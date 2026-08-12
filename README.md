@@ -15,8 +15,6 @@ pip install -e ".[test]"
 | 环境变量 | 默认值 |
 | --- | --- |
 | `OP_TEST_JENKINS_URL` | `http://10.112.32.240:28080` |
-| `OP_TEST_JENKINS_USER` | `admin` |
-| `OP_TEST_JENKINS_PASSWORD` | `XDS@2025` |
 | `OP_TEST_JENKINS_JOB_NAME` | `xds-local-deploy` |
 | `OP_TEST_JENKINS_TIMEOUT` | `30.0` |
 
