@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>op_test Profiling 优化流程</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <nav class="nav">
+        <a class="brand" href="/">op_test</a>
+        <div class="nav-links">
+          <a class="active" href="/">Profiling 优化</a>
+          <a href="/deploy">Jenkins 部署</a>
+        </div>
+      </nav>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">自动化性能分析工作台</p>
+          <h1>Profiling 优化流程</h1>
+          <p>
+            从模型部署、预热、采集到瓶颈分析的端到端流程编排。当前页面为流程模拟，
+            后续 profiling 节点会接入真实采集与报告生成逻辑。
+          </p>
+          <div class="hero-actions">
+            <button id="startSimulation" type="button">开始模拟流程</button>
+            <button id="resetSimulation" class="secondary" type="button">重置</button>
+            <a class="link-button" href="/deploy">进入 Jenkins 部署模块</a>
+          </div>
+        </div>
+        <div class="hero-metrics" aria-label="流程概览">
+          <div><strong id="metricStep">0/7</strong><span>完成步骤</span></div>
+          <div><strong id="metricStatus">待开始</strong><span>当前状态</span></div>
+          <div><strong>模拟</strong><span>运行模式</span></div>
+        </div>
+      </section>
+
+      <section class="workflow-board">
+        <div class="section-header">
+          <h2>优化流水线</h2>
+          <p>每个阶段会在模拟运行中依次切换状态。</p>
+        </div>
+        <div id="profilingSteps" class="flow-grid">
+          <article class="flow-step" data-step="0">
+            <span class="step-index">01</span>
+            <h3>选择模型与目标环境</h3>
+            <p>确认模型路径、部署架构、镜像和目标 GPU 资源。</p>
+            <span class="badge">待开始</span>
+          </article>
+          <article class="flow-step" data-step="1">
+            <span class="step-index">02</span>
+            <h3>环境部署</h3>
+            <p>调用 Jenkins 部署模块，拉起模型服务并记录构建信息。</p>
+            <span class="badge">待开始</span>
+          </article>
+          <article class="flow-step" data-step="2">
+            <span class="step-index">03</span>
+            <h3>预热与健康检查</h3>
+            <p>模拟请求预热、接口探活、基础吞吐检查。</p>
+            <span class="badge">待开始</span>
+          </article>
+          <article class="flow-step" data-step="3">
+            <span class="step-index">04</span>
+            <h3>Profiling 采集</h3>
+            <p>采集运行时指标、延迟分布、GPU 利用率和关键 trace。</p>
+            <span class="badge">待开始</span>
+          </article>
+          <article class="flow-step" data-step="4">
+            <span class="step-index">05</span>
+            <h3>瓶颈分析</h3>
+            <p>识别调度、显存、通信、算子或批处理配置瓶颈。</p>
+            <span class="badge">待开始</span>
+          </article>
+          <article class="flow-step" data-step="5">
+            <span class="step-index">06</span>
+            <h3>优化建议生成</h3>
+            <p>形成可执行优化项，给出影响范围和验证方式。</p>
+            <span class="badge">待开始</span>
+          </article>
+          <article class="flow-step" data-step="6">
+            <span class="step-index">07</span>
+            <h3>报告输出</h3>
+            <p>汇总部署信息、性能指标、瓶颈结论和优化建议。</p>
+            <span class="badge">待开始</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="insight-band">
+        <div>
+          <h2>模拟输出</h2>
+          <p id="simulationLog">点击“开始模拟流程”后，这里会展示当前阶段说明。</p>
+        </div>
+        <div class="report-preview">
+          <span>报告预览</span>
+          <strong id="reportScore">--</strong>
+          <small>综合优化评分</small>
+        </div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

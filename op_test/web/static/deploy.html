@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>op_test Jenkins 部署模块</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <nav class="nav">
+        <a class="brand" href="/">op_test</a>
+        <div class="nav-links">
+          <a href="/">Profiling 优化</a>
+          <a class="active" href="/deploy">Jenkins 部署</a>
+        </div>
+      </nav>
+
+      <header class="page-title">
+        <div>
+          <p class="eyebrow">部署能力模块</p>
+          <h1>Jenkins 部署模块</h1>
+          <p>提交模型部署、查看 GPU 节点、跟踪构建阶段和增量日志。</p>
+        </div>
+        <button id="refreshGpu" type="button">刷新 GPU</button>
+      </header>
+
+      <section class="workspace">
+        <form id="deployForm" class="panel deploy-panel">
+          <div class="section-header compact">
+            <h2>部署配置</h2>
+            <p>参数会提交到 Jenkins job。</p>
+          </div>
+          <label>执行者<input name="executor" value="agent-api" required /></label>
+          <label>部署节点 IP<input name="deploy_node_ips" placeholder="192.168.0.78" /></label>
+          <label>模型路径<input name="model_path" placeholder="/data/models/GLM-5.2-NVFP4" /></label>
+          <label>架构名称<input name="arch_name" placeholder="1p1d" /></label>
+          <label>容器镜像<input name="image" placeholder="registry/image:tag" /></label>
+          <label>代码分支<input name="code_branch" placeholder="main" /></label>
+          <label>架构 JSON<textarea name="arch_content" rows="7"></textarea></label>
+          <label class="check-row">
+            <input name="auto_uninstall_on_failure" type="checkbox" />
+            <span>失败后自动卸载</span>
+          </label>
+          <button type="submit">提交部署</button>
+        </form>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>GPU 节点</h2>
+              <p>点击节点可填入部署 IP。</p>
+            </div>
+            <label class="inline-field">需求 GPU<input id="requiredGpus" type="number" min="0" value="0" /></label>
+          </div>
+          <div id="gpuNodes" class="node-grid"></div>
+        </section>
+      </section>
+
+      <section class="panel status-panel">
+        <div class="panel-header">
+          <div>
+            <h2>构建状态</h2>
+            <p>查看 build number、阶段状态、实时日志链接和增量日志。</p>
+          </div>
+          <div class="actions">
+            <input id="buildNumberInput" type="number" placeholder="Build #" />
+            <button id="refreshStatus" class="secondary" type="button">刷新状态</button>
+            <button id="uninstallBuild" class="danger" type="button">卸载</button>
+          </div>
+        </div>
+        <div id="summary" class="summary-grid"></div>
+        <div id="stages" class="stage-list"></div>
+        <pre id="logs"></pre>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
