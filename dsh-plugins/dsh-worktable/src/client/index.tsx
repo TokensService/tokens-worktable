@@ -14,7 +14,10 @@ import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, type LayoutSpec, ty
  *   - 「管理项目…」编辑模式：改名/隐藏/排序（拖拽 + ↑↓），全存 localStorage。
  *   - 「+」：接入指引 + 本地快捷方式（名称/图标/链接，点击新标签打开）。
  *   - 完整 zh/en 词典接入 dsh-client-locale（NS 'worktable'）。
- * 持久化：dsh.worktable.view.v1（视图）+ dsh.worktable.projects.v1（项目元状态）。
+ * 持久化：dsh.worktable.view.v1（视图）+ dsh.worktable.projects.v1（项目元状态，仅本地条目）；
+ *         新建项目一律本地，完善后在管理列表点 ☁「发布」，布局条目转存服务端
+ *         ~/.dsh/storages/worktable-projects.json（/api/worktable/projects，跨浏览器可见；
+ *         发布后的改名/图标/视图变更/删除随之同步；再点 ☁ 取消发布回到本地）。
  */
 
 type OrderBy = 'manual' | 'recent'
@@ -145,6 +148,13 @@ const ICON_ADD = (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
     <path transform="translate(9.52 2.52)" d="M3.55246 0L3.55246 2.44252L6 2.44252L6 3.55748L3.55246 3.55748L3.55246 6L2.43834 6L2.43834 3.55748L0 3.55748L0 2.44252L2.43834 2.44252L2.43834 0L3.55246 0Z" fill="currentColor" />
     <path transform="translate(0.3496 2.35)" d="M4.76367 0C5.36861 1.80598e-05 5.93113 0.310294 6.25488 0.821289L6.78027 1.64941C6.79685 1.67558 6.81791 1.69775 6.83887 1.71973C6.72186 2.15521 6.65702 2.61192 6.65137 3.08301C6.25601 2.96045 5.90909 2.70478 5.68164 2.3457L5.15723 1.5166C5.07183 1.38189 4.92318 1.3008 4.76367 1.30078L2.32422 1.30078C1.7589 1.30078 1.30078 1.7589 1.30078 2.32422L1.30078 10.1338C1.30078 10.6991 1.7589 11.1572 2.32422 11.1572L11.9766 11.1572C12.5419 11.1572 13 10.6991 13 10.1338L13 8.58398C13.4545 8.5135 13.8903 8.38748 14.3008 8.21289L14.3008 10.1338C14.3008 11.4171 13.2598 12.458 11.9766 12.458L2.32422 12.458C1.04093 12.458 0 11.4171 0 10.1338L0 2.32422C0 1.04093 1.04093 0 2.32422 0L4.76367 0Z" fill="currentColor" />
+  </svg>
+)
+/** 发布按钮的云图标：SVG fill=currentColor，发布后随 data-on 整体变蓝
+ * （emoji ☁ 是彩色字形、忽略 CSS color，做不到变蓝，故不用）。 */
+const ICON_CLOUD = (
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+    <path d="M4.406 3.342A5.53 5.53 0 0 1 8 2c2.69 0 4.923 2 5.166 4.579C14.758 6.804 16 8.137 16 9.773 16 11.569 14.502 13 12.687 13H3.781C1.708 13 0 11.366 0 9.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z" />
   </svg>
 )
 
@@ -1056,6 +1066,34 @@ function WorktableSection(props: any) {
   const updateCheckingRef = useRef(false)
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
+  // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
+  // 仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const r = await fetch('/api/worktable/projects', { cache: 'no-store' })
+        const d = await r.json()
+        if (!alive || !d || !Array.isArray(d.layouts)) return
+        const remote = (d.layouts as any[])
+          .filter((l) => l && typeof l.id === 'string' && typeof l.title === 'string' && Array.isArray(l.main))
+          .map((l) => ({ ...l, sync: true as const }))
+        const remoteFolders: Record<string, string> = {}
+        if (d.folders && typeof d.folders === 'object') {
+          for (const [k, v] of Object.entries(d.folders)) if (typeof v === 'string') remoteFolders[k] = v
+        }
+        setProjects((prev) => {
+          const remoteIds = new Set(remote.map((l) => l.id))
+          return {
+            ...prev,
+            layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
+            folders: { ...prev.folders, ...remoteFolders },
+          }
+        })
+      } catch { /* 服务端不可用 = 仅本地模式 */ }
+    })()
+    return () => { alive = false }
+  }, [])
   const checkUpdates = useCallback(async (force = false) => {
     if (updateCheckingRef.current) return // 防重入：并发点击只保留一个 in-flight
     const last = Number(localStorage.getItem('dsh.worktable.lastUpdateCheck.v1') ?? '0')
@@ -1362,10 +1400,30 @@ function WorktableSection(props: any) {
     })
   }
 
+  /** 同步条目切片（sync 标记的布局 + 其文件夹映射）：以服务端文件为准，localStorage 不落。 */
+  const syncedSliceOf = (s: ProjectsState) => {
+    const layouts = s.layouts.filter((l) => l.sync)
+    const ids = new Set(layouts.map((l) => l.id))
+    const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)))
+    return { layouts, folders }
+  }
   const persistProjects = (patch: Partial<ProjectsState> | ((prev: ProjectsState) => ProjectsState)) => {
     setProjects((prev) => {
       const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
-      try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(next)) } catch {}
+      // localStorage 只落本地条目：sync 布局与其文件夹映射由服务端托管
+      const syncedIds = new Set(next.layouts.filter((l) => l.sync).map((l) => l.id))
+      const local = {
+        ...next,
+        layouts: next.layouts.filter((l) => !l.sync),
+        folders: Object.fromEntries(Object.entries(next.folders).filter(([id]) => !syncedIds.has(id))),
+      }
+      try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(local)) } catch {}
+      // 同步切片有变化才推服务端（全量覆盖，last-write-wins；排序/隐藏等本地偏好不触发推送）
+      const prevSync = JSON.stringify(syncedSliceOf(prev))
+      const nextSync = JSON.stringify(syncedSliceOf(next))
+      if (prevSync !== nextSync) {
+        void fetch('/api/worktable/projects', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: nextSync }).catch(() => {})
+      }
       return next
     })
   }
@@ -2064,6 +2122,13 @@ function buildCustomLayoutPrompt(req: string): string {
 
   const renameProject = (id: string, name: string) => {
     persistProjects((prev) => {
+      // 同步布局改名直接写 title：nameOverrides 是本地偏好，不会跨浏览器
+      const layout = prev.layouts.find((l) => l.id === id)
+      if (layout?.sync) {
+        const title = name.trim()
+        if (!title || title === layout.title) return prev
+        return { ...prev, layouts: prev.layouts.map((l) => (l.id === id ? { ...l, title } : l)) }
+      }
       const next = { ...prev.nameOverrides }
       if (name.trim()) next[id] = name
       else delete next[id]
@@ -2088,7 +2153,7 @@ function buildCustomLayoutPrompt(req: string): string {
       // 轻量兜底：选中的路径理应存在，mkdir 幂等无害
       await fetch('/api/worktable/mkdir', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: folderPath }) })
     } catch { /* 非致命 */ }
-    const layout = buildLayout(wsPreset, name)
+    const layout = buildLayout(wsPreset, name) // 新建一律本地；完善后在管理列表里「发布」才同步到服务端
     persistProjects((prev) => ({ ...prev, layouts: [...prev.layouts, layout], folders: { ...prev.folders, [layout.id]: folderPath } }))
     setWsName(''); setWsFolderParent(''); setWsError(false); setWsFolderError(false)
     setAddOpen(false)
@@ -2098,6 +2163,14 @@ function buildCustomLayoutPrompt(req: string): string {
 
   const removeLayout = (id: string) => {
     persistProjects((prev) => ({ ...prev, layouts: prev.layouts.filter((l) => l.id !== id) }))
+  }
+
+  /** 发布/取消发布：切换布局条目的 sync 标记；persistProjects 检测到同步切片变化后推送/移出服务端文件 */
+  const togglePublish = (id: string) => {
+    persistProjects((prev) => ({
+      ...prev,
+      layouts: prev.layouts.map((l) => (l.id === id ? { ...l, sync: l.sync ? undefined : true } : l)),
+    }))
   }
 
   // ── 变更视图：所有项目通用。布局项目 = 重建其布局条目；入驻项目 = 建立/更新视图覆盖。
@@ -2697,6 +2770,15 @@ function buildCustomLayoutPrompt(req: string): string {
                   <EyeIcon closed={isHidden} />
                 </button>
                 <button type="button" className="dsh-wt_manageBtn" title={t('manage.changeView')} onClick={() => setViewPickFor(id)}>🧩</button>
+                {layout && (
+                  <button
+                    type="button"
+                    className="dsh-wt_manageBtn dsh-wt_managePublish"
+                    data-on={layout.sync ? 'true' : 'false'}
+                    title={layout.sync ? t('manage.unpublish') : t('manage.publish')}
+                    onClick={() => togglePublish(id)}
+                  >{ICON_CLOUD}</button>
+                )}
                 <button
                   type="button"
                   className="dsh-wt_manageBtn"

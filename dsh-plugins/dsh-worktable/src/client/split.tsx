@@ -64,6 +64,9 @@ export type LayoutSpec = {
   chatFullHeight?: boolean
   /** 顶行首次打开时高度占可用高度比例（0~1；0.5 = 上下等分）；拖动后由存档值覆盖 */
   topHeightRatio?: number
+  /** 跨浏览器同步标记：true = 条目存服务端（/api/worktable/projects），所有浏览器可见；
+   *  缺省/false = 仅存本浏览器 localStorage。新建一律本地，由管理列表的「发布」按钮切换。 */
+  sync?: boolean
 }
 
 type Geom = { left: number; top: number; right: number; bottom: number }

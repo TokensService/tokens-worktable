@@ -351,6 +351,51 @@ export function apply(ctx: Context) {
     },
   })
 
+  // 跨浏览器同步的项目存储：新建项目一律本地（localStorage），完善后在管理列表点 ☁「发布」，
+  // 布局条目转存此文件；任何浏览器启动时 GET 拉取合并，取消发布即移出。
+  // 全量覆盖写（last-write-wins），原子落盘（tmp + rename）。
+  const PROJECTS_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-projects.json')
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/projects',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method === 'GET') {
+          let raw = ''
+          try { raw = await readFile(PROJECTS_STORE, 'utf8') } catch { /* 无文件 = 空集 */ }
+          const p = raw ? JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) : {}
+          json(res, 200, {
+            layouts: Array.isArray(p.layouts) ? p.layouts : [],
+            folders: p.folders && typeof p.folders === 'object' ? p.folders : {},
+          })
+          return
+        }
+        if (req.method === 'PUT') {
+          const body = await readJsonBody(req)
+          const layouts = Array.isArray(body.layouts)
+            ? body.layouts.filter((l: any) => l && typeof l.id === 'string' && typeof l.title === 'string' && Array.isArray(l.main))
+            : []
+          const folders: Record<string, string> = {}
+          if (body.folders && typeof body.folders === 'object') {
+            for (const [k, v] of Object.entries(body.folders)) if (typeof v === 'string') folders[k] = v
+          }
+          const text = JSON.stringify({ layouts, folders })
+          if (text.length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
+          const fsx = await import('node:fs/promises')
+          await fsx.mkdir(dirname(PROJECTS_STORE), { recursive: true })
+          const tmp = PROJECTS_STORE + '.tmp'
+          await fsx.writeFile(tmp, text, 'utf8')
+          await fsx.rename(tmp, PROJECTS_STORE)
+          json(res, 200, { ok: true })
+          return
+        }
+        res.writeHead(405); res.end()
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
   // 本地文件写入（MD 编辑模式保存回磁盘）
   webServer.register({
     kind: 'exact',

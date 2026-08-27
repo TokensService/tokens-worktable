@@ -66,6 +66,8 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_manageRow:hover{border-color:var(--dsw-alias-border-l2,#3a4150)}',
   '.dsh-wt_manageRowOff{opacity:.45}',
   '.dsh-wt_manageGrip{flex:none;color:var(--dsw-alias-label-tertiary,#6e7683);font-size:12px;cursor:grab;user-select:none;-webkit-user-select:none}',
+  /* 发布按钮（☁）：data-on=true 表示已发布（服务端同步、跨浏览器可见） */
+  '.dsh-wt_managePublish[data-on=true]{color:var(--dsw-alias-state-accent-primary,#4f8ef7)}',
   '.dsh-wt_manageIcon{flex:none;width:20px;font-size:15px;text-align:center}',
   '.dsh-wt_manageInput{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--dsw-alias-label-primary,#e6e8eb);font:inherit;font-size:12px;line-height:18px;padding:2px 0}',
   '.dsh-wt_manageBtn{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:11px;line-height:1;cursor:pointer}',

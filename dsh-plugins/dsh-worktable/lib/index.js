@@ -472,6 +472,52 @@ function apply(ctx) {
       }
     }
   });
+  const PROJECTS_STORE = pathResolve(homedir(), ".dsh", "storages", "worktable-projects.json");
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/projects",
+    handler: async (req, res) => {
+      try {
+        if (req.method === "GET") {
+          let raw = "";
+          try {
+            raw = await readFile(PROJECTS_STORE, "utf8");
+          } catch {
+          }
+          const p = raw ? JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw) : {};
+          json(res, 200, {
+            layouts: Array.isArray(p.layouts) ? p.layouts : [],
+            folders: p.folders && typeof p.folders === "object" ? p.folders : {}
+          });
+          return;
+        }
+        if (req.method === "PUT") {
+          const body = await readJsonBody(req);
+          const layouts = Array.isArray(body.layouts) ? body.layouts.filter((l) => l && typeof l.id === "string" && typeof l.title === "string" && Array.isArray(l.main)) : [];
+          const folders = {};
+          if (body.folders && typeof body.folders === "object") {
+            for (const [k, v] of Object.entries(body.folders)) if (typeof v === "string") folders[k] = v;
+          }
+          const text = JSON.stringify({ layouts, folders });
+          if (text.length > 1024 * 1024) {
+            json(res, 413, { error: "too large" });
+            return;
+          }
+          const fsx = await import("node:fs/promises");
+          await fsx.mkdir(dirname(PROJECTS_STORE), { recursive: true });
+          const tmp = PROJECTS_STORE + ".tmp";
+          await fsx.writeFile(tmp, text, "utf8");
+          await fsx.rename(tmp, PROJECTS_STORE);
+          json(res, 200, { ok: true });
+          return;
+        }
+        res.writeHead(405);
+        res.end();
+      } catch (err) {
+        json(res, 500, { error: String(err) });
+      }
+    }
+  });
   webServer.register({
     kind: "exact",
     path: "/api/worktable/write",
@@ -620,57 +666,6 @@ function apply(ctx) {
           finalUrl: urlStr,
           body: result.body.toString("utf8")
         });
-      } catch (err) {
-        json(res, 500, { error: String(err) });
-      }
-    }
-  });
-  webServer.register({
-    kind: "exact",
-    path: "/api/worktable/exec",
-    handler: async (req, res) => {
-      try {
-        if (req.method !== "POST") {
-          res.writeHead(405);
-          res.end();
-          return;
-        }
-        const body = await readJsonBody(req);
-        const p = typeof body.path === "string" ? body.path.trim() : "";
-        if (!p) {
-          json(res, 400, { error: "missing path" });
-          return;
-        }
-        const abs = pathResolve(p);
-        const root = pathResolve(process.env.DSH_WORKDIR || process.cwd());
-        if (abs !== root && !abs.startsWith(root + sep)) {
-          json(res, 403, { error: "script outside allowed root (" + root + ")" });
-          return;
-        }
-        const fsx = await import("node:fs/promises");
-        const stat = await fsx.stat(abs).catch(() => null);
-        if (!stat || !stat.isFile()) {
-          json(res, 404, { error: "script not found: " + abs });
-          return;
-        }
-        const args = Array.isArray(body.args) ? body.args.map((a) => String(a)) : [];
-        const env = Object.assign({}, process.env, body.env && typeof body.env === "object" ? body.env : {});
-        const cwd = typeof body.cwd === "string" && body.cwd ? pathResolve(body.cwd) : dirname(abs);
-        const timeoutMs = Math.min(Math.max(parseInt(body.timeoutMs, 10) || 12e4, 1e3), 6e5);
-        const ext = (abs.split(".").pop() || "").toLowerCase();
-        const t0 = Date.now();
-        const done = (err, stdout, stderr) => {
-          const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-          json(res, 200, {
-            code,
-            stdout: String(stdout ?? ""),
-            stderr: String(stderr ?? "") + (err && err.killed ? "\n[\u8D85\u65F6\u5DF2\u7EC8\u6B62]" : ""),
-            durationMs: Date.now() - t0
-          });
-        };
-        if (ext === "sh" || ext === "bash") execFile("bash", [abs, ...args], { cwd, env, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, done);
-        else if (ext === "py") execFile("python3", [abs, ...args], { cwd, env, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, done);
-        else execFile(abs, args, { cwd, env, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, done);
       } catch (err) {
         json(res, 500, { error: String(err) });
       }
