@@ -62,8 +62,6 @@
     .mini { font-size:11px; padding:5px 12px; }
     #historyTable tbody tr { cursor:pointer; }
     #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
-    #historyTable .rowActs { display:flex; gap:4px; flex-wrap:nowrap; }
-    #historyTable .rowActs .mini { padding:3px 8px; }
     ::-webkit-scrollbar-thumb { background:var(--scroll); }
   </style>
   <script>
@@ -211,10 +209,10 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button id="aiAnalyzeBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="汇总全部运行日志写到服务端文件，并新开 DSH 会话进行分析" style="margin-left:6px;">✨ AI 日志分析</button></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button id="aiAnalyzeBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="汇总全部运行日志写到服务端文件，并新开 DSH 会话进行分析" style="margin-left:6px;">✨ AI 日志分析</button><span style="margin-left:8px; padding-left:8px; border-left:1px solid var(--dsw-alias-border-l1);"><button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话做日志分析（提示词见「分析配置」页）">日志</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话做 Profiling 分析（提示词见「分析配置」页）">Profiling</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话做性能分析（提示词见「分析配置」页）">性能</button></span> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th><th>操作</th></tr></thead>
+          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -260,9 +258,9 @@
   <!-- 分析配置（独立页面）：运行历史行分析按钮的提示词模板 -->
   <div id="pageCfg" style="display:none">
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史行分析按钮的提示词模板</span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」选中某一行（点击行即选中），点行内按钮会新建一个 AI 会话并发送对应提示词。
+        在「运行历史」点击选中某一行后，点标题行的 日志 / Profiling / 性能 按钮会新建一个 AI 会话并发送对应提示词。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -1320,12 +1318,7 @@ function archiveRun(result){
     await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
   })().catch(e=>console.warn('[archive] 归档失败（不影响运行结果）:', e));
 }
-/* ---------- AI 分析（历史行按钮 → 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
-const ANALYSIS_KINDS = [
-  {key:'log',  label:'日志分析', btn:'日志'},
-  {key:'prof', label:'Profiling 分析', btn:'Profiling'},
-  {key:'perf', label:'性能分析', btn:'性能'},
-];
+/* ---------- AI 分析（历史标题行按钮 → 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
 const DEFAULT_PROMPTS = {
   log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件：{logFile}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
   prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
@@ -1370,18 +1363,21 @@ function renderHistory(){
     const tr=document.createElement('tr');
     if(idx===selHistoryIdx) tr.className='sel';
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':h.status==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(h.status)+'</span>';
-    const acts='<span class="rowActs">'+ANALYSIS_KINDS.map(k=>'<button class="dshell-btn dshell-btnGhost mini" data-act="'+k.key+'" data-idx="'+idx+'" title="'+k.label+'：新建 AI 会话分析本次运行">'+k.btn+'</button>').join('')+'</span>';
-    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+h.env+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+h.dur+'</td><td class="dshell-muted">'+h.time+'</td><td>'+acts+'</td>';
-    tr.addEventListener('click', (e)=>{ if(e.target.closest && e.target.closest('[data-act]')) return; selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
+    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+h.env+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+h.dur+'</td><td class="dshell-muted">'+h.time+'</td>';
+    tr.addEventListener('click', ()=>{ selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
     tb.appendChild(tr);
   });
-  tb.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click', ()=>{
-    const i=parseInt(b.getAttribute('data-idx'),10);
-    if(!history[i]) return;
-    selHistoryIdx=i; renderHistory();
-    createAnalysisChat(b.getAttribute('data-act'), history[i]);
-  }));
+  const tip=$('rowSelTip');
+  if(tip) tip.textContent = (selHistoryIdx>=0 && history[selHistoryIdx])
+    ? ('已选 #'+history[selHistoryIdx].no+' '+(history[selHistoryIdx].pipeline||''))
+    : '点击行选中后可分析';
 }
+/* 标题行分析按钮：作用于当前选中行 */
+document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', ()=>{
+  const rec=(selHistoryIdx>=0)?history[selHistoryIdx]:null;
+  if(!rec){ alert('请先点击选择一条运行历史。'); return; }
+  createAnalysisChat(b.getAttribute('data-ract'), rec);
+}));
 function labelOf(s){ return {success:'成功',failed:'失败',aborted:'已中止'}[s]||s; }
 function renderStats(){
   $('sTotal').textContent = buildNo;
