@@ -1,0 +1,11 @@
+{{- if .Values.XDSCppServerConfigFile }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xds-cpp-server-config
+data:
+  {{- range $filename, $content := .Values.XDSCppServerConfigFile }}
+  {{ $filename | quote }}: |-
+    {{- $content | nindent 4 }}
+  {{- end }}
+{{- end }}

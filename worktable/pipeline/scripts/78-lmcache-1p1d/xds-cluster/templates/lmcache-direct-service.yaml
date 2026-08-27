@@ -1,0 +1,38 @@
+{{- $lmcache := .Values.lmcache | default dict }}
+{{- $deploymentMode := $lmcache.deploymentMode | default .Values.deploymentMode }}
+{{- $direct := $lmcache.direct | default .Values.direct | default dict }}
+{{- if and (eq $deploymentMode "direct") ($direct.enabled | default false) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $direct.name | quote }}
+  namespace: {{ include "lmcache.namespace" . | quote }}
+  labels:
+    app.kubernetes.io/name: lmcache
+    app.kubernetes.io/instance: {{ $direct.name | quote }}
+spec:
+  type: {{ $direct.service.type | quote }}
+  internalTrafficPolicy: {{ $direct.service.internalTrafficPolicy | quote }}
+  selector:
+    app.kubernetes.io/name: lmcache
+    app.kubernetes.io/instance: {{ $direct.name | quote }}
+  ports:
+    - name: zmq
+      port: {{ $direct.server.port }}
+      targetPort: {{ $direct.server.port }}
+      protocol: TCP
+    - name: http
+      port: {{ $direct.server.httpPort }}
+      targetPort: {{ $direct.server.httpPort }}
+      protocol: TCP
+    {{- if $direct.server.decodePort }}
+    - name: zmq-decode
+      port: {{ $direct.server.decodePort }}
+      targetPort: {{ $direct.server.decodePort }}
+      protocol: TCP
+    - name: http-decode
+      port: {{ $direct.server.decodeHttpPort }}
+      targetPort: {{ $direct.server.decodeHttpPort }}
+      protocol: TCP
+    {{- end }}
+{{- end }}
