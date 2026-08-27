@@ -60,6 +60,10 @@
     .legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
     .gate { display:flex; gap:8px; justify-content:center; margin-top:8px; }
     .mini { font-size:11px; padding:5px 12px; }
+    #historyTable tbody tr { cursor:pointer; }
+    #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
+    #historyTable .rowActs { display:flex; gap:4px; flex-wrap:nowrap; }
+    #historyTable .rowActs .mini { padding:3px 8px; }
     ::-webkit-scrollbar-thumb { background:var(--scroll); }
   </style>
   <script>
@@ -100,6 +104,7 @@
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
+    <button id="navCfg" class="dshell-btn dshell-btnGhost mini" data-pagenav="cfg">分析配置</button>
   </div>
   <div id="pageMain">
 
@@ -119,6 +124,9 @@
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" value="dev-li" />
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
+      <input id="archiveDir" class="dshell-input" placeholder="留空=不归档" style="width:210px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档" />
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="cleanupEnv" /> 先清理环境
@@ -206,7 +214,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button id="aiAnalyzeBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="汇总全部运行日志写到服务端文件，并新开 DSH 会话进行分析" style="margin-left:6px;">✨ AI 日志分析</button></h2>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -248,6 +256,33 @@
       <div id="cleanupParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
   </div><!-- /pageEnv -->
+
+  <!-- 分析配置（独立页面）：运行历史行分析按钮的提示词模板 -->
+  <div id="pageCfg" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史行分析按钮的提示词模板</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        在「运行历史」选中某一行（点击行即选中），点行内按钮会新建一个 AI 会话并发送对应提示词。
+        模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
+      </p>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">AI 日志分析
+          <textarea id="cfgPromptLog" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">Profiling 分析
+          <textarea id="cfgPromptProf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">性能分析
+          <textarea id="cfgPromptPerf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="cfgSave" class="dshell-btn mini">保存</button>
+          <button id="cfgReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
+          <span id="cfgSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+        </div>
+      </div>
+    </div>
+  </div><!-- /pageCfg -->
 
   <!-- GPU 详情弹层 -->
   <div id="gpuDetail" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:200; align-items:center; justify-content:center;">
@@ -647,6 +682,9 @@ function detectScriptsDir(){
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
 function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
+/* 归档根目录：留空=不归档；归档按「流水线名称_日期」文件夹组织（见 archiveRun） */
+let archiveDir = lsGet('pip-archiveDir', '');
+function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
 
 /* ---------- 环境清理脚本（在「设置」页配置；勾选主控「清理环境」后于流水线启动前执行） ---------- */
 let cleanupScript=(function(){ try{ return JSON.parse(localStorage.getItem('pip-cleanupScript')); }catch(e){ return null; } })() || null;
@@ -1212,10 +1250,12 @@ function finish(result){
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
     dur: fmtDur(elapsed), time:'今天 '+nowHM(), by:curRun.by||'anonymous',
-    logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs())};
+    logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
+    tag:curRun.tag, archive:archiveFolderFor(curRun)};
   history.unshift(rec); if(history.length>200) history.length=200;
   renderHistory(); renderStats();
   persistState();
+  archiveRun(result);
   drainQueue();
   renderQueue();
 }
@@ -1231,16 +1271,116 @@ async function runCleanupBefore(){
   if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
   if(curRun) curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
 }
+/* ---------- 产物归档（运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
+function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
+function todayCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
+async function apiMkdir(p){
+  try{
+    const r=await fetch('/api/worktable/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})});
+    const j=await r.json(); return !(j && j.error);
+  }catch(e){ return false; }
+}
+async function apiWrite(p, content){
+  const r=await fetch('/api/worktable/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p, content})});
+  const j=await r.json(); if(j && j.error) throw new Error(j.error);
+}
+function archiveFolderFor(ctx){
+  const root=(archiveDir||'').trim().replace(/\/+$/,'');
+  if(!root || !ctx) return null;
+  return root+'/'+sanitizeFsName(ctx.pipelineName||curPipeline().name)+'_'+todayCompact();
+}
+function archiveRun(result){
+  const folder=archiveFolderFor(curRun);
+  if(!folder) return;
+  const root=folder.slice(0, folder.lastIndexOf('/'));
+  const ctx=curRun, stages=activeStages();
+  // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
+  const logLines=[];
+  stages.forEach(s=>{
+    const n=nodes[s.id]||{status:'idle'};
+    logLines.push('===== '+s.name+' ['+(n.status||'idle')+'] =====');
+    buildLog(s, ctx, n).forEach(l=>logLines.push(l));
+    logLines.push('');
+  });
+  logLines.push('[result] '+result);
+  // profiling：各阶段耗时/状态 + 总耗时等运行元数据
+  const profile={
+    pipeline: ctx.pipelineName||null, tag: ctx.tag, commit: ctx.commit,
+    env: ctx.env, image: ctx.image, by: ctx.by, source: ctx.source, result,
+    startTime: new Date(ctx.startTs).toISOString(),
+    totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
+    stages: stages.map(s=>{
+      const n=nodes[s.id]||{};
+      return { id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null };
+    }),
+  };
+  (async()=>{
+    if(!await apiMkdir(folder)){ await apiMkdir(root); await apiMkdir(folder); }
+    await apiWrite(folder+'/run-'+ctx.tag+'.log', logLines.join('\n'));
+    await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
+  })().catch(e=>console.warn('[archive] 归档失败（不影响运行结果）:', e));
+}
+/* ---------- AI 分析（历史行按钮 → 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
+const ANALYSIS_KINDS = [
+  {key:'log',  label:'日志分析', btn:'日志'},
+  {key:'prof', label:'Profiling 分析', btn:'Profiling'},
+  {key:'perf', label:'性能分析', btn:'性能'},
+];
+const DEFAULT_PROMPTS = {
+  log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件：{logFile}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
+  prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
+  perf: '请对下面这条流水线运行做性能分析：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 与 run-{tag}.profile.json 分别为日志与 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
+};
+function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
+let analysisPrompts = loadPrompts();
+function savePrompts(){ try{ localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts)); }catch(e){} persistState(); }
+function analysisSummary(rec){ return '#'+rec.no+' 流水线「'+rec.pipeline+'」 环境 '+rec.env+' · 执行人 '+rec.by+' · 状态 '+labelOf(rec.status)+' · 耗时 '+rec.dur+' · '+rec.time+' · commit '+rec.commit; }
+function buildAnalysisPrompt(kind, rec){
+  const tpl = analysisPrompts[kind] || DEFAULT_PROMPTS[kind] || '';
+  const archive = rec.archive || '';
+  const vars = {
+    no:rec.no, pipeline:rec.pipeline, env:rec.env, by:rec.by, commit:rec.commit,
+    status:labelOf(rec.status), dur:rec.dur, time:rec.time, tag:rec.tag||'',
+    archive: archive || '（未归档）',
+    summary: analysisSummary(rec),
+    logFile: archive ? archive+'/run-'+rec.tag+'.log' : '（未归档）',
+    profileFile: archive ? archive+'/run-'+rec.tag+'.profile.json' : '（未归档）',
+  };
+  return tpl.replace(/\{(\w+)\}/g, (m,k)=> vars[k]!==undefined ? String(vars[k]) : m);
+}
+/* 经父页面（工作台）暴露的 __dshSessions/__dshPromptIntoSession 新建会话并发送提示词 */
+async function createAnalysisChat(kind, rec){
+  const P = window.parent;
+  const sessions = P && P.__dshSessions;
+  if(!sessions || typeof sessions.create!=='function' || typeof P.__dshPromptIntoSession!=='function'){
+    alert('无法创建 AI 会话：请在 DSH 工作台中打开本页面。'); return;
+  }
+  const text = buildAnalysisPrompt(kind, rec);
+  const sid = await sessions.create({});
+  try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
+  await P.__dshPromptIntoSession(sid, text);
+}
 
 /* ---------- 历史 & 统计 ---------- */
+let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中）
 function renderHistory(){
   const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
-  history.forEach(h=>{
+  if(selHistoryIdx>=history.length) selHistoryIdx=-1;
+  history.forEach((h,idx)=>{
     const tr=document.createElement('tr');
+    if(idx===selHistoryIdx) tr.className='sel';
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':h.status==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+h.env+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+h.dur+'</td><td class="dshell-muted">'+h.time+'</td>';
+    const acts='<span class="rowActs">'+ANALYSIS_KINDS.map(k=>'<button class="dshell-btn dshell-btnGhost mini" data-act="'+k.key+'" data-idx="'+idx+'" title="'+k.label+'：新建 AI 会话分析本次运行">'+k.btn+'</button>').join('')+'</span>';
+    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+h.env+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+h.dur+'</td><td class="dshell-muted">'+h.time+'</td><td>'+acts+'</td>';
+    tr.addEventListener('click', (e)=>{ if(e.target.closest && e.target.closest('[data-act]')) return; selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
     tb.appendChild(tr);
   });
+  tb.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click', ()=>{
+    const i=parseInt(b.getAttribute('data-idx'),10);
+    if(!history[i]) return;
+    selHistoryIdx=i; renderHistory();
+    createAnalysisChat(b.getAttribute('data-act'), history[i]);
+  }));
 }
 function labelOf(s){ return {success:'成功',failed:'失败',aborted:'已中止'}[s]||s; }
 function renderStats(){
@@ -1392,6 +1532,8 @@ $('aiAnalyzeBtn').addEventListener('click', startAiAnalysis);
 $('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
 $('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });
 $('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); });
+$('archiveDir').value = archiveDir;
+$('archiveDir').addEventListener('change', e=>{ archiveDir=e.target.value.trim(); saveArchiveDir(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); });
 /* 阶段编辑器：增删/上下移/识别参数（事件委托） */
 $('plStageList').addEventListener('click', (e)=>{
@@ -1424,16 +1566,26 @@ $('cleanupScriptName').value = cleanupScript?cleanupScript.name:'';
 $('cleanupScriptName').addEventListener('change', (e)=>setCleanupScript(e.target.value.trim()));
 $('cleanupDetect').addEventListener('click', ()=>{ detectCleanupParams().then(saveCleanup); });
 renderCleanupParams();
-/* 页面切换（流水线 / 设置） */
+/* 页面切换（流水线 / 设置 / 分析配置） */
 function switchPage(p){
-  const main=p==='main';
-  $('pageMain').style.display = main?'':'none';
-  $('pageEnv').style.display = main?'none':'';
-  $('navMain').className = 'dshell-btn mini'+(main?'':' dshell-btnGhost');
-  $('navEnv').className = 'dshell-btn mini'+(main?' dshell-btnGhost':'');
+  $('pageMain').style.display = p==='main'?'':'none';
+  $('pageEnv').style.display = p==='env'?'':'none';
+  $('pageCfg').style.display = p==='cfg'?'':'none';
+  $('navMain').className = 'dshell-btn mini'+(p==='main'?'':' dshell-btnGhost');
+  $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
+  $('navCfg').className = 'dshell-btn mini'+(p==='cfg'?'':' dshell-btnGhost');
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
+$('navCfg').addEventListener('click', ()=>switchPage('cfg'));
+/* 分析配置页：提示词模板编辑 */
+function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
+$('cfgSave').addEventListener('click', ()=>{
+  analysisPrompts={log:$('cfgPromptLog').value, prof:$('cfgPromptProf').value, perf:$('cfgPromptPerf').value};
+  savePrompts();
+  $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
+});
+$('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
@@ -1451,6 +1603,7 @@ function renderAll(){
   refreshGpuAll();
   renderQueue();
   renderDetail();
+  fillCfgForm();
 }
 renderAll();
 /* 从服务端拉取配置与历史（含日志）；服务端有数据则覆盖本地并重渲染 */
