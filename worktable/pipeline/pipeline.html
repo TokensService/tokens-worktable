@@ -1,0 +1,1278 @@
+<!doctype html>
+<!-- K8s/通用流水线 · 交互式可视化（多条流水线 + 执行人 + 运行队列 + 定时任务） -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>流水线工作台</title>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <style>
+    /* ===== 主题：浅色 / 深色 / 跟随系统（通过 DSH 主题变量驱动原生皮肤自动适配） ===== */
+    :root { color-scheme: dark; }
+    :root[data-theme="light"] { color-scheme: light; }
+    :root {
+      --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb; --dsw-alias-label-secondary:#9aa4b2;
+      --dsw-alias-label-tertiary:#6b7280; --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+      --dsw-alias-fill-l1:rgba(255,255,255,.03); --dsw-alias-state-accent-primary:#4f8ef7;
+      --log-bg:#06090f; --log-fg:#9aa4b2; --log-ok:#3fb950; --log-err:#f85149; --log-warn:#d29922;
+      --log-hi:#e6e8eb; --log-dim:#6b7280; --scroll:rgba(255,255,255,.16);
+    }
+    :root[data-theme="light"] {
+      --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328; --dsw-alias-label-secondary:#57606a;
+      --dsw-alias-label-tertiary:#8c959f; --dsw-alias-border-l1:#d0d7de; --dsw-alias-border-l2:#afb8c1;
+      --dsw-alias-fill-l1:#f6f8fa; --dsw-alias-state-accent-primary:#0969da;
+      --log-bg:#f6f8fa; --log-fg:#57606a; --log-ok:#1a7f37; --log-err:#cf222e; --log-warn:#9a6700;
+      --log-hi:#1f2328; --log-dim:#8c959f; --scroll:rgba(0,0,0,.2);
+    }
+    /* ===== 流水线专属样式（色板走上述变量，最小自造范围） ===== */
+    .pipeline-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+    .pipeline-controls .dshell-input { width:auto; min-width:96px; }
+    .pipeline-seg { display:flex; align-items:center; flex-wrap:nowrap; overflow-x:auto; gap:0; padding-bottom:4px; }
+    .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; transition:border-color .15s,background .15s,box-shadow .15s; }
+    .pipeline-node:hover { border-color:var(--dsw-alias-border-l2); background:var(--dsw-alias-fill-l1); }
+    .pipeline-node.sel { border-color:var(--dsw-alias-state-accent-primary); box-shadow:0 0 0 2px rgba(79,142,247,.18); }
+    .pipeline-node.run { border-color:rgba(210,153,34,.5); background:rgba(210,153,34,.07); }
+    .pipeline-node.ok  { border-color:rgba(63,185,80,.45); background:rgba(63,185,80,.07); }
+    .pipeline-node.fail{ border-color:rgba(248,81,73,.5); background:rgba(248,81,73,.08); }
+    .pipeline-node.wait{ border-color:rgba(79,142,247,.5); background:rgba(79,142,247,.08); }
+    .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
+    .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
+    .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
+    .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:#d29922; transition:width .12s linear; }
+    .pipeline-node.ok .pipeline-bar > i { background:#3fb950; }
+    .pipeline-node.fail .pipeline-bar > i { background:#f85149; }
+    .pipeline-conn { flex:0 0 auto; display:flex; align-items:center; height:42px; }
+    .pipeline-conn::before { content:''; display:block; width:18px; height:2px; background:var(--dsw-alias-border-l2); }
+    .pipeline-conn::after { content:''; border:4px solid transparent; border-left-color:var(--dsw-alias-border-l2); margin-left:-1px; }
+    .pipeline-sub { display:flex; gap:4px; justify-content:center; margin-top:5px; }
+    .pipeline-sub > span { font-size:9.5px; padding:1px 6px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-tertiary); }
+    .pipeline-sub > span.ok { color:#3fb950; border-color:rgba(63,185,80,.4); }
+    .pipeline-sub > span.run { color:#d29922; border-color:rgba(210,153,34,.4); }
+    .pipeline-sub > span.fail{ color:#f85149; border-color:rgba(248,81,73,.4); }
+    @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 rgba(210,153,34,.45);} 50%{ box-shadow:0 0 0 4px rgba(210,153,34,0);} }
+    .pipeline-node.run { animation:pipPulse 1.4s infinite; }
+    .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    @media (max-width:900px){ .pipeline-cols{ grid-template-columns:1fr; } }
+    .logbox { background:var(--log-bg); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:10px 12px; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:11px; line-height:1.55; color:var(--log-fg); max-height:240px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+    .logbox .ok{ color:var(--log-ok); } .logbox .warn{ color:var(--log-warn); } .logbox .err{ color:var(--log-err); } .logbox .hi{ color:var(--log-hi); } .logbox .dim{ color:var(--log-dim); }
+    .legend { display:flex; gap:14px; flex-wrap:wrap; }
+    .legend span { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--dsw-alias-label-secondary); }
+    .legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
+    .gate { display:flex; gap:8px; justify-content:center; margin-top:8px; }
+    .mini { font-size:11px; padding:5px 12px; }
+    ::-webkit-scrollbar-thumb { background:var(--scroll); }
+  </style>
+  <script>
+    /* 防闪烁：首屏前按已存偏好解析主题（浅色 / 深色 / 跟随系统） */
+    (function(){
+      try {
+        var p = localStorage.getItem('pip-theme') || 'auto';
+        var dark = p==='dark' || (p==='auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark?'dark':'light');
+      } catch(e){ document.documentElement.setAttribute('data-theme','dark'); }
+    })();
+  </script>
+</head>
+<body>
+<div class="dshell">
+  <!-- 标题区 -->
+  <div style="display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:10px;">
+    <div>
+      <h1 class="dshell-title">流水线工作台</h1>
+      <p class="dshell-sub">多条流水线 · 执行人留痕 · 运行队列 · 定时任务（周期/一次性）· 环境多选（IP）· 本地模拟</p>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
+      <div id="overall" style="display:flex; gap:6px; flex-wrap:wrap;">
+        <span class="dshell-badge">未运行</span>
+      </div>
+      <span id="overallBy" class="dshell-muted"></span>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">主题
+        <select id="theme" class="dshell-input" style="min-width:104px;">
+          <option value="light">浅色</option>
+          <option value="dark">深色</option>
+          <option value="auto">跟随系统</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <!-- 页面导航 -->
+  <div style="display:flex; gap:6px; margin:2px 0 4px;">
+    <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
+    <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">环境配置</button>
+  </div>
+  <div id="pageMain">
+
+  <!-- 控制区 -->
+  <div class="dshell-card pipeline-controls">
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
+      <select id="pipelineSel" class="dshell-input" style="min-width:130px;"></select>
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境（可多选）
+      <span id="envMulti" style="position:relative;display:inline-block;">
+        <button id="envMultiBtn" type="button" class="dshell-input" style="min-width:150px;text-align:left;cursor:pointer;">选择 IP</button>
+        <div id="envMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:230px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+      </span>
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">镜像名
+      <input id="imageName" class="dshell-input" value="myapp" />
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
+      <input id="triggeredBy" class="dshell-input" value="dev-li" />
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+      <input type="checkbox" id="simFail" /> 模拟末段失败（触发回滚）
+    </label>
+    <span style="flex:1"></span>
+    <button id="runBtn" class="dshell-btn">▶ 运行流水线</button>
+    <button id="resetBtn" class="dshell-btn dshell-btnGhost">重置</button>
+  </div>
+
+  <!-- 统计 -->
+  <div class="dshell-grid">
+    <div class="dshell-stat"><div class="dshell-statLabel">总构建次数</div><div class="dshell-statValue" id="sTotal">—</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">成功率</div><div class="dshell-statValue" id="sRate">—</div><div class="dshell-statDelta" id="sRateDelta"></div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">平均耗时</div><div class="dshell-statValue" id="sAvg">—</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">最近构建</div><div class="dshell-statValue" id="sLast">—</div></div>
+  </div>
+
+  <!-- 运行队列 -->
+  <div class="dshell-card" id="queueCard">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <h2 class="dshell-sub" style="margin:0">运行队列 <span id="queueCount" class="dshell-muted"></span></h2>
+      <span id="queueStatus" class="dshell-badge">空闲</span>
+    </div>
+    <div id="queueList" class="dshell-list"></div>
+  </div>
+
+  <!-- 流水线任务（多条流水线） -->
+  <div class="dshell-card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+      <h2 class="dshell-sub" style="margin:0">流水线任务 <span id="plCount" class="dshell-muted"></span></h2>
+      <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
+    </div>
+    <div id="plForm" style="display:none; margin-bottom:10px;">
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
+          <input id="plName" class="dshell-input" placeholder="我的流水线" style="width:220px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">脚本目录
+          <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
+          <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
+        </label>
+        <label class="dshell-muted">阶段（名称/耗时/审批门，可上移下移/增删；每步可绑 scripts 下脚本并自动识别参数，留空=本地模拟该步）</label>
+        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
+        <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
+        <datalist id="scriptsList"></datalist>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button id="plSave" class="dshell-btn mini">保存</button>
+          <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
+          <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
+        </div>
+      </div>
+    </div>
+    <div style="overflow:auto;">
+      <table class="dshell-table" id="plTable">
+        <thead><tr><th>流水线</th><th>阶段数</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 流水线编排 -->
+  <div class="dshell-card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+      <h2 class="dshell-sub" style="margin:0">流水线编排 <button id="flowEditBtn" class="dshell-btn dshell-btnGhost mini" type="button" style="margin-left:6px;">✎ 编辑流水线</button></h2>
+      <div class="legend">
+        <span><i style="background:#6b7280"></i>未开始</span>
+        <span><i style="background:#d29922;box-shadow:0 0 5px #d29922"></i>进行中</span>
+        <span><i style="background:#4f8ef7"></i>等待审批</span>
+        <span><i style="background:#3fb950;box-shadow:0 0 5px #3fb950"></i>成功</span>
+        <span><i style="background:#f85149;box-shadow:0 0 5px #f85149"></i>失败</span>
+      </div>
+    </div>
+    <div id="flow" class="pipeline-seg"></div>
+    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。</p>
+  </div>
+
+  <!-- 定时任务 -->
+  <div class="dshell-card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+      <h2 class="dshell-sub" style="margin:0">定时任务 <span id="schedCount" class="dshell-muted"></span></h2>
+      <button id="addSchedBtn" class="dshell-btn dshell-btnGhost mini">+ 新建定时任务</button>
+    </div>
+    <div id="schedForm" style="display:none; margin-bottom:10px;">
+      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">名称
+          <input id="sName" class="dshell-input" placeholder="nightly-prod" style="width:130px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">流水线
+          <select id="sPipeline" class="dshell-input" style="min-width:130px;"></select>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">周期
+          <select id="sPreset" class="dshell-input">
+            <option value="i1">每 1 分钟（演示）</option>
+            <option value="i5" selected>每 5 分钟</option>
+            <option value="i15">每 15 分钟</option>
+            <option value="i30">每 30 分钟</option>
+            <option value="i60">每小时</option>
+            <option value="d9">每天 09:00</option>
+            <option value="d22">每天 22:00</option>
+            <option value="once5">一次性 · 5 分钟后</option>
+            <option value="once30">一次性 · 30 分钟后</option>
+            <option value="onceAt">一次性 · 指定时间</option>
+            <option value="custom">自定义间隔</option>
+          </select>
+        </label>
+        <label id="sCustomWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">间隔(分)
+          <input id="sEvery" class="dshell-input" type="number" min="1" value="10" style="width:64px;" />
+        </label>
+        <label id="sOnceWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
+          <input id="sOnceAt" class="dshell-input" type="datetime-local" style="width:180px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">环境
+          <select id="sEnv" class="dshell-input"></select>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">执行人
+          <input id="sBy" class="dshell-input" placeholder="⏰ nightly-prod" style="width:130px;" />
+        </label>
+        <button id="sAdd" class="dshell-btn mini">添加</button>
+        <button id="sCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
+      </div>
+    </div>
+    <div style="overflow:auto;">
+      <table class="dshell-table" id="schedTable">
+        <thead><tr><th>任务</th><th>流水线</th><th>环境</th><th>执行人</th><th>下次运行</th><th>上次</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="dshell-muted" style="margin:8px 0 0">周期任务到点循环触发；一次性任务到点只跑一次并自动停用。已有运行进行中时进入「运行队列」按先进先出依次执行（同任务不重复排队，最多 8 条）。任务保存在本机浏览器。</p>
+  </div>
+
+  <!-- 详情 + 历史 -->
+  <div class="pipeline-cols">
+    <div class="dshell-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0" id="detailTitle">阶段详情</h2>
+        <span id="detailBadge"></span>
+      </div>
+      <div class="dshell-kv" id="detailKv"></div>
+      <div class="dshell-divider"></div>
+      <div class="pipeline-bar" id="detailBarWrap" style="height:7px;margin:6px 0 8px;"><i id="detailBar" style="display:block;height:100%;width:0;border-radius:3px;background:#3fb950;"></i></div>
+      <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史</h2>
+      <div style="overflow:auto;">
+        <table class="dshell-table" id="historyTable">
+          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  </div><!-- /pageMain -->
+
+  <!-- 环境配置（独立页面） -->
+  <div id="pageEnv" style="display:none">
+    <div class="dshell-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0">环境配置 <span id="envCount" class="dshell-muted"></span></h2>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:140px;" />
+        <input id="envIp" class="dshell-input" placeholder="IP 地址（如 192.168.1.20）" style="width:180px;" />
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="envProd" /> 生产</label>
+        <button id="envAdd" class="dshell-btn mini">添加</button>
+        <button id="envCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
+      </div>
+      <div style="overflow:auto;">
+        <table class="dshell-table" id="envTable">
+          <thead><tr><th>名称</th><th>IP 地址</th><th>生产</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP（运行环境值取 <b>IP 地址</b>）；标记「生产」的环境会触发流水线的审批门（若含审批阶段）。</p>
+    </div>
+  </div><!-- /pageEnv -->
+</div>
+
+<script>
+/* ---------- 流水线定义（内置） ---------- */
+const K8S_STAGES = [
+  {id:'checkout',name:'检出',dur:5,sub:[]},
+  {id:'validate',name:'校验',dur:9,sub:['代码检查','测试']},
+  {id:'approval',name:'审批',dur:0,gate:true,prodOnly:true,sub:[]},
+  {id:'build',name:'构建镜像',dur:13,sub:[]},
+  {id:'push',name:'推送镜像',dur:6,sub:[]},
+  {id:'deploy',name:'部署到 K8s',dur:10,sub:[]},
+  {id:'health',name:'健康检查',dur:7,sub:[]},
+];
+const CI_STAGES = [
+  {id:'checkout',name:'检出',dur:5,sub:[]},
+  {id:'validate',name:'校验',dur:9,sub:['代码检查','测试']},
+  {id:'build',name:'构建镜像',dur:12,sub:[]},
+];
+const CANARY_STAGES = [
+  {id:'deploy',name:'部署到 K8s',dur:10,sub:[]},
+  {id:'health',name:'健康检查',dur:7,sub:[]},
+];
+// 每阶段真实日志模板（按阶段 id 匹配；自定义阶段走通用日志）
+const LOGS = {
+  checkout: [
+    "[Pipeline] stage { (检出)",
+    "Cloning into 'myapp'…",
+    "构建来源: commit={{commit}}",
+    "触发者: {{by}}",
+    "目标镜像: {{registry}}/{{image}}:{{tag}}",
+    "[Pipeline] }",
+  ],
+  validate: [
+    "[Pipeline] stage { (校验)",
+    "[Pipeline] { (代码检查)  ← 并行",
+    "docker run --rm myapp-lint:latest --check",
+    "✓ 代码检查通过 (12 项检查)",
+    "[Pipeline] { (测试)  ← 并行",
+    "pytest -q --maxfail=1",
+    "..........  10 passed in 3.21s",
+    "✓ 全部测试通过",
+    "[Pipeline] }",
+  ],
+  approval: [
+    "[Pipeline] stage { (审批)",
+    "Input: 确认将 {{registry}}/{{image}}:{{tag}} 发布到生产 ({{env}})？",
+    "等待 发布管理员组 成员审批…",
+  ],
+  build: [
+    "[Pipeline] stage { (构建镜像)",
+    "docker build \\",
+    "  --label org.opencontainers.image.revision={{commit}} \\",
+    "  --label org.opencontainers.image.source={{giturl}} \\",
+    "  -t {{registry}}/{{image}}:{{tag}} .",
+    "[+] Building 42.3s (12/12) FINISHED",
+    " => exporting layers   => writing image",
+    "✓ 镜像构建完成",
+    "[Pipeline] }",
+  ],
+  push: [
+    "[Pipeline] stage { (推送镜像)",
+    "docker login {{registry}} -u $username -p ********",
+    "The push refers to repository [{{registry}}/{{image}}]",
+    "abc123f: Pushed",
+    "✓ 推送完成",
+    "docker logout {{registry}}",
+    "[Pipeline] }",
+  ],
+  deploy: [
+    "[Pipeline] stage { (部署到 K8s)",
+    "helm upgrade --install {{release}} ./deploy/helm/myapp \\",
+    "  --atomic --wait --namespace {{env}} \\",
+    "  --set image.repository={{registry}}/{{image}} \\",
+    "  --set image.tag={{tag}}",
+    'Release "{{release}}" has been upgraded.',
+    "✓ 已部署到 {{env}}/{{release}}",
+    "[Pipeline] }",
+  ],
+  health: [
+    "[Pipeline] stage { (健康检查)",
+    "kubectl -n {{env}} rollout status deployment/{{release}} --timeout=180s",
+  ],
+  rollback: [
+    "[Pipeline] post-failure { (自动回滚)",
+    "helm history {{release}} --namespace {{env}} --max 5",
+    "helm rollback {{release}} 0 --namespace {{env}} --wait --timeout 5m",
+    "Rollback was a success.",
+    "↩ 已回滚到上一版本",
+    "[Pipeline] }",
+  ],
+};
+
+/* ---------- 流水线注册表（多条流水线） ---------- */
+/* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
+const DEFAULT_PIPELINE_ID='pl-deploy';
+function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署', stages:K8S_STAGES.map(s=>({...s})), builtIn:true}; }
+function loadPipelines(){
+  let stored=null;
+  try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); stored=Array.isArray(a)?a:null; }catch(e){ stored=null; }
+  if(stored && stored.length){
+    const def=stored.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+    const customs=stored.filter(p=>p && !p.builtIn);
+    return [ def || defaultPipeline() ].concat(customs);
+  }
+  return [ defaultPipeline() ];
+}
+let pipelines = loadPipelines();
+let curPipelineId = lsGet('pip-curPipeline', pipelines[0].id);
+let runStages = null; // 运行期间快照；null 时用当前流水线
+function curPipeline(){ return pipelines.find(p=>p.id===curPipelineId) || pipelines[0]; }
+function activeStages(){ return runStages || curPipeline().stages; }
+function findPipeline(id){ return pipelines.find(p=>p.id===id); }
+function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} }
+
+/* ---------- 环境配置（名称 + IP + 是否生产） ---------- */
+function loadEnvs(){ try{ const a=JSON.parse(localStorage.getItem('pip-envs')); return Array.isArray(a)?a:null; }catch(e){ return null; } }
+let environments = loadEnvs() || [
+  {id:'env-dev', name:'开发', ip:'192.168.1.10', prod:false},
+  {id:'env-prod', name:'生产', ip:'192.168.1.20', prod:true},
+];
+function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){} }
+function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',prod:false}; }
+function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),prod:false}; }
+function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
+/* 环境多选（主控，可选多个目标 IP） */
+let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
+function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} }
+function curEnvs(){
+  let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
+  if(!list.length) list = environments.slice(0,1);
+  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',prod:false}];
+}
+function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
+function renderEnvOptions(){
+  const btn=$('envMultiBtn'); const panel=$('envMultiPanel'); if(!btn||!panel) return;
+  if(!selectedEnvIds || !selectedEnvIds.length) selectedEnvIds = environments.slice(0,1).map(e=>e.id);
+  btn.textContent = envSelText() || '选择 IP';
+  panel.innerHTML='';
+  environments.forEach(e=>{
+    const on = selectedEnvIds.indexOf(e.id)>=0;
+    const lab=document.createElement('label');
+    lab.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;';
+    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+(e.prod?' · 生产':'')+'</span></span>';
+    panel.appendChild(lab);
+  });
+  panel.querySelectorAll('[data-envcb]').forEach(cb=>cb.addEventListener('change',()=>{
+    const id=cb.getAttribute('data-envcb');
+    if(cb.checked){ if(selectedEnvIds.indexOf(id)<0) selectedEnvIds.push(id); }
+    else { selectedEnvIds=selectedEnvIds.filter(x=>x!==id); }
+    if(!selectedEnvIds.length){ selectedEnvIds=[id]; cb.checked=true; }   // 至少保留一个
+    saveEnvSel(); renderEnvOptions();
+    if(nodes && activeStages().some(s=>s.gate)) renderFlow();
+    renderDetail();
+  }));
+}
+let envEditId=null;
+function renderEnvs(){
+  $('envCount').textContent = environments.length? '('+environments.length+')':'';
+  const tb=$('envTable').querySelector('tbody'); tb.innerHTML='';
+  environments.forEach(e=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td>'+(e.prod?'<span class="dshell-badge">生产</span>':'<span class="dshell-muted">—</span>')+'</td>'+
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
+  tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
+}
+function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envProd').checked=!!e.prod; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
+function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envProd').checked=false; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
+function saveEnvForm(){
+  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const prod=$('envProd').checked;
+  if(!ip){ alert('请填写 IP 地址'); return; }
+  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.prod=prod; } }
+  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, prod}); }
+  saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
+}
+function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',prod:false}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
+function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
+function stageIdFor(name){
+  const lc=(name||'').toLowerCase();
+  const map={'检出':'checkout','checkout':'checkout','校验':'validate','validate':'validate','审批':'approval','approval':'approval','构建镜像':'build','构建':'build','build':'build','推送镜像':'push','push':'push','部署到 k8s':'deploy','部署到k8s':'deploy','deploy to k8s':'deploy','deploy':'deploy','健康检查':'health','health':'health'};
+  if(map[name]) return map[name];
+  if(map[lc]) return map[lc];
+  return slug(name)||null;
+}
+function parseStagesText(text){
+  return text.split('\n').map(l=>l.trim()).filter(Boolean).map((l,idx)=>{
+    const parts=l.split(',').map(s=>s.trim());
+    const name=parts[0]||('阶段 '+(idx+1));
+    const dur=parts[1]?Math.max(1,parseInt(parts[1])||5):5;
+    const gate=parts[2]==='gate';
+    let id=stageIdFor(name)||('st'+idx);
+    return {id,name,dur,gate,sub:[]};
+  });
+}
+
+/* ---------- 步骤脚本绑定（scripts 目录 + 参数自动识别 + 执行） ---------- */
+function detectScriptsDir(){
+  try{
+    if(typeof location!=='undefined' && location.pathname){
+      const m=/\/api\/worktable\/site\/([^/]+)\//.exec(location.pathname);
+      if(m){ const folder=decodeURIComponent(m[1]); if(folder) return folder.replace(/\/+$/,'')+'/scripts'; }
+    }
+  }catch(e){}
+  return 'scripts';
+}
+let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
+function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} }
+let availableScripts=[];   // [{name, path}]
+async function loadScripts(){
+  try{
+    const r=await fetch('/api/worktable/fs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:scriptsDir})});
+    const j=await r.json();
+    const ents=(j.entries||[]).filter(e=>!e.isDir);
+    availableScripts=ents.map(e=>({name:e.name, path:e.path}));
+  }catch(e){ availableScripts=[]; }
+  fillScriptsDatalist();
+}
+function fillScriptsDatalist(){
+  const dl=$('scriptsList'); if(!dl) return; dl.innerHTML='';
+  availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
+}
+function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
+async function readScriptSrc(path){
+  const r=await fetch('/api/worktable/file?path='+encodeURIComponent(path));
+  return r.text();
+}
+/* 从脚本源码识别参数：位置参数 $1..$N/${N:-def} + 环境变量 ${VAR:-def}/${VAR}/$VAR */
+function detectParams(src){
+  const pos={}; let m;
+  const posRe=/\$\{?(\d+)(?:(:-|:\?)([^}]*))?\}?/g;
+  while((m=posRe.exec(src))){
+    const n=parseInt(m[1],10); if(n<1) continue;
+    const op=m[2]||''; const rest=m[3]||'';
+    const req=(op===':?'); const def=(op===':-')?rest:'';
+    if(!(n in pos)) pos[n]={def, required:req};
+    else { if(def && !pos[n].def) pos[n].def=def; if(req) pos[n].required=true; }
+  }
+  const maxPos=Object.keys(pos).length?Math.max.apply(null,Object.keys(pos).map(Number)):0;
+  const posParams=[];
+  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:'位置参数 '+i, def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
+  const envSeen={}; const envOrder=[];
+  const envRe=/\$\{([A-Z_][A-Z0-9_]*)(?:(:-|:\?)([^}]*))?\}|\$([A-Z_][A-Z0-9_]*)\b/g;
+  const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
+  while((m=envRe.exec(src))){
+    const v=m[1]||m[4]; const op=m[2]||''; const rest=m[3]||'';
+    if(!v||BUILT.test(v)) continue;
+    const req=(op===':?'); const def=(op===':-')?rest:'';
+    if(!(v in envSeen)){ envSeen[v]={def, required:req}; envOrder.push(v); }
+    else { if(def && !envSeen[v].def) envSeen[v].def=def; if(req) envSeen[v].required=true; }
+  }
+  const envParams=envOrder.map(v=>({kind:'env', key:v, label:v, def:envSeen[v].def, required:!!envSeen[v].required}));
+  return posParams.concat(envParams);
+}
+/* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
+let editStages=[];   // [{id,name,dur,gate,sub,script|null}]
+function newStage(name){ return {id:'', name:name||'新阶段', dur:5, gate:false, sub:[], script:null}; }
+function renderStageEditor(){
+  const wrap=$('plStageList'); if(!wrap) return; wrap.innerHTML='';
+  editStages.forEach((s,i)=>{
+    const row=document.createElement('div'); row.className='plstage'; row.dataset.idx=i;
+    row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;'
+      +(i===editFocusIdx?';border-color:var(--dsw-alias-state-accent-primary);box-shadow:0 0 0 2px rgba(79,142,247,.18);':'');
+    row.innerHTML='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+      +'<span class="dshell-muted" style="font-size:11px;min-width:18px;">'+(i+1)+'</span>'
+      +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
+      +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
+      +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;">耗时(s)<input class="dshell-input" data-f="dur" type="number" min="1" value="'+(s.dur||5)+'" style="width:58px;" /></label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="gate" '+(s.gate?'checked':'')+'/> 审批门</label>'
+      +'<span style="flex:1"></span>'
+      +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+      +'<span class="dshell-muted" style="font-size:11px;">脚本</span>'
+      +'<input class="dshell-input" list="scriptsList" data-f="script" value="'+esc(s.script?s.script.name:'')+'" placeholder="选择脚本（可搜索，留空=模拟）" style="width:216px;" />'
+      +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="detect">识别参数</button>'
+      +'</div>'
+      +'<div data-params style="display:flex;gap:10px;flex-wrap:wrap;"></div>';
+    wrap.appendChild(row);
+    renderStageParams(i);
+  });
+  if(editFocusIdx>=0 && wrap.children && wrap.children[editFocusIdx]){ const fr=wrap.children[editFocusIdx]; if(fr.scrollIntoView) fr.scrollIntoView({block:'nearest'}); }
+  editFocusIdx=-1;
+}
+function renderStageParams(i){
+  const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
+  const box=row.querySelector('[data-params]'); box.innerHTML='';
+  const s=editStages[i]; if(!s||!s.script||!s.script.params) return;
+  s.script.params.forEach(p=>{
+    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'');
+    const lab=document.createElement('label'); lab.className='dshell-muted';
+    lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:#f85149" title="必填">*</span>':'')
+      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:#f85149;':'')+'" />';
+    const inp=lab.querySelector('input');
+    inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; s.script.values[p.key]=inp.value; renderStageParams(i); });
+    box.appendChild(lab);
+  });
+}
+async function setStageScript(i, name){
+  const s=editStages[i]; if(!s) return;
+  const sc=scriptByName(name);
+  if(!name || !sc){ s.script=null; renderStageParams(i); return; }
+  const keep=(s.script && s.script.name===sc.name)?s.script:null;
+  s.script={name:sc.name, path:sc.path, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  await detectStageParams(i);
+}
+async function detectStageParams(i){
+  const s=editStages[i]; if(!s||!s.script||!s.script.path) return;
+  try{
+    const src=await readScriptSrc(s.script.path);
+    const det=detectParams(src);
+    const oldVals=s.script.values||{};
+    s.script.params=det; s.script.values=s.script.values||{};
+    det.forEach(p=>{ if(oldVals[p.key]!==undefined) s.script.values[p.key]=oldVals[p.key]; });
+  }catch(e){ s.script.params=[]; }
+  renderStageParams(i);
+}
+
+
+/* ---------- 运行状态 ---------- */
+let nodes = {};
+let selectedId = curPipeline().stages[0].id;
+let running = false;
+let timer = null;
+let buildNo = 47;
+let history = [
+  { no:46, pipeline:'K8s 应用安装', env:'prod',    commit:'9f2a1c0', status:'success', dur:'1m52s', time:'今天 09:14', by:'release-manager' },
+  { no:45, pipeline:'CI 构建测试', env:'staging', commit:'3b7e8d2', status:'success', dur:'58s',   time:'昨天 22:07', by:'GitHub Push' },
+  { no:44, pipeline:'K8s 应用安装', env:'prod',    commit:'3b7e2d2', status:'failed',  dur:'2m10s', time:'昨天 21:40', by:'release-manager' },
+  { no:43, pipeline:'灰度发布',     env:'dev',     commit:'7c1d5af', status:'success', dur:'41s',   time:'昨天 18:33', by:'dev-li' },
+];
+let curRun = null;
+
+const $ = id => document.getElementById(id);
+function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
+const REGISTRY = 'registry.example.com';
+const GITURL = 'https://git.example.com/dev/myapp';
+function randCommit(){ return Math.random().toString(16).slice(2,9); }
+function nowHM(){ const d=new Date(); return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
+function fmtDur(s){ if(s<60) return Math.round(s)+'s'; return Math.floor(s/60)+'m'+Math.round(s%60)+'s'; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ---------- 渲染流水线编排 ---------- */
+function renderFlow(){
+  const f = $('flow'); f.innerHTML='';
+  activeStages().forEach((s,i)=>{
+    if(i>0){ const c=document.createElement('div'); c.className='pipeline-conn'; f.appendChild(c); }
+    const n=document.createElement('div');
+    n.className='pipeline-node';
+    n.dataset.id=s.id;
+    n.innerHTML =
+      '<div class="pipeline-nodeName">'+esc(s.name)+'</div>'+
+      '<div class="pipeline-bar"><i></i></div>'+
+      '<div class="pipeline-nodeMeta"></div>'+
+      (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
+    n.addEventListener('click',()=>{ selectedId=s.id; renderFlow(); renderDetail(); });
+    n.addEventListener('dblclick',()=>{ if(!running) openPlForm(curPipelineId, i); });
+    n.title='单击查看详情，双击编辑该阶段';
+    f.appendChild(n);
+  });
+  applyStatusClasses();
+}
+function applyStatusClasses(){
+  activeStages().forEach(s=>{
+    const el = document.querySelector('.pipeline-node[data-id="'+s.id+'"]');
+    if(!el) return;
+    const st = nodes[s.id] ? nodes[s.id].status : 'idle';
+    el.classList.remove('run','ok','fail','wait','sel');
+    if(st==='running') el.classList.add('run');
+    if(st==='success') el.classList.add('ok');
+    if(st==='failed')  el.classList.add('fail');
+    if(st==='waiting') el.classList.add('wait');
+    if(s.id===selectedId) el.classList.add('sel');
+    const bar = el.querySelector('.pipeline-bar > i');
+    const nd = nodes[s.id];
+    if(nd){ bar.style.width=(nd.progress||0)+'%';
+      if(st==='success') bar.style.width='100%';
+    } else { bar.style.width='0%'; }
+    const meta = el.querySelector('.pipeline-nodeMeta');
+    meta.textContent = metaFor(s.id);
+    if(s.sub && s.sub.length){
+      s.sub.forEach(x=>{
+        const sp = el.querySelector('.pipeline-sub span[data-sub="'+x+'"]');
+        if(sp){ sp.className=''; const ss=nodes[s.id]&&nodes[s.id].sub?nodes[s.id].sub[x]:'idle';
+          if(ss==='running') sp.classList.add('run');
+          else if(ss==='success') sp.classList.add('ok');
+          else if(ss==='failed') sp.classList.add('fail');
+        }
+      });
+    }
+  });
+}
+function metaFor(id){
+  const n=nodes[id];
+  if(!n) return '';
+  if(n.status==='success') return '✓ '+fmtDur(n.dur);
+  if(n.status==='failed')  return '✗ 失败';
+  if(n.status==='waiting') return '等待审批';
+  if(n.status==='running') return Math.round(n.progress||0)+'%';
+  return '';
+}
+
+/* ---------- 详情面板 ---------- */
+function renderDetail(){
+  const s = activeStages().find(x=>x.id===selectedId) || activeStages()[0];
+  if(!s) return;
+  $('detailTitle').textContent = s.name + ' · 阶段详情';
+  const oldGate=document.getElementById('gateBtns'); if(oldGate) oldGate.remove();
+  const n = nodes[s.id] || {status:'idle'};
+  const badge = $('detailBadge'); badge.innerHTML='';
+  const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], waiting:['等待审批',''],
+    success:['成功','dshell-badgeDone'], failed:['失败','dshell-badgeDone']};
+  const [txt,cls] = map[n.status]||['未开始',''];
+  const b=document.createElement('span');
+  if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='#f85149'; b.style.borderColor='rgba(248,81,73,.4)'; }
+  else b.className='dshell-badge '+(n.status==='waiting'?'':cls);
+  b.textContent=txt; badge.appendChild(b);
+
+  const ctx = curRun || {commit:'—',env:'dev',branch:'xds',image:'myapp',release:'myapp',tag:'—',by:'—',pipelineName:curPipeline().name};
+  const kv = $('detailKv'); kv.innerHTML='';
+  const rows = [
+    ['阶段', s.name],
+    ['状态', txt],
+    ['流水线', ctx.pipelineName||curPipeline().name],
+    ['执行人', ctx.by||'—'],
+    ['环境', ctx.env],
+    ['镜像', ctx.registry||REGISTRY+'/'+ctx.image+':'+ctx.tag],
+    ['Commit', ctx.commit],
+  ];
+  if(n.status==='success'||n.status==='failed') rows.push(['耗时', fmtDur(n.dur)]);
+  rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
+    r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+
+  const bar=$('detailBar'); const wrap=$('detailBarWrap');
+  const pct = n.status==='success'?100:(n.progress||0);
+  bar.style.width=pct+'%';
+  bar.style.background = n.status==='failed'?'#f85149':(n.status==='success'?'#3fb950':'#d29922');
+  wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed')?'block':'none';
+
+  const log=$('detailLog'); log.innerHTML='';
+  const lines = buildLog(s, ctx, n);
+  lines.forEach(ln=>{
+    const div=document.createElement('div'); let cls='dim';
+    if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';
+    if(/✗|failed|失败|timed out|Rollback|回滚/.test(ln)) cls='err';
+    if(/^\[Pipeline\]/.test(ln) || /docker|helm|kubectl/.test(ln)) cls='hi';
+    div.className=cls; div.textContent=ln; log.appendChild(div);
+  });
+  if(n.status==='idle' && !lines.length){ log.textContent='该阶段尚未运行。'; }
+}
+function buildLog(stage, ctx, n){
+  const id=stage.id;
+  if(stage.script && stage.script.path){
+    const sc=stage.script;
+    const argStr=(sc.params||[]).filter(p=>p.kind==='pos').map(p=>{ const v=(sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||''); return v; }).join(' ');
+    const lines=['$ bash '+sc.name+(argStr?(' '+argStr):'')];
+    const envPairs=(sc.params||[]).filter(p=>p.kind==='env').map(p=>p.key+'='+((sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'')));
+    if(envPairs.length) lines.push('# env: '+envPairs.join(' '));
+    const out=stage._out;
+    if(!out){ lines.push('（脚本执行中…）'); }
+    else{
+      if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
+      if(out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      lines.push('[exit '+(out.code===undefined?'?':out.code)+']');
+    }
+    return lines;
+  }
+  const fill = t => (t||'')
+    .replace(/\{\{registry\}\}/g,REGISTRY).replace(/\{\{giturl\}\}/g,GITURL)
+    .replace(/\{\{image\}\}/g,ctx.image).replace(/\{\{release\}\}/g,ctx.release)
+    .replace(/\{\{tag\}\}/g,ctx.tag).replace(/\{\{commit\}\}/g,ctx.commit).replace(/\{\{env\}\}/g,ctx.env).replace(/\{\{by\}\}/g,ctx.by||'—').replace(/\{\{branch\}\}/g,ctx.branch||'xds');
+  let lines;
+  if(LOGS[id]){ lines = LOGS[id].map(fill); }
+  else {
+    lines = ["[Pipeline] stage { ("+stage.name+")"];
+    if(stage.gate){ lines.push("Input: 确认执行 "+stage.name+"？（环境 "+ctx.env+"）"); lines.push("等待审批…"); }
+    else { lines.push("执行步骤…"); }
+  }
+  if(stage.gate && n.status==='waiting'){ lines.push('⏸ 已暂停，等待人工审批。'); }
+  if(id==='health'){
+    if(n.status==='success'){
+      lines.push('deployment "'+ctx.release+'" 已成功滚动发布');
+      lines.push('NAME      READY   UP-TO-DATE   AVAILABLE   AGE');
+      lines.push(ctx.release+'   3/3     3            3           1m');
+      lines.push('✅ 安装成功：'+REGISTRY+'/'+ctx.image+':'+ctx.tag+' -> '+ctx.env+'/'+ctx.release);
+    } else if(n.status==='failed'){
+      lines.push('等待 deployment "'+ctx.release+'" 滚动更新完成：2/3 副本已更新…');
+      lines.push('✗ 滚动更新超时');
+      lines.push('');
+      lines.push(...(LOGS.rollback.map(fill)));
+    } else if(n.status==='running'){
+      lines.push('等待 deployment "'+ctx.release+'" 滚动更新完成：'+Math.floor((n.progress||0)/25)+'/3 副本已更新…');
+    }
+  } else if(n.status==='success' && !LOGS[id]){
+    lines.push('✓ '+stage.name+' 完成 ('+fmtDur(n.dur)+')');
+  } else if(n.status==='failed' && !LOGS[id]){
+    lines.push('✗ '+stage.name+' 失败');
+  }
+  return lines;
+}
+
+/* ---------- 运行队列 + 调度 ---------- */
+const QUEUE_CAP = 8;
+let queue = [];
+function resetNodes(){
+  nodes={}; activeStages().forEach(s=> nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}});
+  renderFlow(); renderDetail();
+}
+function setOverall(txt,cls){
+  const o=$('overall'); o.innerHTML='';
+  const b=document.createElement('span'); b.className='dshell-badge '+cls; b.textContent=txt; o.appendChild(b);
+}
+function startRun(opts){
+  opts = opts || {};
+  let pl;
+  if(opts.stages){ pl={stages:opts.stages, id:opts.pipelineId||null, name:opts.pipelineName||'(自定义)'}; }
+  else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
+  const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();   // 手动运行：可多选 IP；定时：单环境
+  const env = envs.map(e=>e.ip).join('，');
+  const envProd = envs.some(e=>e.prod);
+  const image = opts.image || ($('imageName').value||'myapp');
+  const release = image;                 // Release 字段已移除，内部以镜像名作为 release
+  const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
+  const c = {env, envProd, image, release, by, source:opts.source||'manual', scheduleId:opts.scheduleId||null};
+  startSimRun(pl, c);
+  return true;
+}
+function startSimRun(pl, c){
+  const stages = pl.stages.map(s=>({...s}));
+  runStages = stages;
+  resetNodes();
+  const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
+  curRun={env:c.env,image:c.image,release:c.release,envProd:c.envProd,commit,tag,startTs:Date.now(),by:c.by,scheduleId:c.scheduleId||null,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name};
+  selectedId = stages[0].id;
+  running=true; $('runBtn').disabled=true;
+  setOverall('运行中…','dshell-badgeWait');
+  $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
+  advance(0);
+  startFailWatcher();
+  renderQueue();
+}
+function runPipeline(opts){
+  opts = opts || {};
+  if(!running){ return startRun(opts); }
+  if(opts.scheduleId && queue.some(q=>q.scheduleId===opts.scheduleId)) return false;
+  if(queue.length >= QUEUE_CAP) return false;
+  let pl;
+  if(opts.stages){ /* from queue snapshot already */ }
+  else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
+  const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();
+  const env = envs.map(e=>e.ip).join('，');
+  const envProd = envs.some(e=>e.prod);
+  const image = opts.image || ($('imageName').value||'myapp');
+  const release = image;
+  const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
+  const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
+    env, envProd, image, release, by, source:opts.source||'manual', scheduleId:opts.scheduleId||null, queuedAt:Date.now()};
+  if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
+  else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
+  queue.push(item);
+  renderQueue();
+  return 'queued';
+}
+function drainQueue(){ if(!queue.length) return; const next=queue.shift(); startRun(next); }
+function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
+function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s.indexOf('schedule:')===0) return '定时·'+s.slice(9); return s; }
+function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
+function renderQueue(){
+  const list=$('queueList'); if(!list) return; list.innerHTML='';
+  $('queueCount').textContent = queue.length? '('+queue.length+' 排队)':'';
+  let status='空闲', cls='';
+  if(running && curRun){
+    status='运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
+    const it=document.createElement('div'); it.className='dshell-listItem';
+    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#1</span> '+esc(curRun.by)+' · '+esc(curRun.pipelineName||'')+' <span class="dshell-muted">'+curRun.env+' '+sourceLabel(curRun.source)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
+    list.appendChild(it);
+  } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
+  const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
+  if(!running && !queue.length){
+    const e=document.createElement('div'); e.className='dshell-muted'; e.style.padding='4px 2px'; e.textContent='暂无运行或排队任务。'; list.appendChild(e);
+  }
+  queue.forEach((q,idx)=>{
+    const it=document.createElement('div'); it.className='dshell-listItem';
+    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(idx+2)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+q.env+' '+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    list.appendChild(it);
+  });
+  list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
+}
+
+/* ---------- 运行引擎 ---------- */
+/* 串行编排：有脚本的步骤执行脚本，其余本地模拟 */
+function advance(i){
+  const stg=activeStages();
+  if(i>=stg.length){ finish('success'); return; }
+  const s=stg[i];
+  if(s.script && s.script.path){ runScriptStep(i); return; }
+  runStage(i);
+}
+async function execScript(sc){
+  const args=[]; const env={};
+  (sc.params||[]).forEach(p=>{
+    const v=(sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'');
+    if(p.kind==='pos') args.push(v); else env[p.key]=v;
+  });
+  try{
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:120000})});
+    const j=await r.json();
+    if(j && j.error) return {code:1, stdout:'', stderr:String(j.error)};
+    return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||''};
+  }catch(e){ return {code:1, stdout:'', stderr:String(e.message||e)}; }
+}
+async function runScriptStep(i){
+  const stg=activeStages(); const s=stg[i]; const sc=s.script;
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name};
+  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+  const t0=Date.now();
+  if(timer) clearInterval(timer);
+  timer=setInterval(()=>{ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },300);
+  const res=await execScript(sc);
+  if(timer){ clearInterval(timer); timer=null; }
+  const dur=(Date.now()-t0)/1000;
+  s._out=res;
+  if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name}; applyStatusClasses(); renderDetail(); advance(i+1); }
+  else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name}; applyStatusClasses(); renderDetail(); finish('failed'); }
+}
+function runStage(i){
+  const stg = activeStages();
+  if(i>=stg.length){ finish('success'); return; }
+  const s=stg[i];
+  if(s.gate && s.prodOnly && !curRun.envProd){ nodes[s.id]={status:'skipped',progress:0,dur:0,sub:{}}; applyStatusClasses(); renderDetail(); return advance(i+1); }
+  if(s.gate){
+    nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{}};
+    selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+    showGate(s.id, i);
+    return;
+  }
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{}};
+  selectedId=s.id; renderFlow(); renderDetail();
+  if(s.sub && s.sub.length){ s.sub.forEach(x=> nodes[s.id].sub[x]='running'); }
+  const start=Date.now();
+  const total=s.dur*1000;
+  if(timer) clearInterval(timer);
+  timer=setInterval(()=>{
+    let p=(Date.now()-start)/(s.sub&&s.sub.length?total*1.2:total)*100;
+    if(p>=100) p=100;
+    nodes[s.id].progress=p; nodes[s.id].dur=(Date.now()-start)/1000;
+    if(s.sub && s.sub.length){ s.sub.forEach((x,idx)=>{ if(p> 50*(idx+1)) nodes[s.id].sub[x]='success'; }); }
+    applyStatusClasses(); renderDetail();
+    if(p>=100){ clearInterval(timer); timer=null;
+      nodes[s.id].status='success'; nodes[s.id].progress=100;
+      applyStatusClasses(); renderDetail();
+      advance(i+1);
+    }
+  },120);
+}
+function showGate(stageId, i){
+  const wrap=document.createElement('div'); wrap.className='gate'; wrap.id='gateBtns';
+  wrap.innerHTML='<button class="dshell-btn mini" id="approveBtn">✓ 批准</button><button class="dshell-btn dshell-btnDanger mini" id="rejectBtn">拒绝</button>';
+  $('detailLog').parentElement.appendChild(wrap);
+  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); nodes[stageId]={status:'success',progress:100,dur:0,sub:{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
+  document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); finish('aborted'); };
+}
+function finish(result){
+  running=false; $('runBtn').disabled=false;
+  if(timer){ clearInterval(timer); timer=null; }
+  const elapsed=(Date.now()-curRun.startTs)/1000;
+  if(result==='success'){ setOverall('✓ 成功','dshell-badgeDone'); }
+  else if(result==='aborted'){ setOverall('⏏ 已中止',''); }
+  else { setOverall('✗ 失败（已回滚）',''); const o=$('overall').firstChild; o.style.color='#f85149'; o.style.borderColor='rgba(248,81,73,.4)'; }
+  buildNo++;
+  const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
+    status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
+    dur: fmtDur(elapsed), time:'今天 '+nowHM(), by:curRun.by||'anonymous'};
+  history.unshift(rec); if(history.length>20) history.pop();
+  if(curRun.scheduleId){ updateScheduleAfterRun(curRun.scheduleId, rec.status); }
+  renderHistory(); renderStats();
+  drainQueue();
+  renderQueue();
+}
+/* 末段失败注入：末段运行到 ~75% 时触发（勾选模拟失败） */
+function maybeFailLast(){
+  if(!$('simFail').checked) return false;
+  const stg=activeStages(); const last=stg[stg.length-1];
+  if(last && nodes[last.id] && nodes[last.id].status==='running' && nodes[last.id].progress>=75){
+    if(timer){ clearInterval(timer); timer=null; }
+    nodes[last.id].status='failed'; applyStatusClasses(); renderDetail(); finish('failed'); return true;
+  }
+  return false;
+}
+let failWatcher=null;
+function startFailWatcher(){ if(failWatcher) return; failWatcher=setInterval(()=>{ if(running) maybeFailLast(); if(!running){ clearInterval(failWatcher); failWatcher=null; } },200); }
+
+/* ---------- 历史 & 统计 ---------- */
+function renderHistory(){
+  const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
+  history.forEach(h=>{
+    const tr=document.createElement('tr');
+    const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':h.status==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(h.status)+'</span>';
+    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+h.env+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+h.dur+'</td><td class="dshell-muted">'+h.time+'</td>';
+    tb.appendChild(tr);
+  });
+}
+function labelOf(s){ return {success:'成功',failed:'失败',aborted:'已中止'}[s]||s; }
+function renderStats(){
+  $('sTotal').textContent = buildNo;
+  const succ = history.filter(h=>h.status==='success').length;
+  const rate = history.length? Math.round(succ/history.length*100):0;
+  $('sRate').textContent = rate+'%';
+  $('sRateDelta').textContent = rate>=80?'良好':'需关注';
+  $('sRateDelta').style.color = rate>=80?'#3fb950':'#d29922';
+  const avg = history.reduce((a,h)=>{ const m=/^(\d+)m(\d+)?/.exec(h.dur); const s=/^(\d+)s/.exec(h.dur);
+    let sec=0; if(m) sec=parseInt(m[1])*60+(m[2]?parseInt(m[2]):0); else if(s) sec=parseInt(s[1]); return a+sec; },0);
+  $('sAvg').textContent = history.length? fmtDur(avg/history.length):'—';
+  $('sLast').textContent = history.length? ('#'+history[0].no+' '+history[0].env):'—';
+}
+
+/* ---------- 流水线任务管理（多条流水线） ---------- */
+function renderPipelines(){
+  $('plCount').textContent = pipelines.length? '('+pipelines.length+')':'';
+  const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
+  pipelines.forEach(p=>{
+    const tr=document.createElement('tr');
+    const isCur = p.id===curPipelineId;
+    const preview = p.stages.map(s=>s.name).join(' → ');
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
+      '<td>'+p.stages.length+'</td>'+
+      '<td style="white-space:nowrap"><button class="dshell-btn '+(isCur?'':'dshell-btnGhost')+' mini" data-plselect="'+p.id+'">'+(isCur?'当前':'选用')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-plselect]').forEach(b=>b.addEventListener('click',()=>selectPipeline(b.getAttribute('data-plselect'))));
+  tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',()=>openPlForm(b.getAttribute('data-pledit'))));
+  tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',()=>deletePipeline(b.getAttribute('data-pldel'))));
+  renderPipelineOptions();
+  renderSchedPipelineOptions();
+}
+function renderPipelineOptions(){
+  const sel=$('pipelineSel'); if(!sel) return; const cur=sel.value; sel.innerHTML='';
+  pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===curPipelineId) o.selected=true; sel.appendChild(o); });
+  if(cur && pipelines.some(p=>p.id===cur)) sel.value=cur;
+}
+function selectPipeline(id){
+  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){}
+  runStages=null; selectedId=curPipeline().stages[0].id;
+  resetNodes(); renderPipelines(); renderFlow(); renderDetail();
+}
+let editFocusIdx=-1;
+function openPlForm(id, focusIdx){
+  const f=$('plForm'); f.style.display='block'; f.dataset.editId=id||'';
+  editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
+  $('scriptsDir').value=scriptsDir;
+  if(id){ const p=findPipeline(id); $('plName').value=p.name;
+    editStages=p.stages.map(s=>({id:s.id, name:s.name, dur:s.dur, gate:!!s.gate, sub:(s.sub||[]), script:s.script?{name:s.script.name,path:s.script.path,params:(s.script.params||[]),values:(s.script.values||{})}:null})); }
+  else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
+  loadScripts().then(()=>renderStageEditor());
+  $('plName').focus();
+}
+function savePlForm(){
+  const name=$('plName').value.trim()||'未命名流水线';
+  if(!editStages.length){ alert('请至少添加一个阶段'); return; }
+  // 校验：阶段名非空/不重复、脚本存在（可警告）、必填参数已填
+  const seen={};
+  for(let i=0;i<editStages.length;i++){
+    const s=editStages[i];
+    if(!String(s.name).trim()){ alert('第 '+(i+1)+' 阶段的名称未填写'); return; }
+    if(seen[s.name]){ alert('阶段名重复：'+s.name); return; }
+    seen[s.name]=1;
+    if(s.script){
+      if(!scriptByName(s.script.name)){ if(!confirm('第 '+(i+1)+' 阶段「'+s.name+'」的脚本「'+s.script.name+'」不在 scripts 目录中，仍要保存？')) return; }
+      const missing=(s.script.params||[]).filter(p=>p.required && !String((s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'')).trim());
+      if(missing.length){ alert('第 '+(i+1)+' 阶段「'+s.name+'」脚本 '+s.script.name+' 有必填参数未填：'+missing.map(p=>p.label||p.key).join('、')); return; }
+    }
+  }
+  scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
+  const stages=editStages.map((s,i)=>{
+    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), gate:!!s.gate, sub:(s.sub||[])};
+    if(s.script) st.script={name:s.script.name, path:s.script.path, params:(s.script.params||[]), values:(s.script.values||{})};
+    return st;
+  });
+  const editId=$('plForm').dataset.editId;
+  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; } }
+  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false}); }
+  savePipelines(); $('plForm').style.display='none';
+  if(editId && editId===curPipelineId){ selectPipeline(editId); }
+  else if(!editId){ selectPipeline(pipelines[pipelines.length-1].id); }
+  else { renderPipelines(); }
+  renderPipelines();
+}
+function deletePipeline(id){
+  if(!confirm('删除该流水线？')) return;
+  pipelines=pipelines.filter(p=>p.id!==id);
+  if(!pipelines.length){ pipelines=[defaultPipeline()]; }
+  savePipelines();
+  if(curPipelineId===id){ curPipelineId=pipelines[0].id; runStages=null; selectedId=curPipeline().stages[0].id; resetNodes(); }
+  renderPipelines(); renderFlow(); renderDetail();
+}
+
+/* ---------- 定时任务（周期 + 一次性） ---------- */
+const PRESETS = {
+  i1:{mode:'interval',every:1,cron:'* * * * *'},
+  i5:{mode:'interval',every:5,cron:'*/5 * * * *'},
+  i15:{mode:'interval',every:15,cron:'*/15 * * * *'},
+  i30:{mode:'interval',every:30,cron:'*/30 * * * *'},
+  i60:{mode:'interval',every:60,cron:'0 * * * *'},
+  d9:{mode:'daily',at:'09:00',cron:'0 9 * * *'},
+  d22:{mode:'daily',at:'22:00',cron:'0 22 * * *'},
+  once5:{mode:'once',every:5,cron:'once +5m'},
+  once30:{mode:'once',every:30,cron:'once +30m'},
+  onceAt:{mode:'onceAt',cron:'once @time'},
+};
+let schedules = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedules')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
+if(!schedules){
+  schedules = [
+    {id:'sc1',name:'dev-smoke',pipelineId:'pl-deploy',pipelineName:'安装部署',mode:'interval',every:5,cron:'*/5 * * * *',env:'dev',by:'⏰ dev-smoke',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
+    {id:'sc2',name:'nightly-prod',pipelineId:'pl-deploy',pipelineName:'安装部署',mode:'daily',at:'22:00',cron:'0 22 * * *',env:'prod',by:'release-manager',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
+  ];
+}
+schedules.forEach(s=>{ if(!s.nextRun) s.nextRun=computeNextRun(s); });
+function saveSchedules(){ try{ localStorage.setItem('pip-schedules', JSON.stringify(schedules)); }catch(e){} }
+function findSched(id){ return schedules.find(s=>s.id===id); }
+function nextDaily(at){ const p=at.split(':').map(Number); const d=new Date(); d.setHours(p[0]||0,p[1]||0,0,0); let t=d.getTime(); if(t<=Date.now()) t+=86400000; return t; }
+function computeNextRun(s){
+  if(s.mode==='onceAt'){ return s.onceAt? new Date(s.onceAt).getTime() : (Date.now()+60000); }
+  if(s.mode==='once'){ return Date.now()+(s.every||1)*60000; }
+  if(s.mode==='daily'){ return nextDaily(s.at); }
+  return Date.now()+(s.every||1)*60000;
+}
+function periodLabel(s){ if(s.mode==='once') return '一次性 · '+(s.every||0)+'分钟后'; if(s.mode==='onceAt') return '一次性 · 指定时间'; if(s.mode==='daily') return '每天 '+s.at; return '每 '+s.every+' 分钟'; }
+function fmtCountdown(s){
+  if(s.mode==='once' || s.mode==='onceAt'){
+    const ms=s.nextRun-Date.now();
+    if(ms<=0) return s.enabled?'到点·等待空闲':'已完成';
+    const sec=Math.round(ms/1000);
+    if(sec<3600) return '约 '+Math.floor(sec/60)+'m '+(sec%60)+'s';
+    const d=new Date(s.nextRun);
+    return (d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
+  }
+  if(s.mode==='daily'){ const d=new Date(s.nextRun); const t=new Date(); const isToday=d.getDate()===t.getDate()&&d.getMonth()===t.getMonth(); return (isToday?'今天 ':'明天 ')+s.at; }
+  const ms=s.nextRun-Date.now();
+  if(ms<=0) return s.enabled?'到点·等待空闲':'已到点';
+  const sec=Math.round(ms/1000);
+  if(sec<60) return '约 '+sec+'s';
+  return '约 '+Math.floor(sec/60)+'m '+(sec%60)+'s';
+}
+function renderSchedPipelineOptions(){
+  const sel=$('sPipeline'); if(sel){ const cur=sel.value; sel.innerHTML='';
+    pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; sel.appendChild(o); });
+    if(cur && pipelines.some(p=>p.id===cur)) sel.value=cur; }
+  const es=$('sEnv'); if(es){ const ecur=es.value; es.innerHTML='';
+    environments.forEach(e=>{ const o=document.createElement('option'); o.value=e.id; o.textContent=e.name+'（'+e.ip+'）'; es.appendChild(o); });
+    if(ecur && environments.some(e=>e.id===ecur)) es.value=ecur; }
+}
+function renderSchedules(){
+  $('schedCount').textContent = schedules.length? '('+schedules.length+')':'';
+  const tb=$('schedTable').querySelector('tbody'); tb.innerHTML='';
+  if(!schedules.length){ tb.innerHTML='<tr><td colspan="8" class="dshell-muted" style="text-align:center;padding:14px">暂无定时任务，点「新建定时任务」添加</td></tr>'; return; }
+  schedules.forEach(s=>{
+    const tr=document.createElement('tr');
+    const last = s.lastStatus
+      ? '<span class="dshell-badge '+(s.lastStatus==='success'?'dshell-badgeDone':'')+'"'+(s.lastStatus==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':s.lastStatus==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(s.lastStatus)+'</span><div class="dshell-muted" style="font-size:10px;margin-top:2px">'+fmtRelative(s.lastRun)+'</div>'
+      : '<span class="dshell-muted">—</span>';
+    tr.innerHTML=
+      '<td><div style="font-weight:600">'+esc(s.name)+'</div><div class="dshell-muted" style="font-size:10px">'+esc(s.cron)+' · '+periodLabel(s)+'</div></td>'+
+      '<td class="dshell-muted">'+esc(s.pipelineName||'—')+'</td>'+
+      '<td class="dshell-muted">'+esc(envLabelOf(s.env))+'</td>'+
+      '<td class="dshell-muted">'+esc(s.by)+'</td>'+
+      '<td class="sc-next" data-sid="'+s.id+'">'+fmtCountdown(s)+'</td>'+
+      '<td>'+last+'</td>'+
+      '<td><label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" data-toggle="'+s.id+'" '+(s.enabled?'checked':'')+'/> '+(s.enabled?'启用':'停用')+'</label></td>'+
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-run="'+s.id+'">立即运行</button> <button class="dshell-btn dshell-btnDanger mini" data-del="'+s.id+'">删除</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-toggle]').forEach(cb=>cb.addEventListener('change',()=>toggleSched(cb.getAttribute('data-toggle'))));
+  tb.querySelectorAll('[data-run]').forEach(b=>b.addEventListener('click',()=>manualFireSchedule(findSched(b.getAttribute('data-run')))));
+  tb.querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click',()=>deleteSched(b.getAttribute('data-del'))));
+}
+function updateCountdowns(){ schedules.forEach(s=>{ const el=document.querySelector('.sc-next[data-sid="'+s.id+'"]'); if(el) el.textContent=fmtCountdown(s); }); }
+function addSched(){
+  const name=$('sName').value.trim();
+  if(!name){ alert('请填写任务名称'); $('sName').focus(); return; }
+  const pv=$('sPreset').value;
+  const plId=$('sPipeline').value; const pl=findPipeline(plId);
+  let mode, every, at, onceAt, cron;
+  if(pv==='custom'){ every=Math.max(1, parseInt($('sEvery').value)||1); mode='interval'; at=null; cron='*/'+every+' * * * *'; }
+  else if(pv==='onceAt'){ mode='onceAt'; onceAt=$('sOnceAt').value; if(!onceAt){ alert('请选择时间'); return; } cron='once @'+onceAt; }
+  else { const p=PRESETS[pv]; mode=p.mode; every=p.every; at=p.at; cron=p.cron; }
+  const env=$('sEnv').value, by=$('sBy').value.trim()||('⏰ '+name);
+  const sched={id:'sc'+Date.now().toString(36),name,pipelineId:plId,pipelineName:pl?pl.name:'(已删除)',mode,every,at,onceAt,cron,env,by,enabled:false,lastRun:null,lastStatus:null,nextRun:0};
+  sched.nextRun=computeNextRun(sched);
+  schedules.push(sched); saveSchedules(); renderSchedules();
+  $('sName').value=''; $('sBy').value=''; $('schedForm').style.display='none';
+}
+function toggleSched(id){ const s=findSched(id); if(!s) return; s.enabled=!s.enabled; if(s.enabled && (s.mode==='once'||s.mode==='onceAt') && s.nextRun<Date.now()) s.nextRun=computeNextRun(s); if(s.enabled && s.mode!=='once' && s.mode!=='onceAt' && s.nextRun<Date.now()) s.nextRun=computeNextRun(s); saveSchedules(); renderSchedules(); }
+function deleteSched(id){ if(!confirm('删除定时任务？')) return; schedules=schedules.filter(s=>s.id!==id); saveSchedules(); renderSchedules(); }
+function runOptsFromSchedule(s){ return {pipelineId:s.pipelineId, env:s.env, by:s.by||('⏰ '+s.name), source:'schedule:'+s.name, scheduleId:s.id, image:'myapp'}; }
+function manualFireSchedule(s){ if(!s) return; runPipeline(runOptsFromSchedule(s)); }
+function fireScheduleAuto(s){
+  s.lastFire=Date.now();
+  if(s.mode==='once' || s.mode==='onceAt'){ s.enabled=false; }
+  else { s.nextRun=computeNextRun(s); }
+  saveSchedules(); renderSchedules();
+  runPipeline(runOptsFromSchedule(s));
+}
+function updateScheduleAfterRun(id,status){ const s=findSched(id); if(!s) return; s.lastRun=Date.now(); s.lastStatus=status; saveSchedules(); renderSchedules(); }
+let schedTicker=null;
+function startSchedTicker(){ if(schedTicker) return; schedTicker=setInterval(()=>{ const now=Date.now(); schedules.forEach(s=>{ if(s.enabled && !running && now>=s.nextRun){ fireScheduleAuto(s); } }); updateCountdowns(); },1000); }
+
+/* ---------- 主题切换 ---------- */
+let themePref = lsGet('pip-theme', 'auto');
+function systemDark(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches); }
+function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} }
+$('theme').value = themePref;
+$('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); });
+if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
+
+/* ---------- 绑定 ---------- */
+$('runBtn').addEventListener('click', ()=>{ runPipeline(); });
+$('resetBtn').addEventListener('click', ()=>{ if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue(); });
+$('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
+$('addPlBtn').addEventListener('click', ()=>{ const f=$('plForm'); const open=f.style.display!=='block'; f.style.display=open?'block':'none'; if(open) openPlForm(''); });
+$('plSave').addEventListener('click', savePlForm);
+$('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
+$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); });
+$('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); });
+$('flowEditBtn').addEventListener('click', ()=>{ if(!running) openPlForm(curPipelineId); });
+/* 阶段编辑器：增删/上下移/识别参数（事件委托） */
+$('plStageList').addEventListener('click', (e)=>{
+  const btn=e.target.closest && e.target.closest('[data-act]'); if(!btn) return;
+  const row=btn.closest('.plstage'); const i=parseInt(row.dataset.idx,10);
+  const act=btn.getAttribute('data-act');
+  if(act==='del'){ editStages.splice(i,1); renderStageEditor(); }
+  else if(act==='up' && i>0){ const t=editStages[i-1]; editStages[i-1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
+  else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
+  else if(act==='detect'){ detectStageParams(i); }
+});
+$('plStageList').addEventListener('change', (e)=>{
+  const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
+  const row=e.target.closest('.plstage'); const i=parseInt(row.dataset.idx,10); const s=editStages[i]; if(!s) return;
+  if(f==='name') s.name=e.target.value;
+  else if(f==='dur') s.dur=Math.max(1,parseInt(e.target.value,10)||5);
+  else if(f==='gate') s.gate=e.target.checked;
+  else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
+});
+$('addSchedBtn').addEventListener('click', ()=>{ const f=$('schedForm'); f.style.display = f.style.display==='none'?'block':'none'; if(f.style.display==='block'){ renderSchedPipelineOptions(); $('sName').focus(); } });
+$('sPreset').addEventListener('change', e=>{ $('sCustomWrap').style.display = e.target.value==='custom'?'flex':'none'; $('sOnceWrap').style.display = e.target.value==='onceAt'?'flex':'none'; });
+$('sAdd').addEventListener('click', addSched);
+$('sCancel').addEventListener('click', ()=>{ $('schedForm').style.display='none'; });
+$('envAdd').addEventListener('click', saveEnvForm);
+$('envCancelEdit').addEventListener('click', resetEnvForm);
+/* 页面切换（流水线 / 环境配置） */
+function switchPage(p){
+  const main=p==='main';
+  $('pageMain').style.display = main?'':'none';
+  $('pageEnv').style.display = main?'none':'';
+  $('navMain').className = 'dshell-btn mini'+(main?'':' dshell-btnGhost');
+  $('navEnv').className = 'dshell-btn mini'+(main?' dshell-btnGhost':'');
+}
+$('navMain').addEventListener('click', ()=>switchPage('main'));
+$('navEnv').addEventListener('click', ()=>switchPage('env'));
+/* 环境多选面板开合 */
+$('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
+document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+
+/* 初始化 */
+applyTheme();
+resetNodes();
+loadScripts();
+renderHistory();
+renderStats();
+renderPipelines();
+renderEnvOptions();
+renderEnvs();
+renderSchedules();
+startSchedTicker();
+renderQueue();
+renderDetail();
+</script>
+</body>
+</html>
