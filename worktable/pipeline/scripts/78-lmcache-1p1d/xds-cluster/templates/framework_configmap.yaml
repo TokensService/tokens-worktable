@@ -1,0 +1,11 @@
+{{- if .Values.frameworkConfigFiles }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xds-framework-config
+data:
+  {{- range $filename, $content := .Values.frameworkConfigFiles }}
+  {{ $filename | quote }}: |-
+    {{- $content | nindent 4 }}
+  {{- end }}
+{{- end }}

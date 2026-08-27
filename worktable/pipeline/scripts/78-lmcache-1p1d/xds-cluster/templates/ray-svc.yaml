@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{.Values.global.service.svcName}}
+  labels:
+    app.kubernetes.io/name: ray
+  namespace: {{.Values.global.namespace}}
+  annotations:
+    kubernetes.io/elb.class: performance
+    kubernetes.io/elb.id: {{.Values.global.network.elbId}}
+    kubernetes.io/elb.lb-algorithm: ROUND_ROBIN
+    kubernetes.io/elb.keepalive_timeout: '1000'
+    kubernetes.io/elb.health-check-flag: 'on'
+    kubernetes.io/elb.health-check-option: '{"protocol":"TCP","delay":"5","timeout":"10","max_retries":"3"}'
+spec:
+  selector:
+    app.kubernetes.io/created-by: kuberay-operator
+    ray.io/group: frontGroup
+    in_draining_status: "false"
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  # externalTrafficPolicy: Cluster
+  {{- if .Values.global.network.ports }}
+  ports: {{- toYaml .Values.global.network.ports | nindent 14}}
+  {{- end }}
+  # type: LoadBalancer
+  type: NodePort
