@@ -388,14 +388,20 @@ const LOGS = {
 };
 
 /* ---------- 流水线注册表（多条流水线） ---------- */
+/* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
+const DEFAULT_PIPELINE_ID='pl-deploy';
+function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署', stages:K8S_STAGES.map(s=>({...s})), builtIn:true}; }
 function loadPipelines(){
-  try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; }
+  let stored=null;
+  try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); stored=Array.isArray(a)?a:null; }catch(e){ stored=null; }
+  if(stored && stored.length){
+    const def=stored.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+    const customs=stored.filter(p=>p && !p.builtIn);
+    return [ def || defaultPipeline() ].concat(customs);
+  }
+  return [ defaultPipeline() ];
 }
-let pipelines = loadPipelines() || [
-  {id:'pl-k8s',name:'K8s 应用安装',stages:K8S_STAGES,builtIn:true},
-  {id:'pl-ci',name:'CI 构建测试',stages:CI_STAGES,builtIn:true},
-  {id:'pl-canary',name:'灰度发布',stages:CANARY_STAGES,builtIn:true},
-];
+let pipelines = loadPipelines();
 let curPipelineId = lsGet('pip-curPipeline', pipelines[0].id);
 let runStages = null; // 运行期间快照；null 时用当前流水线
 function curPipeline(){ return pipelines.find(p=>p.id===curPipelineId) || pipelines[0]; }
@@ -1082,7 +1088,7 @@ function savePlForm(){
 function deletePipeline(id){
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);
-  if(!pipelines.length){ pipelines=[{id:'pl-k8s',name:'K8s 应用安装',stages:K8S_STAGES,builtIn:true}]; }
+  if(!pipelines.length){ pipelines=[defaultPipeline()]; }
   savePipelines();
   if(curPipelineId===id){ curPipelineId=pipelines[0].id; runStages=null; selectedId=curPipeline().stages[0].id; resetNodes(); }
   renderPipelines(); renderFlow(); renderDetail();
@@ -1104,8 +1110,8 @@ const PRESETS = {
 let schedules = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedules')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
 if(!schedules){
   schedules = [
-    {id:'sc1',name:'dev-smoke',pipelineId:'pl-ci',pipelineName:'CI 构建测试',mode:'interval',every:5,cron:'*/5 * * * *',env:'dev',by:'⏰ dev-smoke',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
-    {id:'sc2',name:'nightly-prod',pipelineId:'pl-k8s',pipelineName:'K8s 应用安装',mode:'daily',at:'22:00',cron:'0 22 * * *',env:'prod',by:'release-manager',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
+    {id:'sc1',name:'dev-smoke',pipelineId:'pl-deploy',pipelineName:'安装部署',mode:'interval',every:5,cron:'*/5 * * * *',env:'dev',by:'⏰ dev-smoke',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
+    {id:'sc2',name:'nightly-prod',pipelineId:'pl-deploy',pipelineName:'安装部署',mode:'daily',at:'22:00',cron:'0 22 * * *',env:'prod',by:'release-manager',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
   ];
 }
 schedules.forEach(s=>{ if(!s.nextRun) s.nextRun=computeNextRun(s); });
