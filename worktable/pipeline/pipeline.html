@@ -102,7 +102,6 @@
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
-    <button id="navCfg" class="dshell-btn dshell-btnGhost mini" data-pagenav="cfg">分析配置</button>
   </div>
   <div id="pageMain">
 
@@ -253,11 +252,8 @@
       </div>
       <div id="cleanupParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
-  </div><!-- /pageEnv -->
-
-  <!-- 分析配置（独立页面）：运行历史行分析按钮的提示词模板 -->
-  <div id="pageCfg" style="display:none">
-    <div class="dshell-card">
+    <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
+    <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
         在「运行历史」点击选中某一行后，点标题行的 日志 / Profiling / 性能 按钮会新建一个 AI 会话并发送对应提示词。
@@ -280,7 +276,7 @@
         </div>
       </div>
     </div>
-  </div><!-- /pageCfg -->
+  </div><!-- /pageEnv -->
 
   <!-- GPU 详情弹层 -->
   <div id="gpuDetail" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:200; align-items:center; justify-content:center;">
@@ -1562,19 +1558,16 @@ $('cleanupScriptName').value = cleanupScript?cleanupScript.name:'';
 $('cleanupScriptName').addEventListener('change', (e)=>setCleanupScript(e.target.value.trim()));
 $('cleanupDetect').addEventListener('click', ()=>{ detectCleanupParams().then(saveCleanup); });
 renderCleanupParams();
-/* 页面切换（流水线 / 设置 / 分析配置） */
+/* 页面切换（流水线 / 设置） */
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
   $('pageEnv').style.display = p==='env'?'':'none';
-  $('pageCfg').style.display = p==='cfg'?'':'none';
   $('navMain').className = 'dshell-btn mini'+(p==='main'?'':' dshell-btnGhost');
   $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
-  $('navCfg').className = 'dshell-btn mini'+(p==='cfg'?'':' dshell-btnGhost');
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
-$('navCfg').addEventListener('click', ()=>switchPage('cfg'));
-/* 分析配置页：提示词模板编辑 */
+/* 分析配置（设置页内卡片）：提示词模板编辑 */
 function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
 $('cfgSave').addEventListener('click', ()=>{
   analysisPrompts={log:$('cfgPromptLog').value, prof:$('cfgPromptProf').value, perf:$('cfgPromptPerf').value};
