@@ -28,7 +28,7 @@
     .pipeline-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
     .pipeline-controls .dshell-input { width:auto; min-width:96px; }
     .pipeline-seg { display:flex; align-items:center; flex-wrap:nowrap; overflow-x:auto; gap:0; padding-bottom:4px; }
-    .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; transition:border-color .15s,background .15s,box-shadow .15s; }
+    .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; user-select:none; transition:border-color .15s,background .15s,box-shadow .15s; }
     .pipeline-node:hover { border-color:var(--dsw-alias-border-l2); background:var(--dsw-alias-fill-l1); }
     .pipeline-node.sel { border-color:var(--dsw-alias-state-accent-primary); box-shadow:0 0 0 2px rgba(79,142,247,.18); }
     .pipeline-node.run { border-color:rgba(210,153,34,.5); background:rgba(210,153,34,.07); }
@@ -99,7 +99,7 @@
   <!-- 页面导航 -->
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
-    <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">环境配置</button>
+    <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
 
@@ -121,7 +121,7 @@
       <input id="triggeredBy" class="dshell-input" value="dev-li" />
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" id="simFail" /> 模拟末段失败（触发回滚）
+      <input type="checkbox" id="cleanupEnv" /> 先清理环境
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">定时
       <select id="runSched" class="dshell-input" style="min-width:92px;">
@@ -165,26 +165,6 @@
       <h2 class="dshell-sub" style="margin:0">流水线任务 <span id="plCount" class="dshell-muted"></span></h2>
       <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
     </div>
-    <div id="plForm" style="display:none; margin-bottom:10px;">
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
-          <input id="plName" class="dshell-input" placeholder="我的流水线" style="width:220px;" />
-        </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">脚本目录
-          <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
-          <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
-        </label>
-        <label class="dshell-muted">阶段（名称/耗时/审批门，可上移下移/增删；每步可绑 scripts 下脚本并自动识别参数，留空=本地模拟该步）</label>
-        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
-        <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
-        <datalist id="scriptsList"></datalist>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button id="plSave" class="dshell-btn mini">保存</button>
-          <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
-          <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
-        </div>
-      </div>
-    </div>
     <div style="overflow:auto;">
       <table class="dshell-table" id="plTable">
         <thead><tr><th>流水线</th><th>阶段数</th><th>操作</th></tr></thead>
@@ -196,7 +176,7 @@
   <!-- 流水线编排 -->
   <div class="dshell-card">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-      <h2 class="dshell-sub" style="margin:0">流水线编排 <button id="flowEditBtn" class="dshell-btn dshell-btnGhost mini" type="button" style="margin-left:6px;">✎ 编辑流水线</button></h2>
+      <h2 class="dshell-sub" style="margin:0">流水线编排 <span class="dshell-muted" style="font-size:11px;font-weight:normal;">双击阶段可编辑</span></h2>
       <div class="legend">
         <span><i style="background:#6b7280"></i>未开始</span>
         <span><i style="background:#d29922;box-shadow:0 0 5px #d29922"></i>进行中</span>
@@ -223,7 +203,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史</h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button id="aiAnalyzeBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="汇总全部运行日志写到服务端文件，并新开 DSH 会话进行分析" style="margin-left:6px;">✨ AI 日志分析</button></h2>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
           <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
@@ -234,11 +214,11 @@
   </div>
   </div><!-- /pageMain -->
 
-  <!-- 环境配置（独立页面） -->
+  <!-- 设置（独立页面：节点环境 + 环境清理脚本） -->
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">环境配置 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点 GPU 状态" style="margin-left:6px;">⟳ GPU状态</button></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点 GPU 状态" style="margin-left:6px;">⟳ GPU状态</button></h2>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
@@ -257,6 +237,16 @@
       </div>
       <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP（运行环境值取 <b>IP 地址</b>）；节点的用户名/密码会在执行脚本时以 <code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>/<code>TARGET_IP</code> 环境变量注入，供脚本登录目标机使用。</p>
     </div>
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span class="dshell-muted" style="font-size:11px;">脚本</span>
+        <input id="cleanupScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不清理）" style="width:216px;" />
+        <button id="cleanupDetect" class="dshell-btn dshell-btnGhost mini" type="button">识别参数</button>
+        <span class="dshell-muted" style="font-size:11px;">勾选主控「先清理环境」后，每次流水线启动前会先执行该脚本（失败不阻断启动），同样注入 TARGET_* 环境变量。</span>
+      </div>
+      <div id="cleanupParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
+    </div>
   </div><!-- /pageEnv -->
 
   <!-- GPU 详情弹层 -->
@@ -267,6 +257,31 @@
         <button id="gpuDetailClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
       <div id="gpuDetailBody"></div>
+    </div>
+  </div>
+
+  <!-- 新建 / 编辑流水线弹窗 -->
+  <div id="plForm" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:210; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:95%; max-width:95%; height:95%; max-height:95vh; overflow:auto;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;" id="plFormTitle">编辑流水线</h2>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
+          <input id="plName" class="dshell-input" placeholder="我的流水线" style="width:220px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">脚本目录
+          <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
+          <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
+        </label>
+        <label class="dshell-muted">阶段（名称/耗时/审批门，可上移下移/增删；每步可绑 scripts 下脚本并自动识别参数，留空=本地模拟该步）</label>
+        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
+        <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
+        <datalist id="scriptsList"></datalist>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button id="plSave" class="dshell-btn mini">保存</button>
+          <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
+          <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -370,6 +385,77 @@ const LOGS = {
   ],
 };
 
+/* ---------- 服务端持久化（配置 + 运行历史/日志，存服务端 ~/.dsh/storages/worktable-pipeline.json） ---------- */
+/* localStorage 仍保留作离线缓存；服务端不可达时行为与原来一致。 */
+let stateLoaded=false;   // loadServerState 完成后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
+let persistTimer=null;
+function persistState(){
+  if(!stateLoaded) return;
+  if(persistTimer) clearTimeout(persistTimer);
+  persistTimer=setTimeout(pushState, 400);
+}
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, scriptsDir, theme: themePref, buildNo, cleanupScript, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+async function pushState(){
+  try{
+    await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history})});
+  }catch(e){}
+}
+async function loadServerState(){
+  let st=null;
+  try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
+  try{
+    if(st && st.config && Object.keys(st.config).length){
+      const cfg=st.config;
+      if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
+        const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+        const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
+        pipelines=[def||defaultPipeline()].concat(customs);
+      }
+      if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
+      if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
+      if(Array.isArray(cfg.selectedEnvIds) && cfg.selectedEnvIds.length) selectedEnvIds=cfg.selectedEnvIds;
+      if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+      if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
+      if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
+      if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
+      if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
+      if(Array.isArray(st.history) && st.history.length) history=st.history;
+      runStages=null; selectedId=curPipeline().stages[0].id;
+      /* 同步 localStorage 离线缓存 */
+      try{
+        localStorage.setItem('pip-pipelines', JSON.stringify(pipelines));
+        localStorage.setItem('pip-envs', JSON.stringify(environments));
+        localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds));
+        localStorage.setItem('pip-scriptsDir', scriptsDir);
+        localStorage.setItem('pip-curPipeline', curPipelineId);
+        localStorage.setItem('pip-theme', themePref);
+        localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
+        localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
+      }catch(e){}
+      $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
+      renderCleanupParams();
+      renderAll();
+    }
+  } finally {
+    stateLoaded=true;
+    /* 服务端为空：把本地（localStorage/默认）状态迁移上去 */
+    if(st && (!st.config || !Object.keys(st.config).length)) persistState();
+  }
+}
+/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端 */
+function collectRunLogs(){
+  const out=[];
+  activeStages().forEach(s=>{
+    const n=nodes[s.id];
+    if(!n || n.status==='running' || n.status==='waiting') return;
+    let text='';
+    try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
+    if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
+    out.push({stage:s.name, status:n.status, log:text});
+  });
+  return out;
+}
+
 /* ---------- 流水线注册表（多条流水线） ---------- */
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
 const DEFAULT_PIPELINE_ID='pl-xds';
@@ -390,7 +476,7 @@ let runStages = null; // 运行期间快照；null 时用当前流水线
 function curPipeline(){ return pipelines.find(p=>p.id===curPipelineId) || pipelines[0]; }
 function activeStages(){ return runStages || curPipeline().stages; }
 function findPipeline(id){ return pipelines.find(p=>p.id===id); }
-function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} }
+function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} persistState(); }
 
 /* ---------- 环境配置（名称 + IP + 用户名 + 密码） ---------- */
 function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, user:e.user||'', pass:e.pass||''}; }
@@ -399,13 +485,13 @@ let environments = loadEnvs() || [
   {id:'env-dev', name:'开发', ip:'192.168.1.10', user:'root', pass:''},
   {id:'env-prod', name:'生产', ip:'192.168.1.20', user:'root', pass:''},
 ];
-function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){} }
+function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){} persistState(); }
 function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}; }
 function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),user:'',pass:''}; }
 function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
 /* 环境多选（主控，可选多个目标 IP） */
 let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
-function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} }
+function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} persistState(); }
 function curEnvs(){
   let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
   if(!list.length) list = environments.slice(0,1);
@@ -419,9 +505,11 @@ function renderEnvOptions(){
   panel.innerHTML='';
   environments.forEach(e=>{
     const on = selectedEnvIds.indexOf(e.id)>=0;
+    const st=gpuStatus[e.id];
+    const gpu=(st && st.total!==undefined)?(' · GPU '+(st.used===undefined?'?':st.used)+'/'+st.total):(st && st.error?' · GPU 查询失败':'');
     const lab=document.createElement('label');
     lab.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;';
-    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+(e.user?(' · '+esc(e.user)):'')+'</span></span>';
+    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+gpu+'</span></span>';
     panel.appendChild(lab);
   });
   panel.querySelectorAll('[data-envcb]').forEach(cb=>cb.addEventListener('change',()=>{
@@ -480,6 +568,7 @@ async function fetchGpu(e){
   }catch(err){ gpuStatus[e.id]={error:String(err.message||err)}; }
   const c2=document.querySelector('[data-gpu="'+e.id+'"]');
   if(c2){ c2.innerHTML=gpuCellFull(e); bindGpuCell(c2, e); }
+  renderEnvOptions();   // 主控环境多选面板同步显示 GPU 占用/总数
 }
 function refreshGpuAll(){ environments.forEach(e=>fetchGpu(e)); }
 /* GPU 详情弹层：完整状态 + 失败原因 */
@@ -557,7 +646,50 @@ function detectScriptsDir(){
   return 'scripts';
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
-function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} }
+function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
+
+/* ---------- 环境清理脚本（在「设置」页配置；勾选主控「清理环境」后于流水线启动前执行） ---------- */
+let cleanupScript=(function(){ try{ return JSON.parse(localStorage.getItem('pip-cleanupScript')); }catch(e){ return null; } })() || null;
+function saveCleanup(){
+  try{
+    localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
+    localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
+  }catch(e){}
+  persistState();
+}
+function renderCleanupParams(){
+  const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
+  if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
+  cleanupScript.params.forEach(p=>{
+    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.def||'');
+    const lab=document.createElement('label'); lab.className='dshell-muted';
+    lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:#f85149" title="必填">*</span>':'')
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:#f85149;':'')+'" />';
+    const inp=lab.querySelector('input');
+    inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
+    box.appendChild(lab);
+  });
+}
+async function setCleanupScript(name){
+  const sc=scriptByName(name);
+  if(!name || !sc){ cleanupScript=null; renderCleanupParams(); saveCleanup(); return; }
+  const keep=(cleanupScript && cleanupScript.name===sc.name)?cleanupScript:null;
+  cleanupScript={name:sc.name, path:sc.path, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  await detectCleanupParams();
+  saveCleanup();
+}
+async function detectCleanupParams(){
+  if(!cleanupScript || !cleanupScript.path){ renderCleanupParams(); return; }
+  try{
+    const src=await readScriptSrc(cleanupScript.path);
+    const det=detectParams(src);
+    const oldVals=cleanupScript.values||{};
+    cleanupScript.params=det; cleanupScript.values=cleanupScript.values||{};
+    det.forEach(p=>{ if(oldVals[p.key]!==undefined) cleanupScript.values[p.key]=oldVals[p.key]; });
+  }catch(e){ cleanupScript.params=[]; }
+  renderCleanupParams();
+}
 let availableScripts=[];   // [{name, path}]
 async function loadScripts(){
   try{
@@ -707,8 +839,16 @@ function renderFlow(){
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+
       (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
-    n.addEventListener('click',()=>{ selectedId=s.id; renderFlow(); renderDetail(); });
-    n.addEventListener('dblclick',()=>{ if(!running) openPlForm(curPipelineId, i); });
+    /* 选中态由 applyStatusClasses 更新即可；不能在这里 renderFlow()，
+       否则第一次单击就重建节点元素，第二次单击落在新元素上，dblclick 永远触发不了 */
+    n.addEventListener('click',()=>{ selectedId=s.id; applyStatusClasses(); renderDetail(); });
+    /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
+       而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
+    n.addEventListener('dblclick',()=>{
+      if(running) return;
+      const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
+      openPlForm(pid, i);
+    });
     n.title='单击查看详情，双击编辑该阶段';
     f.appendChild(n);
   });
@@ -888,8 +1028,13 @@ function startSimRun(pl, c){
   running=true; $('runBtn').disabled=true;
   setOverall('运行中…','dshell-badgeWait');
   $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
-  advance(0);
-  startFailWatcher();
+  /* 勾选「清理环境」且已配置清理脚本：先执行清理，再进入第一个阶段（期间重置可取消启动） */
+  if($('cleanupEnv').checked && cleanupScript && cleanupScript.path){
+    setOverall('清理环境中…','dshell-badgeWait');
+    runCleanupBefore().then(()=>{ if(running){ setOverall('运行中…','dshell-badgeWait'); advance(0); } });
+  } else {
+    advance(0);
+  }
   renderQueue();
 }
 function runPipeline(opts){
@@ -916,37 +1061,46 @@ function drainQueue(){ if(!queue.length) return; const next=queue.shift(); start
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
-/* ---------- 运行定时（周期 / 一次性，轻量，会话内有效） ---------- */
-let planTimers=[];   // {tid, kind:'interval'|'once', desc, ref}
+/* ---------- 运行定时（周期 / 一次性，服务端调度，关闭页面也会执行） ---------- */
+let serverPlans=[];
+async function loadPlans(){
+  try{ const r=await fetch('/api/worktable/pipeline/plans'); if(r.ok){ const j=await r.json(); serverPlans=Array.isArray(j.plans)?j.plans:[]; } }catch(e){}
+  renderPlanList();
+}
+async function pushPlans(){
+  try{ await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:serverPlans})}); }catch(e){}
+}
 function renderPlanList(){
   const el=$('planList'); if(!el) return;
-  if(!planTimers.length){ el.style.display='none'; el.innerHTML=''; return; }
+  if(!serverPlans.length){ el.style.display='none'; el.innerHTML=''; return; }
   el.style.display='flex'; el.style.flexWrap='wrap'; el.style.gap='6px';
-  el.innerHTML='<span class="dshell-muted" style="font-size:11px;align-self:center;">已设定定时（页面需保持打开）：</span>';
-  planTimers.forEach(p=>{
+  el.innerHTML='<span class="dshell-muted" style="font-size:11px;align-self:center;">服务端定时（关闭页面也会执行）：</span>';
+  serverPlans.forEach(p=>{
     const tag=document.createElement('span'); tag.className='dshell-badge'; tag.style.display='inline-flex'; tag.style.alignItems='center'; tag.style.gap='4px';
-    tag.innerHTML='⏰ '+esc(p.desc)+' <span data-plandel="'+p.tid+'" style="cursor:pointer;color:#f85149;" title="取消该定时">✕</span>';
+    tag.innerHTML='⏰ '+esc(p.pipelineName||'')+' '+esc(p.desc||'')+' <span data-plandel="'+esc(p.id)+'" style="cursor:pointer;color:#f85149;" title="取消该定时">✕</span>';
     el.appendChild(tag);
   });
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
-function cancelPlan(tid){ const p=planTimers.find(x=>x.tid===tid); if(!p) return; if(p.kind==='interval') clearInterval(p.ref); else clearTimeout(p.ref); planTimers=planTimers.filter(x=>x.tid!==tid); renderPlanList(); }
+function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
 function addPlan(){
   const mode=$('runSched').value;
-  const opts={ pipelineId: curPipelineId, by: ($('triggeredBy').value.trim()||'anonymous')+' ⏰', source:'schedule' };
-  const tid0='plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4);
+  const pl=curPipeline();
+  const base={
+    id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
+    pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
+    env:envSelText(), envs:curEnvs(), image:($('imageName').value||'myapp'),
+    by:($('triggeredBy').value.trim()||'anonymous')+' ⏰', createdAt:Date.now(),
+  };
   if(mode==='once'){
     const v=$('runSchedAt').value; const t=v?new Date(v).getTime():NaN;
     if(isNaN(t)||t<=Date.now()){ alert('「一次性」请选择一个未来的时间'); return; }
-    const ref=setTimeout(()=>{ planTimers=planTimers.filter(x=>x.tid!==tid0); renderPlanList(); runPipeline(opts); }, t-Date.now());
-    planTimers.push({tid:tid0, kind:'once', desc:'一次性 '+v.replace('T',' '), ref});
-    renderPlanList();
+    serverPlans.push(Object.assign({}, base, {kind:'once', at:t, desc:'一次性 '+v.replace('T',' ')}));
   } else if(mode==='interval'){
     const every=Math.max(1,parseInt($('runSchedEvery').value)||1);
-    const ref=setInterval(()=>{ runPipeline(opts); }, every*60000);
-    planTimers.push({tid:tid0, kind:'interval', desc:'每 '+every+' 分钟', ref});
-    renderPlanList();
-  }
+    serverPlans.push(Object.assign({}, base, {kind:'interval', everyMin:every, desc:'每 '+every+' 分钟'}));
+  } else return;
+  pushPlans(); renderPlanList();
 }
 function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
 function renderQueue(){
@@ -1053,28 +1207,30 @@ function finish(result){
   const elapsed=(Date.now()-curRun.startTs)/1000;
   if(result==='success'){ setOverall('✓ 成功','dshell-badgeDone'); }
   else if(result==='aborted'){ setOverall('⏏ 已中止',''); }
-  else { setOverall('✗ 失败（已回滚）',''); const o=$('overall').firstChild; o.style.color='#f85149'; o.style.borderColor='rgba(248,81,73,.4)'; }
+  else { setOverall('✗ 失败',''); const o=$('overall').firstChild; o.style.color='#f85149'; o.style.borderColor='rgba(248,81,73,.4)'; }
   buildNo++;
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
-    dur: fmtDur(elapsed), time:'今天 '+nowHM(), by:curRun.by||'anonymous'};
-  history.unshift(rec); if(history.length>20) history.pop();
+    dur: fmtDur(elapsed), time:'今天 '+nowHM(), by:curRun.by||'anonymous',
+    logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs())};
+  history.unshift(rec); if(history.length>200) history.length=200;
   renderHistory(); renderStats();
+  persistState();
   drainQueue();
   renderQueue();
 }
-/* 末段失败注入：末段运行到 ~75% 时触发（勾选模拟失败） */
-function maybeFailLast(){
-  if(!$('simFail').checked) return false;
-  const stg=activeStages(); const last=stg[stg.length-1];
-  if(last && nodes[last.id] && nodes[last.id].status==='running' && nodes[last.id].progress>=75){
-    if(timer){ clearInterval(timer); timer=null; }
-    nodes[last.id].status='failed'; applyStatusClasses(); renderDetail(); finish('failed'); return true;
-  }
-  return false;
+/* 环境清理：勾选「清理环境」时，流水线启动前先执行设置页配置的清理脚本，
+   日志挂在 curRun.cleanupLog 上，finish 时并入本次历史记录；清理失败不阻断流水线 */
+async function runCleanupBefore(){
+  const t0=Date.now();
+  const res=await execScript(cleanupScript);
+  const status=res.code===0?'success':'failed';
+  let text='$ bash '+cleanupScript.name+'\n'+(res.stdout||'');
+  if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
+  text+='\n[exit '+res.code+']';
+  if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
+  if(curRun) curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
 }
-let failWatcher=null;
-function startFailWatcher(){ if(failWatcher) return; failWatcher=setInterval(()=>{ if(running) maybeFailLast(); if(!running){ clearInterval(failWatcher); failWatcher=null; } },200); }
 
 /* ---------- 历史 & 统计 ---------- */
 function renderHistory(){
@@ -1098,6 +1254,39 @@ function renderStats(){
     let sec=0; if(m) sec=parseInt(m[1])*60+(m[2]?parseInt(m[2]):0); else if(s) sec=parseInt(s[1]); return a+sec; },0);
   $('sAvg').textContent = history.length? fmtDur(avg/history.length):'—';
   $('sLast').textContent = history.length? ('#'+history[0].no+' '+history[0].env):'—';
+}
+
+/* ---------- AI 日志分析：汇总全部运行日志写服务端文件，postMessage 给 DSH 聊天窗开会话分析 ---------- */
+function buildAnalysisMarkdown(hist){
+  const lines=['# 流水线运行日志','','生成时间：'+new Date().toLocaleString(),'','共 '+hist.length+' 次运行记录（最新在前）。',''];
+  hist.forEach(h=>{
+    lines.push('## #'+h.no+' '+(h.pipeline||'')+' · '+labelOf(h.status));
+    lines.push('- 环境：'+(h.env||'—')+'　提交：'+(h.commit||'—')+'　耗时：'+(h.dur||'—')+'　时间：'+(h.time||'—')+'　执行人：'+(h.by||'—'));
+    if(h.logs && h.logs.length){
+      h.logs.forEach(l=>{
+        lines.push('','### 阶段：'+l.stage+'（'+labelOf(l.status)+'）','','```',l.log||'(无日志)','```');
+      });
+    } else { lines.push('','（无阶段日志）'); }
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+async function startAiAnalysis(){
+  const btn=$('aiAnalyzeBtn'); const t=btn.textContent;
+  btn.disabled=true; btn.textContent='准备中…';
+  try{
+    /* 以服务端存储为准（含定时任务产生的记录），内存 history 作兜底 */
+    let hist=history;
+    try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok){ const j=await r.json(); if(Array.isArray(j.history)&&j.history.length) hist=j.history; } }catch(e){}
+    if(!hist.length){ alert('暂无运行日志可分析'); return; }
+    const w=await fetch('/api/worktable/pipeline/logdump',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:buildAnalysisMarkdown(hist)})});
+    const wj=await w.json().catch(()=>null);
+    if(!wj || !wj.ok || !wj.path){ alert('日志写入失败：'+((wj&&wj.error)||('HTTP '+w.status))); return; }
+    /* 交给 DSH 聊天窗（插件客户端的 message 桥接会新开会话并发送分析请求） */
+    try{ if(window.parent && window.parent!==window) window.parent.postMessage({type:'worktable:analyze-log', path:wj.path}, location.origin); }catch(e){}
+    btn.textContent='已发送 ✓（见聊天窗）';
+  }catch(e){ alert('AI 日志分析失败：'+(e.message||e)); }
+  finally{ setTimeout(()=>{ btn.disabled=false; btn.textContent=t; },2500); }
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
@@ -1124,16 +1313,20 @@ function renderPipelineOptions(){
   if(cur && pipelines.some(p=>p.id===cur)) sel.value=cur;
 }
 function selectPipeline(id){
-  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){}
+  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
   runStages=null; selectedId=curPipeline().stages[0].id;
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
 let editFocusIdx=-1;
 function openPlForm(id, focusIdx){
-  const f=$('plForm'); f.style.display='block'; f.dataset.editId=id||'';
+  const f=$('plForm'); f.style.display='flex';
   editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
   $('scriptsDir').value=scriptsDir;
-  if(id){ const p=findPipeline(id); $('plName').value=p.name;
+  /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
+  const p = id ? (findPipeline(id) || curPipeline()) : null;
+  f.dataset.editId = p ? p.id : '';
+  $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
+  if(p){ $('plName').value=p.name;
     editStages=p.stages.map(s=>({id:s.id, name:s.name, dur:s.dur, gate:!!s.gate, sub:(s.sub||[]), script:s.script?{name:s.script.name,path:s.script.path,params:(s.script.params||[]),values:(s.script.values||{})}:null})); }
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   loadScripts().then(()=>renderStageEditor());
@@ -1183,7 +1376,7 @@ function deletePipeline(id){
 /* ---------- 主题切换 ---------- */
 let themePref = lsGet('pip-theme', 'auto');
 function systemDark(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches); }
-function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} }
+function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} persistState(); }
 $('theme').value = themePref;
 $('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); });
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
@@ -1193,12 +1386,13 @@ $('runBtn').addEventListener('click', ()=>{ const m=$('runSched').value; if(m===
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{ if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue(); });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
-$('addPlBtn').addEventListener('click', ()=>{ const f=$('plForm'); const open=f.style.display!=='block'; f.style.display=open?'block':'none'; if(open) openPlForm(''); });
+$('addPlBtn').addEventListener('click', ()=>openPlForm(''));
 $('plSave').addEventListener('click', savePlForm);
+$('aiAnalyzeBtn').addEventListener('click', startAiAnalysis);
 $('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
+$('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });
 $('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); });
-$('flowEditBtn').addEventListener('click', ()=>{ if(!running) openPlForm(curPipelineId); });
 /* 阶段编辑器：增删/上下移/识别参数（事件委托） */
 $('plStageList').addEventListener('click', (e)=>{
   const btn=e.target.closest && e.target.closest('[data-act]'); if(!btn) return;
@@ -1223,7 +1417,14 @@ $('envAllApply').addEventListener('click', applyEnvCredAll);
 $('gpuRefreshAll').addEventListener('click', refreshGpuAll);
 $('gpuDetailClose').addEventListener('click', ()=>{ $('gpuDetail').style.display='none'; });
 $('gpuDetail').addEventListener('click', (e)=>{ if(e.target===$('gpuDetail')) $('gpuDetail').style.display='none'; });
-/* 页面切换（流水线 / 环境配置） */
+/* 环境清理：开关与脚本配置（初始值取 localStorage，服务端状态就绪后会被覆盖） */
+$('cleanupEnv').checked = lsGet('pip-cleanupEnabled','')==='1';
+$('cleanupEnv').addEventListener('change', saveCleanup);
+$('cleanupScriptName').value = cleanupScript?cleanupScript.name:'';
+$('cleanupScriptName').addEventListener('change', (e)=>setCleanupScript(e.target.value.trim()));
+$('cleanupDetect').addEventListener('click', ()=>{ detectCleanupParams().then(saveCleanup); });
+renderCleanupParams();
+/* 页面切换（流水线 / 设置） */
 function switchPage(p){
   const main=p==='main';
   $('pageMain').style.display = main?'':'none';
@@ -1238,17 +1439,24 @@ $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
 /* 初始化 */
-applyTheme();
-resetNodes();
-loadScripts();
-renderHistory();
-renderStats();
-renderPipelines();
-renderEnvOptions();
-renderEnvs();
-refreshGpuAll();
-renderQueue();
-renderDetail();
+function renderAll(){
+  applyTheme();
+  resetNodes();
+  loadScripts();
+  renderHistory();
+  renderStats();
+  renderPipelines();
+  renderEnvOptions();
+  renderEnvs();
+  refreshGpuAll();
+  renderQueue();
+  renderDetail();
+}
+renderAll();
+/* 从服务端拉取配置与历史（含日志）；服务端有数据则覆盖本地并重渲染 */
+loadServerState();
+/* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
+loadPlans();
 </script>
 </body>
 </html>

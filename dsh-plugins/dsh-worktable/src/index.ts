@@ -4,7 +4,7 @@ import { readdirSync, realpathSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
-import { homedir } from 'node:os'
+import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /**
@@ -395,6 +395,305 @@ export function apply(ctx: Context) {
       }
     },
   })
+
+  // 流水线工作台（pipeline.html）的服务端持久化：配置（pipelines/envs/scriptsDir/theme 等）
+  // 与运行历史（含各阶段日志快照）。全量覆盖写（last-write-wins），原子落盘（tmp + rename）。
+  const PIPELINE_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline.json')
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method === 'GET') {
+          let raw = ''
+          try { raw = await readFile(PIPELINE_STORE, 'utf8') } catch { /* 无文件 = 空集 */ }
+          const p = raw ? JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) : {}
+          json(res, 200, {
+            config: p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {},
+            history: Array.isArray(p.history) ? p.history : [],
+          })
+          return
+        }
+        if (req.method === 'PUT') {
+          const body = await readJsonBody(req)
+          const config = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
+          const history = Array.isArray(body.history) ? body.history.slice(0, 500) : []
+          const text = JSON.stringify({ config, history })
+          if (text.length > 20 * 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
+          const fsx = await import('node:fs/promises')
+          await fsx.mkdir(dirname(PIPELINE_STORE), { recursive: true })
+          const tmp = PIPELINE_STORE + '.tmp'
+          await fsx.writeFile(tmp, text, 'utf8')
+          await fsx.rename(tmp, PIPELINE_STORE)
+          json(res, 200, { ok: true })
+          return
+        }
+        res.writeHead(405); res.end()
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // ---- 流水线定时任务（服务端调度，关闭页面也会执行）----
+  // 计划存独立文件 worktable-pipeline-plans.json；调度器每 15s 轮询，到期即在服务端执行：
+  // 脚本阶段用 bash 真跑（参数/环境注入规则与前端 execScript 一致），模拟阶段按耗时等待，
+  // 审批门自动通过；运行记录（含各阶段日志）追加进 worktable-pipeline.json 的 history。
+  const PLANS_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline-plans.json')
+
+  async function writeJsonAtomic(file: string, text: string) {
+    const fsx = await import('node:fs/promises')
+    await fsx.mkdir(dirname(file), { recursive: true })
+    const tmp = file + '.tmp'
+    await fsx.writeFile(tmp, text, 'utf8')
+    await fsx.rename(tmp, file)
+  }
+  async function readPlansFile(): Promise<any[]> {
+    try {
+      const raw = await readFile(PLANS_STORE, 'utf8')
+      const j = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+      return Array.isArray(j.plans) ? j.plans : []
+    } catch { return [] }
+  }
+  async function readPipelineStore(): Promise<any> {
+    try {
+      const raw = await readFile(PIPELINE_STORE, 'utf8')
+      return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+    } catch { return {} }
+  }
+
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/plans',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method === 'GET') { json(res, 200, { plans: await readPlansFile() }); return }
+        if (req.method === 'PUT') {
+          const body = await readJsonBody(req)
+          const plans = Array.isArray(body.plans)
+            ? body.plans.filter((p: any) => p && typeof p.id === 'string' && (p.kind === 'once' || p.kind === 'interval')).slice(0, 100)
+            : []
+          const text = JSON.stringify({ plans })
+          if (text.length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
+          await writeJsonAtomic(PLANS_STORE, text)
+          json(res, 200, { ok: true })
+          return
+        }
+        res.writeHead(405); res.end()
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // AI 日志分析：把前端汇总好的运行日志（Markdown）写到固定文件，返回绝对路径，
+  // 由页面 postMessage 给插件客户端新开会话分析（路径对聊天 Agent 可读）
+  const LOGDUMP_FILE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline-logs.md')
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/logdump',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const content = typeof body.content === 'string' ? body.content : ''
+        if (!content) { json(res, 400, { error: 'missing content' }); return }
+        if (content.length > 20 * 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
+        await writeJsonAtomic(LOGDUMP_FILE, content)
+        json(res, 200, { ok: true, path: LOGDUMP_FILE })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // ---- GPU 状态查询（pipeline.html 环境页/多选面板；本机直连，远程经 sshpass+ssh）----
+  // 响应：{ total, used, gpus:[{index,util,mem}], procs:[{pid,uuid,proc,container}], containers:[名称...] }
+  // 失败返回 { error }（HTTP 仍 200，前端据 error 字段展示原因）
+  function localAddrs(): Set<string> {
+    const set = new Set<string>(['127.0.0.1', 'localhost', '::1'])
+    try {
+      const ifs = networkInterfaces()
+      for (const list of Object.values(ifs)) for (const it of list || []) if (it && it.address) set.add(it.address)
+    } catch { /* 忽略，按远程处理 */ }
+    return set
+  }
+  function execText(cmd: string, args: string[]): Promise<string> {
+    return new Promise((resolvePromise, reject) => {
+      execFile(cmd, args, { timeout: 20000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) reject(new Error(String(stderr || (err as Error).message || err).trim()))
+        else resolvePromise(String(stdout || ''))
+      })
+    })
+  }
+  // 一段命令取全量数据（=== 分四段：GPU 列表 / 计算进程 / 进程容器 cgroup / docker 容器清单）
+  const GPU_PROBE =
+    'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; ' +
+    'echo ===; ' +
+    'nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name --format=csv,noheader; ' +
+    'echo ===; ' +
+    'for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do ' +
+    'echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; ' +
+    'echo ===; ' +
+    'docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null'
+  async function queryGpu(ip: string, user: string, pass: string) {
+    let out: string
+    if (localAddrs().has(ip)) {
+      out = await execText('bash', ['-c', GPU_PROBE])
+    } else {
+      const target = user ? user + '@' + ip : ip
+      const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8', target, GPU_PROBE]
+      out = pass ? await execText('sshpass', ['-p', pass, 'ssh', ...sshArgs]) : await execText('ssh', ['-o', 'BatchMode=yes', ...sshArgs])
+    }
+    const secs = out.split(/^===\s*$/m)
+    const gpus = (secs[0] || '').trim().split('\n').filter(Boolean).map((l) => {
+      const p = l.split(',').map((s) => s.trim())
+      return { index: p[0], uuid: p[1] || '', util: p[2] || '0', mem: p[3] || '0' }
+    })
+    if (!gpus.length) return { error: 'nvidia-smi 无输出（未安装驱动或无 GPU）' }
+    const procs = (secs[1] || '').trim().split('\n').filter(Boolean).map((l) => {
+      const p = l.split(',').map((s) => s.trim())
+      return { pid: p[0], uuid: p[1] || '', proc: p[2] || '' }
+    })
+    const cg: Record<string, string> = {}
+    for (const l of (secs[2] || '').trim().split('\n')) {
+      const m = /^(\S+):([0-9a-f]{64})$/.exec(l.trim())
+      if (m) cg[m[1]] = m[2]
+    }
+    const dockers = (secs[3] || '').trim().split('\n').filter(Boolean).map((l) => {
+      const sp = l.trim().split(/\s+/)
+      return { id: sp[0] || '', name: sp.slice(1).join(' ') || '' }
+    })
+    const procsOut = procs.map((p) => {
+      let container = ''
+      const hex = cg[p.pid]
+      if (hex) { const d = dockers.find((x) => x.id && hex.indexOf(x.id) === 0); if (d) container = d.name }
+      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container }
+    })
+    const busyUuids = new Set(procs.map((p) => p.uuid))
+    const used = gpus.filter((g) => busyUuids.has(g.uuid) || Number(g.mem) > 1024).length
+    const containers = Array.from(new Set(procsOut.map((p) => p.container).filter(Boolean)))
+    return { total: gpus.length, used, gpus: gpus.map((g) => ({ index: g.index, util: g.util, mem: g.mem })), procs: procsOut, containers }
+  }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/gpu',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
+        if (!ip) { json(res, 400, { error: 'missing ip' }); return }
+        const r = await queryGpu(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '')
+        json(res, 200, r)
+      } catch (err) {
+        json(res, 200, { error: String(err && (err as Error).message ? (err as Error).message : err) })
+      }
+    },
+  })
+
+  const planRunning = new Set<string>()
+  const planLastRun = new Map<string, number>()
+  const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const randHex = (n: number) => Math.random().toString(16).slice(2, 2 + n)
+  const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') }
+  const durText = (sec: number) => (sec < 60 ? Math.round(sec) + 's' : Math.floor(sec / 60) + 'm' + Math.round(sec % 60) + 's')
+  const truncLog = (t: string) => (t.length > 8192 ? t.slice(0, 8192) + '\n…(截断)' : t)
+
+  function runStageScript(sc: any, runCtx: any, scriptsDir: string): Promise<{ code: number; stdout: string; stderr: string }> {
+    const args: string[] = []
+    const env: Record<string, string> = {}
+    for (const p of sc.params || []) {
+      const v = sc.values && sc.values[p.key] !== undefined ? sc.values[p.key] : p.def || ''
+      if (p.kind === 'pos') args.push(String(v))
+      else env[p.key] = String(v)
+    }
+    // 与前端 execScript 一致：注入节点连接信息（脚本显式配置的同名参数优先）
+    const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
+    if (runCtx.env && env.TARGET_IP === undefined) env.TARGET_IP = String(runCtx.env)
+    if (ctx0) {
+      if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
+      if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
+    }
+    return new Promise((resolve) => {
+      execFile('bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+        (err, stdout, stderr) => {
+          const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
+          resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') })
+        })
+    })
+  }
+  function stageLogText(name: string, r: { code: number; stdout: string; stderr: string }) {
+    let t = '$ bash ' + name + '\n' + (r.stdout || '')
+    if (r.stderr) t += '\n✗ ' + r.stderr.split('\n').join('\n✗ ')
+    return truncLog(t + '\n[exit ' + r.code + ']')
+  }
+  async function appendPipelineHistory(rec: any) {
+    const j = await readPipelineStore()
+    const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
+    const history = Array.isArray(j.history) ? j.history : []
+    const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
+    cfg.buildNo = no
+    rec.no = no
+    history.unshift(rec)
+    const text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
+    if (text.length > 20 * 1024 * 1024) return
+    await writeJsonAtomic(PIPELINE_STORE, text)
+  }
+  async function execPlan(pl: any) {
+    const t0 = Date.now()
+    const store = await readPipelineStore()
+    const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+    const scriptsDir = typeof cfg.scriptsDir === 'string' ? cfg.scriptsDir : ''
+    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [] }
+    const logs: any[] = []
+    let status = 'success'
+    // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本
+    if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir)
+      logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: stageLogText(cfg.cleanupScript.name, r) })
+    }
+    for (const s of pl.stages || []) {
+      if (s.gate) { logs.push({ stage: s.name, status: 'success', log: '[定时执行] 审批门自动通过' }); continue }
+      if (s.script && s.script.path) {
+        const r = await runStageScript(s.script, runCtx, scriptsDir)
+        logs.push({ stage: s.name, status: r.code === 0 ? 'success' : 'failed', log: stageLogText(s.script.name, r) })
+        if (r.code !== 0) { status = 'failed'; break }
+      } else {
+        await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
+        logs.push({ stage: s.name, status: 'success', log: '[定时执行] 模拟阶段完成' })
+      }
+    }
+    await appendPipelineHistory({
+      no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
+      status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs,
+    })
+  }
+  async function planTick() {
+    const plans = await readPlansFile()
+    const now = Date.now()
+    for (const p of plans) {
+      if (!p || typeof p.id !== 'string' || planRunning.has(p.id)) continue
+      if (p.kind === 'once') {
+        if (!(Number(p.at) > 0) || Number(p.at) > now) continue
+        planRunning.add(p.id)
+        // 一次性：执行完从计划文件中移除
+        execPlan(p).catch(() => {}).finally(async () => {
+          planRunning.delete(p.id)
+          const rest = (await readPlansFile()).filter((x: any) => x && x.id !== p.id)
+          await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {})
+        })
+      } else if (p.kind === 'interval') {
+        const everyMs = Math.max(1, Number(p.everyMin) || 10) * 60000
+        const last = planLastRun.get(p.id) || Number(p.createdAt) || 0
+        if (now - last < everyMs) continue
+        planLastRun.set(p.id, now)
+        planRunning.add(p.id)
+        execPlan(p).catch(() => {}).finally(() => planRunning.delete(p.id))
+      }
+    }
+  }
+  setInterval(() => { planTick().catch(() => {}) }, 15000)
 
   // 本地文件写入（MD 编辑模式保存回磁盘）
   webServer.register({

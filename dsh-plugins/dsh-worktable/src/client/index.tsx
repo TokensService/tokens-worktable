@@ -829,6 +829,24 @@ export async function sendCustomToSession(sessionId: string, projectId: string, 
   await promptIntoSession(sessionId, text)
 }
 
+/** AI 日志分析（pipeline.html postMessage 触发）：新开会话，把日志文件路径交给聊天 Agent 分析 */
+async function analyzeLogInSession(logPath: string): Promise<void> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const text = [
+    '【流水线日志分析】',
+    '请阅读并分析流水线运行日志文件：' + logPath,
+    '（内含多次运行记录：每次运行的状态/耗时/执行人，以及各阶段日志；脚本阶段含真实 stdout/stderr 与 exit code。）',
+    '请给出：1) 整体运行情况概述（成功率、趋势）；2) 失败/异常运行的根因分析；3) 可执行的改进建议。',
+  ].join('\n')
+  const sessionId = await b.sessions.create({})
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId)
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+}
+
 // ── 项目 × 对话联动（模块级）──
 /** 打开项目前所处的会话（关项目时回切）；attached = 该项目绑定的会话（无绑定 = 打开前会话） */
 const projectAttachRef: { sessionId: string | null; attached: string | null } = { sessionId: null, attached: null }
@@ -3167,6 +3185,18 @@ export function apply(ctx: any) {
   ctx.effect(() => {
     if (ctx.locale?.register) return ctx.locale.register(NS, { zh, en })
   }, 'dsh-worktable: dictionaries')
+
+  // iframe 内容页（如 pipeline.html）→ 聊天窗桥：收到 AI 日志分析请求后新开会话
+  ctx.effect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return
+      const d = e.data as any
+      if (!d || d.type !== 'worktable:analyze-log' || typeof d.path !== 'string' || !d.path) return
+      analyzeLogInSession(d.path).catch((err) => ctx.logger?.warn?.('[dsh-worktable] analyze-log failed: ' + String(err)))
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, 'dsh-worktable: analyze-log bridge')
 
   // 子座位注册 id 序列跟踪（供排序/编辑模式使用）
   const syncIds = () => {

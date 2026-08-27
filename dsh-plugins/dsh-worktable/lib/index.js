@@ -4,7 +4,7 @@ import { readdirSync, realpathSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, resolve as pathResolve, sep } from "node:path";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // template/dshell.css
@@ -518,6 +518,337 @@ function apply(ctx) {
       }
     }
   });
+  const PIPELINE_STORE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline.json");
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/pipeline",
+    handler: async (req, res) => {
+      try {
+        if (req.method === "GET") {
+          let raw = "";
+          try {
+            raw = await readFile(PIPELINE_STORE, "utf8");
+          } catch {
+          }
+          const p = raw ? JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw) : {};
+          json(res, 200, {
+            config: p.config && typeof p.config === "object" && !Array.isArray(p.config) ? p.config : {},
+            history: Array.isArray(p.history) ? p.history : []
+          });
+          return;
+        }
+        if (req.method === "PUT") {
+          const body = await readJsonBody(req);
+          const config = body.config && typeof body.config === "object" && !Array.isArray(body.config) ? body.config : {};
+          const history = Array.isArray(body.history) ? body.history.slice(0, 500) : [];
+          const text = JSON.stringify({ config, history });
+          if (text.length > 20 * 1024 * 1024) {
+            json(res, 413, { error: "too large" });
+            return;
+          }
+          const fsx = await import("node:fs/promises");
+          await fsx.mkdir(dirname(PIPELINE_STORE), { recursive: true });
+          const tmp = PIPELINE_STORE + ".tmp";
+          await fsx.writeFile(tmp, text, "utf8");
+          await fsx.rename(tmp, PIPELINE_STORE);
+          json(res, 200, { ok: true });
+          return;
+        }
+        res.writeHead(405);
+        res.end();
+      } catch (err) {
+        json(res, 500, { error: String(err) });
+      }
+    }
+  });
+  const PLANS_STORE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline-plans.json");
+  async function writeJsonAtomic(file, text) {
+    const fsx = await import("node:fs/promises");
+    await fsx.mkdir(dirname(file), { recursive: true });
+    const tmp = file + ".tmp";
+    await fsx.writeFile(tmp, text, "utf8");
+    await fsx.rename(tmp, file);
+  }
+  async function readPlansFile() {
+    try {
+      const raw = await readFile(PLANS_STORE, "utf8");
+      const j = JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw);
+      return Array.isArray(j.plans) ? j.plans : [];
+    } catch {
+      return [];
+    }
+  }
+  async function readPipelineStore() {
+    try {
+      const raw = await readFile(PIPELINE_STORE, "utf8");
+      return JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw);
+    } catch {
+      return {};
+    }
+  }
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/pipeline/plans",
+    handler: async (req, res) => {
+      try {
+        if (req.method === "GET") {
+          json(res, 200, { plans: await readPlansFile() });
+          return;
+        }
+        if (req.method === "PUT") {
+          const body = await readJsonBody(req);
+          const plans = Array.isArray(body.plans) ? body.plans.filter((p) => p && typeof p.id === "string" && (p.kind === "once" || p.kind === "interval")).slice(0, 100) : [];
+          const text = JSON.stringify({ plans });
+          if (text.length > 1024 * 1024) {
+            json(res, 413, { error: "too large" });
+            return;
+          }
+          await writeJsonAtomic(PLANS_STORE, text);
+          json(res, 200, { ok: true });
+          return;
+        }
+        res.writeHead(405);
+        res.end();
+      } catch (err) {
+        json(res, 500, { error: String(err) });
+      }
+    }
+  });
+  const LOGDUMP_FILE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline-logs.md");
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/pipeline/logdump",
+    handler: async (req, res) => {
+      try {
+        if (req.method !== "POST") {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        const body = await readJsonBody(req);
+        const content = typeof body.content === "string" ? body.content : "";
+        if (!content) {
+          json(res, 400, { error: "missing content" });
+          return;
+        }
+        if (content.length > 20 * 1024 * 1024) {
+          json(res, 413, { error: "too large" });
+          return;
+        }
+        await writeJsonAtomic(LOGDUMP_FILE, content);
+        json(res, 200, { ok: true, path: LOGDUMP_FILE });
+      } catch (err) {
+        json(res, 500, { error: String(err) });
+      }
+    }
+  });
+  function localAddrs() {
+    const set = /* @__PURE__ */ new Set(["127.0.0.1", "localhost", "::1"]);
+    try {
+      const ifs = networkInterfaces();
+      for (const list of Object.values(ifs)) for (const it of list || []) if (it && it.address) set.add(it.address);
+    } catch {
+    }
+    return set;
+  }
+  function execText(cmd, args) {
+    return new Promise((resolvePromise, reject) => {
+      execFile(cmd, args, { timeout: 2e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) reject(new Error(String(stderr || err.message || err).trim()));
+        else resolvePromise(String(stdout || ""));
+      });
+    });
+  }
+  const GPU_PROBE = 'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; echo ===; nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name --format=csv,noheader; echo ===; for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; echo ===; docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null';
+  async function queryGpu(ip, user, pass) {
+    let out;
+    if (localAddrs().has(ip)) {
+      out = await execText("bash", ["-c", GPU_PROBE]);
+    } else {
+      const target = user ? user + "@" + ip : ip;
+      const sshArgs = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8", target, GPU_PROBE];
+      out = pass ? await execText("sshpass", ["-p", pass, "ssh", ...sshArgs]) : await execText("ssh", ["-o", "BatchMode=yes", ...sshArgs]);
+    }
+    const secs = out.split(/^===\s*$/m);
+    const gpus = (secs[0] || "").trim().split("\n").filter(Boolean).map((l) => {
+      const p = l.split(",").map((s) => s.trim());
+      return { index: p[0], uuid: p[1] || "", util: p[2] || "0", mem: p[3] || "0" };
+    });
+    if (!gpus.length) return { error: "nvidia-smi \u65E0\u8F93\u51FA\uFF08\u672A\u5B89\u88C5\u9A71\u52A8\u6216\u65E0 GPU\uFF09" };
+    const procs = (secs[1] || "").trim().split("\n").filter(Boolean).map((l) => {
+      const p = l.split(",").map((s) => s.trim());
+      return { pid: p[0], uuid: p[1] || "", proc: p[2] || "" };
+    });
+    const cg = {};
+    for (const l of (secs[2] || "").trim().split("\n")) {
+      const m = /^(\S+):([0-9a-f]{64})$/.exec(l.trim());
+      if (m) cg[m[1]] = m[2];
+    }
+    const dockers = (secs[3] || "").trim().split("\n").filter(Boolean).map((l) => {
+      const sp = l.trim().split(/\s+/);
+      return { id: sp[0] || "", name: sp.slice(1).join(" ") || "" };
+    });
+    const procsOut = procs.map((p) => {
+      let container = "";
+      const hex = cg[p.pid];
+      if (hex) {
+        const d = dockers.find((x) => x.id && hex.indexOf(x.id) === 0);
+        if (d) container = d.name;
+      }
+      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container };
+    });
+    const busyUuids = new Set(procs.map((p) => p.uuid));
+    const used = gpus.filter((g) => busyUuids.has(g.uuid) || Number(g.mem) > 1024).length;
+    const containers = Array.from(new Set(procsOut.map((p) => p.container).filter(Boolean)));
+    return { total: gpus.length, used, gpus: gpus.map((g) => ({ index: g.index, util: g.util, mem: g.mem })), procs: procsOut, containers };
+  }
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/gpu",
+    handler: async (req, res) => {
+      try {
+        if (req.method !== "POST") {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        const body = await readJsonBody(req);
+        const ip = typeof body.ip === "string" ? body.ip.trim() : "";
+        if (!ip) {
+          json(res, 400, { error: "missing ip" });
+          return;
+        }
+        const r = await queryGpu(ip, typeof body.user === "string" ? body.user.trim() : "", typeof body.pass === "string" ? body.pass : "");
+        json(res, 200, r);
+      } catch (err) {
+        json(res, 200, { error: String(err && err.message ? err.message : err) });
+      }
+    }
+  });
+  const planRunning = /* @__PURE__ */ new Set();
+  const planLastRun = /* @__PURE__ */ new Map();
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  const randHex = (n) => Math.random().toString(16).slice(2, 2 + n);
+  const hhmm = () => {
+    const d = /* @__PURE__ */ new Date();
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  };
+  const durText = (sec) => sec < 60 ? Math.round(sec) + "s" : Math.floor(sec / 60) + "m" + Math.round(sec % 60) + "s";
+  const truncLog = (t) => t.length > 8192 ? t.slice(0, 8192) + "\n\u2026(\u622A\u65AD)" : t;
+  function runStageScript(sc, runCtx, scriptsDir) {
+    const args = [];
+    const env = {};
+    for (const p of sc.params || []) {
+      const v = sc.values && sc.values[p.key] !== void 0 ? sc.values[p.key] : p.def || "";
+      if (p.kind === "pos") args.push(String(v));
+      else env[p.key] = String(v);
+    }
+    const ctx0 = runCtx.envs && runCtx.envs[0] || null;
+    if (runCtx.env && env.TARGET_IP === void 0) env.TARGET_IP = String(runCtx.env);
+    if (ctx0) {
+      if (ctx0.user && env.TARGET_USER === void 0) env.TARGET_USER = String(ctx0.user);
+      if (ctx0.pass && env.TARGET_PASSWORD === void 0) env.TARGET_PASSWORD = String(ctx0.pass);
+    }
+    return new Promise((resolve) => {
+      execFile(
+        "bash",
+        [sc.path, ...args],
+        { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: 12e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+        (err, stdout, stderr) => {
+          const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
+          resolve({ code, stdout: String(stdout || ""), stderr: String(stderr || "") });
+        }
+      );
+    });
+  }
+  function stageLogText(name2, r) {
+    let t = "$ bash " + name2 + "\n" + (r.stdout || "");
+    if (r.stderr) t += "\n\u2717 " + r.stderr.split("\n").join("\n\u2717 ");
+    return truncLog(t + "\n[exit " + r.code + "]");
+  }
+  async function appendPipelineHistory(rec) {
+    const j = await readPipelineStore();
+    const cfg = j.config && typeof j.config === "object" && !Array.isArray(j.config) ? j.config : {};
+    const history = Array.isArray(j.history) ? j.history : [];
+    const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h) => Number(h && h.no) || 0), 0) + 1;
+    cfg.buildNo = no;
+    rec.no = no;
+    history.unshift(rec);
+    const text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
+    if (text.length > 20 * 1024 * 1024) return;
+    await writeJsonAtomic(PIPELINE_STORE, text);
+  }
+  async function execPlan(pl) {
+    const t0 = Date.now();
+    const store = await readPipelineStore();
+    const cfg = store.config && typeof store.config === "object" && !Array.isArray(store.config) ? store.config : {};
+    const scriptsDir = typeof cfg.scriptsDir === "string" ? cfg.scriptsDir : "";
+    const runCtx = { env: pl.env || "", envs: Array.isArray(pl.envs) ? pl.envs : [] };
+    const logs = [];
+    let status = "success";
+    if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir);
+      logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: stageLogText(cfg.cleanupScript.name, r) });
+    }
+    for (const s of pl.stages || []) {
+      if (s.gate) {
+        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] \u5BA1\u6279\u95E8\u81EA\u52A8\u901A\u8FC7" });
+        continue;
+      }
+      if (s.script && s.script.path) {
+        const r = await runStageScript(s.script, runCtx, scriptsDir);
+        logs.push({ stage: s.name, status: r.code === 0 ? "success" : "failed", log: stageLogText(s.script.name, r) });
+        if (r.code !== 0) {
+          status = "failed";
+          break;
+        }
+      } else {
+        await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1e3);
+        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] \u6A21\u62DF\u9636\u6BB5\u5B8C\u6210" });
+      }
+    }
+    await appendPipelineHistory({
+      no: 0,
+      pipeline: pl.pipelineName || "",
+      env: pl.env || "",
+      commit: randHex(7),
+      status,
+      dur: durText((Date.now() - t0) / 1e3),
+      time: "\u4ECA\u5929 " + hhmm(),
+      by: pl.by || "schedule",
+      logs
+    });
+  }
+  async function planTick() {
+    const plans = await readPlansFile();
+    const now = Date.now();
+    for (const p of plans) {
+      if (!p || typeof p.id !== "string" || planRunning.has(p.id)) continue;
+      if (p.kind === "once") {
+        if (!(Number(p.at) > 0) || Number(p.at) > now) continue;
+        planRunning.add(p.id);
+        execPlan(p).catch(() => {
+        }).finally(async () => {
+          planRunning.delete(p.id);
+          const rest = (await readPlansFile()).filter((x) => x && x.id !== p.id);
+          await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {
+          });
+        });
+      } else if (p.kind === "interval") {
+        const everyMs = Math.max(1, Number(p.everyMin) || 10) * 6e4;
+        const last = planLastRun.get(p.id) || Number(p.createdAt) || 0;
+        if (now - last < everyMs) continue;
+        planLastRun.set(p.id, now);
+        planRunning.add(p.id);
+        execPlan(p).catch(() => {
+        }).finally(() => planRunning.delete(p.id));
+      }
+    }
+  }
+  setInterval(() => {
+    planTick().catch(() => {
+    });
+  }, 15e3);
   webServer.register({
     kind: "exact",
     path: "/api/worktable/write",

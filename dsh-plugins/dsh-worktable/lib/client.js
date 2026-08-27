@@ -19004,6 +19004,25 @@ async function sendCustomToSession(sessionId, projectId, projectName, requiremen
   }
   await promptIntoSession(sessionId, text2);
 }
+async function analyzeLogInSession(logPath) {
+  const b = sessionBridge;
+  if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
+  const text2 = [
+    "\u3010\u6D41\u6C34\u7EBF\u65E5\u5FD7\u5206\u6790\u3011",
+    "\u8BF7\u9605\u8BFB\u5E76\u5206\u6790\u6D41\u6C34\u7EBF\u8FD0\u884C\u65E5\u5FD7\u6587\u4EF6\uFF1A" + logPath,
+    "\uFF08\u5185\u542B\u591A\u6B21\u8FD0\u884C\u8BB0\u5F55\uFF1A\u6BCF\u6B21\u8FD0\u884C\u7684\u72B6\u6001/\u8017\u65F6/\u6267\u884C\u4EBA\uFF0C\u4EE5\u53CA\u5404\u9636\u6BB5\u65E5\u5FD7\uFF1B\u811A\u672C\u9636\u6BB5\u542B\u771F\u5B9E stdout/stderr \u4E0E exit code\u3002\uFF09",
+    "\u8BF7\u7ED9\u51FA\uFF1A1) \u6574\u4F53\u8FD0\u884C\u60C5\u51B5\u6982\u8FF0\uFF08\u6210\u529F\u7387\u3001\u8D8B\u52BF\uFF09\uFF1B2) \u5931\u8D25/\u5F02\u5E38\u8FD0\u884C\u7684\u6839\u56E0\u5206\u6790\uFF1B3) \u53EF\u6267\u884C\u7684\u6539\u8FDB\u5EFA\u8BAE\u3002"
+  ].join("\n");
+  const sessionId = await b.sessions.create({});
+  await ensureSessionPreset(sessionId);
+  await ensureSessionModel(sessionId);
+  markPluginSessionOpen(sessionId);
+  try {
+    await b.sessions.open?.(sessionId);
+  } catch {
+  }
+  await promptIntoSession(sessionId, text2);
+}
 var projectAttachRef = { sessionId: null, attached: null };
 var suppressRestoreRef = { current: false };
 var projectBindingsRef = { current: {} };
@@ -21413,6 +21432,16 @@ function apply(ctx) {
   ctx.effect(() => {
     if (ctx.locale?.register) return ctx.locale.register(NS, { zh, en });
   }, "dsh-worktable: dictionaries");
+  ctx.effect(() => {
+    const onMsg = (e) => {
+      if (e.origin !== window.location.origin) return;
+      const d = e.data;
+      if (!d || d.type !== "worktable:analyze-log" || typeof d.path !== "string" || !d.path) return;
+      analyzeLogInSession(d.path).catch((err) => ctx.logger?.warn?.("[dsh-worktable] analyze-log failed: " + String(err)));
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, "dsh-worktable: analyze-log bridge");
   const syncIds = () => {
     const entries = ctx.slots.entries("sidebar.worktable.project");
     const ids = [];
