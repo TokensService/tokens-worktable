@@ -14,7 +14,7 @@
 
 - Cordis 插件协议（客户端 bundle + 服务端路由 /api/worktable/*、终端 WebSocket）。
 - 界面经 slot 座位协议注入侧边栏与 shell.overlay；对话窗复用宿主会话服务（sessions.open）。
-- 状态监控为宿主会话运行时快照的事件订阅镜像；视图/项目/绑定状态存 localStorage。
+- 状态监控为宿主会话运行时快照的事件订阅镜像；视图/项目/绑定状态存 localStorage；项目完善后可在管理列表点 ☁「发布」，转存服务端 `~/.dsh/storages/worktable-projects.json`，跨浏览器可见。
 - 客户端：TypeScript + React（host externals）+ 原生 CSS；服务端：Node。
 
 ## 安装

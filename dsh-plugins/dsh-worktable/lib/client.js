@@ -7820,6 +7820,8 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_manageRow:hover{border-color:var(--dsw-alias-border-l2,#3a4150)}",
   ".dsh-wt_manageRowOff{opacity:.45}",
   ".dsh-wt_manageGrip{flex:none;color:var(--dsw-alias-label-tertiary,#6e7683);font-size:12px;cursor:grab;user-select:none;-webkit-user-select:none}",
+  /* 发布按钮（☁）：data-on=true 表示已发布（服务端同步、跨浏览器可见） */
+  ".dsh-wt_managePublish[data-on=true]{color:var(--dsw-alias-state-accent-primary,#4f8ef7)}",
   ".dsh-wt_manageIcon{flex:none;width:20px;font-size:15px;text-align:center}",
   ".dsh-wt_manageInput{flex:1;min-width:0;background:transparent;border:none;outline:none;color:var(--dsw-alias-label-primary,#e6e8eb);font:inherit;font-size:12px;line-height:18px;padding:2px 0}",
   ".dsh-wt_manageBtn{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:11px;line-height:1;cursor:pointer}",
@@ -8280,6 +8282,8 @@ var zh = {
   "manage.deleteLayout": "\u5220\u9664\u5E03\u5C40",
   "manage.deleteProject": "\u5220\u9664\u9879\u76EE",
   "manage.changeView": "\u53D8\u66F4\u89C6\u56FE",
+  "manage.publish": "\u53D1\u5E03\uFF1A\u5B58\u670D\u52A1\u7AEF\uFF0C\u6240\u6709\u6D4F\u89C8\u5668\u53EF\u89C1",
+  "manage.unpublish": "\u53D6\u6D88\u53D1\u5E03\uFF1A\u56DE\u5230\u4EC5\u672C\u6D4F\u89C8\u5668",
   "viewPick.title": "\u9009\u62E9\u65B0\u89C6\u56FE\uFF08\u5185\u5BB9\u7A97\u81EA\u52A8\u8FC1\u5165\uFF09",
   "confirm.title": "\u5220\u9664\u9879\u76EE",
   "confirm.cancel": "\u53D6\u6D88",
@@ -8451,6 +8455,8 @@ var en = {
   "manage.deleteLayout": "Delete layout",
   "manage.deleteProject": "Delete project",
   "manage.changeView": "Change layout",
+  "manage.publish": "Publish: store on server, visible in all browsers",
+  "manage.unpublish": "Unpublish: back to this browser only",
   "viewPick.title": "Pick a new layout (panes migrate automatically)",
   "confirm.title": "Delete project",
   "confirm.cancel": "Cancel",
@@ -18349,6 +18355,7 @@ var ICON_ADD = /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("svg", { width: "16
   /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { transform: "translate(9.52 2.52)", d: "M3.55246 0L3.55246 2.44252L6 2.44252L6 3.55748L3.55246 3.55748L3.55246 6L2.43834 6L2.43834 3.55748L0 3.55748L0 2.44252L2.43834 2.44252L2.43834 0L3.55246 0Z", fill: "currentColor" }),
   /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { transform: "translate(0.3496 2.35)", d: "M4.76367 0C5.36861 1.80598e-05 5.93113 0.310294 6.25488 0.821289L6.78027 1.64941C6.79685 1.67558 6.81791 1.69775 6.83887 1.71973C6.72186 2.15521 6.65702 2.61192 6.65137 3.08301C6.25601 2.96045 5.90909 2.70478 5.68164 2.3457L5.15723 1.5166C5.07183 1.38189 4.92318 1.3008 4.76367 1.30078L2.32422 1.30078C1.7589 1.30078 1.30078 1.7589 1.30078 2.32422L1.30078 10.1338C1.30078 10.6991 1.7589 11.1572 2.32422 11.1572L11.9766 11.1572C12.5419 11.1572 13 10.6991 13 10.1338L13 8.58398C13.4545 8.5135 13.8903 8.38748 14.3008 8.21289L14.3008 10.1338C14.3008 11.4171 13.2598 12.458 11.9766 12.458L2.32422 12.458C1.04093 12.458 0 11.4171 0 10.1338L0 2.32422C0 1.04093 1.04093 0 2.32422 0L4.76367 0Z", fill: "currentColor" })
 ] });
+var ICON_CLOUD = /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("svg", { width: "12", height: "12", viewBox: "0 0 16 16", fill: "currentColor", "aria-hidden": true, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("path", { d: "M4.406 3.342A5.53 5.53 0 0 1 8 2c2.69 0 4.923 2 5.166 4.579C14.758 6.804 16 8.137 16 9.773 16 11.569 14.502 13 12.687 13H3.781C1.708 13 0 11.366 0 9.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383z" }) });
 function buildLayout(presetId, name) {
   const def = PRESET_DEFS.find((d) => d.id === presetId) ?? PRESET_DEFS[0];
   const mk = (i) => ({
@@ -19215,6 +19222,33 @@ function WorktableSection(props) {
   (0, import_react2.useEffect)(() => () => {
     updateAliveRef.current = false;
   }, []);
+  (0, import_react2.useEffect)(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const r = await fetch("/api/worktable/projects", { cache: "no-store" });
+        const d = await r.json();
+        if (!alive || !d || !Array.isArray(d.layouts)) return;
+        const remote = d.layouts.filter((l) => l && typeof l.id === "string" && typeof l.title === "string" && Array.isArray(l.main)).map((l) => ({ ...l, sync: true }));
+        const remoteFolders = {};
+        if (d.folders && typeof d.folders === "object") {
+          for (const [k, v] of Object.entries(d.folders)) if (typeof v === "string") remoteFolders[k] = v;
+        }
+        setProjects((prev) => {
+          const remoteIds = new Set(remote.map((l) => l.id));
+          return {
+            ...prev,
+            layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
+            folders: { ...prev.folders, ...remoteFolders }
+          };
+        });
+      } catch {
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
   const checkUpdates = (0, import_react2.useCallback)(async (force = false) => {
     if (updateCheckingRef.current) return;
     const last = Number(localStorage.getItem("dsh.worktable.lastUpdateCheck.v1") ?? "0");
@@ -19548,12 +19582,30 @@ function WorktableSection(props) {
       return next;
     });
   };
+  const syncedSliceOf = (s) => {
+    const layouts = s.layouts.filter((l) => l.sync);
+    const ids = new Set(layouts.map((l) => l.id));
+    const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)));
+    return { layouts, folders };
+  };
   const persistProjects = (patch) => {
     setProjects((prev) => {
       const next = typeof patch === "function" ? patch(prev) : { ...prev, ...patch };
+      const syncedIds = new Set(next.layouts.filter((l) => l.sync).map((l) => l.id));
+      const local = {
+        ...next,
+        layouts: next.layouts.filter((l) => !l.sync),
+        folders: Object.fromEntries(Object.entries(next.folders).filter(([id]) => !syncedIds.has(id)))
+      };
       try {
-        localStorage.setItem(PROJECTS_KEY, JSON.stringify(next));
+        localStorage.setItem(PROJECTS_KEY, JSON.stringify(local));
       } catch {
+      }
+      const prevSync = JSON.stringify(syncedSliceOf(prev));
+      const nextSync = JSON.stringify(syncedSliceOf(next));
+      if (prevSync !== nextSync) {
+        void fetch("/api/worktable/projects", { method: "PUT", headers: { "content-type": "application/json" }, body: nextSync }).catch(() => {
+        });
       }
       return next;
     });
@@ -19884,28 +19936,13 @@ function WorktableSection(props) {
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]));
   }, []);
   const pickFolder = async (apply2) => {
-    const ws = sessionBridge?.workspaces;
-    if (ws && typeof ws.pickDirectory === "function") {
-      try {
+    try {
+      const ws = sessionBridge?.workspaces;
+      if (ws && typeof ws.pickDirectory === "function") {
         const p = await ws.pickDirectory();
         if (p && typeof p === "string") apply2(p);
-        return;
-      } catch {
       }
-    }
-    // native 选择器不可用（SSH/无显示器服务器，pickDirectory 抛 directory-picker-unavailable）
-    // 时回退为手动输入路径，并用 /api/worktable/fs 校验后生效
-    try {
-      const typed = window.prompt("当前环境没有图形文件夹选择器，请输入项目文件夹的绝对路径：", "");
-      if (!typed || !typed.trim()) return;
-      const d = await postJson("/api/worktable/fs", { path: typed.trim() });
-      if (d?.error) {
-        window.alert("文件夹不可用：" + String(d.error));
-        return;
-      }
-      apply2(typeof d?.path === "string" && d.path ? d.path : typed.trim());
-    } catch (e) {
-      window.alert("选择文件夹失败：" + String(e));
+    } catch {
     }
   };
   const changeBindFolder = () => {
@@ -20248,6 +20285,12 @@ function WorktableSection(props) {
   };
   const renameProject = (id, name) => {
     persistProjects((prev) => {
+      const layout = prev.layouts.find((l) => l.id === id);
+      if (layout?.sync) {
+        const title = name.trim();
+        if (!title || title === layout.title) return prev;
+        return { ...prev, layouts: prev.layouts.map((l) => l.id === id ? { ...l, title } : l) };
+      }
       const next = { ...prev.nameOverrides };
       if (name.trim()) next[id] = name;
       else delete next[id];
@@ -20284,6 +20327,12 @@ function WorktableSection(props) {
   };
   const removeLayout = (id) => {
     persistProjects((prev) => ({ ...prev, layouts: prev.layouts.filter((l) => l.id !== id) }));
+  };
+  const togglePublish = (id) => {
+    persistProjects((prev) => ({
+      ...prev,
+      layouts: prev.layouts.map((l) => l.id === id ? { ...l, sync: l.sync ? void 0 : true } : l)
+    }));
   };
   const applyLayoutChange = (id, presetId) => {
     const layout = projects.layouts.find((l) => l.id === id);
@@ -20928,6 +20977,17 @@ function WorktableSection(props) {
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RenameInput, { initial: display, placeholder: t("manage.renamePh"), onCommit: (v) => renameProject(id, v) }),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: isHidden ? t("manage.show") : t("manage.hide"), onClick: () => toggleHidden(id), children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(EyeIcon, { closed: isHidden }) }),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: t("manage.changeView"), onClick: () => setViewPickFor(id), children: "\u{1F9E9}" }),
+              layout && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "dsh-wt_manageBtn dsh-wt_managePublish",
+                  "data-on": layout.sync ? "true" : "false",
+                  title: layout.sync ? t("manage.unpublish") : t("manage.publish"),
+                  onClick: () => togglePublish(id),
+                  children: ICON_CLOUD
+                }
+              ),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
                 "button",
                 {

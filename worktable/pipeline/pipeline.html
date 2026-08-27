@@ -123,9 +123,23 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="simFail" /> 模拟末段失败（触发回滚）
     </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">定时
+      <select id="runSched" class="dshell-input" style="min-width:92px;">
+        <option value="now">立即运行</option>
+        <option value="interval">周期性</option>
+        <option value="once">一次性</option>
+      </select>
+    </label>
+    <label id="runSchedEveryWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">每
+      <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" /> 分钟
+    </label>
+    <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
+      <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
+    </label>
     <span style="flex:1"></span>
     <button id="runBtn" class="dshell-btn">▶ 运行流水线</button>
     <button id="resetBtn" class="dshell-btn dshell-btnGhost">重置</button>
+    <div id="planList" style="flex-basis:100%; display:none; margin-top:8px;"></div>
   </div>
 
   <!-- 统计 -->
@@ -195,59 +209,6 @@
     <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。</p>
   </div>
 
-  <!-- 定时任务 -->
-  <div class="dshell-card">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-      <h2 class="dshell-sub" style="margin:0">定时任务 <span id="schedCount" class="dshell-muted"></span></h2>
-      <button id="addSchedBtn" class="dshell-btn dshell-btnGhost mini">+ 新建定时任务</button>
-    </div>
-    <div id="schedForm" style="display:none; margin-bottom:10px;">
-      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">名称
-          <input id="sName" class="dshell-input" placeholder="nightly-prod" style="width:130px;" />
-        </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">流水线
-          <select id="sPipeline" class="dshell-input" style="min-width:130px;"></select>
-        </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">周期
-          <select id="sPreset" class="dshell-input">
-            <option value="i1">每 1 分钟（演示）</option>
-            <option value="i5" selected>每 5 分钟</option>
-            <option value="i15">每 15 分钟</option>
-            <option value="i30">每 30 分钟</option>
-            <option value="i60">每小时</option>
-            <option value="d9">每天 09:00</option>
-            <option value="d22">每天 22:00</option>
-            <option value="once5">一次性 · 5 分钟后</option>
-            <option value="once30">一次性 · 30 分钟后</option>
-            <option value="onceAt">一次性 · 指定时间</option>
-            <option value="custom">自定义间隔</option>
-          </select>
-        </label>
-        <label id="sCustomWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">间隔(分)
-          <input id="sEvery" class="dshell-input" type="number" min="1" value="10" style="width:64px;" />
-        </label>
-        <label id="sOnceWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
-          <input id="sOnceAt" class="dshell-input" type="datetime-local" style="width:180px;" />
-        </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">环境
-          <select id="sEnv" class="dshell-input"></select>
-        </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">执行人
-          <input id="sBy" class="dshell-input" placeholder="⏰ nightly-prod" style="width:130px;" />
-        </label>
-        <button id="sAdd" class="dshell-btn mini">添加</button>
-        <button id="sCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
-      </div>
-    </div>
-    <div style="overflow:auto;">
-      <table class="dshell-table" id="schedTable">
-        <thead><tr><th>任务</th><th>流水线</th><th>环境</th><th>执行人</th><th>下次运行</th><th>上次</th><th>启用</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <p class="dshell-muted" style="margin:8px 0 0">周期任务到点循环触发；一次性任务到点只跑一次并自动停用。已有运行进行中时进入「运行队列」按先进先出依次执行（同任务不重复排队，最多 8 条）。任务保存在本机浏览器。</p>
-  </div>
 
   <!-- 详情 + 历史 -->
   <div class="pipeline-cols">
@@ -277,24 +238,37 @@
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">环境配置 <span id="envCount" class="dshell-muted"></span></h2>
+        <h2 class="dshell-sub" style="margin:0">环境配置 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点 GPU 状态" style="margin-left:6px;">⟳ GPU状态</button></h2>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
-        <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:140px;" />
-        <input id="envIp" class="dshell-input" placeholder="IP 地址（如 192.168.1.20）" style="width:180px;" />
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="envProd" /> 生产</label>
+        <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
+        <input id="envIp" class="dshell-input" placeholder="IP 地址（如 192.168.1.20）" style="width:160px;" />
+        <input id="envUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
+        <input id="envPass" class="dshell-input" type="password" placeholder="密码" style="width:130px;" />
         <button id="envAdd" class="dshell-btn mini">添加</button>
+        <button id="envAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/密码应用到所有节点">应用凭证到全部</button>
         <button id="envCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
-          <thead><tr><th>名称</th><th>IP 地址</th><th>生产</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>IP 地址</th><th>用户名</th><th>密码</th><th>GPU 状态</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP（运行环境值取 <b>IP 地址</b>）；标记「生产」的环境会触发流水线的审批门（若含审批阶段）。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP（运行环境值取 <b>IP 地址</b>）；节点的用户名/密码会在执行脚本时以 <code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>/<code>TARGET_IP</code> 环境变量注入，供脚本登录目标机使用。</p>
     </div>
   </div><!-- /pageEnv -->
+
+  <!-- GPU 详情弹层 -->
+  <div id="gpuDetail" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:200; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="max-width:660px; width:92%; max-height:82vh; overflow:auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0">节点 GPU 详情</h2>
+        <button id="gpuDetailClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <div id="gpuDetailBody"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -316,6 +290,15 @@ const CI_STAGES = [
 const CANARY_STAGES = [
   {id:'deploy',name:'部署到 K8s',dur:10,sub:[]},
   {id:'health',name:'健康检查',dur:7,sub:[]},
+];
+/* 默认「安装部署XDS」流水线（模型部署六步） */
+const XDS_STAGES = [
+  {id:'pull',name:'拉取镜像',dur:8,sub:[]},
+  {id:'rendercfg',name:'模型部署配置渲染',dur:4,sub:[]},
+  {id:'deploymodel',name:'部署模型',dur:12,sub:[]},
+  {id:'register',name:'注册模型',dur:5,sub:[]},
+  {id:'modelhealth',name:'模型健康检查',dur:6,sub:[]},
+  {id:'modeltest',name:'测试',dur:8,sub:[]},
 ];
 // 每阶段真实日志模板（按阶段 id 匹配；自定义阶段走通用日志）
 const LOGS = {
@@ -389,8 +372,8 @@ const LOGS = {
 
 /* ---------- 流水线注册表（多条流水线） ---------- */
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
-const DEFAULT_PIPELINE_ID='pl-deploy';
-function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署', stages:K8S_STAGES.map(s=>({...s})), builtIn:true}; }
+const DEFAULT_PIPELINE_ID='pl-xds';
+function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}; }
 function loadPipelines(){
   let stored=null;
   try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); stored=Array.isArray(a)?a:null; }catch(e){ stored=null; }
@@ -409,15 +392,16 @@ function activeStages(){ return runStages || curPipeline().stages; }
 function findPipeline(id){ return pipelines.find(p=>p.id===id); }
 function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} }
 
-/* ---------- 环境配置（名称 + IP + 是否生产） ---------- */
-function loadEnvs(){ try{ const a=JSON.parse(localStorage.getItem('pip-envs')); return Array.isArray(a)?a:null; }catch(e){ return null; } }
+/* ---------- 环境配置（名称 + IP + 用户名 + 密码） ---------- */
+function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, user:e.user||'', pass:e.pass||''}; }
+function loadEnvs(){ try{ const a=JSON.parse(localStorage.getItem('pip-envs')); if(Array.isArray(a)&&a.length) return a.map(normalizeEnv); }catch(e){} return null; }
 let environments = loadEnvs() || [
-  {id:'env-dev', name:'开发', ip:'192.168.1.10', prod:false},
-  {id:'env-prod', name:'生产', ip:'192.168.1.20', prod:true},
+  {id:'env-dev', name:'开发', ip:'192.168.1.10', user:'root', pass:''},
+  {id:'env-prod', name:'生产', ip:'192.168.1.20', user:'root', pass:''},
 ];
 function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){} }
-function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',prod:false}; }
-function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),prod:false}; }
+function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}; }
+function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),user:'',pass:''}; }
 function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
 /* 环境多选（主控，可选多个目标 IP） */
 let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
@@ -425,7 +409,7 @@ function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(se
 function curEnvs(){
   let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
   if(!list.length) list = environments.slice(0,1);
-  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',prod:false}];
+  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}];
 }
 function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
 function renderEnvOptions(){
@@ -437,7 +421,7 @@ function renderEnvOptions(){
     const on = selectedEnvIds.indexOf(e.id)>=0;
     const lab=document.createElement('label');
     lab.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;';
-    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+(e.prod?' · 生产':'')+'</span></span>';
+    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+(e.user?(' · '+esc(e.user)):'')+'</span></span>';
     panel.appendChild(lab);
   });
   panel.querySelectorAll('[data-envcb]').forEach(cb=>cb.addEventListener('change',()=>{
@@ -456,23 +440,93 @@ function renderEnvs(){
   const tb=$('envTable').querySelector('tbody'); tb.innerHTML='';
   environments.forEach(e=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td>'+(e.prod?'<span class="dshell-badge">生产</span>':'<span class="dshell-muted">—</span>')+'</td>'+
+    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
+      '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
   tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
+  tb.querySelectorAll('[data-gpurefresh]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpurefresh')); if(e) fetchGpu(e); }));
+  tb.querySelectorAll('[data-gpudetail]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpudetail')); if(e) openGpuDetail(e); }));
 }
-function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envProd').checked=!!e.prod; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
-function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envProd').checked=false; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
+function gpuCellFull(e){
+  return gpuCellHtml(gpuStatus[e.id])
+    +' <button class="dshell-btn dshell-btnGhost mini" data-gpurefresh="'+e.id+'" title="刷新 GPU 状态" style="padding:2px 7px;">⟳</button>'
+    +' <button class="dshell-btn dshell-btnGhost mini" data-gpudetail="'+e.id+'" title="查看 GPU 状态与失败原因" style="padding:2px 7px;">详情</button>';
+}
+function bindGpuCell(cell, e){
+  const rb=cell.querySelector('[data-gpurefresh]'); if(rb) rb.addEventListener('click',()=>fetchGpu(e));
+  const db=cell.querySelector('[data-gpudetail]'); if(db) db.addEventListener('click',()=>openGpuDetail(e));
+}
+/* 节点 GPU 状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
+let gpuStatus={};
+function gpuCellHtml(st){
+  if(!st) return '<span class="dshell-muted">—</span>';
+  if(st.error) return '<span style="color:#f85149">查询失败</span>';
+  const cs=st.containers||[];
+  let main;
+  if(cs.length) main='<b>'+esc(cs.slice(0,2).join('、'))+(cs.length>2?' 等':'')+'</b>';
+  else main='<span class="dshell-muted">空闲</span>';
+  return main+'<div class="dshell-muted" style="font-size:10px;">'+(st.total==undefined?'?':st.total)+' 卡 · 已用 '+(st.used==undefined?'?':st.used)+'</div>';
+}
+async function fetchGpu(e){
+  const cell=document.querySelector('[data-gpu="'+e.id+'"]');
+  if(cell) cell.innerHTML='<span class="dshell-muted">查询中…</span>';
+  try{
+    const r=await fetch('/api/worktable/gpu',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:e.ip,user:e.user,pass:e.pass})});
+    const j=await r.json();
+    gpuStatus[e.id]=j;
+  }catch(err){ gpuStatus[e.id]={error:String(err.message||err)}; }
+  const c2=document.querySelector('[data-gpu="'+e.id+'"]');
+  if(c2){ c2.innerHTML=gpuCellFull(e); bindGpuCell(c2, e); }
+}
+function refreshGpuAll(){ environments.forEach(e=>fetchGpu(e)); }
+/* GPU 详情弹层：完整状态 + 失败原因 */
+function openGpuDetail(e){
+  const st=gpuStatus[e.id];
+  const body=$('gpuDetailBody'); if(!body) return;
+  let h='<div style="margin-bottom:8px;"><b>'+esc(e.name)+'</b> <span class="dshell-muted">'+esc(e.ip)+'</span>'+(e.user?(' <span class="dshell-muted">· '+esc(e.user)+'</span>'):'')+'</div>';
+  if(!st){ h+='<div class="dshell-muted">尚未查询，点 ⟳ 刷新。</div>'; }
+  else if(st.error){
+    h+='<div style="color:#f85149;font-weight:600;margin-bottom:6px;">查询失败</div>'
+      +'<div class="logbox" style="max-height:220px;white-space:pre-wrap;">'+esc(st.error)+'</div>';
+  } else {
+    h+='<div style="margin-bottom:8px;">GPU 共 <b>'+st.total+'</b> 张，正在使用 <b>'+st.used+'</b> 张，空闲 <b>'+((st.total||0)-(st.used||0))+'</b> 张</div>';
+    if(st.gpus && st.gpus.length){
+      h+='<table class="dshell-table" style="margin-bottom:8px;"><thead><tr><th>GPU</th><th>利用率</th><th>显存(MiB)</th></tr></thead><tbody>';
+      st.gpus.forEach(g=>{ h+='<tr><td>'+esc(g.index)+'</td><td>'+esc(g.util)+'%</td><td>'+esc(g.mem)+'</td></tr>'; });
+      h+='</tbody></table>';
+    }
+    if(st.procs && st.procs.length){
+      h+='<div class="dshell-muted" style="margin-bottom:4px;">占用进程 / 容器：</div>'
+        +'<table class="dshell-table"><thead><tr><th>PID</th><th>GPU</th><th>进程</th><th>容器</th></tr></thead><tbody>';
+      st.procs.forEach(p=>{ h+='<tr><td>'+esc(p.pid)+'</td><td class="dshell-muted" style="font-size:10px">'+esc((p.uuid||'').replace('GPU-','').slice(0,8))+'</td><td>'+esc(p.proc)+'</td><td>'+(p.container?('<b>'+esc(p.container)+'</b>'):'<span class="dshell-muted">—</span>')+'</td></tr>'; });
+      h+='</tbody></table>';
+    } else { h+='<div class="dshell-muted">当前无进程占用（全部空闲）</div>'; }
+  }
+  body.innerHTML=h;
+  $('gpuDetail').style.display='flex';
+}
+function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envUser').value=e.user||''; $('envPass').value=e.pass||''; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
+function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envUser').value=''; $('envPass').value=''; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
 function saveEnvForm(){
-  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const prod=$('envProd').checked;
+  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const user=$('envUser').value.trim(); const pass=$('envPass').value;
   if(!ip){ alert('请填写 IP 地址'); return; }
-  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.prod=prod; } }
-  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, prod}); }
+  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.user=user; e.pass=pass; } }
+  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, user, pass}); }
   saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
 }
-function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',prod:false}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
+function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
+function applyEnvCredAll(){
+  // 把当前表单（添加/编辑区）里填写的用户名/密码应用到所有节点
+  const u=$('envUser').value.trim(); const p=$('envPass').value;
+  if(!u && !p){ alert('请先在上面的用户名/密码框里填写要统一设置的凭据'); return; }
+  if(!environments.length){ alert('暂无节点'); return; }
+  if(!confirm('将用户名「'+(u||'(空)')+'」/密码 应用到全部 '+environments.length+' 个节点？')) return;
+  environments.forEach(e=>{ e.user=u; e.pass=p; });
+  saveEnvs(); renderEnvs();
+}
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
   const lc=(name||'').toLowerCase();
@@ -817,11 +871,10 @@ function startRun(opts){
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();   // 手动运行：可多选 IP；定时：单环境
   const env = envs.map(e=>e.ip).join('，');
-  const envProd = envs.some(e=>e.prod);
   const image = opts.image || ($('imageName').value||'myapp');
   const release = image;                 // Release 字段已移除，内部以镜像名作为 release
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const c = {env, envProd, image, release, by, source:opts.source||'manual', scheduleId:opts.scheduleId||null};
+  const c = {env, envs, image, release, by, source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
 }
@@ -830,7 +883,7 @@ function startSimRun(pl, c){
   runStages = stages;
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  curRun={env:c.env,image:c.image,release:c.release,envProd:c.envProd,commit,tag,startTs:Date.now(),by:c.by,scheduleId:c.scheduleId||null,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name};
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name};
   selectedId = stages[0].id;
   running=true; $('runBtn').disabled=true;
   setOverall('运行中…','dshell-badgeWait');
@@ -842,19 +895,17 @@ function startSimRun(pl, c){
 function runPipeline(opts){
   opts = opts || {};
   if(!running){ return startRun(opts); }
-  if(opts.scheduleId && queue.some(q=>q.scheduleId===opts.scheduleId)) return false;
   if(queue.length >= QUEUE_CAP) return false;
   let pl;
   if(opts.stages){ /* from queue snapshot already */ }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();
   const env = envs.map(e=>e.ip).join('，');
-  const envProd = envs.some(e=>e.prod);
   const image = opts.image || ($('imageName').value||'myapp');
   const release = image;
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envProd, image, release, by, source:opts.source||'manual', scheduleId:opts.scheduleId||null, queuedAt:Date.now()};
+    env, envs, image, release, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   queue.push(item);
@@ -863,7 +914,40 @@ function runPipeline(opts){
 }
 function drainQueue(){ if(!queue.length) return; const next=queue.shift(); startRun(next); }
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
-function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s.indexOf('schedule:')===0) return '定时·'+s.slice(9); return s; }
+function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
+
+/* ---------- 运行定时（周期 / 一次性，轻量，会话内有效） ---------- */
+let planTimers=[];   // {tid, kind:'interval'|'once', desc, ref}
+function renderPlanList(){
+  const el=$('planList'); if(!el) return;
+  if(!planTimers.length){ el.style.display='none'; el.innerHTML=''; return; }
+  el.style.display='flex'; el.style.flexWrap='wrap'; el.style.gap='6px';
+  el.innerHTML='<span class="dshell-muted" style="font-size:11px;align-self:center;">已设定定时（页面需保持打开）：</span>';
+  planTimers.forEach(p=>{
+    const tag=document.createElement('span'); tag.className='dshell-badge'; tag.style.display='inline-flex'; tag.style.alignItems='center'; tag.style.gap='4px';
+    tag.innerHTML='⏰ '+esc(p.desc)+' <span data-plandel="'+p.tid+'" style="cursor:pointer;color:#f85149;" title="取消该定时">✕</span>';
+    el.appendChild(tag);
+  });
+  el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
+}
+function cancelPlan(tid){ const p=planTimers.find(x=>x.tid===tid); if(!p) return; if(p.kind==='interval') clearInterval(p.ref); else clearTimeout(p.ref); planTimers=planTimers.filter(x=>x.tid!==tid); renderPlanList(); }
+function addPlan(){
+  const mode=$('runSched').value;
+  const opts={ pipelineId: curPipelineId, by: ($('triggeredBy').value.trim()||'anonymous')+' ⏰', source:'schedule' };
+  const tid0='plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4);
+  if(mode==='once'){
+    const v=$('runSchedAt').value; const t=v?new Date(v).getTime():NaN;
+    if(isNaN(t)||t<=Date.now()){ alert('「一次性」请选择一个未来的时间'); return; }
+    const ref=setTimeout(()=>{ planTimers=planTimers.filter(x=>x.tid!==tid0); renderPlanList(); runPipeline(opts); }, t-Date.now());
+    planTimers.push({tid:tid0, kind:'once', desc:'一次性 '+v.replace('T',' '), ref});
+    renderPlanList();
+  } else if(mode==='interval'){
+    const every=Math.max(1,parseInt($('runSchedEvery').value)||1);
+    const ref=setInterval(()=>{ runPipeline(opts); }, every*60000);
+    planTimers.push({tid:tid0, kind:'interval', desc:'每 '+every+' 分钟', ref});
+    renderPlanList();
+  }
+}
 function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
 function renderQueue(){
   const list=$('queueList'); if(!list) return; list.innerHTML='';
@@ -902,6 +986,10 @@ async function execScript(sc){
     const v=(sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'');
     if(p.kind==='pos') args.push(v); else env[p.key]=v;
   });
+  // 注入节点连接信息（脚本可用 TARGET_IP/TARGET_USER/TARGET_PASSWORD 登录目标机；脚本显式配置的同名参数优先）
+  const ctx0=(curRun && curRun.envs && curRun.envs[0]) || null;
+  if(curRun && curRun.env && env.TARGET_IP===undefined) env.TARGET_IP=curRun.env;
+  if(ctx0){ if(ctx0.user && env.TARGET_USER===undefined) env.TARGET_USER=ctx0.user; if(ctx0.pass && env.TARGET_PASSWORD===undefined) env.TARGET_PASSWORD=ctx0.pass; }
   try{
     const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:120000})});
     const j=await r.json();
@@ -927,7 +1015,6 @@ function runStage(i){
   const stg = activeStages();
   if(i>=stg.length){ finish('success'); return; }
   const s=stg[i];
-  if(s.gate && s.prodOnly && !curRun.envProd){ nodes[s.id]={status:'skipped',progress:0,dur:0,sub:{}}; applyStatusClasses(); renderDetail(); return advance(i+1); }
   if(s.gate){
     nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{}};
     selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
@@ -972,7 +1059,6 @@ function finish(result){
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
     dur: fmtDur(elapsed), time:'今天 '+nowHM(), by:curRun.by||'anonymous'};
   history.unshift(rec); if(history.length>20) history.pop();
-  if(curRun.scheduleId){ updateScheduleAfterRun(curRun.scheduleId, rec.status); }
   renderHistory(); renderStats();
   drainQueue();
   renderQueue();
@@ -1031,7 +1117,6 @@ function renderPipelines(){
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',()=>openPlForm(b.getAttribute('data-pledit'))));
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',()=>deletePipeline(b.getAttribute('data-pldel'))));
   renderPipelineOptions();
-  renderSchedPipelineOptions();
 }
 function renderPipelineOptions(){
   const sel=$('pipelineSel'); if(!sel) return; const cur=sel.value; sel.innerHTML='';
@@ -1094,115 +1179,6 @@ function deletePipeline(id){
   renderPipelines(); renderFlow(); renderDetail();
 }
 
-/* ---------- 定时任务（周期 + 一次性） ---------- */
-const PRESETS = {
-  i1:{mode:'interval',every:1,cron:'* * * * *'},
-  i5:{mode:'interval',every:5,cron:'*/5 * * * *'},
-  i15:{mode:'interval',every:15,cron:'*/15 * * * *'},
-  i30:{mode:'interval',every:30,cron:'*/30 * * * *'},
-  i60:{mode:'interval',every:60,cron:'0 * * * *'},
-  d9:{mode:'daily',at:'09:00',cron:'0 9 * * *'},
-  d22:{mode:'daily',at:'22:00',cron:'0 22 * * *'},
-  once5:{mode:'once',every:5,cron:'once +5m'},
-  once30:{mode:'once',every:30,cron:'once +30m'},
-  onceAt:{mode:'onceAt',cron:'once @time'},
-};
-let schedules = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedules')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
-if(!schedules){
-  schedules = [
-    {id:'sc1',name:'dev-smoke',pipelineId:'pl-deploy',pipelineName:'安装部署',mode:'interval',every:5,cron:'*/5 * * * *',env:'dev',by:'⏰ dev-smoke',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
-    {id:'sc2',name:'nightly-prod',pipelineId:'pl-deploy',pipelineName:'安装部署',mode:'daily',at:'22:00',cron:'0 22 * * *',env:'prod',by:'release-manager',enabled:false,lastRun:null,lastStatus:null,nextRun:0},
-  ];
-}
-schedules.forEach(s=>{ if(!s.nextRun) s.nextRun=computeNextRun(s); });
-function saveSchedules(){ try{ localStorage.setItem('pip-schedules', JSON.stringify(schedules)); }catch(e){} }
-function findSched(id){ return schedules.find(s=>s.id===id); }
-function nextDaily(at){ const p=at.split(':').map(Number); const d=new Date(); d.setHours(p[0]||0,p[1]||0,0,0); let t=d.getTime(); if(t<=Date.now()) t+=86400000; return t; }
-function computeNextRun(s){
-  if(s.mode==='onceAt'){ return s.onceAt? new Date(s.onceAt).getTime() : (Date.now()+60000); }
-  if(s.mode==='once'){ return Date.now()+(s.every||1)*60000; }
-  if(s.mode==='daily'){ return nextDaily(s.at); }
-  return Date.now()+(s.every||1)*60000;
-}
-function periodLabel(s){ if(s.mode==='once') return '一次性 · '+(s.every||0)+'分钟后'; if(s.mode==='onceAt') return '一次性 · 指定时间'; if(s.mode==='daily') return '每天 '+s.at; return '每 '+s.every+' 分钟'; }
-function fmtCountdown(s){
-  if(s.mode==='once' || s.mode==='onceAt'){
-    const ms=s.nextRun-Date.now();
-    if(ms<=0) return s.enabled?'到点·等待空闲':'已完成';
-    const sec=Math.round(ms/1000);
-    if(sec<3600) return '约 '+Math.floor(sec/60)+'m '+(sec%60)+'s';
-    const d=new Date(s.nextRun);
-    return (d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');
-  }
-  if(s.mode==='daily'){ const d=new Date(s.nextRun); const t=new Date(); const isToday=d.getDate()===t.getDate()&&d.getMonth()===t.getMonth(); return (isToday?'今天 ':'明天 ')+s.at; }
-  const ms=s.nextRun-Date.now();
-  if(ms<=0) return s.enabled?'到点·等待空闲':'已到点';
-  const sec=Math.round(ms/1000);
-  if(sec<60) return '约 '+sec+'s';
-  return '约 '+Math.floor(sec/60)+'m '+(sec%60)+'s';
-}
-function renderSchedPipelineOptions(){
-  const sel=$('sPipeline'); if(sel){ const cur=sel.value; sel.innerHTML='';
-    pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; sel.appendChild(o); });
-    if(cur && pipelines.some(p=>p.id===cur)) sel.value=cur; }
-  const es=$('sEnv'); if(es){ const ecur=es.value; es.innerHTML='';
-    environments.forEach(e=>{ const o=document.createElement('option'); o.value=e.id; o.textContent=e.name+'（'+e.ip+'）'; es.appendChild(o); });
-    if(ecur && environments.some(e=>e.id===ecur)) es.value=ecur; }
-}
-function renderSchedules(){
-  $('schedCount').textContent = schedules.length? '('+schedules.length+')':'';
-  const tb=$('schedTable').querySelector('tbody'); tb.innerHTML='';
-  if(!schedules.length){ tb.innerHTML='<tr><td colspan="8" class="dshell-muted" style="text-align:center;padding:14px">暂无定时任务，点「新建定时任务」添加</td></tr>'; return; }
-  schedules.forEach(s=>{
-    const tr=document.createElement('tr');
-    const last = s.lastStatus
-      ? '<span class="dshell-badge '+(s.lastStatus==='success'?'dshell-badgeDone':'')+'"'+(s.lastStatus==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':s.lastStatus==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(s.lastStatus)+'</span><div class="dshell-muted" style="font-size:10px;margin-top:2px">'+fmtRelative(s.lastRun)+'</div>'
-      : '<span class="dshell-muted">—</span>';
-    tr.innerHTML=
-      '<td><div style="font-weight:600">'+esc(s.name)+'</div><div class="dshell-muted" style="font-size:10px">'+esc(s.cron)+' · '+periodLabel(s)+'</div></td>'+
-      '<td class="dshell-muted">'+esc(s.pipelineName||'—')+'</td>'+
-      '<td class="dshell-muted">'+esc(envLabelOf(s.env))+'</td>'+
-      '<td class="dshell-muted">'+esc(s.by)+'</td>'+
-      '<td class="sc-next" data-sid="'+s.id+'">'+fmtCountdown(s)+'</td>'+
-      '<td>'+last+'</td>'+
-      '<td><label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" data-toggle="'+s.id+'" '+(s.enabled?'checked':'')+'/> '+(s.enabled?'启用':'停用')+'</label></td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-run="'+s.id+'">立即运行</button> <button class="dshell-btn dshell-btnDanger mini" data-del="'+s.id+'">删除</button></td>';
-    tb.appendChild(tr);
-  });
-  tb.querySelectorAll('[data-toggle]').forEach(cb=>cb.addEventListener('change',()=>toggleSched(cb.getAttribute('data-toggle'))));
-  tb.querySelectorAll('[data-run]').forEach(b=>b.addEventListener('click',()=>manualFireSchedule(findSched(b.getAttribute('data-run')))));
-  tb.querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click',()=>deleteSched(b.getAttribute('data-del'))));
-}
-function updateCountdowns(){ schedules.forEach(s=>{ const el=document.querySelector('.sc-next[data-sid="'+s.id+'"]'); if(el) el.textContent=fmtCountdown(s); }); }
-function addSched(){
-  const name=$('sName').value.trim();
-  if(!name){ alert('请填写任务名称'); $('sName').focus(); return; }
-  const pv=$('sPreset').value;
-  const plId=$('sPipeline').value; const pl=findPipeline(plId);
-  let mode, every, at, onceAt, cron;
-  if(pv==='custom'){ every=Math.max(1, parseInt($('sEvery').value)||1); mode='interval'; at=null; cron='*/'+every+' * * * *'; }
-  else if(pv==='onceAt'){ mode='onceAt'; onceAt=$('sOnceAt').value; if(!onceAt){ alert('请选择时间'); return; } cron='once @'+onceAt; }
-  else { const p=PRESETS[pv]; mode=p.mode; every=p.every; at=p.at; cron=p.cron; }
-  const env=$('sEnv').value, by=$('sBy').value.trim()||('⏰ '+name);
-  const sched={id:'sc'+Date.now().toString(36),name,pipelineId:plId,pipelineName:pl?pl.name:'(已删除)',mode,every,at,onceAt,cron,env,by,enabled:false,lastRun:null,lastStatus:null,nextRun:0};
-  sched.nextRun=computeNextRun(sched);
-  schedules.push(sched); saveSchedules(); renderSchedules();
-  $('sName').value=''; $('sBy').value=''; $('schedForm').style.display='none';
-}
-function toggleSched(id){ const s=findSched(id); if(!s) return; s.enabled=!s.enabled; if(s.enabled && (s.mode==='once'||s.mode==='onceAt') && s.nextRun<Date.now()) s.nextRun=computeNextRun(s); if(s.enabled && s.mode!=='once' && s.mode!=='onceAt' && s.nextRun<Date.now()) s.nextRun=computeNextRun(s); saveSchedules(); renderSchedules(); }
-function deleteSched(id){ if(!confirm('删除定时任务？')) return; schedules=schedules.filter(s=>s.id!==id); saveSchedules(); renderSchedules(); }
-function runOptsFromSchedule(s){ return {pipelineId:s.pipelineId, env:s.env, by:s.by||('⏰ '+s.name), source:'schedule:'+s.name, scheduleId:s.id, image:'myapp'}; }
-function manualFireSchedule(s){ if(!s) return; runPipeline(runOptsFromSchedule(s)); }
-function fireScheduleAuto(s){
-  s.lastFire=Date.now();
-  if(s.mode==='once' || s.mode==='onceAt'){ s.enabled=false; }
-  else { s.nextRun=computeNextRun(s); }
-  saveSchedules(); renderSchedules();
-  runPipeline(runOptsFromSchedule(s));
-}
-function updateScheduleAfterRun(id,status){ const s=findSched(id); if(!s) return; s.lastRun=Date.now(); s.lastStatus=status; saveSchedules(); renderSchedules(); }
-let schedTicker=null;
-function startSchedTicker(){ if(schedTicker) return; schedTicker=setInterval(()=>{ const now=Date.now(); schedules.forEach(s=>{ if(s.enabled && !running && now>=s.nextRun){ fireScheduleAuto(s); } }); updateCountdowns(); },1000); }
 
 /* ---------- 主题切换 ---------- */
 let themePref = lsGet('pip-theme', 'auto');
@@ -1213,7 +1189,8 @@ $('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */
-$('runBtn').addEventListener('click', ()=>{ runPipeline(); });
+$('runBtn').addEventListener('click', ()=>{ const m=$('runSched').value; if(m==='now') runPipeline(); else addPlan(); });
+$('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{ if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue(); });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>{ const f=$('plForm'); const open=f.style.display!=='block'; f.style.display=open?'block':'none'; if(open) openPlForm(''); });
@@ -1240,12 +1217,12 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='gate') s.gate=e.target.checked;
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
 });
-$('addSchedBtn').addEventListener('click', ()=>{ const f=$('schedForm'); f.style.display = f.style.display==='none'?'block':'none'; if(f.style.display==='block'){ renderSchedPipelineOptions(); $('sName').focus(); } });
-$('sPreset').addEventListener('change', e=>{ $('sCustomWrap').style.display = e.target.value==='custom'?'flex':'none'; $('sOnceWrap').style.display = e.target.value==='onceAt'?'flex':'none'; });
-$('sAdd').addEventListener('click', addSched);
-$('sCancel').addEventListener('click', ()=>{ $('schedForm').style.display='none'; });
 $('envAdd').addEventListener('click', saveEnvForm);
 $('envCancelEdit').addEventListener('click', resetEnvForm);
+$('envAllApply').addEventListener('click', applyEnvCredAll);
+$('gpuRefreshAll').addEventListener('click', refreshGpuAll);
+$('gpuDetailClose').addEventListener('click', ()=>{ $('gpuDetail').style.display='none'; });
+$('gpuDetail').addEventListener('click', (e)=>{ if(e.target===$('gpuDetail')) $('gpuDetail').style.display='none'; });
 /* 页面切换（流水线 / 环境配置） */
 function switchPage(p){
   const main=p==='main';
@@ -1269,8 +1246,7 @@ renderStats();
 renderPipelines();
 renderEnvOptions();
 renderEnvs();
-renderSchedules();
-startSchedTicker();
+refreshGpuAll();
 renderQueue();
 renderDetail();
 </script>
