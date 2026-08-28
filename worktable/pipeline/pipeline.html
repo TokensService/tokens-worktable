@@ -741,7 +741,7 @@ async function loadScripts(){
   try{
     const r=await fetch('/api/worktable/fs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:scriptsDir})});
     const j=await r.json();
-    const ents=(j.entries||[]).filter(e=>!e.isDir);
+    const ents=(j.entries||[]).filter(e=>!e.isDir && /\.sh$/i.test(e.name));   // 仅 .sh（README 等文档不进脚本列表）
     availableScripts=ents.map(e=>({name:e.name, path:e.path}));
   }catch(e){ availableScripts=[]; }
   fillScriptsDatalist();
