@@ -63,6 +63,9 @@
     #historyTable tbody tr { cursor:pointer; }
     #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
     ::-webkit-scrollbar-thumb { background:var(--scroll); }
+    /* Jenkins 连接模式分段切换（选中态走主题 accent） */
+    .jk-modeBtn { border-radius:0; }
+    .jk-modeBtn.sel { background:var(--dsw-alias-state-accent-primary); color:#fff; border-color:var(--dsw-alias-state-accent-primary); }
   </style>
   <script>
     /* 防闪烁：首屏前按已存偏好解析主题（浅色 / 深色 / 跟随系统） */
@@ -88,6 +91,7 @@
         <span class="dshell-badge">未运行</span>
       </div>
       <span id="overallBy" class="dshell-muted"></span>
+      <button id="pageEditBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="新建 DSH 聊天会话，让 AI 修改本页面">页面修改</button>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">主题
         <select id="theme" class="dshell-input" style="min-width:104px;">
           <option value="light">浅色</option>
@@ -116,14 +120,17 @@
         <div id="envMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:230px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
       </span>
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">镜像名
-      <input id="imageName" class="dshell-input" value="myapp" />
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
+      <select id="repoSel" class="dshell-input" style="min-width:130px;"></select>
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支
+      <span id="branchPick" style="position:relative;display:inline-block;">
+        <input id="branchName" class="dshell-input" value="main" autocomplete="off" style="min-width:130px;" />
+        <div id="branchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+      </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" value="dev-li" />
-    </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
-      <input id="archiveDir" class="dshell-input" placeholder="留空=不归档" style="width:210px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档" />
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="cleanupEnv" /> 先清理环境
@@ -208,7 +215,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话做日志分析（提示词见「设置」页分析配置）" style="margin-left:6px;">AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话做 Profiling 分析（提示词见「设置」页分析配置）">Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话做性能诊断（提示词见「设置」页分析配置）">性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话做日志分析（提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话做 Profiling 分析（提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话做性能诊断（提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
           <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
@@ -257,6 +264,28 @@
       <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组）、<code>TARGET_HOSTS</code>（全部节点 [{ip,user,pass}] 的 JSON 数组，多节点各自凭据）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0">代码仓 <span id="repoCount" class="dshell-muted"></span></h2>
+        <span id="repoTestTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <input id="repoName" class="dshell-input" placeholder="名称（如 myapp）" style="width:120px;" />
+        <input id="repoUrl" class="dshell-input" placeholder="URL（如 https://git.example.com/dev/myapp.git）" style="width:300px;" />
+        <input id="repoUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
+        <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" />
+        <button id="repoAdd" class="dshell-btn mini">添加</button>
+        <button id="repoAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/令牌应用到所有仓库">应用凭证到全部</button>
+        <button id="repoCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
+      </div>
+      <div style="overflow:auto;">
+        <table class="dshell-table" id="repoTable">
+          <thead><tr><th>名称</th><th>URL</th><th>用户名</th><th>访问令牌</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。</p>
+    </div>
+    <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <span class="dshell-muted" style="font-size:11px;">脚本</span>
@@ -266,11 +295,21 @@
       </div>
       <div id="cleanupParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
+    <!-- 归档配置：运行日志与 profiling 产物的归档根目录 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">归档配置</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
+          <input id="archiveDir" class="dshell-input" placeholder="留空=不归档" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档" />
+        </label>
+        <span class="dshell-muted" style="font-size:11px;">运行日志与 profiling 产物按「流水线名称_日期」文件夹归档到此目录；留空则不归档。</span>
+      </div>
+    </div>
     <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」点击选中某一行后，点标题行的 AI 日志分析 / Profiling 分析 / 性能诊断 按钮会新建一个 AI 会话并发送对应提示词。
+        在「运行历史」点击选中某一行后，点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话并发送对应提示词。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -288,6 +327,54 @@
           <button id="cfgReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
           <span id="cfgSavedTip" class="dshell-muted" style="font-size:11px;"></span>
         </div>
+      </div>
+    </div>
+    <!-- 页面修改配置：右上角「页面修改」按钮发送给 AI 的提示词模板 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">页面修改配置 <span class="dshell-muted">右上角「页面修改」按钮发送给 AI 的提示词模板</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        点右上角「页面修改」按钮会新建一个 AI 会话并发送此提示词，由 AI 协助修改本页面。留空保存将恢复为默认提示词。
+      </p>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">页面修改提示词
+          <textarea id="cfgPromptPageEdit" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="cfgPageEditSave" class="dshell-btn mini">保存</button>
+          <button id="cfgPageEditReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
+          <span id="cfgPageEditSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+        </div>
+      </div>
+    </div>
+    <!-- Jenkins 服务配置：连接模式（本地浏览器经 CORS 桥接 / DSH 服务端代连）+ 测试连接 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">Jenkins 服务配置 <span class="dshell-muted">连接模式 + 测试连接</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        「本地浏览器连接」：浏览器直接用 JS 连接 Jenkins（不走桥接）；需 Jenkins 允许跨域（CORS）或与本页同源，否则浏览器会拦截跨域请求。
+        「远程服务器端连接」：由 DSH 服务端（运行 DSH 的机器）经 <code>/api/worktable/proxy</code> 代连 Jenkins，浏览器不直连；仅允许回环 / 内网地址。
+      </p>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">Jenkins 地址
+          <input id="jkUrl" class="dshell-input" placeholder="http://127.0.0.1:28080" style="width:220px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">用户名
+          <input id="jkUser" class="dshell-input" placeholder="jenkins-user" style="width:140px;" autocomplete="off" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">API Token
+          <input id="jkToken" class="dshell-input" type="password" placeholder="API Token" style="width:180px;" autocomplete="off" />
+        </label>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <span class="dshell-muted" style="font-size:11px;">连接模式</span>
+        <div class="jk-mode" role="group" style="display:inline-flex; border:1px solid var(--dsw-alias-border-l2); border-radius:8px; overflow:hidden;">
+          <button id="jkModeLocal" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="local">本地浏览器连接</button>
+          <button id="jkModeRemote" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="remote">远程服务器端连接</button>
+        </div>
+        <button id="jkTest" class="dshell-btn mini" type="button">测试连接</button>
+        <span id="jkTestTip" class="dshell-muted" style="font-size:11px;"></span>
+        <span style="flex:1"></span>
+        <button id="jkSave" class="dshell-btn mini">保存</button>
+        <span id="jkSavedTip" class="dshell-muted" style="font-size:11px;"></span>
       </div>
     </div>
   </div><!-- /pageEnv -->
@@ -362,8 +449,10 @@ const XDS_STAGES = [
 const LOGS = {
   checkout: [
     "[Pipeline] stage { (检出)",
+    "代码仓: {{giturl}}",
+    "git clone --branch {{branch}} {{giturl}}",
     "Cloning into 'myapp'…",
-    "构建来源: commit={{commit}}",
+    "构建来源: {{branch}}@{{commit}}",
     "触发者: {{by}}",
     "目标镜像: {{registry}}/{{image}}:{{tag}}",
     "[Pipeline] }",
@@ -437,7 +526,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, scriptsDir, theme: themePref, buildNo, cleanupScript, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   try{
     await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history})});
@@ -457,11 +546,14 @@ async function loadServerState(){
       if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
       if(Array.isArray(cfg.selectedEnvIds) && cfg.selectedEnvIds.length) selectedEnvIds=cfg.selectedEnvIds;
+      if(Array.isArray(cfg.repositories) && cfg.repositories.length) repositories=cfg.repositories.map(normalizeRepo);
+      if(typeof cfg.curRepoId==='string' && resolveRepo(cfg.curRepoId)) curRepoId=cfg.curRepoId;
       if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
       if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
       if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
       if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
+      if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
       if(Array.isArray(st.history) && st.history.length) history=st.history;
       runStages=null; selectedId=curPipeline().stages[0].id;
       /* 同步 localStorage 离线缓存 */
@@ -469,11 +561,14 @@ async function loadServerState(){
         localStorage.setItem('pip-pipelines', JSON.stringify(pipelines));
         localStorage.setItem('pip-envs', JSON.stringify(environments));
         localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds));
+        localStorage.setItem('pip-repos', JSON.stringify(repositories));
+        localStorage.setItem('pip-curRepo', curRepoId);
         localStorage.setItem('pip-scriptsDir', scriptsDir);
         localStorage.setItem('pip-curPipeline', curPipelineId);
         localStorage.setItem('pip-theme', themePref);
         localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
         localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
+        localStorage.setItem('pip-jenkins', JSON.stringify(jenkins));
       }catch(e){}
       $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
       renderCleanupParams();
@@ -659,6 +754,106 @@ function applyEnvCredAll(){
   environments.forEach(e=>{ e.user=u; e.pass=p; });
   saveEnvs(); renderEnvs();
 }
+/* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
+function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||''}; }
+function loadRepos(){ try{ const a=JSON.parse(localStorage.getItem('pip-repos')); if(Array.isArray(a)&&a.length) return a.map(normalizeRepo); }catch(e){} return null; }
+let repositories = loadRepos() || [
+  {id:'repo-1', name:'myapp', url:'https://git.example.com/dev/myapp.git', user:'', pass:''},
+];
+function saveRepos(){ try{ localStorage.setItem('pip-repos', JSON.stringify(repositories)); }catch(e){} persistState(); }
+let curRepoId = lsGet('pip-curRepo', repositories[0].id);
+function saveRepoSel(){ try{ localStorage.setItem('pip-curRepo', curRepoId); }catch(e){} persistState(); }
+function curRepo(){ return repositories.find(r=>r.id===curRepoId) || repositories[0]; }
+function resolveRepo(v){ if(!v) return curRepo(); return repositories.find(r=>r.id===v)||repositories.find(r=>r.url===v)||repositories.find(r=>r.name===v)||{id:'',name:String(v),url:String(v),user:'',pass:''}; }
+let repoEditId=null;
+function renderRepoOptions(){
+  const sel=$('repoSel'); if(!sel) return; const cur=sel.value; sel.innerHTML='';
+  repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId) o.selected=true; sel.appendChild(o); });
+  if(cur && repositories.some(r=>r.id===cur)) sel.value=cur;
+  if(repositories.length && !repositories.some(r=>r.id===sel.value)) sel.value=repositories[0].id;
+}
+function renderRepos(){
+  $('repoCount').textContent = repositories.length? '('+repositories.length+')':'';
+  const tb=$('repoTable').querySelector('tbody'); tb.innerHTML='';
+  repositories.forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td>'+
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-repotest]').forEach(b=>b.addEventListener('click',()=>{ const r=repositories.find(x=>x.id===b.getAttribute('data-repotest')); if(r) testRepo(r); }));
+  tb.querySelectorAll('[data-repoedit]').forEach(b=>b.addEventListener('click',()=>startRepoEdit(b.getAttribute('data-repoedit'))));
+  tb.querySelectorAll('[data-repodel]').forEach(b=>b.addEventListener('click',()=>delRepo(b.getAttribute('data-repodel'))));
+}
+function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
+function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
+function saveRepoForm(){
+  const name=$('repoName').value.trim(); const url=$('repoUrl').value.trim(); const user=$('repoUser').value.trim(); const pass=$('repoPass').value;
+  if(!url){ alert('请填写仓库 URL'); return; }
+  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url; r.url=url; r.user=user; r.pass=pass; } }
+  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url, url, user, pass}); }
+  saveRepos(); resetRepoForm(); renderRepos(); renderRepoOptions();
+}
+function delRepo(id){ if(!confirm('删除该代码仓？')) return; repositories=repositories.filter(r=>r.id!==id); if(!repositories.length){ repositories=[{id:'repo-1',name:'默认',url:'',user:'',pass:''}]; } if(curRepoId===id) curRepoId=repositories[0].id; saveRepos(); saveRepoSel(); renderRepos(); renderRepoOptions(); }
+function applyRepoCredAll(){
+  const u=$('repoUser').value.trim(); const p=$('repoPass').value;
+  if(!u && !p){ alert('请先在上面的用户名/令牌框里填写要统一设置的凭据'); return; }
+  if(!repositories.length){ alert('暂无代码仓'); return; }
+  if(!confirm('将用户名「'+(u||'(空)')+'」/令牌 应用到全部 '+repositories.length+' 个仓库？')) return;
+  repositories.forEach(r=>{ r.user=u; r.pass=p; });
+  saveRepos(); renderRepos();
+}
+/* 代码仓联通性检测 + 远程分支列举（经 /api/worktable/git-remote：服务端 git ls-remote --heads） */
+let repoBranches={};   // repoId -> {branches:[], error:'', loading?}
+async function testRepo(r){
+  const tip=$('repoTestTip'); if(!tip || !r) return;
+  tip.style.color=''; tip.textContent='测试中…（'+r.name+'）';
+  let j;
+  try{
+    const res=await fetch('/api/worktable/git-remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:r.url,user:r.user||'',pass:r.pass||''})});
+    j=await res.json();
+  }catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 请求失败：'+String(e.message||e).slice(0,160); return; }
+  if(j && j.ok){
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 连接成功 · '+(j.branches?j.branches.length:0)+' 个分支';
+    repoBranches[r.id]={branches:(j.branches||[]), error:''};   // 顺便刷新该仓分支缓存
+  } else {
+    tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 连接失败：'+(j && j.error ? String(j.error).slice(0,160) : '未知错误');
+  }
+}
+/* 分支选择：按当前代码仓搜索远程分支，下拉面板点选；仍可手动输入 */
+async function loadRepoBranches(repo, force){
+  repo = repo || curRepo();
+  const id=repo.id;
+  if(!force && repoBranches[id] && !repoBranches[id].error && !repoBranches[id].loading) return repoBranches[id];
+  repoBranches[id]={loading:true};
+  renderBranchPanel();
+  let j;
+  try{
+    const res=await fetch('/api/worktable/git-remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:repo.url,user:repo.user||'',pass:repo.pass||''})});
+    j=await res.json();
+  }catch(e){ j={ok:false, error:String(e.message||e)}; }
+  repoBranches[id] = (j && j.ok) ? {branches:(j.branches||[]), error:''} : {branches:[], error:(j&&j.error)?String(j.error):'未知错误'};
+  return repoBranches[id];
+}
+function renderBranchPanel(){
+  const panel=$('branchPanel'); const inp=$('branchName'); if(!panel||!inp) return;
+  const repo=curRepo(); const q=inp.value.trim().toLowerCase();
+  const cached=repoBranches[repo.id];
+  let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(cached&&!cached.loading&&cached.branches?cached.branches.length:'…')+' 分支</span>'
+    +'<span data-branchrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取分支">⟳</span></div>';
+  if(!cached || cached.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
+  else if(cached.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(cached.error.slice(0,200))+'</div>'; }
+  else if(!cached.branches.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无分支</div>'; }
+  else {
+    const list=cached.branches.filter(b=> !q || b.toLowerCase().indexOf(q)>=0).slice(0,200);
+    if(!list.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配分支</div>'; }
+    else list.forEach(b=>{ h+='<div data-branch="'+esc(b)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(b===inp.value?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(b)+'</div>'; });
+  }
+  panel.innerHTML=h; panel.style.display='block';
+  panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); }));
+  const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(curRepo(), true));
+}
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
   const lc=(name||'').toLowerCase();
@@ -691,8 +886,70 @@ function detectScriptsDir(){
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
 function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
 /* 归档根目录：留空=不归档；归档按「流水线名称_日期」文件夹组织（见 archiveRun） */
-let archiveDir = lsGet('pip-archiveDir', '');
+let archiveDir = lsGet('pip-archiveDir', '/var/log/op_test');
 function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
+
+/* ---------- Jenkins 服务配置（连接模式 + 测试连接） ----------
+   本地浏览器连接：浏览器直接用 JS 连接 Jenkins（不走桥接；需 Jenkins 允许跨域或同源）；
+   远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连 Jenkins（仅回环/内网）。 */
+const DEFAULT_JENKINS = { url:'http://127.0.0.1:28080', user:'', token:'', mode:'local' };
+function loadJenkins(){
+  try{ const a=JSON.parse(localStorage.getItem('pip-jenkins')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_JENKINS, a); }catch(e){}
+  return Object.assign({}, DEFAULT_JENKINS);
+}
+let jenkins = loadJenkins();
+function saveJenkins(){ try{ localStorage.setItem('pip-jenkins', JSON.stringify(jenkins)); }catch(e){} persistState(); }
+function applyJenkinsForm(){
+  $('jkUrl').value = jenkins.url || DEFAULT_JENKINS.url;
+  $('jkUser').value = jenkins.user || '';
+  $('jkToken').value = jenkins.token || '';
+  setJenkinsMode(jenkins.mode);
+}
+function setJenkinsMode(m){
+  jenkins.mode = (m==='remote') ? 'remote' : 'local';
+  $('jkModeLocal').classList.toggle('sel', jenkins.mode==='local');
+  $('jkModeRemote').classList.toggle('sel', jenkins.mode==='remote');
+}
+function collectJenkinsForm(){
+  return {
+    url: ($('jkUrl').value||'').trim() || DEFAULT_JENKINS.url,
+    user: ($('jkUser').value||'').trim(),
+    token: ($('jkToken').value||'').trim(),
+    mode: jenkins.mode,
+  };
+}
+async function testJenkins(){
+  const j = collectJenkinsForm();
+  const tip = $('jkTestTip');
+  tip.style.color = ''; tip.textContent = '测试中…';
+  const auth = (j.user || j.token) ? ('Basic ' + btoa(j.user + ':' + j.token)) : '';
+  const sub = '/api/json?tree=mode,nodeName,numExecutors';
+  try {
+    let status = 0, body = '';
+    if (j.mode === 'local') {
+      const r = await fetch(j.url.replace(/\/+$/,'') + sub, { headers: auth ? { Authorization: auth } : {}, cache: 'no-store' });
+      status = r.status; body = await r.text();
+    } else {
+      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: j.url.replace(/\/+$/,'') + sub, method:'GET', headers: auth ? { Authorization: auth } : {} }) });
+      const p = await r.json();
+      if (p && p.error) { tip.style.color='var(--log-err)'; tip.textContent='✗ ' + p.error; return; }
+      status = p.status || 0; body = p.body || '';
+    }
+    if (status === 200) {
+      let info = {}; try { info = JSON.parse(body); } catch (e) {}
+      if (info && (info.nodeName || info.numExecutors !== undefined)) {
+        tip.style.color = 'var(--log-ok)';
+        tip.textContent = '✓ 连接成功 · 节点 ' + (info.nodeName || '?') + ' · ' + (info.numExecutors !== undefined ? info.numExecutors : '?') + ' 执行器' + (info.mode ? (' · ' + info.mode + ' 模式') : '');
+      } else {
+        tip.style.color = 'var(--log-ok)'; tip.textContent = '✓ HTTP 200（未返回预期的 Jenkins 元数据）';
+      }
+    } else {
+      tip.style.color = 'var(--log-err)'; tip.textContent = '✗ Jenkins 返回 HTTP ' + status;
+    }
+  } catch (e) {
+    tip.style.color = 'var(--log-err)'; tip.textContent = '✗ ' + ((e && e.message) ? e.message : e);
+  }
+}
 
 /* ---------- 环境清理脚本（在「设置」页配置；勾选主控「清理环境」后于流水线启动前执行） ---------- */
 let cleanupScript=(function(){ try{ return JSON.parse(localStorage.getItem('pip-cleanupScript')); }catch(e){ return null; } })() || null;
@@ -756,30 +1013,67 @@ async function readScriptSrc(path){
   return r.text();
 }
 /* 从脚本源码识别参数：位置参数 $1..$N/${N:-def} + 环境变量 ${VAR:-def}/${VAR}/$VAR */
+/* 嵌套默认值解包：${1:-${VAR:-glm}} 的默认值取最内层 glm */
+function resolveDef(def){
+  if(!def) return '';
+  let d=String(def).trim(); let guard=0;
+  while(d.indexOf('${')>=0 && guard++<6){
+    const i=d.lastIndexOf(':-'); if(i<0) break;
+    d=d.slice(i+2).replace(/}+/g,'').trim();
+  }
+  return d.replace(/}+$/,'').replace(/^["']|["']$/g,'').trim();
+}
+/* 从注释提取语义化标签：# 位置参数 $1 = 模型架构名 / # 环境变量 XDS_URL = XDS 网关地址（支持一行多个 VAR = 说明） */
+function parseCommentLabels(src){
+  const posLabels={}, envLabels={};
+  src.split('\n').forEach(line=>{
+    const c=/^\s*#\s*(.*)$/.exec(line); if(!c) return;
+    const t=c[1];
+    let m=/位置参数\s*\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t) || /\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t);
+    if(m && m[2]) posLabels[m[1]]=m[2].trim();
+    const envRe=/([A-Z_][A-Z0-9_]*)\s*[=：:]\s*([^（(；;，,\n]+)/g;
+    while((m=envRe.exec(t))){ if(m[2] && !envLabels[m[1]]) envLabels[m[1]]=m[2].trim(); }
+  });
+  return {posLabels, envLabels};
+}
+/* 扫描脚本内部赋值：VAR=... 且右侧不含自引用 ${VAR}/$VAR 的，视为内部变量（不是外部参数） */
+function internalAssignedVars(src){
+  const internal={};
+  const re=/^\s*(?:declare\s+(?:-[a-zA-Z]+\s+)?|local\s+|export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/gm;
+  let m;
+  while((m=re.exec(src))){
+    const v=m[1]; const rhs=m[2].trim().replace(/^["']|["']$/g,'');
+    const selfRef=new RegExp('\\$\\{?'+v+'\\b');
+    if(!selfRef.test(rhs)) internal[v]=true;
+  }
+  return internal;
+}
 function detectParams(src){
+  const labels=parseCommentLabels(src);
+  const internal=internalAssignedVars(src);
   const pos={}; let m;
   const posRe=/\$\{?(\d+)(?:(:-|:\?)([^}]*))?\}?/g;
   while((m=posRe.exec(src))){
     const n=parseInt(m[1],10); if(n<1) continue;
     const op=m[2]||''; const rest=m[3]||'';
-    const req=(op===':?'); const def=(op===':-')?rest:'';
+    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
     if(!(n in pos)) pos[n]={def, required:req};
     else { if(def && !pos[n].def) pos[n].def=def; if(req) pos[n].required=true; }
   }
   const maxPos=Object.keys(pos).length?Math.max.apply(null,Object.keys(pos).map(Number)):0;
   const posParams=[];
-  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:'位置参数 '+i, def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
+  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:labels.posLabels[i]||('位置参数 '+i), def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
   const envSeen={}; const envOrder=[];
   const envRe=/\$\{([A-Z_][A-Z0-9_]*)(?:(:-|:\?)([^}]*))?\}|\$([A-Z_][A-Z0-9_]*)\b/g;
   const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
   while((m=envRe.exec(src))){
     const v=m[1]||m[4]; const op=m[2]||''; const rest=m[3]||'';
-    if(!v||BUILT.test(v)) continue;
-    const req=(op===':?'); const def=(op===':-')?rest:'';
+    if(!v||BUILT.test(v)||internal[v]) continue;
+    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
     if(!(v in envSeen)){ envSeen[v]={def, required:req}; envOrder.push(v); }
     else { if(def && !envSeen[v].def) envSeen[v].def=def; if(req) envSeen[v].required=true; }
   }
-  const envParams=envOrder.map(v=>({kind:'env', key:v, label:v, def:envSeen[v].def, required:!!envSeen[v].required}));
+  const envParams=envOrder.map(v=>({kind:'env', key:v, label:labels.envLabels[v]||v, def:envSeen[v].def, required:!!envSeen[v].required}));
   return posParams.concat(envParams);
 }
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
@@ -841,9 +1135,15 @@ async function detectStageParams(i){
   try{
     const src=await readScriptSrc(s.script.path);
     const det=detectParams(src);
-    const oldVals=s.script.values||{};
+    const oldParams=s.script.params||[]; const oldVals=s.script.values||{};
     s.script.params=det; s.script.values=s.script.values||{};
-    det.forEach(p=>{ if(oldVals[p.key]!==undefined) s.script.values[p.key]=oldVals[p.key]; });
+    det.forEach(p=>{
+      const oldP=oldParams.find(o=>o.key===p.key);
+      const oldV=oldVals[p.key];
+      // 仅保留用户真实改动：旧值存在且不等于旧默认值（即用户手动改过）才保留；
+      // 旧值等于旧默认（识别器产物，如嵌套展开的原文）则刷新为识别到的新默认值
+      if(oldV!==undefined && oldP && String(oldV)!==String(oldP.def||'')) s.script.values[p.key]=oldV;
+    });
   }catch(e){ s.script.params=[]; }
   renderStageParams(i);
 }
@@ -867,6 +1167,7 @@ const $ = id => document.getElementById(id);
 function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
 const REGISTRY = 'registry.example.com';
 const GITURL = 'https://git.example.com/dev/myapp';
+const DEFAULT_IMAGE = 'myapp';   // 镜像名已不在主控填写，内部固定默认值（日志/详情/IMAGE_NAME 注入沿用）
 function randCommit(){ return Math.random().toString(16).slice(2,9); }
 function nowHM(){ const d=new Date(); return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
 function fmtDur(s){ if(s<60) return Math.round(s)+'s'; return Math.floor(s/60)+'m'+Math.round(s%60)+'s'; }
@@ -956,12 +1257,13 @@ function renderDetail(){
   else b.className='dshell-badge '+(n.status==='waiting'?'':cls);
   b.textContent=txt; badge.appendChild(b);
 
-  const ctx = curRun || {commit:'—',env:'dev',branch:'xds',image:'myapp',release:'myapp',tag:'—',by:'—',pipelineName:curPipeline().name};
+  const ctx = curRun || {commit:'—',env:'dev',branch:'main',image:DEFAULT_IMAGE,release:DEFAULT_IMAGE,tag:'—',by:'—',pipelineName:curPipeline().name,giturl:GITURL};
   const kv = $('detailKv'); kv.innerHTML='';
   const rows = [
     ['阶段', s.name],
     ['状态', txt],
     ['流水线', ctx.pipelineName||curPipeline().name],
+    ['分支', ctx.branch||'main'],
     ['执行人', ctx.by||'—'],
     ['环境', ctx.env],
     ['镜像', ctx.registry||REGISTRY+'/'+ctx.image+':'+ctx.tag],
@@ -970,6 +1272,19 @@ function renderDetail(){
   if(n.status==='success'||n.status==='failed') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  /* 阶段间变量传递：上游 stdout 的 KEY=VALUE 行注入下游；此处展示本阶段接收/产出的变量 */
+  (function(){
+    const vIn=n.varsIn, vOut=n.varsOut;
+    const hasIn=vIn&&Object.keys(vIn).length, hasOut=vOut&&Object.keys(vOut).length;
+    if(!hasIn&&!hasOut) return;
+    const hdr=document.createElement('div'); hdr.className='dshell-kvRow'; hdr.style.marginTop='6px';
+    hdr.innerHTML='<span class="dshell-kvKey" style="color:var(--dsw-alias-label-secondary)">传递变量</span><span class="dshell-kvValue dshell-muted" style="font-size:11px;">stdout KEY=VALUE 注入下游</span>';
+    kv.appendChild(hdr);
+    const cap=12, truncV=s=>{ s=String(s==null?'':s); return s.length>48?s.slice(0,48)+'…':s; };
+    const rowsFrom=(obj,arrow,color)=>{ const all=Object.keys(obj); all.slice(0,cap).forEach(k=>{ const r=document.createElement('div'); r.className='dshell-kvRow'; r.innerHTML='<span class="dshell-kvKey" style="color:'+color+'">'+arrow+' '+esc(k)+'</span><span class="dshell-kvValue dshell-muted" style="font-size:11px">'+esc(truncV(obj[k]))+'</span>'; kv.appendChild(r); }); if(all.length>cap){ const r=document.createElement('div'); r.className='dshell-kvRow'; r.innerHTML='<span class="dshell-kvKey"></span><span class="dshell-kvValue dshell-muted" style="font-size:10px">…还有 '+(all.length-cap)+' 个</span>'; kv.appendChild(r); } };
+    if(hasIn) rowsFrom(vIn,'←','var(--dsw-alias-label-tertiary)');
+    if(hasOut) rowsFrom(vOut,'→','var(--log-ok)');
+  })();
 
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
   const pct = n.status==='success'?100:(n.progress||0);
@@ -1006,9 +1321,9 @@ function buildLog(stage, ctx, n){
     return lines;
   }
   const fill = t => (t||'')
-    .replace(/\{\{registry\}\}/g,REGISTRY).replace(/\{\{giturl\}\}/g,GITURL)
+    .replace(/\{\{registry\}\}/g,REGISTRY).replace(/\{\{giturl\}\}/g,ctx.giturl||GITURL)
     .replace(/\{\{image\}\}/g,ctx.image).replace(/\{\{release\}\}/g,ctx.release)
-    .replace(/\{\{tag\}\}/g,ctx.tag).replace(/\{\{commit\}\}/g,ctx.commit).replace(/\{\{env\}\}/g,ctx.env).replace(/\{\{by\}\}/g,ctx.by||'—').replace(/\{\{branch\}\}/g,ctx.branch||'xds');
+    .replace(/\{\{tag\}\}/g,ctx.tag).replace(/\{\{commit\}\}/g,ctx.commit).replace(/\{\{env\}\}/g,ctx.env).replace(/\{\{by\}\}/g,ctx.by||'—').replace(/\{\{branch\}\}/g,ctx.branch||'main');
   let lines;
   if(LOGS[id]){ lines = LOGS[id].map(fill); }
   else {
@@ -1057,10 +1372,12 @@ function startRun(opts){
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();   // 手动运行：可多选 IP；定时：单环境
   const env = envs.map(e=>e.ip).join('，');
-  const image = opts.image || ($('imageName').value||'myapp');
+  const image = opts.image || DEFAULT_IMAGE;
   const release = image;                 // Release 字段已移除，内部以镜像名作为 release
+  const repo = resolveRepo(opts.repoId || $('repoSel').value);
+  const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const c = {env, envs, image, release, by, source:opts.source||'manual'};
+  const c = {env, envs, image, release, repo, branch, by, source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
 }
@@ -1069,7 +1386,7 @@ function startSimRun(pl, c){
   runStages = stages;
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name};
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,vars:{}};
   selectedId = stages[0].id;
   running=true; $('runBtn').disabled=true;
   setOverall('运行中…','dshell-badgeWait');
@@ -1092,11 +1409,13 @@ function runPipeline(opts){
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();
   const env = envs.map(e=>e.ip).join('，');
-  const image = opts.image || ($('imageName').value||'myapp');
+  const image = opts.image || DEFAULT_IMAGE;
   const release = image;
+  const repoId = opts.repoId || $('repoSel').value;
+  const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, by, source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, branch, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   queue.push(item);
@@ -1135,7 +1454,7 @@ function addPlan(){
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
     pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
-    env:envSelText(), envs:curEnvs(), image:($('imageName').value||'myapp'),
+    env:envSelText(), envs:curEnvs(), image:DEFAULT_IMAGE, repoId:$('repoSel').value, branch:($('branchName').value.trim()||'main'),
     by:($('triggeredBy').value.trim()||'anonymous')+' ⏰', createdAt:Date.now(),
   };
   if(mode==='once'){
@@ -1180,12 +1499,39 @@ function advance(i){
   if(s.script && s.script.path){ runScriptStep(i); return; }
   runStage(i);
 }
+/* ---------- 阶段间变量传递（上游 stdout 的 KEY=VALUE 行注入下游环境变量） ---------- */
+/* 提取规则：逐行匹配 ^\s*([A-Z_][A-Z0-9_]*)=(.*)$；值取首个 = 之后全部，
+   去尾 \r；首尾双引号包裹则去引号。累计到 curRun.vars（粘性：后续阶段可见，同 key 后写覆盖） */
+function parseStageVars(stdout){
+  const out={};
+  if(!stdout) return out;
+  String(stdout).split('\n').forEach(line=>{
+    const m=/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+    if(!m) return;
+    let v=m[2].replace(/\r$/,'');
+    if(v.length>=2 && v.charAt(0)==='"' && v.charAt(v.length-1)==='"') v=v.slice(1,-1);
+    out[m[1]]=v;
+  });
+  return out;
+}
+/* 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars；返回本阶段产出的变量集（供 varsOut 展示） */
+function mergeStageVars(stdout){
+  if(!curRun) return {};
+  const v=parseStageVars(stdout);
+  curRun.vars=Object.assign(curRun.vars||{}, v);
+  return v;
+}
 async function execScript(sc){
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
     const v=(sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'');
     if(p.kind==='pos') args.push(v); else env[p.key]=v;
   });
+  /* 阶段间变量传递：上游阶段 stdout 的 KEY=VALUE 行累计在 curRun.vars，
+     作为环境变量注入后续阶段。优先级：阶段显式参数 > 上游变量 > 运行级全局默认 */
+  if(curRun && curRun.vars){
+    for(const k in curRun.vars){ if(env[k]===undefined) env[k]=curRun.vars[k]; }
+  }
   // 注入流水线运行信息（脚本显式配置的同名参数优先）：
   //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
   //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
@@ -1198,6 +1544,10 @@ async function execScript(sc){
     if(env.IMAGE_NAME===undefined && curRun.image) env.IMAGE_NAME=curRun.image;
     if(env.IMAGE_TAG===undefined && curRun.tag) env.IMAGE_TAG=curRun.tag;
     if(env.PIPELINE_NAME===undefined && curRun.pipelineName) env.PIPELINE_NAME=curRun.pipelineName;
+    if(env.GIT_URL===undefined && curRun.repoUrl) env.GIT_URL=curRun.repoUrl;
+    if(env.GIT_BRANCH===undefined && curRun.branch) env.GIT_BRANCH=curRun.branch;
+    if(env.GIT_USER===undefined && curRun.repoUser) env.GIT_USER=curRun.repoUser;
+    if(env.GIT_PASSWORD===undefined && curRun.repoPass) env.GIT_PASSWORD=curRun.repoPass;
   }
   if(ctx0){ if(ctx0.user && env.TARGET_USER===undefined) env.TARGET_USER=ctx0.user; if(ctx0.pass && env.TARGET_PASSWORD===undefined) env.TARGET_PASSWORD=ctx0.pass; }
   try{
@@ -1209,7 +1559,8 @@ async function execScript(sc){
 }
 async function runScriptStep(i){
   const stg=activeStages(); const s=stg[i]; const sc=s.script;
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name};
+  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name,varsIn,varsOut:{}};
   selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
   const t0=Date.now();
   if(timer) clearInterval(timer);
@@ -1218,20 +1569,22 @@ async function runScriptStep(i){
   if(timer){ clearInterval(timer); timer=null; }
   const dur=(Date.now()-t0)/1000;
   s._out=res;
-  if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name}; applyStatusClasses(); renderDetail(); advance(i+1); }
-  else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name}; applyStatusClasses(); renderDetail(); finish('failed'); }
+  const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
+  if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
+  else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
 }
 function runStage(i){
   const stg = activeStages();
   if(i>=stg.length){ finish('success'); return; }
   const s=stg[i];
+  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
   if(s.gate){
-    nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{}};
+    nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
     selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
     showGate(s.id, i);
     return;
   }
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{}};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
   selectedId=s.id; renderFlow(); renderDetail();
   if(s.sub && s.sub.length){ s.sub.forEach(x=> nodes[s.id].sub[x]='running'); }
   const start=Date.now();
@@ -1254,7 +1607,7 @@ function showGate(stageId, i){
   const wrap=document.createElement('div'); wrap.className='gate'; wrap.id='gateBtns';
   wrap.innerHTML='<button class="dshell-btn mini" id="approveBtn">✓ 批准</button><button class="dshell-btn dshell-btnDanger mini" id="rejectBtn">拒绝</button>';
   $('detailLog').parentElement.appendChild(wrap);
-  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); nodes[stageId]={status:'success',progress:100,dur:0,sub:{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
+  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
   document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); finish('aborted'); };
 }
 function finish(result){
@@ -1328,9 +1681,10 @@ function archiveRun(result){
     env: ctx.env, image: ctx.image, by: ctx.by, source: ctx.source, result,
     startTime: new Date(ctx.startTs).toISOString(),
     totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
+    vars: ctx.vars||{},
     stages: stages.map(s=>{
       const n=nodes[s.id]||{};
-      return { id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null };
+      return { id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
     }),
   };
   (async()=>{
@@ -1374,6 +1728,23 @@ async function createAnalysisChat(kind, rec){
   try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
   await P.__dshPromptIntoSession(sid, text);
 }
+
+/* ---------- 页面修改（右上角按钮 → 新建 DSH 会话修改本页面；提示词在「设置」页页面修改配置维护） ---------- */
+const PAGE_EDIT_PROMPT = '请协助修改你当前看到的流水线工作台页面。\n页面文件：/mnt/paas/op_test/worktable/pipeline/pipeline.html\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。';
+const DEFAULT_PAGE_EDIT_PROMPT = PAGE_EDIT_PROMPT;   // 默认提示词（设置页「页面修改配置」可覆盖）
+let pageEditPrompt = (function(){ try{ const p=localStorage.getItem('pip-pageEditPrompt'); return (p==null||!String(p).trim())?DEFAULT_PAGE_EDIT_PROMPT:p; }catch(e){ return DEFAULT_PAGE_EDIT_PROMPT; } })();
+function savePageEditPrompt(){ try{ localStorage.setItem('pip-pageEditPrompt', pageEditPrompt); }catch(e){} persistState(); }
+function fillPageEditForm(){ if($('cfgPromptPageEdit')) $('cfgPromptPageEdit').value=pageEditPrompt; }
+$('pageEditBtn').addEventListener('click', async ()=>{
+  const P = window.parent;
+  const sessions = P && P.__dshSessions;
+  if(!sessions || typeof sessions.create!=='function' || typeof P.__dshPromptIntoSession!=='function'){
+    alert('无法创建 AI 会话：请在 DSH 工作台中打开本页面。'); return;
+  }
+  const sid = await sessions.create({});
+  try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
+  await P.__dshPromptIntoSession(sid, pageEditPrompt);
+});
 
 /* ---------- 历史 & 统计 ---------- */
 let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
@@ -1560,6 +1931,10 @@ $('plStageList').addEventListener('change', (e)=>{
 $('envAdd').addEventListener('click', saveEnvForm);
 $('envCancelEdit').addEventListener('click', resetEnvForm);
 $('envAllApply').addEventListener('click', applyEnvCredAll);
+$('repoSel').addEventListener('change', e=>{ curRepoId=e.target.value; saveRepoSel(); const bp=$('branchPanel'); if(bp) bp.style.display='none'; });
+$('repoAdd').addEventListener('click', saveRepoForm);
+$('repoCancelEdit').addEventListener('click', resetRepoForm);
+$('repoAllApply').addEventListener('click', applyRepoCredAll);
 $('gpuRefreshAll').addEventListener('click', refreshGpuAll);
 $('gpuDetailClose').addEventListener('click', ()=>{ $('gpuDetail').style.display='none'; });
 $('gpuDetail').addEventListener('click', (e)=>{ if(e.target===$('gpuDetail')) $('gpuDetail').style.display='none'; });
@@ -1570,6 +1945,15 @@ $('cleanupScriptName').value = cleanupScript?cleanupScript.name:'';
 $('cleanupScriptName').addEventListener('change', (e)=>setCleanupScript(e.target.value.trim()));
 $('cleanupDetect').addEventListener('click', ()=>{ detectCleanupParams().then(saveCleanup); });
 renderCleanupParams();
+/* Jenkins 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
+applyJenkinsForm();
+$('jkModeLocal').addEventListener('click', ()=>setJenkinsMode('local'));
+$('jkModeRemote').addEventListener('click', ()=>setJenkinsMode('remote'));
+$('jkTest').addEventListener('click', testJenkins);
+$('jkSave').addEventListener('click', ()=>{
+  jenkins = collectJenkinsForm(); saveJenkins();
+  $('jkSavedTip').textContent='已保存。'; setTimeout(()=>{ $('jkSavedTip').textContent=''; },2000);
+});
 /* 页面切换（流水线 / 设置） */
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
@@ -1587,9 +1971,20 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
+/* 页面修改配置（设置页内卡片）：页面修改提示词编辑 */
+$('cfgPageEditSave').addEventListener('click', ()=>{
+  pageEditPrompt=$('cfgPromptPageEdit').value || DEFAULT_PAGE_EDIT_PROMPT;
+  savePageEditPrompt();
+  $('cfgPageEditSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgPageEditSavedTip').textContent=''; },2000);
+});
+$('cfgPageEditReset').addEventListener('click', ()=>{ pageEditPrompt=DEFAULT_PAGE_EDIT_PROMPT; savePageEditPrompt(); fillPageEditForm(); });
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+/* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
+$('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(renderBranchPanel); });
+$('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(renderBranchPanel); } else { renderBranchPanel(); } });
+document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
 /* 初始化 */
 function renderAll(){
@@ -1601,10 +1996,14 @@ function renderAll(){
   renderPipelines();
   renderEnvOptions();
   renderEnvs();
+  renderRepoOptions();
+  renderRepos();
   refreshGpuAll();
   renderQueue();
   renderDetail();
   fillCfgForm();
+  fillPageEditForm();
+  applyJenkinsForm();
 }
 renderAll();
 /* 从服务端拉取配置与历史（含日志）；服务端有数据则覆盖本地并重渲染 */
