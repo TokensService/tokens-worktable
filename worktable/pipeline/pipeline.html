@@ -208,12 +208,26 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button id="aiAnalyzeBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="汇总全部运行日志写到服务端文件，并新开 DSH 会话进行分析" style="margin-left:6px;">✨ AI 日志分析</button><span style="margin-left:8px; padding-left:8px; border-left:1px solid var(--dsw-alias-border-l1);"><button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话做日志分析（提示词见「分析配置」页）">日志</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话做 Profiling 分析（提示词见「分析配置」页）">Profiling</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话做性能分析（提示词见「分析配置」页）">性能</button></span> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话做日志分析（提示词见「设置」页分析配置）" style="margin-left:6px;">AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话做 Profiling 分析（提示词见「设置」页分析配置）">Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话做性能诊断（提示词见「设置」页分析配置）">性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
           <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <label class="dshell-muted" style="font-size:11px; display:flex; align-items:center; gap:5px;">每页
+          <select id="histPageSize" class="dshell-input" style="min-width:64px;">
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select> 条
+        </label>
+        <span style="flex:1"></span>
+        <span id="histPageInfo" class="dshell-muted" style="font-size:11px;"></span>
+        <button id="histPrev" class="dshell-btn dshell-btnGhost mini" type="button">‹ 上一页</button>
+        <button id="histNext" class="dshell-btn dshell-btnGhost mini" type="button">下一页 ›</button>
       </div>
     </div>
   </div>
@@ -256,7 +270,7 @@
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」点击选中某一行后，点标题行的 日志 / Profiling / 性能 按钮会新建一个 AI 会话并发送对应提示词。
+        在「运行历史」点击选中某一行后，点标题行的 AI 日志分析 / Profiling 分析 / 性能诊断 按钮会新建一个 AI 会话并发送对应提示词。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -266,7 +280,7 @@
         <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">Profiling 分析
           <textarea id="cfgPromptProf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
         </label>
-        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">性能分析
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">性能诊断
           <textarea id="cfgPromptPerf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
         </label>
         <div style="display:flex; gap:8px; align-items:center;">
@@ -1247,6 +1261,7 @@ function finish(result){
     logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
     tag:curRun.tag, archive:archiveFolderFor(curRun)};
   history.unshift(rec); if(history.length>200) history.length=200;
+  histPage=0;
   renderHistory(); renderStats();
   persistState();
   archiveRun(result);
@@ -1318,7 +1333,7 @@ function archiveRun(result){
 const DEFAULT_PROMPTS = {
   log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件：{logFile}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
   prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
-  perf: '请对下面这条流水线运行做性能分析：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 与 run-{tag}.profile.json 分别为日志与 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
+  perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 与 run-{tag}.profile.json 分别为日志与 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
 };
 function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
 let analysisPrompts = loadPrompts();
@@ -1351,11 +1366,17 @@ async function createAnalysisChat(kind, rec){
 }
 
 /* ---------- 历史 & 统计 ---------- */
-let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中）
+let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
+let histPage=0;
+let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
 function renderHistory(){
   const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
   if(selHistoryIdx>=history.length) selHistoryIdx=-1;
-  history.forEach((h,idx)=>{
+  const pages=Math.max(1, Math.ceil(history.length/histPageSize));
+  if(histPage>pages-1) histPage=pages-1;
+  if(histPage<0) histPage=0;
+  history.slice(histPage*histPageSize, (histPage+1)*histPageSize).forEach((h,i)=>{
+    const idx=histPage*histPageSize+i;
     const tr=document.createElement('tr');
     if(idx===selHistoryIdx) tr.className='sel';
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':h.status==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(h.status)+'</span>';
@@ -1363,6 +1384,10 @@ function renderHistory(){
     tr.addEventListener('click', ()=>{ selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
     tb.appendChild(tr);
   });
+  const info=$('histPageInfo'); if(info) info.textContent='第 '+(histPage+1)+'/'+pages+' 页 · 共 '+history.length+' 条';
+  const pv=$('histPrev'), nx=$('histNext');
+  if(pv) pv.disabled = histPage<=0;
+  if(nx) nx.disabled = histPage>=pages-1;
   const tip=$('rowSelTip');
   if(tip) tip.textContent = (selHistoryIdx>=0 && history[selHistoryIdx])
     ? ('已选 #'+history[selHistoryIdx].no+' '+(history[selHistoryIdx].pipeline||''))
@@ -1374,6 +1399,11 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
   if(!rec){ alert('请先点击选择一条运行历史。'); return; }
   createAnalysisChat(b.getAttribute('data-ract'), rec);
 }));
+/* 历史分页 */
+$('histPageSize').value=String(histPageSize);
+$('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
+$('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
+$('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<history.length){ histPage++; renderHistory(); } });
 function labelOf(s){ return {success:'成功',failed:'失败',aborted:'已中止'}[s]||s; }
 function renderStats(){
   $('sTotal').textContent = buildNo;
@@ -1386,39 +1416,6 @@ function renderStats(){
     let sec=0; if(m) sec=parseInt(m[1])*60+(m[2]?parseInt(m[2]):0); else if(s) sec=parseInt(s[1]); return a+sec; },0);
   $('sAvg').textContent = history.length? fmtDur(avg/history.length):'—';
   $('sLast').textContent = history.length? ('#'+history[0].no+' '+history[0].env):'—';
-}
-
-/* ---------- AI 日志分析：汇总全部运行日志写服务端文件，postMessage 给 DSH 聊天窗开会话分析 ---------- */
-function buildAnalysisMarkdown(hist){
-  const lines=['# 流水线运行日志','','生成时间：'+new Date().toLocaleString(),'','共 '+hist.length+' 次运行记录（最新在前）。',''];
-  hist.forEach(h=>{
-    lines.push('## #'+h.no+' '+(h.pipeline||'')+' · '+labelOf(h.status));
-    lines.push('- 环境：'+(h.env||'—')+'　提交：'+(h.commit||'—')+'　耗时：'+(h.dur||'—')+'　时间：'+(h.time||'—')+'　执行人：'+(h.by||'—'));
-    if(h.logs && h.logs.length){
-      h.logs.forEach(l=>{
-        lines.push('','### 阶段：'+l.stage+'（'+labelOf(l.status)+'）','','```',l.log||'(无日志)','```');
-      });
-    } else { lines.push('','（无阶段日志）'); }
-    lines.push('');
-  });
-  return lines.join('\n');
-}
-async function startAiAnalysis(){
-  const btn=$('aiAnalyzeBtn'); const t=btn.textContent;
-  btn.disabled=true; btn.textContent='准备中…';
-  try{
-    /* 以服务端存储为准（含定时任务产生的记录），内存 history 作兜底 */
-    let hist=history;
-    try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok){ const j=await r.json(); if(Array.isArray(j.history)&&j.history.length) hist=j.history; } }catch(e){}
-    if(!hist.length){ alert('暂无运行日志可分析'); return; }
-    const w=await fetch('/api/worktable/pipeline/logdump',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:buildAnalysisMarkdown(hist)})});
-    const wj=await w.json().catch(()=>null);
-    if(!wj || !wj.ok || !wj.path){ alert('日志写入失败：'+((wj&&wj.error)||('HTTP '+w.status))); return; }
-    /* 交给 DSH 聊天窗（插件客户端的 message 桥接会新开会话并发送分析请求） */
-    try{ if(window.parent && window.parent!==window) window.parent.postMessage({type:'worktable:analyze-log', path:wj.path}, location.origin); }catch(e){}
-    btn.textContent='已发送 ✓（见聊天窗）';
-  }catch(e){ alert('AI 日志分析失败：'+(e.message||e)); }
-  finally{ setTimeout(()=>{ btn.disabled=false; btn.textContent=t; },2500); }
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
@@ -1520,7 +1517,6 @@ $('resetBtn').addEventListener('click', ()=>{ if(running&&timer){clearInterval(t
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
 $('plSave').addEventListener('click', savePlForm);
-$('aiAnalyzeBtn').addEventListener('click', startAiAnalysis);
 $('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
 $('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });
 $('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); });
