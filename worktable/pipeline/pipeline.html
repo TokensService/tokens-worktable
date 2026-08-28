@@ -315,7 +315,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/审批门，可上移下移/增删；每步可绑 scripts 下脚本并自动识别参数，留空=本地模拟该步）</label>
+        <label class="dshell-muted">阶段（名称/耗时/审批门，可填序号或上移下移调序、增删；每步可绑 scripts 下脚本并自动识别参数，留空=本地模拟该步）</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -792,7 +792,7 @@ function renderStageEditor(){
     row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;'
       +(i===editFocusIdx?';border-color:var(--dsw-alias-state-accent-primary);box-shadow:0 0 0 2px rgba(79,142,247,.18);':'');
     row.innerHTML='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
-      +'<span class="dshell-muted" style="font-size:11px;min-width:18px;">'+(i+1)+'</span>'
+      +'<input class="dshell-input" data-f="ord" type="number" min="1" max="'+editStages.length+'" value="'+(i+1)+'" title="顺序：直接输入目标序号后回车" style="width:52px;" />'
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
       +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
@@ -1536,6 +1536,12 @@ $('plStageList').addEventListener('click', (e)=>{
 $('plStageList').addEventListener('change', (e)=>{
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
   const row=e.target.closest('.plstage'); const i=parseInt(row.dataset.idx,10); const s=editStages[i]; if(!s) return;
+  if(f==='ord'){   // 数字排序：把该阶段移动到目标序号（1 起，自动夹取到有效范围）
+    const to=Math.min(editStages.length, Math.max(1, parseInt(e.target.value,10)||(i+1)))-1;
+    if(to!==i){ const mv=editStages.splice(i,1)[0]; editStages.splice(to,0,mv); editFocusIdx=to; renderStageEditor(); }
+    else e.target.value=String(i+1);
+    return;
+  }
   if(f==='name') s.name=e.target.value;
   else if(f==='dur') s.dur=Math.max(1,parseInt(e.target.value,10)||5);
   else if(f==='gate') s.gate=e.target.checked;
