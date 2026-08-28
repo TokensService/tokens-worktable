@@ -124,7 +124,7 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
       <select id="repoSel" class="dshell-input" style="min-width:130px;"></select>
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支/Tag
       <span id="branchPick" style="position:relative;display:inline-block;">
         <input id="branchName" class="dshell-input" value="main" autocomplete="off" style="min-width:130px;" />
         <div id="branchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
@@ -829,8 +829,8 @@ function applyRepoCredAll(){
   repositories.forEach(r=>{ r.user=u; r.pass=p; });
   saveRepos(); renderRepos();
 }
-/* 代码仓联通性检测 + 远程分支列举（经 /api/worktable/git-remote：服务端 git ls-remote --heads） */
-let repoBranches={};   // repoId -> {branches:[], error:'', loading?}
+/* 代码仓联通性检测 + 远程分支/Tag 列举（经 /api/worktable/git-remote：服务端 git ls-remote --heads --tags） */
+let repoBranches={};   // repoId -> {branches:[], tags:[], error:'', loading?}
 async function testRepo(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
   tip.style.color=''; tip.textContent='测试中…（'+r.name+'）';
@@ -840,13 +840,14 @@ async function testRepo(r){
     j=await res.json();
   }catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 请求失败：'+String(e.message||e).slice(0,160); return; }
   if(j && j.ok){
-    tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 连接成功 · '+(j.branches?j.branches.length:0)+' 个分支';
-    repoBranches[r.id]={branches:(j.branches||[]), error:''};   // 顺便刷新该仓分支缓存
+    const nb=j.branches?j.branches.length:0; const nt=j.tags?j.tags.length:0;
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 连接成功 · '+nb+' 个分支'+(nt?(' · '+nt+' 个 Tag'):'');
+    repoBranches[r.id]={branches:(j.branches||[]), tags:(j.tags||[]), error:''};   // 顺便刷新该仓分支/Tag 缓存
   } else {
     tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 连接失败：'+(j && j.error ? String(j.error).slice(0,160) : '未知错误');
   }
 }
-/* 分支选择：按当前代码仓搜索远程分支，下拉面板点选；仍可手动输入 */
+/* 分支/Tag 选择：按当前代码仓搜索远程分支与 Tag，下拉面板点选；仍可手动输入 */
 async function loadRepoBranches(repo, force){
   repo = repo || curRepo();
   const id=repo.id;
@@ -858,23 +859,28 @@ async function loadRepoBranches(repo, force){
     const res=await fetch('/api/worktable/git-remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:repo.url,user:repo.user||'',pass:repo.pass||''})});
     j=await res.json();
   }catch(e){ j={ok:false, error:String(e.message||e)}; }
-  repoBranches[id] = (j && j.ok) ? {branches:(j.branches||[]), error:''} : {branches:[], error:(j&&j.error)?String(j.error):'未知错误'};
+  repoBranches[id] = (j && j.ok) ? {branches:(j.branches||[]), tags:(j.tags||[]), error:''} : {branches:[], tags:[], error:(j&&j.error)?String(j.error):'未知错误'};
   return repoBranches[id];
 }
 function renderBranchPanel(){
   const panel=$('branchPanel'); const inp=$('branchName'); if(!panel||!inp) return;
   const repo=curRepo(); const q=inp.value.trim().toLowerCase();
   const cached=repoBranches[repo.id];
+  const ready=cached&&!cached.loading&&!cached.error;
+  const nb=ready?(cached.branches||[]).length:0;
+  const nt=ready?(cached.tags||[]).length:0;
   let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
-    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(cached&&!cached.loading&&cached.branches?cached.branches.length:'…')+' 分支</span>'
-    +'<span data-branchrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取分支">⟳</span></div>';
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+(ready?(' · '+nb+' 分支'+(nt?(' · '+nt+' Tag'):'')):' · …')+'</span>'
+    +'<span data-branchrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
   if(!cached || cached.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
   else if(cached.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(cached.error.slice(0,200))+'</div>'; }
-  else if(!cached.branches.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无分支</div>'; }
   else {
-    const list=cached.branches.filter(b=> !q || b.toLowerCase().indexOf(q)>=0).slice(0,200);
-    if(!list.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配分支</div>'; }
-    else list.forEach(b=>{ h+='<div data-branch="'+esc(b)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(b===inp.value?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(b)+'</div>'; });
+    const br=(cached.branches||[]).filter(b=> !q || b.toLowerCase().indexOf(q)>=0).slice(0,200);
+    const tg=(cached.tags||[]).filter(t=> !q || t.toLowerCase().indexOf(q)>=0).slice(0,200);
+    const item=(name)=>'<div data-branch="'+esc(name)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(name===inp.value?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(name)+'</div>';
+    const head=(label,n)=> n? '<div class="dshell-muted" style="font-size:10px;padding:3px 8px 2px;opacity:.7;">'+label+'（'+n+'）</div>':'';
+    if(!br.length && !tg.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配</div>'; }
+    else { h+=head('分支',br.length)+br.map(item).join('')+head('Tag',tg.length)+tg.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
   panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); }));
