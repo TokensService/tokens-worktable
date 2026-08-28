@@ -254,7 +254,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组）、<code>TARGET_HOSTS</code>（全部节点 [{ip,user,pass}] 的 JSON 数组，多节点各自凭据）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
@@ -1187,12 +1187,14 @@ async function execScript(sc){
     if(p.kind==='pos') args.push(v); else env[p.key]=v;
   });
   // 注入流水线运行信息（脚本显式配置的同名参数优先）：
-  //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组，多选时脚本自行遍历）
+  //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
+  //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
   //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；PIPELINE_NAME=流水线名
   const ctx0=(curRun && curRun.envs && curRun.envs[0]) || null;
   if(curRun){
     if(env.TARGET_IP===undefined) env.TARGET_IP=(ctx0 && ctx0.ip) || curRun.env || '';
     if(env.TARGET_IPS===undefined && curRun.envs) env.TARGET_IPS=JSON.stringify(curRun.envs.map(e=>e.ip));
+    if(env.TARGET_HOSTS===undefined && curRun.envs) env.TARGET_HOSTS=JSON.stringify(curRun.envs.map(e=>({ip:e.ip, user:e.user||'', pass:e.pass||''})));
     if(env.IMAGE_NAME===undefined && curRun.image) env.IMAGE_NAME=curRun.image;
     if(env.IMAGE_TAG===undefined && curRun.tag) env.IMAGE_TAG=curRun.tag;
     if(env.PIPELINE_NAME===undefined && curRun.pipelineName) env.PIPELINE_NAME=curRun.pipelineName;
