@@ -105,6 +105,7 @@
   <!-- 页面导航 -->
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
+    <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
@@ -135,23 +136,9 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="cleanupEnv" /> 先清理环境
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">定时
-      <select id="runSched" class="dshell-input" style="min-width:92px;">
-        <option value="now">立即运行</option>
-        <option value="interval">周期性</option>
-        <option value="once">一次性</option>
-      </select>
-    </label>
-    <label id="runSchedEveryWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">每
-      <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" /> 分钟
-    </label>
-    <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
-      <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
-    </label>
     <span style="flex:1"></span>
     <button id="runBtn" class="dshell-btn">▶ 运行流水线</button>
     <button id="resetBtn" class="dshell-btn dshell-btnGhost">重置</button>
-    <div id="planList" style="flex-basis:100%; display:none; margin-top:8px;"></div>
   </div>
 
   <!-- 统计 -->
@@ -239,6 +226,45 @@
     </div>
   </div>
   </div><!-- /pageMain -->
+
+  <!-- 定时任务（独立页面：周期 / 一次性计划，服务端调度，关闭页面也会执行） -->
+  <div id="pageSched" style="display:none">
+    <div class="dshell-card pipeline-controls">
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
+        <select id="schedPipeline" class="dshell-input" style="min-width:130px;"></select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
+        <select id="schedEnv" class="dshell-input" style="min-width:130px;"></select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
+        <select id="schedRepo" class="dshell-input" style="min-width:130px;"></select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支
+        <input id="schedBranch" class="dshell-input" value="main" autocomplete="off" style="min-width:110px;" />
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
+        <input id="schedBy" class="dshell-input" value="dev-li" />
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">方式
+        <select id="runSched" class="dshell-input" style="min-width:92px;">
+          <option value="interval">周期性</option>
+          <option value="once">一次性</option>
+        </select>
+      </label>
+      <label id="runSchedEveryWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">每
+        <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" /> 分钟
+      </label>
+      <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
+        <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
+      </label>
+      <span style="flex:1"></span>
+      <button id="schedCreateBtn" class="dshell-btn">＋ 创建定时计划</button>
+    </div>
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">定时计划 <span id="planCount" class="dshell-muted"></span> <span class="dshell-muted" style="font-size:11px;font-weight:normal;">服务端调度，关闭页面也会执行</span></h2>
+      <div id="planList"></div>
+    </div>
+  </div><!-- /pageSched -->
 
   <!-- 设置（独立页面：节点环境 + 环境清理脚本） -->
   <div id="pageEnv" style="display:none">
@@ -1437,25 +1463,36 @@ async function pushPlans(){
 }
 function renderPlanList(){
   const el=$('planList'); if(!el) return;
-  if(!serverPlans.length){ el.style.display='none'; el.innerHTML=''; return; }
-  el.style.display='flex'; el.style.flexWrap='wrap'; el.style.gap='6px';
-  el.innerHTML='<span class="dshell-muted" style="font-size:11px;align-self:center;">服务端定时（关闭页面也会执行）：</span>';
+  $('planCount').textContent = serverPlans.length? '('+serverPlans.length+')':'';
+  if(!serverPlans.length){ el.innerHTML='<div class="dshell-muted" style="padding:4px 2px;">暂无定时计划。</div>'; return; }
+  let h='<div style="overflow:auto;"><table class="dshell-table"><thead><tr><th>流水线</th><th>方式</th><th>环境</th><th>分支</th><th>执行人</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   serverPlans.forEach(p=>{
-    const tag=document.createElement('span'); tag.className='dshell-badge'; tag.style.display='inline-flex'; tag.style.alignItems='center'; tag.style.gap='4px';
-    tag.innerHTML='⏰ '+esc(p.pipelineName||'')+' '+esc(p.desc||'')+' <span data-plandel="'+esc(p.id)+'" style="cursor:pointer;color:#f85149;" title="取消该定时">✕</span>';
-    el.appendChild(tag);
+    h+='<tr><td style="font-weight:600">'+esc(p.pipelineName||'')+'</td><td>'+esc(p.desc||'')+'</td><td class="dshell-muted">'+esc(p.env||'')+'</td><td class="dshell-muted">'+esc(p.branch||'')+'</td><td class="dshell-muted">'+esc(p.by||'')+'</td><td class="dshell-muted">'+(p.createdAt?new Date(p.createdAt).toLocaleString():'')+'</td><td><button class="dshell-btn dshell-btnGhost mini" data-plandel="'+esc(p.id)+'">取消</button></td></tr>';
   });
+  el.innerHTML=h+'</tbody></table></div>';
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
 function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
+/* 定时页表单：选项跟随流水线 / 环境 / 代码仓数据，切换进页面时刷新并尽量保留已选值 */
+function renderSchedForm(){
+  const pl=$('schedPipeline'); if(!pl) return;
+  const curPl=pl.value || curPipelineId; pl.innerHTML='';
+  pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===curPl) o.selected=true; pl.appendChild(o); });
+  const env=$('schedEnv'); const curEnvId=env.value; env.innerHTML='';
+  environments.forEach(e=>{ const o=document.createElement('option'); o.value=e.id; o.textContent=envLabelOf(e.id); if(e.id===curEnvId) o.selected=true; env.appendChild(o); });
+  const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
+  repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
+  if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim()||'anonymous';
+}
 function addPlan(){
   const mode=$('runSched').value;
-  const pl=curPipeline();
+  const pl=findPipeline($('schedPipeline').value) || curPipeline();
+  const env=resolveEnv($('schedEnv').value);
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
     pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
-    env:envSelText(), envs:curEnvs(), image:DEFAULT_IMAGE, repoId:$('repoSel').value, branch:($('branchName').value.trim()||'main'),
-    by:($('triggeredBy').value.trim()||'anonymous')+' ⏰', createdAt:Date.now(),
+    env:env.ip, envs:[env], image:DEFAULT_IMAGE, repoId:$('schedRepo').value, branch:($('schedBranch').value.trim()||'main'),
+    by:($('schedBy').value.trim()||'anonymous')+' ⏰', createdAt:Date.now(),
   };
   if(mode==='once'){
     const v=$('runSchedAt').value; const t=v?new Date(v).getTime():NaN;
@@ -1892,7 +1929,8 @@ $('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */
-$('runBtn').addEventListener('click', ()=>{ const m=$('runSched').value; if(m==='now') runPipeline(); else addPlan(); });
+$('runBtn').addEventListener('click', ()=>runPipeline());
+$('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{ if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue(); });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
@@ -1954,14 +1992,18 @@ $('jkSave').addEventListener('click', ()=>{
   jenkins = collectJenkinsForm(); saveJenkins();
   $('jkSavedTip').textContent='已保存。'; setTimeout(()=>{ $('jkSavedTip').textContent=''; },2000);
 });
-/* 页面切换（流水线 / 设置） */
+/* 页面切换（流水线 / 定时 / 设置） */
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
+  $('pageSched').style.display = p==='sched'?'':'none';
   $('pageEnv').style.display = p==='env'?'':'none';
   $('navMain').className = 'dshell-btn mini'+(p==='main'?'':' dshell-btnGhost');
+  $('navSched').className = 'dshell-btn mini'+(p==='sched'?'':' dshell-btnGhost');
   $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
+  if(p==='sched'){ renderSchedForm(); renderPlanList(); }
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
+$('navSched').addEventListener('click', ()=>switchPage('sched'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
 /* 分析配置（设置页内卡片）：提示词模板编辑 */
 function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
