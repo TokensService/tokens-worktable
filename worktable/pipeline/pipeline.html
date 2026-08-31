@@ -58,6 +58,8 @@
     .dshell-table th[data-sort] .env-sort-arrow { display:inline-block; min-width:12px; margin-left:2px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
     @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 color-mix(in srgb, var(--st-run) 45%, transparent);} 50%{ box-shadow:0 0 0 4px transparent;} }
     .pipeline-node.run { animation:pipPulse 1.4s infinite; }
+    @keyframes dswSpin { to { transform:rotate(360deg); } }
+    .dshell-btn.spinning { animation:dswSpin .9s linear infinite; }
     .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     @media (max-width:900px){ .pipeline-cols{ grid-template-columns:1fr; } }
     .logbox { background:var(--log-bg); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:10px 12px; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:11px; line-height:1.55; color:var(--log-fg); max-height:240px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
@@ -139,6 +141,7 @@
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
       <select id="deployStrategySel" class="dshell-input" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取该分支支持的部署策略（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）"></select>
+      <button id="deployStrategyRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="重新拉取当前分支的部署策略" style="padding:2px 7px;">⟳</button>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
@@ -1161,20 +1164,33 @@ async function fetchDeployStrategies(tpl, branch){
     return {items:Array.from(new Set(items)), error:''};
   }catch(e){ return {items:[], error:String(e.message||e).slice(0,160)}; }
 }
+/* 刷新按钮状态：未配置策略 URL 时禁用；拉取中转圈并禁用；结果（成功个数/失败原因）写进 tooltip */
+function setStrategyRefreshBtn(state, tip){
+  const btn=$('deployStrategyRefresh'); if(!btn) return;
+  btn.disabled=(state!=='ready');
+  btn.classList.toggle('spinning', state==='loading');
+  btn.title=tip||'重新拉取当前分支的部署策略';
+}
+function strategyRefreshTip(branch, st){
+  return st.error ? ('部署策略拉取失败：'+st.error+'（点击重试）') : ('重新拉取当前分支的部署策略（分支 '+branch+' · 已加载 '+st.items.length+' 个）');
+}
 async function loadDeployStrategies(force){
   const sel=$('deployStrategySel'); if(!sel) return;
   const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
   const tpl=((repo && repo.strategyUrl)||'').trim();
   if(!tpl){
     sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
-    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略'; return;
+    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略';
+    setStrategyRefreshBtn('disabled','在「设置」页代码仓配置「部署策略 URL」后可刷新部署策略'); return;
   }
   sel.disabled=false; sel.title='按当前分支从代码仓「部署策略 URL」拉取支持的部署策略';
   const key=deployStrategyKey(repo,branch);
   const cached=deployStrategies[key];
-  if(!force && cached && !cached.loading){ renderDeployStrategyOptions(); return; }
+  if(!force && cached && !cached.loading){ setStrategyRefreshBtn('ready', strategyRefreshTip(branch, cached)); renderDeployStrategyOptions(); return; }
   deployStrategies[key]={loading:true}; renderDeployStrategyOptions();
+  setStrategyRefreshBtn('loading','正在拉取分支 '+branch+' 的部署策略…');
   deployStrategies[key]=await fetchDeployStrategies(tpl, branch);
+  setStrategyRefreshBtn('ready', strategyRefreshTip(branch, deployStrategies[key]));
   renderDeployStrategyOptions();
 }
 function renderDeployStrategyOptions(){
@@ -2965,6 +2981,8 @@ document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$(
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
+/* 部署策略手动刷新：绕过缓存强制重拉当前分支的策略列表（同分支/Tag 面板的 ⟳） */
+$('deployStrategyRefresh').addEventListener('click', ()=>loadDeployStrategies(true));
 $('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(()=>renderBranchPanel()); } else { renderBranchPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
