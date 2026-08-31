@@ -33,8 +33,8 @@ echo "[template] primary target: $TARGET_USER@$TARGET_IP"
 # 多节点遍历（各自凭据）：TARGET_HOSTS 是 [{ip,user,pass}] JSON 数组
 deploy_one() {   # $1=ip $2=user $3=pass
   echo "[template] -> deploy $IMAGE_NAME:$IMAGE_TAG to $2@$1"
-  # 示例：真实部署时取消注释（需要 sshpass 或免密）
-  # sshpass -p "$3" ssh -o StrictHostKeyChecking=no "$2@$1" \
+  # 示例：真实部署时取消注释（需要 sshpass 或免密；UserKnownHostsFile=/dev/null 免疫首次登录确认与指纹变更）
+  # sshpass -p "$3" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$2@$1" \
   #   "docker pull $IMAGE_NAME:$IMAGE_TAG && docker run -d $IMAGE_NAME:$IMAGE_TAG"
 }
 

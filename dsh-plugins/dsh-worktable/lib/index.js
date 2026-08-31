@@ -653,21 +653,24 @@ function apply(ctx) {
   }
   function execText(cmd, args) {
     return new Promise((resolvePromise, reject) => {
-      execFile(cmd, args, { timeout: 2e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-        if (err) reject(new Error(String(stderr || err.message || err).trim()));
-        else resolvePromise(String(stdout || ""));
+      execFile(cmd, args, { timeout: 6e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          const why = err.killed ? "\uFF08\u6267\u884C\u8D85\u8FC7 60s \u88AB\u7EC8\u6B62\uFF09" : "";
+          reject(new Error((String(stderr || "").trim() || String(err.message || err)) + why));
+        } else resolvePromise(String(stdout || ""));
       });
     });
   }
-  const GPU_PROBE = 'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; echo ===; nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name --format=csv,noheader; echo ===; for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; echo ===; docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null';
+  const GPU_PROBE = 'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; echo ===; nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name --format=csv,noheader; echo ===; for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; echo ===; (docker ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; nerdctl --namespace k8s.io ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; nerdctl ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; true)';
   async function queryGpu(ip, user, pass) {
     let out;
     if (localAddrs().has(ip)) {
       out = await execText("bash", ["-c", GPU_PROBE]);
     } else {
       const target = user ? user + "@" + ip : ip;
-      const sshArgs = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8", target, GPU_PROBE];
-      out = pass ? await execText("sshpass", ["-p", pass, "ssh", ...sshArgs]) : await execText("ssh", ["-o", "BatchMode=yes", ...sshArgs]);
+      const remoteCmd = "echo " + Buffer.from(GPU_PROBE).toString("base64") + " | base64 -d | bash";
+      const sshArgs = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8", target, remoteCmd];
+      out = pass ? await execText("sshpass", ["-p", pass, "ssh", "-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "PubkeyAuthentication=no", "-o", "NumberOfPasswordPrompts=1", ...sshArgs]) : await execText("ssh", ["-o", "BatchMode=yes", ...sshArgs]);
     }
     const secs = out.split(/^===\s*$/m);
     const gpus = (secs[0] || "").trim().split("\n").filter(Boolean).map((l) => {
@@ -685,17 +688,20 @@ function apply(ctx) {
       if (m) cg[m[1]] = m[2];
     }
     const dockers = (secs[3] || "").trim().split("\n").filter(Boolean).map((l) => {
-      const sp = l.trim().split(/\s+/);
-      return { id: sp[0] || "", name: sp.slice(1).join(" ") || "" };
+      const p = l.trim().split("|");
+      return { id: (p[0] || "").trim(), name: (p[1] || "").trim(), up: (p.slice(2).join("|") || "").trim() };
     });
     const procsOut = procs.map((p) => {
-      let container = "";
+      let container = "", up = "";
       const hex = cg[p.pid];
       if (hex) {
         const d = dockers.find((x) => x.id && hex.indexOf(x.id) === 0);
-        if (d) container = d.name;
+        if (d) {
+          container = d.name;
+          up = d.up;
+        }
       }
-      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container };
+      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container, up };
     });
     const busyUuids = new Set(procs.map((p) => p.uuid));
     const used = gpus.filter((g) => busyUuids.has(g.uuid) || Number(g.mem) > 1024).length;
@@ -841,11 +847,28 @@ function apply(ctx) {
           });
         });
       } else if (p.kind === "interval") {
-        const everyMs = Math.max(1, Number(p.everyMin) || 10) * 6e4;
+        const unit = typeof p.everyUnit === "string" && p.everyUnit ? p.everyUnit : "min";
+        const every = Math.max(1, Number(p.every) || Number(p.everyMin) || 10);
         const startAt = Number(p.startAt) || 0;
         if (startAt && now < startAt) continue;
-        const last = planLastRun.get(p.id) || (startAt ? startAt - everyMs : Number(p.createdAt) || 0);
-        if (now - last < everyMs) continue;
+        const base = startAt || Number(p.createdAt) || now;
+        const last = planLastRun.get(p.id) || (startAt ? base - 1 : base);
+        const FIXED_MS = { min: 6e4, hour: 36e5, day: 864e5, week: 6048e5 };
+        let next;
+        if (FIXED_MS[unit]) {
+          const step = FIXED_MS[unit] * every;
+          next = base + (Math.floor((last - base) / step) + 1) * step;
+        } else {
+          next = base;
+          const d = new Date(base);
+          let guard = 0;
+          while (next <= last && guard++ < 5e3) {
+            if (unit === "year") d.setFullYear(d.getFullYear() + every);
+            else d.setMonth(d.getMonth() + every);
+            next = d.getTime();
+          }
+        }
+        if (next > now) continue;
         planLastRun.set(p.id, now);
         planRunning.add(p.id);
         execPlan(p).catch(() => {
