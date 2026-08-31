@@ -369,7 +369,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
           <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">运行日志与 profiling 产物按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
@@ -2255,6 +2255,7 @@ async function runJenkinsStep(i){
     log.push('[Jenkins result '+result+']');
     s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('Jenkins '+result):'',code:ok?0:1,jenkins:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
+    archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
     const dur=(Date.now()-t0)/1000;
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -2262,6 +2263,7 @@ async function runJenkinsStep(i){
     if(timer){clearInterval(timer);timer=null;}
     log.push('✗ '+e.message);
     s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,jenkins:true,done:true};
+    archiveStageLog(s, i+1);   // 异常路径同样归档本阶段已产生的回显
     nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:{}};
     applyStatusClasses(); renderDetail(); finish('failed');
   }
@@ -2281,6 +2283,7 @@ async function runScriptStep(i){
   const dur=(Date.now()-t0)/1000;
   s._out=res;
   const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
+  archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
   if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
   else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
 }
@@ -2309,6 +2312,7 @@ function runStage(i){
     applyStatusClasses(); renderDetail();
     if(p>=100){ clearInterval(timer); timer=null;
       nodes[s.id].status='success'; nodes[s.id].progress=100;
+      archiveStageLog(s, i+1);   // 本地模拟阶段的回显同样归档
       applyStatusClasses(); renderDetail();
       advance(i+1);
     }
@@ -2319,7 +2323,7 @@ function showGate(stageId, i){
   const wrap=document.createElement('div'); wrap.className='gate'; wrap.id='gateBtns';
   wrap.innerHTML='<button class="dshell-btn mini" id="approveBtn">✓ 批准</button><button class="dshell-btn dshell-btnDanger mini" id="rejectBtn">拒绝</button>';
   $('detailLog').parentElement.appendChild(wrap);
-  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
+  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; const sg=activeStages().find(x=>x.id===stageId); if(sg) archiveStageLog(sg, i+1); applyStatusClasses(); renderDetail(); advance(i+1); };
   document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; finish('aborted'); };
 }
 /* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续 */
@@ -2329,7 +2333,7 @@ function retryFromStage(stageId){
   const n=nodes[stageId]; if(!n || n.status!=='failed') return;
   curRun.vars=Object.assign({}, n.varsIn||{});
   runStages[idx]._out=null;   // 清掉上次脚本输出，避免重跑期间误显示旧日志
-  for(let j=idx;j<runStages.length;j++){ const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }
+  for(let j=idx;j<runStages.length;j++){ runStages[j]._logArchived=false; const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
   running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
   setOverall('运行中…（重试）','dshell-badgeWait');
   selectedId=stageId; applyStatusClasses(); renderDetail();
@@ -2369,9 +2373,12 @@ async function runCleanupBefore(){
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
   if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
-  if(curRun && curRun.token===tk) curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
+  if(curRun && curRun.token===tk){
+    curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
+    archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
+  }
 }
-/* ---------- 产物归档（运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
+/* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
 function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
 function todayCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
 async function apiMkdir(p){
@@ -2408,11 +2415,42 @@ function archiveFolderFor(ctx){
   const fb=fallbackArchiveRoot();
   return fb ? fb+'/'+sub : null;
 }
+/* 任务级日志归档：每个任务（阶段 / 环境清理）的回显即时写入归档文件夹的独立日志文件，
+   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理）；失败仅告警，不影响运行结果。 */
+function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(name)+'.log'; }
+async function archiveTaskLog(ctx, seq, name, text){
+  const folder=archiveFolderFor(ctx);
+  if(!folder) return null;
+  if(!await apiMkdir(folder)){ await apiMkdir(folder.slice(0, folder.lastIndexOf('/'))); await apiMkdir(folder); }
+  const file=folder+'/'+taskLogFile(ctx, seq, name);
+  await apiWrite(file, text);
+  return file;
+}
+/* 阶段完成即把本阶段回显重定向到归档文件夹的独立日志文件（内容同详情面板 buildLog）。
+   _logArchived 去重：archiveRun 末尾对未即时归档的已完成阶段统一补齐；
+   归档失败重置标记，交由末尾补齐重试；「从失败阶段重试」复位标记以便重写（见 retryFromStage）。 */
+function archiveStageLog(stage, seq, ctx){
+  ctx=ctx||curRun;
+  if(!ctx || stage._logArchived) return;
+  if(!archiveFolderFor(ctx)) return;   // 未配置归档且保底根不可用：不归档
+  stage._logArchived=true;
+  const n=nodes[stage.id]||{status:'idle'};
+  let text='';
+  try{ text=(buildLog(stage, ctx, n)||[]).join('\n'); }catch(e){}
+  archiveTaskLog(ctx, seq, stage.name, text).catch(e=>{ stage._logArchived=false; console.warn('[archive] 阶段「'+stage.name+'」日志归档失败（不影响运行结果）:', e); });
+}
 function archiveRun(result){
   const folder=archiveFolderFor(curRun);
   if(!folder) return;
   const root=folder.slice(0, folder.lastIndexOf('/'));
   const ctx=curRun, stages=activeStages();
+  // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
+  // 未完成阶段（waiting/running/idle）不归档，与 collectRunLogs 口径一致
+  stages.forEach((s,idx)=>{
+    const n=nodes[s.id]||{status:'idle'};
+    if(n.status==='running' || n.status==='waiting' || n.status==='idle') return;
+    archiveStageLog(s, idx+1, ctx);
+  });
   // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
   const logLines=[];
   stages.forEach(s=>{
@@ -2429,9 +2467,12 @@ function archiveRun(result){
     startTime: new Date(ctx.startTs).toISOString(),
     totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
     vars: ctx.vars||{},
-    stages: stages.map(s=>{
+    cleanupLogFile: ctx.cleanupLog ? folder+'/'+taskLogFile(ctx, 0, '环境清理') : null,
+    stages: stages.map((s,idx)=>{
       const n=nodes[s.id]||{};
-      return { id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
+      const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
+      if(s._logArchived) rec.logFile=folder+'/'+taskLogFile(ctx, idx+1, s.name);   // 本阶段独立回显日志（任务级归档）
+      return rec;
     }),
   };
   (async()=>{
@@ -2464,7 +2505,7 @@ function archiveRun(result){
 const DEFAULT_PROMPTS = {
   log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件：{logFile}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
   prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
-  perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 与 run-{tag}.profile.json 分别为日志与 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
+  perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 为汇总日志、run-{tag}-NN-任务名.log 为各任务独立回显、run-{tag}.profile.json 为 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
 };
 function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
 let analysisPrompts = loadPrompts();
