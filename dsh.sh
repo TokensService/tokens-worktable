@@ -58,6 +58,7 @@ Web 后台管理:
   DSH_WORKDIR         web 新会话的默认工作目录（默认: 脚本所在目录）
   DSH_WEB_PORT        web 服务端口（默认: 3051）
   DSH_LOG_DIR         web 日志与 pid 文件目录（默认: 脚本所在目录）
+  DSH_CLIENT_TITLE    web 品牌标题（默认: op_test，build 时内联进产物）
   DEEPSEEK_API_KEY    真实模型调用密钥；存在 \$DSH_REPO/.env 时自动加载
 
 文件:
@@ -78,6 +79,9 @@ build() {
   # core.worktree 会让其报错）；export 是因为 pnpm run build 前会自动再跑一次
   # pnpm install 校验依赖；不影响依赖安装与编译
   export CI=true
+  # 本仓库的 web 品牌：构建期内联为浏览器标签页标题（vite 替换 <title>、
+  # DocumentTitle 运行时也读它）；可用同名环境变量覆盖
+  export DSH_CLIENT_TITLE=${DSH_CLIENT_TITLE:-op_test}
   pnpm install
   pnpm run build
   [ -f "$CLI_BIN" ] || { echo "编译失败：未生成 $CLI_BIN" >&2; exit 1; }
