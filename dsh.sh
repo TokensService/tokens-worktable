@@ -15,7 +15,7 @@ export NODE_USE_ENV_PROXY=1
 # （/mnt/paas/profiles/web/cordis.patch.yml 的 directory-picker home）也读它
 WORKDIR=${DSH_WORKDIR:-$SCRIPT_DIR}
 export DSH_WORKDIR="$WORKDIR"
-PORT=${DSH_WEB_PORT:-3080}
+PORT=${DSH_WEB_PORT:-3051}
 # 日志与 pid 文件放在脚本所在目录（可用 DSH_LOG_DIR 覆盖）
 LOG_DIR=${DSH_LOG_DIR:-$SCRIPT_DIR}
 LOG="$LOG_DIR/dsh-web.log"
@@ -56,7 +56,7 @@ Web 后台管理:
   DSH_REPO            deepseek-harness 仓库路径（默认: 脚本所在目录/deepseek-harness）
   DSH_HOME            dsh 数据目录（默认: /mnt/paas）
   DSH_WORKDIR         web 新会话的默认工作目录（默认: 脚本所在目录）
-  DSH_WEB_PORT        web 服务端口（默认: 3080）
+  DSH_WEB_PORT        web 服务端口（默认: 3051）
   DSH_LOG_DIR         web 日志与 pid 文件目录（默认: 脚本所在目录）
   DEEPSEEK_API_KEY    真实模型调用密钥；存在 \$DSH_REPO/.env 时自动加载
 
