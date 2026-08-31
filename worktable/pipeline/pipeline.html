@@ -350,7 +350,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。分支获取选 Jenkins（浏览器直连/服务端代连）时仓库 URL 可留空，分支取自 Jenkins 多分支任务子任务名。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
@@ -937,11 +937,13 @@ function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) retu
 function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
 function saveRepoForm(){
   const name=$('repoName').value.trim(); const url=$('repoUrl').value.trim(); const user=$('repoUser').value.trim(); const pass=$('repoPass').value;
-  if(!url){ alert('请填写仓库 URL'); return; }
   const fm=normalizeFetchMode($('repoFetchMode').value);
   const jkJob=($('repoJenkinsJob').value||'').trim();
-  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; } }
-  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:''}); }
+  /* 分支获取选 Jenkins 时分支取自多分支任务子任务名，仓库 URL 可留空（任务框必填）；其余方式仍必填 URL */
+  if(isJenkinsFetchMode(fm)){ if(!jkJob){ alert('分支获取为 Jenkins 时请填写多分支任务或 refs 接口地址'); return; } }
+  else if(!url){ alert('请填写仓库 URL'); return; }
+  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url||jkJob; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; } }
+  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url||jkJob, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:''}); }
   if(repoEditId){ delete repoBranches[repoEditId]; } saveRepos(); resetRepoForm(); renderRepos(); renderRepoOptions();
 }
 function delRepo(id){ if(!confirm('删除该代码仓？')) return; repositories=repositories.filter(r=>r.id!==id); if(!repositories.length){ repositories=[{id:'repo-1',name:'默认',url:'',user:'',pass:'',fetchMode:'server'}]; } if(curRepoId===id) curRepoId=repositories[0].id; saveRepos(); saveRepoSel(); renderRepos(); renderRepoOptions(); }
@@ -953,8 +955,8 @@ function applyRepoCredAll(){
   repositories.forEach(r=>{ r.user=u; r.pass=p; });
   saveRepos(); renderRepos();
 }
-/* 分支获取方式切换：仅 Jenkins（浏览器直连/服务端代连）时显示任务选择框 */
-function toggleRepoJenkinsJobInput(){ const sel=$('repoFetchMode'); const inp=$('repoJenkinsJob'); if(!sel||!inp) return; inp.style.display = isJenkinsFetchMode(sel.value)?'':'none'; }
+/* 分支获取方式切换：仅 Jenkins（浏览器直连/服务端代连）时显示任务选择框；Jenkins 模式下 URL 可留空，联动占位提示 */
+function toggleRepoJenkinsJobInput(){ const sel=$('repoFetchMode'); const inp=$('repoJenkinsJob'); if(!sel||!inp) return; const jk=isJenkinsFetchMode(sel.value); inp.style.display = jk?'':'none'; const urlInp=$('repoUrl'); if(urlInp) urlInp.placeholder = jk?'URL（Jenkins 模式可留空）':'URL（如 https://git.example.com/dev/myapp.git）'; }
 /* 代码仓联通性检测 + 远程分支/Tag 列举：fetchMode='server'(默认)→/api/worktable/git-remote(git ls-remote)；'browser'→直连 /info/refs 解析 smart-HTTP（需服务器开 CORS）；'jenkins-browser'/'jenkins-server'→经配置的 Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连） */
 let repoBranches={};   // repoId -> {branches:[], tags:[], error:'', loading?}
 
