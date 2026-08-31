@@ -1,0 +1,855 @@
+<!doctype html>
+<!-- PR 检视台 · 拉取 GitCode 组织(TokensService)下所有仓库的 PR，点击进入 AI 检视并新建 DSH 会话。
+     皮肤由工作台提供：<link rel="stylesheet" href="/api/worktable/template/dshell.css"> -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PR 检视台 · TokensService</title>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <script>
+    // 首帧前设定主题，避免闪烁；默认跟随系统
+    (function () {
+      try {
+        var t = localStorage.getItem("gc_pr_theme") || "system";
+        if (t !== "light" && t !== "dark" && t !== "system") t = "system";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { document.documentElement.setAttribute("data-theme", "system"); }
+    })();
+  </script>
+  <style>
+    /* —— 主题：深色 / 浅色 / 跟随系统（独立于宿主，覆盖 dshell 默认深色）—— */
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+      --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+      --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+      --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+      --pr-skel:rgba(255,255,255,.10);
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+      --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+      --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+      --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+      --pr-skel:rgba(0,0,0,.10);
+    }
+    html[data-theme="system"] { color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="system"] {
+        color-scheme: dark;
+        --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+        --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+        --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+        --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+        --pr-skel:rgba(255,255,255,.10);
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      html[data-theme="system"] {
+        color-scheme: light;
+        --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+        --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+        --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+        --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+        --pr-skel:rgba(0,0,0,.10);
+      }
+    }
+    html[data-theme="light"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); }
+    @media (prefers-color-scheme: light) { html[data-theme="system"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); } }
+    /* 主题切换分段控件 */
+    .theme-seg { display:inline-flex; align-items:center; gap:2px; padding:2px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:999px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .theme-seg button { border:none; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); font:inherit; font-size:11px; padding:3px 9px; border-radius:999px; cursor:pointer; line-height:1.4; }
+    .theme-seg button:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .theme-seg button.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+
+    /* 仅在 dshell 之上做最小补充：PR 行、标签、布局微调 */
+    .pr-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .pr-toolbar .grow { flex:1 1 220px; }
+    .pr-row { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .pr-row + .pr-row { margin-top:8px; }
+    .pr-row:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .pr-top { display:flex; align-items:flex-start; gap:10px; }
+    .pr-main { flex:1 1 auto; min-width:0; }
+    .pr-title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); word-break:break-word; cursor:pointer; }
+    .pr-title:hover { color:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    .pr-sub { margin-top:3px; font-size:11.5px; color:var(--dsw-alias-label-tertiary,#6b7280); display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+    .pr-repo { color:var(--dsw-alias-label-secondary,#9aa4b2); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .pr-chip { display:inline-flex; align-items:center; gap:4px; padding:1px 7px; border-radius:999px; font-size:10.5px; border:1px solid var(--dsw-alias-border-l1,#262b36); color:var(--dsw-alias-label-secondary,#9aa4b2); background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .pr-chipDraft { color:#d29922; border-color:rgba(210,153,34,.4); }
+    .pr-chipMerged { color:#a371f7; border-color:rgba(163,113,247,.4); }
+    .pr-chipClosed { color:#f85149; border-color:rgba(248,81,73,.4); }
+    .pr-actions { flex:none; display:flex; gap:8px; align-items:center; }
+    .pr-detail { margin-top:6px; padding-top:8px; border-top:1px dashed var(--dsw-alias-border-l1,#262b36); font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .pr-body { white-space:pre-wrap; word-break:break-word; max-height:180px; overflow:auto; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .pr-label { display:inline-block; padding:1px 7px; border-radius:6px; font-size:10.5px; margin:2px 4px 0 0; border:1px solid var(--dsw-alias-border-l1,#262b36); }
+    .pr-mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
+    .pr-empty { text-align:center; padding:34px 10px; color:var(--dsw-alias-label-tertiary,#6b7280); }
+    .pr-skel { height:46px; border-radius:10px; background:var(--pr-skel,rgba(127,127,127,.14)); opacity:.6; }
+    .pr-skel + .pr-skel { margin-top:8px; }
+    .pr-toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:#3fb950; color:#0b0e14; font-weight:600; font-size:12.5px; padding:8px 16px; border-radius:999px; box-shadow:0 6px 22px rgba(0,0,0,.4); z-index:50; opacity:0; transition:opacity .25s; pointer-events:none; }
+    .pr-toast.show { opacity:1; }
+    .pr-toast.err { background:#f85149; color:#fff; }
+    .pr-tokenRow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .pr-tokenRow .grow { flex:1 1 240px; }
+    .pr-link { color:var(--dsw-alias-state-accent-primary,#4f8ef7); text-decoration:none; }
+    .pr-link:hover { text-decoration:underline; }
+    code { background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06)); padding:1px 5px; border-radius:5px; font-size:11px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .pr-progressWrap { display:flex; align-items:center; gap:10px; }
+    .pr-progressText { font-size:11.5px; color:var(--dsw-alias-label-secondary,#9aa4b2); white-space:nowrap; }
+    details.pr-det { margin-top:6px; }
+    details.pr-det > summary { cursor:pointer; font-size:11.5px; color:var(--dsw-alias-label-secondary,#9aa4b2); list-style:none; }
+    details.pr-det > summary::-webkit-details-marker { display:none; }
+    details.pr-det[open] > summary { color:var(--dsw-alias-label-primary,#e6e8eb); }
+  </style>
+</head>
+<body>
+  <div class="dshell" id="app">
+    <!-- 标题区 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div>
+        <h1 class="dshell-title">PR 检视台 · GitCode</h1>
+        <p class="dshell-sub" id="subLine">拉取组织 <span class="pr-repo" id="subOrg">TokensService</span> 下所有仓库的 Pull Request，点击「AI 检视」即新建 AI 聊天会话并送入评审提示。</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div class="theme-seg" id="themeSeg" title="背景主题">
+          <button type="button" data-theme="system">系统</button>
+          <button type="button" data-theme="dark">深</button>
+          <button type="button" data-theme="light">浅</button>
+        </div>
+        <button class="dshell-btn" id="btnPageModify" title="新建 AI 会话修改 pipeline 页面">✎ 页面修改</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnSettings" title="切换到设置标签">⚙ 设置</button>
+        <button class="dshell-btn" id="btnRefresh" title="重新拉取">↻ 刷新 PR</button>
+      </div>
+    </div>
+
+    <!-- 视图标签页：PR 列表 / 设置（设置标签只显示设置信息） -->
+    <div class="dshell-tabs" id="viewTabs">
+      <button class="dshell-tab dshell-tabOn" data-view="list">PR 列表</button>
+      <button class="dshell-tab" data-view="settings">设置</button>
+    </div>
+
+    <!-- 列表视图 -->
+    <div id="viewList">
+    <!-- 状态徽标 -->
+    <div id="statusBar" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+
+    <!-- 统计卡片 -->
+    <div class="dshell-grid" id="stats"></div>
+
+    <!-- 工具条：搜索 + 状态筛选 -->
+    <div class="pr-toolbar" id="toolbar" style="display:none">
+      <input class="dshell-input grow" id="searchInput" placeholder="按仓库 / 标题 / 作者 / 分支搜索…" />
+      <div class="dshell-tabs" id="stateTabs" style="border:none">
+        <button class="dshell-tab dshell-tabOn" data-state="open">开放</button>
+        <button class="dshell-tab" data-state="closed">已关闭</button>
+        <button class="dshell-tab" data-state="all">全部</button>
+      </div>
+    </div>
+
+    <!-- 列表 -->
+    <div id="list"></div>
+    </div><!-- /viewList -->
+
+    <!-- 设置视图：只显示设置信息，切到此标签时隐藏列表 -->
+    <div id="viewSettings" style="display:none">
+      <!-- GitCode 访问令牌 -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">GitCode 访问令牌</h2>
+        <div class="dshell-kv" style="margin-bottom:10px">
+          <div class="dshell-kvRow"><span class="dshell-kvKey">为什么需要令牌</span><span class="dshell-kvValue">组织 TokensService 为私有，匿名访问返回 403</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">令牌存储</span><span class="dshell-kvValue">仅存于本机浏览器 localStorage</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">申请令牌</span><span class="dshell-kvValue"><a class="pr-link" href="https://gitcode.com/profile/personal-access-tokens" target="_blank" rel="noopener">GitCode 个人访问令牌 →</a></span></div>
+        </div>
+        <div class="pr-tokenRow">
+          <input class="dshell-input grow" id="tokenInput" type="password" placeholder="粘贴 GitCode 个人访问令牌（private access token）" autocomplete="off" />
+          <select class="dshell-input" id="authMode" style="flex:0 0 auto;width:auto">
+            <option value="auto">认证: 自动(推荐)</option>
+            <option value="bearer">认证: Bearer 头</option>
+            <option value="query">认证: access_token 参数</option>
+            <option value="token">认证: token 头</option>
+            <option value="private">认证: private-token 头(可能被 CORS 拦截)</option>
+          </select>
+        </div>
+        <div class="pr-tokenRow" style="margin-top:8px">
+          <button class="dshell-btn" id="btnTest">测试连接</button>
+          <button class="dshell-btn dshell-btnGhost" id="btnClearToken">清除令牌</button>
+          <span class="dshell-muted" id="testResult" style="flex:1 1 auto"></span>
+        </div>
+      </div>
+
+      <!-- 组织与评审 -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">组织与评审</h2>
+        <div class="pr-tokenRow">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">组织/用户命名空间
+            <input class="dshell-input" id="orgInput" placeholder="TokensService" style="width:200px" />
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="embedToken" /> 评审提示中携带令牌（便于 AI 直接拉取私有仓库 diff）
+          </label>
+        </div>
+      </div>
+
+      <!-- AI 检视提示词模板 -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 6px">AI 检视提示词模板</h2>
+        <p class="dshell-muted" style="margin:0 0 8px;line-height:1.7">
+          占位：<code>{{owner}}</code> <code>{{repo}}</code> <code>{{number}}</code> <code>{{title}}</code> <code>{{author}}</code> <code>{{head}}</code> <code>{{base}}</code> <code>{{state}}</code> <code>{{draft}}</code> <code>{{changed}}</code> <code>{{add}}</code> <code>{{del}}</code> <code>{{html_url}}</code> <code>{{body}}</code> <code>{{files_api}}</code> <code>{{detail_api}}</code> <code>{{curl_auth}}</code> <code>{{token}}</code><br />
+          <code>{{#x}}…{{/x}}</code> 仅当 x 有值时输出；<code>{{^x}}…{{/x}}</code> 仅当 x 无值时输出。留空保存即恢复默认。
+        </p>
+        <textarea class="dshell-textarea" id="tplInput" rows="16" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;min-height:260px;line-height:1.5"></textarea>
+        <div class="pr-tokenRow" style="margin-top:8px">
+          <button class="dshell-btn dshell-btnGhost" id="btnRestoreTpl">恢复默认提示词</button>
+          <span class="dshell-muted" style="flex:1 1 auto">点「保存设置」后生效。</span>
+        </div>
+      </div>
+
+      <!-- 页面修改提示词 -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 6px">页面修改提示词</h2>
+        <p class="dshell-muted" style="margin:0 0 8px">右上角「✎ 页面修改」会新建 AI 会话并发送此提示；可改页面路径或指令。</p>
+        <textarea class="dshell-textarea" id="pagePromptInput" rows="8" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;min-height:150px;line-height:1.5"></textarea>
+        <div class="pr-tokenRow" style="margin-top:8px">
+          <button class="dshell-btn dshell-btnGhost" id="btnRestorePagePrompt">恢复默认</button>
+          <span class="dshell-muted" style="flex:1 1 auto">点「保存设置」后生效。</span>
+        </div>
+      </div>
+
+      <div class="pr-tokenRow">
+        <button class="dshell-btn" id="btnSaveSettings">保存设置</button>
+        <span class="dshell-muted" style="flex:1 1 auto">保存后自动切回 PR 列表并刷新。</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="pr-toast" id="toast"></div>
+
+<script>
+"use strict";
+(function () {
+  var LS = { token: "gc_pr_token", org: "gc_pr_org", authMode: "gc_pr_authmode", embed: "gc_pr_embed", template: "gc_pr_template", pagePrompt: "gc_pr_pageprompt" };
+  var API = "https://api.gitcode.com/api/v5";
+  var DEFAULT_ORG = "TokensService";
+
+  /* AI 检视提示词默认模板（支持 {{var}} 与 {{#x}}..{{/x}} / {{^x}}..{{/x}} 条件块） */
+  var DEFAULT_TEMPLATE = [
+    "请对以下 GitCode Pull Request 进行代码检视（Code Review）。",
+    "",
+    "- 仓库: {{owner}}/{{repo}}",
+    "- PR #{{number}}: {{title}}",
+    "{{#author}}- 作者: @{{author}}",
+    "{{/author}}- 分支: {{head}} → {{base}}",
+    "- 状态: {{state}}{{draft}}",
+    "{{#changed}}- 变更文件: {{changed}}（+{{add}} / -{{del}}）",
+    "{{/changed}}- PR 页面: {{html_url}}",
+    "{{#body}}",
+    "## PR 描述",
+    "{{body}}",
+    "{{/body}}## 检视步骤建议",
+    "1. 获取变更文件与 diff：",
+    '   curl -sS{{curl_auth}} "{{files_api}}"',
+    '   curl -sS{{curl_auth}} "{{detail_api}}"',
+    "{{^token}}   （私有仓库需要 GitCode 个人访问令牌；如缺少，请向用户索取。）",
+    "{{/token}}2. 总结本 PR 的目的与主要变更。",
+    "3. 逐文件审查：指出 bug、安全风险、性能问题、并发/资源问题、可维护性与命名风格问题，给出具体改进建议与修正代码示例。",
+    "4. 给出合并结论：Approve / 需修改 / 拒绝，并说明理由与阻塞项。",
+    "",
+    "开始检视。"
+  ].join("\n");
+  function renderTemplate(tpl, ctx) {
+    // 条件块：有值时输出
+    tpl = tpl.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, function (_, name, body) {
+      return ctx[name] ? renderTemplate(body, ctx) : "";
+    });
+    // 反向块：无值时输出
+    tpl = tpl.replace(/\{\{\^(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, function (_, name, body) {
+      return ctx[name] ? "" : renderTemplate(body, ctx);
+    });
+    // 变量替换
+    tpl = tpl.replace(/\{\{(\w+)\}\}/g, function (_, name) {
+      return ctx[name] != null && ctx[name] !== undefined ? String(ctx[name]) : "";
+    });
+    return tpl;
+  }
+
+  /* 「页面修改」默认提示词（可在设置标签编辑） */
+  var DEFAULT_PAGE_PROMPT = [
+    "页面文件：/mnt/paas/op_test/worktable/pipeline/pipeline.html，这是一个 DeepSeek Harness worktable 插件的页面。",
+    "请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。",
+    "修改完成后提醒我刷新页面查看效果。",
+    "修改代码时，创建一个 git worktree 修改，防止多个并行的修改冲突。"
+  ].join("\n");
+  function buildPagePrompt() {
+    var tpl = (state.pagePrompt && String(state.pagePrompt).trim()) ? state.pagePrompt : DEFAULT_PAGE_PROMPT;
+    return tpl;
+  }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var app = $("app"), sub = $("subLine"), subOrg = $("subOrg");
+  var btnSettings = $("btnSettings"), btnRefresh = $("btnRefresh");
+  var tokenInput = $("tokenInput"), orgInput = $("orgInput"), authModeSel = $("authMode"), embedToken = $("embedToken");
+  var tplInput = $("tplInput"), btnRestoreTpl = $("btnRestoreTpl"), btnSave = $("btnSaveSettings"), btnClear = $("btnClearToken");
+  var btnTest = $("btnTest"), testResult = $("testResult");
+  var pagePromptInput = $("pagePromptInput"), btnRestorePagePrompt = $("btnRestorePagePrompt"), btnPageModify = $("btnPageModify");
+  var viewTabs = $("viewTabs"), viewList = $("viewList"), viewSettings = $("viewSettings");
+  var searchInput = $("searchInput"), stateTabs = $("stateTabs"), toolbar = $("toolbar");
+  var statsEl = $("stats"), listEl = $("list"), statusBar = $("statusBar"), toastEl = $("toast");
+
+  var state = {
+    token: localStorage.getItem(LS.token) || "",
+    org: localStorage.getItem(LS.org) || DEFAULT_ORG,
+    authMode: localStorage.getItem(LS.authMode) || "auto",
+    embed: localStorage.getItem(LS.embed) !== "0",
+    template: localStorage.getItem(LS.template) || DEFAULT_TEMPLATE,
+    pagePrompt: localStorage.getItem(LS.pagePrompt) || DEFAULT_PAGE_PROMPT,
+    prs: [],            // 全部 PR（含 repo 信息）
+    repos: [],          // 仓库列表
+    filterState: "open",
+    keyword: "",
+    loading: false,
+    lastErr: ""
+  };
+
+  subOrg.textContent = state.org;
+
+  /* ---------- 工具 ---------- */
+  function toast(msg, isErr) {
+    toastEl.textContent = msg;
+    toastEl.classList.toggle("err", !!isErr);
+    toastEl.classList.add("show");
+    setTimeout(function () { toastEl.classList.remove("show"); }, 2600);
+  }
+  function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  }); }
+  function timeAgo(iso) {
+    if (!iso) return "";
+    var t = new Date(iso); if (isNaN(t)) return "";
+    var d = (Date.now() - t.getTime()) / 1000;
+    if (d < 60) return "刚刚";
+    if (d < 3600) return Math.floor(d / 60) + " 分钟前";
+    if (d < 86400) return Math.floor(d / 3600) + " 小时前";
+    if (d < 2592000) return Math.floor(d / 86400) + " 天前";
+    return t.toISOString().slice(0, 10);
+  }
+  function setBadge(state_, draft) {
+    if (draft) return '<span class="pr-chip pr-chipDraft">● 草稿</span>';
+    if (state_ === "open") return '<span class="dshell-badge dshell-badgeWait">开放</span>';
+    if (state_ === "merged") return '<span class="pr-chip pr-chipMerged">● 已合并</span>';
+    if (state_ === "closed") return '<span class="pr-chip pr-chipClosed">● 已关闭</span>';
+    return '<span class="dshell-badge">● ' + esc(state_ || "未知") + "</span>";
+  }
+
+  /* ---------- 认证：构造请求（CORS 安全） ---------- */
+  function applyAuth(url, mode) {
+    var tok = state.token ? state.token.trim() : "";
+    var headers = {};
+    if (tok) {
+      if (mode === "auto" || mode === "bearer") headers["Authorization"] = "Bearer " + tok;
+      if (mode === "token") headers["token"] = tok;
+      if (mode === "private") headers["private-token"] = tok; // 可能被 CORS 拦截
+      if (mode === "auto" || mode === "query") {
+        var sep = url.indexOf("?") >= 0 ? "&" : "?";
+        url = url + sep + "access_token=" + encodeURIComponent(tok);
+      }
+    }
+    return { url: url, headers: headers };
+  }
+
+  function fetchJSON(path, mode) {
+    var a = applyAuth(API + path, mode || state.authMode);
+    return fetch(a.url, {
+      method: "GET",
+      credentials: "omit",
+      headers: a.headers
+    }).then(function (r) {
+      var ct = r.headers.get("content-type") || "";
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var m = "HTTP " + r.status;
+          try { var j = JSON.parse(t); if (j.error_message) m = j.error_message; } catch (e) {}
+          throw new Error(m);
+        });
+      }
+      if (ct.indexOf("application/json") >= 0) return r.json();
+      return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return []; } });
+    });
+  }
+
+  /* ---------- 分页拉取 ---------- */
+  function fetchAll(pathBase, perPage, mode) {
+    var out = [];
+    function page(n) {
+      var sep = pathBase.indexOf("?") >= 0 ? "&" : "?";
+      return fetchJSON(pathBase + sep + "page=" + n + "&per_page=" + perPage, mode).then(function (arr) {
+        if (!Array.isArray(arr)) return out;
+        out = out.concat(arr);
+        if (arr.length < perPage) return out; // 最后一页
+        if (n >= 20) return out; // 安全上限：20 页
+        return page(n + 1);
+      });
+    }
+    return page(1);
+  }
+
+  /* ---------- 拉取组织/用户仓库 ---------- */
+  function fetchRepos(org, mode) {
+    // 先按组织尝试；404 再按用户命名空间尝试
+    return fetchAll("/orgs/" + encodeURIComponent(org) + "/repos", 100, mode)
+      .catch(function (e) {
+        var msg = String(e.message || e);
+        if (/404|not found/i.test(msg)) {
+          return fetchAll("/users/" + encodeURIComponent(org) + "/repos", 100, mode);
+        }
+        throw e;
+      });
+  }
+
+  /* ---------- 拉取仓库 PR ---------- */
+  function fetchRepoPRs(owner, repo, st, mode) {
+    return fetchAll("/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls?state=" + st, 50, mode)
+      .catch(function () { return []; }); // 单仓库失败不阻断整体
+  }
+
+  /* ---------- 渲染 ---------- */
+  function renderStats() {
+    var total = state.prs.length;
+    var open = 0, draft = 0, merged = 0, closed = 0, repos = state.repos.length;
+    state.prs.forEach(function (p) {
+      if (p.draft) draft++;
+      if (p.state === "open") open++;
+      else if (p.state === "merged") merged++;
+      else if (p.state === "closed") closed++;
+    });
+    statsEl.innerHTML = [
+      stat("仓库数", repos),
+      stat("PR 总数", total),
+      stat("开放 PR", open, open > 0),
+      stat("草稿", draft),
+      stat("已合并", merged),
+      stat("已关闭", closed)
+    ].join("");
+  }
+  function stat(label, val, accent) {
+    return '<div class="dshell-stat"><div class="dshell-statLabel">' + esc(label) + "</div>" +
+      '<div class="dshell-statValue"' + (accent ? ' style="color:#3fb950"' : "") + ">" + esc(String(val)) + "</div></div>";
+  }
+
+  function filtered() {
+    var k = state.keyword.trim().toLowerCase();
+    return state.prs.filter(function (p) {
+      if (state.filterState !== "all" && (p.state || "open") !== state.filterState) return false;
+      if (!k) return true;
+      var hay = [p.repo, p.owner, p.title, p.number, p.head, p.base, p.author].filter(Boolean).join(" ").toLowerCase();
+      return hay.indexOf(k) >= 0;
+    });
+  }
+
+  function renderList() {
+    if (state.loading) { renderLoading(); return; }
+    var arr = filtered();
+    if (state.lastErr) {
+      listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">⚠</div>' +
+        '<div style="color:#f85149;margin-bottom:4px">' + esc(state.lastErr) + "</div>" +
+        '<div>请检查令牌与权限，或更换认证方式后重试。</div></div>';
+      return;
+    }
+    if (!arr.length) {
+      listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">✓</div>' +
+        (state.prs.length ? "没有符合筛选条件的 PR" : "当前没有可显示的 PR") + "</div>";
+      return;
+    }
+    var html = [];
+    arr.forEach(function (p, i) {
+      var id = "prdet" + i;
+      html.push('<div class="pr-row">');
+      html.push('  <div class="pr-top">');
+      html.push('    <div class="pr-main">');
+      html.push('      <div class="pr-title" data-open="' + i + '">' + esc(p.title) +
+        ' <span class="pr-mono" style="color:var(--dsw-alias-label-tertiary,#6b7280)">#' + esc(String(p.number)) + "</span></div>");
+      html.push('      <div class="pr-sub">');
+      html.push('        <span class="pr-repo">' + esc(p.repo || "") + "</span>");
+      if (p.author) html.push('<span>@' + esc(p.author) + "</span>");
+      if (p.head || p.base) html.push('<span class="pr-mono">' + esc(p.head || "—") + " → " + esc(p.base || "—") + "</span>");
+      if (p.changed != null) html.push('<span>' + esc(String(p.changed)) + " 文件</span>");
+      if (p.add != null && p.del != null) html.push('<span style="color:#3fb950">+' + esc(p.add) + "</span><span style=\"color:#f85149\">-" + esc(p.del) + "</span>");
+      if (p.comments != null) html.push('<span>💬 ' + esc(String(p.comments)) + "</span>");
+      html.push('        <span>' + esc(timeAgo(p.updated)) + "</span>");
+      html.push("      </div>");
+      html.push("    </div>");
+      html.push('    <div class="pr-actions">' + setBadge(p.state, p.draft) +
+        ' <button class="dshell-btn" data-review="' + i + '">✦ AI 检视</button></div>');
+      html.push("  </div>");
+      // 折叠详情
+      html.push('  <details class="pr-det"><summary>查看描述 / 标签 / 链接 ▾</summary>');
+      html.push('    <div class="pr-detail">');
+      if (p.labels && p.labels.length) {
+        html.push('      <div style="margin-bottom:6px">' + p.labels.map(function (l) {
+          var name = (typeof l === "string" ? l : (l && l.name)) || "";
+          return '<span class="pr-label">' + esc(name) + "</span>";
+        }).join("") + "</div>");
+      }
+      if (p.body) html.push('      <div class="pr-body">' + esc(p.body.slice(0, 1200)) + (p.body.length > 1200 ? "\n…" : "") + "</div>");
+      html.push('      <div class="pr-mono" style="margin-top:6px"><a class="pr-link" href="' + esc(p.htmlUrl) + '" target="_blank" rel="noopener">' + esc(p.htmlUrl) + "</a></div>");
+      html.push("    </div>");
+      html.push("  </details>");
+      html.push("</div>");
+    });
+    listEl.innerHTML = html.join("");
+    // 绑定事件
+    Array.prototype.forEach.call(listEl.querySelectorAll("[data-review]"), function (btn) {
+      btn.addEventListener("click", function () { onReview(filtered()[+btn.getAttribute("data-review")]); });
+    });
+    Array.prototype.forEach.call(listEl.querySelectorAll("[data-open]"), function (el) {
+      el.addEventListener("click", function () {
+        var p = filtered()[+el.getAttribute("data-open")];
+        if (p && p.htmlUrl) window.open(p.htmlUrl, "_blank", "noopener");
+      });
+    });
+  }
+
+  function renderLoading() {
+    statusBar.innerHTML = '<span class="dshell-badge dshell-badgeWait">加载中…</span>';
+    var prog = Math.min(state.repos.length, state.repoDone);
+    statsEl.innerHTML = stat("仓库", state.repos.length) + stat("已扫描", state.repoDone) + stat("已发现 PR", state.prs.length);
+    var h = "";
+    for (var i = 0; i < 6; i++) h += '<div class="pr-skel"></div>';
+    listEl.innerHTML = '<div style="margin-top:4px">' + h + "</div>";
+  }
+
+  function renderStatus() {
+    var s = "";
+    if (state.token) s += '<span class="dshell-badge dshell-badgeDone">令牌已设置</span>';
+    else s += '<span class="dshell-badge dshell-badgeWait">未设置令牌</span>';
+    s += '<span class="dshell-badge">组织: ' + esc(state.org) + "</span>";
+    s += '<span class="dshell-badge">认证: ' + esc(state.authMode) + "</span>";
+    if (state.embed) s += '<span class="dshell-badge">提示含令牌</span>';
+    if (state.lastLoaded) s += '<span class="dshell-muted">· 更新于 ' + esc(state.lastLoaded) + "</span>";
+    statusBar.innerHTML = s;
+  }
+
+  /* ---------- 主流程：拉取全部 ---------- */
+  function loadAll() {
+    if (!state.token) {
+      state.loading = false;
+      listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">🔑</div>' +
+        '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 GitCode 访问令牌</div>' +
+        '<div style="margin-bottom:12px">组织 TokensService 为私有，需令牌才能拉取 PR。</div>' +
+        '<button class="dshell-btn" id="emptyOpenSettings">⚙ 去设置</button></div>';
+      var eb = $("emptyOpenSettings"); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+      renderStatus(); renderStats();
+      return;
+    }
+    state.loading = true; state.lastErr = ""; state.prs = []; state.repos = []; state.repoDone = 0;
+    toolbar.style.display = "none";
+    renderLoading(); renderStatus();
+    fetchRepos(state.org, state.authMode).then(function (repos) {
+      state.repos = (repos || []).map(function (r) {
+        return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
+      }).filter(function (r) { return r.name; });
+      renderLoading();
+      // 并发拉取各仓库 PR（限流 4）
+      var idx = 0, active = 0, done = 0;
+      return new Promise(function (resolve) {
+        function next() {
+          while (active < 4 && idx < state.repos.length) {
+            (function (repo) {
+              active++;
+              fetchRepoPRs(repo.owner, repo.name, "all", state.authMode).then(function (pulls) {
+                (pulls || []).forEach(function (p) {
+                  var author = p.user && (p.user.login || p.user.name);
+                  state.prs.push({
+                    repo: repo.name, owner: repo.owner,
+                    number: p.number, title: p.title || "(无标题)",
+                    author: author, state: p.state || "open", draft: !!p.draft,
+                    head: p.head && (p.head.ref || p.head.label), base: p.base && (p.base.ref || p.base.label),
+                    body: p.body || "", htmlUrl: p.html_url || "",
+                    labels: p.labels || [], comments: p.comments,
+                    changed: p.changed_files, add: p.additions, del: p.deletions,
+                    updated: p.updated_at || p.created_at
+                  });
+                });
+              }).catch(function () {}).then(function () {
+                active--; done++; state.repoDone = done;
+                renderLoading();
+                if (done >= state.repos.length) resolve();
+                else while (active < 4 && idx < state.repos.length) next();
+              });
+              idx++;
+            })(state.repos[idx]);
+          }
+          if (state.repos.length === 0) resolve();
+        }
+        next();
+      });
+    }).then(function () {
+      // 排序：开放优先，再按更新时间倒序
+      state.prs.sort(function (a, b) {
+        var oa = a.state === "open" ? 0 : 1, ob = b.state === "open" ? 0 : 1;
+        if (oa !== ob) return oa - ob;
+        return (new Date(b.updated || 0)) - (new Date(a.updated || 0));
+      });
+      state.loading = false;
+      state.lastLoaded = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      toolbar.style.display = "flex";
+      renderStatus(); renderStats(); renderList();
+      toast("拉取完成：共 " + state.prs.length + " 个 PR");
+    }).catch(function (e) {
+      state.loading = false;
+      state.lastErr = String(e && e.message || e);
+      renderStatus(); renderStats(); renderList();
+      toast("拉取失败：" + state.lastErr, true);
+    });
+  }
+
+  /* ---------- AI 检视：新建 AI 聊天会话并送入评审提示 ---------- */
+  function buildReviewPrompt(p) {
+    var tok = state.embed ? (state.token || "").trim() : "";
+    var owner = p.owner || state.org, repo = p.name || p.repo;
+    var ctx = {
+      owner: owner, repo: repo,
+      number: p.number, title: p.title || "(无标题)",
+      author: p.author || "", head: p.head || "—", base: p.base || "—",
+      state: p.state || "open", draft: p.draft ? "（草稿）" : "",
+      changed: p.changed != null ? String(p.changed) : "",
+      add: p.add != null ? String(p.add) : "",
+      del: p.del != null ? String(p.del) : "",
+      html_url: p.htmlUrl || "", body: p.body || "",
+      files_api: API + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number) + "/files",
+      detail_api: API + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number),
+      curl_auth: tok ? ' -H "Authorization: Bearer ' + tok + '"' : "",
+      token: tok
+    };
+    var tpl = (state.template && String(state.template).trim()) ? state.template : DEFAULT_TEMPLATE;
+    return renderTemplate(tpl, ctx).replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").trim() + "\n";
+  }
+
+  // 攀升父级窗口寻找工作台注入的宿主桥（__dsh* 挂在 DSH 顶层 window 上）
+  function getHost() {
+    var stack = [];
+    try { if (window.parent && window.parent !== window) stack.push(window.parent); } catch (e) {}
+    try { if (window.top && window.top !== window) stack.push(window.top); } catch (e) {}
+    try { var c = window.parent, n = 0; while (c && n++ < 20) { stack.push(c); if (c === c.parent) break; c = c.parent; } } catch (e) {}
+    for (var i = 0; i < stack.length; i++) {
+      var w = stack[i];
+      try { if (w && w.__dshSessions && typeof w.__dshSessions.create === "function") return w; } catch (e) {}
+    }
+    return null;
+  }
+
+  // 尽力为新会话设定默认预设/模型（对齐工作台插件内部流程；任何失败均静默忽略）
+  async function ensureSessionReady(host, sid) {
+    var api = host.__dshHostApi;
+    if (!api) return;
+    try {
+      var ap = api.agentPresets;
+      if (ap && typeof ap.list === "function" && typeof ap.select === "function") {
+        var lr = await ap.list({});
+        var presets = lr && lr.result && lr.result.ok ? (lr.result.value && lr.result.value.presets) : null;
+        if (Array.isArray(presets) && presets.length) {
+          var def = presets.find(function (x) { return x && x.isDefault; }) || presets[0];
+          if (def && def.id) { try { await ap.select({ sessionId: sid, agentPreset: def.id }); } catch (e) {} }
+        }
+      }
+    } catch (e) {}
+    try {
+      var sm = api.sessions;
+      if (sm && typeof sm.models === "function" && typeof sm.selectModel === "function") {
+        var mr = await sm.models({ sessionId: sid });
+        var v = mr && mr.result && mr.result.ok ? mr.result.value : null;
+        if (v && v.routable !== true) {
+          var pick = null;
+          var groups = v.groups || [];
+          for (var gi = 0; gi < groups.length && !pick; gi++) {
+            var g = groups[gi] || {};
+            var items = g.models || g.items || (g.model ? [g] : []);
+            for (var ii = 0; ii < items.length; ii++) {
+              var it = items[ii];
+              if (it && it.provider && it.model) { pick = it; break; }
+            }
+          }
+          if (pick) { try { await sm.selectModel({ sessionId: sid, provider: pick.provider, model: pick.model }); } catch (e) {} }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 新建 DSH AI 聊天会话并送入提示（宿主桥；失败则兜底复制 + 新标签打开 DSH）
+  function launchNewSession(prompt, successMsg) {
+    var host = getHost();
+    if (host) {
+      toast("正在新建 AI 聊天会话…");
+      (async function () {
+        try {
+          var sid = await host.__dshSessions.create({});
+          if (!sid) throw new Error("会话创建失败");
+          await ensureSessionReady(host, sid);
+          try { if (typeof host.__dshOpenSession === "function") await host.__dshOpenSession(sid); } catch (e) {}
+          if (typeof host.__dshPromptIntoSession !== "function") throw new Error("缺少提示接口");
+          await host.__dshPromptIntoSession(sid, prompt);
+          toast(successMsg);
+        } catch (e) {
+          fallbackReview(prompt);
+        }
+      })();
+      return;
+    }
+    fallbackReview(prompt);
+  }
+  function onReview(p) {
+    if (!p) return;
+    launchNewSession(buildReviewPrompt(p), "已新建 AI 聊天会话并开始检视 PR #" + p.number);
+  }
+  function onPageModify() {
+    launchNewSession(buildPagePrompt(), "已新建 AI 会话，进行页面修改");
+  }
+
+  // 兜底：复制提示 + 新标签打开 DSH（手动新建会话后粘贴发送）
+  function fallbackReview(prompt) {
+    var done = function () { toast("已复制提示 · 请在新 DSH 会话中粘贴发送"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(prompt).then(done, function () { fallbackCopy(prompt, done); });
+    } else { fallbackCopy(prompt, done); }
+    try {
+      var dshUrl = (location.origin && location.origin.indexOf("http") === 0) ? location.origin : "http://127.0.0.1:3080";
+      window.open(dshUrl + "/", "_blank", "noopener");
+    } catch (e) { /* 弹窗被拦截时，用户已复制提示，可手动打开 */ }
+  }
+  function fallbackCopy(text, cb) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta); cb && cb();
+    } catch (e) { cb && cb(); }
+  }
+
+  /* ---------- 设置面板 ---------- */
+  /* ---------- 设置标签页（仅显示设置信息） ---------- */
+  function switchView(view) {
+    var isList = view === "list";
+    viewList.style.display = isList ? "" : "none";
+    viewSettings.style.display = isList ? "none" : "";
+    Array.prototype.forEach.call(viewTabs.querySelectorAll(".dshell-tab"), function (t) {
+      t.classList.toggle("dshell-tabOn", t.getAttribute("data-view") === view);
+    });
+  }
+  function populateSettings() {
+    tokenInput.value = state.token;
+    orgInput.value = state.org;
+    authModeSel.value = state.authMode;
+    embedToken.checked = state.embed;
+    tplInput.value = state.template || DEFAULT_TEMPLATE;
+    pagePromptInput.value = state.pagePrompt || DEFAULT_PAGE_PROMPT;
+    testResult.textContent = "";
+  }
+  function saveSettings() {
+    state.token = tokenInput.value.trim();
+    state.org = (orgInput.value.trim() || DEFAULT_ORG);
+    state.authMode = authModeSel.value;
+    state.embed = embedToken.checked;
+    state.template = (tplInput.value && tplInput.value.trim()) ? tplInput.value : DEFAULT_TEMPLATE;
+    state.pagePrompt = (pagePromptInput.value && pagePromptInput.value.trim()) ? pagePromptInput.value : DEFAULT_PAGE_PROMPT;
+    localStorage.setItem(LS.token, state.token);
+    localStorage.setItem(LS.org, state.org);
+    localStorage.setItem(LS.authMode, state.authMode);
+    localStorage.setItem(LS.embed, state.embed ? "1" : "0");
+    localStorage.setItem(LS.template, state.template);
+    localStorage.setItem(LS.pagePrompt, state.pagePrompt);
+    subOrg.textContent = state.org;
+    renderStatus();
+    toast("已保存设置");
+    switchView("list");
+    loadAll();
+  }
+  function clearToken() {
+    state.token = ""; tokenInput.value = "";
+    localStorage.removeItem(LS.token);
+    toast("已清除令牌");
+    renderStatus();
+  }
+  function testConnection() {
+    var tok = tokenInput.value.trim();
+    var org = (orgInput.value.trim() || DEFAULT_ORG);
+    var mode = authModeSel.value;
+    if (!tok) { toast("请先填写令牌", true); return; }
+    testResult.textContent = "测试中…";
+    var headers = {};
+    var url = API + "/orgs/" + encodeURIComponent(org) + "/repos?per_page=1";
+    if (mode === "auto" || mode === "bearer") headers["Authorization"] = "Bearer " + tok;
+    if (mode === "token") headers["token"] = tok;
+    if (mode === "private") headers["private-token"] = tok;
+    if (mode === "auto" || mode === "query") url = url + "&access_token=" + encodeURIComponent(tok);
+    fetch(url, { method: "GET", credentials: "omit", headers: headers })
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { var m = "HTTP " + r.status; try { var j = JSON.parse(t); if (j.error_message) m = j.error_message; } catch (e) {} throw new Error(m); });
+        return r.json();
+      })
+      .then(function (arr) {
+        var n = Array.isArray(arr) ? arr.length : 0;
+        testResult.textContent = "连接成功 · " + org + " 可访问" + (n ? "（第 1 页返回 " + n + " 个仓库）" : "");
+        toast("连接成功");
+      })
+      .catch(function (e) {
+        var msg = String(e && e.message || e);
+        testResult.textContent = "失败：" + msg;
+        toast("连接失败：" + msg, true);
+      });
+  }
+
+  /* ---------- 主题切换 ---------- */
+  var themeSeg = $("themeSeg");
+  function applyThemeUI() {
+    var cur = document.documentElement.getAttribute("data-theme") || "system";
+    Array.prototype.forEach.call(themeSeg.querySelectorAll("button"), function (b) {
+      b.classList.toggle("on", b.getAttribute("data-theme") === cur);
+    });
+  }
+  themeSeg.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("button[data-theme]") : null;
+    if (!b) {
+      b = e.target && e.target.getAttribute && e.target.getAttribute("data-theme") ? e.target : null;
+    }
+    if (!b) return;
+    var t = b.getAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", t);
+    try { localStorage.setItem("gc_pr_theme", t); } catch (err) {}
+    applyThemeUI();
+  });
+
+  /* ---------- 事件绑定 ---------- */
+  btnSettings.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+  btnRefresh.addEventListener("click", loadAll);
+  btnSave.addEventListener("click", saveSettings);
+  btnClear.addEventListener("click", clearToken);
+  btnRestoreTpl.addEventListener("click", function () { tplInput.value = DEFAULT_TEMPLATE; toast("已恢复默认提示词"); });
+  btnTest.addEventListener("click", testConnection);
+  btnRestorePagePrompt.addEventListener("click", function () { pagePromptInput.value = DEFAULT_PAGE_PROMPT; toast("已恢复默认页面修改提示词"); });
+  btnPageModify.addEventListener("click", onPageModify);
+  viewTabs.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("button[data-view]") : null;
+    if (!b && e.target && e.target.getAttribute) b = e.target.getAttribute("data-view") ? e.target : null;
+    if (!b) return;
+    if (b.getAttribute("data-view") === "settings") populateSettings();
+    switchView(b.getAttribute("data-view"));
+  });
+  searchInput.addEventListener("input", function () { state.keyword = searchInput.value; renderList(); });
+  Array.prototype.forEach.call(stateTabs.querySelectorAll(".dshell-tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      Array.prototype.forEach.call(stateTabs.querySelectorAll(".dshell-tab"), function (t) { t.classList.remove("dshell-tabOn"); });
+      tab.classList.add("dshell-tabOn");
+      state.filterState = tab.getAttribute("data-state");
+      renderList();
+    });
+  });
+
+  /* ---------- 初始化 ---------- */
+  applyThemeUI();
+  renderStatus(); renderStats(); renderList();
+  loadAll();
+})();
+</script>
+</body>
+</html>

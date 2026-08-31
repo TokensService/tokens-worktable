@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>大模型推理性能诊断</title>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <style>
+    /* 仅图表布局所需的最小自造样式 */
+    .diag-chartgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
+    .diag-canvas { width:100%; height:220px; display:block; }
+    .diag-canvas-sm { height:180px; }
+    .diag-legend { display:flex; flex-wrap:wrap; gap:10px; font-size:12px; opacity:.85; margin-top:6px; }
+    .diag-legend span { display:inline-flex; align-items:center; gap:5px; }
+    .diag-dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+    .diag-hw { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; }
+    .diag-logbox { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; line-height:1.6; max-height:320px; overflow:auto; white-space:pre-wrap; }
+    .diag-log-warn { color:#d97706; } .diag-log-err { color:#dc2626; } .diag-log-info { opacity:.8; }
+    .diag-flow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; }
+    .diag-flow .diag-node { padding:6px 10px; border:1px solid currentColor; border-radius:8px; opacity:.9; }
+    .diag-flow .diag-arrow { opacity:.6; }
+    .diag-note { font-size:12px; opacity:.65; margin-top:6px; }
+  </style>
+</head>
+<body>
+<div class="dshell">
+  <h1 class="dshell-title">大模型推理性能诊断</h1>
+  <p class="dshell-sub">汇聚系统源码指标、普罗米修斯时序、Profiling、日志与硬件信息，定位推理链路性能瓶颈。</p>
+
+  <div>
+    <span class="dshell-badge dshell-badgeDone">指标采集中</span>
+    <span class="dshell-badge dshell-badgeWait" id="healthBadge">健康度评估中</span>
+    <span class="dshell-badge dshell-badgeWait" id="srcBadge">数据源检测中…</span>
+  </div>
+
+  <!-- 标签页 -->
+  <div class="dshell-tabs" id="tabs">
+    <button class="dshell-tab dshell-tabOn" data-tab="overview">概览</button>
+    <button class="dshell-tab" data-tab="latency">时延分解</button>
+    <button class="dshell-tab" data-tab="throughput">吞吐与缓存</button>
+    <button class="dshell-tab" data-tab="kvcache">KV Cache</button>
+    <button class="dshell-tab" data-tab="profiling">Profiling</button>
+    <button class="dshell-tab" data-tab="requests">请求画像</button>
+    <button class="dshell-tab" data-tab="hardware">硬件架构</button>
+    <button class="dshell-tab" data-tab="logs">日志</button>
+    <button class="dshell-tab" data-tab="metrics">指标字典</button>
+  </div>
+
+  <!-- ============ 概览 ============ -->
+  <div class="diag-tabpane" data-pane="overview">
+    <div class="dshell-grid">
+      <div class="dshell-stat"><div class="dshell-statLabel">TTFT P99</div><div class="dshell-statValue" id="ovTtft">—</div><div class="dshell-statDelta" id="ovTtftD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">TPOT P99</div><div class="dshell-statValue" id="ovTpot">—</div><div class="dshell-statDelta" id="ovTpotD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">队列时延 P99</div><div class="dshell-statValue" id="ovQueue">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">吞吐 TPS</div><div class="dshell-statValue" id="ovTps">—</div><div class="dshell-statDelta" id="ovTpsD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">缓存命中率</div><div class="dshell-statValue" id="ovHit">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">KV Blocks 占用</div><div class="dshell-statValue" id="ovKv">—</div></div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">推理链路时延瀑布（最近一次慢请求）</h2>
+      <canvas class="diag-canvas" id="waterfall"></canvas>
+      <div class="diag-note">队列等待 → Prefill → Decode ×N → 转发回传；点击「时延分解」页查看时序趋势。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论（规则引擎自动研判）</h2>
+      <div class="dshell-list" id="diagFindings"></div>
+    </div>
+  </div>
+
+  <!-- ============ 时延分解 ============ -->
+  <div class="diag-tabpane" data-pane="latency" style="display:none">
+    <div class="diag-chartgrid">
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">TTFT（首 Token 时延）时序</h2>
+        <canvas class="diag-canvas" id="chTtft"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#60a5fa"></i>P50</span><span><i class="diag-dot" style="background:#f59e0b"></i>P90</span><span><i class="diag-dot" style="background:#ef4444"></i>P99</span></div>
+      </div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">TPOT（逐 Token 时延）时序</h2>
+        <canvas class="diag-canvas" id="chTpot"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#60a5fa"></i>P50</span><span><i class="diag-dot" style="background:#f59e0b"></i>P90</span><span><i class="diag-dot" style="background:#ef4444"></i>P99</span></div>
+      </div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">各级队列时延</h2>
+        <canvas class="diag-canvas" id="chQueue"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#34d399"></i>网关队列</span><span><i class="diag-dot" style="background:#a78bfa"></i>调度队列</span><span><i class="diag-dot" style="background:#f472b6"></i>PD 转发队列</span></div>
+      </div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">转发时延（Prefill→Decode / 结果回传）</h2>
+        <canvas class="diag-canvas" id="chTransfer"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#22d3ee"></i>KV 传输</span><span><i class="diag-dot" style="background:#fb923c"></i>结果回传</span></div>
+      </div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">时延构成占比（近 5 分钟均值）</h2>
+      <div class="dshell-kv" id="latencyKv"></div>
+      <div class="dshell-divider"></div>
+      <div class="diag-note" id="latencyNote"></div>
+    </div>
+  </div>
+
+  <!-- ============ 吞吐与缓存 ============ -->
+  <div class="diag-tabpane" data-pane="throughput" style="display:none">
+    <div class="diag-chartgrid">
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">TPS / QPS</h2>
+        <canvas class="diag-canvas" id="chTps"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#34d399"></i>TPS（tokens/s）</span><span><i class="diag-dot" style="background:#a78bfa"></i>QPS（req/s）</span></div>
+      </div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">Mooncake 吞吐（KV 池 GB/s）</h2>
+        <canvas class="diag-canvas" id="chMooncake"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#22d3ee"></i>读</span><span><i class="diag-dot" style="background:#fb923c"></i>写</span></div>
+      </div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">前缀缓存命中率（%）</h2>
+        <canvas class="diag-canvas" id="chHit"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#facc15"></i>命中率</span></div>
+      </div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">Batch 规模 / 并发请求</h2>
+        <canvas class="diag-canvas" id="chBatch"></canvas>
+        <div class="diag-legend"><span><i class="diag-dot" style="background:#60a5fa"></i>running batch</span><span><i class="diag-dot" style="background:#f472b6"></i>waiting 请求数</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ KV Cache ============ -->
+  <div class="diag-tabpane" data-pane="kvcache" style="display:none">
+    <div class="dshell-grid">
+      <div class="dshell-stat"><div class="dshell-statLabel">总 Blocks</div><div class="dshell-statValue" id="kvTotal">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">已用 Blocks</div><div class="dshell-statValue" id="kvUsed">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">Block 大小</div><div class="dshell-statValue" id="kvBlockSize">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">抢占/换出次数</div><div class="dshell-statValue" id="kvPreempt">—</div></div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">KV Blocks 占用率时序</h2>
+      <canvas class="diag-canvas" id="chKv"></canvas>
+      <div class="dshell-divider"></div>
+      <div class="dshell-progress"><div class="dshell-progressBar" id="kvBar" style="width:0%"></div></div>
+      <div class="diag-note" id="kvNote"></div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">KV 层级分布（HBM / DRAM / Mooncake 远端池）</h2>
+      <div class="dshell-kv" id="kvTierKv"></div>
+    </div>
+  </div>
+
+  <!-- ============ Profiling ============ -->
+  <div class="diag-tabpane" data-pane="profiling" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">算子耗时 Top10（单次 Decode Step）</h2>
+      <div class="dshell-kv" id="profOps"></div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">Kernel 时间线占比</h2>
+      <canvas class="diag-canvas-sm diag-canvas" id="chProf"></canvas>
+      <div class="diag-note">数据来源：torch profiler / msprof 导出的 trace 汇总，按 kernel 类别聚合。</div>
+    </div>
+  </div>
+
+  <!-- ============ 请求画像 ============ -->
+  <div class="diag-tabpane" data-pane="requests" style="display:none">
+    <div class="diag-chartgrid">
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">输入长度分布（直方图）</h2><canvas class="diag-canvas" id="chInLen"></canvas></div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">输出长度分布（直方图）</h2><canvas class="diag-canvas" id="chOutLen"></canvas></div>
+      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">输入长度 × TTFT 散点</h2><canvas class="diag-canvas" id="chScatter"></canvas></div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">慢请求 Top5</h2>
+        <div class="dshell-list" id="slowReqs"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 硬件架构 ============ -->
+  <div class="diag-tabpane" data-pane="hardware" style="display:none">
+    <div class="diag-flow" style="margin-bottom:12px">
+      <span class="diag-node">网关</span><span class="diag-arrow">→</span>
+      <span class="diag-node">调度器</span><span class="diag-arrow">→</span>
+      <span class="diag-node">Prefill 节点（NPU ×8）</span><span class="diag-arrow">→</span>
+      <span class="diag-node">Mooncake KV 池</span><span class="diag-arrow">→</span>
+      <span class="diag-node">Decode 节点（NPU ×8）</span><span class="diag-arrow">→</span>
+      <span class="diag-node">回传</span>
+    </div>
+    <div class="diag-hw" id="hwCards"></div>
+  </div>
+
+  <!-- ============ 日志 ============ -->
+  <div class="diag-tabpane" data-pane="logs" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">推理服务日志（自动标注异常行）</h2>
+      <div class="diag-logbox" id="logBox"></div>
+    </div>
+  </div>
+
+  <!-- ============ 指标字典 ============ -->
+  <div class="diag-tabpane" data-pane="metrics" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">指标收集清单（数据源 / 采集方式 / 分析用途）</h2>
+      <div class="dshell-kv" id="metricsDict"></div>
+      <div class="dshell-divider"></div>
+      <div class="diag-note">接入方式：将 Prometheus 指标端点、profiler trace 目录与日志路径配置进采集器后，本页数据接口将切换为实时数据。当前展示为样例数据结构演示。</div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:8px;margin-top:4px">
+    <button class="dshell-btn" id="btnRefresh">刷新数据</button>
+    <button class="dshell-btn dshell-btnGhost" id="btnExport">导出诊断报告（JSON）</button>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+/* ================= 样例数据生成（结构 = 真实接入后的数据契约） ================= */
+function rnd(a,b){return a+Math.random()*(b-a);}
+function series(n,a,b,drift){var arr=[],v=rnd(a,b);for(var i=0;i<n;i++){v=Math.max(a,Math.min(b,v+rnd(-drift,drift)));arr.push(+v.toFixed(2));}return arr;}
+var N=48;
+var DATA={
+  ts:Array.from({length:N},function(_,i){var d=new Date(Date.now()-(N-1-i)*5*60000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);}),
+  ttft:{p50:series(N,120,260,18),p90:series(N,300,520,30),p99:series(N,600,980,55)},
+  tpot:{p50:series(N,18,30,2),p90:series(N,35,55,3),p99:series(N,70,120,7)},
+  queue:{gw:series(N,2,12,1.5),sched:series(N,10,60,7),pd:series(N,5,40,5)},
+  transfer:{kv:series(N,8,28,3),back:series(N,2,8,1)},
+  tps:series(N,1800,3200,180), qps:series(N,8,22,1.6),
+  mooncake:{rd:series(N,3.5,7.5,0.5),wr:series(N,1.2,3.0,0.25)},
+  hit:series(N,55,88,3),
+  batch:{run:series(N,24,64,4),wait:series(N,0,18,3)},
+  kv:{total:196608,used:series(N,120000,178000,5200),blockSize:"128 tokens/blk",preempt:Math.round(rnd(0,6)),
+      tiers:[["HBM（片上显存）","72%",0.72],["本机 DRAM（host 侧换出）","19%",0.19],["Mooncake 远端池","9%",0.09]]},
+  profOps:[["attention.scores (MatMul)","28.4%"],["attention.projection","14.1%"],["mlp.gate_up (MatMul)","12.6%"],
+           ["mlp.down (MatMul)","11.8%"],["all_reduce / 通信","9.7%"],["rms_norm","5.9%"],["rope / 位置编码","4.8%"],
+           ["sampler (top-p/top-k)","4.2%"],["kv_cache 读写搬运","4.0%"],["embedding / lm_head","4.5%"]],
+  slowReqs:[["req-9f3a21  输入 12.4k tokens","TTFT 1.84s · 队列等待 620ms"],
+            ["req-77b0c4  输入 9.8k tokens","TTFT 1.52s · KV 传输 190ms"],
+            ["req-aa11d8  输入 8.1k tokens","TPOT P99 142ms · 触发抢占"],
+            ["req-5c6e09  输出 3.2k tokens","端到端 21.6s · Decode 抖动"],
+            ["req-31f2bb  输入 6.7k tokens","缓存未命中 · Prefill 全算"]],
+  hardware:[["Prefill 节点 · ascend-01",{ "芯片":"Ascend 910B ×8（HBM 64GB/卡）","算力":"320 TFLOPS FP16 / 卡","互联":"HCCS 392GB/s 全互联","利用率":"NPU 92% · HBM 带宽 71%","角色":"高算力 · 承担 Prefill"}],
+            ["Decode 节点 · ascend-02",{ "芯片":"Ascend 910B ×8（HBM 64GB/卡）","算力":"320 TFLOPS FP16 / 卡","互联":"HCCS 392GB/s + RoCE 200Gbps ×4","利用率":"NPU 61% · HBM 带宽 88%","角色":"带宽敏感 · 承担 Decode"}],
+            ["Mooncake KV 池",{ "介质":"DRAM + NVMe SSD 分级","容量":"DRAM 2TB · SSD 16TB","读吞吐":"6.8 GB/s（峰值 8）","网络":"RDMA RoCEv2 200Gbps","角色":"前缀缓存 / KV 复用"}]],
+  metricsDict:[
+    ["TTFT / TPOT","Prometheus: vllm:time_to_first_token_seconds / time_per_output_token_seconds（直方图）","评估首响与流式体验，定位 Prefill/Decode 瓶颈"],
+    ["各级队列时延","源码埋点: scheduler.wait_time / gateway.enqueue_ts 差值","区分排队拥塞与计算慢，判断扩容方向"],
+    ["TPS / QPS","Prometheus: 请求计数 + token 计数 rate()","容量与压测基线，联动 batch 规模分析"],
+    ["Mooncake 吞吐","mooncake_exporter: transfer_bytes 读写分别统计","判断 KV 传输是否成为 PD 分离瓶颈"],
+    ["缓存命中率","prefix_cache.hit / query 比率","评估前缀缓存收益，指导 prompt 组织与 KV 池容量"],
+    ["转发时延","PD 链路 RDMA 传输耗时埋点（KV push / pull）","定位跨节点 KV 搬运与回传链路抖动"],
+    ["KV Cache Blocks","allocator 指标: num_blocks_total/used/free、block_size、preempt 计数","判断显存碎片化与抢占换出对 TPOT 的影响"],
+    ["Profiling 数据","torch profiler / msprof trace，按 kernel 聚合","算子级耗时拆解，指导算子融合与通信优化"],
+    ["日志数据","服务日志 ERROR/WARN + 慢请求访问日志","关联异常事件与时序拐点的因果"],
+    ["硬件架构","npu-smi / nvidia-smi: 利用率、HBM 带宽、温度、互联拓扑","识别算力瓶颈 vs 带宽瓶颈 vs 通信瓶颈"],
+    ["请求输入/输出长度","网关访问日志 prompt_tokens / completion_tokens","长度分布决定调度策略与分桶压测设计"]]
+};
+
+/* ================= 轻量 Canvas 图表 ================= */
+function ctx2d(id){var c=document.getElementById(id);var r=c.getBoundingClientRect();var dpr=window.devicePixelRatio||1;c.width=r.width*dpr;c.height=r.height*dpr;var g=c.getContext("2d");g.scale(dpr,dpr);return {g:g,W:r.width,H:r.height};}
+function css(name){return getComputedStyle(document.body).getPropertyValue(name).trim()||"#888";}
+function line(id,labels,sets,unit){
+  var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
+  var max=0;sets.forEach(function(s){s.data.forEach(function(v){if(v>max)max=v;});});max=max*1.15||1;
+  var iw=W-pad.l-pad.r, ih=H-pad.t-pad.b, n=labels.length;
+  g.font="10px sans-serif";
+  var grid=css("--dshell-border")||"rgba(128,128,128,.25)";
+  var fg=css("--dshell-fg")||"#888";
+  g.strokeStyle=grid;g.fillStyle=fg;
+  for(var i=0;i<=4;i++){var y=pad.t+ih*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(W-pad.r,y);g.globalAlpha=.4;g.stroke();g.globalAlpha=1;
+    g.fillText((max*(4-i)/4).toFixed(max<10?1:0)+unit,4,y+3);}
+  for(var t=0;t<n;t+=Math.ceil(n/6)){g.fillText(labels[t],pad.l+iw*t/(n-1)-10,H-6);}
+  sets.forEach(function(s){
+    g.strokeStyle=s.color;g.lineWidth=1.8;g.beginPath();
+    s.data.forEach(function(v,i){var x=pad.l+iw*i/(n-1),y=pad.t+ih*(1-v/max);i?g.lineTo(x,y):g.moveTo(x,y);});
+    g.stroke();
+  });
+}
+function bars(id,labels,vals,color,unit){
+  var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
+  var max=Math.max.apply(null,vals)*1.15||1,iw=W-pad.l-pad.r,ih=H-pad.t-pad.b,n=vals.length;
+  g.font="10px sans-serif";g.strokeStyle="rgba(128,128,128,.25)";g.fillStyle=css("--dshell-fg")||"#888";
+  for(var i=0;i<=4;i++){var y=pad.t+ih*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(W-pad.r,y);g.globalAlpha=.4;g.stroke();g.globalAlpha=1;g.fillText((max*(4-i)/4).toFixed(0)+unit,4,y+3);}
+  g.fillStyle=color;
+  var bw=Math.max(2,iw/n*0.7);
+  vals.forEach(function(v,i){var x=pad.l+iw*(i+0.15)/n,h=ih*v/max;g.fillRect(x,pad.t+ih-h,bw,h);});
+}
+function hist(id,data,bins,color,unit){
+  var min=Math.min.apply(null,data),max=Math.max.apply(null,data),step=(max-min)/bins||1;
+  var counts=Array.from({length:bins},function(){return 0;});
+  data.forEach(function(v){var i=Math.min(bins-1,Math.floor((v-min)/step));counts[i]++;});
+  var labels=counts.map(function(_,i){return Math.round(min+step*i);});
+  bars(id,labels,counts,color,unit);
+}
+function scatter(id,xs,ys){
+  var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
+  var mx=Math.max.apply(null,xs)*1.1,my=Math.max.apply(null,ys)*1.1,iw=W-pad.l-pad.r,ih=H-pad.t-pad.b;
+  g.font="10px sans-serif";g.fillStyle=css("--dshell-fg")||"#888";
+  g.fillText("输入 tokens →",W-86,H-6);g.fillText("TTFT ms",2,10);
+  g.fillStyle="#60a5fa";
+  xs.forEach(function(x,i){var px=pad.l+iw*x/mx,py=pad.t+ih*(1-ys[i]/my);g.globalAlpha=.55;g.beginPath();g.arc(px,py,3,0,7);g.fill();});
+  g.globalAlpha=1;
+}
+function waterfall(id,stages){
+  var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:120,r:60,t:14,b:8};
+  var total=stages.reduce(function(s,x){return s+x.ms;},0),iw=W-pad.l-pad.r,rowH=(H-pad.t-pad.b)/stages.length;
+  g.font="11px sans-serif";var fg=css("--dshell-fg")||"#888";
+  var t=0;
+  stages.forEach(function(s,i){
+    var x=pad.l+iw*t/total,w=Math.max(2,iw*s.ms/total),y=pad.t+i*rowH+3,h=rowH-8;
+    g.fillStyle=s.color;g.globalAlpha=.85;g.fillRect(x,y,w,h);g.globalAlpha=1;
+    g.fillStyle=fg;g.fillText(s.name,4,y+h/2+4);g.fillText(s.ms+"ms",x+w+4,y+h/2+4);
+    t+=s.ms;
+  });
+  g.fillStyle=fg;g.fillText("端到端 "+total+"ms",W-100,10);
+}
+
+/* ================= 渲染各页 ================= */
+function renderAll(){
+  /* 概览统计 */
+  var last=function(a){return a[a.length-1];};
+  document.getElementById("ovTtft").textContent=last(DATA.ttft.p99)+" ms";
+  document.getElementById("ovTpot").textContent=last(DATA.tpot.p99)+" ms";
+  document.getElementById("ovQueue").textContent=(last(DATA.queue.gw)+last(DATA.queue.sched)+last(DATA.queue.pd)).toFixed(0)+" ms";
+  document.getElementById("ovTps").textContent=last(DATA.tps).toFixed(0);
+  document.getElementById("ovHit").textContent=last(DATA.hit).toFixed(1)+"%";
+  var kvPct=last(DATA.kv.used)/DATA.kv.total;
+  document.getElementById("ovKv").textContent=(kvPct*100).toFixed(1)+"%";
+  document.getElementById("ovTtftD").textContent="P50 "+last(DATA.ttft.p50)+"ms";
+  document.getElementById("ovTpsD").textContent="QPS "+last(DATA.qps).toFixed(1);
+
+  var hb=document.getElementById("healthBadge");
+  if(last(DATA.ttft.p99)>900||kvPct>0.9){hb.className="dshell-badge";hb.textContent="⚠ 存在性能风险";}
+  else{hb.className="dshell-badge dshell-badgeDone";hb.textContent="整体健康";}
+
+  /* 瀑布图 */
+  waterfall("waterfall",[
+    {name:"网关队列",ms:Math.round(last(DATA.queue.gw)),color:"#34d399"},
+    {name:"调度队列",ms:Math.round(last(DATA.queue.sched)),color:"#a78bfa"},
+    {name:"Prefill",ms:Math.round(last(DATA.ttft.p50)*0.7),color:"#60a5fa"},
+    {name:"KV 传输",ms:Math.round(last(DATA.transfer.kv)),color:"#22d3ee"},
+    {name:"Decode(前10 tok)",ms:Math.round(last(DATA.tpot.p50)*10),color:"#f59e0b"},
+    {name:"回传",ms:Math.round(last(DATA.transfer.back)),color:"#fb923c"}
+  ]);
+
+  /* 诊断结论 */
+  var findings=[];
+  if(last(DATA.queue.sched)>45)findings.push(["调度队列时延偏高（"+last(DATA.queue.sched)+"ms）：waiting 请求积压，建议增大 max_num_seqs 或扩容 Decode 实例。","warn"]);
+  if(kvPct>0.85)findings.push(["KV Blocks 占用 "+(kvPct*100).toFixed(0)+"%：接近耗尽，可能触发抢占换出并拉高 TPOT，建议扩容 KV 池或降低 max_model_len。","warn"]);
+  if(last(DATA.hit)<65)findings.push(["前缀缓存命中率仅 "+last(DATA.hit).toFixed(1)+"%：检查 system prompt 是否一致前置，提升 Mooncake 池复用收益。","warn"]);
+  if(last(DATA.tpot.p99)>100)findings.push(["TPOT P99 "+last(DATA.tpot.p99)+"ms：Decode 侧 HBM 带宽接近饱和（88%），属带宽瓶颈，建议减小 batch 或启用投机解码。","warn"]);
+  if(!findings.length)findings.push(["各项指标处于正常区间，未发现显著瓶颈。","ok"]);
+  document.getElementById("diagFindings").innerHTML=findings.map(function(f){
+    return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+f[0]+'</span><span class="dshell-badge '+(f[1]==="warn"?"dshell-badgeWait":"dshell-badgeDone")+'">'+(f[1]==="warn"?"关注":"正常")+'</span></div>';
+  }).join("");
+
+  /* 时延分解 */
+  var L=DATA.ts;
+  line("chTtft",L,[{data:DATA.ttft.p50,color:"#60a5fa"},{data:DATA.ttft.p90,color:"#f59e0b"},{data:DATA.ttft.p99,color:"#ef4444"}],"ms");
+  line("chTpot",L,[{data:DATA.tpot.p50,color:"#60a5fa"},{data:DATA.tpot.p90,color:"#f59e0b"},{data:DATA.tpot.p99,color:"#ef4444"}],"ms");
+  line("chQueue",L,[{data:DATA.queue.gw,color:"#34d399"},{data:DATA.queue.sched,color:"#a78bfa"},{data:DATA.queue.pd,color:"#f472b6"}],"ms");
+  line("chTransfer",L,[{data:DATA.transfer.kv,color:"#22d3ee"},{data:DATA.transfer.back,color:"#fb923c"}],"ms");
+  var parts=[["队列等待（网关+调度+PD）",18],["Prefill 计算",34],["KV 传输",9],["Decode 计算",36],["结果回传",3]];
+  document.getElementById("latencyKv").innerHTML=parts.map(function(p){
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+p[1]+'%</span></div>';
+  }).join("");
+  document.getElementById("latencyNote").textContent="Decode 与 Prefill 合计约 70%：计算占主导，但队列等待 18% 提示高峰期调度拥塞。";
+
+  /* 吞吐与缓存 */
+  line("chTps",L,[{data:DATA.tps,color:"#34d399"},{data:DATA.qps.map(function(v){return v*100;}),color:"#a78bfa"}],"");
+  line("chMooncake",L,[{data:DATA.mooncake.rd,color:"#22d3ee"},{data:DATA.mooncake.wr,color:"#fb923c"}],"");
+  line("chHit",L,[{data:DATA.hit,color:"#facc15"}],"%");
+  line("chBatch",L,[{data:DATA.batch.run,color:"#60a5fa"},{data:DATA.batch.wait,color:"#f472b6"}],"");
+
+  /* KV Cache */
+  document.getElementById("kvTotal").textContent=DATA.kv.total.toLocaleString();
+  document.getElementById("kvUsed").textContent=last(DATA.kv.used).toLocaleString();
+  document.getElementById("kvBlockSize").textContent=DATA.kv.blockSize;
+  document.getElementById("kvPreempt").textContent=DATA.kv.preempt;
+  line("chKv",L,[{data:DATA.kv.used.map(function(v){return v/DATA.kv.total*100;}),color:"#f472b6"}],"%");
+  document.getElementById("kvBar").style.width=(kvPct*100).toFixed(1)+"%";
+  document.getElementById("kvNote").textContent="当前占用 "+(kvPct*100).toFixed(1)+"%（阈值告警线 85%）；抢占次数 "+DATA.kv.preempt+" 次 / 5min。";
+  document.getElementById("kvTierKv").innerHTML=DATA.kv.tiers.map(function(t){
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+t[0]+'</span><span class="dshell-kvValue">'+t[1]+'</span></div>';
+  }).join("");
+
+  /* Profiling */
+  document.getElementById("profOps").innerHTML=DATA.profOps.map(function(p){
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+p[1]+'</span></div>';
+  }).join("");
+  var profSegs=DATA.profOps.slice(0,6).map(function(p,i){return {name:p[0],ms:parseFloat(p[1]),color:["#60a5fa","#a78bfa","#34d399","#f59e0b","#22d3ee","#f472b6"][i]};});
+  waterfall("chProf",profSegs);
+
+  /* 请求画像 */
+  var inLens=[],outLens=[],ttftS=[];
+  for(var i=0;i<300;i++){var l=Math.round(Math.pow(10,rnd(1.7,4.1)));inLens.push(l);outLens.push(Math.round(rnd(50,2000)));ttftS.push(Math.round(60+l*rnd(0.05,0.12)));}
+  hist("chInLen",inLens,20,"#60a5fa","");
+  hist("chOutLen",outLens,20,"#f59e0b","");
+  scatter("chScatter",inLens,ttftS);
+  document.getElementById("slowReqs").innerHTML=DATA.slowReqs.map(function(r){
+    return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+r[0]+'</span><span class="dshell-listItemMeta">'+r[1]+'</span></div>';
+  }).join("");
+
+  /* 硬件 */
+  document.getElementById("hwCards").innerHTML=DATA.hardware.map(function(h){
+    var rows=Object.keys(h[1]).map(function(k){return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+k+'</span><span class="dshell-kvValue">'+h[1][k]+'</span></div>';}).join("");
+    return '<div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">'+h[0]+'</h2><div class="dshell-kv">'+rows+'</div></div>';
+  }).join("");
+
+  /* 日志 */
+  var logs=[
+    ["info","[14:02:11] INFO  scheduler: batch=48 running, 3 waiting, kv_used=86.2%"],
+    ["info","[14:02:11] INFO  mooncake: prefetch hit req=req-31f2bb blocks=512"],
+    ["warn","[14:02:13] WARN  allocator: gpu blocks low (free=8.9%), consider eviction"],
+    ["info","[14:02:14] INFO  req-9f3a21 finish: ttft=1840ms tpot_avg=41ms out=512tok"],
+    ["err","[14:02:15] ERROR transfer: RDMA retry on pd-link-2, latency spike 190ms"],
+    ["warn","[14:02:16] WARN  scheduler: preempted seq req-aa11d8 (kv pressure)"],
+    ["info","[14:02:18] INFO  profiler: trace saved to /var/log/prof/step_48211.json"],
+    ["info","[14:02:20] INFO  metrics: scrape ok (248 series)"]];
+  document.getElementById("logBox").innerHTML=logs.map(function(l){
+    return '<div class="diag-log-'+l[0]+'">'+l[1]+'</div>';
+  }).join("");
+
+  /* 指标字典 */
+  document.getElementById("metricsDict").innerHTML=DATA.metricsDict.map(function(m){
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+m[0]+'<div class="diag-note">'+m[1]+'</div></span><span class="dshell-kvValue">'+m[2]+'</span></div>';
+  }).join("");
+}
+
+/* ================= 交互 ================= */
+document.getElementById("tabs").addEventListener("click",function(e){
+  var b=e.target.closest("[data-tab]");if(!b)return;
+  document.querySelectorAll(".dshell-tab").forEach(function(t){t.classList.remove("dshell-tabOn");});
+  b.classList.add("dshell-tabOn");
+  document.querySelectorAll(".diag-tabpane").forEach(function(p){p.style.display=p.dataset.pane===b.dataset.tab?"":"none";});
+});
+document.getElementById("btnRefresh").addEventListener("click",function(){location.reload();});
+document.getElementById("btnExport").addEventListener("click",function(){
+  var blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),summary:{ttft_p99:document.getElementById("ovTtft").textContent,tpot_p99:document.getElementById("ovTpot").textContent,tps:document.getElementById("ovTps").textContent,cache_hit:document.getElementById("ovHit").textContent,kv_usage:document.getElementById("ovKv").textContent},data:DATA},null,2)],{type:"application/json"});
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="diag-report-"+Date.now()+".json";a.click();
+});
+/* ================= 实时数据接入（http://10.83.90.203:9601/metrics） ================= */
+var METRICS_URL="http://10.83.90.203:9601/metrics";
+var POLL_MS=15000;
+var PREV={};   /* 计数器上次取值，用于计算 rate */
+var LIVE=false;
+
+function pushPoint(arr,v){arr.shift();arr.push(+v.toFixed(2));}
+function pushLabel(){DATA.ts.shift();var d=new Date();DATA.ts.push(d.getHours()+":"+("0"+d.getMinutes()).slice(-2)+":"+("0"+d.getSeconds()).slice(-2));}
+function demoTick(){ /* 端点不可达时让示例数据保持缓慢游走 */
+  pushLabel();
+  var walk=function(a,lo,hi,d){var v=a[a.length-1]+((Math.random()*2-1)*d);v=Math.max(lo,Math.min(hi,v));pushPoint(a,v);};
+  walk(DATA.ttft.p99,600,980,40);walk(DATA.ttft.p90,300,520,20);walk(DATA.ttft.p50,120,260,12);
+  walk(DATA.tpot.p99,70,120,5);walk(DATA.tpot.p90,35,55,2.5);walk(DATA.tpot.p50,18,30,1.5);
+  walk(DATA.queue.sched,10,60,5);walk(DATA.queue.gw,2,12,1);walk(DATA.queue.pd,5,40,4);
+  walk(DATA.transfer.kv,8,28,2);walk(DATA.transfer.back,2,8,0.8);
+  walk(DATA.tps,1800,3200,150);walk(DATA.qps,8,22,1.2);
+  walk(DATA.mooncake.rd,3.5,7.5,0.4);walk(DATA.mooncake.wr,1.2,3.0,0.2);
+  walk(DATA.hit,55,88,2);walk(DATA.batch.run,24,64,3);walk(DATA.batch.wait,0,18,2);
+  walk(DATA.kv.used,120000,178000,4000);
+}
+
+/* Prometheus 文本格式解析 → {name:[{labels,value}]} */
+function parseProm(text){
+  var out={};
+  text.split("\n").forEach(function(line){
+    if(!line||line.charAt(0)==="#")return;
+    var m=line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+([-+0-9.eE]+)/);
+    if(!m)return;
+    var labels={};
+    if(m[3])m[3].split(",").forEach(function(kv){var p=kv.split("=");if(p.length===2)labels[p[0].trim()]=p[1].trim().replace(/^"|"$/g,"");});
+    (out[m[1]]=out[m[1]]||[]).push({labels:labels,value:parseFloat(m[4])});
+  });
+  return out;
+}
+function pick(map,re){ /* 第一个匹配指标名的样本值 */
+  for(var name in map){if(re.test(name)&&map[name].length)return map[name][0].value;}
+  return null;
+}
+function rate(map,key,re){ /* 计数器每秒增量（需两次采样） */
+  var v=pick(map,re);if(v===null)return null;
+  var now=Date.now(),r=null;
+  if(PREV[key]){var dt=(now-PREV[key].t)/1000;if(dt>0)r=Math.max(0,(v-PREV[key].v)/dt);}
+  PREV[key]={v:v,t:now};return r;
+}
+function histAvg(map,re){ /* 直方图/摘要均值 = _sum/_count */
+  var sum=null,count=null;
+  for(var name in map){
+    if(re.test(name)&&/_sum$/.test(name))sum=map[name][0].value;
+    if(re.test(name)&&/_count$/.test(name))count=map[name][0].value;
+  }
+  return (sum!==null&&count>0)?sum/count:null;
+}
+function quantile(map,re,q){ /* summary 的 quantile 标签取值 */
+  for(var name in map){if(!re.test(name))continue;
+    var s=map[name];
+    for(var i=0;i<s.length;i++)if(s[i].labels.quantile===q)return s[i].value;
+  }
+  return null;
+}
+function secSeries(map,re,scale){ /* 秒→毫秒，优先 quantile，缺省用均值估算 */
+  var avg=histAvg(map,re);
+  if(avg===null&&pick(map,re)===null)return null;
+  var q50=quantile(map,re,"0.5"),q90=quantile(map,re,"0.9"),q99=quantile(map,re,"0.99");
+  avg=(avg!==null?avg:pick(map,re))||0;
+  return {p50:(q50!==null?q50:avg)*scale,p90:(q90!==null?q90:avg*1.8)*scale,p99:(q99!==null?q99:avg*3)*scale};
+}
+
+/* 指标名 → 看板数据契约的映射（兼容 vLLM / sglang / mooncake 常见命名） */
+function applyMetrics(map){
+  var matched=0;
+  var t=secSeries(map,/^[^\s]*time_to_first_token[^\s]*$/,1000);
+  if(t){pushPoint(DATA.ttft.p50,t.p50);pushPoint(DATA.ttft.p90,t.p90);pushPoint(DATA.ttft.p99,t.p99);matched++;}
+  t=secSeries(map,/^[^\s]*time_per_output_token[^\s]*$/,1000);
+  if(t){pushPoint(DATA.tpot.p50,t.p50);pushPoint(DATA.tpot.p90,t.p90);pushPoint(DATA.tpot.p99,t.p99);matched++;}
+  t=secSeries(map,/(queue_time|time_in_queue|request_waiting_time)[^\s]*$/,1000);
+  if(t){pushPoint(DATA.queue.sched,t.p50);pushPoint(DATA.queue.pd,t.p90*0.3);pushPoint(DATA.queue.gw,t.p50*0.15);matched++;}
+  t=secSeries(map,/(transfer|kv_transfer|kv_send)[^\s]*$/,1000);
+  if(t){pushPoint(DATA.transfer.kv,t.p50);pushPoint(DATA.transfer.back,t.p50*0.25);matched++;}
+  var v=rate(map,"tps",/(generation_tokens_total|tokens_generated_total|output_tokens_total)(_|$)/);
+  if(v!==null){pushPoint(DATA.tps,v);matched++;}
+  v=rate(map,"qps",/(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)(_|$)/);
+  if(v!==null){pushPoint(DATA.qps,v);matched++;}
+  v=pick(map,/(prefix_cache_hit|cache_hit_rate|hit_rate)/);
+  if(v!==null){pushPoint(DATA.hit,v<=1?v*100:v);matched++;}
+  v=pick(map,/(gpu_cache_usage|kv_cache_usage|cache_usage_perc|kv_block_usage)/);
+  if(v!==null){var p=v<=1?v*100:v;pushPoint(DATA.kv.used,DATA.kv.total*p/100);matched++;}
+  v=pick(map,/(num_requests_running|running_requests|running_batch)/);
+  if(v!==null){pushPoint(DATA.batch.run,v);matched++;}
+  v=pick(map,/(num_requests_waiting|waiting_requests|pending_requests)/);
+  if(v!==null){pushPoint(DATA.batch.wait,v);matched++;}
+  v=rate(map,"mcRd",/mooncake[^\s]*(read|pull)[^\s]*bytes[^\s]*$/);
+  if(v!==null){pushPoint(DATA.mooncake.rd,v/1073741824);matched++;}
+  v=rate(map,"mcWr",/mooncake[^\s]*(write|push)[^\s]*bytes[^\s]*$/);
+  if(v!==null){pushPoint(DATA.mooncake.wr,v/1073741824);matched++;}
+  return matched>0;
+}
+
+function setSrcBadge(state,msg){
+  var b=document.getElementById("srcBadge");
+  b.className="dshell-badge "+(state==="ok"?"dshell-badgeDone":state==="warn"?"dshell-badgeWait":"");
+  b.textContent=msg;
+}
+function fetchMetrics(cb){
+  fetch("/api/worktable/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:METRICS_URL})})
+    .then(function(r){if(!r.ok)throw new Error("proxy");return r.json();})
+    .then(function(j){if(!j||j.status!==200||typeof j.body!=="string")throw new Error("bad");cb(j.body);})
+    .catch(function(){ /* 代理失败 → 浏览器直连兜底（取决于 CORS 与浏览器侧网络） */
+      fetch(METRICS_URL).then(function(r){if(!r.ok)throw new Error("direct");return r.text();})
+        .then(function(t){cb(t);}).catch(function(){cb(null);});
+    });
+}
+function poll(){
+  fetchMetrics(function(text){
+    if(text){
+      var map=parseProm(text);
+      if(applyMetrics(map)){LIVE=true;pushLabel();renderAll();setSrcBadge("ok","实时数据 · 10.83.90.203:9601 · "+POLL_MS/1000+"s 刷新");}
+      else setSrcBadge("warn","已连通 · 指标名未匹配映射表（暂显示示例数据）");
+    }else{
+      if(!LIVE){demoTick();renderAll();}
+      setSrcBadge("","端点不可达 · 示例数据 · "+POLL_MS/1000+"s 自动重试");
+    }
+  });
+}
+
+window.addEventListener("resize",function(){clearTimeout(window.__diagRt);window.__diagRt=setTimeout(renderAll,200);});
+renderAll();
+poll();
+setInterval(poll,POLL_MS);
+})();
+</script>
+</body>
+</html>

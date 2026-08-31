@@ -750,8 +750,9 @@ function apply(ctx) {
       if (ctx0.pass && env.TARGET_PASSWORD === void 0) env.TARGET_PASSWORD = String(ctx0.pass);
     }
     return new Promise((resolve) => {
+      const isPy = sc.lang === "py" || /\.py$/i.test(sc.name || "");
       execFile(
-        "bash",
+        isPy ? "python3" : "bash",
         [sc.path, ...args],
         { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: 12e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
@@ -762,7 +763,8 @@ function apply(ctx) {
     });
   }
   function stageLogText(name2, r) {
-    let t = "$ bash " + name2 + "\n" + (r.stdout || "");
+    const interp = /\.py$/i.test(name2) ? "python3" : "bash";
+    let t = "$ " + interp + " " + name2 + "\n" + (r.stdout || "");
     if (r.stderr) t += "\n\u2717 " + r.stderr.split("\n").join("\n\u2717 ");
     return truncLog(t + "\n[exit " + r.code + "]");
   }
@@ -793,6 +795,10 @@ function apply(ctx) {
     for (const s of pl.stages || []) {
       if (s.gate) {
         logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] \u5BA1\u6279\u95E8\u81EA\u52A8\u901A\u8FC7" });
+        continue;
+      }
+      if (s.kind === "jenkins") {
+        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] Jenkins \u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" });
         continue;
       }
       if (s.script && s.script.path) {
@@ -836,7 +842,9 @@ function apply(ctx) {
         });
       } else if (p.kind === "interval") {
         const everyMs = Math.max(1, Number(p.everyMin) || 10) * 6e4;
-        const last = planLastRun.get(p.id) || Number(p.createdAt) || 0;
+        const startAt = Number(p.startAt) || 0;
+        if (startAt && now < startAt) continue;
+        const last = planLastRun.get(p.id) || (startAt ? startAt - everyMs : Number(p.createdAt) || 0);
         if (now - last < everyMs) continue;
         planLastRun.set(p.id, now);
         planRunning.add(p.id);
@@ -849,6 +857,46 @@ function apply(ctx) {
     planTick().catch(() => {
     });
   }, 15e3);
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/exec",
+    handler: async (req, res) => {
+      try {
+        if (req.method !== "POST") {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        const body = await readJsonBody(req);
+        const path = typeof body.path === "string" ? body.path : "";
+        if (!path) {
+          json(res, 400, { error: "missing path" });
+          return;
+        }
+        const args = Array.isArray(body.args) ? body.args.map((a) => String(a)) : [];
+        const envIn = body.env && typeof body.env === "object" ? body.env : {};
+        const env = {};
+        for (const k of Object.keys(envIn)) {
+          const v = envIn[k];
+          if (v !== void 0 && v !== null) env[k] = String(v);
+        }
+        const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : void 0;
+        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 12e4, 1e3), 36e5);
+        const interp = /\.py$/i.test(path) ? "python3" : "bash";
+        execFile(
+          interp,
+          [path, ...args],
+          { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+          (err, stdout, stderr) => {
+            const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
+            json(res, 200, { code, stdout: String(stdout || ""), stderr: String(stderr || "") });
+          }
+        );
+      } catch (err) {
+        json(res, 500, { error: String(err && err.message ? err.message : err) });
+      }
+    }
+  });
   webServer.register({
     kind: "exact",
     path: "/api/worktable/write",
@@ -917,6 +965,61 @@ function apply(ctx) {
       const body = await readJsonBody(req);
       const cwd = serverCwd(ctx, body.sessionId, body.cwd);
       json(res, 200, await gitStatus(cwd));
+    }
+  });
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/git-remote",
+    handler: async (req, res) => {
+      if (req.method !== "POST") {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+      const body = await readJsonBody(req);
+      const url = typeof body.url === "string" ? body.url.trim() : "";
+      const user = typeof body.user === "string" ? body.user : "";
+      const pass = typeof body.pass === "string" ? body.pass : "";
+      if (!url) {
+        json(res, 400, { ok: false, error: "missing url" });
+        return;
+      }
+      let fetchUrl = url;
+      if ((user || pass) && /^https?:\/\//i.test(url)) {
+        try {
+          const u = new URL(url);
+          if (user) u.username = user;
+          if (pass) u.password = pass;
+          fetchUrl = u.toString();
+        } catch {
+        }
+      }
+      const args = ["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "ls-remote", "--heads", "--tags", fetchUrl];
+      const r = await new Promise((resolve) => {
+        execFile("git", args, { timeout: 2e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+          const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
+          resolve({ code, stdout: String(stdout || ""), stderr: String(stderr || "") });
+        });
+      });
+      if (r.code === 0) {
+        const branches = [];
+        const tags = [];
+        for (const line of r.stdout.split("\n")) {
+          const s = line.trim();
+          let m = /^[0-9a-f]+\trefs\/heads\/(.+)$/.exec(s);
+          if (m) {
+            if (!branches.includes(m[1])) branches.push(m[1]);
+            continue;
+          }
+          m = /^[0-9a-f]+\trefs\/tags\/([^^]+)$/.exec(s);
+          if (m) {
+            if (!tags.includes(m[1])) tags.push(m[1]);
+          }
+        }
+        json(res, 200, { ok: true, branches, tags });
+      } else {
+        json(res, 200, { ok: false, error: (r.stderr || r.stdout || "git ls-remote failed").trim().slice(0, 2e3) });
+      }
     }
   });
   setupTerminal(webServer, ctx);

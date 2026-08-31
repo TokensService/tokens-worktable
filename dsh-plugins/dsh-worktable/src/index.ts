@@ -616,7 +616,8 @@ export function apply(ctx: Context) {
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
     }
     return new Promise((resolve) => {
-      execFile('bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
+      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
           resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') })
@@ -624,7 +625,8 @@ export function apply(ctx: Context) {
     })
   }
   function stageLogText(name: string, r: { code: number; stdout: string; stderr: string }) {
-    let t = '$ bash ' + name + '\n' + (r.stdout || '')
+    const interp = /\.py$/i.test(name) ? 'python3' : 'bash'
+    let t = '$ ' + interp + ' ' + name + '\n' + (r.stdout || '')
     if (r.stderr) t += '\n✗ ' + r.stderr.split('\n').join('\n✗ ')
     return truncLog(t + '\n[exit ' + r.code + ']')
   }
@@ -655,6 +657,7 @@ export function apply(ctx: Context) {
     }
     for (const s of pl.stages || []) {
       if (s.gate) { logs.push({ stage: s.name, status: 'success', log: '[定时执行] 审批门自动通过' }); continue }
+      if (s.kind === 'jenkins') { logs.push({ stage: s.name, status: 'success', log: '[定时执行] Jenkins 阶段：定时触发暂不支持，已跳过' }); continue }
       if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir)
         logs.push({ stage: s.name, status: r.code === 0 ? 'success' : 'failed', log: stageLogText(s.script.name, r) })
@@ -685,7 +688,9 @@ export function apply(ctx: Context) {
         })
       } else if (p.kind === 'interval') {
         const everyMs = Math.max(1, Number(p.everyMin) || 10) * 60000
-        const last = planLastRun.get(p.id) || Number(p.createdAt) || 0
+        const startAt = Number(p.startAt) || 0
+        if (startAt && now < startAt) continue
+        const last = planLastRun.get(p.id) || (startAt ? startAt - everyMs : Number(p.createdAt) || 0)
         if (now - last < everyMs) continue
         planLastRun.set(p.id, now)
         planRunning.add(p.id)
@@ -694,6 +699,35 @@ export function apply(ctx: Context) {
     }
   }
   setInterval(() => { planTick().catch(() => {}) }, 15000)
+
+  // 流水线阶段脚本执行（pipeline.html 的 execScript 调用）：按扩展名选解释器（.sh→bash、.py→python3），
+  // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/exec',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const path = typeof body.path === 'string' ? body.path : ''
+        if (!path) { json(res, 400, { error: 'missing path' }); return }
+        const args: string[] = Array.isArray(body.args) ? body.args.map((a: any) => String(a)) : []
+        const envIn = (body.env && typeof body.env === 'object') ? body.env : {}
+        const env: Record<string, string> = {}
+        for (const k of Object.keys(envIn)) { const v = (envIn as any)[k]; if (v !== undefined && v !== null) env[k] = String(v) }
+        const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
+        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
+        const interp = /\.py$/i.test(path) ? 'python3' : 'bash'
+        execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+          (err, stdout, stderr) => {
+            const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
+            json(res, 200, { code, stdout: String(stdout || ''), stderr: String(stderr || '') })
+          })
+      } catch (err) {
+        json(res, 500, { error: String(err && err.message ? err.message : err) })
+      }
+    }
+  })
 
   // 本地文件写入（MD 编辑模式保存回磁盘）
   webServer.register({
@@ -745,6 +779,52 @@ export function apply(ctx: Context) {
       const body = await readJsonBody(req)
       const cwd = serverCwd(ctx, body.sessionId, body.cwd)
       json(res, 200, await gitStatus(cwd))
+    },
+  })
+
+  // 代码仓联通性检测 + 远程分支/Tag 列举：服务端 git ls-remote --heads --tags <url>。
+  // HTTP(S) 仓库凭据注入 URL（user:token@host）；SSH 走服务端 ssh 配置。
+  // 阻断 ext/file 传输，避免恶意 URL 触发任意命令执行 / 本地路径探测。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/git-remote',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+      const body = await readJsonBody(req)
+      const url = typeof body.url === 'string' ? body.url.trim() : ''
+      const user = typeof body.user === 'string' ? body.user : ''
+      const pass = typeof body.pass === 'string' ? body.pass : ''
+      if (!url) { json(res, 400, { ok: false, error: 'missing url' }); return }
+      let fetchUrl = url
+      if ((user || pass) && /^https?:\/\//i.test(url)) {
+        try {
+          const u = new URL(url)
+          if (user) u.username = user
+          if (pass) u.password = pass
+          fetchUrl = u.toString()
+        } catch { /* 非 http(s) 或非法 URL：交给 git 自身处理协议/凭据 */ }
+      }
+      const args = ['-c', 'protocol.ext.allow=never', '-c', 'protocol.file.allow=never', 'ls-remote', '--heads', '--tags', fetchUrl]
+      const r = await new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+        execFile('git', args, { timeout: 20000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+          const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
+          resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') })
+        })
+      })
+      if (r.code === 0) {
+        const branches: string[] = []
+        const tags: string[] = []
+        for (const line of r.stdout.split('\n')) {
+          const s = line.trim()
+          let m = /^[0-9a-f]+\trefs\/heads\/(.+)$/.exec(s)
+          if (m) { if (!branches.includes(m[1])) branches.push(m[1]); continue }
+          m = /^[0-9a-f]+\trefs\/tags\/([^^]+)$/.exec(s)   // 忽略 annotated tag 的 peeled ref（…^{}）
+          if (m) { if (!tags.includes(m[1])) tags.push(m[1]) }
+        }
+        json(res, 200, { ok: true, branches, tags })
+      } else {
+        json(res, 200, { ok: false, error: (r.stderr || r.stdout || 'git ls-remote failed').trim().slice(0, 2000) })
+      }
     },
   })
 

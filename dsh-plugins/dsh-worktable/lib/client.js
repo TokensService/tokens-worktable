@@ -8032,6 +8032,20 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_bindConvName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
   ".dsh-wt_bindConvChevron{flex:none;color:var(--dsw-alias-label-tertiary,#6b7280);font-size:9px;line-height:1}",
   ".dsh-wt_bindHint{margin:6px 0 2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#9aa4b2)}",
+  // 应用内目录选择弹窗（native pickDirectory 不可用时的回退）
+  ".dsh-wt_dirPickPop{gap:6px;padding:8px}",
+  ".dsh-wt_dirPickCrumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px}",
+  ".dsh-wt_dirPickCrumb{max-width:120px;padding:1px 4px;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-state-accent-primary,#4f8ef7);font:inherit;font-size:11px;line-height:16px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+  ".dsh-wt_dirPickCrumb:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.05))}",
+  ".dsh-wt_dirPickSep{color:var(--dsw-alias-label-tertiary,#6e7683);font-size:11px}",
+  ".dsh-wt_dirPickInput{flex:none;width:100%}",
+  ".dsh-wt_dirPickNew{display:flex;align-items:center;gap:6px}",
+  ".dsh-wt_dirPickNew .dsh-wt_bindFolderChange{padding:4px 10px;line-height:18px}",
+  ".dsh-wt_dirPickNew .dsh-wt_bindFolderChange:disabled{opacity:.5;cursor:default}",
+  ".dsh-wt_dirPickList{margin-top:0;max-height:240px}",
+  ".dsh-wt_dirPickMsg{padding:10px 8px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-tertiary,#6e7683);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+  ".dsh-wt_dirPickErr{color:var(--dsw-alias-state-danger,#f85149)}",
+  ".dsh-wt_dirPickOk{align-self:stretch}",
   // 自定义窗完成页：自动绑定提示
   ".dsh-wt_customDoneBind{margin:6px 0 0;font-size:11px;line-height:16px;color:var(--dsw-alias-state-accent-primary,#4f8ef7)}",
   ".dsh-wt_bindUnbind{flex:none;display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font:inherit;font-size:11px;line-height:16px;cursor:pointer}",
@@ -8339,6 +8353,14 @@ var zh = {
   "bind.tipBound": "\u5DF2\u7ED1\u5B9A\u5BF9\u8BDD\uFF1A{name}",
   "bind.clickPick": "\u70B9\u51FB\u9009\u62E9\u5BF9\u8BDD",
   "bind.hint": "\u6253\u5F00\u9879\u76EE\u65F6\uFF0C\u53F3\u4FA7\u5BF9\u8BDD\u7A97\u4F1A\u81EA\u52A8\u5207\u6362\u5230\u8FD9\u4E2A\u5BF9\u8BDD\u3002",
+  "dirpick.title": "\u9009\u62E9\u9879\u76EE\u6587\u4EF6\u5939",
+  "dirpick.confirm": "\u9009\u62E9\u6B64\u6587\u4EF6\u5939",
+  "dirpick.loading": "\u52A0\u8F7D\u4E2D\u2026",
+  "dirpick.empty": "\uFF08\u6CA1\u6709\u5B50\u6587\u4EF6\u5939\uFF09",
+  "dirpick.manualPh": "\u4E5F\u53EF\u76F4\u63A5\u8F93\u5165\u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u56DE\u8F66\u8DF3\u8F6C",
+  "dirpick.newPh": "\u65B0\u5EFA\u6587\u4EF6\u5939\u540D\u79F0",
+  "dirpick.newBtn": "\u65B0\u5EFA",
+  "dirpick.newInvalid": "\u540D\u79F0\u987B\u4E3A\u5355\u5C42\u6587\u4EF6\u5939\u540D\uFF08\u4E0D\u542B / \u6216 \\\uFF09",
   "customLayout.add": "\u81EA\u5B9A\u4E49",
   "customLayout.addTitle": "\u81EA\u5B9A\u4E49\u4E00\u4E2A\u5E03\u5C40\uFF08\u751F\u6210\u63D0\u793A\u8BCD\uFF09",
   "customLayout.title": "\u81EA\u5B9A\u4E49\u5E03\u5C40",
@@ -8512,6 +8534,14 @@ var en = {
   "bind.tipBound": "Bound to: {name}",
   "bind.clickPick": "click to pick",
   "bind.hint": "Opening the project switches the right chat pane to this conversation.",
+  "dirpick.title": "Choose project folder",
+  "dirpick.confirm": "Choose this folder",
+  "dirpick.loading": "Loading\u2026",
+  "dirpick.empty": "(no subfolders)",
+  "dirpick.manualPh": "Or type an absolute path, Enter to jump",
+  "dirpick.newPh": "New folder name",
+  "dirpick.newBtn": "New",
+  "dirpick.newInvalid": "Name must be a single path segment (no / or \\)",
   "customLayout.add": "Custom",
   "customLayout.addTitle": "Customize a layout (generate a prompt)",
   "customLayout.title": "Custom layout",
@@ -19340,6 +19370,7 @@ function WorktableSection(props) {
   const [bindPick, setBindPick] = (0, import_react2.useState)(null);
   const [bindGroups, setBindGroups] = (0, import_react2.useState)([]);
   const [bindListOpen, setBindListOpen] = (0, import_react2.useState)(false);
+  const [dirPick, setDirPick] = (0, import_react2.useState)(null);
   const [consoleBind, setConsoleBind] = (0, import_react2.useState)(null);
   const [consoleGroups, setConsoleGroups] = (0, import_react2.useState)([]);
   const [consoleMode, setConsoleMode] = (0, import_react2.useState)("none");
@@ -19954,21 +19985,70 @@ function WorktableSection(props) {
     setBindGroups([]);
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]));
   }, []);
-  const pickFolder = async (apply2) => {
+  const dirPickLoad = async (path, manualOverride) => {
+    const ws = sessionBridge?.workspaces;
+    if (!ws || typeof ws.listDirectory !== "function") {
+      setDirPick((s) => s ? { ...s, loading: false, error: "listDirectory unavailable" } : s);
+      return;
+    }
+    setDirPick((s) => s ? { ...s, loading: true, error: null } : s);
     try {
-      const ws = sessionBridge?.workspaces;
+      const d = await ws.listDirectory(path);
+      setDirPick((s) => s ? {
+        ...s,
+        loading: false,
+        path: typeof d?.path === "string" ? d.path : s.path,
+        crumbs: Array.isArray(d?.crumbs) ? d.crumbs : [],
+        entries: Array.isArray(d?.entries) ? d.entries : [],
+        manual: typeof manualOverride === "string" ? manualOverride : typeof d?.path === "string" ? d.path : s.manual,
+        newName: ""
+      } : s);
+    } catch (err) {
+      setDirPick((s) => s ? { ...s, loading: false, error: String(err) } : s);
+    }
+  };
+  const dirPickCreate = async () => {
+    const cur = dirPick;
+    if (!cur) return;
+    const name = cur.newName.trim();
+    if (!name) return;
+    if (/[/\\]/.test(name)) {
+      setDirPick((s) => s ? { ...s, error: t("dirpick.newInvalid") } : s);
+      return;
+    }
+    const ws = sessionBridge?.workspaces;
+    if (!ws || typeof ws.createDirectory !== "function" || !cur.path) {
+      setDirPick((s) => s ? { ...s, error: "createDirectory unavailable" } : s);
+      return;
+    }
+    setDirPick((s) => s ? { ...s, loading: true, error: null } : s);
+    try {
+      const created = await ws.createDirectory(cur.path, name);
+      const createdPath = typeof created === "string" && created ? created : joinPath(cur.path, name);
+      await dirPickLoad(cur.path, createdPath);
+    } catch (err) {
+      setDirPick((s) => s ? { ...s, loading: false, error: String(err) } : s);
+    }
+  };
+  const pickFolder = async (apply2, startPath) => {
+    const ws = sessionBridge?.workspaces;
+    try {
       if (ws && typeof ws.pickDirectory === "function") {
         const p = await ws.pickDirectory();
         if (p && typeof p === "string") apply2(p);
+        return;
       }
     } catch {
     }
+    const start = typeof startPath === "string" ? startPath.trim() : "";
+    setDirPick({ apply: apply2, path: start, crumbs: [], entries: [], manual: start, newName: "", loading: true, error: null });
+    dirPickLoad(start || void 0);
   };
   const changeBindFolder = () => {
     if (!bindPick) return;
     pickFolder((p) => {
       persistProjects((prev) => ({ ...prev, folders: { ...prev.folders, [bindPick.id]: p } }));
-    });
+    }, projectsRef.current.projects.folders[bindPick.id] ?? void 0);
   };
   const setProjectBinding = (id, sessionId) => {
     persistProjects((prev) => {
@@ -20840,7 +20920,7 @@ function WorktableSection(props) {
             pickFolder((p) => {
               setWsFolderParent(p);
               setWsFolderError(false);
-            });
+            }, wsFolderParent || void 0);
             setWsError(false);
           }, children: t("add.folderPick") })
         ] }),
@@ -21174,6 +21254,76 @@ function WorktableSection(props) {
         ))
       ] }, g.title || "g" + gi)) }) });
     })(),
+    dirPick && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_popBackdrop", style: { zIndex: 87 }, onClick: () => setDirPick(null) }),
+    dirPick && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_menu dsh-wt_pop dsh-wt_dirPickPop", style: { position: "fixed", left: "50%", top: "50%", transform: "translate(-50%,-50%)", width: 360, zIndex: 88 }, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_bindFolderRow", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindFolderLabel", children: [
+          "\u{1F4C1} ",
+          t("dirpick.title")
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_bindFolderChange", onClick: () => setDirPick(null), children: t("confirm.cancel") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_dirPickCrumbs", children: dirPick.crumbs.map((c, i) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(import_react2.Fragment, { children: [
+        i > 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_dirPickSep", "aria-hidden": true, children: "/" }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_dirPickCrumb", title: c.path, onClick: () => dirPickLoad(c.path), children: c.name })
+      ] }, c.path + ":" + i)) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+        "input",
+        {
+          className: "dsh-wt_customPathInput dsh-wt_dirPickInput",
+          value: dirPick.manual,
+          placeholder: t("dirpick.manualPh"),
+          spellCheck: false,
+          onChange: (e) => setDirPick((s) => s ? { ...s, manual: e.target.value } : s),
+          onKeyDown: (e) => {
+            if (e.key === "Enter" && dirPick.manual.trim()) dirPickLoad(dirPick.manual.trim());
+          }
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_dirPickNew", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          "input",
+          {
+            className: "dsh-wt_customPathInput",
+            value: dirPick.newName,
+            placeholder: t("dirpick.newPh"),
+            spellCheck: false,
+            onChange: (e) => setDirPick((s) => s ? { ...s, newName: e.target.value } : s),
+            onKeyDown: (e) => {
+              if (e.key === "Enter") dirPickCreate();
+            }
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_bindFolderChange", disabled: !dirPick.newName.trim() || dirPick.loading, onClick: dirPickCreate, children: [
+          "\uFF0B ",
+          t("dirpick.newBtn")
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_selectList dsh-wt_dirPickList", children: [
+        dirPick.loading && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_dirPickMsg", children: t("dirpick.loading") }),
+        !dirPick.loading && dirPick.error && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_dirPickMsg dsh-wt_dirPickErr", children: dirPick.error }),
+        !dirPick.loading && !dirPick.error && dirPick.entries.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_dirPickMsg", children: t("dirpick.empty") }),
+        !dirPick.loading && !dirPick.error && dirPick.entries.map((en2) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_selectItem", title: en2.path, onClick: () => dirPickLoad(en2.path), children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { "aria-hidden": true, children: "\u{1F4C1}" }),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_selectItemTitle", children: en2.name })
+        ] }, en2.path))
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "dsh-wt_customSend dsh-wt_dirPickOk",
+          disabled: !dirPick.manual.trim(),
+          onClick: () => {
+            const p = dirPick.manual.trim();
+            if (!p) return;
+            dirPick.apply(p);
+            setDirPick(null);
+          },
+          children: t("dirpick.confirm")
+        }
+      )
+    ] }),
     consoleBind && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_popBackdrop", style: { zIndex: 85 }, onClick: () => setConsoleBind(null) }),
     consoleBind && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_menu dsh-wt_pop dsh-wt_consoleBindPop", style: { position: "fixed", left: consoleBind.x, top: consoleBind.y, width: 560, zIndex: 86 }, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_consoleBindCols", children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_consoleBindCol", children: [

@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Pre-pull one deployment image on the controller and all target nodes.
+# All settings, including the complete image reference, come from environment
+# variables.
+set -euo pipefail
+
+IMAGE_NAME="${IMAGE_NAME:?IMAGE_NAME is required}"
+IMAGE="$IMAGE_NAME"
+TARGET_HOSTS="${TARGET_HOSTS:?TARGET_HOSTS is required}"
+SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:?SSH_PASSWORD or TARGET_PASSWORD is required}}"
+REGISTRY_SECRET_NAMESPACE="${REGISTRY_SECRET_NAMESPACE:?REGISTRY_SECRET_NAMESPACE is required}"
+REGISTRY_SECRET_NAME="${REGISTRY_SECRET_NAME:?REGISTRY_SECRET_NAME is required}"
+RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
+REGISTRY_AUTH_DIR=""
+
+cleanup() {
+  [[ -z "$REGISTRY_AUTH_DIR" ]] || rm -rf "$REGISTRY_AUTH_DIR"
+}
+
+prepare_registry_auth() {
+  command -v kubectl >/dev/null 2>&1 || {
+    echo "kubectl is required when REGISTRY_SECRET_NAMESPACE is set" >&2
+    exit 2
+  }
+
+  REGISTRY_AUTH_DIR="$(mktemp -d)"
+  umask 077
+  kubectl -n "$REGISTRY_SECRET_NAMESPACE" get secret "$REGISTRY_SECRET_NAME" \
+    -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d >"$REGISTRY_AUTH_DIR/config.json"
+  jq -e '.auths | type == "object"' "$REGISTRY_AUTH_DIR/config.json" >/dev/null
+  echo "[pull] using registry secret ${REGISTRY_SECRET_NAMESPACE}/${REGISTRY_SECRET_NAME}"
+}
+
+container_with_auth() {
+  if [[ -n "$REGISTRY_AUTH_DIR" ]]; then
+    DOCKER_CONFIG="$REGISTRY_AUTH_DIR" "$@"
+  else
+    "$@"
+  fi
+}
+
+if command -v nerdctl >/dev/null 2>&1; then
+  # Kubernetes uses containerd's k8s.io namespace, not nerdctl's default one.
+  container_pull() { container_with_auth nerdctl --namespace k8s.io pull "$1"; }
+  container_image_exists() { nerdctl --namespace k8s.io image inspect "$1" >/dev/null 2>&1; }
+elif command -v docker >/dev/null 2>&1; then
+  container_pull() { container_with_auth docker pull "$1"; }
+  container_image_exists() { docker image inspect "$1" >/dev/null 2>&1; }
+else
+  echo "neither docker nor nerdctl is available" >&2
+  exit 2
+fi
+
+prepare_registry_auth
+trap cleanup EXIT
+
+if container_image_exists "$IMAGE"; then
+  echo "[pull] local: image already present"
+else
+  echo "[pull] local: pull $IMAGE"
+  container_pull "$IMAGE"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  while IFS=$'\t' read -r ip user; do
+    [[ -n "$ip" ]] || continue
+    echo "[pull] $ip: pull $IMAGE"
+    remote_auth_dir="/tmp/op-test-registry-auth-$$"
+    remote_auth_setup=''
+    remote_auth_cleanup=''
+    remote_docker_pull="docker pull '$IMAGE'"
+    remote_nerdctl_pull="nerdctl --namespace k8s.io pull '$IMAGE'"
+    if [[ -n "$REGISTRY_AUTH_DIR" ]]; then
+      auth_b64="$(base64 -w 0 "$REGISTRY_AUTH_DIR/config.json")"
+      remote_auth_setup="umask 077; mkdir -p '$remote_auth_dir'; printf '%s' '$auth_b64' | base64 -d >'$remote_auth_dir/config.json'; "
+      remote_auth_cleanup="; status=\$?; rm -rf '$remote_auth_dir'; exit \$status"
+      remote_docker_pull="DOCKER_CONFIG='$remote_auth_dir' docker pull '$IMAGE'"
+      remote_nerdctl_pull="DOCKER_CONFIG='$remote_auth_dir' nerdctl --namespace k8s.io pull '$IMAGE'"
+    fi
+    remote_pull="${remote_auth_setup}if command -v nerdctl >/dev/null 2>&1; then nerdctl --namespace k8s.io image inspect '$IMAGE' >/dev/null 2>&1 || $remote_nerdctl_pull; elif command -v docker >/dev/null 2>&1; then docker image inspect '$IMAGE' >/dev/null 2>&1 || $remote_docker_pull; else echo 'neither docker nor nerdctl is available' >&2; exit 2; fi${remote_auth_cleanup}"
+    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o LogLevel=ERROR "$user@$ip" "$remote_pull"
+  done < <(python3 -c 'import json,sys
+for host in json.loads(sys.argv[1]): print(host.get("ip", ""), host.get("user", "root"), sep="\t")' "$TARGET_HOSTS")
+else
+  echo "python3 is required to parse TARGET_HOSTS" >&2
+  exit 2
+fi
+
+printf 'RUN_DIR=%s\n' "$RUN_DIR"
+printf 'DEPLOY_IMAGE=%s\n' "$IMAGE"

@@ -1,0 +1,24 @@
+[pipeline] image=swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0730_dev_bnt3_mc_fix.20260828212101.BNT3.x86_64 arch=glm-5.2-nvfp4 run_dir=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829
+[pull] using registry secret default/default-secret
+[pull] local: image already present
+[pull] local template image already present
+[pull] 192.168.0.78: pull swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0730_dev_bnt3_mc_fix.20260828212101.BNT3.x86_64
+[pull] 192.168.0.128: pull swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0730_dev_bnt3_mc_fix.20260828212101.BNT3.x86_64
+[pull] 192.168.0.243: pull swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0730_dev_bnt3_mc_fix.20260828212101.BNT3.x86_64
+[pull] export render templates from swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0830_dev_bnt3_CICD.20260828163801.BNT3.x86_64
+RUN_DIR=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829
+CHART_TEMPLATE_DIR=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/template/xds-cluster
+VALUES_TEMPLATE=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/template/values-16Node-je-cpp-bnt3.yaml
+ARCH_FILE=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/template/model_arch-lt-je-cpp-bnt3.json
+DEPLOY_IMAGE=swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0730_dev_bnt3_mc_fix.20260828212101.BNT3.x86_64
+RUN_DIR=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829
+CHART_DIR=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/rendered/xds-cluster
+VALUES_FILE=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/rendered/values.rendered.yaml
+ARCH_FILE=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/template/model_arch-lt-je-cpp-bnt3.json
+ARCH_NAME=glm-5.2-nvfp4
+ARCH_REQUEST_FILE=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/rendered/architecture.request.json
+RESOURCE_MANIFEST=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/rendered/resources.rendered.json
+NODE_LABELS_FILE=/mnt/paas/op_test/worktable/pipeline/runs/verify-glm52-optest-selector-20260829/rendered/node-labels.json
+DEPLOY_IMAGE=swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:0730_dev_bnt3_mc_fix.20260828212101.BNT3.x86_64
+NAMESPACE=xds-glm-5.2-nvfp4-local
+RELEASE_NAME=xds-glm-5.2-nvfp4-local
