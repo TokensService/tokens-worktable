@@ -1351,11 +1351,41 @@ function fillScriptsDatalist(){
   availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
 }
 function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
-/* Jenkins 任务列表（设置页「获取任务列表」后填充；阶段编辑器「Jenkins」类型据此选择任务） */
+/* Jenkins 任务列表（设置页「获取任务列表」或编辑器内自动拉取后填充；阶段编辑器「Jenkins」类型据此选择任务，datalist 输入即搜索） */
 let availableJenkinsJobs=[];   // [{name: fullName}]
+let jenkinsJobsLoading=null;   // 拉取中的 Promise（防并发重复拉取）
 function fillJenkinsJobsDatalist(){
   const dl=$('jenkinsJobsList'); if(!dl) return; dl.innerHTML='';
   availableJenkinsJobs.forEach(j=>{ const o=document.createElement('option'); o.value=j.name; dl.appendChild(o); });
+}
+/* 阶段编辑器 Jenkins 行提示文案（拉取中 / 已有列表 / 待拉取） */
+function jkJobsHintText(){ return jenkinsJobsLoading?'任务列表拉取中…':(availableJenkinsJobs.length?('共 '+availableJenkinsJobs.length+' 个任务，输入可搜索'):'（单击输入框自动获取任务列表）'); }
+/* 同步阶段编辑器所有 Jenkins 行的提示文本（只改提示、不重建输入框，避免输入失焦） */
+function updateJkJobHints(text, isErr){
+  document.querySelectorAll('#plStageList [data-jkhint]').forEach(function(h){
+    h.textContent=text; h.style.color=isErr?'var(--log-err)':'';
+  });
+}
+/* 流水线编辑器内拉取 Jenkins 任务列表：单击任务输入框时自动触发（已有列表则跳过），点「↻」强制重拉；
+   复用全局 jenkins 连接配置（本地浏览器直连 / 服务端代连），成功后填充 datalist 并同步各行提示 */
+async function ensureJenkinsJobs(force){
+  if(jenkinsJobsLoading) return jenkinsJobsLoading;
+  if(!force && availableJenkinsJobs.length) return true;
+  if(!(jenkins.url||'').trim()){ updateJkJobHints('请先在「设置」页配置 Jenkins 地址', true); return false; }
+  updateJkJobHints('任务列表拉取中…');
+  jenkinsJobsLoading = (async function(){
+    try{
+      const jobs = await fetchAllJenkinsJobs(jenkins);
+      availableJenkinsJobs = jobs.map(function(jb){ return {name: jb.name}; });
+      fillJenkinsJobsDatalist();
+      updateJkJobHints(jkJobsHintText());
+      return true;
+    }catch(e){
+      updateJkJobHints('✗ 任务列表拉取失败：'+String((e&&e.message)||e).slice(0,120), true);
+      return false;
+    }finally{ jenkinsJobsLoading=null; }
+  })();
+  return jenkinsJobsLoading;
 }
 function jkJobByName(name){ return availableJenkinsJobs.find(j=>j.name===name)||null; }
 async function readScriptSrc(path){
@@ -1569,10 +1599,12 @@ function renderStageActionRow(i){
   }
   if(s.kind==='jenkins'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName）'; inp.style.width='240px';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName，可输入搜索）'; inp.style.width='240px'; inp.title='单击输入框自动拉取 Jenkins 任务列表，输入即搜索；右侧 ↻ 强制刷新';
+    inp.addEventListener('focus', function(){ ensureJenkinsJobs(false); });
+    const ref=document.createElement('button'); ref.className='dshell-btn dshell-btnGhost mini'; ref.type='button'; ref.setAttribute('data-act','jkrefresh'); ref.textContent='↻'; ref.title='刷新 Jenkins 任务列表';
     const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
-    const hint=document.createElement('span'); hint.className='dshell-muted'; hint.style.fontSize='11px'; hint.textContent=availableJenkinsJobs.length?'':'（先在「设置」页获取任务列表）';
-    box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(hint); return;
+    const hint=document.createElement('span'); hint.className='dshell-muted'; hint.style.fontSize='11px'; hint.setAttribute('data-jkhint',''); hint.textContent=jkJobsHintText();
+    box.appendChild(lab); box.appendChild(inp); box.appendChild(ref); box.appendChild(btn); box.appendChild(hint); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
@@ -2827,6 +2859,7 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='jkparams'){ detectJenkinsParams(i); }
+  else if(act==='jkrefresh'){ ensureJenkinsJobs(true); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
 });
 $('plStageList').addEventListener('change', (e)=>{
