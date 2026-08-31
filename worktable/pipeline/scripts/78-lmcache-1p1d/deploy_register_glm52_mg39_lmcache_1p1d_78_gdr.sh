@@ -5,7 +5,7 @@ set -euo pipefail
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_HOST="${REMOTE_HOST:-192.168.0.78}"
 REMOTE_USER="${REMOTE_USER:-root}"
-REMOTE_PASS="${REMOTE_PASS:?set REMOTE_PASS before running this script}"
+REMOTE_PASS="${REMOTE_PASS:-}"
 LOG_HOST="${LOG_HOST:-192.168.0.78}"
 LOG_USER="${LOG_USER:-${REMOTE_USER}}"
 LOG_PASS="${LOG_PASS:-${REMOTE_PASS}}"
@@ -26,11 +26,19 @@ require_cmd() {
 }
 
 remote() {
-  sshpass -p "${REMOTE_PASS}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+  if [[ -n "${REMOTE_PASS}" ]]; then
+    sshpass -p "${REMOTE_PASS}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+  else
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+  fi
 }
 
 log_remote() {
-  sshpass -p "${LOG_PASS}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOG_USER}@${LOG_HOST}" "$@"
+  if [[ -n "${LOG_PASS}" ]]; then
+    sshpass -p "${LOG_PASS}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOG_USER}@${LOG_HOST}" "$@"
+  else
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOG_USER}@${LOG_HOST}" "$@"
+  fi
 }
 
 echo ">>> local dir: ${LOCAL_DIR}"
@@ -41,7 +49,9 @@ echo ">>> chart dir: ${CHART_DIR}"
 echo ">>> xds url: ${XDS_URL}"
 echo ">>> log host: ${LOG_USER}@${LOG_HOST}:${REMOTE_XDS_FOLLOW_DIR}"
 
-require_cmd sshpass
+if [[ -n "${REMOTE_PASS}" || -n "${LOG_PASS}" ]]; then
+  require_cmd sshpass
+fi
 echo ">>> use existing chart and values on ${REMOTE_HOST}; directory sync is disabled ..."
 
 echo ">>> verify yaml ..."
@@ -74,7 +84,11 @@ kubectl -n '${NAMESPACE}' get pods -o wide >&2 || true
 exit 1"
 
 echo ">>> start following XDS head pod logs on ${LOG_HOST} ..."
-sshpass -p "${LOG_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOCAL_DIR}/follow_xds_head_logs.sh" "${LOG_USER}@${LOG_HOST}:/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh" || true
+if [[ -n "${LOG_PASS}" ]]; then
+  sshpass -p "${LOG_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOCAL_DIR}/follow_xds_head_logs.sh" "${LOG_USER}@${LOG_HOST}:/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh" || true
+else
+  scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOCAL_DIR}/follow_xds_head_logs.sh" "${LOG_USER}@${LOG_HOST}:/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh" || true
+fi
 log_remote "set -e; chmod +x '/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh'; mkdir -p '${REMOTE_XDS_FOLLOW_DIR}'; cd '${REMOTE_XDS_FOLLOW_DIR}'; nohup env OUT='${REMOTE_XDS_FOLLOW_DIR}' bash '/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh' '${NAMESPACE}' > follow_launcher.log 2>&1 < /dev/null & echo \\\$! > launcher.pid" || true
 
 echo ">>> register GLM-5.2 NVFP4 lmcache l2 1P1D model ..."

@@ -2,12 +2,13 @@
 # Register a model using only the P/D resources rendered in this pipeline run.
 set -euo pipefail
 
-RUN_DIR="${RUN_DIR:?RUN_DIR is required}"
-RESOURCE_MANIFEST="${RESOURCE_MANIFEST:?RESOURCE_MANIFEST is required}"
-ARCH_NAME="${ARCH_NAME:?ARCH_NAME is required}"
-XDS_URL="${XDS_URL:?XDS_URL is required}"
+RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
+RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
+RESOURCE_MANIFEST="${RESOURCE_MANIFEST:-${RENDER_DIR}/resources.rendered.json}"
+ARCH_NAME="${ARCH_NAME:-default}"
+XDS_URL="${XDS_URL:-http://127.0.0.1:30079/xds/v1}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
-MODEL_PATH="${MODEL_PATH:?MODEL_PATH is required}"
+MODEL_PATH="${MODEL_PATH:-}"
 MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_REQUEST_FILE="$RUN_DIR/rendered/model.request.json"
 MODEL_ACTIVE_TIMEOUT_SECONDS="${MODEL_ACTIVE_TIMEOUT_SECONDS:-4800}"

@@ -2,8 +2,8 @@
 # Follow the current Ray head pod and persist logs across head pod recreation.
 set -euo pipefail
 
-namespace=${1:?usage: follow-xds-head-logs.sh NAMESPACE [LOG_DIR]}
-log_dir=${2:-"./logs/xds_head_follow_logs_${namespace}_$(date +%Y%m%d_%H%M%S)"}
+namespace=${1:-${NAMESPACE:-default}}
+log_dir=${2:-${LOG_DIR:-"./logs/xds_head_follow_logs_${namespace}_$(date +%Y%m%d_%H%M%S)"}}
 poll_interval_seconds=${POLL_INTERVAL_SECONDS:-5}
 kubectl_bin=${KUBECTL_BIN:-kubectl}
 last_head=""

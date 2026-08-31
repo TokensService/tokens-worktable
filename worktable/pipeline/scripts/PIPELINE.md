@@ -1,6 +1,6 @@
 # Pipeline scripts
 
-`pipeline.sh` is the preparation entry point. It runs, in order:
+`pull_render_config.sh` is the preparation entry point. It runs, in order:
 
 1. `pull-image.sh`: pre-pulls `IMAGE_NAME` into the local and target
    Kubernetes/containerd image caches, then exports the chart, values, and
@@ -11,7 +11,7 @@
 All pipeline configuration is supplied through environment variables. None of
 the stage scripts accepts a deployment argument.
 
-Required for `pipeline.sh`:
+`pull_render_config.sh` reads all configuration from environment variables. They are optional; unset values use the script defaults.
 
 ```bash
 export IMAGE_NAME='registry.example/xds:tag'
@@ -20,12 +20,12 @@ export TARGET_HOSTS='[{"ip":"<target-host-ip>","user":"root"}]'
 export TARGET_PASSWORD='...'
 export REGISTRY_SECRET_NAMESPACE='...'
 export REGISTRY_SECRET_NAME='...'
-bash pipeline.sh
+bash pull_render_config.sh
 ```
 
 Optional environment variables include `RUN_DIR`, `DEPLOY_IMAGE`,
 `PIPELINE_NAME`, `NUM_PREFILL`, `NUM_DECODE`, `PREFILL_GPU`, `DECODE_GPU`,
-`NAMESPACE`, and `RELEASE_NAME`. `pipeline.sh` prints the rendered contract as
+`NAMESPACE`, and `RELEASE_NAME`. `pull_render_config.sh` prints the rendered contract as
 `KEY=VALUE` lines for the later `deploy-model.sh`, `register-model.sh`, and
 `model-health.sh` stages.
 

@@ -4,19 +4,25 @@
 # variables.
 set -euo pipefail
 
-IMAGE_NAME="${IMAGE_NAME:?IMAGE_NAME is required}"
+IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"
 IMAGE="$IMAGE_NAME"
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
-TARGET_HOSTS="${TARGET_HOSTS:?TARGET_HOSTS is required}"
-SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:?SSH_PASSWORD or TARGET_PASSWORD is required}}"
-REGISTRY_SECRET_NAMESPACE="${REGISTRY_SECRET_NAMESPACE:?REGISTRY_SECRET_NAMESPACE is required}"
-REGISTRY_SECRET_NAME="${REGISTRY_SECRET_NAME:?REGISTRY_SECRET_NAME is required}"
+TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
+REGISTRY_USERNAME="${REGISTRY_USERNAME:-}"
+REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 REGISTRY_AUTH_DIR=""
 TEMPLATE_CONTAINER=""
 TEMPLATE_DIR="$RUN_DIR/template"
 TEMPLATE_MOUNT_DIR=""
 CTR_REGISTRY_CREDENTIAL=""
+PULL_PROXY="${PULL_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
+
+if [[ -n "$PULL_PROXY" ]]; then
+  export http_proxy="$PULL_PROXY" https_proxy="$PULL_PROXY"
+  export HTTP_PROXY="$PULL_PROXY" HTTPS_PROXY="$PULL_PROXY"
+fi
 
 cleanup() {
   [[ -z "$TEMPLATE_CONTAINER" ]] || container_remove "$TEMPLATE_CONTAINER" || true
@@ -24,21 +30,18 @@ cleanup() {
 }
 
 prepare_registry_auth() {
-  command -v kubectl >/dev/null 2>&1 || {
-    echo "kubectl is required when REGISTRY_SECRET_NAMESPACE is set" >&2
-    exit 2
-  }
+  if [[ -z "$REGISTRY_USERNAME" || -z "$REGISTRY_PASSWORD" ]]; then
+    echo "[pull] registry credentials are incomplete; pulling without explicit credentials"
+    return 0
+  fi
 
   REGISTRY_AUTH_DIR="$(mktemp -d)"
   umask 077
-  kubectl -n "$REGISTRY_SECRET_NAMESPACE" get secret "$REGISTRY_SECRET_NAME" \
-    -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d >"$REGISTRY_AUTH_DIR/config.json"
-  jq -e '.auths | type == "object"' "$REGISTRY_AUTH_DIR/config.json" >/dev/null
-  registry_auth="$(jq -r --arg host "${IMAGE%%/*}" '.auths[$host].auth // empty' "$REGISTRY_AUTH_DIR/config.json")"
-  if [[ -n "$registry_auth" ]]; then
-    CTR_REGISTRY_CREDENTIAL="$(printf '%s' "$registry_auth" | base64 -d)"
-  fi
-  echo "[pull] using registry secret ${REGISTRY_SECRET_NAMESPACE}/${REGISTRY_SECRET_NAME}"
+  registry_host="${IMAGE%%/*}"
+  registry_auth="$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 -w 0)"
+  printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry_host" "$registry_auth" >"$REGISTRY_AUTH_DIR/config.json"
+  CTR_REGISTRY_CREDENTIAL="$REGISTRY_USERNAME:$REGISTRY_PASSWORD"
+  echo "[pull] using registry credentials from environment for $registry_host"
 }
 
 container_with_auth() {
@@ -59,7 +62,13 @@ if command -v nerdctl >/dev/null 2>&1; then
 elif command -v ctr >/dev/null 2>&1; then
   # ctr writes directly to the namespace used by Kubernetes on hosts without
   # nerdctl. Its pull path runs in the CLI process and honors proxy variables.
-  container_pull() { ctr --namespace k8s.io images pull --user "$CTR_REGISTRY_CREDENTIAL" "$1"; }
+  container_pull() {
+    if [[ -n "$CTR_REGISTRY_CREDENTIAL" ]]; then
+      ctr --namespace k8s.io images pull --user "$CTR_REGISTRY_CREDENTIAL" "$1"
+    else
+      ctr --namespace k8s.io images pull "$1"
+    fi
+  }
   container_image_exists() { ctr --namespace k8s.io images ls -q | grep -Fx -- "$1" >/dev/null 2>&1; }
   container_create() {
     TEMPLATE_MOUNT_DIR="$(mktemp -d)"
@@ -81,6 +90,14 @@ else
   echo "neither docker nor nerdctl is available" >&2
   exit 2
 fi
+
+remote_ssh() {
+  if [[ -n "$SSH_PASSWORD" ]]; then
+    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$@"
+  else
+    ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$@"
+  fi
+}
 
 prepare_registry_auth
 trap cleanup EXIT
@@ -130,7 +147,7 @@ if command -v python3 >/dev/null 2>&1; then
       remote_nerdctl_pull="DOCKER_CONFIG='$remote_auth_dir' nerdctl --namespace k8s.io pull '$IMAGE'"
     fi
     remote_pull="${remote_auth_setup}if command -v nerdctl >/dev/null 2>&1; then nerdctl --namespace k8s.io image inspect '$IMAGE' >/dev/null 2>&1 || $remote_nerdctl_pull; elif command -v docker >/dev/null 2>&1; then docker image inspect '$IMAGE' >/dev/null 2>&1 || $remote_docker_pull; else echo 'neither docker nor nerdctl is available' >&2; exit 2; fi${remote_auth_cleanup}"
-    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$user@$ip" "${remote_proxy_env}${remote_pull}"
+    remote_ssh "$user@$ip" "${remote_proxy_env}${remote_pull}"
   done < <(python3 -c 'import json,sys
 for host in json.loads(sys.argv[1]): print(host.get("ip", ""), host.get("user", "root"), sep="\t")' "$TARGET_HOSTS")
 else

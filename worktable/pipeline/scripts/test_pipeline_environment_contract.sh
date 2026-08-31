@@ -2,14 +2,14 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-pipeline="$script_dir/pipeline.sh"
+pipeline="$script_dir/pull_render_config.sh"
 
-[[ -x "$pipeline" ]] || { echo "pipeline.sh must exist and be executable" >&2; exit 1; }
+[[ -x "$pipeline" ]] || { echo "pull_render_config.sh must exist and be executable" >&2; exit 1; }
 grep -Fq 'bash "$SCRIPT_DIR/pull-image.sh"' "$pipeline"
 grep -Fq 'bash "$SCRIPT_DIR/render-config.sh"' "$pipeline"
 grep -Fq 'IMAGE_NAME' "$pipeline"
 grep -Fq 'ARCH_NAME' "$pipeline"
-grep -Fq 'RENDER_DIR="${RENDER_DIR:?RENDER_DIR is required}"' "$pipeline"
+grep -Fq 'RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"' "$pipeline"
 
 for script in pull-image.sh render-config.sh deploy-model.sh register-model.sh model-health.sh; do
   if rg -n '^\s*(IMAGE|IMAGE_NAME|ARCH_NAME|MODEL_NAME|RUN_DIR|CHART_DIR|VALUES_FILE|ARCH_REQUEST_FILE|RESOURCE_MANIFEST|XDS_URL)=.*\$\{?1' "$script_dir/$script" ||
@@ -19,9 +19,16 @@ for script in pull-image.sh render-config.sh deploy-model.sh register-model.sh m
   fi
 done
 
-grep -Fq 'IMAGE_NAME="${IMAGE_NAME:?IMAGE_NAME is required}"' "$script_dir/pull-image.sh"
-grep -Fq 'ARCH_NAME="${ARCH_NAME:?ARCH_NAME is required}"' "$script_dir/render-config.sh"
-grep -Fq 'RENDER_DIR="${RENDER_DIR:?RENDER_DIR is required}"' "$script_dir/render-config.sh"
+if find "$script_dir" -type f -name '*.sh' ! -path '*/backups/*' ! -name 'test_*.sh' \
+  -exec grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*:\?' {} +; then
+  echo "pipeline scripts must not declare required environment variables" >&2
+  exit 1
+fi
+
+grep -Fq 'IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"' "$script_dir/pull-image.sh"
+grep -Fq 'TARGET_HOSTS="${TARGET_HOSTS:-[]}"' "$script_dir/pull-image.sh"
+grep -Fq 'ARCH_NAME="${ARCH_NAME:-default}"' "$script_dir/render-config.sh"
+grep -Fq 'RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"' "$script_dir/render-config.sh"
 grep -Fq "printf 'RENDER_DIR=%s\\n' \"\$RENDER_DIR\"" "$script_dir/render-config.sh"
 grep -Fq 'MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"' "$script_dir/register-model.sh"
 grep -Fq 'TEMPLATE_VARS_JSON' "$script_dir/render-config.sh"

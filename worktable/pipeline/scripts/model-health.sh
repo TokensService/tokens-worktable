@@ -2,8 +2,8 @@
 # Verify the XDS API and execute one real non-streaming chat request.
 set -euo pipefail
 
-XDS_URL="${XDS_URL:?XDS_URL is required}"
-MODEL_NAME="${MODEL_NAME:?MODEL_NAME is required}"
+XDS_URL="${XDS_URL:-http://127.0.0.1:30079/xds/v1}"
+MODEL_NAME="${MODEL_NAME:-${ARCH_NAME:-default}}"
 MAX_TOKENS="${MAX_TOKENS:-1}"
 
 echo "[health] check models at ${XDS_URL%/}/models/"
