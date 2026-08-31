@@ -930,7 +930,7 @@ function renderRepos(){
   repositories.forEach(r=>{
     const tr=document.createElement('tr');
     tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td><td class="dshell-muted" style="font-size:11px;"'+(r.strategyUrl?(' title="'+esc(r.strategyUrl)+'">✓ 已配置'):'>—')+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支；已配置部署策略 URL 时按主控当前分支试拉部署策略">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-repotest]').forEach(b=>b.addEventListener('click',()=>{ const r=repositories.find(x=>x.id===b.getAttribute('data-repotest')); if(r) testRepo(r); }));
@@ -1058,13 +1058,23 @@ function parseGitRefsAdvertisement(buf){
 }
 async function testRepo(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
-  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+fetchModeLabel(r.fetchMode)+'）';
+  const stUrl=(r.strategyUrl||'').trim();
+  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+fetchModeLabel(r.fetchMode)+(stUrl?' · 部署策略':'')+'）';
   let j;
   try{ j=await fetchRepoRefs(r); }
   catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 请求失败：'+String(e.message||e).slice(0,160); return; }
   if(j && j.ok){
     const nb=j.branches?j.branches.length:0; const nt=j.tags?j.tags.length:0;
-    tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 连接成功 · '+nb+' 个分支'+(nt?(' · '+nt+' 个 Tag'):'');
+    let msg='✓ '+r.name+' 连接成功 · '+nb+' 个分支'+(nt?(' · '+nt+' 个 Tag'):''); let allOk=true;
+    /* 已配置部署策略 URL：按主控当前分支试拉一次部署策略（{branch} 占位替换），并顺便刷新主控下拉缓存 */
+    if(stUrl){
+      const br=($('branchName') && $('branchName').value.trim())||'main';
+      const st=await fetchDeployStrategies(stUrl, br);
+      if(st.error){ msg+='；✗ 部署策略（分支 '+br+'）：'+st.error; allOk=false; }
+      else msg+=' · '+st.items.length+' 个部署策略（分支 '+br+'）';
+      if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; renderDeployStrategyOptions(); }
+    }
+    tip.style.color=allOk?'var(--log-ok)':'var(--log-err)'; tip.textContent=msg;
     repoBranches[r.id]={branches:(j.branches||[]), tags:(j.tags||[]), error:''};   // 顺便刷新该仓分支/Tag 缓存
   } else {
     tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 连接失败：'+(j && j.error ? String(j.error).slice(0,160) : '未知错误');
@@ -1127,19 +1137,9 @@ async function fetchStrategyJson(url){
   }
 }
 function deployStrategyKey(repo,branch){ return repo.id+'|'+(branch||''); }
-async function loadDeployStrategies(force){
-  const sel=$('deployStrategySel'); if(!sel) return;
-  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
-  const tpl=((repo && repo.strategyUrl)||'').trim();
-  if(!tpl){
-    sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
-    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略'; return;
-  }
-  sel.disabled=false; sel.title='按当前分支从代码仓「部署策略 URL」拉取支持的部署策略';
-  const key=deployStrategyKey(repo,branch);
-  const cached=deployStrategies[key];
-  if(!force && cached && !cached.loading){ renderDeployStrategyOptions(); return; }
-  deployStrategies[key]={loading:true}; renderDeployStrategyOptions();
+/* 拉取指定分支的部署策略列表：tpl 中 {branch} 替换为分支名；分页 {total,offset,next_offset,items:[{arch_name}]}
+   （arch_name 缺省回退 name）跟 next_offset 逐页拉全。返回 {items:[], error:''} */
+async function fetchDeployStrategies(tpl, branch){
   const url=tpl.split('{branch}').join(encodeURIComponent(branch));
   const items=[];
   try{
@@ -1154,8 +1154,23 @@ async function loadDeployStrategies(force){
       const nu=url.replace(/([?&])offset=\d+/,'$1offset='+next);   // 保留原 query，仅替换/追加 offset
       u=(nu===url)? url+(url.indexOf('?')>=0?'&':'?')+'offset='+next : nu;
     }
-    deployStrategies[key]={items:Array.from(new Set(items)), error:''};
-  }catch(e){ deployStrategies[key]={items:[], error:String(e.message||e).slice(0,160)}; }
+    return {items:Array.from(new Set(items)), error:''};
+  }catch(e){ return {items:[], error:String(e.message||e).slice(0,160)}; }
+}
+async function loadDeployStrategies(force){
+  const sel=$('deployStrategySel'); if(!sel) return;
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
+  const tpl=((repo && repo.strategyUrl)||'').trim();
+  if(!tpl){
+    sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
+    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略'; return;
+  }
+  sel.disabled=false; sel.title='按当前分支从代码仓「部署策略 URL」拉取支持的部署策略';
+  const key=deployStrategyKey(repo,branch);
+  const cached=deployStrategies[key];
+  if(!force && cached && !cached.loading){ renderDeployStrategyOptions(); return; }
+  deployStrategies[key]={loading:true}; renderDeployStrategyOptions();
+  deployStrategies[key]=await fetchDeployStrategies(tpl, branch);
   renderDeployStrategyOptions();
 }
 function renderDeployStrategyOptions(){
