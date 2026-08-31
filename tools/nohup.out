@@ -1,0 +1,5 @@
+[server] agent port: 9001, ctl port: 9002
+[server] agent 'agent1' online from 127.0.0.1:34122
+[server] exec e5d798c3 -> 'agent1': 'ls' (from 127.0.0.1)
+[server] exec c2f40c52 -> 'agent1': 'ls' (from 127.0.0.1)
+[server] exec bad66992 -> 'agent1': 'ls' (from 127.0.0.1)

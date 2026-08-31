@@ -2,3 +2,4 @@ dsh-web.log
 dsh-web.pid
 __pycache__/
 *.pyc
+configs/

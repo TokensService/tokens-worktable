@@ -1,0 +1,1194 @@
+common:
+  containerEnv:
+    - name: RAY_min_memory_free_bytes
+      value: '2147483648'
+    - name: RAY_SERVE_CONTROL_LOOP_INTERVAL_S
+      value: '10'
+    - name: RAY_gcs_rpc_server_connect_timeout_s
+      value: '10'
+    - name: RAY_maximum_gcs_destroyed_actor_cached_count
+      value: '2000'
+    - name: MC_USE_TENT
+      value: '1'
+    - name: MC_TENT_CONF
+      value: '{"topology":{"rdma_whitelist":["mlx5_bond_1","mlx5_bond_2","mlx5_bond_3","mlx5_bond_4","mlx5_bond_5","mlx5_bond_6","mlx5_bond_7","mlx5_bond_8"],"rdma_blacklist":[]},"transports":{"nvlink":{"enable":false},"rdma":{"enable":true,"device":{"gid_index":3},"workers":{"max_retry_count":1}}}}'
+    - name: XDS_COMMON_CONFIGMAP_FILE
+      value: /etc/xds/config/common/xds_common.conf
+    - name: XDS_FRAMEWORK_CONFIGMAP_FILE
+      value: /etc/xds/config/framework/xds_framework.conf
+    - name: XDS_JOB_EXECUTION_CONFIGMAP_FILE
+      value: /etc/xds/config/framework/job_execution_config.json
+    - name: RAY_ROTATION_MAX_BYTES
+      value: '104857600'
+    - name: RAY_ROTATION_BACKUP_COUNT
+      value: '10'
+    - name: RAY_num_server_call_thread
+      value: '1'
+    - name: RAY_DEDUP_LOGS
+      value: '0'
+    - name: INF_NAN_MODE_ENABLE
+      value: '0'
+    - name: INF_NAN_MODE_FORCE_DISABLE
+      value: '1'
+    - name: NUMEXPR_MAX_THREADS
+      value: '16'
+    - name: RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES
+      value: '1'
+    - name: ENABLE_MYSQL_ENCRYPT
+      value: 'false'
+    - name: EMS_SDK_LOG
+      value: /opt/cloud/logs/ems
+    - name: EMS_ENABLE_SEPARATE_THREAD_POOL
+      value: '1'
+    - name: EMS_MAIN_LOAD_THREAD_SIZE
+      value: '2'
+    - name: EMS_MAIN_SAVE_THREAD_SIZE
+      value: '24'
+    - name: EMS_MID_REQ_QUEUE_NUM
+      value: '1'
+    - name: EMS_MAX_TASK_NUM_PER_QUEUE
+      value: '8196'
+    - name: ENABLE_MKI_LOG
+      value: '1'
+    - name: VLLM_MQ_MAX_CHUNKS
+      value: '20'
+    - name: VLLM_GC_ENABLED
+      value: '1'
+    - name: VLLM_GC_CHECK_INTERVAL
+      value: '400'
+    - name: VLLM_GC_THRESHOLD
+      value: '0.95'
+    - name: VLLM_GC_EMERGENCY_THRESHOLD
+      value: '0.97'
+    - name: XCCL_TURBO_PREFILL_MLA_HEAD_PADDING
+      value: '64'
+    - name: VLLM_RAY_EXTRA_ENV_VAR_PREFIXES_TO_COPY
+      value: "XCCL_TURBO_SYNC_SPARSE_INDEXER, XCCL_TURBO_FIX_NATIVE_CPU_OFFLOAD_PIN, XCCL_TURBO_FIX_INDEXER_CACHE_BLOCK_RELEASE"
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+    - name: K8S_NODE_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    - name: K8S_POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: XDS_DATABASE_TYPE
+      value: 'mysql'
+    - name: XDS_DATABASE_NAME
+      value: {XDS_DATABASE_NAME}
+    - name: XDS_DATABASE_HOST
+      value: {XDS_DATABASE_HOST}
+    - name: XDS_DATABASE_PORT
+      value: {XDS_DATABASE_PORT}
+    - name: XDS_DATABASE_USERNAME
+      value: {XDS_DATABASE_USERNAME}
+    - name: XDS_DATABASE_PASSWORD
+      value: {DATABASE_PASSWORD}
+    - name: TASK_QUEUE_ENABLE
+      value: '2'
+    - name: PLOG_SRC_DIR
+      value: /home/service/log
+    - name: PLOG_DEST_DIR
+      value: /home/service/works/models_ssd/plog
+    - name: XDS_NAMESPACE
+      value: {DEPLOY_NAMESPACE}
+    - name: XDS_TE_POD_LABEL_KEY
+      value: {XDS_TE_POD_LABEL_KEY}
+    - name: XDS_TE_POD_LABEL_VAL
+      value: {XDS_TE_POD_LABEL_VAL}
+    - name: RAY_TMPDIR
+      value: /opt/cloud/logs
+    - name: VLLM_LOG_DIR
+      value: /opt/cloud/logs/vllm
+  tolerations:
+    - effect: NoExecute
+      key: node.kubernetes.io/not-ready
+      operator: Exists
+      tolerationSeconds: 60
+    - effect: NoExecute
+      key: node.kubernetes.io/unreachable
+      operator: Exists
+      tolerationSeconds: 60
+
+commonConfigFiles:
+  xds_common.conf: |
+    [log]
+    log_path = /opt/cloud/logs # override notice
+    log_level = INFO
+    [feature]
+    npu_fork = true
+
+frameworkConfigFiles:
+  xds_framework.conf: |
+    [metric]
+    pushgateway = true
+    collector_gateway_url = {COLLECTOR_GATEWAY_URL}
+    latency_metric_interval = 1
+    executor_metric_interval = 1
+    metrics_ssl_auth = false
+    [model]
+    model_cache_dir = /home/service/works/models_ssd
+    local_model_dir = /home/service/works/models_ssd
+    [deploy]
+    actor_max_concurrency = 20000
+    grpc_channel_count = 4
+    separate_deploy = true
+    serve_proxy_use_pod_ip = true
+    k8s_deploy_namespace = {DEPLOY_NAMESPACE}
+    task_executor_max_init_time = 4800 # 首次部署的时候设置拉起TE的最大超时时间, 单位s
+    [scale]
+    executor_scale_interval = 1
+    scale_in_uptime = 600
+    scale_in_stalled_request_limit = 10
+    scale_in_hard_limit_seconds = 2100
+    dte_rest_wait_seconds = 120 # DTE rest 阶段等待时间
+    enable_te_server = false # TE drain HTTP 服务开关
+    [fe]
+    min_frontend_num = 10 # 对应修改frontGroup minReplicas
+    max_frontend_num = 10 # 对应修改frontGroup maxReplicas
+    graceful_shutdown_timeout_s = 2100
+    force_restart_threshold_s = 2100
+    max_proxy_actor_draining_time = 2100
+    min_requests_to_kill = 2
+    # FEM 模式开关 - true 使用 FEM 管理 FE Pods, false 使用 Ray Serve 管理
+    use_fem_frontend = true
+    fem_min_frontend_num = 10 # 对应修改feTemplate default_replica
+    fem_max_frontend_num = 10
+    fe_scale_in_step_ratio = 0.2
+    scale_out_threshold = 0.8
+    stable_scale_threshold = 0.65
+    scale_in_threshold = 0.5
+    [health_check]
+    fetch_runtime_info_timeout = 30
+    [feature]
+    ak_str = str
+    sk_str = str
+    project_id = str
+    region_id = str
+    sendalarm_to_aom = false
+    alarm_resource_provider = MagicToken
+    [je_scheduler_sub_health_aware_policy]
+    enable_je_scheduler_sub_health_aware_policy = true
+    [prefix_match_schedule_policy]
+    use_je_prefix_match_strategy = false
+    prefix_match_strategy = prompt # prompt|tenant, 其中prompt表示按照输入内容进行亲和性调度，tenant表示按照租户id进行亲和性调度
+    prefix_match_balance_abs_threshold = 0
+    [limit]
+    concurrency_limit_threshold = 18000
+    [Mock]
+    only_je = false
+    mock_prefill_te = false
+    mock_decode_te = false
+    mock_prefill_te_latency_ms = 0.0
+    mock_decode_te_latency_ms = 0.0
+    [XDS_JE_CPP]
+    xds_je_cpp_install_dir = /usr/local/xds_cpp
+    xds_je_cpp_conf_path = /etc/xds/config/xds_cpp/conf/xds_je_server.config
+    je_heartbeat_posix = /je_heartbeat_cpp_to_py
+    je_heartbeat_retry_times = 3 # JE心跳失败连续重试次数
+    je_heartbeat_retry_timeout_s = 10 # JE心跳单次超时时间
+    [XDS_LME_CPP]
+    xds_lme_cpp_install_dir = /usr/local/xds_cpp
+    xds_lme_cpp_conf_path = /etc/xds/config/xds_cpp/conf/xds_lme_server.config
+    lme_heartbeat_posix = /lme_heartbeat_cpp_to_py
+    lme_data_upload_posix = /lme_data_upload_cpp_to_py
+    lme_heartbeat_retry_times = 3 # LME心跳失败连续重试次数
+    lme_heartbeat_retry_timeout_s = 10 # LME心跳单次超时时间
+    [XDS_DPS_CPP]
+    xds_dps_cpp_install_dir = /usr/local/xds_cpp
+    xds_dps_cpp_conf_path = /etc/xds/config/xds_cpp/conf/xds_dps_server.config
+    dps_heartbeat_posix = /dps_heartbeat_cpp_to_py
+    dps_heartbeat_retry_times = 3 # DPS心跳失败连续重试次数
+    dps_heartbeat_retry_timeout_s = 10 # DPS心跳单次超时时间
+    [RAS]
+    npu_label_only = true
+    [je_reconstruct]
+    use_prefill_batch_schedule = true # je c++重构开关，prefill是否使用batch调度
+    [kv_transfer]
+    kv_transfer_in_node_link_type = SDMA
+    kv_transfer_cross_node_link_type = TCP
+    [ems_config]
+    ems_enable = false
+    ems_namespace = ems_deploy_ns
+    ems_cluster_id = 00000000-0000-0000-0000-000000000000
+    [device]
+    compute_device = gpu
+
+  job_execution_config.json: |
+    {
+      "job_executor_groups": [
+        {
+          "type": "chat_completion",
+          "min_executors": 2,
+          "max_executors": 2,
+          "resources": {
+            "CPU": 12.0,
+            "GPU": 0,
+            "NPU": 0
+          }
+        }
+      ]
+    }
+XDSCppServerConfigFile:
+  xds_je_server.config: |
+    {
+      "server": {
+        "port": 50051,
+        "host": "0.0.0.0",
+        "max_concurrent_requests": 100,
+        "tokenizer_queue_capacity": 100000,
+        "tokenizer_max_tasks": 10,
+        "schedule_strategy_queue_capacity": 100000,
+        "schedule_strategy_max_tasks": 10,
+        "schedule_queue_capacity": 100000,
+        "schedule_max_tasks": 10,
+        "post_queue_capacity": 100000,
+        "post_max_tasks": 10,
+        "pending_dispatch_queue_capacity": 100000,
+        "pending_dispatch_max_tasks": 10,
+        "grpc_je_to_ts_deadline_second": 20,
+        "grpc_je_to_pte_deadline_second": 7200,
+        "je_ttft_check_interval_us": 1000
+      },
+      "model": {
+        "model_dir": "/home/service/works/models_ssd/",
+        "jinja_dir": "/usr/local/lib/python3.12/dist-packages/vllm_xds_engine/entrypoints/templates/",
+        "tokenizer_mode": "auto",
+        "tokenizer_revision": "None",
+        "disagg_pd_deploy_prefill_tp_size": 8,
+        "scheduler_mode": "local"
+      },
+      "logging": {
+        "level": "INFO",
+        "log_file": "/opt/cloud/logs/xds/xds_cpp_je.log"
+      },
+      "heartbeat": {
+        "processor_heartbeat_interval_ms": 500,
+        "processor_heartbeat_timeout_ms": 30000,
+        "heartbeat_manager_log_interval_ms": 10000,
+        "heartbeat_manager_report_interval_ms":  500
+      },
+      "metrics": {
+        "push_interval_s": 15
+      }
+    }
+  xds_lme_server.config: |
+    {
+      "server": {
+        "data_upload_posix": "/lme_data_upload_cpp_to_py",
+        "tps_batch_window_size": 12,
+        "tps_stat_interval_seconds": 5,
+        "tp_theoretical_token_length_range": "tp4:6000;tp8:9000;tp16:12000;tp32:;",
+        "ts_subscribe_from_dps_interval_ms": 100
+      },
+      "common": {
+        "ts_queue_limits_on_scheduler": 2560,
+        "sp_len_threshold": 12288,
+        "ts_queue_size_per_te": 2,
+        "ts_ttft_timeout_second": 180,
+        "estimator_offline_update_mode": true,
+        "batching_strategy": "TOKEN_DEV_TE",
+        "grpc_timeout_seconds": 5,
+        "ts_dte_select_strategy": "CACHE_AWARE",
+        "hyper_node_kv_cache_util_threshold": 0.0,
+        "hyper_node_batchsize_util_threshold": 0.0,
+        "ts_ems_enable_block_num_lower_bound": 20,
+        "ts_kv_block_size": 128,
+        "ts_not_sp_req_wait_time_threshold": 0.0
+      },
+      "te_type": {
+        "tp4_dp2": {
+          "ts_batch_token_num_limit_per_dp": 6144,
+          "ts_dp_num_per_te": 2,
+          "ts_batch_size_per_dp": 64,
+          "ts_batching_timeout_strategy": "LIMIT",
+          "ts_batching_timeout_on_request": 0.1,
+          "ts_waiting_pte_batch_time": 0.2,
+          "theoretical_tps": 1750,
+          "theoretical_qps_per_pte":200,
+          "ts_not_sp_req_wait_num_threshold": -2
+        },
+        "tp4_dp4": {
+          "ts_batch_token_num_limit_per_dp": 6144,
+          "ts_dp_num_per_te": 4,
+          "ts_batch_size_per_dp": 64,
+          "ts_batching_timeout_strategy": "LIMIT",
+          "ts_batching_timeout_on_request": 0.1,
+          "ts_waiting_pte_batch_time": 0.6,
+          "theoretical_tps": 1750,
+          "theoretical_qps_per_pte":200,
+          "ts_not_sp_req_wait_num_threshold": -2
+        },
+        "tp4_dp8": {
+          "ts_batch_token_num_limit_per_dp": 6144,
+          "ts_dp_num_per_te": 8,
+          "ts_batch_size_per_dp": 64,
+          "ts_batching_timeout_strategy": "LIMIT",
+          "ts_batching_timeout_on_request": 0.1,
+          "ts_waiting_pte_batch_time": 0.6,
+          "theoretical_tps": 1750,
+          "theoretical_qps_per_pte":200,
+          "ts_not_sp_req_wait_num_threshold": -2
+        },
+        "tp8_dp4": {
+          "ts_batch_token_num_limit_per_dp": 32768,
+          "ts_dp_num_per_te": 4,
+          "ts_batch_size_per_dp": 64,
+          "ts_batching_timeout_strategy": "SMART_V1",
+          "ts_batching_timeout_on_request": 0.1,
+          "ts_waiting_pte_batch_time": 0.2,
+          "theoretical_tps": 1180,
+          "theoretical_qps_per_pte":200,
+          "ts_not_sp_req_wait_num_threshold": -2
+        },
+        "tp16_dp2": {
+          "ts_batch_token_num_limit_per_dp": 32768,
+          "ts_dp_num_per_te": 2,
+          "ts_batch_size_per_dp": 64,
+          "ts_batching_timeout_strategy": "SMART_V1",
+          "ts_batching_timeout_on_request": 0.1,
+          "ts_waiting_pte_batch_time": 0.2,
+          "theoretical_tps": 0,
+          "theoretical_qps_per_pte":200,
+          "ts_not_sp_req_wait_num_threshold": -2
+        }
+      },
+      "logging": {
+        "level": "INFO",
+        "log_file": "/opt/cloud/logs/xds/xds_cpp_lme.log"
+      },
+      "heartbeat": {
+        "processor_heartbeat_interval_ms": 500,
+        "processor_heartbeat_timeout_ms": 30000,
+        "heartbeat_manager_log_interval_ms": 10000,
+        "heartbeat_manager_report_interval_ms": 500,
+        "heartbeat_manager_report_timeout_ms": 300000
+      },
+      "metrics": {
+        "push_interval_s": 15
+      }
+    }
+  xds_dps_server.config: |
+    {
+      "server": {
+        "rpc_thread_nums": 4,
+        "dps_sender_thread_nums": 4,
+        "grpc_dps_to_multiend_deadline_second": 7200,
+        "dps_publish_to_ts_interval_ms": 100
+      },
+      "logging": {
+        "level": "INFO",
+        "log_file": "/opt/cloud/logs/xds/xds_cpp_dps.log"
+      },
+      "heartbeat": {
+        "processor_heartbeat_interval_ms": 500,
+        "processor_heartbeat_timeout_ms": 30000,
+        "heartbeat_manager_log_interval_ms": 10000,
+        "heartbeat_manager_report_interval_ms":  500
+      },
+      "metrics": {
+        "pushgateway_enabled": false,
+        "collector_gateway_url": "${COLLECTOR_GATEWAY_URL}",
+        "tls_enabled": false,
+        "tls_path": "/home/service/resource/ssl/",
+        "push_interval_s": 15
+      }
+    }
+
+global:
+  annotations:
+    ray.io/external-storage-namespace: my-raycluster-storage
+    ray.io/ft-enabled: "true"
+    ray.io/overwrite-container-cmd: "true"
+  enableAutomountServiceAccountToken: true
+  restartPolicy:
+    head: OnFailure
+    worker: OnFailure
+  fullnameOverride: ""
+  imagePullPolicy: IfNotPresent
+  # imagePullSecrets:
+  #   - name: default-secret
+  imageRegistry: swr.cn-southwest-283.myhuaweicloud.com/serverlessai
+  images:
+    ray: xds:{IMAGE_TAG}
+  nameOverride: kuberay
+  namespace: {DEPLOY_NAMESPACE}
+  useFemFrontend: true
+  network:
+    # elbId: {ELB_ID}
+    ports:
+      - name: frontend-port
+        port: {SERVICE_PORT} # Service 监听的端口
+        protocol: TCP
+        targetPort: 8000
+        nodePort: {NODE_PORT}  # 范围是 30000 - 32767
+  redis:
+    redisEnable: false
+    redisSslEnable: false
+  scc:
+    enable: false
+  service:
+    svcName: ray-svc
+  ssl:
+    grpcSslEnable: false
+    httpSslEnable: false
+  storage:
+    hostPath: /mnt/paas
+    mountPath: /home/service/works/models_ssd
+  roleName: {DEPLOY_NAMESPACE}-role
+  roleBindingName: {DEPLOY_NAMESPACE}-role-binding
+  serviceAccountName: {DEPLOY_NAMESPACE}-sa
+  serviceAccountSecretName: {DEPLOY_NAMESPACE}-sa-secret
+  enableTaskExecutorGroups: true
+  taskExecutorGroupType: "card"
+head:
+  annotations: {}
+  args:
+   - >-
+     source /home/service/.bashrc;
+     ulimit -n 65536;
+     source /usr/local/xds_cpp/script/setenv.bash;
+     sh /home/service/prelaunch/clear_log.sh &
+     (for i in {1..20}; do echo "wait $i s"; sleep 1; done;
+     ray status; python3 /home/service/prelaunch/check_work_pod_status.py; xds --port 8000 --host 0.0.0.0 --route-prefix=/xds/v1) &
+     $(KUBERAY_GEN_RAY_START_CMD)
+  command:
+    - /bin/bash
+    - -lc
+    - --
+  containerEnv:
+    - name: RAY_redis_db_connect_retries
+      value: '300'
+    - name: RAY_redis_db_connect_wait_milliseconds
+      value: '1000'
+    - name: RAY_gcs_rpc_server_reconnect_timeout_s
+      value: '3600'
+    - name: RAY_health_check_failure_threshold
+      value: '60'
+    - name: RAY_health_check_period_ms
+      value: '5000'
+    - name: RAY_SERVE_PROXY_HEALTH_CHECK_TIMEOUT_S
+      value: '90'
+    - name: RAY_SERVE_PROXY_READY_CHECK_TIMEOUT_S
+      value: '90'
+    - name: RAY_SERVE_PROXY_HEALTH_CHECK_PERIOD_S
+      value: '120'
+    - name: RAY_grpc_client_keepalive_timeout_ms
+      value: '300000'
+  enableInTreeAutoscaling: true
+  envFrom: []
+  labels: {}
+  livenessProbe:
+    exec:
+      command:
+        - bash
+        - '-c'
+        - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success && wget -T 2 -q -O- http://$POD_IP:8265/api/gcs_healthz | grep success
+    failureThreshold: 10
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 10
+  nodeSelector:
+    {}
+  ports:
+    - containerPort: 6379
+      name: gcs
+    - containerPort: 8265
+      name: dashboard
+    - containerPort: 10001
+      name: client
+    - containerPort: 44217
+      name: as-metrics
+    - containerPort: 44227
+      name: dash-metrics
+  rayStartParams:
+    system-config: '"{\"gcs_server_rpc_server_thread_num\": 32, \"gcs_server_rpc_client_thread_num\": 32}"'
+    dashboard-agent-grpc-port: 10013
+    dashboard-agent-listen-port: 52365
+    dashboard-host: $POD_IP
+    dashboard-port: 8265
+    max-worker-port: 19999
+    metrics-export-port: 10014
+    min-worker-port: 10020
+    node-manager-port: 10010
+    num-cpus: 0
+    object-manager-port: 10011
+    port: 6379
+    ray-client-server-port: 10001
+    redis-shard-ports: 10002
+    runtime-env-agent-port: 10012
+  rayVersion: 2.34.0
+  readinessProbe:
+    exec:
+      command:
+        - bash
+        - '-c'
+        - timeout 10 bash -c "/bin/bash /opt/xds/script/check_net_connect.sh" || true && wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success && wget -T 2 -q -O- http://$POD_IP:8265/api/gcs_healthz | grep success
+    failureThreshold: 10
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 20
+  startupProbe:
+    exec:
+      command:
+        - bash
+        - '-c'
+        - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+    failureThreshold: 60
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 10
+  resources:
+    limits:
+      cpu: '12'
+      memory: 32Gi
+    requests:
+      cpu: '12'
+      memory: 32Gi
+  securityContext:
+    privileged: true
+    runAsGroup: 1000
+    runAsUser: 1000
+    capabilities:
+      add: ["NET_ADMIN"]
+    seccompProfile:
+      type: RuntimeDefault
+  sidecarContainers: []
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:   # 改为 required
+      - labelSelector:
+          matchExpressions:
+            - key: ray.io/node-type
+              operator: In
+              values:
+                - head
+        namespaceSelector: {}        # 匹配所有 namespace
+        topologyKey: kubernetes.io/hostname
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: ray.io/node-type
+                operator: In
+                values:
+                  - head
+          namespaceSelector: {}
+          topologyKey: topology.kubernetes.io/zone
+        weight: 100
+  volumeMounts:
+    - mountPath: /opt/cloud/logs/ray
+      name: ray-log-volume
+    - mountPath: /opt/cloud/logs/xds
+      name: xds-log-volume
+    - mountPath: /etc/xds/config/common
+      name: xds-common-config-volume
+    - mountPath: /etc/xds/config/framework
+      name: xds-framework-config-volume
+  volumes:
+    - emptyDir: {}
+      name: ray-log-volume
+    - emptyDir: {}
+      name: xds-log-volume
+    - name: xds-common-config-volume
+      configMap:
+        name: xds-common-config
+    - name: xds-framework-config-volume
+      configMap:
+        name: xds-framework-config
+taskExecutorGroups:
+  - name: taskExecutorGroup2prefill1
+    replicas: 1
+    nodeSelector:
+      {XDS_TE_POD_LABEL_KEY}: {XDS_TE_POD_LABEL_VAL}
+    resources: '"{\"GPU-BNT3-POD\": 2, \"XDS-TE\": 4, \"prefill\": 1}"'
+    containerEnvOverrides:
+      CUDA_VISIBLE_DEVICES: '0,1'
+      TE_SERVER_PORT: '8090'
+      ENABLE_TE_SERVER: 'false'   # 与 ini enable_te_server 同步，控制 preStop drain 行为
+    portsOverrides:
+      metrics: 8082
+    rayStartParamsPorts:
+      num-gpus: 2
+      dashboard-agent-listen-port: 52365
+    containerResources:
+      limits:
+        cpu: '24'
+        nvidia.com/gpu: 2
+        memory: 100Gi
+        hugepages-2Mi: "0"
+      requests:
+        cpu: '24'
+        nvidia.com/gpu: 2
+        memory: 100Gi
+        hugepages-2Mi: "0"
+  - name: taskExecutorGroup2decode1
+    replicas: 1
+    nodeSelector:
+      {XDS_TE_POD_LABEL_KEY}: {XDS_TE_POD_LABEL_VAL}
+    resources: '"{\"GPU-BNT3-POD\": 2, \"XDS-TE\": 4, \"decode\": 1}"'
+    containerEnvOverrides:
+      CUDA_VISIBLE_DEVICES: '2,3'
+      TE_SERVER_PORT: '8091'
+      ENABLE_TE_SERVER: 'false'   # 与 ini enable_te_server 同步，控制 preStop drain 行为
+    portsOverrides:
+      metrics: 8083
+    rayStartParamsPorts:
+      num-gpus: 2
+      dashboard-agent-listen-port: 62365
+    containerResources:
+      limits:
+        cpu: '24'
+        nvidia.com/gpu: 2
+        memory: 100Gi
+        hugepages-2Mi: "0"
+      requests:
+        cpu: '24'
+        nvidia.com/gpu: 2
+        memory: 100Gi
+        hugepages-2Mi: "0"
+
+workerGroups:
+  ctrlGroup:
+    annotations:
+      max_count_on_node: "3"
+    args:
+     - >-
+       source /home/service/.bashrc;
+       ulimit -n 65536;
+       source /usr/local/xds_cpp/script/setenv.bash;
+       python3 /home/service/prelaunch/check_max_pod_config.py || exit 1;
+       sh /home/service/prelaunch/clear_log.sh & $(KUBERAY_GEN_RAY_START_CMD)
+    command:
+      - /bin/bash
+      - '-c'
+      - '--'
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: ray.io/group
+                  operator: In
+                  values:
+                    - ctrlGroup
+            topologyKey: kubernetes.io/hostname
+          weight: 100
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: ray.io/group
+                  operator: In
+                  values:
+                    - ctrlGroup
+            topologyKey: topology.kubernetes.io/zone
+          weight: 100
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: ray.io/group
+                  operator: In
+                  values:
+                    - headgroup
+            topologyKey: kubernetes.io/hostname
+          weight: 100
+    disabled: false
+    livenessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - |
+            /opt/xds/script/check_key_process.sh || true
+            wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 360
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    maxReplicas: 4
+    minReplicas: 4
+    nodeSelector:
+      {}
+    rayStartParams:
+      block: 'true'
+      dashboard-agent-grpc-port: 10013
+      dashboard-agent-listen-port: 52365
+      max-worker-port: 19999
+      metrics-export-port: 10014
+      min-worker-port: 10020
+      node-manager-port: 10010
+      object-manager-port: 10011
+      resources: '"{\"XDS-CTRL\": 4}"'
+      runtime-env-agent-port: 10012
+    readinessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - timeout 10 bash -c "/bin/bash /opt/xds/script/check_net_connect.sh" || true && wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 10
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 20
+    startupProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    resources:
+      limits:
+        cpu: '8'
+        memory: 24Gi
+      requests:
+        cpu: '8'
+        memory: 24Gi
+    schedulerName: volcano
+
+  frontGroup:
+    annotations:
+      max_count_on_node: "10"
+    containerEnv:
+      - name: PROXY_MIN_DRAINING_PERIOD_S
+        value: '5'
+    args:
+     - >-
+       source /home/service/.bashrc;
+       ulimit -n 65536;
+       source /usr/local/xds_cpp/script/setenv.bash;
+       python3 /home/service/prelaunch/check_max_pod_config.py || exit 1;
+       sh /home/service/prelaunch/clear_log.sh & $(KUBERAY_GEN_RAY_START_CMD)
+    command:
+      - /bin/bash
+      - '-c'
+      - '--'
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: ray.io/group
+                  operator: In
+                  values:
+                    - frontGroup
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
+          weight: 100
+    disabled: false
+    livenessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - |
+            wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    maxReplicas: 10  # 对应修改xds配置 max_frontend_num
+    minReplicas: 10   # 对应修改xds配置 min_frontend_num
+    labels:
+      in_draining_status: "false"
+    nodeSelector:
+      {}
+    topologySpreadConstraints:
+      - labelSelector:
+          matchExpressions:
+            - key: ray.io/group
+              operator: In
+              values:
+                - frontGroup
+        maxSkew: 3
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+    tolerations:
+      - key: xds/node-monitor-taint
+        operator: Exists
+    rayStartParams:
+      block: 'true'
+      dashboard-agent-grpc-port: 10013
+      dashboard-agent-listen-port: 52365
+      max-worker-port: 19999
+      metrics-export-port: 10014
+      min-worker-port: 10020
+      node-manager-port: 10010
+      object-manager-port: 10011
+      resources: '"{\"XDS-FRONT\": 1}"'
+      runtime-env-agent-port: 10012
+    readinessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - timeout 10 bash -c "/bin/bash /opt/xds/script/check_net_connect.sh" || true && wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 30
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 20
+    startupProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    resources:
+      limits:
+        cpu: '2'
+        memory: 10Gi
+      requests:
+        cpu: '2'
+        memory: 10Gi
+    schedulerName: volcano
+
+  jobExecutorGroup:
+    annotations:
+      max_count_on_node: "2"
+    args:
+     - >-
+       source /home/service/.bashrc;
+       ulimit -n 65536;
+       source /usr/local/xds_cpp/script/setenv.bash;
+       python3 /home/service/prelaunch/check_max_pod_config.py || exit 1;
+       sh /home/service/prelaunch/clear_log.sh & $(KUBERAY_GEN_RAY_START_CMD)
+    command:
+      - /bin/bash
+      - '-c'
+      - '--'
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: ray.io/group
+                  operator: In
+                  values:
+                    - jobExecutorGroup
+            namespaceSelector: {}
+            topologyKey: kubernetes.io/hostname
+          weight: 100
+    disabled: false
+    livenessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - |
+            wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 120960
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    readinessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - timeout 10 bash -c "/bin/bash /opt/xds/script/check_net_connect.sh" || true && wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 20
+    startupProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - wget -T 2 -q -O- http://localhost:52365/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    maxReplicas: 2
+    minReplicas: 2
+    tolerations:
+      - key: xds/node-monitor-taint
+        operator: Exists
+    nodeSelector:
+      {}
+    topologySpreadConstraints:
+      - labelSelector:
+          matchExpressions:
+            - key: ray.io/group
+              operator: In
+              values:
+                - jobExecutorGroup
+        maxSkew: 3
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+    rayStartParams:
+      block: 'true'
+      dashboard-agent-grpc-port: 10013
+      dashboard-agent-listen-port: 52365
+      max-worker-port: 19999
+      metrics-export-port: 10014
+      min-worker-port: 10020
+      node-manager-port: 10010
+      object-manager-port: 10011
+      resources: '"{\"XDS-JE\": 1}"'
+      runtime-env-agent-port: 10012
+    resources:
+      limits:
+        cpu: '16'
+        memory: 64Gi
+      requests:
+        cpu: '16'
+        memory: 64Gi
+    schedulerName: volcano
+    ems:
+      enable: true
+      hostPath: /mnt/paas/kubernetes/kubelet/ems
+      mountPath: /dev/shm/ems
+      resources:
+        limits:
+          cpu: '2'
+          memory: 128Mi
+        requests:
+          cpu: '2'
+          memory: 128Mi
+
+  taskExecutorGroup-card:
+    containerEnv:
+      - name: RAY_grpc_client_keepalive_timeout_ms
+        value: '30000'
+    ports:
+      - containerPort: 8082
+        name: metrics
+        protocol: TCP
+    args:
+      - source /home/service/.bashrc; ulimit -n 65536 ; export LAZY_SET_DEVICE=0; source /usr/local/xds_cpp/script/setenv.bash; export CUDA_VISIBLE_DEVICES=$(NVIDIA_VISIBLE_DEVICES); source /opt/xds/script/fix_cuda_visible_devices.sh; echo $CUDA_VISIBLE_DEVICES; bash /opt/xds/script/clear_gdr_acs_redirect.sh || exit 1; sh /home/service/prelaunch/clear_log.sh & $(KUBERAY_GEN_RAY_START_CMD)
+    command:
+      - /bin/bash
+      - '-c'
+      - '--'
+    disabled: false
+    labels:
+      xds.podGroup: "taskExecutorGroup"
+      evict_on_gpu_error: "true"
+    nodeSelector:
+      {XDS_TE_POD_LABEL_KEY}: {XDS_TE_POD_LABEL_VAL}
+    rayStartParams:
+      block: 'true'
+      dashboard-agent-listen-port: 52365
+      num-gpus: 8
+      node-ip-address: $POD_IP
+      resources: '"{\"GPU\":8,\"XDS-TE\":4}"'
+    terminationGracePeriodSeconds: 2100
+    lifecycle:
+      preStop:
+        exec:
+          command:
+            - /bin/bash
+            - -c
+            - |
+              TE_SCHEME=${TE_SCHEME:-http}
+              TE_SERVER_PORT=${TE_SERVER_PORT:-8088}
+              # enable_te_server!=true 时跳过 drain，直接退出
+              if [ "${ENABLE_TE_SERVER:-false}" != "true" ]; then
+                timeout 30 ray stop || true
+                pkill -KILL -f 'ray start' 2>/dev/null || true
+                exit 0
+              fi
+              while true; do
+                curl -s -X POST ${TE_SCHEME}://localhost:${TE_SERVER_PORT}/drain || true
+                resp_full=$(curl -s -w "\n%{http_code}" ${TE_SCHEME}://localhost:${TE_SERVER_PORT}/ready_to_delete 2>/dev/null)
+                curl_rc=$?
+                http_code=$(echo "$resp_full" | tail -1)
+                if [ $curl_rc -ne 0 ] || [ "$http_code" != "200" ]; then
+                  if ! ps -ef | grep -q '[r]ay::VLLMInferenceTaskExecutor'; then
+                    break
+                  fi
+                  sleep 5
+                  continue
+                fi
+                resp=$(echo "$resp_full" | sed '$d')
+                ready=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('ready',False))" 2>/dev/null)
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 5
+              done
+              timeout 30 ray stop || true
+              pkill -KILL -f 'ray start' 2>/dev/null || true
+    livenessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - |
+            wget -T 2 -q -O- http://localhost:{DASHBOARD_AGENT_LISTEN_PORT}/api/local_raylet_healthz | grep success
+      failureThreshold: 120960
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    modelCache:
+      hostPath: /var/lib/docker/vllm
+      mountPath: /home/service/works/models_ssd
+    readinessProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - timeout 10 bash -c "/bin/bash /opt/xds/script/check_net_connect.sh" || true && wget -T 2 -q -O- http://localhost:{DASHBOARD_AGENT_LISTEN_PORT}/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 20
+    startupProbe:
+      exec:
+        command:
+          - bash
+          - '-c'
+          - wget -T 2 -q -O- http://localhost:{DASHBOARD_AGENT_LISTEN_PORT}/api/local_raylet_healthz | grep success
+      failureThreshold: 60
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 10
+    replicas: 0
+    resources:
+      limits:
+        cpu: '20'
+        nvidia.com/gpu: 8
+        memory: 70Gi
+        hugepages-2Mi: "0"
+      requests:
+        cpu: '20'
+        nvidia.com/gpu: 8
+        memory: 70Gi
+        hugepages-2Mi: "0"
+    schedulerName: volcano
+    securityContext:
+      privileged: true
+      capabilities:
+        add:
+          - NET_ADMIN
+          - NET_RAW
+          - DAC_OVERRIDE
+          - SYS_MODULE
+          - SYS_PTRACE
+          - SYS_RAWIO
+          - FOWNER
+          - SETPCAP
+          - SYS_NICE
+    ems:
+      enable: true
+      hostPath: /mnt/paas/kubernetes/kubelet/ems
+      mountPath: /dev/shm/ems
+      resources:
+        limits:
+          cpu: '2'
+          memory: 128Mi
+        requests:
+          cpu: '2'
+          memory: 128Mi
+    softub:
+      enable: false
+    hostnetwork:
+      enable: true
+
+# FE Pod 模板配置 (非ray worker)
+feTemplate:
+  default_replica: 10
+  annotations:
+    max_count_on_node: "10"
+  containerEnv: []
+  command:
+    - /bin/bash
+    - '-c'
+    - '--'
+  args:
+    - source /home/service/.bashrc; ulimit -n 65536; source /usr/local/xds_cpp/script/setenv.bash; python3 /home/service/prelaunch/check_max_pod_config.py || exit 1; ray start --address=$RAY_ADDRESS; exec python3 -m xds.frontend.frontend_executor_main --fe-id=$POD_NAME --fem-endpoint=FrontendExecutorManager
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: ray.io/group
+                operator: In
+                values:
+                  - frontGroup
+          namespaceSelector: {}
+          topologyKey: kubernetes.io/hostname
+        weight: 100
+  labels: {}
+  terminationGracePeriodSeconds: 2100
+  lifecycle:
+    preStop:
+      exec:
+        command:
+          - /bin/bash
+          - -c
+          - |
+            CURL_OPTS="-s --connect-timeout 3 --max-time 10"
+            if [ "$FE_SCHEME" = "https" ]; then
+              CURL_OPTS="$CURL_OPTS -k --cert $SSL_DIR/module.crt --key $SSL_DIR/module.key"
+              CERT_PASS=$(python3 -c "from xds.config.constants import ENABLE_SENSITIVE_INFO_DECRYPT; from xds.framework.utils.scc_util import decrypt_pad; pwd=open('$SSL_DIR/cert_pwd').read().strip(); print(decrypt_pad(pwd) if ENABLE_SENSITIVE_INFO_DECRYPT else pwd)" 2>/dev/null)
+              if [ -n "$CERT_PASS" ]; then CURL_OPTS="$CURL_OPTS --pass $CERT_PASS"; fi
+            fi
+            check_process_alive() { kill -0 1 2>/dev/null; }
+            until [ "$(curl $CURL_OPTS -o /dev/null -w "%{http_code}" -X POST ${FE_SCHEME}://localhost:${FE_PORT}/drain 2>/dev/null)" = "200" ]; do
+              check_process_alive || exit 0
+              sleep 1
+            done
+            sleep $(((${FE_READY_FAILURE_THRESHOLD:-3} + 1) * (${FE_READY_PERIOD_SECONDS:-5} + ${FE_READY_TIMEOUT_SECONDS:-5})))
+            until [ "$(curl $CURL_OPTS -o /dev/null -w "%{http_code}" -X POST ${FE_SCHEME}://localhost:${FE_PORT}/reject 2>/dev/null)" = "200" ]; do
+              check_process_alive || exit 0
+              sleep 1
+            done
+            # 等待keep alive连接全部断掉 该值需要大于fe的uvicorn配置的timeout_keep_alive
+            sleep 70
+            while check_process_alive; do
+              ongoing=$(curl $CURL_OPTS ${FE_SCHEME}://localhost:${FE_PORT}/metrics 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('ongoing_requests',1))" 2>/dev/null)
+              [ "$ongoing" = "0" ] && break
+              sleep 5
+            done
+            kill -9 1
+  nodeSelector:
+    {}
+  # schedulerName: volcano
+  tolerations:
+    - key: xds/node-monitor-taint
+      operator: Exists
+  livenessProbe:
+    httpGet:
+      path: /health
+    failureThreshold: 60
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /ready
+    failureThreshold: 3
+    periodSeconds: 5
+    successThreshold: 1
+    timeoutSeconds: 5
+  startupProbe:
+    httpGet:
+      path: /health
+    failureThreshold: 60
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    successThreshold: 1
+    timeoutSeconds: 10
+  resources:
+    limits:
+      cpu: '2'
+      memory: 10Gi
+    requests:
+      cpu: '2'
+      memory: 10Gi

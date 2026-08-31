@@ -16,6 +16,8 @@
       --dsw-alias-fill-l1:rgba(255,255,255,.03); --dsw-alias-state-accent-primary:#4f8ef7;
       --log-bg:#06090f; --log-fg:#9aa4b2; --log-ok:#3fb950; --log-err:#f85149; --log-warn:#d29922;
       --log-hi:#e6e8eb; --log-dim:#6b7280; --scroll:rgba(255,255,255,.16);
+      /* 流水线状态色（浅/深双主题；CSS 与 JS 内联样式统一引用，勿再硬编码） */
+      --st-idle:#6b7280; --st-run:#d29922; --st-wait:#4f8ef7; --st-ok:#3fb950; --st-err:#f85149;
     }
     :root[data-theme="light"] {
       --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328; --dsw-alias-label-secondary:#57606a;
@@ -23,33 +25,34 @@
       --dsw-alias-fill-l1:#f6f8fa; --dsw-alias-state-accent-primary:#0969da;
       --log-bg:#f6f8fa; --log-fg:#57606a; --log-ok:#1a7f37; --log-err:#cf222e; --log-warn:#9a6700;
       --log-hi:#1f2328; --log-dim:#8c959f; --scroll:rgba(0,0,0,.2);
+      --st-idle:#6b7280; --st-run:#9a6700; --st-wait:#0969da; --st-ok:#1a7f37; --st-err:#cf222e;
     }
     /* ===== 流水线专属样式（色板走上述变量，最小自造范围） ===== */
     .pipeline-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
     .pipeline-controls .dshell-input { width:auto; min-width:96px; }
     .pipeline-seg { display:flex; align-items:center; flex-wrap:nowrap; overflow-x:auto; gap:0; padding-bottom:4px; }
-    .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; transition:border-color .15s,background .15s,box-shadow .15s; }
+    .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; user-select:none; transition:border-color .15s,background .15s,box-shadow .15s; }
     .pipeline-node:hover { border-color:var(--dsw-alias-border-l2); background:var(--dsw-alias-fill-l1); }
     .pipeline-node.sel { border-color:var(--dsw-alias-state-accent-primary); box-shadow:0 0 0 2px rgba(79,142,247,.18); }
-    .pipeline-node.run { border-color:rgba(210,153,34,.5); background:rgba(210,153,34,.07); }
-    .pipeline-node.ok  { border-color:rgba(63,185,80,.45); background:rgba(63,185,80,.07); }
-    .pipeline-node.fail{ border-color:rgba(248,81,73,.5); background:rgba(248,81,73,.08); }
-    .pipeline-node.wait{ border-color:rgba(79,142,247,.5); background:rgba(79,142,247,.08); }
+    .pipeline-node.run { border-color:color-mix(in srgb, var(--st-run) 50%, transparent); background:color-mix(in srgb, var(--st-run) 7%, transparent); }
+    .pipeline-node.ok  { border-color:color-mix(in srgb, var(--st-ok) 45%, transparent); background:color-mix(in srgb, var(--st-ok) 7%, transparent); }
+    .pipeline-node.fail{ border-color:color-mix(in srgb, var(--st-err) 50%, transparent); background:color-mix(in srgb, var(--st-err) 8%, transparent); }
+    .pipeline-node.wait{ border-color:color-mix(in srgb, var(--st-wait) 50%, transparent); background:color-mix(in srgb, var(--st-wait) 8%, transparent); }
     .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
-    .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:#d29922; transition:width .12s linear; }
-    .pipeline-node.ok .pipeline-bar > i { background:#3fb950; }
-    .pipeline-node.fail .pipeline-bar > i { background:#f85149; }
+    .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--st-run); transition:width .12s linear; }
+    .pipeline-node.ok .pipeline-bar > i { background:var(--st-ok); }
+    .pipeline-node.fail .pipeline-bar > i { background:var(--st-err); }
     .pipeline-conn { flex:0 0 auto; display:flex; align-items:center; height:42px; }
     .pipeline-conn::before { content:''; display:block; width:18px; height:2px; background:var(--dsw-alias-border-l2); }
     .pipeline-conn::after { content:''; border:4px solid transparent; border-left-color:var(--dsw-alias-border-l2); margin-left:-1px; }
     .pipeline-sub { display:flex; gap:4px; justify-content:center; margin-top:5px; }
     .pipeline-sub > span { font-size:9.5px; padding:1px 6px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-tertiary); }
-    .pipeline-sub > span.ok { color:#3fb950; border-color:rgba(63,185,80,.4); }
-    .pipeline-sub > span.run { color:#d29922; border-color:rgba(210,153,34,.4); }
-    .pipeline-sub > span.fail{ color:#f85149; border-color:rgba(248,81,73,.4); }
-    @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 rgba(210,153,34,.45);} 50%{ box-shadow:0 0 0 4px rgba(210,153,34,0);} }
+    .pipeline-sub > span.ok { color:var(--st-ok); border-color:color-mix(in srgb, var(--st-ok) 40%, transparent); }
+    .pipeline-sub > span.run { color:var(--st-run); border-color:color-mix(in srgb, var(--st-run) 40%, transparent); }
+    .pipeline-sub > span.fail{ color:var(--st-err); border-color:color-mix(in srgb, var(--st-err) 40%, transparent); }
+    @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 color-mix(in srgb, var(--st-run) 45%, transparent);} 50%{ box-shadow:0 0 0 4px transparent;} }
     .pipeline-node.run { animation:pipPulse 1.4s infinite; }
     .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     @media (max-width:900px){ .pipeline-cols{ grid-template-columns:1fr; } }
@@ -60,7 +63,12 @@
     .legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
     .gate { display:flex; gap:8px; justify-content:center; margin-top:8px; }
     .mini { font-size:11px; padding:5px 12px; }
+    #historyTable tbody tr { cursor:pointer; }
+    #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
     ::-webkit-scrollbar-thumb { background:var(--scroll); }
+    /* Jenkins 连接模式分段切换（选中态走主题 accent） */
+    .jk-modeBtn { border-radius:0; }
+    .jk-modeBtn.sel { background:var(--dsw-alias-state-accent-primary); color:#fff; border-color:var(--dsw-alias-state-accent-primary); }
   </style>
   <script>
     /* 防闪烁：首屏前按已存偏好解析主题（浅色 / 深色 / 跟随系统） */
@@ -86,6 +94,7 @@
         <span class="dshell-badge">未运行</span>
       </div>
       <span id="overallBy" class="dshell-muted"></span>
+      <button id="pageEditBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="新建 DSH 聊天会话，让 AI 修改本页面">页面修改</button>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">主题
         <select id="theme" class="dshell-input" style="min-width:104px;">
           <option value="light">浅色</option>
@@ -99,7 +108,8 @@
   <!-- 页面导航 -->
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
-    <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">环境配置</button>
+    <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
+    <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
 
@@ -114,32 +124,26 @@
         <div id="envMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:230px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
       </span>
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">镜像名
-      <input id="imageName" class="dshell-input" value="myapp" />
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
+      <select id="repoSel" class="dshell-input" style="min-width:130px;"></select>
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支/Tag
+      <span id="branchPick" style="position:relative;display:inline-block;">
+        <input id="branchName" class="dshell-input" value="main" autocomplete="off" style="min-width:130px;" />
+        <div id="branchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+      </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" value="dev-li" />
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" id="simFail" /> 模拟末段失败（触发回滚）
-    </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">定时
-      <select id="runSched" class="dshell-input" style="min-width:92px;">
-        <option value="now">立即运行</option>
-        <option value="interval">周期性</option>
-        <option value="once">一次性</option>
-      </select>
-    </label>
-    <label id="runSchedEveryWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">每
-      <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" /> 分钟
-    </label>
-    <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
-      <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
+      <input type="checkbox" id="cleanupEnv" /> 先清理环境
     </label>
     <span style="flex:1"></span>
     <button id="runBtn" class="dshell-btn">▶ 运行流水线</button>
+    <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled>⏹ 中止</button>
     <button id="resetBtn" class="dshell-btn dshell-btnGhost">重置</button>
-    <div id="planList" style="flex-basis:100%; display:none; margin-top:8px;"></div>
+    <span id="runTip" class="dshell-muted" style="font-size:11px;"></span>
   </div>
 
   <!-- 统计 -->
@@ -165,26 +169,6 @@
       <h2 class="dshell-sub" style="margin:0">流水线任务 <span id="plCount" class="dshell-muted"></span></h2>
       <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
     </div>
-    <div id="plForm" style="display:none; margin-bottom:10px;">
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
-          <input id="plName" class="dshell-input" placeholder="我的流水线" style="width:220px;" />
-        </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">脚本目录
-          <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
-          <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
-        </label>
-        <label class="dshell-muted">阶段（名称/耗时/审批门，可上移下移/增删；每步可绑 scripts 下脚本并自动识别参数，留空=本地模拟该步）</label>
-        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
-        <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
-        <datalist id="scriptsList"></datalist>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button id="plSave" class="dshell-btn mini">保存</button>
-          <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
-          <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
-        </div>
-      </div>
-    </div>
     <div style="overflow:auto;">
       <table class="dshell-table" id="plTable">
         <thead><tr><th>流水线</th><th>阶段数</th><th>操作</th></tr></thead>
@@ -196,13 +180,13 @@
   <!-- 流水线编排 -->
   <div class="dshell-card">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-      <h2 class="dshell-sub" style="margin:0">流水线编排 <button id="flowEditBtn" class="dshell-btn dshell-btnGhost mini" type="button" style="margin-left:6px;">✎ 编辑流水线</button></h2>
+      <h2 class="dshell-sub" style="margin:0">流水线编排 <span class="dshell-muted" style="font-size:11px;font-weight:normal;">双击阶段可编辑</span></h2>
       <div class="legend">
-        <span><i style="background:#6b7280"></i>未开始</span>
-        <span><i style="background:#d29922;box-shadow:0 0 5px #d29922"></i>进行中</span>
-        <span><i style="background:#4f8ef7"></i>等待审批</span>
-        <span><i style="background:#3fb950;box-shadow:0 0 5px #3fb950"></i>成功</span>
-        <span><i style="background:#f85149;box-shadow:0 0 5px #f85149"></i>失败</span>
+        <span><i style="background:var(--st-idle)"></i>未开始</span>
+        <span><i style="background:var(--st-run);box-shadow:0 0 5px var(--st-run)"></i>进行中</span>
+        <span><i style="background:var(--st-wait)"></i>等待审批</span>
+        <span><i style="background:var(--st-ok);box-shadow:0 0 5px var(--st-ok)"></i>成功</span>
+        <span><i style="background:var(--st-err);box-shadow:0 0 5px var(--st-err)"></i>失败</span>
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
@@ -219,26 +203,100 @@
       </div>
       <div class="dshell-kv" id="detailKv"></div>
       <div class="dshell-divider"></div>
-      <div class="pipeline-bar" id="detailBarWrap" style="height:7px;margin:6px 0 8px;"><i id="detailBar" style="display:block;height:100%;width:0;border-radius:3px;background:#3fb950;"></i></div>
+      <div class="pipeline-bar" id="detailBarWrap" style="height:7px;margin:6px 0 8px;"><i id="detailBar" style="display:block;height:100%;width:0;border-radius:3px;background:var(--st-ok);"></i></div>
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史</h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话做日志分析（提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话做 Profiling 分析（提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话做性能诊断（提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
+          <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">状态
+          <select id="histFilterStatus" class="dshell-input" style="min-width:96px;">
+            <option value="">全部</option>
+            <option value="success">成功</option>
+            <option value="failed">失败</option>
+            <option value="aborted">已中止</option>
+          </select>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
+          <select id="histFilterPipeline" class="dshell-input" style="min-width:130px;"></select>
+        </label>
+        <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
+        <span id="histFilterTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
           <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <label class="dshell-muted" style="font-size:11px; display:flex; align-items:center; gap:5px;">每页
+          <select id="histPageSize" class="dshell-input" style="min-width:64px;">
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select> 条
+        </label>
+        <span style="flex:1"></span>
+        <span id="histPageInfo" class="dshell-muted" style="font-size:11px;"></span>
+        <button id="histPrev" class="dshell-btn dshell-btnGhost mini" type="button">‹ 上一页</button>
+        <button id="histNext" class="dshell-btn dshell-btnGhost mini" type="button">下一页 ›</button>
+      </div>
     </div>
   </div>
   </div><!-- /pageMain -->
 
-  <!-- 环境配置（独立页面） -->
+  <!-- 定时任务（独立页面：周期 / 一次性计划，服务端调度，关闭页面也会执行） -->
+  <div id="pageSched" style="display:none">
+    <div class="dshell-card pipeline-controls">
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
+        <select id="schedPipeline" class="dshell-input" style="min-width:130px;"></select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
+        <select id="schedEnv" class="dshell-input" style="min-width:130px;"></select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
+        <select id="schedRepo" class="dshell-input" style="min-width:130px;"></select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支
+        <input id="schedBranch" class="dshell-input" value="main" autocomplete="off" style="min-width:110px;" />
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
+        <input id="schedBy" class="dshell-input" value="dev-li" />
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">方式
+        <select id="runSched" class="dshell-input" style="min-width:92px;">
+          <option value="interval">周期性</option>
+          <option value="once">一次性</option>
+        </select>
+      </label>
+      <label id="runSchedEveryWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">每
+        <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" /> 分钟
+      </label>
+      <label id="runSchedStartWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">开始时间
+        <input id="runSchedStart" class="dshell-input" type="datetime-local" style="width:180px;" title="留空=立即按周期触发；填未来时间=到达后才开始周期触发" />
+      </label>
+      <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
+        <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
+      </label>
+      <span style="flex:1"></span>
+      <button id="schedCreateBtn" class="dshell-btn">＋ 创建定时计划</button>
+    </div>
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">定时计划 <span id="planCount" class="dshell-muted"></span> <span class="dshell-muted" style="font-size:11px;font-weight:normal;">服务端调度，关闭页面也会执行</span></h2>
+      <div id="planList"></div>
+    </div>
+  </div><!-- /pageSched -->
+
+  <!-- 设置（独立页面：节点环境 + 环境清理脚本） -->
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">环境配置 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点 GPU 状态" style="margin-left:6px;">⟳ GPU状态</button></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点 GPU 状态" style="margin-left:6px;">⟳ GPU状态</button></h2>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
@@ -255,7 +313,142 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP（运行环境值取 <b>IP 地址</b>）；节点的用户名/密码会在执行脚本时以 <code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>/<code>TARGET_IP</code> 环境变量注入，供脚本登录目标机使用。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组）、<code>TARGET_HOSTS</code>（全部节点 [{ip,user,pass}] 的 JSON 数组，多节点各自凭据）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
+    </div>
+    <div class="dshell-card" style="margin-top:10px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0">代码仓 <span id="repoCount" class="dshell-muted"></span></h2>
+        <span id="repoTestTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <input id="repoName" class="dshell-input" placeholder="名称（如 myapp）" style="width:120px;" />
+        <input id="repoUrl" class="dshell-input" placeholder="URL（如 https://git.example.com/dev/myapp.git）" style="width:300px;" />
+        <input id="repoUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
+        <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" />
+        <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；jenkins=经配置的 Jenkins 多分支任务，子任务名即分支" style="width:106px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins">Jenkins 任务</option></select>
+        <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="选择 Jenkins 多分支任务" title="分支获取=Jenkins 任务时：指定一个多分支/文件夹类型任务，其子任务名即分支（需先在「设置」页获取任务列表）" style="width:180px;display:none;" autocomplete="off" />
+        <button id="repoAdd" class="dshell-btn mini">添加</button>
+        <button id="repoAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/令牌应用到所有仓库">应用凭证到全部</button>
+        <button id="repoCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
+      </div>
+      <div style="overflow:auto;">
+        <table class="dshell-table" id="repoTable">
+          <thead><tr><th>名称</th><th>URL</th><th>用户名</th><th>访问令牌</th><th>分支获取</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。</p>
+    </div>
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span class="dshell-muted" style="font-size:11px;">脚本</span>
+        <input id="cleanupScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不清理）" style="width:216px;" />
+        <button id="cleanupDetect" class="dshell-btn dshell-btnGhost mini" type="button">识别参数</button>
+        <span class="dshell-muted" style="font-size:11px;">勾选主控「先清理环境」后，每次流水线启动前会先执行该脚本（失败不阻断启动），同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
+      </div>
+      <div id="cleanupParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
+    </div>
+    <!-- 归档配置：运行日志与 profiling 产物的归档根目录 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">归档配置</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
+          <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
+        </label>
+        <span class="dshell-muted" style="font-size:11px;">运行日志与 profiling 产物按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
+          <input id="archiveScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不执行）" style="width:216px;" title="归档写入日志/profiling 后执行该脚本收集日志；默认 scripts/collect_logs.sh，脚本不存在则跳过" />
+        </label>
+        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行。运行启动时即按「流水线名_日期」生成归档文件夹，并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本），脚本显式参数优先。</span>
+      </div>
+    </div>
+    <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        在「运行历史」点击选中某一行后，点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话并发送对应提示词。
+        模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
+      </p>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">AI 日志分析
+          <textarea id="cfgPromptLog" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">Profiling 分析
+          <textarea id="cfgPromptProf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">性能诊断
+          <textarea id="cfgPromptPerf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="cfgSave" class="dshell-btn mini">保存</button>
+          <button id="cfgReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
+          <span id="cfgSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+        </div>
+      </div>
+    </div>
+    <!-- 页面修改配置：右上角「页面修改」按钮发送给 AI 的提示词模板 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">页面修改配置 <span class="dshell-muted">右上角「页面修改」按钮发送给 AI 的提示词模板</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        点右上角「页面修改」按钮会新建一个 AI 会话并发送此提示词，由 AI 协助修改本页面。留空保存将恢复为默认提示词。
+      </p>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">页面修改提示词
+          <textarea id="cfgPromptPageEdit" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="cfgPageEditSave" class="dshell-btn mini">保存</button>
+          <button id="cfgPageEditReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
+          <span id="cfgPageEditSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+        </div>
+      </div>
+    </div>
+    <!-- Jenkins 服务配置：连接模式（本地浏览器经 CORS 桥接 / DSH 服务端代连）+ 测试连接 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">Jenkins 服务配置 <span class="dshell-muted">连接模式 + 测试连接</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        「本地浏览器连接」：浏览器直接用 JS 连接 Jenkins（不走桥接）；需 Jenkins 允许跨域（CORS）或与本页同源，否则浏览器会拦截跨域请求。
+        「远程服务器端连接」：由 DSH 服务端（运行 DSH 的机器）经 <code>/api/worktable/proxy</code> 代连 Jenkins，浏览器不直连；仅允许回环 / 内网地址。
+      </p>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">Jenkins 地址
+          <input id="jkUrl" class="dshell-input" placeholder="http://127.0.0.1:28080" style="width:220px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">用户名
+          <input id="jkUser" class="dshell-input" placeholder="jenkins-user" style="width:140px;" autocomplete="off" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">API Token
+          <input id="jkToken" class="dshell-input" type="password" placeholder="API Token" style="width:180px;" autocomplete="off" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">链接地址
+          <input id="jkLinkUrl" class="dshell-input" placeholder="真实 Jenkins 地址，如 http://7.242.105.149:18080" style="width:240px;" title="任务「打开 / 复制链接」用的真实 Jenkins 地址；留空则用上方的 Jenkins 地址" />
+        </label>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <span class="dshell-muted" style="font-size:11px;">连接模式</span>
+        <div class="jk-mode" role="group" style="display:inline-flex; border:1px solid var(--dsw-alias-border-l2); border-radius:8px; overflow:hidden;">
+          <button id="jkModeLocal" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="local">本地浏览器连接</button>
+          <button id="jkModeRemote" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="remote">远程服务器端连接</button>
+        </div>
+        <button id="jkTest" class="dshell-btn mini" type="button">测试连接</button>
+        <span id="jkTestTip" class="dshell-muted" style="font-size:11px;"></span>
+        <span style="flex:1"></span>
+        <button id="jkSave" class="dshell-btn mini">保存</button>
+        <span id="jkSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+        <button id="jkJobs" class="dshell-btn dshell-btnGhost mini" type="button">获取任务列表</button>
+        <span id="jkJobsTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <div id="jkJobsWrap" style="display:none; margin-top:8px; overflow:auto;">
+        <table class="dshell-table" id="jkJobsTable">
+          <thead><tr><th>任务</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div><!-- /pageEnv -->
 
@@ -267,6 +460,35 @@
         <button id="gpuDetailClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
       <div id="gpuDetailBody"></div>
+    </div>
+  </div>
+
+  <!-- 新建 / 编辑流水线弹窗 -->
+  <div id="plForm" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:210; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:95%; max-width:95%; height:95%; max-height:95vh; overflow:auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0" id="plFormTitle">编辑流水线</h2>
+        <button id="plFormClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
+          <input id="plName" class="dshell-input" placeholder="我的流水线" style="width:220px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">脚本目录
+          <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
+          <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
+        </label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/审批门，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 120（Jenkins 默认 300）秒）</label>
+        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
+        <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
+        <datalist id="scriptsList"></datalist>
+        <datalist id="jenkinsJobsList"></datalist>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button id="plSave" class="dshell-btn mini">保存</button>
+          <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
+          <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -304,8 +526,10 @@ const XDS_STAGES = [
 const LOGS = {
   checkout: [
     "[Pipeline] stage { (检出)",
+    "代码仓: {{giturl}}",
+    "git clone --branch {{branch}} {{giturl}}",
     "Cloning into 'myapp'…",
-    "构建来源: commit={{commit}}",
+    "构建来源: {{branch}}@{{commit}}",
     "触发者: {{by}}",
     "目标镜像: {{registry}}/{{image}}:{{tag}}",
     "[Pipeline] }",
@@ -370,6 +594,92 @@ const LOGS = {
   ],
 };
 
+/* ---------- 服务端持久化（配置 + 运行历史/日志，存服务端 ~/.dsh/storages/worktable-pipeline.json） ---------- */
+/* localStorage 仍保留作离线缓存；服务端不可达时行为与原来一致。 */
+let stateLoaded=false;   // loadServerState 完成后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
+let persistTimer=null;
+function persistState(){
+  if(!stateLoaded) return;
+  if(persistTimer) clearTimeout(persistTimer);
+  persistTimer=setTimeout(pushState, 400);
+}
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, archiveDir, archiveScriptName, analysisPrompts, pageEditPrompt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+async function pushState(){
+  try{
+    /* 演示数据（demo 标记）不上服务端；历史含逐阶段日志，200 条上限同时控制服务端存储体积 */
+    await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history:history.filter(h=>!h.demo)})});
+  }catch(e){}
+}
+async function loadServerState(){
+  let st=null;
+  try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
+  try{
+    if(st && st.config && Object.keys(st.config).length){
+      const cfg=st.config;
+      if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
+        const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+        const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
+        pipelines=[def||defaultPipeline()].concat(customs);
+      }
+      if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
+      if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
+      if(Array.isArray(cfg.selectedEnvIds) && cfg.selectedEnvIds.length) selectedEnvIds=cfg.selectedEnvIds;
+      if(Array.isArray(cfg.repositories) && cfg.repositories.length) repositories=cfg.repositories.map(normalizeRepo);
+      if(typeof cfg.curRepoId==='string' && resolveRepo(cfg.curRepoId)) curRepoId=cfg.curRepoId;
+      if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+      if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
+      if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
+      if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
+      if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
+      if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
+      if(typeof cfg.archiveDir==='string'){ archiveDir=cfg.archiveDir; $('archiveDir').value=archiveDir; }
+      if(typeof cfg.archiveScriptName==='string'){ archiveScriptName=cfg.archiveScriptName; $('archiveScriptName').value=archiveScriptName; }
+      if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
+      if(typeof cfg.pageEditPrompt==='string' && cfg.pageEditPrompt.trim()) pageEditPrompt=cfg.pageEditPrompt;
+      if(Array.isArray(st.history) && st.history.length) history=st.history;
+      runStages=null; selectedId=curPipeline().stages[0].id;
+      /* 同步 localStorage 离线缓存 */
+      try{
+        localStorage.setItem('pip-pipelines', JSON.stringify(pipelines));
+        localStorage.setItem('pip-envs', JSON.stringify(environments));
+        localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds));
+        localStorage.setItem('pip-repos', JSON.stringify(repositories));
+        localStorage.setItem('pip-curRepo', curRepoId);
+        localStorage.setItem('pip-scriptsDir', scriptsDir);
+        localStorage.setItem('pip-curPipeline', curPipelineId);
+        localStorage.setItem('pip-theme', themePref);
+        localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
+        localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
+        localStorage.setItem('pip-jenkins', JSON.stringify(jenkins));
+        localStorage.setItem('pip-archiveDir', archiveDir);
+        localStorage.setItem('pip-archiveScript', archiveScriptName);
+        localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts));
+        localStorage.setItem('pip-pageEditPrompt', pageEditPrompt);
+      }catch(e){}
+      $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
+      renderCleanupParams();
+      renderAll();
+    }
+  } finally {
+    stateLoaded=true;
+    /* 服务端为空：把本地（localStorage/默认）状态迁移上去 */
+    if(st && (!st.config || !Object.keys(st.config).length)) persistState();
+  }
+}
+/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端 */
+function collectRunLogs(){
+  const out=[];
+  activeStages().forEach(s=>{
+    const n=nodes[s.id];
+    if(!n || n.status==='running' || n.status==='waiting') return;
+    let text='';
+    try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
+    if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
+    out.push({stage:s.name, status:n.status, log:text});
+  });
+  return out;
+}
+
 /* ---------- 流水线注册表（多条流水线） ---------- */
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
 const DEFAULT_PIPELINE_ID='pl-xds';
@@ -390,7 +700,7 @@ let runStages = null; // 运行期间快照；null 时用当前流水线
 function curPipeline(){ return pipelines.find(p=>p.id===curPipelineId) || pipelines[0]; }
 function activeStages(){ return runStages || curPipeline().stages; }
 function findPipeline(id){ return pipelines.find(p=>p.id===id); }
-function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} }
+function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} persistState(); }
 
 /* ---------- 环境配置（名称 + IP + 用户名 + 密码） ---------- */
 function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, user:e.user||'', pass:e.pass||''}; }
@@ -399,13 +709,13 @@ let environments = loadEnvs() || [
   {id:'env-dev', name:'开发', ip:'192.168.1.10', user:'root', pass:''},
   {id:'env-prod', name:'生产', ip:'192.168.1.20', user:'root', pass:''},
 ];
-function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){} }
+function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){} persistState(); }
 function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}; }
 function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),user:'',pass:''}; }
 function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
 /* 环境多选（主控，可选多个目标 IP） */
 let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
-function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} }
+function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} persistState(); }
 function curEnvs(){
   let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
   if(!list.length) list = environments.slice(0,1);
@@ -419,9 +729,11 @@ function renderEnvOptions(){
   panel.innerHTML='';
   environments.forEach(e=>{
     const on = selectedEnvIds.indexOf(e.id)>=0;
+    const st=gpuStatus[e.id];
+    const gpu=(st && st.total!==undefined)?(' · GPU '+(st.used===undefined?'?':st.used)+'/'+st.total):(st && st.error?' · GPU 查询失败':'');
     const lab=document.createElement('label');
     lab.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;';
-    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+(e.user?(' · '+esc(e.user)):'')+'</span></span>';
+    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+gpu+'</span></span>';
     panel.appendChild(lab);
   });
   panel.querySelectorAll('[data-envcb]').forEach(cb=>cb.addEventListener('change',()=>{
@@ -430,7 +742,7 @@ function renderEnvOptions(){
     else { selectedEnvIds=selectedEnvIds.filter(x=>x!==id); }
     if(!selectedEnvIds.length){ selectedEnvIds=[id]; cb.checked=true; }   // 至少保留一个
     saveEnvSel(); renderEnvOptions();
-    if(nodes && activeStages().some(s=>s.gate)) renderFlow();
+    if(activeStages().some(s=>s.gate)) renderFlow();
     renderDetail();
   }));
 }
@@ -463,7 +775,7 @@ function bindGpuCell(cell, e){
 let gpuStatus={};
 function gpuCellHtml(st){
   if(!st) return '<span class="dshell-muted">—</span>';
-  if(st.error) return '<span style="color:#f85149">查询失败</span>';
+  if(st.error) return '<span style="color:var(--st-err)">查询失败</span>';
   const cs=st.containers||[];
   let main;
   if(cs.length) main='<b>'+esc(cs.slice(0,2).join('、'))+(cs.length>2?' 等':'')+'</b>';
@@ -480,6 +792,7 @@ async function fetchGpu(e){
   }catch(err){ gpuStatus[e.id]={error:String(err.message||err)}; }
   const c2=document.querySelector('[data-gpu="'+e.id+'"]');
   if(c2){ c2.innerHTML=gpuCellFull(e); bindGpuCell(c2, e); }
+  renderEnvOptions();   // 主控环境多选面板同步显示 GPU 占用/总数
 }
 function refreshGpuAll(){ environments.forEach(e=>fetchGpu(e)); }
 /* GPU 详情弹层：完整状态 + 失败原因 */
@@ -489,7 +802,7 @@ function openGpuDetail(e){
   let h='<div style="margin-bottom:8px;"><b>'+esc(e.name)+'</b> <span class="dshell-muted">'+esc(e.ip)+'</span>'+(e.user?(' <span class="dshell-muted">· '+esc(e.user)+'</span>'):'')+'</div>';
   if(!st){ h+='<div class="dshell-muted">尚未查询，点 ⟳ 刷新。</div>'; }
   else if(st.error){
-    h+='<div style="color:#f85149;font-weight:600;margin-bottom:6px;">查询失败</div>'
+    h+='<div style="color:var(--st-err);font-weight:600;margin-bottom:6px;">查询失败</div>'
       +'<div class="logbox" style="max-height:220px;white-space:pre-wrap;">'+esc(st.error)+'</div>';
   } else {
     h+='<div style="margin-bottom:8px;">GPU 共 <b>'+st.total+'</b> 张，正在使用 <b>'+st.used+'</b> 张，空闲 <b>'+((st.total||0)-(st.used||0))+'</b> 张</div>';
@@ -527,6 +840,182 @@ function applyEnvCredAll(){
   environments.forEach(e=>{ e.user=u; e.pass=p; });
   saveEnvs(); renderEnvs();
 }
+/* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
+function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:(r.fetchMode==='browser'?'browser':(r.fetchMode==='jenkins'?'jenkins':'server')), jenkinsJob:r.jenkinsJob||''}; }
+function loadRepos(){ try{ const a=JSON.parse(localStorage.getItem('pip-repos')); if(Array.isArray(a)&&a.length) return a.map(normalizeRepo); }catch(e){} return null; }
+let repositories = loadRepos() || [
+  {id:'repo-1', name:'myapp', url:'https://git.example.com/dev/myapp.git', user:'', pass:'', fetchMode:'server'},
+];
+function saveRepos(){ try{ localStorage.setItem('pip-repos', JSON.stringify(repositories)); }catch(e){} persistState(); }
+let curRepoId = lsGet('pip-curRepo', repositories[0].id);
+function saveRepoSel(){ try{ localStorage.setItem('pip-curRepo', curRepoId); }catch(e){} persistState(); }
+function curRepo(){ return repositories.find(r=>r.id===curRepoId) || repositories[0]; }
+function resolveRepo(v){ if(!v) return curRepo(); return repositories.find(r=>r.id===v)||repositories.find(r=>r.url===v)||repositories.find(r=>r.name===v)||{id:'',name:String(v),url:String(v),user:'',pass:''}; }
+let repoEditId=null;
+function renderRepoOptions(){
+  const sel=$('repoSel'); if(!sel) return; const cur=sel.value; sel.innerHTML='';
+  repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId) o.selected=true; sel.appendChild(o); });
+  if(cur && repositories.some(r=>r.id===cur)) sel.value=cur;
+  if(repositories.length && !repositories.some(r=>r.id===sel.value)) sel.value=repositories[0].id;
+}
+function renderRepos(){
+  $('repoCount').textContent = repositories.length? '('+repositories.length+')':'';
+  const tb=$('repoTable').querySelector('tbody'); tb.innerHTML='';
+  repositories.forEach(r=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+(r.fetchMode==='browser'?'浏览器直连 /info/refs（需 CORS）':(r.fetchMode==='jenkins'?'Jenkins 多分支任务子任务名':'服务端 git ls-remote'))+'">'+(r.fetchMode==='browser'?'浏览器':(r.fetchMode==='jenkins'?('Jenkins'+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):'服务端'))+'</td>'+
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('[data-repotest]').forEach(b=>b.addEventListener('click',()=>{ const r=repositories.find(x=>x.id===b.getAttribute('data-repotest')); if(r) testRepo(r); }));
+  tb.querySelectorAll('[data-repoedit]').forEach(b=>b.addEventListener('click',()=>startRepoEdit(b.getAttribute('data-repoedit'))));
+  tb.querySelectorAll('[data-repodel]').forEach(b=>b.addEventListener('click',()=>delRepo(b.getAttribute('data-repodel'))));
+}
+function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=(r.fetchMode==='browser'?'browser':(r.fetchMode==='jenkins'?'jenkins':'server')); $('repoJenkinsJob').value=r.jenkinsJob||''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
+function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
+function saveRepoForm(){
+  const name=$('repoName').value.trim(); const url=$('repoUrl').value.trim(); const user=$('repoUser').value.trim(); const pass=$('repoPass').value;
+  if(!url){ alert('请填写仓库 URL'); return; }
+  const fm=$('repoFetchMode').value==='browser'?'browser':($('repoFetchMode').value==='jenkins'?'jenkins':'server');
+  const jkJob=($('repoJenkinsJob').value||'').trim();
+  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=(fm==='jenkins')?jkJob:''; } }
+  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url, url, user, pass, fetchMode:fm, jenkinsJob:(fm==='jenkins')?jkJob:''}); }
+  if(repoEditId){ delete repoBranches[repoEditId]; } saveRepos(); resetRepoForm(); renderRepos(); renderRepoOptions();
+}
+function delRepo(id){ if(!confirm('删除该代码仓？')) return; repositories=repositories.filter(r=>r.id!==id); if(!repositories.length){ repositories=[{id:'repo-1',name:'默认',url:'',user:'',pass:'',fetchMode:'server'}]; } if(curRepoId===id) curRepoId=repositories[0].id; saveRepos(); saveRepoSel(); renderRepos(); renderRepoOptions(); }
+function applyRepoCredAll(){
+  const u=$('repoUser').value.trim(); const p=$('repoPass').value;
+  if(!u && !p){ alert('请先在上面的用户名/令牌框里填写要统一设置的凭据'); return; }
+  if(!repositories.length){ alert('暂无代码仓'); return; }
+  if(!confirm('将用户名「'+(u||'(空)')+'」/令牌 应用到全部 '+repositories.length+' 个仓库？')) return;
+  repositories.forEach(r=>{ r.user=u; r.pass=p; });
+  saveRepos(); renderRepos();
+}
+/* 分支获取方式切换：仅「Jenkins 任务」时显示任务选择框 */
+function toggleRepoJenkinsJobInput(){ const sel=$('repoFetchMode'); const inp=$('repoJenkinsJob'); if(!sel||!inp) return; inp.style.display = sel.value==='jenkins'?'':'none'; }
+/* 代码仓联通性检测 + 远程分支/Tag 列举：fetchMode='server'(默认)→/api/worktable/git-remote(git ls-remote)；'browser'→直连 /info/refs 解析 smart-HTTP（需服务器开 CORS）；'jenkins'→经配置的 Jenkins 多分支任务子任务名 */
+let repoBranches={};   // repoId -> {branches:[], tags:[], error:'', loading?}
+
+/* 按 fetchMode 分流：统一返回 {ok, branches:[], tags:[], error} */
+async function fetchRepoRefs(r){
+  if(r.fetchMode==='browser') return fetchBranchesBrowser(r);
+  if(r.fetchMode==='jenkins') return fetchBranchesJenkins(r);
+  const res=await fetch('/api/worktable/git-remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:r.url,user:r.user||'',pass:r.pass||''})});
+  return res.json();
+}
+/* 浏览器直连：解析 git smart-HTTP refs 广告，输出 branches/tags */
+async function fetchBranchesBrowser(repo){
+  const out={ok:false, branches:[], tags:[], error:''};
+  let base=(repo.url||'').trim();
+  if(!base){ out.error='仓库 URL 为空'; return out; }
+  while(base.length && base.charAt(base.length-1)==='/') base=base.slice(0,-1);
+  const endpoint=base+'/info/refs?service=git-upload-pack';
+  const headers={};
+  if(repo.user||repo.pass){
+    try{ headers['Authorization']='Basic '+btoa(unescape(encodeURIComponent((repo.user||'')+':'+(repo.pass||'')))); }catch(e){}
+  }
+  let res;
+  try{ res=await fetch(endpoint,{method:'GET',headers:headers,mode:'cors'}); }
+  catch(e){ out.error='浏览器直连失败（多为 CORS 拦截或网络不可达）：'+String(e.message||e).slice(0,140)+' —— 建议切回「服务端拉取」'; return out; }
+  if(!res.ok){ out.error='仓库返回 HTTP '+res.status+' —— 浏览器直连仅对开了 CORS 的 git 服务器有效，建议切回「服务端拉取」'; return out; }
+  let buf;
+  try{ buf=new Uint8Array(await res.arrayBuffer()); }catch(e){ out.error='读取响应失败：'+String(e.message||e).slice(0,140); return out; }
+  const refs=parseGitRefsAdvertisement(buf);
+  if(!refs){ out.error='无法解析 git 分支广告（可能非 smart-HTTP 端点）—— 建议切回「服务端拉取」'; return out; }
+  out.branches=refs.filter(x=>x.name.indexOf('refs/heads/')===0).map(x=>x.name.slice(11)).sort();
+  out.tags=refs.filter(x=>x.name.indexOf('refs/tags/')===0).map(x=>x.name.slice(10)).sort();
+  out.ok=true; return out;
+}
+/* Jenkins 多分支任务：子任务名即分支。复用全局 jenkins 配置 + jkFetchJson/jkJobPath（local 直连 / remote 走 proxy）。返回 {ok, branches, tags, error} */
+async function fetchBranchesJenkins(r){
+  const out={ok:false, branches:[], tags:[], error:''};
+  const job=(r.jenkinsJob||'').trim();
+  if(!job){ out.error='未配置 Jenkins 任务（在「代码仓」表单选择一个多分支任务）'; return out; }
+  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+  if(!base){ out.error='Jenkins 地址未配置（请在「设置」页填写 Jenkins 服务地址）'; return out; }
+  let data;
+  try{ data=await jkFetchJson(j, base+jkJobPath(job)+'api/json?tree=jobs[name,fullName,color,_class]'); }
+  catch(e){ out.error='Jenkins 请求失败：'+String(e.message||e).slice(0,160); return out; }
+  const subs=(data && Array.isArray(data.jobs))?data.jobs:[];
+  if(!subs.length){ out.error='该 Jenkins 任务未返回子任务列表（请确认其为多分支/文件夹类型任务，如 Multibranch Pipeline）'; return out; }
+  const branches=subs.map(function(s){
+    let n=String(s.fullName||s.name||'');
+    n=n.split('/').pop();                      // 多分支子任务 fullName 形如 <父任务>/<分支>，取末段
+    try{ n=decodeURIComponent(n); }catch(e){} // Jenkins 会把 / 编码成 %2F，还原为真实分支名
+    return n;
+  }).filter(Boolean).sort();
+  out.branches=branches; out.ok=true; return out;
+}
+/* 解析 smart-HTTP refs 广告（GET info/refs?service=git-upload-pack 响应体）。返回 [{sha,name}] 或 null */
+function parseGitRefsAdvertisement(buf){
+  try{
+    let pos=0; const dec=new TextDecoder('utf-8',{fatal:false}); const refs=[];
+    const readPkt=()=>{ if(pos+4>buf.length) return null; const hex=dec.decode(buf.subarray(pos,pos+4)); if(!/^[0-9a-f]{4}$/.test(hex)) return null; const len=parseInt(hex,16); if(len===0){ pos+=4; return ''; } if(len<4||pos+len>buf.length) return null; const s=dec.decode(buf.subarray(pos+4,pos+len)); pos+=len; return s; };
+    const all=[]; let line=readPkt(); if(line===null) return null;
+    if(!(typeof line==='string' && line.indexOf('# service=')===0)) all.push(line);
+    let l; while((l=readPkt())!==null){ if(l!=='') all.push(l); }
+    for(const t of all){
+      const m=t.match(/^([0-9a-f]{40}) /);
+      if(!m) continue;
+      let name=t.slice(m[0].length);
+      for(let i=0;i<name.length;i++){ const c=name.charCodeAt(i); if(c===0||c===10||c===13){ name=name.slice(0,i); break; } }
+      if(name) refs.push({sha:m[1], name:name});
+    }
+    return refs;
+  }catch(e){ return null; }
+}
+async function testRepo(r){
+  const tip=$('repoTestTip'); if(!tip || !r) return;
+  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+(r.fetchMode==='browser'?'浏览器':(r.fetchMode==='jenkins'?'Jenkins':'服务端'))+'）';
+  let j;
+  try{ j=await fetchRepoRefs(r); }
+  catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 请求失败：'+String(e.message||e).slice(0,160); return; }
+  if(j && j.ok){
+    const nb=j.branches?j.branches.length:0; const nt=j.tags?j.tags.length:0;
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 连接成功 · '+nb+' 个分支'+(nt?(' · '+nt+' 个 Tag'):'');
+    repoBranches[r.id]={branches:(j.branches||[]), tags:(j.tags||[]), error:''};   // 顺便刷新该仓分支/Tag 缓存
+  } else {
+    tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 连接失败：'+(j && j.error ? String(j.error).slice(0,160) : '未知错误');
+  }
+}
+/* 分支/Tag 选择：按当前代码仓搜索远程分支与 Tag，下拉面板点选；仍可手动输入 */
+async function loadRepoBranches(repo, force){
+  repo = repo || curRepo();
+  const id=repo.id;
+  if(!force && repoBranches[id] && !repoBranches[id].error && !repoBranches[id].loading) return repoBranches[id];
+  repoBranches[id]={loading:true};
+  renderBranchPanel();
+  let j;
+  try{ j=await fetchRepoRefs(repo); }
+  catch(e){ j={ok:false, error:String(e.message||e)}; }
+  repoBranches[id] = (j && j.ok) ? {branches:(j.branches||[]), tags:(j.tags||[]), error:''} : {branches:[], tags:[], error:(j&&j.error)?String(j.error):'未知错误'};
+  return repoBranches[id];
+}
+function renderBranchPanel(showAll){
+  const panel=$('branchPanel'); const inp=$('branchName'); if(!panel||!inp) return;
+  const repo=curRepo(); const q=showAll?'':inp.value.trim().toLowerCase();
+  const cached=repoBranches[repo.id];
+  const ready=cached&&!cached.loading&&!cached.error;
+  const nb=ready?(cached.branches||[]).length:0;
+  const nt=ready?(cached.tags||[]).length:0;
+  let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(repo.fetchMode==='browser'?'浏览器':(repo.fetchMode==='jenkins'?('Jenkins'+(repo.jenkinsJob?(' · '+esc(repo.jenkinsJob)):'')):'服务端'))+(ready?(' · '+nb+' 分支'+(nt?(' · '+nt+' Tag'):'')):' · …')+'</span>'
+    +'<span data-branchrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
+  if(!cached || cached.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
+  else if(cached.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(cached.error.slice(0,200))+'</div>'; if(repo.fetchMode==='browser'||repo.fetchMode==='jenkins'){ h+='<div style="padding:2px 6px;"><button class="dshell-btn dshell-btnGhost mini" data-branchfallback type="button">切回服务端并重试</button></div>'; } }
+  else {
+    const br=(cached.branches||[]).filter(b=> !q || b.toLowerCase().indexOf(q)>=0).slice(0,200);
+    const tg=(cached.tags||[]).filter(t=> !q || t.toLowerCase().indexOf(q)>=0).slice(0,200);
+    const item=(name)=>'<div data-branch="'+esc(name)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(name===inp.value?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(name)+'</div>';
+    const head=(label,n)=> n? '<div class="dshell-muted" style="font-size:10px;padding:3px 8px 2px;opacity:.7;">'+label+'（'+n+'）</div>':'';
+    if(!br.length && !tg.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配</div>'; }
+    else { h+=head('分支',br.length)+br.map(item).join('')+head('Tag',tg.length)+tg.map(item).join(''); }
+  }
+  panel.innerHTML=h; panel.style.display='block';
+  panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); }));
+  const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(curRepo(), true));
+  const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=curRepo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(curRepo(), true).then(()=>renderBranchPanel()); });
+}
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
   const lc=(name||'').toLowerCase();
@@ -557,14 +1046,211 @@ function detectScriptsDir(){
   return 'scripts';
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
-function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} }
+function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
+/* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_日期」文件夹组织（见 archiveRun） */
+let archiveDir = lsGet('pip-archiveDir', '/var/log/op_test');
+function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
+/* 归档脚本：归档写入日志/profiling 后执行（可选），收集额外日志；默认 scripts/collect_logs.sh，留空=不执行，脚本缺失自动跳过（见 archiveRun） */
+let archiveScriptName = lsGet('pip-archiveScript', 'collect_logs.sh');
+function saveArchiveScript(){ try{ localStorage.setItem('pip-archiveScript', archiveScriptName); }catch(e){} persistState(); }
+
+/* ---------- Jenkins 服务配置（连接模式 + 测试连接） ----------
+   本地浏览器连接：浏览器直接用 JS 连接 Jenkins（不走桥接；需 Jenkins 允许跨域或同源）；
+   远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连 Jenkins（仅回环/内网）。 */
+const DEFAULT_JENKINS = { url:'http://127.0.0.1:28080', linkUrl:'', user:'', token:'', mode:'local' };
+function loadJenkins(){
+  try{ const a=JSON.parse(localStorage.getItem('pip-jenkins')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_JENKINS, a); }catch(e){}
+  return Object.assign({}, DEFAULT_JENKINS);
+}
+let jenkins = loadJenkins();
+function saveJenkins(){ try{ localStorage.setItem('pip-jenkins', JSON.stringify(jenkins)); }catch(e){} persistState(); }
+function applyJenkinsForm(){
+  $('jkUrl').value = jenkins.url || DEFAULT_JENKINS.url;
+  $('jkLinkUrl').value = jenkins.linkUrl || '';
+  $('jkUser').value = jenkins.user || '';
+  $('jkToken').value = jenkins.token || '';
+  setJenkinsMode(jenkins.mode);
+}
+function setJenkinsMode(m){
+  jenkins.mode = (m==='remote') ? 'remote' : 'local';
+  $('jkModeLocal').classList.toggle('sel', jenkins.mode==='local');
+  $('jkModeRemote').classList.toggle('sel', jenkins.mode==='remote');
+}
+function collectJenkinsForm(){
+  return {
+    url: ($('jkUrl').value||'').trim() || DEFAULT_JENKINS.url,
+    linkUrl: ($('jkLinkUrl').value||'').trim(),
+    user: ($('jkUser').value||'').trim(),
+    token: ($('jkToken').value||'').trim(),
+    mode: jenkins.mode,
+  };
+}
+async function testJenkins(){
+  const j = collectJenkinsForm();
+  const tip = $('jkTestTip');
+  tip.style.color = ''; tip.textContent = '测试中…';
+  const auth = (j.user || j.token) ? ('Basic ' + btoa(j.user + ':' + j.token)) : '';
+  const sub = '/api/json?tree=mode,nodeName,numExecutors';
+  try {
+    let status = 0, body = '';
+    if (j.mode === 'local') {
+      const r = await fetch(j.url.replace(/\/+$/,'') + sub, { headers: auth ? { Authorization: auth } : {}, cache: 'no-store' });
+      status = r.status; body = await r.text();
+    } else {
+      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: j.url.replace(/\/+$/,'') + sub, method:'GET', headers: auth ? { Authorization: auth } : {} }) });
+      const p = await r.json();
+      if (p && p.error) { tip.style.color='var(--log-err)'; tip.textContent='✗ ' + p.error; return; }
+      status = p.status || 0; body = p.body || '';
+    }
+    if (status === 200) {
+      let info = {}; try { info = JSON.parse(body); } catch (e) {}
+      if (info && (info.nodeName || info.numExecutors !== undefined)) {
+        tip.style.color = 'var(--log-ok)';
+        tip.textContent = '✓ 连接成功 · 节点 ' + (info.nodeName || '?') + ' · ' + (info.numExecutors !== undefined ? info.numExecutors : '?') + ' 执行器' + (info.mode ? (' · ' + info.mode + ' 模式') : '');
+      } else {
+        tip.style.color = 'var(--log-ok)'; tip.textContent = '✓ HTTP 200（未返回预期的 Jenkins 元数据）';
+      }
+    } else {
+      tip.style.color = 'var(--log-err)'; tip.textContent = '✗ Jenkins 返回 HTTP ' + status;
+    }
+  } catch (e) {
+    tip.style.color = 'var(--log-err)'; tip.textContent = '✗ ' + ((e && e.message) ? e.message : e);
+  }
+}
+
+/* ---------- Jenkins：拉取任务列表（本地直连 / 远程走 proxy，复用连接模式） ---------- */
+/* 模式自适应取 JSON：本地模式浏览器直连；远程模式经 DSH 服务端 /api/worktable/proxy 代连 */
+async function jkFetchJson(j, url){
+  const auth = (j.user || j.token) ? { Authorization: 'Basic ' + btoa(j.user + ':' + j.token) } : {};
+  if (j.mode === 'local') {
+    const r = await fetch(url, { headers: auth, cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+  const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, method:'GET', headers: auth }) });
+  const p = await r.json();
+  if (p && p.error) throw new Error(p.error);
+  if ((p.status||0) !== 200) throw new Error('HTTP ' + (p.status||0));
+  return JSON.parse(p.body || '{}');
+}
+/* Jenkins color → 可读状态（_anime 后缀=正在构建） */
+function jobStatus(color){
+  if (!color) return '-';
+  const building = color.endsWith('_anime');
+  const base = color.replace(/_anime$/, '');
+  const map = { blue:'成功', red:'失败', yellow:'不稳定', grey:'未构建', disabled:'已禁用', aborted:'已中止', notbuilt:'未构建' };
+  return (map[base] || base) + (building ? '（构建中）' : '');
+}
+/* 递归拉取所有任务（展开文件夹/多分支）。子级 URL 用 fullName 拼到配置的 base 上，
+   避免 Jenkins 返回的绝对地址绕开本机桥接/反代导致再次被 CORS 拦截。 */
+async function fetchAllJenkinsJobs(j){
+  const base = j.url.replace(/\/+$/, '');
+  const jobUrl = (fn) => base + '/job/' + String(fn).split('/').map(encodeURIComponent).join('/job/') + '/';
+  async function walk(nodeUrl){
+    const data = await jkFetchJson(j, nodeUrl.replace(/\/+$/,'') + '/api/json?tree=jobs[name,fullName,url,color,_class]');
+    let out = [];
+    for (const job of (data.jobs || [])) {
+      const isContainer = /folder|multibranch|organization/i.test(job._class || '');
+      const fullName = job.fullName || job.name;
+      if (isContainer) out = out.concat(await walk(jobUrl(fullName)));
+      else out.push({ name: fullName, color: job.color });
+    }
+    return out;
+  }
+  return walk(base + '/');
+}
+/* 复制到剪贴板（clipboard API 优先，execCommand 兜底；http://127.0.0.1 / localhost 属安全上下文） */
+function copyText(text, btn){
+  const done = ()=>{ if(btn){ const o=btn.textContent; btn.textContent='已复制'; setTimeout(()=>{ btn.textContent=o; },1200);} };
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done).catch(()=>fallbackCopy(text, done)); }
+  else fallbackCopy(text, done);
+}
+function fallbackCopy(text, done){
+  try{ const ta=document.createElement('textarea'); ta.value=text; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); if(done) done(); }catch(e){}
+}
+async function listJenkinsJobs(){
+  const j = collectJenkinsForm();
+  const openBase = (j.linkUrl || j.url).replace(/\/+$/,'');   // 打开/复制用：真实 Jenkins 地址（留空则用上方 Jenkins 地址）
+  const wrap = $('jkJobsWrap'); const tip = $('jkJobsTip'); const tb = $('jkJobsTable').querySelector('tbody');
+  tip.style.color=''; tip.textContent='拉取中…'; tb.innerHTML=''; wrap.style.display='none';
+  try {
+    const jobs = await fetchAllJenkinsJobs(j);
+    availableJenkinsJobs = jobs.map(function(jb){ return {name: jb.name}; }); fillJenkinsJobsDatalist();
+    wrap.style.display='';
+    if (!jobs.length) {
+      const tr=document.createElement('tr'); const td=document.createElement('td');
+      td.colSpan=3; td.className='dshell-muted'; td.textContent='（无任务）'; tr.appendChild(td); tb.appendChild(tr);
+    }
+    jobs.forEach(job => {
+      const link = openBase + '/job/' + String(job.name).split('/').map(encodeURIComponent).join('/job/') + '/';
+      const tr = document.createElement('tr');
+      const tdName=document.createElement('td'); tdName.textContent=job.name;
+      const tdSt=document.createElement('td'); tdSt.textContent=jobStatus(job.color);
+      const c=job.color||'';
+      tdSt.style.color = c.indexOf('red')===0 ? 'var(--log-err)' : (c.indexOf('blue')===0 ? 'var(--log-ok)' : (c.indexOf('yellow')===0 ? 'var(--log-warn)' : ''));
+      const tdOp=document.createElement('td');
+      const a=document.createElement('a'); a.href=link; a.target='_blank'; a.rel='noopener'; a.textContent='打开'; a.style.marginRight='8px';
+      const cp=document.createElement('button'); cp.className='dshell-btn dshell-btnGhost mini'; cp.type='button'; cp.textContent='复制链接';
+      cp.addEventListener('click', ()=>copyText(link, cp));
+      tdOp.appendChild(a); tdOp.appendChild(cp);
+      tr.appendChild(tdName); tr.appendChild(tdSt); tr.appendChild(tdOp);
+      tb.appendChild(tr);
+    });
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ 共 ' + jobs.length + ' 个任务';
+  } catch(e) {
+    tip.style.color='var(--log-err)'; tip.textContent='✗ ' + ((e && e.message) ? e.message : e);
+  }
+}
+
+/* ---------- 环境清理脚本（在「设置」页配置；勾选主控「清理环境」后于流水线启动前执行） ---------- */
+let cleanupScript=(function(){ try{ return JSON.parse(localStorage.getItem('pip-cleanupScript')); }catch(e){ return null; } })() || null;
+function saveCleanup(){
+  try{
+    localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
+    localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
+  }catch(e){}
+  persistState();
+}
+function renderCleanupParams(){
+  const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
+  if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
+  cleanupScript.params.forEach(p=>{
+    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.def||'');
+    const lab=document.createElement('label'); lab.className='dshell-muted';
+    lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+    const inp=lab.querySelector('input');
+    inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
+    box.appendChild(lab);
+  });
+}
+async function setCleanupScript(name){
+  const sc=scriptByName(name);
+  if(!name || !sc){ cleanupScript=null; renderCleanupParams(); saveCleanup(); return; }
+  const keep=(cleanupScript && cleanupScript.name===sc.name)?cleanupScript:null;
+  cleanupScript={name:sc.name, path:sc.path, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  await detectCleanupParams();
+  saveCleanup();
+}
+async function detectCleanupParams(){
+  if(!cleanupScript || !cleanupScript.path){ renderCleanupParams(); return; }
+  try{
+    const src=await readScriptSrc(cleanupScript.path);
+    const det=detectParams(src);
+    const oldVals=cleanupScript.values||{};
+    cleanupScript.params=det; cleanupScript.values=cleanupScript.values||{};
+    det.forEach(p=>{ if(oldVals[p.key]!==undefined) cleanupScript.values[p.key]=oldVals[p.key]; });
+  }catch(e){ cleanupScript.params=[]; }
+  renderCleanupParams();
+}
 let availableScripts=[];   // [{name, path}]
 async function loadScripts(){
   try{
     const r=await fetch('/api/worktable/fs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:scriptsDir})});
     const j=await r.json();
-    const ents=(j.entries||[]).filter(e=>!e.isDir);
-    availableScripts=ents.map(e=>({name:e.name, path:e.path}));
+    const ents=(j.entries||[]).filter(e=>!e.isDir && /\.(sh|py)$/i.test(e.name));   // .sh + .py（README 等文档不进脚本列表）
+    availableScripts=ents.map(e=>({name:e.name, path:e.path, lang:/\.py$/i.test(e.name)?'py':'sh'}));
   }catch(e){ availableScripts=[]; }
   fillScriptsDatalist();
 }
@@ -573,40 +1259,128 @@ function fillScriptsDatalist(){
   availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
 }
 function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
+/* Jenkins 任务列表（设置页「获取任务列表」后填充；阶段编辑器「Jenkins」类型据此选择任务） */
+let availableJenkinsJobs=[];   // [{name: fullName}]
+function fillJenkinsJobsDatalist(){
+  const dl=$('jenkinsJobsList'); if(!dl) return; dl.innerHTML='';
+  availableJenkinsJobs.forEach(j=>{ const o=document.createElement('option'); o.value=j.name; dl.appendChild(o); });
+}
+function jkJobByName(name){ return availableJenkinsJobs.find(j=>j.name===name)||null; }
 async function readScriptSrc(path){
   const r=await fetch('/api/worktable/file?path='+encodeURIComponent(path));
   return r.text();
 }
 /* 从脚本源码识别参数：位置参数 $1..$N/${N:-def} + 环境变量 ${VAR:-def}/${VAR}/$VAR */
-function detectParams(src){
+/* 嵌套默认值解包：${1:-${VAR:-glm}} 的默认值取最内层 glm */
+function resolveDef(def){
+  if(!def) return '';
+  let d=String(def).trim(); let guard=0;
+  while(d.indexOf('${')>=0 && guard++<6){
+    const i=d.lastIndexOf(':-'); if(i<0) break;
+    d=d.slice(i+2).replace(/}+/g,'').trim();
+  }
+  return d.replace(/}+$/,'').replace(/^["']|["']$/g,'').trim();
+}
+/* 从注释提取语义化标签：# 位置参数 $1 = 模型架构名 / # 环境变量 XDS_URL = XDS 网关地址（支持一行多个 VAR = 说明） */
+function parseCommentLabels(src){
+  const posLabels={}, envLabels={};
+  src.split('\n').forEach(line=>{
+    const c=/^\s*#\s*(.*)$/.exec(line); if(!c) return;
+    const t=c[1];
+    let m=/位置参数\s*\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t) || /\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t);
+    if(m && m[2]) posLabels[m[1]]=m[2].trim();
+    const envRe=/([A-Z_][A-Z0-9_]*)\s*[=：:]\s*([^（(；;，,\n]+)/g;
+    while((m=envRe.exec(t))){ if(m[2] && !envLabels[m[1]]) envLabels[m[1]]=m[2].trim(); }
+  });
+  return {posLabels, envLabels};
+}
+/* 扫描脚本内部赋值：VAR=... 且右侧不含自引用 ${VAR}/$VAR 的，视为内部变量（不是外部参数） */
+function internalAssignedVars(src){
+  const internal={};
+  const re=/^\s*(?:declare\s+(?:-[a-zA-Z]+\s+)?|local\s+|export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/gm;
+  let m;
+  while((m=re.exec(src))){
+    const v=m[1]; const rhs=m[2].trim().replace(/^["']|["']$/g,'');
+    const selfRef=new RegExp('\\$\\{?'+v+'\\b');
+    if(!selfRef.test(rhs)) internal[v]=true;
+  }
+  return internal;
+}
+/* Python 脚本参数识别：位置参数 sys.argv[N] + 环境变量 os.environ['KEY']/os.environ.get('KEY','默认')/os.getenv('KEY','默认')。
+   os.environ['KEY']（下标访问、无默认）视为必填；getenv/get 带默认值视为可选。argparse --opt 不映射（与位置/环境参数模型不直接对应），如需可手动补。 */
+function detectPythonParams(src){
+  const pos={}; let m;
+  const argvRe=/sys\.argv\[(\d+)\]/g;
+  while((m=argvRe.exec(src))){ const n=parseInt(m[1],10); if(n>=1 && !(n in pos)) pos[n]={def:'',required:false}; }
+  const maxPos=Object.keys(pos).length?Math.max.apply(null,Object.keys(pos).map(Number)):0;
+  const posParams=[];
+  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos',key:String(i),label:'参数 '+i,def:'',required:false});
+  const envSeen={}; const envOrder=[];
+  const envRe=/os\.environ\.get\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"](?:\s*,\s*([^)]+))?\)|os\.getenv\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"](?:\s*,\s*([^)]+))?\)|os\.environ\[\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\]/g;
+  while((m=envRe.exec(src))){
+    const v=m[1]||m[3]||m[5]; if(!v) continue;
+    const rawDef=m[2]||m[4]||'';
+    const def=rawDef?String(rawDef).replace(/^["']|["']$/g,'').trim():'';
+    const req=!rawDef && (m[5]!==undefined);   // 仅 os.environ['KEY']（下标访问、无默认）视为必填
+    if(!(v in envSeen)){ envSeen[v]={def,required:req}; envOrder.push(v); }
+    else { if(def && !envSeen[v].def) envSeen[v].def=def; if(req) envSeen[v].required=true; }
+  }
+  const envParams=envOrder.map(v=>({kind:'env',key:v,label:v,def:envSeen[v].def,required:!!envSeen[v].required}));
+  return posParams.concat(envParams);
+}
+function detectParams(src, lang){
+  if(lang==='py') return detectPythonParams(src);
+  const labels=parseCommentLabels(src);
+  const internal=internalAssignedVars(src);
   const pos={}; let m;
   const posRe=/\$\{?(\d+)(?:(:-|:\?)([^}]*))?\}?/g;
   while((m=posRe.exec(src))){
     const n=parseInt(m[1],10); if(n<1) continue;
     const op=m[2]||''; const rest=m[3]||'';
-    const req=(op===':?'); const def=(op===':-')?rest:'';
+    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
     if(!(n in pos)) pos[n]={def, required:req};
     else { if(def && !pos[n].def) pos[n].def=def; if(req) pos[n].required=true; }
   }
   const maxPos=Object.keys(pos).length?Math.max.apply(null,Object.keys(pos).map(Number)):0;
   const posParams=[];
-  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:'位置参数 '+i, def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
+  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:labels.posLabels[i]||('位置参数 '+i), def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
   const envSeen={}; const envOrder=[];
   const envRe=/\$\{([A-Z_][A-Z0-9_]*)(?:(:-|:\?)([^}]*))?\}|\$([A-Z_][A-Z0-9_]*)\b/g;
   const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
   while((m=envRe.exec(src))){
     const v=m[1]||m[4]; const op=m[2]||''; const rest=m[3]||'';
-    if(!v||BUILT.test(v)) continue;
-    const req=(op===':?'); const def=(op===':-')?rest:'';
+    if(!v||BUILT.test(v)||internal[v]) continue;
+    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
     if(!(v in envSeen)){ envSeen[v]={def, required:req}; envOrder.push(v); }
     else { if(def && !envSeen[v].def) envSeen[v].def=def; if(req) envSeen[v].required=true; }
   }
-  const envParams=envOrder.map(v=>({kind:'env', key:v, label:v, def:envSeen[v].def, required:!!envSeen[v].required}));
+  const envParams=envOrder.map(v=>({kind:'env', key:v, label:labels.envLabels[v]||v, def:envSeen[v].def, required:!!envSeen[v].required}));
   return posParams.concat(envParams);
 }
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
-let editStages=[];   // [{id,name,dur,gate,sub,script|null}]
-function newStage(name){ return {id:'', name:name||'新阶段', dur:5, gate:false, sub:[], script:null}; }
+let editStages=[];   // [{id,name,dur,gate,sub,kind,script|null,jenkins|null,sched|null}]
+const STAGE_KIND_LABEL={simulate:'模拟',shell:'Shell',python:'Python',jenkins:'Jenkins'};
+/* 旧数据兼容：未带 kind 的阶段按 script/jenkins 字段推断；补齐 script.lang */
+function normalizeStageKind(s){
+  if(!s) return s;
+  if(!s.kind){
+    if(s.jenkins && s.jenkins.job) s.kind='jenkins';
+    else if(s.script && s.script.path) s.kind=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'python':'shell';
+    else s.kind='simulate';
+  }
+  if(s.kind==='jenkins'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; if(!s.script) s.script=null; }
+  else { if(!s.jenkins) s.jenkins=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
+  /* 定时配置归一：sched 可为 null / {mode:'interval',everyMin} / {mode:'once',at(ms)}；非法置空 */
+  if(s.sched===true) s.sched={mode:'interval',everyMin:10};
+  if(s.sched){
+    if(s.sched.mode!=='interval' && s.sched.mode!=='once') s.sched=null;
+    else if(s.sched.mode==='interval'){ if(!(Number(s.sched.everyMin)>=1)) s.sched.everyMin=10; }
+    else { if(!(Number(s.sched.at)>0)) s.sched=null; }
+  }
+  return s;
+}
+function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
+function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, gate:false, sub:[], kind:'simulate', script:null, jenkins:null, sched:null}; }
 function renderStageEditor(){
   const wrap=$('plStageList'); if(!wrap) return; wrap.innerHTML='';
   editStages.forEach((s,i)=>{
@@ -614,23 +1388,29 @@ function renderStageEditor(){
     row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;'
       +(i===editFocusIdx?';border-color:var(--dsw-alias-state-accent-primary);box-shadow:0 0 0 2px rgba(79,142,247,.18);':'');
     row.innerHTML='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
-      +'<span class="dshell-muted" style="font-size:11px;min-width:18px;">'+(i+1)+'</span>'
+      +'<input class="dshell-input" data-f="ord" type="number" min="1" max="'+editStages.length+'" value="'+(i+1)+'" title="顺序：直接输入目标序号后回车" style="width:52px;" />'
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
       +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;">耗时(s)<input class="dshell-input" data-f="dur" type="number" min="1" value="'+(s.dur||5)+'" style="width:58px;" /></label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="脚本阶段执行超时（秒），留空=默认 120">超时(s)<input class="dshell-input" data-f="timeout" type="number" min="1" value="'+(s.timeout||'')+'" placeholder="120" style="width:58px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="gate" '+(s.gate?'checked':'')+'/> 审批门</label>'
       +'<span style="flex:1"></span>'
       +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
       +'</div>'
       +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
-      +'<span class="dshell-muted" style="font-size:11px;">脚本</span>'
-      +'<input class="dshell-input" list="scriptsList" data-f="script" value="'+esc(s.script?s.script.name:'')+'" placeholder="选择脚本（可搜索，留空=模拟）" style="width:216px;" />'
-      +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="detect">识别参数</button>'
+      +'<span class="dshell-muted" style="font-size:11px;">类型</span>'
+      +'<div class="jk-mode" role="group" style="display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;">'
+      +['simulate','shell','python','jenkins'].map(function(k){return '<button type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn'+(s.kind===k?' sel':'')+'" data-act="kind" data-kind="'+k+'">'+STAGE_KIND_LABEL[k]+'</button>';}).join('')
       +'</div>'
-      +'<div data-params style="display:flex;gap:10px;flex-wrap:wrap;"></div>';
+      +'</div>'
+      +'<div data-action style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>'
+      +'<div data-params style="display:flex;gap:10px;flex-wrap:wrap;"></div>'
+      +'<div data-sched style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>';
     wrap.appendChild(row);
+    renderStageActionRow(i);
     renderStageParams(i);
+    renderStageSched(i);
   });
   if(editFocusIdx>=0 && wrap.children && wrap.children[editFocusIdx]){ const fr=wrap.children[editFocusIdx]; if(fr.scrollIntoView) fr.scrollIntoView({block:'nearest'}); }
   editFocusIdx=-1;
@@ -638,13 +1418,29 @@ function renderStageEditor(){
 function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-params]'); box.innerHTML='';
-  const s=editStages[i]; if(!s||!s.script||!s.script.params) return;
+  const s=editStages[i]; if(!s) return;
+  if(s.kind==='jenkins'){
+    const jk=s.jenkins; if(!jk||!jk.params||!jk.params.length) return;
+    jk.params.forEach(p=>{
+      const key=p.name||p.key;
+      const def=(p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?String(p.defaultParameterValue.value):(p.def||'');
+      const v=(jk.values&&jk.values[key]!==undefined)?jk.values[key]:def;
+      const lab=document.createElement('label'); lab.className='dshell-muted';
+      lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+      const lbl=esc(key)+(p.description?' ('+esc(p.description)+')':'')+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'');
+      lab.innerHTML=lbl+' <input class="dshell-input" data-pkey="'+esc(key)+'" value="'+esc(v)+'" placeholder="'+esc(def)+'" style="width:150px;font-size:11px;" />';
+      lab.querySelector('input').addEventListener('change',function(e){ jk.values=jk.values||{}; jk.values[key]=e.target.value; renderStageParams(i); });
+      box.appendChild(lab);
+    });
+    return;
+  }
+  if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
     const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'');
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
-    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:#f85149" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:#f85149;':'')+'" />';
+    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
+      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
     inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; s.script.values[p.key]=inp.value; renderStageParams(i); });
     box.appendChild(lab);
@@ -655,18 +1451,115 @@ async function setStageScript(i, name){
   const sc=scriptByName(name);
   if(!name || !sc){ s.script=null; renderStageParams(i); return; }
   const keep=(s.script && s.script.name===sc.name)?s.script:null;
-  s.script={name:sc.name, path:sc.path, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  s.script={name:sc.name, path:sc.path, lang:sc.lang, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
   await detectStageParams(i);
 }
 async function detectStageParams(i){
   const s=editStages[i]; if(!s||!s.script||!s.script.path) return;
   try{
     const src=await readScriptSrc(s.script.path);
-    const det=detectParams(src);
-    const oldVals=s.script.values||{};
+    const det=detectParams(src, s.script.lang);
+    const oldParams=s.script.params||[]; const oldVals=s.script.values||{};
     s.script.params=det; s.script.values=s.script.values||{};
-    det.forEach(p=>{ if(oldVals[p.key]!==undefined) s.script.values[p.key]=oldVals[p.key]; });
+    det.forEach(p=>{
+      const oldP=oldParams.find(o=>o.key===p.key);
+      const oldV=oldVals[p.key];
+      // 仅保留用户真实改动：旧值存在且不等于旧默认值（即用户手动改过）才保留；
+      // 旧值等于旧默认（识别器产物，如嵌套展开的原文）则刷新为识别到的新默认值
+      if(oldV!==undefined && oldP && String(oldV)!==String(oldP.def||'')) s.script.values[p.key]=oldV;
+    });
   }catch(e){ s.script.params=[]; }
+  renderStageParams(i);
+}
+
+/* ---------- 阶段动作行（按类型渲染绑定：模拟/Shell/Python/Jenkins） ---------- */
+function renderStageActionRow(i){
+  const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
+  const box=row.querySelector('[data-action]'); if(!box) return; box.innerHTML='';
+  const s=editStages[i]; if(!s) return;
+  if(s.kind==='simulate'){
+    const sp=document.createElement('span'); sp.className='dshell-muted'; sp.style.cssText='font-size:11px;'; sp.textContent='本地模拟（按耗时等待）'; box.appendChild(sp); return;
+  }
+  if(s.kind==='jenkins'){
+    const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName）'; inp.style.width='240px';
+    const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
+    const hint=document.createElement('span'); hint.className='dshell-muted'; hint.style.fontSize='11px'; hint.textContent=availableJenkinsJobs.length?'':'（先在「设置」页获取任务列表）';
+    box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(hint); return;
+  }
+  // shell / python
+  const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
+  const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','scriptsList'); inp.setAttribute('data-f','script'); inp.value=(s.script&&s.script.name)||''; inp.placeholder=(s.kind==='python'?'选择 .py 脚本（可搜索）':'选择 .sh 脚本（可搜索，留空=模拟）'); inp.style.width='216px';
+  const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','detect'); btn.textContent='识别参数';
+  box.appendChild(lab); box.appendChild(inp); box.appendChild(btn);
+}
+/* ---------- 阶段定时配置行（勾选「支持定时」+ 周期/一次性；服务端按计划触发，关闭页面仍执行） ---------- */
+function toLocalDT(ts){ if(!ts) return ''; const d=new Date(ts); const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
+function renderStageSched(i){
+  const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
+  const box=row.querySelector('[data-sched]'); if(!box) return; box.innerHTML='';
+  const s=editStages[i]; if(!s) return;
+  const on=!!(s.sched && s.sched.mode);
+  const mode=(on && s.sched.mode)||'interval';
+  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(on?'checked':'')+'/> 支持定时</label>';
+  if(on){
+    h+='<div class="jk-mode" role="group" style="display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;">';
+    h+=['interval','once'].map(function(k){return '<button type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn'+(mode===k?' sel':'')+'" data-act="schedmode" data-mode="'+k+'">'+(k==='interval'?'周期性':'一次性')+'</button>';}).join('');
+    h+='</div>';
+    if(mode==='interval'){
+      h+='<label class="dshell-muted" style="display:flex;align-items:center;gap:4px;font-size:11px;">每 <input class="dshell-input" data-f="schedEvery" type="number" min="1" value="'+(s.sched.everyMin||10)+'" style="width:60px;" /> 分钟</label>';
+    } else {
+      h+='<label class="dshell-muted" style="display:flex;align-items:center;gap:4px;font-size:11px;">时间 <input class="dshell-input" data-f="schedAt" type="datetime-local" value="'+toLocalDT(s.sched.at)+'" style="width:180px;" /></label>';
+    }
+    h+='<span class="dshell-muted" style="font-size:11px;">非定时阶段须排在本阶段之前，否则保存报错；运行时前缀走运行队列，本阶段及之后由服务端按计划触发</span>';
+  }
+  box.innerHTML=h;
+}
+function setStageSchedMode(i,k){
+  const s=editStages[i]; if(!s) return;
+  if(!s.sched) s.sched={mode:'interval', everyMin:10};
+  s.sched.mode=(k==='once')?'once':'interval';
+  if(s.sched.mode==='interval' && !(s.sched.everyMin>=1)) s.sched.everyMin=10;
+  if(s.sched.mode==='once' && !(s.sched.at>0)) s.sched.at=0;
+  const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){ wrap.children[i].querySelectorAll('[data-act="schedmode"]').forEach(function(b){ b.classList.toggle('sel', b.getAttribute('data-mode')===s.sched.mode); }); }
+  renderStageSched(i);
+}
+function setStageKind(i,k){
+  const s=editStages[i]; if(!s) return;
+  if(['simulate','shell','python','jenkins'].indexOf(k)<0) return;
+  s.kind=k;
+  if(k==='jenkins'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; }
+  else if(k!=='simulate' && s.script){ s.script.lang=(k==='python')?'py':'sh'; }
+  /* 类型按钮选中态同步：整行不重渲染（避免输入失焦），仅切换 .sel 类 */
+  const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){
+    wrap.children[i].querySelectorAll('.jk-modeBtn').forEach(function(b){ b.classList.toggle('sel', b.getAttribute('data-kind')===k); });
+  }
+  renderStageActionRow(i); renderStageParams(i);
+}
+async function setStageJenkins(i, name){
+  const s=editStages[i]; if(!s) return;
+  if(!s.jenkins) s.jenkins={job:'',params:[],values:{}};
+  name=(name||'').trim();
+  if(!name){ s.jenkins.job=''; s.jenkins.params=[]; renderStageParams(i); return; }
+  const keep=(s.jenkins.job===name);
+  s.jenkins.job=name;
+  if(!keep) s.jenkins.params=[];
+  renderStageParams(i);
+}
+/* 拉取 Jenkins 作业参数定义（parameterDefinitions），填入阶段参数表单 */
+async function detectJenkinsParams(i){
+  const s=editStages[i]; if(!s||!s.jenkins||!s.jenkins.job) return;
+  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+  const jobPath='/job/'+String(s.jenkins.job).split('/').map(encodeURIComponent).join('/job/')+'/';
+  try{
+    const data=await jkFetchJson(j, base+jobPath+'api/json?tree=property[parameterDefinitions[name,type,defaultParameterValue[value],description]]');
+    let defs=[];
+    (data.property||[]).forEach(function(p){ if(Array.isArray(p.parameterDefinitions)) defs=defs.concat(p.parameterDefinitions); });
+    const oldVals=s.jenkins.values||{};
+    s.jenkins.params=defs.map(function(d){ return {name:d.name, type:d.type, description:d.description||'', defaultParameterValue:(d.defaultParameterValue||{}), required:false}; });
+    s.jenkins.values=s.jenkins.values||{};
+    defs.forEach(function(d){ const k=d.name; if(oldVals[k]!==undefined) s.jenkins.values[k]=oldVals[k]; else if(d.defaultParameterValue && d.defaultParameterValue.value!==undefined) s.jenkins.values[k]=String(d.defaultParameterValue.value); });
+  }catch(e){ s.jenkins.params=[]; }
   renderStageParams(i);
 }
 
@@ -677,18 +1570,23 @@ let selectedId = curPipeline().stages[0].id;
 let running = false;
 let timer = null;
 let buildNo = 47;
+/* 内置演示数据（demo:true）：仅作首次打开时的界面示例——不推送到服务端、不计入统计，「清空」可一并移除 */
 let history = [
-  { no:46, pipeline:'K8s 应用安装', env:'prod',    commit:'9f2a1c0', status:'success', dur:'1m52s', time:'今天 09:14', by:'release-manager' },
-  { no:45, pipeline:'CI 构建测试', env:'staging', commit:'3b7e8d2', status:'success', dur:'58s',   time:'昨天 22:07', by:'GitHub Push' },
-  { no:44, pipeline:'K8s 应用安装', env:'prod',    commit:'3b7e2d2', status:'failed',  dur:'2m10s', time:'昨天 21:40', by:'release-manager' },
-  { no:43, pipeline:'灰度发布',     env:'dev',     commit:'7c1d5af', status:'success', dur:'41s',   time:'昨天 18:33', by:'dev-li' },
+  { no:46, pipeline:'K8s 应用安装', env:'prod',    commit:'9f2a1c0', status:'success', dur:'1m52s', time:'今天 09:14', by:'release-manager', demo:true },
+  { no:45, pipeline:'CI 构建测试', env:'staging', commit:'3b7e8d2', status:'success', dur:'58s',   time:'昨天 22:07', by:'GitHub Push', demo:true },
+  { no:44, pipeline:'K8s 应用安装', env:'prod',    commit:'3b7e2d2', status:'failed',  dur:'2m10s', time:'昨天 21:40', by:'release-manager', demo:true },
+  { no:43, pipeline:'灰度发布',     env:'dev',     commit:'7c1d5af', status:'success', dur:'41s',   time:'昨天 18:33', by:'dev-li', demo:true },
 ];
 let curRun = null;
+/* 运行令牌：每次启动新运行递增；在途异步（脚本/清理/审批门）回来后比对，
+   防止已中止运行的迟回结果污染下一次运行（中止无法真正中断已发出的脚本） */
+let runSeq = 0;
 
 const $ = id => document.getElementById(id);
 function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
 const REGISTRY = 'registry.example.com';
 const GITURL = 'https://git.example.com/dev/myapp';
+const DEFAULT_IMAGE = 'myapp';   // 镜像名已不在主控填写，内部固定默认值（日志/详情/IMAGE_NAME 注入沿用）
 function randCommit(){ return Math.random().toString(16).slice(2,9); }
 function nowHM(){ const d=new Date(); return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
 function fmtDur(s){ if(s<60) return Math.round(s)+'s'; return Math.floor(s/60)+'m'+Math.round(s%60)+'s'; }
@@ -703,12 +1601,20 @@ function renderFlow(){
     n.className='pipeline-node';
     n.dataset.id=s.id;
     n.innerHTML =
-      '<div class="pipeline-nodeName">'+esc(s.name)+'</div>'+
+      '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段">⏰</span> ':'')+esc(s.name)+'</div>'+
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+
       (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
-    n.addEventListener('click',()=>{ selectedId=s.id; renderFlow(); renderDetail(); });
-    n.addEventListener('dblclick',()=>{ if(!running) openPlForm(curPipelineId, i); });
+    /* 选中态由 applyStatusClasses 更新即可；不能在这里 renderFlow()，
+       否则第一次单击就重建节点元素，第二次单击落在新元素上，dblclick 永远触发不了 */
+    n.addEventListener('click',()=>{ selectedId=s.id; applyStatusClasses(); renderDetail(); });
+    /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
+       而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
+    n.addEventListener('dblclick',()=>{
+      if(running) return;
+      const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
+      openPlForm(pid, i);
+    });
     n.title='单击查看详情，双击编辑该阶段';
     f.appendChild(n);
   });
@@ -755,44 +1661,73 @@ function metaFor(id){
 }
 
 /* ---------- 详情面板 ---------- */
+/* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（运行 tick 会以 120~300ms 高频调用本函数） */
+let _detailKey='';
 function renderDetail(){
   const s = activeStages().find(x=>x.id===selectedId) || activeStages()[0];
   if(!s) return;
+  const n = nodes[s.id] || {status:'idle'};
+  const ctx = curRun || {commit:'—',env:'dev',branch:'main',image:DEFAULT_IMAGE,release:DEFAULT_IMAGE,tag:'—',by:'—',pipelineName:curPipeline().name,giturl:GITURL};
+  const lines = buildLog(s, ctx, n);
+  const key = s.id+'|'+n.status+'|'+lines.length+'|'+(lines[lines.length-1]||'')+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(running?1:0);
+  if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
+  _detailKey=key;
   $('detailTitle').textContent = s.name + ' · 阶段详情';
   const oldGate=document.getElementById('gateBtns'); if(oldGate) oldGate.remove();
-  const n = nodes[s.id] || {status:'idle'};
   const badge = $('detailBadge'); badge.innerHTML='';
   const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], waiting:['等待审批',''],
     success:['成功','dshell-badgeDone'], failed:['失败','dshell-badgeDone']};
   const [txt,cls] = map[n.status]||['未开始',''];
   const b=document.createElement('span');
-  if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='#f85149'; b.style.borderColor='rgba(248,81,73,.4)'; }
-  else b.className='dshell-badge '+(n.status==='waiting'?'':cls);
+  if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='var(--st-err)'; b.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+  else if(n.status==='waiting'){ b.className='dshell-badge'; b.style.color='var(--st-wait)'; b.style.borderColor='color-mix(in srgb, var(--st-wait) 40%, transparent)'; }
+  else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
+  /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
+  if(n.status==='failed' && !running && curRun && runStages){
+    const rb=document.createElement('button'); rb.className='dshell-btn dshell-btnGhost mini'; rb.style.marginLeft='6px';
+    rb.textContent='↻ 从本阶段重试'; rb.title='保留本次运行的 commit/tag/环境，从本阶段继续执行';
+    rb.addEventListener('click', ()=>retryFromStage(s.id));
+    badge.appendChild(rb);
+  }
 
-  const ctx = curRun || {commit:'—',env:'dev',branch:'xds',image:'myapp',release:'myapp',tag:'—',by:'—',pipelineName:curPipeline().name};
   const kv = $('detailKv'); kv.innerHTML='';
   const rows = [
     ['阶段', s.name],
     ['状态', txt],
     ['流水线', ctx.pipelineName||curPipeline().name],
+    ['分支', ctx.branch||'main'],
     ['执行人', ctx.by||'—'],
     ['环境', ctx.env],
-    ['镜像', ctx.registry||REGISTRY+'/'+ctx.image+':'+ctx.tag],
+    ['镜像', (ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],
     ['Commit', ctx.commit],
   ];
   if(n.status==='success'||n.status==='failed') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  /* 阶段间变量传递：上游 stdout 的 KEY=VALUE 行注入下游；此处展示本阶段接收/产出的变量 */
+  (function(){
+    const vIn=n.varsIn, vOut=n.varsOut;
+    const hasIn=vIn&&Object.keys(vIn).length, hasOut=vOut&&Object.keys(vOut).length;
+    if(!hasIn&&!hasOut) return;
+    const hdr=document.createElement('div'); hdr.className='dshell-kvRow'; hdr.style.marginTop='6px';
+    hdr.innerHTML='<span class="dshell-kvKey" style="color:var(--dsw-alias-label-secondary)">传递变量</span><span class="dshell-kvValue dshell-muted" style="font-size:11px;">stdout KEY=VALUE 注入下游</span>';
+    kv.appendChild(hdr);
+    const cap=12, truncV=s=>{ s=String(s==null?'':s); return s.length>48?s.slice(0,48)+'…':s; };
+    const rowsFrom=(obj,arrow,color)=>{ const all=Object.keys(obj); all.slice(0,cap).forEach(k=>{ const r=document.createElement('div'); r.className='dshell-kvRow'; r.innerHTML='<span class="dshell-kvKey" style="color:'+color+'">'+arrow+' '+esc(k)+'</span><span class="dshell-kvValue dshell-muted" style="font-size:11px">'+esc(truncV(obj[k]))+'</span>'; kv.appendChild(r); }); if(all.length>cap){ const r=document.createElement('div'); r.className='dshell-kvRow'; r.innerHTML='<span class="dshell-kvKey"></span><span class="dshell-kvValue dshell-muted" style="font-size:10px">…还有 '+(all.length-cap)+' 个</span>'; kv.appendChild(r); } };
+    if(hasIn) rowsFrom(vIn,'←','var(--dsw-alias-label-tertiary)');
+    if(hasOut) rowsFrom(vOut,'→','var(--log-ok)');
+  })();
 
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
   const pct = n.status==='success'?100:(n.progress||0);
   bar.style.width=pct+'%';
-  bar.style.background = n.status==='failed'?'#f85149':(n.status==='success'?'#3fb950':'#d29922');
+  bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':'var(--st-run)');
   wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed')?'block':'none';
 
-  const log=$('detailLog'); log.innerHTML='';
-  const lines = buildLog(s, ctx, n);
+  const log=$('detailLog');
+  const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;   // 用户停留在底部附近时才跟随最新日志
+  log.innerHTML='';
   lines.forEach(ln=>{
     const div=document.createElement('div'); let cls='dim';
     if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';
@@ -801,13 +1736,31 @@ function renderDetail(){
     div.className=cls; div.textContent=ln; log.appendChild(div);
   });
   if(n.status==='idle' && !lines.length){ log.textContent='该阶段尚未运行。'; }
+  if(stick) log.scrollTop = log.scrollHeight;
+  /* 等待审批中：全量重渲染会移除审批按钮（如点击其他节点再切回），此处补回 */
+  if(n.status==='waiting' && running){ const gi=activeStages().findIndex(x=>x.id===s.id); if(gi>=0) showGate(s.id, gi); }
 }
 function buildLog(stage, ctx, n){
   const id=stage.id;
+  if(stage.kind==='jenkins' && stage.jenkins && stage.jenkins.job){
+    const jk=stage.jenkins;
+    const lines=['$ jenkins build '+jk.job];
+    const envPairs=(jk.params||[]).map(p=>p.name+'='+((jk.values&&jk.values[p.name]!==undefined)?jk.values[p.name]:((p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?p.defaultParameterValue.value:''))).filter(function(x){return !x.endsWith('=');});
+    if(envPairs.length) lines.push('# params: '+envPairs.join(' '));
+    const out=stage._out;
+    if(!out||!out.done){ lines.push('（Jenkins 构建中…）'); }
+    else{
+      if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
+      if(out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      lines.push('[exit '+(out.code===undefined?'?':out.code)+']');
+    }
+    return lines;
+  }
   if(stage.script && stage.script.path){
     const sc=stage.script;
     const argStr=(sc.params||[]).filter(p=>p.kind==='pos').map(p=>{ const v=(sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||''); return v; }).join(' ');
-    const lines=['$ bash '+sc.name+(argStr?(' '+argStr):'')];
+    const interp=/\.py$/i.test(sc.name)?'python3':'bash';
+    const lines=['$ '+interp+' '+sc.name+(argStr?(' '+argStr):'')];
     const envPairs=(sc.params||[]).filter(p=>p.kind==='env').map(p=>p.key+'='+((sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'')));
     if(envPairs.length) lines.push('# env: '+envPairs.join(' '));
     const out=stage._out;
@@ -820,9 +1773,9 @@ function buildLog(stage, ctx, n){
     return lines;
   }
   const fill = t => (t||'')
-    .replace(/\{\{registry\}\}/g,REGISTRY).replace(/\{\{giturl\}\}/g,GITURL)
+    .replace(/\{\{registry\}\}/g,REGISTRY).replace(/\{\{giturl\}\}/g,ctx.giturl||GITURL)
     .replace(/\{\{image\}\}/g,ctx.image).replace(/\{\{release\}\}/g,ctx.release)
-    .replace(/\{\{tag\}\}/g,ctx.tag).replace(/\{\{commit\}\}/g,ctx.commit).replace(/\{\{env\}\}/g,ctx.env).replace(/\{\{by\}\}/g,ctx.by||'—').replace(/\{\{branch\}\}/g,ctx.branch||'xds');
+    .replace(/\{\{tag\}\}/g,ctx.tag).replace(/\{\{commit\}\}/g,ctx.commit).replace(/\{\{env\}\}/g,ctx.env).replace(/\{\{by\}\}/g,ctx.by||'—').replace(/\{\{branch\}\}/g,ctx.branch||'main');
   let lines;
   if(LOGS[id]){ lines = LOGS[id].map(fill); }
   else {
@@ -858,6 +1811,7 @@ const QUEUE_CAP = 8;
 let queue = [];
 function resetNodes(){
   nodes={}; activeStages().forEach(s=> nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}});
+  _detailKey='';   // 节点全部重建，详情渲染缓存一并失效
   renderFlow(); renderDetail();
 }
 function setOverall(txt,cls){
@@ -869,27 +1823,43 @@ function startRun(opts){
   let pl;
   if(opts.stages){ pl={stages:opts.stages, id:opts.pipelineId||null, name:opts.pipelineName||'(自定义)'}; }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
-  const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();   // 手动运行：可多选 IP；定时：单环境
+  const envs = (opts.envs && opts.envs.length) ? opts.envs      // 队列/定时快照：复用入队时的节点对象（多选 IP 不丢失）
+    : opts.env ? [resolveEnv(opts.env)] : curEnvs();             // 手动运行：可多选 IP；定时：单环境
   const env = envs.map(e=>e.ip).join('，');
-  const image = opts.image || ($('imageName').value||'myapp');
+  const image = opts.image || DEFAULT_IMAGE;
   const release = image;                 // Release 字段已移除，内部以镜像名作为 release
+  const repo = resolveRepo(opts.repoId || $('repoSel').value);
+  const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const c = {env, envs, image, release, by, source:opts.source||'manual'};
+  const c = {env, envs, image, release, repo, branch, by, source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
 }
 function startSimRun(pl, c){
   const stages = pl.stages.map(s=>({...s}));
+  /* 运行时兜底校验：非定时阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏） */
+  {
+    let started=false, badIdx=-1;
+    for(let i=0;i<stages.length;i++){ const has=!!stages[i].sched; if(has) started=true; else if(started){ badIdx=i; break; } }
+    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」未开启定时却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
+  }
   runStages = stages;
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name};
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,vars:{},token:++runSeq,hasSched:stages.some(s=>s.sched)};
+  curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runJenkinsStep），末尾 archiveRun 复用同一路径
   selectedId = stages[0].id;
-  running=true; $('runBtn').disabled=true;
+  running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
   setOverall('运行中…','dshell-badgeWait');
   $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
-  advance(0);
-  startFailWatcher();
+  /* 勾选「清理环境」且已配置清理脚本：先执行清理，再进入第一个阶段（期间重置可取消启动） */
+  if($('cleanupEnv').checked && cleanupScript && cleanupScript.path){
+    setOverall('清理环境中…','dshell-badgeWait');
+    const tk=curRun.token;
+    runCleanupBefore().then(()=>{ if(running && curRun && curRun.token===tk){ setOverall('运行中…','dshell-badgeWait'); advance(0); } });
+  } else {
+    advance(0);
+  }
   renderQueue();
 }
 function runPipeline(opts){
@@ -899,13 +1869,16 @@ function runPipeline(opts){
   let pl;
   if(opts.stages){ /* from queue snapshot already */ }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
-  const envs = opts.env ? [resolveEnv(opts.env)] : curEnvs();
+  const envs = (opts.envs && opts.envs.length) ? opts.envs   // 与 startRun 一致：快照节点对象优先（多选 IP 不退化）
+    : opts.env ? [resolveEnv(opts.env)] : curEnvs();
   const env = envs.map(e=>e.ip).join('，');
-  const image = opts.image || ($('imageName').value||'myapp');
+  const image = opts.image || DEFAULT_IMAGE;
   const release = image;
+  const repoId = opts.repoId || $('repoSel').value;
+  const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, by, source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, branch, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   queue.push(item);
@@ -916,37 +1889,96 @@ function drainQueue(){ if(!queue.length) return; const next=queue.shift(); start
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
-/* ---------- 运行定时（周期 / 一次性，轻量，会话内有效） ---------- */
-let planTimers=[];   // {tid, kind:'interval'|'once', desc, ref}
+/* ---------- 运行定时（周期 / 一次性，服务端调度，关闭页面也会执行） ---------- */
+let serverPlans=[];
+async function loadPlans(){
+  try{ const r=await fetch('/api/worktable/pipeline/plans'); if(r.ok){ const j=await r.json(); serverPlans=Array.isArray(j.plans)?j.plans:[]; } }catch(e){}
+  renderPlanList();
+}
+async function pushPlans(){
+  try{ await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:serverPlans})}); }catch(e){}
+}
 function renderPlanList(){
   const el=$('planList'); if(!el) return;
-  if(!planTimers.length){ el.style.display='none'; el.innerHTML=''; return; }
-  el.style.display='flex'; el.style.flexWrap='wrap'; el.style.gap='6px';
-  el.innerHTML='<span class="dshell-muted" style="font-size:11px;align-self:center;">已设定定时（页面需保持打开）：</span>';
-  planTimers.forEach(p=>{
-    const tag=document.createElement('span'); tag.className='dshell-badge'; tag.style.display='inline-flex'; tag.style.alignItems='center'; tag.style.gap='4px';
-    tag.innerHTML='⏰ '+esc(p.desc)+' <span data-plandel="'+p.tid+'" style="cursor:pointer;color:#f85149;" title="取消该定时">✕</span>';
-    el.appendChild(tag);
+  $('planCount').textContent = serverPlans.length? '('+serverPlans.length+')':'';
+  if(!serverPlans.length){ el.innerHTML='<div class="dshell-muted" style="padding:4px 2px;">暂无定时计划。</div>'; return; }
+  let h='<div style="overflow:auto;"><table class="dshell-table"><thead><tr><th>流水线</th><th>方式</th><th>环境</th><th>分支</th><th>执行人</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  serverPlans.forEach(p=>{
+    h+='<tr><td style="font-weight:600">'+esc(p.pipelineName||'')+'</td><td>'+esc(p.desc||'')+'</td><td class="dshell-muted">'+esc(p.env||'')+'</td><td class="dshell-muted">'+esc(p.branch||'')+'</td><td class="dshell-muted">'+esc(p.by||'')+'</td><td class="dshell-muted">'+(p.createdAt?new Date(p.createdAt).toLocaleString():'')+'</td><td><button class="dshell-btn dshell-btnGhost mini" data-plandel="'+esc(p.id)+'">取消</button></td></tr>';
   });
+  el.innerHTML=h+'</tbody></table></div>';
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
-function cancelPlan(tid){ const p=planTimers.find(x=>x.tid===tid); if(!p) return; if(p.kind==='interval') clearInterval(p.ref); else clearTimeout(p.ref); planTimers=planTimers.filter(x=>x.tid!==tid); renderPlanList(); }
+function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
+/* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀每个定时阶段登记为一条服务端计划
+   （稳定 id 去重——重跑同一阶段会替换旧计划而非叠加；周期性按 everyMin 触发，一次性到 at 触发）。
+   服务端 15s 轮询到期即在服务端执行该阶段（脚本真跑/模拟等待；Jenkins 阶段服务端跳过；审批门自动通过），
+   关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
+async function registerStageTimers(startIdx){
+  if(!curRun || !runStages) return;
+  const ids=[]; const newPlans=[];
+  for(let i=startIdx;i<runStages.length;i++){
+    const st=runStages[i]; if(!st || !st.sched) continue;
+    const sid='stimer-'+(curRun.pipelineId||'pl')+'-'+(st.id||('s'+i));
+    ids.push(sid);
+    const ps={...st}; delete ps.sched;   // 计划只承载单阶段执行，去掉 sched 避免冗余
+    const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · '+st.name,
+      stages:[ps], env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
+      branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now() };
+    if(st.sched.mode==='once'){
+      const at=Number(st.sched.at)||0; plan.kind='once'; plan.at=at;
+      plan.desc='阶段定时 · '+st.name+' · '+(at?new Date(at).toLocaleString():'立即');
+    } else {
+      const every=Math.max(1,parseInt(st.sched.everyMin,10)||1); plan.kind='interval'; plan.everyMin=every;
+      plan.desc='阶段定时 · '+st.name+' · 每 '+every+' 分钟';
+    }
+    newPlans.push(plan);
+  }
+  if(!newPlans.length) return;
+  try{
+    const r=await fetch('/api/worktable/pipeline/plans');
+    let fresh=[]; if(r.ok){ const j=await r.json(); fresh=Array.isArray(j.plans)?j.plans:[]; }
+    const idset=new Set(ids);
+    const kept=fresh.filter(p=>!p || !idset.has(p.id));   // 去重：替换本阶段旧计划
+    const merged=kept.concat(newPlans);
+    await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:merged})});
+    serverPlans=merged; renderPlanList();
+  }catch(e){ console.warn('[stage-timer] 登记失败：', e); }
+}
+/* 定时页表单：选项跟随流水线 / 环境 / 代码仓数据，切换进页面时刷新并尽量保留已选值 */
+function renderSchedForm(){
+  const pl=$('schedPipeline'); if(!pl) return;
+  const curPl=pl.value || curPipelineId; pl.innerHTML='';
+  pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===curPl) o.selected=true; pl.appendChild(o); });
+  const env=$('schedEnv'); const curEnvId=env.value; env.innerHTML='';
+  environments.forEach(e=>{ const o=document.createElement('option'); o.value=e.id; o.textContent=envLabelOf(e.id); if(e.id===curEnvId) o.selected=true; env.appendChild(o); });
+  const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
+  repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
+  if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim()||'anonymous';
+}
 function addPlan(){
   const mode=$('runSched').value;
-  const opts={ pipelineId: curPipelineId, by: ($('triggeredBy').value.trim()||'anonymous')+' ⏰', source:'schedule' };
-  const tid0='plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4);
+  const pl=findPipeline($('schedPipeline').value) || curPipeline();
+  const env=resolveEnv($('schedEnv').value);
+  const base={
+    id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
+    pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
+    env:env.ip, envs:[env], image:DEFAULT_IMAGE, repoId:$('schedRepo').value, branch:($('schedBranch').value.trim()||'main'),
+    by:($('schedBy').value.trim()||'anonymous')+' ⏰', createdAt:Date.now(),
+  };
   if(mode==='once'){
     const v=$('runSchedAt').value; const t=v?new Date(v).getTime():NaN;
     if(isNaN(t)||t<=Date.now()){ alert('「一次性」请选择一个未来的时间'); return; }
-    const ref=setTimeout(()=>{ planTimers=planTimers.filter(x=>x.tid!==tid0); renderPlanList(); runPipeline(opts); }, t-Date.now());
-    planTimers.push({tid:tid0, kind:'once', desc:'一次性 '+v.replace('T',' '), ref});
-    renderPlanList();
+    serverPlans.push(Object.assign({}, base, {kind:'once', at:t, desc:'一次性 '+v.replace('T',' ')}));
   } else if(mode==='interval'){
     const every=Math.max(1,parseInt($('runSchedEvery').value)||1);
-    const ref=setInterval(()=>{ runPipeline(opts); }, every*60000);
-    planTimers.push({tid:tid0, kind:'interval', desc:'每 '+every+' 分钟', ref});
-    renderPlanList();
-  }
+    let desc='每 '+every+' 分钟';
+    const extra={};
+    const sv=$('runSchedStart').value;
+    if(sv){ const st=new Date(sv).getTime(); if(!isNaN(st) && st>Date.now()){ extra.startAt=st; desc+=' · 自 '+sv.replace('T',' ')+' 起'; } }
+    serverPlans.push(Object.assign({}, base, {kind:'interval', everyMin:every}, extra, {desc:desc}));
+  } else return;
+  pushPlans(); renderPlanList();
 }
 function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
 function renderQueue(){
@@ -976,52 +2008,224 @@ function renderQueue(){
 function advance(i){
   const stg=activeStages();
   if(i>=stg.length){ finish('success'); return; }
+  /* 到达定时阶段分界：前缀（非定时阶段）已完成，定时后缀登记为服务端计划后结束本次客户端运行。
+     定时阶段不在客户端执行——交由服务端 /api/worktable/pipeline/plans 按计划触发（关闭页面仍执行）。 */
+  if(stg[i].sched){
+    const tk=curRun?curRun.token:null;
+    (async()=>{ await registerStageTimers(i); if(running && curRun && curRun.token===tk) finish('success'); })();
+    return;
+  }
   const s=stg[i];
+  if(s.kind==='jenkins' && s.jenkins && s.jenkins.job){ runJenkinsStep(i); return; }
   if(s.script && s.script.path){ runScriptStep(i); return; }
   runStage(i);
 }
-async function execScript(sc){
+/* ---------- 阶段间变量传递（上游 stdout 的 KEY=VALUE 行注入下游环境变量） ---------- */
+/* 提取规则：逐行匹配 ^\s*([A-Z_][A-Z0-9_]*)=(.*)$；值取首个 = 之后全部，
+   去尾 \r；首尾双引号包裹则去引号。累计到 curRun.vars（粘性：后续阶段可见，同 key 后写覆盖） */
+function parseStageVars(stdout){
+  const out={};
+  if(!stdout) return out;
+  String(stdout).split('\n').forEach(line=>{
+    const m=/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+    if(!m) return;
+    let v=m[2].replace(/\r$/,'');
+    if(v.length>=2 && v.charAt(0)==='"' && v.charAt(v.length-1)==='"') v=v.slice(1,-1);
+    out[m[1]]=v;
+  });
+  return out;
+}
+/* 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars；返回本阶段产出的变量集（供 varsOut 展示） */
+function mergeStageVars(stdout){
+  if(!curRun) return {};
+  const v=parseStageVars(stdout);
+  curRun.vars=Object.assign(curRun.vars||{}, v);
+  return v;
+}
+async function execScript(sc, timeoutMs, extraEnv, runCtx){
+  const rc=runCtx||curRun;   // 归档脚本等异步调用方传入已结束运行的快照上下文，避免运行队列切换后读到新运行的 curRun
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
     const v=(sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'');
-    if(p.kind==='pos') args.push(v); else env[p.key]=v;
+    if(p.kind==='pos') args.push(v);
+    // Empty stage fields mean "inherit" so rendered artifact paths from an
+    // upstream script are not overwritten with an empty environment value.
+    else if(v!=='') env[p.key]=v;
   });
-  // 注入节点连接信息（脚本可用 TARGET_IP/TARGET_USER/TARGET_PASSWORD 登录目标机；脚本显式配置的同名参数优先）
-  const ctx0=(curRun && curRun.envs && curRun.envs[0]) || null;
-  if(curRun && curRun.env && env.TARGET_IP===undefined) env.TARGET_IP=curRun.env;
+  /* 阶段间变量传递：上游阶段 stdout 的 KEY=VALUE 行累计在 curRun.vars，
+     作为环境变量注入后续阶段。优先级：阶段显式参数 > 上游变量 > 运行级全局默认 */
+  if(rc && rc.vars){
+    for(const k in rc.vars){ if(env[k]===undefined) env[k]=rc.vars[k]; }
+  }
+  // 注入流水线运行信息（脚本显式配置的同名参数优先）：
+  //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
+  //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
+  //   注意（安全）：TARGET_HOSTS/GIT_PASSWORD 等含明文凭据，对所有脚本可见；
+  //   且阶段 stdout 的 KEY=VALUE 会粘性注入下游并随历史/归档持久化——脚本切勿 echo 密码类变量。
+  //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；PIPELINE_NAME=流水线名
+  const ctx0=(rc && rc.envs && rc.envs[0]) || null;
+  if(rc){
+    if(env.TARGET_IP===undefined) env.TARGET_IP=(ctx0 && ctx0.ip) || rc.env || '';
+    if(env.TARGET_IPS===undefined && rc.envs) env.TARGET_IPS=JSON.stringify(rc.envs.map(e=>e.ip));
+    if(env.TARGET_HOSTS===undefined && rc.envs) env.TARGET_HOSTS=JSON.stringify(rc.envs.map(e=>({ip:e.ip, user:e.user||'', pass:e.pass||''})));
+    if(env.IMAGE_NAME===undefined && rc.image) env.IMAGE_NAME=rc.image;
+    if(env.IMAGE_TAG===undefined && rc.tag) env.IMAGE_TAG=rc.tag;
+    if(env.PIPELINE_NAME===undefined && rc.pipelineName) env.PIPELINE_NAME=rc.pipelineName;
+    if(env.GIT_URL===undefined && rc.repoUrl) env.GIT_URL=rc.repoUrl;
+    if(env.GIT_BRANCH===undefined && rc.branch) env.GIT_BRANCH=rc.branch;
+    if(env.GIT_USER===undefined && rc.repoUser) env.GIT_USER=rc.repoUser;
+    if(env.GIT_PASSWORD===undefined && rc.repoPass) env.GIT_PASSWORD=rc.repoPass;
+    /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名_日期」文件夹注入各阶段，
+       供脚本把本阶段产物直接写入归档目录；脚本显式参数优先。留空（未配置归档）则不注入。
+       取值与末尾 archiveRun 注入归档脚本的 ARCHIVE_DIR/ARCHIVE_FOLDER 一致（均=本次运行归档文件夹）。 */
+    if(rc.archive){
+      if(env.ARCHIVE_DIR===undefined) env.ARCHIVE_DIR=rc.archive;
+      if(env.ARCHIVE_FOLDER===undefined) env.ARCHIVE_FOLDER=rc.archive;
+      if(env.ARCHIVE_PIPELINE===undefined && rc.pipelineName) env.ARCHIVE_PIPELINE=rc.pipelineName;
+      if(env.ARCHIVE_TAG===undefined && rc.tag) env.ARCHIVE_TAG=rc.tag;
+    }
+  }
   if(ctx0){ if(ctx0.user && env.TARGET_USER===undefined) env.TARGET_USER=ctx0.user; if(ctx0.pass && env.TARGET_PASSWORD===undefined) env.TARGET_PASSWORD=ctx0.pass; }
+  /* 归档脚本等异步调用方经 extraEnv 注入的运行级变量（ARCHIVE_* 等）；脚本显式参数优先 */
+  if(extraEnv){ for(const k in extraEnv){ if(env[k]===undefined) env[k]=extraEnv[k]; } }
   try{
-    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:120000})});
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||120000})});
     const j=await r.json();
     if(j && j.error) return {code:1, stdout:'', stderr:String(j.error)};
     return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||''};
   }catch(e){ return {code:1, stdout:'', stderr:String(e.message||e)}; }
 }
+/* ---------- Jenkins 阶段：触发构建 + 轮询结果（本地直连 / 远程走 proxy；复用连接模式） ---------- */
+function jkJobPath(job){ return '/job/'+String(job).split('/').map(encodeURIComponent).join('/job/')+'/'; }
+async function jkTriggerBuild(job, params){
+  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+  const qs=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
+  const url=base+jkJobPath(job)+'buildWithParameters'+(qs?('?'+qs):'');
+  const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
+  if(j.mode==='remote'){
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const p=await r.json(); if(p&&p.error) throw new Error(p.error);
+    if((p.status||0)>=400 && (p.status||0)!==302 && (p.status||0)!==303) throw new Error('HTTP '+(p.status||0));
+    return true;
+  }
+  const r=await fetch(url,{headers:auth,cache:'no-store'});
+  if(!r.ok && r.status!==302 && r.status!==303) throw new Error('HTTP '+r.status);
+  return true;
+}
+async function jkGetText(path){
+  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+  const url=base+path;
+  const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
+  if(j.mode==='remote'){
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const p=await r.json(); if(p&&p.error) throw new Error(p.error); return p.body||'';
+  }
+  const r=await fetch(url,{headers:auth,cache:'no-store'}); return r.text();
+}
+async function runJenkinsStep(i){
+  const stg=activeStages(); const s=stg[i]; const jk=s.jenkins;
+  const tk=curRun?curRun.token:null;
+  const varsIn=curRun?Object.assign({},curRun.vars||{}):{};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:{}};
+  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+  const t0=Date.now();
+  if(timer) clearInterval(timer);
+  timer=setInterval(function(){ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },500);
+  const log=['$ jenkins build '+jk.job];
+  try{
+    const params={};
+    (jk.params||[]).forEach(function(p){
+      const k=p.name;
+      const dv=(p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?String(p.defaultParameterValue.value):'';
+      const v=(jk.values&&jk.values[k]!==undefined)?String(jk.values[k]):dv;
+      if(v!=='') params[k]=v;
+    });
+    const ctx0=(curRun&&curRun.envs&&curRun.envs[0])||null;
+    if(curRun){
+      if(ctx0&&ctx0.ip&&params.TARGET_IP===undefined) params.TARGET_IP=ctx0.ip;
+      if(curRun.envs&&params.TARGET_IPS===undefined) params.TARGET_IPS=JSON.stringify(curRun.envs.map(function(e){return e.ip;}));
+      if(curRun.image&&params.IMAGE_NAME===undefined) params.IMAGE_NAME=curRun.image;
+      if(curRun.tag&&params.IMAGE_TAG===undefined) params.IMAGE_TAG=curRun.tag;
+      if(curRun.pipelineName&&params.PIPELINE_NAME===undefined) params.PIPELINE_NAME=curRun.pipelineName;
+      if(curRun.repoUrl&&params.GIT_URL===undefined) params.GIT_URL=curRun.repoUrl;
+      if(curRun.branch&&params.GIT_BRANCH===undefined) params.GIT_BRANCH=curRun.branch;
+      /* 归档路径：同脚本阶段，注入 Jenkins 构建参数，供下游作业把产物写入归档目录；显式参数优先。 */
+      if(curRun.archive){
+        if(params.ARCHIVE_DIR===undefined) params.ARCHIVE_DIR=curRun.archive;
+        if(params.ARCHIVE_FOLDER===undefined) params.ARCHIVE_FOLDER=curRun.archive;
+        if(curRun.pipelineName&&params.ARCHIVE_PIPELINE===undefined) params.ARCHIVE_PIPELINE=curRun.pipelineName;
+        if(curRun.tag&&params.ARCHIVE_TAG===undefined) params.ARCHIVE_TAG=curRun.tag;
+      }
+    }
+    log.push('# params: '+Object.keys(params).map(function(k){return k+'='+params[k];}).join(' '));
+    s._out={stdout:log.join('\n'),stderr:'',code:null,jenkins:true,done:false}; renderDetail();
+    let preNum=null;
+    try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jkJobPath(jk.job)+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); }
+    await jkTriggerBuild(jk.job, params);
+    log.push('# 已触发构建'+(preNum?(' #'+preNum):'')+'，等待执行…'); s._out.stdout=log.join('\n'); renderDetail();
+    const deadline=t0+((s.timeout||300)*1000);
+    let result=null, buildNum=null, building=true;
+    while(Date.now()<deadline && (building||buildNum==null)){
+      await new Promise(function(r){ setTimeout(r,2000); });
+      if(!running||!curRun||curRun.token!==tk){ if(timer){clearInterval(timer);timer=null;} return; }
+      try{
+        const target=(buildNum!=null)?(jkJobPath(jk.job)+buildNum):(jkJobPath(jk.job)+'lastBuild');
+        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration');
+        if(buildNum==null && info.number && (preNum==null || info.number>=preNum)) buildNum=info.number;
+        if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
+      }catch(e){ }
+      const n=nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); applyStatusClasses(); renderDetail(); }
+    }
+    if(timer){clearInterval(timer);timer=null;}
+    if(!running||!curRun||curRun.token!==tk) return;
+    let consoleText='';
+    if(buildNum!=null){ try{ consoleText=await jkGetText(jkJobPath(jk.job)+buildNum+'/consoleText'); }catch(e){} }
+    const ok=(result==='SUCCESS');
+    if(consoleText){ log.push(''); consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
+    log.push('[Jenkins result '+result+']');
+    s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('Jenkins '+result):'',code:ok?0:1,jenkins:true,done:true};
+    const varsOut=mergeStageVars(log.join('\n'));
+    const dur=(Date.now()-t0)/1000;
+    if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
+    else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
+  }catch(e){
+    if(timer){clearInterval(timer);timer=null;}
+    log.push('✗ '+e.message);
+    s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,jenkins:true,done:true};
+    nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:{}};
+    applyStatusClasses(); renderDetail(); finish('failed');
+  }
+}
 async function runScriptStep(i){
   const stg=activeStages(); const s=stg[i]; const sc=s.script;
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name};
+  const tk = curRun ? curRun.token : null;   // 运行令牌：await 期间若本次运行被中止/重置并启动了新运行，下方比对丢弃迟回结果
+  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name,varsIn,varsOut:{}};
   selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
   const t0=Date.now();
   if(timer) clearInterval(timer);
   timer=setInterval(()=>{ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },300);
-  const res=await execScript(sc);
+  const res=await execScript(sc, ((s.timeout||120)*1000));   // 阶段级超时（编辑器「超时(s)」，默认 120）
   if(timer){ clearInterval(timer); timer=null; }
+  if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（已发出的脚本无法中断）。'); return; }
   const dur=(Date.now()-t0)/1000;
   s._out=res;
-  if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name}; applyStatusClasses(); renderDetail(); advance(i+1); }
-  else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name}; applyStatusClasses(); renderDetail(); finish('failed'); }
+  const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
+  if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
+  else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
 }
 function runStage(i){
   const stg = activeStages();
   if(i>=stg.length){ finish('success'); return; }
   const s=stg[i];
+  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
   if(s.gate){
-    nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{}};
+    nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
     selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
     showGate(s.id, i);
     return;
   }
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{}};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
   selectedId=s.id; renderFlow(); renderDetail();
   if(s.sub && s.sub.length){ s.sub.forEach(x=> nodes[s.id].sub[x]='running'); }
   const start=Date.now();
@@ -1041,63 +2245,317 @@ function runStage(i){
   },120);
 }
 function showGate(stageId, i){
+  const tk = curRun ? curRun.token : null;   // 运行令牌：中止/重置后残留的审批按钮不得再推进运行
   const wrap=document.createElement('div'); wrap.className='gate'; wrap.id='gateBtns';
   wrap.innerHTML='<button class="dshell-btn mini" id="approveBtn">✓ 批准</button><button class="dshell-btn dshell-btnDanger mini" id="rejectBtn">拒绝</button>';
   $('detailLog').parentElement.appendChild(wrap);
-  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); nodes[stageId]={status:'success',progress:100,dur:0,sub:{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
-  document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); finish('aborted'); };
+  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
+  document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; finish('aborted'); };
+}
+/* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续 */
+function retryFromStage(stageId){
+  if(running || !curRun || !runStages) return;
+  const idx=runStages.findIndex(x=>x.id===stageId); if(idx<0) return;
+  const n=nodes[stageId]; if(!n || n.status!=='failed') return;
+  curRun.vars=Object.assign({}, n.varsIn||{});
+  runStages[idx]._out=null;   // 清掉上次脚本输出，避免重跑期间误显示旧日志
+  for(let j=idx;j<runStages.length;j++){ const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }
+  running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
+  setOverall('运行中…（重试）','dshell-badgeWait');
+  selectedId=stageId; applyStatusClasses(); renderDetail();
+  advance(idx);
 }
 function finish(result){
-  running=false; $('runBtn').disabled=false;
+  running=false; $('runBtn').disabled=false; $('stopBtn').disabled=true;
   if(timer){ clearInterval(timer); timer=null; }
   const elapsed=(Date.now()-curRun.startTs)/1000;
-  if(result==='success'){ setOverall('✓ 成功','dshell-badgeDone'); }
+  if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 成功','dshell-badgeDone'); }
   else if(result==='aborted'){ setOverall('⏏ 已中止',''); }
-  else { setOverall('✗ 失败（已回滚）',''); const o=$('overall').firstChild; o.style.color='#f85149'; o.style.borderColor='rgba(248,81,73,.4)'; }
+  else { setOverall('✗ 失败',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
   buildNo++;
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
-    dur: fmtDur(elapsed), time:'今天 '+nowHM(), by:curRun.by||'anonymous'};
-  history.unshift(rec); if(history.length>20) history.pop();
+    dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), by:curRun.by||'anonymous',
+    pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main',
+    logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
+    tag:curRun.tag, archive:archiveFolderFor(curRun)};
+  history.unshift(rec); if(history.length>200) history.length=200;
+  histPage=0;
   renderHistory(); renderStats();
+  persistState();
+  archiveRun(result);
+  renderDetail();   // running 已置 false：失败阶段补出「从本阶段重试」按钮
   drainQueue();
   renderQueue();
 }
-/* 末段失败注入：末段运行到 ~75% 时触发（勾选模拟失败） */
-function maybeFailLast(){
-  if(!$('simFail').checked) return false;
-  const stg=activeStages(); const last=stg[stg.length-1];
-  if(last && nodes[last.id] && nodes[last.id].status==='running' && nodes[last.id].progress>=75){
-    if(timer){ clearInterval(timer); timer=null; }
-    nodes[last.id].status='failed'; applyStatusClasses(); renderDetail(); finish('failed'); return true;
-  }
-  return false;
+/* 环境清理：勾选「清理环境」时，流水线启动前先执行设置页配置的清理脚本，
+   日志挂在 curRun.cleanupLog 上，finish 时并入本次历史记录；清理失败不阻断流水线 */
+async function runCleanupBefore(){
+  const t0=Date.now();
+  const tk = curRun ? curRun.token : null;   // 运行令牌：清理脚本迟回时若已换了新运行，结果不得写入新运行
+  const res=await execScript(cleanupScript);
+  const status=res.code===0?'success':'failed';
+  let text='$ bash '+cleanupScript.name+'\n'+(res.stdout||'');
+  if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
+  text+='\n[exit '+res.code+']';
+  if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
+  if(curRun && curRun.token===tk) curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
 }
-let failWatcher=null;
-function startFailWatcher(){ if(failWatcher) return; failWatcher=setInterval(()=>{ if(running) maybeFailLast(); if(!running){ clearInterval(failWatcher); failWatcher=null; } },200); }
+/* ---------- 产物归档（运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
+function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
+function todayCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
+async function apiMkdir(p){
+  try{
+    const r=await fetch('/api/worktable/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})});
+    const j=await r.json(); return !(j && j.error);
+  }catch(e){ return false; }
+}
+async function apiWrite(p, content){
+  const r=await fetch('/api/worktable/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p, content})});
+  const j=await r.json(); if(j && j.error) throw new Error(j.error);
+}
+/* 是否显式配置了归档根目录（留空=走保底，见 fallbackArchiveRoot） */
+function archiveConfigured(){ return !!(archiveDir||'').trim(); }
+/* 保底归档根：未配置 archiveDir 时，归档落到 scripts 目录同级的 runs/（仅当 scriptsDir 为绝对路径时可用）。
+   仍按「流水线名称_日期」文件夹组织，写 run-<tag>.log/.profile.json；但不执行归档脚本（归档脚本是「已配置归档」的专属能力，见 archiveRun）。 */
+function fallbackArchiveRoot(){
+  try{
+    const sd=(scriptsDir||'').trim();
+    if(!sd || sd.charAt(0)!=='/') return null;   // 相对路径（非 site 路由场景）无法可靠解析，降级为不归档
+    const dir=sd.replace(/\/+$/,'').replace(/\/[^/]*$/,'');   // scriptsDir 同级目录（即 pipeline 目录）
+    return (dir||'/')+'/runs';
+  }catch(e){ return null; }
+}
+function archiveFolderFor(ctx){
+  // 运行启动时已把归档文件夹快照到 ctx.archive，全程复用：保证各阶段注入的环境变量与
+  // 末尾 archiveRun 写入 run-<tag>.log/.profile.json 的目录完全一致（运行中 archiveDir 改动不致漂移）。
+  if(ctx && ctx.archive!==undefined) return ctx.archive;
+  if(!ctx) return null;
+  const sub=sanitizeFsName(ctx.pipelineName||curPipeline().name)+'_'+todayCompact();
+  const root=(archiveDir||'').trim().replace(/\/+$/,'');
+  if(root) return root+'/'+sub;
+  // 未配置归档：保底落到 scripts 同级的 runs/，仍写 run-<tag>.log/.profile.json（不执行归档脚本）
+  const fb=fallbackArchiveRoot();
+  return fb ? fb+'/'+sub : null;
+}
+function archiveRun(result){
+  const folder=archiveFolderFor(curRun);
+  if(!folder) return;
+  const root=folder.slice(0, folder.lastIndexOf('/'));
+  const ctx=curRun, stages=activeStages();
+  // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
+  const logLines=[];
+  stages.forEach(s=>{
+    const n=nodes[s.id]||{status:'idle'};
+    logLines.push('===== '+s.name+' ['+(n.status||'idle')+'] =====');
+    buildLog(s, ctx, n).forEach(l=>logLines.push(l));
+    logLines.push('');
+  });
+  logLines.push('[result] '+result);
+  // profiling：各阶段耗时/状态 + 总耗时等运行元数据
+  const profile={
+    pipeline: ctx.pipelineName||null, tag: ctx.tag, commit: ctx.commit,
+    env: ctx.env, image: ctx.image, by: ctx.by, source: ctx.source, result,
+    startTime: new Date(ctx.startTs).toISOString(),
+    totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
+    vars: ctx.vars||{},
+    stages: stages.map(s=>{
+      const n=nodes[s.id]||{};
+      return { id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
+    }),
+  };
+  (async()=>{
+    if(!await apiMkdir(folder)){ await apiMkdir(root); await apiMkdir(folder); }
+    await apiWrite(folder+'/run-'+ctx.tag+'.log', logLines.join('\n'));
+    await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
+    // 归档脚本：写完日志/profiling 后执行（可选），收集额外日志到归档目录；
+    //   注入 ARCHIVE_DIR/ARCHIVE_FOLDER/ARCHIVE_LOG_FILE/ARCHIVE_PROFILE_FILE 等，失败不影响运行结果。
+    //   经 runCtx=ctx 传入已结束运行的快照，避免运行队列切换后读到新运行的 TARGET_*/IMAGE_*。
+    //   脚本不存在（如默认 collect_logs.sh 尚未创建）时 scriptByName 返回 null，自动跳过。
+    const scName=(archiveScriptName||'').trim();
+    if(scName && archiveConfigured()){   // 归档脚本是「已配置归档」专属；保底归档（archiveDir 留空）不执行，避免关归档时仍跑节点日志收集
+      const asc=scriptByName(scName);
+      if(asc){
+        try{
+          const ar=await execScript({name:asc.name,path:asc.path,params:[],values:{}},120000,{
+            ARCHIVE_DIR:folder, ARCHIVE_FOLDER:folder,
+            ARCHIVE_LOG_FILE:folder+'/run-'+ctx.tag+'.log',
+            ARCHIVE_PROFILE_FILE:folder+'/run-'+ctx.tag+'.profile.json',
+            ARCHIVE_PIPELINE:ctx.pipelineName||curPipeline().name,
+            ARCHIVE_TAG:ctx.tag, ARCHIVE_RESULT:result
+          }, ctx);
+          if(ar && ar.code!==0) console.warn('[archive] 归档脚本退出码 '+ar.code+'（不影响运行结果）');
+        }catch(ee){ console.warn('[archive] 归档脚本执行失败（不影响运行结果）:', ee); }
+      }else{ console.warn('[archive] 归档脚本未找到，跳过：', scName); }
+    }
+  })().catch(e=>console.warn('[archive] 归档失败（不影响运行结果）:', e));
+}
+/* ---------- AI 分析（历史标题行按钮 → 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
+const DEFAULT_PROMPTS = {
+  log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件：{logFile}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
+  prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
+  perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 与 run-{tag}.profile.json 分别为日志与 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
+};
+function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
+let analysisPrompts = loadPrompts();
+function savePrompts(){ try{ localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts)); }catch(e){} persistState(); }
+function analysisSummary(rec){ return '#'+rec.no+' 流水线「'+rec.pipeline+'」 环境 '+rec.env+' · 执行人 '+rec.by+' · 状态 '+labelOf(rec.status)+' · 耗时 '+rec.dur+' · '+rec.time+' · commit '+rec.commit; }
+function buildAnalysisPrompt(kind, rec){
+  const tpl = analysisPrompts[kind] || DEFAULT_PROMPTS[kind] || '';
+  const archive = rec.archive || '';
+  const vars = {
+    no:rec.no, pipeline:rec.pipeline, env:rec.env, by:rec.by, commit:rec.commit,
+    status:labelOf(rec.status), dur:rec.dur, time:rec.time, tag:rec.tag||'',
+    archive: archive || '（未归档）',
+    summary: analysisSummary(rec),
+    logFile: archive ? archive+'/run-'+rec.tag+'.log' : '（未归档）',
+    profileFile: archive ? archive+'/run-'+rec.tag+'.profile.json' : '（未归档）',
+  };
+  return tpl.replace(/\{(\w+)\}/g, (m,k)=> vars[k]!==undefined ? String(vars[k]) : m);
+}
+/* 经父页面（工作台）暴露的 __dshSessions/__dshPromptIntoSession 新建会话并发送提示词 */
+async function createAnalysisChat(kind, rec){
+  const P = window.parent;
+  const sessions = P && P.__dshSessions;
+  if(!sessions || typeof sessions.create!=='function' || typeof P.__dshPromptIntoSession!=='function'){
+    alert('无法创建 AI 会话：请在 DSH 工作台中打开本页面。'); return;
+  }
+  const text = buildAnalysisPrompt(kind, rec);
+  const sid = await sessions.create({});
+  try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
+  await P.__dshPromptIntoSession(sid, text);
+}
+
+/* ---------- 页面修改（右上角按钮 → 新建 DSH 会话修改本页面；提示词在「设置」页页面修改配置维护） ---------- */
+const PAGE_EDIT_PROMPT = '请协助修改你当前看到的流水线工作台页面。\n页面文件：/mnt/paas/op_test/worktable/pipeline/pipeline.html\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。';
+const DEFAULT_PAGE_EDIT_PROMPT = PAGE_EDIT_PROMPT;   // 默认提示词（设置页「页面修改配置」可覆盖）
+let pageEditPrompt = (function(){ try{ const p=localStorage.getItem('pip-pageEditPrompt'); return (p==null||!String(p).trim())?DEFAULT_PAGE_EDIT_PROMPT:p; }catch(e){ return DEFAULT_PAGE_EDIT_PROMPT; } })();
+function savePageEditPrompt(){ try{ localStorage.setItem('pip-pageEditPrompt', pageEditPrompt); }catch(e){} persistState(); }
+function fillPageEditForm(){ if($('cfgPromptPageEdit')) $('cfgPromptPageEdit').value=pageEditPrompt; }
+$('pageEditBtn').addEventListener('click', async ()=>{
+  const P = window.parent;
+  const sessions = P && P.__dshSessions;
+  if(!sessions || typeof sessions.create!=='function' || typeof P.__dshPromptIntoSession!=='function'){
+    alert('无法创建 AI 会话：请在 DSH 工作台中打开本页面。'); return;
+  }
+  const sid = await sessions.create({});
+  try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
+  await P.__dshPromptIntoSession(sid, pageEditPrompt);
+});
 
 /* ---------- 历史 & 统计 ---------- */
-function renderHistory(){
-  const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
-  history.forEach(h=>{
-    const tr=document.createElement('tr');
-    const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:#f85149;border-color:rgba(248,81,73,.4)"':h.status==='aborted'?' style="color:#6b7280"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+h.env+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+h.dur+'</td><td class="dshell-muted">'+h.time+'</td>';
-    tb.appendChild(tr);
+let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
+let histPage=0;
+let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
+/* 运行历史筛选：关键字（# / 流水线 / 环境 / 执行人 / Commit，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
+let histFilter={kw:'',status:'',pipeline:''};
+try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
+function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
+function filteredHistory(){
+  const kw=histFilter.kw.trim().toLowerCase();
+  if(!kw && !histFilter.status && !histFilter.pipeline) return history;
+  return history.filter(h=>{
+    if(histFilter.status && h.status!==histFilter.status) return false;
+    if(histFilter.pipeline && (h.pipeline||'')!==histFilter.pipeline) return false;
+    if(kw){ const hay=[('#'+(h.no||'')),(h.pipeline||''),(h.env||''),(h.by||''),(h.commit||'')].join(' ').toLowerCase(); if(hay.indexOf(kw)<0) return false; }
+    return true;
   });
 }
+let _histFilterPipelineSig='';
+function renderHistFilterOptions(){
+  const sel=$('histFilterPipeline'); if(!sel) return;
+  const names=Array.from(new Set([].concat(history.map(h=>h.pipeline).filter(Boolean), pipelines.map(p=>p&&p.name).filter(Boolean))));
+  const sig=names.join('\u0001');
+  if(sig!==_histFilterPipelineSig){ _histFilterPipelineSig=sig; sel.innerHTML='<option value="">全部流水线</option>'+names.map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join(''); }
+  /* 始终以筛选状态为权威源同步下拉选中项（名单不含该项时置空） */
+  sel.value = (histFilter.pipeline && Array.from(sel.options).some(o=>o.value===histFilter.pipeline)) ? histFilter.pipeline : '';
+}
+function renderHistory(){
+  const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
+  if(selHistoryIdx>=history.length) selHistoryIdx=-1;
+  const view=filteredHistory();
+  renderHistFilterOptions();
+  const fTip=$('histFilterTip'); if(fTip) fTip.textContent=(histFilter.kw||histFilter.status||histFilter.pipeline)?('已筛选 '+view.length+' / '+history.length+' 条'):'';
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="8" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
+  const pages=Math.max(1, Math.ceil(view.length/histPageSize));
+  if(histPage>pages-1) histPage=pages-1;
+  if(histPage<0) histPage=0;
+  view.slice(histPage*histPageSize, (histPage+1)*histPageSize).forEach((h,i)=>{
+    const idx=history.indexOf(h);
+    const tr=document.createElement('tr');
+    if(idx===selHistoryIdx) tr.className='sel';
+    const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
+    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.addEventListener('click', ()=>{ selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
+    tb.appendChild(tr);
+  });
+  const info=$('histPageInfo'); if(info) info.textContent='第 '+(histPage+1)+'/'+pages+' 页 · 共 '+view.length+' 条';
+  const pv=$('histPrev'), nx=$('histNext');
+  if(pv) pv.disabled = histPage<=0;
+  if(nx) nx.disabled = histPage>=pages-1;
+  const tip=$('rowSelTip');
+  if(tip) tip.textContent = (selHistoryIdx>=0 && history[selHistoryIdx])
+    ? ('已选 #'+history[selHistoryIdx].no+' '+(history[selHistoryIdx].pipeline||''))
+    : '点击行选中后可分析';
+}
+/* 标题行分析按钮：作用于当前选中行 */
+document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', ()=>{
+  const rec=(selHistoryIdx>=0)?history[selHistoryIdx]:null;
+  if(!rec){ alert('请先点击选择一条运行历史。'); return; }
+  createAnalysisChat(b.getAttribute('data-ract'), rec);
+}));
+/* 历史重跑：按选中行的流水线 + 环境 IP + 分支 + 执行人重新运行（运行中则入队） */
+function rerunFromHistory(rec){
+  const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline);
+  if(!pl){ alert('找不到该次运行的流水线「'+(rec.pipeline||'')+'」（可能已删除），无法重跑。'); return; }
+  /* 环境按历史 IP 串匹配当前节点列表；匹配不到则退回当前所选环境 */
+  const ips=String(rec.env||'').split('，').map(s=>s.trim()).filter(Boolean);
+  const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
+  const repoId=(rec.repoId && repositories.some(r=>r.id===rec.repoId)) ? rec.repoId : undefined;
+  const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, by:rec.by, source:'manual'});
+  if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
+  else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）');
+  else flashRunTip('已开始重跑 #'+rec.no+'（'+pl.name+'）');
+}
+$('histRerun').addEventListener('click', ()=>{
+  const rec=(selHistoryIdx>=0)?history[selHistoryIdx]:null;
+  if(!rec){ alert('请先点击选择一条运行历史。'); return; }
+  rerunFromHistory(rec);
+});
+/* 历史分页 */
+$('histPageSize').value=String(histPageSize);
+$('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
+$('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
+$('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
+$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; history=[]; selHistoryIdx=-1; histPage=0; renderHistory(); renderStats(); persistState(); });
+/* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
+$('histFilterKw').value=histFilter.kw;
+$('histFilterStatus').value=histFilter.status;
+$('histFilterKw').addEventListener('input', e=>{ histFilter.kw=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
+$('histFilterStatus').addEventListener('change', e=>{ histFilter.status=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
+$('histFilterPipeline').addEventListener('change', e=>{ histFilter.pipeline=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
+$('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
 function labelOf(s){ return {success:'成功',failed:'失败',aborted:'已中止'}[s]||s; }
+/* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
+function fmtHistTime(h){
+  if(!h.ts) return h.time||'';
+  const d=new Date(h.ts), now=new Date(); const p=n=>String(n).padStart(2,'0');
+  const hm=p(d.getHours())+':'+p(d.getMinutes());
+  const sameDay=d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()&&d.getDate()===now.getDate();
+  return sameDay?('今天 '+hm):(p(d.getMonth()+1)+'-'+p(d.getDate())+' '+hm);
+}
 function renderStats(){
-  $('sTotal').textContent = buildNo;
-  const succ = history.filter(h=>h.status==='success').length;
-  const rate = history.length? Math.round(succ/history.length*100):0;
-  $('sRate').textContent = rate+'%';
-  $('sRateDelta').textContent = rate>=80?'良好':'需关注';
-  $('sRateDelta').style.color = rate>=80?'#3fb950':'#d29922';
-  const avg = history.reduce((a,h)=>{ const m=/^(\d+)m(\d+)?/.exec(h.dur); const s=/^(\d+)s/.exec(h.dur);
+  const rows = history.filter(h=>!h.demo);   // 统计只计真实运行，不含内置演示数据
+  $('sTotal').textContent = rows.length;
+  const succ = rows.filter(h=>h.status==='success').length;
+  const rate = rows.length? Math.round(succ/rows.length*100):0;
+  $('sRate').textContent = rows.length? rate+'%':'—';
+  $('sRateDelta').textContent = rows.length? (rate>=80?'良好':'需关注'):'';
+  $('sRateDelta').style.color = rate>=80?'var(--st-ok)':'var(--st-run)';
+  const avg = rows.reduce((a,h)=>{ const m=/^(\d+)m(\d+)?/.exec(h.dur); const s=/^(\d+)s/.exec(h.dur);
     let sec=0; if(m) sec=parseInt(m[1])*60+(m[2]?parseInt(m[2]):0); else if(s) sec=parseInt(s[1]); return a+sec; },0);
-  $('sAvg').textContent = history.length? fmtDur(avg/history.length):'—';
-  $('sLast').textContent = history.length? ('#'+history[0].no+' '+history[0].env):'—';
+  $('sAvg').textContent = rows.length? fmtDur(avg/rows.length):'—';
+  $('sLast').textContent = rows.length? ('#'+rows[0].no+' '+rows[0].env):'—';
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
@@ -1124,17 +2582,22 @@ function renderPipelineOptions(){
   if(cur && pipelines.some(p=>p.id===cur)) sel.value=cur;
 }
 function selectPipeline(id){
-  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){}
+  if(running && id!==curPipelineId){ renderPipelineOptions(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
+  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
   runStages=null; selectedId=curPipeline().stages[0].id;
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
 let editFocusIdx=-1;
 function openPlForm(id, focusIdx){
-  const f=$('plForm'); f.style.display='block'; f.dataset.editId=id||'';
+  const f=$('plForm'); f.style.display='flex';
   editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
   $('scriptsDir').value=scriptsDir;
-  if(id){ const p=findPipeline(id); $('plName').value=p.name;
-    editStages=p.stages.map(s=>({id:s.id, name:s.name, dur:s.dur, gate:!!s.gate, sub:(s.sub||[]), script:s.script?{name:s.script.name,path:s.script.path,params:(s.script.params||[]),values:(s.script.values||{})}:null})); }
+  /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
+  const p = id ? (findPipeline(id) || curPipeline()) : null;
+  f.dataset.editId = p ? p.id : '';
+  $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
+  if(p){ $('plName').value=p.name;
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, gate:!!s.gate, sched: s.sched?{mode:s.sched.mode, everyMin:s.sched.everyMin, at:s.sched.at}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{})}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{})}:null})); }
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   loadScripts().then(()=>renderStageEditor());
   $('plName').focus();
@@ -1149,28 +2612,54 @@ function savePlForm(){
     if(!String(s.name).trim()){ alert('第 '+(i+1)+' 阶段的名称未填写'); return; }
     if(seen[s.name]){ alert('阶段名重复：'+s.name); return; }
     seen[s.name]=1;
+    if(s.kind==='jenkins'){
+      if(!s.jenkins || !String(s.jenkins.job).trim()){ alert('第 '+(i+1)+' 阶段「'+s.name+'」未选择 Jenkins 任务'); return; }
+    }
     if(s.script){
       if(!scriptByName(s.script.name)){ if(!confirm('第 '+(i+1)+' 阶段「'+s.name+'」的脚本「'+s.script.name+'」不在 scripts 目录中，仍要保存？')) return; }
       const missing=(s.script.params||[]).filter(p=>p.required && !String((s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'')).trim());
       if(missing.length){ alert('第 '+(i+1)+' 阶段「'+s.name+'」脚本 '+s.script.name+' 有必填参数未填：'+missing.map(p=>p.label||p.key).join('、')); return; }
     }
   }
+  /* 定时阶段顺序校验：一旦出现支持定时的阶段，其后必须全是定时阶段（非定时不能排在定时之后）；
+     即「若不支持定时的任务的前面有支持定时的任务，则报错」 */
+  {
+    let schedStarted=false;
+    for(let i=0;i<editStages.length;i++){
+      const sc=editStages[i].sched;
+      const has=!!(sc && sc.mode);
+      if(has){
+        schedStarted=true;
+        if(sc.mode==='interval'){ if(!(Number(sc.everyMin)>=1)){ alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」的周期分钟数无效'); return; } }
+        else if(sc.mode==='once'){ if(!(Number(sc.at)>Date.now())){ alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」的一次性时间需为未来'); return; } }
+      } else if(schedStarted){
+        alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」未开启「支持定时」，但不能排在已开启定时的阶段之后。\n规则：非定时阶段必须在所有定时阶段之前。');
+        return;
+      }
+    }
+  }
   scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
-    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), gate:!!s.gate, sub:(s.sub||[])};
-    if(s.script) st.script={name:s.script.name, path:s.script.path, params:(s.script.params||[]), values:(s.script.values||{})};
+    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), gate:!!s.gate, sub:(s.sub||[]), kind:s.kind||'simulate'};
+    if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
+    if(s.script) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{})};
+    if(s.jenkins) st.jenkins={job:s.jenkins.job, params:(s.jenkins.params||[]), values:(s.jenkins.values||{})};
+    if(s.sched) st.sched={mode:s.sched.mode, everyMin:s.sched.everyMin, at:s.sched.at};
     return st;
   });
   const editId=$('plForm').dataset.editId;
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; } }
   else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false}); }
   savePipelines(); $('plForm').style.display='none';
-  if(editId && editId===curPipelineId){ selectPipeline(editId); }
+  /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
+  if(running){ renderPipelines(); }
+  else if(editId && editId===curPipelineId){ selectPipeline(editId); }
   else if(!editId){ selectPipeline(pipelines[pipelines.length-1].id); }
   else { renderPipelines(); }
   renderPipelines();
 }
 function deletePipeline(id){
+  if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);
   if(!pipelines.length){ pipelines=[defaultPipeline()]; }
@@ -1183,22 +2672,43 @@ function deletePipeline(id){
 /* ---------- 主题切换 ---------- */
 let themePref = lsGet('pip-theme', 'auto');
 function systemDark(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches); }
-function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} }
+function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} persistState(); }
 $('theme').value = themePref;
 $('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); });
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */
-$('runBtn').addEventListener('click', ()=>{ const m=$('runSched').value; if(m==='now') runPipeline(); else addPlan(); });
-$('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
-$('resetBtn').addEventListener('click', ()=>{ if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue(); });
+/* 运行按钮旁短暂提示（入队 / 重跑反馈） */
+let runTipTimer=null;
+function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
+$('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); });
+/* 中止当前运行：以「已中止」计入历史并消耗队列；进行中的脚本无法真正中断（结果回来后丢弃，见 runScriptStep） */
+$('stopBtn').addEventListener('click', ()=>{
+  if(!running || !curRun) return;
+  if(timer){ clearInterval(timer); timer=null; }
+  const g=$('gateBtns'); if(g) g.remove();   // 审批阶段中止：移除残留的批准/拒绝按钮
+  activeStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running'||n.status==='waiting')) nodes[s.id]={status:'idle',progress:0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
+  finish('aborted');
+  applyStatusClasses(); renderDetail();
+});
+$('schedCreateBtn').addEventListener('click', addPlan);
+$('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
+$('resetBtn').addEventListener('click', ()=>{
+  if(running || queue.length){ if(!confirm('将中止当前运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本结果将被丢弃，且不计入历史）。继续？')) return; }
+  if(running&&timer){clearInterval(timer);timer=null;} { const g=$('gateBtns'); if(g) g.remove(); } running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
+});
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
-$('addPlBtn').addEventListener('click', ()=>{ const f=$('plForm'); const open=f.style.display!=='block'; f.style.display=open?'block':'none'; if(open) openPlForm(''); });
+$('addPlBtn').addEventListener('click', ()=>openPlForm(''));
 $('plSave').addEventListener('click', savePlForm);
 $('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
+$('plFormClose').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
+$('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });
 $('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); });
+$('archiveDir').value = archiveDir;
+$('archiveDir').addEventListener('change', e=>{ archiveDir=e.target.value.trim(); saveArchiveDir(); });
+$('archiveScriptName').value = archiveScriptName;
+$('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); });
-$('flowEditBtn').addEventListener('click', ()=>{ if(!running) openPlForm(curPipelineId); });
 /* 阶段编辑器：增删/上下移/识别参数（事件委托） */
 $('plStageList').addEventListener('click', (e)=>{
   const btn=e.target.closest && e.target.closest('[data-act]'); if(!btn) return;
@@ -1208,47 +2718,118 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='up' && i>0){ const t=editStages[i-1]; editStages[i-1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
+  else if(act==='jkparams'){ detectJenkinsParams(i); }
+  else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
+  else if(act==='schedmode'){ setStageSchedMode(i, btn.getAttribute('data-mode')); }
 });
 $('plStageList').addEventListener('change', (e)=>{
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
   const row=e.target.closest('.plstage'); const i=parseInt(row.dataset.idx,10); const s=editStages[i]; if(!s) return;
+  if(f==='ord'){   // 数字排序：把该阶段移动到目标序号（1 起，自动夹取到有效范围）
+    const to=Math.min(editStages.length, Math.max(1, parseInt(e.target.value,10)||(i+1)))-1;
+    if(to!==i){ const mv=editStages.splice(i,1)[0]; editStages.splice(to,0,mv); editFocusIdx=to; renderStageEditor(); }
+    else e.target.value=String(i+1);
+    return;
+  }
   if(f==='name') s.name=e.target.value;
   else if(f==='dur') s.dur=Math.max(1,parseInt(e.target.value,10)||5);
+  else if(f==='timeout'){ const tv=parseInt(e.target.value,10); s.timeout=(tv>=1)?tv:null; }
   else if(f==='gate') s.gate=e.target.checked;
+  else if(f==='sched'){ s.sched = e.target.checked ? {mode:'interval', everyMin:10} : null; renderStageSched(i); }
+  else if(f==='schedEvery'){ if(s.sched && s.sched.mode==='interval'){ s.sched.everyMin=Math.max(1,parseInt(e.target.value,10)||10); } }
+  else if(f==='schedAt'){ if(s.sched && s.sched.mode==='once'){ const t=e.target.value?new Date(e.target.value).getTime():NaN; s.sched.at=(!isNaN(t)&&t>Date.now())?t:0; } }
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
+  else if(f==='jenkinsJob'){ setStageJenkins(i, e.target.value.trim()); }
 });
 $('envAdd').addEventListener('click', saveEnvForm);
 $('envCancelEdit').addEventListener('click', resetEnvForm);
 $('envAllApply').addEventListener('click', applyEnvCredAll);
+$('repoSel').addEventListener('change', e=>{ curRepoId=e.target.value; saveRepoSel(); const bp=$('branchPanel'); if(bp) bp.style.display='none'; });
+$('repoAdd').addEventListener('click', saveRepoForm);
+$('repoCancelEdit').addEventListener('click', resetRepoForm);
+$('repoAllApply').addEventListener('click', applyRepoCredAll);
+$('repoFetchMode').addEventListener('change', toggleRepoJenkinsJobInput);
+toggleRepoJenkinsJobInput();
 $('gpuRefreshAll').addEventListener('click', refreshGpuAll);
 $('gpuDetailClose').addEventListener('click', ()=>{ $('gpuDetail').style.display='none'; });
 $('gpuDetail').addEventListener('click', (e)=>{ if(e.target===$('gpuDetail')) $('gpuDetail').style.display='none'; });
-/* 页面切换（流水线 / 环境配置） */
+/* 环境清理：开关与脚本配置（初始值取 localStorage，服务端状态就绪后会被覆盖） */
+$('cleanupEnv').checked = lsGet('pip-cleanupEnabled','')==='1';
+$('cleanupEnv').addEventListener('change', saveCleanup);
+$('cleanupScriptName').value = cleanupScript?cleanupScript.name:'';
+$('cleanupScriptName').addEventListener('change', (e)=>setCleanupScript(e.target.value.trim()));
+$('cleanupDetect').addEventListener('click', ()=>{ detectCleanupParams().then(saveCleanup); });
+renderCleanupParams();
+/* Jenkins 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
+applyJenkinsForm();
+$('jkModeLocal').addEventListener('click', ()=>setJenkinsMode('local'));
+$('jkModeRemote').addEventListener('click', ()=>setJenkinsMode('remote'));
+$('jkTest').addEventListener('click', testJenkins);
+$('jkSave').addEventListener('click', ()=>{
+  jenkins = collectJenkinsForm(); saveJenkins();
+  $('jkSavedTip').textContent='已保存。'; setTimeout(()=>{ $('jkSavedTip').textContent=''; },2000);
+});
+$('jkJobs').addEventListener('click', listJenkinsJobs);
+/* 页面切换（流水线 / 定时 / 设置） */
 function switchPage(p){
-  const main=p==='main';
-  $('pageMain').style.display = main?'':'none';
-  $('pageEnv').style.display = main?'none':'';
-  $('navMain').className = 'dshell-btn mini'+(main?'':' dshell-btnGhost');
-  $('navEnv').className = 'dshell-btn mini'+(main?' dshell-btnGhost':'');
+  $('pageMain').style.display = p==='main'?'':'none';
+  $('pageSched').style.display = p==='sched'?'':'none';
+  $('pageEnv').style.display = p==='env'?'':'none';
+  $('navMain').className = 'dshell-btn mini'+(p==='main'?'':' dshell-btnGhost');
+  $('navSched').className = 'dshell-btn mini'+(p==='sched'?'':' dshell-btnGhost');
+  $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
+  if(p==='sched'){ renderSchedForm(); renderPlanList(); }
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
+$('navSched').addEventListener('click', ()=>switchPage('sched'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
+/* 分析配置（设置页内卡片）：提示词模板编辑 */
+function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
+$('cfgSave').addEventListener('click', ()=>{
+  analysisPrompts={log:$('cfgPromptLog').value, prof:$('cfgPromptProf').value, perf:$('cfgPromptPerf').value};
+  savePrompts();
+  $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
+});
+$('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
+/* 页面修改配置（设置页内卡片）：页面修改提示词编辑 */
+$('cfgPageEditSave').addEventListener('click', ()=>{
+  pageEditPrompt=$('cfgPromptPageEdit').value || DEFAULT_PAGE_EDIT_PROMPT;
+  savePageEditPrompt();
+  $('cfgPageEditSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgPageEditSavedTip').textContent=''; },2000);
+});
+$('cfgPageEditReset').addEventListener('click', ()=>{ pageEditPrompt=DEFAULT_PAGE_EDIT_PROMPT; savePageEditPrompt(); fillPageEditForm(); });
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+/* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
+$('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
+$('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(()=>renderBranchPanel()); } else { renderBranchPanel(); } });
+document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
 /* 初始化 */
-applyTheme();
-resetNodes();
-loadScripts();
-renderHistory();
-renderStats();
-renderPipelines();
-renderEnvOptions();
-renderEnvs();
-refreshGpuAll();
-renderQueue();
-renderDetail();
+function renderAll(){
+  applyTheme();
+  resetNodes();
+  loadScripts();
+  renderHistory();
+  renderStats();
+  renderPipelines();
+  renderEnvOptions();
+  renderEnvs();
+  renderRepoOptions();
+  renderRepos();
+  refreshGpuAll();
+  renderQueue();
+  renderDetail();
+  fillCfgForm();
+  fillPageEditForm();
+  applyJenkinsForm();
+}
+renderAll();
+/* 从服务端拉取配置与历史（含日志）；服务端有数据则覆盖本地并重渲染 */
+loadServerState();
+/* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
+loadPlans();
 </script>
 </body>
 </html>

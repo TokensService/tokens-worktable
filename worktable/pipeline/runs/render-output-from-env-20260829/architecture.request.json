@@ -1,0 +1,164 @@
+{
+  "arch_name": "glm-5.2-nvfp4",
+  "model_family": "deepseek_v3_npu",
+  "engine_type": "vllm",
+  "deploy_spec_packages": [
+    {
+      "spec_package_name": "glm-5.2-nvfp4",
+      "deploy_specs": [
+        {
+          "name": "prefill",
+          "role": "prefill",
+          "params": {
+            "tensor_parallel_size": 1,
+            "pipeline_parallel_size": 4,
+            "pp_layer_partition": "22,20,20,16",
+            "data_parallel_size": 1,
+            "data_parallel_backend": "ray",
+            "distributed_executor_backend": "mp",
+            "async_scheduling": false,
+            "vllm_use_v2_model_runner": false,
+            "max_model_len": 1048576,
+            "max_input_tokens": 1044480,
+            "enable_prefix_caching": true,
+            "enable_expert_parallel": false,
+            "max_num_seqs": 8,
+            "max_num_batched_tokens": 32768,
+            "reasoning_tokens_upper_bound": 65536,
+            "max_tokens_upper_bound": 131072,
+            "output_tokens_upper_bound": 131072,
+            "use_python_encode": false,
+            "ts_model": "Default",
+            "dp_strategy_type": "max_time",
+            "dp_strategy_sp_type": "max_time",
+            "dp_strategy_ems_type": "max_time",
+            "dp_strategy_sp_ems_type": "max_time",
+            "ts_batching_strategy": "PROMPT_HASH_AFFINITY",
+            "ts_pha_affinity_strategy": "TRIE_PREFIX",
+            "ts_pha_trie_max_nodes": 3000000,
+            "ts_pha_trie_limit_nodes": 1500000,
+            "ts_trie_sync_interval_s": 30,
+            "ts_prefix_match_balance_abs_threshold": 8,
+            "ts_prefix_match_balance_rel_threshold": 6,
+            "ts_pha_balance_strategy": "QUEUE_LEN_BALANCED",
+            "use_single_batch_schedule": true,
+            "affinity_schedule_strategy": "radix_tree",
+            "je_fault_injection_mode": "actor",
+            "je_fault_injection_interval_s": 300,
+            "tool_parser": "glm47",
+            "reasoning_parser": "glm45",
+            "ttft_timeout_seconds": 180,
+            "enable_auto_tools": true,
+            "dynamic_chunk_sizing_enabled": false,
+            "dynamic_chunk_min_size": 4096,
+            "dynamic_chunk_smooth_factor": 1.0,
+            "use_vllm_offloading": true,
+            "vllm_offloading_cpu_bytes": 1209462790554,
+            "kv_connector": "OffloadingConnector",
+            "compilation_config": {
+              "cudagraph_mode": "None"
+            },
+            "gpu_memory_utilization": 0.9,
+            "kv_cache_dtype": "fp8",
+            "xccl_turbo_sync_sparse_indexer": true,
+            "xccl_turbo_fix_native_cpu_offload_pin": true,
+            "xccl_turbo_fix_indexer_cache_block_release": true,
+            "xds_pte_max_inflight": 32,
+            "speculative_config": {
+              "method": "mtp",
+              "num_speculative_tokens": 3
+            },
+            "kernel_config": {
+              "enable_flashinfer_autotune": false
+            }
+          },
+          "resources": [
+            {
+              "device_type": "BNT3",
+              "cpu": 48,
+              "gpu": 4,
+              "memory": "1410G"
+            }
+          ],
+          "min": 1,
+          "max": 1,
+          "default": 1
+        },
+        {
+          "name": "decode",
+          "role": "decode",
+          "params": {
+            "tensor_parallel_size": 1,
+            "data_parallel_size": 4,
+            "data_parallel_backend": "ray",
+            "distributed_executor_backend": "mp",
+            "async_scheduling": true,
+            "vllm_use_v2_model_runner": true,
+            "max_model_len": 1048576,
+            "max_input_tokens": 1044480,
+            "enable_prefix_caching": true,
+            "enable_expert_parallel": false,
+            "max_num_seqs": 32,
+            "max_num_batched_tokens": 128,
+            "use_python_encode": false,
+            "tool_parser": "glm47",
+            "reasoning_parser": "glm45",
+            "enable_auto_tools": true,
+            "compilation_config": {
+              "cudagraph_mode": "FULL_DECODE_ONLY",
+              "cudagraph_capture_sizes": [
+                8,
+                16,
+                24,
+                32,
+                40,
+                48,
+                56,
+                64,
+                72,
+                80,
+                88,
+                96,
+                104,
+                112,
+                120,
+                128
+              ]
+            },
+            "gpu_memory_utilization": 0.94,
+            "kv_cache_dtype": "fp8",
+            "xccl_turbo_fix_indexer_cache_block_release": true,
+            "speculative_config": {
+              "method": "mtp",
+              "num_speculative_tokens": 3
+            },
+            "kernel_config": {
+              "enable_flashinfer_autotune": true
+            },
+            "mtp_output_anormaly_config": {
+              "detect_action": "detect_only",
+              "detect_config": {
+                "min_accept_rate": 0.4,
+                "min_gen_tokens": 64,
+                "max_accept_rate": 0.98,
+                "window_steps": 64,
+                "consecutive_steps": 32
+              }
+            }
+          },
+          "resources": [
+            {
+              "device_type": "BNT3",
+              "cpu": 48,
+              "gpu": 4,
+              "memory": "200G"
+            }
+          ],
+          "min": 1,
+          "max": 1,
+          "default": 1
+        }
+      ]
+    }
+  ]
+}

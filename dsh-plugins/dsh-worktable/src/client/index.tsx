@@ -829,6 +829,24 @@ export async function sendCustomToSession(sessionId: string, projectId: string, 
   await promptIntoSession(sessionId, text)
 }
 
+/** AI 日志分析（pipeline.html postMessage 触发）：新开会话，把日志文件路径交给聊天 Agent 分析 */
+async function analyzeLogInSession(logPath: string): Promise<void> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const text = [
+    '【流水线日志分析】',
+    '请阅读并分析流水线运行日志文件：' + logPath,
+    '（内含多次运行记录：每次运行的状态/耗时/执行人，以及各阶段日志；脚本阶段含真实 stdout/stderr 与 exit code。）',
+    '请给出：1) 整体运行情况概述（成功率、趋势）；2) 失败/异常运行的根因分析；3) 可执行的改进建议。',
+  ].join('\n')
+  const sessionId = await b.sessions.create({})
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId)
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+}
+
 // ── 项目 × 对话联动（模块级）──
 /** 打开项目前所处的会话（关项目时回切）；attached = 该项目绑定的会话（无绑定 = 打开前会话） */
 const projectAttachRef: { sessionId: string | null; attached: string | null } = { sessionId: null, attached: null }
@@ -1154,6 +1172,18 @@ function WorktableSection(props: any) {
   const [bindPick, setBindPick] = useState<{ id: string; x: number; y: number } | null>(null)
   const [bindGroups, setBindGroups] = useState<{ title: string; sessions: { id: string; title: string; isCurrent: boolean }[] }[]>([])
   const [bindListOpen, setBindListOpen] = useState(false)
+  /** 应用内目录选择弹窗：native pickDirectory 不可用（browse 组合 / 远程无桌面）时的回退；
+   *  经宿主 browse 能力 listDirectory 逐层浏览，manual 为可编辑的当前路径（确认即取它） */
+  const [dirPick, setDirPick] = useState<{
+    apply: (p: string) => void
+    path: string
+    crumbs: { name: string; path: string }[]
+    entries: { name: string; path: string; hidden: boolean }[]
+    manual: string
+    newName: string
+    loading: boolean
+    error: string | null
+  } | null>(null)
   /** 控制室强制绑定弹窗：未绑定点开「工作台」时弹出（左加入现有对话 / 右新建对话） */
   const [consoleBind, setConsoleBind] = useState<{ x: number; y: number } | null>(null)
   const [consoleGroups, setConsoleGroups] = useState<{ title: string; sessions: { id: string; title: string; isCurrent: boolean }[] }[]>([])
@@ -1756,23 +1786,81 @@ function buildCustomLayoutPrompt(req: string): string {
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]))
   }, [])
 
-  /** 弹出系统文件夹选择窗（宿主 pickDirectory）；选中后回调 */
-  const pickFolder = async (apply: (p: string) => void) => {
+  /** 应用内目录浏览：经宿主 browse 能力 listDirectory 加载一层（path 缺省 = 宿主主目录锚点）；
+   *  manualOverride 用于「列表留在当前层、确认目标指向另一路径」的场景（新建文件夹后选中新目录） */
+  const dirPickLoad = async (path?: string, manualOverride?: string) => {
+    const ws = sessionBridge?.workspaces as any
+    if (!ws || typeof ws.listDirectory !== 'function') {
+      setDirPick((s) => (s ? { ...s, loading: false, error: 'listDirectory unavailable' } : s))
+      return
+    }
+    setDirPick((s) => (s ? { ...s, loading: true, error: null } : s))
     try {
-      const ws = sessionBridge?.workspaces as any
+      const d = await ws.listDirectory(path)
+      setDirPick((s) => (s
+        ? {
+            ...s,
+            loading: false,
+            path: typeof d?.path === 'string' ? d.path : s.path,
+            crumbs: Array.isArray(d?.crumbs) ? d.crumbs : [],
+            entries: Array.isArray(d?.entries) ? d.entries : [],
+            manual: typeof manualOverride === 'string' ? manualOverride : (typeof d?.path === 'string' ? d.path : s.manual),
+            newName: '',
+          }
+        : s))
+    } catch (err) {
+      setDirPick((s) => (s ? { ...s, loading: false, error: String(err) } : s))
+    }
+  }
+
+  /** 目录选择弹窗内新建文件夹：经宿主 browse 能力 createDirectory 在当前目录下建单层目录。
+   *  成功后刷新当前目录列表（新文件夹立即可见）并把确认目标设为新文件夹——对齐宿主
+   *  DirectoryBrowser「创建后重列当前层 + 选中新目录」的交互；直接进入新目录会让列表变空，
+   *  看起来像「没有生效」。失败（重名 / 无权限等）在列表区显示原因 */
+  const dirPickCreate = async () => {
+    const cur = dirPick
+    if (!cur) return
+    const name = cur.newName.trim()
+    if (!name) return
+    if (/[/\\]/.test(name)) { setDirPick((s) => (s ? { ...s, error: t('dirpick.newInvalid') } : s)); return }
+    const ws = sessionBridge?.workspaces as any
+    if (!ws || typeof ws.createDirectory !== 'function' || !cur.path) {
+      setDirPick((s) => (s ? { ...s, error: 'createDirectory unavailable' } : s))
+      return
+    }
+    setDirPick((s) => (s ? { ...s, loading: true, error: null } : s))
+    try {
+      const created = await ws.createDirectory(cur.path, name)
+      const createdPath = typeof created === 'string' && created ? created : joinPath(cur.path, name)
+      await dirPickLoad(cur.path, createdPath)
+    } catch (err) {
+      setDirPick((s) => (s ? { ...s, loading: false, error: String(err) } : s))
+    }
+  }
+
+  /** 弹出系统文件夹选择窗（宿主 pickDirectory）；选中后回调。
+   *  native 能力不可用（宿主组合的是 browse 选择器 / 远程无桌面）时回退应用内目录浏览弹窗；
+   *  用户在原生框里点取消（返回 null）不回退。 */
+  const pickFolder = async (apply: (p: string) => void, startPath?: string) => {
+    const ws = sessionBridge?.workspaces as any
+    try {
       if (ws && typeof ws.pickDirectory === 'function') {
         const p = await ws.pickDirectory()
         if (p && typeof p === 'string') apply(p)
+        return
       }
-    } catch { /* 取消或不可用 */ }
+    } catch { /* native 不可用 → 落入应用内浏览 */ }
+    const start = typeof startPath === 'string' ? startPath.trim() : ''
+    setDirPick({ apply, path: start, crumbs: [], entries: [], manual: start, newName: '', loading: true, error: null })
+    dirPickLoad(start || undefined)
   }
 
-  /** 绑定弹窗「更改」：弹窗选择文件夹，直接作为项目文件夹 */
+  /** 绑定弹窗「更改」：弹窗选择文件夹，直接作为项目文件夹（起始定位到当前文件夹） */
   const changeBindFolder = () => {
     if (!bindPick) return
     pickFolder((p) => {
       persistProjects((prev) => ({ ...prev, folders: { ...prev.folders, [bindPick.id]: p } }))
-    })
+    }, projectsRef.current.projects.folders[bindPick.id] ?? undefined)
   }
 
   /** 绑定 / 解绑会话（弹窗保持打开，绑定结果即时显示在「绑定对话」框里） */
@@ -2651,7 +2739,7 @@ function buildCustomLayoutPrompt(req: string): string {
               <span className={'dsh-wt_addFolderPath' + (wsFolderParent ? '' : ' dsh-wt_addFolderPathNone')} title={wsFolderParent || ''}>
                 {wsFolderParent || t('add.folderNone')}
               </span>
-              <button type="button" className="dsh-wt_bindFolderChange" onClick={() => { pickFolder((p) => { setWsFolderParent(p); setWsFolderError(false) }); setWsError(false) }}>{t('add.folderPick')}</button>
+              <button type="button" className="dsh-wt_bindFolderChange" onClick={() => { pickFolder((p) => { setWsFolderParent(p); setWsFolderError(false) }, wsFolderParent || undefined); setWsError(false) }}>{t('add.folderPick')}</button>
             </div>
             <button type="button" className="dsh-wt_addBtn" onClick={saveLayout}>{t('add.layoutSave')}</button>
           </div>
@@ -2927,6 +3015,66 @@ function buildCustomLayoutPrompt(req: string): string {
         )
       })()}
 
+      {/* 应用内目录选择弹窗：native pickDirectory 不可用（browse 组合 / 远程访问）时的回退；
+          面包屑 + 目录列表逐层浏览，路径输入框可手输回车跳转，「选择此文件夹」取输入框值 */}
+      {dirPick && <div className="dsh-wt_popBackdrop" style={{ zIndex: 87 }} onClick={() => setDirPick(null)} />}
+      {dirPick && (
+        <div className="dsh-wt_menu dsh-wt_pop dsh-wt_dirPickPop" style={{ position: 'fixed', left: '50%', top: '50%', transform: 'translate(-50%,-50%)', width: 360, zIndex: 88 }}>
+          <div className="dsh-wt_bindFolderRow">
+            <span className="dsh-wt_bindFolderLabel">📁 {t('dirpick.title')}</span>
+            <button type="button" className="dsh-wt_bindFolderChange" onClick={() => setDirPick(null)}>{t('confirm.cancel')}</button>
+          </div>
+          <div className="dsh-wt_dirPickCrumbs">
+            {dirPick.crumbs.map((c, i) => (
+              <Fragment key={c.path + ':' + i}>
+                {i > 0 && <span className="dsh-wt_dirPickSep" aria-hidden>/</span>}
+                <button type="button" className="dsh-wt_dirPickCrumb" title={c.path} onClick={() => dirPickLoad(c.path)}>{c.name}</button>
+              </Fragment>
+            ))}
+          </div>
+          <input
+            className="dsh-wt_customPathInput dsh-wt_dirPickInput"
+            value={dirPick.manual}
+            placeholder={t('dirpick.manualPh')}
+            spellCheck={false}
+            onChange={(e) => setDirPick((s) => (s ? { ...s, manual: e.target.value } : s))}
+            onKeyDown={(e) => { if (e.key === 'Enter' && dirPick.manual.trim()) dirPickLoad(dirPick.manual.trim()) }}
+          />
+          <div className="dsh-wt_dirPickNew">
+            <input
+              className="dsh-wt_customPathInput"
+              value={dirPick.newName}
+              placeholder={t('dirpick.newPh')}
+              spellCheck={false}
+              onChange={(e) => setDirPick((s) => (s ? { ...s, newName: e.target.value } : s))}
+              onKeyDown={(e) => { if (e.key === 'Enter') dirPickCreate() }}
+            />
+            <button type="button" className="dsh-wt_bindFolderChange" disabled={!dirPick.newName.trim() || dirPick.loading} onClick={dirPickCreate}>
+              ＋ {t('dirpick.newBtn')}
+            </button>
+          </div>
+          <div className="dsh-wt_selectList dsh-wt_dirPickList">
+            {dirPick.loading && <div className="dsh-wt_dirPickMsg">{t('dirpick.loading')}</div>}
+            {!dirPick.loading && dirPick.error && <div className="dsh-wt_dirPickMsg dsh-wt_dirPickErr">{dirPick.error}</div>}
+            {!dirPick.loading && !dirPick.error && dirPick.entries.length === 0 && <div className="dsh-wt_dirPickMsg">{t('dirpick.empty')}</div>}
+            {!dirPick.loading && !dirPick.error && dirPick.entries.map((en) => (
+              <button key={en.path} type="button" className="dsh-wt_selectItem" title={en.path} onClick={() => dirPickLoad(en.path)}>
+                <span aria-hidden>📁</span>
+                <span className="dsh-wt_selectItemTitle">{en.name}</span>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="dsh-wt_customSend dsh-wt_dirPickOk"
+            disabled={!dirPick.manual.trim()}
+            onClick={() => { const p = dirPick.manual.trim(); if (!p) return; dirPick.apply(p); setDirPick(null) }}
+          >
+            {t('dirpick.confirm')}
+          </button>
+        </div>
+      )}
+
       {/* 控制室强制绑定弹窗：左「加入现有对话」+ 右「新建对话」，选定/建成后自动打开控制室 */}
       {consoleBind && <div className="dsh-wt_popBackdrop" style={{ zIndex: 85 }} onClick={() => setConsoleBind(null)} />}
       {consoleBind && (
@@ -3167,6 +3315,18 @@ export function apply(ctx: any) {
   ctx.effect(() => {
     if (ctx.locale?.register) return ctx.locale.register(NS, { zh, en })
   }, 'dsh-worktable: dictionaries')
+
+  // iframe 内容页（如 pipeline.html）→ 聊天窗桥：收到 AI 日志分析请求后新开会话
+  ctx.effect(() => {
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return
+      const d = e.data as any
+      if (!d || d.type !== 'worktable:analyze-log' || typeof d.path !== 'string' || !d.path) return
+      analyzeLogInSession(d.path).catch((err) => ctx.logger?.warn?.('[dsh-worktable] analyze-log failed: ' + String(err)))
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, 'dsh-worktable: analyze-log bridge')
 
   // 子座位注册 id 序列跟踪（供排序/编辑模式使用）
   const syncIds = () => {

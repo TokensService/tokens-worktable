@@ -1,0 +1,27 @@
+{
+  "arch_name": "glm-5.2-nvfp4",
+  "resources": [
+    {
+      "resource_id": "glm-5.2-nvfp4-prefill-1",
+      "role": "prefill",
+      "resource_type": "prefill",
+      "resource_status": "IDLE",
+      "resource_bundles": [
+        "127.0.0.1"
+      ],
+      "task_executor_group": "taskExecutorGroup4prefill1",
+      "gpu": 4
+    },
+    {
+      "resource_id": "glm-5.2-nvfp4-decode-1",
+      "role": "decode",
+      "resource_type": "decode",
+      "resource_status": "IDLE",
+      "resource_bundles": [
+        "127.0.0.2"
+      ],
+      "task_executor_group": "taskExecutorGroup4decode1",
+      "gpu": 4
+    }
+  ]
+}
