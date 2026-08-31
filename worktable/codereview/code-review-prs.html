@@ -713,7 +713,7 @@
       navigator.clipboard.writeText(prompt).then(done, function () { fallbackCopy(prompt, done); });
     } else { fallbackCopy(prompt, done); }
     try {
-      var dshUrl = (location.origin && location.origin.indexOf("http") === 0) ? location.origin : "http://127.0.0.1:3080";
+      var dshUrl = (location.origin && location.origin.indexOf("http") === 0) ? location.origin : "http://127.0.0.1:3051";
       window.open(dshUrl + "/", "_blank", "noopener");
     } catch (e) { /* 弹窗被拦截时，用户已复制提示，可手动打开 */ }
   }

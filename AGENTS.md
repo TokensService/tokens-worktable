@@ -7,6 +7,7 @@ op_test —— 自动化测试与优化工具。本仓库是一个「宿主工�
 ```
 deepseek-harness/   git 子模块（github.com/deepseek-ai/deepseek-harness），dsh 本体
 dsh.sh              dsh 编译 / 安装 / 运行 / Web 后台管理脚本（本仓库的主入口）
+install-plugins.sh  一键安装 dsh-plugins/ 下所有插件（构建 → plugin add link: → 重启 web，幂等）
 dsh-plugins/
   dsh-worktable/    工作台插件的本地副本（含本仓库自有改动，见其中 CHANGES.md）
 worktable/          工作台项目页与配套脚本（由插件经 /api/worktable/* 提供访问）
@@ -36,17 +37,17 @@ dsh-web.log / dsh-web.pid   dsh web 后台进程的运行日志与 pid（已 git
 ./dsh.sh install    # 在 pnpm 全局 bin 生成 dsh 包装脚本，指向仓库编译产物
 ./dsh.sh run ...    # 前台运行 dsh，参数透传
 ./dsh.sh all ...    # build + install + run
-./dsh.sh start      # 后台启动 dsh web（setsid nohup，默认端口 3080，幂等）
+./dsh.sh start      # 后台启动 dsh web（setsid nohup，默认端口 3051，幂等）
 ./dsh.sh stop / restart / status / log
 ```
 
-关键环境变量：`DSH_REPO`（子模块路径）、`DSH_HOME`（dsh 数据目录，默认 `/mnt/paas`）、`DSH_WORKDIR`（web 新会话默认工作目录，默认脚本所在目录）、`DSH_WEB_PORT`（默认 3080）、`DSH_LOG_DIR`、`DEEPSEEK_API_KEY`（存在 `$DSH_REPO/.env` 时自动加载）。
+关键环境变量：`DSH_REPO`（子模块路径）、`DSH_HOME`（dsh 数据目录，默认 `/mnt/paas`）、`DSH_WORKDIR`（web 新会话默认工作目录，默认脚本所在目录）、`DSH_WEB_PORT`（默认 3051）、`DSH_LOG_DIR`、`DEEPSEEK_API_KEY`（存在 `$DSH_REPO/.env` 时自动加载）。
 
 运行态要点：
 
 - web profile 位于 `$DSH_HOME/profiles/web/`（即 `/mnt/paas/profiles/web/`），其 `package.json` 的 `dsh.profile.bundles` 组合了 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-web-app`、`dsh-worktable`、`dshmarket`、`dsh-better-sidebar`；其中 `dsh-worktable` 以 `file:` 依赖指向本仓库的 `dsh-plugins/dsh-worktable`。
 - profile 的用户覆写层是 `profiles/web/cordis.patch.yml`（目录选择器主目录跟随 `DSH_WORKDIR`）；不要直接改 `cordis.yml`。
-- 端口被占时 web 启动失败报 `EADDRINUSE 127.0.0.1:3080`，用 `./dsh.sh stop` 清理后再启动。
+- 端口被占时 web 启动失败报 `EADDRINUSE 127.0.0.1:3051`，用 `./dsh.sh stop` 清理后再启动。
 
 ## dsh-plugins/dsh-worktable（工作台插件）
 
@@ -63,7 +64,7 @@ dsh web 侧边栏的 agent 级项目容器（应用抽屉），纯增量插件�
   ```
 
 - 必须在本目录下构建（产物写入本目录 `lib/`）；客户端 bundle 保持 `window.__ModuleLoader__.load` 握手，`react` / `@deepseek-ai/*` 全部 external。
-- 装/卸载走 `dsh plugin --profile web add "link:<本目录绝对路径>"`，改完需 `./dsh.sh restart` 并刷新页面生效。
+- 装/卸载走 `dsh plugin --profile web add "link:<本目录绝对路径>"`，改完需 `./dsh.sh restart` 并刷新页面生效；也可直接用根目录 `./install-plugins.sh` 一键完成「构建 → add → 重启」。
 
 ## worktable/（工作台项目页）
 

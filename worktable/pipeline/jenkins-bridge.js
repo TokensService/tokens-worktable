@@ -2,7 +2,7 @@
 // jenkins-bridge.js — 本地 Jenkins CORS 桥接（工作台「流水线」项目专用）
 // 监听 127.0.0.1:28081（默认），把请求转发到上游 Jenkins（默认 http://127.0.0.1:28080，
 // 该地址通常是 ssh -L 隧道），并为所有响应附加 CORS 头、把响应里的绝对 Jenkins 地址
-// 改写为桥接地址。这样浏览器页面（工作台 :3080）即可跨域直连本机 Jenkins，
+// 改写为桥接地址。这样浏览器页面（工作台 :3051）即可跨域直连本机 Jenkins，
 // 全程不出本机、无需配置任何代理、无需改动 Jenkins 本身。
 // 启动：  node jenkins-bridge.js            （日志写 bridge.log，pid 写 bridge.pid）
 // 环境变量：BRIDGE_BIND（默认 0.0.0.0）、BRIDGE_PORT（默认 28081）、
