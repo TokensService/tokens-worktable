@@ -1015,7 +1015,12 @@ async function fetchBranchesJenkins(r){
         url=job.replace(/([?&])offset=\d+/, '$1offset='+next);      // 保留原 query，仅替换/追加 offset
         if(url===job) url=job+(job.indexOf('?')>=0?'&':'?')+'offset='+next;
       }
-    }catch(e){ out.error='refs 接口请求失败：'+String(e.message||e).slice(0,160); return out; }
+    }catch(e){
+      const em=String((e&&e.message)||e).slice(0,160);
+      /* TypeError（Failed to fetch / NetworkError / Load failed）= 浏览器层失败，多为 CORS 拦截（接口未回 Access-Control-Allow-Origin）或网络不可达，补充排查指引 */
+      out.error='refs 接口请求失败：'+em+(/failed to fetch|networkerror|load failed/i.test(em)?' —— 多为 CORS 拦截或网络不可达：若浏览器地址栏能直接打开该接口即为 CORS，需接口方添加 Access-Control-Allow-Origin 响应头（浏览器安全限制，页面侧无法绕过）；否则请检查到该服务的网络通路':'');
+      return out;
+    }
     out.branches=Array.from(new Set(branches)).sort(); out.tags=Array.from(new Set(tags)).sort(); out.ok=true; return out;
   }
   const base=(j.url||'').replace(/\/+$/,'');
