@@ -130,7 +130,7 @@ if command -v python3 >/dev/null 2>&1; then
       remote_nerdctl_pull="DOCKER_CONFIG='$remote_auth_dir' nerdctl --namespace k8s.io pull '$IMAGE'"
     fi
     remote_pull="${remote_auth_setup}if command -v nerdctl >/dev/null 2>&1; then nerdctl --namespace k8s.io image inspect '$IMAGE' >/dev/null 2>&1 || $remote_nerdctl_pull; elif command -v docker >/dev/null 2>&1; then docker image inspect '$IMAGE' >/dev/null 2>&1 || $remote_docker_pull; else echo 'neither docker nor nerdctl is available' >&2; exit 2; fi${remote_auth_cleanup}"
-    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -n -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o LogLevel=ERROR "$user@$ip" "${remote_proxy_env}${remote_pull}"
+    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -n -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$user@$ip" "${remote_proxy_env}${remote_pull}"
   done < <(python3 -c 'import json,sys
 for host in json.loads(sys.argv[1]): print(host.get("ip", ""), host.get("user", "root"), sep="\t")' "$TARGET_HOSTS")
 else
