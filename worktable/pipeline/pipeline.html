@@ -339,7 +339,7 @@
         <input id="repoUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
         <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" />
         <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；Jenkins=多分支任务子任务名即分支（任务框也可直接粘贴 refs 接口地址），浏览器直连=本地浏览器请求 Jenkins，服务端代连=经 /api/worktable/proxy 由 DSH 服务端请求（按仓库各自选择，不跟随全局连接模式）" style="width:128px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins-browser">Jenkins·浏览器直连</option><option value="jenkins-server">Jenkins·服务端代连</option></select>
-        <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}）" style="width:240px;display:none;" autocomplete="off" />
+        <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}；免凭证，不附带 Jenkins 用户名/令牌）" style="width:240px;display:none;" autocomplete="off" />
         <button id="repoAdd" class="dshell-btn mini">添加</button>
         <button id="repoAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/令牌应用到所有仓库">应用凭证到全部</button>
         <button id="repoCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
@@ -990,19 +990,20 @@ async function fetchBranchesBrowser(repo){
   out.tags=refs.filter(x=>x.name.indexOf('refs/tags/')===0).map(x=>x.name.slice(10)).sort();
   out.ok=true; return out;
 }
-/* Jenkins 分支来源有两种：① 多分支/文件夹任务：子任务名即分支；② 自定义 refs 接口：jenkinsJob 直接填完整 http(s) 地址，返回分页 JSON {total,offset,limit,next_offset,items:[{type,name}]}，跟 next_offset 逐页拉全。复用全局 jenkins 凭据 + jkFetchJson/jkJobPath，但连接方式按仓库选择覆盖全局连接模式：jenkins-browser=local 浏览器直连；jenkins-server=remote 经 /api/worktable/proxy 服务端代连。返回 {ok, branches, tags, error} */
+/* Jenkins 分支来源有两种：① 多分支/文件夹任务：子任务名即分支；② 自定义 refs 接口：jenkinsJob 直接填完整 http(s) 地址，返回分页 JSON {total,offset,limit,next_offset,items:[{type,name}]}，跟 next_offset 逐页拉全（refs 接口免凭证，请求不附带 Jenkins 用户名/令牌）。多分支任务路径复用全局 jenkins 凭据 + jkFetchJson/jkJobPath，连接方式按仓库选择覆盖全局连接模式：jenkins-browser=local 浏览器直连；jenkins-server=remote 经 /api/worktable/proxy 服务端代连。返回 {ok, branches, tags, error} */
 async function fetchBranchesJenkins(r){
   const out={ok:false, branches:[], tags:[], error:''};
   const job=(r.jenkinsJob||'').trim();
   if(!job){ out.error='未配置 Jenkins 任务（在「代码仓」表单选择一个多分支任务，或粘贴 refs 接口完整地址）'; return out; }
   const j=Object.assign({}, jenkins, {mode:(r.fetchMode==='jenkins-server')?'remote':'local'});
-  /* ② refs 接口：分页 {total,offset,limit,next_offset,items:[{type:'branch'|'tag',name}]}，逐页拉取直至拉全 */
+  /* ② refs 接口：分页 {total,offset,limit,next_offset,items:[{type:'branch'|'tag',name}]}，逐页拉取直至拉全；接口免凭证，不携带 Jenkins 凭据 */
   if(/^https?:\/\//i.test(job)){
+    const jn=Object.assign({}, j, {user:'', token:''});   // refs 接口免凭证：清空用户名/令牌，jkFetchJson 即不附加 Authorization
     const branches=[], tags=[];
     try{
       let url=job;
       for(let page=0; page<100; page++){            // 页数兜底，防接口异常导致死循环
-        const data=await jkFetchJson(j, url);
+        const data=await jkFetchJson(jn, url);
         const items=(data && Array.isArray(data.items))?data.items:[];
         if(!items.length){ if(page===0){ out.error='refs 接口未返回任何条目（items 为空，请确认接口地址与分页格式）'; return out; } break; }
         for(const it of items){
