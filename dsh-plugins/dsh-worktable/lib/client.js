@@ -19053,6 +19053,19 @@ async function analyzeLogInSession(logPath) {
   }
   await promptIntoSession(sessionId, text2);
 }
+async function newChatInProject(text2) {
+  const b = sessionBridge;
+  if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
+  const sessionId = await b.sessions.create({});
+  await ensureSessionPreset(sessionId);
+  await ensureSessionModel(sessionId);
+  markPluginSessionOpen(sessionId);
+  try {
+    await b.sessions.open?.(sessionId);
+  } catch {
+  }
+  await promptIntoSession(sessionId, text2);
+}
 var projectAttachRef = { sessionId: null, attached: null };
 var suppressRestoreRef = { current: false };
 var projectBindingsRef = { current: {} };
@@ -21539,6 +21552,7 @@ function apply(ctx) {
     window.__dshOpenSession = (id) => ctx.sessions?.open?.(id);
     window.__dshSessions = ctx.sessions;
     window.__dshPromptIntoSession = (id, text2) => promptIntoSession(id, text2);
+    window.__dshNewChatSession = (text2) => newChatInProject(text2);
     window.__dshWorkspaces = ctx.workspaces;
     window.__dshBuildWindowTaskText = buildWindowTaskText;
     window.__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list);

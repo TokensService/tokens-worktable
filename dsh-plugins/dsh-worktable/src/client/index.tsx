@@ -847,6 +847,19 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
   await promptIntoSession(sessionId, text)
 }
 
+/** 内容页（pipeline.html「页面修改」按钮等）→ 右侧聊天窗桥（经 window.__dshNewChatSession 暴露给 iframe 调用）：
+ *  新建会话并发送提示词；标记为插件发起的切换，项目分栏保持打开，新会话出现在右侧聊天窗而非离开项目页。 */
+async function newChatInProject(text: string): Promise<void> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const sessionId = await b.sessions.create({})
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+}
+
 // ── 项目 × 对话联动（模块级）──
 /** 打开项目前所处的会话（关项目时回切）；attached = 该项目绑定的会话（无绑定 = 打开前会话） */
 const projectAttachRef: { sessionId: string | null; attached: string | null } = { sessionId: null, attached: null }
@@ -3275,7 +3288,7 @@ export function apply(ctx: any) {
   sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null }
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
 
 
   ctx.effect(() => {
