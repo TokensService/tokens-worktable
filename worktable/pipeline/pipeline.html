@@ -73,6 +73,10 @@
     /* Jenkins 连接模式分段切换（选中态走主题 accent） */
     .jk-modeBtn { border-radius:0; }
     .jk-modeBtn.sel { background:var(--dsw-alias-state-accent-primary); color:#fff; border-color:var(--dsw-alias-state-accent-primary); }
+    /* 服务端同步浮层提示（定时任务完成等；右下角，色板走主题变量，浅/深自适应） */
+    .sync-toast { position:fixed; right:16px; bottom:16px; z-index:60; display:flex; flex-direction:column; gap:8px; max-width:360px; }
+    .sync-toast-item { background:var(--dsw-alias-bg-base); border:1px solid var(--dsw-alias-border-l2); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--dsw-alias-label-primary); box-shadow:0 8px 24px rgba(0,0,0,.35); cursor:pointer; }
+    .sync-toast-item:hover { border-color:var(--dsw-alias-state-accent-primary); }
   </style>
   <script>
     /* 防闪烁：首屏前按已存偏好解析主题（浅色 / 深色 / 跟随系统） */
@@ -1980,6 +1984,62 @@ function renderPlanList(){
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
 function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
+/* ---------- 服务端自动同步：定时任务由服务端调度执行（关闭页面也会跑），
+   页面与调度器 15s tick 对齐轮询，把服务端新增的运行历史（定时触发/其他窗口运行）合并进本地并刷新历史与统计；
+   一次性计划执行完会被服务端移除，定时计划列表同步跟随。
+   只读取 history / buildNo / plans —— 不回传、不覆盖配置，避免冲掉本页未保存的编辑；
+   buildNo 取大：服务端定时执行会自增编号，不同步会导致本地下次运行复用编号。 ---------- */
+let syncInFlight=false;
+function histKey(h){ return ((h&&h.no)||0)+'|'+(h&&h.commit||'')+'|'+(h&&h.time||'')+'|'+(h&&h.pipeline||''); }
+async function syncServer(){
+  if(!stateLoaded || syncInFlight) return;
+  syncInFlight=true;
+  try{
+    const r=await fetch('/api/worktable/pipeline');
+    if(r.ok){
+      const st=await r.json();
+      const cfg=st.config && typeof st.config==='object' && !Array.isArray(st.config) ? st.config : {};
+      if(Number.isFinite(cfg.buildNo) && cfg.buildNo>buildNo) buildNo=cfg.buildNo;
+      const srv=Array.isArray(st.history)?st.history:[];
+      const known={}; history.forEach(h=>{ known[histKey(h)]=1; });
+      const news=srv.filter(h=>h && !h.demo && !known[histKey(h)]);
+      if(news.length){
+        history=history.concat(news).sort((a,b)=>((b&&b.no)||0)-((a&&a.no)||0));
+        if(history.length>200) history.length=200;
+        renderHistory(); renderStats();
+        showSyncToast(news);
+      }
+    }
+    const rp=await fetch('/api/worktable/pipeline/plans');
+    if(rp.ok){
+      const j=await rp.json(); const fresh=Array.isArray(j.plans)?j.plans:[];
+      if(JSON.stringify(fresh)!==JSON.stringify(serverPlans)){ serverPlans=fresh; renderPlanList(); }
+    }
+  }catch(e){}
+  syncInFlight=false;
+}
+/* 同步浮层：新记录提示（⏰=定时触发），点击切回「流水线」页选中对应历史行并滚动定位，8s 自动消失 */
+function showSyncToast(news){
+  let box=$('syncToast');
+  if(!box){ box=document.createElement('div'); box.id='syncToast'; box.className='sync-toast'; document.body.appendChild(box); }
+  news.slice(0,3).forEach(h=>{
+    const ok=h.status==='success';
+    const sched=String(h.by||'').indexOf('⏰')>=0;
+    const t=document.createElement('div');
+    t.className='sync-toast-item';
+    t.innerHTML='<span style="color:var('+(ok?'--st-ok':'--st-err')+');font-weight:600;">'+(ok?'✓':'✗')+'</span> '
+      +'#'+(h.no||'?')+' '+esc(h.pipeline||'流水线')+' · '+esc(labelOf(h.status))
+      +' <span class="dshell-muted" style="font-size:11px;">'+(sched?'⏰ 定时完成':'服务端同步')+' · 点击查看</span>';
+    t.addEventListener('click',()=>{
+      switchPage('main');
+      selHistoryIdx=history.indexOf(h); histPage=0; renderHistory();
+      const tr=$('historyTable').querySelector('tbody tr.sel'); if(tr) tr.scrollIntoView({behavior:'smooth',block:'center'});
+      t.remove();
+    });
+    box.appendChild(t);
+    setTimeout(()=>{ t.remove(); },8000);
+  });
+}
 /* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
    （稳定 id 去重——重跑同一条流水线会替换旧计划而非叠加）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
@@ -2946,6 +3006,9 @@ renderAll();
 loadServerState();
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
+/* 服务端自动同步：与调度器 15s tick 对齐轮询；标签页重新可见时立即补一次 */
+setInterval(syncServer, 15000);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) syncServer(); });
 </script>
 </body>
 </html>
