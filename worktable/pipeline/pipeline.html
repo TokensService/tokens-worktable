@@ -58,8 +58,6 @@
     .dshell-table th[data-sort] .env-sort-arrow { display:inline-block; min-width:12px; margin-left:2px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
     @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 color-mix(in srgb, var(--st-run) 45%, transparent);} 50%{ box-shadow:0 0 0 4px transparent;} }
     .pipeline-node.run { animation:pipPulse 1.4s infinite; }
-    @keyframes dswSpin { to { transform:rotate(360deg); } }
-    .dshell-btn.spinning { animation:dswSpin .9s linear infinite; }
     .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     @media (max-width:900px){ .pipeline-cols{ grid-template-columns:1fr; } }
     .logbox { background:var(--log-bg); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:10px 12px; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:11px; line-height:1.55; color:var(--log-fg); max-height:240px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
@@ -140,8 +138,10 @@
       </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
-      <select id="deployStrategySel" class="dshell-input" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取该分支支持的部署策略（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）"></select>
-      <button id="deployStrategyRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="重新拉取当前分支的部署策略" style="padding:2px 7px;">⟳</button>
+      <span id="strategyPick" style="position:relative;display:inline-block;">
+        <input id="deployStrategyName" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取支持的部署策略，聚焦弹出面板可搜索/刷新（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）" />
+        <div id="strategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+      </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
@@ -1085,7 +1085,7 @@ async function testRepoStrategy(r){
   const st=await fetchDeployStrategies(stUrl, br);
   if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（分支 '+br+'）：'+st.error; }
   else { tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 部署策略拉取成功（分支 '+br+'）· '+st.items.length+' 个：'+st.items.slice(0,8).join('、')+(st.items.length>8?' …':''); }
-  if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; renderDeployStrategyOptions(); }
+  if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; if(strategyPanelOpen()) renderStrategyPanel(); }
 }
 /* 分支/Tag 选择：按当前代码仓搜索远程分支与 Tag，下拉面板点选；仍可手动输入 */
 async function loadRepoBranches(repo, force){
@@ -1164,46 +1164,46 @@ async function fetchDeployStrategies(tpl, branch){
     return {items:Array.from(new Set(items)), error:''};
   }catch(e){ return {items:[], error:String(e.message||e).slice(0,160)}; }
 }
-/* 刷新按钮状态：未配置策略 URL 时禁用；拉取中转圈并禁用；结果（成功个数/失败原因）写进 tooltip */
-function setStrategyRefreshBtn(state, tip){
-  const btn=$('deployStrategyRefresh'); if(!btn) return;
-  btn.disabled=(state!=='ready');
-  btn.classList.toggle('spinning', state==='loading');
-  btn.title=tip||'重新拉取当前分支的部署策略';
-}
-function strategyRefreshTip(branch, st){
-  return st.error ? ('部署策略拉取失败：'+st.error+'（点击重试）') : ('重新拉取当前分支的部署策略（分支 '+branch+' · 已加载 '+st.items.length+' 个）');
-}
+/* 主控当前选中的部署策略（input 自由文本，可手输列表外名称；空串=不使用） */
+function curStrategy(){ const i=$('deployStrategyName'); return i?i.value.trim():''; }
+function strategyPanelOpen(){ const p=$('strategyPanel'); return !!(p && p.style.display!=='none'); }
+/* 拉取当前分支的策略列表进缓存；仅面板打开时重绘（初始化调用不弹面板） */
 async function loadDeployStrategies(force){
-  const sel=$('deployStrategySel'); if(!sel) return;
   const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
   const tpl=((repo && repo.strategyUrl)||'').trim();
-  if(!tpl){
-    sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
-    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略';
-    setStrategyRefreshBtn('disabled','在「设置」页代码仓配置「部署策略 URL」后可刷新部署策略'); return;
-  }
-  sel.disabled=false; sel.title='按当前分支从代码仓「部署策略 URL」拉取支持的部署策略';
   const key=deployStrategyKey(repo,branch);
+  if(!tpl){ delete deployStrategies[key]; if(strategyPanelOpen()) renderStrategyPanel(); return; }
   const cached=deployStrategies[key];
-  if(!force && cached && !cached.loading){ setStrategyRefreshBtn('ready', strategyRefreshTip(branch, cached)); renderDeployStrategyOptions(); return; }
-  deployStrategies[key]={loading:true}; renderDeployStrategyOptions();
-  setStrategyRefreshBtn('loading','正在拉取分支 '+branch+' 的部署策略…');
+  if(!force && cached && !cached.loading){ if(strategyPanelOpen()) renderStrategyPanel(); return; }
+  deployStrategies[key]={loading:true}; if(strategyPanelOpen()) renderStrategyPanel();
   deployStrategies[key]=await fetchDeployStrategies(tpl, branch);
-  setStrategyRefreshBtn('ready', strategyRefreshTip(branch, deployStrategies[key]));
-  renderDeployStrategyOptions();
+  if(strategyPanelOpen()) renderStrategyPanel();
 }
-function renderDeployStrategyOptions(){
-  const sel=$('deployStrategySel'); if(!sel||sel.disabled) return;
-  const cur=sel.value;
-  const st=deployStrategies[deployStrategyKey(curRepo(), $('branchName').value.trim()||'main')];
-  sel.innerHTML='';
-  const add=(v,t,tip)=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; if(tip) o.title=tip; sel.appendChild(o); };
-  add('','（不使用）');
-  if(!st || st.loading){ add('','加载中…'); }
-  else if(st.error){ add('','加载失败',st.error); sel.title='部署策略拉取失败：'+st.error; }
-  else st.items.forEach(n=>add(n,n));
-  if(cur && Array.from(sel.options).some(o=>o.value===cur)) sel.value=cur; else sel.value='';
+/* 部署策略搜索面板：与分支/Tag 面板同款——头部仓库/分支/个数 + ⟳ 重新拉取，列表按输入筛选，点选回填 */
+function renderStrategyPanel(showAll){
+  const panel=$('strategyPanel'); const inp=$('deployStrategyName'); if(!panel||!inp) return;
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
+  const q=showAll?'':inp.value.trim().toLowerCase();
+  const tpl=((repo && repo.strategyUrl)||'').trim();
+  const st=tpl?deployStrategies[deployStrategyKey(repo,branch)]:null;
+  const ready=st&&!st.loading&&!st.error;
+  let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+esc(branch)+(ready?(' · '+st.items.length+' 策略'):' · …')+'</span>'
+    +'<span data-strategyrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
+  if(!tpl){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">未配置「部署策略 URL」，请在「设置」页代码仓中配置</div>'; }
+  else if(!st || st.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
+  else if(st.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(st.error.slice(0,200))+'</div>'; }
+  else {
+    const cur=inp.value.trim();
+    const items=st.items.filter(n=>!q||n.toLowerCase().indexOf(q)>=0).slice(0,200);
+    const item=(name)=>'<div data-strategy="'+esc(name)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(name===cur?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+(name?esc(name):'<span class="dshell-muted">（不使用）</span>')+'</div>';
+    h+=item('');
+    if(!items.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配</div>'; }
+    else { h+='<div class="dshell-muted" style="font-size:10px;padding:3px 8px 2px;opacity:.7;">策略（'+items.length+'）</div>'+items.map(item).join(''); }
+  }
+  panel.innerHTML=h; panel.style.display='block';
+  panel.querySelectorAll('[data-strategy]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-strategy'); panel.style.display='none'; inp.focus(); }));
+  const rb=panel.querySelector('[data-strategyrefresh]'); if(rb) rb.addEventListener('click', ()=>loadDeployStrategies(true));
 }
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
@@ -1997,7 +1997,7 @@ function startRun(opts){
   const repo = resolveRepo(opts.repoId || $('repoSel').value);
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const strategy = opts.strategy!==undefined ? opts.strategy : (($('deployStrategySel') && $('deployStrategySel').value) || '');
+  const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const c = {env, envs, image, release, repo, branch, by, strategy, source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
@@ -2046,7 +2046,7 @@ function runPipeline(opts){
   const repoId = opts.repoId || $('repoSel').value;
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const strategy = opts.strategy!==undefined ? opts.strategy : (($('deployStrategySel') && $('deployStrategySel').value) || '');
+  const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
     env, envs, image, release, repoId, branch, strategy, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
@@ -2981,8 +2981,10 @@ document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$(
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
-/* 部署策略手动刷新：绕过缓存强制重拉当前分支的策略列表（同分支/Tag 面板的 ⟳） */
-$('deployStrategyRefresh').addEventListener('click', ()=>loadDeployStrategies(true));
+/* 部署策略搜索面板：聚焦/输入时按当前分支拉取并筛选策略；点外关闭（同分支/Tag 面板交互） */
+$('deployStrategyName').addEventListener('focus', ()=>{ loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
+$('deployStrategyName').addEventListener('input', ()=>{ if($('strategyPanel').style.display==='none'){ loadDeployStrategies().then(()=>renderStrategyPanel()); } else { renderStrategyPanel(); } });
+document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$('strategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 $('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(()=>renderBranchPanel()); } else { renderBranchPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
