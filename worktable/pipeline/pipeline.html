@@ -52,6 +52,10 @@
     .pipeline-sub > span.ok { color:var(--st-ok); border-color:color-mix(in srgb, var(--st-ok) 40%, transparent); }
     .pipeline-sub > span.run { color:var(--st-run); border-color:color-mix(in srgb, var(--st-run) 40%, transparent); }
     .pipeline-sub > span.fail{ color:var(--st-err); border-color:color-mix(in srgb, var(--st-err) 40%, transparent); }
+    /* 节点环境表头排序：可点列头 + 升降序箭头（色板走主题变量） */
+    .dshell-table th[data-sort] { cursor:pointer; user-select:none; white-space:nowrap; }
+    .dshell-table th[data-sort]:hover { color:var(--dsw-alias-state-accent-primary); }
+    .dshell-table th[data-sort] .env-sort-arrow { display:inline-block; min-width:12px; margin-left:2px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
     @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 color-mix(in srgb, var(--st-run) 45%, transparent);} 50%{ box-shadow:0 0 0 4px transparent;} }
     .pipeline-node.run { animation:pipPulse 1.4s infinite; }
     .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
@@ -134,7 +138,7 @@
       </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
-      <input id="triggeredBy" class="dshell-input" value="dev-li" />
+      <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="cleanupEnv" /> 先清理环境
@@ -266,7 +270,7 @@
         <input id="schedBranch" class="dshell-input" value="main" autocomplete="off" style="min-width:110px;" />
       </label>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
-        <input id="schedBy" class="dshell-input" value="dev-li" />
+        <input id="schedBy" class="dshell-input" placeholder="必填" autocomplete="off" />
       </label>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">方式
         <select id="runSched" class="dshell-input" style="min-width:92px;">
@@ -275,7 +279,15 @@
         </select>
       </label>
       <label id="runSchedEveryWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">每
-        <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" /> 分钟
+        <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" />
+        <select id="runSchedUnit" class="dshell-input" style="min-width:64px;" title="周期单位：分钟 / 小时 / 天 / 周 / 月 / 年（月、年按日历步进）">
+          <option value="min">分钟</option>
+          <option value="hour">小时</option>
+          <option value="day">天</option>
+          <option value="week">周</option>
+          <option value="month">月</option>
+          <option value="year">年</option>
+        </select>
       </label>
       <label id="runSchedStartWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">开始时间
         <input id="runSchedStart" class="dshell-input" type="datetime-local" style="width:180px;" title="留空=立即按周期触发；填未来时间=到达后才开始周期触发" />
@@ -296,7 +308,8 @@
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点 GPU 状态" style="margin-left:6px;">⟳ GPU状态</button></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
+        <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 用户名 / 设备状态" style="width:230px;" />
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
@@ -309,7 +322,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
-          <thead><tr><th>名称</th><th>IP 地址</th><th>用户名</th><th>密码</th><th>GPU 状态</th><th>操作</th></tr></thead>
+          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">IP 地址<span class="env-sort-arrow"></span></th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -452,11 +465,11 @@
     </div>
   </div><!-- /pageEnv -->
 
-  <!-- GPU 详情弹层 -->
+  <!-- 设备详情弹层 -->
   <div id="gpuDetail" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:200; align-items:center; justify-content:center;">
     <div class="dshell-card" style="max-width:660px; width:92%; max-height:82vh; overflow:auto;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点 GPU 详情</h2>
+        <h2 class="dshell-sub" style="margin:0">节点设备详情</h2>
         <button id="gpuDetailClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
       <div id="gpuDetailBody"></div>
@@ -747,10 +760,52 @@ function renderEnvOptions(){
   }));
 }
 let envEditId=null;
+let envFilterText='';
+/* 节点排序：点击表头切换 升序 → 降序 → 取消（恢复原始顺序） */
+let envSort={key:null, dir:1};
+function envSortVal(e, key){
+  if(key==='name') return (e.name||'').toLowerCase();
+  if(key==='user') return (e.user||'').toLowerCase();
+  if(key==='ip') return String(e.ip||'').split('.').map(p=>String(parseInt(p,10)||0).padStart(3,'0')).join('.');   // 按段数值排 IP
+  if(key==='gpu'){
+    const st=gpuStatus[e.id];
+    if(!st) return 100000;                       // 未查询
+    if(st.error) return 0;                       // 查询失败排最前
+    const used=st.used==undefined?0:st.used;
+    return ((st.containers||[]).length?300000:200000)+used;   // 空闲 → 占用（占用内按已用卡数）
+  }
+  return '';
+}
+function envSortList(list){
+  if(!envSort.key) return list;
+  return list.map((e,i)=>({e,i})).sort((a,b)=>{
+    const va=envSortVal(a.e,envSort.key), vb=envSortVal(b.e,envSort.key);
+    if(va<vb) return -1*envSort.dir;
+    if(va>vb) return 1*envSort.dir;
+    return a.i-b.i;                              // 同值保持原顺序
+  }).map(x=>x.e);
+}
+/* 节点筛选：匹配名称 / IP / 用户名 / 设备状态文本（容器名、空闲、查询失败、卡数） */
+function envFilterMatch(e){
+  const kw=envFilterText.trim().toLowerCase();
+  if(!kw) return true;
+  let text=(e.name+' '+e.ip+' '+(e.user||'')).toLowerCase();
+  const st=gpuStatus[e.id];
+  if(st){
+    if(st.error) text+=' 查询失败';
+    else{
+      text+=' '+(st.containers||[]).join(' ').toLowerCase();
+      text+=' '+(st.total==undefined?'?':st.total)+'卡 已用'+(st.used==undefined?'?':st.used);
+      if(!(st.containers||[]).length) text+=' 空闲';
+    }
+  }
+  return text.indexOf(kw)>=0;
+}
 function renderEnvs(){
-  $('envCount').textContent = environments.length? '('+environments.length+')':'';
+  const list=envSortList(environments.filter(envFilterMatch));
+  $('envCount').textContent = environments.length? (envFilterText.trim()? '('+list.length+'/'+environments.length+')' : '('+environments.length+')') :'';
   const tb=$('envTable').querySelector('tbody'); tb.innerHTML='';
-  environments.forEach(e=>{
+  list.forEach(e=>{
     const tr=document.createElement('tr');
     tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
@@ -761,17 +816,18 @@ function renderEnvs(){
   tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
   tb.querySelectorAll('[data-gpurefresh]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpurefresh')); if(e) fetchGpu(e); }));
   tb.querySelectorAll('[data-gpudetail]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpudetail')); if(e) openGpuDetail(e); }));
+  $('envTable').querySelectorAll('th[data-sort]').forEach(th=>{ th.querySelector('.env-sort-arrow').textContent = th.getAttribute('data-sort')===envSort.key ? (envSort.dir>0?'▲':'▼') : ''; });
 }
 function gpuCellFull(e){
   return gpuCellHtml(gpuStatus[e.id])
-    +' <button class="dshell-btn dshell-btnGhost mini" data-gpurefresh="'+e.id+'" title="刷新 GPU 状态" style="padding:2px 7px;">⟳</button>'
-    +' <button class="dshell-btn dshell-btnGhost mini" data-gpudetail="'+e.id+'" title="查看 GPU 状态与失败原因" style="padding:2px 7px;">详情</button>';
+    +' <button class="dshell-btn dshell-btnGhost mini" data-gpurefresh="'+e.id+'" title="刷新设备状态" style="padding:2px 7px;">⟳</button>'
+    +' <button class="dshell-btn dshell-btnGhost mini" data-gpudetail="'+e.id+'" title="查看设备状态与失败原因" style="padding:2px 7px;">详情</button>';
 }
 function bindGpuCell(cell, e){
   const rb=cell.querySelector('[data-gpurefresh]'); if(rb) rb.addEventListener('click',()=>fetchGpu(e));
   const db=cell.querySelector('[data-gpudetail]'); if(db) db.addEventListener('click',()=>openGpuDetail(e));
 }
-/* 节点 GPU 状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
+/* 节点设备状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
 let gpuStatus={};
 function gpuCellHtml(st){
   if(!st) return '<span class="dshell-muted">—</span>';
@@ -793,9 +849,10 @@ async function fetchGpu(e){
   const c2=document.querySelector('[data-gpu="'+e.id+'"]');
   if(c2){ c2.innerHTML=gpuCellFull(e); bindGpuCell(c2, e); }
   renderEnvOptions();   // 主控环境多选面板同步显示 GPU 占用/总数
+  if((envFilterText && envFilterText.trim()) || envSort.key==='gpu') renderEnvs();   // 筛选命中设备状态文本或按设备状态排序时同步刷新列表
 }
 function refreshGpuAll(){ environments.forEach(e=>fetchGpu(e)); }
-/* GPU 详情弹层：完整状态 + 失败原因 */
+/* 设备详情弹层：完整状态 + 失败原因 */
 function openGpuDetail(e){
   const st=gpuStatus[e.id];
   const body=$('gpuDetailBody'); if(!body) return;
@@ -1370,17 +1427,12 @@ function normalizeStageKind(s){
   }
   if(s.kind==='jenkins'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; if(!s.script) s.script=null; }
   else { if(!s.jenkins) s.jenkins=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
-  /* 定时配置归一：sched 可为 null / {mode:'interval',everyMin} / {mode:'once',at(ms)}；非法置空 */
-  if(s.sched===true) s.sched={mode:'interval',everyMin:10};
-  if(s.sched){
-    if(s.sched.mode!=='interval' && s.sched.mode!=='once') s.sched=null;
-    else if(s.sched.mode==='interval'){ if(!(Number(s.sched.everyMin)>=1)) s.sched.everyMin=10; }
-    else { if(!(Number(s.sched.at)>0)) s.sched=null; }
-  }
+  /* 定时标记归一：sched 仅作「支持定时」标记（{}），周期跟随流水线定时计划；旧数据 true / {mode...} 一律归一为 {}，非法置空 */
+  s.sched = s.sched ? {} : null;
   return s;
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
-function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, gate:false, sub:[], kind:'simulate', script:null, jenkins:null, sched:null}; }
+function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, gate:false, sub:[], kind:'simulate', script:null, jenkins:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
 function renderStageEditor(){
   const wrap=$('plStageList'); if(!wrap) return; wrap.innerHTML='';
   editStages.forEach((s,i)=>{
@@ -1493,36 +1545,17 @@ function renderStageActionRow(i){
   const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','detect'); btn.textContent='识别参数';
   box.appendChild(lab); box.appendChild(inp); box.appendChild(btn);
 }
-/* ---------- 阶段定时配置行（勾选「支持定时」+ 周期/一次性；服务端按计划触发，关闭页面仍执行） ---------- */
-function toLocalDT(ts){ if(!ts) return ''; const d=new Date(ts); const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
+/* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「需本地运行」则不支持定时） ---------- */
 function renderStageSched(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-sched]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
-  const on=!!(s.sched && s.sched.mode);
-  const mode=(on && s.sched.mode)||'interval';
-  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(on?'checked':'')+'/> 支持定时</label>';
+  const on=!!s.sched;
+  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(!on?'checked':'')+'/> 需本地运行，不支持定时</label>';
   if(on){
-    h+='<div class="jk-mode" role="group" style="display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;">';
-    h+=['interval','once'].map(function(k){return '<button type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn'+(mode===k?' sel':'')+'" data-act="schedmode" data-mode="'+k+'">'+(k==='interval'?'周期性':'一次性')+'</button>';}).join('');
-    h+='</div>';
-    if(mode==='interval'){
-      h+='<label class="dshell-muted" style="display:flex;align-items:center;gap:4px;font-size:11px;">每 <input class="dshell-input" data-f="schedEvery" type="number" min="1" value="'+(s.sched.everyMin||10)+'" style="width:60px;" /> 分钟</label>';
-    } else {
-      h+='<label class="dshell-muted" style="display:flex;align-items:center;gap:4px;font-size:11px;">时间 <input class="dshell-input" data-f="schedAt" type="datetime-local" value="'+toLocalDT(s.sched.at)+'" style="width:180px;" /></label>';
-    }
-    h+='<span class="dshell-muted" style="font-size:11px;">非定时阶段须排在本阶段之前，否则保存报错；运行时前缀走运行队列，本阶段及之后由服务端按计划触发</span>';
+    h+='<span class="dshell-muted" style="font-size:11px;">跟随流水线定时计划执行（周期/一次性在「定时」页配置）；本地运行阶段须排在本阶段之前，否则保存报错；运行时前缀走运行队列，本阶段及之后由服务端触发</span>';
   }
   box.innerHTML=h;
-}
-function setStageSchedMode(i,k){
-  const s=editStages[i]; if(!s) return;
-  if(!s.sched) s.sched={mode:'interval', everyMin:10};
-  s.sched.mode=(k==='once')?'once':'interval';
-  if(s.sched.mode==='interval' && !(s.sched.everyMin>=1)) s.sched.everyMin=10;
-  if(s.sched.mode==='once' && !(s.sched.at>0)) s.sched.at=0;
-  const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){ wrap.children[i].querySelectorAll('[data-act="schedmode"]').forEach(function(b){ b.classList.toggle('sel', b.getAttribute('data-mode')===s.sched.mode); }); }
-  renderStageSched(i);
 }
 function setStageKind(i,k){
   const s=editStages[i]; if(!s) return;
@@ -1601,7 +1634,7 @@ function renderFlow(){
     n.className='pipeline-node';
     n.dataset.id=s.id;
     n.innerHTML =
-      '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段">⏰</span> ':'')+esc(s.name)+'</div>'+
+      '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+esc(s.name)+'</div>'+
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+
       (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
@@ -1837,11 +1870,11 @@ function startRun(opts){
 }
 function startSimRun(pl, c){
   const stages = pl.stages.map(s=>({...s}));
-  /* 运行时兜底校验：非定时阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏） */
+  /* 运行时兜底校验：本地运行（不支持定时）阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏） */
   {
     let started=false, badIdx=-1;
     for(let i=0;i<stages.length;i++){ const has=!!stages[i].sched; if(has) started=true; else if(started){ badIdx=i; break; } }
-    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」未开启定时却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
+    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
   }
   runStages = stages;
   resetNodes();
@@ -1864,6 +1897,8 @@ function startSimRun(pl, c){
 }
 function runPipeline(opts){
   opts = opts || {};
+  /* 执行人为必填项：手动运行未填写时弹窗拦截（队列/定时快照与历史重跑自带 opts.by，不受影响） */
+  if(!opts.by && !$('triggeredBy').value.trim()){ alert('请先填写「执行人」再运行流水线。'); $('triggeredBy').focus(); return 'no-by'; }
   if(!running){ return startRun(opts); }
   if(queue.length >= QUEUE_CAP) return false;
   let pl;
@@ -1910,37 +1945,30 @@ function renderPlanList(){
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
 function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
-/* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀每个定时阶段登记为一条服务端计划
-   （稳定 id 去重——重跑同一阶段会替换旧计划而非叠加；周期性按 everyMin 触发，一次性到 at 触发）。
-   服务端 15s 轮询到期即在服务端执行该阶段（脚本真跑/模拟等待；Jenkins 阶段服务端跳过；审批门自动通过），
+/* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
+   （稳定 id 去重——重跑同一条流水线会替换旧计划而非叠加）。阶段不再单独配置周期：周期性由流水线级定时计划
+   （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
+   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；Jenkins 阶段服务端跳过；审批门自动通过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
 async function registerStageTimers(startIdx){
   if(!curRun || !runStages) return;
-  const ids=[]; const newPlans=[];
+  const stages=[];
   for(let i=startIdx;i<runStages.length;i++){
     const st=runStages[i]; if(!st || !st.sched) continue;
-    const sid='stimer-'+(curRun.pipelineId||'pl')+'-'+(st.id||('s'+i));
-    ids.push(sid);
-    const ps={...st}; delete ps.sched;   // 计划只承载单阶段执行，去掉 sched 避免冗余
-    const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · '+st.name,
-      stages:[ps], env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
-      branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now() };
-    if(st.sched.mode==='once'){
-      const at=Number(st.sched.at)||0; plan.kind='once'; plan.at=at;
-      plan.desc='阶段定时 · '+st.name+' · '+(at?new Date(at).toLocaleString():'立即');
-    } else {
-      const every=Math.max(1,parseInt(st.sched.everyMin,10)||1); plan.kind='interval'; plan.everyMin=every;
-      plan.desc='阶段定时 · '+st.name+' · 每 '+every+' 分钟';
-    }
-    newPlans.push(plan);
+    const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
+    stages.push(ps);
   }
-  if(!newPlans.length) return;
+  if(!stages.length) return;
+  const sid='stimer-'+(curRun.pipelineId||'pl')+'-suffix';
+  const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · 定时后缀',
+    stages, env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
+    branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now(),
+    kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · 立即（周期跟随流水线计划）' };
   try{
     const r=await fetch('/api/worktable/pipeline/plans');
     let fresh=[]; if(r.ok){ const j=await r.json(); fresh=Array.isArray(j.plans)?j.plans:[]; }
-    const idset=new Set(ids);
-    const kept=fresh.filter(p=>!p || !idset.has(p.id));   // 去重：替换本阶段旧计划
-    const merged=kept.concat(newPlans);
+    const kept=fresh.filter(p=>!p || p.id!==sid);   // 去重：替换旧计划
+    const merged=kept.concat([plan]);
     await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:merged})});
     serverPlans=merged; renderPlanList();
   }catch(e){ console.warn('[stage-timer] 登记失败：', e); }
@@ -1954,17 +1982,19 @@ function renderSchedForm(){
   environments.forEach(e=>{ const o=document.createElement('option'); o.value=e.id; o.textContent=envLabelOf(e.id); if(e.id===curEnvId) o.selected=true; env.appendChild(o); });
   const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
   repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
-  if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim()||'anonymous';
+  if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim();
 }
 function addPlan(){
   const mode=$('runSched').value;
+  const schedBy=$('schedBy').value.trim();
+  if(!schedBy){ alert('请先填写「执行人」再创建定时计划。'); $('schedBy').focus(); return; }
   const pl=findPipeline($('schedPipeline').value) || curPipeline();
   const env=resolveEnv($('schedEnv').value);
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
     pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
     env:env.ip, envs:[env], image:DEFAULT_IMAGE, repoId:$('schedRepo').value, branch:($('schedBranch').value.trim()||'main'),
-    by:($('schedBy').value.trim()||'anonymous')+' ⏰', createdAt:Date.now(),
+    by:schedBy+' ⏰', createdAt:Date.now(),
   };
   if(mode==='once'){
     const v=$('runSchedAt').value; const t=v?new Date(v).getTime():NaN;
@@ -1972,11 +2002,16 @@ function addPlan(){
     serverPlans.push(Object.assign({}, base, {kind:'once', at:t, desc:'一次性 '+v.replace('T',' ')}));
   } else if(mode==='interval'){
     const every=Math.max(1,parseInt($('runSchedEvery').value)||1);
-    let desc='每 '+every+' 分钟';
+    const unitEl=$('runSchedUnit'); const unit=(unitEl&&unitEl.value)||'min';
+    const UNIT_LABEL={min:'分钟',hour:'小时',day:'天',week:'周',month:'月',year:'年'};
+    const UNIT_MIN={min:1,hour:60,day:1440,week:10080};   // 月/年无固定分钟数，由服务端按日历步进
+    let desc='每 '+every+' '+(UNIT_LABEL[unit]||'分钟');
     const extra={};
     const sv=$('runSchedStart').value;
     if(sv){ const st=new Date(sv).getTime(); if(!isNaN(st) && st>Date.now()){ extra.startAt=st; desc+=' · 自 '+sv.replace('T',' ')+' 起'; } }
-    serverPlans.push(Object.assign({}, base, {kind:'interval', everyMin:every}, extra, {desc:desc}));
+    const iv={kind:'interval', every:every, everyUnit:unit};
+    if(UNIT_MIN[unit]) iv.everyMin=every*UNIT_MIN[unit];   // 固定单位保留 everyMin，兼容旧服务端
+    serverPlans.push(Object.assign({}, base, iv, extra, {desc:desc}));
   } else return;
   pushPlans(); renderPlanList();
 }
@@ -2008,8 +2043,8 @@ function renderQueue(){
 function advance(i){
   const stg=activeStages();
   if(i>=stg.length){ finish('success'); return; }
-  /* 到达定时阶段分界：前缀（非定时阶段）已完成，定时后缀登记为服务端计划后结束本次客户端运行。
-     定时阶段不在客户端执行——交由服务端 /api/worktable/pipeline/plans 按计划触发（关闭页面仍执行）。 */
+  /* 到达定时阶段分界：前缀（本地运行阶段）已完成，定时后缀登记为服务端「立即执行一次」计划后结束本次客户端运行。
+     定时阶段不在客户端执行——交由服务端 /api/worktable/pipeline/plans 触发（关闭页面仍执行）；周期由流水线定时计划决定。 */
   if(stg[i].sched){
     const tk=curRun?curRun.token:null;
     (async()=>{ await registerStageTimers(i); if(running && curRun && curRun.token===tk) finish('success'); })();
@@ -2597,7 +2632,7 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, gate:!!s.gate, sched: s.sched?{mode:s.sched.mode, everyMin:s.sched.everyMin, at:s.sched.at}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{})}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{})}:null})); }
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, gate:!!s.gate, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{})}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{})}:null})); }
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   loadScripts().then(()=>renderStageEditor());
   $('plName').focus();
@@ -2621,19 +2656,16 @@ function savePlForm(){
       if(missing.length){ alert('第 '+(i+1)+' 阶段「'+s.name+'」脚本 '+s.script.name+' 有必填参数未填：'+missing.map(p=>p.label||p.key).join('、')); return; }
     }
   }
-  /* 定时阶段顺序校验：一旦出现支持定时的阶段，其后必须全是定时阶段（非定时不能排在定时之后）；
-     即「若不支持定时的任务的前面有支持定时的任务，则报错」 */
+  /* 定时阶段顺序校验：阶段默认支持定时，勾选「需本地运行」的阶段必须排在所有定时阶段之前；
+     即「若本地运行任务的前面有定时任务，则报错」 */
   {
     let schedStarted=false;
     for(let i=0;i<editStages.length;i++){
-      const sc=editStages[i].sched;
-      const has=!!(sc && sc.mode);
+      const has=!!editStages[i].sched;
       if(has){
         schedStarted=true;
-        if(sc.mode==='interval'){ if(!(Number(sc.everyMin)>=1)){ alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」的周期分钟数无效'); return; } }
-        else if(sc.mode==='once'){ if(!(Number(sc.at)>Date.now())){ alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」的一次性时间需为未来'); return; } }
       } else if(schedStarted){
-        alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」未开启「支持定时」，但不能排在已开启定时的阶段之后。\n规则：非定时阶段必须在所有定时阶段之前。');
+        alert('第 '+(i+1)+' 阶段「'+editStages[i].name+'」勾选了「需本地运行」，但不能排在定时阶段之后。\n规则：本地运行阶段必须在所有定时阶段之前。');
         return;
       }
     }
@@ -2644,7 +2676,7 @@ function savePlForm(){
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{})};
     if(s.jenkins) st.jenkins={job:s.jenkins.job, params:(s.jenkins.params||[]), values:(s.jenkins.values||{})};
-    if(s.sched) st.sched={mode:s.sched.mode, everyMin:s.sched.everyMin, at:s.sched.at};
+    if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
   });
   const editId=$('plForm').dataset.editId;
@@ -2720,7 +2752,6 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='jkparams'){ detectJenkinsParams(i); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
-  else if(act==='schedmode'){ setStageSchedMode(i, btn.getAttribute('data-mode')); }
 });
 $('plStageList').addEventListener('change', (e)=>{
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
@@ -2735,11 +2766,20 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='dur') s.dur=Math.max(1,parseInt(e.target.value,10)||5);
   else if(f==='timeout'){ const tv=parseInt(e.target.value,10); s.timeout=(tv>=1)?tv:null; }
   else if(f==='gate') s.gate=e.target.checked;
-  else if(f==='sched'){ s.sched = e.target.checked ? {mode:'interval', everyMin:10} : null; renderStageSched(i); }
-  else if(f==='schedEvery'){ if(s.sched && s.sched.mode==='interval'){ s.sched.everyMin=Math.max(1,parseInt(e.target.value,10)||10); } }
-  else if(f==='schedAt'){ if(s.sched && s.sched.mode==='once'){ const t=e.target.value?new Date(e.target.value).getTime():NaN; s.sched.at=(!isNaN(t)&&t>Date.now())?t:0; } }
+  else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='jenkinsJob'){ setStageJenkins(i, e.target.value.trim()); }
+});
+$('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
+/* 节点环境表头排序：升序 → 降序 → 取消 */
+document.querySelectorAll('#envTable th[data-sort]').forEach(th=>{
+  th.addEventListener('click', ()=>{
+    const k=th.getAttribute('data-sort');
+    if(envSort.key!==k) envSort={key:k, dir:1};
+    else if(envSort.dir>0) envSort.dir=-1;
+    else envSort={key:null, dir:1};
+    renderEnvs();
+  });
 });
 $('envAdd').addEventListener('click', saveEnvForm);
 $('envCancelEdit').addEventListener('click', resetEnvForm);

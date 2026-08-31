@@ -508,7 +508,8 @@ export function apply(ctx: Context) {
   })
 
   // ---- GPU 状态查询（pipeline.html 环境页/多选面板；本机直连，远程经 sshpass+ssh）----
-  // 响应：{ total, used, gpus:[{index,util,mem}], procs:[{pid,uuid,proc,container}], containers:[名称...] }
+  // 响应：{ total, used, gpus:[{index,util,mem}], procs:[{pid,uuid,proc,container,up}], containers:[名称...] }
+  // up 为容器已运行时长（docker/nerdctl 的 RunningFor，如 "Up 3 days"），未能关联容器时为空串
   // 失败返回 { error }（HTTP 仍 200，前端据 error 字段展示原因）
   function localAddrs(): Set<string> {
     const set = new Set<string>(['127.0.0.1', 'localhost', '::1'])
@@ -520,8 +521,13 @@ export function apply(ctx: Context) {
   }
   function execText(cmd: string, args: string[]): Promise<string> {
     return new Promise((resolvePromise, reject) => {
-      execFile(cmd, args, { timeout: 20000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-        if (err) reject(new Error(String(stderr || (err as Error).message || err).trim()))
+      // 超时 60s：远程探针含 ssh 握手 + 3 次 nvidia-smi + nerdctl 列容器，繁忙节点实测 ~10s，20s 余量不足
+      execFile(cmd, args, { timeout: 60000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          // execFile 超时/被终止时 stderr 为空，err.message 只剩 "Command failed: ..."，补一句可读的失败原因
+          const why = (err as any).killed ? '（执行超过 60s 被终止）' : ''
+          reject(new Error((String(stderr || '').trim() || String((err as Error).message || err)) + why))
+        }
         else resolvePromise(String(stdout || ''))
       })
     })
@@ -537,9 +543,9 @@ export function apply(ctx: Context) {
     'for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do ' +
     'echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; ' +
     'echo ===; ' +
-    '(docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null; ' +
-    'nerdctl --namespace k8s.io ps --format "{{.ID}} {{.Names}}" 2>/dev/null; ' +
-    'nerdctl ps --format "{{.ID}} {{.Names}}" 2>/dev/null; true)'
+    '(docker ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; ' +
+    'nerdctl --namespace k8s.io ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; ' +
+    'nerdctl ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; true)'
   async function queryGpu(ip: string, user: string, pass: string) {
     let out: string
     if (localAddrs().has(ip)) {
@@ -573,15 +579,16 @@ export function apply(ctx: Context) {
       const m = /^(\S+):([0-9a-f]{64})$/.exec(l.trim())
       if (m) cg[m[1]] = m[2]
     }
+    // 容器清单行格式 id|名称|已运行时长（RunningFor 含空格，故用 | 分隔而非空白）
     const dockers = (secs[3] || '').trim().split('\n').filter(Boolean).map((l) => {
-      const sp = l.trim().split(/\s+/)
-      return { id: sp[0] || '', name: sp.slice(1).join(' ') || '' }
+      const p = l.trim().split('|')
+      return { id: (p[0] || '').trim(), name: (p[1] || '').trim(), up: (p.slice(2).join('|') || '').trim() }
     })
     const procsOut = procs.map((p) => {
-      let container = ''
+      let container = '', up = ''
       const hex = cg[p.pid]
-      if (hex) { const d = dockers.find((x) => x.id && hex.indexOf(x.id) === 0); if (d) container = d.name }
-      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container }
+      if (hex) { const d = dockers.find((x) => x.id && hex.indexOf(x.id) === 0); if (d) { container = d.name; up = d.up } }
+      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container, up }
     })
     const busyUuids = new Set(procs.map((p) => p.uuid))
     const used = gpus.filter((g) => busyUuids.has(g.uuid) || Number(g.mem) > 1024).length
@@ -700,11 +707,32 @@ export function apply(ctx: Context) {
           await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {})
         })
       } else if (p.kind === 'interval') {
-        const everyMs = Math.max(1, Number(p.everyMin) || 10) * 60000
+        // 周期单位：min/hour/day/week 按固定毫秒步进；month/year 按日历步进（每月/每年同日触发）。
+        // 旧计划仅带 everyMin（分钟）：unit 归一为 'min'、every 取 everyMin，向后兼容。
+        const unit = typeof p.everyUnit === 'string' && p.everyUnit ? p.everyUnit : 'min'
+        const every = Math.max(1, Number(p.every) || Number(p.everyMin) || 10)
         const startAt = Number(p.startAt) || 0
         if (startAt && now < startAt) continue
-        const last = planLastRun.get(p.id) || (startAt ? startAt - everyMs : Number(p.createdAt) || 0)
-        if (now - last < everyMs) continue
+        const base = startAt || Number(p.createdAt) || now
+        // 有 startAt 时首触发点为 startAt 本身（last 取 base 之前，语义与旧版一致）；否则首触发在 createdAt 之后一个周期
+        const last = planLastRun.get(p.id) || (startAt ? base - 1 : base)
+        // 计算 last 之后第一个应触发点：固定单位直接按步长取整推进；日历单位从基准逐格步进（月/年格数有限）
+        const FIXED_MS: Record<string, number> = { min: 60000, hour: 3600000, day: 86400000, week: 604800000 }
+        let next: number
+        if (FIXED_MS[unit]) {
+          const step = FIXED_MS[unit] * every
+          next = base + (Math.floor((last - base) / step) + 1) * step
+        } else {
+          next = base
+          const d = new Date(base)
+          let guard = 0
+          while (next <= last && guard++ < 5000) {
+            if (unit === 'year') d.setFullYear(d.getFullYear() + every)
+            else d.setMonth(d.getMonth() + every)
+            next = d.getTime()
+          }
+        }
+        if (next > now) continue
         planLastRun.set(p.id, now)
         planRunning.add(p.id)
         execPlan(p).catch(() => {}).finally(() => planRunning.delete(p.id))
