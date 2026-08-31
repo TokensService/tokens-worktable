@@ -137,6 +137,9 @@
         <div id="branchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
       </span>
     </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
+      <select id="deployStrategySel" class="dshell-input" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取该分支支持的部署策略（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）"></select>
+    </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
     </label>
@@ -232,7 +235,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -340,17 +343,18 @@
         <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" />
         <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；Jenkins=多分支任务子任务名即分支（任务框也可直接粘贴 refs 接口地址），浏览器直连=本地浏览器请求 Jenkins，服务端代连=经 /api/worktable/proxy 由 DSH 服务端请求（按仓库各自选择，不跟随全局连接模式）" style="width:128px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins-browser">Jenkins·浏览器直连</option><option value="jenkins-server">Jenkins·服务端代连</option></select>
         <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}；免凭证，不附带 Jenkins 用户名/令牌）" style="width:240px;display:none;" autocomplete="off" />
+        <input id="repoStrategyUrl" class="dshell-input" placeholder="部署策略 URL（{branch} 占位，可留空）" title="按分支拉取支持的部署策略的接口地址：{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}；返回分页 JSON {total,offset,next_offset,items:[{arch_name}]}，自动跟 next_offset 逐页拉全；浏览器直连失败自动改经服务端代取；留空则主控不提供部署策略选择" style="width:250px;" />
         <button id="repoAdd" class="dshell-btn mini">添加</button>
         <button id="repoAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/令牌应用到所有仓库">应用凭证到全部</button>
         <button id="repoCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="repoTable">
-          <thead><tr><th>名称</th><th>URL</th><th>用户名</th><th>访问令牌</th><th>分支获取</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>URL</th><th>用户名</th><th>访问令牌</th><th>分支获取</th><th>部署策略</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。分支获取选 Jenkins（浏览器直连/服务端代连）时仓库 URL 可留空，分支取自 Jenkins 多分支任务子任务名。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。分支获取选 Jenkins（浏览器直连/服务端代连）时仓库 URL 可留空，分支取自 Jenkins 多分支任务子任务名。配置「部署策略 URL」后，主控选择分支即可下拉选择该分支支持的部署策略，运行时额外注入 <code>DEPLOY_STRATEGY</code>（脚本显式配置的同名参数优先）。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
@@ -903,7 +907,7 @@ function normalizeFetchMode(m){ return m==='browser'?'browser':(m==='jenkins-ser
 function isJenkinsFetchMode(m){ return m==='jenkins-browser'||m==='jenkins-server'; }
 function fetchModeLabel(m){ return m==='browser'?'浏览器':(m==='jenkins-browser'?'Jenkins·浏览器':(m==='jenkins-server'?'Jenkins·服务端':'服务端')); }
 function fetchModeTitle(m){ return m==='browser'?'浏览器直连 /info/refs（需 CORS）':(m==='jenkins-browser'?'Jenkins 多分支任务子任务名（本地浏览器直连 Jenkins）':(m==='jenkins-server'?'Jenkins 多分支任务子任务名（服务端经 /api/worktable/proxy 代连）':'服务端 git ls-remote')); }
-function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:normalizeFetchMode(r.fetchMode), jenkinsJob:r.jenkinsJob||''}; }
+function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:normalizeFetchMode(r.fetchMode), jenkinsJob:r.jenkinsJob||'', strategyUrl:r.strategyUrl||''}; }
 function loadRepos(){ try{ const a=JSON.parse(localStorage.getItem('pip-repos')); if(Array.isArray(a)&&a.length) return a.map(normalizeRepo); }catch(e){} return null; }
 let repositories = loadRepos() || [
   {id:'repo-1', name:'myapp', url:'https://git.example.com/dev/myapp.git', user:'', pass:'', fetchMode:'server'},
@@ -925,7 +929,7 @@ function renderRepos(){
   const tb=$('repoTable').querySelector('tbody'); tb.innerHTML='';
   repositories.forEach(r=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td>'+
+    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td><td class="dshell-muted" style="font-size:11px;"'+(r.strategyUrl?(' title="'+esc(r.strategyUrl)+'">✓ 已配置'):'>—')+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
@@ -933,17 +937,18 @@ function renderRepos(){
   tb.querySelectorAll('[data-repoedit]').forEach(b=>b.addEventListener('click',()=>startRepoEdit(b.getAttribute('data-repoedit'))));
   tb.querySelectorAll('[data-repodel]').forEach(b=>b.addEventListener('click',()=>delRepo(b.getAttribute('data-repodel'))));
 }
-function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=normalizeFetchMode(r.fetchMode); $('repoJenkinsJob').value=r.jenkinsJob||''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
-function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
+function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=normalizeFetchMode(r.fetchMode); $('repoJenkinsJob').value=r.jenkinsJob||''; $('repoStrategyUrl').value=r.strategyUrl||''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
+function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; $('repoStrategyUrl').value=''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
 function saveRepoForm(){
   const name=$('repoName').value.trim(); const url=$('repoUrl').value.trim(); const user=$('repoUser').value.trim(); const pass=$('repoPass').value;
   const fm=normalizeFetchMode($('repoFetchMode').value);
   const jkJob=($('repoJenkinsJob').value||'').trim();
+  const stUrl=($('repoStrategyUrl').value||'').trim();
   /* 分支获取选 Jenkins 时分支取自多分支任务子任务名，仓库 URL 可留空（任务框必填）；其余方式仍必填 URL */
   if(isJenkinsFetchMode(fm)){ if(!jkJob){ alert('分支获取为 Jenkins 时请填写多分支任务或 refs 接口地址'); return; } }
   else if(!url){ alert('请填写仓库 URL'); return; }
-  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url||jkJob; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; } }
-  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url||jkJob, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:''}); }
+  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url||jkJob; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; r.strategyUrl=stUrl; } }
+  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url||jkJob, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:'', strategyUrl:stUrl}); }
   if(repoEditId){ delete repoBranches[repoEditId]; } saveRepos(); resetRepoForm(); renderRepos(); renderRepoOptions();
 }
 function delRepo(id){ if(!confirm('删除该代码仓？')) return; repositories=repositories.filter(r=>r.id!==id); if(!repositories.length){ repositories=[{id:'repo-1',name:'默认',url:'',user:'',pass:'',fetchMode:'server'}]; } if(curRepoId===id) curRepoId=repositories[0].id; saveRepos(); saveRepoSel(); renderRepos(); renderRepoOptions(); }
@@ -1099,9 +1104,71 @@ function renderBranchPanel(showAll){
     else { h+=head('分支',br.length)+br.map(item).join('')+head('Tag',tg.length)+tg.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
-  panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); }));
+  panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); loadDeployStrategies(); }));
   const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(curRepo(), true));
   const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=curRepo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(curRepo(), true).then(()=>renderBranchPanel()); });
+}
+/* ---------- 部署策略（按分支从代码仓「部署策略 URL」拉取） ---------- */
+/* 仓库可配置 strategyUrl（{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}）；
+   返回分页 JSON {total,offset,limit,next_offset,items:[{arch_name}]}（arch_name 缺省时回退 name），跟 next_offset 逐页拉全。
+   浏览器直连失败（多为 CORS 拦截或网络不可达）时自动改经 /api/worktable/proxy 由 DSH 服务端代取（仅允许回环/内网目标）。 */
+let deployStrategies={};   // repoId+'|'+branch -> {items:[], error:'', loading?}
+async function fetchStrategyJson(url){
+  try{
+    const r=await fetch(url,{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return await r.json();
+  }catch(e){
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'})});
+    const p=await r.json();
+    if(p && p.error) throw new Error(String(p.error));
+    if((p.status||0)!==200) throw new Error('HTTP '+(p.status||0));
+    return JSON.parse(p.body||'{}');
+  }
+}
+function deployStrategyKey(repo,branch){ return repo.id+'|'+(branch||''); }
+async function loadDeployStrategies(force){
+  const sel=$('deployStrategySel'); if(!sel) return;
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
+  const tpl=((repo && repo.strategyUrl)||'').trim();
+  if(!tpl){
+    sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
+    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略'; return;
+  }
+  sel.disabled=false; sel.title='按当前分支从代码仓「部署策略 URL」拉取支持的部署策略';
+  const key=deployStrategyKey(repo,branch);
+  const cached=deployStrategies[key];
+  if(!force && cached && !cached.loading){ renderDeployStrategyOptions(); return; }
+  deployStrategies[key]={loading:true}; renderDeployStrategyOptions();
+  const url=tpl.split('{branch}').join(encodeURIComponent(branch));
+  const items=[];
+  try{
+    let u=url;
+    for(let page=0; page<100; page++){            // 页数兜底，防接口异常导致死循环
+      const data=await fetchStrategyJson(u);
+      const arr=(data && Array.isArray(data.items))?data.items:[];
+      if(!arr.length){ if(page===0) throw new Error('接口未返回任何条目（items 为空，请确认 URL 与分页格式）'); break; }
+      for(const it of arr){ const n=String((it&&(it.arch_name!==undefined?it.arch_name:it.name))||'').trim(); if(n) items.push(n); }
+      const total=+data.total||0, next=(data.next_offset===null||data.next_offset===undefined)?NaN:+data.next_offset;
+      if(!isFinite(next)||next>=total) break;
+      const nu=url.replace(/([?&])offset=\d+/,'$1offset='+next);   // 保留原 query，仅替换/追加 offset
+      u=(nu===url)? url+(url.indexOf('?')>=0?'&':'?')+'offset='+next : nu;
+    }
+    deployStrategies[key]={items:Array.from(new Set(items)), error:''};
+  }catch(e){ deployStrategies[key]={items:[], error:String(e.message||e).slice(0,160)}; }
+  renderDeployStrategyOptions();
+}
+function renderDeployStrategyOptions(){
+  const sel=$('deployStrategySel'); if(!sel||sel.disabled) return;
+  const cur=sel.value;
+  const st=deployStrategies[deployStrategyKey(curRepo(), $('branchName').value.trim()||'main')];
+  sel.innerHTML='';
+  const add=(v,t,tip)=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; if(tip) o.title=tip; sel.appendChild(o); };
+  add('','（不使用）');
+  if(!st || st.loading){ add('','加载中…'); }
+  else if(st.error){ add('','加载失败',st.error); sel.title='部署策略拉取失败：'+st.error; }
+  else st.items.forEach(n=>add(n,n));
+  if(cur && Array.from(sel.options).some(o=>o.value===cur)) sel.value=cur; else sel.value='';
 }
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
@@ -1760,6 +1827,7 @@ function renderDetail(){
     ['状态', txt],
     ['流水线', ctx.pipelineName||curPipeline().name],
     ['分支', ctx.branch||'main'],
+    ['策略', ctx.strategy||'—'],
     ['执行人', ctx.by||'—'],
     ['环境', ctx.env],
     ['镜像', (ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],
@@ -1894,7 +1962,8 @@ function startRun(opts){
   const repo = resolveRepo(opts.repoId || $('repoSel').value);
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const c = {env, envs, image, release, repo, branch, by, source:opts.source||'manual'};
+  const strategy = opts.strategy!==undefined ? opts.strategy : (($('deployStrategySel') && $('deployStrategySel').value) || '');
+  const c = {env, envs, image, release, repo, branch, by, strategy, source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
 }
@@ -1909,7 +1978,7 @@ function startSimRun(pl, c){
   runStages = stages;
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,vars:{},token:++runSeq,hasSched:stages.some(s=>s.sched)};
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',vars:{},token:++runSeq,hasSched:stages.some(s=>s.sched)};
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runJenkinsStep），末尾 archiveRun 复用同一路径
   selectedId = stages[0].id;
   running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
@@ -1942,8 +2011,9 @@ function runPipeline(opts){
   const repoId = opts.repoId || $('repoSel').value;
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
+  const strategy = opts.strategy!==undefined ? opts.strategy : (($('deployStrategySel') && $('deployStrategySel').value) || '');
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, repoId, branch, by, source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, branch, strategy, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   queue.push(item);
@@ -2138,6 +2208,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
     if(env.PIPELINE_NAME===undefined && rc.pipelineName) env.PIPELINE_NAME=rc.pipelineName;
     if(env.GIT_URL===undefined && rc.repoUrl) env.GIT_URL=rc.repoUrl;
     if(env.GIT_BRANCH===undefined && rc.branch) env.GIT_BRANCH=rc.branch;
+    if(env.DEPLOY_STRATEGY===undefined && rc.strategy) env.DEPLOY_STRATEGY=rc.strategy;
     if(env.GIT_USER===undefined && rc.repoUser) env.GIT_USER=rc.repoUser;
     if(env.GIT_PASSWORD===undefined && rc.repoPass) env.GIT_PASSWORD=rc.repoPass;
     /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名_日期」文件夹注入各阶段，
@@ -2214,6 +2285,7 @@ async function runJenkinsStep(i){
       if(curRun.pipelineName&&params.PIPELINE_NAME===undefined) params.PIPELINE_NAME=curRun.pipelineName;
       if(curRun.repoUrl&&params.GIT_URL===undefined) params.GIT_URL=curRun.repoUrl;
       if(curRun.branch&&params.GIT_BRANCH===undefined) params.GIT_BRANCH=curRun.branch;
+      if(curRun.strategy&&params.DEPLOY_STRATEGY===undefined) params.DEPLOY_STRATEGY=curRun.strategy;
       /* 归档路径：同脚本阶段，注入 Jenkins 构建参数，供下游作业把产物写入归档目录；显式参数优先。 */
       if(curRun.archive){
         if(params.ARCHIVE_DIR===undefined) params.ARCHIVE_DIR=curRun.archive;
@@ -2341,7 +2413,7 @@ function finish(result){
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
     dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), by:curRun.by||'anonymous',
-    pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main',
+    pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
     logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
     tag:curRun.tag, archive:archiveFolderFor(curRun)};
   history.unshift(rec); if(history.length>200) history.length=200;
@@ -2541,7 +2613,7 @@ function renderHistory(){
   const view=filteredHistory();
   renderHistFilterOptions();
   const fTip=$('histFilterTip'); if(fTip) fTip.textContent=(histFilter.kw||histFilter.status||histFilter.pipeline)?('已筛选 '+view.length+' / '+history.length+' 条'):'';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="8" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="9" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
   const pages=Math.max(1, Math.ceil(view.length/histPageSize));
   if(histPage>pages-1) histPage=pages-1;
   if(histPage<0) histPage=0;
@@ -2550,7 +2622,7 @@ function renderHistory(){
     const tr=document.createElement('tr');
     if(idx===selHistoryIdx) tr.className='sel';
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
     tr.addEventListener('click', ()=>{ selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
     tb.appendChild(tr);
   });
@@ -2577,7 +2649,7 @@ function rerunFromHistory(rec){
   const ips=String(rec.env||'').split('，').map(s=>s.trim()).filter(Boolean);
   const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
   const repoId=(rec.repoId && repositories.some(r=>r.id===rec.repoId)) ? rec.repoId : undefined;
-  const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, by:rec.by, source:'manual'});
+  const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, strategy:rec.strategy||'', by:rec.by, source:'manual'});
   if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
   else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）');
   else flashRunTip('已开始重跑 #'+rec.no+'（'+pl.name+'）');
@@ -2814,7 +2886,7 @@ document.querySelectorAll('#envTable th[data-sort]').forEach(th=>{
 $('envAdd').addEventListener('click', saveEnvForm);
 $('envCancelEdit').addEventListener('click', resetEnvForm);
 $('envAllApply').addEventListener('click', applyEnvCredAll);
-$('repoSel').addEventListener('change', e=>{ curRepoId=e.target.value; saveRepoSel(); const bp=$('branchPanel'); if(bp) bp.style.display='none'; });
+$('repoSel').addEventListener('change', e=>{ curRepoId=e.target.value; saveRepoSel(); const bp=$('branchPanel'); if(bp) bp.style.display='none'; loadDeployStrategies(true); });
 $('repoAdd').addEventListener('click', saveRepoForm);
 $('repoCancelEdit').addEventListener('click', resetRepoForm);
 $('repoAllApply').addEventListener('click', applyRepoCredAll);
@@ -2873,6 +2945,7 @@ $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
+$('branchName').addEventListener('change', ()=>loadDeployStrategies());
 $('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(()=>renderBranchPanel()); } else { renderBranchPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
@@ -2894,6 +2967,7 @@ function renderAll(){
   fillCfgForm();
   fillPageEditForm();
   applyJenkinsForm();
+  loadDeployStrategies();
 }
 renderAll();
 /* 从服务端拉取配置与历史（含日志）；服务端有数据则覆盖本地并重渲染 */
