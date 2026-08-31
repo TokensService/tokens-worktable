@@ -930,10 +930,11 @@ function renderRepos(){
   repositories.forEach(r=>{
     const tr=document.createElement('tr');
     tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td><td class="dshell-muted" style="font-size:11px;"'+(r.strategyUrl?(' title="'+esc(r.strategyUrl)+'">✓ 已配置'):'>—')+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支；已配置部署策略 URL 时按主控当前分支试拉部署策略">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoststrategy="'+r.id+'" title="按主控当前分支试拉部署策略 URL（{branch} 占位替换）">策略测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-repotest]').forEach(b=>b.addEventListener('click',()=>{ const r=repositories.find(x=>x.id===b.getAttribute('data-repotest')); if(r) testRepo(r); }));
+  tb.querySelectorAll('[data-repoststrategy]').forEach(b=>b.addEventListener('click',()=>{ const r=repositories.find(x=>x.id===b.getAttribute('data-repoststrategy')); if(r) testRepoStrategy(r); }));
   tb.querySelectorAll('[data-repoedit]').forEach(b=>b.addEventListener('click',()=>startRepoEdit(b.getAttribute('data-repoedit'))));
   tb.querySelectorAll('[data-repodel]').forEach(b=>b.addEventListener('click',()=>delRepo(b.getAttribute('data-repodel'))));
 }
@@ -1058,27 +1059,30 @@ function parseGitRefsAdvertisement(buf){
 }
 async function testRepo(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
-  const stUrl=(r.strategyUrl||'').trim();
-  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+fetchModeLabel(r.fetchMode)+(stUrl?' · 部署策略':'')+'）';
+  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+fetchModeLabel(r.fetchMode)+'）';
   let j;
   try{ j=await fetchRepoRefs(r); }
   catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 请求失败：'+String(e.message||e).slice(0,160); return; }
   if(j && j.ok){
     const nb=j.branches?j.branches.length:0; const nt=j.tags?j.tags.length:0;
-    let msg='✓ '+r.name+' 连接成功 · '+nb+' 个分支'+(nt?(' · '+nt+' 个 Tag'):''); let allOk=true;
-    /* 已配置部署策略 URL：按主控当前分支试拉一次部署策略（{branch} 占位替换），并顺便刷新主控下拉缓存 */
-    if(stUrl){
-      const br=($('branchName') && $('branchName').value.trim())||'main';
-      const st=await fetchDeployStrategies(stUrl, br);
-      if(st.error){ msg+='；✗ 部署策略（分支 '+br+'）：'+st.error; allOk=false; }
-      else msg+=' · '+st.items.length+' 个部署策略（分支 '+br+'）';
-      if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; renderDeployStrategyOptions(); }
-    }
-    tip.style.color=allOk?'var(--log-ok)':'var(--log-err)'; tip.textContent=msg;
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 连接成功 · '+nb+' 个分支'+(nt?(' · '+nt+' 个 Tag'):'');
     repoBranches[r.id]={branches:(j.branches||[]), tags:(j.tags||[]), error:''};   // 顺便刷新该仓分支/Tag 缓存
   } else {
     tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 连接失败：'+(j && j.error ? String(j.error).slice(0,160) : '未知错误');
   }
+}
+/* 部署策略 URL 单独测试：按主控当前分支（{branch} 占位替换）试拉一次部署策略，
+   报告策略个数或失败原因；测试的是当前选中仓库时顺便刷新主控「部署策略」下拉缓存 */
+async function testRepoStrategy(r){
+  const tip=$('repoTestTip'); if(!tip || !r) return;
+  const stUrl=(r.strategyUrl||'').trim();
+  if(!stUrl){ tip.style.color='var(--log-warn)'; tip.textContent='⚠ '+r.name+' 未配置部署策略 URL（点「编辑」在表单中填写）'; return; }
+  const br=($('branchName') && $('branchName').value.trim())||'main';
+  tip.style.color=''; tip.textContent='测试部署策略中…（'+r.name+' · 分支 '+br+'）';
+  const st=await fetchDeployStrategies(stUrl, br);
+  if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（分支 '+br+'）：'+st.error; }
+  else { tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 部署策略拉取成功（分支 '+br+'）· '+st.items.length+' 个：'+st.items.slice(0,8).join('、')+(st.items.length>8?' …':''); }
+  if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; renderDeployStrategyOptions(); }
 }
 /* 分支/Tag 选择：按当前代码仓搜索远程分支与 Tag，下拉面板点选；仍可手动输入 */
 async function loadRepoBranches(repo, force){
