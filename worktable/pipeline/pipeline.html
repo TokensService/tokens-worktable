@@ -1077,7 +1077,7 @@ async function testRepoStrategy(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
   const stUrl=(r.strategyUrl||'').trim();
   if(!stUrl){ tip.style.color='var(--log-warn)'; tip.textContent='⚠ '+r.name+' 未配置部署策略 URL（点「编辑」在表单中填写）'; return; }
-  const br=($('branchName') && $('branchName').value.trim())||'main';
+  const br=($('branchName') && $('branchName').value.trim())||'0830_dev_bnt3';
   tip.style.color=''; tip.textContent='测试部署策略中…（'+r.name+' · 分支 '+br+'）';
   const st=await fetchDeployStrategies(stUrl, br);
   if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（分支 '+br+'）：'+st.error; }
@@ -1163,7 +1163,7 @@ async function fetchDeployStrategies(tpl, branch){
 }
 async function loadDeployStrategies(force){
   const sel=$('deployStrategySel'); if(!sel) return;
-  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
   const tpl=((repo && repo.strategyUrl)||'').trim();
   if(!tpl){
     sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
@@ -1180,7 +1180,7 @@ async function loadDeployStrategies(force){
 function renderDeployStrategyOptions(){
   const sel=$('deployStrategySel'); if(!sel||sel.disabled) return;
   const cur=sel.value;
-  const st=deployStrategies[deployStrategyKey(curRepo(), $('branchName').value.trim()||'main')];
+  const st=deployStrategies[deployStrategyKey(curRepo(), $('branchName').value.trim()||'0830_dev_bnt3')];
   sel.innerHTML='';
   const add=(v,t,tip)=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; if(tip) o.title=tip; sel.appendChild(o); };
   add('','（不使用）');
