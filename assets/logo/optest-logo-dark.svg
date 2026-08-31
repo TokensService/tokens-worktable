@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="774" height="128" viewBox="0 0 774 128">
+  <defs>
+    <linearGradient id="wordGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(0 0) scale(0.25)">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#6366F1"/>
+        <stop offset="1" stop-color="#06B6D4"/>
+      </linearGradient>
+    </defs>
+    <rect x="16" y="16" width="480" height="480" rx="120" fill="url(#bg)"/>
+    <circle cx="157" cy="256" r="84" fill="none" stroke="#FFFFFF" stroke-width="44"/>
+    <path d="M 134 252 L 152 270 L 184 230" fill="none" stroke="#4ADE80" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 311 340 L 311 172 L 377 172 A 62 62 0 0 1 377 296 L 311 296" fill="none" stroke="#FFFFFF" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(0 112)">
+    <path transform="translate(156.00 0) scale(0.064300 -0.064300)" d="M870 1241Q694 1241 597.0 1111.0Q500 981 500 745Q500 510 597.0 380.0Q694 250 870 250Q1047 250 1144.0 380.0Q1241 510 1241 745Q1241 981 1144.0 1111.0Q1047 1241 870 1241ZM870 1520Q1230 1520 1434.0 1314.0Q1638 1108 1638 745Q1638 383 1434.0 177.0Q1230 -29 870 -29Q511 -29 306.5 177.0Q102 383 102 745Q102 1108 306.5 1314.0Q511 1520 870 1520Z" fill="url(#wordGrad)"/>
+    <path transform="translate(273.95 0) scale(0.064300 -0.064300)" d="M188 1493H827Q1112 1493 1264.5 1366.5Q1417 1240 1417 1006Q1417 771 1264.5 644.5Q1112 518 827 518H573V0H188ZM573 1214V797H786Q898 797 959.0 851.5Q1020 906 1020 1006Q1020 1106 959.0 1160.0Q898 1214 786 1214Z" fill="url(#wordGrad)"/>
+    <path transform="translate(384.46 0) scale(0.064300 -0.064300)" d="M10 1493H1386V1202H891V0H506V1202H10Z" fill="#F8FAFC"/>
+    <path transform="translate(480.29 0) scale(0.064300 -0.064300)" d="M188 1493H1227V1202H573V924H1188V633H573V291H1249V0H188Z" fill="#F8FAFC"/>
+    <path transform="translate(576.24 0) scale(0.064300 -0.064300)" d="M1227 1446V1130Q1104 1185 987.0 1213.0Q870 1241 766 1241Q628 1241 562.0 1203.0Q496 1165 496 1085Q496 1025 540.5 991.5Q585 958 702 934L866 901Q1115 851 1220.0 749.0Q1325 647 1325 459Q1325 212 1178.5 91.5Q1032 -29 731 -29Q589 -29 446.0 -2.0Q303 25 160 78V403Q303 327 436.5 288.5Q570 250 694 250Q820 250 887.0 292.0Q954 334 954 412Q954 482 908.5 520.0Q863 558 727 588L578 621Q354 669 250.5 774.0Q147 879 147 1057Q147 1280 291.0 1400.0Q435 1520 705 1520Q828 1520 958.0 1501.5Q1088 1483 1227 1446Z" fill="#F8FAFC"/>
+    <path transform="translate(677.09 0) scale(0.064300 -0.064300)" d="M10 1493H1386V1202H891V0H506V1202H10Z" fill="#F8FAFC"/>
+  </g>
+</svg>
