@@ -1,0 +1,9 @@
+# Your patch layer for this dsh profile, applied after every bundle layer:
+# a top-level YAML array of loader patch entries (id-targeted config
+# overrides, disables, and insert lists; `!!js` expressions allowed).
+
+# 目录选择器主目录跟随 dsh.sh 的工作目录（DSH_WORKDIR，默认脚本所在目录）；
+# 仅 browse 后端接收该配置，native 不受影响；未设置时保持系统主目录默认。
+- id: directory-picker
+  config:
+    home: !!js process.env.DSH_WORKDIR

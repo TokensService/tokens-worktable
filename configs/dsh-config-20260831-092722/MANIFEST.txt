@@ -1,0 +1,5 @@
+备份时间: 2026-08-31 09:27:22
+主机:     bms-f222
+DSH_HOME: /mnt/paas
+DSH_REPO: /mnt/paas/op_test/deepseek-harness
+文件数:   6
