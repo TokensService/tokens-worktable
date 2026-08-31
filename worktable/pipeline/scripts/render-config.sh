@@ -3,13 +3,13 @@
 # The pipeline forwards every KEY=VALUE line below to later stages.
 set -euo pipefail
 
-ARCH_NAME="${ARCH_NAME:?ARCH_NAME is required}"
-RUN_DIR="${RUN_DIR:?RUN_DIR is required}"
-RENDER_DIR="${RENDER_DIR:?RENDER_DIR is required}"
+ARCH_NAME="${ARCH_NAME:-default}"
+RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
+RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-$RUN_DIR/template/xds-cluster}"
 VALUES_TEMPLATE="${VALUES_TEMPLATE:-$RUN_DIR/template/values-16Node-je-cpp-bnt3.yaml}"
 ARCH_FILE="${ARCH_FILE:-$RUN_DIR/template/model_arch-lt-je-cpp-bnt3.json}"
-DEPLOY_IMAGE="${DEPLOY_IMAGE:-${IMAGE_NAME:?IMAGE_NAME is required}:${IMAGE_TAG:-latest}}"
+DEPLOY_IMAGE="${DEPLOY_IMAGE:-${IMAGE_NAME:-myapp}:${IMAGE_TAG:-latest}}"
 NUM_PREFILL="${NUM_PREFILL:-1}"
 NUM_DECODE="${NUM_DECODE:-1}"
 PREFILL_GPU="${PREFILL_GPU:-4}"
@@ -23,7 +23,7 @@ EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 MOCK_DB="${MOCK_DB:-false}"
-TARGET_HOSTS="${TARGET_HOSTS:?TARGET_HOSTS is required}"
+TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 NODE_SELECTOR_KEY="${NODE_SELECTOR_KEY:-xds.optest}"
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'

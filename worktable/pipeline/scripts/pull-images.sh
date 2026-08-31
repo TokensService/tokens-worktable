@@ -9,13 +9,14 @@
 # 依赖：目标机 root 免密登录（或已配置 sshpass + TARGET_PASSWORD），目标机有 docker/nerdctl。
 set -euo pipefail
 
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY 2>/dev/null || true
+IPS="${1:-${TARGET_IPS:-${TARGET_IP:-127.0.0.1}}}"
+IMAGE="${2:-${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}}"
+PULL_PROXY="${PULL_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}"
 
-IPS="${1:-${TARGET_IP:-}}"
-IMAGE="${2:-${IMAGE_NAME:-}}"
-
-[ -n "$IPS" ] || { echo "错误: 未指定节点 IP 列表（\$1 或 TARGET_IP）" >&2; exit 1; }
-[ -n "$IMAGE" ] || { echo "错误: 未指定镜像（\$2 或 IMAGE_NAME）" >&2; exit 1; }
+if [[ -n "$PULL_PROXY" ]]; then
+  export http_proxy="$PULL_PROXY" https_proxy="$PULL_PROXY"
+  export HTTP_PROXY="$PULL_PROXY" HTTPS_PROXY="$PULL_PROXY"
+fi
 
 # 兼容空格 / 逗号分隔
 IPS="$(printf '%s' "$IPS" | tr ',' ' ')"
