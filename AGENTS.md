@@ -8,6 +8,9 @@ op_test —— 自动化测试与优化工具。本仓库是一个「宿主工�
 deepseek-harness/   git 子模块（github.com/deepseek-ai/deepseek-harness），dsh 本体
 dsh.sh              dsh 编译 / 安装 / 运行 / Web 后台管理脚本（本仓库的主入口）
 install-plugins.sh  一键安装 dsh-plugins/ 下所有插件（构建 → plugin add link: → 重启 web，幂等）
+apply-branding.sh   一键应用 OPTEST web 品牌补丁（patches/ → 子模块 → 重建 → 重启，幂等）
+patches/
+  optest-branding.patch   子模块品牌改动的 git diff（由 apply-branding.sh 应用）
 dsh-plugins/
   dsh-worktable/    工作台插件的本地副本（含本仓库自有改动，见其中 CHANGES.md）
 worktable/          工作台项目页与配套脚本（由插件经 /api/worktable/* 提供访问）
@@ -41,7 +44,12 @@ dsh-web.log / dsh-web.pid   dsh web 后台进程的运行日志与 pid（已 git
 ./dsh.sh stop / restart / status / log
 ```
 
-关键环境变量：`DSH_REPO`（子模块路径）、`DSH_HOME`（dsh 数据目录，默认 `/mnt/paas`）、`DSH_WORKDIR`（web 新会话默认工作目录，默认脚本所在目录）、`DSH_WEB_PORT`（默认 3051）、`DSH_LOG_DIR`、`DEEPSEEK_API_KEY`（存在 `$DSH_REPO/.env` 时自动加载）。
+关键环境变量：`DSH_REPO`（子模块路径）、`DSH_HOME`（dsh 数据目录，默认 `/mnt/paas`）、`DSH_WORKDIR`（web 新会话默认工作目录，默认脚本所在目录）、`DSH_WEB_PORT`（默认 3051）、`DSH_LOG_DIR`、`DSH_CLIENT_TITLE`（web 品牌标题，默认 `op_test`，build 时内联进产物）、`DEEPSEEK_API_KEY`（存在 `$DSH_REPO/.env` 时自动加载）。
+
+本仓库对子模块的本地改动（未上游化，已固化为 `patches/optest-branding.patch`，用 `./apply-branding.sh` 一键应用/重建，`--check` 查状态；子模块升级导致补丁冲突时需重做改动并重新生成补丁）：
+
+- web 品牌 OPTEST：`packages/client/ui-sidebar/src/client/SidebarRoot.tsx` 的品牌 fallback 改为 `OpTestMark` 图标 + `OPTEST` 文字（配套测试 `ui-sidebar/tests/sidebar-root.client.spec.tsx` 与快照 `sidebar-snapshot.client.spec.tsx`）；`apps/web/public/manifest.webmanifest` 名称改为 `op_test` / `OPTEST`；`apps/web/public/favicon.svg` 换成同款「OP」徽章（保留暗色模式变白适配，配套 `apps/web/tests/pwa-manifest.e2e.ts`）；标签页标题由 `dsh.sh build` 注入的 `DSH_CLIENT_TITLE=op_test` 决定，不在补丁内。
+- 注意：会话主页中央 hero 区仍是上游鲸鱼图标（`FishLogo`），未改动。
 
 运行态要点：
 
