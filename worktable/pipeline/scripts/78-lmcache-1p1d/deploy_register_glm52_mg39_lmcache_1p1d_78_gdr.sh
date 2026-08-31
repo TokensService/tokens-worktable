@@ -26,11 +26,11 @@ require_cmd() {
 }
 
 remote() {
-  sshpass -p "${REMOTE_PASS}" ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${REMOTE_HOST}" "$@"
+  sshpass -p "${REMOTE_PASS}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${REMOTE_USER}@${REMOTE_HOST}" "$@"
 }
 
 log_remote() {
-  sshpass -p "${LOG_PASS}" ssh -o StrictHostKeyChecking=no "${LOG_USER}@${LOG_HOST}" "$@"
+  sshpass -p "${LOG_PASS}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOG_USER}@${LOG_HOST}" "$@"
 }
 
 echo ">>> local dir: ${LOCAL_DIR}"
@@ -74,7 +74,7 @@ kubectl -n '${NAMESPACE}' get pods -o wide >&2 || true
 exit 1"
 
 echo ">>> start following XDS head pod logs on ${LOG_HOST} ..."
-sshpass -p "${LOG_PASS}" scp -o StrictHostKeyChecking=no "${LOCAL_DIR}/follow_xds_head_logs.sh" "${LOG_USER}@${LOG_HOST}:/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh" || true
+sshpass -p "${LOG_PASS}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${LOCAL_DIR}/follow_xds_head_logs.sh" "${LOG_USER}@${LOG_HOST}:/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh" || true
 log_remote "set -e; chmod +x '/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh'; mkdir -p '${REMOTE_XDS_FOLLOW_DIR}'; cd '${REMOTE_XDS_FOLLOW_DIR}'; nohup env OUT='${REMOTE_XDS_FOLLOW_DIR}' bash '/data/wwx/follow_xds_head_logs_${NAMESPACE}.sh' '${NAMESPACE}' > follow_launcher.log 2>&1 < /dev/null & echo \\\$! > launcher.pid" || true
 
 echo ">>> register GLM-5.2 NVFP4 lmcache l2 1P1D model ..."

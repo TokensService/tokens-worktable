@@ -52,7 +52,7 @@ collect_one() {   # $1=ip $2=user $3=pass
   {
     echo "===== host $user@$ip @ $(stamp) ====="
     if command -v sshpass >/dev/null 2>&1 && [ -n "$pass" ]; then
-      sshpass -p "$pass" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 "$user@$ip" "$remote" 2>&1
+      sshpass -p "$pass" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8 "$user@$ip" "$remote" 2>&1
     else
       echo "(无 sshpass 或密码，跳过远程采集；可配 ssh 免密或安装 sshpass)"
     fi

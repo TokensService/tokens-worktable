@@ -659,15 +659,16 @@ function apply(ctx) {
       });
     });
   }
-  const GPU_PROBE = 'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; echo ===; nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name --format=csv,noheader; echo ===; for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; echo ===; docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null';
+  const GPU_PROBE = 'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; echo ===; nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name --format=csv,noheader; echo ===; for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; echo ===; (docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null; nerdctl --namespace k8s.io ps --format "{{.ID}} {{.Names}}" 2>/dev/null; nerdctl ps --format "{{.ID}} {{.Names}}" 2>/dev/null; true)';
   async function queryGpu(ip, user, pass) {
     let out;
     if (localAddrs().has(ip)) {
       out = await execText("bash", ["-c", GPU_PROBE]);
     } else {
       const target = user ? user + "@" + ip : ip;
-      const sshArgs = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8", target, GPU_PROBE];
-      out = pass ? await execText("sshpass", ["-p", pass, "ssh", ...sshArgs]) : await execText("ssh", ["-o", "BatchMode=yes", ...sshArgs]);
+      const remoteCmd = "echo " + Buffer.from(GPU_PROBE).toString("base64") + " | base64 -d | bash";
+      const sshArgs = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8", target, remoteCmd];
+      out = pass ? await execText("sshpass", ["-p", pass, "ssh", "-o", "PreferredAuthentications=password,keyboard-interactive", "-o", "PubkeyAuthentication=no", "-o", "NumberOfPasswordPrompts=1", ...sshArgs]) : await execText("ssh", ["-o", "BatchMode=yes", ...sshArgs]);
     }
     const secs = out.split(/^===\s*$/m);
     const gpus = (secs[0] || "").trim().split("\n").filter(Boolean).map((l) => {

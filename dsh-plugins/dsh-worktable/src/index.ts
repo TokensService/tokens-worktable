@@ -526,7 +526,9 @@ export function apply(ctx: Context) {
       })
     })
   }
-  // 一段命令取全量数据（=== 分四段：GPU 列表 / 计算进程 / 进程容器 cgroup / docker 容器清单）
+  // 一段命令取全量数据（=== 分四段：GPU 列表 / 计算进程 / 进程容器 cgroup / 容器清单）
+  // 容器清单段兼容无 docker 的 K8s 节点：docker（有则输出）+ nerdctl 的 k8s.io 与 default 两个 namespace；
+  // 段尾 true 兜底：ssh 退出码取末条命令，目标机缺 nerdctl/docker 时否则会整体以 127 失败、丢掉已采到的数据
   const GPU_PROBE =
     'nvidia-smi --query-gpu=index,uuid,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits; ' +
     'echo ===; ' +
@@ -535,15 +537,26 @@ export function apply(ctx: Context) {
     'for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do ' +
     'echo "$p:$(cat /proc/$p/cgroup 2>/dev/null | grep -oE "[0-9a-f]{64}" | head -1)"; done; ' +
     'echo ===; ' +
-    'docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null'
+    '(docker ps --format "{{.ID}} {{.Names}}" 2>/dev/null; ' +
+    'nerdctl --namespace k8s.io ps --format "{{.ID}} {{.Names}}" 2>/dev/null; ' +
+    'nerdctl ps --format "{{.ID}} {{.Names}}" 2>/dev/null; true)'
   async function queryGpu(ip: string, user: string, pass: string) {
     let out: string
     if (localAddrs().has(ip)) {
       out = await execText('bash', ['-c', GPU_PROBE])
     } else {
       const target = user ? user + '@' + ip : ip
-      const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=8', target, GPU_PROBE]
-      out = pass ? await execText('sshpass', ['-p', pass, 'ssh', ...sshArgs]) : await execText('ssh', ['-o', 'BatchMode=yes', ...sshArgs])
+      // 远程登录 shell 可能是 zsh（如部分 BMS 节点）：`echo ===` 触发 zsh 的 =word 展开报错，
+      // $(...) 结果默认不做单词拆分导致 for 循环失效。base64 编码后经管道交给 bash 执行，与登录 shell 解耦。
+      const remoteCmd = 'echo ' + Buffer.from(GPU_PROBE).toString('base64') + ' | base64 -d | bash'
+      // UserKnownHostsFile=/dev/null：不查不写 known_hosts，首次登录的 yes/no 确认与
+      // 重装后指纹变更（REMOTE HOST IDENTIFICATION HAS CHANGED）都不阻塞（内网受信前提）
+      const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=8', target, remoteCmd]
+      // 密码路径：只做密码/键盘交互认证（跳过公钥尝试，避免 agent 密钥过多触发 Too many authentication failures），
+      // 密码只喂一次（错误即失败返回，不把错密码重试 3 遍触发账户锁定）
+      out = pass
+        ? await execText('sshpass', ['-p', pass, 'ssh', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...sshArgs])
+        : await execText('ssh', ['-o', 'BatchMode=yes', ...sshArgs])
     }
     const secs = out.split(/^===\s*$/m)
     const gpus = (secs[0] || '').trim().split('\n').filter(Boolean).map((l) => {
