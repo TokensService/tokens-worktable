@@ -338,8 +338,8 @@
         <input id="repoUrl" class="dshell-input" placeholder="URL（如 https://git.example.com/dev/myapp.git）" style="width:300px;" />
         <input id="repoUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
         <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" />
-        <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；jenkins=经配置的 Jenkins 多分支任务，子任务名即分支" style="width:106px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins">Jenkins 任务</option></select>
-        <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="选择 Jenkins 多分支任务" title="分支获取=Jenkins 任务时：指定一个多分支/文件夹类型任务，其子任务名即分支（需先在「设置」页获取任务列表）" style="width:180px;display:none;" autocomplete="off" />
+        <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；Jenkins=多分支任务子任务名即分支（任务框也可直接粘贴 refs 接口地址），浏览器直连=本地浏览器请求 Jenkins，服务端代连=经 /api/worktable/proxy 由 DSH 服务端请求（按仓库各自选择，不跟随全局连接模式）" style="width:128px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins-browser">Jenkins·浏览器直连</option><option value="jenkins-server">Jenkins·服务端代连</option></select>
+        <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}）" style="width:240px;display:none;" autocomplete="off" />
         <button id="repoAdd" class="dshell-btn mini">添加</button>
         <button id="repoAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/令牌应用到所有仓库">应用凭证到全部</button>
         <button id="repoCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
@@ -898,7 +898,12 @@ function applyEnvCredAll(){
   saveEnvs(); renderEnvs();
 }
 /* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
-function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:(r.fetchMode==='browser'?'browser':(r.fetchMode==='jenkins'?'jenkins':'server')), jenkinsJob:r.jenkinsJob||''}; }
+/* 分支获取方式：server=服务端 git ls-remote；browser=浏览器直连 /info/refs；jenkins-browser/jenkins-server=Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连，按仓库各自选择）；旧值 jenkins 归为 jenkins-browser */
+function normalizeFetchMode(m){ return m==='browser'?'browser':(m==='jenkins-server'?'jenkins-server':((m==='jenkins'||m==='jenkins-browser')?'jenkins-browser':'server')); }
+function isJenkinsFetchMode(m){ return m==='jenkins-browser'||m==='jenkins-server'; }
+function fetchModeLabel(m){ return m==='browser'?'浏览器':(m==='jenkins-browser'?'Jenkins·浏览器':(m==='jenkins-server'?'Jenkins·服务端':'服务端')); }
+function fetchModeTitle(m){ return m==='browser'?'浏览器直连 /info/refs（需 CORS）':(m==='jenkins-browser'?'Jenkins 多分支任务子任务名（本地浏览器直连 Jenkins）':(m==='jenkins-server'?'Jenkins 多分支任务子任务名（服务端经 /api/worktable/proxy 代连）':'服务端 git ls-remote')); }
+function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:normalizeFetchMode(r.fetchMode), jenkinsJob:r.jenkinsJob||''}; }
 function loadRepos(){ try{ const a=JSON.parse(localStorage.getItem('pip-repos')); if(Array.isArray(a)&&a.length) return a.map(normalizeRepo); }catch(e){} return null; }
 let repositories = loadRepos() || [
   {id:'repo-1', name:'myapp', url:'https://git.example.com/dev/myapp.git', user:'', pass:'', fetchMode:'server'},
@@ -920,7 +925,7 @@ function renderRepos(){
   const tb=$('repoTable').querySelector('tbody'); tb.innerHTML='';
   repositories.forEach(r=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+(r.fetchMode==='browser'?'浏览器直连 /info/refs（需 CORS）':(r.fetchMode==='jenkins'?'Jenkins 多分支任务子任务名':'服务端 git ls-remote'))+'">'+(r.fetchMode==='browser'?'浏览器':(r.fetchMode==='jenkins'?('Jenkins'+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):'服务端'))+'</td>'+
+    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
@@ -928,15 +933,15 @@ function renderRepos(){
   tb.querySelectorAll('[data-repoedit]').forEach(b=>b.addEventListener('click',()=>startRepoEdit(b.getAttribute('data-repoedit'))));
   tb.querySelectorAll('[data-repodel]').forEach(b=>b.addEventListener('click',()=>delRepo(b.getAttribute('data-repodel'))));
 }
-function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=(r.fetchMode==='browser'?'browser':(r.fetchMode==='jenkins'?'jenkins':'server')); $('repoJenkinsJob').value=r.jenkinsJob||''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
+function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=normalizeFetchMode(r.fetchMode); $('repoJenkinsJob').value=r.jenkinsJob||''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
 function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
 function saveRepoForm(){
   const name=$('repoName').value.trim(); const url=$('repoUrl').value.trim(); const user=$('repoUser').value.trim(); const pass=$('repoPass').value;
   if(!url){ alert('请填写仓库 URL'); return; }
-  const fm=$('repoFetchMode').value==='browser'?'browser':($('repoFetchMode').value==='jenkins'?'jenkins':'server');
+  const fm=normalizeFetchMode($('repoFetchMode').value);
   const jkJob=($('repoJenkinsJob').value||'').trim();
-  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=(fm==='jenkins')?jkJob:''; } }
-  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url, url, user, pass, fetchMode:fm, jenkinsJob:(fm==='jenkins')?jkJob:''}); }
+  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; } }
+  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:''}); }
   if(repoEditId){ delete repoBranches[repoEditId]; } saveRepos(); resetRepoForm(); renderRepos(); renderRepoOptions();
 }
 function delRepo(id){ if(!confirm('删除该代码仓？')) return; repositories=repositories.filter(r=>r.id!==id); if(!repositories.length){ repositories=[{id:'repo-1',name:'默认',url:'',user:'',pass:'',fetchMode:'server'}]; } if(curRepoId===id) curRepoId=repositories[0].id; saveRepos(); saveRepoSel(); renderRepos(); renderRepoOptions(); }
@@ -948,15 +953,15 @@ function applyRepoCredAll(){
   repositories.forEach(r=>{ r.user=u; r.pass=p; });
   saveRepos(); renderRepos();
 }
-/* 分支获取方式切换：仅「Jenkins 任务」时显示任务选择框 */
-function toggleRepoJenkinsJobInput(){ const sel=$('repoFetchMode'); const inp=$('repoJenkinsJob'); if(!sel||!inp) return; inp.style.display = sel.value==='jenkins'?'':'none'; }
-/* 代码仓联通性检测 + 远程分支/Tag 列举：fetchMode='server'(默认)→/api/worktable/git-remote(git ls-remote)；'browser'→直连 /info/refs 解析 smart-HTTP（需服务器开 CORS）；'jenkins'→经配置的 Jenkins 多分支任务子任务名 */
+/* 分支获取方式切换：仅 Jenkins（浏览器直连/服务端代连）时显示任务选择框 */
+function toggleRepoJenkinsJobInput(){ const sel=$('repoFetchMode'); const inp=$('repoJenkinsJob'); if(!sel||!inp) return; inp.style.display = isJenkinsFetchMode(sel.value)?'':'none'; }
+/* 代码仓联通性检测 + 远程分支/Tag 列举：fetchMode='server'(默认)→/api/worktable/git-remote(git ls-remote)；'browser'→直连 /info/refs 解析 smart-HTTP（需服务器开 CORS）；'jenkins-browser'/'jenkins-server'→经配置的 Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连） */
 let repoBranches={};   // repoId -> {branches:[], tags:[], error:'', loading?}
 
 /* 按 fetchMode 分流：统一返回 {ok, branches:[], tags:[], error} */
 async function fetchRepoRefs(r){
   if(r.fetchMode==='browser') return fetchBranchesBrowser(r);
-  if(r.fetchMode==='jenkins') return fetchBranchesJenkins(r);
+  if(isJenkinsFetchMode(r.fetchMode)) return fetchBranchesJenkins(r);
   const res=await fetch('/api/worktable/git-remote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:r.url,user:r.user||'',pass:r.pass||''})});
   return res.json();
 }
@@ -983,18 +988,40 @@ async function fetchBranchesBrowser(repo){
   out.tags=refs.filter(x=>x.name.indexOf('refs/tags/')===0).map(x=>x.name.slice(10)).sort();
   out.ok=true; return out;
 }
-/* Jenkins 多分支任务：子任务名即分支。复用全局 jenkins 配置 + jkFetchJson/jkJobPath（local 直连 / remote 走 proxy）。返回 {ok, branches, tags, error} */
+/* Jenkins 分支来源有两种：① 多分支/文件夹任务：子任务名即分支；② 自定义 refs 接口：jenkinsJob 直接填完整 http(s) 地址，返回分页 JSON {total,offset,limit,next_offset,items:[{type,name}]}，跟 next_offset 逐页拉全。复用全局 jenkins 凭据 + jkFetchJson/jkJobPath，但连接方式按仓库选择覆盖全局连接模式：jenkins-browser=local 浏览器直连；jenkins-server=remote 经 /api/worktable/proxy 服务端代连。返回 {ok, branches, tags, error} */
 async function fetchBranchesJenkins(r){
   const out={ok:false, branches:[], tags:[], error:''};
   const job=(r.jenkinsJob||'').trim();
-  if(!job){ out.error='未配置 Jenkins 任务（在「代码仓」表单选择一个多分支任务）'; return out; }
-  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+  if(!job){ out.error='未配置 Jenkins 任务（在「代码仓」表单选择一个多分支任务，或粘贴 refs 接口完整地址）'; return out; }
+  const j=Object.assign({}, jenkins, {mode:(r.fetchMode==='jenkins-server')?'remote':'local'});
+  /* ② refs 接口：分页 {total,offset,limit,next_offset,items:[{type:'branch'|'tag',name}]}，逐页拉取直至拉全 */
+  if(/^https?:\/\//i.test(job)){
+    const branches=[], tags=[];
+    try{
+      let url=job;
+      for(let page=0; page<100; page++){            // 页数兜底，防接口异常导致死循环
+        const data=await jkFetchJson(j, url);
+        const items=(data && Array.isArray(data.items))?data.items:[];
+        if(!items.length){ if(page===0){ out.error='refs 接口未返回任何条目（items 为空，请确认接口地址与分页格式）'; return out; } break; }
+        for(const it of items){
+          const n=String((it&&it.name)||'').trim(); if(!n) continue;
+          if(it.type==='tag') tags.push(n); else branches.push(n);   // type 缺省/未知按分支计
+        }
+        const total=+data.total||0, next=(data.next_offset===null||data.next_offset===undefined)?NaN:+data.next_offset;
+        if(!isFinite(next)||next>=total) break;
+        url=job.replace(/([?&])offset=\d+/, '$1offset='+next);      // 保留原 query，仅替换/追加 offset
+        if(url===job) url=job+(job.indexOf('?')>=0?'&':'?')+'offset='+next;
+      }
+    }catch(e){ out.error='refs 接口请求失败：'+String(e.message||e).slice(0,160); return out; }
+    out.branches=Array.from(new Set(branches)).sort(); out.tags=Array.from(new Set(tags)).sort(); out.ok=true; return out;
+  }
+  const base=(j.url||'').replace(/\/+$/,'');
   if(!base){ out.error='Jenkins 地址未配置（请在「设置」页填写 Jenkins 服务地址）'; return out; }
   let data;
   try{ data=await jkFetchJson(j, base+jkJobPath(job)+'api/json?tree=jobs[name,fullName,color,_class]'); }
   catch(e){ out.error='Jenkins 请求失败：'+String(e.message||e).slice(0,160); return out; }
   const subs=(data && Array.isArray(data.jobs))?data.jobs:[];
-  if(!subs.length){ out.error='该 Jenkins 任务未返回子任务列表（请确认其为多分支/文件夹类型任务，如 Multibranch Pipeline）'; return out; }
+  if(!subs.length){ out.error='该 Jenkins 任务未返回子任务列表（实际类型 '+(data&&data._class?String(data._class).split('.').pop():'未知')+'，非多分支/文件夹类型，如 Multibranch Pipeline；若其经自定义接口暴露分支，请直接粘贴 refs 接口完整地址）'; return out; }
   const branches=subs.map(function(s){
     let n=String(s.fullName||s.name||'');
     n=n.split('/').pop();                      // 多分支子任务 fullName 形如 <父任务>/<分支>，取末段
@@ -1023,7 +1050,7 @@ function parseGitRefsAdvertisement(buf){
 }
 async function testRepo(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
-  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+(r.fetchMode==='browser'?'浏览器':(r.fetchMode==='jenkins'?'Jenkins':'服务端'))+'）';
+  tip.style.color=''; tip.textContent='测试中…（'+r.name+' · '+fetchModeLabel(r.fetchMode)+'）';
   let j;
   try{ j=await fetchRepoRefs(r); }
   catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 请求失败：'+String(e.message||e).slice(0,160); return; }
@@ -1056,10 +1083,10 @@ function renderBranchPanel(showAll){
   const nb=ready?(cached.branches||[]).length:0;
   const nt=ready?(cached.tags||[]).length:0;
   let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
-    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(repo.fetchMode==='browser'?'浏览器':(repo.fetchMode==='jenkins'?('Jenkins'+(repo.jenkinsJob?(' · '+esc(repo.jenkinsJob)):'')):'服务端'))+(ready?(' · '+nb+' 分支'+(nt?(' · '+nt+' Tag'):'')):' · …')+'</span>'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(isJenkinsFetchMode(repo.fetchMode)?(fetchModeLabel(repo.fetchMode)+(repo.jenkinsJob?(' · '+esc(repo.jenkinsJob)):'')):fetchModeLabel(repo.fetchMode))+(ready?(' · '+nb+' 分支'+(nt?(' · '+nt+' Tag'):'')):' · …')+'</span>'
     +'<span data-branchrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
   if(!cached || cached.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
-  else if(cached.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(cached.error.slice(0,200))+'</div>'; if(repo.fetchMode==='browser'||repo.fetchMode==='jenkins'){ h+='<div style="padding:2px 6px;"><button class="dshell-btn dshell-btnGhost mini" data-branchfallback type="button">切回服务端并重试</button></div>'; } }
+  else if(cached.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(cached.error.slice(0,200))+'</div>'; if(repo.fetchMode==='browser'||isJenkinsFetchMode(repo.fetchMode)){ h+='<div style="padding:2px 6px;"><button class="dshell-btn dshell-btnGhost mini" data-branchfallback type="button">切回服务端并重试</button></div>'; } }
   else {
     const br=(cached.branches||[]).filter(b=> !q || b.toLowerCase().indexOf(q)>=0).slice(0,200);
     const tg=(cached.tags||[]).filter(t=> !q || t.toLowerCase().indexOf(q)>=0).slice(0,200);
@@ -2462,7 +2489,7 @@ async function createAnalysisChat(kind, rec){
 }
 
 /* ---------- 页面修改（右上角按钮 → 新建 DSH 会话修改本页面；提示词在「设置」页页面修改配置维护） ---------- */
-const PAGE_EDIT_PROMPT = '请协助修改你当前看到的流水线工作台页面。\n页面文件：/mnt/paas/op_test/worktable/pipeline/pipeline.html\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。';
+const PAGE_EDIT_PROMPT = '页面文件：/mnt/paas/op_test/worktable/pipeline/pipeline.html，这是一个deepseek harness worktable插件的页面\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。\n修改代码时，创建一个git worktree修改，防止多个并行的修改冲突。';
 const DEFAULT_PAGE_EDIT_PROMPT = PAGE_EDIT_PROMPT;   // 默认提示词（设置页「页面修改配置」可覆盖）
 let pageEditPrompt = (function(){ try{ const p=localStorage.getItem('pip-pageEditPrompt'); return (p==null||!String(p).trim())?DEFAULT_PAGE_EDIT_PROMPT:p; }catch(e){ return DEFAULT_PAGE_EDIT_PROMPT; } })();
 function savePageEditPrompt(){ try{ localStorage.setItem('pip-pageEditPrompt', pageEditPrompt); }catch(e){} persistState(); }
