@@ -10,6 +10,12 @@
 #   2. 把当前配置快照到 configs/pre-restore-<时间戳>/，防止误覆盖
 #
 # 恢复内容：settings.yaml、profiles/web/ 配置文件、env.backup（还原为 .env，权限 600）。
+#
+# 恢复后还会：
+#   1. 修正 package.json 中失效的相对 file: 依赖路径（备份机目录布局与本机不同时，
+#      相对路径会解析到不存在的目录，导致 pnpm install 报 ENOENT）
+#   2. 重新安装 web profile 依赖（备份不含 node_modules，不装则启动报
+#      "cannot resolve profile bundle"）
 
 set -euo pipefail
 
@@ -35,7 +41,8 @@ usage() {
   DSH_REPO   deepseek-harness 子模块路径（默认 脚本所在目录/deepseek-harness）
 
 恢复前会先确认 dsh web 已停止（./dsh.sh stop），并把当前配置快照到
-configs/pre-restore-<时间戳>/ 以便回滚。恢复后执行 ./dsh.sh start 生效。
+configs/pre-restore-<时间戳>/ 以便回滚。恢复后会自动修正失效的 file: 依赖路径
+并重装 profile 依赖（不含 node_modules 的备份必须重装才能启动）。
 EOF
 }
 
@@ -86,4 +93,44 @@ if [[ -f "$backup/env.backup" ]]; then
   chmod 600 "$DSH_REPO/.env"
 fi
 
-echo "完成：共恢复 $count 个文件。执行 ./dsh.sh start 重新启动 dsh web 后生效。"
+echo "完成：共恢复 $count 个文件。"
+
+# 修正 package.json 中失效的 file: 依赖路径：
+# 备份里的相对路径（如 file:../../op_test/...）相对 profile 目录解析，
+# 本机目录布局不同时会指向不存在的目录，导致 pnpm install 报 ENOENT。
+# 对失效的相对 file: 依赖，若本仓库 dsh-plugins/<包名> 存在则改写为该绝对路径。
+pkg="$PROFILE_DIR/package.json"
+if [[ -f "$pkg" ]]; then
+  SCRIPT_DIR="$SCRIPT_DIR" PROFILE_DIR="$PROFILE_DIR" node - <<'EOF'
+const fs = require('fs');
+const path = require('path');
+const profileDir = process.env.PROFILE_DIR;
+const pkgPath = path.join(profileDir, 'package.json');
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+let changed = false;
+for (const [name, spec] of Object.entries(pkg.dependencies || {})) {
+  if (typeof spec !== 'string' || !spec.startsWith('file:')) continue;
+  const p = spec.slice(5);
+  const target = path.isAbsolute(p) ? p : path.resolve(profileDir, p);
+  if (fs.existsSync(target)) continue; // 路径仍有效，不动
+  const local = path.join(process.env.SCRIPT_DIR, 'dsh-plugins', name);
+  if (fs.existsSync(local)) {
+    pkg.dependencies[name] = 'file:' + local;
+    changed = true;
+    console.log(`  ~ ${name}: ${spec} -> file:${local}`);
+  } else {
+    console.warn(`  ! 警告：${name} 的依赖路径无效且本仓库无 dsh-plugins/${name}：${spec}`);
+  }
+}
+if (changed) fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+EOF
+fi
+
+# 备份不含 node_modules，恢复后必须重装 profile 依赖，
+# 否则启动报 "cannot resolve profile bundle ..."
+echo "重新安装 web profile 依赖..."
+if "$SCRIPT_DIR/dsh.sh" run plugin --profile web install; then
+  echo "依赖安装完成。执行 ./dsh.sh start 启动 dsh web。"
+else
+  echo "警告：依赖安装失败，请手动执行 ./dsh.sh run plugin --profile web install 后再启动" >&2
+fi
