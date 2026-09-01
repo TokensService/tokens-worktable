@@ -73,6 +73,10 @@
     /* Jenkins 连接模式分段切换（选中态走主题 accent） */
     .jk-modeBtn { border-radius:0; }
     .jk-modeBtn.sel { background:var(--dsw-alias-state-accent-primary); color:#fff; border-color:var(--dsw-alias-state-accent-primary); }
+    /* 服务端同步浮层提示（定时任务完成等；右下角，色板走主题变量，浅/深自适应） */
+    .sync-toast { position:fixed; right:16px; bottom:16px; z-index:60; display:flex; flex-direction:column; gap:8px; max-width:360px; }
+    .sync-toast-item { background:var(--dsw-alias-bg-base); border:1px solid var(--dsw-alias-border-l2); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--dsw-alias-label-primary); box-shadow:0 8px 24px rgba(0,0,0,.35); cursor:pointer; }
+    .sync-toast-item:hover { border-color:var(--dsw-alias-state-accent-primary); }
   </style>
   <script>
     /* 防闪烁：首屏前按已存偏好解析主题（浅色 / 深色 / 跟随系统） */
@@ -138,7 +142,10 @@
       </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
-      <select id="deployStrategySel" class="dshell-input" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取该分支支持的部署策略（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）"></select>
+      <span id="strategyPick" style="position:relative;display:inline-block;">
+        <input id="deployStrategyName" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取支持的部署策略，聚焦弹出面板可搜索/刷新（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）" />
+        <div id="strategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+      </span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
@@ -373,7 +380,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
           <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">运行日志与 profiling 产物按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
@@ -776,7 +783,7 @@ function envSortVal(e, key){
     if(!st) return 100000;                       // 未查询
     if(st.error) return 0;                       // 查询失败排最前
     const used=st.used==undefined?0:st.used;
-    return ((st.containers||[]).length?300000:200000)+used;   // 空闲 → 占用（占用内按已用卡数）
+    return (gpuBusy(st)?300000:200000)+used;   // 空闲 → 占用（占用内按已用卡数）
   }
   return '';
 }
@@ -789,7 +796,7 @@ function envSortList(list){
     return a.i-b.i;                              // 同值保持原顺序
   }).map(x=>x.e);
 }
-/* 节点筛选：匹配名称 / IP / 用户名 / 设备状态文本（容器名、空闲、查询失败、卡数） */
+/* 节点筛选：匹配名称 / IP / 用户名 / 设备状态文本（容器名、空闲、占用、查询失败、卡数） */
 function envFilterMatch(e){
   const kw=envFilterText.trim().toLowerCase();
   if(!kw) return true;
@@ -800,7 +807,7 @@ function envFilterMatch(e){
     else{
       text+=' '+(st.containers||[]).join(' ').toLowerCase();
       text+=' '+(st.total==undefined?'?':st.total)+'卡 已用'+(st.used==undefined?'?':st.used);
-      if(!(st.containers||[]).length) text+=' 空闲';
+      text+=gpuBusy(st)?' 占用':' 空闲';
     }
   }
   return text.indexOf(kw)>=0;
@@ -833,12 +840,15 @@ function bindGpuCell(cell, e){
 }
 /* 节点设备状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
 let gpuStatus={};
+/* 占用判定：关联到容器，或 nvidia-smi 显示有卡被用（宿主机直跑进程关联不到容器，不能按空闲显示） */
+function gpuBusy(st){ return (st.containers||[]).length>0 || (Number(st.used)||0)>0; }
 function gpuCellHtml(st){
   if(!st) return '<span class="dshell-muted">—</span>';
   if(st.error) return '<span style="color:var(--st-err)">查询失败</span>';
   const cs=st.containers||[];
   let main;
   if(cs.length) main='<b>'+esc(cs.slice(0,2).join('、'))+(cs.length>2?' 等':'')+'</b>';
+  else if(gpuBusy(st)) main='<b style="color:var(--st-run)">占用</b>';
   else main='<span class="dshell-muted">空闲</span>';
   return main+'<div class="dshell-muted" style="font-size:10px;">'+(st.total==undefined?'?':st.total)+' 卡 · 已用 '+(st.used==undefined?'?':st.used)+'</div>';
 }
@@ -877,7 +887,8 @@ function openGpuDetail(e){
         +'<table class="dshell-table"><thead><tr><th>PID</th><th>GPU</th><th>进程</th><th>容器</th></tr></thead><tbody>';
       st.procs.forEach(p=>{ h+='<tr><td>'+esc(p.pid)+'</td><td class="dshell-muted" style="font-size:10px">'+esc((p.uuid||'').replace('GPU-','').slice(0,8))+'</td><td>'+esc(p.proc)+'</td><td>'+(p.container?('<b>'+esc(p.container)+'</b>'):'<span class="dshell-muted">—</span>')+'</td></tr>'; });
       h+='</tbody></table>';
-    } else { h+='<div class="dshell-muted">当前无进程占用（全部空闲）</div>'; }
+    } else if(gpuBusy(st)) { h+='<div class="dshell-muted">有 '+(st.used||0)+' 张卡被占用，但未列出占用进程（可能为其他用户进程，查询权限不足）。</div>'; }
+    else { h+='<div class="dshell-muted">当前无进程占用（全部空闲）</div>'; }
   }
   body.innerHTML=h;
   $('gpuDetail').style.display='flex';
@@ -1021,7 +1032,12 @@ async function fetchBranchesJenkins(r){
         url=job.replace(/([?&])offset=\d+/, '$1offset='+next);      // 保留原 query，仅替换/追加 offset
         if(url===job) url=job+(job.indexOf('?')>=0?'&':'?')+'offset='+next;
       }
-    }catch(e){ out.error='refs 接口请求失败：'+String(e.message||e).slice(0,160); return out; }
+    }catch(e){
+      const em=String((e&&e.message)||e).slice(0,160);
+      /* TypeError（Failed to fetch / NetworkError / Load failed）= 浏览器层失败，多为 CORS 拦截（接口未回 Access-Control-Allow-Origin）或网络不可达，补充排查指引 */
+      out.error='refs 接口请求失败：'+em+(/failed to fetch|networkerror|load failed/i.test(em)?' —— 多为 CORS 拦截或网络不可达：若浏览器地址栏能直接打开该接口即为 CORS，需接口方添加 Access-Control-Allow-Origin 响应头（浏览器安全限制，页面侧无法绕过）；否则请检查到该服务的网络通路':'');
+      return out;
+    }
     out.branches=Array.from(new Set(branches)).sort(); out.tags=Array.from(new Set(tags)).sort(); out.ok=true; return out;
   }
   const base=(j.url||'').replace(/\/+$/,'');
@@ -1082,7 +1098,7 @@ async function testRepoStrategy(r){
   const st=await fetchDeployStrategies(stUrl, br);
   if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（分支 '+br+'）：'+st.error; }
   else { tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 部署策略拉取成功（分支 '+br+'）· '+st.items.length+' 个：'+st.items.slice(0,8).join('、')+(st.items.length>8?' …':''); }
-  if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; renderDeployStrategyOptions(); }
+  if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; if(strategyPanelOpen()) renderStrategyPanel(); }
 }
 /* 分支/Tag 选择：按当前代码仓搜索远程分支与 Tag，下拉面板点选；仍可手动输入 */
 async function loadRepoBranches(repo, force){
@@ -1161,33 +1177,46 @@ async function fetchDeployStrategies(tpl, branch){
     return {items:Array.from(new Set(items)), error:''};
   }catch(e){ return {items:[], error:String(e.message||e).slice(0,160)}; }
 }
+/* 主控当前选中的部署策略（input 自由文本，可手输列表外名称；空串=不使用） */
+function curStrategy(){ const i=$('deployStrategyName'); return i?i.value.trim():''; }
+function strategyPanelOpen(){ const p=$('strategyPanel'); return !!(p && p.style.display!=='none'); }
+/* 拉取当前分支的策略列表进缓存；仅面板打开时重绘（初始化调用不弹面板） */
 async function loadDeployStrategies(force){
-  const sel=$('deployStrategySel'); if(!sel) return;
   const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
   const tpl=((repo && repo.strategyUrl)||'').trim();
-  if(!tpl){
-    sel.innerHTML=''; const o=document.createElement('option'); o.value=''; o.textContent='（未配置策略 URL）'; sel.appendChild(o);
-    sel.disabled=true; sel.title='在「设置」页代码仓配置「部署策略 URL」后，可按分支选择支持的部署策略'; return;
-  }
-  sel.disabled=false; sel.title='按当前分支从代码仓「部署策略 URL」拉取支持的部署策略';
   const key=deployStrategyKey(repo,branch);
+  if(!tpl){ delete deployStrategies[key]; if(strategyPanelOpen()) renderStrategyPanel(); return; }
   const cached=deployStrategies[key];
-  if(!force && cached && !cached.loading){ renderDeployStrategyOptions(); return; }
-  deployStrategies[key]={loading:true}; renderDeployStrategyOptions();
+  if(!force && cached && !cached.loading){ if(strategyPanelOpen()) renderStrategyPanel(); return; }
+  deployStrategies[key]={loading:true}; if(strategyPanelOpen()) renderStrategyPanel();
   deployStrategies[key]=await fetchDeployStrategies(tpl, branch);
-  renderDeployStrategyOptions();
+  if(strategyPanelOpen()) renderStrategyPanel();
 }
-function renderDeployStrategyOptions(){
-  const sel=$('deployStrategySel'); if(!sel||sel.disabled) return;
-  const cur=sel.value;
-  const st=deployStrategies[deployStrategyKey(curRepo(), $('branchName').value.trim()||'0830_dev_bnt3')];
-  sel.innerHTML='';
-  const add=(v,t,tip)=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; if(tip) o.title=tip; sel.appendChild(o); };
-  add('','（不使用）');
-  if(!st || st.loading){ add('','加载中…'); }
-  else if(st.error){ add('','加载失败',st.error); sel.title='部署策略拉取失败：'+st.error; }
-  else st.items.forEach(n=>add(n,n));
-  if(cur && Array.from(sel.options).some(o=>o.value===cur)) sel.value=cur; else sel.value='';
+/* 部署策略搜索面板：与分支/Tag 面板同款——头部仓库/分支/个数 + ⟳ 重新拉取，列表按输入筛选，点选回填 */
+function renderStrategyPanel(showAll){
+  const panel=$('strategyPanel'); const inp=$('deployStrategyName'); if(!panel||!inp) return;
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
+  const q=showAll?'':inp.value.trim().toLowerCase();
+  const tpl=((repo && repo.strategyUrl)||'').trim();
+  const st=tpl?deployStrategies[deployStrategyKey(repo,branch)]:null;
+  const ready=st&&!st.loading&&!st.error;
+  let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+esc(branch)+(ready?(' · '+st.items.length+' 策略'):' · …')+'</span>'
+    +'<span data-strategyrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
+  if(!tpl){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">未配置「部署策略 URL」，请在「设置」页代码仓中配置</div>'; }
+  else if(!st || st.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
+  else if(st.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(st.error.slice(0,200))+'</div>'; }
+  else {
+    const cur=inp.value.trim();
+    const items=st.items.filter(n=>!q||n.toLowerCase().indexOf(q)>=0).slice(0,200);
+    const item=(name)=>'<div data-strategy="'+esc(name)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(name===cur?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+(name?esc(name):'<span class="dshell-muted">（不使用）</span>')+'</div>';
+    h+=item('');
+    if(!items.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配</div>'; }
+    else { h+='<div class="dshell-muted" style="font-size:10px;padding:3px 8px 2px;opacity:.7;">策略（'+items.length+'）</div>'+items.map(item).join(''); }
+  }
+  panel.innerHTML=h; panel.style.display='block';
+  panel.querySelectorAll('[data-strategy]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-strategy'); panel.style.display='none'; inp.focus(); }));
+  const rb=panel.querySelector('[data-strategyrefresh]'); if(rb) rb.addEventListener('click', ()=>loadDeployStrategies(true));
 }
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
@@ -1432,11 +1461,41 @@ function fillScriptsDatalist(){
   availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
 }
 function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
-/* Jenkins 任务列表（设置页「获取任务列表」后填充；阶段编辑器「Jenkins」类型据此选择任务） */
+/* Jenkins 任务列表（设置页「获取任务列表」或编辑器内自动拉取后填充；阶段编辑器「Jenkins」类型据此选择任务，datalist 输入即搜索） */
 let availableJenkinsJobs=[];   // [{name: fullName}]
+let jenkinsJobsLoading=null;   // 拉取中的 Promise（防并发重复拉取）
 function fillJenkinsJobsDatalist(){
   const dl=$('jenkinsJobsList'); if(!dl) return; dl.innerHTML='';
   availableJenkinsJobs.forEach(j=>{ const o=document.createElement('option'); o.value=j.name; dl.appendChild(o); });
+}
+/* 阶段编辑器 Jenkins 行提示文案（拉取中 / 已有列表 / 待拉取） */
+function jkJobsHintText(){ return jenkinsJobsLoading?'任务列表拉取中…':(availableJenkinsJobs.length?('共 '+availableJenkinsJobs.length+' 个任务，输入可搜索'):'（单击输入框自动获取任务列表）'); }
+/* 同步阶段编辑器所有 Jenkins 行的提示文本（只改提示、不重建输入框，避免输入失焦） */
+function updateJkJobHints(text, isErr){
+  document.querySelectorAll('#plStageList [data-jkhint]').forEach(function(h){
+    h.textContent=text; h.style.color=isErr?'var(--log-err)':'';
+  });
+}
+/* 流水线编辑器内拉取 Jenkins 任务列表：单击任务输入框时自动触发（已有列表则跳过），点「↻」强制重拉；
+   复用全局 jenkins 连接配置（本地浏览器直连 / 服务端代连），成功后填充 datalist 并同步各行提示 */
+async function ensureJenkinsJobs(force){
+  if(jenkinsJobsLoading) return jenkinsJobsLoading;
+  if(!force && availableJenkinsJobs.length) return true;
+  if(!(jenkins.url||'').trim()){ updateJkJobHints('请先在「设置」页配置 Jenkins 地址', true); return false; }
+  updateJkJobHints('任务列表拉取中…');
+  jenkinsJobsLoading = (async function(){
+    try{
+      const jobs = await fetchAllJenkinsJobs(jenkins);
+      availableJenkinsJobs = jobs.map(function(jb){ return {name: jb.name}; });
+      fillJenkinsJobsDatalist();
+      updateJkJobHints(jkJobsHintText());
+      return true;
+    }catch(e){
+      updateJkJobHints('✗ 任务列表拉取失败：'+String((e&&e.message)||e).slice(0,120), true);
+      return false;
+    }finally{ jenkinsJobsLoading=null; }
+  })();
+  return jenkinsJobsLoading;
 }
 function jkJobByName(name){ return availableJenkinsJobs.find(j=>j.name===name)||null; }
 async function readScriptSrc(path){
@@ -1650,10 +1709,12 @@ function renderStageActionRow(i){
   }
   if(s.kind==='jenkins'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName）'; inp.style.width='240px';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName，可输入搜索）'; inp.style.width='240px'; inp.title='单击输入框自动拉取 Jenkins 任务列表，输入即搜索；右侧 ↻ 强制刷新';
+    inp.addEventListener('focus', function(){ ensureJenkinsJobs(false); });
+    const ref=document.createElement('button'); ref.className='dshell-btn dshell-btnGhost mini'; ref.type='button'; ref.setAttribute('data-act','jkrefresh'); ref.textContent='↻'; ref.title='刷新 Jenkins 任务列表';
     const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
-    const hint=document.createElement('span'); hint.className='dshell-muted'; hint.style.fontSize='11px'; hint.textContent=availableJenkinsJobs.length?'':'（先在「设置」页获取任务列表）';
-    box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(hint); return;
+    const hint=document.createElement('span'); hint.className='dshell-muted'; hint.style.fontSize='11px'; hint.setAttribute('data-jkhint',''); hint.textContent=jkJobsHintText();
+    box.appendChild(lab); box.appendChild(inp); box.appendChild(ref); box.appendChild(btn); box.appendChild(hint); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
@@ -1981,7 +2042,7 @@ function startRun(opts){
   const repo = resolveRepo(opts.repoId || $('repoSel').value);
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const strategy = opts.strategy!==undefined ? opts.strategy : (($('deployStrategySel') && $('deployStrategySel').value) || '');
+  const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const c = {env, envs, image, release, repo, branch, by, strategy, source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
@@ -2030,7 +2091,7 @@ function runPipeline(opts){
   const repoId = opts.repoId || $('repoSel').value;
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
-  const strategy = opts.strategy!==undefined ? opts.strategy : (($('deployStrategySel') && $('deployStrategySel').value) || '');
+  const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
     env, envs, image, release, repoId, branch, strategy, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
@@ -2064,6 +2125,62 @@ function renderPlanList(){
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
 function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
+/* ---------- 服务端自动同步：定时任务由服务端调度执行（关闭页面也会跑），
+   页面与调度器 15s tick 对齐轮询，把服务端新增的运行历史（定时触发/其他窗口运行）合并进本地并刷新历史与统计；
+   一次性计划执行完会被服务端移除，定时计划列表同步跟随。
+   只读取 history / buildNo / plans —— 不回传、不覆盖配置，避免冲掉本页未保存的编辑；
+   buildNo 取大：服务端定时执行会自增编号，不同步会导致本地下次运行复用编号。 ---------- */
+let syncInFlight=false;
+function histKey(h){ return ((h&&h.no)||0)+'|'+(h&&h.commit||'')+'|'+(h&&h.time||'')+'|'+(h&&h.pipeline||''); }
+async function syncServer(){
+  if(!stateLoaded || syncInFlight) return;
+  syncInFlight=true;
+  try{
+    const r=await fetch('/api/worktable/pipeline');
+    if(r.ok){
+      const st=await r.json();
+      const cfg=st.config && typeof st.config==='object' && !Array.isArray(st.config) ? st.config : {};
+      if(Number.isFinite(cfg.buildNo) && cfg.buildNo>buildNo) buildNo=cfg.buildNo;
+      const srv=Array.isArray(st.history)?st.history:[];
+      const known={}; history.forEach(h=>{ known[histKey(h)]=1; });
+      const news=srv.filter(h=>h && !h.demo && !known[histKey(h)]);
+      if(news.length){
+        history=history.concat(news).sort((a,b)=>((b&&b.no)||0)-((a&&a.no)||0));
+        if(history.length>200) history.length=200;
+        renderHistory(); renderStats();
+        showSyncToast(news);
+      }
+    }
+    const rp=await fetch('/api/worktable/pipeline/plans');
+    if(rp.ok){
+      const j=await rp.json(); const fresh=Array.isArray(j.plans)?j.plans:[];
+      if(JSON.stringify(fresh)!==JSON.stringify(serverPlans)){ serverPlans=fresh; renderPlanList(); }
+    }
+  }catch(e){}
+  syncInFlight=false;
+}
+/* 同步浮层：新记录提示（⏰=定时触发），点击切回「流水线」页选中对应历史行并滚动定位，8s 自动消失 */
+function showSyncToast(news){
+  let box=$('syncToast');
+  if(!box){ box=document.createElement('div'); box.id='syncToast'; box.className='sync-toast'; document.body.appendChild(box); }
+  news.slice(0,3).forEach(h=>{
+    const ok=h.status==='success';
+    const sched=String(h.by||'').indexOf('⏰')>=0;
+    const t=document.createElement('div');
+    t.className='sync-toast-item';
+    t.innerHTML='<span style="color:var('+(ok?'--st-ok':'--st-err')+');font-weight:600;">'+(ok?'✓':'✗')+'</span> '
+      +'#'+(h.no||'?')+' '+esc(h.pipeline||'流水线')+' · '+esc(labelOf(h.status))
+      +' <span class="dshell-muted" style="font-size:11px;">'+(sched?'⏰ 定时完成':'服务端同步')+' · 点击查看</span>';
+    t.addEventListener('click',()=>{
+      switchPage('main');
+      selHistoryIdx=history.indexOf(h); histPage=0; renderHistory();
+      const tr=$('historyTable').querySelector('tbody tr.sel'); if(tr) tr.scrollIntoView({behavior:'smooth',block:'center'});
+      t.remove();
+    });
+    box.appendChild(t);
+    setTimeout(()=>{ t.remove(); },8000);
+  });
+}
 /* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
    （稳定 id 去重——重跑同一条流水线会替换旧计划而非叠加）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
@@ -2341,6 +2458,7 @@ async function runJenkinsStep(i){
     log.push('[Jenkins result '+result+']');
     s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('Jenkins '+result):'',code:ok?0:1,jenkins:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
+    archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
     const dur=(Date.now()-t0)/1000;
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -2348,6 +2466,7 @@ async function runJenkinsStep(i){
     if(timer){clearInterval(timer);timer=null;}
     log.push('✗ '+e.message);
     s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,jenkins:true,done:true};
+    archiveStageLog(s, i+1);   // 异常路径同样归档本阶段已产生的回显
     nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:{}};
     applyStatusClasses(); renderDetail(); finish('failed');
   }
@@ -2367,6 +2486,7 @@ async function runScriptStep(i){
   const dur=(Date.now()-t0)/1000;
   s._out=res;
   const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
+  archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
   if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
   else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
 }
@@ -2395,6 +2515,7 @@ function runStage(i){
     applyStatusClasses(); renderDetail();
     if(p>=100){ clearInterval(timer); timer=null;
       nodes[s.id].status='success'; nodes[s.id].progress=100;
+      archiveStageLog(s, i+1);   // 本地模拟阶段的回显同样归档
       applyStatusClasses(); renderDetail();
       advance(i+1);
     }
@@ -2405,7 +2526,7 @@ function showGate(stageId, i){
   const wrap=document.createElement('div'); wrap.className='gate'; wrap.id='gateBtns';
   wrap.innerHTML='<button class="dshell-btn mini" id="approveBtn">✓ 批准</button><button class="dshell-btn dshell-btnDanger mini" id="rejectBtn">拒绝</button>';
   $('detailLog').parentElement.appendChild(wrap);
-  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; applyStatusClasses(); renderDetail(); advance(i+1); };
+  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; const sg=activeStages().find(x=>x.id===stageId); if(sg) archiveStageLog(sg, i+1); applyStatusClasses(); renderDetail(); advance(i+1); };
   document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; finish('aborted'); };
 }
 /* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续 */
@@ -2415,7 +2536,7 @@ function retryFromStage(stageId){
   const n=nodes[stageId]; if(!n || n.status!=='failed') return;
   curRun.vars=Object.assign({}, n.varsIn||{});
   runStages[idx]._out=null;   // 清掉上次脚本输出，避免重跑期间误显示旧日志
-  for(let j=idx;j<runStages.length;j++){ const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }
+  for(let j=idx;j<runStages.length;j++){ runStages[j]._logArchived=false; const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
   running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
   setOverall('运行中…（重试）','dshell-badgeWait');
   selectedId=stageId; applyStatusClasses(); renderDetail();
@@ -2455,9 +2576,12 @@ async function runCleanupBefore(){
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
   if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
-  if(curRun && curRun.token===tk) curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
+  if(curRun && curRun.token===tk){
+    curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
+    archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
+  }
 }
-/* ---------- 产物归档（运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
+/* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
 function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
 function todayCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
 async function apiMkdir(p){
@@ -2494,11 +2618,42 @@ function archiveFolderFor(ctx){
   const fb=fallbackArchiveRoot();
   return fb ? fb+'/'+sub : null;
 }
+/* 任务级日志归档：每个任务（阶段 / 环境清理）的回显即时写入归档文件夹的独立日志文件，
+   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理）；失败仅告警，不影响运行结果。 */
+function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(name)+'.log'; }
+async function archiveTaskLog(ctx, seq, name, text){
+  const folder=archiveFolderFor(ctx);
+  if(!folder) return null;
+  if(!await apiMkdir(folder)){ await apiMkdir(folder.slice(0, folder.lastIndexOf('/'))); await apiMkdir(folder); }
+  const file=folder+'/'+taskLogFile(ctx, seq, name);
+  await apiWrite(file, text);
+  return file;
+}
+/* 阶段完成即把本阶段回显重定向到归档文件夹的独立日志文件（内容同详情面板 buildLog）。
+   _logArchived 去重：archiveRun 末尾对未即时归档的已完成阶段统一补齐；
+   归档失败重置标记，交由末尾补齐重试；「从失败阶段重试」复位标记以便重写（见 retryFromStage）。 */
+function archiveStageLog(stage, seq, ctx){
+  ctx=ctx||curRun;
+  if(!ctx || stage._logArchived) return;
+  if(!archiveFolderFor(ctx)) return;   // 未配置归档且保底根不可用：不归档
+  stage._logArchived=true;
+  const n=nodes[stage.id]||{status:'idle'};
+  let text='';
+  try{ text=(buildLog(stage, ctx, n)||[]).join('\n'); }catch(e){}
+  archiveTaskLog(ctx, seq, stage.name, text).catch(e=>{ stage._logArchived=false; console.warn('[archive] 阶段「'+stage.name+'」日志归档失败（不影响运行结果）:', e); });
+}
 function archiveRun(result){
   const folder=archiveFolderFor(curRun);
   if(!folder) return;
   const root=folder.slice(0, folder.lastIndexOf('/'));
   const ctx=curRun, stages=activeStages();
+  // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
+  // 未完成阶段（waiting/running/idle）不归档，与 collectRunLogs 口径一致
+  stages.forEach((s,idx)=>{
+    const n=nodes[s.id]||{status:'idle'};
+    if(n.status==='running' || n.status==='waiting' || n.status==='idle') return;
+    archiveStageLog(s, idx+1, ctx);
+  });
   // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
   const logLines=[];
   stages.forEach(s=>{
@@ -2515,9 +2670,12 @@ function archiveRun(result){
     startTime: new Date(ctx.startTs).toISOString(),
     totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
     vars: ctx.vars||{},
-    stages: stages.map(s=>{
+    cleanupLogFile: ctx.cleanupLog ? folder+'/'+taskLogFile(ctx, 0, '环境清理') : null,
+    stages: stages.map((s,idx)=>{
       const n=nodes[s.id]||{};
-      return { id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
+      const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
+      if(s._logArchived) rec.logFile=folder+'/'+taskLogFile(ctx, idx+1, s.name);   // 本阶段独立回显日志（任务级归档）
+      return rec;
     }),
   };
   (async()=>{
@@ -2550,7 +2708,7 @@ function archiveRun(result){
 const DEFAULT_PROMPTS = {
   log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件：{logFile}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
   prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
-  perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 与 run-{tag}.profile.json 分别为日志与 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
+  perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 为汇总日志、run-{tag}-NN-任务名.log 为各任务独立回显、run-{tag}.profile.json 为 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
 };
 function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
 let analysisPrompts = loadPrompts();
@@ -2872,6 +3030,7 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='jkparams'){ detectJenkinsParams(i); }
+  else if(act==='jkrefresh'){ ensureJenkinsJobs(true); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
 });
 $('plStageList').addEventListener('change', (e)=>{
@@ -2965,6 +3124,10 @@ document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$(
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
+/* 部署策略搜索面板：聚焦/输入时按当前分支拉取并筛选策略；点外关闭（同分支/Tag 面板交互） */
+$('deployStrategyName').addEventListener('focus', ()=>{ loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
+$('deployStrategyName').addEventListener('input', ()=>{ if($('strategyPanel').style.display==='none'){ loadDeployStrategies().then(()=>renderStrategyPanel()); } else { renderStrategyPanel(); } });
+document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$('strategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 $('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(()=>renderBranchPanel()); } else { renderBranchPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 
@@ -2993,6 +3156,9 @@ renderAll();
 loadServerState();
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
+/* 服务端自动同步：与调度器 15s tick 对齐轮询；标签页重新可见时立即补一次 */
+setInterval(syncServer, 15000);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) syncServer(); });
 </script>
 </body>
 </html>
