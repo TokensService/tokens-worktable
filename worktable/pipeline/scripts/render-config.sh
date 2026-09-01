@@ -24,7 +24,7 @@ YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 MOCK_DB="${MOCK_DB:-false}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
-NODE_SELECTOR_KEY="${NODE_SELECTOR_KEY:-xds.optest}"
+NODE_SELECTOR_KEY="xds.optest"
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
 [[ -n "$DECODE_OVERRIDES_JSON" ]] || DECODE_OVERRIDES_JSON='{}'
@@ -106,6 +106,18 @@ def selector_fragment(ip):
     return re.sub(r"[^a-zA-Z0-9]+", "-", ip).strip("-")
 
 node_selector_value = "node-" + "-".join(selector_fragment(ip) for ip in target_ips)
+
+def upsert_container_env(name, value):
+    common = values.setdefault("common", {})
+    container_env = common.setdefault("containerEnv", [])
+    if not isinstance(container_env, list):
+        raise SystemExit("common.containerEnv must be a list")
+    for item in container_env:
+        if isinstance(item, dict) and item.get("name") == name:
+            item["value"] = value
+            item.pop("valueFrom", None)
+            return
+    container_env.append({"name": name, "value": value})
 
 def deep_merge(base, update):
     result = copy.deepcopy(base)
@@ -199,6 +211,10 @@ values["global"] = deep_merge(values.get("global", {}), {
     "enableTaskExecutorGroups": True,
 })
 values = deep_merge(values, yaml_replace_map)
+# Target placement is derived only from TARGET_HOSTS and must not be overridden.
+values["nodeSelector"] = {node_selector_key: node_selector_value}
+upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
+upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
 with open(arch_request_file, "w", encoding="utf-8") as output:
