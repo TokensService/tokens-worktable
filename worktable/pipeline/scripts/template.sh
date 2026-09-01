@@ -26,6 +26,17 @@ IMAGE_NAME="${IMAGE_NAME:-myapp}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 PIPELINE_NAME="${PIPELINE_NAME:-unknown}"
 
+# 打印流水线运行时系统注入的全部环境变量（未注入的显示 <未注入>）
+# 注意：TARGET_PASSWORD / TARGET_HOSTS 含节点密码，会明文出现在阶段日志与归档日志中
+echo "[template] ---- 系统注入的环境变量 ----"
+for v in PIPELINE_NAME IMAGE_NAME IMAGE_TAG \
+         TARGET_IP TARGET_USER TARGET_PASSWORD TARGET_IPS TARGET_HOSTS \
+         ARCHIVE_DIR ARCHIVE_FOLDER ARCHIVE_PIPELINE ARCHIVE_TAG \
+         ARCHIVE_LOG_FILE ARCHIVE_PROFILE_FILE ARCHIVE_RESULT; do
+  echo "[template]   $v=${!v:-<未注入>}"
+done
+echo "[template] -----------------------------"
+
 echo "[template] pipeline=$PIPELINE_NAME model=$MODEL"
 echo "[template] image=$IMAGE_NAME:$IMAGE_TAG"
 echo "[template] primary target: $TARGET_USER@$TARGET_IP"
