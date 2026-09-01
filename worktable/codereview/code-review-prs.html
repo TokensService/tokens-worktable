@@ -188,13 +188,22 @@
         </div>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建脚本
-            <input class="dshell-input" id="relBuildScript" placeholder="服务端脚本路径，留空=跳过构建" autocomplete="off" style="width:280px" title="经 /api/worktable/exec 在服务端执行；自动注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME/BUILD_CMD 环境变量" />
+            <select class="dshell-input" id="relBuildScript" style="width:280px" title="从代码库 codereview/scripts 选择构建脚本（经 /api/worktable/exec 在服务端执行；注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME/BUILD_CMD；设置页配置构建容器时在容器内执行）。可选「自定义…」手填路径，留空=跳过构建">
+              <option value="">（点 ⟳ 拉取脚本）</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+            <button class="dshell-btn dshell-btnGhost" id="relBuildScriptRefresh" title="重新列出代码库 codereview/scripts 下的脚本" style="padding:4px 8px">⟳</button>
           </label>
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建命令
             <input class="dshell-input" id="relBuildCmd" placeholder="可选，作为 BUILD_CMD 注入脚本" autocomplete="off" style="width:200px" />
           </label>
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">超时(s)
             <input class="dshell-input" id="relBuildTimeout" type="number" min="10" max="3600" style="width:80px" />
+          </label>
+        </div>
+        <div class="pr-tokenRow" id="relBuildScriptCustomRow" style="display:none;margin-bottom:8px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">自定义脚本路径
+            <input class="dshell-input" id="relBuildScriptCustom" placeholder="服务端脚本绝对路径，留空=跳过构建" autocomplete="off" style="width:380px" />
           </label>
         </div>
         <div class="pr-tokenRow" style="margin-bottom:8px">
@@ -212,7 +221,7 @@
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行构建脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code>，脚本留空则跳过）→ ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行构建脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code>；设置页配置「构建容器」时在指定容器内 <code>docker run</code> 执行，脚本留空则跳过）→ ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤</h2>
@@ -262,6 +271,17 @@
         </div>
       </div>
 
+      <!-- 构建容器（构建运行环境，编译发行页统一使用） -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建容器（构建运行环境）</h2>
+        <p class="dshell-muted" style="margin:0 0 8px;line-height:1.7">
+          「编译发行」构建阶段默认在服务端本机执行构建脚本；填写镜像后，构建脚本将在该容器内经 <code>docker run</code> 执行（脚本只读挂载到 <code>/mnt/build.sh</code>，<code>GIT_URL</code>/<code>GIT_AUTH_URL</code>/<code>GIT_BRANCH</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 透传进容器）。留空=本机直接执行。
+        </p>
+        <div class="pr-tokenRow">
+          <input class="dshell-input grow" id="buildContainerInput" placeholder="如 ubuntu:22.04 / registry.example.com/builder:latest（留空=本机执行）" autocomplete="off" />
+        </div>
+      </div>
+
       <!-- AI 检视提示词模板 -->
       <div class="dshell-card">
         <h2 class="dshell-sub" style="margin:0 0 6px">AI 检视提示词模板</h2>
@@ -299,7 +319,7 @@
 <script>
 "use strict";
 (function () {
-  var LS = { token: "gc_pr_token", org: "gc_pr_org", authMode: "gc_pr_authmode", embed: "gc_pr_embed", template: "gc_pr_template", pagePrompt: "gc_pr_pageprompt", relCfg: "gc_pr_relcfg" };
+  var LS = { token: "gc_pr_token", org: "gc_pr_org", authMode: "gc_pr_authmode", embed: "gc_pr_embed", template: "gc_pr_template", pagePrompt: "gc_pr_pageprompt", relCfg: "gc_pr_relcfg", buildContainer: "gc_pr_buildcontainer" };
   var API = "https://api.gitcode.com/api/v5";
   var DEFAULT_ORG = "TokensService";
 
@@ -370,6 +390,8 @@
   var relRunBtn = $("relRunBtn"), relRunTip = $("relRunTip"), relSteps = $("relSteps"), relResult = $("relResult"), relLogEl = $("relLog");
   var searchInput = $("searchInput"), stateTabs = $("stateTabs"), toolbar = $("toolbar");
   var statsEl = $("stats"), listEl = $("list"), statusBar = $("statusBar"), toastEl = $("toast");
+  var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
+  var buildContainerInput = $("buildContainerInput");
 
   var state = {
     token: localStorage.getItem(LS.token) || "",
@@ -383,7 +405,8 @@
     filterState: "open",
     keyword: "",
     loading: false,
-    lastErr: ""
+    lastErr: "",
+    buildContainer: localStorage.getItem(LS.buildContainer) || ""
   };
 
   subOrg.textContent = state.org;
@@ -817,6 +840,7 @@
     embedToken.checked = state.embed;
     tplInput.value = state.template || DEFAULT_TEMPLATE;
     pagePromptInput.value = state.pagePrompt || DEFAULT_PAGE_PROMPT;
+    buildContainerInput.value = state.buildContainer;
     testResult.textContent = "";
   }
   function saveSettings() {
@@ -826,12 +850,14 @@
     state.embed = embedToken.checked;
     state.template = (tplInput.value && tplInput.value.trim()) ? tplInput.value : DEFAULT_TEMPLATE;
     state.pagePrompt = (pagePromptInput.value && pagePromptInput.value.trim()) ? pagePromptInput.value : DEFAULT_PAGE_PROMPT;
+    state.buildContainer = buildContainerInput.value.trim();
     localStorage.setItem(LS.token, state.token);
     localStorage.setItem(LS.org, state.org);
     localStorage.setItem(LS.authMode, state.authMode);
     localStorage.setItem(LS.embed, state.embed ? "1" : "0");
     localStorage.setItem(LS.template, state.template);
     localStorage.setItem(LS.pagePrompt, state.pagePrompt);
+    localStorage.setItem(LS.buildContainer, state.buildContainer);
     subOrg.textContent = state.org;
     renderStatus();
     toast("已保存设置");
@@ -956,8 +982,91 @@
     relTag.value = b ? b + "." + date + "." + time : "v" + date + "." + time;
   }
   function fillRelForm() {
-    relBuildScript.value = relCfg.script || defaultBuildScript();
     relBuildTimeout.value = relCfg.timeout || DEFAULT_REL_CFG.timeout;
+    applyBuildScriptSelection();
+  }
+  /* 代码库脚本目录与构建脚本下拉：从本站 URL 解析 root，列 codereview/scripts/*.sh；
+     选项含「跳过构建」、各脚本绝对路径与「自定义…」（自定义时显示文本框手填路径）。 */
+  function scriptsRootDir() {
+    try {
+      var m = location.pathname.match(/^\/api\/worktable\/site\/([^/]+)\//);
+      if (m) return decodeURIComponent(m[1]);
+    } catch (e) {}
+    return "";
+  }
+  function scriptsDir() { var r = scriptsRootDir(); return r ? r + "/codereview/scripts" : ""; }
+  function effectiveBuildScript() {
+    if (relBuildScript.value === "__custom__") return relBuildScriptCustom.value.trim();
+    return relBuildScript.value.trim();
+  }
+  function applyBuildScriptSelection() {
+    var s = relCfg.script || "";
+    var custom = false;
+    if (s) {
+      var matched = false;
+      Array.prototype.forEach.call(relBuildScript.options, function (o) {
+        if (o.value && o.value !== "__custom__" && o.value === s) matched = true;
+      });
+      if (matched) { relBuildScript.value = s; }
+      else { relBuildScript.value = "__custom__"; relBuildScriptCustom.value = s; custom = true; }
+    } else {
+      var def = defaultBuildScript(), found = false;
+      Array.prototype.forEach.call(relBuildScript.options, function (o) { if (o.value === def) found = true; });
+      relBuildScript.value = found ? def : "";
+      relBuildScriptCustom.value = "";
+    }
+    relBuildScriptCustomRow.style.display = custom ? "flex" : "none";
+  }
+  function loadBuildScripts() {
+    var dir = scriptsDir();
+    var ph = dir ? "加载脚本中…" : "未识别代码库根目录，可选「自定义…」";
+    relBuildScript.innerHTML = '<option value="">（' + ph + '）</option><option value="__custom__">自定义…</option>';
+    if (!dir) { applyBuildScriptSelection(); return Promise.resolve(); }
+    return fetch("/api/worktable/fs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: dir }) })
+      .then(function (r) { return r.json().catch(function () { return { entries: [] }; }); })
+      .then(function (j) {
+        var ents = (j && j.entries) || [];
+        var scripts = ents.filter(function (e) { return e && !e.isDir && /\.sh$/i.test(e.name); });
+        var html = '<option value="">（跳过构建）</option>';
+        scripts.forEach(function (e) { html += '<option value="' + esc(e.path) + '">' + esc(e.name) + "</option>"; });
+        html += '<option value="__custom__">自定义…</option>';
+        relBuildScript.innerHTML = html;
+        applyBuildScriptSelection();
+      })
+      .catch(function () { applyBuildScriptSelection(); });
+  }
+  /* 构建容器运行：经 /api/worktable/write 落地临时包装脚本后 exec 执行，
+     docker run 只读挂载构建脚本到 /mnt/build.sh 并透传 GIT_*/RELEASE_*/BUILD_CMD。 */
+  var BUILD_WRAP_SCRIPT_PATH = "/tmp/dsh-codereview-build-wrap.sh";
+  var BUILD_WRAP_SCRIPT = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：在指定构建容器内运行构建脚本。",
+    "# 构建容器（BUILD_CONTAINER）在「设置」页统一配置；本脚本不 echo 任何凭据。",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${BUILD_CONTAINER:-}" ] || fail "缺少 BUILD_CONTAINER"',
+    '[ -n "${BUILD_SCRIPT:-}" ] || fail "缺少 BUILD_SCRIPT"',
+    'SCRIPT_ABS=$(readlink -f "$BUILD_SCRIPT" 2>/dev/null || echo "$BUILD_SCRIPT")',
+    '[ -f "$SCRIPT_ABS" ] || fail "构建脚本不存在：$BUILD_SCRIPT"',
+    'echo "→ 在容器 ${BUILD_CONTAINER} 内执行构建脚本 ${BUILD_SCRIPT} …"',
+    'docker run --rm -v "${SCRIPT_ABS}":/mnt/build.sh:ro -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${BUILD_CONTAINER}" bash /mnt/build.sh',
+    'code=$?',
+    '[ $code -eq 0 ] || fail "构建容器执行失败（退出码 $code）"',
+    'echo "✓ 构建容器执行完成"'
+  ].join("\n");
+  function execBuildInContainer(script, container, env, timeoutMs) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: BUILD_WRAP_SCRIPT_PATH, content: BUILD_WRAP_SCRIPT }) })
+      .then(function (w) {
+        return w.json().catch(function () { return {}; }).then(function (wj) {
+          if (!w.ok || (wj && wj.error)) {
+            return { code: 1, stdout: "", stderr: "写入构建容器脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)) };
+          }
+          var wrapEnv = {}; if (env) { for (var k in env) wrapEnv[k] = env[k]; }
+          wrapEnv.BUILD_CONTAINER = container; wrapEnv.BUILD_SCRIPT = script;
+          return execScript(BUILD_WRAP_SCRIPT_PATH, wrapEnv, timeoutMs);
+        });
+      });
   }
   /* GitCode v5 写请求：form 参数 + 本页认证方式（Bearer 头 / access_token query） */
   function fetchPost(path, params) {
@@ -1034,7 +1143,7 @@
     var branch = relBranch.value.trim();
     var tag = relTag.value.trim();
     var name = relName.value.trim();
-    var script = relBuildScript.value.trim();
+    var script = effectiveBuildScript();
     var tip = relRunTip;
     var fail = function (m) { tip.textContent = m; relLog("✗ " + m, "err"); };
     if (!state.token) { fail("缺少访问令牌：请先在「设置」页配置"); return; }
@@ -1051,14 +1160,16 @@
       try {
         if (script) {
           states[0] = { st: "run" }; relSetSteps(states);
-          relLog("→ 执行构建脚本 " + script + " …", "dim");
+          var container = (state.buildContainer || "").trim();
+          if (container) relLog("→ 在容器 " + container + " 内执行构建脚本 " + script + " …", "dim");
+          else relLog("→ 执行构建脚本 " + script + " …", "dim");
           var timeoutMs = Math.min(Math.max(Number(relBuildTimeout.value) || relCfg.timeout || DEFAULT_REL_CFG.timeout, 10), 3600) * 1000;
           var env = {
             GIT_URL: repoGitUrl(repo), GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch,
             RELEASE_TAG: tag, RELEASE_NAME: name || tag
           };
           var cmd = relBuildCmd.value.trim(); if (cmd) env.BUILD_CMD = cmd;
-          var res = await execScript(script, env, timeoutMs);
+          var res = container ? (await execBuildInContainer(script, container, env, timeoutMs)) : (await execScript(script, env, timeoutMs));
           if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
           if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "warn"); });
           if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
@@ -1100,7 +1211,14 @@
   relBranch.addEventListener("focus", function () { loadRelBranches(); });
   relTagSuggest.addEventListener("click", suggestRelTag);
   relRunBtn.addEventListener("click", runRelease);
-  relBuildScript.addEventListener("change", function () { relCfg.script = relBuildScript.value.trim(); saveRelCfg(); });
+  relBuildScript.addEventListener("change", function () {
+    var custom = relBuildScript.value === "__custom__";
+    relBuildScriptCustomRow.style.display = custom ? "flex" : "none";
+    if (!custom) relBuildScriptCustom.value = "";
+    relCfg.script = effectiveBuildScript(); saveRelCfg();
+  });
+  relBuildScriptCustom.addEventListener("change", function () { relCfg.script = effectiveBuildScript(); saveRelCfg(); });
+  relBuildScriptRefresh.addEventListener("click", function () { loadBuildScripts(); });
   relBuildTimeout.addEventListener("change", function () {
     relCfg.timeout = Math.min(Math.max(Number(relBuildTimeout.value) || DEFAULT_REL_CFG.timeout, 10), 3600);
     relBuildTimeout.value = relCfg.timeout; saveRelCfg();
@@ -1141,7 +1259,7 @@
     if (!b) return;
     var v = b.getAttribute("data-view");
     if (v === "settings") populateSettings();
-    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadRelBranches(); relSetSteps([]); }
+    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); relSetSteps([]); }
     switchView(v);
   });
   searchInput.addEventListener("input", function () { state.keyword = searchInput.value; renderList(); });
