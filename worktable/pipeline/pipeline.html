@@ -2609,7 +2609,7 @@ function runStage(i){
     }
   },120);
 }
-/* 「不执行」阶段：直接标记跳过（记入历史，日志为跳过说明），推进到下一阶段 */
+/* 「不执行」阶段：直接标记跳过（记入历史与归档，日志为跳过说明），推进到下一阶段 */
 function skipStage(i){
   const stg = activeStages();
   const s=stg[i];
@@ -2736,10 +2736,10 @@ function archiveRun(result){
   const root=folder.slice(0, folder.lastIndexOf('/'));
   const ctx=curRun, stages=activeStages();
   // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
-  // 未完成阶段（waiting/running/idle）不归档，与 collectRunLogs 口径一致
+  // 未完成阶段（running/idle）不归档，与 collectRunLogs 口径一致
   stages.forEach((s,idx)=>{
     const n=nodes[s.id]||{status:'idle'};
-    if(n.status==='running' || n.status==='waiting' || n.status==='idle') return;
+    if(n.status==='running' || n.status==='idle') return;
     archiveStageLog(s, idx+1, ctx);
   });
   // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
