@@ -20,6 +20,8 @@ common:
       value: 192.168.0.243
     - name: XDS_NAMESPACE
       value: old-namespace
+    - name: XDS_DATABASE_PORT
+      value: {XDS_DATABASE_PORT}
 nodeSelector:
   kubernetes.io/hostname: 192.168.0.243
 global:
@@ -74,6 +76,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-one-node-78-verify' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78"}]' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
+TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
 bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run/rendered/values.rendered.yaml" <<'PY'
@@ -90,6 +93,8 @@ env = {entry["name"]: entry.get("value") for entry in values["common"]["containe
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
+assert env["XDS_DATABASE_PORT"] == "3306", env
+assert isinstance(env["XDS_DATABASE_PORT"], str), env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
 assert "XCCL_TURBO_FIX_PP_WEIGHT_LOAD" not in env, env
 assert all(group["nodeSelector"] == expected for group in values["taskExecutorGroups"])

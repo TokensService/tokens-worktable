@@ -224,6 +224,22 @@ if str(mock_db).lower() == "true":
     if "mock_db" in values_text:
         values_text = re.sub(r"mock_db =.*", "mock_db = true", values_text)
 values = yaml.safe_load(values_text) or {}
+
+def normalize_container_env_values(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in ("containerEnv", "env") and isinstance(child, list):
+                for entry in child:
+                    if isinstance(entry, dict) and "value" in entry and not isinstance(entry["value"], str):
+                        env_value = entry["value"]
+                        entry["value"] = str(env_value).lower() if isinstance(env_value, bool) else str(env_value)
+            else:
+                normalize_container_env_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            normalize_container_env_values(child)
+
+normalize_container_env_values(values)
 values["taskExecutorGroups"] = groups
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
