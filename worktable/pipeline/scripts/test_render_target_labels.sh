@@ -12,6 +12,8 @@ common:
   containerEnv:
     - name: RAY_gcs_rpc_server_reconnect_timeout_s
       value: '1209600'
+    - name: XCCL_TURBO_FIX_PP_WEIGHT_LOAD
+      value: '1'
     - name: XDS_TE_POD_LABEL_KEY
       value: kubernetes.io/hostname
     - name: XDS_TE_POD_LABEL_VAL
@@ -89,6 +91,7 @@ assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
+assert "XCCL_TURBO_FIX_PP_WEIGHT_LOAD" not in env, env
 assert all(group["nodeSelector"] == expected for group in values["taskExecutorGroups"])
 for group in values["taskExecutorGroups"]:
     resources = group["resources"]

@@ -237,6 +237,7 @@ upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
 upsert_container_env("XDS_NAMESPACE", namespace)
 # The chart appends this exact value to every Ray worker environment.
 remove_container_env("RAY_gcs_rpc_server_reconnect_timeout_s")
+remove_container_env("XCCL_TURBO_FIX_PP_WEIGHT_LOAD")
 
 registry, image_repository, image_name, image_tag = split_image_reference(deploy_image)
 global_values = values.setdefault("global", {})
