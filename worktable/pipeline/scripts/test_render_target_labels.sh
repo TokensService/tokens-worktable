@@ -32,6 +32,9 @@ workerGroups:
       kubernetes.io/hostname: 192.168.0.243
   frontGroup:
     nodeSelector: {}
+feTemplate:
+  nodeSelector:
+    kubernetes.io/hostname: 192.168.0.243
 global:
   imageRegistry: registry.example/old
   images:
@@ -99,6 +102,7 @@ expected = {"xds.optest": "node-243-78"}
 assert values["nodeSelector"] == expected, values["nodeSelector"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
+assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env

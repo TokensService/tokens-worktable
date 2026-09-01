@@ -249,6 +249,7 @@ values = deep_merge(values, yaml_replace_map)
 # Target placement is derived only from TARGET_HOSTS and must not be overridden.
 values["nodeSelector"] = {node_selector_key: node_selector_value}
 values.setdefault("head", {})["nodeSelector"] = {node_selector_key: node_selector_value}
+values.setdefault("feTemplate", {})["nodeSelector"] = {node_selector_key: node_selector_value}
 worker_groups = values.get("workerGroups")
 if isinstance(worker_groups, dict):
     for worker_group in worker_groups.values():
