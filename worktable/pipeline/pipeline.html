@@ -37,7 +37,7 @@
     .pipeline-node.run { border-color:color-mix(in srgb, var(--st-run) 50%, transparent); background:color-mix(in srgb, var(--st-run) 7%, transparent); }
     .pipeline-node.ok  { border-color:color-mix(in srgb, var(--st-ok) 45%, transparent); background:color-mix(in srgb, var(--st-ok) 7%, transparent); }
     .pipeline-node.fail{ border-color:color-mix(in srgb, var(--st-err) 50%, transparent); background:color-mix(in srgb, var(--st-err) 8%, transparent); }
-    .pipeline-node.wait{ border-color:color-mix(in srgb, var(--st-wait) 50%, transparent); background:color-mix(in srgb, var(--st-wait) 8%, transparent); }
+    .pipeline-node.skip{ border-style:dashed; opacity:.55; }
     .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
@@ -65,7 +65,6 @@
     .legend { display:flex; gap:14px; flex-wrap:wrap; }
     .legend span { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--dsw-alias-label-secondary); }
     .legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
-    .gate { display:flex; gap:8px; justify-content:center; margin-top:8px; }
     .mini { font-size:11px; padding:5px 12px; }
     #historyTable tbody tr { cursor:pointer; }
     #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
@@ -188,7 +187,7 @@
       <div class="legend">
         <span><i style="background:var(--st-idle)"></i>未开始</span>
         <span><i style="background:var(--st-run);box-shadow:0 0 5px var(--st-run)"></i>进行中</span>
-        <span><i style="background:var(--st-wait)"></i>等待审批</span>
+        <span><i style="background:var(--dsw-alias-label-tertiary)"></i>跳过</span>
         <span><i style="background:var(--st-ok);box-shadow:0 0 5px var(--st-ok)"></i>成功</span>
         <span><i style="background:var(--st-err);box-shadow:0 0 5px var(--st-err)"></i>失败</span>
       </div>
@@ -491,7 +490,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/审批门，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 120（Jenkins 默认 300）秒）</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 120（Jenkins 默认 300）秒）</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -511,7 +510,7 @@
 const K8S_STAGES = [
   {id:'checkout',name:'检出',dur:5,sub:[]},
   {id:'validate',name:'校验',dur:9,sub:['代码检查','测试']},
-  {id:'approval',name:'审批',dur:0,gate:true,prodOnly:true,sub:[]},
+  {id:'approval',name:'审批',dur:0,skip:true,prodOnly:true,sub:[]},
   {id:'build',name:'构建镜像',dur:13,sub:[]},
   {id:'push',name:'推送镜像',dur:6,sub:[]},
   {id:'deploy',name:'部署到 K8s',dur:10,sub:[]},
@@ -560,8 +559,7 @@ const LOGS = {
   ],
   approval: [
     "[Pipeline] stage { (审批)",
-    "Input: 确认将 {{registry}}/{{image}}:{{tag}} 发布到生产 ({{env}})？",
-    "等待 发布管理员组 成员审批…",
+    "✓ 审批通过，继续发布 {{registry}}/{{image}}:{{tag}} -> {{env}}",
   ],
   build: [
     "[Pipeline] stage { (构建镜像)",
@@ -632,7 +630,7 @@ async function loadServerState(){
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
         const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
         const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
-        pipelines=[def||defaultPipeline()].concat(customs);
+        pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate);
       }
       if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
@@ -684,7 +682,7 @@ function collectRunLogs(){
   const out=[];
   activeStages().forEach(s=>{
     const n=nodes[s.id];
-    if(!n || n.status==='running' || n.status==='waiting') return;
+    if(!n || n.status==='running') return;
     let text='';
     try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
     if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
@@ -697,13 +695,15 @@ function collectRunLogs(){
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
 const DEFAULT_PIPELINE_ID='pl-xds';
 function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}; }
+/* 旧数据迁移：「审批门」(gate) 已改为「是否执行」(skip)，旧 gate:true 阶段按不执行处理 */
+function migrateGate(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(s && s.gate){ s.skip=true; delete s.gate; } }); return p; }
 function loadPipelines(){
   let stored=null;
   try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); stored=Array.isArray(a)?a:null; }catch(e){ stored=null; }
   if(stored && stored.length){
     const def=stored.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
     const customs=stored.filter(p=>p && !p.builtIn);
-    return [ def || defaultPipeline() ].concat(customs);
+    return [ def || defaultPipeline() ].concat(customs).map(migrateGate);
   }
   return [ defaultPipeline() ];
 }
@@ -755,7 +755,7 @@ function renderEnvOptions(){
     else { selectedEnvIds=selectedEnvIds.filter(x=>x!==id); }
     if(!selectedEnvIds.length){ selectedEnvIds=[id]; cb.checked=true; }   // 至少保留一个
     saveEnvSel(); renderEnvOptions();
-    if(activeStages().some(s=>s.gate)) renderFlow();
+    if(activeStages().some(s=>s.skip)) renderFlow();
     renderDetail();
   }));
 }
@@ -1121,9 +1121,9 @@ function parseStagesText(text){
     const parts=l.split(',').map(s=>s.trim());
     const name=parts[0]||('阶段 '+(idx+1));
     const dur=parts[1]?Math.max(1,parseInt(parts[1])||5):5;
-    const gate=parts[2]==='gate';
+    const skip=parts[2]==='skip'||parts[2]==='gate'||parts[2]==='不执行';   // 兼容旧文本中的 gate 标记
     let id=stageIdFor(name)||('st'+idx);
-    return {id,name,dur,gate,sub:[]};
+    return {id,name,dur,skip,sub:[]};
   });
 }
 
@@ -1450,7 +1450,7 @@ function detectParams(src, lang){
   return posParams.concat(envParams);
 }
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
-let editStages=[];   // [{id,name,dur,gate,sub,kind,script|null,jenkins|null,sched|null}]
+let editStages=[];   // [{id,name,dur,skip,sub,kind,script|null,jenkins|null,sched|null}]
 const STAGE_KIND_LABEL={simulate:'模拟',shell:'Shell',python:'Python',jenkins:'Jenkins'};
 /* 旧数据兼容：未带 kind 的阶段按 script/jenkins 字段推断；补齐 script.lang */
 function normalizeStageKind(s){
@@ -1467,7 +1467,7 @@ function normalizeStageKind(s){
   return s;
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
-function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, gate:false, sub:[], kind:'simulate', script:null, jenkins:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
+function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, skip:false, sub:[], kind:'simulate', script:null, jenkins:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
 function renderStageEditor(){
   const wrap=$('plStageList'); if(!wrap) return; wrap.innerHTML='';
   editStages.forEach((s,i)=>{
@@ -1481,7 +1481,7 @@ function renderStageEditor(){
       +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;">耗时(s)<input class="dshell-input" data-f="dur" type="number" min="1" value="'+(s.dur||5)+'" style="width:58px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="脚本阶段执行超时（秒），留空=默认 120">超时(s)<input class="dshell-input" data-f="timeout" type="number" min="1" value="'+(s.timeout||'')+'" placeholder="120" style="width:58px;" /></label>'
-      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="gate" '+(s.gate?'checked':'')+'/> 审批门</label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后运行到本阶段直接跳过"><input type="checkbox" data-f="skip" '+(s.skip?'checked':'')+'/> 不执行</label>'
       +'<span style="flex:1"></span>'
       +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
       +'</div>'
@@ -1646,7 +1646,7 @@ let history = [
   { no:43, pipeline:'灰度发布',     env:'dev',     commit:'7c1d5af', status:'success', dur:'41s',   time:'昨天 18:33', by:'dev-li', demo:true },
 ];
 let curRun = null;
-/* 运行令牌：每次启动新运行递增；在途异步（脚本/清理/审批门）回来后比对，
+/* 运行令牌：每次启动新运行递增；在途异步（脚本/清理）回来后比对，
    防止已中止运行的迟回结果污染下一次运行（中止无法真正中断已发出的脚本） */
 let runSeq = 0;
 
@@ -1693,11 +1693,11 @@ function applyStatusClasses(){
     const el = document.querySelector('.pipeline-node[data-id="'+s.id+'"]');
     if(!el) return;
     const st = nodes[s.id] ? nodes[s.id].status : 'idle';
-    el.classList.remove('run','ok','fail','wait','sel');
+    el.classList.remove('run','ok','fail','skip','sel');
     if(st==='running') el.classList.add('run');
     if(st==='success') el.classList.add('ok');
     if(st==='failed')  el.classList.add('fail');
-    if(st==='waiting') el.classList.add('wait');
+    if(st==='skipped') el.classList.add('skip');
     if(s.id===selectedId) el.classList.add('sel');
     const bar = el.querySelector('.pipeline-bar > i');
     const nd = nodes[s.id];
@@ -1723,7 +1723,7 @@ function metaFor(id){
   if(!n) return '';
   if(n.status==='success') return '✓ '+fmtDur(n.dur);
   if(n.status==='failed')  return '✗ 失败';
-  if(n.status==='waiting') return '等待审批';
+  if(n.status==='skipped') return '⏭ 跳过';
   if(n.status==='running') return Math.round(n.progress||0)+'%';
   return '';
 }
@@ -1741,14 +1741,13 @@ function renderDetail(){
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
   $('detailTitle').textContent = s.name + ' · 阶段详情';
-  const oldGate=document.getElementById('gateBtns'); if(oldGate) oldGate.remove();
   const badge = $('detailBadge'); badge.innerHTML='';
-  const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], waiting:['等待审批',''],
+  const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], skipped:['跳过',''],
     success:['成功','dshell-badgeDone'], failed:['失败','dshell-badgeDone']};
   const [txt,cls] = map[n.status]||['未开始',''];
   const b=document.createElement('span');
   if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='var(--st-err)'; b.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
-  else if(n.status==='waiting'){ b.className='dshell-badge'; b.style.color='var(--st-wait)'; b.style.borderColor='color-mix(in srgb, var(--st-wait) 40%, transparent)'; }
+  else if(n.status==='skipped'){ b.className='dshell-badge'; b.style.color='var(--dsw-alias-label-tertiary)'; b.style.borderColor='var(--dsw-alias-border-l2)'; }
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
   /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
@@ -1788,10 +1787,10 @@ function renderDetail(){
   })();
 
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
-  const pct = n.status==='success'?100:(n.progress||0);
+  const pct = (n.status==='success'||n.status==='skipped')?100:(n.progress||0);
   bar.style.width=pct+'%';
-  bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':'var(--st-run)');
-  wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed')?'block':'none';
+  bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':(n.status==='skipped'?'var(--st-idle)':'var(--st-run)'));
+  wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed'||n.status==='skipped')?'block':'none';
 
   const log=$('detailLog');
   const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;   // 用户停留在底部附近时才跟随最新日志
@@ -1805,11 +1804,10 @@ function renderDetail(){
   });
   if(n.status==='idle' && !lines.length){ log.textContent='该阶段尚未运行。'; }
   if(stick) log.scrollTop = log.scrollHeight;
-  /* 等待审批中：全量重渲染会移除审批按钮（如点击其他节点再切回），此处补回 */
-  if(n.status==='waiting' && running){ const gi=activeStages().findIndex(x=>x.id===s.id); if(gi>=0) showGate(s.id, gi); }
 }
 function buildLog(stage, ctx, n){
   const id=stage.id;
+  if(stage.skip || n.status==='skipped'){ return ["[Pipeline] stage { ("+stage.name+")", '⏭ 本阶段配置为不执行，已跳过。']; }
   if(stage.kind==='jenkins' && stage.jenkins && stage.jenkins.job){
     const jk=stage.jenkins;
     const lines=['$ jenkins build '+jk.job];
@@ -1853,10 +1851,8 @@ function buildLog(stage, ctx, n){
   if(LOGS[id]){ lines = LOGS[id].map(fill); }
   else {
     lines = ["[Pipeline] stage { ("+stage.name+")"];
-    if(stage.gate){ lines.push("Input: 确认执行 "+stage.name+"？（环境 "+ctx.env+"）"); lines.push("等待审批…"); }
-    else { lines.push("执行步骤…"); }
+    lines.push("执行步骤…");
   }
-  if(stage.gate && n.status==='waiting'){ lines.push('⏸ 已暂停，等待人工审批。'); }
   if(id==='health'){
     if(n.status==='success'){
       lines.push('deployment "'+ctx.release+'" 已成功滚动发布');
@@ -1988,7 +1984,7 @@ function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans
 /* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
    （稳定 id 去重——重跑同一条流水线会替换旧计划而非叠加）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
-   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；Jenkins 阶段服务端跳过；审批门自动通过），
+   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；Jenkins 阶段服务端跳过；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
 async function registerStageTimers(startIdx){
   if(!curRun || !runStages) return;
@@ -2094,6 +2090,7 @@ function advance(i){
     return;
   }
   const s=stg[i];
+  if(s.skip){ skipStage(i); return; }   // 配置「不执行」：标记跳过并推进（脚本/Jenkins/模拟阶段一视同仁）
   if(s.kind==='jenkins' && s.jenkins && s.jenkins.job){ runJenkinsStep(i); return; }
   if(s.script && s.script.path){ runScriptStep(i); return; }
   runStage(i);
@@ -2300,12 +2297,6 @@ function runStage(i){
   if(i>=stg.length){ finish('success'); return; }
   const s=stg[i];
   const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
-  if(s.gate){
-    nodes[s.id]={status:'waiting',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
-    selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
-    showGate(s.id, i);
-    return;
-  }
   nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
   selectedId=s.id; renderFlow(); renderDetail();
   if(s.sub && s.sub.length){ s.sub.forEach(x=> nodes[s.id].sub[x]='running'); }
@@ -2326,13 +2317,15 @@ function runStage(i){
     }
   },120);
 }
-function showGate(stageId, i){
-  const tk = curRun ? curRun.token : null;   // 运行令牌：中止/重置后残留的审批按钮不得再推进运行
-  const wrap=document.createElement('div'); wrap.className='gate'; wrap.id='gateBtns';
-  wrap.innerHTML='<button class="dshell-btn mini" id="approveBtn">✓ 批准</button><button class="dshell-btn dshell-btnDanger mini" id="rejectBtn">拒绝</button>';
-  $('detailLog').parentElement.appendChild(wrap);
-  document.getElementById('approveBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; const prev=nodes[stageId]||{}; nodes[stageId]={status:'success',progress:100,dur:0,sub:{},varsIn:prev.varsIn||{},varsOut:prev.varsOut||{}}; const sg=activeStages().find(x=>x.id===stageId); if(sg) archiveStageLog(sg, i+1); applyStatusClasses(); renderDetail(); advance(i+1); };
-  document.getElementById('rejectBtn').onclick=()=>{ wrap.remove(); if(!running || !curRun || curRun.token!==tk) return; finish('aborted'); };
+/* 「不执行」阶段：直接标记跳过（记入历史与归档，日志为跳过说明），推进到下一阶段 */
+function skipStage(i){
+  const stg = activeStages();
+  const s=stg[i];
+  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
+  nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{},varsIn,varsOut:{}};
+  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+  archiveStageLog(s, i+1);
+  advance(i+1);
 }
 /* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续 */
 function retryFromStage(stageId){
@@ -2456,7 +2449,7 @@ function archiveRun(result){
   // 未执行且无任何回显的阶段不归档；被中止的任务（running 时被重置为 idle 但已有部分回显）照常归档
   stages.forEach((s,idx)=>{
     const n=nodes[s.id]||{status:'idle'};
-    if(n.status==='running' || n.status==='waiting') return;
+    if(n.status==='running') return;
     const hasEcho=!!(s._out && (s._out.stdout || s._out.stderr));
     if(n.status==='idle' && !hasEcho) return;
     archiveStageLog(s, idx+1, ctx);
@@ -2716,7 +2709,7 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, gate:!!s.gate, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{})}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{})}:null})); }
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{})}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{})}:null})); }
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   loadScripts().then(()=>renderStageEditor());
   $('plName').focus();
@@ -2756,7 +2749,7 @@ function savePlForm(){
   }
   scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
-    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), gate:!!s.gate, sub:(s.sub||[]), kind:s.kind||'simulate'};
+    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{})};
     if(s.jenkins) st.jenkins={job:s.jenkins.job, params:(s.jenkins.params||[]), values:(s.jenkins.values||{})};
@@ -2802,10 +2795,9 @@ $('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false)
 $('stopBtn').addEventListener('click', ()=>{
   if(!running || !curRun) return;
   if(timer){ clearInterval(timer); timer=null; }
-  const g=$('gateBtns'); if(g) g.remove();   // 审批阶段中止：移除残留的批准/拒绝按钮
   // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
-  activeStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running'||n.status==='waiting')) nodes[s.id]={status:'idle',progress:0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
+  activeStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running')) nodes[s.id]={status:'idle',progress:0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
   finish('aborted');
   applyStatusClasses(); renderDetail();
 });
@@ -2813,7 +2805,7 @@ $('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{
   if(running || queue.length){ if(!confirm('将中止当前运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本结果将被丢弃，且不计入历史）。继续？')) return; }
-  if(running&&timer){clearInterval(timer);timer=null;} { const g=$('gateBtns'); if(g) g.remove(); } running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
+  if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
@@ -2851,7 +2843,7 @@ $('plStageList').addEventListener('change', (e)=>{
   if(f==='name') s.name=e.target.value;
   else if(f==='dur') s.dur=Math.max(1,parseInt(e.target.value,10)||5);
   else if(f==='timeout'){ const tv=parseInt(e.target.value,10); s.timeout=(tv>=1)?tv:null; }
-  else if(f==='gate') s.gate=e.target.checked;
+  else if(f==='skip') s.skip=e.target.checked;
   else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='jenkinsJob'){ setStageJenkins(i, e.target.value.trim()); }
