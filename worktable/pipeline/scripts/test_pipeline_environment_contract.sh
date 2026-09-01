@@ -41,6 +41,15 @@ grep -Fq 'values["nodeSelector"] = {node_selector_key: node_selector_value}' "$s
 grep -Fq 'NODE_LABELS_FILE' "$script_dir/render-config.sh"
 grep -Fq 'NODE_LABELS_FILE' "$script_dir/deploy-model.sh"
 grep -Fq '"$KUBECTL_BIN" label node' "$script_dir/deploy-model.sh"
+grep -Fq '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh"
+grep -Fq '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh"
+
+uninstall_line="$(grep -nF '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
+install_line="$(grep -nF '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
+[[ "$uninstall_line" -lt "$install_line" ]] || {
+  echo "helm uninstall must run before helm install" >&2
+  exit 1
+}
 
 collector="$script_dir/follow-xds-head-logs.sh"
 [[ -x "$collector" ]] || { echo "follow-xds-head-logs.sh must exist and be executable" >&2; exit 1; }

@@ -84,7 +84,9 @@ PY
 
 label_target_nodes
 echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
-"$HELM_BIN" upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
+"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
+  --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
+"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"
 
