@@ -22,6 +22,10 @@ global:
   imageRegistry: registry.example/old
   images:
     ray: xds:old
+  roleName: old-namespace-role
+  roleBindingName: old-namespace-role-binding
+  serviceAccountName: old-namespace-sa
+  serviceAccountSecretName: old-namespace-sa-secret
 frameworkConfigFiles:
   xds_framework.conf: |
     [deploy]
@@ -84,6 +88,10 @@ assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert all(group["nodeSelector"] == expected for group in values["taskExecutorGroups"])
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["images"]["ray"] == "xds:test-tag"
+assert values["global"]["roleName"] == "xds-one-node-78-verify-role"
+assert values["global"]["roleBindingName"] == "xds-one-node-78-verify-role-binding"
+assert values["global"]["serviceAccountName"] == "xds-one-node-78-verify-sa"
+assert values["global"]["serviceAccountSecretName"] == "xds-one-node-78-verify-sa-secret"
 assert values["lmcache"]["namespace"]["name"] == "xds-one-node-78-verify"
 assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"

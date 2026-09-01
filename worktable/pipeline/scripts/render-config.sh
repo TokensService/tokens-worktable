@@ -231,6 +231,10 @@ registry, image_repository, image_name, image_tag = split_image_reference(deploy
 global_values = values.setdefault("global", {})
 global_values["imageRegistry"] = registry
 global_values.setdefault("images", {})["ray"] = image_name
+global_values["roleName"] = f"{namespace}-role"
+global_values["roleBindingName"] = f"{namespace}-role-binding"
+global_values["serviceAccountName"] = f"{namespace}-sa"
+global_values["serviceAccountSecretName"] = f"{namespace}-sa-secret"
 
 lmcache = values.get("lmcache")
 if isinstance(lmcache, dict):
