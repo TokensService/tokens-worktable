@@ -184,7 +184,7 @@
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">Tag
             <input class="dshell-input" id="relTag" placeholder="如 v1.0.0" autocomplete="off" style="width:150px" />
           </label>
-          <button class="dshell-btn dshell-btnGhost" id="relTagSuggest" title="按当前日期时间生成建议 Tag（v年.月.日-时分）">建议</button>
+          <button class="dshell-btn dshell-btnGhost" id="relTagSuggest" title="按分支名+日期时间生成建议 Tag（分支名.YYYY.MM.DD.HHMM，如 main.2026.09.01.1111；分支为空则回退 vYYYY.MM.DD.HHMM）">建议</button>
         </div>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建脚本
@@ -950,7 +950,10 @@
   }
   function suggestRelTag() {
     var d = new Date(); var p = function (n) { return String(n).padStart(2, "0"); };
-    relTag.value = "v" + d.getFullYear() + "." + p(d.getMonth() + 1) + "." + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes());
+    var date = d.getFullYear() + "." + p(d.getMonth() + 1) + "." + p(d.getDate());
+    var time = p(d.getHours()) + p(d.getMinutes());
+    var b = (relBranch.value || "").trim().replace(/\//g, "-");
+    relTag.value = b ? b + "." + date + "." + time : "v" + date + "." + time;
   }
   function fillRelForm() {
     relBuildScript.value = relCfg.script || defaultBuildScript();
