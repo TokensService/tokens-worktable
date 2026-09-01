@@ -7811,6 +7811,11 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_settingsClose:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06));color:var(--dsw-alias-label-primary,#dbe4f3)}",
   ".dsh-wt_manageDone{display:flex;align-items:center;padding:2px 8px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-state-accent-primary,#4f8ef7);font:inherit;font-size:11px;line-height:16px;cursor:pointer}",
   ".dsh-wt_manageDone:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.05))}",
+  // 页面修改：设置弹窗内提示词模板编辑（{page}/{name} 占位符，随主题变量适配浅色/深色）
+  ".dsh-wt_pageEditHint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5);padding:0 2px 5px}",
+  ".dsh-wt_pageEditPrompt{width:100%;box-sizing:border-box;resize:vertical;min-height:72px;font-family:inherit;font-size:11px;line-height:1.5;padding:6px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#262b36);background:var(--dsw-alias-bg-base,#0b0e14);color:var(--dsw-alias-label-primary,#dbe4f3);outline:none}",
+  ".dsh-wt_pageEditPrompt:focus{border-color:var(--dsw-alias-state-accent-primary,#4f8ef7)}",
+  ".dsh-wt_pageEditOps{display:flex;justify-content:flex-end;padding:4px 0 2px}",
   // 排序方式：一左一右两个选择按钮（手动 / 最近）
   ".dsh-wt_sortRow{display:flex;gap:6px;padding:0 8px 2px}",
   ".dsh-wt_sortBtn{flex:1;display:flex;align-items:center;justify-content:center;padding:4px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02));color:var(--dsw-alias-label-secondary,#9aa4b2);font:inherit;font-size:11px;line-height:16px;cursor:pointer}",
@@ -8296,6 +8301,10 @@ var zh = {
   "manage.deleteLayout": "\u5220\u9664\u5E03\u5C40",
   "manage.deleteProject": "\u5220\u9664\u9879\u76EE",
   "manage.changeView": "\u53D8\u66F4\u89C6\u56FE",
+  "pageEdit.title": "\u9875\u9762\u4FEE\u6539",
+  "pageEdit.desc": "\u300C\u7BA1\u7406\u9879\u76EE\u300D\u5217\u8868\u91CC \u270F\uFE0F \u6309\u94AE\u53D1\u9001\u7ED9 AI \u7684\u63D0\u793A\u8BCD\u6A21\u677F\uFF1A{page} \u66FF\u6362\u4E3A\u8BE5\u9879\u76EE\u9875\u9762\u6587\u4EF6\u8DEF\u5F84\uFF0C{name} \u66FF\u6362\u4E3A\u9879\u76EE\u540D\u3002\u6E05\u7A7A\u4FDD\u5B58\u5373\u6062\u590D\u9ED8\u8BA4\u3002",
+  "pageEdit.hint": "\u9875\u9762\u4FEE\u6539\uFF1A\u65B0\u5EFA AI \u4F1A\u8BDD\u4FEE\u6539\u8BE5\u9879\u76EE\u9875\u9762",
+  "pageEdit.reset": "\u6062\u590D\u9ED8\u8BA4",
   "manage.publish": "\u53D1\u5E03\uFF1A\u5B58\u670D\u52A1\u7AEF\uFF0C\u6240\u6709\u6D4F\u89C8\u5668\u53EF\u89C1",
   "manage.unpublish": "\u53D6\u6D88\u53D1\u5E03\uFF1A\u56DE\u5230\u4EC5\u672C\u6D4F\u89C8\u5668",
   "viewPick.title": "\u9009\u62E9\u65B0\u89C6\u56FE\uFF08\u5185\u5BB9\u7A97\u81EA\u52A8\u8FC1\u5165\uFF09",
@@ -8477,6 +8486,10 @@ var en = {
   "manage.deleteLayout": "Delete layout",
   "manage.deleteProject": "Delete project",
   "manage.changeView": "Change layout",
+  "pageEdit.title": "Page edit",
+  "pageEdit.desc": 'Prompt template sent to the AI by the \u270F\uFE0F button in the "Manage projects" list: {page} is replaced with the project page file path, {name} with the project name. Clear and save to restore the default.',
+  "pageEdit.hint": "Edit page: open a new AI session to modify this project page",
+  "pageEdit.reset": "Reset",
   "manage.publish": "Publish: store on server, visible in all browsers",
   "manage.unpublish": "Unpublish: back to this browser only",
   "viewPick.title": "Pick a new layout (panes migrate automatically)",
@@ -19053,6 +19066,57 @@ async function analyzeLogInSession(logPath) {
   }
   await promptIntoSession(sessionId, text2);
 }
+async function newChatInProject(text2) {
+  const b = sessionBridge;
+  if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
+  const sessionId = await b.sessions.create({});
+  await ensureSessionPreset(sessionId);
+  await ensureSessionModel(sessionId);
+  markPluginSessionOpen(sessionId);
+  try {
+    await b.sessions.open?.(sessionId);
+  } catch {
+  }
+  await promptIntoSession(sessionId, text2);
+}
+var DEFAULT_PAGE_EDIT_PROMPT = "\u9875\u9762\u6587\u4EF6\uFF1A{page}\uFF0C\u8FD9\u662F\u4E00\u4E2Adeepseek harness worktable\u63D2\u4EF6\u7684\u9875\u9762\n\u8BF7\u5148\u95EE\u6211\u60F3\u505A\u4EC0\u4E48\u4FEE\u6539\uFF1B\u786E\u8BA4\u9700\u6C42\u540E\u76F4\u63A5\u7F16\u8F91\u8BE5\u6587\u4EF6\uFF0C\u4FDD\u6301\u73B0\u6709\u4EE3\u7801\u98CE\u683C\u4E0E dshell \u6837\u5F0F\u4F53\u7CFB\uFF08\u5355\u6587\u4EF6\u5185\u8054\u5B9E\u73B0\uFF0C\u4E3B\u9898\u53D8\u91CF\u9002\u914D\u6D45\u8272/\u6DF1\u8272\uFF09\u3002\u4FEE\u6539\u5B8C\u6210\u540E\u63D0\u9192\u6211\u5237\u65B0\u9875\u9762\u67E5\u770B\u6548\u679C\u3002\n\u4FEE\u6539\u4EE3\u7801\u65F6\uFF0C\u521B\u5EFA\u4E00\u4E2Agit worktree\u4FEE\u6539\uFF0C\u9632\u6B62\u591A\u4E2A\u5E76\u884C\u7684\u4FEE\u6539\u51B2\u7A81\u3002\u6539\u5B8C\u540E\uFF0C\u521B\u5EFA\u63D0\u4EA4PR\u94FE\u63A5";
+var PAGE_EDIT_PROMPT_KEY = "dsh.worktable.pageEditPrompt.v1";
+function loadPageEditPrompt() {
+  try {
+    const p = localStorage.getItem(PAGE_EDIT_PROMPT_KEY);
+    return p == null || !String(p).trim() ? DEFAULT_PAGE_EDIT_PROMPT : p;
+  } catch {
+    return DEFAULT_PAGE_EDIT_PROMPT;
+  }
+}
+function savePageEditPrompt(text2) {
+  try {
+    localStorage.setItem(PAGE_EDIT_PROMPT_KEY, text2);
+  } catch {
+  }
+}
+function layoutPagePath(layout) {
+  const SITE = "/api/worktable/site/";
+  const panels = [...layout?.left ? [layout.left] : [], ...layout?.top ? [layout.top] : [], ...Array.isArray(layout?.main) ? layout.main : []];
+  for (const p of panels) {
+    const tabs = Array.isArray(p?.tabs) ? p.tabs : p?.content ? [{ content: p.content }] : [];
+    for (const tb of tabs) {
+      const u = tb?.content?.url;
+      if (typeof u === "string" && u.startsWith(SITE)) {
+        try {
+          return u.slice(SITE.length).split("/").map((s) => decodeURIComponent(s)).join("/");
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+async function startPageEdit(pagePath, projectName) {
+  const prompt = loadPageEditPrompt().split("{page}").join(pagePath).split("{name}").join(projectName);
+  await newChatInProject(prompt);
+}
 var projectAttachRef = { sessionId: null, attached: null };
 var suppressRestoreRef = { current: false };
 var projectBindingsRef = { current: {} };
@@ -19262,6 +19326,7 @@ function WorktableSection(props) {
   const [registeredIds, setRegisteredIds] = (0, import_react2.useState)(() => [...registryStore.ids]);
   const [addOpen, setAddOpen] = (0, import_react2.useState)(false);
   const [viewOptionsOpen, setViewOptionsOpen] = (0, import_react2.useState)(false);
+  const [pageEditPrompt, setPageEditPrompt] = (0, import_react2.useState)(() => loadPageEditPrompt());
   const [updateInfo, setUpdateInfo] = (0, import_react2.useState)(null);
   const [updateCheckOn, setUpdateCheckOn] = (0, import_react2.useState)(() => localStorage.getItem("dsh.worktable.updateCheck.v1") !== "0");
   const [updateCopied, setUpdateCopied] = (0, import_react2.useState)(false);
@@ -21022,6 +21087,7 @@ function WorktableSection(props) {
         const meta = metas[id];
         const layout = projects.layouts.find((l) => l.id === id);
         const display = projects.nameOverrides[id] ?? layout?.title ?? meta?.name ?? id;
+        const pagePath = layout ? layoutPagePath(layout) : null;
         const isHidden = projects.hidden.includes(id);
         return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
           "div",
@@ -21076,6 +21142,19 @@ function WorktableSection(props) {
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RenameInput, { initial: display, placeholder: t("manage.renamePh"), onCommit: (v) => renameProject(id, v) }),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: isHidden ? t("manage.show") : t("manage.hide"), onClick: () => toggleHidden(id), children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(EyeIcon, { closed: isHidden }) }),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: t("manage.changeView"), onClick: () => setViewPickFor(id), children: "\u{1F9E9}" }),
+              pagePath && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "dsh-wt_manageBtn",
+                  title: t("pageEdit.hint"),
+                  onClick: () => {
+                    setViewOptionsOpen(false);
+                    void startPageEdit(pagePath, display);
+                  },
+                  children: "\u270F\uFE0F"
+                }
+              ),
               layout && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
                 "button",
                 {
@@ -21121,6 +21200,25 @@ function WorktableSection(props) {
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_manageScName", children: s.name }),
         /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: t("manage.deleteShortcut"), onClick: () => askDelete("shortcut", s.id, s.name), children: "\u2715" })
       ] }, s.id)),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_menuSep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_manageHead", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_manageTitle", children: t("pageEdit.title") }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_pageEditHint", children: t("pageEdit.desc") }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+        "textarea",
+        {
+          className: "dsh-wt_pageEditPrompt",
+          rows: 5,
+          value: pageEditPrompt,
+          onChange: (e) => {
+            setPageEditPrompt(e.target.value);
+            savePageEditPrompt(e.target.value);
+          }
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_pageEditOps", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_updateBtn", onClick: () => {
+        setPageEditPrompt(DEFAULT_PAGE_EDIT_PROMPT);
+        savePageEditPrompt("");
+      }, children: t("pageEdit.reset") }) }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_versionRow", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { children: [
           "v",
@@ -21539,6 +21637,7 @@ function apply(ctx) {
     window.__dshOpenSession = (id) => ctx.sessions?.open?.(id);
     window.__dshSessions = ctx.sessions;
     window.__dshPromptIntoSession = (id, text2) => promptIntoSession(id, text2);
+    window.__dshNewChatSession = (text2) => newChatInProject(text2);
     window.__dshWorkspaces = ctx.workspaces;
     window.__dshBuildWindowTaskText = buildWindowTaskText;
     window.__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list);

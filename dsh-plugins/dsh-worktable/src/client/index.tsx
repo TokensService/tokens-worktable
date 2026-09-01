@@ -847,6 +847,52 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
   await promptIntoSession(sessionId, text)
 }
 
+/** 内容页（pipeline.html「页面修改」按钮等）→ 右侧聊天窗桥（经 window.__dshNewChatSession 暴露给 iframe 调用）：
+ *  新建会话并发送提示词；标记为插件发起的切换，项目分栏保持打开，新会话出现在右侧聊天窗而非离开项目页。 */
+async function newChatInProject(text: string): Promise<void> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const sessionId = await b.sessions.create({})
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+}
+
+// ── 页面修改（设置弹窗：项目管理行「✏️」按钮 + 提示词模板配置；替代原 pipeline.html 页内按钮）──
+/** 默认「页面修改」提示词模板：{page} 替换为项目页面文件路径，{name} 替换为项目显示名 */
+const DEFAULT_PAGE_EDIT_PROMPT = '页面文件：{page}，这是一个deepseek harness worktable插件的页面\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。\n修改代码时，创建一个git worktree修改，防止多个并行的修改冲突。改完后，创建提交PR链接'
+const PAGE_EDIT_PROMPT_KEY = 'dsh.worktable.pageEditPrompt.v1'
+/** 读取「页面修改」提示词模板（localStorage；空值/未设 = 默认模板） */
+function loadPageEditPrompt(): string {
+  try { const p = localStorage.getItem(PAGE_EDIT_PROMPT_KEY); return (p == null || !String(p).trim()) ? DEFAULT_PAGE_EDIT_PROMPT : p } catch { return DEFAULT_PAGE_EDIT_PROMPT }
+}
+/** 保存「页面修改」提示词模板（存空串 = 恢复默认） */
+function savePageEditPrompt(text: string): void {
+  try { localStorage.setItem(PAGE_EDIT_PROMPT_KEY, text) } catch {}
+}
+/** 从布局各窗口的 iframe 标签推项目页面文件路径（/api/worktable/site/<编码目录>/<文件名> → 绝对路径）；非本机托管页返回 null */
+function layoutPagePath(layout: any): string | null {
+  const SITE = '/api/worktable/site/'
+  const panels: any[] = [...(layout?.left ? [layout.left] : []), ...(layout?.top ? [layout.top] : []), ...(Array.isArray(layout?.main) ? layout.main : [])]
+  for (const p of panels) {
+    const tabs: any[] = Array.isArray(p?.tabs) ? p.tabs : (p?.content ? [{ content: p.content }] : [])
+    for (const tb of tabs) {
+      const u = tb?.content?.url
+      if (typeof u === 'string' && u.startsWith(SITE)) {
+        try { return u.slice(SITE.length).split('/').map((s) => decodeURIComponent(s)).join('/') } catch { return null }
+      }
+    }
+  }
+  return null
+}
+/** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开） */
+async function startPageEdit(pagePath: string, projectName: string): Promise<void> {
+  const prompt = loadPageEditPrompt().split('{page}').join(pagePath).split('{name}').join(projectName)
+  await newChatInProject(prompt)
+}
+
 // ── 项目 × 对话联动（模块级）──
 /** 打开项目前所处的会话（关项目时回切）；attached = 该项目绑定的会话（无绑定 = 打开前会话） */
 const projectAttachRef: { sessionId: string | null; attached: string | null } = { sessionId: null, attached: null }
@@ -1076,6 +1122,8 @@ function WorktableSection(props: any) {
   const [registeredIds, setRegisteredIds] = useState<string[]>(() => [...registryStore.ids])
   const [addOpen, setAddOpen] = useState(false)
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false)
+  // 页面修改：提示词模板（设置弹窗内编辑，存 localStorage；清空保存 = 恢复默认）
+  const [pageEditPrompt, setPageEditPrompt] = useState<string>(() => loadPageEditPrompt())
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateCheckOn, setUpdateCheckOn] = useState<boolean>(() => localStorage.getItem('dsh.worktable.updateCheck.v1') !== '0')
@@ -2822,6 +2870,7 @@ function buildCustomLayoutPrompt(req: string): string {
             const meta = metas[id]
             const layout = projects.layouts.find((l) => l.id === id)
             const display = projects.nameOverrides[id] ?? layout?.title ?? meta?.name ?? id
+            const pagePath = layout ? layoutPagePath(layout) : null
             const isHidden = projects.hidden.includes(id)
             return (
               <div
@@ -2858,6 +2907,14 @@ function buildCustomLayoutPrompt(req: string): string {
                   <EyeIcon closed={isHidden} />
                 </button>
                 <button type="button" className="dsh-wt_manageBtn" title={t('manage.changeView')} onClick={() => setViewPickFor(id)}>🧩</button>
+                {pagePath && (
+                  <button
+                    type="button"
+                    className="dsh-wt_manageBtn"
+                    title={t('pageEdit.hint')}
+                    onClick={() => { setViewOptionsOpen(false); void startPageEdit(pagePath, display) }}
+                  >✏️</button>
+                )}
                 {layout && (
                   <button
                     type="button"
@@ -2890,6 +2947,20 @@ function buildCustomLayoutPrompt(req: string): string {
               <button type="button" className="dsh-wt_manageBtn" title={t('manage.deleteShortcut')} onClick={() => askDelete('shortcut', s.id, s.name)}>✕</button>
             </div>
           ))}
+          <div className="dsh-wt_menuSep" />
+          <div className="dsh-wt_manageHead">
+            <span className="dsh-wt_manageTitle">{t('pageEdit.title')}</span>
+          </div>
+          <div className="dsh-wt_pageEditHint">{t('pageEdit.desc')}</div>
+          <textarea
+            className="dsh-wt_pageEditPrompt"
+            rows={5}
+            value={pageEditPrompt}
+            onChange={(e: any) => { setPageEditPrompt(e.target.value); savePageEditPrompt(e.target.value) }}
+          />
+          <div className="dsh-wt_pageEditOps">
+            <button type="button" className="dsh-wt_updateBtn" onClick={() => { setPageEditPrompt(DEFAULT_PAGE_EDIT_PROMPT); savePageEditPrompt('') }}>{t('pageEdit.reset')}</button>
+          </div>
           <div className="dsh-wt_versionRow">
             <span>
               v{LOCAL_VERSION}
@@ -3275,7 +3346,7 @@ export function apply(ctx: any) {
   sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null }
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
 
 
   ctx.effect(() => {
