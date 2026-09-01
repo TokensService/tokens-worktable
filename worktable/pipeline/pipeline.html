@@ -135,7 +135,7 @@
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支/Tag
       <span id="branchPick" style="position:relative;display:inline-block;">
-        <input id="branchName" class="dshell-input" value="main" autocomplete="off" style="min-width:130px;" />
+        <input id="branchName" class="dshell-input" value="0830_dev_bnt3" autocomplete="off" style="min-width:130px;" />
         <div id="branchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
       </span>
     </label>
@@ -764,7 +764,7 @@ function envSortVal(e, key){
     if(!st) return 100000;                       // 未查询
     if(st.error) return 0;                       // 查询失败排最前
     const used=st.used==undefined?0:st.used;
-    return ((st.containers||[]).length?300000:200000)+used;   // 空闲 → 占用（占用内按已用卡数）
+    return (gpuBusy(st)?300000:200000)+used;   // 空闲 → 占用（占用内按已用卡数）
   }
   return '';
 }
@@ -777,7 +777,7 @@ function envSortList(list){
     return a.i-b.i;                              // 同值保持原顺序
   }).map(x=>x.e);
 }
-/* 节点筛选：匹配名称 / IP / 用户名 / 设备状态文本（容器名、空闲、查询失败、卡数） */
+/* 节点筛选：匹配名称 / IP / 用户名 / 设备状态文本（容器名、空闲、占用、查询失败、卡数） */
 function envFilterMatch(e){
   const kw=envFilterText.trim().toLowerCase();
   if(!kw) return true;
@@ -788,7 +788,7 @@ function envFilterMatch(e){
     else{
       text+=' '+(st.containers||[]).join(' ').toLowerCase();
       text+=' '+(st.total==undefined?'?':st.total)+'卡 已用'+(st.used==undefined?'?':st.used);
-      if(!(st.containers||[]).length) text+=' 空闲';
+      text+=gpuBusy(st)?' 占用':' 空闲';
     }
   }
   return text.indexOf(kw)>=0;
@@ -821,12 +821,15 @@ function bindGpuCell(cell, e){
 }
 /* 节点设备状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
 let gpuStatus={};
+/* 占用判定：关联到容器，或 nvidia-smi 显示有卡被用（宿主机直跑进程关联不到容器，不能按空闲显示） */
+function gpuBusy(st){ return (st.containers||[]).length>0 || (Number(st.used)||0)>0; }
 function gpuCellHtml(st){
   if(!st) return '<span class="dshell-muted">—</span>';
   if(st.error) return '<span style="color:var(--st-err)">查询失败</span>';
   const cs=st.containers||[];
   let main;
   if(cs.length) main='<b>'+esc(cs.slice(0,2).join('、'))+(cs.length>2?' 等':'')+'</b>';
+  else if(gpuBusy(st)) main='<b style="color:var(--st-run)">占用</b>';
   else main='<span class="dshell-muted">空闲</span>';
   return main+'<div class="dshell-muted" style="font-size:10px;">'+(st.total==undefined?'?':st.total)+' 卡 · 已用 '+(st.used==undefined?'?':st.used)+'</div>';
 }
@@ -865,7 +868,8 @@ function openGpuDetail(e){
         +'<table class="dshell-table"><thead><tr><th>PID</th><th>GPU</th><th>进程</th><th>容器</th></tr></thead><tbody>';
       st.procs.forEach(p=>{ h+='<tr><td>'+esc(p.pid)+'</td><td class="dshell-muted" style="font-size:10px">'+esc((p.uuid||'').replace('GPU-','').slice(0,8))+'</td><td>'+esc(p.proc)+'</td><td>'+(p.container?('<b>'+esc(p.container)+'</b>'):'<span class="dshell-muted">—</span>')+'</td></tr>'; });
       h+='</tbody></table>';
-    } else { h+='<div class="dshell-muted">当前无进程占用（全部空闲）</div>'; }
+    } else if(gpuBusy(st)) { h+='<div class="dshell-muted">有 '+(st.used||0)+' 张卡被占用，但未列出占用进程（可能为其他用户进程，查询权限不足）。</div>'; }
+    else { h+='<div class="dshell-muted">当前无进程占用（全部空闲）</div>'; }
   }
   body.innerHTML=h;
   $('gpuDetail').style.display='flex';
@@ -1065,7 +1069,7 @@ async function testRepoStrategy(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
   const stUrl=(r.strategyUrl||'').trim();
   if(!stUrl){ tip.style.color='var(--log-warn)'; tip.textContent='⚠ '+r.name+' 未配置部署策略 URL（点「编辑」在表单中填写）'; return; }
-  const br=($('branchName') && $('branchName').value.trim())||'main';
+  const br=($('branchName') && $('branchName').value.trim())||'0830_dev_bnt3';
   tip.style.color=''; tip.textContent='测试部署策略中…（'+r.name+' · 分支 '+br+'）';
   const st=await fetchDeployStrategies(stUrl, br);
   if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（分支 '+br+'）：'+st.error; }
@@ -1154,7 +1158,7 @@ function curStrategy(){ const i=$('deployStrategyName'); return i?i.value.trim()
 function strategyPanelOpen(){ const p=$('strategyPanel'); return !!(p && p.style.display!=='none'); }
 /* 拉取当前分支的策略列表进缓存；仅面板打开时重绘（初始化调用不弹面板） */
 async function loadDeployStrategies(force){
-  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
   const tpl=((repo && repo.strategyUrl)||'').trim();
   const key=deployStrategyKey(repo,branch);
   if(!tpl){ delete deployStrategies[key]; if(strategyPanelOpen()) renderStrategyPanel(); return; }
@@ -1167,7 +1171,7 @@ async function loadDeployStrategies(force){
 /* 部署策略搜索面板：与分支/Tag 面板同款——头部仓库/分支/个数 + ⟳ 重新拉取，列表按输入筛选，点选回填 */
 function renderStrategyPanel(showAll){
   const panel=$('strategyPanel'); const inp=$('deployStrategyName'); if(!panel||!inp) return;
-  const repo=curRepo(); const branch=($('branchName').value.trim()||'main');
+  const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
   const q=showAll?'':inp.value.trim().toLowerCase();
   const tpl=((repo && repo.strategyUrl)||'').trim();
   const st=tpl?deployStrategies[deployStrategyKey(repo,branch)]:null;
