@@ -13,10 +13,31 @@ MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_REQUEST_FILE="$RUN_DIR/rendered/model.request.json"
 MODEL_ACTIVE_TIMEOUT_SECONDS="${MODEL_ACTIVE_TIMEOUT_SECONDS:-4800}"
 MODEL_ACTIVE_POLL_SECONDS="${MODEL_ACTIVE_POLL_SECONDS:-10}"
+SPEC_PACKAGE="${SPEC_PACKAGE:-}"
 
 [[ -f "$RESOURCE_MANIFEST" ]] || { echo "resource manifest not found: $RESOURCE_MANIFEST" >&2; exit 2; }
+[[ -f "$ARCH_REQUEST_FILE" ]] || { echo "architecture request not found: $ARCH_REQUEST_FILE" >&2; exit 2; }
 [[ "$MODEL_ACTIVE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid MODEL_ACTIVE_TIMEOUT_SECONDS: $MODEL_ACTIVE_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$MODEL_ACTIVE_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid MODEL_ACTIVE_POLL_SECONDS: $MODEL_ACTIVE_POLL_SECONDS" >&2; exit 2; }
+
+SPEC_PACKAGE="$(python3 - "$ARCH_REQUEST_FILE" "$SPEC_PACKAGE" <<'PY'
+import json
+import sys
+
+request_file, requested = sys.argv[1:]
+with open(request_file, encoding="utf-8") as source:
+    packages = [item.get("spec_package_name") for item in json.load(source).get("deploy_spec_packages", [])]
+packages = [item for item in packages if item]
+if requested:
+    if requested not in packages:
+        raise SystemExit(f"SPEC_PACKAGE is not defined by architecture request: {requested}")
+    print(requested)
+elif len(packages) == 1:
+    print(packages[0])
+else:
+    raise SystemExit("architecture request has multiple deploy spec packages; set SPEC_PACKAGE")
+PY
+)"
 
 wait_for_model_active() {
   local deadline response
@@ -41,11 +62,11 @@ wait_for_model_active() {
   return 1
 }
 
-python3 - "$RESOURCE_MANIFEST" "$ARCH_NAME" "$MODEL_NAME" "$MODEL_PATH" "$MODEL_VERSION" >"$MODEL_REQUEST_FILE" <<'PY'
+python3 - "$RESOURCE_MANIFEST" "$ARCH_NAME" "$MODEL_NAME" "$MODEL_PATH" "$MODEL_VERSION" "$SPEC_PACKAGE" >"$MODEL_REQUEST_FILE" <<'PY'
 import json
 import sys
 
-manifest_file, arch_name, model_name, model_path, version = sys.argv[1:]
+manifest_file, arch_name, model_name, model_path, version, spec_package = sys.argv[1:]
 with open(manifest_file, encoding="utf-8") as source:
     manifest = json.load(source)
 resources = []
@@ -61,7 +82,7 @@ payload = {
     "max_instance": 1,
     "min_instance": 1,
     "location": "local",
-    "spec_package": arch_name,
+    "spec_package": spec_package,
     "local_info": {"path": model_path},
     "resource_list": resources,
 }
@@ -69,7 +90,7 @@ json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
 sys.stdout.write("\n")
 PY
 
-echo "[register] model=$MODEL_NAME resources=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["resources"]))' "$RESOURCE_MANIFEST")"
+echo "[register] model=$MODEL_NAME spec_package=$SPEC_PACKAGE resources=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["resources"]))' "$RESOURCE_MANIFEST")"
 curl --noproxy '*' --fail-with-body -sS -X POST "${XDS_URL%/}/models/" \
   -H 'Content-Type: application/json' \
   --data-binary "@$MODEL_REQUEST_FILE"
