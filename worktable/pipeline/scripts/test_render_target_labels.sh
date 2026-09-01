@@ -16,6 +16,7 @@ common:
       value: 192.168.0.243
 nodeSelector:
   kubernetes.io/hostname: 192.168.0.243
+# disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
 [

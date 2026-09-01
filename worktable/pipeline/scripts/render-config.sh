@@ -190,7 +190,10 @@ with open(values_template, encoding="utf-8") as source:
 template_vars.setdefault("IMAGE_TAG", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("DEPLOY_NAMESPACE", namespace)
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
-unresolved = sorted({match.group(1) for match in placeholder_pattern.finditer(values_text)
+active_values_text = "\n".join(
+    line for line in values_text.splitlines() if not line.lstrip().startswith("#")
+)
+unresolved = sorted({match.group(1) for match in placeholder_pattern.finditer(active_values_text)
                      if match.group(1) not in template_vars})
 if unresolved:
     raise SystemExit("unresolved template placeholders: " + ", ".join(unresolved))
