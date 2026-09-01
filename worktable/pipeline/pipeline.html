@@ -2308,18 +2308,39 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
    变量传递：上游阶段变量（curRun.vars）自动注入为构建参数；任务控制台输出的 KEY=VALUE 行 /
    单行 JSON 对象（{"KEY":"VALUE"}）经 mergeStageVars 累计回 curRun.vars，传递给后续阶段。 */
 function jkJobPath(job){ return '/job/'+String(job).split('/').map(encodeURIComponent).join('/job/')+'/'; }
+/* Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
+   参数放在 form-urlencoded 请求体中（等价于旧版 query 传参）；
+   CSRF 防护开启时需带 crumb——先经 crumbIssuer 尝试获取（API token 认证通常豁免，拿不到则直接 POST）。 */
+async function jkFetchCrumb(j, auth){
+  const url=(j.url||'').replace(/\/+$/,'')+'/crumbIssuer/api/json';
+  try{
+    if(j.mode==='remote'){
+      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+      const p=await r.json(); if(p&&p.error) return null;
+      if((p.status||0)!==200) return null;
+      const c=JSON.parse(p.body||'{}'); if(c&&c.crumbRequestField&&c.crumb){ const h={}; h[c.crumbRequestField]=c.crumb; return h; }
+      return null;
+    }
+    const r=await fetch(url,{headers:auth,cache:'no-store'});
+    if(!r.ok) return null;
+    const c=await r.json(); if(c&&c.crumbRequestField&&c.crumb){ const h={}; h[c.crumbRequestField]=c.crumb; return h; }
+  }catch(e){}
+  return null;
+}
 async function jkTriggerBuild(job, params){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
-  const qs=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
-  const url=base+jkJobPath(job)+'buildWithParameters'+(qs?('?'+qs):'');
+  const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
+  const url=base+jkJobPath(job)+'buildWithParameters';
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
+  const crumb=await jkFetchCrumb(j, auth);
+  const headers=Object.assign({}, auth, crumb||{}, {'Content-Type':'application/x-www-form-urlencoded'});
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body})});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400 && (p.status||0)!==302 && (p.status||0)!==303) throw new Error('HTTP '+(p.status||0));
     return true;
   }
-  const r=await fetch(url,{headers:auth,cache:'no-store'});
+  const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store'});
   if(!r.ok && r.status!==302 && r.status!==303) throw new Error('HTTP '+r.status);
   return true;
 }
