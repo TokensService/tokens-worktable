@@ -372,15 +372,15 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">归档配置</h2>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
-          <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
+          <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_年月日时分秒」文件夹归档；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
           <input id="archiveScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不执行）" style="width:216px;" title="归档写入日志/profiling 后执行该脚本收集日志；默认 scripts/collect_logs.sh，脚本不存在则跳过" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行。运行启动时即按「流水线名_日期」生成归档文件夹，并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本），脚本显式参数优先。</span>
+        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行。运行启动时即按「流水线名称_年月日时分秒」生成归档文件夹，并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本），脚本显式参数优先。</span>
       </div>
     </div>
     <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
@@ -1221,7 +1221,7 @@ function detectScriptsDir(){
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
 function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
-/* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_日期」文件夹组织（见 archiveRun） */
+/* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_年月日时分秒」文件夹组织（见 archiveRun） */
 let archiveDir = lsGet('pip-archiveDir', '/var/log/op_test');
 function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
 /* 归档脚本：归档写入日志/profiling 后执行（可选），收集额外日志；默认 scripts/collect_logs.sh，留空=不执行，脚本缺失自动跳过（见 archiveRun） */
@@ -2284,7 +2284,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
     if(env.DEPLOY_STRATEGY===undefined && rc.strategy) env.DEPLOY_STRATEGY=rc.strategy;
     if(env.GIT_USER===undefined && rc.repoUser) env.GIT_USER=rc.repoUser;
     if(env.GIT_PASSWORD===undefined && rc.repoPass) env.GIT_PASSWORD=rc.repoPass;
-    /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名_日期」文件夹注入各阶段，
+    /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名称_年月日时分秒」文件夹注入各阶段，
        供脚本把本阶段产物直接写入归档目录；脚本显式参数优先。留空（未配置归档）则不注入。
        取值与末尾 archiveRun 注入归档脚本的 ARCHIVE_DIR/ARCHIVE_FOLDER 一致（均=本次运行归档文件夹）。 */
     if(rc.archive){
@@ -2532,9 +2532,9 @@ async function runCleanupBefore(){
     archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
   }
 }
-/* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
+/* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_年月日时分秒」文件夹） ---------- */
 function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
-function todayCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
+function nowCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
 async function apiMkdir(p){
   try{
     const r=await fetch('/api/worktable/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})});
@@ -2548,7 +2548,7 @@ async function apiWrite(p, content){
 /* 是否显式配置了归档根目录（留空=走保底，见 fallbackArchiveRoot） */
 function archiveConfigured(){ return !!(archiveDir||'').trim(); }
 /* 保底归档根：未配置 archiveDir 时，归档落到 scripts 目录同级的 runs/（仅当 scriptsDir 为绝对路径时可用）。
-   仍按「流水线名称_日期」文件夹组织，写 run-<tag>.log/.profile.json；但不执行归档脚本（归档脚本是「已配置归档」的专属能力，见 archiveRun）。 */
+   仍按「流水线名称_年月日时分秒」文件夹组织，写 run-<tag>.log/.profile.json；但不执行归档脚本（归档脚本是「已配置归档」的专属能力，见 archiveRun）。 */
 function fallbackArchiveRoot(){
   try{
     const sd=(scriptsDir||'').trim();
@@ -2562,7 +2562,7 @@ function archiveFolderFor(ctx){
   // 末尾 archiveRun 写入 run-<tag>.log/.profile.json 的目录完全一致（运行中 archiveDir 改动不致漂移）。
   if(ctx && ctx.archive!==undefined) return ctx.archive;
   if(!ctx) return null;
-  const sub=sanitizeFsName(ctx.pipelineName||curPipeline().name)+'_'+todayCompact();
+  const sub=sanitizeFsName(ctx.pipelineName||curPipeline().name)+'_'+nowCompact();
   const root=(archiveDir||'').trim().replace(/\/+$/,'');
   if(root) return root+'/'+sub;
   // 未配置归档：保底落到 scripts 同级的 runs/，仍写 run-<tag>.log/.profile.json（不执行归档脚本）

@@ -61,7 +61,7 @@ XDS 流水线按以下顺序绑定脚本：
 
 ## 归档与 AI 分析
 
-主控填了「归档路径」后，每次运行结束会把产物写到 `<归档路径>/<流水线名称>_<YYYYMMDD>/`：
+主控填了「归档路径」后，每次运行结束会把产物写到 `<归档路径>/<流水线名称>_<YYYYMMDDhhmmss>/`：
 
 - `run-<tag>.log` — 各阶段完整日志（脚本阶段含真实 stdout/stderr）
 - `run-<tag>.profile.json` — 各阶段耗时/状态等 profiling 数据
