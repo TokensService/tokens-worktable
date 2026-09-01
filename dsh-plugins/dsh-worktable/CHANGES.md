@@ -1,5 +1,12 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 流水线运行历史「AI 日志分析 / Profiling 分析 / 性能诊断」改为填草稿不提交、工作目录跟随归档目录
+  （`src/client/index.tsx` + `worktable/pipeline/pipeline.html`）：
+  `newChatInProject` 新增 `cwd` 参数（未分组时以 `{ cwd }` 建会话，优先级：workspaceId > cwd > 默认），
+  window 桥新增 `__dshNewChatSessionAt(text, cwd)`；pipeline.html `createAnalysisChat` 优先走该桥——
+  新会话工作目录 = 选中行的 `archive` 归档目录，提示词经 `fillSessionDraft` 只填输入框、不自动发送，
+  旧版插件无此桥时退化为原 `__dshPromptIntoSession` 自动发送路径（退化路径建会话同样带 `cwd`）。
+  按钮悬停提示、「分析配置」说明与 `scripts/README.md` 同步更新。
 - 项目设置新增「工作区（会话分组）」选择（`src/client/index.tsx` + `src/index.ts`）：
   绑定弹窗在「项目文件夹」与「绑定对话」之间新增工作区行，点击弹出宿主工作区列表
   （与对话列表弹层互斥、同一定位/样式），选中即记、✕ 清除；`ProjectsState` 新增

@@ -19104,10 +19104,10 @@ async function analyzeLogInSession(logPath) {
   }
   await promptIntoSession(sessionId, text2);
 }
-async function newChatInProject(text2, workspaceId = null) {
+async function newChatInProject(text2, workspaceId = null, cwd = null) {
   const b = sessionBridge;
   if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
-  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : {});
+  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {});
   await ensureSessionPreset(sessionId);
   await ensureSessionModel(sessionId);
   markPluginSessionOpen(sessionId);
@@ -21767,6 +21767,7 @@ function apply(ctx) {
     window.__dshSessions = ctx.sessions;
     window.__dshPromptIntoSession = (id, text2) => promptIntoSession(id, text2);
     window.__dshNewChatSession = (text2) => newChatInProject(text2);
+    window.__dshNewChatSessionAt = (text2, cwd) => newChatInProject(text2, null, cwd || null);
     window.__dshWorkspaces = ctx.workspaces;
     window.__dshBuildWindowTaskText = buildWindowTaskText;
     window.__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list);

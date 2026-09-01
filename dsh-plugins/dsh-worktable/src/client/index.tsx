@@ -874,11 +874,13 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
 /** 内容页（pipeline.html「页面修改」按钮等）→ 右侧聊天窗桥（经 window.__dshNewChatSession 暴露给 iframe 调用）：
  *  新建会话并把提示词填入输入框（不提交，用户确认后手动发送）；标记为插件发起的切换，
  *  项目分栏保持打开，新会话出现在右侧聊天窗而非离开项目页。
- *  workspaceId 为项目设置里选定的会话分组（缺省 = 未分组）。 */
-async function newChatInProject(text: string, workspaceId: string | null = null): Promise<void> {
+ *  workspaceId 为项目设置里选定的会话分组（缺省 = 未分组）；cwd 为新会话工作目录
+ *  （如流水线运行历史分析按钮传入选中行的日志归档目录），未分组时生效。 */
+async function newChatInProject(text: string, workspaceId: string | null = null, cwd: string | null = null): Promise<void> {
   const b = sessionBridge
   if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
-  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : {})
+  // 工作目录优先级：显式分组（workspaceId）> 指定目录（cwd）> 默认
+  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : (cwd ? { cwd } : {}))
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
@@ -3452,7 +3454,7 @@ export function apply(ctx: any) {
   sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null }
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
 
 
   ctx.effect(() => {
