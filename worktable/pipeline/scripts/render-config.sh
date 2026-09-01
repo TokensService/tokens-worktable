@@ -119,6 +119,15 @@ def upsert_container_env(name, value):
             return
     container_env.append({"name": name, "value": value})
 
+def remove_container_env(name):
+    common = values.get("common")
+    if not isinstance(common, dict) or not isinstance(common.get("containerEnv"), list):
+        return
+    common["containerEnv"] = [
+        item for item in common["containerEnv"]
+        if not isinstance(item, dict) or item.get("name") != name
+    ]
+
 def split_image_reference(reference):
     image_path, separator, tag = reference.rpartition(":")
     if not separator or "/" not in image_path:
@@ -226,6 +235,8 @@ values["nodeSelector"] = {node_selector_key: node_selector_value}
 upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
 upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
 upsert_container_env("XDS_NAMESPACE", namespace)
+# The chart appends this exact value to every Ray worker environment.
+remove_container_env("RAY_gcs_rpc_server_reconnect_timeout_s")
 
 registry, image_repository, image_name, image_tag = split_image_reference(deploy_image)
 global_values = values.setdefault("global", {})

@@ -10,6 +10,8 @@ printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Char
 cat >"$work_dir/values.yaml" <<'EOF'
 common:
   containerEnv:
+    - name: RAY_gcs_rpc_server_reconnect_timeout_s
+      value: '1209600'
     - name: XDS_TE_POD_LABEL_KEY
       value: kubernetes.io/hostname
     - name: XDS_TE_POD_LABEL_VAL
@@ -85,6 +87,7 @@ env = {entry["name"]: entry.get("value") for entry in values["common"]["containe
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
+assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
 assert all(group["nodeSelector"] == expected for group in values["taskExecutorGroups"])
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["images"]["ray"] == "xds:test-tag"
