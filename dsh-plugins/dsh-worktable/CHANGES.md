@@ -1,5 +1,23 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 项目设置新增「工作区（会话分组）」选择（`src/client/index.tsx` + `src/index.ts`）：
+  绑定弹窗在「项目文件夹」与「绑定对话」之间新增工作区行，点击弹出宿主工作区列表
+  （与对话列表弹层互斥、同一定位/样式），选中即记、✕ 清除；`ProjectsState` 新增
+  `workspaces: Record<projectId, workspaceId>`（随 folders 同款规则：本地项目落 localStorage，
+  已发布项目走服务端 `/api/worktable/projects` 同步切片，服务端路由同步放行该字段）。
+  生效点：「页面修改」✏️ 新建会话时带 `{ workspaceId }`，新会话落进项目选定的分组
+  （未设置 = 未分组，行为不变）。
+  修复：初版在模块级 `startPageEdit` 里误引组件内的 `projectsRef`（esbuild 不做未定义名校验，
+  运行期 ReferenceError 导致点 ✏️ 无反应）；改为由组件调用侧读 `projects.workspaces[id]` 传入。
+  「管理项目」列表每行新增 ⚙ 按钮（`manage.settings`），直接打开该项目的设置弹窗
+  （文件夹 / 工作区 / 绑定对话），不再只能从项目卡片的 ◎ 绑定图标进入。
+- 「页面修改」新建会话改为只填输入框、不自动提交（`src/client/index.tsx`）：
+  新增 `fillSessionDraft`，经宿主 `conversation.input`（SessionInputResolver.for +
+  sessions.binding(sessionId).ctx）把提示词写入新会话输入机草稿；`newChatInProject`
+  （管理项目 ✏️ 按钮与 window.__dshNewChatSession 桥共用）由 `promptIntoSession`（自动发送）
+  改为 `fillSessionDraft`，用户确认内容后自己按发送；facade 不可用时直接报错，
+  不退化为自动发送。✏️ 按钮悬停提示与设置弹窗说明文案同步更新（`src/client/locales.ts`）。
+  「AI 日志分析」与「自定义窗口新建会话」维持自动发送不变。
 - 修复流水线环境变量未正确传入任务脚本（`src/index.ts` `runStageScript` + `worktable/pipeline/pipeline.html` `execScript`）：
   参数的 `:-默认值` 由识别器存入 `p.def`，旧逻辑在用户未显式填值时也把 `p.def` 当显式值下发，`env[key]` 被占位后
   运行级注入（`TARGET_IP`/`TARGET_IPS`/`TARGET_HOSTS`/`IMAGE_NAME`/`IMAGE_TAG`/`PIPELINE_NAME` 等）因「同名已存在」被跳过，

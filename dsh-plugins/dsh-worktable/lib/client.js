@@ -8301,9 +8301,10 @@ var zh = {
   "manage.deleteLayout": "\u5220\u9664\u5E03\u5C40",
   "manage.deleteProject": "\u5220\u9664\u9879\u76EE",
   "manage.changeView": "\u53D8\u66F4\u89C6\u56FE",
+  "manage.settings": "\u9879\u76EE\u8BBE\u7F6E\uFF1A\u6587\u4EF6\u5939 / \u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u5206\u7EC4\uFF09/ \u7ED1\u5B9A\u5BF9\u8BDD",
   "pageEdit.title": "\u9875\u9762\u4FEE\u6539",
-  "pageEdit.desc": "\u300C\u7BA1\u7406\u9879\u76EE\u300D\u5217\u8868\u91CC \u270F\uFE0F \u6309\u94AE\u53D1\u9001\u7ED9 AI \u7684\u63D0\u793A\u8BCD\u6A21\u677F\uFF1A{page} \u66FF\u6362\u4E3A\u8BE5\u9879\u76EE\u9875\u9762\u6587\u4EF6\u8DEF\u5F84\uFF0C{name} \u66FF\u6362\u4E3A\u9879\u76EE\u540D\u3002\u6E05\u7A7A\u4FDD\u5B58\u5373\u6062\u590D\u9ED8\u8BA4\u3002",
-  "pageEdit.hint": "\u9875\u9762\u4FEE\u6539\uFF1A\u65B0\u5EFA AI \u4F1A\u8BDD\u4FEE\u6539\u8BE5\u9879\u76EE\u9875\u9762",
+  "pageEdit.desc": "\u300C\u7BA1\u7406\u9879\u76EE\u300D\u5217\u8868\u91CC \u270F\uFE0F \u6309\u94AE\u586B\u5165\u65B0\u4F1A\u8BDD\u8F93\u5165\u6846\u7684\u63D0\u793A\u8BCD\u6A21\u677F\uFF1A{page} \u66FF\u6362\u4E3A\u8BE5\u9879\u76EE\u9875\u9762\u6587\u4EF6\u8DEF\u5F84\uFF0C{name} \u66FF\u6362\u4E3A\u9879\u76EE\u540D\u3002\u6E05\u7A7A\u4FDD\u5B58\u5373\u6062\u590D\u9ED8\u8BA4\u3002",
+  "pageEdit.hint": "\u9875\u9762\u4FEE\u6539\uFF1A\u65B0\u5EFA AI \u4F1A\u8BDD\u5E76\u628A\u4FEE\u6539\u63D0\u793A\u8BCD\u586B\u5165\u8F93\u5165\u6846\uFF08\u4E0D\u81EA\u52A8\u53D1\u9001\uFF0C\u786E\u8BA4\u540E\u624B\u52A8\u63D0\u4EA4\uFF09",
   "pageEdit.reset": "\u6062\u590D\u9ED8\u8BA4",
   "manage.publish": "\u53D1\u5E03\uFF1A\u5B58\u670D\u52A1\u7AEF\uFF0C\u6240\u6709\u6D4F\u89C8\u5668\u53EF\u89C1",
   "manage.unpublish": "\u53D6\u6D88\u53D1\u5E03\uFF1A\u56DE\u5230\u4EC5\u672C\u6D4F\u89C8\u5668",
@@ -8362,6 +8363,11 @@ var zh = {
   "bind.tipBound": "\u5DF2\u7ED1\u5B9A\u5BF9\u8BDD\uFF1A{name}",
   "bind.clickPick": "\u70B9\u51FB\u9009\u62E9\u5BF9\u8BDD",
   "bind.hint": "\u6253\u5F00\u9879\u76EE\u65F6\uFF0C\u53F3\u4FA7\u5BF9\u8BDD\u7A97\u4F1A\u81EA\u52A8\u5207\u6362\u5230\u8FD9\u4E2A\u5BF9\u8BDD\u3002",
+  "bind.workspace": "\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u5206\u7EC4\uFF09",
+  "bind.workspaceNone": "\u672A\u8BBE\u7F6E",
+  "bind.workspaceClear": "\u6E05\u9664",
+  "bind.workspaceEmpty": "\uFF08\u8FD8\u6CA1\u6709\u5DE5\u4F5C\u533A\uFF0C\u53EF\u5148\u5728\u4FA7\u8FB9\u680F\u65B0\u5EFA\uFF09",
+  "bind.workspaceHint": "\u4ECE\u8BE5\u9879\u76EE\u65B0\u5EFA\u4F1A\u8BDD\uFF08\u5982\u300C\u9875\u9762\u4FEE\u6539\u300D\uFF09\u65F6\uFF0C\u81EA\u52A8\u843D\u8FDB\u9009\u4E2D\u7684\u5DE5\u4F5C\u533A\u5206\u7EC4\u3002",
   "dirpick.title": "\u9009\u62E9\u9879\u76EE\u6587\u4EF6\u5939",
   "dirpick.confirm": "\u9009\u62E9\u6B64\u6587\u4EF6\u5939",
   "dirpick.loading": "\u52A0\u8F7D\u4E2D\u2026",
@@ -8486,9 +8492,10 @@ var en = {
   "manage.deleteLayout": "Delete layout",
   "manage.deleteProject": "Delete project",
   "manage.changeView": "Change layout",
+  "manage.settings": "Project settings: folder / workspace (session group) / bound conversation",
   "pageEdit.title": "Page edit",
-  "pageEdit.desc": 'Prompt template sent to the AI by the \u270F\uFE0F button in the "Manage projects" list: {page} is replaced with the project page file path, {name} with the project name. Clear and save to restore the default.',
-  "pageEdit.hint": "Edit page: open a new AI session to modify this project page",
+  "pageEdit.desc": `Prompt template the \u270F\uFE0F button in the "Manage projects" list fills into the new session's input box: {page} is replaced with the project page file path, {name} with the project name. Clear and save to restore the default.`,
+  "pageEdit.hint": "Edit page: open a new AI session and fill the edit prompt into the input box (not auto-sent; review and submit yourself)",
   "pageEdit.reset": "Reset",
   "manage.publish": "Publish: store on server, visible in all browsers",
   "manage.unpublish": "Unpublish: back to this browser only",
@@ -8547,6 +8554,11 @@ var en = {
   "bind.tipBound": "Bound to: {name}",
   "bind.clickPick": "click to pick",
   "bind.hint": "Opening the project switches the right chat pane to this conversation.",
+  "bind.workspace": "Workspace (session group)",
+  "bind.workspaceNone": "Not set",
+  "bind.workspaceClear": "Clear",
+  "bind.workspaceEmpty": "(no workspaces yet \u2014 create one in the sidebar first)",
+  "bind.workspaceHint": 'Sessions created from this project (e.g. "Edit page") land in the chosen workspace group.',
   "dirpick.title": "Choose project folder",
   "dirpick.confirm": "Choose this folder",
   "dirpick.loading": "Loading\u2026",
@@ -18533,7 +18545,8 @@ var DEFAULT_PROJECTS = {
   shortcuts: [],
   layouts: [],
   bindings: {},
-  folders: {}
+  folders: {},
+  workspaces: {}
 };
 function loadView() {
   try {
@@ -18569,7 +18582,8 @@ function loadProjects() {
       shortcuts: Array.isArray(p.shortcuts) ? p.shortcuts.filter((s) => s && typeof s.id === "string" && typeof s.name === "string" && typeof s.href === "string") : [],
       layouts: Array.isArray(p.layouts) ? p.layouts.filter((l) => l && typeof l.id === "string" && typeof l.title === "string" && Array.isArray(l.main)) : [],
       bindings: p.bindings && typeof p.bindings === "object" ? p.bindings : {},
-      folders: p.folders && typeof p.folders === "object" ? p.folders : {}
+      folders: p.folders && typeof p.folders === "object" ? p.folders : {},
+      workspaces: p.workspaces && typeof p.workspaces === "object" ? p.workspaces : {}
     };
   } catch {
     return { ...DEFAULT_PROJECTS };
@@ -18958,6 +18972,30 @@ async function promptIntoSession(sessionId, text2) {
   }
   throw new Error("no send path: session face unavailable");
 }
+async function fillSessionDraft(sessionId, text2) {
+  const b = sessionBridge;
+  if (!b) throw new Error("bridge unavailable");
+  const sessions = b.sessions;
+  const resolver = b.conversation?.input;
+  if (!resolver || typeof resolver.for !== "function") throw new Error("conversation.input unavailable");
+  for (let i = 0; i < 10; i++) {
+    let binding = null;
+    try {
+      binding = sessions?.binding?.(sessionId) ?? null;
+    } catch {
+      binding = null;
+    }
+    if (binding?.ctx) {
+      try {
+        resolver.for(binding.ctx).setDraft(text2);
+        return;
+      } catch {
+      }
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error("no fill path: input facade unavailable");
+}
 var KNOWLEDGE_PACK = [
   "\u3010\u63D2\u4EF6\u77E5\u8BC6\u5305\xB7\u8BF7\u76F4\u63A5\u91C7\u7528\uFF0C\u4E0D\u8981\u91CD\u65B0\u4FA6\u5BDF\u63D2\u4EF6\u6E90\u7801\u3011",
   "- dsh-worktable \u662F DeepSeek Harness \u7684\u81EA\u5EFA\u5BB9\u5668\u63D2\u4EF6\uFF08\u5DE5\u4F5C\u53F0\uFF1A\u4FA7\u8FB9\u680F\u91CC\u7684\u9879\u76EE\u5E94\u7528\u62BD\u5C49\uFF1B\u4E0D\u4E86\u89E3\u7684\u7EC6\u8282\u53EF\u76F4\u63A5\u5411\u7528\u6237\u63D0\u95EE\uFF09\u3002",
@@ -19066,10 +19104,10 @@ async function analyzeLogInSession(logPath) {
   }
   await promptIntoSession(sessionId, text2);
 }
-async function newChatInProject(text2) {
+async function newChatInProject(text2, workspaceId = null) {
   const b = sessionBridge;
   if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
-  const sessionId = await b.sessions.create({});
+  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : {});
   await ensureSessionPreset(sessionId);
   await ensureSessionModel(sessionId);
   markPluginSessionOpen(sessionId);
@@ -19077,7 +19115,7 @@ async function newChatInProject(text2) {
     await b.sessions.open?.(sessionId);
   } catch {
   }
-  await promptIntoSession(sessionId, text2);
+  await fillSessionDraft(sessionId, text2);
 }
 var DEFAULT_PAGE_EDIT_PROMPT = "\u9875\u9762\u6587\u4EF6\uFF1A{page}\uFF0C\u8FD9\u662F\u4E00\u4E2Adeepseek harness worktable\u63D2\u4EF6\u7684\u9875\u9762\n\u8BF7\u5148\u95EE\u6211\u60F3\u505A\u4EC0\u4E48\u4FEE\u6539\uFF1B\u786E\u8BA4\u9700\u6C42\u540E\u76F4\u63A5\u7F16\u8F91\u8BE5\u6587\u4EF6\uFF0C\u4FDD\u6301\u73B0\u6709\u4EE3\u7801\u98CE\u683C\u4E0E dshell \u6837\u5F0F\u4F53\u7CFB\uFF08\u5355\u6587\u4EF6\u5185\u8054\u5B9E\u73B0\uFF0C\u4E3B\u9898\u53D8\u91CF\u9002\u914D\u6D45\u8272/\u6DF1\u8272\uFF09\u3002\u4FEE\u6539\u5B8C\u6210\u540E\u63D0\u9192\u6211\u5237\u65B0\u9875\u9762\u67E5\u770B\u6548\u679C\u3002\n\u4FEE\u6539\u4EE3\u7801\u65F6\uFF0C\u521B\u5EFA\u4E00\u4E2Agit worktree\u4FEE\u6539\uFF0C\u9632\u6B62\u591A\u4E2A\u5E76\u884C\u7684\u4FEE\u6539\u51B2\u7A81\u3002\u6539\u5B8C\u540E\uFF0C\u521B\u5EFA\u63D0\u4EA4PR\u94FE\u63A5";
 var PAGE_EDIT_PROMPT_KEY = "dsh.worktable.pageEditPrompt.v1";
@@ -19113,9 +19151,9 @@ function layoutPagePath(layout) {
   }
   return null;
 }
-async function startPageEdit(pagePath, projectName) {
+async function startPageEdit(pagePath, projectName, workspaceId = null) {
   const prompt = loadPageEditPrompt().split("{page}").join(pagePath).split("{name}").join(projectName);
-  await newChatInProject(prompt);
+  await newChatInProject(prompt, workspaceId);
 }
 var projectAttachRef = { sessionId: null, attached: null };
 var suppressRestoreRef = { current: false };
@@ -19348,12 +19386,17 @@ function WorktableSection(props) {
         if (d.folders && typeof d.folders === "object") {
           for (const [k, v] of Object.entries(d.folders)) if (typeof v === "string") remoteFolders[k] = v;
         }
+        const remoteWorkspaces = {};
+        if (d.workspaces && typeof d.workspaces === "object") {
+          for (const [k, v] of Object.entries(d.workspaces)) if (typeof v === "string") remoteWorkspaces[k] = v;
+        }
         setProjects((prev) => {
           const remoteIds = new Set(remote.map((l) => l.id));
           return {
             ...prev,
             layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
-            folders: { ...prev.folders, ...remoteFolders }
+            folders: { ...prev.folders, ...remoteFolders },
+            workspaces: { ...prev.workspaces, ...remoteWorkspaces }
           };
         });
       } catch {
@@ -19435,6 +19478,7 @@ function WorktableSection(props) {
   const [bindPick, setBindPick] = (0, import_react2.useState)(null);
   const [bindGroups, setBindGroups] = (0, import_react2.useState)([]);
   const [bindListOpen, setBindListOpen] = (0, import_react2.useState)(false);
+  const [bindWsOpen, setBindWsOpen] = (0, import_react2.useState)(false);
   const [dirPick, setDirPick] = (0, import_react2.useState)(null);
   const [consoleBind, setConsoleBind] = (0, import_react2.useState)(null);
   const [consoleGroups, setConsoleGroups] = (0, import_react2.useState)([]);
@@ -19701,7 +19745,8 @@ function WorktableSection(props) {
     const layouts = s.layouts.filter((l) => l.sync);
     const ids = new Set(layouts.map((l) => l.id));
     const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)));
-    return { layouts, folders };
+    const workspaces = Object.fromEntries(Object.entries(s.workspaces).filter(([id]) => ids.has(id)));
+    return { layouts, folders, workspaces };
   };
   const persistProjects = (patch) => {
     setProjects((prev) => {
@@ -19710,7 +19755,8 @@ function WorktableSection(props) {
       const local = {
         ...next,
         layouts: next.layouts.filter((l) => !l.sync),
-        folders: Object.fromEntries(Object.entries(next.folders).filter(([id]) => !syncedIds.has(id)))
+        folders: Object.fromEntries(Object.entries(next.folders).filter(([id]) => !syncedIds.has(id))),
+        workspaces: Object.fromEntries(Object.entries(next.workspaces).filter(([id]) => !syncedIds.has(id)))
       };
       try {
         localStorage.setItem(PROJECTS_KEY, JSON.stringify(local));
@@ -20047,6 +20093,7 @@ function WorktableSection(props) {
     const y = clamp2(Math.round(r.top), 8, window.innerHeight - 420);
     setBindPick({ id, x, y });
     setBindListOpen(false);
+    setBindWsOpen(false);
     setBindGroups([]);
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]));
   }, []);
@@ -20114,6 +20161,15 @@ function WorktableSection(props) {
     pickFolder((p) => {
       persistProjects((prev) => ({ ...prev, folders: { ...prev.folders, [bindPick.id]: p } }));
     }, projectsRef.current.projects.folders[bindPick.id] ?? void 0);
+  };
+  const setProjectWorkspace = (id, workspaceId) => {
+    persistProjects((prev) => {
+      const next = { ...prev.workspaces };
+      if (workspaceId) next[id] = workspaceId;
+      else delete next[id];
+      return { ...prev, workspaces: next };
+    });
+    setBindWsOpen(false);
   };
   const setProjectBinding = (id, sessionId) => {
     persistProjects((prev) => {
@@ -21141,6 +21197,19 @@ function WorktableSection(props) {
               ),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(RenameInput, { initial: display, placeholder: t("manage.renamePh"), onCommit: (v) => renameProject(id, v) }),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: isHidden ? t("manage.show") : t("manage.hide"), onClick: () => toggleHidden(id), children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(EyeIcon, { closed: isHidden }) }),
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+                "button",
+                {
+                  type: "button",
+                  className: "dsh-wt_manageBtn",
+                  title: t("manage.settings"),
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    openBindPick(id, e.currentTarget);
+                  },
+                  children: "\u2699"
+                }
+              ),
               /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_manageBtn", title: t("manage.changeView"), onClick: () => setViewPickFor(id), children: "\u{1F9E9}" }),
               pagePath && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
                 "button",
@@ -21150,7 +21219,7 @@ function WorktableSection(props) {
                   title: t("pageEdit.hint"),
                   onClick: () => {
                     setViewOptionsOpen(false);
-                    void startPageEdit(pagePath, display);
+                    void startPageEdit(pagePath, display, projects.workspaces[id] ?? null);
                   },
                   children: "\u270F\uFE0F"
                 }
@@ -21274,6 +21343,7 @@ function WorktableSection(props) {
     bindPick && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_popBackdrop", style: { zIndex: 83 }, onClick: () => {
       setBindPick(null);
       setBindListOpen(false);
+      setBindWsOpen(false);
     } }),
     bindPick && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_menu dsh-wt_pop dsh-wt_bindPop", style: { position: "fixed", left: bindPick.x, top: bindPick.y, width: 280, zIndex: 84 }, children: [
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_bindFolderBox", children: [
@@ -21292,6 +21362,40 @@ function WorktableSection(props) {
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_bindFolderBox", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_bindFolderRow", children: [
           /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindFolderLabel", children: [
+            "\u{1F5C2} ",
+            t("bind.workspace")
+          ] }),
+          projects.workspaces[bindPick.id] && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_bindUnbind", onClick: () => setProjectWorkspace(bindPick.id, null), children: [
+            t("bind.workspaceClear"),
+            " \u2715"
+          ] })
+        ] }),
+        (() => {
+          const wid = projects.workspaces[bindPick.id];
+          const cur = wid ? listWorkspaces().find((w) => w.id === wid) : void 0;
+          if (!wid) {
+            return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_bindConvRow dsh-wt_bindConvRowNone", title: t("bind.workspaceHint"), onClick: () => {
+              setBindWsOpen((v) => !v);
+              setBindListOpen(false);
+            }, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindNoneText", children: [
+              t("bind.workspaceNone"),
+              " \xB7 ",
+              t("bind.clickPick")
+            ] }) });
+          }
+          return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_bindConvRow", title: cur ? cur.path : wid, onClick: () => {
+            setBindWsOpen((v) => !v);
+            setBindListOpen(false);
+          }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_bindConvName", title: cur ? cur.title : wid, children: cur ? cur.title : wid }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_bindConvChevron", "aria-hidden": true, children: "\u25BE" })
+          ] });
+        })(),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "dsh-wt_bindHint", children: t("bind.workspaceHint") })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_bindFolderBox", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_bindFolderRow", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindFolderLabel", children: [
             "\u{1F4AC} ",
             t("bind.title")
           ] }),
@@ -21303,14 +21407,20 @@ function WorktableSection(props) {
         (() => {
           const sid = projects.bindings[bindPick.id];
           if (!sid) {
-            return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_bindConvRow dsh-wt_bindConvRowNone", title: t("bind.tipUnbound"), onClick: () => setBindListOpen((v) => !v), children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindNoneText", children: [
+            return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_bindConvRow dsh-wt_bindConvRowNone", title: t("bind.tipUnbound"), onClick: () => {
+              setBindListOpen((v) => !v);
+              setBindWsOpen(false);
+            }, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindNoneText", children: [
               t("bind.unbound"),
               " \xB7 ",
               t("bind.clickPick")
             ] }) });
           }
           const info = bindInfoOf(bindGroups, sid);
-          return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_bindConvRow", title: t("bind.tipBound", { name: info.title }), onClick: () => setBindListOpen((v) => !v), children: [
+          return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_bindConvRow", title: t("bind.tipBound", { name: info.title }), onClick: () => {
+            setBindListOpen((v) => !v);
+            setBindWsOpen(false);
+          }, children: [
             /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { className: "dsh-wt_bindFolder", title: info.folder, children: [
               "\u{1F4C2} ",
               info.folder
@@ -21351,6 +21461,25 @@ function WorktableSection(props) {
           s.id
         ))
       ] }, g.title || "g" + gi)) }) });
+    })(),
+    bindPick && bindWsOpen && (() => {
+      const rightFits = bindPick.x + 300 + 260 <= window.innerWidth - 8;
+      const listLeft = rightFits ? bindPick.x + 300 : Math.max(8, bindPick.x - 268);
+      const wsList = listWorkspaces();
+      return /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_menu dsh-wt_pop dsh-wt_bindListPop", style: { position: "fixed", left: listLeft, top: clamp2(bindPick.y, 8, window.innerHeight - 348), width: 260, zIndex: 86 }, children: /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_selectList dsh-wt_bindList", children: [
+        wsList.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_selectGroup", children: t("bind.workspaceEmpty") }),
+        wsList.map((w) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "dsh-wt_selectItem" + (projects.workspaces[bindPick.id] === w.id ? " dsh-wt_selectItemOn" : ""),
+            title: w.path,
+            onClick: () => setProjectWorkspace(bindPick.id, w.id),
+            children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_selectItemTitle", children: w.title || w.path || w.id })
+          },
+          w.id
+        ))
+      ] }) });
     })(),
     dirPick && /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_popBackdrop", style: { zIndex: 87 }, onClick: () => setDirPick(null) }),
     dirPick && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_menu dsh-wt_pop dsh-wt_dirPickPop", style: { position: "fixed", left: "50%", top: "50%", transform: "translate(-50%,-50%)", width: 360, zIndex: 88 }, children: [

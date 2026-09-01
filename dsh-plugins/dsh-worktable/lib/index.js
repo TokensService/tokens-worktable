@@ -487,7 +487,8 @@ function apply(ctx) {
           const p = raw ? JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw) : {};
           json(res, 200, {
             layouts: Array.isArray(p.layouts) ? p.layouts : [],
-            folders: p.folders && typeof p.folders === "object" ? p.folders : {}
+            folders: p.folders && typeof p.folders === "object" ? p.folders : {},
+            workspaces: p.workspaces && typeof p.workspaces === "object" ? p.workspaces : {}
           });
           return;
         }
@@ -498,7 +499,11 @@ function apply(ctx) {
           if (body.folders && typeof body.folders === "object") {
             for (const [k, v] of Object.entries(body.folders)) if (typeof v === "string") folders[k] = v;
           }
-          const text = JSON.stringify({ layouts, folders });
+          const workspaces = {};
+          if (body.workspaces && typeof body.workspaces === "object") {
+            for (const [k, v] of Object.entries(body.workspaces)) if (typeof v === "string") workspaces[k] = v;
+          }
+          const text = JSON.stringify({ layouts, folders, workspaces });
           if (text.length > 1024 * 1024) {
             json(res, 413, { error: "too large" });
             return;

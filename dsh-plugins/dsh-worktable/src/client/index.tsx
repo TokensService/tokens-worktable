@@ -100,6 +100,8 @@ type ProjectsState = {
   bindings: Record<string, string>
   /** 项目 → 工作文件夹（绝对路径）：该项目所有产出文件都放这里；新建项目时强制填写。 */
   folders: Record<string, string>
+  /** 项目 → 会话分组（宿主工作区 id）：从该项目新建会话（如「页面修改」）时落进这个分组；空/缺 = 未分组。 */
+  workspaces: Record<string, string>
 }
 
 const PERSIST_KEY = 'dsh.worktable.view.v1'
@@ -282,6 +284,7 @@ const DEFAULT_PROJECTS: ProjectsState = {
   layouts: [],
   bindings: {},
   folders: {},
+  workspaces: {},
 }
 
 function loadView(): ViewState {
@@ -329,6 +332,7 @@ function loadProjects(): ProjectsState {
         : [],
       bindings: p.bindings && typeof p.bindings === 'object' ? p.bindings : {},
       folders: p.folders && typeof p.folders === 'object' ? p.folders : {},
+      workspaces: p.workspaces && typeof p.workspaces === 'object' ? p.workspaces : {},
     }
   } catch {
     return { ...DEFAULT_PROJECTS }
@@ -734,6 +738,26 @@ async function promptIntoSession(sessionId: string, text: string): Promise<void>
   throw new Error('no send path: session face unavailable')
 }
 
+/** 只把文本填进指定会话的输入框草稿（不提交）：经宿主 conversation.input（SessionInputResolver.for）
+ *  写入该会话的输入机，用户确认后自己按发送。新会话的 binding/scope 可能异步就绪，
+ *  重试节奏同 promptIntoSession；facade 不可用时直接报错（绝不退化为自动发送）。 */
+async function fillSessionDraft(sessionId: string, text: string): Promise<void> {
+  const b = sessionBridge
+  if (!b) throw new Error('bridge unavailable')
+  const sessions = b.sessions as any
+  const resolver = (b.conversation as any)?.input
+  if (!resolver || typeof resolver.for !== 'function') throw new Error('conversation.input unavailable')
+  for (let i = 0; i < 10; i++) {
+    let binding: any = null
+    try { binding = sessions?.binding?.(sessionId) ?? null } catch { binding = null }
+    if (binding?.ctx) {
+      try { resolver.for(binding.ctx).setDraft(text); return } catch { /* scope 未就绪，重试 */ }
+    }
+    await new Promise((r) => setTimeout(r, 200))
+  }
+  throw new Error('no fill path: input facade unavailable')
+}
+
 /** 新建会话的分组选择：未分组 / 加入现有分组 / 新建一个分组（父目录 + 名称） */
 export type NewSessionGroup = { kind: 'none' } | { kind: 'existing'; workspaceId: string } | { kind: 'new'; parent: string; name: string }
 
@@ -848,16 +872,18 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
 }
 
 /** 内容页（pipeline.html「页面修改」按钮等）→ 右侧聊天窗桥（经 window.__dshNewChatSession 暴露给 iframe 调用）：
- *  新建会话并发送提示词；标记为插件发起的切换，项目分栏保持打开，新会话出现在右侧聊天窗而非离开项目页。 */
-async function newChatInProject(text: string): Promise<void> {
+ *  新建会话并把提示词填入输入框（不提交，用户确认后手动发送）；标记为插件发起的切换，
+ *  项目分栏保持打开，新会话出现在右侧聊天窗而非离开项目页。
+ *  workspaceId 为项目设置里选定的会话分组（缺省 = 未分组）。 */
+async function newChatInProject(text: string, workspaceId: string | null = null): Promise<void> {
   const b = sessionBridge
   if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
-  const sessionId = await b.sessions.create({})
+  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : {})
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
   try { await b.sessions.open?.(sessionId) } catch {}
-  await promptIntoSession(sessionId, text)
+  await fillSessionDraft(sessionId, text)
 }
 
 // ── 页面修改（设置弹窗：项目管理行「✏️」按钮 + 提示词模板配置；替代原 pipeline.html 页内按钮）──
@@ -887,10 +913,11 @@ function layoutPagePath(layout: any): string | null {
   }
   return null
 }
-/** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开） */
-async function startPageEdit(pagePath: string, projectName: string): Promise<void> {
+/** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开）；
+ *  项目设置里选了会话分组时（由组件调用侧读 projects.workspaces 传入），新会话落进该分组。 */
+async function startPageEdit(pagePath: string, projectName: string, workspaceId: string | null = null): Promise<void> {
   const prompt = loadPageEditPrompt().split('{page}').join(pagePath).split('{name}').join(projectName)
-  await newChatInProject(prompt)
+  await newChatInProject(prompt, workspaceId)
 }
 
 // ── 项目 × 对话联动（模块级）──
@@ -1148,12 +1175,17 @@ function WorktableSection(props: any) {
         if (d.folders && typeof d.folders === 'object') {
           for (const [k, v] of Object.entries(d.folders)) if (typeof v === 'string') remoteFolders[k] = v
         }
+        const remoteWorkspaces: Record<string, string> = {}
+        if (d.workspaces && typeof d.workspaces === 'object') {
+          for (const [k, v] of Object.entries(d.workspaces)) if (typeof v === 'string') remoteWorkspaces[k] = v
+        }
         setProjects((prev) => {
           const remoteIds = new Set(remote.map((l) => l.id))
           return {
             ...prev,
             layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
             folders: { ...prev.folders, ...remoteFolders },
+            workspaces: { ...prev.workspaces, ...remoteWorkspaces },
           }
         })
       } catch { /* 服务端不可用 = 仅本地模式 */ }
@@ -1220,6 +1252,8 @@ function WorktableSection(props: any) {
   const [bindPick, setBindPick] = useState<{ id: string; x: number; y: number } | null>(null)
   const [bindGroups, setBindGroups] = useState<{ title: string; sessions: { id: string; title: string; isCurrent: boolean }[] }[]>([])
   const [bindListOpen, setBindListOpen] = useState(false)
+  /** 会话分组（工作区）列表弹层：点绑定弹窗「工作区」行弹出（与对话列表弹层互斥） */
+  const [bindWsOpen, setBindWsOpen] = useState(false)
   /** 应用内目录选择弹窗：native pickDirectory 不可用（browse 组合 / 远程无桌面）时的回退；
    *  经宿主 browse 能力 listDirectory 逐层浏览，manual 为可编辑的当前路径（确认即取它） */
   const [dirPick, setDirPick] = useState<{
@@ -1483,7 +1517,8 @@ function WorktableSection(props: any) {
     const layouts = s.layouts.filter((l) => l.sync)
     const ids = new Set(layouts.map((l) => l.id))
     const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)))
-    return { layouts, folders }
+    const workspaces = Object.fromEntries(Object.entries(s.workspaces).filter(([id]) => ids.has(id)))
+    return { layouts, folders, workspaces }
   }
   const persistProjects = (patch: Partial<ProjectsState> | ((prev: ProjectsState) => ProjectsState)) => {
     setProjects((prev) => {
@@ -1494,6 +1529,7 @@ function WorktableSection(props: any) {
         ...next,
         layouts: next.layouts.filter((l) => !l.sync),
         folders: Object.fromEntries(Object.entries(next.folders).filter(([id]) => !syncedIds.has(id))),
+        workspaces: Object.fromEntries(Object.entries(next.workspaces).filter(([id]) => !syncedIds.has(id))),
       }
       try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(local)) } catch {}
       // 同步切片有变化才推服务端（全量覆盖，last-write-wins；排序/隐藏等本地偏好不触发推送）
@@ -1830,6 +1866,7 @@ function buildCustomLayoutPrompt(req: string): string {
     const y = clamp(Math.round(r.top), 8, window.innerHeight - 420)
     setBindPick({ id, x, y })
     setBindListOpen(false)
+    setBindWsOpen(false)
     setBindGroups([])
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]))
   }, [])
@@ -1909,6 +1946,17 @@ function buildCustomLayoutPrompt(req: string): string {
     pickFolder((p) => {
       persistProjects((prev) => ({ ...prev, folders: { ...prev.folders, [bindPick.id]: p } }))
     }, projectsRef.current.projects.folders[bindPick.id] ?? undefined)
+  }
+
+  /** 设置 / 清除项目的会话分组（工作区）：从该项目新建会话时落进选中的分组 */
+  const setProjectWorkspace = (id: string, workspaceId: string | null) => {
+    persistProjects((prev) => {
+      const next = { ...prev.workspaces }
+      if (workspaceId) next[id] = workspaceId
+      else delete next[id]
+      return { ...prev, workspaces: next }
+    })
+    setBindWsOpen(false)
   }
 
   /** 绑定 / 解绑会话（弹窗保持打开，绑定结果即时显示在「绑定对话」框里） */
@@ -2906,13 +2954,19 @@ function buildCustomLayoutPrompt(req: string): string {
                 <button type="button" className="dsh-wt_manageBtn" title={isHidden ? t('manage.show') : t('manage.hide')} onClick={() => toggleHidden(id)}>
                   <EyeIcon closed={isHidden} />
                 </button>
+                <button
+                  type="button"
+                  className="dsh-wt_manageBtn"
+                  title={t('manage.settings')}
+                  onClick={(e) => { e.stopPropagation(); openBindPick(id, e.currentTarget as HTMLElement) }}
+                >⚙</button>
                 <button type="button" className="dsh-wt_manageBtn" title={t('manage.changeView')} onClick={() => setViewPickFor(id)}>🧩</button>
                 {pagePath && (
                   <button
                     type="button"
                     className="dsh-wt_manageBtn"
                     title={t('pageEdit.hint')}
-                    onClick={() => { setViewOptionsOpen(false); void startPageEdit(pagePath, display) }}
+                    onClick={() => { setViewOptionsOpen(false); void startPageEdit(pagePath, display, projects.workspaces[id] ?? null) }}
                   >✏️</button>
                 )}
                 {layout && (
@@ -3008,7 +3062,7 @@ function buildCustomLayoutPrompt(req: string): string {
         </div>
       )}
 
-      {bindPick && <div className="dsh-wt_popBackdrop" style={{ zIndex: 83 }} onClick={() => { setBindPick(null); setBindListOpen(false) }} />}
+      {bindPick && <div className="dsh-wt_popBackdrop" style={{ zIndex: 83 }} onClick={() => { setBindPick(null); setBindListOpen(false); setBindWsOpen(false) }} />}
       {bindPick && (
         <div className="dsh-wt_menu dsh-wt_pop dsh-wt_bindPop" style={{ position: 'fixed', left: bindPick.x, top: bindPick.y, width: 280, zIndex: 84 }}>
           {/* 项目文件夹框（格式基准）：第一行 emoji+标题，第二行路径；可随时更改 */}
@@ -3020,6 +3074,33 @@ function buildCustomLayoutPrompt(req: string): string {
             <div className={'dsh-wt_bindFolderPath' + (projects.folders[bindPick.id] ? '' : ' dsh-wt_bindFolderPathNone')} title={projects.folders[bindPick.id] ?? ''}>
               {projects.folders[bindPick.id] ?? t('bind.folderNone')}
             </div>
+          </div>
+          {/* 工作区（会话分组）框（与项目文件夹同格式）：第一行 🗂+标题（最右清除）；第二行选中的分组名（点击弹列表）；框内下方：说明 */}
+          <div className="dsh-wt_bindFolderBox">
+            <div className="dsh-wt_bindFolderRow">
+              <span className="dsh-wt_bindFolderLabel">🗂 {t('bind.workspace')}</span>
+              {projects.workspaces[bindPick.id] && (
+                <button type="button" className="dsh-wt_bindUnbind" onClick={() => setProjectWorkspace(bindPick.id, null)}>{t('bind.workspaceClear')} ✕</button>
+              )}
+            </div>
+            {(() => {
+              const wid = projects.workspaces[bindPick.id]
+              const cur = wid ? listWorkspaces().find((w) => w.id === wid) : undefined
+              if (!wid) {
+                return (
+                  <button type="button" className="dsh-wt_bindConvRow dsh-wt_bindConvRowNone" title={t('bind.workspaceHint')} onClick={() => { setBindWsOpen((v) => !v); setBindListOpen(false) }}>
+                    <span className="dsh-wt_bindNoneText">{t('bind.workspaceNone')} · {t('bind.clickPick')}</span>
+                  </button>
+                )
+              }
+              return (
+                <button type="button" className="dsh-wt_bindConvRow" title={cur ? cur.path : wid} onClick={() => { setBindWsOpen((v) => !v); setBindListOpen(false) }}>
+                  <span className="dsh-wt_bindConvName" title={cur ? cur.title : wid}>{cur ? cur.title : wid}</span>
+                  <span className="dsh-wt_bindConvChevron" aria-hidden>▾</span>
+                </button>
+              )
+            })()}
+            <p className="dsh-wt_bindHint">{t('bind.workspaceHint')}</p>
           </div>
           {/* 绑定对话框（与项目文件夹同格式）：第一行 💬+标题（最右解绑）；第二行 分组 | 对话名（点击右侧弹列表，再点反选收起）；框内下方：说明 */}
           <div className="dsh-wt_bindFolderBox">
@@ -3033,14 +3114,14 @@ function buildCustomLayoutPrompt(req: string): string {
               const sid = projects.bindings[bindPick.id]
               if (!sid) {
                 return (
-                  <button type="button" className="dsh-wt_bindConvRow dsh-wt_bindConvRowNone" title={t('bind.tipUnbound')} onClick={() => setBindListOpen((v) => !v)}>
+                  <button type="button" className="dsh-wt_bindConvRow dsh-wt_bindConvRowNone" title={t('bind.tipUnbound')} onClick={() => { setBindListOpen((v) => !v); setBindWsOpen(false) }}>
                     <span className="dsh-wt_bindNoneText">{t('bind.unbound')} · {t('bind.clickPick')}</span>
                   </button>
                 )
               }
               const info = bindInfoOf(bindGroups, sid)
               return (
-                <button type="button" className="dsh-wt_bindConvRow" title={t('bind.tipBound', { name: info.title })} onClick={() => setBindListOpen((v) => !v)}>
+                <button type="button" className="dsh-wt_bindConvRow" title={t('bind.tipBound', { name: info.title })} onClick={() => { setBindListOpen((v) => !v); setBindWsOpen(false) }}>
                   <span className="dsh-wt_bindFolder" title={info.folder}>📂 {info.folder}</span>
                   <span className="dsh-wt_bindSep" aria-hidden>|</span>
                   <span className="dsh-wt_bindConvName" title={info.title}>{info.title}</span>
@@ -3080,6 +3161,31 @@ function buildCustomLayoutPrompt(req: string): string {
                   </button>
                 ))}
               </Fragment>
+            ))}
+          </div>
+        </div>
+        )
+      })()}
+
+      {/* 工作区（会话分组）列表弹层：点「工作区」行弹出（定位同对话列表弹层）；选中即设置并收起 */}
+      {bindPick && bindWsOpen && (() => {
+        const rightFits = bindPick.x + 300 + 260 <= window.innerWidth - 8
+        const listLeft = rightFits ? bindPick.x + 300 : Math.max(8, bindPick.x - 268)
+        const wsList = listWorkspaces()
+        return (
+        <div className="dsh-wt_menu dsh-wt_pop dsh-wt_bindListPop" style={{ position: 'fixed', left: listLeft, top: clamp(bindPick.y, 8, window.innerHeight - 348), width: 260, zIndex: 86 }}>
+          <div className="dsh-wt_selectList dsh-wt_bindList">
+            {wsList.length === 0 && <div className="dsh-wt_selectGroup">{t('bind.workspaceEmpty')}</div>}
+            {wsList.map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                className={'dsh-wt_selectItem' + (projects.workspaces[bindPick.id] === w.id ? ' dsh-wt_selectItemOn' : '')}
+                title={w.path}
+                onClick={() => setProjectWorkspace(bindPick.id, w.id)}
+              >
+                <span className="dsh-wt_selectItemTitle">{w.title || w.path || w.id}</span>
+              </button>
             ))}
           </div>
         </div>
