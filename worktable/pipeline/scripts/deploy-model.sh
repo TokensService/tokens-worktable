@@ -11,7 +11,8 @@ CHART_DIR="${CHART_DIR:-${RENDER_DIR}/xds-cluster}"
 VALUES_FILE="${VALUES_FILE:-${RENDER_DIR}/values.rendered.yaml}"
 ARCH_REQUEST_FILE="${ARCH_REQUEST_FILE:-${RENDER_DIR}/architecture.request.json}"
 NODE_LABELS_FILE="${NODE_LABELS_FILE:-${RENDER_DIR}/node-labels.json}"
-XDS_URL="${XDS_URL:-http://127.0.0.1:30079/xds/v1}"
+TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+XDS_URL="${XDS_URL:-}"
 HELM_BIN="${HELM_BIN:-helm}"
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
@@ -28,6 +29,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$NODE_LABELS_FILE" ]] || { echo "node labels file not found: $NODE_LABELS_FILE" >&2; exit 2; }
 [[ "$XDS_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid XDS_READY_TIMEOUT_SECONDS: $XDS_READY_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$XDS_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid XDS_READY_POLL_SECONDS: $XDS_READY_POLL_SECONDS" >&2; exit 2; }
+
+if [[ -z "$XDS_URL" ]]; then
+  target_ip="$(python3 - "$TARGET_HOSTS" <<'PY'
+import json
+import sys
+
+try:
+    target_hosts = json.loads(sys.argv[1])
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TARGET_HOSTS: {error}")
+
+if not isinstance(target_hosts, list) or not target_hosts:
+    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array when XDS_URL is unset")
+first_host = target_hosts[0]
+if not isinstance(first_host, dict) or not isinstance(first_host.get("ip"), str) or not first_host["ip"]:
+    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string when XDS_URL is unset")
+print(first_host["ip"])
+PY
+)"
+  XDS_URL="http://${target_ip}:30079/xds/v1"
+fi
 
 wait_for_xds_api() {
   local deadline response
