@@ -53,6 +53,9 @@ frameworkConfigFiles:
   xds_framework.conf: |
     [deploy]
     k8s_deploy_namespace = old-namespace
+    [fe]
+    fem_min_frontend_num = 10
+    fem_max_frontend_num = 10
 lmcache:
   namespace:
     name: old-namespace
@@ -165,6 +168,9 @@ assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 2, values["workerGr
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 2, values["workerGroups"]
+framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "fem_min_frontend_num = 2" in framework_config, framework_config
+assert "fem_max_frontend_num = 2" in framework_config, framework_config
 PY
 
 health_service_template="$work_dir/run-single/rendered/xds-cluster/templates/xds-head-health-service.yaml"

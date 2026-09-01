@@ -270,6 +270,13 @@ if len(target_hosts) == 1:
             if isinstance(worker_group, dict):
                 worker_group["minReplicas"] = 2
                 worker_group["maxReplicas"] = 2
+    framework_files = values.get("frameworkConfigFiles")
+    if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+        framework_files["xds_framework.conf"] = re.sub(
+            r"(?m)^(\s*fem_(?:min|max)_frontend_num\s*=\s*)\d+",
+            r"\g<1>2",
+            framework_files["xds_framework.conf"],
+        )
     health_service_template = Path(chart_dir) / "templates" / "xds-head-health-service.yaml"
     health_service_template.parent.mkdir(parents=True, exist_ok=True)
     health_service_template.write_text("""apiVersion: v1
