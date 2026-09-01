@@ -119,6 +119,13 @@ def upsert_container_env(name, value):
             return
     container_env.append({"name": name, "value": value})
 
+def split_image_reference(reference):
+    image_path, separator, tag = reference.rpartition(":")
+    if not separator or "/" not in image_path:
+        raise SystemExit(f"DEPLOY_IMAGE must include a registry path and tag: {reference}")
+    registry, image_name = image_path.rsplit("/", 1)
+    return registry, image_path, f"{image_name}:{tag}", tag
+
 def deep_merge(base, update):
     result = copy.deepcopy(base)
     for key, value in update.items():
@@ -218,6 +225,30 @@ values = deep_merge(values, yaml_replace_map)
 values["nodeSelector"] = {node_selector_key: node_selector_value}
 upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
 upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
+upsert_container_env("XDS_NAMESPACE", namespace)
+
+registry, image_repository, image_name, image_tag = split_image_reference(deploy_image)
+global_values = values.setdefault("global", {})
+global_values["imageRegistry"] = registry
+global_values.setdefault("images", {})["ray"] = image_name
+
+lmcache = values.get("lmcache")
+if isinstance(lmcache, dict):
+    namespace_config = lmcache.get("namespace")
+    if isinstance(namespace_config, dict):
+        namespace_config["name"] = namespace
+    direct = lmcache.get("direct")
+    if isinstance(direct, dict) and isinstance(direct.get("image"), dict):
+        direct["image"]["repository"] = image_repository
+        direct["image"]["tag"] = image_tag
+
+framework_files = values.get("frameworkConfigFiles")
+if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    framework_files["xds_framework.conf"] = re.sub(
+        r"(?m)^(\s*k8s_deploy_namespace\s*=\s*).*$",
+        rf"\g<1>{namespace}",
+        framework_files["xds_framework.conf"],
+    )
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
 with open(arch_request_file, "w", encoding="utf-8") as output:

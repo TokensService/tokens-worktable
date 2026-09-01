@@ -14,8 +14,25 @@ common:
       value: kubernetes.io/hostname
     - name: XDS_TE_POD_LABEL_VAL
       value: 192.168.0.243
+    - name: XDS_NAMESPACE
+      value: old-namespace
 nodeSelector:
   kubernetes.io/hostname: 192.168.0.243
+global:
+  imageRegistry: registry.example/old
+  images:
+    ray: xds:old
+frameworkConfigFiles:
+  xds_framework.conf: |
+    [deploy]
+    k8s_deploy_namespace = old-namespace
+lmcache:
+  namespace:
+    name: old-namespace
+  direct:
+    image:
+      repository: registry.example/old/xds
+      tag: old
 # disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
@@ -45,6 +62,8 @@ RUN_DIR="$work_dir/run" \
 CHART_TEMPLATE_DIR="$work_dir/chart" \
 VALUES_TEMPLATE="$work_dir/values.yaml" \
 ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-one-node-78-verify' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78"}]' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 bash "$script_dir/render-config.sh" >/dev/null
@@ -61,7 +80,15 @@ assert values["nodeSelector"] == expected, values["nodeSelector"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
+assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert all(group["nodeSelector"] == expected for group in values["taskExecutorGroups"])
+assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
+assert values["global"]["images"]["ray"] == "xds:test-tag"
+assert values["lmcache"]["namespace"]["name"] == "xds-one-node-78-verify"
+assert values["lmcache"]["direct"]["image"] == {
+    "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
+}
+assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
 
 echo "render target-label tests passed"
