@@ -35,12 +35,17 @@ RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
 ARCH_REQUEST_FILE="$work_dir/rendered/architecture.request.json" \
 ARCH_NAME='glm-5.2-nvfp4-one-node' \
 MODEL_NAME='glm-5.2-nvfp4-one-node' \
-MODEL_PATH='/models/glm52' \
 XDS_URL='http://xds.test/xds/v1' \
 "$script_dir/register-model.sh" >/dev/null
 
 actual="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["spec_package"])' "$work_dir/payload.json")"
 [[ "$actual" == 'glm-5.2-nvfp4' ]] || {
   echo "expected spec_package=glm-5.2-nvfp4, got $actual" >&2
+  exit 1
+}
+
+actual_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["local_info"]["path"])' "$work_dir/payload.json")"
+[[ "$actual_path" == '/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1' ]] || {
+  echo "unexpected default model path: $actual_path" >&2
   exit 1
 }

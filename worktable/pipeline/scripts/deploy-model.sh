@@ -10,9 +10,12 @@ RELEASE_NAME="${RELEASE_NAME:-${NAMESPACE}}"
 CHART_DIR="${CHART_DIR:-${RENDER_DIR}/xds-cluster}"
 VALUES_FILE="${VALUES_FILE:-${RENDER_DIR}/values.rendered.yaml}"
 ARCH_REQUEST_FILE="${ARCH_REQUEST_FILE:-${RENDER_DIR}/architecture.request.json}"
+RESOURCE_MANIFEST="${RESOURCE_MANIFEST:-${RENDER_DIR}/resources.rendered.json}"
 NODE_LABELS_FILE="${NODE_LABELS_FILE:-${RENDER_DIR}/node-labels.json}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 XDS_URL="${XDS_URL:-}"
+MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
+MODEL_PATH="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 HELM_BIN="${HELM_BIN:-helm}"
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
@@ -26,6 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$CHART_DIR/Chart.yaml" ]] || { echo "Chart.yaml not found: $CHART_DIR" >&2; exit 2; }
 [[ -f "$VALUES_FILE" ]] || { echo "values file not found: $VALUES_FILE" >&2; exit 2; }
 [[ -f "$ARCH_REQUEST_FILE" ]] || { echo "architecture request not found: $ARCH_REQUEST_FILE" >&2; exit 2; }
+[[ -f "$RESOURCE_MANIFEST" ]] || { echo "resource manifest not found: $RESOURCE_MANIFEST" >&2; exit 2; }
 [[ -f "$NODE_LABELS_FILE" ]] || { echo "node labels file not found: $NODE_LABELS_FILE" >&2; exit 2; }
 [[ "$XDS_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid XDS_READY_TIMEOUT_SECONDS: $XDS_READY_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$XDS_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid XDS_READY_POLL_SECONDS: $XDS_READY_POLL_SECONDS" >&2; exit 2; }
@@ -128,6 +132,17 @@ curl --noproxy '*' --fail-with-body -sS -X POST "${XDS_URL%/}/models/architectur
   --data-binary "@$ARCH_REQUEST_FILE"
 echo
 
+echo "[deploy] register model=$MODEL_NAME path=$MODEL_PATH"
+RUN_DIR="$RUN_DIR" \
+  RENDER_DIR="$RENDER_DIR" \
+  RESOURCE_MANIFEST="$RESOURCE_MANIFEST" \
+  ARCH_REQUEST_FILE="$ARCH_REQUEST_FILE" \
+  ARCH_NAME="$ARCH_NAME" \
+  MODEL_NAME="$MODEL_NAME" \
+  MODEL_PATH="$MODEL_PATH" \
+  XDS_URL="$XDS_URL" \
+  bash "$SCRIPT_DIR/register-model.sh"
+
 printf 'CHART_DIR=%s\n' "$CHART_DIR"
 printf 'VALUES_FILE=%s\n' "$VALUES_FILE"
 printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
@@ -136,4 +151,6 @@ printf 'NAMESPACE=%s\n' "$NAMESPACE"
 printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
 printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
 printf 'XDS_URL=%s\n' "$XDS_URL"
+printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
+printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
 printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
