@@ -54,9 +54,11 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" <<'PY'
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
+  "$CHART_DIR" <<'PY'
 import copy
 import json
+from pathlib import Path
 import re
 import sys
 
@@ -66,7 +68,8 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, node_labels_file, template_vars_json) = sys.argv[1:]
+ node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
+ chart_dir) = sys.argv[1:]
 
 num_prefill = int(num_prefill)
 num_decode = int(num_decode)
@@ -260,7 +263,6 @@ elif isinstance(worker_groups, list):
         if isinstance(worker_group, dict):
             worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
 if len(target_hosts) == 1:
-    values.setdefault("global", {})["fullnameOverride"] = "ray"
     values.setdefault("feTemplate", {})["default_replica"] = 2
     if isinstance(worker_groups, dict):
         for group_name in ("ctrlGroup", "jobExecutorGroup"):
@@ -268,6 +270,23 @@ if len(target_hosts) == 1:
             if isinstance(worker_group, dict):
                 worker_group["minReplicas"] = 2
                 worker_group["maxReplicas"] = 2
+    health_service_template = Path(chart_dir) / "templates" / "xds-head-health-service.yaml"
+    health_service_template.parent.mkdir(parents=True, exist_ok=True)
+    health_service_template.write_text("""apiVersion: v1
+kind: Service
+metadata:
+  name: ray-gcs-head-svc
+  namespace: {{ .Release.Namespace }}
+spec:
+  publishNotReadyAddresses: true
+  selector:
+    ray.io/cluster: {{ include \"ray-cluster.fullname\" . }}
+    ray.io/node-type: head
+  ports:
+    - name: dashboard
+      port: 8265
+      targetPort: 8265
+""", encoding="utf-8")
 upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
 upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
 upsert_container_env("XDS_NAMESPACE", namespace)

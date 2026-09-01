@@ -160,11 +160,17 @@ with open(sys.argv[1], encoding="utf-8") as source:
     values = yaml.safe_load(source)
 
 assert values["feTemplate"]["default_replica"] == 2, values["feTemplate"]
-assert values["global"]["fullnameOverride"] == "ray", values["global"]
+assert values["global"].get("fullnameOverride", "") == "", values["global"]
 assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 2, values["workerGroups"]
 PY
+
+health_service_template="$work_dir/run-single/rendered/xds-cluster/templates/xds-head-health-service.yaml"
+test -f "$health_service_template"
+grep -q 'name: ray-gcs-head-svc' "$health_service_template"
+grep -q 'publishNotReadyAddresses: true' "$health_service_template"
+grep -q 'ray.io/node-type: head' "$health_service_template"
 
 echo "render target-label tests passed"
