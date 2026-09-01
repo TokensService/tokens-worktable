@@ -12,7 +12,7 @@ REGISTRY_USERNAME="${REGISTRY_USERNAME:-}"
 REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
 REGISTRY_SECRET_NAMESPACE="${REGISTRY_SECRET_NAMESPACE:-default}"
 REGISTRY_SECRET_NAME="${REGISTRY_SECRET_NAME:-xds-swr-credentials}"
-VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-/mnt/paas/wwx/values-huhang-glm52-243-1p1d-mooncake-fixed-wheel.yaml}"
+VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
 CONTROL_TARGET_IP=""
@@ -125,7 +125,6 @@ cleanup() {
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
-[[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
 if command -v nerdctl >/dev/null 2>&1; then
   nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
   nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
@@ -146,7 +145,10 @@ else
   echo "neither nerdctl, ctr, nor docker is available" >&2
   exit 2
 fi
-cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
+  [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
+  cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+fi
 tar -C "$work_dir" -cf - xds-cluster values-16Node-je-cpp-bnt3.yaml model_arch-lt-je-cpp-bnt3.json
 REMOTE
   } | remote_bash "$CONTROL_TARGET_USER@$CONTROL_TARGET_IP" | tar -C "$TEMPLATE_DIR" -xf -
