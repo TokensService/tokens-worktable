@@ -57,6 +57,11 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_settingsClose:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06));color:var(--dsw-alias-label-primary,#dbe4f3)}',
   '.dsh-wt_manageDone{display:flex;align-items:center;padding:2px 8px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-state-accent-primary,#4f8ef7);font:inherit;font-size:11px;line-height:16px;cursor:pointer}',
   '.dsh-wt_manageDone:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.05))}',
+  // 页面修改：设置弹窗内提示词模板编辑（{page}/{name} 占位符，随主题变量适配浅色/深色）
+  '.dsh-wt_pageEditHint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5);padding:0 2px 5px}',
+  '.dsh-wt_pageEditPrompt{width:100%;box-sizing:border-box;resize:vertical;min-height:72px;font-family:inherit;font-size:11px;line-height:1.5;padding:6px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#262b36);background:var(--dsw-alias-bg-base,#0b0e14);color:var(--dsw-alias-label-primary,#dbe4f3);outline:none}',
+  '.dsh-wt_pageEditPrompt:focus{border-color:var(--dsw-alias-state-accent-primary,#4f8ef7)}',
+  '.dsh-wt_pageEditOps{display:flex;justify-content:flex-end;padding:4px 0 2px}',
   // 排序方式：一左一右两个选择按钮（手动 / 最近）
   '.dsh-wt_sortRow{display:flex;gap:6px;padding:0 8px 2px}',
   '.dsh-wt_sortBtn{flex:1;display:flex;align-items:center;justify-content:center;padding:4px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02));color:var(--dsw-alias-label-secondary,#9aa4b2);font:inherit;font-size:11px;line-height:16px;cursor:pointer}',
