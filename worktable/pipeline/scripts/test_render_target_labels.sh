@@ -75,6 +75,7 @@ YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run/rendered/values.rendered.yaml" <<'PY'
+import json
 import sys
 import yaml
 
@@ -89,6 +90,10 @@ assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
 assert all(group["nodeSelector"] == expected for group in values["taskExecutorGroups"])
+for group in values["taskExecutorGroups"]:
+    resources = group["resources"]
+    assert resources.startswith("'") and resources.endswith("'"), resources
+    assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["images"]["ray"] == "xds:test-tag"
 assert values["global"]["roleName"] == "xds-one-node-78-verify-role"

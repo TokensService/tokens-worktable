@@ -175,7 +175,7 @@ for package in arch.get("deploy_spec_packages", []):
                 "name": group_name,
                 "replicas": 1,
                 "nodeSelector": {node_selector_key: node_selector_value},
-                "resources": json.dumps({"GPU-BNT3-POD": gpu, "XDS-TE": gpu, role: 1}),
+                "resources": "'" + json.dumps({"GPU-BNT3-POD": gpu, "XDS-TE": gpu, role: 1}) + "'",
                 "containerEnvOverrides": {},
                 "portsOverrides": {"metrics": 33200 + len(groups)},
                 "rayStartParamsPorts": {
