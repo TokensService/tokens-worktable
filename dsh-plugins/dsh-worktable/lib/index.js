@@ -1,5 +1,5 @@
 // src/index.ts
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readdirSync, realpathSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, resolve as pathResolve, sep } from "node:path";
@@ -917,6 +917,82 @@ function apply(ctx) {
         );
       } catch (err) {
         json(res, 500, { error: String(err && err.message ? err.message : err) });
+      }
+    }
+  });
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/exec-stream",
+    handler: async (req, res) => {
+      try {
+        if (req.method !== "POST") {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        const body = await readJsonBody(req);
+        const scriptPath = typeof body.path === "string" ? body.path : "";
+        if (!scriptPath) {
+          json(res, 400, { error: "missing path" });
+          return;
+        }
+        const args = Array.isArray(body.args) ? body.args.map((a) => String(a)) : [];
+        const envIn = body.env && typeof body.env === "object" ? body.env : {};
+        const env = {};
+        for (const k of Object.keys(envIn)) {
+          const v = envIn[k];
+          if (v !== void 0 && v !== null) env[k] = String(v);
+        }
+        const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : void 0;
+        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 12e4, 1e3), 36e5);
+        const interp = /.py$/i.test(scriptPath) ? "python3" : "bash";
+        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+        const send = (obj) => {
+          if (!res.writableEnded) res.write(JSON.stringify(obj) + "\n");
+        };
+        const child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== "win32" });
+        let finished = false;
+        let timedOut = false;
+        const killTree = (sig) => {
+          try {
+            if (process.platform !== "win32" && child.pid) process.kill(-child.pid, sig);
+            else child.kill(sig);
+          } catch {
+          }
+        };
+        const killTimer = setTimeout(() => {
+          timedOut = true;
+          killTree("SIGKILL");
+        }, timeoutMs);
+        child.stdout.on("data", (d) => send({ type: "out", text: d.toString("utf8") }));
+        child.stderr.on("data", (d) => send({ type: "err", text: d.toString("utf8") }));
+        child.on("error", (err) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(killTimer);
+          send({ type: "error", message: String(err && err.message ? err.message : err) });
+          res.end();
+        });
+        child.on("close", (code) => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(killTimer);
+          if (timedOut) send({ type: "error", message: "exec timed out after " + Math.round(timeoutMs / 1e3) + "s" });
+          else send({ type: "done", code: typeof code === "number" ? code : 1 });
+          res.end();
+        });
+        res.on("close", () => {
+          if (!finished) {
+            finished = true;
+            clearTimeout(killTimer);
+            killTree("SIGTERM");
+          }
+        });
+      } catch (err) {
+        try {
+          if (!res.writableEnded) res.end();
+        } catch {
+        }
       }
     }
   });
