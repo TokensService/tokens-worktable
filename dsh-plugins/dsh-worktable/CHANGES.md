@@ -1,5 +1,19 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 「流水线」定时执行的任务回显逐任务归档（`src/index.ts` `execPlan`）：
+  每个任务（环境清理 00 / 各阶段 01…，含审批门、Jenkins 跳过、模拟阶段）的回显都按页面约定
+  写入归档文件夹的独立日志文件 `run-<tag>-NN-任务名.log`，并写/合并汇总 `run-<tag>.log`
+  与 `run-<tag>.profile.json`；阶段定时后缀沿用页面登记的 `pl.archive`/`pl.tag`/`baseSeq`
+  （回显落进本地前缀同一归档文件夹、编号连贯），独立定时计划自建
+  「<流水线名>_<年月日时分秒>」文件夹（`archiveDir`，为空时回退 `scriptsDir` 旁 `runs/`，同页面保底）。
+  `runStageScript` 同步注入 `ARCHIVE_DIR/ARCHIVE_FOLDER/ARCHIVE_PIPELINE/ARCHIVE_TAG`（与前端 execScript 一致）；
+  归档目录已显式配置时追加执行归档脚本（如 collect_logs.sh，注入 `ARCHIVE_LOG_FILE` 等）；
+  历史记录带 `archive`/`tag` 字段。归档失败只告警、不影响定时执行。
+- 「流水线」页面侧配套（`worktable/pipeline/pipeline.html`）：
+  `registerStageTimers` 把本次运行的归档上下文（`archive`/`tag`/`baseSeq`）随计划交给服务端；
+  点「中止」时先把被中断任务的当前回显即时归档为独立任务日志，`archiveRun` 兜底也补归档
+  「有回显但被中止」的阶段；Jenkins 阶段构建中/被中止时 buildLog 输出已轮询到的部分回显。
+
 - 修复「项目文件夹无法修改」（`src/client/index.tsx`）：
   宿主组合的是 browse 目录选择器时，`host.pickDirectory`（native）会以
   `directory-picker-unavailable` 失败，而旧代码静默吞掉异常，点「更改」无反应。

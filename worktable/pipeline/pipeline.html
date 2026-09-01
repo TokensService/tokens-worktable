@@ -1816,7 +1816,12 @@ function buildLog(stage, ctx, n){
     const envPairs=(jk.params||[]).map(p=>p.name+'='+((jk.values&&jk.values[p.name]!==undefined)?jk.values[p.name]:((p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?p.defaultParameterValue.value:''))).filter(function(x){return !x.endsWith('=');});
     if(envPairs.length) lines.push('# params: '+envPairs.join(' '));
     const out=stage._out;
-    if(!out||!out.done){ lines.push('（Jenkins 构建中…）'); }
+    if(!out||!out.done){
+      // 构建中/被中止：已轮询到的部分回显也输出（归档时保留被中断任务的独立日志）
+      if(out && out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
+      if(out && out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      lines.push('（Jenkins 构建中…）');
+    }
     else{
       if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
       if(out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
@@ -1995,9 +2000,12 @@ async function registerStageTimers(startIdx){
   }
   if(!stages.length) return;
   const sid='stimer-'+(curRun.pipelineId||'pl')+'-suffix';
+  // 把本次运行的归档上下文（文件夹/tag/起始序号）随计划交给服务端：
+  // 定时后缀各任务回显由服务端写入同一归档文件夹、独立任务日志（run-<tag>-NN-任务名.log），与前缀日志连贯编号
   const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · 定时后缀',
     stages, env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
     branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now(),
+    archive:curRun.archive||null, tag:curRun.tag||null, baseSeq:startIdx,
     kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · 立即（周期跟随流水线计划）' };
   try{
     const r=await fetch('/api/worktable/pipeline/plans');
@@ -2445,10 +2453,12 @@ function archiveRun(result){
   const root=folder.slice(0, folder.lastIndexOf('/'));
   const ctx=curRun, stages=activeStages();
   // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
-  // 未完成阶段（waiting/running/idle）不归档，与 collectRunLogs 口径一致
+  // 未执行且无任何回显的阶段不归档；被中止的任务（running 时被重置为 idle 但已有部分回显）照常归档
   stages.forEach((s,idx)=>{
     const n=nodes[s.id]||{status:'idle'};
-    if(n.status==='running' || n.status==='waiting' || n.status==='idle') return;
+    if(n.status==='running' || n.status==='waiting') return;
+    const hasEcho=!!(s._out && (s._out.stdout || s._out.stderr));
+    if(n.status==='idle' && !hasEcho) return;
     archiveStageLog(s, idx+1, ctx);
   });
   // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
@@ -2795,6 +2805,8 @@ $('stopBtn').addEventListener('click', ()=>{
   if(!running || !curRun) return;
   if(timer){ clearInterval(timer); timer=null; }
   const g=$('gateBtns'); if(g) g.remove();   // 审批阶段中止：移除残留的批准/拒绝按钮
+  // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
+  activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
   activeStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running'||n.status==='waiting')) nodes[s.id]={status:'idle',progress:0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
   finish('aborted');
   applyStatusClasses(); renderDetail();

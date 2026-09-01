@@ -741,6 +741,25 @@ function apply(ctx) {
   };
   const durText = (sec) => sec < 60 ? Math.round(sec) + "s" : Math.floor(sec / 60) + "m" + Math.round(sec % 60) + "s";
   const truncLog = (t) => t.length > 8192 ? t.slice(0, 8192) + "\n\u2026(\u622A\u65AD)" : t;
+  const sanitizeFsName = (s) => String(s || "pipeline").replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "") || "pipeline";
+  const nowCompactFull = () => {
+    const d = /* @__PURE__ */ new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return "" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  };
+  const stripSuffixName = (name2) => String(name2 || "").replace(/\s*·\s*定时后缀\s*$/, "") || "pipeline";
+  async function writeTaskLogFile(folder, tag, seq, name2, text) {
+    try {
+      const fsx = await import("node:fs/promises");
+      await fsx.mkdir(folder, { recursive: true });
+      const file = folder + "/run-" + tag + "-" + String(seq).padStart(2, "0") + "-" + sanitizeFsName(name2) + ".log";
+      await fsx.writeFile(file, text, "utf8");
+      return file;
+    } catch (e) {
+      console.warn("[archive] \u5B9A\u65F6\u4EFB\u52A1\u65E5\u5FD7\u5F52\u6863\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u6267\u884C\uFF09:", e);
+      return null;
+    }
+  }
   function runStageScript(sc, runCtx, scriptsDir) {
     const args = [];
     const env = {};
@@ -754,6 +773,12 @@ function apply(ctx) {
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === void 0) env.TARGET_USER = String(ctx0.user);
       if (ctx0.pass && env.TARGET_PASSWORD === void 0) env.TARGET_PASSWORD = String(ctx0.pass);
+    }
+    if (runCtx.archive) {
+      if (env.ARCHIVE_DIR === void 0) env.ARCHIVE_DIR = String(runCtx.archive);
+      if (env.ARCHIVE_FOLDER === void 0) env.ARCHIVE_FOLDER = String(runCtx.archive);
+      if (runCtx.pipelineName && env.ARCHIVE_PIPELINE === void 0) env.ARCHIVE_PIPELINE = String(runCtx.pipelineName);
+      if (runCtx.tag && env.ARCHIVE_TAG === void 0) env.ARCHIVE_TAG = String(runCtx.tag);
     }
     return new Promise((resolve) => {
       const isPy = sc.lang === "py" || /\.py$/i.test(sc.name || "");
@@ -791,32 +816,120 @@ function apply(ctx) {
     const store = await readPipelineStore();
     const cfg = store.config && typeof store.config === "object" && !Array.isArray(store.config) ? store.config : {};
     const scriptsDir = typeof cfg.scriptsDir === "string" ? cfg.scriptsDir : "";
-    const runCtx = { env: pl.env || "", envs: Array.isArray(pl.envs) ? pl.envs : [] };
+    const pipeName = stripSuffixName(pl.pipelineName);
+    const tag = typeof pl.tag === "string" && pl.tag ? pl.tag : hhmm().replace(":", "") + "-" + randHex(5);
+    const baseSeq = Math.max(0, Number(pl.baseSeq) || 0);
+    const isSuffixRun = typeof pl.archive === "string" && !!pl.archive;
+    let archiveRoot = typeof cfg.archiveDir === "string" ? cfg.archiveDir.trim().replace(/\/+$/, "") : "";
+    if (!archiveRoot && scriptsDir && scriptsDir.charAt(0) === "/") {
+      const dir = scriptsDir.replace(/\/+$/, "").replace(/\/[^/]*$/, "");
+      archiveRoot = (dir || "/") + "/runs";
+    }
+    const folder = isSuffixRun ? String(pl.archive) : archiveRoot ? archiveRoot + "/" + sanitizeFsName(pipeName) + "_" + nowCompactFull() : null;
+    const runCtx = { env: pl.env || "", envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName };
     const logs = [];
+    const profileStages = [];
     let status = "success";
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+      const st0 = Date.now();
       const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir);
-      logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: stageLogText(cfg.cleanupScript.name, r) });
+      const text = stageLogText(cfg.cleanupScript.name, r);
+      const logFile = folder ? await writeTaskLogFile(folder, tag, 0, "\u73AF\u5883\u6E05\u7406", text) : null;
+      logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: text });
+      profileStages.push({ id: "__cleanup__", name: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile });
     }
+    let seq = baseSeq + 1;
     for (const s of pl.stages || []) {
+      const st0 = Date.now();
+      let entry = null;
       if (s.gate) {
-        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] \u5BA1\u6279\u95E8\u81EA\u52A8\u901A\u8FC7" });
-        continue;
-      }
-      if (s.kind === "jenkins") {
-        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] Jenkins \u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" });
-        continue;
-      }
-      if (s.script && s.script.path) {
+        entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] \u5BA1\u6279\u95E8\u81EA\u52A8\u901A\u8FC7" };
+      } else if (s.kind === "jenkins") {
+        entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] Jenkins \u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" };
+      } else if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir);
-        logs.push({ stage: s.name, status: r.code === 0 ? "success" : "failed", log: stageLogText(s.script.name, r) });
-        if (r.code !== 0) {
-          status = "failed";
-          break;
-        }
+        entry = { status: r.code === 0 ? "success" : "failed", text: stageLogText(s.script.name, r) };
+        if (r.code !== 0) status = "failed";
       } else {
         await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1e3);
-        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] \u6A21\u62DF\u9636\u6BB5\u5B8C\u6210" });
+        entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] \u6A21\u62DF\u9636\u6BB5\u5B8C\u6210" };
+      }
+      const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null;
+      logs.push({ stage: s.name, status: entry.status, log: entry.text });
+      profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: s.script && s.script.name || null, logFile });
+      seq++;
+      if (status === "failed") break;
+    }
+    if (folder) {
+      try {
+        const fsx = await import("node:fs/promises");
+        await fsx.mkdir(folder, { recursive: true });
+        const sumFile = folder + "/run-" + tag + ".log";
+        let prev = "";
+        try {
+          prev = await fsx.readFile(sumFile, "utf8");
+        } catch {
+        }
+        prev = prev.replace(/\s*\[result\][^\n]*\s*$/, "");
+        const lines = [];
+        if (prev.trim()) lines.push(prev.replace(/\s+$/, ""), "", "----- \u5B9A\u65F6\u6267\u884C\uFF08\u670D\u52A1\u7AEF\uFF09 -----");
+        logs.forEach((l) => {
+          lines.push("===== " + l.stage + " [" + l.status + "] =====");
+          l.log.split("\n").forEach((x) => lines.push(x));
+          lines.push("");
+        });
+        lines.push("[result] " + status);
+        await fsx.writeFile(sumFile, lines.join("\n") + "\n", "utf8");
+      } catch (e) {
+        console.warn("[archive] \u5B9A\u65F6\u8FD0\u884C\u65E5\u5FD7\u6C47\u603B\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u6267\u884C\uFF09:", e);
+      }
+      try {
+        const fsx = await import("node:fs/promises");
+        const profFile = folder + "/run-" + tag + ".profile.json";
+        let profile = null;
+        try {
+          profile = JSON.parse(await fsx.readFile(profFile, "utf8"));
+        } catch {
+        }
+        if (!profile || typeof profile !== "object") profile = {};
+        profile.pipeline = pipeName;
+        profile.tag = tag;
+        if (!profile.commit) profile.commit = randHex(7);
+        profile.env = pl.env || "";
+        profile.image = pl.image || "";
+        profile.by = pl.by || "schedule";
+        profile.source = isSuffixRun ? "\u5B9A\u65F6\u540E\u7F00" : "\u5B9A\u65F6\u8BA1\u5212";
+        profile.result = status;
+        if (!profile.startTime) profile.startTime = new Date(t0).toISOString();
+        profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10;
+        if (!Array.isArray(profile.stages)) profile.stages = [];
+        profileStages.forEach((rec) => {
+          const idx = profile.stages.findIndex((x) => x && (x.id === rec.id || x.name === rec.name));
+          if (idx >= 0) profile.stages[idx] = { ...profile.stages[idx], ...rec };
+          else profile.stages.push(rec);
+        });
+        await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), "utf8");
+      } catch (e) {
+        console.warn("[archive] \u5B9A\u65F6\u8FD0\u884C profiling \u5199\u5165\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u6267\u884C\uFF09:", e);
+      }
+      const archiveScriptName = typeof cfg.archiveScript === "string" ? cfg.archiveScript.trim() : "";
+      if (archiveScriptName && archiveRoot && typeof cfg.archiveDir === "string" && cfg.archiveDir.trim()) {
+        try {
+          await new Promise((resolve) => {
+            execFile("bash", [pathResolve(scriptsDir, archiveScriptName)], {
+              cwd: scriptsDir || void 0,
+              env: { ...process.env, ARCHIVE_DIR: folder, ARCHIVE_FOLDER: folder, ARCHIVE_LOG_FILE: folder + "/run-" + tag + ".log", ARCHIVE_PROFILE_FILE: folder + "/run-" + tag + ".profile.json", ARCHIVE_PIPELINE: pipeName, ARCHIVE_TAG: tag, ARCHIVE_RESULT: status },
+              timeout: 12e4,
+              maxBuffer: 4 * 1024 * 1024,
+              windowsHide: true
+            }, (err) => {
+              if (err) console.warn("[archive] \u5F52\u6863\u811A\u672C\u9000\u51FA\u7801 " + (err.code ?? err) + "\uFF08\u4E0D\u5F71\u54CD\u6267\u884C\uFF09");
+              resolve();
+            });
+          });
+        } catch (e) {
+          console.warn("[archive] \u5F52\u6863\u811A\u672C\u6267\u884C\u5931\u8D25\uFF08\u4E0D\u5F71\u54CD\u6267\u884C\uFF09:", e);
+        }
       }
     }
     await appendPipelineHistory({
@@ -828,7 +941,9 @@ function apply(ctx) {
       dur: durText((Date.now() - t0) / 1e3),
       time: "\u4ECA\u5929 " + hhmm(),
       by: pl.by || "schedule",
-      logs
+      logs,
+      tag,
+      archive: folder || null
     });
   }
   async function planTick() {

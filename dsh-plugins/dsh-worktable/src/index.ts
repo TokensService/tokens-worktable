@@ -619,6 +619,21 @@ export function apply(ctx: Context) {
   const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') }
   const durText = (sec: number) => (sec < 60 ? Math.round(sec) + 's' : Math.floor(sec / 60) + 'm' + Math.round(sec % 60) + 's')
   const truncLog = (t: string) => (t.length > 8192 ? t.slice(0, 8192) + '\n…(截断)' : t)
+  // 与页面一致的归档命名：文件名安全化（非法字符/空白 → '-'，去首尾 '-'）
+  const sanitizeFsName = (s: any) => String(s || 'pipeline').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'pipeline'
+  const nowCompactFull = () => { const d = new Date(); const p = (n: number) => String(n).padStart(2, '0'); return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) }
+  const stripSuffixName = (name: any) => String(name || '').replace(/\s*·\s*定时后缀\s*$/, '') || 'pipeline'
+
+  /** 任务级回显归档（定时执行）：与页面 archiveStageLog 同一约定 run-<tag>-NN-任务名.log；失败仅告警不影响执行 */
+  async function writeTaskLogFile(folder: string, tag: string, seq: number, name: string, text: string): Promise<string | null> {
+    try {
+      const fsx = await import('node:fs/promises')
+      await fsx.mkdir(folder, { recursive: true })
+      const file = folder + '/run-' + tag + '-' + String(seq).padStart(2, '0') + '-' + sanitizeFsName(name) + '.log'
+      await fsx.writeFile(file, text, 'utf8')
+      return file
+    } catch (e) { console.warn('[archive] 定时任务日志归档失败（不影响执行）:', e); return null }
+  }
 
   function runStageScript(sc: any, runCtx: any, scriptsDir: string): Promise<{ code: number; stdout: string; stderr: string }> {
     const args: string[] = []
@@ -634,6 +649,13 @@ export function apply(ctx: Context) {
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
+    }
+    // 与前端 execScript 一致：注入归档上下文（脚本显式配置的同名参数优先）
+    if (runCtx.archive) {
+      if (env.ARCHIVE_DIR === undefined) env.ARCHIVE_DIR = String(runCtx.archive)
+      if (env.ARCHIVE_FOLDER === undefined) env.ARCHIVE_FOLDER = String(runCtx.archive)
+      if (runCtx.pipelineName && env.ARCHIVE_PIPELINE === undefined) env.ARCHIVE_PIPELINE = String(runCtx.pipelineName)
+      if (runCtx.tag && env.ARCHIVE_TAG === undefined) env.ARCHIVE_TAG = String(runCtx.tag)
     }
     return new Promise((resolve) => {
       const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
@@ -667,29 +689,111 @@ export function apply(ctx: Context) {
     const store = await readPipelineStore()
     const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
     const scriptsDir = typeof cfg.scriptsDir === 'string' ? cfg.scriptsDir : ''
-    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [] }
-    const logs: any[] = []
-    let status = 'success'
-    // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本
-    if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
-      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir)
-      logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: stageLogText(cfg.cleanupScript.name, r) })
+    // 归档上下文（与页面约定一致）：
+    //   阶段定时后缀沿用页面传入的 pl.archive/pl.tag/baseSeq——回显写入本地前缀同一归档文件夹、编号连贯；
+    //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
+    const pipeName = stripSuffixName(pl.pipelineName)
+    const tag = (typeof pl.tag === 'string' && pl.tag) ? pl.tag : hhmm().replace(':', '') + '-' + randHex(5)
+    const baseSeq = Math.max(0, Number(pl.baseSeq) || 0)
+    const isSuffixRun = typeof pl.archive === 'string' && !!pl.archive
+    let archiveRoot = typeof cfg.archiveDir === 'string' ? cfg.archiveDir.trim().replace(/\/+$/, '') : ''
+    if (!archiveRoot && scriptsDir && scriptsDir.charAt(0) === '/') {
+      const dir = scriptsDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '')
+      archiveRoot = (dir || '/') + '/runs'
     }
+    const folder = isSuffixRun ? String(pl.archive) : (archiveRoot ? archiveRoot + '/' + sanitizeFsName(pipeName) + '_' + nowCompactFull() : null)
+    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName }
+    const logs: any[] = []
+    const profileStages: any[] = []
+    let status = 'success'
+    // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
+    if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+      const st0 = Date.now()
+      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir)
+      const text = stageLogText(cfg.cleanupScript.name, r)
+      const logFile = folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null
+      logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text })
+      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
+    }
+    let seq = baseSeq + 1
     for (const s of pl.stages || []) {
-      if (s.gate) { logs.push({ stage: s.name, status: 'success', log: '[定时执行] 审批门自动通过' }); continue }
-      if (s.kind === 'jenkins') { logs.push({ stage: s.name, status: 'success', log: '[定时执行] Jenkins 阶段：定时触发暂不支持，已跳过' }); continue }
-      if (s.script && s.script.path) {
+      const st0 = Date.now()
+      let entry: any = null
+      if (s.gate) { entry = { status: 'success', text: '[定时执行] 审批门自动通过' } }
+      else if (s.kind === 'jenkins') { entry = { status: 'success', text: '[定时执行] Jenkins 阶段：定时触发暂不支持，已跳过' } }
+      else if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir)
-        logs.push({ stage: s.name, status: r.code === 0 ? 'success' : 'failed', log: stageLogText(s.script.name, r) })
-        if (r.code !== 0) { status = 'failed'; break }
+        entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
+        if (r.code !== 0) status = 'failed'
       } else {
         await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
-        logs.push({ stage: s.name, status: 'success', log: '[定时执行] 模拟阶段完成' })
+        entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
+      }
+      // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
+      const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null
+      logs.push({ stage: s.name, status: entry.status, log: entry.text })
+      profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
+      seq++
+      if (status === 'failed') break
+    }
+    // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
+    //   定时后缀追加到页面登记时已写内容（去掉旧 [result] 行、profile 按阶段 id/name 合并）；独立计划整文件新建。
+    if (folder) {
+      try {
+        const fsx = await import('node:fs/promises')
+        await fsx.mkdir(folder, { recursive: true })
+        const sumFile = folder + '/run-' + tag + '.log'
+        let prev = ''
+        try { prev = await fsx.readFile(sumFile, 'utf8') } catch { /* 首次创建 */ }
+        prev = prev.replace(/\s*\[result\][^\n]*\s*$/, '')   // 去掉页面登记时写入的 result 行，由服务端统一收尾
+        const lines: string[] = []
+        if (prev.trim()) lines.push(prev.replace(/\s+$/, ''), '', '----- 定时执行（服务端） -----')
+        logs.forEach(l => { lines.push('===== ' + l.stage + ' [' + l.status + '] ====='); l.log.split('\n').forEach((x: string) => lines.push(x)); lines.push('') })
+        lines.push('[result] ' + status)
+        await fsx.writeFile(sumFile, lines.join('\n') + '\n', 'utf8')
+      } catch (e) { console.warn('[archive] 定时运行日志汇总失败（不影响执行）:', e) }
+      try {
+        const fsx = await import('node:fs/promises')
+        const profFile = folder + '/run-' + tag + '.profile.json'
+        let profile: any = null
+        try { profile = JSON.parse(await fsx.readFile(profFile, 'utf8')) } catch { /* 首次创建 */ }
+        if (!profile || typeof profile !== 'object') profile = {}
+        profile.pipeline = pipeName
+        profile.tag = tag
+        if (!profile.commit) profile.commit = randHex(7)
+        profile.env = pl.env || ''
+        profile.image = pl.image || ''
+        profile.by = pl.by || 'schedule'
+        profile.source = isSuffixRun ? '定时后缀' : '定时计划'
+        profile.result = status
+        if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
+        profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
+        if (!Array.isArray(profile.stages)) profile.stages = []
+        profileStages.forEach(rec => {
+          const idx = profile.stages.findIndex((x: any) => x && (x.id === rec.id || x.name === rec.name))
+          if (idx >= 0) profile.stages[idx] = { ...profile.stages[idx], ...rec }
+          else profile.stages.push(rec)
+        })
+        await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), 'utf8')
+      } catch (e) { console.warn('[archive] 定时运行 profiling 写入失败（不影响执行）:', e) }
+      // 归档脚本（可选）：与页面一致，写完日志/profiling 后执行（如 collect_logs.sh），收集额外日志到归档目录；失败不影响执行
+      const archiveScriptName = typeof cfg.archiveScript === 'string' ? cfg.archiveScript.trim() : ''
+      if (archiveScriptName && archiveRoot && typeof cfg.archiveDir === 'string' && cfg.archiveDir.trim()) {
+        try {
+          await new Promise<void>((resolve) => {
+            execFile('bash', [pathResolve(scriptsDir, archiveScriptName)], {
+              cwd: scriptsDir || undefined,
+              env: { ...process.env, ARCHIVE_DIR: folder, ARCHIVE_FOLDER: folder, ARCHIVE_LOG_FILE: folder + '/run-' + tag + '.log', ARCHIVE_PROFILE_FILE: folder + '/run-' + tag + '.profile.json', ARCHIVE_PIPELINE: pipeName, ARCHIVE_TAG: tag, ARCHIVE_RESULT: status },
+              timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+            }, (err) => { if (err) console.warn('[archive] 归档脚本退出码 ' + ((err as any).code ?? err) + '（不影响执行）'); resolve() })
+          })
+        } catch (e) { console.warn('[archive] 归档脚本执行失败（不影响执行）:', e) }
       }
     }
     await appendPipelineHistory({
       no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
       status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs,
+      tag, archive: folder || null,
     })
   }
   async function planTick() {
