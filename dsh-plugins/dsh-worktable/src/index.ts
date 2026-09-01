@@ -639,13 +639,28 @@ export function apply(ctx: Context) {
     const args: string[] = []
     const env: Record<string, string> = {}
     for (const p of sc.params || []) {
-      const v = sc.values && sc.values[p.key] !== undefined ? sc.values[p.key] : p.def || ''
+      // 与前端 execScript 一致：env 参数仅在显式配置（values[key] 存在且非空）时下发；
+      // 未配置时不下发识别到的 :-默认值，否则会以「显式参数优先」挡住下方的运行级注入
+      // （TARGET_IP/TARGET_USER 等），未注入时脚本自身的 :- 默认仍会兜底。位置参数保留 def 兜底。
+      const hasVal = sc.values && sc.values[p.key] !== undefined
+      const v = hasVal ? sc.values[p.key] : (p.kind === 'env' ? '' : p.def || '')
       if (p.kind === 'pos') args.push(String(v))
-      else env[p.key] = String(v)
+      else if (String(v) !== '') env[p.key] = String(v)
     }
-    // 与前端 execScript 一致：注入节点连接信息（脚本显式配置的同名参数优先）
+    // 与前端 execScript 一致：注入运行上下文（脚本显式配置的同名参数优先）：
+    //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
+    //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
+    //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；
+    //   PIPELINE_NAME=流水线名；GIT_BRANCH/DEPLOY_STRATEGY=分支与部署策略
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
-    if (runCtx.env && env.TARGET_IP === undefined) env.TARGET_IP = String(runCtx.env)
+    if (env.TARGET_IP === undefined) env.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
+    if (env.TARGET_IPS === undefined && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e: any) => e.ip))
+    if (env.TARGET_HOSTS === undefined && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e: any) => ({ ip: e.ip, user: e.user || '', pass: e.pass || '' })))
+    if (env.IMAGE_NAME === undefined && runCtx.image) env.IMAGE_NAME = String(runCtx.image)
+    if (env.IMAGE_TAG === undefined && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag)
+    if (env.PIPELINE_NAME === undefined && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName)
+    if (env.GIT_BRANCH === undefined && runCtx.branch) env.GIT_BRANCH = String(runCtx.branch)
+    if (env.DEPLOY_STRATEGY === undefined && runCtx.strategy) env.DEPLOY_STRATEGY = String(runCtx.strategy)
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
@@ -702,7 +717,7 @@ export function apply(ctx: Context) {
       archiveRoot = (dir || '/') + '/runs'
     }
     const folder = isSuffixRun ? String(pl.archive) : (archiveRoot ? archiveRoot + '/' + sanitizeFsName(pipeName) + '_' + nowCompactFull() : null)
-    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName }
+    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || '', branch: pl.branch || '', strategy: pl.strategy || '' }
     const logs: any[] = []
     const profileStages: any[] = []
     let status = 'success'

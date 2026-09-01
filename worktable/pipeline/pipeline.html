@@ -1389,11 +1389,12 @@ function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
   if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
   cleanupScript.params.forEach(p=>{
-    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.def||'');
+    /* env 参数：只回显显式配置值，留空=继承注入值/脚本默认（与 renderStageParams 同一规则，见 execScript） */
+    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.kind==='env'?'':(p.def||''));
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||(p.kind==='env'?'留空=注入值':''))+'"'+(p.kind==='env'?' title="留空=使用运行级注入值（TARGET_IP/IMAGE_NAME 等）或脚本默认；填入则显式覆盖"':'')+' style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
     inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
     box.appendChild(lab);
@@ -1605,11 +1606,13 @@ function renderStageParams(i){
   }
   if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
-    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'');
+    /* env 参数：只回显显式配置值，留空=继承运行级注入（TARGET_IP 等）/上游变量/脚本自身 :- 默认；
+       识别到的默认值放 placeholder 作提示（预填进 value 会在执行时被当作显式值挡住注入，见 execScript） */
+    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.kind==='env'?'':(p.def||''));
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||(p.kind==='env'?'留空=注入值':''))+'"'+(p.kind==='env'?' title="留空=使用运行级注入值（TARGET_IP/IMAGE_NAME 等）或脚本默认；填入则显式覆盖"':'')+' style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
     inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; s.script.values[p.key]=inp.value; renderStageParams(i); });
     box.appendChild(lab);
@@ -1918,7 +1921,8 @@ function buildLog(stage, ctx, n){
     const argStr=(sc.params||[]).filter(p=>p.kind==='pos').map(p=>{ const v=(sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||''); return v; }).join(' ');
     const interp=/\.py$/i.test(sc.name)?'python3':'bash';
     const lines=['$ '+interp+' '+sc.name+(argStr?(' '+argStr):'')];
-    const envPairs=(sc.params||[]).filter(p=>p.kind==='env').map(p=>p.key+'='+((sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'')));
+    /* 与 execScript 下发规则一致：只展示显式配置的 env 参数（未配置的不下发，由运行级注入/脚本默认兜底） */
+    const envPairs=(sc.params||[]).filter(p=>p.kind==='env'&&sc.values&&sc.values[p.key]!==undefined&&String(sc.values[p.key])!=='').map(p=>p.key+'='+sc.values[p.key]);
     if(envPairs.length) lines.push('# env: '+envPairs.join(' '));
     const out=stage._out;
     if(!out){ lines.push('（脚本执行中…）'); }
@@ -2244,8 +2248,12 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
   const rc=runCtx||curRun;   // 归档脚本等异步调用方传入已结束运行的快照上下文，避免运行队列切换后读到新运行的 curRun
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
-    /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理（env 参数空 = 继承上游同名变量） */
-    const raw=(sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||'');
+    /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理（env 参数空 = 继承上游同名变量）。
+       env 参数仅在用户显式配置过（values[key] 存在）时下发：未配置时若把识别到的 :-默认值 当显式值下发，
+       会以「显式参数优先」之名挡住运行级注入（TARGET_IP/IMAGE_NAME 等），脚本只能拿到源码里的兜底默认值；
+       不下发则注入值优先生效，未注入时脚本自身的 :- 默认仍会兜底。位置参数无注入语义，保留 def 兜底。 */
+    const hasVal=(sc.values && sc.values[p.key]!==undefined);
+    const raw=hasVal?sc.values[p.key]:(p.kind==='env'?'':(p.def||''));
     const v=substRunVars(raw, rc);
     if(p.kind==='pos') args.push(v);
     // Empty stage fields mean "inherit" so rendered artifact paths from an

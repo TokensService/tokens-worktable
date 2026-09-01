@@ -764,12 +764,20 @@ function apply(ctx) {
     const args = [];
     const env = {};
     for (const p of sc.params || []) {
-      const v = sc.values && sc.values[p.key] !== void 0 ? sc.values[p.key] : p.def || "";
+      const hasVal = sc.values && sc.values[p.key] !== void 0;
+      const v = hasVal ? sc.values[p.key] : p.kind === "env" ? "" : p.def || "";
       if (p.kind === "pos") args.push(String(v));
-      else env[p.key] = String(v);
+      else if (String(v) !== "") env[p.key] = String(v);
     }
     const ctx0 = runCtx.envs && runCtx.envs[0] || null;
-    if (runCtx.env && env.TARGET_IP === void 0) env.TARGET_IP = String(runCtx.env);
+    if (env.TARGET_IP === void 0) env.TARGET_IP = String(ctx0 && ctx0.ip || runCtx.env || "");
+    if (env.TARGET_IPS === void 0 && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e) => e.ip));
+    if (env.TARGET_HOSTS === void 0 && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e) => ({ ip: e.ip, user: e.user || "", pass: e.pass || "" })));
+    if (env.IMAGE_NAME === void 0 && runCtx.image) env.IMAGE_NAME = String(runCtx.image);
+    if (env.IMAGE_TAG === void 0 && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag);
+    if (env.PIPELINE_NAME === void 0 && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName);
+    if (env.GIT_BRANCH === void 0 && runCtx.branch) env.GIT_BRANCH = String(runCtx.branch);
+    if (env.DEPLOY_STRATEGY === void 0 && runCtx.strategy) env.DEPLOY_STRATEGY = String(runCtx.strategy);
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === void 0) env.TARGET_USER = String(ctx0.user);
       if (ctx0.pass && env.TARGET_PASSWORD === void 0) env.TARGET_PASSWORD = String(ctx0.pass);
@@ -826,7 +834,7 @@ function apply(ctx) {
       archiveRoot = (dir || "/") + "/runs";
     }
     const folder = isSuffixRun ? String(pl.archive) : archiveRoot ? archiveRoot + "/" + sanitizeFsName(pipeName) + "_" + nowCompactFull() : null;
-    const runCtx = { env: pl.env || "", envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName };
+    const runCtx = { env: pl.env || "", envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || "", branch: pl.branch || "", strategy: pl.strategy || "" };
     const logs = [];
     const profileStages = [];
     let status = "success";
