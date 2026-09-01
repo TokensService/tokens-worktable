@@ -405,10 +405,10 @@
     if (d < 2592000) return Math.floor(d / 86400) + " 天前";
     return t.toISOString().slice(0, 10);
   }
-  function setBadge(state_, draft) {
+  function setBadge(state_, draft, merged) {
+    if (merged) return '<span class="pr-chip pr-chipMerged">● 已合并</span>';
     if (draft) return '<span class="pr-chip pr-chipDraft">● 草稿</span>';
     if (state_ === "open") return '<span class="dshell-badge dshell-badgeWait">开放</span>';
-    if (state_ === "merged") return '<span class="pr-chip pr-chipMerged">● 已合并</span>';
     if (state_ === "closed") return '<span class="pr-chip pr-chipClosed">● 已关闭</span>';
     return '<span class="dshell-badge">● ' + esc(state_ || "未知") + "</span>";
   }
@@ -489,10 +489,10 @@
     var total = state.prs.length;
     var open = 0, draft = 0, merged = 0, closed = 0, repos = state.repos.length;
     state.prs.forEach(function (p) {
-      if (p.draft) draft++;
-      if (p.state === "open") open++;
-      else if (p.state === "merged") merged++;
+      if (p.merged) merged++;
+      else if (p.state === "open") open++;
       else if (p.state === "closed") closed++;
+      if (p.draft) draft++;
     });
     statsEl.innerHTML = [
       stat("仓库数", repos),
@@ -550,7 +550,7 @@
       html.push('        <span>' + esc(timeAgo(p.updated)) + "</span>");
       html.push("      </div>");
       html.push("    </div>");
-      html.push('    <div class="pr-actions">' + setBadge(p.state, p.draft) +
+      html.push('    <div class="pr-actions">' + setBadge(p.state, p.draft, p.merged) +
         ' <button class="dshell-btn" data-review="' + i + '">✦ AI 检视</button></div>');
       html.push("  </div>");
       // 折叠详情
@@ -634,7 +634,7 @@
                   state.prs.push({
                     repo: repo.name, owner: repo.owner,
                     number: p.number, title: p.title || "(无标题)",
-                    author: author, state: p.state || "open", draft: !!p.draft,
+                    author: author, state: p.state || "open", draft: !!p.draft, merged: !!(p.merged || p.merged_at),
                     head: p.head && (p.head.ref || p.head.label), base: p.base && (p.base.ref || p.base.label),
                     body: p.body || "", htmlUrl: p.html_url || "",
                     labels: p.labels || [], comments: p.comments,
@@ -1086,7 +1086,27 @@
   }
   /* 打 Tag 并推送的临时脚本：经 /api/worktable/write 落到服务端临时文件后 exec 执行 */
   var PUSH_TAG_SCRIPT_PATH = "/tmp/dsh-codereview-push-tag.sh";
-  var PUSH_TAG_SCRIPT = "#!/usr/bin/env bash\\n# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆指定分支 → 创建 Tag → 推送远端。\\n# 凭据经 GIT_AUTH_URL 注入（页面侧已 URL 编码）；本脚本不 echo 任何凭据，失败输出先脱敏。\\nset -u\\nfail(){ echo \"✗ $*\" >&2; exit 1; }\\n[ -n \"\\${GIT_AUTH_URL:-}\" ] || fail \"缺少 GIT_AUTH_URL\"\\n[ -n \"\\${GIT_BRANCH:-}\" ] || fail \"缺少 GIT_BRANCH\"\\n[ -n \"\\${RELEASE_TAG:-}\" ] || fail \"缺少 RELEASE_TAG\"\\nmask(){ sed -e \"s#\\${GIT_AUTH_URL}#<repo>#g\"; }\\nout=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"\\${GIT_AUTH_URL}\" \"refs/tags/\\${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }\\nprintf \"%s\\n\" \"$out\" | grep -q . && fail \"远端已存在 Tag \\${RELEASE_TAG}（如需重发请先删除远端 Tag）\"\\nTMPD=$(mktemp -d); trap 'rm -rf \"$TMPD\"' EXIT\\necho \"→ 浅克隆分支 \\${GIT_BRANCH} …\"\\nout=$(git clone --quiet --depth 1 --branch \"\\${GIT_BRANCH}\" \"\\${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"克隆失败（分支名/凭据/网络）\"; }\\ncd \"$TMPD/repo\" || exit 1\\ngit -c user.name=\"\\${GIT_AUTHOR_NAME:-codereview-bot}\" -c user.email=\"codereview-bot@local\" tag -a \"$RELEASE_TAG\" -m \"\\${RELEASE_NAME:-$RELEASE_TAG}\" || fail \"创建 Tag 失败\"\\necho \"→ 推送 Tag \\${RELEASE_TAG} …\"\\nout=$(git push --quiet origin \"refs/tags/\\${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"推送 Tag 失败（检查令牌写权限）\"; }\\necho \"✓ Tag \\${RELEASE_TAG} 已推送\"\\n";
+  var PUSH_TAG_SCRIPT = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆指定分支 → 创建 Tag → 推送远端。",
+    "# 凭据经 GIT_AUTH_URL 注入（页面侧已 URL 编码）；本脚本不 echo 任何凭据，失败输出先脱敏。",
+    "set -u",
+    "fail(){ echo \"✗ $*\" >&2; exit 1; }",
+    "[ -n \"${GIT_AUTH_URL:-}\" ] || fail \"缺少 GIT_AUTH_URL\"",
+    "[ -n \"${GIT_BRANCH:-}\" ] || fail \"缺少 GIT_BRANCH\"",
+    "[ -n \"${RELEASE_TAG:-}\" ] || fail \"缺少 RELEASE_TAG\"",
+    "mask(){ sed -e \"s#${GIT_AUTH_URL}#<repo>#g\"; }",
+    "out=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"${GIT_AUTH_URL}\" \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }",
+    "printf \"%s\\n\" \"$out\" | grep -q . && fail \"远端已存在 Tag ${RELEASE_TAG}（如需重发请先删除远端 Tag）\"",
+    "TMPD=$(mktemp -d); trap 'rm -rf \"$TMPD\"' EXIT",
+    "echo \"→ 浅克隆分支 ${GIT_BRANCH} …\"",
+    "out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"克隆失败（分支名/凭据/网络）\"; }",
+    "cd \"$TMPD/repo\" || exit 1",
+    "git -c user.name=\"${GIT_AUTHOR_NAME:-codereview-bot}\" -c user.email=\"codereview-bot@local\" tag -a \"$RELEASE_TAG\" -m \"${RELEASE_NAME:-$RELEASE_TAG}\" || fail \"创建 Tag 失败\"",
+    "echo \"→ 推送 Tag ${RELEASE_TAG} …\"",
+    "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
+    "echo \"✓ Tag ${RELEASE_TAG} 已推送\""
+  ].join("\n");
   function pushReleaseTag(repo, branch, tag, name) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: PUSH_TAG_SCRIPT_PATH, content: PUSH_TAG_SCRIPT }) })
@@ -1146,7 +1166,7 @@
         var tagDone = false;
         try {
           await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
-            { refs: branch, ref_name: tag, description: name || tag });
+            { tag_name: tag, target: branch, message: name || tag });
           relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
           tagDone = true;
         } catch (e) {
