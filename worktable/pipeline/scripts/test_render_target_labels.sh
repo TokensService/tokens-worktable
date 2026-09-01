@@ -129,6 +129,7 @@ for group in values["taskExecutorGroups"]:
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["images"]["ray"] == "xds:test-tag"
+assert values["global"].get("fullnameOverride", "") == "", values["global"]
 assert values["global"]["roleName"] == "xds-one-node-78-verify-role"
 assert values["global"]["roleBindingName"] == "xds-one-node-78-verify-role-binding"
 assert values["global"]["serviceAccountName"] == "xds-one-node-78-verify-sa"
@@ -159,6 +160,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
     values = yaml.safe_load(source)
 
 assert values["feTemplate"]["default_replica"] == 2, values["feTemplate"]
+assert values["global"]["fullnameOverride"] == "ray", values["global"]
 assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 2, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 2, values["workerGroups"]

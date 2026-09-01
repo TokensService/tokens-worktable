@@ -260,6 +260,7 @@ elif isinstance(worker_groups, list):
         if isinstance(worker_group, dict):
             worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
 if len(target_hosts) == 1:
+    values.setdefault("global", {})["fullnameOverride"] = "ray"
     values.setdefault("feTemplate", {})["default_replica"] = 2
     if isinstance(worker_groups, dict):
         for group_name in ("ctrlGroup", "jobExecutorGroup"):
