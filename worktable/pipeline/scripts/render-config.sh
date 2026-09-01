@@ -259,6 +259,14 @@ elif isinstance(worker_groups, list):
     for worker_group in worker_groups:
         if isinstance(worker_group, dict):
             worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
+if len(target_hosts) == 1:
+    values.setdefault("feTemplate", {})["default_replica"] = 2
+    if isinstance(worker_groups, dict):
+        for group_name in ("ctrlGroup", "jobExecutorGroup"):
+            worker_group = worker_groups.get(group_name)
+            if isinstance(worker_group, dict):
+                worker_group["minReplicas"] = 2
+                worker_group["maxReplicas"] = 2
 upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
 upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
 upsert_container_env("XDS_NAMESPACE", namespace)

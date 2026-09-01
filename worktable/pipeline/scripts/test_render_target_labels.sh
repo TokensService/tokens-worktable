@@ -28,11 +28,17 @@ head:
   nodeSelector: {}
 workerGroups:
   ctrlGroup:
+    minReplicas: 4
+    maxReplicas: 4
     nodeSelector:
       kubernetes.io/hostname: 192.168.0.243
   frontGroup:
     nodeSelector: {}
+  jobExecutorGroup:
+    minReplicas: 8
+    maxReplicas: 8
 feTemplate:
+  default_replica: 10
   nodeSelector:
     kubernetes.io/hostname: 192.168.0.243
 global:
@@ -103,6 +109,11 @@ assert values["nodeSelector"] == expected, values["nodeSelector"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
+assert values["feTemplate"]["default_replica"] == 10, values["feTemplate"]
+assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 4, values["workerGroups"]
+assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 4, values["workerGroups"]
+assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 8, values["workerGroups"]
+assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 8, values["workerGroups"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
@@ -127,6 +138,31 @@ assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
+PY
+
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-single" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-one-node-78-verify' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-single/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+assert values["feTemplate"]["default_replica"] == 2, values["feTemplate"]
+assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 2, values["workerGroups"]
+assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 2, values["workerGroups"]
+assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 2, values["workerGroups"]
+assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 2, values["workerGroups"]
 PY
 
 echo "render target-label tests passed"
