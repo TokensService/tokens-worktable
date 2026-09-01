@@ -142,6 +142,7 @@ assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
 
 ARCH_NAME=test-arch \
@@ -171,6 +172,7 @@ assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 2, values["w
 framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "fem_min_frontend_num = 2" in framework_config, framework_config
 assert "fem_max_frontend_num = 2" in framework_config, framework_config
+assert "mock_db = true" in framework_config, framework_config
 PY
 
 health_service_template="$work_dir/run-single/rendered/xds-cluster/templates/xds-head-health-service.yaml"

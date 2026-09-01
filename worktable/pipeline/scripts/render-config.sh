@@ -22,7 +22,7 @@ REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"
 EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
-MOCK_DB="${MOCK_DB:-false}"
+MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 NODE_SELECTOR_KEY="xds.optest"
 
@@ -223,10 +223,18 @@ for key, value in replace_map.items():
         values_text = values_text.replace(str(key), str(value))
 for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
-if str(mock_db).lower() == "true":
-    if "mock_db" in values_text:
-        values_text = re.sub(r"mock_db =.*", "mock_db = true", values_text)
 values = yaml.safe_load(values_text) or {}
+
+if str(mock_db).lower() == "true":
+    framework_files = values.get("frameworkConfigFiles")
+    if not isinstance(framework_files, dict) or not isinstance(framework_files.get("xds_framework.conf"), str):
+        raise SystemExit("frameworkConfigFiles.xds_framework.conf must be a string when MOCK_DB=true")
+    framework_config = framework_files["xds_framework.conf"]
+    mock_db_pattern = re.compile(r"(?m)^(\s*mock_db\s*=\s*).*$", re.IGNORECASE)
+    if mock_db_pattern.search(framework_config):
+        framework_files["xds_framework.conf"] = mock_db_pattern.sub(r"\g<1>true", framework_config)
+    else:
+        framework_files["xds_framework.conf"] = framework_config.rstrip() + "\nmock_db = true\n"
 
 def normalize_container_env_values(value):
     if isinstance(value, dict):
