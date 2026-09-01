@@ -1,5 +1,5 @@
 import { Context } from '@deepseek-ai/cordis'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { dirname, resolve as pathResolve, sep } from 'node:path'
@@ -719,7 +719,7 @@ export function apply(ctx: Context) {
     for (const s of pl.stages || []) {
       const st0 = Date.now()
       let entry: any = null
-      if (s.gate) { entry = { status: 'success', text: '[定时执行] 审批门自动通过' } }
+      if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'jenkins') { entry = { status: 'success', text: '[定时执行] Jenkins 阶段：定时触发暂不支持，已跳过' } }
       else if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir)
@@ -870,6 +870,62 @@ export function apply(ctx: Context) {
           })
       } catch (err) {
         json(res, 500, { error: String(err && err.message ? err.message : err) })
+      }
+    }
+  })
+
+  // 流式执行（脚本阶段实时回显）：参数与 /api/worktable/exec 一致，但用 spawn 边执行边把
+  // stdout/stderr 以 NDJSON 逐块回传（{"type":"out"|"err","text":…} / {"type":"done","code":N} /
+  // {"type":"error","message":…}）。pipeline.html 的 execStreaming 按行解析、实时追加到阶段详情；
+  // 客户端断开（中止 / 刷新）时终止子进程（detached 进程组，SIGTERM 连子进程一起收）；超时同样生效。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/exec-stream',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const scriptPath = typeof body.path === 'string' ? body.path : ''
+        if (!scriptPath) { json(res, 400, { error: 'missing path' }); return }
+        const args: string[] = Array.isArray(body.args) ? body.args.map((a: any) => String(a)) : []
+        const envIn = (body.env && typeof body.env === 'object') ? body.env : {}
+        const env: Record<string, string> = {}
+        for (const k of Object.keys(envIn)) { const v = (envIn as any)[k]; if (v !== undefined && v !== null) env[k] = String(v) }
+        const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
+        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
+        const interp = /.py$/i.test(scriptPath) ? 'python3' : 'bash'
+        res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
+        const send = (obj: unknown) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n') }
+        // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
+        const child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
+        let finished = false
+        let timedOut = false
+        const killTree = (sig: string) => {
+          try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, sig); else child.kill(sig) } catch {}
+        }
+        const killTimer = setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs)
+        child.stdout.on('data', (d: Buffer) => send({ type: 'out', text: d.toString('utf8') }))
+        child.stderr.on('data', (d: Buffer) => send({ type: 'err', text: d.toString('utf8') }))
+        child.on('error', (err: Error) => {               // ENOENT 等无法启动
+          if (finished) return
+          finished = true
+          clearTimeout(killTimer)
+          send({ type: 'error', message: String(err && err.message ? err.message : err) })
+          res.end()
+        })
+        child.on('close', (code: number | null) => {
+          if (finished) return
+          finished = true
+          clearTimeout(killTimer)
+          if (timedOut) send({ type: 'error', message: 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's' })
+          else send({ type: 'done', code: typeof code === 'number' ? code : 1 })
+          res.end()
+        })
+        res.on('close', () => {                            // 客户端断开（中止/刷新）：终止子进程
+          if (!finished) { finished = true; clearTimeout(killTimer); killTree('SIGTERM') }
+        })
+      } catch (err) {
+        try { if (!res.writableEnded) res.end() } catch {}
       }
     }
   })
