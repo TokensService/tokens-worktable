@@ -101,7 +101,6 @@
         <span class="dshell-badge">未运行</span>
       </div>
       <span id="overallBy" class="dshell-muted"></span>
-      <button id="pageEditBtn" class="dshell-btn dshell-btnGhost mini" type="button" title="新建 DSH 聊天会话，让 AI 修改本页面">页面修改</button>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">主题
         <select id="theme" class="dshell-input" style="min-width:104px;">
           <option value="light">浅色</option>
@@ -377,15 +376,15 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">归档配置</h2>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
-          <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_日期」文件夹归档；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
+          <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_年月日时分秒」文件夹归档（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_日期」文件夹归档到此目录；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
           <input id="archiveScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不执行）" style="width:216px;" title="归档写入日志/profiling 后执行该脚本收集日志；默认 scripts/collect_logs.sh，脚本不存在则跳过" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行。运行启动时即按「流水线名_日期」生成归档文件夹，并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本），脚本显式参数优先。</span>
+        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行。运行启动时即按「流水线名_年月日时分秒」生成归档文件夹（每次运行独立目录），并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本），脚本显式参数优先。</span>
       </div>
     </div>
     <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
@@ -409,23 +408,6 @@
           <button id="cfgSave" class="dshell-btn mini">保存</button>
           <button id="cfgReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
           <span id="cfgSavedTip" class="dshell-muted" style="font-size:11px;"></span>
-        </div>
-      </div>
-    </div>
-    <!-- 页面修改配置：右上角「页面修改」按钮发送给 AI 的提示词模板 -->
-    <div class="dshell-card" style="margin-top:10px;">
-      <h2 class="dshell-sub" style="margin:0 0 8px">页面修改配置 <span class="dshell-muted">右上角「页面修改」按钮发送给 AI 的提示词模板</span></h2>
-      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        点右上角「页面修改」按钮会新建一个 AI 会话并发送此提示词，由 AI 协助修改本页面。留空保存将恢复为默认提示词。
-      </p>
-      <div style="display:flex; flex-direction:column; gap:10px;">
-        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">页面修改提示词
-          <textarea id="cfgPromptPageEdit" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
-        </label>
-        <div style="display:flex; gap:8px; align-items:center;">
-          <button id="cfgPageEditSave" class="dshell-btn mini">保存</button>
-          <button id="cfgPageEditReset" class="dshell-btn dshell-btnGhost mini">恢复默认</button>
-          <span id="cfgPageEditSavedTip" class="dshell-muted" style="font-size:11px;"></span>
         </div>
       </div>
     </div>
@@ -501,11 +483,12 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/是否执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 120（Jenkins 默认 300）秒）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/是否执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 120（Jenkins 默认 300）秒）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}，输入 ${ 出现下拉候选）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
+        <datalist id="pipelineEnvVarsList"></datalist>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <button id="plSave" class="dshell-btn mini">保存</button>
           <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
@@ -625,7 +608,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, archiveDir, archiveScriptName, analysisPrompts, pageEditPrompt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, archiveDir, archiveScriptName, analysisPrompts, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   try{
     /* 演示数据（demo 标记）不上服务端；历史含逐阶段日志，200 条上限同时控制服务端存储体积 */
@@ -657,7 +640,6 @@ async function loadServerState(){
       if(typeof cfg.archiveDir==='string'){ archiveDir=cfg.archiveDir; $('archiveDir').value=archiveDir; }
       if(typeof cfg.archiveScriptName==='string'){ archiveScriptName=cfg.archiveScriptName; $('archiveScriptName').value=archiveScriptName; }
       if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
-      if(typeof cfg.pageEditPrompt==='string' && cfg.pageEditPrompt.trim()) pageEditPrompt=cfg.pageEditPrompt;
       if(Array.isArray(st.history) && st.history.length) history=st.history;
       runStages=null; selectedId=curPipeline().stages[0].id;
       /* 同步 localStorage 离线缓存 */
@@ -676,7 +658,6 @@ async function loadServerState(){
         localStorage.setItem('pip-archiveDir', archiveDir);
         localStorage.setItem('pip-archiveScript', archiveScriptName);
         localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts));
-        localStorage.setItem('pip-pageEditPrompt', pageEditPrompt);
       }catch(e){}
       $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
       renderCleanupParams();
@@ -1032,12 +1013,7 @@ async function fetchBranchesJenkins(r){
         url=job.replace(/([?&])offset=\d+/, '$1offset='+next);      // 保留原 query，仅替换/追加 offset
         if(url===job) url=job+(job.indexOf('?')>=0?'&':'?')+'offset='+next;
       }
-    }catch(e){
-      const em=String((e&&e.message)||e).slice(0,160);
-      /* TypeError（Failed to fetch / NetworkError / Load failed）= 浏览器层失败，多为 CORS 拦截（接口未回 Access-Control-Allow-Origin）或网络不可达，补充排查指引 */
-      out.error='refs 接口请求失败：'+em+(/failed to fetch|networkerror|load failed/i.test(em)?' —— 多为 CORS 拦截或网络不可达：若浏览器地址栏能直接打开该接口即为 CORS，需接口方添加 Access-Control-Allow-Origin 响应头（浏览器安全限制，页面侧无法绕过）；否则请检查到该服务的网络通路':'');
-      return out;
-    }
+    }catch(e){ out.error='refs 接口请求失败：'+String(e.message||e).slice(0,160); return out; }
     out.branches=Array.from(new Set(branches)).sort(); out.tags=Array.from(new Set(tags)).sort(); out.ok=true; return out;
   }
   const base=(j.url||'').replace(/\/+$/,'');
@@ -1249,7 +1225,7 @@ function detectScriptsDir(){
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
 function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
-/* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_日期」文件夹组织（见 archiveRun） */
+/* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_年月日时分秒」文件夹组织（见 archiveRun） */
 let archiveDir = lsGet('pip-archiveDir', '/var/log/op_test');
 function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
 /* 归档脚本：归档写入日志/profiling 后执行（可选），收集额外日志；默认 scripts/collect_logs.sh，留空=不执行，脚本缺失自动跳过（见 archiveRun） */
@@ -1415,14 +1391,17 @@ function saveCleanup(){
 }
 function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
+  fillEnvVarsDatalist(-1);   // 清理脚本在流水线启动前执行：无上游阶段变量，候选仅运行注入变量
   if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
   cleanupScript.params.forEach(p=>{
-    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.def||'');
+    /* 动态默认值（dyn）不预填：留空交由脚本自身 :- 展开，原表达式经 placeholder 展示 */
+    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.dyn?'':(p.def||''));
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" list="pipelineEnvVarsList" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="可填 ${变量名} 引用运行注入变量（输入 ${ 出现下拉候选）；留空='+(p.dyn?'由脚本展开默认值（placeholder 为脚本表达式）':'默认值/自动注入的同名变量')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
+    inp.addEventListener('focus',()=>{ fillEnvVarsDatalist(-1); });
     inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
     box.appendChild(lab);
   });
@@ -1461,6 +1440,40 @@ function fillScriptsDatalist(){
   availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
 }
 function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
+/* 参数值 ${VAR} 引用下拉候选（list="pipelineEnvVarsList"）：运行注入变量 + 本阶段之前的上游阶段「输出变量」
+   + 归档脚本专属变量（标注仅归档脚本）。输入 ${ 即出现候选，选中插入完整 ${VAR}。 */
+const RUN_INJECTED_VARS=[
+  ['TARGET_IP','首个目标节点 IP'],['TARGET_IPS','全部目标 IP（JSON 数组）'],['TARGET_HOSTS','全部节点凭据 [{ip,user,pass}]（JSON 数组）'],
+  ['TARGET_USER','首个节点登录用户名'],['TARGET_PASSWORD','首个节点登录密码'],
+  ['IMAGE_NAME','主控「镜像名」'],['IMAGE_TAG','本次运行 tag'],['PIPELINE_NAME','流水线名'],
+  ['GIT_URL','代码仓地址'],['GIT_BRANCH','主控填写的分支'],['GIT_USER','仓库访问用户'],['GIT_PASSWORD','仓库访问令牌'],
+  ['DEPLOY_STRATEGY','部署策略'],['ARCHIVE_DIR','本次运行归档文件夹'],['ARCHIVE_FOLDER','本次运行归档文件夹（同 ARCHIVE_DIR）'],
+  ['ARCHIVE_PIPELINE','归档用流水线名'],['ARCHIVE_TAG','归档用运行 tag'],
+];
+const ARCHIVE_SCRIPT_VARS=[['ARCHIVE_LOG_FILE','归档内 run 日志文件（仅归档脚本注入）'],['ARCHIVE_PROFILE_FILE','归档内 profiling JSON（仅归档脚本注入）'],['ARCHIVE_RESULT','运行结果 success/failed/aborted（仅归档脚本注入）']];
+/* 上游阶段（Jenkins）声明的输出变量名：outVars 形如 "IMAGE_URL=image, TAG" → 取下传名 IMAGE_URL/TAG。
+   只取 stageIdx 之前的阶段；stageIdx=-1（清理脚本，启动前执行）时无上游变量 */
+function upstreamOutVars(stageIdx){
+  const names=[];
+  editStages.forEach((s,i)=>{
+    if(i>=stageIdx) return;
+    const ov=s && s.jenkins && s.jenkins.outVars; if(!ov) return;
+    String(ov).split(',').forEach(t=>{
+      const name=t.trim().split('=')[0].trim();
+      if(/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && names.indexOf(name)<0) names.push(name);
+    });
+  });
+  return names;
+}
+function fillEnvVarsDatalist(stageIdx){
+  const dl=$('pipelineEnvVarsList'); if(!dl) return; dl.innerHTML='';
+  RUN_INJECTED_VARS.concat(ARCHIVE_SCRIPT_VARS).forEach(it=>{
+    const o=document.createElement('option'); o.value='${'+it[0]+'}'; o.label=it[0]+' — '+it[1]; dl.appendChild(o);
+  });
+  upstreamOutVars(stageIdx===undefined?editStages.length:stageIdx).forEach(v=>{
+    const o=document.createElement('option'); o.value='${'+v+'}'; o.label=v+' — 上游阶段输出变量'; dl.appendChild(o);
+  });
+}
 /* Jenkins 任务列表（设置页「获取任务列表」或编辑器内自动拉取后填充；阶段编辑器「Jenkins」类型据此选择任务，datalist 输入即搜索） */
 let availableJenkinsJobs=[];   // [{name: fullName}]
 let jenkinsJobsLoading=null;   // 拉取中的 Promise（防并发重复拉取）
@@ -1503,25 +1516,46 @@ async function readScriptSrc(path){
   return r.text();
 }
 /* 从脚本源码识别参数：位置参数 $1..$N/${N:-def} + 环境变量 ${VAR:-def}/${VAR}/$VAR */
-/* 嵌套默认值解包：${1:-${VAR:-glm}} 的默认值取最内层 glm */
-function resolveDef(def){
-  if(!def) return '';
-  let d=String(def).trim(); let guard=0;
-  while(d.indexOf('${')>=0 && guard++<6){
-    const i=d.lastIndexOf(':-'); if(i<0) break;
-    d=d.slice(i+2).replace(/}+/g,'').trim();
+/* 统一扫描 $ 引用：${...} 的默认值按花括号配平截取，${A:-${B}/x} 嵌套不截断；
+   默认值内部的 $ 引用递归扫描（${A:-$B} 里的 B 同样是可配置项），覆盖面与旧的逐字正则一致。
+   返回 [{key, isPos, op, def}]，op 为 '' | ':-' | ':?' */
+function scanShellRefs(src){
+  const refs=[]; let i=0; const n=src.length;
+  while(i<n){
+    if(src[i]!=='$'){ i++; continue; }
+    let j=i+1; let braced=false;
+    if(src[j]==='{'){ braced=true; j++; }
+    const m=/^([A-Za-z_][A-Za-z0-9_]*|\d+)/.exec(src.slice(j));
+    if(!m){ i++; continue; }
+    const key=m[1]; j+=key.length;
+    let op=''; let def='';
+    if(braced){
+      if(src[j]===':'&&(src[j+1]==='-'||src[j+1]==='?')){
+        op=':'+src[j+1];
+        let depth=1; let k=j+2;
+        while(k<n && depth>0){ const ch=src[k]; if(ch==='{')depth++; else if(ch==='}')depth--; k++; }
+        def=src.slice(j+2, depth===0?k-1:n); j=k;
+      } else if(src[j]==='}'){ j++; }
+    }
+    refs.push({key:key, isPos:/^\d+$/.test(key), op:op, def:def});
+    if(def.indexOf('$')>=0) refs.push.apply(refs, scanShellRefs(def));
+    i=j;
   }
-  return d.replace(/}+$/,'').replace(/^["']|["']$/g,'').trim();
+  return refs;
 }
+/* 动态默认值：含 $引用/${}/$() 的 shell 表达式不做字面值预填/注入（注入后 shell 不会二次展开），
+   页面留空、原表达式显示在 placeholder，运行时由脚本自身 :- 展开 */
+function isDynDef(def){ return /\$(\(|\{?[A-Za-z_])/.test(def||''); }
 /* 从注释提取语义化标签：# 位置参数 $1 = 模型架构名 / # 环境变量 XDS_URL = XDS 网关地址（支持一行多个 VAR = 说明） */
 function parseCommentLabels(src){
   const posLabels={}, envLabels={};
   src.split('\n').forEach(line=>{
     const c=/^\s*#\s*(.*)$/.exec(line); if(!c) return;
     const t=c[1];
-    let m=/位置参数\s*\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t) || /\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t);
+    /* 标签分隔符：= / ：/ 半角冒号后跟空白 / 两格以上对齐空格；避免把 docker pull $IMAGE:$TAG 这类文本里的冒号当分隔符 */
+    let m=/位置参数\s*\$(\d+)(?:\s*[=：]|\s*:(?=\s)| {2,})\s*([^（(；;，,\n]+)/.exec(t) || /\$(\d+)(?:\s*[=：]|\s*:(?=\s)| {2,})\s*([^（(；;，,\n]+)/.exec(t);
     if(m && m[2]) posLabels[m[1]]=m[2].trim();
-    const envRe=/([A-Z_][A-Z0-9_]*)\s*[=：:]\s*([^（(；;，,\n]+)/g;
+    const envRe=/([A-Z_][A-Z0-9_]*)(?:\s*[=：]|\s*:(?=\s)| {2,})\s*([^（(；;，,\n]+)/g;
     while((m=envRe.exec(t))){ if(m[2] && !envLabels[m[1]]) envLabels[m[1]]=m[2].trim(); }
   });
   return {posLabels, envLabels};
@@ -1564,29 +1598,28 @@ function detectParams(src, lang){
   if(lang==='py') return detectPythonParams(src);
   const labels=parseCommentLabels(src);
   const internal=internalAssignedVars(src);
-  const pos={}; let m;
-  const posRe=/\$\{?(\d+)(?:(:-|:\?)([^}]*))?\}?/g;
-  while((m=posRe.exec(src))){
-    const n=parseInt(m[1],10); if(n<1) continue;
-    const op=m[2]||''; const rest=m[3]||'';
-    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
-    if(!(n in pos)) pos[n]={def, required:req};
-    else { if(def && !pos[n].def) pos[n].def=def; if(req) pos[n].required=true; }
-  }
+  const pos={}; const envSeen={}; const envOrder=[];
+  const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|BASH_SOURCE|BASH_LINENO|FUNCNAME|PIPESTATUS|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
+  scanShellRefs(src).forEach(r=>{
+    const req=(r.op===':?');
+    /* 带 :-默认值 的参数在页面预填默认值；动态默认值（dyn）仅 placeholder 展示，不预填不注入（见 isDynDef/execScript） */
+    const def=(r.op===':-')?r.def.replace(/^["']|["']$/g,'').trim():'';
+    const dyn=(r.op===':-')&&isDynDef(def);
+    if(r.isPos){
+      const n=parseInt(r.key,10); if(n<1) return;
+      if(!(n in pos)) pos[n]={def:def, required:req, dyn:dyn};
+      else { if(def && !pos[n].def){ pos[n].def=def; pos[n].dyn=dyn; } if(req) pos[n].required=true; }
+      return;
+    }
+    const v=r.key;
+    if(!/^[A-Z_][A-Z0-9_]*$/.test(v)||BUILT.test(v)||internal[v]) return;   // 环境参数沿用旧规则：仅全大写名
+    if(!(v in envSeen)){ envSeen[v]={def:def, required:req, dyn:dyn}; envOrder.push(v); }
+    else { if(def && !envSeen[v].def){ envSeen[v].def=def; envSeen[v].dyn=dyn; } if(req) envSeen[v].required=true; }
+  });
   const maxPos=Object.keys(pos).length?Math.max.apply(null,Object.keys(pos).map(Number)):0;
   const posParams=[];
-  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:labels.posLabels[i]||('位置参数 '+i), def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
-  const envSeen={}; const envOrder=[];
-  const envRe=/\$\{([A-Z_][A-Z0-9_]*)(?:(:-|:\?)([^}]*))?\}|\$([A-Z_][A-Z0-9_]*)\b/g;
-  const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
-  while((m=envRe.exec(src))){
-    const v=m[1]||m[4]; const op=m[2]||''; const rest=m[3]||'';
-    if(!v||BUILT.test(v)||internal[v]) continue;
-    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
-    if(!(v in envSeen)){ envSeen[v]={def, required:req}; envOrder.push(v); }
-    else { if(def && !envSeen[v].def) envSeen[v].def=def; if(req) envSeen[v].required=true; }
-  }
-  const envParams=envOrder.map(v=>({kind:'env', key:v, label:labels.envLabels[v]||v, def:envSeen[v].def, required:!!envSeen[v].required}));
+  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:labels.posLabels[i]||('位置参数 '+i), def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required), dyn:!!(pos[i]&&pos[i].dyn)});
+  const envParams=envOrder.map(v=>({kind:'env', key:v, label:labels.envLabels[v]||v, def:envSeen[v].def, required:!!envSeen[v].required, dyn:!!envSeen[v].dyn}));
   return posParams.concat(envParams);
 }
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
@@ -1646,6 +1679,7 @@ function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-params]'); box.innerHTML='';
   const s=editStages[i]; if(!s) return;
+  fillEnvVarsDatalist(i);   // 参数值 ${VAR} 下拉候选跟随阶段位置（仅含本阶段之前的上游输出变量）
   if(s.kind==='jenkins'){
     const jk=s.jenkins; if(!jk||!jk.params||!jk.params.length) return;
     jk.params.forEach(p=>{
@@ -1655,20 +1689,24 @@ function renderStageParams(i){
       const lab=document.createElement('label'); lab.className='dshell-muted';
       lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
       const lbl=esc(key)+(p.description?' ('+esc(p.description)+')':'')+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'');
-      lab.innerHTML=lbl+' <input class="dshell-input" data-pkey="'+esc(key)+'" value="'+esc(v)+'" placeholder="'+esc(def)+'" title="可填 ${变量名} 引用上游阶段产出（如 ${IMAGE_URL}）；留空=Jenkins 默认值，同名上游变量自动注入" style="width:150px;font-size:11px;" />';
-      lab.querySelector('input').addEventListener('change',function(e){ jk.values=jk.values||{}; jk.values[key]=e.target.value; renderStageParams(i); });
+      lab.innerHTML=lbl+' <input class="dshell-input" list="pipelineEnvVarsList" data-pkey="'+esc(key)+'" value="'+esc(v)+'" placeholder="'+esc(def)+'" title="可填 ${变量名} 引用上游阶段产出（输入 ${ 出现下拉候选，如 ${IMAGE_URL}）；留空=Jenkins 默认值，同名上游变量自动注入" style="width:150px;font-size:11px;" />';
+      const jkInp=lab.querySelector('input');
+      jkInp.addEventListener('focus',function(){ fillEnvVarsDatalist(i); });
+      jkInp.addEventListener('change',function(e){ jk.values=jk.values||{}; jk.values[key]=e.target.value; renderStageParams(i); });
       box.appendChild(lab);
     });
     return;
   }
   if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
-    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'');
+    /* 动态默认值（dyn）不预填：留空交由脚本自身 :- 展开，原表达式经 placeholder 展示 */
+    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.dyn?'':(p.def||''));
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="可填 ${变量名} 引用上游阶段产出（如 ${IMAGE_URL}）；留空=默认值/继承上游同名变量" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" list="pipelineEnvVarsList" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="可填 ${变量名} 引用上游阶段产出（输入 ${ 出现下拉候选，如 ${IMAGE_URL}）；留空='+(p.dyn?'由脚本展开默认值（placeholder 为脚本表达式）':'默认值/继承上游同名变量')+'" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
+    inp.addEventListener('focus',()=>{ fillEnvVarsDatalist(i); });
     inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; s.script.values[p.key]=inp.value; renderStageParams(i); });
     box.appendChild(lab);
   });
@@ -1709,7 +1747,7 @@ function renderStageActionRow(i){
   }
   if(s.kind==='jenkins'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName，可输入搜索）'; inp.style.width='240px'; inp.title='单击输入框自动拉取 Jenkins 任务列表，输入即搜索；右侧 ↻ 强制刷新；上游阶段产出的变量（KEY=VALUE 行 / 单行 JSON 对象）自动注入为本任务构建参数（同名时上方显式参数优先）；本任务控制台输出的 KEY=VALUE 行或单行 JSON 对象会传递给后续阶段';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName，可输入搜索）'; inp.style.width='240px'; inp.title='单击输入框自动拉取 Jenkins 任务列表，输入即搜索；右侧 ↻ 强制刷新；上游阶段产出的变量（KEY=VALUE 行 / 单行 JSON 对象）自动注入为本任务构建参数（同名时显式参数优先），本任务控制台输出的 KEY=VALUE 行或单行 JSON 对象会传递给后续阶段';
     inp.addEventListener('focus', function(){ ensureJenkinsJobs(false); });
     const ref=document.createElement('button'); ref.className='dshell-btn dshell-btnGhost mini'; ref.type='button'; ref.setAttribute('data-act','jkrefresh'); ref.textContent='↻'; ref.title='刷新 Jenkins 任务列表';
     const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
@@ -2352,8 +2390,10 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
   const rc=runCtx||curRun;   // 归档脚本等异步调用方传入已结束运行的快照上下文，避免运行队列切换后读到新运行的 curRun
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
-    /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理 */
-    const v=substRunVars((sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.def||''), rc);
+    /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理。
+       动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）不注入字面值：留空交由脚本自身 :- 展开 */
+    const raw=(sc.values && sc.values[p.key]!==undefined)?sc.values[p.key]:(p.dyn?'':(p.def||''));
+    const v=substRunVars(raw, rc);
     if(p.kind==='pos') args.push(v);
     // Empty stage fields mean "inherit" so rendered artifact paths from an
     // upstream script are not overwritten with an empty environment value.
@@ -2383,7 +2423,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
     if(env.DEPLOY_STRATEGY===undefined && rc.strategy) env.DEPLOY_STRATEGY=rc.strategy;
     if(env.GIT_USER===undefined && rc.repoUser) env.GIT_USER=rc.repoUser;
     if(env.GIT_PASSWORD===undefined && rc.repoPass) env.GIT_PASSWORD=rc.repoPass;
-    /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名_日期」文件夹注入各阶段，
+    /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名_年月日时分秒」文件夹注入各阶段，
        供脚本把本阶段产物直接写入归档目录；脚本显式参数优先。留空（未配置归档）则不注入。
        取值与末尾 archiveRun 注入归档脚本的 ARCHIVE_DIR/ARCHIVE_FOLDER 一致（均=本次运行归档文件夹）。 */
     if(rc.archive){
@@ -2503,6 +2543,7 @@ async function runJenkinsStep(i){
     log.push('[Jenkins result '+result+']');
     s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('Jenkins '+result):'',code:ok?0:1,jenkins:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
+    archiveStageLog(s, i+1);   // 本阶段回显即时归档到归档文件夹的独立日志文件
     /* 输出变量映射（阶段编辑器「输出变量」，逗号分隔，如 IMAGE_URL=image, ARCH）：把变量池里捕获到的 key
        改名/声明为目标名补充进 curRun.vars（来源含本阶段控制台产出与更早的上游变量）；原 key 仍保留下传。 */
     String(jk.outVars||'').split(',').forEach(function(pair){
@@ -2512,7 +2553,6 @@ async function runJenkinsStep(i){
       if(!dst || !src || !curRun || !curRun.vars || curRun.vars[src]===undefined) return;
       curRun.vars[dst]=String(curRun.vars[src]); varsOut[dst]=String(curRun.vars[src]);
     });
-    archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
     const dur=(Date.now()-t0)/1000;
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -2540,7 +2580,7 @@ async function runScriptStep(i){
   const dur=(Date.now()-t0)/1000;
   s._out=res;
   const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
-  archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
+  archiveStageLog(s, i+1);   // 本阶段回显即时归档到归档文件夹的独立日志文件
   if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
   else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
 }
@@ -2576,7 +2616,7 @@ function skipStage(i){
   const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
   nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{},varsIn,varsOut:{}};
   selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
-  archiveStageLog(s, i+1);
+  archiveStageLog(s, i+1);   // 「不执行」阶段的跳过说明同样归档
   advance(i+1);
 }
 /* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续 */
@@ -2626,14 +2666,12 @@ async function runCleanupBefore(){
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
   if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
-  if(curRun && curRun.token===tk){
-    curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
-    archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
-  }
+  if(curRun && curRun.token===tk){ curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000}; archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e)); }   // 清理回显同样即时归档
 }
-/* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_日期」文件夹） ---------- */
+/* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_年月日时分秒」文件夹） ---------- */
 function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
 function todayCompact(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate()); }
+function nowCompactFull(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }   // 年月日时分秒：每次运行独立归档文件夹，避免同日多次运行共用一目录
 async function apiMkdir(p){
   try{
     const r=await fetch('/api/worktable/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})});
@@ -2647,7 +2685,7 @@ async function apiWrite(p, content){
 /* 是否显式配置了归档根目录（留空=走保底，见 fallbackArchiveRoot） */
 function archiveConfigured(){ return !!(archiveDir||'').trim(); }
 /* 保底归档根：未配置 archiveDir 时，归档落到 scripts 目录同级的 runs/（仅当 scriptsDir 为绝对路径时可用）。
-   仍按「流水线名称_日期」文件夹组织，写 run-<tag>.log/.profile.json；但不执行归档脚本（归档脚本是「已配置归档」的专属能力，见 archiveRun）。 */
+   仍按「流水线名称_年月日时分秒」文件夹组织，写 run-<tag>.log/.profile.json；但不执行归档脚本（归档脚本是「已配置归档」的专属能力，见 archiveRun）。 */
 function fallbackArchiveRoot(){
   try{
     const sd=(scriptsDir||'').trim();
@@ -2661,7 +2699,7 @@ function archiveFolderFor(ctx){
   // 末尾 archiveRun 写入 run-<tag>.log/.profile.json 的目录完全一致（运行中 archiveDir 改动不致漂移）。
   if(ctx && ctx.archive!==undefined) return ctx.archive;
   if(!ctx) return null;
-  const sub=sanitizeFsName(ctx.pipelineName||curPipeline().name)+'_'+todayCompact();
+  const sub=sanitizeFsName(ctx.pipelineName||curPipeline().name)+'_'+nowCompactFull();   // 「流水线名_年月日时分秒」
   const root=(archiveDir||'').trim().replace(/\/+$/,'');
   if(root) return root+'/'+sub;
   // 未配置归档：保底落到 scripts 同级的 runs/，仍写 run-<tag>.log/.profile.json（不执行归档脚本）
@@ -2789,23 +2827,6 @@ async function createAnalysisChat(kind, rec){
   try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
   await P.__dshPromptIntoSession(sid, text);
 }
-
-/* ---------- 页面修改（右上角按钮 → 新建 DSH 会话修改本页面；提示词在「设置」页页面修改配置维护） ---------- */
-const PAGE_EDIT_PROMPT = '页面文件：/mnt/paas/op_test/worktable/pipeline/pipeline.html，这是一个deepseek harness worktable插件的页面\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。\n修改代码时，创建一个git worktree修改，防止多个并行的修改冲突。';
-const DEFAULT_PAGE_EDIT_PROMPT = PAGE_EDIT_PROMPT;   // 默认提示词（设置页「页面修改配置」可覆盖）
-let pageEditPrompt = (function(){ try{ const p=localStorage.getItem('pip-pageEditPrompt'); return (p==null||!String(p).trim())?DEFAULT_PAGE_EDIT_PROMPT:p; }catch(e){ return DEFAULT_PAGE_EDIT_PROMPT; } })();
-function savePageEditPrompt(){ try{ localStorage.setItem('pip-pageEditPrompt', pageEditPrompt); }catch(e){} persistState(); }
-function fillPageEditForm(){ if($('cfgPromptPageEdit')) $('cfgPromptPageEdit').value=pageEditPrompt; }
-$('pageEditBtn').addEventListener('click', async ()=>{
-  const P = window.parent;
-  const sessions = P && P.__dshSessions;
-  if(!sessions || typeof sessions.create!=='function' || typeof P.__dshPromptIntoSession!=='function'){
-    alert('无法创建 AI 会话：请在 DSH 工作台中打开本页面。'); return;
-  }
-  const sid = await sessions.create({});
-  try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
-  await P.__dshPromptIntoSession(sid, pageEditPrompt);
-});
 
 /* ---------- 历史 & 统计 ---------- */
 let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
@@ -3161,13 +3182,6 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
-/* 页面修改配置（设置页内卡片）：页面修改提示词编辑 */
-$('cfgPageEditSave').addEventListener('click', ()=>{
-  pageEditPrompt=$('cfgPromptPageEdit').value || DEFAULT_PAGE_EDIT_PROMPT;
-  savePageEditPrompt();
-  $('cfgPageEditSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgPageEditSavedTip').textContent=''; },2000);
-});
-$('cfgPageEditReset').addEventListener('click', ()=>{ pageEditPrompt=DEFAULT_PAGE_EDIT_PROMPT; savePageEditPrompt(); fillPageEditForm(); });
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
@@ -3197,7 +3211,6 @@ function renderAll(){
   renderQueue();
   renderDetail();
   fillCfgForm();
-  fillPageEditForm();
   applyJenkinsForm();
   loadDeployStrategies();
 }
