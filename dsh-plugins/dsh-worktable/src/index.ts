@@ -676,7 +676,7 @@ export function apply(ctx: Context) {
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: stageLogText(cfg.cleanupScript.name, r) })
     }
     for (const s of pl.stages || []) {
-      if (s.gate) { logs.push({ stage: s.name, status: 'success', log: '[定时执行] 审批门自动通过' }); continue }
+      if (s.skip || s.gate) { logs.push({ stage: s.name, status: 'skipped', log: '[定时执行] 本阶段配置为不执行，已跳过' }); continue }   // 兼容旧计划中的 gate（审批门）标记
       if (s.kind === 'jenkins') { logs.push({ stage: s.name, status: 'success', log: '[定时执行] Jenkins 阶段：定时触发暂不支持，已跳过' }); continue }
       if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir)

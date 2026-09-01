@@ -799,8 +799,8 @@ function apply(ctx) {
       logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: stageLogText(cfg.cleanupScript.name, r) });
     }
     for (const s of pl.stages || []) {
-      if (s.gate) {
-        logs.push({ stage: s.name, status: "success", log: "[\u5B9A\u65F6\u6267\u884C] \u5BA1\u6279\u95E8\u81EA\u52A8\u901A\u8FC7" });
+      if (s.skip || s.gate) {
+        logs.push({ stage: s.name, status: "skipped", log: "[\u5B9A\u65F6\u6267\u884C] \u672C\u9636\u6BB5\u914D\u7F6E\u4E3A\u4E0D\u6267\u884C\uFF0C\u5DF2\u8DF3\u8FC7" });
         continue;
       }
       if (s.kind === "jenkins") {
