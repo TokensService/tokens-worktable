@@ -248,6 +248,16 @@ values["global"] = deep_merge(values.get("global", {}), {
 values = deep_merge(values, yaml_replace_map)
 # Target placement is derived only from TARGET_HOSTS and must not be overridden.
 values["nodeSelector"] = {node_selector_key: node_selector_value}
+values.setdefault("head", {})["nodeSelector"] = {node_selector_key: node_selector_value}
+worker_groups = values.get("workerGroups")
+if isinstance(worker_groups, dict):
+    for worker_group in worker_groups.values():
+        if isinstance(worker_group, dict):
+            worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
+elif isinstance(worker_groups, list):
+    for worker_group in worker_groups:
+        if isinstance(worker_group, dict):
+            worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
 upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
 upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
 upsert_container_env("XDS_NAMESPACE", namespace)
