@@ -362,6 +362,9 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_splitChatToggle:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}',
   '.dsh-wt_splitChatToggleOff{opacity:.45;filter:grayscale(1)}',
   '.dsh-wt_splitChatToggleOff:hover{opacity:.9}',
+  // 聊天列右上角 ✕ 关闭会话窗（fixed 浮在会话视图头部之上；半透明底色保证压在深/浅内容上都可读）
+  '.dsh-wt_splitChatClose{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.18));color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;cursor:pointer}',
+  '.dsh-wt_splitChatClose:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09))}',
   // + 右侧弹出面板
   '.dsh-wt_popBackdrop{position:fixed;left:0;top:0;right:0;bottom:0;z-index:79;background:transparent}',
   // 删除二次确认（fixed 居中模态，压在弹窗之上）
