@@ -207,7 +207,11 @@
     <div class="dshell-card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <h2 class="dshell-sub" style="margin:0" id="detailTitle">阶段详情</h2>
-        <span id="detailBadge"></span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
+          <span id="detailBadge"></span>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="用系统文件管理器打开归档目录（在 DSH 服务端主机上打开）：优先当前/最近一次运行的归档文件夹，未运行时取运行历史选中行，均无则打开归档根目录">📂 打开归档目录</button>
+        </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
       <div class="dshell-divider"></div>
@@ -2782,6 +2786,35 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
   if(!rec){ alert('请先点击选择一条运行历史。'); return; }
   createAnalysisChat(b.getAttribute('data-ract'), rec);
 }));
+/* 「📂 打开归档目录」：用系统文件管理器打开归档目录（在 DSH 服务端主机上打开，xdg-open/gio/open 依次探测）。
+   目录选取优先级：当前/最近一次运行的归档文件夹（curRun.archive）→ 运行历史选中行的归档目录 →
+   配置的归档根目录（archiveDir，留空时取保底 runs/）。均无可用目录时仅提示。 */
+const FM_HELPER='/tmp/op_test_open_fm.sh';
+const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的助手脚本：用系统文件管理器打开 $1\n'
+  +'d="$1"\n[ -n "$d" ] && [ -d "$d" ] || exit 2\n'
+  +'if command -v xdg-open >/dev/null 2>&1; then setsid nohup xdg-open "$d" >/dev/null 2>&1 & exit 0; fi\n'
+  +'if command -v gio >/dev/null 2>&1; then setsid nohup gio open "$d" >/dev/null 2>&1 & exit 0; fi\n'
+  +'if command -v open >/dev/null 2>&1; then open "$d" >/dev/null 2>&1 & exit 0; fi\n'
+  +'exit 3\n';
+async function openArchiveFolder(){
+  const tip=$('archiveTip');
+  const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
+  let folder=(curRun && curRun.archive) || '';
+  if(!folder && selHistoryIdx>=0 && history[selHistoryIdx]) folder=history[selHistoryIdx].archive||'';
+  if(!folder) folder=(archiveDir||'').trim() || fallbackArchiveRoot() || '';
+  if(!folder){ say('✗ 暂无归档目录：请先运行一次流水线，或在「设置」页配置归档路径','var(--log-warn)'); return; }
+  try{
+    await apiWrite(FM_HELPER, FM_SCRIPT);   // 幂等重写助手脚本（内容固定）
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:FM_HELPER,args:[folder],timeoutMs:10000})});
+    const j=await r.json();
+    if(j && j.error){ say('✗ '+String(j.error).slice(0,120),'var(--log-err)'); return; }
+    if(j.code===0) say('✓ 已在服务端打开 '+folder,'var(--log-ok)');
+    else if(j.code===2) say('✗ 目录不存在：'+folder,'var(--log-err)');
+    else if(j.code===3) say('✗ 服务端未找到文件管理器（xdg-open/gio/open）','var(--log-err)');
+    else say('✗ 打开失败（退出码 '+j.code+'）'+(j.stderr?('：'+String(j.stderr).trim().slice(0,120)):''),'var(--log-err)');
+  }catch(e){ say('✗ 请求失败：'+String(e.message||e).slice(0,120),'var(--log-err)'); }
+}
+$('openArchiveBtn').addEventListener('click', openArchiveFolder);
 /* 历史重跑：按选中行的流水线 + 环境 IP + 分支 + 执行人重新运行（运行中则入队） */
 function rerunFromHistory(rec){
   const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline);
