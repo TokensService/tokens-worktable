@@ -134,20 +134,8 @@
       <div class="dshell-list" id="diagFindings"></div>
     </div>
 
-    <!-- 设置：全部配置内联在本页底部（全局「刷新数据」操作条之前），保存后立即生效 -->
+    <!-- 设置：全部配置内联在本页底部（全局「刷新数据」操作条之前），改动即自动保存生效 -->
     <div class="dshell-divider"></div>
-    <h2 class="dshell-sub" style="margin:0 0 8px">设置</h2>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">外观主题</h2>
-      <div class="diag-formrow">
-        <div class="theme-seg" title="背景主题（浅色 / 深色 / 跟随系统）">
-          <button type="button" data-theme="system">系统</button>
-          <button type="button" data-theme="dark">深</button>
-          <button type="button" data-theme="light">浅</button>
-        </div>
-        <span class="dshell-muted">立即生效并记住选择；「跟随系统」随操作系统明暗模式自动切换。</span>
-      </div>
-    </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">普罗米修斯数据源（时序指标）</h2>
       <div class="diag-formrow" style="margin-bottom:8px">
@@ -159,7 +147,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">轮询间隔（秒）
           <input class="dshell-input" id="setPollS" type="number" min="5" max="600" style="width:80px" /></label>
       </div>
-      <div class="diag-note">URL 参数 ?prom=host:port 优先于此处地址；保存后立即按新配置重新拉取。</div>
+      <div class="diag-note">URL 参数 ?prom=host:port 优先于此处地址；改动后自动保存并按新配置重新拉取。</div>
     </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">日志目录</h2>
@@ -175,11 +163,7 @@
       </div>
       <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则保留示例数据。</div>
     </div>
-    <div class="diag-formrow">
-      <button class="dshell-btn" id="btnSaveSettings">保存设置</button>
-      <button class="dshell-btn dshell-btnGhost" id="btnResetSettings">恢复默认</button>
-      <span class="dshell-muted" id="setHint" style="flex:1 1 auto">配置仅存于本机浏览器 localStorage，保存后立即生效。</span>
-    </div>
+    <div class="diag-note" id="setHint">改动即自动保存并生效；配置仅存于本机浏览器 localStorage。</div>
   </div>
 
   <!-- ============ 时延分解 ============ -->
@@ -1011,7 +995,7 @@ function loadProf(){
     });
 }
 
-/* ================= 设置（localStorage 持久化，保存后立即生效） ================= */
+/* ================= 设置（localStorage 持久化，改动即自动保存生效） ================= */
 function fillSettings(){
   document.getElementById("setPromUrl").value=PROM_URL;
   document.getElementById("setRangeH").value=PROM_RANGE_H;
@@ -1040,17 +1024,11 @@ function applySettings(save){
   PREV={};LIVE=false;   /* 数据源变更后重新采样 */
   PROM_PANEL_MODE="init";PROM_LAST_OK="—";renderPromPanel();
   poll();startPoll();loadLogs();loadProf();
-  document.getElementById("setHint").textContent=save?"已保存并生效。":"已恢复默认并生效。";
+  document.getElementById("setHint").textContent="已自动保存并生效。";
 }
-document.getElementById("btnSaveSettings").addEventListener("click",function(){applySettings(true);});
-document.getElementById("btnResetSettings").addEventListener("click",function(){
-  ["diagPerf.promUrl","diagPerf.promRangeH","diagPerf.pollS","diagPerf.logDir","diagPerf.profDir"].forEach(function(k){lsSet(k,"");});
-  document.getElementById("setPromUrl").value=DEFAULT_PROM;
-  document.getElementById("setRangeH").value=4;
-  document.getElementById("setPollS").value=30;
-  document.getElementById("setLogDir").value="";
-  document.getElementById("setProfDir").value="";
-  applySettings(false);
+/* 无保存/恢复按钮：任一配置项 change（失焦或回车确认）即自动保存并生效 */
+["setPromUrl","setRangeH","setPollS","setLogDir","setProfDir"].forEach(function(id){
+  document.getElementById(id).addEventListener("change",function(){applySettings(true);});
 });
 
 window.addEventListener("resize",function(){clearTimeout(window.__diagRt);window.__diagRt=setTimeout(renderAll,200);});
