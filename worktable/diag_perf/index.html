@@ -75,9 +75,28 @@
     .diag-flow .diag-node { padding:6px 10px; border:1px solid currentColor; border-radius:8px; opacity:.9; }
     .diag-flow .diag-arrow { opacity:.6; }
     .diag-note { font-size:12px; opacity:.65; margin-top:6px; }
+  .diag-tabx { margin-left:6px; opacity:.5; font-size:12px; }
+  .diag-tabx:hover { opacity:1; color:#ef4444; }
     .diag-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .diag-formrow .grow { flex:1 1 240px; }
     .diag-promql { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; word-break:break-all; opacity:.65; }
+  /* 面板 ⋯ 菜单与查看 / 编辑弹层（仿 Grafana 面板操作） */
+  .diag-kebab { position:absolute; top:6px; right:8px; border:none; background:transparent; color:var(--dshell-fg,#9aa4b2); font-size:15px; cursor:pointer; padding:2px 7px; border-radius:6px; line-height:1; }
+  .diag-kebab:hover { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15)); }
+  .diag-menu { position:absolute; top:28px; right:8px; z-index:30; min-width:112px; background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l2,#3a4150); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:4px; display:flex; flex-direction:column; }
+  .diag-menu button { border:none; background:transparent; color:var(--dsw-alias-label-primary,#e6e8eb); font:inherit; font-size:12px; text-align:left; padding:6px 10px; border-radius:6px; cursor:pointer; }
+  .diag-menu button:hover { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15)); }
+  .diag-modal { position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:24px; }
+  .diag-modal-card { background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:12px; padding:16px 18px; max-width:960px; width:100%; max-height:90vh; overflow:auto; }
+  .diag-modal-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+  .diag-modal-x { border:none; background:transparent; color:var(--dshell-fg,#9aa4b2); font-size:15px; cursor:pointer; padding:2px 8px; border-radius:6px; }
+  .diag-modal-x:hover { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15)); }
+  .diag-view-canvas { width:100%; height:420px; display:block; }
+  .diag-modal-full .diag-modal-card { max-width:none; width:calc(100vw - 48px); height:calc(100vh - 48px); display:flex; flex-direction:column; }
+  .diag-modal-full .diag-view-canvas { flex:1 1 auto; height:auto; min-height:280px; }
+  .diag-editrow { margin-bottom:10px; }
+  .diag-mname { cursor:pointer; }
+  .diag-editql { width:100%; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; resize:vertical; }
   </style>
 </head>
 <body>
@@ -87,10 +106,25 @@
       <h1 class="dshell-title">大模型推理性能诊断</h1>
       <p class="dshell-sub">汇聚系统源码指标、普罗米修斯时序、Profiling、日志与硬件信息，定位推理链路性能瓶颈。</p>
     </div>
-    <div class="theme-seg" id="themeSeg" title="背景主题（浅色 / 深色 / 跟随系统）">
-      <button type="button" data-theme="system">系统</button>
-      <button type="button" data-theme="dark">深</button>
-      <button type="button" data-theme="light">浅</button>
+    <div style="display:flex;align-items:center;gap:10px">
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="Prometheus 查询窗口（与「开始诊断」页设置区联动，改动即重新拉取）">窗口
+        <select class="dshell-input" id="rangeSel" style="width:auto;padding:3px 6px;font-size:12px">
+          <option value="1">近 1h</option><option value="4">近 4h</option><option value="8">近 8h</option>
+          <option value="12">近 12h</option><option value="24">近 24h</option><option value="72">近 72h</option>
+          <option value="abs">绝对时间…</option>
+        </select>
+      </label>
+      <span id="absRange" style="display:none;align-items:center;gap:6px">
+        <input class="dshell-input" id="absFrom" type="datetime-local" style="width:auto;padding:2px 4px;font-size:12px" />
+        <span class="dshell-muted" style="font-size:12px">~</span>
+        <input class="dshell-input" id="absTo" type="datetime-local" style="width:auto;padding:2px 4px;font-size:12px" />
+        <button class="dshell-btn" id="absApply" type="button" style="padding:3px 10px;font-size:12px">应用</button>
+      </span>
+      <div class="theme-seg" id="themeSeg" title="背景主题（浅色 / 深色 / 跟随系统）">
+        <button type="button" data-theme="system">系统</button>
+        <button type="button" data-theme="dark">深</button>
+        <button type="button" data-theme="light">浅</button>
+      </div>
     </div>
   </div>
 
@@ -112,30 +146,12 @@
     <button class="dshell-tab" data-tab="logs">日志</button>
     <button class="dshell-tab" data-tab="metrics">指标字典</button>
     <button class="dshell-tab" data-tab="prom">数据源</button>
+    <button class="dshell-tab" id="tabAdd" type="button" title="添加标签页" style="min-width:32px">＋</button>
   </div>
 
   <!-- ============ 开始诊断 ============ -->
   <div class="diag-tabpane" data-pane="overview">
-    <div class="dshell-grid">
-      <div class="dshell-stat"><div class="dshell-statLabel">TTFT P99</div><div class="dshell-statValue" id="ovTtft">—</div><div class="dshell-statDelta" id="ovTtftD"></div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">TPOT P99</div><div class="dshell-statValue" id="ovTpot">—</div><div class="dshell-statDelta" id="ovTpotD"></div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">队列时延 P99</div><div class="dshell-statValue" id="ovQueue">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">吞吐 TPS</div><div class="dshell-statValue" id="ovTps">—</div><div class="dshell-statDelta" id="ovTpsD"></div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">缓存命中率</div><div class="dshell-statValue" id="ovHit">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">KV Blocks 占用</div><div class="dshell-statValue" id="ovKv">—</div></div>
-    </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">推理链路时延瀑布（最近一次慢请求）</h2>
-      <canvas class="diag-canvas" id="waterfall"></canvas>
-      <div class="diag-note">队列等待 → Prefill → Decode ×N → 转发回传；点击「时延分解」页查看时序趋势。</div>
-    </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论（规则引擎自动研判）</h2>
-      <div class="dshell-list" id="diagFindings"></div>
-    </div>
-
-    <!-- 设置：全部配置内联在本页底部（全局「刷新数据」操作条之前），改动即自动保存生效 -->
-    <div class="dshell-divider"></div>
+    <!-- 设置：全部配置内联在本页顶部，改动即自动保存生效 -->
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">普罗米修斯数据源（时序指标）</h2>
       <div class="diag-formrow" style="margin-bottom:8px">
@@ -146,6 +162,10 @@
           <input class="dshell-input" id="setRangeH" type="number" min="1" max="72" style="width:80px" /></label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">轮询间隔（秒）
           <input class="dshell-input" id="setPollS" type="number" min="5" max="600" style="width:80px" /></label>
+      </div>
+      <div class="diag-formrow" style="margin-top:8px">
+        <button class="dshell-btn dshell-btnGhost" id="btnMetrics" type="button">获取数据源全部指标</button>
+        <span class="dshell-muted" id="metricsBtnHint" style="font-size:12px"></span>
       </div>
       <div class="diag-note">URL 参数 ?prom=host:port 优先于此处地址；改动后自动保存并按新配置重新拉取。</div>
     </div>
@@ -164,6 +184,25 @@
       <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则保留示例数据。</div>
     </div>
     <div class="diag-note" id="setHint">改动即自动保存并生效；配置仅存于本机浏览器 localStorage。</div>
+    <div class="dshell-divider"></div>
+
+    <div class="dshell-grid">
+      <div class="dshell-stat"><div class="dshell-statLabel">TTFT P99</div><div class="dshell-statValue" id="ovTtft">—</div><div class="dshell-statDelta" id="ovTtftD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">TPOT P99</div><div class="dshell-statValue" id="ovTpot">—</div><div class="dshell-statDelta" id="ovTpotD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">队列时延 P99</div><div class="dshell-statValue" id="ovQueue">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">吞吐 TPS</div><div class="dshell-statValue" id="ovTps">—</div><div class="dshell-statDelta" id="ovTpsD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">缓存命中率</div><div class="dshell-statValue" id="ovHit">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">KV Blocks 占用</div><div class="dshell-statValue" id="ovKv">—</div></div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">推理链路时延瀑布（最近一次慢请求）</h2>
+      <canvas class="diag-canvas" id="waterfall"></canvas>
+      <div class="diag-note">队列等待 → Prefill → Decode ×N → 转发回传；点击「时延分解」页查看时序趋势。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论（规则引擎自动研判）</h2>
+      <div class="dshell-list" id="diagFindings"></div>
+    </div>
   </div>
 
   <!-- ============ 时延分解 ============ -->
@@ -295,7 +334,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">指标收集清单（数据源 / 采集方式 / 分析用途）</h2>
       <div class="dshell-kv" id="metricsDict"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「开始诊断」页底部的设置区配置（URL 参数 ?prom=host:port 优先于设置区的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
+      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「开始诊断」页顶部的设置区配置（URL 参数 ?prom=host:port 优先于设置区的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
     </div>
   </div>
 
@@ -374,6 +413,529 @@ var DATA={
 /* ================= 轻量 Canvas 图表 ================= */
 function ctx2d(id){var c=document.getElementById(id);var r=c.getBoundingClientRect();var dpr=window.devicePixelRatio||1;c.width=r.width*dpr;c.height=r.height*dpr;var g=c.getContext("2d");g.scale(dpr,dpr);return {g:g,W:r.width,H:r.height};}
 function css(name){return getComputedStyle(document.body).getPropertyValue(name).trim()||"#888";}
+/* ================= 图表框选（拖动选中时间段 → 全部时序图联动放大，双击 / Esc 还原） ================= */
+var SELPAD={l:44,r:10};   /* 与 line() 左右留白一致：选区像素 ↔ 数据点索引换算 */
+var CHARTS={};            /* id → 当前视图的 line() 参数 {labels,sets,unit}（缩放后为切片） */
+var FULL={};              /* id → 完整视图的 line() 参数，缩放还原用 */
+var SEL={};               /* id → 已确认选区 {i0,i1}（当前视图的数据点索引区间） */
+var ZOOM={};              /* id → 缩放区间 {i0,i1}（相对完整视图的绝对索引） */
+var ZOOMING=false;        /* 视图重绘标记：true 时 line() 不更新 FULL、不触发缩放重挂 */
+var BRUSH_IDS=["chTtft","chTpot","chQueue","chTransfer","chTps","chMooncake","chHit","chBatch","chKv"];   /* 参与框选/联动/面板菜单的时序图 */
+
+function xToIdx(e,cv,c){  /* 鼠标 x → 最近数据点索引 */
+  var r=cv.getBoundingClientRect(),n=c.labels.length,iw=r.width-SELPAD.l-SELPAD.r;
+  return Math.max(0,Math.min(n-1,Math.round((e.clientX-r.left-SELPAD.l)/iw*(n-1))));
+}
+function drawSel(id,tmp){ /* 在 line() 绘制结果上叠加选区高亮（须紧随 line/redraw 调用，复用其 dpr 变换） */
+  var sel=tmp||SEL[id];if(!sel)return;
+  var c=CHARTS[id];if(!c)return;
+  var cv=document.getElementById(id),g=cv.getContext("2d"),dpr=window.devicePixelRatio||1;
+  var W=cv.width/dpr,H=cv.height/dpr,n=c.labels.length,iw=W-SELPAD.l-SELPAD.r;
+  var x0=SELPAD.l+iw*Math.min(sel.i0,sel.i1)/(n-1),x1=SELPAD.l+iw*Math.max(sel.i0,sel.i1)/(n-1);
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.fillStyle="rgba(96,165,250,.18)";g.fillRect(x0,10,Math.max(1,x1-x0),H-32);
+  g.strokeStyle="rgba(96,165,250,.8)";g.strokeRect(x0+.5,10.5,Math.max(1,x1-x0),H-32);
+}
+function redrawChart(id){ /* 按当前视图原样重绘（不动 FULL / 缩放状态） */
+  var c=CHARTS[id];if(!c)return;
+  ZOOMING=true;line(id,c.labels,c.sets,c.unit);ZOOMING=false;
+}
+function zoomApply(id,z){ /* 把完整视图按绝对索引区间切片显示 */
+  var c=FULL[id];if(!c)return;
+  var n=c.labels.length;
+  var a=Math.max(0,Math.min(n-1,Math.min(z.i0,z.i1))),b=Math.max(0,Math.min(n-1,Math.max(z.i0,z.i1)));
+  if(b-a<1){delete ZOOM[id];return;}
+  ZOOMING=true;
+  line(id,c.labels.slice(a,b+1),c.sets.map(function(s){return {color:s.color,data:s.data.slice(a,b+1)};}),c.unit);
+  ZOOMING=false;
+}
+function zoomAll(range){ /* 联动：同一绝对索引区间应用到全部时序图（共享同一时间网格） */
+  BRUSH_IDS.forEach(function(cid){
+    if(!FULL[cid])return;
+    ZOOM[cid]={i0:range.i0,i1:range.i1};
+    zoomApply(cid,ZOOM[cid]);
+    showZoomInfo(cid);
+  });
+}
+function resetAllZoom(){ /* 联动还原 */
+  Object.keys(ZOOM).slice().forEach(resetZoom);
+  Object.keys(CHARTS).forEach(hideInfo);
+}
+function zoomChart(id,i0,i1){ /* 框选放大：索引为当前视图相对值，需叠加当前缩放偏移 */
+  var prev=ZOOM[id],base=prev?Math.min(prev.i0,prev.i1):0;
+  delete SEL[id];
+  zoomAll({i0:base+i0,i1:base+i1});
+}
+function resetZoom(id){
+  if(!ZOOM[id])return;
+  delete ZOOM[id];
+  var c=FULL[id];if(!c)return;
+  ZOOMING=true;line(id,c.labels,c.sets,c.unit);ZOOMING=false;
+}
+function hideInfo(id){
+  var cv=document.getElementById(id),info=cv.parentNode.querySelector(".diag-selinfo");
+  if(info){info.style.display="none";info.textContent="";}
+}
+function showZoomInfo(id){ /* 缩放后的区间统计，写进 canvas 下方的说明行 */
+  var cv=document.getElementById(id),c=CHARTS[id];if(!c)return;
+  var info=cv.parentNode.querySelector(".diag-selinfo");
+  if(!info){info=document.createElement("div");info.className="diag-note diag-selinfo";cv.parentNode.insertBefore(info,cv.nextSibling);}
+  var names=[];
+  cv.parentNode.querySelectorAll(".diag-legend span").forEach(function(s){names.push(s.textContent.trim());});
+  var n=c.labels.length;
+  var parts=["已放大 "+c.labels[0]+" ~ "+c.labels[n-1]+"（"+n+" 点）"];
+  c.sets.forEach(function(s,si){
+    var seg=s.data,sum=0;
+    seg.forEach(function(v){sum+=v;});
+    parts.push((names[si]||"序列"+(si+1))+" 均值 "+(sum/seg.length).toFixed(1)+" · 区间 "+Math.min.apply(null,seg)+"~"+Math.max.apply(null,seg)+c.unit);
+  });
+  parts.push("双击或 Esc 还原");
+  info.style.display="";info.textContent=parts.join("；");
+}
+function clearAllSel(){
+  SEL={};
+  document.querySelectorAll(".diag-selinfo").forEach(function(el){el.style.display="none";el.textContent="";});
+}
+function attachBrush(id){
+  var cv=document.getElementById(id);if(!cv)return;
+  cv.style.cursor="crosshair";
+  cv.title="按住拖动框选时间段并放大（全部时序图联动）；双击或 Esc 还原";
+  var drag=null;
+  cv.addEventListener("mousedown",function(e){if(!CHARTS[id])return;delete SEL[id];drag={i0:xToIdx(e,cv,CHARTS[id])};e.preventDefault();});
+  window.addEventListener("mousemove",function(e){
+    if(!drag)return;var c=CHARTS[id];if(!c)return;
+    drag.i1=xToIdx(e,cv,c);redrawChart(id);drawSel(id,drag);
+  });
+  window.addEventListener("mouseup",function(e){
+    if(!drag)return;var c=CHARTS[id];var i0=drag.i0;drag=null;if(!c)return;
+    var i1=xToIdx(e,cv,c);
+    if(Math.abs(i1-i0)>=1)zoomChart(id,i0,i1);   /* 框选 ≥1 个点：放大到该时间段 */
+    else{redrawChart(id);if(!ZOOM[id])hideInfo(id);}   /* 单击：仅清除选区残留 */
+  });
+  cv.addEventListener("dblclick",function(){resetAllZoom();});
+}
+BRUSH_IDS.forEach(attachBrush);
+document.addEventListener("keydown",function(e){
+  if(e.key!=="Escape")return;
+  if(document.getElementById("diagModal")){closeModal();return;}   /* 弹层打开时 Esc 仅关闭弹层 */
+  clearAllSel();
+  resetAllZoom();
+  Object.keys(CHARTS).forEach(redrawChart);
+});
+
+/* ================= 面板菜单（卡片右上角 ⋯ → 查看 / 编辑，仿 Grafana 面板操作） ================= */
+var PANEL_DEFS={   /* 图表 id → 该面板用到的 PROM_DEFS 序列键 */
+  chTtft:["ttft.p50","ttft.p90","ttft.p99"],chTpot:["tpot.p50","tpot.p90","tpot.p99"],
+  chQueue:["queue.sched"],chTransfer:["transfer.kv"],chTps:["tps","qps"],
+  chMooncake:["mooncake.rd","mooncake.wr"],chHit:["hit"],chBatch:["batch.run","batch.wait"],chKv:["kvUsage"]
+};
+function cardOf(id){var cv=document.getElementById(id);return cv&&cv.closest?cv.closest(".dshell-card"):null;}
+function panelTitle(id){var card=cardOf(id),h=card?card.querySelector("h2"):null;return h?h.textContent:id;}
+function closeModal(){
+  var m=document.getElementById("diagModal");if(m)m.remove();
+  delete CHARTS["diagViewCanvas"];delete FULL["diagViewCanvas"];
+  if(VIEW){window.removeEventListener("mousemove",VIEW.move);window.removeEventListener("mouseup",VIEW.up);VIEW=null;}
+}
+function openModal(titleText,bodyEl,full){
+  closeModal();
+  var ov=document.createElement("div");ov.className="diag-modal"+(full?" diag-modal-full":"");ov.id="diagModal";
+  var card=document.createElement("div");card.className="diag-modal-card";
+  var head=document.createElement("div");head.className="diag-modal-head";
+  var h=document.createElement("h2");h.className="dshell-sub";h.style.margin="0";h.textContent=titleText;
+  var x=document.createElement("button");x.className="diag-modal-x";x.type="button";x.textContent="✕";x.title="关闭";
+  x.addEventListener("click",closeModal);
+  head.appendChild(h);head.appendChild(x);card.appendChild(head);card.appendChild(bodyEl);ov.appendChild(card);
+  ov.addEventListener("click",function(e){if(e.target===ov)closeModal();});
+  document.body.appendChild(ov);
+}
+var VIEW=null;   /* 查看弹层状态 {panelId,note,move,up}，关闭弹层时清理监听 */
+function redrawViewCanvas(){ /* 以面板当前视图（含联动缩放）重绘弹层大图 */
+  if(!VIEW)return;
+  var c=CHARTS[VIEW.panelId];if(!c)return;
+  ZOOMING=true;line("diagViewCanvas",c.labels,c.sets,c.unit);ZOOMING=false;
+  if(VIEW.note)VIEW.note.textContent="当前视图 "+c.labels[0]+" ~ "+c.labels[c.labels.length-1]+"（"+c.labels.length+" 点）· 可拖动框选放大（全部时序图联动），双击还原";
+}
+function openView(id){   /* 查看：最大化画布呈现当前视图，弹层内同样支持框选放大 */
+  if(!CHARTS[id])return;
+  var body=document.createElement("div");
+  body.style.cssText="display:flex;flex-direction:column;flex:1;min-height:0";
+  var cv=document.createElement("canvas");cv.className="diag-view-canvas";cv.id="diagViewCanvas";
+  body.appendChild(cv);
+  var note=document.createElement("div");note.className="diag-note";
+  body.appendChild(note);
+  var card=cardOf(id),lg=card?card.querySelector(".diag-legend"):null;
+  if(lg)body.appendChild(lg.cloneNode(true));
+  openModal(panelTitle(id),body,true);
+  var drag=null;
+  var move=function(e){
+    if(!drag)return;var cc=CHARTS["diagViewCanvas"];if(!cc)return;
+    drag.i1=xToIdx(e,cv,cc);
+    ZOOMING=true;line("diagViewCanvas",cc.labels,cc.sets,cc.unit);ZOOMING=false;
+    drawSel("diagViewCanvas",drag);
+  };
+  var up=function(e){
+    if(!drag)return;var cc=CHARTS["diagViewCanvas"];var i0=drag.i0;drag=null;if(!cc)return;
+    var i1=xToIdx(e,cv,cc);
+    if(Math.abs(i1-i0)<1){redrawViewCanvas();return;}
+    var pz=ZOOM[id],base=pz?Math.min(pz.i0,pz.i1):0;   /* 弹层视图索引 → 完整视图绝对索引 */
+    zoomAll({i0:base+i0,i1:base+i1});
+    redrawViewCanvas();
+  };
+  VIEW={panelId:id,note:note,move:move,up:up};
+  cv.style.cursor="crosshair";
+  cv.title="按住拖动框选时间段并放大（全部时序图联动）；双击还原";
+  cv.addEventListener("mousedown",function(e){var cc=CHARTS["diagViewCanvas"];if(!cc)return;drag={i0:xToIdx(e,cv,cc)};e.preventDefault();});
+  window.addEventListener("mousemove",move);
+  window.addEventListener("mouseup",up);
+  cv.addEventListener("dblclick",function(){resetAllZoom();redrawViewCanvas();});
+  redrawViewCanvas();
+}
+function openEdit(id){   /* 编辑：已有线改名称/候选 PromQL，附加线增删改；保存后立即重新拉取 */
+  var keys=PANEL_DEFS[id]||[];
+  var body=document.createElement("div");
+  var tip=document.createElement("div");tip.className="diag-note";tip.style.marginBottom="10px";
+  tip.textContent="已有线可改名称与候选 PromQL（每行一条，按顺序取第一个有结果的查询）；附加线为单条 PromQL，可增删改。保存后立即重新拉取，覆写存于本机 localStorage；「恢复默认」清除该画板全部覆写（含线名与附加线）并重载页面。";
+  body.appendChild(tip);
+  var nameOv=CUSTOM.names[id]||[],leg=ORIG_NAMES[id]||legendNames(id);
+  keys.forEach(function(k,ki){
+    var def=PROM_DEFS.filter(function(d){return d.k===k;})[0];if(!def)return;
+    var row=document.createElement("div");row.className="diag-editrow";
+    row.style.cssText="border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:8px;padding:8px;margin-bottom:8px";
+    var head=document.createElement("div");head.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:6px";
+    var nm=document.createElement("input");nm.className="dshell-input ce-bname";nm.style.flex="1";
+    nm.value=nameOv[ki]||leg[ki]||def.name;nm.title="线名称（图例显示）";
+    var unit=document.createElement("span");unit.className="dshell-muted";unit.style.fontSize="12px";unit.textContent=def.unit;
+    head.appendChild(nm);head.appendChild(unit);
+    var ta=document.createElement("textarea");ta.className="dshell-input diag-editql";ta.setAttribute("data-def",k);
+    ta.value=def.q.join("\n");ta.rows=Math.min(5,def.q.length+1);
+    row.appendChild(head);row.appendChild(ta);body.appendChild(row);
+  });
+  var xtip=document.createElement("div");xtip.className="dshell-muted";xtip.style.cssText="font-size:12px;margin:10px 0 6px";
+  xtip.textContent="附加线（叠加在本画板曲线上，随缩放联动）";
+  body.appendChild(xtip);
+  var list=document.createElement("div");body.appendChild(list);
+  var addXRow=function(s){
+    var row=document.createElement("div");row.className="diag-celine";
+    row.style.cssText="border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:8px;padding:8px;margin-bottom:8px";
+    var head=document.createElement("div");head.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:6px";
+    var nm=document.createElement("input");nm.className="dshell-input ce-xname";nm.style.flex="1";nm.placeholder="线名称";nm.value=s.name||"";
+    var cl=document.createElement("input");cl.className="ce-xcolor";cl.type="color";cl.value=s.color||PALETTE[list.children.length%PALETTE.length];
+    cl.style.cssText="width:36px;height:26px;border:none;background:none;padding:0";
+    var del=document.createElement("button");del.className="dshell-btn dshell-btnGhost";del.type="button";del.style.padding="2px 8px";del.textContent="删";
+    del.addEventListener("click",function(){row.remove();});
+    head.appendChild(nm);head.appendChild(cl);head.appendChild(del);
+    var q=document.createElement("textarea");q.className="dshell-input diag-editql ce-xq";q.rows=2;q.placeholder="PromQL";q.value=s.q||"";
+    row.appendChild(head);row.appendChild(q);
+    list.appendChild(row);
+  };
+  (CUSTOM.extra[id]||[]).forEach(addXRow);
+  var bar=document.createElement("div");bar.style.cssText="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap";
+  var add=document.createElement("button");add.className="dshell-btn dshell-btnGhost";add.type="button";add.textContent="＋ 添加线";
+  var save=document.createElement("button");save.className="dshell-btn";save.type="button";save.textContent="保存并重新拉取";
+  var rst=document.createElement("button");rst.className="dshell-btn dshell-btnGhost";rst.type="button";rst.textContent="恢复默认";
+  bar.appendChild(add);bar.appendChild(save);bar.appendChild(rst);body.appendChild(bar);
+  add.addEventListener("click",function(){addXRow({});});
+  save.addEventListener("click",function(){
+    body.querySelectorAll("textarea[data-def]").forEach(function(ta){
+      var k=ta.getAttribute("data-def");
+      var def=PROM_DEFS.filter(function(d){return d.k===k;})[0];if(!def)return;
+      var qs=ta.value.split("\n").map(function(s){return s.trim();}).filter(function(s){return s;});
+      if(qs.length){def.q=qs;lsSet("diagPerf.promql."+k,JSON.stringify(qs));}
+    });
+    var nmArr=[];
+    body.querySelectorAll(".ce-bname").forEach(function(inp){nmArr.push(inp.value.trim());});
+    if(nmArr.some(function(s){return s;}))CUSTOM.names[id]=nmArr;else delete CUSTOM.names[id];
+    applyLineNames(id);
+    var xs=[];
+    list.querySelectorAll(".diag-celine").forEach(function(row){
+      var q=row.querySelector(".ce-xq").value.trim();if(!q)return;
+      xs.push({name:row.querySelector(".ce-xname").value.trim()||("线"+(xs.length+1)),color:row.querySelector(".ce-xcolor").value,q:q});
+    });
+    if(xs.length)CUSTOM.extra[id]=xs;else delete CUSTOM.extra[id];
+    refreshExtraLegend(id);
+    saveCustom();closeModal();poll();
+  });
+  rst.addEventListener("click",function(){
+    keys.forEach(function(k){lsSet("diagPerf.promql."+k,"");});
+    delete CUSTOM.names[id];delete CUSTOM.extra[id];
+    saveCustom();
+    location.reload();
+  });
+  openModal(panelTitle(id)+" · 编辑画板",body);
+}
+/* 时序图卡片右上角注入 ⋯ 按钮；菜单展开/收起走 document 单击委托（点别处或再点同一按钮收起） */
+function injectKebab(id){
+  var card=cardOf(id);if(!card||card.querySelector(".diag-kebab"))return;
+  card.style.position="relative";
+  var btn=document.createElement("button");
+  btn.className="diag-kebab";btn.type="button";btn.title="面板操作";btn.textContent="⋮";
+  btn.setAttribute("data-panel",id);
+  card.appendChild(btn);
+}
+BRUSH_IDS.forEach(injectKebab);
+document.addEventListener("click",function(e){
+  var kb=e.target.closest?e.target.closest(".diag-kebab"):null;
+  var openId=null;
+  document.querySelectorAll(".diag-menu").forEach(function(m){openId=m.getAttribute("data-for");m.remove();});
+  if(!kb)return;
+  var id=kb.getAttribute("data-panel");
+  if(openId===id)return;
+  var menu=document.createElement("div");
+  menu.className="diag-menu";menu.setAttribute("data-for",id);
+  var items=isCustomPanel(id)
+    ?[["view","查看 View"],["edit","编辑 Edit"],["delpanel","删除画板"]]
+    :[["view","查看 View"],["edit","编辑 Edit"]];
+  items.forEach(function(it){
+    var b=document.createElement("button");b.type="button";b.setAttribute("data-act",it[0]);b.textContent=it[1];
+    menu.appendChild(b);
+  });
+  menu.addEventListener("click",function(ev){
+    var b=ev.target.closest?ev.target.closest("button[data-act]"):null;if(!b)return;
+    var act=b.getAttribute("data-act");
+    if(act==="view")openView(id);
+    else if(act==="edit"){if(isCustomPanel(id))openCustomEdit(id);else openEdit(id);}
+    else if(act==="delpanel")deletePanel(id);
+  });
+  kb.parentNode.appendChild(menu);
+});
+
+/* ================= 自定义看板（＋标签页 / ＋普罗画板 / 画板加线，配置存 localStorage: diagPerf.custom） ================= */
+var PALETTE=["#60a5fa","#f59e0b","#ef4444","#34d399","#a78bfa","#f472b6","#22d3ee","#fb923c","#facc15"];
+var CUSTOM={tabs:[],panels:[],extra:{},names:{}};
+try{var __c=JSON.parse(lsGet("diagPerf.custom","")||"null");if(__c){CUSTOM.tabs=__c.tabs||[];CUSTOM.panels=__c.panels||[];CUSTOM.extra=__c.extra||{};CUSTOM.names=__c.names||{};}}catch(e){}
+function saveCustom(){
+  var strip=function(s){return {name:s.name,color:s.color,q:s.q};};
+  var extra={},names={};
+  Object.keys(CUSTOM.extra).forEach(function(id){if(CUSTOM.extra[id]&&CUSTOM.extra[id].length)extra[id]=CUSTOM.extra[id].map(strip);});
+  Object.keys(CUSTOM.names).forEach(function(id){if(CUSTOM.names[id]&&CUSTOM.names[id].some(function(s){return s;}))names[id]=CUSTOM.names[id];});
+  lsSet("diagPerf.custom",JSON.stringify({tabs:CUSTOM.tabs,
+    panels:CUSTOM.panels.map(function(p){return {id:p.id,tab:p.tab,title:p.title,unit:p.unit,series:p.series.map(strip)};}),
+    extra:extra,names:names}));
+}
+function panelOf(id){for(var i=0;i<CUSTOM.panels.length;i++)if(CUSTOM.panels[i].id===id)return CUSTOM.panels[i];return null;}
+function isCustomPanel(id){return !!panelOf(id);}
+function zeroSeries(){return Array.from({length:N},function(){return 0;});}
+function renderCustomPanels(){   /* 自定义画板整图绘制；内置画板叠加用户附加线（经 CHARTS 与缩放/查看联动一致） */
+  CUSTOM.panels.forEach(function(p){
+    if(!document.getElementById(p.id))return;
+    line(p.id,DATA.ts,p.series.map(function(s){return {color:s.color,data:s._data||zeroSeries()};}),p.unit||"");
+  });
+  Object.keys(CUSTOM.extra).forEach(function(id){
+    var xs=CUSTOM.extra[id];if(!xs||!xs.length)return;
+    var c=CHARTS[id];if(!c)return;
+    line(id,c.labels,c.sets.concat(xs.map(function(s){return {color:s.color,data:s._data||zeroSeries()};})),c.unit);
+  });
+}
+function refreshLegend(p){
+  var card=document.getElementById("card_"+p.id);if(!card)return;
+  card.querySelector(".diag-legend").innerHTML=p.series.map(function(s){
+    return '<span><i class="diag-dot" style="background:'+s.color+'"></i>'+esc(s.name)+'</span>';
+  }).join("");
+}
+var ORIG_NAMES={};   /* 内置画板图例的原始线名（首次应用覆写前快照，供清除覆写后还原） */
+function legendNames(id){
+  var card=cardOf(id),out=[];
+  if(!card)return out;
+  card.querySelectorAll(".diag-legend span:not(.diag-xlg)").forEach(function(sp){out.push(sp.textContent.trim());});
+  return out;
+}
+function applyLineNames(id){
+  var card=cardOf(id);if(!card)return;
+  var spans=card.querySelectorAll(".diag-legend span:not(.diag-xlg)");
+  if(!ORIG_NAMES[id])ORIG_NAMES[id]=legendNames(id);
+  var names=CUSTOM.names[id]||ORIG_NAMES[id];
+  spans.forEach(function(sp,i){
+    var t=names[i]||ORIG_NAMES[id][i];if(!t)return;
+    while(sp.childNodes.length>1)sp.removeChild(sp.lastChild);
+    sp.appendChild(document.createTextNode(t));
+  });
+}
+function refreshExtraLegend(id){
+  var card=cardOf(id);if(!card)return;
+  var lg=card.querySelector(".diag-legend");
+  if(!lg){lg=document.createElement("div");lg.className="diag-legend";card.appendChild(lg);}
+  lg.querySelectorAll(".diag-xlg").forEach(function(x){x.remove();});
+  (CUSTOM.extra[id]||[]).forEach(function(s){
+    var sp=document.createElement("span");sp.className="diag-xlg";
+    var dot=document.createElement("i");dot.className="diag-dot";dot.style.background=s.color;
+    sp.appendChild(dot);sp.appendChild(document.createTextNode(s.name));
+    lg.appendChild(sp);
+  });
+}
+function makeAddPanelBtn(tab){
+  var wrap=document.createElement("div");wrap.style.marginTop="12px";
+  var b=document.createElement("button");
+  b.className="dshell-btn dshell-btnGhost diag-addpanel";b.type="button";
+  b.setAttribute("data-pane",tab);b.textContent="＋ 添加普罗指标画板";
+  wrap.appendChild(b);return wrap;
+}
+function createTab(id,name){
+  var b=document.createElement("button");
+  b.className="dshell-tab";b.type="button";b.setAttribute("data-tab",id);b.textContent=name;
+  var x=document.createElement("span");   /* 自定义标签页可删除（× 不触发页签切换） */
+  x.className="diag-tabx";x.textContent="×";x.title="删除标签页";
+  x.addEventListener("click",function(e){e.stopPropagation();deleteTab(id);});
+  b.appendChild(x);
+  document.getElementById("tabs").insertBefore(b,document.getElementById("tabAdd"));
+  var pane=document.createElement("div");
+  pane.className="diag-tabpane";pane.setAttribute("data-pane",id);pane.style.display="none";
+  var grid=document.createElement("div");grid.className="diag-chartgrid";
+  pane.appendChild(grid);
+  pane.appendChild(makeAddPanelBtn(id));
+  document.getElementById("globalActions").parentNode.insertBefore(pane,document.getElementById("globalActions"));
+}
+function deleteTab(id){
+  var t=null;
+  CUSTOM.tabs.forEach(function(x){if(x.id===id)t=x;});
+  if(!t)return;
+  if(!window.confirm||!window.confirm("删除标签页「"+t.name+"」及其全部画板？"))return;
+  CUSTOM.panels.filter(function(p){return p.tab===id;}).forEach(function(p){
+    var bi=BRUSH_IDS.indexOf(p.id);if(bi>=0)BRUSH_IDS.splice(bi,1);
+    delete CHARTS[p.id];delete FULL[p.id];delete SEL[p.id];delete ZOOM[p.id];
+  });
+  CUSTOM.panels=CUSTOM.panels.filter(function(p){return p.tab!==id;});
+  CUSTOM.tabs=CUSTOM.tabs.filter(function(x){return x.id!==id;});
+  var b=document.querySelector('.dshell-tab[data-tab="'+id+'"]');if(b)b.remove();
+  var pane=document.querySelector('.diag-tabpane[data-pane="'+id+'"]');if(pane)pane.remove();
+  saveCustom();
+  document.querySelector('.dshell-tab[data-tab="overview"]').click();   /* 删除后切回「开始诊断」 */
+}
+function buildPanelCard(p){
+  var pane=document.querySelector('.diag-tabpane[data-pane="'+p.tab+'"]');if(!pane)return;
+  var grid=pane.querySelector(".diag-chartgrid");
+  if(!grid){
+    grid=document.createElement("div");grid.className="diag-chartgrid";
+    var ap=pane.querySelector(".diag-addpanel");
+    pane.insertBefore(grid,ap?ap.parentNode:null);
+  }
+  var card=document.createElement("div");card.className="dshell-card";card.id="card_"+p.id;
+  var h=document.createElement("h2");h.className="dshell-sub";h.style.margin="0 0 8px";h.textContent=p.title;
+  var cv=document.createElement("canvas");cv.className="diag-canvas";cv.id=p.id;
+  var lg=document.createElement("div");lg.className="diag-legend";
+  card.appendChild(h);card.appendChild(cv);card.appendChild(lg);
+  grid.appendChild(card);
+  refreshLegend(p);
+  BRUSH_IDS.push(p.id);
+  attachBrush(p.id);
+  injectKebab(p.id);
+}
+/* 通用表单弹层：fields=[{key,label,kind:text|color|ql,value}] */
+function openFormModal(title,fields,onSave,saveText){
+  var body=document.createElement("div");
+  fields.forEach(function(f){
+    var row=document.createElement("div");row.className="diag-editrow";
+    var lb=document.createElement("div");lb.className="dshell-muted";lb.style.cssText="font-size:12px;margin-bottom:4px";lb.textContent=f.label;
+    row.appendChild(lb);
+    var inp;
+    if(f.kind==="ql"){inp=document.createElement("textarea");inp.className="dshell-input diag-editql";inp.rows=2;}
+    else{inp=document.createElement("input");inp.className="dshell-input";inp.type=f.kind==="color"?"color":"text";}
+    inp.id="diagF_"+f.key;inp.value=f.value||"";
+    row.appendChild(inp);body.appendChild(row);
+  });
+  var bar=document.createElement("div");bar.style.cssText="display:flex;gap:8px;margin-top:6px";
+  var save=document.createElement("button");save.className="dshell-btn";save.type="button";save.textContent=saveText||"保存";
+  bar.appendChild(save);body.appendChild(bar);
+  save.addEventListener("click",function(){
+    var values={};
+    fields.forEach(function(f){values[f.key]=document.getElementById("diagF_"+f.key).value;});
+    closeModal();onSave(values);
+  });
+  openModal(title,body);
+}
+function openTabModal(){
+  openFormModal("添加标签页",[{key:"name",label:"标签页名称",value:""}],function(v){
+    var name=(v.name||"").trim();if(!name)return;
+    var id="ct_"+Date.now().toString(36);
+    CUSTOM.tabs.push({id:id,name:name});createTab(id,name);saveCustom();
+    document.querySelector('.dshell-tab[data-tab="'+id+'"]').click();   /* 建完直接切过去 */
+  },"添加");
+}
+function openPanelModal(tab){
+  openFormModal("添加普罗指标画板",[
+    {key:"title",label:"画板标题",value:""},
+    {key:"unit",label:"单位（如 ms / %，可空）",value:""},
+    {key:"sname",label:"第一条线名称",value:"value"},
+    {key:"q",label:"PromQL",kind:"ql",value:""}
+  ],function(v){
+    var title=(v.title||"").trim(),q=(v.q||"").trim();
+    if(!title||!q)return;
+    var p={id:"cp_"+Date.now().toString(36),tab:tab,title:title,unit:(v.unit||"").trim(),
+      series:[{name:(v.sname||"").trim()||"value",color:PALETTE[0],q:q}]};
+    CUSTOM.panels.push(p);buildPanelCard(p);saveCustom();poll();
+  },"添加");
+}
+function openCustomEdit(pid){
+  var p=panelOf(pid);if(!p)return;
+  var body=document.createElement("div");
+  var tip=document.createElement("div");tip.className="diag-note";tip.style.marginBottom="10px";
+  tip.textContent="编辑画板标题/单位与每条线的名称、颜色、PromQL；保存后立即重新拉取。";
+  body.appendChild(tip);
+  var mkRow=function(labelText,id,val){
+    var row=document.createElement("div");row.className="diag-editrow";
+    var lb=document.createElement("div");lb.className="dshell-muted";lb.style.cssText="font-size:12px;margin-bottom:4px";lb.textContent=labelText;
+    var inp=document.createElement("input");inp.className="dshell-input";inp.id=id;inp.value=val||"";
+    row.appendChild(lb);row.appendChild(inp);body.appendChild(row);
+  };
+  mkRow("画板标题","ceTitle",p.title);
+  mkRow("单位","ceUnit",p.unit);
+  var list=document.createElement("div");body.appendChild(list);
+  var addLineRow=function(s){
+    var row=document.createElement("div");row.className="diag-celine";
+    row.style.cssText="border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:8px;padding:8px;margin-bottom:8px";
+    var head=document.createElement("div");head.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:6px";
+    var nm=document.createElement("input");nm.className="dshell-input ce-name";nm.style.flex="1";nm.placeholder="线名称";nm.value=s.name||"";
+    var cl=document.createElement("input");cl.className="ce-color";cl.type="color";cl.value=s.color||PALETTE[list.children.length%PALETTE.length];
+    cl.style.cssText="width:36px;height:26px;border:none;background:none;padding:0";
+    var del=document.createElement("button");del.className="dshell-btn dshell-btnGhost ce-del";del.type="button";del.style.padding="2px 8px";del.textContent="删";
+    del.addEventListener("click",function(){row.remove();});
+    head.appendChild(nm);head.appendChild(cl);head.appendChild(del);
+    var q=document.createElement("textarea");q.className="dshell-input diag-editql ce-q";q.rows=2;q.placeholder="PromQL";q.value=s.q||"";
+    row.appendChild(head);row.appendChild(q);
+    list.appendChild(row);
+  };
+  p.series.forEach(addLineRow);
+  var bar=document.createElement("div");bar.style.cssText="display:flex;gap:8px;margin-top:6px";
+  var add=document.createElement("button");add.className="dshell-btn dshell-btnGhost";add.type="button";add.textContent="＋ 添加线";
+  var save=document.createElement("button");save.className="dshell-btn";save.type="button";save.textContent="保存并重新拉取";
+  bar.appendChild(add);bar.appendChild(save);body.appendChild(bar);
+  add.addEventListener("click",function(){addLineRow({});});
+  save.addEventListener("click",function(){
+    var series=[];
+    list.querySelectorAll(".diag-celine").forEach(function(row){
+      var q=row.querySelector(".ce-q").value.trim();if(!q)return;
+      series.push({name:row.querySelector(".ce-name").value.trim()||("线"+(series.length+1)),
+        color:row.querySelector(".ce-color").value,q:q});
+    });
+    if(!series.length)return;
+    p.title=document.getElementById("ceTitle").value.trim()||p.title;
+    p.unit=document.getElementById("ceUnit").value.trim();
+    p.series=series;
+    var card=document.getElementById("card_"+p.id);
+    if(card)card.querySelector("h2").textContent=p.title;
+    refreshLegend(p);saveCustom();closeModal();poll();
+  });
+  openModal(p.title+" · 编辑画板",body);
+}
+function deletePanel(pid){
+  var p=panelOf(pid);if(!p)return;
+  if(!window.confirm||!window.confirm("删除画板「"+p.title+"」？"))return;
+  var card=document.getElementById("card_"+p.id);if(card)card.remove();
+  CUSTOM.panels=CUSTOM.panels.filter(function(x){return x.id!==pid;});
+  var bi=BRUSH_IDS.indexOf(pid);if(bi>=0)BRUSH_IDS.splice(bi,1);
+  delete CHARTS[pid];delete FULL[pid];delete SEL[pid];delete ZOOM[pid];
+  saveCustom();
+}
+/* 入口：标签栏 ＋、每个标签页底部「＋ 添加普罗指标画板」；恢复上次的自定义配置 */
+document.getElementById("tabAdd").addEventListener("click",openTabModal);
+document.addEventListener("click",function(e){
+  var b=e.target.closest?e.target.closest(".diag-addpanel"):null;
+  if(b)openPanelModal(b.getAttribute("data-pane"));
+});
+document.querySelectorAll(".diag-tabpane").forEach(function(p){p.appendChild(makeAddPanelBtn(p.getAttribute("data-pane")));});
+CUSTOM.tabs.forEach(function(t){createTab(t.id,t.name);});
+CUSTOM.panels.forEach(buildPanelCard);
+Object.keys(CUSTOM.extra).forEach(refreshExtraLegend);
+BRUSH_IDS.forEach(applyLineNames);   /* 恢复快照的原始线名并应用保存的线名覆写 */
 function line(id,labels,sets,unit){
   var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
   var max=0;sets.forEach(function(s){s.data.forEach(function(v){if(v>max)max=v;});});max=max*1.15||1;
@@ -390,6 +952,12 @@ function line(id,labels,sets,unit){
     s.data.forEach(function(v,i){var x=pad.l+iw*i/(n-1),y=pad.t+ih*(1-v/max);i?g.lineTo(x,y):g.moveTo(x,y);});
     g.stroke();
   });
+  CHARTS[id]={labels:labels,sets:sets,unit:unit};   /* 登记当前视图参数供框选/缩放重绘 */
+  if(!ZOOMING){
+    FULL[id]=CHARTS[id];                            /* 数据管线刷新的是完整视图 */
+    if(ZOOM[id]){zoomApply(id,ZOOM[id]);showZoomInfo(id);return;}   /* 缩放中：新数据切片后维持放大 */
+  }
+  drawSel(id);                                     /* 已有选区时重绘高亮 */
 }
 function bars(id,labels,vals,color,unit){
   var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
@@ -528,6 +1096,9 @@ function renderAll(){
   document.getElementById("metricsDict").innerHTML=DATA.metricsDict.map(function(m){
     return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+m[0]+'<div class="diag-note">'+m[1]+'</div></span><span class="dshell-kvValue">'+m[2]+'</span></div>';
   }).join("");
+
+  /* 自定义画板与内置画板的附加线 */
+  renderCustomPanels();
 }
 
 /* ================= 主题（浅色 / 深色 / 跟随系统） ================= */
@@ -577,6 +1148,9 @@ PROM_URL=PROM_URL.replace(/\/+$/,"");
 var PROM_RANGE_H=Math.min(72,Math.max(1,parseInt(lsGet("diagPerf.promRangeH","4"),10)||4));   /* 查询窗口：默认近 4 小时 */
 var PROM_RANGE_S=PROM_RANGE_H*3600;
 var PROM_STEP_S=Math.max(60,Math.round(PROM_RANGE_S/N));   /* 步长随窗口自适应：4h → 300s → 48 点，与图表布局一致 */
+var PROM_ABS=null;   /* 绝对时间窗口 {from,to}（epoch 秒），null = 相对窗口（近 N 小时） */
+try{var __pa=JSON.parse(lsGet("diagPerf.promAbs","")||"null");if(__pa&&__pa.to>__pa.from)PROM_ABS=__pa;}catch(e){}
+var STEP_S=PROM_ABS?Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N)):PROM_STEP_S;   /* 当前生效步长（每次 pollProm 重算） */
 var POLL_MS=Math.min(600,Math.max(5,parseInt(lsGet("diagPerf.pollS","30"),10)||30))*1000;
 var LOG_DIR=lsGet("diagPerf.logDir","").replace(/\/+$/,"");    /* 服务端日志目录（留空 = 示例日志） */
 var PROF_DIR=lsGet("diagPerf.profDir","").replace(/\/+$/,"");  /* Profiling trace 导出目录（留空 = 示例数据） */
@@ -595,7 +1169,10 @@ function proxyGet(url){
 }
 
 function pushPoint(arr,v){arr.shift();arr.push(+v.toFixed(2));}
-function pushLabel(){DATA.ts.shift();var d=new Date();DATA.ts.push(d.getHours()+":"+("0"+d.getMinutes()).slice(-2)+":"+("0"+d.getSeconds()).slice(-2));}
+function pushLabel(){DATA.ts.shift();var d=new Date();DATA.ts.push(d.getHours()+":"+("0"+d.getMinutes()).slice(-2)+":"+("0"+d.getSeconds()).slice(-2));
+  /* 数据滚动一格：选区/缩放索引同步左移，滚出窗口则丢弃 */
+  Object.keys(SEL).forEach(function(id){var s=SEL[id];s.i0--;s.i1--;if(s.i1<=0)delete SEL[id];else if(s.i0<0)s.i0=0;});
+  Object.keys(ZOOM).forEach(function(id){var z=ZOOM[id];z.i0--;z.i1--;if(z.i1<=0)delete ZOOM[id];else if(z.i0<0)z.i0=0;});}
 function demoTick(){ /* 端点不可达时让示例数据保持缓慢游走 */
   pushLabel();
   var walk=function(a,lo,hi,d){var v=a[a.length-1]+((Math.random()*2-1)*d);v=Math.max(lo,Math.min(hi,v));pushPoint(a,v);};
@@ -723,11 +1300,20 @@ var PROM_DEFS=[
   {k:"mooncake.rd",name:"Mooncake 读吞吐",unit:"GB/s",scale:1/1073741824,q:['sum(rate({__name__=~".*mooncake.*(read|pull).*bytes.*"}[5m]))']},
   {k:"mooncake.wr",name:"Mooncake 写吞吐",unit:"GB/s",scale:1/1073741824,q:['sum(rate({__name__=~".*mooncake.*(write|push).*bytes.*"}[5m]))']}
 ];
+/* 面板「编辑」保存的候选 PromQL 覆写（localStorage）在启动时回填 */
+PROM_DEFS.forEach(function(def){
+  var raw=lsGet("diagPerf.promql."+def.k,"");
+  if(!raw)return;
+  try{
+    var q=JSON.parse(raw);
+    if(Array.isArray(q)&&q.length&&q.every(function(s){return typeof s==="string"&&s.trim();}))def.q=q;
+  }catch(e){}
+});
 
 /* query_range：返回含非空序列的完整 result（[{metric,values},...]），无数据返回 null */
 function promRange(q,end){
   var url=PROM_URL+"/api/v1/query_range?query="+encodeURIComponent(q)
-    +"&start="+(end-(N-1)*PROM_STEP_S)+"&end="+end+"&step="+PROM_STEP_S;
+    +"&start="+(end-(N-1)*STEP_S)+"&end="+end+"&step="+STEP_S;
   return proxyGet(url).then(function(text){
     var j=JSON.parse(text);
     if(!j||j.status!=="success"||!j.data||!j.data.result)return null;
@@ -740,10 +1326,10 @@ function promRange(q,end){
 /* 把 query_range 结果对齐到固定时间网格：缺口前向填充、头部后向回填 */
 function alignValues(values,grid){
   var m={},i;
-  for(i=0;i<values.length;i++)m[Math.round(values[i][0]/PROM_STEP_S)]=parseFloat(values[i][1]);
+  for(i=0;i<values.length;i++)m[Math.round(values[i][0]/STEP_S)]=parseFloat(values[i][1]);
   var out=[],last=null;
   for(i=0;i<grid.length;i++){
-    var v=m[grid[i]/PROM_STEP_S];
+    var v=m[grid[i]/STEP_S];
     if(v===undefined||isNaN(v))v=last;else last=v;
     out.push(v);
   }
@@ -771,9 +1357,12 @@ var PROM_LAST_OK="—";
 
 /* 主路径：Prometheus query_range 拉满整个窗口，cb("ok"|"empty"|"down") */
 function pollProm(cb){
-  var end=Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S;
+  var end,step;
+  if(PROM_ABS){end=PROM_ABS.to;step=Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N));}   /* 绝对窗口：固定起止，步长按窗口宽度 */
+  else{end=Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S;step=PROM_STEP_S;}
+  STEP_S=step;
   var grid=[],i;
-  for(i=N-1;i>=0;i--)grid.push(end-i*PROM_STEP_S);
+  for(i=N-1;i>=0;i--)grid.push(end-i*step);
   var labels=grid.map(function(t){var d=new Date(t*1000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);});
   var matched=0,failed=false,next={},seq=Promise.resolve();
   PROM_STATE={};
@@ -812,11 +1401,30 @@ function pollProm(cb){
       });
     }).catch(function(){failed=true;});
   });
+  /* 自定义画板的线与内置画板的附加线：逐条 query_range，对齐到同一时间网格（无数据记 null，渲染为 0 线） */
+  var customSeries=[];
+  CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){customSeries.push(s);});});
+  Object.keys(CUSTOM.extra).forEach(function(id){(CUSTOM.extra[id]||[]).forEach(function(s){customSeries.push(s);});});
+  customSeries.forEach(function(s){
+    seq=seq.then(function(){
+      if(failed)return null;
+      return promRange(s.q,end).then(function(res){
+        s._data=null;
+        if(!res)return;
+        var values=null;
+        for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length){values=res[i].values;break;}
+        if(!values)return;
+        s._data=alignValues(values,grid).map(function(v){return v===null?0:+v.toFixed(2);});
+        matched++;
+      }).catch(function(){s._data=null;});
+    });
+  });
   seq.then(function(){
     if(failed){cb("down");return;}
     if(!matched){cb("empty");return;}
     DATA.ts=labels;
     applySeries(next);
+    clearAllSel();   /* 整窗数据被替换，旧选区索引已失效 */
     LIVE=true;renderAll();
     var d=new Date();
     PROM_LAST_OK=d.getHours()+":"+("0"+d.getMinutes()).slice(-2)+":"+("0"+d.getSeconds()).slice(-2);
@@ -826,13 +1434,14 @@ function pollProm(cb){
 
 /* ---- 「数据源」页渲染：连接状态 + 序列映射命中情况 + 原始序列细分 ---- */
 function fmtNum(v){return v===null||v===undefined||isNaN(v)?"—":(+v).toLocaleString();}
+function fmtTs(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);}return p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes());}
 function renderPromPanel(){
   var modeText={init:"检测中…",ok:"实时数据 · Prometheus query_range",empty:"已连通 · 指标名未匹配（看板暂显示示例数据）",
     metrics:"/metrics 瞬时抓取兜底",down:"数据源不可达（看板为示例数据演示）"}[PROM_PANEL_MODE]||PROM_PANEL_MODE;
   var meta=[
     ["数据源地址",PROM_URL],
     ["接入模式",modeText],
-    ["查询窗口","近 "+PROM_RANGE_H+"h · "+N+" 点 · 步长 "+PROM_STEP_S+"s"],
+    ["查询窗口",(PROM_ABS?("绝对 "+fmtTs(PROM_ABS.from)+" ~ "+fmtTs(PROM_ABS.to)):("近 "+PROM_RANGE_H+"h"))+" · "+N+" 点 · 步长 "+STEP_S+"s"],
     ["轮询间隔",(POLL_MS/1000)+"s"],
     ["最近成功拉取",PROM_LAST_OK]
   ];
@@ -841,7 +1450,7 @@ function renderPromPanel(){
   }).join("");
   document.getElementById("promMetaNote").textContent=
     PROM_PANEL_MODE==="metrics"?"当前经 /metrics 文本瞬时抓取按指标名正则匹配，单点推入序列，无 PromQL 明细。"
-    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；可在「开始诊断」页底部的设置区修改数据源地址。"
+    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；可在「开始诊断」页顶部的设置区修改数据源地址。"
     :"请求经 /api/worktable/proxy 代联（仅回环/内网），失败回退浏览器直连；命中明细见下表。";
 
   var hit=0;
@@ -888,7 +1497,7 @@ function poll(){
   pollProm(function(state){
     if(state==="ok"){
       PROM_PANEL_MODE="ok";renderPromPanel();
-      setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · 近"+(PROM_RANGE_S/3600)+"h · "+POLL_MS/1000+"s 刷新");
+      setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · "+(PROM_ABS?"绝对窗口":"近"+(PROM_RANGE_S/3600)+"h")+" · "+POLL_MS/1000+"s 刷新");
       return;
     }
     if(state==="empty"){
@@ -932,7 +1541,7 @@ function renderLogs(lines){
 }
 function setLogNote(t){document.getElementById("logNote").textContent=t;}
 function loadLogs(){
-  if(!LOG_DIR){renderLogs(SAMPLE_LOGS);setLogNote("示例数据 · 可在「开始诊断」页底部的设置区配置服务端日志目录接入真实日志");return;}
+  if(!LOG_DIR){renderLogs(SAMPLE_LOGS);setLogNote("示例数据 · 可在「开始诊断」页顶部的设置区配置服务端日志目录接入真实日志");return;}
   fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:LOG_DIR})})
     .then(function(r){return r.json();})
     .then(function(j){
@@ -967,7 +1576,7 @@ function parseProfSummary(j){   /* 支持 [["算子","28.4%"],…] 或 [{"name":
 }
 function loadProf(){
   var card=document.getElementById("profFilesCard");
-  if(!PROF_DIR){card.style.display="none";setProfNote("数据来源：示例数据 · 可在「开始诊断」页底部的设置区配置 Profiling 数据目录（torch profiler / msprof trace 导出目录）。");return;}
+  if(!PROF_DIR){card.style.display="none";setProfNote("数据来源：示例数据 · 可在「开始诊断」页顶部的设置区配置 Profiling 数据目录（torch profiler / msprof trace 导出目录）。");return;}
   fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:PROF_DIR})})
     .then(function(r){return r.json();})
     .then(function(j){
@@ -1002,7 +1611,84 @@ function fillSettings(){
   document.getElementById("setPollS").value=POLL_MS/1000;
   document.getElementById("setLogDir").value=LOG_DIR;
   document.getElementById("setProfDir").value=PROF_DIR;
+  syncRangeSel();
 }
+/* 头部「窗口」快选与设置区「查询窗口（小时）」双向同步；绝对时间窗口走 PROM_ABS */
+function fmtDTL(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);}return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes());}
+function syncAbsInputs(){
+  document.getElementById("absRange").style.display=PROM_ABS?"inline-flex":"none";
+  if(PROM_ABS){document.getElementById("absFrom").value=fmtDTL(PROM_ABS.from);document.getElementById("absTo").value=fmtDTL(PROM_ABS.to);}
+}
+function syncRangeSel(){
+  var sel=document.getElementById("rangeSel");
+  if(PROM_ABS){sel.value="abs";syncAbsInputs();return;}
+  syncAbsInputs();
+  var v=String(PROM_RANGE_H);
+  if(!sel.querySelector('option[value="'+v+'"]')){
+    var o=document.createElement("option");o.value=v;o.textContent="近 "+v+"h";sel.appendChild(o);
+  }
+  sel.value=v;
+}
+document.getElementById("rangeSel").addEventListener("change",function(){
+  if(this.value==="abs"){
+    if(!PROM_ABS){var to=Math.floor(Date.now()/1000);PROM_ABS={from:to-PROM_RANGE_S,to:to};}   /* 预填当前相对窗口 */
+    syncAbsInputs();
+    return;
+  }
+  PROM_ABS=null;lsSet("diagPerf.promAbs","");
+  document.getElementById("setRangeH").value=this.value;
+  applySettings(true);
+});
+document.getElementById("absApply").addEventListener("click",function(){
+  var f=Date.parse(document.getElementById("absFrom").value),t=Date.parse(document.getElementById("absTo").value);
+  if(!f||!t||t<=f){document.getElementById("setHint").textContent="绝对时间范围无效：请填写起止时间，且止时间要大于起时间。";return;}
+  PROM_ABS={from:Math.floor(f/1000),to:Math.floor(t/1000)};
+  lsSet("diagPerf.promAbs",JSON.stringify(PROM_ABS));
+  poll();startPoll();
+  document.getElementById("setHint").textContent="已切换到绝对时间窗口并重新拉取。";
+});
+
+/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可过滤、点击复制 */
+function openMetricsModal(names){
+  var body=document.createElement("div");
+  var note=document.createElement("div");note.className="diag-note";note.style.marginBottom="8px";
+  note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；输入关键字过滤，点击名称复制。";
+  var filter=document.createElement("input");filter.className="dshell-input";filter.placeholder="过滤指标名…";
+  filter.style.cssText="width:100%;margin-bottom:8px";
+  var list=document.createElement("div");list.className="dshell-list";list.style.cssText="max-height:50vh;overflow:auto";
+  var count=document.createElement("div");count.className="diag-note";
+  var render=function(){
+    var q=filter.value.trim().toLowerCase();
+    var hits=q?names.filter(function(n){return n.toLowerCase().indexOf(q)>=0;}):names;
+    list.innerHTML=hits.slice(0,300).map(function(n){
+      return '<div class="dshell-listItem diag-mname" data-n="'+esc(n)+'"><span class="dshell-listItemMeta diag-promql">'+esc(n)+'</span></div>';
+    }).join("")||'<div class="diag-note">无匹配指标</div>';
+    count.textContent="显示 "+Math.min(hits.length,300)+" / "+hits.length+" 个"+(hits.length>300?"（其余请继续输入过滤）":"");
+  };
+  filter.addEventListener("input",render);
+  list.addEventListener("click",function(e){
+    var it=e.target.closest?e.target.closest(".diag-mname"):null;if(!it)return;
+    var n=it.getAttribute("data-n");
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(n);
+    it.querySelector(".dshell-listItemMeta").textContent=n+"  ✓ 已复制";
+  });
+  body.appendChild(note);body.appendChild(filter);body.appendChild(list);body.appendChild(count);
+  render();
+  openModal("数据源全部指标",body);
+}
+document.getElementById("btnMetrics").addEventListener("click",function(){
+  var b=this,hint=document.getElementById("metricsBtnHint");
+  b.disabled=true;hint.textContent="获取中…";
+  proxyGet(PROM_URL+"/api/v1/label/__name__/values").then(function(text){
+    b.disabled=false;
+    var j=JSON.parse(text);
+    if(!j||j.status!=="success"||!Array.isArray(j.data))throw new Error("bad");
+    hint.textContent="共 "+j.data.length+" 个指标";
+    openMetricsModal(j.data);
+  }).catch(function(){
+    b.disabled=false;hint.textContent="获取失败：数据源不可达或返回异常";
+  });
+});
 var pollTimer=null;
 function startPoll(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval(poll,POLL_MS);}
 function applySettings(save){
@@ -1012,6 +1698,7 @@ function applySettings(save){
   PROM_RANGE_S=PROM_RANGE_H*3600;
   PROM_STEP_S=Math.max(60,Math.round(PROM_RANGE_S/N));
   POLL_MS=Math.min(600,Math.max(5,parseInt(document.getElementById("setPollS").value,10)||30))*1000;
+  syncRangeSel();   /* 设置区直接改小时数时同步头部快选（非预设档位会动态补 option） */
   LOG_DIR=document.getElementById("setLogDir").value.trim().replace(/\/+$/,"");
   PROF_DIR=document.getElementById("setProfDir").value.trim().replace(/\/+$/,"");
   if(save){
