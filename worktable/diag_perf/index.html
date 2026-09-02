@@ -102,7 +102,7 @@
 
   <!-- 标签页 -->
   <div class="dshell-tabs" id="tabs">
-    <button class="dshell-tab dshell-tabOn" data-tab="overview">概览</button>
+    <button class="dshell-tab dshell-tabOn" data-tab="overview">开始诊断</button>
     <button class="dshell-tab" data-tab="latency">时延分解</button>
     <button class="dshell-tab" data-tab="throughput">吞吐与缓存</button>
     <button class="dshell-tab" data-tab="kvcache">KV Cache</button>
@@ -112,10 +112,9 @@
     <button class="dshell-tab" data-tab="logs">日志</button>
     <button class="dshell-tab" data-tab="metrics">指标字典</button>
     <button class="dshell-tab" data-tab="prom">数据源</button>
-    <button class="dshell-tab" data-tab="settings">设置</button>
   </div>
 
-  <!-- ============ 概览 ============ -->
+  <!-- ============ 开始诊断 ============ -->
   <div class="diag-tabpane" data-pane="overview">
     <div class="dshell-grid">
       <div class="dshell-stat"><div class="dshell-statLabel">TTFT P99</div><div class="dshell-statValue" id="ovTtft">—</div><div class="dshell-statDelta" id="ovTtftD"></div></div>
@@ -133,6 +132,53 @@
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论（规则引擎自动研判）</h2>
       <div class="dshell-list" id="diagFindings"></div>
+    </div>
+
+    <!-- 设置：全部配置内联在本页底部（全局「刷新数据」操作条之前），保存后立即生效 -->
+    <div class="dshell-divider"></div>
+    <h2 class="dshell-sub" style="margin:0 0 8px">设置</h2>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">外观主题</h2>
+      <div class="diag-formrow">
+        <div class="theme-seg" title="背景主题（浅色 / 深色 / 跟随系统）">
+          <button type="button" data-theme="system">系统</button>
+          <button type="button" data-theme="dark">深</button>
+          <button type="button" data-theme="light">浅</button>
+        </div>
+        <span class="dshell-muted">立即生效并记住选择；「跟随系统」随操作系统明暗模式自动切换。</span>
+      </div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">普罗米修斯数据源（时序指标）</h2>
+      <div class="diag-formrow" style="margin-bottom:8px">
+        <input class="dshell-input grow" id="setPromUrl" placeholder="http://host:port（默认 http://10.83.90.203:9601）" autocomplete="off" />
+      </div>
+      <div class="diag-formrow">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">查询窗口（小时）
+          <input class="dshell-input" id="setRangeH" type="number" min="1" max="72" style="width:80px" /></label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">轮询间隔（秒）
+          <input class="dshell-input" id="setPollS" type="number" min="5" max="600" style="width:80px" /></label>
+      </div>
+      <div class="diag-note">URL 参数 ?prom=host:port 优先于此处地址；保存后立即按新配置重新拉取。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">日志目录</h2>
+      <div class="diag-formrow">
+        <input class="dshell-input grow" id="setLogDir" placeholder="服务端日志目录，如 /var/log/vllm（留空 = 示例日志）" autocomplete="off" />
+      </div>
+      <div class="diag-note">目录为 dsh 服务端路径：经 /api/worktable/fs 列出目录内 .log 文件，取最新的一个经 /api/worktable/file 读取尾部 200 行渲染；目录不可读或无 .log 文件时回退示例日志。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">Profiling 数据目录</h2>
+      <div class="diag-formrow">
+        <input class="dshell-input grow" id="setProfDir" placeholder="torch profiler / msprof trace 导出目录（留空 = 示例数据）" autocomplete="off" />
+      </div>
+      <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则保留示例数据。</div>
+    </div>
+    <div class="diag-formrow">
+      <button class="dshell-btn" id="btnSaveSettings">保存设置</button>
+      <button class="dshell-btn dshell-btnGhost" id="btnResetSettings">恢复默认</button>
+      <span class="dshell-muted" id="setHint" style="flex:1 1 auto">配置仅存于本机浏览器 localStorage，保存后立即生效。</span>
     </div>
   </div>
 
@@ -265,7 +311,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">指标收集清单（数据源 / 采集方式 / 分析用途）</h2>
       <div class="dshell-kv" id="metricsDict"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「设置」页配置（URL 参数 ?prom=host:port 优先于设置页的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
+      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「开始诊断」页底部的设置区配置（URL 参数 ?prom=host:port 优先于设置区的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
     </div>
   </div>
 
@@ -290,54 +336,7 @@
     </div>
   </div>
 
-  <!-- ============ 设置 ============ -->
-  <div class="diag-tabpane" data-pane="settings" style="display:none">
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">外观主题</h2>
-      <div class="diag-formrow">
-        <div class="theme-seg" title="背景主题（浅色 / 深色 / 跟随系统）">
-          <button type="button" data-theme="system">系统</button>
-          <button type="button" data-theme="dark">深</button>
-          <button type="button" data-theme="light">浅</button>
-        </div>
-        <span class="dshell-muted">立即生效并记住选择；「跟随系统」随操作系统明暗模式自动切换。</span>
-      </div>
-    </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">普罗米修斯数据源（时序指标）</h2>
-      <div class="diag-formrow" style="margin-bottom:8px">
-        <input class="dshell-input grow" id="setPromUrl" placeholder="http://host:port（默认 http://10.83.90.203:9601）" autocomplete="off" />
-      </div>
-      <div class="diag-formrow">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">查询窗口（小时）
-          <input class="dshell-input" id="setRangeH" type="number" min="1" max="72" style="width:80px" /></label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">轮询间隔（秒）
-          <input class="dshell-input" id="setPollS" type="number" min="5" max="600" style="width:80px" /></label>
-      </div>
-      <div class="diag-note">URL 参数 ?prom=host:port 优先于此处地址；保存后立即按新配置重新拉取。</div>
-    </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">日志目录</h2>
-      <div class="diag-formrow">
-        <input class="dshell-input grow" id="setLogDir" placeholder="服务端日志目录，如 /var/log/vllm（留空 = 示例日志）" autocomplete="off" />
-      </div>
-      <div class="diag-note">目录为 dsh 服务端路径：经 /api/worktable/fs 列出目录内 .log 文件，取最新的一个经 /api/worktable/file 读取尾部 200 行渲染；目录不可读或无 .log 文件时回退示例日志。</div>
-    </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">Profiling 数据目录</h2>
-      <div class="diag-formrow">
-        <input class="dshell-input grow" id="setProfDir" placeholder="torch profiler / msprof trace 导出目录（留空 = 示例数据）" autocomplete="off" />
-      </div>
-      <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则保留示例数据。</div>
-    </div>
-    <div class="diag-formrow">
-      <button class="dshell-btn" id="btnSaveSettings">保存设置</button>
-      <button class="dshell-btn dshell-btnGhost" id="btnResetSettings">恢复默认</button>
-      <span class="dshell-muted" id="setHint" style="flex:1 1 auto">配置仅存于本机浏览器 localStorage，保存后立即生效。</span>
-    </div>
-  </div>
-
-  <!-- 全局操作条：「设置」页不显示（设置已有自己的保存/恢复按钮） -->
+  <!-- 全局操作条 -->
   <div style="display:flex;gap:8px;margin-top:4px" id="globalActions">
     <button class="dshell-btn" id="btnRefresh">刷新数据</button>
     <button class="dshell-btn dshell-btnGhost" id="btnExport">导出诊断报告（JSON）</button>
@@ -539,7 +538,7 @@ function renderAll(){
     return '<div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">'+h[0]+'</h2><div class="dshell-kv">'+rows+'</div></div>';
   }).join("");
 
-  /* 日志：渲染移至 loadLogs()（支持「设置」页配置的服务端日志目录），此处不再每次重绘覆盖 */
+  /* 日志：渲染移至 loadLogs()（支持设置区配置的服务端日志目录），此处不再每次重绘覆盖 */
 
   /* 指标字典 */
   document.getElementById("metricsDict").innerHTML=DATA.metricsDict.map(function(m){
@@ -577,7 +576,6 @@ document.getElementById("tabs").addEventListener("click",function(e){
   document.querySelectorAll(".dshell-tab").forEach(function(t){t.classList.remove("dshell-tabOn");});
   b.classList.add("dshell-tabOn");
   document.querySelectorAll(".diag-tabpane").forEach(function(p){p.style.display=p.dataset.pane===b.dataset.tab?"":"none";});
-  document.getElementById("globalActions").style.display=b.dataset.tab==="settings"?"none":"flex";   /* 设置页隐藏刷新/导出按钮 */
   renderAll();   /* 切出隐藏页后 canvas 尺寸为 0，重绘补齐 */
   renderPromPanel();
 });
@@ -859,7 +857,7 @@ function renderPromPanel(){
   }).join("");
   document.getElementById("promMetaNote").textContent=
     PROM_PANEL_MODE==="metrics"?"当前经 /metrics 文本瞬时抓取按指标名正则匹配，单点推入序列，无 PromQL 明细。"
-    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；可在「设置」页修改数据源地址。"
+    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；可在「开始诊断」页底部的设置区修改数据源地址。"
     :"请求经 /api/worktable/proxy 代联（仅回环/内网），失败回退浏览器直连；命中明细见下表。";
 
   var hit=0;
@@ -950,7 +948,7 @@ function renderLogs(lines){
 }
 function setLogNote(t){document.getElementById("logNote").textContent=t;}
 function loadLogs(){
-  if(!LOG_DIR){renderLogs(SAMPLE_LOGS);setLogNote("示例数据 · 可在「设置」页配置服务端日志目录接入真实日志");return;}
+  if(!LOG_DIR){renderLogs(SAMPLE_LOGS);setLogNote("示例数据 · 可在「开始诊断」页底部的设置区配置服务端日志目录接入真实日志");return;}
   fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:LOG_DIR})})
     .then(function(r){return r.json();})
     .then(function(j){
@@ -985,7 +983,7 @@ function parseProfSummary(j){   /* 支持 [["算子","28.4%"],…] 或 [{"name":
 }
 function loadProf(){
   var card=document.getElementById("profFilesCard");
-  if(!PROF_DIR){card.style.display="none";setProfNote("数据来源：示例数据 · 可在「设置」页配置 Profiling 数据目录（torch profiler / msprof trace 导出目录）。");return;}
+  if(!PROF_DIR){card.style.display="none";setProfNote("数据来源：示例数据 · 可在「开始诊断」页底部的设置区配置 Profiling 数据目录（torch profiler / msprof trace 导出目录）。");return;}
   fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:PROF_DIR})})
     .then(function(r){return r.json();})
     .then(function(j){
