@@ -188,7 +188,7 @@
   <!-- 流水线编排 -->
   <div class="dshell-card">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-      <h2 class="dshell-sub" style="margin:0">流水线编排 <span class="dshell-muted" style="font-size:11px;font-weight:normal;">双击阶段可编辑</span></h2>
+      <h2 class="dshell-sub" style="margin:0">流水线编排 <span class="dshell-muted" style="font-size:11px;font-weight:normal;">双击阶段可编辑</span> <span id="replayTip" style="font-size:11px;font-weight:normal;color:var(--dsw-alias-state-accent-primary);"></span></h2>
       <div class="legend">
         <span><i style="background:var(--st-idle)"></i>未开始</span>
         <span><i style="background:var(--st-run);box-shadow:0 0 5px var(--st-run)"></i>进行中</span>
@@ -1771,7 +1771,7 @@ function renderFlow(){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(running) return;
+      if(running || replayRec) return;   // 回放态只读：双击不进入编辑（编排区显示的是历史快照）
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, i);
     });
@@ -1824,6 +1824,7 @@ function metaFor(id){
 /* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（运行 tick 会以 120~300ms 高频调用本函数） */
 let _detailKey='';
 function renderDetail(){
+  if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
   const s = activeStages().find(x=>x.id===selectedId) || activeStages()[0];
   if(!s) return;
   const n = nodes[s.id] || {status:'idle'};
@@ -2000,6 +2001,7 @@ function startRun(opts){
   return true;
 }
 function startSimRun(pl, c){
+  replayRec=null; const rt0=$('replayTip'); if(rt0) rt0.textContent='';   // 新运行优先：退出历史回放态
   const stages = pl.stages.map(s=>({...s}));
   /* 运行时兜底校验：本地运行（不支持定时）阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏） */
   {
@@ -2726,6 +2728,91 @@ async function createAnalysisChat(kind, rec){
 }
 
 /* ---------- 历史 & 统计 ---------- */
+/* ---------- 历史回放：点击运行历史行，把该次运行同步到编排区 / 回显框 / 主控控件 ----------
+   replayRec 非空 = 正在回放该条历史：编排区显示该次运行的阶段快照（runStages 语义）与状态/耗时，
+   详情与回显取自 rec.logs；再次点击该行、手动切换流水线、新运行或「重置」退出回放。 */
+let replayRec = null;
+function enterHistoryReplay(rec){
+  if(running){ flashRunTip('运行中暂不能回放历史（可等待完成或点「重置」中止后再试）'); return; }
+  replayRec=rec;
+  /* 编排区：切到该次运行的流水线（按 id/名称匹配；不写 localStorage，避免回放污染偏好），
+     阶段状态/耗时按阶段名从历史 logs 回填；流水线已删除时按日志阶段名重建只读编排 */
+  const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline) || null;
+  if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineOptions(); renderPipelines(); }
+  const logs=Array.isArray(rec.logs)?rec.logs:[];
+  const byName={}; logs.forEach(l=>{ if(l && l.stage) byName[l.stage]=l; });
+  runStages = pl ? pl.stages.map(s=>({...s}))
+    : logs.filter(l=>l.stage!=='环境清理').map((l,i)=>({id:'replay-st'+i, name:l.stage, dur:5, sub:[]}));
+  nodes={};
+  runStages.forEach(s=>{
+    const l=byName[s.name];
+    const st=l?(l.status||'idle'):'idle';
+    nodes[s.id]={status:st, progress:st==='success'?100:0, dur:(l && l.dur)||0, sub:{}};
+  });
+  selectedId=runStages.length?runStages[0].id:null;
+  /* 主控区其余项同步为该次运行的取值：环境多选按 IP 匹配（同历史重跑），仓库/分支/策略/执行人直接回填 */
+  const ips=String(rec.env||'').split('，').map(x=>x.trim()).filter(Boolean);
+  const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
+  if(envs.length){ selectedEnvIds=envs.map(e=>e.id); renderEnvOptions(); }
+  if(rec.repoId && repositories.some(r=>r.id===rec.repoId)){ curRepoId=rec.repoId; const rs=$('repoSel'); if(rs) rs.value=rec.repoId; }
+  if(rec.branch) $('branchName').value=rec.branch;
+  if($('deployStrategyName')) $('deployStrategyName').value=rec.strategy||'';
+  if(rec.by) $('triggeredBy').value=rec.by;
+  /* 总状态徽标 + 编排区回放提示 */
+  setOverall(labelOf(rec.status)+' · 回放 #'+rec.no, rec.status==='success'?'dshell-badgeDone':'');
+  if(rec.status==='failed'){ const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; } }
+  $('overallBy').textContent='执行人：'+(rec.by||'—')+' · '+rec.time+'（历史回放）';
+  const rt=$('replayTip'); if(rt) rt.textContent='正在回放历史 #'+rec.no+'「'+rec.pipeline+'」 · 再次点击该行退出';
+  _detailKey='';   // 详情渲染缓存失效，强制按回放数据重绘
+  renderFlow(); renderDetail();
+}
+function exitHistoryReplay(){
+  if(!replayRec) return;
+  replayRec=null; runStages=null;
+  const rt=$('replayTip'); if(rt) rt.textContent='';
+  setOverall('未运行',''); $('overallBy').textContent='';
+  resetNodes();   // 恢复主控当前流水线的空闲编排（内部重置 _detailKey 并重绘流程/详情）
+}
+/* 回放态详情渲染：结构与 renderDetail 一致，数据取自历史记录（logs 按阶段名匹配选中阶段） */
+function renderReplayDetail(rec){
+  const s=activeStages().find(x=>x.id===selectedId) || activeStages()[0];
+  if(!s) return;
+  const logs=Array.isArray(rec.logs)?rec.logs:[];
+  const entry=logs.find(l=>l && l.stage===s.name) || null;
+  const n=nodes[s.id] || {status:'idle'};
+  $('detailTitle').textContent = s.name + ' · 阶段详情';
+  const badge=$('detailBadge'); badge.innerHTML='';
+  const map={idle:['未开始',''], running:['进行中','dshell-badgeWait'], skipped:['跳过',''],
+    success:['成功','dshell-badgeDone'], failed:['失败','dshell-badgeDone']};
+  const [txt,cls]=map[n.status]||['未开始',''];
+  const b=document.createElement('span');
+  if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='var(--st-err)'; b.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+  else if(n.status==='skipped'){ b.className='dshell-badge'; b.style.color='var(--dsw-alias-label-tertiary)'; b.style.borderColor='var(--dsw-alias-border-l2)'; }
+  else b.className='dshell-badge '+cls;
+  b.textContent=txt; badge.appendChild(b);
+  const kv=$('detailKv'); kv.innerHTML='';
+  const rows=[['阶段',s.name],['状态',txt],['流水线',rec.pipeline||'—'],['分支',rec.branch||'main'],['策略',rec.strategy||'—'],
+    ['执行人',rec.by||'—'],['环境',rec.env||'—'],['Commit',rec.commit||'—'],['运行时间',rec.time||'—']];
+  if(n.status==='success'||n.status==='failed') rows.push(['耗时', fmtDur(n.dur||0)]);
+  if(rec.archive) rows.push(['归档目录', rec.archive]);
+  rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
+    r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  const bar=$('detailBar'); const wrap=$('detailBarWrap');
+  const pct=(n.status==='success'||n.status==='skipped')?100:(n.progress||0);
+  bar.style.width=pct+'%';
+  bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':(n.status==='skipped'?'var(--st-idle)':'var(--st-run)'));
+  wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed'||n.status==='skipped')?'block':'none';
+  const log=$('detailLog'); log.innerHTML='';
+  const lines=entry && entry.log ? String(entry.log).split('\n') : [];
+  if(!lines.length){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
+  else lines.forEach(ln=>{
+    const div=document.createElement('div'); let cls='dim';
+    if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';
+    if(/✗|failed|失败|timed out|Rollback|回滚/.test(ln)) cls='err';
+    if(/^\[Pipeline\]/.test(ln) || /docker|helm|kubectl/.test(ln)) cls='hi';
+    div.className=cls; div.textContent=ln; log.appendChild(div);
+  });
+}
 let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
 let histPage=0;
 let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
@@ -2768,7 +2855,12 @@ function renderHistory(){
     if(idx===selHistoryIdx) tr.className='sel';
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
     tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
-    tr.addEventListener('click', ()=>{ selHistoryIdx = selHistoryIdx===idx?-1:idx; renderHistory(); });
+    tr.addEventListener('click', ()=>{
+      selHistoryIdx = selHistoryIdx===idx?-1:idx;
+      if(selHistoryIdx>=0) enterHistoryReplay(history[selHistoryIdx]);   // 选中行：编排区/回显框/主控控件同步回放该次运行
+      else exitHistoryReplay();
+      renderHistory();
+    });
     tb.appendChild(tr);
   });
   const info=$('histPageInfo'); if(info) info.textContent='第 '+(histPage+1)+'/'+pages+' 页 · 共 '+view.length+' 条';
@@ -2838,7 +2930,7 @@ $('histPageSize').value=String(histPageSize);
 $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
-$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; history=[]; selHistoryIdx=-1; histPage=0; renderHistory(); renderStats(); persistState(); });
+$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; histPage=0; renderHistory(); renderStats(); persistState(); });
 /* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
 $('histFilterKw').value=histFilter.kw;
 $('histFilterStatus').value=histFilter.status;
@@ -2894,6 +2986,7 @@ function renderPipelineOptions(){
 }
 function selectPipeline(id){
   if(running && id!==curPipelineId){ renderPipelineOptions(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
+  exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
   runStages=null; selectedId=curPipeline().stages[0].id;
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
@@ -3004,6 +3097,7 @@ $('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{
   if(running || queue.length){ if(!confirm('将中止当前运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本结果将被丢弃，且不计入历史）。继续？')) return; }
+  exitHistoryReplay();   // 重置一并退出历史回放态
   if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
