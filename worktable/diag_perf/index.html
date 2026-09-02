@@ -108,7 +108,7 @@
       <p class="dshell-sub">汇聚系统源码指标、普罗米修斯时序、Profiling、日志与硬件信息，定位推理链路性能瓶颈。</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="Prometheus 查询窗口（与「开始诊断」页设置区联动，改动即重新拉取）">窗口
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="Prometheus 查询窗口（与「开始诊断」页设置区及各画板时间轴联动，改动即重新拉取）">窗口
         <select class="dshell-input" id="rangeSel" style="width:auto;padding:3px 6px;font-size:12px">
           <option value="1">近 1h</option><option value="4">近 4h</option><option value="8">近 8h</option>
           <option value="12">近 12h</option><option value="24">近 24h</option><option value="72">近 72h</option>
@@ -1172,6 +1172,15 @@ var METRICS_URL=PROM_URL+"/metrics";   /* Prometheus 不可达时退化为瞬时
 var PREV={};   /* 计数器上次取值，用于计算 rate（/metrics 兜底路径） */
 var LIVE=false;
 
+/* 当前「窗口」选择对应的时间网格（N 点）：绝对窗口固定起止，相对窗口右端取整到步长。
+   示例数据 / 兜底模式同样按此网格打时间轴，保证窗口选择与各画板时间联动 */
+function winEndStep(){
+  if(PROM_ABS)return {end:PROM_ABS.to,step:Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N))};
+  return {end:Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S,step:PROM_STEP_S};
+}
+function gridLabels(grid){return grid.map(function(t){var d=new Date(t*1000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);});}
+function winLabels(){var w=winEndStep(),grid=[];for(var i=N-1;i>=0;i--)grid.push(w.end-i*w.step);return gridLabels(grid);}
+
 /* 代联 GET：优先走 /api/worktable/proxy（仅回环/内网），失败回退浏览器直连 */
 function proxyGet(url){
   return fetch("/api/worktable/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:url,useProxy:USE_PROXY})})
@@ -1183,7 +1192,7 @@ function proxyGet(url){
 }
 
 function pushPoint(arr,v){arr.shift();arr.push(+v.toFixed(2));}
-function pushLabel(){DATA.ts.shift();var d=new Date();DATA.ts.push(d.getHours()+":"+("0"+d.getMinutes()).slice(-2)+":"+("0"+d.getSeconds()).slice(-2));
+function pushLabel(){DATA.ts=winLabels();   /* 时间轴跟随当前「窗口」网格（示例/兜底数据仍滚动一格），窗口选择联动各画板 */
   /* 数据滚动一格：选区/缩放索引同步左移，滚出窗口则丢弃 */
   Object.keys(SEL).forEach(function(id){var s=SEL[id];s.i0--;s.i1--;if(s.i1<=0)delete SEL[id];else if(s.i0<0)s.i0=0;});
   Object.keys(ZOOM).forEach(function(id){var z=ZOOM[id];z.i0--;z.i1--;if(z.i1<=0)delete ZOOM[id];else if(z.i0<0)z.i0=0;});}
@@ -1389,13 +1398,11 @@ var PROM_LAST_OK="—";
 
 /* 主路径：Prometheus query_range 拉满整个窗口，cb("ok"|"empty"|"down") */
 function pollProm(cb){
-  var end,step;
-  if(PROM_ABS){end=PROM_ABS.to;step=Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N));}   /* 绝对窗口：固定起止，步长按窗口宽度 */
-  else{end=Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S;step=PROM_STEP_S;}
+  var w=winEndStep(),end=w.end,step=w.step;   /* 窗口网格：绝对窗口固定起止、步长按窗口宽度；相对窗口右端取整到步长 */
   STEP_S=step;
   var grid=[],i;
   for(i=N-1;i>=0;i--)grid.push(end-i*step);
-  var labels=grid.map(function(t){var d=new Date(t*1000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);});
+  var labels=gridLabels(grid);
   var matched=0,failed=false,next={},seq=Promise.resolve();
   PROM_STATE={};
   PROM_DEFS.forEach(function(def){
@@ -1803,6 +1810,7 @@ function applySettings(save){
 });
 
 window.addEventListener("resize",function(){clearTimeout(window.__diagRt);window.__diagRt=setTimeout(renderAll,200);});
+DATA.ts=winLabels();   /* 首屏时间轴即按当前「窗口」网格（含 localStorage 恢复的小时数/绝对窗口），示例数据也联动 */
 renderAll();
 renderPromPanel();
 fillSettings();
