@@ -22,6 +22,13 @@ const PLUGIN_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERS
 export const name = 'dsh-worktable'
 export const inject = ['webServer', 'sessions']
 
+/** 插件项目目录（lib/ 的上一级；经 link: 安装时 realpath 即源码目录，供「开发 dsh-worktable」新会话定位工作目录） */
+const PLUGIN_DIR = (() => {
+  try { return pathResolve(realpathSync(dirname(fileURLToPath(import.meta.url))), '..') } catch {}
+  try { return pathResolve(dirname(fileURLToPath(import.meta.url)), '..') } catch {}
+  return process.cwd()
+})()
+
 export const HEALTH_PATH = '/api/worktable/health'
 export const PROXY_PATH = '/api/worktable/proxy'
 
@@ -231,7 +238,7 @@ export function apply(ctx: Context) {
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'dsh-worktable', version: PLUGIN_VERSION, ok: true })
+      json(res, 200, { plugin: 'dsh-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, ok: true })
     },
   })
 
@@ -1076,8 +1083,12 @@ export function apply(ctx: Context) {
           }
         }
         const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (typeof body.body === 'string' ? body.body : undefined)
-        // 用 node:http/https 直接请求，彻底忽略系统代理（NO_PROXY 在 undici 下偶发失效），
-        // 保证「本地访问不走代理」——避免间歇性 fetch failed。
+        // 默认用 node:http/https + 显式独立 Agent 直连，忽略系统代理
+        // （Node 24 起 NODE_USE_ENV_PROXY=1 时 node:http 同样会走系统代理，
+        // 本机 127.0.0.1:8118 不通部分内网目标会挂起直到超时）。
+        // 调用方传 useProxy:true 时不注入 Agent，按进程环境走系统代理
+        // （需 NODE_USE_ENV_PROXY=1 才生效，否则 node:http 恒为直连）。
+        const useProxy = body.useProxy === true
         const fwdHeaders: Record<string, string> = {}
         for (const [k, v] of Object.entries(headers)) {
           const lk = k.toLowerCase()
@@ -1086,7 +1097,7 @@ export function apply(ctx: Context) {
         }
         const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
         const result = await new Promise<{ status: number, headers: any, body: Buffer }>((resolve, reject) => {
-          const r = reqLib.request(urlStr, { method, headers: fwdHeaders }, (resp: any) => {
+          const r = reqLib.request(urlStr, useProxy ? { method, headers: fwdHeaders } : { method, headers: fwdHeaders, agent: new reqLib.Agent() }, (resp: any) => {
             const chunks: Buffer[] = []
             resp.on('data', (c: Buffer) => chunks.push(c))
             resp.on('end', () => resolve({ status: resp.statusCode ?? 0, headers: resp.headers, body: Buffer.concat(chunks) }))

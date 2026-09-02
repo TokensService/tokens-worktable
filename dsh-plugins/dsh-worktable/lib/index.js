@@ -91,6 +91,17 @@ var dshell_default2 = '<!doctype html>\n<!-- dsh-worktable \u539F\u751F\u76AE\u8
 var PLUGIN_VERSION = false ? "dev" : "0.2.2";
 var name = "dsh-worktable";
 var inject = ["webServer", "sessions"];
+var PLUGIN_DIR = (() => {
+  try {
+    return pathResolve(realpathSync(dirname(fileURLToPath(import.meta.url))), "..");
+  } catch {
+  }
+  try {
+    return pathResolve(dirname(fileURLToPath(import.meta.url)), "..");
+  } catch {
+  }
+  return process.cwd();
+})();
 var HEALTH_PATH = "/api/worktable/health";
 var PROXY_PATH = "/api/worktable/proxy";
 function isLocalTarget(hostname) {
@@ -318,7 +329,7 @@ function apply(ctx) {
     kind: "exact",
     path: HEALTH_PATH,
     handler: (_req, res) => {
-      json(res, 200, { plugin: "dsh-worktable", version: PLUGIN_VERSION, ok: true });
+      json(res, 200, { plugin: "dsh-worktable", version: PLUGIN_VERSION, dir: PLUGIN_DIR, ok: true });
     }
   });
   webServer.register({
@@ -1289,6 +1300,7 @@ function apply(ctx) {
           }
         }
         const reqBody = method === "GET" || method === "HEAD" ? void 0 : typeof body.body === "string" ? body.body : void 0;
+        const useProxy = body.useProxy === true;
         const fwdHeaders = {};
         for (const [k, v] of Object.entries(headers)) {
           const lk = k.toLowerCase();
@@ -1297,7 +1309,7 @@ function apply(ctx) {
         }
         const reqLib = await (target.protocol === "https:" ? import("node:https") : import("node:http"));
         const result = await new Promise((resolve, reject) => {
-          const r = reqLib.request(urlStr, { method, headers: fwdHeaders }, (resp) => {
+          const r = reqLib.request(urlStr, useProxy ? { method, headers: fwdHeaders } : { method, headers: fwdHeaders, agent: new reqLib.Agent() }, (resp) => {
             const chunks = [];
             resp.on("data", (c) => chunks.push(c));
             resp.on("end", () => resolve({ status: resp.statusCode ?? 0, headers: resp.headers, body: Buffer.concat(chunks) }));
