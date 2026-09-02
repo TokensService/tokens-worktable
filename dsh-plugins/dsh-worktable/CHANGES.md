@@ -1,5 +1,12 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 修复会话窗关闭（内容全宽）时标题栏 💬/✕ 与其他插件按钮重叠（`src/client/split.tsx`）：
+  会话窗打开时标题栏右端到聊天列左缘即止，不存在冲突；关闭会话窗后标题栏横跨整页，
+  💬/✕ 落在页面右上角，与其他插件注入在该区域的按钮重叠。
+  修复：`chatClosed` 时标题栏 `paddingRight` 预留 `BAR_RIGHT_RESERVE = 160`px 空区
+  （常量，宽不够可调），💬/✕ 随之左移；栏体背景与底边仍横跨整页，视觉不断裂。
+  `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 聊天图标颜色再调为主题次级灰（`src/client/styles.ts`）：
   主题强调色（亮蓝）实机仍显突兀；改为 `var(--dsw-alias-label-secondary, #9aa4b2)`——
   与绑定按钮常态、⇄/✕ 按钮同色系，最克制耐看；hover 恢复主色（`--dsw-alias-label-primary`），

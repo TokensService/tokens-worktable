@@ -16484,6 +16484,7 @@ core_default.registerLanguage("json", json);
 var clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 var DIVIDER = 4;
 var BAR_H = 26;
+var BAR_RIGHT_RESERVE = 160;
 var PERSIST_KEY = "dsh.worktable.split.v2";
 var BUILTIN_ICONS = {
   browser: "\u{1F310}",
@@ -18259,7 +18260,7 @@ function WorkspaceLayer(props) {
     it.pane.id
   );
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dsh-wt_splitBar", style: { position: "fixed", left: g.left, top: barTop, width: hasLeft || chatFull ? contentW : hasTop ? colW : contentW, zIndex: 70 }, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dsh-wt_splitBar", style: { position: "fixed", left: g.left, top: barTop, width: hasLeft || chatFull ? contentW : hasTop ? colW : contentW, paddingRight: chatClosed ? BAR_RIGHT_RESERVE : void 0, zIndex: 70 }, children: [
       spec.id !== "wt-console" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dsh-wt_splitTitle", children: spec.title }),
       !hasLeft && !chatClosed && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
         "button",
