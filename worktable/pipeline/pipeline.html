@@ -80,6 +80,10 @@
     .mini { font-size:11px; padding:5px 12px; }
     #historyTable tbody tr { cursor:pointer; }
     #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
+    /* 流水线任务行：整行点击即选用，当前行高亮（色板走主题变量） */
+    #plTable tbody tr { cursor:pointer; }
+    #plTable tbody tr:hover td { background:var(--dsw-alias-fill-l1); }
+    #plTable tbody tr.sel td { background:rgba(79,142,247,.12); }
     ::-webkit-scrollbar-thumb { background:var(--scroll); }
     /* Jenkins 连接模式分段切换（选中态走主题 accent） */
     .jk-modeBtn { border-radius:0; }
@@ -130,7 +134,7 @@
   <!-- 控制区 -->
   <div class="dshell-card pipeline-controls" id="pipelineControls">
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-      <select id="pipelineSel" class="dshell-input" style="min-width:130px;"></select>
+      <span id="pipelineName" class="dshell-input" style="min-width:130px;display:inline-block;font-weight:600;color:var(--dsw-alias-state-accent-primary);" title="在下方「流水线任务」列表中点击行即可选用"></span>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境（可多选）
       <span id="envMulti" style="position:relative;display:inline-block;">
@@ -2821,7 +2825,7 @@ function enterHistoryReplay(rec){
   /* 编排区：切到该次运行的流水线（按 id/名称匹配；不写 localStorage，避免回放污染偏好），
      阶段状态/耗时按阶段名从历史 logs 回填；流水线已删除时按日志阶段名重建只读编排 */
   const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline) || null;
-  if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineOptions(); renderPipelines(); }
+  if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineName(); renderPipelines(); }
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   const byName={}; logs.forEach(l=>{ if(l && l.stage) byName[l.stage]=l; });
   runStages = pl ? pl.stages.map(s=>({...s}))
@@ -3131,23 +3135,24 @@ function renderPipelines(){
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
     const preview = p.stages.map(s=>s.name).join(' → ');
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
+    if(isCur) tr.className='sel';
+    tr.title='点击选用该流水线';
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
       '<td>'+p.stages.length+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn '+(isCur?'':'dshell-btnGhost')+' mini" data-plselect="'+p.id+'">'+(isCur?'当前':'选用')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
+    tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击即选用（编辑/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
-  tb.querySelectorAll('[data-plselect]').forEach(b=>b.addEventListener('click',()=>selectPipeline(b.getAttribute('data-plselect'))));
-  tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',()=>openPlForm(b.getAttribute('data-pledit'))));
-  tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',()=>deletePipeline(b.getAttribute('data-pldel'))));
-  renderPipelineOptions();
+  tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
+  tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
+  renderPipelineName();
 }
-function renderPipelineOptions(){
-  const sel=$('pipelineSel'); if(!sel) return; const cur=sel.value; sel.innerHTML='';
-  pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===curPipelineId) o.selected=true; sel.appendChild(o); });
-  if(cur && pipelines.some(p=>p.id===cur)) sel.value=cur;
+function renderPipelineName(){
+  const el=$('pipelineName'); if(!el) return;
+  const cur=curPipeline(); el.textContent = cur? cur.name : '—';
 }
 function selectPipeline(id){
-  if(running && id!==curPipelineId){ renderPipelineOptions(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
+  if(running && id!==curPipelineId){ alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
   runStages=null; selectedId=curPipeline().stages[0].id;
@@ -3263,7 +3268,6 @@ $('resetBtn').addEventListener('click', ()=>{
   if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
   refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行/归档根
 });
-$('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
 $('plSave').addEventListener('click', savePlForm);
 $('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
