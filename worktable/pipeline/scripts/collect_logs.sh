@@ -33,15 +33,14 @@ if [ -z "$ARCHIVE_FOLDER" ]; then
   echo "[collect_logs] ARCHIVE_FOLDER 为空，跳过"
   exit 0
 fi
-mkdir -p "$ARCHIVE_FOLDER/hosts"
 
 stamp() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 
-# 收集单个节点日志到 ARCHIVE_FOLDER/hosts/<ip>.log
+# 收集单个节点日志到 ARCHIVE_FOLDER/<ip>.log（平铺在归档文件夹根，不再单建 hosts 子目录）
 collect_one() {   # $1=ip $2=user $3=pass
   local ip="$1" user="$2" pass="$3"
   local safe; safe=$(printf '%s' "$ip" | tr -c 'A-Za-z0-9.-' '_')
-  local out="$ARCHIVE_FOLDER/hosts/${safe}.log"
+  local out="$ARCHIVE_FOLDER/${safe}.log"
   echo "[collect_logs] -> host $user@$ip -> $out"
   local remote='echo "### uname"; uname -a; '
   remote+='echo "### uptime"; uptime; '
@@ -94,7 +93,7 @@ if command -v kubectl >/dev/null 2>&1 && [ -n "${NAMESPACE:-}" ]; then
   kubectl -n "$NAMESPACE" get pods --no-headers 2>/dev/null | awk '{print $1}' | while read -r pod; do
     [ -n "$pod" ] || continue
     kubectl -n "$NAMESPACE" logs "$pod" --tail=300 2>/dev/null \
-      >"$ARCHIVE_FOLDER/hosts/pod-${pod}.log" 2>&1
+      >"$ARCHIVE_FOLDER/pod-${pod}.log" 2>&1
   done
 fi
 
