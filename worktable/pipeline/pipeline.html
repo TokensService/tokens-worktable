@@ -494,7 +494,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）；Jenkins 任务除 fullName 外也可直接粘贴任务 URL，URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符，运行时用注入的环境变量替换（URL 编码）后触发</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）；Jenkins 任务除 fullName 外也可直接粘贴任务 URL，URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1673,7 +1673,7 @@ function renderStageActionRow(i){
   if(s.kind==='jenkins'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
     const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='任务 fullName 或 URL（支持 {GIT_BRANCH} 占位符）'; inp.style.width='280px';
-    inp.title='可填 Jenkins 任务 fullName（先在「设置」页获取任务列表），或直接粘贴任务 URL；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符，运行时用注入的环境变量/构建参数替换（URL 编码），未定义的变量原样保留；URL 仅取路径部分，连接方式与凭据仍走「Jenkins 服务配置」';
+    inp.title='可填 Jenkins 任务 fullName（先在「设置」页获取任务列表，POST buildWithParameters 触发并轮询），或直接粘贴任务 URL；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符，运行时用注入的环境变量/构建参数替换（URL 编码），未定义的变量原样保留；URL 触发为对完整地址直接 GET（等价 curl，URL 自含鉴权如 token 参数，不附加全局凭据），连接模式（本地直连/服务端代连）仍走「Jenkins 服务配置」';
     const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量';
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','jenkinsOutVars'); outInp.value=(s.jenkins&&s.jenkins.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
@@ -2338,9 +2338,11 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
    变量传递：上游阶段变量（curRun.vars）自动注入为构建参数；任务控制台输出的 KEY=VALUE 行 /
    单行 JSON 对象（{"KEY":"VALUE"}）经 mergeStageVars 累计回 curRun.vars，传递给后续阶段。 */
 function jkJobPath(job){ return '/job/'+String(job).split('/').map(encodeURIComponent).join('/job/')+'/'; }
-/* Jenkins 任务除 fullName 外也支持直接粘贴任务 URL（如 http://jenkins/job/app/job/{GIT_BRANCH}/）：
+/* Jenkins 任务除 fullName 外也支持直接粘贴任务 URL（如 http://jenkins/job/app/job/{GIT_BRANCH}/buildWithParameters?token=xxx）：
    {VAR} 占位符由环境变量/构建参数（GIT_BRANCH、IMAGE_NAME、上游产出变量等）替换并做 URL 编码，
-   未定义的变量原样保留；URL 仅取路径部分拼到「Jenkins 服务配置」的地址上，连接模式与凭据保持不变。 */
+   未定义的变量原样保留；URL 触发为对替换后的完整地址直接发 GET（等价 curl，URL 自含鉴权如 token 参数，
+   不附加「Jenkins 服务配置」的用户名/令牌）；jkJobRef 仅取 URL 路径（剥掉尾部 build/buildWithParameters
+   触发动作段），供拉取参数定义与轮询构建结果使用。 */
 function jkIsUrl(job){ return /^https?:\/\//i.test(String(job||'').trim()); }
 function jkSubstUrl(url, vars){
   return String(url||'').replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, function(m,k){
@@ -2352,7 +2354,8 @@ function jkJobRef(job, vars){
   const raw=String(job||'').trim();
   if(!jkIsUrl(raw)) return jkJobPath(raw);
   const u=jkSubstUrl(raw, vars);
-  try{ return new URL(u).pathname.replace(/\/+$/,'')+'/'; }catch(e){ return u; }
+  /* URL 触发直接 GET 完整地址；这里仅取路径供拉取参数/轮询，尾部 build/buildWithParameters 动作段需剥掉 */
+  try{ return new URL(u).pathname.replace(/\/+$/,'').replace(/\/(buildWithParameters|build)$/i,'')+'/'; }catch(e){ return u; }
 }
 /* Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
    参数放在 form-urlencoded 请求体中（等价于旧版 query 传参）；
@@ -2389,6 +2392,21 @@ async function jkTriggerBuild(jobPath, params){
   }
   const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store'});
   if(!r.ok && r.status!==302 && r.status!==303) throw new Error('HTTP '+r.status);
+  return true;
+}
+/* 任务 URL 触发：{VAR} 占位符替换后直接 GET 完整地址（等价 curl——此类 URL 本身就是 GET 触发的接口地址）。
+   URL 视为自包含：不拼 buildWithParameters、不带 crumb、不附加「Jenkins 服务配置」的用户名/令牌（鉴权信息如
+   token 由 URL 自带）；连接模式仍生效：本地=浏览器直连（需 CORS/同源），远程=经 /api/worktable/proxy 代连。 */
+async function jkTriggerGet(url){
+  const j=jenkins;
+  if(j.mode==='remote'){
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'})});
+    const p=await r.json(); if(p&&p.error) throw new Error(p.error);
+    if((p.status||0)>=400) throw new Error('HTTP '+(p.status||0));
+    return true;
+  }
+  const r=await fetch(url,{cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status);
   return true;
 }
 async function jkGetText(path){
@@ -2444,18 +2462,23 @@ async function runJenkinsStep(i){
         if(curRun.tag&&params.ARCHIVE_TAG===undefined) params.ARCHIVE_TAG=curRun.tag;
       }
     }
-    /* 任务可填 URL：{VAR} 占位符用上面注入完成的环境变量/构建参数替换（URL 编码），取路径拼到配置的 Jenkins 地址上 */
+    /* 任务可填 URL：{VAR} 占位符用上面注入完成的环境变量/构建参数替换（URL 编码）后，对完整 URL 直接 GET 触发
+       （等价 curl）；jobPath 仅取 URL 路径（已剥掉触发动作段）供拉取 nextBuildNumber 与轮询结果使用 */
+    const isUrl=jkIsUrl(jk.job);
     const jobPath=jkJobRef(jk.job, params);
+    const pollable=/\/job\//.test(jobPath);   // 非标准任务路径（如 webhook 触发地址）无法定位任务，跳过轮询
     log.push('# params: '+Object.keys(params).map(function(k){return k+'='+params[k];}).join(' '));
-    if(jkIsUrl(jk.job)) log.push('# job url: '+(jenkins.url||'').replace(/\/+$/,'')+jobPath.replace(/\/+$/,'')+'/');
+    if(isUrl) log.push('# trigger url: '+jkSubstUrl(jk.job, params));
     s._out={stdout:log.join('\n'),stderr:'',code:null,jenkins:true,done:false}; renderDetail();
     let preNum=null;
-    try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); }
-    await jkTriggerBuild(jobPath, params);
-    log.push('# 已触发构建'+(preNum?(' #'+preNum):'')+'，等待执行…'); s._out.stdout=log.join('\n'); renderDetail();
+    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); } }
+    if(isUrl){ await jkTriggerGet(jkSubstUrl(jk.job, params)); }
+    else{ await jkTriggerBuild(jobPath, params); }
+    log.push('# 已触发构建'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); renderDetail();
     const deadline=t0+((s.timeout||300)*1000);
     let result=null, buildNum=null, building=true;
-    while(Date.now()<deadline && (building||buildNum==null)){
+    if(!pollable){ building=false; result='SUCCESS'; }
+    while(pollable && Date.now()<deadline && (building||buildNum==null)){
       await new Promise(function(r){ setTimeout(r,2000); });
       if(!running||!curRun||curRun.token!==tk){ if(timer){clearInterval(timer);timer=null;} return; }
       try{
