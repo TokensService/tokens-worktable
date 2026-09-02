@@ -221,7 +221,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
           <span id="detailBadge"></span>
-          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。点击会先新建一个 AI 会话（工作区=设置的归档目录根目录，空草稿不自动提交）再打开目录，避免会话切换刷新侧边栏把文件面板刷掉。目录选取：运行中取当前运行的归档文件夹；未运行时优先运行历史选中行（点击历史行即刷新目标），其次最近一次运行，均无则打开归档根目录；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。点击同时新建一个 AI 会话并切入其窗口（工作区=设置的归档目录根目录，空草稿不自动提交）：项目页随之关闭，新窗口只含会话聊天与文件夹浏览（文件夹窗口由插件在会话切换落定后重开，避免被侧边栏刷新刷掉）。目录选取：运行中取当前运行的归档文件夹；未运行时优先运行历史选中行（点击历史行即刷新目标），其次最近一次运行，均无则打开归档根目录；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
         </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
@@ -2931,10 +2931,12 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
 }));
 /* 「📂 打开归档目录」：优先经 dsh-better-sidebar 侧边栏「文件」面板打开归档目录（__dshOpenFolderInSidebar
    桥由工作台插件暴露，开一个以归档目录为根的文件夹窗口）；未装 better-sidebar 或桥不可用时回退到
-   服务端系统文件管理器（xdg-open/gio/open 依次探测）。点击先新建一个 AI 会话（工作区=设置的
-   归档目录根目录 archiveRootFolder；空草稿不自动提交，见 createArchiveRootChat），await 落定后
-   再打开目录：会话切换会刷新侧边栏，后打开文件面板才不会被刷掉；会话创建失败仅 console.warn，
-   不阻断打开目录。
+   服务端系统文件管理器（xdg-open/gio/open 依次探测）。点击同时新建一个 AI 会话（工作区=设置的
+   归档目录根目录 archiveRootFolder；空草稿不自动提交）：新版插件桥 __dshNewChatSessionAtFolder
+   切会话时项目随之关闭（插件侧刻意不做 markPluginSessionOpen），新窗口只含会话聊天 + 文件夹浏览，
+   文件夹窗口由插件在切换落定后重开（会话切换会刷新侧边栏，页内先开的会被刷掉）；旧版插件无此桥时
+   退回 __dshNewChatSessionAt（项目保持打开，见 createArchiveRootChat），会话创建后页内补开一次
+   文件夹窗口。会话创建失败仅 console.warn，不阻断打开目录。
    目录选取优先级（archiveTargetFolder）：运行中取当前运行的归档文件夹（页面展示的是实时运行）→
    运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）→
    最近一次运行的归档文件夹（curRun.archive，运行结束后不清空）→
@@ -2978,22 +2980,8 @@ function refreshArchiveTip(){
   tip.textContent = f ? ('归档目录：'+f) : '';
   tip.style.color='';
 }
-async function openArchiveFolder(){
-  const tip=$('archiveTip');
-  const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
-  const folder=archiveTargetFolder();
-  if(!folder){ say('✗ 暂无归档目录：请先运行一次流水线，或在「设置」页配置归档路径','var(--log-warn)'); return; }
-  /* 先新建工作区=归档根目录的 AI 会话（空草稿），await 落定后再打开目录：
-     会话切换会刷新侧边栏，后打开文件面板才不会被会话创建刷掉；失败仅告警不阻断 */
-  const root=archiveRootFolder();
-  if(root){ try{ await createArchiveRootChat(root); }catch(e){ console.warn('[archive] 新建归档根目录会话失败（不影响打开目录）:', e); } }
-  /* 优先走 better-sidebar 侧边栏「文件」面板（文件夹窗口）；桥缺失/拒绝（未装插件等）再回退系统文件管理器 */
-  const P=window.parent;
-  if(P && typeof P.__dshOpenFolderInSidebar==='function'){
-    let opened=false;
-    try{ opened=!!P.__dshOpenFolderInSidebar(folder); }catch(e){ opened=false; }
-    if(opened){ say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)'); return; }
-  }
+/* 服务端系统文件管理器回退路径（无 better-sidebar 时用）：助手脚本探测 xdg-open/gio/open */
+async function openFolderViaFileManager(folder, say){
   try{
     await apiWrite(FM_HELPER, FM_SCRIPT);   // 幂等重写助手脚本（内容固定）
     const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:FM_HELPER,args:[folder],timeoutMs:10000})});
@@ -3008,6 +2996,44 @@ async function openArchiveFolder(){
     else if(j.code===3) say('✗ 服务端未找到文件管理器（xdg-open/gio/open）','var(--log-err)');
     else say('✗ 打开失败（退出码 '+j.code+'）'+(j.stderr?('：'+String(j.stderr).trim().slice(0,120)):''),'var(--log-err)');
   }catch(e){ say('✗ 请求失败：'+String(e.message||e).slice(0,120),'var(--log-err)'); }
+}
+async function openArchiveFolder(){
+  const tip=$('archiveTip');
+  const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
+  const folder=archiveTargetFolder();
+  if(!folder){ say('✗ 暂无归档目录：请先运行一次流水线，或在「设置」页配置归档路径','var(--log-warn)'); return; }
+  const root=archiveRootFolder();
+  const P=window.parent;
+  /* 探测 better-sidebar 并顺手开一次文件夹窗口：会话切换会刷新侧边栏，这次打开随后会被刷掉，
+     仅供判定回退路径；新版插件桥会在切换落定后重开（见 __dshNewChatSessionAtFolder） */
+  let bsOpened=false;
+  if(P && typeof P.__dshOpenFolderInSidebar==='function'){
+    try{ bsOpened=!!P.__dshOpenFolderInSidebar(folder); }catch(e){ bsOpened=false; }
+  }
+  const newBridge=!!(P && typeof P.__dshNewChatSessionAtFolder==='function');
+  /* 主路径（better-sidebar + 新版插件桥）：建会话（工作区=归档根）→ 切会话关项目（新窗口只含
+     会话聊天 + 文件夹浏览）→ 插件在切换落定后重开文件夹窗口；此后本页面随项目关闭卸载，不再执行 */
+  if(bsOpened && root && newBridge){
+    try{ await P.__dshNewChatSessionAtFolder('', root, folder); }
+    catch(e){ console.warn('[archive] 新建归档根目录会话失败:', e); }
+    return;
+  }
+  /* 无 better-sidebar 的回退：先走服务端系统文件管理器（必须在建会话之前——新桥建会话会关项目
+     卸载本页，之后就执行不到了） */
+  if(!bsOpened) await openFolderViaFileManager(folder, say);
+  /* 建会话：新桥（切会话关项目；无 better-sidebar 时 folder 传空只建会话）；
+     旧插件退回 __dshNewChatSessionAt（项目保持打开）。失败仅告警，不影响已打开的目录 */
+  if(root){
+    try{
+      if(newBridge) await P.__dshNewChatSessionAtFolder('', root, null);
+      else await createArchiveRootChat(root);
+    }catch(e){ console.warn('[archive] 新建归档根目录会话失败（不影响打开目录）:', e); }
+  }
+  /* better-sidebar 已开过的收尾：旧插件会话创建可能刷新了侧边栏，补开一次文件夹窗口；
+     新桥但 root 缺失（无法建会话）的边角同样在此给出结果提示 */
+  if(bsOpened){
+    try{ if(P.__dshOpenFolderInSidebar(folder)) say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)'); }catch(e){}
+  }
 }
 $('openArchiveBtn').addEventListener('click', openArchiveFolder);
 /* 历史重跑：按选中行的流水线 + 环境 IP + 分支 + 执行人重新运行（运行中则入队） */

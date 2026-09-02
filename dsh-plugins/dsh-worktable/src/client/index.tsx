@@ -364,6 +364,9 @@ let sessionBridge: { sessions: any; conversation: any; list: any; workspaces: an
 /** 宿主 API 客户端（apply 时从 connection 服务取；agentPresets/sessions 用于修复新会话继承失效模型的 bug） */
 let hostApi: { agentPresets?: any; sessions?: any } | null = null
 
+/** apply 的插件上下文（模块级暂存）：供 openFolderInSidebar 等模块级助手取 better-sidebar 服务 */
+let applyCtx: any = null
+
 /** 新会话显式应用「部署默认预设」：宿主新会话座位同款逻辑（api.agentPresets.select，仅对 blank 会话生效）。
  *  修复：用户删掉默认模型后，新建会话继承到失效预设，prompt 报 model-unavailable 导致窗口建不出来。 */
 async function ensureSessionPreset(sessionId: string): Promise<void> {
@@ -888,6 +891,27 @@ async function newChatInProject(text: string, workspaceId: string | null = null,
   await fillSessionDraft(sessionId, text)
 }
 
+/** pipeline.html「打开归档目录」→ 新桥（经 window.__dshNewChatSessionAtFolder 暴露给 iframe 调用）：
+ *  新建会话（cwd=归档根目录）并切过去——与 newChatInProject 相反，刻意不做 markPluginSessionOpen，
+ *  让「切会话关项目」联动生效：项目分栏随切换关闭，新窗口只含会话聊天 + 文件夹浏览。
+ *  切换落定后重开 better-sidebar 文件夹窗口：会话切换会刷新侧边栏，项目页内先开的会被刷掉，
+ *  故此处立即 + 延时各开一次（openTab 按 dedupeKey 复用同一标签，幂等）。
+ *  text 非空时才填输入框草稿（不提交）；folder 为空（无 better-sidebar 等）则只建会话。 */
+async function newChatSessionWithFolder(text: string, cwd: string | null, folder: string | null): Promise<void> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const sessionId = await b.sessions.create(cwd ? { cwd } : {})
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  try { await b.sessions.open?.(sessionId) } catch {}
+  if (text) { try { await fillSessionDraft(sessionId, text) } catch { /* 草稿填充失败不影响会话创建 */ } }
+  if (folder) {
+    openFolderInSidebar(folder)
+    setTimeout(() => openFolderInSidebar(folder), 400)
+    setTimeout(() => openFolderInSidebar(folder), 1200)
+  }
+}
+
 // ── 页面修改（设置弹窗：项目管理行「✏️」按钮 + 提示词模板配置；替代原 pipeline.html 页内按钮）──
 /** 默认「页面修改」提示词模板：{page} 替换为项目页面文件路径，{name} 替换为项目显示名 */
 const DEFAULT_PAGE_EDIT_PROMPT = '页面文件：{page}，这是一个deepseek harness worktable插件的页面\n请先问我想做什么修改；确认需求后直接编辑该文件，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。修改完成后提醒我刷新页面查看效果。\n修改代码时，创建一个git worktree修改，防止多个并行的修改冲突。改完后，创建提交PR链接'
@@ -937,6 +961,19 @@ function markPluginSessionOpen(sessionId: string) {
     if (s.size > 50) s.clear()
     s.add(sessionId)
   }
+}
+
+/** better-sidebar 侧边栏开一个以 p 为根的文件夹窗口（editor 标签 + meta.dir，同 better-sidebar
+ *  agent-opens 推送的 folder 分支；path 相同按 dedupeKey 复用同一标签，幂等可重开）。
+ *  未装 better-sidebar（服务缺失/无 openTab）或打开抛错时返回 false。 */
+function openFolderInSidebar(p: string): boolean {
+  try {
+    const bs = applyCtx?.get?.('betterSidebar') as any
+    if (!bs || typeof bs.openTab !== 'function' || typeof p !== 'string' || !p) return false
+    const title = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
+    bs.openTab({ type: 'editor', title, path: p, id: 'editor:' + p, meta: { dir: true } })
+    return true
+  } catch { return false }
 }
 let lastSessionScopeId = ''
 
@@ -3452,24 +3489,15 @@ export const inject = ['slots', 'locale', 'sessions', 'conversation', 'workspace
 export function apply(ctx: any) {
   // 自定义窗口 → 宿主会话桥：保存 sessions/conversation/list 服务引用（模块级）
   sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null }
+  applyCtx = ctx   // 模块级暂存：openFolderInSidebar 等助手经它取 better-sidebar 服务
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
   // 项目页（pipeline.html「打开归档目录」等）→ dsh-better-sidebar 侧边栏桥：开一个以传入目录为根的
   // 文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；path 相同按
   // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）
   // 或打开抛错时返回 false，由页面回退到系统文件管理器路径。
-  try {
-    (window as any).__dshOpenFolderInSidebar = (p: string): boolean => {
-      try {
-        const bs = ctx.get?.('betterSidebar') as any
-        if (!bs || typeof bs.openTab !== 'function' || typeof p !== 'string' || !p) return false
-        const title = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
-        bs.openTab({ type: 'editor', title, path: p, id: 'editor:' + p, meta: { dir: true } })
-        return true
-      } catch { return false }
-    }
-  } catch {}
+  try { (window as any).__dshOpenFolderInSidebar = (p: string): boolean => openFolderInSidebar(p) } catch {}
 
 
   ctx.effect(() => {
