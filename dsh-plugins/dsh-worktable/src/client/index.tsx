@@ -3455,6 +3455,21 @@ export function apply(ctx: any) {
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
   try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  // 项目页（pipeline.html「打开归档目录」等）→ dsh-better-sidebar 侧边栏桥：开一个以传入目录为根的
+  // 文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；path 相同按
+  // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）
+  // 或打开抛错时返回 false，由页面回退到系统文件管理器路径。
+  try {
+    (window as any).__dshOpenFolderInSidebar = (p: string): boolean => {
+      try {
+        const bs = ctx.get?.('betterSidebar') as any
+        if (!bs || typeof bs.openTab !== 'function' || typeof p !== 'string' || !p) return false
+        const title = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
+        bs.openTab({ type: 'editor', title, path: p, id: 'editor:' + p, meta: { dir: true } })
+        return true
+      } catch { return false }
+    }
+  } catch {}
 
 
   ctx.effect(() => {
