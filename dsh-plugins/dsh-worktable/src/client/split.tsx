@@ -128,6 +128,8 @@ type SplitState = {
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
 const DIVIDER = 4
 const BAR_H = 26
+/** 会话窗关闭（内容全宽）时标题栏右侧预留的空区宽：💬/✕ 左移，让开页面右上角其他插件注入的按钮 */
+const BAR_RIGHT_RESERVE = 160
 const PERSIST_KEY = 'dsh.worktable.split.v2'
 
 /** 内置内容窗图标 */
@@ -1983,7 +1985,8 @@ function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: num
   return (
     <>
       {/* 标题栏 */}
-      <div className="dsh-wt_splitBar" style={{ position: 'fixed', left: g.left, top: barTop, width: hasLeft || chatFull ? contentW : (hasTop ? colW : contentW), zIndex: 70 }}>
+      {/* 会话窗关闭（内容全宽）时右侧预留 BAR_RIGHT_RESERVE 空区：💬/✕ 左移，避开页面右上角其他插件按钮 */}
+      <div className="dsh-wt_splitBar" style={{ position: 'fixed', left: g.left, top: barTop, width: hasLeft || chatFull ? contentW : (hasTop ? colW : contentW), paddingRight: chatClosed ? BAR_RIGHT_RESERVE : undefined, zIndex: 70 }}>
         {spec.id !== 'wt-console' && <span className="dsh-wt_splitTitle">{spec.title}</span>}
         {!hasLeft && !chatClosed && (
           <button
