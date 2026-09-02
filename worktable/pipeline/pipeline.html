@@ -2844,7 +2844,7 @@ function renderReplayDetail(rec){
   const rows=[['阶段',s.name],['状态',txt],['流水线',rec.pipeline||'—'],['分支',rec.branch||'main'],['策略',rec.strategy||'—'],
     ['执行人',rec.by||'—'],['环境',rec.env||'—'],['Commit',rec.commit||'—'],['运行时间',rec.time||'—']];
   if(n.status==='success'||n.status==='failed') rows.push(['耗时', fmtDur(n.dur||0)]);
-  if(rec.archive) rows.push(['归档目录', rec.archive]);
+  /* 不再单独展示「归档目录」行：归档路径已由「📂 打开归档目录」按钮旁的状态提示展示（refreshArchiveTip），避免长路径挤压回显日志区 */
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
