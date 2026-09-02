@@ -230,7 +230,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=归档目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=归档目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=归档目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
@@ -402,7 +402,7 @@
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」点击选中某一行后，点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话（工作目录取该次运行的归档目录），把对应提示词填入输入框，确认无误后手动发送。
+        在「运行历史」点击选中某一行后，点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话（工作目录取归档根目录，即设置的归档路径；该次运行的归档文件夹写进提示词），把对应提示词填入输入框，确认无误后手动发送。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -2780,14 +2780,17 @@ function buildAnalysisPrompt(kind, rec){
   };
   return tpl.replace(/\{(\w+)\}/g, (m,k)=> vars[k]!==undefined ? String(vars[k]) : m);
 }
-/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：工作目录 = 选中行的归档目录，
+/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：工作目录 = 归档根目录
+   （archiveRootFolder：设置的归档路径，留空=保底 runs/），选中行的归档文件夹仍写进提示词供分析；
+   取根目录而非单次运行文件夹，保证未归档/归档已清理时新会话也有稳定工作区；
    提示词只填入输入框草稿（不自动提交，用户确认后手动发送）；
    旧版插件无此桥时退化为 __dshSessions/__dshPromptIntoSession 原自动发送路径 */
 async function createAnalysisChat(kind, rec){
   const P = window.parent;
   const text = buildAnalysisPrompt(kind, rec);
+  const root = archiveRootFolder();
   if(P && typeof P.__dshNewChatSessionAt==='function'){
-    try{ await P.__dshNewChatSessionAt(text, rec.archive || null); }
+    try{ await P.__dshNewChatSessionAt(text, root || null); }
     catch(e){ alert('创建 AI 会话失败：'+(e && e.message ? e.message : e)); }
     return;
   }
@@ -2795,7 +2798,7 @@ async function createAnalysisChat(kind, rec){
   if(!sessions || typeof sessions.create!=='function' || typeof P.__dshPromptIntoSession!=='function'){
     alert('无法创建 AI 会话：请在 DSH 工作台中打开本页面。'); return;
   }
-  const sid = await sessions.create(rec.archive ? {cwd: rec.archive} : {});
+  const sid = await sessions.create(root ? {cwd: root} : {});
   try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
   await P.__dshPromptIntoSession(sid, text);
 }
