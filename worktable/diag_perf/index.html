@@ -337,7 +337,8 @@
     </div>
   </div>
 
-  <div style="display:flex;gap:8px;margin-top:4px">
+  <!-- 全局操作条：「设置」页不显示（设置已有自己的保存/恢复按钮） -->
+  <div style="display:flex;gap:8px;margin-top:4px" id="globalActions">
     <button class="dshell-btn" id="btnRefresh">刷新数据</button>
     <button class="dshell-btn dshell-btnGhost" id="btnExport">导出诊断报告（JSON）</button>
   </div>
@@ -576,6 +577,7 @@ document.getElementById("tabs").addEventListener("click",function(e){
   document.querySelectorAll(".dshell-tab").forEach(function(t){t.classList.remove("dshell-tabOn");});
   b.classList.add("dshell-tabOn");
   document.querySelectorAll(".diag-tabpane").forEach(function(p){p.style.display=p.dataset.pane===b.dataset.tab?"":"none";});
+  document.getElementById("globalActions").style.display=b.dataset.tab==="settings"?"none":"flex";   /* 设置页隐藏刷新/导出按钮 */
   renderAll();   /* 切出隐藏页后 canvas 尺寸为 0，重绘补齐 */
   renderPromPanel();
 });
