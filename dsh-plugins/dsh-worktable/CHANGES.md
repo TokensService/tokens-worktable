@@ -1,5 +1,11 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 聊天图标颜色再调为主题次级灰（`src/client/styles.ts`）：
+  主题强调色（亮蓝）实机仍显突兀；改为 `var(--dsw-alias-label-secondary, #9aa4b2)`——
+  与绑定按钮常态、⇄/✕ 按钮同色系，最克制耐看；hover 恢复主色（`--dsw-alias-label-primary`），
+  关窗态仍降透明度 + `grayscale` 置灰。分栏标题栏 💬 与项目行 💬 一并替换。
+  `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 聊天图标颜色由饱和绿 `#3fb950` 改为主题强调色（`src/client/styles.ts`）：
   `#3fb950` 在整体灰蓝色调中突兀；改用 `var(--dsw-alias-state-accent-primary, #4f8ef7)`——
   项目卡片选中描边 / 激活态同款主题变量，浅色/深色主题自适应，与整套 dshell 视觉同源；
