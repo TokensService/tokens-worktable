@@ -403,7 +403,8 @@
     if (d < 3600) return Math.floor(d / 60) + " 分钟前";
     if (d < 86400) return Math.floor(d / 3600) + " 小时前";
     if (d < 2592000) return Math.floor(d / 86400) + " 天前";
-    return t.toISOString().slice(0, 10);
+    var p2 = function (n) { return String(n).padStart(2, "0"); };
+    return t.getFullYear() + "-" + p2(t.getMonth() + 1) + "-" + p2(t.getDate()); // 本地日期，避免 UTC 差一天
   }
   function setBadge(state_, draft, merged) {
     if (merged) return '<span class="pr-chip pr-chipMerged">● 已合并</span>';
@@ -583,7 +584,6 @@
 
   function renderLoading() {
     statusBar.innerHTML = '<span class="dshell-badge dshell-badgeWait">加载中…</span>';
-    var prog = Math.min(state.repos.length, state.repoDone);
     statsEl.innerHTML = stat("仓库", state.repos.length) + stat("已扫描", state.repoDone) + stat("已发现 PR", state.prs.length);
     var h = "";
     for (var i = 0; i < 6; i++) h += '<div class="pr-skel"></div>';
@@ -601,10 +601,15 @@
     statusBar.innerHTML = s;
   }
 
-  /* ---------- 主流程：拉取全部 ---------- */
+  /* ---------- 主流程：拉取全部 ----------
+     loadSeq 为拉取代际号：新拉取开始后旧拉取的回调全部作废，防止连续
+     「刷新 / 保存设置」触发两次 loadAll 时交叉写入 state.prs 导致列表重复、统计翻倍。 */
+  var loadSeq = 0;
   function loadAll() {
+    var seq = ++loadSeq;
     if (!state.token) {
       state.loading = false;
+      toolbar.style.display = "none";
       listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">🔑</div>' +
         '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 GitCode 访问令牌</div>' +
         '<div style="margin-bottom:12px">组织 TokensService 为私有，需令牌才能拉取 PR。</div>' +
@@ -617,6 +622,7 @@
     toolbar.style.display = "none";
     renderLoading(); renderStatus();
     fetchRepos(state.org, state.authMode).then(function (repos) {
+      if (seq !== loadSeq) return; // 已被更新的拉取取代
       state.repos = (repos || []).map(function (r) {
         return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
       }).filter(function (r) { return r.name; });
@@ -629,6 +635,7 @@
             (function (repo) {
               active++;
               fetchRepoPRs(repo.owner, repo.name, "all", state.authMode).then(function (pulls) {
+                if (seq !== loadSeq) return;
                 (pulls || []).forEach(function (p) {
                   var author = p.user && (p.user.login || p.user.name);
                   state.prs.push({
@@ -643,7 +650,9 @@
                   });
                 });
               }).catch(function () {}).then(function () {
-                active--; done++; state.repoDone = done;
+                active--; done++;
+                if (seq !== loadSeq) { resolve(); return; } // 旧拉取静默结束
+                state.repoDone = done;
                 renderLoading();
                 if (done >= state.repos.length) resolve();
                 else while (active < 4 && idx < state.repos.length) next();
@@ -656,6 +665,7 @@
         next();
       });
     }).then(function () {
+      if (seq !== loadSeq) return;
       // 排序：开放优先，再按更新时间倒序
       state.prs.sort(function (a, b) {
         var oa = a.state === "open" ? 0 : 1, ob = b.state === "open" ? 0 : 1;
@@ -669,6 +679,7 @@
       renderRelRepoOptions(); // 同步「编译发行」页仓库下拉
       toast("拉取完成：共 " + state.prs.length + " 个 PR");
     }).catch(function (e) {
+      if (seq !== loadSeq) return;
       state.loading = false;
       state.lastErr = String(e && e.message || e);
       renderStatus(); renderStats(); renderList();
@@ -834,8 +845,10 @@
   function clearToken() {
     state.token = ""; tokenInput.value = "";
     localStorage.removeItem(LS.token);
+    state.prs = []; state.repos = []; state.lastErr = "";
     toast("已清除令牌");
-    renderStatus();
+    renderRelRepoOptions(); // 发行页仓库下拉回到「需先设置令牌」
+    loadAll(); // 无令牌分支：渲染 🔑 空态并刷新状态栏/统计
   }
   function testConnection() {
     var tok = tokenInput.value.trim();
@@ -1166,7 +1179,7 @@
         var tagDone = false;
         try {
           await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
-            { tag_name: tag, target: branch, message: name || tag });
+            { tag_name: tag, refs: branch, tag_message: name || tag });
           relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
           tagDone = true;
         } catch (e) {
@@ -1244,7 +1257,7 @@
     if (!b) return;
     var v = b.getAttribute("data-view");
     if (v === "settings") populateSettings();
-    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); relSetSteps([]); }
+    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
     switchView(v);
   });
   searchInput.addEventListener("input", function () { state.keyword = searchInput.value; renderList(); });
