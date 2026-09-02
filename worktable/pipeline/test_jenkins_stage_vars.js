@@ -31,6 +31,7 @@ const context = {
     image: "registry.example.com/xds",
     tag: "test",
     pipelineName: "contract-test",
+    branch: "feat/demo",
     token: 1,
   },
   __stages: [
@@ -44,8 +45,13 @@ const context = {
       values: { SHARED: "explicit", REF: "${UP_VER}" },   // 显式参数压过同名上游变量；${VAR} 引用上游产出
       outVars: "RENAMED=NEW_KEY, DECLARED_ONLY",           // 改名映射 + 无来源声明（后者应跳过）
     } },
+    { id: "st-jk-url", name: "Jenkins URL 阶段", jenkins: {
+      job: "http://jk.local/job/app/job/{GIT_BRANCH}/",   // 任务 URL：{VAR} 占位符运行时用环境变量替换
+      params: [],
+      values: {},
+    } },
   ],
-  JSON, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
+  JSON, URL, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
   // 页面侧依赖全部打桩：本测试只关心变量传递链路
   activeStages: () => context.__stages,
   applyStatusClasses: () => {},
@@ -130,4 +136,19 @@ context.jkGetText = async () => 'build log line\n{"NEW_KEY":"new-value","COUNT":
   if (advancedTo !== 1) throw new Error("成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
   if (finishedWith !== null) throw new Error("成功路径不应 finish，得到 " + JSON.stringify(finishedWith));
   console.log("PASS: Jenkins 阶段双向传递变量（上游注入构建参数 / ${VAR} 引用 / 控制台回传 / 输出变量改名）");
+
+  // ④ 任务 URL + {VAR} 占位符：jkIsUrl / jkSubstUrl / jkJobRef 单测 + runJenkinsStep 端到端
+  if (context.jkIsUrl("a/b")) throw new Error("fullName 不应判定为 URL");
+  if (!context.jkIsUrl(" https://jk.local/job/app/ ")) throw new Error("http(s) 地址应判定为 URL");
+  if (context.jkSubstUrl("/job/{GIT_BRANCH}/", { GIT_BRANCH: "feat/x" }) !== "/job/feat%2Fx/") throw new Error("已定义变量应替换并 URL 编码");
+  if (context.jkSubstUrl("/job/{NOPE}/", { GIT_BRANCH: "feat/x" }) !== "/job/{NOPE}/") throw new Error("未定义变量应原样保留");
+  if (context.jkSubstUrl("/job/{EMPTY}/", { EMPTY: "" }) !== "/job/{EMPTY}/") throw new Error("空值变量应原样保留");
+  if (context.jkJobRef("a/b", {}) !== "/job/a/job/b/") throw new Error("fullName 仍按 /job/ 段拼接，得到 " + context.jkJobRef("a/b", {}));
+  if (context.jkJobRef("http://jk.local:8080/job/app/job/{GIT_BRANCH}/", { GIT_BRANCH: "feat/x" }) !== "/job/app/job/feat%2Fx/") throw new Error("URL 应替换占位符后取路径，得到 " + context.jkJobRef("http://jk.local:8080/job/app/job/{GIT_BRANCH}/", { GIT_BRANCH: "feat/x" }));
+  await context.runJenkinsStep(1);
+  if (triggerCalls.length !== 2) throw new Error("URL 阶段构建未被触发");
+  if (triggerCalls[1].job !== "/job/app/job/feat%2Fdemo/") throw new Error("触发路径应由 {GIT_BRANCH} 替换得到，得到 " + JSON.stringify(triggerCalls[1].job));
+  if (triggerCalls[1].params.GIT_BRANCH !== "feat/demo") throw new Error("运行级 GIT_BRANCH 注入不应受影响，得到 " + JSON.stringify(triggerCalls[1].params.GIT_BRANCH));
+  if (advancedTo !== 2) throw new Error("URL 阶段成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
+  console.log("PASS: Jenkins 任务 URL 支持 {GIT_BRANCH} 等 {变量} 占位符（运行时替换并 URL 编码）");
 })().catch((e) => { console.error(e); process.exit(1); });

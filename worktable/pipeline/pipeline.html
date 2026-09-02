@@ -483,7 +483,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）；Jenkins 任务除 fullName 外也可直接粘贴任务 URL，URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符，运行时用注入的环境变量替换（URL 编码）后触发</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1658,7 +1658,8 @@ function renderStageActionRow(i){
   }
   if(s.kind==='jenkins'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='选择 Jenkins 任务（fullName）'; inp.style.width='240px';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='任务 fullName 或 URL（支持 {GIT_BRANCH} 占位符）'; inp.style.width='280px';
+    inp.title='可填 Jenkins 任务 fullName（先在「设置」页获取任务列表），或直接粘贴任务 URL；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符，运行时用注入的环境变量/构建参数替换（URL 编码），未定义的变量原样保留；URL 仅取路径部分，连接方式与凭据仍走「Jenkins 服务配置」';
     const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量';
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','jenkinsOutVars'); outInp.value=(s.jenkins&&s.jenkins.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
@@ -1706,11 +1707,14 @@ async function setStageJenkins(i, name){
   if(!keep) s.jenkins.params=[];
   renderStageParams(i);
 }
-/* 拉取 Jenkins 作业参数定义（parameterDefinitions），填入阶段参数表单 */
+/* 拉取 Jenkins 作业参数定义（parameterDefinitions），填入阶段参数表单；
+   任务可填 URL（取路径部分）；URL 含 {VAR} 占位符时编辑期无运行上下文，提示先替换为具体值再拉取 */
 async function detectJenkinsParams(i){
   const s=editStages[i]; if(!s||!s.jenkins||!s.jenkins.job) return;
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
-  const jobPath='/job/'+String(s.jenkins.job).split('/').map(encodeURIComponent).join('/job/')+'/';
+  const raw=String(s.jenkins.job||'').trim();
+  if(jkIsUrl(raw) && /\{[A-Za-z_][A-Za-z0-9_]*\}/.test(raw)){ alert('任务 URL 含 {变量} 占位符（运行时才用环境变量替换），请先替换为具体值再拉取参数'); return; }
+  const jobPath=jkJobRef(raw, {});
   try{
     const data=await jkFetchJson(j, base+jobPath+'api/json?tree=property[parameterDefinitions[name,type,defaultParameterValue[value],description]]');
     let defs=[];
@@ -2316,6 +2320,22 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
    变量传递：上游阶段变量（curRun.vars）自动注入为构建参数；任务控制台输出的 KEY=VALUE 行 /
    单行 JSON 对象（{"KEY":"VALUE"}）经 mergeStageVars 累计回 curRun.vars，传递给后续阶段。 */
 function jkJobPath(job){ return '/job/'+String(job).split('/').map(encodeURIComponent).join('/job/')+'/'; }
+/* Jenkins 任务除 fullName 外也支持直接粘贴任务 URL（如 http://jenkins/job/app/job/{GIT_BRANCH}/）：
+   {VAR} 占位符由环境变量/构建参数（GIT_BRANCH、IMAGE_NAME、上游产出变量等）替换并做 URL 编码，
+   未定义的变量原样保留；URL 仅取路径部分拼到「Jenkins 服务配置」的地址上，连接模式与凭据保持不变。 */
+function jkIsUrl(job){ return /^https?:\/\//i.test(String(job||'').trim()); }
+function jkSubstUrl(url, vars){
+  return String(url||'').replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, function(m,k){
+    const v=vars?vars[k]:undefined;
+    return (v===undefined||v===null||v==='')?m:encodeURIComponent(String(v));
+  });
+}
+function jkJobRef(job, vars){
+  const raw=String(job||'').trim();
+  if(!jkIsUrl(raw)) return jkJobPath(raw);
+  const u=jkSubstUrl(raw, vars);
+  try{ return new URL(u).pathname.replace(/\/+$/,'')+'/'; }catch(e){ return u; }
+}
 /* Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
    参数放在 form-urlencoded 请求体中（等价于旧版 query 传参）；
    CSRF 防护开启时需带 crumb——先经 crumbIssuer 尝试获取（API token 认证通常豁免，拿不到则直接 POST）。 */
@@ -2335,10 +2355,11 @@ async function jkFetchCrumb(j, auth){
   }catch(e){}
   return null;
 }
-async function jkTriggerBuild(job, params){
+/* jobPath 为已解析的任务路径（fullName 经 jkJobPath / URL 经 jkJobRef 得到，占位符已替换） */
+async function jkTriggerBuild(jobPath, params){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
-  const url=base+jkJobPath(job)+'buildWithParameters';
+  const url=base+jobPath+'buildWithParameters';
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
   const crumb=await jkFetchCrumb(j, auth);
   const headers=Object.assign({}, auth, crumb||{}, {'Content-Type':'application/x-www-form-urlencoded'});
@@ -2405,11 +2426,14 @@ async function runJenkinsStep(i){
         if(curRun.tag&&params.ARCHIVE_TAG===undefined) params.ARCHIVE_TAG=curRun.tag;
       }
     }
+    /* 任务可填 URL：{VAR} 占位符用上面注入完成的环境变量/构建参数替换（URL 编码），取路径拼到配置的 Jenkins 地址上 */
+    const jobPath=jkJobRef(jk.job, params);
     log.push('# params: '+Object.keys(params).map(function(k){return k+'='+params[k];}).join(' '));
+    if(jkIsUrl(jk.job)) log.push('# job url: '+(jenkins.url||'').replace(/\/+$/,'')+jobPath.replace(/\/+$/,'')+'/');
     s._out={stdout:log.join('\n'),stderr:'',code:null,jenkins:true,done:false}; renderDetail();
     let preNum=null;
-    try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jkJobPath(jk.job)+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); }
-    await jkTriggerBuild(jk.job, params);
+    try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); }
+    await jkTriggerBuild(jobPath, params);
     log.push('# 已触发构建'+(preNum?(' #'+preNum):'')+'，等待执行…'); s._out.stdout=log.join('\n'); renderDetail();
     const deadline=t0+((s.timeout||300)*1000);
     let result=null, buildNum=null, building=true;
@@ -2417,7 +2441,7 @@ async function runJenkinsStep(i){
       await new Promise(function(r){ setTimeout(r,2000); });
       if(!running||!curRun||curRun.token!==tk){ if(timer){clearInterval(timer);timer=null;} return; }
       try{
-        const target=(buildNum!=null)?(jkJobPath(jk.job)+buildNum):(jkJobPath(jk.job)+'lastBuild');
+        const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
         const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration');
         if(buildNum==null && info.number && (preNum==null || info.number>=preNum)) buildNum=info.number;
         if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
@@ -2427,7 +2451,7 @@ async function runJenkinsStep(i){
     if(timer){clearInterval(timer);timer=null;}
     if(!running||!curRun||curRun.token!==tk) return;
     let consoleText='';
-    if(buildNum!=null){ try{ consoleText=await jkGetText(jkJobPath(jk.job)+buildNum+'/consoleText'); }catch(e){} }
+    if(buildNum!=null){ try{ consoleText=await jkGetText(jobPath+buildNum+'/consoleText'); }catch(e){} }
     const ok=(result==='SUCCESS');
     if(consoleText){ log.push(''); consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
     log.push('[Jenkins result '+result+']');
