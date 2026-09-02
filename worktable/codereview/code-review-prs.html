@@ -1016,7 +1016,7 @@
       .catch(function () { applyBuildScriptSelection(); });
   }
   /* 构建容器运行：经 /api/worktable/write 落地临时包装脚本后 exec 执行，
-     docker run 只读挂载构建脚本到 /mnt/build.sh 并透传 GIT_*/RELEASE_*/BUILD_CMD。 */
+     docker run 只读挂载构建脚本到 /mnt/build.sh 并透传 GIT_、RELEASE_ 系列环境变量与 BUILD_CMD。 */
   var BUILD_WRAP_SCRIPT_PATH = "/tmp/dsh-codereview-build-wrap.sh";
   var BUILD_WRAP_SCRIPT = [
     "#!/usr/bin/env bash",
