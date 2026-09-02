@@ -716,6 +716,11 @@ function saveCustom(){
     extra:extra,names:names}));
 }
 function panelOf(id){for(var i=0;i<CUSTOM.panels.length;i++)if(CUSTOM.panels[i].id===id)return CUSTOM.panels[i];return null;}
+function customSeriesCount(){   /* 自定义画板线 + 内置画板附加线的总条数（拉取进度提示用） */
+  var n=0;CUSTOM.panels.forEach(function(p){n+=p.series.length;});
+  Object.keys(CUSTOM.extra).forEach(function(id){n+=(CUSTOM.extra[id]||[]).length;});
+  return n;
+}
 function isCustomPanel(id){return !!panelOf(id);}
 function zeroSeries(){return Array.from({length:N},function(){return 0;});}
 function renderCustomPanels(){   /* 自定义画板整图绘制；内置画板叠加用户附加线（经 CHARTS 与缩放/查看联动一致） */
@@ -1181,12 +1186,22 @@ function winEndStep(){
 function gridLabels(grid){return grid.map(function(t){var d=new Date(t*1000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);});}
 function winLabels(){var w=winEndStep(),grid=[];for(var i=N-1;i>=0;i--)grid.push(w.end-i*w.step);return gridLabels(grid);}
 
-/* 代联 GET：优先走 /api/worktable/proxy（仅回环/内网），失败回退浏览器直连 */
+/* 代联 GET：优先走 /api/worktable/proxy（仅回环/内网），代理自身失败才回退浏览器直连；
+   目标站明确应答 HTTP 错误（如 PromQL 执行报 422）时携带服务端错误信息抛出，不再走直连兜底 */
 function proxyGet(url){
   return fetch("/api/worktable/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:url,useProxy:USE_PROXY})})
     .then(function(r){if(!r.ok)throw new Error("proxy");return r.json();})
-    .then(function(j){if(!j||j.status!==200||typeof j.body!=="string")throw new Error("bad");return j.body;})
-    .catch(function(){ /* 代理失败 → 浏览器直连兜底（取决于 CORS 与浏览器侧网络） */
+    .then(function(j){
+      if(!j||typeof j.body!=="string")throw new Error("bad");
+      if(j.status!==200){
+        var m="HTTP "+j.status;
+        try{var ej=JSON.parse(j.body);if(ej&&ej.error)m+="："+ej.error;}catch(e){}
+        throw new Error(m);
+      }
+      return j.body;
+    })
+    .catch(function(e){ /* 代理失败 → 浏览器直连兜底（取决于 CORS 与浏览器侧网络） */
+      if(e&&e.message&&e.message.indexOf("HTTP ")===0)throw e;
       return fetch(url).then(function(r){if(!r.ok)throw new Error("direct");return r.text();});
     });
 }
@@ -1333,7 +1348,11 @@ var PROM_DEFS=[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(response_transfer|result_transfer|response_send|result_send).*_bucket"}[5m])))',
     '{__name__=~".*(response_transfer|result_transfer|response_send|result_send).*", quantile="0.5"}']},
   {k:"tps",name:"吞吐 TPS",unit:"tokens/s",q:['sum(rate({__name__=~".*(generation_tokens_total|tokens_generated_total|output_tokens_total)"}[5m]))']},
-  {k:"qps",name:"请求 QPS",unit:"req/s",q:['sum(rate({__name__=~".*(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)"}[5m]))']},
+  {k:"qps",name:"请求 QPS",unit:"req/s",q:[
+    /* 首选不含裸 requests_total：避免同时匹配 http_requests_total / pushgateway_http_requests_total
+       等多个指标，rate 丢 __name__ 后出现重复 labelset（Prometheus 报 422 vector 错误） */
+    'sum(rate({__name__=~".*(e2e_request_latency_seconds_count|request_success_total|finished_requests_total)"}[5m]))',
+    'sum(rate({__name__=~".*(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)"}[5m]))']},
   {k:"hit",name:"前缀缓存命中率",unit:"%",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(prefix_cache_hit_rate|cache_hit_rate|hit_rate).*"})']},
   {k:"kvUsage",name:"KV Cache 占用率",unit:"%",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(gpu_cache_usage|kv_cache_usage|cache_usage_perc|kv_block_usage).*"})']},
   {k:"batch.run",name:"运行中请求数",unit:"个",q:['sum({__name__=~".*(num_requests_running|running_requests|running_batch).*"})']},
@@ -1396,71 +1415,85 @@ var PROM_STATE={};      /* def.k → {q, latest, min, max, avg, series:[{labels,
 var PROM_PANEL_MODE="init";   /* init | ok | empty | metrics | down */
 var PROM_LAST_OK="—";
 
-/* 主路径：Prometheus query_range 拉满整个窗口，cb("ok"|"empty"|"down") */
+/* 有限并发池：tasks 为 ()=>Promise 数组，conc 路并行，全部 settle 后 resolve（单任务失败不中断其余任务） */
+function pool(tasks,conc){
+  return new Promise(function(done){
+    var i=0,active=0,settled=0;
+    function next(){
+      if(settled===tasks.length){done();return;}
+      while(active<conc&&i<tasks.length){
+        var t=tasks[i++];active++;
+        Promise.resolve().then(t).then(function(){active--;settled++;next();},function(){active--;settled++;next();});
+      }
+    }
+    next();
+  });
+}
+
+/* 主路径：Prometheus query_range 拉满整个窗口，cb("ok"|"empty"|"down")
+   序列间 5 路并发（每条序列的候选 PromQL 仍按顺序试），避免 19+ 条串行查询把整窗刷新拖到分钟级 */
 function pollProm(cb){
   var w=winEndStep(),end=w.end,step=w.step;   /* 窗口网格：绝对窗口固定起止、步长按窗口宽度；相对窗口右端取整到步长 */
   STEP_S=step;
   var grid=[],i;
   for(i=N-1;i>=0;i--)grid.push(end-i*step);
   var labels=gridLabels(grid);
-  var matched=0,failed=false,next={},seq=Promise.resolve();
+  var matched=0,errors=0,next={};
   PROM_STATE={};
-  PROM_DEFS.forEach(function(def){
-    seq=seq.then(function(){
-      if(failed)return null;
-      var qi=0;
-      var tryQ=function(){
-        if(qi>=def.q.length)return Promise.resolve(null);
-        var q=def.q[qi++];
-        return promRange(q,end).then(function(res){return res?{res:res,q:q}:tryQ();});
-      };
-      var firstValues=function(res){
-        for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length)return res[i].values;
-        return null;
-      };
-      return tryQ().then(function(r){
-        if(!r)return;
-        var values=firstValues(r.res);
-        if(!values)return;
-        var arr=alignValues(values,grid);
-        if(arr[arr.length-1]===null)return;   /* 整条序列无有效点 */
-        var scale=def.scale||1;
-        var xform=function(v){v=v*scale;if(def.map)v=def.map(v);return +v.toFixed(2);};
-        next[def.k]=arr.map(xform);
-        /* 记录呈现状态：命中查询、窗口统计、原始序列（按实例/标签细分，取末值） */
-        var scaled=next[def.k],sum=0;
-        scaled.forEach(function(v){sum+=v;});
-        PROM_STATE[def.k]={q:r.q,latest:scaled[scaled.length-1],
-          min:Math.min.apply(null,scaled),max:Math.max.apply(null,scaled),avg:+(sum/scaled.length).toFixed(2),
-          series:r.res.map(function(s){
-            var lv=(s.values&&s.values.length)?xform(parseFloat(s.values[s.values.length-1][1])):null;
-            return {labels:s.metric||{},latest:lv};
-          })};
-        matched++;
-      });
-    }).catch(function(){failed=true;});
-  });
+  var firstValues=function(res){
+    for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length)return res[i].values;
+    return null;
+  };
+  var tasks=PROM_DEFS.map(function(def){return function(){
+    var qi=0,lastErr=null;
+    /* 候选 PromQL 依次试：返回空试下一条；执行报错（如 422）记下错误也试下一条 */
+    var tryQ=function(){
+      if(qi>=def.q.length)return Promise.resolve(null);
+      var q=def.q[qi++];
+      return promRange(q,end).then(function(res){return res?{res:res,q:q}:tryQ();},function(e){lastErr=e;return tryQ();});
+    };
+    return tryQ().then(function(r){
+      if(!r){   /* 全部候选无数据 = 未匹配；全部候选报错 = 该序列查询报错（不拖垮整轮拉取） */
+        if(lastErr){errors++;PROM_STATE[def.k]={err:String((lastErr&&lastErr.message)||lastErr)};}
+        return;
+      }
+      var values=firstValues(r.res);
+      if(!values)return;
+      var arr=alignValues(values,grid);
+      if(arr[arr.length-1]===null)return;   /* 整条序列无有效点 */
+      var scale=def.scale||1;
+      var xform=function(v){v=v*scale;if(def.map)v=def.map(v);return +v.toFixed(2);};
+      next[def.k]=arr.map(xform);
+      /* 记录呈现状态：命中查询、窗口统计、原始序列（按实例/标签细分，取末值） */
+      var scaled=next[def.k],sum=0;
+      scaled.forEach(function(v){sum+=v;});
+      PROM_STATE[def.k]={q:r.q,latest:scaled[scaled.length-1],
+        min:Math.min.apply(null,scaled),max:Math.max.apply(null,scaled),avg:+(sum/scaled.length).toFixed(2),
+        series:r.res.map(function(s){
+          var lv=(s.values&&s.values.length)?xform(parseFloat(s.values[s.values.length-1][1])):null;
+          return {labels:s.metric||{},latest:lv};
+        })};
+      matched++;
+    }).catch(function(e){errors++;PROM_STATE[def.k]={err:String((e&&e.message)||e)};});
+  };});
   /* 自定义画板的线与内置画板的附加线：逐条 query_range，对齐到同一时间网格（无数据记 null，渲染为 0 线） */
   var customSeries=[];
   CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){customSeries.push(s);});});
   Object.keys(CUSTOM.extra).forEach(function(id){(CUSTOM.extra[id]||[]).forEach(function(s){customSeries.push(s);});});
   customSeries.forEach(function(s){
-    seq=seq.then(function(){
-      if(failed)return null;
+    tasks.push(function(){
       return promRange(s.q,end).then(function(res){
         s._data=null;
         if(!res)return;
-        var values=null;
-        for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length){values=res[i].values;break;}
+        var values=firstValues(res);
         if(!values)return;
         s._data=alignValues(values,grid).map(function(v){return v===null?0:+v.toFixed(2);});
         matched++;
-      }).catch(function(){s._data=null;});
+      }).catch(function(){s._data=null;errors++;});
     });
   });
-  seq.then(function(){
-    if(failed){cb("down");return;}
-    if(!matched){cb("empty");return;}
+  pool(tasks,5).then(function(){
+    if(!matched){cb(errors>=tasks.length?"down":"empty");return;}   /* 全部报错才判不可达；部分报错仅该序列标错 */
     DATA.ts=labels;
     applySeries(next);
     clearAllSel();   /* 整窗数据被替换，旧选区索引已失效 */
@@ -1496,11 +1529,13 @@ function renderPromPanel(){
   var hit=0;
   var rows=PROM_DEFS.map(function(def){
     var st=PROM_STATE[def.k];
-    if(st)hit++;
-    var badge=st?'<span class="dshell-badge dshell-badgeDone">已匹配</span>':'<span class="dshell-badge dshell-badgeWait">无数据</span>';
-    var stats=st?("最新 "+fmtNum(st.latest)+def.unit+" · 均值 "+fmtNum(st.avg)+" · 区间 "+fmtNum(st.min)+"~"+fmtNum(st.max)+" · "+st.series.length+" 条序列"):"候选 PromQL 均无返回";
+    if(st&&!st.err)hit++;
+    var badge=st?(st.err?'<span class="dshell-badge dshell-badgeWait">查询报错</span>':'<span class="dshell-badge dshell-badgeDone">已匹配</span>')
+      :'<span class="dshell-badge dshell-badgeWait">无数据</span>';
+    var stats=st?(st.err?esc(st.err):("最新 "+fmtNum(st.latest)+def.unit+" · 均值 "+fmtNum(st.avg)+" · 区间 "+fmtNum(st.min)+"~"+fmtNum(st.max)+" · "+st.series.length+" 条序列"))
+      :"候选 PromQL 均无返回";
     return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+def.name
-      +(st?'<div class="diag-promql">'+esc(st.q)+'</div>':'')
+      +(st&&st.q?'<div class="diag-promql">'+esc(st.q)+'</div>':'')
       +'</span><span class="dshell-kvValue">'+stats+' '+badge+'</span></div>';
   }).join("");
   document.getElementById("promSeries").innerHTML=rows;
@@ -1508,7 +1543,7 @@ function renderPromPanel(){
   var raw=[],totalSeries=0;
   PROM_DEFS.forEach(function(def){
     var st=PROM_STATE[def.k];
-    if(!st||!st.series.length)return;
+    if(!st||!st.series||!st.series.length)return;
     totalSeries+=st.series.length;
     raw.push('<div class="dshell-listItem"><span class="dshell-listItemTitle">'+def.name+'（'+st.series.length+' 条）</span></div>');
     st.series.slice(0,8).forEach(function(s){
@@ -1534,6 +1569,7 @@ function fetchMetrics(cb){
   proxyGet(METRICS_URL).then(function(t){cb(t);}).catch(function(){cb(null);});
 }
 function poll(){
+  setSrcBadge("","数据拉取中 · Prometheus 并发查询 "+(PROM_DEFS.length+customSeriesCount())+" 条序列…");   /* 即时反馈：切窗口/轮询一开始就亮状态 */
   pollProm(function(state){
     if(state==="ok"){
       PROM_PANEL_MODE="ok";renderPromPanel();
