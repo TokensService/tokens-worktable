@@ -19,8 +19,8 @@ hljs.registerLanguage('json', hljsJson)
  * 布局模型：标题栏 + 顶部通栏行(可选) + 主行内容窗 + 聊天窗（官方会话视图区整体，
  * 贴右或贴左，由 chatSide 决定；marginLeft/marginRight + marginTop 组合挤法）。
  * 内容三态：null（未指派 → 6 选 1 选择器）/ iframe / builtin（浏览器/资源管理器/SCM/任务/终端）。
- * 窗位调整：标题栏拖拽换位（同行或跨行）；工具栏 ⇄ 切换聊天窗左右、💬 关闭/打开会话窗；
- * 聊天列左上角另有 ✕ 浮钮关闭会话窗（关闭后可由标题栏/项目行 💬 恢复）。
+ * 窗位调整：标题栏拖拽换位（同行或跨行）；工具栏 ⇄ 切换聊天窗左右、💬 关闭/打开会话窗
+ * （绿色 CSS 气泡图标，与项目行 💬 按钮同款）。
  * 会话切换重新锚定不关闭；宽度按 layoutId 持久化 dsh.worktable.split.v2；
  * 内容与 chatSide 的变更经 onSpecMutated 回调交给工作台持久化（布局条目）。
  */
@@ -1914,8 +1914,6 @@ function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: num
   const rowH = g.bottom - g.top
   // 会话窗关闭时聊天列宽按 0 计，内容窗（含顶行）占满整宽
   const chatW = chatClosed ? 0 : clamp(props.chatW, spec.chatWidth.min, Math.max(spec.chatWidth.min, colW - 60))
-  // 聊天列左缘（chatLeft 贴左，否则贴右；有左列时恒贴右）
-  const chatX = chatLeft ? g.left : g.right - chatW
   const topH = hasTop
     ? clamp(props.topH, spec.topHeight?.min ?? 80, Math.max(spec.topHeight?.min ?? 80, rowH - BAR_H - 80))
     : 0
@@ -2001,20 +1999,9 @@ function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: num
           title={T(chatClosed ? 'split.showChat' : 'split.hideChat')}
           aria-label={T(chatClosed ? 'split.showChat' : 'split.hideChat')}
           onClick={() => splitStore.setChatClosed(!chatClosed)}
-        >💬</button>
+        ><span className="dsh-wt_chatGlyph" aria-hidden /></button>
         <button type="button" className="dsh-wt_splitClose" aria-label="退出分栏（Esc）" onClick={() => splitStore.close()}>✕</button>
       </div>
-      {/* 聊天列左上角 ✕ 关闭会话窗（关闭后可由分栏标题栏/项目行 💬 恢复）；半透明底避免压在会话视图头部上读不出 */}
-      {!chatClosed && chatW > 0 && (
-        <button
-          type="button"
-          className="dsh-wt_splitChatClose"
-          title={T('split.hideChat')}
-          aria-label={T('split.hideChat')}
-          style={{ position: 'fixed', left: chatX + 6, top: barTop + 3, zIndex: 70 }}
-          onClick={() => splitStore.setChatClosed(true)}
-        >✕</button>
-      )}
       {/* 左列整高内容窗 */}
       {leftItem && renderPane(leftItem, 'left', 0, g.left, barTop + BAR_H, g.bottom - barTop - BAR_H)}
       {/* 顶部通栏行（左列布局时为右侧列顶行） */}

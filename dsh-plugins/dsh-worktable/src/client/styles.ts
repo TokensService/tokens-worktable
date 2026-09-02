@@ -189,10 +189,10 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles::after{animation:dsh-wt-busyB 1s ease-in-out infinite}',
   '.dsh-wt_bindBtn[data-bound=done] .dsh-wt_bindCircles,.dsh-wt_bindBtn[data-bound=need] .dsh-wt_bindCircles,.dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles{filter:drop-shadow(0 0 3px currentColor)}',
   // 项目卡片上的 💬 聊天按钮（打开/关闭该项目会话窗口）：绑定按钮左侧同款 22×22 按钮底，
-  // 常态次级灰；会话窗已关闭（data-closed=true）降透明度 + 去色，与分栏标题栏 💬 关态一致；
-  // 气泡复用 .dsh-wt_bindTip（data-tip 事件委托）
-  '.dsh-wt_chatBtn{position:absolute;right:50px;top:50%;transform:translateY(-50%);width:22px;height:22px;margin:0;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;line-height:1;cursor:pointer;user-select:none}',
-  '.dsh-wt_chatBtn:hover{background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#e6e8eb)}',
+  // 常态绿色（#3fb950，同绑定按钮「完成」绿）；会话窗已关闭（data-closed=true）降透明度 + 去色，
+  // 与分栏标题栏 💬 关态一致；气泡复用 .dsh-wt_bindTip（data-tip 事件委托）
+  '.dsh-wt_chatBtn{position:absolute;right:50px;top:50%;transform:translateY(-50%);width:22px;height:22px;margin:0;display:flex;align-items:center;justify-content:center;border-radius:6px;color:#3fb950;font-size:12px;line-height:1;cursor:pointer;user-select:none}',
+  '.dsh-wt_chatBtn:hover{background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09))}',
   '.dsh-wt_chatBtn[data-closed=true]{opacity:.45;filter:grayscale(1)}',
   '.dsh-wt_chatBtn[data-closed=true]:hover{opacity:.9}',
   // 气泡为 body 级独立元素（.dsh-wt_bindTip），此处只保留按钮本体样式
@@ -357,14 +357,15 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_paneWipText{font-size:11px}',
   '.dsh-wt_splitFlip{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:13px;cursor:pointer}',
   '.dsh-wt_splitFlip:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}',
-  // 会话窗开关（关闭会话窗口 / 重新打开；关闭态置灰提示）
-  '.dsh-wt_splitChatToggle{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;cursor:pointer}',
-  '.dsh-wt_splitChatToggle:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}',
+  // 会话窗开关（关闭会话窗口 / 重新打开；关闭态置灰提示）；常态绿色（#3fb950，同绑定按钮「完成」绿）
+  '.dsh-wt_splitChatToggle{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:#3fb950;font-size:12px;cursor:pointer}',
+  '.dsh-wt_splitChatToggle:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}',
   '.dsh-wt_splitChatToggleOff{opacity:.45;filter:grayscale(1)}',
   '.dsh-wt_splitChatToggleOff:hover{opacity:.9}',
-  // 聊天列左上角 ✕ 关闭会话窗（fixed 浮在会话视图头部之上；半透明底色保证压在深/浅内容上都可读）
-  '.dsh-wt_splitChatClose{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.18));color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;cursor:pointer}',
-  '.dsh-wt_splitChatClose:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09))}',
+  // 💬 对话气泡图标（CSS 绘制：圆角描边泡体 + 左下实心三角尾，颜色随 currentColor——
+  // emoji 💬 无法染色，CSS 绘制才能绿色化并随关态 grayscale 置灰；分栏标题栏与项目行 💬 按钮共用）
+  '.dsh-wt_chatGlyph{position:relative;flex:none;width:12px;height:9px;box-sizing:border-box;border:1.5px solid currentColor;border-radius:3px}',
+  '.dsh-wt_chatGlyph::after{content:\'\';position:absolute;left:0;top:100%;margin-top:-1px;width:0;height:0;border:3px solid transparent;border-top-color:currentColor;border-left-color:currentColor}',
   // + 右侧弹出面板
   '.dsh-wt_popBackdrop{position:fixed;left:0;top:0;right:0;bottom:0;z-index:79;background:transparent}',
   // 删除二次确认（fixed 居中模态，压在弹窗之上）
