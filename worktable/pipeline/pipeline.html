@@ -1404,12 +1404,12 @@ function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
   if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
   cleanupScript.params.forEach(p=>{
-    /* env 参数：只回显显式配置值，留空=继承注入值/脚本默认（与 renderStageParams 同一规则，见 execScript） */
-    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.kind==='env'?'':(p.def||''));
+    /* 静态默认值预填进输入框；动态默认值（dyn）不预填，留空由脚本自身 :- 展开（与 renderStageParams 同一规则，见 execScript） */
+    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:(p.dyn?'':(p.def||''));
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||(p.kind==='env'?'留空=注入值':''))+'"'+(p.kind==='env'?' title="留空=使用运行级注入值（TARGET_IP/IMAGE_NAME 等）或脚本默认；填入则显式覆盖"':'')+' style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="留空='+(p.dyn?'由脚本展开默认值（placeholder 为脚本表达式）':'自动注入的同名变量/脚本默认')+'；填入则显式覆盖" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
     inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
     box.appendChild(lab);
@@ -1461,25 +1461,46 @@ async function readScriptSrc(path){
   return r.text();
 }
 /* 从脚本源码识别参数：位置参数 $1..$N/${N:-def} + 环境变量 ${VAR:-def}/${VAR}/$VAR */
-/* 嵌套默认值解包：${1:-${VAR:-glm}} 的默认值取最内层 glm */
-function resolveDef(def){
-  if(!def) return '';
-  let d=String(def).trim(); let guard=0;
-  while(d.indexOf('${')>=0 && guard++<6){
-    const i=d.lastIndexOf(':-'); if(i<0) break;
-    d=d.slice(i+2).replace(/}+/g,'').trim();
+/* 统一扫描 $ 引用：${...} 的默认值按花括号配平截取，${A:-${B}/x} 嵌套不截断；
+   默认值内部的 $ 引用递归扫描（${A:-$B} 里的 B 同样是可配置项），覆盖面与旧的逐字正则一致。
+   返回 [{key, isPos, op, def}]，op 为 '' | ':-' | ':?' */
+function scanShellRefs(src){
+  const refs=[]; let i=0; const n=src.length;
+  while(i<n){
+    if(src[i]!=='$'){ i++; continue; }
+    let j=i+1; let braced=false;
+    if(src[j]==='{'){ braced=true; j++; }
+    const m=/^([A-Za-z_][A-Za-z0-9_]*|\d+)/.exec(src.slice(j));
+    if(!m){ i++; continue; }
+    const key=m[1]; j+=key.length;
+    let op=''; let def='';
+    if(braced){
+      if(src[j]===':'&&(src[j+1]==='-'||src[j+1]==='?')){
+        op=':'+src[j+1];
+        let depth=1; let k=j+2;
+        while(k<n && depth>0){ const ch=src[k]; if(ch==='{')depth++; else if(ch==='}')depth--; k++; }
+        def=src.slice(j+2, depth===0?k-1:n); j=k;
+      } else if(src[j]==='}'){ j++; }
+    }
+    refs.push({key:key, isPos:/^\d+$/.test(key), op:op, def:def});
+    if(def.indexOf('$')>=0) refs.push.apply(refs, scanShellRefs(def));
+    i=j;
   }
-  return d.replace(/}+$/,'').replace(/^["']|["']$/g,'').trim();
+  return refs;
 }
+/* 动态默认值：含 $引用/${}/$() 的 shell 表达式不做字面值预填/注入（注入后 shell 不会二次展开），
+   页面留空、原表达式显示在 placeholder，运行时由脚本自身 :- 展开 */
+function isDynDef(def){ return /\$(\(|\{?[A-Za-z_])/.test(def||''); }
 /* 从注释提取语义化标签：# 位置参数 $1 = 模型架构名 / # 环境变量 XDS_URL = XDS 网关地址（支持一行多个 VAR = 说明） */
 function parseCommentLabels(src){
   const posLabels={}, envLabels={};
   src.split('\n').forEach(line=>{
     const c=/^\s*#\s*(.*)$/.exec(line); if(!c) return;
     const t=c[1];
-    let m=/位置参数\s*\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t) || /\$(\d+)\s*[=：:]\s*([^（(；;，,\n]+)/.exec(t);
+    /* 标签分隔符：= / ：/ 半角冒号后跟空白 / 两格以上对齐空格；避免把 docker pull $IMAGE:$TAG 这类文本里的冒号当分隔符 */
+    let m=/位置参数\s*\$(\d+)(?:\s*[=：]|\s*:(?=\s)| {2,})\s*([^（(；;，,\n]+)/.exec(t) || /\$(\d+)(?:\s*[=：]|\s*:(?=\s)| {2,})\s*([^（(；;，,\n]+)/.exec(t);
     if(m && m[2]) posLabels[m[1]]=m[2].trim();
-    const envRe=/([A-Z_][A-Z0-9_]*)\s*[=：:]\s*([^（(；;，,\n]+)/g;
+    const envRe=/([A-Z_][A-Z0-9_]*)(?:\s*[=：]|\s*:(?=\s)| {2,})\s*([^（(；;，,\n]+)/g;
     while((m=envRe.exec(t))){ if(m[2] && !envLabels[m[1]]) envLabels[m[1]]=m[2].trim(); }
   });
   return {posLabels, envLabels};
@@ -1522,29 +1543,28 @@ function detectParams(src, lang){
   if(lang==='py') return detectPythonParams(src);
   const labels=parseCommentLabels(src);
   const internal=internalAssignedVars(src);
-  const pos={}; let m;
-  const posRe=/\$\{?(\d+)(?:(:-|:\?)([^}]*))?\}?/g;
-  while((m=posRe.exec(src))){
-    const n=parseInt(m[1],10); if(n<1) continue;
-    const op=m[2]||''; const rest=m[3]||'';
-    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
-    if(!(n in pos)) pos[n]={def, required:req};
-    else { if(def && !pos[n].def) pos[n].def=def; if(req) pos[n].required=true; }
-  }
+  const pos={}; const envSeen={}; const envOrder=[];
+  const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|BASH_SOURCE|BASH_LINENO|FUNCNAME|PIPESTATUS|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
+  scanShellRefs(src).forEach(r=>{
+    const req=(r.op===':?');
+    /* 带 :-默认值 的参数在页面预填默认值；动态默认值（dyn）仅 placeholder 展示，不预填不注入（见 isDynDef/execScript） */
+    const def=(r.op===':-')?r.def.replace(/^["']|["']$/g,'').trim():'';
+    const dyn=(r.op===':-')&&isDynDef(def);
+    if(r.isPos){
+      const n=parseInt(r.key,10); if(n<1) return;
+      if(!(n in pos)) pos[n]={def:def, required:req, dyn:dyn};
+      else { if(def && !pos[n].def){ pos[n].def=def; pos[n].dyn=dyn; } if(req) pos[n].required=true; }
+      return;
+    }
+    const v=r.key;
+    if(!/^[A-Z_][A-Z0-9_]*$/.test(v)||BUILT.test(v)||internal[v]) return;   // 环境参数沿用旧规则：仅全大写名
+    if(!(v in envSeen)){ envSeen[v]={def:def, required:req, dyn:dyn}; envOrder.push(v); }
+    else { if(def && !envSeen[v].def){ envSeen[v].def=def; envSeen[v].dyn=dyn; } if(req) envSeen[v].required=true; }
+  });
   const maxPos=Object.keys(pos).length?Math.max.apply(null,Object.keys(pos).map(Number)):0;
   const posParams=[];
-  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:labels.posLabels[i]||('位置参数 '+i), def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required)});
-  const envSeen={}; const envOrder=[];
-  const envRe=/\$\{([A-Z_][A-Z0-9_]*)(?:(:-|:\?)([^}]*))?\}|\$([A-Z_][A-Z0-9_]*)\b/g;
-  const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
-  while((m=envRe.exec(src))){
-    const v=m[1]||m[4]; const op=m[2]||''; const rest=m[3]||'';
-    if(!v||BUILT.test(v)||internal[v]) continue;
-    const req=(op===':?'); const def=(op===':-')?resolveDef(rest):'';
-    if(!(v in envSeen)){ envSeen[v]={def, required:req}; envOrder.push(v); }
-    else { if(def && !envSeen[v].def) envSeen[v].def=def; if(req) envSeen[v].required=true; }
-  }
-  const envParams=envOrder.map(v=>({kind:'env', key:v, label:labels.envLabels[v]||v, def:envSeen[v].def, required:!!envSeen[v].required}));
+  for(let i=1;i<=maxPos;i++) posParams.push({kind:'pos', key:String(i), label:labels.posLabels[i]||('位置参数 '+i), def:(pos[i]&&pos[i].def)||'', required:!!(pos[i]&&pos[i].required), dyn:!!(pos[i]&&pos[i].dyn)});
+  const envParams=envOrder.map(v=>({kind:'env', key:v, label:labels.envLabels[v]||v, def:envSeen[v].def, required:!!envSeen[v].required, dyn:!!envSeen[v].dyn}));
   return posParams.concat(envParams);
 }
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
@@ -1621,13 +1641,13 @@ function renderStageParams(i){
   }
   if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
-    /* env 参数：只回显显式配置值，留空=继承运行级注入（TARGET_IP 等）/上游变量/脚本自身 :- 默认；
-       识别到的默认值放 placeholder 作提示（预填进 value 会在执行时被当作显式值挡住注入，见 execScript） */
-    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.kind==='env'?'':(p.def||''));
+    /* 识别到的静态默认值预填进输入框（即显式值，随执行下发）；动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）
+       不预填：留空交由脚本自身 :- 展开，原表达式经 placeholder 展示（见 isDynDef/execScript） */
+    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.dyn?'':(p.def||''));
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||(p.kind==='env'?'留空=注入值':''))+'"'+(p.kind==='env'?' title="留空=使用运行级注入值（TARGET_IP/IMAGE_NAME 等）或脚本默认；填入则显式覆盖"':'')+' style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="留空='+(p.dyn?'由脚本展开默认值（placeholder 为脚本表达式）':'继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/上游同名变量')+'；填入则显式覆盖" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
     inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; s.script.values[p.key]=inp.value; renderStageParams(i); });
     box.appendChild(lab);
@@ -2275,11 +2295,10 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
     /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理（env 参数空 = 继承上游同名变量）。
-       env 参数仅在用户显式配置过（values[key] 存在）时下发：未配置时若把识别到的 :-默认值 当显式值下发，
-       会以「显式参数优先」之名挡住运行级注入（TARGET_IP/IMAGE_NAME 等），脚本只能拿到源码里的兜底默认值；
-       不下发则注入值优先生效，未注入时脚本自身的 :- 默认仍会兜底。位置参数无注入语义，保留 def 兜底。 */
+       静态 :-默认值 视为识别到的显式值照常下发（页面已预填）；动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）不下发字面值：
+       注入后 shell 不会二次展开，留空交由脚本自身 :- 展开；位置参数同理。 */
     const hasVal=(sc.values && sc.values[p.key]!==undefined);
-    const raw=hasVal?sc.values[p.key]:(p.kind==='env'?'':(p.def||''));
+    const raw=hasVal?sc.values[p.key]:(p.dyn?'':(p.def||''));
     const v=substRunVars(raw, rc);
     if(p.kind==='pos') args.push(v);
     // Empty stage fields mean "inherit" so rendered artifact paths from an

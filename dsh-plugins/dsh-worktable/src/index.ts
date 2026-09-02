@@ -651,11 +651,11 @@ export function apply(ctx: Context) {
     const args: string[] = []
     const env: Record<string, string> = {}
     for (const p of sc.params || []) {
-      // 与前端 execScript 一致：env 参数仅在显式配置（values[key] 存在且非空）时下发；
-      // 未配置时不下发识别到的 :-默认值，否则会以「显式参数优先」挡住下方的运行级注入
-      // （TARGET_IP/TARGET_USER 等），未注入时脚本自身的 :- 默认仍会兜底。位置参数保留 def 兜底。
+      // 与前端 execScript 一致：静态 :-默认值 照常下发（页面已预填为显式值）；
+      // 动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）不下发字面值——注入后 shell 不会二次展开，
+      // 留空交由脚本自身 :- 展开，同时不挡住下方同名的运行级注入（TARGET_IP/TARGET_USER 等）。
       const hasVal = sc.values && sc.values[p.key] !== undefined
-      const v = hasVal ? sc.values[p.key] : (p.kind === 'env' ? '' : p.def || '')
+      const v = hasVal ? sc.values[p.key] : (p.dyn ? '' : p.def || '')
       if (p.kind === 'pos') args.push(String(v))
       else if (String(v) !== '') env[p.key] = String(v)
     }
