@@ -77,6 +77,7 @@
     .diag-note { font-size:12px; opacity:.65; margin-top:6px; }
     .diag-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .diag-formrow .grow { flex:1 1 240px; }
+    .diag-promql { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; word-break:break-all; opacity:.65; }
   </style>
 </head>
 <body>
@@ -110,6 +111,7 @@
     <button class="dshell-tab" data-tab="hardware">硬件架构</button>
     <button class="dshell-tab" data-tab="logs">日志</button>
     <button class="dshell-tab" data-tab="metrics">指标字典</button>
+    <button class="dshell-tab" data-tab="prom">数据源</button>
     <button class="dshell-tab" data-tab="settings">设置</button>
   </div>
 
@@ -263,7 +265,28 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">指标收集清单（数据源 / 采集方式 / 分析用途）</h2>
       <div class="dshell-kv" id="metricsDict"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「设置」页配置（URL 参数 ?prom=host:port 优先于设置页的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。</div>
+      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「设置」页配置（URL 参数 ?prom=host:port 优先于设置页的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
+    </div>
+  </div>
+
+  <!-- ============ 数据源（Prometheus 接入呈现） ============ -->
+  <div class="diag-tabpane" data-pane="prom" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">连接状态</h2>
+      <div class="dshell-kv" id="promMeta"></div>
+      <div class="dshell-divider"></div>
+      <div class="diag-note" id="promMetaNote"></div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">看板序列 × PromQL 映射（命中情况与窗口统计）</h2>
+      <div class="dshell-kv" id="promSeries"></div>
+      <div class="dshell-divider"></div>
+      <div class="diag-note">呈现方式：每条看板序列按候选 PromQL 依次查询 /api/v1/query_range，取第一个有结果的查询；返回的多条序列中取第一条非空序列，对齐到固定时间网格（缺口前向填充、头部后向回填）后整体替换看板对应曲线。未命中的序列保留示例数据。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">原始序列（按实例 / 标签细分）</h2>
+      <div class="dshell-list" id="promRaw"></div>
+      <div class="diag-note" id="promRawNote"></div>
     </div>
   </div>
 
@@ -554,6 +577,7 @@ document.getElementById("tabs").addEventListener("click",function(e){
   b.classList.add("dshell-tabOn");
   document.querySelectorAll(".diag-tabpane").forEach(function(p){p.style.display=p.dataset.pane===b.dataset.tab?"":"none";});
   renderAll();   /* 切出隐藏页后 canvas 尺寸为 0，重绘补齐 */
+  renderPromPanel();
 });
 document.getElementById("btnRefresh").addEventListener("click",function(){location.reload();});
 document.getElementById("btnExport").addEventListener("click",function(){
@@ -677,45 +701,46 @@ function applyMetrics(map){
   return matched>0;
 }
 
-/* ---- PromQL 定义：每个逻辑序列给出候选查询（直方图 → summary quantile → 均值），取第一个有结果的 ---- */
+/* ---- PromQL 定义：每个逻辑序列给出候选查询（直方图 → summary quantile → 均值），取第一个有结果的 ----
+   ---- name/unit 供「数据源」页呈现命中情况与窗口统计 ---- */
 var PROM_DEFS=[
-  {k:"ttft.p50",scale:1000,q:[
+  {k:"ttft.p50",name:"TTFT 首 Token 时延 P50",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*time_to_first_token.*_bucket"}[5m])))',
     '{__name__=~".*time_to_first_token.*", quantile="0.5"}',
     'sum(rate({__name__=~".*time_to_first_token.*_sum"}[5m])) / sum(rate({__name__=~".*time_to_first_token.*_count"}[5m]))']},
-  {k:"ttft.p90",scale:1000,q:[
+  {k:"ttft.p90",name:"TTFT 首 Token 时延 P90",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.9, sum by (le) (rate({__name__=~".*time_to_first_token.*_bucket"}[5m])))',
     '{__name__=~".*time_to_first_token.*", quantile="0.9"}']},
-  {k:"ttft.p99",scale:1000,q:[
+  {k:"ttft.p99",name:"TTFT 首 Token 时延 P99",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.99, sum by (le) (rate({__name__=~".*time_to_first_token.*_bucket"}[5m])))',
     '{__name__=~".*time_to_first_token.*", quantile="0.99"}']},
-  {k:"tpot.p50",scale:1000,q:[
+  {k:"tpot.p50",name:"TPOT 逐 Token 时延 P50",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*time_per_output_token.*_bucket"}[5m])))',
     '{__name__=~".*time_per_output_token.*", quantile="0.5"}',
     'sum(rate({__name__=~".*time_per_output_token.*_sum"}[5m])) / sum(rate({__name__=~".*time_per_output_token.*_count"}[5m]))']},
-  {k:"tpot.p90",scale:1000,q:[
+  {k:"tpot.p90",name:"TPOT 逐 Token 时延 P90",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.9, sum by (le) (rate({__name__=~".*time_per_output_token.*_bucket"}[5m])))',
     '{__name__=~".*time_per_output_token.*", quantile="0.9"}']},
-  {k:"tpot.p99",scale:1000,q:[
+  {k:"tpot.p99",name:"TPOT 逐 Token 时延 P99",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.99, sum by (le) (rate({__name__=~".*time_per_output_token.*_bucket"}[5m])))',
     '{__name__=~".*time_per_output_token.*", quantile="0.99"}']},
-  {k:"queue.sched",scale:1000,q:[
+  {k:"queue.sched",name:"调度队列时延 P50",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(queue_time|time_in_queue|request_waiting_time).*_bucket"}[5m])))',
     '{__name__=~".*(queue_time|time_in_queue|request_waiting_time).*", quantile="0.5"}']},
-  {k:"transfer.kv",scale:1000,q:[
+  {k:"transfer.kv",name:"KV 传输时延 P50",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(transfer|kv_transfer|kv_send).*_bucket"}[5m])))',
     '{__name__=~".*(transfer|kv_transfer|kv_send).*", quantile="0.5"}']},
-  {k:"tps",q:['sum(rate({__name__=~".*(generation_tokens_total|tokens_generated_total|output_tokens_total)"}[5m]))']},
-  {k:"qps",q:['sum(rate({__name__=~".*(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)"}[5m]))']},
-  {k:"hit",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(prefix_cache_hit_rate|cache_hit_rate|hit_rate).*"})']},
-  {k:"kvUsage",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(gpu_cache_usage|kv_cache_usage|cache_usage_perc|kv_block_usage).*"})']},
-  {k:"batch.run",q:['sum({__name__=~".*(num_requests_running|running_requests|running_batch).*"})']},
-  {k:"batch.wait",q:['sum({__name__=~".*(num_requests_waiting|waiting_requests|pending_requests).*"})']},
-  {k:"mooncake.rd",scale:1/1073741824,q:['sum(rate({__name__=~".*mooncake.*(read|pull).*bytes.*"}[5m]))']},
-  {k:"mooncake.wr",scale:1/1073741824,q:['sum(rate({__name__=~".*mooncake.*(write|push).*bytes.*"}[5m]))']}
+  {k:"tps",name:"吞吐 TPS",unit:"tokens/s",q:['sum(rate({__name__=~".*(generation_tokens_total|tokens_generated_total|output_tokens_total)"}[5m]))']},
+  {k:"qps",name:"请求 QPS",unit:"req/s",q:['sum(rate({__name__=~".*(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)"}[5m]))']},
+  {k:"hit",name:"前缀缓存命中率",unit:"%",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(prefix_cache_hit_rate|cache_hit_rate|hit_rate).*"})']},
+  {k:"kvUsage",name:"KV Cache 占用率",unit:"%",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(gpu_cache_usage|kv_cache_usage|cache_usage_perc|kv_block_usage).*"})']},
+  {k:"batch.run",name:"运行中请求数",unit:"个",q:['sum({__name__=~".*(num_requests_running|running_requests|running_batch).*"})']},
+  {k:"batch.wait",name:"等待中请求数",unit:"个",q:['sum({__name__=~".*(num_requests_waiting|waiting_requests|pending_requests).*"})']},
+  {k:"mooncake.rd",name:"Mooncake 读吞吐",unit:"GB/s",scale:1/1073741824,q:['sum(rate({__name__=~".*mooncake.*(read|pull).*bytes.*"}[5m]))']},
+  {k:"mooncake.wr",name:"Mooncake 写吞吐",unit:"GB/s",scale:1/1073741824,q:['sum(rate({__name__=~".*mooncake.*(write|push).*bytes.*"}[5m]))']}
 ];
 
-/* query_range：返回第一条非空序列的 [[ts,"v"],...]，无数据返回 null */
+/* query_range：返回含非空序列的完整 result（[{metric,values},...]），无数据返回 null */
 function promRange(q,end){
   var url=PROM_URL+"/api/v1/query_range?query="+encodeURIComponent(q)
     +"&start="+(end-(N-1)*PROM_STEP_S)+"&end="+end+"&step="+PROM_STEP_S;
@@ -723,7 +748,7 @@ function promRange(q,end){
     var j=JSON.parse(text);
     if(!j||j.status!=="success"||!j.data||!j.data.result)return null;
     var res=j.data.result;
-    for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length)return res[i].values;
+    for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length)return res;
     return null;
   });
 }
@@ -755,6 +780,11 @@ function applySeries(next){
   if(next["transfer.kv"])DATA.transfer.back=DATA.transfer.kv.map(function(v){return +(v*0.25).toFixed(2);});
 }
 
+/* 「数据源」页呈现状态：每条逻辑序列的命中查询、窗口统计与原始序列细分 */
+var PROM_STATE={};      /* def.k → {q, latest, min, max, avg, series:[{labels,latest}]} */
+var PROM_PANEL_MODE="init";   /* init | ok | empty | metrics | down */
+var PROM_LAST_OK="—";
+
 /* 主路径：Prometheus query_range 拉满整个窗口，cb("ok"|"empty"|"down") */
 function pollProm(cb){
   var end=Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S;
@@ -762,20 +792,38 @@ function pollProm(cb){
   for(i=N-1;i>=0;i--)grid.push(end-i*PROM_STEP_S);
   var labels=grid.map(function(t){var d=new Date(t*1000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);});
   var matched=0,failed=false,next={},seq=Promise.resolve();
+  PROM_STATE={};
   PROM_DEFS.forEach(function(def){
     seq=seq.then(function(){
       if(failed)return null;
       var qi=0;
       var tryQ=function(){
         if(qi>=def.q.length)return Promise.resolve(null);
-        return promRange(def.q[qi++],end).then(function(values){return values||tryQ();});
+        var q=def.q[qi++];
+        return promRange(q,end).then(function(res){return res?{res:res,q:q}:tryQ();});
       };
-      return tryQ().then(function(values){
+      var firstValues=function(res){
+        for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length)return res[i].values;
+        return null;
+      };
+      return tryQ().then(function(r){
+        if(!r)return;
+        var values=firstValues(r.res);
         if(!values)return;
         var arr=alignValues(values,grid);
         if(arr[arr.length-1]===null)return;   /* 整条序列无有效点 */
         var scale=def.scale||1;
-        next[def.k]=arr.map(function(v){v=v*scale;if(def.map)v=def.map(v);return +v.toFixed(2);});
+        var xform=function(v){v=v*scale;if(def.map)v=def.map(v);return +v.toFixed(2);};
+        next[def.k]=arr.map(xform);
+        /* 记录呈现状态：命中查询、窗口统计、原始序列（按实例/标签细分，取末值） */
+        var scaled=next[def.k],sum=0;
+        scaled.forEach(function(v){sum+=v;});
+        PROM_STATE[def.k]={q:r.q,latest:scaled[scaled.length-1],
+          min:Math.min.apply(null,scaled),max:Math.max.apply(null,scaled),avg:+(sum/scaled.length).toFixed(2),
+          series:r.res.map(function(s){
+            var lv=(s.values&&s.values.length)?xform(parseFloat(s.values[s.values.length-1][1])):null;
+            return {labels:s.metric||{},latest:lv};
+          })};
         matched++;
       });
     }).catch(function(){failed=true;});
@@ -786,8 +834,61 @@ function pollProm(cb){
     DATA.ts=labels;
     applySeries(next);
     LIVE=true;renderAll();
+    var d=new Date();
+    PROM_LAST_OK=d.getHours()+":"+("0"+d.getMinutes()).slice(-2)+":"+("0"+d.getSeconds()).slice(-2);
     cb("ok");
   });
+}
+
+/* ---- 「数据源」页渲染：连接状态 + 序列映射命中情况 + 原始序列细分 ---- */
+function fmtNum(v){return v===null||v===undefined||isNaN(v)?"—":(+v).toLocaleString();}
+function renderPromPanel(){
+  var modeText={init:"检测中…",ok:"实时数据 · Prometheus query_range",empty:"已连通 · 指标名未匹配（看板暂显示示例数据）",
+    metrics:"/metrics 瞬时抓取兜底",down:"数据源不可达（看板为示例数据演示）"}[PROM_PANEL_MODE]||PROM_PANEL_MODE;
+  var meta=[
+    ["数据源地址",PROM_URL],
+    ["接入模式",modeText],
+    ["查询窗口","近 "+PROM_RANGE_H+"h · "+N+" 点 · 步长 "+PROM_STEP_S+"s"],
+    ["轮询间隔",(POLL_MS/1000)+"s"],
+    ["最近成功拉取",PROM_LAST_OK]
+  ];
+  document.getElementById("promMeta").innerHTML=meta.map(function(m){
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+m[0]+'</span><span class="dshell-kvValue">'+esc(m[1])+'</span></div>';
+  }).join("");
+  document.getElementById("promMetaNote").textContent=
+    PROM_PANEL_MODE==="metrics"?"当前经 /metrics 文本瞬时抓取按指标名正则匹配，单点推入序列，无 PromQL 明细。"
+    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；可在「设置」页修改数据源地址。"
+    :"请求经 /api/worktable/proxy 代联（仅回环/内网），失败回退浏览器直连；命中明细见下表。";
+
+  var hit=0;
+  var rows=PROM_DEFS.map(function(def){
+    var st=PROM_STATE[def.k];
+    if(st)hit++;
+    var badge=st?'<span class="dshell-badge dshell-badgeDone">已匹配</span>':'<span class="dshell-badge dshell-badgeWait">无数据</span>';
+    var stats=st?("最新 "+fmtNum(st.latest)+def.unit+" · 均值 "+fmtNum(st.avg)+" · 区间 "+fmtNum(st.min)+"~"+fmtNum(st.max)+" · "+st.series.length+" 条序列"):"候选 PromQL 均无返回";
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+def.name
+      +(st?'<div class="diag-promql">'+esc(st.q)+'</div>':'')
+      +'</span><span class="dshell-kvValue">'+stats+' '+badge+'</span></div>';
+  }).join("");
+  document.getElementById("promSeries").innerHTML=rows;
+
+  var raw=[],totalSeries=0;
+  PROM_DEFS.forEach(function(def){
+    var st=PROM_STATE[def.k];
+    if(!st||!st.series.length)return;
+    totalSeries+=st.series.length;
+    raw.push('<div class="dshell-listItem"><span class="dshell-listItemTitle">'+def.name+'（'+st.series.length+' 条）</span></div>');
+    st.series.slice(0,8).forEach(function(s){
+      var ks=Object.keys(s.labels);
+      var lb=ks.length?ks.map(function(k){return k+'="'+s.labels[k]+'"';}).join(" "):"（无标签）";
+      raw.push('<div class="dshell-listItem"><span class="dshell-listItemMeta diag-promql">'+esc(lb)+'</span><span class="dshell-listItemMeta">'+fmtNum(s.latest)+def.unit+'</span></div>');
+    });
+    if(st.series.length>8)raw.push('<div class="diag-note">… 其余 '+(st.series.length-8)+' 条序列从略</div>');
+  });
+  document.getElementById("promRaw").innerHTML=raw.length?raw.join(""):'<div class="diag-note">暂无可呈现的原始序列（未命中或非 query_range 模式）。</div>';
+  document.getElementById("promRawNote").textContent=raw.length
+    ?"共 "+totalSeries+" 条原始序列（每条最多列出 8 条，末值为窗口最后一个采样点）；看板曲线取每条查询的第一条非空序列。"
+    :"";
 }
 
 function setSrcBadge(state,msg){
@@ -802,11 +903,13 @@ function fetchMetrics(cb){
 function poll(){
   pollProm(function(state){
     if(state==="ok"){
+      PROM_PANEL_MODE="ok";renderPromPanel();
       setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · 近"+(PROM_RANGE_S/3600)+"h · "+POLL_MS/1000+"s 刷新");
       return;
     }
     if(state==="empty"){
       if(!LIVE){demoTick();renderAll();}
+      PROM_PANEL_MODE="empty";renderPromPanel();
       setSrcBadge("warn","Prometheus 已连通 · 指标名未匹配映射表（暂显示示例数据）");
       return;
     }
@@ -814,12 +917,14 @@ function poll(){
     fetchMetrics(function(text){
       if(text){
         var map=parseProm(text);
-        if(applyMetrics(map)){LIVE=true;pushLabel();renderAll();setSrcBadge("ok","实时数据 · /metrics 瞬时抓取 · "+POLL_MS/1000+"s 刷新");}
-        else setSrcBadge("warn","已连通 · 指标名未匹配映射表（暂显示示例数据）");
+        if(applyMetrics(map)){LIVE=true;pushLabel();renderAll();PROM_PANEL_MODE="metrics";setSrcBadge("ok","实时数据 · /metrics 瞬时抓取 · "+POLL_MS/1000+"s 刷新");}
+        else{PROM_PANEL_MODE="empty";setSrcBadge("warn","已连通 · 指标名未匹配映射表（暂显示示例数据）");}
       }else{
         if(!LIVE){demoTick();renderAll();}
+        PROM_PANEL_MODE="down";
         setSrcBadge("","数据源不可达 · 示例数据 · "+POLL_MS/1000+"s 自动重试");
       }
+      renderPromPanel();
     });
   });
 }
@@ -933,6 +1038,7 @@ function applySettings(save){
     lsSet("diagPerf.profDir",PROF_DIR);
   }
   PREV={};LIVE=false;   /* 数据源变更后重新采样 */
+  PROM_PANEL_MODE="init";PROM_LAST_OK="—";renderPromPanel();
   poll();startPoll();loadLogs();loadProf();
   document.getElementById("setHint").textContent=save?"已保存并生效。":"已恢复默认并生效。";
 }
@@ -949,6 +1055,7 @@ document.getElementById("btnResetSettings").addEventListener("click",function(){
 
 window.addEventListener("resize",function(){clearTimeout(window.__diagRt);window.__diagRt=setTimeout(renderAll,200);});
 renderAll();
+renderPromPanel();
 fillSettings();
 loadLogs();
 loadProf();
