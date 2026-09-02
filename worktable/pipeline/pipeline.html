@@ -483,7 +483,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 120（Jenkins 默认 300）秒）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1566,8 +1566,8 @@ function renderStageEditor(){
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
       +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
-      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;">耗时(s)<input class="dshell-input" data-f="dur" type="number" min="1" value="'+(s.dur||5)+'" style="width:58px;" /></label>'
-      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="脚本阶段执行超时（秒），留空=默认 120">超时(s)<input class="dshell-input" data-f="timeout" type="number" min="1" value="'+(s.timeout||'')+'" placeholder="120" style="width:58px;" /></label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="模拟阶段的等待时长（分钟），内部按秒存储">耗时(分钟)<input class="dshell-input" data-f="dur" type="number" min="0.1" step="0.1" value="'+secToMinInput(s.dur||5)+'" style="width:84px;" /></label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="脚本阶段执行超时（分钟），留空=默认 2">超时(分钟)<input class="dshell-input" data-f="timeout" type="number" min="0.1" step="0.1" value="'+(s.timeout?secToMinInput(s.timeout):'')+'" placeholder="2" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后运行到本阶段直接跳过"><input type="checkbox" data-f="skip" '+(s.skip?'checked':'')+'/> 不执行</label>'
       +'<span style="flex:1"></span>'
       +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
@@ -1750,6 +1750,8 @@ const DEFAULT_IMAGE = 'myapp';   // 镜像名已不在主控填写，内部固�
 function randCommit(){ return Math.random().toString(16).slice(2,9); }
 function nowHM(){ const d=new Date(); return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
 function fmtDur(s){ if(s<60) return Math.round(s)+'s'; return Math.floor(s/60)+'m'+Math.round(s%60)+'s'; }
+/* 阶段「耗时/超时」内部一律按秒存储；编辑器输入框按分钟显示与填写（×60 换算，四舍五入回秒） */
+function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String(m) : String(Math.round(m*100)/100); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ---------- 渲染流水线编排 ---------- */
@@ -2462,7 +2464,7 @@ async function runScriptStep(i){
   const t0=Date.now();
   if(timer) clearInterval(timer);
   timer=setInterval(()=>{ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },300);
-  const res=await execScript(sc, ((s.timeout||120)*1000));   // 阶段级超时（编辑器「超时(s)」，默认 120）
+  const res=await execScript(sc, ((s.timeout||120)*1000));   // 阶段级超时（编辑器「超时(分钟)」×60 存秒，默认 120）
   if(timer){ clearInterval(timer); timer=null; }
   if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（已发出的脚本无法中断）。'); return; }
   const dur=(Date.now()-t0)/1000;
@@ -3134,8 +3136,8 @@ $('plStageList').addEventListener('change', (e)=>{
     return;
   }
   if(f==='name') s.name=e.target.value;
-  else if(f==='dur') s.dur=Math.max(1,parseInt(e.target.value,10)||5);
-  else if(f==='timeout'){ const tv=parseInt(e.target.value,10); s.timeout=(tv>=1)?tv:null; }
+  else if(f==='dur'){ const mv=parseFloat(e.target.value); s.dur=Math.max(1,Math.round(mv*60)||5); }   /* 输入为分钟，×60 存秒 */
+  else if(f==='timeout'){ const sec=Math.round(parseFloat(e.target.value)*60); s.timeout=(sec>=1)?sec:null; }   /* 留空=null（默认 2 分钟） */
   else if(f==='skip') s.skip=e.target.checked;
   else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
