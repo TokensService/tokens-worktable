@@ -131,6 +131,23 @@
   </div>
   <div id="pageMain">
 
+  <!-- 统计 -->
+  <div class="dshell-grid">
+    <div class="dshell-stat"><div class="dshell-statLabel">总构建次数</div><div class="dshell-statValue" id="sTotal">—</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">成功率</div><div class="dshell-statValue" id="sRate">—</div><div class="dshell-statDelta" id="sRateDelta"></div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">平均耗时</div><div class="dshell-statValue" id="sAvg">—</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">最近构建</div><div class="dshell-statValue" id="sLast">—</div></div>
+  </div>
+
+  <!-- 运行队列 -->
+  <div class="dshell-card" id="queueCard">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+      <h2 class="dshell-sub" style="margin:0">运行队列 <span id="queueCount" class="dshell-muted"></span></h2>
+      <span id="queueStatus" class="dshell-badge">空闲</span>
+    </div>
+    <div id="queueList" class="dshell-list"></div>
+  </div>
+
   <!-- 控制区 -->
   <div class="dshell-card pipeline-controls" id="pipelineControls">
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
@@ -167,23 +184,6 @@
     <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled style="flex-shrink:0;">⏹ 中止</button>
     <button id="resetBtn" class="dshell-btn dshell-btnGhost" style="flex-shrink:0;">重置</button>
     <span id="runTip" class="dshell-muted" style="font-size:11px;"></span>
-  </div>
-
-  <!-- 统计 -->
-  <div class="dshell-grid">
-    <div class="dshell-stat"><div class="dshell-statLabel">总构建次数</div><div class="dshell-statValue" id="sTotal">—</div></div>
-    <div class="dshell-stat"><div class="dshell-statLabel">成功率</div><div class="dshell-statValue" id="sRate">—</div><div class="dshell-statDelta" id="sRateDelta"></div></div>
-    <div class="dshell-stat"><div class="dshell-statLabel">平均耗时</div><div class="dshell-statValue" id="sAvg">—</div></div>
-    <div class="dshell-stat"><div class="dshell-statLabel">最近构建</div><div class="dshell-statValue" id="sLast">—</div></div>
-  </div>
-
-  <!-- 运行队列 -->
-  <div class="dshell-card" id="queueCard">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-      <h2 class="dshell-sub" style="margin:0">运行队列 <span id="queueCount" class="dshell-muted"></span></h2>
-      <span id="queueStatus" class="dshell-badge">空闲</span>
-    </div>
-    <div id="queueList" class="dshell-list"></div>
   </div>
 
   <!-- 流水线任务（多条流水线） -->
