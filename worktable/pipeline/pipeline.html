@@ -210,7 +210,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
           <span id="detailBadge"></span>
-          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="用系统文件管理器打开归档目录（在 DSH 服务端主机上打开）：优先当前/最近一次运行的归档文件夹，未运行时取运行历史选中行，均无则打开归档根目录">📂 打开归档目录</button>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。目录选取：优先当前/最近一次运行的归档文件夹，未运行时取运行历史选中行，均无则打开归档根目录；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
         </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
@@ -2016,6 +2016,9 @@ function startSimRun(pl, c){
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
   curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',vars:{},token:++runSeq,hasSched:stages.some(s=>s.sched)};
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runJenkinsStep），末尾 archiveRun 复用同一路径
+  if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
+    ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
+  }
   selectedId = stages[0].id;
   running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
   setOverall('运行中…','dshell-badgeWait');
@@ -2598,13 +2601,19 @@ function archiveFolderFor(ctx){
   const fb=fallbackArchiveRoot();
   return fb ? fb+'/'+sub : null;
 }
+/* 确保归档文件夹存在：/api/worktable/mkdir 非递归（插件要求父目录已存在），失败时先补建父目录再重试 */
+async function ensureArchiveFolder(folder){
+  if(await apiMkdir(folder)) return true;
+  await apiMkdir(folder.slice(0, folder.lastIndexOf('/')));
+  return apiMkdir(folder);
+}
 /* 任务级日志归档：每个任务（阶段 / 环境清理）的回显即时写入归档文件夹的独立日志文件，
    命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理）；失败仅告警，不影响运行结果。 */
 function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(name)+'.log'; }
 async function archiveTaskLog(ctx, seq, name, text){
   const folder=archiveFolderFor(ctx);
   if(!folder) return null;
-  if(!await apiMkdir(folder)){ await apiMkdir(folder.slice(0, folder.lastIndexOf('/'))); await apiMkdir(folder); }
+  await ensureArchiveFolder(folder);
   const file=folder+'/'+taskLogFile(ctx, seq, name);
   await apiWrite(file, text);
   return file;
@@ -2625,7 +2634,6 @@ function archiveStageLog(stage, seq, ctx){
 function archiveRun(result){
   const folder=archiveFolderFor(curRun);
   if(!folder) return;
-  const root=folder.slice(0, folder.lastIndexOf('/'));
   const ctx=curRun, stages=activeStages();
   // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
   // 未执行且无任何回显的阶段不归档；被中止的任务（running 时被重置为 idle 但已有部分回显）照常归档
@@ -2661,7 +2669,7 @@ function archiveRun(result){
     }),
   };
   (async()=>{
-    if(!await apiMkdir(folder)){ await apiMkdir(root); await apiMkdir(folder); }
+    await ensureArchiveFolder(folder);
     await apiWrite(folder+'/run-'+ctx.tag+'.log', logLines.join('\n'));
     await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
     // 归档脚本：写完日志/profiling 后执行（可选），收集额外日志到归档目录；
@@ -2880,12 +2888,19 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
   if(!rec){ alert('请先点击选择一条运行历史。'); return; }
   createAnalysisChat(b.getAttribute('data-ract'), rec);
 }));
-/* 「📂 打开归档目录」：用系统文件管理器打开归档目录（在 DSH 服务端主机上打开，xdg-open/gio/open 依次探测）。
+/* 「📂 打开归档目录」：优先经 dsh-better-sidebar 侧边栏「文件」面板打开归档目录（__dshOpenFolderInSidebar
+   桥由工作台插件暴露，开一个以归档目录为根的文件夹窗口）；未装 better-sidebar 或桥不可用时回退到
+   服务端系统文件管理器（xdg-open/gio/open 依次探测）。
    目录选取优先级：当前/最近一次运行的归档文件夹（curRun.archive）→ 运行历史选中行的归档目录 →
-   配置的归档根目录（archiveDir，留空时取保底 runs/）。均无可用目录时仅提示。 */
+   配置的归档根目录（archiveDir，留空时取保底 runs/）。均无可用目录时仅提示。
+   系统文件管理器路径下，目标目录不存在时（历史目录已清理等）助手脚本回退到其父目录（归档根），
+   并把实际打开的目录回显在 stdout 供页面提示；连归档根都不存在才报「目录不存在」。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
 const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的助手脚本：用系统文件管理器打开 $1\n'
-  +'d="$1"\n[ -n "$d" ] && [ -d "$d" ] || exit 2\n'
+  +'d="$1"\n'
+  +'[ -n "$d" ] && [ -d "$d" ] || d="${d%/*}"\n'
+  +'[ -n "$d" ] && [ -d "$d" ] || exit 2\n'
+  +'echo "$d"\n'
   +'if command -v xdg-open >/dev/null 2>&1; then setsid nohup xdg-open "$d" >/dev/null 2>&1 & exit 0; fi\n'
   +'if command -v gio >/dev/null 2>&1; then setsid nohup gio open "$d" >/dev/null 2>&1 & exit 0; fi\n'
   +'if command -v open >/dev/null 2>&1; then open "$d" >/dev/null 2>&1 & exit 0; fi\n'
@@ -2897,13 +2912,24 @@ async function openArchiveFolder(){
   if(!folder && selHistoryIdx>=0 && history[selHistoryIdx]) folder=history[selHistoryIdx].archive||'';
   if(!folder) folder=(archiveDir||'').trim() || fallbackArchiveRoot() || '';
   if(!folder){ say('✗ 暂无归档目录：请先运行一次流水线，或在「设置」页配置归档路径','var(--log-warn)'); return; }
+  /* 优先走 better-sidebar 侧边栏「文件」面板（文件夹窗口）；桥缺失/拒绝（未装插件等）再回退系统文件管理器 */
+  const P=window.parent;
+  if(P && typeof P.__dshOpenFolderInSidebar==='function'){
+    let opened=false;
+    try{ opened=!!P.__dshOpenFolderInSidebar(folder); }catch(e){ opened=false; }
+    if(opened){ say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)'); return; }
+  }
   try{
     await apiWrite(FM_HELPER, FM_SCRIPT);   // 幂等重写助手脚本（内容固定）
     const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:FM_HELPER,args:[folder],timeoutMs:10000})});
     const j=await r.json();
     if(j && j.error){ say('✗ '+String(j.error).slice(0,120),'var(--log-err)'); return; }
-    if(j.code===0) say('✓ 已在服务端打开 '+folder,'var(--log-ok)');
-    else if(j.code===2) say('✗ 目录不存在：'+folder,'var(--log-err)');
+    if(j.code===0){
+      const opened=String(j.stdout||'').trim().split('\n').pop()||folder;   // 助手脚本回显实际打开的目录
+      if(opened===folder) say('✓ 已在服务端打开 '+opened,'var(--log-ok)');
+      else say('✓ 目标目录不存在，已回退打开 '+opened,'var(--log-warn)');
+    }
+    else if(j.code===2) say('✗ 目录不存在（含归档根目录）：'+folder,'var(--log-err)');
     else if(j.code===3) say('✗ 服务端未找到文件管理器（xdg-open/gio/open）','var(--log-err)');
     else say('✗ 打开失败（退出码 '+j.code+'）'+(j.stderr?('：'+String(j.stderr).trim().slice(0,120)):''),'var(--log-err)');
   }catch(e){ say('✗ 请求失败：'+String(e.message||e).slice(0,120),'var(--log-err)'); }

@@ -21773,6 +21773,20 @@ function apply(ctx) {
     window.__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list);
   } catch {
   }
+  try {
+    window.__dshOpenFolderInSidebar = (p) => {
+      try {
+        const bs = ctx.get?.("betterSidebar");
+        if (!bs || typeof bs.openTab !== "function" || typeof p !== "string" || !p) return false;
+        const title = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+        bs.openTab({ type: "editor", title, path: p, id: "editor:" + p, meta: { dir: true } });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+  } catch {
+  }
   ctx.effect(() => {
     const style = document.createElement("style");
     style.setAttribute("data-dsh-plugin", "dsh-worktable");

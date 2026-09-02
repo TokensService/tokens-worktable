@@ -1,5 +1,15 @@
 # 本目录 dsh-worktable 的本地改动
 
+- pipeline.html「📂 打开归档目录」优先经 dsh-better-sidebar 侧边栏「文件」面板打开归档目录
+  （`src/client/index.tsx` + `worktable/pipeline/pipeline.html`）：
+  新增 `window.__dshOpenFolderInSidebar(path)` 桥（暴露给 iframe 项目页），调用 better-sidebar 服务的
+  `openTab({ type:'editor', path, meta:{ dir:true } })` 开一个以归档目录为根的文件夹窗口
+  （同 better-sidebar agent-opens 推送的 folder 分支；path 相同按 dedupeKey 复用同一标签，
+  内容型打开自动展开所在面板）；未装 better-sidebar 或打开抛错时返回 false，
+  页面回退到原服务端系统文件管理器（xdg-open/gio/open）路径。
+  顺带修复：运行启动即预建归档文件夹（`ensureArchiveFolder`，此前要等首个任务日志落盘才建目录，
+  运行初期点按钮报「✗ 目录不存在」）；系统文件管理器助手脚本在目标目录不存在时回退打开其父目录
+  （归档根）并回显实际打开目录，连归档根都不存在才报错。
 - 流水线运行历史「AI 日志分析 / Profiling 分析 / 性能诊断」改为填草稿不提交、工作目录跟随归档目录
   （`src/client/index.tsx` + `worktable/pipeline/pipeline.html`）：
   `newChatInProject` 新增 `cwd` 参数（未分组时以 `{ cwd }` 建会话，优先级：workspaceId > cwd > 默认），
