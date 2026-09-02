@@ -8114,6 +8114,9 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_splitChatToggle:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}",
   ".dsh-wt_splitChatToggleOff{opacity:.45;filter:grayscale(1)}",
   ".dsh-wt_splitChatToggleOff:hover{opacity:.9}",
+  // 聊天列右上角 ✕ 关闭会话窗（fixed 浮在会话视图头部之上；半透明底色保证压在深/浅内容上都可读）
+  ".dsh-wt_splitChatClose{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.18));color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;cursor:pointer}",
+  ".dsh-wt_splitChatClose:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09))}",
   // + 右侧弹出面板
   ".dsh-wt_popBackdrop{position:fixed;left:0;top:0;right:0;bottom:0;z-index:79;background:transparent}",
   // 删除二次确认（fixed 居中模态，压在弹窗之上）
@@ -18184,6 +18187,7 @@ function WorkspaceLayer(props) {
   const colW = g.right - g.left;
   const rowH = g.bottom - g.top;
   const chatW = chatClosed ? 0 : clamp(props.chatW, spec.chatWidth.min, Math.max(spec.chatWidth.min, colW - 60));
+  const chatX = chatLeft ? g.left : g.right - chatW;
   const topH = hasTop ? clamp(props.topH, spec.topHeight?.min ?? 80, Math.max(spec.topHeight?.min ?? 80, rowH - BAR_H - 80)) : 0;
   const leftW = hasLeft ? clamp(props.leftW, spec.leftWidth?.min ?? 160, Math.max(spec.leftWidth?.min ?? 160, colW - 260)) : 0;
   const chatFull = spec.chatFullHeight === true;
@@ -18280,6 +18284,18 @@ function WorkspaceLayer(props) {
       ),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "dsh-wt_splitClose", "aria-label": "\u9000\u51FA\u5206\u680F\uFF08Esc\uFF09", onClick: () => splitStore.close(), children: "\u2715" })
     ] }),
+    !chatClosed && chatW > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      "button",
+      {
+        type: "button",
+        className: "dsh-wt_splitChatClose",
+        title: T("split.hideChat"),
+        "aria-label": T("split.hideChat"),
+        style: { position: "fixed", left: chatX + chatW - 26, top: barTop + 3, zIndex: 70 },
+        onClick: () => splitStore.setChatClosed(true),
+        children: "\u2715"
+      }
+    ),
     leftItem && renderPane(leftItem, "left", 0, g.left, barTop + BAR_H, g.bottom - barTop - BAR_H),
     hasTop && topItems.map((it, i) => renderPane(it, "top", i, topRowX, topY, topH)),
     mainItems.map((it, i) => renderPane(it, "main", i, contentX, bodyTop, mainH)),
