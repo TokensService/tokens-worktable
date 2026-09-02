@@ -353,7 +353,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">看板序列 × PromQL 映射（命中情况与窗口统计）</h2>
       <div class="dshell-kv" id="promSeries"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">呈现方式：每条看板序列按候选 PromQL 依次查询 /api/v1/query_range，取第一个有结果的查询；返回的多条序列中取第一条非空序列，对齐到固定时间网格（缺口前向填充、头部后向回填）后整体替换看板对应曲线。未命中的序列保留示例数据。</div>
+      <div class="diag-note">呈现方式：每条看板序列按候选 PromQL 依次查询 /api/v1/query_range，取第一个有结果的查询；返回的多条序列中取第一条非空序列，对齐到固定时间网格（缺口前向填充、头部后向回填）后整体替换看板对应曲线。未命中的序列保留示例数据；其中网关队列 / PD 转发队列 / 结果回传若上级序列（调度队列 / KV 传输）已命中，则按经验比例（0.15× / 0.3× / 0.25×）估算填充。</div>
     </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">原始序列（按实例 / 标签细分）</h2>
@@ -401,11 +401,11 @@ var DATA={
             ["Mooncake KV 池",{ "介质":"DRAM + NVMe SSD 分级","容量":"DRAM 2TB · SSD 16TB","读吞吐":"6.8 GB/s（峰值 8）","网络":"RDMA RoCEv2 200Gbps","角色":"前缀缓存 / KV 复用"}]],
   metricsDict:[
     ["TTFT / TPOT","Prometheus: vllm:time_to_first_token_seconds / time_per_output_token_seconds（直方图）","评估首响与流式体验，定位 Prefill/Decode 瓶颈"],
-    ["各级队列时延","源码埋点: scheduler.wait_time / gateway.enqueue_ts 差值","区分排队拥塞与计算慢，判断扩容方向"],
+    ["各级队列时延","Prometheus: gateway_queue_time / queue_time / pd_forward_queue 直方图（缺级时按经验比例估算）","区分排队拥塞与计算慢，判断扩容方向"],
     ["TPS / QPS","Prometheus: 请求计数 + token 计数 rate()","容量与压测基线，联动 batch 规模分析"],
     ["Mooncake 吞吐","mooncake_exporter: transfer_bytes 读写分别统计","判断 KV 传输是否成为 PD 分离瓶颈"],
     ["缓存命中率","prefix_cache.hit / query 比率","评估前缀缓存收益，指导 prompt 组织与 KV 池容量"],
-    ["转发时延","PD 链路 RDMA 传输耗时埋点（KV push / pull）","定位跨节点 KV 搬运与回传链路抖动"],
+    ["转发时延","Prometheus: kv_transfer / response_transfer 直方图（回传缺省时按经验比例估算），对应 PD 链路 RDMA 传输耗时","定位跨节点 KV 搬运与回传链路抖动"],
     ["KV Cache Blocks","allocator 指标: num_blocks_total/used/free、block_size、preempt 计数","判断显存碎片化与抢占换出对 TPOT 的影响"],
     ["Profiling 数据","torch profiler / msprof trace，按 kernel 聚合","算子级耗时拆解，指导算子融合与通信优化"],
     ["日志数据","服务日志 ERROR/WARN + 慢请求访问日志","关联异常事件与时序拐点的因果"],
@@ -529,7 +529,7 @@ document.addEventListener("keydown",function(e){
 /* ================= 面板菜单（卡片右上角 ⋯ → 查看 / 编辑，仿 Grafana 面板操作） ================= */
 var PANEL_DEFS={   /* 图表 id → 该面板用到的 PROM_DEFS 序列键 */
   chTtft:["ttft.p50","ttft.p90","ttft.p99"],chTpot:["tpot.p50","tpot.p90","tpot.p99"],
-  chQueue:["queue.sched"],chTransfer:["transfer.kv"],chTps:["tps","qps"],
+  chQueue:["queue.gw","queue.sched","queue.pd"],chTransfer:["transfer.kv","transfer.back"],chTps:["tps","qps"],
   chMooncake:["mooncake.rd","mooncake.wr"],chHit:["hit"],chBatch:["batch.run","batch.wait"],chKv:["kvUsage"]
 };
 function cardOf(id){var cv=document.getElementById(id);return cv&&cv.closest?cv.closest(".dshell-card"):null;}
@@ -1046,11 +1046,21 @@ function renderAll(){
   line("chTpot",L,[{data:DATA.tpot.p50,color:"#60a5fa"},{data:DATA.tpot.p90,color:"#f59e0b"},{data:DATA.tpot.p99,color:"#ef4444"}],"ms");
   line("chQueue",L,[{data:DATA.queue.gw,color:"#34d399"},{data:DATA.queue.sched,color:"#a78bfa"},{data:DATA.queue.pd,color:"#f472b6"}],"ms");
   line("chTransfer",L,[{data:DATA.transfer.kv,color:"#22d3ee"},{data:DATA.transfer.back,color:"#fb923c"}],"ms");
-  var parts=[["队列等待（网关+调度+PD）",18],["Prefill 计算",34],["KV 传输",9],["Decode 计算",36],["结果回传",3]];
+  /* 时延构成占比：取近 5 分钟（尾部 tailN 个采样点）均值，按瀑布图同一套口径折算后归一 */
+  var tailN=Math.max(1,Math.min(N,Math.round(300/STEP_S)));
+  var tailAvg=function(a){var s=0,c=0;for(var i=Math.max(0,a.length-tailN);i<a.length;i++){s+=a[i];c++;}return c?s/c:0;};
+  var qMs=tailAvg(DATA.queue.gw)+tailAvg(DATA.queue.sched)+tailAvg(DATA.queue.pd);
+  var parts=[["队列等待（网关+调度+PD）",qMs],["Prefill 计算",tailAvg(DATA.ttft.p50)*0.7],
+             ["KV 传输",tailAvg(DATA.transfer.kv)],["Decode 计算",tailAvg(DATA.tpot.p50)*10],
+             ["结果回传",tailAvg(DATA.transfer.back)]];
+  var totMs=parts.reduce(function(s,p){return s+p[1];},0)||1;
   document.getElementById("latencyKv").innerHTML=parts.map(function(p){
-    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+p[1]+'%</span></div>';
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+Math.round(p[1]/totMs*100)+'% · 约 '+p[1].toFixed(0)+' ms</span></div>';
   }).join("");
-  document.getElementById("latencyNote").textContent="Decode 与 Prefill 合计约 70%：计算占主导，但队列等待 18% 提示高峰期调度拥塞。";
+  var top=parts.slice().sort(function(a,b){return b[1]-a[1];})[0];
+  var calcPct=Math.round((parts[1][1]+parts[3][1])/totMs*100);
+  document.getElementById("latencyNote").textContent=
+    "占比按当前看板数据（近 5 分钟均值）实时折算：占比最高为「"+top[0]+"」"+Math.round(top[1]/totMs*100)+"%；计算（Prefill+Decode）合计 "+calcPct+"%，队列等待 "+Math.round(qMs/totMs*100)+"%"+(qMs/totMs>0.2?"，提示高峰期调度拥塞":"")+"。Prefill/Decode 口径：TTFT P50 ×70% / TPOT P50 ×10 tok。";
 
   /* 吞吐与缓存 */
   line("chTps",L,[{data:DATA.tps,color:"#34d399"},{data:DATA.qps.map(function(v){return v*100;}),color:"#a78bfa"}],"");
@@ -1244,9 +1254,18 @@ function applyMetrics(map){
   t=secSeries(map,/^[^\s]*time_per_output_token[^\s]*$/,1000);
   if(t){pushPoint(DATA.tpot.p50,t.p50);pushPoint(DATA.tpot.p90,t.p90);pushPoint(DATA.tpot.p99,t.p99);matched++;}
   t=secSeries(map,/(queue_time|time_in_queue|request_waiting_time)[^\s]*$/,1000);
-  if(t){pushPoint(DATA.queue.sched,t.p50);pushPoint(DATA.queue.pd,t.p90*0.3);pushPoint(DATA.queue.gw,t.p50*0.15);matched++;}
+  if(t){pushPoint(DATA.queue.sched,t.p50);matched++;}
+  var tg=secSeries(map,/(gateway_queue_time|gw_queue_time|enqueue_wait)[^\s]*$/,1000);
+  if(tg){pushPoint(DATA.queue.gw,tg.p50);matched++;}
+  else if(t){pushPoint(DATA.queue.gw,t.p50*0.15);}   /* 网关队列无独立指标时按经验比例估算 */
+  var td=secSeries(map,/(pd_queue_time|pd_forward_queue|forward_queue_time)[^\s]*$/,1000);
+  if(td){pushPoint(DATA.queue.pd,td.p50);matched++;}
+  else if(t){pushPoint(DATA.queue.pd,t.p90*0.3);}    /* PD 转发队列无独立指标时按经验比例估算 */
   t=secSeries(map,/(transfer|kv_transfer|kv_send)[^\s]*$/,1000);
-  if(t){pushPoint(DATA.transfer.kv,t.p50);pushPoint(DATA.transfer.back,t.p50*0.25);matched++;}
+  if(t){pushPoint(DATA.transfer.kv,t.p50);matched++;}
+  var tb=secSeries(map,/(response_transfer|result_transfer|response_send|result_send)[^\s]*$/,1000);
+  if(tb){pushPoint(DATA.transfer.back,tb.p50);matched++;}
+  else if(t){pushPoint(DATA.transfer.back,t.p50*0.25);}   /* 结果回传无独立指标时按经验比例估算 */
   var v=rate(map,"tps",/(generation_tokens_total|tokens_generated_total|output_tokens_total)(_|$)/);
   if(v!==null){pushPoint(DATA.tps,v);matched++;}
   v=rate(map,"qps",/(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)(_|$)/);
@@ -1289,12 +1308,21 @@ var PROM_DEFS=[
   {k:"tpot.p99",name:"TPOT 逐 Token 时延 P99",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.99, sum by (le) (rate({__name__=~".*time_per_output_token.*_bucket"}[5m])))',
     '{__name__=~".*time_per_output_token.*", quantile="0.99"}']},
+  {k:"queue.gw",name:"网关队列时延 P50",unit:"ms",scale:1000,q:[
+    'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(gateway_queue_time|gw_queue_time|enqueue_wait).*_bucket"}[5m])))',
+    '{__name__=~".*(gateway_queue_time|gw_queue_time|enqueue_wait).*", quantile="0.5"}']},
   {k:"queue.sched",name:"调度队列时延 P50",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(queue_time|time_in_queue|request_waiting_time).*_bucket"}[5m])))',
     '{__name__=~".*(queue_time|time_in_queue|request_waiting_time).*", quantile="0.5"}']},
+  {k:"queue.pd",name:"PD 转发队列时延 P50",unit:"ms",scale:1000,q:[
+    'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(pd_queue_time|pd_forward_queue|forward_queue_time).*_bucket"}[5m])))',
+    '{__name__=~".*(pd_queue_time|pd_forward_queue|forward_queue_time).*", quantile="0.5"}']},
   {k:"transfer.kv",name:"KV 传输时延 P50",unit:"ms",scale:1000,q:[
     'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(transfer|kv_transfer|kv_send).*_bucket"}[5m])))',
     '{__name__=~".*(transfer|kv_transfer|kv_send).*", quantile="0.5"}']},
+  {k:"transfer.back",name:"结果回传时延 P50",unit:"ms",scale:1000,q:[
+    'histogram_quantile(0.5, sum by (le) (rate({__name__=~".*(response_transfer|result_transfer|response_send|result_send).*_bucket"}[5m])))',
+    '{__name__=~".*(response_transfer|result_transfer|response_send|result_send).*", quantile="0.5"}']},
   {k:"tps",name:"吞吐 TPS",unit:"tokens/s",q:['sum(rate({__name__=~".*(generation_tokens_total|tokens_generated_total|output_tokens_total)"}[5m]))']},
   {k:"qps",name:"请求 QPS",unit:"req/s",q:['sum(rate({__name__=~".*(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)"}[5m]))']},
   {k:"hit",name:"前缀缓存命中率",unit:"%",map:function(v){return v<=1?v*100:v;},q:['avg({__name__=~".*(prefix_cache_hit_rate|cache_hit_rate|hit_rate).*"})']},
@@ -1346,12 +1374,12 @@ function applySeries(next){
     if(k==="kvUsage"){DATA.kv.used=next[k].map(function(v){return Math.round(DATA.kv.total*v/100);});continue;}
     setPath(DATA,k,next[k]);
   }
-  /* 派生序列：与 /metrics 兜底路径保持同一套经验比例 */
+  /* 派生序列：PromQL 未命中独立指标时按经验比例估算（与 /metrics 兜底路径同一套比例），命中则保留真实数据 */
   if(next["queue.sched"]){
-    DATA.queue.gw=DATA.queue.sched.map(function(v){return +(v*0.15).toFixed(2);});
-    DATA.queue.pd=DATA.queue.sched.map(function(v){return +(v*0.3).toFixed(2);});
+    if(!next["queue.gw"])DATA.queue.gw=DATA.queue.sched.map(function(v){return +(v*0.15).toFixed(2);});
+    if(!next["queue.pd"])DATA.queue.pd=DATA.queue.sched.map(function(v){return +(v*0.3).toFixed(2);});
   }
-  if(next["transfer.kv"])DATA.transfer.back=DATA.transfer.kv.map(function(v){return +(v*0.25).toFixed(2);});
+  if(next["transfer.kv"]&&!next["transfer.back"])DATA.transfer.back=DATA.transfer.kv.map(function(v){return +(v*0.25).toFixed(2);});
 }
 
 /* 「数据源」页呈现状态：每条逻辑序列的命中查询、窗口统计与原始序列细分 */
