@@ -7941,6 +7941,13 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles::before{animation:dsh-wt-busyA 1s ease-in-out infinite}",
   ".dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles::after{animation:dsh-wt-busyB 1s ease-in-out infinite}",
   ".dsh-wt_bindBtn[data-bound=done] .dsh-wt_bindCircles,.dsh-wt_bindBtn[data-bound=need] .dsh-wt_bindCircles,.dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles{filter:drop-shadow(0 0 3px currentColor)}",
+  // 项目卡片上的 💬 聊天按钮（打开/关闭该项目会话窗口）：绑定按钮左侧同款 22×22 按钮底，
+  // 常态次级灰；会话窗已关闭（data-closed=true）降透明度 + 去色，与分栏标题栏 💬 关态一致；
+  // 气泡复用 .dsh-wt_bindTip（data-tip 事件委托）
+  ".dsh-wt_chatBtn{position:absolute;right:50px;top:50%;transform:translateY(-50%);width:22px;height:22px;margin:0;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;line-height:1;cursor:pointer;user-select:none}",
+  ".dsh-wt_chatBtn:hover{background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#e6e8eb)}",
+  ".dsh-wt_chatBtn[data-closed=true]{opacity:.45;filter:grayscale(1)}",
+  ".dsh-wt_chatBtn[data-closed=true]:hover{opacity:.9}",
   // 气泡为 body 级独立元素（.dsh-wt_bindTip），此处只保留按钮本体样式
   ".dsh-wt_bindTip{position:fixed;transform:translateY(-50%);padding:5px 9px;border:1px solid var(--dsw-alias-border-l2,#3a4150);border-radius:6px;background:var(--dsw-alias-fill-l2,#171b22);color:var(--dsw-alias-label-primary,#e6e8eb);font-size:11px;line-height:15px;white-space:nowrap;pointer-events:none;z-index:1200;box-shadow:0 4px 12px rgba(0,0,0,.35);display:none}",
   ".dsh-wt_bindCircles{position:absolute;left:50%;top:50%;width:17px;height:7px;transform:translate(-50%,-50%)}",
@@ -8440,6 +8447,8 @@ var zh = {
   "split.flip": "\u5207\u6362\u5BF9\u8BDD\u7A97\u4F4D\u7F6E\uFF08\u5DE6\u21C4\u53F3\uFF09",
   "split.dragSwap": "\u62D6\u52A8\u6807\u9898\u680F\u4E0E\u5176\u4ED6\u7A97\u4EA4\u6362\u4F4D\u7F6E",
   "split.hideChat": "\u5173\u95ED\u4F1A\u8BDD\u7A97\u53E3\uFF08\u5185\u5BB9\u7A97\u5360\u6EE1\u6574\u5BBD\uFF0C\u518D\u6B21\u70B9\u51FB\u6062\u590D\uFF09",
+  "rowChat.hide": "\u5173\u95ED\u8BE5\u9879\u76EE\u4F1A\u8BDD\u7A97\u53E3\uFF08\u5185\u5BB9\u7A97\u5360\u6EE1\u6574\u5BBD\uFF0C\u518D\u6B21\u70B9\u51FB\u6062\u590D\uFF09",
+  "rowChat.show": "\u6253\u5F00\u8BE5\u9879\u76EE\u4F1A\u8BDD\u7A97\u53E3",
   "split.showChat": "\u6253\u5F00\u4F1A\u8BDD\u7A97\u53E3",
   "icons.title": "\u9009\u62E9\u56FE\u6807",
   "icons.change": "\u66F4\u6362\u56FE\u6807",
@@ -8637,6 +8646,8 @@ var en = {
   "split.flip": "Flip chat side (left \u21C4 right)",
   "split.dragSwap": "Drag the title bar to swap panes",
   "split.hideChat": "Close the chat panel (panes take the full width; click again to restore)",
+  "rowChat.hide": "Close this project's chat panel (panes take the full width; click again to restore)",
+  "rowChat.show": "Open this project's chat panel",
   "split.showChat": "Open the chat panel",
   "icons.title": "Pick an icon",
   "icons.change": "Change icon",
@@ -16571,6 +16582,9 @@ function persistSaved(layoutId, s) {
   } catch {
   }
 }
+function peekChatClosed(layoutId) {
+  return loadSaved(layoutId)?.chatClosed === true;
+}
 window.addEventListener("dsh:split-claim", ((e) => {
   const id = e?.detail?.id;
   if (splitStore.active && id && id !== splitStore.spec?.id) splitStore.close();
@@ -19635,6 +19649,9 @@ function WorktableSection(props) {
   const [activeSplitId, setActiveSplitId] = (0, import_react2.useState)(
     () => splitStore.active && splitStore.spec ? splitStore.spec.id : null
   );
+  const [activeChatClosed, setActiveChatClosed] = (0, import_react2.useState)(
+    () => splitStore.active ? splitStore.chatClosed === true : false
+  );
   const projectsRef = (0, import_react2.useRef)(
     { projects, metas, aliveRegisteredIds: registeredIds }
   );
@@ -19914,6 +19931,7 @@ function WorktableSection(props) {
   }, []);
   (0, import_react2.useEffect)(() => splitStore.subscribe(() => {
     setActiveSplitId(splitStore.active && splitStore.spec ? splitStore.spec.id : null);
+    setActiveChatClosed(splitStore.active ? splitStore.chatClosed === true : false);
     if (!splitStore.active) {
       if (!suppressRestoreRef.current) {
         const prev = projectAttachRef.sessionId;
@@ -20144,6 +20162,11 @@ function WorktableSection(props) {
       }
     }
   }, [projects.views, t]);
+  const rowChatClosed = (id) => activeSplitId === id ? activeChatClosed : peekChatClosed(id);
+  const toggleRowChat = (id, open) => {
+    if (!(splitStore.active && splitStore.spec?.id === id)) open();
+    if (splitStore.active && splitStore.spec?.id === id) splitStore.setChatClosed(!splitStore.chatClosed);
+  };
   const clickConsoleCard = (anchor) => {
     if (projectsRef.current.projects.bindings[CONSOLE_ID]) {
       openConsole();
@@ -21806,6 +21829,22 @@ function WorktableSection(props) {
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
               "span",
               {
+                className: "dsh-wt_chatBtn",
+                role: "button",
+                tabIndex: 0,
+                "data-closed": rowChatClosed(CONSOLE_ID) ? "true" : "false",
+                "data-tip": t(rowChatClosed(CONSOLE_ID) ? "rowChat.show" : "rowChat.hide"),
+                "aria-label": t(rowChatClosed(CONSOLE_ID) ? "rowChat.show" : "rowChat.hide"),
+                onClick: (e) => {
+                  e.stopPropagation();
+                  toggleRowChat(CONSOLE_ID, () => openConsole());
+                },
+                children: "\u{1F4AC}"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+              "span",
+              {
                 className: "dsh-wt_bindBtn",
                 role: "button",
                 tabIndex: 0,
@@ -21851,6 +21890,25 @@ function WorktableSection(props) {
               }
             ),
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_layoutText", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_layoutName", children: projects.nameOverrides[l.id] ?? l.title }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+              "span",
+              {
+                className: "dsh-wt_chatBtn",
+                role: "button",
+                tabIndex: 0,
+                "data-closed": rowChatClosed(l.id) ? "true" : "false",
+                "data-tip": t(rowChatClosed(l.id) ? "rowChat.show" : "rowChat.hide"),
+                "aria-label": t(rowChatClosed(l.id) ? "rowChat.show" : "rowChat.hide"),
+                onClick: (e) => {
+                  e.stopPropagation();
+                  toggleRowChat(l.id, () => {
+                    openSplit(l);
+                    reportUsed(l.id);
+                  });
+                },
+                children: "\u{1F4AC}"
+              }
+            ),
             /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
               "span",
               {
@@ -21946,12 +22004,12 @@ function apply(ctx) {
   ctx.effect(() => {
     const over = (e) => {
       const t = e.target;
-      const btn = t && t.closest ? t.closest(".dsh-wt_bindBtn") : null;
+      const btn = t && t.closest ? t.closest(".dsh-wt_bindBtn,.dsh-wt_chatBtn") : null;
       if (btn) showBindTip(btn);
     };
     const out = (e) => {
       const t = e.target;
-      if (t && t.closest && t.closest(".dsh-wt_bindBtn")) hideBindTip();
+      if (t && t.closest && t.closest(".dsh-wt_bindBtn,.dsh-wt_chatBtn")) hideBindTip();
     };
     const hide = () => hideBindTip();
     document.addEventListener("mouseover", over, true);
