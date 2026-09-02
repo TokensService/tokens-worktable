@@ -131,27 +131,10 @@
   </div>
   <div id="pageMain">
 
-  <!-- 统计 -->
-  <div class="dshell-grid">
-    <div class="dshell-stat"><div class="dshell-statLabel">总构建次数</div><div class="dshell-statValue" id="sTotal">—</div></div>
-    <div class="dshell-stat"><div class="dshell-statLabel">成功率</div><div class="dshell-statValue" id="sRate">—</div><div class="dshell-statDelta" id="sRateDelta"></div></div>
-    <div class="dshell-stat"><div class="dshell-statLabel">平均耗时</div><div class="dshell-statValue" id="sAvg">—</div></div>
-    <div class="dshell-stat"><div class="dshell-statLabel">最近构建</div><div class="dshell-statValue" id="sLast">—</div></div>
-  </div>
-
-  <!-- 运行队列 -->
-  <div class="dshell-card" id="queueCard">
-    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-      <h2 class="dshell-sub" style="margin:0">运行队列 <span id="queueCount" class="dshell-muted"></span></h2>
-      <span id="queueStatus" class="dshell-badge">空闲</span>
-    </div>
-    <div id="queueList" class="dshell-list"></div>
-  </div>
-
-  <!-- 控制区 -->
+  <!-- 控制区（统计与运行队列信息已并入下方「流水线任务」卡片首行） -->
   <div class="dshell-card pipeline-controls" id="pipelineControls">
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-      <span id="pipelineName" class="dshell-input" style="min-width:130px;display:inline-block;font-weight:600;color:var(--dsw-alias-state-accent-primary);" title="在下方「流水线任务」列表中点击行即可选用"></span>
+      <select id="pipelineSel" class="dshell-input" style="min-width:130px;font-weight:600;" title="下拉选用流水线（也可在下方「流水线任务」列表点击行选用）；运行中不可切换"></select>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境（可多选）
       <span id="envMulti" style="position:relative;display:inline-block;">
@@ -186,12 +169,18 @@
     <span id="runTip" class="dshell-muted" style="font-size:11px;"></span>
   </div>
 
-  <!-- 流水线任务（多条流水线） -->
+  <!-- 流水线任务（多条流水线）：首行内嵌统计（总构建/成功率/平均耗时/最近构建）与运行队列状态 -->
   <div class="dshell-card">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
       <h2 class="dshell-sub" style="margin:0">流水线任务 <span id="plCount" class="dshell-muted"></span></h2>
-      <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
+      <span class="dshell-muted" style="font-size:11px;" title="统计只计真实运行，不含内置演示数据">总构建 <b id="sTotal">—</b> · 成功率 <b id="sRate">—</b> <span id="sRateDelta"></span> · 平均耗时 <b id="sAvg">—</b> · 最近构建 <b id="sLast">—</b></span>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span class="dshell-muted" style="font-size:11px;">运行队列<span id="queueCount"></span></span>
+        <span id="queueStatus" class="dshell-badge">空闲</span>
+        <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
+      </span>
     </div>
+    <div id="queueList" class="dshell-list" style="display:none;margin-bottom:8px;"></div>
     <div style="overflow:auto;">
       <table class="dshell-table" id="plTable">
         <thead><tr><th>流水线</th><th>阶段数</th><th>操作</th></tr></thead>
@@ -2188,6 +2177,8 @@ function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/
 function renderQueue(){
   const list=$('queueList'); if(!list) return; list.innerHTML='';
   $('queueCount').textContent = queue.length? '('+queue.length+' 排队)':'';
+  /* 队列状态已并入「流水线任务」首行徽标；明细列表仅在有运行/排队时展开，空态不再渲染占位文案 */
+  list.style.display = (running||queue.length)?'':'none';
   let status='空闲', cls='';
   if(running && curRun){
     status='运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
@@ -2196,9 +2187,6 @@ function renderQueue(){
     list.appendChild(it);
   } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
-  if(!running && !queue.length){
-    const e=document.createElement('div'); e.className='dshell-muted'; e.style.padding='4px 2px'; e.textContent='暂无运行或排队任务。'; list.appendChild(e);
-  }
   queue.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
     it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(idx+2)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+q.env+' '+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
@@ -2825,7 +2813,7 @@ function enterHistoryReplay(rec){
   /* 编排区：切到该次运行的流水线（按 id/名称匹配；不写 localStorage，避免回放污染偏好），
      阶段状态/耗时按阶段名从历史 logs 回填；流水线已删除时按日志阶段名重建只读编排 */
   const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline) || null;
-  if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineName(); renderPipelines(); }
+  if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineSel(); renderPipelines(); }
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   const byName={}; logs.forEach(l=>{ if(l && l.stage) byName[l.stage]=l; });
   runStages = pl ? pl.stages.map(s=>({...s}))
@@ -3145,14 +3133,16 @@ function renderPipelines(){
   });
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
-  renderPipelineName();
+  renderPipelineSel();
 }
-function renderPipelineName(){
-  const el=$('pipelineName'); if(!el) return;
-  const cur=curPipeline(); el.textContent = cur? cur.name : '—';
+/* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中切换被 selectPipeline 拦截后重绘回弹到当前流水线 */
+function renderPipelineSel(){
+  const sel=$('pipelineSel'); if(!sel) return;
+  const cur=curPipeline(); sel.innerHTML='';
+  pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(cur && p.id===cur.id) o.selected=true; sel.appendChild(o); });
 }
 function selectPipeline(id){
-  if(running && id!==curPipelineId){ alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
+  if(running && id!==curPipelineId){ renderPipelineSel(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
   runStages=null; selectedId=curPipeline().stages[0].id;
@@ -3268,6 +3258,7 @@ $('resetBtn').addEventListener('click', ()=>{
   if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
   refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行/归档根
 });
+$('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
 $('plSave').addEventListener('click', savePlForm);
 $('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
