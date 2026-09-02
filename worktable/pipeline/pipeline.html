@@ -58,6 +58,12 @@
     .dshell-table th[data-sort] .env-sort-arrow { display:inline-block; min-width:12px; margin-left:2px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
     @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 color-mix(in srgb, var(--st-run) 45%, transparent);} 50%{ box-shadow:0 0 0 4px transparent;} }
     .pipeline-node.run { animation:pipPulse 1.4s infinite; }
+    /* 分支 / 部署策略面板加载态：三点弹跳动画（颜色随 dshell-muted 文本，浅/深主题自适应） */
+    @keyframes pipDot { 0%,60%,100%{ transform:translateY(0); opacity:.35; } 30%{ transform:translateY(-3px); opacity:1; } }
+    .pip-dots { display:inline-flex; align-items:center; gap:3px; margin-left:2px; vertical-align:middle; }
+    .pip-dots i { width:4px; height:4px; border-radius:50%; background:currentColor; animation:pipDot 1.2s infinite; }
+    .pip-dots i:nth-child(2) { animation-delay:.15s; }
+    .pip-dots i:nth-child(3) { animation-delay:.3s; }
     .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     @media (max-width:900px){ .pipeline-cols{ grid-template-columns:1fr; } }
     .logbox { background:var(--log-bg); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:10px 12px; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:11px; line-height:1.55; color:var(--log-fg); max-height:480px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
@@ -1089,6 +1095,8 @@ async function loadRepoBranches(repo, force){
   repoBranches[id] = (j && j.ok) ? {branches:(j.branches||[]), tags:(j.tags||[]), error:''} : {branches:[], tags:[], error:(j&&j.error)?String(j.error):'未知错误'};
   return repoBranches[id];
 }
+/* 加载三点：分支 / 部署策略面板「加载中」与头部计数占位共用的弹跳小圆点（样式见 .pip-dots） */
+function loadingDots(){ return '<span class="pip-dots"><i></i><i></i><i></i></span>'; }
 function renderBranchPanel(showAll){
   const panel=$('branchPanel'); const inp=$('branchName'); if(!panel||!inp) return;
   const repo=curRepo(); const q=showAll?'':inp.value.trim().toLowerCase();
@@ -1097,9 +1105,9 @@ function renderBranchPanel(showAll){
   const nb=ready?(cached.branches||[]).length:0;
   const nt=ready?(cached.tags||[]).length:0;
   let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
-    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(isJenkinsFetchMode(repo.fetchMode)?(fetchModeLabel(repo.fetchMode)+(repo.jenkinsJob?(' · '+esc(repo.jenkinsJob)):'')):fetchModeLabel(repo.fetchMode))+(ready?(' · '+nb+' 分支'+(nt?(' · '+nt+' Tag'):'')):' · …')+'</span>'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+(isJenkinsFetchMode(repo.fetchMode)?(fetchModeLabel(repo.fetchMode)+(repo.jenkinsJob?(' · '+esc(repo.jenkinsJob)):'')):fetchModeLabel(repo.fetchMode))+(ready?(' · '+nb+' 分支'+(nt?(' · '+nt+' Tag'):'')):(' · '+loadingDots()))+'</span>'
     +'<span data-branchrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
-  if(!cached || cached.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
+  if(!cached || cached.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中'+loadingDots()+'</div>'; }
   else if(cached.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(cached.error.slice(0,200))+'</div>'; if(repo.fetchMode==='browser'||isJenkinsFetchMode(repo.fetchMode)){ h+='<div style="padding:2px 6px;"><button class="dshell-btn dshell-btnGhost mini" data-branchfallback type="button">切回服务端并重试</button></div>'; } }
   else {
     const br=(cached.branches||[]).filter(b=> !q || b.toLowerCase().indexOf(q)>=0).slice(0,200);
@@ -1177,10 +1185,10 @@ function renderStrategyPanel(showAll){
   const st=tpl?deployStrategies[deployStrategyKey(repo,branch)]:null;
   const ready=st&&!st.loading&&!st.error;
   let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
-    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+esc(branch)+(ready?(' · '+st.items.length+' 策略'):' · …')+'</span>'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+esc(branch)+(ready?(' · '+st.items.length+' 策略'):(' · '+loadingDots()))+'</span>'
     +'<span data-strategyrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
   if(!tpl){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">未配置「部署策略 URL」，请在「设置」页代码仓中配置</div>'; }
-  else if(!st || st.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中…</div>'; }
+  else if(!st || st.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中'+loadingDots()+'</div>'; }
   else if(st.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(st.error.slice(0,200))+'</div>'; }
   else {
     const cur=inp.value.trim();
