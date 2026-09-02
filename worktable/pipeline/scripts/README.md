@@ -66,12 +66,13 @@ XDS 流水线按以下顺序绑定脚本：
 - `run-<tag>.log` — 各阶段完整日志（脚本阶段含真实 stdout/stderr）
 - `run-<tag>.profile.json` — 各阶段耗时/状态等 profiling 数据
 
-「设置 → 归档配置 → 归档脚本」可配置一个在写完上述产物后执行的脚本（默认 `collect_logs.sh`，留空=不执行），用于把节点/系统日志等额外产物收集进同一归档目录。脚本缺失（如 `collect_logs.sh` 尚未创建）会自动跳过，执行失败也不影响运行结果。除常规的 `TARGET_*`/`IMAGE_*`/`PIPELINE_NAME` 外，还会注入：
+「设置 → 归档配置 → 归档脚本」可配置一个在写完上述产物后执行的脚本（默认 `collect_logs.sh`，留空=不执行），用于收集节点/系统日志等额外产物。脚本缺失（如 `collect_logs.sh` 尚未创建）会自动跳过，执行失败也不影响运行结果。落盘约定：host 日志（`<ip>.log` / `controller.log`）是节点环境日志，写到归档路径根目录（跨运行共享，同名覆盖为最新环境快照），不进单次运行的归档文件夹；pod 日志等与本次运行相关的产物仍写进本次运行文件夹。除常规的 `TARGET_*`/`IMAGE_*`/`PIPELINE_NAME` 外，还会注入：
 
-- `ARCHIVE_DIR` / `ARCHIVE_FOLDER` — 归档根目录 / 本次运行的归档文件夹（绝对路径）
+- `ARCHIVE_DIR` — 归档根目录（绝对路径；host 节点环境日志写到此处）
+- `ARCHIVE_FOLDER` — 本次运行的归档文件夹（绝对路径）
 - `ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` — 归档内 `run-<tag>.log` / `run-<tag>.profile.json` 的绝对路径
 - `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` / `ARCHIVE_RESULT` — 流水线名 / 本次运行 tag / 运行结果（`success`/`failed`/`aborted`）
 
-运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、Jenkins 阶段、「先清理环境」的清理脚本），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
+运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、Jenkins 阶段、「先清理环境」的清理脚本；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
 
 运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：新会话工作目录取该次运行的归档目录，提示词只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。

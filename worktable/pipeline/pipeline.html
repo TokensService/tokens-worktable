@@ -395,7 +395,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
           <input id="archiveScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不执行）" style="width:216px;" title="归档写入日志/profiling 后执行该脚本收集日志；默认 scripts/collect_logs.sh，脚本不存在则跳过" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行。运行启动时即按「流水线名称_年月日时分秒」生成归档文件夹（每次运行独立目录），并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本），脚本显式参数优先。</span>
+        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行；其中归档脚本收到的 <code>ARCHIVE_DIR</code>=归档根目录（host 节点环境日志写到根目录，跨运行共享，不占单次运行目录）、<code>ARCHIVE_FOLDER</code>=本次运行归档文件夹。运行启动时即按「流水线名称_年月日时分秒」生成归档文件夹（每次运行独立目录），并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本；任务内 <code>ARCHIVE_DIR</code> 仍=本次运行归档文件夹），脚本显式参数优先。</span>
       </div>
     </div>
     <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
@@ -2316,7 +2316,8 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
     if(env.GIT_PASSWORD===undefined && rc.repoPass) env.GIT_PASSWORD=rc.repoPass;
     /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名称_年月日时分秒」文件夹注入各阶段，
        供脚本把本阶段产物直接写入归档目录；脚本显式参数优先。留空（未配置归档）则不注入。
-       取值与末尾 archiveRun 注入归档脚本的 ARCHIVE_DIR/ARCHIVE_FOLDER 一致（均=本次运行归档文件夹）。 */
+       此处 ARCHIVE_DIR/ARCHIVE_FOLDER 均=本次运行归档文件夹；注意末尾 archiveRun 注入归档脚本的
+       ARCHIVE_DIR 为归档根目录（host 节点环境日志写到根目录，见 scripts/collect_logs.sh），两处语义不同。 */
     if(rc.archive){
       if(env.ARCHIVE_DIR===undefined) env.ARCHIVE_DIR=rc.archive;
       if(env.ARCHIVE_FOLDER===undefined) env.ARCHIVE_FOLDER=rc.archive;
@@ -2735,8 +2736,9 @@ function archiveRun(result){
     await ensureArchiveFolder(folder);
     await apiWrite(folder+'/run-'+ctx.tag+'.log', logLines.join('\n'));
     await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
-    // 归档脚本：写完日志/profiling 后执行（可选），收集额外日志到归档目录；
-    //   注入 ARCHIVE_DIR/ARCHIVE_FOLDER/ARCHIVE_LOG_FILE/ARCHIVE_PROFILE_FILE 等，失败不影响运行结果。
+    // 归档脚本：写完日志/profiling 后执行（可选），收集额外日志；
+    //   注入 ARCHIVE_DIR=归档根目录（host 节点环境日志写到根目录，跨运行共享，不进单次运行文件夹）/
+    //   ARCHIVE_FOLDER=本次运行归档文件夹/ARCHIVE_LOG_FILE/ARCHIVE_PROFILE_FILE 等，失败不影响运行结果。
     //   经 runCtx=ctx 传入已结束运行的快照，避免运行队列切换后读到新运行的 TARGET_*/IMAGE_*。
     //   脚本不存在（如默认 collect_logs.sh 尚未创建）时 scriptByName 返回 null，自动跳过。
     const scName=(archiveScriptName||'').trim();
@@ -2744,8 +2746,9 @@ function archiveRun(result){
       const asc=scriptByName(scName);
       if(asc){
         try{
+          const aroot=folder.slice(0, folder.lastIndexOf('/'))||'/';   // 归档根目录：由本次运行文件夹快照回推，运行中 archiveDir 改动不致漂移
           const ar=await execScript({name:asc.name,path:asc.path,params:[],values:{}},120000,{
-            ARCHIVE_DIR:folder, ARCHIVE_FOLDER:folder,
+            ARCHIVE_DIR:aroot, ARCHIVE_FOLDER:folder,
             ARCHIVE_LOG_FILE:folder+'/run-'+ctx.tag+'.log',
             ARCHIVE_PROFILE_FILE:folder+'/run-'+ctx.tag+'.profile.json',
             ARCHIVE_PIPELINE:ctx.pipelineName||curPipeline().name,
