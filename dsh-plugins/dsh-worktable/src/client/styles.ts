@@ -188,6 +188,13 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles::before{animation:dsh-wt-busyA 1s ease-in-out infinite}',
   '.dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles::after{animation:dsh-wt-busyB 1s ease-in-out infinite}',
   '.dsh-wt_bindBtn[data-bound=done] .dsh-wt_bindCircles,.dsh-wt_bindBtn[data-bound=need] .dsh-wt_bindCircles,.dsh-wt_bindBtn[data-bound=busy] .dsh-wt_bindCircles{filter:drop-shadow(0 0 3px currentColor)}',
+  // 项目卡片上的 💬 聊天按钮（打开/关闭该项目会话窗口）：绑定按钮左侧同款 22×22 按钮底，
+  // 常态次级灰；会话窗已关闭（data-closed=true）降透明度 + 去色，与分栏标题栏 💬 关态一致；
+  // 气泡复用 .dsh-wt_bindTip（data-tip 事件委托）
+  '.dsh-wt_chatBtn{position:absolute;right:50px;top:50%;transform:translateY(-50%);width:22px;height:22px;margin:0;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;line-height:1;cursor:pointer;user-select:none}',
+  '.dsh-wt_chatBtn:hover{background:var(--dsw-alias-fill-l2,rgba(255,255,255,.09));color:var(--dsw-alias-label-primary,#e6e8eb)}',
+  '.dsh-wt_chatBtn[data-closed=true]{opacity:.45;filter:grayscale(1)}',
+  '.dsh-wt_chatBtn[data-closed=true]:hover{opacity:.9}',
   // 气泡为 body 级独立元素（.dsh-wt_bindTip），此处只保留按钮本体样式
   '.dsh-wt_bindTip{position:fixed;transform:translateY(-50%);padding:5px 9px;border:1px solid var(--dsw-alias-border-l2,#3a4150);border-radius:6px;background:var(--dsw-alias-fill-l2,#171b22);color:var(--dsw-alias-label-primary,#e6e8eb);font-size:11px;line-height:15px;white-space:nowrap;pointer-events:none;z-index:1200;box-shadow:0 4px 12px rgba(0,0,0,.35);display:none}',
   '.dsh-wt_bindCircles{position:absolute;left:50%;top:50%;width:17px;height:7px;transform:translate(-50%,-50%)}',

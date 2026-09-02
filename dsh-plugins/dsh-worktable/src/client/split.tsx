@@ -311,6 +311,11 @@ function persistSaved(layoutId: string, s: { chatW: number; topH: number; leftW:
   } catch {}
 }
 
+/** 读取某布局持久化的会话窗关/开状态（项目行 💬 按钮据此显示未打开项目的按钮态；无存档 = 打开） */
+export function peekChatClosed(layoutId: string): boolean {
+  return loadSaved(layoutId)?.chatClosed === true
+}
+
 /** 共享互斥协议：其他接入本协议的分栏引擎声明占用时，本引擎让位（同一时刻仅一个分栏工作区） */
 window.addEventListener('dsh:split-claim', ((e: any) => {
   const id = e?.detail?.id

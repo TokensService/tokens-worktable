@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { css } from './styles'
 import { NS, zh, en, type WorktableKey } from './locales'
 import { isAbs, joinPath, parentPathOf, basenameOf } from './pathutil'
-import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, type LayoutSpec, type SplitPane, type ConsoleCardData } from './split'
+import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, peekChatClosed, type LayoutSpec, type SplitPane, type ConsoleCardData } from './split'
 
 /**
  * dsh-worktable 客户端（v2）：侧边栏底部「工作台」区块。
@@ -1370,6 +1370,10 @@ function WorktableSection(props: any) {
   const [activeSplitId, setActiveSplitId] = useState<string | null>(() =>
     splitStore.active && splitStore.spec ? splitStore.spec.id : null,
   )
+  // 当前打开项目的会话窗关/开状态（项目行 💬 按钮的按钮态；未打开项目读持久化存档）
+  const [activeChatClosed, setActiveChatClosed] = useState<boolean>(() =>
+    splitStore.active ? splitStore.chatClosed === true : false,
+  )
   /** 供分栏引擎读取的最新项目快照（setSplitEnv 闭包取最新值用） */
   const projectsRef = useRef<{ projects: ProjectsState; metas: Record<string, ProjectMeta>; aliveRegisteredIds: string[] }>(
     { projects, metas, aliveRegisteredIds: registeredIds },
@@ -1633,6 +1637,7 @@ function WorktableSection(props: any) {
   // 分栏引擎激活态 → activeSplitId（卡片据此显示选中效果）；关闭项目 → 回切打开前的会话
   useEffect(() => splitStore.subscribe(() => {
     setActiveSplitId(splitStore.active && splitStore.spec ? splitStore.spec.id : null)
+    setActiveChatClosed(splitStore.active ? splitStore.chatClosed === true : false)
     if (!splitStore.active) {
       if (!suppressRestoreRef.current) {
         const prev = projectAttachRef.sessionId
@@ -1870,6 +1875,14 @@ function buildCustomLayoutPrompt(req: string): string {
       try { sweepPreviews() } catch {}
     }
   }, [projects.views, t])
+
+  /** 项目行 💬 按钮的按钮态：当前打开项目读引擎实时状态，未打开项目读持久化存档（无 = 打开） */
+  const rowChatClosed = (id: string) => (activeSplitId === id ? activeChatClosed : peekChatClosed(id))
+  /** 项目行 💬 聊天按钮：打开/关闭该项目的会话窗口；项目未打开时先打开再切换（开/关状态随布局条目持久化） */
+  const toggleRowChat = (id: string, open: () => void) => {
+    if (!(splitStore.active && splitStore.spec?.id === id)) open()
+    if (splitStore.active && splitStore.spec?.id === id) splitStore.setChatClosed(!splitStore.chatClosed)
+  }
 
   /** 控制室卡片点击：已绑定 → 打开控制室；未绑定 → 强制绑定弹窗 */
   const clickConsoleCard = (anchor: HTMLElement) => {
@@ -3451,6 +3464,15 @@ function buildCustomLayoutPrompt(req: string): string {
             <span className="dsh-wt_layoutName">{t('console.name')}</span>
           </span>
           <span
+            className="dsh-wt_chatBtn"
+            role="button"
+            tabIndex={0}
+            data-closed={rowChatClosed(CONSOLE_ID) ? 'true' : 'false'}
+            data-tip={t(rowChatClosed(CONSOLE_ID) ? 'rowChat.show' : 'rowChat.hide')}
+            aria-label={t(rowChatClosed(CONSOLE_ID) ? 'rowChat.show' : 'rowChat.hide')}
+            onClick={(e) => { e.stopPropagation(); toggleRowChat(CONSOLE_ID, () => openConsole()) }}
+          >💬</span>
+          <span
             className={'dsh-wt_bindBtn'}
             role="button"
             tabIndex={0}
@@ -3487,6 +3509,15 @@ function buildCustomLayoutPrompt(req: string): string {
             <span className="dsh-wt_layoutText">
               <span className="dsh-wt_layoutName">{projects.nameOverrides[l.id] ?? l.title}</span>
             </span>
+            <span
+              className="dsh-wt_chatBtn"
+              role="button"
+              tabIndex={0}
+              data-closed={rowChatClosed(l.id) ? 'true' : 'false'}
+              data-tip={t(rowChatClosed(l.id) ? 'rowChat.show' : 'rowChat.hide')}
+              aria-label={t(rowChatClosed(l.id) ? 'rowChat.show' : 'rowChat.hide')}
+              onClick={(e) => { e.stopPropagation(); toggleRowChat(l.id, () => { openSplit(l); reportUsed(l.id) }) }}
+            >💬</span>
             <span
               className={'dsh-wt_bindBtn'}
               role="button"
@@ -3555,16 +3586,16 @@ export function apply(ctx: any) {
     return () => { style.remove() }
   }, 'dsh-worktable: styles')
 
-  // 绑定按钮 hover 气泡：事件委托 + body 级气泡（跨层显示，不遮挡右侧对话也不盖项目名）
+  // 绑定/聊天按钮 hover 气泡：事件委托 + body 级气泡（跨层显示，不遮挡右侧对话也不盖项目名）
   ctx.effect(() => {
     const over = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null
-      const btn = t && t.closest ? (t.closest('.dsh-wt_bindBtn') as HTMLElement | null) : null
+      const btn = t && t.closest ? (t.closest('.dsh-wt_bindBtn,.dsh-wt_chatBtn') as HTMLElement | null) : null
       if (btn) showBindTip(btn)
     }
     const out = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null
-      if (t && t.closest && t.closest('.dsh-wt_bindBtn')) hideBindTip()
+      if (t && t.closest && t.closest('.dsh-wt_bindBtn,.dsh-wt_chatBtn')) hideBindTip()
     }
     const hide = () => hideBindTip()
     document.addEventListener('mouseover', over, true)
