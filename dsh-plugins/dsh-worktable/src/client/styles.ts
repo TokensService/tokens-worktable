@@ -61,7 +61,7 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_pageEditHint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5);padding:0 2px 5px}',
   '.dsh-wt_pageEditPrompt{width:100%;box-sizing:border-box;resize:vertical;min-height:72px;font-family:inherit;font-size:11px;line-height:1.5;padding:6px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#262b36);background:var(--dsw-alias-bg-base,#0b0e14);color:var(--dsw-alias-label-primary,#dbe4f3);outline:none}',
   '.dsh-wt_pageEditPrompt:focus{border-color:var(--dsw-alias-state-accent-primary,#4f8ef7)}',
-  '.dsh-wt_pageEditOps{display:flex;justify-content:flex-end;padding:4px 0 2px}',
+  '.dsh-wt_pageEditOps{display:flex;justify-content:flex-end;gap:6px;padding:4px 0 2px}',
   // 排序方式：一左一右两个选择按钮（手动 / 最近）
   '.dsh-wt_sortRow{display:flex;gap:6px;padding:0 8px 2px}',
   '.dsh-wt_sortBtn{flex:1;display:flex;align-items:center;justify-content:center;padding:4px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02));color:var(--dsw-alias-label-secondary,#9aa4b2);font:inherit;font-size:11px;line-height:16px;cursor:pointer}',
@@ -350,6 +350,11 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_paneWipText{font-size:11px}',
   '.dsh-wt_splitFlip{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:13px;cursor:pointer}',
   '.dsh-wt_splitFlip:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}',
+  // 会话窗开关（关闭会话窗口 / 重新打开；关闭态置灰提示）
+  '.dsh-wt_splitChatToggle{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;cursor:pointer}',
+  '.dsh-wt_splitChatToggle:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}',
+  '.dsh-wt_splitChatToggleOff{opacity:.45;filter:grayscale(1)}',
+  '.dsh-wt_splitChatToggleOff:hover{opacity:.9}',
   // + 右侧弹出面板
   '.dsh-wt_popBackdrop{position:fixed;left:0;top:0;right:0;bottom:0;z-index:79;background:transparent}',
   // 删除二次确认（fixed 居中模态，压在弹窗之上）

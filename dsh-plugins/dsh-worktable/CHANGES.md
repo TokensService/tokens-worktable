@@ -1,5 +1,22 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 修复 `/api/worktable/proxy` 代联在 Node 24 + `NODE_USE_ENV_PROXY=1` 环境下超时（`src/index.ts`）：
+  Node 24 起 `NODE_USE_ENV_PROXY=1` 时 `node:http`/`node:https` 同样会走系统代理（原注释
+  「node:http 直连彻底忽略系统代理」在旧 Node 成立、Node 24 失效），dsh web 进程带
+  `http_proxy=127.0.0.1:8118` 时，代联部分内网目标（如 192.168.10.6:25889）经代理不通，
+  挂起至路由自带 20s 超时返回 `{"error":"Error: timeout"}`。
+  修复：代联请求显式传入独立 `Agent`（`agent: new reqLib.Agent()`），实测可彻底绕过环境代理直连。
+  同时新增调用方可选 `useProxy:true`：不注入 Agent、按进程环境走系统代理
+  （需 NODE_USE_ENV_PROXY=1 才生效）——供页面「走系统代理」开关选择，默认仍直连。
+  `lib/index.js`（+`.map`）已重建，`./dsh.sh restart` 后生效。
+
+- 分栏标题栏新增「会话窗口」开关按钮 💬（`src/client/split.tsx` + `locales.ts` + `styles.ts`）：
+  点击关闭右侧（或左侧）会话窗口——会话视图区整体 `display:none`（含输入框），内容窗
+  （含顶部通栏行）占满整宽，聊天分隔线与 ⇄ 换位按钮随关隐藏；再次点击恢复。
+  状态经 `chatClosed` 字段随布局条目持久化（`dsh.worktable.split.v2`，旧存档无该字段默认
+  打开，向后兼容），重开布局时恢复上次的开/关状态；`close()` / `syncAnchor()` 重锚定时
+  恢复旧视图区 `display`，避免关窗状态泄漏到新会话根。
+  `lib/client.js`（+`.map`）已随本改动重建。
 - pipeline.html「📂 打开归档目录」新建会话改为「关项目、只留会话聊天 + 文件夹浏览」的独立窗口
   （`src/client/index.tsx` + `worktable/pipeline/pipeline.html`）：
   window 桥新增 `__dshNewChatSessionAtFolder(text, cwd, folder)`（`newChatSessionWithFolder`）——
@@ -92,8 +109,9 @@
   为工作台项目页（如「流水线」Jenkins 集成）提供经插件服务器的 HTTP 转发，
   浏览器只与本工作台同源交互，绕开浏览器 CORS 与 SSH 隧道可达性问题。
   安全约束：仅允许回环 / 内网（RFC1918 / 链路本地）目标，拒绝公网地址。
-- 代联请求用 `node:http`/`node:https` 直连（不用内置 fetch），
-  彻底忽略系统代理（NODE_USE_ENV_PROXY 下 undici 的 NO_PROXY 偶发失效），
+- 代联请求用 `node:http`/`node:https` + 显式独立 `Agent` 直连（不用内置 fetch），
+  彻底忽略系统代理（NODE_USE_ENV_PROXY 下 undici 的 NO_PROXY 偶发失效；
+  且 Node 24 起 NODE_USE_ENV_PROXY=1 时 node:http 也会走环境代理，仅靠「不用 fetch」不够），
   保证「本地访问不走代理」。
 - `lib/client.js` 已随上述修复重建（`npm run build`）。
 - 重建：`npm run build`（需 devDependencies：esbuild、xterm、markdown-it、highlight.js；esbuild 可复用仓库 pnpm store 的并设 ESBUILD_BINARY_PATH）。
@@ -189,3 +207,10 @@
   pipeline.html 侧移除页头「页面修改」按钮、设置页「页面修改配置」卡片及其配置存取
   （`pageEditPrompt` 不再进服务端配置 / 离线缓存；旧 `pip-pageEditPrompt` localStorage 键废弃不再读取）。
   `lib/client.js`（+`.map`）已随上述新增重建并同步进 web profile 安装副本，`./dsh.sh restart` 后生效。
+- 设置弹窗新增「开发 dsh-worktable」区（`src/client/index.tsx` + `src/index.ts` + `locales.ts` + `styles.ts`）：
+  「页面修改」区下方新增提示词模板编辑区（`{dsh_worktable}` 替换为插件项目目录，存 localStorage
+  `dsh.worktable.devPrompt.v1`，清空保存即恢复默认模板）与 🛠「新建开发会话」按钮；
+  点击经 `newChatInProject` 新建 AI 会话（cwd = 插件项目目录），开发提示词只填输入框、不自动发送。
+  插件项目目录由服务端健康路由 `/api/worktable/health` 新增 `dir` 字段上报
+  （`import.meta.url` 的 realpath 上一级；link: 安装时即源码目录），客户端 `fetchPluginDir` 取一次后缓存。
+  `lib/index.js` / `lib/client.js`（+`.map`）已随上述新增重建，`./dsh.sh restart` 后生效。

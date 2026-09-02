@@ -19,7 +19,7 @@ hljs.registerLanguage('json', hljsJson)
  * 布局模型：标题栏 + 顶部通栏行(可选) + 主行内容窗 + 聊天窗（官方会话视图区整体，
  * 贴右或贴左，由 chatSide 决定；marginLeft/marginRight + marginTop 组合挤法）。
  * 内容三态：null（未指派 → 6 选 1 选择器）/ iframe / builtin（浏览器/资源管理器/SCM/任务/终端）。
- * 窗位调整：标题栏拖拽换位（同行或跨行）；工具栏 ⇄ 切换聊天窗左右。
+ * 窗位调整：标题栏拖拽换位（同行或跨行）；工具栏 ⇄ 切换聊天窗左右、💬 关闭/打开会话窗。
  * 会话切换重新锚定不关闭；宽度按 layoutId 持久化 dsh.worktable.split.v2；
  * 内容与 chatSide 的变更经 onSpecMutated 回调交给工作台持久化（布局条目）。
  */
@@ -78,6 +78,8 @@ type SplitState = {
   spec: LayoutSpec | null
   geom: Geom | null
   chatW: number
+  /** 会话窗口（聊天列）是否被关闭：关闭后内容窗占满整宽，会话视图区 display:none，可再打开 */
+  chatClosed: boolean
   topH: number
   leftW: number
   paneWs: number[]
@@ -103,6 +105,7 @@ type SplitState = {
   refreshGeom(): void
   applyMargin(): void
   setChatW(w: number): void
+  setChatClosed(closed: boolean): void
   setTopH(h: number): void
   setLeftW(w: number): void
   setPaneW(i: number, w: number): void
@@ -279,7 +282,7 @@ function findConversationRoot(): HTMLElement | null {
     ?? null
 }
 
-function loadSaved(layoutId: string): { chatW: number; topH: number; leftW: number; paneWs: number[]; topWs: number[]; leftWs: number[] } | null {
+function loadSaved(layoutId: string): { chatW: number; topH: number; leftW: number; paneWs: number[]; topWs: number[]; leftWs: number[]; chatClosed: boolean } | null {
   try {
     const raw = localStorage.getItem(PERSIST_KEY)
     if (!raw) return null
@@ -292,13 +295,14 @@ function loadSaved(layoutId: string): { chatW: number; topH: number; leftW: numb
       paneWs: Array.isArray(s.paneWs) ? s.paneWs : [],
       topWs: Array.isArray(s.topWs) ? s.topWs : [],
       leftWs: Array.isArray(s.leftWs) ? s.leftWs : [],
+      chatClosed: s.chatClosed === true,
     }
   } catch {
     return null
   }
 }
 
-function persistSaved(layoutId: string, s: { chatW: number; topH: number; leftW: number; paneWs: number[]; topWs: number[]; leftWs: number[] }) {
+function persistSaved(layoutId: string, s: { chatW: number; topH: number; leftW: number; paneWs: number[]; topWs: number[]; leftWs: number[]; chatClosed: boolean }) {
   try {
     const raw = localStorage.getItem(PERSIST_KEY)
     const all = raw ? JSON.parse(raw) : {}
@@ -318,6 +322,7 @@ export const splitStore: SplitState = {
   spec: null,
   geom: null,
   chatW: 320,
+  chatClosed: false,
   topH: 200,
   leftW: 260,
   paneWs: [],
@@ -384,6 +389,7 @@ export const splitStore: SplitState = {
     const hasTopWs = !!saved && saved.topWs.length === top.length
     const hasLeftWs = !!saved && saved.leftWs.length === (left ? 1 : 0)
     this.chatW = hasChatW ? saved!.chatW : spec.chatWidth.default
+    this.chatClosed = saved?.chatClosed === true
     this.topH = hasTopH ? saved!.topH : (spec.topHeight?.default ?? 200)
     this.leftW = hasLeftW ? saved!.leftW : (spec.leftWidth?.default ?? 260)
     this.paneWs = hasPaneWs ? [...saved!.paneWs] : main.map((p) => p.min)
@@ -494,6 +500,7 @@ export const splitStore: SplitState = {
       this.viewArea.style.marginLeft = this.savedMarginLeft
       this.viewArea.style.marginRight = this.savedMarginRight
       this.viewArea.style.marginTop = this.savedMarginTop
+      this.viewArea.style.display = ''
     }
     this.root = next
     this.header = header
@@ -526,6 +533,18 @@ export const splitStore: SplitState = {
     const g = this.geom
     const spec = this.spec
     if (!viewArea || !g || !spec) return
+    if (this.chatClosed) {
+      // 关闭会话窗：隐藏整个会话视图区（含输入框），内容窗占满整宽；margin 归零保持一致性
+      this.lastMarginLeft = ''
+      this.lastMarginRight = ''
+      this.lastMarginTop = ''
+      viewArea.style.marginLeft = ''
+      viewArea.style.marginRight = ''
+      viewArea.style.marginTop = ''
+      viewArea.style.display = 'none'
+      return
+    }
+    viewArea.style.display = ''
     const colW = g.right - g.left
     const rowH = g.bottom - g.top
     const hasLeft = !!spec.left
@@ -558,6 +577,15 @@ export const splitStore: SplitState = {
     const minContent = main.reduce((a, p) => a + p.min, 0) + Math.max(0, main.length - 1) * DIVIDER
     const hi = Math.max(spec.chatWidth.min, colW - minContent)
     this.chatW = clamp(Math.round(w), spec.chatWidth.min, hi)
+    this.applyMargin()
+    this.persist()
+    this.notify()
+  },
+
+  /** 关闭/打开会话窗口（聊天列）：状态随布局条目持久化，重开布局时恢复 */
+  setChatClosed(closed) {
+    if (!this.spec || this.chatClosed === closed) return
+    this.chatClosed = closed
     this.applyMargin()
     this.persist()
     this.notify()
@@ -834,7 +862,7 @@ export const splitStore: SplitState = {
 
   persist() {
     if (!this.spec) return
-    persistSaved(this.spec.id, { chatW: this.chatW, topH: this.topH, leftW: this.leftW, paneWs: this.paneWs, topWs: this.topWs, leftWs: this.leftWs })
+    persistSaved(this.spec.id, { chatW: this.chatW, topH: this.topH, leftW: this.leftW, paneWs: this.paneWs, topWs: this.topWs, leftWs: this.leftWs, chatClosed: this.chatClosed })
   },
 
   close() {
@@ -842,6 +870,7 @@ export const splitStore: SplitState = {
       this.viewArea.style.marginLeft = this.savedMarginLeft
       this.viewArea.style.marginRight = this.savedMarginRight
       this.viewArea.style.marginTop = this.savedMarginTop
+      this.viewArea.style.display = ''
     }
     this.observer?.disconnect()
     this.observer = null
@@ -1863,20 +1892,22 @@ function PanePicker(props: { row: PaneRow; index: number }) {
   )
 }
 
-type PoolItem = { spec: LayoutSpec; chatW: number; topH: number; leftW: number; paneWs: number[]; topWs: number[] }
+type PoolItem = { spec: LayoutSpec; chatW: number; chatClosed: boolean; topH: number; leftW: number; paneWs: number[]; topWs: number[] }
 
 /** 单个工作区渲染层（geom 为 null 时用 0 几何渲染，外层 display:none 保活，保留网页/MD 滚动/激活标签等状态） */
-function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: number; topH: number; leftW: number; paneWs: number[]; topWs: number[] }) {
+function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: number; chatClosed: boolean; topH: number; leftW: number; paneWs: number[]; topWs: number[] }) {
   const g = props.geom ?? { left: 0, top: 0, right: 0, bottom: 0 }
   const spec = props.spec
   const top = spec.top ?? []
   const main = spec.main ?? []
   const hasLeft = !!spec.left
   const hasTop = top.length > 0
+  const chatClosed = props.chatClosed
   const chatLeft = !hasLeft && spec.chatSide === 'left'
   const colW = g.right - g.left
   const rowH = g.bottom - g.top
-  const chatW = clamp(props.chatW, spec.chatWidth.min, Math.max(spec.chatWidth.min, colW - 60))
+  // 会话窗关闭时聊天列宽按 0 计，内容窗（含顶行）占满整宽
+  const chatW = chatClosed ? 0 : clamp(props.chatW, spec.chatWidth.min, Math.max(spec.chatWidth.min, colW - 60))
   const topH = hasTop
     ? clamp(props.topH, spec.topHeight?.min ?? 80, Math.max(spec.topHeight?.min ?? 80, rowH - BAR_H - 80))
     : 0
@@ -1948,7 +1979,7 @@ function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: num
       {/* 标题栏 */}
       <div className="dsh-wt_splitBar" style={{ position: 'fixed', left: g.left, top: barTop, width: hasLeft || chatFull ? contentW : (hasTop ? colW : contentW), zIndex: 70 }}>
         {spec.id !== 'wt-console' && <span className="dsh-wt_splitTitle">{spec.title}</span>}
-        {!hasLeft && (
+        {!hasLeft && !chatClosed && (
           <button
             type="button"
             className="dsh-wt_splitFlip"
@@ -1956,6 +1987,13 @@ function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: num
             onClick={() => splitStore.setChatSide(chatLeft ? 'right' : 'left')}
           >⇄</button>
         )}
+        <button
+          type="button"
+          className={'dsh-wt_splitChatToggle' + (chatClosed ? ' dsh-wt_splitChatToggleOff' : '')}
+          title={T(chatClosed ? 'split.showChat' : 'split.hideChat')}
+          aria-label={T(chatClosed ? 'split.showChat' : 'split.hideChat')}
+          onClick={() => splitStore.setChatClosed(!chatClosed)}
+        >💬</button>
         <button type="button" className="dsh-wt_splitClose" aria-label="退出分栏（Esc）" onClick={() => splitStore.close()}>✕</button>
       </div>
       {/* 左列整高内容窗 */}
@@ -1996,21 +2034,23 @@ function WorkspaceLayer(props: { spec: LayoutSpec; geom: Geom | null; chatW: num
           onPointerDown={makeDividerHandler('pane', i)}
         />
       ))}
-      {/* 聊天分隔线（左列布局 = 左/右列边界；其余 = 内容与聊天之间） */}
-      <div
-        className="dsh-wt_splitDivider"
-        role="separator"
-        title={hasLeft ? '拖动调整左右列宽' : '拖动调整聊天宽度'}
-        style={{
-          position: 'fixed',
-          left: (hasLeft ? g.left + leftW : (chatLeft ? g.left + chatW : g.right - chatW)) - DIVIDER / 2,
-          top: hasLeft || chatFull ? barTop + BAR_H : bodyTop,
-          width: DIVIDER,
-          height: hasLeft || chatFull ? g.bottom - barTop - BAR_H : mainH,
-          zIndex: 72,
-        }}
-        onPointerDown={makeDividerHandler(hasLeft ? 'left' : 'chat')}
-      />
+      {/* 聊天分隔线（左列布局 = 左/右列边界；其余 = 内容与聊天之间）；会话窗关闭且非左列布局时不渲染 */}
+      {(!chatClosed || hasLeft) && (
+        <div
+          className="dsh-wt_splitDivider"
+          role="separator"
+          title={hasLeft ? '拖动调整左右列宽' : '拖动调整聊天宽度'}
+          style={{
+            position: 'fixed',
+            left: (hasLeft ? g.left + leftW : (chatLeft ? g.left + chatW : g.right - chatW)) - DIVIDER / 2,
+            top: hasLeft || chatFull ? barTop + BAR_H : bodyTop,
+            width: DIVIDER,
+            height: hasLeft || chatFull ? g.bottom - barTop - BAR_H : mainH,
+            zIndex: 72,
+          }}
+          onPointerDown={makeDividerHandler(hasLeft ? 'left' : 'chat')}
+        />
+      )}
     </>
   )
 }
@@ -2024,6 +2064,7 @@ function SplitWorkspace() {
     spec: splitStore.spec,
     geom: splitStore.geom,
     chatW: splitStore.chatW,
+    chatClosed: splitStore.chatClosed,
     topH: splitStore.topH,
     leftW: splitStore.leftW,
     paneWs: [...splitStore.paneWs],
@@ -2038,6 +2079,7 @@ function SplitWorkspace() {
       poolRef.current.set(spec.id, {
         spec,
         chatW: splitStore.chatW,
+        chatClosed: splitStore.chatClosed,
         topH: splitStore.topH,
         leftW: splitStore.leftW,
         paneWs: [...splitStore.paneWs],
@@ -2054,6 +2096,7 @@ function SplitWorkspace() {
       spec: splitStore.spec,
       geom: splitStore.geom,
       chatW: splitStore.chatW,
+      chatClosed: splitStore.chatClosed,
       topH: splitStore.topH,
       leftW: splitStore.leftW,
       paneWs: [...splitStore.paneWs],
@@ -2092,6 +2135,7 @@ function SplitWorkspace() {
               spec={item.spec}
               geom={isActive ? snap.geom : null}
               chatW={isActive ? snap.chatW : item.chatW}
+              chatClosed={isActive ? snap.chatClosed : item.chatClosed}
               topH={isActive ? snap.topH : item.topH}
               leftW={isActive ? snap.leftW : item.leftW}
               paneWs={isActive ? snap.paneWs : item.paneWs}

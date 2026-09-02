@@ -7815,7 +7815,7 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_pageEditHint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5);padding:0 2px 5px}",
   ".dsh-wt_pageEditPrompt{width:100%;box-sizing:border-box;resize:vertical;min-height:72px;font-family:inherit;font-size:11px;line-height:1.5;padding:6px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#262b36);background:var(--dsw-alias-bg-base,#0b0e14);color:var(--dsw-alias-label-primary,#dbe4f3);outline:none}",
   ".dsh-wt_pageEditPrompt:focus{border-color:var(--dsw-alias-state-accent-primary,#4f8ef7)}",
-  ".dsh-wt_pageEditOps{display:flex;justify-content:flex-end;padding:4px 0 2px}",
+  ".dsh-wt_pageEditOps{display:flex;justify-content:flex-end;gap:6px;padding:4px 0 2px}",
   // 排序方式：一左一右两个选择按钮（手动 / 最近）
   ".dsh-wt_sortRow{display:flex;gap:6px;padding:0 8px 2px}",
   ".dsh-wt_sortBtn{flex:1;display:flex;align-items:center;justify-content:center;padding:4px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:6px;background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02));color:var(--dsw-alias-label-secondary,#9aa4b2);font:inherit;font-size:11px;line-height:16px;cursor:pointer}",
@@ -8102,6 +8102,11 @@ var css = xterm_default + "\n" + [
   ".dsh-wt_paneWipText{font-size:11px}",
   ".dsh-wt_splitFlip{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:13px;cursor:pointer}",
   ".dsh-wt_splitFlip:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}",
+  // 会话窗开关（关闭会话窗口 / 重新打开；关闭态置灰提示）
+  ".dsh-wt_splitChatToggle{flex:none;display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#9aa4b2);font-size:12px;cursor:pointer}",
+  ".dsh-wt_splitChatToggle:hover{color:var(--dsw-alias-label-primary,#e6e8eb);background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06))}",
+  ".dsh-wt_splitChatToggleOff{opacity:.45;filter:grayscale(1)}",
+  ".dsh-wt_splitChatToggleOff:hover{opacity:.9}",
   // + 右侧弹出面板
   ".dsh-wt_popBackdrop{position:fixed;left:0;top:0;right:0;bottom:0;z-index:79;background:transparent}",
   // 删除二次确认（fixed 居中模态，压在弹窗之上）
@@ -8306,6 +8311,10 @@ var zh = {
   "pageEdit.desc": "\u300C\u7BA1\u7406\u9879\u76EE\u300D\u5217\u8868\u91CC \u270F\uFE0F \u6309\u94AE\u586B\u5165\u65B0\u4F1A\u8BDD\u8F93\u5165\u6846\u7684\u63D0\u793A\u8BCD\u6A21\u677F\uFF1A{page} \u66FF\u6362\u4E3A\u8BE5\u9879\u76EE\u9875\u9762\u6587\u4EF6\u8DEF\u5F84\uFF0C{name} \u66FF\u6362\u4E3A\u9879\u76EE\u540D\u3002\u6E05\u7A7A\u4FDD\u5B58\u5373\u6062\u590D\u9ED8\u8BA4\u3002",
   "pageEdit.hint": "\u9875\u9762\u4FEE\u6539\uFF1A\u65B0\u5EFA AI \u4F1A\u8BDD\u5E76\u628A\u4FEE\u6539\u63D0\u793A\u8BCD\u586B\u5165\u8F93\u5165\u6846\uFF08\u4E0D\u81EA\u52A8\u53D1\u9001\uFF0C\u786E\u8BA4\u540E\u624B\u52A8\u63D0\u4EA4\uFF09",
   "pageEdit.reset": "\u6062\u590D\u9ED8\u8BA4",
+  "dev.title": "\u5F00\u53D1 dsh-worktable",
+  "dev.desc": "\u300C\u65B0\u5EFA\u5F00\u53D1\u4F1A\u8BDD\u300D\u6309\u94AE\u586B\u5165\u65B0\u4F1A\u8BDD\u8F93\u5165\u6846\u7684\u63D0\u793A\u8BCD\u6A21\u677F\uFF1A{dsh_worktable} \u66FF\u6362\u4E3A\u63D2\u4EF6\u9879\u76EE\u76EE\u5F55\uFF08\u670D\u52A1\u7AEF\u4E0A\u62A5\uFF09\uFF0C\u65B0\u4F1A\u8BDD\u5DE5\u4F5C\u76EE\u5F55\u540C\u3002\u6E05\u7A7A\u4FDD\u5B58\u5373\u6062\u590D\u9ED8\u8BA4\u3002",
+  "dev.hint": "\u5F00\u53D1 dsh-worktable\uFF1A\u65B0\u5EFA AI \u4F1A\u8BDD\uFF08\u5DE5\u4F5C\u76EE\u5F55 = \u63D2\u4EF6\u9879\u76EE\u76EE\u5F55\uFF09\u5E76\u628A\u5F00\u53D1\u63D0\u793A\u8BCD\u586B\u5165\u8F93\u5165\u6846\uFF08\u4E0D\u81EA\u52A8\u53D1\u9001\uFF0C\u786E\u8BA4\u540E\u624B\u52A8\u63D0\u4EA4\uFF09",
+  "dev.start": "\u65B0\u5EFA\u5F00\u53D1\u4F1A\u8BDD",
   "manage.publish": "\u53D1\u5E03\uFF1A\u5B58\u670D\u52A1\u7AEF\uFF0C\u6240\u6709\u6D4F\u89C8\u5668\u53EF\u89C1",
   "manage.unpublish": "\u53D6\u6D88\u53D1\u5E03\uFF1A\u56DE\u5230\u4EC5\u672C\u6D4F\u89C8\u5668",
   "viewPick.title": "\u9009\u62E9\u65B0\u89C6\u56FE\uFF08\u5185\u5BB9\u7A97\u81EA\u52A8\u8FC1\u5165\uFF09",
@@ -8430,6 +8439,8 @@ var zh = {
   "pane.subagentsEmpty": "\u5F53\u524D\u4F1A\u8BDD\u6682\u65E0\u5B50\u4EE3\u7406",
   "split.flip": "\u5207\u6362\u5BF9\u8BDD\u7A97\u4F4D\u7F6E\uFF08\u5DE6\u21C4\u53F3\uFF09",
   "split.dragSwap": "\u62D6\u52A8\u6807\u9898\u680F\u4E0E\u5176\u4ED6\u7A97\u4EA4\u6362\u4F4D\u7F6E",
+  "split.hideChat": "\u5173\u95ED\u4F1A\u8BDD\u7A97\u53E3\uFF08\u5185\u5BB9\u7A97\u5360\u6EE1\u6574\u5BBD\uFF0C\u518D\u6B21\u70B9\u51FB\u6062\u590D\uFF09",
+  "split.showChat": "\u6253\u5F00\u4F1A\u8BDD\u7A97\u53E3",
   "icons.title": "\u9009\u62E9\u56FE\u6807",
   "icons.change": "\u66F4\u6362\u56FE\u6807",
   "empty": "\u6682\u65E0\u9879\u76EE",
@@ -8497,6 +8508,10 @@ var en = {
   "pageEdit.desc": `Prompt template the \u270F\uFE0F button in the "Manage projects" list fills into the new session's input box: {page} is replaced with the project page file path, {name} with the project name. Clear and save to restore the default.`,
   "pageEdit.hint": "Edit page: open a new AI session and fill the edit prompt into the input box (not auto-sent; review and submit yourself)",
   "pageEdit.reset": "Reset",
+  "dev.title": "Develop dsh-worktable",
+  "dev.desc": `Prompt template the "New dev session" button fills into the new session's input box: {dsh_worktable} is replaced with the plugin project directory (reported by the server), which is also the new session's working directory. Clear and save to restore the default.`,
+  "dev.hint": "Develop dsh-worktable: open a new AI session (cwd = plugin project directory) and fill the dev prompt into the input box (not auto-sent; review and submit yourself)",
+  "dev.start": "New dev session",
   "manage.publish": "Publish: store on server, visible in all browsers",
   "manage.unpublish": "Unpublish: back to this browser only",
   "viewPick.title": "Pick a new layout (panes migrate automatically)",
@@ -8621,6 +8636,8 @@ var en = {
   "pane.subagentsEmpty": "No subagents in the current session",
   "split.flip": "Flip chat side (left \u21C4 right)",
   "split.dragSwap": "Drag the title bar to swap panes",
+  "split.hideChat": "Close the chat panel (panes take the full width; click again to restore)",
+  "split.showChat": "Open the chat panel",
   "icons.title": "Pick an icon",
   "icons.change": "Change icon",
   "empty": "No projects yet",
@@ -16538,7 +16555,8 @@ function loadSaved(layoutId) {
       leftW: Number.isFinite(s.leftW) ? s.leftW : -1,
       paneWs: Array.isArray(s.paneWs) ? s.paneWs : [],
       topWs: Array.isArray(s.topWs) ? s.topWs : [],
-      leftWs: Array.isArray(s.leftWs) ? s.leftWs : []
+      leftWs: Array.isArray(s.leftWs) ? s.leftWs : [],
+      chatClosed: s.chatClosed === true
     };
   } catch {
     return null;
@@ -16562,6 +16580,7 @@ var splitStore = {
   spec: null,
   geom: null,
   chatW: 320,
+  chatClosed: false,
   topH: 200,
   leftW: 260,
   paneWs: [],
@@ -16625,6 +16644,7 @@ var splitStore = {
     const hasTopWs = !!saved && saved.topWs.length === top.length;
     const hasLeftWs = !!saved && saved.leftWs.length === (left ? 1 : 0);
     this.chatW = hasChatW ? saved.chatW : spec.chatWidth.default;
+    this.chatClosed = saved?.chatClosed === true;
     this.topH = hasTopH ? saved.topH : spec.topHeight?.default ?? 200;
     this.leftW = hasLeftW ? saved.leftW : spec.leftWidth?.default ?? 260;
     this.paneWs = hasPaneWs ? [...saved.paneWs] : main.map((p) => p.min);
@@ -16723,6 +16743,7 @@ var splitStore = {
       this.viewArea.style.marginLeft = this.savedMarginLeft;
       this.viewArea.style.marginRight = this.savedMarginRight;
       this.viewArea.style.marginTop = this.savedMarginTop;
+      this.viewArea.style.display = "";
     }
     this.root = next;
     this.header = header;
@@ -16751,6 +16772,17 @@ var splitStore = {
     const g = this.geom;
     const spec = this.spec;
     if (!viewArea || !g || !spec) return;
+    if (this.chatClosed) {
+      this.lastMarginLeft = "";
+      this.lastMarginRight = "";
+      this.lastMarginTop = "";
+      viewArea.style.marginLeft = "";
+      viewArea.style.marginRight = "";
+      viewArea.style.marginTop = "";
+      viewArea.style.display = "none";
+      return;
+    }
+    viewArea.style.display = "";
     const colW = g.right - g.left;
     const rowH = g.bottom - g.top;
     const hasLeft = !!spec.left;
@@ -16778,6 +16810,14 @@ var splitStore = {
     const minContent = main.reduce((a, p) => a + p.min, 0) + Math.max(0, main.length - 1) * DIVIDER;
     const hi = Math.max(spec.chatWidth.min, colW - minContent);
     this.chatW = clamp(Math.round(w), spec.chatWidth.min, hi);
+    this.applyMargin();
+    this.persist();
+    this.notify();
+  },
+  /** 关闭/打开会话窗口（聊天列）：状态随布局条目持久化，重开布局时恢复 */
+  setChatClosed(closed) {
+    if (!this.spec || this.chatClosed === closed) return;
+    this.chatClosed = closed;
     this.applyMargin();
     this.persist();
     this.notify();
@@ -17055,13 +17095,14 @@ var splitStore = {
   },
   persist() {
     if (!this.spec) return;
-    persistSaved(this.spec.id, { chatW: this.chatW, topH: this.topH, leftW: this.leftW, paneWs: this.paneWs, topWs: this.topWs, leftWs: this.leftWs });
+    persistSaved(this.spec.id, { chatW: this.chatW, topH: this.topH, leftW: this.leftW, paneWs: this.paneWs, topWs: this.topWs, leftWs: this.leftWs, chatClosed: this.chatClosed });
   },
   close() {
     if (this.viewArea) {
       this.viewArea.style.marginLeft = this.savedMarginLeft;
       this.viewArea.style.marginRight = this.savedMarginRight;
       this.viewArea.style.marginTop = this.savedMarginTop;
+      this.viewArea.style.display = "";
     }
     this.observer?.disconnect();
     this.observer = null;
@@ -18124,10 +18165,11 @@ function WorkspaceLayer(props) {
   const main = spec.main ?? [];
   const hasLeft = !!spec.left;
   const hasTop = top.length > 0;
+  const chatClosed = props.chatClosed;
   const chatLeft = !hasLeft && spec.chatSide === "left";
   const colW = g.right - g.left;
   const rowH = g.bottom - g.top;
-  const chatW = clamp(props.chatW, spec.chatWidth.min, Math.max(spec.chatWidth.min, colW - 60));
+  const chatW = chatClosed ? 0 : clamp(props.chatW, spec.chatWidth.min, Math.max(spec.chatWidth.min, colW - 60));
   const topH = hasTop ? clamp(props.topH, spec.topHeight?.min ?? 80, Math.max(spec.topHeight?.min ?? 80, rowH - BAR_H - 80)) : 0;
   const leftW = hasLeft ? clamp(props.leftW, spec.leftWidth?.min ?? 160, Math.max(spec.leftWidth?.min ?? 160, colW - 260)) : 0;
   const chatFull = spec.chatFullHeight === true;
@@ -18201,7 +18243,7 @@ function WorkspaceLayer(props) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "dsh-wt_splitBar", style: { position: "fixed", left: g.left, top: barTop, width: hasLeft || chatFull ? contentW : hasTop ? colW : contentW, zIndex: 70 }, children: [
       spec.id !== "wt-console" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "dsh-wt_splitTitle", children: spec.title }),
-      !hasLeft && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      !hasLeft && !chatClosed && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
         "button",
         {
           type: "button",
@@ -18209,6 +18251,17 @@ function WorkspaceLayer(props) {
           title: T("split.flip"),
           onClick: () => splitStore.setChatSide(chatLeft ? "right" : "left"),
           children: "\u21C4"
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        "button",
+        {
+          type: "button",
+          className: "dsh-wt_splitChatToggle" + (chatClosed ? " dsh-wt_splitChatToggleOff" : ""),
+          title: T(chatClosed ? "split.showChat" : "split.hideChat"),
+          "aria-label": T(chatClosed ? "split.showChat" : "split.hideChat"),
+          onClick: () => splitStore.setChatClosed(!chatClosed),
+          children: "\u{1F4AC}"
         }
       ),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "dsh-wt_splitClose", "aria-label": "\u9000\u51FA\u5206\u680F\uFF08Esc\uFF09", onClick: () => splitStore.close(), children: "\u2715" })
@@ -18248,7 +18301,7 @@ function WorkspaceLayer(props) {
       },
       "v" + it.pane.id
     )),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+    (!chatClosed || hasLeft) && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
       "div",
       {
         className: "dsh-wt_splitDivider",
@@ -18273,6 +18326,7 @@ function SplitWorkspace() {
     spec: splitStore.spec,
     geom: splitStore.geom,
     chatW: splitStore.chatW,
+    chatClosed: splitStore.chatClosed,
     topH: splitStore.topH,
     leftW: splitStore.leftW,
     paneWs: [...splitStore.paneWs],
@@ -18286,6 +18340,7 @@ function SplitWorkspace() {
       poolRef.current.set(spec.id, {
         spec,
         chatW: splitStore.chatW,
+        chatClosed: splitStore.chatClosed,
         topH: splitStore.topH,
         leftW: splitStore.leftW,
         paneWs: [...splitStore.paneWs],
@@ -18301,6 +18356,7 @@ function SplitWorkspace() {
       spec: splitStore.spec,
       geom: splitStore.geom,
       chatW: splitStore.chatW,
+      chatClosed: splitStore.chatClosed,
       topH: splitStore.topH,
       leftW: splitStore.leftW,
       paneWs: [...splitStore.paneWs],
@@ -18335,6 +18391,7 @@ function SplitWorkspace() {
         spec: item.spec,
         geom: isActive ? snap.geom : null,
         chatW: isActive ? snap.chatW : item.chatW,
+        chatClosed: isActive ? snap.chatClosed : item.chatClosed,
         topH: isActive ? snap.topH : item.topH,
         leftW: isActive ? snap.leftW : item.leftW,
         paneWs: isActive ? snap.paneWs : item.paneWs,
@@ -19180,6 +19237,39 @@ async function startPageEdit(pagePath, projectName, workspaceId = null) {
   const prompt = loadPageEditPrompt().split("{page}").join(pagePath).split("{name}").join(projectName);
   await newChatInProject(prompt, workspaceId);
 }
+var DEFAULT_DEV_PROMPT = "\u8FD9\u662F\u4E00\u4E2Adeepseek harness worktable\u63D2\u4EF6\uFF0C\u9879\u76EE\u76EE\u5F55\u5728{dsh_worktable}\uFF0C\n\u4FEE\u6539\u524D\u521B\u5EFA\u4E00\u4E2Agit worktree\u4FEE\u6539\uFF0C\u9632\u6B62\u591A\u4E2A\u5E76\u884C\u7684\u4FEE\u6539\u51B2\u7A81\u3002\n\u4FEE\u6539\u65F6\uFF0C\u4FDD\u6301\u73B0\u6709\u4EE3\u7801\u98CE\u683C\u4E0E dshell \u6837\u5F0F\u4F53\u7CFB\uFF08\u5355\u6587\u4EF6\u5185\u8054\u5B9E\u73B0\uFF0C\u4E3B\u9898\u53D8\u91CF\u9002\u914D\u6D45\u8272/\u6DF1\u8272\uFF09\u3002\n\u6539\u5B8C\u540E\uFF0C\u5408\u5E76\u5230\u672C\u5730dev4\uFF0C\u5E76git push\u5230\u8FDC\u7AEF";
+var DEV_PROMPT_KEY = "dsh.worktable.devPrompt.v1";
+function loadDevPrompt() {
+  try {
+    const p = localStorage.getItem(DEV_PROMPT_KEY);
+    return p == null || !String(p).trim() ? DEFAULT_DEV_PROMPT : p;
+  } catch {
+    return DEFAULT_DEV_PROMPT;
+  }
+}
+function saveDevPrompt(text2) {
+  try {
+    localStorage.setItem(DEV_PROMPT_KEY, text2);
+  } catch {
+  }
+}
+var pluginDirCache;
+async function fetchPluginDir() {
+  if (pluginDirCache !== void 0) return pluginDirCache;
+  try {
+    const r = await fetch("/api/worktable/health", { cache: "no-store" });
+    const d = await r.json();
+    pluginDirCache = r.ok && typeof d?.dir === "string" && d.dir ? d.dir : null;
+  } catch {
+    pluginDirCache = null;
+  }
+  return pluginDirCache;
+}
+async function startPluginDev() {
+  const dir = await fetchPluginDir();
+  const prompt = loadDevPrompt().split("{dsh_worktable}").join(dir ?? "{dsh_worktable}");
+  await newChatInProject(prompt, null, dir);
+}
 var projectAttachRef = { sessionId: null, attached: null };
 var suppressRestoreRef = { current: false };
 var projectBindingsRef = { current: {} };
@@ -19401,6 +19491,7 @@ function WorktableSection(props) {
   const [addOpen, setAddOpen] = (0, import_react2.useState)(false);
   const [viewOptionsOpen, setViewOptionsOpen] = (0, import_react2.useState)(false);
   const [pageEditPrompt, setPageEditPrompt] = (0, import_react2.useState)(() => loadPageEditPrompt());
+  const [devPrompt, setDevPrompt] = (0, import_react2.useState)(() => loadDevPrompt());
   const [updateInfo, setUpdateInfo] = (0, import_react2.useState)(null);
   const [updateCheckOn, setUpdateCheckOn] = (0, import_react2.useState)(() => localStorage.getItem("dsh.worktable.updateCheck.v1") !== "0");
   const [updateCopied, setUpdateCopied] = (0, import_react2.useState)(false);
@@ -21324,6 +21415,34 @@ function WorktableSection(props) {
         setPageEditPrompt(DEFAULT_PAGE_EDIT_PROMPT);
         savePageEditPrompt("");
       }, children: t("pageEdit.reset") }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_menuSep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_manageHead", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_manageTitle", children: t("dev.title") }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_pageEditHint", children: t("dev.desc") }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(
+        "textarea",
+        {
+          className: "dsh-wt_pageEditPrompt",
+          rows: 5,
+          value: devPrompt,
+          onChange: (e) => {
+            setDevPrompt(e.target.value);
+            saveDevPrompt(e.target.value);
+          }
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_pageEditOps", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("button", { type: "button", className: "dsh-wt_updateBtn", onClick: () => {
+          setDevPrompt(DEFAULT_DEV_PROMPT);
+          saveDevPrompt("");
+        }, children: t("pageEdit.reset") }),
+        /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("button", { type: "button", className: "dsh-wt_updateBtn", title: t("dev.hint"), onClick: () => {
+          setViewOptionsOpen(false);
+          void startPluginDev();
+        }, children: [
+          "\u{1F6E0} ",
+          t("dev.start")
+        ] })
+      ] }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "dsh-wt_versionRow", children: [
         /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("span", { children: [
           "v",

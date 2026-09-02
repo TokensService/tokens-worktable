@@ -946,6 +946,36 @@ async function startPageEdit(pagePath: string, projectName: string, workspaceId:
   await newChatInProject(prompt, workspaceId)
 }
 
+// ── 开发 dsh-worktable（设置弹窗：提示词模板 + 「新建开发会话」按钮；模板与「页面修改」同套存取规则）──
+/** 默认「开发 dsh-worktable」提示词模板：{dsh_worktable} 替换为插件项目目录（服务端健康路由 realpath 上报） */
+const DEFAULT_DEV_PROMPT = '这是一个deepseek harness worktable插件，项目目录在{dsh_worktable}，\n修改前创建一个git worktree修改，防止多个并行的修改冲突。\n修改时，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。\n改完后，合并到本地dev4，并git push到远端'
+const DEV_PROMPT_KEY = 'dsh.worktable.devPrompt.v1'
+/** 读取「开发 dsh-worktable」提示词模板（localStorage；空值/未设 = 默认模板） */
+function loadDevPrompt(): string {
+  try { const p = localStorage.getItem(DEV_PROMPT_KEY); return (p == null || !String(p).trim()) ? DEFAULT_DEV_PROMPT : p } catch { return DEFAULT_DEV_PROMPT }
+}
+/** 保存「开发 dsh-worktable」提示词模板（存空串 = 恢复默认） */
+function saveDevPrompt(text: string): void {
+  try { localStorage.setItem(DEV_PROMPT_KEY, text) } catch {}
+}
+/** 插件项目目录缓存：经健康路由服务端上报（link: 安装时 realpath 即源码目录；file: 安装副本时为副本目录） */
+let pluginDirCache: string | null | undefined
+async function fetchPluginDir(): Promise<string | null> {
+  if (pluginDirCache !== undefined) return pluginDirCache
+  try {
+    const r = await fetch('/api/worktable/health', { cache: 'no-store' })
+    const d = await r.json()
+    pluginDirCache = (r.ok && typeof d?.dir === 'string' && d.dir) ? d.dir : null
+  } catch { pluginDirCache = null }
+  return pluginDirCache
+}
+/** 设置弹窗「新建开发会话」：按提示词模板 + 插件项目目录新建 AI 会话（cwd = 插件目录，提示词只填输入框、不自动发送） */
+async function startPluginDev(): Promise<void> {
+  const dir = await fetchPluginDir()
+  const prompt = loadDevPrompt().split('{dsh_worktable}').join(dir ?? '{dsh_worktable}')
+  await newChatInProject(prompt, null, dir)
+}
+
 // ── 项目 × 对话联动（模块级）──
 /** 打开项目前所处的会话（关项目时回切）；attached = 该项目绑定的会话（无绑定 = 打开前会话） */
 const projectAttachRef: { sessionId: string | null; attached: string | null } = { sessionId: null, attached: null }
@@ -1190,6 +1220,8 @@ function WorktableSection(props: any) {
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false)
   // 页面修改：提示词模板（设置弹窗内编辑，存 localStorage；清空保存 = 恢复默认）
   const [pageEditPrompt, setPageEditPrompt] = useState<string>(() => loadPageEditPrompt())
+  // 开发 dsh-worktable：提示词模板（同「页面修改」存取规则；{dsh_worktable} 替换为插件项目目录）
+  const [devPrompt, setDevPrompt] = useState<string>(() => loadDevPrompt())
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateCheckOn, setUpdateCheckOn] = useState<boolean>(() => localStorage.getItem('dsh.worktable.updateCheck.v1') !== '0')
@@ -3053,6 +3085,21 @@ function buildCustomLayoutPrompt(req: string): string {
           />
           <div className="dsh-wt_pageEditOps">
             <button type="button" className="dsh-wt_updateBtn" onClick={() => { setPageEditPrompt(DEFAULT_PAGE_EDIT_PROMPT); savePageEditPrompt('') }}>{t('pageEdit.reset')}</button>
+          </div>
+          <div className="dsh-wt_menuSep" />
+          <div className="dsh-wt_manageHead">
+            <span className="dsh-wt_manageTitle">{t('dev.title')}</span>
+          </div>
+          <div className="dsh-wt_pageEditHint">{t('dev.desc')}</div>
+          <textarea
+            className="dsh-wt_pageEditPrompt"
+            rows={5}
+            value={devPrompt}
+            onChange={(e: any) => { setDevPrompt(e.target.value); saveDevPrompt(e.target.value) }}
+          />
+          <div className="dsh-wt_pageEditOps">
+            <button type="button" className="dsh-wt_updateBtn" onClick={() => { setDevPrompt(DEFAULT_DEV_PROMPT); saveDevPrompt('') }}>{t('pageEdit.reset')}</button>
+            <button type="button" className="dsh-wt_updateBtn" title={t('dev.hint')} onClick={() => { setViewOptionsOpen(false); void startPluginDev() }}>🛠 {t('dev.start')}</button>
           </div>
           <div className="dsh-wt_versionRow">
             <span>
