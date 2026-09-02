@@ -3471,7 +3471,7 @@ function buildCustomLayoutPrompt(req: string): string {
             data-tip={t(rowChatClosed(CONSOLE_ID) ? 'rowChat.show' : 'rowChat.hide')}
             aria-label={t(rowChatClosed(CONSOLE_ID) ? 'rowChat.show' : 'rowChat.hide')}
             onClick={(e) => { e.stopPropagation(); toggleRowChat(CONSOLE_ID, () => openConsole()) }}
-          >💬</span>
+          ><span className="dsh-wt_chatGlyph" aria-hidden /></span>
           <span
             className={'dsh-wt_bindBtn'}
             role="button"
@@ -3517,7 +3517,7 @@ function buildCustomLayoutPrompt(req: string): string {
               data-tip={t(rowChatClosed(l.id) ? 'rowChat.show' : 'rowChat.hide')}
               aria-label={t(rowChatClosed(l.id) ? 'rowChat.show' : 'rowChat.hide')}
               onClick={(e) => { e.stopPropagation(); toggleRowChat(l.id, () => { openSplit(l); reportUsed(l.id) }) }}
-            >💬</span>
+            ><span className="dsh-wt_chatGlyph" aria-hidden /></span>
             <span
               className={'dsh-wt_bindBtn'}
               role="button"
