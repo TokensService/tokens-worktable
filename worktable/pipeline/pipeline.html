@@ -2291,6 +2291,10 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
   if(rc && rc.vars){
     for(const k in rc.vars){ if(env[k]===undefined) env[k]=rc.vars[k]; }
   }
+  /* 归档脚本等异步调用方经 extraEnv 注入的运行级变量（ARCHIVE_* 等）：须先于下方运行级默认注入应用，
+     否则归档脚本的 ARCHIVE_DIR=归档根目录会被 rc.archive 默认注入（=本次运行文件夹）提前占位挡住，
+     host 节点环境日志（<ip>.log/controller.log）就会错写进单次运行文件夹；脚本显式参数仍最优先 */
+  if(extraEnv){ for(const k in extraEnv){ if(env[k]===undefined) env[k]=extraEnv[k]; } }
   // 注入流水线运行信息（脚本显式配置的同名参数优先）：
   //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
   //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
@@ -2322,8 +2326,6 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
     }
   }
   if(ctx0){ if(ctx0.user && env.TARGET_USER===undefined) env.TARGET_USER=ctx0.user; if(ctx0.pass && env.TARGET_PASSWORD===undefined) env.TARGET_PASSWORD=ctx0.pass; }
-  /* 归档脚本等异步调用方经 extraEnv 注入的运行级变量（ARCHIVE_* 等）；脚本显式参数优先 */
-  if(extraEnv){ for(const k in extraEnv){ if(env[k]===undefined) env[k]=extraEnv[k]; } }
   try{
     const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||120000})});
     const j=await r.json();
