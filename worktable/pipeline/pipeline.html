@@ -221,7 +221,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
           <span id="detailBadge"></span>
-          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。同时新建一个 AI 会话，工作区=设置的归档目录根目录（空草稿，不自动提交）。目录选取：运行中取当前运行的归档文件夹；未运行时优先运行历史选中行（点击历史行即刷新目标），其次最近一次运行，均无则打开归档根目录；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。点击会先新建一个 AI 会话（工作区=设置的归档目录根目录，空草稿不自动提交）再打开目录，避免会话切换刷新侧边栏把文件面板刷掉。目录选取：运行中取当前运行的归档文件夹；未运行时优先运行历史选中行（点击历史行即刷新目标），其次最近一次运行，均无则打开归档根目录；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
         </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
@@ -2931,9 +2931,10 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
 }));
 /* 「📂 打开归档目录」：优先经 dsh-better-sidebar 侧边栏「文件」面板打开归档目录（__dshOpenFolderInSidebar
    桥由工作台插件暴露，开一个以归档目录为根的文件夹窗口）；未装 better-sidebar 或桥不可用时回退到
-   服务端系统文件管理器（xdg-open/gio/open 依次探测）。点击同时新建一个 AI 会话，工作区=设置的
-   归档目录根目录（archiveRootFolder；空草稿不自动提交，见 createArchiveRootChat），会话创建与
-   打开目录互不影响（失败仅 console.warn，不阻断打开）。
+   服务端系统文件管理器（xdg-open/gio/open 依次探测）。点击先新建一个 AI 会话（工作区=设置的
+   归档目录根目录 archiveRootFolder；空草稿不自动提交，见 createArchiveRootChat），await 落定后
+   再打开目录：会话切换会刷新侧边栏，后打开文件面板才不会被刷掉；会话创建失败仅 console.warn，
+   不阻断打开目录。
    目录选取优先级（archiveTargetFolder）：运行中取当前运行的归档文件夹（页面展示的是实时运行）→
    运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）→
    最近一次运行的归档文件夹（curRun.archive，运行结束后不清空）→
@@ -2982,9 +2983,10 @@ async function openArchiveFolder(){
   const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
   const folder=archiveTargetFolder();
   if(!folder){ say('✗ 暂无归档目录：请先运行一次流水线，或在「设置」页配置归档路径','var(--log-warn)'); return; }
-  /* 同时新建工作区=归档根目录的 AI 会话（空草稿）：与下方打开目录并行，失败仅告警不阻断 */
+  /* 先新建工作区=归档根目录的 AI 会话（空草稿），await 落定后再打开目录：
+     会话切换会刷新侧边栏，后打开文件面板才不会被会话创建刷掉；失败仅告警不阻断 */
   const root=archiveRootFolder();
-  if(root) createArchiveRootChat(root).catch(e=>console.warn('[archive] 新建归档根目录会话失败（不影响打开目录）:', e));
+  if(root){ try{ await createArchiveRootChat(root); }catch(e){ console.warn('[archive] 新建归档根目录会话失败（不影响打开目录）:', e); } }
   /* 优先走 better-sidebar 侧边栏「文件」面板（文件夹窗口）；桥缺失/拒绝（未装插件等）再回退系统文件管理器 */
   const P=window.parent;
   if(P && typeof P.__dshOpenFolderInSidebar==='function'){
