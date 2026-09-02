@@ -30,6 +30,12 @@
     /* ===== 流水线专属样式（色板走上述变量，最小自造范围） ===== */
     .pipeline-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
     .pipeline-controls .dshell-input { width:auto; min-width:96px; }
+    /* 主控区各选择框限宽：超长省略号显示，保证右侧「运行流水线」按钮位置稳定 */
+    #pipelineControls select.dshell-input,
+    #pipelineControls button.dshell-input { max-width:220px; }
+    #pipelineControls input.dshell-input { max-width:150px; }
+    #pipelineControls #triggeredBy { max-width:110px; }
+    #pipelineControls #envMultiBtn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
     .pipeline-seg { display:flex; align-items:center; flex-wrap:nowrap; overflow-x:auto; gap:0; padding-bottom:4px; }
     .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; user-select:none; transition:border-color .15s,background .15s,box-shadow .15s; }
     .pipeline-node:hover { border-color:var(--dsw-alias-border-l2); background:var(--dsw-alias-fill-l1); }
@@ -122,7 +128,7 @@
   <div id="pageMain">
 
   <!-- 控制区 -->
-  <div class="dshell-card pipeline-controls">
+  <div class="dshell-card pipeline-controls" id="pipelineControls">
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
       <select id="pipelineSel" class="dshell-input" style="min-width:130px;"></select>
     </label>
@@ -153,10 +159,9 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="cleanupEnv" /> 先清理环境
     </label>
-    <span style="flex:1"></span>
-    <button id="runBtn" class="dshell-btn">▶ 运行流水线</button>
-    <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled>⏹ 中止</button>
-    <button id="resetBtn" class="dshell-btn dshell-btnGhost">重置</button>
+    <button id="runBtn" class="dshell-btn" style="margin-left:auto;flex-shrink:0;">▶ 运行流水线</button>
+    <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled style="flex-shrink:0;">⏹ 中止</button>
+    <button id="resetBtn" class="dshell-btn dshell-btnGhost" style="flex-shrink:0;">重置</button>
     <span id="runTip" class="dshell-muted" style="font-size:11px;"></span>
   </div>
 
@@ -736,6 +741,7 @@ function renderEnvOptions(){
   const btn=$('envMultiBtn'); const panel=$('envMultiPanel'); if(!btn||!panel) return;
   if(!selectedEnvIds || !selectedEnvIds.length) selectedEnvIds = environments.slice(0,1).map(e=>e.id);
   btn.textContent = envSelText() || '选择 IP';
+  btn.title = btn.textContent;   // 限宽省略时悬浮可见完整 IP 列表
   panel.innerHTML='';
   environments.forEach(e=>{
     const on = selectedEnvIds.indexOf(e.id)>=0;
@@ -3271,10 +3277,8 @@ $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
 $('branchName').addEventListener('input', ()=>{ if($('branchPanel').style.display==='none'){ loadRepoBranches(curRepo()).then(()=>renderBranchPanel()); } else { renderBranchPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('branchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
-/* 部署策略搜索面板：聚焦/输入时按当前分支拉取并筛选策略；点外关闭（同分支/Tag 面板交互）。
-   聚焦时先渲染面板再拉取：面板未打开时 loadDeployStrategies 不弹面板（初始化/预拉设计），
-   若等拉完才渲染则整个加载过程无任何反馈，先渲染可立即看到「加载中」三点动画 */
-$('deployStrategyName').addEventListener('focus', ()=>{ renderStrategyPanel(true); loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
+/* 部署策略搜索面板：聚焦/输入时按当前分支拉取并筛选策略；点外关闭（同分支/Tag 面板交互） */
+$('deployStrategyName').addEventListener('focus', ()=>{ loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
 $('deployStrategyName').addEventListener('input', ()=>{ if($('strategyPanel').style.display==='none'){ loadDeployStrategies().then(()=>renderStrategyPanel()); } else { renderStrategyPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$('strategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 

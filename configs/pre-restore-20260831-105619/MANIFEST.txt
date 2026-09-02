@@ -1,0 +1,5 @@
+备份时间: 2026-08-31 10:56:19
+主机:     ecs-cc96-lihaifeng00476938
+DSH_HOME: /mnt/paas
+DSH_REPO: /root/op_test/deepseek-harness
+文件数:   6

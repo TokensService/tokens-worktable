@@ -1,0 +1,22 @@
+{
+  "name": "dsh-profile-web",
+  "private": true,
+  "dependencies": {
+    "dsh-better-sidebar": "^0.16.1",
+    "dsh-find-plugin": "^0.3.7",
+    "dsh-worktable": "file:/root/op_test/dsh-plugins/dsh-worktable",
+    "dshmarket": "^1.35.0"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "dsh-worktable",
+        "dshmarket",
+        "dsh-better-sidebar",
+        "dsh-find-plugin"
+      ]
+    }
+  }
+}

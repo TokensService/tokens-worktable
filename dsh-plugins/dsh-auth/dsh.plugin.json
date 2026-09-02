@@ -1,0 +1,9 @@
+{
+  "name": "dsh-auth",
+  "description": "dsh web 登录守卫：OPTEST 登录页 + 会话 Cookie，统一拦截 HTTP / API / WebSocket",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-auth",
+    "inject": []
+  }
+}

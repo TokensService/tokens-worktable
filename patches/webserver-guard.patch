@@ -1,0 +1,182 @@
+diff --git a/packages/host/webserver/src/index.ts b/packages/host/webserver/src/index.ts
+index bc41100de9..a586267440 100644
+--- a/packages/host/webserver/src/index.ts
++++ b/packages/host/webserver/src/index.ts
+@@ -55,6 +55,31 @@ export interface WebUpgradeRoute {
+   handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>
+ }
+ 
++/**
++ * One pre-dispatch guard. Guards run in registration order before any route
++ * matching (and before upgrade negotiation), so a deployment can gate the
++ * whole HTTP surface — named routes, the fallback seat, and upgrade sockets
++ * alike — behind one check such as an authentication plugin.
++ */
++export interface WebGuard {
++  /**
++   * Inspect one HTTP request before route matching and optionally answer it
++   * (redirect, 401).
++   * @param req - the incoming request.
++   * @param res - the response the guard may settle.
++   * @returns true when the guard answered the request and dispatch must stop.
++   */
++  http?(req: IncomingMessage, res: ServerResponse): boolean | Promise<boolean>
++  /**
++   * Inspect one HTTP upgrade before route lookup. Synchronous: the upgrade
++   * event does not await listeners, so an upgrade guard decides from data
++   * already in hand (headers, cookies).
++   * @param req - the upgrade request.
++   * @returns true to refuse the upgrade; the socket is destroyed without negotiation.
++   */
++  upgrade?(req: IncomingMessage): boolean
++}
++
+ /** Web server listen and response-compression config. */
+ export interface Config {
+   /** Listen host; the two supported values are loopback and all-interfaces. */
+@@ -133,6 +158,7 @@ export class WebServer extends Service {
+   private readonly exact = new Map<string, WebRoute>()
+   private readonly prefixes = new Map<string, WebRoute>()
+   private readonly upgrades = new Map<string, WebUpgradeRoute>()
++  private readonly guards: WebGuard[] = []
+   private readonly upgradedSockets = new Set<Duplex>()
+   private readonly indexTaps: ((html: string) => string)[] = []
+   private fallback: WebRoute['handler'] | undefined
+@@ -185,6 +211,21 @@ export class WebServer extends Service {
+     return () => { this.upgrades.delete(route.path) }
+   }
+ 
++  /**
++   * Register a pre-dispatch guard; guards run in registration order ahead of
++   * every route, fallback, and upgrade dispatch, and the first guard that
++   * answers or refuses stops the dispatch.
++   * @param guard - the http and/or upgrade inspectors to add.
++   * @returns the disposer removing the guard.
++   */
++  registerGuard(guard: WebGuard): () => void {
++    this.guards.push(guard)
++    return () => {
++      const at = this.guards.indexOf(guard)
++      if (at !== -1) this.guards.splice(at, 1)
++    }
++  }
++
+   /**
+    * Claim the fallback seat: the handler answering every request no named
+    * route matches (the SPA dist server in the shipped Web composition). One
+@@ -219,6 +260,9 @@ export class WebServer extends Service {
+   /** Listen; resolves once the socket is bound (rejection = FAILED fiber). */
+   async [Service.init](): Promise<void> {
+     const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
++      for (const guard of this.guards) {
++        if (guard.http !== undefined && await guard.http(req, res)) return
++      }
+       /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
+       requests; the field is only optional on the client-side IncomingMessage type */
+       const rawPath = new URL(req.url ?? '/', 'http://x').pathname
+@@ -264,6 +308,22 @@ export class WebServer extends Service {
+         socket.off('error', onError)
+         this.upgradedSockets.delete(socket)
+       })
++      // Guard failures are contained like handler failures: log and destroy.
++      for (const guard of this.guards) {
++        if (guard.upgrade === undefined) continue
++        let refused: boolean
++        try {
++          refused = guard.upgrade(req)
++        } catch (error) {
++          this.ctx.logger.warn(error instanceof Error ? error : new Error(String(error)))
++          socket.destroy()
++          return
++        }
++        if (refused) {
++          socket.destroy()
++          return
++        }
++      }
+       let route: WebUpgradeRoute | undefined
+       try {
+         /* v8 ignore next -- node:http always sets url on server requests. */
+diff --git a/packages/host/webserver/tests/webserver.spec.ts b/packages/host/webserver/tests/webserver.spec.ts
+index b7ac506b17..d9d1080099 100644
+--- a/packages/host/webserver/tests/webserver.spec.ts
++++ b/packages/host/webserver/tests/webserver.spec.ts
+@@ -378,4 +378,78 @@ describe('real Loader composition', () => {
+       root = firstRoot
+     }
+   })
++
++  it('runs pre-dispatch guards over routes, the fallback seat, and upgrades', { timeout: 60_000 }, async () => {
++    const loaded = await loadComposition()
++    const server = loaded.webServer
++    const port = server.port
++    server.register({ kind: 'exact', path: '/probe', handler: (_req, res) => { res.writeHead(200); res.end('EXACT') } })
++    server.registerFallback((_req, res) => { res.writeHead(200); res.end('SHELL') })
++
++    // Inspector arms are optional: an upgrade-only guard never sees HTTP
++    // requests and an http-only guard never sees upgrades.
++    const disposeUpgradeOnly = server.registerGuard({ upgrade: () => false })
++    const disposeHttpOnly = server.registerGuard({ http: () => false })
++    // Deny everything under /locked; pass anything else.
++    const disposeDeny = server.registerGuard({
++      http: async (req, res) => {
++        await Promise.resolve()
++        if ((req.url ?? '').startsWith('/locked')) {
++          res.writeHead(401)
++          res.end('DENIED')
++          return true
++        }
++        return false
++      },
++      upgrade: (req) => (req.url ?? '').startsWith('/locked'),
++    })
++
++    expect(await request(port, '/locked/route')).toMatchObject({ status: 401, body: 'DENIED' })
++    expect((await request(port, '/locked/deep', { method: 'POST' })).status).toBe(401)
++    expect(await request(port, '/probe')).toMatchObject({ status: 200, body: 'EXACT' })
++    expect((await request(port, '/no/such/route')).body).toContain('SHELL')
++
++    // Upgrade guards: a refusal destroys the socket without negotiation; a
++    // passing upgrade reaches the registered route.
++    const disposeUpgradeRoute = server.registerUpgrade({
++      path: '/events',
++      handler: (_req, socket) => {
++        socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: dsh-test\r\n\r\n')
++      },
++    })
++    const accepted = await upgrade(port, '/events')
++    accepted.destroy()
++
++    const refusedUpgrade = async (path: string): Promise<void> => {
++      const socket = connect(port, '127.0.0.1')
++      await once(socket, 'connect')
++      const closed = once(socket, 'close')
++      socket.write([
++        `GET ${path} HTTP/1.1`,
++        `Host: 127.0.0.1:${String(port)}`,
++        'Connection: Upgrade',
++        'Upgrade: dsh-test',
++        '',
++        '',
++      ].join('\r\n'))
++      await closed
++    }
++    await refusedUpgrade('/locked/events')
++
++    // A throwing guard is contained like any per-request failure: the socket
++    // is destroyed and the server keeps serving.
++    const disposeThrowing = server.registerGuard({ upgrade: () => { throw new Error('guard blew up') } })
++    await refusedUpgrade('/events')
++    disposeThrowing()
++    expect(await request(port, '/probe')).toMatchObject({ status: 200, body: 'EXACT' })
++
++    // Disposal removes the guard (a repeated dispose is a no-op), and the
++    // formerly denied path dispatches again — to the fallback owner here.
++    disposeDeny()
++    disposeDeny()
++    disposeUpgradeOnly()
++    disposeHttpOnly()
++    expect((await request(port, '/locked/route')).body).toContain('SHELL')
++    disposeUpgradeRoute()
++  })
+ })

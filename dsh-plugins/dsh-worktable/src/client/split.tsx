@@ -434,7 +434,8 @@ export const splitStore: SplitState = {
     this.applyMargin()
     this.observer = new ResizeObserver(() => {
       const r = this.root
-      if (!(r && r.isConnected && r.dataset.phase === 'active')) {
+      // hero（新建空会话）是可锚定的终态；只有 settling（会话回放过渡）才需等它落定
+      if (!(r && r.isConnected && r.dataset.phase !== 'settling')) {
         this.syncAnchor()
         return
       }
@@ -446,7 +447,7 @@ export const splitStore: SplitState = {
     // 兜底：会话根被替换/phase 变化时 RO 可能不再回调，用 body 级 MutationObserver 驱动重锚定
     this.fallback = new MutationObserver(() => {
       const r = this.root
-      if (r && r.isConnected && r.dataset.phase === 'active') return
+      if (r && r.isConnected && r.dataset.phase !== 'settling') return
       this.syncAnchor()
     })
     this.fallback.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-phase'] })
@@ -473,7 +474,9 @@ export const splitStore: SplitState = {
       this.close()
       return
     }
-    if (next.dataset.phase !== 'active') return // 过渡态：保持等待（phase 变化会再次触发）
+    // 只等 settling 过渡态；hero（新建空会话，首发消息前一直是 hero）必须立即锚定，
+    // 否则 margin 永不施加，新会话全宽铺开、hero 居中输入框被内容窗挡住
+    if (next.dataset.phase === 'settling') return
     if (next === this.root) {
       this.refreshGeom()
       this.applyMargin()
@@ -500,6 +503,9 @@ export const splitStore: SplitState = {
     this.savedMarginTop = viewArea.style.marginTop
     this.observer?.disconnect()
     this.observer.observe(next)
+    // 让位观察器跟随新视图区（原观察对象已随旧会话根卸载）
+    this.yieldObserver?.disconnect()
+    this.yieldObserver?.observe(viewArea, { attributes: true, attributeFilter: ['style'] })
     this.refreshGeom()
     this.applyMargin()
     this.notify()
@@ -511,7 +517,8 @@ export const splitStore: SplitState = {
     if (!root || !header) return
     const rr = root.getBoundingClientRect()
     const hr = header.getBoundingClientRect()
-    this.geom = { left: rr.left, top: hr.bottom, right: rr.right, bottom: rr.bottom }
+    // 空白 hero 会话的 header 为 display:none（rect 全 0）：顶部回退到会话根顶
+    this.geom = { left: rr.left, top: hr.height > 0 ? hr.bottom : rr.top, right: rr.right, bottom: rr.bottom }
   },
 
   applyMargin() {

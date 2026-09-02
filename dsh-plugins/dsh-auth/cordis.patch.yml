@@ -1,0 +1,5 @@
+# dsh-auth 服务端插件：登录页 + 全站守卫（依赖宿主 webserver 的 registerGuard 前置钩子）
+# 口令哈希等配置由 profile 的用户覆写层（profiles/web/cordis.patch.yml）按 id: dsh-auth 注入。
+- insert:
+    - id: dsh-auth
+      name: dsh-auth

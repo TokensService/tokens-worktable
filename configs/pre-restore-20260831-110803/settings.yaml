@@ -1,0 +1,47 @@
+ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+llm-pi-ai:
+  providers:
+    alibailian:
+      displayName: 阿里百炼
+      apiKeyEnv: ALIBAILIAN_API_KEY
+      api: openai-completions
+      baseURL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      models:
+        - id: glm-5.2
+          name: glm-5.2
+        - id: deepseek-v4-flash-0731
+          name: deepseek-v4-flash-0731
+        - id: qwen3.7-plus
+          name: qwen3.7-plus
+        - id: qwen3.8-27b
+        - id: ZHIPU/GLM-5.3
+        - id: deepseek-v4-pro-0813
+        - id: xiaomi/mimo-v2.5-pro
+        - id: MiniMax/MiniMax-M3
+    lhf-kimi:
+      apiKeyEnv: LHF_KIMI_API_KEY
+      api: openai-completions
+      baseURL: https://api.kimi.com/coding/v1
+      models:
+        - id: kimi-for-coding
+          name: K2.7 Coding
+          contextWindow: 262144
+        - id: kimi-for-coding-highspeed
+          name: K2.7 Coding Highspeed
+          contextWindow: 262144
+        - id: k3
+          name: K3
+          contextWindow: 1048576
+        - id: k3-256k
+          name: K3-256k
+          contextWindow: 262144
+agent-default-model:
+  provider: alibailian
+  model: glm-5.2
+llm-deepseek:
+  models: []
+permission:
+  defaultPreset: danger-full-access
+agent-presets:
+  default: code

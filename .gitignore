@@ -2,3 +2,5 @@ dsh-web.log
 dsh-web.pid
 __pycache__/
 *.pyc
+.worktrees/
+node_modules/

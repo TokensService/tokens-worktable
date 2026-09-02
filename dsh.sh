@@ -45,9 +45,10 @@ dsh 编译 / 安装 / 运行 / Web 后台管理脚本
 
 Web 后台管理:
   start               后台启动 dsh web（--no-open），重复执行幂等
+                      启动后等待并打印带 token 的登录地址
   stop                停止后台 dsh web（按进程组停止，含派生子进程）
-  restart             重启后台 dsh web
-  status              查看运行状态（pid 与访问地址）
+  restart             重启后台 dsh web（完成后打印新的登录地址）
+  status              查看运行状态（pid 与带 token 的登录地址）
   log                 跟踪 web 日志（tail -f，Ctrl-C 退出）
 
   help, -h, --help    显示本帮助
@@ -129,16 +130,46 @@ is_running() {
   [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
 }
 
+# 从日志取最近一次启动打印的带 token 登录地址（dsh web: http://...?token=...）
+login_url() {
+  [ -f "$LOG" ] || return 1
+  grep '^dsh web: ' "$LOG" | tail -1 | sed 's/^dsh web: //'
+}
+
+# 等待本次启动的登录地址出现在日志中并打印；$1 为启动前日志的字节偏移，
+# 只从偏移之后的新内容里找，避免拿到上一次重启的旧 token
+wait_login_url() {
+  local offset=$1 i
+  for i in $(seq 1 40); do
+    if [ -f "$LOG" ]; then
+      local url
+      url=$(tail -c +$((offset + 1)) "$LOG" 2>/dev/null | grep '^dsh web: ' | tail -1 | sed 's/^dsh web: //')
+      if [ -n "$url" ]; then
+        echo "登录地址: $url"
+        return 0
+      fi
+    fi
+    is_running || break
+    sleep 0.5
+  done
+  echo "未取到登录地址，可稍后执行 $0 status 查看" >&2
+  return 1
+}
+
 start() {
   if is_running; then
     echo "已在运行 (pid $(cat "$PIDFILE"))"
+    login_url >/dev/null 2>&1 && echo "登录地址: $(login_url)"
     return 0
   fi
   mkdir -p "$DSH_HOME" "$WORKDIR" "$LOG_DIR"
   cd "$WORKDIR"
+  local offset=0
+  [ -f "$LOG" ] && offset=$(stat -c %s "$LOG")
   setsid nohup $(dsh_cmd) web --no-open --port "$PORT" >>"$LOG" 2>&1 &
   echo $! >"$PIDFILE"
   echo "已启动 (pid $(cat "$PIDFILE"), 端口 $PORT), 日志: $LOG"
+  wait_login_url "$offset" || true
 }
 
 stop() {
@@ -162,7 +193,9 @@ case "${1:-}" in
   stop) stop ;;
   restart) stop; start ;;
   status)
-    if is_running; then echo "运行中 (pid $(cat "$PIDFILE"), http://127.0.0.1:$PORT)"
+    if is_running; then
+      echo "运行中 (pid $(cat "$PIDFILE"), http://127.0.0.1:$PORT)"
+      login_url >/dev/null 2>&1 && echo "登录地址: $(login_url)"
     else echo "未运行"; fi
     ;;
   log) tail -f "$LOG" ;;

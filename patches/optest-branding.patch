@@ -31,7 +31,7 @@ index 20a428fee6..886bfb1c69 100644
    "scope": "/",
    "display": "fullscreen",
 diff --git a/apps/web/tests/pwa-manifest.e2e.ts b/apps/web/tests/pwa-manifest.e2e.ts
-index fe97e42da9..4ab40dbd13 100644
+index 08e210fa26..a2e856d4d0 100644
 --- a/apps/web/tests/pwa-manifest.e2e.ts
 +++ b/apps/web/tests/pwa-manifest.e2e.ts
 @@ -12,8 +12,8 @@ it('ships install metadata with the built web application', async () => {
@@ -63,8 +63,34 @@ index fe97e42da9..4ab40dbd13 100644
    expect(favicon).toContain('fill="#000"')
 +  expect(favicon).toContain('>OP</text>')
  })
+diff --git a/packages/client/locale/src/locales/en.ts b/packages/client/locale/src/locales/en.ts
+index 70ce31598c..c52ff80a74 100644
+--- a/packages/client/locale/src/locales/en.ts
++++ b/packages/client/locale/src/locales/en.ts
+@@ -30,7 +30,7 @@ export const en = {
+   'collapse': 'Collapse',
+   'expand': 'Expand',
+   'back': 'Back',
+-  'brand.localBuild': 'DSH Local Build',
++  'brand.localBuild': 'OPTEST',
+   'unknown': 'Unknown',
+   'none': 'None',
+   'truncated': 'Truncated',
+diff --git a/packages/client/locale/src/locales/zh.ts b/packages/client/locale/src/locales/zh.ts
+index 30cee308d5..ff9b3e4a63 100644
+--- a/packages/client/locale/src/locales/zh.ts
++++ b/packages/client/locale/src/locales/zh.ts
+@@ -28,7 +28,7 @@ export const zh = {
+   'collapse': '收起',
+   'expand': '展开',
+   'back': '返回',
+-  'brand.localBuild': 'DSH 本地构建',
++  'brand.localBuild': 'OPTEST',
+   'unknown': '未知',
+   'none': '无',
+   'truncated': '已截断',
 diff --git a/packages/client/ui-sidebar/src/client/SidebarRoot.tsx b/packages/client/ui-sidebar/src/client/SidebarRoot.tsx
-index a7ef74eaa6..f4dceadbc3 100644
+index 9dde97bf9e..5241fa0d48 100644
 --- a/packages/client/ui-sidebar/src/client/SidebarRoot.tsx
 +++ b/packages/client/ui-sidebar/src/client/SidebarRoot.tsx
 @@ -18,7 +18,7 @@
@@ -76,9 +102,9 @@ index a7ef74eaa6..f4dceadbc3 100644
  } from '@deepseek-ai/dsh-client-ui-primitives'
  import type { SidebarRootComponentProps } from './contract/slots.ts'
  import css from './SidebarRoot.module.css'
-@@ -34,6 +34,21 @@ const COLLAPSE_SETTLE_MS = 150
-  */
- const SCROLLBAR_LINGER_MS = 2000
+@@ -44,6 +44,21 @@ function localBuildVersion(): string | undefined {
+     + (process.env.DSH_CLIENT_GIT_DIRTY === 'true' ? '-dirty' : '')
+ }
  
 +/**
 + * Local-build brand mark: a rounded-square "OP" badge, rendered in
@@ -98,7 +124,7 @@ index a7ef74eaa6..f4dceadbc3 100644
  /**
   * Render the sidebar column shell.
   * @param props - composed slot props (runtime share + injected callbacks, contract/slots.ts).
-@@ -137,13 +152,13 @@ export function SidebarRoot({
+@@ -149,7 +164,7 @@ export function SidebarRoot({
            >
              <span className={css.brandIdentity} aria-hidden="true">
                <span className={css.brandMark}>
@@ -107,14 +133,7 @@ index a7ef74eaa6..f4dceadbc3 100644
                </span>
                <span className={css.brandName}>
                  {renderSlot('sidebar.brand.name', {}, {
-                   fallback: (
-                     <>
--                      <span className={css.fallbackBrandName}>DSH Local Build</span>
-+                      <span className={css.fallbackBrandName}>OPTEST</span>
-                       {process.env.DSH_CLIENT_COMMIT_HASH
-                         ? <span className={css.buildRevision}>{process.env.DSH_CLIENT_COMMIT_HASH}</span>
-                         : null}
-@@ -165,7 +180,7 @@ export function SidebarRoot({
+@@ -177,7 +192,7 @@ export function SidebarRoot({
            >
              {!wide && (
                <span className={css.railMark} aria-hidden="true">
@@ -124,7 +143,7 @@ index a7ef74eaa6..f4dceadbc3 100644
              )}
              {/* Rail icons render at 18 (figma rail spec); expanded keeps the glyph-native sizes. */}
 diff --git a/packages/client/ui-sidebar/tests/__snapshots__/sidebar-snapshot.client.spec.tsx.snap b/packages/client/ui-sidebar/tests/__snapshots__/sidebar-snapshot.client.spec.tsx.snap
-index a8ef9f5d4e..7f1d7de6d4 100644
+index ba3e4d9540..37a7dee318 100644
 --- a/packages/client/ui-sidebar/tests/__snapshots__/sidebar-snapshot.client.spec.tsx.snap
 +++ b/packages/client/ui-sidebar/tests/__snapshots__/sidebar-snapshot.client.spec.tsx.snap
 @@ -27,10 +27,9 @@ exports[`sidebar shell snapshots > renders the collapsed rail after the crossfad
@@ -155,16 +174,16 @@ index a8ef9f5d4e..7f1d7de6d4 100644
                  width="24"
                />
              </div>
-@@ -140,7 +138,7 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
-               <span
-                 class="fallbackBrandName"
-               >
--                DSH Local Build
-+                OPTEST
-               </span>
-               <span
-                 class="buildRevision"
-@@ -248,10 +246,9 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
+@@ -143,7 +141,7 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
+                 <span
+                   class="localBuildTitle"
+                 >
+-                  DSH Local Build
++                  OPTEST
+                 </span>
+                 <span
+                   class="buildVersion"
+@@ -252,10 +250,9 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
              >
                <svg
                  aria-hidden="true"
@@ -178,25 +197,43 @@ index a8ef9f5d4e..7f1d7de6d4 100644
                  width="24"
                />
              </div>
-@@ -266,7 +263,7 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
-               <span
-                 class="fallbackBrandName"
-               >
--                DSH Local Build
-+                OPTEST
-               </span>
-               <span
-                 class="buildRevision"
+@@ -273,7 +270,7 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
+                 <span
+                   class="localBuildTitle"
+                 >
+-                  DSH 本地构建
++                  OPTEST
+                 </span>
+                 <span
+                   class="buildVersion"
 diff --git a/packages/client/ui-sidebar/tests/sidebar-root.client.spec.tsx b/packages/client/ui-sidebar/tests/sidebar-root.client.spec.tsx
-index 99ae7e4d5e..c5d1b8fc12 100644
+index 0f5edce0de..05eafb4ee4 100644
 --- a/packages/client/ui-sidebar/tests/sidebar-root.client.spec.tsx
 +++ b/packages/client/ui-sidebar/tests/sidebar-root.client.spec.tsx
-@@ -103,7 +103,7 @@ describe('SidebarRoot shell', () => {
+@@ -110,7 +110,7 @@ describe('SidebarRoot shell', () => {
          options?.fallback ?? null) as SidebarRootComponentProps['renderSlot']}
      />)
  
 -    expect(screen.getByText('DSH Local Build')).toBeTruthy()
 +    expect(screen.getByText('OPTEST')).toBeTruthy()
-     expect(screen.getByText('0123456')).toBeTruthy()
+     expect(screen.getByText('1.2.3-rc.4-0123456-dirty')).toBeTruthy()
      expect(container.querySelector('svg')).not.toBeNull()
    })
+@@ -128,7 +128,7 @@ describe('SidebarRoot shell', () => {
+         options?.fallback ?? null) as SidebarRootComponentProps['renderSlot']}
+     />)
+ 
+-    expect(screen.getByText('DSH Local Build')).toBeTruthy()
++    expect(screen.getByText('OPTEST')).toBeTruthy()
+     expect(screen.getByText(expected)).toBeTruthy()
+   })
+ 
+@@ -141,7 +141,7 @@ describe('SidebarRoot shell', () => {
+         options?.fallback ?? null) as SidebarRootComponentProps['renderSlot']}
+     />)
+ 
+-    expect(screen.getByText('DSH Local Build')).toBeTruthy()
++    expect(screen.getByText('OPTEST')).toBeTruthy()
+   })
+ 
+   it('hands the region its wide flag and clamps expandSidebar to the collapsed state', () => {

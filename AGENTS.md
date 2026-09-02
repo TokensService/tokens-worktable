@@ -8,9 +8,11 @@ op_test —— 自动化测试与优化工具。本仓库是一个「宿主工�
 deepseek-harness/   git 子模块（github.com/deepseek-ai/deepseek-harness），dsh 本体
 dsh.sh              dsh 编译 / 安装 / 运行 / Web 后台管理脚本（本仓库的主入口）
 install-plugins.sh  一键安装 dsh-plugins/ 下所有插件（构建 → plugin add link: → 重启 web，幂等）
-apply-branding.sh   一键应用 OPTEST web 品牌补丁（patches/ → 子模块 → 重建 → 重启，幂等）
+apply-branding.sh   一键应用 patches/ 下所有本地补丁（→ 子模块 → 重建 → 重启，幂等）
+upgrade-dsh.sh      一键升级子模块（反摘全部补丁 → submodule update --remote → 重打补丁 → 重建 → 重启）
 patches/
-  optest-branding.patch   子模块品牌改动的 git diff（由 apply-branding.sh 应用）
+  optest-branding.patch   OPTEST web 品牌改动的 git diff（由 apply-branding.sh 应用）
+  webserver-guard.patch   webserver 前置守卫（registerGuard/WebGuard，供认证插件统一拦截 HTTP/WS）的 git diff
 dsh-plugins/
   dsh-worktable/    工作台插件的本地副本（含本仓库自有改动，见其中 CHANGES.md）
 worktable/          工作台项目页与配套脚本（由插件经 /api/worktable/* 提供访问）
@@ -40,20 +42,22 @@ dsh-web.log / dsh-web.pid   dsh web 后台进程的运行日志与 pid（已 git
 ./dsh.sh install    # 在 pnpm 全局 bin 生成 dsh 包装脚本，指向仓库编译产物
 ./dsh.sh run ...    # 前台运行 dsh，参数透传
 ./dsh.sh all ...    # build + install + run
-./dsh.sh start      # 后台启动 dsh web（setsid nohup，默认端口 3051，幂等）
-./dsh.sh stop / restart / status / log
+./dsh.sh start      # 后台启动 dsh web（setsid nohup，默认端口 3051，幂等），成功后打印带 token 的登录地址
+./dsh.sh stop / restart / status / log   # status 同样会打印当前登录地址
 ```
 
 关键环境变量：`DSH_REPO`（子模块路径）、`DSH_HOME`（dsh 数据目录，默认 `/mnt/paas`）、`DSH_WORKDIR`（web 新会话默认工作目录，默认脚本所在目录）、`DSH_WEB_PORT`（默认 3051）、`DSH_LOG_DIR`、`DSH_CLIENT_TITLE`（web 品牌标题，默认 `op_test`，build 时内联进产物）、`DEEPSEEK_API_KEY`（存在 `$DSH_REPO/.env` 时自动加载）。
 
-本仓库对子模块的本地改动（未上游化，已固化为 `patches/optest-branding.patch`，用 `./apply-branding.sh` 一键应用/重建，`--check` 查状态；子模块升级导致补丁冲突时需重做改动并重新生成补丁）：
+本仓库对子模块的本地改动（未上游化，按用途固化为 `patches/*.patch`，用 `./apply-branding.sh` 一键全部应用/重建，`--check` 查各补丁状态；子模块升级导致补丁冲突时需重做改动并重新生成补丁）：
 
-- web 品牌 OPTEST：`packages/client/ui-sidebar/src/client/SidebarRoot.tsx` 的品牌 fallback 改为 `OpTestMark` 图标 + `OPTEST` 文字（配套测试 `ui-sidebar/tests/sidebar-root.client.spec.tsx` 与快照 `sidebar-snapshot.client.spec.tsx`）；`apps/web/public/manifest.webmanifest` 名称改为 `op_test` / `OPTEST`；`apps/web/public/favicon.svg` 换成同款「OP」徽章（保留暗色模式变白适配，配套 `apps/web/tests/pwa-manifest.e2e.ts`）；标签页标题由 `dsh.sh build` 注入的 `DSH_CLIENT_TITLE=op_test` 决定，不在补丁内。
+- `optest-branding.patch` —— web 品牌 OPTEST：`packages/client/ui-sidebar/src/client/SidebarRoot.tsx` 的品牌 fallback 图标改为 `OpTestMark`（配套测试 `ui-sidebar/tests/sidebar-root.client.spec.tsx` 与快照 `sidebar-snapshot.client.spec.tsx`）；品牌文字走公共语言包，`packages/client/locale/src/locales/{en,zh}.ts` 的 `brand.localBuild` 改为 `OPTEST`；`apps/web/public/manifest.webmanifest` 名称改为 `op_test` / `OPTEST`；`apps/web/public/favicon.svg` 换成同款「OP」徽章（保留暗色模式变白适配，配套 `apps/web/tests/pwa-manifest.e2e.ts`）；标签页标题由 `dsh.sh build` 注入的 `DSH_CLIENT_TITLE=op_test` 决定，不在补丁内。
+- `webserver-guard.patch` —— webserver 前置守卫：`packages/host/webserver/src/index.ts` 新增 `WebGuard` 接口与 `WebServer.registerGuard()`，在路由匹配与 upgrade 协商前按注册顺序统一拦截 HTTP 请求与 WebSocket 升级（供 dsh-auth 等认证插件把整个 HTTP 面收到一道检查之后）；配套测试 `packages/host/webserver/tests/webserver.spec.ts`。
 - 注意：会话主页中央 hero 区仍是上游鲸鱼图标（`FishLogo`），未改动。
 
 运行态要点：
 
-- web profile 位于 `$DSH_HOME/profiles/web/`（即 `/mnt/paas/profiles/web/`），其 `package.json` 的 `dsh.profile.bundles` 组合了 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-web-app`、`dsh-worktable`、`dshmarket`、`dsh-better-sidebar`；其中 `dsh-worktable` 以 `file:` 依赖指向本仓库的 `dsh-plugins/dsh-worktable`。
+- web profile 位于 `$DSH_HOME/profiles/web/`（即 `/mnt/paas/profiles/web/`），其 `package.json` 的 `dsh.profile.bundles` 组合了 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-web-app` 与若干第三方插件（`dshmarket`、`dsh-better-sidebar`、`dsh-find-plugin`、`@xmanrui/dsh-im`、`@michengai/dsh-skills-manager`、`dsh-archived-chats`、`dsh-session-search-toggle`）以及本仓库的 `dsh-worktable`（以 `link:` 依赖指向 `dsh-plugins/dsh-worktable`）。
+- 第三方插件按 peer 范围绑定 dsh 版本（如 `^0.1.2-alpha.2`）；子模块升级后若 web 启动报 `does not provide an export named ...`，用 `./dsh.sh run plugin --profile web add <插件>@<适配版本>` 升级对应插件（注意 npm dist-tag，适配新版的可能在 `alpha` 标签下）。
 - profile 的用户覆写层是 `profiles/web/cordis.patch.yml`（目录选择器主目录跟随 `DSH_WORKDIR`）；不要直接改 `cordis.yml`。
 - 端口被占时 web 启动失败报 `EADDRINUSE 127.0.0.1:3051`，用 `./dsh.sh stop` 清理后再启动。
 

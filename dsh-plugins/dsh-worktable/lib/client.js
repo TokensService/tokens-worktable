@@ -16672,7 +16672,7 @@ var splitStore = {
     this.applyMargin();
     this.observer = new ResizeObserver(() => {
       const r = this.root;
-      if (!(r && r.isConnected && r.dataset.phase === "active")) {
+      if (!(r && r.isConnected && r.dataset.phase !== "settling")) {
         this.syncAnchor();
         return;
       }
@@ -16683,7 +16683,7 @@ var splitStore = {
     this.observer.observe(root);
     this.fallback = new MutationObserver(() => {
       const r = this.root;
-      if (r && r.isConnected && r.dataset.phase === "active") return;
+      if (r && r.isConnected && r.dataset.phase !== "settling") return;
       this.syncAnchor();
     });
     this.fallback.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-phase"] });
@@ -16706,7 +16706,7 @@ var splitStore = {
       this.close();
       return;
     }
-    if (next.dataset.phase !== "active") return;
+    if (next.dataset.phase === "settling") return;
     if (next === this.root) {
       this.refreshGeom();
       this.applyMargin();
@@ -16732,6 +16732,8 @@ var splitStore = {
     this.savedMarginTop = viewArea.style.marginTop;
     this.observer?.disconnect();
     this.observer.observe(next);
+    this.yieldObserver?.disconnect();
+    this.yieldObserver?.observe(viewArea, { attributes: true, attributeFilter: ["style"] });
     this.refreshGeom();
     this.applyMargin();
     this.notify();
@@ -16742,7 +16744,7 @@ var splitStore = {
     if (!root || !header) return;
     const rr = root.getBoundingClientRect();
     const hr2 = header.getBoundingClientRect();
-    this.geom = { left: rr.left, top: hr2.bottom, right: rr.right, bottom: rr.bottom };
+    this.geom = { left: rr.left, top: hr2.height > 0 ? hr2.bottom : rr.top, right: rr.right, bottom: rr.bottom };
   },
   applyMargin() {
     const viewArea = this.viewArea;
