@@ -1,7 +1,7 @@
 # 本目录 dsh-worktable 的本地改动
 
-- 聊天列右上角新增 ✕ 关闭按钮（`src/client/split.tsx` + `styles.ts`）：
-  会话窗打开时，聊天列右上角浮一个 ✕（fixed 定位，`left = chatX + chatW - 26`，与标题栏同排），
+- 聊天列左上角新增 ✕ 关闭按钮（`src/client/split.tsx` + `styles.ts`）：
+  会话窗打开时，聊天列左上角浮一个 ✕（fixed 定位，`left = chatX + 6`，与标题栏同排），
   点击即 `setChatClosed(true)` 关闭会话窗——与分栏标题栏 💬 / 项目行 💬 同一 `chatClosed` 状态，
   关闭后可由这两处 💬 恢复；按钮半透明底色（`--dsw-alias-fill-l1`），压在深/浅会话内容上都可读，
   会话窗关闭或列宽为 0 时不渲染。
