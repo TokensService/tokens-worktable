@@ -18605,6 +18605,7 @@ function findSidebar(start) {
 var registryStore = { ids: [], listeners: /* @__PURE__ */ new Set() };
 var sessionBridge = null;
 var hostApi = null;
+var applyCtx = null;
 async function ensureSessionPreset(sessionId) {
   const api = hostApi?.agentPresets;
   if (!api || typeof api.list !== "function" || typeof api.select !== "function") return;
@@ -19119,6 +19120,28 @@ async function newChatInProject(text2, workspaceId = null, cwd = null) {
   }
   await fillSessionDraft(sessionId, text2);
 }
+async function newChatSessionWithFolder(text2, cwd, folder) {
+  const b = sessionBridge;
+  if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
+  const sessionId = await b.sessions.create(cwd ? { cwd } : {});
+  await ensureSessionPreset(sessionId);
+  await ensureSessionModel(sessionId);
+  try {
+    await b.sessions.open?.(sessionId);
+  } catch {
+  }
+  if (text2) {
+    try {
+      await fillSessionDraft(sessionId, text2);
+    } catch {
+    }
+  }
+  if (folder) {
+    openFolderInSidebar(folder);
+    setTimeout(() => openFolderInSidebar(folder), 400);
+    setTimeout(() => openFolderInSidebar(folder), 1200);
+  }
+}
 var DEFAULT_PAGE_EDIT_PROMPT = "\u9875\u9762\u6587\u4EF6\uFF1A{page}\uFF0C\u8FD9\u662F\u4E00\u4E2Adeepseek harness worktable\u63D2\u4EF6\u7684\u9875\u9762\n\u8BF7\u5148\u95EE\u6211\u60F3\u505A\u4EC0\u4E48\u4FEE\u6539\uFF1B\u786E\u8BA4\u9700\u6C42\u540E\u76F4\u63A5\u7F16\u8F91\u8BE5\u6587\u4EF6\uFF0C\u4FDD\u6301\u73B0\u6709\u4EE3\u7801\u98CE\u683C\u4E0E dshell \u6837\u5F0F\u4F53\u7CFB\uFF08\u5355\u6587\u4EF6\u5185\u8054\u5B9E\u73B0\uFF0C\u4E3B\u9898\u53D8\u91CF\u9002\u914D\u6D45\u8272/\u6DF1\u8272\uFF09\u3002\u4FEE\u6539\u5B8C\u6210\u540E\u63D0\u9192\u6211\u5237\u65B0\u9875\u9762\u67E5\u770B\u6548\u679C\u3002\n\u4FEE\u6539\u4EE3\u7801\u65F6\uFF0C\u521B\u5EFA\u4E00\u4E2Agit worktree\u4FEE\u6539\uFF0C\u9632\u6B62\u591A\u4E2A\u5E76\u884C\u7684\u4FEE\u6539\u51B2\u7A81\u3002\u6539\u5B8C\u540E\uFF0C\u521B\u5EFA\u63D0\u4EA4PR\u94FE\u63A5";
 var PAGE_EDIT_PROMPT_KEY = "dsh.worktable.pageEditPrompt.v1";
 function loadPageEditPrompt() {
@@ -19166,6 +19189,17 @@ function markPluginSessionOpen(sessionId) {
     const s = pluginOpenedSessionsRef.current;
     if (s.size > 50) s.clear();
     s.add(sessionId);
+  }
+}
+function openFolderInSidebar(p) {
+  try {
+    const bs = applyCtx?.get?.("betterSidebar");
+    if (!bs || typeof bs.openTab !== "function" || typeof p !== "string" || !p) return false;
+    const title = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+    bs.openTab({ type: "editor", title, path: p, id: "editor:" + p, meta: { dir: true } });
+    return true;
+  } catch {
+    return false;
   }
 }
 var lastSessionScopeId = "";
@@ -21755,6 +21789,7 @@ function WorktableSection(props) {
 var inject = ["slots", "locale", "sessions", "conversation", "workspaces"];
 function apply(ctx) {
   sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null };
+  applyCtx = ctx;
   try {
     hostApi = ctx.get?.("connection")?.api ?? null;
   } catch {
@@ -21770,23 +21805,14 @@ function apply(ctx) {
     window.__dshPromptIntoSession = (id, text2) => promptIntoSession(id, text2);
     window.__dshNewChatSession = (text2) => newChatInProject(text2);
     window.__dshNewChatSessionAt = (text2, cwd) => newChatInProject(text2, null, cwd || null);
+    window.__dshNewChatSessionAtFolder = (text2, cwd, folder) => newChatSessionWithFolder(text2, cwd || null, folder || null);
     window.__dshWorkspaces = ctx.workspaces;
     window.__dshBuildWindowTaskText = buildWindowTaskText;
     window.__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list);
   } catch {
   }
   try {
-    window.__dshOpenFolderInSidebar = (p) => {
-      try {
-        const bs = ctx.get?.("betterSidebar");
-        if (!bs || typeof bs.openTab !== "function" || typeof p !== "string" || !p) return false;
-        const title = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
-        bs.openTab({ type: "editor", title, path: p, id: "editor:" + p, meta: { dir: true } });
-        return true;
-      } catch {
-        return false;
-      }
-    };
+    window.__dshOpenFolderInSidebar = (p) => openFolderInSidebar(p);
   } catch {
   }
   ctx.effect(() => {
