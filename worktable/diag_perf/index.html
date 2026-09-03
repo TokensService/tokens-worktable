@@ -201,11 +201,15 @@
     </div>
     <div class="diag-note" id="setHint">改动即自动保存并生效；配置仅存于本机浏览器 localStorage。</div>
     <div class="diag-formrow" style="margin-top:8px">
-      <button class="dshell-btn" id="btnDiagnose" type="button" title="按当前设置立即执行一轮完整诊断：拉取 Prometheus 时序、日志目录与 Profiling 目录，规则引擎随渲染重新研判">开始诊断</button>
+      <button class="dshell-btn" id="btnRefresh" type="button" title="立即重新拉取 Prometheus 数据（原地刷新，不重载页面；自动轮询照常进行）">刷新数据</button>
+      <button class="dshell-btn" id="btnDiagnose" type="button" title="按当前设置立即执行一轮完整诊断：拉取 Prometheus 时序、日志目录与 Profiling 目录，规则引擎随渲染重新研判；结果见「诊断报告」页">开始诊断</button>
       <span class="dshell-muted" id="diagBtnHint" style="font-size:12px"></span>
     </div>
-    <div class="dshell-divider"></div>
+    <div class="diag-note">诊断结果（概览统计、时延瀑布、诊断结论与导出）统一呈现在「诊断报告」页。</div>
+  </div>
 
+  <!-- ============ 诊断报告 ============ -->
+  <div class="diag-tabpane" data-pane="report" style="display:none">
     <div class="dshell-grid">
       <div class="dshell-stat"><div class="dshell-statLabel">TTFT P99</div><div class="dshell-statValue" id="ovTtft">—</div><div class="dshell-statDelta" id="ovTtftD"></div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">TPOT P99</div><div class="dshell-statValue" id="ovTpot">—</div><div class="dshell-statDelta" id="ovTpotD"></div></div>
@@ -219,10 +223,6 @@
       <canvas class="diag-canvas" id="waterfall"></canvas>
       <div class="diag-note">队列等待 → Prefill → Decode ×N → 转发回传；点击「时延分解」页查看时序趋势。</div>
     </div>
-  </div>
-
-  <!-- ============ 诊断报告 ============ -->
-  <div class="diag-tabpane" data-pane="report" style="display:none">
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论（规则引擎自动研判）</h2>
       <div class="dshell-list" id="diagFindings"></div>
@@ -385,10 +385,6 @@
     </div>
   </div>
 
-  <!-- 全局操作条 -->
-  <div style="display:flex;gap:8px;margin-top:4px" id="globalActions">
-    <button class="dshell-btn" id="btnRefresh" title="立即重新拉取 Prometheus 数据（原地刷新，不重载页面；自动轮询照常进行）">刷新数据</button>
-  </div>
 </div>
 
 <script>
@@ -801,7 +797,7 @@ function createTab(id,name){
   var grid=document.createElement("div");grid.className="diag-chartgrid";
   pane.appendChild(grid);
   pane.appendChild(makeAddPanelBtn(id));
-  document.getElementById("globalActions").parentNode.insertBefore(pane,document.getElementById("globalActions"));
+  document.querySelector(".dshell").appendChild(pane);   /* 新标签页面板挂到 .dshell 容器末尾（原「全局操作条」锚点已移除） */
 }
 function deleteTab(id){
   var t=null;
