@@ -1,10 +1,14 @@
 # 本目录 dsh-worktable 的本地改动
 
-- 定时执行的归档日志不再截断（`src/index.ts`）：服务端定时路径（`execPlan` 定时计划/定时后缀）此前经
-  `truncLog` 把每个任务的回显截到 8192 字符后再写归档，长输出任务（如镜像拉取进度条）的
-  独立任务日志 run-<tag>-NN-任务名.log 与汇总 run-<tag>.log 都被切断在 8192 字符 + 「…(截断)」，
-  丢失后续输出与 [exit] 行。现移除 `truncLog`，`stageLogText` 返回完整回显，与页面运行路径
-  （buildLog/collectRunLogs 均不截断）行为一致；历史记录同样保全量（存储层本有 500 条 / 20MB 上限兜底）。
+- 定时执行的归档日志不再截断（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：服务端定时路径
+  （`execPlan` 定时计划/定时后缀）此前经 `truncLog` 把每个任务的回显截到 8192 字符后再写归档，长输出任务
+  （如镜像拉取进度条）的独立任务日志 run-<tag>-NN-任务名.log 与汇总 run-<tag>.log 都被切断在
+  8192 字符 + 「…(截断)」，丢失后续输出与 [exit] 行；页面侧「环境清理」日志（runCleanupBefore）也有同款
+  8192 截断且同时喂给归档与历史。现归档文件一律保全量（移除 `truncLog`，`stageLogText`/清理日志返回完整回显）。
+  为防超大回显撑爆历史存储（worktable-pipeline.json，500 条 / 20MB 上限），历史记录条目单独限长：
+  页面与服务端同一规则 `histLogText`——单条超 256KB 保留头 64KB + 尾 192KB，标记注明完整日志所在的
+  归档文件路径。同时修两个存储守卫：20MB 整体超限时 PUT `/api/worktable/pipeline` 与
+  `appendPipelineHistory` 改为丢最旧记录直至放得下（此前分别 413 整批拒绝 / 静默丢弃新记录）。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
 
 - 新增「右侧聊天窗 + 自动发送」桥 `window.__dshSendChatInProject(text)`（`src/client/index.tsx`）：
