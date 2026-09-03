@@ -233,9 +233,17 @@
             <input type="checkbox" id="relPrerelease" /> 预发布
           </label>
         </div>
-        <label class="dshell-muted" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">发行说明
-          <textarea class="dshell-textarea" id="relBody" rows="4" placeholder="本次发行的变更说明（可选）" style="font-size:12px"></textarea>
-        </label>
+        <div style="margin-bottom:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
+            <span class="dshell-muted">发行说明</span>
+            <span style="display:flex;align-items:center;gap:8px">
+              <span class="dshell-muted" id="relNotesAiTip" style="font-size:11px"></span>
+              <button class="dshell-btn dshell-btnGhost" id="relNotesAiBtn" style="padding:3px 10px;font-size:11.5px"
+                title="拉取上一发行版之后合并到当前分支的 PR，新建 AI 会话生成发行说明草稿（生成后从会话复制回本框，可再编辑）">✦ AI 生成</button>
+            </span>
+          </div>
+          <textarea class="dshell-textarea" id="relBody" rows="4" placeholder="本次发行的变更说明（可选；点「✦ AI 生成」由 AI 按上一发行版以来的已合并 PR 起草）" style="font-size:12px"></textarea>
+        </div>
         <div class="pr-tokenRow">
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
@@ -400,7 +408,7 @@
   var searchInput = $("searchInput"), stateTabs = $("stateTabs"), toolbar = $("toolbar");
   var statsEl = $("stats"), listEl = $("list"), statusBar = $("statusBar"), toastEl = $("toast");
   var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
-  var relArtifacts = $("relArtifacts");
+  var relArtifacts = $("relArtifacts"), relNotesAiBtn = $("relNotesAiBtn"), relNotesAiTip = $("relNotesAiTip");
   var buildContainerInput = $("buildContainerInput"), buildExtraEnvInput = $("buildExtraEnvInput");
   var relHistEl = $("relHist"), relHistClear = $("relHistClear"), relHistTip = $("relHistTip");
 
@@ -1438,6 +1446,95 @@
     });
   }
   relHistClear.addEventListener("click", function () { saveRelHist([]); renderRelHist(); toast("已清空构建历史"); });
+
+  /* ---------- AI 生成发行说明：按「上一发行版 → 本次发行」区间内的已合并 PR 起草 ----------
+     上一发行版取 releases 接口按创建时间最新的非草稿发行版（接口不可用/为空视为无历史发行版）；
+     PR 取 state=closed 中 merged_at 晚于上一发行版创建时间、且 base 为当前分支的已合并 PR
+     （无历史发行版时取全部已合并；上限 REL_NOTES_PR_MAX 条，按合并时间升序）。
+     提示词内嵌 PR 清单与描述摘要，走「AI 检视」同款 launchNewSession 新建会话自动发送；
+     令牌是否随提示携带沿用设置页「评审提示中携带令牌」开关，便于 AI 按需补查 PR diff。 */
+  var REL_NOTES_PR_MAX = 100;   // 参与生成发行说明的已合并 PR 上限
+  var REL_NOTES_BODY_MAX = 500; // 单个 PR 描述摘要的最大字符数
+  var relNotesAiBusy = false;
+  function fetchPrevRelease(repo) {
+    return fetchJSON("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases?per_page=30")
+      .then(function (arr) {
+        var list = (Array.isArray(arr) ? arr : []).filter(function (r) { return r && r.tag_name && !r.draft; });
+        list.sort(function (a, b) { return (new Date(b.created_at || 0)) - (new Date(a.created_at || 0)); });
+        return list[0] || null;
+      })
+      .catch(function () { return null; }); // 无发行版/接口不可用：按「无历史发行版」处理
+  }
+  function fetchMergedPrsSince(repo, sinceIso, branch) {
+    return fetchAll("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/pulls?state=closed", 50)
+      .then(function (arr) {
+        var since = sinceIso ? new Date(sinceIso).getTime() : 0;
+        return (arr || []).filter(function (p) {
+          if (!p || !p.merged_at) return false; // 未合并的已关闭 PR 不计入
+          if (since && new Date(p.merged_at).getTime() <= since) return false;
+          var base = p.base && (p.base.ref || p.base.label);
+          if (branch && base && base !== branch) return false; // 只统计合入当前分支的 PR（base 缺失时不过滤）
+          return true;
+        }).sort(function (a, b) { return (new Date(a.merged_at || 0)) - (new Date(b.merged_at || 0)); })
+          .slice(0, REL_NOTES_PR_MAX);
+      });
+  }
+  function buildRelNotesPrompt(repo, branch, tag, name, prevRel, prs) {
+    var tok = state.embed ? (state.token || "").trim() : "";
+    var curlAuth = tok ? ' -H "Authorization: Bearer ' + tok + '"' : "";
+    var pullsApi = API + "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/pulls";
+    var lines = [
+      "请为 GitCode 仓库 " + repo.owner + "/" + repo.name + " 起草本次发行版的发行说明（Release Notes）。",
+      "",
+      "- 本次发行：" + (tag || "（待定）") + (name && name !== tag ? "（" + name + "）" : "") + "，基于分支 " + branch,
+      prevRel
+        ? "- 上一发行版：" + prevRel.tag_name + "（发行于 " + (prevRel.created_at || "未知") + "），以下 " + prs.length + " 个 PR 均在上一发行版之后合并到 " + branch + " 分支："
+        : "- 该仓库尚无历史发行版，以下为全部已合并到 " + branch + " 分支的 " + prs.length + " 个 PR：",
+      ""
+    ];
+    prs.forEach(function (p) {
+      var author = p.user && (p.user.login || p.user.name);
+      lines.push("- #" + p.number + " " + (p.title || "(无标题)") + (author ? "（@" + author + "）" : "") +
+        (p.merged_at ? " · 合并于 " + p.merged_at : ""));
+      var body = (p.body || "").trim();
+      if (body) lines.push("  摘要：" + body.slice(0, REL_NOTES_BODY_MAX) + (body.length > REL_NOTES_BODY_MAX ? " …" : ""));
+    });
+    lines.push(
+      "",
+      "## 生成要求",
+      "1. 用中文输出 Markdown 发行说明，直接给最终文本，不要寒暄或解释过程。",
+      "2. 开头一行标题：## " + (name || tag || "本次发行") + "；随后按变更类型分组：「✨ 新功能」「🐛 问题修复」「📦 构建与依赖」「🔧 其他变更」（无条目的分组省略）。",
+      "3. 每条格式：- 简要说明 (#PR号)；说明要提炼自 PR 标题与描述，避免照搬长标题，必要时可带 @作者。",
+      "4. 如需查看某个 PR 的详细 diff 再归纳，可执行：",
+      '   curl -sS' + curlAuth + ' "' + pullsApi + '/{number}/files"',
+      "5. 最终结果单独放在一个 markdown 代码块中输出，方便整体复制粘贴回「发行说明」输入框。"
+    );
+    return lines.join("\n") + "\n";
+  }
+  function genRelNotes() {
+    if (relNotesAiBusy) return;
+    if (!state.token) { toast("请先在「设置」页配置令牌", true); return; }
+    var repo = relSelectedRepo();
+    if (!repo) { toast("请先选择仓库（列表为空时点 ⟳ 拉取）", true); return; }
+    var branch = relBranch.value.trim() || "main";
+    var tag = relTag.value.trim(), name = relName.value.trim();
+    relNotesAiBusy = true; relNotesAiBtn.disabled = true; relNotesAiBtn.textContent = "⏳ 生成中…"; relNotesAiTip.textContent = "";
+    var prevRel = null;
+    fetchPrevRelease(repo)
+      .then(function (r) { prevRel = r; return fetchMergedPrsSince(repo, r && r.created_at, branch); })
+      .then(function (prs) {
+        if (!prs.length) {
+          toast(prevRel ? "上一发行版 " + prevRel.tag_name + " 之后没有已合并到 " + branch + " 的 PR" : "该仓库还没有已合并的 PR", true);
+          return;
+        }
+        relNotesAiTip.textContent = (prevRel ? "自 " + prevRel.tag_name : "全部") + " · " + prs.length + " 个已合并 PR";
+        launchNewSession(buildRelNotesPrompt(repo, branch, tag, name, prevRel, prs),
+          "已新建 AI 会话生成发行说明（生成后复制回「发行说明」框）");
+      })
+      .catch(function (e) { toast("拉取 PR 失败：" + String(e && e.message || e), true); })
+      .then(function () { relNotesAiBusy = false; relNotesAiBtn.disabled = false; relNotesAiBtn.textContent = "✦ AI 生成"; });
+  }
+  relNotesAiBtn.addEventListener("click", genRelNotes);
 
   function runRelease() {
     if (relRunning) return;
