@@ -487,7 +487,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ URL请求（填完整 URL，GET 触发）；留空脚本=本地模拟该步；超时对脚本与 URL 请求阶段生效，默认 2（URL 请求默认 5）分钟）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（URL 请求阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / URL 请求阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image）；URL 请求阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ URL请求（填完整 URL，GET 触发）；留空脚本=本地模拟该步；超时对脚本与 URL 请求阶段生效，默认 2（URL 请求默认 5）分钟）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（URL 请求阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / URL 请求阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数）；URL 请求阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1688,8 +1688,8 @@ function renderStageActionRow(i){
     const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','stageUrl'); inp.value=(s.url&&s.url.url)||''; inp.placeholder='http(s)://…（支持 {GIT_BRANCH} 等 {变量} 占位符）'; inp.style.width='320px';
     inp.title='粘贴完整请求地址（如 Jenkins 任务 …/job/app/job/{GIT_BRANCH}/buildWithParameters?token=xxx，或任意 webhook 地址）；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符传参，运行时用注入的环境变量/上游产出替换（URL 编码），未定义的变量原样保留；触发为对完整地址直接 GET（等价 curl，URL 自含鉴权如 token 参数，不附加全局凭据）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量';
-    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','urlOutVars'); outInp.value=(s.url&&s.url.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
-    outInp.title='本请求响应体（Jenkins 控制台）产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 字段全部按原名下传；IMAGE_URL=image 表示把响应体的 image 改名为 IMAGE_URL；下游阶段参数值可填 ${IMAGE_URL} 引用、URL 可填 {IMAGE_URL} 占位符引用';
+    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','urlOutVars'); outInp.value=(s.url&&s.url.outVars)||''; outInp.placeholder='如 IMAGE_URL=image 或 XDS_BRANCH=items.0.name'; outInp.style.width='200px';
+    outInp.title='本请求响应体（Jenkins 控制台）产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 顶层字段全部按原名下传；IMAGE_URL=image 表示把响应体的 image 改名为 IMAGE_URL；来源也可写 JSON 路径取单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数）；下游阶段参数值可填 ${IMAGE_URL} 引用、URL 可填 {IMAGE_URL} 占位符引用';
     box.appendChild(lab); box.appendChild(inp); box.appendChild(outLab); box.appendChild(outInp); return;
   }
   // shell / python
@@ -1697,8 +1697,8 @@ function renderStageActionRow(i){
   const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','scriptsList'); inp.setAttribute('data-f','script'); inp.value=(s.script&&s.script.name)||''; inp.placeholder=(s.kind==='python'?'选择 .py 脚本（可搜索）':'选择 .sh 脚本（可搜索，留空=模拟）'); inp.style.width='216px';
   const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','detect'); btn.textContent='识别参数';
   const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量';
-  const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','scriptOutVars'); outInp.value=(s.script&&s.script.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
-  outInp.title='本阶段脚本 stdout 产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 字段全部按原名下传；IMAGE_URL=image 表示把产出的 image 改名为 IMAGE_URL；下游阶段参数值可填 ${IMAGE_URL} 引用';
+  const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','scriptOutVars'); outInp.value=(s.script&&s.script.outVars)||''; outInp.placeholder='如 IMAGE_URL=image 或 XDS_BRANCH=items.0.name'; outInp.style.width='200px';
+  outInp.title='本阶段脚本 stdout 产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 顶层字段全部按原名下传；IMAGE_URL=image 表示把产出的 image 改名为 IMAGE_URL；来源也可写 JSON 路径取单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数）；下游阶段参数值可填 ${IMAGE_URL} 引用';
   box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(outLab); box.appendChild(outInp);
 }
 /* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「需本地运行」则不支持定时） ---------- */
@@ -2251,16 +2251,62 @@ function mergeStageVars(stdout){
   curRun.vars=Object.assign(curRun.vars||{}, v);
   return v;
 }
+/* 提取输出里的单行 JSON（对象或数组；数组仅供「输出变量」JSON 路径取值，顶层标量提取仍只认对象，
+   见 parseStageVars）：逐行尝试解析，同一输出里多处 JSON 时最后一处为准。 */
+function parseStageJson(stdout){
+  if(!stdout) return null;
+  let found=null;
+  String(stdout).split('\n').forEach(function(line){
+    const t=line.trim();
+    if(t.length<2) return;
+    const c0=t.charAt(0), c1=t.charAt(t.length-1);
+    if(!((c0==='{'&&c1==='}')||(c0==='['&&c1===']'))) return;
+    try{ const o=JSON.parse(t); if(o&&typeof o==='object') found=o; }catch(e){}
+  });
+  return found;
+}
+/* JSON 路径取值（「输出变量」的来源写法，如 items.0.name / $.items[-1].name / [0].name）：
+   点号分段，数组段可用数字下标或 [N]（负数从尾部取，-1=最后一项）；终点为标量（字符串/数字/布尔）
+   才返回字符串，路径不存在 / 终点为对象或数组一律 undefined。 */
+function jsonPathGet(obj, path){
+  const p=String(path||'').trim().replace(/^\$\.?/,'');
+  if(!p) return undefined;
+  const tokens=p.match(/[^.\[\]]+|\[-?\d+\]/g);
+  if(!tokens) return undefined;
+  let cur=obj;
+  for(const t of tokens){
+    if(cur===null||cur===undefined) return undefined;
+    const idx=/^\[(-?\d+)\]$/.exec(t);
+    if(Array.isArray(cur)){
+      const i=parseInt(idx?idx[1]:t,10);
+      if(isNaN(i)) return undefined;
+      const at=i<0?cur.length+i:i;
+      if(at<0||at>=cur.length) return undefined;
+      cur=cur[at];
+    }else if(typeof cur==='object'){
+      if(idx) return undefined;   // 对象段不能用 [N] 下标
+      cur=cur[t];
+    }else return undefined;
+  }
+  if(cur===null||cur===undefined||typeof cur==='object') return undefined;
+  return String(cur);
+}
 /* 输出变量映射（阶段编辑器「输出变量」，逗号分隔，如 IMAGE_URL=image, ARCH）：把变量池里捕获到的 key
    改名/声明为目标名补充进 curRun.vars（来源含本阶段产出与更早的上游变量）；原 key 仍保留下传。
+   来源还可写 JSON 路径（含 . / [N] / 前导 $，如 XDS_BRANCH=items.0.name）：从本阶段 stdout / 响应体里的
+   单行 JSON（jsonCtx，见 parseStageJson）按路径取嵌套字段——分页列表类接口（{"items":[...]}）的
+   顶层标量提取拿不到数组内容，需用路径显式指定。
    脚本 / URL 请求阶段通用；varsOut 同步补充，供运行详情展示本阶段产出。 */
-function applyOutVars(spec, varsOut){
+function applyOutVars(spec, varsOut, jsonCtx){
   String(spec||'').split(',').forEach(function(pair){
     const p=pair.trim(); if(!p) return;
     const eq=p.indexOf('=');
     const dst=(eq>=0?p.slice(0,eq):p).trim(), src=(eq>=0?p.slice(eq+1):p).trim();
-    if(!dst || !src || !curRun || !curRun.vars || curRun.vars[src]===undefined) return;
-    curRun.vars[dst]=String(curRun.vars[src]); if(varsOut) varsOut[dst]=String(curRun.vars[src]);
+    if(!dst || !src || !curRun || !curRun.vars) return;
+    let val=curRun.vars[src];
+    if(val===undefined && jsonCtx && /[.\[\]$]/.test(src)) val=jsonPathGet(jsonCtx, src);   // 变量池未捕获到时按 JSON 路径取嵌套字段
+    if(val===undefined||val===null) return;
+    curRun.vars[dst]=String(val); if(varsOut) varsOut[dst]=String(val);
   });
 }
 /* 参数值 ${VAR} 引用替换：取值来源 = 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR 等）+ 上游阶段变量
@@ -2568,14 +2614,16 @@ async function runUrlStep(i){
     }
     if(timer){clearInterval(timer);timer=null;}
     if(!running||!curRun||curRun.token!==tk) return;
-    let consoleText='';
+    let consoleText='', bodyFull='';
     if(buildNum!=null){ try{ const full=await jkGetText(jobPath+buildNum+'/consoleText'); if(full.length>consoleRead){ consoleText=full.slice(consoleRead); consoleRead=full.length; } }catch(e){} }
     else if(triggerBody){
-      /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 对象规整成单行
-         （与脚本阶段「单行 JSON 对象」规则一致），超大体仅取前 64K 防归档膨胀 */
+      /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 规整成单行
+         （与脚本阶段「单行 JSON 对象」规则一致，数组响应同样规整，供输出变量 JSON 路径取值）。
+         超大体仅展示前 64K 防归档膨胀；变量捕获用完整 bodyFull——截断会切烂 JSON 导致整行解析失败 */
       let body=triggerBody;
-      try{ const o=JSON.parse(body); if(o&&typeof o==='object'&&!Array.isArray(o)) body=JSON.stringify(o); }catch(e){}
-      if(body.length>65536) body=body.slice(0,65536);
+      try{ const o=JSON.parse(body); if(o&&typeof o==='object') body=JSON.stringify(o); }catch(e){}
+      bodyFull=body;
+      if(body.length>65536) body=body.slice(0,65536)+'…(截断，仅展示；变量捕获用完整响应体)';
       consoleText=body;
     }
     const ok=(result==='SUCCESS');
@@ -2583,8 +2631,9 @@ async function runUrlStep(i){
     log.push('[URL result '+result+']');
     s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('URL 请求 '+result):'',code:ok?0:1,url:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
+    if(bodyFull && bodyFull!==consoleText) Object.assign(varsOut, mergeStageVars(bodyFull));   // 响应体被截断展示时，顶层标量改从完整体捕获
     archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-    applyOutVars(outSpec, varsOut);   // 输出变量映射：响应体/控制台捕获的 key 改名后下传（见 applyOutVars）
+    applyOutVars(outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')));   // 输出变量映射：响应体/控制台捕获的 key 改名后下传，JSON 路径从单行 JSON 取嵌套字段（见 applyOutVars）
     const dur=(Date.now()-t0)/1000;
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -2625,7 +2674,7 @@ async function runScriptStep(i){
   const dur=(Date.now()-t0)/1000;
   s._out=res;
   const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
-  applyOutVars(sc.outVars, varsOut);   // 输出变量映射：stdout 捕获的 key 改名后下传（与 URL 请求阶段一致，见 applyOutVars）
+  applyOutVars(sc.outVars, varsOut, parseStageJson(res.stdout));   // 输出变量映射：stdout 捕获的 key 改名后下传，JSON 路径从单行 JSON 取嵌套字段（与 URL 请求阶段一致，见 applyOutVars）
   archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
   if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
   else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
