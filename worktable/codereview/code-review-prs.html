@@ -310,7 +310,7 @@
       <div class="dshell-card">
         <h2 class="dshell-sub" style="margin:0 0 8px">构建容器（构建运行环境）</h2>
         <p class="dshell-muted" style="margin:0 0 8px;line-height:1.7">
-          「编译发行」构建阶段默认在服务端本机执行：浅克隆所选分支后在仓库根目录运行所选仓内脚本；填写镜像后，克隆目录将挂载到该容器 <code>/mnt/repo</code> 并经 <code>docker run</code> 在容器内执行（<code>GIT_URL</code>/<code>GIT_AUTH_URL</code>/<code>GIT_BRANCH</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 透传进容器）。留空=本机直接执行。容器执行时自动加 <code>--entrypoint bash</code> 覆盖镜像入口（避免 vllm-openai 等镜像把 <code>bash</code>/脚本名当成入口命令 <code>vllm serve</code> 的参数）。<br />
+          「编译发行」构建阶段默认在服务端本机执行：浅克隆所选分支后在仓库根目录运行所选仓内脚本；填写镜像后，克隆目录将挂载到该容器 <code>/mnt/repo</code> 并经 <code>docker run</code> 在容器内执行（<code>GIT_URL</code>/<code>GIT_AUTH_URL</code>/<code>GIT_BRANCH</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 透传进容器）。留空=本机直接执行。容器执行时自动加 <code>-u root</code> 以 root 权限启动（编译常需写系统目录/安装依赖）并加 <code>--entrypoint bash</code> 覆盖镜像入口（避免 vllm-openai 等镜像把 <code>bash</code>/脚本名当成入口命令 <code>vllm serve</code> 的参数）。<br />
           「附加环境变量」按 <code>KEY=VALUE</code> 空格分隔填写：本机执行时直接注入、容器执行时经 <code>-e KEY</code> 透传（如代理、镜像源、特性开关等仓内脚本需要的变量）。
         </p>
         <div class="pr-tokenRow">
@@ -1065,7 +1065,7 @@
   /* 仓内脚本构建：经 /api/worktable/write 落地临时包装脚本后 exec 执行——
      浅克隆 GIT_AUTH_URL 的 GIT_BRANCH 到临时目录，在仓库根目录运行仓内脚本 BUILD_SCRIPT（相对路径）；
      设置页配置 BUILD_CONTAINER 时把克隆目录挂载到容器 /mnt/repo 内经 docker run 执行
-     （--entrypoint bash 覆盖镜像入口，脚本作为 bash 参数执行），
+     （-u root 以 root 权限启动，--entrypoint bash 覆盖镜像入口，脚本作为 bash 参数执行），
      并透传 GIT_、RELEASE_ 系列环境变量与 BUILD_CMD；BUILD_EXTRA_ENV_KEYS（空格分隔的变量名，
      来自设置页「附加环境变量」）中的变量同样注入并逐一经 -e 透传进容器；凭据输出脱敏。
      BUILD_ARTIFACTS（空格分隔的仓内相对路径/通配）非空时，构建成功后把匹配产物拷贝到
@@ -1108,9 +1108,10 @@
     "# 设置页「附加环境变量」：逐一经 -e KEY 透传进容器（值取包装脚本进程环境）",
     '  dk_env=(); for k in ${BUILD_EXTRA_ENV_KEYS:-}; do dk_env+=(-e "$k"); done',
     "# --entrypoint bash 覆盖镜像入口：vllm-openai 等镜像 ENTRYPOINT=vllm serve，不覆盖会把 bash/脚本名当成入口命令的参数",
+    "# -u root 以 root 权限启动容器：编译常需写系统目录/安装依赖，镜像默认非 root 用户时会直接失败",
     '  echo "→ 在容器 ${BUILD_CONTAINER} 内执行仓内脚本 ${BUILD_SCRIPT} …"',
-    '  echo "+ docker run --rm --entrypoint bash -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${dk_env[*]} ${BUILD_CONTAINER} ${BUILD_SCRIPT}"',
-    '  docker run --rm --entrypoint bash -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${dk_env[@]}" "${BUILD_CONTAINER}" "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
+    '  echo "+ docker run --rm -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${dk_env[*]} ${BUILD_CONTAINER} ${BUILD_SCRIPT}"',
+    '  docker run --rm -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${dk_env[@]}" "${BUILD_CONTAINER}" "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
     '  echo "✓ 构建容器执行完成"',
     "else",
     '  echo "→ 执行仓内构建脚本 ${BUILD_SCRIPT} …（本机执行；如需容器请在「设置」页填写构建容器并保存）"',
