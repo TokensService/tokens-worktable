@@ -766,12 +766,12 @@ export function apply(ctx: Context) {
     const args: string[] = []
     const env: Record<string, string> = {}
     for (const p of sc.params || []) {
-      // 与前端 execScript 一致：静态 :-默认值 照常下发（页面已预填为显式值）；
-      // 动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）不下发字面值——注入后 shell 不会二次展开，
-      // 留空交由脚本自身 :- 展开，同时不挡住下方同名的运行级注入（TARGET_IP/TARGET_USER 等）。
+      // 与前端 execScript 一致：识别到的 :-默认值（静态/动态 dyn 一律）不下发，仅在编辑页 placeholder 展示；
+      // 留空不挡住下方同名的运行级注入（TARGET_IP/TARGET_USER 等）与变量池兜底，都未注入时由脚本自身 :- 展开
+      // （dyn 表达式注入后 shell 不会二次展开，也不能按字面值下发）。
       // 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）。
       const hasVal = sc.values && sc.values[p.key] !== undefined
-      const v = substRunVars(hasVal ? sc.values[p.key] : (p.dyn ? '' : p.def || ''), look)
+      const v = substRunVars(hasVal ? sc.values[p.key] : '', look)
       if (p.kind === 'pos') args.push(String(v))
       else if (String(v) !== '') env[p.key] = String(v)
     }

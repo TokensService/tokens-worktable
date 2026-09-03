@@ -902,7 +902,7 @@ function apply(ctx) {
     const env = {};
     for (const p of sc.params || []) {
       const hasVal = sc.values && sc.values[p.key] !== void 0;
-      const v = substRunVars(hasVal ? sc.values[p.key] : p.dyn ? "" : p.def || "", look);
+      const v = substRunVars(hasVal ? sc.values[p.key] : "", look);
       if (p.kind === "pos") args.push(String(v));
       else if (String(v) !== "") env[p.key] = String(v);
     }
