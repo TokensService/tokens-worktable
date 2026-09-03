@@ -1,11 +1,16 @@
 # 本目录 dsh-worktable 的本地改动
 
-- 定时执行的阶段超时不再生效 bug 修复 + 超时标注（`src/index.ts`）：服务端定时路径 `runStageScript`
-  此前硬编码 `timeout: 120000`，无视阶段在编辑器里配置的「超时(分钟)」，长任务（如大镜像拉取）到 120s
-  被 execFile 杀掉，日志戛然而止且无 stderr 说明，看起来就像「日志被截断」。现按页面 `runScriptStep`
-  同一规则取阶段 `timeout`（秒存，默认 120，上限 1h 对齐 exec-stream），由 `execPlan` 随计划带入；
-  进程因超时（SIGTERM）或输出超 256MB 缓冲（ENOBUFS）被杀时，在 stderr 追加原因说明
-  （对齐 exec-stream 的 'exec timed out' 提示），日志里能直接看到是被超时终止而非截断。
+- 阶段超时改为「留空=无超时」并修复定时路径超时失效（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
+  此前编辑器「超时(分钟)」留空时脚本阶段默认 2 分钟、URL 请求阶段默认 5 分钟，且服务端定时路径
+  `runStageScript` 硬编码 `timeout: 120000` 完全无视阶段配置——长任务（如大镜像拉取）到点被杀，
+  日志戛然而止且无 stderr 说明，看起来就像「日志被截断」。现统一改为：留空=无超时（不限制执行时长，
+  可经「中止」手动停止；填写后仍夹取 1s~1h 上限）：页面 runScriptStep/runUrlStep（Jenkins 轮询 deadline=0
+  不启用）与 execScript 默认值、服务端 exec-stream 与一次性 exec 路由（timeoutMs=0 不挂 kill 定时器 /
+  execFile timeout:0）、定时路径 runStageScript（execPlan 随计划带入 s.timeout）全部对齐；编辑器输入框
+  placeholder 改「不限」、设置页说明同步更新。「环境清理」脚本无编辑器超时字段，保留原 120s 隐式上限
+  防挂死阻塞启动；归档脚本调用方显式传的 120s 不变。另：进程因超时（SIGTERM）或输出超 256MB 缓冲
+  （ENOBUFS）被杀时，在 stderr 追加原因说明（对齐 exec-stream 的 'exec timed out' 提示），日志里能直接
+  看到是被超时终止而非截断。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
 
 - 流水线日志全量保留、一律不截断（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：

@@ -806,9 +806,10 @@ export function apply(ctx: Context) {
       if (runCtx.tag && env.ARCHIVE_TAG === undefined) env.ARCHIVE_TAG = String(runCtx.tag)
     }
     const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
-    /* 阶段级超时（与页面 runScriptStep 一致：编辑器「超时(分钟)」×60 存秒，默认 120；上限 1h 对齐 exec-stream）。
-       此前服务端硬编码 120s，长任务（如大镜像拉取）到点被杀，日志戛然而止且无任何超时说明 */
-    const timeoutMs = Math.min(Math.max(Number(timeoutSec) || 120, 1), 3600) * 1000
+    /* 阶段级超时（与页面 runScriptStep 一致：编辑器「超时(分钟)」×60 存秒；留空=0=无超时。
+       此前服务端硬编码 120s，长任务（如大镜像拉取）到点被杀，日志戛然而止且无任何超时说明；
+       设置后仍夹取 1s~1h 上限，对齐 exec-stream */
+    const timeoutMs = timeoutSec ? Math.min(Math.max(Number(timeoutSec), 1), 3600) * 1000 : 0
     return new Promise((resolve) => {
       const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
       /* maxBuffer 256MB：日志保全量，不得因缓冲上限杀进程丢输出（此前 4MB，超大输出 ENOBUFS 截断）；
@@ -1046,7 +1047,7 @@ export function apply(ctx: Context) {
         const env: Record<string, string> = {}
         for (const k of Object.keys(envIn)) { const v = (envIn as any)[k]; if (v !== undefined && v !== null) env[k] = String(v) }
         const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
-        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
+        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), 3600000) : 0   // 0/缺省=无超时（execFile timeout:0 不启用超时）；页面阶段「超时(分钟)」留空即传 0
         const interp = /\.py$/i.test(path) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
         execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },   // 256MB：与 runStageScript 一致，日志保全量，不得因缓冲上限杀进程丢输出
@@ -1078,7 +1079,7 @@ export function apply(ctx: Context) {
         const env: Record<string, string> = {}
         for (const k of Object.keys(envIn)) { const v = (envIn as any)[k]; if (v !== undefined && v !== null) env[k] = String(v) }
         const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
-        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
+        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), 3600000) : 0   // 0/缺省=无超时（页面阶段「超时(分钟)」留空即传 0）：不挂超时 kill 定时器
         const interp = /.py$/i.test(scriptPath) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 spawn 直接 E2BIG，见 dropOversizeEnv）
         res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
@@ -1091,7 +1092,7 @@ export function apply(ctx: Context) {
         const killTree = (sig: string) => {
           try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, sig); else child.kill(sig) } catch {}
         }
-        const killTimer = setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs)
+        const killTimer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs) : null
         child.stdout.on('data', (d: Buffer) => send({ type: 'out', text: d.toString('utf8') }))
         child.stderr.on('data', (d: Buffer) => send({ type: 'err', text: d.toString('utf8') }))
         child.on('error', (err: Error) => {               // ENOENT 等无法启动

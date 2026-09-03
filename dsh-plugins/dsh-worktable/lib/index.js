@@ -927,7 +927,7 @@ function apply(ctx) {
       if (runCtx.tag && env.ARCHIVE_TAG === void 0) env.ARCHIVE_TAG = String(runCtx.tag);
     }
     const oversizeWarn = dropOversizeEnv(env);
-    const timeoutMs = Math.min(Math.max(Number(timeoutSec) || 120, 1), 3600) * 1e3;
+    const timeoutMs = timeoutSec ? Math.min(Math.max(Number(timeoutSec), 1), 3600) * 1e3 : 0;
     return new Promise((resolve) => {
       const isPy = sc.lang === "py" || /\.py$/i.test(sc.name || "");
       execFile(
@@ -1185,7 +1185,7 @@ function apply(ctx) {
           if (v !== void 0 && v !== null) env[k] = String(v);
         }
         const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : void 0;
-        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 12e4, 1e3), 36e5);
+        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1e3), 36e5) : 0;
         const interp = /\.py$/i.test(path) ? "python3" : "bash";
         const oversizeWarn = dropOversizeEnv(env);
         execFile(
@@ -1227,7 +1227,7 @@ function apply(ctx) {
           if (v !== void 0 && v !== null) env[k] = String(v);
         }
         const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : void 0;
-        const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 12e4, 1e3), 36e5);
+        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1e3), 36e5) : 0;
         const interp = /.py$/i.test(scriptPath) ? "python3" : "bash";
         const oversizeWarn = dropOversizeEnv(env);
         res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
@@ -1245,10 +1245,10 @@ function apply(ctx) {
           } catch {
           }
         };
-        const killTimer = setTimeout(() => {
+        const killTimer = timeoutMs > 0 ? setTimeout(() => {
           timedOut = true;
           killTree("SIGKILL");
-        }, timeoutMs);
+        }, timeoutMs) : null;
         child.stdout.on("data", (d) => send({ type: "out", text: d.toString("utf8") }));
         child.stderr.on("data", (d) => send({ type: "err", text: d.toString("utf8") }));
         child.on("error", (err) => {
