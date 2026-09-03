@@ -257,6 +257,27 @@ values["global"] = deep_merge(values.get("global", {}), {
     "enableTaskExecutorGroups": True,
 })
 values = deep_merge(values, yaml_replace_map)
+
+# The chart substitutes this placeholder per task executor group.  Image
+# templates from older builds hard-code 52365, which makes custom Ray
+# dashboard-agent ports fail their Kubernetes health probes.
+worker_group_templates = values.get("workerGroups")
+task_executor_template = (
+    worker_group_templates.get("taskExecutorGroup-card")
+    if isinstance(worker_group_templates, dict) else None
+)
+if isinstance(task_executor_template, dict):
+    for probe_name in ("livenessProbe", "readinessProbe", "startupProbe"):
+        command = task_executor_template.get(probe_name, {}).get("exec", {}).get("command")
+        if isinstance(command, list):
+            task_executor_template[probe_name]["exec"]["command"] = [
+                item.replace(
+                    "http://localhost:52365/api/local_raylet_healthz",
+                    "http://localhost:{DASHBOARD_AGENT_LISTEN_PORT}/api/local_raylet_healthz",
+                ) if isinstance(item, str) else item
+                for item in command
+            ]
+
 # Target placement is derived only from TARGET_HOSTS and must not be overridden.
 values["nodeSelector"] = {node_selector_key: node_selector_value}
 values.setdefault("head", {})["nodeSelector"] = {node_selector_key: node_selector_value}
