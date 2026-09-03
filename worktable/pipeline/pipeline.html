@@ -36,6 +36,12 @@
     #pipelineControls input.dshell-input { max-width:150px; }
     #pipelineControls #triggeredBy { max-width:110px; }
     #pipelineControls #envMultiBtn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
+    /* 定时页控制区与主控同一限宽规则（第一行设置与「运行流水线」保持一致，「方式」及以后排第二行） */
+    #schedControls select.dshell-input,
+    #schedControls button.dshell-input { max-width:220px; }
+    #schedControls input.dshell-input { max-width:150px; }
+    #schedControls #schedBy { max-width:110px; }
+    #schedControls #schedEnvMultiBtn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
     .pipeline-seg { display:flex; align-items:center; flex-wrap:nowrap; overflow-x:auto; gap:0; padding-bottom:4px; }
     .pipeline-node { flex:0 0 auto; width:140px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-fill-l1); padding:10px 8px; cursor:pointer; user-select:none; transition:border-color .15s,background .15s,box-shadow .15s; }
     .pipeline-node:hover { border-color:var(--dsw-alias-border-l2); background:var(--dsw-alias-fill-l1); }
@@ -266,49 +272,70 @@
   </div>
   </div><!-- /pageMain -->
 
-  <!-- 定时任务（独立页面：周期 / 一次性计划，服务端调度，关闭页面也会执行） -->
+  <!-- 定时任务（独立页面：周期 / 一次性计划，服务端调度，关闭页面也会执行）。
+       设置分两行：第一行与主控「运行流水线」设置保持一致（流水线 / 环境（可多选）/ 代码仓 / 分支Tag / 部署策略 / 执行人 / 先清理环境），
+       第二行为「方式」及以后的调度参数与创建按钮 -->
   <div id="pageSched" style="display:none">
-    <div class="dshell-card pipeline-controls">
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-        <select id="schedPipeline" class="dshell-input" style="min-width:130px;"></select>
-      </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
-        <select id="schedEnv" class="dshell-input" style="min-width:130px;"></select>
-      </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
-        <select id="schedRepo" class="dshell-input" style="min-width:130px;"></select>
-      </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支
-        <input id="schedBranch" class="dshell-input" value="main" autocomplete="off" style="min-width:110px;" />
-      </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
-        <input id="schedBy" class="dshell-input" placeholder="必填" autocomplete="off" />
-      </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">方式
-        <select id="runSched" class="dshell-input" style="min-width:92px;">
-          <option value="interval">周期性</option>
-          <option value="once">一次性</option>
-        </select>
-      </label>
-      <label id="runSchedEveryWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">每
-        <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" />
-        <select id="runSchedUnit" class="dshell-input" style="min-width:64px;" title="周期单位：分钟 / 小时 / 天 / 周 / 月 / 年（月、年按日历步进）">
-          <option value="min">分钟</option>
-          <option value="hour">小时</option>
-          <option value="day">天</option>
-          <option value="week">周</option>
-          <option value="month">月</option>
-          <option value="year">年</option>
-        </select>
-      </label>
-      <label id="runSchedStartWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">开始时间
-        <input id="runSchedStart" class="dshell-input" type="datetime-local" style="width:180px;" title="留空=立即按周期触发；填未来时间=到达后才开始周期触发" />
-      </label>
-      <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
-        <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
-      </label>
-      <span style="flex:1"></span>
-      <button id="schedCreateBtn" class="dshell-btn">＋ 创建定时计划</button>
+    <div class="dshell-card">
+      <div class="pipeline-controls" id="schedControls">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
+          <select id="schedPipeline" class="dshell-input" style="min-width:130px;font-weight:600;"></select>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境（可多选）
+          <span id="schedEnvMulti" style="position:relative;display:inline-block;">
+            <button id="schedEnvMultiBtn" type="button" class="dshell-input" style="min-width:150px;text-align:left;cursor:pointer;">选择 IP</button>
+            <div id="schedEnvMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:230px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
+          <select id="schedRepo" class="dshell-input" style="min-width:130px;"></select>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支/Tag
+          <span id="schedBranchPick" style="position:relative;display:inline-block;">
+            <input id="schedBranch" class="dshell-input" value="main" autocomplete="off" style="min-width:130px;" />
+            <div id="schedBranchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
+          <span id="schedStrategyPick" style="position:relative;display:inline-block;">
+            <input id="schedStrategy" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取支持的部署策略，聚焦弹出面板可搜索/刷新（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）" />
+            <div id="schedStrategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
+          <input id="schedBy" class="dshell-input" placeholder="必填" autocomplete="off" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="与主控「先清理环境」同一开关：勾选后定时触发时服务端同样先执行清理脚本">
+          <input type="checkbox" id="schedCleanupEnv" /> 先清理环境
+        </label>
+      </div>
+      <div class="pipeline-controls" style="margin-top:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">方式
+          <select id="runSched" class="dshell-input" style="min-width:92px;">
+            <option value="interval">周期性</option>
+            <option value="once">一次性</option>
+          </select>
+        </label>
+        <label id="runSchedEveryWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">每
+          <input id="runSchedEvery" class="dshell-input" type="number" min="1" value="10" style="width:60px;" />
+          <select id="runSchedUnit" class="dshell-input" style="min-width:64px;" title="周期单位：分钟 / 小时 / 天 / 周 / 月 / 年（月、年按日历步进）">
+            <option value="min">分钟</option>
+            <option value="hour">小时</option>
+            <option value="day">天</option>
+            <option value="week">周</option>
+            <option value="month">月</option>
+            <option value="year">年</option>
+          </select>
+        </label>
+        <label id="runSchedStartWrap" class="dshell-muted" style="display:flex;align-items:center;gap:5px;">开始时间
+          <input id="runSchedStart" class="dshell-input" type="datetime-local" style="width:180px;" title="留空=立即按周期触发；填未来时间=到达后才开始周期触发" />
+        </label>
+        <label id="runSchedAtWrap" class="dshell-muted" style="display:none;align-items:center;gap:5px;">时间
+          <input id="runSchedAt" class="dshell-input" type="datetime-local" style="width:180px;" />
+        </label>
+        <span style="flex:1"></span>
+        <button id="schedCreateBtn" class="dshell-btn">＋ 创建定时计划</button>
+      </div>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">定时计划 <span id="planCount" class="dshell-muted"></span> <span class="dshell-muted" style="font-size:11px;font-weight:normal;">服务端调度，关闭页面也会执行</span></h2>
@@ -735,14 +762,17 @@ function curEnvs(){
   return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}];
 }
 function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
-function renderEnvOptions(){
-  const btn=$('envMultiBtn'); const panel=$('envMultiPanel'); if(!btn||!panel) return;
-  if(!selectedEnvIds || !selectedEnvIds.length) selectedEnvIds = environments.slice(0,1).map(e=>e.id);
-  btn.textContent = envSelText() || '选择 IP';
+/* 环境多选面板（主控与定时页共用渲染）：勾选状态经 getIds/setIds 回调注入，切换后执行 after 附加动作 */
+function renderEnvMulti(o){
+  const btn=$(o.btnId); const panel=$(o.panelId); if(!btn||!panel) return;
+  let ids=o.getIds();
+  if(!ids || !ids.length){ ids=environments.slice(0,1).map(e=>e.id); o.setIds(ids); }
+  const sel=environments.filter(e=>ids.indexOf(e.id)>=0);
+  btn.textContent = (sel.length?sel:environments.slice(0,1)).map(e=>e.ip).join('，') || '选择 IP';
   btn.title = btn.textContent;   // 限宽省略时悬浮可见完整 IP 列表
   panel.innerHTML='';
   environments.forEach(e=>{
-    const on = selectedEnvIds.indexOf(e.id)>=0;
+    const on = ids.indexOf(e.id)>=0;
     const st=gpuStatus[e.id];
     const gpu=(st && st.total!==undefined)?(' · GPU '+(st.used===undefined?'?':st.used)+'/'+st.total):(st && st.error?' · GPU 查询失败':'');
     const lab=document.createElement('label');
@@ -752,13 +782,19 @@ function renderEnvOptions(){
   });
   panel.querySelectorAll('[data-envcb]').forEach(cb=>cb.addEventListener('change',()=>{
     const id=cb.getAttribute('data-envcb');
-    if(cb.checked){ if(selectedEnvIds.indexOf(id)<0) selectedEnvIds.push(id); }
-    else { selectedEnvIds=selectedEnvIds.filter(x=>x!==id); }
-    if(!selectedEnvIds.length){ selectedEnvIds=[id]; cb.checked=true; }   // 至少保留一个
-    saveEnvSel(); renderEnvOptions();
-    if(activeStages().some(s=>s.skip)) renderFlow();
-    renderDetail();
+    let cur=(o.getIds()||[]).slice();
+    if(cb.checked){ if(cur.indexOf(id)<0) cur.push(id); }
+    else { cur=cur.filter(x=>x!==id); }
+    if(!cur.length){ cur=[id]; cb.checked=true; }   // 至少保留一个
+    o.setIds(cur); renderEnvMulti(o);
+    if(o.after) o.after();
   }));
+}
+function renderEnvOptions(){
+  renderEnvMulti({btnId:'envMultiBtn', panelId:'envMultiPanel',
+    getIds:()=>selectedEnvIds, setIds:(ids)=>{ selectedEnvIds=ids; saveEnvSel(); },
+    after:()=>{ if(activeStages().some(s=>s.skip)) renderFlow(); renderDetail(); }});
+  renderSchedEnvOptions();   // 定时页环境多选与主控共用节点环境数据，一并刷新
 }
 let envEditId=null;
 let envFilterText='';
@@ -1090,13 +1126,29 @@ async function testRepoStrategy(r){
   else { tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 部署策略拉取成功（分支 '+br+'）· '+st.items.length+' 个：'+st.items.slice(0,8).join('、')+(st.items.length>8?' …':''); }
   if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; if(strategyPanelOpen()) renderStrategyPanel(); }
 }
+/* 分支/Tag 与部署策略面板上下文：主控（运行流水线设置）与定时页共用同一套拉取/渲染逻辑，
+   仅输入框、面板元素与目标代码仓不同（which 缺省='main' 主控，'sched'=定时页） */
+function pickCtx(which){
+  if(which==='sched') return {
+    inp:$('schedBranch'), panel:$('schedBranchPanel'),
+    repo:function(){ return resolveRepo(($('schedRepo') && $('schedRepo').value) || curRepoId); },
+    branch:function(){ return ($('schedBranch').value.trim()||'main'); },
+    strategyInp:$('schedStrategy'), strategyPanel:$('schedStrategyPanel'),
+  };
+  return {
+    inp:$('branchName'), panel:$('branchPanel'),
+    repo:curRepo,
+    branch:function(){ return ($('branchName').value.trim()||'0830_dev_bnt3'); },
+    strategyInp:$('deployStrategyName'), strategyPanel:$('strategyPanel'),
+  };
+}
 /* 分支/Tag 选择：按当前代码仓搜索远程分支与 Tag，下拉面板点选；仍可手动输入 */
-async function loadRepoBranches(repo, force){
-  repo = repo || curRepo();
+async function loadRepoBranches(repo, force, which){
+  repo = repo || pickCtx(which).repo();
   const id=repo.id;
   if(!force && repoBranches[id] && !repoBranches[id].error && !repoBranches[id].loading) return repoBranches[id];
   repoBranches[id]={loading:true};
-  renderBranchPanel();
+  renderBranchPanel(false, which);
   let j;
   try{ j=await fetchRepoRefs(repo); }
   catch(e){ j={ok:false, error:String(e.message||e)}; }
@@ -1105,9 +1157,9 @@ async function loadRepoBranches(repo, force){
 }
 /* 加载三点：分支 / 部署策略面板「加载中」与头部计数占位共用的弹跳小圆点（样式见 .pip-dots） */
 function loadingDots(){ return '<span class="pip-dots"><i></i><i></i><i></i></span>'; }
-function renderBranchPanel(showAll){
-  const panel=$('branchPanel'); const inp=$('branchName'); if(!panel||!inp) return;
-  const repo=curRepo(); const q=showAll?'':inp.value.trim().toLowerCase();
+function renderBranchPanel(showAll, which){
+  const ctx=pickCtx(which); const panel=ctx.panel; const inp=ctx.inp; if(!panel||!inp) return;
+  const repo=ctx.repo(); const q=showAll?'':inp.value.trim().toLowerCase();
   const cached=repoBranches[repo.id];
   const ready=cached&&!cached.loading&&!cached.error;
   const nb=ready?(cached.branches||[]).length:0;
@@ -1126,9 +1178,9 @@ function renderBranchPanel(showAll){
     else { h+=head('分支',br.length)+br.map(item).join('')+head('Tag',tg.length)+tg.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
-  panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); loadDeployStrategies(); }));
-  const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(curRepo(), true));
-  const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=curRepo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(curRepo(), true).then(()=>renderBranchPanel()); });
+  panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); loadDeployStrategies(false, which); }));
+  const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(ctx.repo(), true, which));
+  const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=ctx.repo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(ctx.repo(), true, which).then(()=>renderBranchPanel(false, which)); });
 }
 /* ---------- 部署策略（按分支从代码仓「部署策略 URL」拉取） ---------- */
 /* 仓库可配置 strategyUrl（{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}）；
@@ -1171,23 +1223,23 @@ async function fetchDeployStrategies(tpl, branch){
 }
 /* 主控当前选中的部署策略（input 自由文本，可手输列表外名称；空串=不使用） */
 function curStrategy(){ const i=$('deployStrategyName'); return i?i.value.trim():''; }
-function strategyPanelOpen(){ const p=$('strategyPanel'); return !!(p && p.style.display!=='none'); }
-/* 拉取当前分支的策略列表进缓存；仅面板打开时重绘（初始化调用不弹面板） */
-async function loadDeployStrategies(force){
-  const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
+function strategyPanelOpen(which){ const p=pickCtx(which).strategyPanel; return !!(p && p.style.display!=='none'); }
+/* 拉取当前分支的策略列表进缓存；仅面板打开时重绘（初始化调用不弹面板）；which 区分主控 / 定时页面板 */
+async function loadDeployStrategies(force, which){
+  const ctx=pickCtx(which); const repo=ctx.repo(); const branch=ctx.branch();
   const tpl=((repo && repo.strategyUrl)||'').trim();
   const key=deployStrategyKey(repo,branch);
-  if(!tpl){ delete deployStrategies[key]; if(strategyPanelOpen()) renderStrategyPanel(); return; }
+  if(!tpl){ delete deployStrategies[key]; if(strategyPanelOpen(which)) renderStrategyPanel(false, which); return; }
   const cached=deployStrategies[key];
-  if(!force && cached && !cached.loading){ if(strategyPanelOpen()) renderStrategyPanel(); return; }
-  deployStrategies[key]={loading:true}; if(strategyPanelOpen()) renderStrategyPanel();
+  if(!force && cached && !cached.loading){ if(strategyPanelOpen(which)) renderStrategyPanel(false, which); return; }
+  deployStrategies[key]={loading:true}; if(strategyPanelOpen(which)) renderStrategyPanel(false, which);
   deployStrategies[key]=await fetchDeployStrategies(tpl, branch);
-  if(strategyPanelOpen()) renderStrategyPanel();
+  if(strategyPanelOpen(which)) renderStrategyPanel(false, which);
 }
 /* 部署策略搜索面板：与分支/Tag 面板同款——头部仓库/分支/个数 + ⟳ 重新拉取，列表按输入筛选，点选回填 */
-function renderStrategyPanel(showAll){
-  const panel=$('strategyPanel'); const inp=$('deployStrategyName'); if(!panel||!inp) return;
-  const repo=curRepo(); const branch=($('branchName').value.trim()||'0830_dev_bnt3');
+function renderStrategyPanel(showAll, which){
+  const ctx=pickCtx(which); const panel=ctx.strategyPanel; const inp=ctx.strategyInp; if(!panel||!inp) return;
+  const repo=ctx.repo(); const branch=ctx.branch();
   const q=showAll?'':inp.value.trim().toLowerCase();
   const tpl=((repo && repo.strategyUrl)||'').trim();
   const st=tpl?deployStrategies[deployStrategyKey(repo,branch)]:null;
@@ -1208,7 +1260,7 @@ function renderStrategyPanel(showAll){
   }
   panel.innerHTML=h; panel.style.display='block';
   panel.querySelectorAll('[data-strategy]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-strategy'); panel.style.display='none'; inp.focus(); }));
-  const rb=panel.querySelector('[data-strategyrefresh]'); if(rb) rb.addEventListener('click', ()=>loadDeployStrategies(true));
+  const rb=panel.querySelector('[data-strategyrefresh]'); if(rb) rb.addEventListener('click', ()=>loadDeployStrategies(true, which));
 }
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
@@ -1403,6 +1455,7 @@ function saveCleanup(){
     localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
     localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
   }catch(e){}
+  const sc=$('schedCleanupEnv'); if(sc) sc.checked=$('cleanupEnv').checked;   // 定时页「先清理环境」与主控同一开关，保持双向同步
   persistState();
 }
 function renderCleanupParams(){
@@ -2014,7 +2067,7 @@ function startRun(opts){
   if(opts.stages){ pl={stages:opts.stages, id:opts.pipelineId||null, name:opts.pipelineName||'(自定义)'}; }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   const envs = (opts.envs && opts.envs.length) ? opts.envs      // 队列/定时快照：复用入队时的节点对象（多选 IP 不丢失）
-    : opts.env ? [resolveEnv(opts.env)] : curEnvs();             // 手动运行：可多选 IP；定时：单环境
+    : opts.env ? [resolveEnv(opts.env)] : curEnvs();             // 手动运行/定时计划：均可多选 IP（快照节点对象优先）
   const env = envs.map(e=>e.ip).join('，');
   const image = opts.image || DEFAULT_IMAGE;
   const release = image;                 // Release 字段已移除，内部以镜像名作为 release
@@ -2143,15 +2196,29 @@ async function registerStageTimers(startIdx){
     serverPlans=merged; renderPlanList();
   }catch(e){ console.warn('[stage-timer] 登记失败：', e); }
 }
-/* 定时页表单：选项跟随流水线 / 环境 / 代码仓数据，切换进页面时刷新并尽量保留已选值 */
+/* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化；未单独选择过则跟随主控当前环境 */
+let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
+function saveSchedEnvSel(){ try{ localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds)); }catch(e){} }
+function schedEnvs(){
+  const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）
+  let list=environments.filter(e=>ids.indexOf(e.id)>=0);
+  if(!list.length) list=environments.slice(0,1);
+  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}];
+}
+function renderSchedEnvOptions(){
+  renderEnvMulti({btnId:'schedEnvMultiBtn', panelId:'schedEnvMultiPanel',
+    getIds:()=> (schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id),
+    setIds:(ids)=>{ schedEnvIds=ids; saveSchedEnvSel(); }});
+}
+/* 定时页表单：选项跟随流水线 / 环境 / 代码仓数据（设置项与主控「运行流水线」保持一致），切换进页面时刷新并尽量保留已选值 */
 function renderSchedForm(){
   const pl=$('schedPipeline'); if(!pl) return;
   const curPl=pl.value || curPipelineId; pl.innerHTML='';
   pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===curPl) o.selected=true; pl.appendChild(o); });
-  const env=$('schedEnv'); const curEnvId=env.value; env.innerHTML='';
-  environments.forEach(e=>{ const o=document.createElement('option'); o.value=e.id; o.textContent=envLabelOf(e.id); if(e.id===curEnvId) o.selected=true; env.appendChild(o); });
+  renderSchedEnvOptions();   // 环境（可多选）：面板选项跟随节点环境数据
   const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
   repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
+  $('schedCleanupEnv').checked=$('cleanupEnv').checked;   // 「先清理环境」与主控同一开关（全局配置，服务端定时执行同样生效）
   if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim();
 }
 function addPlan(){
@@ -2159,11 +2226,12 @@ function addPlan(){
   const schedBy=$('schedBy').value.trim();
   if(!schedBy){ alert('请先填写「执行人」再创建定时计划。'); $('schedBy').focus(); return; }
   const pl=findPipeline($('schedPipeline').value) || curPipeline();
-  const env=resolveEnv($('schedEnv').value);
+  const envs=schedEnvs();   // 环境（可多选）：与「运行流水线」设置一致，快照多 IP 节点对象（服务端按 envs 注入 TARGET_IPS 等）
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
     pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
-    env:env.ip, envs:[env], image:DEFAULT_IMAGE, repoId:$('schedRepo').value, branch:($('schedBranch').value.trim()||'main'),
+    env:envs.map(e=>e.ip).join('，'), envs:envs.map(e=>({...e})), image:DEFAULT_IMAGE, repoId:$('schedRepo').value, branch:($('schedBranch').value.trim()||'main'),
+    strategy:($('schedStrategy').value.trim()||''),   // 部署策略：随计划快照，服务端定时执行时与运行队列同样注入
     by:schedBy+' ⏰', createdAt:Date.now(),
   };
   if(mode==='once'){
@@ -3542,6 +3610,19 @@ document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('b
 $('deployStrategyName').addEventListener('focus', ()=>{ renderStrategyPanel(true); loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
 $('deployStrategyName').addEventListener('input', ()=>{ if($('strategyPanel').style.display==='none'){ loadDeployStrategies().then(()=>renderStrategyPanel()); } else { renderStrategyPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$('strategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+/* 定时页控制区：与主控同一套交互（环境多选 / 代码仓切换 / 分支Tag / 部署策略面板，点外关闭）；
+   「先清理环境」与主控同一开关——改定时页勾选即写回主控并持久化（saveCleanup 内反向同步显示） */
+$('schedEnvMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('schedEnvMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
+document.addEventListener('click', (e)=>{ const p=$('schedEnvMultiPanel'); const m=$('schedEnvMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+$('schedRepo').addEventListener('change', ()=>{ const bp=$('schedBranchPanel'); if(bp) bp.style.display='none'; loadDeployStrategies(true,'sched'); });
+$('schedBranch').addEventListener('focus', ()=>{ loadRepoBranches(pickCtx('sched').repo(), false, 'sched').then(()=>renderBranchPanel(true,'sched')); });
+$('schedBranch').addEventListener('change', ()=>loadDeployStrategies(false,'sched'));
+$('schedBranch').addEventListener('input', ()=>{ if($('schedBranchPanel').style.display==='none'){ loadRepoBranches(pickCtx('sched').repo(), false, 'sched').then(()=>renderBranchPanel(false,'sched')); } else { renderBranchPanel(false,'sched'); } });
+document.addEventListener('click', (e)=>{ const p=$('schedBranchPanel'); const m=$('schedBranchPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+$('schedStrategy').addEventListener('focus', ()=>{ renderStrategyPanel(true,'sched'); loadDeployStrategies(false,'sched').then(()=>renderStrategyPanel(true,'sched')); });
+$('schedStrategy').addEventListener('input', ()=>{ if($('schedStrategyPanel').style.display==='none'){ loadDeployStrategies(false,'sched').then(()=>renderStrategyPanel(false,'sched')); } else { renderStrategyPanel(false,'sched'); } });
+document.addEventListener('click', (e)=>{ const p=$('schedStrategyPanel'); const m=$('schedStrategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+$('schedCleanupEnv').addEventListener('change', (e)=>{ $('cleanupEnv').checked=e.target.checked; saveCleanup(); });
 
 /* 初始化 */
 function renderAll(){
