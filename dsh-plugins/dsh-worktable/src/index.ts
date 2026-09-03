@@ -831,10 +831,11 @@ export function apply(ctx: Context) {
       if (p.kind === 'once') {
         if (!(Number(p.at) > 0) || Number(p.at) > now) continue
         planRunning.add(p.id)
-        // 一次性：执行完从计划文件中移除
+        // 一次性：执行完从计划文件中移除——按 id+createdAt 双条件仅移除本次执行的那一份登记，
+        //   避免执行期间页面以同 id 重新登记的新计划（如旧版页面稳定 id 的定时后缀）被一并误删
         execPlan(p).catch(() => {}).finally(async () => {
           planRunning.delete(p.id)
-          const rest = (await readPlansFile()).filter((x: any) => x && x.id !== p.id)
+          const rest = (await readPlansFile()).filter((x: any) => !x || x.id !== p.id || Number(x.createdAt) !== Number(p.createdAt))
           await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {})
         })
       } else if (p.kind === 'interval') {

@@ -2103,7 +2103,9 @@ function renderPlanList(){
 }
 function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
 /* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
-   （稳定 id 去重——重跑同一条流水线会替换旧计划而非叠加）。阶段不再单独配置周期：周期性由流水线级定时计划
+   （id 带本次运行 tag 逐次运行独立登记：每次运行各自执行、各自归档，重跑不再互替——
+   旧版稳定 id 会被「执行完按 id 移除计划」的服务端清理误删执行中登记的新计划，导致该次运行后缀不执行、
+   归档文件夹缺失每任务独立日志）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
    服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；URL 请求阶段服务端跳过；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
@@ -2116,18 +2118,18 @@ async function registerStageTimers(startIdx){
     stages.push(ps);
   }
   if(!stages.length) return;
-  const sid='stimer-'+(curRun.pipelineId||'pl')+'-suffix';
+  const sid='stimer-'+(curRun.pipelineId||'pl')+'-'+(curRun.tag||Date.now())+'-suffix';   // 逐次运行唯一：同一次运行内重复登记（如从失败阶段重试再到分界）仍按同 id 替换去重
   // 把本次运行的归档上下文（文件夹/tag/起始序号）随计划交给服务端：
   // 定时后缀各任务回显由服务端写入同一归档文件夹、独立任务日志（run-<tag>-NN-任务名.log），与前缀日志连贯编号
   const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · 定时后缀',
     stages, env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
     branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now(),
     archive:curRun.archive||null, tag:curRun.tag||null, baseSeq:startIdx,
-    kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · 立即（周期跟随流水线计划）' };
+    kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(curRun.tag||'')+' · 立即（周期跟随流水线计划）' };
   try{
     const r=await fetch('/api/worktable/pipeline/plans');
     let fresh=[]; if(r.ok){ const j=await r.json(); fresh=Array.isArray(j.plans)?j.plans:[]; }
-    const kept=fresh.filter(p=>!p || p.id!==sid);   // 去重：替换旧计划
+    const kept=fresh.filter(p=>!p || p.id!==sid);   // 去重：仅替换同一次运行的旧登记（sid 含 tag），不影响其他运行的待执行计划
     const merged=kept.concat([plan]);
     await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:merged})});
     serverPlans=merged; renderPlanList();

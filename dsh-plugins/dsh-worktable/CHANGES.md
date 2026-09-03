@@ -1,5 +1,14 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 定时后缀计划丢失修复（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
+  页面 `registerStageTimers` 的后缀计划 id 由稳定值 `stimer-<流水线id>-suffix` 改为带本次运行 tag 的
+  逐次唯一值——旧稳定 id 下，重跑同一条流水线会以同 id 替换待执行计划（前一次运行后缀永不执行），
+  且服务端 once 计划执行完的 `finally` 按 id 移除会把执行期间新登记的同 id 计划一并误删，
+  两种情形都导致该次运行的定时后缀不执行、归档文件夹缺失每任务独立日志（run-<tag>-NN-任务名.log）。
+  服务端 `planTick` 移除条件同步收紧为 id+createdAt 双条件（仅移除本次执行的那一份登记），
+  旧版页面（稳定 id）重登记的新计划也不再被误删。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 流水线页 Jenkins 阶段改为「URL 请求」阶段（`src/index.ts` 配套）：
   worktable/pipeline/pipeline.html 阶段类型 `kind:'jenkins'` 改为 `kind:'url'`（标签「URL请求」），
   去掉「拉取参数」（`detectJenkinsParams` 与 params/values 参数表单），参数改由 URL 的
