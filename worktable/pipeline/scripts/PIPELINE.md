@@ -2,11 +2,14 @@
 
 `pull_render_config.sh` is the preparation entry point. It runs, in order:
 
-1. `pull-image.sh`: pre-pulls `IMAGE_NAME` into the local and target
-   Kubernetes/containerd image caches, then exports the chart, values, and
+1. `pull-image.sh`: pulls `IMAGE_NAME` into the pipeline execution host's
+   Kubernetes/containerd image cache, then exports the chart, values, and
    architecture templates from `TEMPLATE_IMAGE` into `RUN_DIR/template`.
 2. `render-config.sh`: renders the Helm chart, values file, architecture
-   request, and rendered P/D resource manifest.
+   request, and rendered P/D resource manifest on the pipeline execution host.
+3. `pull_render_config.sh`: synchronizes the rendered directory and target
+   `pipeline.env` to every `TARGET_HOSTS` entry. The default target path is
+   `/tmp/op-test-pipeline/<PIPELINE_NAME>/rendered`.
 
 All pipeline configuration is supplied through environment variables. None of
 the stage scripts accepts a deployment argument.
@@ -18,8 +21,6 @@ export IMAGE_NAME='registry.example/xds:tag'
 export ARCH_NAME='glm-5.2-nvfp4'
 export TARGET_HOSTS='[{"ip":"<target-host-ip>","user":"root"}]'
 export TARGET_PASSWORD='...'
-export REGISTRY_SECRET_NAMESPACE='...'
-export REGISTRY_SECRET_NAME='...'
 bash pull_render_config.sh
 ```
 
