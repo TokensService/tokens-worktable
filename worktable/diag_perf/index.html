@@ -372,7 +372,7 @@
 
   <!-- 全局操作条 -->
   <div style="display:flex;gap:8px;margin-top:4px" id="globalActions">
-    <button class="dshell-btn" id="btnRefresh">刷新数据</button>
+    <button class="dshell-btn" id="btnRefresh" title="立即重新拉取 Prometheus 数据（原地刷新，不重载页面；自动轮询照常进行）">刷新数据</button>
     <button class="dshell-btn dshell-btnGhost" id="btnExport">导出诊断报告（JSON）</button>
   </div>
 </div>
@@ -1160,7 +1160,13 @@ document.getElementById("tabs").addEventListener("click",function(e){
   renderAll();   /* 切出隐藏页后 canvas 尺寸为 0，重绘补齐 */
   renderPromPanel();
 });
-document.getElementById("btnRefresh").addEventListener("click",function(){location.reload();});
+/* 手动刷新：原地重拉 Prometheus 数据（不整页 reload，保留标签页 / 缩放选区等页面状态），完成后重置自动轮询计时 */
+document.getElementById("btnRefresh").addEventListener("click",function(){
+  var b=this;
+  b.disabled=true;b.textContent="刷新中…";
+  poll(function(){b.disabled=false;b.textContent="刷新数据";});
+  startPoll();
+});
 document.getElementById("btnExport").addEventListener("click",function(){
   var blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),summary:{ttft_p99:document.getElementById("ovTtft").textContent,tpot_p99:document.getElementById("ovTpot").textContent,tps:document.getElementById("ovTps").textContent,cache_hit:document.getElementById("ovHit").textContent,kv_usage:document.getElementById("ovKv").textContent},data:DATA},null,2)],{type:"application/json"});
   var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="diag-report-"+Date.now()+".json";a.click();
@@ -1531,7 +1537,7 @@ function renderPromPanel(){
   }).join("");
   document.getElementById("promMetaNote").textContent=
     PROM_PANEL_MODE==="metrics"?"当前经 /metrics 文本瞬时抓取按指标名正则匹配，单点推入序列，无 PromQL 明细。"
-    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；可在「开始诊断」页顶部的设置区修改数据源地址。"
+    :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；也可点页面底部「刷新数据」立即手动重试，或在「开始诊断」页顶部的设置区修改数据源地址。"
     :"请求经 /api/worktable/proxy 代联（仅回环/内网），失败回退浏览器直连；命中明细见下表。";
 
   var hit=0;
@@ -1576,18 +1582,24 @@ function setSrcBadge(state,msg){
 function fetchMetrics(cb){
   proxyGet(METRICS_URL).then(function(t){cb(t);}).catch(function(){cb(null);});
 }
-function poll(){
+var POLLING=false;   /* 防重入：上一轮拉取未完成时跳过本次（自动轮询与手动刷新共用 poll） */
+function poll(done){
+  if(POLLING){if(done)done("busy");return;}
+  POLLING=true;
+  var finish=function(state){POLLING=false;if(done)done(state);};
   setSrcBadge("","数据拉取中 · Prometheus 并发查询 "+(PROM_DEFS.length+customSeriesCount())+" 条序列…");   /* 即时反馈：切窗口/轮询一开始就亮状态 */
   pollProm(function(state){
     if(state==="ok"){
       PROM_PANEL_MODE="ok";renderPromPanel();
       setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · "+(PROM_ABS?"绝对窗口":"近"+(PROM_RANGE_S/3600)+"h")+" · "+POLL_MS/1000+"s 刷新");
+      finish("ok");
       return;
     }
     if(state==="empty"){
       if(!LIVE){demoTick();renderAll();}
       PROM_PANEL_MODE="empty";renderPromPanel();
       setSrcBadge("warn","Prometheus 已连通 · 指标名未匹配映射表（暂显示示例数据）");
+      finish("empty");
       return;
     }
     /* Prometheus 不可达 → 回退 /metrics 瞬时抓取 */
@@ -1602,6 +1614,7 @@ function poll(){
         setSrcBadge("","数据源不可达 · 示例数据 · "+POLL_MS/1000+"s 自动重试");
       }
       renderPromPanel();
+      finish(state);
     });
   });
 }
