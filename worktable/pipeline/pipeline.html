@@ -2427,11 +2427,11 @@ async function jkTriggerGet(url){
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'})});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400) throw new Error('HTTP '+(p.status||0));
-    return true;
+    return typeof p.body==='string'?p.body:'';   // 返回响应体：runJenkinsStep 喂给 parseStageVars 解析产物
   }
   const r=await fetch(url,{cache:'no-store'});
   if(!r.ok) throw new Error('HTTP '+r.status);
-  return true;
+  try{ return await r.text(); }catch(e){ return ''; }   // 跨域无 CORS 读不到体时不阻断触发成功
 }
 async function jkGetText(path){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
@@ -2496,7 +2496,8 @@ async function runJenkinsStep(i){
     s._out={stdout:log.join('\n'),stderr:'',code:null,jenkins:true,done:false}; renderDetail();
     let preNum=null;
     if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); } }
-    if(isUrl){ await jkTriggerGet(jkSubstUrl(jk.job, params)); }
+    let triggerBody='';
+    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(jk.job, params)); }
     else{ await jkTriggerBuild(jobPath, params); }
     log.push('# 已触发构建'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); renderDetail();
     const deadline=t0+((s.timeout||300)*1000);
@@ -2517,6 +2518,14 @@ async function runJenkinsStep(i){
     if(!running||!curRun||curRun.token!==tk) return;
     let consoleText='';
     if(buildNum!=null){ try{ consoleText=await jkGetText(jobPath+buildNum+'/consoleText'); }catch(e){} }
+    else if(triggerBody){
+      /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 对象规整成单行
+         （与脚本阶段「单行 JSON 对象」规则一致），超大体仅取前 64K 防归档膨胀 */
+      let body=triggerBody;
+      try{ const o=JSON.parse(body); if(o&&typeof o==='object'&&!Array.isArray(o)) body=JSON.stringify(o); }catch(e){}
+      if(body.length>65536) body=body.slice(0,65536);
+      consoleText=body;
+    }
     const ok=(result==='SUCCESS');
     if(consoleText){ log.push(''); consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
     log.push('[Jenkins result '+result+']');
