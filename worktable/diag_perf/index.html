@@ -951,7 +951,8 @@ function line(id,labels,sets,unit){
   g.strokeStyle=grid;g.fillStyle=fg;
   for(var i=0;i<=4;i++){var y=pad.t+ih*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(W-pad.r,y);g.globalAlpha=.4;g.stroke();g.globalAlpha=1;
     g.fillText((max*(4-i)/4).toFixed(max<10?1:0)+unit,4,y+3);}
-  for(var t=0;t<n;t+=Math.ceil(n/6)){g.fillText(labels[t],pad.l+iw*t/(n-1)-10,H-6);}
+  for(var t=0;t<n;t+=Math.ceil(n/6)){var lb=labels[t],lw=g.measureText(lb).width;   /* 按文本宽度居中并夹进绘图区（跨天带日期的标签更宽） */
+    g.fillText(lb,Math.max(0,Math.min(W-lw,pad.l+iw*t/(n-1)-lw/2)),H-6);}
   if(!has){g.font="11px sans-serif";g.fillText("暂无数据（等待数据源接入）",pad.l,pad.t+14);}   /* 无任何有效点：只画坐标网格并提示，不用模拟数据充数 */
   sets.forEach(function(s){
     g.strokeStyle=s.color;g.lineWidth=1.8;g.beginPath();
@@ -1199,7 +1200,14 @@ function winEndStep(){
   if(PROM_ABS)return {end:PROM_ABS.to,step:Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N))};
   return {end:Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S,step:PROM_STEP_S};
 }
-function gridLabels(grid){return grid.map(function(t){var d=new Date(t*1000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);});}
+function gridLabels(grid){   /* 时间轴标签：窗口跨天时带 MM-DD 日期前缀，同日只显示 HH:MM */
+  var d0=new Date(grid[0]*1000),d1=new Date(grid[grid.length-1]*1000);
+  var crossDay=d0.getFullYear()!==d1.getFullYear()||d0.getMonth()!==d1.getMonth()||d0.getDate()!==d1.getDate();
+  return grid.map(function(t){
+    var d=new Date(t*1000),hm=d.getHours()+":"+("0"+d.getMinutes()).slice(-2);
+    return crossDay?("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2)+" "+hm:hm;
+  });
+}
 function winLabels(){var w=winEndStep(),grid=[];for(var i=N-1;i>=0;i--)grid.push(w.end-i*w.step);return gridLabels(grid);}
 
 /* 代联 GET：优先走 /api/worktable/proxy（仅回环/内网），代理自身失败才回退浏览器直连；
