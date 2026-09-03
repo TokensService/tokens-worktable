@@ -1,5 +1,20 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 定时后缀阶段间变量传递修复（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
+  阶段 stdout 的 KEY=VALUE / 单行 JSON / 「输出变量」映射此前只在页面运行期累计进 `curRun.vars`，
+  而带「定时」标记的后缀阶段交给服务端 `execPlan` 执行，页面 `registerStageTimers` 登记计划时又不带
+  变量快照，导致后缀第一个脚本阶段起就收不到上游产出（如「拉取分支」URL 阶段 `XDS_BRANCH=*` 捕获的
+  结果在下游 template.sh 里打印为空）。
+  修复：页面登记后缀计划时随计划带 `vars`（`curRun.vars` 快照）；服务端 `execPlan` 引入与页面同规则的
+  变量池（`parseStageVars`/`parseStageJson`/`jsonPathGet`/`applyOutVars`），逐脚本阶段捕获 stdout 产出、
+  按阶段 `outVars` 映射改名/JSON 路径/全文赋值，`runStageScript` 按「脚本显式参数 > 上游变量 > 运行级默认」
+  注入并支持参数值 `${VAR}` 引用替换（`substRunVars`，与页面对齐）；变量池随归档 profile 的 `vars` 合并持久化。
+  另修一个随之暴露的隐患：单个环境变量受内核 MAX_ARG_STRLEN（128KiB）限制，超大捕获值（如 2880 个分支的
+  完整响应体 ~165KB）会让 spawn/execFile 直接抛 E2BIG——`dropOversizeEnv` 在 `/api/worktable/exec`、
+  `/api/worktable/exec-stream`、`runStageScript` 三处统一剔除超限变量并在 stderr/阶段日志补 `[warn]` 告警，
+  提示改用「输出变量」JSON 路径截取所需字段。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 定时后缀计划丢失修复（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
   页面 `registerStageTimers` 的后缀计划 id 由稳定值 `stimer-<流水线id>-suffix` 改为带本次运行 tag 的
   逐次唯一值——旧稳定 id 下，重跑同一条流水线会以同 id 替换待执行计划（前一次运行后缀永不执行），

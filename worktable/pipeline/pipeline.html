@@ -2125,6 +2125,7 @@ async function registerStageTimers(startIdx){
     stages, env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
     branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now(),
     archive:curRun.archive||null, tag:curRun.tag||null, baseSeq:startIdx,
+    vars:Object.assign({}, curRun.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
     kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(curRun.tag||'')+' · 立即（周期跟随流水线计划）' };
   try{
     const r=await fetch('/api/worktable/pipeline/plans');
