@@ -48,7 +48,7 @@ XDS 流水线按以下顺序绑定脚本：
 4. `register-model.sh [MODEL_NAME]`：使用本轮 resource manifest 注册模型。
 5. `model-health.sh`：检查 XDS models 接口并发起一次真实 chat 请求。
 
-脚本通过 stdout 中的 `KEY=VALUE` 自动传递运行目录和产物路径；阶段编辑器的「输出变量」可把捕获的 key 改名后下传给指定的环境变量（如 `IMAGE_URL=image`，与 Jenkins 阶段一致），下游参数值也可填 `${IMAGE_URL}` 显式引用。以下参数通常在阶段参数区配置：
+脚本通过 stdout 中的 `KEY=VALUE` 自动传递运行目录和产物路径；阶段编辑器的「输出变量」可把捕获的 key 改名后下传给指定的环境变量（如 `IMAGE_URL=image`，与 URL 请求阶段一致），下游参数值也可填 `${IMAGE_URL}` 显式引用。以下参数通常在阶段参数区配置：
 
 - `ARCH_NAME`、`NUM_PREFILL`、`NUM_DECODE`、`PREFILL_GPU`、`DECODE_GPU`
 - `XDS_URL`、`MODEL_PATH`、`NAMESPACE`、`RELEASE_NAME`
@@ -76,6 +76,6 @@ XDS 流水线按以下顺序绑定脚本：
 - `ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` — 归档内 `run-<tag>.log` / `run-<tag>.profile.json` 的绝对路径
 - `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` / `ARCHIVE_RESULT` — 流水线名 / 本次运行 tag / 运行结果（`success`/`failed`/`aborted`）
 
-运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、Jenkins 阶段、「先清理环境」的清理脚本；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
+运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、URL 请求阶段、「先清理环境」的清理脚本；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
 
 运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：新会话工作目录取该次运行的归档目录，提示词只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。

@@ -1,5 +1,15 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 流水线页 Jenkins 阶段改为「URL 请求」阶段（`src/index.ts` 配套）：
+  worktable/pipeline/pipeline.html 阶段类型 `kind:'jenkins'` 改为 `kind:'url'`（标签「URL请求」），
+  去掉「拉取参数」（`detectJenkinsParams` 与 params/values 参数表单），参数改由 URL 的
+  `{GIT_BRANCH}` 等 `{变量名}` 占位符传递（运行时用注入的环境变量/上游产出替换，URL 编码后
+  对完整地址 GET 触发）；旧数据经 `migrateStageUrl`/`normalizeStageKind` 迁移
+  （`jenkins.job`→`url.url`），阶段仍填旧 fullName（非 URL）时按 `buildWithParameters` POST
+  兼容触发。`execPlan` 定时执行跳过条件同步扩展 `kind:'url'`（URL 触发仅前端运行期支持，
+  兼容旧计划中的 `kind:'jenkins'`）。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 设置面板新增「工作区（默认会话分组）」设置项（`src/client/index.tsx` + `src/client/locales.ts`）：
   视图选项弹层在「排序方式」与「管理项目」之间新增工作区下拉（复用 `dsh-wt_consoleSelect`
   主题变量样式，浅色/深色自适应），列出宿主已配置的工作区供选择，选「未分组」即清除；
