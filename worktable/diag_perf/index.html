@@ -148,6 +148,7 @@
   <!-- 标签页 -->
   <div class="dshell-tabs" id="tabs">
     <button class="dshell-tab dshell-tabOn" data-tab="overview">开始诊断</button>
+    <button class="dshell-tab" data-tab="report">诊断报告</button>
     <button class="dshell-tab" data-tab="latency">时延分解</button>
     <button class="dshell-tab" data-tab="throughput">吞吐与缓存</button>
     <button class="dshell-tab" data-tab="kvcache">KV Cache</button>
@@ -218,9 +219,18 @@
       <canvas class="diag-canvas" id="waterfall"></canvas>
       <div class="diag-note">队列等待 → Prefill → Decode ×N → 转发回传；点击「时延分解」页查看时序趋势。</div>
     </div>
+  </div>
+
+  <!-- ============ 诊断报告 ============ -->
+  <div class="diag-tabpane" data-pane="report" style="display:none">
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论（规则引擎自动研判）</h2>
       <div class="dshell-list" id="diagFindings"></div>
+      <div class="dshell-divider"></div>
+      <div class="diag-formrow">
+        <button class="dshell-btn dshell-btnGhost" id="btnExport" type="button">导出诊断报告（JSON）</button>
+      </div>
+      <div class="diag-note">结论由规则引擎按当前看板真实数据自动研判，随数据拉取实时更新；导出内容为概览统计与全部看板数据的 JSON 快照。</div>
     </div>
   </div>
 
@@ -378,7 +388,6 @@
   <!-- 全局操作条 -->
   <div style="display:flex;gap:8px;margin-top:4px" id="globalActions">
     <button class="dshell-btn" id="btnRefresh" title="立即重新拉取 Prometheus 数据（原地刷新，不重载页面；自动轮询照常进行）">刷新数据</button>
-    <button class="dshell-btn dshell-btnGhost" id="btnExport">导出诊断报告（JSON）</button>
   </div>
 </div>
 
