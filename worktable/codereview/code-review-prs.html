@@ -1052,7 +1052,7 @@
   var BUILD_WRAP_SCRIPT = [
     "#!/usr/bin/env bash",
     "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆代码仓并运行仓内构建脚本。",
-    "# 构建容器（BUILD_CONTAINER）在「设置」页统一配置，留空=本机执行；本脚本不 echo 任何凭据，克隆失败输出先脱敏。",
+    "# 构建容器（BUILD_CONTAINER）在「设置」页统一配置，留空=本机执行；关键命令执行前以「+」前缀回显（凭据固定脱敏为 <repo>），克隆失败输出先脱敏。",
     "set -u",
     'fail(){ echo "✗ $*" >&2; exit 1; }',
     '[ -n "${GIT_AUTH_URL:-}" ] || fail "缺少 GIT_AUTH_URL"',
@@ -1060,18 +1060,23 @@
     '[ -n "${BUILD_SCRIPT:-}" ] || fail "缺少 BUILD_SCRIPT（仓内相对路径）"',
     'case "$BUILD_SCRIPT" in /*|*..*) fail "BUILD_SCRIPT 须为仓内相对路径且不含 ..：$BUILD_SCRIPT" ;; esac',
     'mask(){ sed -e "s#${GIT_AUTH_URL}#<repo>#g"; }',
+    "# 命令回显：关键命令执行前以「+ 命令行」打到 stdout（凭据固定脱敏为 <repo>）",
     'TMPD=$(mktemp -d); trap \'rm -rf "$TMPD"\' EXIT',
     'echo "→ 浅克隆分支 ${GIT_BRANCH} …"',
+    'echo "+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo"',
     'out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${GIT_AUTH_URL}" "$TMPD/repo" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "克隆失败（检查分支名/凭据/网络）"; }',
     'cd "$TMPD/repo" || exit 1',
     'echo "✓ 克隆完成：$(git log -1 --format=\'%h %s\' 2>/dev/null || echo unknown)"',
     '[ -f "$BUILD_SCRIPT" ] || fail "仓内构建脚本不存在：$BUILD_SCRIPT（分支 ${GIT_BRANCH}）"',
     'if [ -n "${BUILD_CONTAINER:-}" ]; then',
+    '  command -v docker >/dev/null 2>&1 || fail "已配置构建容器（${BUILD_CONTAINER}），但服务端未找到 docker 命令"',
     '  echo "→ 在容器 ${BUILD_CONTAINER} 内执行仓内脚本 ${BUILD_SCRIPT} …"',
+    '  echo "+ docker run --rm -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${BUILD_CONTAINER} bash ${BUILD_SCRIPT}"',
     '  docker run --rm -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${BUILD_CONTAINER}" bash "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
     '  echo "✓ 构建容器执行完成"',
     "else",
-    '  echo "→ 执行仓内构建脚本 ${BUILD_SCRIPT} …"',
+    '  echo "→ 执行仓内构建脚本 ${BUILD_SCRIPT} …（本机执行；如需容器请在「设置」页填写构建容器并保存）"',
+    '  echo "+ bash ${BUILD_SCRIPT}"',
     '  bash "$BUILD_SCRIPT" || fail "构建脚本执行失败（退出码 $?）"',
     "fi",
     'if [ -n "${BUILD_ARTIFACTS:-}" ]; then',
@@ -1200,14 +1205,18 @@
     "[ -n \"${GIT_BRANCH:-}\" ] || fail \"缺少 GIT_BRANCH\"",
     "[ -n \"${RELEASE_TAG:-}\" ] || fail \"缺少 RELEASE_TAG\"",
     "mask(){ sed -e \"s#${GIT_AUTH_URL}#<repo>#g\"; }",
+    "echo \"+ git ls-remote --tags <repo> refs/tags/${RELEASE_TAG}\"",
     "out=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"${GIT_AUTH_URL}\" \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }",
     "printf \"%s\\n\" \"$out\" | grep -q . && fail \"远端已存在 Tag ${RELEASE_TAG}（如需重发请先删除远端 Tag）\"",
     "TMPD=$(mktemp -d); trap 'rm -rf \"$TMPD\"' EXIT",
     "echo \"→ 浅克隆分支 ${GIT_BRANCH} …\"",
+    "echo \"+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo\"",
     "out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"克隆失败（分支名/凭据/网络）\"; }",
     "cd \"$TMPD/repo\" || exit 1",
+    "echo \"+ git tag -a ${RELEASE_TAG} -m \\\"${RELEASE_NAME:-$RELEASE_TAG}\\\"\"",
     "git -c user.name=\"${GIT_AUTHOR_NAME:-codereview-bot}\" -c user.email=\"codereview-bot@local\" tag -a \"$RELEASE_TAG\" -m \"${RELEASE_NAME:-$RELEASE_TAG}\" || fail \"创建 Tag 失败\"",
     "echo \"→ 推送 Tag ${RELEASE_TAG} …\"",
+    "echo \"+ git push origin refs/tags/${RELEASE_TAG}\"",
     "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
     "echo \"✓ Tag ${RELEASE_TAG} 已推送\""
   ].join("\n");
@@ -1251,6 +1260,7 @@
     "  n=$((n+1))",
     '  base=$(basename "$f")',
     '  echo "→ 上传 $base …"',
+    '  echo "+ curl -sS -f -F file=@$f ${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}/attach_files?access_token=<token>"',
     '  out=$(curl -sS -f -F "file=@$f;filename=$base" "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}/attach_files?access_token=${ACCESS_TOKEN}" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
     '  echo "✓ 已上传 $base"',
     'done < <(find "$ARTIFACT_DIR" -type f | sort)',
@@ -1422,6 +1432,8 @@
           };
           var cmd = relBuildCmd.value.trim(); if (cmd) env.BUILD_CMD = cmd;
           if (artifacts) { env.BUILD_ARTIFACTS = artifacts; env.ARTIFACT_DIR = artifactDir; }
+          relLog("+ POST /api/worktable/exec " + BUILD_WRAP_SCRIPT_PATH + "（超时 " + rec.timeoutS + "s，注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME" +
+            (cmd ? "/BUILD_CMD" : "") + (container ? "/BUILD_CONTAINER=" + container : "（本机执行）") + (artifacts ? "/BUILD_ARTIFACTS/ARTIFACT_DIR" : "") + "）", "dim");
           var res = await execRepoBuild(script, container, env, timeoutMs);
           if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
           if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "warn"); });
@@ -1431,6 +1443,7 @@
         states[1] = { st: "run" }; relSetSteps(states); relCurStep = 1;
         var tagDone = false;
         try {
+          relLog("+ POST " + API + "/repos/" + repo.owner + "/" + repo.name + "/tags（tag_name=" + tag + ", refs=" + branch + "）", "dim");
           await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
             { tag_name: tag, refs: branch, tag_message: name || tag });
           relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
@@ -1441,6 +1454,7 @@
         if (!tagDone) await pushReleaseTag(repo, branch, tag, name);
         states[1] = { st: "ok" }; relSetSteps(states);
         states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
+        relLog("+ POST " + API + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
         var relJson = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
           { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked ? "true" : "false" });
         states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
