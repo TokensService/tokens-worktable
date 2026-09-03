@@ -240,7 +240,7 @@
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>attach_files</code> 接口逐个上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出可就地展开「回显」查看；总日志在下方统一滚动</span></h2>
@@ -925,7 +925,7 @@
      Tag 优先走 GitCode v5 API（POST /repos/{owner}/{repo}/tags），API 不可用时回退为页面生成临时脚本
      经 /api/worktable/write + exec 浅克隆 → git tag → push（凭据 URL 编码注入 GIT_AUTH_URL，输出脱敏，远端已有同名 Tag 拒绝覆盖）；
      发行版走 GitCode v5 API（POST /repos/{owner}/{repo}/releases，form 参数 + 本页认证方式）；
-     产物上传经服务端临时脚本 curl -F file=@… 调 attach_files 接口（令牌注入 ACCESS_TOKEN，输出脱敏，完成后清理暂存目录）。 */
+     产物上传经服务端临时脚本：按 tag 调 upload_url 接口换取 OBS 预签名地址后 curl -T PUT 直传（令牌注入 ACCESS_TOKEN，输出脱敏，完成后清理暂存目录）。 */
   var DEFAULT_REL_CFG = { repo: "", branch: "", script: "", timeout: 1800, artifacts: "" };
   var relCfg = (function () {
     try { var c = JSON.parse(localStorage.getItem(LS.relCfg)); if (c && typeof c === "object") return { repo: c.repo || "", branch: c.branch || "", script: c.script || "", timeout: c.timeout || DEFAULT_REL_CFG.timeout, artifacts: c.artifacts || "" }; } catch (e) {}
@@ -1177,14 +1177,6 @@
         });
       });
   }
-  /* 从发行版响应中提取 id：兼容 id / release_id 及嵌套 release/data 包装 */
-  function pickReleaseId(j) {
-    if (!j) return null;
-    if (j.id || j.release_id) return j.id || j.release_id;
-    if (j.release && (j.release.id || j.release.release_id)) return j.release.id || j.release.release_id;
-    if (j.data && (j.data.id || j.data.release_id)) return j.data.id || j.data.release_id;
-    return null;
-  }
   /* 服务端脚本执行（与流水线工作台 execScript 同形） */
   function execScript(path, env, timeoutMs) {
     return fetch("/api/worktable/exec", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1290,36 +1282,50 @@
       });
   }
   /* 上传构建产物到 GitCode 发行版附件：经 /api/worktable/write 落地临时脚本后 exec 执行——
-     对 ARTIFACT_DIR 内每个文件 curl -F file=@… 调 attach_files 接口（access_token query 认证，
-     令牌经 ACCESS_TOKEN 注入、输出脱敏），完成后清理暂存目录。 */
+     GitCode 发行版没有数字 id，也不提供 Gitee 式 attach_files；官方流程是按 tag + file_name 调
+     upload_url 接口换取华为云 OBS 预签名上传地址，再按返回的 url + headers 用 PUT 直传
+     （x-obs-callback 回调头负责把附件挂到发行版）。令牌经 ACCESS_TOKEN 注入、输出脱敏，
+     预签名 url 不落日志，完成后清理暂存目录。 */
   var UPLOAD_ASSETS_SCRIPT_PATH = "/tmp/dsh-codereview-upload-assets.sh";
   var UPLOAD_ASSETS_SCRIPT = [
     "#!/usr/bin/env bash",
     "# 由 PR 检视台「编译发行」页自动写入并执行：把构建产物上传到 GitCode 发行版附件。",
-    "# 令牌经 ACCESS_TOKEN 注入；本脚本不 echo 令牌，失败输出先脱敏；结束后清理产物暂存目录。",
+    "# 流程：GET releases/{tag}/upload_url（access_token + file_name）→ 按返回 url/headers PUT 直传 OBS。",
+    "# 令牌经 ACCESS_TOKEN 注入；本脚本不 echo 令牌与预签名 url，失败输出先脱敏；结束后清理产物暂存目录。",
     "set -u",
     'fail(){ echo "✗ $*" >&2; exit 1; }',
     '[ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR"',
-    '[ -n "${RELEASE_ID:-}" ] || fail "缺少 RELEASE_ID"',
+    '[ -n "${RELEASE_TAG:-}" ] || fail "缺少 RELEASE_TAG"',
     '[ -n "${OWNER:-}" ] || fail "缺少 OWNER"',
     '[ -n "${REPO:-}" ] || fail "缺少 REPO"',
     '[ -n "${ACCESS_TOKEN:-}" ] || fail "缺少 ACCESS_TOKEN"',
     'trap \'rm -rf "$ARTIFACT_DIR"\' EXIT',
     'mask(){ sed -e "s#${ACCESS_TOKEN}#<token>#g"; }',
     'API_BASE="${API_BASE:-https://api.gitcode.com/api/v5}"',
+    '# 从扁平 JSON 提取 "key":"value" 字符串值（还原 \\/ 转义）；upload_url 响应的 url/headers 均为扁平字符串字段',
+    'jget(){ sed -n "s/.*\\"$1\\" *: *\\"\\([^\\"]*\\)\\".*/\\1/p" | sed \'s#\\\\/#/#g\'; }',
     "n=0",
     'while IFS= read -r f; do',
     "  n=$((n+1))",
     '  base=$(basename "$f")',
     '  echo "→ 上传 $base …"',
-    '  echo "+ curl -sS -f -F file=@$f ${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}/attach_files?access_token=<token>"',
-    '  out=$(curl -sS -f -F "file=@$f;filename=$base" "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_ID}/attach_files?access_token=${ACCESS_TOKEN}" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    '  echo "+ GET ${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url?access_token=<token>&file_name=$base"',
+    '  resp=$(curl -sS -f -G "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url" --data-urlencode "access_token=${ACCESS_TOKEN}" --data-urlencode "file_name=${base}" 2>&1) || { printf "%s\\n" "$resp" | mask >&2; fail "获取上传地址失败：$base（检查令牌权限）"; }',
+    '  url=$(printf "%s" "$resp" | jget url)',
+    '  [ -n "$url" ] || { printf "%s\\n" "$resp" | mask >&2; fail "上传地址响应缺少 url：$base"; }',
+    '  h_proj=$(printf "%s" "$resp" | jget x-obs-meta-project-id)',
+    '  h_acl=$(printf "%s" "$resp" | jget x-obs-acl)',
+    '  h_cb=$(printf "%s" "$resp" | jget x-obs-callback)',
+    '  h_ct=$(printf "%s" "$resp" | jget Content-Type)',
+    '  [ -n "$h_ct" ] || h_ct="application/octet-stream"',
+    '  echo "+ curl -sS -f -X PUT -T $f <OBS 预签名地址>（携带 x-obs-* 回调头）"',
+    '  out=$(curl -sS -f -X PUT -T "$f" -H "x-obs-meta-project-id: $h_proj" -H "x-obs-acl: $h_acl" -H "x-obs-callback: $h_cb" -H "Content-Type: $h_ct" "$url" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
     '  echo "✓ 已上传 $base"',
     'done < <(find "$ARTIFACT_DIR" -type f | sort)',
     '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
     'echo "✓ 共上传 $n 个产物"'
   ].join("\n");
-  function uploadReleaseAssets(repo, releaseId, artifactDir) {
+  function uploadReleaseAssets(repo, tag, artifactDir) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: UPLOAD_ASSETS_SCRIPT_PATH, content: UPLOAD_ASSETS_SCRIPT }) })
       .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
@@ -1327,7 +1333,7 @@
       }); })
       .then(function () {
         return execScript(UPLOAD_ASSETS_SCRIPT_PATH, {
-          ARTIFACT_DIR: artifactDir, RELEASE_ID: String(releaseId),
+          ARTIFACT_DIR: artifactDir, RELEASE_TAG: tag,
           OWNER: repo.owner, REPO: repo.name, ACCESS_TOKEN: state.token.trim()
         }, 600000);
       })
@@ -1509,7 +1515,7 @@
         states[1] = { st: "ok" }; relSetSteps(states);
         states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
         relLog("+ POST " + API + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
-        var relJson = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
+        await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
           { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked ? "true" : "false" });
         states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
         var webUrl = "https://gitcode.com/" + repo.owner + "/" + repo.name;
@@ -1518,17 +1524,9 @@
         relLog("✓ 发行版 " + (name || tag) + " 创建完成", "ok");
         if (artifacts) {
           states[3] = { st: "run" }; relSetSteps(states); relCurStep = 3;
-          var releaseId = pickReleaseId(relJson);
-          if (!releaseId) {
-            // GitCode 创建发行版有时不直接返回 id：按 tag 回查一次再取
-            relLog("… 创建响应未含 id，按 tag 回查发行版（GET releases/tags/" + tag + "）", "dim");
-            var relByTag = await fetchJSON("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) +
-              "/releases/tags/" + encodeURIComponent(tag));
-            releaseId = pickReleaseId(relByTag);
-          }
-          if (!releaseId) throw new Error("发行版创建响应缺少 id，按 tag 回查也未取到，无法上传产物");
-          relLog("→ 上传构建产物到发行版（id " + releaseId + "）…", "dim");
-          await uploadReleaseAssets(repo, releaseId, artifactDir);
+          // GitCode 发行版没有数字 id：附件上传按 tag 走 upload_url 换 OBS 地址后 PUT 直传
+          relLog("→ 上传构建产物到发行版（tag " + tag + "，upload_url + PUT 直传）…", "dim");
+          await uploadReleaseAssets(repo, tag, artifactDir);
           states[3] = { st: "ok" }; relSetSteps(states);
         }
         tip.textContent = "✓ 发行完成";
