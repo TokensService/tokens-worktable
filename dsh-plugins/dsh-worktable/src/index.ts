@@ -647,24 +647,136 @@ export function apply(ctx: Context) {
     } catch (e) { console.warn('[archive] 定时任务日志归档失败（不影响执行）:', e); return null }
   }
 
-  function runStageScript(sc: any, runCtx: any, scriptsDir: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  // ---- 阶段间变量传递（与页面 pipeline.html 同一规则，供服务端定时执行使用）----
+  // 上游阶段 stdout 的 KEY=VALUE 行 / 单行 JSON 对象（顶层标量字段）累计进变量池，作为环境变量注入后续阶段；
+  // 阶段「输出变量」逗号分隔映射：IMAGE_URL=image 把捕获的 key 改名下传、XDS_BRANCH=items.0.name 按 JSON 路径
+  // 取单行 JSON 的嵌套字段（数组支持 [-1] 倒数，终点为对象/数组整体序列化）、RESP=* 或 RESP=（留空）=本阶段
+  // stdout 全文整体赋值。
+  function parseStageVars(stdout: string): Record<string, string> {
+    const out: Record<string, string> = {}
+    String(stdout || '').split('\n').forEach((line) => {
+      const m = /^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line)
+      if (m) {
+        let v = m[2].replace(/\r$/, '')
+        if (v.length >= 2 && v.charAt(0) === '"' && v.charAt(v.length - 1) === '"') v = v.slice(1, -1)
+        out[m[1]] = v
+        return
+      }
+      const t = line.trim()
+      if (t.length < 2 || t.charAt(0) !== '{' || t.charAt(t.length - 1) !== '}') return
+      try {
+        const o = JSON.parse(t)
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return
+        for (const k in o) { const v = o[k]; if (v === null || v === undefined || typeof v === 'object') continue; out[k] = String(v) }
+      } catch { /* 非 JSON 行忽略 */ }
+    })
+    return out
+  }
+  function parseStageJson(stdout: string): any {
+    let found: any = null
+    String(stdout || '').split('\n').forEach((line) => {
+      const t = line.trim()
+      if (t.length < 2) return
+      const c0 = t.charAt(0), c1 = t.charAt(t.length - 1)
+      if (!((c0 === '{' && c1 === '}') || (c0 === '[' && c1 === ']'))) return
+      try { const o = JSON.parse(t); if (o && typeof o === 'object') found = o } catch { /* 非 JSON 行忽略 */ }
+    })
+    return found
+  }
+  function jsonPathGet(obj: any, path: string): any {
+    const p = String(path || '').trim().replace(/^\$\.?/, '')
+    if (!p) return undefined
+    const tokens = p.match(/[^.\[\]]+|\[-?\d+\]/g)
+    if (!tokens) return undefined
+    let cur = obj
+    for (const t of tokens) {
+      if (cur === null || cur === undefined) return undefined
+      const idx = /^\[(-?\d+)\]$/.exec(t)
+      if (Array.isArray(cur)) {
+        const i = parseInt(idx ? idx[1] : t, 10)
+        if (isNaN(i)) return undefined
+        const at = i < 0 ? cur.length + i : i
+        if (at < 0 || at >= cur.length) return undefined
+        cur = cur[at]
+      } else if (typeof cur === 'object') {
+        if (idx) return undefined   // 对象段不能用 [N] 下标
+        cur = cur[t]
+      } else return undefined
+    }
+    return cur === null || cur === undefined ? undefined : cur
+  }
+  function applyOutVars(spec: string, pool: Record<string, string>, jsonCtx: any, fullText: string) {
+    String(spec || '').split(',').forEach((pair) => {
+      const p = pair.trim(); if (!p) return
+      const eq = p.indexOf('=')
+      const dst = (eq >= 0 ? p.slice(0, eq) : p).trim(), src = (eq >= 0 ? p.slice(eq + 1) : p).trim()
+      if (!dst) return
+      let val: any
+      if (src === '*' || (eq >= 0 && src === '')) val = fullText   // 整段返回值全文（脚本 stdout）
+      else {
+        val = pool[src]
+        if (val === undefined && jsonCtx) {
+          if (/[.\[\]$]/.test(src)) val = jsonPathGet(jsonCtx, src)   // JSON 路径取嵌套字段
+          else if (!Array.isArray(jsonCtx) && Object.prototype.hasOwnProperty.call(jsonCtx, src)) val = jsonCtx[src]   // 顶层容器字段整体取出
+        }
+      }
+      if (val === undefined || val === null) return
+      pool[dst] = typeof val === 'object' ? JSON.stringify(val) : String(val)
+    })
+  }
+  // 参数值 ${VAR} 引用替换（同页面 substRunVars）：未定义引用原样保留；整值即单个未定义 ${VAR} 时按空值处理。
+  function substRunVars(v: any, look: Record<string, string>): string {
+    const s = String(v === undefined || v === null ? '' : v)
+    if (s.indexOf('${') < 0) return s
+    const single = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(s)
+    if (single && look[single[1]] === undefined) return ''
+    return s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, k) => (look[k] !== undefined ? String(look[k]) : m))
+  }
+  // 单个环境变量受内核 MAX_ARG_STRLEN（128KiB，含 KEY= 前缀，按字节计）限制，超限 spawn/execFile 直接抛 E2BIG：
+  // 注入前剔除超限变量并返回告警文案（提示改用「输出变量」JSON 路径截取所需字段，而非 * 全文整体赋值）。
+  const ENV_VAL_LIMIT = 128 * 1024
+  function dropOversizeEnv(env: Record<string, string>): string | null {
+    const dropped: string[] = []
+    for (const k of Object.keys(env)) {
+      const size = Buffer.byteLength(k) + 1 + Buffer.byteLength(env[k])
+      if (size >= ENV_VAL_LIMIT) { dropped.push(k + '（' + size + ' 字节）'); delete env[k] }
+    }
+    return dropped.length ? '[warn] 环境变量 ' + dropped.join('、') + ' 超过单变量 128KiB 上限，未注入；请用「输出变量」JSON 路径截取所需字段（如 XDS_BRANCH=items.0.name）' : null
+  }
+
+  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+    const pool = varsPool || {}
+    const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
+    // ${VAR} 取值池（同页面 substRunVars）：运行级注入变量 + 上游阶段变量（同名时上游优先）
+    const look: Record<string, string> = {}
+    if ((ctx0 && ctx0.ip) || runCtx.env) look.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
+    if (runCtx.envs) look.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e: any) => e.ip))
+    if (runCtx.image) look.IMAGE_NAME = String(runCtx.image)
+    if (runCtx.tag) look.IMAGE_TAG = String(runCtx.tag)
+    if (runCtx.pipelineName) look.PIPELINE_NAME = String(runCtx.pipelineName)
+    if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch)
+    if (runCtx.strategy) look.DEPLOY_STRATEGY = String(runCtx.strategy)
+    if (runCtx.archive) { look.ARCHIVE_DIR = String(runCtx.archive); look.ARCHIVE_FOLDER = String(runCtx.archive) }
+    Object.assign(look, pool)
     const args: string[] = []
     const env: Record<string, string> = {}
     for (const p of sc.params || []) {
       // 与前端 execScript 一致：静态 :-默认值 照常下发（页面已预填为显式值）；
       // 动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）不下发字面值——注入后 shell 不会二次展开，
       // 留空交由脚本自身 :- 展开，同时不挡住下方同名的运行级注入（TARGET_IP/TARGET_USER 等）。
+      // 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）。
       const hasVal = sc.values && sc.values[p.key] !== undefined
-      const v = hasVal ? sc.values[p.key] : (p.dyn ? '' : p.def || '')
+      const v = substRunVars(hasVal ? sc.values[p.key] : (p.dyn ? '' : p.def || ''), look)
       if (p.kind === 'pos') args.push(String(v))
       else if (String(v) !== '') env[p.key] = String(v)
     }
+    // 与前端 execScript 一致：上游阶段变量（变量池）作为环境变量注入本阶段（脚本显式参数优先，运行级默认兜底）
+    for (const k of Object.keys(pool)) { if (env[k] === undefined) env[k] = String(pool[k]) }
     // 与前端 execScript 一致：注入运行上下文（脚本显式配置的同名参数优先）：
     //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
     //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
     //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；
     //   PIPELINE_NAME=流水线名；GIT_BRANCH/DEPLOY_STRATEGY=分支与部署策略
-    const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
     if (env.TARGET_IP === undefined) env.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
     if (env.TARGET_IPS === undefined && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e: any) => e.ip))
     if (env.TARGET_HOSTS === undefined && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e: any) => ({ ip: e.ip, user: e.user || '', pass: e.pass || '' })))
@@ -684,12 +796,13 @@ export function apply(ctx: Context) {
       if (runCtx.pipelineName && env.ARCHIVE_PIPELINE === undefined) env.ARCHIVE_PIPELINE = String(runCtx.pipelineName)
       if (runCtx.tag && env.ARCHIVE_TAG === undefined) env.ARCHIVE_TAG = String(runCtx.tag)
     }
+    const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
     return new Promise((resolve) => {
       const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
       execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
-          resolve({ code, stdout: String(stdout || ''), stderr: String(stderr || '') })
+          resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '') })
         })
     })
   }
@@ -730,13 +843,20 @@ export function apply(ctx: Context) {
     }
     const folder = isSuffixRun ? String(pl.archive) : (archiveRoot ? archiveRoot + '/' + sanitizeFsName(pipeName) + '_' + nowCompactFull() : null)
     const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || '', branch: pl.branch || '', strategy: pl.strategy || '' }
+    // 变量池（与页面 curRun.vars 一致）：定时后缀由页面登记时随计划快照上游阶段变量（pl.vars，
+    // 见 pipeline.html registerStageTimers）；服务端阶段间同样按 KEY=VALUE 行 / 单行 JSON 累计、
+    // 按阶段「输出变量」映射，作为环境变量注入后续阶段（脚本显式参数 > 上游变量 > 运行级默认）
+    const varsPool: Record<string, string> = {}
+    if (pl.vars && typeof pl.vars === 'object' && !Array.isArray(pl.vars)) {
+      for (const k of Object.keys(pl.vars)) { const v = pl.vars[k]; if (v !== undefined && v !== null) varsPool[k] = String(v) }
+    }
     const logs: any[] = []
     const profileStages: any[] = []
     let status = 'success'
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
-      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir)
+      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool)
       const text = stageLogText(cfg.cleanupScript.name, r)
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text })
@@ -749,7 +869,11 @@ export function apply(ctx: Context) {
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'url' || s.kind === 'jenkins') { entry = { status: 'success', text: '[定时执行] URL 请求阶段：定时触发暂不支持，已跳过' } }   // 兼容旧计划中的 kind:'jenkins'（Jenkins 阶段已改为 URL 请求阶段）
       else if (s.script && s.script.path) {
-        const r = await runStageScript(s.script, runCtx, scriptsDir)
+        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool)
+        // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
+        // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
+        Object.assign(varsPool, parseStageVars(r.stdout))
+        applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
         if (r.code !== 0) status = 'failed'
       } else {
@@ -795,6 +919,8 @@ export function apply(ctx: Context) {
         profile.result = status
         if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
         profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
+        // 阶段间变量随 profile 持久化（与页面 archiveRun 的 vars 一致）：定时后缀在页面写入的基础上合并本轮捕获
+        if (Object.keys(varsPool).length) profile.vars = Object.assign({}, profile.vars || {}, varsPool)
         if (!Array.isArray(profile.stages)) profile.stages = []
         profileStages.forEach(rec => {
           const idx = profile.stages.findIndex((x: any) => x && (x.id === rec.id || x.name === rec.name))
@@ -891,10 +1017,11 @@ export function apply(ctx: Context) {
         const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
         const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
         const interp = /\.py$/i.test(path) ? 'python3' : 'bash'
+        const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
         execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
           (err, stdout, stderr) => {
             const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
-            json(res, 200, { code, stdout: String(stdout || ''), stderr: String(stderr || '') })
+            json(res, 200, { code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '') })
           })
       } catch (err) {
         json(res, 500, { error: String(err && err.message ? err.message : err) })
@@ -922,10 +1049,12 @@ export function apply(ctx: Context) {
         const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
         const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
         const interp = /.py$/i.test(scriptPath) ? 'python3' : 'bash'
+        const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 spawn 直接 E2BIG，见 dropOversizeEnv）
         res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
         const send = (obj: unknown) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n') }
         // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
         const child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
+        if (oversizeWarn) send({ type: 'err', text: oversizeWarn + '\n' })
         let finished = false
         let timedOut = false
         const killTree = (sig: string) => {

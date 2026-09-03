@@ -48,7 +48,7 @@ XDS 流水线按以下顺序绑定脚本：
 4. `register-model.sh [MODEL_NAME]`：使用本轮 resource manifest 注册模型。
 5. `model-health.sh`：检查 XDS models 接口并发起一次真实 chat 请求。
 
-脚本通过 stdout 中的 `KEY=VALUE` 自动传递运行目录和产物路径；阶段编辑器的「输出变量」可把捕获的 key 改名后下传给指定的环境变量（如 `IMAGE_URL=image`，与 URL 请求阶段一致），来源也可写 JSON 路径从 stdout / 响应体里的单行 JSON 取嵌套字段（如 `XDS_BRANCH=items.0.name`，数组支持 `[-1]` 倒数取末项，终点为对象/数组则整体序列化成 JSON 字符串；分页列表类接口 `{"items":[...]}` 的顶层标量提取拿不到数组内容，需用路径显式指定），或填 `*` / 留空把本阶段返回值全文整体赋给指定变量（如 `RESP=*`），下游参数值也可填 `${IMAGE_URL}` 显式引用。以下参数通常在阶段参数区配置：
+脚本通过 stdout 中的 `KEY=VALUE` 自动传递运行目录和产物路径；阶段编辑器的「输出变量」可把捕获的 key 改名后下传给指定的环境变量（如 `IMAGE_URL=image`，与 URL 请求阶段一致），来源也可写 JSON 路径从 stdout / 响应体里的单行 JSON 取嵌套字段（如 `XDS_BRANCH=items.0.name`，数组支持 `[-1]` 倒数取末项，终点为对象/数组则整体序列化成 JSON 字符串；分页列表类接口 `{"items":[...]}` 的顶层标量提取拿不到数组内容，需用路径显式指定），或填 `*` / 留空把本阶段返回值全文整体赋给指定变量（如 `RESP=*`），下游参数值也可填 `${IMAGE_URL}` 显式引用。带「定时」标记的后缀阶段由服务端执行：变量池在定时分界处随计划快照带过，后缀各阶段间同样按上述规则累计/映射/注入（含 `${VAR}` 参数引用）。注意单个环境变量受内核 128KiB 上限约束，超大捕获值（如用 `*` 承接数千分支的完整响应体）不会注入并在阶段日志给出 `[warn]` 告警——这种场景应改用 JSON 路径截取所需字段（如 `XDS_BRANCH=items[-1].name`）。以下参数通常在阶段参数区配置：
 
 - `ARCH_NAME`、`NUM_PREFILL`、`NUM_DECODE`、`PREFILL_GPU`、`DECODE_GPU`
 - `XDS_URL`、`MODEL_PATH`、`NAMESPACE`、`RELEASE_NAME`

@@ -776,16 +776,134 @@ function apply(ctx) {
       return null;
     }
   }
-  function runStageScript(sc, runCtx, scriptsDir) {
+  function parseStageVars(stdout) {
+    const out = {};
+    String(stdout || "").split("\n").forEach((line) => {
+      const m = /^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+      if (m) {
+        let v = m[2].replace(/\r$/, "");
+        if (v.length >= 2 && v.charAt(0) === '"' && v.charAt(v.length - 1) === '"') v = v.slice(1, -1);
+        out[m[1]] = v;
+        return;
+      }
+      const t = line.trim();
+      if (t.length < 2 || t.charAt(0) !== "{" || t.charAt(t.length - 1) !== "}") return;
+      try {
+        const o = JSON.parse(t);
+        if (!o || typeof o !== "object" || Array.isArray(o)) return;
+        for (const k in o) {
+          const v = o[k];
+          if (v === null || v === void 0 || typeof v === "object") continue;
+          out[k] = String(v);
+        }
+      } catch {
+      }
+    });
+    return out;
+  }
+  function parseStageJson(stdout) {
+    let found = null;
+    String(stdout || "").split("\n").forEach((line) => {
+      const t = line.trim();
+      if (t.length < 2) return;
+      const c0 = t.charAt(0), c1 = t.charAt(t.length - 1);
+      if (!(c0 === "{" && c1 === "}" || c0 === "[" && c1 === "]")) return;
+      try {
+        const o = JSON.parse(t);
+        if (o && typeof o === "object") found = o;
+      } catch {
+      }
+    });
+    return found;
+  }
+  function jsonPathGet(obj, path) {
+    const p = String(path || "").trim().replace(/^\$\.?/, "");
+    if (!p) return void 0;
+    const tokens = p.match(/[^.\[\]]+|\[-?\d+\]/g);
+    if (!tokens) return void 0;
+    let cur = obj;
+    for (const t of tokens) {
+      if (cur === null || cur === void 0) return void 0;
+      const idx = /^\[(-?\d+)\]$/.exec(t);
+      if (Array.isArray(cur)) {
+        const i = parseInt(idx ? idx[1] : t, 10);
+        if (isNaN(i)) return void 0;
+        const at = i < 0 ? cur.length + i : i;
+        if (at < 0 || at >= cur.length) return void 0;
+        cur = cur[at];
+      } else if (typeof cur === "object") {
+        if (idx) return void 0;
+        cur = cur[t];
+      } else return void 0;
+    }
+    return cur === null || cur === void 0 ? void 0 : cur;
+  }
+  function applyOutVars(spec, pool, jsonCtx, fullText) {
+    String(spec || "").split(",").forEach((pair) => {
+      const p = pair.trim();
+      if (!p) return;
+      const eq = p.indexOf("=");
+      const dst = (eq >= 0 ? p.slice(0, eq) : p).trim(), src = (eq >= 0 ? p.slice(eq + 1) : p).trim();
+      if (!dst) return;
+      let val;
+      if (src === "*" || eq >= 0 && src === "") val = fullText;
+      else {
+        val = pool[src];
+        if (val === void 0 && jsonCtx) {
+          if (/[.\[\]$]/.test(src)) val = jsonPathGet(jsonCtx, src);
+          else if (!Array.isArray(jsonCtx) && Object.prototype.hasOwnProperty.call(jsonCtx, src)) val = jsonCtx[src];
+        }
+      }
+      if (val === void 0 || val === null) return;
+      pool[dst] = typeof val === "object" ? JSON.stringify(val) : String(val);
+    });
+  }
+  function substRunVars(v, look) {
+    const s = String(v === void 0 || v === null ? "" : v);
+    if (s.indexOf("${") < 0) return s;
+    const single = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(s);
+    if (single && look[single[1]] === void 0) return "";
+    return s.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (m, k) => look[k] !== void 0 ? String(look[k]) : m);
+  }
+  const ENV_VAL_LIMIT = 128 * 1024;
+  function dropOversizeEnv(env) {
+    const dropped = [];
+    for (const k of Object.keys(env)) {
+      const size = Buffer.byteLength(k) + 1 + Buffer.byteLength(env[k]);
+      if (size >= ENV_VAL_LIMIT) {
+        dropped.push(k + "\uFF08" + size + " \u5B57\u8282\uFF09");
+        delete env[k];
+      }
+    }
+    return dropped.length ? "[warn] \u73AF\u5883\u53D8\u91CF " + dropped.join("\u3001") + " \u8D85\u8FC7\u5355\u53D8\u91CF 128KiB \u4E0A\u9650\uFF0C\u672A\u6CE8\u5165\uFF1B\u8BF7\u7528\u300C\u8F93\u51FA\u53D8\u91CF\u300DJSON \u8DEF\u5F84\u622A\u53D6\u6240\u9700\u5B57\u6BB5\uFF08\u5982 XDS_BRANCH=items.0.name\uFF09" : null;
+  }
+  function runStageScript(sc, runCtx, scriptsDir, varsPool) {
+    const pool = varsPool || {};
+    const ctx0 = runCtx.envs && runCtx.envs[0] || null;
+    const look = {};
+    if (ctx0 && ctx0.ip || runCtx.env) look.TARGET_IP = String(ctx0 && ctx0.ip || runCtx.env || "");
+    if (runCtx.envs) look.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e) => e.ip));
+    if (runCtx.image) look.IMAGE_NAME = String(runCtx.image);
+    if (runCtx.tag) look.IMAGE_TAG = String(runCtx.tag);
+    if (runCtx.pipelineName) look.PIPELINE_NAME = String(runCtx.pipelineName);
+    if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch);
+    if (runCtx.strategy) look.DEPLOY_STRATEGY = String(runCtx.strategy);
+    if (runCtx.archive) {
+      look.ARCHIVE_DIR = String(runCtx.archive);
+      look.ARCHIVE_FOLDER = String(runCtx.archive);
+    }
+    Object.assign(look, pool);
     const args = [];
     const env = {};
     for (const p of sc.params || []) {
       const hasVal = sc.values && sc.values[p.key] !== void 0;
-      const v = hasVal ? sc.values[p.key] : p.dyn ? "" : p.def || "";
+      const v = substRunVars(hasVal ? sc.values[p.key] : p.dyn ? "" : p.def || "", look);
       if (p.kind === "pos") args.push(String(v));
       else if (String(v) !== "") env[p.key] = String(v);
     }
-    const ctx0 = runCtx.envs && runCtx.envs[0] || null;
+    for (const k of Object.keys(pool)) {
+      if (env[k] === void 0) env[k] = String(pool[k]);
+    }
     if (env.TARGET_IP === void 0) env.TARGET_IP = String(ctx0 && ctx0.ip || runCtx.env || "");
     if (env.TARGET_IPS === void 0 && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e) => e.ip));
     if (env.TARGET_HOSTS === void 0 && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e) => ({ ip: e.ip, user: e.user || "", pass: e.pass || "" })));
@@ -804,6 +922,7 @@ function apply(ctx) {
       if (runCtx.pipelineName && env.ARCHIVE_PIPELINE === void 0) env.ARCHIVE_PIPELINE = String(runCtx.pipelineName);
       if (runCtx.tag && env.ARCHIVE_TAG === void 0) env.ARCHIVE_TAG = String(runCtx.tag);
     }
+    const oversizeWarn = dropOversizeEnv(env);
     return new Promise((resolve) => {
       const isPy = sc.lang === "py" || /\.py$/i.test(sc.name || "");
       execFile(
@@ -812,7 +931,7 @@ function apply(ctx) {
         { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: 12e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-          resolve({ code, stdout: String(stdout || ""), stderr: String(stderr || "") });
+          resolve({ code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "") });
         }
       );
     });
@@ -851,12 +970,19 @@ function apply(ctx) {
     }
     const folder = isSuffixRun ? String(pl.archive) : archiveRoot ? archiveRoot + "/" + sanitizeFsName(pipeName) + "_" + nowCompactFull() : null;
     const runCtx = { env: pl.env || "", envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || "", branch: pl.branch || "", strategy: pl.strategy || "" };
+    const varsPool = {};
+    if (pl.vars && typeof pl.vars === "object" && !Array.isArray(pl.vars)) {
+      for (const k of Object.keys(pl.vars)) {
+        const v = pl.vars[k];
+        if (v !== void 0 && v !== null) varsPool[k] = String(v);
+      }
+    }
     const logs = [];
     const profileStages = [];
     let status = "success";
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now();
-      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir);
+      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool);
       const text = stageLogText(cfg.cleanupScript.name, r);
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, "\u73AF\u5883\u6E05\u7406", text) : null;
       logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: text });
@@ -871,7 +997,9 @@ function apply(ctx) {
       } else if (s.kind === "url" || s.kind === "jenkins") {
         entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] URL \u8BF7\u6C42\u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" };
       } else if (s.script && s.script.path) {
-        const r = await runStageScript(s.script, runCtx, scriptsDir);
+        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool);
+        Object.assign(varsPool, parseStageVars(r.stdout));
+        applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout);
         entry = { status: r.code === 0 ? "success" : "failed", text: stageLogText(s.script.name, r) };
         if (r.code !== 0) status = "failed";
       } else {
@@ -926,6 +1054,7 @@ function apply(ctx) {
         profile.result = status;
         if (!profile.startTime) profile.startTime = new Date(t0).toISOString();
         profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10;
+        if (Object.keys(varsPool).length) profile.vars = Object.assign({}, profile.vars || {}, varsPool);
         if (!Array.isArray(profile.stages)) profile.stages = [];
         profileStages.forEach((rec) => {
           const idx = profile.stages.findIndex((x) => x && (x.id === rec.id || x.name === rec.name));
@@ -1045,13 +1174,14 @@ function apply(ctx) {
         const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : void 0;
         const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 12e4, 1e3), 36e5);
         const interp = /\.py$/i.test(path) ? "python3" : "bash";
+        const oversizeWarn = dropOversizeEnv(env);
         execFile(
           interp,
           [path, ...args],
           { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
           (err, stdout, stderr) => {
             const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-            json(res, 200, { code, stdout: String(stdout || ""), stderr: String(stderr || "") });
+            json(res, 200, { code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "") });
           }
         );
       } catch (err) {
@@ -1085,11 +1215,13 @@ function apply(ctx) {
         const cwd = typeof body.cwd === "string" && body.cwd ? body.cwd : void 0;
         const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 12e4, 1e3), 36e5);
         const interp = /.py$/i.test(scriptPath) ? "python3" : "bash";
+        const oversizeWarn = dropOversizeEnv(env);
         res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
         const send = (obj) => {
           if (!res.writableEnded) res.write(JSON.stringify(obj) + "\n");
         };
         const child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== "win32" });
+        if (oversizeWarn) send({ type: "err", text: oversizeWarn + "\n" });
         let finished = false;
         let timedOut = false;
         const killTree = (sig) => {
