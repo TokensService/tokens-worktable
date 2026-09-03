@@ -1738,13 +1738,30 @@ var LABEL_COMBOS=["model_name","xds_namespace"].map(function(label){
   document.getElementById("labelFilterRow").appendChild(c.el);
   return c;
 });
-function loadLabelValues(){   /* 标签候选值异步取自数据源；数据源地址变更后随 applySettings 重载 */
-  LABEL_COMBOS.forEach(function(c){
-    proxyGet(PROM_URL+"/api/v1/label/"+c.label+"/values").then(function(text){
-      var j=JSON.parse(text);
-      if(!j||j.status!=="success"||!Array.isArray(j.data))return;
-      c.setVals(j.data);
-    }).catch(function(){});
+/* 标签候选值取自 vllm:num_requests_running{exported_job=~".*vllmp.*"} 的序列标签（/api/v1/series），
+   与 Grafana 模板变量取数口径一致；已选另一边过滤时候选按之联动收窄。序列查询失败回退 /api/v1/label/<label>/values。
+   数据源地址变更后随 applySettings 重载 */
+function loadLabelValues(){
+  proxyGet(PROM_URL+"/api/v1/series?match[]="+encodeURIComponent('vllm:num_requests_running{exported_job=~".*vllmp.*"}')).then(function(text){
+    var j=JSON.parse(text);
+    if(!j||j.status!=="success"||!Array.isArray(j.data)||!j.data.length)throw new Error("bad");
+    LABEL_COMBOS.forEach(function(c){
+      var other=c.label==="model_name"?"xds_namespace":"model_name";
+      var seen={},list=[];
+      j.data.forEach(function(m){
+        if(LABEL_FILTER[other]&&m[other]!==LABEL_FILTER[other])return;   /* 另一标签已选：候选收窄到匹配序列 */
+        var v=m[c.label];if(v&&!seen[v]){seen[v]=1;list.push(v);}
+      });
+      c.setVals(list.sort());
+    });
+  }).catch(function(){
+    LABEL_COMBOS.forEach(function(c){
+      proxyGet(PROM_URL+"/api/v1/label/"+c.label+"/values").then(function(text){
+        var j=JSON.parse(text);
+        if(!j||j.status!=="success"||!Array.isArray(j.data))return;
+        c.setVals(j.data);
+      }).catch(function(){});
+    });
   });
 }
 function fillSettings(){
