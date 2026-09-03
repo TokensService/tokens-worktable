@@ -96,7 +96,8 @@
   .diag-modal-full .diag-view-canvas { flex:1 1 auto; height:auto; min-height:280px; }
   .diag-editrow { margin-bottom:10px; }
   .diag-mname { cursor:pointer; }
-  .diag-mname .diag-promql { color:var(--dsw-alias-label-primary,#1f2328); opacity:1; }   /* 指标名用主色（浅近黑/深近白），不用 65% 灰字 */
+  .diag-mname.diag-promql { color:var(--dsw-alias-label-primary,#1f2328); opacity:1; flex:1; }   /* 指标名用主色（浅近黑/深近白），不用 65% 灰字 */
+  .diag-mchk { flex:none; accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7); }   /* 指标弹层勾选框（添加到画布） */
   .diag-editql { width:100%; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; resize:vertical; }
   /* 可搜索下拉（指标弹层的 model_name / xds_namespace 标签过滤）：输入即过滤，候选值异步加载 */
   .diag-combo { position:relative; flex:1; min-width:200px; }
@@ -183,16 +184,16 @@
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">日志目录</h2>
       <div class="diag-formrow">
-        <input class="dshell-input grow" id="setLogDir" placeholder="服务端日志目录，如 /var/log/vllm（留空 = 示例日志）" autocomplete="off" />
+        <input class="dshell-input grow" id="setLogDir" placeholder="服务端日志目录，如 /var/log/vllm（留空 = 不接入）" autocomplete="off" />
       </div>
-      <div class="diag-note">目录为 dsh 服务端路径：经 /api/worktable/fs 列出目录内 .log 文件，取最新的一个经 /api/worktable/file 读取尾部 200 行渲染；目录不可读或无 .log 文件时回退示例日志。</div>
+      <div class="diag-note">目录为 dsh 服务端路径：经 /api/worktable/fs 列出目录内 .log 文件，取最新的一个经 /api/worktable/file 读取尾部 200 行渲染；目录留空、不可读或无 .log 文件时不展示日志。</div>
     </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">Profiling 数据目录</h2>
       <div class="diag-formrow">
-        <input class="dshell-input grow" id="setProfDir" placeholder="torch profiler / msprof trace 导出目录（留空 = 示例数据）" autocomplete="off" />
+        <input class="dshell-input grow" id="setProfDir" placeholder="torch profiler / msprof trace 导出目录（留空 = 不接入）" autocomplete="off" />
       </div>
-      <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则保留示例数据。</div>
+      <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则不展示。</div>
     </div>
     <div class="diag-note" id="setHint">改动即自动保存并生效；配置仅存于本机浏览器 localStorage。</div>
     <div class="dshell-divider"></div>
@@ -270,7 +271,7 @@
   <div class="diag-tabpane" data-pane="kvcache" style="display:none">
     <div class="dshell-grid">
       <div class="dshell-stat"><div class="dshell-statLabel">总 Blocks</div><div class="dshell-statValue" id="kvTotal">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">已用 Blocks</div><div class="dshell-statValue" id="kvUsed">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">占用率</div><div class="dshell-statValue" id="kvUsed">—</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">Block 大小</div><div class="dshell-statValue" id="kvBlockSize">—</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">抢占/换出次数</div><div class="dshell-statValue" id="kvPreempt">—</div></div>
     </div>
@@ -306,14 +307,11 @@
 
   <!-- ============ 请求画像 ============ -->
   <div class="diag-tabpane" data-pane="requests" style="display:none">
-    <div class="diag-chartgrid">
-      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">输入长度分布（直方图）</h2><canvas class="diag-canvas" id="chInLen"></canvas></div>
-      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">输出长度分布（直方图）</h2><canvas class="diag-canvas" id="chOutLen"></canvas></div>
-      <div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">输入长度 × TTFT 散点</h2><canvas class="diag-canvas" id="chScatter"></canvas></div>
-      <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">慢请求 Top5</h2>
-        <div class="dshell-list" id="slowReqs"></div>
-      </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">慢请求 Top5</h2>
+      <div class="dshell-list" id="slowReqs"></div>
+      <div class="dshell-divider"></div>
+      <div class="diag-note">请求画像（输入/输出长度分布、输入长度 × TTFT 散点、慢请求明细）需接入网关访问日志（prompt_tokens / completion_tokens / 端到端耗时），暂未接入真实数据；本页只呈现真实拉取到的数据，不再使用模拟数据演示。</div>
     </div>
   </div>
 
@@ -345,7 +343,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">指标收集清单（数据源 / 采集方式 / 分析用途）</h2>
       <div class="dshell-kv" id="metricsDict"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「开始诊断」页顶部的设置区配置（URL 参数 ?prom=host:port 优先于设置区的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取，再降级为示例数据演示。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
+      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「开始诊断」页顶部的设置区配置（URL 参数 ?prom=host:port 优先于设置区的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取；均未命中时画板保持「暂无数据」，不使用模拟数据。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
     </div>
   </div>
 
@@ -361,7 +359,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">看板序列 × PromQL 映射（命中情况与窗口统计）</h2>
       <div class="dshell-kv" id="promSeries"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">呈现方式：每条看板序列按候选 PromQL 依次查询 /api/v1/query_range，取第一个有结果的查询；返回的多条序列中取第一条非空序列，对齐到固定时间网格（缺口前向填充、头部后向回填）后整体替换看板对应曲线。未命中的序列保留示例数据；其中网关队列 / PD 转发队列 / 结果回传若上级序列（调度队列 / KV 传输）已命中，则按经验比例（0.15× / 0.3× / 0.25×）估算填充。</div>
+      <div class="diag-note">呈现方式：每条看板序列按候选 PromQL 依次查询 /api/v1/query_range，取第一个有结果的查询；返回的多条序列中取第一条非空序列，对齐到固定时间网格（缺口前向填充、头部后向回填）后整体替换看板对应曲线。未命中的序列保持无数据（画板显示「暂无数据」），全程只使用真实拉取的数据。</div>
     </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">原始序列（按实例 / 标签细分）</h2>
@@ -380,40 +378,30 @@
 <script>
 (function(){
 "use strict";
-/* ================= 样例数据生成（结构 = 真实接入后的数据契约） ================= */
-function rnd(a,b){return a+Math.random()*(b-a);}
-function series(n,a,b,drift){var arr=[],v=rnd(a,b);for(var i=0;i<n;i++){v=Math.max(a,Math.min(b,v+rnd(-drift,drift)));arr.push(+v.toFixed(2));}return arr;}
+/* ================= 数据契约（仅承载真实接入数据；序列初始为 NaN 空序列，画板据此显示「暂无数据」） ================= */
 var N=48;
+function nanSeries(){return Array.from({length:N},function(){return NaN;});}   /* 空序列：NaN 不参与绘制，line()/waterfall() 显示「暂无数据」 */
 var DATA={
   ts:Array.from({length:N},function(_,i){var d=new Date(Date.now()-(N-1-i)*5*60000);return d.getHours()+":"+("0"+d.getMinutes()).slice(-2);}),
-  ttft:{p50:series(N,120,260,18),p90:series(N,300,520,30),p99:series(N,600,980,55)},
-  tpot:{p50:series(N,18,30,2),p90:series(N,35,55,3),p99:series(N,70,120,7)},
-  queue:{gw:series(N,2,12,1.5),sched:series(N,10,60,7),pd:series(N,5,40,5)},
-  transfer:{kv:series(N,8,28,3),back:series(N,2,8,1)},
-  tps:series(N,1800,3200,180), qps:series(N,8,22,1.6),
-  mooncake:{rd:series(N,3.5,7.5,0.5),wr:series(N,1.2,3.0,0.25)},
-  hit:series(N,55,88,3),
-  batch:{run:series(N,24,64,4),wait:series(N,0,18,3)},
-  kv:{total:196608,used:series(N,120000,178000,5200),blockSize:"128 tokens/blk",preempt:Math.round(rnd(0,6)),
-      tiers:[["HBM（片上显存）","72%",0.72],["本机 DRAM（host 侧换出）","19%",0.19],["Mooncake 远端池","9%",0.09]]},
-  profOps:[["attention.scores (MatMul)","28.4%"],["attention.projection","14.1%"],["mlp.gate_up (MatMul)","12.6%"],
-           ["mlp.down (MatMul)","11.8%"],["all_reduce / 通信","9.7%"],["rms_norm","5.9%"],["rope / 位置编码","4.8%"],
-           ["sampler (top-p/top-k)","4.2%"],["kv_cache 读写搬运","4.0%"],["embedding / lm_head","4.5%"]],
-  slowReqs:[["req-9f3a21  输入 12.4k tokens","TTFT 1.84s · 队列等待 620ms"],
-            ["req-77b0c4  输入 9.8k tokens","TTFT 1.52s · KV 传输 190ms"],
-            ["req-aa11d8  输入 8.1k tokens","TPOT P99 142ms · 触发抢占"],
-            ["req-5c6e09  输出 3.2k tokens","端到端 21.6s · Decode 抖动"],
-            ["req-31f2bb  输入 6.7k tokens","缓存未命中 · Prefill 全算"]],
-  hardware:[["Prefill 节点 · ascend-01",{ "芯片":"Ascend 910B ×8（HBM 64GB/卡）","算力":"320 TFLOPS FP16 / 卡","互联":"HCCS 392GB/s 全互联","利用率":"NPU 92% · HBM 带宽 71%","角色":"高算力 · 承担 Prefill"}],
-            ["Decode 节点 · ascend-02",{ "芯片":"Ascend 910B ×8（HBM 64GB/卡）","算力":"320 TFLOPS FP16 / 卡","互联":"HCCS 392GB/s + RoCE 200Gbps ×4","利用率":"NPU 61% · HBM 带宽 88%","角色":"带宽敏感 · 承担 Decode"}],
-            ["Mooncake KV 池",{ "介质":"DRAM + NVMe SSD 分级","容量":"DRAM 2TB · SSD 16TB","读吞吐":"6.8 GB/s（峰值 8）","网络":"RDMA RoCEv2 200Gbps","角色":"前缀缓存 / KV 复用"}]],
+  ttft:{p50:nanSeries(),p90:nanSeries(),p99:nanSeries()},
+  tpot:{p50:nanSeries(),p90:nanSeries(),p99:nanSeries()},
+  queue:{gw:nanSeries(),sched:nanSeries(),pd:nanSeries()},
+  transfer:{kv:nanSeries(),back:nanSeries()},
+  tps:nanSeries(), qps:nanSeries(),
+  mooncake:{rd:nanSeries(),wr:nanSeries()},
+  hit:nanSeries(),
+  batch:{run:nanSeries(),wait:nanSeries()},
+  kv:{total:0,usage:nanSeries(),blockSize:"—",preempt:null,tiers:[]},
+  profOps:[],
+  slowReqs:[],
+  hardware:[],
   metricsDict:[
     ["TTFT / TPOT","Prometheus: vllm:time_to_first_token_seconds / time_per_output_token_seconds（直方图）","评估首响与流式体验，定位 Prefill/Decode 瓶颈"],
-    ["各级队列时延","Prometheus: gateway_queue_time / queue_time / pd_forward_queue 直方图（缺级时按经验比例估算）","区分排队拥塞与计算慢，判断扩容方向"],
+    ["各级队列时延","Prometheus: gateway_queue_time / queue_time / pd_forward_queue 直方图","区分排队拥塞与计算慢，判断扩容方向"],
     ["TPS / QPS","Prometheus: 请求计数 + token 计数 rate()","容量与压测基线，联动 batch 规模分析"],
     ["Mooncake 吞吐","mooncake_exporter: transfer_bytes 读写分别统计","判断 KV 传输是否成为 PD 分离瓶颈"],
     ["缓存命中率","prefix_cache.hit / query 比率","评估前缀缓存收益，指导 prompt 组织与 KV 池容量"],
-    ["转发时延","Prometheus: kv_transfer / response_transfer 直方图（回传缺省时按经验比例估算），对应 PD 链路 RDMA 传输耗时","定位跨节点 KV 搬运与回传链路抖动"],
+    ["转发时延","Prometheus: kv_transfer / response_transfer 直方图，对应 PD 链路 RDMA 传输耗时","定位跨节点 KV 搬运与回传链路抖动"],
     ["KV Cache Blocks","allocator 指标: num_blocks_total/used/free、block_size、preempt 计数","判断显存碎片化与抢占换出对 TPOT 的影响"],
     ["Profiling 数据","torch profiler / msprof trace，按 kernel 聚合","算子级耗时拆解，指导算子融合与通信优化"],
     ["日志数据","服务日志 ERROR/WARN + 慢请求访问日志","关联异常事件与时序拐点的因果"],
@@ -730,16 +718,15 @@ function customSeriesCount(){   /* 自定义画板线 + 内置画板附加线的
   return n;
 }
 function isCustomPanel(id){return !!panelOf(id);}
-function zeroSeries(){return Array.from({length:N},function(){return 0;});}
 function renderCustomPanels(){   /* 自定义画板整图绘制；内置画板叠加用户附加线（经 CHARTS 与缩放/查看联动一致） */
   CUSTOM.panels.forEach(function(p){
     if(!document.getElementById(p.id))return;
-    line(p.id,DATA.ts,p.series.map(function(s){return {color:s.color,data:s._data||zeroSeries()};}),p.unit||"");
+    line(p.id,DATA.ts,p.series.map(function(s){return {color:s.color,data:s._data||nanSeries()};}),p.unit||"");
   });
   Object.keys(CUSTOM.extra).forEach(function(id){
     var xs=CUSTOM.extra[id];if(!xs||!xs.length)return;
     var c=CHARTS[id];if(!c)return;
-    line(id,c.labels,c.sets.concat(xs.map(function(s){return {color:s.color,data:s._data||zeroSeries()};})),c.unit);
+    line(id,c.labels,c.sets.concat(xs.map(function(s){return {color:s.color,data:s._data||nanSeries()};})),c.unit);
   });
 }
 function refreshLegend(p){
@@ -954,7 +941,7 @@ Object.keys(CUSTOM.extra).forEach(refreshExtraLegend);
 BRUSH_IDS.forEach(applyLineNames);   /* 恢复快照的原始线名并应用保存的线名覆写 */
 function line(id,labels,sets,unit){
   var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
-  var max=0;sets.forEach(function(s){s.data.forEach(function(v){if(v>max)max=v;});});max=max*1.15||1;
+  var max=0,has=false;sets.forEach(function(s){s.data.forEach(function(v){if(isFinite(v)){has=true;if(v>max)max=v;}});});max=max*1.15||1;
   var iw=W-pad.l-pad.r, ih=H-pad.t-pad.b, n=labels.length;
   g.font="10px sans-serif";
   var grid=css("--dshell-border")||"rgba(128,128,128,.25)";
@@ -963,6 +950,7 @@ function line(id,labels,sets,unit){
   for(var i=0;i<=4;i++){var y=pad.t+ih*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(W-pad.r,y);g.globalAlpha=.4;g.stroke();g.globalAlpha=1;
     g.fillText((max*(4-i)/4).toFixed(max<10?1:0)+unit,4,y+3);}
   for(var t=0;t<n;t+=Math.ceil(n/6)){g.fillText(labels[t],pad.l+iw*t/(n-1)-10,H-6);}
+  if(!has){g.font="11px sans-serif";g.fillText("暂无数据（等待数据源接入）",pad.l,pad.t+14);}   /* 无任何有效点：只画坐标网格并提示，不用模拟数据充数 */
   sets.forEach(function(s){
     g.strokeStyle=s.color;g.lineWidth=1.8;g.beginPath();
     s.data.forEach(function(v,i){var x=pad.l+iw*i/(n-1),y=pad.t+ih*(1-v/max);i?g.lineTo(x,y):g.moveTo(x,y);});
@@ -975,35 +963,11 @@ function line(id,labels,sets,unit){
   }
   drawSel(id);                                     /* 已有选区时重绘高亮 */
 }
-function bars(id,labels,vals,color,unit){
-  var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
-  var max=Math.max.apply(null,vals)*1.15||1,iw=W-pad.l-pad.r,ih=H-pad.t-pad.b,n=vals.length;
-  g.font="10px sans-serif";g.strokeStyle="rgba(128,128,128,.25)";g.fillStyle=css("--dshell-fg")||"#888";
-  for(var i=0;i<=4;i++){var y=pad.t+ih*i/4;g.beginPath();g.moveTo(pad.l,y);g.lineTo(W-pad.r,y);g.globalAlpha=.4;g.stroke();g.globalAlpha=1;g.fillText((max*(4-i)/4).toFixed(0)+unit,4,y+3);}
-  g.fillStyle=color;
-  var bw=Math.max(2,iw/n*0.7);
-  vals.forEach(function(v,i){var x=pad.l+iw*(i+0.15)/n,h=ih*v/max;g.fillRect(x,pad.t+ih-h,bw,h);});
-}
-function hist(id,data,bins,color,unit){
-  var min=Math.min.apply(null,data),max=Math.max.apply(null,data),step=(max-min)/bins||1;
-  var counts=Array.from({length:bins},function(){return 0;});
-  data.forEach(function(v){var i=Math.min(bins-1,Math.floor((v-min)/step));counts[i]++;});
-  var labels=counts.map(function(_,i){return Math.round(min+step*i);});
-  bars(id,labels,counts,color,unit);
-}
-function scatter(id,xs,ys){
-  var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:44,r:10,t:10,b:22};
-  var mx=Math.max.apply(null,xs)*1.1,my=Math.max.apply(null,ys)*1.1,iw=W-pad.l-pad.r,ih=H-pad.t-pad.b;
-  g.font="10px sans-serif";g.fillStyle=css("--dshell-fg")||"#888";
-  g.fillText("输入 tokens →",W-86,H-6);g.fillText("TTFT ms",2,10);
-  g.fillStyle="#60a5fa";
-  xs.forEach(function(x,i){var px=pad.l+iw*x/mx,py=pad.t+ih*(1-ys[i]/my);g.globalAlpha=.55;g.beginPath();g.arc(px,py,3,0,7);g.fill();});
-  g.globalAlpha=1;
-}
 function waterfall(id,stages){
   var o=ctx2d(id),g=o.g,W=o.W,H=o.H,pad={l:120,r:60,t:14,b:8};
   var total=stages.reduce(function(s,x){return s+x.ms;},0),iw=W-pad.l-pad.r,rowH=(H-pad.t-pad.b)/stages.length;
   g.font="11px sans-serif";var fg=css("--dshell-fg")||"#888";
+  if(!(total>0)){g.fillStyle=fg;g.fillText("暂无数据（等待数据源接入）",4,pad.t+12);return;}   /* 无有效分段：仅提示，不用模拟数据充数 */
   var t=0;
   stages.forEach(function(s,i){
     var x=pad.l+iw*t/total,w=Math.max(2,iw*s.ms/total),y=pad.t+i*rowH+3,h=rowH-8;
@@ -1016,39 +980,48 @@ function waterfall(id,stages){
 
 /* ================= 渲染各页 ================= */
 function renderAll(){
-  /* 概览统计 */
-  var last=function(a){return a[a.length-1];};
-  document.getElementById("ovTtft").textContent=last(DATA.ttft.p99)+" ms";
-  document.getElementById("ovTpot").textContent=last(DATA.tpot.p99)+" ms";
-  document.getElementById("ovQueue").textContent=(last(DATA.queue.gw)+last(DATA.queue.sched)+last(DATA.queue.pd)).toFixed(0)+" ms";
-  document.getElementById("ovTps").textContent=last(DATA.tps).toFixed(0);
-  document.getElementById("ovHit").textContent=last(DATA.hit).toFixed(1)+"%";
-  var kvPct=last(DATA.kv.used)/DATA.kv.total;
-  document.getElementById("ovKv").textContent=(kvPct*100).toFixed(1)+"%";
-  document.getElementById("ovTtftD").textContent="P50 "+last(DATA.ttft.p50)+"ms";
-  document.getElementById("ovTpsD").textContent="QPS "+last(DATA.qps).toFixed(1);
+  /* 概览统计（无真实数据的末值返回 null，界面显示「—」） */
+  var last=function(a){var v=a[a.length-1];return (typeof v==="number"&&isFinite(v))?v:null;};
+  var ttft99=last(DATA.ttft.p99),ttft50=last(DATA.ttft.p50);
+  var tpot99=last(DATA.tpot.p99),tpot50=last(DATA.tpot.p50);
+  var qGw=last(DATA.queue.gw),qSched=last(DATA.queue.sched),qPd=last(DATA.queue.pd);
+  var tpsV=last(DATA.tps),qpsV=last(DATA.qps),hitV=last(DATA.hit);
+  var kvU=last(DATA.kv.usage),kvPct=kvU===null?null:kvU/100;
+  document.getElementById("ovTtft").textContent=ttft99===null?"—":ttft99+" ms";
+  document.getElementById("ovTpot").textContent=tpot99===null?"—":tpot99+" ms";
+  document.getElementById("ovQueue").textContent=(qGw===null&&qSched===null&&qPd===null)?"—":((qGw||0)+(qSched||0)+(qPd||0)).toFixed(0)+" ms";
+  document.getElementById("ovTps").textContent=tpsV===null?"—":tpsV.toFixed(0);
+  document.getElementById("ovHit").textContent=hitV===null?"—":hitV.toFixed(1)+"%";
+  document.getElementById("ovKv").textContent=kvPct===null?"—":(kvPct*100).toFixed(1)+"%";
+  document.getElementById("ovTtftD").textContent=ttft50===null?"":"P50 "+ttft50+"ms";
+  document.getElementById("ovTpsD").textContent=qpsV===null?"":"QPS "+qpsV.toFixed(1);
 
   var hb=document.getElementById("healthBadge");
-  if(last(DATA.ttft.p99)>900||kvPct>0.9){hb.className="dshell-badge";hb.textContent="⚠ 存在性能风险";}
+  if(ttft99===null&&kvPct===null&&hitV===null&&tpot99===null){hb.className="dshell-badge dshell-badgeWait";hb.textContent="等待数据源接入";}
+  else if((ttft99!==null&&ttft99>900)||(kvPct!==null&&kvPct>0.9)){hb.className="dshell-badge";hb.textContent="⚠ 存在性能风险";}
   else{hb.className="dshell-badge dshell-badgeDone";hb.textContent="整体健康";}
 
   /* 瀑布图 */
   waterfall("waterfall",[
-    {name:"网关队列",ms:Math.round(last(DATA.queue.gw)),color:"#34d399"},
-    {name:"调度队列",ms:Math.round(last(DATA.queue.sched)),color:"#a78bfa"},
-    {name:"Prefill",ms:Math.round(last(DATA.ttft.p50)*0.7),color:"#60a5fa"},
-    {name:"KV 传输",ms:Math.round(last(DATA.transfer.kv)),color:"#22d3ee"},
-    {name:"Decode(前10 tok)",ms:Math.round(last(DATA.tpot.p50)*10),color:"#f59e0b"},
-    {name:"回传",ms:Math.round(last(DATA.transfer.back)),color:"#fb923c"}
+    {name:"网关队列",ms:Math.round(qGw||0),color:"#34d399"},
+    {name:"调度队列",ms:Math.round(qSched||0),color:"#a78bfa"},
+    {name:"Prefill",ms:Math.round((ttft50||0)*0.7),color:"#60a5fa"},
+    {name:"KV 传输",ms:Math.round(last(DATA.transfer.kv)||0),color:"#22d3ee"},
+    {name:"Decode(前10 tok)",ms:Math.round((tpot50||0)*10),color:"#f59e0b"},
+    {name:"回传",ms:Math.round(last(DATA.transfer.back)||0),color:"#fb923c"}
   ]);
 
   /* 诊断结论 */
   var findings=[];
-  if(last(DATA.queue.sched)>45)findings.push(["调度队列时延偏高（"+last(DATA.queue.sched)+"ms）：waiting 请求积压，建议增大 max_num_seqs 或扩容 Decode 实例。","warn"]);
-  if(kvPct>0.85)findings.push(["KV Blocks 占用 "+(kvPct*100).toFixed(0)+"%：接近耗尽，可能触发抢占换出并拉高 TPOT，建议扩容 KV 池或降低 max_model_len。","warn"]);
-  if(last(DATA.hit)<65)findings.push(["前缀缓存命中率仅 "+last(DATA.hit).toFixed(1)+"%：检查 system prompt 是否一致前置，提升 Mooncake 池复用收益。","warn"]);
-  if(last(DATA.tpot.p99)>100)findings.push(["TPOT P99 "+last(DATA.tpot.p99)+"ms：Decode 侧 HBM 带宽接近饱和（88%），属带宽瓶颈，建议减小 batch 或启用投机解码。","warn"]);
-  if(!findings.length)findings.push(["各项指标处于正常区间，未发现显著瓶颈。","ok"]);
+  if(ttft99===null&&kvPct===null&&hitV===null&&tpot99===null&&qSched===null){
+    findings.push(["等待 Prometheus 数据接入：画板仅呈现真实拉取到的指标，接入前显示「暂无数据」。","ok"]);
+  }else{
+    if(qSched!==null&&qSched>45)findings.push(["调度队列时延偏高（"+qSched+"ms）：waiting 请求积压，建议增大 max_num_seqs 或扩容 Decode 实例。","warn"]);
+    if(kvPct!==null&&kvPct>0.85)findings.push(["KV Blocks 占用 "+(kvPct*100).toFixed(0)+"%：接近耗尽，可能触发抢占换出并拉高 TPOT，建议扩容 KV 池或降低 max_model_len。","warn"]);
+    if(hitV!==null&&hitV<65)findings.push(["前缀缓存命中率仅 "+hitV.toFixed(1)+"%：检查 system prompt 是否一致前置，提升 Mooncake 池复用收益。","warn"]);
+    if(tpot99!==null&&tpot99>100)findings.push(["TPOT P99 "+tpot99+"ms：Decode 侧 HBM 带宽接近饱和（88%），属带宽瓶颈，建议减小 batch 或启用投机解码。","warn"]);
+    if(!findings.length)findings.push(["各项指标处于正常区间，未发现显著瓶颈。","ok"]);
+  }
   document.getElementById("diagFindings").innerHTML=findings.map(function(f){
     return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+f[0]+'</span><span class="dshell-badge '+(f[1]==="warn"?"dshell-badgeWait":"dshell-badgeDone")+'">'+(f[1]==="warn"?"关注":"正常")+'</span></div>';
   }).join("");
@@ -1061,19 +1034,24 @@ function renderAll(){
   line("chTransfer",L,[{data:DATA.transfer.kv,color:"#22d3ee"},{data:DATA.transfer.back,color:"#fb923c"}],"ms");
   /* 时延构成占比：取近 5 分钟（尾部 tailN 个采样点）均值，按瀑布图同一套口径折算后归一 */
   var tailN=Math.max(1,Math.min(N,Math.round(300/STEP_S)));
-  var tailAvg=function(a){var s=0,c=0;for(var i=Math.max(0,a.length-tailN);i<a.length;i++){s+=a[i];c++;}return c?s/c:0;};
+  var tailAvg=function(a){var s=0,c=0;for(var i=Math.max(0,a.length-tailN);i<a.length;i++){if(isFinite(a[i])){s+=a[i];c++;}}return c?s/c:0;};   /* 跳过 NaN 空点 */
   var qMs=tailAvg(DATA.queue.gw)+tailAvg(DATA.queue.sched)+tailAvg(DATA.queue.pd);
   var parts=[["队列等待（网关+调度+PD）",qMs],["Prefill 计算",tailAvg(DATA.ttft.p50)*0.7],
              ["KV 传输",tailAvg(DATA.transfer.kv)],["Decode 计算",tailAvg(DATA.tpot.p50)*10],
              ["结果回传",tailAvg(DATA.transfer.back)]];
-  var totMs=parts.reduce(function(s,p){return s+p[1];},0)||1;
-  document.getElementById("latencyKv").innerHTML=parts.map(function(p){
-    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+Math.round(p[1]/totMs*100)+'% · 约 '+p[1].toFixed(0)+' ms</span></div>';
-  }).join("");
-  var top=parts.slice().sort(function(a,b){return b[1]-a[1];})[0];
-  var calcPct=Math.round((parts[1][1]+parts[3][1])/totMs*100);
-  document.getElementById("latencyNote").textContent=
-    "占比按当前看板数据（近 5 分钟均值）实时折算：占比最高为「"+top[0]+"」"+Math.round(top[1]/totMs*100)+"%；计算（Prefill+Decode）合计 "+calcPct+"%，队列等待 "+Math.round(qMs/totMs*100)+"%"+(qMs/totMs>0.2?"，提示高峰期调度拥塞":"")+"。Prefill/Decode 口径：TTFT P50 ×70% / TPOT P50 ×10 tok。";
+  var totMs=parts.reduce(function(s,p){return s+p[1];},0);
+  if(!(totMs>0)){
+    document.getElementById("latencyKv").innerHTML='<div class="diag-note">暂无数据（等待数据源接入）</div>';
+    document.getElementById("latencyNote").textContent="时延构成占比等待真实数据接入后折算。";
+  }else{
+    document.getElementById("latencyKv").innerHTML=parts.map(function(p){
+      return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+Math.round(p[1]/totMs*100)+'% · 约 '+p[1].toFixed(0)+' ms</span></div>';
+    }).join("");
+    var top=parts.slice().sort(function(a,b){return b[1]-a[1];})[0];
+    var calcPct=Math.round((parts[1][1]+parts[3][1])/totMs*100);
+    document.getElementById("latencyNote").textContent=
+      "占比按当前看板数据（近 5 分钟均值）实时折算：占比最高为「"+top[0]+"」"+Math.round(top[1]/totMs*100)+"%；计算（Prefill+Decode）合计 "+calcPct+"%，队列等待 "+Math.round(qMs/totMs*100)+"%"+(qMs/totMs>0.2?"，提示高峰期调度拥塞":"")+"。Prefill/Decode 口径：TTFT P50 ×70% / TPOT P50 ×10 tok。";
+  }
 
   /* 吞吐与缓存 */
   line("chTps",L,[{data:DATA.tps,color:"#34d399"},{data:DATA.qps.map(function(v){return v*100;}),color:"#a78bfa"}],"");
@@ -1082,39 +1060,38 @@ function renderAll(){
   line("chBatch",L,[{data:DATA.batch.run,color:"#60a5fa"},{data:DATA.batch.wait,color:"#f472b6"}],"");
 
   /* KV Cache */
-  document.getElementById("kvTotal").textContent=DATA.kv.total.toLocaleString();
-  document.getElementById("kvUsed").textContent=last(DATA.kv.used).toLocaleString();
+  document.getElementById("kvTotal").textContent=DATA.kv.total>0?DATA.kv.total.toLocaleString():"—";
+  document.getElementById("kvUsed").textContent=kvPct===null?"—":(kvPct*100).toFixed(1)+"%";
   document.getElementById("kvBlockSize").textContent=DATA.kv.blockSize;
-  document.getElementById("kvPreempt").textContent=DATA.kv.preempt;
-  line("chKv",L,[{data:DATA.kv.used.map(function(v){return v/DATA.kv.total*100;}),color:"#f472b6"}],"%");
-  document.getElementById("kvBar").style.width=(kvPct*100).toFixed(1)+"%";
-  document.getElementById("kvNote").textContent="当前占用 "+(kvPct*100).toFixed(1)+"%（阈值告警线 85%）；抢占次数 "+DATA.kv.preempt+" 次 / 5min。";
-  document.getElementById("kvTierKv").innerHTML=DATA.kv.tiers.map(function(t){
+  document.getElementById("kvPreempt").textContent=DATA.kv.preempt===null?"—":DATA.kv.preempt;
+  line("chKv",L,[{data:DATA.kv.usage,color:"#f472b6"}],"%");
+  document.getElementById("kvBar").style.width=(kvPct===null?0:kvPct*100).toFixed(1)+"%";
+  document.getElementById("kvNote").textContent=kvPct===null
+    ?"等待 KV 占用指标接入（gpu_cache_usage / kv_cache_usage 等）。"
+    :"当前占用 "+(kvPct*100).toFixed(1)+"%（阈值告警线 85%）。";
+  document.getElementById("kvTierKv").innerHTML=DATA.kv.tiers.length?DATA.kv.tiers.map(function(t){
     return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+t[0]+'</span><span class="dshell-kvValue">'+t[1]+'</span></div>';
-  }).join("");
+  }).join(""):'<div class="diag-note">暂无 KV 层级分布数据（需接入分级介质的 exporter 指标）。</div>';
 
   /* Profiling */
-  document.getElementById("profOps").innerHTML=DATA.profOps.map(function(p){
+  document.getElementById("profOps").innerHTML=DATA.profOps.length?DATA.profOps.map(function(p){
     return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+p[1]+'</span></div>';
-  }).join("");
-  var profSegs=DATA.profOps.slice(0,6).map(function(p,i){return {name:p[0],ms:parseFloat(p[1]),color:["#60a5fa","#a78bfa","#34d399","#f59e0b","#22d3ee","#f472b6"][i]};});
-  waterfall("chProf",profSegs);
+  }).join(""):'<div class="diag-note">暂无 Profiling 数据：请在「开始诊断」页顶部的设置区配置 Profiling 数据目录。</div>';
+  if(DATA.profOps.length){
+    var profSegs=DATA.profOps.slice(0,6).map(function(p,i){return {name:p[0],ms:parseFloat(p[1]),color:["#60a5fa","#a78bfa","#34d399","#f59e0b","#22d3ee","#f472b6"][i]};});
+    waterfall("chProf",profSegs);
+  }
 
   /* 请求画像 */
-  var inLens=[],outLens=[],ttftS=[];
-  for(var i=0;i<300;i++){var l=Math.round(Math.pow(10,rnd(1.7,4.1)));inLens.push(l);outLens.push(Math.round(rnd(50,2000)));ttftS.push(Math.round(60+l*rnd(0.05,0.12)));}
-  hist("chInLen",inLens,20,"#60a5fa","");
-  hist("chOutLen",outLens,20,"#f59e0b","");
-  scatter("chScatter",inLens,ttftS);
-  document.getElementById("slowReqs").innerHTML=DATA.slowReqs.map(function(r){
+  document.getElementById("slowReqs").innerHTML=DATA.slowReqs.length?DATA.slowReqs.map(function(r){
     return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+r[0]+'</span><span class="dshell-listItemMeta">'+r[1]+'</span></div>';
-  }).join("");
+  }).join(""):'<div class="diag-note">暂无慢请求数据（未接入网关访问日志）。</div>';
 
   /* 硬件 */
-  document.getElementById("hwCards").innerHTML=DATA.hardware.map(function(h){
+  document.getElementById("hwCards").innerHTML=DATA.hardware.length?DATA.hardware.map(function(h){
     var rows=Object.keys(h[1]).map(function(k){return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+k+'</span><span class="dshell-kvValue">'+h[1][k]+'</span></div>';}).join("");
     return '<div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">'+h[0]+'</h2><div class="dshell-kv">'+rows+'</div></div>';
-  }).join("");
+  }).join(""):'<div class="diag-note">硬件实时数据（利用率 / HBM 带宽 / 温度）需接入 npu-smi / nvidia-smi 采集，暂未接入。</div>';
 
   /* 日志：渲染移至 loadLogs()（支持设置区配置的服务端日志目录），此处不再每次重绘覆盖 */
 
@@ -1185,14 +1162,14 @@ try{var __pa=JSON.parse(lsGet("diagPerf.promAbs","")||"null");if(__pa&&__pa.to>_
 var USE_PROXY=lsGet("diagPerf.useSysProxy","")==="1";   /* 代联是否经系统代理转发（默认关 = 服务端直连） */
 var STEP_S=PROM_ABS?Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N)):PROM_STEP_S;   /* 当前生效步长（每次 pollProm 重算） */
 var POLL_MS=Math.min(600,Math.max(5,parseInt(lsGet("diagPerf.pollS","30"),10)||30))*1000;
-var LOG_DIR=lsGet("diagPerf.logDir","").replace(/\/+$/,"");    /* 服务端日志目录（留空 = 示例日志） */
-var PROF_DIR=lsGet("diagPerf.profDir","").replace(/\/+$/,"");  /* Profiling trace 导出目录（留空 = 示例数据） */
+var LOG_DIR=lsGet("diagPerf.logDir","").replace(/\/+$/,"");    /* 服务端日志目录（留空 = 不接入） */
+var PROF_DIR=lsGet("diagPerf.profDir","").replace(/\/+$/,"");  /* Profiling trace 导出目录（留空 = 不接入） */
 var METRICS_URL=PROM_URL+"/metrics";   /* Prometheus 不可达时退化为瞬时抓取兜底 */
 var PREV={};   /* 计数器上次取值，用于计算 rate（/metrics 兜底路径） */
 var LIVE=false;
 
 /* 当前「窗口」选择对应的时间网格（N 点）：绝对窗口固定起止，相对窗口右端取整到步长。
-   示例数据 / 兜底模式同样按此网格打时间轴，保证窗口选择与各画板时间联动 */
+   兜底模式同样按此网格打时间轴，保证窗口选择与各画板时间联动 */
 function winEndStep(){
   if(PROM_ABS)return {end:PROM_ABS.to,step:Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N))};
   return {end:Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S,step:PROM_STEP_S};
@@ -1221,23 +1198,10 @@ function proxyGet(url){
 }
 
 function pushPoint(arr,v){arr.shift();arr.push(+v.toFixed(2));}
-function pushLabel(){DATA.ts=winLabels();   /* 时间轴跟随当前「窗口」网格（示例/兜底数据仍滚动一格），窗口选择联动各画板 */
+function pushLabel(){DATA.ts=winLabels();   /* 时间轴跟随当前「窗口」网格（兜底模式单点推入时序列滚动一格），窗口选择联动各画板 */
   /* 数据滚动一格：选区/缩放索引同步左移，滚出窗口则丢弃 */
   Object.keys(SEL).forEach(function(id){var s=SEL[id];s.i0--;s.i1--;if(s.i1<=0)delete SEL[id];else if(s.i0<0)s.i0=0;});
   Object.keys(ZOOM).forEach(function(id){var z=ZOOM[id];z.i0--;z.i1--;if(z.i1<=0)delete ZOOM[id];else if(z.i0<0)z.i0=0;});}
-function demoTick(){ /* 端点不可达时让示例数据保持缓慢游走 */
-  pushLabel();
-  var walk=function(a,lo,hi,d){var v=a[a.length-1]+((Math.random()*2-1)*d);v=Math.max(lo,Math.min(hi,v));pushPoint(a,v);};
-  walk(DATA.ttft.p99,600,980,40);walk(DATA.ttft.p90,300,520,20);walk(DATA.ttft.p50,120,260,12);
-  walk(DATA.tpot.p99,70,120,5);walk(DATA.tpot.p90,35,55,2.5);walk(DATA.tpot.p50,18,30,1.5);
-  walk(DATA.queue.sched,10,60,5);walk(DATA.queue.gw,2,12,1);walk(DATA.queue.pd,5,40,4);
-  walk(DATA.transfer.kv,8,28,2);walk(DATA.transfer.back,2,8,0.8);
-  walk(DATA.tps,1800,3200,150);walk(DATA.qps,8,22,1.2);
-  walk(DATA.mooncake.rd,3.5,7.5,0.4);walk(DATA.mooncake.wr,1.2,3.0,0.2);
-  walk(DATA.hit,55,88,2);walk(DATA.batch.run,24,64,3);walk(DATA.batch.wait,0,18,2);
-  walk(DATA.kv.used,120000,178000,4000);
-}
-
 /* Prometheus 文本格式解析 → {name:[{labels,value}]} */
 function parseProm(text){
   var out={};
@@ -1295,15 +1259,12 @@ function applyMetrics(map){
   if(t){pushPoint(DATA.queue.sched,t.p50);matched++;}
   var tg=secSeries(map,/(gateway_queue_time|gw_queue_time|enqueue_wait)[^\s]*$/,1000);
   if(tg){pushPoint(DATA.queue.gw,tg.p50);matched++;}
-  else if(t){pushPoint(DATA.queue.gw,t.p50*0.15);}   /* 网关队列无独立指标时按经验比例估算 */
   var td=secSeries(map,/(pd_queue_time|pd_forward_queue|forward_queue_time)[^\s]*$/,1000);
   if(td){pushPoint(DATA.queue.pd,td.p50);matched++;}
-  else if(t){pushPoint(DATA.queue.pd,t.p90*0.3);}    /* PD 转发队列无独立指标时按经验比例估算 */
   t=secSeries(map,/(transfer|kv_transfer|kv_send)[^\s]*$/,1000);
   if(t){pushPoint(DATA.transfer.kv,t.p50);matched++;}
   var tb=secSeries(map,/(response_transfer|result_transfer|response_send|result_send)[^\s]*$/,1000);
   if(tb){pushPoint(DATA.transfer.back,tb.p50);matched++;}
-  else if(t){pushPoint(DATA.transfer.back,t.p50*0.25);}   /* 结果回传无独立指标时按经验比例估算 */
   var v=rate(map,"tps",/(generation_tokens_total|tokens_generated_total|output_tokens_total)(_|$)/);
   if(v!==null){pushPoint(DATA.tps,v);matched++;}
   v=rate(map,"qps",/(e2e_request_latency_seconds_count|request_success_total|requests_total|finished_requests_total)(_|$)/);
@@ -1311,7 +1272,7 @@ function applyMetrics(map){
   v=pick(map,/(prefix_cache_hit|cache_hit_rate|hit_rate)/);
   if(v!==null){pushPoint(DATA.hit,v<=1?v*100:v);matched++;}
   v=pick(map,/(gpu_cache_usage|kv_cache_usage|cache_usage_perc|kv_block_usage)/);
-  if(v!==null){var p=v<=1?v*100:v;pushPoint(DATA.kv.used,DATA.kv.total*p/100);matched++;}
+  if(v!==null){pushPoint(DATA.kv.usage,v<=1?v*100:v);matched++;}
   v=pick(map,/(num_requests_running|running_requests|running_batch)/);
   if(v!==null){pushPoint(DATA.batch.run,v);matched++;}
   v=pick(map,/(num_requests_waiting|waiting_requests|pending_requests)/);
@@ -1413,15 +1374,10 @@ function alignValues(values,grid){
 function setPath(obj,path,v){var p=path.split(".");for(var i=0;i<p.length-1;i++)obj=obj[p[i]];obj[p[p.length-1]]=v;}
 function applySeries(next){
   for(var k in next){
-    if(k==="kvUsage"){DATA.kv.used=next[k].map(function(v){return Math.round(DATA.kv.total*v/100);});continue;}
+    if(k==="kvUsage"){DATA.kv.usage=next[k];continue;}
     setPath(DATA,k,next[k]);
   }
-  /* 派生序列：PromQL 未命中独立指标时按经验比例估算（与 /metrics 兜底路径同一套比例），命中则保留真实数据 */
-  if(next["queue.sched"]){
-    if(!next["queue.gw"])DATA.queue.gw=DATA.queue.sched.map(function(v){return +(v*0.15).toFixed(2);});
-    if(!next["queue.pd"])DATA.queue.pd=DATA.queue.sched.map(function(v){return +(v*0.3).toFixed(2);});
-  }
-  if(next["transfer.kv"]&&!next["transfer.back"])DATA.transfer.back=DATA.transfer.kv.map(function(v){return +(v*0.25).toFixed(2);});
+  /* 未命中的序列保持 NaN 空序列（画板显示「暂无数据」），不再按经验比例估算填充 */
 }
 
 /* 「数据源」页呈现状态：每条逻辑序列的命中查询、窗口统计与原始序列细分 */
@@ -1501,7 +1457,7 @@ function pollProm(cb){
         if(!res)return;
         var values=firstValues(res);
         if(!values)return;
-        s._data=alignValues(values,grid).map(function(v){return v===null?0:+v.toFixed(2);});
+        s._data=alignValues(values,grid).map(function(v){return v===null?NaN:+v.toFixed(2);});
         matched++;
       }).catch(function(){s._data=null;errors++;});
     });
@@ -1522,8 +1478,8 @@ function pollProm(cb){
 function fmtNum(v){return v===null||v===undefined||isNaN(v)?"—":(+v).toLocaleString();}
 function fmtTs(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);}return p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes());}
 function renderPromPanel(){
-  var modeText={init:"检测中…",ok:"实时数据 · Prometheus query_range",empty:"已连通 · 指标名未匹配（看板暂显示示例数据）",
-    metrics:"/metrics 瞬时抓取兜底",down:"数据源不可达（看板为示例数据演示）"}[PROM_PANEL_MODE]||PROM_PANEL_MODE;
+  var modeText={init:"检测中…",ok:"实时数据 · Prometheus query_range",empty:"已连通 · 指标名未匹配（看板暂无数据）",
+    metrics:"/metrics 瞬时抓取兜底",down:"数据源不可达（看板暂无数据，等待重试）"}[PROM_PANEL_MODE]||PROM_PANEL_MODE;
   var meta=[
     ["数据源地址",PROM_URL],
     ["接入模式",modeText],
@@ -1596,9 +1552,9 @@ function poll(done){
       return;
     }
     if(state==="empty"){
-      if(!LIVE){demoTick();renderAll();}
+      if(!LIVE)renderAll();   /* 未接入过真实数据：重绘空画板（显示「暂无数据」），不再用模拟数据充数 */
       PROM_PANEL_MODE="empty";renderPromPanel();
-      setSrcBadge("warn","Prometheus 已连通 · 指标名未匹配映射表（暂显示示例数据）");
+      setSrcBadge("warn","Prometheus 已连通 · 指标名未匹配映射表（画板暂无数据）");
       finish("empty");
       return;
     }
@@ -1607,11 +1563,11 @@ function poll(done){
       if(text){
         var map=parseProm(text);
         if(applyMetrics(map)){LIVE=true;pushLabel();renderAll();PROM_PANEL_MODE="metrics";setSrcBadge("ok","实时数据 · /metrics 瞬时抓取 · "+POLL_MS/1000+"s 刷新");}
-        else{PROM_PANEL_MODE="empty";setSrcBadge("warn","已连通 · 指标名未匹配映射表（暂显示示例数据）");}
+        else{PROM_PANEL_MODE="empty";setSrcBadge("warn","已连通 · 指标名未匹配映射表（画板暂无数据）");}
       }else{
-        if(!LIVE){demoTick();renderAll();}
+        if(!LIVE)renderAll();
         PROM_PANEL_MODE="down";
-        setSrcBadge("","数据源不可达 · 示例数据 · "+POLL_MS/1000+"s 自动重试");
+        setSrcBadge("","数据源不可达 · "+POLL_MS/1000+"s 自动重试");
       }
       renderPromPanel();
       finish(state);
@@ -1622,15 +1578,6 @@ function poll(done){
 /* ================= 日志目录（经 /api/worktable/fs + /file 读服务端日志尾部） ================= */
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 function logClass(line){if(/error|fatal|exception/i.test(line))return "err";if(/warn/i.test(line))return "warn";return "info";}
-var SAMPLE_LOGS=[
-  "[14:02:11] INFO  scheduler: batch=48 running, 3 waiting, kv_used=86.2%",
-  "[14:02:11] INFO  mooncake: prefetch hit req=req-31f2bb blocks=512",
-  "[14:02:13] WARN  allocator: gpu blocks low (free=8.9%), consider eviction",
-  "[14:02:14] INFO  req-9f3a21 finish: ttft=1840ms tpot_avg=41ms out=512tok",
-  "[14:02:15] ERROR transfer: RDMA retry on pd-link-2, latency spike 190ms",
-  "[14:02:16] WARN  scheduler: preempted seq req-aa11d8 (kv pressure)",
-  "[14:02:18] INFO  profiler: trace saved to /var/log/prof/step_48211.json",
-  "[14:02:20] INFO  metrics: scrape ok (248 series)"];
 function renderLogs(lines){
   document.getElementById("logBox").innerHTML=lines.map(function(l){
     return '<div class="diag-log-'+logClass(l)+'">'+esc(l)+'</div>';
@@ -1638,7 +1585,7 @@ function renderLogs(lines){
 }
 function setLogNote(t){document.getElementById("logNote").textContent=t;}
 function loadLogs(){
-  if(!LOG_DIR){renderLogs(SAMPLE_LOGS);setLogNote("示例数据 · 可在「开始诊断」页顶部的设置区配置服务端日志目录接入真实日志");return;}
+  if(!LOG_DIR){document.getElementById("logBox").innerHTML="";setLogNote("未配置日志目录：在「开始诊断」页顶部的设置区配置服务端日志目录后接入真实日志。");return;}
   fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:LOG_DIR})})
     .then(function(r){return r.json();})
     .then(function(j){
@@ -1657,8 +1604,8 @@ function loadLogs(){
       setLogNote("日志目录 "+LOG_DIR+" · "+res.name.split("/").pop()+" 尾部 "+tail.length+" 行");
     })
     .catch(function(){
-      renderLogs(SAMPLE_LOGS);
-      setLogNote("日志目录 "+LOG_DIR+" 不可读或无 .log 文件 · 暂显示示例日志");
+      document.getElementById("logBox").innerHTML="";
+      setLogNote("日志目录 "+LOG_DIR+" 不可读或无 .log 文件。");
     });
 }
 
@@ -1673,7 +1620,7 @@ function parseProfSummary(j){   /* 支持 [["算子","28.4%"],…] 或 [{"name":
 }
 function loadProf(){
   var card=document.getElementById("profFilesCard");
-  if(!PROF_DIR){card.style.display="none";setProfNote("数据来源：示例数据 · 可在「开始诊断」页顶部的设置区配置 Profiling 数据目录（torch profiler / msprof trace 导出目录）。");return;}
+  if(!PROF_DIR){card.style.display="none";setProfNote("未配置 Profiling 数据目录：在「开始诊断」页顶部的设置区配置 torch profiler / msprof trace 导出目录后接入真实数据。");return;}
   fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:PROF_DIR})})
     .then(function(r){return r.json();})
     .then(function(j){
@@ -1697,7 +1644,7 @@ function loadProf(){
       setProfNote("数据来源："+PROF_DIR+" 最新聚合摘要 · 已渲染算子 Top10 与占比图");
     })
     .catch(function(){
-      setProfNote("数据来源：示例数据 · "+PROF_DIR+" 内暂无可解析的聚合摘要 JSON（[[name,pct],…] / [{name,pct},…]）");
+      setProfNote("暂无数据："+PROF_DIR+" 内无可解析的聚合摘要 JSON（[[name,pct],…] / [{name,pct},…]）。");
     });
 }
 
@@ -1746,12 +1693,12 @@ document.getElementById("absApply").addEventListener("click",function(){
   document.getElementById("setHint").textContent="已切换到绝对时间窗口并重新拉取。";
 });
 
-/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、按 model_name / xds_namespace 标签过滤（下拉支持搜索）、点击复制 */
+/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、按 model_name / xds_namespace 标签过滤（下拉支持搜索）、点击复制、勾选后添加到画布 */
 function openMetricsModal(names){
   function escQL(s){return s.replace(/\\/g,"\\\\").replace(/"/g,'\\"');}
   var body=document.createElement("div");
   var note=document.createElement("div");note.className="diag-note";note.style.marginBottom="8px";
-  note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；支持关键字与标签过滤，点击名称复制。";
+  note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；支持关键字与标签过滤，点击名称复制；勾选后可在底部添加到画布（自定义画板，随轮询实时拉取真实数据）。";
   var filter=document.createElement("input");filter.className="dshell-input";filter.placeholder="过滤指标名…";
   filter.style.cssText="width:100%;margin-bottom:8px";
   /* 标签过滤：可搜索下拉（输入即过滤），候选值异步取自 /api/v1/label/<label>/values */
@@ -1803,12 +1750,14 @@ function openMetricsModal(names){
   lfRow.appendChild(selModel.el);lfRow.appendChild(selNs.el);
   var list=document.createElement("div");list.className="dshell-list";list.style.cssText="max-height:46vh;overflow:auto";
   var count=document.createElement("div");count.className="diag-note";
+  var selected={};   /* 勾选的指标名（过滤重绘后仍保留） */
   var baseNames=names;   /* 标签过滤后的指标全集（关键字过滤再叠加其上） */
   var render=function(){
     var q=filter.value.trim().toLowerCase();
     var hits=q?baseNames.filter(function(n){return n.toLowerCase().indexOf(q)>=0;}):baseNames;
     list.innerHTML=hits.slice(0,300).map(function(n){
-      return '<div class="dshell-listItem diag-mname" data-n="'+esc(n)+'"><span class="dshell-listItemMeta diag-promql">'+esc(n)+'</span></div>';
+      return '<div class="dshell-listItem"><input type="checkbox" class="diag-mchk" data-n="'+esc(n)+'"'+(selected[n]?" checked":"")
+        +' /><span class="dshell-listItemMeta diag-promql diag-mname" data-n="'+esc(n)+'" title="点击复制指标名">'+esc(n)+'</span></div>';
     }).join("")||'<div class="diag-note">无匹配指标</div>';
     var tag=(labelFilter.model_name||labelFilter.xds_namespace)?"（已按标签过滤，共 "+baseNames.length+" 个）":"";
     count.textContent="显示 "+Math.min(hits.length,300)+" / "+hits.length+" 个"+tag+(hits.length>300?"，其余请继续输入过滤":"");
@@ -1848,9 +1797,57 @@ function openMetricsModal(names){
     var it=e.target.closest?e.target.closest(".diag-mname"):null;if(!it)return;
     var n=it.getAttribute("data-n");
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(n);
-    it.querySelector(".dshell-listItemMeta").textContent=n+"  ✓ 已复制";
+    it.textContent=n+"  ✓ 已复制";
   });
-  body.appendChild(note);body.appendChild(filter);body.appendChild(lfRow);body.appendChild(list);body.appendChild(count);
+  /* 勾选状态随过滤重绘保留（change 事件委托，checkbox 重绘后从 selected 还原 checked） */
+  list.addEventListener("change",function(e){
+    var c=e.target.closest?e.target.closest(".diag-mchk"):null;if(!c)return;
+    var n=c.getAttribute("data-n");
+    if(c.checked)selected[n]=1;else delete selected[n];
+    syncSelBar();
+  });
+  /* 底部操作条：已选数量 + 目标画布（按标签页新建画板 / 追加到已有自定义画板）+ 添加按钮 */
+  var selBar=document.createElement("div");selBar.style.cssText="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap";
+  var selCount=document.createElement("span");selCount.className="dshell-muted";selCount.style.fontSize="12px";
+  var target=document.createElement("select");target.className="dshell-input";target.style.cssText="width:auto;padding:3px 6px;font-size:12px";
+  var addOpt=function(v,t){var o=document.createElement("option");o.value=v;o.textContent=t;target.appendChild(o);};
+  [["latency","时延分解"],["throughput","吞吐与缓存"]].forEach(function(t){addOpt("tab:"+t[0],"新建画板 · "+t[1]);});
+  CUSTOM.tabs.forEach(function(t){addOpt("tab:"+t.id,"新建画板 · "+t.name);});
+  CUSTOM.panels.forEach(function(p){addOpt("panel:"+p.id,"追加到画板 · "+p.title);});
+  /* 默认跟随当前激活的标签页（在可选目标内时） */
+  var active=document.querySelector(".dshell-tab.dshell-tabOn");
+  if(active){var av="tab:"+active.getAttribute("data-tab");
+    for(var oi=0;oi<target.options.length;oi++)if(target.options[oi].value===av){target.value=av;break;}}
+  var addBtn=document.createElement("button");addBtn.className="dshell-btn";addBtn.type="button";
+  addBtn.style.cssText="padding:3px 10px;font-size:12px";addBtn.textContent="添加到画布";
+  selBar.appendChild(selCount);selBar.appendChild(target);selBar.appendChild(addBtn);
+  var syncSelBar=function(){selCount.textContent="已选 "+Object.keys(selected).length+" 个指标 →";};
+  syncSelBar();
+  addBtn.addEventListener("click",function(){
+    var picked=Object.keys(selected);
+    if(!picked.length){selCount.textContent="请先勾选要添加的指标";return;}
+    /* 标签过滤生效时把标签选择器带进 PromQL，保证加到画布的是同一批序列 */
+    var sel=[];
+    if(labelFilter.model_name)sel.push('model_name="'+escQL(labelFilter.model_name)+'"');
+    if(labelFilter.xds_namespace)sel.push('xds_namespace="'+escQL(labelFilter.xds_namespace)+'"');
+    var ql=function(n){return sel.length?n+"{"+sel.join(",")+"}":n;};
+    var tv=target.value,doneTab=null;
+    if(tv.indexOf("panel:")===0){
+      var p=panelOf(tv.slice(6));
+      if(p){picked.forEach(function(n){p.series.push({name:n,color:PALETTE[p.series.length%PALETTE.length],q:ql(n)});});refreshLegend(p);doneTab=p.tab;}
+    }else{
+      var tab=tv.slice(4);doneTab=tab;
+      picked.forEach(function(n,i){
+        var np={id:"cp_"+Date.now().toString(36)+"_"+i,tab:tab,title:n,unit:"",
+          series:[{name:n,color:PALETTE[i%PALETTE.length],q:ql(n)}]};
+        CUSTOM.panels.push(np);buildPanelCard(np);
+      });
+    }
+    saveCustom();closeModal();poll();
+    document.getElementById("metricsBtnHint").textContent="已添加 "+picked.length+" 个指标到画布";
+    if(doneTab){var tb=document.querySelector('.dshell-tab[data-tab="'+doneTab+'"]');if(tb)tb.click();}
+  });
+  body.appendChild(note);body.appendChild(filter);body.appendChild(lfRow);body.appendChild(list);body.appendChild(count);body.appendChild(selBar);
   render();
   openModal("数据源全部指标",body);
 }
@@ -1899,7 +1896,7 @@ function applySettings(save){
 });
 
 window.addEventListener("resize",function(){clearTimeout(window.__diagRt);window.__diagRt=setTimeout(renderAll,200);});
-DATA.ts=winLabels();   /* 首屏时间轴即按当前「窗口」网格（含 localStorage 恢复的小时数/绝对窗口），示例数据也联动 */
+DATA.ts=winLabels();   /* 首屏时间轴即按当前「窗口」网格（含 localStorage 恢复的小时数/绝对窗口） */
 renderAll();
 renderPromPanel();
 fillSettings();
