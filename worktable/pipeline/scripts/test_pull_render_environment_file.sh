@@ -3,7 +3,7 @@ set -euo pipefail
 
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pull_render_config.sh"
 
-grep -Fq 'PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"' "$script"
+grep -Fq '|| PIPELINE_ENV_FILE="${RUN_DIR}/pipeline.env"' "$script"
 grep -Fq 'write_pipeline_env()' "$script"
 grep -Fq 'export %s=%q' "$script"
 

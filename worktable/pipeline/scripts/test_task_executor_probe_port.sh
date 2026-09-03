@@ -52,6 +52,16 @@ for name in ("livenessProbe", "readinessProbe", "startupProbe"):
 
 groups = values["taskExecutorGroups"]
 assert [group["rayStartParamsPorts"]["dashboard-agent-listen-port"] for group in groups] == [33300, 33301]
+port_ranges = [
+    (group["rayStartParamsPorts"]["min-worker-port"], group["rayStartParamsPorts"]["max-worker-port"])
+    for group in groups
+]
+assert port_ranges[0][0] <= port_ranges[0][1]
+assert port_ranges[1][0] <= port_ranges[1][1]
+assert port_ranges[0][1] < port_ranges[1][0]
+ray_start_params = values["workerGroups"]["taskExecutorGroup-card"]["rayStartParams"]
+assert "min-worker-port" in ray_start_params
+assert "max-worker-port" in ray_start_params
 PY
 
 echo "PASS: task executor probes use each group's dashboard agent port"

@@ -4,9 +4,9 @@ set -euo pipefail
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pull_render_config.sh"
 pull_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pull-image.sh"
 
-grep -Fq 'TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"' "$script"
-grep -Fq 'TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"' "$script"
-grep -Fq 'TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"' "$script"
+grep -Fq '|| TARGET_RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"' "$script"
+grep -Fq '|| TARGET_RENDER_DIR="${TARGET_RUN_DIR}/rendered"' "$script"
+grep -Fq '|| TARGET_PIPELINE_ENV_FILE="${TARGET_RUN_DIR}/pipeline.env"' "$script"
 grep -Fq 'sync_rendered_to_targets()' "$script"
 grep -Fq 'tar -C "$RENDER_DIR" -cf - .' "$script"
 grep -Fq 'TARGET_HOSTS must be a non-empty JSON array' "$script"

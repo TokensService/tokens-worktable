@@ -204,16 +204,47 @@ for package in arch.get("deploy_spec_packages", []):
 if not groups:
     raise SystemExit(f"no prefill/decode specs found in {arch_name}")
 
+# TE pods use host networking.  Their Ray core workers therefore share one
+# host port namespace and must not use the same default worker-port range.
+worker_port_first = 10002
+worker_port_last = 19999
+worker_port_capacity = worker_port_last - worker_port_first + 1
+worker_port_span = worker_port_capacity // len(groups)
+if worker_port_span < 1:
+    raise SystemExit(f"too many task executor groups for worker ports: {len(groups)}")
+for group_index, group in enumerate(groups):
+    range_start = worker_port_first + group_index * worker_port_span
+    range_end = worker_port_last if group_index == len(groups) - 1 else range_start + worker_port_span - 1
+    group["rayStartParamsPorts"]["min-worker-port"] = range_start
+    group["rayStartParamsPorts"]["max-worker-port"] = range_end
+
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("IMAGE_TAG", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("DEPLOY_NAMESPACE", namespace)
+# TE 标签由渲染器按 TARGET_HOSTS 计算，模板内联引用时直接替换为同一份值。
+template_vars.setdefault("XDS_TE_POD_LABEL_KEY", node_selector_key)
+template_vars.setdefault("XDS_TE_POD_LABEL_VAL", node_selector_value)
+# 环境相关占位符默认值，均可被 TEMPLATE_VARS_JSON 覆盖：
+# 数据库五项为 mock 参考值（MOCK_DB=true 时不真正连库）；ELB_ID 仅用于注解；
+# NODE_PORT/SERVICE_PORT/COLLECTOR_GATEWAY_URL 为本环境固定配置。
+template_vars.setdefault("XDS_DATABASE_HOST", "127.0.0.1")
+template_vars.setdefault("XDS_DATABASE_PORT", "5432")
+template_vars.setdefault("XDS_DATABASE_NAME", "xds")
+template_vars.setdefault("XDS_DATABASE_USERNAME", "xds")
+template_vars.setdefault("DATABASE_PASSWORD", "mock")
+template_vars.setdefault("ELB_ID", "unused")
+template_vars.setdefault("NODE_PORT", "31365")
+template_vars.setdefault("SERVICE_PORT", "8080")
+template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
 )
+helm_runtime_placeholders = {"DASHBOARD_AGENT_LISTEN_PORT"}
 unresolved = sorted({match.group(1) for match in placeholder_pattern.finditer(active_values_text)
-                     if match.group(1) not in template_vars})
+                     if match.group(1) not in template_vars
+                     and match.group(1) not in helm_runtime_placeholders})
 if unresolved:
     raise SystemExit("unresolved template placeholders: " + ", ".join(unresolved))
 for key, value in template_vars.items():
@@ -267,6 +298,11 @@ task_executor_template = (
     if isinstance(worker_group_templates, dict) else None
 )
 if isinstance(task_executor_template, dict):
+    ray_start_params = task_executor_template.setdefault("rayStartParams", {})
+    if not isinstance(ray_start_params, dict):
+        raise SystemExit("workerGroups.taskExecutorGroup-card.rayStartParams must be a mapping")
+    ray_start_params.setdefault("min-worker-port", worker_port_first)
+    ray_start_params.setdefault("max-worker-port", worker_port_last)
     for probe_name in ("livenessProbe", "readinessProbe", "startupProbe"):
         command = task_executor_template.get(probe_name, {}).get("exec", {}).get("command")
         if isinstance(command, list):

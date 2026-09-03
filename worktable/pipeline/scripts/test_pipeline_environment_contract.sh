@@ -9,7 +9,7 @@ grep -Fq 'bash "$SCRIPT_DIR/pull-image.sh"' "$pipeline"
 grep -Fq 'bash "$SCRIPT_DIR/render-config.sh"' "$pipeline"
 grep -Fq 'IMAGE_NAME' "$pipeline"
 grep -Fq 'ARCH_NAME' "$pipeline"
-grep -Fq 'RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"' "$pipeline"
+grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$pipeline"
 
 for script in pull-image.sh render-config.sh deploy-model.sh register-model.sh model-health.sh; do
   if rg -n '^\s*(IMAGE|IMAGE_NAME|ARCH_NAME|MODEL_NAME|RUN_DIR|CHART_DIR|VALUES_FILE|ARCH_REQUEST_FILE|RESOURCE_MANIFEST|XDS_URL)=.*\$\{?1' "$script_dir/$script" ||

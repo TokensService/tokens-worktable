@@ -13,7 +13,7 @@ cat >"$work_dir/architecture.request.json" <<'JSON'
 JSON
 mkdir -p "$work_dir/rendered"
 cat >"$work_dir/rendered/resources.rendered.json" <<'JSON'
-{"resources":[{"resource_id":"prefill-1","resource_type":"prefill","resource_status":"IDLE","resource_bundles":["127.0.0.1"]}]}
+{"resources":[{"resource_id":"prefill-1","resource_type":"prefill","resource_status":"IDLE","resource_bundles":["127.0.0.1"],"task_executor_group":"taskExecutorGroup4prefill1"}]}
 JSON
 cat >"$work_dir/node-labels.json" <<'EOF'
 {"key":"xds.optest","value":"node-78","hosts":[{"ip":"192.168.0.78"}]}
@@ -27,6 +27,8 @@ cat >"$work_dir/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "get" && "$2" == "nodes" ]]; then
   printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
+elif [[ "$1" == "-n" && "$3" == "get" && "$4" == "pods" && "$*" == *"-o json"* ]]; then
+  printf '{"items":[{"metadata":{"name":"taskExecutorGroup4prefill1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}}]}'
 fi
 exit 0
 EOF
