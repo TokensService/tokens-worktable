@@ -761,7 +761,6 @@ function apply(ctx) {
     return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   };
   const durText = (sec) => sec < 60 ? Math.round(sec) + "s" : Math.floor(sec / 60) + "m" + Math.round(sec % 60) + "s";
-  const truncLog = (t) => t.length > 8192 ? t.slice(0, 8192) + "\n\u2026(\u622A\u65AD)" : t;
   const sanitizeFsName = (s) => String(s || "pipeline").replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "") || "pipeline";
   const nowCompactFull = () => {
     const d = /* @__PURE__ */ new Date();
@@ -945,7 +944,7 @@ function apply(ctx) {
     const interp = /\.py$/i.test(name2) ? "python3" : "bash";
     let t = "$ " + interp + " " + name2 + "\n" + (r.stdout || "");
     if (r.stderr) t += "\n\u2717 " + r.stderr.split("\n").join("\n\u2717 ");
-    return truncLog(t + "\n[exit " + r.code + "]");
+    return t + "\n[exit " + r.code + "]";
   }
   async function appendPipelineHistory(rec) {
     const j = await readPipelineStore();

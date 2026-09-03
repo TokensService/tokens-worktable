@@ -635,7 +635,6 @@ export function apply(ctx: Context) {
   const randHex = (n: number) => Math.random().toString(16).slice(2, 2 + n)
   const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') }
   const durText = (sec: number) => (sec < 60 ? Math.round(sec) + 's' : Math.floor(sec / 60) + 'm' + Math.round(sec % 60) + 's')
-  const truncLog = (t: string) => (t.length > 8192 ? t.slice(0, 8192) + '\n…(截断)' : t)
   // 与页面一致的归档命名：文件名安全化（非法字符/空白 → '-'，去首尾 '-'）
   const sanitizeFsName = (s: any) => String(s || 'pipeline').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'pipeline'
   const nowCompactFull = () => { const d = new Date(); const p = (n: number) => String(n).padStart(2, '0'); return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) }
@@ -811,11 +810,14 @@ export function apply(ctx: Context) {
         })
     })
   }
+  /* 任务回显文本：与页面 buildLog 同格式（命令行 + stdout + ✗ 前缀 stderr + [exit]）。
+     完整回显不截断（对齐页面行为，见 pipeline.html collectRunLogs）：独立任务日志 / 汇总 run-<tag>.log /
+     历史记录均保全量，避免长输出任务（如镜像拉取进度）归档日志被切断 */
   function stageLogText(name: string, r: { code: number; stdout: string; stderr: string }) {
     const interp = /\.py$/i.test(name) ? 'python3' : 'bash'
     let t = '$ ' + interp + ' ' + name + '\n' + (r.stdout || '')
     if (r.stderr) t += '\n✗ ' + r.stderr.split('\n').join('\n✗ ')
-    return truncLog(t + '\n[exit ' + r.code + ']')
+    return t + '\n[exit ' + r.code + ']'
   }
   async function appendPipelineHistory(rec: any) {
     const j = await readPipelineStore()
