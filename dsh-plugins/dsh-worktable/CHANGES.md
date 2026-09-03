@@ -1,5 +1,17 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 设置面板新增「工作区（默认会话分组）」设置项（`src/client/index.tsx` + `src/client/locales.ts`）：
+  视图选项弹层在「排序方式」与「管理项目」之间新增工作区下拉（复用 `dsh-wt_consoleSelect`
+  主题变量样式，浅色/深色自适应），列出宿主已配置的工作区供选择，选「未分组」即清除；
+  存 `ViewState.workspace`（localStorage 视图态切片，随 persistView 落盘；仅本机偏好，不走服务端同步）。
+  生效点：项目未单独设置会话分组时，「页面修改」✏️ / `window.__dshNewChatSession` 桥 /
+  AI 日志分析（postMessage）等无显式目录的新建会话统一落进该默认分组
+  （`newChatInProject` 内兜底 + `analyzeLogInSession` 显式取用；分组/目录优先级：
+  项目分组 > 指定目录 > 默认分组 > 未分组）；带指定目录的会话（归档目录分析、开发会话、
+  打开归档目录）保持 cwd 行为不变。所选工作区被删除后按未设置处理
+  （`defaultWorkspaceId` 校验存活；下拉显示「已删除」占位项便于改选/清除）。
+  `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 定时执行（服务端 runStageScript）脚本参数下发规则与前端新 execScript 对齐（`src/index.ts`）：
   流水线页参数识别改版后（静态 `:-默认值` 预填为显式值并照常下发，动态默认值——含 `$引用`/`$(命令)` 的
   脚本表达式，标 `dyn`——不下发字面值、留空由脚本自身 `:-` 展开），服务端定时路径同步改为

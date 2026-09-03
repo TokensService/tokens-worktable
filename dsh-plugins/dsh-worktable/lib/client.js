@@ -8286,6 +8286,10 @@ var zh = {
   "sort.label": "\u6392\u5E8F\u65B9\u5F0F",
   "sort.manual": "\u624B\u52A8",
   "sort.recent": "\u6700\u8FD1",
+  "workspace.title": "\u5DE5\u4F5C\u533A\uFF08\u9ED8\u8BA4\u4F1A\u8BDD\u5206\u7EC4\uFF09",
+  "workspace.desc": "\u9879\u76EE\u672A\u5355\u72EC\u8BBE\u7F6E\u4F1A\u8BDD\u5206\u7EC4\u65F6\uFF0C\u300C\u9875\u9762\u4FEE\u6539\u300D\u270F\uFE0F / AI \u65E5\u5FD7\u5206\u6790\u7B49\u65B0\u5EFA\u4F1A\u8BDD\u7EDF\u4E00\u843D\u8FDB\u9009\u4E2D\u7684\u5DE5\u4F5C\u533A\uFF1B\u5E26\u6307\u5B9A\u76EE\u5F55\u7684\u4F1A\u8BDD\uFF08\u5F52\u6863\u5206\u6790\u3001\u5F00\u53D1\u4F1A\u8BDD\uFF09\u4E0D\u53D7\u5F71\u54CD\u3002",
+  "workspace.none": "\u672A\u5206\u7EC4",
+  "workspace.missing": "\uFF08\u5DF2\u5220\u9664\uFF09",
   "menu.manage": "\u7BA1\u7406\u9879\u76EE\u2026",
   "add.guideTitle": "\u63A5\u5165\u65B0\u9879\u76EE",
   "add.guideBody": "\u5DE5\u4F5C\u53F0\u91CC\u7684\u9879\u76EE\u5C31\u662F DSH \u63D2\u4EF6\u2014\u2014\u63D2\u4EF6\u6CE8\u518C\u4E00\u5F20\u300C\u5DE5\u4F5C\u53F0\u9879\u76EE\u5361\u7247\u300D\u5373\u81EA\u52A8\u5165\u9A7B\uFF08\u534F\u8BAE\u89C1\u9879\u76EE PRD \xA75.3\uFF09\u3002\u5DF2\u5B89\u88C5\u4F46\u672A\u5165\u9A7B\u7684\u63D2\u4EF6\u9700\u5728\u63D2\u4EF6\u4EE3\u7801\u91CC\u5B8C\u6210\u6CE8\u518C\u3002",
@@ -8485,6 +8489,10 @@ var en = {
   "sort.label": "Sort by",
   "sort.manual": "Manual",
   "sort.recent": "Recent",
+  "workspace.title": "Workspace (default session group)",
+  "workspace.desc": 'When a project has no session group of its own, new sessions such as "Edit page" \u270F\uFE0F / AI log analysis land in the chosen workspace; sessions with an explicit directory (archive analysis, dev session) are unaffected.',
+  "workspace.none": "Ungrouped",
+  "workspace.missing": "(deleted)",
   "menu.manage": "Manage projects\u2026",
   "add.guideTitle": "Add a project",
   "add.guideBody": "Projects in the worktable are DSH plugins \u2014 a plugin joins by registering a worktable project card (protocol in the project PRD \xA75.3). Installed plugins that have not registered need to do so in their code.",
@@ -18610,7 +18618,8 @@ var DEFAULT_VIEW = {
   searchOpen: false,
   orderBy: "manual",
   dock: "footer",
-  floatTop: null
+  floatTop: null,
+  workspace: null
 };
 var DEFAULT_PROJECTS = {
   order: [],
@@ -18638,7 +18647,8 @@ function loadView() {
       orderBy,
       dock: p.dock === "float" ? "float" : "footer",
       floatTop: typeof p.floatTop === "number" ? p.floatTop : null,
-      consoleTheme: p.consoleTheme === "dark" || p.consoleTheme === "light" || p.consoleTheme === "system" ? p.consoleTheme : "system"
+      consoleTheme: p.consoleTheme === "dark" || p.consoleTheme === "light" || p.consoleTheme === "system" ? p.consoleTheme : "system",
+      workspace: typeof p.workspace === "string" && p.workspace ? p.workspace : null
     };
   } catch {
     return { ...DEFAULT_VIEW };
@@ -18841,6 +18851,17 @@ function listWorkspaces() {
     }));
   } catch {
     return [];
+  }
+}
+function defaultWorkspaceId() {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY2);
+    if (!raw) return null;
+    const id = JSON.parse(raw)?.workspace;
+    if (typeof id !== "string" || !id) return null;
+    return listWorkspaces().some((w) => w.id === id) ? id : null;
+  } catch {
+    return null;
   }
 }
 function cleanPreviewText(raw) {
@@ -19173,7 +19194,8 @@ async function analyzeLogInSession(logPath) {
     "\uFF08\u5185\u542B\u591A\u6B21\u8FD0\u884C\u8BB0\u5F55\uFF1A\u6BCF\u6B21\u8FD0\u884C\u7684\u72B6\u6001/\u8017\u65F6/\u6267\u884C\u4EBA\uFF0C\u4EE5\u53CA\u5404\u9636\u6BB5\u65E5\u5FD7\uFF1B\u811A\u672C\u9636\u6BB5\u542B\u771F\u5B9E stdout/stderr \u4E0E exit code\u3002\uFF09",
     "\u8BF7\u7ED9\u51FA\uFF1A1) \u6574\u4F53\u8FD0\u884C\u60C5\u51B5\u6982\u8FF0\uFF08\u6210\u529F\u7387\u3001\u8D8B\u52BF\uFF09\uFF1B2) \u5931\u8D25/\u5F02\u5E38\u8FD0\u884C\u7684\u6839\u56E0\u5206\u6790\uFF1B3) \u53EF\u6267\u884C\u7684\u6539\u8FDB\u5EFA\u8BAE\u3002"
   ].join("\n");
-  const sessionId = await b.sessions.create({});
+  const wsId = defaultWorkspaceId();
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : {});
   await ensureSessionPreset(sessionId);
   await ensureSessionModel(sessionId);
   markPluginSessionOpen(sessionId);
@@ -19186,7 +19208,8 @@ async function analyzeLogInSession(logPath) {
 async function newChatInProject(text2, workspaceId = null, cwd = null) {
   const b = sessionBridge;
   if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
-  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : cwd ? { cwd } : {});
+  const wsId = workspaceId ?? (cwd ? null : defaultWorkspaceId());
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : cwd ? { cwd } : {});
   await ensureSessionPreset(sessionId);
   await ensureSessionModel(sessionId);
   markPluginSessionOpen(sessionId);
@@ -21292,6 +21315,31 @@ function WorktableSection(props) {
           }
         )
       ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_menuSep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_manageHead", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_manageTitle", children: t("workspace.title") }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_pageEditHint", children: t("workspace.desc") }),
+      (() => {
+        const wsList = listWorkspaces();
+        const cur = view.workspace ?? "";
+        const missing = !!cur && !wsList.some((w) => w.id === cur);
+        return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+          "select",
+          {
+            className: "dsh-wt_consoleSelect",
+            value: cur,
+            onChange: (e) => persistView({ workspace: e.target.value || null }),
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: "", children: t("workspace.none") }),
+              missing && /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("option", { value: cur, children: [
+                cur,
+                " ",
+                t("workspace.missing")
+              ] }),
+              wsList.map((w) => /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("option", { value: w.id, title: w.path, children: w.title || w.path || w.id }, w.id))
+            ]
+          }
+        );
+      })(),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_menuSep" }),
       /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "dsh-wt_manageHead", children: /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "dsh-wt_manageTitle", children: t("manage.title") }) }),
       effectiveOrder.map((id) => {

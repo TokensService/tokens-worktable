@@ -70,6 +70,8 @@ type ViewState = {
   floatTop: number | null
   /** 控制室面板主题：dark/light/system（system = 跟随宿主 color-scheme，即 DSH 深色/白色/跟随系统设置） */
   consoleTheme?: 'dark' | 'light' | 'system'
+  /** 全局默认会话分组（宿主工作区 id）：项目未单独设分组时，「页面修改」/ AI 日志分析等新建会话落进它；空/缺 = 未分组。 */
+  workspace?: string | null
 }
 
 /** 卡片上报的项目元信息（协议 v2）。 */
@@ -270,6 +272,7 @@ const DEFAULT_VIEW: ViewState = {
   orderBy: 'manual',
   dock: 'footer',
   floatTop: null,
+  workspace: null,
 }
 
 const DEFAULT_PROJECTS: ProjectsState = {
@@ -305,6 +308,7 @@ function loadView(): ViewState {
       dock: p.dock === 'float' ? 'float' : 'footer',
       floatTop: typeof p.floatTop === 'number' ? p.floatTop : null,
       consoleTheme: p.consoleTheme === 'dark' || p.consoleTheme === 'light' || p.consoleTheme === 'system' ? p.consoleTheme : 'system',
+      workspace: typeof p.workspace === 'string' && p.workspace ? p.workspace : null,
     }
   } catch {
     return { ...DEFAULT_VIEW }
@@ -529,6 +533,18 @@ function listWorkspaces(): { id: string; title: string; path: string }[] {
       path: w.path ?? '',
     }))
   } catch { return [] }
+}
+
+/** 全局默认会话分组（设置面板「工作区」设置项；读 localStorage 视图态切片，供模块级新建会话路径使用）。
+ *  引用的工作区已被删除时按未设置处理（避免带着失效 id 建会话）。 */
+function defaultWorkspaceId(): string | null {
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY)
+    if (!raw) return null
+    const id = JSON.parse(raw)?.workspace
+    if (typeof id !== 'string' || !id) return null
+    return listWorkspaces().some((w) => w.id === id) ? id : null
+  } catch { return null }
 }
 
 /** 预览文本清洗：去掉围栏代码块（```…```，含 dsh-ui 等）与行内代码，压缩空白；
@@ -866,7 +882,9 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
     '（内含多次运行记录：每次运行的状态/耗时/执行人，以及各阶段日志；脚本阶段含真实 stdout/stderr 与 exit code。）',
     '请给出：1) 整体运行情况概述（成功率、趋势）；2) 失败/异常运行的根因分析；3) 可执行的改进建议。',
   ].join('\n')
-  const sessionId = await b.sessions.create({})
+  // 未指定目录的分析会话：落进设置面板的默认会话分组（未设置 = 未分组）
+  const wsId = defaultWorkspaceId()
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : {})
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId)
@@ -877,13 +895,14 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
 /** 内容页（pipeline.html「页面修改」按钮等）→ 右侧聊天窗桥（经 window.__dshNewChatSession 暴露给 iframe 调用）：
  *  新建会话并把提示词填入输入框（不提交，用户确认后手动发送）；标记为插件发起的切换，
  *  项目分栏保持打开，新会话出现在右侧聊天窗而非离开项目页。
- *  workspaceId 为项目设置里选定的会话分组（缺省 = 未分组）；cwd 为新会话工作目录
- *  （如流水线运行历史分析按钮传入选中行的日志归档目录），未分组时生效。 */
+ *  workspaceId 为项目设置里选定的会话分组；cwd 为新会话工作目录
+ *  （如流水线运行历史分析按钮传入选中行的日志归档目录）。
+ *  分组/目录优先级：项目分组（workspaceId）> 指定目录（cwd）> 设置面板默认分组 > 未分组。 */
 async function newChatInProject(text: string, workspaceId: string | null = null, cwd: string | null = null): Promise<void> {
   const b = sessionBridge
   if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
-  // 工作目录优先级：显式分组（workspaceId）> 指定目录（cwd）> 默认
-  const sessionId = await b.sessions.create(workspaceId ? { workspaceId } : (cwd ? { cwd } : {}))
+  const wsId = workspaceId ?? (cwd ? null : defaultWorkspaceId())
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : (cwd ? { cwd } : {}))
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
@@ -940,7 +959,8 @@ function layoutPagePath(layout: any): string | null {
   return null
 }
 /** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开）；
- *  项目设置里选了会话分组时（由组件调用侧读 projects.workspaces 传入），新会话落进该分组。 */
+ *  项目设置里选了会话分组时（由组件调用侧读 projects.workspaces 传入），新会话落进该分组；
+ *  项目未设分组时由 newChatInProject 回落到设置面板的默认会话分组。 */
 async function startPageEdit(pagePath: string, projectName: string, workspaceId: string | null = null): Promise<void> {
   const prompt = loadPageEditPrompt().split('{page}').join(pagePath).split('{name}').join(projectName)
   await newChatInProject(prompt, workspaceId)
@@ -2994,6 +3014,29 @@ function buildCustomLayoutPrompt(req: string): string {
             <button type="button" className="dsh-wt_sortBtn" data-on={view.orderBy === 'recent'}
               onClick={() => persistView({ orderBy: 'recent' })}>{t('sort.recent')}</button>
           </div>
+          <div className="dsh-wt_menuSep" />
+          {/* 工作区（默认会话分组）：项目未单独设分组时，页面修改/AI 日志分析等新建会话统一落进选中的工作区；选「未分组」即清除 */}
+          <div className="dsh-wt_manageHead">
+            <span className="dsh-wt_manageTitle">{t('workspace.title')}</span>
+          </div>
+          <div className="dsh-wt_pageEditHint">{t('workspace.desc')}</div>
+          {(() => {
+            const wsList = listWorkspaces()
+            const cur = view.workspace ?? ''
+            // 所选工作区已被删除：保留一个占位项显示原 id，便于识别并改选/清除
+            const missing = !!cur && !wsList.some((w) => w.id === cur)
+            return (
+              <select
+                className="dsh-wt_consoleSelect"
+                value={cur}
+                onChange={(e) => persistView({ workspace: e.target.value || null })}
+              >
+                <option value="">{t('workspace.none')}</option>
+                {missing && <option value={cur}>{cur} {t('workspace.missing')}</option>}
+                {wsList.map((w) => <option key={w.id} value={w.id} title={w.path}>{w.title || w.path || w.id}</option>)}
+              </select>
+            )
+          })()}
           <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('manage.title')}</span>
