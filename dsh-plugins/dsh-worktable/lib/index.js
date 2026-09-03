@@ -981,7 +981,7 @@ function apply(ctx) {
         execPlan(p).catch(() => {
         }).finally(async () => {
           planRunning.delete(p.id);
-          const rest = (await readPlansFile()).filter((x) => x && x.id !== p.id);
+          const rest = (await readPlansFile()).filter((x) => !x || x.id !== p.id || Number(x.createdAt) !== Number(p.createdAt));
           await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {
           });
         });
