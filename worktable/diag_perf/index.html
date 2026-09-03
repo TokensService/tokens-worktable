@@ -119,8 +119,9 @@
     <div style="display:flex;align-items:center;gap:10px">
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="Prometheus 查询窗口（与「开始诊断」页设置区及各画板时间轴联动，改动即重新拉取）">窗口
         <select class="dshell-input" id="rangeSel" style="width:auto;padding:3px 6px;font-size:12px">
-          <option value="1">近 1h</option><option value="4">近 4h</option><option value="8">近 8h</option>
-          <option value="12">近 12h</option><option value="24">近 24h</option><option value="72">近 72h</option>
+          <option value="5">近 5min</option><option value="15">近 15min</option><option value="30">近 30min</option>
+          <option value="60">近 1h</option><option value="240">近 4h</option><option value="480">近 8h</option>
+          <option value="720">近 12h</option><option value="1440">近 24h</option><option value="4320">近 72h</option>
           <option value="abs">绝对时间…</option>
         </select>
       </label>
@@ -168,8 +169,8 @@
         <input class="dshell-input grow" id="setPromUrl" placeholder="http://host:port（默认 http://192.168.10.6:25889）" autocomplete="off" />
       </div>
       <div class="diag-formrow">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">查询窗口（小时）
-          <input class="dshell-input" id="setRangeH" type="number" min="1" max="72" style="width:80px" /></label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">查询窗口（分钟）
+          <input class="dshell-input" id="setRangeM" type="number" min="5" max="4320" style="width:80px" /></label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">轮询间隔（秒）
           <input class="dshell-input" id="setPollS" type="number" min="5" max="600" style="width:80px" /></label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px" title="开：代联请求经系统代理转发（需服务端 NODE_USE_ENV_PROXY=1 生效）；关（默认）：服务端直连目标">走系统代理
@@ -1157,9 +1158,15 @@ function lsGet(k,d){try{return localStorage.getItem(k)||d;}catch(e){return d;}}
 function lsSet(k,v){try{if(v)localStorage.setItem(k,v);else localStorage.removeItem(k);}catch(e){}}
 var PROM_URL=(new URLSearchParams(location.search).get("prom"))||lsGet("diagPerf.promUrl","")||DEFAULT_PROM;
 PROM_URL=PROM_URL.replace(/\/+$/,"");
-var PROM_RANGE_H=Math.min(72,Math.max(1,parseInt(lsGet("diagPerf.promRangeH","4"),10)||4));   /* 查询窗口：默认近 4 小时 */
-var PROM_RANGE_S=PROM_RANGE_H*3600;
-var PROM_STEP_S=Math.max(60,Math.round(PROM_RANGE_S/N));   /* 步长随窗口自适应：4h → 300s → 48 点，与图表布局一致 */
+/* 查询窗口（分钟）：默认近 4 小时（240min）；兼容旧版按小时存储的 diagPerf.promRangeH（读一次后随保存清理） */
+var PROM_RANGE_M=(function(){
+  var m=parseInt(lsGet("diagPerf.promRangeM",""),10);
+  if(!m){var h=parseInt(lsGet("diagPerf.promRangeH",""),10);if(h)m=h*60;}
+  return Math.min(4320,Math.max(5,m||240));
+})();
+var PROM_RANGE_S=PROM_RANGE_M*60;
+var PROM_STEP_S=Math.max(5,Math.round(PROM_RANGE_S/N));   /* 步长随窗口自适应：4h → 300s → 48 点，与图表布局一致；分钟级小窗口同样按 N 点细分 */
+function fmtRange(){return PROM_RANGE_M%60?("近 "+PROM_RANGE_M+"min"):("近 "+(PROM_RANGE_M/60)+"h");}   /* 窗口展示文案：整小时按 h，否则按 min */
 var PROM_ABS=null;   /* 绝对时间窗口 {from,to}（epoch 秒），null = 相对窗口（近 N 小时） */
 try{var __pa=JSON.parse(lsGet("diagPerf.promAbs","")||"null");if(__pa&&__pa.to>__pa.from)PROM_ABS=__pa;}catch(e){}
 var USE_PROXY=lsGet("diagPerf.useSysProxy","")==="1";   /* 代联是否经系统代理转发（默认关 = 服务端直连） */
@@ -1518,7 +1525,7 @@ function renderPromPanel(){
     ["接入模式",modeText],
     ["标签过滤",labelSelector()?("{"+labelSelector()+"}"):"无（全部序列）"],
     ["代联代理",USE_PROXY?"经系统代理转发":"服务端直连（不走代理）"],
-    ["查询窗口",(PROM_ABS?("绝对 "+fmtTs(PROM_ABS.from)+" ~ "+fmtTs(PROM_ABS.to)):("近 "+PROM_RANGE_H+"h"))+" · "+N+" 点 · 步长 "+STEP_S+"s"],
+    ["查询窗口",(PROM_ABS?("绝对 "+fmtTs(PROM_ABS.from)+" ~ "+fmtTs(PROM_ABS.to)):fmtRange())+" · "+N+" 点 · 步长 "+STEP_S+"s"],
     ["轮询间隔",(POLL_MS/1000)+"s"],
     ["最近成功拉取",PROM_LAST_OK]
   ];
@@ -1581,7 +1588,7 @@ function poll(done){
   pollProm(function(state){
     if(state==="ok"){
       PROM_PANEL_MODE="ok";renderPromPanel();
-      setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · "+(PROM_ABS?"绝对窗口":"近"+(PROM_RANGE_S/3600)+"h")+" · "+POLL_MS/1000+"s 刷新");
+      setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · "+(PROM_ABS?"绝对窗口":fmtRange())+" · "+POLL_MS/1000+"s 刷新");
       finish("ok");
       return;
     }
@@ -1766,7 +1773,7 @@ function loadLabelValues(){
 }
 function fillSettings(){
   document.getElementById("setPromUrl").value=PROM_URL;
-  document.getElementById("setRangeH").value=PROM_RANGE_H;
+  document.getElementById("setRangeM").value=PROM_RANGE_M;
   document.getElementById("setPollS").value=POLL_MS/1000;
   document.getElementById("setLogDir").value=LOG_DIR;
   document.getElementById("setProfDir").value=PROF_DIR;
@@ -1774,7 +1781,7 @@ function fillSettings(){
   LABEL_COMBOS.forEach(function(c){c.setValue(LABEL_FILTER[c.label]);});
   syncRangeSel();
 }
-/* 头部「窗口」快选与设置区「查询窗口（小时）」双向同步；绝对时间窗口走 PROM_ABS */
+/* 头部「窗口」快选与设置区「查询窗口（分钟）」双向同步；绝对时间窗口走 PROM_ABS */
 function fmtDTL(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);}return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes());}
 function syncAbsInputs(){
   document.getElementById("absRange").style.display=PROM_ABS?"inline-flex":"none";
@@ -1784,9 +1791,9 @@ function syncRangeSel(){
   var sel=document.getElementById("rangeSel");
   if(PROM_ABS){sel.value="abs";syncAbsInputs();return;}
   syncAbsInputs();
-  var v=String(PROM_RANGE_H);
+  var v=String(PROM_RANGE_M);
   if(!sel.querySelector('option[value="'+v+'"]')){
-    var o=document.createElement("option");o.value=v;o.textContent="近 "+v+"h";sel.appendChild(o);
+    var o=document.createElement("option");o.value=v;o.textContent=fmtRange();sel.appendChild(o);
   }
   sel.value=v;
 }
@@ -1797,7 +1804,7 @@ document.getElementById("rangeSel").addEventListener("change",function(){
     return;
   }
   PROM_ABS=null;lsSet("diagPerf.promAbs","");
-  document.getElementById("setRangeH").value=this.value;
+  document.getElementById("setRangeM").value=this.value;
   applySettings(true);
 });
 document.getElementById("absApply").addEventListener("click",function(){
@@ -1925,17 +1932,18 @@ function startPoll(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval
 function applySettings(save){
   PROM_URL=(document.getElementById("setPromUrl").value.trim()||DEFAULT_PROM).replace(/\/+$/,"");
   METRICS_URL=PROM_URL+"/metrics";
-  PROM_RANGE_H=Math.min(72,Math.max(1,parseInt(document.getElementById("setRangeH").value,10)||4));
-  PROM_RANGE_S=PROM_RANGE_H*3600;
-  PROM_STEP_S=Math.max(60,Math.round(PROM_RANGE_S/N));
+  PROM_RANGE_M=Math.min(4320,Math.max(5,parseInt(document.getElementById("setRangeM").value,10)||240));
+  PROM_RANGE_S=PROM_RANGE_M*60;
+  PROM_STEP_S=Math.max(5,Math.round(PROM_RANGE_S/N));
   POLL_MS=Math.min(600,Math.max(5,parseInt(document.getElementById("setPollS").value,10)||30))*1000;
-  syncRangeSel();   /* 设置区直接改小时数时同步头部快选（非预设档位会动态补 option） */
+  syncRangeSel();   /* 设置区直接改窗口分钟数时同步头部快选（非预设档位会动态补 option） */
   LOG_DIR=document.getElementById("setLogDir").value.trim().replace(/\/+$/,"");
   PROF_DIR=document.getElementById("setProfDir").value.trim().replace(/\/+$/,"");
   USE_PROXY=document.getElementById("setUseProxy").checked;
   if(save){
     lsSet("diagPerf.promUrl",PROM_URL===DEFAULT_PROM?"":PROM_URL);
-    lsSet("diagPerf.promRangeH",PROM_RANGE_H===4?"":String(PROM_RANGE_H));
+    lsSet("diagPerf.promRangeM",PROM_RANGE_M===240?"":String(PROM_RANGE_M));
+    lsSet("diagPerf.promRangeH","");   /* 旧版按小时存储的键已不再使用，保存时清理 */
     lsSet("diagPerf.pollS",POLL_MS===30000?"":String(POLL_MS/1000));
     lsSet("diagPerf.logDir",LOG_DIR);
     lsSet("diagPerf.profDir",PROF_DIR);
@@ -1947,7 +1955,7 @@ function applySettings(save){
   document.getElementById("setHint").textContent="已自动保存并生效。";
 }
 /* 无保存/恢复按钮：任一配置项 change（失焦或回车确认）即自动保存并生效 */
-["setPromUrl","setRangeH","setPollS","setLogDir","setProfDir","setUseProxy"].forEach(function(id){
+["setPromUrl","setRangeM","setPollS","setLogDir","setProfDir","setUseProxy"].forEach(function(id){
   document.getElementById(id).addEventListener("change",function(){applySettings(true);});
 });
 
