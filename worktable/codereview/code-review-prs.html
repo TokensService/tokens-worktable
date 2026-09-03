@@ -103,7 +103,7 @@
     details.pr-det > summary::-webkit-details-marker { display:none; }
     details.pr-det[open] > summary { color:var(--dsw-alias-label-primary,#e6e8eb); }
     /* 编译发行：步骤列表与日志（颜色统一走主题变量 / 状态色） */
-    .rel-step { display:flex; align-items:center; gap:8px; padding:7px 10px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .rel-step { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:7px 10px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
     .rel-step + .rel-step { margin-top:6px; }
     .rel-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--dsw-alias-label-tertiary,#6b7280); }
     .rel-dotRun { background:var(--dsw-alias-state-accent-primary,#4f8ef7); box-shadow:0 0 5px var(--dsw-alias-state-accent-primary,#4f8ef7); }
@@ -116,6 +116,20 @@
     .rel-warn { color:#d29922; }
     .rel-dim { color:var(--dsw-alias-label-tertiary,#6b7280); }
     .rel-hi { color:var(--dsw-alias-label-primary,#e6e8eb); font-weight:600; }
+    /* 步骤内联回显（发行中每步输出就地展开）与构建历史 */
+    .rel-stepDet { width:100%; margin-top:4px; }
+    .rel-stepDet > summary { cursor:pointer; font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); list-style:none; }
+    .rel-stepDet > summary::-webkit-details-marker { display:none; }
+    .rel-stepDet[open] > summary { color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .rel-stepLog { max-height:220px; margin-top:6px; }
+    .rel-histRow { padding:10px 12px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .rel-histRow + .rel-histRow { margin-top:8px; }
+    .rel-histRow:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .rel-histHead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; cursor:pointer; }
+    .rel-histTitle { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .rel-histDel { margin-left:auto; }
+    .rel-histBody { margin-top:8px; padding-top:8px; border-top:1px dashed var(--dsw-alias-border-l1,#262b36); }
+    .rel-histSec { font-size:11.5px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); margin:10px 0 6px; }
   </style>
 </head>
 <body>
@@ -229,10 +243,18 @@
         <p class="dshell-muted" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code>；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>attach_files</code> 接口逐个上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
-        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤</h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出可就地展开「回显」查看；总日志在下方统一滚动</span></h2>
         <div id="relSteps"></div>
         <div id="relResult" style="margin-top:8px"></div>
         <div class="rel-log" id="relLog" style="display:none"></div>
+      </div>
+      <div class="dshell-card" style="margin-top:10px">
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建历史 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每次发行归档依赖信息（仓库/分支/脚本/容器/产物路径）、收集到的产物清单与逐步回显日志，存于本机浏览器 localStorage，最多保留 30 条</span></h2>
+        <div class="pr-tokenRow" style="margin-bottom:8px">
+          <button class="dshell-btn dshell-btnGhost" id="relHistClear" title="清空本机保存的全部构建历史">清空历史</button>
+          <span class="dshell-muted" id="relHistTip" style="font-size:11px"></span>
+        </div>
+        <div id="relHist"></div>
       </div>
     </div><!-- /viewRelease -->
 
@@ -313,7 +335,7 @@
 <script>
 "use strict";
 (function () {
-  var LS = { token: "gc_pr_token", org: "gc_pr_org", authMode: "gc_pr_authmode", embed: "gc_pr_embed", template: "gc_pr_template", relCfg: "gc_pr_relcfg", buildContainer: "gc_pr_buildcontainer" };
+  var LS = { token: "gc_pr_token", org: "gc_pr_org", authMode: "gc_pr_authmode", embed: "gc_pr_embed", template: "gc_pr_template", relCfg: "gc_pr_relcfg", buildContainer: "gc_pr_buildcontainer", relHist: "gc_pr_relhist" };
   var API = "https://api.gitcode.com/api/v5";
   var DEFAULT_ORG = "TokensService";
 
@@ -374,6 +396,7 @@
   var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
   var relArtifacts = $("relArtifacts");
   var buildContainerInput = $("buildContainerInput");
+  var relHistEl = $("relHist"), relHistClear = $("relHistClear"), relHistTip = $("relHistTip");
 
   var state = {
     token: localStorage.getItem(LS.token) || "",
@@ -1117,24 +1140,53 @@
   }
   var REL_STEPS = ["编译构建", "创建 Tag", "创建发行版", "上传产物"];
   var REL_STEP_LABEL = { idle: "未开始", run: "进行中", ok: "成功", err: "失败", skip: "跳过" };
+  var REL_HIST_MAX = 30;          // 构建历史最多保留条数
+  var REL_STEP_LOG_MAX = 300;     // 归档时每步回显最多保留行数（超出截断前部）
+  var relStates = [];             // 当前发行的步骤状态（供逐步回显就地刷新时重绘）
+  var relCurStep = -1;            // 当前回显归属的步骤下标（-1=公共行，只进总日志）
+  var relStepLogs = [[], [], [], []]; // 每步回显缓存：发行中就地展开 + 结束后归档
+  function relLogLineHtml(l) { return '<div class="rel-line' + (l.cls ? " rel-" + l.cls : "") + '">' + esc(l.msg) + "</div>"; }
+  function relStepBadgeCls(st) { return st === "run" ? " dshell-badgeWait" : (st === "ok" ? " dshell-badgeDone" : ""); }
   function relSetSteps(states) {
+    relStates = states;
     relSteps.innerHTML = REL_STEPS.map(function (n, i) {
       var s = states[i] || { st: "idle" };
       var dot = s.st === "run" ? "rel-dot rel-dotRun" : s.st === "ok" ? "rel-dot rel-dotOk" : s.st === "err" ? "rel-dot rel-dotErr" : "rel-dot";
-      var badge = '<span class="dshell-badge' + (s.st === "run" ? " dshell-badgeWait" : (s.st === "ok" ? " dshell-badgeDone" : "")) + '"' +
+      var badge = '<span class="dshell-badge' + relStepBadgeCls(s.st) + '"' +
         (s.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : "") + ">" + REL_STEP_LABEL[s.st] + "</span>";
+      var lines = relStepLogs[i] || [];
+      var det = "";
+      if (lines.length) {
+        det = '<details class="rel-stepDet"' + (s.st === "run" ? " open" : "") + '><summary id="relStepLogSum' + i + '">回显 ' + lines.length + ' 行 ▾</summary>' +
+          '<div class="rel-log rel-stepLog" id="relStepLog' + i + '" style="display:block">' + lines.map(relLogLineHtml).join("") + "</div></details>";
+      }
       return '<div class="rel-step"><i class="' + dot + '"></i>' +
         '<span style="font-size:12.5px;color:var(--dsw-alias-label-primary,#e6e8eb)">' + (i + 1) + ". " + n + "</span>" + badge +
-        (s.note ? '<span class="dshell-muted" style="font-size:11px">' + esc(s.note) + "</span>" : "") + "</div>";
+        (s.note ? '<span class="dshell-muted" style="font-size:11px">' + esc(s.note) + "</span>" : "") + det + "</div>";
     }).join("");
   }
-  function relLogClear() { relLogEl.style.display = "none"; relLogEl.innerHTML = ""; relResult.innerHTML = ""; }
+  function relLogClear() {
+    relLogEl.style.display = "none"; relLogEl.innerHTML = ""; relResult.innerHTML = "";
+    relCurStep = -1; relStepLogs = [[], [], [], []];
+  }
   function relLog(msg, cls) {
     relLogEl.style.display = "block";
     var d = document.createElement("div");
     d.className = "rel-line" + (cls ? " rel-" + cls : "");
     d.textContent = msg;
     relLogEl.appendChild(d); relLogEl.scrollTop = relLogEl.scrollHeight;
+    // 同步计入当前步骤的回显缓存，并就地更新该步的展开块
+    if (relCurStep >= 0 && relCurStep < REL_STEPS.length) {
+      relStepLogs[relCurStep].push({ msg: msg, cls: cls || "" });
+      var box = $("relStepLog" + relCurStep);
+      if (!box) { relSetSteps(relStates); return; } // 该步首行回显：重绘补出折叠块
+      var ld = document.createElement("div");
+      ld.className = "rel-line" + (cls ? " rel-" + cls : "");
+      ld.textContent = msg;
+      box.appendChild(ld); box.scrollTop = box.scrollHeight;
+      var sum = $("relStepLogSum" + relCurStep);
+      if (sum) sum.textContent = "回显 " + relStepLogs[relCurStep].length + " 行 ▾";
+    }
   }
   /* 打 Tag 并推送的临时脚本：经 /api/worktable/write 落到服务端临时文件后 exec 执行 */
   var PUSH_TAG_SCRIPT_PATH = "/tmp/dsh-codereview-push-tag.sh";
@@ -1223,6 +1275,102 @@
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");
       });
   }
+  /* ---------- 构建历史：归档每次发行的依赖信息、产物清单与逐步回显（本机 localStorage） ---------- */
+  function loadRelHist() {
+    try { var h = JSON.parse(localStorage.getItem(LS.relHist)); if (Array.isArray(h)) return h; } catch (e) {}
+    return [];
+  }
+  function saveRelHist(list) {
+    try { localStorage.setItem(LS.relHist, JSON.stringify(list.slice(0, REL_HIST_MAX))); } catch (e) {}
+  }
+  /* 归档一步回显：超过上限只留末尾，前部以省略行代替 */
+  function archiveStepLines(lines) {
+    if (lines.length <= REL_STEP_LOG_MAX) return lines.slice();
+    var cut = lines.length - REL_STEP_LOG_MAX;
+    return [{ msg: "…（归档省略前 " + cut + " 行）", cls: "dim" }].concat(lines.slice(cut));
+  }
+  function relHistStatusBadge(rec) {
+    if (rec.status === "ok") return '<span class="dshell-badge dshell-badgeDone">成功</span>';
+    if (rec.status === "err") return '<span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.4)">失败</span>';
+    return '<span class="dshell-badge dshell-badgeWait">进行中</span>';
+  }
+  function renderRelHist() {
+    var hist = loadRelHist();
+    relHistTip.textContent = hist.length ? "共 " + hist.length + " 条（本机存储，最多 " + REL_HIST_MAX + " 条）" : "";
+    if (!hist.length) {
+      relHistEl.innerHTML = '<div class="pr-empty" style="padding:20px 10px">暂无构建历史：完成一次「构建并发行」后自动归档到这里。</div>';
+      return;
+    }
+    relHistEl.innerHTML = hist.map(function (rec, ri) {
+      var h = [];
+      h.push('<div class="rel-histRow">');
+      h.push('  <div class="rel-histHead" data-hist-toggle="' + ri + '" title="点击展开依赖信息 / 产物 / 逐步回显">');
+      h.push('    ' + relHistStatusBadge(rec));
+      h.push('    <span class="rel-histTitle">' + esc(rec.repo || "") + "</span>");
+      h.push('    <span class="pr-mono" style="color:var(--dsw-alias-label-secondary,#9aa4b2)">' + esc(rec.branch || "—") + " → " + esc(rec.tag || "—") + "</span>");
+      h.push('    <span class="dshell-muted" style="font-size:11px">' + esc(timeAgo(rec.time)) + "</span>");
+      if (rec.script) h.push('    <span class="pr-chip">⚙ ' + esc(rec.script) + "</span>");
+      if (rec.artifactFiles && rec.artifactFiles.length) h.push('    <span class="pr-chip">📦 ' + rec.artifactFiles.length + " 个产物</span>");
+      h.push('    <button class="dshell-btn dshell-btnGhost rel-histDel" data-hist-del="' + ri + '" title="删除本条历史" style="padding:2px 8px;font-size:11px">✕</button>');
+      h.push("  </div>");
+      h.push('  <div class="rel-histBody" id="relHistBody' + ri + '" style="display:none">');
+      // 依赖信息
+      h.push('    <div class="rel-histSec">依赖信息</div>');
+      h.push('    <div class="dshell-kv">');
+      [
+        ["仓库地址", rec.gitUrl], ["分支", rec.branch], ["Tag", rec.tag], ["发行版名称", rec.name],
+        ["构建脚本", rec.script || "（未配置，跳过构建）"],
+        ["构建命令", rec.buildCmd || "（空）"],
+        ["构建容器", rec.container || "（本机执行）"],
+        ["超时", (rec.timeoutS || "—") + " s"],
+        ["产物路径", rec.artifacts || "（未配置）"],
+        ["预发布", rec.prerelease ? "是" : "否"],
+        ["时间", rec.time ? new Date(rec.time).toLocaleString("zh-CN", { hour12: false }) : ""]
+      ].forEach(function (p) {
+        h.push('<div class="dshell-kvRow"><span class="dshell-kvKey">' + esc(p[0]) + '</span><span class="dshell-kvValue pr-mono">' + esc(String(p[1] == null ? "" : p[1])) + "</span></div>");
+      });
+      h.push("    </div>");
+      // 产物清单
+      if (rec.artifactFiles && rec.artifactFiles.length) {
+        h.push('    <div class="rel-histSec">产物（' + rec.artifactFiles.length + "）</div>");
+        h.push('    <div>' + rec.artifactFiles.map(function (f) { return '<span class="pr-label pr-mono">' + esc(f) + "</span>"; }).join("") + "</div>");
+      }
+      if (rec.releaseUrl) h.push('    <div style="margin-top:6px"><a class="pr-link" href="' + esc(rec.releaseUrl) + '" target="_blank" rel="noopener">打开发行版列表 →</a></div>');
+      if (rec.error) h.push('    <div style="margin-top:6px;color:#f85149;font-size:12px">✗ ' + esc(rec.error) + "</div>");
+      // 逐步回显（日志归档）
+      h.push('    <div class="rel-histSec">逐步回显（日志归档）</div>');
+      (rec.steps || []).forEach(function (st, si) {
+        var dot = st.st === "ok" ? "rel-dot rel-dotOk" : st.st === "err" ? "rel-dot rel-dotErr" : st.st === "run" ? "rel-dot rel-dotRun" : "rel-dot";
+        h.push('    <div class="rel-step"><i class="' + dot + '"></i>' +
+          '<span style="font-size:12.5px;color:var(--dsw-alias-label-primary,#e6e8eb)">' + (si + 1) + ". " + esc(st.name || "") + "</span>" +
+          '<span class="dshell-badge' + relStepBadgeCls(st.st) + '"' + (st.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : "") + ">" + (REL_STEP_LABEL[st.st] || esc(st.st || "")) + "</span>" +
+          (st.note ? '<span class="dshell-muted" style="font-size:11px">' + esc(st.note) + "</span>" : ""));
+        if (st.lines && st.lines.length) {
+          h.push('<details class="rel-stepDet"><summary>回显 ' + st.lines.length + " 行 ▾</summary>" +
+            '<div class="rel-log rel-stepLog" style="display:block">' + st.lines.map(relLogLineHtml).join("") + "</div></details>");
+        }
+        h.push("</div>");
+      });
+      h.push("  </div>");
+      h.push("</div>");
+      return h.join("");
+    }).join("");
+    // 展开/收起（删除按钮不触发展开）
+    Array.prototype.forEach.call(relHistEl.querySelectorAll("[data-hist-toggle]"), function (el) {
+      el.addEventListener("click", function (e) {
+        if (e.target && e.target.closest && e.target.closest("[data-hist-del]")) return;
+        var b = $("relHistBody" + el.getAttribute("data-hist-toggle"));
+        if (b) b.style.display = b.style.display === "none" ? "" : "none";
+      });
+    });
+    Array.prototype.forEach.call(relHistEl.querySelectorAll("[data-hist-del]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var list = loadRelHist(); list.splice(+btn.getAttribute("data-hist-del"), 1); saveRelHist(list); renderRelHist();
+      });
+    });
+  }
+  relHistClear.addEventListener("click", function () { saveRelHist([]); renderRelHist(); toast("已清空构建历史"); });
+
   function runRelease() {
     if (relRunning) return;
     var repo = relSelectedRepo();
@@ -1243,6 +1391,18 @@
     relRunning = true; relRunBtn.disabled = true; relRunBtn.textContent = "⏳ 发行中…"; tip.textContent = "";
     relLogClear();
     var artifactDir = "/tmp/dsh-codereview-assets/" + repo.name + "-" + tag.replace(/[^A-Za-z0-9._-]/g, "-") + "-" + Date.now();
+    // 构建历史记录：依赖信息先行登记，步骤状态/回显/产物在结束时归档
+    var rec = {
+      id: Date.now(), time: new Date().toISOString(),
+      repo: repo.owner + "/" + repo.name, gitUrl: repoGitUrl(repo),
+      branch: branch, tag: tag, name: name || tag,
+      script: script, buildCmd: relBuildCmd.value.trim(),
+      container: (state.buildContainer || "").trim(),
+      timeoutS: Math.min(Math.max(Number(relBuildTimeout.value) || relCfg.timeout || DEFAULT_REL_CFG.timeout, 10), 3600),
+      artifacts: artifacts, prerelease: relPrerelease.checked,
+      status: "run", error: "", releaseUrl: "", artifactFiles: [], steps: []
+    };
+    var relErr = "";
     var states = [{ st: script ? "idle" : "skip" }, { st: "idle" }, { st: "idle" }, { st: artifacts ? "idle" : "skip" }];
     if (!script) states[0].note = "未配置构建脚本";
     if (!artifacts) states[3].note = "未配置产物路径";
@@ -1251,11 +1411,11 @@
     (async function () {
       try {
         if (script) {
-          states[0] = { st: "run" }; relSetSteps(states);
+          states[0] = { st: "run" }; relSetSteps(states); relCurStep = 0;
           var container = (state.buildContainer || "").trim();
           if (container) relLog("→ 浅克隆 " + branch + " 后在容器 " + container + " 内执行仓内脚本 " + script + " …", "dim");
           else relLog("→ 浅克隆 " + branch + " 后执行仓内脚本 " + script + " …", "dim");
-          var timeoutMs = Math.min(Math.max(Number(relBuildTimeout.value) || relCfg.timeout || DEFAULT_REL_CFG.timeout, 10), 3600) * 1000;
+          var timeoutMs = rec.timeoutS * 1000;
           var env = {
             GIT_URL: repoGitUrl(repo), GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch,
             RELEASE_TAG: tag, RELEASE_NAME: name || tag
@@ -1268,7 +1428,7 @@
           if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
           states[0] = { st: "ok" }; relSetSteps(states);
         }
-        states[1] = { st: "run" }; relSetSteps(states);
+        states[1] = { st: "run" }; relSetSteps(states); relCurStep = 1;
         var tagDone = false;
         try {
           await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
@@ -1280,15 +1440,16 @@
         }
         if (!tagDone) await pushReleaseTag(repo, branch, tag, name);
         states[1] = { st: "ok" }; relSetSteps(states);
-        states[2] = { st: "run" }; relSetSteps(states);
+        states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
         var relJson = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
           { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked ? "true" : "false" });
         states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
         var webUrl = "https://gitcode.com/" + repo.owner + "/" + repo.name;
+        rec.releaseUrl = webUrl + "/releases";
         relResult.innerHTML = '<span style="color:#3fb950">✓ 发行版已创建</span> <a class="pr-link" href="' + esc(webUrl + "/releases") + '" target="_blank" rel="noopener">打开仓库发行版列表 →</a>';
         relLog("✓ 发行版 " + (name || tag) + " 创建完成", "ok");
         if (artifacts) {
-          states[3] = { st: "run" }; relSetSteps(states);
+          states[3] = { st: "run" }; relSetSteps(states); relCurStep = 3;
           var releaseId = relJson && (relJson.id || relJson.release_id);
           if (!releaseId) throw new Error("发行版创建响应缺少 id，无法上传产物");
           relLog("→ 上传构建产物到发行版（id " + releaseId + "）…", "dim");
@@ -1297,11 +1458,26 @@
         }
         tip.textContent = "✓ 发行完成";
       } catch (e) {
+        relErr = String(e && e.message || e);
         for (var i = 0; i < states.length; i++) { if (states[i].st === "run") states[i] = { st: "err" }; }
         relSetSteps(states);
-        relLog("✗ " + String(e && e.message || e), "err");
-        tip.textContent = "✗ " + String(e && e.message || e);
+        relLog("✗ " + relErr, "err");
+        tip.textContent = "✗ " + relErr;
       } finally {
+        // 归档本次发行：依赖信息 + 产物清单 + 每步状态与回显日志 → 构建历史
+        relCurStep = -1;
+        rec.status = relErr ? "err" : "ok";
+        rec.error = relErr;
+        rec.steps = states.map(function (s, si) {
+          return { name: REL_STEPS[si], st: s.st, note: s.note || "", lines: archiveStepLines(relStepLogs[si] || []) };
+        });
+        rec.artifactFiles = (relStepLogs[0] || []).filter(function (l) { return l.msg.indexOf("  + ") === 0; })
+          .map(function (l) { return l.msg.slice(4); });
+        if (!rec.artifactFiles.length) {
+          rec.artifactFiles = (relStepLogs[3] || []).filter(function (l) { return l.msg.indexOf("✓ 已上传 ") === 0; })
+            .map(function (l) { return l.msg.slice(6); });
+        }
+        var hist = loadRelHist(); hist.unshift(rec); saveRelHist(hist); renderRelHist();
         relRunning = false; relRunBtn.disabled = false; relRunBtn.textContent = "🚀 构建并发行";
       }
     })();
@@ -1360,7 +1536,7 @@
     if (!b) return;
     var v = b.getAttribute("data-view");
     if (v === "settings") populateSettings();
-    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
+    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); renderRelHist(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
     switchView(v);
   });
   searchInput.addEventListener("input", function () { state.keyword = searchInput.value; renderList(); });
@@ -1376,6 +1552,7 @@
   /* ---------- 初始化 ---------- */
   applyThemeUI();
   renderStatus(); renderStats(); renderList();
+  renderRelHist();
   loadAll();
 })();
 </script>
