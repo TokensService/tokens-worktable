@@ -699,15 +699,27 @@ async function loadServerState(){
     if(st && (!st.config || !Object.keys(st.config).length)) persistState();
   }
 }
-/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端 */
+/* 历史记录回显上限（与服务端 histLogText 同规则）：归档文件始终保全量，历史记录随
+   worktable-pipeline.json 持久化（500 条 / 20MB 上限），单条回显超 256KB 时保留头 64KB + 尾 192KB
+   （头部命令行/起始输出、尾部错误与退出信息最关键，中间多为进度条类噪声），标记注明完整日志位置——
+   防止个别超大回显撑爆存储、整批历史写不进 */
+const HIST_LOG_CAP=256*1024, HIST_LOG_HEAD=64*1024;
+function histLogText(t, logFile){
+  if(t.length<=HIST_LOG_CAP) return t;
+  const note='…(截断：历史记录仅保留头尾，完整日志见归档文件'+(logFile?' '+logFile:'')+')';
+  return t.slice(0,HIST_LOG_HEAD)+'\n'+note+'\n'+t.slice(-(HIST_LOG_CAP-HIST_LOG_HEAD));
+}
+/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端；
+   逐条经 histLogText 限长（全量回显在归档文件，见 archiveStageLog/archiveRun） */
 function collectRunLogs(){
   const out=[];
-  activeStages().forEach(s=>{
+  const folder=curRun ? archiveFolderFor(curRun) : null;
+  activeStages().forEach((s,idx)=>{
     const n=nodes[s.id];
     if(!n || n.status==='running') return;
     let text='';
     try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
-    out.push({stage:s.name, status:n.status, log:text});   // 完整回显随历史持久化（不截断，回放历史可看全量日志）
+    out.push({stage:s.name, status:n.status, log:histLogText(text, folder?folder+'/'+taskLogFile(curRun, idx+1, s.name):null)});
   });
   return out;
 }
@@ -2870,9 +2882,11 @@ async function runCleanupBefore(){
   let text='$ bash '+cleanupScript.name+'\n'+(res.stdout||'');
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
-  if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
   if(curRun && curRun.token===tk){
-    curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};
+    /* 归档保全量（此前 8192 截断会同时喂给归档与历史，长输出清理日志被切断）；
+       历史记录条目经 histLogText 限长，防止超大回显撑爆服务端存储 */
+    const folder=archiveFolderFor(curRun);
+    curRun.cleanupLog={stage:'环境清理', status, log:histLogText(text, folder?folder+'/'+taskLogFile(curRun, 0, '环境清理'):null), dur:(Date.now()-t0)/1000};
     archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
   }
 }

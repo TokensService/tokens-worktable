@@ -562,10 +562,10 @@ function apply(ctx) {
           const body = await readJsonBody(req);
           const config = body.config && typeof body.config === "object" && !Array.isArray(body.config) ? body.config : {};
           const history = Array.isArray(body.history) ? body.history.slice(0, 500) : [];
-          const text = JSON.stringify({ config, history });
-          if (text.length > 20 * 1024 * 1024) {
-            json(res, 413, { error: "too large" });
-            return;
+          let text = JSON.stringify({ config, history });
+          while (text.length > 20 * 1024 * 1024 && history.length > 1) {
+            history.pop();
+            text = JSON.stringify({ config, history });
           }
           const fsx = await import("node:fs/promises");
           await fsx.mkdir(dirname(PIPELINE_STORE), { recursive: true });
@@ -946,6 +946,12 @@ function apply(ctx) {
     if (r.stderr) t += "\n\u2717 " + r.stderr.split("\n").join("\n\u2717 ");
     return t + "\n[exit " + r.code + "]";
   }
+  const HIST_LOG_CAP = 256 * 1024, HIST_LOG_HEAD = 64 * 1024;
+  function histLogText(t, logFile) {
+    if (t.length <= HIST_LOG_CAP) return t;
+    const note = "\u2026(\u622A\u65AD\uFF1A\u5386\u53F2\u8BB0\u5F55\u4EC5\u4FDD\u7559\u5934\u5C3E\uFF0C\u5B8C\u6574\u65E5\u5FD7\u89C1\u5F52\u6863\u6587\u4EF6" + (logFile ? " " + logFile : "") + ")";
+    return t.slice(0, HIST_LOG_HEAD) + "\n" + note + "\n" + t.slice(-(HIST_LOG_CAP - HIST_LOG_HEAD));
+  }
   async function appendPipelineHistory(rec) {
     const j = await readPipelineStore();
     const cfg = j.config && typeof j.config === "object" && !Array.isArray(j.config) ? j.config : {};
@@ -954,8 +960,11 @@ function apply(ctx) {
     cfg.buildNo = no;
     rec.no = no;
     history.unshift(rec);
-    const text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
-    if (text.length > 20 * 1024 * 1024) return;
+    let text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
+    while (text.length > 20 * 1024 * 1024 && history.length > 1) {
+      history.pop();
+      text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
+    }
     await writeJsonAtomic(PIPELINE_STORE, text);
   }
   async function execPlan(pl) {
@@ -982,6 +991,7 @@ function apply(ctx) {
       }
     }
     const logs = [];
+    const histLogs = [];
     const profileStages = [];
     let status = "success";
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
@@ -990,6 +1000,7 @@ function apply(ctx) {
       const text = stageLogText(cfg.cleanupScript.name, r);
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, "\u73AF\u5883\u6E05\u7406", text) : null;
       logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: text });
+      histLogs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: histLogText(text, logFile) });
       profileStages.push({ id: "__cleanup__", name: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile });
     }
     let seq = baseSeq + 1;
@@ -1012,6 +1023,7 @@ function apply(ctx) {
       }
       const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null;
       logs.push({ stage: s.name, status: entry.status, log: entry.text });
+      histLogs.push({ stage: s.name, status: entry.status, log: histLogText(entry.text, logFile) });
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: s.script && s.script.name || null, logFile });
       seq++;
       if (status === "failed") break;
@@ -1098,7 +1110,7 @@ function apply(ctx) {
       dur: durText((Date.now() - t0) / 1e3),
       time: "\u4ECA\u5929 " + hhmm(),
       by: pl.by || "schedule",
-      logs,
+      logs: histLogs,
       tag,
       archive: folder || null
     });
