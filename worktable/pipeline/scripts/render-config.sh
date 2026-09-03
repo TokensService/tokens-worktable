@@ -22,9 +22,9 @@ REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"
 EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
-MOCK_DB="${MOCK_DB:-false}"
+MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
-NODE_SELECTOR_KEY="${NODE_SELECTOR_KEY:-xds.optest}"
+NODE_SELECTOR_KEY="xds.optest"
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
 [[ -n "$DECODE_OVERRIDES_JSON" ]] || DECODE_OVERRIDES_JSON='{}'
@@ -54,9 +54,11 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" <<'PY'
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
+  "$CHART_DIR" <<'PY'
 import copy
 import json
+from pathlib import Path
 import re
 import sys
 
@@ -66,7 +68,8 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, node_labels_file, template_vars_json) = sys.argv[1:]
+ node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
+ chart_dir) = sys.argv[1:]
 
 num_prefill = int(num_prefill)
 num_decode = int(num_decode)
@@ -106,6 +109,34 @@ def selector_fragment(ip):
     return re.sub(r"[^a-zA-Z0-9]+", "-", ip).strip("-")
 
 node_selector_value = "node-" + "-".join(selector_fragment(ip) for ip in target_ips)
+
+def upsert_container_env(name, value):
+    common = values.setdefault("common", {})
+    container_env = common.setdefault("containerEnv", [])
+    if not isinstance(container_env, list):
+        raise SystemExit("common.containerEnv must be a list")
+    for item in container_env:
+        if isinstance(item, dict) and item.get("name") == name:
+            item["value"] = value
+            item.pop("valueFrom", None)
+            return
+    container_env.append({"name": name, "value": value})
+
+def remove_container_env(name):
+    common = values.get("common")
+    if not isinstance(common, dict) or not isinstance(common.get("containerEnv"), list):
+        return
+    common["containerEnv"] = [
+        item for item in common["containerEnv"]
+        if not isinstance(item, dict) or item.get("name") != name
+    ]
+
+def split_image_reference(reference):
+    image_path, separator, tag = reference.rpartition(":")
+    if not separator or "/" not in image_path:
+        raise SystemExit(f"DEPLOY_IMAGE must include a registry path and tag: {reference}")
+    registry, image_name = image_path.rsplit("/", 1)
+    return registry, image_path, f"{image_name}:{tag}", tag
 
 def deep_merge(base, update):
     result = copy.deepcopy(base)
@@ -147,7 +178,7 @@ for package in arch.get("deploy_spec_packages", []):
                 "name": group_name,
                 "replicas": 1,
                 "nodeSelector": {node_selector_key: node_selector_value},
-                "resources": json.dumps({"GPU-BNT3-POD": gpu, "XDS-TE": gpu, role: 1}),
+                "resources": "'" + json.dumps({"GPU-BNT3-POD": gpu, "XDS-TE": gpu, role: 1}) + "'",
                 "containerEnvOverrides": {},
                 "portsOverrides": {"metrics": 33200 + len(groups)},
                 "rayStartParamsPorts": {
@@ -173,13 +204,47 @@ for package in arch.get("deploy_spec_packages", []):
 if not groups:
     raise SystemExit(f"no prefill/decode specs found in {arch_name}")
 
+# TE pods use host networking.  Their Ray core workers therefore share one
+# host port namespace and must not use the same default worker-port range.
+worker_port_first = 10002
+worker_port_last = 19999
+worker_port_capacity = worker_port_last - worker_port_first + 1
+worker_port_span = worker_port_capacity // len(groups)
+if worker_port_span < 1:
+    raise SystemExit(f"too many task executor groups for worker ports: {len(groups)}")
+for group_index, group in enumerate(groups):
+    range_start = worker_port_first + group_index * worker_port_span
+    range_end = worker_port_last if group_index == len(groups) - 1 else range_start + worker_port_span - 1
+    group["rayStartParamsPorts"]["min-worker-port"] = range_start
+    group["rayStartParamsPorts"]["max-worker-port"] = range_end
+
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("IMAGE_TAG", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("DEPLOY_NAMESPACE", namespace)
+# TE 标签由渲染器按 TARGET_HOSTS 计算，模板内联引用时直接替换为同一份值。
+template_vars.setdefault("XDS_TE_POD_LABEL_KEY", node_selector_key)
+template_vars.setdefault("XDS_TE_POD_LABEL_VAL", node_selector_value)
+# 环境相关占位符默认值，均可被 TEMPLATE_VARS_JSON 覆盖：
+# 数据库五项为 mock 参考值（MOCK_DB=true 时不真正连库）；ELB_ID 仅用于注解；
+# NODE_PORT/SERVICE_PORT/COLLECTOR_GATEWAY_URL 为本环境固定配置。
+template_vars.setdefault("XDS_DATABASE_HOST", "127.0.0.1")
+template_vars.setdefault("XDS_DATABASE_PORT", "5432")
+template_vars.setdefault("XDS_DATABASE_NAME", "xds")
+template_vars.setdefault("XDS_DATABASE_USERNAME", "xds")
+template_vars.setdefault("DATABASE_PASSWORD", "mock")
+template_vars.setdefault("ELB_ID", "unused")
+template_vars.setdefault("NODE_PORT", "31365")
+template_vars.setdefault("SERVICE_PORT", "8080")
+template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
-unresolved = sorted({match.group(1) for match in placeholder_pattern.finditer(values_text)
-                     if match.group(1) not in template_vars})
+active_values_text = "\n".join(
+    line for line in values_text.splitlines() if not line.lstrip().startswith("#")
+)
+helm_runtime_placeholders = {"DASHBOARD_AGENT_LISTEN_PORT"}
+unresolved = sorted({match.group(1) for match in placeholder_pattern.finditer(active_values_text)
+                     if match.group(1) not in template_vars
+                     and match.group(1) not in helm_runtime_placeholders})
 if unresolved:
     raise SystemExit("unresolved template placeholders: " + ", ".join(unresolved))
 for key, value in template_vars.items():
@@ -189,16 +254,144 @@ for key, value in replace_map.items():
         values_text = values_text.replace(str(key), str(value))
 for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
-if str(mock_db).lower() == "true":
-    if "mock_db" in values_text:
-        values_text = re.sub(r"mock_db =.*", "mock_db = true", values_text)
 values = yaml.safe_load(values_text) or {}
+
+if str(mock_db).lower() == "true":
+    framework_files = values.get("frameworkConfigFiles")
+    if not isinstance(framework_files, dict) or not isinstance(framework_files.get("xds_framework.conf"), str):
+        raise SystemExit("frameworkConfigFiles.xds_framework.conf must be a string when MOCK_DB=true")
+    framework_config = framework_files["xds_framework.conf"]
+    mock_db_pattern = re.compile(r"(?m)^(\s*mock_db\s*=\s*).*$", re.IGNORECASE)
+    if mock_db_pattern.search(framework_config):
+        framework_files["xds_framework.conf"] = mock_db_pattern.sub(r"\g<1>true", framework_config)
+    else:
+        framework_files["xds_framework.conf"] = framework_config.rstrip() + "\nmock_db = true\n"
+
+def normalize_container_env_values(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in ("containerEnv", "env") and isinstance(child, list):
+                for entry in child:
+                    if isinstance(entry, dict) and "value" in entry and not isinstance(entry["value"], str):
+                        env_value = entry["value"]
+                        entry["value"] = str(env_value).lower() if isinstance(env_value, bool) else str(env_value)
+            else:
+                normalize_container_env_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            normalize_container_env_values(child)
+
+normalize_container_env_values(values)
 values["taskExecutorGroups"] = groups
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
     "enableTaskExecutorGroups": True,
 })
 values = deep_merge(values, yaml_replace_map)
+
+# The chart substitutes this placeholder per task executor group.  Image
+# templates from older builds hard-code 52365, which makes custom Ray
+# dashboard-agent ports fail their Kubernetes health probes.
+worker_group_templates = values.get("workerGroups")
+task_executor_template = (
+    worker_group_templates.get("taskExecutorGroup-card")
+    if isinstance(worker_group_templates, dict) else None
+)
+if isinstance(task_executor_template, dict):
+    ray_start_params = task_executor_template.setdefault("rayStartParams", {})
+    if not isinstance(ray_start_params, dict):
+        raise SystemExit("workerGroups.taskExecutorGroup-card.rayStartParams must be a mapping")
+    ray_start_params.setdefault("min-worker-port", worker_port_first)
+    ray_start_params.setdefault("max-worker-port", worker_port_last)
+    for probe_name in ("livenessProbe", "readinessProbe", "startupProbe"):
+        command = task_executor_template.get(probe_name, {}).get("exec", {}).get("command")
+        if isinstance(command, list):
+            task_executor_template[probe_name]["exec"]["command"] = [
+                item.replace(
+                    "http://localhost:52365/api/local_raylet_healthz",
+                    "http://localhost:{DASHBOARD_AGENT_LISTEN_PORT}/api/local_raylet_healthz",
+                ) if isinstance(item, str) else item
+                for item in command
+            ]
+
+# Target placement is derived only from TARGET_HOSTS and must not be overridden.
+values["nodeSelector"] = {node_selector_key: node_selector_value}
+values.setdefault("head", {})["nodeSelector"] = {node_selector_key: node_selector_value}
+values.setdefault("feTemplate", {})["nodeSelector"] = {node_selector_key: node_selector_value}
+worker_groups = values.get("workerGroups")
+if isinstance(worker_groups, dict):
+    for worker_group in worker_groups.values():
+        if isinstance(worker_group, dict):
+            worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
+elif isinstance(worker_groups, list):
+    for worker_group in worker_groups:
+        if isinstance(worker_group, dict):
+            worker_group["nodeSelector"] = {node_selector_key: node_selector_value}
+if len(target_hosts) == 1:
+    values.setdefault("feTemplate", {})["default_replica"] = 2
+    if isinstance(worker_groups, dict):
+        for group_name in ("ctrlGroup", "jobExecutorGroup"):
+            worker_group = worker_groups.get(group_name)
+            if isinstance(worker_group, dict):
+                worker_group["minReplicas"] = 2
+                worker_group["maxReplicas"] = 2
+    framework_files = values.get("frameworkConfigFiles")
+    if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+        framework_files["xds_framework.conf"] = re.sub(
+            r"(?m)^(\s*fem_(?:min|max)_frontend_num\s*=\s*)\d+",
+            r"\g<1>2",
+            framework_files["xds_framework.conf"],
+        )
+    health_service_template = Path(chart_dir) / "templates" / "xds-head-health-service.yaml"
+    health_service_template.parent.mkdir(parents=True, exist_ok=True)
+    health_service_template.write_text("""apiVersion: v1
+kind: Service
+metadata:
+  name: ray-gcs-head-svc
+  namespace: {{ .Release.Namespace }}
+spec:
+  publishNotReadyAddresses: true
+  selector:
+    ray.io/cluster: {{ include \"ray-cluster.fullname\" . }}
+    ray.io/node-type: head
+  ports:
+    - name: dashboard
+      port: 8265
+      targetPort: 8265
+""", encoding="utf-8")
+upsert_container_env("XDS_TE_POD_LABEL_KEY", node_selector_key)
+upsert_container_env("XDS_TE_POD_LABEL_VAL", node_selector_value)
+upsert_container_env("XDS_NAMESPACE", namespace)
+# The chart appends this exact value to every Ray worker environment.
+remove_container_env("RAY_gcs_rpc_server_reconnect_timeout_s")
+remove_container_env("XCCL_TURBO_FIX_PP_WEIGHT_LOAD")
+
+registry, image_repository, image_name, image_tag = split_image_reference(deploy_image)
+global_values = values.setdefault("global", {})
+global_values["imageRegistry"] = registry
+global_values.setdefault("images", {})["ray"] = image_name
+global_values["roleName"] = f"{namespace}-role"
+global_values["roleBindingName"] = f"{namespace}-role-binding"
+global_values["serviceAccountName"] = f"{namespace}-sa"
+global_values["serviceAccountSecretName"] = f"{namespace}-sa-secret"
+
+lmcache = values.get("lmcache")
+if isinstance(lmcache, dict):
+    namespace_config = lmcache.get("namespace")
+    if isinstance(namespace_config, dict):
+        namespace_config["name"] = namespace
+    direct = lmcache.get("direct")
+    if isinstance(direct, dict) and isinstance(direct.get("image"), dict):
+        direct["image"]["repository"] = image_repository
+        direct["image"]["tag"] = image_tag
+
+framework_files = values.get("frameworkConfigFiles")
+if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    framework_files["xds_framework.conf"] = re.sub(
+        r"(?m)^(\s*k8s_deploy_namespace\s*=\s*).*$",
+        rf"\g<1>{namespace}",
+        framework_files["xds_framework.conf"],
+    )
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
 with open(arch_request_file, "w", encoding="utf-8") as output:
