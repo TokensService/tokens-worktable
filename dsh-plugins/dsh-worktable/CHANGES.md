@@ -1,5 +1,12 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 定时执行的归档日志不再截断（`src/index.ts`）：服务端定时路径（`execPlan` 定时计划/定时后缀）此前经
+  `truncLog` 把每个任务的回显截到 8192 字符后再写归档，长输出任务（如镜像拉取进度条）的
+  独立任务日志 run-<tag>-NN-任务名.log 与汇总 run-<tag>.log 都被切断在 8192 字符 + 「…(截断)」，
+  丢失后续输出与 [exit] 行。现移除 `truncLog`，`stageLogText` 返回完整回显，与页面运行路径
+  （buildLog/collectRunLogs 均不截断）行为一致；历史记录同样保全量（存储层本有 500 条 / 20MB 上限兜底）。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 新增「右侧聊天窗 + 自动发送」桥 `window.__dshSendChatInProject(text)`（`src/client/index.tsx`）：
   供 iframe 内容页「一键 AI 生成」类按钮（如 code-review-prs.html 发行说明「✦ AI 生成」）调用。
   与既有 `__dshNewChatSession`（newChatInProject）相同地新建会话、`markPluginSessionOpen` 标记插件
