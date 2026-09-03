@@ -1177,6 +1177,14 @@
         });
       });
   }
+  /* 从发行版响应中提取 id：兼容 id / release_id 及嵌套 release/data 包装 */
+  function pickReleaseId(j) {
+    if (!j) return null;
+    if (j.id || j.release_id) return j.id || j.release_id;
+    if (j.release && (j.release.id || j.release.release_id)) return j.release.id || j.release.release_id;
+    if (j.data && (j.data.id || j.data.release_id)) return j.data.id || j.data.release_id;
+    return null;
+  }
   /* 服务端脚本执行（与流水线工作台 execScript 同形） */
   function execScript(path, env, timeoutMs) {
     return fetch("/api/worktable/exec", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1510,8 +1518,15 @@
         relLog("✓ 发行版 " + (name || tag) + " 创建完成", "ok");
         if (artifacts) {
           states[3] = { st: "run" }; relSetSteps(states); relCurStep = 3;
-          var releaseId = relJson && (relJson.id || relJson.release_id);
-          if (!releaseId) throw new Error("发行版创建响应缺少 id，无法上传产物");
+          var releaseId = pickReleaseId(relJson);
+          if (!releaseId) {
+            // GitCode 创建发行版有时不直接返回 id：按 tag 回查一次再取
+            relLog("… 创建响应未含 id，按 tag 回查发行版（GET releases/tags/" + tag + "）", "dim");
+            var relByTag = await fetchJSON("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) +
+              "/releases/tags/" + encodeURIComponent(tag));
+            releaseId = pickReleaseId(relByTag);
+          }
+          if (!releaseId) throw new Error("发行版创建响应缺少 id，按 tag 回查也未取到，无法上传产物");
           relLog("→ 上传构建产物到发行版（id " + releaseId + "）…", "dim");
           await uploadReleaseAssets(repo, releaseId, artifactDir);
           states[3] = { st: "ok" }; relSetSteps(states);
