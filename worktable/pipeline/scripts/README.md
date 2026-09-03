@@ -39,13 +39,13 @@
 
 XDS 流水线按以下顺序绑定脚本：
 
-1. `pull-image.sh <完整镜像>`：在所有 `TARGET_HOSTS` 预拉镜像；在工作台本机从镜像导出 Chart、values 模板和架构库。
-2. `render-config.sh <ARCH_NAME>`：基于只读架构库生成独立的 Chart、values、架构注册请求和 P/D resource manifest。
+1. `pull_render_config.sh`：在流水线执行机拉取镜像、导出模板并渲染配置；随后将渲染产物同步到每个 `TARGET_HOSTS`。
+2. `deploy-model.sh`：在目标机读取同步的 Chart、values、架构注册请求和 P/D resource manifest 并执行部署。
 3. `deploy-model.sh`：使用渲染后的 Chart/values 执行 Helm 安装，并注册渲染后的架构请求。
 4. `register-model.sh [MODEL_NAME]`：使用本轮 resource manifest 注册模型。
 5. `model-health.sh`：检查 XDS models 接口并发起一次真实 chat 请求。
 
-脚本通过 stdout 中的 `KEY=VALUE` 自动传递运行目录和产物路径。以下参数通常在阶段参数区配置：
+目标机产物默认保存于 `/tmp/op-test-pipeline/<PIPELINE_NAME>/rendered`，并在同级写入 `pipeline.env` 供远程部署阶段加载。可通过 `TARGET_RUN_DIR`、`TARGET_RENDER_DIR` 覆盖。脚本通过 stdout 中的 `KEY=VALUE` 自动传递执行机运行目录和产物路径。以下参数通常在阶段参数区配置：
 
 - `ARCH_NAME`、`NUM_PREFILL`、`NUM_DECODE`、`PREFILL_GPU`、`DECODE_GPU`
 - `XDS_URL`、`MODEL_PATH`、`NAMESPACE`、`RELEASE_NAME`

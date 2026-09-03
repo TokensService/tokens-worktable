@@ -1,129 +1,62 @@
 #!/usr/bin/env bash
-# Pre-pull one deployment image on target nodes and export render templates.
+# Pre-pull deployment images and export render templates on the pipeline execution host.
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"
 IMAGE="$IMAGE_NAME"
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
-TARGET_HOSTS="${TARGET_HOSTS:-[]}"
-SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
-CONTROL_HOST="${CONTROL_HOST:-}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
-CONTROL_TARGET_IP=""
-CONTROL_TARGET_USER=""
-PULL_PROXY="${PULL_PROXY:-}"
-PULL_NO_PROXY="${PULL_NO_PROXY:-}"
 
-select_control_target() {
-  local selected
-  selected="$(python3 - "$TARGET_HOSTS" "$CONTROL_HOST" <<'PY'
-import json
-import sys
-hosts = json.loads(sys.argv[1])
-control_host = sys.argv[2]
-if not isinstance(hosts, list) or not hosts:
-    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
-for host in hosts:
-    if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
-        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-matches = [host for host in hosts if host["ip"] == control_host]
-if control_host and len(matches) != 1:
-    raise SystemExit("CONTROL_HOST must match an entry in TARGET_HOSTS")
-selected = matches[0] if control_host else hosts[0]
-print(selected["ip"])
-print(selected.get("user") or "root")
-PY
-)" || exit $?
-  mapfile -t control_fields <<<"$selected"
-  CONTROL_TARGET_IP="${control_fields[0]:-}"
-  CONTROL_TARGET_USER="${control_fields[1]:-root}"
-}
+pull_image() {
+  local image="$1" registry_host
+  registry_host="${image%%/*}"
 
-remote_bash() {
-  local target="$1"
-  if [[ -n "$SSH_PASSWORD" ]]; then
-    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$target" 'bash -s'
-  else
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$target" 'bash -s'
+  command -v nerdctl >/dev/null 2>&1 || {
+    echo "nerdctl is required on the pipeline execution host; install it and run nerdctl login $registry_host" >&2
+    exit 2
+  }
+
+  echo "[pull] execution host: pull $image"
+  if ! nerdctl --namespace k8s.io image inspect "$image" >/dev/null 2>&1 && ! nerdctl --namespace k8s.io pull "$image"; then
+    echo "image pull failed; run nerdctl --namespace k8s.io login $registry_host as the pipeline execution user" >&2
+    exit 1
   fi
 }
 
-write_remote_context() {
-  printf 'IMAGE=%q\n' "$IMAGE"
-  printf 'TEMPLATE_IMAGE=%q\n' "$TEMPLATE_IMAGE"
-  printf 'VALUES_TEMPLATE_SOURCE=%q\n' "$VALUES_TEMPLATE_SOURCE"
-  if [[ -n "$PULL_PROXY" ]]; then
-    printf 'export http_proxy=%q https_proxy=%q HTTP_PROXY=%q HTTPS_PROXY=%q\n' "$PULL_PROXY" "$PULL_PROXY" "$PULL_PROXY" "$PULL_PROXY"
-  fi
-  if [[ -n "$PULL_NO_PROXY" ]]; then
-    printf 'export no_proxy=%q NO_PROXY=%q\n' "$PULL_NO_PROXY" "$PULL_NO_PROXY"
-  fi
-}
+export_templates() {
+  local work_dir container_name
+  work_dir="$(mktemp -d)"
+  container_name="op-test-template-$$"
+  cleanup() {
+    nerdctl --namespace k8s.io rm -f "$container_name" >/dev/null 2>&1 || true
+    rm -rf "$work_dir"
+  }
+  trap cleanup RETURN
 
-pull_image_on_target() {
-  local ip="$1" user="$2"
-  echo "[pull] $ip: pull $IMAGE"
-  {
-    write_remote_context
-    cat <<'REMOTE'
-set -euo pipefail
-registry_host="${IMAGE%%/*}"
-command -v nerdctl >/dev/null 2>&1 || {
-  echo "nerdctl is required on target nodes; install it and run nerdctl login $registry_host" >&2
-  exit 2
-}
-if ! nerdctl --namespace k8s.io image inspect "$IMAGE" >/dev/null 2>&1 && ! nerdctl --namespace k8s.io pull "$IMAGE"; then
-  echo "image pull failed; run nerdctl --namespace k8s.io login $registry_host as the pipeline SSH user" >&2
-  exit 1
-fi
-REMOTE
-  } | remote_bash "$user@$ip"
-}
-
-export_templates_from_control_target() {
-  echo "[pull] $CONTROL_TARGET_IP: export render templates from $TEMPLATE_IMAGE"
+  echo "[pull] execution host: export render templates from $TEMPLATE_IMAGE"
   mkdir -p "$TEMPLATE_DIR"
-  {
-    write_remote_context
-    cat <<'REMOTE'
-set -euo pipefail
-work_dir="$(mktemp -d)"
-container_name="op-test-template-$$"
-cleanup() {
-  nerdctl --namespace k8s.io rm -f "$container_name" >/dev/null 2>&1 || true
-  rm -rf "$work_dir"
-}
-trap cleanup EXIT
-command -v nerdctl >/dev/null 2>&1 || {
-  echo "nerdctl is required on target nodes; install it before exporting templates" >&2
-  exit 2
-}
-nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
-nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
-if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
-  [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
-  cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-fi
-tar -C "$work_dir" -cf - xds-cluster values-16Node-je-cpp-bnt3.yaml model_arch-lt-je-cpp-bnt3.json
-REMOTE
-  } | remote_bash "$CONTROL_TARGET_USER@$CONTROL_TARGET_IP" | tar -C "$TEMPLATE_DIR" -xf -
+  nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
+  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
+  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
+
+  if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
+    [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
+    cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+  fi
+
+  cp -a "$work_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
+  cp -a "$work_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
+  cp -a "$work_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
 }
 
-select_control_target
-declare -A seen_hosts=()
-while IFS=$'\t' read -r ip user; do
-  [[ -n "$ip" && -z "${seen_hosts[$ip]:-}" ]] || continue
-  seen_hosts["$ip"]=1
-  pull_image_on_target "$ip" "$user"
-done < <(python3 -c 'import json,sys
-for host in json.loads(sys.argv[1]): print(host.get("ip", ""), host.get("user", "root"), sep="\t")' "$TARGET_HOSTS")
+pull_image "$IMAGE"
+[[ "$TEMPLATE_IMAGE" == "$IMAGE" ]] || pull_image "$TEMPLATE_IMAGE"
 
 if [[ -z "${CHART_TEMPLATE_DIR:-}" && -z "${VALUES_TEMPLATE:-}" && -z "${ARCH_FILE:-}" ]]; then
-  export_templates_from_control_target
+  export_templates
   CHART_TEMPLATE_DIR="$TEMPLATE_DIR/xds-cluster"
   VALUES_TEMPLATE="$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
   ARCH_FILE="$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
