@@ -8,10 +8,6 @@ TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
 CONTROL_HOST="${CONTROL_HOST:-}"
-REGISTRY_USERNAME="${REGISTRY_USERNAME:-}"
-REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
-REGISTRY_SECRET_NAMESPACE="${REGISTRY_SECRET_NAMESPACE:-default}"
-REGISTRY_SECRET_NAME="${REGISTRY_SECRET_NAME:-xds-swr-credentials}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
@@ -57,10 +53,6 @@ remote_bash() {
 write_remote_context() {
   printf 'IMAGE=%q\n' "$IMAGE"
   printf 'TEMPLATE_IMAGE=%q\n' "$TEMPLATE_IMAGE"
-  printf 'REGISTRY_USERNAME=%q\n' "$REGISTRY_USERNAME"
-  printf 'REGISTRY_PASSWORD=%q\n' "$REGISTRY_PASSWORD"
-  printf 'REGISTRY_SECRET_NAMESPACE=%q\n' "$REGISTRY_SECRET_NAMESPACE"
-  printf 'REGISTRY_SECRET_NAME=%q\n' "$REGISTRY_SECRET_NAME"
   printf 'VALUES_TEMPLATE_SOURCE=%q\n' "$VALUES_TEMPLATE_SOURCE"
   if [[ -n "$PULL_PROXY" ]]; then
     printf 'export http_proxy=%q https_proxy=%q HTTP_PROXY=%q HTTPS_PROXY=%q\n' "$PULL_PROXY" "$PULL_PROXY" "$PULL_PROXY" "$PULL_PROXY"
@@ -77,31 +69,14 @@ pull_image_on_target() {
     write_remote_context
     cat <<'REMOTE'
 set -euo pipefail
-auth_dir=""
-cleanup() { [[ -z "$auth_dir" ]] || rm -rf "$auth_dir"; }
-trap cleanup EXIT
-if [[ -n "$REGISTRY_USERNAME" || -n "$REGISTRY_PASSWORD" ]]; then
-  [[ -n "$REGISTRY_USERNAME" && -n "$REGISTRY_PASSWORD" ]] || { echo "REGISTRY_USERNAME and REGISTRY_PASSWORD must be set together" >&2; exit 2; }
-else
-  command -v kubectl >/dev/null 2>&1 || { echo "kubectl is required to read registry credentials from Kubernetes" >&2; exit 2; }
-  REGISTRY_USERNAME="$(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY kubectl -n "$REGISTRY_SECRET_NAMESPACE" get secret "$REGISTRY_SECRET_NAME" -o jsonpath='{.data.username}' | base64 -d)"
-  REGISTRY_PASSWORD="$(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY kubectl -n "$REGISTRY_SECRET_NAMESPACE" get secret "$REGISTRY_SECRET_NAME" -o jsonpath='{.data.password}' | base64 -d)"
-  [[ -n "$REGISTRY_USERNAME" && -n "$REGISTRY_PASSWORD" ]] || { echo "registry Secret $REGISTRY_SECRET_NAMESPACE/$REGISTRY_SECRET_NAME must contain non-empty username and password data keys" >&2; exit 2; }
-fi
-auth_dir="$(mktemp -d)"
-umask 077
 registry_host="${IMAGE%%/*}"
-registry_auth="$(printf '%s:%s' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" | base64 -w 0)"
-printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry_host" "$registry_auth" >"$auth_dir/config.json"
-if command -v nerdctl >/dev/null 2>&1; then
-  nerdctl --namespace k8s.io image inspect "$IMAGE" >/dev/null 2>&1 || DOCKER_CONFIG="$auth_dir" nerdctl --namespace k8s.io pull "$IMAGE"
-elif command -v ctr >/dev/null 2>&1; then
-  ctr --namespace k8s.io images ls -q | grep -Fx -- "$IMAGE" >/dev/null 2>&1 || ctr --namespace k8s.io images pull --user "$REGISTRY_USERNAME:$REGISTRY_PASSWORD" "$IMAGE"
-elif command -v docker >/dev/null 2>&1; then
-  docker image inspect "$IMAGE" >/dev/null 2>&1 || DOCKER_CONFIG="$auth_dir" docker pull "$IMAGE"
-else
-  echo "neither nerdctl, ctr, nor docker is available" >&2
+command -v nerdctl >/dev/null 2>&1 || {
+  echo "nerdctl is required on target nodes; install it and run nerdctl login $registry_host" >&2
   exit 2
+}
+if ! nerdctl --namespace k8s.io image inspect "$IMAGE" >/dev/null 2>&1 && ! nerdctl --namespace k8s.io pull "$IMAGE"; then
+  echo "image pull failed; run nerdctl --namespace k8s.io login $registry_host as the pipeline SSH user" >&2
+  exit 1
 fi
 REMOTE
   } | remote_bash "$user@$ip"
@@ -116,35 +91,19 @@ export_templates_from_control_target() {
 set -euo pipefail
 work_dir="$(mktemp -d)"
 container_name="op-test-template-$$"
-mount_dir=""
 cleanup() {
-  [[ -z "$mount_dir" ]] || ctr --namespace k8s.io images unmount "$mount_dir" >/dev/null 2>&1 || true
-  [[ -z "$mount_dir" ]] || rmdir "$mount_dir" 2>/dev/null || true
   nerdctl --namespace k8s.io rm -f "$container_name" >/dev/null 2>&1 || true
-  docker rm -f "$container_name" >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
-if command -v nerdctl >/dev/null 2>&1; then
-  nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
-elif command -v ctr >/dev/null 2>&1; then
-  mount_dir="$(mktemp -d)"
-  ctr --namespace k8s.io images mount "$TEMPLATE_IMAGE" "$mount_dir" >/dev/null
-  cp -a "$mount_dir/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-  cp -a "$mount_dir/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-  cp -a "$mount_dir/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
-elif command -v docker >/dev/null 2>&1; then
-  docker create --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
-  docker cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-  docker cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-  docker cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
-else
-  echo "neither nerdctl, ctr, nor docker is available" >&2
+command -v nerdctl >/dev/null 2>&1 || {
+  echo "nerdctl is required on target nodes; install it before exporting templates" >&2
   exit 2
-fi
+}
+nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
+nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
+nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
 if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
   [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
   cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
