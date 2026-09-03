@@ -753,7 +753,7 @@ export function apply(ctx: Context) {
     return dropped.length ? '[warn] 环境变量 ' + dropped.join('、') + ' 超过单变量 128KiB 上限，未注入；请用「输出变量」JSON 路径截取所需字段（如 XDS_BRANCH=items.0.name）' : null
   }
 
-  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number): Promise<{ code: number; stdout: string; stderr: string }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
     // ${VAR} 取值池（同页面 substRunVars）：运行级注入变量 + 上游阶段变量（同名时上游优先）
@@ -806,14 +806,26 @@ export function apply(ctx: Context) {
       if (runCtx.tag && env.ARCHIVE_TAG === undefined) env.ARCHIVE_TAG = String(runCtx.tag)
     }
     const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
+    /* 阶段级超时（与页面 runScriptStep 一致：编辑器「超时(分钟)」×60 存秒，默认 120；上限 1h 对齐 exec-stream）。
+       此前服务端硬编码 120s，长任务（如大镜像拉取）到点被杀，日志戛然而止且无任何超时说明 */
+    const timeoutMs = Math.min(Math.max(Number(timeoutSec) || 120, 1), 3600) * 1000
     return new Promise((resolve) => {
       const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
       /* maxBuffer 256MB：日志保全量，不得因缓冲上限杀进程丢输出（此前 4MB，超大输出 ENOBUFS 截断）；
          页面流式路径（exec-stream spawn）本就无缓冲上限，此处对齐 */
-      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
+      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
-          resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '') })
+          /* 超时/缓冲超限被杀时在 stderr 标注原因（对齐 exec-stream 的 'exec timed out' 提示），
+             否则日志戛然而止、无 [exit] 前的任何说明，看起来像被截断 */
+          let errText = String(stderr || '')
+          if (err && (err as any).killed) {
+            const why = (err as any).code === 'ENOBUFS'
+              ? '输出超过 256MB 缓冲上限（ENOBUFS），进程被终止'
+              : 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's（阶段超时，进程被终止；可在流水线编辑器调大该阶段「超时(分钟)」）'
+            errText = (errText ? errText + '\n' : '') + why
+          }
+          resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + errText })
         })
     })
   }
@@ -888,7 +900,7 @@ export function apply(ctx: Context) {
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'url' || s.kind === 'jenkins') { entry = { status: 'success', text: '[定时执行] URL 请求阶段：定时触发暂不支持，已跳过' } }   // 兼容旧计划中的 kind:'jenkins'（Jenkins 阶段已改为 URL 请求阶段）
       else if (s.script && s.script.path) {
-        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool)
+        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
         // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
         // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
         Object.assign(varsPool, parseStageVars(r.stdout))

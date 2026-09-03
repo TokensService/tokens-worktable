@@ -881,7 +881,7 @@ function apply(ctx) {
     }
     return dropped.length ? "[warn] \u73AF\u5883\u53D8\u91CF " + dropped.join("\u3001") + " \u8D85\u8FC7\u5355\u53D8\u91CF 128KiB \u4E0A\u9650\uFF0C\u672A\u6CE8\u5165\uFF1B\u8BF7\u7528\u300C\u8F93\u51FA\u53D8\u91CF\u300DJSON \u8DEF\u5F84\u622A\u53D6\u6240\u9700\u5B57\u6BB5\uFF08\u5982 XDS_BRANCH=items.0.name\uFF09" : null;
   }
-  function runStageScript(sc, runCtx, scriptsDir, varsPool) {
+  function runStageScript(sc, runCtx, scriptsDir, varsPool, timeoutSec) {
     const pool = varsPool || {};
     const ctx0 = runCtx.envs && runCtx.envs[0] || null;
     const look = {};
@@ -927,15 +927,21 @@ function apply(ctx) {
       if (runCtx.tag && env.ARCHIVE_TAG === void 0) env.ARCHIVE_TAG = String(runCtx.tag);
     }
     const oversizeWarn = dropOversizeEnv(env);
+    const timeoutMs = Math.min(Math.max(Number(timeoutSec) || 120, 1), 3600) * 1e3;
     return new Promise((resolve) => {
       const isPy = sc.lang === "py" || /\.py$/i.test(sc.name || "");
       execFile(
         isPy ? "python3" : "bash",
         [sc.path, ...args],
-        { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: 12e4, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
+        { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-          resolve({ code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "") });
+          let errText = String(stderr || "");
+          if (err && err.killed) {
+            const why = err.code === "ENOBUFS" ? "\u8F93\u51FA\u8D85\u8FC7 256MB \u7F13\u51B2\u4E0A\u9650\uFF08ENOBUFS\uFF09\uFF0C\u8FDB\u7A0B\u88AB\u7EC8\u6B62" : "exec timed out after " + Math.round(timeoutMs / 1e3) + "s\uFF08\u9636\u6BB5\u8D85\u65F6\uFF0C\u8FDB\u7A0B\u88AB\u7EC8\u6B62\uFF1B\u53EF\u5728\u6D41\u6C34\u7EBF\u7F16\u8F91\u5668\u8C03\u5927\u8BE5\u9636\u6BB5\u300C\u8D85\u65F6(\u5206\u949F)\u300D\uFF09";
+            errText = (errText ? errText + "\n" : "") + why;
+          }
+          resolve({ code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + errText });
         }
       );
     });
@@ -1004,7 +1010,7 @@ function apply(ctx) {
       } else if (s.kind === "url" || s.kind === "jenkins") {
         entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] URL \u8BF7\u6C42\u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" };
       } else if (s.script && s.script.path) {
-        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool);
+        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout);
         Object.assign(varsPool, parseStageVars(r.stdout));
         applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout);
         entry = { status: r.code === 0 ? "success" : "failed", text: stageLogText(s.script.name, r) };
