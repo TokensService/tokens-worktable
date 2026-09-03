@@ -388,7 +388,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
           <input id="archiveScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不执行）" style="width:216px;" title="归档写入日志/profiling 后执行该脚本收集日志；默认 scripts/collect_logs.sh，脚本不存在则跳过" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行；其中归档脚本收到的 <code>ARCHIVE_DIR</code>=归档根目录（host 节点环境日志写到根目录，跨运行共享，不占单次运行目录）、<code>ARCHIVE_FOLDER</code>=本次运行归档文件夹。运行启动时即按「流水线名称_年月日时分秒」生成归档文件夹（每次运行独立目录），并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、Jenkins 阶段、清理脚本；任务内 <code>ARCHIVE_DIR</code> 仍=本次运行归档文件夹），脚本显式参数优先。</span>
+        <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行；其中归档脚本收到的 <code>ARCHIVE_DIR</code>=归档根目录（host 节点环境日志写到根目录，跨运行共享，不占单次运行目录）、<code>ARCHIVE_FOLDER</code>=本次运行归档文件夹。运行启动时即按「流水线名称_年月日时分秒」生成归档文件夹（每次运行独立目录），并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、URL 请求阶段、清理脚本；任务内 <code>ARCHIVE_DIR</code> 仍=本次运行归档文件夹），脚本显式参数优先。</span>
       </div>
     </div>
     <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
@@ -487,7 +487,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / Jenkins 阶段的「输出变量」可把 stdout / 控制台捕获的 key 改名后下传（如 IMAGE_URL=image）；Jenkins 任务除 fullName 外也可直接粘贴任务 URL，URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ URL请求（填完整 URL，GET 触发）；留空脚本=本地模拟该步；超时对脚本与 URL 请求阶段生效，默认 2（URL 请求默认 5）分钟）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（URL 请求阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / URL 请求阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image）；URL 请求阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -627,7 +627,7 @@ async function loadServerState(){
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
         const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
         const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
-        pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate);
+        pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl);
       }
       if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
@@ -692,13 +692,18 @@ const DEFAULT_PIPELINE_ID='pl-xds';
 function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}; }
 /* 旧数据迁移：「审批门」(gate) 已改为「是否执行」(skip)，旧 gate:true 阶段按不执行处理 */
 function migrateGate(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(s && s.gate){ s.skip=true; delete s.gate; } }); return p; }
+/* 旧数据迁移：Jenkins 阶段已改为 URL 请求阶段（kind:'jenkins'→'url'，jenkins.job→url.url）；
+   「拉取参数」的 params/values 随之下线，参数改由 URL 的 {GIT_BRANCH} 等 {变量名} 占位符传递 */
+function migrateStageUrl(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(!s) return; if(s.kind==='jenkins') s.kind='url'; if(s.jenkins){ if(!s.url) s.url={url:s.jenkins.job||'', outVars:s.jenkins.outVars||''}; delete s.jenkins; } }); return p; }
+/* URL 请求阶段取值（兼容旧数据：kind:'jenkins' / jenkins.job 字段，见 migrateStageUrl/normalizeStageKind） */
+function stageUrlOf(s){ if(!s) return ''; if(s.url && s.url.url!==undefined) return String(s.url.url||''); return (s.jenkins && s.jenkins.job) ? String(s.jenkins.job) : ''; }
 function loadPipelines(){
   let stored=null;
   try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); stored=Array.isArray(a)?a:null; }catch(e){ stored=null; }
   if(stored && stored.length){
     const def=stored.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
     const customs=stored.filter(p=>p && !p.builtIn);
-    return [ def || defaultPipeline() ].concat(customs).map(migrateGate);
+    return [ def || defaultPipeline() ].concat(customs).map(migrateGate).map(migrateStageUrl);
   }
   return [ defaultPipeline() ];
 }
@@ -1449,7 +1454,7 @@ function fillScriptsDatalist(){
   availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
 }
 function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
-/* Jenkins 任务列表（设置页「获取任务列表」后填充；阶段编辑器「Jenkins」类型据此选择任务） */
+/* Jenkins 任务列表（设置页「获取任务列表」后填充；供「代码仓」分支获取=Jenkins 时选择多分支任务） */
 let availableJenkinsJobs=[];   // [{name: fullName}]
 function fillJenkinsJobsDatalist(){
   const dl=$('jenkinsJobsList'); if(!dl) return; dl.innerHTML='';
@@ -1568,24 +1573,28 @@ function detectParams(src, lang){
   return posParams.concat(envParams);
 }
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
-let editStages=[];   // [{id,name,dur,skip,sub,kind,script|null,jenkins|null,sched|null}]
-const STAGE_KIND_LABEL={simulate:'模拟',shell:'Shell',python:'Python',jenkins:'Jenkins'};
-/* 旧数据兼容：未带 kind 的阶段按 script/jenkins 字段推断；补齐 script.lang */
+let editStages=[];   // [{id,name,dur,skip,sub,kind,script|null,url|null,sched|null}]
+const STAGE_KIND_LABEL={simulate:'模拟',shell:'Shell',python:'Python',url:'URL请求'};
+/* 旧数据兼容：Jenkins 阶段已改为 URL 请求阶段——kind:'jenkins' 归为 'url'，jenkins.job 迁入 url.url
+   （「拉取参数」的 params/values 随之下线，参数改由 URL 的 {GIT_BRANCH} 等占位符传递，见 migrateStageUrl）；
+   未带 kind 的阶段按 url/script 字段推断；补齐 script.lang */
 function normalizeStageKind(s){
   if(!s) return s;
+  if(s.kind==='jenkins') s.kind='url';
+  if(s.jenkins){ if(!s.url) s.url={url:s.jenkins.job||'', outVars:s.jenkins.outVars||''}; s.jenkins=null; }
   if(!s.kind){
-    if(s.jenkins && s.jenkins.job) s.kind='jenkins';
+    if(s.url && s.url.url) s.kind='url';
     else if(s.script && s.script.path) s.kind=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'python':'shell';
     else s.kind='simulate';
   }
-  if(s.kind==='jenkins'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; if(!s.script) s.script=null; }
-  else { if(!s.jenkins) s.jenkins=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
+  if(s.kind==='url'){ if(!s.url) s.url={url:'',outVars:''}; if(!s.script) s.script=null; }
+  else { if(!s.url) s.url=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
   /* 定时标记归一：sched 仅作「支持定时」标记（{}），周期跟随流水线定时计划；旧数据 true / {mode...} 一律归一为 {}，非法置空 */
   s.sched = s.sched ? {} : null;
   return s;
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
-function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, skip:false, sub:[], kind:'simulate', script:null, jenkins:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
+function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, skip:false, sub:[], kind:'simulate', script:null, url:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
 function renderStageEditor(){
   const wrap=$('plStageList'); if(!wrap) return; wrap.innerHTML='';
   editStages.forEach((s,i)=>{
@@ -1606,7 +1615,7 @@ function renderStageEditor(){
       +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
       +'<span class="dshell-muted" style="font-size:11px;">类型</span>'
       +'<div class="jk-mode" role="group" style="display:inline-flex;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden;">'
-      +['simulate','shell','python','jenkins'].map(function(k){return '<button type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn'+(s.kind===k?' sel':'')+'" data-act="kind" data-kind="'+k+'">'+STAGE_KIND_LABEL[k]+'</button>';}).join('')
+      +['simulate','shell','python','url'].map(function(k){return '<button type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn'+(s.kind===k?' sel':'')+'" data-act="kind" data-kind="'+k+'">'+STAGE_KIND_LABEL[k]+'</button>';}).join('')
       +'</div>'
       +'</div>'
       +'<div data-action style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>'
@@ -1624,21 +1633,8 @@ function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-params]'); box.innerHTML='';
   const s=editStages[i]; if(!s) return;
-  if(s.kind==='jenkins'){
-    const jk=s.jenkins; if(!jk||!jk.params||!jk.params.length) return;
-    jk.params.forEach(p=>{
-      const key=p.name||p.key;
-      const def=(p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?String(p.defaultParameterValue.value):(p.def||'');
-      const v=(jk.values&&jk.values[key]!==undefined)?jk.values[key]:def;
-      const lab=document.createElement('label'); lab.className='dshell-muted';
-      lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
-      const lbl=esc(key)+(p.description?' ('+esc(p.description)+')':'')+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'');
-      lab.innerHTML=lbl+' <input class="dshell-input" data-pkey="'+esc(key)+'" value="'+esc(v)+'" placeholder="'+esc(def)+'" style="width:150px;font-size:11px;" />';
-      lab.querySelector('input').addEventListener('change',function(e){ jk.values=jk.values||{}; jk.values[key]=e.target.value; renderStageParams(i); });
-      box.appendChild(lab);
-    });
-    return;
-  }
+  /* URL 请求阶段无参数表单：参数经 URL 的 {GIT_BRANCH} 等占位符传递（运行时用注入的环境变量替换） */
+  if(s.kind==='url') return;
   if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
     /* 识别到的静态默认值预填进输入框（即显式值，随执行下发）；动态默认值（dyn，含 $引用/$(命令) 的脚本表达式）
@@ -1679,7 +1675,7 @@ async function detectStageParams(i){
   renderStageParams(i);
 }
 
-/* ---------- 阶段动作行（按类型渲染绑定：模拟/Shell/Python/Jenkins） ---------- */
+/* ---------- 阶段动作行（按类型渲染绑定：模拟/Shell/Python/URL请求） ---------- */
 function renderStageActionRow(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-action]'); if(!box) return; box.innerHTML='';
@@ -1687,16 +1683,14 @@ function renderStageActionRow(i){
   if(s.kind==='simulate'){
     const sp=document.createElement('span'); sp.className='dshell-muted'; sp.style.cssText='font-size:11px;'; sp.textContent='本地模拟（按耗时等待）'; box.appendChild(sp); return;
   }
-  if(s.kind==='jenkins'){
-    const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='Jenkins 任务';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','jenkinsJobsList'); inp.setAttribute('data-f','jenkinsJob'); inp.value=(s.jenkins&&s.jenkins.job)||''; inp.placeholder='任务 fullName 或 URL（支持 {GIT_BRANCH} 占位符）'; inp.style.width='280px';
-    inp.title='可填 Jenkins 任务 fullName（先在「设置」页获取任务列表，POST buildWithParameters 触发并轮询），或直接粘贴任务 URL；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符，运行时用注入的环境变量/构建参数替换（URL 编码），未定义的变量原样保留；URL 触发为对完整地址直接 GET（等价 curl，URL 自含鉴权如 token 参数，不附加全局凭据），连接模式（本地直连/服务端代连）仍走「Jenkins 服务配置」';
-    const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','jkparams'); btn.textContent='拉取参数';
+  if(s.kind==='url'){
+    const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='请求 URL';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','stageUrl'); inp.value=(s.url&&s.url.url)||''; inp.placeholder='http(s)://…（支持 {GIT_BRANCH} 等 {变量} 占位符）'; inp.style.width='320px';
+    inp.title='粘贴完整请求地址（如 Jenkins 任务 …/job/app/job/{GIT_BRANCH}/buildWithParameters?token=xxx，或任意 webhook 地址）；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符传参，运行时用注入的环境变量/上游产出替换（URL 编码），未定义的变量原样保留；触发为对完整地址直接 GET（等价 curl，URL 自含鉴权如 token 参数，不附加全局凭据）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量';
-    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','jenkinsOutVars'); outInp.value=(s.jenkins&&s.jenkins.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
-    outInp.title='本任务控制台产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 字段全部按原名下传；IMAGE_URL=image 表示把控制台的 image 改名为 IMAGE_URL；下游阶段参数值可填 ${IMAGE_URL} 引用';
-    const hint=document.createElement('span'); hint.className='dshell-muted'; hint.style.fontSize='11px'; hint.textContent=availableJenkinsJobs.length?'':'（先在「设置」页获取任务列表）';
-    box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(hint); return;
+    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','urlOutVars'); outInp.value=(s.url&&s.url.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
+    outInp.title='本请求响应体（Jenkins 控制台）产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 字段全部按原名下传；IMAGE_URL=image 表示把响应体的 image 改名为 IMAGE_URL；下游阶段参数值可填 ${IMAGE_URL} 引用、URL 可填 {IMAGE_URL} 占位符引用';
+    box.appendChild(lab); box.appendChild(inp); box.appendChild(outLab); box.appendChild(outInp); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
@@ -1721,9 +1715,9 @@ function renderStageSched(i){
 }
 function setStageKind(i,k){
   const s=editStages[i]; if(!s) return;
-  if(['simulate','shell','python','jenkins'].indexOf(k)<0) return;
+  if(['simulate','shell','python','url'].indexOf(k)<0) return;
   s.kind=k;
-  if(k==='jenkins'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; }
+  if(k==='url'){ if(!s.url) s.url={url:'',outVars:''}; }
   else if(k!=='simulate' && s.script){ s.script.lang=(k==='python')?'py':'sh'; }
   /* 类型按钮选中态同步：整行不重渲染（避免输入失焦），仅切换 .sel 类 */
   const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){
@@ -1731,34 +1725,10 @@ function setStageKind(i,k){
   }
   renderStageActionRow(i); renderStageParams(i);
 }
-async function setStageJenkins(i, name){
+function setStageUrl(i, val){
   const s=editStages[i]; if(!s) return;
-  if(!s.jenkins) s.jenkins={job:'',params:[],values:{}};
-  name=(name||'').trim();
-  if(!name){ s.jenkins.job=''; s.jenkins.params=[]; renderStageParams(i); return; }
-  const keep=(s.jenkins.job===name);
-  s.jenkins.job=name;
-  if(!keep) s.jenkins.params=[];
-  renderStageParams(i);
-}
-/* 拉取 Jenkins 作业参数定义（parameterDefinitions），填入阶段参数表单；
-   任务可填 URL（取路径部分）；URL 含 {VAR} 占位符时编辑期无运行上下文，提示先替换为具体值再拉取 */
-async function detectJenkinsParams(i){
-  const s=editStages[i]; if(!s||!s.jenkins||!s.jenkins.job) return;
-  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
-  const raw=String(s.jenkins.job||'').trim();
-  if(jkIsUrl(raw) && /\{[A-Za-z_][A-Za-z0-9_]*\}/.test(raw)){ alert('任务 URL 含 {变量} 占位符（运行时才用环境变量替换），请先替换为具体值再拉取参数'); return; }
-  const jobPath=jkJobRef(raw, {});
-  try{
-    const data=await jkFetchJson(j, base+jobPath+'api/json?tree=property[parameterDefinitions[name,type,defaultParameterValue[value],description]]');
-    let defs=[];
-    (data.property||[]).forEach(function(p){ if(Array.isArray(p.parameterDefinitions)) defs=defs.concat(p.parameterDefinitions); });
-    const oldVals=s.jenkins.values||{};
-    s.jenkins.params=defs.map(function(d){ return {name:d.name, type:d.type, description:d.description||'', defaultParameterValue:(d.defaultParameterValue||{}), required:false}; });
-    s.jenkins.values=s.jenkins.values||{};
-    defs.forEach(function(d){ const k=d.name; if(oldVals[k]!==undefined) s.jenkins.values[k]=oldVals[k]; else if(d.defaultParameterValue && d.defaultParameterValue.value!==undefined) s.jenkins.values[k]=String(d.defaultParameterValue.value); });
-  }catch(e){ s.jenkins.params=[]; }
-  renderStageParams(i);
+  if(!s.url) s.url={url:'',outVars:''};
+  s.url.url=(val||'').trim();
 }
 
 
@@ -1942,17 +1912,14 @@ function renderDetail(){
 function buildLog(stage, ctx, n){
   const id=stage.id;
   if(stage.skip || n.status==='skipped'){ return ["[Pipeline] stage { ("+stage.name+")", '⏭ 本阶段配置为不执行，已跳过。']; }
-  if(stage.kind==='jenkins' && stage.jenkins && stage.jenkins.job){
-    const jk=stage.jenkins;
-    const lines=['$ jenkins build '+jk.job];
-    const envPairs=(jk.params||[]).map(p=>p.name+'='+((jk.values&&jk.values[p.name]!==undefined)?jk.values[p.name]:((p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?p.defaultParameterValue.value:''))).filter(function(x){return !x.endsWith('=');});
-    if(envPairs.length) lines.push('# params: '+envPairs.join(' '));
+  if((stage.kind==='url'||stage.kind==='jenkins') && stageUrlOf(stage)){   // 兼容旧数据 kind:'jenkins'
+    const lines=['$ GET '+stageUrlOf(stage)];
     const out=stage._out;
     if(!out||!out.done){
-      // 构建中/被中止：已轮询到的部分回显也输出（归档时保留被中断任务的独立日志）
+      // 请求中/被中止：已轮询到的部分回显也输出（归档时保留被中断任务的独立日志）
       if(out && out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
       if(out && out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
-      lines.push('（Jenkins 构建中…）');
+      lines.push('（URL 请求进行中…）');
     }
     else{
       if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
@@ -2059,7 +2026,7 @@ function startSimRun(pl, c){
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
   curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',vars:{},token:++runSeq,hasSched:stages.some(s=>s.sched)};
-  curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runJenkinsStep），末尾 archiveRun 复用同一路径
+  curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
   }
@@ -2132,7 +2099,7 @@ function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans
 /* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
    （稳定 id 去重——重跑同一条流水线会替换旧计划而非叠加）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
-   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；Jenkins 阶段服务端跳过；「不执行」阶段自动跳过），
+   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；URL 请求阶段服务端跳过；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
 async function registerStageTimers(startIdx){
   if(!curRun || !runStages) return;
@@ -2237,12 +2204,12 @@ function advance(i){
     return;
   }
   const s=stg[i];
-  if(s.skip){ skipStage(i); return; }   // 配置「不执行」：标记跳过并推进（脚本/Jenkins/模拟阶段一视同仁）
-  if(s.kind==='jenkins' && s.jenkins && s.jenkins.job){ runJenkinsStep(i); return; }
+  if(s.skip){ skipStage(i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
+  if((s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(i); return; }   // 兼容旧数据 kind:'jenkins'
   if(s.script && s.script.path){ runScriptStep(i); return; }
   runStage(i);
 }
-/* ---------- 阶段间变量传递（上游 stdout / Jenkins 控制台的 KEY=VALUE 行、单行 JSON 对象注入下游） ---------- */
+/* ---------- 阶段间变量传递（上游 stdout / URL 响应体（Jenkins 控制台）的 KEY=VALUE 行、单行 JSON 对象注入下游） ---------- */
 /* 提取规则：逐行匹配 ^\s*([A-Z_][A-Z0-9_]*)=(.*)$；值取首个 = 之后全部，
    去尾 \r；首尾双引号包裹则去引号。累计到 curRun.vars（粘性：后续阶段可见，同 key 后写覆盖）。
    另支持整行为 JSON 对象（{"KEY":"VALUE",...}，Jenkins 任务常见的 key=value 结果回显）：
@@ -2278,7 +2245,7 @@ function mergeStageVars(stdout){
 }
 /* 输出变量映射（阶段编辑器「输出变量」，逗号分隔，如 IMAGE_URL=image, ARCH）：把变量池里捕获到的 key
    改名/声明为目标名补充进 curRun.vars（来源含本阶段产出与更早的上游变量）；原 key 仍保留下传。
-   脚本 / Jenkins 阶段通用；varsOut 同步补充，供运行详情展示本阶段产出。 */
+   脚本 / URL 请求阶段通用；varsOut 同步补充，供运行详情展示本阶段产出。 */
 function applyOutVars(spec, varsOut){
   String(spec||'').split(',').forEach(function(pair){
     const p=pair.trim(); if(!p) return;
@@ -2289,7 +2256,7 @@ function applyOutVars(spec, varsOut){
   });
 }
 /* 参数值 ${VAR} 引用替换：取值来源 = 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR 等）+ 上游阶段变量
-   （curRun.vars，同名时上游优先）。供脚本 / Jenkins 阶段在参数值里显式引用上游产出（如 ${IMAGE_URL}）。
+   （curRun.vars，同名时上游优先）。供脚本阶段在参数值里显式引用上游产出（如 ${IMAGE_URL}）。
    未定义的引用原样保留；整值即单个 ${VAR} 且未定义时按空值处理（env 参数空 = 继承上游同名变量）。 */
 function substRunVars(v, rc){
   v=String(v===undefined||v===null?'':v);
@@ -2373,15 +2340,15 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx){
     return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||''};
   }catch(e){ return {code:1, stdout:'', stderr:String(e.message||e)}; }
 }
-/* ---------- Jenkins 阶段：触发构建 + 轮询结果（本地直连 / 远程走 proxy；复用连接模式） ----------
-   变量传递：上游阶段变量（curRun.vars）自动注入为构建参数；任务控制台输出的 KEY=VALUE 行 /
+/* ---------- URL 请求阶段：{VAR} 占位符替换后 GET 触发 + 轮询结果（本地直连 / 远程走 proxy；复用连接模式） ----------
+   变量传递：上游阶段变量（curRun.vars）自动注入为占位符取值；URL 响应体 / 任务控制台输出的 KEY=VALUE 行 /
    单行 JSON 对象（{"KEY":"VALUE"}）经 mergeStageVars 累计回 curRun.vars，传递给后续阶段。 */
 function jkJobPath(job){ return '/job/'+String(job).split('/').map(encodeURIComponent).join('/job/')+'/'; }
-/* Jenkins 任务除 fullName 外也支持直接粘贴任务 URL（如 http://jenkins/job/app/job/{GIT_BRANCH}/buildWithParameters?token=xxx）：
-   {VAR} 占位符由环境变量/构建参数（GIT_BRANCH、IMAGE_NAME、上游产出变量等）替换并做 URL 编码，
+/* 阶段填完整请求 URL（如 http://jenkins/job/app/job/{GIT_BRANCH}/buildWithParameters?token=xxx）：
+   {VAR} 占位符由环境变量（GIT_BRANCH、IMAGE_NAME、上游产出变量等）替换并做 URL 编码，
    未定义的变量原样保留；URL 触发为对替换后的完整地址直接发 GET（等价 curl，URL 自含鉴权如 token 参数，
    不附加「Jenkins 服务配置」的用户名/令牌）；jkJobRef 仅取 URL 路径（剥掉尾部 build/buildWithParameters
-   触发动作段），供拉取参数定义与轮询构建结果使用。 */
+   触发动作段），供轮询构建结果使用。 */
 function jkIsUrl(job){ return /^https?:\/\//i.test(String(job||'').trim()); }
 function jkSubstUrl(url, vars){
   return String(url||'').replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, function(m,k){
@@ -2393,10 +2360,11 @@ function jkJobRef(job, vars){
   const raw=String(job||'').trim();
   if(!jkIsUrl(raw)) return jkJobPath(raw);
   const u=jkSubstUrl(raw, vars);
-  /* URL 触发直接 GET 完整地址；这里仅取路径供拉取参数/轮询，尾部 build/buildWithParameters 动作段需剥掉 */
+  /* URL 触发直接 GET 完整地址；这里仅取路径供轮询，尾部 build/buildWithParameters 动作段需剥掉 */
   try{ return new URL(u).pathname.replace(/\/+$/,'').replace(/\/(buildWithParameters|build)$/i,'')+'/'; }catch(e){ return u; }
 }
-/* Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
+/* 旧格式兼容：阶段仍填 Jenkins 任务 fullName（非 URL）时按 buildWithParameters 触发。
+   Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
    参数放在 form-urlencoded 请求体中（等价于旧版 query 传参）；
    CSRF 防护开启时需带 crumb——先经 crumbIssuer 尝试获取（API token 认证通常豁免，拿不到则直接 POST）。 */
 async function jkFetchCrumb(j, auth){
@@ -2442,7 +2410,7 @@ async function jkTriggerGet(url){
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'})});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400) throw new Error('HTTP '+(p.status||0));
-    return typeof p.body==='string'?p.body:'';   // 返回响应体：runJenkinsStep 喂给 parseStageVars 解析产物
+    return typeof p.body==='string'?p.body:'';   // 返回响应体：runUrlStep 喂给 parseStageVars 解析产物
   }
   const r=await fetch(url,{cache:'no-store'});
   if(!r.ok) throw new Error('HTTP '+r.status);
@@ -2458,63 +2426,58 @@ async function jkGetText(path){
   }
   const r=await fetch(url,{headers:auth,cache:'no-store'}); return r.text();
 }
-async function runJenkinsStep(i){
-  const stg=activeStages(); const s=stg[i]; const jk=s.jenkins;
+async function runUrlStep(i){
+  const stg=activeStages(); const s=stg[i];
+  const raw=stageUrlOf(s);   // 兼容旧数据 kind:'jenkins' / jenkins.job（见 stageUrlOf）
+  const outSpec=(s.url&&s.url.outVars)||(s.jenkins&&s.jenkins.outVars)||'';
   const tk=curRun?curRun.token:null;
   const varsIn=curRun?Object.assign({},curRun.vars||{}):{};
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:{}};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:{}};
   selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
   const t0=Date.now();
   if(timer) clearInterval(timer);
   timer=setInterval(function(){ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },500);
-  const log=['$ jenkins build '+jk.job];
+  const isUrl=jkIsUrl(raw);
+  const log=['$ '+(isUrl?'GET':'POST')+' '+raw+(isUrl?'':'（旧格式 fullName，建议改为完整 URL，参数经 {GIT_BRANCH} 等占位符传递）')];
   try{
-    const params={};
-    (jk.params||[]).forEach(function(p){
-      const k=p.name;
-      const dv=(p.defaultParameterValue&&p.defaultParameterValue.value!==undefined)?String(p.defaultParameterValue.value):'';
-      /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理（不下发） */
-      const v=substRunVars((jk.values&&jk.values[k]!==undefined)?String(jk.values[k]):dv, curRun);
-      if(v!=='') params[k]=v;
-    });
-    /* 阶段间变量传递：上游阶段（脚本 stdout / Jenkins 控制台）产出的 KEY=VALUE / 单行 JSON 变量
-       累计在 curRun.vars，作为构建参数注入本 Jenkins 任务（未定义的参数名 Jenkins 自动忽略，无副作用）。
-       优先级：阶段显式参数 > 上游变量 > 运行级全局默认（与脚本阶段一致）。 */
+    /* 占位符取值池（旧 fullName 触发时兼作构建参数）：上游阶段（脚本 stdout / URL 响应体）产出的
+       KEY=VALUE / 单行 JSON 变量累计在 curRun.vars，叠加运行级注入（TARGET_IP/IMAGE_NAME/GIT_BRANCH/ARCHIVE_DIR 等），
+       优先级：上游变量 > 运行级全局默认（与脚本阶段一致）。 */
+    const vars={};
     if(curRun && curRun.vars){
-      for(const k in curRun.vars){ if(params[k]===undefined) params[k]=String(curRun.vars[k]); }
+      for(const k in curRun.vars){ if(vars[k]===undefined) vars[k]=String(curRun.vars[k]); }
     }
     const ctx0=(curRun&&curRun.envs&&curRun.envs[0])||null;
     if(curRun){
-      if(ctx0&&ctx0.ip&&params.TARGET_IP===undefined) params.TARGET_IP=ctx0.ip;
-      if(curRun.envs&&params.TARGET_IPS===undefined) params.TARGET_IPS=JSON.stringify(curRun.envs.map(function(e){return e.ip;}));
-      if(curRun.image&&params.IMAGE_NAME===undefined) params.IMAGE_NAME=curRun.image;
-      if(curRun.tag&&params.IMAGE_TAG===undefined) params.IMAGE_TAG=curRun.tag;
-      if(curRun.pipelineName&&params.PIPELINE_NAME===undefined) params.PIPELINE_NAME=curRun.pipelineName;
-      if(curRun.repoUrl&&params.GIT_URL===undefined) params.GIT_URL=curRun.repoUrl;
-      if(curRun.branch&&params.GIT_BRANCH===undefined) params.GIT_BRANCH=curRun.branch;
-      if(curRun.strategy&&params.DEPLOY_STRATEGY===undefined) params.DEPLOY_STRATEGY=curRun.strategy;
-      /* 归档路径：同脚本阶段，注入 Jenkins 构建参数，供下游作业把产物写入归档目录；显式参数优先。 */
+      if(ctx0&&ctx0.ip&&vars.TARGET_IP===undefined) vars.TARGET_IP=ctx0.ip;
+      if(curRun.envs&&vars.TARGET_IPS===undefined) vars.TARGET_IPS=JSON.stringify(curRun.envs.map(function(e){return e.ip;}));
+      if(curRun.image&&vars.IMAGE_NAME===undefined) vars.IMAGE_NAME=curRun.image;
+      if(curRun.tag&&vars.IMAGE_TAG===undefined) vars.IMAGE_TAG=curRun.tag;
+      if(curRun.pipelineName&&vars.PIPELINE_NAME===undefined) vars.PIPELINE_NAME=curRun.pipelineName;
+      if(curRun.repoUrl&&vars.GIT_URL===undefined) vars.GIT_URL=curRun.repoUrl;
+      if(curRun.branch&&vars.GIT_BRANCH===undefined) vars.GIT_BRANCH=curRun.branch;
+      if(curRun.strategy&&vars.DEPLOY_STRATEGY===undefined) vars.DEPLOY_STRATEGY=curRun.strategy;
+      /* 归档路径：同脚本阶段注入，供下游作业把产物写入归档目录。 */
       if(curRun.archive){
-        if(params.ARCHIVE_DIR===undefined) params.ARCHIVE_DIR=curRun.archive;
-        if(params.ARCHIVE_FOLDER===undefined) params.ARCHIVE_FOLDER=curRun.archive;
-        if(curRun.pipelineName&&params.ARCHIVE_PIPELINE===undefined) params.ARCHIVE_PIPELINE=curRun.pipelineName;
-        if(curRun.tag&&params.ARCHIVE_TAG===undefined) params.ARCHIVE_TAG=curRun.tag;
+        if(vars.ARCHIVE_DIR===undefined) vars.ARCHIVE_DIR=curRun.archive;
+        if(vars.ARCHIVE_FOLDER===undefined) vars.ARCHIVE_FOLDER=curRun.archive;
+        if(curRun.pipelineName&&vars.ARCHIVE_PIPELINE===undefined) vars.ARCHIVE_PIPELINE=curRun.pipelineName;
+        if(curRun.tag&&vars.ARCHIVE_TAG===undefined) vars.ARCHIVE_TAG=curRun.tag;
       }
     }
-    /* 任务可填 URL：{VAR} 占位符用上面注入完成的环境变量/构建参数替换（URL 编码）后，对完整 URL 直接 GET 触发
-       （等价 curl）；jobPath 仅取 URL 路径（已剥掉触发动作段）供拉取 nextBuildNumber 与轮询结果使用 */
-    const isUrl=jkIsUrl(jk.job);
-    const jobPath=jkJobRef(jk.job, params);
+    /* {VAR} 占位符用上面注入完成的环境变量替换（URL 编码）后，对完整 URL 直接 GET 触发（等价 curl）；
+       jobPath 仅取 URL 路径（已剥掉触发动作段）供拉取 nextBuildNumber 与轮询结果使用 */
+    const jobPath=jkJobRef(raw, vars);
     const pollable=/\/job\//.test(jobPath);   // 非标准任务路径（如 webhook 触发地址）无法定位任务，跳过轮询
-    log.push('# params: '+Object.keys(params).map(function(k){return k+'='+params[k];}).join(' '));
-    if(isUrl) log.push('# trigger url: '+jkSubstUrl(jk.job, params));
-    s._out={stdout:log.join('\n'),stderr:'',code:null,jenkins:true,done:false}; renderDetail();
+    log.push('# vars: '+Object.keys(vars).map(function(k){return k+'='+vars[k];}).join(' '));
+    if(isUrl) log.push('# trigger url: '+jkSubstUrl(raw, vars));
+    s._out={stdout:log.join('\n'),stderr:'',code:null,url:true,done:false}; renderDetail();
     let preNum=null;
     if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); } }
     let triggerBody='';
-    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(jk.job, params)); }
-    else{ await jkTriggerBuild(jobPath, params); }
-    log.push('# 已触发构建'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); renderDetail();
+    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars)); }
+    else{ await jkTriggerBuild(jobPath, vars); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    log.push('# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); renderDetail();
     const deadline=t0+((s.timeout||300)*1000);
     let result=null, buildNum=null, building=true;
     if(!pollable){ building=false; result='SUCCESS'; }
@@ -2543,20 +2506,20 @@ async function runJenkinsStep(i){
     }
     const ok=(result==='SUCCESS');
     if(consoleText){ log.push(''); consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
-    log.push('[Jenkins result '+result+']');
-    s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('Jenkins '+result):'',code:ok?0:1,jenkins:true,done:true};
+    log.push('[URL result '+result+']');
+    s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('URL 请求 '+result):'',code:ok?0:1,url:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
     archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-    applyOutVars(jk.outVars, varsOut);   // 输出变量映射：控制台捕获的 key 改名后下传（见 applyOutVars）
+    applyOutVars(outSpec, varsOut);   // 输出变量映射：响应体/控制台捕获的 key 改名后下传（见 applyOutVars）
     const dur=(Date.now()-t0)/1000;
-    if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
-    else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
+    if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
+    else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
   }catch(e){
     if(timer){clearInterval(timer);timer=null;}
     log.push('✗ '+e.message);
-    s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,jenkins:true,done:true};
+    s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,url:true,done:true};
     archiveStageLog(s, i+1);   // 异常路径同样归档本阶段已产生的回显
-    nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:{}};
+    nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:{}};
     applyStatusClasses(); renderDetail(); finish('failed');
   }
 }
@@ -2575,7 +2538,7 @@ async function runScriptStep(i){
   const dur=(Date.now()-t0)/1000;
   s._out=res;
   const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
-  applyOutVars(sc.outVars, varsOut);   // 输出变量映射：stdout 捕获的 key 改名后下传（与 Jenkins 阶段一致，见 applyOutVars）
+  applyOutVars(sc.outVars, varsOut);   // 输出变量映射：stdout 捕获的 key 改名后下传（与 URL 请求阶段一致，见 applyOutVars）
   archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
   if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
   else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -3202,7 +3165,7 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{}),outVars:(s.jenkins.outVars||'')}:null})); }
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 url 后清掉 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   loadScripts().then(()=>renderStageEditor());
   $('plName').focus();
@@ -3217,8 +3180,8 @@ function savePlForm(){
     if(!String(s.name).trim()){ alert('第 '+(i+1)+' 阶段的名称未填写'); return; }
     if(seen[s.name]){ alert('阶段名重复：'+s.name); return; }
     seen[s.name]=1;
-    if(s.kind==='jenkins'){
-      if(!s.jenkins || !String(s.jenkins.job).trim()){ alert('第 '+(i+1)+' 阶段「'+s.name+'」未选择 Jenkins 任务'); return; }
+    if(s.kind==='url'){
+      if(!s.url || !String(s.url.url).trim()){ alert('第 '+(i+1)+' 阶段「'+s.name+'」未填写请求 URL'); return; }
     }
     if(s.script && s.script.name){   // 仅填了「输出变量」未选脚本的占位（name 为空）视为未绑脚本，按本地模拟处理
       if(!scriptByName(s.script.name)){ if(!confirm('第 '+(i+1)+' 阶段「'+s.name+'」的脚本「'+s.script.name+'」不在 scripts 目录中，仍要保存？')) return; }
@@ -3245,7 +3208,7 @@ function savePlForm(){
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
-    if(s.jenkins) st.jenkins={job:s.jenkins.job, params:(s.jenkins.params||[]), values:(s.jenkins.values||{}), outVars:(s.jenkins.outVars||'')};
+    if(s.url) st.url={url:s.url.url, outVars:(s.url.outVars||'')};
     if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
   });
@@ -3323,7 +3286,6 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='up' && i>0){ const t=editStages[i-1]; editStages[i-1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
-  else if(act==='jkparams'){ detectJenkinsParams(i); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
 });
 $('plStageList').addEventListener('change', (e)=>{
@@ -3341,8 +3303,8 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='skip') s.skip=e.target.checked;
   else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
-  else if(f==='jenkinsJob'){ setStageJenkins(i, e.target.value.trim()); }
-  else if(f==='jenkinsOutVars'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; s.jenkins.outVars=e.target.value; }
+  else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
+  else if(f==='urlOutVars'){ if(!s.url) s.url={url:'',outVars:''}; s.url.outVars=e.target.value; }
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
 });
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
