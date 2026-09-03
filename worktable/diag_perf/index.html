@@ -199,6 +199,10 @@
       <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则不展示。</div>
     </div>
     <div class="diag-note" id="setHint">改动即自动保存并生效；配置仅存于本机浏览器 localStorage。</div>
+    <div class="diag-formrow" style="margin-top:8px">
+      <button class="dshell-btn" id="btnDiagnose" type="button" title="按当前设置立即执行一轮完整诊断：拉取 Prometheus 时序、日志目录与 Profiling 目录，规则引擎随渲染重新研判">开始诊断</button>
+      <span class="dshell-muted" id="diagBtnHint" style="font-size:12px"></span>
+    </div>
     <div class="dshell-divider"></div>
 
     <div class="dshell-grid">
@@ -1146,6 +1150,21 @@ document.getElementById("btnRefresh").addEventListener("click",function(){
   var b=this;
   b.disabled=true;b.textContent="刷新中…";
   poll(function(){b.disabled=false;b.textContent="刷新数据";});
+  startPoll();
+});
+/* 开始诊断：按当前设置立即执行一轮完整诊断（拉取 Prometheus 时序 + 日志目录 + Profiling 目录，规则引擎随渲染重新研判），完成后重置自动轮询计时 */
+document.getElementById("btnDiagnose").addEventListener("click",function(){
+  var b=this,hint=document.getElementById("diagBtnHint");
+  b.disabled=true;b.textContent="诊断中…";hint.textContent="";
+  poll(function(state){
+    b.disabled=false;b.textContent="开始诊断";
+    hint.textContent=state==="busy"?"上一轮拉取尚未完成，请稍候"
+      :state==="ok"?"诊断完成：已按真实数据更新各画板与诊断结论"
+      :state==="empty"?"诊断完成：数据源已连通但指标名未匹配（画板暂无数据）"
+      :"诊断完成：数据源不可达（已尝试 /metrics 兜底，等待自动重试）";
+  });
+  loadLogs();
+  loadProf();
   startPoll();
 });
 document.getElementById("btnExport").addEventListener("click",function(){
