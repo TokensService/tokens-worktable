@@ -183,7 +183,7 @@
     <!-- 发行视图：选仓库/分支，一键串行「编译构建 → 创建 Tag → 创建 GitCode 发行版」 -->
     <div id="viewRelease" style="display:none">
       <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失</span></h2>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">仓库
             <select class="dshell-input" id="relRepo" style="min-width:150px"></select>
@@ -926,10 +926,10 @@
      经 /api/worktable/write + exec 浅克隆 → git tag → push（凭据 URL 编码注入 GIT_AUTH_URL，输出脱敏，远端已有同名 Tag 拒绝覆盖）；
      发行版走 GitCode v5 API（POST /repos/{owner}/{repo}/releases，form 参数 + 本页认证方式）；
      产物上传经服务端临时脚本 curl -F file=@… 调 attach_files 接口（令牌注入 ACCESS_TOKEN，输出脱敏，完成后清理暂存目录）。 */
-  var DEFAULT_REL_CFG = { script: "", timeout: 1800, artifacts: "" };
+  var DEFAULT_REL_CFG = { repo: "", branch: "", script: "", timeout: 1800, artifacts: "" };
   var relCfg = (function () {
-    try { var c = JSON.parse(localStorage.getItem(LS.relCfg)); if (c && typeof c === "object") return { script: c.script || "", timeout: c.timeout || DEFAULT_REL_CFG.timeout, artifacts: c.artifacts || "" }; } catch (e) {}
-    return { script: "", timeout: DEFAULT_REL_CFG.timeout, artifacts: "" };
+    try { var c = JSON.parse(localStorage.getItem(LS.relCfg)); if (c && typeof c === "object") return { repo: c.repo || "", branch: c.branch || "", script: c.script || "", timeout: c.timeout || DEFAULT_REL_CFG.timeout, artifacts: c.artifacts || "" }; } catch (e) {}
+    return { repo: "", branch: "", script: "", timeout: DEFAULT_REL_CFG.timeout, artifacts: "" };
   })();
   function saveRelCfg() { try { localStorage.setItem(LS.relCfg, JSON.stringify(relCfg)); } catch (e) {} }
   var relRunning = false;
@@ -960,6 +960,7 @@
       var o = document.createElement("option"); o.value = r.name; o.textContent = r.name; relRepoSel.appendChild(o);
     });
     if (cur && state.repos.some(function (r) { return r.name === cur; })) relRepoSel.value = cur;
+    else if (relCfg.repo && state.repos.some(function (r) { return r.name === relCfg.repo; })) relRepoSel.value = relCfg.repo; // 回退到本机缓存的仓库选择
   }
   function fetchRelRepos() {
     if (!state.token) { toast("请先在「设置」页配置令牌", true); return Promise.resolve(); }
@@ -996,6 +997,7 @@
     relTag.value = b ? b + "." + date + "." + time : "v" + date + "." + time;
   }
   function fillRelForm() {
+    relBranch.value = relCfg.branch || "main"; // 恢复本机缓存的分支（默认 main）
     relBuildTimeout.value = relCfg.timeout || DEFAULT_REL_CFG.timeout;
     relArtifacts.value = relCfg.artifacts || "";
     applyBuildScriptSelection();
@@ -1541,10 +1543,10 @@
     })();
   }
   relRepoRefresh.addEventListener("click", fetchRelRepos);
-  relRepoSel.addEventListener("change", function () { loadRelBranches(true); loadBuildScripts(); });
+  relRepoSel.addEventListener("change", function () { relCfg.repo = relRepoSel.value; saveRelCfg(); loadRelBranches(true); loadBuildScripts(); });
   relBranchRefresh.addEventListener("click", function () { loadRelBranches(true); });
   relBranch.addEventListener("focus", function () { loadRelBranches(); });
-  relBranch.addEventListener("change", function () { loadBuildScripts(); }); // 分支影响仓内脚本列表
+  relBranch.addEventListener("change", function () { relCfg.branch = relBranch.value.trim(); saveRelCfg(); loadBuildScripts(); }); // 分支影响仓内脚本列表
   relTagSuggest.addEventListener("click", suggestRelTag);
   relRunBtn.addEventListener("click", runRelease);
   relBuildScript.addEventListener("change", function () {
