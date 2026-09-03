@@ -19219,6 +19219,20 @@ async function newChatInProject(text2, workspaceId = null, cwd = null) {
   }
   await fillSessionDraft(sessionId, text2);
 }
+async function sendChatInProject(text2, workspaceId = null, cwd = null) {
+  const b = sessionBridge;
+  if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
+  const wsId = workspaceId ?? (cwd ? null : defaultWorkspaceId());
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : cwd ? { cwd } : {});
+  await ensureSessionPreset(sessionId);
+  await ensureSessionModel(sessionId);
+  markPluginSessionOpen(sessionId);
+  try {
+    await b.sessions.open?.(sessionId);
+  } catch {
+  }
+  await promptIntoSession(sessionId, text2);
+}
 async function newChatSessionWithFolder(text2, cwd, folder) {
   const b = sessionBridge;
   if (!b || typeof b.sessions?.create !== "function") throw new Error("sessions unavailable");
@@ -22034,6 +22048,7 @@ function apply(ctx) {
     window.__dshSessions = ctx.sessions;
     window.__dshPromptIntoSession = (id, text2) => promptIntoSession(id, text2);
     window.__dshNewChatSession = (text2) => newChatInProject(text2);
+    window.__dshSendChatInProject = (text2) => sendChatInProject(text2);
     window.__dshNewChatSessionAt = (text2, cwd) => newChatInProject(text2, null, cwd || null);
     window.__dshNewChatSessionAtFolder = (text2, cwd, folder) => newChatSessionWithFolder(text2, cwd || null, folder || null);
     window.__dshWorkspaces = ctx.workspaces;

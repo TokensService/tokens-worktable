@@ -239,7 +239,7 @@
             <span style="display:flex;align-items:center;gap:8px">
               <span class="dshell-muted" id="relNotesAiTip" style="font-size:11px"></span>
               <button class="dshell-btn dshell-btnGhost" id="relNotesAiBtn" style="padding:3px 10px;font-size:11.5px"
-                title="拉取上一发行版 Tag 与当前分支之间的提交（commit），新建 AI 会话按业界通行格式生成发行说明草稿（生成后从会话复制回本框，可再编辑）">✦ AI 生成</button>
+                title="拉取上一发行版 Tag 与当前分支之间的提交（commit），在右侧聊天窗新建 AI 会话按业界通行格式生成发行说明草稿（生成后从会话复制回本框，可再编辑）">✦ AI 生成</button>
             </span>
           </div>
           <textarea class="dshell-textarea" id="relBody" rows="4" placeholder="本次发行的变更说明（可选；点「✦ AI 生成」由 AI 按上一发行版与当前分支之间的提交起草）" style="font-size:12px"></textarea>
@@ -1453,8 +1453,9 @@
      或 compare 不可用时回退为按分支拉提交并以 since=上一发行版时间过滤，无历史发行版时取最近提交），
      上限 REL_NOTES_COMMIT_MAX 条。
      提示词内嵌提交清单（短 hash + 首行 message + 作者），要求 AI 按业界通行格式
-     （Keep a Changelog + Conventional Commits 分组）输出；走「AI 检视」同款 launchNewSession
-     新建会话自动发送；令牌是否随提示携带沿用设置页「评审提示中携带令牌」开关，便于 AI 按需补查提交 diff。 */
+     （Keep a Changelog + Conventional Commits 分组）输出；会话在右侧聊天小窗打开并自动发送
+     （优先插件 __dshSendChatInProject 桥；旧版插件退化为右侧聊天窗草稿，再退化全屏会话），
+     不离开当前发行页；令牌是否随提示携带沿用设置页「评审提示中携带令牌」开关，便于 AI 按需补查提交 diff。 */
   var REL_NOTES_COMMIT_MAX = 100; // 参与生成发行说明的提交上限
   var relNotesAiBusy = false;
   function fetchPrevRelease(repo) {
@@ -1531,6 +1532,29 @@
     );
     return lines.join("\n") + "\n";
   }
+  /* 发行说明 AI 生成会话：优先走插件「右侧聊天窗 + 自动发送」桥（__dshSendChatInProject，项目分栏保持打开）；
+     旧版插件无此桥时退化为右侧聊天窗草稿（__dshNewChatSession，需手动发送），再退化为全屏会话（launchNewSession） */
+  function launchRelNotesSession(prompt) {
+    var host = getHost();
+    var okMsg = "已新建 AI 会话生成发行说明（生成后复制回「发行说明」框）";
+    if (host && typeof host.__dshSendChatInProject === "function") {
+      toast("正在右侧聊天窗新建 AI 会话…");
+      Promise.resolve(host.__dshSendChatInProject(prompt)).then(
+        function () { toast("已在右侧聊天窗开始生成发行说明（生成后复制回「发行说明」框）"); },
+        function () { launchNewSession(prompt, okMsg); } // 桥内失败：回退全屏会话路径（含复制兜底）
+      );
+      return;
+    }
+    if (host && typeof host.__dshNewChatSession === "function") {
+      toast("正在右侧聊天窗新建 AI 会话…");
+      Promise.resolve(host.__dshNewChatSession(prompt)).then(
+        function () { toast("提示已填入右侧聊天窗输入框，请确认后发送"); },
+        function () { launchNewSession(prompt, okMsg); }
+      );
+      return;
+    }
+    launchNewSession(prompt, okMsg);
+  }
   function genRelNotes() {
     if (relNotesAiBusy) return;
     if (!state.token) { toast("请先在「设置」页配置令牌", true); return; }
@@ -1548,8 +1572,7 @@
           return;
         }
         relNotesAiTip.textContent = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
-        launchNewSession(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits),
-          "已新建 AI 会话生成发行说明（生成后复制回「发行说明」框）");
+        launchRelNotesSession(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
       })
       .catch(function (e) { toast("拉取提交失败：" + String(e && e.message || e), true); })
       .then(function () { relNotesAiBusy = false; relNotesAiBtn.disabled = false; relNotesAiBtn.textContent = "✦ AI 生成"; });
