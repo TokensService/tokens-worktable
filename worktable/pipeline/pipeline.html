@@ -707,8 +707,7 @@ function collectRunLogs(){
     if(!n || n.status==='running') return;
     let text='';
     try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
-    if(text.length>8192) text=text.slice(0,8192)+'\n…(截断)';
-    out.push({stage:s.name, status:n.status, log:text});
+    out.push({stage:s.name, status:n.status, log:text});   // 完整回显随历史持久化（不截断，回放历史可看全量日志）
   });
   return out;
 }
