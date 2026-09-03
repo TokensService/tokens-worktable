@@ -487,7 +487,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；Jenkins 阶段的「输出变量」可把控制台捕获的 key 改名后下传（如 IMAGE_URL=image）；Jenkins 任务除 fullName 外也可直接粘贴任务 URL，URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ Jenkins（绑任务，触发并轮询）；留空脚本=本地模拟该步；超时对脚本与 Jenkins 阶段生效，默认 2（Jenkins 默认 5）分钟）。阶段间变量传递：阶段 stdout / Jenkins 控制台输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ 构建参数（Jenkins 阶段）注入后续阶段，同名时阶段显式参数优先；参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / Jenkins 阶段的「输出变量」可把 stdout / 控制台捕获的 key 改名后下传（如 IMAGE_URL=image）；Jenkins 任务除 fullName 外也可直接粘贴任务 URL，URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1658,7 +1658,7 @@ async function setStageScript(i, name){
   const sc=scriptByName(name);
   if(!name || !sc){ s.script=null; renderStageParams(i); return; }
   const keep=(s.script && s.script.name===sc.name)?s.script:null;
-  s.script={name:sc.name, path:sc.path, lang:sc.lang, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  s.script={name:sc.name, path:sc.path, lang:sc.lang, params:(keep?keep.params:[]), values:(keep?keep.values:{}), outVars:((s.script&&s.script.outVars)||'')};   // 输出变量映射随脚本选择保留
   await detectStageParams(i);
 }
 async function detectStageParams(i){
@@ -1702,7 +1702,10 @@ function renderStageActionRow(i){
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
   const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','scriptsList'); inp.setAttribute('data-f','script'); inp.value=(s.script&&s.script.name)||''; inp.placeholder=(s.kind==='python'?'选择 .py 脚本（可搜索）':'选择 .sh 脚本（可搜索，留空=模拟）'); inp.style.width='216px';
   const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','detect'); btn.textContent='识别参数';
-  box.appendChild(lab); box.appendChild(inp); box.appendChild(btn);
+  const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量';
+  const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','scriptOutVars'); outInp.value=(s.script&&s.script.outVars)||''; outInp.placeholder='如 IMAGE_URL 或 IMAGE_URL=image'; outInp.style.width='200px';
+  outInp.title='本阶段脚本 stdout 产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 字段全部按原名下传；IMAGE_URL=image 表示把产出的 image 改名为 IMAGE_URL；下游阶段参数值可填 ${IMAGE_URL} 引用';
+  box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(outLab); box.appendChild(outInp);
 }
 /* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「需本地运行」则不支持定时） ---------- */
 function renderStageSched(i){
@@ -2273,6 +2276,18 @@ function mergeStageVars(stdout){
   curRun.vars=Object.assign(curRun.vars||{}, v);
   return v;
 }
+/* 输出变量映射（阶段编辑器「输出变量」，逗号分隔，如 IMAGE_URL=image, ARCH）：把变量池里捕获到的 key
+   改名/声明为目标名补充进 curRun.vars（来源含本阶段产出与更早的上游变量）；原 key 仍保留下传。
+   脚本 / Jenkins 阶段通用；varsOut 同步补充，供运行详情展示本阶段产出。 */
+function applyOutVars(spec, varsOut){
+  String(spec||'').split(',').forEach(function(pair){
+    const p=pair.trim(); if(!p) return;
+    const eq=p.indexOf('=');
+    const dst=(eq>=0?p.slice(0,eq):p).trim(), src=(eq>=0?p.slice(eq+1):p).trim();
+    if(!dst || !src || !curRun || !curRun.vars || curRun.vars[src]===undefined) return;
+    curRun.vars[dst]=String(curRun.vars[src]); if(varsOut) varsOut[dst]=String(curRun.vars[src]);
+  });
+}
 /* 参数值 ${VAR} 引用替换：取值来源 = 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR 等）+ 上游阶段变量
    （curRun.vars，同名时上游优先）。供脚本 / Jenkins 阶段在参数值里显式引用上游产出（如 ${IMAGE_URL}）。
    未定义的引用原样保留；整值即单个 ${VAR} 且未定义时按空值处理（env 参数空 = 继承上游同名变量）。 */
@@ -2532,15 +2547,7 @@ async function runJenkinsStep(i){
     s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('Jenkins '+result):'',code:ok?0:1,jenkins:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
     archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-    /* 输出变量映射（阶段编辑器「输出变量」，逗号分隔，如 IMAGE_URL=image, ARCH）：把变量池里捕获到的 key
-       改名/声明为目标名补充进 curRun.vars（来源含本阶段控制台产出与更早的上游变量）；原 key 仍保留下传。 */
-    String(jk.outVars||'').split(',').forEach(function(pair){
-      const p=pair.trim(); if(!p) return;
-      const eq=p.indexOf('=');
-      const dst=(eq>=0?p.slice(0,eq):p).trim(), src=(eq>=0?p.slice(eq+1):p).trim();
-      if(!dst || !src || !curRun || !curRun.vars || curRun.vars[src]===undefined) return;
-      curRun.vars[dst]=String(curRun.vars[src]); varsOut[dst]=String(curRun.vars[src]);
-    });
+    applyOutVars(jk.outVars, varsOut);   // 输出变量映射：控制台捕获的 key 改名后下传（见 applyOutVars）
     const dur=(Date.now()-t0)/1000;
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'Jenkins · '+jk.job,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -2568,6 +2575,7 @@ async function runScriptStep(i){
   const dur=(Date.now()-t0)/1000;
   s._out=res;
   const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
+  applyOutVars(sc.outVars, varsOut);   // 输出变量映射：stdout 捕获的 key 改名后下传（与 Jenkins 阶段一致，见 applyOutVars）
   archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
   if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
   else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
@@ -3194,7 +3202,7 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{})}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{}),outVars:(s.jenkins.outVars||'')}:null})); }
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, jenkins:s.jenkins?{job:s.jenkins.job,params:(s.jenkins.params||[]),values:(s.jenkins.values||{}),outVars:(s.jenkins.outVars||'')}:null})); }
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   loadScripts().then(()=>renderStageEditor());
   $('plName').focus();
@@ -3212,7 +3220,7 @@ function savePlForm(){
     if(s.kind==='jenkins'){
       if(!s.jenkins || !String(s.jenkins.job).trim()){ alert('第 '+(i+1)+' 阶段「'+s.name+'」未选择 Jenkins 任务'); return; }
     }
-    if(s.script){
+    if(s.script && s.script.name){   // 仅填了「输出变量」未选脚本的占位（name 为空）视为未绑脚本，按本地模拟处理
       if(!scriptByName(s.script.name)){ if(!confirm('第 '+(i+1)+' 阶段「'+s.name+'」的脚本「'+s.script.name+'」不在 scripts 目录中，仍要保存？')) return; }
       const missing=(s.script.params||[]).filter(p=>p.required && !String((s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:(p.def||'')).trim());
       if(missing.length){ alert('第 '+(i+1)+' 阶段「'+s.name+'」脚本 '+s.script.name+' 有必填参数未填：'+missing.map(p=>p.label||p.key).join('、')); return; }
@@ -3236,7 +3244,7 @@ function savePlForm(){
   const stages=editStages.map((s,i)=>{
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
-    if(s.script) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{})};
+    if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
     if(s.jenkins) st.jenkins={job:s.jenkins.job, params:(s.jenkins.params||[]), values:(s.jenkins.values||{}), outVars:(s.jenkins.outVars||'')};
     if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
@@ -3335,6 +3343,7 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='jenkinsJob'){ setStageJenkins(i, e.target.value.trim()); }
   else if(f==='jenkinsOutVars'){ if(!s.jenkins) s.jenkins={job:'',params:[],values:{}}; s.jenkins.outVars=e.target.value; }
+  else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
 });
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
 /* 节点环境表头排序：升序 → 降序 → 取消 */
