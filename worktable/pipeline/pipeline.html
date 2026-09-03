@@ -2019,6 +2019,12 @@ function setOverall(txt,cls){
   const o=$('overall'); o.innerHTML='';
   const b=document.createElement('span'); b.className='dshell-badge '+cls; b.textContent=txt; o.appendChild(b);
 }
+/* 运行按钮不随运行禁用：运行中点击即把当前配置入队（见 runPipeline），文案与提示随运行态切换 */
+function syncRunBtn(){
+  const b=$('runBtn'); b.disabled=false;
+  if(running){ b.textContent='▶ 入队运行'; b.title='有流水线运行中：点击将当前配置加入运行队列（上限 '+QUEUE_CAP+' 个）'; }
+  else { b.textContent='▶ 运行流水线'; b.title=''; }
+}
 function startRun(opts){
   opts = opts || {};
   let pl;
@@ -2055,7 +2061,7 @@ function startSimRun(pl, c){
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
   }
   selectedId = stages[0].id;
-  running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
+  running=true; $('stopBtn').disabled=false; syncRunBtn();
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   setOverall('运行中…','dshell-badgeWait');
   $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
@@ -2600,13 +2606,13 @@ function retryFromStage(stageId){
   curRun.vars=Object.assign({}, n.varsIn||{});
   runStages[idx]._out=null;   // 清掉上次脚本输出，避免重跑期间误显示旧日志
   for(let j=idx;j<runStages.length;j++){ runStages[j]._logArchived=false; const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
-  running=true; $('runBtn').disabled=true; $('stopBtn').disabled=false;
+  running=true; $('stopBtn').disabled=false; syncRunBtn();
   setOverall('运行中…（重试）','dshell-badgeWait');
   selectedId=stageId; applyStatusClasses(); renderDetail();
   advance(idx);
 }
 function finish(result){
-  running=false; $('runBtn').disabled=false; $('stopBtn').disabled=true;
+  running=false; $('stopBtn').disabled=true; syncRunBtn();
   refreshArchiveTip();   // 运行结束：目标回退到历史选中行/本次运行归档
   if(timer){ clearInterval(timer); timer=null; }
   const elapsed=(Date.now()-curRun.startTs)/1000;
@@ -3276,7 +3282,7 @@ $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSche
 $('resetBtn').addEventListener('click', ()=>{
   if(running || queue.length){ if(!confirm('将中止当前运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本结果将被丢弃，且不计入历史）。继续？')) return; }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('runBtn').disabled=false; $('stopBtn').disabled=true; resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
+  if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('stopBtn').disabled=true; syncRunBtn(); resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
   refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行/归档根
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
