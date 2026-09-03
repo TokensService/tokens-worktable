@@ -1,5 +1,13 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 定时执行的阶段超时不再生效 bug 修复 + 超时标注（`src/index.ts`）：服务端定时路径 `runStageScript`
+  此前硬编码 `timeout: 120000`，无视阶段在编辑器里配置的「超时(分钟)」，长任务（如大镜像拉取）到 120s
+  被 execFile 杀掉，日志戛然而止且无 stderr 说明，看起来就像「日志被截断」。现按页面 `runScriptStep`
+  同一规则取阶段 `timeout`（秒存，默认 120，上限 1h 对齐 exec-stream），由 `execPlan` 随计划带入；
+  进程因超时（SIGTERM）或输出超 256MB 缓冲（ENOBUFS）被杀时，在 stderr 追加原因说明
+  （对齐 exec-stream 的 'exec timed out' 提示），日志里能直接看到是被超时终止而非截断。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 流水线日志全量保留、一律不截断（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
   服务端定时路径（`execPlan` 定时计划/定时后缀）此前经 `truncLog` 把每个任务的回显截到 8192 字符后再写归档，
   长输出任务（如镜像拉取进度条）的独立任务日志 run-<tag>-NN-任务名.log 与汇总 run-<tag>.log 都被切断在
