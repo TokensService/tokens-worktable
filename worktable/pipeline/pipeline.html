@@ -699,27 +699,15 @@ async function loadServerState(){
     if(st && (!st.config || !Object.keys(st.config).length)) persistState();
   }
 }
-/* 历史记录回显上限（与服务端 histLogText 同规则）：归档文件始终保全量，历史记录随
-   worktable-pipeline.json 持久化（500 条 / 20MB 上限），单条回显超 256KB 时保留头 64KB + 尾 192KB
-   （头部命令行/起始输出、尾部错误与退出信息最关键，中间多为进度条类噪声），标记注明完整日志位置——
-   防止个别超大回显撑爆存储、整批历史写不进 */
-const HIST_LOG_CAP=256*1024, HIST_LOG_HEAD=64*1024;
-function histLogText(t, logFile){
-  if(t.length<=HIST_LOG_CAP) return t;
-  const note='…(截断：历史记录仅保留头尾，完整日志见归档文件'+(logFile?' '+logFile:'')+')';
-  return t.slice(0,HIST_LOG_HEAD)+'\n'+note+'\n'+t.slice(-(HIST_LOG_CAP-HIST_LOG_HEAD));
-}
-/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端；
-   逐条经 histLogText 限长（全量回显在归档文件，见 archiveStageLog/archiveRun） */
+/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端 */
 function collectRunLogs(){
   const out=[];
-  const folder=curRun ? archiveFolderFor(curRun) : null;
-  activeStages().forEach((s,idx)=>{
+  activeStages().forEach(s=>{
     const n=nodes[s.id];
     if(!n || n.status==='running') return;
     let text='';
     try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
-    out.push({stage:s.name, status:n.status, log:histLogText(text, folder?folder+'/'+taskLogFile(curRun, idx+1, s.name):null)});
+    out.push({stage:s.name, status:n.status, log:text});   // 完整回显随历史持久化（不截断，回放历史可看全量日志）
   });
   return out;
 }
@@ -2748,9 +2736,18 @@ async function runUrlStep(i){
       consoleText=body;
     }
     const ok=(result==='SUCCESS');
+    const preConsoleLen=log.length;   // 本阶段日志中响应体展示文本的起点（归档全量副本用，见下）
     if(consoleText){ if(!consoleStarted){ log.push(''); } consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
     log.push('[URL result '+result+']');
     s._out={stdout:log.join('\n'),stderr:(result&&result!=='SUCCESS')?('URL 请求 '+result):'',code:ok?0:1,url:true,done:true};
+    /* 响应体超 64K 只截断「展示」；归档另存全量副本 _archiveStdout（日志不丢），archiveStageLog 优先使用 */
+    if(bodyFull && bodyFull!==consoleText){
+      const fullLog=log.slice(0,preConsoleLen);
+      if(!consoleStarted) fullLog.push('');
+      bodyFull.split('\n').forEach(function(l){ if(l!=='') fullLog.push(l); });
+      fullLog.push('[URL result '+result+']');
+      s._archiveStdout=fullLog.join('\n');
+    }
     const varsOut=mergeStageVars(log.join('\n'));
     if(bodyFull && bodyFull!==consoleText) Object.assign(varsOut, mergeStageVars(bodyFull));   // 响应体被截断展示时，顶层标量改从完整体捕获
     archiveStageLog(s, i+1);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
@@ -2841,8 +2838,8 @@ function retryFromStage(stageId){
   const idx=runStages.findIndex(x=>x.id===stageId); if(idx<0) return;
   const n=nodes[stageId]; if(!n || n.status!=='failed') return;
   curRun.vars=Object.assign({}, n.varsIn||{});
-  runStages[idx]._out=null;   // 清掉上次脚本输出，避免重跑期间误显示旧日志
-  for(let j=idx;j<runStages.length;j++){ runStages[j]._logArchived=false; const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
+  runStages[idx]._out=null; runStages[idx]._archiveStdout=null;   // 清掉上次脚本输出与归档全量副本，避免重跑期间误显示/误归档旧日志
+  for(let j=idx;j<runStages.length;j++){ runStages[j]._logArchived=false; if(j>idx) runStages[j]._archiveStdout=null; const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
   running=true; $('stopBtn').disabled=false; syncRunBtn();
   setOverall('运行中…（重试）','dshell-badgeWait');
   selectedId=stageId; applyStatusClasses(); renderDetail();
@@ -2883,10 +2880,7 @@ async function runCleanupBefore(){
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
   if(curRun && curRun.token===tk){
-    /* 归档保全量（此前 8192 截断会同时喂给归档与历史，长输出清理日志被切断）；
-       历史记录条目经 histLogText 限长，防止超大回显撑爆服务端存储 */
-    const folder=archiveFolderFor(curRun);
-    curRun.cleanupLog={stage:'环境清理', status, log:histLogText(text, folder?folder+'/'+taskLogFile(curRun, 0, '环境清理'):null), dur:(Date.now()-t0)/1000};
+    curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};   // 全量回显：归档与历史均不截断
     archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
   }
 }
@@ -2954,7 +2948,9 @@ function archiveStageLog(stage, seq, ctx){
   stage._logArchived=true;
   const n=nodes[stage.id]||{status:'idle'};
   let text='';
-  try{ text=(buildLog(stage, ctx, n)||[]).join('\n'); }catch(e){}
+  /* URL 阶段响应体超 64K 时展示用的是截断版，归档优先换全量副本 _archiveStdout（见 runUrlStep） */
+  const st=(stage._archiveStdout!=null && stage._out) ? Object.assign({}, stage, {_out:Object.assign({}, stage._out, {stdout:stage._archiveStdout})}) : stage;
+  try{ text=(buildLog(st, ctx, n)||[]).join('\n'); }catch(e){}
   archiveTaskLog(ctx, seq, stage.name, text).catch(e=>{ stage._logArchived=false; console.warn('[archive] 阶段「'+stage.name+'」日志归档失败（不影响运行结果）:', e); });
 }
 function archiveRun(result){
