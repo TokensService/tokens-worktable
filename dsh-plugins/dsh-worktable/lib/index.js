@@ -932,7 +932,7 @@ function apply(ctx) {
       execFile(
         isPy ? "python3" : "bash",
         [sc.path, ...args],
-        { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: 12e4, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+        { cwd: scriptsDir || void 0, env: { ...process.env, ...env }, timeout: 12e4, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
           resolve({ code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "") });
@@ -945,12 +945,6 @@ function apply(ctx) {
     let t = "$ " + interp + " " + name2 + "\n" + (r.stdout || "");
     if (r.stderr) t += "\n\u2717 " + r.stderr.split("\n").join("\n\u2717 ");
     return t + "\n[exit " + r.code + "]";
-  }
-  const HIST_LOG_CAP = 256 * 1024, HIST_LOG_HEAD = 64 * 1024;
-  function histLogText(t, logFile) {
-    if (t.length <= HIST_LOG_CAP) return t;
-    const note = "\u2026(\u622A\u65AD\uFF1A\u5386\u53F2\u8BB0\u5F55\u4EC5\u4FDD\u7559\u5934\u5C3E\uFF0C\u5B8C\u6574\u65E5\u5FD7\u89C1\u5F52\u6863\u6587\u4EF6" + (logFile ? " " + logFile : "") + ")";
-    return t.slice(0, HIST_LOG_HEAD) + "\n" + note + "\n" + t.slice(-(HIST_LOG_CAP - HIST_LOG_HEAD));
   }
   async function appendPipelineHistory(rec) {
     const j = await readPipelineStore();
@@ -991,7 +985,6 @@ function apply(ctx) {
       }
     }
     const logs = [];
-    const histLogs = [];
     const profileStages = [];
     let status = "success";
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
@@ -1000,7 +993,6 @@ function apply(ctx) {
       const text = stageLogText(cfg.cleanupScript.name, r);
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, "\u73AF\u5883\u6E05\u7406", text) : null;
       logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: text });
-      histLogs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: histLogText(text, logFile) });
       profileStages.push({ id: "__cleanup__", name: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile });
     }
     let seq = baseSeq + 1;
@@ -1023,7 +1015,6 @@ function apply(ctx) {
       }
       const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null;
       logs.push({ stage: s.name, status: entry.status, log: entry.text });
-      histLogs.push({ stage: s.name, status: entry.status, log: histLogText(entry.text, logFile) });
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: s.script && s.script.name || null, logFile });
       seq++;
       if (status === "failed") break;
@@ -1110,7 +1101,7 @@ function apply(ctx) {
       dur: durText((Date.now() - t0) / 1e3),
       time: "\u4ECA\u5929 " + hhmm(),
       by: pl.by || "schedule",
-      logs: histLogs,
+      logs,
       tag,
       archive: folder || null
     });
@@ -1194,7 +1185,8 @@ function apply(ctx) {
         execFile(
           interp,
           [path, ...args],
-          { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+          { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
+          // 256MB：与 runStageScript 一致，日志保全量，不得因缓冲上限杀进程丢输出
           (err, stdout, stderr) => {
             const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
             json(res, 200, { code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "") });
@@ -1300,7 +1292,7 @@ function apply(ctx) {
           json(res, 400, { error: "missing path" });
           return;
         }
-        if (content.length > 20 * 1024 * 1024) {
+        if (content.length > 256 * 1024 * 1024) {
           json(res, 413, { error: "content too large" });
           return;
         }

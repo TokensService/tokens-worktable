@@ -808,7 +808,9 @@ export function apply(ctx: Context) {
     const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
     return new Promise((resolve) => {
       const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
-      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      /* maxBuffer 256MB：日志保全量，不得因缓冲上限杀进程丢输出（此前 4MB，超大输出 ENOBUFS 截断）；
+         页面流式路径（exec-stream spawn）本就无缓冲上限，此处对齐 */
+      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: 120000, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
         (err, stdout, stderr) => {
           const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
           resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '') })
@@ -816,23 +818,13 @@ export function apply(ctx: Context) {
     })
   }
   /* 任务回显文本：与页面 buildLog 同格式（命令行 + stdout + ✗ 前缀 stderr + [exit]）。
-     完整回显不截断（对齐页面行为，见 pipeline.html collectRunLogs）：独立任务日志 / 汇总 run-<tag>.log
-     均保全量，避免长输出任务（如镜像拉取进度）归档日志被切断；历史记录条目另受 histLogText 上限约束 */
+     完整回显不截断（对齐页面行为，见 pipeline.html collectRunLogs）：独立任务日志 / 汇总 run-<tag>.log /
+     历史记录均保全量，避免长输出任务（如镜像拉取进度）日志被切断 */
   function stageLogText(name: string, r: { code: number; stdout: string; stderr: string }) {
     const interp = /\.py$/i.test(name) ? 'python3' : 'bash'
     let t = '$ ' + interp + ' ' + name + '\n' + (r.stdout || '')
     if (r.stderr) t += '\n✗ ' + r.stderr.split('\n').join('\n✗ ')
     return t + '\n[exit ' + r.code + ']'
-  }
-  /* 历史记录回显上限（与页面 histLogText 同规则）：归档文件始终保全量，历史记录随
-     worktable-pipeline.json 持久化（500 条 / 20MB 上限），单条回显超 256KB 时保留头 64KB + 尾 192KB
-     （头部命令行/起始输出、尾部错误与退出信息最关键，中间多为进度条类噪声），标记注明完整日志位置——
-     防止个别超大回显（单阶段 stdout 上限 4MB，见 runStageScript maxBuffer）撑爆存储、整批历史写不进 */
-  const HIST_LOG_CAP = 256 * 1024, HIST_LOG_HEAD = 64 * 1024
-  function histLogText(t: string, logFile: string | null): string {
-    if (t.length <= HIST_LOG_CAP) return t
-    const note = '…(截断：历史记录仅保留头尾，完整日志见归档文件' + (logFile ? ' ' + logFile : '') + ')'
-    return t.slice(0, HIST_LOG_HEAD) + '\n' + note + '\n' + t.slice(-(HIST_LOG_CAP - HIST_LOG_HEAD))
   }
   async function appendPipelineHistory(rec: any) {
     const j = await readPipelineStore()
@@ -877,8 +869,7 @@ export function apply(ctx: Context) {
     if (pl.vars && typeof pl.vars === 'object' && !Array.isArray(pl.vars)) {
       for (const k of Object.keys(pl.vars)) { const v = pl.vars[k]; if (v !== undefined && v !== null) varsPool[k] = String(v) }
     }
-    const logs: any[] = []        // 全量回显：归档独立任务日志与汇总 run-<tag>.log 用
-    const histLogs: any[] = []    // 历史记录副本：逐条经 histLogText 限长（归档文件保全量，见上）
+    const logs: any[] = []
     const profileStages: any[] = []
     let status = 'success'
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
@@ -888,7 +879,6 @@ export function apply(ctx: Context) {
       const text = stageLogText(cfg.cleanupScript.name, r)
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text })
-      histLogs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: histLogText(text, logFile) })
       profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
     }
     let seq = baseSeq + 1
@@ -912,7 +902,6 @@ export function apply(ctx: Context) {
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
       const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null
       logs.push({ stage: s.name, status: entry.status, log: entry.text })
-      histLogs.push({ stage: s.name, status: entry.status, log: histLogText(entry.text, logFile) })
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
       seq++
       if (status === 'failed') break
@@ -975,7 +964,7 @@ export function apply(ctx: Context) {
     }
     await appendPipelineHistory({
       no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
-      status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs: histLogs,
+      status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs,
       tag, archive: folder || null,
     })
   }
@@ -1048,7 +1037,7 @@ export function apply(ctx: Context) {
         const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 120000, 1000), 3600000)
         const interp = /\.py$/i.test(path) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
-        execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+        execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },   // 256MB：与 runStageScript 一致，日志保全量，不得因缓冲上限杀进程丢输出
           (err, stdout, stderr) => {
             const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
             json(res, 200, { code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '') })
@@ -1128,7 +1117,7 @@ export function apply(ctx: Context) {
         const p = typeof body.path === 'string' ? body.path : ''
         const content = typeof body.content === 'string' ? body.content : ''
         if (!p) { json(res, 400, { error: 'missing path' }); return }
-        if (content.length > 20 * 1024 * 1024) { json(res, 413, { error: 'content too large' }); return }
+        if (content.length > 256 * 1024 * 1024) { json(res, 413, { error: 'content too large' }); return }   // 256MB：全量归档日志单文件可能超 20MB，不得拒绝写入丢日志
         const abs = pathResolve(p)
         await import('node:fs/promises').then((m) => m.writeFile(abs, content, 'utf8'))
         json(res, 200, { ok: true })
