@@ -1,5 +1,15 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 流水线页脚本参数默认值不再预填/下发（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
+  此前识别到的静态 `:-默认值` 会预填进参数输入框并作为显式值随执行注入，压过运行级自动注入的同名变量
+  （如脚本 `IMAGE_NAME="${IMAGE_NAME:-myapp}"` 的 `myapp`、`TARGET_IP` 的 `127.0.0.1` 盖掉主控镜像名与节点环境 IP）。
+  改为：识别到的默认值（静态/动态 dyn 一律）只在输入框 placeholder 展示，不预填、不随执行下发；
+  留空=运行级注入值/上游同名变量兜底，都未注入时由脚本自身 `:-` 展开；填入=显式覆盖，优先级最高。
+  服务端定时路径 `runStageScript` 同步改为无显式值即不下发（`hasVal ? values[key] : ''`）。
+  存量数据迁移：页面 `loadPipelines` 新增 `migratePrefillDefaults`（复用 `cleanScriptValues`），
+  清掉 values 中与识别默认值相同的旧版预填产物；`detectStageParams`/`detectCleanupParams` 重新识别时同样丢弃。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 项目设置弹窗支持按项目自定义「页面修改」提示词（`src/client/index.tsx` + `src/client/locales.ts`
   + `src/client/styles.ts` + `src/index.ts` 配套）：
   「管理项目」行 ⚙ 弹窗在「绑定对话」框后新增「自定义提示词」框（仅该项目有页面文件、✏️ 可用时显示），

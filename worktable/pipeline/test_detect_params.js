@@ -49,7 +49,7 @@ const detect = context.detectParams;
   if (!ns || ns.def !== "xds-${ARCH_NAME}-${IMAGE_TAG:-local}" || !ns.dyn) throw new Error("多层嵌套默认值应完整捕获，得到 " + JSON.stringify(ns));
   console.log("PASS: 嵌套 ${} 默认值配平捕获并标记 dyn");
 
-  // ② 静态默认值保持原行为（预填/注入）；含 $引用 / $() 命令替换的默认值标 dyn；:? 必填
+  // ② 静态默认值照常识别为 def（供 placeholder 展示，不再预填/注入）且不标 dyn；含 $引用 / $() 命令替换的默认值标 dyn；:? 必填
   const ps2 = detect([
     'IMAGE_NAME="${IMAGE_NAME:-myapp}"',
     'RUN_DIR="${RUN_DIR:-/tmp/r-$(date +%s)}"',
@@ -58,7 +58,7 @@ const detect = context.detectParams;
     'echo "${BASH_SOURCE[0]} $HOME"',   // 内置变量不识别
   ].join("\n"), "sh");
   const img = ps2.find((p) => p.key === "IMAGE_NAME");
-  if (!img || img.def !== "myapp" || img.dyn) throw new Error("静态默认值应预填且不标 dyn，得到 " + JSON.stringify(img));
+  if (!img || img.def !== "myapp" || img.dyn) throw new Error("静态默认值应识别为 def 且不标 dyn，得到 " + JSON.stringify(img));
   if (!ps2.find((p) => p.key === "RUN_DIR").dyn) throw new Error("含 $() 的默认值应标 dyn");
   if (!ps2.find((p) => p.key === "REL").dyn) throw new Error("含 $VAR 的默认值应标 dyn");
   const req = ps2.find((p) => p.key === "REQ");
@@ -79,25 +79,30 @@ const detect = context.detectParams;
   if (!im || im.label !== "镜像名") throw new Error("对齐空格标签应识别为「镜像名」，且不应被 docker 行冒号污染，得到 " + JSON.stringify(im));
   console.log("PASS: 注释标签识别（分隔符收紧，$IMAGE:$TAG 不误判）");
 
-  // ④ execScript：dyn 参数无显式值时不注入 env（交由脚本自身 :- 展开）、位置参数传空串；静态默认仍注入
+  // ④ execScript：识别到的默认值（静态/动态一律）无显式值时不下发——静态默认不再注入 env（不压过运行级注入的
+  //    同名变量，此处 IMAGE_NAME 由 rc.image 兜底），dyn 默认不注入（交由脚本自身 :- 展开）、位置参数留空传空串
   await context.execScript({
     path: "/tmp/t.sh",
     params: [
       { kind: "env", key: "RENDER_DIR", def: "${RUN_DIR}/rendered", dyn: true },
       { kind: "env", key: "IMAGE_NAME", def: "myapp", dyn: false },
-      { kind: "pos", key: "1", def: "${VAR:-glm}", dyn: true },
+      { kind: "pos", key: "1", def: "xds", dyn: false },
     ],
     values: {},
   });
   const req1 = execRequests[0];
   if ("RENDER_DIR" in req1.env) throw new Error("dyn 默认值不应注入 env，得到 " + JSON.stringify(req1.env.RENDER_DIR));
-  if (req1.env.IMAGE_NAME !== "myapp") throw new Error("静态默认值应照旧注入，得到 " + JSON.stringify(req1.env.IMAGE_NAME));
-  if (req1.args[0] !== "") throw new Error("dyn 位置参数留空应传空串（${1:-...} 由脚本展开），得到 " + JSON.stringify(req1.args));
+  if (req1.env.IMAGE_NAME !== "reg/xds") throw new Error("静态默认值不再下发，留空应由运行级注入的 IMAGE_NAME 兜底，得到 " + JSON.stringify(req1.env.IMAGE_NAME));
+  if (req1.args[0] !== "") throw new Error("位置参数留空应传空串（${1:-...} 由脚本展开默认值），得到 " + JSON.stringify(req1.args));
   await context.execScript({
     path: "/tmp/t.sh",
-    params: [{ kind: "env", key: "RENDER_DIR", def: "${RUN_DIR}/rendered", dyn: true }],
-    values: { RENDER_DIR: "/custom/rendered" },
+    params: [
+      { kind: "env", key: "RENDER_DIR", def: "${RUN_DIR}/rendered", dyn: true },
+      { kind: "env", key: "IMAGE_NAME", def: "myapp", dyn: false },
+    ],
+    values: { RENDER_DIR: "/custom/rendered", IMAGE_NAME: "custom/img" },
   });
   if (execRequests[1].env.RENDER_DIR !== "/custom/rendered") throw new Error("dyn 参数显式值应正常注入，得到 " + JSON.stringify(execRequests[1].env.RENDER_DIR));
-  console.log("PASS: execScript 动态默认值不注入、显式值优先、静态默认不变");
+  if (execRequests[1].env.IMAGE_NAME !== "custom/img") throw new Error("静态默认参数的显式值应优先于运行级注入，得到 " + JSON.stringify(execRequests[1].env.IMAGE_NAME));
+  console.log("PASS: execScript 识别默认值不下发、运行级注入兜底、显式值优先");
 })().catch((e) => { console.error(e); process.exit(1); });
