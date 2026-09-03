@@ -98,6 +98,14 @@
   .diag-mname { cursor:pointer; }
   .diag-mname .diag-promql { color:var(--dsw-alias-label-primary,#1f2328); opacity:1; }   /* 指标名用主色（浅近黑/深近白），不用 65% 灰字 */
   .diag-editql { width:100%; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; resize:vertical; }
+  /* 可搜索下拉（指标弹层的 model_name / xds_namespace 标签过滤）：输入即过滤，候选值异步加载 */
+  .diag-combo { position:relative; flex:1; min-width:200px; }
+  .diag-combo input { width:100%; font-size:12px; padding:3px 6px; box-sizing:border-box; }
+  .diag-combo-list { position:absolute; top:calc(100% + 2px); left:0; right:0; z-index:40; max-height:220px; overflow:auto; background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l2,#3a4150); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:4px; display:none; }
+  .diag-combo.open .diag-combo-list { display:block; }
+  .diag-combo-item { padding:5px 8px; font-size:12px; border-radius:6px; cursor:pointer; color:var(--dsw-alias-label-primary,#e6e8eb); word-break:break-all; }
+  .diag-combo-item:hover { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15)); }
+  .diag-combo-empty { padding:5px 8px; font-size:12px; color:var(--dsw-alias-label-tertiary,#6b7280); }
   </style>
 </head>
 <body>
@@ -1725,7 +1733,7 @@ document.getElementById("absApply").addEventListener("click",function(){
   document.getElementById("setHint").textContent="已切换到绝对时间窗口并重新拉取。";
 });
 
-/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、按 model_name / xds_namespace 标签过滤、点击复制 */
+/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、按 model_name / xds_namespace 标签过滤（下拉支持搜索）、点击复制 */
 function openMetricsModal(names){
   function escQL(s){return s.replace(/\\/g,"\\\\").replace(/"/g,'\\"');}
   var body=document.createElement("div");
@@ -1733,17 +1741,53 @@ function openMetricsModal(names){
   note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；支持关键字与标签过滤，点击名称复制。";
   var filter=document.createElement("input");filter.className="dshell-input";filter.placeholder="过滤指标名…";
   filter.style.cssText="width:100%;margin-bottom:8px";
-  /* 标签过滤：下拉值异步取自 /api/v1/label/<label>/values */
+  /* 标签过滤：可搜索下拉（输入即过滤），候选值异步取自 /api/v1/label/<label>/values */
   var labelFilter={model_name:"",xds_namespace:""};
   var lfRow=document.createElement("div");lfRow.style.cssText="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap";
   var mkSel=function(label){
-    var s=document.createElement("select");s.className="dshell-input";s.setAttribute("data-label",label);
-    s.style.cssText="flex:1;min-width:200px;font-size:12px;padding:3px 6px";
-    var o=document.createElement("option");o.value="";o.textContent=label+"：全部";s.appendChild(o);
-    return s;
+    var wrap=document.createElement("div");wrap.className="diag-combo";wrap.setAttribute("data-label",label);
+    var input=document.createElement("input");input.className="dshell-input";input.placeholder=label+"：全部（输入可搜索）";
+    var drop=document.createElement("div");drop.className="diag-combo-list";
+    wrap.appendChild(input);wrap.appendChild(drop);
+    var vals=[];   /* 异步加载到的候选值全集 */
+    var renderDrop=function(){
+      var q=input.value.trim().toLowerCase();
+      var hits=q?vals.filter(function(v){return v.toLowerCase().indexOf(q)>=0;}):vals;
+      var html='<div class="diag-combo-item" data-v="">'+esc(label)+'：全部</div>';
+      html+=hits.slice(0,200).map(function(v){return '<div class="diag-combo-item" data-v="'+esc(v)+'" title="'+esc(v)+'">'+esc(v)+'</div>';}).join("");
+      if(!hits.length)html+='<div class="diag-combo-empty">无匹配项</div>';
+      else if(hits.length>200)html+='<div class="diag-combo-empty">仅显示前 200 个，请继续输入过滤</div>';
+      drop.innerHTML=html;
+    };
+    var open=function(){renderDrop();wrap.classList.add("open");};
+    var close=function(){wrap.classList.remove("open");};
+    var choose=function(v){
+      labelFilter[label]=v;
+      input.value=v;
+      close();
+      applyLabelFilter();
+    };
+    input.addEventListener("focus",open);
+    input.addEventListener("input",open);
+    input.addEventListener("keydown",function(e){
+      if(e.key==="Escape"){input.value=labelFilter[label];close();input.blur();}
+      else if(e.key==="Enter"){var first=drop.querySelector(".diag-combo-item");if(first)choose(first.getAttribute("data-v"));}
+    });
+    /* mousedown 先于 input blur 触发，保证点击选项能生效 */
+    drop.addEventListener("mousedown",function(e){
+      var it=e.target.closest?e.target.closest(".diag-combo-item"):null;if(!it)return;
+      e.preventDefault();choose(it.getAttribute("data-v"));
+    });
+    input.addEventListener("blur",function(){
+      /* 清空视为「全部」；其余未确认的手动输入回退为当前已选值 */
+      if(!input.value.trim())choose("");
+      else input.value=labelFilter[label];
+      close();
+    });
+    return {el:wrap,label:label,setVals:function(vs){vals=vs;}};
   };
   var selModel=mkSel("model_name"),selNs=mkSel("xds_namespace");
-  lfRow.appendChild(selModel);lfRow.appendChild(selNs);
+  lfRow.appendChild(selModel.el);lfRow.appendChild(selNs.el);
   var list=document.createElement("div");list.className="dshell-list";list.style.cssText="max-height:46vh;overflow:auto";
   var count=document.createElement("div");count.className="diag-note";
   var baseNames=names;   /* 标签过滤后的指标全集（关键字过滤再叠加其上） */
@@ -1780,15 +1824,11 @@ function openMetricsModal(names){
       });
   };
   filter.addEventListener("input",render);
-  [selModel,selNs].forEach(function(s){
-    s.addEventListener("change",function(){labelFilter[s.getAttribute("data-label")]=s.value;applyLabelFilter();});
-    proxyGet(PROM_URL+"/api/v1/label/"+s.getAttribute("data-label")+"/values").then(function(text){
+  [selModel,selNs].forEach(function(c){
+    proxyGet(PROM_URL+"/api/v1/label/"+c.label+"/values").then(function(text){
       var j=JSON.parse(text);
       if(!j||j.status!=="success"||!Array.isArray(j.data))return;
-      j.data.forEach(function(v){
-        var o=document.createElement("option");o.value=v;o.textContent=v.length>60?v.slice(0,57)+"…":v;o.title=v;
-        s.appendChild(o);
-      });
+      c.setVals(j.data);
     }).catch(function(){});
   });
   list.addEventListener("click",function(e){
