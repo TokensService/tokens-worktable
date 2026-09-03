@@ -1881,6 +1881,7 @@ function applyStatusClasses(){
     if(st==='success') el.classList.add('ok');
     if(st==='failed')  el.classList.add('fail');
     if(st==='skipped') el.classList.add('skip');
+    if(st==='idle' && s.skip) el.classList.add('skip');   // 配置「不执行」：未运行即以虚线/弱化样式提示（运行后由 skipStage 置 skipped）
     if(s.id===selectedId) el.classList.add('sel');
     const bar = el.querySelector('.pipeline-bar > i');
     const nd = nodes[s.id];
@@ -1902,12 +1903,12 @@ function applyStatusClasses(){
   });
 }
 function metaFor(id){
-  const n=nodes[id];
-  if(!n) return '';
-  if(n.status==='success') return '✓ '+fmtDur(n.dur);
-  if(n.status==='failed')  return '✗ 失败';
-  if(n.status==='skipped') return '⏭ 跳过';
-  if(n.status==='running') return Math.round(n.progress||0)+'%';
+  const n=nodes[id], st=n?n.status:'idle';
+  if(st==='success') return '✓ '+fmtDur(n.dur);
+  if(st==='failed')  return '✗ 失败';
+  if(st==='skipped') return '⏭ 跳过';
+  if(st==='running') return Math.round(n.progress||0)+'%';
+  if(st==='idle'){ const s=activeStages().find(x=>x.id===id); if(s&&s.skip) return '⊘ 不执行'; }   // 未运行且配置「不执行」：编排区节点元信息显示
   return '';
 }
 
