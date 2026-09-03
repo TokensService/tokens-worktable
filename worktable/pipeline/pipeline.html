@@ -514,7 +514,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ URL请求（填完整 URL，GET 触发）；留空脚本=本地模拟该步；超时对脚本与 URL 请求阶段生效，默认 2（URL 请求默认 5）分钟）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（URL 请求阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / URL 请求阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；URL 请求阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ URL请求（填完整 URL，GET 触发）；留空脚本=本地模拟该步；超时对脚本与 URL 请求阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止））。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（URL 请求阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / URL 请求阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；URL 请求阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1680,7 +1680,7 @@ function renderStageEditor(){
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
       +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="模拟阶段的等待时长（分钟），内部按秒存储">耗时(分钟)<input class="dshell-input" data-f="dur" type="number" min="0.1" step="0.1" value="'+secToMinInput(s.dur||5)+'" style="width:84px;" /></label>'
-      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="脚本阶段执行超时（分钟），留空=默认 2">超时(分钟)<input class="dshell-input" data-f="timeout" type="number" min="0.1" step="0.1" value="'+(s.timeout?secToMinInput(s.timeout):'')+'" placeholder="2" style="width:84px;" /></label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="阶段执行超时（分钟），脚本与 URL 请求阶段均生效；留空=无超时">超时(分钟)<input class="dshell-input" data-f="timeout" type="number" min="0.1" step="0.1" value="'+(s.timeout?secToMinInput(s.timeout):'')+'" placeholder="不限" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后运行到本阶段直接跳过"><input type="checkbox" data-f="skip" '+(s.skip?'checked':'')+'/> 不执行</label>'
       +'<span style="flex:1"></span>'
       +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
@@ -2544,11 +2544,11 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal){
   /* 流式回显（默认）：调用方传入 onStream 时走 /api/worktable/exec-stream，执行中逐块实时回调；
      接口不可用（旧插件构建返回非 200）时返回 null，降级走下方一次性 /api/worktable/exec */
   if(typeof onStream==='function'){
-    const st=await execStreaming(sc.path, args, env, scriptsDir, timeoutMs||120000, onStream, signal);
+    const st=await execStreaming(sc.path, args, env, scriptsDir, timeoutMs||0, onStream, signal);   // timeoutMs 0/缺省=无超时（服务端同语义）
     if(st) return st;
   }
   try{
-    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||120000})});
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||0})});   // 0=无超时
     const j=await r.json();
     if(j && j.error) return {code:1, stdout:'', stderr:String(j.error)};
     return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||''};
@@ -2692,11 +2692,11 @@ async function runUrlStep(i){
     if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars)); }
     else{ await jkTriggerBuild(jobPath, vars); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
     log.push('# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); renderDetail();
-    const deadline=t0+((s.timeout||300)*1000);
+    const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时，轮询直到出结果
     let result=null, buildNum=null, building=true;
     let consoleRead=0, consoleStarted=false, lastLive=0;   // 控制台增量回显：按已读长度差分，只追加新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
-    while(pollable && Date.now()<deadline && (building||buildNum==null)){
+    while(pollable && (!deadline || Date.now()<deadline) && (building||buildNum==null)){
       await new Promise(function(r){ setTimeout(r,2000); });
       if(!running||!curRun||curRun.token!==tk){ if(timer){clearInterval(timer);timer=null;} return; }
       try{
@@ -2780,7 +2780,7 @@ async function runScriptStep(i){
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); if(curRun) curRun.scriptAbort=ctrl;
   let accStdout='', accStderr='', lastLive=0;
-  const res=await execScript(sc, ((s.timeout||120)*1000), null, null, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒，默认 120）
+  const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, null, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
     if(!running || !curRun || curRun.token!==tk) return;   // 迟回片段丢弃（已切换新运行）
     if(m.type==='out'){ accStdout+=m.text; } else if(m.type==='err'){ accStderr+=m.text; }
     s._out={stdout:accStdout, stderr:accStderr, code:null};   // 实时快照；归档与历史以最终结果为准
@@ -2875,7 +2875,7 @@ function finish(result){
 async function runCleanupBefore(){
   const t0=Date.now();
   const tk = curRun ? curRun.token : null;   // 运行令牌：清理脚本迟回时若已换了新运行，结果不得写入新运行
-  const res=await execScript(cleanupScript);
+  const res=await execScript(cleanupScript, 120000);   // 清理脚本无编辑器超时字段：保留原 120s 隐式上限，防止挂死阻塞流水线启动（阶段「超时(分钟)」留空无超时的新语义不影响这里）
   const status=res.code===0?'success':'failed';
   let text='$ bash '+cleanupScript.name+'\n'+(res.stdout||'');
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
@@ -3581,7 +3581,7 @@ $('plStageList').addEventListener('change', (e)=>{
   }
   if(f==='name') s.name=e.target.value;
   else if(f==='dur'){ const mv=parseFloat(e.target.value); s.dur=Math.max(1,Math.round(mv*60)||5); }   /* 输入为分钟，×60 存秒 */
-  else if(f==='timeout'){ const sec=Math.round(parseFloat(e.target.value)*60); s.timeout=(sec>=1)?sec:null; }   /* 留空=null（默认 2 分钟） */
+  else if(f==='timeout'){ const sec=Math.round(parseFloat(e.target.value)*60); s.timeout=(sec>=1)?sec:null; }   /* 留空=null（无超时） */
   else if(f==='skip') s.skip=e.target.checked;
   else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
