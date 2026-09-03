@@ -1212,13 +1212,47 @@ function labelSelector(){   /* 当前过滤条件的 PromQL 标签选择器片�
   if(LABEL_FILTER.xds_namespace)sel.push('xds_namespace="'+escQL(LABEL_FILTER.xds_namespace)+'"');
   return sel.join(",");
 }
-function withLabels(q){   /* 把全局标签过滤注入 PromQL：已有 {} 选择器全部注入；裸指标名补选择器；已含同名标签的不重复注入 */
+function withLabels(q){   /* 把全局标签过滤注入 PromQL：已有 {} 选择器全部注入；裸指标名补选择器（含 rate(vllm:xxx[5m]) 这类函数内不带 {} 的指标）；已含同名标签的不重复注入 */
   var sel=labelSelector();if(!sel)return q;
   var add=sel.split(",").filter(function(m){return q.indexOf(m.split("=")[0]+"=")<0;}).join(",");
   if(!add)return q;
-  if(q.indexOf("{")>=0)return q.replace(/\{/g,"{"+add+",");
-  if(/^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(q))return q+"{"+add+"}";
-  return q;
+  /* 聚合算子与 PromQL 关键字/修饰词：不是指标名，不注入 */
+  var AGG={sum:1,avg:1,min:1,max:1,count:1,stddev:1,stdvar:1,topk:1,bottomk:1,quantile:1,group:1,count_values:1,limitk:1,limit_ratio:1};
+  var KW={by:1,without:1,on:1,ignoring:1,group_left:1,group_right:1,offset:1,bool:1,and:1,or:1,unless:1};
+  var out="",i=0,n=q.length;
+  while(i<n){
+    var ch=q[i],j,d;
+    if(ch==='"'){   /* 字符串字面量原样保留 */
+      j=i+1;while(j<n&&(q[j]!=='"'||q[j-1]==="\\"))j++;
+      out+=q.slice(i,j+1);i=j+1;continue;
+    }
+    if(ch==="{"){   /* 已有 {} 选择器：注入过滤标签后整段原样跳过（含其中的字符串） */
+      d=1;j=i+1;
+      while(j<n&&d){
+        if(q[j]==='"'){j++;while(j<n&&(q[j]!=='"'||q[j-1]==="\\"))j++;}
+        else if(q[j]==="{")d++;
+        else if(q[j]==="}")d--;
+        j++;
+      }
+      out+="{"+add+","+q.slice(i+1,j);i=j;continue;
+    }
+    if(/[a-zA-Z_:]/.test(ch)&&(i===0||!/[a-zA-Z0-9_:]/.test(q[i-1]))){   /* 标识符起点（排除 5m/1h 这类时长后缀） */
+      j=i+1;while(j<n&&/[a-zA-Z0-9_:]/.test(q[j]))j++;
+      var word=q.slice(i,j);
+      out+=word;i=j;
+      if(q[j]==="("||AGG[word]||KW[word]){   /* 函数名/聚合算子/关键字不注入；by/without 等后跟的标签列表整体跳过 */
+        if(word==="by"||word==="without"||word==="on"||word==="ignoring"||word==="group_left"||word==="group_right"){
+          while(i<n&&/\s/.test(q[i])){out+=q[i];i++;}
+          if(q[i]==="("){d=0;do{if(q[i]==="(")d++;else if(q[i]===")")d--;out+=q[i];i++;}while(i<n&&d);}
+        }
+        continue;
+      }
+      if(q[j]==="{")continue;   /* 后随 {} 选择器：交给 {} 分支注入，避免重复补选择器 */
+      out+="{"+add+"}";continue;   /* 裸指标名：补选择器 */
+    }
+    out+=ch;i++;
+  }
+  return out;
 }
 function labelMatch(labels){   /* /metrics 兜底路径：样本标签是否满足全局过滤 */
   return (!LABEL_FILTER.model_name||labels.model_name===LABEL_FILTER.model_name)
