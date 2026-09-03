@@ -104,6 +104,8 @@ type ProjectsState = {
   folders: Record<string, string>
   /** 项目 → 会话分组（宿主工作区 id）：从该项目新建会话（如「页面修改」）时落进这个分组；空/缺 = 未分组。 */
   workspaces: Record<string, string>
+  /** 项目 → 自定义「页面修改」提示词模板：该项目点 ✏️ 时优先用这份（{page}/{name} 占位符同全局模板）；空/缺 = 用设置面板的全局模板。 */
+  prompts: Record<string, string>
 }
 
 const PERSIST_KEY = 'dsh.worktable.view.v1'
@@ -288,6 +290,7 @@ const DEFAULT_PROJECTS: ProjectsState = {
   bindings: {},
   folders: {},
   workspaces: {},
+  prompts: {},
 }
 
 function loadView(): ViewState {
@@ -337,6 +340,7 @@ function loadProjects(): ProjectsState {
       bindings: p.bindings && typeof p.bindings === 'object' ? p.bindings : {},
       folders: p.folders && typeof p.folders === 'object' ? p.folders : {},
       workspaces: p.workspaces && typeof p.workspaces === 'object' ? p.workspaces : {},
+      prompts: p.prompts && typeof p.prompts === 'object' ? p.prompts : {},
     }
   } catch {
     return { ...DEFAULT_PROJECTS }
@@ -960,9 +964,11 @@ function layoutPagePath(layout: any): string | null {
 }
 /** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开）；
  *  项目设置里选了会话分组时（由组件调用侧读 projects.workspaces 传入），新会话落进该分组；
- *  项目未设分组时由 newChatInProject 回落到设置面板的默认会话分组。 */
-async function startPageEdit(pagePath: string, projectName: string, workspaceId: string | null = null): Promise<void> {
-  const prompt = loadPageEditPrompt().split('{page}').join(pagePath).split('{name}').join(projectName)
+ *  项目未设分组时由 newChatInProject 回落到设置面板的默认会话分组。
+ *  template 为项目自定义提示词（项目设置弹窗里设置，projects.prompts[id]）：非空时优先于全局模板。 */
+async function startPageEdit(pagePath: string, projectName: string, workspaceId: string | null = null, template?: string): Promise<void> {
+  const tpl = (typeof template === 'string' && template.trim()) ? template : loadPageEditPrompt()
+  const prompt = tpl.split('{page}').join(pagePath).split('{name}').join(projectName)
   await newChatInProject(prompt, workspaceId)
 }
 
@@ -1270,6 +1276,10 @@ function WorktableSection(props: any) {
         if (d.workspaces && typeof d.workspaces === 'object') {
           for (const [k, v] of Object.entries(d.workspaces)) if (typeof v === 'string') remoteWorkspaces[k] = v
         }
+        const remotePrompts: Record<string, string> = {}
+        if (d.prompts && typeof d.prompts === 'object') {
+          for (const [k, v] of Object.entries(d.prompts)) if (typeof v === 'string') remotePrompts[k] = v
+        }
         setProjects((prev) => {
           const remoteIds = new Set(remote.map((l) => l.id))
           return {
@@ -1277,6 +1287,7 @@ function WorktableSection(props: any) {
             layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
             folders: { ...prev.folders, ...remoteFolders },
             workspaces: { ...prev.workspaces, ...remoteWorkspaces },
+            prompts: { ...prev.prompts, ...remotePrompts },
           }
         })
       } catch { /* 服务端不可用 = 仅本地模式 */ }
@@ -1607,24 +1618,26 @@ function WorktableSection(props: any) {
     })
   }
 
-  /** 同步条目切片（sync 标记的布局 + 其文件夹映射）：以服务端文件为准，localStorage 不落。 */
+  /** 同步条目切片（sync 标记的布局 + 其文件夹/分组/提示词映射）：以服务端文件为准，localStorage 不落。 */
   const syncedSliceOf = (s: ProjectsState) => {
     const layouts = s.layouts.filter((l) => l.sync)
     const ids = new Set(layouts.map((l) => l.id))
     const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)))
     const workspaces = Object.fromEntries(Object.entries(s.workspaces).filter(([id]) => ids.has(id)))
-    return { layouts, folders, workspaces }
+    const prompts = Object.fromEntries(Object.entries(s.prompts).filter(([id]) => ids.has(id)))
+    return { layouts, folders, workspaces, prompts }
   }
   const persistProjects = (patch: Partial<ProjectsState> | ((prev: ProjectsState) => ProjectsState)) => {
     setProjects((prev) => {
       const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
-      // localStorage 只落本地条目：sync 布局与其文件夹映射由服务端托管
+      // localStorage 只落本地条目：sync 布局与其文件夹/分组/提示词映射由服务端托管
       const syncedIds = new Set(next.layouts.filter((l) => l.sync).map((l) => l.id))
       const local = {
         ...next,
         layouts: next.layouts.filter((l) => !l.sync),
         folders: Object.fromEntries(Object.entries(next.folders).filter(([id]) => !syncedIds.has(id))),
         workspaces: Object.fromEntries(Object.entries(next.workspaces).filter(([id]) => !syncedIds.has(id))),
+        prompts: Object.fromEntries(Object.entries(next.prompts).filter(([id]) => !syncedIds.has(id))),
       }
       try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(local)) } catch {}
       // 同步切片有变化才推服务端（全量覆盖，last-write-wins；排序/隐藏等本地偏好不触发推送）
@@ -2061,6 +2074,16 @@ function buildCustomLayoutPrompt(req: string): string {
       return { ...prev, workspaces: next }
     })
     setBindWsOpen(false)
+  }
+
+  /** 设置 / 清除项目的自定义「页面修改」提示词（空串 = 清除覆盖，回到全局模板；弹窗保持打开） */
+  const setProjectPrompt = (id: string, text: string | null) => {
+    persistProjects((prev) => {
+      const next = { ...prev.prompts }
+      if (text && text.trim()) next[id] = text
+      else delete next[id]
+      return { ...prev, prompts: next }
+    })
   }
 
   /** 绑定 / 解绑会话（弹窗保持打开，绑定结果即时显示在「绑定对话」框里） */
@@ -2528,6 +2551,7 @@ function buildCustomLayoutPrompt(req: string): string {
       }
       if (next.bindings[id]) { next.bindings = { ...next.bindings }; delete next.bindings[id] }
       if (next.folders[id]) { next.folders = { ...next.folders }; delete next.folders[id] }
+      if (next.prompts[id]) { next.prompts = { ...next.prompts }; delete next.prompts[id] }
       if (next.views[id]) { next.views = { ...next.views }; delete next.views[id] }
       return next
     })
@@ -3093,7 +3117,7 @@ function buildCustomLayoutPrompt(req: string): string {
                     type="button"
                     className="dsh-wt_manageBtn"
                     title={t('pageEdit.hint')}
-                    onClick={() => { setViewOptionsOpen(false); void startPageEdit(pagePath, display, projects.workspaces[id] ?? null) }}
+                    onClick={() => { setViewOptionsOpen(false); void startPageEdit(pagePath, display, projects.workspaces[id] ?? null, projects.prompts[id]) }}
                   >✏️</button>
                 )}
                 {layout && (
@@ -3273,6 +3297,30 @@ function buildCustomLayoutPrompt(req: string): string {
             })()}
             <p className="dsh-wt_bindHint">{t('bind.hint')}</p>
           </div>
+          {/* 自定义提示词框（与项目文件夹同格式；仅本项目有页面文件、✏️ 可用时显示）：
+              第一行 📝+标题（最右清除）；第二行 textarea 编辑（留空 = 用全局模板）；框内下方：说明 */}
+          {(() => {
+            const bindLayout = projects.layouts.find((l) => l.id === bindPick.id)
+            if (!bindLayout || !layoutPagePath(bindLayout)) return null
+            return (
+              <div className="dsh-wt_bindFolderBox">
+                <div className="dsh-wt_bindFolderRow">
+                  <span className="dsh-wt_bindFolderLabel">📝 {t('bind.prompt')}</span>
+                  {projects.prompts[bindPick.id] && (
+                    <button type="button" className="dsh-wt_bindUnbind" onClick={() => setProjectPrompt(bindPick.id, null)}>{t('bind.promptClear')} ✕</button>
+                  )}
+                </div>
+                <textarea
+                  className="dsh-wt_pageEditPrompt dsh-wt_bindPrompt"
+                  rows={4}
+                  value={projects.prompts[bindPick.id] ?? ''}
+                  placeholder={t('bind.promptPh')}
+                  onChange={(e: any) => setProjectPrompt(bindPick.id, e.target.value)}
+                />
+                <p className="dsh-wt_bindHint">{t('bind.promptHint')}</p>
+              </div>
+            )
+          })()}
         </div>
       )}
       {/* 对话列表弹层：点「绑定对话」行弹出（优先右侧，放不下翻到左侧）；选中即绑定并收起 */}

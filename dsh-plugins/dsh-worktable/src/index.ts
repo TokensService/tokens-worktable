@@ -375,6 +375,7 @@ export function apply(ctx: Context) {
             layouts: Array.isArray(p.layouts) ? p.layouts : [],
             folders: p.folders && typeof p.folders === 'object' ? p.folders : {},
             workspaces: p.workspaces && typeof p.workspaces === 'object' ? p.workspaces : {},
+            prompts: p.prompts && typeof p.prompts === 'object' ? p.prompts : {},
           })
           return
         }
@@ -391,7 +392,11 @@ export function apply(ctx: Context) {
           if (body.workspaces && typeof body.workspaces === 'object') {
             for (const [k, v] of Object.entries(body.workspaces)) if (typeof v === 'string') workspaces[k] = v
           }
-          const text = JSON.stringify({ layouts, folders, workspaces })
+          const prompts: Record<string, string> = {}
+          if (body.prompts && typeof body.prompts === 'object') {
+            for (const [k, v] of Object.entries(body.prompts)) if (typeof v === 'string') prompts[k] = v
+          }
+          const text = JSON.stringify({ layouts, folders, workspaces, prompts })
           if (text.length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
           const fsx = await import('node:fs/promises')
           await fsx.mkdir(dirname(PROJECTS_STORE), { recursive: true })

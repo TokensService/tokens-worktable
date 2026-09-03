@@ -1,5 +1,16 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 项目设置弹窗支持按项目自定义「页面修改」提示词（`src/client/index.tsx` + `src/client/locales.ts`
+  + `src/client/styles.ts` + `src/index.ts` 配套）：
+  「管理项目」行 ⚙ 弹窗在「绑定对话」框后新增「自定义提示词」框（仅该项目有页面文件、✏️ 可用时显示），
+  textarea 即输即存（复用 `dsh-wt_pageEditPrompt` 主题变量样式，浅色/深色自适应；弹窗内紧凑变体
+  `dsh-wt_bindPrompt`），留空/「清除」即回到设置面板的全局模板；`{page}`/`{name}` 占位符与全局模板同规则。
+  存取走 `ProjectsState.prompts`（项目 id → 模板，localStorage 持久化；`startPageEdit` 第四参传入，
+  非空覆盖全局模板；删除项目时随 folders 一并清理）。已发布（sync）布局的提示词映射随
+  folders/workspaces 同切片走服务端 `/api/worktable/projects` 同步（GET/PUT 均加白名单 `prompts` 字段），
+  localStorage 不落 sync 条目。
+  `lib/index.js` / `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 定时后缀阶段间变量传递修复（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
   阶段 stdout 的 KEY=VALUE / 单行 JSON / 「输出变量」映射此前只在页面运行期累计进 `curRun.vars`，
   而带「定时」标记的后缀阶段交给服务端 `execPlan` 执行，页面 `registerStageTimers` 登记计划时又不带
