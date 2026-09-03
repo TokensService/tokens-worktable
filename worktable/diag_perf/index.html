@@ -175,6 +175,8 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px" title="开：代联请求经系统代理转发（需服务端 NODE_USE_ENV_PROXY=1 生效）；关（默认）：服务端直连目标">走系统代理
           <input id="setUseProxy" type="checkbox" /></label>
       </div>
+      <div class="diag-formrow" style="margin-top:8px" id="labelFilterRow"></div>
+      <div class="diag-note" id="labelFilterNote">按 model_name / xds_namespace 过滤全部 Prometheus 查询（各画板、指标弹层与兜底抓取；留空 = 不过滤），候选值来自数据源，改动即自动保存并重新拉取。</div>
       <div class="diag-formrow" style="margin-top:8px">
         <button class="dshell-btn dshell-btnGhost" id="btnMetrics" type="button">获取数据源全部指标</button>
         <span class="dshell-muted" id="metricsBtnHint" style="font-size:12px"></span>
@@ -1168,6 +1170,29 @@ var METRICS_URL=PROM_URL+"/metrics";   /* Prometheus 不可达时退化为瞬时
 var PREV={};   /* 计数器上次取值，用于计算 rate（/metrics 兜底路径） */
 var LIVE=false;
 
+/* 标签过滤（model_name / xds_namespace）：设置区全局配置，注入全部 Prometheus 查询与兜底抓取，localStorage 持久化 */
+var LABEL_FILTER={model_name:"",xds_namespace:""};
+try{var __lf=JSON.parse(lsGet("diagPerf.labelFilter","")||"null");if(__lf){LABEL_FILTER.model_name=__lf.model_name||"";LABEL_FILTER.xds_namespace=__lf.xds_namespace||"";}}catch(e){}
+function escQL(s){return s.replace(/\\/g,"\\\\").replace(/"/g,'\\"');}
+function labelSelector(){   /* 当前过滤条件的 PromQL 标签选择器片段（空串 = 不过滤） */
+  var sel=[];
+  if(LABEL_FILTER.model_name)sel.push('model_name="'+escQL(LABEL_FILTER.model_name)+'"');
+  if(LABEL_FILTER.xds_namespace)sel.push('xds_namespace="'+escQL(LABEL_FILTER.xds_namespace)+'"');
+  return sel.join(",");
+}
+function withLabels(q){   /* 把全局标签过滤注入 PromQL：已有 {} 选择器全部注入；裸指标名补选择器；已含同名标签的不重复注入 */
+  var sel=labelSelector();if(!sel)return q;
+  var add=sel.split(",").filter(function(m){return q.indexOf(m.split("=")[0]+"=")<0;}).join(",");
+  if(!add)return q;
+  if(q.indexOf("{")>=0)return q.replace(/\{/g,"{"+add+",");
+  if(/^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(q))return q+"{"+add+"}";
+  return q;
+}
+function labelMatch(labels){   /* /metrics 兜底路径：样本标签是否满足全局过滤 */
+  return (!LABEL_FILTER.model_name||labels.model_name===LABEL_FILTER.model_name)
+      && (!LABEL_FILTER.xds_namespace||labels.xds_namespace===LABEL_FILTER.xds_namespace);
+}
+
 /* 当前「窗口」选择对应的时间网格（N 点）：绝对窗口固定起止，相对窗口右端取整到步长。
    兜底模式同样按此网格打时间轴，保证窗口选择与各画板时间联动 */
 function winEndStep(){
@@ -1345,9 +1370,9 @@ PROM_DEFS.forEach(function(def){
   }catch(e){}
 });
 
-/* query_range：返回含非空序列的完整 result（[{metric,values},...]），无数据返回 null */
+/* query_range：返回含非空序列的完整 result（[{metric,values},...]），无数据返回 null；查询统一注入全局标签过滤 */
 function promRange(q,end){
-  var url=PROM_URL+"/api/v1/query_range?query="+encodeURIComponent(q)
+  var url=PROM_URL+"/api/v1/query_range?query="+encodeURIComponent(withLabels(q))
     +"&start="+(end-(N-1)*STEP_S)+"&end="+end+"&step="+STEP_S;
   return proxyGet(url).then(function(text){
     var j=JSON.parse(text);
@@ -1437,7 +1462,7 @@ function pollProm(cb){
       /* 记录呈现状态：命中查询、窗口统计、原始序列（按实例/标签细分，取末值） */
       var scaled=next[def.k],sum=0;
       scaled.forEach(function(v){sum+=v;});
-      PROM_STATE[def.k]={q:r.q,latest:scaled[scaled.length-1],
+      PROM_STATE[def.k]={q:withLabels(r.q),latest:scaled[scaled.length-1],
         min:Math.min.apply(null,scaled),max:Math.max.apply(null,scaled),avg:+(sum/scaled.length).toFixed(2),
         series:r.res.map(function(s){
           var lv=(s.values&&s.values.length)?xform(parseFloat(s.values[s.values.length-1][1])):null;
@@ -1483,6 +1508,7 @@ function renderPromPanel(){
   var meta=[
     ["数据源地址",PROM_URL],
     ["接入模式",modeText],
+    ["标签过滤",labelSelector()?("{"+labelSelector()+"}"):"无（全部序列）"],
     ["代联代理",USE_PROXY?"经系统代理转发":"服务端直连（不走代理）"],
     ["查询窗口",(PROM_ABS?("绝对 "+fmtTs(PROM_ABS.from)+" ~ "+fmtTs(PROM_ABS.to)):("近 "+PROM_RANGE_H+"h"))+" · "+N+" 点 · 步长 "+STEP_S+"s"],
     ["轮询间隔",(POLL_MS/1000)+"s"],
@@ -1562,6 +1588,13 @@ function poll(done){
     fetchMetrics(function(text){
       if(text){
         var map=parseProm(text);
+        /* 全局标签过滤同样作用于兜底抓取：丢弃不满足 model_name/xds_namespace 的样本 */
+        if(LABEL_FILTER.model_name||LABEL_FILTER.xds_namespace){
+          Object.keys(map).forEach(function(name){
+            map[name]=map[name].filter(function(s){return labelMatch(s.labels);});
+            if(!map[name].length)delete map[name];
+          });
+        }
         if(applyMetrics(map)){LIVE=true;pushLabel();renderAll();PROM_PANEL_MODE="metrics";setSrcBadge("ok","实时数据 · /metrics 瞬时抓取 · "+POLL_MS/1000+"s 刷新");}
         else{PROM_PANEL_MODE="empty";setSrcBadge("warn","已连通 · 指标名未匹配映射表（画板暂无数据）");}
       }else{
@@ -1649,6 +1682,63 @@ function loadProf(){
 }
 
 /* ================= 设置（localStorage 持久化，改动即自动保存生效） ================= */
+/* 可搜索下拉（设置区 model_name / xds_namespace 标签过滤）：输入即过滤，候选值异步取自 /api/v1/label/<label>/values */
+function makeCombo(label,onChoose){
+  var wrap=document.createElement("div");wrap.className="diag-combo";wrap.setAttribute("data-label",label);
+  var input=document.createElement("input");input.className="dshell-input";input.placeholder=label+"：全部（输入可搜索）";
+  var drop=document.createElement("div");drop.className="diag-combo-list";
+  wrap.appendChild(input);wrap.appendChild(drop);
+  var vals=[];   /* 异步加载到的候选值全集 */
+  var renderDrop=function(){
+    var q=input.value.trim().toLowerCase();
+    var hits=q?vals.filter(function(v){return v.toLowerCase().indexOf(q)>=0;}):vals;
+    var html='<div class="diag-combo-item" data-v="">'+esc(label)+'：全部</div>';
+    html+=hits.slice(0,200).map(function(v){return '<div class="diag-combo-item" data-v="'+esc(v)+'" title="'+esc(v)+'">'+esc(v)+'</div>';}).join("");
+    if(!hits.length)html+='<div class="diag-combo-empty">无匹配项</div>';
+    else if(hits.length>200)html+='<div class="diag-combo-empty">仅显示前 200 个，请继续输入过滤</div>';
+    drop.innerHTML=html;
+  };
+  var open=function(){renderDrop();wrap.classList.add("open");};
+  var close=function(){wrap.classList.remove("open");};
+  var choose=function(v){input.value=v;close();onChoose(v);};
+  input.addEventListener("focus",open);
+  input.addEventListener("input",open);
+  input.addEventListener("keydown",function(e){
+    if(e.key==="Escape"){input.value=LABEL_FILTER[label];close();input.blur();}
+    else if(e.key==="Enter"){var first=drop.querySelector(".diag-combo-item");if(first)choose(first.getAttribute("data-v"));}
+  });
+  /* mousedown 先于 input blur 触发，保证点击选项能生效 */
+  drop.addEventListener("mousedown",function(e){
+    var it=e.target.closest?e.target.closest(".diag-combo-item"):null;if(!it)return;
+    e.preventDefault();choose(it.getAttribute("data-v"));
+  });
+  input.addEventListener("blur",function(){
+    /* 清空视为「全部」；其余未确认的手动输入回退为当前已选值 */
+    if(!input.value.trim())choose("");
+    else input.value=LABEL_FILTER[label];
+    close();
+  });
+  return {el:wrap,label:label,setVals:function(vs){vals=vs;},setValue:function(v){input.value=v;}};
+}
+/* 设置区标签过滤：两个可搜索下拉，选择即保存并按新过滤重新拉取（全局生效） */
+var LABEL_COMBOS=["model_name","xds_namespace"].map(function(label){
+  var c=makeCombo(label,function(v){
+    LABEL_FILTER[label]=v;
+    lsSet("diagPerf.labelFilter",(LABEL_FILTER.model_name||LABEL_FILTER.xds_namespace)?JSON.stringify(LABEL_FILTER):"");
+    applySettings(true);
+  });
+  document.getElementById("labelFilterRow").appendChild(c.el);
+  return c;
+});
+function loadLabelValues(){   /* 标签候选值异步取自数据源；数据源地址变更后随 applySettings 重载 */
+  LABEL_COMBOS.forEach(function(c){
+    proxyGet(PROM_URL+"/api/v1/label/"+c.label+"/values").then(function(text){
+      var j=JSON.parse(text);
+      if(!j||j.status!=="success"||!Array.isArray(j.data))return;
+      c.setVals(j.data);
+    }).catch(function(){});
+  });
+}
 function fillSettings(){
   document.getElementById("setPromUrl").value=PROM_URL;
   document.getElementById("setRangeH").value=PROM_RANGE_H;
@@ -1656,6 +1746,7 @@ function fillSettings(){
   document.getElementById("setLogDir").value=LOG_DIR;
   document.getElementById("setProfDir").value=PROF_DIR;
   document.getElementById("setUseProxy").checked=USE_PROXY;
+  LABEL_COMBOS.forEach(function(c){c.setValue(LABEL_FILTER[c.label]);});
   syncRangeSel();
 }
 /* 头部「窗口」快选与设置区「查询窗口（小时）」双向同步；绝对时间窗口走 PROM_ABS */
@@ -1693,61 +1784,15 @@ document.getElementById("absApply").addEventListener("click",function(){
   document.getElementById("setHint").textContent="已切换到绝对时间窗口并重新拉取。";
 });
 
-/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、按 model_name / xds_namespace 标签过滤（下拉支持搜索）、点击复制、勾选后添加到画布 */
+/* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、点击复制、勾选后添加到画布；
+   model_name / xds_namespace 标签过滤由「开始诊断」设置区全局配置，弹层列表同步按之过滤 */
 function openMetricsModal(names){
-  function escQL(s){return s.replace(/\\/g,"\\\\").replace(/"/g,'\\"');}
   var body=document.createElement("div");
   var note=document.createElement("div");note.className="diag-note";note.style.marginBottom="8px";
-  note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；支持关键字与标签过滤，点击名称复制；勾选后可在底部添加到画布（自定义画板，随轮询实时拉取真实数据）。";
+  note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；支持关键字过滤，点击名称复制；勾选后可在底部添加到画布（自定义画板，随轮询实时拉取真实数据）。"
+    +(labelSelector()?"当前全局标签过滤 {"+labelSelector()+"}（在「开始诊断」设置区修改，各画板查询同样生效）。":"");
   var filter=document.createElement("input");filter.className="dshell-input";filter.placeholder="过滤指标名…";
   filter.style.cssText="width:100%;margin-bottom:8px";
-  /* 标签过滤：可搜索下拉（输入即过滤），候选值异步取自 /api/v1/label/<label>/values */
-  var labelFilter={model_name:"",xds_namespace:""};
-  var lfRow=document.createElement("div");lfRow.style.cssText="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap";
-  var mkSel=function(label){
-    var wrap=document.createElement("div");wrap.className="diag-combo";wrap.setAttribute("data-label",label);
-    var input=document.createElement("input");input.className="dshell-input";input.placeholder=label+"：全部（输入可搜索）";
-    var drop=document.createElement("div");drop.className="diag-combo-list";
-    wrap.appendChild(input);wrap.appendChild(drop);
-    var vals=[];   /* 异步加载到的候选值全集 */
-    var renderDrop=function(){
-      var q=input.value.trim().toLowerCase();
-      var hits=q?vals.filter(function(v){return v.toLowerCase().indexOf(q)>=0;}):vals;
-      var html='<div class="diag-combo-item" data-v="">'+esc(label)+'：全部</div>';
-      html+=hits.slice(0,200).map(function(v){return '<div class="diag-combo-item" data-v="'+esc(v)+'" title="'+esc(v)+'">'+esc(v)+'</div>';}).join("");
-      if(!hits.length)html+='<div class="diag-combo-empty">无匹配项</div>';
-      else if(hits.length>200)html+='<div class="diag-combo-empty">仅显示前 200 个，请继续输入过滤</div>';
-      drop.innerHTML=html;
-    };
-    var open=function(){renderDrop();wrap.classList.add("open");};
-    var close=function(){wrap.classList.remove("open");};
-    var choose=function(v){
-      labelFilter[label]=v;
-      input.value=v;
-      close();
-      applyLabelFilter();
-    };
-    input.addEventListener("focus",open);
-    input.addEventListener("input",open);
-    input.addEventListener("keydown",function(e){
-      if(e.key==="Escape"){input.value=labelFilter[label];close();input.blur();}
-      else if(e.key==="Enter"){var first=drop.querySelector(".diag-combo-item");if(first)choose(first.getAttribute("data-v"));}
-    });
-    /* mousedown 先于 input blur 触发，保证点击选项能生效 */
-    drop.addEventListener("mousedown",function(e){
-      var it=e.target.closest?e.target.closest(".diag-combo-item"):null;if(!it)return;
-      e.preventDefault();choose(it.getAttribute("data-v"));
-    });
-    input.addEventListener("blur",function(){
-      /* 清空视为「全部」；其余未确认的手动输入回退为当前已选值 */
-      if(!input.value.trim())choose("");
-      else input.value=labelFilter[label];
-      close();
-    });
-    return {el:wrap,label:label,setVals:function(vs){vals=vs;}};
-  };
-  var selModel=mkSel("model_name"),selNs=mkSel("xds_namespace");
-  lfRow.appendChild(selModel.el);lfRow.appendChild(selNs.el);
   var list=document.createElement("div");list.className="dshell-list";list.style.cssText="max-height:46vh;overflow:auto";
   var count=document.createElement("div");count.className="diag-note";
   var selected={};   /* 勾选的指标名（过滤重绘后仍保留） */
@@ -1759,20 +1804,16 @@ function openMetricsModal(names){
       return '<div class="dshell-listItem"><input type="checkbox" class="diag-mchk" data-n="'+esc(n)+'"'+(selected[n]?" checked":"")
         +' /><span class="dshell-listItemMeta diag-promql diag-mname" data-n="'+esc(n)+'" title="点击复制指标名">'+esc(n)+'</span></div>';
     }).join("")||'<div class="diag-note">无匹配指标</div>';
-    var tag=(labelFilter.model_name||labelFilter.xds_namespace)?"（已按标签过滤，共 "+baseNames.length+" 个）":"";
+    var tag=(LABEL_FILTER.model_name||LABEL_FILTER.xds_namespace)?"（已按设置区标签过滤，共 "+baseNames.length+" 个）":"";
     count.textContent="显示 "+Math.min(hits.length,300)+" / "+hits.length+" 个"+tag+(hits.length>300?"，其余请继续输入过滤":"");
   };
-  var lfSeq=0;   /* 标签过滤请求序号：连续改动时旧响应作废，防止竞态覆盖新状态 */
+  /* 按设置区的全局标签过滤（/api/v1/series）缩小指标全集；打开弹层时即应用一次 */
   var applyLabelFilter=function(){
-    var seq=++lfSeq;
-    var sel=[];
-    if(labelFilter.model_name)sel.push('model_name="'+escQL(labelFilter.model_name)+'"');
-    if(labelFilter.xds_namespace)sel.push('xds_namespace="'+escQL(labelFilter.xds_namespace)+'"');
-    if(!sel.length){baseNames=names;render();return;}
+    var sel=labelSelector();
+    if(!sel){baseNames=names;render();return;}
     count.textContent="按标签过滤中…";
-    proxyGet(PROM_URL+"/api/v1/series?match[]="+encodeURIComponent("{"+sel.join(",")+"}"))
+    proxyGet(PROM_URL+"/api/v1/series?match[]="+encodeURIComponent("{"+sel+"}"))
       .then(function(text){
-        if(seq!==lfSeq)return;   /* 期间过滤条件又变了，丢弃本次响应 */
         var j=JSON.parse(text);
         if(!j||j.status!=="success"||!Array.isArray(j.data))throw new Error("bad");
         var set={};
@@ -1781,18 +1822,10 @@ function openMetricsModal(names){
         render();
       })
       .catch(function(){
-        if(seq!==lfSeq)return;
         baseNames=names;count.textContent="标签过滤失败（数据源不可达或返回异常），暂显示全部指标";render();
       });
   };
   filter.addEventListener("input",render);
-  [selModel,selNs].forEach(function(c){
-    proxyGet(PROM_URL+"/api/v1/label/"+c.label+"/values").then(function(text){
-      var j=JSON.parse(text);
-      if(!j||j.status!=="success"||!Array.isArray(j.data))return;
-      c.setVals(j.data);
-    }).catch(function(){});
-  });
   list.addEventListener("click",function(e){
     var it=e.target.closest?e.target.closest(".diag-mname"):null;if(!it)return;
     var n=it.getAttribute("data-n");
@@ -1826,11 +1859,8 @@ function openMetricsModal(names){
   addBtn.addEventListener("click",function(){
     var picked=Object.keys(selected);
     if(!picked.length){selCount.textContent="请先勾选要添加的指标";return;}
-    /* 标签过滤生效时把标签选择器带进 PromQL，保证加到画布的是同一批序列 */
-    var sel=[];
-    if(labelFilter.model_name)sel.push('model_name="'+escQL(labelFilter.model_name)+'"');
-    if(labelFilter.xds_namespace)sel.push('xds_namespace="'+escQL(labelFilter.xds_namespace)+'"');
-    var ql=function(n){return sel.length?n+"{"+sel.join(",")+"}":n;};
+    /* 画板线只存裸指标名：设置区的全局标签过滤在 query_range 时统一注入，随设置改动动态生效 */
+    var ql=function(n){return n;};
     var tv=target.value,doneTab=null;
     if(tv.indexOf("panel:")===0){
       var p=panelOf(tv.slice(6));
@@ -1847,7 +1877,8 @@ function openMetricsModal(names){
     document.getElementById("metricsBtnHint").textContent="已添加 "+picked.length+" 个指标到画布";
     if(doneTab){var tb=document.querySelector('.dshell-tab[data-tab="'+doneTab+'"]');if(tb)tb.click();}
   });
-  body.appendChild(note);body.appendChild(filter);body.appendChild(lfRow);body.appendChild(list);body.appendChild(count);body.appendChild(selBar);
+  body.appendChild(note);body.appendChild(filter);body.appendChild(list);body.appendChild(count);body.appendChild(selBar);
+  applyLabelFilter();   /* 打开即按设置区的全局标签过滤缩小指标全集（内部会调 render） */
   render();
   openModal("数据源全部指标",body);
 }
@@ -1887,7 +1918,7 @@ function applySettings(save){
   }
   PREV={};LIVE=false;   /* 数据源变更后重新采样 */
   PROM_PANEL_MODE="init";PROM_LAST_OK="—";renderPromPanel();
-  poll();startPoll();loadLogs();loadProf();
+  poll();startPoll();loadLogs();loadProf();loadLabelValues();
   document.getElementById("setHint").textContent="已自动保存并生效。";
 }
 /* 无保存/恢复按钮：任一配置项 change（失焦或回车确认）即自动保存并生效 */
@@ -1902,6 +1933,7 @@ renderPromPanel();
 fillSettings();
 loadLogs();
 loadProf();
+loadLabelValues();
 poll();
 startPoll();
 })();
