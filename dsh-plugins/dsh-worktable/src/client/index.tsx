@@ -914,6 +914,23 @@ async function newChatInProject(text: string, workspaceId: string | null = null,
   await fillSessionDraft(sessionId, text)
 }
 
+/** 内容页「一键 AI 生成」类按钮（如 code-review-prs.html 发行说明「✦ AI 生成」）→ 右侧聊天窗桥
+ *  （经 window.__dshSendChatInProject 暴露给 iframe 调用）：与 newChatInProject 相同地新建会话、
+ *  标记插件发起的切换使项目分栏保持打开、会话出现在右侧聊天窗；区别在于提示词直接自动发送
+ *  （promptIntoSession），不经过输入框草稿——「一键生成」场景无需用户再点一次发送。
+ *  分组/目录优先级同 newChatInProject。 */
+async function sendChatInProject(text: string, workspaceId: string | null = null, cwd: string | null = null): Promise<void> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const wsId = workspaceId ?? (cwd ? null : defaultWorkspaceId())
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : (cwd ? { cwd } : {}))
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+}
+
 /** pipeline.html「打开归档目录」→ 新桥（经 window.__dshNewChatSessionAtFolder 暴露给 iframe 调用）：
  *  新建会话（cwd=归档根目录）并切过去——与 newChatInProject 相反，刻意不做 markPluginSessionOpen，
  *  让「切会话关项目」联动生效：项目分栏随切换关闭，新窗口只含会话聊天 + 文件夹浏览。
@@ -3661,7 +3678,7 @@ export function apply(ctx: any) {
   applyCtx = ctx   // 模块级暂存：openFolderInSidebar 等助手经它取 better-sidebar 服务
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
   // 项目页（pipeline.html「打开归档目录」等）→ dsh-better-sidebar 侧边栏桥：开一个以传入目录为根的
   // 文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；path 相同按
   // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）

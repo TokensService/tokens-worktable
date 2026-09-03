@@ -1,5 +1,13 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 新增「右侧聊天窗 + 自动发送」桥 `window.__dshSendChatInProject(text)`（`src/client/index.tsx`）：
+  供 iframe 内容页「一键 AI 生成」类按钮（如 code-review-prs.html 发行说明「✦ AI 生成」）调用。
+  与既有 `__dshNewChatSession`（newChatInProject）相同地新建会话、`markPluginSessionOpen` 标记插件
+  发起的切换使项目分栏保持打开、会话出现在右侧聊天窗；区别在于提示词经 `promptIntoSession` 直接
+  自动发送，不经输入框草稿（`fillSessionDraft`），「一键生成」场景无需用户再点发送。
+  分组/目录优先级与 newChatInProject 一致（项目分组 > 指定 cwd > 设置面板默认分组 > 未分组）。
+  `lib/client.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 项目设置弹窗支持按项目自定义「页面修改」提示词（`src/client/index.tsx` + `src/client/locales.ts`
   + `src/client/styles.ts` + `src/index.ts` 配套）：
   「管理项目」行 ⚙ 弹窗在「绑定对话」框后新增「自定义提示词」框（仅该项目有页面文件、✏️ 可用时显示），
