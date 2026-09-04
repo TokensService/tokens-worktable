@@ -8,6 +8,7 @@ python3 - "$SCRIPT" <<'PY'
 import csv
 import http.server
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -102,6 +103,29 @@ with tempfile.TemporaryDirectory() as temp_dir:
     with (output_dir / "summary.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["metric"] == "vllm:mooncake_xfer_time_seconds_bucket"
+
+    continuous_dir = Path(temp_dir) / "continuous"
+    env = os.environ.copy()
+    env.update(
+        {
+            "VLLM_METRICS_PROMETHEUS_URL": f"http://127.0.0.1:{server.server_port}",
+            "VLLM_METRICS_START": "2024-01-01T00:00:00Z",
+            "VLLM_METRICS_STEP": "5s",
+            "VLLM_METRICS_NAMESPACE": "xds-env",
+            "VLLM_METRICS_MODEL_NAME": "model-env",
+            "VLLM_METRICS_JOB_REGEX": ".*vllmp.*",
+            "VLLM_METRICS_METRICS": "vllm:mooncake_xfer_time_seconds_bucket",
+            "VLLM_METRICS_OUTPUT_DIR": str(continuous_dir),
+            "VLLM_METRICS_MAX_ITERATIONS": "1",
+        }
+    )
+    continuous = subprocess.run([str(script)], text=True, capture_output=True, check=False, env=env)
+    assert continuous.returncode == 0, f"stdout={continuous.stdout}\nstderr={continuous.stderr}"
+    snapshots = list((continuous_dir / "snapshots").glob("*/summary.json"))
+    assert len(snapshots) == 1
+    continuous_summary = json.loads(snapshots[0].read_text())
+    assert continuous_summary["namespace"] == "xds-env"
+    assert continuous_summary["model_name"] == "model-env"
 
 server.shutdown()
 print("collect vLLM metrics test passed")

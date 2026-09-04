@@ -7,8 +7,10 @@ import argparse
 import csv
 import datetime as dt
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -183,43 +185,38 @@ def safe_filename(metric: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", metric).strip("_") + ".json"
 
 
+def step_seconds(value: str) -> float:
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(ms|s|m|h)", value)
+    if not match:
+        raise ValueError("--step 必须是 Prometheus 时长，例如 30s、1m 或 1h")
+    amount = float(match.group(1))
+    unit = match.group(2)
+    return amount * {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[unit]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--start", required=True, help="开始时间：RFC3339 或 Unix 秒")
-    parser.add_argument("--end", required=True, help="结束时间：RFC3339 或 Unix 秒")
-    parser.add_argument("--step", default="60s", help="Prometheus 查询步长，默认 60s")
-    parser.add_argument("--prometheus-url", default="http://192.168.10.6:25889")
-    parser.add_argument("--namespace")
-    parser.add_argument("--model-name")
-    parser.add_argument("--job-regex")
+    parser.add_argument("--start", default=os.getenv("VLLM_METRICS_START"),
+                        help="开始时间；环境变量 VLLM_METRICS_START")
+    parser.add_argument("--end", default=os.getenv("VLLM_METRICS_END"),
+                        help="结束时间；未设置时持续采集，环境变量 VLLM_METRICS_END")
+    parser.add_argument("--step", default=os.getenv("VLLM_METRICS_STEP", "5s"),
+                        help="Prometheus 查询/采集周期，默认 5s；环境变量 VLLM_METRICS_STEP")
+    parser.add_argument("--prometheus-url", default=os.getenv("VLLM_METRICS_PROMETHEUS_URL", "http://192.168.10.6:25889"),
+                        help="环境变量 VLLM_METRICS_PROMETHEUS_URL")
+    parser.add_argument("--namespace", default=os.getenv("VLLM_METRICS_NAMESPACE"))
+    parser.add_argument("--model-name", default=os.getenv("VLLM_METRICS_MODEL_NAME"))
+    parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
-    parser.add_argument("--output-dir", default="vllm-metrics")
-    parser.add_argument("--timeout", type=int, default=30, help="每个查询的 HTTP 超时秒数")
+    parser.add_argument("--output-dir", default=os.getenv("VLLM_METRICS_OUTPUT_DIR", "vllm-metrics"))
+    parser.add_argument("--timeout", type=int, default=os.getenv("VLLM_METRICS_TIMEOUT", "30"),
+                        help="每个查询的 HTTP 超时秒数；环境变量 VLLM_METRICS_TIMEOUT")
+    parser.add_argument("--max-iterations", type=int, default=os.getenv("VLLM_METRICS_MAX_ITERATIONS", "0"),
+                        help="持续采集最大轮次；0 表示持续运行，环境变量 VLLM_METRICS_MAX_ITERATIONS")
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    try:
-        start = parse_time(args.start)
-        end = parse_time(args.end)
-    except ValueError as error:
-        print(f"时间参数错误: {error}", file=sys.stderr)
-        return 2
-    if start >= end:
-        print("时间参数错误: --start 必须早于 --end", file=sys.stderr)
-        return 2
-    if args.timeout <= 0:
-        print("参数错误: --timeout 必须大于 0", file=sys.stderr)
-        return 2
-
-    metrics = args.metric or list(METRICS)
-    invalid_metrics = [metric for metric in metrics if not METRIC_PATTERN.fullmatch(metric)]
-    if invalid_metrics:
-        print(f"指标名非法: {', '.join(invalid_metrics)}", file=sys.stderr)
-        return 2
-
-    output_dir = Path(args.output_dir)
+def collect_once(args: argparse.Namespace, metrics: list[str], start: int, end: int, output_dir: Path) -> int:
     query_dir = output_dir / "queries"
     query_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict] = []
@@ -263,6 +260,58 @@ def main() -> int:
 
     print(f"输出目录: {output_dir}")
     return 1 if summary["failed_queries"] else 0
+
+
+def main() -> int:
+    args = parse_args()
+    if not args.start:
+        print("参数错误: 请设置 VLLM_METRICS_START 或传入 --start", file=sys.stderr)
+        return 2
+    try:
+        start = parse_time(args.start)
+        end = parse_time(args.end) if args.end else None
+        interval = step_seconds(args.step)
+    except ValueError as error:
+        print(f"时间参数错误: {error}", file=sys.stderr)
+        return 2
+    if end is not None and start >= end:
+        print("时间参数错误: --start 必须早于 --end", file=sys.stderr)
+        return 2
+    if args.timeout <= 0 or args.max_iterations < 0:
+        print("参数错误: --timeout 必须大于 0，--max-iterations 不能小于 0", file=sys.stderr)
+        return 2
+
+    env_metrics = [item.strip() for item in os.getenv("VLLM_METRICS_METRICS", "").split(",") if item.strip()]
+    metrics = args.metric or env_metrics or list(METRICS)
+    invalid_metrics = [metric for metric in metrics if not METRIC_PATTERN.fullmatch(metric)]
+    if invalid_metrics:
+        print(f"指标名非法: {', '.join(invalid_metrics)}", file=sys.stderr)
+        return 2
+
+    output_dir = Path(args.output_dir)
+    if end is not None:
+        return collect_once(args, metrics, start, end, output_dir)
+
+    print(f"持续采集已启动: start={start} step={args.step}，Ctrl-C 停止")
+    cursor = start
+    iteration = 0
+    failed = False
+    try:
+        while args.max_iterations == 0 or iteration < args.max_iterations:
+            now = int(time.time())
+            if now <= cursor:
+                time.sleep(min(interval, max(1, cursor - now + 1)))
+                continue
+            iteration += 1
+            snapshot_dir = output_dir / "snapshots" / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            print(f"持续采集第 {iteration} 轮: {cursor} -> {now}")
+            failed = collect_once(args, metrics, cursor, now, snapshot_dir) != 0 or failed
+            cursor = now
+            if args.max_iterations == 0 or iteration < args.max_iterations:
+                time.sleep(interval)
+    except KeyboardInterrupt:
+        print("持续采集已停止", file=sys.stderr)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
