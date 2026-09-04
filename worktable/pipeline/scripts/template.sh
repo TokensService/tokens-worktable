@@ -37,6 +37,8 @@ GIT_USER="${GIT_USER:-}"
 GIT_PASSWORD="${GIT_PASSWORD:-}"
 DEPLOY_STRATEGY="${DEPLOY_STRATEGY:-}"
 
+echo "XDS_BRANCH=$XDS_BRANCH"
+
 # 打印流水线运行时系统注入的全部环境变量（未注入的显示 <未注入>）
 # 注意：TARGET_PASSWORD / TARGET_HOSTS / GIT_PASSWORD 含节点/仓库凭据，会明文出现在阶段日志与归档日志中
 echo "[template] ---- 系统注入的环境变量 ----"

@@ -36,15 +36,18 @@ spec:
       {{- end}}
       - name: ENV_SCC_CONF
         value: "/opt/cloud/scc/scc.conf"
+      - name: RAY_TMPDIR
+        value: "/opt/cloud/logs"
     idleTimeoutSeconds: 60
     imagePullPolicy: IfNotPresent
     resources:
       limits:
         cpu: '1'
-        memory: 512Mi
+        memory: 1Gi
       requests:
         cpu: '1'
-        memory: 512Mi
+        memory: 1Gi
+    {{- if or $.Values.global.ssl.grpcSslEnable $.Values.global.scc.enable }}
     volumeMounts:
       {{- if $.Values.global.ssl.grpcSslEnable}}
       - mountPath: /etc/ca/tls
@@ -57,13 +60,16 @@ spec:
         mountPath: {{ $.Values.global.scc.mountPath }}
         readOnly: true
       {{- end}}
+    {{- end}}
     securityContext: { }
     upscalingMode: Default
   headGroupSpec:
     {{- if .Values.head.headService }}
     headService: {{- toYaml .Values.head.headService | nindent 6 }}
     {{- end }}
+    {{- if .Values.head.type }}
     serviceType: {{ .Values.head.type }}
+    {{- end }}
     rayStartParams:
     {{- if and (not .Values.head.rayStartParams) (not .Values.head.initArgs) }}
       {}
@@ -318,6 +324,11 @@ spec:
     template:
       spec:
         restartPolicy: {{ $.Values.global.restartPolicy.worker }}
+        {{- if contains "decode" (lower $teGroupValues.name) }}
+        priorityClassName: io-priority-1
+        {{- else if contains "prefill" (lower $teGroupValues.name) }}
+        priorityClassName: io-priority-3
+        {{- end }}
         automountServiceAccountToken: {{ $.Values.global.enableAutomountServiceAccountToken }}
         imagePullSecrets: {{- toYaml $.Values.global.imagePullSecrets | nindent 10 }}
         {{- if $.Values.global.serviceAccountName }}
@@ -378,25 +389,19 @@ spec:
               - sh
               - '-c'
               - |
-                mkdir -p /tmp/ems;
-                chown -h 1000:1000 /tmp/ems;
-                chmod 2750 /tmp/ems;
-                ls -ld /tmp/ems;
+                mkdir -p /opt/cloud/logs/ems;
+                chown -h 1000:1000 /opt/cloud/logs/ems;
+                chmod 2750 /opt/cloud/logs/ems;
+                ls -ld /opt/cloud/logs/ems;
             volumeMounts:
-              - mountPath: /tmp/ems
-                name: log-ems-volume
+              - mountPath: /opt/cloud/logs/ems
+                name: xds-ems-log-volume
             securityContext:
               runAsUser: 0
               runAsGroup: 0
             resources: {{- toYaml $values.ems.resources | nindent 14 }}
           {{- end }}
           {{- end }}
-        {{- if $values.hostIPC }}
-        hostIPC: true
-        {{- end }}
-        {{- if $values.hostPID }}
-        hostPID: true
-        {{- end }}
         {{- if or (and $values.softub $values.softub.enable) (and $values.hostnetwork $values.hostnetwork.enable) }}
         hostNetwork: true
         dnsPolicy: ClusterFirstWithHostNet
@@ -409,12 +414,14 @@ spec:
             volumeMounts:
               - mountPath: /tmp/ray
                 name: log-volume
+              - mountPath: /opt/cloud/logs
+                name: cloud-log-volume
               - mountPath: {{ $.Values.global.storage.mountPath }}
                 name: local-volume
               {{- if $values.ems }}
               {{- if $values.ems.enable }}
-              - mountPath: /tmp/ems
-                name: log-ems-volume
+              - mountPath: /opt/cloud/logs/ems
+                name: xds-ems-log-volume
               - mountPath: {{ $values.ems.mountPath }}
                 name: ems-vol-domainsocket
               {{- end }}
@@ -450,35 +457,6 @@ spec:
                 name: xds-framework-config-volume
               - mountPath: /etc/xds/config/xds_cpp/conf
                 name: xds-cpp-server-config-volume
-              {{- if $values.softub }}
-              {{- if $values.softub.enable }}
-              - mountPath: /dev/vfio/vfio
-                name: dev-vfio
-              - mountPath: /dev/net/tun
-                name: dev-tun
-              - mountPath: /dev/uio0
-                name: dev-uio0
-              - mountPath: /dev/hugepages
-                name: dev-hugepages
-              - mountPath: /sys/bus/pci/drivers
-                name: pci-drivers
-              - mountPath: /sys/bus/pci/devices
-                name: pci-devices
-              - mountPath: /sys/kernel/mm/hugepages
-                name: hugepages-info
-              - mountPath: /etc/leaper
-                name: etc-leaper
-              - mountPath: /sys/fs/cgroup
-                name: cgroup
-              - mountPath: /sys/devices
-                name: devices
-              - mountPath: /sys
-                name: sys
-              {{- end }}
-              {{- end }}
-              {{- with $values.extraVolumeMounts }}
-{{ toYaml . | nindent 14 }}
-              {{- end }}
             {{- end }}
             image: {{ $.Values.global.imageRegistry }}/{{ $.Values.global.images.ray }}
             imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
@@ -488,8 +466,10 @@ spec:
             {{- else }}
             resources: {{- toYaml $values.resources | nindent 14 }}
             {{- end }}
+            {{- if $values.securityContext }}
             securityContext:
             {{- toYaml $values.securityContext | nindent 14 }}
+            {{- end }}
             env:
             {{- with $.Values.common.containerEnv }}
             {{- if $teGroupValues.containerEnvOverrides }}
@@ -574,6 +554,8 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: status.podIP
+              - name: RAY_gcs_rpc_server_reconnect_timeout_s
+                value: '1209600'
             # GPU(nvidia.com/gpu)不需要GLOO/HCCL_SOCKET_IFNAME,仅NPU需要
             {{- if and (not (and $values.resources $values.resources.limits (hasKey $values.resources.limits "nvidia.com/gpu"))) (or (and $values.softub $values.softub.enable) (and $values.hostnetwork $values.hostnetwork.enable)) }}
               - name: GLOO_SOCKET_IFNAME
@@ -648,9 +630,11 @@ spec:
         volumes:
           - name: log-volume
             emptyDir: {}
+          - name: cloud-log-volume
+            emptyDir: {}
           {{- if $values.ems }}
           {{- if $values.ems.enable }}
-          - name: log-ems-volume
+          - name: xds-ems-log-volume
             emptyDir: {}
           - name: ems-vol-domainsocket
             hostPath:
@@ -709,58 +693,8 @@ spec:
           - name: xds-cpp-server-config-volume
             configMap:
               name: xds-cpp-server-config
-          {{- if $values.softub }}
-          {{- if $values.softub.enable }}
-          - name: dev-vfio
-            hostPath:
-              path: /dev/vfio/vfio
-              type: CharDevice
-          - name: dev-tun
-            hostPath:
-              path: /dev/net/tun
-              type: CharDevice
-          - name: dev-uio0
-            hostPath:
-              path: /dev/uio0
-              type: CharDevice
-          - name: sys
-            hostPath:
-              path: /sys
-              type: Directory
-          - name: dev-hugepages
-            hostPath:
-              path: /dev/hugepages
-              type: Directory
-          - name: pci-drivers
-            hostPath:
-              path: /sys/bus/pci/drivers
-              type: Directory
-          - name: pci-devices
-            hostPath:
-              path: /sys/bus/pci/devices
-              type: Directory
-          - name: hugepages-info
-            hostPath:
-              path: /sys/kernel/mm/hugepages
-              type: Directory
-          - name: etc-leaper
-            hostPath:
-              path: /etc/leaper
-              type: DirectoryOrCreate
-          - name: cgroup
-            hostPath:
-              path: /sys/fs/cgroup
-              type: Directory
-          - name: devices
-            hostPath:
-              path: /sys/devices
-              type: Directory
-          {{- end }}
-          {{- end }}
-          {{- with $values.extraVolumes }}
-{{ toYaml . | nindent 10 }}
-          {{- end }}
         {{- end }}
+        {{- if or $values.podAntiAffinity $values.nodeAffinity (contains "decode" (lower $teGroupValues.name)) }}
         affinity:
           {{- if or $values.podAntiAffinity (contains "decode" (lower $teGroupValues.name)) }}
           podAntiAffinity:
@@ -787,6 +721,7 @@ spec:
           {{- if $values.nodeAffinity }}
           nodeAffinity: {{- toYaml $values.nodeAffinity | nindent 12 }}
           {{- end }}
+        {{- end }}
         {{- if $values.tolerations }}
         tolerations: {{- toYaml $values.tolerations | nindent 10 }}
         {{- else if $.Values.tolerations }}
@@ -837,7 +772,7 @@ spec:
   {{- /* [Skip card] taskExecutorGroup-card在非card模式下跳过渲染（enableTaskExecutorGroups=false或taskExecutorGroupType!="card"） */}}
   {{- else }}
   {{- /* [Default分支] 非TE分组workerGroup按原有逻辑渲染（enableTaskExecutorGroups=false时所有workerGroup都走此分支） */}}
-  {{- if ne $values.disabled true }}
+  {{- if and (ne $values.disabled true) (or (not $.Values.global.useFemFrontend) (ne $groupName "frontGroup")) }}
   - rayStartParams:
     {{- if and (not $values.rayStartParams) (not $values.initArgs) }}
       {}
@@ -920,13 +855,13 @@ spec:
               - sh
               - '-c'
               - |
-                mkdir -p /tmp/ems;
-                chown -h 1000:1000 /tmp/ems;
-                chmod 2750 /tmp/ems;
-                ls -ld /tmp/ems;
+                mkdir -p /opt/cloud/logs/ems;
+                chown -h 1000:1000 /opt/cloud/logs/ems;
+                chmod 2750 /opt/cloud/logs/ems;
+                ls -ld /opt/cloud/logs/ems;
             volumeMounts:
-              - mountPath: /tmp/ems
-                name: log-ems-volume
+              - mountPath: /opt/cloud/logs/ems
+                name: xds-ems-log-volume
             securityContext:
               runAsUser: 0
               runAsGroup: 0
@@ -945,12 +880,14 @@ spec:
             volumeMounts:
               - mountPath: /tmp/ray
                 name: log-volume
+              - mountPath: /opt/cloud/logs
+                name: cloud-log-volume
               - mountPath: {{ $.Values.global.storage.mountPath }}
                 name: local-volume
               {{- if $values.ems }}
               {{- if $values.ems.enable }}
-              - mountPath: /tmp/ems
-                name: log-ems-volume
+              - mountPath: /opt/cloud/logs/ems
+                name: xds-ems-log-volume
               - mountPath: {{ $values.ems.mountPath }}
                 name: ems-vol-domainsocket
               {{- end }}
@@ -986,38 +923,14 @@ spec:
                 name: xds-framework-config-volume
               - mountPath: /etc/xds/config/xds_cpp/conf
                 name: xds-cpp-server-config-volume
-              {{- if $values.softub }}
-              {{- if $values.softub.enable }}
-              - mountPath: /dev/vfio/vfio
-                name: dev-vfio
-              - mountPath: /dev/net/tun
-                name: dev-tun
-              - mountPath: /dev/uio0
-                name: dev-uio0
-              - mountPath: /dev/hugepages
-                name: dev-hugepages
-              - mountPath: /sys/bus/pci/drivers
-                name: pci-drivers
-              - mountPath: /sys/bus/pci/devices
-                name: pci-devices
-              - mountPath: /sys/kernel/mm/hugepages
-                name: hugepages-info
-              - mountPath: /etc/leaper
-                name: etc-leaper
-              - mountPath: /sys/fs/cgroup
-                name: cgroup
-              - mountPath: /sys/devices
-                name: devices
-              - mountPath: /sys
-                name: sys
-              {{- end }}
-              {{- end }}
             {{- end }}
             image: {{ $.Values.global.imageRegistry }}/{{ $.Values.global.images.ray }}
             imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
             resources: {{- toYaml $values.resources | nindent 14 }}
+            {{- if $values.securityContext }}
             securityContext:
             {{- toYaml $values.securityContext | nindent 14 }}
+            {{- end }}
             env:
             {{- with $.Values.common.containerEnv }}
             {{- toYaml . | nindent 14 }}
@@ -1050,6 +963,8 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: status.podIP
+              - name: RAY_gcs_rpc_server_reconnect_timeout_s
+                value: '1209600'
             # GPU(nvidia.com/gpu)不需要GLOO/HCCL_SOCKET_IFNAME,仅NPU需要
             {{- if and (not (and $values.resources $values.resources.limits (hasKey $values.resources.limits "nvidia.com/gpu"))) (or (and $values.softub $values.softub.enable) (and $values.hostnetwork $values.hostnetwork.enable)) }}
               - name: GLOO_SOCKET_IFNAME
@@ -1099,9 +1014,11 @@ spec:
         volumes:
           - name: log-volume
             emptyDir: {}
+          - name: cloud-log-volume
+            emptyDir: {}
           {{- if $values.ems }}
           {{- if $values.ems.enable }}
-          - name: log-ems-volume
+          - name: xds-ems-log-volume
             emptyDir: {}
           - name: ems-vol-domainsocket
             hostPath:
@@ -1160,55 +1077,8 @@ spec:
           - name: xds-cpp-server-config-volume
             configMap:
               name: xds-cpp-server-config
-          {{- if $values.softub }}
-          {{- if $values.softub.enable }}
-          - name: dev-vfio
-            hostPath:
-              path: /dev/vfio/vfio
-              type: CharDevice
-          - name: dev-tun
-            hostPath:
-              path: /dev/net/tun
-              type: CharDevice
-          - name: dev-uio0
-            hostPath:
-              path: /dev/uio0
-              type: CharDevice
-          - name: sys
-            hostPath:
-              path: /sys
-              type: Directory
-          - name: dev-hugepages
-            hostPath:
-              path: /dev/hugepages
-              type: Directory
-          - name: pci-drivers
-            hostPath:
-              path: /sys/bus/pci/drivers
-              type: Directory
-          - name: pci-devices
-            hostPath:
-              path: /sys/bus/pci/devices
-              type: Directory
-          - name: hugepages-info
-            hostPath:
-              path: /sys/kernel/mm/hugepages
-              type: Directory
-          - name: etc-leaper
-            hostPath:
-              path: /etc/leaper
-              type: DirectoryOrCreate
-          - name: cgroup
-            hostPath:
-              path: /sys/fs/cgroup
-              type: Directory
-          - name: devices
-            hostPath:
-              path: /sys/devices
-              type: Directory
-          {{- end }}
-          {{- end }}
         {{- end }}
+        {{- if or $values.podAntiAffinity $values.nodeAffinity }}
         affinity:
           {{- if $values.podAntiAffinity }}
           podAntiAffinity: {{- toYaml $values.podAntiAffinity | nindent 12 }}
@@ -1216,6 +1086,7 @@ spec:
           {{- if $values.nodeAffinity }}
           nodeAffinity: {{- toYaml $values.nodeAffinity | nindent 12 }}
           {{- end }}
+        {{- end }}
         {{- if $values.tolerations }}
         tolerations: {{- toYaml $values.tolerations | nindent 10 }}
         {{- else if $.Values.tolerations }}
@@ -1271,6 +1142,7 @@ metadata:
   name: io-priority-3
 value: -3
 globalDefault: false
+preemptionPolicy: Never
 description: "For io-priority-3 workloads"
 {{- end }}
 ---
@@ -1281,6 +1153,7 @@ metadata:
   name: io-priority-2
 value: -2
 globalDefault: false
+preemptionPolicy: Never
 description: "For io-priority-2 workloads"
 {{- end }}
 ---
@@ -1291,5 +1164,6 @@ metadata:
   name: io-priority-1
 value: -1
 globalDefault: false
+preemptionPolicy: Never
 description: "For io-priority-1 workloads"
 {{- end }}

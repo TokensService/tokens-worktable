@@ -53,14 +53,3 @@ Create the name of the service account to use
     {{ default "default" .Values.serviceAccount.name }}
 {{- end -}}
 {{- end -}}
-{{/*
-Namespace used by the colocated LMCache server resources.
-Defaults to lmcache.namespace.name, then global.namespace, then the Helm release
-namespace so XDS and LMCache are installed together.
-*/}}
-{{- define "lmcache.namespace" -}}
-{{- $lmcache := .Values.lmcache | default dict -}}
-{{- $namespace := $lmcache.namespace | default dict -}}
-{{- $global := .Values.global | default dict -}}
-{{- $namespace.name | default $global.namespace | default .Release.Namespace -}}
-{{- end -}}
