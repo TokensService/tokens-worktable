@@ -3685,15 +3685,22 @@ function renderReplayDetail(rec){
     if(typeof cached==='string') text=cached;
     else log.textContent = cached===null ? ('日志文件读取失败或不存在：'+entry.logFile) : '（日志加载中…）';
   }
-  const lines=text!==undefined ? String(text).split('\n') : [];
-  if(!lines.length && !log.textContent){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
-  else lines.forEach(ln=>{
-    const div=document.createElement('div'); let cls='dim';
-    if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';
-    if(/✗|failed|失败|timed out|Rollback|回滚/.test(ln)) cls='err';
-    if(/^\[Pipeline\]/.test(ln) || /docker|helm|kubectl/.test(ln)) cls='hi';
-    div.className=cls; div.textContent=ln; log.appendChild(div);
-  });
+  /* 阶段详情日志只回显归档日志文件的最后 20 行（全量日志仍在归档文件，未截断），
+     超过 20 行时在顶部插入一行省略提示，避免长日志挤压详情面板 */
+  const TAIL=20;
+  const all=text!==undefined ? String(text).split('\n') : [];
+  const lines=all.length>TAIL ? all.slice(all.length-TAIL) : all;
+  if(!all.length && !log.textContent){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
+  else{
+    if(all.length>TAIL){ const tip=document.createElement('div'); tip.className='dim'; tip.textContent='… 仅显示最后 '+TAIL+' 行（共 '+all.length+' 行，全量见归档日志文件）'; log.appendChild(tip); }
+    lines.forEach(ln=>{
+      const div=document.createElement('div'); let cls='dim';
+      if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';
+      if(/✗|failed|失败|timed out|Rollback|回滚/.test(ln)) cls='err';
+      if(/^\[Pipeline\]/.test(ln) || /docker|helm|kubectl/.test(ln)) cls='hi';
+      div.className=cls; div.textContent=ln; log.appendChild(div);
+    });
+  }
 }
 let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
 let histPage=0;
