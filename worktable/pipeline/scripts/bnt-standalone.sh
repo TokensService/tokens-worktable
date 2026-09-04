@@ -9,7 +9,7 @@
 #
 # 环境变量:
 #   BNT_ACTION=standardize   动作：standardize|check-health|clean-containers|kill-gpu|svc|hugepages
-#   BNT_STEPS=               standardize 步骤，逗号分隔；默认 crond,containers,gpu
+#   BNT_STEPS=               standardize 清理步骤，逗号分隔；默认 crond,containers,gpu；完成后固定执行环境检查
 #   BNT_DRY_RUN=0|1          仅预演
 #   BNT_NODE=                指定 Kubernetes nodeName
 #   BNT_WHITELIST_NS=        白名单命名空间，空格分隔 glob
@@ -596,7 +596,12 @@ do_standardize() {
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
     done
-    log "==== BNT 标准化完成 (日志: $LOG_FILE) ===="
+    log "==== 清理完成，开始环境健康检查 ===="
+    if ! check_health; then
+        log "==== BNT 标准化失败：清理后环境检查未通过 (日志: $LOG_FILE) ===="
+        return 1
+    fi
+    log "==== BNT 标准化完成，环境检查通过 (日志: $LOG_FILE) ===="
 }
 
 # ---------------- 远端执行 ----------------

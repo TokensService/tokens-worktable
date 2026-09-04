@@ -34,14 +34,19 @@ EOF
 
 chmod +x "$work_dir/bin"/*
 
-PATH="$work_dir/bin:$PATH" \
-BNT_TEST_LOG="$work_dir/actions.log" \
-LOG_FILE="$work_dir/bnt.log" \
-BNT_DRY_RUN=0 \
-bash "$script" >"$work_dir/output"
+if PATH="$work_dir/bin:$PATH" \
+  BNT_TEST_LOG="$work_dir/actions.log" \
+  LOG_FILE="$work_dir/bnt.log" \
+  BNT_DRY_RUN=0 \
+  bash "$script" >"$work_dir/output"; then
+  echo 'expected health check failure in isolated test environment' >&2
+  exit 1
+fi
 
 grep -Fq 'BNT 标准化开始 steps=[crond containers gpu]' "$work_dir/output"
 grep -Fq 'service crond stop' "$work_dir/actions.log"
+grep -Fq '环境健康检查' "$work_dir/output"
+grep -Fq '环境检查未通过' "$work_dir/output"
 
 cat >"$work_dir/bin/scp" <<'EOF'
 #!/usr/bin/env bash
