@@ -224,7 +224,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
           <span id="detailBadge"></span>
-          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。点击同时新建一个 AI 会话并切入其窗口（工作区=设置的归档目录根目录，空草稿不自动提交）：项目页随之关闭，新窗口只含会话聊天与文件夹浏览（文件夹窗口由插件在会话切换落定后重开，避免被侧边栏刷新刷掉）。目录选取：运行中取当前运行的归档文件夹；未运行时优先运行历史选中行（点击历史行即刷新目标），其次最近一次运行，均无则打开归档根目录；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。点击同时新建一个 AI 会话并切入其窗口（工作区=设置的归档目录根目录，空草稿不自动提交）：项目页随之关闭，新窗口只含会话聊天与文件夹浏览（文件夹窗口由插件在会话切换落定后重开，避免被侧边栏刷新刷掉）。目录选取：运行中取当前运行的归档文件夹；未运行时取运行历史选中行（点击历史行即刷新目标），未选中则提示先选择一条运行历史（不再回退打开归档根目录）；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
         </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
@@ -3593,7 +3593,7 @@ function retryFromStage(stageId){
 }
 function finish(result){
   running=false; $('stopBtn').disabled=true; syncRunBtn();
-  refreshArchiveTip();   // 运行结束：目标回退到历史选中行/本次运行归档
+  refreshArchiveTip();   // 运行结束：目标回退到历史选中行（未选中则提示选择，不再回退本次运行归档）
   if(timer){ clearInterval(timer); timer=null; }
   const elapsed=(Date.now()-curRun.startTs)/1000;
   if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 已完成','dshell-badgeDone'); }
@@ -4028,10 +4028,10 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
    文件夹窗口由插件在切换落定后重开（会话切换会刷新侧边栏，页内先开的会被刷掉）；旧版插件无此桥时
    退回 __dshNewChatSessionAt（项目保持打开，见 createArchiveRootChat），会话创建后页内补开一次
    文件夹窗口。会话创建失败仅 console.warn，不阻断打开目录。
-   目录选取优先级（archiveTargetFolder）：运行中取当前运行的归档文件夹（页面展示的是实时运行）→
-   运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）→
-   最近一次运行的归档文件夹（curRun.archive，运行结束后不清空）→
-   配置的归档根目录（archiveDir，留空时取保底 runs/）。均无可用目录时仅提示。
+   目录选取（archiveTargetFolder）：运行中取当前运行的归档文件夹（页面展示的是实时运行）；
+   否则取运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）。
+   未运行且未选中历史行时不回退（不再打开最近一次运行或归档根目录），返回 null，
+   由 openArchiveFolder 提示先选择一条运行历史。
    系统文件管理器路径下，目标目录不存在时（历史目录已清理等）助手脚本回退到其父目录（归档根），
    并把实际打开的目录回显在 stdout 供页面提示；连归档根都不存在才报「目录不存在」。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
@@ -4044,12 +4044,13 @@ const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的�
   +'if command -v gio >/dev/null 2>&1; then setsid nohup gio open "$d" >/dev/null 2>&1 & exit 0; fi\n'
   +'if command -v open >/dev/null 2>&1; then open "$d" >/dev/null 2>&1 & exit 0; fi\n'
   +'exit 3\n';
-/* 打开归档目录的目标解析：运行中优先当前运行归档；否则历史选中行 → 最近一次运行 → 归档根（保底 runs/） */
+/* 打开归档目录的目标解析：运行中取当前运行归档；否则取历史选中行的归档目录。
+   未运行且未选中历史行时不回退（不再打开最近一次运行或归档根目录），返回 null，
+   由 openArchiveFolder 提示先选择一条运行历史。 */
 function archiveTargetFolder(){
   if(running && curRun && curRun.archive) return curRun.archive;
   if(selHistoryIdx>=0 && history[selHistoryIdx] && history[selHistoryIdx].archive) return history[selHistoryIdx].archive;
-  if(curRun && curRun.archive) return curRun.archive;
-  return archiveRootFolder();
+  return null;
 }
 /* 归档根目录：设置的归档路径（archiveDir），留空=保底 runs/（fallbackArchiveRoot）；
    「打开归档目录」新建 AI 会话的工作区即取此根目录（而非单次运行的归档文件夹） */
@@ -4064,11 +4065,12 @@ async function createArchiveRootChat(root){
   const sid=await sessions.create({cwd: root});
   try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
 }
-/* 历史行选中变化时刷新「打开归档目录」的状态提示：展示当前将打开的目录，清掉上一次打开结果的残留 */
+/* 历史行选中变化时刷新「打开归档目录」的状态提示：展示当前将打开的目录，清掉上一次打开结果的残留。
+   未运行且未选中历史行时提示先选择一条运行历史（不再回退到归档根目录）。 */
 function refreshArchiveTip(){
   const tip=$('archiveTip'); if(!tip) return;
   const f=archiveTargetFolder();
-  tip.textContent = f ? ('归档目录：'+f) : '';
+  tip.textContent = f ? ('归档目录：'+f) : '未选中运行，请点击历史行选择';
   tip.style.color='';
 }
 /* 服务端系统文件管理器回退路径（无 better-sidebar 时用）：助手脚本探测 xdg-open/gio/open */
@@ -4092,7 +4094,7 @@ async function openArchiveFolder(){
   const tip=$('archiveTip');
   const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
   const folder=archiveTargetFolder();
-  if(!folder){ say('✗ 暂无归档目录：请先运行一次流水线，或在「设置」页配置归档路径','var(--log-warn)'); return; }
+  if(!folder){ say('⚠ 请先点击选择一条运行历史（或运行一条流水线后再打开）','var(--log-warn)'); return; }
   const root=archiveRootFolder();
   const P=window.parent;
   /* 探测 better-sidebar 并顺手开一次文件夹窗口：会话切换会刷新侧边栏，这次打开随后会被刷掉，
@@ -4354,7 +4356,7 @@ $('resetBtn').addEventListener('click', ()=>{
   exitHistoryReplay();   // 重置一并退出历史回放态
   if(curRun && curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 → 服务端终止子进程
   if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('stopBtn').disabled=true; syncRunBtn(); resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
-  refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行/归档根
+  refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
