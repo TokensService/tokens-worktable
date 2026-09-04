@@ -7,39 +7,45 @@
 #
 # 可放在任意 BNT(GPU) 机器上独立运行; 也可对远端机器批量执行(内置 SSH 推送+执行)。
 #
-# 子命令:
-#   standardize [STEP...] [--dry-run] [--node NAME] [--no-crond]
-#                 默认全流程: crond停 -> clean-containers -> kill-gpu
-#                 STEP: crond | containers | gpu | kubelet | kube-proxy | hugepages
-#   clean-containers [--dry-run] [--node NAME]   清k8s负载+docker+containerd+Terminating pod
-#   kill-gpu       [--dry-run]                   清nvidia-smi占卡进程(宿主/docker/k8s)
-#   check-health   [--node NAME]                 只读检查运行时、CNI、网络、DRAM、HugePage 与 GPU
-#   svc <name>     name=kubelet|kube-proxy       systemctl enable --now 并验证
-#   hugepages      [nr_path]                     echo 0 > nr_hugepages (默认2048kB)
-#   remote <ip> [--ssh-port 22] [-- as-is args]  把本脚本 scp 到远端并执行 standardize
-#   batch <ip1,ip2,...>                          并发对多机执行 remote
-#
 # 环境变量:
-#   DRY_RUN=1        仅预演
-#   K8S_NODE_NAME=   指定本机 k8s nodeName (覆盖自动解析)
-#   WHITELIST_NS=    覆盖白名单(空格分隔 glob, 默认见下)
-#   SSH_USER=        远端用户 (默认 root)
+#   BNT_ACTION=standardize   动作：standardize|check-health|clean-containers|kill-gpu|svc|hugepages
+#   BNT_STEPS=               standardize 清理步骤，逗号分隔；默认 crond,containers,gpu；完成后固定执行环境检查
+#   BNT_DRY_RUN=0|1          仅预演
+#   BNT_NODE=                指定 Kubernetes nodeName
+#   BNT_WHITELIST_NS=        白名单命名空间，空格分隔 glob
+#   BNT_NO_CROND=0|1         standardize 时不停止 crond
+#   BNT_SERVICE=             svc 动作的服务名：kubelet 或 kube-proxy
+#   BNT_HUGEPAGE_PATH=       hugepages 动作的 nr_hugepages 文件路径
+#   BNT_TARGET_HOSTS=         逗号分隔 IP；也兼容 TARGET_HOSTS JSON 的 ip 字段
+#   BNT_SSH_USER=root        远端 SSH 用户
+#   BNT_SSH_PORT=22          远端 SSH 端口
+#   BNT_TARGET_PASSWORD=     远端密码；也兼容 TARGET_PASSWORD
+#   BNT_LOG_FILE=            日志路径
 #
 # 用法示例:
-#   sudo bash bnt-standalone.sh standardize --dry-run
-#   sudo bash bnt-standalone.sh standardize containers,gpu
-#   sudo bash bnt-standalone.sh kill-gpu
-#   bash bnt-standalone.sh remote 172.19.209.32 -- --dry-run
-#   bash bnt-standalone.sh batch 172.19.209.32,172.19.43.193
+#   BNT_DRY_RUN=1 bash bnt-standalone.sh
+#   BNT_ACTION=check-health bash bnt-standalone.sh
+#   BNT_STEPS=containers,gpu BNT_TARGET_HOSTS=192.0.2.10 bash bnt-standalone.sh
 # ============================================================================
 
 set -uo pipefail
 
 # ---------------- 全局 ----------------
-DRY_RUN="${DRY_RUN:-0}"
+BNT_ACTION="${BNT_ACTION:-standardize}"
+BNT_STEPS="${BNT_STEPS:-}"
+DRY_RUN="${BNT_DRY_RUN:-${DRY_RUN:-0}}"
 LOG_PREFIX="[bnt]"
-LOG_FILE="${LOG_FILE:-/tmp/bnt-standalone_$(date +%Y%m%d_%H%M%S).log}"
-NODE="${K8S_NODE_NAME:-}"
+LOG_FILE="${BNT_LOG_FILE:-${LOG_FILE:-/tmp/bnt-standalone_$(date +%Y%m%d_%H%M%S).log}}"
+NODE="${BNT_NODE:-${K8S_NODE_NAME:-}}"
+WHITELIST_NS="${BNT_WHITELIST_NS:-${WHITELIST_NS:-}}"
+NO_CROND="${BNT_NO_CROND:-${NO_CROND:-0}}"
+BNT_SERVICE="${BNT_SERVICE:-}"
+BNT_HUGEPAGE_PATH="${BNT_HUGEPAGE_PATH:-}"
+BNT_TARGET_HOSTS="${BNT_TARGET_HOSTS:-${TARGET_HOSTS:-}}"
+SSH_USER="${BNT_SSH_USER:-${SSH_USER:-root}}"
+BNT_SSH_PORT="${BNT_SSH_PORT:-22}"
+BNT_TARGET_PASSWORD="${BNT_TARGET_PASSWORD:-${TARGET_PASSWORD:-}}"
+BNT_REMOTE_EXECUTION="${BNT_REMOTE_EXECUTION:-0}"
 SSHD_PID=""
 HEALTH_PASS=0
 HEALTH_WARN=0
@@ -556,12 +562,6 @@ health_gpu() {
 
 check_health() {
     HEALTH_PASS=0; HEALTH_WARN=0; HEALTH_FAIL=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --node) NODE="$2"; shift 2 ;;
-            *) die "check-health 不支持参数: $1" ;;
-        esac
-    done
     log "=== 环境健康检查 ==="
     health_service containerd
     health_service kubelet
@@ -579,17 +579,7 @@ DEFAULT_STEPS="crond,containers,gpu"
 VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages"
 
 do_standardize() {
-    local steps="" dry=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --dry-run) dry=1; shift;;
-            --node) NODE="$2"; shift 2;;
-            --no-crond) NO_CROND=1; shift;;
-            --whitelist) WHITELIST_NS="$2"; shift 2;;
-            *) steps="$steps $1"; shift;;
-        esac
-    done
-    DRY_RUN=$dry
+    local steps="$BNT_STEPS"
     [[ -z "${steps// /}" ]] && steps="$DEFAULT_STEPS"
     # 支持逗号分隔
     steps=$(echo "$steps" | tr ',' ' ')
@@ -606,59 +596,86 @@ do_standardize() {
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
     done
-    log "==== BNT 标准化完成 (日志: $LOG_FILE) ===="
+    log "==== 清理完成，开始环境健康检查 ===="
+    if ! check_health; then
+        log "==== BNT 标准化失败：清理后环境检查未通过 (日志: $LOG_FILE) ===="
+        return 1
+    fi
+    log "==== BNT 标准化完成，环境检查通过 (日志: $LOG_FILE) ===="
 }
 
 # ---------------- 远端执行 ----------------
-do_remote() {
-    local ip="$1"; shift
-    local port=22
-    local extra=""
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --ssh-port) port="$2"; shift 2;;
-            --) shift; extra="$*"; break;;
-            *) extra="$extra $1"; shift;;
-        esac
-    done
-    local user="${SSH_USER:-root}"
-    local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-    log "推送脚本到 $user@$ip:$port 并执行 standardize $extra"
-    # 尝试 scp; 失败则用 ssh + base64 传内容 (免 scp)
-    if scp -P "$port" -q "$self" "$user@$ip:/tmp/bnt-standalone.sh" 2>/dev/null; then
-        ssh -p "$port" "$user@$ip" "sudo bash /tmp/bnt-standalone.sh standardize $extra; rm -f /tmp/bnt-standalone.sh"
+remote_scp() {
+    if [[ -n "$BNT_TARGET_PASSWORD" ]]; then
+        have sshpass || die "BNT_TARGET_PASSWORD 已设置但未找到 sshpass"
+        SSHPASS="$BNT_TARGET_PASSWORD" sshpass -e scp "$@"
     else
-        local b64; b64=$(base64 -w0 "$self" 2>/dev/null || base64 "$self" | tr -d '\n')
-        ssh -p "$port" "$user@$ip" "echo '$b64' | base64 -d > /tmp/bnt-standalone.sh && sudo bash /tmp/bnt-standalone.sh standardize $extra; rm -f /tmp/bnt-standalone.sh"
+        scp "$@"
     fi
 }
 
-do_batch() {
-    local ips="$1"; shift
-    local ip pids=""
-    IFS=',' read -ra IP_ARR <<< "$ips"
-    for ip in "${IP_ARR[@]}"; do
-        do_remote "$ip" "$@" &
-        pids="$pids $!"
+remote_ssh() {
+    if [[ -n "$BNT_TARGET_PASSWORD" ]]; then
+        have sshpass || die "BNT_TARGET_PASSWORD 已设置但未找到 sshpass"
+        SSHPASS="$BNT_TARGET_PASSWORD" sshpass -e ssh "$@"
+    else
+        ssh "$@"
+    fi
+}
+
+do_remote() {
+    local ip="$1" target self remote_env pair key
+    target="${SSH_USER}@${ip}"
+    local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+    log "推送脚本到 $target:$BNT_SSH_PORT 并执行 $BNT_ACTION"
+    remote_scp -P "$BNT_SSH_PORT" -q "$self" "$target:/tmp/bnt-standalone.sh"
+
+    remote_env=""
+    for key in BNT_ACTION BNT_STEPS BNT_DRY_RUN BNT_NODE BNT_WHITELIST_NS BNT_NO_CROND BNT_SERVICE BNT_HUGEPAGE_PATH BNT_LOG_FILE; do
+        printf -v pair '%q' "$key=${!key:-}"
+        remote_env+=" $pair"
     done
-    wait $pids
+    remote_ssh -p "$BNT_SSH_PORT" "$target" \
+        "env BNT_REMOTE_EXECUTION=1 BNT_TARGET_HOSTS= TARGET_HOSTS=$remote_env bash /tmp/bnt-standalone.sh"
+}
+
+target_ips() {
+    local hosts="$BNT_TARGET_HOSTS"
+    if [[ "$hosts" == \[* ]]; then
+        printf '%s' "$hosts" | grep -oE '"ip"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/'
+    else
+        tr ',' '\n' <<<"$hosts" | sed '/^[[:space:]]*$/d; s/^[[:space:]]*//; s/[[:space:]]*$//'
+    fi
+}
+
+do_targets() {
+    local ip count=0
+    while IFS= read -r ip; do
+        [[ -z "$ip" ]] && continue
+        do_remote "$ip"
+        ((count += 1))
+    done < <(target_ips)
+    if (( count == 0 )); then
+        die "BNT_TARGET_HOSTS 未包含可用 IP"
+    fi
 }
 
 # ---------------- main ----------------
 main() {
-    [[ $# -lt 1 ]] && { sed -n '2,/^====/p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
-    local cmd="$1"; shift
-    case "$cmd" in
-        standardize) do_standardize "$@";;
-        clean-containers) DRY_RUN=0; while [[ $# -gt 0 ]]; do case "$1" in --dry-run) DRY_RUN=1; shift;; --node) NODE="$2"; shift 2;; *) shift;; esac; done; step_containers; log "完成 (日志 $LOG_FILE)";;
-        kill-gpu) DRY_RUN=0; [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1; step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
-        check-health) check_health "$@";;
-        svc) step_svc "$1";;
-        hugepages) step_hugepages "${1:-}";;
-        remote) do_remote "$@";;
-        batch) do_batch "$@";;
-        -h|--help|help) sed -n '2,/^====/p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
-        *) die "未知命令: $cmd";;
+    [[ $# -eq 0 ]] || die "不支持命令行参数；请使用 BNT_* 环境变量"
+    [[ "$DRY_RUN" =~ ^[01]$ ]] || die "BNT_DRY_RUN 必须为 0 或 1"
+    if [[ -n "$BNT_TARGET_HOSTS" && "$BNT_REMOTE_EXECUTION" != "1" ]]; then
+        do_targets
+        return
+    fi
+    case "$BNT_ACTION" in
+        standardize) do_standardize;;
+        clean-containers) step_containers; log "完成 (日志 $LOG_FILE)";;
+        kill-gpu) step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
+        check-health) check_health;;
+        svc) [[ "$BNT_SERVICE" == "kubelet" || "$BNT_SERVICE" == "kube-proxy" ]] || die "BNT_SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$BNT_SERVICE";;
+        hugepages) step_hugepages "$BNT_HUGEPAGE_PATH";;
+        *) die "未知 BNT_ACTION: $BNT_ACTION";;
     esac
 }
 
