@@ -69,6 +69,7 @@ EVENT_LOG="$work_dir/events.log" \
 PODS_DELETED="$work_dir/pods-deleted" \
 FRONTEND_PODS_DELETED="$work_dir/frontend-pods-deleted" \
 CURL_PAYLOAD_FILE="$work_dir/model.payload.json" \
+DEPLOY_ON_TARGET_HOST=1 \
 RUN_DIR="$work_dir/run" \
 CHART_DIR="$work_dir/chart" \
 VALUES_FILE="$work_dir/values.yaml" \

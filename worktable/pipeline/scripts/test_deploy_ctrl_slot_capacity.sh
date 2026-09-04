@@ -74,6 +74,7 @@ chmod +x "$work_dir/bin/helm" "$work_dir/bin/kubectl" "$work_dir/bin/curl"
 
 EVENT_LOG="$work_dir/events.log" \
 INSTALLED_VALUES="$work_dir/installed-values.yaml" \
+DEPLOY_ON_TARGET_HOST=1 \
 RUN_DIR="$work_dir/run" \
 CHART_DIR="$work_dir/chart" \
 VALUES_FILE="$work_dir/values.yaml" \
