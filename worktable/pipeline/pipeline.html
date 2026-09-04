@@ -206,9 +206,9 @@
         <span><i style="background:var(--st-idle)"></i>未开始</span>
         <span><i style="background:var(--st-run);box-shadow:0 0 5px var(--st-run)"></i>进行中</span>
         <span><i style="background:var(--dsw-alias-label-tertiary)"></i>跳过</span>
-        <span><i style="background:var(--st-idle);opacity:.7"></i>已中止</span>
-        <span><i style="background:var(--st-ok);box-shadow:0 0 5px var(--st-ok)"></i>成功</span>
-        <span><i style="background:var(--st-err);box-shadow:0 0 5px var(--st-err)"></i>失败</span>
+        <span><i style="background:var(--st-idle);opacity:.7"></i>终止</span>
+        <span><i style="background:var(--st-ok);box-shadow:0 0 5px var(--st-ok)"></i>已完成</span>
+        <span><i style="background:var(--st-err);box-shadow:0 0 5px var(--st-err)"></i>错误</span>
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
@@ -241,9 +241,9 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">状态
           <select id="histFilterStatus" class="dshell-input" style="min-width:96px;">
             <option value="">全部</option>
-            <option value="success">成功</option>
-            <option value="failed">失败</option>
-            <option value="aborted">已中止</option>
+            <option value="success">已完成</option>
+            <option value="failed">错误</option>
+            <option value="aborted">终止</option>
           </select>
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
@@ -2385,9 +2385,9 @@ function applyStatusClasses(){
 function metaFor(id){
   const n=nodes[id], st=n?n.status:'idle';
   if(st==='success') return '✓ '+fmtDur(n.dur);
-  if(st==='failed')  return '✗ 失败';
+  if(st==='failed')  return '✗ 错误';
   if(st==='skipped') return '⏭ 跳过';
-  if(st==='aborted') return '⏏ 已中止';
+  if(st==='aborted') return '⏏ 终止';
   if(st==='running') return Math.round(n.progress||0)+'%';
   if(st==='idle'){ const s=activeStages().find(x=>x.id===id); if(s&&s.skip) return '⊘ 不执行'; }   // 未运行且配置「不执行」：编排区节点元信息显示
   return '';
@@ -2409,7 +2409,7 @@ function renderDetail(){
   $('detailTitle').textContent = s.name + ' · 阶段详情';
   const badge = $('detailBadge'); badge.innerHTML='';
   const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], skipped:['跳过',''],
-    success:['成功','dshell-badgeDone'], failed:['失败','dshell-badgeDone'], aborted:['已中止','']};
+    success:['已完成','dshell-badgeDone'], failed:['错误','dshell-badgeDone'], aborted:['终止','']};
   const [txt,cls] = map[n.status]||['未开始',''];
   const b=document.createElement('span');
   if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='var(--st-err)'; b.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
@@ -3344,9 +3344,9 @@ function finish(result){
   refreshArchiveTip();   // 运行结束：目标回退到历史选中行/本次运行归档
   if(timer){ clearInterval(timer); timer=null; }
   const elapsed=(Date.now()-curRun.startTs)/1000;
-  if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 成功','dshell-badgeDone'); }
-  else if(result==='aborted'){ setOverall('⏏ 已中止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
-  else { setOverall('✗ 失败',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+  if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 已完成','dshell-badgeDone'); }
+  else if(result==='aborted'){ setOverall('⏏ 终止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
+  else { setOverall('✗ 错误',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
   buildNo++;
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
@@ -3581,7 +3581,34 @@ async function loadReplayLogs(rec){
       .then(t=>{ rec._lc[l.stage]=t; })
       .catch(()=>{ rec._lc[l.stage]=null; }));
   });
+  /* 阶段状态校正：服务端定时执行的真实结果写入了归档目录的 run-<tag>.profile.json；
+     历史条目里的阶段状态可能因页面/服务端记录按 tag 合并而被回退为 idle（未反映服务端实际执行），
+     回放时按 profile.stages 覆盖各阶段 status/dur，使详情如实展示「已完成/跳过/错误/终止」。 */
+  if(rec.archive && rec.tag && !rec._profChecked){
+    rec._profChecked=true;
+    jobs.push(fetch('/api/worktable/file?path='+encodeURIComponent(rec.archive+'/run-'+rec.tag+'.profile.json'))
+      .then(r=> r.ok ? r.text() : null)
+      .then(t=>{ if(!t) return; let prof; try{ prof=JSON.parse(t); }catch(e){ return; }
+        if(!prof || !Array.isArray(prof.stages)) return;
+        const m={}; prof.stages.forEach(s=>{ if(s && s.name) m[s.name]=s; });
+        logs.forEach(l=>{ if(l && l.stage && m[l.stage] && m[l.stage].status){ l.status=m[l.stage].status; if(typeof m[l.stage].durSec==='number') l.dur=m[l.stage].durSec; } });
+      })
+      .catch(()=>{}));
+  }
   if(jobs.length) await Promise.all(jobs);
+}
+/* 回放态：从历史 logs 重建各阶段节点状态（首次进入回放 + loadReplayLogs 校正状态后重算，
+   使编排区节点状态/进度与详情面板一致）。阶段按名称匹配 logs；无记录视为未开始（idle）。 */
+function rebuildReplayNodes(rec){
+  if(!runStages) return;
+  const logs=Array.isArray(rec.logs)?rec.logs:[];
+  const byName={}; logs.forEach(l=>{ if(l && l.stage) byName[l.stage]=l; });
+  nodes={};
+  runStages.forEach(s=>{
+    const l=byName[s.name];
+    const st=l?(l.status||'idle'):'idle';
+    nodes[s.id]={status:st, progress:st==='success'?100:0, dur:(l && l.dur)||0, sub:{}};
+  });
 }
 function enterHistoryReplay(rec){
   if(running){ flashRunTip('运行中暂不能回放历史（可等待完成或点「重置」中止后再试）'); return; }
@@ -3591,15 +3618,9 @@ function enterHistoryReplay(rec){
   const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline) || null;
   if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineSel(); renderPipelines(); }
   const logs=Array.isArray(rec.logs)?rec.logs:[];
-  const byName={}; logs.forEach(l=>{ if(l && l.stage) byName[l.stage]=l; });
   runStages = pl ? pl.stages.map(s=>({...s}))
     : logs.filter(l=>l.stage!=='环境清理').map((l,i)=>({id:'replay-st'+i, name:l.stage, dur:5, sub:[]}));
-  nodes={};
-  runStages.forEach(s=>{
-    const l=byName[s.name];
-    const st=l?(l.status||'idle'):'idle';
-    nodes[s.id]={status:st, progress:st==='success'?100:0, dur:(l && l.dur)||0, sub:{}};
-  });
+  rebuildReplayNodes(rec);
   selectedId=runStages.length?runStages[0].id:null;
   /* 主控区其余项同步为该次运行的取值：环境多选按 IP 匹配（同历史重跑），仓库/分支/策略/执行人直接回填 */
   const ips=String(rec.env||'').split('，').map(x=>x.trim()).filter(Boolean);
@@ -3617,7 +3638,7 @@ function enterHistoryReplay(rec){
   const rt=$('replayTip'); if(rt) rt.textContent='正在回放历史 #'+rec.no+'「'+rec.pipeline+'」 · 再次点击该行退出';
   _detailKey='';   // 详情渲染缓存失效，强制按回放数据重绘
   renderFlow(); renderDetail();
-  loadReplayLogs(rec).then(()=>{ if(replayRec===rec){ _detailKey=''; renderDetail(); } });   // 按需拉取归档日志文件，完成后重绘
+  loadReplayLogs(rec).then(()=>{ if(replayRec===rec){ rebuildReplayNodes(rec); _detailKey=''; renderFlow(); renderDetail(); } });   // 按需拉取归档日志 + 校正阶段状态，完成后重算节点并重绘编排/详情
 }
 function exitHistoryReplay(){
   if(!replayRec) return;
@@ -3636,7 +3657,7 @@ function renderReplayDetail(rec){
   $('detailTitle').textContent = s.name + ' · 阶段详情';
   const badge=$('detailBadge'); badge.innerHTML='';
   const map={idle:['未开始',''], running:['进行中','dshell-badgeWait'], skipped:['跳过',''],
-    success:['成功','dshell-badgeDone'], failed:['失败','dshell-badgeDone'], aborted:['已中止','']};
+    success:['已完成','dshell-badgeDone'], failed:['错误','dshell-badgeDone'], aborted:['终止','']};
   const [txt,cls]=map[n.status]||['未开始',''];
   const b=document.createElement('span');
   if(n.status==='failed'){ b.className='dshell-badge'; b.style.color='var(--st-err)'; b.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
@@ -3878,7 +3899,7 @@ $('histFilterKw').addEventListener('input', e=>{ histFilter.kw=e.target.value; h
 $('histFilterStatus').addEventListener('change', e=>{ histFilter.status=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterPipeline').addEventListener('change', e=>{ histFilter.pipeline=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
-function labelOf(s){ return {success:'成功',failed:'失败',aborted:'已中止'}[s]||s; }
+function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
 /* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
 function fmtHistTime(h){
   if(!h.ts) return h.time||'';
@@ -4057,7 +4078,7 @@ $('stopBtn').addEventListener('click', ()=>{
   if(timer){ clearInterval(timer); timer=null; }
   // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
-  // 被中断的运行中阶段置为 aborted（保留已运行进度/耗时/变量），详情面板如实展示「已中止」而非误显「未开始」
+  // 被中断的运行中阶段置为 aborted（保留已运行进度/耗时/变量），详情面板如实展示「终止」而非误显「未开始」
   activeStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running')) nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
   finish('aborted');
   applyStatusClasses(); renderDetail();
