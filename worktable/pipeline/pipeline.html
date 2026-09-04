@@ -593,7 +593,7 @@
           <input id="plModelName" class="dshell-input" placeholder="model_name" autocomplete="off" style="width:160px;" title="普罗数据采集的模型名（运行时注入环境变量 MODEL_NAME）" />
           <input id="plXdsNamespace" class="dshell-input" placeholder="xds_namespace（默认 ${DEPLOY_STRATEGY}-${BY}）" autocomplete="off" style="width:220px;" title="普罗数据采集的命名空间（运行时注入环境变量 XDS_NAMESPACE）；默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时解析），可改填实际命名空间" />
         </div>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（轮询 EvalTokens 服务任务到终态）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，轮询到终态）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -1993,7 +1993,7 @@ function normalizeStageKind(s){
     else s.kind='simulate';
   }
   if(s.kind==='http'){ if(!s.url) s.url={url:'',outVars:''}; if(!s.script) s.script=null; if(!s.evaltokens) s.evaltokens=null; }
-  else if(s.kind==='evaltokens'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:''}; if(!s.script) s.script=null; if(!s.url) s.url=null; }
+  else if(s.kind==='evaltokens'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; if(!s.evaltokens.params) s.evaltokens.params=[]; if(!s.script) s.script=null; if(!s.url) s.url=null; }
   else { if(!s.url) s.url=null; if(!s.evaltokens) s.evaltokens=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
   /* 定时标记归一：sched 仅作「支持定时」标记（{}），周期跟随流水线定时计划；旧数据 true / {mode...} 一律归一为 {}，非法置空 */
   s.sched = s.sched ? {} : null;
@@ -2039,8 +2039,22 @@ function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-params]'); box.innerHTML='';
   const s=editStages[i]; if(!s) return;
-  /* HTTP / EvalTokens 阶段无脚本参数表单：HTTP 参数经 URL 的 {GIT_BRANCH} 等占位符传递，EvalTokens 任务在「设置」页 EvalTokens 服务配置 */
-  if(s.kind==='http'||s.kind==='evaltokens') return;
+  /* HTTP 阶段无脚本参数表单：参数经 URL 的 {GIT_BRANCH} 等占位符传递 */
+  if(s.kind==='http') return;
+  /* EvalTokens 阶段：展示选中任务自动识别的输入参数（只读参考——任务已创建，输入参数不可改） */
+  if(s.kind==='evaltokens'){
+    const ps=s.evaltokens && s.evaltokens.params;
+    if(!ps || !ps.length) return;
+    const title=document.createElement('span'); title.className='dshell-muted'; title.style.fontSize='11px'; title.textContent='任务输入参数（自动识别）';
+    box.appendChild(title);
+    ps.forEach(p=>{
+      const lab=document.createElement('label'); lab.className='dshell-muted';
+      lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+      lab.innerHTML=esc(p.label)+' <input class="dshell-input" value="'+esc(p.def)+'" readOnly title="任务创建时的输入参数（选中任务后自动识别，只读参考）" style="width:150px;font-size:11px;color:var(--dsw-alias-label-tertiary);" />';
+      box.appendChild(lab);
+    });
+    return;
+  }
   if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
     /* 识别到的默认值以可编辑文本填入框中（未改动时弱化色显示，仅为展示：不写进 values、不随执行下发，
@@ -2114,14 +2128,21 @@ function renderStageActionRow(i){
   }
   if(s.kind==='evaltokens'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='EvalTokens 任务';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（可点「选择」从列表取）'; inp.style.width='220px';
-    inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要轮询等待的任务：填任务 ID（优先）或名称；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌周期 GET /api/open/v1/tasks，匹配到该任务并等待其到终态（成功/失败）后推进，捕获任务字段为输出变量；可点「选择」从任务列表取 ID';
+    /* 输入框 + 选择按钮 + 下拉面板置于同一 relative 容器：聚焦输入框自动拉取任务列表（可搜索），
+       选中后回填 taskId/taskName 并自动识别任务输入参数；点容器外关闭面板 */
+    const pickWrap=document.createElement('span'); pickWrap.style.cssText='position:relative;display:inline-flex;align-items:center;gap:4px;';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表）'; inp.style.width='200px';
+    inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要轮询等待的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌周期 GET /api/open/v1/tasks，匹配到该任务并等待其到终态（成功/失败）后推进，捕获任务字段为输出变量';
     const pick=document.createElement('button'); pick.className='dshell-btn dshell-btnGhost mini'; pick.type='button'; pick.setAttribute('data-act','etPick'); pick.textContent='选择';
+    const panel=document.createElement('div'); panel.setAttribute('data-etpick-panel','1'); panel.style.cssText='display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:280px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);';
+    pickWrap.appendChild(inp); pickWrap.appendChild(pick); pickWrap.appendChild(panel);
+    inp.addEventListener('focus', ()=>{ if(panel.style.display==='none') openEvaltokPicker(i); });
+    inp.addEventListener('input', ()=>{ if(panel.style.display!=='none') renderEvaltokPickerPanel(i, inp.value); });
     const nm=document.createElement('span'); nm.className='dshell-muted'; nm.style.fontSize='11px'; nm.textContent=(s.evaltokens&&s.evaltokens.taskName)?('· '+s.evaltokens.taskName):'';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('任务字段'));
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status / TASK_ID=* / CREATED=created_at'; outInp.style.width='200px';
     outInp.title='本任务字段产出变量的下传命名（逗号分隔）：留空=任务顶层标量字段全部按原名下传；STATUS=status 表示把任务 status 改名为 STATUS；来源也可写 JSON 路径取任务对象的嵌套字段（如 items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把整条任务 JSON 整体赋给指定变量（如 TASK=*）；下游阶段参数值可填 ${STATUS} 引用';
-    box.appendChild(lab); box.appendChild(inp); box.appendChild(pick); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); return;
+    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
@@ -2149,7 +2170,7 @@ function setStageKind(i,k){
   if(['simulate','shell','python','http','evaltokens'].indexOf(k)<0) return;
   s.kind=k;
   if(k==='http'){ if(!s.url) s.url={url:'',outVars:''}; }
-  else if(k==='evaltokens'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:''}; }
+  else if(k==='evaltokens'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; if(!s.evaltokens.params) s.evaltokens.params=[]; }
   else if(k!=='simulate' && s.script){ s.script.lang=(k==='python')?'py':'sh'; }
   /* 类型按钮选中态同步：整行不重渲染（避免输入失焦），仅切换 .sel 类 */
   const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){
@@ -3190,6 +3211,57 @@ async function evaltokFetchTasks(e){
   }
   return Array.isArray(data)?data:(Array.isArray(data.data)?data.data:(Array.isArray(data.tasks)?data.tasks:(Array.isArray(data.list)?data.list:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[])))));
 }
+/* 任务列表缓存（15s TTL，多阶段编辑器打开 / 多次聚焦输入框时避免重复拉取） */
+let evaltokTasksCache={tasks:null, ts:0};
+async function evaltokFetchTasksCached(){
+  const now=Date.now();
+  if(evaltokTasksCache.tasks && now-evaltokTasksCache.ts<15000) return evaltokTasksCache.tasks;
+  const tasks=await evaltokFetchTasks(evaltokConfig());
+  evaltokTasksCache={tasks, ts:now};
+  return tasks;
+}
+/* 从 EvalTokens 任务对象提取输入参数：兼容 input/inputs/params/parameters/args/config/arguments 等常见字段名，
+   对象取键值对、数组取 {name|key, value|def|default} 元素，供阶段编辑器「识别参数」只读展示 */
+function detectEvaltokTaskParams(task){
+  if(!task || typeof task!=='object') return [];
+  const fields=['input','inputs','params','parameters','args','arguments','config','input_params','task_params','task_input','input_args','payload','metadata'];
+  let raw=null;
+  for(const f of fields){ const v=task[f]; if(v!==undefined && v!==null){ raw=v; break; } }
+  if(raw==null) return [];
+  const params=[]; const seen={};
+  const add=(k,v)=>{
+    k=String(k); if(!k || seen[k]) return; seen[k]=1;
+    if(v && typeof v==='object') try{ v=JSON.stringify(v); }catch(_){ v=String(v); }
+    params.push({key:k, label:k, def:String(v), required:false});
+  };
+  if(Array.isArray(raw)){
+    raw.forEach((item,idx)=>{
+      if(item && typeof item==='object'){
+        const k=item.key||item.name||item.param||item.field||item.label||('参数'+(idx+1));
+        const v=item.value!==undefined?item.value:(item.def!==undefined?item.def:(item.default!==undefined?item.default:''));
+        add(k,v);
+      } else { add(String(item),''); }
+    });
+  } else if(typeof raw==='object'){
+    Object.keys(raw).forEach(k=>add(k, raw[k]));
+  }
+  return params;
+}
+/* 阶段编辑器：对已选任务的 evaltokens 阶段自动识别输入参数（拉取任务列表→匹配任务→提取参数）。
+   keepOnError：编辑器打开时置 true——服务未配置 / 拉取失败时保留已有参数不清空 */
+async function detectEvaltokStageParams(i, keepOnError){
+  const s=editStages[i]; if(!s||s.kind!=='evaltokens'||!s.evaltokens) return;
+  const tid=String(s.evaltokens.taskId||'').trim(); if(!tid) return;
+  try{
+    const tasks=await evaltokFetchTasksCached();
+    const idOf=t=>String(t.id||t.task_id||t.uuid||t._id||'');
+    const nameOf=t=>String(t.name||t.title||t.task_name||t.display_name||'');
+    const task=tasks.find(t=>idOf(t)===tid) || tasks.find(t=>nameOf(t)===tid) || null;
+    if(!task){ if(!keepOnError) s.evaltokens.params=[]; }
+    else{ s.evaltokens.params=detectEvaltokTaskParams(task); }
+  }catch(e){ if(!keepOnError) s.evaltokens.params=[]; }
+  renderStageParams(i);
+}
 /* EvalTokens 任务状态归类：成功 / 失败 / 运行中（大小写不敏感子串匹配，覆盖 success|done|completed|passed|finished 与 failed|error|cancel|abort|killed 等） */
 function evaltokStatusKind(st){
   const s=String(st||'').toLowerCase();
@@ -3197,28 +3269,57 @@ function evaltokStatusKind(st){
   if(/fail|error|cancel|abort|kill|stop|timeout/.test(s)) return 'failed';
   return 'running';
 }
-/* 编辑器「选择」按钮：拉取任务列表，在本阶段动作行内联渲染下拉选择，选中后回填 taskId/taskName */
-async function pickEvaltokTask(i){
+/* 编辑器 evalTokens 任务选择面板：聚焦输入框 / 点「选择」按钮时拉取任务列表并渲染可搜索下拉，
+   选中任务后回填 taskId/taskName 并自动识别任务输入参数（复用「设置」页 EvalTokens 服务配置 + Bearer 令牌） */
+async function openEvaltokPicker(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children)?wrap.children[i]:null; if(!row) return;
   const box=row.querySelector('[data-action]'); if(!box) return;
-  const s=editStages[i]; if(!s) return;
-  const old=box.querySelector('[data-etpick]'); if(old){ old.remove(); return; }   // 再次点击收起已展开的选择器
-  const tip=document.createElement('span'); tip.className='dshell-muted'; tip.style.fontSize='11px'; tip.textContent='拉取中…'; tip.setAttribute('data-etpick','1'); box.appendChild(tip);
+  const panel=box.querySelector('[data-etpick-panel]'); if(!panel) return;
+  const s=editStages[i]; if(!s||!s.evaltokens) return;
+  panel.style.display='block';
+  panel.innerHTML='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">拉取中'+loadingDots()+'</div>';
   try{
-    const tasks=await evaltokFetchTasks(evaltokConfig());
-    if(!tasks.length){ tip.textContent='（无任务）'; return; }
-    tip.remove();
-    const sel=document.createElement('select'); sel.className='dshell-input'; sel.setAttribute('data-etpick','1'); sel.style.maxWidth='300px'; sel.style.fontSize='11px';
-    const opt=document.createElement('option'); opt.value=''; opt.textContent='— 选择任务（共 '+tasks.length+' 个）—'; sel.appendChild(opt);
-    tasks.forEach(t=>{
-      const id=String(t.id||t.task_id||t.uuid||t._id||'');
-      const name=String(t.name||t.title||t.task_name||t.display_name||'');
-      const st=String(t.status||t.state||t.task_status||'');
-      const o=document.createElement('option'); o.value=id||name; o.textContent=(id||name)+' — '+(name||id)+(st?(' ['+st+']'):''); sel.appendChild(o);
-    });
-    sel.addEventListener('change',()=>{ const v=sel.value; if(!v) return; const t=tasks.find(x=>String(x.id||x.task_id||x.uuid||x._id||'')===v||String(x.name||x.title||x.task_name||x.display_name||'')===v); if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:''}; s.evaltokens.taskId=t?String(t.id||t.task_id||t.uuid||t._id||''):''; s.evaltokens.taskName=t?String(t.name||t.title||t.task_name||t.display_name||''):''; renderStageActionRow(i); });
-    box.appendChild(sel);
-  }catch(e){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+(e&&e.message?e.message:e); }
+    const tasks=await evaltokFetchTasksCached();
+    s._etTasks=tasks;   /* 暂存供输入框过滤面板用（_ 前缀=瞬态，不持久化） */
+    renderEvaltokPickerPanel(i, '');
+  }catch(e){
+    panel.innerHTML='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+(e&&e.message?e.message:e)+'</div>';
+  }
+}
+/* 渲染任务选择面板内容：按输入框文本过滤，点击项回填并触发参数识别 */
+function renderEvaltokPickerPanel(i, q){
+  const wrap=$('plStageList'); const row=(wrap && wrap.children)?wrap.children[i]:null; if(!row) return;
+  const box=row.querySelector('[data-action]'); if(!box) return;
+  const panel=box.querySelector('[data-etpick-panel]'); if(!panel) return;
+  const s=editStages[i]; if(!s) return;
+  const tasks=(s._etTasks)||[];
+  const idOf=t=>String(t.id||t.task_id||t.uuid||t._id||'');
+  const nameOf=t=>String(t.name||t.title||t.task_name||t.display_name||'');
+  const stOf=t=>String(t.status||t.state||t.task_status||t.phase||'');
+  if(!tasks.length){ panel.innerHTML='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">（无任务）</div>'; panel.style.display='block'; return; }
+  const ql=(q||'').toLowerCase();
+  const filtered=tasks.filter(t=>{ const id=idOf(t),nm=nameOf(t); return !ql||id.toLowerCase().indexOf(ql)>=0||nm.toLowerCase().indexOf(ql)>=0; }).slice(0,200);
+  let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:2px;">'
+    +'<span class="dshell-muted" style="font-size:10px;">共 '+tasks.length+' 个任务'+(q?(' · 匹配 '+filtered.length):'')+'</span>'
+    +'<span data-etpickrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
+  if(!filtered.length){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配</div>'; }
+  else{
+    h+=filtered.map(t=>{
+      const id=idOf(t),nm=nameOf(t),st=stOf(t);
+      const sel=(s.evaltokens&&s.evaltokens.taskId===id);
+      return '<div data-etpick-item="'+esc(id||nm)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;'+(sel?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(id||nm)+' — '+esc(nm||id)+(st?(' ['+esc(st)+']'):'')+'</div>';
+    }).join('');
+  }
+  panel.innerHTML=h; panel.style.display='block';
+  panel.querySelectorAll('[data-etpick-item]').forEach(el=>el.addEventListener('click', ()=>{
+    const v=el.getAttribute('data-etpick-item'); const t=tasks.find(x=>idOf(x)===v||nameOf(x)===v); if(!t) return;
+    if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]};
+    s.evaltokens.taskId=idOf(t); s.evaltokens.taskName=nameOf(t);
+    s.evaltokens.params=detectEvaltokTaskParams(t);   /* 选中任务后自动识别其输入参数 */
+    panel.style.display='none';
+    renderStageActionRow(i); renderStageParams(i);
+  }));
+  const rb=panel.querySelector('[data-etpickrefresh]'); if(rb) rb.addEventListener('click', ()=>{ evaltokTasksCache={tasks:null,ts:0}; openEvaltokPicker(i); });
 }
 /* EvalTokens 阶段运行：周期拉取任务列表，匹配 taskId（优先；未命中则把所填值当名称匹配）或 taskName，等待终态后推进；
    捕获任务字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
@@ -3999,7 +4100,7 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?{taskId:s.evaltokens.taskId,taskName:s.evaltokens.taskName,outVars:(s.evaltokens.outVars||'')}:null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉 */
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?{taskId:s.evaltokens.taskId,taskName:s.evaltokens.taskName,outVars:(s.evaltokens.outVars||''),params:[]}:null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化，编辑器打开时自动重新识别 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   /* 收集普罗数据：按流水线配置回填（无配置用默认，xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY}） */
   const pp = (p && p.prom) ? Object.assign({}, DEFAULT_PIPELINE_PROM, p.prom) : DEFAULT_PIPELINE_PROM;
@@ -4010,7 +4111,11 @@ function openPlForm(id, focusIdx){
     renderStageEditor();
     /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
        重新识别刷新 placeholder 展示；用户真实改动由 detectStageParams 内部合并保留（keepOnError 防止脚本暂不可读时清空） */
-    await Promise.all(editStages.map((s,i)=>((s.script&&s.script.path)?detectStageParams(i,true):null)));
+    await Promise.all(editStages.map((s,i)=>{
+      if(s.kind==='evaltokens'&&s.evaltokens&&s.evaltokens.taskId) return detectEvaltokStageParams(i,true);
+      if(s.script&&s.script.path) return detectStageParams(i,true);
+      return null;
+    }));
   });
   $('plName').focus();
 }
@@ -4162,7 +4267,7 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
-  else if(act==='etPick'){ pickEvaltokTask(i); }
+  else if(act==='etPick'){ const panel=btn.closest('[data-action]').querySelector('[data-etpick-panel]'); if(panel && panel.style.display!=='none') panel.style.display='none'; else openEvaltokPicker(i); }
 });
 $('plStageList').addEventListener('change', (e)=>{
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
@@ -4181,8 +4286,8 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
   else if(f==='urlOutVars'){ if(!s.url) s.url={url:'',outVars:''}; s.url.outVars=e.target.value; }
-  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:''}; s.evaltokens.taskId=e.target.value.trim(); }
-  else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:''}; s.evaltokens.outVars=e.target.value; }
+  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.taskId=e.target.value.trim(); s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入任务 ID/名称后自动识别输入参数（异步，失败保留空） */
+  else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.outVars=e.target.value; }
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
 });
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
@@ -4280,6 +4385,8 @@ document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('b
 $('deployStrategyName').addEventListener('focus', ()=>{ renderStrategyPanel(true); loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
 $('deployStrategyName').addEventListener('input', ()=>{ if($('strategyPanel').style.display==='none'){ loadDeployStrategies().then(()=>renderStrategyPanel()); } else { renderStrategyPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$('strategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+/* evalTokens 任务选择面板（阶段编辑器内动态生成）：点容器外关闭（输入框 + 选择按钮 + 面板在同一 relative 容器内） */
+document.addEventListener('click', (e)=>{ document.querySelectorAll('[data-etpick-panel]').forEach(p=>{ const wrap=p.parentElement; if(p.style.display!=='none' && wrap && !wrap.contains(e.target)) p.style.display='none'; }); });
 /* 定时页控制区：与主控同一套交互（环境多选 / 代码仓切换 / 分支Tag / 部署策略面板，点外关闭）；
    「先清理环境」与主控同一开关——改定时页勾选即写回主控并持久化（saveCleanup 内反向同步显示） */
 $('schedEnvMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('schedEnvMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
