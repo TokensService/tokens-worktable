@@ -529,6 +529,35 @@
         </table>
       </div>
     </div>
+    <!-- 普罗数据（Prometheus）服务配置：时序指标数据源连接模式 + 测试连接 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px">普罗数据（Prometheus）服务配置 <span class="dshell-muted">时序指标数据源 · 连接模式 + 测试连接</span></h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
+        Prometheus 提供时序指标 HTTP API（<code>/api/v1/query</code>、<code>/api/v1/query_range</code>），供诊断性能页与流水线指标拉取。
+        「本地浏览器连接」：浏览器直接请求 Prometheus API（需 Prometheus 允许跨域 CORS 或与本页同源，否则跨域请求被拦截）。
+        「远程服务器端连接」：由 DSH 服务端经 <code>/api/worktable/proxy</code> 代连 Prometheus，浏览器不直连；仅允许回环 / 内网地址。
+      </p>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">数据源地址
+          <input id="pmUrl" class="dshell-input" placeholder="http://192.168.10.6:25889" style="width:240px;" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">链接地址
+          <input id="pmLinkUrl" class="dshell-input" placeholder="真实 Prometheus 地址，留空则用上方数据源地址" style="width:240px;" title="「打开 / 复制链接」用的真实 Prometheus 地址；留空则用上方的数据源地址" />
+        </label>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <span class="dshell-muted" style="font-size:11px;">连接模式</span>
+        <div class="jk-mode" role="group" style="display:inline-flex; border:1px solid var(--dsw-alias-border-l2); border-radius:8px; overflow:hidden;">
+          <button id="pmModeLocal" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="local">本地浏览器连接</button>
+          <button id="pmModeRemote" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="remote">远程服务器端连接</button>
+        </div>
+        <button id="pmTest" class="dshell-btn mini" type="button">测试连接</button>
+        <span id="pmTestTip" class="dshell-muted" style="font-size:11px;"></span>
+        <span style="flex:1"></span>
+        <button id="pmSave" class="dshell-btn mini">保存</button>
+        <span id="pmSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+    </div>
   </div><!-- /pageEnv -->
 
   <!-- 测试任务（独立页面：evalscope 模型评估 / 性能测试任务的增删改查与执行） -->
@@ -842,7 +871,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evalscope, archiveDir, archiveScriptName, analysisPrompts, testCases, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evalscope, prom, archiveDir, archiveScriptName, analysisPrompts, testCases, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
@@ -874,6 +903,7 @@ async function loadServerState(){
       if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
       if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
       if(cfg.evalscope && typeof cfg.evalscope==='object') evalscope=Object.assign({}, DEFAULT_EVALSCOPE, cfg.evalscope);
+      if(cfg.prom && typeof cfg.prom==='object') prom=Object.assign({}, DEFAULT_PROM, cfg.prom);
       if(typeof cfg.archiveDir==='string'){ archiveDir=cfg.archiveDir; $('archiveDir').value=archiveDir; }
       if(typeof cfg.archiveScriptName==='string'){ archiveScriptName=cfg.archiveScriptName; $('archiveScriptName').value=archiveScriptName; }
       if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
@@ -897,6 +927,7 @@ async function loadServerState(){
         localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
         localStorage.setItem('pip-jenkins', JSON.stringify(jenkins));
         localStorage.setItem('pip-evalscope', JSON.stringify(evalscope));
+        localStorage.setItem('pip-prom', JSON.stringify(prom));
         localStorage.setItem('pip-archiveDir', archiveDir);
         localStorage.setItem('pip-archiveScript', archiveScriptName);
         localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts));
@@ -2001,6 +2032,61 @@ async function listEvalscopeReports(){
     const em = (err && err.message) ? err.message : String(err);
     tip.style.color='var(--log-err)';
     tip.textContent='✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达，请切「远程服务器端连接」由 DSH 服务端代连' : '');
+  }
+}
+
+/* ---------- 普罗数据（Prometheus）服务配置（设置页内卡片）：连接模式 + 测试连接 ----------
+   本地浏览器连接：浏览器直接请求 Prometheus API（需 Prometheus 允许跨域 CORS 或同源）；
+   远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连 Prometheus（仅回环/内网）。 */
+const DEFAULT_PROM = { url:'http://192.168.10.6:25889', linkUrl:'', mode:'local' };
+function loadProm(){
+  try{ const a=JSON.parse(localStorage.getItem('pip-prom')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_PROM, a); }catch(e){}
+  return Object.assign({}, DEFAULT_PROM);
+}
+let prom = loadProm();
+function saveProm(){ try{ localStorage.setItem('pip-prom', JSON.stringify(prom)); }catch(e){} persistState(); }
+function applyPromForm(){
+  $('pmUrl').value = prom.url || DEFAULT_PROM.url;
+  $('pmLinkUrl').value = prom.linkUrl || '';
+  setPromMode(prom.mode);
+}
+function setPromMode(m){
+  prom.mode = (m==='remote') ? 'remote' : 'local';
+  $('pmModeLocal').classList.toggle('sel', prom.mode==='local');
+  $('pmModeRemote').classList.toggle('sel', prom.mode==='remote');
+}
+function collectPromForm(){
+  return {
+    url: ($('pmUrl').value||'').trim() || DEFAULT_PROM.url,
+    linkUrl: ($('pmLinkUrl').value||'').trim(),
+    mode: prom.mode,
+  };
+}
+/* 测试连接：本地模式浏览器直连 Prometheus 的 /api/v1/status/buildinfo（跨域无 CORS 会抛 TypeError，提示切远程）；远程模式经 /api/worktable/proxy 代连 */
+async function testProm(){
+  const p = collectPromForm();
+  const tip = $('pmTestTip');
+  tip.style.color = ''; tip.textContent = '测试中…';
+  const api = p.url.replace(/\/+$/,'') + '/api/v1/status/buildinfo';
+  try {
+    let data;
+    if (p.mode === 'local') {
+      const r = await fetch(api, { cache:'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      data = await r.json();
+    } else {
+      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: api, method:'GET', headers:{} }) });
+      const pr = await r.json();
+      if (pr && pr.error) { tip.style.color='var(--log-err)'; tip.textContent='✗ ' + pr.error; return; }
+      if ((pr.status||0) !== 200) throw new Error('HTTP ' + (pr.status||0));
+      data = JSON.parse(pr.body || '{}');
+    }
+    const ver = (data && data.data && data.data.version) ? data.data.version : '';
+    tip.style.color = 'var(--log-ok)'; tip.textContent = '✓ Prometheus 可达' + (ver ? '（版本 ' + ver + '）' : '');
+  } catch (err) {
+    const em = (err && err.message) ? err.message : String(err);
+    tip.style.color = 'var(--log-err)';
+    tip.textContent = '✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达：浏览器地址栏能直接打开数据源即为 CORS，请切「远程服务器端连接」由 DSH 服务端代连' : '');
   }
 }
 
@@ -4353,6 +4439,15 @@ $('esSave').addEventListener('click', ()=>{
   evalscope = collectEvalscopeForm(); saveEvalscope();
   $('esSavedTip').textContent='已保存。'; setTimeout(()=>{ $('esSavedTip').textContent=''; },2000);
 });
+/* 普罗数据（Prometheus）服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
+applyPromForm();
+$('pmModeLocal').addEventListener('click', ()=>setPromMode('local'));
+$('pmModeRemote').addEventListener('click', ()=>setPromMode('remote'));
+$('pmTest').addEventListener('click', testProm);
+$('pmSave').addEventListener('click', ()=>{
+  prom = collectPromForm(); saveProm();
+  $('pmSavedTip').textContent='已保存。'; setTimeout(()=>{ $('pmSavedTip').textContent=''; },2000);
+});
 /* 页面切换（流水线 / 定时 / 设置） */
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
@@ -4436,6 +4531,7 @@ function renderAll(){
   fillCfgForm();
   applyJenkinsForm();
   applyEvalscopeForm();
+  applyPromForm();
   renderTestCases();
 }
 renderAll();
