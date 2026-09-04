@@ -490,12 +490,12 @@
         </table>
       </div>
     </div>
-    <!-- EvalScope Web 服务配置：可视化看板（evalscope service，默认 9000）连接模式 + 测试连接 + 打开看板 -->
+    <!-- EvalScope Web 服务配置：可视化看板（evalscope service，默认 9000）连接模式 + 测试连接 + 获取任务列表 -->
     <div class="dshell-card" style="margin-top:10px;">
-      <h2 class="dshell-sub" style="margin:0 0 8px">EvalScope Web 服务配置 <span class="dshell-muted">可视化看板 · 连接模式 + 测试连接</span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">EvalScope Web 服务配置 <span class="dshell-muted">可视化看板 · 连接模式 + 测试连接 + 获取任务列表</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
         EvalScope 提供 <code>evalscope service</code> 可视化看板（<code>pip install 'evalscope[service]'</code> 后执行，默认 <code>http://127.0.0.1:9000</code>），用于多维度对比评估 / 性能测试报告。测试任务运行成功后可在回显区点「查看报告」打开本看板。
-        「本地浏览器连接」：浏览器直接打开 / 请求看板（需看板允许跨域 CORS 或与本页同源，否则跨域请求被拦截，但「打开看板」直接跳转不受 CORS 限制）。
+        「本地浏览器连接」：浏览器直接请求看板 API（需看板允许跨域 CORS 或与本页同源，否则跨域请求被拦截；evalscope service 默认开启 CORS，本地直连通常可用）。
         「远程服务器端连接」：由 DSH 服务端经 <code>/api/worktable/proxy</code> 代连看板，浏览器不直连；仅允许回环 / 内网地址。
       </p>
       <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
@@ -503,7 +503,7 @@
           <input id="esUrl" class="dshell-input" placeholder="http://127.0.0.1:9000" style="width:220px;" />
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">链接地址
-          <input id="esLinkUrl" class="dshell-input" placeholder="真实看板地址，留空则用上方看板地址" style="width:240px;" title="「打开看板 / 查看报告」用的真实看板地址；留空则用上方的看板地址" />
+          <input id="esLinkUrl" class="dshell-input" placeholder="真实看板地址，留空则用上方看板地址" style="width:240px;" title="「获取任务列表 / 查看报告」用的真实看板地址；留空则用上方的看板地址" />
         </label>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
@@ -513,11 +513,20 @@
           <button id="esModeRemote" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="remote">远程服务器端连接</button>
         </div>
         <button id="esTest" class="dshell-btn mini" type="button">测试连接</button>
-        <button id="esOpen" class="dshell-btn dshell-btnGhost mini" type="button">打开看板</button>
         <span id="esTestTip" class="dshell-muted" style="font-size:11px;"></span>
         <span style="flex:1"></span>
         <button id="esSave" class="dshell-btn mini">保存</button>
         <span id="esSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+        <button id="esOpen" class="dshell-btn dshell-btnGhost mini" type="button">获取任务列表</button>
+        <span id="esReportsTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <div id="esReportsWrap" style="display:none; margin-top:8px; overflow:auto;">
+        <table class="dshell-table" id="esReportsTable">
+          <thead><tr><th>模型</th><th>数据集</th><th>样本数</th><th>时间</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
   </div><!-- /pageEnv -->
@@ -1886,7 +1895,7 @@ async function testJenkins(){
 }
 
 /* ---------- EvalScope Web 服务配置（可视化看板：evalscope service，默认 9000） ----------
-   本地浏览器连接：浏览器直接打开 / 请求看板（需看板允许跨域 CORS 或同源）；
+   本地浏览器连接：浏览器直接请求看板 API（需看板允许跨域 CORS 或同源）；
    远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连看板（仅回环/内网）。 */
 const DEFAULT_EVALSCOPE = { url:'http://127.0.0.1:9000', linkUrl:'', mode:'local' };
 function loadEvalscope(){
@@ -1937,12 +1946,62 @@ async function testEvalscope(){
     tip.textContent = '✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达：浏览器地址栏能直接打开看板即为 CORS，请切「远程服务器端连接」由 DSH 服务端代连' : '');
   }
 }
-/* 打开看板：用链接地址（留空则看板地址）在新标签打开（浏览器直接跳转，不受 CORS 限制） */
-function openEvalscopeDashboard(){
+/* 获取任务列表：经 /api/v1/reports 拉取评估报告（本地直连 / 远程走 proxy，复用连接模式），表格展示；「打开」链接到该 run 的 HTML 报告 */
+async function listEvalscopeReports(){
   const e = collectEvalscopeForm();
-  const u = (e.linkUrl || e.url || '').trim();
-  if (!u) { $('esTestTip').style.color='var(--log-err)'; $('esTestTip').textContent='✗ 未配置看板地址'; return; }
-  window.open(u, '_blank', 'noopener');
+  const openBase = (e.linkUrl || e.url || '').trim();
+  const wrap = $('esReportsWrap'); const tip = $('esReportsTip'); const tb = $('esReportsTable').querySelector('tbody');
+  tip.style.color=''; tip.textContent='拉取中…'; tb.innerHTML=''; wrap.style.display='none';
+  if (!openBase) { tip.style.color='var(--log-err)'; tip.textContent='✗ 未配置看板地址'; return; }
+  const api = e.url.replace(/\/+$/,'') + '/api/v1/reports?page=1&page_size=100';
+  try {
+    let data;
+    if (e.mode === 'local') {
+      const r = await fetch(api, { cache:'no-store' });
+      if (!r.ok) {
+        let msg = 'HTTP ' + r.status;
+        try { const j = await r.json(); if (j && j.error) msg = String(j.error) + '（HTTP ' + r.status + '）'; } catch (_) {}
+        throw new Error(msg);
+      }
+      data = await r.json();
+    } else {
+      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: api, method:'GET', headers:{} }) });
+      const p = await r.json();
+      if (p && p.error) throw new Error(p.error);
+      if ((p.status||0) !== 200) {
+        let msg = 'HTTP ' + (p.status||0);
+        try { const j = JSON.parse(p.body || '{}'); if (j && j.error) msg = String(j.error) + '（HTTP ' + (p.status||0) + '）'; } catch (_) {}
+        throw new Error(msg);
+      }
+      data = JSON.parse(p.body || '{}');
+    }
+    const reports = (data && data.reports) || [];
+    wrap.style.display='';
+    if (!reports.length) {
+      const tr=document.createElement('tr'); const td=document.createElement('td');
+      td.colSpan=5; td.className='dshell-muted'; td.textContent='（无报告）'; tr.appendChild(td); tb.appendChild(tr);
+    }
+    reports.forEach(rep => {
+      const tr=document.createElement('tr');
+      const tdM=document.createElement('td'); tdM.textContent=rep.model_name || rep.model_id || '-';
+      const tdD=document.createElement('td'); tdD.textContent=rep.dataset_pretty_name || rep.dataset_name || '-';
+      const tdN=document.createElement('td'); tdN.textContent=(rep.num_samples!=null?String(rep.num_samples):'-');
+      const tdT=document.createElement('td'); tdT.textContent=rep.timestamp ? new Date(rep.timestamp).toLocaleString() : '-';
+      const tdOp=document.createElement('td');
+      const link = openBase.replace(/\/+$/,'') + '/api/v1/reports/runs/' + encodeURIComponent(rep.run_id) + '/html';
+      const a=document.createElement('a'); a.href=link; a.target='_blank'; a.rel='noopener'; a.textContent='打开'; a.style.marginRight='8px';
+      const cp=document.createElement('button'); cp.className='dshell-btn dshell-btnGhost mini'; cp.type='button'; cp.textContent='复制链接';
+      cp.addEventListener('click', ()=>copyText(link, cp));
+      tdOp.appendChild(a); tdOp.appendChild(cp);
+      tr.appendChild(tdM); tr.appendChild(tdD); tr.appendChild(tdN); tr.appendChild(tdT); tr.appendChild(tdOp);
+      tb.appendChild(tr);
+    });
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ 共 ' + reports.length + ' 份报告' + (data.total!=null && data.total!==reports.length ? '（总计 ' + data.total + '）' : '');
+  } catch (err) {
+    const em = (err && err.message) ? err.message : String(err);
+    tip.style.color='var(--log-err)';
+    tip.textContent='✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达，请切「远程服务器端连接」由 DSH 服务端代连' : '');
+  }
 }
 
 /* ---------- Jenkins：拉取任务列表（本地直连 / 远程走 proxy，复用连接模式） ---------- */
@@ -4284,12 +4343,12 @@ $('jkSave').addEventListener('click', ()=>{
   $('jkSavedTip').textContent='已保存。'; setTimeout(()=>{ $('jkSavedTip').textContent=''; },2000);
 });
 $('jkJobs').addEventListener('click', listJenkinsJobs);
-/* EvalScope Web 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 打开看板 / 保存 */
+/* EvalScope Web 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 获取任务列表 / 保存 */
 applyEvalscopeForm();
 $('esModeLocal').addEventListener('click', ()=>setEvalscopeMode('local'));
 $('esModeRemote').addEventListener('click', ()=>setEvalscopeMode('remote'));
 $('esTest').addEventListener('click', testEvalscope);
-$('esOpen').addEventListener('click', openEvalscopeDashboard);
+$('esOpen').addEventListener('click', listEvalscopeReports);
 $('esSave').addEventListener('click', ()=>{
   evalscope = collectEvalscopeForm(); saveEvalscope();
   $('esSavedTip').textContent='已保存。'; setTimeout(()=>{ $('esSavedTip').textContent=''; },2000);
