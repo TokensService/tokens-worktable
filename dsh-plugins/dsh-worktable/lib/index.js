@@ -345,7 +345,7 @@ function apply(ctx) {
         }
         const abs = pathResolve(p);
         const stat = await import("node:fs/promises").then((m) => m.stat(abs));
-        if (stat.size > 20 * 1024 * 1024) {
+        if (stat.size > 256 * 1024 * 1024) {
           json(res, 413, { error: "file too large" });
           return;
         }
@@ -562,16 +562,26 @@ function apply(ctx) {
           const body = await readJsonBody(req);
           const config = body.config && typeof body.config === "object" && !Array.isArray(body.config) ? body.config : {};
           const history = Array.isArray(body.history) ? body.history.slice(0, 500) : [];
-          let text = JSON.stringify({ config, history });
-          while (text.length > 20 * 1024 * 1024 && history.length > 1) {
-            history.pop();
-            text = JSON.stringify({ config, history });
-          }
-          const fsx = await import("node:fs/promises");
-          await fsx.mkdir(dirname(PIPELINE_STORE), { recursive: true });
-          const tmp = PIPELINE_STORE + ".tmp";
-          await fsx.writeFile(tmp, text, "utf8");
-          await fsx.rename(tmp, PIPELINE_STORE);
+          await withStoreLock(async () => {
+            const disk = await readPipelineStore();
+            const diskCfg = disk.config && typeof disk.config === "object" && !Array.isArray(disk.config) ? disk.config : {};
+            const diskHistory = Array.isArray(disk.history) ? disk.history : [];
+            const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0);
+            if (clearedAt) config.histClearedAt = clearedAt;
+            config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0);
+            const keyOf = (r) => r && r.tag ? "tag:" + r.tag : r && r.ts ? "ts:" + r.ts : "no:" + (r && r.no) + ":" + (r && r.pipeline);
+            const seen = new Set(history.map(keyOf));
+            const serverOnly = diskHistory.filter((r) => !seen.has(keyOf(r)) && (clearedAt ? (Number(r && r.ts) || 0) > clearedAt : true));
+            const merged = history.concat(serverOnly);
+            merged.sort((a, b) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0));
+            if (merged.length > 500) merged.length = 500;
+            let text = JSON.stringify({ config, history: merged });
+            while (text.length > 20 * 1024 * 1024 && merged.length > 1) {
+              merged.pop();
+              text = JSON.stringify({ config, history: merged });
+            }
+            await writeJsonAtomic(PIPELINE_STORE, text);
+          });
           json(res, 200, { ok: true });
           return;
         }
@@ -589,6 +599,12 @@ function apply(ctx) {
     const tmp = file + ".tmp";
     await fsx.writeFile(tmp, text, "utf8");
     await fsx.rename(tmp, file);
+  }
+  let storeChain = Promise.resolve();
+  function withStoreLock(fn) {
+    const p = storeChain.then(fn);
+    storeChain = p.then(() => void 0, () => void 0);
+    return p;
   }
   async function readPlansFile() {
     try {
@@ -953,19 +969,22 @@ function apply(ctx) {
     return t + "\n[exit " + r.code + "]";
   }
   async function appendPipelineHistory(rec) {
-    const j = await readPipelineStore();
-    const cfg = j.config && typeof j.config === "object" && !Array.isArray(j.config) ? j.config : {};
-    const history = Array.isArray(j.history) ? j.history : [];
-    const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h) => Number(h && h.no) || 0), 0) + 1;
-    cfg.buildNo = no;
-    rec.no = no;
-    history.unshift(rec);
-    let text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
-    while (text.length > 20 * 1024 * 1024 && history.length > 1) {
-      history.pop();
-      text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
-    }
-    await writeJsonAtomic(PIPELINE_STORE, text);
+    await withStoreLock(async () => {
+      const j = await readPipelineStore();
+      const cfg = j.config && typeof j.config === "object" && !Array.isArray(j.config) ? j.config : {};
+      const history = Array.isArray(j.history) ? j.history : [];
+      const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h) => Number(h && h.no) || 0), 0) + 1;
+      cfg.buildNo = no;
+      rec.no = no;
+      if (!rec.ts) rec.ts = Date.now();
+      history.unshift(rec);
+      let text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
+      while (text.length > 20 * 1024 * 1024 && history.length > 1) {
+        history.pop();
+        text = JSON.stringify({ config: cfg, history: history.slice(0, 500) });
+      }
+      await writeJsonAtomic(PIPELINE_STORE, text);
+    });
   }
   async function execPlan(pl) {
     const t0 = Date.now();
@@ -991,14 +1010,22 @@ function apply(ctx) {
       }
     }
     const logs = [];
+    const histLogs = [];
     const profileStages = [];
     let status = "success";
+    const pushHist = (stage, st, text, logFile, durSec) => {
+      const e = { stage, status: st, dur: durSec };
+      if (logFile) e.logFile = logFile;
+      else e.log = text;
+      histLogs.push(e);
+    };
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now();
       const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool);
       const text = stageLogText(cfg.cleanupScript.name, r);
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, "\u73AF\u5883\u6E05\u7406", text) : null;
       logs.push({ stage: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", log: text });
+      pushHist("\u73AF\u5883\u6E05\u7406", r.code === 0 ? "success" : "failed", text, logFile, Math.round((Date.now() - st0) / 100) / 10);
       profileStages.push({ id: "__cleanup__", name: "\u73AF\u5883\u6E05\u7406", status: r.code === 0 ? "success" : "failed", durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile });
     }
     let seq = baseSeq + 1;
@@ -1021,6 +1048,7 @@ function apply(ctx) {
       }
       const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null;
       logs.push({ stage: s.name, status: entry.status, log: entry.text });
+      pushHist(s.name, entry.status, entry.text, logFile, Math.round((Date.now() - st0) / 100) / 10);
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: s.script && s.script.name || null, logFile });
       seq++;
       if (status === "failed") break;
@@ -1107,7 +1135,8 @@ function apply(ctx) {
       dur: durText((Date.now() - t0) / 1e3),
       time: "\u4ECA\u5929 " + hhmm(),
       by: pl.by || "schedule",
-      logs,
+      logs: histLogs,
+      ts: Date.now(),
       tag,
       archive: folder || null
     });
