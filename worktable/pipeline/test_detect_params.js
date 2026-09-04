@@ -79,7 +79,17 @@ const detect = context.detectParams;
   if (!im || im.label !== "镜像名") throw new Error("对齐空格标签应识别为「镜像名」，且不应被 docker 行冒号污染，得到 " + JSON.stringify(im));
   console.log("PASS: 注释标签识别（分隔符收紧，$IMAGE:$TAG 不误判）");
 
-  // ④ execScript：识别到的默认值（静态/动态一律）无显式值时不下发——静态默认不再注入 env（不压过运行级注入的
+  // ④ 标记为无位置参数的环境变量脚本，内部辅助函数的 $1/$2 不得生成页面参数。
+  const ps4 = detect([
+    '# pipeline: no-positional-args',
+    'run_remote() { local host=$1 port=$2; echo "$host:$port"; }',
+    'ACTION="${ACTION:-check-health}"',
+  ].join("\n"), "sh");
+  if (ps4.some((p) => p.kind === "pos")) throw new Error("no-positional-args 标记不应生成位置参数，得到 " + JSON.stringify(ps4));
+  if (!ps4.find((p) => p.kind === "env" && p.key === "ACTION")) throw new Error("no-positional-args 不应影响环境变量识别，得到 " + JSON.stringify(ps4));
+  console.log("PASS: no-positional-args 忽略内部位置参数");
+
+  // ⑤ execScript：识别到的默认值（静态/动态一律）无显式值时不下发——静态默认不再注入 env（不压过运行级注入的
   //    同名变量，此处 IMAGE_NAME 由 rc.image 兜底），dyn 默认不注入（交由脚本自身 :- 展开）、位置参数留空传空串
   await context.execScript({
     path: "/tmp/t.sh",

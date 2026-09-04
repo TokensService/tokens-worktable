@@ -1,5 +1,6 @@
 #!/bin/bash
 # bnt-standalone.sh - BNT (GPU) 环境标准化 · 单文件零依赖入口
+# pipeline: no-positional-args
 # ============================================================================
 # 把 wht_test_bnt 分支 xds_prechecker/bnt/ 下的全部标准化逻辑内联进一个
 # 纯 bash 脚本: 不依赖 python3 / fastapi / bnt 包 / bnt_config.json / HTTP API。

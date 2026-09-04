@@ -1936,6 +1936,7 @@ function detectPythonParams(src){
 }
 function detectParams(src, lang){
   if(lang==='py') return detectPythonParams(src);
+  const noPositionalArgs=/^\s*#\s*pipeline:\s*no-positional-args\s*$/mi.test(src);
   const labels=parseCommentLabels(src);
   const internal=internalAssignedVars(src);
   const pos={}; const envSeen={}; const envOrder=[];
@@ -1947,6 +1948,7 @@ function detectParams(src, lang){
     const def=(r.op===':-')?r.def.replace(/^["']|["']$/g,'').trim():'';
     const dyn=(r.op===':-')&&isDynDef(def);
     if(r.isPos){
+      if(noPositionalArgs) return;
       const n=parseInt(r.key,10); if(n<1) return;
       if(!(n in pos)) pos[n]={def:def, required:req, dyn:dyn};
       else { if(def && !pos[n].def){ pos[n].def=def; pos[n].dyn=dyn; } if(req) pos[n].required=true; }
