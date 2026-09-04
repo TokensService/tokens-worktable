@@ -62,6 +62,8 @@ with tempfile.TemporaryDirectory() as temp_dir:
     result = subprocess.run(
         [
             str(script),
+            "--action",
+            "collect",
             "--prometheus-url",
             f"http://127.0.0.1:{server.server_port}",
             "--start",
@@ -110,6 +112,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
     env.update(
         {
             "PROMETHEUS_URL": f"http://127.0.0.1:{server.server_port}",
+            "METRICS_ACTION": "collect",
             "VLLM_METRICS_START": "2024-01-01T00:00:00Z",
             "VLLM_METRICS_STEP": "5s",
             "NAMESPACE": "xds-env",

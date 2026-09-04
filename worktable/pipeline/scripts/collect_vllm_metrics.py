@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Collect vLLM/XDS Prometheus metrics for a specified time range."""
+"""Collect vLLM/XDS Prometheus metrics for a specified time range.
+
+Pipeline shared environment variables: NAMESPACE, MODEL_NAME, PROMETHEUS_URL,
+RUN_DIR. Collector-specific controls use VLLM_METRICS_* or METRICS_*.
+"""
 
 from __future__ import annotations
 
@@ -215,10 +219,10 @@ def default_output_dir() -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--action", choices=("start", "collect", "stop"),
-                        default=env_value("METRICS_ACTION", "VLLM_METRICS_ACTION", default="collect"),
+                        default=env_value("METRICS_ACTION", "VLLM_METRICS_ACTION", default="start"),
                         help="start 后台启动，collect 前台采集，stop 终止后台采集；环境变量 METRICS_ACTION")
     parser.add_argument("--start", default=os.getenv("VLLM_METRICS_START"),
-                        help="开始时间；环境变量 VLLM_METRICS_START")
+                        help="开始时间；未设置时取启动时刻，环境变量 VLLM_METRICS_START")
     parser.add_argument("--end", default=os.getenv("VLLM_METRICS_END"),
                         help="结束时间；未设置时持续采集，环境变量 VLLM_METRICS_END")
     parser.add_argument("--step", default=os.getenv("VLLM_METRICS_STEP", "5s"),
@@ -226,9 +230,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prometheus-url", default=env_value("PROMETHEUS_URL", "VLLM_METRICS_PROMETHEUS_URL", default="http://192.168.10.6:25889"),
                         help="环境变量 PROMETHEUS_URL（兼容 VLLM_METRICS_PROMETHEUS_URL）")
     parser.add_argument("--namespace", default=env_value("NAMESPACE", "VLLM_METRICS_NAMESPACE"),
-                        help="环境变量 NAMESPACE（兼容 VLLM_METRICS_NAMESPACE）")
+                        help="环境变量 NAMESPACE；未设置时不按命名空间筛选")
     parser.add_argument("--model-name", default=env_value("MODEL_NAME", "ARCH_NAME", "VLLM_METRICS_MODEL_NAME"),
-                        help="环境变量 MODEL_NAME；未设置时回退 ARCH_NAME")
+                        help="环境变量 MODEL_NAME；未设置时回退 ARCH_NAME，否则不按模型筛选")
     parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
     parser.add_argument("--output-dir", default=default_output_dir(),
