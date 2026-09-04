@@ -1014,7 +1014,7 @@ function migrateStageUrl(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s
 /* URL 请求阶段取值（兼容旧数据：kind:'jenkins' / jenkins.job 字段，见 migrateStageUrl/normalizeStageKind） */
 function stageUrlOf(s){ if(!s) return ''; if(s.url && s.url.url!==undefined) return String(s.url.url||''); return (s.jenkins && s.jenkins.job) ? String(s.jenkins.job) : ''; }
 /* 旧数据迁移：旧版识别器把脚本静态 :-默认值 预填进 values 作为显式值（压过运行级注入的同名变量）；
-   现默认值仅 placeholder 展示、不预填不下发，加载时清掉与识别默认值相同的 values 项（视为预填产物，见 cleanScriptValues） */
+   现默认值以可编辑文本填入参数框、未改动不写入 values 不下发，加载时清掉与识别默认值相同的 values 项（视为预填产物，见 cleanScriptValues） */
 function migratePrefillDefaults(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(s && s.script && s.script.values) s.script.values=cleanScriptValues(s.script.params, s.script.values); }); return p; }
 function loadPipelines(){
   let stored=null;
@@ -2202,7 +2202,7 @@ async function listJenkinsJobs(){
 }
 
 /* ---------- 环境清理脚本（在「设置」页配置；勾选主控「清理环境」后于流水线启动前执行） ---------- */
-/* 旧版识别器会把静态 :-默认值 预填进 values 作为显式值（压过运行级注入）；现默认值仅 placeholder 展示、不预填不下发。
+/* 旧版识别器会把静态 :-默认值 预填进 values 作为显式值（压过运行级注入）；现默认值填入参数框可编辑、未改动不预填不下发。
    加载存量数据时清掉与识别默认值相同的 values 项（视为预填产物），回到「留空=注入值/脚本默认兜底」语义 */
 function cleanScriptValues(params, values){
   const out={};
@@ -2226,15 +2226,19 @@ function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
   if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
   cleanupScript.params.forEach(p=>{
-    /* 识别到的默认值（静态/动态 dyn 一律）不预填：仅在 placeholder 展示，留空=自动注入的同名变量/脚本自身 :- 默认兜底；
-       填入=显式覆盖（与 renderStageParams 同一规则，见 execScript） */
-    const v=(cleanupScript.values && cleanupScript.values[p.key]!==undefined)?cleanupScript.values[p.key]:'';
+    /* 识别到的默认值以可编辑文本填入框中（未改动时弱化色显示，仅为展示：不写进 values、不随执行下发，
+       留空语义=自动注入的同名变量/脚本自身 :- 默认兜底，dyn 表达式未改动时同样不下发——注入后 shell 不会二次展开）；
+       在框中修改后作为显式值下发（优先级最高，与 renderStageParams 同一规则，见 execScript）；清空或改回与默认一致=恢复留空语义 */
+    const hasV=!!(cleanupScript.values && cleanupScript.values[p.key]!==undefined);
+    const v=hasV?cleanupScript.values[p.key]:(p.def||'');
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="留空=自动注入的同名变量兜底，未注入则由脚本自身默认值（placeholder）兜底；填入则显式覆盖" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="识别默认值已填入框中、可直接修改：修改后作为显式值下发（优先级最高）；清空或改回与默认一致=自动注入的同名变量兜底，未注入则由脚本自身 :- 默认值兜底" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
-    inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
+    if(!hasV && p.def) inp.style.color='var(--dsw-alias-label-tertiary)';   // 未改动的默认值弱化显示（主题变量适配浅色/深色）
+    inp.addEventListener('input',()=>{ inp.style.color=''; });
+    inp.addEventListener('change',()=>{ cleanupScript.values=cleanupScript.values||{}; if(!inp.value||inp.value===p.def) delete cleanupScript.values[p.key]; else cleanupScript.values[p.key]=inp.value; renderCleanupParams(); saveCleanup(); });
     box.appendChild(lab);
   });
 }
@@ -2375,8 +2379,8 @@ function detectParams(src, lang){
   const BUILT=/^(PATH|HOME|PWD|OLDPWD|USER|SHELL|LANG|TERM|RANDOM|LINENO|IFS|PPID|UID|EUID|BASH|BASH_VERSION|BASH_SOURCE|BASH_LINENO|FUNCNAME|PIPESTATUS|OSTYPE|HOSTNAME|HOSTTYPE|SHLVL|_|SECONDS|EPOCHREALTIME)$/;
   scanShellRefs(src).forEach(r=>{
     const req=(r.op===':?');
-    /* 带 :-默认值 的参数记录 def 供 placeholder 展示（不预填、不随执行下发，见 renderStageParams/execScript）；
-       含 $引用/$(命令) 的动态默认值（dyn）同样仅 placeholder 展示（见 isDynDef） */
+    /* 带 :-默认值 的参数记录 def 供参数框展示（未改动不预填、不随执行下发，见 renderStageParams/execScript）；
+       含 $引用/$(命令) 的动态默认值（dyn）同样仅框内展示（见 isDynDef） */
     const def=(r.op===':-')?r.def.replace(/^["']|["']$/g,'').trim():'';
     const dyn=(r.op===':-')&&isDynDef(def);
     if(r.isPos){
@@ -2463,16 +2467,20 @@ function renderStageParams(i){
   if(s.kind==='url') return;
   if(!s.script||!s.script.params) return;
   s.script.params.forEach(p=>{
-    /* 识别到的默认值（静态/动态 dyn 一律）不预填：仅在 placeholder 展示，留空=继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/
-       上游同名变量，未注入则由脚本自身 :- 默认兜底；填入=显式覆盖，优先级最高（见 execScript）。
-       dyn 表达式（含 $引用/$(命令)）注入后 shell 不会二次展开，也不能按字面值下发 */
-    const v=(s.script.values&&s.script.values[p.key]!==undefined)?s.script.values[p.key]:'';
+    /* 识别到的默认值以可编辑文本填入框中（未改动时弱化色显示，仅为展示：不写进 values、不随执行下发，
+       留空语义=继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/上游同名变量，未注入则由脚本自身 :- 默认兜底；
+       dyn 表达式（含 $引用/$(命令)）未改动时同样不下发——注入后 shell 不会二次展开，也不能按字面值下发）。
+       在框中修改后作为显式值下发（优先级最高，见 execScript）；清空或改回与默认一致=恢复留空语义 */
+    const hasV=!!(s.script.values&&s.script.values[p.key]!==undefined);
+    const v=hasV?s.script.values[p.key]:(p.def||'');
     const lab=document.createElement('label'); lab.className='dshell-muted';
     lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
     lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
-      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="留空=继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/上游同名变量，未注入则由脚本自身默认值（placeholder）兜底；填入则显式覆盖" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+      +' <input class="dshell-input" data-pkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="识别默认值已填入框中、可直接修改：修改后作为显式值下发（优先级最高）；清空或改回与默认一致=继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/上游同名变量，未注入则由脚本自身 :- 默认值兜底" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
     const inp=lab.querySelector('input');
-    inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; s.script.values[p.key]=inp.value; renderStageParams(i); });
+    if(!hasV && p.def) inp.style.color='var(--dsw-alias-label-tertiary)';   // 未改动的默认值弱化显示（主题变量适配浅色/深色）
+    inp.addEventListener('input',()=>{ inp.style.color=''; });
+    inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; if(!inp.value||inp.value===p.def) delete s.script.values[p.key]; else s.script.values[p.key]=inp.value; renderStageParams(i); });
     box.appendChild(lab);
   });
 }
@@ -2777,7 +2785,7 @@ function buildLog(stage, ctx, n){
   }
   if(stage.script && stage.script.path){
     const sc=stage.script;
-    const argStr=(sc.params||[]).filter(p=>p.kind==='pos').map(p=>(sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:'').join(' ').replace(/\s+$/,'');   // 与 execScript 一致：仅展示显式值，识别到的默认值（placeholder）不再预填/下发
+    const argStr=(sc.params||[]).filter(p=>p.kind==='pos').map(p=>(sc.values&&sc.values[p.key]!==undefined)?sc.values[p.key]:'').join(' ').replace(/\s+$/,'');   // 与 execScript 一致：仅展示显式值，识别到的默认值（参数框展示）未改动不预填/下发
     const interp=/\.py$/i.test(sc.name)?'python3':'bash';
     const lines=['$ '+interp+' '+sc.name+(argStr?(' '+argStr):'')];
     /* 与 execScript 下发规则一致：只展示显式配置的 env 参数（未配置的不下发，由运行级注入/脚本默认兜底） */
@@ -3261,7 +3269,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal){
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
     /* 参数值支持 ${VAR} 引用上游产出 / 运行级变量（见 substRunVars）；整值单个未定义引用按空值处理（env 参数空 = 继承上游同名变量）。
-       识别到的 :-默认值（静态/动态 dyn 一律）不下发：仅在编辑页 placeholder 展示；留空由运行级注入值/上游同名变量兜底，
+       识别到的 :-默认值（静态/动态 dyn 一律）不下发：仅在编辑页参数框展示（未改动不写入 values）；留空由运行级注入值/上游同名变量兜底，
        都未注入时交由脚本自身 :- 展开（dyn 表达式注入后 shell 不会二次展开，也不能按字面值下发）；位置参数同理（留空传空串）。 */
     const hasVal=(sc.values && sc.values[p.key]!==undefined);
     const raw=hasVal?sc.values[p.key]:'';
