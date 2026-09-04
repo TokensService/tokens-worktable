@@ -79,16 +79,25 @@ cat >"$work_dir/bin/ssh" <<'EOF'
 printf 'ssh %s\n' "$*" >>"$TEST_ACTION_LOG"
 EOF
 
-chmod +x "$work_dir/bin/scp" "$work_dir/bin/ssh"
+cat >"$work_dir/bin/sshpass" <<'EOF'
+#!/usr/bin/env bash
+printf 'sshpass password=%s command=%s\n' "$SSHPASS" "$*" >>"$TEST_ACTION_LOG"
+[[ "${1:-}" == '-e' ]] && shift
+"$@"
+EOF
+
+chmod +x "$work_dir/bin/scp" "$work_dir/bin/ssh" "$work_dir/bin/sshpass"
 : >"$work_dir/actions.log"
 
 PATH="$work_dir/bin:$PATH" \
 TEST_ACTION_LOG="$work_dir/actions.log" \
 LOG_FILE="$work_dir/bnt-remote.log" \
 ACTION=check-health \
+SSH_PASSWORD=test-password \
 TARGET_HOSTS='[{"ip":"192.0.2.10"},{"ip":"192.0.2.11"}]' \
 bash "$script" >"$work_dir/remote-output"
 
+grep -Fq 'sshpass password=test-password' "$work_dir/actions.log"
 grep -Fq 'root@192.0.2.10' "$work_dir/actions.log"
 grep -Fq 'root@192.0.2.11' "$work_dir/actions.log"
 grep -Fq 'REMOTE_EXECUTION=1' "$work_dir/actions.log"

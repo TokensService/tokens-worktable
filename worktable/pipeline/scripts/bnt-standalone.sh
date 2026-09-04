@@ -19,7 +19,7 @@
 #   TARGET_HOSTS=            逗号分隔 IP；也兼容 TARGET_HOSTS JSON 的 ip 字段
 #   SSH_USER=root            远端 SSH 用户
 #   SSH_PORT=22              远端 SSH 端口
-#   TARGET_PASSWORD=         远端密码
+#   SSH_PASSWORD=            远端密码（兼容 TARGET_PASSWORD）
 #   LOG_FILE=                日志路径
 #
 # 用法示例:
@@ -44,7 +44,7 @@ HUGEPAGE_PATH="${HUGEPAGE_PATH:-}"
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 SSH_USER="${SSH_USER:-root}"
 SSH_PORT="${SSH_PORT:-22}"
-TARGET_PASSWORD="${TARGET_PASSWORD:-}"
+SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
 REMOTE_EXECUTION="${REMOTE_EXECUTION:-0}"
 SSHD_PID=""
 HEALTH_PASS=0
@@ -606,18 +606,18 @@ do_standardize() {
 
 # ---------------- 远端执行 ----------------
 remote_scp() {
-    if [[ -n "$TARGET_PASSWORD" ]]; then
-        have sshpass || die "TARGET_PASSWORD 已设置但未找到 sshpass"
-        SSHPASS="$TARGET_PASSWORD" sshpass -e scp "$@"
+    if [[ -n "$SSH_PASSWORD" ]]; then
+        have sshpass || die "SSH_PASSWORD 已设置但未找到 sshpass"
+        SSHPASS="$SSH_PASSWORD" sshpass -e scp "$@"
     else
         scp "$@"
     fi
 }
 
 remote_ssh() {
-    if [[ -n "$TARGET_PASSWORD" ]]; then
-        have sshpass || die "TARGET_PASSWORD 已设置但未找到 sshpass"
-        SSHPASS="$TARGET_PASSWORD" sshpass -e ssh "$@"
+    if [[ -n "$SSH_PASSWORD" ]]; then
+        have sshpass || die "SSH_PASSWORD 已设置但未找到 sshpass"
+        SSHPASS="$SSH_PASSWORD" sshpass -e ssh "$@"
     else
         ssh "$@"
     fi
