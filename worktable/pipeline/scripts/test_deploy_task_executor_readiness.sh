@@ -53,6 +53,7 @@ chmod +x "$work_dir/bin/helm" "$work_dir/bin/kubectl" "$work_dir/bin/curl"
 
 EVENT_LOG="$work_dir/events.log" \
 CURL_PAYLOAD_FILE="$work_dir/model.payload.json" \
+DEPLOY_ON_TARGET_HOST=1 \
 RUN_DIR="$work_dir/run" \
 CHART_DIR="$work_dir/chart" \
 VALUES_FILE="$work_dir/values.yaml" \

@@ -2,9 +2,12 @@
 # Deploy the rendered chart, then register its rendered architecture request.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 ARCH_NAME="${ARCH_NAME:-default}"
+PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
 NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-local}"
 RELEASE_NAME="${RELEASE_NAME:-${NAMESPACE}}"
 CHART_DIR="${CHART_DIR:-${RENDER_DIR}/xds-cluster}"
@@ -14,6 +17,9 @@ ARCH_REQUEST_FILE="${ARCH_REQUEST_FILE:-${RENDER_DIR}/architecture.request.json}
 RESOURCE_MANIFEST="${RESOURCE_MANIFEST:-${RENDER_DIR}/resources.rendered.json}"
 NODE_LABELS_FILE="${NODE_LABELS_FILE:-${RENDER_DIR}/node-labels.json}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
+TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
+TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 XDS_URL="${XDS_URL:-}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
 MODEL_PATH="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
@@ -30,7 +36,115 @@ SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-./logs}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+remote_quote() {
+  printf '%q' "$1"
+}
+
+run_remote() {
+  local target="$1"
+  shift
+  if [[ -n "${REMOTE_SSH_PASSWORD:-}" ]]; then
+    SSHPASS="$REMOTE_SSH_PASSWORD" sshpass -e ssh \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+  else
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+  fi
+}
+
+sync_remote_file() {
+  local source="$1" destination="$2" target="$3"
+  local destination_dir
+  destination_dir="$(dirname "$destination")"
+  cat "$source" | run_remote "$target" \
+    "mkdir -p $(remote_quote "$destination_dir") && cat > $(remote_quote "$destination")"
+}
+
+deploy_from_target_host() {
+  local parsed target_ip target_user safe_target_hosts target remote_script_dir remote_script
+  local remote_env remote_xds_url remote_head_log_root remote_command
+
+  command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
+  parsed="$(python3 - "$TARGET_HOSTS" "${TARGET_PASSWORD:-}" <<'PY'
+import json
+import sys
+
+try:
+    hosts = json.loads(sys.argv[1])
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TARGET_HOSTS: {error}")
+if not isinstance(hosts, list) or not hosts:
+    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
+host = hosts[0]
+if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
+    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string")
+user = host.get("user") or "root"
+password = host.get("pass", host.get("password", sys.argv[2]))
+if not isinstance(user, str) or not user:
+    raise SystemExit("TARGET_HOSTS[0].user must be a string when specified")
+if password is None:
+    password = ""
+if not isinstance(password, str):
+    raise SystemExit("TARGET_HOSTS[0].pass must be a string when specified")
+safe_hosts = []
+for item in hosts:
+    if isinstance(item, dict) and isinstance(item.get("ip"), str) and item["ip"]:
+        safe_hosts.append({"ip": item["ip"], "user": item.get("user") or "root"})
+print(host["ip"], user, password, json.dumps(safe_hosts, separators=(",", ":")), sep="\t")
+PY
+)"
+  IFS=$'\t' read -r target_ip target_user REMOTE_SSH_PASSWORD safe_target_hosts <<<"$parsed"
+  target="${target_user}@${target_ip}"
+  remote_script_dir="${TARGET_RUN_DIR}/scripts"
+  remote_script="${remote_script_dir}/deploy-model.sh"
+  remote_xds_url="${XDS_URL:-http://${target_ip}:30079/xds/v1}"
+  remote_head_log_root="${TARGET_RUN_DIR}/logs"
+  remote_env="$(mktemp)"
+
+  {
+    printf 'export RUN_DIR=%q\n' "$TARGET_RUN_DIR"
+    printf 'export RENDER_DIR=%q\n' "$TARGET_RENDER_DIR"
+    printf 'export ARCH_NAME=%q\nexport PIPELINE_NAME=%q\n' "$ARCH_NAME" "$PIPELINE_NAME"
+    printf 'export NAMESPACE=%q\nexport RELEASE_NAME=%q\n' "$NAMESPACE" "$RELEASE_NAME"
+    printf 'export CHART_DIR=%q\n' "${TARGET_RENDER_DIR}/xds-cluster"
+    printf 'export VALUES_FILE=%q\n' "${TARGET_RENDER_DIR}/values.rendered.yaml"
+    printf 'export DEPLOY_VALUES_FILE=%q\n' "${TARGET_RUN_DIR}/values.deploy.yaml"
+    printf 'export ARCH_REQUEST_FILE=%q\n' "${TARGET_RENDER_DIR}/architecture.request.json"
+    printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
+    printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
+    printf 'export TARGET_HOSTS=%q\nexport XDS_URL=%q\n' "$safe_target_hosts" "$remote_xds_url"
+    printf 'export MODEL_NAME=%q\nexport MODEL_PATH=%q\n' "$MODEL_NAME" "$MODEL_PATH"
+    printf 'export HELM_BIN=%q\nexport KUBECTL_BIN=%q\nexport HELM_TIMEOUT=%q\n' "$HELM_BIN" "$KUBECTL_BIN" "$HELM_TIMEOUT"
+    printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
+    printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
+    printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS"
+    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
+  } >"$remote_env"
+
+  echo "[deploy] execution host delegates deployment to target host: $target_ip"
+  run_remote "$target" "mkdir -p $(remote_quote "$TARGET_RUN_DIR") $(remote_quote "$remote_script_dir")"
+  tar -C "$RENDER_DIR" -cf - . | run_remote "$target" \
+    "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
+  sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target"
+  sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target"
+  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target"
+  run_remote "$target" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh")"
+
+  remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
+  if ! run_remote "$target" "$remote_command"; then
+    rm -f "$remote_env"
+    return 1
+  fi
+  rm -f "$remote_env"
+  printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
+}
+
+if [[ "$DEPLOY_ON_TARGET_HOST" != "1" ]]; then
+  deploy_from_target_host
+  exit $?
+fi
 
 [[ -f "$CHART_DIR/Chart.yaml" ]] || { echo "Chart.yaml not found: $CHART_DIR" >&2; exit 2; }
 [[ -f "$VALUES_FILE" ]] || { echo "values file not found: $VALUES_FILE" >&2; exit 2; }
