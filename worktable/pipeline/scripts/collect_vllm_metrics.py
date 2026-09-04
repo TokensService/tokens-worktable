@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Collect vLLM/XDS Prometheus metrics for a specified time range."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import datetime as dt
+import json
+import re
+import sys
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import ProxyHandler, build_opener
+
+
+METRICS = (
+    "chat_je_inbound_request_latency_count",
+    "chat_je_inbound_request_latency_sum",
+    "chat_je_num_of_requests_in",
+    "chat_je_num_of_requests_out",
+    "fe_inbound_request_iops",
+    "fe_inbound_request_latency_count",
+    "fe_inbound_request_latency_sum",
+    "fe_num_inbound_requests",
+    "fe_num_outbound_requests",
+    "fe_outbound_request_latency_count",
+    "fe_outbound_request_latency_sum",
+    "fe_to_je_avg_latency",
+    "fe_to_je_latency_count",
+    "fe_to_je_latency_sum",
+    "first_token_dte_to_fe_request_latency_count",
+    "first_token_dte_to_fe_request_latency_sum",
+    "first_token_latency_count",
+    "first_token_latency_sum",
+    "incremental_latency_count",
+    "incremental_latency_sum",
+    "inference_input_tokens_bucket",
+    "inference_latency_count",
+    "inference_latency_sum",
+    "inference_reasoning_tokens_bucket",
+    "inference_tokens_bucket",
+    "je_avg_latency",
+    "je_processor_avg_process_latency",
+    "je_processor_avg_queue_latency",
+    "je_to_te_latency_count",
+    "je_to_te_latency_sum",
+    "je_ts_avg_latency",
+    "job_executor_state",
+    "second_token_latency_count",
+    "second_token_latency_sum",
+    "task_executor_starting_nums",
+    "task_executor_working_nums",
+    "te_to_dp_actor_latency_count",
+    "te_to_dp_actor_latency_sum",
+    "vllm:e2e_request_latency_seconds_bucket",
+    "vllm:e2e_request_latency_seconds_count",
+    "vllm:e2e_request_latency_seconds_sum",
+    "vllm:ems_exists_sdk_latency_ms_count",
+    "vllm:ems_exists_sdk_latency_ms_sum",
+    "vllm:ems_load_sdk_latency_ms_count",
+    "vllm:ems_load_sdk_latency_ms_sum",
+    "vllm:ems_nominal_hit_rate",
+    "vllm:ems_num_exists_query_total",
+    "vllm:ems_num_loaded_blocks_total",
+    "vllm:ems_num_saved_blocks_total",
+    "vllm:ems_num_to_load_blocks_total",
+    "vllm:ems_num_to_save_blocks_total",
+    "vllm:ems_real_hit_rate",
+    "vllm:ems_save_sdk_latency_ms_count",
+    "vllm:ems_save_sdk_latency_ms_sum",
+    "vllm:external_prefix_cache_hits_total",
+    "vllm:external_prefix_cache_queries_total",
+    "vllm:generation_tokens_total",
+    "vllm:gpu_cache_blocks_total",
+    "vllm:inter_token_latency_seconds_bucket",
+    "vllm:inter_token_latency_seconds_count",
+    "vllm:inter_token_latency_seconds_sum",
+    "vllm:kv_cache_usage_perc",
+    "vllm:mooncake_bytes_transferred_count",
+    "vllm:mooncake_bytes_transferred_sum",
+    "vllm:mooncake_num_failed_recvs_total",
+    "vllm:mooncake_num_failed_transfers_total",
+    "vllm:mooncake_num_kv_expired_reqs_total",
+    "vllm:mooncake_xfer_time_seconds_bucket",
+    "vllm:mooncake_xfer_time_seconds_count",
+    "vllm:mooncake_xfer_time_seconds_sum",
+    "vllm:mtp_high_accept_requests_total",
+    "vllm:mtp_low_accept_requests_total",
+    "vllm:mtp_truncation_enabled",
+    "vllm:num_preemptions_total",
+    "vllm:num_requests_running",
+    "vllm:num_requests_swapped",
+    "vllm:num_requests_waiting",
+    "vllm:prefix_cache_hits_total",
+    "vllm:prefix_cache_queries_total",
+    "vllm:prompt_tokens_total",
+    "vllm:repetition_detected_requests_total",
+    "vllm:request_decode_time_seconds_sum",
+    "vllm:request_generation_tokens_bucket",
+    "vllm:request_generation_tokens_sum",
+    "vllm:request_prefill_time_seconds_count",
+    "vllm:request_prefill_time_seconds_sum",
+    "vllm:request_prompt_tokens_bucket",
+    "vllm:request_queue_time_seconds_bucket",
+    "vllm:request_queue_time_seconds_sum",
+    "vllm:request_success_total",
+    "vllm:request_time_per_output_token_seconds_bucket",
+    "vllm:spec_decode_num_accepted_tokens_per_pos_total",
+    "vllm:spec_decode_num_accepted_tokens_total",
+    "vllm:spec_decode_num_drafts_total",
+    "vllm:spec_decode_num_draft_tokens_total",
+    "vllm:time_to_first_token_seconds_bucket",
+    "vllm:time_to_first_token_seconds_count",
+    "vllm:time_to_first_token_seconds_sum",
+)
+
+METRIC_PATTERN = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:]*$")
+MODELLESS_METRICS = {
+    "vllm:mtp_high_accept_requests_total",
+    "vllm:mtp_low_accept_requests_total",
+    "vllm:mtp_truncation_enabled",
+    "vllm:spec_decode_num_accepted_tokens_per_pos_total",
+    "vllm:spec_decode_num_accepted_tokens_total",
+    "vllm:spec_decode_num_drafts_total",
+    "vllm:spec_decode_num_draft_tokens_total",
+}
+JOBLESS_METRICS = MODELLESS_METRICS | {
+    "vllm:ems_exists_sdk_latency_ms_count",
+    "vllm:ems_exists_sdk_latency_ms_sum",
+    "vllm:ems_load_sdk_latency_ms_count",
+    "vllm:ems_load_sdk_latency_ms_sum",
+    "vllm:ems_nominal_hit_rate",
+    "vllm:ems_num_exists_query_total",
+    "vllm:ems_num_loaded_blocks_total",
+    "vllm:ems_num_saved_blocks_total",
+    "vllm:ems_num_to_load_blocks_total",
+    "vllm:ems_num_to_save_blocks_total",
+    "vllm:ems_real_hit_rate",
+    "vllm:ems_save_sdk_latency_ms_count",
+    "vllm:ems_save_sdk_latency_ms_sum",
+}
+
+
+def parse_time(value: str) -> int:
+    if value.isdigit():
+        return int(value)
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = dt.datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        raise ValueError("时间必须带时区，例如 2026-09-02T00:00:00Z")
+    return int(parsed.timestamp())
+
+
+def promql_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def build_query(metric: str, namespace: str | None, model_name: str | None, job_regex: str | None) -> str:
+    labels: list[str] = []
+    if namespace:
+        labels.append(f'xds_namespace="{promql_string(namespace)}"')
+    if metric.startswith("vllm:") and model_name and metric not in MODELLESS_METRICS:
+        labels.append(f'model_name="{promql_string(model_name)}"')
+    if job_regex and metric not in JOBLESS_METRICS:
+        labels.append(f'exported_job=~"{promql_string(job_regex)}"')
+    return metric if not labels else f"{metric}{{{','.join(labels)}}}"
+
+
+def request_range(base_url: str, query: str, start: int, end: int, step: str, timeout: int) -> dict:
+    params = urlencode({"query": query, "start": str(start), "end": str(end), "step": step})
+    url = f"{base_url.rstrip('/')}/api/v1/query_range?{params}"
+    # Prometheus is commonly an intranet endpoint; do not inherit shell proxy settings.
+    with build_opener(ProxyHandler({})).open(url, timeout=timeout) as response:
+        payload = json.load(response)
+    if payload.get("status") != "success":
+        raise RuntimeError(payload.get("error", "Prometheus 返回非 success 状态"))
+    return payload
+
+
+def safe_filename(metric: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", metric).strip("_") + ".json"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--start", required=True, help="开始时间：RFC3339 或 Unix 秒")
+    parser.add_argument("--end", required=True, help="结束时间：RFC3339 或 Unix 秒")
+    parser.add_argument("--step", default="60s", help="Prometheus 查询步长，默认 60s")
+    parser.add_argument("--prometheus-url", default="http://192.168.10.6:25889")
+    parser.add_argument("--namespace")
+    parser.add_argument("--model-name")
+    parser.add_argument("--job-regex")
+    parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
+    parser.add_argument("--output-dir", default="vllm-metrics")
+    parser.add_argument("--timeout", type=int, default=30, help="每个查询的 HTTP 超时秒数")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        start = parse_time(args.start)
+        end = parse_time(args.end)
+    except ValueError as error:
+        print(f"时间参数错误: {error}", file=sys.stderr)
+        return 2
+    if start >= end:
+        print("时间参数错误: --start 必须早于 --end", file=sys.stderr)
+        return 2
+    if args.timeout <= 0:
+        print("参数错误: --timeout 必须大于 0", file=sys.stderr)
+        return 2
+
+    metrics = args.metric or list(METRICS)
+    invalid_metrics = [metric for metric in metrics if not METRIC_PATTERN.fullmatch(metric)]
+    if invalid_metrics:
+        print(f"指标名非法: {', '.join(invalid_metrics)}", file=sys.stderr)
+        return 2
+
+    output_dir = Path(args.output_dir)
+    query_dir = output_dir / "queries"
+    query_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict] = []
+
+    for index, metric in enumerate(metrics, start=1):
+        query = build_query(metric, args.namespace, args.model_name, args.job_regex)
+        result = {"metric": metric, "query": query, "status": "success", "series_count": 0, "sample_count": 0}
+        try:
+            payload = request_range(args.prometheus_url, query, start, end, args.step, args.timeout)
+            data = payload.get("data", {})
+            series = data.get("result", [])
+            result["series_count"] = len(series)
+            result["sample_count"] = sum(len(item.get("values", [])) for item in series)
+            result["file"] = str(Path("queries") / safe_filename(metric))
+            (query_dir / safe_filename(metric)).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        except (HTTPError, URLError, TimeoutError, ValueError, RuntimeError, OSError) as error:
+            result["status"] = "failed"
+            result["error"] = str(error)
+        results.append(result)
+        print(f"[{index}/{len(metrics)}] {metric}: {result['status']} series={result['series_count']} samples={result['sample_count']}")
+        if result["status"] == "failed":
+            print(f"  error: {result['error']}", file=sys.stderr)
+
+    summary = {
+        "prometheus_url": args.prometheus_url,
+        "start": start,
+        "end": end,
+        "step": args.step,
+        "namespace": args.namespace,
+        "model_name": args.model_name,
+        "job_regex": args.job_regex,
+        "successful_queries": sum(item["status"] == "success" for item in results),
+        "failed_queries": sum(item["status"] == "failed" for item in results),
+        "results": results,
+    }
+    (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+    with (output_dir / "summary.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["metric", "status", "series_count", "sample_count", "file", "error", "query"])
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"输出目录: {output_dir}")
+    return 1 if summary["failed_queries"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
