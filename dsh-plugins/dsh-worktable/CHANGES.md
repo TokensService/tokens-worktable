@@ -1,5 +1,20 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 流水线阶段类型「URL请求」改名「HTTP」并新增「EvalTokens」阶段类型（worktable/pipeline/pipeline.html + src/index.ts / lib/index.js 配套）：
+  - 「URL请求」阶段类型改名为「HTTP」——`STAGE_KIND_LABEL` 的 `url:'URL请求'` 改为 `http:'HTTP'`，内部 `kind` 值
+    `url`→`http`，按现有 `jenkins→url` 迁移风格兼容旧数据：`migrateStageUrl`/`normalizeStageKind` 把旧 `kind:'jenkins'`/`'url'`
+    归为 `'http'`；运行期分发（`runStep` advance / `buildLog`）保留对旧 `url`/`jenkins` 的兼容判断；`runUrlStep` 节点显示
+    `URL请求 · raw`→`HTTP · raw`、结果标记 `[URL result]`→`[HTTP result]`、设置页 / 编辑器 / 脚本 README 说明文案同步更新。
+  - 新增 `EvalTokens` 阶段类型（`kind:'evaltokens'`，`STAGE_KIND_LABEL.evaltokens='EvalTokens'`）：阶段持有
+    `evaltokens{taskId,taskName,outVars}`；编辑器动作行提供「任务」输入 +「选择」按钮（拉取 `GET /api/open/v1/tasks`
+    内联下拉回填 id/name）+「输出变量」（`mkOutVarHelp('任务字段')`）；运行期 `runEvaltokensStep` 复用「设置」页
+    EvalTokens 服务配置（地址 / Bearer 令牌 / 本地直连或服务端 `/api/worktable/proxy` 代连），周期拉取任务列表匹配
+    该任务并等待其到终态（`evaltokStatusKind` 按 status 子串归类成功 / 失败 / 运行中），任务对象顶层标量字段按
+    KEY=VALUE / 单行 JSON 规则累计为输出变量（`mergeStageVars`/`applyOutVars`，与 HTTP / 脚本阶段一致），并附
+    「查看报告」链接；阶段超时 / 中止 / 迟回令牌守卫与 `runUrlStep` 同规则；`buildLog` 增加 EvalTokens 分支展示轮询回显。
+  - 服务端定时执行（`execPlan`）跳过条件同步扩展 `kind:'http'`/`'evaltokens'`（兼容旧计划 `url`/`jenkins`）：HTTP /
+    EvalTokens 阶段仅前端运行期支持，定时触发暂跳过。`lib/index.js` 已随本改动与 `src/index.ts` 同步手改（条件 + 跳过提示文案）。
+
 - 修复项目创建时「选择位置…」报错 `listDirectory unavailable`（`src/client/index.tsx`）：
   目录选择能力（`listDirectory`/`pickDirectory`/`createDirectory`）在宿主 `uiWorkspace`
   服务（`@deepseek-ai/dsh-client-ui-workspace` 的 `UiWorkspaceService`）上，不在 `ctx.workspaces`
