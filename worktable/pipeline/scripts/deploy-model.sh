@@ -21,6 +21,9 @@ TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 XDS_URL="${XDS_URL:-}"
+XDS_URL_EXPLICIT=false
+[[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
+XDS_API_HOST=""
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
 MODEL_PATH="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 HELM_BIN="${HELM_BIN:-helm}"
@@ -99,7 +102,7 @@ PY
   target="${target_user}@${target_ip}"
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
-  remote_xds_url="${XDS_URL:-http://${target_ip}:30079/xds/v1}"
+  remote_xds_url="${XDS_URL:-}"
   remote_head_log_root="${TARGET_RUN_DIR}/logs"
   remote_env="$(mktemp)"
 
@@ -114,7 +117,10 @@ PY
     printf 'export ARCH_REQUEST_FILE=%q\n' "${TARGET_RENDER_DIR}/architecture.request.json"
     printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
     printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
-    printf 'export TARGET_HOSTS=%q\nexport XDS_URL=%q\n' "$safe_target_hosts" "$remote_xds_url"
+    printf 'export TARGET_HOSTS=%q\n' "$safe_target_hosts"
+    if [[ -n "$remote_xds_url" ]]; then
+      printf 'export XDS_URL=%q\n' "$remote_xds_url"
+    fi
     printf 'export MODEL_NAME=%q\nexport MODEL_PATH=%q\n' "$MODEL_NAME" "$MODEL_PATH"
     printf 'export HELM_BIN=%q\nexport KUBECTL_BIN=%q\nexport HELM_TIMEOUT=%q\n' "$HELM_BIN" "$KUBECTL_BIN" "$HELM_TIMEOUT"
     printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
@@ -176,8 +182,35 @@ if not isinstance(first_host, dict) or not isinstance(first_host.get("ip"), str)
 print(first_host["ip"])
 PY
 )"
-  XDS_URL="http://${target_ip}:30079/xds/v1"
+  XDS_API_HOST="$target_ip"
 fi
+
+resolve_xds_url_from_service() {
+  local node_port
+
+  [[ "$XDS_URL_EXPLICIT" == false ]] || return 0
+  node_port="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc ray-svc -o json | python3 -c '
+import json
+import sys
+
+service = json.load(sys.stdin)
+for port in service.get("spec", {}).get("ports", []):
+    if isinstance(port.get("nodePort"), int):
+        print(port["nodePort"])
+        break
+else:
+    raise SystemExit("ray-svc does not expose a NodePort")
+' 2>/dev/null)" || {
+    echo "failed to resolve NodePort from service ray-svc" >&2
+    return 1
+  }
+  [[ "$node_port" =~ ^[0-9]+$ ]] || {
+    echo "invalid ray-svc NodePort: $node_port" >&2
+    return 1
+  }
+  XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
+  echo "[deploy] resolved XDS API URL from ray-svc: $XDS_URL"
+}
 
 wait_for_xds_api() {
   local deadline response
@@ -532,6 +565,7 @@ prepare_ctrl_slot_capacity
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"
+resolve_xds_url_from_service
 
 mkdir -p "$HEAD_LOG_DIR"
 nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \

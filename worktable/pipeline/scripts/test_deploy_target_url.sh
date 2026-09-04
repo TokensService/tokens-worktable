@@ -29,6 +29,8 @@ if [[ "$1" == "get" && "$2" == "nodes" ]]; then
   printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
 elif [[ "$*" == 'get svc -A -o json' ]]; then
   printf '{"items":[]}'
+elif [[ "$1" == "-n" && "$3" == "get" && "$4" == "svc" && "$5" == "ray-svc" && "$*" == *"-o json"* ]]; then
+  printf '{"spec":{"ports":[{"nodePort":31465}]}}'
 elif [[ "$1" == "-n" && "$3" == "get" && "$4" == "pods" && "$*" == *"-o json"* ]]; then
   printf '{"items":[{"metadata":{"name":"taskExecutorGroup4prefill1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}}]}'
 fi
@@ -69,9 +71,9 @@ HEAD_LOG_ROOT="$work_dir/logs" \
 XDS_READY_TIMEOUT_SECONDS=5 \
 bash "$script_dir/deploy-model.sh" >/dev/null
 
-grep -Fq 'http://192.168.0.78:30079/xds/v1/models/' "$work_dir/curl.log"
-grep -Fq 'http://192.168.0.78:30079/xds/v1/models/architectures' "$work_dir/curl.log"
-grep -Fq 'http://192.168.0.78:30079/xds/v1/models/test-arch' "$work_dir/curl.log"
+grep -Fq 'http://192.168.0.78:31465/xds/v1/models/' "$work_dir/curl.log"
+grep -Fq 'http://192.168.0.78:31465/xds/v1/models/architectures' "$work_dir/curl.log"
+grep -Fq 'http://192.168.0.78:31465/xds/v1/models/test-arch' "$work_dir/curl.log"
 python3 - "$work_dir/model.payload.json" <<'PY'
 import json
 import sys

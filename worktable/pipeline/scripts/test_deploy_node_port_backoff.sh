@@ -42,6 +42,9 @@ case "$*" in
   'get svc -A -o json')
     printf '{"items":[{"spec":{"ports":[{"nodePort":31365}]}}]}'
     ;;
+  *'get svc ray-svc -o json')
+    printf '{"spec":{"ports":[{"name":"frontend-port","nodePort":31375}]}}'
+    ;;
   *'get pods -l ray.io/cluster=xds-test-arch-local-kuberay -o json')
     printf '{"items":[{"metadata":{"name":"taskexecutor","labels":{"ray.io/group":"taskexecutor"}}}]}'
     ;;
@@ -51,6 +54,7 @@ SH
 cat >"$work_dir/bin/curl" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >>"$API_REQUEST_LOG"
 if [[ "$*" == *'/models/test-arch'* ]]; then
   printf '{"status":"ACTIVE"}\n'
 else
@@ -60,6 +64,7 @@ SH
 chmod +x "$work_dir/bin/helm" "$work_dir/bin/kubectl" "$work_dir/bin/curl"
 
 INSTALLED_VALUES="$work_dir/installed-values.yaml" \
+API_REQUEST_LOG="$work_dir/api-requests.log" \
 DEPLOY_ON_TARGET_HOST=1 \
 RUN_DIR="$work_dir/run" \
 CHART_DIR="$work_dir/chart" \
@@ -69,7 +74,6 @@ RESOURCE_MANIFEST="$work_dir/run/rendered/resources.rendered.json" \
 NODE_LABELS_FILE="$work_dir/node-labels.json" \
 ARCH_NAME=test-arch \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
-XDS_URL='http://192.168.0.78:30079/xds/v1' \
 HELM_BIN="$work_dir/bin/helm" \
 KUBECTL_BIN="$work_dir/bin/kubectl" \
 PATH="$work_dir/bin:$PATH" \
@@ -87,6 +91,12 @@ PY
 )"
 [[ "$node_port" == 31375 ]] || {
   echo "expected occupied nodePort 31365 to back off to 31375, got $node_port" >&2
+  exit 1
+}
+
+grep -Fq 'http://192.168.0.78:31375/xds/v1/models/' "$work_dir/api-requests.log" || {
+  echo "expected XDS readiness probe to use the resolved ray-svc NodePort" >&2
+  cat "$work_dir/api-requests.log" >&2
   exit 1
 }
 
