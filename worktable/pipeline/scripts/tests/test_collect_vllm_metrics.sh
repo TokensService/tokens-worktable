@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -108,11 +109,11 @@ with tempfile.TemporaryDirectory() as temp_dir:
     env = os.environ.copy()
     env.update(
         {
-            "VLLM_METRICS_PROMETHEUS_URL": f"http://127.0.0.1:{server.server_port}",
+            "PROMETHEUS_URL": f"http://127.0.0.1:{server.server_port}",
             "VLLM_METRICS_START": "2024-01-01T00:00:00Z",
             "VLLM_METRICS_STEP": "5s",
-            "VLLM_METRICS_NAMESPACE": "xds-env",
-            "VLLM_METRICS_MODEL_NAME": "model-env",
+            "NAMESPACE": "xds-env",
+            "MODEL_NAME": "model-env",
             "VLLM_METRICS_JOB_REGEX": ".*vllmp.*",
             "VLLM_METRICS_METRICS": "vllm:mooncake_xfer_time_seconds_bucket",
             "VLLM_METRICS_OUTPUT_DIR": str(continuous_dir),
@@ -126,6 +127,30 @@ with tempfile.TemporaryDirectory() as temp_dir:
     continuous_summary = json.loads(snapshots[0].read_text())
     assert continuous_summary["namespace"] == "xds-env"
     assert continuous_summary["model_name"] == "model-env"
+
+    lifecycle_dir = Path(temp_dir) / "lifecycle"
+    lifecycle_pid = lifecycle_dir / "collector.pid"
+    lifecycle_env = env | {
+        "METRICS_ACTION": "start",
+        "METRICS_OUTPUT_DIR": str(lifecycle_dir),
+        "METRICS_PID_FILE": str(lifecycle_pid),
+        "VLLM_METRICS_MAX_ITERATIONS": "0",
+    }
+    started = subprocess.run([str(script)], text=True, capture_output=True, check=False, env=lifecycle_env)
+    assert started.returncode == 0, f"stdout={started.stdout}\nstderr={started.stderr}"
+    assert lifecycle_pid.is_file()
+    deadline = time.monotonic() + 5
+    while len(requests) < 3 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    stopped = subprocess.run(
+        [str(script)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=lifecycle_env | {"METRICS_ACTION": "stop"},
+    )
+    assert stopped.returncode == 0, f"stdout={stopped.stdout}\nstderr={stopped.stderr}"
+    assert not lifecycle_pid.exists()
 
 server.shutdown()
 print("collect vLLM metrics test passed")

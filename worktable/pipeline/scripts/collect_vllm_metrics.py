@@ -9,6 +9,8 @@ import datetime as dt
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -194,25 +196,51 @@ def step_seconds(value: str) -> float:
     return amount * {"ms": 0.001, "s": 1, "m": 60, "h": 3600}[unit]
 
 
+def env_value(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
+def default_output_dir() -> str:
+    configured = env_value("METRICS_OUTPUT_DIR", "VLLM_METRICS_OUTPUT_DIR")
+    if configured:
+        return configured
+    run_dir = os.getenv("RUN_DIR")
+    return str(Path(run_dir) / "vllm-metrics") if run_dir else "vllm-metrics"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--action", choices=("start", "collect", "stop"),
+                        default=env_value("METRICS_ACTION", "VLLM_METRICS_ACTION", default="collect"),
+                        help="start 后台启动，collect 前台采集，stop 终止后台采集；环境变量 METRICS_ACTION")
     parser.add_argument("--start", default=os.getenv("VLLM_METRICS_START"),
                         help="开始时间；环境变量 VLLM_METRICS_START")
     parser.add_argument("--end", default=os.getenv("VLLM_METRICS_END"),
                         help="结束时间；未设置时持续采集，环境变量 VLLM_METRICS_END")
     parser.add_argument("--step", default=os.getenv("VLLM_METRICS_STEP", "5s"),
                         help="Prometheus 查询/采集周期，默认 5s；环境变量 VLLM_METRICS_STEP")
-    parser.add_argument("--prometheus-url", default=os.getenv("VLLM_METRICS_PROMETHEUS_URL", "http://192.168.10.6:25889"),
-                        help="环境变量 VLLM_METRICS_PROMETHEUS_URL")
-    parser.add_argument("--namespace", default=os.getenv("VLLM_METRICS_NAMESPACE"))
-    parser.add_argument("--model-name", default=os.getenv("VLLM_METRICS_MODEL_NAME"))
+    parser.add_argument("--prometheus-url", default=env_value("PROMETHEUS_URL", "VLLM_METRICS_PROMETHEUS_URL", default="http://192.168.10.6:25889"),
+                        help="环境变量 PROMETHEUS_URL（兼容 VLLM_METRICS_PROMETHEUS_URL）")
+    parser.add_argument("--namespace", default=env_value("NAMESPACE", "VLLM_METRICS_NAMESPACE"),
+                        help="环境变量 NAMESPACE（兼容 VLLM_METRICS_NAMESPACE）")
+    parser.add_argument("--model-name", default=env_value("MODEL_NAME", "ARCH_NAME", "VLLM_METRICS_MODEL_NAME"),
+                        help="环境变量 MODEL_NAME；未设置时回退 ARCH_NAME")
     parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
-    parser.add_argument("--output-dir", default=os.getenv("VLLM_METRICS_OUTPUT_DIR", "vllm-metrics"))
+    parser.add_argument("--output-dir", default=default_output_dir(),
+                        help="环境变量 METRICS_OUTPUT_DIR；未设置时使用 RUN_DIR/vllm-metrics")
     parser.add_argument("--timeout", type=int, default=os.getenv("VLLM_METRICS_TIMEOUT", "30"),
                         help="每个查询的 HTTP 超时秒数；环境变量 VLLM_METRICS_TIMEOUT")
     parser.add_argument("--max-iterations", type=int, default=os.getenv("VLLM_METRICS_MAX_ITERATIONS", "0"),
                         help="持续采集最大轮次；0 表示持续运行，环境变量 VLLM_METRICS_MAX_ITERATIONS")
+    parser.add_argument("--pid-file", default=env_value("METRICS_PID_FILE", "VLLM_METRICS_PID_FILE"),
+                        help="后台采集器 PID 文件；默认 <output-dir>/collector.pid")
+    parser.add_argument("--log-file", default=env_value("METRICS_LOG_FILE", "VLLM_METRICS_LOG_FILE"),
+                        help="后台采集器日志；默认 <output-dir>/collector.log")
     return parser.parse_args()
 
 
@@ -262,13 +290,107 @@ def collect_once(args: argparse.Namespace, metrics: list[str], start: int, end: 
     return 1 if summary["failed_queries"] else 0
 
 
-def main() -> int:
-    args = parse_args()
-    if not args.start:
-        print("参数错误: 请设置 VLLM_METRICS_START 或传入 --start", file=sys.stderr)
-        return 2
+def collector_paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    output_dir = Path(args.output_dir)
+    return (
+        Path(args.pid_file) if args.pid_file else output_dir / "collector.pid",
+        Path(args.log_file) if args.log_file else output_dir / "collector.log",
+    )
+
+
+def process_running(pid: int) -> bool:
     try:
-        start = parse_time(args.start)
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        # os.kill(pid, 0) 对尚未被父进程回收的 zombie 仍会成功。
+        if Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2] == "Z":
+            return False
+    except (FileNotFoundError, IndexError):
+        return False
+    return True
+
+
+def start_collector(args: argparse.Namespace) -> int:
+    pid_file, log_file = collector_paths(args)
+    if pid_file.is_file():
+        try:
+            existing_pid = int(pid_file.read_text().strip())
+        except ValueError:
+            existing_pid = 0
+        if existing_pid and process_running(existing_pid):
+            print(f"采集器已在运行: pid={existing_pid} pid_file={pid_file}", file=sys.stderr)
+            return 1
+        pid_file.unlink(missing_ok=True)
+
+    env = os.environ.copy()
+    env.update({
+        "METRICS_ACTION": "collect",
+        "VLLM_METRICS_START": args.start or str(int(time.time())),
+        "VLLM_METRICS_END": args.end or "",
+        "VLLM_METRICS_STEP": args.step,
+        "PROMETHEUS_URL": args.prometheus_url,
+        "NAMESPACE": args.namespace or "",
+        "MODEL_NAME": args.model_name or "",
+        "VLLM_METRICS_JOB_REGEX": args.job_regex or "",
+        "METRICS_OUTPUT_DIR": args.output_dir,
+        "VLLM_METRICS_TIMEOUT": str(args.timeout),
+        "VLLM_METRICS_MAX_ITERATIONS": str(args.max_iterations),
+        "METRICS_PID_FILE": str(pid_file),
+        "METRICS_LOG_FILE": str(log_file),
+    })
+    if args.metric:
+        env["VLLM_METRICS_METRICS"] = ",".join(args.metric)
+
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with log_file.open("a", encoding="utf-8") as log_handle:
+        process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--action", "collect"],
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+    print(f"采集器已启动: pid={process.pid} pid_file={pid_file} log_file={log_file}")
+    return 0
+
+
+def stop_collector(args: argparse.Namespace) -> int:
+    pid_file, _ = collector_paths(args)
+    if not pid_file.is_file():
+        print(f"未发现运行中的采集器: pid_file={pid_file}")
+        return 0
+    try:
+        pid = int(pid_file.read_text().strip())
+    except ValueError:
+        pid_file.unlink(missing_ok=True)
+        print(f"已清理无效 PID 文件: {pid_file}")
+        return 0
+    if not process_running(pid):
+        pid_file.unlink(missing_ok=True)
+        print(f"采集器已退出，清理 PID 文件: {pid_file}")
+        return 0
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 15
+    while process_running(pid) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if process_running(pid):
+        os.kill(pid, signal.SIGKILL)
+        print(f"采集器未在 15 秒内退出，已强制终止: pid={pid}", file=sys.stderr)
+    else:
+        print(f"采集器已停止: pid={pid}")
+    pid_file.unlink(missing_ok=True)
+    return 0
+
+
+def collect(args: argparse.Namespace) -> int:
+    try:
+        start = parse_time(args.start) if args.start else int(time.time())
         end = parse_time(args.end) if args.end else None
         interval = step_seconds(args.step)
     except ValueError as error:
@@ -289,29 +411,48 @@ def main() -> int:
         return 2
 
     output_dir = Path(args.output_dir)
-    if end is not None:
+    now = int(time.time())
+    if end is not None and end <= now:
         return collect_once(args, metrics, start, end, output_dir)
 
-    print(f"持续采集已启动: start={start} step={args.step}，Ctrl-C 停止")
+    end_text = str(end) if end is not None else "无限"
+    print(f"持续采集已启动: start={start} end={end_text} step={args.step}，Ctrl-C 停止")
     cursor = start
     iteration = 0
     failed = False
     try:
         while args.max_iterations == 0 or iteration < args.max_iterations:
             now = int(time.time())
-            if now <= cursor:
+            window_end = min(now, end) if end is not None else now
+            if window_end <= cursor:
+                if end is not None and now >= end:
+                    print(f"达到截止时间 {end}，持续采集已结束")
+                    break
                 time.sleep(min(interval, max(1, cursor - now + 1)))
                 continue
             iteration += 1
             snapshot_dir = output_dir / "snapshots" / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            print(f"持续采集第 {iteration} 轮: {cursor} -> {now}")
-            failed = collect_once(args, metrics, cursor, now, snapshot_dir) != 0 or failed
-            cursor = now
+            print(f"持续采集第 {iteration} 轮: {cursor} -> {window_end}")
+            failed = collect_once(args, metrics, cursor, window_end, snapshot_dir) != 0 or failed
+            cursor = window_end
+            if end is not None and cursor >= end:
+                print(f"达到截止时间 {end}，持续采集已结束")
+                break
             if args.max_iterations == 0 or iteration < args.max_iterations:
-                time.sleep(interval)
+                sleep_seconds = min(interval, max(0, end - time.time())) if end is not None else interval
+                time.sleep(sleep_seconds)
     except KeyboardInterrupt:
         print("持续采集已停止", file=sys.stderr)
     return 1 if failed else 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.action == "start":
+        return start_collector(args)
+    if args.action == "stop":
+        return stop_collector(args)
+    return collect(args)
 
 
 if __name__ == "__main__":
