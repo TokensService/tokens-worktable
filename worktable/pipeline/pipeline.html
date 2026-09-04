@@ -3336,7 +3336,7 @@ function finish(result){
   if(timer){ clearInterval(timer); timer=null; }
   const elapsed=(Date.now()-curRun.startTs)/1000;
   if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 成功','dshell-badgeDone'); }
-  else if(result==='aborted'){ setOverall('⏏ 已中止',''); }
+  else if(result==='aborted'){ setOverall('⏏ 已中止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
   else { setOverall('✗ 失败',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
   buildNo++;
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
@@ -3603,6 +3603,7 @@ function enterHistoryReplay(rec){
   /* 总状态徽标 + 编排区回放提示 */
   setOverall(labelOf(rec.status)+' · 回放 #'+rec.no, rec.status==='success'?'dshell-badgeDone':'');
   if(rec.status==='failed'){ const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; } }
+  else if(rec.status==='aborted'){ const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
   $('overallBy').textContent='执行人：'+(rec.by||'—')+' · '+rec.time+'（历史回放）';
   const rt=$('replayTip'); if(rt) rt.textContent='正在回放历史 #'+rec.no+'「'+rec.pipeline+'」 · 再次点击该行退出';
   _detailKey='';   // 详情渲染缓存失效，强制按回放数据重绘
