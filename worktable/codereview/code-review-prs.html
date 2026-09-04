@@ -137,7 +137,7 @@
     <!-- 标题区 -->
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
       <div>
-        <h1 class="dshell-title">PR 检视台 · GitCode</h1>
+        <h1 class="dshell-title" id="pageTitle">PR 检视台 · GitCode</h1>
         <p class="dshell-sub" id="subLine">拉取组织 <span class="pr-repo" id="subOrg">TokensService</span> 下所有仓库的 Pull Request，点击「AI 检视」即新建 AI 聊天会话并送入评审提示。</p>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -183,7 +183,7 @@
     <!-- 发行视图：选仓库/分支，一键串行「编译构建 → 创建 Tag → 创建 GitCode 发行版」 -->
     <div id="viewRelease" style="display:none">
       <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" id="relCardSubHelp" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失</span></h2>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">仓库
             <select class="dshell-input" id="relRepo" style="min-width:150px"></select>
@@ -248,7 +248,7 @@
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出可就地展开「回显」查看；总日志在下方统一滚动</span></h2>
@@ -268,13 +268,22 @@
 
     <!-- 设置视图：只显示设置信息，切到此标签时隐藏列表 -->
     <div id="viewSettings" style="display:none">
-      <!-- GitCode 访问令牌 -->
+      <!-- 访问令牌（GitCode / GitHub，平台切换在下方下拉） -->
       <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">GitCode 访问令牌</h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px" id="tokenCardTitle">GitCode 访问令牌</h2>
+        <div class="pr-tokenRow" style="margin-bottom:10px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">代码托管平台
+            <select class="dshell-input" id="platformSel" style="min-width:120px" title="切换 GitCode / GitHub：各平台令牌/组织/认证方式/提示词/发行缓存独立存于本机">
+              <option value="gitcode">GitCode</option>
+              <option value="github">GitHub</option>
+            </select>
+          </label>
+          <span class="dshell-muted" id="platformTip" style="font-size:11px"></span>
+        </div>
         <div class="dshell-kv" style="margin-bottom:10px">
-          <div class="dshell-kvRow"><span class="dshell-kvKey">为什么需要令牌</span><span class="dshell-kvValue">组织 TokensService 为私有，匿名访问返回 403</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">为什么需要令牌</span><span class="dshell-kvValue" id="tokenWhyValue">组织 TokensService 为私有，匿名访问返回 403</span></div>
           <div class="dshell-kvRow"><span class="dshell-kvKey">令牌存储</span><span class="dshell-kvValue">仅存于本机浏览器 localStorage</span></div>
-          <div class="dshell-kvRow"><span class="dshell-kvKey">申请令牌</span><span class="dshell-kvValue"><a class="pr-link" href="https://gitcode.com/profile/personal-access-tokens" target="_blank" rel="noopener">GitCode 个人访问令牌 →</a></span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">申请令牌</span><span class="dshell-kvValue"><a class="pr-link" id="tokenApplyLink" href="https://gitcode.com/profile/personal-access-tokens" target="_blank" rel="noopener">GitCode 个人访问令牌 →</a></span></div>
         </div>
         <div class="pr-tokenRow">
           <input class="dshell-input grow" id="tokenInput" type="password" placeholder="粘贴 GitCode 个人访问令牌（private access token）" autocomplete="off" />
@@ -349,35 +358,68 @@
 <script>
 "use strict";
 (function () {
-  var LS = { token: "gc_pr_token", org: "gc_pr_org", authMode: "gc_pr_authmode", embed: "gc_pr_embed", template: "gc_pr_template", relCfg: "gc_pr_relcfg", buildContainer: "gc_pr_buildcontainer", buildExtraEnv: "gc_pr_buildenv", relHist: "gc_pr_relhist" };
-  var API = "https://api.gitcode.com/api/v5";
+  /* —— 平台：GitCode / GitHub ——
+     API 端点、git/web 主机、令牌申请地址、克隆认证用户名与可用认证方式随平台不同；
+     各平台配置（令牌/组织/认证方式/提示词/发行缓存/构建容器/历史）独立存于本机 localStorage，
+     主题（gc_pr_theme）与平台选择（gc_pr_platform）跨平台共享。 */
+  var PLATFORMS = {
+    gitcode: {
+      label: "GitCode", api: "https://api.gitcode.com/api/v5", web: "https://gitcode.com",
+      gitHost: "gitcode.com", authUser: "oauth2",
+      tokenUrl: "https://gitcode.com/profile/personal-access-tokens", tokenName: "GitCode 个人访问令牌",
+      authModes: [
+        { v: "auto", t: "认证: 自动(推荐)" }, { v: "bearer", t: "认证: Bearer 头" },
+        { v: "query", t: "认证: access_token 参数" }, { v: "token", t: "认证: token 头" },
+        { v: "private", t: "认证: private-token 头(可能被 CORS 拦截)" }
+      ]
+    },
+    github: {
+      label: "GitHub", api: "https://api.github.com", web: "https://github.com",
+      gitHost: "github.com", authUser: "x-access-token",
+      tokenUrl: "https://github.com/settings/tokens", tokenName: "GitHub Personal Access Token",
+      // GitHub 不支持 access_token query / private-token 头；统一走 Authorization: Bearer
+      authModes: [ { v: "auto", t: "认证: Bearer 头(推荐)" }, { v: "bearer", t: "认证: Bearer 头" } ]
+    }
+  };
   var DEFAULT_ORG = "TokensService";
+  function curPlatform() { return PLATFORMS[state.platform] || PLATFORMS.gitcode; }
+  function apiBase() { return curPlatform().api; }
+  function webBase() { return curPlatform().web; }
+  function gitHost() { return curPlatform().gitHost; }
+  function authUsername() { return curPlatform().authUser; }
+  function platformLabel() { return curPlatform().label; }
+  function tokenApplyUrl() { return curPlatform().tokenUrl; }
+  function tokenApplyName() { return curPlatform().tokenName; }
+  /* 本机存储：平台前缀（gc_pr_ / gh_pr_）+ 键名 */
+  function lsKey(base) { return (state.platform === "github" ? "gh_pr_" : "gc_pr_") + base; }
 
-  /* AI 检视提示词默认模板（支持 {{var}} 与 {{#x}}..{{/x}} / {{^x}}..{{/x}} 条件块） */
-  var DEFAULT_TEMPLATE = [
-    "请对以下 GitCode Pull Request 进行代码检视（Code Review）。",
-    "",
-    "- 仓库: {{owner}}/{{repo}}",
-    "- PR #{{number}}: {{title}}",
-    "{{#author}}- 作者: @{{author}}",
-    "{{/author}}- 分支: {{head}} → {{base}}",
-    "- 状态: {{state}}{{draft}}",
-    "{{#changed}}- 变更文件: {{changed}}（+{{add}} / -{{del}}）",
-    "{{/changed}}- PR 页面: {{html_url}}",
-    "{{#body}}",
-    "## PR 描述",
-    "{{body}}",
-    "{{/body}}## 检视步骤建议",
-    "1. 获取变更文件与 diff：",
-    '   curl -sS{{curl_auth}} "{{files_api}}"',
-    '   curl -sS{{curl_auth}} "{{detail_api}}"',
-    "{{^token}}   （私有仓库需要 GitCode 个人访问令牌；如缺少，请向用户索取。）",
-    "{{/token}}2. 总结本 PR 的目的与主要变更。",
-    "3. 逐文件审查：指出 bug、安全风险、性能问题、并发/资源问题、可维护性与命名风格问题，给出具体改进建议与修正代码示例。",
-    "4. 给出合并结论：Approve / 需修改 / 拒绝，并说明理由与阻塞项。",
-    "",
-    "开始检视。"
-  ].join("\n");
+  /* AI 检视提示词默认模板（支持 {{var}} 与 {{#x}}..{{/x}} / {{^x}}..{{/x}} 条件块）；标题随平台改称 */
+  function defaultTemplate() {
+    return [
+      "请对以下 " + platformLabel() + " Pull Request 进行代码检视（Code Review）。",
+      "",
+      "- 仓库: {{owner}}/{{repo}}",
+      "- PR #{{number}}: {{title}}",
+      "{{#author}}- 作者: @{{author}}",
+      "{{/author}}- 分支: {{head}} → {{base}}",
+      "- 状态: {{state}}{{draft}}",
+      "{{#changed}}- 变更文件: {{changed}}（+{{add}} / -{{del}}）",
+      "{{/changed}}- PR 页面: {{html_url}}",
+      "{{#body}}",
+      "## PR 描述",
+      "{{body}}",
+      "{{/body}}## 检视步骤建议",
+      "1. 获取变更文件与 diff：",
+      '   curl -sS{{curl_auth}} "{{files_api}}"',
+      '   curl -sS{{curl_auth}} "{{detail_api}}"',
+      "{{^token}}   （私有仓库需要 " + platformLabel() + " 个人访问令牌；如缺少，请向用户索取。）",
+      "{{/token}}2. 总结本 PR 的目的与主要变更。",
+      "3. 逐文件审查：指出 bug、安全风险、性能问题、并发/资源问题、可维护性与命名风格问题，给出具体改进建议与修正代码示例。",
+      "4. 给出合并结论：Approve / 需修改 / 拒绝，并说明理由与阻塞项。",
+      "",
+      "开始检视。"
+    ].join("\n");
+  }
   function renderTemplate(tpl, ctx) {
     // 条件块：有值时输出
     tpl = tpl.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, function (_, name, body) {
@@ -400,6 +442,9 @@
   var tokenInput = $("tokenInput"), orgInput = $("orgInput"), authModeSel = $("authMode"), embedToken = $("embedToken");
   var tplInput = $("tplInput"), btnRestoreTpl = $("btnRestoreTpl"), btnSave = $("btnSaveSettings"), btnClear = $("btnClearToken");
   var btnTest = $("btnTest"), testResult = $("testResult");
+  var pageTitle = $("pageTitle"), tokenCardTitle = $("tokenCardTitle"), tokenWhyValue = $("tokenWhyValue"), tokenApplyLink = $("tokenApplyLink");
+  var platformSel = $("platformSel"), platformTip = $("platformTip");
+  var relCardSubHelp = $("relCardSubHelp"), relFlowHelp = $("relFlowHelp");
   var viewTabs = $("viewTabs"), viewList = $("viewList"), viewSettings = $("viewSettings"), viewRelease = $("viewRelease");
   var relRepoSel = $("relRepo"), relRepoRefresh = $("relRepoRefresh"), relBranch = $("relBranch"), relBranchRefresh = $("relBranchRefresh");
   var relTag = $("relTag"), relTagSuggest = $("relTagSuggest"), relBuildScript = $("relBuildScript"), relBuildCmd = $("relBuildCmd");
@@ -413,20 +458,22 @@
   var relHistEl = $("relHist"), relHistClear = $("relHistClear"), relHistTip = $("relHistTip");
 
   var state = {
-    token: localStorage.getItem(LS.token) || "",
-    org: localStorage.getItem(LS.org) || DEFAULT_ORG,
-    authMode: localStorage.getItem(LS.authMode) || "auto",
-    embed: localStorage.getItem(LS.embed) !== "0",
-    template: localStorage.getItem(LS.template) || DEFAULT_TEMPLATE,
     prs: [],            // 全部 PR（含 repo 信息）
     repos: [],          // 仓库列表
     filterState: "open",
     keyword: "",
     loading: false,
     lastErr: "",
-    buildContainer: localStorage.getItem(LS.buildContainer) || "",
-    buildExtraEnv: localStorage.getItem(LS.buildExtraEnv) || ""
+    repoDone: 0
   };
+  state.platform = localStorage.getItem("gc_pr_platform") || "gitcode"; // 平台选择跨平台共享
+  state.token = localStorage.getItem(lsKey("token")) || "";
+  state.org = localStorage.getItem(lsKey("org")) || DEFAULT_ORG;
+  state.authMode = localStorage.getItem(lsKey("authMode")) || "auto";
+  state.embed = localStorage.getItem(lsKey("embed")) !== "0";
+  state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
+  state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
+  state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
 
   subOrg.textContent = state.org;
 
@@ -459,10 +506,16 @@
     return '<span class="dshell-badge">● ' + esc(state_ || "未知") + "</span>";
   }
 
-  /* ---------- 认证：构造请求（CORS 安全） ---------- */
+  /* ---------- 认证：构造请求（CORS 安全；GitHub 强制 Bearer 头 + Accept） ---------- */
   function applyAuth(url, mode) {
     var tok = state.token ? state.token.trim() : "";
     var headers = {};
+    if (state.platform === "github") {
+      // GitHub 不支持 access_token query / private-token 头；统一走 Authorization: Bearer
+      if (tok) headers["Authorization"] = "Bearer " + tok;
+      headers["Accept"] = "application/vnd.github+json";
+      return { url: url, headers: headers };
+    }
     if (tok) {
       if (mode === "auto" || mode === "bearer") headers["Authorization"] = "Bearer " + tok;
       if (mode === "token") headers["token"] = tok;
@@ -476,7 +529,7 @@
   }
 
   function fetchJSON(path, mode) {
-    var a = applyAuth(API + path, mode || state.authMode);
+    var a = applyAuth(apiBase() + path, mode || state.authMode);
     return fetch(a.url, {
       method: "GET",
       credentials: "omit",
@@ -637,6 +690,7 @@
 
   function renderStatus() {
     var s = "";
+    s += '<span class="dshell-badge">' + esc(platformLabel()) + "</span>";
     if (state.token) s += '<span class="dshell-badge dshell-badgeDone">令牌已设置</span>';
     else s += '<span class="dshell-badge dshell-badgeWait">未设置令牌</span>';
     s += '<span class="dshell-badge">组织: ' + esc(state.org) + "</span>";
@@ -656,8 +710,8 @@
       state.loading = false;
       toolbar.style.display = "none";
       listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">🔑</div>' +
-        '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 GitCode 访问令牌</div>' +
-        '<div style="margin-bottom:12px">组织 TokensService 为私有，需令牌才能拉取 PR。</div>' +
+        '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 ' + platformLabel() + ' 访问令牌</div>' +
+        '<div style="margin-bottom:12px">组织 ' + esc(state.org) + ' 为私有或需令牌才能拉取 PR。</div>' +
         '<button class="dshell-btn" id="emptyOpenSettings">⚙ 去设置</button></div>';
       var eb = $("emptyOpenSettings"); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
       renderStatus(); renderStats();
@@ -745,12 +799,12 @@
       add: p.add != null ? String(p.add) : "",
       del: p.del != null ? String(p.del) : "",
       html_url: p.htmlUrl || "", body: p.body || "",
-      files_api: API + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number) + "/files",
-      detail_api: API + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number),
+      files_api: apiBase() + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number) + "/files",
+      detail_api: apiBase() + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number),
       curl_auth: tok ? ' -H "Authorization: Bearer ' + tok + '"' : "",
       token: tok
     };
-    var tpl = (state.template && String(state.template).trim()) ? state.template : DEFAULT_TEMPLATE;
+    var tpl = (state.template && String(state.template).trim()) ? state.template : defaultTemplate();
     return renderTemplate(tpl, ctx).replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").trim() + "\n";
   }
 
@@ -864,7 +918,7 @@
     orgInput.value = state.org;
     authModeSel.value = state.authMode;
     embedToken.checked = state.embed;
-    tplInput.value = state.template || DEFAULT_TEMPLATE;
+    tplInput.value = state.template || defaultTemplate();
     buildContainerInput.value = state.buildContainer;
     buildExtraEnvInput.value = state.buildExtraEnv;
     testResult.textContent = "";
@@ -874,16 +928,16 @@
     state.org = (orgInput.value.trim() || DEFAULT_ORG);
     state.authMode = authModeSel.value;
     state.embed = embedToken.checked;
-    state.template = (tplInput.value && tplInput.value.trim()) ? tplInput.value : DEFAULT_TEMPLATE;
+    state.template = (tplInput.value && tplInput.value.trim()) ? tplInput.value : defaultTemplate();
     state.buildContainer = buildContainerInput.value.trim();
     state.buildExtraEnv = buildExtraEnvInput.value.trim();
-    localStorage.setItem(LS.token, state.token);
-    localStorage.setItem(LS.org, state.org);
-    localStorage.setItem(LS.authMode, state.authMode);
-    localStorage.setItem(LS.embed, state.embed ? "1" : "0");
-    localStorage.setItem(LS.template, state.template);
-    localStorage.setItem(LS.buildContainer, state.buildContainer);
-    localStorage.setItem(LS.buildExtraEnv, state.buildExtraEnv);
+    localStorage.setItem(lsKey("token"), state.token);
+    localStorage.setItem(lsKey("org"), state.org);
+    localStorage.setItem(lsKey("authMode"), state.authMode);
+    localStorage.setItem(lsKey("embed"), state.embed ? "1" : "0");
+    localStorage.setItem(lsKey("template"), state.template);
+    localStorage.setItem(lsKey("buildcontainer"), state.buildContainer);
+    localStorage.setItem(lsKey("buildenv"), state.buildExtraEnv);
     subOrg.textContent = state.org;
     renderStatus();
     toast("已保存设置");
@@ -892,7 +946,7 @@
   }
   function clearToken() {
     state.token = ""; tokenInput.value = "";
-    localStorage.removeItem(LS.token);
+    localStorage.removeItem(lsKey("token"));
     state.prs = []; state.repos = []; state.lastErr = "";
     toast("已清除令牌");
     renderRelRepoOptions(); // 发行页仓库下拉回到「需先设置令牌」
@@ -901,18 +955,12 @@
   function testConnection() {
     var tok = tokenInput.value.trim();
     var org = (orgInput.value.trim() || DEFAULT_ORG);
-    var mode = authModeSel.value;
     if (!tok) { toast("请先填写令牌", true); return; }
     testResult.textContent = "测试中…";
-    var headers = {};
-    var url = API + "/orgs/" + encodeURIComponent(org) + "/repos?per_page=1";
-    if (mode === "auto" || mode === "bearer") headers["Authorization"] = "Bearer " + tok;
-    if (mode === "token") headers["token"] = tok;
-    if (mode === "private") headers["private-token"] = tok;
-    if (mode === "auto" || mode === "query") url = url + "&access_token=" + encodeURIComponent(tok);
-    fetch(url, { method: "GET", credentials: "omit", headers: headers })
+    var a = applyAuth(apiBase() + "/orgs/" + encodeURIComponent(org) + "/repos?per_page=1", state.authMode);
+    fetch(a.url, { method: "GET", credentials: "omit", headers: a.headers })
       .then(function (r) {
-        if (!r.ok) return r.text().then(function (t) { var m = "HTTP " + r.status; try { var j = JSON.parse(t); if (j.error_message) m = j.error_message; } catch (e) {} throw new Error(m); });
+        if (!r.ok) return r.text().then(function (t) { var m = "HTTP " + r.status; try { var j = JSON.parse(t); if (j.error_message || j.message) m = j.error_message || j.message; } catch (e) {} throw new Error(m); });
         return r.json();
       })
       .then(function (arr) {
@@ -927,27 +975,30 @@
       });
   }
 
-  /* ---------- 编译发行：构建分支 → 创建 Tag → GitCode 发行版 → 上传产物附件（一键串行） ----------
+  /* ---------- 编译发行：构建分支 → 创建 Tag → 创建发行版 → 上传产物附件（一键串行） ----------
      构建经 /api/worktable/exec 在服务端执行包装脚本：浅克隆所选分支后运行仓内脚本（留空=跳过）；
      配置「产物路径」时构建后按仓内相对路径/通配收集产物到 ARTIFACT_DIR（服务端 /tmp 暂存目录）；
-     Tag 优先走 GitCode v5 API（POST /repos/{owner}/{repo}/tags），API 不可用时回退为页面生成临时脚本
-     经 /api/worktable/write + exec 浅克隆 → git tag → push（凭据 URL 编码注入 GIT_AUTH_URL，输出脱敏，远端已有同名 Tag 拒绝覆盖）；
-     发行版走 GitCode v5 API（POST /repos/{owner}/{repo}/releases，form 参数 + 本页认证方式）；
-     产物上传经服务端临时脚本：按 tag 调 upload_url 接口换取 OBS 预签名地址后 curl -T PUT 直传（令牌注入 ACCESS_TOKEN，输出脱敏，完成后清理暂存目录）。 */
+     Tag：GitCode 走 v5 API（POST /repos/{owner}/{repo}/tags）；GitHub 走 Git Data API（分支 HEAD → 建 tag 对象 → 建 ref）；
+     两者 API 不可用均回退为页面生成临时脚本经 /api/worktable/write + exec 浅克隆 → git tag → push
+     （凭据 URL 编码注入 GIT_AUTH_URL，输出脱敏，远端已有同名 Tag 拒绝覆盖）；
+     发行版走各平台 API（POST /repos/{owner}/{repo}/releases）：GitCode form 参数；GitHub JSON 请求体（响应含 upload_url）；
+     产物上传经服务端临时脚本：GitCode 按 tag 调 upload_url 换 OBS 预签名地址后 PUT 直传；
+     GitHub 取发行版响应的 upload_url（uploads.github.com）按 ?name= 文件二进制 POST（令牌注入 ACCESS_TOKEN，输出脱敏，完成后清理暂存目录）。 */
   var DEFAULT_REL_CFG = { repo: "", branch: "", script: "", timeout: 1800, artifacts: "" };
-  var relCfg = (function () {
-    try { var c = JSON.parse(localStorage.getItem(LS.relCfg)); if (c && typeof c === "object") return { repo: c.repo || "", branch: c.branch || "", script: c.script || "", timeout: c.timeout || DEFAULT_REL_CFG.timeout, artifacts: c.artifacts || "" }; } catch (e) {}
+  function loadRelCfg() {
+    try { var c = JSON.parse(localStorage.getItem(lsKey("relcfg"))); if (c && typeof c === "object") return { repo: c.repo || "", branch: c.branch || "", script: c.script || "", timeout: c.timeout || DEFAULT_REL_CFG.timeout, artifacts: c.artifacts || "" }; } catch (e) {}
     return { repo: "", branch: "", script: "", timeout: DEFAULT_REL_CFG.timeout, artifacts: "" };
-  })();
-  function saveRelCfg() { try { localStorage.setItem(LS.relCfg, JSON.stringify(relCfg)); } catch (e) {} }
+  }
+  var relCfg = loadRelCfg();
+  function saveRelCfg() { try { localStorage.setItem(lsKey("relcfg"), JSON.stringify(relCfg)); } catch (e) {} }
   var relRunning = false;
   var relBranchCache = {}; // "owner/repo" -> 分支名数组（按需缓存）
 
-  function repoGitUrl(repo) { return "https://gitcode.com/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + ".git"; }
+  function repoGitUrl(repo) { return "https://" + gitHost() + "/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + ".git"; }
   function repoAuthUrl(repo) {
     try {
       var u = new URL(repoGitUrl(repo));
-      if (state.token) { u.username = "oauth2"; u.password = state.token.trim(); }
+      if (state.token) { u.username = authUsername(); u.password = state.token.trim(); }
       return u.toString();
     } catch (e) { return repoGitUrl(repo); }
   }
@@ -1168,12 +1219,20 @@
         });
       });
   }
-  /* GitCode v5 写请求：form 参数 + 本页认证方式（Bearer 头 / access_token query） */
+  /* 写请求：GitCode 走 form 参数；GitHub 走 JSON 请求体（统一沿用本页认证方式） */
   function fetchPost(path, params) {
-    var a = applyAuth(API + path, state.authMode);
-    var headers = { "Content-Type": "application/x-www-form-urlencoded" };
+    var a = applyAuth(apiBase() + path, state.authMode);
+    var headers = {};
+    var body;
+    if (state.platform === "github") {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(params);
+    } else {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      body = new URLSearchParams(params).toString();
+    }
     for (var k in a.headers) headers[k] = a.headers[k];
-    return fetch(a.url, { method: "POST", credentials: "omit", headers: headers, body: new URLSearchParams(params).toString() })
+    return fetch(a.url, { method: "POST", credentials: "omit", headers: headers, body: body })
       .then(function (r) {
         return r.text().then(function (t) {
           var j = null; try { j = JSON.parse(t); } catch (e) {}
@@ -1290,6 +1349,37 @@
         if (res.code !== 0) throw new Error("Tag 推送失败（详见日志）");
       });
   }
+  /* GitHub 建 annotated Tag：Git Data API（取分支 HEAD → 建 tag 对象 → 建 ref）。
+     GitHub 无「按 ref 直接建 Tag」的 REST 端点；ref 已存在（422）视为远端已有同名 Tag 拒绝覆盖
+     （与 git 推送脚本一致）；其余失败回退到 git 推送脚本（pushReleaseTag）。 */
+  function githubCreateTag(repo, branch, tag, name) {
+    var repoPath = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name);
+    return fetchJSON(repoPath + "/branches/" + encodeURIComponent(branch))
+      .then(function (b) {
+        var sha = b && b.commit && b.commit.sha;
+        if (!sha) throw new Error("无法获取分支 " + branch + " 的最新提交 SHA");
+        relLog("→ 分支 " + branch + " HEAD = " + String(sha).slice(0, 7), "dim");
+        relLog("+ POST " + apiBase() + repoPath + "/git/tags（tag=" + tag + "）", "dim");
+        return fetchPost(repoPath + "/git/tags", { tag: tag, message: name || tag, object: sha, type: "commit" })
+          .then(function (tobj) {
+            var tagSha = tobj && tobj.sha;
+            if (!tagSha) throw new Error("创建 tag 对象失败");
+            relLog("→ 已创建 tag 对象 " + String(tagSha).slice(0, 7), "dim");
+            relLog("+ POST " + apiBase() + repoPath + "/git/refs（refs/tags/" + tag + "）", "dim");
+            return fetchPost(repoPath + "/git/refs", { ref: "refs/tags/" + tag, sha: tagSha });
+          });
+      })
+      .then(function () { relLog("✓ Tag " + tag + " 已通过 Git Data API 创建", "ok"); })
+      .catch(function (e) {
+        var msg = String(e && e.message || e);
+        // ref 已存在（422）视为远端已有同名 Tag，拒绝覆盖
+        if (/422|already exists|Reference already/i.test(msg)) {
+          throw new Error("远端已存在 Tag " + tag + "（如需重发请先删除远端 Tag）");
+        }
+        relLog("… Git Data API 不可用（" + msg + "），改用 git 推送", "dim");
+        return pushReleaseTag(repo, branch, tag, name);
+      });
+  }
   /* 上传构建产物到 GitCode 发行版附件：经 /api/worktable/write 落地临时脚本后 exec 执行——
      GitCode 发行版没有数字 id，也不提供 Gitee 式 attach_files；官方流程是按 tag + file_name 调
      upload_url 接口换取华为云 OBS 预签名上传地址，再按返回的 url + headers 用 PUT 直传
@@ -1352,13 +1442,58 @@
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");
       });
   }
+  /* GitHub 发行版产物上传：发行版创建响应的 upload_url 形如
+     https://uploads.github.com/repos/{owner}/{repo}/releases/{id}/assets{?name,label}，
+     去除 {?name,label} 模板后对每个产物 POST 文件二进制（name=basename，Bearer 头，application/octet-stream）。
+     令牌经 ACCESS_TOKEN 注入、输出脱敏，结束后清理暂存目录。复用 UPLOAD_ASSETS_SCRIPT_PATH（运行前覆盖为 GitHub 版脚本）。 */
+  var UPLOAD_ASSETS_SCRIPT_GITHUB = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：把构建产物上传到 GitHub 发行版附件。",
+    "# 流程：对 ARTIFACT_DIR 内每个文件 POST 到 UPLOAD_URL?name=basename，文件二进制为请求体。",
+    "# 令牌经 ACCESS_TOKEN 注入（Bearer 头）；本脚本不 echo 令牌，结束后清理产物暂存目录。",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR"',
+    '[ -n "${UPLOAD_URL:-}" ] || fail "缺少 UPLOAD_URL"',
+    '[ -n "${ACCESS_TOKEN:-}" ] || fail "缺少 ACCESS_TOKEN"',
+    'trap \'rm -rf "$ARTIFACT_DIR"\' EXIT',
+    'mask(){ sed -e "s#${ACCESS_TOKEN}#<token>#g"; }',
+    "n=0",
+    'while IFS= read -r f; do',
+    "  n=$((n+1))",
+    '  base=$(basename "$f")',
+    '  echo "→ 上传 $base …"',
+    '  echo "+ POST ${UPLOAD_URL}?name=$base （Bearer 头，文件二进制体）"',
+    '  out=$(curl -sS -f -X POST -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/octet-stream" --data-binary @"$f" "${UPLOAD_URL}?name=${base}" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    '  echo "✓ 已上传 $base"',
+    "done < <(find \"$ARTIFACT_DIR\" -type f | sort)",
+    '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
+    'echo "✓ 共上传 $n 个产物"'
+  ].join("\n");
+  function uploadGithubAssets(repo, artifactDir, uploadUrlBase) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: UPLOAD_ASSETS_SCRIPT_PATH, content: UPLOAD_ASSETS_SCRIPT_GITHUB }) })
+      .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
+        if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
+      }); })
+      .then(function () {
+        return execScript(UPLOAD_ASSETS_SCRIPT_PATH, {
+          ARTIFACT_DIR: artifactDir, UPLOAD_URL: uploadUrlBase, ACCESS_TOKEN: state.token.trim()
+        }, 600000);
+      })
+      .then(function (res) {
+        if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
+        if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "err"); });
+        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");
+      });
+  }
   /* ---------- 构建历史：归档每次发行的依赖信息、产物清单与逐步回显（本机 localStorage） ---------- */
   function loadRelHist() {
-    try { var h = JSON.parse(localStorage.getItem(LS.relHist)); if (Array.isArray(h)) return h; } catch (e) {}
+    try { var h = JSON.parse(localStorage.getItem(lsKey("relhist"))); if (Array.isArray(h)) return h; } catch (e) {}
     return [];
   }
   function saveRelHist(list) {
-    try { localStorage.setItem(LS.relHist, JSON.stringify(list.slice(0, REL_HIST_MAX))); } catch (e) {}
+    try { localStorage.setItem(lsKey("relhist"), JSON.stringify(list.slice(0, REL_HIST_MAX))); } catch (e) {}
   }
   /* 归档一步回显：超过上限只留末尾，前部以省略行代替 */
   function archiveStepLines(lines) {
@@ -1502,9 +1637,9 @@
   function buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits) {
     var tok = state.embed ? (state.token || "").trim() : "";
     var curlAuth = tok ? ' -H "Authorization: Bearer ' + tok + '"' : "";
-    var commitsApi = API + "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/commits";
+    var commitsApi = apiBase() + "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/commits";
     var lines = [
-      "请为 GitCode 仓库 " + repo.owner + "/" + repo.name + " 起草本次发行版的发行说明（Release Notes）。",
+      "请为 " + platformLabel() + " 仓库 " + repo.owner + "/" + repo.name + " 起草本次发行版的发行说明（Release Notes）。",
       "",
       "- 本次发行：" + (tag || "（待定）") + (name && name !== tag ? "（" + name + "）" : "") + "，基于分支 " + branch,
       prevRel
@@ -1643,31 +1778,45 @@
         }
         states[1] = { st: "run" }; relSetSteps(states); relCurStep = 1;
         var tagDone = false;
-        try {
-          relLog("+ POST " + API + "/repos/" + repo.owner + "/" + repo.name + "/tags（tag_name=" + tag + ", refs=" + branch + "）", "dim");
-          await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
-            { tag_name: tag, refs: branch, tag_message: name || tag });
-          relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
+        if (state.platform === "github") {
+          // GitHub 无「按 ref 建 Tag」API：走 Git Data API（分支 HEAD → 建 tag 对象 → 建 ref），失败回退 git 推送；ref 已存在拒绝覆盖
+          await githubCreateTag(repo, branch, tag, name);
           tagDone = true;
-        } catch (e) {
-          relLog("… Tag API 不可用（" + String(e && e.message || e) + "），改用 git 推送", "dim");
+        } else {
+          try {
+            relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/tags（tag_name=" + tag + ", refs=" + branch + "）", "dim");
+            await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
+              { tag_name: tag, refs: branch, tag_message: name || tag });
+            relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
+            tagDone = true;
+          } catch (e) {
+            relLog("… Tag API 不可用（" + String(e && e.message || e) + "），改用 git 推送", "dim");
+          }
         }
         if (!tagDone) await pushReleaseTag(repo, branch, tag, name);
         states[1] = { st: "ok" }; relSetSteps(states);
         states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
-        relLog("+ POST " + API + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
-        await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
-          { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked ? "true" : "false" });
+        relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
+        var relObj = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
+          { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked });
         states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
-        var webUrl = "https://gitcode.com/" + repo.owner + "/" + repo.name;
+        var webUrl = webBase() + "/" + repo.owner + "/" + repo.name;
         rec.releaseUrl = webUrl + "/releases";
         relResult.innerHTML = '<span style="color:#3fb950">✓ 发行版已创建</span> <a class="pr-link" href="' + esc(webUrl + "/releases") + '" target="_blank" rel="noopener">打开仓库发行版列表 →</a>';
         relLog("✓ 发行版 " + (name || tag) + " 创建完成", "ok");
         if (artifacts) {
           states[3] = { st: "run" }; relSetSteps(states); relCurStep = 3;
-          // GitCode 发行版没有数字 id：附件上传按 tag 走 upload_url 换 OBS 地址后 PUT 直传
-          relLog("→ 上传构建产物到发行版（tag " + tag + "，upload_url + PUT 直传）…", "dim");
-          await uploadReleaseAssets(repo, tag, artifactDir);
+          if (state.platform === "github") {
+            // GitHub：发行版响应带 upload_url（uploads.github.com，去 {?name,label} 模板）→ POST 文件二进制
+            var upBase = relObj && relObj.upload_url ? String(relObj.upload_url).replace(/\{.*$/, "") : "";
+            if (!upBase) throw new Error("发行版响应缺少 upload_url（无法上传产物）");
+            relLog("→ 上传构建产物到发行版（GitHub upload_url，POST 文件二进制）…", "dim");
+            await uploadGithubAssets(repo, artifactDir, upBase);
+          } else {
+            // GitCode 发行版没有数字 id：附件上传按 tag 走 upload_url 换 OBS 地址后 PUT 直传
+            relLog("→ 上传构建产物到发行版（tag " + tag + "，upload_url + PUT 直传）…", "dim");
+            await uploadReleaseAssets(repo, tag, artifactDir);
+          }
           states[3] = { st: "ok" }; relSetSteps(states);
         }
         tip.textContent = "✓ 发行完成";
@@ -1737,13 +1886,77 @@
     applyThemeUI();
   });
 
+  /* ---------- 平台切换（GitCode / GitHub）：各平台配置独立存于本机 ---------- */
+  function renderAuthModeOptions() {
+    var modes = curPlatform().authModes;
+    var prev = state.authMode;
+    authModeSel.innerHTML = "";
+    modes.forEach(function (m) {
+      var o = document.createElement("option");
+      o.value = m.v; o.textContent = m.t; authModeSel.appendChild(o);
+    });
+    var ok = modes.some(function (m) { return m.v === prev; });
+    state.authMode = ok ? prev : modes[0].v; // 当前平台不支持该认证方式时回退到首项
+    authModeSel.value = state.authMode;
+  }
+  function releaseFlowHelpHtml() {
+    if (state.platform === "github") {
+      return '流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌（Bearer 头）。';
+    }
+    return '流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。';
+  }
+  function updatePlatformUI() {
+    document.title = "PR 检视台 · " + platformLabel();
+    if (pageTitle) pageTitle.textContent = "PR 检视台 · " + platformLabel();
+    if (tokenCardTitle) tokenCardTitle.textContent = platformLabel() + " 访问令牌";
+    if (tokenWhyValue) tokenWhyValue.textContent = state.platform === "github"
+      ? "GitHub 私有仓库/组织需令牌访问；PAT 需 repo 等权限"
+      : "组织 TokensService 为私有，匿名访问返回 403";
+    if (tokenApplyLink) { tokenApplyLink.href = tokenApplyUrl(); tokenApplyLink.textContent = tokenApplyName() + " →"; }
+    if (tokenInput) tokenInput.placeholder = "粘贴 " + tokenApplyName() + "（PAT）";
+    if (platformSel) platformSel.value = state.platform;
+    if (platformTip) platformTip.textContent = state.platform === "github"
+      ? "GitHub REST API · Bearer 头认证 · releases 走 JSON 请求体"
+      : "GitCode API v5 · 支持 Bearer / access_token 参数等多种认证";
+    if (relCardSubHelp) relCardSubHelp.textContent = "选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 " + platformLabel() + " 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失";
+    if (relFlowHelp) relFlowHelp.innerHTML = releaseFlowHelpHtml();
+    renderAuthModeOptions();
+    renderStatus();
+  }
+  function switchPlatform(p) {
+    if (p !== "gitcode" && p !== "github") return;
+    if (p === state.platform) return;
+    state.platform = p;
+    localStorage.setItem("gc_pr_platform", p);
+    // 重载该平台的本地配置（令牌/组织/认证/提示词/发行缓存/构建容器独立存储）
+    state.token = localStorage.getItem(lsKey("token")) || "";
+    state.org = localStorage.getItem(lsKey("org")) || DEFAULT_ORG;
+    state.authMode = localStorage.getItem(lsKey("authMode")) || "auto";
+    state.embed = localStorage.getItem(lsKey("embed")) !== "0";
+    state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
+    state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
+    state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
+    // 重置运行态与缓存
+    state.prs = []; state.repos = []; state.lastErr = ""; state.repoDone = 0;
+    relBranchCache = {};
+    relCfg = loadRelCfg();
+    subOrg.textContent = state.org;
+    updatePlatformUI();
+    populateSettings();
+    renderRelRepoOptions();
+    renderRelHist();
+    loadAll();
+    toast("已切换到 " + platformLabel());
+  }
+
   /* ---------- 事件绑定 ---------- */
   btnSettings.addEventListener("click", function () { populateSettings(); switchView("settings"); });
   btnRefresh.addEventListener("click", loadAll);
   btnSave.addEventListener("click", saveSettings);
   btnClear.addEventListener("click", clearToken);
-  btnRestoreTpl.addEventListener("click", function () { tplInput.value = DEFAULT_TEMPLATE; toast("已恢复默认提示词"); });
+  btnRestoreTpl.addEventListener("click", function () { tplInput.value = defaultTemplate(); toast("已恢复默认提示词"); });
   btnTest.addEventListener("click", testConnection);
+  if (platformSel) platformSel.addEventListener("change", function () { switchPlatform(platformSel.value); });
   viewTabs.addEventListener("click", function (e) {
     var b = e.target.closest ? e.target.closest("button[data-view]") : null;
     if (!b && e.target && e.target.getAttribute) b = e.target.getAttribute("data-view") ? e.target : null;
@@ -1765,7 +1978,8 @@
 
   /* ---------- 初始化 ---------- */
   applyThemeUI();
-  renderStatus(); renderStats(); renderList();
+  updatePlatformUI();          // 平台文案 + 认证方式下拉（含 renderStatus）
+  renderStats(); renderList();
   renderRelHist();
   loadAll();
 })();
