@@ -197,7 +197,7 @@
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">Tag
             <input class="dshell-input" id="relTag" placeholder="如 v1.0.0" autocomplete="off" style="width:150px" />
           </label>
-          <button class="dshell-btn dshell-btnGhost" id="relTagSuggest" title="按分支名+日期时间生成建议 Tag（分支名.YYYY.MM.DD.HHMM，如 main.2026.09.01.1111；分支为空则回退 vYYYY.MM.DD.HHMM）">建议</button>
+          <button class="dshell-btn dshell-btnGhost" id="relTagSuggest" title="按上一发行版 Tag 递增生成建议（vllm 风格语义化版本：正式 vX.Y.Z / 候选 vX.Y.ZrcN / 修订 vX.Y.Z.postN / 开发 vX.Y.Z.devN）。勾选「预发布」生成候选版（同版本下一 rc，或下一版本 rc1）；未勾选生成正式版（同版本定版，或下一版本）">建议</button>
         </div>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建脚本
@@ -1048,12 +1048,66 @@
         relBranchCache[key] = names; fillBranchList(names);
       }).catch(function () {});
   }
+  /* —— 建议 Tag（vllm 风格语义化版本号）：拉取上一发行版 Tag，按「预发布」开关递增 ——
+     参考 vllm 通行命名：vX.Y.Z（正式）/ vX.Y.ZrcN（候选）/ vX.Y.Z.postN（修订）/ vX.Y.Z.devN（开发）。
+     - 无历史发行版 / Tag 不可解析：起步 v0.1.0（预发布 v0.1.0rc1）
+     - 上一正式 vX.Y.Z：下一 vX.Y.(Z+1)（预发布 vX.Y.(Z+1)rc1）
+     - 上一候选 vX.Y.ZrcN：预发布 vX.Y.Zrc(N+1)；正式 vX.Y.Z（定版）
+     - 上一修订 vX.Y.Z.postN：下一 vX.Y.(Z+1)（预发布 vX.Y.(Z+1)rc1）
+     - 上一开发 vX.Y.Z.devN：预发布 vX.Y.Zrc1；正式 vX.Y.Z（定版） */
+  var relTagSuggestBusy = false;
+  function parseSemverTag(tag) {
+    if (!tag) return null; // 无上一发行版
+    var m = /^v?(\d+)\.(\d+)\.(\d+)(.*)?$/.exec(String(tag).trim());
+    if (!m) return null; // 主版本号都不匹配：按「无历史」起步
+    var base = { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
+    var rest = (m[4] || "").trim();
+    var rc = /(?:^|[-.])rc[\.\-]?(\d+)$/i.exec(rest);
+    if (rc) return { base: base, kind: "rc", n: Number(rc[1]) };
+    var post = /(?:^|[-.])post[\.\-]?(\d+)$/i.exec(rest);
+    if (post) return { base: base, kind: "post", n: Number(post[1]) };
+    var dev = /(?:^|[-.])dev[\.\-]?(\d+)$/i.exec(rest);
+    if (dev) return { base: base, kind: "dev", n: Number(dev[1]) };
+    return { base: base, kind: "final", n: 0 }; // 正式版或后缀不可识别：按正式版处理
+  }
+  function fmtVer(b) { return "v" + b.major + "." + b.minor + "." + b.patch; }
+  function bumpPatch(b) { return { major: b.major, minor: b.minor, patch: b.patch + 1 }; }
+  function suggestVllmTag(prev, wantPre) {
+    var p = parseSemverTag(prev);
+    if (!p) { // 无历史发行版 / Tag 不可解析：起步 v0.1.0
+      var first = { major: 0, minor: 1, patch: 0 };
+      return wantPre ? fmtVer(first) + "rc1" : fmtVer(first);
+    }
+    if (p.kind === "rc" || p.kind === "dev") {
+      // 同版本已有候选/开发版：预发布→下一候选（开发版进位到 rc1）；正式→定版该版本
+      return wantPre ? fmtVer(p.base) + "rc" + (p.kind === "rc" ? p.n + 1 : 1) : fmtVer(p.base);
+    }
+    // 正式版 / 修订版：下一版本 vX.Y.(Z+1)（预发布则其候选 rc1）
+    var next = bumpPatch(p.base);
+    return wantPre ? fmtVer(next) + "rc1" : fmtVer(next);
+  }
   function suggestRelTag() {
-    var d = new Date(); var p = function (n) { return String(n).padStart(2, "0"); };
-    var date = d.getFullYear() + "." + p(d.getMonth() + 1) + "." + p(d.getDate());
-    var time = p(d.getHours()) + p(d.getMinutes());
-    var b = (relBranch.value || "").trim().replace(/\//g, "-");
-    relTag.value = b ? b + "." + date + "." + time : "v" + date + "." + time;
+    if (relTagSuggestBusy) return;
+    var repo = relSelectedRepo(), wantPre = relPrerelease.checked;
+    if (!state.token || !repo) {
+      relTag.value = suggestVllmTag(null, wantPre); // 无令牌/未选仓库：本地起步建议，不联网
+      toast("无历史发行版参照，建议从 " + relTag.value + " 起步" + (wantPre ? "（预发布）" : ""));
+      return;
+    }
+    relTagSuggestBusy = true; relTagSuggest.disabled = true; relTagSuggest.textContent = "⏳ 建议中…";
+    fetchPrevRelease(repo)
+      .then(function (r) {
+        var prev = r && r.tag_name ? r.tag_name : null;
+        relTag.value = suggestVllmTag(prev, wantPre);
+        toast(prev
+          ? "已按上一发行版 " + prev + " 建议 " + relTag.value + (wantPre ? "（预发布）" : "")
+          : "该仓库无历史发行版，建议从 " + relTag.value + " 起步");
+      })
+      .catch(function () {
+        relTag.value = suggestVllmTag(null, wantPre);
+        toast("拉取上一发行版失败，按无历史建议 " + relTag.value, true);
+      })
+      .then(function () { relTagSuggestBusy = false; relTagSuggest.disabled = false; relTagSuggest.textContent = "建议"; });
   }
   function fillRelForm() {
     relBranch.value = relCfg.branch || "main"; // 恢复本机缓存的分支（默认 main）
