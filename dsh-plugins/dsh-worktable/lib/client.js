@@ -18866,6 +18866,19 @@ function listWorkspaces() {
     return [];
   }
 }
+function crumbsOf(abs) {
+  if (!abs) return [];
+  const chain = [];
+  let cur = abs;
+  let guard = 0;
+  while (cur && guard++ < 64) {
+    const parent = parentPathOf(cur);
+    chain.push({ name: cur === parent ? cur : basenameOf(cur), path: cur, hidden: false });
+    if (cur === parent) break;
+    cur = parent;
+  }
+  return chain.reverse();
+}
 function defaultWorkspaceId() {
   try {
     const raw = localStorage.getItem(PERSIST_KEY2);
@@ -19160,7 +19173,7 @@ async function createCustomSession(projectId, projectName, requirement, group, w
     if (!parent || !name) throw new Error("invalid group path");
     const full = joinPath(parent, name);
     try {
-      await ws.createDirectory?.(parent, name);
+      await applyCtx?.get?.("uiWorkspace")?.createDirectory?.(parent, name);
     } catch {
     }
     try {
@@ -19860,7 +19873,21 @@ function WorktableSection(props) {
           }
         },
         createWorkspace: (path) => sessionBridge?.workspaces?.create?.({ path }),
-        createWorkspaceDir: (parent, name) => sessionBridge?.workspaces?.createDirectory?.(parent, name),
+        createWorkspaceDir: async (parent, name) => {
+          try {
+            const uiWs = applyCtx?.get?.("uiWorkspace");
+            if (uiWs && typeof uiWs.createDirectory === "function") {
+              const p = await uiWs.createDirectory(parent, name);
+              if (typeof p === "string" && p) return p;
+            }
+          } catch {
+          }
+          const full = joinPath(parent, name);
+          const r = await fetch("/api/worktable/mkdir", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: full }) });
+          const d = await r.json();
+          if (!r.ok || !d?.ok) throw new Error(d?.error ?? "mkdir failed");
+          return typeof d.path === "string" && d.path ? d.path : full;
+        },
         // 自动绑定规则：当前项目未绑定 → 绑定到刚新建/发送的会话；已绑定 → 不改（返回 'kept'）
         autoBind: (sessionId) => {
           const pid = splitStore.active && splitStore.spec ? splitStore.spec.id : null;
@@ -20311,14 +20338,24 @@ function WorktableSection(props) {
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]));
   }, []);
   const dirPickLoad = async (path, manualOverride) => {
-    const ws = sessionBridge?.workspaces;
-    if (!ws || typeof ws.listDirectory !== "function") {
-      setDirPick((s) => s ? { ...s, loading: false, error: "listDirectory unavailable" } : s);
-      return;
-    }
+    const uiWs = applyCtx?.get?.("uiWorkspace");
     setDirPick((s) => s ? { ...s, loading: true, error: null } : s);
     try {
-      const d = await ws.listDirectory(path);
+      let d;
+      if (uiWs && typeof uiWs.listDirectory === "function") {
+        d = await uiWs.listDirectory(path);
+      } else {
+        const r = await fetch("/api/worktable/fs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: path ?? "" })
+        });
+        const j = await r.json();
+        if (!r.ok || !Array.isArray(j?.entries)) throw new Error(j?.error ?? "listDirectory failed");
+        const base2 = typeof j.path === "string" && j.path ? j.path : path ?? "";
+        const dirEntries = j.entries.filter((e) => e?.isDir).map((e) => ({ name: e.name, path: e.path, hidden: !!e.hidden }));
+        d = { path: base2, crumbs: crumbsOf(base2), entries: dirEntries };
+      }
       setDirPick((s) => s ? {
         ...s,
         loading: false,
@@ -20341,25 +20378,38 @@ function WorktableSection(props) {
       setDirPick((s) => s ? { ...s, error: t("dirpick.newInvalid") } : s);
       return;
     }
-    const ws = sessionBridge?.workspaces;
-    if (!ws || typeof ws.createDirectory !== "function" || !cur.path) {
-      setDirPick((s) => s ? { ...s, error: "createDirectory unavailable" } : s);
+    if (!cur.path) {
+      setDirPick((s) => s ? { ...s, error: "no current directory" } : s);
       return;
     }
+    const uiWs = applyCtx?.get?.("uiWorkspace");
     setDirPick((s) => s ? { ...s, loading: true, error: null } : s);
     try {
-      const created = await ws.createDirectory(cur.path, name);
-      const createdPath = typeof created === "string" && created ? created : joinPath(cur.path, name);
-      await dirPickLoad(cur.path, createdPath);
+      let createdPath = "";
+      if (uiWs && typeof uiWs.createDirectory === "function") {
+        createdPath = await uiWs.createDirectory(cur.path, name);
+      } else {
+        const full = joinPath(cur.path, name);
+        const r = await fetch("/api/worktable/mkdir", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: full })
+        });
+        const j = await r.json();
+        if (!r.ok || !j?.ok) throw new Error(j?.error ?? "mkdir failed");
+        createdPath = typeof j.path === "string" && j.path ? j.path : full;
+      }
+      const createdPathStr = typeof createdPath === "string" && createdPath ? createdPath : joinPath(cur.path, name);
+      await dirPickLoad(cur.path, createdPathStr);
     } catch (err) {
       setDirPick((s) => s ? { ...s, loading: false, error: String(err) } : s);
     }
   };
   const pickFolder = async (apply2, startPath) => {
-    const ws = sessionBridge?.workspaces;
+    const uiWs = applyCtx?.get?.("uiWorkspace");
     try {
-      if (ws && typeof ws.pickDirectory === "function") {
-        const p = await ws.pickDirectory();
+      if (uiWs && typeof uiWs.pickDirectory === "function") {
+        const p = await uiWs.pickDirectory();
         if (p && typeof p === "string") apply2(p);
         return;
       }

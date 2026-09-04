@@ -1,5 +1,18 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 修复项目创建时「选择位置…」报错 `listDirectory unavailable`（`src/client/index.tsx`）：
+  目录选择能力（`listDirectory`/`pickDirectory`/`createDirectory`）在宿主 `uiWorkspace`
+  服务（`@deepseek-ai/dsh-client-ui-workspace` 的 `UiWorkspaceService`）上，不在 `ctx.workspaces`
+  （`IWorkspaces` 工作区控制器，仅有 `list`/`create`/`archiveSession` 等）；原 `dirPickLoad`/
+  `dirPickCreate`/`pickFolder` 误读 `sessionBridge.workspaces` 取这些方法，恒为 `undefined`
+  → 能力判定直接失败、弹出「listDirectory unavailable」。现改为经 `applyCtx.get('uiWorkspace')`
+  懒取宿主目录能力（与现有 `betterSidebar` 同款惰性查找，不进 `inject`、不阻塞插件激活），
+  并在不可用时回退到插件自身路由：`POST /api/worktable/fs`（列目录，仅保留子目录并按路径推面包屑，
+  与资源管理器窗同源）+ `POST /api/worktable/mkdir`（建目录）；`createCustomSession` 与
+  `createWorkspaceDir` 的建目录同样改为「宿主优先 + 插件兜底」。即：宿主组合了 directory-picker
+  （browse/native）时走宿主能力并尊重其作用域，远程无桌面 / 未组合时回退插件自身路由，项目创建
+  选目录始终可用。`lib/client.js` 已随本改动重建，`./dsh.sh restart` 后刷新页面生效。
+
 - 流水线历史记录与日志分离存储 + 运行状态机竞态修复（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
   全量日志进历史记录导致 worktable-pipeline.json 单条记录可达数 MB（页面加载全量 GET + 每次保存全量回写，
   页面明显变慢）。现改为：归档文件（run-*.log）仍是全量日志唯一实体、永不截断；历史条目只存元数据 +

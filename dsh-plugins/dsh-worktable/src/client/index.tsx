@@ -539,6 +539,23 @@ function listWorkspaces(): { id: string; title: string; path: string }[] {
   } catch { return [] }
 }
 
+/** 由绝对路径推出面包屑链（根 → 当前目录，逐级可跳转），与宿主 browse 的 ancestryCrumbs 同形。
+ *  仅用于「宿主 uiWorkspace.listDirectory 不可用」回退到插件自身 /api/worktable/fs 时的结果适配；
+ *  根级 crumb 取完整路径为名（同宿主约定），非根级取 basename。 */
+function crumbsOf(abs: string): { name: string; path: string; hidden: false }[] {
+  if (!abs) return []
+  const chain: { name: string; path: string; hidden: false }[] = []
+  let cur = abs
+  let guard = 0
+  while (cur && guard++ < 64) {
+    const parent = parentPathOf(cur)
+    chain.push({ name: cur === parent ? cur : basenameOf(cur), path: cur, hidden: false })
+    if (cur === parent) break
+    cur = parent
+  }
+  return chain.reverse()
+}
+
 /** 全局默认会话分组（设置面板「工作区」设置项；读 localStorage 视图态切片，供模块级新建会话路径使用）。
  *  引用的工作区已被删除时按未设置处理（避免带着失效 id 建会话）。 */
 function defaultWorkspaceId(): string | null {
@@ -842,7 +859,7 @@ export async function createCustomSession(projectId: string, projectName: string
     const name = g.name.replace(/^[\\/]+/, '').replace(/[\\/]+$/, '')
     if (!parent || !name) throw new Error('invalid group path')
     const full = joinPath(parent, name)
-    try { await ws.createDirectory?.(parent, name) } catch { /* 宿主 browse 能力本机为 native 时不可用 */ }
+    try { await applyCtx?.get?.('uiWorkspace')?.createDirectory?.(parent, name) } catch { /* 宿主目录能力不可用（未组合 / native）→ 落入插件 mkdir 兜底 */ }
     try {
       // 兜底：插件服务端 mkdir（父目录必须已存在，避免误建深层目录）
       const r = await fetch('/api/worktable/mkdir', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: full }) })
@@ -1578,7 +1595,20 @@ function WorktableSection(props: any) {
           } catch { return [] }
         },
         createWorkspace: (path: string) => sessionBridge?.workspaces?.create?.({ path }),
-        createWorkspaceDir: (parent: string, name: string) => sessionBridge?.workspaces?.createDirectory?.(parent, name),
+        createWorkspaceDir: async (parent: string, name: string) => {
+          try {
+            const uiWs = applyCtx?.get?.('uiWorkspace') as any
+            if (uiWs && typeof uiWs.createDirectory === 'function') {
+              const p = await uiWs.createDirectory(parent, name)
+              if (typeof p === 'string' && p) return p
+            }
+          } catch { /* 宿主目录能力不可用 → 落入插件 mkdir 兜底 */ }
+          const full = joinPath(parent, name)
+          const r = await fetch('/api/worktable/mkdir', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: full }) })
+          const d = await r.json()
+          if (!r.ok || !d?.ok) throw new Error(d?.error ?? 'mkdir failed')
+          return typeof d.path === 'string' && d.path ? d.path : full
+        },
         // 自动绑定规则：当前项目未绑定 → 绑定到刚新建/发送的会话；已绑定 → 不改（返回 'kept'）
         autoBind: (sessionId: string): 'auto' | 'kept' | 'none' => {
           const pid = splitStore.active && splitStore.spec ? splitStore.spec.id : null
@@ -2005,17 +2035,30 @@ function buildCustomLayoutPrompt(req: string): string {
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]))
   }, [])
 
-  /** 应用内目录浏览：经宿主 browse 能力 listDirectory 加载一层（path 缺省 = 宿主主目录锚点）；
+  /** 应用内目录浏览：优先经宿主 uiWorkspace.listDirectory（browse 能力）加载一层（path 缺省 = 宿主主目录锚点）；
+   *  宿主目录能力不可用时回退到插件自身 POST /api/worktable/fs（与资源管理器窗同源的 raw readdir，
+   *  仅保留子目录并按路径推面包屑），保证远程/未组合 browse 能力时目录选择仍可用；
    *  manualOverride 用于「列表留在当前层、确认目标指向另一路径」的场景（新建文件夹后选中新目录） */
   const dirPickLoad = async (path?: string, manualOverride?: string) => {
-    const ws = sessionBridge?.workspaces as any
-    if (!ws || typeof ws.listDirectory !== 'function') {
-      setDirPick((s) => (s ? { ...s, loading: false, error: 'listDirectory unavailable' } : s))
-      return
-    }
+    const uiWs = applyCtx?.get?.('uiWorkspace') as any
     setDirPick((s) => (s ? { ...s, loading: true, error: null } : s))
     try {
-      const d = await ws.listDirectory(path)
+      let d: any
+      if (uiWs && typeof uiWs.listDirectory === 'function') {
+        d = await uiWs.listDirectory(path)
+      } else {
+        const r = await fetch('/api/worktable/fs', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: path ?? '' }),
+        })
+        const j = await r.json()
+        if (!r.ok || !Array.isArray(j?.entries)) throw new Error(j?.error ?? 'listDirectory failed')
+        const base = typeof j.path === 'string' && j.path ? j.path : (path ?? '')
+        const dirEntries = (j.entries as any[])
+          .filter((e) => e?.isDir)
+          .map((e) => ({ name: e.name, path: e.path, hidden: !!e.hidden }))
+        d = { path: base, crumbs: crumbsOf(base), entries: dirEntries }
+      }
       setDirPick((s) => (s
         ? {
             ...s,
@@ -2032,7 +2075,8 @@ function buildCustomLayoutPrompt(req: string): string {
     }
   }
 
-  /** 目录选择弹窗内新建文件夹：经宿主 browse 能力 createDirectory 在当前目录下建单层目录。
+  /** 目录选择弹窗内新建文件夹：优先经宿主 uiWorkspace.createDirectory 在当前目录下建单层目录；
+   *  不可用时回退到插件自身 POST /api/worktable/mkdir（父目录必须已存在，避免误建深层目录）。
    *  成功后刷新当前目录列表（新文件夹立即可见）并把确认目标设为新文件夹——对齐宿主
    *  DirectoryBrowser「创建后重列当前层 + 选中新目录」的交互；直接进入新目录会让列表变空，
    *  看起来像「没有生效」。失败（重名 / 无权限等）在列表区显示原因 */
@@ -2042,29 +2086,38 @@ function buildCustomLayoutPrompt(req: string): string {
     const name = cur.newName.trim()
     if (!name) return
     if (/[/\\]/.test(name)) { setDirPick((s) => (s ? { ...s, error: t('dirpick.newInvalid') } : s)); return }
-    const ws = sessionBridge?.workspaces as any
-    if (!ws || typeof ws.createDirectory !== 'function' || !cur.path) {
-      setDirPick((s) => (s ? { ...s, error: 'createDirectory unavailable' } : s))
-      return
-    }
+    if (!cur.path) { setDirPick((s) => (s ? { ...s, error: 'no current directory' } : s)); return }
+    const uiWs = applyCtx?.get?.('uiWorkspace') as any
     setDirPick((s) => (s ? { ...s, loading: true, error: null } : s))
     try {
-      const created = await ws.createDirectory(cur.path, name)
-      const createdPath = typeof created === 'string' && created ? created : joinPath(cur.path, name)
-      await dirPickLoad(cur.path, createdPath)
+      let createdPath = ''
+      if (uiWs && typeof uiWs.createDirectory === 'function') {
+        createdPath = await uiWs.createDirectory(cur.path, name)
+      } else {
+        const full = joinPath(cur.path, name)
+        const r = await fetch('/api/worktable/mkdir', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: full }),
+        })
+        const j = await r.json()
+        if (!r.ok || !j?.ok) throw new Error(j?.error ?? 'mkdir failed')
+        createdPath = typeof j.path === 'string' && j.path ? j.path : full
+      }
+      const createdPathStr = typeof createdPath === 'string' && createdPath ? createdPath : joinPath(cur.path, name)
+      await dirPickLoad(cur.path, createdPathStr)
     } catch (err) {
       setDirPick((s) => (s ? { ...s, loading: false, error: String(err) } : s))
     }
   }
 
-  /** 弹出系统文件夹选择窗（宿主 pickDirectory）；选中后回调。
-   *  native 能力不可用（宿主组合的是 browse 选择器 / 远程无桌面）时回退应用内目录浏览弹窗；
+  /** 弹出系统文件夹选择窗（宿主 uiWorkspace.pickDirectory）；选中后回调。
+   *  native 能力不可用（宿主未组合 directory-picker / 远程无桌面）时回退应用内目录浏览弹窗；
    *  用户在原生框里点取消（返回 null）不回退。 */
   const pickFolder = async (apply: (p: string) => void, startPath?: string) => {
-    const ws = sessionBridge?.workspaces as any
+    const uiWs = applyCtx?.get?.('uiWorkspace') as any
     try {
-      if (ws && typeof ws.pickDirectory === 'function') {
-        const p = await ws.pickDirectory()
+      if (uiWs && typeof uiWs.pickDirectory === 'function') {
+        const p = await uiWs.pickDirectory()
         if (p && typeof p === 'string') apply(p)
         return
       }
