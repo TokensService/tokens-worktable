@@ -490,41 +490,44 @@
         </table>
       </div>
     </div>
-    <!-- EvalScope Web 服务配置：可视化看板（evalscope service，默认 9000）连接模式 + 测试连接 + 获取任务列表 -->
+    <!-- EvalTokens 服务配置：评估任务管理服务（默认 http://1.95.87.43:9000）连接模式 + Bearer 令牌 + 测试连接 + 获取任务列表 -->
     <div class="dshell-card" style="margin-top:10px;">
-      <h2 class="dshell-sub" style="margin:0 0 8px">EvalScope Web 服务配置 <span class="dshell-muted">可视化看板 · 连接模式 + 测试连接 + 获取任务列表</span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">EvalTokens 服务配置 <span class="dshell-muted">评估任务管理服务 · 连接模式 + Bearer 令牌 + 测试连接 + 获取任务列表</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        EvalScope 提供 <code>evalscope service</code> 可视化看板（<code>pip install 'evalscope[service]'</code> 后执行，默认 <code>http://127.0.0.1:9000</code>），用于多维度对比评估 / 性能测试报告。测试任务运行成功后可在回显区点「查看报告」打开本看板。
-        「本地浏览器连接」：浏览器直接请求看板 API（需看板允许跨域 CORS 或与本页同源，否则跨域请求被拦截；evalscope service 默认开启 CORS，本地直连通常可用）。
-        「远程服务器端连接」：由 DSH 服务端经 <code>/api/worktable/proxy</code> 代连看板，浏览器不直连；仅允许回环 / 内网地址。
+        EvalTokens 提供评估任务管理 API（<code>GET /api/open/v1/tasks</code>，请求头需携带 <code>Authorization: Bearer &lt;令牌&gt;</code>），用于查询评估 / 测试任务列表。测试任务运行成功后可在回显区点「查看报告」打开本服务。
+        「本地浏览器连接」：浏览器直接请求服务 API（需服务允许跨域 CORS 或与本页同源，否则跨域请求被拦截）。
+        「远程服务器端连接」：由 DSH 服务端经 <code>/api/worktable/proxy</code> 代连服务，浏览器不直连；仅允许回环 / 内网地址（公网地址请用本地浏览器连接）。
       </p>
       <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">看板地址
-          <input id="esUrl" class="dshell-input" placeholder="http://127.0.0.1:9000" style="width:220px;" />
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">服务地址
+          <input id="etUrl" class="dshell-input" placeholder="http://1.95.87.43:9000" style="width:220px;" />
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">链接地址
-          <input id="esLinkUrl" class="dshell-input" placeholder="真实看板地址，留空则用上方看板地址" style="width:240px;" title="「获取任务列表 / 查看报告」用的真实看板地址；留空则用上方的看板地址" />
+          <input id="etLinkUrl" class="dshell-input" placeholder="真实服务地址，留空则用上方服务地址" style="width:240px;" title="「获取任务列表 / 查看报告」用的真实服务地址；留空则用上方的服务地址" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">访问令牌
+          <input id="etToken" class="dshell-input" type="password" placeholder="Bearer 令牌（api-token）" style="width:240px;" autocomplete="off" title="调用服务 API 所需的访问令牌（Authorization: Bearer &lt;令牌&gt;）；仅保存到本浏览器 localStorage，请勿提交进仓库" />
         </label>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
         <span class="dshell-muted" style="font-size:11px;">连接模式</span>
         <div class="jk-mode" role="group" style="display:inline-flex; border:1px solid var(--dsw-alias-border-l2); border-radius:8px; overflow:hidden;">
-          <button id="esModeLocal" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="local">本地浏览器连接</button>
-          <button id="esModeRemote" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="remote">远程服务器端连接</button>
+          <button id="etModeLocal" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="local">本地浏览器连接</button>
+          <button id="etModeRemote" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="remote">远程服务器端连接</button>
         </div>
-        <button id="esTest" class="dshell-btn mini" type="button">测试连接</button>
-        <span id="esTestTip" class="dshell-muted" style="font-size:11px;"></span>
+        <button id="etTest" class="dshell-btn mini" type="button">测试连接</button>
+        <span id="etTestTip" class="dshell-muted" style="font-size:11px;"></span>
         <span style="flex:1"></span>
-        <button id="esSave" class="dshell-btn mini">保存</button>
-        <span id="esSavedTip" class="dshell-muted" style="font-size:11px;"></span>
+        <button id="etSave" class="dshell-btn mini">保存</button>
+        <span id="etSavedTip" class="dshell-muted" style="font-size:11px;"></span>
       </div>
       <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
-        <button id="esOpen" class="dshell-btn dshell-btnGhost mini" type="button">获取任务列表</button>
-        <span id="esReportsTip" class="dshell-muted" style="font-size:11px;"></span>
+        <button id="etOpen" class="dshell-btn dshell-btnGhost mini" type="button">获取任务列表</button>
+        <span id="etReportsTip" class="dshell-muted" style="font-size:11px;"></span>
       </div>
-      <div id="esReportsWrap" style="display:none; margin-top:8px; overflow:auto;">
-        <table class="dshell-table" id="esReportsTable">
-          <thead><tr><th>模型</th><th>数据集</th><th>样本数</th><th>时间</th><th>操作</th></tr></thead>
+      <div id="etReportsWrap" style="display:none; margin-top:8px; overflow:auto;">
+        <table class="dshell-table" id="etReportsTable">
+          <thead><tr><th>序号</th><th>任务ID</th><th>名称</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -871,7 +874,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evalscope, prom, archiveDir, archiveScriptName, analysisPrompts, testCases, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, testCases, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
@@ -902,7 +905,8 @@ async function loadServerState(){
       if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
       if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
       if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
-      if(cfg.evalscope && typeof cfg.evalscope==='object') evalscope=Object.assign({}, DEFAULT_EVALSCOPE, cfg.evalscope);
+      if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
+      else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
       if(cfg.prom && typeof cfg.prom==='object') prom=Object.assign({}, DEFAULT_PROM, cfg.prom);
       if(typeof cfg.archiveDir==='string'){ archiveDir=cfg.archiveDir; $('archiveDir').value=archiveDir; }
       if(typeof cfg.archiveScriptName==='string'){ archiveScriptName=cfg.archiveScriptName; $('archiveScriptName').value=archiveScriptName; }
@@ -926,7 +930,7 @@ async function loadServerState(){
         localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
         localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
         localStorage.setItem('pip-jenkins', JSON.stringify(jenkins));
-        localStorage.setItem('pip-evalscope', JSON.stringify(evalscope));
+        localStorage.setItem('pip-evaltokens', JSON.stringify(evaltok));
         localStorage.setItem('pip-prom', JSON.stringify(prom));
         localStorage.setItem('pip-archiveDir', archiveDir);
         localStorage.setItem('pip-archiveScript', archiveScriptName);
@@ -1548,13 +1552,13 @@ function finishTcRun(code, err){
   if(code===0) appendReportLink($('tcRunLog'));
 }
 function appendErr(box, txt){ const d=document.createElement('div'); d.className='err'; d.textContent=txt; box.appendChild(d); box.scrollTop=box.scrollHeight; }
-/* 测试任务成功后在回显区追加「查看报告」链接：打开 EvalScope 可视化看板（设置页配置的看板地址） */
+/* 测试任务成功后在回显区追加「查看报告」链接：打开 EvalTokens 服务（设置页配置的服务地址） */
 function appendReportLink(box){
-  const u=((evalscope && (evalscope.linkUrl||evalscope.url))||'').trim();
+  const u=((evaltok && (evaltok.linkUrl||evaltok.url))||'').trim();
   if(!u) return;
   const d=document.createElement('div'); d.className='ok'; d.style.marginTop='4px';
   const a=document.createElement('a'); a.href=u; a.target='_blank'; a.rel='noopener';
-  a.textContent='📊 查看评估报告（EvalScope 看板） →';
+  a.textContent='📊 查看评估报告（EvalTokens 服务） →';
   a.style.color='var(--log-ok)'; a.style.textDecoration='underline';
   d.appendChild(a); box.appendChild(d); box.scrollTop=box.scrollHeight;
 }
@@ -1925,113 +1929,136 @@ async function testJenkins(){
   }
 }
 
-/* ---------- EvalScope Web 服务配置（可视化看板：evalscope service，默认 9000） ----------
-   本地浏览器连接：浏览器直接请求看板 API（需看板允许跨域 CORS 或同源）；
-   远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连看板（仅回环/内网）。 */
-const DEFAULT_EVALSCOPE = { url:'http://127.0.0.1:9000', linkUrl:'', mode:'local' };
-function loadEvalscope(){
-  try{ const a=JSON.parse(localStorage.getItem('pip-evalscope')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_EVALSCOPE, a); }catch(e){}
-  return Object.assign({}, DEFAULT_EVALSCOPE);
+/* ---------- EvalTokens 服务配置（评估任务管理服务：默认 http://1.95.87.43:9000） ----------
+   本地浏览器连接：浏览器直接请求服务 API（需服务允许跨域 CORS 或同源）；
+   远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连服务（仅回环/内网，公网地址走本地连接）。 */
+const DEFAULT_EVALTOK = { url:'http://1.95.87.43:9000', linkUrl:'', token:'', mode:'local' };
+function loadEvaltok(){
+  try{
+    const a=JSON.parse(localStorage.getItem('pip-evaltokens')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_EVALTOK, a);
+    /* 迁移旧 EvalScope 配置（pip-evalscope）到 EvalTokens，保留已配置的服务地址 */
+    const old=JSON.parse(localStorage.getItem('pip-evalscope')); if(old && typeof old==='object') return Object.assign({}, DEFAULT_EVALTOK, old);
+  }catch(e){}
+  return Object.assign({}, DEFAULT_EVALTOK);
 }
-let evalscope = loadEvalscope();
-function saveEvalscope(){ try{ localStorage.setItem('pip-evalscope', JSON.stringify(evalscope)); }catch(e){} persistState(); }
-function applyEvalscopeForm(){
-  $('esUrl').value = evalscope.url || DEFAULT_EVALSCOPE.url;
-  $('esLinkUrl').value = evalscope.linkUrl || '';
-  setEvalscopeMode(evalscope.mode);
+let evaltok = loadEvaltok();
+function saveEvaltok(){ try{ localStorage.setItem('pip-evaltokens', JSON.stringify(evaltok)); localStorage.removeItem('pip-evalscope'); }catch(e){} persistState(); }
+function applyEvaltokForm(){
+  $('etUrl').value = evaltok.url || DEFAULT_EVALTOK.url;
+  $('etLinkUrl').value = evaltok.linkUrl || '';
+  $('etToken').value = evaltok.token || '';
+  setEvaltokMode(evaltok.mode);
 }
-function setEvalscopeMode(m){
-  evalscope.mode = (m==='remote') ? 'remote' : 'local';
-  $('esModeLocal').classList.toggle('sel', evalscope.mode==='local');
-  $('esModeRemote').classList.toggle('sel', evalscope.mode==='remote');
+function setEvaltokMode(m){
+  evaltok.mode = (m==='remote') ? 'remote' : 'local';
+  $('etModeLocal').classList.toggle('sel', evaltok.mode==='local');
+  $('etModeRemote').classList.toggle('sel', evaltok.mode==='remote');
 }
-function collectEvalscopeForm(){
+function collectEvaltokForm(){
   return {
-    url: ($('esUrl').value||'').trim() || DEFAULT_EVALSCOPE.url,
-    linkUrl: ($('esLinkUrl').value||'').trim(),
-    mode: evalscope.mode,
+    url: ($('etUrl').value||'').trim() || DEFAULT_EVALTOK.url,
+    linkUrl: ($('etLinkUrl').value||'').trim(),
+    token: ($('etToken').value||'').trim(),
+    mode: evaltok.mode,
   };
 }
-/* 测试连接：本地模式浏览器直连看板根（跨域无 CORS 会抛 TypeError，提示切远程）；远程模式经 /api/worktable/proxy 代连 */
-async function testEvalscope(){
-  const e = collectEvalscopeForm();
-  const tip = $('esTestTip');
+/* 取带 Bearer 令牌的请求头（令牌为空时不附加 Authorization，由服务按未鉴权处理） */
+function evaltokHeaders(e){ return e.token ? { Authorization:'Bearer ' + e.token } : {}; }
+/* 测试连接：本地模式浏览器直连服务任务接口（带 Bearer 令牌；跨域无 CORS 会抛 TypeError，提示切本地/检查令牌）；远程模式经 /api/worktable/proxy 代连（仅回环/内网） */
+async function testEvaltok(){
+  const e = collectEvaltokForm();
+  const tip = $('etTestTip');
   tip.style.color = ''; tip.textContent = '测试中…';
-  const root = e.url.replace(/\/+$/,'') + '/';
+  const api = e.url.replace(/\/+$/,'') + '/api/open/v1/tasks';
+  const headers = evaltokHeaders(e);
   try {
     let status = 0;
     if (e.mode === 'local') {
-      const r = await fetch(root, { cache:'no-store' });
+      const r = await fetch(api, { cache:'no-store', headers });
       status = r.status;
     } else {
-      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: root, method:'GET', headers:{} }) });
+      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: api, method:'GET', headers }) });
       const p = await r.json();
-      if (p && p.error) { tip.style.color='var(--log-err)'; tip.textContent='✗ ' + p.error; return; }
+      if (p && p.error) { tip.style.color='var(--log-err)'; tip.textContent='✗ ' + p.error + (/-?only loopback|private targets/i.test(String(p.error)) ? '（公网地址请切「本地浏览器连接」）' : ''); return; }
       status = p.status || 0;
     }
-    if (status === 200) { tip.style.color = 'var(--log-ok)'; tip.textContent = '✓ 看板可达（HTTP 200）'; }
-    else { tip.style.color = 'var(--log-err)'; tip.textContent = '✗ 看板返回 HTTP ' + status; }
+    if (status === 200) { tip.style.color = 'var(--log-ok)'; tip.textContent = '✓ 服务可达且令牌有效（HTTP 200）'; }
+    else if (status === 401 || status === 403) { tip.style.color = 'var(--log-err)'; tip.textContent = '✗ 令牌无效或缺失（HTTP ' + status + '），请在「访问令牌」填写正确的 Bearer 令牌'; }
+    else { tip.style.color = 'var(--log-err)'; tip.textContent = '✗ 服务返回 HTTP ' + status; }
   } catch (err) {
     const em = (err && err.message) ? err.message : String(err);
     tip.style.color = 'var(--log-err)';
-    tip.textContent = '✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达：浏览器地址栏能直接打开看板即为 CORS，请切「远程服务器端连接」由 DSH 服务端代连' : '');
+    tip.textContent = '✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达：浏览器地址栏能直接打开服务即为 CORS，请保持「本地浏览器连接」并确认令牌正确' : '');
   }
 }
-/* 获取任务列表：经 /api/v1/reports 拉取评估报告（本地直连 / 远程走 proxy，复用连接模式），表格展示；「打开」链接到该 run 的 HTML 报告 */
-async function listEvalscopeReports(){
-  const e = collectEvalscopeForm();
+/* 获取任务列表：经 /api/open/v1/tasks 拉取评估任务（本地直连 / 远程走 proxy，复用连接模式 + Bearer 令牌），表格展示；「打开」链接到该任务详情页 */
+async function listEvaltokTasks(){
+  const e = collectEvaltokForm();
   const openBase = (e.linkUrl || e.url || '').trim();
-  const wrap = $('esReportsWrap'); const tip = $('esReportsTip'); const tb = $('esReportsTable').querySelector('tbody');
+  const wrap = $('etReportsWrap'); const tip = $('etReportsTip'); const tb = $('etReportsTable').querySelector('tbody');
   tip.style.color=''; tip.textContent='拉取中…'; tb.innerHTML=''; wrap.style.display='none';
-  if (!openBase) { tip.style.color='var(--log-err)'; tip.textContent='✗ 未配置看板地址'; return; }
-  const api = e.url.replace(/\/+$/,'') + '/api/v1/reports?page=1&page_size=100';
+  if (!openBase) { tip.style.color='var(--log-err)'; tip.textContent='✗ 未配置服务地址'; return; }
+  const api = e.url.replace(/\/+$/,'') + '/api/open/v1/tasks';
+  const headers = evaltokHeaders(e);
   try {
     let data;
     if (e.mode === 'local') {
-      const r = await fetch(api, { cache:'no-store' });
+      const r = await fetch(api, { cache:'no-store', headers });
       if (!r.ok) {
         let msg = 'HTTP ' + r.status;
-        try { const j = await r.json(); if (j && j.error) msg = String(j.error) + '（HTTP ' + r.status + '）'; } catch (_) {}
+        try { const j = await r.json(); if (j && (j.error||j.message)) msg = String(j.error||j.message) + '（HTTP ' + r.status + '）'; } catch (_) {}
         throw new Error(msg);
       }
       data = await r.json();
     } else {
-      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: api, method:'GET', headers:{} }) });
+      const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: api, method:'GET', headers }) });
       const p = await r.json();
-      if (p && p.error) throw new Error(p.error);
+      if (p && p.error) throw new Error(p.error + (/-?only loopback|private targets/i.test(String(p.error)) ? '（公网地址请切「本地浏览器连接」）' : ''));
       if ((p.status||0) !== 200) {
         let msg = 'HTTP ' + (p.status||0);
-        try { const j = JSON.parse(p.body || '{}'); if (j && j.error) msg = String(j.error) + '（HTTP ' + (p.status||0) + '）'; } catch (_) {}
+        try { const j = JSON.parse(p.body || '{}'); if (j && (j.error||j.message)) msg = String(j.error||j.message) + '（HTTP ' + (p.status||0) + '）'; } catch (_) {}
         throw new Error(msg);
       }
       data = JSON.parse(p.body || '{}');
     }
-    const reports = (data && data.reports) || [];
+    /* 归一化为任务数组：兼容裸数组 / {data|tasks|list|items|results:[...]} 等常见包装 */
+    const tasks = Array.isArray(data) ? data
+      : (Array.isArray(data.data) ? data.data
+      : (Array.isArray(data.tasks) ? data.tasks
+      : (Array.isArray(data.list) ? data.list
+      : (Array.isArray(data.items) ? data.items
+      : (Array.isArray(data.results) ? data.results : [])))));
     wrap.style.display='';
-    if (!reports.length) {
+    if (!tasks.length) {
       const tr=document.createElement('tr'); const td=document.createElement('td');
-      td.colSpan=5; td.className='dshell-muted'; td.textContent='（无报告）'; tr.appendChild(td); tb.appendChild(tr);
+      td.colSpan=6; td.className='dshell-muted'; td.textContent='（无任务）'; tr.appendChild(td); tb.appendChild(tr);
     }
-    reports.forEach(rep => {
+    tasks.forEach((t,i) => {
       const tr=document.createElement('tr');
-      const tdM=document.createElement('td'); tdM.textContent=rep.model_name || rep.model_id || '-';
-      const tdD=document.createElement('td'); tdD.textContent=rep.dataset_pretty_name || rep.dataset_name || '-';
-      const tdN=document.createElement('td'); tdN.textContent=(rep.num_samples!=null?String(rep.num_samples):'-');
-      const tdT=document.createElement('td'); tdT.textContent=rep.timestamp ? new Date(rep.timestamp).toLocaleString() : '-';
+      const tdIdx=document.createElement('td'); tdIdx.className='dshell-muted'; tdIdx.textContent=String(i+1);
+      const id=String(t.id||t.task_id||t.uuid||t._id||'');
+      const tdId=document.createElement('td'); tdId.style.fontFamily='Menlo,Consolas,monospace'; tdId.style.fontSize='11px'; tdId.textContent=id||'-';
+      const name=String(t.name||t.title||t.task_name||t.display_name||'');
+      const tdName=document.createElement('td'); tdName.textContent=name||'-';
+      const st=String(t.status||t.state||t.task_status||t.phase||'');
+      const tdSt=document.createElement('td'); tdSt.textContent=st||'-';
+      const tm=t.created_at||t.create_time||t.start_time||t.created_time||t.gmt_create||t.created||'';
+      const tdTm=document.createElement('td'); tdTm.textContent= tm ? (String(new Date(tm))==='Invalid Date' ? String(tm) : new Date(tm).toLocaleString()) : '-';
       const tdOp=document.createElement('td');
-      const link = openBase.replace(/\/+$/,'') + '/api/v1/reports/runs/' + encodeURIComponent(rep.run_id) + '/html';
+      const link = openBase.replace(/\/+$/,'') + (id ? ('/tasks/' + encodeURIComponent(id)) : '');
       const a=document.createElement('a'); a.href=link; a.target='_blank'; a.rel='noopener'; a.textContent='打开'; a.style.marginRight='8px';
       const cp=document.createElement('button'); cp.className='dshell-btn dshell-btnGhost mini'; cp.type='button'; cp.textContent='复制链接';
       cp.addEventListener('click', ()=>copyText(link, cp));
       tdOp.appendChild(a); tdOp.appendChild(cp);
-      tr.appendChild(tdM); tr.appendChild(tdD); tr.appendChild(tdN); tr.appendChild(tdT); tr.appendChild(tdOp);
+      tr.appendChild(tdIdx); tr.appendChild(tdId); tr.appendChild(tdName); tr.appendChild(tdSt); tr.appendChild(tdTm); tr.appendChild(tdOp);
       tb.appendChild(tr);
     });
-    tip.style.color='var(--log-ok)'; tip.textContent='✓ 共 ' + reports.length + ' 份报告' + (data.total!=null && data.total!==reports.length ? '（总计 ' + data.total + '）' : '');
+    const total = (!Array.isArray(data) && Number.isFinite(data.total)) ? data.total : tasks.length;
+    tip.style.color='var(--log-ok)'; tip.textContent='✓ 共 ' + tasks.length + ' 个任务' + (total!==tasks.length ? '（总计 ' + total + '）' : '');
   } catch (err) {
     const em = (err && err.message) ? err.message : String(err);
     tip.style.color='var(--log-err)';
-    tip.textContent='✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达，请切「远程服务器端连接」由 DSH 服务端代连' : '');
+    tip.textContent='✗ ' + em + (/failed to fetch|networkerror|load failed/i.test(em) ? ' —— 多为 CORS 拦截或网络不可达，请保持「本地浏览器连接」并确认令牌正确' : '');
   }
 }
 
@@ -4440,15 +4467,15 @@ $('jkSave').addEventListener('click', ()=>{
   $('jkSavedTip').textContent='已保存。'; setTimeout(()=>{ $('jkSavedTip').textContent=''; },2000);
 });
 $('jkJobs').addEventListener('click', listJenkinsJobs);
-/* EvalScope Web 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 获取任务列表 / 保存 */
-applyEvalscopeForm();
-$('esModeLocal').addEventListener('click', ()=>setEvalscopeMode('local'));
-$('esModeRemote').addEventListener('click', ()=>setEvalscopeMode('remote'));
-$('esTest').addEventListener('click', testEvalscope);
-$('esOpen').addEventListener('click', listEvalscopeReports);
-$('esSave').addEventListener('click', ()=>{
-  evalscope = collectEvalscopeForm(); saveEvalscope();
-  $('esSavedTip').textContent='已保存。'; setTimeout(()=>{ $('esSavedTip').textContent=''; },2000);
+/* EvalTokens 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 获取任务列表 / 保存 */
+applyEvaltokForm();
+$('etModeLocal').addEventListener('click', ()=>setEvaltokMode('local'));
+$('etModeRemote').addEventListener('click', ()=>setEvaltokMode('remote'));
+$('etTest').addEventListener('click', testEvaltok);
+$('etOpen').addEventListener('click', listEvaltokTasks);
+$('etSave').addEventListener('click', ()=>{
+  evaltok = collectEvaltokForm(); saveEvaltok();
+  $('etSavedTip').textContent='已保存。'; setTimeout(()=>{ $('etSavedTip').textContent=''; },2000);
 });
 /* 普罗数据（Prometheus）服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
 applyPromForm();
@@ -4541,7 +4568,7 @@ function renderAll(){
   renderDetail();
   fillCfgForm();
   applyJenkinsForm();
-  applyEvalscopeForm();
+  applyEvaltokForm();
   applyPromForm();
   renderTestCases();
 }
