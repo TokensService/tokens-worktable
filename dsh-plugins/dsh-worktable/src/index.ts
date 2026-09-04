@@ -931,7 +931,7 @@ export function apply(ctx: Context) {
       const st0 = Date.now()
       let entry: any = null
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
-      else if (s.kind === 'url' || s.kind === 'jenkins') { entry = { status: 'success', text: '[定时执行] URL 请求阶段：定时触发暂不支持，已跳过' } }   // 兼容旧计划中的 kind:'jenkins'（Jenkins 阶段已改为 URL 请求阶段）
+      else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins' || s.kind === 'evaltokens') { entry = { status: 'success', text: '[定时执行] HTTP/EvalTokens 阶段：定时触发暂不支持，已跳过' } }   // 兼容旧计划中的 kind:'url'/'jenkins'（URL 请求阶段已改为 HTTP 阶段；EvalTokens 阶段同样仅前端运行期支持）
       else if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
         // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /

@@ -1034,8 +1034,8 @@ function apply(ctx) {
       let entry = null;
       if (s.skip || s.gate) {
         entry = { status: "skipped", text: "[\u5B9A\u65F6\u6267\u884C] \u672C\u9636\u6BB5\u914D\u7F6E\u4E3A\u4E0D\u6267\u884C\uFF0C\u5DF2\u8DF3\u8FC7" };
-      } else if (s.kind === "url" || s.kind === "jenkins") {
-        entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] URL \u8BF7\u6C42\u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" };
+      } else if (s.kind === "http" || s.kind === "url" || s.kind === "jenkins" || s.kind === "evaltokens") {
+        entry = { status: "success", text: "[\u5B9A\u65F6\u6267\u884C] HTTP/EvalTokens \u9636\u6BB5\uFF1A\u5B9A\u65F6\u89E6\u53D1\u6682\u4E0D\u652F\u6301\uFF0C\u5DF2\u8DF3\u8FC7" };
       } else if (s.script && s.script.path) {
         const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout);
         Object.assign(varsPool, parseStageVars(r.stdout));
