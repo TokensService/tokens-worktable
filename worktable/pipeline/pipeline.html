@@ -2595,7 +2595,14 @@ function startSimRun(pl, c){
   runStages = stages;
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',vars:{},token:++runSeq,hasSched:stages.some(s=>s.sched)};
+  /* hasSched：是否把定时后缀登记到服务端执行。仅当存在「本地前缀」（首个阶段勾选了
+     「需本地运行」，即 stages[0].sched 为空）且其后有定时阶段时才为真——这样混合流水线
+     仍按「本地前缀 → 服务端定时后缀」拆分。若全部阶段都支持定时（默认，无本地前缀），
+     则 hasSched 为假：手动「运行流水线」直接在浏览器本地执行全部阶段，避免一点击就
+     整体登记为服务端计划、所有节点停留在「未开始」仅显示「前缀完成（定时已登记服务端）」，
+     用户以为任务没有执行。定时页的计划触发仍由服务端 execPlan 整条执行，不受此影响。 */
+  const deferSuffix = stages.length>0 && !stages[0].sched && stages.some(s=>s.sched);
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',vars:{},token:++runSeq,hasSched:deferSuffix};
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
@@ -2785,8 +2792,10 @@ function advance(i){
   const stg=activeStages();
   if(i>=stg.length){ finish('success'); return; }
   /* 到达定时阶段分界：前缀（本地运行阶段）已完成，定时后缀登记为服务端「立即执行一次」计划后结束本次客户端运行。
-     定时阶段不在客户端执行——交由服务端 /api/worktable/pipeline/plans 触发（关闭页面仍执行）；周期由流水线定时计划决定。 */
-  if(stg[i].sched){
+     定时阶段不在客户端执行——交由服务端 /api/worktable/pipeline/plans 触发（关闭页面仍执行）；周期由流水线定时计划决定。
+     仅当本次运行确有本地前缀（curRun.hasSched，见 startSimRun）才登记后缀：全部阶段都支持定时（默认，无本地前缀）时
+     hasSched 为假，此处不进入登记分支，改由下方正常执行把各阶段在浏览器本地跑出实时回显。 */
+  if(stg[i].sched && curRun && curRun.hasSched){
     const tk=curRun?curRun.token:null;
     (async()=>{ await registerStageTimers(i); if(running && curRun && curRun.token===tk) finish('success'); })();
     return;
