@@ -588,6 +588,11 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
+        <div class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;" title="勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。xds_namespace 默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时按当前部署策略与执行人解析），可改填实际命名空间；脚本显式参数同名时优先。">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="plPromEnable" /> 收集普罗数据</label>
+          <input id="plModelName" class="dshell-input" placeholder="model_name" autocomplete="off" style="width:160px;" title="普罗数据采集的模型名（运行时注入环境变量 MODEL_NAME）" />
+          <input id="plXdsNamespace" class="dshell-input" placeholder="xds_namespace（默认 ${DEPLOY_STRATEGY}-${BY}）" autocomplete="off" style="width:220px;" title="普罗数据采集的命名空间（运行时注入环境变量 XDS_NAMESPACE）；默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时解析），可改填实际命名空间" />
+        </div>
         <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（轮询 EvalTokens 服务任务到终态）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
@@ -841,6 +846,10 @@ function collectRunLogs(){
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
 const DEFAULT_PIPELINE_ID='pl-xds';
 function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}; }
+/* 收集普罗数据（每条流水线独立配置）：勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，
+   供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。
+   xdsNamespace 默认 ${DEPLOY_STRATEGY}-${BY}（运行时按当前部署策略与执行人解析为「部署策略-执行人拼音」），可改填实际命名空间 */
+const DEFAULT_PIPELINE_PROM = { enabled:false, modelName:'', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}' };
 /* 旧数据迁移：「审批门」(gate) 已改为「是否执行」(skip)，旧 gate:true 阶段按不执行处理 */
 function migrateGate(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(s && s.gate){ s.skip=true; delete s.gate; } }); return p; }
 /* 旧数据迁移：Jenkins 阶段先改为 URL 请求阶段、再统一改为 HTTP 阶段（kind:'jenkins'/'url'→'http'，jenkins.job→url.url）；
@@ -2461,7 +2470,7 @@ function startRun(opts){
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
-  const c = {env, envs, image, release, repo, branch, by, strategy, source:opts.source||'manual'};
+  const c = {env, envs, image, release, repo, branch, by, strategy, prom:(opts.prom!==undefined?opts.prom:((pl&&pl.prom)||null)), source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
 }
@@ -2484,7 +2493,7 @@ function startSimRun(pl, c){
      整体登记为服务端计划、所有节点停留在「未开始」仅显示「前缀完成（定时已登记服务端）」，
      用户以为任务没有执行。定时页的计划触发仍由服务端 execPlan 整条执行，不受此影响。 */
   const deferSuffix = stages.length>0 && !stages[0].sched && stages.some(s=>s.sched);
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',vars:{},token:++runSeq,hasSched:deferSuffix};
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',prom:c.prom||null,vars:{},token:++runSeq,hasSched:deferSuffix};
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
@@ -2523,7 +2532,7 @@ function runPipeline(opts){
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, repoId, branch, strategy, by, source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, branch, strategy, by, prom:(opts.prom!==undefined?opts.prom:(pl?(pl.prom||null):null)), source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   queue.push(item);
@@ -2809,6 +2818,8 @@ function substRunVars(v, rc){
     if(rc.pipelineName) look.PIPELINE_NAME=rc.pipelineName;
     if(rc.repoUrl) look.GIT_URL=rc.repoUrl;
     if(rc.branch) look.GIT_BRANCH=rc.branch;
+    if(rc.strategy!==undefined) look.DEPLOY_STRATEGY=rc.strategy;   // 部署策略（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用）
+    if(rc.by) look.BY=rc.by;   // 执行人（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用，= 执行人拼音）
     if(rc.archive){ look.ARCHIVE_DIR=rc.archive; look.ARCHIVE_FOLDER=rc.archive; }
     if(rc.vars) Object.assign(look, rc.vars);   // 上游阶段变量同名优先
   }
@@ -2912,6 +2923,15 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal){
       if(env.ARCHIVE_FOLDER===undefined) env.ARCHIVE_FOLDER=rc.archive;
       if(env.ARCHIVE_PIPELINE===undefined && rc.pipelineName) env.ARCHIVE_PIPELINE=rc.pipelineName;
       if(env.ARCHIVE_TAG===undefined && rc.tag) env.ARCHIVE_TAG=rc.tag;
+    }
+    /* 收集普罗数据：勾选「收集普罗数据」的流水线运行时注入 MODEL_NAME / XDS_NAMESPACE
+       （值支持 ${VAR} 占位，如 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 按当前部署策略与执行人解析）；
+       脚本显式参数优先；解析后为空则不注入。供 collect_vllm_metrics.py 等采集脚本按模型/命名空间筛选指标 */
+    if(rc.prom && rc.prom.enabled){
+      const mn=substRunVars(rc.prom.modelName||'', rc);
+      if(mn && env.MODEL_NAME===undefined) env.MODEL_NAME=mn;
+      const ns=substRunVars(rc.prom.xdsNamespace||'', rc);
+      if(ns && env.XDS_NAMESPACE===undefined) env.XDS_NAMESPACE=ns;
     }
   }
   if(ctx0){ if(ctx0.user && env.TARGET_USER===undefined) env.TARGET_USER=ctx0.user; if(ctx0.pass && env.TARGET_PASSWORD===undefined) env.TARGET_PASSWORD=ctx0.pass; }
@@ -3051,6 +3071,13 @@ async function runUrlStep(i){
         if(vars.ARCHIVE_FOLDER===undefined) vars.ARCHIVE_FOLDER=curRun.archive;
         if(curRun.pipelineName&&vars.ARCHIVE_PIPELINE===undefined) vars.ARCHIVE_PIPELINE=curRun.pipelineName;
         if(curRun.tag&&vars.ARCHIVE_TAG===undefined) vars.ARCHIVE_TAG=curRun.tag;
+      }
+      /* 收集普罗数据：HTTP 阶段同样注入 MODEL_NAME / XDS_NAMESPACE 占位取值（与脚本阶段一致） */
+      if(curRun.prom && curRun.prom.enabled){
+        const mn=substRunVars(curRun.prom.modelName||'', curRun);
+        if(mn && vars.MODEL_NAME===undefined) vars.MODEL_NAME=mn;
+        const ns=substRunVars(curRun.prom.xdsNamespace||'', curRun);
+        if(ns && vars.XDS_NAMESPACE===undefined) vars.XDS_NAMESPACE=ns;
       }
     }
     /* {VAR} 占位符用上面注入完成的环境变量替换（URL 编码）后，对完整 URL 直接 GET 触发（等价 curl）；
@@ -3974,6 +4001,11 @@ function openPlForm(id, focusIdx){
   if(p){ $('plName').value=p.name;
     editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?{taskId:s.evaltokens.taskId,taskName:s.evaltokens.taskName,outVars:(s.evaltokens.outVars||'')}:null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
+  /* 收集普罗数据：按流水线配置回填（无配置用默认，xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY}） */
+  const pp = (p && p.prom) ? Object.assign({}, DEFAULT_PIPELINE_PROM, p.prom) : DEFAULT_PIPELINE_PROM;
+  $('plPromEnable').checked = !!pp.enabled;
+  $('plModelName').value = pp.modelName || '';
+  $('plXdsNamespace').value = (pp.xdsNamespace!=null) ? pp.xdsNamespace : DEFAULT_PIPELINE_PROM.xdsNamespace;
   loadScripts().then(async ()=>{
     renderStageEditor();
     /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
@@ -4028,9 +4060,10 @@ function savePlForm(){
     if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
   });
+  const prom={enabled:$('plPromEnable').checked, modelName:$('plModelName').value.trim(), xdsNamespace:$('plXdsNamespace').value.trim()};
   const editId=$('plForm').dataset.editId;
-  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; } }
-  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false}); }
+  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.prom=prom; } }
+  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false, prom}); }
   savePipelines(); $('plForm').style.display='none';
   /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
   if(running){ renderPipelines(); }
