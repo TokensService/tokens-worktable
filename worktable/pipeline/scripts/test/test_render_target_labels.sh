@@ -42,6 +42,7 @@ feTemplate:
   nodeSelector:
     kubernetes.io/hostname: 192.168.0.243
 global:
+  useFemFrontend: true
   imageRegistry: registry.example/old
   images:
     ray: xds:old
@@ -54,6 +55,7 @@ frameworkConfigFiles:
     [deploy]
     k8s_deploy_namespace = old-namespace
     [fe]
+    use_fem_frontend = true
     fem_min_frontend_num = 10
     fem_max_frontend_num = 10
 lmcache:
@@ -131,6 +133,7 @@ for group in values["taskExecutorGroups"]:
     assert resources.startswith("'") and resources.endswith("'"), resources
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
+assert values["global"]["useFemFrontend"] is False, values["global"]
 assert values["global"]["images"]["ray"] == "xds:test-tag"
 assert values["global"].get("fullnameOverride", "") == "", values["global"]
 assert values["global"]["roleName"] == "xds-one-node-78-verify-role"
@@ -142,6 +145,7 @@ assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
 

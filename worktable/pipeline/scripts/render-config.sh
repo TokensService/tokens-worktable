@@ -379,6 +379,7 @@ remove_container_env("XCCL_TURBO_FIX_PP_WEIGHT_LOAD")
 
 registry, image_repository, image_name, image_tag = split_image_reference(deploy_image)
 global_values = values.setdefault("global", {})
+global_values["useFemFrontend"] = False
 global_values["imageRegistry"] = registry
 global_values.setdefault("images", {})["ray"] = image_name
 global_values["roleName"] = f"{namespace}-role"
@@ -398,6 +399,11 @@ if isinstance(lmcache, dict):
 
 framework_files = values.get("frameworkConfigFiles")
 if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    framework_files["xds_framework.conf"] = re.sub(
+        r"(?m)^(\s*use_fem_frontend\s*=\s*).*$",
+        r"\g<1>false",
+        framework_files["xds_framework.conf"],
+    )
     framework_files["xds_framework.conf"] = re.sub(
         r"(?m)^(\s*k8s_deploy_namespace\s*=\s*).*$",
         rf"\g<1>{namespace}",
