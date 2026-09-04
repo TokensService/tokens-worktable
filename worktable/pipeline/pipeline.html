@@ -133,7 +133,7 @@
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
-    <button id="navTest" class="dshell-btn dshell-btnGhost mini" data-pagenav="test">测试用例</button>
+    <button id="navTest" class="dshell-btn dshell-btnGhost mini" data-pagenav="test">测试任务</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
@@ -489,12 +489,12 @@
     </div>
   </div><!-- /pageEnv -->
 
-  <!-- 测试用例（独立页面：evalscope 模型评估 / 性能测试任务的增删改查与执行） -->
+  <!-- 测试任务（独立页面：evalscope 模型评估 / 性能测试任务的增删改查与执行） -->
   <div id="pageTest" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-        <h2 class="dshell-sub" style="margin:0">测试用例 <span id="tcCount" class="dshell-muted"></span> <span class="dshell-muted" style="font-size:11px;font-weight:normal;">evalscope 模型评估 / 性能测试任务</span></h2>
-        <button id="tcAddBtn" class="dshell-btn mini">+ 新建测试用例</button>
+        <h2 class="dshell-sub" style="margin:0">测试任务 <span id="tcCount" class="dshell-muted"></span> <span class="dshell-muted" style="font-size:11px;font-weight:normal;">evalscope 模型评估 / 性能测试任务</span></h2>
+        <button id="tcAddBtn" class="dshell-btn mini">+ 新建测试任务</button>
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="tcTable">
@@ -504,7 +504,7 @@
       </div>
       <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">基于 <code>evalscope</code>（<a href="https://github.com/modelscope/evalscope" target="_blank" rel="noopener">ModelScope/EvalScope</a>）的模型能力评估与推理性能压测任务；编辑表单按「类型」切换字段，保存后生成对应 CLI 命令，可在本页直接运行并查看流式回显。</p>
     </div>
-    <!-- 运行回显区：执行测试用例时的流式输出（logbox 复用主题变量） -->
+    <!-- 运行回显区：执行测试任务时的流式输出（logbox 复用主题变量） -->
     <div class="dshell-card" id="tcRunCard" style="display:none; margin-top:10px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
         <h2 class="dshell-sub" style="margin:0">运行回显 <span id="tcRunTitle" class="dshell-muted" style="font-size:11px;font-weight:normal;"></span></h2>
@@ -518,11 +518,11 @@
     </div>
   </div><!-- /pageTest -->
 
-  <!-- 测试用例 新建/编辑弹窗 -->
+  <!-- 测试任务 新建/编辑弹窗 -->
   <div id="tcForm" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:210; align-items:center; justify-content:center;">
     <div class="dshell-card" style="width:95%; max-width:760px; max-height:94vh; overflow:auto;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0" id="tcFormTitle">新建测试用例</h2>
+        <h2 class="dshell-sub" style="margin:0" id="tcFormTitle">新建测试任务</h2>
         <button id="tcFormClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
@@ -1211,7 +1211,7 @@ function applyRepoCredAll(){
   repositories.forEach(r=>{ r.user=u; r.pass=p; });
   saveRepos(); renderRepos();
 }
-/* ---------- 测试用例配置（evalscope 模型评估 / 性能测试任务） ---------- */
+/* ---------- 测试任务配置（evalscope 模型评估 / 性能测试任务） ---------- */
 /* 数据结构：{id, name, kind:'eval'|'perf', model, apiUrl, apiKey,
               evalType, datasets, limit, genConfig, datasetArgs,   // eval 专属
               perfApi, perfDataset, datasetPath, parallel, number, rate, stream, openLoop, warmup, duration, sleep,  // perf 专属
@@ -1373,18 +1373,18 @@ function fillTcForm(t){
 function resetTcForm(){
   tcEditId=null;
   fillTcForm(normalizeTc({name:'', model:'', stream:true}));
-  $('tcFormTitle').textContent='新建测试用例';
+  $('tcFormTitle').textContent='新建测试任务';
   $('tcSavedTip').textContent='';
 }
 function openTcForm(id){
-  if(running){ alert('流水线运行中，无法编辑测试用例'); return; }
+  if(running){ alert('流水线运行中，无法编辑测试任务'); return; }
   resetTcForm();
   if(id){
     const t=testCases.find(x=>x.id===id);
     if(!t) return;
     tcEditId=id;
     fillTcForm(t);
-    $('tcFormTitle').textContent='编辑测试用例';
+    $('tcFormTitle').textContent='编辑测试任务';
   }
   $('tcForm').style.display='flex';
 }
@@ -1399,7 +1399,7 @@ function saveTcForm(){
 }
 function delTc(id){
   const t=testCases.find(x=>x.id===id);
-  if(!confirm('删除测试用例「'+(t?t.name:id)+'」？')) return;
+  if(!confirm('删除测试任务「'+(t?t.name:id)+'」？')) return;
   testCases=testCases.filter(x=>x.id!==id);
   saveTestCases(); renderTestCases();
 }
@@ -1407,7 +1407,7 @@ function renderTestCases(){
   $('tcCount').textContent = testCases.length?('('+testCases.length+')'):'';
   const tb=$('tcTable').querySelector('tbody'); tb.innerHTML='';
   if(!testCases.length){
-    tb.innerHTML='<tr><td colspan="6" class="dshell-muted" style="text-align:center;padding:18px;">暂无测试用例，点「+ 新建测试用例」添加</td></tr>';
+    tb.innerHTML='<tr><td colspan="6" class="dshell-muted" style="text-align:center;padding:18px;">暂无测试任务，点「+ 新建测试任务」添加</td></tr>';
     return;
   }
   testCases.forEach(t=>{
@@ -1425,11 +1425,11 @@ function renderTestCases(){
   tb.querySelectorAll('[data-tcedit]').forEach(b=>b.addEventListener('click',()=>openTcForm(b.getAttribute('data-tcedit'))));
   tb.querySelectorAll('[data-tcdel]').forEach(b=>b.addEventListener('click',()=>delTc(b.getAttribute('data-tcdel'))));
 }
-/* 运行测试用例：拼装 evalscope 命令，经 /api/worktable/exec-stream 流式回显到本页 logbox */
+/* 运行测试任务：拼装 evalscope 命令，经 /api/worktable/exec-stream 流式回显到本页 logbox */
 function runTc(id){
   const t=testCases.find(x=>x.id===id);
   if(!t) return;
-  if(tcRunCtrl){ alert('已有测试用例在运行，请等待完成或先中止'); return; }
+  if(tcRunCtrl){ alert('已有测试任务在运行，请等待完成或先中止'); return; }
   $('tcRunCard').style.display='';
   $('tcRunTitle').textContent='· '+t.name;
   $('tcRunStatus').textContent='运行中'; $('tcRunStatus').className='dshell-badge';
@@ -4160,7 +4160,7 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
-/* 测试用例页：新建/编辑弹窗、类型切换实时命令预览、运行回显中止/关闭 */
+/* 测试任务页：新建/编辑弹窗、类型切换实时命令预览、运行回显中止/关闭 */
 $('tcAddBtn').addEventListener('click', ()=>openTcForm());
 $('tcSave').addEventListener('click', saveTcForm);
 $('tcCancel').addEventListener('click', closeTcForm);
