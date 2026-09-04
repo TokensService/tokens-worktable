@@ -135,7 +135,6 @@
   <div style="display:flex; gap:6px; margin:2px 0 4px;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
-    <button id="navTest" class="dshell-btn dshell-btnGhost mini" data-pagenav="test">测试任务</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
@@ -494,7 +493,7 @@
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">EvalTokens 服务配置 <span class="dshell-muted">评估任务管理服务 · 连接模式 + Bearer 令牌 + 测试连接 + 获取任务列表</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        EvalTokens 提供评估任务管理 API（<code>GET /api/open/v1/tasks</code>，请求头需携带 <code>Authorization: Bearer &lt;令牌&gt;</code>），用于查询评估 / 测试任务列表。测试任务运行成功后可在回显区点「查看报告」打开本服务。
+        EvalTokens 提供评估任务管理 API（<code>GET /api/open/v1/tasks</code>，请求头需携带 <code>Authorization: Bearer &lt;令牌&gt;</code>），用于查询评估 / 测试任务列表。
         「本地浏览器连接」：浏览器直接请求服务 API（需服务允许跨域 CORS 或与本页同源，否则跨域请求被拦截）。
         「远程服务器端连接」：由 DSH 服务端经 <code>/api/worktable/proxy</code> 代连服务，浏览器不直连；仅允许回环 / 内网地址（公网地址请用本地浏览器连接）。
       </p>
@@ -562,168 +561,6 @@
       </div>
     </div>
   </div><!-- /pageEnv -->
-
-  <!-- 测试任务（独立页面：evalscope 模型评估 / 性能测试任务的增删改查与执行） -->
-  <div id="pageTest" style="display:none">
-    <div class="dshell-card">
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-        <h2 class="dshell-sub" style="margin:0">测试任务 <span id="tcCount" class="dshell-muted"></span> <span class="dshell-muted" style="font-size:11px;font-weight:normal;">evalscope 模型评估 / 性能测试任务</span></h2>
-        <button id="tcAddBtn" class="dshell-btn mini">+ 新建测试任务</button>
-      </div>
-      <div style="overflow:auto;">
-        <table class="dshell-table" id="tcTable">
-          <thead><tr><th>名称</th><th>类型</th><th>模型</th><th>API 地址</th><th>数据集</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">基于 <code>evalscope</code>（<a href="https://github.com/modelscope/evalscope" target="_blank" rel="noopener">ModelScope/EvalScope</a>）的模型能力评估与推理性能压测任务；编辑表单按「类型」切换字段，保存后生成对应 CLI 命令，可在本页直接运行并查看流式回显。</p>
-    </div>
-    <!-- 运行回显区：执行测试任务时的流式输出（logbox 复用主题变量） -->
-    <div class="dshell-card" id="tcRunCard" style="display:none; margin-top:10px;">
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-        <h2 class="dshell-sub" style="margin:0">运行回显 <span id="tcRunTitle" class="dshell-muted" style="font-size:11px;font-weight:normal;"></span></h2>
-        <span style="display:flex; align-items:center; gap:8px;">
-          <span id="tcRunStatus" class="dshell-badge">空闲</span>
-          <button id="tcRunStop" class="dshell-btn dshell-btnGhost mini" disabled>⏹ 中止</button>
-          <button id="tcRunClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
-        </span>
-      </div>
-      <div id="tcRunLog" class="logbox" style="max-height:420px;"></div>
-    </div>
-  </div><!-- /pageTest -->
-
-  <!-- 测试任务 新建/编辑弹窗 -->
-  <div id="tcForm" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:210; align-items:center; justify-content:center;">
-    <div class="dshell-card" style="width:95%; max-width:760px; max-height:94vh; overflow:auto;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0" id="tcFormTitle">新建测试任务</h2>
-        <button id="tcFormClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
-      </div>
-      <div style="display:flex; flex-direction:column; gap:8px;">
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
-            <input id="tcName" class="dshell-input" placeholder="如 GSM8K 评估 / 并发压测" style="width:240px;" />
-          </label>
-          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">类型
-            <select id="tcKind" class="dshell-input" style="min-width:130px;">
-              <option value="eval">模型评估（evalscope eval）</option>
-              <option value="perf">性能测试（evalscope perf）</option>
-            </select>
-          </label>
-        </div>
-        <!-- 公共字段：模型 + API 连接 -->
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">模型
-            <input id="tcModel" class="dshell-input" placeholder="模型名 / 路径（如 Qwen2.5-0.5B-Instruct）" style="width:260px;" />
-          </label>
-          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">API 地址
-            <input id="tcApiUrl" class="dshell-input" placeholder="http://127.0.0.1:8000/v1（评估留空=本地模型）" style="width:260px;" />
-          </label>
-          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">API Key
-            <input id="tcApiKey" class="dshell-input" type="password" placeholder="EMPTY（可留空）" style="width:160px;" autocomplete="off" />
-          </label>
-        </div>
-        <!-- 模型评估（eval）专属字段 -->
-        <div id="tcEvalFields" style="display:flex; flex-direction:column; gap:8px;">
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">评估类型
-              <select id="tcEvalType" class="dshell-input" style="min-width:130px;" title="openai_api=OpenAI 兼容接口；local=本地模型（ModelScope 拉取）；anthropic_api=Anthropic 接口">
-                <option value="openai_api">openai_api</option>
-                <option value="local">local（本地模型）</option>
-                <option value="anthropic_api">anthropic_api</option>
-              </select>
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">数据集
-              <input id="tcDatasets" class="dshell-input" placeholder="gsm8k arc（空格分隔多个）" style="width:240px;" />
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">样本数
-              <input id="tcLimit" class="dshell-input" placeholder="5（留空=全量）" style="width:110px;" />
-            </label>
-          </div>
-          <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">生成参数（generation-config，JSON 或 key=value）
-            <textarea id="tcGenConfig" class="dshell-input" rows="2" placeholder='如 {"do_sample":true,"temperature":0.6,"max_tokens":512}（可留空）' style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
-          </label>
-          <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">数据集参数（dataset-args，JSON）
-            <textarea id="tcDatasetArgs" class="dshell-input" rows="3" placeholder='如 {"gsm8k":{"few_shot_num":4,"few_shot_random":false}}（可留空）' style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
-          </label>
-        </div>
-        <!-- 性能测试（perf）专属字段 -->
-        <div id="tcPerfFields" style="display:none; flex-direction:column; gap:8px;">
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">服务 API
-              <select id="tcPerfApi" class="dshell-input" style="min-width:160px;" title="openai=OpenAI 兼容 Chat；openai_responses=Responses；openai_embedding=Embedding；openai_rerank=Rerank；local/local_vllm=本地推理">
-                <option value="openai">openai（Chat Completions）</option>
-                <option value="openai_responses">openai_responses（Responses）</option>
-                <option value="openai_embedding">openai_embedding</option>
-                <option value="openai_rerank">openai_rerank</option>
-                <option value="local">local（transformers）</option>
-                <option value="local_vllm">local_vllm（vLLM）</option>
-              </select>
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">数据集
-              <select id="tcPerfDataset" class="dshell-input" style="min-width:130px;" title="openqa=短提示；longalpaca=长提示；line_by_line=逐行读取；random=随机生成（需 tokenizer）">
-                <option value="openqa">openqa（短提示）</option>
-                <option value="longalpaca">longalpaca（长提示）</option>
-                <option value="line_by_line">line_by_line（逐行）</option>
-                <option value="random">random（随机生成）</option>
-              </select>
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">数据集路径
-              <input id="tcDatasetPath" class="dshell-input" placeholder="文件 / 目录路径（可留空）" style="width:200px;" />
-            </label>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">并发数 parallel
-              <input id="tcParallel" class="dshell-input" placeholder="1 4 8（空格分隔多档）" style="width:140px;" />
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">请求数 number
-              <input id="tcNumber" class="dshell-input" placeholder="100（与 parallel 对应）" style="width:130px;" />
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">调度速率 rate
-              <input id="tcRate" class="dshell-input" placeholder="-1=不限速（Poisson）" style="width:130px;" />
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-              <input type="checkbox" id="tcStream" checked /> 流式（测 TTFT）
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-              <input type="checkbox" id="tcOpenLoop" /> 开环模式
-            </label>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">预热 warmup
-              <input id="tcWarmup" class="dshell-input" placeholder="0=关闭（可填数量或比例）" style="width:120px;" />
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">时长 duration(秒)
-              <input id="tcDuration" class="dshell-input" placeholder="留空=不限时长" style="width:120px;" />
-            </label>
-            <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">间隔 sleep(秒)
-              <input id="tcSleep" class="dshell-input" placeholder="5" style="width:90px;" />
-            </label>
-          </div>
-        </div>
-        <!-- 公共：附加参数 + 备注 -->
-        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">附加参数（原样追加到命令末尾，如 --work-dir /tmp/eval）
-          <input id="tcExtraArgs" class="dshell-input" placeholder="--work-dir /tmp/eval --limit 10（可留空）" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;" />
-        </label>
-        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">备注
-          <input id="tcNote" class="dshell-input" placeholder="用例说明（可选）" style="width:100%;" />
-        </label>
-        <!-- 命令预览（实时按表单生成 evalscope CLI） -->
-        <div class="dshell-card" style="margin:4px 0; background:var(--dsw-alias-fill-l1); border-color:var(--dsw-alias-border-l1);">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
-            <span class="dshell-muted" style="font-size:11px;">命令预览</span>
-            <button id="tcCmdCopy" class="dshell-btn dshell-btnGhost mini" type="button">复制</button>
-          </div>
-          <div id="tcCmdPreview" class="logbox" style="max-height:120px; margin:0;"></div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button id="tcSave" class="dshell-btn mini">保存</button>
-          <button id="tcCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
-          <span id="tcSavedTip" class="dshell-muted" style="font-size:11px;"></span>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <!-- 设备详情弹层 -->
   <div id="gpuDetail" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:200; align-items:center; justify-content:center;">
@@ -874,7 +711,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, testCases, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
@@ -911,7 +748,6 @@ async function loadServerState(){
       if(typeof cfg.archiveDir==='string'){ archiveDir=cfg.archiveDir; $('archiveDir').value=archiveDir; }
       if(typeof cfg.archiveScriptName==='string'){ archiveScriptName=cfg.archiveScriptName; $('archiveScriptName').value=archiveScriptName; }
       if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
-      if(Array.isArray(cfg.testCases)) testCases=cfg.testCases.map(normalizeTc);
       if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
       /* 服务端历史为空但被显式清空过（histClearedAt）：保持空，不复活内置演示数据 */
       if(Array.isArray(st.history) && st.history.length) history=st.history;
@@ -935,7 +771,6 @@ async function loadServerState(){
         localStorage.setItem('pip-archiveDir', archiveDir);
         localStorage.setItem('pip-archiveScript', archiveScriptName);
         localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts));
-        localStorage.setItem('pip-testcases', JSON.stringify(testCases));
       }catch(e){}
       $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
       renderCleanupParams();
@@ -1289,278 +1124,6 @@ function applyRepoCredAll(){
   if(!confirm('将用户名「'+(u||'(空)')+'」/令牌 应用到全部 '+repositories.length+' 个仓库？')) return;
   repositories.forEach(r=>{ r.user=u; r.pass=p; });
   saveRepos(); renderRepos();
-}
-/* ---------- 测试任务配置（evalscope 模型评估 / 性能测试任务） ---------- */
-/* 数据结构：{id, name, kind:'eval'|'perf', model, apiUrl, apiKey,
-              evalType, datasets, limit, genConfig, datasetArgs,   // eval 专属
-              perfApi, perfDataset, datasetPath, parallel, number, rate, stream, openLoop, warmup, duration, sleep,  // perf 专属
-              extraArgs, note} */
-function normalizeTc(t){
-  if(!t) t={};
-  return {
-    id:t.id||('tc-'+Date.now().toString(36)),
-    name:String(t.name||'').trim()||'未命名用例',
-    kind:t.kind==='perf'?'perf':'eval',
-    model:String(t.model||'').trim(),
-    apiUrl:String(t.apiUrl||'').trim(),
-    apiKey:String(t.apiKey||''),
-    evalType:['openai_api','local','anthropic_api'].indexOf(t.evalType)>=0?t.evalType:'openai_api',
-    datasets:String(t.datasets||'').trim(),
-    limit:String(t.limit||'').trim(),
-    genConfig:String(t.genConfig||'').trim(),
-    datasetArgs:String(t.datasetArgs||'').trim(),
-    perfApi:['openai','openai_responses','openai_embedding','openai_rerank','local','local_vllm'].indexOf(t.perfApi)>=0?t.perfApi:'openai',
-    perfDataset:['openqa','longalpaca','line_by_line','random'].indexOf(t.perfDataset)>=0?t.perfDataset:'openqa',
-    datasetPath:String(t.datasetPath||'').trim(),
-    parallel:String(t.parallel||'').trim(),
-    number:String(t.number||'').trim(),
-    rate:String(t.rate||'').trim(),
-    stream: t.stream===undefined ? true : !!t.stream,
-    openLoop: !!t.openLoop,
-    warmup:String(t.warmup||'').trim(),
-    duration:String(t.duration||'').trim(),
-    sleep:String(t.sleep||'').trim(),
-    extraArgs:String(t.extraArgs||'').trim(),
-    note:String(t.note||'').trim(),
-  };
-}
-function loadTestCases(){ try{ const a=JSON.parse(localStorage.getItem('pip-testcases')); if(Array.isArray(a)) return a.map(normalizeTc); }catch(e){} return null; }
-let testCases = loadTestCases() || [];
-let tcEditId=null;   // 编辑中的用例 id；null=新建
-let tcRunCtrl=null;  // 运行中的 AbortController；null=空闲
-function saveTestCases(){ try{ localStorage.setItem('pip-testcases', JSON.stringify(testCases)); }catch(e){} persistState(); }
-function kindLabel(k){ return k==='perf'?'性能测试':'模型评估'; }
-/* POSIX 单引号包裹（含空格 / JSON 的参数安全转义，复制后可直接在 shell 执行） */
-function shellQuote(v){ v=String(v==null?'':v); return "'"+v.replace(/'/g, "'\\''")+"'"; }
-/* 构造 evalscope CLI 参数数组（eval / perf 两套，eval-type=local 时不带 --api-url/--api-key）。
-   forExec=true 时按真实值构造（空值原样保留，evalscope 自行报错）；false 时空 model/url 占位为 <model>/<url> 便于预览 */
-function buildTcArgs(t, forExec){
-  if(!t) t=collectTcForm();
-  const a=[];
-  const m = t.model || (forExec?'':'<model>');
-  const u = t.apiUrl || (forExec?'':'<url>');
-  if(t.kind==='perf'){
-    a.push('perf');
-    a.push('--model', m);
-    if(t.perfApi==='local'||t.perfApi==='local_vllm'){
-      a.push('--api', t.perfApi);
-      if(t.perfPort) a.push('--port', t.perfPort);
-    } else {
-      a.push('--api', t.perfApi);
-      a.push('--url', u);
-      if(t.apiKey) a.push('--api-key', t.apiKey);
-    }
-    if(t.perfDataset) a.push('--dataset', t.perfDataset);
-    if(t.datasetPath) a.push('--dataset-path', t.datasetPath);
-    if(t.parallel) a.push('--parallel', t.parallel);
-    if(t.number) a.push('--number', t.number);
-    if(t.rate) a.push('--rate', t.rate);
-    if(t.stream) a.push('--stream');
-    if(t.openLoop) a.push('--open-loop');
-    if(t.warmup) a.push('--warmup-num', t.warmup);
-    if(t.duration) a.push('--duration', t.duration);
-    if(t.sleep) a.push('--sleep-interval', t.sleep);
-  } else {
-    a.push('eval');
-    a.push('--model', m);
-    if(t.evalType==='local'){
-      a.push('--eval-type', 'local');
-    } else {
-      a.push('--eval-type', t.evalType);
-      a.push('--api-url', u);
-      if(t.apiKey) a.push('--api-key', t.apiKey);
-    }
-    if(t.datasets) a.push('--datasets', t.datasets);
-    if(t.limit) a.push('--limit', t.limit);
-    if(t.genConfig) a.push('--generation-config', t.genConfig);
-    if(t.datasetArgs) a.push('--dataset-args', t.datasetArgs);
-  }
-  if(t.extraArgs){ /* 附加参数按空白拆为独立 argv（含空格的 JSON 值须用 \"...\" 包裹） */
-    t.extraArgs.split(/\s+(?=(?:[^\"]*\")*[^\"]*$)/).forEach(s=>{ const v=s.trim().replace(/^\"|\"$/g,''); if(v) a.push(v); });
-  }
-  return a;
-}
-/* 命令预览字符串：参数单引号包裹（含空格/JSON 安全），复制后可直接在 shell 执行 */
-function buildTcCommand(t){
-  return ['evalscope'].concat(buildTcArgs(t, false).map(shellQuote)).join(' ');
-}
-/* 实际执行用：真实值（无占位），参数单引号包裹，作为 bash -c 的命令体 */
-function buildTcShell(t){
-  return ['evalscope'].concat(buildTcArgs(t, true).map(shellQuote)).join(' ');
-}
-/* 表单按类型切换字段显隐 + 实时刷新命令预览 */
-function toggleTcFields(){
-  const k=$('tcKind').value;
-  $('tcEvalFields').style.display = k==='eval'?'flex':'none';
-  $('tcPerfFields').style.display = k==='perf'?'flex':'none';
-  $('tcCmdPreview').textContent = buildTcCommand();
-}
-function collectTcForm(){
-  return normalizeTc({
-    id: tcEditId||undefined,
-    name: $('tcName').value,
-    kind: $('tcKind').value,
-    model: $('tcModel').value,
-    apiUrl: $('tcApiUrl').value,
-    apiKey: $('tcApiKey').value,
-    evalType: $('tcEvalType').value,
-    datasets: $('tcDatasets').value,
-    limit: $('tcLimit').value,
-    genConfig: $('tcGenConfig').value,
-    datasetArgs: $('tcDatasetArgs').value,
-    perfApi: $('tcPerfApi').value,
-    perfDataset: $('tcPerfDataset').value,
-    datasetPath: $('tcDatasetPath').value,
-    parallel: $('tcParallel').value,
-    number: $('tcNumber').value,
-    rate: $('tcRate').value,
-    stream: $('tcStream').checked,
-    openLoop: $('tcOpenLoop').checked,
-    warmup: $('tcWarmup').value,
-    duration: $('tcDuration').value,
-    sleep: $('tcSleep').value,
-    extraArgs: $('tcExtraArgs').value,
-    note: $('tcNote').value,
-  });
-}
-function fillTcForm(t){
-  $('tcName').value=t.name;
-  $('tcKind').value=t.kind;
-  $('tcModel').value=t.model;
-  $('tcApiUrl').value=t.apiUrl;
-  $('tcApiKey').value=t.apiKey;
-  $('tcEvalType').value=t.evalType;
-  $('tcDatasets').value=t.datasets;
-  $('tcLimit').value=t.limit;
-  $('tcGenConfig').value=t.genConfig;
-  $('tcDatasetArgs').value=t.datasetArgs;
-  $('tcPerfApi').value=t.perfApi;
-  $('tcPerfDataset').value=t.perfDataset;
-  $('tcDatasetPath').value=t.datasetPath;
-  $('tcParallel').value=t.parallel;
-  $('tcNumber').value=t.number;
-  $('tcRate').value=t.rate;
-  $('tcStream').checked=t.stream;
-  $('tcOpenLoop').checked=t.openLoop;
-  $('tcWarmup').value=t.warmup;
-  $('tcDuration').value=t.duration;
-  $('tcSleep').value=t.sleep;
-  $('tcExtraArgs').value=t.extraArgs;
-  $('tcNote').value=t.note;
-  toggleTcFields();
-}
-function resetTcForm(){
-  tcEditId=null;
-  fillTcForm(normalizeTc({name:'', model:'', stream:true}));
-  $('tcFormTitle').textContent='新建测试任务';
-  $('tcSavedTip').textContent='';
-}
-function openTcForm(id){
-  if(running){ alert('流水线运行中，无法编辑测试任务'); return; }
-  resetTcForm();
-  if(id){
-    const t=testCases.find(x=>x.id===id);
-    if(!t) return;
-    tcEditId=id;
-    fillTcForm(t);
-    $('tcFormTitle').textContent='编辑测试任务';
-  }
-  $('tcForm').style.display='flex';
-}
-function closeTcForm(){ $('tcForm').style.display='none'; }
-function saveTcForm(){
-  const t=collectTcForm();
-  if(!t.model.trim()){ alert('请填写模型名'); return; }
-  if(t.kind==='eval' && !t.datasets.trim() && t.evalType!=='local'){ alert('模型评估需至少填写一个数据集'); return; }
-  if(tcEditId){ const idx=testCases.findIndex(x=>x.id===tcEditId); if(idx>=0) testCases[idx]=t; }
-  else testCases.push(t);
-  saveTestCases(); renderTestCases(); closeTcForm();
-}
-function delTc(id){
-  const t=testCases.find(x=>x.id===id);
-  if(!confirm('删除测试任务「'+(t?t.name:id)+'」？')) return;
-  testCases=testCases.filter(x=>x.id!==id);
-  saveTestCases(); renderTestCases();
-}
-function renderTestCases(){
-  $('tcCount').textContent = testCases.length?('('+testCases.length+')'):'';
-  const tb=$('tcTable').querySelector('tbody'); tb.innerHTML='';
-  if(!testCases.length){
-    tb.innerHTML='<tr><td colspan="6" class="dshell-muted" style="text-align:center;padding:18px;">暂无测试任务，点「+ 新建测试任务」添加</td></tr>';
-    return;
-  }
-  testCases.forEach(t=>{
-    const tr=document.createElement('tr');
-    const ds = t.kind==='eval' ? (esc(t.datasets||'—')) : (esc(t.perfDataset||'—')+(t.datasetPath?(' · '+esc(t.datasetPath)):''));
-    tr.innerHTML='<td style="font-weight:600">'+esc(t.name)+'</td>'+
-      '<td><span class="dshell-badge">'+kindLabel(t.kind)+'</span></td>'+
-      '<td class="dshell-muted">'+esc(t.model||'—')+'</td>'+
-      '<td class="dshell-muted">'+esc(t.apiUrl||'—')+'</td>'+
-      '<td class="dshell-muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+ds+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn mini" data-tcrun="'+t.id+'">▶ 运行</button> <button class="dshell-btn dshell-btnGhost mini" data-tcedit="'+t.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-tcdel="'+t.id+'">删除</button></td>';
-    tb.appendChild(tr);
-  });
-  tb.querySelectorAll('[data-tcrun]').forEach(b=>b.addEventListener('click',()=>runTc(b.getAttribute('data-tcrun'))));
-  tb.querySelectorAll('[data-tcedit]').forEach(b=>b.addEventListener('click',()=>openTcForm(b.getAttribute('data-tcedit'))));
-  tb.querySelectorAll('[data-tcdel]').forEach(b=>b.addEventListener('click',()=>delTc(b.getAttribute('data-tcdel'))));
-}
-/* 运行测试任务：拼装 evalscope 命令，经 /api/worktable/exec-stream 流式回显到本页 logbox */
-function runTc(id){
-  const t=testCases.find(x=>x.id===id);
-  if(!t) return;
-  if(tcRunCtrl){ alert('已有测试任务在运行，请等待完成或先中止'); return; }
-  $('tcRunCard').style.display='';
-  $('tcRunTitle').textContent='· '+t.name;
-  $('tcRunStatus').textContent='运行中'; $('tcRunStatus').className='dshell-badge';
-  $('tcRunStatus').style.color='var(--st-run)'; $('tcRunStatus').style.borderColor='color-mix(in srgb, var(--st-run) 40%, transparent)';
-  $('tcRunStop').disabled=false;
-  const log=$('tcRunLog'); log.innerHTML='';
-  const append=(cls,txt)=>{ const d=document.createElement('div'); if(cls) d.className=cls; d.textContent=txt; log.appendChild(d); log.scrollTop=log.scrollHeight; };
-  append('hi','$ '+buildTcCommand(t));
-  append('dim','（开始执行，回显实时刷新…）');
-  tcRunCtrl=new AbortController();
-  const env={}; if(t.apiKey) env.OPENAI_API_KEY=t.apiKey;
-  if(t.apiUrl) env.OPENAI_API_BASE_URL=t.apiUrl;
-  const shell=buildTcShell(t);
-  /* exec 路由按 interp=bash、path+args 执行：传 path='-c'、args=[shell] 即 bash -c '<evalscope …>'，
-     由 bash 做 PATH 查找与 JSON 含空格参数的二次解析（参数已单引号转义，安全） */
-  execStreaming('-c', [shell], env, null, 0, (m)=>{
-    append(m.type==='err'?'err':'', m.text||'');
-  }, tcRunCtrl.signal).then(res=>{
-    if(!res){   // exec-stream 路由不可用：降级一次性执行（path/args 走标准 /api/worktable/exec）
-      append('warn','（当前插件构建未提供 exec-stream，改用一次性执行…）');
-      fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:'-c',args:[shell],env,cwd:null,timeoutMs:0})}).then(r=>r.json()).then(j=>{
-        if(j && j.stdout){ append('', j.stdout); }
-        if(j && j.stderr){ append('err', j.stderr); }
-        finishTcRun(j && j.error ? 1 : (j && j.code!==undefined?j.code:0), j && j.error);
-      }).catch(e=>{ append('err','执行请求失败：'+(e&&e.message?e.message:e)); finishTcRun(1); });
-      return;
-    }
-    if(res.code===null){ append('dim','（已中止）'); finishTcRun(null); return; }
-    if(res.code===0){ append('ok','（执行完成，退出码 0）'); }
-    else { append('err','（执行结束，退出码 '+res.code+'）'); }
-    finishTcRun(res.code);
-  });
-}
-function finishTcRun(code, err){
-  tcRunCtrl=null;
-  $('tcRunStatus').textContent = code===null?'已中止':(code===0?'成功':'失败');
-  $('tcRunStatus').style.color = code===0?'var(--st-ok)':(code===null?'var(--st-idle)':'var(--st-err)');
-  $('tcRunStatus').style.borderColor = code===0?'color-mix(in srgb, var(--st-ok) 40%, transparent)':(code===null?'var(--dsw-alias-border-l2)':'color-mix(in srgb, var(--st-err) 40%, transparent)');
-  $('tcRunStop').disabled=true;
-  if(err) appendErr($('tcRunLog'), String(err));
-  if(code===0) appendReportLink($('tcRunLog'));
-}
-function appendErr(box, txt){ const d=document.createElement('div'); d.className='err'; d.textContent=txt; box.appendChild(d); box.scrollTop=box.scrollHeight; }
-/* 测试任务成功后在回显区追加「查看报告」链接：打开 EvalTokens 服务（设置页配置的服务地址） */
-function appendReportLink(box){
-  const u=((evaltok && (evaltok.linkUrl||evaltok.url))||'').trim();
-  if(!u) return;
-  const d=document.createElement('div'); d.className='ok'; d.style.marginTop='4px';
-  const a=document.createElement('a'); a.href=u; a.target='_blank'; a.rel='noopener';
-  a.textContent='📊 查看评估报告（EvalTokens 服务） →';
-  a.style.color='var(--log-ok)'; a.style.textDecoration='underline';
-  d.appendChild(a); box.appendChild(d); box.scrollTop=box.scrollHeight;
 }
 
 /* 分支获取方式切换：仅 Jenkins（浏览器直连/服务端代连）时显示任务选择框；Jenkins 模式下 URL 可留空，联动占位提示 */
@@ -4498,18 +4061,14 @@ $('pmSave').addEventListener('click', ()=>{
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
   $('pageSched').style.display = p==='sched'?'':'none';
-  $('pageTest').style.display = p==='test'?'':'none';
   $('pageEnv').style.display = p==='env'?'':'none';
   $('navMain').className = 'dshell-btn mini'+(p==='main'?'':' dshell-btnGhost');
   $('navSched').className = 'dshell-btn mini'+(p==='sched'?'':' dshell-btnGhost');
-  $('navTest').className = 'dshell-btn mini'+(p==='test'?'':' dshell-btnGhost');
   $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
   if(p==='sched'){ renderSchedForm(); renderPlanList(); }
-  if(p==='test') renderTestCases();
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
 $('navSched').addEventListener('click', ()=>switchPage('sched'));
-$('navTest').addEventListener('click', ()=>switchPage('test'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
 /* 分析配置（设置页内卡片）：提示词模板编辑 */
 function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
@@ -4519,17 +4078,6 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
-/* 测试任务页：新建/编辑弹窗、类型切换实时命令预览、运行回显中止/关闭 */
-$('tcAddBtn').addEventListener('click', ()=>openTcForm());
-$('tcSave').addEventListener('click', saveTcForm);
-$('tcCancel').addEventListener('click', closeTcForm);
-$('tcFormClose').addEventListener('click', closeTcForm);
-$('tcKind').addEventListener('change', toggleTcFields);
-/* 表单任意输入变更即刷新命令预览（事件委托：捕获 input/change/select） */
-['input','change'].forEach(ev=>$('tcForm').addEventListener(ev, ()=>{ $('tcCmdPreview').textContent=buildTcCommand(); }));
-$('tcCmdCopy').addEventListener('click', ()=>{ copyText($('tcCmdPreview').textContent, $('tcCmdCopy')); });
-$('tcRunStop').addEventListener('click', ()=>{ if(tcRunCtrl) tcRunCtrl.abort(); });
-$('tcRunClose').addEventListener('click', ()=>{ if(tcRunCtrl) tcRunCtrl.abort(); $('tcRunCard').style.display='none'; });
 
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
@@ -4578,7 +4126,6 @@ function renderAll(){
   applyJenkinsForm();
   applyEvaltokForm();
   applyPromForm();
-  renderTestCases();
 }
 renderAll();
 /* 从服务端拉取配置与历史（历史条目只含元数据 + 日志文件路径，全量日志在归档文件按需读取）；
