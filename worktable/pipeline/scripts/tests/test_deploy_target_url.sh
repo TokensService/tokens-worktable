@@ -62,6 +62,7 @@ ARCH_REQUEST_FILE="$work_dir/architecture.request.json" \
 RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
 NODE_LABELS_FILE="$work_dir/node-labels.json" \
 ARCH_NAME='test-arch' \
+MODEL_PATH='/mnt/paas/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 XDS_URL='' \
 HELM_BIN="$work_dir/bin/helm" \
@@ -83,6 +84,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 assert payload["model"] == "test-arch", payload
 assert payload["arch_name"] == "test-arch", payload
 assert payload["spec_package"] == "test-package", payload
+assert payload["local_info"]["path"] == "/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1", payload
 PY
 
 echo "deploy target-url tests passed"

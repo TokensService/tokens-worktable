@@ -25,7 +25,9 @@ XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
 XDS_API_HOST=""
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
-MODEL_PATH="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
+MODEL_PATH_INPUT="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
+MODEL_CONTAINER_ROOT="${MODEL_CONTAINER_ROOT:-/home/service/works/models_ssd}"
+MODEL_WEIGHT_NAME="${MODEL_WEIGHT_NAME:-}"
 HELM_BIN="${HELM_BIN:-helm}"
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
@@ -39,6 +41,27 @@ SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-./logs}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+
+resolve_container_model_path() {
+  local input="${MODEL_PATH_INPUT%/}" weight_name
+  [[ -n "$input" && "$input" != "/" ]] || { echo "MODEL_PATH must identify a model weight directory" >&2; return 2; }
+
+  if [[ -n "$MODEL_WEIGHT_NAME" ]]; then
+    weight_name="$MODEL_WEIGHT_NAME"
+  else
+    weight_name="${input##*/}"
+    [[ "$weight_name" == "v1" ]] && weight_name="${input%/*}" && weight_name="${weight_name##*/}"
+  fi
+
+  [[ "$weight_name" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "MODEL_WEIGHT_NAME must be a single weight directory name: $weight_name" >&2
+    return 2
+  }
+  MODEL_WEIGHT_NAME="$weight_name"
+  MODEL_PATH="${MODEL_CONTAINER_ROOT%/}/${MODEL_WEIGHT_NAME}/v1"
+}
+
+resolve_container_model_path
 
 remote_quote() {
   printf '%q' "$1"
