@@ -269,6 +269,100 @@ PY
   return 1
 }
 
+prepare_available_node_ports() {
+  local services_file port_plan changed
+  services_file="$(mktemp)"
+  "$KUBECTL_BIN" get svc -A -o json >"$services_file"
+  port_plan="$(python3 - "$VALUES_FILE" "$services_file" <<'PY'
+import json
+import sys
+
+import yaml
+
+values_path, services_path = sys.argv[1:]
+values = yaml.safe_load(open(values_path, encoding="utf-8")) or {}
+services = json.load(open(services_path, encoding="utf-8"))
+
+requested = []
+def collect(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "nodePort" and isinstance(item, int):
+                requested.append(item)
+            else:
+                collect(item)
+    elif isinstance(value, list):
+        for item in value:
+            collect(item)
+
+collect(values)
+used = {
+    port.get("nodePort")
+    for service in services.get("items", [])
+    for port in service.get("spec", {}).get("ports", [])
+    if isinstance(port.get("nodePort"), int)
+}
+plan = []
+for port in requested:
+    candidate = port
+    while candidate in used:
+        candidate += 10
+    if candidate > 32767:
+        raise SystemExit(f"no available NodePort after {port}; candidate {candidate} exceeds 32767")
+    plan.append({"requested": port, "selected": candidate})
+    used.add(candidate)
+print(json.dumps(plan, separators=(",", ":")))
+PY
+)"
+  rm -f "$services_file"
+  changed="$(python3 - "$port_plan" <<'PY'
+import json
+import sys
+
+print(str(any(item["requested"] != item["selected"] for item in json.loads(sys.argv[1]))).lower())
+PY
+)"
+  [[ "$changed" == true ]] || return 0
+
+  if [[ "$DEPLOY_VALUES_FILE" != "$VALUES_FILE" ]]; then
+    cp "$VALUES_FILE" "$DEPLOY_VALUES_FILE"
+  fi
+  python3 - "$DEPLOY_VALUES_FILE" "$port_plan" <<'PY'
+import json
+import sys
+
+import yaml
+
+path, raw_plan = sys.argv[1:]
+plan = iter(json.loads(raw_plan))
+values = yaml.safe_load(open(path, encoding="utf-8")) or {}
+
+def replace(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "nodePort" and isinstance(item, int):
+                value[key] = next(plan)["selected"]
+            else:
+                replace(item)
+    elif isinstance(value, list):
+        for item in value:
+            replace(item)
+
+replace(values)
+with open(path, "w", encoding="utf-8") as stream:
+    yaml.safe_dump(values, stream, allow_unicode=True, sort_keys=False)
+PY
+  VALUES_FILE="$DEPLOY_VALUES_FILE"
+  python3 - "$port_plan" <<'PY'
+import json
+import sys
+
+for item in json.loads(sys.argv[1]):
+    if item["requested"] != item["selected"]:
+        print(f"[deploy] NodePort {item['requested']} is allocated; back off to {item['selected']}")
+PY
+}
+
 label_target_nodes() {
   local inventory
   inventory="$(mktemp)"
@@ -433,6 +527,7 @@ echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
 wait_for_release_cleanup
+prepare_available_node_ports
 prepare_ctrl_slot_capacity
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \

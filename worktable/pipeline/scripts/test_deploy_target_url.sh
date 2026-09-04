@@ -27,6 +27,8 @@ cat >"$work_dir/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "get" && "$2" == "nodes" ]]; then
   printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
+elif [[ "$*" == 'get svc -A -o json' ]]; then
+  printf '{"items":[]}'
 elif [[ "$1" == "-n" && "$3" == "get" && "$4" == "pods" && "$*" == *"-o json"* ]]; then
   printf '{"items":[{"metadata":{"name":"taskExecutorGroup4prefill1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}}]}'
 fi

@@ -28,6 +28,9 @@ case "$*" in
   'get nodes -o json')
     printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
     ;;
+  'get svc -A -o json')
+    printf '{"items":[]}'
+    ;;
   *'get pods -l ray.io/cluster=xds-test-arch-local-kuberay -o json')
     printf '{"items":[{"metadata":{"name":"taskExecutorGroup4prefill1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}},{"metadata":{"name":"taskExecutorGroup4decode1","labels":{"ray.io/group":"taskExecutorGroup4decode1"}}}],"padding":"'
     head -c 3000000 /dev/zero | tr '\0' x

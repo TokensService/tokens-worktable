@@ -28,6 +28,9 @@ case "$*" in
   'get nodes -o json')
     printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
     ;;
+  'get svc -A -o json')
+    printf '{"items":[]}'
+    ;;
   *'get pods -l ray.io/cluster=xds-test-arch-local-kuberay -o name')
     if [[ ! -e "$PODS_DELETED" ]]; then
       printf 'pod/stale-task-executor\n'

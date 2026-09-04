@@ -45,6 +45,9 @@ case "$*" in
   'get nodes -o json')
     printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
     ;;
+  'get svc -A -o json')
+    printf '{"items":[]}'
+    ;;
   *'get configmap ctrlgroup-192-168-0-78-slot-cm -o json')
     printf '{"data":{"holders":"[\\"pipeline-op/ctrl-a\\", \\"pipeline-op/ctrl-b\\", \\"old-release/ctrl-stale\\"]"}}'
     ;;
