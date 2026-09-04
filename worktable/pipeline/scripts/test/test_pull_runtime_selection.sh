@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pull-image.sh"
+script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pull-image.sh"
 
 # The pipeline execution host uses nerdctl's persisted registry login.
 grep -q 'nerdctl --namespace k8s.io' "$script"

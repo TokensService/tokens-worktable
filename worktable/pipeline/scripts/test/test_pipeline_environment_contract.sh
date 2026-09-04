@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pipeline="$script_dir/pull_render_config.sh"
 
 [[ -x "$pipeline" ]] || { echo "pull_render_config.sh must exist and be executable" >&2; exit 1; }

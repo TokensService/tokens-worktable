@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work_dir="$(mktemp -d)"
-trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$work_dir/chart" "$work_dir/bin" "$work_dir/run/rendered"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Chart.yaml"
-cat >"$work_dir/values.yaml" <<'YAML'
-workerGroups:
-  ctrlGroup:
-    annotations:
-      max_count_on_node: '3'
-    minReplicas: 2
-YAML
+printf '{}\n' >"$work_dir/values.yaml"
 cat >"$work_dir/architecture.request.json" <<'JSON'
 {"arch_name":"test-arch","deploy_spec_packages":[{"spec_package_name":"test-package","deploy_specs":[]}]}
 JSON
@@ -27,20 +20,10 @@ JSON
 cat >"$work_dir/bin/helm" <<'EOF'
 #!/usr/bin/env bash
 printf 'helm %s\n' "$*" >>"$EVENT_LOG"
-if [[ "$1" == install ]]; then
-  values=''
-  for ((index = 1; index <= $#; index++)); do
-    if [[ "${!index}" == --values ]]; then
-      next=$((index + 1))
-      values="${!next}"
-      break
-    fi
-  done
-  cp "$values" "$INSTALLED_VALUES"
-fi
 EOF
 cat >"$work_dir/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
+printf 'kubectl %s\n' "$*" >>"$EVENT_LOG"
 case "$*" in
   'get nodes -o json')
     printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
@@ -48,25 +31,35 @@ case "$*" in
   'get svc -A -o json')
     printf '{"items":[]}'
     ;;
-  *'get configmap ctrlgroup-192-168-0-78-slot-cm -o json')
-    printf '{"data":{"holders":"[\\"pipeline-op/ctrl-a\\", \\"pipeline-op/ctrl-b\\", \\"old-release/ctrl-stale\\"]"}}'
+  *'get pods -l ray.io/cluster=xds-test-arch-local-kuberay -o name')
+    if [[ ! -e "$PODS_DELETED" ]]; then
+      printf 'pod/stale-task-executor\n'
+    fi
     ;;
-  *'-n pipeline-op get pod ctrl-a -o name')
-    printf 'pod/ctrl-a\n'
-    ;;
-  *'-n pipeline-op get pod ctrl-b -o name')
-    printf 'pod/ctrl-b\n'
-    ;;
-  *'-n old-release get pod ctrl-stale -o name')
-    exit 1
+  *'get pods -l app=frontend-executor,xds-component=frontend -o name')
+    if [[ ! -e "$FRONTEND_PODS_DELETED" ]]; then
+      printf 'pod/stale-frontend\n'
+    fi
     ;;
   *'get pods -l ray.io/cluster=xds-test-arch-local-kuberay -o json')
     printf '{"items":[{"metadata":{"name":"taskExecutorGroup4prefill1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}}]}'
+    ;;
+  *'delete pod/stale-task-executor'*)
+    : >"$PODS_DELETED"
+    ;;
+  *'delete pod/stale-frontend'*)
+    : >"$FRONTEND_PODS_DELETED"
     ;;
 esac
 EOF
 cat >"$work_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+printf 'curl %s\n' "$*" >>"$EVENT_LOG"
+for arg in "$@"; do
+  case "$arg" in
+    @*) cp "${arg#@}" "$CURL_PAYLOAD_FILE" ;;
+  esac
+done
 if [[ "$*" == *'/models/test-arch'* ]]; then
   printf '{"status":"ACTIVE"}\n'
 else
@@ -76,7 +69,9 @@ EOF
 chmod +x "$work_dir/bin/helm" "$work_dir/bin/kubectl" "$work_dir/bin/curl"
 
 EVENT_LOG="$work_dir/events.log" \
-INSTALLED_VALUES="$work_dir/installed-values.yaml" \
+PODS_DELETED="$work_dir/pods-deleted" \
+FRONTEND_PODS_DELETED="$work_dir/frontend-pods-deleted" \
+CURL_PAYLOAD_FILE="$work_dir/model.payload.json" \
 DEPLOY_ON_TARGET_HOST=1 \
 RUN_DIR="$work_dir/run" \
 CHART_DIR="$work_dir/chart" \
@@ -94,30 +89,20 @@ HEAD_LOG_ROOT="$work_dir/logs" \
 XDS_READY_TIMEOUT_SECONDS=5 \
 bash "$script_dir/deploy-model.sh" >/dev/null
 
-actual="$(python3 - "$work_dir/installed-values.yaml" <<'PY'
-import sys
-import yaml
-
-values = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(values["workerGroups"]["ctrlGroup"]["annotations"]["max_count_on_node"])
-PY
-)"
-if [[ "$actual" != 4 ]]; then
-  echo "expected ctrlGroup max_count_on_node=4, got $actual" >&2
+delete_line="$(grep -nF 'kubectl -n xds-test-arch-local delete pod/stale-task-executor --grace-period=0 --force --wait=false' "$work_dir/events.log" | cut -d: -f1 || true)"
+frontend_delete_line="$(grep -nF 'kubectl -n xds-test-arch-local delete pod/stale-frontend --grace-period=0 --force --wait=false' "$work_dir/events.log" | cut -d: -f1 || true)"
+install_line="$(grep -nF 'helm install xds-test-arch-local' "$work_dir/events.log" | cut -d: -f1 || true)"
+if [[ -z "$delete_line" ]]; then
+  echo "expected deploy-model.sh to delete stale Ray worker pods after uninstall" >&2
+  exit 1
+fi
+if [[ -z "$install_line" || "$delete_line" -ge "$install_line" ]]; then
+  echo "stale Ray worker pods must be deleted before helm install" >&2
+  exit 1
+fi
+if [[ -z "$frontend_delete_line" || "$frontend_delete_line" -ge "$install_line" ]]; then
+  echo "stale frontend executor pods must be deleted before helm install" >&2
   exit 1
 fi
 
-source_value="$(python3 - "$work_dir/values.yaml" <<'PY'
-import sys
-import yaml
-
-values = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(values["workerGroups"]["ctrlGroup"]["annotations"]["max_count_on_node"])
-PY
-)"
-if [[ "$source_value" != 3 ]]; then
-  echo "expected source values file to remain unchanged, got $source_value" >&2
-  exit 1
-fi
-
-echo "deploy ctrl slot-capacity test passed"
+echo "deploy stale-pod cleanup test passed"
