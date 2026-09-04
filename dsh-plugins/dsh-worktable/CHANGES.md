@@ -1,5 +1,27 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 流水线历史记录与日志分离存储 + 运行状态机竞态修复（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
+  全量日志进历史记录导致 worktable-pipeline.json 单条记录可达数 MB（页面加载全量 GET + 每次保存全量回写，
+  页面明显变慢）。现改为：归档文件（run-*.log）仍是全量日志唯一实体、永不截断；历史条目只存元数据 +
+  logFile 路径（`collectRunLogs`/`runCleanupBefore`/服务端 `execPlan` 的 `pushHist` 统一），无归档目录时内嵌全文兜底；
+  回放历史按需经 `/api/worktable/file` 拉取日志缓存到 `rec._lc`（`loadReplayLogs`，失败下次进入重试）；
+  存量内嵌 logs 的记录加载后后台迁移（`migrateInlineLogs`：补齐归档文件——已有同名文件不覆盖——再改存路径，
+  完成后自动保存）；AI 分析提示词原本就走 {archive}/{logFile} 文件路径，无需内嵌日志。
+  配套修复（页面加载慢的根因之外的同组 bug）：
+  - `runUrlStep` 收尾段与 catch 补运行令牌校验（此前中止后迟回的触发/拉控制台结果会把旧阶段变量、
+    归档日志、失败状态写进新运行，甚至把新运行判失败）；
+  - 全局 `timer` 清理移到令牌校验之后（`runScriptStep`/`runUrlStep` 轮询守卫）：此前旧运行迟回会清新运行
+    的 timer，模拟阶段永久挂起；
+  - `loadServerState` 拉取失败不再打开写入门（stateLoaded 保持 false，`pushState` 写前重试加载，
+    仍失败则放弃保存）：此前服务端暂不可达时任何一次保存都会用本地默认值+空历史覆盖服务端全部数据；
+  - 服务端 PUT `/api/worktable/pipeline` 由全量覆盖改为在写互斥锁（`withStoreLock`，与
+    `appendPipelineHistory` 串行）内与磁盘合并：页面未知的磁盘记录（页面加载后定时运行产出的）按 tag/ts
+    键保留，buildNo/histClearedAt 取双方较大值防回退；「清空」经 config.histClearedAt 表达，
+    清空点之前的磁盘记录不因合并复活，且清空后刷新不再复活内置演示数据；页面历史上限 200→500 与服务端对齐；
+  - 服务端定时历史记录补 `ts` 字段（参与合并排序与清空判定）；
+  - `/api/worktable/file` 读取上限 20MB→256MB（全量归档日志可能超 20MB，回放按需读取不得 413）。
+  `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
+
 - 阶段超时改为「留空=无超时」并修复定时路径超时失效（`src/index.ts` + worktable/pipeline/pipeline.html 配套）：
   此前编辑器「超时(分钟)」留空时脚本阶段默认 2 分钟、URL 请求阶段默认 5 分钟，且服务端定时路径
   `runStageScript` 硬编码 `timeout: 120000` 完全无视阶段配置——长任务（如大镜像拉取）到点被杀，

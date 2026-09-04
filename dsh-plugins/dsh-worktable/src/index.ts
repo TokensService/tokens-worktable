@@ -253,7 +253,7 @@ export function apply(ctx: Context) {
         if (!p) { json(res, 400, { error: 'missing path' }); return }
         const abs = pathResolve(p)
         const stat = await import('node:fs/promises').then((m) => m.stat(abs))
-        if (stat.size > 20 * 1024 * 1024) { json(res, 413, { error: 'file too large' }); return }
+        if (stat.size > 256 * 1024 * 1024) { json(res, 413, { error: 'file too large' }); return }   // 256MB：全量归档日志可能超 20MB，回放按需读取不得 413
         const data = await readFile(abs)
         const ext = (abs.split('.').pop() || '').toLowerCase()
         const types: Record<string, string> = {
@@ -435,18 +435,31 @@ export function apply(ctx: Context) {
           const body = await readJsonBody(req)
           const config = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
           const history = Array.isArray(body.history) ? body.history.slice(0, 500) : []
-          /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
-             与 appendPipelineHistory 同一策略） */
-          let text = JSON.stringify({ config, history })
-          while (text.length > 20 * 1024 * 1024 && history.length > 1) {
-            history.pop()
-            text = JSON.stringify({ config, history })
-          }
-          const fsx = await import('node:fs/promises')
-          await fsx.mkdir(dirname(PIPELINE_STORE), { recursive: true })
-          const tmp = PIPELINE_STORE + '.tmp'
-          await fsx.writeFile(tmp, text, 'utf8')
-          await fsx.rename(tmp, PIPELINE_STORE)
+          await withStoreLock(async () => {
+            /* 与磁盘现状合并再写（此前全量覆盖：页面打开期间服务端定时运行 append 的记录会被抹掉、
+               buildNo 回退重号）。页面不知道的磁盘记录保留；「清空」语义经 histClearedAt 表达——
+               清空时间点之前的磁盘记录视为已删、不因合并复活。buildNo / histClearedAt 取双方较大值防回退。 */
+            const disk = await readPipelineStore()
+            const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
+            const diskHistory = Array.isArray(disk.history) ? disk.history : []
+            const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
+            if (clearedAt) config.histClearedAt = clearedAt
+            config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0)
+            const keyOf = (r: any) => (r && r.tag) ? 'tag:' + r.tag : ((r && r.ts) ? 'ts:' + r.ts : 'no:' + (r && r.no) + ':' + (r && r.pipeline))
+            const seen = new Set(history.map(keyOf))
+            const serverOnly = diskHistory.filter((r: any) => !seen.has(keyOf(r)) && (clearedAt ? (Number(r && r.ts) || 0) > clearedAt : true))
+            const merged = history.concat(serverOnly)
+            merged.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))   // ts 倒序（新在前）；无 ts 的存量记录沉底
+            if (merged.length > 500) merged.length = 500
+            /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
+               与 appendPipelineHistory 同一策略） */
+            let text = JSON.stringify({ config, history: merged })
+            while (text.length > 20 * 1024 * 1024 && merged.length > 1) {
+              merged.pop()
+              text = JSON.stringify({ config, history: merged })
+            }
+            await writeJsonAtomic(PIPELINE_STORE, text)
+          })
           json(res, 200, { ok: true })
           return
         }
@@ -460,7 +473,7 @@ export function apply(ctx: Context) {
   // ---- 流水线定时任务（服务端调度，关闭页面也会执行）----
   // 计划存独立文件 worktable-pipeline-plans.json；调度器每 15s 轮询，到期即在服务端执行：
   // 脚本阶段用 bash 真跑（参数/环境注入规则与前端 execScript 一致），模拟阶段按耗时等待，
-  // 审批门自动通过；运行记录（含各阶段日志）追加进 worktable-pipeline.json 的 history。
+  // 审批门自动通过；运行记录（阶段元数据 + 日志文件路径，日志全文在归档文件）追加进 worktable-pipeline.json 的 history。
   const PLANS_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline-plans.json')
 
   async function writeJsonAtomic(file: string, text: string) {
@@ -469,6 +482,14 @@ export function apply(ctx: Context) {
     const tmp = file + '.tmp'
     await fsx.writeFile(tmp, text, 'utf8')
     await fsx.rename(tmp, file)
+  }
+  /* 流水线存储写互斥：PUT（页面保存）与 appendPipelineHistory（服务端定时运行追加）都是
+     读-改-写，串行化防并发互踩丢记录（函数声明提升 + 请求/调度均发生在 apply 之后，let 时序安全） */
+  let storeChain: Promise<unknown> = Promise.resolve()
+  function withStoreLock<T>(fn: () => Promise<T>): Promise<T> {
+    const p = storeChain.then(fn)
+    storeChain = p.then(() => undefined, () => undefined)
+    return p
   }
   async function readPlansFile(): Promise<any[]> {
     try {
@@ -831,8 +852,8 @@ export function apply(ctx: Context) {
     })
   }
   /* 任务回显文本：与页面 buildLog 同格式（命令行 + stdout + ✗ 前缀 stderr + [exit]）。
-     完整回显不截断（对齐页面行为，见 pipeline.html collectRunLogs）：独立任务日志 / 汇总 run-<tag>.log /
-     历史记录均保全量，避免长输出任务（如镜像拉取进度）日志被切断 */
+     完整回显不截断：独立任务日志 / 汇总 run-<tag>.log 均保全量，避免长输出任务（如镜像拉取进度）
+     日志被切断；历史记录只存元数据 + logFile 路径指向这些归档文件（见 pushHist） */
   function stageLogText(name: string, r: { code: number; stdout: string; stderr: string }) {
     const interp = /\.py$/i.test(name) ? 'python3' : 'bash'
     let t = '$ ' + interp + ' ' + name + '\n' + (r.stdout || '')
@@ -840,21 +861,24 @@ export function apply(ctx: Context) {
     return t + '\n[exit ' + r.code + ']'
   }
   async function appendPipelineHistory(rec: any) {
-    const j = await readPipelineStore()
-    const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
-    const history = Array.isArray(j.history) ? j.history : []
-    const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
-    cfg.buildNo = no
-    rec.no = no
-    history.unshift(rec)
-    /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前整体 return，新运行记录反而丢失）。
-       逐条 pop 重序列化：超限通常由个别大记录引起，弹出少数几条即回落，无需批量估算 */
-    let text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
-    while (text.length > 20 * 1024 * 1024 && history.length > 1) {
-      history.pop()
-      text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
-    }
-    await writeJsonAtomic(PIPELINE_STORE, text)
+    await withStoreLock(async () => {   // 与页面 PUT 同一把锁：读-改-写串行化，防并发互踩
+      const j = await readPipelineStore()
+      const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
+      const history = Array.isArray(j.history) ? j.history : []
+      const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
+      cfg.buildNo = no
+      rec.no = no
+      if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
+      history.unshift(rec)
+      /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前整体 return，新运行记录反而丢失）。
+         逐条 pop 重序列化：超限通常由个别大记录引起，弹出少数几条即回落，无需批量估算 */
+      let text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
+      while (text.length > 20 * 1024 * 1024 && history.length > 1) {
+        history.pop()
+        text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
+      }
+      await writeJsonAtomic(PIPELINE_STORE, text)
+    })
   }
   async function execPlan(pl: any) {
     const t0 = Date.now()
@@ -882,9 +906,16 @@ export function apply(ctx: Context) {
     if (pl.vars && typeof pl.vars === 'object' && !Array.isArray(pl.vars)) {
       for (const k of Object.keys(pl.vars)) { const v = pl.vars[k]; if (v !== undefined && v !== null) varsPool[k] = String(v) }
     }
-    const logs: any[] = []
+    const logs: any[] = []        // 全量回显：汇总 run-<tag>.log 用（页面回放不从这里取日志）
+    const histLogs: any[] = []    // 历史记录条目：只存元数据 + 日志文件路径（全量日志在归档文件，页面回放时按需读取）
     const profileStages: any[] = []
     let status = 'success'
+    /* 历史条目：有归档文件时只存 logFile 路径；folder=null（无归档目录）时内嵌全文兜底 */
+    const pushHist = (stage: string, st: string, text: string, logFile: string | null, durSec: number) => {
+      const e: any = { stage, status: st, dur: durSec }
+      if (logFile) e.logFile = logFile; else e.log = text
+      histLogs.push(e)
+    }
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
     if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
@@ -892,6 +923,7 @@ export function apply(ctx: Context) {
       const text = stageLogText(cfg.cleanupScript.name, r)
       const logFile = folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text })
+      pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
     }
     let seq = baseSeq + 1
@@ -915,6 +947,7 @@ export function apply(ctx: Context) {
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
       const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null
       logs.push({ stage: s.name, status: entry.status, log: entry.text })
+      pushHist(s.name, entry.status, entry.text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
       seq++
       if (status === 'failed') break
@@ -977,7 +1010,7 @@ export function apply(ctx: Context) {
     }
     await appendPipelineHistory({
       no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
-      status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs,
+      status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs: histLogs, ts: Date.now(),
       tag, archive: folder || null,
     })
   }

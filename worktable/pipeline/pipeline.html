@@ -629,19 +629,20 @@ const LOGS = {
   ],
 };
 
-/* ---------- 服务端持久化（配置 + 运行历史/日志，存服务端 ~/.dsh/storages/worktable-pipeline.json） ---------- */
+/* ---------- 服务端持久化（配置 + 运行历史，存服务端 ~/.dsh/storages/worktable-pipeline.json；日志不内嵌，走归档文件引用） ---------- */
 /* localStorage 仍保留作离线缓存；服务端不可达时行为与原来一致。 */
-let stateLoaded=false;   // loadServerState 完成后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
+let stateLoaded=false;   // loadServerState 成功后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
 let persistTimer=null;
 function persistState(){
-  if(!stateLoaded) return;
   if(persistTimer) clearTimeout(persistTimer);
-  persistTimer=setTimeout(pushState, 400);
+  persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, archiveDir, archiveScriptName, analysisPrompts, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
+  if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
-    /* 演示数据（demo 标记）不上服务端；历史含逐阶段日志，200 条上限同时控制服务端存储体积 */
+    /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
+       服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖 */
     await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history:history.filter(h=>!h.demo)})});
   }catch(e){}
 }
@@ -670,7 +671,10 @@ async function loadServerState(){
       if(typeof cfg.archiveDir==='string'){ archiveDir=cfg.archiveDir; $('archiveDir').value=archiveDir; }
       if(typeof cfg.archiveScriptName==='string'){ archiveScriptName=cfg.archiveScriptName; $('archiveScriptName').value=archiveScriptName; }
       if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
+      if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
+      /* 服务端历史为空但被显式清空过（histClearedAt）：保持空，不复活内置演示数据 */
       if(Array.isArray(st.history) && st.history.length) history=st.history;
+      else if(histClearedAt) history=[];
       runStages=null; selectedId=curPipeline().stages[0].id;
       /* 同步 localStorage 离线缓存 */
       try{
@@ -692,22 +696,64 @@ async function loadServerState(){
       $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
       renderCleanupParams();
       renderAll();
+      migrateInlineLogs();   // 后台把存量内嵌日志迁移为归档文件引用（完成后自行 persistState）
     }
   } finally {
-    stateLoaded=true;
+    /* 仅在成功拉到服务端响应后才打开写入门：拉取失败（服务端暂不可达）保持 stateLoaded=false，
+       防止随后保存用本地默认值把服务端历史/配置整体覆盖（pushState 会先重试加载） */
+    if(st) stateLoaded=true;
     /* 服务端为空：把本地（localStorage/默认）状态迁移上去 */
     if(st && (!st.config || !Object.keys(st.config).length)) persistState();
   }
 }
-/* 收集本次运行各阶段日志（脚本输出/模拟日志），随历史记录持久化到服务端 */
+/* 存量迁移：旧版记录内嵌的 logs 全文 → 补齐归档文件夹里对应的任务日志文件后改存 logFile 引用。
+   已有同名文件不覆盖（归档文件才是全量实体，内嵌可能是旧版截断版）；归档目录不可读/写失败时保持内嵌。
+   迁移完成后 persistState 一次，把引用形态推上服务端 */
+async function migrateInlineLogs(){
+  let changed=false;
+  for(const rec of history){
+    if(!rec || rec.demo || !rec.archive || !rec.tag || !Array.isArray(rec.logs)) continue;
+    const inline=rec.logs.filter(l=>l && typeof l.log==='string');
+    if(!inline.length) continue;
+    let names=null;
+    try{
+      const r=await fetch('/api/worktable/fs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:rec.archive})});
+      const j=await r.json(); names=new Set((j && j.entries || []).map(e=>e.name));
+    }catch(e){}
+    if(!names) continue;
+    const hasCleanup=!!(rec.logs[0] && rec.logs[0].stage==='环境清理');
+    for(const l of inline){
+      const idx=rec.logs.indexOf(l);
+      const seq=(l.stage==='环境清理')?0:(hasCleanup?idx:idx+1);   // 与归档命名约定一致：00=环境清理，阶段从 01 起
+      const fname='run-'+rec.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(l.stage)+'.log';
+      const fp=rec.archive+'/'+fname;
+      if(!names.has(fname)){
+        try{ await apiWrite(fp, l.log); }catch(e){ continue; }
+      }
+      rec.logs[idx]={stage:l.stage, status:l.status, dur:l.dur||0, logFile:fp};
+      changed=true;
+    }
+  }
+  if(changed) persistState();
+}
+/* 收集本次运行各阶段日志的元数据，随历史记录持久化到服务端：
+   全量日志的唯一实体是归档文件（run-<tag>-NN-任务名.log，永不截断），历史条目只存 logFile 路径，
+   回放历史时按需经文件读路由拉取（见 loadReplayLogs）；无归档目录（scriptsDir 非绝对路径）时内嵌全文兜底 */
 function collectRunLogs(){
   const out=[];
-  activeStages().forEach(s=>{
+  const folder=curRun ? archiveFolderFor(curRun) : null;
+  activeStages().forEach((s,idx)=>{
     const n=nodes[s.id];
     if(!n || n.status==='running') return;
-    let text='';
-    try{ text=(buildLog(s, curRun, n)||[]).join('\n'); }catch(e){}
-    out.push({stage:s.name, status:n.status, log:text});   // 完整回显随历史持久化（不截断，回放历史可看全量日志）
+    const e={stage:s.name, status:n.status, dur:(n.dur||0)};
+    if(folder) e.logFile=folder+'/'+taskLogFile(curRun, idx+1, s.name);
+    else{
+      /* URL 阶段响应体超 64K 时展示版被截断，内嵌兜底也换全量副本（与 archiveStageLog 同一规则） */
+      const st2=(s._archiveStdout!=null && s._out) ? Object.assign({}, s, {_out:Object.assign({}, s._out, {stdout:s._archiveStdout})}) : s;
+      let text=''; try{ text=(buildLog(st2, curRun, n)||[]).join('\n'); }catch(e2){}
+      e.log=text;
+    }
+    out.push(e);
   });
   return out;
 }
@@ -1819,6 +1865,9 @@ let selectedId = curPipeline().stages[0].id;
 let running = false;
 let timer = null;
 let buildNo = 47;
+/* 历史清空时间戳：「清空」时记录，随 config 持久化；服务端 PUT 合并历史时以此区分「页面不知道的磁盘记录」
+   与「已被清空的磁盘记录」（清空时间点之前的不再复活），加载时空历史 + 有清空标记则不复活演示数据 */
+let histClearedAt = 0;
 /* 内置演示数据（demo:true）：仅作首次打开时的界面示例——不推送到服务端、不计入统计，「清空」可一并移除 */
 let history = [
   { no:46, pipeline:'K8s 应用安装', env:'prod',    commit:'9f2a1c0', status:'success', dur:'1m52s', time:'今天 09:14', by:'release-manager', demo:true },
@@ -2697,7 +2746,7 @@ async function runUrlStep(i){
     if(!pollable){ building=false; result='SUCCESS'; }
     while(pollable && (!deadline || Date.now()<deadline) && (building||buildNum==null)){
       await new Promise(function(r){ setTimeout(r,2000); });
-      if(!running||!curRun||curRun.token!==tk){ if(timer){clearInterval(timer);timer=null;} return; }
+      if(!running||!curRun||curRun.token!==tk) return;   // 迟回直接丢弃：不得清全局 timer（此时它属于新运行，见 runScriptStep 同规则）
       try{
         const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
         const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration');
@@ -2721,8 +2770,8 @@ async function runUrlStep(i){
       }
       const n=nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); applyStatusClasses(); renderDetail(); }
     }
+    if(!running||!curRun||curRun.token!==tk) return;   // 先验令牌再动全局 timer：迟回时 timer 已属新运行（中止已由 finish 清过）
     if(timer){clearInterval(timer);timer=null;}
-    if(!running||!curRun||curRun.token!==tk) return;
     let consoleText='', bodyFull='';
     if(buildNum!=null){ try{ const full=await jkGetText(jobPath+buildNum+'/consoleText'); if(full.length>consoleRead){ consoleText=full.slice(consoleRead); consoleRead=full.length; } }catch(e){} }
     else if(triggerBody){
@@ -2735,6 +2784,7 @@ async function runUrlStep(i){
       if(body.length>65536) body=body.slice(0,65536)+'…(截断，仅展示；变量捕获用完整响应体)';
       consoleText=body;
     }
+    if(!running||!curRun||curRun.token!==tk) return;   // 收尾拉取控制台（上方 await）期间被中止/切换运行：变量/归档/节点状态不得写入新运行
     const ok=(result==='SUCCESS');
     const preConsoleLen=log.length;   // 本阶段日志中响应体展示文本的起点（归档全量副本用，见下）
     if(consoleText){ if(!consoleStarted){ log.push(''); } consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
@@ -2756,6 +2806,7 @@ async function runUrlStep(i){
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'URL请求 · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
   }catch(e){
+    if(!running||!curRun||curRun.token!==tk) return;   // 迟回异常（中止/已切换新运行）：不得覆盖节点状态、不得对旧阶段再 finish（否则新运行被误判失败）
     if(timer){clearInterval(timer);timer=null;}
     log.push('✗ '+e.message);
     s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,url:true,done:true};
@@ -2786,8 +2837,8 @@ async function runScriptStep(i){
     if(selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
   }, ctrl.signal);
   if(curRun && curRun.scriptAbort===ctrl) curRun.scriptAbort=null;
+  if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验令牌再动全局 timer：迟回时 timer 已属新运行（中止已由 finish 清过）
   if(timer){ clearInterval(timer); timer=null; }
-  if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;
   s._out=res;
@@ -2860,7 +2911,7 @@ function finish(result){
     pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
     logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
     tag:curRun.tag, archive:archiveFolderFor(curRun)};
-  history.unshift(rec); if(history.length>200) history.length=200;
+  history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
   histPage=0;
   renderHistory(); renderStats();
   persistState();
@@ -2880,7 +2931,11 @@ async function runCleanupBefore(){
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
   if(curRun && curRun.token===tk){
-    curRun.cleanupLog={stage:'环境清理', status, log:text, dur:(Date.now()-t0)/1000};   // 全量回显：归档与历史均不截断
+    /* 历史条目只存元数据 + logFile 路径（全量日志在归档文件）；无归档目录时内嵌全文兜底 */
+    const folder=archiveFolderFor(curRun);
+    curRun.cleanupLog={stage:'环境清理', status, dur:(Date.now()-t0)/1000};
+    if(folder) curRun.cleanupLog.logFile=folder+'/'+taskLogFile(curRun, 0, '环境清理');
+    else curRun.cleanupLog.log=text;
     archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
   }
 }
@@ -3069,6 +3124,22 @@ async function createAnalysisChat(kind, rec){
    replayRec 非空 = 正在回放该条历史：编排区显示该次运行的阶段快照（runStages 语义）与状态/耗时，
    详情与回显取自 rec.logs；再次点击该行、手动切换流水线、新运行或「重置」退出回放。 */
 let replayRec = null;
+/* 回放日志按需加载：历史条目只存 logFile 路径（全量日志在归档文件），进入回放时经文件读路由拉取，
+   缓存到 rec._lc（阶段名→文本；null=读取失败，下次进入回放时重试）；完成后若仍在回放同一条记录则重绘详情 */
+async function loadReplayLogs(rec){
+  const logs=Array.isArray(rec.logs)?rec.logs:[];
+  if(!rec._lc) rec._lc={};
+  const jobs=[];
+  logs.forEach(l=>{
+    if(!l || typeof l.log==='string' || !l.logFile) return;
+    if(typeof rec._lc[l.stage]==='string') return;
+    jobs.push(fetch('/api/worktable/file?path='+encodeURIComponent(l.logFile))
+      .then(r=> r.ok ? r.text() : null)
+      .then(t=>{ rec._lc[l.stage]=t; })
+      .catch(()=>{ rec._lc[l.stage]=null; }));
+  });
+  if(jobs.length) await Promise.all(jobs);
+}
 function enterHistoryReplay(rec){
   if(running){ flashRunTip('运行中暂不能回放历史（可等待完成或点「重置」中止后再试）'); return; }
   replayRec=rec;
@@ -3102,6 +3173,7 @@ function enterHistoryReplay(rec){
   const rt=$('replayTip'); if(rt) rt.textContent='正在回放历史 #'+rec.no+'「'+rec.pipeline+'」 · 再次点击该行退出';
   _detailKey='';   // 详情渲染缓存失效，强制按回放数据重绘
   renderFlow(); renderDetail();
+  loadReplayLogs(rec).then(()=>{ if(replayRec===rec){ _detailKey=''; renderDetail(); } });   // 按需拉取归档日志文件，完成后重绘
 }
 function exitHistoryReplay(){
   if(!replayRec) return;
@@ -3140,8 +3212,15 @@ function renderReplayDetail(rec){
   bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':(n.status==='skipped'?'var(--st-idle)':'var(--st-run)'));
   wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed'||n.status==='skipped')?'block':'none';
   const log=$('detailLog'); log.innerHTML='';
-  const lines=entry && entry.log ? String(entry.log).split('\n') : [];
-  if(!lines.length){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
+  /* 日志来源：旧版记录内嵌 entry.log 直接用；新版条目只存 logFile 路径，由 loadReplayLogs 按需拉取缓存到 rec._lc */
+  let text=(entry && typeof entry.log==='string') ? entry.log : undefined;
+  if(entry && text===undefined && entry.logFile){
+    const cached=rec._lc ? rec._lc[entry.stage] : undefined;
+    if(typeof cached==='string') text=cached;
+    else log.textContent = cached===null ? ('日志文件读取失败或不存在：'+entry.logFile) : '（日志加载中…）';
+  }
+  const lines=text!==undefined ? String(text).split('\n') : [];
+  if(!lines.length && !log.textContent){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
   else lines.forEach(ln=>{
     const div=document.createElement('div'); let cls='dim';
     if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';
@@ -3346,7 +3425,7 @@ $('histPageSize').value=String(histPageSize);
 $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
-$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; histPage=0; renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });
+$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
 /* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
 $('histFilterKw').value=histFilter.kw;
 $('histFilterStatus').value=histFilter.status;
@@ -3696,7 +3775,8 @@ function renderAll(){
   applyJenkinsForm();
 }
 renderAll();
-/* 从服务端拉取配置与历史（含日志）；服务端有数据则覆盖本地并重渲染 */
+/* 从服务端拉取配置与历史（历史条目只含元数据 + 日志文件路径，全量日志在归档文件按需读取）；
+   服务端有数据则覆盖本地并重渲染；拉取失败不打开写入门（stateLoaded 保持 false，防覆盖服务端数据） */
 loadServerState();
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
