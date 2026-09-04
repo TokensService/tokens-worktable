@@ -37,4 +37,11 @@ grep -Fq 'PIPELINE_NAME=xds-test-arch' <<<"$resolved"
 grep -Fq 'TARGET_RUN_DIR=/tmp/op-test-pipeline/xds-test-arch' <<<"$resolved"
 grep -Fq 'TARGET_RENDER_DIR=/tmp/op-test-pipeline/xds-test-arch/rendered' <<<"$resolved"
 
+namespace_resolved="$(ARCH_NAME='glm-5.2-nvfp4-one-node' \
+  IMAGE_TAG='1043.ec96f' \
+  bash -c "$config
+printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
+grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
+grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
+
 echo "pipeline variable-default tests passed"

@@ -3,6 +3,15 @@
 # The pipeline forwards every KEY=VALUE line below to later stages.
 set -euo pipefail
 
+normalize_kubernetes_name() {
+  local value="$1" max_length="$2"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
+  value="${value:0:max_length}"
+  value="${value%-}"
+  [[ -n "$value" ]] || { echo "cannot derive a Kubernetes name from: $1" >&2; return 2; }
+  printf '%s' "$value"
+}
+
 ARCH_NAME="${ARCH_NAME:-default}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
@@ -16,6 +25,8 @@ PREFILL_GPU="${PREFILL_GPU:-4}"
 DECODE_GPU="${DECODE_GPU:-4}"
 NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-${IMAGE_TAG:-local}}"
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
+NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
+RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
 PREFILL_OVERRIDES_JSON="${PREFILL_OVERRIDES_JSON:-}"
 DECODE_OVERRIDES_JSON="${DECODE_OVERRIDES_JSON:-}"
 REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"

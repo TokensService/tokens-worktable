@@ -7,6 +7,15 @@ contains_unexpanded_placeholder() {
   [[ "${1:-}" == *'${'* || "${1:-}" == *'$('* ]]
 }
 
+normalize_kubernetes_name() {
+  local value="$1" max_length="$2"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
+  value="${value:0:max_length}"
+  value="${value%-}"
+  [[ -n "$value" ]] || { echo "cannot derive a Kubernetes name from: $1" >&2; return 2; }
+  printf '%s' "$value"
+}
+
 IMAGE_NAME="${IMAGE_NAME:-}"
 DEPLOY_IMAGE="${DEPLOY_IMAGE:-}"
 contains_unexpanded_placeholder "$IMAGE_NAME" && IMAGE_NAME=""
@@ -27,9 +36,11 @@ IMAGE_TAG="${IMAGE_TAG:-local}"
 NAMESPACE="${NAMESPACE:-}"
 contains_unexpanded_placeholder "$NAMESPACE" && NAMESPACE=""
 [[ -n "$NAMESPACE" ]] || NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG}"
+NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
 RELEASE_NAME="${RELEASE_NAME:-}"
 contains_unexpanded_placeholder "$RELEASE_NAME" && RELEASE_NAME=""
 [[ -n "$RELEASE_NAME" ]] || RELEASE_NAME="$NAMESPACE"
+RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
 CHART_DIR="${CHART_DIR:-}"
 contains_unexpanded_placeholder "$CHART_DIR" && CHART_DIR=""
 [[ -n "$CHART_DIR" ]] || CHART_DIR="${RENDER_DIR}/xds-cluster"
