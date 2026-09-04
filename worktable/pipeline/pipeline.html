@@ -2359,7 +2359,9 @@ function detectParams(src, lang){
       return;
     }
     const v=r.key;
-    if(!/^[A-Z_][A-Z0-9_]*$/.test(v)||BUILT.test(v)||internal[v]) return;   // 环境参数沿用旧规则：仅全大写名
+    /* 带 :-/:? 默认值声明（VAR="${VAR:-...}"）的变量是明确的外部参数声明，即使脚本内另有普通重赋值
+       （如 if 分支里 VALUES_FILE="$DEPLOY_VALUES_FILE" 致 internalAssignedVars 误判为内部变量）也不过滤 */
+    if(!/^[A-Z_][A-Z0-9_]*$/.test(v)||BUILT.test(v)||(internal[v]&&!r.op)) return;   // 环境参数沿用旧规则：仅全大写名
     if(!(v in envSeen)){ envSeen[v]={def:def, required:req, dyn:dyn}; envOrder.push(v); }
     else { if(def && !envSeen[v].def){ envSeen[v].def=def; envSeen[v].dyn=dyn; } if(req) envSeen[v].required=true; }
   });
@@ -2455,7 +2457,9 @@ async function setStageScript(i, name){
   s.script={name:sc.name, path:sc.path, lang:sc.lang, params:(keep?keep.params:[]), values:(keep?keep.values:{}), outVars:((s.script&&s.script.outVars)||'')};   // 输出变量映射随脚本选择保留
   await detectStageParams(i);
 }
-async function detectStageParams(i){
+/* keepOnError：打开编辑器时的自动重新识别置 true——脚本暂不可读（如 scriptsDir 在另一台机器）时
+   保留已存参数不清空；「识别参数」按钮手动触发仍按失败清空（与脚本报不存在告警一致） */
+async function detectStageParams(i, keepOnError){
   const s=editStages[i]; if(!s||!s.script||!s.script.path) return;
   try{
     const src=await readScriptSrc(s.script.path);
@@ -2469,7 +2473,7 @@ async function detectStageParams(i){
       // 旧值等于旧默认（旧版识别器预填产物）则丢弃，回到「留空=注入值/脚本默认兜底」语义
       if(oldV!==undefined && oldP && String(oldV)!==String(oldP.def||'')) s.script.values[p.key]=oldV;
     });
-  }catch(e){ s.script.params=[]; }
+  }catch(e){ if(!keepOnError) s.script.params=[]; }
   renderStageParams(i);
 }
 
@@ -4223,7 +4227,12 @@ function openPlForm(id, focusIdx){
   if(p){ $('plName').value=p.name;
     editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 url 后清掉 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
-  loadScripts().then(()=>renderStageEditor());
+  loadScripts().then(async ()=>{
+    renderStageEditor();
+    /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
+       重新识别刷新 placeholder 展示；用户真实改动由 detectStageParams 内部合并保留（keepOnError 防止脚本暂不可读时清空） */
+    await Promise.all(editStages.map((s,i)=>((s.script&&s.script.path)?detectStageParams(i,true):null)));
+  });
   $('plName').focus();
 }
 function savePlForm(){
