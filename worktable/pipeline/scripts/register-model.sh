@@ -8,6 +8,7 @@ RESOURCE_MANIFEST="${RESOURCE_MANIFEST:-${RENDER_DIR}/resources.rendered.json}"
 ARCH_NAME="${ARCH_NAME:-default}"
 XDS_URL="${XDS_URL:-http://127.0.0.1:30079/xds/v1}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
+MODEL_ENDPOINT="${MODEL_ENDPOINT:-$MODEL_NAME}"
 MODEL_PATH="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_REQUEST_FILE="$RUN_DIR/rendered/model.request.json"
@@ -62,11 +63,11 @@ wait_for_model_active() {
   return 1
 }
 
-python3 - "$RESOURCE_MANIFEST" "$ARCH_NAME" "$MODEL_NAME" "$MODEL_PATH" "$MODEL_VERSION" "$SPEC_PACKAGE" >"$MODEL_REQUEST_FILE" <<'PY'
+python3 - "$RESOURCE_MANIFEST" "$ARCH_NAME" "$MODEL_NAME" "$MODEL_ENDPOINT" "$MODEL_PATH" "$MODEL_VERSION" "$SPEC_PACKAGE" >"$MODEL_REQUEST_FILE" <<'PY'
 import json
 import sys
 
-manifest_file, arch_name, model_name, model_path, version, spec_package = sys.argv[1:]
+manifest_file, arch_name, model_name, model_endpoint, model_path, version, spec_package = sys.argv[1:]
 with open(manifest_file, encoding="utf-8") as source:
     manifest = json.load(source)
 resources = []
@@ -76,7 +77,7 @@ for resource in manifest["resources"]:
     )})
 payload = {
     "model": model_name,
-    "model_endpoint": model_name,
+    "model_endpoint": model_endpoint,
     "arch_name": arch_name,
     "version": version,
     "max_instance": 1,
@@ -99,6 +100,8 @@ echo
 wait_for_model_active
 
 printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
+printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
+printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
 printf 'MODEL_REQUEST_FILE=%s\n' "$MODEL_REQUEST_FILE"
 printf 'RESOURCE_MANIFEST=%s\n' "$RESOURCE_MANIFEST"
 printf 'XDS_URL=%s\n' "$XDS_URL"

@@ -24,7 +24,10 @@ XDS_URL="${XDS_URL:-}"
 XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
 XDS_API_HOST=""
+SERVICE_NAME="${SERVICE_NAME:-ray-svc}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
+MODEL_ENDPOINT="${MODEL_ENDPOINT:-$MODEL_NAME}"
+MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_PATH_INPUT="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 MODEL_CONTAINER_ROOT="${MODEL_CONTAINER_ROOT:-/home/service/works/models_ssd}"
 MODEL_WEIGHT_NAME="${MODEL_WEIGHT_NAME:-}"
@@ -144,7 +147,8 @@ PY
     if [[ -n "$remote_xds_url" ]]; then
       printf 'export XDS_URL=%q\n' "$remote_xds_url"
     fi
-    printf 'export MODEL_NAME=%q\nexport MODEL_PATH=%q\n' "$MODEL_NAME" "$MODEL_PATH"
+    printf 'export SERVICE_NAME=%q\nexport MODEL_NAME=%q\nexport MODEL_ENDPOINT=%q\nexport MODEL_VERSION=%q\nexport MODEL_PATH=%q\n' \
+      "$SERVICE_NAME" "$MODEL_NAME" "$MODEL_ENDPOINT" "$MODEL_VERSION" "$MODEL_PATH"
     printf 'export HELM_BIN=%q\nexport KUBECTL_BIN=%q\nexport HELM_TIMEOUT=%q\n' "$HELM_BIN" "$KUBECTL_BIN" "$HELM_TIMEOUT"
     printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
     printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
@@ -213,7 +217,7 @@ resolve_xds_url_from_service() {
   local node_port
 
   [[ "$XDS_URL_EXPLICIT" == false ]] || return 0
-  node_port="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc ray-svc -o json | python3 -c '
+  node_port="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json | python3 -c '
 import json
 import sys
 
@@ -223,17 +227,17 @@ for port in service.get("spec", {}).get("ports", []):
         print(port["nodePort"])
         break
 else:
-    raise SystemExit("ray-svc does not expose a NodePort")
+    raise SystemExit("service does not expose a NodePort")
 ' 2>/dev/null)" || {
-    echo "failed to resolve NodePort from service ray-svc" >&2
+    echo "failed to resolve NodePort from service $SERVICE_NAME" >&2
     return 1
   }
   [[ "$node_port" =~ ^[0-9]+$ ]] || {
-    echo "invalid ray-svc NodePort: $node_port" >&2
+    echo "invalid service NodePort: $node_port" >&2
     return 1
   }
   XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
-  echo "[deploy] resolved XDS API URL from ray-svc: $XDS_URL"
+  echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
 }
 
 wait_for_xds_api() {
@@ -615,6 +619,8 @@ RUN_DIR="$RUN_DIR" \
   ARCH_REQUEST_FILE="$ARCH_REQUEST_FILE" \
   ARCH_NAME="$ARCH_NAME" \
   MODEL_NAME="$MODEL_NAME" \
+  MODEL_ENDPOINT="$MODEL_ENDPOINT" \
+  MODEL_VERSION="$MODEL_VERSION" \
   MODEL_PATH="$MODEL_PATH" \
   XDS_URL="$XDS_URL" \
   bash "$SCRIPT_DIR/register-model.sh"
@@ -627,6 +633,12 @@ printf 'NAMESPACE=%s\n' "$NAMESPACE"
 printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
 printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
 printf 'XDS_URL=%s\n' "$XDS_URL"
+printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
+printf 'SERVICE_API=%s\n' "${XDS_URL%/}"
 printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
+printf 'MODEL=%s\n' "$MODEL_NAME"
+printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
+printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
+printf 'MODEL_API=%s/models/%s\n' "${XDS_URL%/}" "$MODEL_ENDPOINT"
 printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
 printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"

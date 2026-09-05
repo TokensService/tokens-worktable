@@ -46,7 +46,7 @@
 XDS 流水线按以下顺序绑定脚本：
 
 1. `pull_render_config.sh`：在流水线执行机拉取镜像、导出模板并渲染配置；随后将渲染产物同步到每个 `TARGET_HOSTS`。
-2. `deploy-model.sh`：执行机选取 `TARGET_HOSTS[0]` 作为控制节点，通过 SSH 同步部署脚本和本轮渲染产物；随后在该目标机读取 Chart、values、架构注册请求和 P/D resource manifest，执行 Helm 安装并注册架构。
+2. `deploy-model.sh`：执行机选取 `TARGET_HOSTS[0]` 作为控制节点，通过 SSH 同步部署脚本和本轮渲染产物；随后在该目标机读取 Chart、values、架构注册请求和 P/D resource manifest，执行 Helm 安装并注册架构。成功后额外输出可供后续阶段引用的 `SERVICE_NAME`、`SERVICE_API`、`MODEL`、`MODEL_ENDPOINT`、`MODEL_VERSION`、`MODEL_API`；默认服务名为 `ray-svc`，可通过 `SERVICE_NAME` 覆盖。
 3. `register-model.sh [MODEL_NAME]`：使用本轮 resource manifest 注册模型。
 4. `model-health.sh`：检查 XDS models 接口并发起一次真实 chat 请求。
 

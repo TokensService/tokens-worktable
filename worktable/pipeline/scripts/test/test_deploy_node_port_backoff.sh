@@ -79,7 +79,7 @@ KUBECTL_BIN="$work_dir/bin/kubectl" \
 PATH="$work_dir/bin:$PATH" \
 HEAD_LOG_ROOT="$work_dir/logs" \
 XDS_READY_TIMEOUT_SECONDS=5 \
-bash "$script_dir/deploy-model.sh" >/dev/null
+bash "$script_dir/deploy-model.sh" >"$work_dir/output"
 
 node_port="$(python3 - "$work_dir/installed-values.yaml" <<'PY'
 import sys
@@ -99,5 +99,12 @@ grep -Fq 'http://192.168.0.78:31375/xds/v1/models/' "$work_dir/api-requests.log"
   cat "$work_dir/api-requests.log" >&2
   exit 1
 }
+
+grep -Fxq 'SERVICE_NAME=ray-svc' "$work_dir/output"
+grep -Fxq 'SERVICE_API=http://192.168.0.78:31375/xds/v1' "$work_dir/output"
+grep -Fxq 'MODEL=test-arch' "$work_dir/output"
+grep -Fxq 'MODEL_ENDPOINT=test-arch' "$work_dir/output"
+grep -Fxq 'MODEL_VERSION=v1' "$work_dir/output"
+grep -Fxq 'MODEL_API=http://192.168.0.78:31375/xds/v1/models/test-arch' "$work_dir/output"
 
 echo "deploy node-port backoff test passed"

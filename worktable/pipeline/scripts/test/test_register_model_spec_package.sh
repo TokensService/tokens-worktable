@@ -35,6 +35,7 @@ RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
 ARCH_REQUEST_FILE="$work_dir/rendered/architecture.request.json" \
 ARCH_NAME='glm-5.2-nvfp4-one-node' \
 MODEL_NAME='glm-5.2-nvfp4-one-node' \
+MODEL_ENDPOINT='glm-5.2-nvfp4-one-node-serving' \
 XDS_URL='http://xds.test/xds/v1' \
 "$script_dir/register-model.sh" >/dev/null
 
@@ -49,3 +50,11 @@ actual_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["
   echo "unexpected default model path: $actual_path" >&2
   exit 1
 }
+
+actual_endpoint="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model_endpoint"])' "$work_dir/payload.json")"
+[[ "$actual_endpoint" == 'glm-5.2-nvfp4-one-node-serving' ]] || {
+  echo "expected configured model_endpoint, got $actual_endpoint" >&2
+  exit 1
+}
+
+echo "register model spec-package test passed"
