@@ -19,6 +19,7 @@ CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-$RUN_DIR/template/xds-cluster}"
 VALUES_TEMPLATE="${VALUES_TEMPLATE:-$RUN_DIR/template/values-16Node-je-cpp-bnt3.yaml}"
 ARCH_FILE="${ARCH_FILE:-$RUN_DIR/template/model_arch-lt-je-cpp-bnt3.json}"
 DEPLOY_IMAGE="${DEPLOY_IMAGE:-${IMAGE_NAME:-myapp}:${IMAGE_TAG:-latest}}"
+IMAGE_PULL_SECRETS="${IMAGE_PULL_SECRETS:-${IMAGE_PULL_SECRET:-default-secret,swr-cn-southwest-2}}"
 NUM_PREFILL="${NUM_PREFILL:-1}"
 NUM_DECODE="${NUM_DECODE:-1}"
 PREFILL_GPU="${PREFILL_GPU:-4}"
@@ -66,7 +67,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
-  "$CHART_DIR" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
 from pathlib import Path
@@ -80,7 +81,7 @@ import yaml
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
- chart_dir) = sys.argv[1:]
+ chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill)
 num_decode = int(num_decode)
@@ -101,6 +102,18 @@ replace_map = load_json("REPLACE_MAP_JSON", replace_map)
 equal_replace_map = load_json("EQUAL_REPLACE_JSON", equal_replace_map)
 yaml_replace_map = load_json("YAML_REPLACE_JSON", yaml_replace_map)
 template_vars = load_json("TEMPLATE_VARS_JSON", template_vars_json)
+
+image_pull_secrets = []
+for secret_name in image_pull_secrets_text.split(","):
+    secret_name = secret_name.strip()
+    if not secret_name:
+        continue
+    if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", secret_name):
+        raise SystemExit(f"invalid image pull secret name: {secret_name}")
+    if secret_name not in [item["name"] for item in image_pull_secrets]:
+        image_pull_secrets.append({"name": secret_name})
+if not image_pull_secrets:
+    raise SystemExit("IMAGE_PULL_SECRETS must contain at least one secret name")
 
 try:
     target_hosts = json.loads(target_hosts_json)
@@ -294,6 +307,7 @@ def normalize_container_env_values(value):
 
 normalize_container_env_values(values)
 values["taskExecutorGroups"] = groups
+values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
     "enableTaskExecutorGroups": True,

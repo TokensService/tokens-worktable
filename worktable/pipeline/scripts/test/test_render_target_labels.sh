@@ -134,6 +134,10 @@ for group in values["taskExecutorGroups"]:
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["useFemFrontend"] is False, values["global"]
+assert values["global"]["imagePullSecrets"] == [
+    {"name": "default-secret"},
+    {"name": "swr-cn-southwest-2"},
+], values["global"]
 assert values["global"]["images"]["ray"] == "xds:test-tag"
 assert values["global"].get("fullnameOverride", "") == "", values["global"]
 assert values["global"]["roleName"] == "xds-one-node-78-verify-role"
@@ -177,6 +181,54 @@ framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "fem_min_frontend_num = 2" in framework_config, framework_config
 assert "fem_max_frontend_num = 2" in framework_config, framework_config
 assert "mock_db = true" in framework_config, framework_config
+PY
+
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-image-secrets" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-one-node-78-verify' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+IMAGE_PULL_SECRETS='first-secret, second-secret' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-image-secrets/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+assert values["global"]["imagePullSecrets"] == [
+    {"name": "first-secret"},
+    {"name": "second-secret"},
+], values["global"]
+PY
+
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-image-secret-compat" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-one-node-78-verify' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+IMAGE_PULL_SECRET='legacy-secret, second-secret' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-image-secret-compat/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+assert values["global"]["imagePullSecrets"] == [
+    {"name": "legacy-secret"},
+    {"name": "second-secret"},
+], values["global"]
 PY
 
 health_service_template="$work_dir/run-single/rendered/xds-cluster/templates/xds-head-health-service.yaml"

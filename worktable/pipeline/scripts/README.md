@@ -55,6 +55,9 @@ XDS 流水线按以下顺序绑定脚本：
 - `ARCH_NAME`、`NUM_PREFILL`、`NUM_DECODE`、`PREFILL_GPU`、`DECODE_GPU`
 - `XDS_URL`、`MODEL_PATH`、`NAMESPACE`、`RELEASE_NAME`
 - `PREFILL_OVERRIDES_JSON`、`DECODE_OVERRIDES_JSON`
+- `IMAGE_PULL_SECRETS`：逗号分隔的 Kubernetes 镜像凭证 Secret；默认
+  `default-secret,swr-cn-southwest-2`。旧变量 `IMAGE_PULL_SECRET` 仍兼容且同样支持逗号分隔；
+  `IMAGE_PULL_SECRETS` 优先。所有列出的 Secret 必须存在于本次部署 Namespace 中。
 
 镜像必须包含以下模板路径，否则 `pull-image.sh` 会失败：
 
