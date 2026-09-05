@@ -46,7 +46,7 @@
 XDS 流水线按以下顺序绑定脚本：
 
 1. `pull_render_config.sh`：在流水线执行机拉取镜像、导出模板并渲染配置；随后将渲染产物同步到每个 `TARGET_HOSTS`。
-2. `deploy-model.sh`：执行机选取 `TARGET_HOSTS[0]` 作为控制节点，通过 SSH 同步部署脚本和本轮渲染产物；随后在该目标机读取 Chart、values、架构注册请求和 P/D resource manifest，执行 Helm 安装并注册架构。
+2. `deploy-model.sh`：执行机选取 `TARGET_HOSTS[0]` 作为控制节点，通过 SSH 同步部署脚本和本轮渲染产物；随后在该目标机读取 Chart、values、架构注册请求和 P/D resource manifest，执行 Helm 安装并注册架构。成功后额外输出可供后续阶段引用的 `SERVICE_NAME`、`SERVICE_API`、`MODEL`、`MODEL_ENDPOINT`、`MODEL_VERSION`、`MODEL_API`；默认服务名为 `ray-svc`，可通过 `SERVICE_NAME` 覆盖。
 3. `register-model.sh [MODEL_NAME]`：使用本轮 resource manifest 注册模型。
 4. `model-health.sh`：检查 XDS models 接口并发起一次真实 chat 请求。
 
@@ -95,7 +95,7 @@ XDS 流水线按以下顺序绑定脚本：
 - `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（供 `collect_vllm_metrics.py` 的 `--start`/`--end` 默认取值）
 - `METRICS_ACTION` — 固定 `collect`（`collect_vllm_metrics.py` 默认 action 为 `start` 即后台采集；前台按段采集需 `collect`）
 - `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
-- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 仅当选中行对应流水线勾选了「收集普罗数据」才注入（`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
+- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 仅当选中行对应流水线勾选了「收集普罗数据」才注入（`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
 - `ARCHIVE_FOLDER` — 选中运行的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
 
 示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 取 `VLLM_METRICS_START`/`VLLM_METRICS_END`、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集。

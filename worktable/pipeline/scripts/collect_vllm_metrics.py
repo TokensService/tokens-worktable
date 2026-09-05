@@ -149,6 +149,8 @@ JOBLESS_METRICS = MODELLESS_METRICS | {
     "vllm:ems_save_sdk_latency_ms_count",
     "vllm:ems_save_sdk_latency_ms_sum",
 }
+MODEL_LABEL_ROOT = "/home/service/works/models_ssd"
+MODEL_LABEL_VERSION = "v1"
 
 
 def parse_time(value: str) -> int:
@@ -165,12 +167,23 @@ def promql_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def normalize_model_label(model_name: str | None) -> str | None:
+    """Turn a model identifier into the vLLM Prometheus label value.
+
+    vLLM exposes relative model names as the model directory ending in ``/v1``.
+    Callers that already provide an absolute label value retain full control.
+    """
+    if not model_name or model_name.startswith("/"):
+        return model_name
+    return f"{MODEL_LABEL_ROOT}/{model_name.rstrip('/')}/{MODEL_LABEL_VERSION}"
+
+
 def build_query(metric: str, namespace: str | None, model_name: str | None, job_regex: str | None) -> str:
     labels: list[str] = []
     if namespace:
         labels.append(f'xds_namespace="{promql_string(namespace)}"')
     if metric.startswith("vllm:") and model_name and metric not in MODELLESS_METRICS:
-        labels.append(f'model_name="{promql_string(model_name)}"')
+        labels.append(f'model_name="{promql_string(normalize_model_label(model_name))}"')
     if job_regex and metric not in JOBLESS_METRICS:
         labels.append(f'exported_job=~"{promql_string(job_regex)}"')
     return metric if not labels else f"{metric}{{{','.join(labels)}}}"
@@ -232,7 +245,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", default=os.getenv("NAMESPACE"),
                         help="环境变量 NAMESPACE；未设置时不按命名空间筛选")
     parser.add_argument("--model-name", default=os.getenv("ARCH_NAME"),
-                        help="环境变量 ARCH_NAME；未设置时不按模型筛选")
+                        help="环境变量 ARCH_NAME；相对模型名按 /home/service/works/models_ssd/<name>/v1 筛选，绝对路径原样使用")
     parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
     parser.add_argument("--output-dir", default=default_output_dir(),
