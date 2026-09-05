@@ -248,10 +248,10 @@
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
-        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出可就地展开「回显」查看；总日志在下方统一滚动</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）</span></h2>
         <div id="relSteps"></div>
         <div id="relResult" style="margin-top:8px"></div>
         <div class="rel-log" id="relLog" style="display:none"></div>
@@ -1270,7 +1270,7 @@
           }
           var wrapEnv = {}; if (env) { for (var k in env) wrapEnv[k] = env[k]; }
           wrapEnv.BUILD_CONTAINER = container || ""; wrapEnv.BUILD_SCRIPT = script;
-          return execScript(BUILD_WRAP_SCRIPT_PATH, wrapEnv, timeoutMs);
+          return execStreamLines(BUILD_WRAP_SCRIPT_PATH, wrapEnv, timeoutMs);   // 流式实时回显（旧插件降级一次性 exec）
         });
       });
   }
@@ -1310,14 +1310,81 @@
         return { code: (j && j.code !== undefined) ? j.code : 1, stdout: (j && j.stdout) || "", stderr: (j && j.stderr) || "" };
       }).catch(function (e) { return { code: 1, stdout: "", stderr: String(e && e.message || e) }; });
   }
+  /* 流式执行：POST /api/worktable/exec-stream（插件服务端 spawn 后按块回传 NDJSON：
+     {"type":"out"|"err","text":…} / {"type":"done","code":N} / {"type":"error","message":…}）。
+     逐块解析并回调 onStream({type,text})；累计 stdout/stderr，结束时返回 {code,stdout,stderr}。
+     旧插件构建未含该路由（响应非 200 / 无 body）时返回 null，由调用方降级为一次性 exec。
+     与流水线工作台 execStreaming 同形（精简去 signal，发行流程无中止需求）。 */
+  async function execStreaming(path, args, env, cwd, timeoutMs, onStream) {
+    var stdout = "", stderr = "";
+    var emit = function (type, text) { if (typeof onStream === "function" && text) onStream({ type: type, text: text }); };
+    try {
+      var r = await fetch("/api/worktable/exec-stream", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path, args: args || [], env: env || {}, cwd: cwd, timeoutMs: timeoutMs || 0 }) });
+      if (!r.ok || !r.body) { await r.json().catch(function () { return null; }); return null; }   // 旧插件构建无此路由：降级为一次性执行
+      var reader = r.body.getReader();
+      var dec = new TextDecoder();
+      var buf = "";
+      for (;;) {
+        var chunk;
+        try { chunk = await reader.read(); }
+        catch (e) { return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" }; }
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        var idx;
+        while ((idx = buf.indexOf("\n")) >= 0) {
+          var line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
+          if (!line) continue;
+          var m = null; try { m = JSON.parse(line); } catch (e) { continue; }
+          if (m.type === "out") { stdout += m.text || ""; emit("out", m.text || ""); }
+          else if (m.type === "err") { stderr += m.text || ""; emit("err", m.text || ""); }
+          else if (m.type === "error") { var txt = m.message || "执行流错误"; stderr += (stderr ? "\n" : "") + txt; emit("err", txt); }
+          else if (m.type === "done") { return { code: typeof m.code === "number" ? m.code : 1, stdout: stdout, stderr: stderr }; }
+        }
+      }
+      if (buf.trim()) {   // 末尾残余（流结束前未换行的最后一块）
+        var m2 = null; try { m2 = JSON.parse(buf.trim()); } catch (e) {}
+        if (m2 && m2.type === "out") { stdout += m2.text || ""; emit("out", m2.text || ""); }
+        else if (m2 && m2.type === "err") { stderr += m2.text || ""; emit("err", m2.text || ""); }
+        else if (m2 && m2.type === "error") { var txt2 = m2.message || "执行流错误"; stderr += (stderr ? "\n" : "") + txt2; emit("err", txt2); }
+        else if (m2 && m2.type === "done") { return { code: typeof m2.code === "number" ? m2.code : 1, stdout: stdout, stderr: stderr }; }
+      }
+      return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（输出流意外中断，未收到完成标记）" };
+    } catch (e) {
+      return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" };
+    }
+  }
+  /* 流式执行并实时回显：按块收到 stdout/stderr 即按行追加到当前步骤回显块与总日志
+     （relLog 内仅保留末尾 REL_LIVE_TAIL 行，避免输出过多撑爆 DOM 导致页面卡死）；
+     旧插件无 exec-stream 路由时降级为一次性 exec（结束后整体回显，同样受末尾截断保护）。 */
+  function execStreamLines(path, env, timeoutMs) {
+    var lineBuf = "", lastCls = "";   // 跨块半行缓冲：仅在收到完整 \n 时回显一行，末尾半行兜底回显
+    var emitText = function (text, cls) {
+      lastCls = cls || ""; lineBuf += text;
+      for (;;) { var nl = lineBuf.indexOf("\n"); if (nl < 0) break; relLog(lineBuf.slice(0, nl), lastCls); lineBuf = lineBuf.slice(nl + 1); }
+    };
+    return execStreaming(path, [], env, undefined, timeoutMs, function (m) {
+      if (m.type === "out") emitText(m.text || "");
+      else if (m.type === "err") emitText(m.text || "", "warn");
+    }).then(function (res) {
+      if (res) { if (lineBuf) relLog(lineBuf, lastCls); return res; }   // 末尾半行兜底回显
+      return execScript(path, env, timeoutMs).then(function (r) {   // 降级：一次性 exec 后整体回显
+        if (r.stdout) r.stdout.replace(/\n$/, "").split("\n").forEach(function (l) { if (l) relLog(l); });
+        if (r.stderr) r.stderr.replace(/\n$/, "").split("\n").forEach(function (l) { if (l) relLog(l, "warn"); });
+        return r;
+      });
+    });
+  }
   var REL_STEPS = ["编译构建", "创建 Tag", "创建发行版", "上传产物"];
   var REL_STEP_LABEL = { idle: "未开始", run: "进行中", ok: "成功", err: "失败", skip: "跳过" };
   var REL_HIST_MAX = 30;          // 构建历史最多保留条数
   var REL_STEP_LOG_MAX = 300;     // 归档时每步回显最多保留行数（超出截断前部）
+  var REL_LIVE_TAIL = 20;         // 实时回显仅保留末尾行数（每步回显块与总日志共用，避免输出过多撑爆 DOM 卡死页面）
   var relStates = [];             // 当前发行的步骤状态（供逐步回显就地刷新时重绘）
   var relCurStep = -1;            // 当前回显归属的步骤下标（-1=公共行，只进总日志）
   var relStepLogs = [[], [], [], []]; // 每步回显缓存：发行中就地展开 + 结束后归档
   function relLogLineHtml(l) { return '<div class="rel-line' + (l.cls ? " rel-" + l.cls : "") + '">' + esc(l.msg) + "</div>"; }
+  function relStepSumText(total) { return total > REL_LIVE_TAIL ? "回显 " + total + " 行（实时仅显示最近 " + REL_LIVE_TAIL + " 行）▾" : "回显 " + total + " 行 ▾"; }
   function relStepBadgeCls(st) { return st === "run" ? " dshell-badgeWait" : (st === "ok" ? " dshell-badgeDone" : ""); }
   function relSetSteps(states) {
     relStates = states;
@@ -1329,8 +1396,9 @@
       var lines = relStepLogs[i] || [];
       var det = "";
       if (lines.length) {
-        det = '<details class="rel-stepDet"' + (s.st === "run" ? " open" : "") + '><summary id="relStepLogSum' + i + '">回显 ' + lines.length + ' 行 ▾</summary>' +
-          '<div class="rel-log rel-stepLog" id="relStepLog' + i + '" style="display:block">' + lines.map(relLogLineHtml).join("") + "</div></details>";
+        var tail = lines.length > REL_LIVE_TAIL ? lines.slice(lines.length - REL_LIVE_TAIL) : lines;   // 仅渲染末尾若干行，避免重绘时撑爆 DOM
+        det = '<details class="rel-stepDet"' + (s.st === "run" ? " open" : "") + '><summary id="relStepLogSum' + i + '">' + relStepSumText(lines.length) + '</summary>' +
+          '<div class="rel-log rel-stepLog" id="relStepLog' + i + '" style="display:block">' + tail.map(relLogLineHtml).join("") + "</div></details>";
       }
       return '<div class="rel-step"><i class="' + dot + '"></i>' +
         '<span style="font-size:12.5px;color:var(--dsw-alias-label-primary,#e6e8eb)">' + (i + 1) + ". " + n + "</span>" + badge +
@@ -1346,7 +1414,9 @@
     var d = document.createElement("div");
     d.className = "rel-line" + (cls ? " rel-" + cls : "");
     d.textContent = msg;
-    relLogEl.appendChild(d); relLogEl.scrollTop = relLogEl.scrollHeight;
+    relLogEl.appendChild(d);
+    while (relLogEl.childNodes.length > REL_LIVE_TAIL) relLogEl.removeChild(relLogEl.firstChild);   // 总日志仅保留末尾若干行，避免输出过多撑爆 DOM 卡死页面
+    relLogEl.scrollTop = relLogEl.scrollHeight;
     // 同步计入当前步骤的回显缓存，并就地更新该步的展开块
     if (relCurStep >= 0 && relCurStep < REL_STEPS.length) {
       relStepLogs[relCurStep].push({ msg: msg, cls: cls || "" });
@@ -1355,9 +1425,11 @@
       var ld = document.createElement("div");
       ld.className = "rel-line" + (cls ? " rel-" + cls : "");
       ld.textContent = msg;
-      box.appendChild(ld); box.scrollTop = box.scrollHeight;
+      box.appendChild(ld);
+      while (box.childNodes.length > REL_LIVE_TAIL) box.removeChild(box.firstChild);   // 步骤回显块仅保留末尾若干行
+      box.scrollTop = box.scrollHeight;
       var sum = $("relStepLogSum" + relCurStep);
-      if (sum) sum.textContent = "回显 " + relStepLogs[relCurStep].length + " 行 ▾";
+      if (sum) sum.textContent = relStepSumText(relStepLogs[relCurStep].length);
     }
   }
   /* 打 Tag 并推送的临时脚本：经 /api/worktable/write 落到服务端临时文件后 exec 执行 */
@@ -1394,14 +1466,12 @@
         if (!w.ok || (wj && wj.error)) throw new Error("写入 Tag 脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
       }); })
       .then(function () {
-        return execScript(PUSH_TAG_SCRIPT_PATH, {
+        return execStreamLines(PUSH_TAG_SCRIPT_PATH, {
           GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch, RELEASE_TAG: tag, RELEASE_NAME: name || tag
         }, 300000);
       })
       .then(function (res) {
-        if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
-        if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "err"); });
-        if (res.code !== 0) throw new Error("Tag 推送失败（详见日志）");
+        if (res.code !== 0) throw new Error("Tag 推送失败（详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
   /* GitHub 建 annotated Tag：Git Data API（取分支 HEAD → 建 tag 对象 → 建 ref）。
@@ -1486,15 +1556,13 @@
         if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
       }); })
       .then(function () {
-        return execScript(UPLOAD_ASSETS_SCRIPT_PATH, {
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, {
           ARTIFACT_DIR: artifactDir, RELEASE_TAG: tag,
           OWNER: repo.owner, REPO: repo.name, ACCESS_TOKEN: state.token.trim()
         }, 600000);
       })
       .then(function (res) {
-        if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
-        if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "err"); });
-        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");
+        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
   /* GitHub 发行版产物上传：发行版创建响应的 upload_url 形如
@@ -1532,14 +1600,12 @@
         if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
       }); })
       .then(function () {
-        return execScript(UPLOAD_ASSETS_SCRIPT_PATH, {
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, {
           ARTIFACT_DIR: artifactDir, UPLOAD_URL: uploadUrlBase, ACCESS_TOKEN: state.token.trim()
         }, 600000);
       })
       .then(function (res) {
-        if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
-        if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "err"); });
-        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");
+        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
   /* ---------- 构建历史：归档每次发行的依赖信息、产物清单与逐步回显（本机 localStorage） ---------- */
@@ -1822,12 +1888,10 @@
           var cmd = relBuildCmd.value.trim(); if (cmd) env.BUILD_CMD = cmd;
           if (artifacts) { env.BUILD_ARTIFACTS = artifacts; env.ARTIFACT_DIR = artifactDir; }
           var extraKeys = mergeBuildExtraEnv(env);
-          relLog("+ POST /api/worktable/exec " + BUILD_WRAP_SCRIPT_PATH + "（超时 " + rec.timeoutS + "s，注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME" +
+          relLog("+ POST /api/worktable/exec-stream " + BUILD_WRAP_SCRIPT_PATH + "（流式实时回显，超时 " + rec.timeoutS + "s，注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME" +
             (cmd ? "/BUILD_CMD" : "") + (container ? "/BUILD_CONTAINER=" + container : "（本机执行）") + (artifacts ? "/BUILD_ARTIFACTS/ARTIFACT_DIR" : "") +
             (extraKeys.length ? "/附加环境变量(" + extraKeys.join(",") + ")" : "") + "）", "dim");
-          var res = await execRepoBuild(script, container, env, timeoutMs);
-          if (res.stdout) res.stdout.trim().split("\n").forEach(function (l) { relLog(l); });
-          if (res.stderr) res.stderr.trim().split("\n").forEach(function (l) { relLog(l, "warn"); });
+          var res = await execRepoBuild(script, container, env, timeoutMs);   // 流式实时回显已在 execRepoBuild→execStreamLines 内完成（末尾仅保留最近 REL_LIVE_TAIL 行）
           if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
           states[0] = { st: "ok" }; relSetSteps(states);
         }
@@ -1956,9 +2020,9 @@
   }
   function releaseFlowHelpHtml() {
     if (state.platform === "github") {
-      return '流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌（Bearer 头）。';
+      return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌（Bearer 头）。';
     }
-    return '流程：① 服务端经 <code>/api/worktable/exec</code> 执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。';
+    return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。';
   }
   function updatePlatformUI() {
     document.title = "PR 检视台 · " + platformLabel();
