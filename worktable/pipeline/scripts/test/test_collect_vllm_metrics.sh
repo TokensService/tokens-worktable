@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
             "--namespace",
             "xds-test",
             "--model-name",
-            "model-test",
+            "GLM-5.2-NVFP4-W4A4-MG39-BNT3",
             "--job-regex",
             ".*vllmp.*",
             "--metric",
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert len(requests) == 1
     query, params = requests[0]
     assert 'xds_namespace="xds-test"' in query
-    assert 'model_name="model-test"' in query
+    assert 'model_name="/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1"' in query
     assert 'exported_job=~".*vllmp.*"' in query
     assert params["start"] == ["1704067200"]
     assert params["end"] == ["1704067800"]
@@ -106,6 +106,35 @@ with tempfile.TemporaryDirectory() as temp_dir:
     with (output_dir / "summary.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert rows[0]["metric"] == "vllm:mooncake_xfer_time_seconds_bucket"
+
+    absolute_output_dir = Path(temp_dir) / "absolute-model"
+    absolute_model_name = "/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1"
+    absolute = subprocess.run(
+        [
+            str(script),
+            "--action",
+            "collect",
+            "--prometheus-url",
+            f"http://127.0.0.1:{server.server_port}",
+            "--start",
+            "2024-01-01T00:00:00Z",
+            "--end",
+            "2024-01-01T00:10:00Z",
+            "--model-name",
+            absolute_model_name,
+            "--metric",
+            "vllm:mooncake_xfer_time_seconds_bucket",
+            "--output-dir",
+            str(absolute_output_dir),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert absolute.returncode == 0, f"stdout={absolute.stdout}\nstderr={absolute.stderr}"
+    absolute_query, _ = requests[-1]
+    assert f'model_name="{absolute_model_name}"' in absolute_query
+    assert f'model_name="{absolute_model_name}/v1"' not in absolute_query
 
     continuous_dir = Path(temp_dir) / "continuous"
     env = os.environ.copy()
