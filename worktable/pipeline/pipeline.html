@@ -601,7 +601,7 @@
           <input id="plPromStart" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集开始时间（留空=运行时自动取流水线开始时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
           <input id="plPromEnd" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集结束时间（留空=运行时自动取最后一个任务结束后的时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
         </div>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，轮询到终态）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，轮询到终态；任务 ID/名称可填 ${变量名} 引用上游产出）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -2163,8 +2163,8 @@ function renderStageActionRow(i){
     /* 输入框 + 下拉面板置于同一 relative 容器：聚焦输入框自动拉取任务列表（可搜索），
        选中后回填 taskId/taskName 并自动识别任务输入参数；点容器外关闭面板 */
     const pickWrap=document.createElement('span'); pickWrap.style.cssText='position:relative;display:inline-flex;align-items:center;gap:4px;';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表）'; inp.style.width='200px';
-    inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要轮询等待的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌周期 GET /api/open/v1/tasks，匹配到该任务并等待其到终态（成功/失败）后推进，捕获任务字段为输出变量';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表，支持 ${VAR}）'; inp.style.width='200px';
+    inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要轮询等待的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}），运行时替换后匹配任务（未定义的单个引用按空值处理）；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌周期 GET /api/open/v1/tasks，匹配到该任务并等待其到终态（成功/失败）后推进，捕获任务字段为输出变量';
     const panel=document.createElement('div'); panel.setAttribute('data-etpick-panel','1'); panel.style.cssText='display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:280px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);';
     pickWrap.appendChild(inp); pickWrap.appendChild(panel);
     inp.addEventListener('focus', ()=>{ if(panel.style.display==='none') openEvaltokPicker(i); });
@@ -3356,7 +3356,12 @@ function renderEvaltokPickerPanel(i, q){
    捕获任务字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
 async function runEvaltokensStep(i){
   const stg=activeStages(); const s=stg[i]; const et=s.evaltokens||{};
-  const taskId=String(et.taskId||'').trim(); const taskName=String(et.taskName||'').trim(); const outSpec=et.outVars||'';
+  /* 任务 ID/名称支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}）：
+     运行时用 substRunVars 从 curRun.vars（上游变量同名优先）+ 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR
+     等）替换后再匹配任务；未定义的单个 ${VAR} 引用按空值处理（空 taskId+空 taskName → 抛「未选择 EvalTokens
+     任务」）。与脚本阶段参数值 ${VAR} 替换同一套规则（见 substRunVars）；编辑器内的 taskId/taskName 仍按字面值
+     用于任务选择面板与输入参数自动识别，不做运行时替换。 */
+  const taskId=substRunVars(String(et.taskId||''), curRun).trim(); const taskName=substRunVars(String(et.taskName||''), curRun).trim(); const outSpec=et.outVars||'';
   const tk=curRun?curRun.token:null; const varsIn=curRun?Object.assign({},curRun.vars||{}):{};
   const label='EvalTokens · '+(taskName||taskId||'未命名');
   nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
