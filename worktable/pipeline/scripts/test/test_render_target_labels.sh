@@ -43,6 +43,8 @@ feTemplate:
     kubernetes.io/hostname: 192.168.0.243
 global:
   useFemFrontend: true
+  storage:
+    hostPath: /mnt/paas
   imageRegistry: registry.example/old
   images:
     ray: xds:old
@@ -134,6 +136,7 @@ for group in values["taskExecutorGroups"]:
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["useFemFrontend"] is False, values["global"]
+assert values["global"]["storage"]["hostPath"] == "/mnt/xds/sfs", values["global"]
 assert values["global"]["imagePullSecrets"] == [
     {"name": "default-secret"},
     {"name": "swr-cn-southwest-2"},
