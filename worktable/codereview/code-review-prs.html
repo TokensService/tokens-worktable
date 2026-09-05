@@ -130,6 +130,16 @@
     .rel-histDel { margin-left:auto; }
     .rel-histBody { margin-top:8px; padding-top:8px; border-top:1px dashed var(--dsw-alias-border-l1,#262b36); }
     .rel-histSec { font-size:11.5px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); margin:10px 0 6px; }
+    /* 仓库过滤下拉（PR 列表与 Issues 共用）：在 dshell 工具条内联 */
+    .repo-filter { position:relative; flex:0 0 auto; }
+    .repo-filterBtn { font-size:12px; padding:4px 10px; white-space:nowrap; }
+    .repo-filterPanel { position:absolute; top:calc(100% + 4px); left:0; z-index:30; min-width:240px; max-width:380px; max-height:340px; overflow:auto; padding:6px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-bg-base,#0b0e14); box-shadow:0 8px 24px rgba(0,0,0,.32); display:none; }
+    .repo-filterPanel.open { display:block; }
+    .repo-filterHead { display:flex; align-items:center; gap:6px; padding:4px 6px 6px; border-bottom:1px dashed var(--dsw-alias-border-l1,#262b36); margin-bottom:4px; flex-wrap:wrap; }
+    .repo-filterItem { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; cursor:pointer; }
+    .repo-filterItem:hover { background:var(--dsw-alias-fill-l1,rgba(255,255,255,.04)); }
+    .repo-filterItem input { flex:0 0 auto; margin:0; }
+    .repo-filterEmpty { padding:10px 8px; color:var(--dsw-alias-label-tertiary,#6b7280); font-size:12px; }
   </style>
 </head>
 <body>
@@ -154,6 +164,7 @@
     <!-- 视图标签页：PR 列表 / 编译发行 / 设置（设置标签只显示设置信息） -->
     <div class="dshell-tabs" id="viewTabs">
       <button class="dshell-tab dshell-tabOn" data-view="list">PR 列表</button>
+      <button class="dshell-tab" data-view="issues">Issues</button>
       <button class="dshell-tab" data-view="release">编译发行</button>
       <button class="dshell-tab" data-view="settings">设置</button>
     </div>
@@ -166,9 +177,10 @@
     <!-- 统计卡片 -->
     <div class="dshell-grid" id="stats"></div>
 
-    <!-- 工具条：搜索 + 状态筛选 -->
+    <!-- 工具条：搜索 + 仓库过滤 + 状态筛选 -->
     <div class="pr-toolbar" id="toolbar" style="display:none">
       <input class="dshell-input grow" id="searchInput" placeholder="按仓库 / 标题 / 作者 / 分支搜索…" />
+      <div class="repo-filter" id="repoFilter" title="按代码仓过滤（仅显示所选仓库的 PR）"></div>
       <div class="dshell-tabs" id="stateTabs" style="border:none">
         <button class="dshell-tab dshell-tabOn" data-state="open">开放</button>
         <button class="dshell-tab" data-state="closed">已关闭</button>
@@ -179,6 +191,24 @@
     <!-- 列表 -->
     <div id="list"></div>
     </div><!-- /viewList -->
+
+    <!-- Issues 视图：拉取组织各仓库 Issue（GitHub 自动跳过 PR；首次切到本标签时拉取） -->
+    <div id="viewIssues" style="display:none">
+      <div id="issueStatusBar" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      <div class="dshell-grid" id="issueStats"></div>
+      <!-- 工具条：搜索 + 仓库过滤 + 状态筛选 -->
+      <div class="pr-toolbar" id="issueToolbar" style="display:none">
+        <input class="dshell-input grow" id="issueSearchInput" placeholder="按仓库 / 标题 / 作者搜索…" />
+        <div class="repo-filter" id="issueRepoFilter" title="按代码仓过滤（仅显示所选仓库的 Issue）"></div>
+        <div class="dshell-tabs" id="issueStateTabs" style="border:none">
+          <button class="dshell-tab dshell-tabOn" data-state="open">开放</button>
+          <button class="dshell-tab" data-state="closed">已关闭</button>
+          <button class="dshell-tab" data-state="all">全部</button>
+        </div>
+        <button class="dshell-btn dshell-btnGhost" id="issueRefresh" title="重新拉取 Issues">↻ 刷新</button>
+      </div>
+      <div id="issueList"></div>
+    </div><!-- /viewIssues -->
 
     <!-- 发行视图：选仓库/分支，一键串行「编译构建 → 创建 Tag → 创建 GitCode 发行版」 -->
     <div id="viewRelease" style="display:none">
@@ -445,12 +475,16 @@
   var pageTitle = $("pageTitle"), tokenCardTitle = $("tokenCardTitle"), tokenWhyValue = $("tokenWhyValue"), tokenApplyLink = $("tokenApplyLink");
   var platformSel = $("platformSel"), platformTip = $("platformTip");
   var relCardSubHelp = $("relCardSubHelp"), relFlowHelp = $("relFlowHelp");
-  var viewTabs = $("viewTabs"), viewList = $("viewList"), viewSettings = $("viewSettings"), viewRelease = $("viewRelease");
+  var viewTabs = $("viewTabs"), viewList = $("viewList"), viewSettings = $("viewSettings"), viewRelease = $("viewRelease"), viewIssues = $("viewIssues");
   var relRepoSel = $("relRepo"), relRepoRefresh = $("relRepoRefresh"), relBranch = $("relBranch"), relBranchRefresh = $("relBranchRefresh");
   var relTag = $("relTag"), relTagSuggest = $("relTagSuggest"), relBuildScript = $("relBuildScript"), relBuildCmd = $("relBuildCmd");
   var relBuildTimeout = $("relBuildTimeout"), relName = $("relName"), relPrerelease = $("relPrerelease"), relBody = $("relBody");
   var relRunBtn = $("relRunBtn"), relRunTip = $("relRunTip"), relSteps = $("relSteps"), relResult = $("relResult"), relLogEl = $("relLog");
   var searchInput = $("searchInput"), stateTabs = $("stateTabs"), toolbar = $("toolbar");
+  var repoFilterBox = $("repoFilter");
+  var issueStatusBar = $("issueStatusBar"), issueStatsEl = $("issueStats"), issueToolbar = $("issueToolbar");
+  var issueSearchInput = $("issueSearchInput"), issueRepoFilterBox = $("issueRepoFilter"), issueStateTabs = $("issueStateTabs");
+  var issueListEl = $("issueList"), issueRefresh = $("issueRefresh");
   var statsEl = $("stats"), listEl = $("list"), statusBar = $("statusBar"), toastEl = $("toast");
   var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
   var relArtifacts = $("relArtifacts"), relNotesAiBtn = $("relNotesAiBtn"), relNotesAiTip = $("relNotesAiTip");
@@ -459,12 +493,19 @@
 
   var state = {
     prs: [],            // 全部 PR（含 repo 信息）
+    issues: [],        // 全部 Issue（含 repo 信息；GitHub 已跳过 PR）
     repos: [],          // 仓库列表
     filterState: "open",
+    issuesFilterState: "open",
     keyword: "",
+    issuesKeyword: "",
+    repoFilter: [],     // 仓库过滤：选中的仓库名（PR 列表与 Issues 共用）；空=不过滤
     loading: false,
+    issuesLoading: false,
     lastErr: "",
-    repoDone: 0
+    issuesLastErr: "",
+    repoDone: 0,
+    issueRepoDone: 0
   };
   state.platform = localStorage.getItem("gc_pr_platform") || "gitcode"; // 平台选择跨平台共享
   state.token = localStorage.getItem(lsKey("token")) || "";
@@ -474,6 +515,7 @@
   state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
   state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
   state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
+  state.repoFilter = loadRepoFilter(); // 仓库过滤选择（按平台独立存于本机）
 
   subOrg.textContent = state.org;
 
@@ -607,10 +649,26 @@
       '<div class="dshell-statValue"' + (accent ? ' style="color:#3fb950"' : "") + ">" + esc(String(val)) + "</div></div>";
   }
 
+  /* ---------- 仓库过滤（PR 列表与 Issues 共用）：选中仓库名，空=不过滤 ----------
+     选择存于本机（按平台独立：gc_pr_repofilter / gh_pr_repofilter），刷新不丢失；
+     切换平台 / 重新拉取仓库后裁剪掉已不存在的仓库名，避免幽灵勾选。 */
+  function repoFilterActive() { return state.repoFilter.length > 0; }
+  function inRepoFilter(repoName) { return !repoFilterActive() || state.repoFilter.indexOf(repoName) >= 0; }
+  function pruneRepoFilter() {
+    var names = state.repos.map(function (r) { return r.name; });
+    state.repoFilter = state.repoFilter.filter(function (n) { return names.indexOf(n) >= 0; });
+  }
+  function loadRepoFilter() {
+    try { var a = JSON.parse(localStorage.getItem(lsKey("repofilter"))); return Array.isArray(a) ? a.filter(function (n) { return typeof n === "string"; }) : []; }
+    catch (e) { return []; }
+  }
+  function saveRepoFilter() { try { localStorage.setItem(lsKey("repofilter"), JSON.stringify(state.repoFilter)); } catch (e) {} }
+
   function filtered() {
     var k = state.keyword.trim().toLowerCase();
     return state.prs.filter(function (p) {
       if (state.filterState !== "all" && (p.state || "open") !== state.filterState) return false;
+      if (repoFilterActive() && !inRepoFilter(p.repo)) return false;
       if (!k) return true;
       var hay = [p.repo, p.owner, p.title, p.number, p.head, p.base, p.author].filter(Boolean).join(" ").toLowerCase();
       return hay.indexOf(k) >= 0;
@@ -700,6 +758,283 @@
     statusBar.innerHTML = s;
   }
 
+  /* ---------- 仓库过滤下拉（PR 列表与 Issues 共用）----------
+     下拉就地勾选，切换勾选不重建面板（保留展开态），只同步文案与勾选态后重渲染列表。 */
+  function repoFilterLabel() {
+    var n = state.repos.length, sel = state.repoFilter.length;
+    if (!n) return "仓库 ▾";
+    return sel ? ("仓库 " + sel + "/" + n + " ▾") : "仓库: 全部 ▾";
+  }
+  function renderRepoFilter(container) {
+    if (!container) return;
+    var repos = state.repos, sel = state.repoFilter;
+    var btn = '<button type="button" class="dshell-btn dshell-btnGhost repo-filterBtn">' + esc(repoFilterLabel()) + "</button>";
+    var p = '<div class="repo-filterPanel">';
+    p += '<div class="repo-filterHead"><button type="button" class="dshell-btn dshell-btnGhost" data-rf="all" style="padding:2px 8px;font-size:11px">全选</button>' +
+      '<button type="button" class="dshell-btn dshell-btnGhost" data-rf="none" style="padding:2px 8px;font-size:11px">清空</button>' +
+      '<span class="dshell-muted" style="font-size:11px">勾选要显示的仓库</span></div>';
+    if (!repos.length) p += '<div class="repo-filterEmpty">（暂无仓库，先在 PR 列表页拉取）</div>';
+    repos.forEach(function (r) {
+      var name = r.name || "";
+      var ck = sel.indexOf(name) >= 0 ? " checked" : "";
+      p += '<label class="repo-filterItem"><input type="checkbox" data-repo="' + esc(name) + '"' + ck + ' /><span class="pr-repo">' + esc(name) + "</span></label>";
+    });
+    p += "</div>";
+    container.innerHTML = btn + p;
+    var btnEl = container.querySelector(".repo-filterBtn");
+    var panelEl = container.querySelector(".repo-filterPanel");
+    if (btnEl) btnEl.addEventListener("click", function (e) {
+      e.stopPropagation();
+      Array.prototype.forEach.call(document.querySelectorAll(".repo-filterPanel.open"), function (x) { if (x !== panelEl) x.classList.remove("open"); });
+      panelEl.classList.toggle("open");
+    });
+    Array.prototype.forEach.call(container.querySelectorAll('input[type=checkbox][data-repo]'), function (cb) {
+      cb.addEventListener("change", function () {
+        var name = cb.getAttribute("data-repo");
+        var i = state.repoFilter.indexOf(name);
+        if (cb.checked && i < 0) state.repoFilter.push(name);
+        if (!cb.checked && i >= 0) state.repoFilter.splice(i, 1);
+        saveRepoFilter();
+        syncRepoFilterUI();
+        renderList(); renderIssueList();
+      });
+    });
+    var allBtn = container.querySelector('[data-rf="all"]'), noneBtn = container.querySelector('[data-rf="none"]');
+    if (allBtn) allBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      state.repoFilter = state.repos.map(function (r) { return r.name; });
+      saveRepoFilter(); syncRepoFilterUI(); renderList(); renderIssueList();
+    });
+    if (noneBtn) noneBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      state.repoFilter = [];
+      saveRepoFilter(); syncRepoFilterUI(); renderList(); renderIssueList();
+    });
+  }
+  function syncRepoFilterUI() {
+    // 同步两个下拉的按钮文案、勾选态（切换勾选不重建面板，保留展开态）
+    Array.prototype.forEach.call(document.querySelectorAll(".repo-filterBtn"), function (b) { b.textContent = repoFilterLabel(); });
+    Array.prototype.forEach.call(document.querySelectorAll(".repo-filterPanel"), function (panel) {
+      Array.prototype.forEach.call(panel.querySelectorAll('input[type=checkbox][data-repo]'), function (cb) {
+        cb.checked = state.repoFilter.indexOf(cb.getAttribute("data-repo")) >= 0;
+      });
+    });
+  }
+  function renderRepoFilterAll() {
+    renderRepoFilter(repoFilterBox);
+    renderRepoFilter(issueRepoFilterBox);
+  }
+
+  /* ---------- Issues：拉取组织各仓库 Issue ----------
+     端点 /repos/{owner}/{repo}/issues?state=all（GitCode v5 / GitHub REST 通用）；
+     GitHub issues 接口会顺带返回 PR（带 pull_request 字段），一律跳过；
+     单仓库失败不阻断整体；首次切到 Issues 标签时按需拉取，避免首页额外请求。 */
+  function fetchRepoIssues(owner, repo, st, mode) {
+    return fetchAll("/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/issues?state=" + st, 50, mode)
+      .catch(function () { return []; }); // 单仓库失败不阻断整体
+  }
+  function filteredIssues() {
+    var k = state.issuesKeyword.trim().toLowerCase();
+    return state.issues.filter(function (it) {
+      if (state.issuesFilterState !== "all" && (it.state || "open") !== state.issuesFilterState) return false;
+      if (repoFilterActive() && !inRepoFilter(it.repo)) return false;
+      if (!k) return true;
+      var hay = [it.repo, it.owner, it.title, it.number, it.author].filter(Boolean).join(" ").toLowerCase();
+      return hay.indexOf(k) >= 0;
+    });
+  }
+  function renderIssueStats() {
+    var total = state.issues.length, open = 0, closed = 0, repos = state.repos.length;
+    state.issues.forEach(function (it) { if (it.state === "open") open++; else if (it.state === "closed") closed++; });
+    issueStatsEl.innerHTML = [
+      stat("仓库数", repos),
+      stat("Issue 总数", total),
+      stat("开放 Issue", open, open > 0),
+      stat("已关闭", closed)
+    ].join("");
+  }
+  function renderIssueStatus() {
+    var s = "";
+    s += '<span class="dshell-badge">' + esc(platformLabel()) + "</span>";
+    if (state.token) s += '<span class="dshell-badge dshell-badgeDone">令牌已设置</span>';
+    else s += '<span class="dshell-badge dshell-badgeWait">未设置令牌</span>';
+    s += '<span class="dshell-badge">组织: ' + esc(state.org) + "</span>";
+    if (repoFilterActive()) s += '<span class="dshell-badge">仓库过滤: ' + state.repoFilter.length + "</span>";
+    if (state.issuesLastLoaded) s += '<span class="dshell-muted">· 更新于 ' + esc(state.issuesLastLoaded) + "</span>";
+    issueStatusBar.innerHTML = s;
+  }
+  function renderIssueLoading() {
+    issueStatusBar.innerHTML = '<span class="dshell-badge dshell-badgeWait">加载中…</span>';
+    issueStatsEl.innerHTML = stat("仓库", state.repos.length) + stat("已扫描", state.issueRepoDone) + stat("已发现 Issue", state.issues.length);
+    var h = "";
+    for (var i = 0; i < 6; i++) h += '<div class="pr-skel"></div>';
+    issueListEl.innerHTML = '<div style="margin-top:4px">' + h + "</div>";
+  }
+  function renderIssueList() {
+    if (state.issuesLoading) { renderIssueLoading(); return; }
+    var arr = filteredIssues();
+    if (state.issuesLastErr) {
+      issueListEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">⚠</div>' +
+        '<div style="color:#f85149;margin-bottom:4px">' + esc(state.issuesLastErr) + "</div>" +
+        '<div>请检查令牌与权限，或更换认证方式后重试。</div></div>';
+      return;
+    }
+    if (!arr.length) {
+      issueListEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">✓</div>' +
+        (state.issues.length ? "没有符合筛选条件的 Issue" : "当前没有可显示的 Issue") + "</div>";
+      return;
+    }
+    var html = [];
+    arr.forEach(function (it, i) {
+      html.push('<div class="pr-row">');
+      html.push('  <div class="pr-top">');
+      html.push('    <div class="pr-main">');
+      html.push('      <div class="pr-title" data-iopen="' + i + '">' + esc(it.title) +
+        ' <span class="pr-mono" style="color:var(--dsw-alias-label-tertiary,#6b7280)">#' + esc(String(it.number)) + "</span></div>");
+      html.push('      <div class="pr-sub">');
+      html.push('        <span class="pr-repo">' + esc(it.repo || "") + "</span>");
+      if (it.author) html.push('<span>@' + esc(it.author) + "</span>");
+      if (it.comments != null) html.push('<span>💬 ' + esc(String(it.comments)) + "</span>");
+      html.push('        <span>' + esc(timeAgo(it.updated)) + "</span>");
+      html.push("      </div>");
+      html.push("    </div>");
+      html.push('    <div class="pr-actions">' + setBadge(it.state, false, false) +
+        ' <button class="dshell-btn" data-ireview="' + i + '">✦ AI 分析</button></div>');
+      html.push("  </div>");
+      html.push('  <details class="pr-det"><summary>查看描述 / 标签 / 链接 ▾</summary>');
+      html.push('    <div class="pr-detail">');
+      if (it.labels && it.labels.length) {
+        html.push('      <div style="margin-bottom:6px">' + it.labels.map(function (l) {
+          var name = (typeof l === "string" ? l : (l && l.name)) || "";
+          return '<span class="pr-label">' + esc(name) + "</span>";
+        }).join("") + "</div>");
+      }
+      if (it.body) html.push('      <div class="pr-body">' + esc(it.body.slice(0, 1200)) + (it.body.length > 1200 ? "\n…" : "") + "</div>");
+      html.push('      <div class="pr-mono" style="margin-top:6px"><a class="pr-link" href="' + esc(it.htmlUrl) + '" target="_blank" rel="noopener">' + esc(it.htmlUrl) + "</a></div>");
+      html.push("    </div>");
+      html.push("  </details>");
+      html.push("</div>");
+    });
+    issueListEl.innerHTML = html.join("");
+    Array.prototype.forEach.call(issueListEl.querySelectorAll("[data-ireview]"), function (btn) {
+      btn.addEventListener("click", function () { onIssueReview(filteredIssues()[+btn.getAttribute("data-ireview")]); });
+    });
+    Array.prototype.forEach.call(issueListEl.querySelectorAll("[data-iopen]"), function (el) {
+      el.addEventListener("click", function () {
+        var it = filteredIssues()[+el.getAttribute("data-iopen")];
+        if (it && it.htmlUrl) window.open(it.htmlUrl, "_blank", "noopener");
+      });
+    });
+  }
+  /* —— Issue 提示词：在右侧或新会话送入分析提示（与 PR 检视同一宿主桥）—— */
+  function buildIssuePrompt(it) {
+    var owner = it.owner || state.org, repo = it.repo;
+    var lines = [
+      "请对以下 " + platformLabel() + " Issue 进行分析。",
+      "",
+      "- 仓库: " + owner + "/" + repo,
+      "- Issue #" + it.number + ": " + (it.title || "(无标题)")
+    ];
+    if (it.author) lines.push("- 提交者: @" + it.author);
+    lines.push("- 状态: " + (it.state === "open" ? "开放" : "已关闭"));
+    if (it.htmlUrl) lines.push("- Issue 页面: " + it.htmlUrl);
+    if (it.body) { lines.push("", "## Issue 描述", it.body, ""); }
+    lines.push("## 分析建议");
+    lines.push("1. 复述并澄清该 Issue 描述的问题与期望。");
+    lines.push("2. 判断问题类别（bug / 功能需求 / 文档 / 增强 等）与优先级。");
+    lines.push("3. 若需复现/排查，给出步骤与排查思路（必要时调用仓库文件/代码接口）。");
+    lines.push("4. 给出初步处理建议（修复方向、相关代码位置、是否需要更多信息）。");
+    lines.push("", "开始分析。");
+    return lines.join("\n") + "\n";
+  }
+  function onIssueReview(it) {
+    if (!it) return;
+    launchNewSession(buildIssuePrompt(it), "已新建 AI 聊天会话并开始分析 Issue #" + it.number);
+  }
+  var issueSeq = 0;
+  function loadIssues() {
+    var seq = ++issueSeq;
+    if (!state.token) {
+      state.issuesLoading = false;
+      issueToolbar.style.display = "none";
+      issueListEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">🔑</div>' +
+        '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 ' + platformLabel() + ' 访问令牌</div>' +
+        '<div style="margin-bottom:12px">组织 ' + esc(state.org) + ' 为私有或需令牌才能拉取 Issue。</div>' +
+        '<button class="dshell-btn" id="issueEmptyOpenSettings">⚙ 去设置</button></div>';
+      var eb = $("issueEmptyOpenSettings"); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+      renderIssueStatus(); renderIssueStats();
+      return;
+    }
+    state.issuesLoading = true; state.issuesLastErr = ""; state.issues = []; state.issueRepoDone = 0;
+    issueToolbar.style.display = "none";
+    renderIssueLoading(); renderIssueStatus();
+    var ensureRepos = state.repos.length ? Promise.resolve() : fetchRepos(state.org, state.authMode).then(function (repos) {
+      if (seq !== issueSeq) return;
+      state.repos = (repos || []).map(function (r) {
+        return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
+      }).filter(function (r) { return r.name; });
+      pruneRepoFilter(); renderRepoFilterAll(); renderRelRepoOptions();
+    });
+    ensureRepos.then(function () {
+      if (seq !== issueSeq) return;
+      var idx = 0, active = 0, done = 0;
+      return new Promise(function (resolve) {
+        function next() {
+          while (active < 4 && idx < state.repos.length) {
+            (function (repo) {
+              active++;
+              fetchRepoIssues(repo.owner, repo.name, "all", state.authMode).then(function (issues) {
+                if (seq !== issueSeq) return;
+                (issues || []).forEach(function (it) {
+                  if (it.pull_request) return; // GitHub issues 接口会顺带返回 PR，跳过
+                  var author = it.user && (it.user.login || it.user.name);
+                  var st = (it.state || "open");
+                  state.issues.push({
+                    repo: repo.name, owner: repo.owner,
+                    number: it.number, title: it.title || "(无标题)",
+                    author: author, state: st === "closed" ? "closed" : "open",
+                    body: it.body || "", htmlUrl: it.html_url || "",
+                    labels: it.labels || [], comments: it.comments,
+                    created: it.created_at, updated: it.updated_at || it.created_at
+                  });
+                });
+              }).catch(function () {}).then(function () {
+                active--; done++;
+                if (seq !== issueSeq) { resolve(); return; }
+                state.issueRepoDone = done;
+                renderIssueLoading();
+                if (done >= state.repos.length) resolve();
+                else while (active < 4 && idx < state.repos.length) next();
+              });
+              idx++;
+            })(state.repos[idx]);
+          }
+          if (state.repos.length === 0) resolve();
+        }
+        next();
+      });
+    }).then(function () {
+      if (seq !== issueSeq) return;
+      state.issues.sort(function (a, b) {
+        var oa = a.state === "open" ? 0 : 1, ob = b.state === "open" ? 0 : 1;
+        if (oa !== ob) return oa - ob;
+        return (new Date(b.updated || 0)) - (new Date(a.updated || 0));
+      });
+      state.issuesLoading = false;
+      state.issuesLastLoaded = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      issueToolbar.style.display = "flex";
+      pruneRepoFilter(); renderRepoFilterAll();
+      renderIssueStatus(); renderIssueStats(); renderIssueList();
+      toast("拉取完成：共 " + state.issues.length + " 个 Issue");
+    }).catch(function (e) {
+      if (seq !== issueSeq) return;
+      state.issuesLoading = false;
+      state.issuesLastErr = String(e && e.message || e);
+      renderIssueStatus(); renderIssueStats(); renderIssueList();
+      toast("拉取 Issues 失败：" + state.issuesLastErr, true);
+    });
+  }
+
   /* ---------- 主流程：拉取全部 ----------
      loadSeq 为拉取代际号：新拉取开始后旧拉取的回调全部作废，防止连续
      「刷新 / 保存设置」触发两次 loadAll 时交叉写入 state.prs 导致列表重复、统计翻倍。 */
@@ -725,6 +1060,7 @@
       state.repos = (repos || []).map(function (r) {
         return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
       }).filter(function (r) { return r.name; });
+      pruneRepoFilter(); renderRepoFilterAll(); // PR 列表与 Issues 仓库过滤下拉同步
       renderLoading();
       // 并发拉取各仓库 PR（限流 4）
       var idx = 0, active = 0, done = 0;
@@ -907,6 +1243,7 @@
   /* ---------- 视图切换：PR 列表 / 编译发行 / 设置 ---------- */
   function switchView(view) {
     viewList.style.display = view === "list" ? "" : "none";
+    viewIssues.style.display = view === "issues" ? "" : "none";
     viewRelease.style.display = view === "release" ? "" : "none";
     viewSettings.style.display = view === "settings" ? "" : "none";
     Array.prototype.forEach.call(viewTabs.querySelectorAll(".dshell-tab"), function (t) {
@@ -948,9 +1285,12 @@
     state.token = ""; tokenInput.value = "";
     localStorage.removeItem(lsKey("token"));
     state.prs = []; state.repos = []; state.lastErr = "";
+    state.issues = []; state.issuesLastErr = ""; state.issueRepoDone = 0;
     toast("已清除令牌");
     renderRelRepoOptions(); // 发行页仓库下拉回到「需先设置令牌」
+    renderRepoFilterAll(); // 仓库过滤下拉回到「暂无仓库」
     loadAll(); // 无令牌分支：渲染 🔑 空态并刷新状态栏/统计
+    renderIssueStatus(); renderIssueStats(); renderIssueList();
   }
   function testConnection() {
     var tok = tokenInput.value.trim();
@@ -2064,13 +2404,17 @@
     state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
     // 重置运行态与缓存
     state.prs = []; state.repos = []; state.lastErr = ""; state.repoDone = 0;
+    state.issues = []; state.issuesLastErr = ""; state.issueRepoDone = 0; state.issuesLoading = false;
     relBranchCache = {};
     relCfg = loadRelCfg();
+    state.repoFilter = loadRepoFilter(); // 各平台仓库过滤独立存储
     subOrg.textContent = state.org;
     updatePlatformUI();
     populateSettings();
     renderRelRepoOptions();
+    renderRepoFilterAll();
     renderRelHist();
+    renderIssueStatus(); renderIssueStats(); renderIssueList();
     loadAll();
     toast("已切换到 " + platformLabel());
   }
@@ -2090,6 +2434,7 @@
     var v = b.getAttribute("data-view");
     if (v === "settings") populateSettings();
     if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); renderRelHist(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
+    if (v === "issues") { renderRepoFilterAll(); if (!state.issues.length && !state.issuesLoading && state.token) loadIssues(); }
     switchView(v);
   });
   searchInput.addEventListener("input", function () { state.keyword = searchInput.value; renderList(); });
@@ -2101,11 +2446,30 @@
       renderList();
     });
   });
+  issueSearchInput.addEventListener("input", function () { state.issuesKeyword = issueSearchInput.value; renderIssueList(); });
+  issueRefresh.addEventListener("click", loadIssues);
+  Array.prototype.forEach.call(issueStateTabs.querySelectorAll(".dshell-tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      Array.prototype.forEach.call(issueStateTabs.querySelectorAll(".dshell-tab"), function (t) { t.classList.remove("dshell-tabOn"); });
+      tab.classList.add("dshell-tabOn");
+      state.issuesFilterState = tab.getAttribute("data-state");
+      renderIssueList();
+    });
+  });
+  // 点击仓库过滤下拉之外处收起所有面板
+  document.addEventListener("click", function (e) {
+    var root = e.target.closest ? e.target.closest(".repo-filter") : null;
+    if (!root) {
+      Array.prototype.forEach.call(document.querySelectorAll(".repo-filterPanel.open"), function (p) { p.classList.remove("open"); });
+    }
+  });
 
   /* ---------- 初始化 ---------- */
   applyThemeUI();
   updatePlatformUI();          // 平台文案 + 认证方式下拉（含 renderStatus）
   renderStats(); renderList();
+  renderIssueStatus(); renderIssueStats(); renderIssueList();
+  renderRepoFilterAll();
   renderRelHist();
   loadAll();
 })();
