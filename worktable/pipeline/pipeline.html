@@ -594,10 +594,12 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <div class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;" title="勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。xds_namespace 默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时按当前部署策略与执行人解析），可改填实际命名空间；脚本显式参数同名时优先。">
+        <div class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;" title="勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。xds_namespace 默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时按当前部署策略与执行人解析），可改填实际命名空间；脚本显式参数同名时优先。开始/结束时间留空=运行时自动取流水线开始时间与最后一个任务结束后的时间；填则作为该流水线收集时段（勾选后运行结束自动收集一次，运行历史「收集普罗数据」对话框可临时覆盖）。">
           <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="plPromEnable" /> 收集普罗数据</label>
           <input id="plModelName" class="dshell-input" placeholder="model_name" autocomplete="off" style="width:160px;" title="普罗数据采集的模型名（运行时注入环境变量 MODEL_NAME）" />
           <input id="plXdsNamespace" class="dshell-input" placeholder="xds_namespace（默认 ${DEPLOY_STRATEGY}-${BY}）" autocomplete="off" style="width:220px;" title="普罗数据采集的命名空间（运行时注入环境变量 XDS_NAMESPACE）；默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时解析），可改填实际命名空间" />
+          <input id="plPromStart" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集开始时间（留空=运行时自动取流水线开始时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
+          <input id="plPromEnd" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集结束时间（留空=运行时自动取最后一个任务结束后的时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
         </div>
         <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，轮询到终态）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
@@ -877,7 +879,7 @@ function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XD
 /* 收集普罗数据（每条流水线独立配置）：勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，
    供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。
    xdsNamespace 默认 ${DEPLOY_STRATEGY}-${BY}（运行时按当前部署策略与执行人解析为「部署策略-执行人拼音」），可改填实际命名空间 */
-const DEFAULT_PIPELINE_PROM = { enabled:false, modelName:'', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}' };
+const DEFAULT_PIPELINE_PROM = { enabled:false, modelName:'', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}', startTime:'', endTime:'' };
 /* 旧数据迁移：「审批门」(gate) 已改为「是否执行」(skip)，旧 gate:true 阶段按不执行处理 */
 function migrateGate(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(s && s.gate){ s.skip=true; delete s.gate; } }); return p; }
 /* 旧数据迁移：Jenkins 阶段先改为 URL 请求阶段、再统一改为 HTTP 阶段（kind:'jenkins'/'url'→'http'，jenkins.job→url.url）；
@@ -3514,6 +3516,7 @@ function finish(result){
   renderHistory(); renderStats();
   persistState();
   archiveRun(result);
+  promCollectRun(curRun).catch(e=>console.warn('[prom] 自动收集异常（不影响运行结果）:', e));   // 勾选收集普罗数据的流水线运行结束自动收集
   renderDetail();   // running 已置 false：失败阶段补出「从本阶段重试」按钮
   drainQueue();
   renderQueue();
@@ -3679,9 +3682,9 @@ function archiveRun(result){
    （Unix 秒，collect_vllm_metrics.py 的 --start/--end 默认取此）、PROMETHEUS_URL、
    MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入，按本次运行解析）；
    时间经 execStreaming 流式回显到对话框日志区（接口不可用时降级一次性 exec）。 */
-function promSnapshotForRun(rc){   // 把本次运行勾选的 model_name/xds_namespace 占位按当前运行上下文解析为实际值，随历史记录保存
+function promSnapshotForRun(rc){   // 把本次运行勾选的 model_name/xds_namespace 占位按当前运行上下文解析为实际值，随历史记录保存；start/end 为编辑器设的固定时段（原样带过，运行时收集按此或自动取运行起止）
   if(!rc || !rc.prom || !rc.prom.enabled) return null;
-  return { enabled:true, modelName:substRunVars(rc.prom.modelName||'', rc).trim(), xdsNamespace:substRunVars(rc.prom.xdsNamespace||'', rc).trim() };
+  return { enabled:true, modelName:substRunVars(rc.prom.modelName||'', rc).trim(), xdsNamespace:substRunVars(rc.prom.xdsNamespace||'', rc).trim(), startTime:rc.prom.startTime||'', endTime:rc.prom.endTime||'' };
 }
 function parseDurSec(s){   // 解析 fmtDur 输出（如 2m30s / 45s）为秒，用于旧记录无 startTs 时回推起点
   s=String(s||'').trim(); if(!s) return 0;
@@ -3700,18 +3703,74 @@ function dtLocalToMs(s){   // datetime-local 值 → 毫秒（无时区按本地
 }
 let pmcCtxCurrent=null;   // 当前对话框对应的运行上下文（运行中 / 历史选中行），供「还原」与「收集」复用
 let pmcRunning=false, pmcAbort=null;
-function pmcContext(){   // 取收集目标运行上下文：运行中取 curRun；否则取历史选中行（旧记录无 startTs 时用 ts-dur 回推）
+function pmcContext(){   // 取收集目标运行上下文：运行中取 curRun；否则取历史选中行（旧记录无 startTs 时用 ts-dur 回推）。起止时间先取运行起止，编辑器设了固定时段则覆盖（留空=自动）
+  let startMs=0, endMs=0, ps=null, archive='', label='';
   if(running && curRun){
-    return { label:'运行中 · '+esc(curRun.pipelineName||'')+' '+esc(curRun.env||'')+' · 执行人 '+esc(curRun.by||''),
-      startMs:curRun.startTs, endMs:Date.now(), prom:promSnapshotForRun(curRun), archive:curRun.archive||'' };
-  }
-  if(selHistoryIdx>=0 && history[selHistoryIdx]){
+    startMs=curRun.startTs; endMs=Date.now(); ps=promSnapshotForRun(curRun); archive=curRun.archive||'';
+    label='运行中 · '+esc(curRun.pipelineName||'')+' '+esc(curRun.env||'')+' · 执行人 '+esc(curRun.by||'');
+  }else if(selHistoryIdx>=0 && history[selHistoryIdx]){
     const rec=history[selHistoryIdx];
-    const startMs=rec.startTs || (rec.ts ? rec.ts-parseDurSec(rec.dur)*1000 : 0);   // 旧记录无 startTs：用 ts-dur 回推
-    return { label:'#'+rec.no+' '+esc(rec.pipeline||'')+' '+esc(rec.env||'')+' · 执行人 '+esc(rec.by||'')+' · '+labelOf(rec.status),
-      startMs, endMs:rec.ts||0, prom:rec.prom||null, archive:rec.archive||'' };
+    startMs=rec.startTs || (rec.ts ? rec.ts-parseDurSec(rec.dur)*1000 : 0);   // 旧记录无 startTs：用 ts-dur 回推
+    endMs=rec.ts||0; ps=rec.prom||null; archive=rec.archive||'';
+    label='#'+rec.no+' '+esc(rec.pipeline||'')+' '+esc(rec.env||'')+' · 执行人 '+esc(rec.by||'')+' · '+labelOf(rec.status);
+  }else return null;
+  if(ps && ps.enabled){   // 编辑器设了固定时段则覆盖运行起止（默认留空=自动取运行起止）
+    const cs=ps.startTime ? dtLocalToMs(ps.startTime) : 0;
+    const ce=ps.endTime ? dtLocalToMs(ps.endTime) : 0;
+    if(cs) startMs=cs;
+    if(ce) endMs=ce;
   }
-  return null;
+  return { label, startMs, endMs, prom:ps, archive };
+}
+function buildPromCollectEnv(ctx, startMs, endMs){   // 收集普罗数据注入脚本的环境变量：时间段（ISO + Unix 秒）+ 数据源 + 模型/命名空间 + 归档目录
+  const env={
+    METRICS_ACTION:'collect',
+    PROM_START:new Date(startMs).toISOString(),
+    PROM_END:new Date(endMs).toISOString(),
+    VLLM_METRICS_START:String(Math.floor(startMs/1000)),
+    VLLM_METRICS_END:String(Math.floor(endMs/1000)),
+    PROMETHEUS_URL:(prom.url||'').trim(),
+  };
+  /* collect_vllm_metrics.py 的 --model-name 取 ARCH_NAME、--namespace 取 NAMESPACE；MODEL_NAME / XDS_NAMESPACE 为兼容其他脚本的同值副本 */
+  if(ctx.prom && ctx.prom.enabled){
+    if(ctx.prom.modelName){ env.ARCH_NAME=ctx.prom.modelName; env.MODEL_NAME=ctx.prom.modelName; }
+    if(ctx.prom.xdsNamespace){ env.NAMESPACE=ctx.prom.xdsNamespace; env.XDS_NAMESPACE=ctx.prom.xdsNamespace; }
+  }
+  if(ctx.archive) env.ARCHIVE_FOLDER=ctx.archive;
+  return env;
+}
+/* 运行结束自动收集普罗数据：勾选「收集普罗数据」且设置页配了收集脚本的流水线，最后一个任务结束后
+   自动按编辑器设的时段（留空=本次运行起止）调用收集脚本；输出写入归档目录 prom-collect-<tag>.log，
+   失败仅 console.warn（不影响运行结果，与归档脚本同语义）。经 runCtx=rc 传入已结束运行快照。 */
+async function promCollectRun(rc){
+  if(!rc || !rc.prom || !rc.prom.enabled) return;
+  const scName=(prom.collectScript||'').trim();
+  if(!scName){ console.warn('[prom] 未配置收集脚本，跳过自动收集（可在「设置 → 普罗数据服务配置 → 收集脚本」配置）'); return; }
+  const sc=scriptByName(scName);
+  if(!sc || !sc.path){ console.warn('[prom] 自动收集：脚本「'+scName+'」未在 scripts 目录找到，跳过'); return; }
+  const ps=promSnapshotForRun(rc);
+  let startMs=rc.startTs, endMs=Date.now();   // 默认=本次运行起止
+  if(ps && ps.enabled){
+    const cs=ps.startTime ? dtLocalToMs(ps.startTime) : 0;
+    const ce=ps.endTime ? dtLocalToMs(ps.endTime) : 0;
+    if(cs) startMs=cs;
+    if(ce) endMs=ce;
+  }
+  if(!startMs || !endMs || startMs>=endMs){ console.warn('[prom] 自动收集：起止时间无效（start='+startMs+' end='+endMs+'），跳过'); return; }
+  const env=buildPromCollectEnv({prom:ps, archive:rc.archive||''}, startMs, endMs);
+  try{
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path,args:[],env,cwd:scriptsDir,timeoutMs:0})});
+    const j=await r.json();
+    const code=(j && j.code!==undefined) ? j.code : 1;
+    if(j && j.error) console.warn('[prom] 自动收集失败：'+j.error+'（不影响运行结果）');
+    else if(code!==0) console.warn('[prom] 自动收集脚本退出码 '+code+'（不影响运行结果）');
+    if(rc.archive){
+      let text='$ '+sc.name+'  PROM_START='+env.PROM_START+'  PROM_END='+env.PROM_END+'\n'+((j&&j.stdout)||'');
+      if(j && j.stderr) text+='\n✗ '+j.stderr;
+      text+='\n[exit '+code+']';
+      apiWrite(rc.archive+'/prom-collect-'+(rc.tag||'run')+'.log', text).catch(e=>console.warn('[prom] 自动收集日志写入失败（不影响运行结果）:', e));
+    }
+  }catch(e){ console.warn('[prom] 自动收集执行失败（不影响运行结果）:', e); }
 }
 function pmcSay(text, cls){   // 追加文本到收集对话框日志区（cls: ''/ok/warn/err）
   const log=$('pmcLog'); if(!log) return;
@@ -3757,22 +3816,7 @@ async function pmcCollect(){
   const startMs=dtLocalToMs($('pmcStart').value), endMs=dtLocalToMs($('pmcEnd').value);
   if(!startMs || !endMs){ pmcSay('✗ 起止时间不完整：请填写开始时间与结束时间。\n','err'); return; }
   if(startMs>=endMs){ pmcSay('✗ 时间参数错误：开始时间必须早于结束时间。\n','err'); return; }
-  /* 环境变量：时间段（ISO + Unix 秒）+ 数据源地址 + 模型/命名空间（勾选收集普罗数据的流水线才注入）。
-     collect_vllm_metrics.py 的 --model-name 取 ARCH_NAME、--namespace 取 NAMESPACE；
-     MODEL_NAME / XDS_NAMESPACE 为兼容其他脚本的同值副本。 */
-  const env={
-    METRICS_ACTION:'collect',
-    PROM_START:new Date(startMs).toISOString(),
-    PROM_END:new Date(endMs).toISOString(),
-    VLLM_METRICS_START:String(Math.floor(startMs/1000)),
-    VLLM_METRICS_END:String(Math.floor(endMs/1000)),
-    PROMETHEUS_URL:(prom.url||'').trim(),
-  };
-  if(ctx.prom && ctx.prom.enabled){
-    if(ctx.prom.modelName){ env.ARCH_NAME=ctx.prom.modelName; env.MODEL_NAME=ctx.prom.modelName; }
-    if(ctx.prom.xdsNamespace){ env.NAMESPACE=ctx.prom.xdsNamespace; env.XDS_NAMESPACE=ctx.prom.xdsNamespace; }
-  }
-  if(ctx.archive) env.ARCHIVE_FOLDER=ctx.archive;
+  const env=buildPromCollectEnv(ctx, startMs, endMs);   // 时间段 + 数据源 + 模型/命名空间 + 归档目录（见 buildPromCollectEnv）
   pmcRunning=true; pmcAbort=new AbortController();
   const btn=$('pmcRun'); btn.textContent='采集中…'; btn.disabled=true;
   pmcSay('$ '+sc.name+'  PROM_START='+env.PROM_START+'  PROM_END='+env.PROM_END+'\n','');
@@ -4272,6 +4316,8 @@ function openPlForm(id, focusIdx){
   $('plPromEnable').checked = !!pp.enabled;
   $('plModelName').value = pp.modelName || '';
   $('plXdsNamespace').value = (pp.xdsNamespace!=null) ? pp.xdsNamespace : DEFAULT_PIPELINE_PROM.xdsNamespace;
+  $('plPromStart').value = pp.startTime || '';
+  $('plPromEnd').value = pp.endTime || '';
   loadScripts().then(async ()=>{
     renderStageEditor();
     /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
@@ -4330,7 +4376,7 @@ function savePlForm(){
     if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
   });
-  const prom={enabled:$('plPromEnable').checked, modelName:$('plModelName').value.trim(), xdsNamespace:$('plXdsNamespace').value.trim()};
+  const prom={enabled:$('plPromEnable').checked, modelName:$('plModelName').value.trim(), xdsNamespace:$('plXdsNamespace').value.trim(), startTime:$('plPromStart').value, endTime:$('plPromEnd').value};
   const editId=$('plForm').dataset.editId;
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.prom=prom; } }
   else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false, prom}); }
