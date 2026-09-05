@@ -2158,14 +2158,13 @@ function renderStageActionRow(i){
   }
   if(s.kind==='evaltokens'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='EvalTokens 任务';
-    /* 输入框 + 选择按钮 + 下拉面板置于同一 relative 容器：聚焦输入框自动拉取任务列表（可搜索），
+    /* 输入框 + 下拉面板置于同一 relative 容器：聚焦输入框自动拉取任务列表（可搜索），
        选中后回填 taskId/taskName 并自动识别任务输入参数；点容器外关闭面板 */
     const pickWrap=document.createElement('span'); pickWrap.style.cssText='position:relative;display:inline-flex;align-items:center;gap:4px;';
     const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表）'; inp.style.width='200px';
     inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要轮询等待的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌周期 GET /api/open/v1/tasks，匹配到该任务并等待其到终态（成功/失败）后推进，捕获任务字段为输出变量';
-    const pick=document.createElement('button'); pick.className='dshell-btn dshell-btnGhost mini'; pick.type='button'; pick.setAttribute('data-act','etPick'); pick.textContent='选择';
     const panel=document.createElement('div'); panel.setAttribute('data-etpick-panel','1'); panel.style.cssText='display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:280px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);';
-    pickWrap.appendChild(inp); pickWrap.appendChild(pick); pickWrap.appendChild(panel);
+    pickWrap.appendChild(inp); pickWrap.appendChild(panel);
     inp.addEventListener('focus', ()=>{ if(panel.style.display==='none') openEvaltokPicker(i); });
     inp.addEventListener('input', ()=>{ if(panel.style.display!=='none') renderEvaltokPickerPanel(i, inp.value); });
     const nm=document.createElement('span'); nm.className='dshell-muted'; nm.style.fontSize='11px'; nm.textContent=(s.evaltokens&&s.evaltokens.taskName)?('· '+s.evaltokens.taskName):'';
@@ -4433,7 +4432,6 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
-  else if(act==='etPick'){ const panel=btn.closest('[data-action]').querySelector('[data-etpick-panel]'); if(panel && panel.style.display!=='none') panel.style.display='none'; else openEvaltokPicker(i); }
 });
 $('plStageList').addEventListener('change', (e)=>{
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
@@ -4551,7 +4549,7 @@ document.addEventListener('click', (e)=>{ const p=$('branchPanel'); const m=$('b
 $('deployStrategyName').addEventListener('focus', ()=>{ renderStrategyPanel(true); loadDeployStrategies().then(()=>renderStrategyPanel(true)); });
 $('deployStrategyName').addEventListener('input', ()=>{ if($('strategyPanel').style.display==='none'){ loadDeployStrategies().then(()=>renderStrategyPanel()); } else { renderStrategyPanel(); } });
 document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$('strategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
-/* evalTokens 任务选择面板（阶段编辑器内动态生成）：点容器外关闭（输入框 + 选择按钮 + 面板在同一 relative 容器内） */
+/* evalTokens 任务选择面板（阶段编辑器内动态生成）：点容器外关闭（输入框 + 面板在同一 relative 容器内） */
 document.addEventListener('click', (e)=>{ document.querySelectorAll('[data-etpick-panel]').forEach(p=>{ const wrap=p.parentElement; if(p.style.display!=='none' && wrap && !wrap.contains(e.target)) p.style.display='none'; }); });
 /* 定时页控制区：与主控同一套交互（环境多选 / 代码仓切换 / 分支Tag / 部署策略面板，点外关闭）；
    「先清理环境」与主控同一开关——改定时页勾选即写回主控并持久化（saveCleanup 内反向同步显示） */
