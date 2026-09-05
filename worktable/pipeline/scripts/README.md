@@ -84,3 +84,18 @@ XDS 流水线按以下顺序绑定脚本：
 运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、URL 请求阶段、「先清理环境」的清理脚本；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
 
 运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：新会话工作目录取该次运行的归档目录，提示词只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。
+
+## 收集普罗数据
+
+「设置 → 普罗数据服务配置 → 收集脚本」可配置一个按时间段采集普罗（Prometheus）指标的脚本（在 scripts 目录按名选用，留空=不启用）。运行历史选中某次运行（或运行中的流水线）后，点标题行的「📊 收集普罗数据」弹出对话框：开始/结束时间默认取该次运行的开始时间与最后一个任务结束后的时间（运行中取当前时刻），可在对话框里覆盖后再点「收集」执行。脚本经流式执行接口运行，输出实时回显到对话框日志区（接口不可用时降级为一次性执行）。
+
+除常规的 `PIPELINE_NAME` 外，「收集」时还会注入以下环境变量（同名时脚本自身参数优先）：
+
+- `PROM_START` / `PROM_END` — 采集区间起止时间（ISO 8601 带 `Z`，如 `2026-09-05T10:30:00Z`）
+- `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（供 `collect_vllm_metrics.py` 的 `--start`/`--end` 默认取值）
+- `METRICS_ACTION` — 固定 `collect`（`collect_vllm_metrics.py` 默认 action 为 `start` 即后台采集；前台按段采集需 `collect`）
+- `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
+- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 仅当选中行对应流水线勾选了「收集普罗数据」才注入（`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
+- `ARCHIVE_FOLDER` — 选中运行的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
+
+示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 取 `VLLM_METRICS_START`/`VLLM_METRICS_END`、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集。

@@ -232,7 +232,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间">📊 收集普罗数据</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
@@ -548,6 +548,12 @@
         </label>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收集脚本
+          <input id="pmCollectScript" class="dshell-input" list="scriptsList" placeholder="选择脚本（如 collect_vllm_metrics.py，留空=不启用）" style="width:280px;" title="收集普罗数据的脚本（在 scripts 目录按名选用，留空=不启用）。「收集普罗数据」时按运行起止时间调用并注入：PROM_START/PROM_END（ISO）、VLLM_METRICS_START/VLLM_METRICS_END（Unix 秒）、PROMETHEUS_URL、MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入）等环境变量；起止时间可在收集对话框覆盖" />
+        </label>
+        <span class="dshell-muted" style="font-size:11px;">运行历史选中行 · 收集时按起止时间段采集</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
         <span class="dshell-muted" style="font-size:11px;">连接模式</span>
         <div class="jk-mode" role="group" style="display:inline-flex; border:1px solid var(--dsw-alias-border-l2); border-radius:8px; overflow:hidden;">
           <button id="pmModeLocal" type="button" class="dshell-btn dshell-btnGhost mini jk-modeBtn" data-mode="local">本地浏览器连接</button>
@@ -604,6 +610,28 @@
           <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
         </div>
       </div>
+    </div>
+  </div>
+  <!-- 收集普罗数据对话框：按运行起止时间调用设置页配置的收集脚本，起止时间可在对话框覆盖 -->
+  <div id="pmcDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:220; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%; max-width:760px; max-height:90vh; display:flex; flex-direction:column;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0">收集普罗数据</h2>
+        <button id="pmcClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <div class="dshell-kv" id="pmcMeta" style="margin-bottom:8px;"></div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">开始时间
+          <input id="pmcStart" type="datetime-local" step="1" class="dshell-input" style="width:200px;" title="采集区间起点，默认取流水线开始时间" />
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">结束时间
+          <input id="pmcEnd" type="datetime-local" step="1" class="dshell-input" style="width:200px;" title="采集区间终点，默认取最后一个任务结束后的时间（运行中取当前时刻）" />
+        </label>
+        <button id="pmcResetTimes" class="dshell-btn dshell-btnGhost mini" type="button" title="恢复为本次运行的起止时间">↺ 还原</button>
+        <span style="flex:1"></span>
+        <button id="pmcRun" class="dshell-btn mini">▶ 收集</button>
+      </div>
+      <div class="logbox" id="pmcLog" style="flex:1; min-height:160px; max-height:46vh; margin:0;">配置收集脚本后点「收集」执行（输出实时回显）。</div>
     </div>
   </div>
 </div>
@@ -1637,7 +1665,7 @@ async function listEvaltokTasks(){
 /* ---------- 普罗数据（Prometheus）服务配置（设置页内卡片）：连接模式 + 测试连接 ----------
    本地浏览器连接：浏览器直接请求 Prometheus API（需 Prometheus 允许跨域 CORS 或同源）；
    远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连 Prometheus（仅回环/内网）。 */
-const DEFAULT_PROM = { url:'http://192.168.10.6:25889', linkUrl:'', mode:'local' };
+const DEFAULT_PROM = { url:'http://192.168.10.6:25889', linkUrl:'', mode:'local', collectScript:'' };
 function loadProm(){
   try{ const a=JSON.parse(localStorage.getItem('pip-prom')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_PROM, a); }catch(e){}
   return Object.assign({}, DEFAULT_PROM);
@@ -1647,6 +1675,7 @@ function saveProm(){ try{ localStorage.setItem('pip-prom', JSON.stringify(prom))
 function applyPromForm(){
   $('pmUrl').value = prom.url || DEFAULT_PROM.url;
   $('pmLinkUrl').value = prom.linkUrl || '';
+  $('pmCollectScript').value = prom.collectScript || '';
   setPromMode(prom.mode);
 }
 function setPromMode(m){
@@ -1659,6 +1688,7 @@ function collectPromForm(){
     url: ($('pmUrl').value||'').trim() || DEFAULT_PROM.url,
     linkUrl: ($('pmLinkUrl').value||'').trim(),
     mode: prom.mode,
+    collectScript: ($('pmCollectScript').value||'').trim(),
   };
 }
 /* 测试连接：本地模式浏览器直连 Prometheus 的 /api/v1/status/buildinfo（跨域无 CORS 会抛 TypeError，提示切远程）；远程模式经 /api/worktable/proxy 代连 */
@@ -3475,8 +3505,9 @@ function finish(result){
   buildNo++;
   const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
     status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
-    dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), by:curRun.by||'anonymous',
+    dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:curRun.startTs, by:curRun.by||'anonymous',
     pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
+    prom: promSnapshotForRun(curRun),
     logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
     tag:curRun.tag, archive:archiveFolderFor(curRun)};
   history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
@@ -3640,6 +3671,136 @@ function archiveRun(result){
       }else{ console.warn('[archive] 归档脚本未找到，跳过：', scName); }
     }
   })().catch(e=>console.warn('[archive] 归档失败（不影响运行结果）:', e));
+}
+/* ---------- 收集普罗数据：按运行起止时间调用设置页配置的收集脚本（时间段指标采集） ----------
+   脚本在「设置 → 普罗数据服务配置 → 收集脚本」按名选用（scripts 目录，留空=不启用）。
+   「运行历史」标题行「收集普罗数据」作用于选中行（或运行中的流水线）：弹出对话框，起止时间
+   默认取本次运行的开始时间与最后一个任务结束后的时间（运行中取当前时刻），可在对话框覆盖。
+   收集时注入环境变量：PROM_START/PROM_END（ISO 带 Z）、VLLM_METRICS_START/VLLM_METRICS_END
+   （Unix 秒，collect_vllm_metrics.py 的 --start/--end 默认取此）、PROMETHEUS_URL、
+   MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入，按本次运行解析）；
+   时间经 execStreaming 流式回显到对话框日志区（接口不可用时降级一次性 exec）。 */
+function promSnapshotForRun(rc){   // 把本次运行勾选的 model_name/xds_namespace 占位按当前运行上下文解析为实际值，随历史记录保存
+  if(!rc || !rc.prom || !rc.prom.enabled) return null;
+  return { enabled:true, modelName:substRunVars(rc.prom.modelName||'', rc).trim(), xdsNamespace:substRunVars(rc.prom.xdsNamespace||'', rc).trim() };
+}
+function parseDurSec(s){   // 解析 fmtDur 输出（如 2m30s / 45s）为秒，用于旧记录无 startTs 时回推起点
+  s=String(s||'').trim(); if(!s) return 0;
+  let m=/^(\d+)m(\d+)s$/.exec(s); if(m) return parseInt(m[1],10)*60+parseInt(m[2],10);
+  if((m=/^(\d+)m$/.exec(s))) return parseInt(m[1],10)*60;
+  if((m=/^(\d+)s$/.exec(s))) return parseInt(m[1],10);
+  return 0;
+}
+function msToDTLocal(ms){   // 毫秒 → datetime-local 本地时间值（YYYY-MM-DDTHH:MM:SS）
+  if(!ms) return '';
+  const d=new Date(ms); const p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
+function dtLocalToMs(s){   // datetime-local 值 → 毫秒（无时区按本地时间解析，非法返回 0）
+  if(!s) return 0; const t=new Date(s).getTime(); return isNaN(t)?0:t;
+}
+let pmcCtxCurrent=null;   // 当前对话框对应的运行上下文（运行中 / 历史选中行），供「还原」与「收集」复用
+let pmcRunning=false, pmcAbort=null;
+function pmcContext(){   // 取收集目标运行上下文：运行中取 curRun；否则取历史选中行（旧记录无 startTs 时用 ts-dur 回推）
+  if(running && curRun){
+    return { label:'运行中 · '+esc(curRun.pipelineName||'')+' '+esc(curRun.env||'')+' · 执行人 '+esc(curRun.by||''),
+      startMs:curRun.startTs, endMs:Date.now(), prom:promSnapshotForRun(curRun), archive:curRun.archive||'' };
+  }
+  if(selHistoryIdx>=0 && history[selHistoryIdx]){
+    const rec=history[selHistoryIdx];
+    const startMs=rec.startTs || (rec.ts ? rec.ts-parseDurSec(rec.dur)*1000 : 0);   // 旧记录无 startTs：用 ts-dur 回推
+    return { label:'#'+rec.no+' '+esc(rec.pipeline||'')+' '+esc(rec.env||'')+' · 执行人 '+esc(rec.by||'')+' · '+labelOf(rec.status),
+      startMs, endMs:rec.ts||0, prom:rec.prom||null, archive:rec.archive||'' };
+  }
+  return null;
+}
+function pmcSay(text, cls){   // 追加文本到收集对话框日志区（cls: ''/ok/warn/err）
+  const log=$('pmcLog'); if(!log) return;
+  const span=document.createElement('span');
+  if(cls) span.className=cls;
+  span.textContent=text;
+  log.appendChild(span);
+  log.scrollTop=log.scrollHeight;
+}
+function pmcShow(){
+  const ctx=pmcContext();
+  const dlg=$('pmcDialog'), meta=$('pmcMeta'), log=$('pmcLog');
+  log.textContent='配置收集脚本后点「收集」执行（输出实时回显）。'; log.style.color='';
+  pmcCtxCurrent=ctx;
+  if(!ctx){
+    meta.textContent='⚠ 请先点击选择一条运行历史，或运行一条流水线后再收集。'; meta.style.color='var(--log-warn)';
+    $('pmcStart').value=''; $('pmcEnd').value=''; $('pmcRun').disabled=true; $('pmcResetTimes').disabled=true;
+  }else{
+    const ps=ctx.prom && ctx.prom.enabled;
+    meta.textContent=ctx.label + (ps ? ' · 收集普罗数据：model_name='+(ctx.prom.modelName||'(空)')+(ctx.prom.xdsNamespace?(' · xds_namespace='+ctx.prom.xdsNamespace):'') : ' · 未勾选收集普罗数据（不注入 MODEL_NAME/NAMESPACE）');
+    meta.style.color='';
+    $('pmcStart').value=msToDTLocal(ctx.startMs);
+    $('pmcEnd').value=msToDTLocal(ctx.endMs);
+    $('pmcRun').disabled=false; $('pmcResetTimes').disabled=false;
+  }
+  $('pmcRun').textContent='▶ 收集';
+  dlg.style.display='flex';
+}
+function pmcResetTimes(){   // 「还原」：恢复为本次运行的起止时间
+  if(!pmcCtxCurrent) return;
+  $('pmcStart').value=msToDTLocal(pmcCtxCurrent.startMs);
+  $('pmcEnd').value=msToDTLocal(pmcCtxCurrent.endMs);
+}
+async function pmcCollect(){
+  const ctx=pmcCtxCurrent;
+  if(!ctx || pmcRunning) return;
+  const scName=(prom.collectScript||'').trim();
+  const log=$('pmcLog');
+  log.textContent='';
+  if(!scName){ pmcSay('✗ 未配置收集脚本：请在「设置 → 普罗数据服务配置 → 收集脚本」选用 scripts 目录中的脚本（如 collect_vllm_metrics.py）。\n','err'); return; }
+  const sc=scriptByName(scName);
+  if(!sc || !sc.path){ pmcSay('✗ 收集脚本「'+scName+'」未在 scripts 目录找到（已配置目录：'+(scriptsDir||'（未配置）')+'）。\n','err'); return; }
+  const startMs=dtLocalToMs($('pmcStart').value), endMs=dtLocalToMs($('pmcEnd').value);
+  if(!startMs || !endMs){ pmcSay('✗ 起止时间不完整：请填写开始时间与结束时间。\n','err'); return; }
+  if(startMs>=endMs){ pmcSay('✗ 时间参数错误：开始时间必须早于结束时间。\n','err'); return; }
+  /* 环境变量：时间段（ISO + Unix 秒）+ 数据源地址 + 模型/命名空间（勾选收集普罗数据的流水线才注入）。
+     collect_vllm_metrics.py 的 --model-name 取 ARCH_NAME、--namespace 取 NAMESPACE；
+     MODEL_NAME / XDS_NAMESPACE 为兼容其他脚本的同值副本。 */
+  const env={
+    METRICS_ACTION:'collect',
+    PROM_START:new Date(startMs).toISOString(),
+    PROM_END:new Date(endMs).toISOString(),
+    VLLM_METRICS_START:String(Math.floor(startMs/1000)),
+    VLLM_METRICS_END:String(Math.floor(endMs/1000)),
+    PROMETHEUS_URL:(prom.url||'').trim(),
+  };
+  if(ctx.prom && ctx.prom.enabled){
+    if(ctx.prom.modelName){ env.ARCH_NAME=ctx.prom.modelName; env.MODEL_NAME=ctx.prom.modelName; }
+    if(ctx.prom.xdsNamespace){ env.NAMESPACE=ctx.prom.xdsNamespace; env.XDS_NAMESPACE=ctx.prom.xdsNamespace; }
+  }
+  if(ctx.archive) env.ARCHIVE_FOLDER=ctx.archive;
+  pmcRunning=true; pmcAbort=new AbortController();
+  const btn=$('pmcRun'); btn.textContent='采集中…'; btn.disabled=true;
+  pmcSay('$ '+sc.name+'  PROM_START='+env.PROM_START+'  PROM_END='+env.PROM_END+'\n','');
+  const onStream=(m)=>{ pmcSay((m.type==='err'?'✗ ':'')+m.text, m.type==='err'?'err':''); };
+  let res=null;
+  try{
+    res=await execStreaming(sc.path, [], env, scriptsDir, 0, onStream, pmcAbort.signal);
+    if(!res){   // 旧插件构建无 exec-stream 路由：降级一次性 exec，回放已收到的输出
+      try{
+        const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path,args:[],env,cwd:scriptsDir,timeoutMs:0}),signal:pmcAbort.signal});
+        const j=await r.json();
+        if(j && j.error) res={code:1, stdout:'', stderr:String(j.error)};
+        else res={code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||''};
+        if(res.stdout) onStream({type:'out', text:res.stdout});
+        if(res.stderr) onStream({type:'err', text:res.stderr});
+      }catch(e){ if(e && e.name==='AbortError') return; res={code:1, stdout:'', stderr:String(e.message||e)}; onStream({type:'err', text:res.stderr}); }
+    }
+  }catch(e){
+    if(e && e.name==='AbortError') return;
+    res={code:1, stdout:'', stderr:String(e.message||e)}; onStream({type:'err', text:res.stderr});
+  }finally{
+    pmcRunning=false; pmcAbort=null;
+    btn.textContent='▶ 收集'; btn.disabled=false;
+  }
+  if(res && res.code!==null && res.code!==undefined){
+    pmcSay('\n[exit '+(res.code)+']'+(res.code===0?' ✓ 采集完成':' ✗ 采集失败'), res.code===0?'ok':'err');
+  }
 }
 /* ---------- AI 分析（历史标题行按钮 → 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
 const DEFAULT_PROMPTS = {
@@ -4020,6 +4181,11 @@ $('histRerun').addEventListener('click', ()=>{
   if(!rec){ alert('请先点击选择一条运行历史。'); return; }
   rerunFromHistory(rec);
 });
+/* 收集普罗数据：作用于运行中流水线或历史选中行（对话框内可改起止时间） */
+$('histPromCollect').addEventListener('click', pmcShow);
+$('pmcRun').addEventListener('click', pmcCollect);
+$('pmcResetTimes').addEventListener('click', pmcResetTimes);
+$('pmcClose').addEventListener('click', ()=>{ if(pmcRunning && pmcAbort){ try{ pmcAbort.abort(); }catch(e){} } $('pmcDialog').style.display='none'; });
 /* 历史分页 */
 $('histPageSize').value=String(histPageSize);
 $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
