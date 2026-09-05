@@ -1216,13 +1216,20 @@
     "# -u root 以 root 权限启动容器：编译常需写系统目录/安装依赖，镜像默认非 root 用户时会直接失败",
     "# --network host 与宿主共享网络栈：便于访问内网服务/代理，无需端口映射",
     '  echo "→ 在容器 ${BUILD_CONTAINER} 内执行仓内脚本 ${BUILD_SCRIPT} …"',
-    '  echo "+ docker run --rm --network host -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${dk_env[*]} ${BUILD_CONTAINER} ${BUILD_SCRIPT}"',
-    '  docker run --rm --network host -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${dk_env[@]}" "${BUILD_CONTAINER}" "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
+    '  echo "+ docker run --rm -t --network host -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${dk_env[*]} ${BUILD_CONTAINER} ${BUILD_SCRIPT}"',
+    '  docker run --rm -t --network host -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${dk_env[@]}" "${BUILD_CONTAINER}" "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
     '  echo "✓ 构建容器执行完成"',
     "else",
     '  echo "→ 执行仓内构建脚本 ${BUILD_SCRIPT} …（本机执行；如需容器请在「设置」页填写构建容器并保存）"',
-    '  echo "+ bash ${BUILD_SCRIPT}"',
-    '  bash "$BUILD_SCRIPT" || fail "构建脚本执行失败（退出码 $?）"',
+    "# 实时回显：程序（python/node/gcc/make…）检测到非 TTY 时块缓冲 stdout，会堆积成簇或末尾才出；",
+    "# 用 script(1) 分配伪终端令子进程行缓冲，输出逐行实时回传（CRLF 的 \\r 由前端 execStreamLines 剥离）；script 不在则回退直跑（输出可能成簇）。",
+    '  if command -v script >/dev/null 2>&1; then',
+    '    echo "+ script -qfec bash ${BUILD_SCRIPT} /dev/null（PTY 行缓冲，实时回显）"',
+    '    script -qfec "bash \\"$BUILD_SCRIPT\\"" /dev/null || fail "构建脚本执行失败（退出码 $?）"',
+    "  else",
+    '    echo "+ bash ${BUILD_SCRIPT}（未装 script，输出可能成簇）"',
+    '    bash "$BUILD_SCRIPT" || fail "构建脚本执行失败（退出码 $?）"',
+    "  fi",
     "fi",
     'if [ -n "${BUILD_ARTIFACTS:-}" ]; then',
     '  [ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR（产物暂存目录）"',
@@ -1360,7 +1367,7 @@
   function execStreamLines(path, env, timeoutMs) {
     var lineBuf = "", lastCls = "";   // 跨块半行缓冲：仅在收到完整 \n 时回显一行，末尾半行兜底回显
     var emitText = function (text, cls) {
-      lastCls = cls || ""; lineBuf += text;
+      lastCls = cls || ""; lineBuf += text.replace(/\r/g, "");   // PTY(script/docker -t)回传 CRLF，剥离 \r 后按行切
       for (;;) { var nl = lineBuf.indexOf("\n"); if (nl < 0) break; relLog(lineBuf.slice(0, nl), lastCls); lineBuf = lineBuf.slice(nl + 1); }
     };
     return execStreaming(path, [], env, undefined, timeoutMs, function (m) {
