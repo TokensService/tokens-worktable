@@ -4611,7 +4611,9 @@ $('schedStrategy').addEventListener('input', ()=>{ if($('schedStrategyPanel').st
 document.addEventListener('click', (e)=>{ const p=$('schedStrategyPanel'); const m=$('schedStrategyPick'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 $('schedCleanupEnv').addEventListener('change', (e)=>{ $('cleanupEnv').checked=e.target.checked; saveCleanup(); });
 
-/* 初始化 */
+/* 初始化：renderAll 只做纯 DOM 渲染；全环境 GPU 查询（每个环境一次慢 SSH+nvidia-smi，ConnectTimeout 最坏 8s）
+   剥离到首屏之后且只触发一次——原先 renderAll 在首屏同步调用 + loadServerState 成功后重渲染再调用，会发起两轮
+   全环境 GPU 查询，浏览器同源 6 路并发限制下排队，首屏长时间卡在「查询中…」。改为首屏后延迟单次刷新 */
 function renderAll(){
   applyTheme();
   resetNodes();
@@ -4623,7 +4625,6 @@ function renderAll(){
   renderEnvs();
   renderRepoOptions();
   renderRepos();
-  refreshGpuAll();
   renderQueue();
   renderDetail();
   fillCfgForm();
@@ -4632,9 +4633,20 @@ function renderAll(){
   applyPromForm();
 }
 renderAll();
+/* GPU 查询幂等延迟触发：让到首屏空闲帧再发，且全页生命周期内初始化只触发一次；
+   环境多选面板 / 各环境 ⟳ / 「全部刷新」按钮仍可按需手动触发（直接调 refreshGpuAll，不经此守卫） */
+let _gpuInited=false;
+function scheduleGpuRefresh(){
+  if(_gpuInited) return;
+  _gpuInited=true;
+  const kick=()=>refreshGpuAll();
+  if('requestIdleCallback' in window) requestIdleCallback(kick,{timeout:1500});
+  else setTimeout(kick,200);
+}
 /* 从服务端拉取配置与历史（历史条目只含元数据 + 日志文件路径，全量日志在归档文件按需读取）；
-   服务端有数据则覆盖本地并重渲染；拉取失败不打开写入门（stateLoaded 保持 false，防覆盖服务端数据） */
-loadServerState();
+   服务端有数据则覆盖本地并重渲染；拉取失败不打开写门（stateLoaded 保持 false，防覆盖服务端数据）。
+   状态就绪（成功覆盖或失败保留本地）后用最终环境列表延迟刷新一次 GPU，不再阻塞首屏 */
+loadServerState().finally(scheduleGpuRefresh);
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
 </script>
