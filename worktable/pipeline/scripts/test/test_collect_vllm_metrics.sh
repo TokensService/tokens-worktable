@@ -116,7 +116,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
             "VLLM_METRICS_START": "2024-01-01T00:00:00Z",
             "VLLM_METRICS_STEP": "5s",
             "NAMESPACE": "xds-env",
-            "MODEL_NAME": "model-env",
+            "ARCH_NAME": "model-env",
             "VLLM_METRICS_JOB_REGEX": ".*vllmp.*",
             "VLLM_METRICS_METRICS": "vllm:mooncake_xfer_time_seconds_bucket",
             "VLLM_METRICS_OUTPUT_DIR": str(continuous_dir),
@@ -130,6 +130,24 @@ with tempfile.TemporaryDirectory() as temp_dir:
     continuous_summary = json.loads(snapshots[0].read_text())
     assert continuous_summary["namespace"] == "xds-env"
     assert continuous_summary["model_name"] == "model-env"
+
+    legacy_dir = Path(temp_dir) / "legacy-aliases"
+    legacy_env = env.copy()
+    legacy_env.pop("NAMESPACE", None)
+    legacy_env.pop("ARCH_NAME", None)
+    legacy_env.update(
+        {
+            "VLLM_METRICS_NAMESPACE": "legacy-namespace",
+            "VLLM_METRICS_MODEL_NAME": "legacy-model",
+            "VLLM_METRICS_OUTPUT_DIR": str(legacy_dir),
+            "VLLM_METRICS_MAX_ITERATIONS": "1",
+        }
+    )
+    legacy = subprocess.run([str(script)], text=True, capture_output=True, check=False, env=legacy_env)
+    assert legacy.returncode == 0, f"stdout={legacy.stdout}\nstderr={legacy.stderr}"
+    legacy_summary = json.loads(next((legacy_dir / "snapshots").glob("*/summary.json")).read_text())
+    assert legacy_summary["namespace"] is None
+    assert legacy_summary["model_name"] is None
 
     lifecycle_dir = Path(temp_dir) / "lifecycle"
     lifecycle_pid = lifecycle_dir / "collector.pid"
