@@ -746,7 +746,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取 */ scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
@@ -766,16 +766,15 @@ async function loadServerState(){
         const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
         pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl);
       }
-      if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
+      // 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds）仅存浏览器本地，不从服务端覆盖；见 collectConfig
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
-      if(Array.isArray(cfg.selectedEnvIds) && cfg.selectedEnvIds.length) selectedEnvIds=cfg.selectedEnvIds;
       if(Array.isArray(cfg.repositories) && cfg.repositories.length){
         // 代码仓访问令牌仅存浏览器本地：服务端回传的仓库不含 pass，按 id 回填本地已存令牌，避免刷新后丢失
         const prevPass={}; repositories.forEach(function(r){ if(r.pass) prevPass[r.id]=r.pass; });
         repositories=cfg.repositories.map(normalizeRepo);
         repositories.forEach(function(r){ if(prevPass[r.id]) r.pass=prevPass[r.id]; });
       }
-      if(typeof cfg.curRepoId==='string' && resolveRepo(cfg.curRepoId)) curRepoId=cfg.curRepoId;
+      // 当前代码仓 curRepoId 仅存浏览器本地，不从服务端覆盖（仓库定义仍从服务端加载，见上 repositories 块）；见 collectConfig
       if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
       if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
@@ -4594,6 +4593,14 @@ $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},D
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+/* 运行设置（分支 / 部署策略 / 执行人）仅存浏览器本地：刷新后从 localStorage 回填；
+   change 即时存，pagehide 兜底（分支面板点选为程序化赋值、不触发 change，靠 pagehide 持久化） */
+function saveRunSelLS(){ try{ localStorage.setItem('pip-branch',$('branchName').value); localStorage.setItem('pip-strategy',$('deployStrategyName').value); localStorage.setItem('pip-by',$('triggeredBy').value); }catch(e){} }
+(function(){ try{ const b=localStorage.getItem('pip-branch'); if(b!==null) $('branchName').value=b; const s=localStorage.getItem('pip-strategy'); if(s!==null) $('deployStrategyName').value=s; const y=localStorage.getItem('pip-by'); if(y!==null) $('triggeredBy').value=y; }catch(e){} })();
+$('branchName').addEventListener('change', saveRunSelLS);
+$('deployStrategyName').addEventListener('change', saveRunSelLS);
+$('triggeredBy').addEventListener('change', saveRunSelLS);
+window.addEventListener('pagehide', saveRunSelLS);
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
