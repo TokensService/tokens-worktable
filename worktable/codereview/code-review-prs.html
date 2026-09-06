@@ -1328,7 +1328,9 @@
     buildExtraEnvInput.value = state.buildExtraEnv;
     testResult.textContent = "";
   }
-  function saveSettings() {
+  // 静默保存：把设置页各项输入写入 state 与 localStorage（不弹 toast、不切视图、不刷新列表）。
+  // 供「测试连接」等需要确保设置已落盘的场景复用，避免读到滞后的 state（如改动未保存的 authMode）。
+  function persistSettings() {
     state.token = tokenInput.value.trim();
     state.org = (orgInput.value.trim() || DEFAULT_ORG);
     state.authMode = authModeSel.value;
@@ -1343,6 +1345,9 @@
     localStorage.setItem(lsKey("template"), state.template);
     localStorage.setItem(lsKey("buildcontainer"), state.buildContainer);
     localStorage.setItem(lsKey("buildenv"), state.buildExtraEnv);
+  }
+  function saveSettings() {
+    persistSettings();
     subOrg.textContent = state.org;
     renderStatus();
     toast("已保存设置");
@@ -1362,8 +1367,9 @@
   }
   function testConnection() {
     var tok = tokenInput.value.trim();
-    var org = (orgInput.value.trim() || DEFAULT_ORG);
     if (!tok) { toast("请先填写令牌", true); return; }
+    persistSettings(); // 先静默保存设置（令牌 / 组织 / 认证方式等），确保测试基于最新落盘配置
+    var org = state.org;
     testResult.innerHTML = '<span class="dshell-muted">测试中…</span>';
     var a = applyAuth(apiBase() + "/orgs/" + encodeURIComponent(org) + "/repos?per_page=1", state.authMode);
     fetch(a.url, { method: "GET", credentials: "omit", headers: a.headers })
