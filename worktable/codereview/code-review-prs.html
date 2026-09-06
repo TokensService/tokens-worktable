@@ -503,7 +503,9 @@
     loading: false,
     issuesLoading: false,
     lastErr: "",
+    lastErrObj: null,
     issuesLastErr: "",
+    issuesLastErrObj: null,
     repoDone: 0,
     issueRepoDone: 0
   };
@@ -529,6 +531,78 @@
   function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"']/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
   }); }
+
+  /* —— API 错误诊断：区分 401/403/404，识别「项目访问令牌」，掩盖明文令牌 ——
+     GitCode 的 403 形如："403 Forbidden - Unauthorized READ by groupId: 13332940,
+     user: p_repoRobot，token:xAx9r6UZxsFpktRzxEoVgbVN" —— 其中 user 以 p_ 开头是
+     「项目访问令牌」自动生成的 bot 账户，只对创建它的那一个仓库有权限，无法访问组织级
+     接口 /orgs/{org}/repos；且 error_message 内带明文令牌，回显前必须掩盖。 */
+  function apiError(status, message) {
+    var e = new Error(maskTokenInText(message || ("HTTP " + status)));
+    e.status = status || 0; e.apiMessage = e.message; // 已脱敏
+    return e;
+  }
+  function parseBadResponse(r, text) {
+    var m = "";
+    try { var j = JSON.parse(text); m = j.error_message || j.message || ""; } catch (e) {}
+    return apiError(r.status, m || ("HTTP " + r.status));
+  }
+  // 掩盖错误消息里出现的明文令牌（先按本机令牌原值替换，再兜底匹配 token:xxx 形态）
+  function maskTokenInText(s) {
+    s = String(s == null ? "" : s);
+    var t = state.token && state.token.trim();
+    if (t) s = s.split(t).join("***");
+    return s.replace(/(token[:：]\s*)[^\s,，}]+/gi, "$1***");
+  }
+  // 把任意错误（apiError 对象 / Error / 字符串）归纳为面向用户的诊断结构
+  function describeApiError(err) {
+    var status = 0, msg = "";
+    if (err && typeof err === "object") { status = err.status || 0; msg = String(err.apiMessage || err.message || ""); }
+    else { msg = String(err || ""); }
+    var title, hint, user = "";
+    var userMatch = msg.match(/user:\s*([A-Za-z0-9_.\-]+)/i);
+    if (userMatch) user = userMatch[1];
+    var isProj = !!user && /^p_/i.test(user); // GitCode 项目令牌 bot 账户名以 p_ 开头
+    var orgName = state.org || "";
+    if (status === 401) {
+      title = "令牌无效或未授权（401）";
+      hint = "服务器未识别该令牌。请确认令牌拼写正确、未过期、未被吊销；" + platformLabel() +
+        " 须使用「个人访问令牌」（GitHub classic 或 fine-grained 均可）。";
+    } else if (status === 403) {
+      title = "无访问权限（403）";
+      if (isProj) {
+        hint = "令牌本身被服务器识别，但其代表的账户对该组织没有读取权限。" +
+          (user ? "（错误消息里的 user: " + user + " 以 p_ 开头，是「项目访问令牌」自动生成的 bot 账户——" +
+            "这类令牌只对创建它的那一个仓库有权限，无法访问组织级接口 /orgs/{org}/repos。）" : "") +
+          "请改用「个人访问令牌」：由属于该组织成员的真实账号生成，并确认该账号已加入组织 " + orgName +
+          " 且具备读取权限（下方有申请链接）。";
+      } else {
+        hint = "令牌认证通过，但其账户对该组织/仓库没有读取权限。请确认令牌所属账号已加入组织 " + orgName +
+          " 且具备读取权限；若令牌 scope 不足（缺 api / 读取权限），请重新生成并勾选所需权限。";
+      }
+    } else if (status === 404) {
+      title = "组织或仓库不存在（404）";
+      hint = "未找到该命名空间。请检查组织/用户名拼写；若是组织且按 /orgs 找不到，已自动按 /users 命名空间重试。";
+    } else {
+      title = "请求失败" + (status ? "（HTTP " + status + "）" : "");
+      hint = "请检查令牌与权限，或更换认证方式后重试。";
+    }
+    return { status: status, title: title, hint: hint, raw: maskTokenInText(msg) };
+  }
+  // 列表区/Issue 区通用的错误空态：标题 + 建议 + 脱敏原始消息 + 去设置 / 申请令牌
+  function renderApiError(targetEl, errObj, errStr, btnId) {
+    var d = describeApiError(errObj || errStr);
+    var html = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">⚠</div>' +
+      '<div style="color:#f85149;font-weight:600;margin-bottom:6px">' + esc(d.title) + "</div>" +
+      '<div style="margin:0 auto 8px;max-width:680px;text-align:left;line-height:1.7">' + esc(d.hint) + "</div>";
+    if (d.raw) html += '<details class="pr-det" style="text-align:left;max-width:680px;margin:0 auto 10px"><summary>原始错误消息 ▾</summary><div class="pr-detail pr-mono" style="margin-top:6px">' + esc(d.raw) + "</div></details>";
+    html += '<div class="pr-tokenRow" style="justify-content:center">';
+    html += '<button class="dshell-btn" id="' + btnId + '">⚙ 去设置令牌 / 认证方式</button>';
+    if (d.status === 401 || d.status === 403) html += '<a class="dshell-btn dshell-btnGhost" href="' + esc(tokenApplyUrl()) + '" target="_blank" rel="noopener">↗ 申请' + esc(tokenApplyName()) + '</a>';
+    html += '</div></div>';
+    targetEl.innerHTML = html;
+    var eb = $(btnId); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+  }
   function timeAgo(iso) {
     if (!iso) return "";
     var t = new Date(iso); if (isNaN(t)) return "";
@@ -579,11 +653,7 @@
     }).then(function (r) {
       var ct = r.headers.get("content-type") || "";
       if (!r.ok) {
-        return r.text().then(function (t) {
-          var m = "HTTP " + r.status;
-          try { var j = JSON.parse(t); if (j.error_message) m = j.error_message; } catch (e) {}
-          throw new Error(m);
-        });
+        return r.text().then(function (t) { throw parseBadResponse(r, t); });
       }
       if (ct.indexOf("application/json") >= 0) return r.json();
       return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return []; } });
@@ -611,8 +681,8 @@
     // 先按组织尝试；404 再按用户命名空间尝试
     return fetchAll("/orgs/" + encodeURIComponent(org) + "/repos", 100, mode)
       .catch(function (e) {
-        var msg = String(e.message || e);
-        if (/404|not found/i.test(msg)) {
+        var st = e && e.status, msg = String((e && e.apiMessage) || (e && e.message) || e);
+        if (st === 404 || /404|not found/i.test(msg)) {
           return fetchAll("/users/" + encodeURIComponent(org) + "/repos", 100, mode);
         }
         throw e;
@@ -679,9 +749,7 @@
     if (state.loading) { renderLoading(); return; }
     var arr = filtered();
     if (state.lastErr) {
-      listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">⚠</div>' +
-        '<div style="color:#f85149;margin-bottom:4px">' + esc(state.lastErr) + "</div>" +
-        '<div>请检查令牌与权限，或更换认证方式后重试。</div></div>';
+      renderApiError(listEl, state.lastErrObj, state.lastErr, "errOpenSettings");
       return;
     }
     if (!arr.length) {
@@ -874,9 +942,7 @@
     if (state.issuesLoading) { renderIssueLoading(); return; }
     var arr = filteredIssues();
     if (state.issuesLastErr) {
-      issueListEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">⚠</div>' +
-        '<div style="color:#f85149;margin-bottom:4px">' + esc(state.issuesLastErr) + "</div>" +
-        '<div>请检查令牌与权限，或更换认证方式后重试。</div></div>';
+      renderApiError(issueListEl, state.issuesLastErrObj, state.issuesLastErr, "issueErrOpenSettings");
       return;
     }
     if (!arr.length) {
@@ -965,7 +1031,7 @@
       renderIssueStatus(); renderIssueStats();
       return;
     }
-    state.issuesLoading = true; state.issuesLastErr = ""; state.issues = []; state.issueRepoDone = 0;
+    state.issuesLoading = true; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issues = []; state.issueRepoDone = 0;
     issueToolbar.style.display = "none";
     renderIssueLoading(); renderIssueStatus();
     var ensureRepos = state.repos.length ? Promise.resolve() : fetchRepos(state.org, state.authMode).then(function (repos) {
@@ -1029,9 +1095,10 @@
     }).catch(function (e) {
       if (seq !== issueSeq) return;
       state.issuesLoading = false;
-      state.issuesLastErr = String(e && e.message || e);
+      state.issuesLastErrObj = e;
+      state.issuesLastErr = String((e && e.apiMessage) || (e && e.message) || e);
       renderIssueStatus(); renderIssueStats(); renderIssueList();
-      toast("拉取 Issues 失败：" + state.issuesLastErr, true);
+      toast("拉取 Issues 失败：" + describeApiError(e).title, true);
     });
   }
 
@@ -1052,7 +1119,7 @@
       renderStatus(); renderStats();
       return;
     }
-    state.loading = true; state.lastErr = ""; state.prs = []; state.repos = []; state.repoDone = 0;
+    state.loading = true; state.lastErr = ""; state.lastErrObj = null; state.prs = []; state.repos = []; state.repoDone = 0;
     toolbar.style.display = "none";
     renderLoading(); renderStatus();
     fetchRepos(state.org, state.authMode).then(function (repos) {
@@ -1116,9 +1183,10 @@
     }).catch(function (e) {
       if (seq !== loadSeq) return;
       state.loading = false;
-      state.lastErr = String(e && e.message || e);
+      state.lastErrObj = e;
+      state.lastErr = String((e && e.apiMessage) || (e && e.message) || e);
       renderStatus(); renderStats(); renderList();
-      toast("拉取失败：" + state.lastErr, true);
+      toast("拉取失败：" + describeApiError(e).title, true);
     });
   }
 
@@ -1284,8 +1352,8 @@
   function clearToken() {
     state.token = ""; tokenInput.value = "";
     localStorage.removeItem(lsKey("token"));
-    state.prs = []; state.repos = []; state.lastErr = "";
-    state.issues = []; state.issuesLastErr = ""; state.issueRepoDone = 0;
+    state.prs = []; state.repos = []; state.lastErr = ""; state.lastErrObj = null;
+    state.issues = []; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issueRepoDone = 0;
     toast("已清除令牌");
     renderRelRepoOptions(); // 发行页仓库下拉回到「需先设置令牌」
     renderRepoFilterAll(); // 仓库过滤下拉回到「暂无仓库」
@@ -1296,22 +1364,24 @@
     var tok = tokenInput.value.trim();
     var org = (orgInput.value.trim() || DEFAULT_ORG);
     if (!tok) { toast("请先填写令牌", true); return; }
-    testResult.textContent = "测试中…";
+    testResult.innerHTML = '<span class="dshell-muted">测试中…</span>';
     var a = applyAuth(apiBase() + "/orgs/" + encodeURIComponent(org) + "/repos?per_page=1", state.authMode);
     fetch(a.url, { method: "GET", credentials: "omit", headers: a.headers })
       .then(function (r) {
-        if (!r.ok) return r.text().then(function (t) { var m = "HTTP " + r.status; try { var j = JSON.parse(t); if (j.error_message || j.message) m = j.error_message || j.message; } catch (e) {} throw new Error(m); });
-        return r.json();
+        return r.text().then(function (t) {
+          if (!r.ok) throw parseBadResponse(r, t);
+          try { return JSON.parse(t); } catch (e) { return []; }
+        });
       })
       .then(function (arr) {
         var n = Array.isArray(arr) ? arr.length : 0;
-        testResult.textContent = "连接成功 · " + org + " 可访问" + (n ? "（第 1 页返回 " + n + " 个仓库）" : "");
+        testResult.innerHTML = '<span style="color:#3fb950">✓ 连接成功</span> · ' + esc(org) + ' 可访问' + (n ? '（第 1 页返回 ' + n + ' 个仓库）' : '');
         toast("连接成功");
       })
       .catch(function (e) {
-        var msg = String(e && e.message || e);
-        testResult.textContent = "失败：" + msg;
-        toast("连接失败：" + msg, true);
+        var d = describeApiError(e);
+        testResult.innerHTML = '<span style="color:#f85149;font-weight:600">✗ ' + esc(d.title) + '</span> <span class="dshell-muted">' + esc(d.hint) + '</span>';
+        toast(d.title, true);
       });
   }
 
@@ -1370,7 +1440,7 @@
       }).filter(function (r) { return r.name; });
       renderRelRepoOptions(); loadRelBranches(true);
       toast("已拉取 " + state.repos.length + " 个仓库");
-    }).catch(function (e) { toast("拉取仓库失败：" + String(e && e.message || e), true); })
+    }).catch(function (e) { toast("拉取仓库失败：" + describeApiError(e).title, true); })
       .then(function () { relRepoRefresh.disabled = false; });
   }
   function fillBranchList(names) {
@@ -1641,7 +1711,7 @@
           if (!r.ok) {
             var m = "HTTP " + r.status;
             if (j && (j.error_message || j.message)) m += "：" + (j.error_message || j.message);
-            throw new Error(m);
+            throw apiError(r.status, m);
           }
           return j || {};
         });
@@ -2178,7 +2248,7 @@
         relNotesAiTip.textContent = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
         launchRelNotesSession(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
       })
-      .catch(function (e) { toast("拉取提交失败：" + String(e && e.message || e), true); })
+      .catch(function (e) { toast("拉取提交失败：" + describeApiError(e).title, true); })
       .then(function () { relNotesAiBusy = false; relNotesAiBtn.disabled = false; relNotesAiBtn.textContent = "✦ AI 生成"; });
   }
   relNotesAiBtn.addEventListener("click", genRelNotes);
@@ -2403,8 +2473,8 @@
     state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
     state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
     // 重置运行态与缓存
-    state.prs = []; state.repos = []; state.lastErr = ""; state.repoDone = 0;
-    state.issues = []; state.issuesLastErr = ""; state.issueRepoDone = 0; state.issuesLoading = false;
+    state.prs = []; state.repos = []; state.lastErr = ""; state.lastErrObj = null; state.repoDone = 0;
+    state.issues = []; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issueRepoDone = 0; state.issuesLoading = false;
     relBranchCache = {};
     relCfg = loadRelCfg();
     state.repoFilter = loadRepoFilter(); // 各平台仓库过滤独立存储
