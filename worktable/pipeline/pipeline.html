@@ -379,7 +379,7 @@
         <input id="repoName" class="dshell-input" placeholder="名称（如 myapp）" style="width:120px;" />
         <input id="repoUrl" class="dshell-input" placeholder="URL（如 https://git.example.com/dev/myapp.git）" style="width:300px;" />
         <input id="repoUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
-        <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" />
+        <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" title="代码仓访问令牌；仅保存到本浏览器 localStorage，不上送服务端存储，刷新/换浏览器需重新填写" />
         <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；Jenkins=多分支任务子任务名即分支（任务框也可直接粘贴 refs 接口地址），浏览器直连=本地浏览器请求 Jenkins，服务端代连=经 /api/worktable/proxy 由 DSH 服务端请求（按仓库各自选择，不跟随全局连接模式）" style="width:128px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins-browser">Jenkins·浏览器直连</option><option value="jenkins-server">Jenkins·服务端代连</option></select>
         <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}；免凭证，不附带 Jenkins 用户名/令牌）" style="width:240px;display:none;" autocomplete="off" />
         <input id="repoStrategyUrl" class="dshell-input" placeholder="部署策略 URL（{branch} 占位，可留空）" title="按分支拉取支持的部署策略的接口地址：{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}；返回分页 JSON {total,offset,next_offset,items:[{arch_name}]}，自动跟 next_offset 逐页拉全；浏览器直连失败自动改经服务端代取；留空则主控不提供部署策略选择" style="width:250px;" />
@@ -746,7 +746,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, repositories, curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, curPipelineId, environments, selectedEnvIds, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), curRepoId, scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
@@ -769,7 +769,12 @@ async function loadServerState(){
       if(typeof cfg.curPipelineId==='string' && findPipeline(cfg.curPipelineId)) curPipelineId=cfg.curPipelineId;
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
       if(Array.isArray(cfg.selectedEnvIds) && cfg.selectedEnvIds.length) selectedEnvIds=cfg.selectedEnvIds;
-      if(Array.isArray(cfg.repositories) && cfg.repositories.length) repositories=cfg.repositories.map(normalizeRepo);
+      if(Array.isArray(cfg.repositories) && cfg.repositories.length){
+        // 代码仓访问令牌仅存浏览器本地：服务端回传的仓库不含 pass，按 id 回填本地已存令牌，避免刷新后丢失
+        const prevPass={}; repositories.forEach(function(r){ if(r.pass) prevPass[r.id]=r.pass; });
+        repositories=cfg.repositories.map(normalizeRepo);
+        repositories.forEach(function(r){ if(prevPass[r.id]) r.pass=prevPass[r.id]; });
+      }
       if(typeof cfg.curRepoId==='string' && resolveRepo(cfg.curRepoId)) curRepoId=cfg.curRepoId;
       if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
