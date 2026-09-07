@@ -2165,11 +2165,22 @@ async function detectStageParams(i, keepOnError){
   renderStageParams(i);
 }
 
-/* 「输出变量」旁的 ? 帮助徽标：说明变量名（等号左侧）的设置方法；srcTxt 为产出全文来源描述（stdout / 响应体） */
+/* 「输出变量」旁的 ? 帮助徽标：区分来源格式与映射写法；srcTxt 为产出全文来源描述 */
 function mkOutVarHelp(srcTxt){
   const b=document.createElement('span'); b.textContent='?';
   b.style.cssText='display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;margin-left:3px;border-radius:50%;border:1px solid var(--dsw-alias-state-accent-primary,#4f8ef7);color:var(--dsw-alias-state-accent-primary,#4f8ef7);font-size:10px;line-height:1;cursor:help;vertical-align:1px;';
-  b.title='输出变量名写在等号左侧（如 IMAGE_URL=image 中的 IMAGE_URL），即本阶段'+srcTxt+'产出的变量改名后下传时使用的名字，后续阶段可作为环境变量读取、脚本参数值写 ${IMAGE_URL}、URL 写 {IMAGE_URL} 引用；命名建议字母开头，只用大写字母/数字/下划线；多条映射用英文逗号分隔（示例：IMAGE_URL=image, XDS_BRANCH=items.0.name, RESP=*）；等号右侧为来源：捕获的 key、JSON 路径（items.0.name，数组支持 [-1] 倒数）、* 或留空（'+srcTxt+'全文整体赋给该变量）；本框整体留空=捕获的 key 全部按原名下传';
+  b.title=[
+    '映射写法：目标变量名=来源，多条映射用英文逗号分隔，例如 IMAGE_URL=image, XDS_BRANCH=items.0.name, RESP=*。',
+    '等号左侧是下游使用的变量名，区分大小写，建议使用大写字母/数字/下划线，不以数字开头。右侧可以是捕获的 key、JSON 路径（items.0.name，数组支持 [-1] 倒数），或 * / 留空（把'+srcTxt+'全文赋给该变量）。',
+    '本框整体留空：捕获的 key 全部按原名下传；填写映射不会过滤其他已捕获变量。下游脚本可直接读取环境变量，脚本参数值可写 ${IMAGE_URL}，URL 可写 {IMAGE_URL}；下游同名参数未填写时继承上游值。'
+  ].join('\n\n');
+  if(srcTxt==='stdout') b.title+='\n\n'+[
+    '脚本实际输出格式（只填写本框不会改变脚本输出）：',
+    '推荐单行 JSON，支持小写变量名和多个变量：\necho \'{"key1":"1","key2":"2","key3":"2 3 4"}\'\n映射填写：key1=key1, key2=key2, key3=key3\n下游读取：echo "$key1"、echo "$key2"、echo "$key3"。',
+    '也支持每行一个大写 KEY=VALUE：\necho "KEY1=1"\necho "KEY2=2"\n下游读取：echo "$KEY1"、echo "$KEY2"。',
+    '不支持把 key1=1 key2=2 写在同一行当作多个变量；普通 key=value 行的小写键也不会被捕获。JSON 必须是单行合法 JSON，键和字符串值用双引号；多行 JSON 不会自动按完整对象解析。',
+    '自动捕获仅提取 JSON 顶层字符串/数字/布尔值；嵌套字段或对象/数组需在映射中用 JSON 路径取值。变量来自 stdout，不解析 stderr。'
+  ].join('\n\n');
   return b;
 }
 /* ---------- 阶段动作行（按类型渲染绑定：模拟/Shell/Python/HTTP/EvalTokens） ---------- */
