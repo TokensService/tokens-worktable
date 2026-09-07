@@ -52,6 +52,7 @@
     .pipeline-node.skip{ border-style:dashed; opacity:.55; }
     .pipeline-node.abort{ border-color:color-mix(in srgb, var(--st-idle) 50%, transparent); background:color-mix(in srgb, var(--st-idle) 6%, transparent); opacity:.7; }
     .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
+    .pipeline-preset { display:inline-block; margin-bottom:6px; padding:1px 6px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; font-size:10px; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-fill-l1); }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
     .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--st-run); transition:width .12s linear; }
@@ -211,7 +212,7 @@
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
-    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。</p>
+    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理为系统预设任务，不可在编排中编辑；清理脚本在设置页配置。</p>
   </div>
 
 
@@ -2310,6 +2311,7 @@ function renderFlow(){
     n.dataset.id=s.id;
     n.innerHTML =
       '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+esc(s.name)+'</div>'+
+      (s.cleanup?'<span class="pipeline-preset" title="不可在编排中编辑；清理脚本在设置页配置">🔒 系统预设 · 不可编辑</span>':'')+
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+
       (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
@@ -2323,7 +2325,7 @@ function renderFlow(){
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, activeStages().findIndex(x=>x.id===s.id));
     });
-    n.title=s.cleanup?'单击查看详情；清理脚本在设置页配置':'单击查看详情，双击编辑该阶段';
+    n.title=s.cleanup?'系统预设任务，不可在编排中编辑；单击查看详情，清理脚本在设置页配置':'单击查看详情，双击编辑该阶段';
     f.appendChild(n);
   });
   applyStatusClasses();
@@ -4226,12 +4228,8 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
 }));
 /* 「📂 打开归档目录」：优先经 dsh-better-sidebar 侧边栏「文件」面板打开归档目录（__dshOpenFolderInSidebar
    桥由工作台插件暴露，开一个以归档目录为根的文件夹窗口）；未装 better-sidebar 或桥不可用时回退到
-   服务端系统文件管理器（xdg-open/gio/open 依次探测）。点击同时新建一个 AI 会话（工作区=设置的
-   归档目录根目录 archiveRootFolder；空草稿不自动提交）：新版插件桥 __dshNewChatSessionAtFolder
-   切会话时项目随之关闭（插件侧刻意不做 markPluginSessionOpen），新窗口只含会话聊天 + 文件夹浏览，
-   文件夹窗口由插件在切换落定后重开（会话切换会刷新侧边栏，页内先开的会被刷掉）；旧版插件无此桥时
-   退回 __dshNewChatSessionAt（项目保持打开，见 createArchiveRootChat），会话创建后页内补开一次
-   文件夹窗口。会话创建失败仅 console.warn，不阻断打开目录。
+   服务端系统文件管理器（xdg-open/gio/open 依次探测）。保持当前页面与会话，避免新建会话的
+   预设/模型查询和切换后的重复目录加载；需要 AI 分析时使用运行历史的分析按钮。
    目录选取（archiveTargetFolder）：运行中取当前运行的归档文件夹（页面展示的是实时运行）；
    否则取运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）。
    未运行且未选中历史行时不回退（不再打开最近一次运行或归档根目录），返回 null，
@@ -4256,19 +4254,8 @@ function archiveTargetFolder(){
   if(selHistoryIdx>=0 && history[selHistoryIdx] && history[selHistoryIdx].archive) return history[selHistoryIdx].archive;
   return null;
 }
-/* 归档根目录：设置的归档路径（archiveDir），留空=保底 runs/（fallbackArchiveRoot）；
-   「打开归档目录」新建 AI 会话的工作区即取此根目录（而非单次运行的归档文件夹） */
+/* 归档根目录：设置的归档路径，留空=保底 runs/；供未归档历史的 AI 分析工作区兜底。 */
 function archiveRootFolder(){ return (archiveDir||'').trim() || fallbackArchiveRoot() || ''; }
-/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建空草稿会话：工作目录 = 归档根目录，
-   提示词留空（只建会话不填内容）；旧版插件无此桥时退化为 __dshSessions.create + __dshOpenSession */
-async function createArchiveRootChat(root){
-  const P=window.parent;
-  if(P && typeof P.__dshNewChatSessionAt==='function'){ await P.__dshNewChatSessionAt('', root); return; }
-  const sessions=P && P.__dshSessions;
-  if(!sessions || typeof sessions.create!=='function') return;
-  const sid=await sessions.create({cwd: root});
-  try{ if(P.__dshOpenSession) await P.__dshOpenSession(sid); }catch(e){}
-}
 /* 历史行选中变化时刷新「打开归档目录」的状态提示：展示当前将打开的目录，清掉上一次打开结果的残留。
    未运行且未选中历史行时提示先选择一条运行历史（不再回退到归档根目录）。 */
 function refreshArchiveTip(){
@@ -4299,46 +4286,18 @@ async function openArchiveFolder(){
   const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
   const folder=archiveTargetFolder();
   if(!folder){ say('⚠ 请先点击选择一条运行历史（或运行一条流水线后再打开）','var(--log-warn)'); return; }
+  say('正在等待日志落盘并打开目录…');
   try{ await waitArchiveWrites(folder); }
   catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
-  const root=archiveRootFolder();
   const P=window.parent;
-  /* 探测 better-sidebar 并顺手开一次文件夹窗口：会话切换会刷新侧边栏，这次打开随后会被刷掉，
-     仅供判定回退路径；新版插件桥会在切换落定后重开（见 __dshNewChatSessionAtFolder） */
-  let bsOpened=false;
+  // 直接打开文件夹，保留本页与执行上下文；不再为浏览目录创建会话。
   if(P && typeof P.__dshOpenFolderInSidebar==='function'){
-    try{ bsOpened=!!P.__dshOpenFolderInSidebar(folder); }catch(e){ bsOpened=false; }
-  }
-  // 运行期间切会话会卸载本页并中断执行流，只打开目录，不创建会话。
-  if(running){
-    if(!bsOpened) await openFolderViaFileManager(folder, say);
-    else say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)');
-    return;
-  }
-  const newBridge=!!(P && typeof P.__dshNewChatSessionAtFolder==='function');
-  /* 主路径（better-sidebar + 新版插件桥）：建会话（工作区=归档根）→ 切会话关项目（新窗口只含
-     会话聊天 + 文件夹浏览）→ 插件在切换落定后重开文件夹窗口；此后本页面随项目关闭卸载，不再执行 */
-  if(bsOpened && root && newBridge){
-    try{ await P.__dshNewChatSessionAtFolder('', root, folder); }
-    catch(e){ console.warn('[archive] 新建归档根目录会话失败:', e); }
-    return;
-  }
-  /* 无 better-sidebar 的回退：先走服务端系统文件管理器（必须在建会话之前——新桥建会话会关项目
-     卸载本页，之后就执行不到了） */
-  if(!bsOpened) await openFolderViaFileManager(folder, say);
-  /* 建会话：新桥（切会话关项目；无 better-sidebar 时 folder 传空只建会话）；
-     旧插件退回 __dshNewChatSessionAt（项目保持打开）。失败仅告警，不影响已打开的目录 */
-  if(root){
     try{
-      if(newBridge) await P.__dshNewChatSessionAtFolder('', root, null);
-      else await createArchiveRootChat(root);
-    }catch(e){ console.warn('[archive] 新建归档根目录会话失败（不影响打开目录）:', e); }
+      if(P.__dshOpenFolderInSidebar(folder)){ say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)'); return; }
+    }catch(e){}
   }
-  /* better-sidebar 已开过的收尾：旧插件会话创建可能刷新了侧边栏，补开一次文件夹窗口；
-     新桥但 root 缺失（无法建会话）的边角同样在此给出结果提示 */
-  if(bsOpened){
-    try{ if(P.__dshOpenFolderInSidebar(folder)) say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)'); }catch(e){}
-  }
+  say('正在打开服务端文件管理器…');
+  await openFolderViaFileManager(folder, say);
 }
 $('openArchiveBtn').addEventListener('click', openArchiveFolder);
 /* 历史重跑：按选中行的流水线 + 环境 IP + 分支 + 执行人重新运行（运行中则入队） */
