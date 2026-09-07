@@ -4371,10 +4371,11 @@ function renderPipelines(){
     tr.title='点击选用该流水线';
     tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
       '<td>'+p.stages.length+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
-    tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击即选用（编辑/复制/删除按钮已阻止冒泡）
+      '<td style="white-space:nowrap"><button class="dshell-btn mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
+    tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击即选用（运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
+  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun')}); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); }));
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
   tb.querySelectorAll('[data-plcopy]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); copyPipeline(b.getAttribute('data-plcopy')); }));
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
