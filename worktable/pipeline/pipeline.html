@@ -189,6 +189,7 @@
       <span style="display:flex;align-items:center;gap:8px;">
         <span class="dshell-muted" style="font-size:11px;">运行队列<span id="queueCount"></span></span>
         <span id="queueStatus" class="dshell-badge">空闲</span>
+        <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即上报本页队列并拉取其他浏览器的在跑/排队任务（平时每 5 秒自动刷新）">↻</button>
         <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
       </span>
     </div>
@@ -236,7 +237,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间">📊 收集普罗数据</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间">📊 收集普罗数据</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
@@ -2739,6 +2740,56 @@ function drainQueue(){ if(!queue.length) return; const next=queue.shift(); start
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
+/* ---------- 运行队列跨浏览器可见（在场快照上报 + 轮询） ---------- */
+/* 运行队列本是纯浏览器内存态，换台浏览器（或另一标签页）就互相看不见谁在跑。各标签页把自己
+   「正在运行 + 排队中」的快照上报到服务端内存暂存（/api/worktable/pipeline/queue，易失不落盘），
+   并轮询拉取其他标签页的快照只读展示；服务端侧 45 秒不上报即过期，pagehide 时 sendBeacon 清态。 */
+const QCLIENT_ID=(function(){
+  /* 同标签页内刷新/重开保持同一 id（避免刷新瞬间旧 id 未过期 + 新 id 入场造成短暂双份在场）；
+     sessionStorage 不可用时退化为纯随机 id */
+  const mk=()=>Math.random().toString(16).slice(2,6)+Date.now().toString(36).slice(-4);
+  try{ let id=sessionStorage.getItem('pip-qclient'); if(!id){ id=mk(); sessionStorage.setItem('pip-qclient', id); } return id; }
+  catch(e){ return mk(); }
+})();
+let remoteQueueClients=[];   // 其他标签页上报的在场快照（GET 拉取时已过滤掉自己）
+/* 浏览器标签：从 userAgent 粗判浏览器 + id 后 4 位，回答「哪个浏览器的哪个标签页」 */
+function browserTag(){
+  const ua=navigator.userAgent||''; let b='浏览器';
+  if(/Edg\//.test(ua)) b='Edge'; else if(/Chrome\//.test(ua)) b='Chrome'; else if(/Firefox\//.test(ua)) b='Firefox'; else if(/Safari\//.test(ua)) b='Safari';
+  return b+'·'+QCLIENT_ID.slice(-4);
+}
+let _qPubSig='', _qPubAt=0, _qPubTimer=null, _qPubWarned=false;
+/* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
+function publishQueue(force){
+  const runningSnap=(running&&curRun)?{by:curRun.by,pipelineName:curRun.pipelineName,env:curRun.env,source:curRun.source,startedAt:curRun.startTs}:null;
+  const queueSnap=queue.map(q=>({by:q.by,pipelineName:q.pipelineName,env:q.env,source:q.source,queuedAt:q.queuedAt}));
+  const sig=JSON.stringify([runningSnap,queueSnap]);
+  const now=Date.now();
+  if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
+  _qPubSig=sig; _qPubAt=now;
+  fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({id:QCLIENT_ID,label:browserTag(),running:runningSnap,queue:queueSnap})})
+    .catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
+}
+/* renderQueue 渲染很频繁（运行期逐帧），上报走 500ms 防抖合并，避免状态抖动时连续发请求 */
+function scheduleQueuePublish(){ if(_qPubTimer) clearTimeout(_qPubTimer); _qPubTimer=setTimeout(()=>{ _qPubTimer=null; publishQueue(false); },500); }
+/* 拉取其他标签页的在场快照（过滤掉自己）并重绘队列区 */
+async function pullRemoteQueue(){
+  try{
+    const r=await fetch('/api/worktable/pipeline/queue');
+    if(r.ok){ const j=await r.json(); remoteQueueClients=(Array.isArray(j.clients)?j.clients:[]).filter(c=>c && c.id!==QCLIENT_ID); }
+  }catch(e){}
+  renderQueue();
+}
+$('queueRefresh').addEventListener('click', async ()=>{
+  const b=$('queueRefresh'); b.disabled=true;
+  try{ publishQueue(true); await pullRemoteQueue(); } finally{ b.disabled=false; }
+});
+/* 关页/切走时 beacon 清掉自己的在场信息（beacon 只能 POST，服务端同路由接受 POST 即为此设计）；失败静默 */
+window.addEventListener('pagehide', ()=>{
+  try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify({id:QCLIENT_ID,running:null,queue:[]})],{type:'application/json'})); }catch(e){}
+});
+
 /* ---------- 运行定时（周期 / 一次性，服务端调度，关闭页面也会执行） ---------- */
 let serverPlans=[];
 async function loadPlans(){
@@ -2861,8 +2912,8 @@ function renderQueue(){
   if(!running && queue.length){ try{ drainQueue(); }catch(e){ console.warn('[queue] 自愈排空失败（不影响渲染）:', e); } }
   list.innerHTML='';
   $('queueCount').textContent = queue.length? '('+queue.length+' 排队)':'';
-  /* 队列状态已并入「流水线任务」首行徽标；明细列表仅在有运行/排队时展开，空态不再渲染占位文案 */
-  list.style.display = (running||queue.length)?'':'none';
+  /* 队列状态已并入「流水线任务」首行徽标；明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态不再渲染占位文案 */
+  list.style.display = (running||queue.length||remoteQueueClients.length)?'':'none';
   let status='空闲', cls='';
   if(running && curRun){
     status='运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
@@ -2870,13 +2921,39 @@ function renderQueue(){
     it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#1</span> '+esc(curRun.by)+' · '+esc(curRun.pipelineName||'')+' <span class="dshell-muted">'+curRun.env+' '+sourceLabel(curRun.source)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
     list.appendChild(it);
   } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
+  else {
+    /* 本地空闲但其他浏览器在跑：徽标提示他端活动（样式保持灰——活动不在本页，避免误导成本页可停止） */
+    const remoteRunning=remoteQueueClients.reduce((a,c)=>a+((c&&c.running)?1:0),0);
+    if(remoteRunning) status='空闲 · 他端 '+remoteRunning+' 运行';
+  }
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
   queue.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
     it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(idx+2)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+q.env+' '+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
     list.appendChild(it);
   });
+  /* 其他浏览器标签页的在场快照：只读展示（运行与取消都是本页内存态，远端条目给取消按钮无意义），
+     标题前带 muted 的客户端标签（如 [Chrome·a1b2]）区分来源 */
+  if(remoteQueueClients.length){
+    const sep=document.createElement('div'); sep.className='dshell-listItem';
+    sep.innerHTML='<span class="dshell-muted" style="font-size:10px">— 其他浏览器 —</span>';
+    list.appendChild(sep);
+    remoteQueueClients.forEach(c=>{
+      const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
+      if(c.running){
+        const it=document.createElement('div'); it.className='dshell-listItem';
+        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(c.running.by)+' · '+esc(c.running.pipelineName||'')+' <span class="dshell-muted">'+esc(c.running.env||'')+' '+esc(sourceLabel(c.running.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(c.running.startedAt)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
+        list.appendChild(it);
+      }
+      (Array.isArray(c.queue)?c.queue:[]).forEach(q=>{
+        const it=document.createElement('div'); it.className='dshell-listItem';
+        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(q.env||'')+' '+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><span class="dshell-muted" style="font-size:10px">排队</span>';
+        list.appendChild(it);
+      });
+    });
+  }
   list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
+  scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「运行队列跨浏览器可见」区块）
 }
 
 /* ---------- 运行引擎 ---------- */
@@ -4481,6 +4558,28 @@ $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseI
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
 $('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
+/* 「↻ 刷新」运行历史：从服务端重新拉取——本页加载后，其他浏览器的保存与服务端定时运行追加的记录
+   已在服务端落盘合并（PUT 按 tag/ts 合并），本地不会自己出现，手动拉取才合并进来 */
+$('histRefresh').addEventListener('click', async ()=>{
+  const b=$('histRefresh'); b.disabled=true;
+  try{
+    const r=await fetch('/api/worktable/pipeline');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const st=await r.json();
+    const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+    /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
+       防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录 */
+    if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
+    if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
+    /* 历史整体替换语义与 loadServerState 一致：非空替换；空但 histClearedAt 非零视为已清空（不复活演示数据） */
+    if(Array.isArray(st.history) && st.history.length) history=st.history;
+    else if(histClearedAt) history=[];
+    /* 历史回放基于行下标，列表整体变了必须退出回放并清选中，否则指向错误的记录 */
+    if(selHistoryIdx>=0){ exitHistoryReplay(); selHistoryIdx=-1; }
+    histPage=0; renderHistory(); renderStats(); refreshArchiveTip();
+  }catch(e){ alert('从服务端拉取运行历史失败：'+String(e && e.message || e)); }
+  finally{ b.disabled=false; }
+});
 /* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
 $('histFilterKw').value=histFilter.kw;
 $('histFilterStatus').value=histFilter.status;
@@ -4920,6 +5019,9 @@ function scheduleGpuRefresh(){
 loadServerState().finally(scheduleGpuRefresh);
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
+/* 其他浏览器标签页的在场快照：启动即拉一次，之后每 5 秒轮询（见「运行队列跨浏览器可见」区块） */
+pullRemoteQueue();
+setInterval(pullRemoteQueue, 5000);
 </script>
 </body>
 </html>

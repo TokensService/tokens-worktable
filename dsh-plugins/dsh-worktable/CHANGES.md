@@ -1,5 +1,21 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 流水线运行队列跨浏览器可见 + 队列/运行历史手动刷新（`src/index.ts` + `worktable/pipeline/pipeline.html` 配套）：
+  - 新增路由 `/api/worktable/pipeline/queue`：各 pipeline.html 标签页把自己「正在运行 + 排队中」的快照 PUT 到服务端内存
+    `Map`（`{id, label, running, queue, seenAt}`，seenAt 用服务端收到时间防客户端时钟偏差；上限 100 个客户端，超出淘汰最旧
+    seenAt；running/queue 条目逐字段白名单清洗，by/pipelineName/env/source 截 200 字符，startedAt/queuedAt 取有限数值），
+    页面再轮询 GET 拉取其他标签页的快照（GET 先剔除 45 秒未上报的过期在场，跳过无活动的空闲客户端）。在场信息是易失数据，
+    存内存不落盘，重启即清；POST 与 PUT 同逻辑，供页面 pagehide 时 navigator.sendBeacon 清态（beacon 只能 POST）。
+  - 页面侧（pipeline.html）：sessionStorage 持久化随机短 id（`pip-qclient`）+ `browserTag()`（userAgent 粗判浏览器拼 id 后 4 位，
+    如 `Chrome·a1b2`）；`renderQueue()` 末尾经 500ms 防抖上报本页在场快照（仅签名变化或距上次超 10 秒心跳时真正发请求）；
+    每 5 秒轮询拉取其他标签页快照，在本地队列条目之后只读渲染（「— 其他浏览器 —」分隔行 + muted 客户端标签前缀，无取消按钮），
+    本地空闲但有远端活动时徽标显示「空闲 · 他端 N 运行」（样式保持灰）；「运行队列」行新增 ↻ 按钮（立即上报+拉取）；
+    pagehide 时 sendBeacon 清掉自己的在场信息。
+  - 「运行历史」标题行新增「↻ 刷新」按钮：GET `/api/worktable/pipeline` 重新拉取历史（其他浏览器与服务端定时运行产生的记录
+    一并合并进来）；buildNo/histClearedAt 取双方较大值回填（防另一浏览器跑过后本地 buildNo 回退重号），历史非空整体替换、
+    空但 histClearedAt 非零则置空（语义同 loadServerState）；有选中行时先退出历史回放再清选中（回放基于行下标，列表变了必须退出）。
+    需构建插件并重启 web 后刷新页面生效。
+
 - 脚本阶段日志改为执行服务端直接落盘（`src/index.ts` + `worktable/pipeline/pipeline.html`）：
   - `/api/worktable/exec-stream` 接受可选 `logFile`，执行前递归创建日志目录，stdout/stderr 按到达顺序实时写入，关闭文件后才发送包含 `logFile` 的 `done`；`log` 事件提前确认日志归属。日志保留命令、原始输出及退出码；中止/断网保留已写内容和 `[aborted]`，超时保留原因。
   - `/api/worktable/exec` 同样支持实时执行端归档（含环境清理），关闭文件后再响应；写文件失败返回 `logError`，不改变脚本退出码，也不重跑脚本。未传 `logFile` 的旧调用保持原协议。响应头先声明日志归属，无法确认归属的断流不触发覆盖上传。
