@@ -651,6 +651,67 @@ function apply(ctx) {
       }
     }
   });
+  const queuePresence = /* @__PURE__ */ new Map();
+  const QUEUE_PRESENCE_CAP = 100;
+  const QUEUE_PRESENCE_TTL = 45 * 1e3;
+  function cleanQueueEntry(e, timeKey) {
+    if (!e || typeof e !== "object") return null;
+    const o = {};
+    for (const k of ["by", "pipelineName", "env", "source"]) o[k] = String(e[k] ?? "").slice(0, 200);
+    const t = Number(e[timeKey]);
+    o[timeKey] = Number.isFinite(t) ? t : 0;
+    return o;
+  }
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/pipeline/queue",
+    handler: async (req, res) => {
+      try {
+        if (req.method === "PUT" || req.method === "POST") {
+          const body = await readJsonBody(req);
+          const id = typeof body.id === "string" ? body.id.slice(0, 64) : "";
+          if (!id) {
+            json(res, 400, { error: "missing id" });
+            return;
+          }
+          const running = body.running === null || body.running === void 0 ? null : cleanQueueEntry(body.running, "startedAt");
+          const queue = (Array.isArray(body.queue) ? body.queue : []).slice(0, 20).map((q) => cleanQueueEntry(q, "queuedAt")).filter((q) => !!q);
+          if (queuePresence.size >= QUEUE_PRESENCE_CAP && !queuePresence.has(id)) {
+            let oldestKey = "", oldestAt = Infinity;
+            for (const [k, v] of queuePresence) if (v.seenAt < oldestAt) {
+              oldestAt = v.seenAt;
+              oldestKey = k;
+            }
+            if (oldestKey) queuePresence.delete(oldestKey);
+          }
+          queuePresence.set(id, {
+            id,
+            label: (typeof body.label === "string" ? body.label : "").slice(0, 64),
+            running,
+            queue,
+            seenAt: Date.now()
+          });
+          json(res, 200, { ok: true });
+          return;
+        }
+        if (req.method === "GET") {
+          const now = Date.now();
+          for (const [k, v] of queuePresence) if (now - v.seenAt > QUEUE_PRESENCE_TTL) queuePresence.delete(k);
+          const clients = [];
+          for (const v of queuePresence.values()) {
+            if (!v.running && !v.queue.length) continue;
+            clients.push({ id: v.id, label: v.label, seenAgo: Math.max(0, Math.round((now - v.seenAt) / 1e3)), running: v.running, queue: v.queue });
+          }
+          json(res, 200, { clients });
+          return;
+        }
+        res.writeHead(405);
+        res.end();
+      } catch (err) {
+        json(res, 500, { error: String(err) });
+      }
+    }
+  });
   const LOGDUMP_FILE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline-logs.md");
   webServer.register({
     kind: "exact",
