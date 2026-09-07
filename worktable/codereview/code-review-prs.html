@@ -290,9 +290,9 @@
         <div class="rel-log" id="relLog" style="display:none"></div>
       </div>
       <div class="dshell-card" style="margin-top:10px">
-        <h2 class="dshell-sub" style="margin:0 0 8px">构建历史 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每次发行归档依赖信息（仓库/分支/脚本/容器/产物路径）、收集到的产物清单与逐步回显日志，存于本机浏览器 localStorage，最多保留 30 条</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建历史 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每次发行归档依赖信息（仓库/分支/脚本/容器/产物路径）、收集到的产物清单与逐步回显日志，存于云端（服务端，所有浏览器共享），本地启动时从云端拉取，最多保留 30 条</span></h2>
         <div class="pr-tokenRow" style="margin-bottom:8px">
-          <button class="dshell-btn dshell-btnGhost" id="relHistClear" title="清空本机保存的全部构建历史">清空历史</button>
+          <button class="dshell-btn dshell-btnGhost" id="relHistClear" title="清空云端保存的全部构建历史">清空历史</button>
           <span class="dshell-muted" id="relHistTip" style="font-size:11px"></span>
         </div>
         <div id="relHist"></div>
@@ -2130,13 +2130,85 @@
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
-  /* ---------- 构建历史：归档每次发行的依赖信息、产物清单与逐步回显（本机 localStorage） ---------- */
-  function loadRelHist() {
-    try { var h = JSON.parse(localStorage.getItem(lsKey("relhist"))); if (Array.isArray(h)) return h; } catch (e) {}
-    return [];
+  /* ---------- 构建历史：云端存储，本地从云端拉（服务端 DSH_HOME/storages 下 JSON 文件，按平台分桶，所有浏览器共享） ----------
+     旧版本存于本机浏览器 localStorage（gc_pr_relhist / gh_pr_relhist）：仅本机可见，换浏览器即丢。
+     改为云端后，归档 / 删除 / 清空均经 /api/worktable/write 写回服务端文件，启动 / 切到发行页 / 切平台时
+     经 /api/worktable/file 从云端拉取到本地缓存 relHistCache；首次发现云端为空而本机仍有旧 localStorage
+     数据时，一次性迁移上云并清掉本机旧键，避免历史丢失。 */
+  var REL_HIST_STORE_DIR = "/mnt/paas/storages";   // = $DSH_HOME/storages（默认 /mnt/paas），dsh web 进程可写、跨重启持久
+  function relHistFile() { return REL_HIST_STORE_DIR + "/dsh-codereview-relhist-" + (state.platform === "github" ? "gh" : "gc") + ".json"; }
+  var relHistCache = null;        // 云端构建历史的本地镜像（null=尚未拉取）；增删改均改此缓存并写回云端，渲染只读缓存
+  var relHistLoading = false;     // 防并发重复拉取
+  var relHistLoadGen = 0;         // 拉取代次：过期代次的返回不覆盖更新的缓存（归档写回后并发的旧拉取丢弃）
+  function relHistFileUrl() { return "/api/worktable/file?path=" + encodeURIComponent(relHistFile()); }
+  function relHistWrite(content) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: relHistFile(), content: content }) });
   }
+  // 写云端（目录缺失时建目录重试一次）；返回是否成功（不抛异常，便于迁移处按成功与否决定是否清本机旧键）
+  function relHistWriteRobust(content) {
+    return relHistWrite(content).then(function (r) {
+      if (r.ok) return true;
+      return fetch("/api/worktable/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: REL_HIST_STORE_DIR }) })
+        .then(function () { return relHistWrite(content); })
+        .then(function (r2) { return !!r2.ok; })
+        .catch(function () { return false; });
+    }).catch(function () { return false; });
+  }
+  function loadRelHistCloud() {
+    if (relHistLoading) return Promise.resolve(relHistCache || []);
+    relHistLoading = true;
+    var gen = ++relHistLoadGen;
+    return fetch(relHistFileUrl(), { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) return [];                       // 404 = 云端尚无历史文件（首用）
+        var ct = r.headers.get("content-type") || "";
+        return r.text().then(function (t) {
+          if (ct.indexOf("json") < 0) return [];   // file 路由 404 也回 JSON 错误体，按非数据跳过
+          try { var h = JSON.parse(t); if (Array.isArray(h)) return h; } catch (e) {}
+          return [];
+        });
+      })
+      .then(function (list) {
+        // 一次性迁移：云端为空且本机 localStorage 仍有旧 relhist 数据 → 等写成功后清本机旧键（写失败下次重试，不丢历史）
+        if (!list.length && !localStorage.getItem(lsKey("relhist_migrated"))) {
+          try {
+            var old = JSON.parse(localStorage.getItem(lsKey("relhist")));
+            if (Array.isArray(old) && old.length) {
+              var migrated = old.slice(0, REL_HIST_MAX);
+              return relHistWriteRobust(JSON.stringify(migrated)).then(function (ok) {   // 等待写结果再决定是否清本机旧键
+                if (ok) { localStorage.setItem(lsKey("relhist_migrated"), "1"); localStorage.removeItem(lsKey("relhist")); list = migrated; }
+                // 写失败：不标记、不清本机旧键，下次加载重试迁移；本次仍按云端（空）展示
+                if (gen === relHistLoadGen && relHistCache === null) relHistCache = list;
+                return relHistCache || list;
+              });
+            }
+            localStorage.setItem(lsKey("relhist_migrated"), "1");   // 本机无旧数据：直接标记，免得每次查
+          } catch (e) {}
+        }
+        if (gen === relHistLoadGen && relHistCache === null) relHistCache = list;   // 归档写回后并发的旧拉取不覆盖
+        return relHistCache || list;
+      })
+      .catch(function () { if (gen === relHistLoadGen && relHistCache === null) relHistCache = []; return relHistCache || []; })
+      .finally(function () { if (gen === relHistLoadGen) relHistLoading = false; });
+  }
+  function ensureRelHistLoaded() {                 // 归档前确保云端历史已拉取，避免未加载时按空缓存覆盖丢历史
+    if (relHistCache !== null) return Promise.resolve(relHistCache);
+    return loadRelHistCloud();
+  }
+  function loadRelHist() { return relHistCache || []; }   // 渲染源：缓存（null→空数组占位）
   function saveRelHist(list) {
-    try { localStorage.setItem(lsKey("relhist"), JSON.stringify(list.slice(0, REL_HIST_MAX))); } catch (e) {}
+    relHistCache = Array.isArray(list) ? list.slice(0, REL_HIST_MAX) : [];
+    relHistWriteRobust(JSON.stringify(relHistCache)).then(function (ok) {   // fire-and-forget：归档不阻塞发行 UI；失败仅提示
+      if (!ok) toast("构建历史写回云端失败（本次归档仅本机可见）");
+    });
+  }
+  function ensureRelHist() {                       // 进入发行页 / 初始化 / 切平台时触发拉取（已加载则直接渲染）
+    if (relHistCache !== null) { renderRelHist(); return; }
+    relHistEl.innerHTML = '<div class="pr-empty" style="padding:20px 10px">正在从云端拉取构建历史…</div>';
+    relHistTip.textContent = "";
+    loadRelHistCloud().then(renderRelHist);
   }
   /* 归档一步回显：超过上限只留末尾，前部以省略行代替 */
   function archiveStepLines(lines) {
@@ -2152,9 +2224,9 @@
   }
   function renderRelHist() {
     var hist = loadRelHist();
-    relHistTip.textContent = hist.length ? "共 " + hist.length + " 条（本机存储，最多 " + REL_HIST_MAX + " 条）" : "";
+    relHistTip.textContent = hist.length ? "共 " + hist.length + " 条（云端存储，最多 " + REL_HIST_MAX + " 条）" : "（云端存储，最多 " + REL_HIST_MAX + " 条）";
     if (!hist.length) {
-      relHistEl.innerHTML = '<div class="pr-empty" style="padding:20px 10px">暂无构建历史：完成一次「构建并发行」后自动归档到这里。</div>';
+      relHistEl.innerHTML = '<div class="pr-empty" style="padding:20px 10px">暂无构建历史：完成一次「构建并发行」后自动归档到云端。</div>';
       return;
     }
     relHistEl.innerHTML = hist.map(function (rec, ri) {
@@ -2512,7 +2584,7 @@
           rec.artifactFiles = (relStepLogs[3] || []).filter(function (l) { return l.msg.indexOf("✓ 已上传 ") === 0; })
             .map(function (l) { return l.msg.slice(6); });
         }
-        var hist = loadRelHist(); hist.unshift(rec); saveRelHist(hist); renderRelHist();
+        var hist = await ensureRelHistLoaded(); hist.unshift(rec); saveRelHist(hist); renderRelHist();
         relRunning = false; relAbortCtrl = null;
         relRunBtn.disabled = false; relRunBtn.textContent = "🚀 构建并发行"; relRunBtn.classList.remove("is-stop");
       }
@@ -2622,7 +2694,7 @@
     populateSettings();
     renderRelRepoOptions();
     renderRepoFilterAll();
-    renderRelHist();
+    relHistCache = null; ensureRelHist();
     renderIssueStatus(); renderIssueStats(); renderIssueList();
     loadAll();
     toast("已切换到 " + platformLabel());
@@ -2643,7 +2715,7 @@
     if (!b) return;
     var v = b.getAttribute("data-view");
     if (v === "settings") populateSettings();
-    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); renderRelHist(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
+    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); ensureRelHist(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
     if (v === "issues") { renderRepoFilterAll(); if (!state.issues.length && !state.issuesLoading && state.token) loadIssues(); }
     switchView(v);
   });
@@ -2680,7 +2752,7 @@
   renderStats(); renderList();
   renderIssueStatus(); renderIssueStats(); renderIssueList();
   renderRepoFilterAll();
-  renderRelHist();
+  ensureRelHist();
   loadAll();
 })();
 </script>
