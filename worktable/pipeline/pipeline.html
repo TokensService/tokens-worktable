@@ -3583,7 +3583,9 @@ function finish(result){
       tag:curRun.tag, archive:archiveFolderFor(curRun)};
     history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
     histPage=0;
+    selHistoryIdx=0;   // 运行完成：自然选中运行历史第一条（本次运行，仅选中不进入回放，保持本次运行的实时编排/详情视图），便于直接对选中行做分析/收集普罗/打开归档
     renderHistory(); renderStats();
+    refreshArchiveTip();   // 归档目录目标跟随刚选中的本次运行记录刷新
     persistState();
     archiveRun(result);
     promCollectRun(curRun).catch(e=>console.warn('[prom] 自动收集异常（不影响运行结果）:', e));   // 勾选收集普罗数据的流水线运行结束自动收集
