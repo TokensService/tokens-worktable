@@ -11,6 +11,8 @@
 # 环境变量:
 #   ACTION=standardize       动作：standardize|check-health|clean-containers|kill-gpu|svc|hugepages
 #   STEPS=                   standardize 清理步骤，逗号分隔；默认 crond,containers,gpu；完成后固定执行环境检查
+#   CLEANUP_TIMEOUT_SECONDS=300 清理等待上限
+#   CLEANUP_POLL_SECONDS=5     残留 Pod 检查间隔
 #   DRY_RUN=0|1              仅预演
 #   NODE=                    指定 Kubernetes nodeName
 #   WHITELIST_NS=            白名单命名空间，空格分隔 glob
@@ -48,6 +50,8 @@ SSH_PORT="${SSH_PORT:-22}"
 SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
 REMOTE_EXECUTION="${REMOTE_EXECUTION:-0}"
 SSHD_PID=""
+CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"
+CLEANUP_POLL_SECONDS="${CLEANUP_POLL_SECONDS:-5}"
 HEALTH_PASS=0
 HEALTH_WARN=0
 HEALTH_FAIL=0
@@ -162,58 +166,74 @@ handle_top_owner() {
             log "  WARN DaemonSet 无法 scale, 需手动 cordon/patch: $ref"; return ;;
         pod|node|"") return ;;
         raycluster)
-            log "  -> RayCluster $ns/$name, patch all workerGroupSpecs replicas=0"
-            echo "RayCluster $ns $name" >> "$SCALED_RECORD"
-            local wc; wc=$(kubectl get raycluster "$name" -n "$ns" -o jsonpath='{.spec.workerGroupSpecs}' 2>/dev/null | json_array_len)
-            if [[ "${wc:-0}" -gt 0 ]] 2>/dev/null; then
-                local i
-                for (( i=0; i<wc; i++ )); do
-                    run kubectl patch raycluster "$name" -n "$ns" --type=json -p "[{\"op\":\"replace\",\"path\":\"/spec/workerGroupSpecs/${i}/replicas\",\"value\":0}]" 2>/dev/null
-                done
-                log "    -> patched $wc workerGroup(s)"
-            else
-                run kubectl patch raycluster "$name" -n "$ns" --type=json -p '[{"op":"replace","path":"/spec/workerGroupSpecs/0/replicas","value":0}]' 2>/dev/null
-            fi
-            return ;;
+            # 仅缩 Worker 会留下 Head，并可能被 autoscaler 恢复。
+            log "  -> delete RayCluster $ns/$name (含 Head)"
+            run kubectl delete raycluster "$name" -n "$ns" \
+                --ignore-not-found --wait=true --timeout="${CLEANUP_TIMEOUT_SECONDS}s"
+            return $? ;;
+
     esac
     log "  try scale 0: $ref"
     if [[ "$DRY_RUN" == "1" ]]; then log "  [DRY_RUN] kubectl scale $ref -n $ns --replicas=0"; return; fi
     if kubectl scale "$ref" -n "$ns" --replicas=0 >/dev/null 2>&1; then log "    -> scaled"; return; fi
     log "  scale 不支持, delete: $ref"
-    kubectl delete "$ref" -n "$ns" --grace-period=5 --ignore-not-found >/dev/null 2>&1 || log "    WARN delete 失败: $ref"
+    kubectl delete "$ref" -n "$ns" --grace-period=5 --ignore-not-found \
+        --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || return 1
 }
 
 clean_namespace() {
-    local ns=$1 pod owner res
+    local ns=$1 pod owner res pod_names
     if [[ "$HAS_HELM" == "1" ]]; then
-        local rels; rels=$(helm list -n "$ns" -q 2>/dev/null)
+        local rels; rels=$(helm list -n "$ns" --all -q) || return 1
         if [[ -n "$rels" ]]; then
             log "[CLEAN] ns=$ns (Helm)"
             while read -r rel; do
                 [[ -z "$rel" ]] && continue
                 log "  helm uninstall $rel (ns=$ns)"
                 [[ "$DRY_RUN" == "1" ]] && { log "  [DRY_RUN] helm uninstall $rel -n $ns"; continue; }
-                helm uninstall "$rel" -n "$ns" 2>/dev/null || log "    WARN helm uninstall 失败: $rel"
+                helm uninstall "$rel" -n "$ns" --wait --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || {
+                    log "ERROR: helm uninstall 失败: $ns/$rel"; return 1;
+                }
             done <<< "$rels"
-            return
+            wait_namespace_cleanup "$ns"
+            return $?
         fi
     fi
     log "[CLEAN] ns=$ns"
     declare -A TOP=()
+    pod_names=$(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}') || return 1
     while read -r pod; do
         [[ -z "$pod" ]] && continue
         owner=$(get_top_owner "$ns" pod "$pod")
         [[ -n "$owner" ]] && TOP[$owner]=1
-    done < <(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+    done <<< "$pod_names"
     if (( ${#TOP[@]} > 0 )); then
         log "  顶层 owner (${#TOP[@]}): ${!TOP[*]}"
-        for owner in "${!TOP[@]}"; do handle_top_owner "$ns" "$owner"; done
+        for owner in "${!TOP[@]}"; do handle_top_owner "$ns" "$owner" || return 1; done
     fi
+    pod_names=$(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o name) || return 1
     while read -r res; do
         [[ -z "$res" ]] && continue
-        log "  force delete: $res"
-        run kubectl delete "$res" -n "$ns" --grace-period=0 --force --ignore-not-found 2>/dev/null
-    done < <(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o name 2>/dev/null)
+        log "  delete: $res"
+        run kubectl delete "$res" -n "$ns" --ignore-not-found --wait=false || return 1
+    done <<< "$pod_names"
+    wait_namespace_cleanup "$ns"
+}
+
+# API 中 Pod 消失后才能继续；不能以删除命令已提交代替清理完成。
+wait_namespace_cleanup() {
+    local ns=$1 remaining deadline=$((SECONDS + CLEANUP_TIMEOUT_SECONDS))
+    [[ "$DRY_RUN" == 1 ]] && return 0
+    while true; do
+        remaining=$(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o name) || return 1
+        [[ -z "$remaining" ]] && { log "[CLEAN] $ns 节点 Pod 已清空"; return 0; }
+        if (( SECONDS >= deadline )); then
+            log "ERROR: $ns 清理超时，残留: $remaining"
+            return 1
+        fi
+        log "等待 $ns 节点 Pod 退出: $remaining"
+        sleep "$CLEANUP_POLL_SECONDS"
+    done
 }
 
 clean_docker() {
@@ -285,40 +305,17 @@ step_containers() {
     fi
     if [[ "$HAS_KUBECTL" == "1" ]]; then
         log "nodeName=$NODE (hostname=$(hostname)) DRY_RUN=$DRY_RUN"
-        # 预清理本节点 RayCluster
-        if kubectl get crd rayclusters.ray.io -o name &>/dev/null; then
-            log "预清理本节点 RayCluster..."
-            declare -A LRC=()
-            local pl rc_ns rc_pod top_ref top_kind
-            while IFS= read -r pl; do
-                [[ -z "$pl" ]] && continue
-                rc_ns=${pl%% *}; rc_pod=${pl#* }
-                top_ref=$(get_top_owner "$rc_ns" pod "$rc_pod"); top_kind=${top_ref%%/*}
-                [[ "$top_kind" == "raycluster" ]] && LRC["$rc_ns/${top_ref#*/}"]=1
-            done < <(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)
-            for k in "${!LRC[@]}"; do
-                rc_ns=${k%/*}; local rc_name=${k#*/}
-                if is_whitelisted "$rc_ns"; then log "  [SKIP] RayCluster $k (白名单)"; continue; fi
-                log "  -> RayCluster $k, patch replicas=0"
-                echo "RayCluster $rc_ns $rc_name" >> "$SCALED_RECORD"
-                local wc; wc=$(kubectl get raycluster "$rc_name" -n "$rc_ns" -o jsonpath='{.spec.workerGroupSpecs}' 2>/dev/null | json_array_len)
-                if [[ "${wc:-0}" -gt 0 ]] 2>/dev/null; then
-                    local j; for (( j=0; j<wc; j++ )); do
-                        run kubectl patch raycluster "$rc_name" -n "$rc_ns" --type=json -p "[{\"op\":\"replace\",\"path\":\"/spec/workerGroupSpecs/${j}/replicas\",\"value\":0}]" 2>/dev/null
-                    done
-                else
-                    run kubectl patch raycluster "$rc_name" -n "$rc_ns" --type=json -p '[{"op":"replace","path":"/spec/workerGroupSpecs/0/replicas","value":0}]' 2>/dev/null
-                fi
-            done
-        fi
+        # 先固定命名空间清单，再逐个删除控制器，避免提前缩容改变发现结果。
         log "白名单 ns: ${WHITELIST_NS_ARR[*]}"
         local -a NS_LIST=()
-        mapfile -t NS_LIST < <(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u)
+        local namespace_names
+        namespace_names=$(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}') || return 1
+        mapfile -t NS_LIST < <(printf '%s\n' "$namespace_names" | sed '/^$/d' | sort -u)
         [[ ${#NS_LIST[@]} -eq 0 ]] && log "节点上无 Pod" || log "节点上有 Pod 的 ns (${#NS_LIST[@]}): ${NS_LIST[*]}"
         for ns in "${NS_LIST[@]}"; do
             [[ -z "$ns" ]] && continue
             is_whitelisted "$ns" && { log "[SKIP] $ns (白名单)"; continue; }
-            clean_namespace "$ns"
+            clean_namespace "$ns" || return 1
         done
     else
         log "跳过 k8s 工作负载清理"
@@ -589,7 +586,7 @@ do_standardize() {
     for s in $steps; do
         case "$s" in
             crond) [[ "${NO_CROND:-0}" == "1" ]] || step_crond ;;
-            containers) step_containers ;;
+            containers) step_containers || return 1 ;;
             gpu) step_kill_gpu ;;
             kubelet) step_svc kubelet ;;
             kube-proxy) step_svc kube-proxy ;;
@@ -629,10 +626,10 @@ do_remote() {
     target="${SSH_USER}@${ip}"
     local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
     log "推送脚本到 $target:$SSH_PORT 并执行 $ACTION"
-    remote_scp -P "$SSH_PORT" -q "$self" "$target:/tmp/bnt-standalone.sh"
+    remote_scp -P "$SSH_PORT" -q "$self" "$target:/tmp/bnt-standalone.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE HUGEPAGE_PATH LOG_FILE; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
@@ -653,7 +650,7 @@ do_targets() {
     local ip count=0
     while IFS= read -r ip; do
         [[ -z "$ip" ]] && continue
-        do_remote "$ip"
+        do_remote "$ip" || return 1
         ((count += 1))
     done < <(target_ips)
     if (( count == 0 )); then
@@ -665,13 +662,15 @@ do_targets() {
 main() {
     [[ $# -eq 0 ]] || die "不支持命令行参数；请使用环境变量配置"
     [[ "$DRY_RUN" =~ ^[01]$ ]] || die "DRY_RUN 必须为 0 或 1"
+    [[ "$CLEANUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CLEANUP_TIMEOUT_SECONDS 必须为正整数"
+    [[ "$CLEANUP_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CLEANUP_POLL_SECONDS 必须为正整数"
     if [[ -n "$TARGET_HOSTS" && "$REMOTE_EXECUTION" != "1" ]]; then
         do_targets
         return
     fi
     case "$ACTION" in
         standardize) do_standardize;;
-        clean-containers) step_containers; log "完成 (日志 $LOG_FILE)";;
+        clean-containers) step_containers || return 1; log "完成 (日志 $LOG_FILE)";;
         kill-gpu) step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
         check-health) check_health;;
         svc) [[ "$SERVICE" == "kubelet" || "$SERVICE" == "kube-proxy" ]] || die "SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$SERVICE";;
