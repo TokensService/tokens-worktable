@@ -19,20 +19,20 @@ test('勾选后首位显示清理，取消后移除，普通任务编辑索引�
   checkbox.checked=false;flow.children=[];ctx.renderFlow();
   assert.match(flow.children[0].innerHTML,/First/);
 });
-test('勾选检查后首位显示环境检查（先于清理），预设节点双击均不可编辑',()=>{
+test('勾选检查后清理仍在首位、检查次之（执行顺序：清理 → 检查），预设节点双击均不可编辑',()=>{
   const {ctx,flow,checkBox}=context();checkBox.checked=true;ctx.renderFlow();
-  assert.match(flow.children[0].innerHTML,/环境检查/);
-  assert.match(flow.children[2].innerHTML,/环境清理/);
-  flow.children[0].dblclick();assert.equal(ctx.edited,undefined);   // 预设任务（环境检查/环境清理）不可在编排中编辑
+  assert.match(flow.children[0].innerHTML,/环境清理/);
+  assert.match(flow.children[2].innerHTML,/环境检查/);
+  flow.children[0].dblclick();assert.equal(ctx.edited,undefined);   // 预设任务（环境清理/环境检查）不可在编排中编辑
   flow.children[2].dblclick();assert.equal(ctx.edited,undefined);
   flow.children[4].dblclick();assert.equal(ctx.edited,0);   // 普通阶段编辑索引不因前置预设节点偏移
 });
-test('运行快照和历史中的检查/清理节点不受当前开关影响',()=>{
+test('运行快照和历史中的清理/检查节点不受当前开关影响',()=>{
   const {ctx,flow,checkbox,checkBox}=context();checkbox.checked=false;checkBox.checked=false;
   ctx.runStages=ctx.activeStages();ctx.curRun={checkStage:{id:'__check__',name:'环境检查',preset:true,check:true},cleanupStage:{id:'__cleanup__',name:'环境清理',preset:true,cleanup:true}};
-  ctx.renderFlow();assert.match(flow.children[0].innerHTML,/环境检查/);assert.match(flow.children[2].innerHTML,/环境清理/);
-  ctx.curRun=null;ctx.replayRec={logs:[{stage:'环境检查',status:'failed'},{stage:'环境清理',status:'success'}]};flow.children=[];
-  ctx.renderFlow();assert.match(flow.children[0].innerHTML,/环境检查/);assert.match(flow.children[2].innerHTML,/环境清理/);
+  ctx.renderFlow();assert.match(flow.children[0].innerHTML,/环境清理/);assert.match(flow.children[2].innerHTML,/环境检查/);
+  ctx.curRun=null;ctx.replayRec={logs:[{stage:'环境清理',status:'success'},{stage:'环境检查',status:'failed'}]};flow.children=[];
+  ctx.renderFlow();assert.match(flow.children[0].innerHTML,/环境清理/);assert.match(flow.children[2].innerHTML,/环境检查/);
 });
 test('运行快照和历史清理节点不受当前开关影响',()=>{
   const {ctx,flow,checkbox}=context();checkbox.checked=false;

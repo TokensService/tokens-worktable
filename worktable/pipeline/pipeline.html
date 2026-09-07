@@ -169,11 +169,11 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="勾选后流水线启动前先执行设置页配置的「环境检查脚本」：检查不通过（脚本非零退出）则阻断本次启动">
-      <input type="checkbox" id="checkEnv" /> 检查环境
-    </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
       <input type="checkbox" id="cleanupEnv" /> 清理环境
+    </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="勾选后流水线启动前执行设置页配置的「环境检查脚本」（在环境清理之后）：检查不通过（脚本非零退出）则阻断本次启动">
+      <input type="checkbox" id="checkEnv" /> 检查环境
     </label>
     <button id="runBtn" class="dshell-btn" style="margin-left:auto;flex-shrink:0;">▶ 运行流水线</button>
     <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled style="flex-shrink:0;">⏹ 中止</button>
@@ -216,7 +216,7 @@
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
-    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境检查/环境清理为系统预设任务，不可在编排中编辑；检查/清理脚本在设置页配置。</p>
+    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理/环境检查为系统预设任务，不可在编排中编辑；清理/检查脚本在设置页配置。</p>
   </div>
 
 
@@ -416,7 +416,7 @@
         <span class="dshell-muted" style="font-size:11px;">脚本</span>
         <input id="checkScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不检查）" style="width:216px;" />
         <button id="checkDetect" class="dshell-btn dshell-btnGhost mini" type="button">识别参数</button>
-        <span class="dshell-muted" style="font-size:11px;">勾选主控「检查环境」后，每次流水线启动前会先执行该脚本（先于环境清理）：检查不通过（脚本非零退出）则阻断本次启动，不执行清理与各阶段；同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
+        <span class="dshell-muted" style="font-size:11px;">勾选主控「检查环境」后，每次流水线启动前会执行该脚本（在环境清理之后）：检查不通过（脚本非零退出）则阻断启动，不执行后续各阶段；同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
       </div>
       <div id="checkParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
@@ -427,7 +427,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
           <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_年月日时分秒」文件夹归档（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境检查/环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理/环境检查），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
@@ -863,7 +863,7 @@ async function migrateInlineLogs(){
     const isPreStage=n=>n==='环境检查'||n==='环境清理';   // 启动前的系统预设任务：与归档命名约定一致占 00 号，阶段从 01 起
     for(const l of inline){
       const idx=rec.logs.indexOf(l);
-      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=环境检查/环境清理，阶段按剔除预设任务后的位置从 01 起
+      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=环境清理/环境检查，阶段按剔除预设任务后的位置从 01 起
       const fname='run-'+rec.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(l.stage)+'.log';
       const fp=rec.archive+'/'+fname;
       if(!names.has(fname)){
@@ -2368,14 +2368,14 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;',
 /* ---------- 渲染流水线编排 ---------- */
 function cleanupFlowStage(){ return {id:'__cleanup__',name:'环境清理',preset:true,cleanup:true,script:cleanupScript ? JSON.parse(JSON.stringify(cleanupScript)) : null}; }
 function checkFlowStage(){ return {id:'__check__',name:'环境检查',preset:true,check:true,script:checkScript ? JSON.parse(JSON.stringify(checkScript)) : null}; }
-// 检查/清理只加入展示序列，不改正式阶段索引、编辑位置与归档编号（执行顺序：环境检查 → 环境清理 → 各阶段）。
+// 清理/检查只加入展示序列，不改正式阶段索引、编辑位置与归档编号（执行顺序：环境清理 → 环境检查 → 各阶段）。
 function flowStages(){
   const stages=activeStages();
   const cleanup=replayRec ? ((replayRec.logs||[]).some(l=>l.stage==='环境清理') ? cleanupFlowStage() : null)
     : runStages ? (curRun && curRun.cleanupStage) : ($('cleanupEnv').checked ? cleanupFlowStage() : null);
   const check=replayRec ? ((replayRec.logs||[]).some(l=>l.stage==='环境检查') ? checkFlowStage() : null)
     : runStages ? (curRun && curRun.checkStage) : ($('checkEnv').checked ? checkFlowStage() : null);
-  return (check?[check]:[]).concat(cleanup?[cleanup]:[], stages);
+  return (cleanup?[cleanup]:[]).concat(check?[check]:[], stages);
 }
 function renderFlow(){
   const f = $('flow'); f.innerHTML='';
@@ -2396,7 +2396,7 @@ function renderFlow(){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(running || replayRec || s.preset) return;   // 预设任务（环境检查/环境清理）脚本在设置页配置；回放态只读
+      if(running || replayRec || s.preset) return;   // 预设任务（环境清理/环境检查）脚本在设置页配置；回放态只读
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, activeStages().findIndex(x=>x.id===s.id));
     });
@@ -2676,37 +2676,37 @@ function startSimRun(pl, c){
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
   }
-  selectedId = curRun.checkStage ? curRun.checkStage.id : (curRun.cleanupStage ? curRun.cleanupStage.id : stages[0].id);
+  selectedId = curRun.cleanupStage ? curRun.cleanupStage.id : (curRun.checkStage ? curRun.checkStage.id : stages[0].id);
   running=true; $('stopBtn').disabled=false; syncRunBtn();
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   setOverall('运行中…','dshell-badgeWait');
   $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
   const tk=curRun.token;
-  /* 勾选「清理环境」且已配置清理脚本：先执行清理，再进入第一个阶段（期间重置可取消启动） */
-  const afterPrechecks=()=>{
+  /* 勾选「检查环境」且已配置检查脚本：清理之后执行检查；检查不通过（脚本非零退出）则阻断启动，
+     按失败计入历史，不执行后续各阶段 */
+  const afterCleanup=()=>{
     if(!running || !curRun || curRun.token!==tk) return;
-    if(curRun.cleanupStage){
-      setOverall('清理环境中…','dshell-badgeWait');
-      runCleanupBefore().then(()=>{ if(running && curRun && curRun.token===tk){ setOverall('运行中…','dshell-badgeWait'); advance(0); } });
+    if(curRun.checkStage){
+      setOverall('检查环境中…','dshell-badgeWait');
+      runCheckBefore().then(ok=>{
+        if(!running || !curRun || curRun.token!==tk) return;
+        if(ok===false){
+          finish('failed');
+          setOverall('✗ 环境检查未通过',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+          return;
+        }
+        setOverall('运行中…','dshell-badgeWait'); advance(0);
+      });
     } else {
       advance(0);
     }
   };
-  /* 勾选「检查环境」且已配置检查脚本：先执行检查（先于清理）；检查不通过（脚本非零退出）则阻断启动，
-     按失败计入历史，不执行清理与各阶段 */
-  if(curRun.checkStage){
-    setOverall('检查环境中…','dshell-badgeWait');
-    runCheckBefore().then(ok=>{
-      if(!running || !curRun || curRun.token!==tk) return;
-      if(ok===false){
-        finish('failed');
-        setOverall('✗ 环境检查未通过',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
-        return;
-      }
-      afterPrechecks();
-    });
+  /* 勾选「清理环境」且已配置清理脚本：先执行清理，再做环境检查、进入第一个阶段（期间重置可取消启动） */
+  if(curRun.cleanupStage){
+    setOverall('清理环境中…','dshell-badgeWait');
+    runCleanupBefore().then(()=>{ if(running && curRun && curRun.token===tk) afterCleanup(); });
   } else {
-    afterPrechecks();
+    afterCleanup();
   }
   renderQueue();
 }
@@ -3751,7 +3751,7 @@ function finish(result){
       dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:curRun.startTs, by:curRun.by||'anonymous',
       pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
       prom: promSnapshotForRun(curRun),
-      logs: (curRun.checkLog?[curRun.checkLog]:[]).concat(curRun.cleanupLog?[curRun.cleanupLog]:[], collectRunLogs()),
+      logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(curRun.checkLog?[curRun.checkLog]:[], collectRunLogs()),
       tag:curRun.tag, archive:archiveFolderFor(curRun)};
     history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
     histPage=0;
@@ -3818,7 +3818,7 @@ async function runCleanupBefore(){
   }
   applyStatusClasses(); renderDetail();
 }
-/* 环境检查：勾选「检查环境」时，流水线启动前先执行设置页配置的检查脚本（先于环境清理），
+/* 环境检查：勾选「检查环境」时，流水线启动前执行设置页配置的检查脚本（在环境清理之后），
    日志挂在 curRun.checkLog 上，finish 时并入本次历史记录；与清理不同：检查不通过（脚本非零退出）阻断启动。
    返回 true=通过/未配置（跳过不阻断），false=未通过；运行被中止/令牌失效时返回 undefined（调用方按令牌守卫忽略） */
 async function runCheckBefore(){
@@ -3937,7 +3937,7 @@ async function ensureArchiveFolder(folder){
   return apiMkdir(folder);
 }
 /* 任务级日志归档：每个任务（阶段 / 环境清理）的回显即时写入归档文件夹的独立日志文件，
-   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境检查/环境清理）；失败仅告警，不影响运行结果。 */
+   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理/环境检查）；失败仅告警，不影响运行结果。 */
 function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(name)+'.log'; }
 async function archiveTaskLog(ctx, seq, name, text){
   const folder=archiveFolderFor(ctx);
@@ -3994,8 +3994,8 @@ function archiveRun(result){
     startTime: new Date(ctx.startTs).toISOString(),
     totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
     vars: ctx.vars||{},
-    checkLogFile: ctx.checkLog ? folder+'/'+taskLogFile(ctx, 0, '环境检查') : null,
     cleanupLogFile: ctx.cleanupLog ? folder+'/'+taskLogFile(ctx, 0, '环境清理') : null,
+    checkLogFile: ctx.checkLog ? folder+'/'+taskLogFile(ctx, 0, '环境检查') : null,
     stages: stages.map((s,idx)=>{
       const n=nodes[s.id]||{};
       const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
@@ -4788,15 +4788,15 @@ $('stopBtn').addEventListener('click', ()=>{
   if(timer){ clearInterval(timer); timer=null; }
   // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
-  const ks=curRun.checkStage;
-  if(ks && nodes[ks.id] && nodes[ks.id].status==='running'){
-    archiveStageLog(ks,0);
-    if(curRun.checkLog){curRun.checkLog.status='aborted';curRun.checkLog.dur=nodes[ks.id].dur||0;}
-  }
   const cs=curRun.cleanupStage;
   if(cs && nodes[cs.id] && nodes[cs.id].status==='running'){
     archiveStageLog(cs,0);
     if(curRun.cleanupLog){curRun.cleanupLog.status='aborted';curRun.cleanupLog.dur=nodes[cs.id].dur||0;}
+  }
+  const ks=curRun.checkStage;
+  if(ks && nodes[ks.id] && nodes[ks.id].status==='running'){
+    archiveStageLog(ks,0);
+    if(curRun.checkLog){curRun.checkLog.status='aborted';curRun.checkLog.dur=nodes[ks.id].dur||0;}
   }
   // 被中断的运行中阶段置为 aborted（保留已运行进度/耗时/变量），详情面板如实展示「终止」而非误显「未开始」
   flowStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running')) nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
