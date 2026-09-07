@@ -2919,19 +2919,27 @@ function substRunVars(v, rc){
    流中断（网络异常 / 响应非 200 / 被 signal 中止）时已收到的输出原样带回：
    AbortController 中止返回 code:null（调用方按令牌丢弃），其余中断按失败返回；
    接口不存在（旧插件构建未含该路由）返回 null，由 execScript 降级为一次性执行。 */
-async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal){
+async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal, logFile){
   let stdout='', stderr='';
+  let logInfo=logFile?{logPending:true}:{};
+  const recordLog=m=>{
+    if(m.logFile) logInfo={logFile:m.logFile};
+    if(m.logError) logInfo={logError:m.logError};
+  };
   const emit=(type,text)=>{ if(typeof onStream==='function' && text) onStream({type,text}); };
   try{
-    const r=await fetch('/api/worktable/exec-stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,args,env,cwd,timeoutMs}),signal});
+    const r=await fetch('/api/worktable/exec-stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,args,env,cwd,timeoutMs,logFile}),signal});
     if(!r.ok || !r.body){ await r.json().catch(()=>null); return null; }   // 旧插件构建无此路由：降级为一次性执行
+    // 响应头先确认日志归属，避免首条数据前断流触发页面覆盖；旧插件仍可归档中止快照。
+    logInfo=r.headers && r.headers.get('x-worktable-log')==='server' ? {logFile} : {};
+    if(logFile && typeof onStream==='function') onStream({type:'log',...logInfo});
     const reader=r.body.getReader();
     const dec=new TextDecoder();
     let buf='';
     for(;;){
       let chunk;
       try{ chunk=await reader.read(); }
-      catch(e){ if(e && e.name==='AbortError') return {code:null, stdout, stderr}; throw e; }
+      catch(e){ if(e && e.name==='AbortError') return {code:null, stdout, stderr,...logInfo}; throw e; }
       if(chunk.done) break;
       buf+=dec.decode(chunk.value,{stream:true});
       let idx;
@@ -2939,10 +2947,11 @@ async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal){
         const line=buf.slice(0,idx).trim(); buf=buf.slice(idx+1);
         if(!line) continue;
         let m=null; try{ m=JSON.parse(line); }catch(e){ continue; }
-        if(m.type==='out'){ stdout+=m.text||''; emit('out', m.text||''); }
+        if(m.type==='log'){ recordLog(m); if(typeof onStream==='function') onStream(m); }
+        else if(m.type==='out'){ stdout+=m.text||''; emit('out', m.text||''); }
         else if(m.type==='err'){ stderr+=m.text||''; emit('err', m.text||''); }
         else if(m.type==='error'){ const txt=m.message||'执行流错误'; stderr+=(stderr?'\n':'')+txt; emit('err', txt); }
-        else if(m.type==='done'){ return {code:(typeof m.code==='number')?m.code:1, stdout, stderr}; }
+        else if(m.type==='done'){ recordLog(m); return {code:(typeof m.code==='number')?m.code:1, stdout, stderr,...logInfo}; }
       }
     }
     if(buf.trim()){   // 末尾残余（流结束前未换行的最后一块）
@@ -2950,14 +2959,14 @@ async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal){
       if(m && m.type==='out'){ stdout+=m.text||''; emit('out', m.text||''); }
       else if(m && m.type==='err'){ stderr+=m.text||''; emit('err', m.text||''); }
       else if(m && m.type==='error'){ const txt=m.message||'执行流错误'; stderr+=(stderr?'\n':'')+txt; emit('err', txt); }
-      else if(m && m.type==='done'){ return {code:(typeof m.code==='number')?m.code:1, stdout, stderr}; }
+      else if(m && m.type==='done'){ recordLog(m); return {code:(typeof m.code==='number')?m.code:1, stdout, stderr,...logInfo}; }
     }
-    return {code:1, stdout, stderr:(stderr?stderr+'\n':'')+'（输出流意外中断，未收到完成标记）'};
+    return {code:1, stdout, stderr:(stderr?stderr+'\n':'')+'（输出流意外中断，未收到完成标记）',...logInfo};
   }catch(e){
-    return {code:1, stdout, stderr:(stderr?stderr+'\n':'')+'（执行流中断：'+(e&&e.message?e.message:e)+'）'};
+    return {code:1, stdout, stderr:(stderr?stderr+'\n':'')+'（执行流中断：'+(e&&e.message?e.message:e)+'）',...logInfo};
   }
 }
-async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal){
+async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, logFile){
   const rc=runCtx||curRun;   // 归档脚本等异步调用方传入已结束运行的快照上下文，避免运行队列切换后读到新运行的 curRun
   const args=[]; const env={};
   (sc.params||[]).forEach(p=>{
@@ -3024,15 +3033,15 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal){
   /* 流式回显（默认）：调用方传入 onStream 时走 /api/worktable/exec-stream，执行中逐块实时回调；
      接口不可用（旧插件构建返回非 200）时返回 null，降级走下方一次性 /api/worktable/exec */
   if(typeof onStream==='function'){
-    const st=await execStreaming(sc.path, args, env, scriptsDir, timeoutMs||0, onStream, signal);   // timeoutMs 0/缺省=无超时（服务端同语义）
+    const st=await execStreaming(sc.path, args, env, scriptsDir, timeoutMs||0, onStream, signal, logFile);   // timeoutMs 0/缺省=无超时（服务端同语义）
     if(st) return st;
   }
   try{
-    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||0})});   // 0=无超时
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||0,logFile}),signal});   // 0=无超时
     const j=await r.json();
     if(j && j.error) return {code:1, stdout:'', stderr:String(j.error)};
-    return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||''};
-  }catch(e){ return {code:1, stdout:'', stderr:String(e.message||e)}; }
+    return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||'',logFile:j&&j.logFile,logError:j&&j.logError};
+  }catch(e){ return {code:1, stdout:'', stderr:String(e.message||e),logPending:!!logFile}; }
 }
 /* ---------- HTTP 阶段：{VAR} 占位符替换后 GET 触发 + 轮询结果（本地直连 / 远程走 proxy；复用连接模式） ----------
    变量传递：上游阶段变量（curRun.vars）自动注入为占位符取值；URL 响应体 / 任务控制台输出的 KEY=VALUE 行 /
@@ -3467,13 +3476,18 @@ async function runScriptStep(i){
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); if(curRun) curRun.scriptAbort=ctrl;
+  const folder=archiveFolderFor(curRun), logFile=folder ? folder+'/'+taskLogFile(curRun,i+1,s.name) : null;
+  s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
   let accStdout='', accStderr='', lastLive=0;
   const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, null, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
     if(!running || !curRun || curRun.token!==tk) return;   // 迟回片段丢弃（已切换新运行）
+    if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }   // 接管确认：中止时也不可用浏览器快照覆盖服务端日志
     if(m.type==='out'){ accStdout+=m.text; } else if(m.type==='err'){ accStderr+=m.text; }
     s._out={stdout:accStdout, stderr:accStderr, code:null};   // 实时快照；归档与历史以最终结果为准
     if(selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
-  }, ctrl.signal);
+  }, ctrl.signal, logFile);
+  s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
+  if(res.logError) console.warn('[archive] 服务端阶段日志写入失败，尝试页面兜底:',res.logError);
   if(curRun && curRun.scriptAbort===ctrl) curRun.scriptAbort=null;
   if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验令牌再动全局 timer：迟回时 timer 已属新运行（中止已由 finish 清过）
   if(timer){ clearInterval(timer); timer=null; }
@@ -3570,7 +3584,8 @@ function finish(result){
 async function runCleanupBefore(){
   const t0=Date.now();
   const tk = curRun ? curRun.token : null;   // 运行令牌：清理脚本迟回时若已换了新运行，结果不得写入新运行
-  const res=await execScript(cleanupScript, 120000);   // 清理脚本无编辑器超时字段：保留原 120s 隐式上限，防止挂死阻塞流水线启动（阶段「超时(分钟)」留空无超时的新语义不影响这里）
+  const folder=archiveFolderFor(curRun), logFile=folder ? folder+'/'+taskLogFile(curRun,0,'环境清理') : null;
+  const res=await execScript(cleanupScript, 120000, null, null, null, null, logFile);   // 清理日志同样交服务端落盘
   const status=res.code===0?'success':'failed';
   let text='$ bash '+cleanupScript.name+'\n'+(res.stdout||'');
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
@@ -3581,7 +3596,7 @@ async function runCleanupBefore(){
     curRun.cleanupLog={stage:'环境清理', status, dur:(Date.now()-t0)/1000};
     if(folder) curRun.cleanupLog.logFile=folder+'/'+taskLogFile(curRun, 0, '环境清理');
     else curRun.cleanupLog.log=text;
-    archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));   // 清理回显同样即时归档
+    if(!res.logFile && !res.logPending) archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));
   }
 }
 /* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_年月日时分秒」文件夹） ---------- */
@@ -3666,6 +3681,7 @@ async function archiveTaskLog(ctx, seq, name, text){
    归档失败重置标记，交由末尾补齐重试；「从失败阶段重试」复位标记以便重写（见 retryFromStage）。 */
 function archiveStageLog(stage, seq, ctx){
   ctx=ctx||curRun;
+  if(stage._serverLogPending || stage._serverLogFile) return;   // 在途/已落盘的服务端日志不能由浏览器覆写
   if(!ctx || stage._logArchived) return;
   if(!archiveFolderFor(ctx)) return;   // 未配置归档且保底根不可用：不归档
   stage._logArchived=true;

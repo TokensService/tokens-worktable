@@ -1,7 +1,7 @@
 // src/index.ts
 import { execFile, spawn } from "node:child_process";
 import { readdirSync, realpathSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen } from "node:fs/promises";
 import { dirname, resolve as pathResolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { homedir, networkInterfaces } from "node:os";
@@ -1190,10 +1190,54 @@ function apply(ctx) {
     planTick().catch(() => {
     });
   }, 15e3);
+  async function openExecLog(requested, header) {
+    const logFile = typeof requested === "string" && requested ? pathResolve(requested) : null;
+    let file = null;
+    let logError = "";
+    let pending = Promise.resolve();
+    let ended = false;
+    let lastNewline = true;
+    if (logFile) {
+      try {
+        await fsMkdir(dirname(logFile), { recursive: true });
+        file = await fsOpen(logFile, "w");
+      } catch (e) {
+        logError = String(e);
+      }
+    }
+    const write = (text) => {
+      if (!file || ended || !text || logError) return;
+      lastNewline = text.endsWith("\n");
+      pending = pending.then(async () => {
+        if (!logError) await file.writeFile(text, "utf8");
+      }).catch((e) => {
+        logError = String(e);
+      });
+    };
+    write(header + "\n");
+    return {
+      info: () => logFile ? logError ? { logError } : { logFile } : {},
+      write,
+      async close(marker) {
+        if (!ended) {
+          write((lastNewline ? "" : "\n") + marker + "\n");
+          ended = true;
+          await pending;
+          try {
+            await file?.close();
+          } catch (e) {
+            logError = String(e);
+          }
+        }
+        return logFile ? logError ? { logError } : { logFile } : {};
+      }
+    };
+  }
   webServer.register({
     kind: "exact",
     path: "/api/worktable/exec",
     handler: async (req, res) => {
+      let failedLog = null;
       try {
         if (req.method !== "POST") {
           res.writeHead(405);
@@ -1217,17 +1261,28 @@ function apply(ctx) {
         const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1e3), 36e5) : 0;
         const interp = /\.py$/i.test(path) ? "python3" : "bash";
         const oversizeWarn = dropOversizeEnv(env);
-        execFile(
+        const log = await openExecLog(body.logFile, "$ " + interp + " " + path + (args.length ? " " + args.join(" ") : ""));
+        failedLog = log;
+        if (oversizeWarn) log.write(oversizeWarn + "\n");
+        const child = execFile(
           interp,
           [path, ...args],
           { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
           // 256MB：与 runStageScript 一致，日志保全量，不得因缓冲上限杀进程丢输出
-          (err, stdout, stderr) => {
+          async (err, stdout, stderr) => {
             const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-            json(res, 200, { code, stdout: String(stdout || ""), stderr: (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "") });
+            const errorText = (oversizeWarn ? oversizeWarn + "\n" : "") + String(stderr || "");
+            if (err?.killed) log.write("\nexec terminated (timeout or output limit)\n");
+            const logged = await log.close("[exit " + code + "]");
+            if (!res.destroyed) json(res, 200, { code, stdout: String(stdout || ""), stderr: errorText, ...logged });
           }
         );
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+        child.stdout?.on("data", (text) => log.write(text));
+        child.stderr?.on("data", (text) => log.write(text));
       } catch (err) {
+        await failedLog?.close("[error] " + String(err));
         json(res, 500, { error: String(err && err.message ? err.message : err) });
       }
     }
@@ -1236,6 +1291,7 @@ function apply(ctx) {
     kind: "exact",
     path: "/api/worktable/exec-stream",
     handler: async (req, res) => {
+      let failExecution = null;
       try {
         if (req.method !== "POST") {
           res.writeHead(405);
@@ -1259,50 +1315,90 @@ function apply(ctx) {
         const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1e3), 36e5) : 0;
         const interp = /.py$/i.test(scriptPath) ? "python3" : "bash";
         const oversizeWarn = dropOversizeEnv(env);
-        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
-        const send = (obj) => {
-          if (!res.writableEnded) res.write(JSON.stringify(obj) + "\n");
-        };
-        const child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== "win32" });
-        if (oversizeWarn) send({ type: "err", text: oversizeWarn + "\n" });
+        let disconnected = false;
+        let child = null;
+        let killTimer = null;
+        let abortTimer = null;
         let finished = false;
-        let timedOut = false;
         const killTree = (sig) => {
           try {
-            if (process.platform !== "win32" && child.pid) process.kill(-child.pid, sig);
-            else child.kill(sig);
+            if (process.platform !== "win32" && child?.pid) process.kill(-child.pid, sig);
+            else child?.kill(sig);
           } catch {
           }
         };
-        const killTimer = timeoutMs > 0 ? setTimeout(() => {
+        res.on("close", () => {
+          if (finished) return;
+          disconnected = true;
+          killTree("SIGTERM");
+          if (child) abortTimer = setTimeout(() => killTree("SIGKILL"), 1e3);
+        });
+        const log = await openExecLog(body.logFile, "$ " + interp + " " + scriptPath + (args.length ? " " + args.join(" ") : ""));
+        failExecution = async (err) => {
+          finished = true;
+          clearTimeout(killTimer);
+          clearTimeout(abortTimer);
+          killTree("SIGKILL");
+          await log.close("[error] " + String(err));
+        };
+        if (disconnected || res.destroyed) {
+          finished = true;
+          await log.close("[aborted]");
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no", "x-worktable-log": log.info().logFile ? "server" : "none" });
+        const send = (obj) => {
+          if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(obj) + "\n");
+        };
+        if (body.logFile) send({ type: "log", ...log.info() });
+        child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== "win32" });
+        if (oversizeWarn) {
+          log.write(oversizeWarn + "\n");
+          send({ type: "err", text: oversizeWarn + "\n" });
+        }
+        let timedOut = false;
+        killTimer = timeoutMs > 0 ? setTimeout(() => {
           timedOut = true;
           killTree("SIGKILL");
         }, timeoutMs) : null;
-        child.stdout.on("data", (d) => send({ type: "out", text: d.toString("utf8") }));
-        child.stderr.on("data", (d) => send({ type: "err", text: d.toString("utf8") }));
-        child.on("error", (err) => {
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (text) => {
+          log.write(text);
+          send({ type: "out", text });
+        });
+        child.stderr.on("data", (text) => {
+          log.write(text);
+          send({ type: "err", text });
+        });
+        child.on("error", async (err) => {
           if (finished) return;
           finished = true;
           clearTimeout(killTimer);
+          clearTimeout(abortTimer);
+          log.write(String(err.message) + "\n");
+          const logged = await log.close("[exit 1]");
           send({ type: "error", message: String(err && err.message ? err.message : err) });
+          send({ type: "done", code: 1, ...logged });
           res.end();
         });
-        child.on("close", (code) => {
+        child.on("close", async (code) => {
           if (finished) return;
           finished = true;
           clearTimeout(killTimer);
-          if (timedOut) send({ type: "error", message: "exec timed out after " + Math.round(timeoutMs / 1e3) + "s" });
-          else send({ type: "done", code: typeof code === "number" ? code : 1 });
-          res.end();
-        });
-        res.on("close", () => {
-          if (!finished) {
-            finished = true;
-            clearTimeout(killTimer);
-            killTree("SIGTERM");
+          clearTimeout(abortTimer);
+          if (timedOut) {
+            const message = "exec timed out after " + Math.round(timeoutMs / 1e3) + "s";
+            log.write("\n" + message + "\n");
+            send({ type: "error", message });
           }
+          const exitCode = typeof code === "number" ? code : 1;
+          const logged = await log.close(disconnected ? "[aborted]" : "[exit " + exitCode + "]");
+          send({ type: "done", code: exitCode, ...logged });
+          res.end();
         });
       } catch (err) {
+        await failExecution?.(err);
         try {
           if (!res.writableEnded) res.end();
         } catch {

@@ -34,6 +34,7 @@ function makeContext() {
     parseStageJson() { return null; },
     applyOutVars() {},
     archiveStageLog() {},
+    archiveFolderFor() { return null; },
     advance(i) { calls.advance.push(i); },
     finish(r) { calls.finish.push(r); },
     execScript() { return new Promise((res) => { context.resolveExec = res; }); },

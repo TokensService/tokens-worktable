@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen } from 'node:fs/promises'
 import { dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -1066,10 +1066,43 @@ export function apply(ctx: Context) {
 
   // 流水线阶段脚本执行（pipeline.html 的 execScript 调用）：按扩展名选解释器（.sh→bash、.py→python3），
   // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。
+  // 日志由执行端持有：按输出到达顺序串行写入，关闭文件后才确认归档成功；失败不改变脚本退出码。
+  async function openExecLog(requested: unknown, header: string) {
+    const logFile = typeof requested === 'string' && requested ? pathResolve(requested) : null
+    let file: Awaited<ReturnType<typeof fsOpen>> | null = null
+    let logError = ''
+    let pending = Promise.resolve()
+    let ended = false
+    let lastNewline = true
+    if (logFile) {
+      try { await fsMkdir(dirname(logFile), { recursive: true }); file = await fsOpen(logFile, 'w') }
+      catch (e) { logError = String(e) }
+    }
+    const write = (text: string) => {
+      if (!file || ended || !text || logError) return
+      lastNewline = text.endsWith('\n')
+      pending = pending.then(async () => { if (!logError) await file!.writeFile(text, 'utf8') }).catch(e => { logError = String(e) })
+    }
+    write(header + '\n')
+    return {
+      info: () => logFile ? (logError ? { logError } : { logFile }) : {},
+      write,
+      async close(marker: string) {
+        if (!ended) {
+          write((lastNewline ? '' : '\n') + marker + '\n')
+          ended = true
+          await pending
+          try { await file?.close() } catch (e) { logError = String(e) }
+        }
+        return logFile ? (logError ? { logError } : { logFile }) : {}
+      }
+    }
+  }
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/exec',
     handler: async (req: any, res: any) => {
+      let failedLog: Awaited<ReturnType<typeof openExecLog>> | null = null
       try {
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         const body = await readJsonBody(req)
@@ -1083,12 +1116,23 @@ export function apply(ctx: Context) {
         const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), 3600000) : 0   // 0/缺省=无超时（execFile timeout:0 不启用超时）；页面阶段「超时(分钟)」留空即传 0
         const interp = /\.py$/i.test(path) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
-        execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },   // 256MB：与 runStageScript 一致，日志保全量，不得因缓冲上限杀进程丢输出
-          (err, stdout, stderr) => {
+        const log = await openExecLog(body.logFile, '$ ' + interp + ' ' + path + (args.length ? ' ' + args.join(' ') : ''))
+        failedLog = log
+        if (oversizeWarn) log.write(oversizeWarn + '\n')
+        const child = execFile(interp, [path, ...args], { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },   // 256MB：与 runStageScript 一致，日志保全量，不得因缓冲上限杀进程丢输出
+          async (err, stdout, stderr) => {
             const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
-            json(res, 200, { code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '') })
+            const errorText = (oversizeWarn ? oversizeWarn + '\n' : '') + String(stderr || '')
+            if (err?.killed) log.write('\nexec terminated (timeout or output limit)\n')
+            const logged = await log.close('[exit ' + code + ']')
+            if (!res.destroyed) json(res, 200, { code, stdout: String(stdout || ''), stderr: errorText, ...logged })
           })
+        child.stdout?.setEncoding('utf8')
+        child.stderr?.setEncoding('utf8')
+        child.stdout?.on('data', (text: string) => log.write(text))
+        child.stderr?.on('data', (text: string) => log.write(text))
       } catch (err) {
+        await failedLog?.close('[error] ' + String(err))
         json(res, 500, { error: String(err && err.message ? err.message : err) })
       }
     }
@@ -1102,6 +1146,7 @@ export function apply(ctx: Context) {
     kind: 'exact',
     path: '/api/worktable/exec-stream',
     handler: async (req: any, res: any) => {
+      let failExecution: ((err: unknown) => Promise<void>) | null = null
       try {
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         const body = await readJsonBody(req)
@@ -1115,38 +1160,66 @@ export function apply(ctx: Context) {
         const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), 3600000) : 0   // 0/缺省=无超时（页面阶段「超时(分钟)」留空即传 0）：不挂超时 kill 定时器
         const interp = /.py$/i.test(scriptPath) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 spawn 直接 E2BIG，见 dropOversizeEnv）
-        res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store' })
-        const send = (obj: unknown) => { if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n') }
-        // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
-        const child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
-        if (oversizeWarn) send({ type: 'err', text: oversizeWarn + '\n' })
+        let disconnected = false
+        let child: ReturnType<typeof spawn> | null = null
+        let killTimer: ReturnType<typeof setTimeout> | null = null
+        let abortTimer: ReturnType<typeof setTimeout> | null = null
         let finished = false
-        let timedOut = false
         const killTree = (sig: string) => {
-          try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, sig); else child.kill(sig) } catch {}
+          try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, sig); else child?.kill(sig as any) } catch {}
         }
-        const killTimer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs) : null
-        child.stdout.on('data', (d: Buffer) => send({ type: 'out', text: d.toString('utf8') }))
-        child.stderr.on('data', (d: Buffer) => send({ type: 'err', text: d.toString('utf8') }))
-        child.on('error', (err: Error) => {               // ENOENT 等无法启动
+        // 建目录/打开文件也可能正在 await；提前监听断开，避免页面已关闭仍启动脚本。
+        res.on('close', () => {
+          if (finished) return
+          disconnected = true
+          killTree('SIGTERM')
+          if (child) abortTimer = setTimeout(() => killTree('SIGKILL'), 1000)
+        })
+        const log = await openExecLog(body.logFile, '$ ' + interp + ' ' + scriptPath + (args.length ? ' ' + args.join(' ') : ''))
+        failExecution = async err => {
+          finished = true; clearTimeout(killTimer); clearTimeout(abortTimer); killTree('SIGKILL')
+          await log.close('[error] ' + String(err))
+        }
+        if (disconnected || res.destroyed) { finished = true; await log.close('[aborted]'); return }
+        res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', 'x-worktable-log': log.info().logFile ? 'server' : 'none' })
+        const send = (obj: unknown) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(obj) + '\n') }
+        if (body.logFile) send({ type: 'log', ...log.info() })
+        // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
+        child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
+        if (oversizeWarn) { log.write(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
+        let timedOut = false
+        killTimer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs) : null
+        child.stdout!.setEncoding('utf8')
+        child.stderr!.setEncoding('utf8')
+        child.stdout!.on('data', (text: string) => { log.write(text); send({ type: 'out', text }) })
+        child.stderr!.on('data', (text: string) => { log.write(text); send({ type: 'err', text }) })
+        child.on('error', async (err: Error) => {               // ENOENT 等无法启动
           if (finished) return
           finished = true
           clearTimeout(killTimer)
+          clearTimeout(abortTimer)
+          log.write(String(err.message) + '\n')
+          const logged = await log.close('[exit 1]')
           send({ type: 'error', message: String(err && err.message ? err.message : err) })
+          send({ type: 'done', code: 1, ...logged })
           res.end()
         })
-        child.on('close', (code: number | null) => {
+        child.on('close', async (code: number | null) => {
           if (finished) return
           finished = true
           clearTimeout(killTimer)
-          if (timedOut) send({ type: 'error', message: 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's' })
-          else send({ type: 'done', code: typeof code === 'number' ? code : 1 })
+          clearTimeout(abortTimer)
+          if (timedOut) {
+            const message = 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's'
+            log.write('\n' + message + '\n'); send({ type: 'error', message })
+          }
+          const exitCode = typeof code === 'number' ? code : 1
+          const logged = await log.close(disconnected ? '[aborted]' : '[exit ' + exitCode + ']')
+          send({ type: 'done', code: exitCode, ...logged })
           res.end()
-        })
-        res.on('close', () => {                            // 客户端断开（中止/刷新）：终止子进程
-          if (!finished) { finished = true; clearTimeout(killTimer); killTree('SIGTERM') }
         })
       } catch (err) {
+        await failExecution?.(err)
         try { if (!res.writableEnded) res.end() } catch {}
       }
     }
