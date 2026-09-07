@@ -278,7 +278,7 @@
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）</span></h2>
@@ -350,6 +350,7 @@
         <h2 class="dshell-sub" style="margin:0 0 8px">构建容器（构建运行环境）</h2>
         <p class="dshell-muted" style="margin:0 0 8px;line-height:1.7">
           「编译发行」构建阶段默认在服务端本机执行：浅克隆所选分支后在仓库根目录运行所选仓内脚本；填写镜像后，克隆目录将挂载到该容器 <code>/mnt/repo</code> 并经 <code>docker run</code> 在容器内执行（<code>GIT_URL</code>/<code>GIT_AUTH_URL</code>/<code>GIT_BRANCH</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 透传进容器）。留空=本机直接执行。容器执行时自动加 <code>-u root</code> 以 root 权限启动（编译常需写系统目录/安装依赖）并加 <code>--entrypoint bash</code> 覆盖镜像入口（避免 vllm-openai 等镜像把 <code>bash</code>/脚本名当成入口命令 <code>vllm serve</code> 的参数），并加 <code>--network host</code> 与宿主共享网络栈（便于访问内网服务/代理，无需端口映射）。<br />
+          注意：浅克隆、Tag 推送、产物上传等 git/curl 网络操作始终由<strong>服务端本机</strong>执行（容器只负责跑仓内构建脚本），进程会继承 dsh web 服务端的代理环境变量（<code>http_proxy</code>/<code>https_proxy</code> 等）；代理拒绝隧道时报「CONNECT tunnel failed」（代理侧故障，与证书/凭据无关），可把下方「构建网络代理」改为直连或自定义代理。容器执行时代理变量按当前取值经 <code>-e KEY</code> 同步透传（直连模式已清空，不带入容器）。<br />
           「附加环境变量」按 <code>KEY=VALUE</code> 空格分隔填写：本机执行时直接注入、容器执行时经 <code>-e KEY</code> 透传（如代理、镜像源、特性开关等仓内脚本需要的变量）。
         </p>
         <div class="pr-tokenRow">
@@ -359,6 +360,16 @@
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex:1 1 auto">附加环境变量
             <input class="dshell-input grow" id="buildExtraEnvInput" placeholder="如 VLLM_TARGET_DEVICE=cpu（KEY=VALUE 空格分隔，留空=不注入）" autocomplete="off" />
           </label>
+        </div>
+        <div class="pr-tokenRow" style="margin-top:6px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建网络代理
+            <select class="dshell-input" id="buildProxySel" style="width:auto" title="服务端执行 git clone / git push / curl 时的代理策略：继承服务端环境=沿用 dsh web 进程的 http_proxy 等代理变量（默认）；直连=清空这些代理变量；自定义=改用右侧填写的代理地址">
+              <option value="inherit">继承服务端环境（默认）</option>
+              <option value="direct">直连（绕过系统代理）</option>
+              <option value="custom">自定义代理…</option>
+            </select>
+          </label>
+          <input class="dshell-input grow" id="buildProxyInput" placeholder="如 http://127.0.0.1:8118（选「自定义代理」时必填）" autocomplete="off" style="display:none" />
         </div>
       </div>
 
@@ -489,6 +500,7 @@
   var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
   var relArtifacts = $("relArtifacts"), relNotesAiBtn = $("relNotesAiBtn"), relNotesAiTip = $("relNotesAiTip");
   var buildContainerInput = $("buildContainerInput"), buildExtraEnvInput = $("buildExtraEnvInput");
+  var buildProxySel = $("buildProxySel"), buildProxyInput = $("buildProxyInput");
   var relHistEl = $("relHist"), relHistClear = $("relHistClear"), relHistTip = $("relHistTip");
 
   var state = {
@@ -517,6 +529,8 @@
   state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
   state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
   state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
+  state.buildProxy = localStorage.getItem(lsKey("buildproxy")) || "inherit";   // 构建网络代理：inherit/direct/custom
+  state.buildProxyUrl = localStorage.getItem(lsKey("buildproxyurl")) || "";   // custom 模式的代理地址
   state.repoFilter = loadRepoFilter(); // 仓库过滤选择（按平台独立存于本机）
 
   subOrg.textContent = state.org;
@@ -1318,6 +1332,8 @@
       t.classList.toggle("dshell-tabOn", t.getAttribute("data-view") === view);
     });
   }
+  // 「构建网络代理」自定义模式才显示代理地址输入框
+  function syncBuildProxyUI() { buildProxyInput.style.display = buildProxySel.value === "custom" ? "" : "none"; }
   function populateSettings() {
     tokenInput.value = state.token;
     orgInput.value = state.org;
@@ -1326,6 +1342,9 @@
     tplInput.value = state.template || defaultTemplate();
     buildContainerInput.value = state.buildContainer;
     buildExtraEnvInput.value = state.buildExtraEnv;
+    buildProxySel.value = state.buildProxy;
+    buildProxyInput.value = state.buildProxyUrl;
+    syncBuildProxyUI();
     testResult.textContent = "";
   }
   // 静默保存：把设置页各项输入写入 state 与 localStorage（不弹 toast、不切视图、不刷新列表）。
@@ -1338,6 +1357,8 @@
     state.template = (tplInput.value && tplInput.value.trim()) ? tplInput.value : defaultTemplate();
     state.buildContainer = buildContainerInput.value.trim();
     state.buildExtraEnv = buildExtraEnvInput.value.trim();
+    state.buildProxy = buildProxySel.value;
+    state.buildProxyUrl = buildProxyInput.value.trim();
     localStorage.setItem(lsKey("token"), state.token);
     localStorage.setItem(lsKey("org"), state.org);
     localStorage.setItem(lsKey("authMode"), state.authMode);
@@ -1345,6 +1366,8 @@
     localStorage.setItem(lsKey("template"), state.template);
     localStorage.setItem(lsKey("buildcontainer"), state.buildContainer);
     localStorage.setItem(lsKey("buildenv"), state.buildExtraEnv);
+    localStorage.setItem(lsKey("buildproxy"), state.buildProxy);
+    localStorage.setItem(lsKey("buildproxyurl"), state.buildProxyUrl);
   }
   function saveSettings() {
     persistSettings();
@@ -1584,11 +1607,15 @@
     }).catch(function () { applyBuildScriptSelection(); });
   }
   /* 仓内脚本构建：经 /api/worktable/write 落地临时包装脚本后 exec 执行——
-     浅克隆 GIT_AUTH_URL 的 GIT_BRANCH 到临时目录，在仓库根目录运行仓内脚本 BUILD_SCRIPT（相对路径）；
+     浅克隆 GIT_AUTH_URL 的 GIT_BRANCH 到临时目录（克隆始终在服务端本机执行，OS 用户=dsh web 进程用户），
+     在仓库根目录运行仓内脚本 BUILD_SCRIPT（相对路径）；
      设置页配置 BUILD_CONTAINER 时把克隆目录挂载到容器 /mnt/repo 内经 docker run 执行
      （--network host 与宿主共享网络栈，-u root 以 root 权限启动，--entrypoint bash 覆盖镜像入口，脚本作为 bash 参数执行），
      并透传 GIT_、RELEASE_ 系列环境变量与 BUILD_CMD；BUILD_EXTRA_ENV_KEYS（空格分隔的变量名，
      来自设置页「附加环境变量」）中的变量同样注入并逐一经 -e 透传进容器；凭据输出脱敏。
+     GIT_PROXY_MODE（来自设置页「构建网络代理」）：inherit=沿用服务端进程代理环境；direct=清空代理变量直连；
+     custom=改用 GIT_PROXY_URL；代理变量按当前取值经 -e 透传进容器。克隆遇 CONNECT tunnel failed
+     （代理拒绝隧道，非证书/凭据问题）时输出针对性提示。
      BUILD_ARTIFACTS（空格分隔的仓内相对路径/通配）非空时，构建成功后把匹配产物拷贝到
      ARTIFACT_DIR（/tmp 下按次生成的暂存目录），供后续「上传产物」步骤使用。 */
   var BUILD_WRAP_SCRIPT_PATH = "/tmp/dsh-codereview-build-wrap.sh";
@@ -1596,6 +1623,7 @@
     "#!/usr/bin/env bash",
     "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆代码仓并运行仓内构建脚本。",
     "# 构建容器（BUILD_CONTAINER）在「设置」页统一配置，留空=本机执行；关键命令执行前以「+」前缀回显（凭据固定脱敏为 <repo>），克隆失败输出先脱敏。",
+    "# 代理策略（GIT_PROXY_MODE/GIT_PROXY_URL）由「设置 → 构建网络代理」注入：inherit=沿用服务端环境，direct=清空代理变量直连，custom=改用 GIT_PROXY_URL。",
     "set -u",
     'fail(){ echo "✗ $*" >&2; exit 1; }',
     '[ -n "${GIT_AUTH_URL:-}" ] || fail "缺少 GIT_AUTH_URL"',
@@ -1603,11 +1631,21 @@
     '[ -n "${BUILD_SCRIPT:-}" ] || fail "缺少 BUILD_SCRIPT（仓内相对路径）"',
     'case "$BUILD_SCRIPT" in /*|*..*) fail "BUILD_SCRIPT 须为仓内相对路径且不含 ..：$BUILD_SCRIPT" ;; esac',
     'mask(){ sed -e "s#${GIT_AUTH_URL}#<repo>#g"; }',
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    "# 克隆/Tag 推送等 git 操作始终在本脚本（服务端本机）执行；容器只在克隆完成后经 docker run 跑仓内脚本，代理变量按当前取值经 -e 透传",
+    'maskurl(){ sed -E "s#(://)[^/@]+@#\\1***@#g"; }   # 代理地址可能带 userinfo，回显前脱敏',
+    'case "${GIT_PROXY_MODE:-inherit}" in',
+    '  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo "… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）" ;;',
+    '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
+    '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
     "# 命令回显：关键命令执行前以「+ 命令行」打到 stdout（凭据固定脱敏为 <repo>）",
     'TMPD=$(mktemp -d); trap \'rm -rf "$TMPD"\' EXIT',
-    'echo "→ 浅克隆分支 ${GIT_BRANCH} …"',
+    'echo "→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）"',
     'echo "+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo"',
-    'out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${GIT_AUTH_URL}" "$TMPD/repo" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "克隆失败（检查分支名/凭据/网络）"; }',
+    'out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${GIT_AUTH_URL}" "$TMPD/repo" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "克隆失败（检查分支名/凭据/网络）"; }',
     'cd "$TMPD/repo" || exit 1',
     'echo "✓ 克隆完成：$(git log -1 --format=\'%h %s\' 2>/dev/null || echo unknown)"',
     "# 脚本不存在时列出该分支根目录及 scripts/、ci/ 下的可用 *.sh，便于直接定位正确路径/分支",
@@ -1628,6 +1666,8 @@
     '  command -v docker >/dev/null 2>&1 || fail "已配置构建容器（${BUILD_CONTAINER}），但服务端未找到 docker 命令"',
     "# 设置页「附加环境变量」：逐一经 -e KEY 透传进容器（值取包装脚本进程环境）",
     '  dk_env=(); for k in ${BUILD_EXTRA_ENV_KEYS:-}; do dk_env+=(-e "$k"); done',
+    "# 代理变量按当前取值透传进容器（仅透传已设置的；直连模式已在上方清空，自然不会带入）",
+    '  for k in http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY; do [ -n "${!k:-}" ] && dk_env+=(-e "$k"); done',
     "# --entrypoint bash 覆盖镜像入口：vllm-openai 等镜像 ENTRYPOINT=vllm serve，不覆盖会把 bash/脚本名当成入口命令的参数",
     "# -u root 以 root 权限启动容器：编译常需写系统目录/安装依赖，镜像默认非 root 用户时会直接失败",
     "# --network host 与宿主共享网络栈：便于访问内网服务/代理，无需端口映射",
@@ -1682,6 +1722,18 @@
     });
     if (keys.length) env.BUILD_EXTRA_ENV_KEYS = keys.join(" ");
     return keys;
+  }
+  /* 设置页「构建网络代理」：把代理策略注入服务端脚本 env（构建 / Tag 推送 / 产物上传共用）。
+     服务端脚本据 GIT_PROXY_MODE 处理：inherit=沿用服务端进程环境（默认）；direct=清空 http_proxy 等
+     代理变量直连；custom=改用 GIT_PROXY_URL。custom 未填地址时降级 inherit 并回显告警。 */
+  function proxyModeLabel(m) { return m === "direct" ? "直连（绕过代理）" : m === "custom" ? "自定义代理" : "继承服务端环境"; }
+  function applyBuildProxyEnv(env) {
+    var mode = state.buildProxy || "inherit";
+    var url = (state.buildProxyUrl || "").trim();
+    if (mode === "custom" && !url) { relLog("… 「构建网络代理」选了自定义但未填代理地址，按「继承服务端环境」处理", "warn"); mode = "inherit"; }
+    env.GIT_PROXY_MODE = mode;
+    if (mode === "custom") env.GIT_PROXY_URL = url;
+    return mode;
   }
   function execRepoBuild(script, container, env, timeoutMs) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1867,19 +1919,28 @@
     "[ -n \"${GIT_BRANCH:-}\" ] || fail \"缺少 GIT_BRANCH\"",
     "[ -n \"${RELEASE_TAG:-}\" ] || fail \"缺少 RELEASE_TAG\"",
     "mask(){ sed -e \"s#${GIT_AUTH_URL}#<repo>#g\"; }",
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    "maskurl(){ sed -E \"s#(://)[^/@]+@#\\1***@#g\"; }   # 代理地址可能带 userinfo，回显前脱敏",
+    "case \"${GIT_PROXY_MODE:-inherit}\" in",
+    "  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo \"… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）\" ;;",
+    "  custom) [ -n \"${GIT_PROXY_URL:-}\" ] || fail \"GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL\"; export http_proxy=\"$GIT_PROXY_URL\" https_proxy=\"$GIT_PROXY_URL\" HTTP_PROXY=\"$GIT_PROXY_URL\" HTTPS_PROXY=\"$GIT_PROXY_URL\"; echo \"… 网络代理：自定义代理 $(printf '%s' \"$GIT_PROXY_URL\" | maskurl)\" ;;",
+    "  *) echo \"… 网络代理：继承服务端环境（http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)）\" ;;",
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    "net_hint(){ printf '%s' \"$1\" | grep -q \"CONNECT tunnel failed\" || return 0; echo \"… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试\" >&2; }",
     "echo \"+ git ls-remote --tags <repo> refs/tags/${RELEASE_TAG}\"",
-    "out=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"${GIT_AUTH_URL}\" \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }",
+    "out=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"${GIT_AUTH_URL}\" \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }",
     "printf \"%s\\n\" \"$out\" | grep -q . && fail \"远端已存在 Tag ${RELEASE_TAG}（如需重发请先删除远端 Tag）\"",
     "TMPD=$(mktemp -d); trap 'rm -rf \"$TMPD\"' EXIT",
-    "echo \"→ 浅克隆分支 ${GIT_BRANCH} …\"",
+    "echo \"→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）\"",
     "echo \"+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo\"",
-    "out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"克隆失败（分支名/凭据/网络）\"; }",
+    "out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"克隆失败（分支名/凭据/网络）\"; }",
     "cd \"$TMPD/repo\" || exit 1",
     "echo \"+ git tag -a ${RELEASE_TAG} -m \\\"${RELEASE_NAME:-$RELEASE_TAG}\\\"\"",
     "git -c user.name=\"${GIT_AUTHOR_NAME:-codereview-bot}\" -c user.email=\"codereview-bot@local\" tag -a \"$RELEASE_TAG\" -m \"${RELEASE_NAME:-$RELEASE_TAG}\" || fail \"创建 Tag 失败\"",
     "echo \"→ 推送 Tag ${RELEASE_TAG} …\"",
     "echo \"+ git push origin refs/tags/${RELEASE_TAG}\"",
-    "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
+    "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
     "echo \"✓ Tag ${RELEASE_TAG} 已推送\""
   ].join("\n");
   function pushReleaseTag(repo, branch, tag, name) {
@@ -1889,9 +1950,9 @@
         if (!w.ok || (wj && wj.error)) throw new Error("写入 Tag 脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
       }); })
       .then(function () {
-        return execStreamLines(PUSH_TAG_SCRIPT_PATH, {
-          GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch, RELEASE_TAG: tag, RELEASE_NAME: name || tag
-        }, 300000);
+        var env = { GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch, RELEASE_TAG: tag, RELEASE_NAME: name || tag };
+        applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
+        return execStreamLines(PUSH_TAG_SCRIPT_PATH, env, 300000);
       })
       .then(function (res) {
         if (res.code !== 0) throw new Error("Tag 推送失败（详见日志）");   // 实时回显已在 execStreamLines 内完成
@@ -1948,6 +2009,15 @@
     '[ -n "${ACCESS_TOKEN:-}" ] || fail "缺少 ACCESS_TOKEN"',
     'trap \'rm -rf "$ARTIFACT_DIR"\' EXIT',
     'mask(){ sed -e "s#${ACCESS_TOKEN}#<token>#g"; }',
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    'maskurl(){ sed -E "s#(://)[^/@]+@#\\1***@#g"; }   # 代理地址可能带 userinfo，回显前脱敏',
+    'case "${GIT_PROXY_MODE:-inherit}" in',
+    '  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo "… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）" ;;',
+    '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
+    '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
     'API_BASE="${API_BASE:-https://api.gitcode.com/api/v5}"',
     '# 从扁平 JSON 提取 "key":"value" 字符串值（还原 \\/ 转义）；upload_url 响应的 url/headers 均为扁平字符串字段',
     'jget(){ sed -n "s/.*\\"$1\\" *: *\\"\\([^\\"]*\\)\\".*/\\1/p" | sed \'s#\\\\/#/#g\'; }',
@@ -1957,7 +2027,7 @@
     '  base=$(basename "$f")',
     '  echo "→ 上传 $base …"',
     '  echo "+ GET ${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url?access_token=<token>&file_name=$base"',
-    '  resp=$(curl -sS -f -G "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url" --data-urlencode "access_token=${ACCESS_TOKEN}" --data-urlencode "file_name=${base}" 2>&1) || { printf "%s\\n" "$resp" | mask >&2; fail "获取上传地址失败：$base（检查令牌权限）"; }',
+    '  resp=$(curl -sS -f -G "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url" --data-urlencode "access_token=${ACCESS_TOKEN}" --data-urlencode "file_name=${base}" 2>&1) || { printf "%s\\n" "$resp" | mask >&2; net_hint "$resp"; fail "获取上传地址失败：$base（检查令牌权限）"; }',
     '  url=$(printf "%s" "$resp" | jget url)',
     '  [ -n "$url" ] || { printf "%s\\n" "$resp" | mask >&2; fail "上传地址响应缺少 url：$base"; }',
     '  h_proj=$(printf "%s" "$resp" | jget x-obs-meta-project-id)',
@@ -1966,7 +2036,7 @@
     '  h_ct=$(printf "%s" "$resp" | jget Content-Type)',
     '  [ -n "$h_ct" ] || h_ct="application/octet-stream"',
     '  echo "+ curl -sS -f -X PUT -T $f <OBS 预签名地址>（携带 x-obs-* 回调头）"',
-    '  out=$(curl -sS -f -X PUT -T "$f" -H "x-obs-meta-project-id: $h_proj" -H "x-obs-acl: $h_acl" -H "x-obs-callback: $h_cb" -H "Content-Type: $h_ct" "$url" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    '  out=$(curl -sS -f -X PUT -T "$f" -H "x-obs-meta-project-id: $h_proj" -H "x-obs-acl: $h_acl" -H "x-obs-callback: $h_cb" -H "Content-Type: $h_ct" "$url" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
     '  echo "✓ 已上传 $base"',
     'done < <(find "$ARTIFACT_DIR" -type f | sort)',
     '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
@@ -1979,10 +2049,12 @@
         if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
       }); })
       .then(function () {
-        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, {
+        var env = {
           ARTIFACT_DIR: artifactDir, RELEASE_TAG: tag,
           OWNER: repo.owner, REPO: repo.name, ACCESS_TOKEN: state.token.trim()
-        }, 600000);
+        };
+        applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000);
       })
       .then(function (res) {
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
@@ -2004,13 +2076,22 @@
     '[ -n "${ACCESS_TOKEN:-}" ] || fail "缺少 ACCESS_TOKEN"',
     'trap \'rm -rf "$ARTIFACT_DIR"\' EXIT',
     'mask(){ sed -e "s#${ACCESS_TOKEN}#<token>#g"; }',
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    'maskurl(){ sed -E "s#(://)[^/@]+@#\\1***@#g"; }   # 代理地址可能带 userinfo，回显前脱敏',
+    'case "${GIT_PROXY_MODE:-inherit}" in',
+    '  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo "… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）" ;;',
+    '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
+    '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
     "n=0",
     'while IFS= read -r f; do',
     "  n=$((n+1))",
     '  base=$(basename "$f")',
     '  echo "→ 上传 $base …"',
     '  echo "+ POST ${UPLOAD_URL}?name=$base （Bearer 头，文件二进制体）"',
-    '  out=$(curl -sS -f -X POST -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/octet-stream" --data-binary @"$f" "${UPLOAD_URL}?name=${base}" 2>&1) || { printf "%s\\n" "$out" | mask >&2; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    '  out=$(curl -sS -f -X POST -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/octet-stream" --data-binary @"$f" "${UPLOAD_URL}?name=${base}" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
     '  echo "✓ 已上传 $base"',
     "done < <(find \"$ARTIFACT_DIR\" -type f | sort)",
     '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
@@ -2023,9 +2104,9 @@
         if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
       }); })
       .then(function () {
-        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, {
-          ARTIFACT_DIR: artifactDir, UPLOAD_URL: uploadUrlBase, ACCESS_TOKEN: state.token.trim()
-        }, 600000);
+        var env = { ARTIFACT_DIR: artifactDir, UPLOAD_URL: uploadUrlBase, ACCESS_TOKEN: state.token.trim() };
+        applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000);
       })
       .then(function (res) {
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
@@ -2078,6 +2159,7 @@
         ["构建脚本", rec.script || "（未配置，跳过构建）"],
         ["构建命令", rec.buildCmd || "（空）"],
         ["构建容器", rec.container || "（本机执行）"],
+        ["网络代理", rec.proxy || "继承服务端环境"],
         ["超时", (rec.timeoutS || "—") + " s"],
         ["产物路径", rec.artifacts || "（未配置）"],
         ["预发布", rec.prerelease ? "是" : "否"],
@@ -2286,6 +2368,7 @@
       branch: branch, tag: tag, name: name || tag,
       script: script, buildCmd: relBuildCmd.value.trim(),
       container: (state.buildContainer || "").trim(),
+      proxy: proxyModeLabel(state.buildProxy),
       timeoutS: Math.min(Math.max(Number(relBuildTimeout.value) || relCfg.timeout || DEFAULT_REL_CFG.timeout, 10), 3600),
       artifacts: artifacts, prerelease: relPrerelease.checked,
       status: "run", error: "", releaseUrl: "", artifactFiles: [], steps: []
@@ -2311,9 +2394,11 @@
           var cmd = relBuildCmd.value.trim(); if (cmd) env.BUILD_CMD = cmd;
           if (artifacts) { env.BUILD_ARTIFACTS = artifacts; env.ARTIFACT_DIR = artifactDir; }
           var extraKeys = mergeBuildExtraEnv(env);
+          var proxyMode = applyBuildProxyEnv(env);
           relLog("+ POST /api/worktable/exec-stream " + BUILD_WRAP_SCRIPT_PATH + "（流式实时回显，超时 " + rec.timeoutS + "s，注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME" +
             (cmd ? "/BUILD_CMD" : "") + (container ? "/BUILD_CONTAINER=" + container : "（本机执行）") + (artifacts ? "/BUILD_ARTIFACTS/ARTIFACT_DIR" : "") +
-            (extraKeys.length ? "/附加环境变量(" + extraKeys.join(",") + ")" : "") + "）", "dim");
+            (extraKeys.length ? "/附加环境变量(" + extraKeys.join(",") + ")" : "") +
+            "，网络代理=" + proxyModeLabel(proxyMode) + "）", "dim");
           var res = await execRepoBuild(script, container, env, timeoutMs);   // 流式实时回显已在 execRepoBuild→execStreamLines 内完成（末尾仅保留最近 REL_LIVE_TAIL 行）
           if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
           states[0] = { st: "ok" }; relSetSteps(states);
@@ -2443,9 +2528,9 @@
   }
   function releaseFlowHelpHtml() {
     if (state.platform === "github") {
-      return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌（Bearer 头）。';
+      return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌（Bearer 头）。';
     }
-    return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）。认证沿用本页令牌与认证方式。';
+    return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。';
   }
   function updatePlatformUI() {
     document.title = "PR 检视台 · " + platformLabel();
@@ -2478,6 +2563,8 @@
     state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
     state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
     state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
+    state.buildProxy = localStorage.getItem(lsKey("buildproxy")) || "inherit";
+    state.buildProxyUrl = localStorage.getItem(lsKey("buildproxyurl")) || "";
     // 重置运行态与缓存
     state.prs = []; state.repos = []; state.lastErr = ""; state.lastErrObj = null; state.repoDone = 0;
     state.issues = []; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issueRepoDone = 0; state.issuesLoading = false;
@@ -2502,6 +2589,7 @@
   btnClear.addEventListener("click", clearToken);
   btnRestoreTpl.addEventListener("click", function () { tplInput.value = defaultTemplate(); toast("已恢复默认提示词"); });
   btnTest.addEventListener("click", testConnection);
+  buildProxySel.addEventListener("change", syncBuildProxyUI);   // 自定义代理才显示地址输入框
   if (platformSel) platformSel.addEventListener("change", function () { switchPlatform(platformSel.value); });
   viewTabs.addEventListener("click", function (e) {
     var b = e.target.closest ? e.target.closest("button[data-view]") : null;
