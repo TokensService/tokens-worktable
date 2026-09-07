@@ -2713,7 +2713,13 @@ function addPlan(){
 }
 function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
 function renderQueue(){
-  const list=$('queueList'); if(!list) return; list.innerHTML='';
+  const list=$('queueList'); if(!list) return;
+  /* 自愈排空：运行已结束（running=false）却仍有排队任务，说明 finish 收尾异常 / 异步竞态致 drainQueue
+     没排到这一项（任务卡在「待启动」永远不跑）。此处补排一个：drainQueue 内部 queue.shift()+startRun，
+     成功则 running 置 true（本帧后续按「运行中」渲染），失败吞异常继续渲染剩余队列；递归进来的 startSimRun
+     末尾也会调 renderQueue，那时 running 已 true 不再触发，故无重入死循环。 */
+  if(!running && queue.length){ try{ drainQueue(); }catch(e){ console.warn('[queue] 自愈排空失败（不影响渲染）:', e); } }
+  list.innerHTML='';
   $('queueCount').textContent = queue.length? '('+queue.length+' 排队)':'';
   /* 队列状态已并入「流水线任务」首行徽标；明细列表仅在有运行/排队时展开，空态不再渲染占位文案 */
   list.style.display = (running||queue.length)?'':'none';
@@ -3506,28 +3512,33 @@ function retryFromStage(stageId){
 }
 function finish(result){
   running=false; $('stopBtn').disabled=true; syncRunBtn();
-  refreshArchiveTip();   // 运行结束：目标回退到历史选中行（未选中则提示选择，不再回退本次运行归档）
   if(timer){ clearInterval(timer); timer=null; }
-  const elapsed=(Date.now()-curRun.startTs)/1000;
-  if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 已完成','dshell-badgeDone'); }
-  else if(result==='aborted'){ setOverall('⏏ 终止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
-  else { setOverall('✗ 错误',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
-  buildNo++;
-  const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
-    status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
-    dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:curRun.startTs, by:curRun.by||'anonymous',
-    pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
-    prom: promSnapshotForRun(curRun),
-    logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
-    tag:curRun.tag, archive:archiveFolderFor(curRun)};
-  history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
-  histPage=0;
-  renderHistory(); renderStats();
-  persistState();
-  archiveRun(result);
-  promCollectRun(curRun).catch(e=>console.warn('[prom] 自动收集异常（不影响运行结果）:', e));   // 勾选收集普罗数据的流水线运行结束自动收集
-  renderDetail();   // running 已置 false：失败阶段补出「从本阶段重试」按钮
-  drainQueue();
+  /* 收尾（徽标 / 历史 / 统计 / 持久化 / 归档 / 详情）尽力而为：任一步异常都不得跳过下方的
+     drainQueue()——否则排队任务会卡在「待启动」永远不跑（renderQueue 自愈仅在此处确实调到时才兜底）。
+     buildLog 等同步步骤在此前未被 try 包裹（archiveStageLog 内部已包），故这里统一兜底。 */
+  try{
+    refreshArchiveTip();   // 运行结束：目标回退到历史选中行（未选中则提示选择，不再回退本次运行归档）
+    const elapsed=(Date.now()-curRun.startTs)/1000;
+    if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 已完成','dshell-badgeDone'); }
+    else if(result==='aborted'){ setOverall('⏏ 终止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
+    else { setOverall('✗ 错误',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+    buildNo++;
+    const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
+      status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
+      dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:curRun.startTs, by:curRun.by||'anonymous',
+      pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
+      prom: promSnapshotForRun(curRun),
+      logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
+      tag:curRun.tag, archive:archiveFolderFor(curRun)};
+    history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
+    histPage=0;
+    renderHistory(); renderStats();
+    persistState();
+    archiveRun(result);
+    promCollectRun(curRun).catch(e=>console.warn('[prom] 自动收集异常（不影响运行结果）:', e));   // 勾选收集普罗数据的流水线运行结束自动收集
+    renderDetail();   // running 已置 false：失败阶段补出「从本阶段重试」按钮
+  }catch(e){ console.warn('[pipeline] finish 收尾异常（已兜底，不阻断队列排空）:', e); }
+  try{ drainQueue(); }catch(e){ console.warn('[pipeline] 排空队列失败（交由 renderQueue 自愈兜底）:', e); }   // startRun 抛错时吞掉：被 shift 的该项丢弃，剩余由下方 renderQueue 自愈逐个补排
   renderQueue();
 }
 /* 环境清理：勾选「清理环境」时，流水线启动前先执行设置页配置的清理脚本，
