@@ -3455,38 +3455,38 @@ async function runUrlStep(i){
 /* 取已保存的 EvalTokens 服务配置（地址/令牌/连接模式，见 loadEvaltok）；服务未配置时返回空 url 供调用方提示 */
 function evaltokConfig(){ return evaltok && typeof evaltok==='object' ? evaltok : {url:'',token:'',mode:'local'}; }
 /* EvalTokens JSON 请求：本地浏览器直连或经 /api/worktable/proxy 代连；POST 请求体显式发 {}，兼容服务端 JSON 解析。 */
-async function evaltokRequestJson(e, api, method, body){
+async function evaltokRequestJson(e, api, method, body, signal){
   const verb=method||'GET'; const headers=evaltokHeaders(e);
   if(body!==undefined) headers['Content-Type']='application/json';
   if(e.mode==='remote'){
     const req={url:api,method:verb,headers}; if(body!==undefined) req.body=JSON.stringify(body);
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(req)});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(req),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error+(/-?only loopback|private targets/i.test(String(p.error))?'（公网地址请切「本地浏览器连接」）':''));
     const status=p.status||0; if(status<200||status>=300){ let msg='HTTP '+status; try{ const j=JSON.parse(p.body||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+status+'）'; }catch(_){} throw new Error(msg); }
     return JSON.parse(p.body||'{}');
   }
-  const opts={method:verb,cache:'no-store',headers}; if(body!==undefined) opts.body=JSON.stringify(body);
+  const opts={method:verb,cache:'no-store',headers,signal:signal}; if(body!==undefined) opts.body=JSON.stringify(body);
   const r=await fetch(api,opts); if(!r.ok){ let msg='HTTP '+r.status; try{ const j=await r.json(); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); }
   return await r.json();
 }
 /* 拉取 EvalTokens 任务列表，并归一化裸数组 / {data|tasks|list|items|results:[...]} 等常见包装。 */
-async function evaltokFetchTasks(e){
+async function evaltokFetchTasks(e, signal){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-  const data=await evaltokRequestJson(e, base+'/api/open/v1/tasks', 'GET');
+  const data=await evaltokRequestJson(e, base+'/api/open/v1/tasks', 'GET', undefined, signal);
   return Array.isArray(data)?data:(Array.isArray(data.data)?data.data:(Array.isArray(data.tasks)?data.tasks:(Array.isArray(data.list)?data.list:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[])))));
 }
 /* 启动一次新的任务运行；返回的 run_id 是后续轮询唯一依据，不能用该任务的旧运行结果代替。 */
-async function evaltokStartRun(e, taskId){
+async function evaltokStartRun(e, taskId, signal){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', {});
+  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', {}, signal);
   if(!run||!run.run_id) throw new Error('EvalTokens 启动任务未返回 run_id');
   return run;
 }
 /* 拉取指定任务的运行列表；服务当前返回 {runs:[...]}，同时兼容裸数组 / data|items|results 包装。 */
-async function evaltokFetchRuns(e, taskId){
+async function evaltokFetchRuns(e, taskId, signal){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
   const api=base+'/api/open/v1/tasks/runs?task_id='+encodeURIComponent(taskId);
-  const data=await evaltokRequestJson(e, api, 'GET');
+  const data=await evaltokRequestJson(e, api, 'GET', undefined, signal);
   return Array.isArray(data)?data:(Array.isArray(data.runs)?data.runs:(Array.isArray(data.data)?data.data:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[]))));
 }
 /* 任务列表缓存（15s TTL，多阶段编辑器打开 / 多次聚焦输入框时避免重复拉取） */
@@ -3609,48 +3609,56 @@ async function runEvaltokensStep(i){
      任务」）。与脚本阶段参数值 ${VAR} 替换同一套规则（见 substRunVars）；编辑器内的 taskId/taskName 仍按字面值
      用于任务选择面板与输入参数自动识别，不做运行时替换。 */
   const taskId=substRunVars(String(et.taskId||''), curRun).trim(); const taskName=substRunVars(String(et.taskName||''), curRun).trim(); const outSpec=et.outVars||'';
-  const tk=curRun?curRun.token:null; const varsIn=curRun?Object.assign({},curRun.vars||{}):{};
+  const rc=curRun; const tk=rc?rc.token:null; const varsIn=rc?Object.assign({},rc.vars||{}):{};
   const label='EvalTokens · '+(taskName||taskId||'未命名');
   nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
   selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
-  const t0=Date.now(); let lastLive=0;
+  const t0=Date.now(); const deadline=s.timeout?t0+s.timeout*1000:0; let lastLive=0, deadlineTimer=null, timedOut=false, waitingRunId='', waitingStatus='';
+  const ctrl=new AbortController(); if(rc) rc.scriptAbort=ctrl;   // 复用运行级中止句柄：停止/重置按钮可取消 EvalTokens 网络请求
+  const timeoutMessage=()=> 'EvalTokens 任务等待超时（阶段超时 '+secToMinInput(s.timeout)+' 分钟'+(waitingRunId?('，run '+waitingRunId+' 仍为 '+(waitingStatus||'未知状态')):'')+'）';
+  const ensureActive=()=>{
+    if(!running||!curRun||curRun.token!==tk) return false;
+    if(timedOut||(deadline&&Date.now()>=deadline)){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); throw new Error(timeoutMessage()); }
+    return true;
+  };
+  if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(timer) clearInterval(timer);
   timer=setInterval(function(){ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },1000);
   const log=['$ EvalTokens run '+(taskId||taskName||'')];
   try{
     if(!taskId && !taskName) throw new Error('未选择 EvalTokens 任务');
     const e=evaltokConfig(); if(!e.url) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-    const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
     const idOf=t=>String(t.id||t.task_id||t.uuid||t._id||'');
     const nameOf=t=>String(t.name||t.title||t.task_name||t.display_name||'');
-    let resolvedTaskId=taskId, resolvedTaskName=taskName;
-    /* 任务选择面板会同时保存 ID/名称，可直接用 ID 启动；手填名称或仅有名称的旧数据先查任务定义解析成 ID。 */
-    if(!resolvedTaskId||!resolvedTaskName){
-      const tasks=await evaltokFetchTasks(e);
-      const task=(taskId?tasks.find(t=>idOf(t)===taskId):null) || (taskId?tasks.find(t=>nameOf(t)===taskId):null) || (taskName?tasks.find(t=>nameOf(t)===taskName):null) || null;
-      if(!task) throw new Error('未在 EvalTokens 服务找到匹配任务：'+(taskId||('"'+taskName+'"'))+'（可能已删除，请核对任务 ID/名称）');
-      resolvedTaskId=idOf(task); resolvedTaskName=nameOf(task)||resolvedTaskName;
-    }
+    /* 每次运行都向服务核验任务：兼容手填名称、${VAR} 解析出的名称，以及编辑器旧数据中残留的 taskName。 */
+    const tasks=await evaltokFetchTasks(e, ctrl.signal); if(!ensureActive()) return;
+    const task=(taskId?tasks.find(t=>idOf(t)===taskId):null) || (taskId?tasks.find(t=>nameOf(t)===taskId):null) || (taskName?tasks.find(t=>nameOf(t)===taskName):null) || null;
+    if(!task) throw new Error('未在 EvalTokens 服务找到匹配任务：'+(taskId||('"'+taskName+'"'))+'（可能已删除，请核对任务 ID/名称）');
+    const resolvedTaskId=idOf(task), resolvedTaskName=nameOf(task)||taskName;
     if(!resolvedTaskId) throw new Error('匹配的 EvalTokens 任务缺少 task_id，无法启动');
     log.push('# service: '+e.url.replace(/\/+$/,'')+'/api/open/v1/tasks/'+encodeURIComponent(resolvedTaskId)+'/run  mode='+(e.mode==='remote'?'remote':'local'));
     s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; renderDetail();
-    const started=await evaltokStartRun(e, resolvedTaskId);
+    const started=await evaltokStartRun(e, resolvedTaskId, ctrl.signal); if(!ensureActive()) return;
     const runId=String(started.run_id||'');
+    waitingRunId=runId; waitingStatus=String(started.status||started.state||started.phase||'');
     log.push('# started run '+runId+' task='+resolvedTaskId+(resolvedTaskName?(' '+resolvedTaskName):''));
-    let run=started, result=null, missingPolls=0;
+    let run=started, result=null;
     while(true){
-      const runs=await evaltokFetchRuns(e, resolvedTaskId);
+      const runs=await evaltokFetchRuns(e, resolvedTaskId, ctrl.signal); if(!ensureActive()) return;
       const current=runs.find(r=>String(r.run_id||r.id||'')===runId) || null;
-      if(current){ run=current; missingPolls=0; }
-      else if(++missingPolls>=10) throw new Error('EvalTokens 已启动 run '+runId+'，但运行列表连续 10 次未返回该记录');
+      if(current) run=current;
       const st=current?String(run.status||run.state||run.phase||''):'';
+      waitingStatus=st;
       const sk=current?evaltokStatusKind(st):'running';
       log.push('# run '+runId+' status='+(current?st:'（等待运行记录）'));
       s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; const now=Date.now(); if(selectedId===s.id && now-lastLive>=300){ lastLive=now; renderDetail(); }
       if(sk!=='running'){ result=sk; break; }
-      if(deadline && Date.now()>=deadline) throw new Error('EvalTokens 任务等待超时（阶段超时 '+secToMinInput(s.timeout)+' 分钟，run '+runId+' 仍为 '+(st||'未知状态')+'）');
-      await new Promise(function(r){ setTimeout(r,3000); });
-      if(!running||!curRun||curRun.token!==tk) return;   // 迟回直接丢弃：运行被中止/切换（与 runUrlStep 同规则）
+      await new Promise(function(resolve){
+        let done=false, h=null;
+        const stop=function(){ if(done) return; done=true; if(h!==null) clearTimeout(h); ctrl.signal.removeEventListener('abort',stop); resolve(); };
+        h=setTimeout(stop,3000); if(!done){ if(ctrl.signal.aborted) stop(); else ctrl.signal.addEventListener('abort',stop,{once:true}); }
+      });
+      if(!ensureActive()) return;   // 中止立即唤醒轮询等待；迟回直接丢弃（与 runUrlStep 同规则）
     }
     if(!running||!curRun||curRun.token!==tk) return;
     if(timer){clearInterval(timer);timer=null;}
@@ -3672,11 +3680,15 @@ async function runEvaltokensStep(i){
   }catch(e){
     if(!running||!curRun||curRun.token!==tk) return;   // 迟回异常：不得覆盖节点状态、不得对旧阶段再 finish
     if(timer){clearInterval(timer);timer=null;}
-    log.push('✗ '+e.message);
-    s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,evaltokens:true,done:true};
+    const msg=timedOut?timeoutMessage():String(e&&e.message?e.message:e);
+    log.push('✗ '+msg);
+    s._out={stdout:log.join('\n'),stderr:msg,code:1,evaltokens:true,done:true};
     archiveStageLog(s, i+1);   // 异常路径同样归档本阶段已产生的回显
     nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}};
     applyStatusClasses(); renderDetail(); finish('failed');
+  }finally{
+    if(deadlineTimer!==null) clearTimeout(deadlineTimer);
+    if(rc&&rc.scriptAbort===ctrl) rc.scriptAbort=null;
   }
 }
 async function runScriptStep(i){
@@ -4812,11 +4824,11 @@ let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
 $('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); });
 /* 中止当前运行：以「已中止」计入历史并消耗队列。
-   流式执行的脚本经 AbortController 断开会话，服务端随之终止对应子进程（见 runScriptStep/execStreaming）；
+   流式执行的脚本经 AbortController 断开会话，服务端随之终止对应子进程（见 runScriptStep/execStreaming）；EvalTokens 阶段取消待响应请求；
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
 $('stopBtn').addEventListener('click', ()=>{
   if(!running || !curRun) return;
-  if(curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 → 服务端终止子进程
+  if(curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
   if(timer){ clearInterval(timer); timer=null; }
   // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
@@ -4840,7 +4852,7 @@ $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSche
 $('resetBtn').addEventListener('click', ()=>{
   if(running || queue.length){ if(!confirm('将中止当前运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  if(curRun && curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 → 服务端终止子进程
+  if(curRun && curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
   if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('stopBtn').disabled=true; syncRunBtn(); resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
   refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
 });
@@ -4884,7 +4896,7 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
   else if(f==='urlOutVars'){ if(!s.url) s.url={url:'',outVars:''}; s.url.outVars=e.target.value; }
-  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.taskId=e.target.value.trim(); s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入任务 ID/名称后自动识别输入参数（异步，失败保留空） */
+  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.taskId=e.target.value.trim(); s.evaltokens.taskName=''; s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入后清除选择器残留名称，再异步识别参数（失败保留空） */
   else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.outVars=e.target.value; }
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
 });
