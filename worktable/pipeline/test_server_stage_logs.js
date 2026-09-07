@@ -6,7 +6,9 @@ test('环境清理请求断网不覆盖仍在服务端写入的文件',async()=>
   let uploads=0;
   const ctx={curRun:{token:1},scriptsDir:'/tmp',cleanupScript:{name:'cleanup',path:'/tmp/cleanup.sh'},archiveFolderFor:()=>'/logs',taskLogFile:()=> 'cleanup.log',
     archiveTaskLog:async()=>{uploads++;},fetch:async()=>{throw new Error('disconnected');}};
-  vm.createContext(ctx);load('async function execScript(', 'function jkJobPath(',ctx);
+  Object.assign(ctx,{running:true,nodes:{},timer:null,selectedId:null,AbortController,TextDecoder,setInterval,clearInterval,renderFlow(){},renderDetail(){},applyStatusClasses(){}});
+  ctx.curRun.cleanupStage={id:'__cleanup__',name:'环境清理',script:ctx.cleanupScript};
+  vm.createContext(ctx);load('async function execStreaming(', 'function jkJobPath(',ctx);
   load('async function runCleanupBefore(', 'function sanitizeFsName(',ctx);
   const result=await ctx.execScript(ctx.cleanupScript,0,null,null,null,null,'/logs/cleanup.log');
   assert.equal(result.logPending,true);

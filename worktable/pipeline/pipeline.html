@@ -1856,6 +1856,7 @@ function saveCleanup(){
   }catch(e){}
   const sc=$('schedCleanupEnv'); if(sc) sc.checked=$('cleanupEnv').checked;   // 定时页「先清理环境」与主控同一开关，保持双向同步
   persistState();
+  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
 function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
@@ -2292,9 +2293,17 @@ function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ---------- 渲染流水线编排 ---------- */
+function cleanupFlowStage(){ return {id:'__cleanup__',name:'环境清理',cleanup:true,script:cleanupScript ? JSON.parse(JSON.stringify(cleanupScript)) : null}; }
+// 清理只加入展示序列，不改正式阶段索引、编辑位置与归档编号。
+function flowStages(){
+  const stages=activeStages();
+  const cleanup=replayRec ? ((replayRec.logs||[]).some(l=>l.stage==='环境清理') ? cleanupFlowStage() : null)
+    : runStages ? (curRun && curRun.cleanupStage) : ($('cleanupEnv').checked ? cleanupFlowStage() : null);
+  return cleanup ? [cleanup].concat(stages) : stages;
+}
 function renderFlow(){
   const f = $('flow'); f.innerHTML='';
-  activeStages().forEach((s,i)=>{
+  flowStages().forEach((s,i)=>{
     if(i>0){ const c=document.createElement('div'); c.className='pipeline-conn'; f.appendChild(c); }
     const n=document.createElement('div');
     n.className='pipeline-node';
@@ -2310,17 +2319,17 @@ function renderFlow(){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(running || replayRec) return;   // 回放态只读：双击不进入编辑（编排区显示的是历史快照）
+      if(running || replayRec || s.cleanup) return;   // 清理脚本在设置页配置；回放态只读
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
-      openPlForm(pid, i);
+      openPlForm(pid, activeStages().findIndex(x=>x.id===s.id));
     });
-    n.title='单击查看详情，双击编辑该阶段';
+    n.title=s.cleanup?'单击查看详情；清理脚本在设置页配置':'单击查看详情，双击编辑该阶段';
     f.appendChild(n);
   });
   applyStatusClasses();
 }
 function applyStatusClasses(){
-  activeStages().forEach(s=>{
+  flowStages().forEach(s=>{
     const el = document.querySelector('.pipeline-node[data-id="'+s.id+'"]');
     if(!el) return;
     const st = nodes[s.id] ? nodes[s.id].status : 'idle';
@@ -2367,7 +2376,7 @@ function metaFor(id){
 let _detailKey='';
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
-  const s = activeStages().find(x=>x.id===selectedId) || activeStages()[0];
+  const s = flowStages().find(x=>x.id===selectedId) || flowStages()[0];
   if(!s) return;
   const n = nodes[s.id] || {status:'idle'};
   const ctx = curRun || {commit:'—',env:'dev',branch:'main',image:DEFAULT_IMAGE,release:DEFAULT_IMAGE,tag:'—',by:'—',pipelineName:curPipeline().name,giturl:GITURL};
@@ -2387,7 +2396,7 @@ function renderDetail(){
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
   /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
-  if(n.status==='failed' && !running && curRun && runStages){
+  if(n.status==='failed' && !running && curRun && runStages && !s.cleanup){
     const rb=document.createElement('button'); rb.className='dshell-btn dshell-btnGhost mini'; rb.style.marginLeft='6px';
     rb.textContent='↻ 从本阶段重试'; rb.title='保留本次运行的 commit/tag/环境，从本阶段继续执行';
     rb.addEventListener('click', ()=>retryFromStage(s.id));
@@ -2448,6 +2457,7 @@ function logClass(ln){
 }
 function buildLog(stage, ctx, n){
   const id=stage.id;
+  if(stage.cleanup && (!stage.script || !stage.script.path)) return ['未配置环境清理脚本'];
   if(stage.skip || n.status==='skipped'){ return ["[Pipeline] stage { ("+stage.name+")", '⏭ 本阶段配置为不执行，已跳过。']; }
   if((stage.kind==='http'||stage.kind==='url'||stage.kind==='jenkins') && stageUrlOf(stage)){   // 兼容旧数据 kind:'url'/'jenkins'
     const lines=['$ GET '+stageUrlOf(stage)];
@@ -2536,7 +2546,7 @@ function buildLog(stage, ctx, n){
 const QUEUE_CAP = 8;
 let queue = [];
 function resetNodes(){
-  nodes={}; activeStages().forEach(s=> nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}});
+  nodes={}; flowStages().forEach(s=> nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}});
   _detailKey='';   // 节点全部重建，详情渲染缓存一并失效
   renderFlow(); renderDetail();
 }
@@ -2578,21 +2588,22 @@ function startSimRun(pl, c){
     if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
   }
   runStages = stages;
-  resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
   // 手动运行（含入队/历史重跑）全程在本页串行执行；定时页仍由服务端执行计划。
   curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',prom:c.prom||null,vars:{},token:++runSeq};
+  curRun.cleanupStage=$('cleanupEnv').checked ? cleanupFlowStage() : null;
+  resetNodes();
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
   }
-  selectedId = stages[0].id;
+  selectedId = curRun.cleanupStage ? curRun.cleanupStage.id : stages[0].id;
   running=true; $('stopBtn').disabled=false; syncRunBtn();
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   setOverall('运行中…','dshell-badgeWait');
   $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
   /* 勾选「清理环境」且已配置清理脚本：先执行清理，再进入第一个阶段（期间重置可取消启动） */
-  if($('cleanupEnv').checked && cleanupScript && cleanupScript.path){
+  if(curRun.cleanupStage){
     setOverall('清理环境中…','dshell-badgeWait');
     const tk=curRun.token;
     runCleanupBefore().then(()=>{ if(running && curRun && curRun.token===tk){ setOverall('运行中…','dshell-badgeWait'); advance(0); } });
@@ -3583,11 +3594,42 @@ function finish(result){
    日志挂在 curRun.cleanupLog 上，finish 时并入本次历史记录；清理失败不阻断流水线 */
 async function runCleanupBefore(){
   const t0=Date.now();
-  const tk = curRun ? curRun.token : null;   // 运行令牌：清理脚本迟回时若已换了新运行，结果不得写入新运行
-  const folder=archiveFolderFor(curRun), logFile=folder ? folder+'/'+taskLogFile(curRun,0,'环境清理') : null;
-  const res=await execScript(cleanupScript, 120000, null, null, null, null, logFile);   // 清理日志同样交服务端落盘
+  const rc=curRun, tk=rc.token, s=rc.cleanupStage;
+  const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,0,'环境清理') : null;
+  const sc=s.script;
+  if(!sc || !sc.path){
+    nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{}};
+    rc.cleanupLog={stage:s.name,status:'skipped',dur:0,log:'未配置环境清理脚本'};
+    applyStatusClasses(); renderDetail(); return;
+  }
+  const ctrl=new AbortController(); rc.scriptAbort=ctrl;
+  let lastLive=0;
+  s._serverLogPending=!!logFile; s._serverLogFile=null; s._out={stdout:'',stderr:'',code:null};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{}}; selectedId=s.id;
+  rc.cleanupLog={stage:s.name,status:'running',dur:0,...(logFile?{logFile}:{log:''})};
+  renderFlow(); renderDetail();
+  if(timer) clearInterval(timer);
+  timer=setInterval(()=>{
+    const n=nodes[s.id]; if(!running || curRun!==rc || n.status!=='running') return;
+    n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,n.progress+2);
+    applyStatusClasses(); renderDetail();
+  },300);
+  const res=await execScript(sc, 120000, null, rc, m=>{
+    if(!running || curRun!==rc || curRun.token!==tk) return;
+    if(m.type==='log'){s._serverLogPending=false;s._serverLogFile=m.logFile||null;return;}
+    if(m.type==='out') s._out.stdout+=m.text||'';
+    else if(m.type==='err') s._out.stderr+=m.text||'';
+    if(!logFile) rc.cleanupLog.log=s._out.stdout+'\n'+s._out.stderr;
+    if(selectedId===s.id){const now=Date.now();if(now-lastLive>=100){lastLive=now;renderDetail();}}
+  }, ctrl.signal, logFile);
+  s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
+  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
+  if(!running || curRun!==rc || curRun.token!==tk) return;
+  if(timer){clearInterval(timer);timer=null;}
+  s._out=res;
   const status=res.code===0?'success':'failed';
-  let text='$ bash '+cleanupScript.name+'\n'+(res.stdout||'');
+  nodes[s.id]={status,progress:100,dur:(Date.now()-t0)/1000,sub:{}};
+  let text='$ bash '+sc.name+'\n'+(res.stdout||'');
   if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
   text+='\n[exit '+res.code+']';
   if(curRun && curRun.token===tk){
@@ -3598,6 +3640,7 @@ async function runCleanupBefore(){
     else curRun.cleanupLog.log=text;
     if(!res.logFile && !res.logPending) archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));
   }
+  applyStatusClasses(); renderDetail();
 }
 /* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_年月日时分秒」文件夹） ---------- */
 function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
@@ -4017,7 +4060,7 @@ function rebuildReplayNodes(rec){
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   const byName={}; logs.forEach(l=>{ if(l && l.stage) byName[l.stage]=l; });
   nodes={};
-  runStages.forEach(s=>{
+  flowStages().forEach(s=>{
     const l=byName[s.name];
     const st=l?(l.status||'idle'):'idle';
     nodes[s.id]={status:st, progress:st==='success'?100:0, dur:(l && l.dur)||0, sub:{}};
@@ -4062,7 +4105,7 @@ function exitHistoryReplay(){
 }
 /* 回放态详情渲染：结构与 renderDetail 一致，数据取自历史记录（logs 按阶段名匹配选中阶段） */
 function renderReplayDetail(rec){
-  const s=activeStages().find(x=>x.id===selectedId) || activeStages()[0];
+  const s=flowStages().find(x=>x.id===selectedId) || flowStages()[0];
   if(!s) return;
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   const entry=logs.find(l=>l && l.stage===s.name) || null;
@@ -4534,8 +4577,13 @@ $('stopBtn').addEventListener('click', ()=>{
   if(timer){ clearInterval(timer); timer=null; }
   // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
+  const cs=curRun.cleanupStage;
+  if(cs && nodes[cs.id] && nodes[cs.id].status==='running'){
+    archiveStageLog(cs,0);
+    if(curRun.cleanupLog){curRun.cleanupLog.status='aborted';curRun.cleanupLog.dur=nodes[cs.id].dur||0;}
+  }
   // 被中断的运行中阶段置为 aborted（保留已运行进度/耗时/变量），详情面板如实展示「终止」而非误显「未开始」
-  activeStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running')) nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
+  flowStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running')) nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
   finish('aborted');
   applyStatusClasses(); renderDetail();
 });
