@@ -2142,7 +2142,7 @@ async function detectStageParams(i, keepOnError){
 function mkOutVarHelp(srcTxt){
   const b=document.createElement('span'); b.textContent='?';
   b.style.cssText='display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;margin-left:3px;border-radius:50%;border:1px solid var(--dsw-alias-state-accent-primary,#4f8ef7);color:var(--dsw-alias-state-accent-primary,#4f8ef7);font-size:10px;line-height:1;cursor:help;vertical-align:1px;';
-  b.title='输出变量名写在等号左侧（如 IMAGE_URL=image 中的 IMAGE_URL），即本阶段'+srcTxt+'产出的变量改名后下传时使用的名字，后续阶段可作为环境变量读取、脚本参数值写 ${IMAGE_URL}、URL 写 {IMAGE_URL} 引用；命名建议字母开头，只用大写字母/数字/下划线；多条映射用英文逗号分隔；等号右侧为来源：捕获的 key、JSON 路径（items.0.name，数组支持 [-1] 倒数）、* 或留空（'+srcTxt+'全文整体赋给该变量）；本框整体留空=捕获的 key 全部按原名下传';
+  b.title='输出变量名写在等号左侧（如 IMAGE_URL=image 中的 IMAGE_URL），即本阶段'+srcTxt+'产出的变量改名后下传时使用的名字，后续阶段可作为环境变量读取、脚本参数值写 ${IMAGE_URL}、URL 写 {IMAGE_URL} 引用；命名建议字母开头，只用大写字母/数字/下划线；多条映射用英文逗号分隔（示例：IMAGE_URL=image, XDS_BRANCH=items.0.name, RESP=*）；等号右侧为来源：捕获的 key、JSON 路径（items.0.name，数组支持 [-1] 倒数）、* 或留空（'+srcTxt+'全文整体赋给该变量）；本框整体留空=捕获的 key 全部按原名下传';
   return b;
 }
 /* ---------- 阶段动作行（按类型渲染绑定：模拟/Shell/Python/HTTP/EvalTokens） ---------- */
@@ -2158,7 +2158,7 @@ function renderStageActionRow(i){
     const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','stageUrl'); inp.value=(s.url&&s.url.url)||''; inp.placeholder='http(s)://…（支持 {GIT_BRANCH} 等 {变量} 占位符）'; inp.style.width='320px';
     inp.title='粘贴完整请求地址（如 Jenkins 任务 …/job/app/job/{GIT_BRANCH}/buildWithParameters?token=xxx，或任意 webhook 地址）；URL 中可用 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量} 占位符传参，运行时用注入的环境变量/上游产出替换（URL 编码），未定义的变量原样保留；触发为对完整地址直接 GET（等价 curl，URL 自含鉴权如 token 参数，不附加全局凭据）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('响应体'));
-    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','urlOutVars'); outInp.value=(s.url&&s.url.outVars)||''; outInp.placeholder='如 IMAGE_URL=image 或 XDS_BRANCH=items.0.name'; outInp.style.width='200px';
+    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','urlOutVars'); outInp.value=(s.url&&s.url.outVars)||''; outInp.placeholder='如 IMAGE_URL=image, XDS_BRANCH=items.0.name, RESP=*'; outInp.style.width='200px';
     outInp.title='本请求响应体（Jenkins 控制台）产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 顶层字段全部按原名下传；IMAGE_URL=image 表示把响应体的 image 改名为 IMAGE_URL；来源也可写 JSON 路径取单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把响应体全文整体赋给指定变量（如 RESP=*）；下游阶段参数值可填 ${IMAGE_URL} 引用、URL 可填 {IMAGE_URL} 占位符引用';
     box.appendChild(lab); box.appendChild(inp); box.appendChild(outLab); box.appendChild(outInp); return;
   }
@@ -2175,7 +2175,7 @@ function renderStageActionRow(i){
     inp.addEventListener('input', ()=>{ if(panel.style.display!=='none') renderEvaltokPickerPanel(i, inp.value); });
     const nm=document.createElement('span'); nm.className='dshell-muted'; nm.style.fontSize='11px'; nm.textContent=(s.evaltokens&&s.evaltokens.taskName)?('· '+s.evaltokens.taskName):'';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('任务字段'));
-    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status / TASK_ID=* / CREATED=created_at'; outInp.style.width='200px';
+    const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status, TASK_ID=*, CREATED=created_at'; outInp.style.width='200px';
     outInp.title='本任务字段产出变量的下传命名（逗号分隔）：留空=任务顶层标量字段全部按原名下传；STATUS=status 表示把任务 status 改名为 STATUS；来源也可写 JSON 路径取任务对象的嵌套字段（如 items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把整条任务 JSON 整体赋给指定变量（如 TASK=*）；下游阶段参数值可填 ${STATUS} 引用';
     box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); return;
   }
@@ -2184,7 +2184,7 @@ function renderStageActionRow(i){
   const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('list','scriptsList'); inp.setAttribute('data-f','script'); inp.value=(s.script&&s.script.name)||''; inp.placeholder=(s.kind==='python'?'选择 .py 脚本（可搜索）':'选择 .sh 脚本（可搜索，留空=模拟）'); inp.style.width='216px';
   const btn=document.createElement('button'); btn.className='dshell-btn dshell-btnGhost mini'; btn.type='button'; btn.setAttribute('data-act','detect'); btn.textContent='识别参数';
   const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('stdout'));
-  const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','scriptOutVars'); outInp.value=(s.script&&s.script.outVars)||''; outInp.placeholder='如 IMAGE_URL=image 或 XDS_BRANCH=items.0.name'; outInp.style.width='200px';
+  const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','scriptOutVars'); outInp.value=(s.script&&s.script.outVars)||''; outInp.placeholder='如 IMAGE_URL=image, XDS_BRANCH=items.0.name, RESP=*'; outInp.style.width='200px';
   outInp.title='本阶段脚本 stdout 产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 顶层字段全部按原名下传；IMAGE_URL=image 表示把产出的 image 改名为 IMAGE_URL；来源也可写 JSON 路径取单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把 stdout 全文整体赋给指定变量（如 RESP=*）；下游阶段参数值可填 ${IMAGE_URL} 引用';
   box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(outLab); box.appendChild(outInp);
 }
