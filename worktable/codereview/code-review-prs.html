@@ -130,6 +130,9 @@
     .rel-histDel { margin-left:auto; }
     .rel-histBody { margin-top:8px; padding-top:8px; border-top:1px dashed var(--dsw-alias-border-l1,#262b36); }
     .rel-histSec { font-size:11.5px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); margin:10px 0 6px; }
+    /* 停止按钮：运行中主按钮切为危险态（红色边框/文字，两主题通用） */
+    .dshell-btn.is-stop { color:#f85149; border-color:rgba(248,81,73,.5); }
+    .dshell-btn.is-stop:hover { background:rgba(248,81,73,.10); }
     /* 仓库过滤下拉（PR 列表与 Issues 共用）：在 dshell 工具条内联 */
     .repo-filter { position:relative; flex:0 0 auto; }
     .repo-filterBtn { font-size:12px; padding:4px 10px; white-space:nowrap; }
@@ -281,7 +284,7 @@
         <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
-        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）；发行中可点「⏹ 停止」中止，服务端进程组即被终止并自动清理克隆目录 / 构建容器 / 暂存产物</span></h2>
         <div id="relSteps"></div>
         <div id="relResult" style="margin-top:8px"></div>
         <div class="rel-log" id="relLog" style="display:none"></div>
@@ -1431,6 +1434,9 @@
   var relCfg = loadRelCfg();
   function saveRelCfg() { try { localStorage.setItem(lsKey("relcfg"), JSON.stringify(relCfg)); } catch (e) {} }
   var relRunning = false;
+  var relAbortCtrl = null;   // 发行流程的 AbortController：停止时 abort 断开 exec-stream，服务端 res.on('close') 即 SIGTERM 整个进程组
+  // 手动停止的哨兵错误：抛出后被 runRelease 捕获，把发行流程标记为「已停止」而非「失败」
+  function relStopErr() { var e = new Error("已手动停止"); e.relStop = true; return e; }
   var relBranchCache = {}; // "owner/repo" -> 分支名数组（按需缓存）
 
   function repoGitUrl(repo) { return "https://" + gitHost() + "/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + ".git"; }
@@ -1735,7 +1741,7 @@
     if (mode === "custom") env.GIT_PROXY_URL = url;
     return mode;
   }
-  function execRepoBuild(script, container, env, timeoutMs) {
+  function execRepoBuild(script, container, env, timeoutMs, signal) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: BUILD_WRAP_SCRIPT_PATH, content: BUILD_WRAP_SCRIPT }) })
       .then(function (w) {
@@ -1745,12 +1751,12 @@
           }
           var wrapEnv = {}; if (env) { for (var k in env) wrapEnv[k] = env[k]; }
           wrapEnv.BUILD_CONTAINER = container || ""; wrapEnv.BUILD_SCRIPT = script;
-          return execStreamLines(BUILD_WRAP_SCRIPT_PATH, wrapEnv, timeoutMs);   // 流式实时回显（旧插件降级一次性 exec）
+          return execStreamLines(BUILD_WRAP_SCRIPT_PATH, wrapEnv, timeoutMs, signal);   // 流式实时回显（旧插件降级一次性 exec）
         });
       });
   }
   /* 写请求：GitCode 走 form 参数；GitHub 走 JSON 请求体（统一沿用本页认证方式） */
-  function fetchPost(path, params) {
+  function fetchPost(path, params, signal) {
     var a = applyAuth(apiBase() + path, state.authMode);
     var headers = {};
     var body;
@@ -1762,7 +1768,7 @@
       body = new URLSearchParams(params).toString();
     }
     for (var k in a.headers) headers[k] = a.headers[k];
-    return fetch(a.url, { method: "POST", credentials: "omit", headers: headers, body: body })
+    return fetch(a.url, { method: "POST", credentials: "omit", headers: headers, body: body, signal: signal || undefined })
       .then(function (r) {
         return r.text().then(function (t) {
           var j = null; try { j = JSON.parse(t); } catch (e) {}
@@ -1789,13 +1795,17 @@
      {"type":"out"|"err","text":…} / {"type":"done","code":N} / {"type":"error","message":…}）。
      逐块解析并回调 onStream({type,text})；累计 stdout/stderr，结束时返回 {code,stdout,stderr}。
      旧插件构建未含该路由（响应非 200 / 无 body）时返回 null，由调用方降级为一次性 exec。
-     与流水线工作台 execStreaming 同形（精简去 signal，发行流程无中止需求）。 */
-  async function execStreaming(path, args, env, cwd, timeoutMs, onStream) {
+     signal（可选 AbortSignal）：abort 时 fetch 立即断开，插件服务端 res.on('close') 收到断开后
+     SIGTERM 整个进程组（detached），构建脚本 EXIT trap 清克隆目录、docker --rm 清容器；此处返回
+     {code:130,aborted:true,stderr:'已手动停止…'} 让调用方按停止语义处理而非失败。 */
+  async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal) {
     var stdout = "", stderr = "";
     var emit = function (type, text) { if (typeof onStream === "function" && text) onStream({ type: type, text: text }); };
+    var abortedMsg = "（已手动停止：执行流已断开，服务端进程组已终止，克隆目录 / 构建容器 / 暂存产物自动清理）";
     try {
       var r = await fetch("/api/worktable/exec-stream", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: path, args: args || [], env: env || {}, cwd: cwd, timeoutMs: timeoutMs || 0 }) });
+        body: JSON.stringify({ path: path, args: args || [], env: env || {}, cwd: cwd, timeoutMs: timeoutMs || 0 }),
+        signal: signal || undefined });
       if (!r.ok || !r.body) { await r.json().catch(function () { return null; }); return null; }   // 旧插件构建无此路由：降级为一次性执行
       var reader = r.body.getReader();
       var dec = new TextDecoder();
@@ -1803,7 +1813,10 @@
       for (;;) {
         var chunk;
         try { chunk = await reader.read(); }
-        catch (e) { return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" }; }
+        catch (e) {
+          if (signal && signal.aborted) return { code: 130, aborted: true, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + abortedMsg };
+          return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" };
+        }
         if (chunk.done) break;
         buf += dec.decode(chunk.value, { stream: true });
         var idx;
@@ -1824,15 +1837,17 @@
         else if (m2 && m2.type === "error") { var txt2 = m2.message || "执行流错误"; stderr += (stderr ? "\n" : "") + txt2; emit("err", txt2); }
         else if (m2 && m2.type === "done") { return { code: typeof m2.code === "number" ? m2.code : 1, stdout: stdout, stderr: stderr }; }
       }
+      if (signal && signal.aborted) return { code: 130, aborted: true, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + abortedMsg };
       return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（输出流意外中断，未收到完成标记）" };
     } catch (e) {
+      if (signal && signal.aborted) return { code: 130, aborted: true, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + abortedMsg };
       return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" };
     }
   }
   /* 流式执行并实时回显：按块收到 stdout/stderr 即按行追加到当前步骤回显块与总日志
      （relLog 内仅保留末尾 REL_LIVE_TAIL 行，避免输出过多撑爆 DOM 导致页面卡死）；
      旧插件无 exec-stream 路由时降级为一次性 exec（结束后整体回显，同样受末尾截断保护）。 */
-  function execStreamLines(path, env, timeoutMs) {
+  function execStreamLines(path, env, timeoutMs, signal) {
     var lineBuf = "", lastCls = "";   // 跨块半行缓冲：仅在收到完整 \n 时回显一行，末尾半行兜底回显
     var emitText = function (text, cls) {
       lastCls = cls || ""; lineBuf += text.replace(/\r/g, "");   // PTY(script/docker -t)回传 CRLF，剥离 \r 后按行切
@@ -1841,9 +1856,9 @@
     return execStreaming(path, [], env, undefined, timeoutMs, function (m) {
       if (m.type === "out") emitText(m.text || "");
       else if (m.type === "err") emitText(m.text || "", "warn");
-    }).then(function (res) {
+    }, signal).then(function (res) {
       if (res) { if (lineBuf) relLog(lineBuf, lastCls); return res; }   // 末尾半行兜底回显
-      return execScript(path, env, timeoutMs).then(function (r) {   // 降级：一次性 exec 后整体回显
+      return execScript(path, env, timeoutMs).then(function (r) {   // 降级：一次性 exec 后整体回显（旧插件无 exec-stream，无法即时中止）
         if (r.stdout) r.stdout.replace(/\n$/, "").split("\n").forEach(function (l) { if (l) relLog(l); });
         if (r.stderr) r.stderr.replace(/\n$/, "").split("\n").forEach(function (l) { if (l) relLog(l, "warn"); });
         return r;
@@ -1851,7 +1866,7 @@
     });
   }
   var REL_STEPS = ["编译构建", "创建 Tag", "创建发行版", "上传产物"];
-  var REL_STEP_LABEL = { idle: "未开始", run: "进行中", ok: "成功", err: "失败", skip: "跳过" };
+  var REL_STEP_LABEL = { idle: "未开始", run: "进行中", ok: "成功", err: "失败", skip: "跳过", abort: "已停止" };
   var REL_HIST_MAX = 30;          // 构建历史最多保留条数
   var REL_STEP_LOG_MAX = 300;     // 归档时每步回显最多保留行数（超出截断前部）
   var REL_LIVE_TAIL = 20;         // 实时回显仅保留末尾行数（每步回显块与总日志共用，避免输出过多撑爆 DOM 卡死页面）
@@ -1865,9 +1880,9 @@
     relStates = states;
     relSteps.innerHTML = REL_STEPS.map(function (n, i) {
       var s = states[i] || { st: "idle" };
-      var dot = s.st === "run" ? "rel-dot rel-dotRun" : s.st === "ok" ? "rel-dot rel-dotOk" : s.st === "err" ? "rel-dot rel-dotErr" : "rel-dot";
+      var dot = s.st === "run" ? "rel-dot rel-dotRun" : s.st === "ok" ? "rel-dot rel-dotOk" : s.st === "err" ? "rel-dot rel-dotErr" : s.st === "abort" ? "rel-dot" : "rel-dot";
       var badge = '<span class="dshell-badge' + relStepBadgeCls(s.st) + '"' +
-        (s.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : "") + ">" + REL_STEP_LABEL[s.st] + "</span>";
+        (s.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : s.st === "abort" ? ' style="color:var(--dsw-alias-label-tertiary,#6b7280);border-color:var(--dsw-alias-border-l2,#3a4150)"' : "") + ">" + REL_STEP_LABEL[s.st] + "</span>";
       var lines = relStepLogs[i] || [];
       var det = "";
       if (lines.length) {
@@ -1943,7 +1958,7 @@
     "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
     "echo \"✓ Tag ${RELEASE_TAG} 已推送\""
   ].join("\n");
-  function pushReleaseTag(repo, branch, tag, name) {
+  function pushReleaseTag(repo, branch, tag, name, signal) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: PUSH_TAG_SCRIPT_PATH, content: PUSH_TAG_SCRIPT }) })
       .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
@@ -1952,16 +1967,17 @@
       .then(function () {
         var env = { GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch, RELEASE_TAG: tag, RELEASE_NAME: name || tag };
         applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
-        return execStreamLines(PUSH_TAG_SCRIPT_PATH, env, 300000);
+        return execStreamLines(PUSH_TAG_SCRIPT_PATH, env, 300000, signal);
       })
       .then(function (res) {
+        if (res.aborted) throw relStopErr();
         if (res.code !== 0) throw new Error("Tag 推送失败（详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
   /* GitHub 建 annotated Tag：Git Data API（取分支 HEAD → 建 tag 对象 → 建 ref）。
      GitHub 无「按 ref 直接建 Tag」的 REST 端点；ref 已存在（422）视为远端已有同名 Tag 拒绝覆盖
      （与 git 推送脚本一致）；其余失败回退到 git 推送脚本（pushReleaseTag）。 */
-  function githubCreateTag(repo, branch, tag, name) {
+  function githubCreateTag(repo, branch, tag, name, signal) {
     var repoPath = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name);
     return fetchJSON(repoPath + "/branches/" + encodeURIComponent(branch))
       .then(function (b) {
@@ -1969,13 +1985,13 @@
         if (!sha) throw new Error("无法获取分支 " + branch + " 的最新提交 SHA");
         relLog("→ 分支 " + branch + " HEAD = " + String(sha).slice(0, 7), "dim");
         relLog("+ POST " + apiBase() + repoPath + "/git/tags（tag=" + tag + "）", "dim");
-        return fetchPost(repoPath + "/git/tags", { tag: tag, message: name || tag, object: sha, type: "commit" })
+        return fetchPost(repoPath + "/git/tags", { tag: tag, message: name || tag, object: sha, type: "commit" }, signal)
           .then(function (tobj) {
             var tagSha = tobj && tobj.sha;
             if (!tagSha) throw new Error("创建 tag 对象失败");
             relLog("→ 已创建 tag 对象 " + String(tagSha).slice(0, 7), "dim");
             relLog("+ POST " + apiBase() + repoPath + "/git/refs（refs/tags/" + tag + "）", "dim");
-            return fetchPost(repoPath + "/git/refs", { ref: "refs/tags/" + tag, sha: tagSha });
+            return fetchPost(repoPath + "/git/refs", { ref: "refs/tags/" + tag, sha: tagSha }, signal);
           });
       })
       .then(function () { relLog("✓ Tag " + tag + " 已通过 Git Data API 创建", "ok"); })
@@ -1986,7 +2002,7 @@
           throw new Error("远端已存在 Tag " + tag + "（如需重发请先删除远端 Tag）");
         }
         relLog("… Git Data API 不可用（" + msg + "），改用 git 推送", "dim");
-        return pushReleaseTag(repo, branch, tag, name);
+        return pushReleaseTag(repo, branch, tag, name, signal);
       });
   }
   /* 上传构建产物到 GitCode 发行版附件：经 /api/worktable/write 落地临时脚本后 exec 执行——
@@ -2042,7 +2058,7 @@
     '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
     'echo "✓ 共上传 $n 个产物"'
   ].join("\n");
-  function uploadReleaseAssets(repo, tag, artifactDir) {
+  function uploadReleaseAssets(repo, tag, artifactDir, signal) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: UPLOAD_ASSETS_SCRIPT_PATH, content: UPLOAD_ASSETS_SCRIPT }) })
       .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
@@ -2054,9 +2070,10 @@
           OWNER: repo.owner, REPO: repo.name, ACCESS_TOKEN: state.token.trim()
         };
         applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
-        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000);
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000, signal);
       })
       .then(function (res) {
+        if (res.aborted) throw relStopErr();
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
@@ -2097,7 +2114,7 @@
     '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
     'echo "✓ 共上传 $n 个产物"'
   ].join("\n");
-  function uploadGithubAssets(repo, artifactDir, uploadUrlBase) {
+  function uploadGithubAssets(repo, artifactDir, uploadUrlBase, signal) {
     return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: UPLOAD_ASSETS_SCRIPT_PATH, content: UPLOAD_ASSETS_SCRIPT_GITHUB }) })
       .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
@@ -2106,9 +2123,10 @@
       .then(function () {
         var env = { ARTIFACT_DIR: artifactDir, UPLOAD_URL: uploadUrlBase, ACCESS_TOKEN: state.token.trim() };
         applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
-        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000);
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000, signal);
       })
       .then(function (res) {
+        if (res.aborted) throw relStopErr();
         if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
       });
   }
@@ -2129,6 +2147,7 @@
   function relHistStatusBadge(rec) {
     if (rec.status === "ok") return '<span class="dshell-badge dshell-badgeDone">成功</span>';
     if (rec.status === "err") return '<span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.4)">失败</span>';
+    if (rec.status === "stop") return '<span class="dshell-badge" style="color:var(--dsw-alias-label-tertiary,#6b7280);border-color:var(--dsw-alias-border-l2,#3a4150)">已停止</span>';
     return '<span class="dshell-badge dshell-badgeWait">进行中</span>';
   }
   function renderRelHist() {
@@ -2181,7 +2200,7 @@
         var dot = st.st === "ok" ? "rel-dot rel-dotOk" : st.st === "err" ? "rel-dot rel-dotErr" : st.st === "run" ? "rel-dot rel-dotRun" : "rel-dot";
         h.push('    <div class="rel-step"><i class="' + dot + '"></i>' +
           '<span style="font-size:12.5px;color:var(--dsw-alias-label-primary,#e6e8eb)">' + (si + 1) + ". " + esc(st.name || "") + "</span>" +
-          '<span class="dshell-badge' + relStepBadgeCls(st.st) + '"' + (st.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : "") + ">" + (REL_STEP_LABEL[st.st] || esc(st.st || "")) + "</span>" +
+          '<span class="dshell-badge' + relStepBadgeCls(st.st) + '"' + (st.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : st.st === "abort" ? ' style="color:var(--dsw-alias-label-tertiary,#6b7280);border-color:var(--dsw-alias-border-l2,#3a4150)"' : "") + ">" + (REL_STEP_LABEL[st.st] || esc(st.st || "")) + "</span>" +
           (st.note ? '<span class="dshell-muted" style="font-size:11px">' + esc(st.note) + "</span>" : ""));
         if (st.lines && st.lines.length) {
           h.push('<details class="rel-stepDet"><summary>回显 ' + st.lines.length + " 行 ▾</summary>" +
@@ -2342,7 +2361,15 @@
   relNotesAiBtn.addEventListener("click", genRelNotes);
 
   function runRelease() {
-    if (relRunning) return;
+    // 运行中再次点击：作为「停止」——abort 断开 exec-stream，服务端 res.on('close') 即 SIGTERM 整个进程组
+    if (relRunning) {
+      if (relAbortCtrl && !relAbortCtrl.signal.aborted) {
+        relRunBtn.disabled = true; relRunBtn.textContent = "⏳ 停止中…";
+        relLog("⏹ 正在停止：断开执行流，服务端将终止整个进程组并清理克隆目录 / 构建容器 / 暂存产物…", "warn");
+        relAbortCtrl.abort();
+      }
+      return;
+    }
     var repo = relSelectedRepo();
     var branch = relBranch.value.trim();
     var tag = relTag.value.trim();
@@ -2358,7 +2385,8 @@
     if (script && (script[0] === "/" || script.indexOf("..") >= 0)) { fail("构建脚本须为仓内相对路径（如 scripts/build.sh，不含 ..）"); return; }
     if (artifacts && artifacts.split(/\s+/).some(function (p) { return p[0] === "/" || p.indexOf("..") >= 0; })) { fail("产物路径须为仓内相对路径（不含 ..），空格分隔"); return; }
     if (artifacts && !script) { fail("已配置产物路径但未选构建脚本：产物由构建产生，请先选择构建脚本"); return; }
-    relRunning = true; relRunBtn.disabled = true; relRunBtn.textContent = "⏳ 发行中…"; tip.textContent = "";
+    relRunning = true; relAbortCtrl = new AbortController();
+    relRunBtn.disabled = false; relRunBtn.textContent = "⏹ 停止"; relRunBtn.classList.add("is-stop"); tip.textContent = "";
     relLogClear();
     var artifactDir = "/tmp/dsh-codereview-assets/" + repo.name + "-" + tag.replace(/[^A-Za-z0-9._-]/g, "-") + "-" + Date.now();
     // 构建历史记录：依赖信息先行登记，步骤状态/回显/产物在结束时归档
@@ -2373,7 +2401,7 @@
       artifacts: artifacts, prerelease: relPrerelease.checked,
       status: "run", error: "", releaseUrl: "", artifactFiles: [], steps: []
     };
-    var relErr = "";
+    var relErr = "", relStopped = false;
     var states = [{ st: script ? "idle" : "skip" }, { st: "idle" }, { st: "idle" }, { st: artifacts ? "idle" : "skip" }];
     if (!script) states[0].note = "未配置构建脚本";
     if (!artifacts) states[3].note = "未配置产物路径";
@@ -2399,33 +2427,40 @@
             (cmd ? "/BUILD_CMD" : "") + (container ? "/BUILD_CONTAINER=" + container : "（本机执行）") + (artifacts ? "/BUILD_ARTIFACTS/ARTIFACT_DIR" : "") +
             (extraKeys.length ? "/附加环境变量(" + extraKeys.join(",") + ")" : "") +
             "，网络代理=" + proxyModeLabel(proxyMode) + "）", "dim");
-          var res = await execRepoBuild(script, container, env, timeoutMs);   // 流式实时回显已在 execRepoBuild→execStreamLines 内完成（末尾仅保留最近 REL_LIVE_TAIL 行）
+          var res = await execRepoBuild(script, container, env, timeoutMs, relAbortCtrl.signal);   // 流式实时回显已在 execRepoBuild→execStreamLines 内完成（末尾仅保留最近 REL_LIVE_TAIL 行）
+          if (res.aborted) throw relStopErr();
           if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
           states[0] = { st: "ok" }; relSetSteps(states);
         }
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
         states[1] = { st: "run" }; relSetSteps(states); relCurStep = 1;
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
         var tagDone = false;
         if (state.platform === "github") {
           // GitHub 无「按 ref 建 Tag」API：走 Git Data API（分支 HEAD → 建 tag 对象 → 建 ref），失败回退 git 推送；ref 已存在拒绝覆盖
-          await githubCreateTag(repo, branch, tag, name);
+          await githubCreateTag(repo, branch, tag, name, relAbortCtrl.signal);
           tagDone = true;
         } else {
           try {
             relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/tags（tag_name=" + tag + ", refs=" + branch + "）", "dim");
             await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
-              { tag_name: tag, refs: branch, tag_message: name || tag });
+              { tag_name: tag, refs: branch, tag_message: name || tag }, relAbortCtrl.signal);
             relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
             tagDone = true;
           } catch (e) {
+            if (relAbortCtrl.signal.aborted) throw relStopErr();
             relLog("… Tag API 不可用（" + String(e && e.message || e) + "），改用 git 推送", "dim");
           }
         }
-        if (!tagDone) await pushReleaseTag(repo, branch, tag, name);
+        if (!tagDone) await pushReleaseTag(repo, branch, tag, name, relAbortCtrl.signal);
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
         states[1] = { st: "ok" }; relSetSteps(states);
         states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
         relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
         var relObj = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
-          { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked });
+          { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked }, relAbortCtrl.signal);
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
         states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
         var webUrl = webBase() + "/" + repo.owner + "/" + repo.name;
         rec.releaseUrl = webUrl + "/releases";
@@ -2438,26 +2473,36 @@
             var upBase = relObj && relObj.upload_url ? String(relObj.upload_url).replace(/\{.*$/, "") : "";
             if (!upBase) throw new Error("发行版响应缺少 upload_url（无法上传产物）");
             relLog("→ 上传构建产物到发行版（GitHub upload_url，POST 文件二进制）…", "dim");
-            await uploadGithubAssets(repo, artifactDir, upBase);
+            await uploadGithubAssets(repo, artifactDir, upBase, relAbortCtrl.signal);
           } else {
             // GitCode 发行版没有数字 id：附件上传按 tag 走 upload_url 换 OBS 地址后 PUT 直传
             relLog("→ 上传构建产物到发行版（tag " + tag + "，upload_url + PUT 直传）…", "dim");
-            await uploadReleaseAssets(repo, tag, artifactDir);
+            await uploadReleaseAssets(repo, tag, artifactDir, relAbortCtrl.signal);
           }
+          if (relAbortCtrl.signal.aborted) throw relStopErr();
           states[3] = { st: "ok" }; relSetSteps(states);
         }
         tip.textContent = "✓ 发行完成";
       } catch (e) {
-        relErr = String(e && e.message || e);
-        for (var i = 0; i < states.length; i++) { if (states[i].st === "run") states[i] = { st: "err" }; }
-        relSetSteps(states);
-        relLog("✗ " + relErr, "err");
-        tip.textContent = "✗ " + relErr;
+        // 停止哨兵 / 已 abort 的 AbortError：按「已停止」语义处理（与真实失败区分）
+        relStopped = !!(relAbortCtrl && relAbortCtrl.signal.aborted) || !!(e && e.relStop);
+        if (relStopped) {
+          for (var i = 0; i < states.length; i++) { if (states[i].st === "run") states[i] = { st: "abort", note: "已停止" }; }
+          relSetSteps(states);
+          relLog("⏹ 已手动停止：服务端进程组已终止，克隆目录 / 构建容器 / 暂存产物已自动清理", "warn");
+          tip.textContent = "⏹ 已停止（服务端资源已释放）";
+        } else {
+          relErr = String(e && e.message || e);
+          for (var i = 0; i < states.length; i++) { if (states[i].st === "run") states[i] = { st: "err" }; }
+          relSetSteps(states);
+          relLog("✗ " + relErr, "err");
+          tip.textContent = "✗ " + relErr;
+        }
       } finally {
         // 归档本次发行：依赖信息 + 产物清单 + 每步状态与回显日志 → 构建历史
         relCurStep = -1;
-        rec.status = relErr ? "err" : "ok";
-        rec.error = relErr;
+        rec.status = relStopped ? "stop" : (relErr ? "err" : "ok");
+        rec.error = relStopped ? "已手动停止" : relErr;
         rec.steps = states.map(function (s, si) {
           return { name: REL_STEPS[si], st: s.st, note: s.note || "", lines: archiveStepLines(relStepLogs[si] || []) };
         });
@@ -2468,7 +2513,8 @@
             .map(function (l) { return l.msg.slice(6); });
         }
         var hist = loadRelHist(); hist.unshift(rec); saveRelHist(hist); renderRelHist();
-        relRunning = false; relRunBtn.disabled = false; relRunBtn.textContent = "🚀 构建并发行";
+        relRunning = false; relAbortCtrl = null;
+        relRunBtn.disabled = false; relRunBtn.textContent = "🚀 构建并发行"; relRunBtn.classList.remove("is-stop");
       }
     })();
   }
