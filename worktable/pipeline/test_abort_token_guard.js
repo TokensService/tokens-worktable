@@ -23,6 +23,7 @@ function makeContext() {
     calls,
     resolveExec: null,
     console,
+    AbortController,
     setInterval: () => 1,
     clearInterval: () => {},
     activeStages: null, // 下方以闭包赋值（vm 内裸调用时 this 不指向本对象）
@@ -30,6 +31,9 @@ function makeContext() {
     renderFlow() {},
     renderDetail() {},
     mergeStageVars() { return {}; },
+    parseStageJson() { return null; },
+    applyOutVars() {},
+    archiveStageLog() {},
     advance(i) { calls.advance.push(i); },
     finish(r) { calls.finish.push(r); },
     execScript() { return new Promise((res) => { context.resolveExec = res; }); },

@@ -1049,6 +1049,24 @@ function gpuCellHtml(st){
   return main+'<div class="dshell-muted" style="font-size:10px;">'+(st.total==undefined?'?':st.total)+' 卡 · 已用 '+(st.used==undefined?'?':st.used)+'</div>';
 }
 async function fetchGpu(e){
+  if(gpuRequests.has(e.id)) return gpuRequests.get(e.id);
+  const job=new Promise(resolve=>{ gpuQueue.push({e,resolve}); });
+  gpuRequests.set(e.id, job);
+  drainGpuQueue();
+  return job;
+}
+/* 慢节点探测最多占两个同源连接，给执行流、配置和归档留出连接；重复刷新复用在途任务。 */
+const gpuRequests=new Map(), gpuQueue=[];
+let gpuActive=0;
+function drainGpuQueue(){
+  while(gpuActive<2 && gpuQueue.length){
+    const {e,resolve}=gpuQueue.shift(); gpuActive++;
+    queryGpu(e).catch(err=>console.warn('[gpu]',err)).finally(()=>{
+      gpuActive--; gpuRequests.delete(e.id); resolve(); drainGpuQueue();
+    });
+  }
+}
+async function queryGpu(e){
   const cell=document.querySelector('[data-gpu="'+e.id+'"]');
   if(cell) cell.innerHTML='<span class="dshell-muted">查询中…</span>';
   try{
@@ -2542,14 +2560,8 @@ function startSimRun(pl, c){
   runStages = stages;
   resetNodes();
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  /* hasSched：是否把定时后缀登记到服务端执行。仅当存在「本地前缀」（首个阶段勾选了
-     「需本地运行」，即 stages[0].sched 为空）且其后有定时阶段时才为真——这样混合流水线
-     仍按「本地前缀 → 服务端定时后缀」拆分。若全部阶段都支持定时（默认，无本地前缀），
-     则 hasSched 为假：手动「运行流水线」直接在浏览器本地执行全部阶段，避免一点击就
-     整体登记为服务端计划、所有节点停留在「未开始」仅显示「前缀完成（定时已登记服务端）」，
-     用户以为任务没有执行。定时页的计划触发仍由服务端 execPlan 整条执行，不受此影响。 */
-  const deferSuffix = stages.length>0 && !stages[0].sched && stages.some(s=>s.sched);
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',prom:c.prom||null,vars:{},token:++runSeq,hasSched:deferSuffix};
+  // 手动运行（含入队/历史重跑）全程在本页串行执行；定时页仍由服务端执行计划。
+  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',prom:c.prom||null,vars:{},token:++runSeq};
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
@@ -2744,15 +2756,7 @@ function renderQueue(){
 function advance(i){
   const stg=activeStages();
   if(i>=stg.length){ finish('success'); return; }
-  /* 到达定时阶段分界：前缀（本地运行阶段）已完成，定时后缀登记为服务端「立即执行一次」计划后结束本次客户端运行。
-     定时阶段不在客户端执行——交由服务端 /api/worktable/pipeline/plans 触发（关闭页面仍执行）；周期由流水线定时计划决定。
-     仅当本次运行确有本地前缀（curRun.hasSched，见 startSimRun）才登记后缀：全部阶段都支持定时（默认，无本地前缀）时
-     hasSched 为假，此处不进入登记分支，改由下方正常执行把各阶段在浏览器本地跑出实时回显。 */
-  if(stg[i].sched && curRun && curRun.hasSched){
-    const tk=curRun?curRun.token:null;
-    (async()=>{ await registerStageTimers(i); if(running && curRun && curRun.token===tk) finish('success'); })();
-    return;
-  }
+  // 手动运行连续执行全部阶段；sched 仅约束定时计划，不在此拆分后缀或提前结束运行。
   const s=stg[i];
   if(s.skip){ skipStage(i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
   if((s.kind==='http'||s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(i); return; }   // 兼容旧数据 kind:'url'/'jenkins'
@@ -3519,7 +3523,7 @@ function finish(result){
   try{
     refreshArchiveTip();   // 运行结束：目标回退到历史选中行（未选中则提示选择，不再回退本次运行归档）
     const elapsed=(Date.now()-curRun.startTs)/1000;
-    if(result==='success'){ setOverall(curRun && curRun.hasSched ? '✓ 前缀完成（定时已登记服务端）' : '✓ 已完成','dshell-badgeDone'); }
+    if(result==='success'){ setOverall('✓ 已完成','dshell-badgeDone'); }
     else if(result==='aborted'){ setOverall('⏏ 终止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
     else { setOverall('✗ 错误',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
     buildNo++;
@@ -3570,8 +3574,29 @@ async function apiMkdir(p){
   }catch(e){ return false; }
 }
 async function apiWrite(p, content){
-  const r=await fetch('/api/worktable/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p, content})});
-  const j=await r.json(); if(j && j.error) throw new Error(j.error);
+  return trackArchiveWrite(p.slice(0,p.lastIndexOf('/')), async()=>{
+    const r=await fetch('/api/worktable/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p, content})});
+    const j=await r.json(); if(!r.ok || (j && j.error)) throw new Error((j&&j.error)||('HTTP '+r.status));
+  });
+}
+/* 按目录跟踪完整归档任务（含建目录），打开文件夹前等待落盘，避免切会话卸载页面打断请求。 */
+const archiveWrites=new Map();
+function trackArchiveWrite(folder, task){
+  let jobs=archiveWrites.get(folder);
+  if(!jobs){ jobs=new Set(); archiveWrites.set(folder,jobs); }
+  const job=Promise.resolve().then(task); jobs.add(job);
+  job.then(()=>{ jobs.delete(job); if(!jobs.size) archiveWrites.delete(folder); },()=>{});
+  return job;
+}
+async function waitArchiveWrites(folder){
+  while(archiveWrites.has(folder)){
+    const jobs=archiveWrites.get(folder);
+    const pending=Array.from(jobs), results=await Promise.allSettled(pending);
+    const failed=results.find(r=>r.status==='rejected');
+    pending.forEach(job=>jobs.delete(job));
+    if(!jobs.size && archiveWrites.get(folder)===jobs) archiveWrites.delete(folder);
+    if(failed) throw failed.reason;
+  }
 }
 /* 是否显式配置了归档根目录（留空=走保底，见 fallbackArchiveRoot） */
 function archiveConfigured(){ return !!(archiveDir||'').trim(); }
@@ -3609,10 +3634,12 @@ function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padS
 async function archiveTaskLog(ctx, seq, name, text){
   const folder=archiveFolderFor(ctx);
   if(!folder) return null;
-  await ensureArchiveFolder(folder);
-  const file=folder+'/'+taskLogFile(ctx, seq, name);
-  await apiWrite(file, text);
-  return file;
+  return trackArchiveWrite(folder, async()=>{
+    await ensureArchiveFolder(folder);
+    const file=folder+'/'+taskLogFile(ctx, seq, name);
+    await apiWrite(file, text);
+    return file;
+  });
 }
 /* 阶段完成即把本阶段回显重定向到归档文件夹的独立日志文件（内容同详情面板 buildLog）。
    _logArchived 去重：archiveRun 末尾对未即时归档的已完成阶段统一补齐；
@@ -3666,10 +3693,11 @@ function archiveRun(result){
       return rec;
     }),
   };
-  (async()=>{
+  trackArchiveWrite(folder, async()=>{
     await ensureArchiveFolder(folder);
     await apiWrite(folder+'/run-'+ctx.tag+'.log', logLines.join('\n'));
     await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
+  }).then(async()=>{
     // 归档脚本：写完日志/profiling 后执行（可选），收集额外日志；
     //   注入 ARCHIVE_DIR=归档根目录（host 节点环境日志写到根目录，跨运行共享，不进单次运行文件夹）/
     //   ARCHIVE_FOLDER=本次运行归档文件夹/ARCHIVE_LOG_FILE/ARCHIVE_PROFILE_FILE 等，失败不影响运行结果。
@@ -3692,7 +3720,7 @@ function archiveRun(result){
         }catch(ee){ console.warn('[archive] 归档脚本执行失败（不影响运行结果）:', ee); }
       }else{ console.warn('[archive] 归档脚本未找到，跳过：', scName); }
     }
-  })().catch(e=>console.warn('[archive] 归档失败（不影响运行结果）:', e));
+  }).catch(e=>console.warn('[archive] 归档失败（不影响运行结果）:', e));
 }
 /* ---------- 收集普罗数据：按运行起止时间调用设置页配置的收集脚本（时间段指标采集） ----------
    脚本在「设置 → 普罗数据服务配置 → 收集脚本」按名选用（scripts 目录，留空=不启用）。
@@ -4192,6 +4220,8 @@ async function openArchiveFolder(){
   const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
   const folder=archiveTargetFolder();
   if(!folder){ say('⚠ 请先点击选择一条运行历史（或运行一条流水线后再打开）','var(--log-warn)'); return; }
+  try{ await waitArchiveWrites(folder); }
+  catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
   const root=archiveRootFolder();
   const P=window.parent;
   /* 探测 better-sidebar 并顺手开一次文件夹窗口：会话切换会刷新侧边栏，这次打开随后会被刷掉，
@@ -4199,6 +4229,12 @@ async function openArchiveFolder(){
   let bsOpened=false;
   if(P && typeof P.__dshOpenFolderInSidebar==='function'){
     try{ bsOpened=!!P.__dshOpenFolderInSidebar(folder); }catch(e){ bsOpened=false; }
+  }
+  // 运行期间切会话会卸载本页并中断执行流，只打开目录，不创建会话。
+  if(running){
+    if(!bsOpened) await openFolderViaFileManager(folder, say);
+    else say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)');
+    return;
   }
   const newBridge=!!(P && typeof P.__dshNewChatSessionAtFolder==='function');
   /* 主路径（better-sidebar + 新版插件桥）：建会话（工作区=归档根）→ 切会话关项目（新窗口只含
