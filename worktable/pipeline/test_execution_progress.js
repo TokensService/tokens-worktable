@@ -14,7 +14,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('六个慢节点及重复刷新不阻塞流水线请求', async()=>{
   const pending=[];
   const ctx={console, environments:Array.from({length:6},(_,id)=>({id})), gpuStatus:{},
-    document:{querySelector:()=>null}, renderEnvOptions(){}, envFilterText:'', envSort:{},
+    document:{querySelector:()=>null}, renderEnvOptions(){}, saveGpuSession(){}, envFilterText:'', envSort:{},
     fetch(){ return new Promise(resolve=>pending.push(()=>resolve({json:async()=>({total:1})}))); }};
   load('async function fetchGpu(e)', '/* 设备详情弹层',ctx);
   ctx.refreshGpuAll(); ctx.refreshGpuAll();

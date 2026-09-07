@@ -1035,7 +1035,15 @@ function bindGpuCell(cell, e){
   const db=cell.querySelector('[data-gpudetail]'); if(db) db.addEventListener('click',()=>openGpuDetail(e));
 }
 /* 节点设备状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
-let gpuStatus={};
+const GPU_SESSION_KEY='pip-gpu-session-v1';
+const gpuSession=(function(){
+  try{ const s=JSON.parse(sessionStorage.getItem(GPU_SESSION_KEY)||'null'); if(s && typeof s==='object') return s; }catch(e){}
+  return {};
+})();
+let gpuStatus=gpuSession.status && typeof gpuSession.status==='object' ? gpuSession.status : {};
+function saveGpuSession(){
+  try{ sessionStorage.setItem(GPU_SESSION_KEY, JSON.stringify({initialized:true,status:gpuStatus})); }catch(e){}
+}
 /* 占用判定：关联到容器，或 nvidia-smi 显示有卡被用（宿主机直跑进程关联不到容器，不能按空闲显示） */
 function gpuBusy(st){ return (st.containers||[]).length>0 || (Number(st.used)||0)>0; }
 function gpuCellHtml(st){
@@ -1074,6 +1082,7 @@ async function queryGpu(e){
     const j=await r.json();
     gpuStatus[e.id]=j;
   }catch(err){ gpuStatus[e.id]={error:String(err.message||err)}; }
+  saveGpuSession();
   const c2=document.querySelector('[data-gpu="'+e.id+'"]');
   if(c2){ c2.innerHTML=gpuCellFull(e); bindGpuCell(c2, e); }
   renderEnvOptions();   // 主控环境多选面板同步显示 GPU 占用/总数
@@ -4697,13 +4706,12 @@ function renderAll(){
   applyPromForm();
 }
 renderAll();
-/* GPU 查询幂等延迟触发：让到首屏空闲帧再发，且全页生命周期内初始化只触发一次；
-   环境多选面板 / 各环境 ⟳ / 「全部刷新」按钮仍可按需手动触发（直接调 refreshGpuAll，不经此守卫） */
-let _gpuInited=false;
+/* 当前浏览器标签页首次载入自动查询一次；切换项目重建 iframe 时复用结果，之后仅手动刷新。 */
+let _gpuInited=!!gpuSession.initialized;
 function scheduleGpuRefresh(){
   if(_gpuInited) return;
   _gpuInited=true;
-  const kick=()=>refreshGpuAll();
+  const kick=()=>{ saveGpuSession(); refreshGpuAll(); };
   if('requestIdleCallback' in window) requestIdleCallback(kick,{timeout:1500});
   else setTimeout(kick,200);
 }
