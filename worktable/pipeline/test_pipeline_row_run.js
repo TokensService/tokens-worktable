@@ -37,8 +37,10 @@ class FakeNode {
         const button = row._buttons[key] || new FakeNode('button');
         button.attributes = { [attr]: valueMatch[1] };
         button.textContent = match[2];
+        const className = /class="([^"]*)"/.exec(attrs);
         const title = /title="([^"]*)"/.exec(attrs);
         const aria = /aria-label="([^"]*)"/.exec(attrs);
+        button.className = className ? className[1] : '';
         button.title = title ? title[1] : '';
         button.ariaLabel = aria ? aria[1] : '';
         button.getAttribute = name => button.attributes[name] || null;
@@ -84,6 +86,7 @@ test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', 
   const buttons = tbody.querySelectorAll('[data-plrun]');
   assert.equal(buttons.length, 2);
   assert.equal(buttons[1].textContent.trim(), '▶');
+  assert.match(buttons[1].className, /(^|\s)dshell-btnGhost(\s|$)/);
   assert.equal(buttons[1].title, '运行流水线「流水线二」');
   assert.equal(buttons[1].ariaLabel, '运行流水线「流水线二」');
 
