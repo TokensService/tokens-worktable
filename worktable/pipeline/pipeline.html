@@ -169,8 +169,11 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
     </label>
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="勾选后流水线启动前先执行设置页配置的「环境检查脚本」：检查不通过（脚本非零退出）则阻断本次启动">
+      <input type="checkbox" id="checkEnv" /> 检查环境
+    </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" id="cleanupEnv" /> 先清理环境
+      <input type="checkbox" id="cleanupEnv" /> 清理环境
     </label>
     <button id="runBtn" class="dshell-btn" style="margin-left:auto;flex-shrink:0;">▶ 运行流水线</button>
     <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled style="flex-shrink:0;">⏹ 中止</button>
@@ -212,7 +215,7 @@
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
-    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理为系统预设任务，不可在编排中编辑；清理脚本在设置页配置。</p>
+    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境检查/环境清理为系统预设任务，不可在编排中编辑；检查/清理脚本在设置页配置。</p>
   </div>
 
 
@@ -277,7 +280,7 @@
   </div><!-- /pageMain -->
 
   <!-- 定时任务（独立页面：周期 / 一次性计划，服务端调度，关闭页面也会执行）。
-       设置分两行：第一行与主控「运行流水线」设置保持一致（流水线 / 环境（可多选）/ 代码仓 / 分支Tag / 部署策略 / 执行人 / 先清理环境），
+       设置分两行：第一行与主控「运行流水线」设置保持一致（流水线 / 环境（可多选）/ 代码仓 / 分支Tag / 部署策略 / 执行人 / 清理环境），
        第二行为「方式」及以后的调度参数与创建按钮 -->
   <div id="pageSched" style="display:none">
     <div class="dshell-card">
@@ -309,8 +312,8 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
           <input id="schedBy" class="dshell-input" placeholder="必填" autocomplete="off" />
         </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="与主控「先清理环境」同一开关：勾选后定时触发时服务端同样先执行清理脚本">
-          <input type="checkbox" id="schedCleanupEnv" /> 先清理环境
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="与主控「清理环境」同一开关：勾选后定时触发时服务端同样先执行清理脚本">
+          <input type="checkbox" id="schedCleanupEnv" /> 清理环境
         </label>
       </div>
       <div class="pipeline-controls" style="margin-top:8px;">
@@ -402,9 +405,19 @@
         <span class="dshell-muted" style="font-size:11px;">脚本</span>
         <input id="cleanupScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不清理）" style="width:216px;" />
         <button id="cleanupDetect" class="dshell-btn dshell-btnGhost mini" type="button">识别参数</button>
-        <span class="dshell-muted" style="font-size:11px;">勾选主控「先清理环境」后，每次流水线启动前会先执行该脚本（失败不阻断启动），同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
+        <span class="dshell-muted" style="font-size:11px;">勾选主控「清理环境」后，每次流水线启动前会先执行该脚本（失败不阻断启动），同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
       </div>
       <div id="cleanupParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
+    </div>
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;">环境检查脚本</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span class="dshell-muted" style="font-size:11px;">脚本</span>
+        <input id="checkScriptName" class="dshell-input" list="scriptsList" placeholder="选择脚本（可搜索，留空=不检查）" style="width:216px;" />
+        <button id="checkDetect" class="dshell-btn dshell-btnGhost mini" type="button">识别参数</button>
+        <span class="dshell-muted" style="font-size:11px;">勾选主控「检查环境」后，每次流水线启动前会先执行该脚本（先于环境清理）：检查不通过（脚本非零退出）则阻断本次启动，不执行清理与各阶段；同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
+      </div>
+      <div id="checkParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
     <!-- 归档配置：运行日志与 profiling 产物的归档根目录 -->
     <div class="dshell-card" style="margin-top:10px;">
@@ -413,7 +426,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
           <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_年月日时分秒」文件夹归档（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境检查/环境清理），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
@@ -747,7 +760,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取 */ scriptsDir, theme: themePref, buildNo, cleanupScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked) }; }
+function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；checkScript/checkEnabled 仅跨浏览器同步勾选态（定时计划的服务端执行暂不支持环境检查） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked) }; }
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
@@ -781,6 +794,8 @@ async function loadServerState(){
       if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
       if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
       if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
+      if(cfg.checkScript && typeof cfg.checkScript.name==='string') checkScript=cfg.checkScript;
+      if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
       if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
       if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
       else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
@@ -805,6 +820,8 @@ async function loadServerState(){
         localStorage.setItem('pip-theme', themePref);
         localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
         localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
+        localStorage.setItem('pip-checkScript', JSON.stringify(checkScript));
+        localStorage.setItem('pip-checkEnabled', $('checkEnv').checked?'1':'');
         localStorage.setItem('pip-jenkins', JSON.stringify(jenkins));
         localStorage.setItem('pip-evaltokens', JSON.stringify(evaltok));
         localStorage.setItem('pip-prom', JSON.stringify(prom));
@@ -814,6 +831,8 @@ async function loadServerState(){
       }catch(e){}
       $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
       renderCleanupParams();
+      $('checkScriptName').value=checkScript?checkScript.name:'';
+      renderCheckParams();
       renderAll();
       migrateInlineLogs();   // 后台把存量内嵌日志迁移为归档文件引用（完成后自行 persistState）
     }
@@ -840,10 +859,10 @@ async function migrateInlineLogs(){
       const j=await r.json(); names=new Set((j && j.entries || []).map(e=>e.name));
     }catch(e){}
     if(!names) continue;
-    const hasCleanup=!!(rec.logs[0] && rec.logs[0].stage==='环境清理');
+    const isPreStage=n=>n==='环境检查'||n==='环境清理';   // 启动前的系统预设任务：与归档命名约定一致占 00 号，阶段从 01 起
     for(const l of inline){
       const idx=rec.logs.indexOf(l);
-      const seq=(l.stage==='环境清理')?0:(hasCleanup?idx:idx+1);   // 与归档命名约定一致：00=环境清理，阶段从 01 起
+      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=环境检查/环境清理，阶段按剔除预设任务后的位置从 01 起
       const fname='run-'+rec.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(l.stage)+'.log';
       const fp=rec.archive+'/'+fname;
       if(!names.has(fname)){
@@ -1855,7 +1874,7 @@ function saveCleanup(){
     localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
     localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
   }catch(e){}
-  const sc=$('schedCleanupEnv'); if(sc) sc.checked=$('cleanupEnv').checked;   // 定时页「先清理环境」与主控同一开关，保持双向同步
+  const sc=$('schedCleanupEnv'); if(sc) sc.checked=$('cleanupEnv').checked;   // 定时页「清理环境」与主控同一开关，保持双向同步
   persistState();
   if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
@@ -1902,6 +1921,58 @@ async function detectCleanupParams(){
     });
   }catch(e){ cleanupScript.params=[]; }
   renderCleanupParams();
+}
+/* ---------- 环境检查脚本（在「设置」页配置；勾选主控「检查环境」后于流水线启动前、环境清理之前执行，不通过则阻断启动） ---------- */
+/* 状态与参数表单逻辑与环境清理脚本完全同构（识别默认值仅展示、显式值才下发，见 renderCleanupParams），仅存储键与 DOM id 不同 */
+let checkScript=(function(){ try{ const cs=JSON.parse(localStorage.getItem('pip-checkScript')); if(cs && cs.values) cs.values=cleanScriptValues(cs.params, cs.values); return cs; }catch(e){ return null; } })() || null;
+function saveCheck(){
+  try{
+    localStorage.setItem('pip-checkScript', JSON.stringify(checkScript));
+    localStorage.setItem('pip-checkEnabled', $('checkEnv').checked?'1':'');
+  }catch(e){}
+  persistState();
+  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+}
+function renderCheckParams(){
+  const box=$('checkParams'); if(!box) return; box.innerHTML='';
+  if(!checkScript || !checkScript.params || !checkScript.params.length) return;
+  checkScript.params.forEach(p=>{
+    const hasV=!!(checkScript.values && checkScript.values[p.key]!==undefined);
+    const v=hasV?checkScript.values[p.key]:(p.def||'');
+    const lab=document.createElement('label'); lab.className='dshell-muted';
+    lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="识别默认值已填入框中、可直接修改：修改后作为显式值下发（优先级最高）；清空或改回与默认一致=自动注入的同名变量兜底，未注入则由脚本自身 :- 默认值兜底" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+    const inp=lab.querySelector('input');
+    if(!hasV && p.def) inp.style.color='var(--dsw-alias-label-tertiary)';   // 未改动的默认值弱化显示（主题变量适配浅色/深色）
+    inp.addEventListener('input',()=>{ inp.style.color=''; });
+    inp.addEventListener('change',()=>{ checkScript.values=checkScript.values||{}; if(!inp.value||inp.value===p.def) delete checkScript.values[p.key]; else checkScript.values[p.key]=inp.value; renderCheckParams(); saveCheck(); });
+    box.appendChild(lab);
+  });
+}
+async function setCheckScript(name){
+  const sc=scriptByName(name);
+  if(!name || !sc){ checkScript=null; renderCheckParams(); saveCheck(); return; }
+  const keep=(checkScript && checkScript.name===sc.name)?checkScript:null;
+  checkScript={name:sc.name, path:sc.path, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  await detectCheckParams();
+  saveCheck();
+}
+async function detectCheckParams(){
+  if(!checkScript || !checkScript.path){ renderCheckParams(); return; }
+  try{
+    const src=await readScriptSrc(checkScript.path);
+    const det=detectParams(src);
+    const oldParams=checkScript.params||[]; const oldVals=checkScript.values||{};
+    checkScript.params=det; checkScript.values=checkScript.values||{};
+    det.forEach(p=>{
+      const oldP=oldParams.find(o=>o.key===p.key);
+      const oldV=oldVals[p.key];
+      // 仅保留用户真实改动：旧值等于旧默认（旧版识别器预填产物）则丢弃，回到「留空=注入值/脚本默认兜底」语义
+      if(oldV!==undefined && oldP && String(oldV)!==String(oldP.def||'')) checkScript.values[p.key]=oldV;
+    });
+  }catch(e){ checkScript.params=[]; }
+  renderCheckParams();
 }
 let availableScripts=[];   // [{name, path}]
 async function loadScripts(){
@@ -2294,13 +2365,16 @@ function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ---------- 渲染流水线编排 ---------- */
-function cleanupFlowStage(){ return {id:'__cleanup__',name:'环境清理',cleanup:true,script:cleanupScript ? JSON.parse(JSON.stringify(cleanupScript)) : null}; }
-// 清理只加入展示序列，不改正式阶段索引、编辑位置与归档编号。
+function cleanupFlowStage(){ return {id:'__cleanup__',name:'环境清理',preset:true,cleanup:true,script:cleanupScript ? JSON.parse(JSON.stringify(cleanupScript)) : null}; }
+function checkFlowStage(){ return {id:'__check__',name:'环境检查',preset:true,check:true,script:checkScript ? JSON.parse(JSON.stringify(checkScript)) : null}; }
+// 检查/清理只加入展示序列，不改正式阶段索引、编辑位置与归档编号（执行顺序：环境检查 → 环境清理 → 各阶段）。
 function flowStages(){
   const stages=activeStages();
   const cleanup=replayRec ? ((replayRec.logs||[]).some(l=>l.stage==='环境清理') ? cleanupFlowStage() : null)
     : runStages ? (curRun && curRun.cleanupStage) : ($('cleanupEnv').checked ? cleanupFlowStage() : null);
-  return cleanup ? [cleanup].concat(stages) : stages;
+  const check=replayRec ? ((replayRec.logs||[]).some(l=>l.stage==='环境检查') ? checkFlowStage() : null)
+    : runStages ? (curRun && curRun.checkStage) : ($('checkEnv').checked ? checkFlowStage() : null);
+  return (check?[check]:[]).concat(cleanup?[cleanup]:[], stages);
 }
 function renderFlow(){
   const f = $('flow'); f.innerHTML='';
@@ -2311,7 +2385,7 @@ function renderFlow(){
     n.dataset.id=s.id;
     n.innerHTML =
       '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+esc(s.name)+'</div>'+
-      (s.cleanup?'<span class="pipeline-preset" title="不可在编排中编辑；清理脚本在设置页配置">🔒 系统预设 · 不可编辑</span>':'')+
+      (s.preset?'<span class="pipeline-preset" title="不可在编排中编辑；'+(s.check?'检查':'清理')+'脚本在设置页配置">🔒 系统预设 · 不可编辑</span>':'')+
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+
       (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
@@ -2321,11 +2395,11 @@ function renderFlow(){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(running || replayRec || s.cleanup) return;   // 清理脚本在设置页配置；回放态只读
+      if(running || replayRec || s.preset) return;   // 预设任务（环境检查/环境清理）脚本在设置页配置；回放态只读
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, activeStages().findIndex(x=>x.id===s.id));
     });
-    n.title=s.cleanup?'系统预设任务，不可在编排中编辑；单击查看详情，清理脚本在设置页配置':'单击查看详情，双击编辑该阶段';
+    n.title=s.preset?('系统预设任务，不可在编排中编辑；单击查看详情，'+(s.check?'检查':'清理')+'脚本在设置页配置'):'单击查看详情，双击编辑该阶段';
     f.appendChild(n);
   });
   applyStatusClasses();
@@ -2398,7 +2472,7 @@ function renderDetail(){
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
   /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
-  if(n.status==='failed' && !running && curRun && runStages && !s.cleanup){
+  if(n.status==='failed' && !running && curRun && runStages && !s.preset){
     const rb=document.createElement('button'); rb.className='dshell-btn dshell-btnGhost mini'; rb.style.marginLeft='6px';
     rb.textContent='↻ 从本阶段重试'; rb.title='保留本次运行的 commit/tag/环境，从本阶段继续执行';
     rb.addEventListener('click', ()=>retryFromStage(s.id));
@@ -2459,6 +2533,7 @@ function logClass(ln){
 }
 function buildLog(stage, ctx, n){
   const id=stage.id;
+  if(stage.check && (!stage.script || !stage.script.path)) return ['未配置环境检查脚本'];
   if(stage.cleanup && (!stage.script || !stage.script.path)) return ['未配置环境清理脚本'];
   if(stage.skip || n.status==='skipped'){ return ["[Pipeline] stage { ("+stage.name+")", '⏭ 本阶段配置为不执行，已跳过。']; }
   if((stage.kind==='http'||stage.kind==='url'||stage.kind==='jenkins') && stageUrlOf(stage)){   // 兼容旧数据 kind:'url'/'jenkins'
@@ -2593,24 +2668,44 @@ function startSimRun(pl, c){
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
   // 手动运行（含入队/历史重跑）全程在本页串行执行；定时页仍由服务端执行计划。
   curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',prom:c.prom||null,vars:{},token:++runSeq};
+  curRun.checkStage=$('checkEnv').checked ? checkFlowStage() : null;
   curRun.cleanupStage=$('cleanupEnv').checked ? cleanupFlowStage() : null;
   resetNodes();
   curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
     ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
   }
-  selectedId = curRun.cleanupStage ? curRun.cleanupStage.id : stages[0].id;
+  selectedId = curRun.checkStage ? curRun.checkStage.id : (curRun.cleanupStage ? curRun.cleanupStage.id : stages[0].id);
   running=true; $('stopBtn').disabled=false; syncRunBtn();
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   setOverall('运行中…','dshell-badgeWait');
   $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
+  const tk=curRun.token;
   /* 勾选「清理环境」且已配置清理脚本：先执行清理，再进入第一个阶段（期间重置可取消启动） */
-  if(curRun.cleanupStage){
-    setOverall('清理环境中…','dshell-badgeWait');
-    const tk=curRun.token;
-    runCleanupBefore().then(()=>{ if(running && curRun && curRun.token===tk){ setOverall('运行中…','dshell-badgeWait'); advance(0); } });
+  const afterPrechecks=()=>{
+    if(!running || !curRun || curRun.token!==tk) return;
+    if(curRun.cleanupStage){
+      setOverall('清理环境中…','dshell-badgeWait');
+      runCleanupBefore().then(()=>{ if(running && curRun && curRun.token===tk){ setOverall('运行中…','dshell-badgeWait'); advance(0); } });
+    } else {
+      advance(0);
+    }
+  };
+  /* 勾选「检查环境」且已配置检查脚本：先执行检查（先于清理）；检查不通过（脚本非零退出）则阻断启动，
+     按失败计入历史，不执行清理与各阶段 */
+  if(curRun.checkStage){
+    setOverall('检查环境中…','dshell-badgeWait');
+    runCheckBefore().then(ok=>{
+      if(!running || !curRun || curRun.token!==tk) return;
+      if(ok===false){
+        finish('failed');
+        setOverall('✗ 环境检查未通过',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+        return;
+      }
+      afterPrechecks();
+    });
   } else {
-    advance(0);
+    afterPrechecks();
   }
   renderQueue();
 }
@@ -2721,7 +2816,7 @@ function renderSchedForm(){
   renderSchedEnvOptions();   // 环境（可多选）：面板选项跟随节点环境数据
   const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
   repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
-  $('schedCleanupEnv').checked=$('cleanupEnv').checked;   // 「先清理环境」与主控同一开关（全局配置，服务端定时执行同样生效）
+  $('schedCleanupEnv').checked=$('cleanupEnv').checked;   // 「清理环境」与主控同一开关（全局配置，服务端定时执行同样生效）
   if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim();
 }
 function addPlan(){
@@ -3579,7 +3674,7 @@ function finish(result){
       dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:curRun.startTs, by:curRun.by||'anonymous',
       pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
       prom: promSnapshotForRun(curRun),
-      logs: (curRun.cleanupLog?[curRun.cleanupLog]:[]).concat(collectRunLogs()),
+      logs: (curRun.checkLog?[curRun.checkLog]:[]).concat(curRun.cleanupLog?[curRun.cleanupLog]:[], collectRunLogs()),
       tag:curRun.tag, archive:archiveFolderFor(curRun)};
     history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
     histPage=0;
@@ -3643,6 +3738,60 @@ async function runCleanupBefore(){
     if(!res.logFile && !res.logPending) archiveTaskLog(curRun, 0, '环境清理', text).catch(e=>console.warn('[archive] 环境清理日志归档失败（不影响运行结果）:', e));
   }
   applyStatusClasses(); renderDetail();
+}
+/* 环境检查：勾选「检查环境」时，流水线启动前先执行设置页配置的检查脚本（先于环境清理），
+   日志挂在 curRun.checkLog 上，finish 时并入本次历史记录；与清理不同：检查不通过（脚本非零退出）阻断启动。
+   返回 true=通过/未配置（跳过不阻断），false=未通过；运行被中止/令牌失效时返回 undefined（调用方按令牌守卫忽略） */
+async function runCheckBefore(){
+  const t0=Date.now();
+  const rc=curRun, tk=rc.token, s=rc.checkStage;
+  const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,0,'环境检查') : null;
+  const sc=s.script;
+  if(!sc || !sc.path){
+    nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{}};
+    rc.checkLog={stage:s.name,status:'skipped',dur:0,log:'未配置环境检查脚本'};
+    applyStatusClasses(); renderDetail(); return true;
+  }
+  const ctrl=new AbortController(); rc.scriptAbort=ctrl;
+  let lastLive=0;
+  s._serverLogPending=!!logFile; s._serverLogFile=null; s._out={stdout:'',stderr:'',code:null};
+  nodes[s.id]={status:'running',progress:0,dur:0,sub:{}}; selectedId=s.id;
+  rc.checkLog={stage:s.name,status:'running',dur:0,...(logFile?{logFile}:{log:''})};
+  renderFlow(); renderDetail();
+  if(timer) clearInterval(timer);
+  timer=setInterval(()=>{
+    const n=nodes[s.id]; if(!running || curRun!==rc || n.status!=='running') return;
+    n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,n.progress+2);
+    applyStatusClasses(); renderDetail();
+  },300);
+  const res=await execScript(sc, 120000, null, rc, m=>{
+    if(!running || curRun!==rc || curRun.token!==tk) return;
+    if(m.type==='log'){s._serverLogPending=false;s._serverLogFile=m.logFile||null;return;}
+    if(m.type==='out') s._out.stdout+=m.text||'';
+    else if(m.type==='err') s._out.stderr+=m.text||'';
+    if(!logFile) rc.checkLog.log=s._out.stdout+'\n'+s._out.stderr;
+    if(selectedId===s.id){const now=Date.now();if(now-lastLive>=100){lastLive=now;renderDetail();}}
+  }, ctrl.signal, logFile);
+  s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
+  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
+  if(!running || curRun!==rc || curRun.token!==tk) return;
+  if(timer){clearInterval(timer);timer=null;}
+  s._out=res;
+  const status=res.code===0?'success':'failed';
+  nodes[s.id]={status,progress:100,dur:(Date.now()-t0)/1000,sub:{}};
+  let text='$ bash '+sc.name+'\n'+(res.stdout||'');
+  if(res.stderr) text+='\n✗ '+String(res.stderr).split('\n').join('\n✗ ');
+  text+='\n[exit '+res.code+']';
+  if(curRun && curRun.token===tk){
+    /* 历史条目只存元数据 + logFile 路径（全量日志在归档文件）；无归档目录时内嵌全文兜底 */
+    const folder=archiveFolderFor(curRun);
+    curRun.checkLog={stage:'环境检查', status, dur:(Date.now()-t0)/1000};
+    if(folder) curRun.checkLog.logFile=folder+'/'+taskLogFile(curRun, 0, '环境检查');
+    else curRun.checkLog.log=text;
+    if(!res.logFile && !res.logPending) archiveTaskLog(curRun, 0, '环境检查', text).catch(e=>console.warn('[archive] 环境检查日志归档失败（不影响运行结果）:', e));
+  }
+  applyStatusClasses(); renderDetail();
+  return res.code===0;
 }
 /* ---------- 产物归档（任务日志 + 运行日志 + profiling，按「流水线名称_年月日时分秒」文件夹） ---------- */
 function sanitizeFsName(s){ return String(s||'pipeline').replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'') || 'pipeline'; }
@@ -3709,7 +3858,7 @@ async function ensureArchiveFolder(folder){
   return apiMkdir(folder);
 }
 /* 任务级日志归档：每个任务（阶段 / 环境清理）的回显即时写入归档文件夹的独立日志文件，
-   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境清理）；失败仅告警，不影响运行结果。 */
+   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为环境检查/环境清理）；失败仅告警，不影响运行结果。 */
 function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(name)+'.log'; }
 async function archiveTaskLog(ctx, seq, name, text){
   const folder=archiveFolderFor(ctx);
@@ -3766,6 +3915,7 @@ function archiveRun(result){
     startTime: new Date(ctx.startTs).toISOString(),
     totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
     vars: ctx.vars||{},
+    checkLogFile: ctx.checkLog ? folder+'/'+taskLogFile(ctx, 0, '环境检查') : null,
     cleanupLogFile: ctx.cleanupLog ? folder+'/'+taskLogFile(ctx, 0, '环境清理') : null,
     stages: stages.map((s,idx)=>{
       const n=nodes[s.id]||{};
@@ -4077,7 +4227,7 @@ function enterHistoryReplay(rec){
   if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineSel(); renderPipelines(); }
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   runStages = pl ? pl.stages.map(s=>({...s}))
-    : logs.filter(l=>l.stage!=='环境清理').map((l,i)=>({id:'replay-st'+i, name:l.stage, dur:5, sub:[]}));
+    : logs.filter(l=>l.stage!=='环境检查'&&l.stage!=='环境清理').map((l,i)=>({id:'replay-st'+i, name:l.stage, dur:5, sub:[]}));
   rebuildReplayNodes(rec);
   selectedId=runStages.length?runStages[0].id:null;
   /* 主控区其余项同步为该次运行的取值：环境多选按 IP 匹配（同历史重跑），仓库/分支/策略/执行人直接回填 */
@@ -4536,6 +4686,11 @@ $('stopBtn').addEventListener('click', ()=>{
   if(timer){ clearInterval(timer); timer=null; }
   // 中止兜底：先把被中断任务的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, idx+1); });
+  const ks=curRun.checkStage;
+  if(ks && nodes[ks.id] && nodes[ks.id].status==='running'){
+    archiveStageLog(ks,0);
+    if(curRun.checkLog){curRun.checkLog.status='aborted';curRun.checkLog.dur=nodes[ks.id].dur||0;}
+  }
   const cs=curRun.cleanupStage;
   if(cs && nodes[cs.id] && nodes[cs.id].status==='running'){
     archiveStageLog(cs,0);
@@ -4629,6 +4784,13 @@ $('cleanupScriptName').value = cleanupScript?cleanupScript.name:'';
 $('cleanupScriptName').addEventListener('change', (e)=>setCleanupScript(e.target.value.trim()));
 $('cleanupDetect').addEventListener('click', ()=>{ detectCleanupParams().then(saveCleanup); });
 renderCleanupParams();
+/* 环境检查：开关与脚本配置（初始值取 localStorage，服务端状态就绪后会被覆盖）；仅手动/队列运行生效，定时计划由服务端执行、暂不支持检查 */
+$('checkEnv').checked = lsGet('pip-checkEnabled','')==='1';
+$('checkEnv').addEventListener('change', saveCheck);
+$('checkScriptName').value = checkScript?checkScript.name:'';
+$('checkScriptName').addEventListener('change', (e)=>setCheckScript(e.target.value.trim()));
+$('checkDetect').addEventListener('click', ()=>{ detectCheckParams().then(saveCheck); });
+renderCheckParams();
 /* Jenkins 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
 applyJenkinsForm();
 $('jkModeLocal').addEventListener('click', ()=>setJenkinsMode('local'));
@@ -4705,7 +4867,7 @@ document.addEventListener('click', (e)=>{ const p=$('strategyPanel'); const m=$(
 /* evalTokens 任务选择面板（阶段编辑器内动态生成）：点容器外关闭（输入框 + 面板在同一 relative 容器内） */
 document.addEventListener('click', (e)=>{ document.querySelectorAll('[data-etpick-panel]').forEach(p=>{ const wrap=p.parentElement; if(p.style.display!=='none' && wrap && !wrap.contains(e.target)) p.style.display='none'; }); });
 /* 定时页控制区：与主控同一套交互（环境多选 / 代码仓切换 / 分支Tag / 部署策略面板，点外关闭）；
-   「先清理环境」与主控同一开关——改定时页勾选即写回主控并持久化（saveCleanup 内反向同步显示） */
+   「清理环境」与主控同一开关——改定时页勾选即写回主控并持久化（saveCleanup 内反向同步显示） */
 $('schedEnvMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('schedEnvMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('schedEnvMultiPanel'); const m=$('schedEnvMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 $('schedRepo').addEventListener('change', ()=>{ const bp=$('schedBranchPanel'); if(bp) bp.style.display='none'; loadDeployStrategies(true,'sched'); });
