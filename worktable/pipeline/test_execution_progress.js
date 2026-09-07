@@ -48,7 +48,7 @@ test('打开目录前等待写入',async()=>{
   let release, opened=false;
   const ctx={console,fetch:()=>new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({ok:true})});})};
   load('async function apiWrite(', '/* 是否显式配置',ctx);
-  Object.assign(ctx,{running:false,$:()=>({}),archiveTargetFolder:()=>'/logs/run',archiveRootFolder:()=>'/logs',
+  Object.assign(ctx,{running:false,$:()=>({style:{}}),archiveTargetFolder:()=>'/logs/run',archiveRootFolder:()=>'/logs',
     window:{parent:{__dshOpenFolderInSidebar(){opened=true;return true;},async __dshNewChatSessionAtFolder(){}}}});
   load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
   const write=ctx.apiWrite('/logs/run/run.log','hello');
@@ -67,4 +67,28 @@ test('日志写入失败时提示错误并保留页面',async()=>{
   await assert.rejects(ctx.apiWrite('/logs/run/run.log','hello'),/disk full/);
   await ctx.openArchiveFolder();
   assert.equal(opened,false); assert.match(tip.textContent,/disk full/);
+});
+
+test('历史归档只打开一次目录，不创建或切换会话',async()=>{
+  const folders=[],tip={style:{}}; let sessions=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},window:{parent:{
+      __dshOpenFolderInSidebar(folder){folders.push(folder);return true;},
+      async __dshNewChatSessionAtFolder(){sessions++;}
+    }}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.equal(sessions,0);assert.deepEqual(folders,['/logs/selected']);
+  assert.match(tip.textContent,/已在侧边栏打开/);
+});
+
+test('侧边栏不可用时回退系统文件管理器，不创建会话',async()=>{
+  const folders=[],tip={style:{}};let sessions=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},openFolderViaFileManager:async folder=>folders.push(folder),
+    window:{parent:{__dshOpenFolderInSidebar(){throw new Error('unavailable');},
+      async __dshNewChatSessionAtFolder(){sessions++;}}}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.equal(sessions,0);assert.deepEqual(folders,['/logs/selected']);
 });
