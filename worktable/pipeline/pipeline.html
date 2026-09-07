@@ -616,7 +616,7 @@
           <input id="plPromStart" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集开始时间（留空=运行时自动取流水线开始时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
           <input id="plPromEnd" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集结束时间（留空=运行时自动取最后一个任务结束后的时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
         </div>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，轮询到终态；任务 ID/名称可填 ${变量名} 引用上游产出）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -2280,7 +2280,7 @@ function renderStageActionRow(i){
        选中后回填 taskId/taskName 并自动识别任务输入参数；点容器外关闭面板 */
     const pickWrap=document.createElement('span'); pickWrap.style.cssText='position:relative;display:inline-flex;align-items:center;gap:4px;';
     const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表，支持 ${VAR}）'; inp.style.width='200px';
-    inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要轮询等待的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}），运行时替换后匹配任务（未定义的单个引用按空值处理）；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌周期 GET /api/open/v1/tasks，匹配到该任务并等待其到终态（成功/失败）后推进，捕获任务字段为输出变量';
+    inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要运行的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}），运行时替换后匹配任务（未定义的单个引用按空值处理）；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌启动一次新 run，并只等待该 run 到终态（成功/失败）后推进，捕获运行字段为输出变量';
     const panel=document.createElement('div'); panel.setAttribute('data-etpick-panel','1'); panel.style.cssText='display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:280px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);';
     pickWrap.appendChild(inp); pickWrap.appendChild(panel);
     inp.addEventListener('focus', ()=>{ if(panel.style.display==='none') openEvaltokPicker(i); });
@@ -2553,9 +2553,9 @@ function buildLog(stage, ctx, n){
     }
     return lines;
   }
-  if(stage.kind==='evaltokens' && stage.evaltokens){   // EvalTokens 任务轮询阶段：匹配任务并等待终态
+  if(stage.kind==='evaltokens' && stage.evaltokens){   // EvalTokens 任务运行阶段：启动新 run 并等待终态
     const et=stage.evaltokens;
-    const lines=['$ EvalTokens poll '+(et.taskId||et.taskName||'')];
+    const lines=['$ EvalTokens run '+(et.taskId||et.taskName||'')];
     const out=stage._out;
     if(!out||!out.done){
       if(out && out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
@@ -3448,27 +3448,46 @@ async function runUrlStep(i){
     applyStatusClasses(); renderDetail(); finish('failed');
   }
 }
-/* ---------- EvalTokens 任务轮询阶段：匹配任务并等待终态（本地直连 / 远程走 proxy；复用「设置」页 EvalTokens 服务配置 + Bearer 令牌） ----------
-   任务由「设置」页 EvalTokens 服务管理（GET /api/open/v1/tasks）；阶段填任务 ID（优先）或名称，运行时周期拉取任务列表
-   匹配该任务，等待其到终态（成功/失败）后推进。任务对象顶层标量字段（id/name/status/created_at…）按 KEY=VALUE /
+/* ---------- EvalTokens 任务运行阶段：启动新 run 并等待终态（本地直连 / 远程走 proxy；复用「设置」页 EvalTokens 服务配置 + Bearer 令牌） ----------
+   任务由「设置」页 EvalTokens 服务管理（GET /api/open/v1/tasks）；阶段填任务 ID（优先）或名称，运行时先匹配任务，
+   再 POST /api/open/v1/tasks/:id/run 启动新 run，并通过 runs 接口只等待该 run 到终态。运行对象顶层标量字段按 KEY=VALUE /
    单行 JSON 规则累计为输出变量（与 HTTP / 脚本阶段一致，见 mergeStageVars/applyOutVars），并附「查看报告」链接。 */
 /* 取已保存的 EvalTokens 服务配置（地址/令牌/连接模式，见 loadEvaltok）；服务未配置时返回空 url 供调用方提示 */
 function evaltokConfig(){ return evaltok && typeof evaltok==='object' ? evaltok : {url:'',token:'',mode:'local'}; }
-/* 拉取 EvalTokens 任务列表（本地直连 / 远程走 /api/worktable/proxy 代连，复用连接模式 + Bearer 令牌）；
-   归一化为任务数组（裸数组 / {data|tasks|list|items|results:[...]} 等常见包装，与 listEvaltokTasks 一致） */
+/* EvalTokens JSON 请求：本地浏览器直连或经 /api/worktable/proxy 代连；POST 请求体显式发 {}，兼容服务端 JSON 解析。 */
+async function evaltokRequestJson(e, api, method, body){
+  const verb=method||'GET'; const headers=evaltokHeaders(e);
+  if(body!==undefined) headers['Content-Type']='application/json';
+  if(e.mode==='remote'){
+    const req={url:api,method:verb,headers}; if(body!==undefined) req.body=JSON.stringify(body);
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(req)});
+    const p=await r.json(); if(p&&p.error) throw new Error(p.error+(/-?only loopback|private targets/i.test(String(p.error))?'（公网地址请切「本地浏览器连接」）':''));
+    const status=p.status||0; if(status<200||status>=300){ let msg='HTTP '+status; try{ const j=JSON.parse(p.body||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+status+'）'; }catch(_){} throw new Error(msg); }
+    return JSON.parse(p.body||'{}');
+  }
+  const opts={method:verb,cache:'no-store',headers}; if(body!==undefined) opts.body=JSON.stringify(body);
+  const r=await fetch(api,opts); if(!r.ok){ let msg='HTTP '+r.status; try{ const j=await r.json(); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); }
+  return await r.json();
+}
+/* 拉取 EvalTokens 任务列表，并归一化裸数组 / {data|tasks|list|items|results:[...]} 等常见包装。 */
 async function evaltokFetchTasks(e){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-  const api=base+'/api/open/v1/tasks'; const headers=evaltokHeaders(e);
-  let data;
-  if(e.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:api,method:'GET',headers})});
-    const p=await r.json(); if(p&&p.error) throw new Error(p.error+(/-?only loopback|private targets/i.test(String(p.error))?'（公网地址请切「本地浏览器连接」）':''));
-    if((p.status||0)!==200){ let msg='HTTP '+(p.status||0); try{ const j=JSON.parse(p.body||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+(p.status||0)+'）'; }catch(_){} throw new Error(msg); }
-    data=JSON.parse(p.body||'{}');
-  } else {
-    const r=await fetch(api,{cache:'no-store',headers}); if(!r.ok){ let msg='HTTP '+r.status; try{ const j=await r.json(); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); } data=await r.json();
-  }
+  const data=await evaltokRequestJson(e, base+'/api/open/v1/tasks', 'GET');
   return Array.isArray(data)?data:(Array.isArray(data.data)?data.data:(Array.isArray(data.tasks)?data.tasks:(Array.isArray(data.list)?data.list:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[])))));
+}
+/* 启动一次新的任务运行；返回的 run_id 是后续轮询唯一依据，不能用该任务的旧运行结果代替。 */
+async function evaltokStartRun(e, taskId){
+  const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
+  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', {});
+  if(!run||!run.run_id) throw new Error('EvalTokens 启动任务未返回 run_id');
+  return run;
+}
+/* 拉取指定任务的运行列表；服务当前返回 {runs:[...]}，同时兼容裸数组 / data|items|results 包装。 */
+async function evaltokFetchRuns(e, taskId){
+  const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
+  const api=base+'/api/open/v1/tasks/runs?task_id='+encodeURIComponent(taskId);
+  const data=await evaltokRequestJson(e, api, 'GET');
+  return Array.isArray(data)?data:(Array.isArray(data.runs)?data.runs:(Array.isArray(data.data)?data.data:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[]))));
 }
 /* 任务列表缓存（15s TTL，多阶段编辑器打开 / 多次聚焦输入框时避免重复拉取） */
 let evaltokTasksCache={tasks:null, ts:0};
@@ -3580,8 +3599,8 @@ function renderEvaltokPickerPanel(i, q){
   }));
   const rb=panel.querySelector('[data-etpickrefresh]'); if(rb) rb.addEventListener('click', ()=>{ evaltokTasksCache={tasks:null,ts:0}; openEvaltokPicker(i); });
 }
-/* EvalTokens 阶段运行：周期拉取任务列表，匹配 taskId（优先；未命中则把所填值当名称匹配）或 taskName，等待终态后推进；
-   捕获任务字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
+/* EvalTokens 阶段运行：匹配 taskId（优先；未命中则把所填值当名称匹配）或 taskName，启动一次新 run，
+   再按启动响应的 run_id 等待终态；捕获运行字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
 async function runEvaltokensStep(i){
   const stg=activeStages(); const s=stg[i]; const et=s.evaltokens||{};
   /* 任务 ID/名称支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}）：
@@ -3597,43 +3616,56 @@ async function runEvaltokensStep(i){
   const t0=Date.now(); let lastLive=0;
   if(timer) clearInterval(timer);
   timer=setInterval(function(){ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },1000);
-  const log=['$ EvalTokens poll '+(taskId||taskName||'')];
+  const log=['$ EvalTokens run '+(taskId||taskName||'')];
   try{
     if(!taskId && !taskName) throw new Error('未选择 EvalTokens 任务');
     const e=evaltokConfig(); if(!e.url) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
     const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
-    let task=null, result=null;
-    log.push('# service: '+e.url.replace(/\/+$/,'')+'/api/open/v1/tasks  mode='+(e.mode==='remote'?'remote':'local'));
-    s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; renderDetail();
     const idOf=t=>String(t.id||t.task_id||t.uuid||t._id||'');
     const nameOf=t=>String(t.name||t.title||t.task_name||t.display_name||'');
-    while(true){
+    let resolvedTaskId=taskId, resolvedTaskName=taskName;
+    /* 任务选择面板会同时保存 ID/名称，可直接用 ID 启动；手填名称或仅有名称的旧数据先查任务定义解析成 ID。 */
+    if(!resolvedTaskId||!resolvedTaskName){
       const tasks=await evaltokFetchTasks(e);
-      task=(taskId?tasks.find(t=>idOf(t)===taskId):null) || (taskId?tasks.find(t=>nameOf(t)===taskId):null) || (taskName?tasks.find(t=>nameOf(t)===taskName):null) || null;
-      if(!task) throw new Error('未在 EvalTokens 服务找到匹配任务：'+(taskId||('"'+taskName+'"'))+'（可能已删除或未创建，请核对任务 ID/名称）');
-      const st=String(task.status||task.state||task.task_status||task.phase||'');
-      const sk=evaltokStatusKind(st);
-      log.push('# task '+idOf(task||{})+' '+nameOf(task||{})+' status='+st);
+      const task=(taskId?tasks.find(t=>idOf(t)===taskId):null) || (taskId?tasks.find(t=>nameOf(t)===taskId):null) || (taskName?tasks.find(t=>nameOf(t)===taskName):null) || null;
+      if(!task) throw new Error('未在 EvalTokens 服务找到匹配任务：'+(taskId||('"'+taskName+'"'))+'（可能已删除，请核对任务 ID/名称）');
+      resolvedTaskId=idOf(task); resolvedTaskName=nameOf(task)||resolvedTaskName;
+    }
+    if(!resolvedTaskId) throw new Error('匹配的 EvalTokens 任务缺少 task_id，无法启动');
+    log.push('# service: '+e.url.replace(/\/+$/,'')+'/api/open/v1/tasks/'+encodeURIComponent(resolvedTaskId)+'/run  mode='+(e.mode==='remote'?'remote':'local'));
+    s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; renderDetail();
+    const started=await evaltokStartRun(e, resolvedTaskId);
+    const runId=String(started.run_id||'');
+    log.push('# started run '+runId+' task='+resolvedTaskId+(resolvedTaskName?(' '+resolvedTaskName):''));
+    let run=started, result=null, missingPolls=0;
+    while(true){
+      const runs=await evaltokFetchRuns(e, resolvedTaskId);
+      const current=runs.find(r=>String(r.run_id||r.id||'')===runId) || null;
+      if(current){ run=current; missingPolls=0; }
+      else if(++missingPolls>=10) throw new Error('EvalTokens 已启动 run '+runId+'，但运行列表连续 10 次未返回该记录');
+      const st=current?String(run.status||run.state||run.phase||''):'';
+      const sk=current?evaltokStatusKind(st):'running';
+      log.push('# run '+runId+' status='+(current?st:'（等待运行记录）'));
       s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; const now=Date.now(); if(selectedId===s.id && now-lastLive>=300){ lastLive=now; renderDetail(); }
       if(sk!=='running'){ result=sk; break; }
-      if(deadline && Date.now()>=deadline) throw new Error('EvalTokens 任务等待超时（阶段超时 '+secToMinInput(s.timeout)+' 分钟，任务仍为 '+st+'）');
+      if(deadline && Date.now()>=deadline) throw new Error('EvalTokens 任务等待超时（阶段超时 '+secToMinInput(s.timeout)+' 分钟，run '+runId+' 仍为 '+(st||'未知状态')+'）');
       await new Promise(function(r){ setTimeout(r,3000); });
       if(!running||!curRun||curRun.token!==tk) return;   // 迟回直接丢弃：运行被中止/切换（与 runUrlStep 同规则）
     }
     if(!running||!curRun||curRun.token!==tk) return;
     if(timer){clearInterval(timer);timer=null;}
-    /* 任务对象规整成单行 JSON 喂给 parseStageVars/parseStageJson（与 HTTP 阶段响应体规则一致） */
-    let bodyFull=''; try{ const o=JSON.parse(JSON.stringify(task)); if(o&&typeof o==='object') bodyFull=JSON.stringify(o); }catch(_){ bodyFull=String(task); }
-    let bodyShow=bodyFull; if(bodyShow.length>65536) bodyShow=bodyShow.slice(0,65536)+'…(截断，仅展示；变量捕获用完整任务对象)';
+    /* 运行对象规整成单行 JSON 喂给 parseStageVars/parseStageJson（与 HTTP 阶段响应体规则一致） */
+    let bodyFull=''; try{ const o=JSON.parse(JSON.stringify(run)); if(o&&typeof o==='object') bodyFull=JSON.stringify(o); }catch(_){ bodyFull=String(run); }
+    let bodyShow=bodyFull; if(bodyShow.length>65536) bodyShow=bodyShow.slice(0,65536)+'…(截断，仅展示；变量捕获用完整运行对象)';
     const ok=(result==='success');
     log.push(bodyShow);
     log.push('[EvalTokens result '+result+']');
-    if(ok){ const u=((evaltok && (evaltok.linkUrl||evaltok.url))||'').replace(/\/+$/,''); const tid=idOf(task||{}); if(u) log.push('📊 查看报告（EvalTokens 服务）→ '+(tid?(u+'/tasks/'+encodeURIComponent(tid)):u)); }
+    if(ok){ const u=((evaltok && (evaltok.linkUrl||evaltok.url))||'').replace(/\/+$/,''); if(u) log.push('📊 查看报告（EvalTokens 服务）→ '+u+'/tasks/'+encodeURIComponent(resolvedTaskId)); }
     s._out={stdout:log.join('\n'),stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true};
     const varsOut=mergeStageVars(log.join('\n'));
-    if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(bodyFull));   // 截断展示时顶层标量改从完整任务对象捕获
+    if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(bodyFull));   // 截断展示时顶层标量改从完整运行对象捕获
     archiveStageLog(s, i+1);
-    applyOutVars(outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：任务字段改名/JSON 路径/全文赋值（与 HTTP 阶段一致）
+    applyOutVars(outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：运行字段改名/JSON 路径/全文赋值（与 HTTP 阶段一致）
     const dur=(Date.now()-t0)/1000;
     if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
     else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
