@@ -694,18 +694,30 @@ export function apply(ctx: Context) {
     '(docker ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; ' +
     'nerdctl --namespace k8s.io ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; ' +
     'nerdctl ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; true)'
+  // 解析 pipeline.html 节点环境填写的「IP:端口」（如 115.33.98.101:2222）：
+  // 单个冒号且其后为数字 → host:port；否则（无冒号或 IPv6 多冒号）整体作 host，端口留空（默认 22）
+  function parseHostPort(ip: string): { host: string; port: string } {
+    const m = /^([^:]+):(\d+)$/.exec(ip.trim())
+    if (m) return { host: m[1], port: m[2] }
+    return { host: ip.trim(), port: '' }
+  }
   async function queryGpu(ip: string, user: string, pass: string) {
     let out: string
-    if (localAddrs().has(ip)) {
+    // 拆出端口：节点环境可填「IP:端口」指定 SSH 端口；本机判定与 ssh target 均用 host（不含端口），
+    // 端口经 ssh -p 传入（ssh 不支持 host:port 形式的 target，须用 -p <port>）
+    const { host, port } = parseHostPort(ip)
+    if (localAddrs().has(host)) {
       out = await execText('bash', ['-c', GPU_PROBE])
     } else {
-      const target = user ? user + '@' + ip : ip
+      const target = user ? user + '@' + host : host
       // 远程登录 shell 可能是 zsh（如部分 BMS 节点）：`echo ===` 触发 zsh 的 =word 展开报错，
       // $(...) 结果默认不做单词拆分导致 for 循环失效。base64 编码后经管道交给 bash 执行，与登录 shell 解耦。
       const remoteCmd = 'echo ' + Buffer.from(GPU_PROBE).toString('base64') + ' | base64 -d | bash'
       // UserKnownHostsFile=/dev/null：不查不写 known_hosts，首次登录的 yes/no 确认与
       // 重装后指纹变更（REMOTE HOST IDENTIFICATION HAS CHANGED）都不阻塞（内网受信前提）
-      const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=8', target, remoteCmd]
+      // 填了端口时用 ssh -p <port> 连接：sshpass 的 -p 密码在 ssh 命令前已由 sshpass 消费，
+      // 此处 -p <port> 落在 ssh 之后、target 之前，属 ssh 的端口参数，两者不冲突
+      const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=8', ...(port ? ['-p', port] : []), target, remoteCmd]
       // 密码路径：只做密码/键盘交互认证（跳过公钥尝试，避免 agent 密钥过多触发 Too many authentication failures），
       // 密码只喂一次（错误即失败返回，不把错密码重试 3 遍触发账户锁定）
       out = pass

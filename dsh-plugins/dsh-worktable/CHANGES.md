@@ -1,5 +1,13 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 节点环境支持「IP:端口」指定 SSH 端口（`worktable/pipeline/pipeline.html` + `src/index.ts` / `lib/index.js` 配套）：
+  - 设置页「节点环境」IP 输入框可填纯 IP（默认 22 端口）或「IP:端口」（如 `115.33.98.101:2222`）：placeholder/tooltip 更新、
+    `saveEnvForm` 增加端口格式校验（单个冒号时其后须为数字端口；多冒号 IPv6 或无冒号原样保留）、IP 表头排序先去掉「:端口」再按段数值排。
+    节点 `ip` 字段整体存「host:port」，注入的 `TARGET_IP`/`TARGET_IPS`/`TARGET_HOSTS` 均含端口，由脚本自行解析。
+  - 服务端 `queryGpu` 解析「IP:端口」：本机判定与 ssh target 均用 host（不含端口），端口经 `ssh -p <port>` 传入
+    （ssh 不支持 `host:port` 形式的 target），设备状态查询因此能连非 22 端口的节点。无端口时行为与原先完全一致。
+    需构建插件并重启 web 后刷新页面生效。
+
 - 本地文件读取路由 `/api/worktable/file` 新增可选 `tailBytes` 参数：流水线历史回放只需日志末尾时，
   服务端以有界随机读取返回最多 4 MiB 的文件尾部，并通过响应头返回原文件大小与截尾状态；
   不带参数的资源管理器等旧调用仍保持完整文件响应，超过 256 MiB 的原有保护不变。
