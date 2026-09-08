@@ -90,6 +90,8 @@
     .mini { font-size:11px; padding:5px 12px; }
     #historyTable tbody tr { cursor:pointer; }
     #historyTable tbody tr.sel td { background:rgba(79,142,247,.12); }
+    #historyTable tbody tr.analysis-sel td:first-child { box-shadow:inset 3px 0 0 var(--dsw-alias-state-accent-primary); }
+    .history-analysisPick { cursor:pointer; accent-color:var(--dsw-alias-state-accent-primary); }
     /* 流水线任务行：整行点击即选用，当前行高亮（色板走主题变量） */
     #plTable tbody tr { cursor:pointer; }
     #plTable tbody tr:hover td { background:var(--dsw-alias-fill-l1); }
@@ -254,7 +256,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="勾选一条做 AI 日志分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="勾选一条做 Profiling 分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="勾选一条做性能诊断，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
@@ -278,7 +280,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -470,7 +472,7 @@
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」点击选中某一行后，点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话（工作目录取该次运行的日志所在目录，即归档文件夹；未归档时回退归档根目录），把对应提示词填入输入框，确认无误后手动发送。
+        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话（单次分析工作目录取该次运行的归档文件夹；对比分析取归档根目录；未归档时回退归档根目录），把对应提示词填入输入框，确认无误后手动发送。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -4464,6 +4466,27 @@ const DEFAULT_PROMPTS = {
 function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
 let analysisPrompts = loadPrompts();
 function savePrompts(){ try{ localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts)); }catch(e){} persistState(); }
+/* 分析选择与回放选择相互独立：tag 是运行主键；旧记录无 tag 时用稳定元数据拼接，支持跨分页保留勾选。 */
+function analysisHistoryKey(rec){
+  if(rec && rec.tag) return 'tag:'+rec.tag;
+  return 'run:'+[(rec&&rec.ts)||'',(rec&&rec.no)||'',(rec&&rec.pipeline)||'',(rec&&rec.commit)||''].join(':');
+}
+function toggleAnalysisHistory(rec, checked){
+  const key=analysisHistoryKey(rec), pos=analysisHistoryKeys.indexOf(key);
+  if(checked && pos<0){
+    if(analysisHistoryKeys.length>=2){ alert('运行历史分析最多选择 2 条。'); return false; }
+    analysisHistoryKeys.push(key);
+  }else if(!checked && pos>=0) analysisHistoryKeys.splice(pos,1);
+  renderHistory();
+  return true;
+}
+function selectedAnalysisHistory(){
+  return analysisHistoryKeys.map(key=>history.find(rec=>analysisHistoryKey(rec)===key)).filter(Boolean);
+}
+function pruneAnalysisHistory(){
+  const valid=new Set(history.map(analysisHistoryKey));
+  analysisHistoryKeys=analysisHistoryKeys.filter(key=>valid.has(key)).slice(0,2);
+}
 function analysisSummary(rec){ return '#'+rec.no+' 流水线「'+rec.pipeline+'」 环境 '+rec.env+' · 执行人 '+rec.by+' · 状态 '+labelOf(rec.status)+' · 耗时 '+rec.dur+' · '+rec.time+' · commit '+rec.commit; }
 function buildAnalysisPrompt(kind, rec){
   const tpl = analysisPrompts[kind] || DEFAULT_PROMPTS[kind] || '';
@@ -4478,15 +4501,34 @@ function buildAnalysisPrompt(kind, rec){
   };
   return tpl.replace(/\{(\w+)\}/g, (m,k)=> vars[k]!==undefined ? String(vars[k]) : m);
 }
-/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：工作目录 = 日志所在目录
-   （选中行的归档文件夹 rec.archive，run-*.log / profile.json 都在其中，AI 可直接读文件分析）；
-   该行未归档（archive 为空）时回退归档根目录（archiveRootFolder）保底，保证新会话始终有工作区；
+const COMPARE_FOCUS = {
+  log:'日志中的失败/异常点、关键告警及新增或消失的问题',
+  prof:'profiling 数据中的阶段耗时占比与瓶颈变化',
+  perf:'日志与 profiling 反映的整体性能、耗时异常及资源瓶颈',
+};
+function buildComparisonPrompt(kind, records){
+  const focus=COMPARE_FOCUS[kind]||'关键结果与异常';
+  return '请比较下面两次流水线运行，重点分析'+focus+'；明确指出改善、退化、可能原因和下一步优化建议。\n\n'
+    +'===== 运行 A（基准） =====\n'+buildAnalysisPrompt(kind,records[0])+'\n\n'
+    +'===== 运行 B（对比） =====\n'+buildAnalysisPrompt(kind,records[1])+'\n\n'
+    +'请先读取两次运行各自列出的归档文件，再按「结论、关键差异、改善/退化、原因、建议」给出对比结果。';
+}
+function buildAnalysisRequest(kind, records){
+  const recs=(Array.isArray(records)?records:[records]).filter(Boolean).slice(0,2);
+  if(!recs.length) return {text:'',cwd:archiveRootFolder()||null};
+  if(recs.length===1) return {text:buildAnalysisPrompt(kind,recs[0]),cwd:(recs[0].archive||'').trim()||archiveRootFolder()||null};
+  /* 双运行通常位于同一归档根目录；会话从根目录启动，提示词仍保留两边绝对路径。 */
+  return {text:buildComparisonPrompt(kind,recs),cwd:archiveRootFolder()||null};
+}
+/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：单次分析工作目录 = 该次运行归档目录，
+   双运行对比工作目录 = 归档根目录，提示词包含两边归档文件的绝对路径；
+   记录未归档（archive 为空）时同样回退归档根目录（archiveRootFolder），保证新会话始终有工作区；
    提示词只填入输入框草稿（不自动提交，用户确认后手动发送）；
    旧版插件无此桥时退化为 __dshSessions/__dshPromptIntoSession 原自动发送路径 */
-async function createAnalysisChat(kind, rec){
+async function createAnalysisChat(kind, records){
   const P = window.parent;
-  const text = buildAnalysisPrompt(kind, rec);
-  const cwd = (rec.archive||'').trim() || archiveRootFolder();
+  const request = buildAnalysisRequest(kind, records);
+  const text = request.text, cwd = request.cwd;
   if(P && typeof P.__dshNewChatSessionAt==='function'){
     try{ await P.__dshNewChatSessionAt(text, cwd || null); }
     catch(e){ alert('创建 AI 会话失败：'+(e && e.message ? e.message : e)); }
@@ -4657,6 +4699,7 @@ function renderReplayDetail(rec){
   }
 }
 let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局下标）
+let analysisHistoryKeys=[];   // AI 分析勾选（最多两条，顺序即对比的 A / B；与单行回放选择分离）
 let histPage=0;
 let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
 /* 运行历史筛选：关键字（# / 流水线 / 环境 / 执行人 / Commit，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
@@ -4685,19 +4728,25 @@ function renderHistFilterOptions(){
 function renderHistory(){
   const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
   if(selHistoryIdx>=history.length) selHistoryIdx=-1;
+  pruneAnalysisHistory();
   const view=filteredHistory();
   renderHistFilterOptions();
   const fTip=$('histFilterTip'); if(fTip) fTip.textContent=(histFilter.kw||histFilter.status||histFilter.pipeline)?('已筛选 '+view.length+' / '+history.length+' 条'):'';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="9" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="10" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
   const pages=Math.max(1, Math.ceil(view.length/histPageSize));
   if(histPage>pages-1) histPage=pages-1;
   if(histPage<0) histPage=0;
   view.slice(histPage*histPageSize, (histPage+1)*histPageSize).forEach((h,i)=>{
     const idx=history.indexOf(h);
     const tr=document.createElement('tr');
-    if(idx===selHistoryIdx) tr.className='sel';
+    const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
+    tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    const analysisPick=tr.querySelector('[data-hist-analysis]');
+    analysisPick.checked=analysisChecked;
+    analysisPick.addEventListener('click', e=>e.stopPropagation());
+    analysisPick.addEventListener('change', e=>{ if(!toggleAnalysisHistory(h,e.target.checked)) e.target.checked=false; });
     tr.addEventListener('click', ()=>{
       selHistoryIdx = selHistoryIdx===idx?-1:idx;
       if(selHistoryIdx>=0) enterHistoryReplay(history[selHistoryIdx]);   // 选中行：编排区/回显框/主控控件同步回放该次运行
@@ -4712,15 +4761,19 @@ function renderHistory(){
   if(pv) pv.disabled = histPage<=0;
   if(nx) nx.disabled = histPage>=pages-1;
   const tip=$('rowSelTip');
-  if(tip) tip.textContent = (selHistoryIdx>=0 && history[selHistoryIdx])
-    ? ('已选 #'+history[selHistoryIdx].no+' '+(history[selHistoryIdx].pipeline||''))
-    : '点击行选中后可分析';
+  if(tip){
+    const picked=selectedAnalysisHistory();
+    if(picked.length) tip.textContent='分析已选 '+picked.length+'/2：'+picked.map(rec=>'#'+rec.no).join(' → ')+(selHistoryIdx>=0&&history[selHistoryIdx]?(' · 回放 #'+history[selHistoryIdx].no):'');
+    else if(selHistoryIdx>=0&&history[selHistoryIdx]) tip.textContent='回放 #'+history[selHistoryIdx].no+'（未勾选时分析此行）';
+    else tip.textContent='勾选 1 条分析，或按顺序勾选 2 条对比';
+  }
 }
-/* 标题行分析按钮：作用于当前选中行 */
+/* 标题行分析按钮：优先作用于勾选的一至两条记录；未勾选时兼容原行为，使用当前回放行。 */
 document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', ()=>{
-  const rec=(selHistoryIdx>=0)?history[selHistoryIdx]:null;
-  if(!rec){ alert('请先点击选择一条运行历史。'); return; }
-  createAnalysisChat(b.getAttribute('data-ract'), rec);
+  const records=selectedAnalysisHistory();
+  if(!records.length && selHistoryIdx>=0 && history[selHistoryIdx]) records.push(history[selHistoryIdx]);
+  if(!records.length){ alert('请先勾选一至两条运行历史，或点击一行进入回放。'); return; }
+  createAnalysisChat(b.getAttribute('data-ract'), records);
 }));
 /* 「📂 打开归档目录」：优先经 dsh-better-sidebar 侧边栏「文件」面板打开归档目录（__dshOpenFolderInSidebar
    桥由工作台插件暴露，开一个以归档目录为根的文件夹窗口）；未装 better-sidebar 或桥不可用时回退到
@@ -4824,7 +4877,7 @@ $('histPageSize').value=String(histPageSize);
 $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
-$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
+$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; analysisHistoryKeys=[]; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
 /* 「↻ 刷新」运行历史：从服务端重新拉取——本页加载后，其他浏览器的保存与服务端定时运行追加的记录
    已在服务端落盘合并（PUT 按 tag/ts 合并），本地不会自己出现，手动拉取才合并进来 */
 $('histRefresh').addEventListener('click', async ()=>{
