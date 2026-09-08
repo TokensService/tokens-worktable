@@ -1,0 +1,2779 @@
+<!doctype html>
+<!-- PR 检视台 · 拉取 GitCode 组织(TokensService)下所有仓库的 PR，点击进入 AI 检视并新建 DSH 会话。
+     皮肤由工作台提供：<link rel="stylesheet" href="/api/worktable/template/dshell.css"> -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PR 检视台 · TokensService</title>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <script>
+    // 首帧前设定主题，避免闪烁；默认跟随系统
+    (function () {
+      try {
+        var t = localStorage.getItem("gc_pr_theme") || "system";
+        if (t !== "light" && t !== "dark" && t !== "system") t = "system";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { document.documentElement.setAttribute("data-theme", "system"); }
+    })();
+  </script>
+  <style>
+    /* —— 主题：深色 / 浅色 / 跟随系统（独立于宿主，覆盖 dshell 默认深色）—— */
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+      --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+      --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+      --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+      --pr-skel:rgba(255,255,255,.10);
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+      --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+      --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+      --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+      --pr-skel:rgba(0,0,0,.10);
+    }
+    html[data-theme="system"] { color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="system"] {
+        color-scheme: dark;
+        --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+        --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+        --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+        --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+        --pr-skel:rgba(255,255,255,.10);
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      html[data-theme="system"] {
+        color-scheme: light;
+        --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+        --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+        --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+        --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+        --pr-skel:rgba(0,0,0,.10);
+      }
+    }
+    html[data-theme="light"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); }
+    @media (prefers-color-scheme: light) { html[data-theme="system"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); } }
+    /* 主题切换分段控件 */
+    .theme-seg { display:inline-flex; align-items:center; gap:2px; padding:2px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:999px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .theme-seg button { border:none; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); font:inherit; font-size:11px; padding:3px 9px; border-radius:999px; cursor:pointer; line-height:1.4; }
+    .theme-seg button:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .theme-seg button.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+
+    /* 仅在 dshell 之上做最小补充：PR 行、标签、布局微调 */
+    .pr-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .pr-toolbar .grow { flex:1 1 220px; }
+    .pr-row { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .pr-row + .pr-row { margin-top:8px; }
+    .pr-row:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .pr-top { display:flex; align-items:flex-start; gap:10px; }
+    .pr-main { flex:1 1 auto; min-width:0; }
+    .pr-title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); word-break:break-word; cursor:pointer; }
+    .pr-title:hover { color:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    .pr-sub { margin-top:3px; font-size:11.5px; color:var(--dsw-alias-label-tertiary,#6b7280); display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+    .pr-repo { color:var(--dsw-alias-label-secondary,#9aa4b2); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .pr-chip { display:inline-flex; align-items:center; gap:4px; padding:1px 7px; border-radius:999px; font-size:10.5px; border:1px solid var(--dsw-alias-border-l1,#262b36); color:var(--dsw-alias-label-secondary,#9aa4b2); background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .pr-chipDraft { color:#d29922; border-color:rgba(210,153,34,.4); }
+    .pr-chipMerged { color:#a371f7; border-color:rgba(163,113,247,.4); }
+    .pr-chipClosed { color:#f85149; border-color:rgba(248,81,73,.4); }
+    .pr-actions { flex:none; display:flex; gap:8px; align-items:center; }
+    .pr-detail { margin-top:6px; padding-top:8px; border-top:1px dashed var(--dsw-alias-border-l1,#262b36); font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .pr-body { white-space:pre-wrap; word-break:break-word; max-height:180px; overflow:auto; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .pr-label { display:inline-block; padding:1px 7px; border-radius:6px; font-size:10.5px; margin:2px 4px 0 0; border:1px solid var(--dsw-alias-border-l1,#262b36); }
+    .pr-mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
+    .pr-empty { text-align:center; padding:34px 10px; color:var(--dsw-alias-label-tertiary,#6b7280); }
+    .pr-skel { height:46px; border-radius:10px; background:var(--pr-skel,rgba(127,127,127,.14)); opacity:.6; }
+    .pr-skel + .pr-skel { margin-top:8px; }
+    .pr-toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%); background:#3fb950; color:#0b0e14; font-weight:600; font-size:12.5px; padding:8px 16px; border-radius:999px; box-shadow:0 6px 22px rgba(0,0,0,.4); z-index:50; opacity:0; transition:opacity .25s; pointer-events:none; }
+    .pr-toast.show { opacity:1; }
+    .pr-toast.err { background:#f85149; color:#fff; }
+    .pr-tokenRow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .pr-tokenRow .grow { flex:1 1 240px; }
+    .pr-link { color:var(--dsw-alias-state-accent-primary,#4f8ef7); text-decoration:none; }
+    .pr-link:hover { text-decoration:underline; }
+    code { background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06)); padding:1px 5px; border-radius:5px; font-size:11px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .pr-progressWrap { display:flex; align-items:center; gap:10px; }
+    .pr-progressText { font-size:11.5px; color:var(--dsw-alias-label-secondary,#9aa4b2); white-space:nowrap; }
+    details.pr-det { margin-top:6px; }
+    details.pr-det > summary { cursor:pointer; font-size:11.5px; color:var(--dsw-alias-label-secondary,#9aa4b2); list-style:none; }
+    details.pr-det > summary::-webkit-details-marker { display:none; }
+    details.pr-det[open] > summary { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    /* 编译发行：步骤列表与日志（颜色统一走主题变量 / 状态色） */
+    .rel-step { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:7px 10px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .rel-step + .rel-step { margin-top:6px; }
+    .rel-dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:var(--dsw-alias-label-tertiary,#6b7280); }
+    .rel-dotRun { background:var(--dsw-alias-state-accent-primary,#4f8ef7); box-shadow:0 0 5px var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    .rel-dotOk { background:#3fb950; }
+    .rel-dotErr { background:#f85149; }
+    .rel-log { margin-top:8px; max-height:320px; overflow:auto; padding:8px 10px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; line-height:1.6; white-space:pre-wrap; word-break:break-all; }
+    .rel-line { color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .rel-err { color:#f85149; }
+    .rel-ok { color:#3fb950; }
+    .rel-warn { color:#d29922; }
+    .rel-dim { color:var(--dsw-alias-label-tertiary,#6b7280); }
+    .rel-hi { color:var(--dsw-alias-label-primary,#e6e8eb); font-weight:600; }
+    /* 步骤内联回显（发行中每步输出就地展开）与构建历史 */
+    .rel-stepDet { width:100%; margin-top:4px; }
+    .rel-stepDet > summary { cursor:pointer; font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); list-style:none; }
+    .rel-stepDet > summary::-webkit-details-marker { display:none; }
+    .rel-stepDet[open] > summary { color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .rel-stepLog { max-height:220px; margin-top:6px; }
+    .rel-histRow { padding:10px 12px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .rel-histRow + .rel-histRow { margin-top:8px; }
+    .rel-histRow:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .rel-histHead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; cursor:pointer; }
+    .rel-histTitle { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .rel-histDel { margin-left:auto; }
+    .rel-histBody { margin-top:8px; padding-top:8px; border-top:1px dashed var(--dsw-alias-border-l1,#262b36); }
+    .rel-histSec { font-size:11.5px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); margin:10px 0 6px; }
+    /* 停止按钮：运行中主按钮切为危险态（红色边框/文字，两主题通用） */
+    .dshell-btn.is-stop { color:#f85149; border-color:rgba(248,81,73,.5); }
+    .dshell-btn.is-stop:hover { background:rgba(248,81,73,.10); }
+    /* 仓库过滤下拉（PR 列表与 Issues 共用）：在 dshell 工具条内联 */
+    .repo-filter { position:relative; flex:0 0 auto; }
+    .repo-filterBtn { font-size:12px; padding:4px 10px; white-space:nowrap; }
+    .repo-filterPanel { position:absolute; top:calc(100% + 4px); left:0; z-index:30; min-width:240px; max-width:380px; max-height:340px; overflow:auto; padding:6px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-bg-base,#0b0e14); box-shadow:0 8px 24px rgba(0,0,0,.32); display:none; }
+    .repo-filterPanel.open { display:block; }
+    .repo-filterHead { display:flex; align-items:center; gap:6px; padding:4px 6px 6px; border-bottom:1px dashed var(--dsw-alias-border-l1,#262b36); margin-bottom:4px; flex-wrap:wrap; }
+    .repo-filterItem { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; cursor:pointer; }
+    .repo-filterItem:hover { background:var(--dsw-alias-fill-l1,rgba(255,255,255,.04)); }
+    .repo-filterItem input { flex:0 0 auto; margin:0; }
+    .repo-filterEmpty { padding:10px 8px; color:var(--dsw-alias-label-tertiary,#6b7280); font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="dshell" id="app">
+    <!-- 标题区 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div>
+        <h1 class="dshell-title" id="pageTitle">PR 检视台 · GitCode</h1>
+        <p class="dshell-sub" id="subLine">拉取组织 <span class="pr-repo" id="subOrg">TokensService</span> 下所有仓库的 Pull Request，点击「AI 检视」即新建 AI 聊天会话并送入评审提示。</p>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div class="theme-seg" id="themeSeg" title="背景主题">
+          <button type="button" data-theme="system">系统</button>
+          <button type="button" data-theme="dark">深</button>
+          <button type="button" data-theme="light">浅</button>
+        </div>
+        <button class="dshell-btn dshell-btnGhost" id="btnSettings" title="切换到设置标签">⚙ 设置</button>
+        <button class="dshell-btn" id="btnRefresh" title="重新拉取">↻ 刷新 PR</button>
+      </div>
+    </div>
+
+    <!-- 视图标签页：PR 列表 / 编译发行 / 设置（设置标签只显示设置信息） -->
+    <div class="dshell-tabs" id="viewTabs">
+      <button class="dshell-tab dshell-tabOn" data-view="list">PR 列表</button>
+      <button class="dshell-tab" data-view="issues">Issues</button>
+      <button class="dshell-tab" data-view="release">编译发行</button>
+      <button class="dshell-tab" data-view="settings">设置</button>
+    </div>
+
+    <!-- 列表视图 -->
+    <div id="viewList">
+    <!-- 状态徽标 -->
+    <div id="statusBar" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+
+    <!-- 统计卡片 -->
+    <div class="dshell-grid" id="stats"></div>
+
+    <!-- 工具条：搜索 + 仓库过滤 + 状态筛选 -->
+    <div class="pr-toolbar" id="toolbar" style="display:none">
+      <input class="dshell-input grow" id="searchInput" placeholder="按仓库 / 标题 / 作者 / 分支搜索…" />
+      <div class="repo-filter" id="repoFilter" title="按代码仓过滤（仅显示所选仓库的 PR）"></div>
+      <div class="dshell-tabs" id="stateTabs" style="border:none">
+        <button class="dshell-tab dshell-tabOn" data-state="open">开放</button>
+        <button class="dshell-tab" data-state="closed">已关闭</button>
+        <button class="dshell-tab" data-state="all">全部</button>
+      </div>
+    </div>
+
+    <!-- 列表 -->
+    <div id="list"></div>
+    </div><!-- /viewList -->
+
+    <!-- Issues 视图：拉取组织各仓库 Issue（GitHub 自动跳过 PR；首次切到本标签时拉取） -->
+    <div id="viewIssues" style="display:none">
+      <div id="issueStatusBar" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      <div class="dshell-grid" id="issueStats"></div>
+      <!-- 工具条：搜索 + 仓库过滤 + 状态筛选 -->
+      <div class="pr-toolbar" id="issueToolbar" style="display:none">
+        <input class="dshell-input grow" id="issueSearchInput" placeholder="按仓库 / 标题 / 作者搜索…" />
+        <div class="repo-filter" id="issueRepoFilter" title="按代码仓过滤（仅显示所选仓库的 Issue）"></div>
+        <div class="dshell-tabs" id="issueStateTabs" style="border:none">
+          <button class="dshell-tab dshell-tabOn" data-state="open">开放</button>
+          <button class="dshell-tab" data-state="closed">已关闭</button>
+          <button class="dshell-tab" data-state="all">全部</button>
+        </div>
+        <button class="dshell-btn dshell-btnGhost" id="issueRefresh" title="重新拉取 Issues">↻ 刷新</button>
+      </div>
+      <div id="issueList"></div>
+    </div><!-- /viewIssues -->
+
+    <!-- 发行视图：选仓库/分支，一键串行「编译构建 → 创建 Tag → 创建 GitCode 发行版」 -->
+    <div id="viewRelease" style="display:none">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" id="relCardSubHelp" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失</span></h2>
+        <div class="pr-tokenRow" style="margin-bottom:8px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">仓库
+            <select class="dshell-input" id="relRepo" style="min-width:150px"></select>
+          </label>
+          <button class="dshell-btn dshell-btnGhost" id="relRepoRefresh" title="重新拉取组织仓库列表" style="padding:4px 8px">⟳</button>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">分支
+            <input class="dshell-input" id="relBranch" list="relBranchList" value="main" autocomplete="off" style="width:150px" />
+            <datalist id="relBranchList"></datalist>
+          </label>
+          <button class="dshell-btn dshell-btnGhost" id="relBranchRefresh" title="重新拉取该仓库分支列表" style="padding:4px 8px">⟳</button>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">Tag
+            <input class="dshell-input" id="relTag" placeholder="如 v1.0.0" autocomplete="off" style="width:150px" />
+          </label>
+          <button class="dshell-btn dshell-btnGhost" id="relTagSuggest" title="按上一发行版 Tag 递增生成建议（vllm 风格语义化版本：正式 vX.Y.Z / 候选 vX.Y.ZrcN / 修订 vX.Y.Z.postN / 开发 vX.Y.Z.devN）。勾选「预发布」生成候选版（同版本下一 rc，或下一版本 rc1）；未勾选生成正式版（同版本定版，或下一版本）">建议</button>
+        </div>
+        <div class="pr-tokenRow" style="margin-bottom:8px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建脚本
+            <select class="dshell-input" id="relBuildScript" style="width:280px" title="从所选代码仓内选择构建脚本（按当前分支经 GitCode API 列出根目录与 scripts/、ci/ 下的 *.sh；执行时浅克隆该分支并在仓库根目录运行脚本，注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME/BUILD_CMD 及设置页「附加环境变量」；设置页配置构建容器时在容器内执行；配置「产物路径」时构建后按通配收集产物并上传发行版附件）。可选「自定义…」手填仓内相对路径，留空=跳过构建">
+              <option value="">（点 ⟳ 拉取脚本）</option>
+              <option value="__custom__">自定义…</option>
+            </select>
+            <button class="dshell-btn dshell-btnGhost" id="relBuildScriptRefresh" title="按当前仓库与分支重新列出仓内脚本（根目录与 scripts/、ci/ 下的 *.sh）" style="padding:4px 8px">⟳</button>
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建命令
+            <input class="dshell-input" id="relBuildCmd" placeholder="可选，作为 BUILD_CMD 注入脚本" autocomplete="off" style="width:200px" />
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">超时(s)
+            <input class="dshell-input" id="relBuildTimeout" type="number" min="10" max="3600" style="width:80px" />
+          </label>
+        </div>
+        <div class="pr-tokenRow" id="relBuildScriptCustomRow" style="display:none;margin-bottom:8px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">自定义脚本路径
+            <input class="dshell-input" id="relBuildScriptCustom" placeholder="仓内脚本相对路径，如 scripts/build.sh，留空=跳过构建" autocomplete="off" style="width:380px" />
+          </label>
+        </div>
+        <div class="pr-tokenRow" style="margin-bottom:8px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">产物路径
+            <input class="dshell-input" id="relArtifacts" placeholder="仓内相对路径/通配，空格分隔，如 dist/*.zip out/app.tar.gz；留空=不上传产物" autocomplete="off" style="width:380px"
+              title="构建结束后从克隆目录按这些仓内相对路径（支持 * ? 通配，目录整体拷贝）收集产物文件，发行版创建成功后作为附件上传到该 GitCode 发行版。留空=跳过产物上传" />
+          </label>
+        </div>
+        <div class="pr-tokenRow" style="margin-bottom:8px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">发行版名称
+            <input class="dshell-input" id="relName" placeholder="留空=同 Tag" autocomplete="off" style="width:180px" />
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="checkbox" id="relPrerelease" /> 预发布
+          </label>
+        </div>
+        <div style="margin-bottom:8px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
+            <span class="dshell-muted">发行说明</span>
+            <span style="display:flex;align-items:center;gap:8px">
+              <span class="dshell-muted" id="relNotesAiTip" style="font-size:11px"></span>
+              <button class="dshell-btn dshell-btnGhost" id="relNotesAiBtn" style="padding:3px 10px;font-size:11.5px"
+                title="拉取上一发行版 Tag 与当前分支之间的提交（commit），在右侧聊天窗新建 AI 会话按业界通行格式生成发行说明草稿（生成后从会话复制回本框，可再编辑）">✦ AI 生成</button>
+            </span>
+          </div>
+          <textarea class="dshell-textarea" id="relBody" rows="4" placeholder="本次发行的变更说明（可选；点「✦ AI 生成」由 AI 按上一发行版与当前分支之间的提交起草）" style="font-size:12px"></textarea>
+        </div>
+        <div class="pr-tokenRow">
+          <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
+          <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
+        </div>
+        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
+      </div>
+      <div class="dshell-card" style="margin-top:10px">
+        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）；发行中可点「⏹ 停止」中止，服务端进程组即被终止并自动清理克隆目录 / 构建容器 / 暂存产物</span></h2>
+        <div id="relSteps"></div>
+        <div id="relResult" style="margin-top:8px"></div>
+        <div class="rel-log" id="relLog" style="display:none"></div>
+      </div>
+      <div class="dshell-card" style="margin-top:10px">
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建历史 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每次发行归档依赖信息（仓库/分支/脚本/容器/产物路径）、收集到的产物清单与逐步回显日志，存于云端（服务端，所有浏览器共享），本地启动时从云端拉取，最多保留 30 条</span></h2>
+        <div class="pr-tokenRow" style="margin-bottom:8px">
+          <button class="dshell-btn dshell-btnGhost" id="relHistClear" title="清空云端保存的全部构建历史">清空历史</button>
+          <span class="dshell-muted" id="relHistTip" style="font-size:11px"></span>
+        </div>
+        <div id="relHist"></div>
+      </div>
+    </div><!-- /viewRelease -->
+
+    <!-- 设置视图：只显示设置信息，切到此标签时隐藏列表 -->
+    <div id="viewSettings" style="display:none">
+      <!-- 访问令牌（GitCode / GitHub，平台切换在下方下拉） -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px" id="tokenCardTitle">GitCode 访问令牌</h2>
+        <div class="pr-tokenRow" style="margin-bottom:10px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">代码托管平台
+            <select class="dshell-input" id="platformSel" style="min-width:120px" title="切换 GitCode / GitHub：各平台令牌/组织/认证方式/提示词/发行缓存独立存于本机">
+              <option value="gitcode">GitCode</option>
+              <option value="github">GitHub</option>
+            </select>
+          </label>
+          <span class="dshell-muted" id="platformTip" style="font-size:11px"></span>
+        </div>
+        <div class="dshell-kv" style="margin-bottom:10px">
+          <div class="dshell-kvRow"><span class="dshell-kvKey">为什么需要令牌</span><span class="dshell-kvValue" id="tokenWhyValue">组织 TokensService 为私有，匿名访问返回 403</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">令牌存储</span><span class="dshell-kvValue">仅存于本机浏览器 localStorage</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">申请令牌</span><span class="dshell-kvValue"><a class="pr-link" id="tokenApplyLink" href="https://gitcode.com/profile/personal-access-tokens" target="_blank" rel="noopener">GitCode 个人访问令牌 →</a></span></div>
+        </div>
+        <div class="pr-tokenRow">
+          <input class="dshell-input grow" id="tokenInput" type="password" placeholder="粘贴 GitCode 个人访问令牌（private access token）" autocomplete="off" />
+          <select class="dshell-input" id="authMode" style="flex:0 0 auto;width:auto">
+            <option value="auto">认证: 自动(推荐)</option>
+            <option value="bearer">认证: Bearer 头</option>
+            <option value="query">认证: access_token 参数</option>
+            <option value="token">认证: token 头</option>
+            <option value="private">认证: private-token 头(可能被 CORS 拦截)</option>
+          </select>
+        </div>
+        <div class="pr-tokenRow" style="margin-top:8px">
+          <button class="dshell-btn" id="btnTest">测试连接</button>
+          <button class="dshell-btn dshell-btnGhost" id="btnClearToken">清除令牌</button>
+          <span class="dshell-muted" id="testResult" style="flex:1 1 auto"></span>
+        </div>
+      </div>
+
+      <!-- 组织与评审 -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">组织与评审</h2>
+        <div class="pr-tokenRow">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">组织/用户命名空间
+            <input class="dshell-input" id="orgInput" placeholder="TokensService" style="width:200px" />
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="embedToken" /> 评审提示中携带令牌（便于 AI 直接拉取私有仓库 diff）
+          </label>
+        </div>
+      </div>
+
+      <!-- 构建容器（构建运行环境，编译发行页统一使用） -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建容器（构建运行环境）</h2>
+        <p class="dshell-muted" style="margin:0 0 8px;line-height:1.7">
+          「编译发行」构建阶段默认在服务端本机执行：浅克隆所选分支后在仓库根目录运行所选仓内脚本；填写镜像后，克隆目录将挂载到该容器 <code>/mnt/repo</code> 并经 <code>docker run</code> 在容器内执行（<code>GIT_URL</code>/<code>GIT_AUTH_URL</code>/<code>GIT_BRANCH</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 透传进容器）。留空=本机直接执行。容器执行时自动加 <code>-u root</code> 以 root 权限启动（编译常需写系统目录/安装依赖）并加 <code>--entrypoint bash</code> 覆盖镜像入口（避免 vllm-openai 等镜像把 <code>bash</code>/脚本名当成入口命令 <code>vllm serve</code> 的参数），并加 <code>--network host</code> 与宿主共享网络栈（便于访问内网服务/代理，无需端口映射）。<br />
+          注意：浅克隆、Tag 推送、产物上传等 git/curl 网络操作始终由<strong>服务端本机</strong>执行（容器只负责跑仓内构建脚本），进程会继承 dsh web 服务端的代理环境变量（<code>http_proxy</code>/<code>https_proxy</code> 等）；代理拒绝隧道时报「CONNECT tunnel failed」（代理侧故障，与证书/凭据无关），可把下方「构建网络代理」改为直连或自定义代理。容器执行时代理变量按当前取值经 <code>-e KEY</code> 同步透传（直连模式已清空，不带入容器）。<br />
+          「附加环境变量」按 <code>KEY=VALUE</code> 空格分隔填写：本机执行时直接注入、容器执行时经 <code>-e KEY</code> 透传（如代理、镜像源、特性开关等仓内脚本需要的变量）。
+        </p>
+        <div class="pr-tokenRow">
+          <input class="dshell-input grow" id="buildContainerInput" placeholder="如 ubuntu:22.04 / registry.example.com/builder:latest（留空=本机执行）" autocomplete="off" />
+        </div>
+        <div class="pr-tokenRow" style="margin-top:6px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex:1 1 auto">附加环境变量
+            <input class="dshell-input grow" id="buildExtraEnvInput" placeholder="如 VLLM_TARGET_DEVICE=cpu（KEY=VALUE 空格分隔，留空=不注入）" autocomplete="off" />
+          </label>
+        </div>
+        <div class="pr-tokenRow" style="margin-top:6px">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建网络代理
+            <select class="dshell-input" id="buildProxySel" style="width:auto" title="服务端执行 git clone / git push / curl 时的代理策略：继承服务端环境=沿用 dsh web 进程的 http_proxy 等代理变量（默认）；直连=清空这些代理变量；自定义=改用右侧填写的代理地址">
+              <option value="inherit">继承服务端环境（默认）</option>
+              <option value="direct">直连（绕过系统代理）</option>
+              <option value="custom">自定义代理…</option>
+            </select>
+          </label>
+          <input class="dshell-input grow" id="buildProxyInput" placeholder="如 http://127.0.0.1:8118（选「自定义代理」时必填）" autocomplete="off" style="display:none" />
+        </div>
+      </div>
+
+      <!-- AI 检视提示词模板 -->
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 6px">AI 检视提示词模板</h2>
+        <p class="dshell-muted" style="margin:0 0 8px;line-height:1.7">
+          占位：<code>{{owner}}</code> <code>{{repo}}</code> <code>{{number}}</code> <code>{{title}}</code> <code>{{author}}</code> <code>{{head}}</code> <code>{{base}}</code> <code>{{state}}</code> <code>{{draft}}</code> <code>{{changed}}</code> <code>{{add}}</code> <code>{{del}}</code> <code>{{html_url}}</code> <code>{{body}}</code> <code>{{files_api}}</code> <code>{{detail_api}}</code> <code>{{curl_auth}}</code> <code>{{token}}</code><br />
+          <code>{{#x}}…{{/x}}</code> 仅当 x 有值时输出；<code>{{^x}}…{{/x}}</code> 仅当 x 无值时输出。留空保存即恢复默认。
+        </p>
+        <textarea class="dshell-textarea" id="tplInput" rows="16" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;min-height:260px;line-height:1.5"></textarea>
+        <div class="pr-tokenRow" style="margin-top:8px">
+          <button class="dshell-btn dshell-btnGhost" id="btnRestoreTpl">恢复默认提示词</button>
+          <span class="dshell-muted" style="flex:1 1 auto">点「保存设置」后生效。</span>
+        </div>
+      </div>
+
+      <div class="pr-tokenRow">
+        <button class="dshell-btn" id="btnSaveSettings">保存设置</button>
+        <span class="dshell-muted" style="flex:1 1 auto">保存后自动切回 PR 列表并刷新。</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="pr-toast" id="toast"></div>
+
+<script>
+"use strict";
+(function () {
+  /* —— 平台：GitCode / GitHub ——
+     API 端点、git/web 主机、令牌申请地址、克隆认证用户名与可用认证方式随平台不同；
+     各平台配置（令牌/组织/认证方式/提示词/发行缓存/构建容器/历史）独立存于本机 localStorage，
+     主题（gc_pr_theme）与平台选择（gc_pr_platform）跨平台共享。 */
+  var PLATFORMS = {
+    gitcode: {
+      label: "GitCode", api: "https://api.gitcode.com/api/v5", web: "https://gitcode.com",
+      gitHost: "gitcode.com", authUser: "oauth2",
+      tokenUrl: "https://gitcode.com/profile/personal-access-tokens", tokenName: "GitCode 个人访问令牌",
+      authModes: [
+        { v: "auto", t: "认证: 自动(推荐)" }, { v: "bearer", t: "认证: Bearer 头" },
+        { v: "query", t: "认证: access_token 参数" }, { v: "token", t: "认证: token 头" },
+        { v: "private", t: "认证: private-token 头(可能被 CORS 拦截)" }
+      ]
+    },
+    github: {
+      label: "GitHub", api: "https://api.github.com", web: "https://github.com",
+      gitHost: "github.com", authUser: "x-access-token",
+      tokenUrl: "https://github.com/settings/tokens", tokenName: "GitHub Personal Access Token",
+      // GitHub 不支持 access_token query / private-token 头；统一走 Authorization: Bearer
+      authModes: [ { v: "auto", t: "认证: Bearer 头(推荐)" }, { v: "bearer", t: "认证: Bearer 头" } ]
+    }
+  };
+  var DEFAULT_ORG = "TokensService";
+  function curPlatform() { return PLATFORMS[state.platform] || PLATFORMS.gitcode; }
+  function apiBase() { return curPlatform().api; }
+  function webBase() { return curPlatform().web; }
+  function gitHost() { return curPlatform().gitHost; }
+  function authUsername() { return curPlatform().authUser; }
+  function platformLabel() { return curPlatform().label; }
+  function tokenApplyUrl() { return curPlatform().tokenUrl; }
+  function tokenApplyName() { return curPlatform().tokenName; }
+  /* 本机存储：平台前缀（gc_pr_ / gh_pr_）+ 键名 */
+  function lsKey(base) { return (state.platform === "github" ? "gh_pr_" : "gc_pr_") + base; }
+
+  /* AI 检视提示词默认模板（支持 {{var}} 与 {{#x}}..{{/x}} / {{^x}}..{{/x}} 条件块）；标题随平台改称 */
+  function defaultTemplate() {
+    return [
+      "请对以下 " + platformLabel() + " Pull Request 进行代码检视（Code Review）。",
+      "",
+      "- 仓库: {{owner}}/{{repo}}",
+      "- PR #{{number}}: {{title}}",
+      "{{#author}}- 作者: @{{author}}",
+      "{{/author}}- 分支: {{head}} → {{base}}",
+      "- 状态: {{state}}{{draft}}",
+      "{{#changed}}- 变更文件: {{changed}}（+{{add}} / -{{del}}）",
+      "{{/changed}}- PR 页面: {{html_url}}",
+      "{{#body}}",
+      "## PR 描述",
+      "{{body}}",
+      "{{/body}}## 检视步骤建议",
+      "1. 获取变更文件与 diff：",
+      '   curl -sS{{curl_auth}} "{{files_api}}"',
+      '   curl -sS{{curl_auth}} "{{detail_api}}"',
+      "{{^token}}   （私有仓库需要 " + platformLabel() + " 个人访问令牌；如缺少，请向用户索取。）",
+      "{{/token}}2. 总结本 PR 的目的与主要变更。",
+      "3. 逐文件审查：指出 bug、安全风险、性能问题、并发/资源问题、可维护性与命名风格问题，给出具体改进建议与修正代码示例。",
+      "4. 给出合并结论：Approve / 需修改 / 拒绝，并说明理由与阻塞项。",
+      "",
+      "开始检视。"
+    ].join("\n");
+  }
+  function renderTemplate(tpl, ctx) {
+    // 条件块：有值时输出
+    tpl = tpl.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, function (_, name, body) {
+      return ctx[name] ? renderTemplate(body, ctx) : "";
+    });
+    // 反向块：无值时输出
+    tpl = tpl.replace(/\{\{\^(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, function (_, name, body) {
+      return ctx[name] ? "" : renderTemplate(body, ctx);
+    });
+    // 变量替换
+    tpl = tpl.replace(/\{\{(\w+)\}\}/g, function (_, name) {
+      return ctx[name] != null && ctx[name] !== undefined ? String(ctx[name]) : "";
+    });
+    return tpl;
+  }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var app = $("app"), sub = $("subLine"), subOrg = $("subOrg");
+  var btnSettings = $("btnSettings"), btnRefresh = $("btnRefresh");
+  var tokenInput = $("tokenInput"), orgInput = $("orgInput"), authModeSel = $("authMode"), embedToken = $("embedToken");
+  var tplInput = $("tplInput"), btnRestoreTpl = $("btnRestoreTpl"), btnSave = $("btnSaveSettings"), btnClear = $("btnClearToken");
+  var btnTest = $("btnTest"), testResult = $("testResult");
+  var pageTitle = $("pageTitle"), tokenCardTitle = $("tokenCardTitle"), tokenWhyValue = $("tokenWhyValue"), tokenApplyLink = $("tokenApplyLink");
+  var platformSel = $("platformSel"), platformTip = $("platformTip");
+  var relCardSubHelp = $("relCardSubHelp"), relFlowHelp = $("relFlowHelp");
+  var viewTabs = $("viewTabs"), viewList = $("viewList"), viewSettings = $("viewSettings"), viewRelease = $("viewRelease"), viewIssues = $("viewIssues");
+  var relRepoSel = $("relRepo"), relRepoRefresh = $("relRepoRefresh"), relBranch = $("relBranch"), relBranchRefresh = $("relBranchRefresh");
+  var relTag = $("relTag"), relTagSuggest = $("relTagSuggest"), relBuildScript = $("relBuildScript"), relBuildCmd = $("relBuildCmd");
+  var relBuildTimeout = $("relBuildTimeout"), relName = $("relName"), relPrerelease = $("relPrerelease"), relBody = $("relBody");
+  var relRunBtn = $("relRunBtn"), relRunTip = $("relRunTip"), relSteps = $("relSteps"), relResult = $("relResult"), relLogEl = $("relLog");
+  var searchInput = $("searchInput"), stateTabs = $("stateTabs"), toolbar = $("toolbar");
+  var repoFilterBox = $("repoFilter");
+  var issueStatusBar = $("issueStatusBar"), issueStatsEl = $("issueStats"), issueToolbar = $("issueToolbar");
+  var issueSearchInput = $("issueSearchInput"), issueRepoFilterBox = $("issueRepoFilter"), issueStateTabs = $("issueStateTabs");
+  var issueListEl = $("issueList"), issueRefresh = $("issueRefresh");
+  var statsEl = $("stats"), listEl = $("list"), statusBar = $("statusBar"), toastEl = $("toast");
+  var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
+  var relArtifacts = $("relArtifacts"), relNotesAiBtn = $("relNotesAiBtn"), relNotesAiTip = $("relNotesAiTip");
+  var buildContainerInput = $("buildContainerInput"), buildExtraEnvInput = $("buildExtraEnvInput");
+  var buildProxySel = $("buildProxySel"), buildProxyInput = $("buildProxyInput");
+  var relHistEl = $("relHist"), relHistClear = $("relHistClear"), relHistTip = $("relHistTip");
+
+  var state = {
+    prs: [],            // 全部 PR（含 repo 信息）
+    issues: [],        // 全部 Issue（含 repo 信息；GitHub 已跳过 PR）
+    repos: [],          // 仓库列表
+    filterState: "open",
+    issuesFilterState: "open",
+    keyword: "",
+    issuesKeyword: "",
+    repoFilter: [],     // 仓库过滤：选中的仓库名（PR 列表与 Issues 共用）；空=不过滤
+    loading: false,
+    issuesLoading: false,
+    lastErr: "",
+    lastErrObj: null,
+    issuesLastErr: "",
+    issuesLastErrObj: null,
+    repoDone: 0,
+    issueRepoDone: 0
+  };
+  state.platform = localStorage.getItem("gc_pr_platform") || "gitcode"; // 平台选择跨平台共享
+  state.token = localStorage.getItem(lsKey("token")) || "";
+  state.org = localStorage.getItem(lsKey("org")) || DEFAULT_ORG;
+  state.authMode = localStorage.getItem(lsKey("authMode")) || "auto";
+  state.embed = localStorage.getItem(lsKey("embed")) !== "0";
+  state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
+  state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
+  state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
+  state.buildProxy = localStorage.getItem(lsKey("buildproxy")) || "inherit";   // 构建网络代理：inherit/direct/custom
+  state.buildProxyUrl = localStorage.getItem(lsKey("buildproxyurl")) || "";   // custom 模式的代理地址
+  state.repoFilter = loadRepoFilter(); // 仓库过滤选择（按平台独立存于本机）
+
+  subOrg.textContent = state.org;
+
+  /* ---------- 工具 ---------- */
+  function toast(msg, isErr) {
+    toastEl.textContent = msg;
+    toastEl.classList.toggle("err", !!isErr);
+    toastEl.classList.add("show");
+    setTimeout(function () { toastEl.classList.remove("show"); }, 2600);
+  }
+  function esc(s) { return (s == null ? "" : String(s)).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  }); }
+
+  /* —— API 错误诊断：区分 401/403/404，识别「项目访问令牌」，掩盖明文令牌 ——
+     GitCode 的 403 形如："403 Forbidden - Unauthorized READ by groupId: 13332940,
+     user: p_repoRobot，token:xAx9r6UZxsFpktRzxEoVgbVN" —— 其中 user 以 p_ 开头是
+     「项目访问令牌」自动生成的 bot 账户，只对创建它的那一个仓库有权限，无法访问组织级
+     接口 /orgs/{org}/repos；且 error_message 内带明文令牌，回显前必须掩盖。 */
+  function apiError(status, message) {
+    var e = new Error(maskTokenInText(message || ("HTTP " + status)));
+    e.status = status || 0; e.apiMessage = e.message; // 已脱敏
+    return e;
+  }
+  function parseBadResponse(r, text) {
+    var m = "";
+    try { var j = JSON.parse(text); m = j.error_message || j.message || ""; } catch (e) {}
+    return apiError(r.status, m || ("HTTP " + r.status));
+  }
+  // 掩盖错误消息里出现的明文令牌（先按本机令牌原值替换，再兜底匹配 token:xxx 形态）
+  function maskTokenInText(s) {
+    s = String(s == null ? "" : s);
+    var t = state.token && state.token.trim();
+    if (t) s = s.split(t).join("***");
+    return s.replace(/(token[:：]\s*)[^\s,，}]+/gi, "$1***");
+  }
+  // 把任意错误（apiError 对象 / Error / 字符串）归纳为面向用户的诊断结构
+  function describeApiError(err) {
+    var status = 0, msg = "";
+    if (err && typeof err === "object") { status = err.status || 0; msg = String(err.apiMessage || err.message || ""); }
+    else { msg = String(err || ""); }
+    var title, hint, user = "";
+    var userMatch = msg.match(/user:\s*([A-Za-z0-9_.\-]+)/i);
+    if (userMatch) user = userMatch[1];
+    var isProj = !!user && /^p_/i.test(user); // GitCode 项目令牌 bot 账户名以 p_ 开头
+    var orgName = state.org || "";
+    if (status === 401) {
+      title = "令牌无效或未授权（401）";
+      hint = "服务器未识别该令牌。请确认令牌拼写正确、未过期、未被吊销；" + platformLabel() +
+        " 须使用「个人访问令牌」（GitHub classic 或 fine-grained 均可）。";
+    } else if (status === 403) {
+      title = "无访问权限（403）";
+      if (isProj) {
+        hint = "令牌本身被服务器识别，但其代表的账户对该组织没有读取权限。" +
+          (user ? "（错误消息里的 user: " + user + " 以 p_ 开头，是「项目访问令牌」自动生成的 bot 账户——" +
+            "这类令牌只对创建它的那一个仓库有权限，无法访问组织级接口 /orgs/{org}/repos。）" : "") +
+          "请改用「个人访问令牌」：由属于该组织成员的真实账号生成，并确认该账号已加入组织 " + orgName +
+          " 且具备读取权限（下方有申请链接）。";
+      } else {
+        hint = "令牌认证通过，但其账户对该组织/仓库没有读取权限。请确认令牌所属账号已加入组织 " + orgName +
+          " 且具备读取权限；若令牌 scope 不足（缺 api / 读取权限），请重新生成并勾选所需权限。";
+      }
+    } else if (status === 404) {
+      title = "组织或仓库不存在（404）";
+      hint = "未找到该命名空间。请检查组织/用户名拼写；若是组织且按 /orgs 找不到，已自动按 /users 命名空间重试。";
+    } else {
+      title = "请求失败" + (status ? "（HTTP " + status + "）" : "");
+      hint = "请检查令牌与权限，或更换认证方式后重试。";
+    }
+    return { status: status, title: title, hint: hint, raw: maskTokenInText(msg) };
+  }
+  // 列表区/Issue 区通用的错误空态：标题 + 建议 + 脱敏原始消息 + 去设置 / 申请令牌
+  function renderApiError(targetEl, errObj, errStr, btnId) {
+    var d = describeApiError(errObj || errStr);
+    var html = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">⚠</div>' +
+      '<div style="color:#f85149;font-weight:600;margin-bottom:6px">' + esc(d.title) + "</div>" +
+      '<div style="margin:0 auto 8px;max-width:680px;text-align:left;line-height:1.7">' + esc(d.hint) + "</div>";
+    if (d.raw) html += '<details class="pr-det" style="text-align:left;max-width:680px;margin:0 auto 10px"><summary>原始错误消息 ▾</summary><div class="pr-detail pr-mono" style="margin-top:6px">' + esc(d.raw) + "</div></details>";
+    html += '<div class="pr-tokenRow" style="justify-content:center">';
+    html += '<button class="dshell-btn" id="' + btnId + '">⚙ 去设置令牌 / 认证方式</button>';
+    if (d.status === 401 || d.status === 403) html += '<a class="dshell-btn dshell-btnGhost" href="' + esc(tokenApplyUrl()) + '" target="_blank" rel="noopener">↗ 申请' + esc(tokenApplyName()) + '</a>';
+    html += '</div></div>';
+    targetEl.innerHTML = html;
+    var eb = $(btnId); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+  }
+  function timeAgo(iso) {
+    if (!iso) return "";
+    var t = new Date(iso); if (isNaN(t)) return "";
+    var d = (Date.now() - t.getTime()) / 1000;
+    if (d < 60) return "刚刚";
+    if (d < 3600) return Math.floor(d / 60) + " 分钟前";
+    if (d < 86400) return Math.floor(d / 3600) + " 小时前";
+    if (d < 2592000) return Math.floor(d / 86400) + " 天前";
+    var p2 = function (n) { return String(n).padStart(2, "0"); };
+    return t.getFullYear() + "-" + p2(t.getMonth() + 1) + "-" + p2(t.getDate()); // 本地日期，避免 UTC 差一天
+  }
+  function setBadge(state_, draft, merged) {
+    if (merged) return '<span class="pr-chip pr-chipMerged">● 已合并</span>';
+    if (draft) return '<span class="pr-chip pr-chipDraft">● 草稿</span>';
+    if (state_ === "open") return '<span class="dshell-badge dshell-badgeWait">开放</span>';
+    if (state_ === "closed") return '<span class="pr-chip pr-chipClosed">● 已关闭</span>';
+    return '<span class="dshell-badge">● ' + esc(state_ || "未知") + "</span>";
+  }
+
+  /* ---------- 认证：构造请求（CORS 安全；GitHub 强制 Bearer 头 + Accept） ---------- */
+  function applyAuth(url, mode) {
+    var tok = state.token ? state.token.trim() : "";
+    var headers = {};
+    if (state.platform === "github") {
+      // GitHub 不支持 access_token query / private-token 头；统一走 Authorization: Bearer
+      if (tok) headers["Authorization"] = "Bearer " + tok;
+      headers["Accept"] = "application/vnd.github+json";
+      return { url: url, headers: headers };
+    }
+    if (tok) {
+      if (mode === "auto" || mode === "bearer") headers["Authorization"] = "Bearer " + tok;
+      if (mode === "token") headers["token"] = tok;
+      if (mode === "private") headers["private-token"] = tok; // 可能被 CORS 拦截
+      if (mode === "auto" || mode === "query") {
+        var sep = url.indexOf("?") >= 0 ? "&" : "?";
+        url = url + sep + "access_token=" + encodeURIComponent(tok);
+      }
+    }
+    return { url: url, headers: headers };
+  }
+
+  function fetchJSON(path, mode) {
+    var a = applyAuth(apiBase() + path, mode || state.authMode);
+    return fetch(a.url, {
+      method: "GET",
+      credentials: "omit",
+      headers: a.headers
+    }).then(function (r) {
+      var ct = r.headers.get("content-type") || "";
+      if (!r.ok) {
+        return r.text().then(function (t) { throw parseBadResponse(r, t); });
+      }
+      if (ct.indexOf("application/json") >= 0) return r.json();
+      return r.text().then(function (t) { try { return JSON.parse(t); } catch (e) { return []; } });
+    });
+  }
+
+  /* ---------- 分页拉取 ---------- */
+  function fetchAll(pathBase, perPage, mode) {
+    var out = [];
+    function page(n) {
+      var sep = pathBase.indexOf("?") >= 0 ? "&" : "?";
+      return fetchJSON(pathBase + sep + "page=" + n + "&per_page=" + perPage, mode).then(function (arr) {
+        if (!Array.isArray(arr)) return out;
+        out = out.concat(arr);
+        if (arr.length < perPage) return out; // 最后一页
+        if (n >= 20) return out; // 安全上限：20 页
+        return page(n + 1);
+      });
+    }
+    return page(1);
+  }
+
+  /* ---------- 拉取组织/用户仓库 ---------- */
+  function fetchRepos(org, mode) {
+    // 先按组织尝试；404 再按用户命名空间尝试
+    return fetchAll("/orgs/" + encodeURIComponent(org) + "/repos", 100, mode)
+      .catch(function (e) {
+        var st = e && e.status, msg = String((e && e.apiMessage) || (e && e.message) || e);
+        if (st === 404 || /404|not found/i.test(msg)) {
+          return fetchAll("/users/" + encodeURIComponent(org) + "/repos", 100, mode);
+        }
+        throw e;
+      });
+  }
+
+  /* ---------- 拉取仓库 PR ---------- */
+  function fetchRepoPRs(owner, repo, st, mode) {
+    return fetchAll("/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls?state=" + st, 50, mode)
+      .catch(function () { return []; }); // 单仓库失败不阻断整体
+  }
+
+  /* ---------- 渲染 ---------- */
+  function renderStats() {
+    var total = state.prs.length;
+    var open = 0, draft = 0, merged = 0, closed = 0, repos = state.repos.length;
+    state.prs.forEach(function (p) {
+      if (p.merged) merged++;
+      else if (p.state === "open") open++;
+      else if (p.state === "closed") closed++;
+      if (p.draft) draft++;
+    });
+    statsEl.innerHTML = [
+      stat("仓库数", repos),
+      stat("PR 总数", total),
+      stat("开放 PR", open, open > 0),
+      stat("草稿", draft),
+      stat("已合并", merged),
+      stat("已关闭", closed)
+    ].join("");
+  }
+  function stat(label, val, accent) {
+    return '<div class="dshell-stat"><div class="dshell-statLabel">' + esc(label) + "</div>" +
+      '<div class="dshell-statValue"' + (accent ? ' style="color:#3fb950"' : "") + ">" + esc(String(val)) + "</div></div>";
+  }
+
+  /* ---------- 仓库过滤（PR 列表与 Issues 共用）：选中仓库名，空=不过滤 ----------
+     选择存于本机（按平台独立：gc_pr_repofilter / gh_pr_repofilter），刷新不丢失；
+     切换平台 / 重新拉取仓库后裁剪掉已不存在的仓库名，避免幽灵勾选。 */
+  function repoFilterActive() { return state.repoFilter.length > 0; }
+  function inRepoFilter(repoName) { return !repoFilterActive() || state.repoFilter.indexOf(repoName) >= 0; }
+  function pruneRepoFilter() {
+    var names = state.repos.map(function (r) { return r.name; });
+    state.repoFilter = state.repoFilter.filter(function (n) { return names.indexOf(n) >= 0; });
+  }
+  function loadRepoFilter() {
+    try { var a = JSON.parse(localStorage.getItem(lsKey("repofilter"))); return Array.isArray(a) ? a.filter(function (n) { return typeof n === "string"; }) : []; }
+    catch (e) { return []; }
+  }
+  function saveRepoFilter() { try { localStorage.setItem(lsKey("repofilter"), JSON.stringify(state.repoFilter)); } catch (e) {} }
+
+  function filtered() {
+    var k = state.keyword.trim().toLowerCase();
+    return state.prs.filter(function (p) {
+      if (state.filterState !== "all" && (p.state || "open") !== state.filterState) return false;
+      if (repoFilterActive() && !inRepoFilter(p.repo)) return false;
+      if (!k) return true;
+      var hay = [p.repo, p.owner, p.title, p.number, p.head, p.base, p.author].filter(Boolean).join(" ").toLowerCase();
+      return hay.indexOf(k) >= 0;
+    });
+  }
+
+  function renderList() {
+    if (state.loading) { renderLoading(); return; }
+    var arr = filtered();
+    if (state.lastErr) {
+      renderApiError(listEl, state.lastErrObj, state.lastErr, "errOpenSettings");
+      return;
+    }
+    if (!arr.length) {
+      listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">✓</div>' +
+        (state.prs.length ? "没有符合筛选条件的 PR" : "当前没有可显示的 PR") + "</div>";
+      return;
+    }
+    var html = [];
+    arr.forEach(function (p, i) {
+      var id = "prdet" + i;
+      html.push('<div class="pr-row">');
+      html.push('  <div class="pr-top">');
+      html.push('    <div class="pr-main">');
+      html.push('      <div class="pr-title" data-open="' + i + '">' + esc(p.title) +
+        ' <span class="pr-mono" style="color:var(--dsw-alias-label-tertiary,#6b7280)">#' + esc(String(p.number)) + "</span></div>");
+      html.push('      <div class="pr-sub">');
+      html.push('        <span class="pr-repo">' + esc(p.repo || "") + "</span>");
+      if (p.author) html.push('<span>@' + esc(p.author) + "</span>");
+      if (p.head || p.base) html.push('<span class="pr-mono">' + esc(p.head || "—") + " → " + esc(p.base || "—") + "</span>");
+      if (p.changed != null) html.push('<span>' + esc(String(p.changed)) + " 文件</span>");
+      if (p.add != null && p.del != null) html.push('<span style="color:#3fb950">+' + esc(p.add) + "</span><span style=\"color:#f85149\">-" + esc(p.del) + "</span>");
+      if (p.comments != null) html.push('<span>💬 ' + esc(String(p.comments)) + "</span>");
+      html.push('        <span>' + esc(timeAgo(p.updated)) + "</span>");
+      html.push("      </div>");
+      html.push("    </div>");
+      html.push('    <div class="pr-actions">' + setBadge(p.state, p.draft, p.merged) +
+        ' <button class="dshell-btn" data-review="' + i + '">✦ AI 检视</button></div>');
+      html.push("  </div>");
+      // 折叠详情
+      html.push('  <details class="pr-det"><summary>查看描述 / 标签 / 链接 ▾</summary>');
+      html.push('    <div class="pr-detail">');
+      if (p.labels && p.labels.length) {
+        html.push('      <div style="margin-bottom:6px">' + p.labels.map(function (l) {
+          var name = (typeof l === "string" ? l : (l && l.name)) || "";
+          return '<span class="pr-label">' + esc(name) + "</span>";
+        }).join("") + "</div>");
+      }
+      if (p.body) html.push('      <div class="pr-body">' + esc(p.body.slice(0, 1200)) + (p.body.length > 1200 ? "\n…" : "") + "</div>");
+      html.push('      <div class="pr-mono" style="margin-top:6px"><a class="pr-link" href="' + esc(p.htmlUrl) + '" target="_blank" rel="noopener">' + esc(p.htmlUrl) + "</a></div>");
+      html.push("    </div>");
+      html.push("  </details>");
+      html.push("</div>");
+    });
+    listEl.innerHTML = html.join("");
+    // 绑定事件
+    Array.prototype.forEach.call(listEl.querySelectorAll("[data-review]"), function (btn) {
+      btn.addEventListener("click", function () { onReview(filtered()[+btn.getAttribute("data-review")]); });
+    });
+    Array.prototype.forEach.call(listEl.querySelectorAll("[data-open]"), function (el) {
+      el.addEventListener("click", function () {
+        var p = filtered()[+el.getAttribute("data-open")];
+        if (p && p.htmlUrl) window.open(p.htmlUrl, "_blank", "noopener");
+      });
+    });
+  }
+
+  function renderLoading() {
+    statusBar.innerHTML = '<span class="dshell-badge dshell-badgeWait">加载中…</span>';
+    statsEl.innerHTML = stat("仓库", state.repos.length) + stat("已扫描", state.repoDone) + stat("已发现 PR", state.prs.length);
+    var h = "";
+    for (var i = 0; i < 6; i++) h += '<div class="pr-skel"></div>';
+    listEl.innerHTML = '<div style="margin-top:4px">' + h + "</div>";
+  }
+
+  function renderStatus() {
+    var s = "";
+    s += '<span class="dshell-badge">' + esc(platformLabel()) + "</span>";
+    if (state.token) s += '<span class="dshell-badge dshell-badgeDone">令牌已设置</span>';
+    else s += '<span class="dshell-badge dshell-badgeWait">未设置令牌</span>';
+    s += '<span class="dshell-badge">组织: ' + esc(state.org) + "</span>";
+    s += '<span class="dshell-badge">认证: ' + esc(state.authMode) + "</span>";
+    if (state.embed) s += '<span class="dshell-badge">提示含令牌</span>';
+    if (state.lastLoaded) s += '<span class="dshell-muted">· 更新于 ' + esc(state.lastLoaded) + "</span>";
+    statusBar.innerHTML = s;
+  }
+
+  /* ---------- 仓库过滤下拉（PR 列表与 Issues 共用）----------
+     下拉就地勾选，切换勾选不重建面板（保留展开态），只同步文案与勾选态后重渲染列表。 */
+  function repoFilterLabel() {
+    var n = state.repos.length, sel = state.repoFilter.length;
+    if (!n) return "仓库 ▾";
+    return sel ? ("仓库 " + sel + "/" + n + " ▾") : "仓库: 全部 ▾";
+  }
+  function renderRepoFilter(container) {
+    if (!container) return;
+    var repos = state.repos, sel = state.repoFilter;
+    var btn = '<button type="button" class="dshell-btn dshell-btnGhost repo-filterBtn">' + esc(repoFilterLabel()) + "</button>";
+    var p = '<div class="repo-filterPanel">';
+    p += '<div class="repo-filterHead"><button type="button" class="dshell-btn dshell-btnGhost" data-rf="all" style="padding:2px 8px;font-size:11px">全选</button>' +
+      '<button type="button" class="dshell-btn dshell-btnGhost" data-rf="none" style="padding:2px 8px;font-size:11px">清空</button>' +
+      '<span class="dshell-muted" style="font-size:11px">勾选要显示的仓库</span></div>';
+    if (!repos.length) p += '<div class="repo-filterEmpty">（暂无仓库，先在 PR 列表页拉取）</div>';
+    repos.forEach(function (r) {
+      var name = r.name || "";
+      var ck = sel.indexOf(name) >= 0 ? " checked" : "";
+      p += '<label class="repo-filterItem"><input type="checkbox" data-repo="' + esc(name) + '"' + ck + ' /><span class="pr-repo">' + esc(name) + "</span></label>";
+    });
+    p += "</div>";
+    container.innerHTML = btn + p;
+    var btnEl = container.querySelector(".repo-filterBtn");
+    var panelEl = container.querySelector(".repo-filterPanel");
+    if (btnEl) btnEl.addEventListener("click", function (e) {
+      e.stopPropagation();
+      Array.prototype.forEach.call(document.querySelectorAll(".repo-filterPanel.open"), function (x) { if (x !== panelEl) x.classList.remove("open"); });
+      panelEl.classList.toggle("open");
+    });
+    Array.prototype.forEach.call(container.querySelectorAll('input[type=checkbox][data-repo]'), function (cb) {
+      cb.addEventListener("change", function () {
+        var name = cb.getAttribute("data-repo");
+        var i = state.repoFilter.indexOf(name);
+        if (cb.checked && i < 0) state.repoFilter.push(name);
+        if (!cb.checked && i >= 0) state.repoFilter.splice(i, 1);
+        saveRepoFilter();
+        syncRepoFilterUI();
+        renderList(); renderIssueList();
+      });
+    });
+    var allBtn = container.querySelector('[data-rf="all"]'), noneBtn = container.querySelector('[data-rf="none"]');
+    if (allBtn) allBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      state.repoFilter = state.repos.map(function (r) { return r.name; });
+      saveRepoFilter(); syncRepoFilterUI(); renderList(); renderIssueList();
+    });
+    if (noneBtn) noneBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      state.repoFilter = [];
+      saveRepoFilter(); syncRepoFilterUI(); renderList(); renderIssueList();
+    });
+  }
+  function syncRepoFilterUI() {
+    // 同步两个下拉的按钮文案、勾选态（切换勾选不重建面板，保留展开态）
+    Array.prototype.forEach.call(document.querySelectorAll(".repo-filterBtn"), function (b) { b.textContent = repoFilterLabel(); });
+    Array.prototype.forEach.call(document.querySelectorAll(".repo-filterPanel"), function (panel) {
+      Array.prototype.forEach.call(panel.querySelectorAll('input[type=checkbox][data-repo]'), function (cb) {
+        cb.checked = state.repoFilter.indexOf(cb.getAttribute("data-repo")) >= 0;
+      });
+    });
+  }
+  function renderRepoFilterAll() {
+    renderRepoFilter(repoFilterBox);
+    renderRepoFilter(issueRepoFilterBox);
+  }
+
+  /* ---------- Issues：拉取组织各仓库 Issue ----------
+     端点 /repos/{owner}/{repo}/issues?state=all（GitCode v5 / GitHub REST 通用）；
+     GitHub issues 接口会顺带返回 PR（带 pull_request 字段），一律跳过；
+     单仓库失败不阻断整体；首次切到 Issues 标签时按需拉取，避免首页额外请求。 */
+  function fetchRepoIssues(owner, repo, st, mode) {
+    return fetchAll("/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/issues?state=" + st, 50, mode)
+      .catch(function () { return []; }); // 单仓库失败不阻断整体
+  }
+  function filteredIssues() {
+    var k = state.issuesKeyword.trim().toLowerCase();
+    return state.issues.filter(function (it) {
+      if (state.issuesFilterState !== "all" && (it.state || "open") !== state.issuesFilterState) return false;
+      if (repoFilterActive() && !inRepoFilter(it.repo)) return false;
+      if (!k) return true;
+      var hay = [it.repo, it.owner, it.title, it.number, it.author].filter(Boolean).join(" ").toLowerCase();
+      return hay.indexOf(k) >= 0;
+    });
+  }
+  function renderIssueStats() {
+    var total = state.issues.length, open = 0, closed = 0, repos = state.repos.length;
+    state.issues.forEach(function (it) { if (it.state === "open") open++; else if (it.state === "closed") closed++; });
+    issueStatsEl.innerHTML = [
+      stat("仓库数", repos),
+      stat("Issue 总数", total),
+      stat("开放 Issue", open, open > 0),
+      stat("已关闭", closed)
+    ].join("");
+  }
+  function renderIssueStatus() {
+    var s = "";
+    s += '<span class="dshell-badge">' + esc(platformLabel()) + "</span>";
+    if (state.token) s += '<span class="dshell-badge dshell-badgeDone">令牌已设置</span>';
+    else s += '<span class="dshell-badge dshell-badgeWait">未设置令牌</span>';
+    s += '<span class="dshell-badge">组织: ' + esc(state.org) + "</span>";
+    if (repoFilterActive()) s += '<span class="dshell-badge">仓库过滤: ' + state.repoFilter.length + "</span>";
+    if (state.issuesLastLoaded) s += '<span class="dshell-muted">· 更新于 ' + esc(state.issuesLastLoaded) + "</span>";
+    issueStatusBar.innerHTML = s;
+  }
+  function renderIssueLoading() {
+    issueStatusBar.innerHTML = '<span class="dshell-badge dshell-badgeWait">加载中…</span>';
+    issueStatsEl.innerHTML = stat("仓库", state.repos.length) + stat("已扫描", state.issueRepoDone) + stat("已发现 Issue", state.issues.length);
+    var h = "";
+    for (var i = 0; i < 6; i++) h += '<div class="pr-skel"></div>';
+    issueListEl.innerHTML = '<div style="margin-top:4px">' + h + "</div>";
+  }
+  function renderIssueList() {
+    if (state.issuesLoading) { renderIssueLoading(); return; }
+    var arr = filteredIssues();
+    if (state.issuesLastErr) {
+      renderApiError(issueListEl, state.issuesLastErrObj, state.issuesLastErr, "issueErrOpenSettings");
+      return;
+    }
+    if (!arr.length) {
+      issueListEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">✓</div>' +
+        (state.issues.length ? "没有符合筛选条件的 Issue" : "当前没有可显示的 Issue") + "</div>";
+      return;
+    }
+    var html = [];
+    arr.forEach(function (it, i) {
+      html.push('<div class="pr-row">');
+      html.push('  <div class="pr-top">');
+      html.push('    <div class="pr-main">');
+      html.push('      <div class="pr-title" data-iopen="' + i + '">' + esc(it.title) +
+        ' <span class="pr-mono" style="color:var(--dsw-alias-label-tertiary,#6b7280)">#' + esc(String(it.number)) + "</span></div>");
+      html.push('      <div class="pr-sub">');
+      html.push('        <span class="pr-repo">' + esc(it.repo || "") + "</span>");
+      if (it.author) html.push('<span>@' + esc(it.author) + "</span>");
+      if (it.comments != null) html.push('<span>💬 ' + esc(String(it.comments)) + "</span>");
+      html.push('        <span>' + esc(timeAgo(it.updated)) + "</span>");
+      html.push("      </div>");
+      html.push("    </div>");
+      html.push('    <div class="pr-actions">' + setBadge(it.state, false, false) +
+        ' <button class="dshell-btn" data-ireview="' + i + '">✦ AI 分析</button></div>');
+      html.push("  </div>");
+      html.push('  <details class="pr-det"><summary>查看描述 / 标签 / 链接 ▾</summary>');
+      html.push('    <div class="pr-detail">');
+      if (it.labels && it.labels.length) {
+        html.push('      <div style="margin-bottom:6px">' + it.labels.map(function (l) {
+          var name = (typeof l === "string" ? l : (l && l.name)) || "";
+          return '<span class="pr-label">' + esc(name) + "</span>";
+        }).join("") + "</div>");
+      }
+      if (it.body) html.push('      <div class="pr-body">' + esc(it.body.slice(0, 1200)) + (it.body.length > 1200 ? "\n…" : "") + "</div>");
+      html.push('      <div class="pr-mono" style="margin-top:6px"><a class="pr-link" href="' + esc(it.htmlUrl) + '" target="_blank" rel="noopener">' + esc(it.htmlUrl) + "</a></div>");
+      html.push("    </div>");
+      html.push("  </details>");
+      html.push("</div>");
+    });
+    issueListEl.innerHTML = html.join("");
+    Array.prototype.forEach.call(issueListEl.querySelectorAll("[data-ireview]"), function (btn) {
+      btn.addEventListener("click", function () { onIssueReview(filteredIssues()[+btn.getAttribute("data-ireview")]); });
+    });
+    Array.prototype.forEach.call(issueListEl.querySelectorAll("[data-iopen]"), function (el) {
+      el.addEventListener("click", function () {
+        var it = filteredIssues()[+el.getAttribute("data-iopen")];
+        if (it && it.htmlUrl) window.open(it.htmlUrl, "_blank", "noopener");
+      });
+    });
+  }
+  /* —— Issue 提示词：在右侧或新会话送入分析提示（与 PR 检视同一宿主桥）—— */
+  function buildIssuePrompt(it) {
+    var owner = it.owner || state.org, repo = it.repo;
+    var lines = [
+      "请对以下 " + platformLabel() + " Issue 进行分析。",
+      "",
+      "- 仓库: " + owner + "/" + repo,
+      "- Issue #" + it.number + ": " + (it.title || "(无标题)")
+    ];
+    if (it.author) lines.push("- 提交者: @" + it.author);
+    lines.push("- 状态: " + (it.state === "open" ? "开放" : "已关闭"));
+    if (it.htmlUrl) lines.push("- Issue 页面: " + it.htmlUrl);
+    if (it.body) { lines.push("", "## Issue 描述", it.body, ""); }
+    lines.push("## 分析建议");
+    lines.push("1. 复述并澄清该 Issue 描述的问题与期望。");
+    lines.push("2. 判断问题类别（bug / 功能需求 / 文档 / 增强 等）与优先级。");
+    lines.push("3. 若需复现/排查，给出步骤与排查思路（必要时调用仓库文件/代码接口）。");
+    lines.push("4. 给出初步处理建议（修复方向、相关代码位置、是否需要更多信息）。");
+    lines.push("", "开始分析。");
+    return lines.join("\n") + "\n";
+  }
+  function onIssueReview(it) {
+    if (!it) return;
+    launchNewSession(buildIssuePrompt(it), "已新建 AI 聊天会话并开始分析 Issue #" + it.number);
+  }
+  var issueSeq = 0;
+  function loadIssues() {
+    var seq = ++issueSeq;
+    if (!state.token) {
+      state.issuesLoading = false;
+      issueToolbar.style.display = "none";
+      issueListEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">🔑</div>' +
+        '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 ' + platformLabel() + ' 访问令牌</div>' +
+        '<div style="margin-bottom:12px">组织 ' + esc(state.org) + ' 为私有或需令牌才能拉取 Issue。</div>' +
+        '<button class="dshell-btn" id="issueEmptyOpenSettings">⚙ 去设置</button></div>';
+      var eb = $("issueEmptyOpenSettings"); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+      renderIssueStatus(); renderIssueStats();
+      return;
+    }
+    state.issuesLoading = true; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issues = []; state.issueRepoDone = 0;
+    issueToolbar.style.display = "none";
+    renderIssueLoading(); renderIssueStatus();
+    var ensureRepos = state.repos.length ? Promise.resolve() : fetchRepos(state.org, state.authMode).then(function (repos) {
+      if (seq !== issueSeq) return;
+      state.repos = (repos || []).map(function (r) {
+        return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
+      }).filter(function (r) { return r.name; });
+      pruneRepoFilter(); renderRepoFilterAll(); renderRelRepoOptions();
+    });
+    ensureRepos.then(function () {
+      if (seq !== issueSeq) return;
+      var idx = 0, active = 0, done = 0;
+      return new Promise(function (resolve) {
+        function next() {
+          while (active < 4 && idx < state.repos.length) {
+            (function (repo) {
+              active++;
+              fetchRepoIssues(repo.owner, repo.name, "all", state.authMode).then(function (issues) {
+                if (seq !== issueSeq) return;
+                (issues || []).forEach(function (it) {
+                  if (it.pull_request) return; // GitHub issues 接口会顺带返回 PR，跳过
+                  var author = it.user && (it.user.login || it.user.name);
+                  var st = (it.state || "open");
+                  state.issues.push({
+                    repo: repo.name, owner: repo.owner,
+                    number: it.number, title: it.title || "(无标题)",
+                    author: author, state: st === "closed" ? "closed" : "open",
+                    body: it.body || "", htmlUrl: it.html_url || "",
+                    labels: it.labels || [], comments: it.comments,
+                    created: it.created_at, updated: it.updated_at || it.created_at
+                  });
+                });
+              }).catch(function () {}).then(function () {
+                active--; done++;
+                if (seq !== issueSeq) { resolve(); return; }
+                state.issueRepoDone = done;
+                renderIssueLoading();
+                if (done >= state.repos.length) resolve();
+                else while (active < 4 && idx < state.repos.length) next();
+              });
+              idx++;
+            })(state.repos[idx]);
+          }
+          if (state.repos.length === 0) resolve();
+        }
+        next();
+      });
+    }).then(function () {
+      if (seq !== issueSeq) return;
+      state.issues.sort(function (a, b) {
+        var oa = a.state === "open" ? 0 : 1, ob = b.state === "open" ? 0 : 1;
+        if (oa !== ob) return oa - ob;
+        return (new Date(b.updated || 0)) - (new Date(a.updated || 0));
+      });
+      state.issuesLoading = false;
+      state.issuesLastLoaded = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      issueToolbar.style.display = "flex";
+      pruneRepoFilter(); renderRepoFilterAll();
+      renderIssueStatus(); renderIssueStats(); renderIssueList();
+      toast("拉取完成：共 " + state.issues.length + " 个 Issue");
+    }).catch(function (e) {
+      if (seq !== issueSeq) return;
+      state.issuesLoading = false;
+      state.issuesLastErrObj = e;
+      state.issuesLastErr = String((e && e.apiMessage) || (e && e.message) || e);
+      renderIssueStatus(); renderIssueStats(); renderIssueList();
+      toast("拉取 Issues 失败：" + describeApiError(e).title, true);
+    });
+  }
+
+  /* ---------- 主流程：拉取全部 ----------
+     loadSeq 为拉取代际号：新拉取开始后旧拉取的回调全部作废，防止连续
+     「刷新 / 保存设置」触发两次 loadAll 时交叉写入 state.prs 导致列表重复、统计翻倍。 */
+  var loadSeq = 0;
+  function loadAll() {
+    var seq = ++loadSeq;
+    if (!state.token) {
+      state.loading = false;
+      toolbar.style.display = "none";
+      listEl.innerHTML = '<div class="pr-empty"><div style="font-size:30px;margin-bottom:8px">🔑</div>' +
+        '<div style="margin-bottom:6px;color:var(--dsw-alias-label-primary,#e6e8eb)">未设置 ' + platformLabel() + ' 访问令牌</div>' +
+        '<div style="margin-bottom:12px">组织 ' + esc(state.org) + ' 为私有或需令牌才能拉取 PR。</div>' +
+        '<button class="dshell-btn" id="emptyOpenSettings">⚙ 去设置</button></div>';
+      var eb = $("emptyOpenSettings"); if (eb) eb.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+      renderStatus(); renderStats();
+      return;
+    }
+    state.loading = true; state.lastErr = ""; state.lastErrObj = null; state.prs = []; state.repos = []; state.repoDone = 0;
+    toolbar.style.display = "none";
+    renderLoading(); renderStatus();
+    fetchRepos(state.org, state.authMode).then(function (repos) {
+      if (seq !== loadSeq) return; // 已被更新的拉取取代
+      state.repos = (repos || []).map(function (r) {
+        return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
+      }).filter(function (r) { return r.name; });
+      pruneRepoFilter(); renderRepoFilterAll(); // PR 列表与 Issues 仓库过滤下拉同步
+      renderLoading();
+      // 并发拉取各仓库 PR（限流 4）
+      var idx = 0, active = 0, done = 0;
+      return new Promise(function (resolve) {
+        function next() {
+          while (active < 4 && idx < state.repos.length) {
+            (function (repo) {
+              active++;
+              fetchRepoPRs(repo.owner, repo.name, "all", state.authMode).then(function (pulls) {
+                if (seq !== loadSeq) return;
+                (pulls || []).forEach(function (p) {
+                  var author = p.user && (p.user.login || p.user.name);
+                  state.prs.push({
+                    repo: repo.name, owner: repo.owner,
+                    number: p.number, title: p.title || "(无标题)",
+                    author: author, state: p.state || "open", draft: !!p.draft, merged: !!(p.merged || p.merged_at),
+                    head: p.head && (p.head.ref || p.head.label), base: p.base && (p.base.ref || p.base.label),
+                    body: p.body || "", htmlUrl: p.html_url || "",
+                    labels: p.labels || [], comments: p.comments,
+                    changed: p.changed_files, add: p.additions, del: p.deletions,
+                    updated: p.updated_at || p.created_at
+                  });
+                });
+              }).catch(function () {}).then(function () {
+                active--; done++;
+                if (seq !== loadSeq) { resolve(); return; } // 旧拉取静默结束
+                state.repoDone = done;
+                renderLoading();
+                if (done >= state.repos.length) resolve();
+                else while (active < 4 && idx < state.repos.length) next();
+              });
+              idx++;
+            })(state.repos[idx]);
+          }
+          if (state.repos.length === 0) resolve();
+        }
+        next();
+      });
+    }).then(function () {
+      if (seq !== loadSeq) return;
+      // 排序：开放优先，再按更新时间倒序
+      state.prs.sort(function (a, b) {
+        var oa = a.state === "open" ? 0 : 1, ob = b.state === "open" ? 0 : 1;
+        if (oa !== ob) return oa - ob;
+        return (new Date(b.updated || 0)) - (new Date(a.updated || 0));
+      });
+      state.loading = false;
+      state.lastLoaded = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      toolbar.style.display = "flex";
+      renderStatus(); renderStats(); renderList();
+      renderRelRepoOptions(); // 同步「编译发行」页仓库下拉
+      toast("拉取完成：共 " + state.prs.length + " 个 PR");
+    }).catch(function (e) {
+      if (seq !== loadSeq) return;
+      state.loading = false;
+      state.lastErrObj = e;
+      state.lastErr = String((e && e.apiMessage) || (e && e.message) || e);
+      renderStatus(); renderStats(); renderList();
+      toast("拉取失败：" + describeApiError(e).title, true);
+    });
+  }
+
+  /* ---------- AI 检视：新建 AI 聊天会话并送入评审提示 ---------- */
+  function buildReviewPrompt(p) {
+    var tok = state.embed ? (state.token || "").trim() : "";
+    var owner = p.owner || state.org, repo = p.name || p.repo;
+    var ctx = {
+      owner: owner, repo: repo,
+      number: p.number, title: p.title || "(无标题)",
+      author: p.author || "", head: p.head || "—", base: p.base || "—",
+      state: p.state || "open", draft: p.draft ? "（草稿）" : "",
+      changed: p.changed != null ? String(p.changed) : "",
+      add: p.add != null ? String(p.add) : "",
+      del: p.del != null ? String(p.del) : "",
+      html_url: p.htmlUrl || "", body: p.body || "",
+      files_api: apiBase() + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number) + "/files",
+      detail_api: apiBase() + "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo) + "/pulls/" + encodeURIComponent(p.number),
+      curl_auth: tok ? ' -H "Authorization: Bearer ' + tok + '"' : "",
+      token: tok
+    };
+    var tpl = (state.template && String(state.template).trim()) ? state.template : defaultTemplate();
+    return renderTemplate(tpl, ctx).replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").trim() + "\n";
+  }
+
+  // 攀升父级窗口寻找工作台注入的宿主桥（__dsh* 挂在 DSH 顶层 window 上）
+  function getHost() {
+    var stack = [];
+    try { if (window.parent && window.parent !== window) stack.push(window.parent); } catch (e) {}
+    try { if (window.top && window.top !== window) stack.push(window.top); } catch (e) {}
+    try { var c = window.parent, n = 0; while (c && n++ < 20) { stack.push(c); if (c === c.parent) break; c = c.parent; } } catch (e) {}
+    for (var i = 0; i < stack.length; i++) {
+      var w = stack[i];
+      try { if (w && w.__dshSessions && typeof w.__dshSessions.create === "function") return w; } catch (e) {}
+    }
+    return null;
+  }
+
+  // 尽力为新会话设定默认预设/模型（对齐工作台插件内部流程；任何失败均静默忽略）
+  async function ensureSessionReady(host, sid) {
+    var api = host.__dshHostApi;
+    if (!api) return;
+    try {
+      var ap = api.agentPresets;
+      if (ap && typeof ap.list === "function" && typeof ap.select === "function") {
+        var lr = await ap.list({});
+        var presets = lr && lr.result && lr.result.ok ? (lr.result.value && lr.result.value.presets) : null;
+        if (Array.isArray(presets) && presets.length) {
+          var def = presets.find(function (x) { return x && x.isDefault; }) || presets[0];
+          if (def && def.id) { try { await ap.select({ sessionId: sid, agentPreset: def.id }); } catch (e) {} }
+        }
+      }
+    } catch (e) {}
+    try {
+      var sm = api.sessions;
+      if (sm && typeof sm.models === "function" && typeof sm.selectModel === "function") {
+        var mr = await sm.models({ sessionId: sid });
+        var v = mr && mr.result && mr.result.ok ? mr.result.value : null;
+        if (v && v.routable !== true) {
+          var pick = null;
+          var groups = v.groups || [];
+          for (var gi = 0; gi < groups.length && !pick; gi++) {
+            var g = groups[gi] || {};
+            var items = g.models || g.items || (g.model ? [g] : []);
+            for (var ii = 0; ii < items.length; ii++) {
+              var it = items[ii];
+              if (it && it.provider && it.model) { pick = it; break; }
+            }
+          }
+          if (pick) { try { await sm.selectModel({ sessionId: sid, provider: pick.provider, model: pick.model }); } catch (e) {} }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 新建 DSH AI 聊天会话并送入提示（宿主桥；失败则兜底复制 + 新标签打开 DSH）
+  function launchNewSession(prompt, successMsg) {
+    var host = getHost();
+    if (host) {
+      toast("正在新建 AI 聊天会话…");
+      (async function () {
+        try {
+          var sid = await host.__dshSessions.create({});
+          if (!sid) throw new Error("会话创建失败");
+          await ensureSessionReady(host, sid);
+          try { if (typeof host.__dshOpenSession === "function") await host.__dshOpenSession(sid); } catch (e) {}
+          if (typeof host.__dshPromptIntoSession !== "function") throw new Error("缺少提示接口");
+          await host.__dshPromptIntoSession(sid, prompt);
+          toast(successMsg);
+        } catch (e) {
+          fallbackReview(prompt);
+        }
+      })();
+      return;
+    }
+    fallbackReview(prompt);
+  }
+  function onReview(p) {
+    if (!p) return;
+    launchNewSession(buildReviewPrompt(p), "已新建 AI 聊天会话并开始检视 PR #" + p.number);
+  }
+  // 兜底：复制提示 + 新标签打开 DSH（手动新建会话后粘贴发送）
+  function fallbackReview(prompt) {
+    var done = function () { toast("已复制提示 · 请在新 DSH 会话中粘贴发送"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(prompt).then(done, function () { fallbackCopy(prompt, done); });
+    } else { fallbackCopy(prompt, done); }
+    try {
+      var dshUrl = (location.origin && location.origin.indexOf("http") === 0) ? location.origin : "http://127.0.0.1:3051";
+      window.open(dshUrl + "/", "_blank", "noopener");
+    } catch (e) { /* 弹窗被拦截时，用户已复制提示，可手动打开 */ }
+  }
+  function fallbackCopy(text, cb) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta); cb && cb();
+    } catch (e) { cb && cb(); }
+  }
+
+  /* ---------- 视图切换：PR 列表 / 编译发行 / 设置 ---------- */
+  function switchView(view) {
+    viewList.style.display = view === "list" ? "" : "none";
+    viewIssues.style.display = view === "issues" ? "" : "none";
+    viewRelease.style.display = view === "release" ? "" : "none";
+    viewSettings.style.display = view === "settings" ? "" : "none";
+    Array.prototype.forEach.call(viewTabs.querySelectorAll(".dshell-tab"), function (t) {
+      t.classList.toggle("dshell-tabOn", t.getAttribute("data-view") === view);
+    });
+  }
+  // 「构建网络代理」自定义模式才显示代理地址输入框
+  function syncBuildProxyUI() { buildProxyInput.style.display = buildProxySel.value === "custom" ? "" : "none"; }
+  function populateSettings() {
+    tokenInput.value = state.token;
+    orgInput.value = state.org;
+    authModeSel.value = state.authMode;
+    embedToken.checked = state.embed;
+    tplInput.value = state.template || defaultTemplate();
+    buildContainerInput.value = state.buildContainer;
+    buildExtraEnvInput.value = state.buildExtraEnv;
+    buildProxySel.value = state.buildProxy;
+    buildProxyInput.value = state.buildProxyUrl;
+    syncBuildProxyUI();
+    testResult.textContent = "";
+  }
+  // 静默保存：把设置页各项输入写入 state 与 localStorage（不弹 toast、不切视图、不刷新列表）。
+  // 供「测试连接」等需要确保设置已落盘的场景复用，避免读到滞后的 state（如改动未保存的 authMode）。
+  function persistSettings() {
+    state.token = tokenInput.value.trim();
+    state.org = (orgInput.value.trim() || DEFAULT_ORG);
+    state.authMode = authModeSel.value;
+    state.embed = embedToken.checked;
+    state.template = (tplInput.value && tplInput.value.trim()) ? tplInput.value : defaultTemplate();
+    state.buildContainer = buildContainerInput.value.trim();
+    state.buildExtraEnv = buildExtraEnvInput.value.trim();
+    state.buildProxy = buildProxySel.value;
+    state.buildProxyUrl = buildProxyInput.value.trim();
+    localStorage.setItem(lsKey("token"), state.token);
+    localStorage.setItem(lsKey("org"), state.org);
+    localStorage.setItem(lsKey("authMode"), state.authMode);
+    localStorage.setItem(lsKey("embed"), state.embed ? "1" : "0");
+    localStorage.setItem(lsKey("template"), state.template);
+    localStorage.setItem(lsKey("buildcontainer"), state.buildContainer);
+    localStorage.setItem(lsKey("buildenv"), state.buildExtraEnv);
+    localStorage.setItem(lsKey("buildproxy"), state.buildProxy);
+    localStorage.setItem(lsKey("buildproxyurl"), state.buildProxyUrl);
+  }
+  function saveSettings() {
+    persistSettings();
+    subOrg.textContent = state.org;
+    renderStatus();
+    toast("已保存设置");
+    switchView("list");
+    loadAll();
+  }
+  function clearToken() {
+    state.token = ""; tokenInput.value = "";
+    localStorage.removeItem(lsKey("token"));
+    state.prs = []; state.repos = []; state.lastErr = ""; state.lastErrObj = null;
+    state.issues = []; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issueRepoDone = 0;
+    toast("已清除令牌");
+    renderRelRepoOptions(); // 发行页仓库下拉回到「需先设置令牌」
+    renderRepoFilterAll(); // 仓库过滤下拉回到「暂无仓库」
+    loadAll(); // 无令牌分支：渲染 🔑 空态并刷新状态栏/统计
+    renderIssueStatus(); renderIssueStats(); renderIssueList();
+  }
+  function testConnection() {
+    var tok = tokenInput.value.trim();
+    if (!tok) { toast("请先填写令牌", true); return; }
+    persistSettings(); // 先静默保存设置（令牌 / 组织 / 认证方式等），确保测试基于最新落盘配置
+    var org = state.org;
+    testResult.innerHTML = '<span class="dshell-muted">测试中…</span>';
+    var a = applyAuth(apiBase() + "/orgs/" + encodeURIComponent(org) + "/repos?per_page=1", state.authMode);
+    fetch(a.url, { method: "GET", credentials: "omit", headers: a.headers })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          if (!r.ok) throw parseBadResponse(r, t);
+          try { return JSON.parse(t); } catch (e) { return []; }
+        });
+      })
+      .then(function (arr) {
+        var n = Array.isArray(arr) ? arr.length : 0;
+        testResult.innerHTML = '<span style="color:#3fb950">✓ 连接成功</span> · ' + esc(org) + ' 可访问' + (n ? '（第 1 页返回 ' + n + ' 个仓库）' : '');
+        toast("连接成功");
+      })
+      .catch(function (e) {
+        var d = describeApiError(e);
+        testResult.innerHTML = '<span style="color:#f85149;font-weight:600">✗ ' + esc(d.title) + '</span> <span class="dshell-muted">' + esc(d.hint) + '</span>';
+        toast(d.title, true);
+      });
+  }
+
+  /* ---------- 编译发行：构建分支 → 创建 Tag → 创建发行版 → 上传产物附件（一键串行） ----------
+     构建经 /api/worktable/exec 在服务端执行包装脚本：浅克隆所选分支后运行仓内脚本（留空=跳过）；
+     配置「产物路径」时构建后按仓内相对路径/通配收集产物到 ARTIFACT_DIR（服务端 /tmp 暂存目录）；
+     Tag：GitCode 走 v5 API（POST /repos/{owner}/{repo}/tags）；GitHub 走 Git Data API（分支 HEAD → 建 tag 对象 → 建 ref）；
+     两者 API 不可用均回退为页面生成临时脚本经 /api/worktable/write + exec 浅克隆 → git tag → push
+     （凭据 URL 编码注入 GIT_AUTH_URL，输出脱敏，远端已有同名 Tag 拒绝覆盖）；
+     发行版走各平台 API（POST /repos/{owner}/{repo}/releases）：GitCode form 参数；GitHub JSON 请求体（响应含 upload_url）；
+     产物上传经服务端临时脚本：GitCode 按 tag 调 upload_url 换 OBS 预签名地址后 PUT 直传；
+     GitHub 取发行版响应的 upload_url（uploads.github.com）按 ?name= 文件二进制 POST（令牌注入 ACCESS_TOKEN，输出脱敏，完成后清理暂存目录）。 */
+  var DEFAULT_REL_CFG = { repo: "", branch: "", script: "", timeout: 1800, artifacts: "" };
+  function loadRelCfg() {
+    try { var c = JSON.parse(localStorage.getItem(lsKey("relcfg"))); if (c && typeof c === "object") return { repo: c.repo || "", branch: c.branch || "", script: c.script || "", timeout: c.timeout || DEFAULT_REL_CFG.timeout, artifacts: c.artifacts || "" }; } catch (e) {}
+    return { repo: "", branch: "", script: "", timeout: DEFAULT_REL_CFG.timeout, artifacts: "" };
+  }
+  var relCfg = loadRelCfg();
+  function saveRelCfg() { try { localStorage.setItem(lsKey("relcfg"), JSON.stringify(relCfg)); } catch (e) {} }
+  var relRunning = false;
+  var relAbortCtrl = null;   // 发行流程的 AbortController：停止时 abort 断开 exec-stream，服务端 res.on('close') 即 SIGTERM 整个进程组
+  // 手动停止的哨兵错误：抛出后被 runRelease 捕获，把发行流程标记为「已停止」而非「失败」
+  function relStopErr() { var e = new Error("已手动停止"); e.relStop = true; return e; }
+  var relBranchCache = {}; // "owner/repo" -> 分支名数组（按需缓存）
+
+  function repoGitUrl(repo) { return "https://" + gitHost() + "/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + ".git"; }
+  function repoAuthUrl(repo) {
+    try {
+      var u = new URL(repoGitUrl(repo));
+      if (state.token) { u.username = authUsername(); u.password = state.token.trim(); }
+      return u.toString();
+    } catch (e) { return repoGitUrl(repo); }
+  }
+  function relSelectedRepo() {
+    var v = relRepoSel.value;
+    for (var i = 0; i < state.repos.length; i++) if (state.repos[i].name === v) return state.repos[i];
+    return null;
+  }
+  function renderRelRepoOptions() {
+    var cur = relRepoSel.value;
+    relRepoSel.innerHTML = "";
+    if (!state.repos.length) {
+      var o0 = document.createElement("option");
+      o0.value = ""; o0.textContent = state.token ? "（点 ⟳ 拉取仓库）" : "（需先设置令牌）";
+      relRepoSel.appendChild(o0); return;
+    }
+    state.repos.forEach(function (r) {
+      var o = document.createElement("option"); o.value = r.name; o.textContent = r.name; relRepoSel.appendChild(o);
+    });
+    if (cur && state.repos.some(function (r) { return r.name === cur; })) relRepoSel.value = cur;
+    else if (relCfg.repo && state.repos.some(function (r) { return r.name === relCfg.repo; })) relRepoSel.value = relCfg.repo; // 回退到本机缓存的仓库选择
+  }
+  function fetchRelRepos() {
+    if (!state.token) { toast("请先在「设置」页配置令牌", true); return Promise.resolve(); }
+    relRepoRefresh.disabled = true;
+    return fetchRepos(state.org, state.authMode).then(function (repos) {
+      state.repos = (repos || []).map(function (r) {
+        return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
+      }).filter(function (r) { return r.name; });
+      renderRelRepoOptions(); loadRelBranches(true);
+      toast("已拉取 " + state.repos.length + " 个仓库");
+    }).catch(function (e) { toast("拉取仓库失败：" + describeApiError(e).title, true); })
+      .then(function () { relRepoRefresh.disabled = false; });
+  }
+  function fillBranchList(names) {
+    var dl = $("relBranchList"); dl.innerHTML = "";
+    names.forEach(function (n) { var o = document.createElement("option"); o.value = n; dl.appendChild(o); });
+  }
+  function loadRelBranches(force) {
+    var repo = relSelectedRepo(); var dl = $("relBranchList");
+    if (!repo) { if (dl) dl.innerHTML = ""; return Promise.resolve(); }
+    var key = repo.owner + "/" + repo.name;
+    if (!force && relBranchCache[key]) { fillBranchList(relBranchCache[key]); return Promise.resolve(); }
+    return fetchAll("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/branches", 100)
+      .then(function (arr) {
+        var names = (arr || []).map(function (b) { return b && b.name; }).filter(Boolean);
+        relBranchCache[key] = names; fillBranchList(names);
+      }).catch(function () {});
+  }
+  /* —— 建议 Tag（vllm 风格语义化版本号）：拉取上一发行版 Tag，按「预发布」开关递增 ——
+     参考 vllm 通行命名：vX.Y.Z（正式）/ vX.Y.ZrcN（候选）/ vX.Y.Z.postN（修订）/ vX.Y.Z.devN（开发）。
+     - 无历史发行版 / Tag 不可解析：起步 v0.1.0（预发布 v0.1.0rc1）
+     - 上一正式 vX.Y.Z：下一 vX.Y.(Z+1)（预发布 vX.Y.(Z+1)rc1）
+     - 上一候选 vX.Y.ZrcN：预发布 vX.Y.Zrc(N+1)；正式 vX.Y.Z（定版）
+     - 上一修订 vX.Y.Z.postN：下一 vX.Y.(Z+1)（预发布 vX.Y.(Z+1)rc1）
+     - 上一开发 vX.Y.Z.devN：预发布 vX.Y.Zrc1；正式 vX.Y.Z（定版） */
+  var relTagSuggestBusy = false;
+  function parseSemverTag(tag) {
+    if (!tag) return null; // 无上一发行版
+    var m = /^v?(\d+)\.(\d+)\.(\d+)(.*)?$/.exec(String(tag).trim());
+    if (!m) return null; // 主版本号都不匹配：按「无历史」起步
+    var base = { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
+    var rest = (m[4] || "").trim();
+    var rc = /(?:^|[-.])rc[\.\-]?(\d+)$/i.exec(rest);
+    if (rc) return { base: base, kind: "rc", n: Number(rc[1]) };
+    var post = /(?:^|[-.])post[\.\-]?(\d+)$/i.exec(rest);
+    if (post) return { base: base, kind: "post", n: Number(post[1]) };
+    var dev = /(?:^|[-.])dev[\.\-]?(\d+)$/i.exec(rest);
+    if (dev) return { base: base, kind: "dev", n: Number(dev[1]) };
+    return { base: base, kind: "final", n: 0 }; // 正式版或后缀不可识别：按正式版处理
+  }
+  function fmtVer(b) { return "v" + b.major + "." + b.minor + "." + b.patch; }
+  function bumpPatch(b) { return { major: b.major, minor: b.minor, patch: b.patch + 1 }; }
+  function suggestVllmTag(prev, wantPre) {
+    var p = parseSemverTag(prev);
+    if (!p) { // 无历史发行版 / Tag 不可解析：起步 v0.1.0
+      var first = { major: 0, minor: 1, patch: 0 };
+      return wantPre ? fmtVer(first) + "rc1" : fmtVer(first);
+    }
+    if (p.kind === "rc" || p.kind === "dev") {
+      // 同版本已有候选/开发版：预发布→下一候选（开发版进位到 rc1）；正式→定版该版本
+      return wantPre ? fmtVer(p.base) + "rc" + (p.kind === "rc" ? p.n + 1 : 1) : fmtVer(p.base);
+    }
+    // 正式版 / 修订版：下一版本 vX.Y.(Z+1)（预发布则其候选 rc1）
+    var next = bumpPatch(p.base);
+    return wantPre ? fmtVer(next) + "rc1" : fmtVer(next);
+  }
+  function suggestRelTag() {
+    if (relTagSuggestBusy) return;
+    var repo = relSelectedRepo(), wantPre = relPrerelease.checked;
+    if (!state.token || !repo) {
+      relTag.value = suggestVllmTag(null, wantPre); // 无令牌/未选仓库：本地起步建议，不联网
+      toast("无历史发行版参照，建议从 " + relTag.value + " 起步" + (wantPre ? "（预发布）" : ""));
+      return;
+    }
+    relTagSuggestBusy = true; relTagSuggest.disabled = true; relTagSuggest.textContent = "⏳ 建议中…";
+    fetchPrevRelease(repo)
+      .then(function (r) {
+        var prev = r && r.tag_name ? r.tag_name : null;
+        relTag.value = suggestVllmTag(prev, wantPre);
+        toast(prev
+          ? "已按上一发行版 " + prev + " 建议 " + relTag.value + (wantPre ? "（预发布）" : "")
+          : "该仓库无历史发行版，建议从 " + relTag.value + " 起步");
+      })
+      .catch(function () {
+        relTag.value = suggestVllmTag(null, wantPre);
+        toast("拉取上一发行版失败，按无历史建议 " + relTag.value, true);
+      })
+      .then(function () { relTagSuggestBusy = false; relTagSuggest.disabled = false; relTagSuggest.textContent = "建议"; });
+  }
+  function fillRelForm() {
+    relBranch.value = relCfg.branch || "main"; // 恢复本机缓存的分支（默认 main）
+    relBuildTimeout.value = relCfg.timeout || DEFAULT_REL_CFG.timeout;
+    relArtifacts.value = relCfg.artifacts || "";
+    applyBuildScriptSelection();
+  }
+  /* 仓内构建脚本下拉：按所选仓库与分支经 GitCode contents API 列根目录与 scripts/、ci/ 下的 *.sh；
+     选项值为仓内相对路径，含「跳过构建」与「自定义…」（自定义时显示文本框手填仓内相对路径）。 */
+  var REL_SCRIPT_DIRS = ["", "scripts", "ci"];
+  function effectiveBuildScript() {
+    if (relBuildScript.value === "__custom__") return relBuildScriptCustom.value.trim();
+    return relBuildScript.value.trim();
+  }
+  function applyBuildScriptSelection() {
+    var s = relCfg.script || "";
+    var custom = false;
+    if (s) {
+      var matched = false;
+      Array.prototype.forEach.call(relBuildScript.options, function (o) {
+        if (o.value && o.value !== "__custom__" && o.value === s) matched = true;
+      });
+      if (matched) { relBuildScript.value = s; }
+      else { relBuildScript.value = "__custom__"; relBuildScriptCustom.value = s; custom = true; }
+    } else {
+      relBuildScript.value = "";
+      relBuildScriptCustom.value = "";
+    }
+    relBuildScriptCustomRow.style.display = custom ? "flex" : "none";
+  }
+  function loadBuildScripts() {
+    var repo = relSelectedRepo();
+    var branch = relBranch.value.trim();
+    var ph = !state.token ? "需先设置令牌" : !repo ? "先选仓库（点 ⟳ 拉取）" : !branch ? "先填分支" : "加载脚本中…";
+    relBuildScript.innerHTML = '<option value="">（' + ph + '）</option><option value="__custom__">自定义…</option>';
+    if (!state.token || !repo || !branch) { applyBuildScriptSelection(); return Promise.resolve(); }
+    var key = repo.owner + "/" + repo.name + "@" + branch;
+    var base = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/contents";
+    var ref = "ref=" + encodeURIComponent(branch);
+    return Promise.all(REL_SCRIPT_DIRS.map(function (d) {
+      return fetchJSON(base + (d ? "/" + d : "") + "?" + ref)
+        .then(function (arr) { return Array.isArray(arr) ? arr : []; })
+        .catch(function () { return []; }); // 目录不存在/无权限不阻断整体
+    })).then(function (lists) {
+      var cur = relSelectedRepo();
+      if (!cur || cur.owner + "/" + cur.name + "@" + relBranch.value.trim() !== key) return; // 期间已切换仓库/分支，丢弃旧结果
+      var seen = {}, scripts = [];
+      lists.forEach(function (arr) {
+        arr.forEach(function (e) {
+          if (e && e.type === "file" && /\.sh$/i.test(e.name || "") && e.path && !seen[e.path]) { seen[e.path] = 1; scripts.push(e.path); }
+        });
+      });
+      var html = '<option value="">（跳过构建）</option>';
+      scripts.forEach(function (p) { html += '<option value="' + esc(p) + '">' + esc(p) + "</option>"; });
+      html += '<option value="__custom__">自定义…</option>';
+      relBuildScript.innerHTML = html;
+      applyBuildScriptSelection();
+    }).catch(function () { applyBuildScriptSelection(); });
+  }
+  /* 仓内脚本构建：经 /api/worktable/write 落地临时包装脚本后 exec 执行——
+     浅克隆 GIT_AUTH_URL 的 GIT_BRANCH 到临时目录（克隆始终在服务端本机执行，OS 用户=dsh web 进程用户），
+     在仓库根目录运行仓内脚本 BUILD_SCRIPT（相对路径）；
+     设置页配置 BUILD_CONTAINER 时把克隆目录挂载到容器 /mnt/repo 内经 docker run 执行
+     （--network host 与宿主共享网络栈，-u root 以 root 权限启动，--entrypoint bash 覆盖镜像入口，脚本作为 bash 参数执行），
+     并透传 GIT_、RELEASE_ 系列环境变量与 BUILD_CMD；BUILD_EXTRA_ENV_KEYS（空格分隔的变量名，
+     来自设置页「附加环境变量」）中的变量同样注入并逐一经 -e 透传进容器；凭据输出脱敏。
+     GIT_PROXY_MODE（来自设置页「构建网络代理」）：inherit=沿用服务端进程代理环境；direct=清空代理变量直连；
+     custom=改用 GIT_PROXY_URL；代理变量按当前取值经 -e 透传进容器。克隆遇 CONNECT tunnel failed
+     （代理拒绝隧道，非证书/凭据问题）时输出针对性提示。
+     BUILD_ARTIFACTS（空格分隔的仓内相对路径/通配）非空时，构建成功后把匹配产物拷贝到
+     ARTIFACT_DIR（/tmp 下按次生成的暂存目录），供后续「上传产物」步骤使用。 */
+  var BUILD_WRAP_SCRIPT_PATH = "/tmp/dsh-codereview-build-wrap.sh";
+  var BUILD_WRAP_SCRIPT = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆代码仓并运行仓内构建脚本。",
+    "# 构建容器（BUILD_CONTAINER）在「设置」页统一配置，留空=本机执行；关键命令执行前以「+」前缀回显（凭据固定脱敏为 <repo>），克隆失败输出先脱敏。",
+    "# 代理策略（GIT_PROXY_MODE/GIT_PROXY_URL）由「设置 → 构建网络代理」注入：inherit=沿用服务端环境，direct=清空代理变量直连，custom=改用 GIT_PROXY_URL。",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${GIT_AUTH_URL:-}" ] || fail "缺少 GIT_AUTH_URL"',
+    '[ -n "${GIT_BRANCH:-}" ] || fail "缺少 GIT_BRANCH"',
+    '[ -n "${BUILD_SCRIPT:-}" ] || fail "缺少 BUILD_SCRIPT（仓内相对路径）"',
+    'case "$BUILD_SCRIPT" in /*|*..*) fail "BUILD_SCRIPT 须为仓内相对路径且不含 ..：$BUILD_SCRIPT" ;; esac',
+    'mask(){ sed -e "s#${GIT_AUTH_URL}#<repo>#g"; }',
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    "# 克隆/Tag 推送等 git 操作始终在本脚本（服务端本机）执行；容器只在克隆完成后经 docker run 跑仓内脚本，代理变量按当前取值经 -e 透传",
+    'maskurl(){ sed -E "s#(://)[^/@]+@#\\1***@#g"; }   # 代理地址可能带 userinfo，回显前脱敏',
+    'case "${GIT_PROXY_MODE:-inherit}" in',
+    '  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo "… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）" ;;',
+    '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
+    '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
+    "# 命令回显：关键命令执行前以「+ 命令行」打到 stdout（凭据固定脱敏为 <repo>）",
+    'TMPD=$(mktemp -d); trap \'rm -rf "$TMPD"\' EXIT',
+    'echo "→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）"',
+    'echo "+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo"',
+    'out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${GIT_AUTH_URL}" "$TMPD/repo" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "克隆失败（检查分支名/凭据/网络）"; }',
+    'cd "$TMPD/repo" || exit 1',
+    'echo "✓ 克隆完成：$(git log -1 --format=\'%h %s\' 2>/dev/null || echo unknown)"',
+    "# 脚本不存在时列出该分支根目录及 scripts/、ci/ 下的可用 *.sh，便于直接定位正确路径/分支",
+    'if [ ! -f "$BUILD_SCRIPT" ]; then',
+    '  echo "✗ 仓内构建脚本不存在：$BUILD_SCRIPT（分支 ${GIT_BRANCH}）" >&2',
+    '  echo "… 分支 ${GIT_BRANCH} 上可用的候选脚本（根目录 / scripts/ / ci/）：" >&2',
+    "  found_sh=0",
+    '  for d in . scripts ci; do',
+    '    for f in "$d"/*.sh; do',
+    '      [ -f "$f" ] || continue',
+    '      echo "    - ${f#./}" >&2; found_sh=1',
+    "    done",
+    "  done",
+    '  [ "$found_sh" = "1" ] || echo "    （未找到任何 *.sh：请确认脚本是否已合入 ${GIT_BRANCH} 分支，或改用「自定义…」填写正确路径）" >&2',
+    "  exit 1",
+    "fi",
+    "# 产物收集脚本（容器与本机共用）：按 BUILD_ARTIFACTS（空格分隔的仓内相对路径/通配）在仓库根 glob 后 cp 到暂存目录，末尾放开读权限。",
+    "# 容器构建时产物以 root 写入挂载的 /mnt/repo，宿主（dsh web 进程用户）可能无法遍历/读取这些 root 属主文件，",
+    "# 故容器场景在容器内以 root 跑本脚本收集；本机场景在宿主直接跑（产物即宿主用户属主，可直接读）。",
+    'cat > "$TMPD/collect.sh" <<\'COLLECT_EOF\'',
+    "#!/usr/bin/env bash",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${BUILD_ARTIFACTS:-}" ] || exit 0',
+    'dest="${1:-}"; root="${2:-}"',
+    '[ -n "$dest" ] || fail "缺少产物暂存目录"',
+    'case "$dest" in /tmp/*|/mnt/*) ;; *) fail "产物暂存目录须位于 /tmp 或 /mnt 下：$dest" ;; esac',
+    'mkdir -p "$dest"',
+    'echo "→ 收集构建产物（$BUILD_ARTIFACTS）…"',
+    'cd "$root" || fail "无法进入仓库目录：$root"',
+    "shopt -s nullglob",
+    "found=0",
+    'for pat in $BUILD_ARTIFACTS; do',
+    '  case "$pat" in /*|*..*) fail "产物路径须为仓内相对路径且不含 ..：$pat" ;; esac',
+    "  matches=( $pat )",
+    '  if [ ${#matches[@]} -eq 0 ]; then echo "… 未匹配到产物：$pat" >&2; continue; fi',
+    '  for m in "${matches[@]}"; do',
+    '    cp -a "$m" "$dest/" || fail "拷贝产物失败：$m"',
+    '    echo "  + $m"',
+    "    found=1",
+    "  done",
+    "done",
+    '[ "$found" = "1" ] || fail "未收集到任何构建产物（检查产物路径配置）"',
+    'chmod -R a+rX "$dest" 2>/dev/null || true',
+    'echo "✓ 产物收集完成：$(find "$dest" -type f | wc -l) 个文件"',
+    "COLLECT_EOF",
+    'if [ -n "${BUILD_CONTAINER:-}" ]; then',
+    '  command -v docker >/dev/null 2>&1 || fail "已配置构建容器（${BUILD_CONTAINER}），但服务端未找到 docker 命令"',
+    "# 设置页「附加环境变量」：逐一经 -e KEY 透传进容器（值取包装脚本进程环境）",
+    '  dk_env=(); for k in ${BUILD_EXTRA_ENV_KEYS:-}; do dk_env+=(-e "$k"); done',
+    "# 代理变量按当前取值透传进容器（仅透传已设置的；直连模式已在上方清空，自然不会带入）",
+    '  for k in http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY; do [ -n "${!k:-}" ] && dk_env+=(-e "$k"); done',
+    "# --entrypoint bash 覆盖镜像入口：vllm-openai 等镜像 ENTRYPOINT=vllm serve，不覆盖会把 bash/脚本名当成入口命令的参数",
+    "# -u root 以 root 权限启动容器：编译常需写系统目录/安装依赖，镜像默认非 root 用户时会直接失败",
+    "# --network host 与宿主共享网络栈：便于访问内网服务/代理，无需端口映射",
+    '  echo "→ 在容器 ${BUILD_CONTAINER} 内执行仓内脚本 ${BUILD_SCRIPT} …"',
+    '  echo "+ docker run --rm -t --network host -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${dk_env[*]} ${BUILD_CONTAINER} ${BUILD_SCRIPT}"',
+    '  docker run --rm -t --network host -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${dk_env[@]}" "${BUILD_CONTAINER}" "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
+    '  echo "✓ 构建容器执行完成"',
+    '  if [ -n "${BUILD_ARTIFACTS:-}" ]; then',
+    '    [ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR（产物暂存目录）"',
+    '    case "$ARTIFACT_DIR" in /tmp/*) ;; *) fail "ARTIFACT_DIR 须位于 /tmp 下：$ARTIFACT_DIR" ;; esac',
+    '    mkdir -p "$ARTIFACT_DIR"   # 宿主先建目录（避免 docker 以 root 自动创建致后续清理失败）',
+    '    echo "→ 在容器内以 root 收集构建产物到暂存目录（挂载仓库与暂存目录，规避容器内 root 属主产物致宿主无法读取）…"',
+    '    echo "+ docker run --rm --network host -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -v $ARTIFACT_DIR:/mnt/artifacts -v $TMPD/collect.sh:/mnt/collect.sh:ro -e BUILD_ARTIFACTS ${BUILD_CONTAINER} /mnt/collect.sh /mnt/artifacts /mnt/repo"',
+    '    docker run --rm --network host -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -v "$ARTIFACT_DIR":/mnt/artifacts -v "$TMPD/collect.sh":/mnt/collect.sh:ro -e BUILD_ARTIFACTS "${BUILD_CONTAINER}" /mnt/collect.sh /mnt/artifacts /mnt/repo || fail "产物收集失败（退出码 $?，详见上方日志）"',
+    '  fi',
+    "else",
+    '  echo "→ 执行仓内构建脚本 ${BUILD_SCRIPT} …（本机执行；如需容器请在「设置」页填写构建容器并保存）"',
+    "# 实时回显：程序（python/node/gcc/make…）检测到非 TTY 时块缓冲 stdout，会堆积成簇或末尾才出；",
+    "# 用 script(1) 分配伪终端令子进程行缓冲，输出逐行实时回传（CRLF 的 \\r 由前端 execStreamLines 剥离）；script 不在则回退直跑（输出可能成簇）。",
+    '  if command -v script >/dev/null 2>&1; then',
+    '    echo "+ script -qfec bash ${BUILD_SCRIPT} /dev/null（PTY 行缓冲，实时回显）"',
+    '    script -qfec "bash \\"$BUILD_SCRIPT\\"" /dev/null || fail "构建脚本执行失败（退出码 $?）"',
+    "  else",
+    '    echo "+ bash ${BUILD_SCRIPT}（未装 script，输出可能成簇）"',
+    '    bash "$BUILD_SCRIPT" || fail "构建脚本执行失败（退出码 $?）"',
+    "  fi",
+    '  if [ -n "${BUILD_ARTIFACTS:-}" ]; then bash "$TMPD/collect.sh" "$ARTIFACT_DIR" "$TMPD/repo"; fi',
+    "fi",
+    'echo "✓ 构建阶段完成${RELEASE_TAG:+：$RELEASE_TAG}"'
+  ].join("\n");
+  /* 设置页「附加环境变量」：KEY=VALUE 空格分隔；合法项并入构建 env 并返回变量名列表
+     （包装脚本据此以 -e KEY 透传进构建容器），非法项忽略并回显告警 */
+  function mergeBuildExtraEnv(env) {
+    var raw = (state.buildExtraEnv || "").trim();
+    if (!raw) return [];
+    var keys = [];
+    raw.split(/\s+/).forEach(function (kv) {
+      var m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(kv);
+      if (!m) { relLog("… 忽略非法附加环境变量项（须为 KEY=VALUE）：" + kv, "warn"); return; }
+      env[m[1]] = m[2]; keys.push(m[1]);
+    });
+    if (keys.length) env.BUILD_EXTRA_ENV_KEYS = keys.join(" ");
+    return keys;
+  }
+  /* 设置页「构建网络代理」：把代理策略注入服务端脚本 env（构建 / Tag 推送 / 产物上传共用）。
+     服务端脚本据 GIT_PROXY_MODE 处理：inherit=沿用服务端进程环境（默认）；direct=清空 http_proxy 等
+     代理变量直连；custom=改用 GIT_PROXY_URL。custom 未填地址时降级 inherit 并回显告警。 */
+  function proxyModeLabel(m) { return m === "direct" ? "直连（绕过代理）" : m === "custom" ? "自定义代理" : "继承服务端环境"; }
+  function applyBuildProxyEnv(env) {
+    var mode = state.buildProxy || "inherit";
+    var url = (state.buildProxyUrl || "").trim();
+    if (mode === "custom" && !url) { relLog("… 「构建网络代理」选了自定义但未填代理地址，按「继承服务端环境」处理", "warn"); mode = "inherit"; }
+    env.GIT_PROXY_MODE = mode;
+    if (mode === "custom") env.GIT_PROXY_URL = url;
+    return mode;
+  }
+  function execRepoBuild(script, container, env, timeoutMs, signal) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: BUILD_WRAP_SCRIPT_PATH, content: BUILD_WRAP_SCRIPT }) })
+      .then(function (w) {
+        return w.json().catch(function () { return {}; }).then(function (wj) {
+          if (!w.ok || (wj && wj.error)) {
+            return { code: 1, stdout: "", stderr: "写入构建包装脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)) };
+          }
+          var wrapEnv = {}; if (env) { for (var k in env) wrapEnv[k] = env[k]; }
+          wrapEnv.BUILD_CONTAINER = container || ""; wrapEnv.BUILD_SCRIPT = script;
+          return execStreamLines(BUILD_WRAP_SCRIPT_PATH, wrapEnv, timeoutMs, signal);   // 流式实时回显（旧插件降级一次性 exec）
+        });
+      });
+  }
+  /* 写请求：GitCode 走 form 参数；GitHub 走 JSON 请求体（统一沿用本页认证方式） */
+  function fetchPost(path, params, signal) {
+    var a = applyAuth(apiBase() + path, state.authMode);
+    var headers = {};
+    var body;
+    if (state.platform === "github") {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(params);
+    } else {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      body = new URLSearchParams(params).toString();
+    }
+    for (var k in a.headers) headers[k] = a.headers[k];
+    return fetch(a.url, { method: "POST", credentials: "omit", headers: headers, body: body, signal: signal || undefined })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          var j = null; try { j = JSON.parse(t); } catch (e) {}
+          if (!r.ok) {
+            var m = "HTTP " + r.status;
+            if (j && (j.error_message || j.message)) m += "：" + (j.error_message || j.message);
+            throw apiError(r.status, m);
+          }
+          return j || {};
+        });
+      });
+  }
+  /* 服务端脚本执行（与流水线工作台 execScript 同形） */
+  function execScript(path, env, timeoutMs) {
+    return fetch("/api/worktable/exec", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path, args: [], env: env || {}, timeoutMs: timeoutMs || 120000 }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.error) return { code: 1, stdout: "", stderr: String(j.error) };
+        return { code: (j && j.code !== undefined) ? j.code : 1, stdout: (j && j.stdout) || "", stderr: (j && j.stderr) || "" };
+      }).catch(function (e) { return { code: 1, stdout: "", stderr: String(e && e.message || e) }; });
+  }
+  /* 流式执行：POST /api/worktable/exec-stream（插件服务端 spawn 后按块回传 NDJSON：
+     {"type":"out"|"err","text":…} / {"type":"done","code":N} / {"type":"error","message":…}）。
+     逐块解析并回调 onStream({type,text})；累计 stdout/stderr，结束时返回 {code,stdout,stderr}。
+     旧插件构建未含该路由（响应非 200 / 无 body）时返回 null，由调用方降级为一次性 exec。
+     signal（可选 AbortSignal）：abort 时 fetch 立即断开，插件服务端 res.on('close') 收到断开后
+     SIGTERM 整个进程组（detached），构建脚本 EXIT trap 清克隆目录、docker --rm 清容器；此处返回
+     {code:130,aborted:true,stderr:'已手动停止…'} 让调用方按停止语义处理而非失败。 */
+  async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal) {
+    var stdout = "", stderr = "";
+    var emit = function (type, text) { if (typeof onStream === "function" && text) onStream({ type: type, text: text }); };
+    var abortedMsg = "（已手动停止：执行流已断开，服务端进程组已终止，克隆目录 / 构建容器 / 暂存产物自动清理）";
+    try {
+      var r = await fetch("/api/worktable/exec-stream", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path, args: args || [], env: env || {}, cwd: cwd, timeoutMs: timeoutMs || 0 }),
+        signal: signal || undefined });
+      if (!r.ok || !r.body) { await r.json().catch(function () { return null; }); return null; }   // 旧插件构建无此路由：降级为一次性执行
+      var reader = r.body.getReader();
+      var dec = new TextDecoder();
+      var buf = "";
+      for (;;) {
+        var chunk;
+        try { chunk = await reader.read(); }
+        catch (e) {
+          if (signal && signal.aborted) return { code: 130, aborted: true, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + abortedMsg };
+          return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" };
+        }
+        if (chunk.done) break;
+        buf += dec.decode(chunk.value, { stream: true });
+        var idx;
+        while ((idx = buf.indexOf("\n")) >= 0) {
+          var line = buf.slice(0, idx).trim(); buf = buf.slice(idx + 1);
+          if (!line) continue;
+          var m = null; try { m = JSON.parse(line); } catch (e) { continue; }
+          if (m.type === "out") { stdout += m.text || ""; emit("out", m.text || ""); }
+          else if (m.type === "err") { stderr += m.text || ""; emit("err", m.text || ""); }
+          else if (m.type === "error") { var txt = m.message || "执行流错误"; stderr += (stderr ? "\n" : "") + txt; emit("err", txt); }
+          else if (m.type === "done") { return { code: typeof m.code === "number" ? m.code : 1, stdout: stdout, stderr: stderr }; }
+        }
+      }
+      if (buf.trim()) {   // 末尾残余（流结束前未换行的最后一块）
+        var m2 = null; try { m2 = JSON.parse(buf.trim()); } catch (e) {}
+        if (m2 && m2.type === "out") { stdout += m2.text || ""; emit("out", m2.text || ""); }
+        else if (m2 && m2.type === "err") { stderr += m2.text || ""; emit("err", m2.text || ""); }
+        else if (m2 && m2.type === "error") { var txt2 = m2.message || "执行流错误"; stderr += (stderr ? "\n" : "") + txt2; emit("err", txt2); }
+        else if (m2 && m2.type === "done") { return { code: typeof m2.code === "number" ? m2.code : 1, stdout: stdout, stderr: stderr }; }
+      }
+      if (signal && signal.aborted) return { code: 130, aborted: true, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + abortedMsg };
+      return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（输出流意外中断，未收到完成标记）" };
+    } catch (e) {
+      if (signal && signal.aborted) return { code: 130, aborted: true, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + abortedMsg };
+      return { code: 1, stdout: stdout, stderr: (stderr ? stderr + "\n" : "") + "（执行流中断：" + (e && e.message ? e.message : e) + "）" };
+    }
+  }
+  /* 流式执行并实时回显：按块收到 stdout/stderr 即按行追加到当前步骤回显块与总日志
+     （relLog 内仅保留末尾 REL_LIVE_TAIL 行，避免输出过多撑爆 DOM 导致页面卡死）；
+     旧插件无 exec-stream 路由时降级为一次性 exec（结束后整体回显，同样受末尾截断保护）。 */
+  function execStreamLines(path, env, timeoutMs, signal) {
+    var lineBuf = "", lastCls = "";   // 跨块半行缓冲：仅在收到完整 \n 时回显一行，末尾半行兜底回显
+    var emitText = function (text, cls) {
+      lastCls = cls || ""; lineBuf += text.replace(/\r/g, "");   // PTY(script/docker -t)回传 CRLF，剥离 \r 后按行切
+      for (;;) { var nl = lineBuf.indexOf("\n"); if (nl < 0) break; relLog(lineBuf.slice(0, nl), lastCls); lineBuf = lineBuf.slice(nl + 1); }
+    };
+    return execStreaming(path, [], env, undefined, timeoutMs, function (m) {
+      if (m.type === "out") emitText(m.text || "");
+      else if (m.type === "err") emitText(m.text || "", "warn");
+    }, signal).then(function (res) {
+      if (res) { if (lineBuf) relLog(lineBuf, lastCls); return res; }   // 末尾半行兜底回显
+      return execScript(path, env, timeoutMs).then(function (r) {   // 降级：一次性 exec 后整体回显（旧插件无 exec-stream，无法即时中止）
+        if (r.stdout) r.stdout.replace(/\n$/, "").split("\n").forEach(function (l) { if (l) relLog(l); });
+        if (r.stderr) r.stderr.replace(/\n$/, "").split("\n").forEach(function (l) { if (l) relLog(l, "warn"); });
+        return r;
+      });
+    });
+  }
+  var REL_STEPS = ["编译构建", "创建 Tag", "创建发行版", "上传产物"];
+  var REL_STEP_LABEL = { idle: "未开始", run: "进行中", ok: "成功", err: "失败", skip: "跳过", abort: "已停止" };
+  var REL_HIST_MAX = 30;          // 构建历史最多保留条数
+  var REL_STEP_LOG_MAX = 300;     // 归档时每步回显最多保留行数（超出截断前部）
+  var REL_LIVE_TAIL = 20;         // 实时回显仅保留末尾行数（每步回显块与总日志共用，避免输出过多撑爆 DOM 卡死页面）
+  var relStates = [];             // 当前发行的步骤状态（供逐步回显就地刷新时重绘）
+  var relCurStep = -1;            // 当前回显归属的步骤下标（-1=公共行，只进总日志）
+  var relStepLogs = [[], [], [], []]; // 每步回显缓存：发行中就地展开 + 结束后归档
+  function relLogLineHtml(l) { return '<div class="rel-line' + (l.cls ? " rel-" + l.cls : "") + '">' + esc(l.msg) + "</div>"; }
+  function relStepSumText(total) { return total > REL_LIVE_TAIL ? "回显 " + total + " 行（实时仅显示最近 " + REL_LIVE_TAIL + " 行）▾" : "回显 " + total + " 行 ▾"; }
+  function relStepBadgeCls(st) { return st === "run" ? " dshell-badgeWait" : (st === "ok" ? " dshell-badgeDone" : ""); }
+  function relSetSteps(states) {
+    relStates = states;
+    relSteps.innerHTML = REL_STEPS.map(function (n, i) {
+      var s = states[i] || { st: "idle" };
+      var dot = s.st === "run" ? "rel-dot rel-dotRun" : s.st === "ok" ? "rel-dot rel-dotOk" : s.st === "err" ? "rel-dot rel-dotErr" : s.st === "abort" ? "rel-dot" : "rel-dot";
+      var badge = '<span class="dshell-badge' + relStepBadgeCls(s.st) + '"' +
+        (s.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : s.st === "abort" ? ' style="color:var(--dsw-alias-label-tertiary,#6b7280);border-color:var(--dsw-alias-border-l2,#3a4150)"' : "") + ">" + REL_STEP_LABEL[s.st] + "</span>";
+      var lines = relStepLogs[i] || [];
+      var det = "";
+      if (lines.length) {
+        var tail = lines.length > REL_LIVE_TAIL ? lines.slice(lines.length - REL_LIVE_TAIL) : lines;   // 仅渲染末尾若干行，避免重绘时撑爆 DOM
+        det = '<details class="rel-stepDet"' + (s.st === "run" ? " open" : "") + '><summary id="relStepLogSum' + i + '">' + relStepSumText(lines.length) + '</summary>' +
+          '<div class="rel-log rel-stepLog" id="relStepLog' + i + '" style="display:block">' + tail.map(relLogLineHtml).join("") + "</div></details>";
+      }
+      return '<div class="rel-step"><i class="' + dot + '"></i>' +
+        '<span style="font-size:12.5px;color:var(--dsw-alias-label-primary,#e6e8eb)">' + (i + 1) + ". " + n + "</span>" + badge +
+        (s.note ? '<span class="dshell-muted" style="font-size:11px">' + esc(s.note) + "</span>" : "") + det + "</div>";
+    }).join("");
+  }
+  function relLogClear() {
+    relLogEl.style.display = "none"; relLogEl.innerHTML = ""; relResult.innerHTML = "";
+    relCurStep = -1; relStepLogs = [[], [], [], []];
+  }
+  function relLog(msg, cls) {
+    relLogEl.style.display = "block";
+    var d = document.createElement("div");
+    d.className = "rel-line" + (cls ? " rel-" + cls : "");
+    d.textContent = msg;
+    relLogEl.appendChild(d);
+    while (relLogEl.childNodes.length > REL_LIVE_TAIL) relLogEl.removeChild(relLogEl.firstChild);   // 总日志仅保留末尾若干行，避免输出过多撑爆 DOM 卡死页面
+    relLogEl.scrollTop = relLogEl.scrollHeight;
+    // 同步计入当前步骤的回显缓存，并就地更新该步的展开块
+    if (relCurStep >= 0 && relCurStep < REL_STEPS.length) {
+      relStepLogs[relCurStep].push({ msg: msg, cls: cls || "" });
+      var box = $("relStepLog" + relCurStep);
+      if (!box) { relSetSteps(relStates); return; } // 该步首行回显：重绘补出折叠块
+      var ld = document.createElement("div");
+      ld.className = "rel-line" + (cls ? " rel-" + cls : "");
+      ld.textContent = msg;
+      box.appendChild(ld);
+      while (box.childNodes.length > REL_LIVE_TAIL) box.removeChild(box.firstChild);   // 步骤回显块仅保留末尾若干行
+      box.scrollTop = box.scrollHeight;
+      var sum = $("relStepLogSum" + relCurStep);
+      if (sum) sum.textContent = relStepSumText(relStepLogs[relCurStep].length);
+    }
+  }
+  /* 打 Tag 并推送的临时脚本：经 /api/worktable/write 落到服务端临时文件后 exec 执行 */
+  var PUSH_TAG_SCRIPT_PATH = "/tmp/dsh-codereview-push-tag.sh";
+  var PUSH_TAG_SCRIPT = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆指定分支 → 创建 Tag → 推送远端。",
+    "# 凭据经 GIT_AUTH_URL 注入（页面侧已 URL 编码）；本脚本不 echo 任何凭据，失败输出先脱敏。",
+    "set -u",
+    "fail(){ echo \"✗ $*\" >&2; exit 1; }",
+    "[ -n \"${GIT_AUTH_URL:-}\" ] || fail \"缺少 GIT_AUTH_URL\"",
+    "[ -n \"${GIT_BRANCH:-}\" ] || fail \"缺少 GIT_BRANCH\"",
+    "[ -n \"${RELEASE_TAG:-}\" ] || fail \"缺少 RELEASE_TAG\"",
+    "mask(){ sed -e \"s#${GIT_AUTH_URL}#<repo>#g\"; }",
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    "maskurl(){ sed -E \"s#(://)[^/@]+@#\\1***@#g\"; }   # 代理地址可能带 userinfo，回显前脱敏",
+    "case \"${GIT_PROXY_MODE:-inherit}\" in",
+    "  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo \"… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）\" ;;",
+    "  custom) [ -n \"${GIT_PROXY_URL:-}\" ] || fail \"GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL\"; export http_proxy=\"$GIT_PROXY_URL\" https_proxy=\"$GIT_PROXY_URL\" HTTP_PROXY=\"$GIT_PROXY_URL\" HTTPS_PROXY=\"$GIT_PROXY_URL\"; echo \"… 网络代理：自定义代理 $(printf '%s' \"$GIT_PROXY_URL\" | maskurl)\" ;;",
+    "  *) echo \"… 网络代理：继承服务端环境（http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)）\" ;;",
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    "net_hint(){ printf '%s' \"$1\" | grep -q \"CONNECT tunnel failed\" || return 0; echo \"… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试\" >&2; }",
+    "echo \"+ git ls-remote --tags <repo> refs/tags/${RELEASE_TAG}\"",
+    "out=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"${GIT_AUTH_URL}\" \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }",
+    "printf \"%s\\n\" \"$out\" | grep -q . && fail \"远端已存在 Tag ${RELEASE_TAG}（如需重发请先删除远端 Tag）\"",
+    "TMPD=$(mktemp -d); trap 'rm -rf \"$TMPD\"' EXIT",
+    "echo \"→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）\"",
+    "echo \"+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo\"",
+    "out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"克隆失败（分支名/凭据/网络）\"; }",
+    "cd \"$TMPD/repo\" || exit 1",
+    "echo \"+ git tag -a ${RELEASE_TAG} -m \\\"${RELEASE_NAME:-$RELEASE_TAG}\\\"\"",
+    "git -c user.name=\"${GIT_AUTHOR_NAME:-codereview-bot}\" -c user.email=\"codereview-bot@local\" tag -a \"$RELEASE_TAG\" -m \"${RELEASE_NAME:-$RELEASE_TAG}\" || fail \"创建 Tag 失败\"",
+    "echo \"→ 推送 Tag ${RELEASE_TAG} …\"",
+    "echo \"+ git push origin refs/tags/${RELEASE_TAG}\"",
+    "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
+    "echo \"✓ Tag ${RELEASE_TAG} 已推送\""
+  ].join("\n");
+  function pushReleaseTag(repo, branch, tag, name, signal) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: PUSH_TAG_SCRIPT_PATH, content: PUSH_TAG_SCRIPT }) })
+      .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
+        if (!w.ok || (wj && wj.error)) throw new Error("写入 Tag 脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
+      }); })
+      .then(function () {
+        var env = { GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch, RELEASE_TAG: tag, RELEASE_NAME: name || tag };
+        applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
+        return execStreamLines(PUSH_TAG_SCRIPT_PATH, env, 300000, signal);
+      })
+      .then(function (res) {
+        if (res.aborted) throw relStopErr();
+        if (res.code !== 0) throw new Error("Tag 推送失败（详见日志）");   // 实时回显已在 execStreamLines 内完成
+      });
+  }
+  /* GitHub 建 annotated Tag：Git Data API（取分支 HEAD → 建 tag 对象 → 建 ref）。
+     GitHub 无「按 ref 直接建 Tag」的 REST 端点；ref 已存在（422）视为远端已有同名 Tag 拒绝覆盖
+     （与 git 推送脚本一致）；其余失败回退到 git 推送脚本（pushReleaseTag）。 */
+  function githubCreateTag(repo, branch, tag, name, signal) {
+    var repoPath = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name);
+    return fetchJSON(repoPath + "/branches/" + encodeURIComponent(branch))
+      .then(function (b) {
+        var sha = b && b.commit && b.commit.sha;
+        if (!sha) throw new Error("无法获取分支 " + branch + " 的最新提交 SHA");
+        relLog("→ 分支 " + branch + " HEAD = " + String(sha).slice(0, 7), "dim");
+        relLog("+ POST " + apiBase() + repoPath + "/git/tags（tag=" + tag + "）", "dim");
+        return fetchPost(repoPath + "/git/tags", { tag: tag, message: name || tag, object: sha, type: "commit" }, signal)
+          .then(function (tobj) {
+            var tagSha = tobj && tobj.sha;
+            if (!tagSha) throw new Error("创建 tag 对象失败");
+            relLog("→ 已创建 tag 对象 " + String(tagSha).slice(0, 7), "dim");
+            relLog("+ POST " + apiBase() + repoPath + "/git/refs（refs/tags/" + tag + "）", "dim");
+            return fetchPost(repoPath + "/git/refs", { ref: "refs/tags/" + tag, sha: tagSha }, signal);
+          });
+      })
+      .then(function () { relLog("✓ Tag " + tag + " 已通过 Git Data API 创建", "ok"); })
+      .catch(function (e) {
+        var msg = String(e && e.message || e);
+        // ref 已存在（422）视为远端已有同名 Tag，拒绝覆盖
+        if (/422|already exists|Reference already/i.test(msg)) {
+          throw new Error("远端已存在 Tag " + tag + "（如需重发请先删除远端 Tag）");
+        }
+        relLog("… Git Data API 不可用（" + msg + "），改用 git 推送", "dim");
+        return pushReleaseTag(repo, branch, tag, name, signal);
+      });
+  }
+  /* 上传构建产物到 GitCode 发行版附件：经 /api/worktable/write 落地临时脚本后 exec 执行——
+     GitCode 发行版没有数字 id，也不提供 Gitee 式 attach_files；官方流程是按 tag + file_name 调
+     upload_url 接口换取华为云 OBS 预签名上传地址，再按返回的 url + headers 用 PUT 直传
+     （x-obs-callback 回调头负责把附件挂到发行版）。令牌经 ACCESS_TOKEN 注入、输出脱敏，
+     预签名 url 不落日志，完成后清理暂存目录。 */
+  var UPLOAD_ASSETS_SCRIPT_PATH = "/tmp/dsh-codereview-upload-assets.sh";
+  var UPLOAD_ASSETS_SCRIPT = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：把构建产物上传到 GitCode 发行版附件。",
+    "# 流程：GET releases/{tag}/upload_url（access_token + file_name）→ 按返回 url/headers PUT 直传 OBS。",
+    "# 令牌经 ACCESS_TOKEN 注入；本脚本不 echo 令牌与预签名 url，失败输出先脱敏；结束后清理产物暂存目录。",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR"',
+    '[ -n "${RELEASE_TAG:-}" ] || fail "缺少 RELEASE_TAG"',
+    '[ -n "${OWNER:-}" ] || fail "缺少 OWNER"',
+    '[ -n "${REPO:-}" ] || fail "缺少 REPO"',
+    '[ -n "${ACCESS_TOKEN:-}" ] || fail "缺少 ACCESS_TOKEN"',
+    'trap \'rm -rf "$ARTIFACT_DIR"\' EXIT',
+    'mask(){ sed -e "s#${ACCESS_TOKEN}#<token>#g"; }',
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    'maskurl(){ sed -E "s#(://)[^/@]+@#\\1***@#g"; }   # 代理地址可能带 userinfo，回显前脱敏',
+    'case "${GIT_PROXY_MODE:-inherit}" in',
+    '  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo "… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）" ;;',
+    '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
+    '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
+    'API_BASE="${API_BASE:-https://api.gitcode.com/api/v5}"',
+    '# 从扁平 JSON 提取 "key":"value" 字符串值（还原 \\/ 转义）；upload_url 响应的 url/headers 均为扁平字符串字段',
+    'jget(){ sed -n "s/.*\\"$1\\" *: *\\"\\([^\\"]*\\)\\".*/\\1/p" | sed \'s#\\\\/#/#g\'; }',
+    "n=0",
+    'while IFS= read -r f; do',
+    "  n=$((n+1))",
+    '  base=$(basename "$f")',
+    '  echo "→ 上传 $base …"',
+    '  echo "+ GET ${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url?access_token=<token>&file_name=$base"',
+    '  resp=$(curl -sS -f -G "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url" --data-urlencode "access_token=${ACCESS_TOKEN}" --data-urlencode "file_name=${base}" 2>&1) || { printf "%s\\n" "$resp" | mask >&2; net_hint "$resp"; fail "获取上传地址失败：$base（检查令牌权限）"; }',
+    '  url=$(printf "%s" "$resp" | jget url)',
+    '  [ -n "$url" ] || { printf "%s\\n" "$resp" | mask >&2; fail "上传地址响应缺少 url：$base"; }',
+    '  h_proj=$(printf "%s" "$resp" | jget x-obs-meta-project-id)',
+    '  h_acl=$(printf "%s" "$resp" | jget x-obs-acl)',
+    '  h_cb=$(printf "%s" "$resp" | jget x-obs-callback)',
+    '  h_ct=$(printf "%s" "$resp" | jget Content-Type)',
+    '  [ -n "$h_ct" ] || h_ct="application/octet-stream"',
+    '  echo "+ curl -sS -f -X PUT -T $f <OBS 预签名地址>（携带 x-obs-* 回调头）"',
+    '  out=$(curl -sS -f -X PUT -T "$f" -H "x-obs-meta-project-id: $h_proj" -H "x-obs-acl: $h_acl" -H "x-obs-callback: $h_cb" -H "Content-Type: $h_ct" "$url" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    '  echo "✓ 已上传 $base"',
+    'done < <(find "$ARTIFACT_DIR" -type f | sort)',
+    '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
+    'echo "✓ 共上传 $n 个产物"'
+  ].join("\n");
+  function uploadReleaseAssets(repo, tag, artifactDir, signal) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: UPLOAD_ASSETS_SCRIPT_PATH, content: UPLOAD_ASSETS_SCRIPT }) })
+      .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
+        if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
+      }); })
+      .then(function () {
+        var env = {
+          ARTIFACT_DIR: artifactDir, RELEASE_TAG: tag,
+          OWNER: repo.owner, REPO: repo.name, ACCESS_TOKEN: state.token.trim()
+        };
+        applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000, signal);
+      })
+      .then(function (res) {
+        if (res.aborted) throw relStopErr();
+        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
+      });
+  }
+  /* GitHub 发行版产物上传：发行版创建响应的 upload_url 形如
+     https://uploads.github.com/repos/{owner}/{repo}/releases/{id}/assets{?name,label}，
+     去除 {?name,label} 模板后对每个产物 POST 文件二进制（name=basename，Bearer 头，application/octet-stream）。
+     令牌经 ACCESS_TOKEN 注入、输出脱敏，结束后清理暂存目录。复用 UPLOAD_ASSETS_SCRIPT_PATH（运行前覆盖为 GitHub 版脚本）。 */
+  var UPLOAD_ASSETS_SCRIPT_GITHUB = [
+    "#!/usr/bin/env bash",
+    "# 由 PR 检视台「编译发行」页自动写入并执行：把构建产物上传到 GitHub 发行版附件。",
+    "# 流程：对 ARTIFACT_DIR 内每个文件 POST 到 UPLOAD_URL?name=basename，文件二进制为请求体。",
+    "# 令牌经 ACCESS_TOKEN 注入（Bearer 头）；本脚本不 echo 令牌，结束后清理产物暂存目录。",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR"',
+    '[ -n "${UPLOAD_URL:-}" ] || fail "缺少 UPLOAD_URL"',
+    '[ -n "${ACCESS_TOKEN:-}" ] || fail "缺少 ACCESS_TOKEN"',
+    'trap \'rm -rf "$ARTIFACT_DIR"\' EXIT',
+    'mask(){ sed -e "s#${ACCESS_TOKEN}#<token>#g"; }',
+    "# 代理策略（GIT_PROXY_MODE，由「设置 → 构建网络代理」注入）：inherit=沿用服务端进程环境（默认）；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL",
+    'maskurl(){ sed -E "s#(://)[^/@]+@#\\1***@#g"; }   # 代理地址可能带 userinfo，回显前脱敏',
+    'case "${GIT_PROXY_MODE:-inherit}" in',
+    '  direct) unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; echo "… 网络代理：直连（已清空服务端继承的 http_proxy/https_proxy 等代理变量）" ;;',
+    '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
+    '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
+    "esac",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
+    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
+    "n=0",
+    'while IFS= read -r f; do',
+    "  n=$((n+1))",
+    '  base=$(basename "$f")',
+    '  echo "→ 上传 $base …"',
+    '  echo "+ POST ${UPLOAD_URL}?name=$base （Bearer 头，文件二进制体）"',
+    '  out=$(curl -sS -f -X POST -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "Accept: application/vnd.github+json" -H "Content-Type: application/octet-stream" --data-binary @"$f" "${UPLOAD_URL}?name=${base}" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    '  echo "✓ 已上传 $base"',
+    "done < <(find \"$ARTIFACT_DIR\" -type f | sort)",
+    '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
+    'echo "✓ 共上传 $n 个产物"'
+  ].join("\n");
+  function uploadGithubAssets(repo, artifactDir, uploadUrlBase, signal) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: UPLOAD_ASSETS_SCRIPT_PATH, content: UPLOAD_ASSETS_SCRIPT_GITHUB }) })
+      .then(function (w) { return w.json().catch(function () { return {}; }).then(function (wj) {
+        if (!w.ok || (wj && wj.error)) throw new Error("写入产物上传脚本失败：" + ((wj && wj.error) || ("HTTP " + w.status)));
+      }); })
+      .then(function () {
+        var env = { ARTIFACT_DIR: artifactDir, UPLOAD_URL: uploadUrlBase, ACCESS_TOKEN: state.token.trim() };
+        applyBuildProxyEnv(env);   // 套用设置页「构建网络代理」策略
+        return execStreamLines(UPLOAD_ASSETS_SCRIPT_PATH, env, 600000, signal);
+      })
+      .then(function (res) {
+        if (res.aborted) throw relStopErr();
+        if (res.code !== 0) throw new Error("产物上传失败（发行版已创建，仅附件未传；详见日志）");   // 实时回显已在 execStreamLines 内完成
+      });
+  }
+  /* ---------- 构建历史：云端存储，本地从云端拉（服务端 DSH_HOME/storages 下 JSON 文件，按平台分桶，所有浏览器共享） ----------
+     旧版本存于本机浏览器 localStorage（gc_pr_relhist / gh_pr_relhist）：仅本机可见，换浏览器即丢。
+     改为云端后，归档 / 删除 / 清空均经 /api/worktable/write 写回服务端文件，启动 / 切到发行页 / 切平台时
+     经 /api/worktable/file 从云端拉取到本地缓存 relHistCache；首次发现云端为空而本机仍有旧 localStorage
+     数据时，一次性迁移上云并清掉本机旧键，避免历史丢失。 */
+  var REL_HIST_STORE_DIR = "/mnt/paas/storages";   // = $DSH_HOME/storages（默认 /mnt/paas），dsh web 进程可写、跨重启持久
+  function relHistFile() { return REL_HIST_STORE_DIR + "/dsh-codereview-relhist-" + (state.platform === "github" ? "gh" : "gc") + ".json"; }
+  var relHistCache = null;        // 云端构建历史的本地镜像（null=尚未拉取）；增删改均改此缓存并写回云端，渲染只读缓存
+  var relHistLoading = false;     // 防并发重复拉取
+  var relHistLoadGen = 0;         // 拉取代次：过期代次的返回不覆盖更新的缓存（归档写回后并发的旧拉取丢弃）
+  function relHistFileUrl() { return "/api/worktable/file?path=" + encodeURIComponent(relHistFile()); }
+  function relHistWrite(content) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: relHistFile(), content: content }) });
+  }
+  // 写云端（目录缺失时建目录重试一次）；返回是否成功（不抛异常，便于迁移处按成功与否决定是否清本机旧键）
+  function relHistWriteRobust(content) {
+    return relHistWrite(content).then(function (r) {
+      if (r.ok) return true;
+      return fetch("/api/worktable/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: REL_HIST_STORE_DIR }) })
+        .then(function () { return relHistWrite(content); })
+        .then(function (r2) { return !!r2.ok; })
+        .catch(function () { return false; });
+    }).catch(function () { return false; });
+  }
+  function loadRelHistCloud() {
+    if (relHistLoading) return Promise.resolve(relHistCache || []);
+    relHistLoading = true;
+    var gen = ++relHistLoadGen;
+    return fetch(relHistFileUrl(), { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) return [];                       // 404 = 云端尚无历史文件（首用）
+        var ct = r.headers.get("content-type") || "";
+        return r.text().then(function (t) {
+          if (ct.indexOf("json") < 0) return [];   // file 路由 404 也回 JSON 错误体，按非数据跳过
+          try { var h = JSON.parse(t); if (Array.isArray(h)) return h; } catch (e) {}
+          return [];
+        });
+      })
+      .then(function (list) {
+        // 一次性迁移：云端为空且本机 localStorage 仍有旧 relhist 数据 → 等写成功后清本机旧键（写失败下次重试，不丢历史）
+        if (!list.length && !localStorage.getItem(lsKey("relhist_migrated"))) {
+          try {
+            var old = JSON.parse(localStorage.getItem(lsKey("relhist")));
+            if (Array.isArray(old) && old.length) {
+              var migrated = old.slice(0, REL_HIST_MAX);
+              return relHistWriteRobust(JSON.stringify(migrated)).then(function (ok) {   // 等待写结果再决定是否清本机旧键
+                if (ok) { localStorage.setItem(lsKey("relhist_migrated"), "1"); localStorage.removeItem(lsKey("relhist")); list = migrated; }
+                // 写失败：不标记、不清本机旧键，下次加载重试迁移；本次仍按云端（空）展示
+                if (gen === relHistLoadGen && relHistCache === null) relHistCache = list;
+                return relHistCache || list;
+              });
+            }
+            localStorage.setItem(lsKey("relhist_migrated"), "1");   // 本机无旧数据：直接标记，免得每次查
+          } catch (e) {}
+        }
+        if (gen === relHistLoadGen && relHistCache === null) relHistCache = list;   // 归档写回后并发的旧拉取不覆盖
+        return relHistCache || list;
+      })
+      .catch(function () { if (gen === relHistLoadGen && relHistCache === null) relHistCache = []; return relHistCache || []; })
+      .finally(function () { if (gen === relHistLoadGen) relHistLoading = false; });
+  }
+  function ensureRelHistLoaded() {                 // 归档前确保云端历史已拉取，避免未加载时按空缓存覆盖丢历史
+    if (relHistCache !== null) return Promise.resolve(relHistCache);
+    return loadRelHistCloud();
+  }
+  function loadRelHist() { return relHistCache || []; }   // 渲染源：缓存（null→空数组占位）
+  function saveRelHist(list) {
+    relHistCache = Array.isArray(list) ? list.slice(0, REL_HIST_MAX) : [];
+    relHistWriteRobust(JSON.stringify(relHistCache)).then(function (ok) {   // fire-and-forget：归档不阻塞发行 UI；失败仅提示
+      if (!ok) toast("构建历史写回云端失败（本次归档仅本机可见）");
+    });
+  }
+  function ensureRelHist() {                       // 进入发行页 / 初始化 / 切平台时触发拉取（已加载则直接渲染）
+    if (relHistCache !== null) { renderRelHist(); return; }
+    relHistEl.innerHTML = '<div class="pr-empty" style="padding:20px 10px">正在从云端拉取构建历史…</div>';
+    relHistTip.textContent = "";
+    loadRelHistCloud().then(renderRelHist);
+  }
+  /* 归档一步回显：超过上限只留末尾，前部以省略行代替 */
+  function archiveStepLines(lines) {
+    if (lines.length <= REL_STEP_LOG_MAX) return lines.slice();
+    var cut = lines.length - REL_STEP_LOG_MAX;
+    return [{ msg: "…（归档省略前 " + cut + " 行）", cls: "dim" }].concat(lines.slice(cut));
+  }
+  function relHistStatusBadge(rec) {
+    if (rec.status === "ok") return '<span class="dshell-badge dshell-badgeDone">成功</span>';
+    if (rec.status === "err") return '<span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.4)">失败</span>';
+    if (rec.status === "stop") return '<span class="dshell-badge" style="color:var(--dsw-alias-label-tertiary,#6b7280);border-color:var(--dsw-alias-border-l2,#3a4150)">已停止</span>';
+    return '<span class="dshell-badge dshell-badgeWait">进行中</span>';
+  }
+  function renderRelHist() {
+    var hist = loadRelHist();
+    relHistTip.textContent = hist.length ? "共 " + hist.length + " 条（云端存储，最多 " + REL_HIST_MAX + " 条）" : "（云端存储，最多 " + REL_HIST_MAX + " 条）";
+    if (!hist.length) {
+      relHistEl.innerHTML = '<div class="pr-empty" style="padding:20px 10px">暂无构建历史：完成一次「构建并发行」后自动归档到云端。</div>';
+      return;
+    }
+    relHistEl.innerHTML = hist.map(function (rec, ri) {
+      var h = [];
+      h.push('<div class="rel-histRow">');
+      h.push('  <div class="rel-histHead" data-hist-toggle="' + ri + '" title="点击展开依赖信息 / 产物 / 逐步回显">');
+      h.push('    ' + relHistStatusBadge(rec));
+      h.push('    <span class="rel-histTitle">' + esc(rec.repo || "") + "</span>");
+      h.push('    <span class="pr-mono" style="color:var(--dsw-alias-label-secondary,#9aa4b2)">' + esc(rec.branch || "—") + " → " + esc(rec.tag || "—") + "</span>");
+      h.push('    <span class="dshell-muted" style="font-size:11px">' + esc(timeAgo(rec.time)) + "</span>");
+      if (rec.script) h.push('    <span class="pr-chip">⚙ ' + esc(rec.script) + "</span>");
+      if (rec.artifactFiles && rec.artifactFiles.length) h.push('    <span class="pr-chip">📦 ' + rec.artifactFiles.length + " 个产物</span>");
+      h.push('    <button class="dshell-btn dshell-btnGhost rel-histDel" data-hist-del="' + ri + '" title="删除本条历史" style="padding:2px 8px;font-size:11px">✕</button>');
+      h.push("  </div>");
+      h.push('  <div class="rel-histBody" id="relHistBody' + ri + '" style="display:none">');
+      // 依赖信息
+      h.push('    <div class="rel-histSec">依赖信息</div>');
+      h.push('    <div class="dshell-kv">');
+      [
+        ["仓库地址", rec.gitUrl], ["分支", rec.branch], ["Tag", rec.tag], ["发行版名称", rec.name],
+        ["构建脚本", rec.script || "（未配置，跳过构建）"],
+        ["构建命令", rec.buildCmd || "（空）"],
+        ["构建容器", rec.container || "（本机执行）"],
+        ["网络代理", rec.proxy || "继承服务端环境"],
+        ["超时", (rec.timeoutS || "—") + " s"],
+        ["产物路径", rec.artifacts || "（未配置）"],
+        ["预发布", rec.prerelease ? "是" : "否"],
+        ["时间", rec.time ? new Date(rec.time).toLocaleString("zh-CN", { hour12: false }) : ""]
+      ].forEach(function (p) {
+        h.push('<div class="dshell-kvRow"><span class="dshell-kvKey">' + esc(p[0]) + '</span><span class="dshell-kvValue pr-mono">' + esc(String(p[1] == null ? "" : p[1])) + "</span></div>");
+      });
+      h.push("    </div>");
+      // 产物清单
+      if (rec.artifactFiles && rec.artifactFiles.length) {
+        h.push('    <div class="rel-histSec">产物（' + rec.artifactFiles.length + "）</div>");
+        h.push('    <div>' + rec.artifactFiles.map(function (f) { return '<span class="pr-label pr-mono">' + esc(f) + "</span>"; }).join("") + "</div>");
+      }
+      if (rec.releaseUrl) h.push('    <div style="margin-top:6px"><a class="pr-link" href="' + esc(rec.releaseUrl) + '" target="_blank" rel="noopener">打开发行版列表 →</a></div>');
+      if (rec.error) h.push('    <div style="margin-top:6px;color:#f85149;font-size:12px">✗ ' + esc(rec.error) + "</div>");
+      // 逐步回显（日志归档）
+      h.push('    <div class="rel-histSec">逐步回显（日志归档）</div>');
+      (rec.steps || []).forEach(function (st, si) {
+        var dot = st.st === "ok" ? "rel-dot rel-dotOk" : st.st === "err" ? "rel-dot rel-dotErr" : st.st === "run" ? "rel-dot rel-dotRun" : "rel-dot";
+        h.push('    <div class="rel-step"><i class="' + dot + '"></i>' +
+          '<span style="font-size:12.5px;color:var(--dsw-alias-label-primary,#e6e8eb)">' + (si + 1) + ". " + esc(st.name || "") + "</span>" +
+          '<span class="dshell-badge' + relStepBadgeCls(st.st) + '"' + (st.st === "err" ? ' style="color:#f85149;border-color:rgba(248,81,73,.4)"' : st.st === "abort" ? ' style="color:var(--dsw-alias-label-tertiary,#6b7280);border-color:var(--dsw-alias-border-l2,#3a4150)"' : "") + ">" + (REL_STEP_LABEL[st.st] || esc(st.st || "")) + "</span>" +
+          (st.note ? '<span class="dshell-muted" style="font-size:11px">' + esc(st.note) + "</span>" : ""));
+        if (st.lines && st.lines.length) {
+          h.push('<details class="rel-stepDet"><summary>回显 ' + st.lines.length + " 行 ▾</summary>" +
+            '<div class="rel-log rel-stepLog" style="display:block">' + st.lines.map(relLogLineHtml).join("") + "</div></details>");
+        }
+        h.push("</div>");
+      });
+      h.push("  </div>");
+      h.push("</div>");
+      return h.join("");
+    }).join("");
+    // 展开/收起（删除按钮不触发展开）
+    Array.prototype.forEach.call(relHistEl.querySelectorAll("[data-hist-toggle]"), function (el) {
+      el.addEventListener("click", function (e) {
+        if (e.target && e.target.closest && e.target.closest("[data-hist-del]")) return;
+        var b = $("relHistBody" + el.getAttribute("data-hist-toggle"));
+        if (b) b.style.display = b.style.display === "none" ? "" : "none";
+      });
+    });
+    Array.prototype.forEach.call(relHistEl.querySelectorAll("[data-hist-del]"), function (btn) {
+      btn.addEventListener("click", function () {
+        var list = loadRelHist(); list.splice(+btn.getAttribute("data-hist-del"), 1); saveRelHist(list); renderRelHist();
+      });
+    });
+  }
+  relHistClear.addEventListener("click", function () { saveRelHist([]); renderRelHist(); toast("已清空构建历史"); });
+
+  /* ---------- AI 生成发行说明：按「上一发行版 Tag … 当前分支」的提交（commit）区间起草 ----------
+     上一发行版取 releases 接口按创建时间最新的非草稿发行版（接口不可用/为空视为无历史发行版）；
+     提交区间优先走 compare 接口（{上一发行版 Tag}...{当前分支}，精确区间；无历史发行版、分支名含 /
+     或 compare 不可用时回退为按分支拉提交并以 since=上一发行版时间过滤，无历史发行版时取最近提交），
+     上限 REL_NOTES_COMMIT_MAX 条。
+     提示词内嵌提交清单（短 hash + 首行 message + 作者），要求 AI 按业界通行格式
+     （Keep a Changelog + Conventional Commits 分组）输出；会话在右侧聊天小窗打开并自动发送
+     （优先插件 __dshSendChatInProject 桥；旧版插件退化为右侧聊天窗草稿，再退化全屏会话），
+     不离开当前发行页；令牌是否随提示携带沿用设置页「评审提示中携带令牌」开关，便于 AI 按需补查提交 diff。 */
+  var REL_NOTES_COMMIT_MAX = 100; // 参与生成发行说明的提交上限
+  var relNotesAiBusy = false;
+  function fetchPrevRelease(repo) {
+    return fetchJSON("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases?per_page=30")
+      .then(function (arr) {
+        var list = (Array.isArray(arr) ? arr : []).filter(function (r) { return r && r.tag_name && !r.draft; });
+        list.sort(function (a, b) { return (new Date(b.created_at || 0)) - (new Date(a.created_at || 0)); });
+        return list[0] || null;
+      })
+      .catch(function () { return null; }); // 无发行版/接口不可用：按「无历史发行版」处理
+  }
+  /* 规范化提交条目：取首行 message、短 hash、作者与提交时间（compare 与 commits 接口字段同构） */
+  function normalizeCommit(raw) {
+    var c = raw && raw.commit ? raw.commit : {};
+    var first = (c.message || "").trim().split("\n")[0];
+    return {
+      sha: (raw && raw.sha ? String(raw.sha) : "").slice(0, 8),
+      msg: first,
+      author: (raw && raw.author && (raw.author.login || raw.author.name)) || (c.author && c.author.name) || "",
+      date: (c.author && c.author.date) || ""
+    };
+  }
+  function fetchRangeCommits(repo, branch, prevRel) {
+    var repoPath = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name);
+    var base = prevRel && prevRel.tag_name;
+    var viaCompare = base
+      ? fetchJSON(repoPath + "/compare/" + encodeURIComponent(base) + "..." + encodeURIComponent(branch))
+          .then(function (j) {
+            var commits = j && Array.isArray(j.commits) ? j.commits : [];
+            if (!commits.length) throw new Error("compare 返回空"); // 空结果回退 since 方式复核
+            return commits;
+          })
+      : Promise.reject(new Error("无历史发行版")); // 直接走回退路径
+    return viaCompare.catch(function () {
+      var q = repoPath + "/commits?sha=" + encodeURIComponent(branch);
+      if (base && prevRel.created_at) q += "&since=" + encodeURIComponent(prevRel.created_at);
+      return fetchAll(q, 100).then(function (arr) { return arr || []; });
+    }).then(function (commits) {
+      return commits.map(normalizeCommit).filter(function (c) { return c.sha; })
+        .slice(0, REL_NOTES_COMMIT_MAX);
+    });
+  }
+  function buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits) {
+    var tok = state.embed ? (state.token || "").trim() : "";
+    var curlAuth = tok ? ' -H "Authorization: Bearer ' + tok + '"' : "";
+    var commitsApi = apiBase() + "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/commits";
+    var lines = [
+      "请为 " + platformLabel() + " 仓库 " + repo.owner + "/" + repo.name + " 起草本次发行版的发行说明（Release Notes）。",
+      "",
+      "- 本次发行：" + (tag || "（待定）") + (name && name !== tag ? "（" + name + "）" : "") + "，基于分支 " + branch,
+      prevRel
+        ? "- 上一发行版：" + prevRel.tag_name + "（发行于 " + (prevRel.created_at || "未知") + "），以下 " + commits.length + " 个提交位于「" + prevRel.tag_name + " … " + branch + "」区间："
+        : "- 该仓库尚无历史发行版，以下为 " + branch + " 分支最近的 " + commits.length + " 个提交：",
+      ""
+    ];
+    commits.forEach(function (c) {
+      lines.push("- `" + c.sha + "` " + c.msg + (c.author ? "（" + c.author + "）" : ""));
+    });
+    lines.push(
+      "",
+      "## 生成要求（按业界通行发行说明格式）",
+      "1. 用中文输出 Markdown，直接给最终文本，不要寒暄或解释过程。",
+      "2. 首行标题：## " + (name || tag || "本次发行") + "（" + new Date().toISOString().slice(0, 10) + "）。",
+      "3. 参考 Keep a Changelog 与 Conventional Commits，按提交类型分组，组内按重要度排序：",
+      "   「✨ 新功能」feat、「🐛 问题修复」fix、「⚡ 性能优化」perf、「🔄 变更与重构」refactor/style、",
+      "   「📚 文档」docs、「📦 构建与依赖」build/ci/deps、「🔧 其他」其余；无条目的分组省略。",
+      "4. 每条格式：- 简要说明（`短hash`）；用一句话提炼提交意图，不照搬 message 原文。",
+      "5. 破坏性变更（type 带 ! 或含 BREAKING CHANGE）整体置于最前，逐条加 ⚠️ 标注。",
+      "6. 纯合并提交（Merge branch/pull request …）若与子提交内容重复则忽略，否则按 PR 标题归纳为一条。",
+      "7. 提交较多时，琐碎提交（typo、ci 微调、版本号回写等）可聚合为一行概述，不必逐条罗列。",
+      "8. 如需查看某个提交的详细 diff 再归纳，可执行：",
+      '   curl -sS' + curlAuth + ' "' + commitsApi + '/{sha}"',
+      "9. 最终结果单独放在一个 markdown 代码块中输出，方便整体复制粘贴回「发行说明」输入框。"
+    );
+    return lines.join("\n") + "\n";
+  }
+  /* 发行说明 AI 生成会话：优先走插件「右侧聊天窗 + 自动发送」桥（__dshSendChatInProject，项目分栏保持打开）；
+     旧版插件无此桥时退化为右侧聊天窗草稿（__dshNewChatSession，需手动发送），再退化为全屏会话（launchNewSession） */
+  function launchRelNotesSession(prompt) {
+    var host = getHost();
+    var okMsg = "已新建 AI 会话生成发行说明（生成后复制回「发行说明」框）";
+    if (host && typeof host.__dshSendChatInProject === "function") {
+      toast("正在右侧聊天窗新建 AI 会话…");
+      Promise.resolve(host.__dshSendChatInProject(prompt)).then(
+        function () { toast("已在右侧聊天窗开始生成发行说明（生成后复制回「发行说明」框）"); },
+        function () { launchNewSession(prompt, okMsg); } // 桥内失败：回退全屏会话路径（含复制兜底）
+      );
+      return;
+    }
+    if (host && typeof host.__dshNewChatSession === "function") {
+      toast("正在右侧聊天窗新建 AI 会话…");
+      Promise.resolve(host.__dshNewChatSession(prompt)).then(
+        function () { toast("提示已填入右侧聊天窗输入框，请确认后发送"); },
+        function () { launchNewSession(prompt, okMsg); }
+      );
+      return;
+    }
+    launchNewSession(prompt, okMsg);
+  }
+  function genRelNotes() {
+    if (relNotesAiBusy) return;
+    if (!state.token) { toast("请先在「设置」页配置令牌", true); return; }
+    var repo = relSelectedRepo();
+    if (!repo) { toast("请先选择仓库（列表为空时点 ⟳ 拉取）", true); return; }
+    var branch = relBranch.value.trim() || "main";
+    var tag = relTag.value.trim(), name = relName.value.trim();
+    relNotesAiBusy = true; relNotesAiBtn.disabled = true; relNotesAiBtn.textContent = "⏳ 生成中…"; relNotesAiTip.textContent = "";
+    var prevRel = null;
+    fetchPrevRelease(repo)
+      .then(function (r) { prevRel = r; return fetchRangeCommits(repo, branch, prevRel); })
+      .then(function (commits) {
+        if (!commits.length) {
+          toast(prevRel ? "上一发行版 " + prevRel.tag_name + " 之后 " + branch + " 分支没有新提交" : branch + " 分支还没有提交", true);
+          return;
+        }
+        relNotesAiTip.textContent = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
+        launchRelNotesSession(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
+      })
+      .catch(function (e) { toast("拉取提交失败：" + describeApiError(e).title, true); })
+      .then(function () { relNotesAiBusy = false; relNotesAiBtn.disabled = false; relNotesAiBtn.textContent = "✦ AI 生成"; });
+  }
+  relNotesAiBtn.addEventListener("click", genRelNotes);
+
+  function runRelease() {
+    // 运行中再次点击：作为「停止」——abort 断开 exec-stream，服务端 res.on('close') 即 SIGTERM 整个进程组
+    if (relRunning) {
+      if (relAbortCtrl && !relAbortCtrl.signal.aborted) {
+        relRunBtn.disabled = true; relRunBtn.textContent = "⏳ 停止中…";
+        relLog("⏹ 正在停止：断开执行流，服务端将终止整个进程组并清理克隆目录 / 构建容器 / 暂存产物…", "warn");
+        relAbortCtrl.abort();
+      }
+      return;
+    }
+    var repo = relSelectedRepo();
+    var branch = relBranch.value.trim();
+    var tag = relTag.value.trim();
+    var name = relName.value.trim();
+    var script = effectiveBuildScript();
+    var artifacts = relArtifacts.value.trim();
+    var tip = relRunTip;
+    var fail = function (m) { tip.textContent = m; relLog("✗ " + m, "err"); };
+    if (!state.token) { fail("缺少访问令牌：请先在「设置」页配置"); return; }
+    if (!repo) { fail("请先选择仓库（列表为空时点 ⟳ 拉取）"); return; }
+    if (!branch) { fail("请填写分支"); return; }
+    if (!tag || /\s/.test(tag) || tag[0] === "-") { fail("请填写合法 Tag（如 v1.0.0，不含空白）"); return; }
+    if (script && (script[0] === "/" || script.indexOf("..") >= 0)) { fail("构建脚本须为仓内相对路径（如 scripts/build.sh，不含 ..）"); return; }
+    if (artifacts && artifacts.split(/\s+/).some(function (p) { return p[0] === "/" || p.indexOf("..") >= 0; })) { fail("产物路径须为仓内相对路径（不含 ..），空格分隔"); return; }
+    if (artifacts && !script) { fail("已配置产物路径但未选构建脚本：产物由构建产生，请先选择构建脚本"); return; }
+    relRunning = true; relAbortCtrl = new AbortController();
+    relRunBtn.disabled = false; relRunBtn.textContent = "⏹ 停止"; relRunBtn.classList.add("is-stop"); tip.textContent = "";
+    relLogClear();
+    var artifactDir = "/tmp/dsh-codereview-assets/" + repo.name + "-" + tag.replace(/[^A-Za-z0-9._-]/g, "-") + "-" + Date.now();
+    // 构建历史记录：依赖信息先行登记，步骤状态/回显/产物在结束时归档
+    var rec = {
+      id: Date.now(), time: new Date().toISOString(),
+      repo: repo.owner + "/" + repo.name, gitUrl: repoGitUrl(repo),
+      branch: branch, tag: tag, name: name || tag,
+      script: script, buildCmd: relBuildCmd.value.trim(),
+      container: (state.buildContainer || "").trim(),
+      proxy: proxyModeLabel(state.buildProxy),
+      timeoutS: Math.min(Math.max(Number(relBuildTimeout.value) || relCfg.timeout || DEFAULT_REL_CFG.timeout, 10), 3600),
+      artifacts: artifacts, prerelease: relPrerelease.checked,
+      status: "run", error: "", releaseUrl: "", artifactFiles: [], steps: []
+    };
+    var relErr = "", relStopped = false;
+    var states = [{ st: script ? "idle" : "skip" }, { st: "idle" }, { st: "idle" }, { st: artifacts ? "idle" : "skip" }];
+    if (!script) states[0].note = "未配置构建脚本";
+    if (!artifacts) states[3].note = "未配置产物路径";
+    relSetSteps(states);
+    relLog("发布 " + repo.owner + "/" + repo.name + " · " + branch + " → " + tag, "hi");
+    (async function () {
+      try {
+        if (script) {
+          states[0] = { st: "run" }; relSetSteps(states); relCurStep = 0;
+          var container = (state.buildContainer || "").trim();
+          if (container) relLog("→ 浅克隆 " + branch + " 后在容器 " + container + " 内执行仓内脚本 " + script + " …", "dim");
+          else relLog("→ 浅克隆 " + branch + " 后执行仓内脚本 " + script + " …", "dim");
+          var timeoutMs = rec.timeoutS * 1000;
+          var env = {
+            GIT_URL: repoGitUrl(repo), GIT_AUTH_URL: repoAuthUrl(repo), GIT_BRANCH: branch,
+            RELEASE_TAG: tag, RELEASE_NAME: name || tag
+          };
+          var cmd = relBuildCmd.value.trim(); if (cmd) env.BUILD_CMD = cmd;
+          if (artifacts) { env.BUILD_ARTIFACTS = artifacts; env.ARTIFACT_DIR = artifactDir; }
+          var extraKeys = mergeBuildExtraEnv(env);
+          var proxyMode = applyBuildProxyEnv(env);
+          relLog("+ POST /api/worktable/exec-stream " + BUILD_WRAP_SCRIPT_PATH + "（流式实时回显，超时 " + rec.timeoutS + "s，注入 GIT_URL/GIT_BRANCH/GIT_AUTH_URL/RELEASE_TAG/RELEASE_NAME" +
+            (cmd ? "/BUILD_CMD" : "") + (container ? "/BUILD_CONTAINER=" + container : "（本机执行）") + (artifacts ? "/BUILD_ARTIFACTS/ARTIFACT_DIR" : "") +
+            (extraKeys.length ? "/附加环境变量(" + extraKeys.join(",") + ")" : "") +
+            "，网络代理=" + proxyModeLabel(proxyMode) + "）", "dim");
+          var res = await execRepoBuild(script, container, env, timeoutMs, relAbortCtrl.signal);   // 流式实时回显已在 execRepoBuild→execStreamLines 内完成（末尾仅保留最近 REL_LIVE_TAIL 行）
+          if (res.aborted) throw relStopErr();
+          if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
+          states[0] = { st: "ok" }; relSetSteps(states);
+        }
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
+        states[1] = { st: "run" }; relSetSteps(states); relCurStep = 1;
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
+        var tagDone = false;
+        if (state.platform === "github") {
+          // GitHub 无「按 ref 建 Tag」API：走 Git Data API（分支 HEAD → 建 tag 对象 → 建 ref），失败回退 git 推送；ref 已存在拒绝覆盖
+          await githubCreateTag(repo, branch, tag, name, relAbortCtrl.signal);
+          tagDone = true;
+        } else {
+          try {
+            relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/tags（tag_name=" + tag + ", refs=" + branch + "）", "dim");
+            await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/tags",
+              { tag_name: tag, refs: branch, tag_message: name || tag }, relAbortCtrl.signal);
+            relLog("✓ Tag " + tag + " 已通过 API 创建", "ok");
+            tagDone = true;
+          } catch (e) {
+            if (relAbortCtrl.signal.aborted) throw relStopErr();
+            relLog("… Tag API 不可用（" + String(e && e.message || e) + "），改用 git 推送", "dim");
+          }
+        }
+        if (!tagDone) await pushReleaseTag(repo, branch, tag, name, relAbortCtrl.signal);
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
+        states[1] = { st: "ok" }; relSetSteps(states);
+        states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
+        relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
+        var relObj = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
+          { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked }, relAbortCtrl.signal);
+        if (relAbortCtrl.signal.aborted) throw relStopErr();
+        states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
+        var webUrl = webBase() + "/" + repo.owner + "/" + repo.name;
+        rec.releaseUrl = webUrl + "/releases";
+        relResult.innerHTML = '<span style="color:#3fb950">✓ 发行版已创建</span> <a class="pr-link" href="' + esc(webUrl + "/releases") + '" target="_blank" rel="noopener">打开仓库发行版列表 →</a>';
+        relLog("✓ 发行版 " + (name || tag) + " 创建完成", "ok");
+        if (artifacts) {
+          states[3] = { st: "run" }; relSetSteps(states); relCurStep = 3;
+          if (state.platform === "github") {
+            // GitHub：发行版响应带 upload_url（uploads.github.com，去 {?name,label} 模板）→ POST 文件二进制
+            var upBase = relObj && relObj.upload_url ? String(relObj.upload_url).replace(/\{.*$/, "") : "";
+            if (!upBase) throw new Error("发行版响应缺少 upload_url（无法上传产物）");
+            relLog("→ 上传构建产物到发行版（GitHub upload_url，POST 文件二进制）…", "dim");
+            await uploadGithubAssets(repo, artifactDir, upBase, relAbortCtrl.signal);
+          } else {
+            // GitCode 发行版没有数字 id：附件上传按 tag 走 upload_url 换 OBS 地址后 PUT 直传
+            relLog("→ 上传构建产物到发行版（tag " + tag + "，upload_url + PUT 直传）…", "dim");
+            await uploadReleaseAssets(repo, tag, artifactDir, relAbortCtrl.signal);
+          }
+          if (relAbortCtrl.signal.aborted) throw relStopErr();
+          states[3] = { st: "ok" }; relSetSteps(states);
+        }
+        tip.textContent = "✓ 发行完成";
+      } catch (e) {
+        // 停止哨兵 / 已 abort 的 AbortError：按「已停止」语义处理（与真实失败区分）
+        relStopped = !!(relAbortCtrl && relAbortCtrl.signal.aborted) || !!(e && e.relStop);
+        if (relStopped) {
+          for (var i = 0; i < states.length; i++) { if (states[i].st === "run") states[i] = { st: "abort", note: "已停止" }; }
+          relSetSteps(states);
+          relLog("⏹ 已手动停止：服务端进程组已终止，克隆目录 / 构建容器 / 暂存产物已自动清理", "warn");
+          tip.textContent = "⏹ 已停止（服务端资源已释放）";
+        } else {
+          relErr = String(e && e.message || e);
+          for (var i = 0; i < states.length; i++) { if (states[i].st === "run") states[i] = { st: "err" }; }
+          relSetSteps(states);
+          relLog("✗ " + relErr, "err");
+          tip.textContent = "✗ " + relErr;
+        }
+      } finally {
+        // 归档本次发行：依赖信息 + 产物清单 + 每步状态与回显日志 → 构建历史
+        relCurStep = -1;
+        rec.status = relStopped ? "stop" : (relErr ? "err" : "ok");
+        rec.error = relStopped ? "已手动停止" : relErr;
+        rec.steps = states.map(function (s, si) {
+          return { name: REL_STEPS[si], st: s.st, note: s.note || "", lines: archiveStepLines(relStepLogs[si] || []) };
+        });
+        rec.artifactFiles = (relStepLogs[0] || []).filter(function (l) { return l.msg.indexOf("  + ") === 0; })
+          .map(function (l) { return l.msg.slice(4); });
+        if (!rec.artifactFiles.length) {
+          rec.artifactFiles = (relStepLogs[3] || []).filter(function (l) { return l.msg.indexOf("✓ 已上传 ") === 0; })
+            .map(function (l) { return l.msg.slice(6); });
+        }
+        var hist = await ensureRelHistLoaded(); hist.unshift(rec); saveRelHist(hist); renderRelHist();
+        relRunning = false; relAbortCtrl = null;
+        relRunBtn.disabled = false; relRunBtn.textContent = "🚀 构建并发行"; relRunBtn.classList.remove("is-stop");
+      }
+    })();
+  }
+  relRepoRefresh.addEventListener("click", fetchRelRepos);
+  relRepoSel.addEventListener("change", function () { relCfg.repo = relRepoSel.value; saveRelCfg(); loadRelBranches(true); loadBuildScripts(); });
+  relBranchRefresh.addEventListener("click", function () { loadRelBranches(true); });
+  relBranch.addEventListener("focus", function () { loadRelBranches(); });
+  relBranch.addEventListener("change", function () { relCfg.branch = relBranch.value.trim(); saveRelCfg(); loadBuildScripts(); }); // 分支影响仓内脚本列表
+  relTagSuggest.addEventListener("click", suggestRelTag);
+  relRunBtn.addEventListener("click", runRelease);
+  relBuildScript.addEventListener("change", function () {
+    var custom = relBuildScript.value === "__custom__";
+    relBuildScriptCustomRow.style.display = custom ? "flex" : "none";
+    if (!custom) relBuildScriptCustom.value = "";
+    relCfg.script = effectiveBuildScript(); saveRelCfg();
+  });
+  relBuildScriptCustom.addEventListener("change", function () { relCfg.script = effectiveBuildScript(); saveRelCfg(); });
+  relArtifacts.addEventListener("change", function () { relCfg.artifacts = relArtifacts.value.trim(); saveRelCfg(); });
+  relBuildScriptRefresh.addEventListener("click", function () { loadBuildScripts(); });
+  relBuildTimeout.addEventListener("change", function () {
+    relCfg.timeout = Math.min(Math.max(Number(relBuildTimeout.value) || DEFAULT_REL_CFG.timeout, 10), 3600);
+    relBuildTimeout.value = relCfg.timeout; saveRelCfg();
+  });
+
+  /* ---------- 主题切换 ---------- */
+  var themeSeg = $("themeSeg");
+  function applyThemeUI() {
+    var cur = document.documentElement.getAttribute("data-theme") || "system";
+    Array.prototype.forEach.call(themeSeg.querySelectorAll("button"), function (b) {
+      b.classList.toggle("on", b.getAttribute("data-theme") === cur);
+    });
+  }
+  themeSeg.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("button[data-theme]") : null;
+    if (!b) {
+      b = e.target && e.target.getAttribute && e.target.getAttribute("data-theme") ? e.target : null;
+    }
+    if (!b) return;
+    var t = b.getAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", t);
+    try { localStorage.setItem("gc_pr_theme", t); } catch (err) {}
+    applyThemeUI();
+  });
+
+  /* ---------- 平台切换（GitCode / GitHub）：各平台配置独立存于本机 ---------- */
+  function renderAuthModeOptions() {
+    var modes = curPlatform().authModes;
+    var prev = state.authMode;
+    authModeSel.innerHTML = "";
+    modes.forEach(function (m) {
+      var o = document.createElement("option");
+      o.value = m.v; o.textContent = m.t; authModeSel.appendChild(o);
+    });
+    var ok = modes.some(function (m) { return m.v === prev; });
+    state.authMode = ok ? prev : modes[0].v; // 当前平台不支持该认证方式时回退到首项
+    authModeSel.value = state.authMode;
+  }
+  function releaseFlowHelpHtml() {
+    if (state.platform === "github") {
+      return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌（Bearer 头）。';
+    }
+    return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。';
+  }
+  function updatePlatformUI() {
+    document.title = "PR 检视台 · " + platformLabel();
+    if (pageTitle) pageTitle.textContent = "PR 检视台 · " + platformLabel();
+    if (tokenCardTitle) tokenCardTitle.textContent = platformLabel() + " 访问令牌";
+    if (tokenWhyValue) tokenWhyValue.textContent = state.platform === "github"
+      ? "GitHub 私有仓库/组织需令牌访问；PAT 需 repo 等权限"
+      : "组织 TokensService 为私有，匿名访问返回 403";
+    if (tokenApplyLink) { tokenApplyLink.href = tokenApplyUrl(); tokenApplyLink.textContent = tokenApplyName() + " →"; }
+    if (tokenInput) tokenInput.placeholder = "粘贴 " + tokenApplyName() + "（PAT）";
+    if (platformSel) platformSel.value = state.platform;
+    if (platformTip) platformTip.textContent = state.platform === "github"
+      ? "GitHub REST API · Bearer 头认证 · releases 走 JSON 请求体"
+      : "GitCode API v5 · 支持 Bearer / access_token 参数等多种认证";
+    if (relCardSubHelp) relCardSubHelp.textContent = "选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 " + platformLabel() + " 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失";
+    if (relFlowHelp) relFlowHelp.innerHTML = releaseFlowHelpHtml();
+    renderAuthModeOptions();
+    renderStatus();
+  }
+  function switchPlatform(p) {
+    if (p !== "gitcode" && p !== "github") return;
+    if (p === state.platform) return;
+    state.platform = p;
+    localStorage.setItem("gc_pr_platform", p);
+    // 重载该平台的本地配置（令牌/组织/认证/提示词/发行缓存/构建容器独立存储）
+    state.token = localStorage.getItem(lsKey("token")) || "";
+    state.org = localStorage.getItem(lsKey("org")) || DEFAULT_ORG;
+    state.authMode = localStorage.getItem(lsKey("authMode")) || "auto";
+    state.embed = localStorage.getItem(lsKey("embed")) !== "0";
+    state.template = localStorage.getItem(lsKey("template")) || defaultTemplate();
+    state.buildContainer = localStorage.getItem(lsKey("buildcontainer")) || "";
+    state.buildExtraEnv = localStorage.getItem(lsKey("buildenv")) || "";
+    state.buildProxy = localStorage.getItem(lsKey("buildproxy")) || "inherit";
+    state.buildProxyUrl = localStorage.getItem(lsKey("buildproxyurl")) || "";
+    // 重置运行态与缓存
+    state.prs = []; state.repos = []; state.lastErr = ""; state.lastErrObj = null; state.repoDone = 0;
+    state.issues = []; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issueRepoDone = 0; state.issuesLoading = false;
+    relBranchCache = {};
+    relCfg = loadRelCfg();
+    state.repoFilter = loadRepoFilter(); // 各平台仓库过滤独立存储
+    subOrg.textContent = state.org;
+    updatePlatformUI();
+    populateSettings();
+    renderRelRepoOptions();
+    renderRepoFilterAll();
+    relHistCache = null; ensureRelHist();
+    renderIssueStatus(); renderIssueStats(); renderIssueList();
+    loadAll();
+    toast("已切换到 " + platformLabel());
+  }
+
+  /* ---------- 事件绑定 ---------- */
+  btnSettings.addEventListener("click", function () { populateSettings(); switchView("settings"); });
+  btnRefresh.addEventListener("click", loadAll);
+  btnSave.addEventListener("click", saveSettings);
+  btnClear.addEventListener("click", clearToken);
+  btnRestoreTpl.addEventListener("click", function () { tplInput.value = defaultTemplate(); toast("已恢复默认提示词"); });
+  btnTest.addEventListener("click", testConnection);
+  buildProxySel.addEventListener("change", syncBuildProxyUI);   // 自定义代理才显示地址输入框
+  if (platformSel) platformSel.addEventListener("change", function () { switchPlatform(platformSel.value); });
+  viewTabs.addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("button[data-view]") : null;
+    if (!b && e.target && e.target.getAttribute) b = e.target.getAttribute("data-view") ? e.target : null;
+    if (!b) return;
+    var v = b.getAttribute("data-view");
+    if (v === "settings") populateSettings();
+    if (v === "release") { renderRelRepoOptions(); fillRelForm(); loadBuildScripts(); loadRelBranches(); ensureRelHist(); if (!relRunning && !relResult.innerHTML) relSetSteps([]); }
+    if (v === "issues") { renderRepoFilterAll(); if (!state.issues.length && !state.issuesLoading && state.token) loadIssues(); }
+    switchView(v);
+  });
+  searchInput.addEventListener("input", function () { state.keyword = searchInput.value; renderList(); });
+  Array.prototype.forEach.call(stateTabs.querySelectorAll(".dshell-tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      Array.prototype.forEach.call(stateTabs.querySelectorAll(".dshell-tab"), function (t) { t.classList.remove("dshell-tabOn"); });
+      tab.classList.add("dshell-tabOn");
+      state.filterState = tab.getAttribute("data-state");
+      renderList();
+    });
+  });
+  issueSearchInput.addEventListener("input", function () { state.issuesKeyword = issueSearchInput.value; renderIssueList(); });
+  issueRefresh.addEventListener("click", loadIssues);
+  Array.prototype.forEach.call(issueStateTabs.querySelectorAll(".dshell-tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      Array.prototype.forEach.call(issueStateTabs.querySelectorAll(".dshell-tab"), function (t) { t.classList.remove("dshell-tabOn"); });
+      tab.classList.add("dshell-tabOn");
+      state.issuesFilterState = tab.getAttribute("data-state");
+      renderIssueList();
+    });
+  });
+  // 点击仓库过滤下拉之外处收起所有面板
+  document.addEventListener("click", function (e) {
+    var root = e.target.closest ? e.target.closest(".repo-filter") : null;
+    if (!root) {
+      Array.prototype.forEach.call(document.querySelectorAll(".repo-filterPanel.open"), function (p) { p.classList.remove("open"); });
+    }
+  });
+
+  /* ---------- 初始化 ---------- */
+  applyThemeUI();
+  updatePlatformUI();          // 平台文案 + 认证方式下拉（含 renderStatus）
+  renderStats(); renderList();
+  renderIssueStatus(); renderIssueStats(); renderIssueList();
+  renderRepoFilterAll();
+  ensureRelHist();
+  loadAll();
+})();
+</script>
+</body>
+</html>
