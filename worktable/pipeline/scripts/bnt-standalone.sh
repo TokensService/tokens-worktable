@@ -12,7 +12,7 @@
 #   ACTION=standardize       动作：standardize|check-health|clean-containers|kill-gpu|svc|hugepages
 #   STEPS=                   standardize 清理步骤，逗号分隔；默认 crond,containers,gpu；完成后固定执行环境检查
 #   CLEANUP_TIMEOUT_SECONDS=300 清理等待上限
-#   CLEANUP_POLL_SECONDS=5     残留 Pod 检查间隔
+#   CLEANUP_POLL_SECONDS=5     残留 Pod 检查间隔；统一等待满 15 秒后强制删除
 #   DRY_RUN=0|1              仅预演
 #   NODE=                    指定 Kubernetes nodeName
 #   WHITELIST_NS=            白名单命名空间，空格分隔 glob
@@ -169,7 +169,7 @@ handle_top_owner() {
             # 仅缩 Worker 会留下 Head，并可能被 autoscaler 恢复。
             log "  -> delete RayCluster $ns/$name (含 Head)"
             run kubectl delete raycluster "$name" -n "$ns" \
-                --ignore-not-found --wait=true --timeout="${CLEANUP_TIMEOUT_SECONDS}s"
+                --ignore-not-found --wait=false
             return $? ;;
 
     esac
@@ -177,8 +177,7 @@ handle_top_owner() {
     if [[ "$DRY_RUN" == "1" ]]; then log "  [DRY_RUN] kubectl scale $ref -n $ns --replicas=0"; return; fi
     if kubectl scale "$ref" -n "$ns" --replicas=0 >/dev/null 2>&1; then log "    -> scaled"; return; fi
     log "  scale 不支持, delete: $ref"
-    kubectl delete "$ref" -n "$ns" --grace-period=5 --ignore-not-found \
-        --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || return 1
+    kubectl delete "$ref" -n "$ns" --ignore-not-found --wait=false || return 1
 }
 
 clean_namespace() {
@@ -191,7 +190,7 @@ clean_namespace() {
                 [[ -z "$rel" ]] && continue
                 log "  helm uninstall $rel (ns=$ns)"
                 [[ "$DRY_RUN" == "1" ]] && { log "  [DRY_RUN] helm uninstall $rel -n $ns"; continue; }
-                helm uninstall "$rel" -n "$ns" --wait --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || {
+                helm uninstall "$rel" -n "$ns" --timeout="${CLEANUP_TIMEOUT_SECONDS}s" || {
                     log "ERROR: helm uninstall 失败: $ns/$rel"; return 1;
                 }
             done <<< "$rels"
@@ -223,6 +222,8 @@ clean_namespace() {
 # API 中 Pod 消失后才能继续；不能以删除命令已提交代替清理完成。
 wait_namespace_cleanup() {
     local ns=$1 remaining deadline=$((SECONDS + CLEANUP_TIMEOUT_SECONDS))
+    local force_at=$((SECONDS + 15)) forced=0 pause
+    local -a remaining_pods
     [[ "$DRY_RUN" == 1 ]] && return 0
     while true; do
         remaining=$(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o name) || return 1
@@ -231,8 +232,22 @@ wait_namespace_cleanup() {
             log "ERROR: $ns 清理超时，残留: $remaining"
             return 1
         fi
+        if (( forced == 0 && SECONDS >= force_at )); then
+            mapfile -t remaining_pods <<< "$remaining"
+            log "[CLEAN] $ns 等待满 15 秒，强制删除残留 Pod: $remaining"
+            kubectl delete "${remaining_pods[@]}" -n "$ns" \
+                --grace-period=0 --force --ignore-not-found --wait=false || return 1
+            forced=1
+            continue
+        fi
         log "等待 $ns 节点 Pod 退出: $remaining"
-        sleep "$CLEANUP_POLL_SECONDS"
+        pause=$CLEANUP_POLL_SECONDS
+        if (( forced == 0 && SECONDS + pause > force_at )); then
+            pause=$((force_at - SECONDS))
+        fi
+        (( SECONDS + pause <= deadline )) || pause=$((deadline - SECONDS))
+        (( pause > 0 )) && sleep "$pause"
+
     done
 }
 
