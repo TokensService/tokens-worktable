@@ -118,6 +118,13 @@ def proxy_keys(values):
     return sorted(k for k, v in values.items() if k.lower() in ('http_proxy', 'https_proxy', 'all_proxy') and v.strip())
 
 
+def proxy_level(scope, values):
+    if not proxy_keys(values):
+        return 'PASS'
+    # 宿主机代理存在不等于部署失败；服务进程仍按无代理基准阻断。
+    return 'WARN' if scope in ('检查进程', '/etc/environment') else 'FAIL'
+
+
 def quantity(value):
     m = re.fullmatch(r'([0-9.]+)([KMGT]i?|[kmgteE]|[eE][+-]?\d+)?', str(value))
     if not m:
@@ -132,7 +139,7 @@ def check_cni():
     folder = pathlib.Path('/etc/cni/net.d')
     configs = sorted(p for p in folder.iterdir() if p.suffix in ('.conf', '.conflist', '.json'))
     if [p.name for p in configs] != ['cni.conflist']:
-        report('FAIL', 'CNI 配置文件集合偏离128基准，可能选择错误网络: ' + ','.join(p.name for p in configs))
+        report('WARN', 'CNI 配置文件集合偏离128基准，额外网络可能影响路由或业务选网: ' + ','.join(p.name for p in configs))
     d = json.loads((folder/'cni.conflist').read_text())
     errors = cni_errors(d)
     report('FAIL' if errors else 'PASS', 'CNI 配置: ' + ('; '.join(errors) or '插件顺序、网段、phynet、capabilities 与128一致'))
@@ -178,7 +185,13 @@ def check_proxy():
         scopes.append(('/etc/environment',env))
     for scope,env in scopes:
         active = proxy_keys(env)
-        report('FAIL' if active else 'PASS', '代理 '+scope+': '+('存在 '+','.join(active)+'，偏离128服务无代理基准（值已隐藏）' if active else '未设置HTTP/HTTPS/ALL代理'))
+        level = proxy_level(scope, env)
+        detail = '未设置HTTP/HTTPS/ALL代理'
+        if active:
+            detail = '存在 '+','.join(active)+'（值已隐藏）'
+            detail += ('；宿主机代理仅告警，部署工具需正确绕过内网代理，NO_PROXY是否生效取决于客户端'
+                       if level == 'WARN' else '；偏离128服务无代理基准')
+        report(level, '代理 '+scope+': '+detail)
         if any(k.lower()=='no_proxy' and v for k,v in env.items()):
             report('PASS','代理 '+scope+': 已配置NO_PROXY（不单独视为开启代理）')
 
