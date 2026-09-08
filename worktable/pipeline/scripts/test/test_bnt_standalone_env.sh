@@ -55,19 +55,15 @@ PATH="$work_dir/bin:$PATH" \
 [[ "$(cat "$hugepage_file")" == "0" ]]
 grep -Fq '大页已清0' "$work_dir/hugepages-output"
 
-if PATH="$work_dir/bin:$PATH" \
+PATH="$work_dir/bin:$PATH" \
   TEST_ACTION_LOG="$work_dir/actions.log" \
   LOG_FILE="$work_dir/bnt.log" \
   DRY_RUN=0 \
-  bash "$script" >"$work_dir/output"; then
-  echo 'expected health check failure in isolated test environment' >&2
-  exit 1
-fi
+  bash "$script" >"$work_dir/output"
 
 grep -Fq 'BNT 标准化开始 steps=[crond containers gpu]' "$work_dir/output"
 grep -Fq 'service crond stop' "$work_dir/actions.log"
-grep -Fq '环境健康检查' "$work_dir/output"
-grep -Fq '环境检查未通过' "$work_dir/output"
+if grep -Fq '环境健康检查' "$work_dir/output"; then exit 1; fi
 
 cat >"$work_dir/bin/scp" <<'EOF'
 #!/usr/bin/env bash
@@ -102,4 +98,19 @@ grep -Fq 'root@192.0.2.10' "$work_dir/actions.log"
 grep -Fq 'root@192.0.2.11' "$work_dir/actions.log"
 grep -Fq 'REMOTE_EXECUTION=1' "$work_dir/actions.log"
 
-echo 'BNT environment-driven default action test passed'
+# 两个新入口单独复制后仍能运行，不依赖旧入口或相邻文件。
+cp "$script_dir/cleanup-env.sh" "$work_dir/cleanup-env.sh"
+cp "$script_dir/check-env.sh" "$work_dir/check-env.sh"
+PATH="$work_dir/bin:$PATH" TEST_ACTION_LOG="$work_dir/actions.log" LOG_FILE="$work_dir/clean.log" \
+  DRY_RUN=1 bash "$work_dir/cleanup-env.sh" >"$work_dir/clean-output"
+if grep -q '环境健康检查' "$work_dir/clean-output"; then exit 1; fi
+: >"$work_dir/actions.log"
+if PATH="$work_dir/bin:$PATH" TEST_ACTION_LOG="$work_dir/actions.log" LOG_FILE="$work_dir/check.log" \
+  bash "$work_dir/check-env.sh" >"$work_dir/check-output"; then
+  echo '检查应报告测试环境缺少组件' >&2; exit 1
+fi
+grep -q '健康检查完成' "$work_dir/check-output"
+[[ ! -s "$work_dir/actions.log" ]]
+# 检查脚本不能被继承的 ACTION 切换成清理。
+if ACTION=kill-gpu LOG_FILE="$work_dir/reject.log" bash "$work_dir/check-env.sh" >"$work_dir/reject-output"; then exit 1; fi
+echo 'BNT independent cleanup/check environment tests passed'

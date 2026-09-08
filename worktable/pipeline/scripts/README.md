@@ -101,3 +101,64 @@ XDS 流水线按以下顺序绑定脚本：
 - `ARCHIVE_FOLDER` — 本次运行（自动收集）/ 选中运行（手动收集）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
 
 示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 取 `VLLM_METRICS_START`/`VLLM_METRICS_END`、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集。
+
+
+## 独立清理与环境检查
+
+流水线设置中的「清理脚本」选择 `cleanup-env.sh`，「环境检查脚本」选择
+`check-env.sh`。两者均可单独复制到目标机执行，支持原有 `TARGET_HOSTS`、
+`SSH_USER`、`SSH_PORT`、`SSH_PASSWORD`（兼容 `TARGET_PASSWORD`）远程参数。
+
+```bash
+# 仅清理，默认 crond、containers、gpu；建议先预演确认范围
+DRY_RUN=1 bash cleanup-env.sh
+bash cleanup-env.sh
+
+# 仅检查，不清理工作负载、不启停服务
+bash check-env.sh
+```
+
+清理入口保留命名空间白名单、统一等待和 15 秒后强制删除残留 Pod 的逻辑，
+清理完成即退出，不再自动进行健康检查。检查入口检查运行时、CNI、API 网络、
+内存、大页和 GPU；有 FAIL 时返回非零。两种入口的远程失败均向上透传。
+
+`bnt-standalone.sh` 保留为本地兼容转发入口：默认转到清理，
+`ACTION=check-health` 转到检查；不再提供默认「清理后自动检查」行为。
+若只复制一个脚本到目标机，应使用上述独立入口。页面已有保存的脚本选择不会自动改写，
+可分别在两个脚本设置中选择新文件。页面是否因清理失败而中断，仍由流水线执行策略决定。
+
+
+### check-env.sh 深入检查（128 基准，2026-09-08）
+
+检查依赖目标机 Python 3（仅标准库）、ip、iptables、sysctl、systemctl；容器内存
+采样还需要 kubectl 访问节点 kubelet summary 的权限，不依赖 metrics-server。
+
+- CNI：检查配置文件集合、JSON、版本 0.3.1、default-network、
+  `vpc-router → portmap` 插件链、`10.0.0.0/16`、`phy_net1`、带宽和端口映射能力，
+  并验证三个 CNI 可执行文件、ip_forward=1、all/default rp_filter=2、
+  KUBE-MARK-MASQ 的 0x4000 规则、默认路由出口和 API Server DNS/直连 TCP。
+  这些是当前 CCE/128 的环境基准，并非其他 Kubernetes 集群的通用标准。
+- 跨节点通信：在本节点和另一个健康可调度节点创建临时普通 Pod，双向通过 Pod IP
+  访问 HTTP 18080 并校验本次随机响应，显式绕过代理。默认复用各节点 Ready XDS Pod
+  的镜像（必须包含 python3），不运行模型；启动等待最多60秒，单次请求最多5秒。
+  无可用对端、启动或任一方向失败判 FAIL，finally 删除本次专属 Pod，清理失败也判 FAIL。
+  需要 kubectl 的 pods get/list/create/delete、pods/exec 权限；探测不申请GPU、不挂载宿主机。
+  默认命名空间为 default，只验证该命名空间的 Pod TCP/HTTP，不覆盖业务 NetworkPolicy、
+  Service/DNS、RDMA。进程被强杀可能遗留探测对象，180秒 activeDeadlineSeconds 限制运行时间。
+  `NETWORK_TEST_PEER` 可指定不同的对端节点，`NETWORK_TEST_IMAGE` 可指定含 python3 的镜像，
+  `NETWORK_TEST_NAMESPACE` 可选择已有命名空间；参数会传入远端。
+- 代理：检查当前进程、containerd/kubelet 实际进程环境和 /etc/environment。
+  非空 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY（大小写均识别）判 FAIL；128 的运行基准为
+  无代理。日志仅打印变量名，不打印代理地址或认证信息。NO_PROXY 本身不代表开启代理。
+- 内存：输出 MemTotal、MemAvailable、大页预留与已使用量。默认按二进制单位，
+  大页预留达到 2048 GiB 时，MemAvailable 小于 700 GiB 判 FAIL，等于 700 GiB 通过。
+  预留尚未分配给进程的大页也计算在内；不重复从 MemAvailable 扣除大页或容器工作集。
+  仍保留普通内存可用比例低于 2% FAIL、低于 10% WARN。
+- 容器：读取节点上的 xds-* Pod requests 和 kubelet workingSetBytes，分别打印、汇总；
+  当前128采样参考约为 Prefill 1154 GiB、Decode 32 GiB，全部业务约1216 GiB。
+  这是实际占用参考，不是将 requests 当作实测，也不是所有部署必须一致的硬门槛。
+  没有权限或采样不可用会 WARN，不伪报实际内存为零。
+
+可通过 `HEALTH_NODE` 指定节点名，否则按本机 IP 自动识别。
+`HUGEPAGE_TRIGGER_GIB=2048`、`MIN_AVAILABLE_WITH_HUGEPAGES_GIB=700` 可覆盖大页规则，
+这些参数会传入远端。CNI、代理或内存检查执行失败判 FAIL。

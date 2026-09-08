@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-script="$(cd "$(dirname "$0")/.." && pwd)/bnt-standalone.sh"
+script="$(cd "$(dirname "$0")/.." && pwd)/cleanup-env.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 # 隔离函数加载，所有集群操作均使用模拟命令。
