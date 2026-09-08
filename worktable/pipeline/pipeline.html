@@ -585,7 +585,7 @@
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收集脚本
-          <input id="pmCollectScript" class="dshell-input" list="scriptsList" placeholder="选择脚本（如 collect_vllm_metrics.py，留空=不启用）" style="width:280px;" title="收集普罗数据的脚本（在 scripts 目录按名选用，留空=不启用）。「收集普罗数据」时按运行起止时间调用并注入：PROM_START/PROM_END（ISO）、VLLM_METRICS_START/VLLM_METRICS_END（Unix 秒）、PROMETHEUS_URL、MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入）、METRICS_OUTPUT_DIR（有归档=归档文件夹/vllm-metrics）等环境变量；起止时间可在收集对话框覆盖；打开对话框会先检测该运行是否已收集并展示收集归档目录" />
+          <input id="pmCollectScript" class="dshell-input" list="scriptsList" placeholder="选择脚本（如 collect_vllm_metrics.py，留空=不启用）" style="width:280px;" title="收集普罗数据的脚本（在 scripts 目录按名选用，留空=不启用）。「收集普罗数据」时按运行起止时间调用并注入：PROM_START/PROM_END（ISO）、VLLM_METRICS_START/VLLM_METRICS_END（Unix 秒）、PROMETHEUS_URL、MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入）、METRICS_OUTPUT_DIR（有归档=归档文件夹/metrics）等环境变量；起止时间可在收集对话框覆盖；打开对话框会先检测该运行是否已收集并展示收集归档目录" />
         </label>
         <span class="dshell-muted" style="font-size:11px;">运行历史选中行 · 收集时按起止时间段采集</span>
       </div>
@@ -4226,7 +4226,7 @@ function archiveRun(result){
    收集时注入环境变量：PROM_START/PROM_END（ISO 带 Z）、VLLM_METRICS_START/VLLM_METRICS_END
    （Unix 秒，collect_vllm_metrics.py 的 --start/--end 默认取此）、PROMETHEUS_URL、
    MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入，按本次运行解析）、
-   METRICS_OUTPUT_DIR（有归档=归档文件夹/vllm-metrics，采集产物落入本次运行归档）；
+   METRICS_OUTPUT_DIR（有归档=归档文件夹/metrics，采集产物落入本次运行归档）；
    时间经 execStreaming 流式回显到对话框日志区（接口不可用时降级一次性 exec）。
    打开对话框时先按产物目录检测该运行是否已收集（summary.json 或 snapshots/<时间戳>/summary.json），
    已在状态行展示收集归档目录。 */
@@ -4284,11 +4284,11 @@ function buildPromCollectEnv(ctx, startMs, endMs){   // 收集普罗数据注入
     if(ctx.prom.modelName){ env.ARCH_NAME=ctx.prom.modelName; env.MODEL_NAME=ctx.prom.modelName; }
     if(ctx.prom.xdsNamespace){ env.NAMESPACE=ctx.prom.xdsNamespace; env.XDS_NAMESPACE=ctx.prom.xdsNamespace; }
   }
-  if(ctx.archive){ env.ARCHIVE_FOLDER=ctx.archive; env.METRICS_OUTPUT_DIR=promOutputDir(ctx); }   // 采集产物落入本次运行归档文件夹的 vllm-metrics 子目录（未归档则由脚本默认取 cwd 下 vllm-metrics）
+  if(ctx.archive){ env.ARCHIVE_FOLDER=ctx.archive; env.METRICS_OUTPUT_DIR=promOutputDir(ctx); }   // 采集产物落入本次运行归档文件夹的 metrics 子目录（未归档则由脚本默认取 cwd 下 vllm-metrics）
   return env;
 }
-function promOutputDir(ctx){   // 收集产物目录：与 buildPromCollectEnv 注入的 METRICS_OUTPUT_DIR 一致——有归档=归档文件夹/vllm-metrics；未归档=脚本目录下 vllm-metrics（exec cwd=scriptsDir，脚本默认输出 cwd/vllm-metrics）
-  if(ctx && ctx.archive) return ctx.archive.replace(/\/+$/,'')+'/vllm-metrics';
+function promOutputDir(ctx){   // 收集产物目录：与 buildPromCollectEnv 注入的 METRICS_OUTPUT_DIR 一致——有归档=归档文件夹/metrics；未归档=脚本目录下 vllm-metrics（exec cwd=scriptsDir，脚本默认输出 cwd/vllm-metrics）
+  if(ctx && ctx.archive) return ctx.archive.replace(/\/+$/,'')+'/metrics';
   return (scriptsDir||'').replace(/\/+$/,'')+'/vllm-metrics';
 }
 /* 运行结束自动收集普罗数据：勾选「收集普罗数据」且设置页配了收集脚本的流水线，最后一个任务结束后
