@@ -133,8 +133,8 @@
     </div>
   </div>
 
-  <!-- 页面导航 -->
-  <div style="display:flex; gap:6px; margin:2px 0 4px;">
+  <!-- 页面导航（吸顶：纵向滚动时「流水线 / 定时 / 设置」按钮始终冻结在行首，背景走主题变量适配浅色/深色） -->
+  <div style="display:flex; gap:6px; margin:2px 0 4px; position:sticky; top:0; z-index:20; background:var(--dsw-alias-bg-base); padding:6px 0;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
