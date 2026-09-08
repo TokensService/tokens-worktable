@@ -2426,7 +2426,7 @@ function renderStageActionRow(i){
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('任务字段'));
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status, TASK_ID=*, CREATED=created_at'; outInp.style.width='200px';
     outInp.title='本任务字段产出变量的下传命名（逗号分隔）：留空=任务顶层标量字段全部按原名下传；STATUS=status 表示把任务 status 改名为 STATUS；来源也可写 JSON 路径取任务对象的嵌套字段（如 items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把整条任务 JSON 整体赋给指定变量（如 TASK=*）；下游阶段参数值可填 ${STATUS} 引用';
-    const reportLab=document.createElement('label'); reportLab.className='dshell-muted'; reportLab.style.cssText='display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;'; reportLab.title='任务进入成功或失败终态后，把本次 run 的完整 JSON 报告写入流水线本次运行的归档目录；归档失败不改变任务结果';
+    const reportLab=document.createElement('label'); reportLab.className='dshell-muted'; reportLab.style.cssText='display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;'; reportLab.title='任务进入成功或失败终态后，把本次 run 的完整 HTML 报告写入流水线本次运行的归档目录；归档失败不改变任务结果';
     const reportInp=document.createElement('input'); reportInp.type='checkbox'; reportInp.setAttribute('data-f','etCollectReport'); reportInp.checked=!(s.evaltokens&&s.evaltokens.collectReport===false);
     reportLab.appendChild(reportInp); reportLab.appendChild(document.createTextNode(' 收集任务报告'));
     box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(reportLab); return;
@@ -3624,6 +3624,20 @@ async function evaltokRequestJson(e, api, method, body, signal){
   const r=await fetch(api,opts); if(!r.ok){ let msg='HTTP '+r.status; try{ const j=await r.json(); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); }
   return await r.json();
 }
+/* EvalTokens 文本请求：报告接口返回完整 HTML，不做 JSON 解析；连接模式/鉴权/错误提示与 JSON 请求一致。 */
+async function evaltokRequestText(e, api, signal){
+  const headers=evaltokHeaders(e);
+  if(e.mode==='remote'){
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:api,method:'GET',headers:headers}),signal:signal});
+    const p=await r.json(); if(p&&p.error) throw new Error(p.error+(/-?only loopback|private targets/i.test(String(p.error))?'（公网地址请切「本地浏览器连接」）':''));
+    const status=p.status||0, text=String(p.body||'');
+    if(status<200||status>=300){ let msg='HTTP '+status; try{ const j=JSON.parse(text||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+status+'）'; }catch(_){} throw new Error(msg); }
+    return text;
+  }
+  const r=await fetch(api,{method:'GET',cache:'no-store',headers:headers,signal:signal}); const text=await r.text();
+  if(!r.ok){ let msg='HTTP '+r.status; try{ const j=JSON.parse(text||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); }
+  return text;
+}
 /* 拉取 EvalTokens 任务列表，并归一化裸数组 / {data|tasks|list|items|results:[...]} 等常见包装。 */
 async function evaltokFetchTasks(e, signal){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
@@ -3645,9 +3659,12 @@ async function evaltokFetchRuns(e, taskId, signal){
   return Array.isArray(data)?data:(Array.isArray(data.runs)?data.runs:(Array.isArray(data.data)?data.data:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[]))));
 }
 /* 终态 run 的完整报告：通用 report 接口的 task_id 实际传启动响应返回的 run_id。 */
-async function evaltokFetchReport(e, runId, signal){
+function evaltokReportUrl(e, runId){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-  return evaltokRequestJson(e, base+'/api/v1/report?task_id='+encodeURIComponent(runId), 'GET', undefined, signal);
+  return base+'/api/v1/report?task_id='+encodeURIComponent(runId);
+}
+async function evaltokFetchReport(e, runId, signal){
+  return evaltokRequestText(e, evaltokReportUrl(e,runId), signal);
 }
 /* 任务列表缓存（15s TTL，多阶段编辑器打开 / 多次聚焦输入框时避免重复拉取） */
 let evaltokTasksCache={tasks:null, ts:0};
@@ -3829,7 +3846,7 @@ async function runEvaltokensStep(i){
     const ok=(result==='success');
     log.push(bodyShow);
     log.push('[EvalTokens result '+result+']');
-    if(ok){ const u=((evaltok && (evaltok.linkUrl||evaltok.url))||'').replace(/\/+$/,''); if(u) log.push('📊 查看报告（EvalTokens 服务）→ '+u+'/tasks/'+encodeURIComponent(resolvedTaskId)); }
+    log.push('📊 任务报告（EvalTokens 服务）→ '+evaltokReportUrl(e,runId));
     const reportFolder=(et.collectReport!==false)?archiveFolderFor(rc):null;
     const seq=stageSeq(i);
     const reportPendingLine=reportFolder?('📦 任务报告归档中 → '+reportFolder+'/'+evaltokReportFile(rc,seq,s.name,runId)):'⚠ 任务报告未归档：无法确定本次运行归档目录';
@@ -3857,7 +3874,7 @@ async function runEvaltokensStep(i){
         replaceReportLine('⚠ 任务报告归档失败（不影响任务结果）：'+msg);
         console.warn('[archive] EvalTokens 任务报告归档失败（不影响任务结果）:', reportErr);
       }).then(async()=>{
-        if(s._evaltokAttempt!==attempt) return;   // 已开始新一次尝试：旧 run 仅保留独立 JSON 报告，不覆写新阶段日志/标记
+        if(s._evaltokAttempt!==attempt) return;   // 已开始新一次尝试：旧 run 仅保留独立 HTML 报告，不覆写新阶段日志/标记
         try{
           const logStage=Object.assign({},s,{_out:terminalOut});
           const text=(buildLog(logStage,rc,finalNode)||[]).join('\n');
@@ -4150,9 +4167,9 @@ async function archiveTaskLog(ctx, seq, name, text){
     return file;
   });
 }
-/* EvalTokens 终态报告：按阶段序号/名称/run_id 独立命名，内容为 /api/v1/report 返回的完整 JSON。 */
+/* EvalTokens 终态报告：按阶段序号/名称/run_id 独立命名，内容为 /api/v1/report 返回的完整 HTML。 */
 function evaltokReportFile(ctx, seq, stageName, runId){
-  return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(stageName)+'-evaltokens-'+sanitizeFsName(runId)+'-report.json';
+  return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(stageName)+'-evaltokens-'+sanitizeFsName(runId)+'-report.html';
 }
 async function archiveEvaltokensReport(e, ctx, seq, stageName, runId){
   const folder=archiveFolderFor(ctx);
@@ -4161,7 +4178,7 @@ async function archiveEvaltokensReport(e, ctx, seq, stageName, runId){
     const report=await evaltokFetchReport(e,runId);
     await ensureArchiveFolder(folder);
     const file=folder+'/'+evaltokReportFile(ctx, seq, stageName, runId);
-    await apiWrite(file, JSON.stringify(report,null,2));
+    await apiWrite(file, report);
     return file;
   });
 }

@@ -49,9 +49,11 @@ function loadEvaltokensRuntime(overrides = {}) {
     'normalizeStageKind',
     'evaltokHeaders',
     'evaltokRequestJson',
+    'evaltokRequestText',
     'evaltokFetchTasks',
     'evaltokStartRun',
     'evaltokFetchRuns',
+    'evaltokReportUrl',
     'evaltokFetchReport',
     'evaltokStatusKind',
     'stageSeq',
@@ -148,7 +150,7 @@ test('EvalTokens 阶段编辑器显示默认勾选且可回显关闭状态的报
   assert.equal(disabled.checked, false)
 })
 
-test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线归档目录', async () => {
+test('EvalTokens 任务终态后把 HTML 报告原文归档，并在回显中打印报告地址', async () => {
   const writes = []
   const reportRequests = []
   let advancedTo = null
@@ -159,11 +161,7 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
     status: 'success',
     result: { score: 0.98, cases: [1, 2] },
   }
-  const report = {
-    task_id: finalRun.run_id,
-    summary: { score: 0.99, passed: 42 },
-    details: [{ case_id: 'case-1', status: 'passed' }],
-  }
+  const report = '<!DOCTYPE html>\n<html><body><h1>EvalTokens Report</h1></body></html>'
   const stage = {
     id: 'eval-report',
     name: '精度 报告',
@@ -171,6 +169,7 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
     evaltokens: { taskId: 'task-report', taskName: 'report-task', outVars: '' },
   }
   const context = loadEvaltokensRuntime({
+    console: { warn: () => {} },
     timer: null,
     running: true,
     curRun: { token: 'run-token', vars: {}, archive: '/archive/pipeline_20260908', tag: 'build-9' },
@@ -184,7 +183,7 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
       if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-report', name: 'report-task' }] })
       if (url.endsWith('/api/open/v1/tasks/task-report/run')) return jsonResponse({ run_id: finalRun.run_id, task_id: 'task-report', status: 'running' })
       if (url.includes('/api/open/v1/tasks/runs?task_id=task-report')) return jsonResponse({ runs: [finalRun] })
-      if (url.includes('/api/v1/report?task_id=')) { reportRequests.push(url); return jsonResponse(report) }
+      if (url.includes('/api/v1/report?task_id=')) { reportRequests.push(url); return htmlResponse(report) }
       throw new Error(`unexpected request: ${url}`)
     },
     setInterval: () => 1,
@@ -210,8 +209,9 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
 
   assert.deepEqual(reportRequests, ['http://evaltokens.local/api/v1/report?task_id=run%2F2026%2009'])
   assert.equal(writes.length, 1)
-  assert.equal(writes[0].path, '/archive/pipeline_20260908/run-build-9-01-精度-报告-evaltokens-run-2026-09-report.json')
-  assert.deepEqual(JSON.parse(writes[0].content), report)
+  assert.equal(writes[0].path, '/archive/pipeline_20260908/run-build-9-01-精度-报告-evaltokens-run-2026-09-report.html')
+  assert.equal(writes[0].content, report)
+  assert.match(stage._out.stdout, /任务报告（EvalTokens 服务）→ http:\/\/evaltokens\.local\/api\/v1\/report\?task_id=run%2F2026%2009/)
   assert.match(stage._out.stdout, /任务报告已归档/)
   assert.equal(advancedTo, 1)
 })
@@ -221,7 +221,7 @@ test('报告归档从建目录开始纳入写入跟踪', async () => {
   const mkdirPending = new Promise(resolve => { releaseMkdir = resolve })
   const context = loadEvaltokensRuntime({
     archiveFolderFor: ctx => ctx.archive,
-    fetch: async () => jsonResponse(run),
+    fetch: async () => htmlResponse('<!DOCTYPE html><title>tracked</title>'),
     ensureArchiveFolder: () => mkdirPending,
     apiWrite: async () => {},
   })
@@ -250,7 +250,7 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
     _evaltokAttempt: 1, _reportPendingAttempt: 1, _reportArchiveState: reportState,
   }
   const reportSettled = reportPending.then(() => {
-    stageOut.stdout = '📦 任务报告已归档 → /archive/ordered/report.json'
+    stageOut.stdout = '📦 任务报告已归档 → /archive/ordered/report.html'
     reportState.logFile = '/archive/ordered/run-ordered-01-汇总报告.log'
     stage._logArchived = true
     stage._reportPendingAttempt = null
@@ -630,7 +630,17 @@ function jsonResponse(body, status = 200) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    async text() { return JSON.stringify(body) },
     async json() { return body },
+  }
+}
+
+function htmlResponse(body, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text() { return body },
+    async json() { return JSON.parse(body) },
   }
 }
 
@@ -735,11 +745,11 @@ test('远程模式通过 worktable proxy 转发启动请求', async () => {
 
 test('远程模式通过 worktable proxy 携带 Bearer 令牌查询通用报告接口', async () => {
   const calls = []
-  const report = { task_id: 'run/a b', summary: { score: 1 } }
+  const report = '<!DOCTYPE html><html><body>remote report</body></html>'
   const context = loadEvaltokensRuntime({
     fetch: async (url, options = {}) => {
       calls.push({ url, options })
-      return jsonResponse({ status: 200, body: JSON.stringify(report) })
+      return jsonResponse({ status: 200, body: report })
     },
   })
 
@@ -749,7 +759,7 @@ test('远程模式通过 worktable proxy 携带 Bearer 令牌查询通用报告�
     mode: 'remote',
   }, 'run/a b')
 
-  assert.deepEqual(result, report)
+  assert.equal(result, report)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, '/api/worktable/proxy')
   assert.deepEqual(JSON.parse(calls[0].options.body), {
