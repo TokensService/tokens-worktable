@@ -1,4 +1,4 @@
-/* dsh-worktable 原生皮肤 · DSH 设计系统组件库
+/* tokens-worktable 原生皮肤 · DSH 设计系统组件库
    用法：<link rel="stylesheet" href="/api/worktable/template/dshell.css">
    所有颜色走 DSH 主题变量（--dsw-alias-*），自动适配明暗主题。 */
 :root { color-scheme: dark; }

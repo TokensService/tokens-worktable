@@ -15,7 +15,7 @@ hljs.registerLanguage('css', hljsCss)
 hljs.registerLanguage('json', hljsJson)
 
 /**
- * dsh-worktable 乐高式工作区 M1：通用分栏引擎（PRD §13）。
+ * tokens-worktable 乐高式工作区 M1：通用分栏引擎（PRD §13）。
  * 布局模型：标题栏 + 顶部通栏行(可选) + 主行内容窗 + 聊天窗（官方会话视图区整体，
  * 贴右或贴左，由 chatSide 决定；marginLeft/marginRight + marginTop 组合挤法）。
  * 内容三态：null（未指派 → 6 选 1 选择器）/ iframe / builtin（浏览器/资源管理器/SCM/任务/终端）。

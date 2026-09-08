@@ -1,4 +1,4 @@
-# dsh-worktable（工作台）
+# tokens-worktable（工作台）
 
 > DeepSeek Harness 侧边栏的 agent 级项目容器（应用抽屉）。纯增量插件，不替换、不禁用任何官方插件。
 
@@ -21,17 +21,17 @@
 
 方式 A（推荐，无需 Git）——直接安装 GitHub Release 的安装包：
 
-    dsh plugin --profile web add "https://github.com/Aisland-SJL/dsh-worktable/releases/latest/download/dsh-worktable.tgz"
+    dsh plugin --profile web add "https://github.com/Aisland-SJL/tokens-worktable/releases/latest/download/tokens-worktable.tgz"
 
 方式 B（想改源码用）——克隆仓库后用本地路径注册（`link:` 只接受本地路径，不要带空格）：
 
     dsh plugin --profile web add "link:<本目录的绝对路径>"
 
-两种方式 `add` 都会把 `dsh-worktable` 注册进 profile 的 bundle 列表（写入 `~/.dsh`），装完重启 dsh web、刷新界面生效。
+两种方式 `add` 都会把 `tokens-worktable` 注册进 profile 的 bundle 列表（写入 `~/.dsh`），装完重启 dsh web、刷新界面生效。
 
 ## 从源码构建
 
-    cd dsh-worktable
+    cd tokens-worktable
     npm install
     npm run build   # lib/index.js + lib/client.js
     npm run check
@@ -55,9 +55,9 @@
 
 ## 相关文档
 
-- 项目规则：https://github.com/Aisland-SJL/dsh-worktable/blob/main/AGENTS.md
-- 需求与协议：https://github.com/Aisland-SJL/dsh-worktable/blob/main/02_process/PRD.md
-- 工作日志：https://github.com/Aisland-SJL/dsh-worktable/tree/main/02_process/worklogs
+- 项目规则：https://github.com/Aisland-SJL/tokens-worktable/blob/main/AGENTS.md
+- 需求与协议：https://github.com/Aisland-SJL/tokens-worktable/blob/main/02_process/PRD.md
+- 工作日志：https://github.com/Aisland-SJL/tokens-worktable/tree/main/02_process/worklogs
 
 ## License
 

@@ -8,7 +8,7 @@ import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /**
- * dsh-worktable 服务端：健康路由 + 工作区内容窗的数据路由。
+ * tokens-worktable 服务端：健康路由 + 工作区内容窗的数据路由。
  * 参考 dsh-better-sidebar 的架构——内容窗能力由本插件自己的服务端路由提供：
  *   - POST /api/worktable/fs     目录列表（资源管理器窗）
  *   - POST /api/worktable/git    git 状态（源代码管理窗）
@@ -19,10 +19,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 declare const __WT_VERSION__: string
 const PLUGIN_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
 
-export const name = 'dsh-worktable'
+export const name = 'tokens-worktable'
 export const inject = ['webServer', 'sessions']
 
-/** 插件项目目录（lib/ 的上一级；经 link: 安装时 realpath 即源码目录，供「开发 dsh-worktable」新会话定位工作目录） */
+/** 插件项目目录（lib/ 的上一级；经 link: 安装时 realpath 即源码目录，供「开发 tokens-worktable」新会话定位工作目录） */
 const PLUGIN_DIR = (() => {
   try { return pathResolve(realpathSync(dirname(fileURLToPath(import.meta.url))), '..') } catch {}
   try { return pathResolve(dirname(fileURLToPath(import.meta.url)), '..') } catch {}
@@ -217,9 +217,9 @@ function setupTerminal(webServer: any, ctx: any) {
   if (typeof webServer.registerUpgrade !== 'function') return
   const wsMod = loadPkg('ws')
   const ptyMod = loadPkg('node-pty')
-  ctx.logger?.info?.('[dsh-worktable] term deps: ws=' + (wsMod ? 'ok' : 'MISSING') + ' node-pty=' + (ptyMod ? 'ok' : 'MISSING'))
+  ctx.logger?.info?.('[tokens-worktable] term deps: ws=' + (wsMod ? 'ok' : 'MISSING') + ' node-pty=' + (ptyMod ? 'ok' : 'MISSING'))
   if (!wsMod || !ptyMod) {
-    ctx.logger?.warn('[dsh-worktable] 终端路由未注册：ws/node-pty 不可用')
+    ctx.logger?.warn('[tokens-worktable] 终端路由未注册：ws/node-pty 不可用')
     return
   }
   const WebSocketServer = wsMod.WebSocketServer ?? wsMod.default?.WebSocketServer
@@ -265,13 +265,13 @@ function setupTerminal(webServer: any, ctx: any) {
         ws.on('close', () => { try { term.kill() } catch {} })
       })
     },
-  }), 'dsh-worktable: terminal upgrade')
+  }), 'tokens-worktable: terminal upgrade')
 }
 
 export function apply(ctx: Context) {
   const webServer = (ctx as any).webServer
   if (!webServer) {
-    ctx.logger?.warn('[dsh-worktable] ctx.webServer 不可用（headless profile？），跳过服务端路由')
+    ctx.logger?.warn('[tokens-worktable] ctx.webServer 不可用（headless profile？），跳过服务端路由')
     return
   }
 
@@ -279,7 +279,7 @@ export function apply(ctx: Context) {
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'dsh-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, ok: true })
+      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, ok: true })
     },
   })
 

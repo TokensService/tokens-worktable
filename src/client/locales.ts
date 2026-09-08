@@ -1,5 +1,5 @@
 /**
- * dsh-worktable locale namespace（NS 'worktable'）：
+ * tokens-worktable locale namespace（NS 'worktable'）：
  * 侧边栏区块、视图菜单、管理项目、添加面板、快捷方式等全部文案。
  * zh 为键集唯一来源；en 与 zh 键集完全对齐。
  */
@@ -58,9 +58,9 @@ export const zh = {
   'pageEdit.desc': '「管理项目」列表里 ✏️ 按钮填入新会话输入框的提示词模板：{page} 替换为该项目页面文件路径，{name} 替换为项目名。清空保存即恢复默认。',
   'pageEdit.hint': '页面修改：新建 AI 会话并把修改提示词填入输入框（不自动发送，确认后手动提交）',
   'pageEdit.reset': '恢复默认',
-  'dev.title': '开发 dsh-worktable',
-  'dev.desc': '「新建开发会话」按钮填入新会话输入框的提示词模板：{dsh_worktable} 替换为插件项目目录（服务端上报），新会话工作目录同。清空保存即恢复默认。',
-  'dev.hint': '开发 dsh-worktable：新建 AI 会话（工作目录 = 插件项目目录）并把开发提示词填入输入框（不自动发送，确认后手动提交）',
+  'dev.title': '开发 tokens-worktable',
+  'dev.desc': '「新建开发会话」按钮填入新会话输入框的提示词模板：{tokens_worktable} 替换为插件项目目录（服务端上报），新会话工作目录同。清空保存即恢复默认。',
+  'dev.hint': '开发 tokens-worktable：新建 AI 会话（工作目录 = 插件项目目录）并把开发提示词填入输入框（不自动发送，确认后手动提交）',
   'dev.start': '新建开发会话',
   'manage.publish': '发布：存服务端，所有浏览器可见',
   'manage.unpublish': '取消发布：回到仅本浏览器',
@@ -270,9 +270,9 @@ export const en = {
   'pageEdit.desc': 'Prompt template the ✏️ button in the "Manage projects" list fills into the new session\'s input box: {page} is replaced with the project page file path, {name} with the project name. Clear and save to restore the default.',
   'pageEdit.hint': 'Edit page: open a new AI session and fill the edit prompt into the input box (not auto-sent; review and submit yourself)',
   'pageEdit.reset': 'Reset',
-  'dev.title': 'Develop dsh-worktable',
-  'dev.desc': 'Prompt template the "New dev session" button fills into the new session\'s input box: {dsh_worktable} is replaced with the plugin project directory (reported by the server), which is also the new session\'s working directory. Clear and save to restore the default.',
-  'dev.hint': 'Develop dsh-worktable: open a new AI session (cwd = plugin project directory) and fill the dev prompt into the input box (not auto-sent; review and submit yourself)',
+  'dev.title': 'Develop tokens-worktable',
+  'dev.desc': 'Prompt template the "New dev session" button fills into the new session\'s input box: {tokens_worktable} is replaced with the plugin project directory (reported by the server), which is also the new session\'s working directory. Clear and save to restore the default.',
+  'dev.hint': 'Develop tokens-worktable: open a new AI session (cwd = plugin project directory) and fill the dev prompt into the input box (not auto-sent; review and submit yourself)',
   'dev.start': 'New dev session',
   'manage.publish': 'Publish: store on server, visible in all browsers',
   'manage.unpublish': 'Unpublish: back to this browser only',

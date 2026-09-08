@@ -1,4 +1,4 @@
-# 本目录 dsh-worktable 的本地改动
+# 本目录 tokens-worktable 的本地改动
 
 - 节点环境支持「IP:端口」指定 SSH 端口（`projects/pipeline/pipeline.html` + `src/index.ts` / `lib/index.js` 配套）：
   - 设置页「节点环境」IP 输入框可填纯 IP（默认 22 端口）或「IP:端口」（如 `115.33.98.101:2222`）：placeholder/tooltip 更新、

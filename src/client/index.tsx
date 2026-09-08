@@ -5,7 +5,7 @@ import { isAbs, joinPath, parentPathOf, basenameOf } from './pathutil'
 import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, peekChatClosed, type LayoutSpec, type SplitPane, type ConsoleCardData } from './split'
 
 /**
- * dsh-worktable 客户端（v2）：侧边栏底部「工作台」区块。
+ * tokens-worktable 客户端（v2）：侧边栏底部「工作台」区块。
  * 结构：分隔线 → [≡ 手柄][工作台][搜索/视图选项/添加+] → 项目卡片区（子座位）。
  * v2 新增（PRD §10 定案）：
  *   - 卡片规范 v2 渐进上报协议：owner props 下发 order/hidden/nameOverrides，
@@ -26,9 +26,9 @@ type DockMode = 'footer' | 'float'
 // ── 更新检查（客户端直连 GitHub Releases API，只读 GET；失败静默）──
 declare const __WT_VERSION__: string
 const LOCAL_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
-const UPDATE_REPO = 'Aisland-SJL/dsh-worktable'
-const UPGRADE_CMD = 'dsh plugin --profile web add "https://github.com/Aisland-SJL/dsh-worktable/releases/latest/download/dsh-worktable.tgz"'
-const UPGRADE_AI = '帮我升级 dsh-worktable：执行 ' + UPGRADE_CMD + '，完成后提醒我重启 dsh web 并刷新页面'
+const UPDATE_REPO = 'Aisland-SJL/tokens-worktable'
+const UPGRADE_CMD = 'dsh plugin --profile web add "https://github.com/Aisland-SJL/tokens-worktable/releases/latest/download/tokens-worktable.tgz"'
+const UPGRADE_AI = '帮我升级 tokens-worktable：执行 ' + UPGRADE_CMD + '，完成后提醒我重启 dsh web 并刷新页面'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
   <svg viewBox="0 0 16 16" aria-hidden>
@@ -804,7 +804,7 @@ export type NewSessionGroup = { kind: 'none' } | { kind: 'existing'; workspaceId
 /** 插件知识包：附在窗口任务提示词里，让接收方跳过对插件源码的重新侦察，直接干活 */
 const KNOWLEDGE_PACK = [
   '【插件知识包·请直接采用，不要重新侦察插件源码】',
-  '- dsh-worktable 是 DeepSeek Harness 的自建容器插件（工作台：侧边栏里的项目应用抽屉；不了解的细节可直接向用户提问）。',
+  '- tokens-worktable 是 DeepSeek Harness 的自建容器插件（工作台：侧边栏里的项目应用抽屉；不了解的细节可直接向用户提问）。',
   '- 窗口（内容窗）模型：每个窗 = 一个标签页；未指派时显示选择器（浏览器/动画/资源管理器/终端/✨自定义）；',
   '  窗内容还可放 iframe 网页与文件预览（.md/.txt/.tsx/.css/.html 等）。',
   '- 窗口可装载的形式：HTML 单文件（交互 UI，放项目文件夹后在资源管理器点击渲染）、网页 URL、',
@@ -826,8 +826,8 @@ function buildWindowTaskText(projectId: string, projectName: string, windowLabel
     : '本项目暂未设置专属文件夹：产出文件先向用户确认存放位置，不要随便写。'
   const lines = [
     '【工作台自定义窗口任务】',
-    '以下内容由 dsh-worktable（工作台）插件' + (mode === 'new' ? '自动发送' : '发送') + '：用户想把「' + projectName + '」项目中的「' + win + '」窗口打造成他想要的内容。',
-    '1. dsh-worktable 是侧边栏底部的自建「工作台」插件（官方文档没有它的说明，不了解之处可直接向用户提问）。',
+    '以下内容由 tokens-worktable（工作台）插件' + (mode === 'new' ? '自动发送' : '发送') + '：用户想把「' + projectName + '」项目中的「' + win + '」窗口打造成他想要的内容。',
+    '1. tokens-worktable 是侧边栏底部的自建「工作台」插件（官方文档没有它的说明，不了解之处可直接向用户提问）。',
     '2. 用户需求：' + requirement,
     '3. ' + folderLine,
     '4. 产出形式请按任务类型选择（不要一律用 HTML）：',
@@ -1006,15 +1006,15 @@ async function startPageEdit(pagePath: string, projectName: string, workspaceId:
   await newChatInProject(prompt, workspaceId)
 }
 
-// ── 开发 dsh-worktable（设置弹窗：提示词模板 + 「新建开发会话」按钮；模板与「页面修改」同套存取规则）──
-/** 默认「开发 dsh-worktable」提示词模板：{dsh_worktable} 替换为插件项目目录（服务端健康路由 realpath 上报） */
-const DEFAULT_DEV_PROMPT = '这是一个deepseek harness worktable插件，项目目录在{dsh_worktable}，\n修改前创建一个git worktree修改，防止多个并行的修改冲突。\n修改时，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。\n改完后，合并到本地dev4，并git push到远端'
+// ── 开发 tokens-worktable（设置弹窗：提示词模板 + 「新建开发会话」按钮；模板与「页面修改」同套存取规则）──
+/** 默认「开发 tokens-worktable」提示词模板：{tokens_worktable} 替换为插件项目目录（服务端健康路由 realpath 上报） */
+const DEFAULT_DEV_PROMPT = '这是一个deepseek harness worktable插件，项目目录在{tokens_worktable}，\n修改前创建一个git worktree修改，防止多个并行的修改冲突。\n修改时，保持现有代码风格与 dshell 样式体系（单文件内联实现，主题变量适配浅色/深色）。\n改完后，合并到本地dev4，并git push到远端'
 const DEV_PROMPT_KEY = 'dsh.worktable.devPrompt.v1'
-/** 读取「开发 dsh-worktable」提示词模板（localStorage；空值/未设 = 默认模板） */
+/** 读取「开发 tokens-worktable」提示词模板（localStorage；空值/未设 = 默认模板） */
 function loadDevPrompt(): string {
   try { const p = localStorage.getItem(DEV_PROMPT_KEY); return (p == null || !String(p).trim()) ? DEFAULT_DEV_PROMPT : p } catch { return DEFAULT_DEV_PROMPT }
 }
-/** 保存「开发 dsh-worktable」提示词模板（存空串 = 恢复默认） */
+/** 保存「开发 tokens-worktable」提示词模板（存空串 = 恢复默认） */
 function saveDevPrompt(text: string): void {
   try { localStorage.setItem(DEV_PROMPT_KEY, text) } catch {}
 }
@@ -1032,7 +1032,7 @@ async function fetchPluginDir(): Promise<string | null> {
 /** 设置弹窗「新建开发会话」：按提示词模板 + 插件项目目录新建 AI 会话（cwd = 插件目录，提示词只填输入框、不自动发送） */
 async function startPluginDev(): Promise<void> {
   const dir = await fetchPluginDir()
-  const prompt = loadDevPrompt().split('{dsh_worktable}').join(dir ?? '{dsh_worktable}')
+  const prompt = loadDevPrompt().split('{tokens_worktable}').join(dir ?? '{tokens_worktable}')
   await newChatInProject(prompt, null, dir)
 }
 
@@ -1280,7 +1280,7 @@ function WorktableSection(props: any) {
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false)
   // 页面修改：提示词模板（设置弹窗内编辑，存 localStorage；清空保存 = 恢复默认）
   const [pageEditPrompt, setPageEditPrompt] = useState<string>(() => loadPageEditPrompt())
-  // 开发 dsh-worktable：提示词模板（同「页面修改」存取规则；{dsh_worktable} 替换为插件项目目录）
+  // 开发 tokens-worktable：提示词模板（同「页面修改」存取规则；{tokens_worktable} 替换为插件项目目录）
   const [devPrompt, setDevPrompt] = useState<string>(() => loadDevPrompt())
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
@@ -1873,9 +1873,9 @@ function bindInfoOf(groups: { title: string; sessions: { id: string; title: stri
  *  零泄漏硬约束：禁止写入用户的个人工作区分组名/项目名/私人路径——本提示词会被发给别人的 DSH。 */
 function buildCustomLayoutPrompt(req: string): string {
   return [
-    '【为 dsh-worktable（工作台）插件增加一个新的布局预设】',
+    '【为 tokens-worktable（工作台）插件增加一个新的布局预设】',
     '',
-    '背景：dsh-worktable 是 DeepSeek Harness 的自建容器插件（本机仓库 dsh-worktable；不了解的细节可直接向用户提问）。',
+    '背景：tokens-worktable 是 DeepSeek Harness 的自建容器插件（本机仓库 tokens-worktable；不了解的细节可直接向用户提问）。',
     '侧边栏「工作台」区块管理项目，每个项目打开后是一个平铺工作区（若干内容窗 + 右侧对话窗）。',
     '布局预设定义在 src/client/index.tsx 的 PRESET_DEFS 数组，选择器缩略图在 presetThumb() 函数。',
     '',
@@ -3741,11 +3741,11 @@ export function apply(ctx: any) {
 
   ctx.effect(() => {
     const style = document.createElement('style')
-    style.setAttribute('data-dsh-plugin', 'dsh-worktable')
+    style.setAttribute('data-dsh-plugin', 'tokens-worktable')
     style.textContent = css
     document.head.appendChild(style)
     return () => { style.remove() }
-  }, 'dsh-worktable: styles')
+  }, 'tokens-worktable: styles')
 
   // 绑定/聊天按钮 hover 气泡：事件委托 + body 级气泡（跨层显示，不遮挡右侧对话也不盖项目名）
   ctx.effect(() => {
@@ -3770,12 +3770,12 @@ export function apply(ctx: any) {
       document.removeEventListener('click', hide, true)
       if (bindTipEl) { bindTipEl.remove(); bindTipEl = null }
     }
-  }, 'dsh-worktable: bind tip')
+  }, 'tokens-worktable: bind tip')
 
   // locale 词典（宿主 locale 服务缺席时由 t 的回退分支兜底）
   ctx.effect(() => {
     if (ctx.locale?.register) return ctx.locale.register(NS, { zh, en })
-  }, 'dsh-worktable: dictionaries')
+  }, 'tokens-worktable: dictionaries')
 
   // iframe 内容页（如 pipeline.html）→ 聊天窗桥：收到 AI 日志分析请求后新开会话
   ctx.effect(() => {
@@ -3783,11 +3783,11 @@ export function apply(ctx: any) {
       if (e.origin !== window.location.origin) return
       const d = e.data as any
       if (!d || d.type !== 'worktable:analyze-log' || typeof d.path !== 'string' || !d.path) return
-      analyzeLogInSession(d.path).catch((err) => ctx.logger?.warn?.('[dsh-worktable] analyze-log failed: ' + String(err)))
+      analyzeLogInSession(d.path).catch((err) => ctx.logger?.warn?.('[tokens-worktable] analyze-log failed: ' + String(err)))
     }
     window.addEventListener('message', onMsg)
     return () => window.removeEventListener('message', onMsg)
-  }, 'dsh-worktable: analyze-log bridge')
+  }, 'tokens-worktable: analyze-log bridge')
 
   // 子座位注册 id 序列跟踪（供排序/编辑模式使用）
   const syncIds = () => {
@@ -3802,26 +3802,26 @@ export function apply(ctx: any) {
   }
   const disposeSubscribe = ctx.slots.subscribe('sidebar.worktable.project', syncIds)
   syncIds()
-  ctx.effect(() => disposeSubscribe, 'dsh-worktable: project registry watch')
+  ctx.effect(() => disposeSubscribe, 'tokens-worktable: project registry watch')
 
   // 会话作用域（当前会话 cwd 与后台任务）→ 功能窗数据源
   const sessionsList = ctx.sessions?.list
   if (sessionsList && typeof sessionsList.getSnapshot === 'function') {
     syncSessionScope(sessionsList)
     const disposeScope = sessionsList.subscribe(() => syncSessionScope(sessionsList))
-    ctx.effect(() => disposeScope, 'dsh-worktable: session scope watch')
+    ctx.effect(() => disposeScope, 'tokens-worktable: session scope watch')
   }
 
   // 分栏工作区浮层（M1 通用引擎，shell.overlay 座位）
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
-    id: 'dsh-worktable-split',
+    id: 'tokens-worktable-split',
     order: 100,
-  }, SplitWorkspace), 'dsh-worktable: split workspace overlay')
+  }, SplitWorkspace), 'tokens-worktable: split workspace overlay')
 
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
-    id: 'dsh-worktable',
+    id: 'tokens-worktable',
     order: 20,
     children: {
       'sidebar.worktable.project': {
@@ -3829,7 +3829,7 @@ export function apply(ctx: any) {
         scope: 'root',
       },
     },
-  }, WorktableSection), 'dsh-worktable: worktable section')
+  }, WorktableSection), 'tokens-worktable: worktable section')
 }
 
 export { WorktableSection }

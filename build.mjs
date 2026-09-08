@@ -1,5 +1,5 @@
 /**
- * dsh-worktable 构建：
+ * tokens-worktable 构建：
  *   - lib/index.js    服务端 ESM（cordis 插件，健康路由）
  *   - lib/client.js   客户端单文件 CJS（window.__ModuleLoader__.load 握手；
  *                     react / @deepseek-ai/* 由宿主模块系统提供，保持 external）
@@ -16,11 +16,11 @@ mkdirSync(join(here, 'lib'), { recursive: true })
 const pkg = JSON.parse(readFileSync(join(here, 'package.json'), 'utf8'))
 const pluginManifest = JSON.parse(readFileSync(join(here, 'dsh.plugin.json'), 'utf8'))
 if (pluginManifest.version !== pkg.version) {
-  throw new Error('dsh-worktable build: package.json version (' + pkg.version + ') != dsh.plugin.json version (' + pluginManifest.version + ') — 发版前先统一两处版本号')
+  throw new Error('tokens-worktable build: package.json version (' + pkg.version + ') != dsh.plugin.json version (' + pluginManifest.version + ') — 发版前先统一两处版本号')
 }
 
 const clientBanner = {
-  js: "window.__ModuleLoader__.load({ id: 'dsh-worktable', factory: (require) => { var module = { exports: {} }; var exports = module.exports;",
+  js: "window.__ModuleLoader__.load({ id: 'tokens-worktable', factory: (require) => { var module = { exports: {} }; var exports = module.exports;",
 }
 const clientFooter = { js: 'return module.exports; } });' }
 
@@ -56,4 +56,4 @@ await build({
   define: { __WT_VERSION__: JSON.stringify(pkg.version) },
 })
 
-console.log('[dsh-worktable build] done: lib/index.js, lib/client.js')
+console.log('[tokens-worktable build] done: lib/index.js, lib/client.js')
