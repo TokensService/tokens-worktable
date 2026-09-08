@@ -178,12 +178,13 @@ def normalize_model_label(model_name: str | None) -> str | None:
     return f"{MODEL_LABEL_ROOT}/{model_name.rstrip('/')}/{MODEL_LABEL_VERSION}"
 
 
-def build_query(metric: str, namespace: str | None, model_name: str | None, job_regex: str | None) -> str:
+def build_query(metric: str, namespace: str | None, model_name: str | None, job_regex: str | None, model_path: str | None = None) -> str:
     labels: list[str] = []
     if namespace:
         labels.append(f'xds_namespace="{promql_string(namespace)}"')
-    if metric.startswith("vllm:") and model_name and metric not in MODELLESS_METRICS:
-        labels.append(f'model_name="{promql_string(normalize_model_label(model_name))}"')
+    model_label = model_path if model_path else normalize_model_label(model_name)
+    if metric.startswith("vllm:") and model_label and metric not in MODELLESS_METRICS:
+        labels.append(f'model_name="{promql_string(model_label)}"')
     if job_regex and metric not in JOBLESS_METRICS:
         labels.append(f'exported_job=~"{promql_string(job_regex)}"')
     return metric if not labels else f"{metric}{{{','.join(labels)}}}"
@@ -237,18 +238,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action", choices=("start", "collect", "stop"),
                         default=env_value("METRICS_ACTION", "VLLM_METRICS_ACTION", default="start"),
                         help="start 后台启动，collect 前台采集，stop 终止后台采集；环境变量 METRICS_ACTION")
-    parser.add_argument("--start", default=os.getenv("VLLM_METRICS_START"),
-                        help="开始时间；未设置时取启动时刻，环境变量 VLLM_METRICS_START")
-    parser.add_argument("--end", default=os.getenv("VLLM_METRICS_END"),
-                        help="结束时间；未设置时持续采集，环境变量 VLLM_METRICS_END")
+    parser.add_argument("--start", default=env_value("PROM_START", "VLLM_METRICS_START"),
+                        help="开始时间；未设置时取启动时刻，环境变量 PROM_START（兼容 VLLM_METRICS_START）")
+    parser.add_argument("--end", default=env_value("PROM_END", "VLLM_METRICS_END"),
+                        help="结束时间；未设置时持续采集，环境变量 PROM_END（兼容 VLLM_METRICS_END）")
     parser.add_argument("--step", default=os.getenv("VLLM_METRICS_STEP", "5s"),
                         help="Prometheus 查询/采集周期，默认 5s；环境变量 VLLM_METRICS_STEP")
     parser.add_argument("--prometheus-url", default=env_value("PROMETHEUS_URL", "VLLM_METRICS_PROMETHEUS_URL", default="http://192.168.10.6:25889"),
                         help="环境变量 PROMETHEUS_URL（兼容 VLLM_METRICS_PROMETHEUS_URL）")
     parser.add_argument("--namespace", default=os.getenv("NAMESPACE"),
                         help="环境变量 NAMESPACE；未设置时不按命名空间筛选")
-    parser.add_argument("--model-name", default=os.getenv("ARCH_NAME"),
-                        help="环境变量 ARCH_NAME；相对模型名按 /home/service/works/models_ssd/<name>/v1 筛选，绝对路径原样使用")
+    parser.add_argument("--model-path", default=env_value("model_path", "MODEL_PATH"),
+                        help="完整模型路径，原样作为 model_name 标签；优先于模型名，环境变量 model_path / MODEL_PATH")
+    parser.add_argument("--model-name", default=env_value("model_name", "MODEL_NAME", "ARCH_NAME"),
+                        help="环境变量 model_name / MODEL_NAME（兼容 ARCH_NAME）；相对模型名按 /home/service/works/models_ssd/<name>/v1 筛选，绝对路径原样使用")
     parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
     parser.add_argument("--output-dir", default=default_output_dir(),
@@ -261,7 +264,15 @@ def parse_args() -> argparse.Namespace:
                         help="后台采集器 PID 文件；默认 <output-dir>/collector.pid")
     parser.add_argument("--log-file", default=env_value("METRICS_LOG_FILE", "VLLM_METRICS_LOG_FILE"),
                         help="后台采集器日志；默认 <output-dir>/collector.log")
-    return parser.parse_args()
+    # 同时支持脚本名后面的 PROM_START=... PROM_END=... 参数。
+    argv = []
+    for arg in sys.argv[1:]:
+        key, separator, value = arg.partition("=")
+        if separator and key in ("PROM_START", "PROM_END"):
+            argv.append(("--start=" if key == "PROM_START" else "--end=") + value)
+        else:
+            argv.append(arg)
+    return parser.parse_args(argv)
 
 
 def collect_once(args: argparse.Namespace, metrics: list[str], start: int, end: int, output_dir: Path) -> int:
@@ -270,7 +281,7 @@ def collect_once(args: argparse.Namespace, metrics: list[str], start: int, end: 
     results: list[dict] = []
 
     for index, metric in enumerate(metrics, start=1):
-        query = build_query(metric, args.namespace, args.model_name, args.job_regex)
+        query = build_query(metric, args.namespace, args.model_name, args.job_regex, args.model_path)
         result = {"metric": metric, "query": query, "status": "success", "series_count": 0, "sample_count": 0}
         try:
             payload = request_range(args.prometheus_url, query, start, end, args.step, args.timeout)
@@ -295,6 +306,7 @@ def collect_once(args: argparse.Namespace, metrics: list[str], start: int, end: 
         "step": args.step,
         "namespace": args.namespace,
         "model_name": args.model_name,
+        "model_path": args.model_path,
         "job_regex": args.job_regex,
         "successful_queries": sum(item["status"] == "success" for item in results),
         "failed_queries": sum(item["status"] == "failed" for item in results),
@@ -349,12 +361,18 @@ def start_collector(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.update({
         "METRICS_ACTION": "collect",
+        "PROM_START": args.start or str(int(time.time())),
         "VLLM_METRICS_START": args.start or str(int(time.time())),
+        "PROM_END": args.end or "",
         "VLLM_METRICS_END": args.end or "",
         "VLLM_METRICS_STEP": args.step,
         "PROMETHEUS_URL": args.prometheus_url,
         "NAMESPACE": args.namespace or "",
+        "model_name": args.model_name or "",
         "MODEL_NAME": args.model_name or "",
+        "ARCH_NAME": args.model_name or "",
+        "model_path": args.model_path or "",
+        "MODEL_PATH": args.model_path or "",
         "VLLM_METRICS_JOB_REGEX": args.job_regex or "",
         "METRICS_OUTPUT_DIR": args.output_dir,
         "VLLM_METRICS_TIMEOUT": str(args.timeout),
