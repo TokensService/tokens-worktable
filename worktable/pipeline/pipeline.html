@@ -35,7 +35,8 @@
     #pipelineControls button.dshell-input { max-width:220px; }
     #pipelineControls input.dshell-input { max-width:150px; }
     #pipelineControls #triggeredBy { max-width:110px; }
-    #pipelineControls #envMultiBtn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
+    #pipelineControls #envMultiBtn,
+    #pipelineControls #presetMultiBtn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
     /* 定时页控制区与主控同一限宽规则（第一行设置与「运行流水线」保持一致，「方式」及以后排第二行） */
     #schedControls select.dshell-input,
     #schedControls button.dshell-input { max-width:220px; }
@@ -145,7 +146,7 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
       <select id="pipelineSel" class="dshell-input" style="min-width:130px;font-weight:600;" title="下拉选用流水线（也可在下方「流水线任务」列表点击行选用）；运行中不可切换"></select>
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境（可多选）
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
       <span id="envMulti" style="position:relative;display:inline-block;">
         <button id="envMultiBtn" type="button" class="dshell-input" style="min-width:150px;text-align:left;cursor:pointer;">选择 IP</button>
         <div id="envMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:230px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
@@ -169,11 +170,18 @@
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">执行人
       <input id="triggeredBy" class="dshell-input" placeholder="必填" autocomplete="off" />
     </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-      <input type="checkbox" id="cleanupEnv" /> 清理环境
-    </label>
-    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;" title="勾选后流水线启动前执行设置页配置的「环境检查脚本」（在环境清理之后）：检查不通过（脚本非零退出）则阻断本次启动">
-      <input type="checkbox" id="checkEnv" /> 检查环境
+    <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">预设任务
+      <span id="presetMulti" style="position:relative;display:inline-block;">
+        <button id="presetMultiBtn" type="button" class="dshell-input" style="min-width:110px;text-align:left;cursor:pointer;" title="启动前依次执行的系统预设任务（环境清理 → 环境检查），可多选；脚本在设置页配置">（不执行）</button>
+        <div id="presetMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:170px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;">
+            <input type="checkbox" id="cleanupEnv" /> 环境清理
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;" title="在环境清理之后执行：检查不通过（脚本非零退出）则阻断本次启动">
+            <input type="checkbox" id="checkEnv" /> 环境检查
+          </label>
+        </div>
+      </span>
     </label>
     <button id="runBtn" class="dshell-btn" style="margin-left:auto;flex-shrink:0;">▶ 运行流水线</button>
     <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled style="flex-shrink:0;">⏹ 中止</button>
@@ -281,7 +289,7 @@
   </div><!-- /pageMain -->
 
   <!-- 定时任务（独立页面：周期 / 一次性计划，服务端调度，关闭页面也会执行）。
-       设置分两行：第一行与主控「运行流水线」设置保持一致（流水线 / 环境（可多选）/ 代码仓 / 分支Tag / 部署策略 / 执行人 / 清理环境），
+       设置分两行：第一行与主控「运行流水线」设置保持一致（流水线 / 环境 / 代码仓 / 分支Tag / 部署策略 / 执行人 / 清理环境），
        第二行为「方式」及以后的调度参数与创建按钮 -->
   <div id="pageSched" style="display:none">
     <div class="dshell-card">
@@ -289,7 +297,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
           <select id="schedPipeline" class="dshell-input" style="min-width:130px;font-weight:600;"></select>
         </label>
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境（可多选）
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
           <span id="schedEnvMulti" style="position:relative;display:inline-block;">
             <button id="schedEnvMultiBtn" type="button" class="dshell-input" style="min-width:150px;text-align:left;cursor:pointer;">选择 IP</button>
             <div id="schedEnvMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:230px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
@@ -373,7 +381,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境（可多选）」按此列表选择目标 IP；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组）、<code>TARGET_HOSTS</code>（全部节点 [{ip,user,pass}] 的 JSON 数组，多节点各自凭据）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标 IP（可多选）；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组）、<code>TARGET_HOSTS</code>（全部节点 [{ip,user,pass}] 的 JSON 数组，多节点各自凭据）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
@@ -1870,12 +1878,20 @@ function cleanScriptValues(params, values){
   return out;
 }
 let cleanupScript=(function(){ try{ const cs=JSON.parse(localStorage.getItem('pip-cleanupScript')); if(cs && cs.values) cs.values=cleanScriptValues(cs.params, cs.values); return cs; }catch(e){ return null; } })() || null;
+/* 预设任务多选（环境清理/环境检查，面板内即 cleanupEnv/checkEnv 两个开关）：按钮文案跟随勾选，与「环境」多选同一交互 */
+function renderPresetMultiBtn(){
+  const b=$('presetMultiBtn'); if(!b) return;
+  const on=[]; if($('cleanupEnv').checked) on.push('环境清理'); if($('checkEnv').checked) on.push('环境检查');
+  b.textContent=on.length?on.join('、'):'（不执行）';
+  b.title=b.textContent;   // 限宽省略时悬浮可见完整列表
+}
 function saveCleanup(){
   try{
     localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
     localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
   }catch(e){}
   const sc=$('schedCleanupEnv'); if(sc) sc.checked=$('cleanupEnv').checked;   // 定时页「清理环境」与主控同一开关，保持双向同步
+  renderPresetMultiBtn();
   persistState();
   if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
@@ -1931,6 +1947,7 @@ function saveCheck(){
     localStorage.setItem('pip-checkScript', JSON.stringify(checkScript));
     localStorage.setItem('pip-checkEnabled', $('checkEnv').checked?'1':'');
   }catch(e){}
+  renderPresetMultiBtn();
   persistState();
   if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
@@ -2864,7 +2881,7 @@ function renderSchedForm(){
   const pl=$('schedPipeline'); if(!pl) return;
   const curPl=pl.value || curPipelineId; pl.innerHTML='';
   pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(p.id===curPl) o.selected=true; pl.appendChild(o); });
-  renderSchedEnvOptions();   // 环境（可多选）：面板选项跟随节点环境数据
+  renderSchedEnvOptions();   // 环境（多选）：面板选项跟随节点环境数据
   const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
   repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
   $('schedCleanupEnv').checked=$('cleanupEnv').checked;   // 「清理环境」与主控同一开关（全局配置，服务端定时执行同样生效）
@@ -2875,7 +2892,7 @@ function addPlan(){
   const schedBy=$('schedBy').value.trim();
   if(!schedBy){ alert('请先填写「执行人」再创建定时计划。'); $('schedBy').focus(); return; }
   const pl=findPipeline($('schedPipeline').value) || curPipeline();
-  const envs=schedEnvs();   // 环境（可多选）：与「运行流水线」设置一致，快照多 IP 节点对象（服务端按 envs 注入 TARGET_IPS 等）
+  const envs=schedEnvs();   // 环境（多选）：与「运行流水线」设置一致，快照多 IP 节点对象（服务端按 envs 注入 TARGET_IPS 等）
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
     pipelineId:pl.id, pipelineName:pl.name, stages:pl.stages,
@@ -4991,6 +5008,9 @@ $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},D
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$('envMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+/* 预设任务多选面板开合（与「环境」多选同一交互：点外关闭） */
+$('presetMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('presetMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
+document.addEventListener('click', (e)=>{ const p=$('presetMultiPanel'); const m=$('presetMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
 /* 运行设置（分支 / 部署策略 / 执行人）仅存浏览器本地：刷新后从 localStorage 回填；
    change 即时存，pagehide 兜底（分支面板点选为程序化赋值、不触发 change，靠 pagehide 持久化） */
 function saveRunSelLS(){ try{ localStorage.setItem('pip-branch',$('branchName').value); localStorage.setItem('pip-strategy',$('deployStrategyName').value); localStorage.setItem('pip-by',$('triggeredBy').value); }catch(e){} }
@@ -5042,6 +5062,7 @@ function renderAll(){
   renderRepos();
   renderQueue();
   renderDetail();
+  renderPresetMultiBtn();
   fillCfgForm();
   applyJenkinsForm();
   applyEvaltokForm();

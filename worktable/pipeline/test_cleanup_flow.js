@@ -46,7 +46,7 @@ test('修改清理配置不能抹掉失败阶段的重试上下文',()=>{
   const run={token:1,vars:{KEY:'value'}};
   ctx.curRun=run;ctx.runStages=ctx.activeStages();ctx.nodes={first:{status:'failed',varsIn:{KEY:'value'}}};
   Object.assign(ctx,{localStorage:{setItem(){}},persistState(){},resetNodes(){ctx.nodes={};}});
-  load('function saveCleanup(', 'function renderCleanupParams(',ctx);
+  load('function renderPresetMultiBtn(', 'function renderCleanupParams(',ctx);
   ctx.saveCleanup();
   assert.equal(ctx.curRun,run);assert.equal(ctx.nodes.first.status,'failed');
 });
@@ -101,4 +101,12 @@ test('未配置检查脚本时按跳过处理且不阻断（返回 true）',asyn
   vm.createContext(ctx);load('async function runCheckBefore(', 'function sanitizeFsName(',ctx);
   assert.equal(await ctx.runCheckBefore(),true);
   assert.equal(ctx.nodes[s.id].status,'skipped');assert.equal(ctx.curRun.checkLog.status,'skipped');
+});
+test('预设任务多选按钮文案跟随勾选（全不选显示「（不执行）」）',()=>{
+  const btn={textContent:'',title:''},cleanupBox={checked:true},checkBox={checked:false};
+  const ctx={$:id=>id==='presetMultiBtn'?btn:(id==='checkEnv'?checkBox:cleanupBox)};
+  vm.createContext(ctx);load('function renderPresetMultiBtn(', 'function saveCleanup(',ctx);
+  ctx.renderPresetMultiBtn();assert.equal(btn.textContent,'环境清理');
+  checkBox.checked=true;ctx.renderPresetMultiBtn();assert.equal(btn.textContent,'环境清理、环境检查');assert.equal(btn.title,btn.textContent);
+  cleanupBox.checked=false;checkBox.checked=false;ctx.renderPresetMultiBtn();assert.equal(btn.textContent,'（不执行）');
 });
