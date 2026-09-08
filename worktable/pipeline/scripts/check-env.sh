@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # check-env.sh - 环境健康检查，可单文件本地或远程执行。
+# pipeline: no-positional-args
 # TARGET_HOSTS= 支持逗号分隔 IP 或 JSON；SSH_USER/SSH_PORT/SSH_PASSWORD 控制 SSH。
 # LOG_FILE= 检查日志。退出码 0 表示无 FAIL，非零表示失败。
 # 深入检查使用 Python 3 标准库；大页按预留量2048 GiB触发至少剩余700 GiB。

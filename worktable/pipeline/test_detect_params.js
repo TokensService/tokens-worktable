@@ -89,6 +89,18 @@ const detect = context.detectParams;
   if (!ps4.find((p) => p.kind === "env" && p.key === "ACTION")) throw new Error("no-positional-args 不应影响环境变量识别，得到 " + JSON.stringify(ps4));
   console.log("PASS: no-positional-args 忽略内部位置参数");
 
+  // 实际清理/检查脚本只能通过环境变量配置，不能把函数参数传给入口。
+  for (const name of ["cleanup-env.sh", "check-env.sh"]) {
+    const script = fs.readFileSync(require("path").join(__dirname, "scripts", name), "utf8");
+    const params = detect(script, "sh");
+    if (params.some((p) => p.kind === "pos")) throw new Error(name + " 不应识别位置参数");
+    if (!params.some((p) => p.kind === "env" && p.key === "ACTION")) throw new Error(name + " 必须保留环境变量识别");
+    await context.execScript({ path: "/tmp/" + name, params, values: {} });
+    const request = execRequests.pop();
+    if (request.args.length !== 0) throw new Error(name + " 不应下发位置参数");
+  }
+  console.log("PASS: 清理/检查脚本实际调用均无位置参数");
+
   // ⑤ execScript：识别到的默认值（静态/动态一律）无显式值时不下发——静态默认不再注入 env（不压过运行级注入的
   //    同名变量，此处 IMAGE_NAME 由 rc.image 兜底），dyn 默认不注入（交由脚本自身 :- 展开）、位置参数留空传空串
   await context.execScript({
