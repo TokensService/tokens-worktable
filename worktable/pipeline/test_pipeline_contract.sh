@@ -17,6 +17,9 @@ global:
   image: repo/xds:{IMAGE_TAG}
   sentinel: old
 taskExecutorGroups: []
+frameworkConfigFiles:
+  xds_framework.conf: |
+    mock_db = false
 EOF
 cat >"$WORK/model_arch.json" <<'EOF'
 [
@@ -38,6 +41,7 @@ CHART_TEMPLATE_DIR="$WORK/xds-cluster" \
 VALUES_TEMPLATE="$WORK/values.template.yaml" \
 ARCH_FILE="$WORK/model_arch.json" \
 ARCH_NAME="glm-5.2-nvfp4" \
+TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test"}]' \
 NUM_PREFILL=2 NUM_DECODE=1 PREFILL_GPU=4 DECODE_GPU=4 \
 DEPLOY_IMAGE="registry.example.com/xds:test" \
 NAMESPACE="xds-test" RELEASE_NAME="xds-test" \
@@ -79,7 +83,7 @@ assert len(values["taskExecutorGroups"]) == 3
 assert values["global"]["sentinel"] == "replaced"
 assert values["global"]["extra"] == "enabled"
 assert values["global"]["enableTaskExecutorGroups"] is True
-assert all(group["nodeSelector"] == {"xds.zcx.bnt": "zcx"} for group in values["taskExecutorGroups"])
+assert all(group["nodeSelector"] == {"xds.optest": "node-10"} for group in values["taskExecutorGroups"])
 PY
 
 echo "PASS: render-config produces one coherent P/D deployment contract"
@@ -93,19 +97,22 @@ mkdir -p "$FAKE_BIN" \
 cp "$WORK/xds-cluster/Chart.yaml" "$FAKE_IMAGE_ROOT/opt/op_test/xds_template/k8s/xds-cluster/Chart.yaml"
 cp "$WORK/values.template.yaml" "$FAKE_IMAGE_ROOT/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml"
 cp "$WORK/model_arch.json" "$FAKE_IMAGE_ROOT/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
-cat >"$FAKE_BIN/docker" <<'EOF'
+cat >"$FAKE_BIN/nerdctl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--namespace" ]]; then
+  shift 2
+fi
 case "$1" in
   image) exit 0 ;;
   pull) exit 0 ;;
   create) echo fake-container ;;
   cp)
-    src="${2#fake-container:}"
+    src="${2#*:}"
     cp -a "$FAKE_IMAGE_ROOT$src" "$3"
     ;;
   rm) exit 0 ;;
-  *) echo "unexpected docker invocation: $*" >&2; exit 1 ;;
+  *) echo "unexpected nerdctl invocation: $*" >&2; exit 1 ;;
 esac
 EOF
 cat >"$FAKE_BIN/sshpass" <<'EOF'
@@ -117,11 +124,29 @@ cat >"$FAKE_BIN/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$FAKE_BIN/docker" "$FAKE_BIN/sshpass" "$FAKE_BIN/ssh"
+cat >"$FAKE_BIN/kubectl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+all="$*"
+case "$all" in
+  "get nodes -o json")
+    echo '{"items":[{"metadata":{"name":"node-a"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
+  *"get svc -A -o json") echo '{"items":[]}' ;;
+  *"get configmap "*) echo '{}' ;;
+  *"get pods "*"-o name") exit 0 ;;
+  *"get pods "*"-o json")
+    echo '{"items":[{"metadata":{"name":"prefill-1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}},{"metadata":{"name":"prefill-2","labels":{"ray.io/group":"taskExecutorGroup4prefill2"}}},{"metadata":{"name":"decode-1","labels":{"ray.io/group":"taskExecutorGroup4decode1"}}}]}' ;;
+  "label node "*) exit 0 ;;
+  *" wait "*) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/nerdctl" "$FAKE_BIN/sshpass" "$FAKE_BIN/ssh" "$FAKE_BIN/kubectl"
 
 PATH="$FAKE_BIN:$PATH" FAKE_IMAGE_ROOT="$FAKE_IMAGE_ROOT" \
 RUN_DIR="$WORK/pull-run" TARGET_IP="192.0.2.10" TARGET_USER=root TARGET_PASSWORD=test \
-bash "$SCRIPTS/pull-image.sh" registry.example.com/xds:test >"$WORK/pull.out"
+env -u CHART_TEMPLATE_DIR -u VALUES_TEMPLATE -u ARCH_FILE \
+  bash "$SCRIPTS/pull-image.sh" registry.example.com/xds:test >"$WORK/pull.out"
 
 grep -qx "RUN_DIR=$WORK/pull-run" "$WORK/pull.out"
 grep -qx "CHART_TEMPLATE_DIR=$WORK/pull-run/template/xds-cluster" "$WORK/pull.out"
@@ -134,7 +159,8 @@ test -f "$WORK/pull-run/template/model_arch-lt-je-cpp-bnt3.json"
 PATH="$FAKE_BIN:$PATH" FAKE_IMAGE_ROOT="$FAKE_IMAGE_ROOT" \
 RUN_DIR="$WORK/pull-run-injected" TARGET_IP="192.0.2.10" TARGET_USER=root TARGET_PASSWORD=test \
 IMAGE_NAME="registry.example.com/xds" IMAGE_TAG="test" \
-bash "$SCRIPTS/pull-image.sh" "" >"$WORK/pull-injected.out"
+env -u CHART_TEMPLATE_DIR -u VALUES_TEMPLATE -u ARCH_FILE \
+  bash "$SCRIPTS/pull-image.sh" "" >"$WORK/pull-injected.out"
 grep -qx 'DEPLOY_IMAGE=registry.example.com/xds:test' "$WORK/pull-injected.out"
 
 echo "PASS: pull-image exports all three immutable template inputs"
@@ -163,7 +189,14 @@ for ((i=0; i<${#args[@]}; i++)); do
 done
 case "$all" in
   *"/models/architectures"*) cp "$payload" "$CAPTURE_DIR/registered-arch.json"; echo '{"ok":true}' ;;
-  *"/models/"*) if [[ -n "$payload" ]]; then cp "$payload" "$CAPTURE_DIR/registered-model.json"; fi; echo '{"ok":true}' ;;
+  *"/models/"*)
+    if [[ -n "$payload" ]]; then
+      cp "$payload" "$CAPTURE_DIR/registered-model.json"; echo '{"ok":true}'
+    elif [[ "$all" == *"/models/" ]]; then
+      echo '[]'
+    else
+      echo '{"status":"ACTIVE"}'
+    fi ;;
   *"/chat/completions"*) echo '{"choices":[{"message":{"content":"ok"}}]}' ;;
   *) echo '{}' ;;
 esac
@@ -173,9 +206,13 @@ chmod +x "$FAKE_BIN/helm" "$FAKE_BIN/curl"
 set -a
 source <(grep -E '^(RUN_DIR|CHART_DIR|VALUES_FILE|ARCH_REQUEST_FILE|RESOURCE_MANIFEST|ARCH_FILE|ARCH_NAME|NAMESPACE|RELEASE_NAME)=' "$WORK/render.out")
 set +a
-PATH="$FAKE_BIN:$PATH" CAPTURE_DIR="$CAPTURE_DIR" XDS_URL="http://xds.test/xds/v1" \
-  bash "$SCRIPTS/deploy-model.sh" >"$WORK/deploy.out"
-grep -q -- "upgrade --install $RELEASE_NAME $CHART_DIR" "$CAPTURE_DIR/helm.args"
+PATH="$FAKE_BIN:$PATH" CAPTURE_DIR="$CAPTURE_DIR" XDS_URL="http://xds.test/xds/v1" DEPLOY_ON_TARGET_HOST=1 \
+  TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test"}]' HEAD_LOG_ROOT="$WORK/head-logs" \
+  RELEASE_CLEANUP_TIMEOUT_SECONDS=1 RELEASE_CLEANUP_POLL_SECONDS=1 \
+  XDS_READY_TIMEOUT_SECONDS=1 XDS_READY_POLL_SECONDS=1 \
+  TASK_EXECUTOR_READY_TIMEOUT_SECONDS=1 TASK_EXECUTOR_READY_POLL_SECONDS=1 \
+  timeout 8s bash "$SCRIPTS/deploy-model.sh" >"$WORK/deploy.out" || { cat "$WORK/deploy.out" >&2; exit 1; }
+grep -q -- "install $RELEASE_NAME $CHART_DIR --namespace $NAMESPACE --create-namespace --values $VALUES_FILE" "$CAPTURE_DIR/helm.args"
 cmp "$ARCH_REQUEST_FILE" "$CAPTURE_DIR/registered-arch.json"
 
 PATH="$FAKE_BIN:$PATH" CAPTURE_DIR="$CAPTURE_DIR" XDS_URL="http://xds.test/xds/v1" \
