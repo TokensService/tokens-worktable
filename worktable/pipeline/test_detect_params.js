@@ -90,7 +90,7 @@ const detect = context.detectParams;
   console.log("PASS: no-positional-args 忽略内部位置参数");
 
   // 实际清理/检查脚本只能通过环境变量配置，不能把函数参数传给入口。
-  for (const name of ["cleanup-env.sh", "check-env.sh"]) {
+  for (const name of ["cleanup-env.sh", "check-env.sh", "bnt-standalone.sh"]) {
     const script = fs.readFileSync(require("path").join(__dirname, "scripts", name), "utf8");
     const params = detect(script, "sh");
     if (params.some((p) => p.kind === "pos")) throw new Error(name + " 不应识别位置参数");
