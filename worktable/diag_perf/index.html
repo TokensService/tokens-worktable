@@ -75,6 +75,24 @@
     .diag-flow .diag-node { padding:6px 10px; border:1px solid currentColor; border-radius:8px; opacity:.9; }
     .diag-flow .diag-arrow { opacity:.6; }
     .diag-note { font-size:12px; opacity:.65; margin-top:6px; }
+    .diag-modebar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+    .diag-mode { display:inline-flex; gap:3px; padding:3px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .diag-mode button { border:none; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); font:inherit; font-size:13px; padding:7px 14px; border-radius:7px; cursor:pointer; }
+    .diag-mode button:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .diag-mode button.on { color:#fff; background:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    .diag-datasets { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:12px; }
+    .diag-dataset-card { border-top:3px solid var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    .diag-dataset-card[data-dataset="a"] { border-top-color:#94a3b8; }
+    .diag-dataset-title { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+    .diag-dataset-fields { display:grid; gap:9px; }
+    .diag-field { display:grid; gap:4px; }
+    .diag-field > label { font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .diag-time-row { display:flex; gap:7px; align-items:center; flex-wrap:wrap; }
+    .diag-time-row .dshell-input { flex:1 1 150px; min-width:0; }
+    .diag-compare-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
+    .diag-change-up { color:#dc2626; }
+    .diag-change-down { color:#16a34a; }
+    @media (max-width:600px) { .diag-datasets,.diag-compare-grid { grid-template-columns:minmax(0,1fr); } }
   .diag-tabx { margin-left:6px; opacity:.5; font-size:12px; }
   .diag-tabx:hover { opacity:1; color:#ef4444; }
     .diag-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
@@ -107,7 +125,7 @@
   .diag-combo-item { padding:5px 8px; font-size:12px; border-radius:6px; cursor:pointer; color:var(--dsw-alias-label-primary,#e6e8eb); word-break:break-all; }
   .diag-combo-item:hover { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15)); }
   .diag-combo-empty { padding:5px 8px; font-size:12px; color:var(--dsw-alias-label-tertiary,#6b7280); }
-  /* 时间对比：图例虚线指示（与实线同色，区分当前/历史窗口） */
+  /* 数据集对比：图例虚线指示（与实线同色，区分劣化对象 B / 基线 A） */
   .diag-dash { width:16px; height:0; border-top:2px dashed currentColor; display:inline-block; flex:none; align-self:center; }
   .diag-clg { opacity:.8; }
   </style>
@@ -120,37 +138,7 @@
       <p class="dshell-sub">汇聚系统源码指标、普罗米修斯时序、Profiling、日志与硬件信息，定位推理链路性能瓶颈。</p>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="Prometheus 查询窗口（与「开始诊断」页设置区及各画板时间轴联动，改动即重新拉取）">窗口
-        <select class="dshell-input" id="rangeSel" style="width:auto;padding:3px 6px;font-size:12px">
-          <option value="5">近 5min</option><option value="15">近 15min</option><option value="30">近 30min</option>
-          <option value="60">近 1h</option><option value="240">近 4h</option><option value="480">近 8h</option>
-          <option value="720">近 12h</option><option value="1440">近 24h</option><option value="4320">近 72h</option>
-          <option value="abs">绝对时间…</option>
-        </select>
-      </label>
-      <span id="absRange" style="display:none;align-items:center;gap:6px">
-        <input class="dshell-input" id="absFrom" type="datetime-local" style="width:auto;padding:2px 4px;font-size:12px" />
-        <span class="dshell-muted" style="font-size:12px">~</span>
-        <input class="dshell-input" id="absTo" type="datetime-local" style="width:auto;padding:2px 4px;font-size:12px" />
-        <button class="dshell-btn" id="absApply" type="button" style="padding:3px 10px;font-size:12px">应用</button>
-      </span>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;font-size:12px" title="时间对比：叠加一个历史时间窗口的同口径数据（虚线，按相对位置索引对齐），用于环比/同比；需 Prometheus query_range 接入（/metrics 兜底模式不生效）">对比
-        <select class="dshell-input" id="cmpSel" style="width:auto;padding:3px 6px;font-size:12px">
-          <option value="off">关</option>
-          <option value="3600">1 小时前</option>
-          <option value="86400">1 天前</option>
-          <option value="259200">3 天前</option>
-          <option value="604800">1 周前</option>
-          <option value="abs">绝对时间…</option>
-        </select>
-      </label>
-      <span id="cmpAbs" style="display:none;align-items:center;gap:6px">
-        <input class="dshell-input" id="cmpFrom" type="datetime-local" style="width:auto;padding:2px 4px;font-size:12px" />
-        <span class="dshell-muted" style="font-size:12px">~</span>
-        <input class="dshell-input" id="cmpTo" type="datetime-local" style="width:auto;padding:2px 4px;font-size:12px" />
-        <button class="dshell-btn" id="cmpApply" type="button" style="padding:3px 10px;font-size:12px">应用</button>
-      </span>
-      <span class="dshell-muted" id="cmpHint" style="font-size:12px"></span>
+      <span class="dshell-muted" id="modeHint" style="font-size:12px"></span>
       <div class="theme-seg" id="themeSeg" title="背景主题（浅色 / 深色 / 跟随系统）">
         <button type="button" data-theme="system">系统</button>
         <button type="button" data-theme="dark">深</button>
@@ -183,41 +171,59 @@
 
   <!-- ============ 开始诊断 ============ -->
   <div class="diag-tabpane" data-pane="overview">
-    <!-- 设置：全部配置内联在本页顶部，改动即自动保存生效 -->
+    <div class="diag-modebar">
+      <div>
+        <h2 class="dshell-sub" style="margin:0 0 4px">诊断模式</h2>
+        <div class="diag-note" style="margin:0">单数据集定位自身瓶颈；双数据集固定按 B 相对基线 A 分析劣化原因。</div>
+      </div>
+      <div class="diag-mode" id="analysisMode" aria-label="诊断模式">
+        <button type="button" data-mode="single">单数据集分析</button>
+        <button type="button" data-mode="compare">双数据集劣化对比</button>
+      </div>
+    </div>
+    <!-- 公共设置：Prometheus 地址共用；数据集标签、时间与文件来源各自独立 -->
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">普罗米修斯数据源（时序指标）</h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">公共 Prometheus 数据源</h2>
       <div class="diag-formrow" style="margin-bottom:8px">
         <input class="dshell-input grow" id="setPromUrl" placeholder="http://host:port（默认 http://192.168.10.6:25889）" autocomplete="off" />
       </div>
       <div class="diag-formrow">
-        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">查询窗口（分钟）
-          <input class="dshell-input" id="setRangeM" type="number" min="5" max="4320" style="width:80px" /></label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">轮询间隔（秒）
           <input class="dshell-input" id="setPollS" type="number" min="5" max="600" style="width:80px" /></label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px" title="开：代联请求经系统代理转发（需服务端 NODE_USE_ENV_PROXY=1 生效）；关（默认）：服务端直连目标">走系统代理
           <input id="setUseProxy" type="checkbox" /></label>
       </div>
-      <div class="diag-formrow" style="margin-top:8px" id="labelFilterRow"></div>
-      <div class="diag-note" id="labelFilterNote">按 model_name / xds_namespace 过滤全部 Prometheus 查询（各画板、指标弹层与兜底抓取；留空 = 不过滤），候选值来自数据源，改动即自动保存并重新拉取。</div>
       <div class="diag-formrow" style="margin-top:8px">
         <button class="dshell-btn dshell-btnGhost" id="btnMetrics" type="button">获取数据源全部指标</button>
         <span class="dshell-muted" id="metricsBtnHint" style="font-size:12px"></span>
       </div>
-      <div class="diag-note">URL 参数 ?prom=host:port 优先于此处地址；改动后自动保存并按新配置重新拉取。</div>
+      <div class="diag-note">两个数据集共用此地址；URL 参数 ?prom=host:port 优先。标签和时间窗口会分别注入两轮 query_range 查询。</div>
     </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">日志目录</h2>
-      <div class="diag-formrow">
-        <input class="dshell-input grow" id="setLogDir" placeholder="服务端日志目录，如 /var/log/vllm（留空 = 不接入）" autocomplete="off" />
+    <div class="diag-datasets">
+      <div class="dshell-card diag-dataset-card" data-dataset="a" id="datasetACard">
+        <div class="diag-dataset-title"><h2 class="dshell-sub" style="margin:0" id="datasetATitle">数据集 A · 分析对象</h2><span class="dshell-badge" id="datasetABadge">当前数据</span></div>
+        <div class="diag-dataset-fields">
+          <div class="diag-field"><label>Prometheus 标签过滤</label><div class="diag-formrow" id="datasetAFilter"></div></div>
+          <div class="diag-field"><label>时间窗口</label><div class="diag-time-row">
+            <select class="dshell-input" id="datasetARange"><option value="5">近 5min</option><option value="15">近 15min</option><option value="30">近 30min</option><option value="60">近 1h</option><option value="240">近 4h</option><option value="480">近 8h</option><option value="720">近 12h</option><option value="1440">近 24h</option><option value="4320">近 72h</option><option value="abs">绝对时间…</option></select>
+            <span id="datasetAAbs" class="diag-time-row" style="display:none"><input class="dshell-input" id="datasetAFrom" type="datetime-local" /><span class="dshell-muted">~</span><input class="dshell-input" id="datasetATo" type="datetime-local" /></span>
+          </div></div>
+          <div class="diag-field"><label>日志文件或目录</label><input class="dshell-input" id="datasetALog" placeholder="/var/log/vllm 或 /var/log/vllm/server.log（留空 = 不接入）" autocomplete="off" /></div>
+          <div class="diag-field"><label>Profiling 文件或目录</label><input class="dshell-input" id="datasetAProf" placeholder="torch profiler / msprof 聚合 JSON 或导出目录" autocomplete="off" /></div>
+        </div>
       </div>
-      <div class="diag-note">目录为 dsh 服务端路径：经 /api/worktable/fs 列出目录内 .log 文件，取最新的一个经 /api/worktable/file 读取尾部 200 行渲染；目录留空、不可读或无 .log 文件时不展示日志。</div>
-    </div>
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">Profiling 数据目录</h2>
-      <div class="diag-formrow">
-        <input class="dshell-input grow" id="setProfDir" placeholder="torch profiler / msprof trace 导出目录（留空 = 不接入）" autocomplete="off" />
+      <div class="dshell-card diag-dataset-card" data-dataset="b" id="datasetBCard" style="display:none">
+        <div class="diag-dataset-title"><h2 class="dshell-sub" style="margin:0">数据集 B · 劣化对象</h2><span class="dshell-badge dshell-badgeWait">实线</span></div>
+        <div class="diag-dataset-fields">
+          <div class="diag-field"><label>Prometheus 标签过滤</label><div class="diag-formrow" id="datasetBFilter"></div></div>
+          <div class="diag-field"><label>时间窗口</label><div class="diag-time-row">
+            <select class="dshell-input" id="datasetBRange"><option value="5">近 5min</option><option value="15">近 15min</option><option value="30">近 30min</option><option value="60">近 1h</option><option value="240">近 4h</option><option value="480">近 8h</option><option value="720">近 12h</option><option value="1440">近 24h</option><option value="4320">近 72h</option><option value="abs">绝对时间…</option></select>
+            <span id="datasetBAbs" class="diag-time-row" style="display:none"><input class="dshell-input" id="datasetBFrom" type="datetime-local" /><span class="dshell-muted">~</span><input class="dshell-input" id="datasetBTo" type="datetime-local" /></span>
+          </div></div>
+          <div class="diag-field"><label>日志文件或目录</label><input class="dshell-input" id="datasetBLog" placeholder="与基线不同的 .log 文件或目录" autocomplete="off" /></div>
+          <div class="diag-field"><label>Profiling 文件或目录</label><input class="dshell-input" id="datasetBProf" placeholder="与基线不同的聚合 JSON 或导出目录" autocomplete="off" /></div>
+        </div>
       </div>
-      <div class="diag-note">列出目录内 .json / .trace 文件；取最新 JSON，若为 [[&quot;算子&quot;,&quot;占比%&quot;],…] 或 [{&quot;name&quot;:…,&quot;pct&quot;:…},…] 聚合摘要则直接渲染算子 Top10 与占比图，否则不展示。</div>
     </div>
     <div class="diag-note" id="setHint">改动即自动保存并生效；配置仅存于本机浏览器 localStorage。</div>
     <div class="diag-formrow" style="margin-top:8px">
@@ -230,6 +236,12 @@
 
   <!-- ============ 诊断报告 ============ -->
   <div class="diag-tabpane" data-pane="report" style="display:none">
+    <div class="dshell-card" id="compareReportCard" style="display:none">
+      <h2 class="dshell-sub" style="margin:0 0 8px">劣化摘要（数据集 B 相对基线 A）</h2>
+      <div class="dshell-kv" id="compareSummary"></div>
+      <div class="diag-note" id="compareStatus"></div>
+      <div class="diag-note">红色表示指标朝不利方向变化，绿色表示改善；Prometheus、日志和 Profiling 属于不同口径的关联证据，分组呈现，不作不可比的跨来源分数排序。</div>
+    </div>
     <div class="dshell-grid">
       <div class="dshell-stat"><div class="dshell-statLabel">TTFT P99</div><div class="dshell-statValue" id="ovTtft">—</div><div class="dshell-statDelta" id="ovTtftD"></div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">TPOT P99</div><div class="dshell-statValue" id="ovTpot">—</div><div class="dshell-statDelta" id="ovTpotD"></div></div>
@@ -337,8 +349,12 @@
       <div class="diag-note" id="profNote">数据来源：torch profiler / msprof 导出的 trace 汇总，按 kernel 类别聚合。</div>
     </div>
     <div class="dshell-card" id="profFilesCard" style="display:none">
-      <h2 class="dshell-sub" style="margin:0 0 8px">Profiling 数据目录内的 trace 文件</h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">当前数据集 Profiling 聚合文件</h2>
       <div class="dshell-list" id="profFiles"></div>
+    </div>
+    <div class="dshell-card" id="profCompareCard" style="display:none">
+      <h2 class="dshell-sub" style="margin:0 0 8px">Profiling 差异（B 相对 A）</h2>
+      <div class="dshell-kv" id="profCompare"></div>
     </div>
   </div>
 
@@ -367,10 +383,21 @@
 
   <!-- ============ 日志 ============ -->
   <div class="diag-tabpane" data-pane="logs" style="display:none">
-    <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">推理服务日志（自动标注异常行）</h2>
-      <div class="diag-logbox" id="logBox"></div>
-      <div class="diag-note" id="logNote"></div>
+    <div class="diag-compare-grid">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px" id="logPrimaryTitle">数据集 A 日志（自动标注异常行）</h2>
+        <div class="diag-logbox" id="logBox"></div>
+        <div class="diag-note" id="logNote"></div>
+      </div>
+      <div class="dshell-card" id="logBaselineCard" style="display:none">
+        <h2 class="dshell-sub" style="margin:0 0 8px">基线 A 日志</h2>
+        <div class="diag-logbox" id="logBaselineBox"></div>
+        <div class="diag-note" id="logBaselineNote"></div>
+      </div>
+    </div>
+    <div class="dshell-card" id="logCompareCard" style="display:none">
+      <h2 class="dshell-sub" style="margin:0 0 8px">日志异常差异（B 相对 A）</h2>
+      <div class="dshell-kv" id="logCompare"></div>
     </div>
   </div>
 
@@ -380,7 +407,7 @@
       <h2 class="dshell-sub" style="margin:0 0 8px">指标收集清单（数据源 / 采集方式 / 分析用途）</h2>
       <div class="dshell-kv" id="metricsDict"></div>
       <div class="dshell-divider"></div>
-      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；数据源地址、查询窗口、轮询间隔与日志 / Profiling 目录均可在「开始诊断」页顶部的设置区配置（URL 参数 ?prom=host:port 优先于设置区的地址）。Prometheus 不可达时自动回退 /metrics 瞬时抓取；均未命中时画板保持「暂无数据」，不使用模拟数据。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
+      <div class="diag-note">接入方式：本页经 Prometheus HTTP API（/api/v1/query_range）按 PromQL 拉取时序；公共地址、轮询间隔，以及各数据集独立的标签、时间窗口、日志和 Profiling 文件/目录均在「开始诊断」页配置。Prometheus 不可达时自动回退 /metrics 瞬时抓取；均未命中时画板保持「暂无数据」，不使用模拟数据。接入后每条序列的命中 PromQL、窗口统计与原始序列明细见「数据源」页。</div>
     </div>
   </div>
 
@@ -684,7 +711,7 @@ function openEdit(id){   /* 编辑：已有线改名称/候选 PromQL，附加�
     });
     if(xs.length)CUSTOM.extra[id]=xs;else delete CUSTOM.extra[id];
     refreshExtraLegend(id);
-    saveCustom();closeModal();poll();
+    saveCustom();closeModal();PROM_GEN++;poll();
   });
   rst.addEventListener("click",function(){
     keys.forEach(function(k){lsSet("diagPerf.promql."+k,"");});
@@ -754,13 +781,15 @@ function renderCustomPanels(){   /* 自定义画板整图绘制；内置画板�
   CUSTOM.panels.forEach(function(p){
     if(!document.getElementById(p.id))return;
     var sets=p.series.map(function(s){return {color:s.color,data:s._data||nanSeries()};});
-    if(CMP_ON){p.series.forEach(function(s){if(s._cmp)sets.push({color:s.color,data:s._cmp,dash:true});});}   /* 时间对比：同色虚线叠加 */
+    if(CMP_ON){p.series.forEach(function(s){if(s._cmp)sets.push({color:s.color,data:s._cmp,dash:true});});}   /* 基线 A：同色虚线叠加 */
     line(p.id,DATA.ts,sets,p.unit||"");
   });
   Object.keys(CUSTOM.extra).forEach(function(id){
     var xs=CUSTOM.extra[id];if(!xs||!xs.length)return;
     var c=CHARTS[id];if(!c)return;
-    line(id,c.labels,c.sets.concat(xs.map(function(s){return {color:s.color,data:s._data||nanSeries()};})),c.unit);
+    var sets=xs.map(function(s){return {color:s.color,data:s._data||nanSeries()};});
+    if(CMP_ON)xs.forEach(function(s){if(s._cmp)sets.push({color:s.color,data:s._cmp,dash:true});});
+    line(id,c.labels,c.sets.concat(sets),c.unit);
   });
 }
 function refreshLegend(p){
@@ -898,7 +927,7 @@ function openPanelModal(tab){
     if(!title||!q)return;
     var p={id:"cp_"+Date.now().toString(36),tab:tab,title:title,unit:(v.unit||"").trim(),
       series:[{name:(v.sname||"").trim()||"value",color:PALETTE[0],q:q}]};
-    CUSTOM.panels.push(p);buildPanelCard(p);saveCustom();poll();
+    CUSTOM.panels.push(p);buildPanelCard(p);saveCustom();PROM_GEN++;poll();
   },"添加");
 }
 function openCustomEdit(pid){
@@ -949,7 +978,7 @@ function openCustomEdit(pid){
     p.series=series;
     var card=document.getElementById("card_"+p.id);
     if(card)card.querySelector("h2").textContent=p.title;
-    refreshLegend(p);saveCustom();closeModal();poll();
+    refreshLegend(p);saveCustom();closeModal();PROM_GEN++;poll();
   });
   openModal(p.title+" · 编辑画板",body);
 }
@@ -988,7 +1017,7 @@ function line(id,labels,sets,unit){
   if(!has){g.font="11px sans-serif";g.fillText("暂无数据（等待数据源接入）",pad.l,pad.t+14);}   /* 无任何有效点：只画坐标网格并提示，不用模拟数据充数 */
   sets.forEach(function(s){
     g.strokeStyle=s.color;g.lineWidth=1.8;
-    if(s.dash){g.setLineDash([5,4]);g.globalAlpha=.7;}   /* 时间对比：历史窗口序列按相对位置叠加，虚线 + 降透明以区分当前实线 */
+    if(s.dash){g.setLineDash([5,4]);g.globalAlpha=.7;}   /* 基线 A 按相对位置叠加，虚线 + 降透明以区分 B 实线 */
     g.beginPath();
     s.data.forEach(function(v,i){var x=pad.l+iw*i/(n-1),y=pad.t+ih*(1-v/max);i?g.lineTo(x,y):g.moveTo(x,y);});
     g.stroke();
@@ -1015,7 +1044,7 @@ function waterfall(id,stages){
   });
   g.fillStyle=fg;g.fillText("端到端 "+total+"ms",W-100,10);
 }
-/* ================= 时间对比（叠加历史窗口同口径虚线，按相对位置索引对齐） ================= */
+/* ================= 数据集对比（叠加基线 A 同口径虚线，按相对位置索引对齐） ================= */
 function cmpJoin(base,keys,xf){   /* 开启时在 base 后追加同色虚线对比序列（COMPARE 未命中则跳过，保持原线集） */
   if(!CMP_ON)return base;
   var out=base.slice();
@@ -1034,11 +1063,11 @@ function syncCompareLegend(id){   /* 图例：当前线后、附加线前插入�
   var p=panelOf(id);
   var baseSpans=[].slice.call(lg.querySelectorAll("span:not(.diag-xlg):not(.diag-clg)"));
   var firstXlg=lg.querySelector(".diag-xlg");
-  var add=function(color,name){
+  var add=function(color,name,afterExtra){
     var sp=document.createElement("span");sp.className="diag-clg";
     var dash=document.createElement("i");dash.className="diag-dash";if(color)dash.style.color=color;
-    sp.appendChild(dash);sp.appendChild(document.createTextNode(name+"（对比）"));
-    if(firstXlg)lg.insertBefore(sp,firstXlg);else lg.appendChild(sp);
+    sp.appendChild(dash);sp.appendChild(document.createTextNode(name+"（基线 A）"));
+    if(firstXlg&&!afterExtra)lg.insertBefore(sp,firstXlg);else lg.appendChild(sp);
   };
   if(p){   /* 自定义画板：按 series / s._cmp，颜色与名称取自 series */
     p.series.forEach(function(s,i){if(!s._cmp)return;add(s.color,(s.name||("线"+(i+1))));});
@@ -1048,10 +1077,54 @@ function syncCompareLegend(id){   /* 图例：当前线后、附加线前插入�
       var base=baseSpans[i],dot=base?base.querySelector(".diag-dot"):null;
       add(dot?dot.style.background:null,base?base.textContent.trim():"");
     });
+    (CUSTOM.extra[id]||[]).forEach(function(s){if(s._cmp)add(s.color,s.name||"附加线",true);});
   }
 }
 
 /* ================= 渲染各页 ================= */
+function metricChange(base,degraded,lowerIsWorse){
+  if(base===null||degraded===null||!isFinite(base)||!isFinite(degraded))return null;
+  var delta=degraded-base,pct=base===0?(delta===0?0:null):delta/base*100;
+  return {base:base,degraded:degraded,delta:+delta.toFixed(2),pct:pct===null?null:+pct.toFixed(2),
+    worsePct:pct===null?null:+((lowerIsWorse?-pct:pct)).toFixed(2)};
+}
+function seriesAvg(a){var sum=0,n=0;(a||[]).forEach(function(v){if(typeof v==="number"&&isFinite(v)){sum+=v;n++;}});return n?sum/n:null;}
+function compareRows(){
+  var qNow=[DATA.queue.gw,DATA.queue.sched,DATA.queue.pd],qBase=[COMPARE["queue.gw"],COMPARE["queue.sched"],COMPARE["queue.pd"]];
+  var sumAvg=function(xs){var total=0,seen=0;xs.forEach(function(x){var v=seriesAvg(x);if(v!==null){total+=v;seen++;}});return seen?total:null;};
+  return [
+    {k:"ttft",name:"TTFT P99",unit:"ms",base:seriesAvg(COMPARE["ttft.p99"]),now:seriesAvg(DATA.ttft.p99),low:false},
+    {k:"tpot",name:"TPOT P99",unit:"ms",base:seriesAvg(COMPARE["tpot.p99"]),now:seriesAvg(DATA.tpot.p99),low:false},
+    {k:"queue",name:"队列时延",unit:"ms",base:sumAvg(qBase),now:sumAvg(qNow),low:false},
+    {k:"tps",name:"吞吐 TPS",unit:"",base:seriesAvg(COMPARE.tps),now:seriesAvg(DATA.tps),low:true},
+    {k:"hit",name:"缓存命中率",unit:"%",base:seriesAvg(COMPARE.hit),now:seriesAvg(DATA.hit),low:true},
+    {k:"kv",name:"KV Cache 占用",unit:"%",base:seriesAvg(COMPARE.kvUsage),now:seriesAvg(DATA.kv.usage),low:false},
+    {k:"waiting",name:"等待请求数",unit:"个",base:seriesAvg(COMPARE["batch.wait"]),now:seriesAvg(DATA.batch.wait),low:false},
+    {k:"transfer",name:"KV 传输时延",unit:"ms",base:seriesAvg(COMPARE["transfer.kv"]),now:seriesAvg(DATA.transfer.kv),low:false}
+  ].map(function(r){r.change=metricChange(r.base,r.now,r.low);return r;});
+}
+function degradationReason(row){
+  var pct=Math.abs(row.change.worsePct).toFixed(1)+"%";
+  return {
+    ttft:"TTFT 上升 "+pct+"：Prefill、排队或缓存复用可能拖慢首 Token。",
+    tpot:"TPOT 上升 "+pct+"：Decode 计算、HBM 带宽或 KV 换出是优先排查方向。",
+    queue:"队列时延上升 "+pct+"：请求积压或调度容量不足与劣化高度相关。",
+    tps:"TPS 下降 "+pct+"：服务处理能力降低，建议联动 batch、队列与硬件指标确认。",
+    hit:"缓存命中率下降 "+pct+"：前缀复用减少可能增加 Prefill 与 KV 传输开销。",
+    kv:"KV Cache 占用上升 "+pct+"：更接近容量上限，抢占/换出风险增大。",
+    waiting:"等待请求数上升 "+pct+"：当前容量无法及时消化请求，是吞吐劣化信号。",
+    transfer:"KV 传输时延上升 "+pct+"：PD 链路、Mooncake 或跨节点网络值得优先检查。"
+  }[row.k];
+}
+function logCounts(lines){var err=0,warn=0;(lines||[]).forEach(function(l){var c=logClass(l);if(c==="err")err++;else if(c==="warn")warn++;});return {err:err,warn:warn};}
+function profileDiff(){
+  if(!auxReady("prof"))return [];
+  var base={},seen={},out=[];
+  AUX.a.profOps.forEach(function(p){base[p[0]]=parseFloat(p[1])||0;});
+  AUX.b.profOps.forEach(function(p){var now=parseFloat(p[1])||0,d=now-(base[p[0]]||0);seen[p[0]]=1;out.push({name:p[0],base:base[p[0]]||0,now:now,delta:d});});
+  Object.keys(base).forEach(function(name){if(!seen[name])out.push({name:name,base:base[name],now:0,delta:-base[name]});});
+  return out.sort(function(a,b){return b.delta-a.delta;});
+}
 function renderAll(){
   /* 概览统计（无真实数据的末值返回 null，界面显示「—」） */
   var last=function(a){var v=a[a.length-1];return (typeof v==="number"&&isFinite(v))?v:null;};
@@ -1069,8 +1142,30 @@ function renderAll(){
   document.getElementById("ovTtftD").textContent=ttft50===null?"":"P50 "+ttft50+"ms";
   document.getElementById("ovTpsD").textContent=qpsV===null?"":"QPS "+qpsV.toFixed(1);
 
+  var cmpRows=ANALYSIS_MODE==="compare"?compareRows():[];
+  var comparable=cmpRows.filter(function(r){return !!r.change;}).length;
+  var dataReady=PROM_MATCHED>0||hasFiniteMetricData(DATA)||comparable>0;
+  var logComparable=ANALYSIS_MODE==="compare"&&auxReady("log"),profComparable=ANALYSIS_MODE==="compare"&&auxReady("prof");
+  var reportReady=hasReportEvidence(dataReady,logComparable,profComparable);
+  var compareConclusive=ANALYSIS_MODE==="compare"&&BASE_STATE.state==="ok"&&comparable>0;
+  var cmpCard=document.getElementById("compareReportCard");cmpCard.style.display=ANALYSIS_MODE==="compare"?"":"none";
+  if(ANALYSIS_MODE==="compare"){
+    document.getElementById("compareSummary").innerHTML=cmpRows.map(function(r){
+      if(!r.change)return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+r.name+'</span><span class="dshell-kvValue">数据不足</span></div>';
+      var p=r.change.pct,cls=r.change.worsePct>0?"diag-change-up":"diag-change-down",change=p===null?("Δ "+(r.change.delta>0?"+":"")+fmtNum(r.change.delta)+r.unit):((p>0?"+":"")+p.toFixed(1)+"%");
+      return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+r.name+'</span><span class="dshell-kvValue">A '+fmtNum(r.base)+r.unit+' → B '+fmtNum(r.now)+r.unit+' · <span class="'+cls+'">'+change+'</span></span></div>';
+    }).join("");
+    document.getElementById("compareStatus").textContent=compareConclusive
+      ?("已形成 "+comparable+" 项 A/B 同口径比较；基线共命中 "+BASE_STATE.matched+" 条查询。")
+      :(BASE_STATE.state==="loading"?"基线 A 正在拉取，暂不判断是否劣化。":BASE_STATE.state==="ok"?"数据集 B 当前窗口未命中可与 A 同口径比较的内置指标，Prometheus 比较结论不充分。":"基线 A 未命中或不可达，当前比较结论不充分；请检查 A 的标签、时间窗口和数据源状态。");
+    var ttftCmp=cmpRows.filter(function(r){return r.k==="ttft";})[0],tpsCmp=cmpRows.filter(function(r){return r.k==="tps";})[0];
+    var deltaText=function(r){if(!r||!r.change)return "基线暂无数据";var p=r.change.pct;return p===null?("较基线 Δ "+fmtNum(r.change.delta)):("较基线 "+(p>0?"+":"")+p.toFixed(1)+"%");};
+    document.getElementById("ovTtftD").textContent=deltaText(ttftCmp);
+    document.getElementById("ovTpsD").textContent=deltaText(tpsCmp);
+  }
+
   var hb=document.getElementById("healthBadge");
-  if(ttft99===null&&kvPct===null&&hitV===null&&tpot99===null){hb.className="dshell-badge dshell-badgeWait";hb.textContent="等待数据源接入";}
+  if(!dataReady){hb.className="dshell-badge dshell-badgeWait";hb.textContent="等待数据源接入";}
   else if((ttft99!==null&&ttft99>900)||(kvPct!==null&&kvPct>0.9)){hb.className="dshell-badge";hb.textContent="⚠ 存在性能风险";}
   else{hb.className="dshell-badge dshell-badgeDone";hb.textContent="整体健康";}
 
@@ -1086,17 +1181,29 @@ function renderAll(){
 
   /* 诊断结论 */
   var findings=[];
-  if(ttft99===null&&kvPct===null&&hitV===null&&tpot99===null&&qSched===null){
-    findings.push(["等待 Prometheus 数据接入：画板仅呈现真实拉取到的指标，接入前显示「暂无数据」。","ok"]);
+  if(!reportReady){
+    findings.push(["等待数据接入：Prometheus 未命中指标，且 A/B 日志与 Profiling 尚无可比较证据。","ok"]);
   }else{
-    if(qSched!==null&&qSched>45)findings.push(["调度队列时延偏高（"+qSched+"ms）：waiting 请求积压，建议增大 max_num_seqs 或扩容 Decode 实例。","warn"]);
-    if(kvPct!==null&&kvPct>0.85)findings.push(["KV Blocks 占用 "+(kvPct*100).toFixed(0)+"%：接近耗尽，可能触发抢占换出并拉高 TPOT，建议扩容 KV 池或降低 max_model_len。","warn"]);
-    if(hitV!==null&&hitV<65)findings.push(["前缀缓存命中率仅 "+hitV.toFixed(1)+"%：检查 system prompt 是否一致前置，提升 Mooncake 池复用收益。","warn"]);
-    if(tpot99!==null&&tpot99>100)findings.push(["TPOT P99 "+tpot99+"ms：Decode 侧 HBM 带宽接近饱和（88%），属带宽瓶颈，建议减小 batch 或启用投机解码。","warn"]);
-    if(!findings.length)findings.push(["各项指标处于正常区间，未发现显著瓶颈。","ok"]);
+    if(!dataReady)findings.push(["【Prometheus】当前未命中可诊断指标；以下结论仅依据已成功读取的日志或 Profiling 辅助证据。","warn"]);
+    if(ANALYSIS_MODE==="compare"){
+      if(!compareConclusive)findings.push([dataReady?"【A/B 对比】基线 A 数据不足，无法判断 B 是否相对劣化；以下仅保留 B 自身瓶颈与已接入的辅助证据。":"【A/B 对比】Prometheus A/B 同口径数据不足，指标侧无法判断 B 是否劣化。","warn"]);
+      else cmpRows.filter(function(r){return r.change&&r.change.worsePct>=5;}).sort(function(a,b){return b.change.worsePct-a.change.worsePct;}).slice(0,5).forEach(function(r){findings.push(["【Prometheus】"+degradationReason(r),"warn"]);});
+      if(logComparable){
+        var la=logCounts(AUX.a.logs),lb=logCounts(AUX.b.logs),logDelta=(lb.err+lb.warn)-(la.err+la.warn);
+        if(logDelta>0)findings.push(["【日志】数据集 B 异常增加 "+logDelta+" 条（A "+(la.err+la.warn)+" → B "+(lb.err+lb.warn)+"）：建议按时间戳与指标拐点交叉定位。","warn"]);
+      }
+      var pd=profComparable?profileDiff().filter(function(p){return p.delta>=3;})[0]:null;
+      if(pd)findings.push(["【Profiling】"+pd.name+" 占比增加 "+pd.delta.toFixed(1)+" 个百分点：该算子是 B 中增长最明显的执行热点。","warn"]);
+    }
+    var ownPrefix=ANALYSIS_MODE==="compare"?"【数据集 B 自身】":"";
+    if(qSched!==null&&qSched>45)findings.push([ownPrefix+"调度队列时延偏高（"+qSched+"ms）：waiting 请求积压，建议增大 max_num_seqs 或扩容 Decode 实例。","warn"]);
+    if(kvPct!==null&&kvPct>0.85)findings.push([ownPrefix+"KV Blocks 占用 "+(kvPct*100).toFixed(0)+"%：接近耗尽，可能触发抢占换出并拉高 TPOT，建议扩容 KV 池或降低 max_model_len。","warn"]);
+    if(hitV!==null&&hitV<65)findings.push([ownPrefix+"前缀缓存命中率仅 "+hitV.toFixed(1)+"%：检查 system prompt 是否一致前置，提升 Mooncake 池复用收益。","warn"]);
+    if(tpot99!==null&&tpot99>100)findings.push([ownPrefix+"TPOT P99 "+tpot99+"ms：Decode 侧 HBM 带宽接近饱和（88%），属带宽瓶颈，建议减小 batch 或启用投机解码。","warn"]);
+    if(!findings.length)findings.push([ANALYSIS_MODE==="compare"&&compareConclusive?("已形成的 "+comparable+" 项 A/B 同口径指标中，未发现超过 5% 的显著劣化信号。其余数据不足项不参与判断。") :"各项指标处于正常区间，未发现显著瓶颈。","ok"]);
   }
   document.getElementById("diagFindings").innerHTML=findings.map(function(f){
-    return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+f[0]+'</span><span class="dshell-badge '+(f[1]==="warn"?"dshell-badgeWait":"dshell-badgeDone")+'">'+(f[1]==="warn"?"关注":"正常")+'</span></div>';
+    return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+esc(f[0])+'</span><span class="dshell-badge '+(f[1]==="warn"?"dshell-badgeWait":"dshell-badgeDone")+'">'+(f[1]==="warn"?"关注":"正常")+'</span></div>';
   }).join("");
 
   /* 时延分解 */
@@ -1148,7 +1255,7 @@ function renderAll(){
 
   /* Profiling */
   document.getElementById("profOps").innerHTML=DATA.profOps.length?DATA.profOps.map(function(p){
-    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+p[0]+'</span><span class="dshell-kvValue">'+p[1]+'</span></div>';
+    return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+esc(p[0])+'</span><span class="dshell-kvValue">'+esc(p[1])+'</span></div>';
   }).join(""):'<div class="diag-note">暂无 Profiling 数据：请在「开始诊断」页顶部的设置区配置 Profiling 数据目录。</div>';
   if(DATA.profOps.length){
     var profSegs=DATA.profOps.slice(0,6).map(function(p,i){return {name:p[0],ms:parseFloat(p[1]),color:["#60a5fa","#a78bfa","#34d399","#f59e0b","#22d3ee","#f472b6"][i]};});
@@ -1175,7 +1282,7 @@ function renderAll(){
 
   /* 自定义画板与内置画板的附加线 */
   renderCustomPanels();
-  /* 时间对比图例：全部时序图同步刷新虚线项（当前线后、附加线前，与 sets 顺序一致） */
+  /* 基线图例：全部时序图同步刷新虚线项（当前线后、附加线前，与 sets 顺序一致） */
   BRUSH_IDS.forEach(syncCompareLegend);
 }
 
@@ -1235,7 +1342,7 @@ document.getElementById("btnDiagnose").addEventListener("click",function(){
   startPoll();
 });
 document.getElementById("btnExport").addEventListener("click",function(){
-  var blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),summary:{ttft_p99:document.getElementById("ovTtft").textContent,tpot_p99:document.getElementById("ovTpot").textContent,tps:document.getElementById("ovTps").textContent,cache_hit:document.getElementById("ovHit").textContent,kv_usage:document.getElementById("ovKv").textContent},data:DATA},null,2)],{type:"application/json"});
+  var blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),mode:ANALYSIS_MODE,datasets:DATASETS,summary:{ttft_p99:document.getElementById("ovTtft").textContent,tpot_p99:document.getElementById("ovTpot").textContent,tps:document.getElementById("ovTps").textContent,cache_hit:document.getElementById("ovHit").textContent,kv_usage:document.getElementById("ovKv").textContent},comparison:ANALYSIS_MODE==="compare"?compareRows():[],baselineStatus:BASE_STATE,data:DATA,baseline:ANALYSIS_MODE==="compare"?COMPARE:null,auxiliary:AUX},null,2)],{type:"application/json"});
   var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="diag-report-"+Date.now()+".json";a.click();
 });
 /* ================= Prometheus 时序接入（/api/v1/query_range） ================= */
@@ -1252,16 +1359,12 @@ var PROM_RANGE_M=(function(){
 })();
 var PROM_RANGE_S=PROM_RANGE_M*60;
 var PROM_STEP_S=Math.max(5,Math.round(PROM_RANGE_S/N));   /* 步长随窗口自适应：4h → 300s → 48 点，与图表布局一致；分钟级小窗口同样按 N 点细分 */
-function fmtRange(){return PROM_RANGE_M%60?("近 "+PROM_RANGE_M+"min"):("近 "+(PROM_RANGE_M/60)+"h");}   /* 窗口展示文案：整小时按 h，否则按 min */
+function fmtRange(ds){var m=ds?ds.rangeM:PROM_RANGE_M;return m%60?("近 "+m+"min"):("近 "+(m/60)+"h");}   /* 窗口展示文案：整小时按 h，否则按 min */
 var PROM_ABS=null;   /* 绝对时间窗口 {from,to}（epoch 秒），null = 相对窗口（近 N 小时） */
 try{var __pa=JSON.parse(lsGet("diagPerf.promAbs","")||"null");if(__pa&&__pa.to>__pa.from)PROM_ABS=__pa;}catch(e){}
 var USE_PROXY=lsGet("diagPerf.useSysProxy","")==="1";   /* 代联是否经系统代理转发（默认关 = 服务端直连） */
-/* 时间对比：叠加一个历史时间窗口的同口径序列（虚线，按相对位置索引对齐），用于环比/同比；localStorage 持久化 */
-var CMP_ON=false;             /* 对比开关 */
-var CMP_SHIFT_S=0;            /* 相对偏移（秒）：对比窗口 = 当前窗口整体前移（同宽同步长） */
-var CMP_ABS=null;             /* 绝对对比窗口 {from,to}（epoch 秒），null = 用相对偏移 */
-try{var __cs=JSON.parse(lsGet("diagPerf.cmpState","")||"null");if(__cs){CMP_ON=!!__cs.on;if(__cs.abs&&__cs.abs.to>__cs.abs.from)CMP_ABS=__cs.abs;else if(__cs.shift>0)CMP_SHIFT_S=__cs.shift;}}catch(e){}
-if(CMP_ON&&!CMP_ABS&&!CMP_SHIFT_S)CMP_SHIFT_S=86400;   /* 默认对比 1 天前 */
+/* 双数据集对比沿用原有虚线对比渲染通道：主数据为 B，COMPARE 为基线 A。 */
+var CMP_ON=false;
 var STEP_S=PROM_ABS?Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N)):PROM_STEP_S;   /* 当前生效步长（每次 pollProm 重算） */
 var POLL_MS=Math.min(600,Math.max(5,parseInt(lsGet("diagPerf.pollS","30"),10)||30))*1000;
 var LOG_DIR=lsGet("diagPerf.logDir","").replace(/\/+$/,"");    /* 服务端日志目录（留空 = 不接入） */
@@ -1273,15 +1376,66 @@ var LIVE=false;
 /* 标签过滤（model_name / xds_namespace）：设置区全局配置，注入全部 Prometheus 查询与兜底抓取，localStorage 持久化 */
 var LABEL_FILTER={model_name:"",xds_namespace:""};
 try{var __lf=JSON.parse(lsGet("diagPerf.labelFilter","")||"null");if(__lf){LABEL_FILTER.model_name=__lf.model_name||"";LABEL_FILTER.xds_namespace=__lf.xds_namespace||"";}}catch(e){}
+function normalizeDatasetConfig(raw,fallback){
+  raw=raw||{};fallback=fallback||{};
+  var abs=raw.abs||fallback.abs||null;
+  if(!abs||!(+abs.to>+abs.from))abs=null;else abs={from:+abs.from,to:+abs.to};
+  var rangeM=parseInt(raw.rangeM||fallback.rangeM||240,10);
+  return {
+    model_name:String(raw.model_name!==undefined?raw.model_name:(fallback.model_name||"")),
+    xds_namespace:String(raw.xds_namespace!==undefined?raw.xds_namespace:(fallback.xds_namespace||"")),
+    rangeM:Math.min(4320,Math.max(5,rangeM||240)),abs:abs,
+    logDir:String(raw.logDir!==undefined?raw.logDir:(fallback.logDir||"")).replace(/\/+$/,"") ,
+    profDir:String(raw.profDir!==undefined?raw.profDir:(fallback.profDir||"")).replace(/\/+$/,"")
+  };
+}
+function normalizeDatasetState(raw,legacy){
+  var hasNew=!!(raw&&typeof raw==="object"&&(raw.a||raw.b||raw.mode));
+  raw=hasNew?raw:{};legacy=legacy||{};
+  var la={model_name:(legacy.labels&&legacy.labels.model_name)||"",xds_namespace:(legacy.labels&&legacy.labels.xds_namespace)||"",
+    rangeM:legacy.rangeM||240,abs:legacy.abs||null,logDir:legacy.logDir||"",profDir:legacy.profDir||""};
+  if(!hasNew&&legacy.compare&&legacy.compare.on){
+    var b=normalizeDatasetConfig(null,la),a=normalizeDatasetConfig(null,la),cmp=legacy.compare;
+    if(cmp.abs&&cmp.abs.to>cmp.abs.from)a.abs={from:+cmp.abs.from,to:+cmp.abs.to};
+    else{
+      var shift=+cmp.shift||86400,now=+legacy.now||Math.floor(Date.now()/1000),to=b.abs?b.abs.to-shift:now-shift;
+      a.abs={from:b.abs?b.abs.from-shift:to-b.rangeM*60,to:to};
+    }
+    return {mode:"compare",a:a,b:b};
+  }
+  return {mode:raw.mode==="compare"?"compare":"single",a:normalizeDatasetConfig(raw.a,la),b:normalizeDatasetConfig(raw.b,{rangeM:240})};
+}
+var __datasetRaw=null;
+try{__datasetRaw=JSON.parse(lsGet("diagPerf.datasets","")||"null");}catch(e){}
+var __legacyCmp=null;
+try{__legacyCmp=JSON.parse(lsGet("diagPerf.cmpState","")||"null");}catch(e){}
+var DATASET_STATE=normalizeDatasetState(__datasetRaw,{labels:LABEL_FILTER,rangeM:PROM_RANGE_M,abs:PROM_ABS,logDir:LOG_DIR,profDir:PROF_DIR,compare:__legacyCmp});
+var ANALYSIS_MODE=DATASET_STATE.mode;
+var DATASETS={a:DATASET_STATE.a,b:DATASET_STATE.b};
+var CONFIG_GEN=0,PROM_GEN=0;
+function primaryDataset(){return ANALYSIS_MODE==="compare"?DATASETS.b:DATASETS.a;}
+function datasetFilter(ds){return {model_name:ds.model_name||"",xds_namespace:ds.xds_namespace||""};}
+function cloneDataset(ds){return normalizeDatasetConfig(JSON.parse(JSON.stringify(ds)));}
+function configSnapshot(){return {configGen:CONFIG_GEN,promGen:PROM_GEN,promUrl:PROM_URL,useProxy:USE_PROXY,mode:ANALYSIS_MODE,
+  datasets:{a:cloneDataset(DATASETS.a),b:cloneDataset(DATASETS.b)},primary:cloneDataset(primaryDataset())};}
+function staleRun(run){return run.configGen!==CONFIG_GEN||run.promGen!==PROM_GEN;}
+function syncDatasetGlobals(){
+  var ds=primaryDataset();
+  LABEL_FILTER=datasetFilter(ds);PROM_RANGE_M=ds.rangeM;PROM_RANGE_S=ds.rangeM*60;PROM_ABS=ds.abs;
+  PROM_STEP_S=Math.max(5,Math.round(PROM_RANGE_S/N));LOG_DIR=ds.logDir;PROF_DIR=ds.profDir;
+  CMP_ON=ANALYSIS_MODE==="compare";
+}
+syncDatasetGlobals();
 function escQL(s){return s.replace(/\\/g,"\\\\").replace(/"/g,'\\"');}
-function labelSelector(){   /* 当前过滤条件的 PromQL 标签选择器片段（空串 = 不过滤） */
+function labelSelector(filter){   /* 指定数据集过滤条件的 PromQL 标签选择器片段（空串 = 不过滤） */
+  filter=filter||LABEL_FILTER;
   var sel=[];
-  if(LABEL_FILTER.model_name)sel.push('model_name="'+escQL(LABEL_FILTER.model_name)+'"');
-  if(LABEL_FILTER.xds_namespace)sel.push('xds_namespace="'+escQL(LABEL_FILTER.xds_namespace)+'"');
+  if(filter.model_name)sel.push('model_name="'+escQL(filter.model_name)+'"');
+  if(filter.xds_namespace)sel.push('xds_namespace="'+escQL(filter.xds_namespace)+'"');
   return sel.join(",");
 }
-function withLabels(q){   /* 把全局标签过滤注入 PromQL：已有 {} 选择器全部注入；裸指标名补选择器（含 rate(vllm:xxx[5m]) 这类函数内不带 {} 的指标）；已含同名标签的不重复注入 */
-  var sel=labelSelector();if(!sel)return q;
+function withLabels(q,filter){   /* 把指定数据集标签过滤注入 PromQL；未传过滤条件时使用当前主数据集。 */
+  var sel=labelSelector(filter);if(!sel)return q;
   var add=sel.split(",").filter(function(m){return q.indexOf(m.split("=")[0]+"=")<0;}).join(",");
   if(!add)return q;
   /* 聚合算子与 PromQL 关键字/修饰词：不是指标名，不注入 */
@@ -1322,29 +1476,32 @@ function withLabels(q){   /* 把全局标签过滤注入 PromQL：已有 {} 选�
   }
   return out;
 }
-function labelMatch(labels){   /* /metrics 兜底路径：样本标签是否满足全局过滤 */
-  return (!LABEL_FILTER.model_name||labels.model_name===LABEL_FILTER.model_name)
-      && (!LABEL_FILTER.xds_namespace||labels.xds_namespace===LABEL_FILTER.xds_namespace);
+function labelMatch(labels,filter){   /* /metrics 兜底路径：样本标签是否满足指定数据集过滤 */
+  filter=filter||LABEL_FILTER;
+  return (!filter.model_name||labels.model_name===filter.model_name)
+      && (!filter.xds_namespace||labels.xds_namespace===filter.xds_namespace);
 }
 
 /* 当前「窗口」选择对应的时间网格（N 点）：绝对窗口固定起止，相对窗口右端取整到步长。
    兜底模式同样按此网格打时间轴，保证窗口选择与各画板时间联动 */
-function winEndStep(){
-  if(PROM_ABS)return {end:PROM_ABS.to,step:Math.max(1,Math.round((PROM_ABS.to-PROM_ABS.from)/N))};
-  return {end:Math.floor(Date.now()/1000/PROM_STEP_S)*PROM_STEP_S,step:PROM_STEP_S};
+function datasetWindow(ds,n,now){
+  n=n||N;now=now||Math.floor(Date.now()/1000);
+  if(ds.abs)return {end:ds.abs.to,step:Math.max(1,Math.round((ds.abs.to-ds.abs.from)/n))};
+  var step=Math.max(5,Math.round(ds.rangeM*60/n));
+  return {end:Math.floor(now/step)*step,step:step};
 }
-/* 时间对比窗口网格：相对偏移 = 当前窗口整体前移（同宽同步长），绝对窗口固定起止；均取 N 点，与当前窗口按索引对齐 */
+function winEndStep(){
+  return datasetWindow(primaryDataset(),N);
+}
+/* 基线 A 独立使用自己的标签和时间窗口，固定取 N 点后与 B 按相对位置对齐。 */
 function cmpEndStep(){
-  var w=winEndStep();
-  if(CMP_ABS)return {end:CMP_ABS.to,step:Math.max(1,Math.round((CMP_ABS.to-CMP_ABS.from)/N))};
-  return {end:w.end-CMP_SHIFT_S,step:w.step};
+  return datasetWindow(DATASETS.a,N);
 }
 function cmpGrid(){var w=cmpEndStep(),grid=[],i;for(i=N-1;i>=0;i--)grid.push(w.end-i*w.step);return grid;}
-function cmpShiftLabel(s){if(s%604800===0)return (s/604800)+" 周前";if(s%86400===0)return (s/86400)+" 天前";if(s%3600===0)return (s/3600)+" 小时前";return s+"s 前";}
-function cmpWinText(){   /* 对比窗口展示文案（图例 / 数据源页用） */
+function cmpWinText(){   /* 基线 A 窗口展示文案（图例 / 数据源页用） */
   if(!CMP_ON)return "关";
-  if(CMP_ABS)return "绝对 "+fmtTs(CMP_ABS.from)+" ~ "+fmtTs(CMP_ABS.to);
-  return cmpShiftLabel(CMP_SHIFT_S);
+  if(DATASETS.a.abs)return "基线 A · "+fmtTs(DATASETS.a.abs.from)+" ~ "+fmtTs(DATASETS.a.abs.to);
+  return "基线 A · "+fmtRange(DATASETS.a);
 }
 function gridLabels(grid){   /* 时间轴标签：窗口跨天时带 MM-DD 日期前缀，同日只显示 HH:MM */
   var d0=new Date(grid[0]*1000),d1=new Date(grid[grid.length-1]*1000);
@@ -1358,8 +1515,8 @@ function winLabels(){var w=winEndStep(),grid=[];for(var i=N-1;i>=0;i--)grid.push
 
 /* 代联 GET：优先走 /api/worktable/proxy（仅回环/内网），代理自身失败才回退浏览器直连；
    目标站明确应答 HTTP 错误（如 PromQL 执行报 422）时携带服务端错误信息抛出，不再走直连兜底 */
-function proxyGet(url){
-  return fetch("/api/worktable/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:url,useProxy:USE_PROXY})})
+function proxyGet(url,useProxy){
+  return fetch("/api/worktable/proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:url,useProxy:useProxy===undefined?USE_PROXY:useProxy})})
     .then(function(r){if(!r.ok)throw new Error("proxy");return r.json();})
     .then(function(j){
       if(!j||typeof j.body!=="string")throw new Error("bad");
@@ -1524,12 +1681,12 @@ PROM_DEFS.forEach(function(def){
   }catch(e){}
 });
 
-/* query_range：返回含非空序列的完整 result（[{metric,values},...]），无数据返回 null；查询统一注入全局标签过滤 */
-function promRange(q,end,step){
-  var st=step||STEP_S;   /* 时间对比用对比窗口步长，主路径沿用当前窗口 STEP_S */
-  var url=PROM_URL+"/api/v1/query_range?query="+encodeURIComponent(withLabels(q))
+/* query_range：返回含非空序列的完整 result；每次查询显式传入所属数据集的标签过滤。 */
+function promRange(q,end,step,filter,run){
+  var st=step||STEP_S;   /* A/B 可分别传入自己的窗口步长。 */
+  var url=(run?run.promUrl:PROM_URL)+"/api/v1/query_range?query="+encodeURIComponent(withLabels(q,filter))
     +"&start="+(end-(N-1)*st)+"&end="+end+"&step="+st;
-  return proxyGet(url).then(function(text){
+  return proxyGet(url,run?run.useProxy:undefined).then(function(text){
     var j=JSON.parse(text);
     if(!j||j.status!=="success"||!j.data||!j.data.result)return null;
     var res=j.data.result;
@@ -1540,7 +1697,7 @@ function promRange(q,end,step){
 
 /* 把 query_range 结果对齐到固定时间网格：缺口前向填充、头部后向回填 */
 function alignValues(values,grid,step){
-  var s=step||STEP_S,m={},i;   /* 时间对比按对比窗口步长对齐，主路径沿用当前窗口 STEP_S */
+  var s=step||STEP_S,m={},i;   /* A/B 分别按自己的窗口步长对齐到 N 点。 */
   for(i=0;i<values.length;i++)m[Math.round(values[i][0]/s)]=parseFloat(values[i][1]);
   var out=[],last=null;
   for(i=0;i<grid.length;i++){
@@ -1553,6 +1710,9 @@ function alignValues(values,grid,step){
 }
 function setPath(obj,path,v){var p=path.split(".");for(var i=0;i<p.length-1;i++)obj=obj[p[i]];obj[p[p.length-1]]=v;}
 function applySeries(next){
+  PROM_DEFS.forEach(function(def){
+    if(def.k==="kvUsage")DATA.kv.usage=nanSeries();else setPath(DATA,def.k,nanSeries());
+  });
   for(var k in next){
     if(k==="kvUsage"){DATA.kv.usage=next[k];continue;}
     setPath(DATA,k,next[k]);
@@ -1564,7 +1724,22 @@ function applySeries(next){
 var PROM_STATE={};      /* def.k → {q, latest, min, max, avg, series:[{labels,latest}]} */
 var PROM_PANEL_MODE="init";   /* init | ok | empty | metrics | down */
 var PROM_LAST_OK="—";
-var COMPARE={};               /* 时间对比：def.k → 对比窗口对齐序列（NaN 空序列 = 未命中/未拉取），pollProm 每轮清空回填；自定义画板线存 s._cmp */
+var COMPARE={};               /* 基线 A：def.k → 对齐序列；pollProm 每轮清空回填，自定义画板线存 s._cmp。 */
+var BASE_STATE={state:ANALYSIS_MODE==="compare"?"loading":"off",matched:0,total:0};
+var PROM_MATCHED=0;
+function makeAux(ds){return {logs:[],logName:"",logState:ds.logDir?"loading":"unconfigured",profOps:[],profName:"",profFiles:[],profState:ds.profDir?"loading":"unconfigured"};}
+var AUX={a:makeAux(DATASETS.a),b:makeAux(DATASETS.b)};
+function auxReady(kind){return AUX.a[kind+"State"]==="loaded"&&AUX.b[kind+"State"]==="loaded";}
+function hasFiniteMetricData(value,key){
+  if(key==="ts"||key==="profOps")return false;
+  if(Array.isArray(value))return value.some(function(v){return typeof v==="number"&&isFinite(v);});
+  if(value&&typeof value==="object")return Object.keys(value).some(function(k){return hasFiniteMetricData(value[k],k);});
+  return false;
+}
+function hasReportEvidence(promReady,logReady,profReady){return !!(promReady||logReady||profReady);}
+function clearPromRound(labels){
+  PROM_MATCHED=0;COMPARE={};applySeries({});DATA.ts=labels;LIVE=false;clearAllSel();renderAll();
+}
 
 /* 有限并发池：tasks 为 ()=>Promise 数组，conc 路并行，全部 settle 后 resolve（单任务失败不中断其余任务） */
 function pool(tasks,conc){
@@ -1583,29 +1758,30 @@ function pool(tasks,conc){
 
 /* 主路径：Prometheus query_range 拉满整个窗口，cb("ok"|"empty"|"down")
    序列间 5 路并发（每条序列的候选 PromQL 仍按顺序试），避免 19+ 条串行查询把整窗刷新拖到分钟级 */
-function pollProm(cb){
-  var w=winEndStep(),end=w.end,step=w.step;   /* 窗口网格：绝对窗口固定起止、步长按窗口宽度；相对窗口右端取整到步长 */
-  STEP_S=step;
+function pollProm(cb,run){
+  run=run||configSnapshot();
+  var mainDs=run.primary,baseDs=run.datasets.a,cmpOn=run.mode==="compare";
+  var w=datasetWindow(mainDs,N),end=w.end,step=w.step;   /* A/B 配置在本轮开始时快照，异步过程不再读取可变全局。 */
+  var mainFilter=datasetFilter(mainDs),baseFilter=datasetFilter(baseDs);
   var grid=[],i;
   for(i=N-1;i>=0;i--)grid.push(end-i*step);
   var labels=gridLabels(grid);
-  var matched=0,errors=0,next={};
-  PROM_STATE={};
+  var matched=0,mainErrors=0,next={},promState={},baseNext={},baseMatched=0,baseErrors=0,baseTaskCount=0;
   var firstValues=function(res){
     for(var i=0;i<res.length;i++)if(res[i].values&&res[i].values.length)return res[i].values;
     return null;
   };
   var tasks=PROM_DEFS.map(function(def){return function(){
-    var qi=0,lastErr=null;
+    var qi=0,lastErr=null,queries=def.q.slice();
     /* 候选 PromQL 依次试：返回空试下一条；执行报错（如 422）记下错误也试下一条 */
     var tryQ=function(){
-      if(qi>=def.q.length)return Promise.resolve(null);
-      var q=def.q[qi++];
-      return promRange(q,end).then(function(res){return res?{res:res,q:q}:tryQ();},function(e){lastErr=e;return tryQ();});
+      if(qi>=queries.length)return Promise.resolve(null);
+      var q=queries[qi++];
+      return promRange(q,end,step,mainFilter,run).then(function(res){return res?{res:res,q:q}:tryQ();},function(e){lastErr=e;return tryQ();});
     };
     return tryQ().then(function(r){
       if(!r){   /* 全部候选无数据 = 未匹配；全部候选报错 = 该序列查询报错（不拖垮整轮拉取） */
-        if(lastErr){errors++;PROM_STATE[def.k]={err:String((lastErr&&lastErr.message)||lastErr)};}
+        if(lastErr){mainErrors++;promState[def.k]={err:String((lastErr&&lastErr.message)||lastErr)};}
         return;
       }
       var values=firstValues(r.res);
@@ -1618,66 +1794,76 @@ function pollProm(cb){
       /* 记录呈现状态：命中查询、窗口统计、原始序列（按实例/标签细分，取末值） */
       var scaled=next[def.k],sum=0;
       scaled.forEach(function(v){sum+=v;});
-      PROM_STATE[def.k]={q:withLabels(r.q),latest:scaled[scaled.length-1],
+      promState[def.k]={q:withLabels(r.q,mainFilter),latest:scaled[scaled.length-1],
         min:Math.min.apply(null,scaled),max:Math.max.apply(null,scaled),avg:+(sum/scaled.length).toFixed(2),
         series:r.res.map(function(s){
           var lv=(s.values&&s.values.length)?xform(parseFloat(s.values[s.values.length-1][1])):null;
           return {labels:s.metric||{},latest:lv};
         })};
       matched++;
-    }).catch(function(e){errors++;PROM_STATE[def.k]={err:String((e&&e.message)||e)};});
+    }).catch(function(e){mainErrors++;promState[def.k]={err:String((e&&e.message)||e)};});
   };});
   /* 自定义画板的线与内置画板的附加线：逐条 query_range，对齐到同一时间网格（无数据记 null，渲染为 0 线） */
   var customSeries=[];
-  CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){customSeries.push(s);});});
-  Object.keys(CUSTOM.extra).forEach(function(id){(CUSTOM.extra[id]||[]).forEach(function(s){customSeries.push(s);});});
-  customSeries.forEach(function(s){
+  CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){customSeries.push({series:s,q:s.q});});});
+  Object.keys(CUSTOM.extra).forEach(function(id){(CUSTOM.extra[id]||[]).forEach(function(s){customSeries.push({series:s,q:s.q});});});
+  var mainCustom=[];
+  customSeries.forEach(function(item){
     tasks.push(function(){
-      return promRange(s.q,end).then(function(res){
-        s._data=null;
+      return promRange(item.q,end,step,mainFilter,run).then(function(res){
+        var data=null;
         if(!res)return;
         var values=firstValues(res);
         if(!values)return;
-        s._data=alignValues(values,grid).map(function(v){return v===null?NaN:+v.toFixed(2);});
+        data=alignValues(values,grid).map(function(v){return v===null?NaN:+v.toFixed(2);});
+        mainCustom.push({series:item.series,data:data});
         matched++;
-      }).catch(function(){s._data=null;errors++;});
+      }).catch(function(){mainErrors++;});
     });
   });
-  /* 时间对比：开启时再为每条序列拉取对比窗口同口径数据（相对偏移同宽同步长 / 绝对窗口固定起止），
-     不计入 matched（次要，命中后回填 COMPARE / s._cmp；报错计入 errors 以维持「全部不可达→down」判定） */
-  if(CMP_ON){
-    COMPARE={};customSeries.forEach(function(s){s._cmp=null;});   /* 每轮清空对比缓存，命中后回填 */
-    var cw=cmpEndStep(),cgrid=cmpGrid(),cstep=cw.step;
+  var mainTaskCount=tasks.length;
+  /* 双数据集模式：再按基线 A 的标签与独立窗口拉取同口径序列，回填 COMPARE / s._cmp。 */
+  var baseCustom=[];
+  if(cmpOn){
+    var cw=datasetWindow(baseDs,N),cgrid=[],cstep=cw.step;
+    for(i=N-1;i>=0;i--)cgrid.push(cw.end-i*cstep);
+    baseTaskCount=PROM_DEFS.length+customSeries.length;
     PROM_DEFS.forEach(function(def){
       tasks.push(function(){
-        var qi=0;
-        var tryQ=function(){if(qi>=def.q.length)return Promise.resolve(null);var q=def.q[qi++];return promRange(q,cw.end,cstep).then(function(res){return res||tryQ();},function(){return tryQ();});};
+        var qi=0,lastErr=null,queries=def.q.slice();
+        var tryQ=function(){if(qi>=queries.length)return Promise.resolve(null);var q=queries[qi++];return promRange(q,cw.end,cstep,baseFilter,run).then(function(res){return res||tryQ();},function(e){lastErr=e;return tryQ();});};
         return tryQ().then(function(res){
-          if(!res)return;
+          if(!res){if(lastErr)baseErrors++;return;}
           var values=firstValues(res);
           if(!values)return;
           var arr=alignValues(values,cgrid,cstep);
           if(arr[arr.length-1]===null)return;
           var scale=def.scale||1;var xform=function(v){v=v*scale;if(def.map)v=def.map(v);return +v.toFixed(2);};
-          COMPARE[def.k]=arr.map(xform);
-        }).catch(function(){errors++;});
+          baseNext[def.k]=arr.map(xform);baseMatched++;
+        }).catch(function(){baseErrors++;});
       });
     });
-    var cmpPanelSeries=[];
-    CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){cmpPanelSeries.push(s);});});
-    cmpPanelSeries.forEach(function(s){
+    customSeries.forEach(function(item){
       tasks.push(function(){
-        return promRange(s.q,cw.end,cstep).then(function(res){
-          s._cmp=null;if(!res)return;
+        return promRange(item.q,cw.end,cstep,baseFilter,run).then(function(res){
+          if(!res)return;
           var values=firstValues(res);
           if(!values)return;
-          s._cmp=alignValues(values,cgrid,cstep).map(function(v){return v===null?NaN:+v.toFixed(2);});
-        }).catch(function(){s._cmp=null;errors++;});
+          baseCustom.push({series:item.series,data:alignValues(values,cgrid,cstep).map(function(v){return v===null?NaN:+v.toFixed(2);})});baseMatched++;
+        }).catch(function(){baseErrors++;});
       });
     });
   }
   pool(tasks,5).then(function(){
-    if(!matched){cb(errors>=tasks.length?"down":"empty");return;}   /* 全部报错才判不可达；部分报错仅该序列标错 */
+    if(staleRun(run)){cb("stale");return;}
+    STEP_S=step;PROM_STATE=promState;PROM_MATCHED=matched;COMPARE=baseNext;
+    customSeries.forEach(function(item){item.series._data=null;item.series._cmp=null;});
+    mainCustom.forEach(function(x){x.series._data=x.data;});baseCustom.forEach(function(x){x.series._cmp=x.data;});
+    BASE_STATE=cmpOn?{state:baseMatched?"ok":(baseErrors>=baseTaskCount?"down":"empty"),matched:baseMatched,total:baseTaskCount}:{state:"off",matched:0,total:0};
+    if(!matched){
+      clearPromRound(labels);
+      cb(mainErrors>=mainTaskCount?"down":"empty");return;   /* 当前轮无 B 数据时撤销旧曲线，避免与新 A 基线组成跨轮次比较。 */
+    }
     DATA.ts=labels;
     applySeries(next);
     clearAllSel();   /* 整窗数据被替换，旧选区索引已失效 */
@@ -1694,16 +1880,21 @@ function fmtTs(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);
 function renderPromPanel(){
   var modeText={init:"检测中…",ok:"实时数据 · Prometheus query_range",empty:"已连通 · 指标名未匹配（看板暂无数据）",
     metrics:"/metrics 瞬时抓取兜底",down:"数据源不可达（看板暂无数据，等待重试）"}[PROM_PANEL_MODE]||PROM_PANEL_MODE;
+  var main=primaryDataset(),mainName=ANALYSIS_MODE==="compare"?"数据集 B（劣化对象）":"数据集 A（分析对象）";
   var meta=[
     ["数据源地址",PROM_URL],
     ["接入模式",modeText],
-    ["标签过滤",labelSelector()?("{"+labelSelector()+"}"):"无（全部序列）"],
+    ["诊断模式",ANALYSIS_MODE==="compare"?"双数据集劣化对比（B 相对 A）":"单数据集瓶颈分析"],
+    [mainName+"标签",labelSelector(datasetFilter(main))?("{"+labelSelector(datasetFilter(main))+"}"):"无（全部序列）"],
     ["代联代理",USE_PROXY?"经系统代理转发":"服务端直连（不走代理）"],
-    ["查询窗口",(PROM_ABS?("绝对 "+fmtTs(PROM_ABS.from)+" ~ "+fmtTs(PROM_ABS.to)):fmtRange())+" · "+N+" 点 · 步长 "+STEP_S+"s"],
-    ["时间对比",cmpWinText()+(CMP_ON?" · 虚线叠加（按相对位置索引对齐，仅 query_range 模式生效）":"")],
+    [mainName+"窗口",(main.abs?("绝对 "+fmtTs(main.abs.from)+" ~ "+fmtTs(main.abs.to)):fmtRange(main))+" · "+N+" 点 · 步长 "+STEP_S+"s"],
     ["轮询间隔",(POLL_MS/1000)+"s"],
     ["最近成功拉取",PROM_LAST_OK]
   ];
+  if(CMP_ON){
+    var bst={loading:"拉取中…",ok:"已命中 "+BASE_STATE.matched+" / "+BASE_STATE.total+" 条查询",empty:"已连通但未命中可比较序列",down:"查询失败或数据源不可达"}[BASE_STATE.state]||BASE_STATE.state;
+    meta.splice(5,0,["基线 A 标签",labelSelector(datasetFilter(DATASETS.a))?("{"+labelSelector(datasetFilter(DATASETS.a))+"}"):"无（全部序列）"],["基线 A 窗口",cmpWinText()+" · 虚线叠加"],["基线 A 状态",bst]);
+  }
   document.getElementById("promMeta").innerHTML=meta.map(function(m){
     return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+m[0]+'</span><span class="dshell-kvValue">'+esc(m[1])+'</span></div>';
   }).join("");
@@ -1711,7 +1902,7 @@ function renderPromPanel(){
     (PROM_PANEL_MODE==="metrics"?"当前经 /metrics 文本瞬时抓取按指标名正则匹配，单点推入序列，无 PromQL 明细。"
     :PROM_PANEL_MODE==="down"?"代理与浏览器直连均不可达，按轮询间隔自动重试；也可点页面底部「刷新数据」立即手动重试，或在「开始诊断」页顶部的设置区修改数据源地址。"
     :"请求经 /api/worktable/proxy 代联（仅回环/内网），失败回退浏览器直连；命中明细见下表。")
-    +(CMP_ON?" 时间对比已开启："+cmpWinText()+"，对比序列以虚线叠加于各时序图（/metrics 兜底模式不生成对比）。":"");
+    +(CMP_ON?" 双数据集对比已开启：B 以实线呈现，基线 A 以同色虚线叠加；两者各自使用独立标签与时间窗口（/metrics 兜底模式不生成基线）。":"");
 
   var hit=0;
   var rows=PROM_DEFS.map(function(def){
@@ -1752,16 +1943,18 @@ function setSrcBadge(state,msg){
   b.textContent=msg;
 }
 /* 兜底路径：瞬时抓取 /metrics 文本，单点推入序列 */
-function fetchMetrics(cb){
-  proxyGet(METRICS_URL).then(function(t){cb(t);}).catch(function(){cb(null);});
+function fetchMetrics(run,cb){
+  proxyGet(run.promUrl+"/metrics",run.useProxy).then(function(t){cb(t);}).catch(function(){cb(null);});
 }
-var POLLING=false;   /* 防重入：上一轮拉取未完成时跳过本次（自动轮询与手动刷新共用 poll） */
+var POLLING=false,POLL_AGAIN=false;   /* 防重入；设置变化发生在拉取中时，当前轮结束后立即补拉新数据集。 */
 function poll(done){
-  if(POLLING){if(done)done("busy");return;}
+  if(POLLING){POLL_AGAIN=true;if(done)done("busy");return;}
   POLLING=true;
-  var finish=function(state){POLLING=false;if(done)done(state);};
-  setSrcBadge("","数据拉取中 · Prometheus 并发查询 "+(PROM_DEFS.length+customSeriesCount())+" 条序列"+(CMP_ON?"（含时间对比窗口）":"")+"…");   /* 即时反馈：切窗口/轮询一开始就亮状态 */
+  var run=configSnapshot();
+  var finish=function(state){POLLING=false;if(done)done(state);if(POLL_AGAIN){POLL_AGAIN=false;setTimeout(poll,0);}};
+  setSrcBadge("","数据拉取中 · Prometheus 并发查询 "+(PROM_DEFS.length+customSeriesCount())+" 条序列"+(CMP_ON?" × A/B 两个数据集":"")+"…");
   pollProm(function(state){
+    if(state==="stale"){finish("stale");return;}
     if(state==="ok"){
       PROM_PANEL_MODE="ok";renderPromPanel();
       setSrcBadge("ok","实时数据 · Prometheus "+PROM_URL.replace(/^https?:\/\//,"")+" · "+(PROM_ABS?"绝对窗口":fmtRange())+" · "+POLL_MS/1000+"s 刷新");
@@ -1776,17 +1969,19 @@ function poll(done){
       return;
     }
     /* Prometheus 不可达 → 回退 /metrics 瞬时抓取 */
-    fetchMetrics(function(text){
+    fetchMetrics(run,function(text){
+      if(staleRun(run)){finish("stale");return;}
       if(text){
         var map=parseProm(text);
-        /* 全局标签过滤同样作用于兜底抓取：丢弃不满足 model_name/xds_namespace 的样本 */
-        if(LABEL_FILTER.model_name||LABEL_FILTER.xds_namespace){
+        /* 当前主数据集标签过滤同样作用于兜底抓取。 */
+        var runFilter=datasetFilter(run.primary);
+        if(runFilter.model_name||runFilter.xds_namespace){
           Object.keys(map).forEach(function(name){
-            map[name]=map[name].filter(function(s){return labelMatch(s.labels);});
+            map[name]=map[name].filter(function(s){return labelMatch(s.labels,runFilter);});
             if(!map[name].length)delete map[name];
           });
         }
-        if(applyMetrics(map)){LIVE=true;pushLabel();renderAll();PROM_PANEL_MODE="metrics";setSrcBadge("ok","实时数据 · /metrics 瞬时抓取 · "+POLL_MS/1000+"s 刷新");}
+        if(applyMetrics(map)){PROM_MATCHED=1;LIVE=true;pushLabel();renderAll();PROM_PANEL_MODE="metrics";setSrcBadge("ok","实时数据 · /metrics 瞬时抓取 · "+POLL_MS/1000+"s 刷新");}
         else{PROM_PANEL_MODE="empty";setSrcBadge("warn","已连通 · 指标名未匹配映射表（画板暂无数据）");}
       }else{
         if(!LIVE)renderAll();
@@ -1796,41 +1991,64 @@ function poll(done){
       renderPromPanel();
       finish(state);
     });
-  });
+  },run);
 }
 
 /* ================= 日志目录（经 /api/worktable/fs + /file 读服务端日志尾部） ================= */
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function escAttr(s){return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/'/g,"&#39;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 function logClass(line){if(/error|fatal|exception/i.test(line))return "err";if(/warn/i.test(line))return "warn";return "info";}
-function renderLogs(lines){
-  document.getElementById("logBox").innerHTML=lines.map(function(l){
+function renderLogLines(id,lines){
+  document.getElementById(id).innerHTML=lines.map(function(l){
     return '<div class="diag-log-'+logClass(l)+'">'+esc(l)+'</div>';
   }).join("");
 }
-function setLogNote(t){document.getElementById("logNote").textContent=t;}
-function loadLogs(){
-  if(!LOG_DIR){document.getElementById("logBox").innerHTML="";setLogNote("未配置日志目录：在「开始诊断」页顶部的设置区配置服务端日志目录后接入真实日志。");return;}
-  fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:LOG_DIR})})
+function readSource(source,re){
+  if(re.test(source.split("/").pop()))return fetch("/api/worktable/file?path="+encodeURIComponent(source)).then(function(r){if(!r.ok)throw new Error("file");return r.text().then(function(text){return {name:source,text:text,files:[source]};});});
+  return fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:source})})
     .then(function(r){return r.json();})
     .then(function(j){
       if(!j||!Array.isArray(j.entries))throw new Error("fs");
-      var files=j.entries.filter(function(e){return !e.isDir&&/\.log$/i.test(e.name);}).map(function(e){return e.path;}).sort();
-      if(!files.length)throw new Error("nolog");
+      var files=j.entries.filter(function(e){return !e.isDir&&re.test(e.name);}).map(function(e){return e.path;}).sort();
+      if(!files.length)throw new Error("empty");
       var newest=files[files.length-1];
       return fetch("/api/worktable/file?path="+encodeURIComponent(newest)).then(function(r){
         if(!r.ok)throw new Error("file");
-        return r.text().then(function(t){return {name:newest,text:t};});
+        return r.text().then(function(t){return {name:newest,text:t,files:files};});
       });
-    })
-    .then(function(res){
+    });
+}
+function loadLogDataset(key,source){
+  if(!source)return Promise.resolve({key:key,logs:[],name:"",state:"unconfigured"});
+  return readSource(source,/\.log$/i).then(function(res){
       var tail=res.text.split("\n").filter(function(l){return l.trim();}).slice(-200);
-      renderLogs(tail);
-      setLogNote("日志目录 "+LOG_DIR+" · "+res.name.split("/").pop()+" 尾部 "+tail.length+" 行");
+      return {key:key,logs:tail,name:res.name,state:"loaded"};
     })
     .catch(function(){
-      document.getElementById("logBox").innerHTML="";
-      setLogNote("日志目录 "+LOG_DIR+" 不可读或无 .log 文件。");
+      return {key:key,logs:[],name:"",state:"failed"};
     });
+}
+function renderLogData(){
+  var primary=ANALYSIS_MODE==="compare"?"b":"a",p=AUX[primary];
+  var logNote=function(key,baseline){var x=AUX[key],source=DATASETS[key].logDir,prefix=baseline?"基线 ":"";
+    if(x.logState==="unconfigured")return "未配置"+prefix+"日志文件或目录。";
+    if(x.logState==="loading")return prefix+"日志正在加载…";
+    if(x.logState==="failed")return source+" 不可读或无 .log 文件。";
+    return "数据来源 "+x.logName+" · 尾部 "+x.logs.length+" 行";
+  };
+  renderLogLines("logBox",p.logs);document.getElementById("logNote").textContent=logNote(primary,false);
+  if(ANALYSIS_MODE!=="compare")return;
+  renderLogLines("logBaselineBox",AUX.a.logs);document.getElementById("logBaselineNote").textContent=logNote("a",true);
+  if(!auxReady("log")){document.getElementById("logCompare").innerHTML='<div class="diag-note">A/B 日志辅助基线不足：只有两侧文件均成功读取时才计算异常增量。</div>';return;}
+  var a=logCounts(AUX.a.logs),b=logCounts(AUX.b.logs);
+  document.getElementById("logCompare").innerHTML=[["ERROR / FATAL / EXCEPTION",a.err,b.err],["WARN",a.warn,b.warn]].map(function(r){var d=r[2]-r[1];return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+r[0]+'</span><span class="dshell-kvValue">A '+r[1]+' → B '+r[2]+' · <span class="'+(d>0?'diag-change-up':'diag-change-down')+'">'+(d>0?'+':'')+d+'</span></span></div>';}).join("");
+}
+function loadLogs(){
+  var gen=CONFIG_GEN,keys=ANALYSIS_MODE==="compare"?["a","b"]:["a"],sources={a:DATASETS.a.logDir,b:DATASETS.b.logDir};
+  return Promise.all(keys.map(function(key){return loadLogDataset(key,sources[key]);})).then(function(results){
+    if(gen!==CONFIG_GEN)return;
+    results.forEach(function(r){AUX[r.key].logs=r.logs;AUX[r.key].logName=r.name;AUX[r.key].logState=r.state;});renderLogData();renderAll();
+  });
 }
 
 /* ================= Profiling 数据目录（trace 列表 + 聚合摘要 JSON 直渲） ================= */
@@ -1842,39 +2060,40 @@ function parseProfSummary(j){   /* 支持 [["算子","28.4%"],…] 或 [{"name":
   if(!rows||!rows.length)return null;
   return rows.slice(0,10);
 }
-function loadProf(){
-  var card=document.getElementById("profFilesCard");
-  if(!PROF_DIR){card.style.display="none";setProfNote("未配置 Profiling 数据目录：在「开始诊断」页顶部的设置区配置 torch profiler / msprof trace 导出目录后接入真实数据。");return;}
-  fetch("/api/worktable/fs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:PROF_DIR})})
-    .then(function(r){return r.json();})
-    .then(function(j){
-      if(!j||!Array.isArray(j.entries))throw new Error("fs");
-      var files=j.entries.filter(function(e){return !e.isDir&&/\.(json|trace|pb)$/i.test(e.name);}).map(function(e){return e.path;}).sort();
-      card.style.display="";
-      document.getElementById("profFiles").innerHTML=files.length
-        ? files.map(function(f){var n=f.split("/").pop();return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+esc(n)+'</span><span class="dshell-listItemMeta">'+esc(f)+'</span></div>';}).join("")
-        : '<div class="diag-note">目录内未找到 .json / .trace 文件</div>';
-      var jsons=files.filter(function(f){return /\.json$/i.test(f);});
-      if(!jsons.length)throw new Error("nojson");
-      return fetch("/api/worktable/file?path="+encodeURIComponent(jsons[jsons.length-1])).then(function(r){
-        if(!r.ok)throw new Error("file");
-        return r.text();
-      });
-    })
-    .then(function(text){
-      var rows=parseProfSummary(JSON.parse(text));
+function loadProfDataset(key,source){
+  if(!source)return Promise.resolve({key:key,ops:[],name:"",files:[],state:"unconfigured"});
+  return readSource(source,/\.json$/i).then(function(res){
+      var rows=parseProfSummary(JSON.parse(res.text));
       if(!rows)throw new Error("fmt");
-      DATA.profOps=rows;renderAll();
-      setProfNote("数据来源："+PROF_DIR+" 最新聚合摘要 · 已渲染算子 Top10 与占比图");
+      return {key:key,ops:rows,name:res.name,files:res.files,state:"loaded"};
     })
     .catch(function(){
-      setProfNote("暂无数据："+PROF_DIR+" 内无可解析的聚合摘要 JSON（[[name,pct],…] / [{name,pct},…]）。");
+      return {key:key,ops:[],name:"",files:[],state:"failed"};
     });
+}
+function renderProfData(){
+  var primary=ANALYSIS_MODE==="compare"?"b":"a",p=AUX[primary],source=DATASETS[primary].profDir,card=document.getElementById("profFilesCard");
+  DATA.profOps=p.profOps;
+  card.style.display=p.profFiles&&p.profFiles.length?"":"none";
+  document.getElementById("profFiles").innerHTML=(p.profFiles||[]).map(function(f){var n=f.split("/").pop();return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+esc(n)+'</span><span class="dshell-listItemMeta">'+esc(f)+'</span></div>';}).join("");
+  setProfNote(p.profState==="unconfigured"?"未配置 Profiling 文件或目录。":p.profState==="loading"?"Profiling 正在加载…":p.profState==="failed"?("暂无数据："+source+" 无可解析的聚合摘要 JSON。"):("数据来源："+p.profName+" · 已渲染算子 Top10 与占比图"));
+  if(ANALYSIS_MODE==="compare"){
+    var diffs=profileDiff();
+    document.getElementById("profCompare").innerHTML=auxReady("prof")&&diffs.length?diffs.slice(0,10).map(function(d){return '<div class="dshell-kvRow"><span class="dshell-kvKey">'+esc(d.name)+'</span><span class="dshell-kvValue">A '+d.base.toFixed(1)+'% → B '+d.now.toFixed(1)+'% · <span class="'+(d.delta>0?'diag-change-up':'diag-change-down')+'">'+(d.delta>0?'+':'')+d.delta.toFixed(1)+'pp</span></span></div>';}).join(""):'<div class="diag-note">A/B Profiling 辅助基线不足：只有两侧摘要均成功解析时才计算算子占比差异。</div>';
+  }
+  renderAll();
+}
+function loadProf(){
+  var gen=CONFIG_GEN,keys=ANALYSIS_MODE==="compare"?["a","b"]:["a"],sources={a:DATASETS.a.profDir,b:DATASETS.b.profDir};
+  return Promise.all(keys.map(function(key){return loadProfDataset(key,sources[key]);})).then(function(results){
+    if(gen!==CONFIG_GEN)return;
+    results.forEach(function(r){AUX[r.key].profOps=r.ops;AUX[r.key].profName=r.name;AUX[r.key].profFiles=r.files;AUX[r.key].profState=r.state;});renderProfData();
+  });
 }
 
 /* ================= 设置（localStorage 持久化，改动即自动保存生效） ================= */
-/* 可搜索下拉（设置区 model_name / xds_namespace 标签过滤）：输入即过滤，候选值异步取自 /api/v1/label/<label>/values */
-function makeCombo(label,onChoose){
+/* 可搜索下拉：A/B 各自维护 model_name / xds_namespace，候选值来自同一 Prometheus。 */
+function makeCombo(label,onChoose,currentValue){
   var wrap=document.createElement("div");wrap.className="diag-combo";wrap.setAttribute("data-label",label);
   var input=document.createElement("input");input.className="dshell-input";input.placeholder=label+"：全部（输入可搜索）";
   var drop=document.createElement("div");drop.className="diag-combo-list";
@@ -1884,7 +2103,7 @@ function makeCombo(label,onChoose){
     var q=input.value.trim().toLowerCase();
     var hits=q?vals.filter(function(v){return v.toLowerCase().indexOf(q)>=0;}):vals;
     var html='<div class="diag-combo-item" data-v="">'+esc(label)+'：全部</div>';
-    html+=hits.slice(0,200).map(function(v){return '<div class="diag-combo-item" data-v="'+esc(v)+'" title="'+esc(v)+'">'+esc(v)+'</div>';}).join("");
+    html+=hits.slice(0,200).map(function(v){return '<div class="diag-combo-item" data-v="'+escAttr(v)+'" title="'+escAttr(v)+'">'+esc(v)+'</div>';}).join("");
     if(!hits.length)html+='<div class="diag-combo-empty">无匹配项</div>';
     else if(hits.length>200)html+='<div class="diag-combo-empty">仅显示前 200 个，请继续输入过滤</div>';
     drop.innerHTML=html;
@@ -1895,7 +2114,7 @@ function makeCombo(label,onChoose){
   input.addEventListener("focus",open);
   input.addEventListener("input",open);
   input.addEventListener("keydown",function(e){
-    if(e.key==="Escape"){input.value=LABEL_FILTER[label];close();input.blur();}
+    if(e.key==="Escape"){input.value=currentValue();close();input.blur();}
     else if(e.key==="Enter"){var first=drop.querySelector(".diag-combo-item");if(first)choose(first.getAttribute("data-v"));}
   });
   /* mousedown 先于 input blur 触发，保证点击选项能生效 */
@@ -1906,40 +2125,41 @@ function makeCombo(label,onChoose){
   input.addEventListener("blur",function(){
     /* 清空视为「全部」；其余未确认的手动输入回退为当前已选值 */
     if(!input.value.trim())choose("");
-    else input.value=LABEL_FILTER[label];
+    else input.value=currentValue();
     close();
   });
   return {el:wrap,label:label,setVals:function(vs){vals=vs;},setValue:function(v){input.value=v;}};
 }
-/* 设置区标签过滤：两个可搜索下拉，选择即保存并按新过滤重新拉取（全局生效） */
-var LABEL_COMBOS=["model_name","xds_namespace"].map(function(label){
-  var c=makeCombo(label,function(v){
-    LABEL_FILTER[label]=v;
-    lsSet("diagPerf.labelFilter",(LABEL_FILTER.model_name||LABEL_FILTER.xds_namespace)?JSON.stringify(LABEL_FILTER):"");
-    applySettings(true);
+var DATASET_COMBOS=[];
+["a","b"].forEach(function(key){
+  ["model_name","xds_namespace"].forEach(function(label){
+    var c=makeCombo(label,function(v){DATASETS[key][label]=v;saveDatasetState();applySettings(true);},function(){return DATASETS[key][label];});
+    c.dataset=key;document.getElementById("dataset"+key.toUpperCase()+"Filter").appendChild(c.el);DATASET_COMBOS.push(c);
   });
-  document.getElementById("labelFilterRow").appendChild(c.el);
-  return c;
 });
 /* 标签候选值取自 vllm:num_requests_running{exported_job=~".*vllmp.*"} 的序列标签（/api/v1/series），
    与 Grafana 模板变量取数口径一致；已选另一边过滤时候选按之联动收窄。序列查询失败回退 /api/v1/label/<label>/values。
    数据源地址变更后随 applySettings 重载 */
 function loadLabelValues(){
-  proxyGet(PROM_URL+"/api/v1/series?match[]="+encodeURIComponent('vllm:num_requests_running{exported_job=~".*vllmp.*"}')).then(function(text){
+  var gen=CONFIG_GEN,promUrl=PROM_URL,useProxy=USE_PROXY;
+  proxyGet(promUrl+"/api/v1/series?match[]="+encodeURIComponent('vllm:num_requests_running{exported_job=~".*vllmp.*"}'),useProxy).then(function(text){
+    if(gen!==CONFIG_GEN)return;
     var j=JSON.parse(text);
     if(!j||j.status!=="success"||!Array.isArray(j.data)||!j.data.length)throw new Error("bad");
-    LABEL_COMBOS.forEach(function(c){
+    DATASET_COMBOS.forEach(function(c){
       var other=c.label==="model_name"?"xds_namespace":"model_name";
+      var ds=DATASETS[c.dataset];
       var seen={},list=[];
       j.data.forEach(function(m){
-        if(LABEL_FILTER[other]&&m[other]!==LABEL_FILTER[other])return;   /* 另一标签已选：候选收窄到匹配序列 */
+        if(ds[other]&&m[other]!==ds[other])return;   /* 同数据集的另一标签已选：候选联动收窄 */
         var v=m[c.label];if(v&&!seen[v]){seen[v]=1;list.push(v);}
       });
       c.setVals(list.sort());
     });
   }).catch(function(){
-    LABEL_COMBOS.forEach(function(c){
-      proxyGet(PROM_URL+"/api/v1/label/"+c.label+"/values").then(function(text){
+    DATASET_COMBOS.forEach(function(c){
+      proxyGet(promUrl+"/api/v1/label/"+c.label+"/values",useProxy).then(function(text){
+        if(gen!==CONFIG_GEN)return;
         var j=JSON.parse(text);
         if(!j||j.status!=="success"||!Array.isArray(j.data))return;
         c.setVals(j.data);
@@ -1947,76 +2167,68 @@ function loadLabelValues(){
     });
   });
 }
+function saveDatasetState(){
+  DATASET_STATE={mode:ANALYSIS_MODE,a:DATASETS.a,b:DATASETS.b};
+  lsSet("diagPerf.datasets",JSON.stringify(DATASET_STATE));
+}
+function fmtDTL(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);}return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes());}
+function syncDatasetCard(key){
+  var up=key.toUpperCase(),ds=DATASETS[key],sel=document.getElementById("dataset"+up+"Range"),abs=document.getElementById("dataset"+up+"Abs");
+  if(ds.abs){sel.value="abs";abs.style.display="flex";document.getElementById("dataset"+up+"From").value=fmtDTL(ds.abs.from);document.getElementById("dataset"+up+"To").value=fmtDTL(ds.abs.to);}
+  else{var rv=String(ds.rangeM);if(!sel.querySelector('option[value="'+rv+'"]')){var o=document.createElement("option");o.value=rv;o.textContent=fmtRange(ds);sel.insertBefore(o,sel.lastElementChild);}sel.value=rv;abs.style.display="none";}
+  document.getElementById("dataset"+up+"Log").value=ds.logDir;
+  document.getElementById("dataset"+up+"Prof").value=ds.profDir;
+  DATASET_COMBOS.filter(function(c){return c.dataset===key;}).forEach(function(c){c.setValue(ds[c.label]);});
+}
+function syncDatasetModeUI(){
+  document.querySelectorAll("#analysisMode button").forEach(function(b){var on=b.getAttribute("data-mode")===ANALYSIS_MODE;b.classList.toggle("on",on);b.setAttribute("aria-pressed",on?"true":"false");});
+  document.getElementById("datasetBCard").style.display=ANALYSIS_MODE==="compare"?"":"none";
+  document.getElementById("datasetATitle").textContent=ANALYSIS_MODE==="compare"?"数据集 A · 性能基线":"数据集 A · 分析对象";
+  document.getElementById("datasetABadge").textContent=ANALYSIS_MODE==="compare"?"虚线基线":"当前数据";
+  document.getElementById("modeHint").textContent=ANALYSIS_MODE==="compare"?"B 劣化对象 · A 虚线基线":"单数据集瓶颈分析";
+  document.getElementById("logPrimaryTitle").textContent=ANALYSIS_MODE==="compare"?"数据集 B 日志（劣化对象）":"数据集 A 日志（分析对象）";
+  document.getElementById("logBaselineCard").style.display=ANALYSIS_MODE==="compare"?"":"none";
+  document.getElementById("logCompareCard").style.display=ANALYSIS_MODE==="compare"?"":"none";
+  document.getElementById("profCompareCard").style.display=ANALYSIS_MODE==="compare"?"":"none";
+  document.getElementById("compareReportCard").style.display=ANALYSIS_MODE==="compare"?"":"none";
+}
 function fillSettings(){
   document.getElementById("setPromUrl").value=PROM_URL;
-  document.getElementById("setRangeM").value=PROM_RANGE_M;
   document.getElementById("setPollS").value=POLL_MS/1000;
-  document.getElementById("setLogDir").value=LOG_DIR;
-  document.getElementById("setProfDir").value=PROF_DIR;
   document.getElementById("setUseProxy").checked=USE_PROXY;
-  LABEL_COMBOS.forEach(function(c){c.setValue(LABEL_FILTER[c.label]);});
-  syncRangeSel();
-  syncCmpSel();
+  syncDatasetCard("a");syncDatasetCard("b");syncDatasetModeUI();
 }
-/* 头部「窗口」快选与设置区「查询窗口（分钟）」双向同步；绝对时间窗口走 PROM_ABS */
-function fmtDTL(s){var d=new Date(s*1000);function p(x){return ("0"+x).slice(-2);}return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes());}
-function syncAbsInputs(){
-  document.getElementById("absRange").style.display=PROM_ABS?"inline-flex":"none";
-  if(PROM_ABS){document.getElementById("absFrom").value=fmtDTL(PROM_ABS.from);document.getElementById("absTo").value=fmtDTL(PROM_ABS.to);}
+function readDatasetForm(key){
+  var up=key.toUpperCase(),ds=DATASETS[key],sel=document.getElementById("dataset"+up+"Range");
+  ds.logDir=document.getElementById("dataset"+up+"Log").value.trim().replace(/\/+$/,"");
+  ds.profDir=document.getElementById("dataset"+up+"Prof").value.trim().replace(/\/+$/,"");
+  if(sel.value==="abs"){
+    var f=Date.parse(document.getElementById("dataset"+up+"From").value),t=Date.parse(document.getElementById("dataset"+up+"To").value);
+    if(!f||!t||t<=f){document.getElementById("setHint").textContent="数据集 "+up+" 的绝对时间无效：止时间需大于起时间。";return false;}
+    ds.abs={from:Math.floor(f/1000),to:Math.floor(t/1000)};
+  }else{ds.abs=null;ds.rangeM=parseInt(sel.value,10)||240;}
+  return true;
 }
-function syncRangeSel(){
-  var sel=document.getElementById("rangeSel");
-  if(PROM_ABS){sel.value="abs";syncAbsInputs();return;}
-  syncAbsInputs();
-  var v=String(PROM_RANGE_M);
-  if(!sel.querySelector('option[value="'+v+'"]')){
-    var o=document.createElement("option");o.value=v;o.textContent=fmtRange();sel.appendChild(o);
-  }
-  sel.value=v;
+function clearCompare(){
+  COMPARE={};BASE_STATE={state:ANALYSIS_MODE==="compare"?"loading":"off",matched:0,total:0};
+  CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){s._data=null;s._cmp=null;});});
+  Object.keys(CUSTOM.extra).forEach(function(id){(CUSTOM.extra[id]||[]).forEach(function(s){s._data=null;s._cmp=null;});});
 }
-document.getElementById("rangeSel").addEventListener("change",function(){
-  if(this.value==="abs"){
-    if(!PROM_ABS){var to=Math.floor(Date.now()/1000);PROM_ABS={from:to-PROM_RANGE_S,to:to};}   /* 预填当前相对窗口 */
-    syncAbsInputs();
-    return;
-  }
-  PROM_ABS=null;lsSet("diagPerf.promAbs","");
-  document.getElementById("setRangeM").value=this.value;
-  applySettings(true);
+document.getElementById("analysisMode").addEventListener("click",function(e){
+  var b=e.target.closest("[data-mode]");if(!b)return;
+  ANALYSIS_MODE=b.getAttribute("data-mode");saveDatasetState();syncDatasetGlobals();clearCompare();syncDatasetModeUI();applySettings(true);
 });
-document.getElementById("absApply").addEventListener("click",function(){
-  var f=Date.parse(document.getElementById("absFrom").value),t=Date.parse(document.getElementById("absTo").value);
-  if(!f||!t||t<=f){document.getElementById("setHint").textContent="绝对时间范围无效：请填写起止时间，且止时间要大于起时间。";return;}
-  PROM_ABS={from:Math.floor(f/1000),to:Math.floor(t/1000)};
-  lsSet("diagPerf.promAbs",JSON.stringify(PROM_ABS));
-  poll();startPoll();
-  document.getElementById("setHint").textContent="已切换到绝对时间窗口并重新拉取。";
-});
-/* 时间对比：头部「对比」快选与绝对时间输入；改动即保存并重新拉取（与「窗口」同一套 poll） */
-function saveCmpState(){lsSet("diagPerf.cmpState",CMP_ON?JSON.stringify({on:true,abs:CMP_ABS,shift:CMP_ABS?0:CMP_SHIFT_S}):"");}
-function syncCmpAbsInputs(){
-  document.getElementById("cmpAbs").style.display=CMP_ON&&CMP_ABS?"inline-flex":"none";
-  if(CMP_ON&&CMP_ABS){document.getElementById("cmpFrom").value=fmtDTL(CMP_ABS.from);document.getElementById("cmpTo").value=fmtDTL(CMP_ABS.to);}
-}
-function syncCmpSel(){
-  var sel=document.getElementById("cmpSel"),hint=document.getElementById("cmpHint");
-  if(!CMP_ON){sel.value="off";syncCmpAbsInputs();hint.textContent="";return;}
-  if(CMP_ABS){sel.value="abs";syncCmpAbsInputs();hint.textContent="对比：绝对 "+fmtTs(CMP_ABS.from)+" ~ "+fmtTs(CMP_ABS.to)+"（虚线叠加）";return;}
-  var v=String(CMP_SHIFT_S);
-  if(!sel.querySelector('option[value="'+v+'"]')){var o=document.createElement("option");o.value=v;o.textContent=cmpShiftLabel(CMP_SHIFT_S);sel.appendChild(o);}   /* 非预设档位动态补 option */
-  sel.value=v;syncCmpAbsInputs();hint.textContent="对比："+cmpShiftLabel(CMP_SHIFT_S)+"（虚线叠加，按相对位置索引对齐）";
-}
-function clearCompare(){COMPARE={};CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){s._cmp=null;});});}   /* 关闭对比或切换对比窗口前清空缓存，避免残留虚线 */
-document.getElementById("cmpSel").addEventListener("change",function(){
-  if(this.value==="off"){CMP_ON=false;CMP_ABS=null;CMP_SHIFT_S=0;saveCmpState();clearCompare();syncCmpSel();renderAll();document.getElementById("setHint").textContent="已关闭时间对比。";return;}
-  if(this.value==="abs"){CMP_ON=true;if(!CMP_ABS){var to=Math.floor(Date.now()/1000);CMP_ABS={from:to-PROM_RANGE_S,to:to};}saveCmpState();clearCompare();syncCmpSel();renderAll();document.getElementById("setHint").textContent="对比：填写起止时间后点「应用」拉取。";return;}
-  CMP_ON=true;CMP_ABS=null;CMP_SHIFT_S=parseInt(this.value,10)||86400;saveCmpState();syncCmpSel();poll();startPoll();
-});
-document.getElementById("cmpApply").addEventListener("click",function(){
-  var f=Date.parse(document.getElementById("cmpFrom").value),t=Date.parse(document.getElementById("cmpTo").value);
-  if(!f||!t||t<=f){document.getElementById("setHint").textContent="对比时间范围无效：止时间需大于起时间。";return;}
-  CMP_ON=true;CMP_ABS={from:Math.floor(f/1000),to:Math.floor(t/1000)};saveCmpState();syncCmpSel();poll();startPoll();
-  document.getElementById("setHint").textContent="已切换对比窗口并重新拉取。";
+["a","b"].forEach(function(key){
+  var up=key.toUpperCase(),range=document.getElementById("dataset"+up+"Range");
+  range.addEventListener("change",function(){
+    if(this.value==="abs"){
+      var to=Math.floor(Date.now()/1000),from=to-DATASETS[key].rangeM*60;
+      document.getElementById("dataset"+up+"From").value=fmtDTL(from);document.getElementById("dataset"+up+"To").value=fmtDTL(to);
+      document.getElementById("dataset"+up+"Abs").style.display="flex";
+    }else document.getElementById("dataset"+up+"Abs").style.display="none";
+    if(readDatasetForm(key))applySettings(true);
+  });
+  ["From","To","Log","Prof"].forEach(function(suffix){document.getElementById("dataset"+up+suffix).addEventListener("change",function(){if(readDatasetForm(key))applySettings(true);});});
 });
 
 /* 获取数据源全部指标名（/api/v1/label/__name__/values）：弹层展示，可关键字过滤、点击复制、勾选后添加到画布；
@@ -2025,7 +2237,7 @@ function openMetricsModal(names){
   var body=document.createElement("div");
   var note=document.createElement("div");note.className="diag-note";note.style.marginBottom="8px";
   note.textContent="数据源 "+PROM_URL+" 共 "+names.length+" 个指标名（/api/v1/label/__name__/values）；支持关键字过滤，点击名称复制；勾选后可在底部添加到画布（自定义画板，随轮询实时拉取真实数据）。"
-    +(labelSelector()?"当前全局标签过滤 {"+labelSelector()+"}（在「开始诊断」设置区修改，各画板查询同样生效）。":"");
+    +(labelSelector()?"当前主数据集标签过滤 {"+labelSelector()+"}（在「开始诊断」设置区修改，各画板查询同样生效）。":"");
   var filter=document.createElement("input");filter.className="dshell-input";filter.placeholder="过滤指标名…";
   filter.style.cssText="width:100%;margin-bottom:8px";
   var list=document.createElement("div");list.className="dshell-list";list.style.cssText="max-height:46vh;overflow:auto";
@@ -2036,8 +2248,8 @@ function openMetricsModal(names){
     var q=filter.value.trim().toLowerCase();
     var hits=q?baseNames.filter(function(n){return n.toLowerCase().indexOf(q)>=0;}):baseNames;
     list.innerHTML=hits.slice(0,300).map(function(n){
-      return '<div class="dshell-listItem"><input type="checkbox" class="diag-mchk" data-n="'+esc(n)+'"'+(selected[n]?" checked":"")
-        +' /><span class="dshell-listItemMeta diag-promql diag-mname" data-n="'+esc(n)+'" title="点击复制指标名">'+esc(n)+'</span></div>';
+      return '<div class="dshell-listItem"><input type="checkbox" class="diag-mchk" data-n="'+escAttr(n)+'"'+(selected[n]?" checked":"")
+        +' /><span class="dshell-listItemMeta diag-promql diag-mname" data-n="'+escAttr(n)+'" title="点击复制指标名">'+esc(n)+'</span></div>';
     }).join("")||'<div class="diag-note">无匹配指标</div>';
     var tag=(LABEL_FILTER.model_name||LABEL_FILTER.xds_namespace)?"（已按设置区标签过滤，共 "+baseNames.length+" 个）":"";
     count.textContent="显示 "+Math.min(hits.length,300)+" / "+hits.length+" 个"+tag+(hits.length>300?"，其余请继续输入过滤":"");
@@ -2108,7 +2320,7 @@ function openMetricsModal(names){
         CUSTOM.panels.push(np);buildPanelCard(np);
       });
     }
-    saveCustom();closeModal();poll();
+    saveCustom();closeModal();PROM_GEN++;poll();
     document.getElementById("metricsBtnHint").textContent="已添加 "+picked.length+" 个指标到画布";
     if(doneTab){var tb=document.querySelector('.dshell-tab[data-tab="'+doneTab+'"]');if(tb)tb.click();}
   });
@@ -2118,15 +2330,17 @@ function openMetricsModal(names){
   openModal("数据源全部指标",body);
 }
 document.getElementById("btnMetrics").addEventListener("click",function(){
-  var b=this,hint=document.getElementById("metricsBtnHint");
+  var b=this,hint=document.getElementById("metricsBtnHint"),gen=CONFIG_GEN,promUrl=PROM_URL,useProxy=USE_PROXY;
   b.disabled=true;hint.textContent="获取中…";
-  proxyGet(PROM_URL+"/api/v1/label/__name__/values").then(function(text){
+  proxyGet(promUrl+"/api/v1/label/__name__/values",useProxy).then(function(text){
+    if(gen!==CONFIG_GEN)return;
     b.disabled=false;
     var j=JSON.parse(text);
     if(!j||j.status!=="success"||!Array.isArray(j.data))throw new Error("bad");
     hint.textContent="共 "+j.data.length+" 个指标";
     openMetricsModal(j.data);
   }).catch(function(){
+    if(gen!==CONFIG_GEN)return;
     b.disabled=false;hint.textContent="获取失败：数据源不可达或返回异常";
   });
 });
@@ -2135,30 +2349,28 @@ function startPoll(){if(pollTimer)clearInterval(pollTimer);pollTimer=setInterval
 function applySettings(save){
   PROM_URL=(document.getElementById("setPromUrl").value.trim()||DEFAULT_PROM).replace(/\/+$/,"");
   METRICS_URL=PROM_URL+"/metrics";
-  PROM_RANGE_M=Math.min(4320,Math.max(5,parseInt(document.getElementById("setRangeM").value,10)||240));
-  PROM_RANGE_S=PROM_RANGE_M*60;
-  PROM_STEP_S=Math.max(5,Math.round(PROM_RANGE_S/N));
   POLL_MS=Math.min(600,Math.max(5,parseInt(document.getElementById("setPollS").value,10)||30))*1000;
-  syncRangeSel();   /* 设置区直接改窗口分钟数时同步头部快选（非预设档位会动态补 option） */
-  LOG_DIR=document.getElementById("setLogDir").value.trim().replace(/\/+$/,"");
-  PROF_DIR=document.getElementById("setProfDir").value.trim().replace(/\/+$/,"");
   USE_PROXY=document.getElementById("setUseProxy").checked;
+  if(!readDatasetForm("a")||!readDatasetForm("b"))return;
+  CONFIG_GEN++;PROM_GEN++;
+  document.getElementById("btnMetrics").disabled=false;   /* 作废旧指标名请求时同步恢复按钮，避免旧回调静默返回后保持禁用。 */
+  syncDatasetGlobals();
   if(save){
     lsSet("diagPerf.promUrl",PROM_URL===DEFAULT_PROM?"":PROM_URL);
-    lsSet("diagPerf.promRangeM",PROM_RANGE_M===240?"":String(PROM_RANGE_M));
-    lsSet("diagPerf.promRangeH","");   /* 旧版按小时存储的键已不再使用，保存时清理 */
     lsSet("diagPerf.pollS",POLL_MS===30000?"":String(POLL_MS/1000));
-    lsSet("diagPerf.logDir",LOG_DIR);
-    lsSet("diagPerf.profDir",PROF_DIR);
     lsSet("diagPerf.useSysProxy",USE_PROXY?"1":"");
+    saveDatasetState();
+    ["diagPerf.promRangeM","diagPerf.promRangeH","diagPerf.promAbs","diagPerf.labelFilter","diagPerf.logDir","diagPerf.profDir"].forEach(function(k){lsSet(k,"");});
   }
-  PREV={};LIVE=false;   /* 数据源变更后重新采样 */
+  PREV={};LIVE=false;PROM_MATCHED=0;clearCompare();applySeries({});DATA.ts=winLabels();   /* 数据集变更后不沿用旧计数器、曲线或基线。 */
+  AUX={a:makeAux(DATASETS.a),b:makeAux(DATASETS.b)};
+  renderLogData();renderProfData();   /* 异步加载新文件前先撤掉旧数据集的辅助证据。 */
   PROM_PANEL_MODE="init";PROM_LAST_OK="—";renderPromPanel();
   poll();startPoll();loadLogs();loadProf();loadLabelValues();
   document.getElementById("setHint").textContent="已自动保存并生效。";
 }
-/* 无保存/恢复按钮：任一配置项 change（失焦或回车确认）即自动保存并生效 */
-["setPromUrl","setRangeM","setPollS","setLogDir","setProfDir","setUseProxy"].forEach(function(id){
+/* 无保存按钮：公共设置和数据集设置改动即自动保存并生效。 */
+["setPromUrl","setPollS","setUseProxy"].forEach(function(id){
   document.getElementById(id).addEventListener("change",function(){applySettings(true);});
 });
 
