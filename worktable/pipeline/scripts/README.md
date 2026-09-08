@@ -97,7 +97,7 @@ XDS 流水线按以下顺序绑定脚本：
 - `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（供 `collect_vllm_metrics.py` 的 `--start`/`--end` 默认取值）
 - `METRICS_ACTION` — 固定 `collect`（`collect_vllm_metrics.py` 默认 action 为 `start` 即后台采集；前台按段采集需 `collect`）
 - `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
-- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 主控启用「收集普罗数据」预设任务时注入（`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
+- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 主控启用「收集普罗数据」预设任务时注入（`model_name` 默认 `${MODEL_PATH}`，按上游 deploy 阶段产出的 `MODEL_PATH` 解析；`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
 - `ARCHIVE_FOLDER` — 本次运行（预设任务）/ 选中运行（手动收集）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
 - `METRICS_OUTPUT_DIR` — 采集产物目录（有归档时 = `ARCHIVE_FOLDER/metrics`，采集产物随本次运行归档；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
 

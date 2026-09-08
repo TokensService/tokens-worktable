@@ -935,9 +935,10 @@ function collectRunLogs(){
 const DEFAULT_PIPELINE_ID='pl-xds';
 function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}; }
 /* 收集普罗数据预设任务：每条流水线在该预设行内独立保存 model/namespace/起止时间。
+   modelName 默认 ${MODEL_PATH}（运行时按上游 deploy 阶段产出的 MODEL_PATH 解析），
    xdsNamespace 默认 ${DEPLOY_STRATEGY}-${BY}（运行时按当前部署策略与执行人解析）。 */
-const DEFAULT_PIPELINE_PROM = { modelName:'', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}', startTime:'', endTime:'' };
-function normalizePipelineProm(p){ p=p||{}; return {modelName:p.modelName||'', xdsNamespace:p.xdsNamespace!=null?p.xdsNamespace:DEFAULT_PIPELINE_PROM.xdsNamespace, startTime:p.startTime||'', endTime:p.endTime||''}; }
+const DEFAULT_PIPELINE_PROM = { modelName:'${MODEL_PATH}', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}', startTime:'', endTime:'' };
+function normalizePipelineProm(p){ p=p||{}; return {modelName:p.modelName!=null?p.modelName:DEFAULT_PIPELINE_PROM.modelName, xdsNamespace:p.xdsNamespace!=null?p.xdsNamespace:DEFAULT_PIPELINE_PROM.xdsNamespace, startTime:p.startTime||'', endTime:p.endTime||''}; }
 function pipelinePromFromStages(stages, legacyProm){ const marker=(stages||[]).find(s=>s&&s.preset&&s.pkey==='promCollect'); return normalizePipelineProm((marker&&marker.prom)||legacyProm); }
 function runtimePipelineProm(pl){ return Object.assign({enabled:presetOn('promCollect')}, pipelinePromFromStages(pl&&pl.stages, pl&&pl.prom)); }
 /* 旧数据迁移：「审批门」(gate) 已改为「是否执行」(skip)，旧 gate:true 阶段按不执行处理 */
@@ -2266,7 +2267,7 @@ function renderStageEditor(){
         +'<span class="dshell-muted" style="font-size:11px;">由主控「预设任务」勾选启用，脚本在设置页配置；'+(s.pkey==='promCollect'?'采集参数随本流水线保存':'此处仅调整执行顺序')+(s.pkey==='check'?'；检查不通过（脚本非零退出）会阻断后续阶段':'')+'</span>'
         +'</div>'
         +(pp?('<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-left:1px;">'
-          +'<span class="dshell-muted" style="font-size:11px;">model_name</span><input class="dshell-input" data-f="promModelName" value="'+esc(pp.modelName)+'" placeholder="model_name" autocomplete="off" style="width:160px;" title="采集模型名（注入 ARCH_NAME / MODEL_NAME）" />'
+          +'<span class="dshell-muted" style="font-size:11px;">model_name</span><input class="dshell-input" data-f="promModelName" value="'+esc(pp.modelName)+'" placeholder="${MODEL_PATH}" autocomplete="off" style="width:160px;" title="采集模型名（注入 ARCH_NAME / MODEL_NAME），默认 ${MODEL_PATH}（按上游 deploy 阶段产出的 MODEL_PATH 解析）" />'
           +'<span class="dshell-muted" style="font-size:11px;">xds_namespace</span><input class="dshell-input" data-f="promXdsNamespace" value="'+esc(pp.xdsNamespace)+'" placeholder="${DEPLOY_STRATEGY}-${BY}" autocomplete="off" style="width:220px;" title="采集命名空间（注入 NAMESPACE / XDS_NAMESPACE），支持运行变量占位" />'
           +'<span class="dshell-muted" style="font-size:11px;">开始</span><input class="dshell-input" data-f="promStart" type="datetime-local" step="1" value="'+esc(pp.startTime)+'" style="width:185px;" title="留空=流水线开始时间" />'
           +'<span class="dshell-muted" style="font-size:11px;">结束</span><input class="dshell-input" data-f="promEnd" type="datetime-local" step="1" value="'+esc(pp.endTime)+'" style="width:185px;" title="留空=执行到本预设任务时的时间" />'
@@ -3353,7 +3354,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
       if(env.ARCHIVE_TAG===undefined && rc.tag) env.ARCHIVE_TAG=rc.tag;
     }
     /* 收集普罗数据：主控启用该预设任务时，为本次流水线运行注入 MODEL_NAME / XDS_NAMESPACE
-       （值支持 ${VAR} 占位，如 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 按当前部署策略与执行人解析）；
+       （值支持 ${VAR} 占位，如 model_name 默认 ${MODEL_PATH} 按上游 deploy 阶段产出解析、xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 按当前部署策略与执行人解析）；
        脚本显式参数优先；解析后为空则不注入。供 collect_vllm_metrics.py 等采集脚本按模型/命名空间筛选指标 */
     if(rc.prom && rc.prom.enabled){
       const mn=substRunVars(rc.prom.modelName||'', rc);
