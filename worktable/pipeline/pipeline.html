@@ -624,7 +624,7 @@
           <input id="plPromStart" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集开始时间（留空=运行时自动取流水线开始时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
           <input id="plPromEnd" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集结束时间（留空=运行时自动取最后一个任务结束后的时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
         </div>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -2133,9 +2133,14 @@ function detectParams(src, lang){
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
 let editStages=[];   // [{id,name,dur,skip,sub,kind,script|null,url|null,sched|null}]
 const STAGE_KIND_LABEL={simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'};
+/* EvalTokens 阶段持久化字段：collectReport 缺省按 true 兼容旧流水线，使新增能力默认开启。 */
+function evaltokensStageConfig(et){
+  et=et||{};
+  return {taskId:et.taskId||'', taskName:et.taskName||'', outVars:et.outVars||'', collectReport:et.collectReport!==false};
+}
 /* 旧数据兼容：Jenkins 阶段先改为 URL 请求阶段、再统一改为 HTTP 阶段——kind:'jenkins'/'url' 归为 'http'，jenkins.job 迁入 url.url
    （「拉取参数」的 params/values 随之下线，参数改由 URL 的 {GIT_BRANCH} 等占位符传递，见 migrateStageUrl）；
-   evaltokens 阶段持有 evaltokens{taskId,taskName,outVars}；未带 kind 的阶段按 url/script/evaltokens 字段推断；补齐 script.lang */
+   evaltokens 阶段持有 evaltokens{taskId,taskName,outVars,collectReport}；未带 kind 的阶段按 url/script/evaltokens 字段推断；补齐 script.lang */
 function normalizeStageKind(s){
   if(!s) return s;
   if(s.kind==='jenkins'||s.kind==='url') s.kind='http';
@@ -2147,7 +2152,7 @@ function normalizeStageKind(s){
     else s.kind='simulate';
   }
   if(s.kind==='http'){ if(!s.url) s.url={url:'',outVars:''}; if(!s.script) s.script=null; if(!s.evaltokens) s.evaltokens=null; }
-  else if(s.kind==='evaltokens'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; if(!s.evaltokens.params) s.evaltokens.params=[]; if(!s.script) s.script=null; if(!s.url) s.url=null; }
+  else if(s.kind==='evaltokens'){ const ps=s.evaltokens&&s.evaltokens.params; s.evaltokens=evaltokensStageConfig(s.evaltokens); s.evaltokens.params=Array.isArray(ps)?ps:[]; if(!s.script) s.script=null; if(!s.url) s.url=null; }
   else { if(!s.url) s.url=null; if(!s.evaltokens) s.evaltokens=null; if(s.script){ s.script.lang=(s.script.lang==='py'||/\.py$/i.test(s.script.name||''))?'py':'sh'; } }
   /* 定时标记归一：sched 仅作「支持定时」标记（{}），周期跟随流水线定时计划；旧数据 true / {mode...} 一律归一为 {}，非法置空 */
   s.sched = s.sched ? {} : null;
@@ -2306,7 +2311,10 @@ function renderStageActionRow(i){
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('任务字段'));
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status, TASK_ID=*, CREATED=created_at'; outInp.style.width='200px';
     outInp.title='本任务字段产出变量的下传命名（逗号分隔）：留空=任务顶层标量字段全部按原名下传；STATUS=status 表示把任务 status 改名为 STATUS；来源也可写 JSON 路径取任务对象的嵌套字段（如 items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把整条任务 JSON 整体赋给指定变量（如 TASK=*）；下游阶段参数值可填 ${STATUS} 引用';
-    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); return;
+    const reportLab=document.createElement('label'); reportLab.className='dshell-muted'; reportLab.style.cssText='display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;'; reportLab.title='任务进入成功或失败终态后，把本次 run 的完整 JSON 报告写入流水线本次运行的归档目录；归档失败不改变任务结果';
+    const reportInp=document.createElement('input'); reportInp.type='checkbox'; reportInp.setAttribute('data-f','etCollectReport'); reportInp.checked=!(s.evaltokens&&s.evaltokens.collectReport===false);
+    reportLab.appendChild(reportInp); reportLab.appendChild(document.createTextNode(' 收集任务报告'));
+    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(reportLab); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
@@ -2334,7 +2342,7 @@ function setStageKind(i,k){
   if(['simulate','shell','python','http','evaltokens'].indexOf(k)<0) return;
   s.kind=k;
   if(k==='http'){ if(!s.url) s.url={url:'',outVars:''}; }
-  else if(k==='evaltokens'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; if(!s.evaltokens.params) s.evaltokens.params=[]; }
+  else if(k==='evaltokens'){ if(!s.evaltokens) s.evaltokens=evaltokensStageConfig(null); if(!s.evaltokens.params) s.evaltokens.params=[]; }
   else if(k!=='simulate' && s.script){ s.script.lang=(k==='python')?'py':'sh'; }
   /* 类型按钮选中态同步：整行不重渲染（避免输入失焦），仅切换 .sel 类 */
   const wrap=$('plStageList'); if(wrap && wrap.children && wrap.children[i]){
@@ -3608,7 +3616,7 @@ function renderEvaltokPickerPanel(i, q){
   panel.innerHTML=h; panel.style.display='block';
   panel.querySelectorAll('[data-etpick-item]').forEach(el=>el.addEventListener('click', ()=>{
     const v=el.getAttribute('data-etpick-item'); const t=tasks.find(x=>idOf(x)===v||nameOf(x)===v); if(!t) return;
-    if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]};
+    if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]});
     s.evaltokens.taskId=idOf(t); s.evaltokens.taskName=nameOf(t);
     s.evaltokens.params=detectEvaltokTaskParams(t);   /* 选中任务后自动识别其输入参数 */
     panel.style.display='none';
@@ -3620,6 +3628,7 @@ function renderEvaltokPickerPanel(i, q){
    再按启动响应的 run_id 等待终态；捕获运行字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
 async function runEvaltokensStep(i){
   const stg=activeStages(); const s=stg[i]; const et=s.evaltokens||{};
+  const attempt=(s._evaltokAttempt||0)+1; s._evaltokAttempt=attempt;   // 识别同一阶段的失败重试，防止旧报告回调污染新一次执行
   /* 任务 ID/名称支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}）：
      运行时用 substRunVars 从 curRun.vars（上游变量同名优先）+ 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR
      等）替换后再匹配任务；未定义的单个 ${VAR} 引用按空值处理（空 taskId+空 taskName → 抛「未选择 EvalTokens
@@ -3686,14 +3695,50 @@ async function runEvaltokensStep(i){
     log.push(bodyShow);
     log.push('[EvalTokens result '+result+']');
     if(ok){ const u=((evaltok && (evaltok.linkUrl||evaltok.url))||'').replace(/\/+$/,''); if(u) log.push('📊 查看报告（EvalTokens 服务）→ '+u+'/tasks/'+encodeURIComponent(resolvedTaskId)); }
-    s._out={stdout:log.join('\n'),stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true};
+    const reportFolder=(et.collectReport!==false)?archiveFolderFor(rc):null;
+    const reportPendingLine=reportFolder?('📦 任务报告归档中 → '+reportFolder+'/'+evaltokReportFile(rc,i+1,s.name,runId)):'⚠ 任务报告未归档：无法确定本次运行归档目录';
+    if(et.collectReport!==false) log.push(reportPendingLine);
+    const terminalOut={stdout:log.join('\n'),stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true};
+    s._out=terminalOut;
     const varsOut=mergeStageVars(log.join('\n'));
     if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(bodyFull));   // 截断展示时顶层标量改从完整运行对象捕获
-    archiveStageLog(s, i+1);
     applyOutVars(outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：运行字段改名/JSON 路径/全文赋值（与 HTTP 阶段一致）
     const dur=(Date.now()-t0)/1000;
-    if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
-    else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
+    const finalNode={status:ok?'success':'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut};
+    let reportJob=null;
+    if(et.collectReport!==false){
+      const reportState={attempt:attempt,logFile:null};
+      s._reportArchiveState=reportState;
+      s._reportPendingAttempt=attempt;   // archiveRun 不抢先写尚未补齐报告结果的阶段日志
+      const replaceReportLine=function(text){
+        if(terminalOut.stdout) terminalOut.stdout=terminalOut.stdout.replace(reportPendingLine,text);
+        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&curRun===rc&&selectedId===s.id) renderDetail();
+      };
+      reportJob=archiveEvaltokensReport(rc,i+1,s.name,runId,run).then(file=>{
+        replaceReportLine(file?('📦 任务报告已归档 → '+file):'⚠ 任务报告未归档：无法确定本次运行归档目录');
+      },reportErr=>{
+        const msg=String(reportErr&&reportErr.message?reportErr.message:reportErr);
+        replaceReportLine('⚠ 任务报告归档失败（不影响任务结果）：'+msg);
+        console.warn('[archive] EvalTokens 任务报告归档失败（不影响任务结果）:', reportErr);
+      }).then(async()=>{
+        if(s._evaltokAttempt!==attempt) return;   // 已开始新一次尝试：旧 run 仅保留独立 JSON 报告，不覆写新阶段日志/标记
+        try{
+          const logStage=Object.assign({},s,{_out:terminalOut});
+          const text=(buildLog(logStage,rc,finalNode)||[]).join('\n');
+          const logFile=await archiveTaskLog(rc,i+1,s.name,text);
+          reportState.logFile=logFile||null;
+          if(logFile&&s._evaltokAttempt===attempt) s._logArchived=true;
+        }catch(logErr){ console.warn('[archive] EvalTokens 阶段日志归档失败（不影响任务结果）:', logErr); }
+      }).finally(()=>{
+        if(s._evaltokAttempt===attempt&&s._reportPendingAttempt===attempt) s._reportPendingAttempt=null;
+      });
+      if(!rc.evaltokensReportWrites) rc.evaltokensReportWrites=[];
+      rc.evaltokensReportWrites.push(reportJob);   // archiveRun 的汇总文件/归档脚本等待报告及本阶段日志收尾
+    }
+    nodes[s.id]=finalNode;
+    if(!reportJob) archiveStageLog(s,i+1);
+    applyStatusClasses(); renderDetail();
+    if(ok) advance(i+1); else finish('failed');
   }catch(e){
     if(!running||!curRun||curRun.token!==tk) return;   // 迟回异常：不得覆盖节点状态、不得对旧阶段再 finish
     if(timer){clearInterval(timer);timer=null;}
@@ -4010,13 +4055,27 @@ async function archiveTaskLog(ctx, seq, name, text){
     return file;
   });
 }
+/* EvalTokens 终态报告：按阶段序号/名称/run_id 独立命名，内容为 runs API 返回的本次 run 完整 JSON。 */
+function evaltokReportFile(ctx, seq, stageName, runId){
+  return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(stageName)+'-evaltokens-'+sanitizeFsName(runId)+'-report.json';
+}
+async function archiveEvaltokensReport(ctx, seq, stageName, runId, report){
+  const folder=archiveFolderFor(ctx);
+  if(!folder) return null;
+  return trackArchiveWrite(folder,async()=>{
+    await ensureArchiveFolder(folder);
+    const file=folder+'/'+evaltokReportFile(ctx, seq, stageName, runId);
+    await apiWrite(file, JSON.stringify(report,null,2));
+    return file;
+  });
+}
 /* 阶段完成即把本阶段回显重定向到归档文件夹的独立日志文件（内容同详情面板 buildLog）。
    _logArchived 去重：archiveRun 末尾对未即时归档的已完成阶段统一补齐；
    归档失败重置标记，交由末尾补齐重试；「从失败阶段重试」复位标记以便重写（见 retryFromStage）。 */
 function archiveStageLog(stage, seq, ctx){
   ctx=ctx||curRun;
   if(stage._serverLogPending || stage._serverLogFile) return;   // 在途/已落盘的服务端日志不能由浏览器覆写
-  if(!ctx || stage._logArchived) return;
+  if(!ctx || stage._logArchived || (stage._reportPendingAttempt&&stage._reportPendingAttempt===stage._evaltokAttempt)) return;
   if(!archiveFolderFor(ctx)) return;   // 未配置归档且保底根不可用：不归档
   stage._logArchived=true;
   const n=nodes[stage.id]||{status:'idle'};
@@ -4029,7 +4088,9 @@ function archiveStageLog(stage, seq, ctx){
 function archiveRun(result){
   const folder=archiveFolderFor(curRun);
   if(!folder) return;
-  const ctx=curRun, stages=activeStages();
+  const ctx=curRun, stages=activeStages(), reportWrites=(ctx.evaltokensReportWrites||[]).slice();
+  const finalizeGeneration=(ctx._archiveFinalizeGeneration||0)+1; ctx._archiveFinalizeGeneration=finalizeGeneration;
+  const previousFinalize=ctx._archiveFinalizeTail||Promise.resolve();   // 失败后重试会再次 finish：串行写入，保证最新结果最后落盘
   // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
   // 未执行且无任何回显的阶段不归档；被中止的任务（running 时被置为 aborted 但已有部分回显）照常归档
   stages.forEach((s,idx)=>{
@@ -4039,36 +4100,50 @@ function archiveRun(result){
     if(n.status==='idle' && !hasEcho) return;
     archiveStageLog(s, idx+1, ctx);
   });
-  // 运行日志：逐阶段标题 + buildLog 生成的日志行（脚本阶段含真实 stdout/stderr）
-  const logLines=[];
-  stages.forEach(s=>{
-    const n=nodes[s.id]||{status:'idle'};
-    logLines.push('===== '+s.name+' ['+(n.status||'idle')+'] =====');
-    buildLog(s, ctx, n).forEach(l=>logLines.push(l));
-    logLines.push('');
+  const endTs=Date.now(), pipelineName=ctx.pipelineName||curPipeline().name;
+  const ctxSnapshot=Object.assign({},ctx,{vars:Object.assign({},ctx.vars||{})});
+  const stageSnapshots=stages.map(s=>{
+    const state=(s._reportArchiveState&&s._reportArchiveState.attempt===s._evaltokAttempt)?s._reportArchiveState:null;
+    return {stage:Object.assign({},s,{_out:s._out}),node:Object.assign({},nodes[s.id]||{status:'idle'},{varsOut:Object.assign({},(nodes[s.id]&&nodes[s.id].varsOut)||{})}),reportState:state};
   });
-  logLines.push('[result] '+result);
-  // profiling：各阶段耗时/状态 + 总耗时等运行元数据
-  const profile={
-    pipeline: ctx.pipelineName||null, tag: ctx.tag, commit: ctx.commit,
-    env: ctx.env, image: ctx.image, by: ctx.by, source: ctx.source, result,
-    startTime: new Date(ctx.startTs).toISOString(),
-    totalDurSec: Math.round((Date.now()-ctx.startTs)/100)/10,
-    vars: ctx.vars||{},
-    cleanupLogFile: ctx.cleanupLog ? folder+'/'+taskLogFile(ctx, 0, '环境清理') : null,
-    checkLogFile: ctx.checkLog ? folder+'/'+taskLogFile(ctx, 0, '环境检查') : null,
-    stages: stages.map((s,idx)=>{
-      const n=nodes[s.id]||{};
-      const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
-      if(s._logArchived) rec.logFile=folder+'/'+taskLogFile(ctx, idx+1, s.name);   // 本阶段独立回显日志（任务级归档）
-      return rec;
-    }),
-  };
-  trackArchiveWrite(folder, async()=>{
+  const finalizeWrite=trackArchiveWrite(folder, async()=>{
+    if(reportWrites.length) await Promise.allSettled(reportWrites);   // 报告及其阶段日志先落盘，归档脚本随后才能收集到完整目录
+    await previousFinalize.catch(()=>{});
+    if(ctx._archiveFinalizeGeneration!==finalizeGeneration) return false;   // 旧 finish 尚在等报告时又发生重试：只由最新 finish 写 canonical 汇总
+    // 运行日志：等报告回调替换「归档中」后再生成；阶段/节点为 finish 时快照，不受后续重试或队列运行改写。
+    const logLines=[];
+    stageSnapshots.forEach(item=>{
+      const s=item.stage, n=item.node;
+      logLines.push('===== '+s.name+' ['+(n.status||'idle')+'] =====');
+      buildLog(s, ctxSnapshot, n).forEach(l=>logLines.push(l));
+      logLines.push('');
+    });
+    logLines.push('[result] '+result);
+    // profiling：各阶段耗时/状态 + 总耗时等运行元数据
+    const profile={
+      pipeline: ctxSnapshot.pipelineName||null, tag: ctxSnapshot.tag, commit: ctxSnapshot.commit,
+      env: ctxSnapshot.env, image: ctxSnapshot.image, by: ctxSnapshot.by, source: ctxSnapshot.source, result,
+      startTime: new Date(ctxSnapshot.startTs).toISOString(),
+      totalDurSec: Math.round((endTs-ctxSnapshot.startTs)/100)/10,
+      vars: ctxSnapshot.vars||{},
+      cleanupLogFile: ctxSnapshot.cleanupLog ? folder+'/'+taskLogFile(ctxSnapshot, 0, '环境清理') : null,
+      checkLogFile: ctxSnapshot.checkLog ? folder+'/'+taskLogFile(ctxSnapshot, 0, '环境检查') : null,
+      stages: stageSnapshots.map((item,idx)=>{
+        const s=item.stage, n=item.node;
+        const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
+        const logFile=item.reportState?item.reportState.logFile:(s._logArchived?folder+'/'+taskLogFile(ctxSnapshot, idx+1, s.name):null);
+        if(logFile) rec.logFile=logFile;   // 本阶段独立回显日志（任务级归档）
+        return rec;
+      }),
+    };
     await ensureArchiveFolder(folder);
-    await apiWrite(folder+'/run-'+ctx.tag+'.log', logLines.join('\n'));
-    await apiWrite(folder+'/run-'+ctx.tag+'.profile.json', JSON.stringify(profile, null, 2));
-  }).then(async()=>{
+    await apiWrite(folder+'/run-'+ctxSnapshot.tag+'.log', logLines.join('\n'));
+    await apiWrite(folder+'/run-'+ctxSnapshot.tag+'.profile.json', JSON.stringify(profile, null, 2));
+    return true;
+  });
+  ctx._archiveFinalizeTail=finalizeWrite.catch(()=>false);
+  finalizeWrite.then(async(wrote)=>{
+    if(!wrote||ctx._archiveFinalizeGeneration!==finalizeGeneration) return;
     // 归档脚本：写完日志/profiling 后执行（可选），收集额外日志；
     //   注入 ARCHIVE_DIR=归档根目录（host 节点环境日志写到根目录，跨运行共享，不进单次运行文件夹）/
     //   ARCHIVE_FOLDER=本次运行归档文件夹/ARCHIVE_LOG_FILE/ARCHIVE_PROFILE_FILE 等，失败不影响运行结果。
@@ -4082,11 +4157,11 @@ function archiveRun(result){
           const aroot=folder.slice(0, folder.lastIndexOf('/'))||'/';   // 归档根目录：由本次运行文件夹快照回推，运行中 archiveDir 改动不致漂移
           const ar=await execScript({name:asc.name,path:asc.path,params:[],values:{}},120000,{
             ARCHIVE_DIR:aroot, ARCHIVE_FOLDER:folder,
-            ARCHIVE_LOG_FILE:folder+'/run-'+ctx.tag+'.log',
-            ARCHIVE_PROFILE_FILE:folder+'/run-'+ctx.tag+'.profile.json',
-            ARCHIVE_PIPELINE:ctx.pipelineName||curPipeline().name,
-            ARCHIVE_TAG:ctx.tag, ARCHIVE_RESULT:result
-          }, ctx);
+            ARCHIVE_LOG_FILE:folder+'/run-'+ctxSnapshot.tag+'.log',
+            ARCHIVE_PROFILE_FILE:folder+'/run-'+ctxSnapshot.tag+'.profile.json',
+            ARCHIVE_PIPELINE:pipelineName,
+            ARCHIVE_TAG:ctxSnapshot.tag, ARCHIVE_RESULT:result
+          }, ctxSnapshot);
           if(ar && ar.code!==0) console.warn('[archive] 归档脚本退出码 '+ar.code+'（不影响运行结果）');
         }catch(ee){ console.warn('[archive] 归档脚本执行失败（不影响运行结果）:', ee); }
       }else{ console.warn('[archive] 归档脚本未找到，跳过：', scName); }
@@ -4716,7 +4791,7 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?{taskId:s.evaltokens.taskId,taskName:s.evaltokens.taskName,outVars:(s.evaltokens.outVars||''),params:[]}:null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化，编辑器打开时自动重新识别 */
+    editStages=p.stages.map(s=>normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化，编辑器打开时自动重新识别 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   /* 收集普罗数据：按流水线配置回填（无配置用默认，xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY}） */
   const pp = (p && p.prom) ? Object.assign({}, DEFAULT_PIPELINE_PROM, p.prom) : DEFAULT_PIPELINE_PROM;
@@ -4779,7 +4854,7 @@ function savePlForm(){
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
     if(s.url) st.url={url:s.url.url, outVars:(s.url.outVars||'')};
-    if(s.evaltokens) st.evaltokens={taskId:s.evaltokens.taskId||'', taskName:s.evaltokens.taskName||'', outVars:(s.evaltokens.outVars||'')};
+    if(s.evaltokens) st.evaltokens=evaltokensStageConfig(s.evaltokens);
     if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
   });
@@ -4913,8 +4988,9 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
   else if(f==='urlOutVars'){ if(!s.url) s.url={url:'',outVars:''}; s.url.outVars=e.target.value; }
-  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.taskId=e.target.value.trim(); s.evaltokens.taskName=''; s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入后清除选择器残留名称，再异步识别参数（失败保留空） */
-  else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens={taskId:'',taskName:'',outVars:'',params:[]}; s.evaltokens.outVars=e.target.value; }
+  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.taskId=e.target.value.trim(); s.evaltokens.taskName=''; s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入后清除选择器残留名称，再异步识别参数（失败保留空） */
+  else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.outVars=e.target.value; }
+  else if(f==='etCollectReport'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.collectReport=!!e.target.checked; }
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
 });
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
