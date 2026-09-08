@@ -89,7 +89,7 @@ XDS 流水线按以下顺序绑定脚本：
 
 「设置 → 普罗数据服务配置 → 收集脚本」可配置一个按时间段采集普罗（Prometheus）指标的脚本（在 scripts 目录按名选用，留空=不启用）。勾选了「收集普罗数据」的流水线运行到最后一个任务结束后会自动调用该脚本采集一次；也可在运行历史选中某次运行（或运行中的流水线）后，点标题行的「📊 收集普罗数据」手动补采。
 
-起止时间在「编辑流水线」的「收集普罗数据」一栏配置（开始时间 / 结束时间两个字段），作为该流水线的默认采集时段；留空 = 运行时自动取流水线开始时间与最后一个任务结束后的时间（运行中取当前时刻）。自动收集与手动收集都先取该默认时段，手动收集时弹出的对话框里仍可临时覆盖后再点「收集」执行。脚本经流式执行接口运行，输出实时回显到对话框日志区（接口不可用时降级为一次性执行）；自动收集的输出另写入归档目录的 `prom-collect-<tag>.log`，失败仅告警、不影响运行结果（与归档脚本同语义）。
+起止时间在「编辑流水线」的「收集普罗数据」一栏配置（开始时间 / 结束时间两个字段），作为该流水线的默认采集时段；留空 = 运行时自动取流水线开始时间与最后一个任务结束后的时间（运行中取当前时刻）。自动收集与手动收集都先取该默认时段，手动收集时弹出的对话框里仍可临时覆盖后再点「收集」执行。打开对话框时会先检测该运行是否已收集过普罗数据（产物目录下存在 `summary.json` 或 `snapshots/*/summary.json` 即视为已收集），并在状态行展示收集归档目录；采集成功后状态行同步刷新为已收集。脚本经流式执行接口运行，输出实时回显到对话框日志区（接口不可用时降级为一次性执行）；自动收集的输出另写入归档目录的 `prom-collect-<tag>.log`，失败仅告警、不影响运行结果（与归档脚本同语义）。
 
 除常规的 `PIPELINE_NAME` 外，「收集」时还会注入以下环境变量（同名时脚本自身参数优先）：
 
@@ -99,8 +99,9 @@ XDS 流水线按以下顺序绑定脚本：
 - `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
 - `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 仅当流水线勾选了「收集普罗数据」才注入（`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
 - `ARCHIVE_FOLDER` — 本次运行（自动收集）/ 选中运行（手动收集）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
+- `METRICS_OUTPUT_DIR` — 采集产物目录（有归档时 = `ARCHIVE_FOLDER/vllm-metrics`，采集产物随本次运行归档；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
 
-示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 取 `VLLM_METRICS_START`/`VLLM_METRICS_END`、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集。
+示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 取 `VLLM_METRICS_START`/`VLLM_METRICS_END`、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集；输出目录默认取 `METRICS_OUTPUT_DIR`，未设置时依次回退 `ARCHIVE_FOLDER/vllm-metrics`、`RUN_DIR/vllm-metrics`、执行目录下 `vllm-metrics`。
 
 
 ## 独立清理与环境检查
