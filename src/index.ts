@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
 import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from 'node:fs/promises'
-import { dirname, resolve as pathResolve, sep } from 'node:path'
+import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
  * 参考 dsh-better-sidebar 的架构——内容窗能力由本插件自己的服务端路由提供：
  *   - POST /api/worktable/fs     目录列表（资源管理器窗）
  *   - POST /api/worktable/git    git 状态（源代码管理窗）
+ *   - POST /api/worktable/scan-projects  一键导入扫描：列出文件夹里所有含 .html 的项目
  *   - WS   /api/worktable/term   node-pty 终端流（终端窗；依赖宿主 node_modules 中的
  *                                node-pty 与 ws，缺失时该路由不注册、终端窗降级提示）
  */
@@ -27,6 +28,36 @@ const PLUGIN_DIR = (() => {
   try { return pathResolve(realpathSync(dirname(fileURLToPath(import.meta.url))), '..') } catch {}
   try { return pathResolve(dirname(fileURLToPath(import.meta.url)), '..') } catch {}
   return process.cwd()
+})()
+
+/** 从插件模块所在 lib/ 目录推断 DSH home：标准安装路径为
+ *  <home>/profiles/<profile>/node_modules/<pkg>/lib（scoped 包多一层 @scope）。
+ *  宿主既然从这里加载本插件，该 home 就是活跃 home（覆盖启动器未注入 DSH_HOME 的部署）。 */
+function inferDshHomeFromModuleDir(libDir: string): string | null {
+  let pkgDir = pathResolve(libDir, '..')
+  if (basename(dirname(pkgDir)).startsWith('@')) pkgDir = dirname(pkgDir)
+  const nmDir = dirname(pkgDir)
+  if (basename(nmDir) !== 'node_modules') return null
+  const profilesDir = dirname(dirname(nmDir))
+  if (basename(profilesDir) !== 'profiles') return null
+  return dirname(profilesDir)
+}
+
+/** 解析 DSH_HOME 环境变量（与宿主 dsh-home-paths 同规则：空白 = 未设；支持 ~ 与 ~/ 展开） */
+function resolveDshHomeEnv(raw: string | undefined, home: string): string | null {
+  const v = (raw ?? '').trim()
+  if (!v) return null
+  if (v === '~') return pathResolve(home)
+  if (v.startsWith('~/') || v.startsWith('~\\')) return pathResolve(home, v.slice(2))
+  return pathResolve(v)
+}
+
+/** DSH home（storages / workspace.json / profiles 的根），与宿主 @deepseek-ai/dsh-home-paths 对齐：
+ *  模块位置推断 → DSH_HOME 环境变量 → 默认 ~/.dsh。 */
+const DSH_HOME = (() => {
+  try { const h = inferDshHomeFromModuleDir(dirname(fileURLToPath(import.meta.url))); if (h) return h } catch {}
+  try { const h = inferDshHomeFromModuleDir(realpathSync(dirname(fileURLToPath(import.meta.url)))); if (h) return h } catch {}
+  return resolveDshHomeEnv(process.env.DSH_HOME, homedir()) ?? pathResolve(homedir(), '.dsh')
 })()
 
 export const HEALTH_PATH = '/api/worktable/health'
@@ -93,9 +124,9 @@ function loadPkg(pkg: string): any | null {
       dir = pathResolve(dir, '..')
     }
   }
-  // 兜底：DSH 标准目录 ~/.dsh/profiles/*/node_modules（宿主按 realpath 加载时前两条链都找不到）
+  // 兜底：DSH 标准目录 <home>/profiles/*/node_modules（宿主按 realpath 加载时前两条链都找不到）
   try {
-    const profilesDir = pathResolve(homedir(), '.dsh', 'profiles')
+    const profilesDir = pathResolve(DSH_HOME, 'profiles')
     for (const profile of readdirSync(profilesDir, { withFileTypes: true })) {
       if (!profile.isDirectory() && !profile.isSymbolicLink()) continue
       const nm = pathResolve(profilesDir, profile.name, 'node_modules')
@@ -279,7 +310,7 @@ export function apply(ctx: Context) {
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, ok: true })
+      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, home: DSH_HOME, ok: true })
     },
   })
 
@@ -386,13 +417,13 @@ export function apply(ctx: Context) {
     },
   })
 
-  // 工作区列表（自定义窗口会话分组用）：读宿主 ~/.dsh/storages/workspace.json（只读）
+  // 工作区列表（自定义窗口会话分组用）：读宿主 <dsh-home>/storages/workspace.json（只读）
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/workspaces',
     handler: async (_req: any, res: any) => {
       try {
-        const file = pathResolve(homedir(), '.dsh', 'storages', 'workspace.json')
+        const file = pathResolve(DSH_HOME, 'storages', 'workspace.json')
         const raw = await readFile(file, 'utf8')
         // 容忍 BOM（外部工具改写可能带 EF BB BF，JSON.parse 会抛错）
         json(res, 200, JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw))
@@ -405,7 +436,7 @@ export function apply(ctx: Context) {
   // 跨浏览器同步的项目存储：新建项目一律本地（localStorage），完善后在管理列表点 ☁「发布」，
   // 布局条目转存此文件；任何浏览器启动时 GET 拉取合并，取消发布即移出。
   // 全量覆盖写（last-write-wins），原子落盘（tmp + rename）。
-  const PROJECTS_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-projects.json')
+  const PROJECTS_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-projects.json')
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/projects',
@@ -459,7 +490,7 @@ export function apply(ctx: Context) {
 
   // 流水线工作台（pipeline.html）的服务端持久化：配置（pipelines/envs/scriptsDir/theme 等）
   // 与运行历史（含各阶段日志快照）。全量覆盖写（last-write-wins），原子落盘（tmp + rename）。
-  const PIPELINE_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline.json')
+  const PIPELINE_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline.json')
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline',
@@ -518,7 +549,7 @@ export function apply(ctx: Context) {
   // 计划存独立文件 worktable-pipeline-plans.json；调度器每 15s 轮询，到期即在服务端执行：
   // 脚本阶段用 bash 真跑（参数/环境注入规则与前端 execScript 一致），模拟阶段按耗时等待，
   // 审批门自动通过；运行记录（阶段元数据 + 日志文件路径，日志全文在归档文件）追加进 worktable-pipeline.json 的 history。
-  const PLANS_STORE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline-plans.json')
+  const PLANS_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline-plans.json')
 
   async function writeJsonAtomic(file: string, text: string) {
     const fsx = await import('node:fs/promises')
@@ -636,7 +667,7 @@ export function apply(ctx: Context) {
 
   // AI 日志分析：把前端汇总好的运行日志（Markdown）写到固定文件，返回绝对路径，
   // 由页面 postMessage 给插件客户端新开会话分析（路径对聊天 Agent 可读）
-  const LOGDUMP_FILE = pathResolve(homedir(), '.dsh', 'storages', 'worktable-pipeline-logs.md')
+  const LOGDUMP_FILE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline-logs.md')
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline/logdump',
@@ -1381,6 +1412,50 @@ export function apply(ctx: Context) {
         json(res, 200, { ok: true, path: abs })
       } catch (err: any) {
         json(res, err?.code === 'EEXIST' ? 200 : 500, err?.code === 'EEXIST' ? { ok: true, exists: true } : { error: String(err) })
+      }
+    },
+  })
+
+  // 一键导入的项目扫描：列出一个文件夹里的可导入项目——每个「含 .html 页面」的子目录算一个项目
+  // （入口择优 index.html → 与目录同名的 .html → 字母序首个），目录下散装的 .html 算单页项目。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/scan-projects',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const p = typeof body.path === 'string' ? body.path.trim() : ''
+        if (!p) { json(res, 400, { error: 'missing path' }); return }
+        const abs = pathResolve(p)
+        const dirents = await readdir(abs, { withFileTypes: true })
+        const isHtml = (n: string) => /\.html?$/i.test(n)
+        const projects: { name: string; dir: string; entry: string }[] = []
+        for (const d of dirents) {
+          if (d.name.startsWith('.')) continue
+          if (d.isDirectory()) {
+            const sub = pathResolve(abs, d.name)
+            let htmls: string[] = []
+            try {
+              htmls = (await readdir(sub, { withFileTypes: true }))
+                .filter((f) => f.isFile() && isHtml(f.name))
+                .map((f) => f.name)
+                .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+            } catch { continue }
+            if (htmls.length === 0) continue
+            const named = d.name.toLowerCase() + '.html'
+            const entry = htmls.find((h) => h.toLowerCase() === 'index.html')
+              ?? htmls.find((h) => h.toLowerCase() === named)
+              ?? htmls[0]
+            projects.push({ name: d.name, dir: sub, entry })
+          } else if (d.isFile() && isHtml(d.name)) {
+            projects.push({ name: d.name.replace(/\.html?$/i, ''), dir: abs, entry: d.name })
+          }
+        }
+        projects.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        json(res, 200, { path: abs, projects })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
       }
     },
   })
