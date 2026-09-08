@@ -230,7 +230,10 @@
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
-    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理/环境检查/Profiling/收集普罗数据为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序，其中普罗采集参数可编辑），脚本在设置页配置。</p>
+    <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理/环境检查/Profiling/收集普罗数据为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序，其中普罗采集参数可编辑），脚本在设置页配置。</p>
+      <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
+    </div>
   </div>
 
 
@@ -251,7 +254,7 @@
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间">📊 收集普罗数据</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="对选中行新建 AI 会话并填入日志分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="对选中行新建 AI 会话并填入 Profiling 分析提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="对选中行新建 AI 会话并填入性能诊断提示词（不自动提交，工作目录=日志所在目录，未归档时取归档根目录；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button> <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
@@ -4258,7 +4261,7 @@ function archiveRun(result){
 }
 /* ---------- 收集普罗数据：按运行起止时间调用设置页配置的收集脚本（时间段指标采集） ----------
    脚本在「设置 → 普罗数据服务配置 → 收集脚本」按名选用（scripts 目录，留空=不启用）。
-   「运行历史」标题行「收集普罗数据」作用于选中行（或运行中的流水线）：弹出对话框，起止时间
+   「流水线编排」右下角「收集普罗数据」按钮作用于选中行（或运行中的流水线）：弹出对话框，起止时间
    默认取本次运行的开始时间与最后一个任务结束后的时间（运行中取当前时刻），可在对话框覆盖。
    收集时注入环境变量：PROM_START/PROM_END（ISO 带 Z）、VLLM_METRICS_START/VLLM_METRICS_END
    （Unix 秒，collect_vllm_metrics.py 的 --start/--end 默认取此）、PROMETHEUS_URL、
