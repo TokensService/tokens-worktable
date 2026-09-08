@@ -4487,13 +4487,13 @@ function pruneAnalysisHistory(){
   const valid=new Set(history.map(analysisHistoryKey));
   analysisHistoryKeys=analysisHistoryKeys.filter(key=>valid.has(key)).slice(0,2);
 }
-function analysisSummary(rec){ return '#'+rec.no+' 流水线「'+rec.pipeline+'」 环境 '+rec.env+' · 执行人 '+rec.by+' · 状态 '+labelOf(rec.status)+' · 耗时 '+rec.dur+' · '+rec.time+' · commit '+rec.commit; }
+function analysisSummary(rec){ return '#'+rec.no+' 流水线「'+rec.pipeline+'」 环境 '+rec.env+' · 执行人 '+rec.by+' · 状态 '+labelOf(rec.status)+' · 耗时 '+rec.dur+' · '+fmtHistTime(rec)+' · commit '+rec.commit; }
 function buildAnalysisPrompt(kind, rec){
   const tpl = analysisPrompts[kind] || DEFAULT_PROMPTS[kind] || '';
   const archive = rec.archive || '';
   const vars = {
     no:rec.no, pipeline:rec.pipeline, env:rec.env, by:rec.by, commit:rec.commit,
-    status:labelOf(rec.status), dur:rec.dur, time:rec.time, tag:rec.tag||'',
+    status:labelOf(rec.status), dur:rec.dur, time:fmtHistTime(rec), tag:rec.tag||'',
     archive: archive || '（未归档）',
     summary: analysisSummary(rec),
     logFile: archive ? archive+'/run-'+rec.tag+'.log' : '（未归档）',
@@ -4508,17 +4508,34 @@ const COMPARE_FOCUS = {
 };
 function buildComparisonPrompt(kind, records){
   const focus=COMPARE_FOCUS[kind]||'关键结果与异常';
+  const archived=records.filter(rec=>String((rec&&rec.archive)||'').trim()).length;
+  const readGuide=archived===2
+    ? '请先读取两次运行各自列出的归档文件'
+    : (archived===1?'仅一条运行有归档，请读取该归档，并将另一条按运行摘要做有限对比':'两次运行均未归档，请基于运行摘要做有限对比并明确数据限制');
   return '请比较下面两次流水线运行，重点分析'+focus+'；明确指出改善、退化、可能原因和下一步优化建议。\n\n'
     +'===== 运行 A（基准） =====\n'+buildAnalysisPrompt(kind,records[0])+'\n\n'
     +'===== 运行 B（对比） =====\n'+buildAnalysisPrompt(kind,records[1])+'\n\n'
-    +'请先读取两次运行各自列出的归档文件，再按「结论、关键差异、改善/退化、原因、建议」给出对比结果。';
+    +readGuide+'，再按「结论、关键差异、改善/退化、原因、建议」给出对比结果。';
+}
+function commonAnalysisArchiveFolder(records){
+  const paths=records.map(rec=>String((rec&&rec.archive)||'').trim().replace(/\/+$/,'')).filter(Boolean);
+  if(paths.length!==records.length) return archiveRootFolder()||null;
+  const absolute=paths.every(path=>path[0]==='/');
+  const parts=paths.map(path=>path.split('/').filter(Boolean));
+  const common=[];
+  for(let i=0;i<parts[0].length;i++){
+    if(parts.every(pathParts=>pathParts[i]===parts[0][i])) common.push(parts[0][i]);
+    else break;
+  }
+  if(!common.length) return absolute?'/':(archiveRootFolder()||null);
+  return (absolute?'/':'')+common.join('/');
 }
 function buildAnalysisRequest(kind, records){
   const recs=(Array.isArray(records)?records:[records]).filter(Boolean).slice(0,2);
   if(!recs.length) return {text:'',cwd:archiveRootFolder()||null};
   if(recs.length===1) return {text:buildAnalysisPrompt(kind,recs[0]),cwd:(recs[0].archive||'').trim()||archiveRootFolder()||null};
-  /* 双运行通常位于同一归档根目录；会话从根目录启动，提示词仍保留两边绝对路径。 */
-  return {text:buildComparisonPrompt(kind,recs),cwd:archiveRootFolder()||null};
+  /* 双运行从记录自身路径推导共同目录；配置后来改变时仍能读取旧归档。 */
+  return {text:buildComparisonPrompt(kind,recs),cwd:commonAnalysisArchiveFolder(recs)};
 }
 /* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：单次分析工作目录 = 该次运行归档目录，
    双运行对比工作目录 = 归档根目录，提示词包含两边归档文件的绝对路径；
@@ -4878,22 +4895,28 @@ $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseI
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
 $('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; analysisHistoryKeys=[]; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
+/* 只应用同一清空版本下发起的刷新：请求在途时若本页清空过历史，迟到响应必须丢弃，不能复活旧记录。 */
+function applyHistoryRefreshPayload(st, clearAtStart){
+  if(histClearedAt!==clearAtStart) return false;
+  const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+  if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
+  if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
+  if(Array.isArray(st&&st.history) && st.history.length) history=st.history;
+  else if(histClearedAt) history=[];
+  return true;
+}
 /* 「↻ 刷新」运行历史：从服务端重新拉取——本页加载后，其他浏览器的保存与服务端定时运行追加的记录
    已在服务端落盘合并（PUT 按 tag/ts 合并），本地不会自己出现，手动拉取才合并进来 */
 $('histRefresh').addEventListener('click', async ()=>{
   const b=$('histRefresh'); b.disabled=true;
+  const clearAtStart=histClearedAt;
   try{
     const r=await fetch('/api/worktable/pipeline');
     if(!r.ok) throw new Error('HTTP '+r.status);
     const st=await r.json();
-    const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
     /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
        防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录 */
-    if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
-    if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
-    /* 历史整体替换语义与 loadServerState 一致：非空替换；空但 histClearedAt 非零视为已清空（不复活演示数据） */
-    if(Array.isArray(st.history) && st.history.length) history=st.history;
-    else if(histClearedAt) history=[];
+    if(!applyHistoryRefreshPayload(st,clearAtStart)) return;
     /* 历史回放基于行下标，列表整体变了必须退出回放并清选中，否则指向错误的记录 */
     if(selHistoryIdx>=0){ exitHistoryReplay(); selHistoryIdx=-1; }
     histPage=0; renderHistory(); renderStats(); refreshArchiveTip();

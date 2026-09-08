@@ -17,6 +17,7 @@ function analysisContext(extra) {
     },
     DEFAULT_PROMPTS: {},
     labelOf: status => ({ success: '已完成', failed: '错误', aborted: '终止' })[status] || status,
+    fmtHistTime: rec => rec.ts ? '09-07 10:00' : rec.time,
     archiveRootFolder: () => '/archive',
     history: [],
     analysisHistoryKeys: [],
@@ -137,6 +138,69 @@ test('双选生成 A/B 对比提示并以共同归档根目录为工作目录', 
   assert.match(request.text, /\/archive\/run-b\/run-run-b\.profile\.json/);
   assert.match(request.text, /耗时占比|瓶颈/);
   assert.match(request.text, /改善|退化/);
+});
+
+test('归档配置变更后，双选工作目录从记录路径推导而不是使用新配置', () => {
+  const ctx = analysisContext({ archiveRootFolder: () => '/new-archive' });
+  const oldA = Object.assign({}, runA, { archive: '/old-archive/run-a' });
+  const oldB = Object.assign({}, runB, { archive: '/old-archive/run-b' });
+
+  const request = ctx.buildAnalysisRequest('log', [oldA, oldB]);
+
+  assert.equal(request.cwd, '/old-archive');
+});
+
+test('分析摘要和 time 占位符按 ts 重算跨日时间', () => {
+  const ctx = analysisContext();
+  const oldRun = Object.assign({}, runA, { time: '今天 10:00', ts: new Date(2026, 8, 7, 10, 0).getTime() });
+
+  const request = ctx.buildAnalysisRequest('log', [oldRun]);
+
+  assert.match(request.text, /09-07 10:00/);
+  assert.doesNotMatch(request.text, /今天 10:00/);
+});
+
+test('双选含未归档记录时不要求读取并不存在的两份归档', () => {
+  const ctx = analysisContext();
+  const request = ctx.buildAnalysisRequest('perf', [
+    Object.assign({}, runA, { archive: '' }),
+    Object.assign({}, runB, { archive: '' }),
+  ]);
+
+  assert.match(request.text, /两次运行均未归档/);
+  assert.doesNotMatch(request.text, /请先读取两次运行各自列出的归档文件/);
+});
+
+test('清空发生在刷新请求期间时，迟到响应不得复活历史', () => {
+  const ctx = { history: [], buildNo: 9, histClearedAt: 200 };
+  vm.createContext(ctx);
+  vm.runInContext(functionSource('applyHistoryRefreshPayload'), ctx);
+
+  const applied = ctx.applyHistoryRefreshPayload({
+    config: { buildNo: 10, histClearedAt: 100 },
+    history: [runA],
+  }, 100);
+
+  assert.equal(applied, false);
+  assert.deepEqual(Array.from(ctx.history), []);
+  assert.equal(ctx.buildNo, 9);
+  assert.equal(ctx.histClearedAt, 200);
+});
+
+test('未发生本地清空时正常应用刷新历史并同步版本字段', () => {
+  const ctx = { history: [], buildNo: 9, histClearedAt: 100 };
+  vm.createContext(ctx);
+  vm.runInContext(functionSource('applyHistoryRefreshPayload'), ctx);
+
+  const applied = ctx.applyHistoryRefreshPayload({
+    config: { buildNo: 10, histClearedAt: 100 },
+    history: [runA],
+  }, 100);
+
+  assert.equal(applied, true);
+  assert.equal(ctx.history.length, 1);
+  assert.equal(ctx.history[0].tag, 'run-a');
+  assert.equal(ctx.buildNo, 10);
 });
 
 test('创建双运行分析会话时把对比提示和共同目录交给工作台桥', async () => {
