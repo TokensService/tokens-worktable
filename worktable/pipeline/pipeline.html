@@ -172,7 +172,7 @@
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">预设任务
       <span id="presetMulti" style="position:relative;display:inline-block;">
-        <button id="presetMultiBtn" type="button" class="dshell-input" style="min-width:110px;text-align:left;cursor:pointer;" title="系统预设任务（环境清理/环境检查/Profiling），可多选；执行顺序在流水线编辑中调整（Profiling 默认在流水线的最后），脚本在设置页配置">（不执行）</button>
+        <button id="presetMultiBtn" type="button" class="dshell-input" style="min-width:110px;text-align:left;cursor:pointer;" title="系统预设任务（环境清理/环境检查/Profiling/收集普罗数据），可多选；执行顺序在流水线编辑中调整，脚本在设置页配置">（不执行）</button>
         <div id="presetMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:170px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;">
             <input type="checkbox" id="cleanupEnv" /> 环境清理
@@ -182,6 +182,9 @@
           </label>
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;" title="Profiling 数据采集，默认放在流水线的最后执行（失败不阻断）">
             <input type="checkbox" id="profilingEnv" /> Profiling
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;" title="按流水线任务中配置的模型、命名空间和时间段收集普罗数据，默认最后执行（失败不阻断）">
+            <input type="checkbox" id="promCollectEnv" /> 收集普罗数据
           </label>
         </div>
       </span>
@@ -227,7 +230,7 @@
       </div>
     </div>
     <div id="flow" class="pipeline-seg"></div>
-    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。</p>
+    <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理/环境检查/Profiling/收集普罗数据为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序，其中普罗采集参数可编辑），脚本在设置页配置。</p>
   </div>
 
 
@@ -448,7 +451,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
           <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_年月日时分秒」文件夹归档（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为预设任务：环境清理/环境检查/Profiling），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为系统预设任务），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
@@ -585,7 +588,7 @@
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收集脚本
-          <input id="pmCollectScript" class="dshell-input" list="scriptsList" placeholder="选择脚本（如 collect_vllm_metrics.py，留空=不启用）" style="width:280px;" title="收集普罗数据的脚本（在 scripts 目录按名选用，留空=不启用）。「收集普罗数据」时按运行起止时间调用并注入：PROM_START/PROM_END（ISO）、VLLM_METRICS_START/VLLM_METRICS_END（Unix 秒）、PROMETHEUS_URL、MODEL_NAME/NAMESPACE/XDS_NAMESPACE（勾选收集普罗数据的流水线才注入）、METRICS_OUTPUT_DIR（有归档=归档文件夹/metrics）等环境变量；起止时间可在收集对话框覆盖；打开对话框会先检测该运行是否已收集并展示收集归档目录" />
+          <input id="pmCollectScript" class="dshell-input" list="scriptsList" placeholder="选择脚本（如 collect_vllm_metrics.py，留空=不启用）" style="width:280px;" title="收集普罗数据的脚本（在 scripts 目录按名选用，留空=不启用）。预设任务执行或手动收集时注入：PROM_START/PROM_END（ISO）、VLLM_METRICS_START/VLLM_METRICS_END（Unix 秒）、PROMETHEUS_URL、MODEL_NAME/NAMESPACE/XDS_NAMESPACE、METRICS_OUTPUT_DIR（有归档=归档文件夹/metrics）等环境变量；model_name、xds_namespace 和默认起止时间在流水线的该预设任务中配置，手动收集时仍可临时覆盖起止时间；打开对话框会先检测该运行是否已收集并展示收集归档目录" />
         </label>
         <span class="dshell-muted" style="font-size:11px;">运行历史选中行 · 收集时按起止时间段采集</span>
       </div>
@@ -630,13 +633,6 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <div class="dshell-muted" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;" title="勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。xds_namespace 默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时按当前部署策略与执行人解析），可改填实际命名空间；脚本显式参数同名时优先。开始/结束时间留空=运行时自动取流水线开始时间与最后一个任务结束后的时间；填则作为该流水线收集时段（勾选后运行结束自动收集一次，运行历史「收集普罗数据」对话框可临时覆盖）。">
-          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="plPromEnable" /> 收集普罗数据</label>
-          <input id="plModelName" class="dshell-input" placeholder="model_name" autocomplete="off" style="width:160px;" title="普罗数据采集的模型名（运行时注入环境变量 MODEL_NAME）" />
-          <input id="plXdsNamespace" class="dshell-input" placeholder="xds_namespace（默认 ${DEPLOY_STRATEGY}-${BY}）" autocomplete="off" style="width:220px;" title="普罗数据采集的命名空间（运行时注入环境变量 XDS_NAMESPACE）；默认 部署策略-执行人拼音（${DEPLOY_STRATEGY}-${BY}，运行时解析），可改填实际命名空间" />
-          <input id="plPromStart" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集开始时间（留空=运行时自动取流水线开始时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
-          <input id="plPromEnd" type="datetime-local" step="1" class="dshell-input" style="width:185px;" title="收集结束时间（留空=运行时自动取最后一个任务结束后的时间）；勾选后运行结束自动收集、运行历史「收集普罗数据」对话框可覆盖" />
-        </div>
         <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
@@ -783,7 +779,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 的脚本与勾选态仅跨浏览器同步（定时计划的服务端执行暂不支持环境检查/Profiling 预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) }; }
+function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling/promCollect 勾选态仅跨浏览器同步（定时计划的服务端执行暂不支持这三项预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked), promCollectEnabled: !!($('promCollectEnv') && $('promCollectEnv').checked) }; }
 function historyForPersist(){
   const transient=['_lc','_lm','_ll','_profChecked'];
   return history.filter(h=>!h.demo).map(h=>{
@@ -827,6 +823,8 @@ async function loadServerState(){
       if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
       if(cfg.profilingScript && typeof cfg.profilingScript.name==='string') profilingScript=cfg.profilingScript;
       if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
+      if(typeof cfg.promCollectEnabled==='boolean') $('promCollectEnv').checked=cfg.promCollectEnabled;
+      else $('promCollectEnv').checked=pipelines.some(p=>p && p.prom && p.prom.enabled);   /* 兼容旧版流水线内 enabled 开关 */
       if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
       if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
       else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
@@ -855,6 +853,7 @@ async function loadServerState(){
         localStorage.setItem('pip-checkEnabled', $('checkEnv').checked?'1':'');
         localStorage.setItem('pip-profilingScript', JSON.stringify(profilingScript));
         localStorage.setItem('pip-profilingEnabled', $('profilingEnv').checked?'1':'');
+        localStorage.setItem('pip-promCollectEnabled', $('promCollectEnv').checked?'1':'');
         localStorage.setItem('pip-jenkins', JSON.stringify(jenkins));
         localStorage.setItem('pip-evaltokens', JSON.stringify(evaltok));
         localStorage.setItem('pip-prom', JSON.stringify(prom));
@@ -894,10 +893,10 @@ async function migrateInlineLogs(){
       const j=await r.json(); names=new Set((j && j.entries || []).map(e=>e.name));
     }catch(e){}
     if(!names) continue;
-    const isPreStage=n=>n==='环境检查'||n==='环境清理'||n==='Profiling';   // 系统预设任务：与归档命名约定一致占 00 号，阶段从 01 起
+    const isPreStage=n=>n==='环境检查'||n==='环境清理'||n==='Profiling'||n==='收集普罗数据';   // 系统预设任务：与归档命名约定一致占 00 号，阶段从 01 起
     for(const l of inline){
       const idx=rec.logs.indexOf(l);
-      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=预设任务（环境清理/环境检查/Profiling），阶段按剔除预设任务后的位置从 01 起
+      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=系统预设任务，普通阶段按剔除预设任务后的位置从 01 起
       const fname='run-'+rec.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(l.stage)+'.log';
       const fp=rec.archive+'/'+fname;
       if(!names.has(fname)){
@@ -935,10 +934,12 @@ function collectRunLogs(){
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
 const DEFAULT_PIPELINE_ID='pl-xds';
 function defaultPipeline(){ return {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}; }
-/* 收集普罗数据（每条流水线独立配置）：勾选后运行该流水线时注入环境变量 MODEL_NAME / XDS_NAMESPACE，
-   供 collect_vllm_metrics.py 等普罗数据采集脚本按 model_name / xds_namespace 标签筛选指标。
-   xdsNamespace 默认 ${DEPLOY_STRATEGY}-${BY}（运行时按当前部署策略与执行人解析为「部署策略-执行人拼音」），可改填实际命名空间 */
-const DEFAULT_PIPELINE_PROM = { enabled:false, modelName:'', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}', startTime:'', endTime:'' };
+/* 收集普罗数据预设任务：每条流水线在该预设行内独立保存 model/namespace/起止时间。
+   xdsNamespace 默认 ${DEPLOY_STRATEGY}-${BY}（运行时按当前部署策略与执行人解析）。 */
+const DEFAULT_PIPELINE_PROM = { modelName:'', xdsNamespace:'${DEPLOY_STRATEGY}-${BY}', startTime:'', endTime:'' };
+function normalizePipelineProm(p){ p=p||{}; return {modelName:p.modelName||'', xdsNamespace:p.xdsNamespace!=null?p.xdsNamespace:DEFAULT_PIPELINE_PROM.xdsNamespace, startTime:p.startTime||'', endTime:p.endTime||''}; }
+function pipelinePromFromStages(stages, legacyProm){ const marker=(stages||[]).find(s=>s&&s.preset&&s.pkey==='promCollect'); return normalizePipelineProm((marker&&marker.prom)||legacyProm); }
+function runtimePipelineProm(pl){ return Object.assign({enabled:presetOn('promCollect')}, pipelinePromFromStages(pl&&pl.stages, pl&&pl.prom)); }
 /* 旧数据迁移：「审批门」(gate) 已改为「是否执行」(skip)，旧 gate:true 阶段按不执行处理 */
 function migrateGate(p){ if(p && Array.isArray(p.stages)) p.stages.forEach(s=>{ if(s && s.gate){ s.skip=true; delete s.gate; } }); return p; }
 /* 旧数据迁移：Jenkins 阶段先改为 URL 请求阶段、再统一改为 HTTP 阶段（kind:'jenkins'/'url'→'http'，jenkins.job→url.url）；
@@ -1904,10 +1905,10 @@ function cleanScriptValues(params, values){
   return out;
 }
 let cleanupScript=(function(){ try{ const cs=JSON.parse(localStorage.getItem('pip-cleanupScript')); if(cs && cs.values) cs.values=cleanScriptValues(cs.params, cs.values); return cs; }catch(e){ return null; } })() || null;
-/* 预设任务多选（环境清理/环境检查/Profiling，面板内即 cleanupEnv/checkEnv/profilingEnv 三个开关）：按钮文案跟随勾选，与「环境」多选同一交互 */
+/* 预设任务多选（环境清理/环境检查/Profiling/收集普罗数据）：按钮文案跟随勾选，与「环境」多选同一交互 */
 function renderPresetMultiBtn(){
   const b=$('presetMultiBtn'); if(!b) return;
-  const on=[]; if($('cleanupEnv').checked) on.push('环境清理'); if($('checkEnv').checked) on.push('环境检查'); if($('profilingEnv').checked) on.push('Profiling');
+  const on=[]; if($('cleanupEnv').checked) on.push('环境清理'); if($('checkEnv').checked) on.push('环境检查'); if($('profilingEnv').checked) on.push('Profiling'); if($('promCollectEnv').checked) on.push('收集普罗数据');
   b.textContent=on.length?on.join('、'):'（不执行）';
   b.title=b.textContent;   // 限宽省略时悬浮可见完整列表
 }
@@ -2028,6 +2029,11 @@ function saveProfiling(){
   }catch(e){}
   renderPresetMultiBtn();
   persistState();
+  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+}
+function savePromCollectPreset(){
+  try{ localStorage.setItem('pip-promCollectEnabled', $('promCollectEnv').checked?'1':''); }catch(e){}
+  renderPresetMultiBtn(); persistState();
   if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
 function renderProfilingParams(){
@@ -2247,14 +2253,21 @@ function renderStageEditor(){
       +(i===editFocusIdx?';border-color:var(--dsw-alias-state-accent-primary);box-shadow:0 0 0 2px rgba(79,142,247,.18);':'');
     /* 预设任务行：仅可调整执行顺序（序号/上移/下移），内容与脚本在设置页配置，不可改名/删除 */
     if(s.preset){
+      const pp=s.pkey==='promCollect'?normalizePipelineProm(s.prom):null;
       row.innerHTML='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
         +'<input class="dshell-input" data-f="ord" type="number" min="1" max="'+editStages.length+'" value="'+(i+1)+'" title="顺序：直接输入目标序号后回车" style="width:52px;" />'
         +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
         +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
         +'<span style="font-weight:600;">'+esc(s.name)+'</span>'
         +'<span class="pipeline-preset">🔒 系统预设</span>'
-        +'<span class="dshell-muted" style="font-size:11px;">由主控「预设任务」勾选启用，脚本在设置页配置；此处仅调整执行顺序'+(s.pkey==='check'?'；检查不通过（脚本非零退出）会阻断后续阶段':'')+'</span>'
-        +'</div>';
+        +'<span class="dshell-muted" style="font-size:11px;">由主控「预设任务」勾选启用，脚本在设置页配置；'+(s.pkey==='promCollect'?'采集参数随本流水线保存':'此处仅调整执行顺序')+(s.pkey==='check'?'；检查不通过（脚本非零退出）会阻断后续阶段':'')+'</span>'
+        +'</div>'
+        +(pp?('<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-left:1px;">'
+          +'<span class="dshell-muted" style="font-size:11px;">model_name</span><input class="dshell-input" data-f="promModelName" value="'+esc(pp.modelName)+'" placeholder="model_name" autocomplete="off" style="width:160px;" title="采集模型名（注入 ARCH_NAME / MODEL_NAME）" />'
+          +'<span class="dshell-muted" style="font-size:11px;">xds_namespace</span><input class="dshell-input" data-f="promXdsNamespace" value="'+esc(pp.xdsNamespace)+'" placeholder="${DEPLOY_STRATEGY}-${BY}" autocomplete="off" style="width:220px;" title="采集命名空间（注入 NAMESPACE / XDS_NAMESPACE），支持运行变量占位" />'
+          +'<span class="dshell-muted" style="font-size:11px;">开始</span><input class="dshell-input" data-f="promStart" type="datetime-local" step="1" value="'+esc(pp.startTime)+'" style="width:185px;" title="留空=流水线开始时间" />'
+          +'<span class="dshell-muted" style="font-size:11px;">结束</span><input class="dshell-input" data-f="promEnd" type="datetime-local" step="1" value="'+esc(pp.endTime)+'" style="width:185px;" title="留空=执行到本预设任务时的时间" />'
+          +'</div>'):'');
       wrap.appendChild(row);
       return;
     }
@@ -2483,46 +2496,51 @@ function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ---------- 渲染流水线编排 ---------- */
-/* 系统预设任务定义：环境清理/环境检查/Profiling。顺序位置存进流水线阶段列表（preset 标记行，
+/* 系统预设任务定义：环境清理/环境检查/Profiling/收集普罗数据。顺序位置存进流水线阶段列表（preset 标记行，
    在流水线编辑器中可排序，见 openPlForm/savePlForm）；运行时按主控「预设任务」勾选展开为执行项
    （脚本取设置页当前配置快照，见 expandRunStages）。block=true 的预设任务失败会阻断后续阶段 */
 const PRESET_DEF={
   cleanup:{id:'__cleanup__', el:'cleanupEnv', name:'环境清理', script:()=>cleanupScript, block:false, noScript:'未配置环境清理脚本'},
   check:{id:'__check__', el:'checkEnv', name:'环境检查', script:()=>checkScript, block:true, noScript:'未配置环境检查脚本'},
   profiling:{id:'__profiling__', el:'profilingEnv', name:'Profiling', script:()=>profilingScript, block:false, noScript:'未配置 Profiling 脚本'},
+  promCollect:{id:'__prom_collect__', el:'promCollectEnv', name:'收集普罗数据', script:()=>scriptByName((prom.collectScript||'').trim()), block:false, noScript:'未在设置页配置普罗数据收集脚本'},
 };
-const PRESET_ORDER=['cleanup','check','profiling'];   // 默认位置顺序：清理/检查在流水线的最前，Profiling 在最后
+const PRESET_ORDER=['cleanup','check','profiling','promCollect'];   // 默认位置顺序：清理/检查在最前，Profiling/普罗采集在最后
 const PRESET_BY_NAME={}; PRESET_ORDER.forEach(k=>{ PRESET_BY_NAME[PRESET_DEF[k].name]=k; });
 function presetOn(pkey){ const el=$(PRESET_DEF[pkey].el); return !!(el && el.checked); }
 /* 预设任务运行态节点：脚本取设置页当前配置的快照 */
-function presetRuntime(pkey){ const def=PRESET_DEF[pkey]; const sc=def.script(); return {id:def.id, name:def.name, preset:true, pkey:pkey, script:sc?JSON.parse(JSON.stringify(sc)):null}; }
-function presetMarker(pkey){ const def=PRESET_DEF[pkey]; return {id:def.id, name:def.name, preset:true, pkey:pkey}; }
+function presetRuntime(pkey, marker){ const def=PRESET_DEF[pkey]; const sc=def.script(); const out={id:def.id, name:def.name, preset:true, pkey:pkey, script:sc?JSON.parse(JSON.stringify(sc)):null}; if(pkey==='promCollect') out.prom=normalizePipelineProm(marker&&marker.prom); return out; }
+function presetMarker(pkey, promCfg){ const def=PRESET_DEF[pkey]; const out={id:def.id, name:def.name, preset:true, pkey:pkey}; if(pkey==='promCollect') out.prom=normalizePipelineProm(promCfg); return out; }
 /* 阶段列表补齐缺失的预设标记（不改动原数组）：已有的保持原位置；缺失的按默认位置补——
-   环境清理补到最前、环境检查紧跟环境清理、Profiling 补到最后 */
-function withPresetMarkers(stages){
+   环境清理补到最前、环境检查紧跟环境清理、Profiling 与普罗采集补到最后 */
+function withPresetMarkers(stages, legacyProm){
   const out=(stages||[]).slice();
   const has={}; out.forEach(s=>{ if(s && s.preset && s.pkey) has[s.pkey]=1; });
   if(!has.cleanup) out.unshift(presetMarker('cleanup'));
   if(!has.check){ const ci=out.findIndex(s=>s && s.preset && s.pkey==='cleanup'); out.splice(ci>=0?ci+1:0, 0, presetMarker('check')); }
   if(!has.profiling) out.push(presetMarker('profiling'));
+  const pi=out.findIndex(s=>s&&s.preset&&s.pkey==='promCollect');
+  if(pi<0) out.push(presetMarker('promCollect', legacyProm));
+  else if(!out[pi].prom) out[pi]=Object.assign({},out[pi],{prom:normalizePipelineProm(legacyProm)});
   return out;
 }
 /* 预设任务展开（运行启动时）：阶段列表中的预设标记（旧流水线先按默认位置补齐）按主控「预设任务」
    勾选展开为本次运行的执行项（脚本取设置页当前配置快照）；未勾选的预设不进本次运行 */
-function expandRunStages(rawStages){
-  return withPresetMarkers(rawStages).flatMap(s=>{
+function expandRunStages(rawStages, legacyProm){
+  return withPresetMarkers(rawStages, legacyProm).flatMap(s=>{
     if(!s || !s.preset) return [{...s}];
-    return presetOn(s.pkey) ? [presetRuntime(s.pkey)] : [];
+    const enabled=(s.pkey==='promCollect' && legacyProm && typeof legacyProm.enabled==='boolean') ? legacyProm.enabled : presetOn(s.pkey);   // 队列传入普罗开关快照时不受出队前 UI 改动影响
+    return enabled ? [presetRuntime(s.pkey,s)] : [];
   });
 }
 // 预设任务随阶段列表进入编排序列（位置即执行顺序）：展示时按勾选（空闲）/运行快照（运行态）/历史日志（回放）展开。
 function flowStages(){
   if(replayRec){   // 回放：按该次运行历史里出现过的预设任务展开
     const logs=replayRec.logs||[];
-    return (runStages||[]).flatMap(s=> s && s.preset ? (logs.some(l=>l && l.stage===s.name)?[presetRuntime(s.pkey)]:[]) : [s]);
+    return (runStages||[]).flatMap(s=> s && s.preset ? (logs.some(l=>l && l.stage===s.name)?[presetRuntime(s.pkey,s)]:[]) : [s]);
   }
   if(runStages) return runStages;   // 运行态/运行后快照：启动时已按勾选展开（见 expandRunStages）
-  return withPresetMarkers(activeStages()).flatMap(s=> s.preset ? (presetOn(s.pkey)?[presetRuntime(s.pkey)]:[]) : [s]);
+  return withPresetMarkers(activeStages(), curPipeline().prom).flatMap(s=> s.preset ? (presetOn(s.pkey)?[presetRuntime(s.pkey,s)]:[]) : [s]);
 }
 function renderFlow(){
   const f = $('flow'); f.innerHTML='';
@@ -2549,9 +2567,9 @@ function renderFlow(){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(running || replayRec || s.preset) return;   // 预设任务（环境清理/环境检查/Profiling）脚本在设置页配置；回放态只读
+      if(running || replayRec || s.preset) return;   // 系统预设任务的脚本在设置页配置，顺序/普罗采集参数在流水线编辑器配置；回放态只读
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
-      openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
+      openPlForm(pid, withPresetMarkers(activeStages(),curPipeline().prom).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
     n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):'单击查看详情，双击编辑该阶段';
     f.appendChild(n);
@@ -2804,14 +2822,14 @@ function startRun(opts){
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
-  const c = {env, envs, image, release, repo, branch, by, strategy, prom:(opts.prom!==undefined?opts.prom:((pl&&pl.prom)||null)), source:opts.source||'manual'};
+  const c = {env, envs, image, release, repo, branch, by, strategy, prom:(opts.prom!==undefined?opts.prom:runtimePipelineProm(pl)), source:opts.source||'manual'};
   startSimRun(pl, c);
   return true;
 }
 function startSimRun(pl, c){
   replayRec=null; const rt0=$('replayTip'); if(rt0) rt0.textContent='';   // 新运行优先：退出历史回放态
-  /* 预设任务按编排位置展开进执行序列（未勾选的不进本次运行），清理/检查/Profiling 与各阶段统一经 advance 串行推进 */
-  const stages = expandRunStages(pl.stages);
+  /* 预设任务按编排位置展开进执行序列（未勾选的不进本次运行），清理/检查/Profiling/普罗采集与普通阶段统一经 advance 串行推进 */
+  const stages = expandRunStages(pl.stages, c.prom);
   /* 运行时兜底校验：本地运行（不支持定时）阶段不能排在定时阶段之后（与保存校验一致，防本地数据被外部改坏）；预设任务不参与定时校验 */
   {
     let started=false, badIdx=-1;
@@ -2854,7 +2872,7 @@ function runPipeline(opts){
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, repoId, branch, strategy, by, prom:(opts.prom!==undefined?opts.prom:(pl?(pl.prom||null):null)), source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, branch, strategy, by, prom:(opts.prom!==undefined?opts.prom:(pl?runtimePipelineProm(pl):null)), source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   queue.push(item);
@@ -3089,7 +3107,7 @@ function advance(i){
   if(i>=stg.length){ finish('success'); return; }
   // 手动运行连续执行全部阶段；sched 仅约束定时计划，不在此拆分后缀或提前结束运行。
   const s=stg[i];
-  if(s.preset){ runPresetStep(i); return; }   // 预设任务（环境清理/环境检查/Profiling）：脚本取设置页配置，见 runPresetStep
+  if(s.preset){ runPresetStep(i); return; }   // 系统预设任务：脚本取设置页配置，普罗参数取任务内配置，见 runPresetStep
   if(s.skip){ skipStage(i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
   if((s.kind==='http'||s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(i); return; }   // 兼容旧数据 kind:'url'/'jenkins'
   if(s.kind==='evaltokens'){ runEvaltokensStep(i); return; }   // EvalTokens 任务轮询阶段：匹配任务并等待终态（见 runEvaltokensStep）
@@ -3331,7 +3349,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
       if(env.ARCHIVE_PIPELINE===undefined && rc.pipelineName) env.ARCHIVE_PIPELINE=rc.pipelineName;
       if(env.ARCHIVE_TAG===undefined && rc.tag) env.ARCHIVE_TAG=rc.tag;
     }
-    /* 收集普罗数据：勾选「收集普罗数据」的流水线运行时注入 MODEL_NAME / XDS_NAMESPACE
+    /* 收集普罗数据：主控启用该预设任务时，为本次流水线运行注入 MODEL_NAME / XDS_NAMESPACE
        （值支持 ${VAR} 占位，如 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 按当前部署策略与执行人解析）；
        脚本显式参数优先；解析后为空则不注入。供 collect_vllm_metrics.py 等采集脚本按模型/命名空间筛选指标 */
     if(rc.prom && rc.prom.enabled){
@@ -3974,13 +3992,12 @@ function finish(result){
     refreshArchiveTip();   // 归档目录目标跟随刚选中的本次运行记录刷新
     persistState();
     archiveRun(result);
-    promCollectRun(curRun).catch(e=>console.warn('[prom] 自动收集异常（不影响运行结果）:', e));   // 勾选收集普罗数据的流水线运行结束自动收集
     renderDetail();   // running 已置 false：失败阶段补出「从本阶段重试」按钮
   }catch(e){ console.warn('[pipeline] finish 收尾异常（已兜底，不阻断队列排空）:', e); }
   try{ drainQueue(); }catch(e){ console.warn('[pipeline] 排空队列失败（交由 renderQueue 自愈兜底）:', e); }   // startRun 抛错时吞掉：被 shift 的该项丢弃，剩余由下方 renderQueue 自愈逐个补排
   renderQueue();
 }
-/* 预设任务（环境清理/环境检查/Profiling）：随阶段列表按编排位置执行（见 advance 分发），
+/* 系统预设任务：随阶段列表按编排位置执行（见 advance 分发），
    脚本为设置页配置在启动时的快照（expandRunStages → presetRuntime）；未配置脚本=跳过（不阻断）；
    block=true 的预设任务（环境检查）不通过（脚本非零退出）时阻断后续阶段、按失败计入历史，
    其余预设任务失败不阻断。日志随任务即时归档为 00 号任务日志（见 stageSeq） */
@@ -4004,7 +4021,17 @@ async function runPresetStep(i){
   const folder=archiveFolderFor(curRun), logFile=folder ? folder+'/'+taskLogFile(curRun,0,s.name) : null;   // 预设任务固定 00 号任务日志（文件名含任务名，互不冲突）
   s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
   let accStdout='', accStderr='', lastLive=0;
-  const res=await execScript(sc, 120000, null, null, m=>{
+  let timeoutMs=120000, extraEnv=null, presetError='';
+  if(s.pkey==='promCollect'){
+    const ps=Object.assign({enabled:true},normalizePipelineProm(s.prom||(curRun&&curRun.prom)));
+    let startMs=curRun.startTs, endMs=Date.now();
+    const cs=ps.startTime?dtLocalToMs(ps.startTime):0, ce=ps.endTime?dtLocalToMs(ps.endTime):0;
+    if(cs) startMs=cs; if(ce) endMs=ce;
+    if(!startMs || !endMs || startMs>=endMs) presetError='时间参数错误：开始时间必须早于结束时间。';
+    else extraEnv=buildPromCollectEnv({prom:ps,archive:curRun.archive||''},startMs,endMs);
+    timeoutMs=0;   // 普罗数据采集与手动收集一致：不设固定超时，可从主控手动中止
+  }
+  const res=presetError ? {code:1,stdout:'',stderr:presetError} : await execScript(sc, timeoutMs, extraEnv, null, m=>{
     if(!running || !curRun || curRun.token!==tk) return;   // 迟回片段丢弃（已切换新运行）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }
     if(m.type==='out'){ accStdout+=m.text; } else if(m.type==='err'){ accStderr+=m.text; }
@@ -4029,7 +4056,7 @@ async function runPresetStep(i){
       finish('failed');
       setOverall('✗ 环境检查未通过',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
     } else {
-      setOverall('运行中…','dshell-badgeWait'); advance(i+1);   // 清理/Profiling 失败不阻断（与原清理语义一致）
+      setOverall('运行中…','dshell-badgeWait'); advance(i+1);   // 清理/Profiling/普罗采集失败不阻断
     }
   }
 }
@@ -4297,39 +4324,6 @@ function promOutputDir(ctx){   // 收集产物目录：与 buildPromCollectEnv �
   if(ctx && ctx.archive) return ctx.archive.replace(/\/+$/,'')+'/metrics';
   return (scriptsDir||'').replace(/\/+$/,'')+'/vllm-metrics';
 }
-/* 运行结束自动收集普罗数据：勾选「收集普罗数据」且设置页配了收集脚本的流水线，最后一个任务结束后
-   自动按编辑器设的时段（留空=本次运行起止）调用收集脚本；输出写入归档目录 prom-collect-<tag>.log，
-   失败仅 console.warn（不影响运行结果，与归档脚本同语义）。经 runCtx=rc 传入已结束运行快照。 */
-async function promCollectRun(rc){
-  if(!rc || !rc.prom || !rc.prom.enabled) return;
-  const scName=(prom.collectScript||'').trim();
-  if(!scName){ console.warn('[prom] 未配置收集脚本，跳过自动收集（可在「设置 → 普罗数据服务配置 → 收集脚本」配置）'); return; }
-  const sc=scriptByName(scName);
-  if(!sc || !sc.path){ console.warn('[prom] 自动收集：脚本「'+scName+'」未在 scripts 目录找到，跳过'); return; }
-  const ps=promSnapshotForRun(rc);
-  let startMs=rc.startTs, endMs=Date.now();   // 默认=本次运行起止
-  if(ps && ps.enabled){
-    const cs=ps.startTime ? dtLocalToMs(ps.startTime) : 0;
-    const ce=ps.endTime ? dtLocalToMs(ps.endTime) : 0;
-    if(cs) startMs=cs;
-    if(ce) endMs=ce;
-  }
-  if(!startMs || !endMs || startMs>=endMs){ console.warn('[prom] 自动收集：起止时间无效（start='+startMs+' end='+endMs+'），跳过'); return; }
-  const env=buildPromCollectEnv({prom:ps, archive:rc.archive||''}, startMs, endMs);
-  try{
-    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path,args:[],env,cwd:scriptsDir,timeoutMs:0})});
-    const j=await r.json();
-    const code=(j && j.code!==undefined) ? j.code : 1;
-    if(j && j.error) console.warn('[prom] 自动收集失败：'+j.error+'（不影响运行结果）');
-    else if(code!==0) console.warn('[prom] 自动收集脚本退出码 '+code+'（不影响运行结果）');
-    if(rc.archive){
-      let text='$ '+sc.name+'  PROM_START='+env.PROM_START+'  PROM_END='+env.PROM_END+'\n'+((j&&j.stdout)||'');
-      if(j && j.stderr) text+='\n✗ '+j.stderr;
-      text+='\n[exit '+code+']';
-      apiWrite(rc.archive+'/prom-collect-'+(rc.tag||'run')+'.log', text).catch(e=>console.warn('[prom] 自动收集日志写入失败（不影响运行结果）:', e));
-    }
-  }catch(e){ console.warn('[prom] 自动收集执行失败（不影响运行结果）:', e); }
-}
 function pmcSay(text, cls){   // 追加文本到收集对话框日志区（cls: ''/ok/warn/err）
   const log=$('pmcLog'); if(!log) return;
   const span=document.createElement('span');
@@ -4550,7 +4544,7 @@ function enterHistoryReplay(rec){
   if(pl && pl.id!==curPipelineId){ curPipelineId=pl.id; renderPipelineSel(); renderPipelines(); }
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   /* 补齐预设标记（旧流水线未存过预设顺序）：回放按 logs 里出现过的预设任务展开节点（见 flowStages） */
-  runStages = pl ? withPresetMarkers(pl.stages).map(s=>({...s}))
+  runStages = pl ? withPresetMarkers(pl.stages,pl.prom).map(s=>({...s}))
     : logs.map((l,i)=> PRESET_BY_NAME[l.stage] ? presetMarker(PRESET_BY_NAME[l.stage]) : ({id:'replay-st'+i, name:l.stage, dur:5, sub:[]}));
   rebuildReplayNodes(rec);
   selectedId=runStages.length?runStages[0].id:null;
@@ -4902,17 +4896,10 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
-    editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设任务标记行原样带入（仅排序，内容不可编辑） */
+    editStages=p.stages.map(s=> (s && s.preset) ? Object.assign({id:s.id, name:s.name, preset:true, pkey:s.pkey},s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom||p.prom)}:{})   /* 预设标记行原样带入；普罗采集同时带入任务内配置（兼容旧 p.prom） */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化，编辑器打开时自动重新识别 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
-  editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行（默认位置：清理/检查最前、Profiling 最后），供调整执行顺序
-  /* 收集普罗数据：按流水线配置回填（无配置用默认，xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY}） */
-  const pp = (p && p.prom) ? Object.assign({}, DEFAULT_PIPELINE_PROM, p.prom) : DEFAULT_PIPELINE_PROM;
-  $('plPromEnable').checked = !!pp.enabled;
-  $('plModelName').value = pp.modelName || '';
-  $('plXdsNamespace').value = (pp.xdsNamespace!=null) ? pp.xdsNamespace : DEFAULT_PIPELINE_PROM.xdsNamespace;
-  $('plPromStart').value = pp.startTime || '';
-  $('plPromEnd').value = pp.endTime || '';
+  editStages=withPresetMarkers(editStages, p&&p.prom);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling/普罗采集最后
   loadScripts().then(async ()=>{
     renderStageEditor();
     /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
@@ -4967,7 +4954,7 @@ function savePlForm(){
   }
   scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
-    if(s.preset) return {id:s.id, name:s.name, preset:true, pkey:s.pkey};   // 预设任务标记：位置随流水线保存，内容/脚本取设置页配置
+    if(s.preset) return Object.assign({id:s.id, name:s.name, preset:true, pkey:s.pkey},s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom)}:{});   // 预设任务标记：位置随流水线保存，普罗采集参数一并存在该任务中
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
@@ -4976,10 +4963,9 @@ function savePlForm(){
     if(s.sched) st.sched={};   // 仅标记「支持定时」，周期跟随流水线定时计划
     return st;
   });
-  const prom={enabled:$('plPromEnable').checked, modelName:$('plModelName').value.trim(), xdsNamespace:$('plXdsNamespace').value.trim(), startTime:$('plPromStart').value, endTime:$('plPromEnd').value};
   const editId=$('plForm').dataset.editId;
-  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.prom=prom; } }
-  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false, prom}); }
+  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; delete p.prom; } }
+  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false}); }
   savePipelines(); $('plForm').style.display='none';
   /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
   if(running){ renderPipelines(); }
@@ -5100,6 +5086,10 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.outVars=e.target.value; }
   else if(f==='etCollectReport'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.collectReport=!!e.target.checked; }
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
+  else if(f==='promModelName'){ s.prom=normalizePipelineProm(s.prom); s.prom.modelName=e.target.value.trim(); }
+  else if(f==='promXdsNamespace'){ s.prom=normalizePipelineProm(s.prom); s.prom.xdsNamespace=e.target.value.trim(); }
+  else if(f==='promStart'){ s.prom=normalizePipelineProm(s.prom); s.prom.startTime=e.target.value; }
+  else if(f==='promEnd'){ s.prom=normalizePipelineProm(s.prom); s.prom.endTime=e.target.value; }
 });
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
 /* 节点环境表头排序：升序 → 降序 → 取消 */
@@ -5145,6 +5135,9 @@ $('profilingScriptName').value = profilingScript?profilingScript.name:'';
 $('profilingScriptName').addEventListener('change', (e)=>setProfilingScript(e.target.value.trim()));
 $('profilingDetect').addEventListener('click', ()=>{ detectProfilingParams().then(saveProfiling); });
 renderProfilingParams();
+/* 收集普罗数据：主控预设开关；旧数据没有全局开关时，任一流水线原 prom.enabled 为 true 则迁移为开启 */
+try{ const pe=localStorage.getItem('pip-promCollectEnabled'); $('promCollectEnv').checked=pe===null?pipelines.some(p=>p&&p.prom&&p.prom.enabled):pe==='1'; }catch(e){ $('promCollectEnv').checked=false; }
+$('promCollectEnv').addEventListener('change', savePromCollectPreset);
 /* Jenkins 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
 applyJenkinsForm();
 $('jkModeLocal').addEventListener('click', ()=>setJenkinsMode('local'));

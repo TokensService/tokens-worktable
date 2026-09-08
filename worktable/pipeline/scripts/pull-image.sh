@@ -2,8 +2,16 @@
 # Pre-pull deployment images and export render templates on the pipeline execution host.
 set -euo pipefail
 
-IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"
-IMAGE="$IMAGE_NAME"
+IMAGE_NAME="${IMAGE_NAME:-myapp}"
+if [[ -n "${1:-}" ]]; then
+  IMAGE="$1"
+elif [[ -n "${DEPLOY_IMAGE:-}" ]]; then
+  IMAGE="$DEPLOY_IMAGE"
+elif [[ -n "${IMAGE_TAG:-}" ]]; then
+  IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+else
+  IMAGE="$IMAGE_NAME"
+fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
