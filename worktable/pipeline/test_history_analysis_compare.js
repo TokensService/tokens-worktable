@@ -150,6 +150,28 @@ test('归档配置变更后，双选工作目录从记录路径推导而不是�
   assert.equal(request.cwd, '/old-archive');
 });
 
+test('仅一条记录有归档时，以该记录目录作为对比工作目录', () => {
+  const ctx = analysisContext({ archiveRootFolder: () => '/new-archive' });
+  const archived = Object.assign({}, runA, { archive: '/old-archive/run-a' });
+  const missing = Object.assign({}, runB, { archive: '' });
+
+  const request = ctx.buildAnalysisRequest('log', [archived, missing]);
+
+  assert.equal(request.cwd, '/old-archive/run-a');
+});
+
+test('两条归档无安全共同父目录时使用基准运行目录，不以根目录启动会话', () => {
+  const ctx = analysisContext({ archiveRootFolder: () => '/configured-archive' });
+  const left = Object.assign({}, runA, { archive: '/old-archive/run-a' });
+  const right = Object.assign({}, runB, { archive: '/new-archive/run-b' });
+
+  const request = ctx.buildAnalysisRequest('perf', [left, right]);
+
+  assert.equal(request.cwd, '/old-archive/run-a');
+  assert.notEqual(request.cwd, '/');
+  assert.match(request.text, /\/new-archive\/run-b/);
+});
+
 test('分析摘要和 time 占位符按 ts 重算跨日时间', () => {
   const ctx = analysisContext();
   const oldRun = Object.assign({}, runA, { time: '今天 10:00', ts: new Date(2026, 8, 7, 10, 0).getTime() });

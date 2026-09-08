@@ -4519,7 +4519,8 @@ function buildComparisonPrompt(kind, records){
 }
 function commonAnalysisArchiveFolder(records){
   const paths=records.map(rec=>String((rec&&rec.archive)||'').trim().replace(/\/+$/,'')).filter(Boolean);
-  if(paths.length!==records.length) return archiveRootFolder()||null;
+  if(!paths.length) return archiveRootFolder()||null;
+  if(paths.length===1) return paths[0];
   const absolute=paths.every(path=>path[0]==='/');
   const parts=paths.map(path=>path.split('/').filter(Boolean));
   const common=[];
@@ -4527,8 +4528,9 @@ function commonAnalysisArchiveFolder(records){
     if(parts.every(pathParts=>pathParts[i]===parts[0][i])) common.push(parts[0][i]);
     else break;
   }
-  if(!common.length) return absolute?'/':(archiveRootFolder()||null);
-  return (absolute?'/':'')+common.join('/');
+  if(!common.length) return paths[0];
+  const folder=(absolute?'/':'')+common.join('/');
+  return folder==='/'?paths[0]:folder;
 }
 function buildAnalysisRequest(kind, records){
   const recs=(Array.isArray(records)?records:[records]).filter(Boolean).slice(0,2);
