@@ -770,12 +770,18 @@ function persistState(){
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
 function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；checkScript/checkEnabled 仅跨浏览器同步勾选态（定时计划的服务端执行暂不支持环境检查） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked) }; }
+function historyForPersist(){
+  const transient=['_lc','_lm','_ll','_profChecked'];
+  return history.filter(h=>!h.demo).map(h=>{
+    const clean={}; Object.keys(h).forEach(k=>{ if(transient.indexOf(k)<0) clean[k]=h[k]; }); return clean;
+  });
+}
 async function pushState(){
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
   try{
     /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
        服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖 */
-    await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history:history.filter(h=>!h.demo)})});
+    await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history:historyForPersist()})});
   }catch(e){}
 }
 async function loadServerState(){
@@ -2409,7 +2415,13 @@ function renderFlow(){
       (s.sub&&s.sub.length?('<div class="pipeline-sub">'+s.sub.map(x=>'<span data-sub="'+esc(x)+'">'+esc(x)+'</span>').join('')+'</div>'):'');
     /* 选中态由 applyStatusClasses 更新即可；不能在这里 renderFlow()，
        否则第一次单击就重建节点元素，第二次单击落在新元素上，dblclick 永远触发不了 */
-    n.addEventListener('click',()=>{ selectedId=s.id; applyStatusClasses(); renderDetail(); });
+    n.addEventListener('click',()=>{
+      selectedId=s.id; applyStatusClasses(); renderDetail();
+      if(replayRec){
+        const rec=replayRec;
+        loadReplayLog(rec,s.name).then(()=>{ if(replayRec===rec && selectedId===s.id){ _detailKey=''; renderDetail(); } });
+      }
+    });
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
@@ -4315,20 +4327,33 @@ async function createAnalysisChat(kind, rec){
    replayRec 非空 = 正在回放该条历史：编排区显示该次运行的阶段快照（runStages 语义）与状态/耗时，
    详情与回显取自 rec.logs；再次点击该行、手动切换流水线、新运行或「重置」退出回放。 */
 let replayRec = null;
-/* 回放日志按需加载：历史条目只存 logFile 路径（全量日志在归档文件），进入回放时经文件读路由拉取，
-   缓存到 rec._lc（阶段名→文本；null=读取失败，下次进入回放时重试）；完成后若仍在回放同一条记录则重绘详情 */
-async function loadReplayLogs(rec){
+/* 回放日志按当前选中阶段懒加载：详情只展示最后 20 行，故请求文件末尾 64KiB，避免全量读取/传输大日志。
+   旧插件不识别 tailBytes 时仍会返回全文，页面逻辑保持兼容；缓存到 rec._lc，_lm 记录是否截尾及原文件大小。 */
+async function loadReplayLog(rec, stageName){
   const logs=Array.isArray(rec.logs)?rec.logs:[];
   if(!rec._lc) rec._lc={};
+  if(!rec._lm) rec._lm={};
+  if(!rec._ll) rec._ll={};
+  const l=logs.find(x=>x && x.stage===stageName);
+  if(!l || typeof l.log==='string' || !l.logFile || typeof rec._lc[l.stage]==='string') return;
+  if(rec._ll[l.stage]) return rec._ll[l.stage];
+  const job=fetch('/api/worktable/file?path='+encodeURIComponent(l.logFile)+'&tailBytes=65536')
+    .then(async r=>{
+      if(!r.ok) return null;
+      const size=parseInt((r.headers&&r.headers.get('x-worktable-file-size'))||'',10);
+      rec._lm[l.stage]={truncated:!!(r.headers&&r.headers.get('x-worktable-file-truncated')==='tail'),size:Number.isFinite(size)?size:null};
+      return r.text();
+    })
+    .then(t=>{ rec._lc[l.stage]=t; })
+    .catch(()=>{ rec._lc[l.stage]=null; })
+    .finally(()=>{ delete rec._ll[l.stage]; });
+  rec._ll[l.stage]=job;
+  return job;
+}
+async function loadReplayLogs(rec){
   const jobs=[];
-  logs.forEach(l=>{
-    if(!l || typeof l.log==='string' || !l.logFile) return;
-    if(typeof rec._lc[l.stage]==='string') return;
-    jobs.push(fetch('/api/worktable/file?path='+encodeURIComponent(l.logFile))
-      .then(r=> r.ok ? r.text() : null)
-      .then(t=>{ rec._lc[l.stage]=t; })
-      .catch(()=>{ rec._lc[l.stage]=null; }));
-  });
+  const selected=flowStages().find(s=>s.id===selectedId);
+  if(selected) jobs.push(loadReplayLog(rec,selected.name));
   /* 阶段状态校正：服务端定时执行的真实结果写入了归档目录的 run-<tag>.profile.json；
      历史条目里的阶段状态可能因页面/服务端记录按 tag 合并而被回退为 idle（未反映服务端实际执行），
      回放时按 profile.stages 覆盖各阶段 status/dur，使详情如实展示「已完成/跳过/错误/终止」。 */
@@ -4426,21 +4451,22 @@ function renderReplayDetail(rec){
   bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':(n.status==='skipped'||n.status==='aborted'?'var(--st-idle)':'var(--st-run)'));
   wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed'||n.status==='skipped'||n.status==='aborted')?'block':'none';
   const log=$('detailLog'); log.innerHTML='';
-  /* 日志来源：旧版记录内嵌 entry.log 直接用；新版条目只存 logFile 路径，由 loadReplayLogs 按需拉取缓存到 rec._lc */
+  /* 日志来源：旧版记录内嵌 entry.log 直接用；新版条目只存 logFile 路径，由 loadReplayLog 按当前阶段拉取并缓存到 rec._lc */
   let text=(entry && typeof entry.log==='string') ? entry.log : undefined;
   if(entry && text===undefined && entry.logFile){
     const cached=rec._lc ? rec._lc[entry.stage] : undefined;
     if(typeof cached==='string') text=cached;
     else log.textContent = cached===null ? ('日志文件读取失败或不存在：'+entry.logFile) : '（日志加载中…）';
   }
-  /* 阶段详情日志只回显归档日志文件的最后 20 行（全量日志仍在归档文件，未截断），
-     超过 20 行时在顶部插入一行省略提示，避免长日志挤压详情面板 */
+  /* 阶段详情只回显最后 20 行；新插件从服务端仅取末尾 64KiB，旧插件返回全文时仍在页面截取。 */
   const TAIL=20;
   const all=text!==undefined ? String(text).split('\n') : [];
   const lines=all.length>TAIL ? all.slice(all.length-TAIL) : all;
+  const meta=entry && rec._lm ? rec._lm[entry.stage] : null;
   if(!all.length && !log.textContent){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
   else{
-    if(all.length>TAIL){ const tip=document.createElement('div'); tip.className='dim'; tip.textContent='… 仅显示最后 '+TAIL+' 行（共 '+all.length+' 行，全量见归档日志文件）'; log.appendChild(tip); }
+    if(meta && meta.truncated){ const tip=document.createElement('div'); tip.className='dim'; tip.textContent='… 已按需加载日志末尾 64 KiB'+(meta.size?('（文件共 '+(meta.size/1024/1024).toFixed(1)+' MiB）'):'')+'，仅显示最后 '+TAIL+' 行；全量见归档日志文件'; log.appendChild(tip); }
+    else if(all.length>TAIL){ const tip=document.createElement('div'); tip.className='dim'; tip.textContent='… 仅显示最后 '+TAIL+' 行（共 '+all.length+' 行，全量见归档日志文件）'; log.appendChild(tip); }
     lines.forEach(ln=>{
       const div=document.createElement('div'); let cls='dim';
       if(/✓|✅|成功|passed|通过/.test(ln)) cls='ok';

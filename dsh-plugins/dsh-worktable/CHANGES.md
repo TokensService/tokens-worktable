@@ -1,5 +1,14 @@
 # 本目录 dsh-worktable 的本地改动
 
+- 本地文件读取路由 `/api/worktable/file` 新增可选 `tailBytes` 参数：流水线历史回放只需日志末尾时，
+  服务端以有界随机读取返回最多 4 MiB 的文件尾部，并通过响应头返回原文件大小与截尾状态；
+  不带参数的资源管理器等旧调用仍保持完整文件响应，超过 256 MiB 的原有保护不变。
+- 流水线历史回放改为只加载当前选中阶段日志，切换阶段时再按需请求并缓存；详情框请求日志末尾
+  64 KiB、继续只渲染最后 20 行，避免进入一条历史记录时并发全量读取所有阶段日志。
+- 页面上送历史及服务端 GET/PUT/定时追加三处统一剔除 `_lc`/`_lm`/`_ll`/`_profChecked`
+  回放临时字段，避免读过的日志全文被误写进 `worktable-pipeline.json`、导致状态文件持续膨胀；
+  存量缓存会在下次历史写入时自动清除。
+
 - 流水线运行队列跨浏览器可见 + 队列/运行历史手动刷新（`src/index.ts` + `worktable/pipeline/pipeline.html` 配套）：
   - 新增路由 `/api/worktable/pipeline/queue`：各 pipeline.html 标签页把自己「正在运行 + 排队中」的快照 PUT 到服务端内存
     `Map`（`{id, label, running, queue, seenAt}`，seenAt 用服务端收到时间防客户端时钟偏差；上限 100 个客户端，超出淘汰最旧

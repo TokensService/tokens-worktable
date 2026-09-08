@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
-import { readdir, readFile, mkdir as fsMkdir, open as fsOpen } from 'node:fs/promises'
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from 'node:fs/promises'
 import { dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -147,6 +147,47 @@ async function listDirectory(path: string) {
   return { path: abs, entries: truncated ? entries.slice(0, MAX_ENTRIES) : entries, truncated }
 }
 
+/** 可选尾部读取：日志详情只需末尾内容时避免把大文件全量读入内存并传给浏览器。 */
+async function readLocalFile(abs: string, tailBytesRaw: string | null) {
+  const stat = await fsStat(abs)
+  const requested = Number.parseInt(tailBytesRaw || '', 10)
+  if (!Number.isFinite(requested) || requested <= 0) {
+    if (stat.size > 256 * 1024 * 1024) {
+      const err: any = new Error('file too large')
+      err.statusCode = 413
+      throw err
+    }
+    return { data: await readFile(abs), size: stat.size, truncated: false }
+  }
+  const tailBytes = Math.min(Math.max(requested, 1024), 4 * 1024 * 1024)
+  if (stat.size <= tailBytes) return { data: await readFile(abs), size: stat.size, truncated: false }
+  const handle = await fsOpen(abs, 'r')
+  try {
+    const data = Buffer.allocUnsafe(tailBytes + 1)
+    const { bytesRead } = await handle.read(data, 0, tailBytes + 1, stat.size - tailBytes - 1)
+    const startsAtLine = data[0] === 10
+    let tail = data.subarray(1, bytesRead)
+    if (!startsAtLine) {
+      const firstNewline = tail.indexOf(10)
+      if (firstNewline >= 0 && firstNewline < tail.length - 1) tail = tail.subarray(firstNewline + 1)
+    }
+    return { data: tail, size: stat.size, truncated: true }
+  } finally {
+    await handle.close()
+  }
+}
+
+/** 回放日志与 profile 校正缓存只属于浏览器内存，不得进入共享历史存储。 */
+function cleanPipelineHistory(history: any[]) {
+  const transient = new Set(['_lc', '_lm', '_ll', '_profChecked'])
+  return history.map((record: any) => {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return record
+    const clean: any = {}
+    for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value
+    return clean
+  })
+}
+
 function gitExec(args: string[], cwd: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile('git', args, { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
@@ -252,9 +293,7 @@ export function apply(ctx: Context) {
         const p = u.searchParams.get('path') || ''
         if (!p) { json(res, 400, { error: 'missing path' }); return }
         const abs = pathResolve(p)
-        const stat = await import('node:fs/promises').then((m) => m.stat(abs))
-        if (stat.size > 256 * 1024 * 1024) { json(res, 413, { error: 'file too large' }); return }   // 256MB：全量归档日志可能超 20MB，回放按需读取不得 413
-        const data = await readFile(abs)
+        const file = await readLocalFile(abs, u.searchParams.get('tailBytes'))
         const ext = (abs.split('.').pop() || '').toLowerCase()
         const types: Record<string, string> = {
           html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
@@ -262,10 +301,15 @@ export function apply(ctx: Context) {
           json: 'application/json; charset=utf-8', md: 'text/markdown; charset=utf-8', markdown: 'text/markdown; charset=utf-8', txt: 'text/plain; charset=utf-8', log: 'text/plain; charset=utf-8',
           pdf: 'application/pdf', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', ico: 'image/x-icon',
         }
-        res.writeHead(200, { 'content-type': FILE_TYPES[ext] ?? 'application/octet-stream', 'cache-control': 'no-store' })
-        res.end(data)
+        res.writeHead(200, {
+          'content-type': FILE_TYPES[ext] ?? 'application/octet-stream',
+          'cache-control': 'no-store',
+          'x-worktable-file-size': String(file.size),
+          'x-worktable-file-truncated': file.truncated ? 'tail' : 'none',
+        })
+        res.end(file.data)
       } catch (err) {
-        json(res, 404, { error: String(err) })
+        json(res, (err as any)?.statusCode === 413 ? 413 : 404, { error: String(err) })
       }
     },
   })
@@ -427,21 +471,21 @@ export function apply(ctx: Context) {
           const p = raw ? JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) : {}
           json(res, 200, {
             config: p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {},
-            history: Array.isArray(p.history) ? p.history : [],
+            history: Array.isArray(p.history) ? cleanPipelineHistory(p.history) : [],
           })
           return
         }
         if (req.method === 'PUT') {
           const body = await readJsonBody(req)
           const config = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
-          const history = Array.isArray(body.history) ? body.history.slice(0, 500) : []
+          const history = Array.isArray(body.history) ? cleanPipelineHistory(body.history.slice(0, 500)) : []
           await withStoreLock(async () => {
             /* 与磁盘现状合并再写（此前全量覆盖：页面打开期间服务端定时运行 append 的记录会被抹掉、
                buildNo 回退重号）。页面不知道的磁盘记录保留；「清空」语义经 histClearedAt 表达——
                清空时间点之前的磁盘记录视为已删、不因合并复活。buildNo / histClearedAt 取双方较大值防回退。 */
             const disk = await readPipelineStore()
             const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
-            const diskHistory = Array.isArray(disk.history) ? disk.history : []
+            const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
             const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
             if (clearedAt) config.histClearedAt = clearedAt
             config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0)
@@ -925,7 +969,7 @@ export function apply(ctx: Context) {
     await withStoreLock(async () => {   // 与页面 PUT 同一把锁：读-改-写串行化，防并发互踩
       const j = await readPipelineStore()
       const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
-      const history = Array.isArray(j.history) ? j.history : []
+      const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
       const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
       cfg.buildNo = no
       rec.no = no
