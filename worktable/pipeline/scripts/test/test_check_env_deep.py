@@ -39,16 +39,17 @@ class Checks(unittest.TestCase):
         self.assertEqual(ns['quantity']('100Mi'),100*1024**2)
 
 class Network(unittest.TestCase):
-    def run_probe(self, fail_exec=False, fail_create=False, peer='b'):
+    def run_probe(self, fail_exec=False, fail_create=False, peer='b', image='python:cached', cached=False):
         calls=[]; created={}; reports=[]
         def fake(args, **kwargs):
             calls.append(args)
             if args[:3]==['kubectl','get','nodes']:
-                return json.dumps({'items':[{'metadata':{'name':n,'labels':{'kubernetes.io/hostname':n}},'spec':{},'status':{'conditions':[{'type':'Ready','status':'True'}]}} for n in ['a','b']]})
+                return json.dumps({'items':[{'metadata':{'name':n,'labels':{'kubernetes.io/hostname':n}},'spec':{},'status':{'conditions':[{'type':'Ready','status':'True'}], 'images':[{'names':None}, {'names':['registry.example/xds:cached-'+n]}] if cached else None}} for n in ['a','b']]})
             if args[:3]==['kubectl','get','pods']:return '{"items":[]}'
             if 'create' in args:
                 pod=json.loads(kwargs['input']);created[pod['metadata']['name']]=pod
                 self.assertFalse(pod['spec']['hostNetwork'])
+                self.assertEqual(pod['spec']['containers'][0]['image'], image or 'registry.example/xds:cached-'+pod['spec']['nodeSelector']['kubernetes.io/hostname'])
                 self.assertFalse(pod['spec']['automountServiceAccountToken'])
                 if fail_create:raise RuntimeError('simulated timeout after creation')
             if 'get' in args and 'pod' in args:
@@ -58,11 +59,22 @@ class Network(unittest.TestCase):
                 return json.dumps(pod)
             if 'exec' in args and fail_exec:raise RuntimeError('unreachable')
             return ''
-        with patch.dict(ns,command=fake,report=lambda *r:reports.append(r)), patch.dict(ns['os'].environ,{'HEALTH_NODE':'a','NETWORK_TEST_PEER':peer,'NETWORK_TEST_IMAGE':'python:cached'},clear=True):
+        with patch.dict(ns,command=fake,report=lambda *r:reports.append(r)), patch.dict(ns['os'].environ,{'HEALTH_NODE':'a','NETWORK_TEST_PEER':peer,'NETWORK_TEST_IMAGE':image},clear=True):
             if fail_create:
                 with self.assertRaises(RuntimeError):ns['check_cross_node']()
             else:ns['check_cross_node']()
         return calls,reports
+
+    def test_clean_nodes_use_cached_images(self):
+        calls,reports=self.run_probe(image='', cached=True)
+        self.assertEqual(sum('exec' in c for c in calls),2)
+        self.assertEqual(sum('delete' in c for c in calls),2)
+        self.assertFalse(any(r[0]=='FAIL' for r in reports))
+
+    def test_missing_images_still_fails(self):
+        calls,reports=self.run_probe(image='')
+        self.assertFalse(any('create' in c for c in calls))
+        self.assertTrue(any(r[0]=='FAIL' for r in reports))
 
     def test_bidirectional_and_cleanup(self):
         calls,reports=self.run_probe()

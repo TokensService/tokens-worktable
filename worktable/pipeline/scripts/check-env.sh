@@ -252,17 +252,27 @@ def check_cross_node():
         if (pod['metadata']['namespace'].startswith('xds-') and
             any(c['type']=='Ready' and c['status']=='True' for c in pod['status'].get('conditions',[]))):
             images.setdefault(pod['spec'].get('nodeName'), pod['spec']['containers'][0]['image'])
+    # 标准化会删除业务 Pod，但不会清理镜像缓存。清理后仍应能执行网络探测。
+    # 仅选已知 XDS 镜像；不能假定任意系统镜像都包含 python3。
+    for node in nodes:
+        name = node['metadata']['name']
+        cached = sorted({ref for entry in (node.get('status',{}).get('images') or [])
+                         for ref in (entry.get('names') or [])
+                         if re.search(r'(?:^|/)xds(?::|@sha256:)', ref)})
+        if cached:
+            tagged = [ref for ref in cached if '@sha256:' not in ref]
+            images.setdefault(name, (tagged or cached)[-1])
     image = os.environ.get('NETWORK_TEST_IMAGE','')
     candidates = [n for n in candidates if image or n in images]
     if not candidates or not (image or local in images):
-        report('FAIL','跨节点测试缺少探测镜像：配置 NETWORK_TEST_IMAGE（需 python3）或使用节点上 Ready XDS Pod 的镜像'); return
+        report('FAIL','跨节点测试缺少探测镜像：配置 NETWORK_TEST_IMAGE（需 python3）；清理后可自动使用节点缓存的 XDS 镜像，当前候选节点未找到可用镜像'); return
     peer = sorted(candidates)[0]
     namespace = os.environ.get('NETWORK_TEST_NAMESPACE','default')
     token = uuid.uuid4().hex
     names = ['env-net-'+token[:12]+'-'+str(i) for i in range(2)]
     attempted = []
     server = "from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200);self.end_headers();self.wfile.write("+repr(token.encode())+")\nHTTPServer(('0.0.0.0',18080),H).serve_forever()"
-    report('PASS','跨节点探测开始: '+local+' ↔ '+peer+'，namespace='+namespace+'（仅验证该命名空间 Pod IP TCP/HTTP，不代表 RDMA 或业务 NetworkPolicy）')
+    report('PASS','跨节点探测开始: '+local+' ↔ '+peer+'，namespace='+namespace+'（仅验证该命名空间 Pod IP TCP/HTTP，不代表 RDMA 或业务 NetworkPolicy）；镜像='+str({local:image or images[local],peer:image or images[peer]}))
     try:
         for name,node in zip(names,[local,peer]):
             manifest = {'apiVersion':'v1','kind':'Pod','metadata':{'name':name,'namespace':namespace,'labels':{'optest-network-probe':token}},
