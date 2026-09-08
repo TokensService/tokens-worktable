@@ -530,7 +530,8 @@ do_targets() {
     local ip count=0
     while IFS= read -r ip; do
         [[ -z "$ip" ]] && continue
-        do_remote "$ip" || return 1
+        # SSH/SCP 不得读取目标列表，避免吞掉后续节点。
+        do_remote "$ip" </dev/null || return 1
         ((count += 1))
     done < <(target_ips)
     if (( count == 0 )); then
