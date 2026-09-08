@@ -202,6 +202,36 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert stopped.returncode == 0, f"stdout={stopped.stdout}\nstderr={stopped.stderr}"
     assert not lifecycle_pid.exists()
 
+# 用户实际使用的 PROM_START/PROM_END，验证最终送到 Prometheus 的时间窗口。
+with tempfile.TemporaryDirectory() as temp_dir:
+    base_env = {k:v for k,v in os.environ.items() if not k.startswith(('PROM_', 'VLLM_METRICS_', 'METRICS_'))}
+    base_env.update({
+        "METRICS_ACTION":"collect", "PROMETHEUS_URL":f"http://127.0.0.1:{server.server_port}",
+        "VLLM_METRICS_START":"1", "VLLM_METRICS_END":"2",
+    })
+    times = {"PROM_START":"2026-09-08T03:26:32.000Z", "PROM_END":"2026-09-08T03:26:56.000Z"}
+    for mode in ("env", "arguments", "background"):
+        out = Path(temp_dir)/mode
+        argv = [str(script), "--metric", "vllm:num_requests_running", "--output-dir", str(out)]
+        run_env = base_env | times
+        if mode == "arguments":
+            run_env = base_env
+            argv += [f"{k}={v}" for k,v in times.items()]
+        if mode == "background":
+            # 显式命令行必须覆盖父进程已有的 PROM_*，并正确传入子进程。
+            run_env = base_env | {"PROM_START":"1", "PROM_END":"2"}
+            argv += ["--action", "start", "--start", times["PROM_START"], "--end", times["PROM_END"]]
+        result = subprocess.run(argv, env=run_env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        deadline = time.monotonic()+5
+        while not (out/"summary.json").exists() and time.monotonic()<deadline:
+            time.sleep(.05)
+        summary = json.loads((out/"summary.json").read_text())
+        assert summary["start"] == 1788837992, summary
+        assert summary["end"] == 1788838016, summary
+        assert requests[-1][1]["start"] == ["1788837992"]
+        assert requests[-1][1]["end"] == ["1788838016"]
+
 server.shutdown()
 print("collect vLLM metrics test passed")
 PY

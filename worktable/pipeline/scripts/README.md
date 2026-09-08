@@ -94,14 +94,15 @@ XDS 流水线按以下顺序绑定脚本：
 除常规的 `PIPELINE_NAME` 外，「收集」时还会注入以下环境变量（同名时脚本自身参数优先）：
 
 - `PROM_START` / `PROM_END` — 采集区间起止时间（ISO 8601 带 `Z`，如 `2026-09-05T10:30:00Z`）
-- `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（供 `collect_vllm_metrics.py` 的 `--start`/`--end` 默认取值）
+- `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（兼容旧脚本；`collect_vllm_metrics.py` 优先读取 `PROM_START`/`PROM_END`）
 - `METRICS_ACTION` — 固定 `collect`（`collect_vllm_metrics.py` 默认 action 为 `start` 即后台采集；前台按段采集需 `collect`）
 - `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
 - `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 主控启用「收集普罗数据」预设任务时注入（`model_name` 默认 `${MODEL_PATH}`，按上游 deploy 阶段产出的 `MODEL_PATH` 解析；`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
 - `ARCHIVE_FOLDER` — 本次运行（预设任务）/ 选中运行（手动收集）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
 - `METRICS_OUTPUT_DIR` — 采集产物目录（有归档时 = `ARCHIVE_FOLDER/metrics`，采集产物随本次运行归档；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
 
-示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 取 `VLLM_METRICS_START`/`VLLM_METRICS_END`、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集；输出目录默认取 `METRICS_OUTPUT_DIR`，未设置时依次回退 `ARCHIVE_FOLDER/metrics`、`RUN_DIR/vllm-metrics`、执行目录下 `vllm-metrics`。
+示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 优先取 `PROM_START`/`PROM_END`（兼容 `VLLM_METRICS_START`/`VLLM_METRICS_END`）、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集；输出目录默认取 `METRICS_OUTPUT_DIR`，未设置时依次回退 `ARCHIVE_FOLDER/metrics`、`RUN_DIR/vllm-metrics`、执行目录下 `vllm-metrics`。
+
 
 
 ## 独立清理与环境检查
@@ -163,3 +164,21 @@ bash check-env.sh
 可通过 `HEALTH_NODE` 指定节点名，否则按本机 IP 自动识别。
 `HUGEPAGE_TRIGGER_GIB=2048`、`MIN_AVAILABLE_WITH_HUGEPAGES_GIB=700` 可覆盖大页规则，
 这些参数会传入远端。CNI、代理或内存检查执行失败判 FAIL。
+
+### 指定普罗数据采集时间
+
+支持 ISO 8601 UTC 时间（含毫秒形式），例如：
+
+```bash
+PROM_START=2026-09-08T03:26:32.000Z \
+PROM_END=2026-09-08T03:26:56.000Z \
+python3 collect_vllm_metrics.py --action collect
+
+# 也支持放在脚本名后：
+python3 collect_vllm_metrics.py --action collect \
+  PROM_START=2026-09-08T03:26:32.000Z \
+  PROM_END=2026-09-08T03:26:56.000Z
+```
+
+命令行时间参数覆盖环境变量；命令行重复指定同一边界时最后一个生效。
+时间未指定时仍保持原来的默认行为。

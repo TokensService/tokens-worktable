@@ -237,10 +237,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action", choices=("start", "collect", "stop"),
                         default=env_value("METRICS_ACTION", "VLLM_METRICS_ACTION", default="start"),
                         help="start 后台启动，collect 前台采集，stop 终止后台采集；环境变量 METRICS_ACTION")
-    parser.add_argument("--start", default=os.getenv("VLLM_METRICS_START"),
-                        help="开始时间；未设置时取启动时刻，环境变量 VLLM_METRICS_START")
-    parser.add_argument("--end", default=os.getenv("VLLM_METRICS_END"),
-                        help="结束时间；未设置时持续采集，环境变量 VLLM_METRICS_END")
+    parser.add_argument("--start", default=env_value("PROM_START", "VLLM_METRICS_START"),
+                        help="开始时间；未设置时取启动时刻，环境变量 PROM_START（兼容 VLLM_METRICS_START）")
+    parser.add_argument("--end", default=env_value("PROM_END", "VLLM_METRICS_END"),
+                        help="结束时间；未设置时持续采集，环境变量 PROM_END（兼容 VLLM_METRICS_END）")
     parser.add_argument("--step", default=os.getenv("VLLM_METRICS_STEP", "5s"),
                         help="Prometheus 查询/采集周期，默认 5s；环境变量 VLLM_METRICS_STEP")
     parser.add_argument("--prometheus-url", default=env_value("PROMETHEUS_URL", "VLLM_METRICS_PROMETHEUS_URL", default="http://192.168.10.6:25889"),
@@ -261,7 +261,15 @@ def parse_args() -> argparse.Namespace:
                         help="后台采集器 PID 文件；默认 <output-dir>/collector.pid")
     parser.add_argument("--log-file", default=env_value("METRICS_LOG_FILE", "VLLM_METRICS_LOG_FILE"),
                         help="后台采集器日志；默认 <output-dir>/collector.log")
-    return parser.parse_args()
+    # 同时支持脚本名后面的 PROM_START=... PROM_END=... 参数。
+    argv = []
+    for arg in sys.argv[1:]:
+        key, separator, value = arg.partition("=")
+        if separator and key in ("PROM_START", "PROM_END"):
+            argv.append(("--start=" if key == "PROM_START" else "--end=") + value)
+        else:
+            argv.append(arg)
+    return parser.parse_args(argv)
 
 
 def collect_once(args: argparse.Namespace, metrics: list[str], start: int, end: int, output_dir: Path) -> int:
@@ -349,7 +357,9 @@ def start_collector(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.update({
         "METRICS_ACTION": "collect",
+        "PROM_START": args.start or str(int(time.time())),
         "VLLM_METRICS_START": args.start or str(int(time.time())),
+        "PROM_END": args.end or "",
         "VLLM_METRICS_END": args.end or "",
         "VLLM_METRICS_STEP": args.step,
         "PROMETHEUS_URL": args.prometheus_url,
