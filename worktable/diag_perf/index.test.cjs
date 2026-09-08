@@ -125,3 +125,34 @@ test("旧版全局设置迁移为单数据集 A，数据集 B 保持独立默认
   assert.equal(state.b.rangeM, 240);
   assert.equal(state.b.abs, null);
 });
+
+test("旧版时间对比迁移为 A 基线、B 劣化对象", () => {
+  const ctx = loadFunctions(["normalizeDatasetConfig", "normalizeDatasetState"]);
+  const state = ctx.normalizeDatasetState(null, {
+    labels: { model_name: "legacy-model", xds_namespace: "legacy-ns" },
+    rangeM: 60,
+    abs: null,
+    logDir: "/logs/current",
+    profDir: "/prof/current",
+    compare: { on: true, shift: 86_400, abs: null },
+    now: 1_800_000_000,
+  });
+
+  assert.equal(state.mode, "compare");
+  assert.equal(state.a.model_name, "legacy-model");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(state.a.abs)),
+    { from: 1_799_910_000, to: 1_799_913_600 },
+  );
+  assert.equal(state.b.model_name, "legacy-model");
+  assert.equal(state.b.abs, null);
+});
+
+test("Prometheus 标签值写入 HTML 属性时转义引号", () => {
+  const ctx = loadFunctions(["escAttr"]);
+
+  assert.equal(
+    ctx.escAttr('model" onmouseover="alert(1)\'&<>'),
+    "model&quot; onmouseover=&quot;alert(1)&#39;&amp;&lt;&gt;",
+  );
+});
