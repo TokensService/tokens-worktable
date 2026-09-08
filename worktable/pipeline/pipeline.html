@@ -3616,6 +3616,11 @@ async function evaltokFetchRuns(e, taskId, signal){
   const data=await evaltokRequestJson(e, api, 'GET', undefined, signal);
   return Array.isArray(data)?data:(Array.isArray(data.runs)?data.runs:(Array.isArray(data.data)?data.data:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[]))));
 }
+/* 终态 run 的完整报告：通用 report 接口的 task_id 实际传启动响应返回的 run_id。 */
+async function evaltokFetchReport(e, runId, signal){
+  const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
+  return evaltokRequestJson(e, base+'/api/v1/report?task_id='+encodeURIComponent(runId), 'GET', undefined, signal);
+}
 /* 任务列表缓存（15s TTL，多阶段编辑器打开 / 多次聚焦输入框时避免重复拉取） */
 let evaltokTasksCache={tasks:null, ts:0};
 async function evaltokFetchTasksCached(){
@@ -3817,7 +3822,7 @@ async function runEvaltokensStep(i){
         if(terminalOut.stdout) terminalOut.stdout=terminalOut.stdout.replace(reportPendingLine,text);
         if(s._evaltokAttempt===attempt&&s._out===terminalOut&&curRun===rc&&selectedId===s.id) renderDetail();
       };
-      reportJob=archiveEvaltokensReport(rc,seq,s.name,runId,run).then(file=>{
+      reportJob=archiveEvaltokensReport(e,rc,seq,s.name,runId).then(file=>{
         replaceReportLine(file?('📦 任务报告已归档 → '+file):'⚠ 任务报告未归档：无法确定本次运行归档目录');
       },reportErr=>{
         const msg=String(reportErr&&reportErr.message?reportErr.message:reportErr);
@@ -4108,14 +4113,15 @@ async function archiveTaskLog(ctx, seq, name, text){
     return file;
   });
 }
-/* EvalTokens 终态报告：按阶段序号/名称/run_id 独立命名，内容为 runs API 返回的本次 run 完整 JSON。 */
+/* EvalTokens 终态报告：按阶段序号/名称/run_id 独立命名，内容为 /api/v1/report 返回的完整 JSON。 */
 function evaltokReportFile(ctx, seq, stageName, runId){
   return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(stageName)+'-evaltokens-'+sanitizeFsName(runId)+'-report.json';
 }
-async function archiveEvaltokensReport(ctx, seq, stageName, runId, report){
+async function archiveEvaltokensReport(e, ctx, seq, stageName, runId){
   const folder=archiveFolderFor(ctx);
   if(!folder) return null;
   return trackArchiveWrite(folder,async()=>{
+    const report=await evaltokFetchReport(e,runId);
     await ensureArchiveFolder(folder);
     const file=folder+'/'+evaltokReportFile(ctx, seq, stageName, runId);
     await apiWrite(file, JSON.stringify(report,null,2));

@@ -52,6 +52,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     'evaltokFetchTasks',
     'evaltokStartRun',
     'evaltokFetchRuns',
+    'evaltokFetchReport',
     'evaltokStatusKind',
     'stageSeq',
     'taskLogFile',
@@ -149,6 +150,7 @@ test('EvalTokens 阶段编辑器显示默认勾选且可回显关闭状态的报
 
 test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线归档目录', async () => {
   const writes = []
+  const reportRequests = []
   let advancedTo = null
   const evaltokConfig = { url: 'http://evaltokens.local', token: '', mode: 'local' }
   const finalRun = {
@@ -156,6 +158,11 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
     task_id: 'task-report',
     status: 'success',
     result: { score: 0.98, cases: [1, 2] },
+  }
+  const report = {
+    task_id: finalRun.run_id,
+    summary: { score: 0.99, passed: 42 },
+    details: [{ case_id: 'case-1', status: 'passed' }],
   }
   const stage = {
     id: 'eval-report',
@@ -177,6 +184,7 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
       if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-report', name: 'report-task' }] })
       if (url.endsWith('/api/open/v1/tasks/task-report/run')) return jsonResponse({ run_id: finalRun.run_id, task_id: 'task-report', status: 'running' })
       if (url.includes('/api/open/v1/tasks/runs?task_id=task-report')) return jsonResponse({ runs: [finalRun] })
+      if (url.includes('/api/v1/report?task_id=')) { reportRequests.push(url); return jsonResponse(report) }
       throw new Error(`unexpected request: ${url}`)
     },
     setInterval: () => 1,
@@ -200,9 +208,10 @@ test('EvalTokens 任务终态后默认把本次 run 完整报告写入流水线�
   await context.runEvaltokensStep(0)
   await Promise.all(context.curRun.evaltokensReportWrites)
 
+  assert.deepEqual(reportRequests, ['http://evaltokens.local/api/v1/report?task_id=run%2F2026%2009'])
   assert.equal(writes.length, 1)
   assert.equal(writes[0].path, '/archive/pipeline_20260908/run-build-9-01-精度-报告-evaltokens-run-2026-09-report.json')
-  assert.deepEqual(JSON.parse(writes[0].content), finalRun)
+  assert.deepEqual(JSON.parse(writes[0].content), report)
   assert.match(stage._out.stdout, /任务报告已归档/)
   assert.equal(advancedTo, 1)
 })
@@ -212,13 +221,15 @@ test('报告归档从建目录开始纳入写入跟踪', async () => {
   const mkdirPending = new Promise(resolve => { releaseMkdir = resolve })
   const context = loadEvaltokensRuntime({
     archiveFolderFor: ctx => ctx.archive,
+    fetch: async () => jsonResponse(run),
     ensureArchiveFolder: () => mkdirPending,
     apiWrite: async () => {},
   })
   const run = { run_id: 'tracked-run', task_id: 'tracked-task', status: 'success' }
 
   const pending = context.archiveEvaltokensReport(
-    { archive: '/archive/tracked', tag: 'tracked' }, 1, '跟踪报告', run.run_id, run,
+    { url: 'http://evaltokens.local', token: '', mode: 'local' },
+    { archive: '/archive/tracked', tag: 'tracked' }, 1, '跟踪报告', run.run_id,
   )
 
   assert.equal(context.archiveWrites.get('/archive/tracked')?.size, 1)
@@ -453,6 +464,7 @@ test('EvalTokens 失败终态不等待慢报告，且旧报告回调不污染重
 
 test('关闭收集任务报告后不写报告文件', async () => {
   let writes = 0
+  const requests = []
   const evaltokConfig = { url: 'http://evaltokens.local', token: '', mode: 'local' }
   const stage = {
     id: 'eval-no-report',
@@ -471,6 +483,7 @@ test('关闭收集任务报告后不写报告文件', async () => {
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
+      requests.push(url)
       if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-no-report', name: 'no-report' }] })
       if (url.endsWith('/api/open/v1/tasks/task-no-report/run')) return jsonResponse({ run_id: 'run-no-report', status: 'running' })
       return jsonResponse({ runs: [{ run_id: 'run-no-report', task_id: 'task-no-report', status: 'success' }] })
@@ -496,6 +509,7 @@ test('关闭收集任务报告后不写报告文件', async () => {
   await context.runEvaltokensStep(0)
 
   assert.equal(writes, 0)
+  assert.equal(requests.filter(url => url.includes('/api/v1/report?task_id=')).length, 0)
   assert.doesNotMatch(stage._out.stdout, /任务报告已归档/)
 })
 
@@ -548,6 +562,68 @@ test('任务报告写入失败只记入回显，不改变 EvalTokens 成功结�
   assert.equal(context.nodes['eval-report-error'].status, 'success')
   assert.equal(advancedTo, 1)
   assert.match(stage._out.stdout, /任务报告归档失败.*disk full/)
+})
+
+test('任务报告查询失败时不写报告，且不改变 EvalTokens 成功结果', async () => {
+  let writes = 0
+  let advancedTo = null
+  const reportRequests = []
+  const evaltokConfig = { url: 'http://evaltokens.local', token: '', mode: 'local' }
+  const stage = {
+    id: 'eval-report-fetch-error',
+    name: '报告查询失败',
+    timeout: null,
+    evaltokens: { taskId: 'task-report-fetch-error', taskName: 'report-fetch-error', outVars: '' },
+  }
+  const context = loadEvaltokensRuntime({
+    console: { warn: () => {} },
+    timer: null,
+    running: true,
+    curRun: { token: 'run-token', vars: {}, archive: '/archive/run', tag: 'build-14' },
+    nodes: {},
+    selectedId: '',
+    evaltok: evaltokConfig,
+    activeStages: () => [stage],
+    substRunVars: value => value,
+    evaltokConfig: () => evaltokConfig,
+    fetch: async (url) => {
+      if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-report-fetch-error', name: 'report-fetch-error' }] })
+      if (url.endsWith('/api/open/v1/tasks/task-report-fetch-error/run')) return jsonResponse({ run_id: 'run-report-fetch-error', status: 'running' })
+      if (url.includes('/api/open/v1/tasks/runs?task_id=task-report-fetch-error')) {
+        return jsonResponse({ runs: [{ run_id: 'run-report-fetch-error', task_id: 'task-report-fetch-error', status: 'success' }] })
+      }
+      if (url.includes('/api/v1/report?task_id=run-report-fetch-error')) {
+        reportRequests.push(url)
+        return jsonResponse({ message: 'report unavailable' }, 503)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: fn => { fn(); return 1 },
+    applyStatusClasses: () => {},
+    renderFlow: () => {},
+    renderDetail: () => {},
+    archiveFolderFor: ctx => ctx.archive,
+    ensureArchiveFolder: async () => true,
+    apiWrite: async () => { writes += 1 },
+    archiveStageLog: () => {},
+    mergeStageVars: () => ({}),
+    parseStageJson: value => JSON.parse(value),
+    applyOutVars: () => {},
+    secToMinInput: value => String(value),
+    advance: index => { advancedTo = index },
+    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+  })
+
+  await context.runEvaltokensStep(0)
+  await Promise.all(context.curRun.evaltokensReportWrites)
+
+  assert.deepEqual(reportRequests, ['http://evaltokens.local/api/v1/report?task_id=run-report-fetch-error'])
+  assert.equal(writes, 0)
+  assert.equal(context.nodes['eval-report-fetch-error'].status, 'success')
+  assert.equal(advancedTo, 1)
+  assert.match(stage._out.stdout, /任务报告归档失败.*report unavailable.*HTTP 503/)
 })
 
 function jsonResponse(body, status = 200) {
@@ -654,6 +730,32 @@ test('远程模式通过 worktable proxy 转发启动请求', async () => {
       'Content-Type': 'application/json',
     },
     body: '{}',
+  })
+})
+
+test('远程模式通过 worktable proxy 携带 Bearer 令牌查询通用报告接口', async () => {
+  const calls = []
+  const report = { task_id: 'run/a b', summary: { score: 1 } }
+  const context = loadEvaltokensRuntime({
+    fetch: async (url, options = {}) => {
+      calls.push({ url, options })
+      return jsonResponse({ status: 200, body: JSON.stringify(report) })
+    },
+  })
+
+  const result = await context.evaltokFetchReport({
+    url: 'http://192.168.1.101:9000/',
+    token: 'remote-token',
+    mode: 'remote',
+  }, 'run/a b')
+
+  assert.deepEqual(result, report)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, '/api/worktable/proxy')
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    url: 'http://192.168.1.101:9000/api/v1/report?task_id=run%2Fa%20b',
+    method: 'GET',
+    headers: { Authorization: 'Bearer remote-token' },
   })
 })
 
