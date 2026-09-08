@@ -227,7 +227,7 @@ def default_output_dir() -> str:
         return configured
     archive_folder = os.getenv("ARCHIVE_FOLDER")
     if archive_folder:
-        return str(Path(archive_folder) / "vllm-metrics")
+        return str(Path(archive_folder) / "metrics")
     run_dir = os.getenv("RUN_DIR")
     return str(Path(run_dir) / "vllm-metrics") if run_dir else "vllm-metrics"
 
@@ -252,7 +252,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
     parser.add_argument("--output-dir", default=default_output_dir(),
-                        help="环境变量 METRICS_OUTPUT_DIR；未设置时使用 ARCHIVE_FOLDER/vllm-metrics 或 RUN_DIR/vllm-metrics")
+                        help="环境变量 METRICS_OUTPUT_DIR；未设置时使用 ARCHIVE_FOLDER/metrics 或 RUN_DIR/vllm-metrics")
     parser.add_argument("--timeout", type=int, default=os.getenv("VLLM_METRICS_TIMEOUT", "30"),
                         help="每个查询的 HTTP 超时秒数；环境变量 VLLM_METRICS_TIMEOUT")
     parser.add_argument("--max-iterations", type=int, default=os.getenv("VLLM_METRICS_MAX_ITERATIONS", "0"),
