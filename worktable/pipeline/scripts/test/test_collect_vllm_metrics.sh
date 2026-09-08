@@ -232,6 +232,31 @@ with tempfile.TemporaryDirectory() as temp_dir:
         assert requests[-1][1]["start"] == ["1788837992"]
         assert requests[-1][1]["end"] == ["1788838016"]
 
+# model_path 原样优先，空值回退模型名；后台进程也必须保留最终选择。
+with tempfile.TemporaryDirectory() as temp_dir:
+    cases = [
+        ({"model_path":"/models/Qwen/v2/", "model_name":"ignored"}, "/models/Qwen/v2/", False),
+        ({"MODEL_PATH":"/models/Qwen", "MODEL_NAME":"ignored"}, "/models/Qwen", False),
+        ({"model_path":"", "model_name":"Qwen"}, "/home/service/works/models_ssd/Qwen/v1", False),
+        ({"model_path":"/models/Qwen/v2/", "model_name":"ignored"}, "/models/Qwen/v2/", True),
+        ({"model_name":"Qwen"}, "/home/service/works/models_ssd/Qwen/v1", True),
+    ]
+    for index, (model_env, expected, background) in enumerate(cases):
+        out=Path(temp_dir)/str(index)
+        run_env={k:v for k,v in os.environ.items() if not k.startswith(('PROM_', 'VLLM_METRICS_', 'METRICS_')) and k not in ('model_path','MODEL_PATH','model_name','MODEL_NAME','ARCH_NAME')}
+        run_env.update(model_env)
+        argv=[str(script), '--action', 'start' if background else 'collect',
+              '--start','1704067200','--end','1704067260',
+              '--prometheus-url',f'http://127.0.0.1:{server.server_port}',
+              '--metric','vllm:num_requests_running','--output-dir',str(out)]
+        result=subprocess.run(argv,env=run_env,text=True,capture_output=True)
+        assert result.returncode==0, result.stderr
+        deadline=time.monotonic()+5
+        while not (out/'summary.json').exists() and time.monotonic()<deadline:
+            time.sleep(.05)
+        assert (out/'summary.json').exists(), result.stdout
+        assert f'model_name="{expected}"' in requests[-1][0], requests[-1]
+
 server.shutdown()
 print("collect vLLM metrics test passed")
 PY

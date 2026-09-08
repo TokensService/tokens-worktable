@@ -182,3 +182,18 @@ python3 collect_vllm_metrics.py --action collect \
 
 命令行时间参数覆盖环境变量；命令行重复指定同一边界时最后一个生效。
 时间未指定时仍保持原来的默认行为。
+
+### 模型路径优先级
+
+`model_path`（兼容 `MODEL_PATH`）有值时，直接作为 Prometheus 的 `model_name`
+标签使用，保留原路径和末尾斜杠，不添加目录或版本后缀。
+未设置或为空时，依次读取 `model_name`、`MODEL_NAME`、`ARCH_NAME`；模型名仍按
+`/home/service/works/models_ssd/<模型名>/v1` 拼接，绝对路径沿用原样保留的逻辑。
+也支持 `--model-path` 和原有 `--model-name` 参数；路径优先于模型名。
+
+```bash
+model_path=/home/service/works/models_ssd/Qwen3.6-35B-A3B \
+PROM_START=2026-09-08T03:26:32.000Z \
+PROM_END=2026-09-08T03:26:56.000Z \
+python3 collect_vllm_metrics.py --action collect
+```
