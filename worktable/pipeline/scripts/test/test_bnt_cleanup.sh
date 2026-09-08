@@ -58,6 +58,28 @@ wait_namespace_cleanup old-ns
 [[ -f "$tmp/forced" ]]
 # Bash SECONDS 同时受真实时间影响，允许测试执行跨过一秒边界。
 awk '$2 == "delete" && $3 == "pod/stale" && $1 >= 15 && $1 <= 20 {ok=1} END {exit !ok}' "$tmp/kubectl"
+# 命名空间 NotFound 不得被忽略成成功；竞态下 Pod 已消失则允许成功。
+for mode in orphan raced; do
+    SECONDS=0
+    rm -f "$tmp/delete-attempted"
+    kubectl() {
+        if [[ "$1 $2" == 'get pods' ]]; then
+            [[ "$mode" == raced && -e "$tmp/delete-attempted" ]] || echo pod/stale
+        elif [[ "$1" == delete ]]; then
+            touch "$tmp/delete-attempted"
+            if [[ " $* " == *' --ignore-not-found '* ]]; then return 0; fi
+            return 1
+        fi
+        return 0
+    }
+    if [[ "$mode" == orphan ]]; then
+        if wait_namespace_cleanup orphan-ns; then echo '孤立Pod被当作成功' >&2; exit 1; fi
+        grep -q '命名空间 orphan-ns 已不存在' "$LOG_FILE"
+        (( SECONDS < CLEANUP_TIMEOUT_SECONDS ))
+    else
+        wait_namespace_cleanup raced-ns
+    fi
+done
 step_containers() { return 1; }
 step_kill_gpu() { touch "$tmp/gpu-ran"; }
 STEPS=containers,gpu

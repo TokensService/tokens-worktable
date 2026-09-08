@@ -222,7 +222,7 @@ clean_namespace() {
 # API 中 Pod 消失后才能继续；不能以删除命令已提交代替清理完成。
 wait_namespace_cleanup() {
     local ns=$1 remaining deadline=$((SECONDS + CLEANUP_TIMEOUT_SECONDS))
-    local force_at=$((SECONDS + 15)) forced=0 pause
+    local force_at=$((SECONDS + 15)) forced=0 pause namespace_ref
     local -a remaining_pods
     [[ "$DRY_RUN" == 1 ]] && return 0
     while true; do
@@ -235,8 +235,19 @@ wait_namespace_cleanup() {
         if (( forced == 0 && SECONDS >= force_at )); then
             mapfile -t remaining_pods <<< "$remaining"
             log "[CLEAN] $ns 等待满 15 秒，强制删除残留 Pod: $remaining"
-            kubectl delete "${remaining_pods[@]}" -n "$ns" \
-                --grace-period=0 --force --ignore-not-found --wait=false || return 1
+            # 不忽略 NotFound：它可能指命名空间缺失，而非 Pod 已删除。
+            if ! kubectl delete "${remaining_pods[@]}" -n "$ns" \
+                --grace-period=0 --force --wait=false --request-timeout=15s; then
+                remaining=$(kubectl get pods -n "$ns" --field-selector "spec.nodeName=$NODE" -o name --request-timeout=15s) || return 1
+                [[ -z "$remaining" ]] && { log "[CLEAN] $ns 节点 Pod 已清空"; return 0; }
+                namespace_ref=$(kubectl get namespace "$ns" --ignore-not-found -o name --request-timeout=15s) || return 1
+                if [[ -z "$namespace_ref" ]]; then
+                    log "ERROR: 命名空间 $ns 已不存在，但仍有孤立 Pod: $remaining；需备份并恢复同名命名空间后清理，再正常删除命名空间"
+                else
+                    log "ERROR: $ns 强制删除失败，仍有 Pod: $remaining；请检查上方 API 错误"
+                fi
+                return 1
+            fi
             forced=1
             continue
         fi
