@@ -181,3 +181,29 @@ test("任意内置指标的有限值都可判定 Prometheus 数据已就绪", ()
   assert.equal(ctx.hasFiniteMetricData({ ts: ["12:00"], tps: [NaN, 812], ttft: { p99: [NaN] } }), true);
   assert.equal(ctx.hasFiniteMetricData({ ts: ["12:00"], profOps: [["op", "30%"]], tps: [NaN] }), false);
 });
+
+test("Prometheus 缺失时，日志或 Profiling 仍可让报告进入证据分析", () => {
+  const ctx = loadFunctions(["hasReportEvidence"]);
+
+  assert.equal(ctx.hasReportEvidence(false, false, false), false);
+  assert.equal(ctx.hasReportEvidence(false, true, false), true);
+  assert.equal(ctx.hasReportEvidence(false, false, true), true);
+});
+
+test("当前 Prometheus 轮次无数据时清空上一轮指标与 A/B 对比", () => {
+  const ctx = loadFunctions(["clearPromRound"]);
+  ctx.PROM_MATCHED = 4;
+  ctx.COMPARE = { tps: [1_000] };
+  ctx.DATA = { ts: ["old"], tps: [800] };
+  ctx.LIVE = true;
+  ctx.applySeries = () => { ctx.DATA.tps = [NaN]; };
+  ctx.clearAllSel = () => {};
+  ctx.renderAll = () => {};
+
+  ctx.clearPromRound(["new"]);
+
+  assert.equal(ctx.PROM_MATCHED, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.COMPARE)), {});
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.DATA.ts)), ["new"]);
+  assert.equal(ctx.LIVE, false);
+});

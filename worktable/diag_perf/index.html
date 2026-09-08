@@ -1145,6 +1145,8 @@ function renderAll(){
   var cmpRows=ANALYSIS_MODE==="compare"?compareRows():[];
   var comparable=cmpRows.filter(function(r){return !!r.change;}).length;
   var dataReady=PROM_MATCHED>0||hasFiniteMetricData(DATA)||comparable>0;
+  var logComparable=ANALYSIS_MODE==="compare"&&auxReady("log"),profComparable=ANALYSIS_MODE==="compare"&&auxReady("prof");
+  var reportReady=hasReportEvidence(dataReady,logComparable,profComparable);
   var compareConclusive=ANALYSIS_MODE==="compare"&&BASE_STATE.state==="ok"&&comparable>0;
   var cmpCard=document.getElementById("compareReportCard");cmpCard.style.display=ANALYSIS_MODE==="compare"?"":"none";
   if(ANALYSIS_MODE==="compare"){
@@ -1155,7 +1157,7 @@ function renderAll(){
     }).join("");
     document.getElementById("compareStatus").textContent=compareConclusive
       ?("已形成 "+comparable+" 项 A/B 同口径比较；基线共命中 "+BASE_STATE.matched+" 条查询。")
-      :(BASE_STATE.state==="loading"?"基线 A 正在拉取，暂不判断是否劣化。":"基线 A 未命中或不可达，当前比较结论不充分；请检查 A 的标签、时间窗口和数据源状态。");
+      :(BASE_STATE.state==="loading"?"基线 A 正在拉取，暂不判断是否劣化。":BASE_STATE.state==="ok"?"数据集 B 当前窗口未命中可与 A 同口径比较的内置指标，Prometheus 比较结论不充分。":"基线 A 未命中或不可达，当前比较结论不充分；请检查 A 的标签、时间窗口和数据源状态。");
     var ttftCmp=cmpRows.filter(function(r){return r.k==="ttft";})[0],tpsCmp=cmpRows.filter(function(r){return r.k==="tps";})[0];
     var deltaText=function(r){if(!r||!r.change)return "基线暂无数据";var p=r.change.pct;return p===null?("较基线 Δ "+fmtNum(r.change.delta)):("较基线 "+(p>0?"+":"")+p.toFixed(1)+"%");};
     document.getElementById("ovTtftD").textContent=deltaText(ttftCmp);
@@ -1179,17 +1181,18 @@ function renderAll(){
 
   /* 诊断结论 */
   var findings=[];
-  if(!dataReady){
-    findings.push(["等待 Prometheus 数据接入：画板仅呈现真实拉取到的指标，接入前显示「暂无数据」。","ok"]);
+  if(!reportReady){
+    findings.push(["等待数据接入：Prometheus 未命中指标，且 A/B 日志与 Profiling 尚无可比较证据。","ok"]);
   }else{
+    if(!dataReady)findings.push(["【Prometheus】当前未命中可诊断指标；以下结论仅依据已成功读取的日志或 Profiling 辅助证据。","warn"]);
     if(ANALYSIS_MODE==="compare"){
-      if(!compareConclusive)findings.push(["【A/B 对比】基线 A 数据不足，无法判断 B 是否相对劣化；以下仅保留 B 自身瓶颈与已接入的辅助证据。","warn"]);
+      if(!compareConclusive)findings.push([dataReady?"【A/B 对比】基线 A 数据不足，无法判断 B 是否相对劣化；以下仅保留 B 自身瓶颈与已接入的辅助证据。":"【A/B 对比】Prometheus A/B 同口径数据不足，指标侧无法判断 B 是否劣化。","warn"]);
       else cmpRows.filter(function(r){return r.change&&r.change.worsePct>=5;}).sort(function(a,b){return b.change.worsePct-a.change.worsePct;}).slice(0,5).forEach(function(r){findings.push(["【Prometheus】"+degradationReason(r),"warn"]);});
-      if(auxReady("log")){
+      if(logComparable){
         var la=logCounts(AUX.a.logs),lb=logCounts(AUX.b.logs),logDelta=(lb.err+lb.warn)-(la.err+la.warn);
         if(logDelta>0)findings.push(["【日志】数据集 B 异常增加 "+logDelta+" 条（A "+(la.err+la.warn)+" → B "+(lb.err+lb.warn)+"）：建议按时间戳与指标拐点交叉定位。","warn"]);
       }
-      var pd=profileDiff().filter(function(p){return p.delta>=3;})[0];
+      var pd=profComparable?profileDiff().filter(function(p){return p.delta>=3;})[0]:null;
       if(pd)findings.push(["【Profiling】"+pd.name+" 占比增加 "+pd.delta.toFixed(1)+" 个百分点：该算子是 B 中增长最明显的执行热点。","warn"]);
     }
     var ownPrefix=ANALYSIS_MODE==="compare"?"【数据集 B 自身】":"";
@@ -1733,6 +1736,10 @@ function hasFiniteMetricData(value,key){
   if(value&&typeof value==="object")return Object.keys(value).some(function(k){return hasFiniteMetricData(value[k],k);});
   return false;
 }
+function hasReportEvidence(promReady,logReady,profReady){return !!(promReady||logReady||profReady);}
+function clearPromRound(labels){
+  PROM_MATCHED=0;COMPARE={};applySeries({});DATA.ts=labels;LIVE=false;clearAllSel();renderAll();
+}
 
 /* 有限并发池：tasks 为 ()=>Promise 数组，conc 路并行，全部 settle 后 resolve（单任务失败不中断其余任务） */
 function pool(tasks,conc){
@@ -1853,7 +1860,10 @@ function pollProm(cb,run){
     customSeries.forEach(function(item){item.series._data=null;item.series._cmp=null;});
     mainCustom.forEach(function(x){x.series._data=x.data;});baseCustom.forEach(function(x){x.series._cmp=x.data;});
     BASE_STATE=cmpOn?{state:baseMatched?"ok":(baseErrors>=baseTaskCount?"down":"empty"),matched:baseMatched,total:baseTaskCount}:{state:"off",matched:0,total:0};
-    if(!matched){cb(mainErrors>=mainTaskCount?"down":"empty");return;}   /* 仅按主数据集任务判断可达性，基线失败不阻断 B。 */
+    if(!matched){
+      clearPromRound(labels);
+      cb(mainErrors>=mainTaskCount?"down":"empty");return;   /* 当前轮无 B 数据时撤销旧曲线，避免与新 A 基线组成跨轮次比较。 */
+    }
     DATA.ts=labels;
     applySeries(next);
     clearAllSel();   /* 整窗数据被替换，旧选区索引已失效 */
@@ -2343,6 +2353,7 @@ function applySettings(save){
   USE_PROXY=document.getElementById("setUseProxy").checked;
   if(!readDatasetForm("a")||!readDatasetForm("b"))return;
   CONFIG_GEN++;PROM_GEN++;
+  document.getElementById("btnMetrics").disabled=false;   /* 作废旧指标名请求时同步恢复按钮，避免旧回调静默返回后保持禁用。 */
   syncDatasetGlobals();
   if(save){
     lsSet("diagPerf.promUrl",PROM_URL===DEFAULT_PROM?"":PROM_URL);
