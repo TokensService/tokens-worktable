@@ -53,6 +53,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     'evaltokStartRun',
     'evaltokFetchRuns',
     'evaltokStatusKind',
+    'stageSeq',
     'taskLogFile',
     'evaltokReportFile',
     'trackArchiveWrite',

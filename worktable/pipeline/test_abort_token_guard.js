@@ -34,6 +34,7 @@ function makeContext() {
     parseStageJson() { return null; },
     applyOutVars() {},
     archiveStageLog() {},
+    stageSeq(i) { return i + 1; },   // 归档序号帮助函数（预设任务改造后由 runScriptStep 调用）
     archiveFolderFor() { return null; },
     advance(i) { calls.advance.push(i); },
     finish(r) { calls.finish.push(r); },

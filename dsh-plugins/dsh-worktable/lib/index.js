@@ -1,7 +1,7 @@
 // src/index.ts
 import { execFile, spawn } from "node:child_process";
 import { readdirSync, realpathSync } from "node:fs";
-import { readdir, readFile, mkdir as fsMkdir, open as fsOpen } from "node:fs/promises";
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from "node:fs/promises";
 import { dirname, resolve as pathResolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { homedir, networkInterfaces } from "node:os";
@@ -226,6 +226,43 @@ async function listDirectory(path) {
   const truncated = entries.length > MAX_ENTRIES;
   return { path: abs, entries: truncated ? entries.slice(0, MAX_ENTRIES) : entries, truncated };
 }
+async function readLocalFile(abs, tailBytesRaw) {
+  const stat = await fsStat(abs);
+  const requested = Number.parseInt(tailBytesRaw || "", 10);
+  if (!Number.isFinite(requested) || requested <= 0) {
+    if (stat.size > 256 * 1024 * 1024) {
+      const err = new Error("file too large");
+      err.statusCode = 413;
+      throw err;
+    }
+    return { data: await readFile(abs), size: stat.size, truncated: false };
+  }
+  const tailBytes = Math.min(Math.max(requested, 1024), 4 * 1024 * 1024);
+  if (stat.size <= tailBytes) return { data: await readFile(abs), size: stat.size, truncated: false };
+  const handle = await fsOpen(abs, "r");
+  try {
+    const data = Buffer.allocUnsafe(tailBytes + 1);
+    const { bytesRead } = await handle.read(data, 0, tailBytes + 1, stat.size - tailBytes - 1);
+    const startsAtLine = data[0] === 10;
+    let tail = data.subarray(1, bytesRead);
+    if (!startsAtLine) {
+      const firstNewline = tail.indexOf(10);
+      if (firstNewline >= 0 && firstNewline < tail.length - 1) tail = tail.subarray(firstNewline + 1);
+    }
+    return { data: tail, size: stat.size, truncated: true };
+  } finally {
+    await handle.close();
+  }
+}
+function cleanPipelineHistory(history) {
+  const transient = /* @__PURE__ */ new Set(["_lc", "_lm", "_ll", "_profChecked"]);
+  return history.map((record) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+    const clean = {};
+    for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value;
+    return clean;
+  });
+}
 function gitExec(args, cwd) {
   return new Promise((resolvePromise, reject) => {
     execFile("git", args, { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
@@ -344,12 +381,7 @@ function apply(ctx) {
           return;
         }
         const abs = pathResolve(p);
-        const stat = await import("node:fs/promises").then((m) => m.stat(abs));
-        if (stat.size > 256 * 1024 * 1024) {
-          json(res, 413, { error: "file too large" });
-          return;
-        }
-        const data = await readFile(abs);
+        const file = await readLocalFile(abs, u.searchParams.get("tailBytes"));
         const ext = (abs.split(".").pop() || "").toLowerCase();
         const types = {
           html: "text/html; charset=utf-8",
@@ -372,10 +404,15 @@ function apply(ctx) {
           bmp: "image/bmp",
           ico: "image/x-icon"
         };
-        res.writeHead(200, { "content-type": FILE_TYPES[ext] ?? "application/octet-stream", "cache-control": "no-store" });
-        res.end(data);
+        res.writeHead(200, {
+          "content-type": FILE_TYPES[ext] ?? "application/octet-stream",
+          "cache-control": "no-store",
+          "x-worktable-file-size": String(file.size),
+          "x-worktable-file-truncated": file.truncated ? "tail" : "none"
+        });
+        res.end(file.data);
       } catch (err) {
-        json(res, 404, { error: String(err) });
+        json(res, err?.statusCode === 413 ? 413 : 404, { error: String(err) });
       }
     }
   });
@@ -554,18 +591,18 @@ function apply(ctx) {
           const p = raw ? JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw) : {};
           json(res, 200, {
             config: p.config && typeof p.config === "object" && !Array.isArray(p.config) ? p.config : {},
-            history: Array.isArray(p.history) ? p.history : []
+            history: Array.isArray(p.history) ? cleanPipelineHistory(p.history) : []
           });
           return;
         }
         if (req.method === "PUT") {
           const body = await readJsonBody(req);
           const config = body.config && typeof body.config === "object" && !Array.isArray(body.config) ? body.config : {};
-          const history = Array.isArray(body.history) ? body.history.slice(0, 500) : [];
+          const history = Array.isArray(body.history) ? cleanPipelineHistory(body.history.slice(0, 500)) : [];
           await withStoreLock(async () => {
             const disk = await readPipelineStore();
             const diskCfg = disk.config && typeof disk.config === "object" && !Array.isArray(disk.config) ? disk.config : {};
-            const diskHistory = Array.isArray(disk.history) ? disk.history : [];
+            const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : [];
             const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0);
             if (clearedAt) config.histClearedAt = clearedAt;
             config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0);
@@ -1033,7 +1070,7 @@ function apply(ctx) {
     await withStoreLock(async () => {
       const j = await readPipelineStore();
       const cfg = j.config && typeof j.config === "object" && !Array.isArray(j.config) ? j.config : {};
-      const history = Array.isArray(j.history) ? j.history : [];
+      const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : [];
       const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h) => Number(h && h.no) || 0), 0) + 1;
       cfg.buildNo = no;
       rec.no = no;
