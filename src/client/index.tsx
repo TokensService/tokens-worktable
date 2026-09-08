@@ -13,6 +13,8 @@ import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, peekChatClosed, typ
  *   - 视图选项只留「排序：手动/最近」（分类已按用户定案取消）。
  *   - 「管理项目…」编辑模式：改名/隐藏/排序（拖拽 + ↑↓），全存 localStorage。
  *   - 「+」：接入指引 + 本地快捷方式（名称/图标/链接，点击新标签打开）。
+ *   - 「+」底部「批量导入」：选一个文件夹，里面所有含 .html 页面的子目录一键收进工作台
+ *     （单窗布局 + 目录级托管页面，项目文件夹 = 子目录；已在工作台里的自动跳过）。
  *   - 完整 zh/en 词典接入 dsh-client-locale（NS 'worktable'）。
  * 持久化：dsh.worktable.view.v1（视图）+ dsh.worktable.projects.v1（项目元状态，仅本地条目）；
  *         新建项目一律本地，完善后在管理列表点 ☁「发布」，布局条目转存服务端
@@ -26,8 +28,8 @@ type DockMode = 'footer' | 'float'
 // ── 更新检查（客户端直连 GitHub Releases API，只读 GET；失败静默）──
 declare const __WT_VERSION__: string
 const LOCAL_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
-const UPDATE_REPO = 'Aisland-SJL/tokens-worktable'
-const UPGRADE_CMD = 'dsh plugin --profile web add "https://github.com/Aisland-SJL/tokens-worktable/releases/latest/download/tokens-worktable.tgz"'
+const UPDATE_REPO = 'TokensService/tokens-worktable'
+const UPGRADE_CMD = 'dsh plugin --profile web add "https://github.com/TokensService/tokens-worktable/releases/latest/download/tokens-worktable.tgz"'
 const UPGRADE_AI = '帮我升级 tokens-worktable：执行 ' + UPGRADE_CMD + '，完成后提醒我重启 dsh web 并刷新页面'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
@@ -1381,6 +1383,9 @@ function WorktableSection(props: any) {
   // 新建项目强制工作文件夹：经「选择位置…」弹窗选定（系统资源管理器式选择窗）
   const [wsFolderParent, setWsFolderParent] = useState('')
   const [wsFolderError, setWsFolderError] = useState(false)
+  // 一键导入：扫描所选文件夹，把里面所有含 HTML 页面的子项目批量收进工作台（添加面板底部）
+  const [importBusy, setImportBusy] = useState(false)
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
   /** 图标选择器：kind + 目标 id + 弹窗锚点坐标（fixed 定位） */
   const [iconPick, setIconPick] = useState<{ kind: 'layout' | 'shortcut' | 'project'; id: string; x: number; y: number } | null>(null)
   /** 对话绑定弹窗：项目 id + 锚点坐标；bindGroups = 打开时抓取的会话分组；
@@ -2546,6 +2551,60 @@ function buildCustomLayoutPrompt(req: string): string {
     persistProjects((prev) => ({ ...prev, layouts: prev.layouts.filter((l) => l.id !== id) }))
   }
 
+  /** 一键导入：经「选择位置…」选定文件夹后扫描，把里面所有含 HTML 页面的子项目批量收进工作台。
+   *  起始目录默认插件自带 projects/（健康路由上报插件目录）；每个项目 = 单窗布局 + 目录级托管页面。 */
+  const importProjects = () => {
+    setImportMsg(null)
+    void (async () => {
+      let start: string | undefined
+      try {
+        const r = await fetch('/api/worktable/health', { cache: 'no-store' })
+        const h = await r.json()
+        if (h && typeof h.dir === 'string' && h.dir) start = joinPath(h.dir, 'projects')
+      } catch { /* 健康路由不可用则不预设起始目录 */ }
+      pickFolder((p) => { void runImport(p) }, start)
+    })()
+  }
+
+  const runImport = async (folder: string) => {
+    setImportBusy(true)
+    try {
+      const r = await fetch('/api/worktable/scan-projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: folder }) })
+      const j = await r.json().catch(() => null)
+      if (!r.ok || !j || !Array.isArray(j.projects)) throw new Error((j && j.error) || ('HTTP ' + r.status))
+      // 去重：项目文件夹或页面路径已在工作台里的跳过（路径统一成 / 分隔再比较，跨平台一致）
+      const norm = (s: string) => s.replace(/\\/g, '/')
+      const cur = projectsRef.current.projects
+      const usedFolders = new Set(Object.values(cur.folders).map(norm))
+      const usedPages = new Set(cur.layouts.map((l) => layoutPagePath(l)).filter((x): x is string => !!x).map(norm))
+      const added: LayoutSpec[] = []
+      const addedFolders: Record<string, string> = {}
+      let skipped = 0
+      for (const p of j.projects as { name?: string; dir?: string; entry?: string }[]) {
+        if (!p || typeof p.dir !== 'string' || !p.dir || typeof p.entry !== 'string' || !p.entry) continue
+        const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.entry.replace(/\.html?$/i, '')
+        const pagePath = norm(joinPath(p.dir, p.entry))
+        if (usedFolders.has(norm(p.dir)) || usedPages.has(pagePath)) { skipped++; continue }
+        const layout = buildLayout('2h', name)
+        layout.main[0].title = name
+        layout.main[0].tabs = [{ id: 't1', title: p.entry, content: { kind: 'iframe', url: '/api/worktable/site/' + encodeURIComponent(p.dir) + '/' + encodeURIComponent(p.entry), title: p.entry } }]
+        layout.main[0].active = 0
+        usedFolders.add(norm(p.dir)); usedPages.add(pagePath)
+        added.push(layout)
+        addedFolders[layout.id] = p.dir
+      }
+      if (added.length > 0) {
+        persistProjects((prev) => ({ ...prev, layouts: [...prev.layouts, ...added], folders: { ...prev.folders, ...addedFolders } }))
+      }
+      if (added.length === 0 && skipped === 0) setImportMsg({ ok: false, text: t('import.empty') })
+      else setImportMsg({ ok: true, text: t(skipped > 0 ? 'import.doneSkip' : 'import.done', { n: String(added.length), m: String(skipped) }) })
+    } catch (err) {
+      setImportMsg({ ok: false, text: t('import.fail') + String(err) })
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
   /** 发布/取消发布：切换布局条目的 sync 标记；persistProjects 检测到同步切片变化后推送/移出服务端文件 */
   const togglePublish = (id: string) => {
     persistProjects((prev) => ({
@@ -2977,7 +3036,7 @@ function buildCustomLayoutPrompt(req: string): string {
             aria-label={t('menu.add')}
             title={t('menu.add')}
             onClick={() => {
-              setAddOpen((v) => !v); setViewOptionsOpen(false)
+              setAddOpen((v) => !v); setViewOptionsOpen(false); setImportMsg(null)
               // 父目录默认 = 当前会话工作目录（不落 C 盘默认位置）
               if (!wsFolderParent) {
                 const cwd = sessionScopeStore.snapshot?.cwd ?? ''
@@ -3039,6 +3098,15 @@ function buildCustomLayoutPrompt(req: string): string {
           </div>
           {wsError && <p className="dsh-wt_addError">{t('add.layoutInvalid')}</p>}
           {wsFolderError && <p className="dsh-wt_addError">{t('add.folderRequired')}</p>}
+          <div className="dsh-wt_menuSep" />
+          <div className="dsh-wt_addForm">
+            <span className="dsh-wt_customLabel">{t('import.title')}</span>
+            <div className="dsh-wt_pageEditHint">{t('import.desc')}</div>
+            <button type="button" className="dsh-wt_addBtn" disabled={importBusy} onClick={importProjects}>
+              {importBusy ? t('import.scanning') : t('import.pick')}
+            </button>
+            {importMsg && <p className={importMsg.ok ? 'dsh-wt_pageEditHint' : 'dsh-wt_addError'}>{importMsg.text}</p>}
+          </div>
         </div>
       )}
 
