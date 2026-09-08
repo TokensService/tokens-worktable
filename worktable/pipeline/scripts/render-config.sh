@@ -12,7 +12,8 @@ normalize_kubernetes_name() {
   printf '%s' "$value"
 }
 
-ARCH_NAME="${ARCH_NAME:-default}"
+# 架构名优先使用流水线 arch_name，其次 DEPLOY_STRATEGY；兼容旧 ARCH_NAME。
+ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-$RUN_DIR/template/xds-cluster}"
