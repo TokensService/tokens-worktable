@@ -21,7 +21,7 @@
 
 方式 A（推荐，无需 Git）——直接安装 GitHub Release 的安装包：
 
-    dsh plugin --profile web add "https://github.com/Aisland-SJL/tokens-worktable/releases/latest/download/tokens-worktable.tgz"
+    dsh plugin --profile web add "https://github.com/TokensService/tokens-worktable/releases/latest/download/tokens-worktable.tgz"
 
 方式 B（想改源码用）——克隆仓库后用本地路径注册（`link:` 只接受本地路径，不要带空格）：
 
@@ -55,9 +55,8 @@
 
 ## 相关文档
 
-- 项目规则：https://github.com/Aisland-SJL/tokens-worktable/blob/main/AGENTS.md
-- 需求与协议：https://github.com/Aisland-SJL/tokens-worktable/blob/main/02_process/PRD.md
-- 工作日志：https://github.com/Aisland-SJL/tokens-worktable/tree/main/02_process/worklogs
+- 更新日志：https://github.com/TokensService/tokens-worktable/blob/main/CHANGES.md
+- 发布页面：https://github.com/TokensService/tokens-worktable/releases
 
 ## License
 
