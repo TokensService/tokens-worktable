@@ -156,3 +156,28 @@ test("Prometheus 标签值写入 HTML 属性时转义引号", () => {
     "model&quot; onmouseover=&quot;alert(1)&#39;&amp;&lt;&gt;",
   );
 });
+
+test("Prometheus 轮次与配置、画板代次任一不符时均视为旧响应", () => {
+  const ctx = loadFunctions(["staleRun"]);
+  ctx.CONFIG_GEN = 3;
+  ctx.PROM_GEN = 8;
+
+  assert.equal(ctx.staleRun({ configGen: 3, promGen: 8 }), false);
+  assert.equal(ctx.staleRun({ configGen: 2, promGen: 8 }), true);
+  assert.equal(ctx.staleRun({ configGen: 3, promGen: 7 }), true);
+});
+
+test("辅助证据仅在 A/B 两侧均加载成功时可比较", () => {
+  const ctx = loadFunctions(["auxReady"]);
+  ctx.AUX = { a: { logState: "loaded", profState: "failed" }, b: { logState: "loaded", profState: "loaded" } };
+
+  assert.equal(ctx.auxReady("log"), true);
+  assert.equal(ctx.auxReady("prof"), false);
+});
+
+test("任意内置指标的有限值都可判定 Prometheus 数据已就绪", () => {
+  const ctx = loadFunctions(["hasFiniteMetricData"]);
+
+  assert.equal(ctx.hasFiniteMetricData({ ts: ["12:00"], tps: [NaN, 812], ttft: { p99: [NaN] } }), true);
+  assert.equal(ctx.hasFiniteMetricData({ ts: ["12:00"], profOps: [["op", "30%"]], tps: [NaN] }), false);
+});
