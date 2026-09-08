@@ -90,6 +90,7 @@ const ctx2 = {
   stageUrlOf: (s) => (s.url && s.url.url) || "",
   activeStages: () => ctx2.__stages,
   applyStatusClasses: () => {}, renderFlow: () => {}, renderDetail: () => {}, archiveStageLog: () => {},
+  stageSeq: (i) => i + 1,   // 归档序号帮助函数（预设任务改造后由 runUrlStep 调用）
   advance: () => {}, finish: () => {},
   jenkins: { url: "", user: "", token: "", mode: "local" },
   fetch: async () => ({ ok: true, text: async () => bigBody }),

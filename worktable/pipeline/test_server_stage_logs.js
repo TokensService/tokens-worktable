@@ -2,19 +2,23 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/pipeline.html','utf8');
 function load(a,b,ctx){ vm.runInContext(source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a))),ctx); }
-test('环境清理请求断网不覆盖仍在服务端写入的文件',async()=>{
+test('预设任务请求断网不覆盖仍在服务端写入的文件',async()=>{
   let uploads=0;
-  const ctx={curRun:{token:1},scriptsDir:'/tmp',cleanupScript:{name:'cleanup',path:'/tmp/cleanup.sh'},archiveFolderFor:()=>'/logs',taskLogFile:()=> 'cleanup.log',
+  const s={id:'__cleanup__',name:'环境清理',preset:true,pkey:'cleanup',script:{name:'cleanup',path:'/tmp/cleanup.sh'}};
+  const ctx={curRun:{token:1},scriptsDir:'/tmp',PRESET_DEF:{cleanup:{name:'环境清理',block:false}},
+    activeStages:()=>[s],advance(){},finish(){},setOverall(){},$:()=>({firstChild:null}),
+    archiveFolderFor:()=>'/logs',taskLogFile:()=> 'cleanup.log',buildLog:()=>['partial'],
     archiveTaskLog:async()=>{uploads++;},fetch:async()=>{throw new Error('disconnected');}};
   Object.assign(ctx,{running:true,nodes:{},timer:null,selectedId:null,AbortController,TextDecoder,setInterval,clearInterval,renderFlow(){},renderDetail(){},applyStatusClasses(){}});
-  ctx.curRun.cleanupStage={id:'__cleanup__',name:'环境清理',script:ctx.cleanupScript};
   vm.createContext(ctx);load('async function execStreaming(', 'function jkJobPath(',ctx);
-  load('async function runCleanupBefore(', 'function sanitizeFsName(',ctx);
-  const result=await ctx.execScript(ctx.cleanupScript,0,null,null,null,null,'/logs/cleanup.log');
+  load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
+  load('function archiveStageLog(', 'function archiveRun(',ctx);
+  const result=await ctx.execScript(s.script,0,null,null,null,null,'/logs/cleanup.log');
   assert.equal(result.logPending,true);
-  await ctx.runCleanupBefore();assert.equal(uploads,0);
+  await ctx.runPresetStep(0);assert.equal(uploads,0);
   ctx.fetch=async()=>({json:async()=>({code:0,stdout:'legacy'})});
-  await ctx.runCleanupBefore();assert.equal(uploads,1,'旧插件正常响应仍兜底');
+  s._serverLogPending=false;s._serverLogFile=null;s._logArchived=false;   // 第二次执行：模拟旧插件一次性响应
+  await ctx.runPresetStep(0);assert.equal(uploads,1,'旧插件正常响应仍兜底');
 });
 test('首条事件之前断流仍保留响应头声明的服务端日志归属',async()=>{
   const ctx={TextDecoder,fetch:async()=>new Response(new ReadableStream({start(c){c.error(new Error('disconnected'));}}),{headers:{'x-worktable-log':'server'}})};
