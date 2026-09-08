@@ -20,10 +20,10 @@ VALUES_TEMPLATE="${VALUES_TEMPLATE:-$RUN_DIR/template/values-16Node-je-cpp-bnt3.
 ARCH_FILE="${ARCH_FILE:-$RUN_DIR/template/model_arch-lt-je-cpp-bnt3.json}"
 DEPLOY_IMAGE="${DEPLOY_IMAGE:-${IMAGE_NAME:-myapp}:${IMAGE_TAG:-latest}}"
 IMAGE_PULL_SECRETS="${IMAGE_PULL_SECRETS:-${IMAGE_PULL_SECRET:-default-secret,swr-cn-southwest-2}}"
-NUM_PREFILL="${NUM_PREFILL:-1}"
-NUM_DECODE="${NUM_DECODE:-1}"
-PREFILL_GPU="${PREFILL_GPU:-4}"
-DECODE_GPU="${DECODE_GPU:-4}"
+NUM_PREFILL="${NUM_PREFILL:-}"
+NUM_DECODE="${NUM_DECODE:-}"
+PREFILL_GPU="${PREFILL_GPU:-}"
+DECODE_GPU="${DECODE_GPU:-}"
 NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-${IMAGE_TAG:-local}}"
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
@@ -46,6 +46,7 @@ NODE_SELECTOR_KEY="xds.optest"
 [[ -n "$TEMPLATE_VARS_JSON" ]] || TEMPLATE_VARS_JSON='{}'
 
 for value in "$NUM_PREFILL" "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU"; do
+  [[ -z "$value" ]] && continue
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "invalid positive integer: $value" >&2; exit 2; }
 done
 [[ -f "$VALUES_TEMPLATE" ]] || { echo "values template not found: $VALUES_TEMPLATE" >&2; exit 2; }
@@ -83,10 +84,10 @@ import yaml
  node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
  chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
-num_prefill = int(num_prefill)
-num_decode = int(num_decode)
-prefill_gpu = int(prefill_gpu)
-decode_gpu = int(decode_gpu)
+num_prefill = int(num_prefill) if num_prefill else None
+num_decode = int(num_decode) if num_decode else None
+prefill_gpu = int(prefill_gpu) if prefill_gpu else None
+decode_gpu = int(decode_gpu) if decode_gpu else None
 def load_json(name, value):
     try:
         parsed = json.loads(value)
@@ -187,14 +188,31 @@ for package in arch.get("deploy_spec_packages", []):
         role = spec.get("role")
         if role not in ("prefill", "decode"):
             continue
-        replicas = num_prefill if role == "prefill" else num_decode
-        gpu = prefill_gpu if role == "prefill" else decode_gpu
+        replicas_override = num_prefill if role == "prefill" else num_decode
+        gpu_override = prefill_gpu if role == "prefill" else decode_gpu
         overrides = prefill_overrides if role == "prefill" else decode_overrides
-        spec["min"] = spec["max"] = spec["default"] = replicas
         spec = deep_merge(spec, overrides)
-        spec["resources"][0]["gpu"] = gpu
-        if role == "decode":
-            spec.setdefault("params", {})["data_parallel_size"] = gpu
+        if replicas_override is not None:
+            spec["min"] = spec["max"] = spec["default"] = replicas_override
+        for field in ("min", "max", "default"):
+            value = spec.get(field)
+            if type(value) is not int or value < 1:
+                raise SystemExit(f"{role}.{field} must be a positive integer in arch")
+        if not spec["min"] <= spec["default"] <= spec["max"]:
+            raise SystemExit(f"{role} requires min <= default <= max")
+        replicas = spec["default"]
+        resource_specs = spec.get("resources", [])
+        if len(resource_specs) != 1:
+            raise SystemExit(f"{role} requires exactly one resources entry per TE")
+        resource = resource_specs[0]
+        if gpu_override is not None:
+            resource["gpu"] = gpu_override
+        gpu = resource.get("gpu")
+        if type(gpu) is not int or gpu < 1:
+            raise SystemExit(f"{role}.resources[0].gpu must be a positive integer")
+        if "cpu" not in resource or "memory" not in resource:
+            raise SystemExit(f"{role}.resources[0] must include cpu and memory")
+        # TP/PP/DP 是模型并行策略，不可从 GPU 数擅自推导或覆盖。
         package["deploy_specs"][spec_index] = spec
         for index in range(1, replicas + 1):
             group_name = f"taskExecutorGroup{gpu}{role}{index}"

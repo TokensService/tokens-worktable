@@ -71,7 +71,7 @@ assert (prefill["min"], prefill["max"], prefill["default"]) == (2, 2, 2)
 assert prefill["resources"][0]["gpu"] == 4
 assert (decode["min"], decode["max"], decode["default"]) == (1, 1, 1)
 assert decode["resources"][0]["gpu"] == 4
-assert decode["params"]["data_parallel_size"] == 4
+assert decode["params"]["data_parallel_size"] == 8  # 不再根据 GPU 覆盖 arch 的 DP
 
 resources = json.load(open(sys.argv[2]))
 assert [r["role"] for r in resources["resources"]] == ["prefill", "prefill", "decode"]
@@ -231,5 +231,40 @@ PY
 PATH="$FAKE_BIN:$PATH" CAPTURE_DIR="$CAPTURE_DIR" XDS_URL="http://xds.test/xds/v1" \
   MODEL_NAME="glm52-test" bash "$SCRIPTS/model-health.sh" >"$WORK/health.out"
 grep -q 'model is healthy' "$WORK/health.out"
+
+python3 - "$WORK" "$SCRIPTS/render-config.sh" <<'PY_ARCH'
+import json, os, pathlib, subprocess, sys, yaml
+work=pathlib.Path(sys.argv[1])
+arch=json.loads((work/'model_arch.json').read_text())
+p,d=arch[0]['deploy_spec_packages'][0]['deploy_specs']
+p.update(min=2,max=5,default=3)
+p['resources'][0]['memory']='1410G'
+d['resources'][0]['gpu']=2
+d['params']={'tensor_parallel_size':2,'pipeline_parallel_size':1,'data_parallel_size':1}
+source=work/'inherit.json';source.write_text(json.dumps(arch))
+env=dict(os.environ, RUN_DIR=str(work/'inherit'), RENDER_DIR=str(work/'inherit/rendered'),
+ CHART_TEMPLATE_DIR=str(work/'xds-cluster'), VALUES_TEMPLATE=str(work/'values.template.yaml'),
+ ARCH_FILE=str(source), ARCH_NAME='glm-5.2-nvfp4', TARGET_HOSTS='[{"ip":"192.0.2.10"}]',
+ DEPLOY_IMAGE='registry.example.com/xds:test')
+for key in ('NUM_PREFILL','NUM_DECODE','PREFILL_GPU','DECODE_GPU','PREFILL_OVERRIDES_JSON','DECODE_OVERRIDES_JSON'):
+ env.pop(key,None)
+subprocess.run(['bash',sys.argv[2]],env=env,check=True,stdout=subprocess.DEVNULL)
+render=work/'inherit/rendered'
+actual=json.loads((render/'architecture.request.json').read_text())
+assert actual['deploy_spec_packages']==arch[0]['deploy_spec_packages']
+groups=yaml.safe_load((render/'values.rendered.yaml').read_text())['taskExecutorGroups']
+assert len(groups)==4
+for g in groups[:3]:
+ assert g['containerResources']['requests']['memory']=='1410G'
+ assert g['containerResources']['limits']['memory']=='1410G'
+ assert g['containerResources']['requests']['nvidia.com/gpu']==4
+assert groups[3]['containerResources']['requests']['nvidia.com/gpu']==2
+assert groups[3]['containerResources']['requests']['memory']=='200G'
+p['default']=6
+source.write_text(json.dumps(arch))
+failed=subprocess.run(['bash',sys.argv[2]],env=env,capture_output=True,text=True)
+assert failed.returncode!=0 and 'min <= default <= max' in failed.stderr
+print('PASS: arch resources, 3P1D defaults, parallel params and replica bounds')
+PY_ARCH
 
 echo "PASS: deployment, registration, and health scripts consume the rendered contract"

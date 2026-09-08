@@ -197,3 +197,17 @@ PROM_START=2026-09-08T03:26:32.000Z \
 PROM_END=2026-09-08T03:26:56.000Z \
 python3 collect_vllm_metrics.py --action collect
 ```
+
+### render-config.sh 从 arch 继承资源
+
+默认以选中的 arch 为准：每个 TE 的 CPU/GPU/内存取 `resources[0]`；
+初始 P/D 实例数取各角色的 `default`，`min/max/default` 原样保留在架构请求中。
+例如 P 的 default=3、D 的 default=1，就生成3个P和1个D的初始TE组。
+`min/max` 是模型实例范围，不等于脚本自动扩缩 Kubernetes Pod；脚本只渲染初始数量。
+TP、PP、DP保留 arch 配置，不再将 Decode DP 强制改为 GPU 数。
+
+`NUM_PREFILL/NUM_DECODE/PREFILL_GPU/DECODE_GPU` 现在默认留空。
+显式填写数量则覆盖相应角色的 min/max/default，显式填写 GPU 则覆盖 GPU 数；
+角色 JSON overrides 先合并，显式数量/GPU变量最后覆盖。
+每个角色当前支持一个 resources 条目，并检查 min <= default <= max。
+旧流水线若保存过这些参数的显式值，需要清空才能继承 arch。
