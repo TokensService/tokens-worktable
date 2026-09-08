@@ -206,6 +206,7 @@
         <span class="dshell-muted" style="font-size:11px;">运行队列<span id="queueCount"></span></span>
         <span id="queueStatus" class="dshell-badge">空闲</span>
         <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即上报本页队列并拉取其他浏览器的在跑/排队任务（平时每 5 秒自动刷新）">↻</button>
+        <button id="pipelineRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取流水线任务（不会自动刷新）">↻ 刷新</button>
         <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
       </span>
     </div>
@@ -4954,6 +4955,46 @@ function renderStats(){
   $('sAvg').textContent = rows.length? fmtDur(avg/rows.length):'—';
   $('sLast').textContent = rows.length? ('#'+rows[0].no+' '+rows[0].env):'—';
 }
+
+/* ---------- 流水线任务手动刷新 ---------- */
+/* 只刷新共享的流水线定义，不覆盖当前浏览器本地保存的环境/仓库选择与访问令牌；
+   默认不自动刷新，用户点击「↻ 刷新」时才从服务端拉取。 */
+function applyPipelineRefreshPayload(st){
+  const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+  if(!Array.isArray(cfg.pipelines) || !cfg.pipelines.length) return false;
+  const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+  const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
+  pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults);
+  if(!findPipeline(curPipelineId)) curPipelineId=pipelines[0].id;
+  try{
+    localStorage.setItem('pip-pipelines', JSON.stringify(pipelines));
+    localStorage.setItem('pip-curPipeline', curPipelineId);
+  }catch(e){}
+  return true;
+}
+async function refreshPipelinesFromServer(){
+  if(running){ alert('流水线运行中，暂不能刷新流水线任务。'); return; }
+  const b=$('pipelineRefresh'); b.disabled=true;
+  try{
+    const r=await fetch('/api/worktable/pipeline');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const st=await r.json();
+    /* 请求在途时仍可能从运行按钮启动任务：迟到响应不得改写运行快照与节点状态。 */
+    if(running){ alert('流水线已开始运行，本次刷新已取消。'); return; }
+    const keepSelectedId=selectedId;   // 响应提交前再取，保留请求在途期间用户新切换的阶段
+    if(!applyPipelineRefreshPayload(st)) throw new Error('服务端暂无流水线任务');
+    /* 完成态的 runStages 用于展示结果/失败重试，历史回放也依赖自己的阶段快照；
+       两者只刷新任务列表，不重置当前阶段视图。纯空闲态才按新定义重建节点。 */
+    if(!runStages && !replayRec){
+      const stages=curPipeline().stages||[];
+      selectedId=stages.some(s=>s && s.id===keepSelectedId) ? keepSelectedId : (stages[0] ? stages[0].id : null);
+      resetNodes();
+    }
+    renderPipelines();
+  }catch(e){ alert('刷新流水线任务失败：'+String(e && e.message || e)); }
+  finally{ b.disabled=false; }
+}
+$('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
 function renderPipelines(){
