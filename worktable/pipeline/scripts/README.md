@@ -16,7 +16,7 @@
 
 ## 自动注入的环境变量
 
-每次执行脚本（含「先清理环境」的清理脚本）都会注入以下变量；**脚本或页面里显式配置的同名参数优先，不会被覆盖**：
+每次执行脚本（含「预设任务」的环境清理/环境检查/Profiling 脚本）都会注入以下变量；**脚本或页面里显式配置的同名参数优先，不会被覆盖**：
 
 | 变量 | 内容 | 示例 |
 |---|---|---|
@@ -81,7 +81,7 @@ XDS 流水线按以下顺序绑定脚本：
 - `ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` — 归档内 `run-<tag>.log` / `run-<tag>.profile.json` 的绝对路径
 - `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` / `ARCHIVE_RESULT` — 流水线名 / 本次运行 tag / 运行结果（`success`/`failed`/`aborted`）
 
-运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、URL 请求阶段、「先清理环境」的清理脚本；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
+运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、URL 请求阶段、「预设任务」的环境清理/环境检查/Profiling 脚本；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
 
 运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：新会话工作目录取该次运行的归档目录，提示词只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。
 
