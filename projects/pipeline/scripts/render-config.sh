@@ -36,6 +36,7 @@ EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
@@ -71,7 +72,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" \
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
@@ -85,7 +86,7 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace,
+ node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
  chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
@@ -132,6 +133,15 @@ except json.JSONDecodeError as error:
     raise SystemExit(f"invalid TARGET_NODE_IP_MAP: {error}")
 if not isinstance(target_node_ip_map, dict):
     raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+try:
+    node_port_map = json.loads(node_port_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid NODE_PORT_MAP: {error}")
+if not isinstance(node_port_map, dict):
+    raise SystemExit("NODE_PORT_MAP must be a JSON object")
+for ip, port in node_port_map.items():
+    if not isinstance(ip, str) or not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip) or type(port) is not int or not 30000 <= port <= 32767:
+        raise SystemExit("NODE_PORT_MAP entries must map an IPv4 address to a NodePort in 30000-32767")
 target_ips = []
 for host in target_hosts:
     if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
@@ -157,6 +167,7 @@ def selector_fragment(ip):
     return re.sub(r"[^a-zA-Z0-9]+", "-", ip).strip("-")
 
 node_selector_value = "node-" + "-".join(selector_fragment(ip) for ip in target_ips)
+target_node_port = node_port_map.get(target_ips[0])
 
 def upsert_container_env(name, value):
     common = values.setdefault("common", {})
@@ -317,7 +328,10 @@ template_vars.setdefault("XDS_DATABASE_NAME", "xds")
 template_vars.setdefault("XDS_DATABASE_USERNAME", "xds")
 template_vars.setdefault("DATABASE_PASSWORD", "mock")
 template_vars.setdefault("ELB_ID", "unused")
-template_vars.setdefault("NODE_PORT", "31365")
+if target_node_port is not None:
+    template_vars["NODE_PORT"] = str(target_node_port)
+else:
+    template_vars.setdefault("NODE_PORT", "31365")
 template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 # 新版模板包含可选 LMCache Sidecar。默认关闭以保持没有 Sidecar 的部署行为；
