@@ -3,8 +3,8 @@
   "type": "commonjs",
   "scripts": {
     "test": "npm run test:js && npm run test:shell && npm run test:python",
-    "test:js": "node --test diag_perf/*.test.cjs pipeline/*.test.cjs pipeline/test_*.js pipeline/tests/*.test.mjs",
-    "test:shell": "bash -c 'set -e; for test_file in pipeline/scripts/test/*.sh pipeline/test_pipeline_contract.sh; do bash \"$test_file\"; done'",
+    "test:js": "node --test diag_perf/*.test.cjs pipeline/tests/*.test.cjs pipeline/tests/test_*.js pipeline/tests/*.test.mjs",
+    "test:shell": "bash -c 'set -e; for test_file in pipeline/scripts/test/*.sh pipeline/tests/test_pipeline_contract.sh; do bash \"$test_file\"; done'",
     "test:python": "python3 -m unittest discover -s pipeline/scripts/test -p 'test_*.py'"
   }
 }

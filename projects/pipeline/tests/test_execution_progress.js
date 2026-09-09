@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname+'/pipeline.html', 'utf8');
+const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname+'/../pipeline.html', 'utf8');
 function load(start, end, context){
   const a=source.indexOf(start), b=source.indexOf(end,a);
   assert.ok(a>=0 && b>a);

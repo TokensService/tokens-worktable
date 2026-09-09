@@ -1,7 +1,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/pipeline.html";
+const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html";
 const source = fs.readFileSync(pipelineHtml, "utf8");
 
 // 切片 1：scanShellRefs/isDynDef/parseCommentLabels/internalAssignedVars/detectPythonParams/detectParams
@@ -90,7 +90,7 @@ const detect = context.detectParams;
 
   // 实际清理/检查脚本只能通过环境变量配置，不能把函数参数传给入口。
   for (const name of ["cleanup-env.sh", "check-env.sh", "bnt-standalone.sh"]) {
-    const script = fs.readFileSync(require("path").join(__dirname, "scripts", name), "utf8");
+    const script = fs.readFileSync(require("path").join(__dirname, "..", "scripts", name), "utf8");
     const params = detect(script, "sh");
     if (params.some((p) => p.kind === "pos")) throw new Error(name + " 不应识别位置参数");
     if (!params.some((p) => p.kind === "env" && p.key === "ACTION")) throw new Error(name + " 必须保留环境变量识别");

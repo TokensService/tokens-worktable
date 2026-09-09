@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/pipeline.html', 'utf8');
+const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
 const start = source.indexOf('function renderPipelines(){');
 const end = source.indexOf('/* 运行框流水线下拉', start);
 assert.ok(start >= 0 && end > start, 'renderPipelines not found');

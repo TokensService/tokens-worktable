@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/pipeline.html','utf8');
+const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
 function load(a,b,ctx){ vm.runInContext(source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a))),ctx); }
 test('预设任务请求断网不覆盖仍在服务端写入的文件',async()=>{
   let uploads=0;
