@@ -35,6 +35,7 @@ REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"
 EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
+MODEL_STORAGE_HOST_PATH="${MODEL_STORAGE_HOST_PATH:-}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
@@ -70,7 +71,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$MODEL_STORAGE_HOST_PATH" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
@@ -84,7 +85,7 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json,
+ node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, model_storage_host_path,
  chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
@@ -365,8 +366,12 @@ values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
     "enableTaskExecutorGroups": True,
-    "storage": {"hostPath": "/mnt/xds/sfs"},
 })
+if model_storage_host_path:
+    storage = values["global"].setdefault("storage", {})
+    if not isinstance(storage, dict):
+        raise SystemExit("global.storage must be a mapping")
+    storage["hostPath"] = model_storage_host_path
 values = deep_merge(values, yaml_replace_map)
 
 # The chart substitutes this placeholder per task executor group.  Image

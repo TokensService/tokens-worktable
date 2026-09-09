@@ -159,7 +159,7 @@ for group in values["taskExecutorGroups"]:
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["useFemFrontend"] is False, values["global"]
-assert values["global"]["storage"]["hostPath"] == "/mnt/xds/sfs", values["global"]
+assert values["global"]["storage"]["hostPath"] == "/mnt/paas", values["global"]
 assert values["global"]["imagePullSecrets"] == [
     {"name": "default-secret"},
     {"name": "swr-cn-southwest-2"},
