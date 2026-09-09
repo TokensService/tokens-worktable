@@ -1,10 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
-- 项目入口页可用 `<meta name="worktable-icon" content="🚀">` 自声明侧栏图标（`src/index.ts` + `src/client/index.tsx`）：
-  `/api/worktable/scan-projects` 扫描时读入口页文件头 64KB 提取该 meta（属性顺序不限，最长 16 字符），
-  随扫描结果带 `icon` 字段；`runImport` 建新布局时采用——优先级：删除时转存的用户图标覆盖 > 页面自声明 > 默认 🧱，
-  已导入/已发布的布局不受影响（认回路径原样继承布局本体图标）。插件自带三个项目已声明：
-  pipeline 🚀、diag_perf 🔍、codereview 🩺（各自入口页 `<head>`）。
+- 项目入口页自报名称与侧栏图标，导入时自动带上（`src/index.ts` + `src/client/index.tsx`）：
+  `/api/worktable/scan-projects` 扫描时读入口页文件头 64KB，提取 `<title>`（折叠空白，最长 60 字符）
+  与 `<meta name="worktable-icon" content="🚀">`（属性顺序不限，最长 16 字符），随扫描结果带 `title`/`icon` 字段；
+  `runImport` 建新布局时采用——名称优先级：删除时转存的用户改名 > 页面 `<title>` > 目录名/文件名，
+  图标优先级：删除时转存的用户覆盖 > 页面自声明 > 默认 🧱；已导入/已发布的布局不受影响（认回路径原样继承布局本体）。
+  插件自带三个项目导入后即显示真实名称与图标：pipeline「流水线工作台」🚀、
+  diag_perf「大模型推理性能诊断」🔍、codereview「PR 检视台 · TokensService」🩺（各自入口页 `<head>` 已声明图标）。
   `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后重新导入项目生效。
 
 - 图标选择器 bug 定位组新增瓢虫 🐞（`src/client/index.tsx`）：EMOJI_SET 由 45 个扩至 46 个，

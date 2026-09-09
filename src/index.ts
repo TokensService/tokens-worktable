@@ -1418,8 +1418,8 @@ export function apply(ctx: Context) {
 
   // 一键导入的项目扫描：列出一个文件夹里的可导入项目——每个「含 .html 页面」的子目录算一个项目
   // （入口择优 index.html → 与目录同名的 .html → 字母序首个），目录下散装的 .html 算单页项目。
-  // 项目可在入口页 <head> 用 <meta name="worktable-icon" content="🚀"> 自声明侧栏图标（emoji），
-  // 导入建布局时带上（只读文件头 64KB 提取；用户改过的图标覆盖优先，见客户端 runImport）。
+  // 项目名/图标从入口页文件头 64KB 提取：<title> 为项目自报名称（导入时优先于目录名），
+  // <meta name="worktable-icon" content="🚀"> 自声明侧栏图标（emoji）；用户改过的名称/图标覆盖优先，见客户端 runImport。
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/scan-projects',
@@ -1432,14 +1432,18 @@ export function apply(ctx: Context) {
         const abs = pathResolve(p)
         const dirents = await readdir(abs, { withFileTypes: true })
         const isHtml = (n: string) => /\.html?$/i.test(n)
-        const projects: { name: string; dir: string; entry: string; icon?: string }[] = []
-        const readDeclaredIcon = async (dir: string, entry: string): Promise<string | undefined> => {
+        const projects: { name: string; dir: string; entry: string; icon?: string; title?: string }[] = []
+        const readEntryMeta = async (dir: string, entry: string): Promise<{ icon?: string; title?: string }> => {
           try {
             const head = (await readFile(pathResolve(dir, entry), 'utf8')).slice(0, 65536)
+            const meta: { icon?: string; title?: string } = {}
             const tag = head.match(/<meta\b[^>]*>/gi)?.find((t) => /\bname\s*=\s*(["'])worktable-icon\1/i.test(t))
             const icon = tag?.match(/\bcontent\s*=\s*(["'])([\s\S]*?)\1/i)?.[2]?.trim()
-            return icon ? icon.slice(0, 16) : undefined
-          } catch { return undefined }
+            if (icon) meta.icon = icon.slice(0, 16)
+            const title = head.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, ' ').trim()
+            if (title) meta.title = title.slice(0, 60)
+            return meta
+          } catch { return {} }
         }
         for (const d of dirents) {
           if (d.name.startsWith('.')) continue
@@ -1457,12 +1461,10 @@ export function apply(ctx: Context) {
             const entry = htmls.find((h) => h.toLowerCase() === 'index.html')
               ?? htmls.find((h) => h.toLowerCase() === named)
               ?? htmls[0]
-            const icon = await readDeclaredIcon(sub, entry)
-            projects.push(icon ? { name: d.name, dir: sub, entry, icon } : { name: d.name, dir: sub, entry })
+            projects.push({ name: d.name, dir: sub, entry, ...await readEntryMeta(sub, entry) })
           } else if (d.isFile() && isHtml(d.name)) {
-            const icon = await readDeclaredIcon(abs, d.name)
             const name = d.name.replace(/\.html?$/i, '')
-            projects.push(icon ? { name, dir: abs, entry: d.name, icon } : { name, dir: abs, entry: d.name })
+            projects.push({ name, dir: abs, entry: d.name, ...await readEntryMeta(abs, d.name) })
           }
         }
         projects.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))

@@ -157,6 +157,29 @@ test('全新项目：按文件夹名建布局，同毫秒批量导入 id 互不�
   assert.equal(state.folders[ids[1]], ROOT + '/beta')
 })
 
+test('全新项目：页面 <title> 作项目名优先于目录名；认回的用户改名仍优先', async () => {
+  // 页面自报名称（<title>）优先于目录名
+  const s1 = makeState()
+  const r1 = loadRunImport({
+    state: s1,
+    scan: { path: ROOT, projects: [{ name: 'pipeline', dir: ROOT + '/pipeline', entry: 'pipeline.html', title: '流水线工作台' }] },
+  })
+  await r1.runImport(ROOT)
+  assert.equal(s1.layouts[0].title, '流水线工作台')
+
+  // 删除时转存的用户改名（nameOverrides）比 <title> 更优先
+  const s2 = makeState({
+    folders: { 'layout-9': ROOT + '/pipeline' },
+    nameOverrides: { 'layout-9': '我的流水线' },
+  })
+  const r2 = loadRunImport({
+    state: s2,
+    scan: { path: ROOT, projects: [{ name: 'pipeline', dir: ROOT + '/pipeline', entry: 'pipeline.html', title: '流水线工作台' }] },
+  })
+  await r2.runImport(ROOT)
+  assert.equal(s2.layouts[0].title, '我的流水线')
+})
+
 test('入驻项目的文件夹映射同样占位；服务端与本地重复的 id 不重复并入', async () => {
   const local = hostedLayout('layout-r1', '已发布', ROOT + '/pub', 'index.html', { sync: true })
   const state = makeState({

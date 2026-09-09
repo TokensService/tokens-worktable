@@ -2650,9 +2650,11 @@ function buildCustomLayoutPrompt(req: string): string {
       const addedWorkspaces: Record<string, string> = {}
       const addedPrompts: Record<string, string> = {}
       let skipped = 0
-      for (const p of j.projects as { name?: string; dir?: string; entry?: string; icon?: string }[]) {
+      for (const p of j.projects as { name?: string; dir?: string; entry?: string; icon?: string; title?: string }[]) {
         if (!p || typeof p.dir !== 'string' || !p.dir || typeof p.entry !== 'string' || !p.entry) continue
-        let name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.entry.replace(/\.html?$/i, '')
+        // 项目名：页面 <title>（项目自报的真实名称）优先，其次目录名/文件名；删除时转存的用户改名见下方 prevName 仍优先
+        let name = typeof p.title === 'string' && p.title.trim() ? p.title.trim()
+          : typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.entry.replace(/\.html?$/i, '')
         const dirKey = norm(p.dir)
         const pageKey = dirKey + '/' + p.entry
         // 散装单页（dir = 扫描根）只按精确页面判重：其文件夹映射就是扫描根本身，按目录判会把同根其他单页全挡掉

@@ -98,6 +98,21 @@ test('入口页 <meta name="worktable-icon"> 自声明图标随扫描结果返�
   assert.equal('icon' in byName.plain, false, '未声明的项目不带 icon 字段')
 })
 
+test('入口页 <title> 作为项目自报名称随扫描结果返回', async t => {
+  const dir = await mkdtemp(tmpdir() + '/scan-projects-title-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await mkdir(dir + '/pipeline')
+  await writeFile(dir + '/pipeline/pipeline.html', '<html><head>\n<title>  流水线\n工作台 </title>\n</head></html>')
+  await mkdir(dir + '/plain')
+  await writeFile(dir + '/plain/index.html', '<html><head></head></html>')
+
+  const res = await call(loadScanRoute(), mockReq({ path: dir }))
+  assert.equal(res.status, 200)
+  const byName = Object.fromEntries(res.json().projects.map(p => [p.name, p]))
+  assert.equal(byName.pipeline.title, '流水线 工作台', 'title 折叠空白后返回')
+  assert.equal('title' in byName.plain, false, '无 <title> 的项目不带 title 字段')
+})
+
 test('缺少 path 返回 400，目录不存在返回 500', async () => {
   const handler = loadScanRoute()
   const bad = await call(handler, mockReq({}))
