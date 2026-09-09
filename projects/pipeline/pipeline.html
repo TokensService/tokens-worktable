@@ -1083,10 +1083,11 @@ function renderEnvs(){
     const tr=document.createElement('tr');
     tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
+  tb.querySelectorAll('[data-envcopy]').forEach(b=>b.addEventListener('click',()=>copyEnv(b.getAttribute('data-envcopy'))));
   tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
   tb.querySelectorAll('[data-gpurefresh]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpurefresh')); if(e) fetchGpu(e); }));
   tb.querySelectorAll('[data-gpudetail]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpudetail')); if(e) openGpuDetail(e); }));
@@ -1196,6 +1197,17 @@ function saveEnvForm(){
   saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
 }
 function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
+/* 复制节点环境：拷贝名称/IP/凭据生成不重名的「副本」，新 id 避免与源节点的设备状态缓存串号 */
+function copyEnv(id){
+  const src=environments.find(x=>x.id===id); if(!src) return;
+  const base=(src.name||'').replace(/（副本( \d+)?）$/,'');   /* 去掉已有副本后缀，避免链式累加 */
+  const taken=new Set(environments.map(e=>e.name));
+  let name=base+'（副本）';
+  if(taken.has(name)){ let n=2; while(taken.has(base+'（副本 '+n+'）')) n++; name=base+'（副本 '+n+'）'; }
+  const idx=environments.indexOf(src);
+  environments.splice(idx+1, 0, {id:'env-'+Date.now().toString(36), name, ip:src.ip, user:src.user||'', pass:src.pass||''});
+  saveEnvs(); renderEnvs(); renderEnvOptions();
+}
 function applyEnvCredAll(){
   // 把当前表单（添加/编辑区）里填写的用户名/密码应用到所有节点
   const u=$('envUser').value.trim(); const p=$('envPass').value;
