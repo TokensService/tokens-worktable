@@ -2514,22 +2514,22 @@ function renderStageActionRow(i){
   if(s.kind==='evaltokens'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='EvalTokens 任务';
     /* 输入框 + 下拉面板置于同一 relative 容器：聚焦输入框自动拉取任务列表（可搜索），
-       选中后回填 taskId/taskName 并自动识别任务输入参数；点容器外关闭面板 */
+       选中后回填 taskId/taskName 并自动识别任务输入参数；点容器外关闭面板。
+       输入框优先显示任务标题（taskName）而非 taskId，便于辨认；手动输入时回退为所填值 */
     const pickWrap=document.createElement('span'); pickWrap.style.cssText='position:relative;display:inline-flex;align-items:center;gap:4px;';
-    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&s.evaltokens.taskId)||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表，支持 ${VAR}）'; inp.style.width='200px';
+    const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-f','etTaskId'); inp.value=(s.evaltokens&&(s.evaltokens.taskName||s.evaltokens.taskId))||''; inp.placeholder='任务 ID 或名称（聚焦自动加载列表，支持 ${VAR}）'; inp.style.width='200px';
     inp.title='EvalTokens 服务（「设置」页配置地址/令牌/连接模式）中要运行的任务：填任务 ID（优先）或名称；聚焦输入框自动拉取任务列表供选择，选中后自动识别任务输入参数；支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}），运行时替换后匹配任务（未定义的单个引用按空值处理）；运行时按连接模式（本地直连/服务端代连）+ Bearer 令牌启动一次新 run，并只等待该 run 到终态（成功/失败）后推进，捕获运行字段为输出变量';
     const panel=document.createElement('div'); panel.setAttribute('data-etpick-panel','1'); panel.style.cssText='display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:280px;max-height:260px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);';
     pickWrap.appendChild(inp); pickWrap.appendChild(panel);
     inp.addEventListener('focus', ()=>{ if(panel.style.display==='none') openEvaltokPicker(i); });
     inp.addEventListener('input', ()=>{ if(panel.style.display!=='none') renderEvaltokPickerPanel(i, inp.value); });
-    const nm=document.createElement('span'); nm.className='dshell-muted'; nm.style.fontSize='11px'; nm.textContent=(s.evaltokens&&s.evaltokens.taskName)?('· '+s.evaltokens.taskName):'';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('任务字段'));
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status, TASK_ID=*, CREATED=created_at'; outInp.style.width='200px';
     outInp.title='本任务字段产出变量的下传命名（逗号分隔）：留空=任务顶层标量字段全部按原名下传；STATUS=status 表示把任务 status 改名为 STATUS；来源也可写 JSON 路径取任务对象的嵌套字段（如 items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把整条任务 JSON 整体赋给指定变量（如 TASK=*）；下游阶段参数值可填 ${STATUS} 引用';
     const reportLab=document.createElement('label'); reportLab.className='dshell-muted'; reportLab.style.cssText='display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;'; reportLab.title='任务进入成功或失败终态后，把本次 run 的完整 HTML 报告写入流水线本次运行的归档目录；归档失败不改变任务结果';
     const reportInp=document.createElement('input'); reportInp.type='checkbox'; reportInp.setAttribute('data-f','etCollectReport'); reportInp.checked=!(s.evaltokens&&s.evaltokens.collectReport===false);
     reportLab.appendChild(reportInp); reportLab.appendChild(document.createTextNode(' 收集任务报告'));
-    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(reportLab); return;
+    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(reportLab); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
