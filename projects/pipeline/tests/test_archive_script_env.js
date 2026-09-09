@@ -7,16 +7,55 @@ const start = source.indexOf("function substRunVars(");   // execScript 依赖�
 const end = source.indexOf("async function runScriptStep", start);
 if (start < 0 || end < 0) throw new Error("substRunVars/execScript not found");
 
+/* 多运行上下文重构后：execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, logFile)，
+   归档脚本由 archiveRun 以 runCtx=已结束运行的 rc 快照显式传入（对齐 pipeline.html archiveRun
+   内的 execScript 调用），不再依赖全局 curRun——curRun 如今只是 viewRc 的展示别名，
+   运行队列切换后可能已指向另一场运行。 */
+const rc = {
+  id: "rc-archive-test",
+  stages: [],
+  nodes: [],
+  selId: null,
+  timer: null,
+  over: true,   // 归档发生在运行结束之后，传入的是已结束运行的快照
+  overall: null,
+  token: "tok-archive-test",
+  vars: {},
+  env: "",
+  envs: [{ ip: "192.0.2.10", user: "root", pass: "secret" }],
+  image: "registry.example.com/xds",
+  release: null,
+  commit: null,
+  tag: "test",
+  startTs: 0,
+  by: "tester",
+  source: "test",
+  pipelineId: "p-contract",
+  pipelineName: "contract-test",
+  repoId: null,
+  repoName: null,
+  repoUrl: "",
+  giturl: "",
+  repoUser: "",
+  repoPass: "",
+  branch: "",
+  strategy: "",
+  prom: null,
+  archive: "/var/log/op_test/contract-test_20260101_000000",   // 本次运行归档文件夹（启动时快照到 rc.archive）
+};
+/* 诱导用的「另一场在跑运行」：若 execScript 错走 curRun 回退而非传入的 runCtx，这些值会漏进 env。 */
+const decoyRun = {
+  vars: {},
+  env: "",
+  envs: [{ ip: "203.0.113.99", user: "decoy", pass: "decoy" }],
+  image: "registry.example.com/decoy",
+  tag: "decoy",
+  pipelineName: "decoy-run",
+  archive: "/var/log/op_test/decoy-run_20260202_000000",
+};
 let request;
 const context = {
-  __curRun: {
-    vars: {},
-    envs: [{ ip: "192.0.2.10", user: "root", pass: "secret" }],
-    image: "registry.example.com/xds",
-    tag: "test",
-    pipelineName: "contract-test",
-    archive: "/var/log/op_test/contract-test_20260101_000000",   // 本次运行归档文件夹（启动时快照到 rc.archive）
-  },
+  __curRun: decoyRun,
   fetch: async (_url, init) => {
     request = JSON.parse(init.body);
     return { json: async () => ({ code: 0, stdout: "", stderr: "" }) };
@@ -38,6 +77,7 @@ vm.runInContext(
     { path: "/tmp/collect_logs.sh", params: [], values: {} },
     120000,
     { ARCHIVE_DIR: "/var/log/op_test", ARCHIVE_FOLDER: folder, ARCHIVE_TAG: "test" },
+    rc,   // runCtx：已结束运行的快照（对齐 archiveRun 的调用方式）
   );
   if (!request) throw new Error(`execution did not reach fetch: ${result.stderr}`);
   if (request.env.ARCHIVE_DIR !== "/var/log/op_test") {
@@ -46,5 +86,16 @@ vm.runInContext(
   if (request.env.ARCHIVE_FOLDER !== folder) {
     throw new Error(`expected run-folder ARCHIVE_FOLDER, got ${JSON.stringify(request.env.ARCHIVE_FOLDER)}`);
   }
+  /* runCtx 生效：注入值取自传入的 rc 快照，而非 curRun 别名当前指向的另一场运行 */
+  if (request.env.TARGET_IP !== "192.0.2.10") {
+    throw new Error(`expected snapshot TARGET_IP from runCtx, got ${JSON.stringify(request.env.TARGET_IP)}`);
+  }
+  if (request.env.IMAGE_NAME !== "registry.example.com/xds") {
+    throw new Error(`expected snapshot IMAGE_NAME from runCtx, got ${JSON.stringify(request.env.IMAGE_NAME)}`);
+  }
+  if (request.env.PIPELINE_NAME !== "contract-test") {
+    throw new Error(`expected snapshot PIPELINE_NAME from runCtx, got ${JSON.stringify(request.env.PIPELINE_NAME)}`);
+  }
   console.log("PASS: extraEnv ARCHIVE_DIR overrides the per-run archive folder default");
+  console.log("PASS: execScript injects from the passed runCtx snapshot, not the curRun alias");
 })();

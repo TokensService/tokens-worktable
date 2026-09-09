@@ -121,9 +121,10 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     archiveDir:'/old/archive', archiveScriptName:'old_collect.sh',
     analysisPrompts:{log:'oldL',prof:'oldP',perf:'oldF'}, histClearedAt:0,
     curPipelineId:'pl-xds', selectedEnvIds:null, curRepoId:'r-old', schedEnvIds:null,
-    histFilter:{kw:'',status:'',pipeline:''}, histPageSize:10, runStages:null, selectedId:'s0',
+    histFilter:{kw:'',status:'',pipeline:''}, histPageSize:10,
+    viewRc:{stages:[{id:'s0'}],nodes:{},selId:'s0',token:'t0',over:false,vars:{},timer:null}, runStages:null, selectedId:'s0',
     curPipeline:function(){ return this.pipelines.find(p=>p.id===this.curPipelineId)||this.pipelines[0]; },
-  },['normalizeFetchMode','normalizeEnv','normalizeRepo','applyImportedSettings']);
+  },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','applyImportedSettings']);
   ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','savePromCollectPreset','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{ ctx[n]=()=>rendered.push(n); });
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
@@ -165,7 +166,8 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   assert.deepEqual(J(ctx.analysisPrompts),{log:'newL',prof:'P',perf:'F'},'提示词与内置默认值合并（文件缺省键回落默认，与 loadServerState 一致）');
   assert.equal(ctx.histClearedAt,123);
   assert.equal(ctx.curPipelineId,'pl-custom');
-  assert.equal(ctx.selectedId,'s9','切换当前流水线后选中阶段重置');
+  assert.equal(ctx.viewRc,null,'切换当前流水线后清空编排区运行视图绑定（旧 runStages 单例重置的新形态）');
+  assert.equal(ctx.selectedId,'s9','切换当前流水线后选中阶段重置（viewRc 为空时 syncViewRun 回落当前流水线首阶段）');
   assert.deepEqual(J(ctx.selectedEnvIds),['env-dev']);
   assert.equal(ctx.curRepoId,'r1');
   assert.deepEqual(J(ctx.schedEnvIds),['env-dev']);
@@ -227,10 +229,11 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
     loadServerState:async()=>{ throw new Error('stateLoaded 后不得再加载'); },
     localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
     pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]}],
-    curPipelineId:'pl-gone', runStages:null, selectedId:'s0',
+    curPipelineId:'pl-gone',
+    viewRc:{stages:[{id:'s9'}],nodes:{},selId:'s9',token:'t9',over:false,vars:{},timer:null}, runStages:null, selectedId:'s9',
     savePipelines:()=>saved.push('savePipelines'),
     renderAll:()=>rendered.push('renderAll'),
-  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','normalizeImportedPipelines','importPipelinesFile']);
+  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesFile']);
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
   const data={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[
     {id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0'}]},
@@ -240,6 +243,8 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
   assert.equal(ctx.pipelines.length,2);
   assert.equal(ctx.pipelines[1].id,'pl-new');
   assert.equal(ctx.curPipelineId,'pl-xds','当前流水线不在导入列表中回退到首条');
+  assert.equal(ctx.viewRc,null,'导入覆盖流水线后清空编排区运行视图绑定');
+  assert.equal(ctx.selectedId,'s0','选中阶段随视图重绑回落到新当前流水线首阶段');
   assert.ok(saved.includes('savePipelines'));
   assert.ok(rendered.includes('renderAll'));
   assert.equal(store['pip-curPipeline'],'pl-xds');

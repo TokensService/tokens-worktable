@@ -22,6 +22,25 @@ function extractFunction(name) {
   throw new Error(`无法提取函数 ${name}`)
 }
 
+/* 多运行上下文：引擎函数（runEvaltokensStep/archiveRun 等）不再读写全局单例
+   （curRun/runStages/nodes/selectedId/timer），改为接收运行上下文 rc 并用 rc.stages/rc.nodes/
+   rc.timer/rc.vars/rc.token/rc.over。测试按运行时形状构造 rc。 */
+function makeRc(overrides = {}) {
+  return {
+    id: 'run-test',
+    stages: [],
+    nodes: {},
+    selId: '',
+    timer: null,
+    over: false,
+    overall: null,
+    token: 'run-token',
+    vars: {},
+    scriptAbort: null,
+    ...overrides,
+  }
+}
+
 function loadEvaltokensRuntime(overrides = {}) {
   const context = vm.createContext({
     console,
@@ -41,6 +60,19 @@ function loadEvaltokensRuntime(overrides = {}) {
     archiveFolderFor: () => null,
     archiveTaskLog: async () => null,
     buildLog: stage => [stage._out?.stdout || ''],
+    // 视图层桩：引擎经 runSetSel/rcRender/rcOverall 与视图交互，仅当 viewRc===rc 时落地渲染
+    viewRc: null,
+    selectedId: '',
+    activeRuns: [],
+    runSetSel: (rc, id) => { rc.selId = id },
+    rcRender: () => {},
+    rcOverall: (rc, txt, cls, color) => { rc.overall = { txt, cls, color: color || '' } },
+    syncViewRun: () => {},
+    syncRunState: () => {},
+    viewActive: () => false,
+    applyStatusClasses: () => {},
+    renderFlow: () => {},
+    renderDetail: () => {},
     ...overrides,
   })
   const names = [
@@ -168,15 +200,9 @@ test('EvalTokens 任务终态后把 HTML 报告原文归档，并在回显中打
     timeout: null,
     evaltokens: { taskId: 'task-report', taskName: 'report-task', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage], archive: '/archive/pipeline_20260908', tag: 'build-9' })
   const context = loadEvaltokensRuntime({
     console: { warn: () => {} },
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {}, archive: '/archive/pipeline_20260908', tag: 'build-9' },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
@@ -189,9 +215,6 @@ test('EvalTokens 任务终态后把 HTML 报告原文归档，并在回显中打
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: async () => true,
     apiWrite: async (path, content) => { writes.push({ path, content }) },
@@ -200,12 +223,12 @@ test('EvalTokens 任务终态后把 HTML 报告原文归档，并在回显中打
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { advancedTo = index },
-    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+    advance: (_rc, index) => { advancedTo = index },
+    finish: (_rc, status) => { throw new Error(`unexpected finish: ${status}`) },
   })
 
-  await context.runEvaltokensStep(0)
-  await Promise.all(context.curRun.evaltokensReportWrites)
+  await context.runEvaltokensStep(rc, 0)
+  await Promise.all(rc.evaltokensReportWrites)
 
   assert.deepEqual(reportRequests, ['http://evaltokens.local/api/v1/report?task_id=run%2F2026%2009'])
   assert.equal(writes.length, 1)
@@ -255,13 +278,13 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
     stage._logArchived = true
     stage._reportPendingAttempt = null
   })
-  const context = loadEvaltokensRuntime({
-    curRun: {
-      archive: '/archive/ordered', tag: 'ordered', startTs: Date.now(), vars: {},
-      evaltokensReportWrites: [reportSettled],
-    },
+  const rc = makeRc({
+    stages: [stage],
     nodes: { 'eval-summary': { status: 'success', progress: 100, dur: 1, varsOut: {} } },
-    activeStages: () => [stage],
+    archive: '/archive/ordered', tag: 'ordered', startTs: Date.now(),
+    evaltokensReportWrites: [reportSettled],
+  })
+  const context = loadEvaltokensRuntime({
     archiveFolderFor: ctx => ctx.archive,
     archiveStageLog: () => {},
     ensureArchiveFolder: async () => true,
@@ -272,7 +295,7 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
     curPipeline: () => ({ name: '测试流水线' }),
   })
 
-  context.archiveRun('success')
+  context.archiveRun(rc, 'success')
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(writes.length, 0, '报告完成前不能先写汇总并启动后续归档链')
 
@@ -295,16 +318,14 @@ test('同一运行失败后重试时，旧汇总不能覆盖最新成功结果',
   let releaseOldReport
   const oldReportPending = new Promise(resolve => { releaseOldReport = resolve })
   const writes = []
-  const run = {
-    archive: '/archive/retry', tag: 'retry', startTs: Date.now(), vars: {},
-    evaltokensReportWrites: [oldReportPending],
-  }
-  let stage = { id: 'eval-retry', name: '重试阶段', kind: 'evaltokens', _out: { stdout: 'old failed' } }
+  const stages = [{ id: 'eval-retry', name: '重试阶段', kind: 'evaltokens', _out: { stdout: 'old failed' } }]
   const nodes = { 'eval-retry': { status: 'failed', progress: 100, dur: 2, varsOut: {} } }
+  const rc = makeRc({
+    stages, nodes,
+    archive: '/archive/retry', tag: 'retry', startTs: Date.now(),
+    evaltokensReportWrites: [oldReportPending],
+  })
   const context = loadEvaltokensRuntime({
-    curRun: run,
-    nodes,
-    activeStages: () => [stage],
     archiveFolderFor: ctx => ctx.archive,
     archiveStageLog: () => {},
     ensureArchiveFolder: async () => true,
@@ -315,11 +336,11 @@ test('同一运行失败后重试时，旧汇总不能覆盖最新成功结果',
     curPipeline: () => ({ name: '测试流水线' }),
   })
 
-  context.archiveRun('failed')
-  stage = { id: 'eval-retry', name: '重试阶段', kind: 'evaltokens', _out: { stdout: 'new success' } }
+  context.archiveRun(rc, 'failed')
+  stages[0] = { id: 'eval-retry', name: '重试阶段', kind: 'evaltokens', _out: { stdout: 'new success' } }
   nodes['eval-retry'] = { status: 'success', progress: 100, dur: 1, varsOut: {} }
-  run.evaltokensReportWrites = []
-  context.archiveRun('success')
+  rc.evaltokensReportWrites = []
+  context.archiveRun(rc, 'success')
   await new Promise(resolve => setImmediate(resolve))
   releaseOldReport()
   await context.waitArchiveWrites('/archive/retry')
@@ -343,14 +364,8 @@ test('终态先落到阶段并继续流水线，报告慢归档在后台完成',
     timeout: null,
     evaltokens: { taskId: 'task-slow-report', taskName: 'slow-report', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage], archive: '/archive/run', tag: 'build-12' })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {}, archive: '/archive/run', tag: 'build-12' },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
@@ -361,9 +376,6 @@ test('终态先落到阶段并继续流水线，报告慢归档在后台完成',
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     buildLog: st => [st._out.stdout],
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: () => { mkdirStarted(); return mkdirPending },
@@ -374,20 +386,20 @@ test('终态先落到阶段并继续流水线，报告慢归档在后台完成',
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { advancedTo = index },
-    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+    advance: (_rc, index) => { advancedTo = index },
+    finish: (_rc, status) => { throw new Error(`unexpected finish: ${status}`) },
   })
 
-  const stageRun = context.runEvaltokensStep(0)
+  const stageRun = context.runEvaltokensStep(rc, 0)
   await started
 
-  assert.equal(context.nodes['eval-slow-report'].status, 'success')
+  assert.equal(rc.nodes['eval-slow-report'].status, 'success')
   assert.equal(advancedTo, 1)
-  assert.equal(context.curRun.evaltokensReportWrites.length, 1)
+  assert.equal(rc.evaltokensReportWrites.length, 1)
 
   releaseMkdir(true)
   await stageRun
-  await Promise.all(context.curRun.evaltokensReportWrites)
+  await Promise.all(rc.evaltokensReportWrites)
   assert.match(stage._out.stdout, /任务报告已归档/)
 })
 
@@ -406,14 +418,8 @@ test('EvalTokens 失败终态不等待慢报告，且旧报告回调不污染重
     timeout: null,
     evaltokens: { taskId: finalRun.task_id, taskName: 'failed-report', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage], archive: '/archive/run', tag: 'build-13' })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {}, archive: '/archive/run', tag: 'build-13' },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
@@ -424,9 +430,6 @@ test('EvalTokens 失败终态不等待慢报告，且旧报告回调不污染重
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: () => { mkdirStarted(); return mkdirPending },
     apiWrite: async () => {},
@@ -440,23 +443,23 @@ test('EvalTokens 失败终态不等待慢报告，且旧报告回调不污染重
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { throw new Error(`unexpected advance: ${index}`) },
-    finish: status => { finishedAs = status },
+    advance: (_rc, index) => { throw new Error(`unexpected advance: ${index}`) },
+    finish: (_rc, status) => { finishedAs = status },
   })
 
-  const stageRun = context.runEvaltokensStep(0)
+  const stageRun = context.runEvaltokensStep(rc, 0)
   await started
 
-  assert.equal(context.nodes['eval-failed-report'].status, 'failed')
+  assert.equal(rc.nodes['eval-failed-report'].status, 'failed')
   assert.equal(finishedAs, 'failed')
-  assert.equal(context.curRun.evaltokensReportWrites.length, 1)
+  assert.equal(rc.evaltokensReportWrites.length, 1)
 
   stage._evaltokAttempt = (stage._evaltokAttempt || 0) + 1
   stage._out = { stdout: '$ EvalTokens run second-attempt', stderr: '', code: null, evaltokens: true, done: false }
   stage._logArchived = false
   releaseMkdir(true)
   await stageRun
-  await Promise.all(context.curRun.evaltokensReportWrites)
+  await Promise.all(rc.evaltokensReportWrites)
   assert.equal(stage._out.stdout, '$ EvalTokens run second-attempt')
   assert.equal(stage._logArchived, false)
   assert.deepEqual(archivedStageTexts, [])
@@ -472,14 +475,8 @@ test('关闭收集任务报告后不写报告文件', async () => {
     timeout: null,
     evaltokens: { taskId: 'task-no-report', taskName: 'no-report', outVars: '', collectReport: false },
   }
+  const rc = makeRc({ stages: [stage], archive: '/archive/run', tag: 'build-10' })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {}, archive: '/archive/run', tag: 'build-10' },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
@@ -491,9 +488,6 @@ test('关闭收集任务报告后不写报告文件', async () => {
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: async () => true,
     apiWrite: async () => { writes += 1 },
@@ -503,10 +497,10 @@ test('关闭收集任务报告后不写报告文件', async () => {
     applyOutVars: () => {},
     secToMinInput: value => String(value),
     advance: () => {},
-    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+    finish: (_rc, status) => { throw new Error(`unexpected finish: ${status}`) },
   })
 
-  await context.runEvaltokensStep(0)
+  await context.runEvaltokensStep(rc, 0)
 
   assert.equal(writes, 0)
   assert.equal(requests.filter(url => url.includes('/api/v1/report?task_id=')).length, 0)
@@ -522,15 +516,9 @@ test('任务报告写入失败只记入回显，不改变 EvalTokens 成功结�
     timeout: null,
     evaltokens: { taskId: 'task-report-error', taskName: 'report-error', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage], archive: '/archive/run', tag: 'build-11' })
   const context = loadEvaltokensRuntime({
     console: { warn: () => {} },
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {}, archive: '/archive/run', tag: 'build-11' },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
@@ -541,9 +529,6 @@ test('任务报告写入失败只记入回显，不改变 EvalTokens 成功结�
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: async () => true,
     apiWrite: async () => { throw new Error('disk full') },
@@ -552,14 +537,14 @@ test('任务报告写入失败只记入回显，不改变 EvalTokens 成功结�
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { advancedTo = index },
-    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+    advance: (_rc, index) => { advancedTo = index },
+    finish: (_rc, status) => { throw new Error(`unexpected finish: ${status}`) },
   })
 
-  await context.runEvaltokensStep(0)
-  await Promise.all(context.curRun.evaltokensReportWrites)
+  await context.runEvaltokensStep(rc, 0)
+  await Promise.all(rc.evaltokensReportWrites)
 
-  assert.equal(context.nodes['eval-report-error'].status, 'success')
+  assert.equal(rc.nodes['eval-report-error'].status, 'success')
   assert.equal(advancedTo, 1)
   assert.match(stage._out.stdout, /任务报告归档失败.*disk full/)
 })
@@ -575,15 +560,9 @@ test('任务报告查询失败时不写报告，且不改变 EvalTokens 成功�
     timeout: null,
     evaltokens: { taskId: 'task-report-fetch-error', taskName: 'report-fetch-error', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage], archive: '/archive/run', tag: 'build-14' })
   const context = loadEvaltokensRuntime({
     console: { warn: () => {} },
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {}, archive: '/archive/run', tag: 'build-14' },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url) => {
@@ -601,9 +580,6 @@ test('任务报告查询失败时不写报告，且不改变 EvalTokens 成功�
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: async () => true,
     apiWrite: async () => { writes += 1 },
@@ -612,16 +588,16 @@ test('任务报告查询失败时不写报告，且不改变 EvalTokens 成功�
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { advancedTo = index },
-    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+    advance: (_rc, index) => { advancedTo = index },
+    finish: (_rc, status) => { throw new Error(`unexpected finish: ${status}`) },
   })
 
-  await context.runEvaltokensStep(0)
-  await Promise.all(context.curRun.evaltokensReportWrites)
+  await context.runEvaltokensStep(rc, 0)
+  await Promise.all(rc.evaltokensReportWrites)
 
   assert.deepEqual(reportRequests, ['http://evaltokens.local/api/v1/report?task_id=run-report-fetch-error'])
   assert.equal(writes, 0)
-  assert.equal(context.nodes['eval-report-fetch-error'].status, 'success')
+  assert.equal(rc.nodes['eval-report-fetch-error'].status, 'success')
   assert.equal(advancedTo, 1)
   assert.match(stage._out.stdout, /任务报告归档失败.*report unavailable.*HTTP 503/)
 })
@@ -656,14 +632,8 @@ test('EvalTokens 阶段启动新 run，并只等待返回的 run_id', async () =
     timeout: null,
     evaltokens: { taskId: 'task/a b', taskName: 'warmup', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage] })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {} },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url, options = {}) => {
@@ -688,26 +658,23 @@ test('EvalTokens 阶段启动新 run，并只等待返回的 run_id', async () =
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveStageLog: () => {},
     mergeStageVars: () => ({}),
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { advancedTo = index },
-    finish: status => { finishedAs = status },
+    advance: (_rc, index) => { advancedTo = index },
+    finish: (_rc, status) => { finishedAs = status },
   })
 
-  await context.runEvaltokensStep(0)
+  await context.runEvaltokensStep(rc, 0)
 
   assert.equal(calls[1].options.method, 'POST')
   assert.equal(calls[1].options.headers.Authorization, 'Bearer api-token')
   assert.equal(calls[1].options.headers['Content-Type'], 'application/json')
   assert.equal(calls[1].options.body, '{}')
   assert.equal(runPolls, 2, '旧 run 的成功状态不能让阶段提前结束')
-  assert.equal(context.nodes['eval-stage'].status, 'success')
+  assert.equal(rc.nodes['eval-stage'].status, 'success')
   assert.equal(advancedTo, 1)
   assert.equal(finishedAs, null)
   assert.match(stage._out.stdout, /run-new/)
@@ -779,14 +746,8 @@ test('变量或手填任务名会重新解析为真实 task_id，不使用残留
     timeout: null,
     evaltokens: { taskId: '${TASK_NAME}', taskName: 'old-selected-name', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage], vars: { TASK_NAME: 'new-task-name' } })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: { TASK_NAME: 'new-task-name' } },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value === '${TASK_NAME}' ? 'new-task-name' : value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url, options = {}) => {
@@ -805,23 +766,20 @@ test('变量或手填任务名会重新解析为真实 task_id，不使用残留
     setInterval: () => 1,
     clearInterval: () => {},
     setTimeout: fn => { fn(); return 1 },
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveStageLog: () => {},
     mergeStageVars: () => ({}),
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
-    advance: index => { advancedTo = index },
-    finish: status => { throw new Error(`unexpected finish: ${status}`) },
+    advance: (_rc, index) => { advancedTo = index },
+    finish: (_rc, status) => { throw new Error(`unexpected finish: ${status}`) },
   })
 
-  await context.runEvaltokensStep(0)
+  await context.runEvaltokensStep(rc, 0)
 
   assert.equal(calls[0].options.method, 'GET')
   assert.match(calls[1].url, /\/tasks\/task-resolved\/run$/)
-  assert.equal(context.nodes['eval-by-name'].status, 'success')
+  assert.equal(rc.nodes['eval-by-name'].status, 'success')
   assert.equal(advancedTo, 1)
 })
 
@@ -835,14 +793,8 @@ test('阶段超时会中断卡住的 EvalTokens 请求', async () => {
     timeout: 0.01,
     evaltokens: { taskId: 'task-timeout', taskName: 'timeout-task', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage] })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {} },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url, options = {}) => {
@@ -860,26 +812,23 @@ test('阶段超时会中断卡住的 EvalTokens 请求', async () => {
     },
     setInterval: () => 1,
     clearInterval: () => {},
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveStageLog: () => {},
     mergeStageVars: () => ({}),
     parseStageJson: value => JSON.parse(value),
     applyOutVars: () => {},
     secToMinInput: value => String(value),
     advance: () => {},
-    finish: status => { finishedAs = status },
+    finish: (_rc, status) => { finishedAs = status },
   })
 
   const completed = await Promise.race([
-    context.runEvaltokensStep(0).then(() => true),
+    context.runEvaltokensStep(rc, 0).then(() => true),
     new Promise(resolve => setTimeout(() => resolve(false), 200)),
   ])
 
   assert.equal(completed, true, '卡住的请求必须在阶段超时后返回')
   assert.equal(requestAborted, true)
-  assert.equal(context.nodes['eval-timeout'].status, 'failed')
+  assert.equal(rc.nodes['eval-timeout'].status, 'failed')
   assert.equal(finishedAs, 'failed')
   assert.match(stage._out.stderr, /等待超时/)
 })
@@ -896,14 +845,8 @@ test('用户中止会取消正在等待的 EvalTokens 请求且不覆盖中止�
     timeout: null,
     evaltokens: { taskId: 'task-abort', taskName: 'abort-task', outVars: '' },
   }
+  const rc = makeRc({ stages: [stage] })
   const context = loadEvaltokensRuntime({
-    timer: null,
-    running: true,
-    curRun: { token: 'run-token', vars: {} },
-    nodes: {},
-    selectedId: '',
-    evaltok: evaltokConfig,
-    activeStages: () => [stage],
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url, options = {}) => {
@@ -922,9 +865,6 @@ test('用户中止会取消正在等待的 EvalTokens 请求且不覆盖中止�
     },
     setInterval: () => 1,
     clearInterval: () => {},
-    applyStatusClasses: () => {},
-    renderFlow: () => {},
-    renderDetail: () => {},
     archiveStageLog: () => {},
     mergeStageVars: () => ({}),
     parseStageJson: value => JSON.parse(value),
@@ -934,11 +874,11 @@ test('用户中止会取消正在等待的 EvalTokens 请求且不覆盖中止�
     finish: () => { finishCalls += 1 },
   })
 
-  const pending = context.runEvaltokensStep(0)
+  const pending = context.runEvaltokensStep(rc, 0)
   await requestStarted
-  assert.ok(context.curRun.scriptAbort, '运行中请求应注册 AbortController')
-  context.running = false
-  context.curRun.scriptAbort.abort()
+  assert.ok(rc.scriptAbort, '运行中请求应注册 AbortController')
+  rc.over = true   // 用户中止（abortRun）：本运行标结束后，迟回的 AbortError 不得再次 finish 入账
+  rc.scriptAbort.abort()
   await pending
 
   assert.equal(requestAborted, true)
