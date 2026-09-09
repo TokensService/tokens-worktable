@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
-import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from 'node:fs/promises'
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -1303,10 +1303,14 @@ export function apply(ctx: Context) {
   // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。
   // 日志由执行端持有：按输出到达顺序串行写入，关闭文件后才确认归档成功；失败不改变脚本退出码。
   async function openExecLog(requested: unknown, header: string) {
+    const backlogLimit = 1024 * 1024
+    const resumeLimit = backlogLimit / 2
     const logFile = typeof requested === 'string' && requested ? pathResolve(requested) : null
     let file: Awaited<ReturnType<typeof fsOpen>> | null = null
     let logError = ''
     let pending = Promise.resolve()
+    let pendingBytes = 0
+    let drainWaiters: Array<() => void> = []
     let ended = false
     let lastNewline = true
     if (logFile) {
@@ -1314,14 +1318,30 @@ export function apply(ctx: Context) {
       catch (e) { logError = String(e) }
     }
     const write = (text: string) => {
-      if (!file || ended || !text || logError) return
+      if (!file || ended || !text || logError) return true
       lastNewline = text.endsWith('\n')
-      pending = pending.then(async () => { if (!logError) await file!.writeFile(text, 'utf8') }).catch(e => { logError = String(e) })
+      const bytes = Buffer.byteLength(text)
+      pendingBytes += bytes
+      pending = pending
+        .then(async () => { if (!logError) await file!.writeFile(text, 'utf8') })
+        .catch(e => { logError = String(e) })
+        .finally(() => {
+          pendingBytes = Math.max(0, pendingBytes - bytes)
+          if (pendingBytes <= resumeLimit && drainWaiters.length) {
+            const waiters = drainWaiters; drainWaiters = []
+            for (const resume of waiters) resume()
+          }
+        })
+      return pendingBytes < backlogLimit
     }
     write(header + '\n')
     return {
       info: () => logFile ? (logError ? { logError } : { logFile }) : {},
       write,
+      onceDrain(resume: () => void) {
+        if (!file || logError || pendingBytes <= resumeLimit) resume()
+        else drainWaiters.push(resume)
+      },
       async close(marker: string) {
         if (!ended) {
           write((lastNewline ? '' : '\n') + marker + '\n')
@@ -1362,10 +1382,21 @@ export function apply(ctx: Context) {
             const logged = await log.close('[exit ' + code + ']')
             if (!res.destroyed) json(res, 200, { code, stdout: String(stdout || ''), stderr: errorText, ...logged })
           })
+        let logBlocked = false
+        const writeLog = (text: string) => {
+          const writable = log.write(text)
+          if (writable || logBlocked) return
+          logBlocked = true
+          child.stdout?.pause(); child.stderr?.pause()
+          log.onceDrain(() => {
+            logBlocked = false
+            child.stdout?.resume(); child.stderr?.resume()
+          })
+        }
         child.stdout?.setEncoding('utf8')
         child.stderr?.setEncoding('utf8')
-        child.stdout?.on('data', (text: string) => log.write(text))
-        child.stderr?.on('data', (text: string) => log.write(text))
+        child.stdout?.on('data', writeLog)
+        child.stderr?.on('data', writeLog)
       } catch (err) {
         await failedLog?.close('[error] ' + String(err))
         json(res, 500, { error: String(err && err.message ? err.message : err) })
@@ -1400,14 +1431,36 @@ export function apply(ctx: Context) {
         let killTimer: ReturnType<typeof setTimeout> | null = null
         let abortTimer: ReturnType<typeof setTimeout> | null = null
         let finished = false
+        let outputPaused = false
+        let responseBlocked = false
+        let logBlocked = false
+        const STREAM_BACKLOG_LIMIT = 1024 * 1024
         const killTree = (sig: string) => {
           try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, sig); else child?.kill(sig as any) } catch {}
         }
+        const resumeOutput = () => {
+          /* 断连后 HTTP 背压已失效，但仍须受磁盘低水位约束地排空已终止进程的管道，
+             否则 close 可能一直等不到 stdio 收尾，日志文件也无法写入 [aborted] 后关闭。 */
+          if (logBlocked || finished || (!disconnected && responseBlocked)) return
+          outputPaused = false
+          child?.stdout?.resume()
+          child?.stderr?.resume()
+        }
+        const pauseOutput = () => {
+          if (outputPaused || !child) return
+          outputPaused = true
+          child.stdout?.pause()
+          child.stderr?.pause()
+        }
+        const responseDrained = () => { responseBlocked = false; resumeOutput() }
         // 建目录/打开文件也可能正在 await；提前监听断开，避免页面已关闭仍启动脚本。
         res.on('close', () => {
           if (finished) return
           disconnected = true
+          res.off?.('drain', responseDrained)
+          responseBlocked = false   // socket 已关闭，不再等待永远不会到来的 HTTP drain
           killTree('SIGTERM')
+          resumeOutput()             // 无磁盘积压时立即排空；有积压则由 log.onceDrain 恢复
           if (child) abortTimer = setTimeout(() => killTree('SIGKILL'), 1000)
         })
         const log = await openExecLog(body.logFile, '$ ' + interp + ' ' + scriptPath + (args.length ? ' ' + args.join(' ') : ''))
@@ -1417,23 +1470,37 @@ export function apply(ctx: Context) {
         }
         if (disconnected || res.destroyed) { finished = true; await log.close('[aborted]'); return }
         res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', 'x-worktable-log': log.info().logFile ? 'server' : 'none' })
-        const send = (obj: unknown) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(obj) + '\n') }
+        const writeLog = (text: string) => {
+          const writable = log.write(text)
+          if (writable || logBlocked) return
+          logBlocked = true; pauseOutput()
+          log.onceDrain(() => { logBlocked = false; resumeOutput() })
+        }
+        const send = (obj: unknown) => {
+          if (res.writableEnded || res.destroyed) return
+          res.write(JSON.stringify(obj) + '\n')
+          // 正常的短暂背压仍允许 Node 合并小块；积压达到上限后暂停两个输出流，
+          // 防慢浏览器/网络让 ServerResponse 与日志写入 Promise 队列随任务输出无界增长。
+          if (!responseBlocked && Number(res.writableLength) >= STREAM_BACKLOG_LIMIT) {
+            responseBlocked = true; pauseOutput(); res.once('drain', responseDrained)
+          }
+        }
         if (body.logFile) send({ type: 'log', ...log.info() })
         // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
         child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
-        if (oversizeWarn) { log.write(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
+        if (oversizeWarn) { writeLog(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
         let timedOut = false
         killTimer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs) : null
         child.stdout!.setEncoding('utf8')
         child.stderr!.setEncoding('utf8')
-        child.stdout!.on('data', (text: string) => { log.write(text); send({ type: 'out', text }) })
-        child.stderr!.on('data', (text: string) => { log.write(text); send({ type: 'err', text }) })
+        child.stdout!.on('data', (text: string) => { writeLog(text); send({ type: 'out', text }) })
+        child.stderr!.on('data', (text: string) => { writeLog(text); send({ type: 'err', text }) })
         child.on('error', async (err: Error) => {               // ENOENT 等无法启动
           if (finished) return
           finished = true
           clearTimeout(killTimer)
           clearTimeout(abortTimer)
-          log.write(String(err.message) + '\n')
+          writeLog(String(err.message) + '\n')
           const logged = await log.close('[exit 1]')
           send({ type: 'error', message: String(err && err.message ? err.message : err) })
           send({ type: 'done', code: 1, ...logged })
@@ -1446,7 +1513,7 @@ export function apply(ctx: Context) {
           clearTimeout(abortTimer)
           if (timedOut) {
             const message = 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's'
-            log.write('\n' + message + '\n'); send({ type: 'error', message })
+            writeLog('\n' + message + '\n'); send({ type: 'error', message })
           }
           const exitCode = typeof code === 'number' ? code : 1
           const logged = await log.close(disconnected ? '[aborted]' : '[exit ' + exitCode + ']')
@@ -1477,6 +1544,44 @@ export function apply(ctx: Context) {
         json(res, 200, { ok: true })
       } catch (err) {
         json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 大文件流式写入（流水线归档）：原始请求体边读边写入同目录临时文件，完成后原子替换目标。
+  // 相比 /write 的 JSON {content}，避免大量日志在浏览器和服务端各额外复制 / 转义一整份。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/write-stream',
+    handler: async (req: any, res: any) => {
+      const limit = 256 * 1024 * 1024
+      let temp = ''
+      let file: Awaited<ReturnType<typeof fsOpen>> | null = null
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const u = new URL(req.url ?? '/', 'http://dsh.internal')
+        const p = u.searchParams.get('path') || ''
+        if (!p) { json(res, 400, { error: 'missing path' }); return }
+        const declared = Number(req.headers?.['content-length'])
+        if (Number.isFinite(declared) && declared > limit) { json(res, 413, { error: 'content too large' }); return }
+        const abs = pathResolve(p)
+        temp = abs + '.worktable-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.tmp'
+        file = await fsOpen(temp, 'wx')
+        let size = 0
+        for await (const chunk of req) {
+          const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+          size += data.length
+          if (size > limit) { const err: any = new Error('content too large'); err.statusCode = 413; throw err }
+          await file.writeFile(data)
+        }
+        await file.sync()
+        await file.close(); file = null
+        await fsRename(temp, abs); temp = ''
+        json(res, 200, { ok: true })
+      } catch (err: any) {
+        try { await file?.close() } catch {}
+        if (temp) { try { await fsUnlink(temp) } catch {} }
+        try { if (!res.writableEnded) json(res, err?.statusCode === 413 ? 413 : 500, { error: String(err?.message || err) }) } catch {}
       }
     },
   })

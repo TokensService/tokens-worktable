@@ -102,7 +102,9 @@ function presetCtx(s){
     buildPromCollectEnv:(promCtx,startMs,endMs)=>({PROM_START:String(startMs),PROM_END:String(endMs),MODEL_NAME:promCtx.prom.modelName}),
     dtLocalToMs:()=>0,
     execScript:async(sc,t,e,_r,stream)=>{calls.exec.push({sc,t,e});if(stream)stream({type:'out',text:'live\n'});return new Promise(r=>{ctx._complete=r;});}};
-  vm.createContext(ctx);load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
+  vm.createContext(ctx);
+  load('function createLiveOutputState(', '/* 流式执行：POST',ctx);
+  load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
   return {ctx,calls,rc};
 }
 test('预设任务实时回显到独立节点，失败不阻断（清理/Profiling）并推进下一阶段',async()=>{
