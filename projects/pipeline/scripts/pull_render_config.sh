@@ -112,14 +112,26 @@ if hosts:
     for item in hosts:
         if not isinstance(item, dict) or not isinstance(item.get("ip"), str) or not item["ip"]:
             raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-        result.append({"ip": item["ip"], "user": item.get("user") or default_user})
+        entry = {"ip": item["ip"], "user": item.get("user") or default_user}
+        password = item.get("pass", item.get("password", ""))
+        if password:
+            if not isinstance(password, str):
+                raise SystemExit("TARGET_HOSTS password must be a string when specified")
+            entry["pass"] = password
+        result.append(entry)
 else:
     result = []
     for item in parse_json_list(raw_ips, "TARGET_IPS"):
         if isinstance(item, str) and item:
             result.append({"ip": item, "user": default_user})
         elif isinstance(item, dict) and isinstance(item.get("ip"), str) and item["ip"]:
-            result.append({"ip": item["ip"], "user": item.get("user") or default_user})
+            entry = {"ip": item["ip"], "user": item.get("user") or default_user}
+            password = item.get("pass", item.get("password", ""))
+            if password:
+                if not isinstance(password, str):
+                    raise SystemExit("TARGET_IPS password must be a string when specified")
+                entry["pass"] = password
+            result.append(entry)
         else:
             raise SystemExit("every TARGET_IPS entry must be a non-empty string or an object with ip")
     if not result and fallback_ip:
@@ -207,10 +219,11 @@ PY
 }
 
 remote_ssh() {
-  local target="$1" port="$2"
-  shift 2
-  if [[ -n "$SSH_PASSWORD" ]]; then
-    SSHPASS="$SSH_PASSWORD" sshpass -e ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$target" "$@"
+  local target="$1" port="$2" password="$3"
+  shift 3
+  [[ -n "$password" ]] || password="$SSH_PASSWORD"
+  if [[ -n "$password" ]]; then
+    SSHPASS="$password" sshpass -e ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$target" "$@"
   else
     ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$target" "$@"
   fi
@@ -242,18 +255,19 @@ for host in hosts:
         continue
     match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     address, port = match.groups() if match else (endpoint, "22")
-    print(f'{endpoint}\t{host.get("user") or "root"}\t{address}\t{port}')
+    password = host.get("pass", host.get("password", "")) or ""
+    print(f'{endpoint}\t{host.get("user") or "root"}\t{address}\t{port}\t{password}')
 PY
 )
 
   for target_spec in "${targets[@]}"; do
-    IFS=$'\t' read -r endpoint user address port <<<"$target_spec"
+    IFS=$'\t' read -r endpoint user address port password <<<"$target_spec"
     target="${user}@${address}"
     # Kubelet node names are not consistently the Linux hostname (some
     # clusters use InternalIP as metadata.name).  Match this host's local IPv4
     # addresses against the API's Node InternalIP values instead.
     remote_command='local_ips="$(hostname -I)"; kubectl get nodes -o json 2>/dev/null | python3 -c '\''import json,sys; local_ips=set(sys.argv[1].split()); nodes=json.load(sys.stdin).get("items", []); matches=[a.get("address") for n in nodes for a in n.get("status",{}).get("addresses",[]) if a.get("type")=="InternalIP" and a.get("address") in local_ips]; print(matches[0] if matches else "")'\'' "$local_ips"'
-    node_ip="$(remote_ssh "$target" "$port" "$remote_command" || true)"
+    node_ip="$(remote_ssh "$target" "$port" "$password" "$remote_command" || true)"
     node_ip="$(python3 - "$node_ip" <<'PY'
 import ipaddress
 import re
@@ -292,7 +306,7 @@ PY
 }
 
 sync_rendered_to_targets() {
-  local endpoint host port user target target_run_dir_q target_render_dir_q target_env_q
+  local endpoint host port user password target target_run_dir_q target_render_dir_q target_env_q
   local target_env_source="${RUN_DIR}/.target.pipeline.env"
   mapfile -t target_hosts < <(python3 - "$TARGET_HOSTS" <<'PY'
 import json
@@ -313,19 +327,20 @@ for host in hosts:
             raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
     else:
         address, port = endpoint, "22"
-    print(f'{host.get("user") or "root"}\t{address}\t{port}\t{endpoint}')
+    password = host.get("pass", host.get("password", "")) or ""
+    print(f'{host.get("user") or "root"}\t{address}\t{port}\t{endpoint}\t{password}')
 PY
 )
 
   for target_host in "${target_hosts[@]}"; do
-    IFS=$'\t' read -r user host port endpoint <<<"$target_host"
+    IFS=$'\t' read -r user host port endpoint password <<<"$target_host"
     target="${user}@${host}"
     printf -v target_run_dir_q '%q' "$TARGET_RUN_DIR"
     printf -v target_render_dir_q '%q' "$TARGET_RENDER_DIR"
     printf -v target_env_q '%q' "$TARGET_PIPELINE_ENV_FILE"
     echo "[sync] $endpoint: copy rendered files to $TARGET_RENDER_DIR"
-    tar -C "$RENDER_DIR" -cf - . | remote_ssh "$target" "$port" "mkdir -p $target_render_dir_q && tar -C $target_render_dir_q -xf -"
-    cat "$target_env_source" | remote_ssh "$target" "$port" "mkdir -p $target_run_dir_q && umask 077 && cat > $target_env_q"
+    tar -C "$RENDER_DIR" -cf - . | remote_ssh "$target" "$port" "$password" "mkdir -p $target_render_dir_q && tar -C $target_render_dir_q -xf -"
+    cat "$target_env_source" | remote_ssh "$target" "$port" "$password" "mkdir -p $target_run_dir_q && umask 077 && cat > $target_env_q"
   done
 }
 
