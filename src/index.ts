@@ -43,6 +43,12 @@ function inferDshHomeFromModuleDir(libDir: string): string | null {
   return dirname(profilesDir)
 }
 
+/** 本地编译安装（link:）判定：lib/ 目录 realpath 后不在标准安装布局内——
+ *  link:/junction 安装 realpath 落在源码树；release tgz 副本安装落在 profile 的 node_modules 内。 */
+function isLocalDevInstall(libDir: string): boolean {
+  try { return !inferDshHomeFromModuleDir(realpathSync(libDir)) } catch { return false }
+}
+
 /** 解析 DSH_HOME 环境变量（与宿主 dsh-home-paths 同规则：空白 = 未设；支持 ~ 与 ~/ 展开） */
 function resolveDshHomeEnv(raw: string | undefined, home: string): string | null {
   const v = (raw ?? '').trim()
@@ -58,6 +64,11 @@ const DSH_HOME = (() => {
   try { const h = inferDshHomeFromModuleDir(dirname(fileURLToPath(import.meta.url))); if (h) return h } catch {}
   try { const h = inferDshHomeFromModuleDir(realpathSync(dirname(fileURLToPath(import.meta.url)))); if (h) return h } catch {}
   return resolveDshHomeEnv(process.env.DSH_HOME, homedir()) ?? pathResolve(homedir(), '.dsh')
+})()
+
+/** 本地编译安装（link:）标记：命中则健康路由上报 dev:true，客户端侧栏默认标题追加「（开发中）」 */
+const DEV_INSTALL = (() => {
+  try { return isLocalDevInstall(dirname(fileURLToPath(import.meta.url))) } catch { return false }
 })()
 
 export const HEALTH_PATH = '/api/worktable/health'
@@ -310,7 +321,7 @@ export function apply(ctx: Context) {
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, home: DSH_HOME, ok: true })
+      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true })
     },
   })
 

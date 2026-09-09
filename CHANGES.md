@@ -1,5 +1,15 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 本地编译安装（link:）时侧栏默认标题显示「工作台（开发中）」（`src/index.ts` + `src/client/index.tsx`
+  + `src/client/locales.ts`）：服务端新增 `isLocalDevInstall` 判定——lib/ 目录 realpath 不在标准安装布局
+  `<home>/profiles/<profile>/node_modules/<pkg>/lib` 内即为本地编译安装（link:/junction 安装 realpath 落在
+  源码树；release tgz 副本安装落在 profile 的 node_modules 内），健康路由 `/api/worktable/health` 新增
+  `dev` 字段上报；客户端挂载时随健康路由取一次（与「插件项目目录」共用同一缓存），命中则默认标题
+  「工作台」追加 locale 后缀「（开发中）」（新增 zh/en 键 `title.devSuffix`，「工作台」本字未改）；
+  用户自定义名不受影响，设置面板改名框仍显示/提交无后缀名（避免失焦提交把后缀固化成自定义名）。
+  新增 `tests/dsh-home.test.mjs` 判定测试（release 副本 / 源码树 / link: 符号链接三种形态）。
+  `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
+
 - pipeline 项目新增设置 / 流水线导入导出（`projects/pipeline/pipeline.html`）：标题区右上角
   「⤓⤒ 导入导出」菜单，设置与流水线分开备份恢复——导出设置=设置页全部配置（服务端部分
   剔除流水线、补回仅存本浏览器的代码仓访问令牌）+ 本地运行选择（当前流水线/环境/代码仓、

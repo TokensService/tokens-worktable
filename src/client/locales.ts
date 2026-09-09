@@ -7,6 +7,7 @@
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   'title': '工作台',
+  'title.devSuffix': '（开发中）',
   'rail.title': '工作台（展开侧边栏查看）',
   'handle.title': '按住拖动位置 · 双击复位',
   'handle.aria': '拖动工作台位置',
@@ -229,6 +230,7 @@ export type WorktableKey = keyof typeof zh
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'title': 'Worktable',
+  'title.devSuffix': ' (Dev)',
   'rail.title': 'Worktable (expand sidebar to view)',
   'handle.title': 'Drag to move · double-click to reset',
   'handle.aria': 'Drag worktable position',
