@@ -22,6 +22,8 @@ common:
       value: old-namespace
     - name: XDS_DATABASE_PORT
       value: {XDS_DATABASE_PORT}
+    - name: EMS_ENABLE
+      value: 'true'
 nodeSelector:
   kubernetes.io/hostname: 192.168.0.243
 head:
@@ -37,6 +39,10 @@ workerGroups:
   jobExecutorGroup:
     minReplicas: 8
     maxReplicas: 8
+    ems:
+      enable: true
+ems:
+  enable: true
 feTemplate:
   default_replica: 10
   nodeSelector:
@@ -60,6 +66,10 @@ frameworkConfigFiles:
     use_fem_frontend = true
     fem_min_frontend_num = 10
     fem_max_frontend_num = 10
+    [ems_config]
+    ems_enable = true
+    ems_namespace = ems_deploy_ns
+    ems_cluster_id = 00000000-0000-0000-0000-000000000000
 lmcache:
   namespace:
     name: old-namespace
@@ -89,6 +99,7 @@ cat >"$work_dir/architectures.json" <<'EOF'
 [
   {
     "arch_name": "test-arch",
+    "use_ems": false,
     "deploy_spec_packages": [
       {
         "deploy_specs": [
@@ -124,6 +135,7 @@ TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
 TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175","192.168.0.78:2222":"192.168.31.17"}' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
+EMS_NAMESPACE='op-ems' \
 bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run/rendered/values.rendered.yaml" <<'PY'
@@ -149,6 +161,7 @@ assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-175-17", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert env["XDS_DATABASE_PORT"] == "3306", env
+assert env["EMS_ENABLE"] == "false", env
 assert isinstance(env["XDS_DATABASE_PORT"], str), env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
 assert "XCCL_TURBO_FIX_PP_WEIGHT_LOAD" not in env, env
@@ -191,6 +204,10 @@ assert values["lmcacheSidecar"] == {
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert values["ems"]["enable"] is False, values["ems"]
+assert values["workerGroups"]["jobExecutorGroup"]["ems"]["enable"] is False
+assert "ems_enable = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "ems_namespace = op-ems" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
 
 ARCH_NAME=test-arch \
@@ -316,5 +333,32 @@ test -f "$health_service_template"
 grep -q 'name: ray-gcs-head-svc' "$health_service_template"
 grep -q 'publishNotReadyAddresses: true' "$health_service_template"
 grep -q 'ray.io/node-type: head' "$health_service_template"
+
+sed 's/"use_ems": false/"use_ems": true/' "$work_dir/architectures.json" >"$work_dir/architectures-ems.json"
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-ems-enabled" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures-ems.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-ems-enabled' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+EMS_NAMESPACE='op-ems-enabled' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-ems-enabled/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
+framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
+assert env["EMS_ENABLE"] == "true", env
+assert values["ems"]["enable"] is True, values["ems"]
+assert values["workerGroups"]["jobExecutorGroup"]["ems"]["enable"] is True
+assert "ems_enable = true" in framework_config, framework_config
+assert "ems_namespace = op-ems-enabled" in framework_config, framework_config
+PY
 
 echo "render target-label tests passed"
