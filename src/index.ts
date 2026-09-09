@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
-import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from 'node:fs/promises'
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -1499,6 +1499,44 @@ export function apply(ctx: Context) {
         json(res, 200, { ok: true })
       } catch (err) {
         json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 大文件流式写入（流水线归档）：原始请求体边读边写入同目录临时文件，完成后原子替换目标。
+  // 相比 /write 的 JSON {content}，避免大量日志在浏览器和服务端各额外复制 / 转义一整份。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/write-stream',
+    handler: async (req: any, res: any) => {
+      const limit = 256 * 1024 * 1024
+      let temp = ''
+      let file: Awaited<ReturnType<typeof fsOpen>> | null = null
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const u = new URL(req.url ?? '/', 'http://dsh.internal')
+        const p = u.searchParams.get('path') || ''
+        if (!p) { json(res, 400, { error: 'missing path' }); return }
+        const declared = Number(req.headers?.['content-length'])
+        if (Number.isFinite(declared) && declared > limit) { json(res, 413, { error: 'content too large' }); return }
+        const abs = pathResolve(p)
+        temp = abs + '.worktable-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.tmp'
+        file = await fsOpen(temp, 'wx')
+        let size = 0
+        for await (const chunk of req) {
+          const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+          size += data.length
+          if (size > limit) { const err: any = new Error('content too large'); err.statusCode = 413; throw err }
+          await file.writeFile(data)
+        }
+        await file.sync()
+        await file.close(); file = null
+        await fsRename(temp, abs); temp = ''
+        json(res, 200, { ok: true })
+      } catch (err: any) {
+        try { await file?.close() } catch {}
+        if (temp) { try { await fsUnlink(temp) } catch {} }
+        try { if (!res.writableEnded) json(res, err?.statusCode === 413 ? 413 : 500, { error: String(err?.message || err) }) } catch {}
       }
     },
   })

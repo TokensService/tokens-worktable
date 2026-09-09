@@ -60,6 +60,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     archiveFolderFor: () => null,
     archiveTaskLog: async () => null,
     buildLog: stage => [stage._out?.stdout || ''],
+    buildLogParts: stage => [stage._out?.stdout || ''],
     // 视图层桩：引擎经 runSetSel/rcRender/rcOverall 与视图交互，仅当 viewRc===rc 时落地渲染
     viewRc: null,
     selectedId: '',
@@ -88,6 +89,14 @@ function loadEvaltokensRuntime(overrides = {}) {
     'evaltokReportUrl',
     'evaltokFetchReport',
     'evaltokStatusKind',
+    'createLiveOutputState',
+    'appendLiveOutput',
+    'liveOutputSnapshot',
+    'createLiveLog',
+    'appendLiveLog',
+    'finishLiveLog',
+    'maybeRenderLiveDetail',
+    'appendArchivePart',
     'stageSeq',
     'taskLogFile',
     'evaltokReportFile',
@@ -100,6 +109,49 @@ function loadEvaltokensRuntime(overrides = {}) {
   vm.runInContext(names.map(extractFunction).join('\n'), context)
   return context
 }
+
+test('EvalTokens 长时间轮询的实时快照有界，结束后保留完整轮询记录', async () => {
+  const stage = {
+    id: 'eval-long', name: '长时间评测', timeout: null,
+    evaltokens: { taskId: 'task-long', taskName: 'long-task', outVars: '', collectReport: false },
+  }
+  const rc = makeRc({ stages: [stage] })
+  let polls = 0
+  let now = 1000
+  let maxLiveChars = 0
+  const context = loadEvaltokensRuntime({
+    Date: { now: () => { now += 300; return now } },
+    viewRc: rc,
+    runSetSel: (run, id) => { run.selId = id; context.selectedId = id },
+    renderDetail: () => {
+      if (stage._out?.code === null) maxLiveChars = Math.max(maxLiveChars, stage._out.stdout.length)
+    },
+    substRunVars: value => value,
+    evaltokConfig: () => ({ url: 'http://evaltokens.local', token: '', mode: 'local' }),
+    fetch: async url => {
+      if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-long', name: 'long-task' }] })
+      if (url.endsWith('/api/open/v1/tasks/task-long/run')) return jsonResponse({ run_id: 'run-long', status: 'running' })
+      polls += 1
+      return jsonResponse({ runs: [{ run_id: 'run-long', status: polls < 12000 ? 'running' : 'success' }] })
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: fn => { fn(); return 1 },
+    archiveStageLog: () => {},
+    mergeStageVars: () => ({}),
+    parseStageJson: value => JSON.parse(value),
+    applyOutVars: () => {},
+    secToMinInput: value => String(value),
+    advance: () => {},
+    finish: (_run, status) => { throw new Error(`unexpected finish: ${status}`) },
+  })
+
+  await context.runEvaltokensStep(rc, 0)
+
+  assert.ok(maxLiveChars <= 256 * 1024, `实时快照峰值应有界，实际 ${maxLiveChars}`)
+  assert.match(stage._out.stdout, /status=success/)
+  assert.ok(stage._out.stdout.length > 256 * 1024, '终态全文不得按实时尾窗截断')
+})
 
 function fakeElement(tagName = 'div') {
   return {
@@ -218,6 +270,7 @@ test('EvalTokens 任务终态后把 HTML 报告原文归档，并在回显中打
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: async () => true,
     apiWrite: async (path, content) => { writes.push({ path, content }) },
+    apiWriteParts: async (path, parts) => { writes.push({ path, content: parts.join('') }) },
     archiveStageLog: () => {},
     mergeStageVars: () => ({}),
     parseStageJson: value => JSON.parse(value),
@@ -266,6 +319,7 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
   let releaseReport
   const reportPending = new Promise(resolve => { releaseReport = resolve })
   const writes = []
+  const partWrites = []
   const stageOut = { stdout: '📦 任务报告归档中', stderr: '', code: 0, evaltokens: true, done: true }
   const reportState = { attempt: 1, logFile: null }
   const stage = {
@@ -289,6 +343,8 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
     archiveStageLog: () => {},
     ensureArchiveFolder: async () => true,
     apiWrite: async (path, content) => { writes.push({ path, content }) },
+    apiWriteParts: async (path, parts) => { partWrites.push({ path, parts }) },
+    buildLogParts: currentStage => [currentStage._out?.stdout || ''],
     archiveScriptName: '',
     archiveConfigured: () => false,
     scriptByName: () => null,
@@ -297,20 +353,18 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
 
   context.archiveRun(rc, 'success')
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(writes.length, 0, '报告完成前不能先写汇总并启动后续归档链')
+  assert.equal(writes.length + partWrites.length, 0, '报告完成前不能先写汇总并启动后续归档链')
 
   releaseReport()
   await context.waitArchiveWrites('/archive/ordered')
-  assert.deepEqual(writes.map(write => write.path), [
-    '/archive/ordered/run-ordered.log',
-    '/archive/ordered/run-ordered.profile.json',
-  ])
-  const logWrite = writes.find(write => write.path.endsWith('.log'))
+  assert.deepEqual(partWrites.map(write => write.path), ['/archive/ordered/run-ordered.log'])
+  assert.deepEqual(writes.map(write => write.path), ['/archive/ordered/run-ordered.profile.json'])
+  const logWrite = partWrites[0]
   const profileWrite = writes.find(write => write.path.endsWith('.profile.json'))
   assert.ok(logWrite)
   assert.ok(profileWrite)
-  assert.match(logWrite.content, /任务报告已归档/)
-  assert.doesNotMatch(logWrite.content, /任务报告归档中/)
+  assert.match(logWrite.parts.join(''), /任务报告已归档/)
+  assert.doesNotMatch(logWrite.parts.join(''), /任务报告归档中/)
   assert.equal(JSON.parse(profileWrite.content).stages[0].logFile, '/archive/ordered/run-ordered-01-汇总报告.log')
 })
 
@@ -330,6 +384,7 @@ test('同一运行失败后重试时，旧汇总不能覆盖最新成功结果',
     archiveStageLog: () => {},
     ensureArchiveFolder: async () => true,
     apiWrite: async (path, content) => { writes.push({ path, content }) },
+    apiWriteParts: async (path, parts) => { writes.push({ path, content: parts.join('') }) },
     archiveScriptName: '',
     archiveConfigured: () => false,
     scriptByName: () => null,

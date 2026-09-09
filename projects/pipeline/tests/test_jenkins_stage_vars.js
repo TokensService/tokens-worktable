@@ -24,6 +24,11 @@ const s3 = source.indexOf("function jkJobPath(job)");
 const e3 = source.indexOf("async function runScriptStep", s3);
 if (s3 < 0 || e3 < 0) throw new Error("runUrlStep not found");
 
+// 切片 4：各类长任务共用的有界实时输出状态
+const s4 = source.indexOf("function createLiveOutputState(");
+const e4 = source.indexOf("/* 流式执行：POST", s4);
+if (s4 < 0 || e4 < 0) throw new Error("live output helpers not found");
+
 const triggerCalls = [];
 const execRequests = [];
 const overallCalls = [];
@@ -113,6 +118,7 @@ vm.createContext(context);
 vm.runInContext(
   `${source.slice(s0, e0)}
 ${source.slice(s1, e1)}
+${source.slice(s4, e4)}
 ${source.slice(s2, e2)}
 ${source.slice(s3, e3)}`,
   context,
@@ -188,4 +194,18 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   if (rc.vars.HOOK_VALUE !== "hook-value") throw new Error("HTTP JSON 响应应按输出变量映射回传，得到 " + JSON.stringify(rc.vars.HOOK_VALUE));
   if (advancedTo !== 2) throw new Error("URL 阶段成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
   console.log("PASS: HTTP URL 支持 {GIT_BRANCH} 等占位符（运行时替换并 URL 编码）");
+
+  // ⑤ Jenkins 大量控制台输出：运行中 _out 只保留有界尾部，结束后仍保留完整全文
+  const heavy = { id: "st-heavy", name: "Jenkins 大日志", kind: "http", url: { url: "job-heavy", outVars: "" } };
+  stages.push(heavy);
+  const heavyConsole = "x".repeat(1200 * 1024);
+  let maxLiveChars = 0;
+  context.jkGetText = async () => heavyConsole;
+  context.renderDetail = () => {
+    if (heavy._out && heavy._out.code === null) maxLiveChars = Math.max(maxLiveChars, heavy._out.stdout.length);
+  };
+  await context.runUrlStep(rc, 2);
+  if (maxLiveChars > 256 * 1024) throw new Error("Jenkins 实时快照不得累积全量控制台日志，峰值=" + maxLiveChars);
+  if (!heavy._out.stdout.includes(heavyConsole)) throw new Error("Jenkins 阶段结束后必须保留完整日志");
+  console.log("PASS: Jenkins 大量控制台输出的实时快照有界，最终全文保留");
 })().catch((e) => { console.error(e); process.exit(1); });
