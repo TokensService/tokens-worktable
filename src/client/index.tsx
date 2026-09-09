@@ -137,8 +137,16 @@ const PRESET_DEFS = [
   { id: 'l23', leftCount: 0, topCount: 2, contentCount: 3, chatFull: true, topHeightRatio: 0.5 },
 ] as const
 
-/** 侧栏图标备选集（emoji）：布局/快捷方式/入驻项目的图标，点击可换（首项 🧱 为布局默认） */
-const EMOJI_SET = ['🧱', '🏠', '🎓', '🚗', '✈️', '🌍', '🏥', '📚', '✏️', '⚙️', '🎨', '🎮', '🌏', '📐', '🧪', '🤖', '📦', '💬']
+/** 侧栏图标备选集（emoji）：布局/快捷方式/入驻项目的图标，点击可换（首项 🧱 为布局默认）。
+ *  后四组为 IT 主题：代码检视 / bug 定位 / 流水线 / 性能诊断 / 通用研发。 */
+const EMOJI_SET = [
+  '🧱', '🏠', '🎓', '🚗', '✈️', '🌍', '🏥', '📚', '✏️', '⚙️', '🎨', '🎮', '🌏', '📐', '🧪', '🤖', '📦', '💬',
+  '🔍', '👀', '🧐', '✅',                       // 代码检视
+  '🐛', '🪲', '🔎', '🎯',                       // bug 定位
+  '🏭', '🔗', '⛓️', '🔄', '🔧',                 // 流水线
+  '📈', '📊', '⏱️', '🩺', '🚀',                 // 性能诊断
+  '🖥️', '💻', '⌨️', '🗄️', '📡', '☁️', '🔒', '🧰', '🗂️', '💾', // 通用研发
+]
 
 /** 官方工作区头部按钮图标（自 DSH Web GUI 工作区面板取样，fill=currentColor 跟随主题） */
 const ICON_SEARCH = (
@@ -2548,11 +2556,23 @@ function buildCustomLayoutPrompt(req: string): string {
   }
 
   const removeLayout = (id: string) => {
-    persistProjects((prev) => ({ ...prev, layouts: prev.layouts.filter((l) => l.id !== id) }))
+    persistProjects((prev) => {
+      const layout = prev.layouts.find((l) => l.id === id)
+      const next = { ...prev, layouts: prev.layouts.filter((l) => l.id !== id) }
+      if (layout) {
+        // 名称/logo 与文件夹映射按布局 id 转存保留（不随布局本体删除）：同目录再导入时按原 id 认回继承（见 runImport 认回 ②）
+        const shown = (prev.nameOverrides[id] ?? layout.title ?? '').trim()
+        if (shown) next.nameOverrides = { ...prev.nameOverrides, [id]: shown }
+        if (layout.icon) next.iconOverrides = { ...prev.iconOverrides, [id]: layout.icon }
+      }
+      return next
+    })
   }
 
   /** 一键导入：经「选择位置…」选定文件夹后扫描，把里面所有含 HTML 页面的子项目批量收进工作台。
-   *  起始目录默认插件自带 projects/（健康路由上报插件目录）；每个项目 = 单窗布局 + 目录级托管页面。 */
+   *  起始目录默认插件自带 projects/（健康路由上报插件目录）；每个项目 = 单窗布局 + 目录级托管页面。
+   *  认回继承：同目录项目已在工作台（活着的 / 服务端已发布未合并的 / 导入后删除过的）时不新建
+   *  默认布局——活着的跳过、服务端的并入原布局、删过的沿用原 id，布局名称与 logo 随之保留/继承。 */
   const importProjects = () => {
     setImportMsg(null)
     void (async () => {
@@ -2572,29 +2592,113 @@ function buildCustomLayoutPrompt(req: string): string {
       const r = await fetch('/api/worktable/scan-projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: folder }) })
       const j = await r.json().catch(() => null)
       if (!r.ok || !j || !Array.isArray(j.projects)) throw new Error((j && j.error) || ('HTTP ' + r.status))
-      // 去重：项目文件夹或页面路径已在工作台里的跳过（路径统一成 / 分隔再比较，跨平台一致）
-      const norm = (s: string) => s.replace(/\\/g, '/')
+      // 路径归一：\ → /、折叠重复斜杠、去尾斜杠——手输/宿主选择器返回的路径与扫描结果（pathResolve）形式对齐再比较
+      const norm = (s: string) => s.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+      const dirOf = (s: string) => { const i = s.lastIndexOf('/'); return i > 0 ? s.slice(0, i) : s }
       const cur = projectsRef.current.projects
-      const usedFolders = new Set(Object.values(cur.folders).map(norm))
-      const usedPages = new Set(cur.layouts.map((l) => layoutPagePath(l)).filter((x): x is string => !!x).map(norm))
+      const rootKey = typeof j.path === 'string' && j.path ? norm(j.path) : norm(folder)
+      const liveIds = new Set(cur.layouts.map((l) => l.id))
+      const aliveIds = new Set([CONSOLE_ID, ...projectsRef.current.aliveRegisteredIds])
+      // 占用键：活布局与活着的入驻项目的文件夹映射、托管页面路径、托管页面所在目录（已删除布局的残留映射不占位，走认回）
+      const usedFolders = new Set<string>()
+      const usedPages = new Set<string>()
+      const usedDirs = new Set<string>()
+      const noteLayout = (l: LayoutSpec, folderMap: Record<string, string>) => {
+        const f = folderMap[l.id]
+        if (typeof f === 'string' && f) usedFolders.add(norm(f))
+        const pp = layoutPagePath(l)
+        if (pp) { const k = norm(pp); usedPages.add(k); usedDirs.add(dirOf(k)) }
+      }
+      for (const l of cur.layouts) noteLayout(l, cur.folders)
+      for (const [pid, f] of Object.entries(cur.folders)) {
+        if (!liveIds.has(pid) && aliveIds.has(pid) && typeof f === 'string' && f) usedFolders.add(norm(f))
+      }
+      // 已删除布局的残留映射（removeLayout 刻意留存 folders/nameOverrides/iconOverrides）：同目录再导入时按原 id 认回
+      const deadIdByFolder = new Map<string, string>()
+      for (const [pid, f] of Object.entries(cur.folders)) {
+        if (liveIds.has(pid) || aliveIds.has(pid) || typeof f !== 'string' || !f) continue
+        const k = norm(f)
+        if (!deadIdByFolder.has(k)) deadIdByFolder.set(k, pid)
+      }
+      // 服务端已发布布局同场匹配：启动合并未完成/他端刚发布时，认回带原标题与 logo 的布局本体，不新建默认布局
+      const remotePool: { l: LayoutSpec; folderKey?: string; pageKey?: string; dirKey?: string }[] = []
+      const remoteFolders: Record<string, string> = {}
+      const remoteWorkspaces: Record<string, string> = {}
+      const remotePrompts: Record<string, string> = {}
+      try {
+        const pr = await fetch('/api/worktable/projects', { cache: 'no-store' })
+        const pd = await pr.json().catch(() => null)
+        if (pd && Array.isArray(pd.layouts)) {
+          for (const [m, out] of [[pd.folders, remoteFolders], [pd.workspaces, remoteWorkspaces], [pd.prompts, remotePrompts]] as [any, Record<string, string>][]) {
+            if (m && typeof m === 'object') for (const [k, v] of Object.entries(m)) if (typeof v === 'string') out[k] = v
+          }
+          for (const raw of pd.layouts as any[]) {
+            if (!raw || typeof raw.id !== 'string' || typeof raw.title !== 'string' || !Array.isArray(raw.main)) continue
+            if (liveIds.has(raw.id)) continue // 本地已有 = 上面 noteLayout 已计入占用
+            const l = { ...raw, sync: true as const } as LayoutSpec
+            const f = remoteFolders[l.id] ?? cur.folders[l.id]
+            const pp = layoutPagePath(l)
+            const pk = pp ? norm(pp) : undefined
+            remotePool.push({ l, folderKey: typeof f === 'string' && f ? norm(f) : undefined, pageKey: pk, dirKey: pk ? dirOf(pk) : undefined })
+          }
+        }
+      } catch { /* 服务端不可用 = 仅按本地状态匹配 */ }
       const added: LayoutSpec[] = []
       const addedFolders: Record<string, string> = {}
+      const addedWorkspaces: Record<string, string> = {}
+      const addedPrompts: Record<string, string> = {}
       let skipped = 0
       for (const p of j.projects as { name?: string; dir?: string; entry?: string }[]) {
         if (!p || typeof p.dir !== 'string' || !p.dir || typeof p.entry !== 'string' || !p.entry) continue
-        const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.entry.replace(/\.html?$/i, '')
-        const pagePath = norm(joinPath(p.dir, p.entry))
-        if (usedFolders.has(norm(p.dir)) || usedPages.has(pagePath)) { skipped++; continue }
+        let name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.entry.replace(/\.html?$/i, '')
+        const dirKey = norm(p.dir)
+        const pageKey = dirKey + '/' + p.entry
+        // 散装单页（dir = 扫描根）只按精确页面判重：其文件夹映射就是扫描根本身，按目录判会把同根其他单页全挡掉
+        const isSubdir = dirKey !== rootKey
+        if (usedPages.has(pageKey) || (isSubdir && (usedFolders.has(dirKey) || usedDirs.has(dirKey)))) { skipped++; continue }
+        // 认回 ①：服务端已发布但本地尚未合并的布局——布局名称/logo/窗口内容随布局本体继承
+        const ri = remotePool.findIndex((k) => k.pageKey === pageKey || (isSubdir && (k.folderKey === dirKey || k.dirKey === dirKey)))
+        if (ri >= 0) {
+          const hit = remotePool.splice(ri, 1)[0]
+          added.push(hit.l)
+          const f = remoteFolders[hit.l.id] ?? cur.folders[hit.l.id]
+          if (typeof f === 'string' && f) addedFolders[hit.l.id] = f
+          if (remoteWorkspaces[hit.l.id]) addedWorkspaces[hit.l.id] = remoteWorkspaces[hit.l.id]
+          if (remotePrompts[hit.l.id]) addedPrompts[hit.l.id] = remotePrompts[hit.l.id]
+          usedPages.add(pageKey)
+          if (isSubdir) { usedFolders.add(dirKey); usedDirs.add(dirKey) }
+          continue
+        }
+        // 认回 ②：同目录曾是已删除的布局——沿用原布局 id（排序/分组/绑定对话/分栏存档随 id 继承），
+        // 名称与 logo 取删除时转存的偏好（见 removeLayout）；散装单页按页面判重，不做目录级认回
+        const deadId = isSubdir ? deadIdByFolder.get(dirKey) : undefined
+        const prevName = deadId ? (cur.nameOverrides[deadId] ?? '').trim() : ''
+        if (prevName) name = prevName
         const layout = buildLayout('2h', name)
+        layout.id = deadId ?? (layout.id + '-' + added.length) // buildLayout 的 id 只精确到毫秒，批量导入需保证互不相同
+        const prevIcon = deadId ? cur.iconOverrides[deadId] : undefined
+        if (typeof prevIcon === 'string' && prevIcon) layout.icon = prevIcon
         layout.main[0].title = name
         layout.main[0].tabs = [{ id: 't1', title: p.entry, content: { kind: 'iframe', url: '/api/worktable/site/' + encodeURIComponent(p.dir) + '/' + encodeURIComponent(p.entry), title: p.entry } }]
         layout.main[0].active = 0
-        usedFolders.add(norm(p.dir)); usedPages.add(pagePath)
+        usedPages.add(pageKey)
+        if (isSubdir) { usedFolders.add(dirKey); usedDirs.add(dirKey) }
         added.push(layout)
         addedFolders[layout.id] = p.dir
       }
       if (added.length > 0) {
-        persistProjects((prev) => ({ ...prev, layouts: [...prev.layouts, ...added], folders: { ...prev.folders, ...addedFolders } }))
+        persistProjects((prev) => {
+          const have = new Set(prev.layouts.map((l) => l.id))
+          const merge = added.filter((l) => !have.has(l.id)) // 与启动合并/他端同步竞态：已存在的 id 不重复并入
+          if (merge.length === 0) return prev
+          return {
+            ...prev,
+            layouts: [...prev.layouts, ...merge],
+            folders: { ...prev.folders, ...addedFolders },
+            workspaces: { ...prev.workspaces, ...addedWorkspaces },
+            prompts: { ...prev.prompts, ...addedPrompts },
+          }
+        })
       }
       if (added.length === 0 && skipped === 0) setImportMsg({ ok: false, text: t('import.empty') })
       else setImportMsg({ ok: true, text: t(skipped > 0 ? 'import.doneSkip' : 'import.done', { n: String(added.length), m: String(skipped) }) })
@@ -2702,7 +2806,7 @@ function buildCustomLayoutPrompt(req: string): string {
   const openIconPick = (kind: 'layout' | 'shortcut' | 'project', id: string, anchor: HTMLElement) => {
     const r = anchor.getBoundingClientRect()
     const x = Math.min(r.right + 8, Math.max(16, window.innerWidth - 284))
-    const y = Math.max(MIN_TOP, Math.min(r.top - 4, window.innerHeight - 316))
+    const y = Math.max(MIN_TOP, Math.min(r.top - 4, window.innerHeight - 372))
     setIconPick({ kind, id, x, y })
   }
   const setLayoutIcon = (id: string, icon: string) => {
@@ -3144,7 +3248,7 @@ function buildCustomLayoutPrompt(req: string): string {
 
       {viewOptionsOpen && <div className="dsh-wt_popBackdrop" onClick={() => setViewOptionsOpen(false)} />}
       {viewOptionsOpen && (
-        <div ref={settingsRef} className="dsh-wt_manage dsh-wt_pop dsh-wt_settings" style={{ position: 'fixed', left: popLeft, top: settingsTop ?? popTop, width: 280, zIndex: 80 }}>
+        <div ref={settingsRef} className="dsh-wt_manage dsh-wt_pop dsh-wt_settings" style={{ position: 'fixed', left: popLeft, top: settingsTop ?? popTop, width: 400, zIndex: 80 }}>
           <button
             type="button"
             className="dsh-wt_settingsClose"
