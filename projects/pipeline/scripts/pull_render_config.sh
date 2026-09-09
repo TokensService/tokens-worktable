@@ -249,9 +249,10 @@ PY
   for target_spec in "${targets[@]}"; do
     IFS=$'\t' read -r endpoint user address port <<<"$target_spec"
     target="${user}@${address}"
-    # hostname is the kubelet node name on the supported BNT hosts.  Ask the
-    # API for that node's InternalIP instead of guessing from hostname -I.
-    remote_command='node_name="$(hostname)"; kubectl get node "$node_name" -o jsonpath="{.status.addresses[?(@.type==\"InternalIP\")].address}" 2>/dev/null'
+    # Kubelet node names are not consistently the Linux hostname (some
+    # clusters use InternalIP as metadata.name).  Match this host's local IPv4
+    # addresses against the API's Node InternalIP values instead.
+    remote_command='local_ips="$(hostname -I)"; kubectl get nodes -o json 2>/dev/null | python3 -c '\''import json,sys; local_ips=set(sys.argv[1].split()); nodes=json.load(sys.stdin).get("items", []); matches=[a.get("address") for n in nodes for a in n.get("status",{}).get("addresses",[]) if a.get("type")=="InternalIP" and a.get("address") in local_ips]; print(matches[0] if matches else "")'\'' "$local_ips"'
     node_ip="$(remote_ssh "$target" "$port" "$remote_command" || true)"
     node_ip="$(python3 - "$node_ip" <<'PY'
 import ipaddress
