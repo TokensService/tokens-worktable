@@ -71,28 +71,28 @@ remote_quote() {
 }
 
 run_remote() {
-  local target="$1"
-  shift
+  local target="$1" port="$2"
+  shift 2
   if [[ -n "${REMOTE_SSH_PASSWORD:-}" ]]; then
     SSHPASS="$REMOTE_SSH_PASSWORD" sshpass -e ssh \
       -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+      -o LogLevel=ERROR -o ConnectTimeout=30 -p "$port" "$target" "$@"
   else
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+      -o LogLevel=ERROR -o ConnectTimeout=30 -p "$port" "$target" "$@"
   fi
 }
 
 sync_remote_file() {
-  local source="$1" destination="$2" target="$3"
+  local source="$1" destination="$2" target="$3" port="$4"
   local destination_dir
   destination_dir="$(dirname "$destination")"
-  cat "$source" | run_remote "$target" \
+  cat "$source" | run_remote "$target" "$port" \
     "mkdir -p $(remote_quote "$destination_dir") && cat > $(remote_quote "$destination")"
 }
 
 deploy_from_target_host() {
-  local parsed target_ip target_user safe_target_hosts target remote_script_dir remote_script
+  local parsed target_ip target_port target_user safe_target_hosts target remote_script_dir remote_script
   local remote_env remote_xds_url remote_head_log_root remote_command
 
   command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
@@ -109,6 +109,15 @@ if not isinstance(hosts, list) or not hosts:
 host = hosts[0]
 if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
     raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string")
+endpoint = host["ip"]
+import re
+match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+if match:
+    target_ip, target_port = match.groups()
+    if not 1 <= int(target_port) <= 65535:
+        raise SystemExit(f"invalid TARGET_HOSTS[0] port: {endpoint}")
+else:
+    target_ip, target_port = endpoint, "22"
 user = host.get("user") or "root"
 password = host.get("pass", host.get("password", sys.argv[2]))
 if not isinstance(user, str) or not user:
@@ -121,10 +130,10 @@ safe_hosts = []
 for item in hosts:
     if isinstance(item, dict) and isinstance(item.get("ip"), str) and item["ip"]:
         safe_hosts.append({"ip": item["ip"], "user": item.get("user") or "root"})
-print(host["ip"], user, password, json.dumps(safe_hosts, separators=(",", ":")), sep="\t")
+print(target_ip, target_port, user, password, json.dumps(safe_hosts, separators=(",", ":")), sep="\t")
 PY
 )"
-  IFS=$'\t' read -r target_ip target_user REMOTE_SSH_PASSWORD safe_target_hosts <<<"$parsed"
+  IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD safe_target_hosts <<<"$parsed"
   target="${target_user}@${target_ip}"
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
@@ -156,18 +165,18 @@ PY
     printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
   } >"$remote_env"
 
-  echo "[deploy] execution host delegates deployment to target host: $target_ip"
-  run_remote "$target" "mkdir -p $(remote_quote "$TARGET_RUN_DIR") $(remote_quote "$remote_script_dir")"
-  tar -C "$RENDER_DIR" -cf - . | run_remote "$target" \
+  echo "[deploy] execution host delegates deployment to target host: ${target_ip}:${target_port}"
+  run_remote "$target" "$target_port" "mkdir -p $(remote_quote "$TARGET_RUN_DIR") $(remote_quote "$remote_script_dir")"
+  tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
     "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
-  sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target"
-  sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target"
-  sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target"
-  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target"
-  run_remote "$target" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
+  sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
+  sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
+  sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
+  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
+  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
-  if ! run_remote "$target" "$remote_command"; then
+  if ! run_remote "$target" "$target_port" "$remote_command"; then
     rm -f "$remote_env"
     return 1
   fi
@@ -207,7 +216,16 @@ if not isinstance(target_hosts, list) or not target_hosts:
 first_host = target_hosts[0]
 if not isinstance(first_host, dict) or not isinstance(first_host.get("ip"), str) or not first_host["ip"]:
     raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string when XDS_URL is unset")
-print(first_host["ip"])
+endpoint = first_host["ip"]
+import re
+match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+if match:
+    address, port = match.groups()
+    if not 1 <= int(port) <= 65535:
+        raise SystemExit(f"invalid TARGET_HOSTS[0] port: {endpoint}")
+    print(address)
+else:
+    print(endpoint)
 PY
 )"
   XDS_API_HOST="$target_ip"
@@ -509,7 +527,15 @@ hosts = json.loads(sys.argv[1])
 for host in hosts:
     ip = host.get("ip") if isinstance(host, dict) else None
     if isinstance(ip, str) and ip:
-        print(ip)
+        import re
+        match = re.fullmatch(r"([^:]+):(\d+)", ip)
+        if match:
+            address, port = match.groups()
+            if not 1 <= int(port) <= 65535:
+                raise SystemExit(f"invalid TARGET_HOSTS port: {ip}")
+            print(address)
+        else:
+            print(ip)
 PY
 )
 
