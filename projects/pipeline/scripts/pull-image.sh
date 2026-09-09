@@ -45,7 +45,7 @@ run_target() {
 }
 
 pull_target_images() {
-  local image="$1" target_line target_json endpoint user host port password target credential remote_command mapped_targets_text
+  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text
   local -a mapped_targets
 
   mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
@@ -86,12 +86,6 @@ PY
   [[ -n "$mapped_targets_text" ]] || return 0
   mapfile -t mapped_targets <<<"$mapped_targets_text"
 
-  if [[ -n "$IMAGE_PULL_PROJECT" && -n "$IMAGE_PULL_AK" && -n "$IMAGE_PULL_LOGIN_KEY" ]]; then
-    credential="${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}"
-  else
-    credential=""
-  fi
-
   for target_line in "${mapped_targets[@]}"; do
     target_json="$(printf '%s' "$target_line" | base64 -d)"
     read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
@@ -102,11 +96,9 @@ print(item["endpoint"], item["user"], item["host"], item["port"], item["password
 PY
 )
     target="${user}@${host}"
-    if [[ -n "$credential" ]]; then
-      printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo 'ctr is required on target host' >&2; exit 2; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else \"\${ctr_cmd[@]}\" -n k8s.io image pull --user $(remote_quote "$credential") $(remote_quote "$image"); fi"
-    else
-      printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo 'ctr is required on target host' >&2; exit 2; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else echo '[pull] target image is missing; use target registry login'; \"\${ctr_cmd[@]}\" -n k8s.io image pull $(remote_quote "$image") || { echo 'target image pull failed; configure IMAGE_PULL_PROJECT, IMAGE_PULL_AK, IMAGE_PULL_LOGIN_KEY or login on the target host' >&2; exit 2; }; fi"
-    fi
+    # Target image preparation is an optimization. Mapped deployment targets
+    # must not receive registry credentials or fail the pipeline when absent.
+    printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo '[pull] target has no ctr; skip image pre-pull'; exit 0; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else echo '[pull] target image is absent; skip unauthenticated pre-pull'; fi"
     echo "[pull] target $endpoint: ensure image $image"
     run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
   done

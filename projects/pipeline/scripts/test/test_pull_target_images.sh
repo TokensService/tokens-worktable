@@ -58,9 +58,7 @@ IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
 RUN_DIR="$work_dir/run" \
 TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"},{"ip":"115.33.98.101:2222","user":"root"},{"ip":"115.33.98.101:2224","user":"root"}]' \
 TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175","115.33.98.101:2222":"192.168.31.17"}' \
-IMAGE_PULL_PROJECT='cn-southwest-2' \
-IMAGE_PULL_AK='test-ak' \
-IMAGE_PULL_LOGIN_KEY='test-login-key' \
+PULL_TARGET_IMAGES_ONLY=1 \
 bash "$script" >/dev/null
 
 grep -Fxq '2223' "$work_dir/ssh-ports.log"
@@ -69,7 +67,9 @@ if grep -Fxq '2224' "$work_dir/ssh-ports.log"; then
   echo 'unmapped SSH endpoint must not receive registry credentials' >&2
   exit 1
 fi
-test "$(grep -c -- ' image pull ' "$work_dir/ctr.log")" -eq 1
-grep -Fq -- '-n k8s.io image pull --user cn-southwest-2@test-ak:test-login-key swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' "$work_dir/ctr.log"
+if [[ -s "$work_dir/ctr.log" ]] && grep -Fq -- ' image pull ' "$work_dir/ctr.log"; then
+  echo 'target pre-pull must not require or send registry credentials' >&2
+  exit 1
+fi
 
-echo 'pull target-image tests passed'
+echo 'pull target-image tests passed (mapped targets do not require registry auth)'
