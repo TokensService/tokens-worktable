@@ -67,6 +67,24 @@ XDS 流水线按以下顺序绑定脚本：
 /opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json
 ```
 
+### LMCache Prefill sidecar 模板
+
+设置 `TEMPLATE_PROFILE=lmcache-sidecar` 时，`pull-image.sh` 仍从镜像读取架构文件，但会用仓库中版本化的
+`worktable/pipeline/templates/xds-cicd-3p1d-lmcache/` 覆盖 Chart 和 values 模板。该模板由
+`0830_dev_bnt3_cicd_3p1d.20260909100253.BNT3.x86_64` 导出，LMCache sidecar 的定义在 Chart 中，
+不由 `render-config.sh` 拼装。
+
+启用时设置 `LMCACHE_SIDECAR_ENABLED=true`。Chart 只给名称包含 `prefill` 的 TE Pod 加入
+`lmcache-sidecar`，Decode Pod 不会加入；每个 Prefill 组以组名末尾序号从
+`LMCACHE_MP_PORT_BASE`（默认 `5555`）和 `LMCACHE_HTTP_PORT_BASE`（默认 `8000`）分配端口。
+因此单机 1P1D、跨节点 XP1D 和单节点多个 Prefill 均不会因 hostNetwork 端口冲突失败。
+
+渲染器仅替换模板里的配置值，并在架构请求中将 Prefill 的 `use_lmcache` 设为 `true`。镜像内的
+TE 连接代码应读取 Chart 注入的 `LMCACHE_MP_HOST`、`LMCACHE_MP_PORT` 和 `LMCACHE_HTTP_PORT`；
+LMCache 的 wheel 和连接补丁须随部署镜像提供。可选资源/容量变量为
+`LMCACHE_L1_INIT_SIZE_GB`、`LMCACHE_L1_SIZE_GB`、`LMCACHE_CPU_REQUEST`、
+`LMCACHE_CPU_LIMIT`、`LMCACHE_MEMORY_REQUEST` 与 `LMCACHE_MEMORY_LIMIT`。
+
 ## 归档与 AI 分析
 
 主控填了「归档路径」后，每次运行结束会把产物写到 `<归档路径>/<流水线名称>_<YYYYMMDDhhmmss>/`：

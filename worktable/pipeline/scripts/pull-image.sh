@@ -14,8 +14,11 @@ else
 fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
+TEMPLATE_PROFILE="${TEMPLATE_PROFILE:-image}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LMCACHE_SIDECAR_TEMPLATE_DIR="$SCRIPT_DIR/../templates/xds-cicd-3p1d-lmcache"
 
 pull_image() {
   local image="$1" registry_host
@@ -50,6 +53,31 @@ export_templates() {
   nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
   nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
 
+  case "$TEMPLATE_PROFILE" in
+    image)
+      ;;
+    lmcache-sidecar)
+      [[ -f "$LMCACHE_SIDECAR_TEMPLATE_DIR/xds-cluster/Chart.yaml" ]] || {
+        echo "LMCache Chart template is missing: $LMCACHE_SIDECAR_TEMPLATE_DIR" >&2
+        exit 2
+      }
+      [[ -f "$LMCACHE_SIDECAR_TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml" ]] || {
+        echo "LMCache values template is missing: $LMCACHE_SIDECAR_TEMPLATE_DIR" >&2
+        exit 2
+      }
+      # The template was exported from the matching CICD 3P1D image and is
+      # versioned here so the sidecar structure remains a Chart concern.
+      rm -rf "$work_dir/xds-cluster"
+      cp -a "$LMCACHE_SIDECAR_TEMPLATE_DIR/xds-cluster" "$work_dir/xds-cluster"
+      cp -a "$LMCACHE_SIDECAR_TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+      echo "[pull] apply template profile: lmcache-sidecar"
+      ;;
+    *)
+      echo "unsupported TEMPLATE_PROFILE: $TEMPLATE_PROFILE (supported: image, lmcache-sidecar)" >&2
+      exit 2
+      ;;
+  esac
+
   if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
     [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
     cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
@@ -83,3 +111,4 @@ printf 'CHART_TEMPLATE_DIR=%s\n' "$CHART_TEMPLATE_DIR"
 printf 'VALUES_TEMPLATE=%s\n' "$VALUES_TEMPLATE"
 printf 'ARCH_FILE=%s\n' "$ARCH_FILE"
 printf 'DEPLOY_IMAGE=%s\n' "$IMAGE"
+printf 'TEMPLATE_PROFILE=%s\n' "$TEMPLATE_PROFILE"

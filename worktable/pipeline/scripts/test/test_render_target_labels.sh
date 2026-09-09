@@ -78,10 +78,16 @@ cat >"$work_dir/architectures.json" <<'EOF'
         "deploy_specs": [
           {
             "role": "prefill",
+            "min": 1,
+            "max": 1,
+            "default": 1,
             "resources": [{"cpu": 1, "gpu": 4, "memory": "1G"}]
           },
           {
             "role": "decode",
+            "min": 1,
+            "max": 1,
+            "default": 1,
             "resources": [{"cpu": 1, "gpu": 4, "memory": "1G"}]
           }
         ]

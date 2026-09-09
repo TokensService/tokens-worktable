@@ -42,7 +42,7 @@ common:
   containerEnv: []
 EOF
 cat >"$template_dir/architectures.json" <<'EOF'
-{"architectures":[{"arch_name":"test-arch","deploy_spec_packages":[{"deploy_specs":[{"name":"prefill","role":"prefill","resources":[{"gpu":1,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","resources":[{"gpu":1,"cpu":1,"memory":"1G"}]}]}]}]}
+{"architectures":[{"arch_name":"test-arch","deploy_spec_packages":[{"deploy_specs":[{"name":"prefill","role":"prefill","min":1,"max":1,"default":1,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","min":1,"max":1,"default":1,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]}]}]}]}
 EOF
 cat >"$fake_bin/nerdctl" <<'EOF'
 #!/usr/bin/env bash
@@ -91,5 +91,16 @@ if grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"; then
   echo 'target pipeline environment must not contain SSH passwords' >&2
   exit 1
 fi
+
+PATH="$fake_bin:$PATH" \
+FAKE_TEMPLATE_DIR="$template_dir" \
+IMAGE_NAME='registry.example/xds:test' \
+TEMPLATE_PROFILE='lmcache-sidecar' \
+RUN_DIR="$work_dir/lmcache-profile-run" \
+bash "$pull_script" >/dev/null
+
+test -f "$work_dir/lmcache-profile-run/template/xds-cluster/Chart.yaml"
+grep -Fq 'name: lmcache-sidecar' "$work_dir/lmcache-profile-run/template/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq 'lmcacheSidecar:' "$work_dir/lmcache-profile-run/template/values-16Node-je-cpp-bnt3.yaml"
 
 echo "pull-render target-sync tests passed"

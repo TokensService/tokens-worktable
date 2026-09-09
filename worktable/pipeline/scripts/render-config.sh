@@ -72,6 +72,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -280,6 +281,20 @@ template_vars.setdefault("ELB_ID", "unused")
 template_vars.setdefault("NODE_PORT", "31365")
 template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
+# LMCache sidecar settings are data-only substitutions for the versioned Chart
+# template.  The renderer does not create containers or mutate their shape.
+template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", os.environ.get("LMCACHE_SIDECAR_ENABLED", "false").lower())
+template_vars.setdefault("LMCACHE_MP_PORT_BASE", os.environ.get("LMCACHE_MP_PORT_BASE", "5555"))
+template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", os.environ.get("LMCACHE_HTTP_PORT_BASE", "8000"))
+template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", os.environ.get("LMCACHE_L1_INIT_SIZE_GB", "64"))
+template_vars.setdefault("LMCACHE_L1_SIZE_GB", os.environ.get("LMCACHE_L1_SIZE_GB", "1100"))
+template_vars.setdefault("LMCACHE_L1_ALIGN_BYTES", os.environ.get("LMCACHE_L1_ALIGN_BYTES", "2097152"))
+template_vars.setdefault("LMCACHE_MAX_WORKERS", os.environ.get("LMCACHE_MAX_WORKERS", "4"))
+template_vars.setdefault("LMCACHE_LOG_LEVEL", os.environ.get("LMCACHE_LOG_LEVEL", "INFO"))
+template_vars.setdefault("LMCACHE_CPU_REQUEST", os.environ.get("LMCACHE_CPU_REQUEST", "4"))
+template_vars.setdefault("LMCACHE_CPU_LIMIT", os.environ.get("LMCACHE_CPU_LIMIT", "8"))
+template_vars.setdefault("LMCACHE_MEMORY_REQUEST", os.environ.get("LMCACHE_MEMORY_REQUEST", "1100Gi"))
+template_vars.setdefault("LMCACHE_MEMORY_LIMIT", os.environ.get("LMCACHE_MEMORY_LIMIT", "1100Gi"))
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -298,6 +313,18 @@ for key, value in replace_map.items():
 for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
+
+lmcache_sidecar = values.get("lmcacheSidecar")
+if lmcache_sidecar is not None:
+    if not isinstance(lmcache_sidecar, dict) or type(lmcache_sidecar.get("enabled")) is not bool:
+        raise SystemExit("lmcacheSidecar.enabled must resolve to true or false")
+    if lmcache_sidecar["enabled"]:
+        # The image-side connector reads its per-Pod local endpoint from the
+        # Chart-injected environment.  The architecture only enables it.
+        for package in arch.get("deploy_spec_packages", []):
+            for spec in package.get("deploy_specs", []):
+                if spec.get("role") == "prefill":
+                    spec.setdefault("params", {})["use_lmcache"] = True
 
 if str(mock_db).lower() == "true":
     framework_files = values.get("frameworkConfigFiles")
