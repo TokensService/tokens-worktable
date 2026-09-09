@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线 EvalTokens 阶段任务输入参数支持设置与识别刷新（`projects/pipeline/pipeline.html`）：编辑器参数区由只读改为
+  可编辑——识别到的任务原值填入参数框（未改动时弱化色展示、不下发），修改后作为显式覆盖存入 `evaltokens.values`
+  随流水线持久化（`evaltokensStageConfig` 携带 values；`params` 仍为瞬态，不持久化）；动作行新增「识别参数」按钮
+  （清空任务列表 15s 缓存后重新拉取识别），重新识别 / 打开编辑器自动识别均只刷新参数定义与任务原值，已设置的
+  参数值保留不刷新；清空或改回与任务原值一致即取消覆盖（恢复不覆盖语义）。换选任务或手改任务 ID 时清空原任务
+  已设值。运行时把已设参数值（支持 ${VAR} 引用上游产出，替换为空的不下发）作为 `{input:{...}}` 随 run 启动请求体
+  下发（未设置时保持空体 `{}` 不变），并在阶段日志打印实际下发的覆盖。`projects/pipeline/tests/evaltokens-stage.test.mjs`
+  新增 6 个用例：values 持久化与 normalizeStageKind 透传、commitEvaltokParamValue 提交规则、参数区可编辑渲染与
+  change 写入/删除、「识别参数」按钮强制重识别、重新识别保留已设值（含 keepOnError/任务未命中路径）、run 请求体
+  携带 input 覆盖。
+
 - 流水线编辑器支持整张任务卡拖拽调序（`projects/pipeline/pipeline.html`）：普通阶段与系统预设阶段均可拖动，
   拖到目标卡上半区 / 下半区时以强调色边线提示插入到目标前 / 后；松开后只更新编辑草稿，继续由原「保存」
   动作统一持久化。原序号输入、上移、下移操作保留，并与拖拽复用同一重排函数。

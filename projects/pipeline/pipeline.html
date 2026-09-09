@@ -679,7 +679,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -2280,14 +2280,17 @@ function detectParams(src, lang){
 /* ---------- 结构化阶段编辑器（结构 + 脚本绑定一体，绑定跟随阶段） ---------- */
 let editStages=[];   // [{id,name,dur,skip,sub,kind,script|null,url|null,sched|null}]
 const STAGE_KIND_LABEL={simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'};
-/* EvalTokens 阶段持久化字段：collectReport 缺省按 true 兼容旧流水线，使新增能力默认开启。 */
+/* EvalTokens 阶段持久化字段：collectReport 缺省按 true 兼容旧流水线，使新增能力默认开启；
+   values=编辑器内显式设置的任务输入参数覆盖值（随流水线持久化，运行时作为输入覆盖随 run 启动请求下发，见 runEvaltokensStep）；
+   params（识别到的参数定义）不持久化，编辑器打开 / 点「识别参数」时重新识别（见 openPlForm/detectEvaltokStageParams）。 */
 function evaltokensStageConfig(et){
   et=et||{};
-  return {taskId:et.taskId||'', taskName:et.taskName||'', outVars:et.outVars||'', collectReport:et.collectReport!==false};
+  const values={}; if(et.values && typeof et.values==='object') Object.keys(et.values).forEach(k=>{ if(k) values[k]=String(et.values[k]); });
+  return {taskId:et.taskId||'', taskName:et.taskName||'', outVars:et.outVars||'', collectReport:et.collectReport!==false, values:values};
 }
 /* 旧数据兼容：Jenkins 阶段先改为 URL 请求阶段、再统一改为 HTTP 阶段——kind:'jenkins'/'url' 归为 'http'，jenkins.job 迁入 url.url
    （「拉取参数」的 params/values 随之下线，参数改由 URL 的 {GIT_BRANCH} 等占位符传递，见 migrateStageUrl）；
-   evaltokens 阶段持有 evaltokens{taskId,taskName,outVars,collectReport}；未带 kind 的阶段按 url/script/evaltokens 字段推断；补齐 script.lang */
+   evaltokens 阶段持有 evaltokens{taskId,taskName,outVars,collectReport,values}；未带 kind 的阶段按 url/script/evaltokens 字段推断；补齐 script.lang */
 function normalizeStageKind(s){
   if(!s) return s;
   if(s.kind==='jenkins'||s.kind==='url') s.kind='http';
@@ -2415,16 +2418,29 @@ function renderStageParams(i){
   const s=editStages[i]; if(!s) return;
   /* HTTP 阶段无脚本参数表单：参数经 URL 的 {GIT_BRANCH} 等占位符传递 */
   if(s.kind==='http') return;
-  /* EvalTokens 阶段：展示选中任务自动识别的输入参数（只读参考——任务已创建，输入参数不可改） */
+  /* EvalTokens 阶段：任务输入参数可设置——识别到的任务原值填入框中（未改动时弱化色显示，仅展示、不下发），
+     修改后写入 evaltokens.values 随流水线持久化，运行时作为输入覆盖随 run 启动请求下发（见 runEvaltokensStep）；
+     清空或改回与任务原值一致=不覆盖（任务按创建时的输入运行）。「识别参数」重新识别时保留已设置的值不刷新 */
   if(s.kind==='evaltokens'){
-    const ps=s.evaltokens && s.evaltokens.params;
+    const et=s.evaltokens; const ps=et && et.params;
     if(!ps || !ps.length) return;
-    const title=document.createElement('span'); title.className='dshell-muted'; title.style.fontSize='11px'; title.textContent='任务输入参数（自动识别）';
+    et.values=et.values||{};
+    const title=document.createElement('span'); title.className='dshell-muted'; title.style.fontSize='11px'; title.textContent='任务输入参数（自动识别，可设置覆盖）';
     box.appendChild(title);
     ps.forEach(p=>{
+      const hasV=et.values[p.key]!==undefined;
+      const v=hasV?et.values[p.key]:(p.def||'');
       const lab=document.createElement('label'); lab.className='dshell-muted';
       lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
-      lab.innerHTML=esc(p.label)+' <input class="dshell-input" value="'+esc(p.def)+'" readOnly title="任务创建时的输入参数（选中任务后自动识别，只读参考）" style="width:150px;font-size:11px;color:var(--dsw-alias-label-tertiary);" />';
+      const name=document.createElement('span'); name.textContent=p.label;
+      const inp=document.createElement('input'); inp.className='dshell-input'; inp.setAttribute('data-etpkey',p.key);
+      inp.value=v; inp.placeholder=p.def||'';
+      inp.title='任务创建时的输入参数（选中任务后自动识别），可直接修改：修改后作为输入覆盖随 run 启动请求下发（支持 ${VAR} 引用上游产出/运行级变量）；清空或改回与原值一致=不覆盖（按任务创建输入运行）；点动作行「识别参数」重新识别时已设置的值保留不刷新';
+      inp.style.cssText='width:150px;font-size:11px;';
+      if(!hasV && p.def) inp.style.color='var(--dsw-alias-label-tertiary)';   // 未改动的任务原值弱化显示（主题变量适配浅色/深色）
+      inp.addEventListener('input',()=>{ inp.style.color=''; });
+      inp.addEventListener('change',()=>{ commitEvaltokParamValue(et,p.key,inp.value,p.def); renderStageParams(i); });
+      lab.appendChild(name); lab.appendChild(document.createTextNode(' ')); lab.appendChild(inp);
       box.appendChild(lab);
     });
     return;
@@ -2447,6 +2463,11 @@ function renderStageParams(i){
     inp.addEventListener('change',()=>{ s.script.values=s.script.values||{}; if(!inp.value||inp.value===p.def) delete s.script.values[p.key]; else s.script.values[p.key]=inp.value; renderStageParams(i); });
     box.appendChild(lab);
   });
+}
+/* EvalTokens 参数值提交：与脚本参数同一规则——清空或改回与任务原值（def）一致即删除显式值（恢复不覆盖语义），否则写入 values */
+function commitEvaltokParamValue(et, key, value, def){
+  et.values=et.values||{};
+  if(!value || value===def) delete et.values[key]; else et.values[key]=value;
 }
 async function setStageScript(i, name){
   const s=editStages[i]; if(!s) return;
@@ -2522,6 +2543,10 @@ function renderStageActionRow(i){
     pickWrap.appendChild(inp); pickWrap.appendChild(panel);
     inp.addEventListener('focus', ()=>{ if(panel.style.display==='none') openEvaltokPicker(i); });
     inp.addEventListener('input', ()=>{ if(panel.style.display!=='none') renderEvaltokPickerPanel(i, inp.value); });
+    /* 「识别参数」：强制刷新任务列表缓存后重新识别输入参数（刷新参数定义与任务原值）；已设置的参数值保留、不被刷新 */
+    const detBtn=document.createElement('button'); detBtn.className='dshell-btn dshell-btnGhost mini'; detBtn.type='button'; detBtn.textContent='识别参数';
+    detBtn.title='重新拉取任务列表并识别该任务的输入参数（刷新参数定义与任务原值）；已在下方设置的参数值保留、不被刷新';
+    detBtn.addEventListener('click', ()=>{ evaltokTasksCache={tasks:null,ts:0}; detectEvaltokStageParams(i,false); });
     const nm=document.createElement('span'); nm.className='dshell-muted'; nm.style.fontSize='11px'; nm.textContent=(s.evaltokens&&s.evaltokens.taskName)?('· '+s.evaltokens.taskName):'';
     const outLab=document.createElement('span'); outLab.className='dshell-muted'; outLab.style.fontSize='11px'; outLab.textContent='输出变量'; outLab.appendChild(mkOutVarHelp('任务字段'));
     const outInp=document.createElement('input'); outInp.className='dshell-input'; outInp.setAttribute('data-f','etOutVars'); outInp.value=(s.evaltokens&&s.evaltokens.outVars)||''; outInp.placeholder='如 STATUS=status, TASK_ID=*, CREATED=created_at'; outInp.style.width='200px';
@@ -2529,7 +2554,7 @@ function renderStageActionRow(i){
     const reportLab=document.createElement('label'); reportLab.className='dshell-muted'; reportLab.style.cssText='display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;'; reportLab.title='任务进入成功或失败终态后，把本次 run 的完整 HTML 报告写入流水线本次运行的归档目录；归档失败不改变任务结果';
     const reportInp=document.createElement('input'); reportInp.type='checkbox'; reportInp.setAttribute('data-f','etCollectReport'); reportInp.checked=!(s.evaltokens&&s.evaltokens.collectReport===false);
     reportLab.appendChild(reportInp); reportLab.appendChild(document.createTextNode(' 收集任务报告'));
-    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(reportLab); return;
+    box.appendChild(lab); box.appendChild(pickWrap); box.appendChild(detBtn); box.appendChild(nm); box.appendChild(outLab); box.appendChild(outInp); box.appendChild(reportLab); return;
   }
   // shell / python
   const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='脚本';
@@ -3825,10 +3850,12 @@ async function evaltokFetchTasks(e, signal){
   const data=await evaltokRequestJson(e, base+'/api/open/v1/tasks', 'GET', undefined, signal);
   return Array.isArray(data)?data:(Array.isArray(data.data)?data.data:(Array.isArray(data.tasks)?data.tasks:(Array.isArray(data.list)?data.list:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[])))));
 }
-/* 启动一次新的任务运行；返回的 run_id 是后续轮询唯一依据，不能用该任务的旧运行结果代替。 */
-async function evaltokStartRun(e, taskId, signal){
+/* 启动一次新的任务运行；返回的 run_id 是后续轮询唯一依据，不能用该任务的旧运行结果代替。
+   input：编辑器显式设置的任务输入参数覆盖（键值对），非空时随请求体 {input:{...}} 下发；未设置时保持空体 {} 兼容旧行为 */
+async function evaltokStartRun(e, taskId, signal, input){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', {}, signal);
+  const body=(input && Object.keys(input).length) ? {input:input} : {};
+  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', body, signal);
   if(!run||!run.run_id) throw new Error('EvalTokens 启动任务未返回 run_id');
   return run;
 }
@@ -3857,7 +3884,7 @@ async function evaltokFetchTasksCached(){
   return tasks;
 }
 /* 从 EvalTokens 任务对象提取输入参数：兼容 input/inputs/params/parameters/args/config/arguments 等常见字段名，
-   对象取键值对、数组取 {name|key, value|def|default} 元素，供阶段编辑器「识别参数」只读展示 */
+   对象取键值对、数组取 {name|key, value|def|default} 元素，供阶段编辑器识别展示并设置覆盖值 */
 function detectEvaltokTaskParams(task){
   if(!task || typeof task!=='object') return [];
   const fields=['input','inputs','params','parameters','args','arguments','config','input_params','task_params','task_input','input_args','payload','metadata'];
@@ -3884,6 +3911,7 @@ function detectEvaltokTaskParams(task){
   return params;
 }
 /* 阶段编辑器：对已选任务的 evaltokens 阶段自动识别输入参数（拉取任务列表→匹配任务→提取参数）。
+   只刷新 params（参数定义与任务原值）；用户在 evaltokens.values 里显式设置的参数值一律保留、不被识别结果刷新。
    keepOnError：编辑器打开时置 true——服务未配置 / 拉取失败时保留已有参数不清空 */
 async function detectEvaltokStageParams(i, keepOnError){
   const s=editStages[i]; if(!s||s.kind!=='evaltokens'||!s.evaltokens) return;
@@ -3950,8 +3978,9 @@ function renderEvaltokPickerPanel(i, q){
   panel.querySelectorAll('[data-etpick-item]').forEach(el=>el.addEventListener('click', ()=>{
     const v=el.getAttribute('data-etpick-item'); const t=tasks.find(x=>idOf(x)===v||nameOf(x)===v); if(!t) return;
     if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]});
+    if(idOf(t)!==s.evaltokens.taskId) s.evaltokens.values={};   /* 换选其他任务：原任务的已设参数值不再适用，一并清空 */
     s.evaltokens.taskId=idOf(t); s.evaltokens.taskName=nameOf(t);
-    s.evaltokens.params=detectEvaltokTaskParams(t);   /* 选中任务后自动识别其输入参数 */
+    s.evaltokens.params=detectEvaltokTaskParams(t);   /* 选中任务后自动识别其输入参数（已设置的值保留） */
     panel.style.display='none';
     renderStageActionRow(i); renderStageParams(i);
   }));
@@ -3968,6 +3997,10 @@ async function runEvaltokensStep(rc, i){
      任务」）。与脚本阶段参数值 ${VAR} 替换同一套规则（见 substRunVars）；编辑器内的 taskId/taskName 仍按字面值
      用于任务选择面板与输入参数自动识别，不做运行时替换。 */
   const taskId=substRunVars(String(et.taskId||''), rc).trim(); const taskName=substRunVars(String(et.taskName||''), rc).trim(); const outSpec=et.outVars||'';
+  /* 任务输入参数覆盖：编辑器显式设置的值（et.values，随流水线持久化）随 run 启动请求体 {input:{...}} 下发；
+     值支持 ${VAR} 引用上游产出/运行级变量（与 taskId 同一套 substRunVars 规则），替换后为空（含未定义引用）的不下发 */
+  const inputOverrides={};
+  Object.keys(et.values||{}).forEach(k=>{ const v=substRunVars(String(et.values[k]), rc); if(v!=='') inputOverrides[k]=v; });
   const tk=rc.token; const varsIn=Object.assign({},rc.vars||{});
   const label='EvalTokens · '+(taskName||taskId||'未命名');
   rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
@@ -3996,8 +4029,9 @@ async function runEvaltokensStep(rc, i){
     const resolvedTaskId=idOf(task), resolvedTaskName=nameOf(task)||taskName;
     if(!resolvedTaskId) throw new Error('匹配的 EvalTokens 任务缺少 task_id，无法启动');
     log.push('# service: '+e.url.replace(/\/+$/,'')+'/api/open/v1/tasks/'+encodeURIComponent(resolvedTaskId)+'/run  mode='+(e.mode==='remote'?'remote':'local'));
+    if(Object.keys(inputOverrides).length) log.push('# input: '+JSON.stringify(inputOverrides));
     s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; rcRender(rc);
-    const started=await evaltokStartRun(e, resolvedTaskId, ctrl.signal); if(!ensureActive()) return;
+    const started=await evaltokStartRun(e, resolvedTaskId, ctrl.signal, inputOverrides); if(!ensureActive()) return;
     const runId=String(started.run_id||'');
     waitingRunId=runId; waitingStatus=String(started.status||started.state||started.phase||'');
     log.push('# started run '+runId+' task='+resolvedTaskId+(resolvedTaskName?(' '+resolvedTaskName):''));
@@ -5235,7 +5269,7 @@ function openPlForm(id, focusIdx){
   $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name;
     editStages=p.stages.map(s=> (s && s.preset) ? Object.assign({id:s.id, name:s.name, preset:true, pkey:s.pkey},s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom||p.prom)}:{})   /* 预设标记行原样带入；普罗采集同时带入任务内配置（兼容旧 p.prom） */
-      : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化，编辑器打开时自动重新识别 */
+      : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages, p&&p.prom);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling/普罗采集最后
   loadScripts().then(async ()=>{
@@ -5430,7 +5464,7 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
   else if(f==='urlOutVars'){ if(!s.url) s.url={url:'',outVars:''}; s.url.outVars=e.target.value; }
-  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.taskId=e.target.value.trim(); s.evaltokens.taskName=''; s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入后清除选择器残留名称，再异步识别参数（失败保留空） */
+  else if(f==='etTaskId'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); const nid=e.target.value.trim(); if(nid!==s.evaltokens.taskId) s.evaltokens.values={}; s.evaltokens.taskId=nid; s.evaltokens.taskName=''; s.evaltokens.params=[]; detectEvaltokStageParams(i,true); }   /* 手动输入后清除选择器残留名称，再异步识别参数（失败保留空）；改换任务时原任务已设参数值一并清空 */
   else if(f==='etOutVars'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.outVars=e.target.value; }
   else if(f==='etCollectReport'){ if(!s.evaltokens) s.evaltokens=Object.assign(evaltokensStageConfig(null),{params:[]}); s.evaltokens.collectReport=!!e.target.checked; }
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
