@@ -2,13 +2,13 @@
 import { execFile, spawn } from "node:child_process";
 import { readdirSync, realpathSync } from "node:fs";
 import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from "node:fs/promises";
-import { dirname, resolve as pathResolve, sep } from "node:path";
+import { basename, dirname, resolve as pathResolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { homedir, networkInterfaces } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // template/dshell.css
-var dshell_default = `/* dsh-worktable \u539F\u751F\u76AE\u80A4 \xB7 DSH \u8BBE\u8BA1\u7CFB\u7EDF\u7EC4\u4EF6\u5E93
+var dshell_default = `/* tokens-worktable \u539F\u751F\u76AE\u80A4 \xB7 DSH \u8BBE\u8BA1\u7CFB\u7EDF\u7EC4\u4EF6\u5E93
    \u7528\u6CD5\uFF1A<link rel="stylesheet" href="/api/worktable/template/dshell.css">
    \u6240\u6709\u989C\u8272\u8D70 DSH \u4E3B\u9898\u53D8\u91CF\uFF08--dsw-alias-*\uFF09\uFF0C\u81EA\u52A8\u9002\u914D\u660E\u6697\u4E3B\u9898\u3002 */
 :root { color-scheme: dark; }
@@ -85,11 +85,11 @@ body {
 `;
 
 // template/dshell.html
-var dshell_default2 = '<!doctype html>\n<!-- dsh-worktable \u539F\u751F\u76AE\u80A4\u6A21\u677F\uFF1A\u65B0\u9875\u9762\u4EE5\u6B64\u4E3A\u57FA\u7840\uFF0C\u66FF\u6362\u4E0B\u9762\u793A\u4F8B\u5185\u5BB9\u5373\u53EF\u3002\n     \u6837\u5F0F\u8868\u7531\u63D2\u4EF6\u63D0\u4F9B\uFF08\u968F\u4E3B\u9898\u81EA\u52A8\u9002\u914D\uFF09\uFF0C\u4E0D\u8981\u590D\u5236\u6216\u6539\u5199\u5B83\u3002 -->\n<html lang="zh-CN">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1" />\n  <title>\u6211\u7684\u7A97\u53E3</title>\n  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />\n</head>\n<body>\n  <div class="dshell">\n    <!-- \u6807\u9898\u533A -->\n    <h1 class="dshell-title">\u7A97\u53E3\u6807\u9898</h1>\n    <p class="dshell-sub">\u4E00\u53E5\u8BDD\u8BF4\u660E\u8FD9\u4E2A\u7A97\u53E3\u505A\u4EC0\u4E48\u3002</p>\n\n    <!-- \u72B6\u6001\u5FBD\u6807\uFF1A\u5DF2\u5B8C\u6210 dshell-badgeDone / \u8FDB\u884C\u4E2D dshell-badgeWait / \u9ED8\u8BA4 -->\n    <div>\n      <span class="dshell-badge dshell-badgeDone">\u5DF2\u5B8C\u6210</span>\n      <span class="dshell-badge dshell-badgeWait">\u8FDB\u884C\u4E2D</span>\n      <span class="dshell-badge">\u672A\u5F00\u59CB</span>\n    </div>\n\n    <!-- \u6807\u7B7E\u9875 -->\n    <div class="dshell-tabs">\n      <button class="dshell-tab dshell-tabOn">\u6982\u89C8</button>\n      <button class="dshell-tab">\u8BE6\u60C5</button>\n      <button class="dshell-tab">\u8BBE\u7F6E</button>\n    </div>\n\n    <!-- \u7EDF\u8BA1\u5361\u7247\u7F51\u683C -->\n    <div class="dshell-grid">\n      <div class="dshell-stat">\n        <div class="dshell-statLabel">\u603B\u6570</div>\n        <div class="dshell-statValue">128</div>\n        <div class="dshell-statDelta">+12.4%</div>\n      </div>\n      <div class="dshell-stat">\n        <div class="dshell-statLabel">\u8FDB\u884C\u4E2D</div>\n        <div class="dshell-statValue">7</div>\n      </div>\n      <div class="dshell-stat">\n        <div class="dshell-statLabel">\u5DF2\u5B8C\u6210</div>\n        <div class="dshell-statValue">121</div>\n      </div>\n    </div>\n\n    <!-- \u5217\u8868 -->\n    <div class="dshell-list">\n      <div class="dshell-listItem">\n        <span class="dshell-listItemTitle">\u6761\u76EE\u4E00\uFF1A\u793A\u4F8B\u5185\u5BB9\u6807\u9898</span>\n        <span class="dshell-listItemMeta">\u6628\u5929</span>\n      </div>\n      <div class="dshell-listItem">\n        <span class="dshell-listItemTitle">\u6761\u76EE\u4E8C\uFF1A\u793A\u4F8B\u5185\u5BB9\u6807\u9898</span>\n        <span class="dshell-badge dshell-badgeDone">\u5DF2\u53D1\u5E03</span>\n      </div>\n    </div>\n\n    <!-- \u5361\u7247 + \u952E\u503C\u5BF9 -->\n    <div class="dshell-card">\n      <h2 class="dshell-sub" style="margin:0 0 8px">\u8BE6\u60C5</h2>\n      <div class="dshell-kv">\n        <div class="dshell-kvRow"><span class="dshell-kvKey">\u5B57\u6BB5 A</span><span class="dshell-kvValue">\u503C A</span></div>\n        <div class="dshell-kvRow"><span class="dshell-kvKey">\u5B57\u6BB5 B</span><span class="dshell-kvValue">\u503C B</span></div>\n      </div>\n      <div class="dshell-divider"></div>\n      <div class="dshell-progress"><div class="dshell-progressBar" style="width:72%"></div></div>\n    </div>\n\n    <!-- \u64CD\u4F5C\u533A -->\n    <div style="display:flex;gap:8px">\n      <button class="dshell-btn">\u4E3B\u8981\u64CD\u4F5C</button>\n      <button class="dshell-btn dshell-btnGhost">\u6B21\u8981\u64CD\u4F5C</button>\n    </div>\n  </div>\n</body>\n</html>\n';
+var dshell_default2 = '<!doctype html>\n<!-- tokens-worktable \u539F\u751F\u76AE\u80A4\u6A21\u677F\uFF1A\u65B0\u9875\u9762\u4EE5\u6B64\u4E3A\u57FA\u7840\uFF0C\u66FF\u6362\u4E0B\u9762\u793A\u4F8B\u5185\u5BB9\u5373\u53EF\u3002\n     \u6837\u5F0F\u8868\u7531\u63D2\u4EF6\u63D0\u4F9B\uFF08\u968F\u4E3B\u9898\u81EA\u52A8\u9002\u914D\uFF09\uFF0C\u4E0D\u8981\u590D\u5236\u6216\u6539\u5199\u5B83\u3002 -->\n<html lang="zh-CN">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1" />\n  <title>\u6211\u7684\u7A97\u53E3</title>\n  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />\n</head>\n<body>\n  <div class="dshell">\n    <!-- \u6807\u9898\u533A -->\n    <h1 class="dshell-title">\u7A97\u53E3\u6807\u9898</h1>\n    <p class="dshell-sub">\u4E00\u53E5\u8BDD\u8BF4\u660E\u8FD9\u4E2A\u7A97\u53E3\u505A\u4EC0\u4E48\u3002</p>\n\n    <!-- \u72B6\u6001\u5FBD\u6807\uFF1A\u5DF2\u5B8C\u6210 dshell-badgeDone / \u8FDB\u884C\u4E2D dshell-badgeWait / \u9ED8\u8BA4 -->\n    <div>\n      <span class="dshell-badge dshell-badgeDone">\u5DF2\u5B8C\u6210</span>\n      <span class="dshell-badge dshell-badgeWait">\u8FDB\u884C\u4E2D</span>\n      <span class="dshell-badge">\u672A\u5F00\u59CB</span>\n    </div>\n\n    <!-- \u6807\u7B7E\u9875 -->\n    <div class="dshell-tabs">\n      <button class="dshell-tab dshell-tabOn">\u6982\u89C8</button>\n      <button class="dshell-tab">\u8BE6\u60C5</button>\n      <button class="dshell-tab">\u8BBE\u7F6E</button>\n    </div>\n\n    <!-- \u7EDF\u8BA1\u5361\u7247\u7F51\u683C -->\n    <div class="dshell-grid">\n      <div class="dshell-stat">\n        <div class="dshell-statLabel">\u603B\u6570</div>\n        <div class="dshell-statValue">128</div>\n        <div class="dshell-statDelta">+12.4%</div>\n      </div>\n      <div class="dshell-stat">\n        <div class="dshell-statLabel">\u8FDB\u884C\u4E2D</div>\n        <div class="dshell-statValue">7</div>\n      </div>\n      <div class="dshell-stat">\n        <div class="dshell-statLabel">\u5DF2\u5B8C\u6210</div>\n        <div class="dshell-statValue">121</div>\n      </div>\n    </div>\n\n    <!-- \u5217\u8868 -->\n    <div class="dshell-list">\n      <div class="dshell-listItem">\n        <span class="dshell-listItemTitle">\u6761\u76EE\u4E00\uFF1A\u793A\u4F8B\u5185\u5BB9\u6807\u9898</span>\n        <span class="dshell-listItemMeta">\u6628\u5929</span>\n      </div>\n      <div class="dshell-listItem">\n        <span class="dshell-listItemTitle">\u6761\u76EE\u4E8C\uFF1A\u793A\u4F8B\u5185\u5BB9\u6807\u9898</span>\n        <span class="dshell-badge dshell-badgeDone">\u5DF2\u53D1\u5E03</span>\n      </div>\n    </div>\n\n    <!-- \u5361\u7247 + \u952E\u503C\u5BF9 -->\n    <div class="dshell-card">\n      <h2 class="dshell-sub" style="margin:0 0 8px">\u8BE6\u60C5</h2>\n      <div class="dshell-kv">\n        <div class="dshell-kvRow"><span class="dshell-kvKey">\u5B57\u6BB5 A</span><span class="dshell-kvValue">\u503C A</span></div>\n        <div class="dshell-kvRow"><span class="dshell-kvKey">\u5B57\u6BB5 B</span><span class="dshell-kvValue">\u503C B</span></div>\n      </div>\n      <div class="dshell-divider"></div>\n      <div class="dshell-progress"><div class="dshell-progressBar" style="width:72%"></div></div>\n    </div>\n\n    <!-- \u64CD\u4F5C\u533A -->\n    <div style="display:flex;gap:8px">\n      <button class="dshell-btn">\u4E3B\u8981\u64CD\u4F5C</button>\n      <button class="dshell-btn dshell-btnGhost">\u6B21\u8981\u64CD\u4F5C</button>\n    </div>\n  </div>\n</body>\n</html>\n';
 
 // src/index.ts
-var PLUGIN_VERSION = false ? "dev" : "0.2.2";
-var name = "dsh-worktable";
+var PLUGIN_VERSION = false ? "dev" : "1.0.6";
+var name = "tokens-worktable";
 var inject = ["webServer", "sessions"];
 var PLUGIN_DIR = (() => {
   try {
@@ -101,6 +101,35 @@ var PLUGIN_DIR = (() => {
   } catch {
   }
   return process.cwd();
+})();
+function inferDshHomeFromModuleDir(libDir) {
+  let pkgDir = pathResolve(libDir, "..");
+  if (basename(dirname(pkgDir)).startsWith("@")) pkgDir = dirname(pkgDir);
+  const nmDir = dirname(pkgDir);
+  if (basename(nmDir) !== "node_modules") return null;
+  const profilesDir = dirname(dirname(nmDir));
+  if (basename(profilesDir) !== "profiles") return null;
+  return dirname(profilesDir);
+}
+function resolveDshHomeEnv(raw, home) {
+  const v = (raw ?? "").trim();
+  if (!v) return null;
+  if (v === "~") return pathResolve(home);
+  if (v.startsWith("~/") || v.startsWith("~\\")) return pathResolve(home, v.slice(2));
+  return pathResolve(v);
+}
+var DSH_HOME = (() => {
+  try {
+    const h = inferDshHomeFromModuleDir(dirname(fileURLToPath(import.meta.url)));
+    if (h) return h;
+  } catch {
+  }
+  try {
+    const h = inferDshHomeFromModuleDir(realpathSync(dirname(fileURLToPath(import.meta.url))));
+    if (h) return h;
+  } catch {
+  }
+  return resolveDshHomeEnv(process.env.DSH_HOME, homedir()) ?? pathResolve(homedir(), ".dsh");
 })();
 var HEALTH_PATH = "/api/worktable/health";
 var PROXY_PATH = "/api/worktable/proxy";
@@ -176,7 +205,7 @@ function loadPkg(pkg) {
     }
   }
   try {
-    const profilesDir = pathResolve(homedir(), ".dsh", "profiles");
+    const profilesDir = pathResolve(DSH_HOME, "profiles");
     for (const profile of readdirSync(profilesDir, { withFileTypes: true })) {
       if (!profile.isDirectory() && !profile.isSymbolicLink()) continue;
       const nm = pathResolve(profilesDir, profile.name, "node_modules");
@@ -285,9 +314,9 @@ function setupTerminal(webServer, ctx) {
   if (typeof webServer.registerUpgrade !== "function") return;
   const wsMod = loadPkg("ws");
   const ptyMod = loadPkg("node-pty");
-  ctx.logger?.info?.("[dsh-worktable] term deps: ws=" + (wsMod ? "ok" : "MISSING") + " node-pty=" + (ptyMod ? "ok" : "MISSING"));
+  ctx.logger?.info?.("[tokens-worktable] term deps: ws=" + (wsMod ? "ok" : "MISSING") + " node-pty=" + (ptyMod ? "ok" : "MISSING"));
   if (!wsMod || !ptyMod) {
-    ctx.logger?.warn("[dsh-worktable] \u7EC8\u7AEF\u8DEF\u7531\u672A\u6CE8\u518C\uFF1Aws/node-pty \u4E0D\u53EF\u7528");
+    ctx.logger?.warn("[tokens-worktable] \u7EC8\u7AEF\u8DEF\u7531\u672A\u6CE8\u518C\uFF1Aws/node-pty \u4E0D\u53EF\u7528");
     return;
   }
   const WebSocketServer = wsMod.WebSocketServer ?? wsMod.default?.WebSocketServer;
@@ -354,19 +383,19 @@ function setupTerminal(webServer, ctx) {
         });
       });
     }
-  }), "dsh-worktable: terminal upgrade");
+  }), "tokens-worktable: terminal upgrade");
 }
 function apply(ctx) {
   const webServer = ctx.webServer;
   if (!webServer) {
-    ctx.logger?.warn("[dsh-worktable] ctx.webServer \u4E0D\u53EF\u7528\uFF08headless profile\uFF1F\uFF09\uFF0C\u8DF3\u8FC7\u670D\u52A1\u7AEF\u8DEF\u7531");
+    ctx.logger?.warn("[tokens-worktable] ctx.webServer \u4E0D\u53EF\u7528\uFF08headless profile\uFF1F\uFF09\uFF0C\u8DF3\u8FC7\u670D\u52A1\u7AEF\u8DEF\u7531");
     return;
   }
   webServer.register({
     kind: "exact",
     path: HEALTH_PATH,
     handler: (_req, res) => {
-      json(res, 200, { plugin: "dsh-worktable", version: PLUGIN_VERSION, dir: PLUGIN_DIR, ok: true });
+      json(res, 200, { plugin: "tokens-worktable", version: PLUGIN_VERSION, dir: PLUGIN_DIR, home: DSH_HOME, ok: true });
     }
   });
   webServer.register({
@@ -512,7 +541,7 @@ function apply(ctx) {
     path: "/api/worktable/workspaces",
     handler: async (_req, res) => {
       try {
-        const file = pathResolve(homedir(), ".dsh", "storages", "workspace.json");
+        const file = pathResolve(DSH_HOME, "storages", "workspace.json");
         const raw = await readFile(file, "utf8");
         json(res, 200, JSON.parse(raw.charCodeAt(0) === 65279 ? raw.slice(1) : raw));
       } catch (err) {
@@ -520,7 +549,7 @@ function apply(ctx) {
       }
     }
   });
-  const PROJECTS_STORE = pathResolve(homedir(), ".dsh", "storages", "worktable-projects.json");
+  const PROJECTS_STORE = pathResolve(DSH_HOME, "storages", "worktable-projects.json");
   webServer.register({
     kind: "exact",
     path: "/api/worktable/projects",
@@ -576,7 +605,7 @@ function apply(ctx) {
       }
     }
   });
-  const PIPELINE_STORE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline.json");
+  const PIPELINE_STORE = pathResolve(DSH_HOME, "storages", "worktable-pipeline.json");
   webServer.register({
     kind: "exact",
     path: "/api/worktable/pipeline",
@@ -629,7 +658,7 @@ function apply(ctx) {
       }
     }
   });
-  const PLANS_STORE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline-plans.json");
+  const PLANS_STORE = pathResolve(DSH_HOME, "storages", "worktable-pipeline-plans.json");
   async function writeJsonAtomic(file, text) {
     const fsx = await import("node:fs/promises");
     await fsx.mkdir(dirname(file), { recursive: true });
@@ -749,7 +778,7 @@ function apply(ctx) {
       }
     }
   });
-  const LOGDUMP_FILE = pathResolve(homedir(), ".dsh", "storages", "worktable-pipeline-logs.md");
+  const LOGDUMP_FILE = pathResolve(DSH_HOME, "storages", "worktable-pipeline-logs.md");
   webServer.register({
     kind: "exact",
     path: "/api/worktable/pipeline/logdump",
@@ -1031,6 +1060,11 @@ function apply(ctx) {
     if (env.TARGET_IP === void 0) env.TARGET_IP = String(ctx0 && ctx0.ip || runCtx.env || "");
     if (env.TARGET_IPS === void 0 && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e) => e.ip));
     if (env.TARGET_HOSTS === void 0 && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e) => ({ ip: e.ip, user: e.user || "", pass: e.pass || "" })));
+    if (env.TARGET_NODE_IP_MAP === void 0 && runCtx.envs) {
+      const nodeIpMap = {};
+      for (const e of runCtx.envs || []) if (e.ip && e.nodeIp) nodeIpMap[e.ip] = e.nodeIp;
+      if (Object.keys(nodeIpMap).length) env.TARGET_NODE_IP_MAP = JSON.stringify(nodeIpMap);
+    }
     if (env.IMAGE_NAME === void 0 && runCtx.image) env.IMAGE_NAME = String(runCtx.image);
     if (env.IMAGE_TAG === void 0 && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag);
     if (env.PIPELINE_NAME === void 0 && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName);
@@ -1568,6 +1602,66 @@ function apply(ctx) {
         json(res, 200, { ok: true, path: abs });
       } catch (err) {
         json(res, err?.code === "EEXIST" ? 200 : 500, err?.code === "EEXIST" ? { ok: true, exists: true } : { error: String(err) });
+      }
+    }
+  });
+  webServer.register({
+    kind: "exact",
+    path: "/api/worktable/scan-projects",
+    handler: async (req, res) => {
+      try {
+        if (req.method !== "POST") {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        const body = await readJsonBody(req);
+        const p = typeof body.path === "string" ? body.path.trim() : "";
+        if (!p) {
+          json(res, 400, { error: "missing path" });
+          return;
+        }
+        const abs = pathResolve(p);
+        const dirents = await readdir(abs, { withFileTypes: true });
+        const isHtml = (n) => /\.html?$/i.test(n);
+        const projects = [];
+        const readEntryMeta = async (dir, entry) => {
+          try {
+            const head = (await readFile(pathResolve(dir, entry), "utf8")).slice(0, 65536);
+            const meta = {};
+            const tag = head.match(/<meta\b[^>]*>/gi)?.find((t) => /\bname\s*=\s*(["'])worktable-icon\1/i.test(t));
+            const icon = tag?.match(/\bcontent\s*=\s*(["'])([\s\S]*?)\1/i)?.[2]?.trim();
+            if (icon) meta.icon = icon.slice(0, 16);
+            const title = head.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim();
+            if (title) meta.title = title.slice(0, 60);
+            return meta;
+          } catch {
+            return {};
+          }
+        };
+        for (const d of dirents) {
+          if (d.name.startsWith(".")) continue;
+          if (d.isDirectory()) {
+            const sub = pathResolve(abs, d.name);
+            let htmls = [];
+            try {
+              htmls = (await readdir(sub, { withFileTypes: true })).filter((f) => f.isFile() && isHtml(f.name)).map((f) => f.name).sort((a, b) => a.localeCompare(b, void 0, { sensitivity: "base" }));
+            } catch {
+              continue;
+            }
+            if (htmls.length === 0) continue;
+            const named = d.name.toLowerCase() + ".html";
+            const entry = htmls.find((h) => h.toLowerCase() === "index.html") ?? htmls.find((h) => h.toLowerCase() === named) ?? htmls[0];
+            projects.push({ name: d.name, dir: sub, entry, ...await readEntryMeta(sub, entry) });
+          } else if (d.isFile() && isHtml(d.name)) {
+            const name2 = d.name.replace(/\.html?$/i, "");
+            projects.push({ name: name2, dir: abs, entry: d.name, ...await readEntryMeta(abs, d.name) });
+          }
+        }
+        projects.sort((a, b) => a.name.localeCompare(b.name, void 0, { sensitivity: "base" }));
+        json(res, 200, { path: abs, projects });
+      } catch (err) {
+        json(res, 500, { error: String(err) });
       }
     }
   });
