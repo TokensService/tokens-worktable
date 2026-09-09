@@ -12,13 +12,11 @@ MODEL_ENDPOINT="${MODEL_ENDPOINT:-$MODEL_NAME}"
 MODEL_PATH="${MODEL_PATH:-/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1}"
 MODEL_VERSION="${MODEL_VERSION:-v1}"
 MODEL_REQUEST_FILE="$RUN_DIR/rendered/model.request.json"
-MODEL_ACTIVE_TIMEOUT_SECONDS="${MODEL_ACTIVE_TIMEOUT_SECONDS:-4800}"
 MODEL_ACTIVE_POLL_SECONDS="${MODEL_ACTIVE_POLL_SECONDS:-10}"
 SPEC_PACKAGE="${SPEC_PACKAGE:-}"
 
 [[ -f "$RESOURCE_MANIFEST" ]] || { echo "resource manifest not found: $RESOURCE_MANIFEST" >&2; exit 2; }
 [[ -f "$ARCH_REQUEST_FILE" ]] || { echo "architecture request not found: $ARCH_REQUEST_FILE" >&2; exit 2; }
-[[ "$MODEL_ACTIVE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid MODEL_ACTIVE_TIMEOUT_SECONDS: $MODEL_ACTIVE_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$MODEL_ACTIVE_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid MODEL_ACTIVE_POLL_SECONDS: $MODEL_ACTIVE_POLL_SECONDS" >&2; exit 2; }
 
 SPEC_PACKAGE="$(python3 - "$ARCH_REQUEST_FILE" "$SPEC_PACKAGE" <<'PY'
@@ -41,11 +39,10 @@ PY
 )"
 
 wait_for_model_active() {
-  local deadline response
-  deadline=$((SECONDS + MODEL_ACTIVE_TIMEOUT_SECONDS))
+  local response
   echo "[register] wait for model ACTIVE: $MODEL_NAME"
 
-  while (( SECONDS < deadline )); do
+  while :; do
     response="$(curl --noproxy '*' -sS --connect-timeout 3 --max-time 10 "${XDS_URL%/}/models/${MODEL_NAME}" 2>&1 || true)"
     if printf '%s' "$response" | grep -q '"status":"ACTIVE"'; then
       echo "[register] model is ACTIVE: $MODEL_NAME"
@@ -58,9 +55,6 @@ wait_for_model_active() {
     echo "[register] model not active: $response"
     sleep "$MODEL_ACTIVE_POLL_SECONDS"
   done
-
-  echo "[register] model ACTIVE wait timed out after ${MODEL_ACTIVE_TIMEOUT_SECONDS}s: $MODEL_NAME" >&2
-  return 1
 }
 
 python3 - "$RESOURCE_MANIFEST" "$ARCH_NAME" "$MODEL_NAME" "$MODEL_ENDPOINT" "$MODEL_PATH" "$MODEL_VERSION" "$SPEC_PACKAGE" >"$MODEL_REQUEST_FILE" <<'PY'

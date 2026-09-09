@@ -2,6 +2,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+! grep -Fq 'MODEL_ACTIVE_TIMEOUT_SECONDS' "$script_dir/register-model.sh"
+grep -Fq 'while :; do' "$script_dir/register-model.sh"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
