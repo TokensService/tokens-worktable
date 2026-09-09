@@ -26,6 +26,10 @@ common:
       value: 'true'
 nodeSelector:
   kubernetes.io/hostname: 192.168.0.243
+rayService:
+  service:
+    ports:
+      - nodePort: {NODE_PORT}
 head:
   nodeSelector: {}
 workerGroups:
@@ -148,6 +152,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 
 expected = {"xds.optest": "node-175-17"}
 assert values["nodeSelector"] == expected, values["nodeSelector"]
+assert values["rayService"]["service"]["ports"][0]["nodePort"] == 31008, values["rayService"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]

@@ -44,6 +44,7 @@ SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-./logs}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
 
 resolve_container_model_path() {
   local input="${MODEL_PATH_INPUT%/}" weight_name
@@ -344,15 +345,19 @@ prepare_available_node_ports() {
   local services_file port_plan changed
   services_file="$(mktemp)"
   "$KUBECTL_BIN" get svc -A -o json >"$services_file"
-  port_plan="$(python3 - "$VALUES_FILE" "$services_file" <<'PY'
+  port_plan="$(python3 - "$VALUES_FILE" "$services_file" "$NODE_PORT_MAP" <<'PY'
 import json
 import sys
 
 import yaml
 
-values_path, services_path = sys.argv[1:]
+values_path, services_path, node_port_map_text = sys.argv[1:]
 values = yaml.safe_load(open(values_path, encoding="utf-8")) or {}
 services = json.load(open(services_path, encoding="utf-8"))
+node_port_map = json.loads(node_port_map_text)
+if not isinstance(node_port_map, dict) or any(type(port) is not int for port in node_port_map.values()):
+    raise SystemExit("NODE_PORT_MAP must be a JSON object with integer ports")
+fixed_ports = set(node_port_map.values())
 
 requested = []
 def collect(value):
@@ -376,6 +381,8 @@ used = {
 plan = []
 for port in requested:
     candidate = port
+    if candidate in used and candidate in fixed_ports:
+        raise SystemExit(f"required NodePort {candidate} is already used by another Service")
     while candidate in used:
         candidate += 10
     if candidate > 32767:
