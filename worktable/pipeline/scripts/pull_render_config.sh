@@ -336,5 +336,11 @@ bash "$SCRIPT_DIR/render-config.sh"
 write_pipeline_env
 write_target_pipeline_env
 sync_rendered_to_targets
+
+# Rendered files are available on every target before the target image pull.
+# This separates execution-host template preparation from target registry
+# authentication and keeps a target pull failure from preventing rendering.
+PULL_TARGET_IMAGES_ONLY=1 bash "$SCRIPT_DIR/pull-image.sh"
+
 printf 'PIPELINE_ENV_FILE=%s\n' "$PIPELINE_ENV_FILE"
 printf 'TARGET_PIPELINE_ENV_FILE=%s\n' "$TARGET_PIPELINE_ENV_FILE"

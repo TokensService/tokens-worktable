@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Pre-pull deployment images and export render templates on the pipeline execution host.
+# Pull deployment images and export render templates.  By default this runs on
+# the pipeline execution host; PULL_TARGET_IMAGES_ONLY=1 performs only the
+# post-sync target-host image check/pull.
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"
@@ -153,8 +155,12 @@ export_templates() {
   cp -a "$work_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
 }
 
+if [[ "${PULL_TARGET_IMAGES_ONLY:-0}" == "1" ]]; then
+  pull_target_images "$IMAGE"
+  exit 0
+fi
+
 pull_image "$IMAGE"
-pull_target_images "$IMAGE"
 [[ "$TEMPLATE_IMAGE" == "$IMAGE" ]] || pull_image "$TEMPLATE_IMAGE"
 
 if [[ -z "${CHART_TEMPLATE_DIR:-}" && -z "${VALUES_TEMPLATE:-}" && -z "${ARCH_FILE:-}" ]]; then
