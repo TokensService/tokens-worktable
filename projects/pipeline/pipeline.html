@@ -133,6 +133,22 @@
           <option value="auto">跟随系统</option>
         </select>
       </label>
+      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；导出文件含密码与令牌明文 -->
+      <span id="ioMenu" style="position:relative;display:inline-block;">
+        <button id="ioMenuBtn" type="button" class="dshell-btn dshell-btnGhost mini" title="设置 / 流水线的导入导出；导出文件含节点密码与访问令牌明文，请妥善保管、勿提交进仓库">⤓⤒ 导入导出</button>
+        <div id="ioMenuPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:30;min-width:230px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+          <div class="dshell-muted" style="font-size:11px;padding:2px 6px;">设置（环境 / 代码仓 / 脚本 / 服务配置等）</div>
+          <button id="ioExpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置页全部配置（含仅存本浏览器的代码仓访问令牌与运行选择），不含流水线与运行历史">⤓ 导出设置…</button>
+          <button id="ioImpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出设置」的 JSON 文件整体恢复设置，流水线与运行历史不受影响">⤒ 导入设置…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">流水线（全部流水线定义）</div>
+          <button id="ioExpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线定义（含内置流水线上的编辑）">⤓ 导出流水线…</button>
+          <button id="ioImpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出流水线」的 JSON 文件，覆盖当前全部流水线">⤒ 导入流水线…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">导出文件含密码 / 令牌明文，勿提交仓库</div>
+          <div id="ioTip" class="dshell-muted" style="font-size:11px;padding:2px 6px;"></div>
+        </div>
+        <input id="ioImpSettingsFile" type="file" accept="application/json,.json" style="display:none" />
+        <input id="ioImpPipelinesFile" type="file" accept="application/json,.json" style="display:none" />
+      </span>
     </div>
   </div>
 
@@ -5347,6 +5363,133 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
+
+/* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
+   导出设置 = 设置页全部配置：服务端部分（collectConfig，剔除流水线——流水线走独立导出——并补回仅存本浏览器的代码仓访问令牌）
+             + 仅存浏览器本地的运行选择（当前流水线/环境/代码仓、分支/部署策略/执行人、历史筛选与分页）；
+   导出流水线 = 全部流水线定义（含内置流水线上的编辑）。
+   导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
+   运行历史不参与导入导出。导出文件含节点密码与令牌明文。 */
+function ioTimestamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+function downloadJson(filename, data){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+  a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+function ioTipShow(msg, bad){ const t=$('ioTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+function collectSettingsForExport(){
+  const cfg=collectConfig();
+  delete cfg.pipelines;   /* 流水线独立导出，见 exportPipelines */
+  /* 导出补回代码仓访问令牌（区别于上送服务端持久化时剔除 pass，见 collectConfig）：导出文件即完整备份 */
+  cfg.repositories=repositories.map(function(r){ return Object.assign({}, r); });
+  return cfg;
+}
+function exportSettings(){
+  downloadJson('pipeline-settings-'+ioTimestamp()+'.json', {
+    app:'worktable-pipeline', kind:'pipeline-settings', version:1, exportedAt:new Date().toISOString(),
+    config:collectSettingsForExport(),
+    local:{ curPipelineId, selectedEnvIds, curRepoId, schedEnvIds, branch:$('branchName').value, strategy:$('deployStrategyName').value, by:$('triggeredBy').value, histFilter, histPageSize },
+  });
+  ioTipShow('✓ 已导出设置配置');
+}
+function exportPipelines(){
+  downloadJson('pipeline-pipelines-'+ioTimestamp()+'.json', {
+    app:'worktable-pipeline', kind:'pipeline-pipelines', version:1, exportedAt:new Date().toISOString(),
+    pipelines:pipelines,
+  });
+  ioTipShow('✓ 已导出 '+pipelines.length+' 条流水线');
+}
+/* 导入的流水线列表归一化：与 loadServerState 同一套迁移（内置默认置顶 + gate/url/预填默认值迁移）；非法列表返回 null */
+function normalizeImportedPipelines(list){
+  if(!Array.isArray(list) || !list.some(p=>p && Array.isArray(p.stages))) return null;
+  const def=list.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+  const customs=list.filter(p=>p && !p.builtIn);
+  return [def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults);
+}
+/* 应用导入的设置配置（不含流水线）：文件为权威，缺省键保持当前值；随后统一落 localStorage + persistState 推服务端 + 全量重渲染 */
+function applyImportedSettings(cfg, loc){
+  cfg=cfg||{}; loc=loc||{};
+  if(Array.isArray(cfg.environments)) environments=cfg.environments.map(normalizeEnv);
+  if(Array.isArray(cfg.repositories)) repositories=cfg.repositories.map(normalizeRepo);   /* 访问令牌按文件内容恢复（含空值） */
+  if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+  if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
+  if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
+  if(cfg.cleanupScript===null || (cfg.cleanupScript && typeof cfg.cleanupScript.name==='string')) cleanupScript=cfg.cleanupScript;
+  if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
+  if(cfg.checkScript===null || (cfg.checkScript && typeof cfg.checkScript.name==='string')) checkScript=cfg.checkScript;
+  if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
+  if(cfg.profilingScript===null || (cfg.profilingScript && typeof cfg.profilingScript.name==='string')) profilingScript=cfg.profilingScript;
+  if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
+  if(typeof cfg.promCollectEnabled==='boolean') $('promCollectEnv').checked=cfg.promCollectEnabled;
+  if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
+  if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
+  else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
+  if(cfg.prom && typeof cfg.prom==='object') prom=Object.assign({}, DEFAULT_PROM, cfg.prom);
+  if(typeof cfg.archiveDir==='string') archiveDir=cfg.archiveDir;
+  if(typeof cfg.archiveScriptName==='string') archiveScriptName=cfg.archiveScriptName;
+  if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
+  if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
+  /* 仅存浏览器本地的运行选择 */
+  if(typeof loc.curPipelineId==='string' && pipelines.some(p=>p.id===loc.curPipelineId)){ curPipelineId=loc.curPipelineId; runStages=null; selectedId=curPipeline().stages[0].id; }
+  if(Array.isArray(loc.selectedEnvIds)) selectedEnvIds=loc.selectedEnvIds.length?loc.selectedEnvIds:null;
+  if(typeof loc.curRepoId==='string') curRepoId=loc.curRepoId;
+  if(Array.isArray(loc.schedEnvIds)) schedEnvIds=loc.schedEnvIds.length?loc.schedEnvIds:null;
+  if(typeof loc.branch==='string') $('branchName').value=loc.branch;
+  if(typeof loc.strategy==='string') $('deployStrategyName').value=loc.strategy;
+  if(typeof loc.by==='string') $('triggeredBy').value=loc.by;
+  if(loc.histFilter && typeof loc.histFilter==='object'){
+    histFilter={kw:String(loc.histFilter.kw||''),status:String(loc.histFilter.status||''),pipeline:String(loc.histFilter.pipeline||'')};
+    $('histFilterKw').value=histFilter.kw; $('histFilterStatus').value=histFilter.status; $('histFilterPipeline').value=histFilter.pipeline;
+  }
+  if(Number.isFinite(loc.histPageSize)){ histPageSize=Math.max(1,parseInt(loc.histPageSize,10)||10); $('histPageSize').value=String(histPageSize); }
+  /* 统一落盘：localStorage（含本地令牌/选择）+ debounce 推服务端 */
+  saveEnvs(); saveEnvSel(); saveRepos(); saveRepoSel(); saveScriptsDir();
+  try{ localStorage.setItem('pip-theme', themePref); localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
+  saveCleanup(); saveCheck(); saveProfiling(); savePromCollectPreset();
+  saveJenkins(); saveEvaltok(); saveProm(); saveArchiveDir(); saveArchiveScript(); savePrompts();
+  saveSchedEnvSel(); saveRunSelLS(); saveHistFilter();
+  try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){}
+  /* 设置页各表单回填 + 全量重渲染（与 loadServerState 同一收尾） */
+  $('cleanupScriptName').value=cleanupScript?cleanupScript.name:''; renderCleanupParams();
+  $('checkScriptName').value=checkScript?checkScript.name:''; renderCheckParams();
+  $('profilingScriptName').value=profilingScript?profilingScript.name:''; renderProfilingParams();
+  $('archiveDir').value=archiveDir; $('archiveScriptName').value=archiveScriptName;
+  renderAll();
+}
+async function importSettingsFile(file){
+  let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
+  if(!data || data.app!=='worktable-pipeline' || data.kind!=='pipeline-settings' || !data.config || typeof data.config!=='object'){
+    ioTipShow('✗ 不是「导出设置」生成的有效文件', true); return;
+  }
+  if(!confirm('导入将按文件内容覆盖当前设置（节点环境 / 代码仓 / 脚本与服务配置等，含文件中的令牌），流水线与运行历史不受影响。确定导入？')) return;
+  if(!stateLoaded){ await loadServerState(); }   /* 等服务端状态落定再覆盖，避免 pushState 写前重载把导入内容冲掉 */
+  applyImportedSettings(data.config, data.local);
+  ioTipShow('✓ 设置已导入并保存');
+}
+async function importPipelinesFile(file){
+  let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
+  const list=(data && data.app==='worktable-pipeline' && data.kind==='pipeline-pipelines') ? normalizeImportedPipelines(data.pipelines) : null;
+  if(!list){ ioTipShow('✗ 不是「导出流水线」生成的有效文件', true); return; }
+  if(!confirm('导入将按文件内容覆盖当前全部流水线（含内置流水线上的改动），其余设置与运行历史不受影响。确定导入？')) return;
+  if(!stateLoaded){ await loadServerState(); }
+  pipelines=list;
+  if(!pipelines.some(p=>p.id===curPipelineId)) curPipelineId=pipelines[0].id;
+  runStages=null; selectedId=curPipeline().stages[0].id;
+  savePipelines();
+  try{ localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
+  renderAll();
+  ioTipShow('✓ 已导入 '+pipelines.length+' 条流水线');
+}
+/* 菜单开合（点外关闭，与「环境」多选同一交互）+ 四个入口 wiring；文件框选完即清空 value，保证重复选同一文件仍触发 change */
+$('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
+document.addEventListener('click', (e)=>{ const p=$('ioMenuPanel'); const m=$('ioMenu'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+$('ioExpSettings').addEventListener('click', exportSettings);
+$('ioExpPipelines').addEventListener('click', exportPipelines);
+$('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
+$('ioImpPipelines').addEventListener('click', ()=>{ $('ioImpPipelinesFile').click(); });
+$('ioImpSettingsFile').addEventListener('change', (e)=>{ const f=e.target.files && e.target.files[0]; e.target.value=''; if(f) importSettingsFile(f); });
+$('ioImpPipelinesFile').addEventListener('change', (e)=>{ const f=e.target.files && e.target.files[0]; e.target.value=''; if(f) importPipelinesFile(f); });
 
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
