@@ -106,6 +106,20 @@ test('归档构建保留大日志原始分片，不按百万行拆成数组', ()
   assert.match(text, /\[exit 0\]$/);
 });
 
+test('Jenkins 中止归档保持原始控制台分片连续，不在块边界注入换行', () => {
+  const context = loadLogBuilders();
+  context.stageUrlOf = () => 'job-heavy';
+  const stage = {
+    id: 'jenkins-heavy', name: 'Jenkins 大日志', kind: 'http', url: { url: 'job-heavy' },
+    _archiveOutputParts: ['$ POST job-heavy\n', 'partial-', 'line-without-boundary'],
+    _out: { stdout: 'tail-only', stderr: '', code: null, done: false },
+  };
+  const text = context.buildLogParts(stage, {}, { status: 'aborted' }).join('');
+  assert.match(text, /partial-line-without-boundary/);
+  assert.doesNotMatch(text, /partial-\nline-without-boundary/);
+  assert.match(text, /HTTP 请求已中止/);
+});
+
 test('归档分片通过 Blob 原始流上传，不进入 JSON content', async () => {
   const start = source.indexOf('async function apiWriteParts(');
   const end = source.indexOf('/* 按目录跟踪完整归档任务', start);

@@ -4,7 +4,7 @@ import { readFile, mkdtemp, rm, mkdir as fsMkdir, open as fsOpen, writeFile } fr
 import { tmpdir } from 'node:os'
 import { dirname, resolve as pathResolve } from 'node:path'
 import { execFile, spawn } from 'node:child_process'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 
@@ -19,6 +19,7 @@ async function fixture(t, options = {}) {
   let maxWritableLength = 0
   let drainListenerCount = 0
   let drainEventCount = 0
+  let activeDrainListeners = 0
   const json = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
   vm.runInNewContext(code, { execFile, spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
     webServer: { register: r => routes.set(r.path, r.handler) }, json, dropOversizeEnv: () => '',
@@ -26,25 +27,56 @@ async function fixture(t, options = {}) {
   const server = createServer((req, res) => {
     const write = res.write.bind(res)
     const once = res.once.bind(res)
+    const off = res.off.bind(res)
+    const drainWrappers = new Map()
     res.write = (...args) => {
       const writable = write(...args)
       maxWritableLength = Math.max(maxWritableLength, res.writableLength)
       return writable
     }
-    res.once = (event, ...args) => {
-      if (event === 'drain') drainListenerCount += 1
-      return once(event, ...args)
+    res.once = (event, listener) => {
+      if (event !== 'drain') return once(event, listener)
+      drainListenerCount += 1; activeDrainListeners += 1
+      const wrapped = (...args) => {
+        if (drainWrappers.delete(listener)) activeDrainListeners -= 1
+        return listener(...args)
+      }
+      drainWrappers.set(listener, wrapped)
+      return once(event, wrapped)
+    }
+    res.off = (event, listener) => {
+      if (event === 'drain' && drainWrappers.has(listener)) {
+        const wrapped = drainWrappers.get(listener)
+        drainWrappers.delete(listener); activeDrainListeners -= 1
+        return off(event, wrapped)
+      }
+      return off(event, listener)
     }
     res.on('drain', () => { drainEventCount += 1 })
     return routes.get(req.url)(req, res)
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true }) })
-  return { dir, maxWritableLength: () => maxWritableLength, drainListenerCount: () => drainListenerCount, drainEventCount: () => drainEventCount, async run(script, extra = {}, route = 'exec-stream') {
-    const path = dir + '/script.sh'; await writeFile(path, script)
-    return fetch('http://127.0.0.1:' + server.address().port + '/api/worktable/' + route, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, args: [], cwd: dir, logFile: dir + '/nested/stage.log', ...extra }) })
-  } }
+  return {
+    dir,
+    maxWritableLength: () => maxWritableLength,
+    drainListenerCount: () => drainListenerCount,
+    drainEventCount: () => drainEventCount,
+    activeDrainListeners: () => activeDrainListeners,
+    async run(script, extra = {}, route = 'exec-stream') {
+      const path = dir + '/script.sh'; await writeFile(path, script)
+      return fetch('http://127.0.0.1:' + server.address().port + '/api/worktable/' + route, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, args: [], cwd: dir, logFile: dir + '/nested/stage.log', ...extra }) })
+    },
+    async runRaw(script, extra = {}, route = 'exec-stream') {
+      const path = dir + '/script.sh'; await writeFile(path, script)
+      const body = JSON.stringify({ path, args: [], cwd: dir, logFile: dir + '/nested/stage.log', ...extra })
+      return new Promise((resolve, reject) => {
+        const req = httpRequest({ hostname: '127.0.0.1', port: server.address().port, path: '/api/worktable/' + route, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, resolve)
+        req.on('error', reject); req.end(body)
+      })
+    },
+  }
 }
 async function until(fn) {
   const deadline = Date.now() + 4000
@@ -139,6 +171,15 @@ test('慢客户端下流式响应积压保持有界，恢复读取后脚本完�
   assert.match(log, /finished\n\[exit 0\]/)
   assert.ok(f.drainListenerCount() > 0, '大量输出必须实际进入背压暂停路径')
   assert.ok(f.drainEventCount() > 0, '恢复消费后必须触发 drain 恢复子进程输出')
+})
+test('进入 HTTP 背压后客户端断开仍排空管道并关闭归档日志', async t => {
+  const f = await fixture(t)
+  const res = await f.runRaw('yes 0123456789abcdef0123456789abcdef | head -c 16777216\nsleep 10\n')
+  res.pause()
+  await until(async () => f.activeDrainListeners() > 0)
+  res.destroy()
+  await until(async () => (await readFile(f.dir + '/nested/stage.log', 'utf8').catch(() => '')).includes('[aborted]'))
+  assert.match(await readFile(f.dir + '/nested/stage.log', 'utf8'), /\[aborted\]\n$/)
 })
 test('归档磁盘阻塞时暂停子进程，磁盘恢复后继续且不丢日志', async t => {
   let releaseWrites

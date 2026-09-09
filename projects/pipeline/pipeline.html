@@ -2991,8 +2991,16 @@ function appendArchivePart(parts,value){
   parts.push(text);
 }
 function appendArchiveOutput(parts,stage,out){
-  const stdoutParts=stage._archiveOutputParts || (stage._archiveStdout!=null?[stage._archiveStdout]:[out&&out.stdout]);
-  stdoutParts.forEach(value=>appendArchivePart(parts,value));
+  const archiveParts=stage._archiveOutputParts;
+  if(Array.isArray(archiveParts)){
+    /* _archiveOutputParts 是已经排好边界的连续原始流（Jenkins 分片可落在同一行中间）：
+       仅在归档命令与首片之间补分隔，后续分片必须逐字拼接。 */
+    let first=true;
+    archiveParts.forEach(value=>{
+      const text=String(value==null?'':value); if(!text) return;
+      if(first){ appendArchivePart(parts,text); first=false; } else parts.push(text);
+    });
+  }else appendArchivePart(parts,stage._archiveStdout!=null?stage._archiveStdout:(out&&out.stdout));
   const stderr=String(out&&out.stderr||'');
   if(stderr) appendArchivePart(parts,'✗ '+stderr.replace(/\n(?=.)/g,'\n✗ '));
 }
@@ -3806,11 +3814,9 @@ function jkHeaderValue(headers,name){
   for(const key in headers){ if(String(key).toLowerCase()===want) return String(headers[key]||''); }
   return '';
 }
-function jkTextByteLength(text){
-  try{ return new TextEncoder().encode(String(text||'')).length; }catch(e){ return String(text||'').length; }
-}
 /* Jenkins 官方 progressiveText 接口按服务端 offset 只返回新增控制台内容。
-   404/405 代表旧 Jenkins 不支持该接口，调用方会永久降级到 consoleText 兼容路径。 */
+   404/405 或读不到 X-Text-Size（如 CORS 未 expose 响应头）时降级到 consoleText；不能按响应体长度
+   猜 offset，因为 Jenkins 会把原始 LF 规范化成 CRLF 后再返回，而头里的 offset 仍指向原始日志。 */
 async function jkGetProgressiveText(buildPath,start){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const path=String(buildPath||'').replace(/\/+$/,'')+'/logText/progressiveText?start='+encodeURIComponent(String(start||0));
@@ -3829,9 +3835,8 @@ async function jkGetProgressiveText(buildPath,start){
   if(status<200||status>=300) throw new Error('HTTP '+status);
   const nextHeader=jkHeaderValue(headers,'x-text-size');
   const rawNext=nextHeader!==''?Number(nextHeader):NaN;
-  const fallbackNext=start+jkTextByteLength(text);
-  const next=Number.isFinite(rawNext)&&rawNext>=fallbackNext ? rawNext : fallbackNext;
-  return {text:text,next:next};
+  if(!Number.isFinite(rawNext)||rawNext<start||(text&&rawNext===start)) return null;
+  return {text:text,next:rawNext};
 }
 async function jkReadConsoleDelta(buildPath,start,useProgressive){
   if(useProgressive){

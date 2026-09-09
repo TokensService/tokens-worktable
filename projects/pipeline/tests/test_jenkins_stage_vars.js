@@ -135,7 +135,7 @@ context.jkGetProgressiveText = async (_path, start) => {
 context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"value":"hook-value"}'; };
 
 (async () => {
-  // progressiveText 未暴露 X-Text-Size（常见于 CORS 未 expose 自定义响应头）时，按 UTF-8 字节数推进；路径自动补斜杠
+  // progressiveText offset 必须采用 Jenkins 的 X-Text-Size；响应换行可能被规范化，不能按响应体字节数猜测
   const savedFetch = context.fetch;
   let progressiveUrl = "";
   context.fetch = async (url) => {
@@ -143,9 +143,12 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
     return { status: 200, headers: { get: () => null }, text: async () => "尾声" };
   };
   const noHeaderDelta = await realJkGetProgressiveText("/job/a/7", 11);
-  context.fetch = savedFetch;
   if (progressiveUrl !== "http://jk.local/job/a/7/logText/progressiveText?start=11") throw new Error("progressiveText 路径拼接错误：" + progressiveUrl);
-  if (noHeaderDelta.next !== 11 + Buffer.byteLength("尾声")) throw new Error("缺少 X-Text-Size 时应按 UTF-8 字节推进，得到 " + noHeaderDelta.next);
+  if (noHeaderDelta !== null) throw new Error("缺少 X-Text-Size 时必须降级 consoleText，不能猜测 offset");
+  context.fetch = async () => ({ status: 200, headers: { get: name => name.toLowerCase() === "x-text-size" ? "4" : null }, text: async () => "a\r\nb\r\n" });
+  const normalizedDelta = await realJkGetProgressiveText("/job/a/7/", 0);
+  context.fetch = savedFetch;
+  if (normalizedDelta.next !== 4 || normalizedDelta.text !== "a\r\nb\r\n") throw new Error("必须信任 Jenkins 原始日志 offset，不得按 CRLF 响应长度推进");
   const savedProgressive = context.jkGetProgressiveText;
   const savedGetText = context.jkGetText;
   let fallbackPath = "";
