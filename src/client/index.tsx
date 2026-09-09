@@ -143,7 +143,7 @@ const PRESET_DEFS = [
 const EMOJI_SET = [
   '🧱', '🏠', '🎓', '🚗', '✈️', '🌍', '🏥', '📚', '✏️', '⚙️', '🎨', '🎮', '🌏', '📐', '🧪', '🤖', '📦', '💬',
   '🔍', '👀', '🧐', '✅',                       // 代码检视
-  '🐛', '🪲', '🔎', '🎯',                       // bug 定位
+  '🐛', '🐞', '🪲', '🔎', '🎯',                  // bug 定位
   '🏭', '🔗', '⛓️', '🔄', '🔧',                 // 流水线
   '📈', '📊', '⏱️', '🩺', '🚀',                 // 性能诊断
   '🖥️', '💻', '⌨️', '🗄️', '📡', '☁️', '🔒', '🧰', '🗂️', '💾', // 通用研发
@@ -2650,7 +2650,7 @@ function buildCustomLayoutPrompt(req: string): string {
       const addedWorkspaces: Record<string, string> = {}
       const addedPrompts: Record<string, string> = {}
       let skipped = 0
-      for (const p of j.projects as { name?: string; dir?: string; entry?: string }[]) {
+      for (const p of j.projects as { name?: string; dir?: string; entry?: string; icon?: string }[]) {
         if (!p || typeof p.dir !== 'string' || !p.dir || typeof p.entry !== 'string' || !p.entry) continue
         let name = typeof p.name === 'string' && p.name.trim() ? p.name.trim() : p.entry.replace(/\.html?$/i, '')
         const dirKey = norm(p.dir)
@@ -2680,6 +2680,7 @@ function buildCustomLayoutPrompt(req: string): string {
         layout.id = deadId ?? (layout.id + '-' + added.length) // buildLayout 的 id 只精确到毫秒，批量导入需保证互不相同
         const prevIcon = deadId ? cur.iconOverrides[deadId] : undefined
         if (typeof prevIcon === 'string' && prevIcon) layout.icon = prevIcon
+        else if (typeof p.icon === 'string' && p.icon) layout.icon = p.icon // 入口页 <meta name="worktable-icon"> 自声明（用户覆盖优先）
         layout.main[0].title = name
         layout.main[0].tabs = [{ id: 't1', title: p.entry, content: { kind: 'iframe', url: '/api/worktable/site/' + encodeURIComponent(p.dir) + '/' + encodeURIComponent(p.entry), title: p.entry } }]
         layout.main[0].active = 0

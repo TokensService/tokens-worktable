@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 项目入口页可用 `<meta name="worktable-icon" content="🚀">` 自声明侧栏图标（`src/index.ts` + `src/client/index.tsx`）：
+  `/api/worktable/scan-projects` 扫描时读入口页文件头 64KB 提取该 meta（属性顺序不限，最长 16 字符），
+  随扫描结果带 `icon` 字段；`runImport` 建新布局时采用——优先级：删除时转存的用户图标覆盖 > 页面自声明 > 默认 🧱，
+  已导入/已发布的布局不受影响（认回路径原样继承布局本体图标）。插件自带三个项目已声明：
+  pipeline 🚀、diag_perf 🔍、codereview 🩺（各自入口页 `<head>`）。
+  `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后重新导入项目生效。
+
+- 图标选择器 bug 定位组新增瓢虫 🐞（`src/client/index.tsx`）：EMOJI_SET 由 45 个扩至 46 个，
+  布局/快捷方式/入驻项目换图标时可直接选用。
+  `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后刷新页面生效。
+
 - 更新提示的升级命令改用带版本号的固定 release URL（`src/client/index.tsx`）：原提示词与更新卡片里的
   升级命令固定为 `releases/latest/download/tokens-worktable.tgz`，该 URL 永不变化，包管理器按 URL
   缓存 tarball，重复执行可能装回旧版（部署机曾因此停在 1.0.0，页面版本号不随发布走）。现改为按

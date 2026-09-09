@@ -18,7 +18,7 @@ function loadScanRoute() {
   const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
   let handler
   const ctx = {
-    readdir, pathResolve,
+    readdir, readFile, pathResolve,
     readJsonBody: async (req) => req.body ?? {},
     webServer: { register(route) { handler = route.handler } },
     json(res, status, body) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) },
@@ -77,6 +77,25 @@ test('扫描文件夹：每个含 .html 的子目录一个项目，散装 .html 
   assert.equal(byName.alpha.dir, pathResolve(dir, 'alpha'))
   assert.equal(byName.loose.dir, pathResolve(dir), '散装 .html 的项目目录 = 被扫描目录本身')
   assert.equal(byName.loose.entry, 'loose.html')
+})
+
+test('入口页 <meta name="worktable-icon"> 自声明图标随扫描结果返回', async t => {
+  const dir = await mkdtemp(tmpdir() + '/scan-projects-icon-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await mkdir(dir + '/rocket')
+  await writeFile(dir + '/rocket/index.html', '<html><head><meta name="worktable-icon" content="🚀" /></head></html>')
+  await mkdir(dir + '/ladybug')
+  // 属性顺序反过来（content 在前）也要认得出
+  await writeFile(dir + '/ladybug/ladybug.html', '<html><head><meta content="🐞" name="worktable-icon" /></head></html>')
+  await mkdir(dir + '/plain')
+  await writeFile(dir + '/plain/index.html', '<html><head><meta name="viewport" content="width=x" /></head></html>')
+
+  const res = await call(loadScanRoute(), mockReq({ path: dir }))
+  assert.equal(res.status, 200)
+  const byName = Object.fromEntries(res.json().projects.map(p => [p.name, p]))
+  assert.equal(byName.rocket.icon, '🚀')
+  assert.equal(byName.ladybug.icon, '🐞')
+  assert.equal('icon' in byName.plain, false, '未声明的项目不带 icon 字段')
 })
 
 test('缺少 path 返回 400，目录不存在返回 500', async () => {
