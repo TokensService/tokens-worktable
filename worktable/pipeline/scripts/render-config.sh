@@ -35,6 +35,7 @@ REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"
 EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
+EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
@@ -70,7 +71,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
@@ -84,7 +85,7 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json,
+ node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace,
  chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
@@ -178,6 +179,21 @@ def remove_container_env(name):
         if not isinstance(item, dict) or item.get("name") != name
     ]
 
+def set_ems_switches(value, enabled):
+    if isinstance(value, dict):
+        if value.get("name") == "EMS_ENABLE":
+            value["value"] = str(enabled).lower()
+            value.pop("valueFrom", None)
+        for key, child in value.items():
+            if key.lower() == "ems" and isinstance(child, dict):
+                child["enable"] = enabled
+            elif key.lower() in ("ems_enable", "enable_ems"):
+                value[key] = enabled
+            set_ems_switches(child, enabled)
+    elif isinstance(value, list):
+        for child in value:
+            set_ems_switches(child, enabled)
+
 def split_image_reference(reference):
     image_path, separator, tag = reference.rpartition(":")
     if not separator or "/" not in image_path:
@@ -201,6 +217,9 @@ matches = [arch for arch in architectures if arch.get("arch_name") == arch_name]
 if len(matches) != 1:
     raise SystemExit(f"arch_name not found or not unique: {arch_name}")
 arch = copy.deepcopy(matches[0])
+use_ems = arch.get("use_ems", False)
+if type(use_ems) is not bool:
+    raise SystemExit(f"{arch_name}.use_ems must be a boolean when specified")
 
 groups = []
 resources = []
@@ -360,6 +379,8 @@ def normalize_container_env_values(value):
             normalize_container_env_values(child)
 
 normalize_container_env_values(values)
+set_ems_switches(values, use_ems)
+upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
 values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
@@ -468,6 +489,17 @@ if isinstance(lmcache, dict):
 
 framework_files = values.get("frameworkConfigFiles")
 if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    framework_files["xds_framework.conf"] = re.sub(
+        r"(?m)^(\s*ems_enable\s*=\s*).*$",
+        rf"\g<1>{str(use_ems).lower()}",
+        framework_files["xds_framework.conf"],
+    )
+    if ems_namespace:
+        framework_files["xds_framework.conf"] = re.sub(
+            r"(?m)^(\s*ems_namespace\s*=\s*).*$",
+            rf"\g<1>{ems_namespace}",
+            framework_files["xds_framework.conf"],
+        )
     framework_files["xds_framework.conf"] = re.sub(
         r"(?m)^(\s*use_fem_frontend\s*=\s*).*$",
         r"\g<1>false",
