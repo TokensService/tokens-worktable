@@ -216,6 +216,80 @@ remote_ssh() {
   fi
 }
 
+# TARGET_HOSTS describes the SSH endpoint used by the pipeline.  Kubernetes
+# schedules against a node's InternalIP, which may be different when the node
+# is reached through a jump/NAT address.  Prefer a mapping supplied by the UI,
+# and resolve only missing entries from the target node itself.
+resolve_target_node_ip_map() {
+  local endpoint address port user target node_ip remote_command
+  local -a resolved_entries=()
+  local -a targets=()
+
+  mapfile -t targets < <(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import re
+import sys
+
+hosts = json.loads(sys.argv[1])
+node_map = json.loads(sys.argv[2])
+if not isinstance(hosts, list) or not isinstance(node_map, dict):
+    raise SystemExit("TARGET_HOSTS must be an array and TARGET_NODE_IP_MAP must be an object")
+for host in hosts:
+    endpoint = host.get("ip") if isinstance(host, dict) else None
+    if not isinstance(endpoint, str) or not endpoint:
+        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
+    if isinstance(node_map.get(endpoint), str) and node_map[endpoint]:
+        continue
+    match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+    address, port = match.groups() if match else (endpoint, "22")
+    print(f'{endpoint}\t{host.get("user") or "root"}\t{address}\t{port}')
+PY
+)
+
+  for target_spec in "${targets[@]}"; do
+    IFS=$'\t' read -r endpoint user address port <<<"$target_spec"
+    target="${user}@${address}"
+    # hostname is the kubelet node name on the supported BNT hosts.  Ask the
+    # API for that node's InternalIP instead of guessing from hostname -I.
+    remote_command='node_name="$(hostname)"; kubectl get node "$node_name" -o jsonpath="{.status.addresses[?(@.type==\"InternalIP\")].address}" 2>/dev/null'
+    node_ip="$(remote_ssh "$target" "$port" "$remote_command" || true)"
+    node_ip="$(python3 - "$node_ip" <<'PY'
+import ipaddress
+import re
+import sys
+for value in re.split(r"\s+", sys.argv[1].strip()):
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        continue
+    if address.version == 4:
+        print(address)
+        break
+PY
+)"
+    if [[ -z "$node_ip" ]]; then
+      echo "cannot resolve Kubernetes InternalIP for SSH target $endpoint; set nodeIp in the worktable environment" >&2
+      return 2
+    fi
+    echo "[pipeline] resolved SSH target $endpoint to Kubernetes InternalIP $node_ip"
+    resolved_entries+=("${endpoint}\t${node_ip}")
+  done
+
+  ((${#resolved_entries[@]})) || return 0
+  TARGET_NODE_IP_MAP="$(python3 - "$TARGET_NODE_IP_MAP" "${resolved_entries[@]}" <<'PY'
+import json
+import sys
+
+node_map = json.loads(sys.argv[1])
+for entry in sys.argv[2:]:
+    endpoint, node_ip = entry.split("\t", 1)
+    node_map[endpoint] = node_ip
+print(json.dumps(node_map, separators=(",", ":"), sort_keys=True))
+PY
+)"
+  export TARGET_NODE_IP_MAP
+}
+
 sync_rendered_to_targets() {
   local endpoint host port user target target_run_dir_q target_render_dir_q target_env_q
   local target_env_source="${RUN_DIR}/.target.pipeline.env"
@@ -254,6 +328,7 @@ PY
   done
 }
 
+resolve_target_node_ip_map
 echo "[pipeline] image=$IMAGE_NAME arch=$ARCH_NAME run_dir=$RUN_DIR render_dir=$RENDER_DIR"
 bash "$SCRIPT_DIR/pull-image.sh"
 bash "$SCRIPT_DIR/render-config.sh"
