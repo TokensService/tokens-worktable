@@ -13,5 +13,6 @@ grep -Fq 'nodeIp:e.nodeIp||' "$page"
 grep -Fq 'TARGET_NODE_IP_MAP' "$page"
 grep -Fq 'TARGET_NODE_IP_MAP' "$server"
 grep -Fq 'if (e.ip && e.nodeIp) nodeIpMap[e.ip] = e.nodeIp;' "$server"
+grep -Fq 'resolve_target_node_ip_map()' "$repo_root/worktable/pipeline/scripts/pull_render_config.sh" 2>/dev/null || grep -Fq 'resolve_target_node_ip_map()' "$repo_root/projects/pipeline/scripts/pull_render_config.sh"
 
 echo 'target node-IP mapping injection tests passed'
