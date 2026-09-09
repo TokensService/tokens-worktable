@@ -21,7 +21,7 @@ async function fixture(t, options = {}) {
   let drainEventCount = 0
   let activeDrainListeners = 0
   const json = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
-  vm.runInNewContext(code, { execFile, spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
+  vm.runInNewContext(code, { execFile, spawn: options.spawn || spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
     webServer: { register: r => routes.set(r.path, r.handler) }, json, dropOversizeEnv: () => '',
     readJsonBody: async req => { let s = ''; for await (const c of req) s += c; return JSON.parse(s) } })
   const server = createServer((req, res) => {
@@ -179,6 +179,42 @@ test('进入 HTTP 背压后客户端断开仍排空管道并关闭归档日志',
   await until(async () => f.activeDrainListeners() > 0)
   res.destroy()
   await until(async () => (await readFile(f.dir + '/nested/stage.log', 'utf8').catch(() => '')).includes('[aborted]'))
+  assert.match(await readFile(f.dir + '/nested/stage.log', 'utf8'), /\[aborted\]\n$/)
+})
+test('进入磁盘背压后客户端断开，磁盘恢复仍关闭归档日志', async t => {
+  let releaseWrites
+  let clientDisconnected = false
+  let resumesAfterDisconnect = 0
+  const writesBlocked = new Promise(resolve => { releaseWrites = resolve })
+  const slowOpen = async (...args) => {
+    const handle = await fsOpen(...args)
+    return {
+      writeFile: async (...writeArgs) => { await writesBlocked; return handle.writeFile(...writeArgs) },
+      close: (...closeArgs) => handle.close(...closeArgs),
+    }
+  }
+  const trackedSpawn = (...args) => {
+    const child = spawn(...args)
+    for (const stream of [child.stdout, child.stderr]) {
+      const resume = stream.resume.bind(stream)
+      stream.resume = (...resumeArgs) => {
+        if (clientDisconnected) resumesAfterDisconnect += 1
+        return resume(...resumeArgs)
+      }
+    }
+    return child
+  }
+  const f = await fixture(t, { fsOpen: slowOpen, spawn: trackedSpawn })
+  const res = await f.runRaw('yes 0123456789abcdef0123456789abcdef | head -c 4194304\nprintf finished > producer-finished\nsleep 10\n')
+  res.resume()
+  await new Promise(resolve => setTimeout(resolve, 600))
+  const producerFinishedEarly = await readFile(f.dir + '/producer-finished', 'utf8').then(() => true, () => false)
+  clientDisconnected = true
+  res.destroy()
+  releaseWrites()
+  assert.equal(producerFinishedEarly, false, '断开前应确认子进程正因磁盘积压暂停')
+  await until(async () => (await readFile(f.dir + '/nested/stage.log', 'utf8').catch(() => '')).includes('[aborted]'))
+  assert.ok(resumesAfterDisconnect > 0, '磁盘降到低水位后应恢复已终止子进程的管道以可靠排空')
   assert.match(await readFile(f.dir + '/nested/stage.log', 'utf8'), /\[aborted\]\n$/)
 })
 test('归档磁盘阻塞时暂停子进程，磁盘恢复后继续且不丢日志', async t => {

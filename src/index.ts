@@ -1439,7 +1439,9 @@ export function apply(ctx: Context) {
           try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, sig); else child?.kill(sig as any) } catch {}
         }
         const resumeOutput = () => {
-          if (responseBlocked || logBlocked || finished || disconnected) return
+          /* 断连后 HTTP 背压已失效，但仍须受磁盘低水位约束地排空已终止进程的管道，
+             否则 close 可能一直等不到 stdio 收尾，日志文件也无法写入 [aborted] 后关闭。 */
+          if (logBlocked || finished || (!disconnected && responseBlocked)) return
           outputPaused = false
           child?.stdout?.resume()
           child?.stderr?.resume()
@@ -1456,7 +1458,9 @@ export function apply(ctx: Context) {
           if (finished) return
           disconnected = true
           res.off?.('drain', responseDrained)
+          responseBlocked = false   // socket 已关闭，不再等待永远不会到来的 HTTP drain
           killTree('SIGTERM')
+          resumeOutput()             // 无磁盘积压时立即排空；有积压则由 log.onceDrain 恢复
           if (child) abortTimer = setTimeout(() => killTree('SIGKILL'), 1000)
         })
         const log = await openExecLog(body.logFile, '$ ' + interp + ' ' + scriptPath + (args.length ? ' ' + args.join(' ') : ''))
