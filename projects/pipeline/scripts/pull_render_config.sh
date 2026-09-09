@@ -273,7 +273,7 @@ PY
       return 2
     fi
     echo "[pipeline] resolved SSH target $endpoint to Kubernetes InternalIP $node_ip"
-    resolved_entries+=("${endpoint}\t${node_ip}")
+    resolved_entries+=("${endpoint}"$'\t'"${node_ip}")
   done
 
   ((${#resolved_entries[@]})) || return 0
