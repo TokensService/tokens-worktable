@@ -513,18 +513,26 @@ remote_ssh() {
 }
 
 do_remote() {
-    local ip="$1" target self remote_env pair key
-    target="${SSH_USER}@${ip}"
+    local endpoint="$1" host port target self remote_env pair key
+    if [[ "$endpoint" =~ ^([^:]+):([1-9][0-9]*)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+        (( port <= 65535 )) || { log "ERROR: 无效 SSH 端口: $endpoint"; return 2; }
+    else
+        host="$endpoint"
+        port="$SSH_PORT"
+    fi
+    target="${SSH_USER}@${host}"
     local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-    log "推送脚本到 $target:$SSH_PORT 并执行 $ACTION"
-    remote_scp -P "$SSH_PORT" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
+    log "推送脚本到 $target:$port 并执行 $ACTION"
+    remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
     for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
-    remote_ssh -p "$SSH_PORT" "$target" \
+    remote_ssh -p "$port" "$target" \
         "env REMOTE_EXECUTION=1 TARGET_HOSTS= $remote_env bash /tmp/cleanup-env.sh"
 }
 
