@@ -37,8 +37,8 @@ class Checks(unittest.TestCase):
         env = {'HTTPS_PROXY': 'http://user:secret@proxy:3128'}
         for scope in ('检查进程', '/etc/environment'):
             self.assertEqual(ns['proxy_level'](scope, env), 'WARN')
-        for scope in ('containerd运行进程', 'kubelet运行进程'):
-            self.assertEqual(ns['proxy_level'](scope, env), 'FAIL')
+        self.assertEqual(ns['proxy_level']('containerd运行进程', env), 'WARN')
+        self.assertEqual(ns['proxy_level']('kubelet运行进程', env), 'FAIL')
         self.assertEqual(ns['proxy_level']('检查进程', {'NO_PROXY': '*'}), 'PASS')
 
     def test_memory_units(self):

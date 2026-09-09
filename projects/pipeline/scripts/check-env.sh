@@ -121,8 +121,9 @@ def proxy_keys(values):
 def proxy_level(scope, values):
     if not proxy_keys(values):
         return 'PASS'
-    # 宿主机代理存在不等于部署失败；服务进程仍按无代理基准阻断。
-    return 'WARN' if scope in ('检查进程', '/etc/environment') else 'FAIL'
+    # 已明确配置代理的宿主机或运行时仅告警；实际部署连通性由后续镜像拉取、
+    # API 与跨节点检查验证，避免把可由 NO_PROXY 绕过的环境直接判为失败。
+    return 'WARN' if scope in ('检查进程', '/etc/environment', 'containerd运行进程') else 'FAIL'
 
 
 def quantity(value):
