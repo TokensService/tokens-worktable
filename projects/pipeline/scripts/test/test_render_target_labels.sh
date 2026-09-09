@@ -67,6 +67,22 @@ lmcache:
     image:
       repository: registry.example/old/xds
       tag: old
+lmcacheSidecar:
+  enabled: {LMCACHE_SIDECAR_ENABLED}
+  mpPortBase: {LMCACHE_MP_PORT_BASE}
+  httpPortBase: {LMCACHE_HTTP_PORT_BASE}
+  l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
+  l1SizeGb: {LMCACHE_L1_SIZE_GB}
+  l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
+  maxWorkers: {LMCACHE_MAX_WORKERS}
+  logLevel: {LMCACHE_LOG_LEVEL}
+  resources:
+    requests:
+      cpu: {LMCACHE_CPU_REQUEST}
+      memory: {LMCACHE_MEMORY_REQUEST}
+    limits:
+      cpu: {LMCACHE_CPU_LIMIT}
+      memory: {LMCACHE_MEMORY_LIMIT}
 # disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
@@ -158,9 +174,48 @@ assert values["lmcache"]["namespace"]["name"] == "xds-one-node-78-verify"
 assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
+assert values["lmcacheSidecar"] == {
+    "enabled": False,
+    "mpPortBase": 18000,
+    "httpPortBase": 18080,
+    "l1InitSizeGb": 0,
+    "l1SizeGb": 0,
+    "l1AlignBytes": 4096,
+    "maxWorkers": 1,
+    "logLevel": "INFO",
+    "resources": {
+        "requests": {"cpu": 1, "memory": "1Gi"},
+        "limits": {"cpu": 1, "memory": "1Gi"},
+    },
+}
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
+PY
+
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-override" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-override' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_MP_PORT_BASE":"20000","LMCACHE_L1_SIZE_GB":"512","LMCACHE_MEMORY_LIMIT":"600Gi"}' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-lmcache-override/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+sidecar = values["lmcacheSidecar"]
+assert sidecar["enabled"] is True, sidecar
+assert sidecar["mpPortBase"] == 20000, sidecar
+assert sidecar["l1SizeGb"] == 512, sidecar
+assert sidecar["resources"]["limits"]["memory"] == "600Gi", sidecar
 PY
 
 if ARCH_NAME=test-arch \
