@@ -202,30 +202,22 @@ fi
 [[ "$TASK_EXECUTOR_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_POLL_SECONDS: $TASK_EXECUTOR_READY_POLL_SECONDS" >&2; exit 2; }
 
 if [[ -z "$XDS_URL" ]]; then
-  target_ip="$(python3 - "$TARGET_HOSTS" <<'PY'
+  target_ip="$(python3 - "$NODE_LABELS_FILE" <<'PY'
 import json
 import sys
 
 try:
-    target_hosts = json.loads(sys.argv[1])
+    labels = json.load(open(sys.argv[1], encoding="utf-8"))
 except json.JSONDecodeError as error:
-    raise SystemExit(f"invalid TARGET_HOSTS: {error}")
+    raise SystemExit(f"invalid node labels file: {error}")
 
-if not isinstance(target_hosts, list) or not target_hosts:
-    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array when XDS_URL is unset")
-first_host = target_hosts[0]
+hosts = labels.get("hosts", [])
+if not isinstance(hosts, list) or not hosts:
+    raise SystemExit("node labels file must contain at least one target node IP when XDS_URL is unset")
+first_host = hosts[0]
 if not isinstance(first_host, dict) or not isinstance(first_host.get("ip"), str) or not first_host["ip"]:
-    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string when XDS_URL is unset")
-endpoint = first_host["ip"]
-import re
-match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
-if match:
-    address, port = match.groups()
-    if not 1 <= int(port) <= 65535:
-        raise SystemExit(f"invalid TARGET_HOSTS[0] port: {endpoint}")
-    print(address)
-else:
-    print(endpoint)
+    raise SystemExit("node labels file host must contain a non-empty IP when XDS_URL is unset")
+print(first_host["ip"])
 PY
 )"
   XDS_API_HOST="$target_ip"
@@ -443,16 +435,13 @@ PY
 }
 
 label_target_nodes() {
-  local inventory
+  local inventory labels
   inventory="$(mktemp)"
-  trap 'rm -f "$inventory"' RETURN
+  labels="$(mktemp)"
+  trap 'rm -f "$inventory" "$labels"' RETURN
   "$KUBECTL_BIN" get nodes -o json >"$inventory"
 
-  while IFS=$'\t' read -r node label; do
-    [[ -n "$node" && -n "$label" ]] || continue
-    echo "[deploy] label node=$node $label"
-    "$KUBECTL_BIN" label node "$node" "$label" --overwrite
-  done < <(python3 - "$NODE_LABELS_FILE" "$inventory" <<'PY'
+  python3 - "$NODE_LABELS_FILE" "$inventory" >"$labels" <<'PY'
 import json
 import sys
 
@@ -469,11 +458,16 @@ for node in inventory.get("items", []):
             by_ip[address.get("address")] = name
 missing = [host["ip"] for host in labels.get("hosts", []) if host["ip"] not in by_ip]
 if missing:
-    raise SystemExit("target host IPs do not match Kubernetes InternalIP: " + ", ".join(missing))
+    raise SystemExit("target node IPs do not match Kubernetes InternalIP: " + ", ".join(missing))
 for host in labels["hosts"]:
     print(by_ip[host["ip"]], f"{key}={value}", sep="\t")
 PY
-)
+
+  while IFS=$'\t' read -r node label; do
+    [[ -n "$node" && -n "$label" ]] || continue
+    echo "[deploy] label node=$node $label"
+    "$KUBECTL_BIN" label node "$node" "$label" --overwrite
+  done <"$labels"
 }
 
 wait_for_release_cleanup() {
@@ -519,23 +513,15 @@ prepare_ctrl_slot_capacity() {
   local holder_namespace holder_pod
   local -a target_ips holders
 
-  mapfile -t target_ips < <(python3 - "$TARGET_HOSTS" <<'PY'
+  mapfile -t target_ips < <(python3 - "$NODE_LABELS_FILE" <<'PY'
 import json
 import sys
 
-hosts = json.loads(sys.argv[1])
-for host in hosts:
+labels = json.load(open(sys.argv[1], encoding="utf-8"))
+for host in labels.get("hosts", []):
     ip = host.get("ip") if isinstance(host, dict) else None
     if isinstance(ip, str) and ip:
-        import re
-        match = re.fullmatch(r"([^:]+):(\d+)", ip)
-        if match:
-            address, port = match.groups()
-            if not 1 <= int(port) <= 65535:
-                raise SystemExit(f"invalid TARGET_HOSTS port: {ip}")
-            print(address)
-        else:
-            print(ip)
+        print(ip)
 PY
 )
 

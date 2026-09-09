@@ -37,6 +37,8 @@ YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+[[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 NODE_SELECTOR_KEY="xds.optest"
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
@@ -68,7 +70,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
@@ -82,7 +84,7 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
+ node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json,
  chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
@@ -123,19 +125,30 @@ except json.JSONDecodeError as error:
     raise SystemExit(f"invalid TARGET_HOSTS: {error}")
 if not isinstance(target_hosts, list) or not target_hosts:
     raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
+try:
+    target_node_ip_map = json.loads(target_node_ip_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TARGET_NODE_IP_MAP: {error}")
+if not isinstance(target_node_ip_map, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
 target_ips = []
 for host in target_hosts:
     if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
     endpoint = host["ip"]
+    mapped_ip = target_node_ip_map.get(endpoint)
+    if target_node_ip_map and not isinstance(mapped_ip, str):
+        raise SystemExit(f"TARGET_NODE_IP_MAP is missing target endpoint: {endpoint}")
+    if mapped_ip is not None and (not isinstance(mapped_ip, str) or not mapped_ip):
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     if endpoint_match:
         address, port = endpoint_match.groups()
         if not 1 <= int(port) <= 65535:
             raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
-        target_ips.append(address)
+        target_ips.append(mapped_ip if mapped_ip is not None else address)
     else:
-        target_ips.append(endpoint)
+        target_ips.append(mapped_ip if mapped_ip is not None else endpoint)
 
 def selector_fragment(ip):
     if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):

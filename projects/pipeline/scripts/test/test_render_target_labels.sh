@@ -105,6 +105,7 @@ ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-one-node-78-verify' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
+TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175","192.168.0.78:2222":"192.168.31.17"}' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
 bash "$script_dir/render-config.sh" >/dev/null
@@ -117,7 +118,7 @@ import yaml
 with open(sys.argv[1], encoding="utf-8") as source:
     values = yaml.safe_load(source)
 
-expected = {"xds.optest": "node-243-78"}
+expected = {"xds.optest": "node-175-17"}
 assert values["nodeSelector"] == expected, values["nodeSelector"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
@@ -129,7 +130,7 @@ assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 8, values["w
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 8, values["workerGroups"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
-assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
+assert env["XDS_TE_POD_LABEL_VAL"] == "node-175-17", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert env["XDS_DATABASE_PORT"] == "3306", env
 assert isinstance(env["XDS_DATABASE_PORT"], str), env
@@ -161,6 +162,21 @@ assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfi
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
+
+if ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-missing-map" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-one-node-map-failure' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
+TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175"}' \
+bash "$script_dir/render-config.sh" >"$work_dir/missing-map.out" 2>&1; then
+  echo 'render must reject a node-IP map missing a target SSH endpoint' >&2
+  exit 1
+fi
+grep -Fq 'TARGET_NODE_IP_MAP is missing target endpoint: 192.168.0.78:2222' "$work_dir/missing-map.out"
 
 ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-single" \

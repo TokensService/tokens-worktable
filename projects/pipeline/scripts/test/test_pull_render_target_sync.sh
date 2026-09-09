@@ -88,6 +88,7 @@ PIPELINE_NAME='target-sync-test' \
 RUN_DIR="$work_dir/execution-run" \
 TARGET_RUN_DIR="$work_dir/target-run" \
 TARGET_HOSTS='[{"ip":"127.0.0.1","user":"root","pass":"must-not-be-copied"}]' \
+TARGET_NODE_IP_MAP='{"127.0.0.1":"192.168.31.175"}' \
 bash "$script" >/dev/null
 
 test -f "$work_dir/target-run/rendered/xds-cluster/Chart.yaml"
@@ -95,6 +96,7 @@ test -f "$work_dir/target-run/rendered/values.rendered.yaml"
 test -f "$work_dir/target-run/rendered/architecture.request.json"
 test -f "$work_dir/target-run/pipeline.env"
 grep -Fq "export RENDER_DIR=$work_dir/target-run/rendered" "$work_dir/target-run/pipeline.env"
+grep -Fq "export TARGET_NODE_IP_MAP=\\{\\\"127.0.0.1\\\":\\\"192.168.31.175\\\"\\}" "$work_dir/target-run/pipeline.env"
 if grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"; then
   echo 'target pipeline environment must not contain SSH passwords' >&2
   exit 1
