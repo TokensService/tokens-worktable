@@ -1,4 +1,0 @@
-apiVersion: v1
-description: A Helm chart for xds, support recover when node is closed
-name: xds-cluster
-version: 1.0.20

@@ -92,15 +92,4 @@ if grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"; then
   exit 1
 fi
 
-PATH="$fake_bin:$PATH" \
-FAKE_TEMPLATE_DIR="$template_dir" \
-IMAGE_NAME='registry.example/xds:test' \
-TEMPLATE_PROFILE='lmcache-sidecar' \
-RUN_DIR="$work_dir/lmcache-profile-run" \
-bash "$pull_script" >/dev/null
-
-test -f "$work_dir/lmcache-profile-run/template/xds-cluster/Chart.yaml"
-grep -Fq 'name: lmcache-sidecar' "$work_dir/lmcache-profile-run/template/xds-cluster/templates/raycluster-cluster.yaml"
-grep -Fq 'lmcacheSidecar:' "$work_dir/lmcache-profile-run/template/values-16Node-je-cpp-bnt3.yaml"
-
 echo "pull-render target-sync tests passed"
