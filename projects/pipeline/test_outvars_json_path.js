@@ -1,8 +1,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const pipelineHtml = process.env.PIPELINE_HTML;
-if (!pipelineHtml) throw new Error("PIPELINE_HTML is required");
+const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/pipeline.html";
 const source = fs.readFileSync(pipelineHtml, "utf8");
 
 // 切片：parseStageVars / parseStageJson / jsonPathGet / mergeStageVars / applyOutVars / substRunVars

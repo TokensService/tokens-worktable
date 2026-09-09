@@ -42,7 +42,7 @@ common:
   containerEnv: []
 EOF
 cat >"$template_dir/architectures.json" <<'EOF'
-{"architectures":[{"arch_name":"test-arch","deploy_spec_packages":[{"deploy_specs":[{"name":"prefill","role":"prefill","resources":[{"gpu":1,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","resources":[{"gpu":1,"cpu":1,"memory":"1G"}]}]}]}]}
+{"architectures":[{"arch_name":"test-arch","deploy_spec_packages":[{"deploy_specs":[{"name":"prefill","role":"prefill","min":1,"max":1,"default":1,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","min":1,"max":1,"default":1,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]}]}]}]}
 EOF
 cat >"$fake_bin/nerdctl" <<'EOF'
 #!/usr/bin/env bash

@@ -552,7 +552,7 @@
 
   /* —— API 错误诊断：区分 401/403/404，识别「项目访问令牌」，掩盖明文令牌 ——
      GitCode 的 403 形如："403 Forbidden - Unauthorized READ by groupId: 13332940,
-     user: p_repoRobot，token:xAx9r6UZxsFpktRzxEoVgbVN" —— 其中 user 以 p_ 开头是
+     user: p_repoRobot，token:***" —— 其中 user 以 p_ 开头是
      「项目访问令牌」自动生成的 bot 账户，只对创建它的那一个仓库有权限，无法访问组织级
      接口 /orgs/{org}/repos；且 error_message 内带明文令牌，回显前必须掩盖。 */
   function apiError(status, message) {

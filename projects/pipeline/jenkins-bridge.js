@@ -5,12 +5,12 @@
 // 改写为桥接地址。这样浏览器页面（工作台 :3051）即可跨域直连本机 Jenkins，
 // 全程不出本机、无需配置任何代理、无需改动 Jenkins 本身。
 // 启动：  node jenkins-bridge.js            （日志写 bridge.log，pid 写 bridge.pid）
-// 环境变量：BRIDGE_BIND（默认 0.0.0.0）、BRIDGE_PORT（默认 28081）、
+// 环境变量：BRIDGE_BIND（默认 127.0.0.1）、BRIDGE_PORT（默认 28081）、
 //          BRIDGE_TARGET（默认 http://127.0.0.1:28080）、BRIDGE_REWRITE（额外改写地址，逗号分隔）
 'use strict';
 const http = require('http');
 
-const BIND   = process.env.BRIDGE_BIND   || '0.0.0.0';
+const BIND   = process.env.BRIDGE_BIND   || '127.0.0.1';
 const PORT   = parseInt(process.env.BRIDGE_PORT || '28081', 10);
 const TARGET = (process.env.BRIDGE_TARGET || 'http://127.0.0.1:28080').replace(/\/+$/, '');
 const EXTRA  = (process.env.BRIDGE_REWRITE || '').split(',').map(s => s.trim()).filter(Boolean);

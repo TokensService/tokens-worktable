@@ -145,8 +145,9 @@ chmod +x "$FAKE_BIN/nerdctl" "$FAKE_BIN/sshpass" "$FAKE_BIN/ssh" "$FAKE_BIN/kube
 
 PATH="$FAKE_BIN:$PATH" FAKE_IMAGE_ROOT="$FAKE_IMAGE_ROOT" \
 RUN_DIR="$WORK/pull-run" TARGET_IP="192.0.2.10" TARGET_USER=root TARGET_PASSWORD=test \
+DEPLOY_IMAGE="registry.example.com/xds:test" \
 env -u CHART_TEMPLATE_DIR -u VALUES_TEMPLATE -u ARCH_FILE \
-  bash "$SCRIPTS/pull-image.sh" registry.example.com/xds:test >"$WORK/pull.out"
+  bash "$SCRIPTS/pull-image.sh" >"$WORK/pull.out"
 
 grep -qx "RUN_DIR=$WORK/pull-run" "$WORK/pull.out"
 grep -qx "CHART_TEMPLATE_DIR=$WORK/pull-run/template/xds-cluster" "$WORK/pull.out"
@@ -160,7 +161,7 @@ PATH="$FAKE_BIN:$PATH" FAKE_IMAGE_ROOT="$FAKE_IMAGE_ROOT" \
 RUN_DIR="$WORK/pull-run-injected" TARGET_IP="192.0.2.10" TARGET_USER=root TARGET_PASSWORD=test \
 IMAGE_NAME="registry.example.com/xds" IMAGE_TAG="test" \
 env -u CHART_TEMPLATE_DIR -u VALUES_TEMPLATE -u ARCH_FILE \
-  bash "$SCRIPTS/pull-image.sh" "" >"$WORK/pull-injected.out"
+  bash "$SCRIPTS/pull-image.sh" >"$WORK/pull-injected.out"
 grep -qx 'DEPLOY_IMAGE=registry.example.com/xds:test' "$WORK/pull-injected.out"
 
 echo "PASS: pull-image exports all three immutable template inputs"

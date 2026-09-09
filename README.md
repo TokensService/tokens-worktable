@@ -35,6 +35,7 @@
     npm install
     npm run build   # lib/index.js + lib/client.js
     npm run check
+    npm test        # 插件与 projects/ 的全部本地自动化测试
 
 ## 构建注意事项
 

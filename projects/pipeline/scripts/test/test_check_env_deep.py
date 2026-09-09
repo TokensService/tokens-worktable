@@ -105,4 +105,5 @@ class Network(unittest.TestCase):
         self.assertFalse(any('create' in c for c in calls))
         self.assertEqual(reports[0][0],'FAIL')
 
-unittest.main()
+if __name__ == '__main__':
+    unittest.main()

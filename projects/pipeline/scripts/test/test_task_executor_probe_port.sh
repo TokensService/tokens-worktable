@@ -25,7 +25,7 @@ workerGroups:
         command: [bash, -c, 'wget -q -O- http://localhost:52365/api/local_raylet_healthz | grep success']
 EOF
 cat >"$WORK/architecture.json" <<'EOF'
-[{"arch_name":"probe-port-test","deploy_spec_packages":[{"spec_package_name":"probe-port-test","deploy_specs":[{"name":"prefill","role":"prefill","params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}]}]}]}]
+[{"arch_name":"probe-port-test","deploy_spec_packages":[{"spec_package_name":"probe-port-test","deploy_specs":[{"name":"prefill","role":"prefill","min":1,"max":1,"default":1,"params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","min":1,"max":1,"default":1,"params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}]}]}]}]
 EOF
 
 RUN_DIR="$WORK/run" \
