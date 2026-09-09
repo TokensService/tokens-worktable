@@ -104,7 +104,7 @@ VALUES_TEMPLATE="$work_dir/values.yaml" \
 ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-one-node-78-verify' \
-TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78"}]' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
 bash "$script_dir/render-config.sh" >/dev/null
