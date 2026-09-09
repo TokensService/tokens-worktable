@@ -127,7 +127,15 @@ target_ips = []
 for host in target_hosts:
     if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-    target_ips.append(host["ip"])
+    endpoint = host["ip"]
+    endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+    if endpoint_match:
+        address, port = endpoint_match.groups()
+        if not 1 <= int(port) <= 65535:
+            raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
+        target_ips.append(address)
+    else:
+        target_ips.append(endpoint)
 
 def selector_fragment(ip):
     if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):

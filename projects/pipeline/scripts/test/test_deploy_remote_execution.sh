@@ -39,10 +39,11 @@ PIPELINE_NAME=test-pipeline \
 TARGET_RUN_DIR="$work_dir/remote-run" \
 TARGET_RENDER_DIR="$work_dir/remote-render" \
 TARGET_PIPELINE_ENV_FILE="$work_dir/remote-run/pipeline.env" \
-TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test-password"}]' \
+TARGET_HOSTS='[{"ip":"192.0.2.10:2222","user":"root","pass":"test-password"}]' \
 bash "$script" >"$work_dir/output"
 
 grep -Fq 'root@192.0.2.10' "$work_dir/ssh.log"
+grep -Fq -- '-p 2222' "$work_dir/ssh.log"
 grep -Fq 'DEPLOY_ON_TARGET_HOST=1' "$work_dir/ssh.log"
 grep -Fq "$work_dir/remote-render" "$work_dir/ssh.log"
 grep -Fq "$work_dir/remote-run/scripts/register-model.sh" "$work_dir/ssh.log"

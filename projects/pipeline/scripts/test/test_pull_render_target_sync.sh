@@ -10,7 +10,7 @@ grep -Fq '|| TARGET_PIPELINE_ENV_FILE="${TARGET_RUN_DIR}/pipeline.env"' "$script
 grep -Fq 'sync_rendered_to_targets()' "$script"
 grep -Fq 'tar -C "$RENDER_DIR" -cf - .' "$script"
 grep -Fq 'TARGET_HOSTS must be a non-empty JSON array' "$script"
-grep -Fq 'sshpass -e ssh -o StrictHostKeyChecking=no' "$script"
+grep -Fq 'sshpass -e ssh -p "$port" -o StrictHostKeyChecking=no' "$script"
 grep -Fq 'TARGET_RUN_DIR TARGET_RENDER_DIR' "$script"
 grep -Fq 'TARGET_PIPELINE_ENV_FILE SSH_PASSWORD' "$script"
 grep -Fq 'safe_target_hosts=' "$script"
@@ -65,7 +65,14 @@ cat >"$fake_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 while [[ "$1" == -* ]]; do
-  if [[ "$1" == "-o" ]]; then shift 2; else shift; fi
+  if [[ "$1" == "-o" ]]; then
+    shift 2
+  elif [[ "$1" == "-p" ]]; then
+    printf '%s\n' "$2" >>"$SSH_PORT_LOG"
+    shift 2
+  else
+    shift
+  fi
 done
 shift
 bash -c "$1"
@@ -74,6 +81,7 @@ chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh"
 
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
+SSH_PORT_LOG="$work_dir/ssh-ports.log" \
 IMAGE_NAME='registry.example/xds:test' \
 ARCH_NAME='test-arch' \
 PIPELINE_NAME='target-sync-test' \
@@ -91,5 +99,32 @@ if grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"; then
   echo 'target pipeline environment must not contain SSH passwords' >&2
   exit 1
 fi
+
+PATH="$fake_bin:$PATH" \
+FAKE_TEMPLATE_DIR="$template_dir" \
+SSH_PORT_LOG="$work_dir/ssh-ports.log" \
+IMAGE_NAME='registry.example/xds:test' \
+ARCH_NAME='test-arch' \
+PIPELINE_NAME='target-port-test' \
+RUN_DIR="$work_dir/port-execution-run" \
+TARGET_RUN_DIR="$work_dir/port-target-run" \
+TARGET_HOSTS='[{"ip":"127.0.0.1:2222","user":"root"}]' \
+bash "$script" >/dev/null
+
+grep -Fxq '2222' "$work_dir/ssh-ports.log"
+
+PATH="$fake_bin:$PATH" \
+FAKE_TEMPLATE_DIR="$template_dir" \
+SSH_PORT_LOG="$work_dir/ssh-ports.log" \
+IMAGE_NAME='registry.example/xds:test' \
+ARCH_NAME='test-arch' \
+PIPELINE_NAME='target-ips-port-test' \
+RUN_DIR="$work_dir/target-ips-execution-run" \
+TARGET_RUN_DIR="$work_dir/target-ips-target-run" \
+TARGET_IP='127.0.0.1:2223' \
+TARGET_IPS='["127.0.0.1:2223"]' \
+bash "$script" >/dev/null
+
+grep -Fxq '2223' "$work_dir/ssh-ports.log"
 
 echo "pull-render target-sync tests passed"
