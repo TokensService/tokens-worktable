@@ -14,6 +14,97 @@ TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
+TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+[[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
+IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${PROJECT:-}}"
+IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
+IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-}}"
+
+remote_quote() {
+  printf '%q' "$1"
+}
+
+run_target() {
+  local target="$1" port="$2" password="$3"
+  shift 3
+  if [[ -n "$password" ]]; then
+    command -v sshpass >/dev/null 2>&1 || {
+      echo "sshpass is required for password-authenticated target image pulls" >&2
+      return 2
+    }
+    SSHPASS="$password" sshpass -e ssh -p "$port" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+  else
+    ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+  fi
+}
+
+pull_target_images() {
+  local image="$1" target_line target_json endpoint user host port password target credential remote_command mapped_targets_text
+  local -a mapped_targets
+
+  mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
+import base64
+import json
+import re
+import sys
+
+hosts_text, mapping_text = sys.argv[1:]
+try:
+    hosts = json.loads(hosts_text)
+    mapping = json.loads(mapping_text)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid target image-pull configuration: {error}")
+if not isinstance(hosts, list):
+    raise SystemExit("TARGET_HOSTS must be a JSON array")
+if not isinstance(mapping, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+for item in hosts:
+    if not isinstance(item, dict) or not isinstance(item.get("ip"), str) or not item["ip"]:
+        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
+    endpoint = item["ip"]
+    if endpoint not in mapping:
+        continue
+    match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+    if match:
+        host, port = match.groups()
+        if not 1 <= int(port) <= 65535:
+            raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
+    else:
+        host, port = endpoint, "22"
+    payload = {"endpoint": endpoint, "host": host, "port": port,
+               "user": item.get("user") or "root",
+               "password": item.get("pass", item.get("password", "")) or ""}
+    print(base64.b64encode(json.dumps(payload).encode()).decode())
+PY
+  )"
+  [[ -n "$mapped_targets_text" ]] || return 0
+  mapfile -t mapped_targets <<<"$mapped_targets_text"
+
+  [[ -n "$IMAGE_PULL_PROJECT" && -n "$IMAGE_PULL_AK" && -n "$IMAGE_PULL_LOGIN_KEY" ]] || {
+    echo "IMAGE_PULL_PROJECT, IMAGE_PULL_AK, and IMAGE_PULL_LOGIN_KEY are required for mapped target image pulls" >&2
+    return 2
+  }
+  credential="${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}"
+
+  for target_line in "${mapped_targets[@]}"; do
+    target_json="$(printf '%s' "$target_line" | base64 -d)"
+    read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
+import json
+import sys
+item = json.loads(sys.argv[1])
+print(item["endpoint"], item["user"], item["host"], item["port"], item["password"])
+PY
+)
+    target="${user}@${host}"
+    printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo 'ctr is required on target host' >&2; exit 2; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else \"\${ctr_cmd[@]}\" -n k8s.io image pull --user $(remote_quote "$credential") $(remote_quote "$image"); fi"
+    echo "[pull] target $endpoint: ensure image $image"
+    run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+  done
+}
 
 pull_image() {
   local image="$1" registry_host
@@ -59,6 +150,7 @@ export_templates() {
 }
 
 pull_image "$IMAGE"
+pull_target_images "$IMAGE"
 [[ "$TEMPLATE_IMAGE" == "$IMAGE" ]] || pull_image "$TEMPLATE_IMAGE"
 
 if [[ -z "${CHART_TEMPLATE_DIR:-}" && -z "${VALUES_TEMPLATE:-}" && -z "${ARCH_FILE:-}" ]]; then
