@@ -113,4 +113,18 @@ bash "$script" >/dev/null
 
 grep -Fxq '2222' "$work_dir/ssh-ports.log"
 
+PATH="$fake_bin:$PATH" \
+FAKE_TEMPLATE_DIR="$template_dir" \
+SSH_PORT_LOG="$work_dir/ssh-ports.log" \
+IMAGE_NAME='registry.example/xds:test' \
+ARCH_NAME='test-arch' \
+PIPELINE_NAME='target-ips-port-test' \
+RUN_DIR="$work_dir/target-ips-execution-run" \
+TARGET_RUN_DIR="$work_dir/target-ips-target-run" \
+TARGET_IP='127.0.0.1:2223' \
+TARGET_IPS='["127.0.0.1:2223"]' \
+bash "$script" >/dev/null
+
+grep -Fxq '2223' "$work_dir/ssh-ports.log"
+
 echo "pull-render target-sync tests passed"

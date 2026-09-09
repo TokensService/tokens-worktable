@@ -57,7 +57,10 @@ contains_unexpanded_placeholder "$RESOURCE_MANIFEST" && RESOURCE_MANIFEST=""
 NODE_LABELS_FILE="${NODE_LABELS_FILE:-}"
 contains_unexpanded_placeholder "$NODE_LABELS_FILE" && NODE_LABELS_FILE=""
 [[ -n "$NODE_LABELS_FILE" ]] || NODE_LABELS_FILE="${RENDER_DIR}/node-labels.json"
-TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_HOSTS="${TARGET_HOSTS:-}"
+TARGET_IP="${TARGET_IP:-}"
+TARGET_IPS="${TARGET_IPS:-}"
+TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
 contains_unexpanded_placeholder "$TARGET_RUN_DIR" && TARGET_RUN_DIR=""
 [[ -n "$TARGET_RUN_DIR" ]] || TARGET_RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"
@@ -80,6 +83,51 @@ POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-}"
 contains_unexpanded_placeholder "$PIPELINE_ENV_FILE" && PIPELINE_ENV_FILE=""
 [[ -n "$PIPELINE_ENV_FILE" ]] || PIPELINE_ENV_FILE="${RUN_DIR}/pipeline.env"
+
+# The UI historically provides TARGET_IP/TARGET_IPS, while deployment scripts
+# consume TARGET_HOSTS.  Normalize once and keep an optional :port suffix for
+# the SSH layer to split later.
+TARGET_HOSTS="$(python3 - "$TARGET_HOSTS" "$TARGET_IPS" "$TARGET_IP" "$TARGET_USER" <<'PY'
+import json
+import sys
+
+raw_hosts, raw_ips, fallback_ip, default_user = sys.argv[1:]
+
+def parse_json_list(raw, name):
+    if not raw or raw == '[]':
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"invalid {name}: {error}")
+    if not isinstance(value, list):
+        raise SystemExit(f"{name} must be a JSON array")
+    return value
+
+hosts = parse_json_list(raw_hosts, "TARGET_HOSTS")
+if hosts:
+    result = []
+    for item in hosts:
+        if not isinstance(item, dict) or not isinstance(item.get("ip"), str) or not item["ip"]:
+            raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
+        result.append({"ip": item["ip"], "user": item.get("user") or default_user})
+else:
+    result = []
+    for item in parse_json_list(raw_ips, "TARGET_IPS"):
+        if isinstance(item, str) and item:
+            result.append({"ip": item, "user": default_user})
+        elif isinstance(item, dict) and isinstance(item.get("ip"), str) and item["ip"]:
+            result.append({"ip": item["ip"], "user": item.get("user") or default_user})
+        else:
+            raise SystemExit("every TARGET_IPS entry must be a non-empty string or an object with ip")
+    if not result and fallback_ip:
+        result.append({"ip": fallback_ip, "user": default_user})
+
+if not result:
+    raise SystemExit("TARGET_HOSTS, TARGET_IPS, or TARGET_IP must provide at least one target")
+print(json.dumps(result, separators=(",", ":")))
+PY
+)"
 
 export IMAGE_NAME ARCH_NAME PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE \
   NAMESPACE RELEASE_NAME CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST \
