@@ -37,6 +37,8 @@ YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+[[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 NODE_SELECTOR_KEY="xds.optest"
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
@@ -68,11 +70,10 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
 import copy
 import json
-import os
 from pathlib import Path
 import re
 import sys
@@ -83,7 +84,7 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
+ node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json,
  chart_dir, image_pull_secrets_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
@@ -124,19 +125,30 @@ except json.JSONDecodeError as error:
     raise SystemExit(f"invalid TARGET_HOSTS: {error}")
 if not isinstance(target_hosts, list) or not target_hosts:
     raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
+try:
+    target_node_ip_map = json.loads(target_node_ip_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TARGET_NODE_IP_MAP: {error}")
+if not isinstance(target_node_ip_map, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
 target_ips = []
 for host in target_hosts:
     if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
     endpoint = host["ip"]
+    mapped_ip = target_node_ip_map.get(endpoint)
+    if target_node_ip_map and not isinstance(mapped_ip, str):
+        raise SystemExit(f"TARGET_NODE_IP_MAP is missing target endpoint: {endpoint}")
+    if mapped_ip is not None and (not isinstance(mapped_ip, str) or not mapped_ip):
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     if endpoint_match:
         address, port = endpoint_match.groups()
         if not 1 <= int(port) <= 65535:
             raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
-        target_ips.append(address)
+        target_ips.append(mapped_ip if mapped_ip is not None else address)
     else:
-        target_ips.append(endpoint)
+        target_ips.append(mapped_ip if mapped_ip is not None else endpoint)
 
 def selector_fragment(ip):
     if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):
@@ -289,20 +301,6 @@ template_vars.setdefault("ELB_ID", "unused")
 template_vars.setdefault("NODE_PORT", "31365")
 template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
-# LMCache sidecar settings are data-only substitutions for the versioned Chart
-# template.  The renderer does not create containers or mutate their shape.
-template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", os.environ.get("LMCACHE_SIDECAR_ENABLED", "false").lower())
-template_vars.setdefault("LMCACHE_MP_PORT_BASE", os.environ.get("LMCACHE_MP_PORT_BASE", "5555"))
-template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", os.environ.get("LMCACHE_HTTP_PORT_BASE", "8000"))
-template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", os.environ.get("LMCACHE_L1_INIT_SIZE_GB", "64"))
-template_vars.setdefault("LMCACHE_L1_SIZE_GB", os.environ.get("LMCACHE_L1_SIZE_GB", "1100"))
-template_vars.setdefault("LMCACHE_L1_ALIGN_BYTES", os.environ.get("LMCACHE_L1_ALIGN_BYTES", "2097152"))
-template_vars.setdefault("LMCACHE_MAX_WORKERS", os.environ.get("LMCACHE_MAX_WORKERS", "4"))
-template_vars.setdefault("LMCACHE_LOG_LEVEL", os.environ.get("LMCACHE_LOG_LEVEL", "INFO"))
-template_vars.setdefault("LMCACHE_CPU_REQUEST", os.environ.get("LMCACHE_CPU_REQUEST", "4"))
-template_vars.setdefault("LMCACHE_CPU_LIMIT", os.environ.get("LMCACHE_CPU_LIMIT", "8"))
-template_vars.setdefault("LMCACHE_MEMORY_REQUEST", os.environ.get("LMCACHE_MEMORY_REQUEST", "1100Gi"))
-template_vars.setdefault("LMCACHE_MEMORY_LIMIT", os.environ.get("LMCACHE_MEMORY_LIMIT", "1100Gi"))
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -321,18 +319,6 @@ for key, value in replace_map.items():
 for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
-
-lmcache_sidecar = values.get("lmcacheSidecar")
-if lmcache_sidecar is not None:
-    if not isinstance(lmcache_sidecar, dict) or type(lmcache_sidecar.get("enabled")) is not bool:
-        raise SystemExit("lmcacheSidecar.enabled must resolve to true or false")
-    if lmcache_sidecar["enabled"]:
-        # The image-side connector reads its per-Pod local endpoint from the
-        # Chart-injected environment.  The architecture only enables it.
-        for package in arch.get("deploy_spec_packages", []):
-            for spec in package.get("deploy_specs", []):
-                if spec.get("role") == "prefill":
-                    spec.setdefault("params", {})["use_lmcache"] = True
 
 if str(mock_db).lower() == "true":
     framework_files = values.get("frameworkConfigFiles")
