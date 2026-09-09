@@ -64,7 +64,7 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
     histFilter:{kw:'x',status:'',pipeline:''}, histPageSize:20,
     collectConfig:()=>({pipelines:[{id:'pl-xds'}],repositories:[{id:'r1',pass:''}]}),
   };
-  const ctx=makeCtx(shared,['collectSettingsForExport','ioTimestamp','exportSettings','exportPipelines']);
+  const ctx=makeCtx(shared,['collectSettingsForExport','ioTimestamp','buildSettingsExport','buildPipelinesExport','exportSettings','exportPipelines']);
   ctx.exportSettings();
   ctx.exportPipelines();
   assert.equal(downloads.length,2);
@@ -207,7 +207,7 @@ test('导入文件校验：坏 JSON / 非本页导出 / kind 不符时提示且�
     loadServerState:async()=>{ throw new Error('校验失败不得加载服务端'); },
     applyImportedSettings:()=>applied.push(1),
     normalizeImportedPipelines:()=>{ throw new Error('kind 不符不得进入归一化'); },
-  },['importSettingsFile','importPipelinesFile']);
+  },['importSettingsFile','importPipelinesFile','importSettingsData','importPipelinesData']);
   const file=obj=>({text:async()=>typeof obj==='string'?obj:JSON.stringify(obj)});
   await ctx.importSettingsFile(file('not-json'));
   await ctx.importSettingsFile(file({app:'other',kind:'pipeline-settings',config:{}}));
@@ -233,7 +233,7 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
     viewRc:{stages:[{id:'s9'}],nodes:{},selId:'s9',token:'t9',over:false,vars:{},timer:null}, runStages:null, selectedId:'s9',
     savePipelines:()=>saved.push('savePipelines'),
     renderAll:()=>rendered.push('renderAll'),
-  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesFile']);
+  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
   const data={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[
     {id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0'}]},
@@ -251,10 +251,182 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
 });
 
 test('页面存在右上角导入导出菜单与全部入口元素',()=>{
-  ['ioMenu','ioMenuBtn','ioMenuPanel','ioTip','ioExpSettings','ioImpSettings','ioExpPipelines','ioImpPipelines','ioImpSettingsFile','ioImpPipelinesFile'].forEach(id=>{
+  ['ioMenu','ioMenuBtn','ioMenuPanel','ioTip','ioExpSettings','ioImpSettings','ioExpPipelines','ioImpPipelines','ioImpSettingsFile','ioImpPipelinesFile',
+   'ioExpSettingsSrv','ioExpPipelinesSrv','ioImpSrv','ioSrvPanel','ioSrvDir','ioSrvList','ioSrvTip','ioSrvRefresh','ioSrvClose'].forEach(id=>{
     assert.ok(source.includes(`id="${id}"`),`pipeline.html 缺少元素 #${id}`);
   });
   const navIdx=source.indexOf('id="navMain"');
   const menuIdx=source.indexOf('id="ioMenu"');
   assert.ok(menuIdx>0 && menuIdx<navIdx,'导入导出菜单应在标题区（页面导航之前，即右上角）');
+});
+
+/* ---------- 服务端备份（导入导出文件在服务端 storages/pipeline-exports/） ---------- */
+function elFull(){ return {style:{},className:'',textContent:'',title:'',type:'',value:'',checked:false,children:[],
+  appendChild(c){ this.children.push(c); },
+  addEventListener(t,h){ if(t==='click') this.clickHandler=h; },
+  set innerHTML(v){ this.children.length=0; }, get innerHTML(){ return ''; } }; }
+const flush=()=>new Promise(r=>setImmediate(r));
+
+test('服务端文件名规整：自动补 .json、trim；路径分隔符 / .. / 前导点 / 超长 / 空名返回 null',()=>{
+  const ctx=makeCtx({},['ioSrvNormalizeName']);
+  assert.equal(ctx.ioSrvNormalizeName('my-backup'),'my-backup.json','缺省自动补 .json 后缀');
+  assert.equal(ctx.ioSrvNormalizeName('  a.json  '),'a.json','两端空白被 trim');
+  assert.equal(ctx.ioSrvNormalizeName('../escape.json'),null);
+  assert.equal(ctx.ioSrvNormalizeName('a/b.json'),null);
+  assert.equal(ctx.ioSrvNormalizeName('a\\b.json'),null);
+  assert.equal(ctx.ioSrvNormalizeName('.hidden.json'),null);
+  assert.equal(ctx.ioSrvNormalizeName('x'.repeat(121)),null,'超长拒绝');
+  assert.equal(ctx.ioSrvNormalizeName(''),null);
+  assert.equal(ctx.ioSrvNormalizeName(null),null);
+});
+
+test('导出到服务端：与本地下载同一份 payload，POST /api/worktable/pipeline/io/save，成功给提示',async()=>{
+  const calls=[],tips=[];
+  const els={branchName:{value:'dev'},deployStrategyName:{value:'s1'},triggeredBy:{value:'lhf'}};
+  const ctx=makeCtx({
+    $:elMapStub(els),
+    prompt:()=>'my-backup',
+    ioTipShow:(msg,bad)=>tips.push({msg,bad}),
+    collectSettingsForExport:()=>({repositories:[{id:'r1',pass:'tk'}],theme:'dark'}),
+    curPipelineId:'pl-xds', selectedEnvIds:null, curRepoId:'r1', schedEnvIds:null,
+    histFilter:{kw:'',status:'',pipeline:''}, histPageSize:10,
+    fetch:async(url,opts)=>{ calls.push({url,body:JSON.parse(opts.body)}); return {ok:true,json:async()=>({ok:true,name:JSON.parse(opts.body).name})}; },
+  },['ioTimestamp','buildSettingsExport','ioSrvNormalizeName','ioSrvPost','exportSettingsToServer']);
+  ctx.exportSettingsToServer();
+  await flush();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].url,'/api/worktable/pipeline/io/save');
+  assert.equal(calls[0].body.name,'my-backup.json','文件名自动补 .json');
+  assert.equal(calls[0].body.payload.kind,'pipeline-settings','payload 与本地下载导出同源（buildSettingsExport）');
+  assert.equal(calls[0].body.payload.config.repositories[0].pass,'tk');
+  assert.equal(tips.length,1);
+  assert.match(tips[0].msg,/✓ 已导出到服务端：my-backup\.json/);
+  assert.ok(!tips[0].bad);
+});
+
+test('导出到服务端：取消不动作；非法文件名不发起请求；HTTP 失败给 ✗ 提示',async()=>{
+  const calls=[],tips=[];
+  let promptRet=null;
+  const els={branchName:{value:''},deployStrategyName:{value:''},triggeredBy:{value:''}};
+  const ctx=makeCtx({
+    $:elMapStub(els),
+    prompt:()=>promptRet,
+    ioTipShow:(msg,bad)=>tips.push({msg,bad}),
+    collectSettingsForExport:()=>({}),
+    pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]}],
+    curPipelineId:'pl-xds', selectedEnvIds:null, curRepoId:'', schedEnvIds:null,
+    histFilter:{kw:'',status:'',pipeline:''}, histPageSize:10,
+    fetch:async(url,opts)=>{ calls.push(url); return {ok:false,status:500,json:async()=>({error:'disk full'})}; },
+  },['ioTimestamp','buildSettingsExport','buildPipelinesExport','ioSrvNormalizeName','ioSrvPost','exportSettingsToServer','exportPipelinesToServer']);
+  ctx.exportSettingsToServer();   // prompt 返回 null = 取消
+  await flush();
+  assert.equal(calls.length,0,'取消不得发起请求');
+  assert.equal(tips.length,0,'取消不给提示');
+  promptRet='../evil';
+  ctx.exportPipelinesToServer();
+  await flush();
+  assert.equal(calls.length,0,'非法文件名不得发起请求');
+  assert.equal(tips.length,1);
+  assert.equal(tips[0].bad,true);
+  promptRet='pl-backup.json';
+  ctx.exportPipelinesToServer();
+  await flush();
+  assert.equal(calls.length,1,'合法名字发起请求');
+  assert.equal(tips.length,2);
+  assert.equal(tips[1].bad,true);
+  assert.match(tips[1].msg,/disk full/,'失败提示带服务端错误');
+});
+
+test('从服务端导入：按 kind 自动分流设置 / 流水线，复用与文件导入相同的数据入口',async()=>{
+  const tips=[],applied=[];
+  const settingsData={app:'worktable-pipeline',kind:'pipeline-settings',version:1,config:{theme:'dark'}};
+  const pipelinesData={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]}]};
+  let loadData=settingsData;
+  const ctx=makeCtx({
+    ioSrvTipShow:(msg,bad)=>tips.push({msg,bad}),
+    pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]},{id:'pl-new',stages:[{id:'s1'}]}],
+    importSettingsData:async d=>{ applied.push(['settings',d]); return 'ok'; },
+    importPipelinesData:async d=>{ applied.push(['pipelines',d]); return 'ok'; },
+    fetch:async(url,opts)=>{
+      assert.equal(url,'/api/worktable/pipeline/io/load');
+      return {ok:true,json:async()=>({ok:true,name:JSON.parse(opts.body).name,data:loadData})};
+    },
+  },['ioSrvPost','importFromServer']);
+  await ctx.importFromServer('settings-1.json');
+  await ctx.importFromServer('x.json');
+  loadData=pipelinesData;
+  await ctx.importFromServer('pl-1.json');
+  assert.equal(applied.length,3);
+  assert.equal(applied[0][0],'settings');
+  assert.equal(applied[1][0],'settings','设置文件无论文件名都走设置导入');
+  assert.equal(applied[2][0],'pipelines');
+  assert.equal(applied[0][1].config.theme,'dark');
+  assert.equal(tips.length,3);
+  assert.match(tips[0].msg,/✓ 已从服务端导入设置：settings-1\.json/);
+  assert.match(tips[2].msg,/✓ 已从服务端导入 2 条流水线：pl-1\.json/);
+  tips.forEach(t=>assert.ok(!t.bad));
+});
+
+test('从服务端导入：非本页备份 / HTTP 失败 / 用户取消 的提示分支',async()=>{
+  const tips=[];
+  let behavior='junk';
+  const ctx=makeCtx({
+    ioSrvTipShow:(msg,bad)=>tips.push({msg,bad}),
+    pipelines:[],
+    importSettingsData:async()=>{ behavior='cancelled-settings'; return 'cancel'; },
+    importPipelinesData:async()=>{ throw new Error('不应走到'); },
+    fetch:async(url)=>{
+      if(behavior==='http-err') return {ok:false,status:404,json:async()=>({error:'ENOENT'})};
+      if(behavior==='junk') return {ok:true,json:async()=>({ok:true,name:'x.json',data:{foo:1}})};
+      return {ok:true,json:async()=>({ok:true,name:'s.json',data:{app:'worktable-pipeline',kind:'pipeline-settings',config:{}}})};
+    },
+  },['ioSrvPost','importFromServer']);
+  await ctx.importFromServer('x.json');
+  assert.equal(tips.length,1);
+  assert.equal(tips[0].bad,true,'kind 不识别给 ✗');
+  assert.match(tips[0].msg,/不是本页/);
+  behavior='ok-cancel';
+  await ctx.importFromServer('s.json');
+  assert.equal(tips.length,1,'用户取消确认框不再追加提示');
+  behavior='http-err';
+  await ctx.importFromServer('gone.json');
+  assert.equal(tips.length,2);
+  assert.equal(tips[1].bad,true);
+  assert.match(tips[1].msg,/✗ 从服务端导入失败/);
+});
+
+test('服务端备份列表面板：渲染目录 / 文件行（导入按钮按名字回传）与加载失败提示',async()=>{
+  const imported=[],tips=[];
+  const els={ioSrvList:elFull(),ioSrvDir:elFull()};
+  const doc={createElement:()=>elFull()};
+  const listPayload={dir:'/home/u/.dsh/storages/pipeline-exports',files:[
+    {name:'pipeline-settings-20260909-120000.json',size:2048,mtime:Date.UTC(2026,8,9,4,0,0)},
+    {name:'pl.json',size:512,mtime:0},
+  ]};
+  let fetchFail=false;
+  const ctx=makeCtx({
+    $:elMapStub(els),
+    document:doc,
+    ioSrvTipShow:(msg,bad)=>tips.push({msg,bad}),
+    importFromServer:name=>imported.push(name),
+    fetch:async()=>{ if(fetchFail) throw new Error('conn refused'); return {ok:true,json:async()=>listPayload}; },
+  },['ioSrvFmtMeta','renderIoSrvList','refreshIoSrvList']);
+  ctx.refreshIoSrvList();
+  await flush();
+  assert.equal(els.ioSrvDir.textContent,listPayload.dir,'面板显示服务端备份目录');
+  assert.equal(els.ioSrvList.children.length,2,'每个文件一行');
+  const row0=els.ioSrvList.children[0];
+  assert.equal(row0.children[0].textContent,'pipeline-settings-20260909-120000.json');
+  assert.match(row0.children[1].textContent,/20260909 /,'元数据含日期');
+  assert.match(row0.children[1].textContent,/2K/,'元数据含大小');
+  assert.equal(row0.children[2].textContent,'⤒ 导入');
+  row0.children[2].clickHandler();
+  assert.deepEqual(imported,['pipeline-settings-20260909-120000.json'],'导入按钮按文件名回传 importFromServer');
+  fetchFail=true;
+  ctx.refreshIoSrvList();
+  await flush();
+  assert.equal(els.ioSrvList.children.length,0,'加载失败清空列表');
+  assert.equal(tips.length,1);
+  assert.equal(tips[0].bad,true);
+  assert.match(tips[0].msg,/读取服务端备份列表失败/);
 });

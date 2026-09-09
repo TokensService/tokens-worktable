@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- pipeline 导入导出支持服务端备份（`src/index.ts` + `projects/pipeline/pipeline.html`）：「⤓⤒ 导入导出」
+  菜单新增「服务端备份」区——「导出设置 / 流水线到服务端…」（与浏览器本地下载同一份 payload，POST 落盘）
+  与「从服务端导入…」（面板列出服务端备份文件：目录 / 文件名 / 修改时间 / 大小，逐个导入，按文件内容
+  kind 自动识别设置 / 流水线，复用与文件导入完全相同的校验、确认与恢复逻辑——importSettingsFile/
+  importPipelinesFile 重构出 importSettingsData/importPipelinesData 数据入口，本地文件与服务端共用）。
+  服务端新增三条路由：GET `/api/worktable/pipeline/io/list`（按 mtime 倒序、上限 200）、POST
+  `/api/worktable/pipeline/io/save`、POST `/api/worktable/pipeline/io/load`；备份文件固定在
+  `<DSH_HOME>/storages/pipeline-exports/` 下，文件名白名单校验（禁路径分隔符 / `..` / 前导点、
+  必须 `.json` 结尾、≤120 字，客户端 `ioSrvNormalizeName` 与服务端 `pipelineIoName` 同一套规则），
+  不提供任意路径读写，写入走 writeJsonAtomic 原子落盘，单文件上限 64MB。新增
+  `tests/pipeline-io.test.mjs` 4 个路由测试（往返 / 白名单 / 方法与参数校验 / 排序与过滤）与
+  `projects/pipeline/tests/test_config_import_export.js` 6 个客户端契约测试。`lib/index.js`
+  （+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
+
 - 本地编译安装（link:）时侧栏默认标题显示「工作台（开发中）」（`src/index.ts` + `src/client/index.tsx`
   + `src/client/locales.ts`）：服务端新增 `isLocalDevInstall` 判定——lib/ 目录 realpath 不在标准安装布局
   `<home>/profiles/<profile>/node_modules/<pkg>/lib` 内即为本地编译安装（link:/junction 安装 realpath 落在
