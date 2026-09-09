@@ -178,7 +178,8 @@ test('流水线编辑器在收集普罗预设任务行内展示 model/namespace/
   const ctx={editStages:[{id:'__prom_collect__',name:'收集普罗数据',preset:true,pkey:'promCollect',prom:{modelName:'model-a',xdsNamespace:'ns-a',startTime:'2026-09-08T10:00',endTime:'2026-09-08T11:00'}}],editFocusIdx:-1,
     $:id=>id==='plStageList'?wrap:null,esc:String,
     normalizePipelineProm:p=>Object.assign({modelName:'',xdsNamespace:'${DEPLOY_STRATEGY}-${BY}',startTime:'',endTime:''},p||{}),
-    document:{createElement:()=>({dataset:{},style:{},innerHTML:'',querySelector(){return null;}})}};
+    stageCardDragStart(){},stageCardDragOver(){},stageCardDrop(){},stageCardDragEnd(){},
+    document:{createElement:()=>({dataset:{},style:{},innerHTML:'',addEventListener(){},querySelector(){return null;}})}};
   vm.createContext(ctx);load('function renderStageEditor(', 'function renderStageParams(',ctx);ctx.renderStageEditor();
   const html=wrap.children[0].innerHTML;
   assert.match(html,/data-f="promModelName"[^>]*value="model-a"/);

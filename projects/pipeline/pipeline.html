@@ -55,6 +55,12 @@
     .pipeline-node.abort{ border-color:color-mix(in srgb, var(--st-idle) 50%, transparent); background:color-mix(in srgb, var(--st-idle) 6%, transparent); opacity:.7; }
     .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
     .pipeline-preset { display:inline-block; margin-bottom:6px; padding:1px 6px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; font-size:10px; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-fill-l1); }
+    /* 流水线编辑器任务卡：整卡可拖拽，目标卡上/下边缘提示最终插入位置 */
+    .plstage { cursor:grab; transition:opacity .12s,border-color .12s,box-shadow .12s; }
+    .plstage:active { cursor:grabbing; }
+    .plstage.plstage-dragging { opacity:.42; }
+    .plstage.plstage-drag-before { border-top:3px solid var(--dsw-alias-state-accent-primary) !important; }
+    .plstage.plstage-drag-after { border-bottom:3px solid var(--dsw-alias-state-accent-primary) !important; }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
     .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--st-run); transition:width .12s linear; }
@@ -673,7 +679,7 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可填序号或上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数，运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
         <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
@@ -2301,10 +2307,58 @@ function normalizeStageKind(s){
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
 function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, skip:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
+let stageDragFrom=-1;
+/* 编辑器统一重排入口：序号、上下移与拖拽都只修改 editStages 草稿，点「保存」后再持久化。 */
+function moveEditStage(from,to){
+  from=parseInt(from,10); to=parseInt(to,10);
+  if(!editStages.length || !Number.isFinite(from) || from<0 || from>=editStages.length) return from;
+  to=Math.max(0,Math.min(editStages.length-1,Number.isFinite(to)?to:from));
+  if(to===from) return from;
+  const moved=editStages.splice(from,1)[0]; editStages.splice(to,0,moved);
+  return to;
+}
+/* 目标卡上半区=插到它前面，下半区=插到它后面；源卡移除会让后方插槽左移一位。 */
+function stageDropTarget(from,over,after){
+  let to=over+(after?1:0);
+  if(from<to) to-=1;
+  return Math.max(0,Math.min(editStages.length-1,to));
+}
+function clearStageDragMarks(){
+  const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
+  for(let i=0;i<wrap.children.length;i+=1) wrap.children[i].classList.remove('plstage-dragging','plstage-drag-before','plstage-drag-after');
+}
+function stageCardDragStart(e){
+  const row=e.currentTarget; stageDragFrom=parseInt(row.dataset.idx,10);
+  clearStageDragMarks(); row.classList.add('plstage-dragging');
+  if(e.dataTransfer){ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',String(stageDragFrom)); }
+}
+function stageCardDragOver(e){
+  if(stageDragFrom<0) return;
+  e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='move';
+  const row=e.currentTarget, over=parseInt(row.dataset.idx,10); clearStageDragMarks();
+  const source=$('plStageList').children[stageDragFrom]; if(source) source.classList.add('plstage-dragging');
+  if(over===stageDragFrom) return;
+  const rect=row.getBoundingClientRect(), after=e.clientY>=rect.top+rect.height/2;
+  row.classList.add(after?'plstage-drag-after':'plstage-drag-before');
+}
+function stageCardDrop(e){
+  if(stageDragFrom<0) return;
+  e.preventDefault();
+  const from=stageDragFrom, row=e.currentTarget, over=parseInt(row.dataset.idx,10);
+  const rect=row.getBoundingClientRect(), after=e.clientY>=rect.top+rect.height/2;
+  const to=stageDropTarget(from,over,after); stageDragFrom=-1; clearStageDragMarks();
+  if(to!==from){ editFocusIdx=moveEditStage(from,to); renderStageEditor(); }
+}
+function stageCardDragEnd(){ stageDragFrom=-1; clearStageDragMarks(); }
 function renderStageEditor(){
   const wrap=$('plStageList'); if(!wrap) return; wrap.innerHTML='';
   editStages.forEach((s,i)=>{
     const row=document.createElement('div'); row.className='plstage'; row.dataset.idx=i;
+    row.draggable=true;
+    row.addEventListener('dragstart',stageCardDragStart);
+    row.addEventListener('dragover',stageCardDragOver);
+    row.addEventListener('drop',stageCardDrop);
+    row.addEventListener('dragend',stageCardDragEnd);
     row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;'
       +(i===editFocusIdx?';border-color:var(--dsw-alias-state-accent-primary);box-shadow:0 0 0 2px rgba(79,142,247,.18);':'');
     /* 预设任务行：仅可调整执行顺序（序号/上移/下移），内容与脚本在设置页配置，不可改名/删除 */
@@ -5354,8 +5408,8 @@ $('plStageList').addEventListener('click', (e)=>{
   const row=btn.closest('.plstage'); const i=parseInt(row.dataset.idx,10);
   const act=btn.getAttribute('data-act');
   if(act==='del'){ editStages.splice(i,1); renderStageEditor(); }
-  else if(act==='up' && i>0){ const t=editStages[i-1]; editStages[i-1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
-  else if(act==='down' && i<editStages.length-1){ const t=editStages[i+1]; editStages[i+1]=editStages[i]; editStages[i]=t; renderStageEditor(); }
+  else if(act==='up' && i>0){ moveEditStage(i,i-1); renderStageEditor(); }
+  else if(act==='down' && i<editStages.length-1){ moveEditStage(i,i+1); renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
 });
@@ -5364,7 +5418,7 @@ $('plStageList').addEventListener('change', (e)=>{
   const row=e.target.closest('.plstage'); const i=parseInt(row.dataset.idx,10); const s=editStages[i]; if(!s) return;
   if(f==='ord'){   // 数字排序：把该阶段移动到目标序号（1 起，自动夹取到有效范围）
     const to=Math.min(editStages.length, Math.max(1, parseInt(e.target.value,10)||(i+1)))-1;
-    if(to!==i){ const mv=editStages.splice(i,1)[0]; editStages.splice(to,0,mv); editFocusIdx=to; renderStageEditor(); }
+    if(to!==i){ editFocusIdx=moveEditStage(i,to); renderStageEditor(); }
     else e.target.value=String(i+1);
     return;
   }
