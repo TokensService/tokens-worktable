@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname+'/pipeline.html', 'utf8');
+const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname+'/../pipeline.html', 'utf8');
 function load(start, end, context){
   const a=source.indexOf(start), b=source.indexOf(end,a);
   assert.ok(a>=0 && b>a);
@@ -27,10 +27,12 @@ test('六个慢节点及重复刷新不阻塞流水线请求', async()=>{
 
 test('混合 sched 标记的手动流水线立即进入第二个脚本',()=>{
   const called=[];
-  const ctx={running:false,curRun:{hasSched:true}, activeStages:()=>[{script:{path:'/gen.sh'}},{sched:{},script:{path:'/print.sh'}}],
-    registerStageTimers:async()=>called.push('schedule'),runScriptStep:i=>called.push(i),stageUrlOf:()=>'',finish(){}};
-  load('function advance(i)', '/* ---------- 阶段间变量传递',ctx);
-  ctx.advance(1);
+  const rc={id:'r1',stages:[{script:{path:'/gen.sh'}},{sched:{},script:{path:'/print.sh'}}],nodes:[],selId:null,
+    timer:null,over:false,overall:null,token:'t1',vars:{},by:'tester',source:'manual'};
+  const ctx={runPresetStep(){},skipStage(){},stageUrlOf:()=>'',runUrlStep(){},runEvaltokensStep(){},
+    runScriptStep:(rc,i)=>called.push(i),runStage(){},finish(){}};
+  load('function advance(rc,i)', '/* ---------- 阶段间变量传递',ctx);
+  ctx.advance(rc,1);
   assert.deepEqual(called,[1]);
 });
 

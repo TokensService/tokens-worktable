@@ -75,6 +75,8 @@ type ViewState = {
   consoleTheme?: 'dark' | 'light' | 'system'
   /** 全局默认会话分组（宿主工作区 id）：项目未单独设分组时，「页面修改」/ AI 日志分析等新建会话落进它；空/缺 = 未分组。 */
   workspace?: string | null
+  /** 工作台自定义名称（侧栏区块标题；空/缺 = 默认 locale 文案「工作台」）。 */
+  title?: string | null
 }
 
 /** 卡片上报的项目元信息（协议 v2）。 */
@@ -286,6 +288,7 @@ const DEFAULT_VIEW: ViewState = {
   dock: 'footer',
   floatTop: null,
   workspace: null,
+  title: null,
 }
 
 const DEFAULT_PROJECTS: ProjectsState = {
@@ -323,6 +326,7 @@ function loadView(): ViewState {
       floatTop: typeof p.floatTop === 'number' ? p.floatTop : null,
       consoleTheme: p.consoleTheme === 'dark' || p.consoleTheme === 'light' || p.consoleTheme === 'system' ? p.consoleTheme : 'system',
       workspace: typeof p.workspace === 'string' && p.workspace ? p.workspace : null,
+      title: typeof p.title === 'string' && p.title.trim() ? p.title : null,
     }
   } catch {
     return { ...DEFAULT_VIEW }
@@ -3090,6 +3094,9 @@ function buildCustomLayoutPrompt(req: string): string {
     )
   }
 
+  // 侧栏标题：用户自定义名（设置面板可改）优先，空/缺回退 locale 默认「工作台」
+  const worktableTitle = (view.title ?? '').trim() || t('title')
+
   return (
     <div ref={rootRef} className={'dsh-wt_section' + (isFloat ? ' dsh-wt_float' : '')} style={isFloat ? floatStyle : dockedStyle}>
       <div className="dsh-wt_divider" />
@@ -3114,7 +3121,7 @@ function buildCustomLayoutPrompt(req: string): string {
           onPointerUp={onHandlePointerUp}
           onPointerCancel={onHandlePointerUp}
           onDoubleClick={resetDock}
-        >{t('title')}</span>
+        >{worktableTitle}</span>
         {updateInfo && (
           <button
             type="button"
@@ -3276,6 +3283,13 @@ function buildCustomLayoutPrompt(req: string): string {
               <div className="dsh-wt_updateHint">{t('update.upgradeHint')}</div>
             </div>
           )}
+          {/* 工作台名称：自定义侧栏区块标题；清空提交 = 恢复默认「工作台」（复用项目管理改名的 RenameInput 交互） */}
+          <div className="dsh-wt_manageHead">
+            <span className="dsh-wt_manageTitle">{t('name.label')}</span>
+          </div>
+          <div className="dsh-wt_pageEditHint">{t('name.desc')}</div>
+          <RenameInput initial={worktableTitle} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
+          <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('sort.label')}</span>
           </div>

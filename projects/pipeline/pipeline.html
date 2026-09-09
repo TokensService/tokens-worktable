@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- K8s/通用流水线 · 交互式可视化（多条流水线 + 执行人 + 运行队列 + 定时任务） -->
+<!-- K8s/通用流水线 · 交互式可视化（多条流水线 + 执行人 + 运行队列（异机并行） + 定时任务） -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -119,7 +119,7 @@
   <div style="display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:10px;">
     <div>
       <h1 class="dshell-title">流水线工作台</h1>
-      <p class="dshell-sub">多条流水线 · 执行人留痕 · 运行队列 · 定时任务（周期/一次性）· 环境多选（IP）· 本地模拟</p>
+      <p class="dshell-sub">多条流水线 · 执行人留痕 · 运行队列（不同机器并行运行） · 定时任务（周期/一次性）· 环境多选（IP）· 本地模拟</p>
     </div>
     <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
       <div id="overall" style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -133,6 +133,22 @@
           <option value="auto">跟随系统</option>
         </select>
       </label>
+      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；导出文件含密码与令牌明文 -->
+      <span id="ioMenu" style="position:relative;display:inline-block;">
+        <button id="ioMenuBtn" type="button" class="dshell-btn dshell-btnGhost mini" title="设置 / 流水线的导入导出；导出文件含节点密码与访问令牌明文，请妥善保管、勿提交进仓库">⤓⤒ 导入导出</button>
+        <div id="ioMenuPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:30;min-width:230px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+          <div class="dshell-muted" style="font-size:11px;padding:2px 6px;">设置（环境 / 代码仓 / 脚本 / 服务配置等）</div>
+          <button id="ioExpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置页全部配置（含仅存本浏览器的代码仓访问令牌与运行选择），不含流水线与运行历史">⤓ 导出设置…</button>
+          <button id="ioImpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出设置」的 JSON 文件整体恢复设置，流水线与运行历史不受影响">⤒ 导入设置…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">流水线（全部流水线定义）</div>
+          <button id="ioExpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线定义（含内置流水线上的编辑）">⤓ 导出流水线…</button>
+          <button id="ioImpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出流水线」的 JSON 文件，覆盖当前全部流水线">⤒ 导入流水线…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">导出文件含密码 / 令牌明文，勿提交仓库</div>
+          <div id="ioTip" class="dshell-muted" style="font-size:11px;padding:2px 6px;"></div>
+        </div>
+        <input id="ioImpSettingsFile" type="file" accept="application/json,.json" style="display:none" />
+        <input id="ioImpPipelinesFile" type="file" accept="application/json,.json" style="display:none" />
+      </span>
     </div>
   </div>
 
@@ -921,18 +937,18 @@ async function migrateInlineLogs(){
 /* 收集本次运行各阶段日志的元数据，随历史记录持久化到服务端：
    全量日志的唯一实体是归档文件（run-<tag>-NN-任务名.log，永不截断），历史条目只存 logFile 路径，
    回放历史时按需经文件读路由拉取（见 loadReplayLogs）；无归档目录（scriptsDir 非绝对路径）时内嵌全文兜底 */
-function collectRunLogs(){
+function collectRunLogs(rc){
   const out=[];
-  const folder=curRun ? archiveFolderFor(curRun) : null;
-  activeStages().forEach((s,idx)=>{
-    const n=nodes[s.id];
+  const folder=rc ? archiveFolderFor(rc) : null;
+  (rc?rc.stages:[]).forEach((s,idx)=>{
+    const n=rc.nodes[s.id];
     if(!n || n.status==='running') return;
     const e={stage:s.name, status:n.status, dur:(n.dur||0)};
-    if(folder) e.logFile=folder+'/'+taskLogFile(curRun, stageSeq(idx), s.name);
+    if(folder) e.logFile=folder+'/'+taskLogFile(rc, stageSeq(rc.stages, idx), s.name);
     else{
       /* URL 阶段响应体超 64K 时展示版被截断，内嵌兜底也换全量副本（与 archiveStageLog 同一规则） */
       const st2=(s._archiveStdout!=null && s._out) ? Object.assign({}, s, {_out:Object.assign({}, s._out, {stdout:s._archiveStdout})}) : s;
-      let text=''; try{ text=(buildLog(st2, curRun, n)||[]).join('\n'); }catch(e2){}
+      let text=''; try{ text=(buildLog(st2, rc, n)||[]).join('\n'); }catch(e2){}
       e.log=text;
     }
     out.push(e);
@@ -1083,10 +1099,11 @@ function renderEnvs(){
     const tr=document.createElement('tr');
     tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
+  tb.querySelectorAll('[data-envcopy]').forEach(b=>b.addEventListener('click',()=>copyEnv(b.getAttribute('data-envcopy'))));
   tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
   tb.querySelectorAll('[data-gpurefresh]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpurefresh')); if(e) fetchGpu(e); }));
   tb.querySelectorAll('[data-gpudetail]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpudetail')); if(e) openGpuDetail(e); }));
@@ -1196,6 +1213,17 @@ function saveEnvForm(){
   saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
 }
 function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
+/* 复制节点环境：拷贝名称/IP/凭据生成不重名的「副本」，新 id 避免与源节点的设备状态缓存串号 */
+function copyEnv(id){
+  const src=environments.find(x=>x.id===id); if(!src) return;
+  const base=(src.name||'').replace(/（副本( \d+)?）$/,'');   /* 去掉已有副本后缀，避免链式累加 */
+  const taken=new Set(environments.map(e=>e.name));
+  let name=base+'（副本）';
+  if(taken.has(name)){ let n=2; while(taken.has(base+'（副本 '+n+'）')) n++; name=base+'（副本 '+n+'）'; }
+  const idx=environments.indexOf(src);
+  environments.splice(idx+1, 0, {id:'env-'+Date.now().toString(36), name, ip:src.ip, user:src.user||'', pass:src.pass||''});
+  saveEnvs(); renderEnvs(); renderEnvOptions();
+}
 function applyEnvCredAll(){
   // 把当前表单（添加/编辑区）里填写的用户名/密码应用到所有节点
   const u=$('envUser').value.trim(); const p=$('envPass').value;
@@ -1934,7 +1962,7 @@ function saveCleanup(){
   const sc=$('schedCleanupEnv'); if(sc) sc.checked=$('cleanupEnv').checked;   // 定时页「清理环境」与主控同一开关，保持双向同步
   renderPresetMultiBtn();
   persistState();
-  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+  if(!viewActive() && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
 function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
@@ -1990,7 +2018,7 @@ function saveCheck(){
   }catch(e){}
   renderPresetMultiBtn();
   persistState();
-  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+  if(!viewActive() && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
 function renderCheckParams(){
   const box=$('checkParams'); if(!box) return; box.innerHTML='';
@@ -2043,12 +2071,12 @@ function saveProfiling(){
   }catch(e){}
   renderPresetMultiBtn();
   persistState();
-  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+  if(!viewActive() && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
 function savePromCollectPreset(){
   try{ localStorage.setItem('pip-promCollectEnabled', $('promCollectEnv').checked?'1':''); }catch(e){}
   renderPresetMultiBtn(); persistState();
-  if(!running && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+  if(!viewActive() && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
 }
 function renderProfilingParams(){
   const box=$('profilingParams'); if(!box) return; box.innerHTML='';
@@ -2476,11 +2504,14 @@ function setStageUrl(i, val){
 }
 
 
-/* ---------- 运行状态 ---------- */
+/* ---------- 运行状态 ----------
+   并行运行：不同流水线跑在不同机器（目标环境 IP 不相交）时可同时入队运行；同一机器的任务仍串行排队。
+   每个在跑运行持有独立上下文 rc（stages/nodes/selId/timer/vars/token/over 等），引擎函数一律经参数
+   操作 rc，不读写下方视图别名；curRun/runStages/nodes/selectedId 是「编排区当前展示运行」（viewRc，
+   含已结束但留作结果视图的运行）的别名，视图切换时经 syncViewRun 重绑定。 */
 let nodes = {};
 let selectedId = curPipeline().stages[0].id;
-let running = false;
-let timer = null;
+let running = false;   // 派生态：activeRuns.length>0，由 syncRunState 维护（勿直接赋值）
 let buildNo = 47;
 /* 历史清空时间戳：「清空」时记录，随 config 持久化；服务端 PUT 合并历史时以此区分「页面不知道的磁盘记录」
    与「已被清空的磁盘记录」（清空时间点之前的不再复活），加载时空历史 + 有清空标记则不复活演示数据 */
@@ -2496,6 +2527,42 @@ let curRun = null;
 /* 运行令牌：每次启动新运行递增；在途异步（脚本/清理）回来后比对，
    防止已中止运行的迟回结果污染下一次运行（中止无法真正中断已发出的脚本） */
 let runSeq = 0;
+/* 在跑运行集合 + 编排区焦点运行。viewRc 可指向已结束（over=true）的运行：结束后编排/详情
+   保持该次运行结果视图（失败阶段可「从本阶段重试」），直到用户切换查看其他运行/历史回放/新运行启动 */
+let activeRuns = [];
+let viewRc = null;
+function viewRun(){ return viewRc; }
+function viewActive(){ return !!(viewRc && !viewRc.over); }   // 编排区展示的运行仍在跑（区别于「任一运行在跑」的 running）
+function syncRunState(){ running = activeRuns.length>0; syncRunBtn(); }
+/* 视图别名重绑定：curRun/runStages/nodes/selectedId 指向当前展示运行的对应字段（对象同引用，引擎写入即见） */
+function syncViewRun(){
+  const rc=viewRc;
+  curRun=rc; runStages=rc?rc.stages:null; nodes=rc?rc.nodes:{};
+  selectedId=rc?rc.selId:(curPipeline().stages[0]?curPipeline().stages[0].id:null);
+}
+function setSel(id){ selectedId=id; if(viewRc) viewRc.selId=id; }          // 视图层选中：写穿到 rc
+function runSetSel(rc,id){ rc.selId=id; if(viewRc===rc) selectedId=id; }   // 引擎层选中：聚焦时同步视图
+/* 引擎侧渲染：仅当该运行正被编排区展示时落 DOM；rc.nodes/rc.stages 的写入不经过这里，始终生效 */
+function rcRender(rc, withFlow){ if(viewRc!==rc) return; applyStatusClasses(); if(withFlow) renderFlow(); renderDetail(); }
+/* 总状态徽标按运行各自留存：切换查看时恢复（含失败/终止的徽标配色） */
+function rcOverall(rc,txt,cls,color){ rc.overall={txt:txt,cls:cls,color:color||''}; if(viewRc===rc) applyRunOverall(rc); }
+function applyRunOverall(rc){
+  const ov=rc?rc.overall:null;
+  if(!rc || !ov){ setOverall('未运行',''); $('overallBy').textContent=''; return; }
+  setOverall(ov.txt,ov.cls);
+  if(ov.color){ const o=$('overall').firstChild; if(o){ o.style.color=ov.color; o.style.borderColor='color-mix(in srgb, '+ov.color+' 40%, transparent)'; } }
+  $('overallBy').textContent='执行人：'+rc.by+(rc.source&&rc.source!=='manual'?' · 定时触发':'');
+}
+/* 切换编排区展示的运行（运行队列条目点击）：退出历史回放、重绑别名、恢复徽标/归档提示 */
+function focusRun(rc){
+  if(viewRc===rc) return;
+  if(replayRec){ replayRec=null; const rt=$('replayTip'); if(rt) rt.textContent=''; }
+  viewRc=rc||null; syncViewRun(); applyRunOverall(viewRc);
+  _detailKey='';
+  $('stopBtn').disabled=!viewActive();
+  refreshArchiveTip();
+  renderFlow(); renderDetail(); renderQueue();
+}
 
 const $ = id => document.getElementById(id);
 function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
@@ -2572,7 +2639,7 @@ function renderFlow(){
     /* 选中态由 applyStatusClasses 更新即可；不能在这里 renderFlow()，
        否则第一次单击就重建节点元素，第二次单击落在新元素上，dblclick 永远触发不了 */
     n.addEventListener('click',()=>{
-      selectedId=s.id; applyStatusClasses(); renderDetail();
+      setSel(s.id); applyStatusClasses(); renderDetail();
       if(replayRec){
         const rec=replayRec;
         loadReplayLog(rec,s.name).then(()=>{ if(replayRec===rec && selectedId===s.id){ _detailKey=''; renderDetail(); } });
@@ -2581,7 +2648,7 @@ function renderFlow(){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(running || replayRec || s.preset) return;   // 系统预设任务的脚本在设置页配置，顺序/普罗采集参数在流水线编辑器配置；回放态只读
+      if(viewActive() || replayRec || s.preset) return;   // 系统预设任务的脚本在设置页配置，顺序/普罗采集参数在流水线编辑器配置；回放态只读
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, withPresetMarkers(activeStages(),curPipeline().prom).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
@@ -2643,7 +2710,7 @@ function renderDetail(){
   const n = nodes[s.id] || {status:'idle'};
   const ctx = curRun || {commit:'—',env:'dev',branch:'main',image:DEFAULT_IMAGE,release:DEFAULT_IMAGE,tag:'—',by:'—',pipelineName:curPipeline().name,giturl:GITURL};
   const lines = buildLog(s, ctx, n);
-  const key = s.id+'|'+n.status+'|'+lines.length+'|'+(lines[lines.length-1]||'')+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(running?1:0);
+  const key = s.id+'|'+n.status+'|'+lines.length+'|'+(lines[lines.length-1]||'')+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0);
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
   $('detailTitle').textContent = s.name + ' · 阶段详情';
@@ -2658,7 +2725,7 @@ function renderDetail(){
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
   /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
-  if(n.status==='failed' && !running && curRun && runStages && !s.preset){
+  if(n.status==='failed' && !viewActive() && curRun && runStages && !s.preset){
     const rb=document.createElement('button'); rb.className='dshell-btn dshell-btnGhost mini'; rb.style.marginLeft='6px';
     rb.textContent='↻ 从本阶段重试'; rb.title='保留本次运行的 commit/tag/环境，从本阶段继续执行';
     rb.addEventListener('click', ()=>retryFromStage(s.id));
@@ -2808,7 +2875,10 @@ function buildLog(stage, ctx, n){
 const QUEUE_CAP = 8;
 let queue = [];
 function resetNodes(){
-  nodes={}; flowStages().forEach(s=> nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}});
+  /* 视图感知：展示某次运行（在跑/结果视图）时重置的是该运行的节点表；空闲态重置当前流水线的空闲编排 */
+  if(viewRc){ viewRc.nodes={}; nodes=viewRc.nodes; }
+  else nodes={};
+  flowStages().forEach(s=> nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}});
   _detailKey='';   // 节点全部重建，详情渲染缓存一并失效
   renderFlow(); renderDetail();
 }
@@ -2816,10 +2886,10 @@ function setOverall(txt,cls){
   const o=$('overall'); o.innerHTML='';
   const b=document.createElement('span'); b.className='dshell-badge '+cls; b.textContent=txt; o.appendChild(b);
 }
-/* 运行按钮不随运行禁用：运行中点击即把当前配置入队（见 runPipeline），文案与提示随运行态切换 */
+/* 运行按钮不随运行禁用：运行中点击即并行启动（机器不相交）或把当前配置入队（见 runPipeline），文案与提示随运行态切换 */
 function syncRunBtn(){
   const b=$('runBtn'); b.disabled=false;
-  if(running){ b.textContent='▶ 入队运行'; b.title='有流水线运行中：点击将当前配置加入运行队列（上限 '+QUEUE_CAP+' 个）'; }
+  if(running){ b.textContent='▶ 入队运行'; b.title='有流水线运行中：目标机器与在跑/排队任务不相交时立即并行运行，相交则加入队列等待（上限 '+QUEUE_CAP+' 个）'; }
   else { b.textContent='▶ 运行流水线'; b.title=''; }
 }
 function startRun(opts){
@@ -2850,29 +2920,32 @@ function startSimRun(pl, c){
     for(let i=0;i<stages.length;i++){ if(stages[i].preset) continue; const has=!!stages[i].sched; if(has) started=true; else if(started){ badIdx=i; break; } }
     if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
   }
-  runStages = stages;
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  // 手动运行（含入队/历史重跑）全程在本页串行执行；定时页仍由服务端执行计划。
-  curRun={env:c.env,envs:c.envs,image:c.image,release:c.release,commit,tag,startTs:Date.now(),by:c.by,source:c.source||'manual',pipelineId:pl.id||null,pipelineName:pl.name,repoId:c.repo.id||null,repoName:c.repo.name,repoUrl:c.repo.url,giturl:c.repo.url||GITURL,repoUser:c.repo.user||'',repoPass:c.repo.pass||'',branch:c.branch,strategy:c.strategy||'',prom:c.prom||null,vars:{},token:++runSeq};
-  resetNodes();
-  curRun.archive = archiveFolderFor(curRun);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
-  if(curRun.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
-    ensureArchiveFolder(curRun.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', curRun.archive); });
+  // 手动运行（含入队/历史重跑）在页面内执行；目标机器不相交的运行并行推进（见 drainQueue/runPipeline）。定时页仍由服务端执行计划。
+  const rc={id:'r'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
+    stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null, over:false, overall:null,
+    env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual',
+    pipelineId:pl.id||null, pipelineName:pl.name, repoId:c.repo.id||null, repoName:c.repo.name, repoUrl:c.repo.url, giturl:c.repo.url||GITURL,
+    repoUser:c.repo.user||'', repoPass:c.repo.pass||'', branch:c.branch, strategy:c.strategy||'', prom:c.prom||null, vars:{}, token:++runSeq};
+  stages.forEach(s=>{ rc.nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}}; });
+  rc.archive = archiveFolderFor(rc);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
+  if(rc.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
+    ensureArchiveFolder(rc.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', rc.archive); });
   }
-  selectedId = stages.length ? stages[0].id : null;
-  running=true; $('stopBtn').disabled=false; syncRunBtn();
+  activeRuns.push(rc);
+  viewRc=rc; syncViewRun(); syncRunState();   // 新运行获得编排区焦点
+  _detailKey='';   // 视图切到新运行，详情渲染缓存一并失效
+  $('stopBtn').disabled=false;
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
-  setOverall('运行中…','dshell-badgeWait');
-  $('overallBy').textContent='执行人：'+curRun.by+(c.source&&c.source!=='manual'?' · 定时触发':'');
-  advance(0);
+  rcOverall(rc,'运行中…','dshell-badgeWait');
+  renderFlow(); renderDetail();
+  advance(rc,0);
   renderQueue();
 }
 function runPipeline(opts){
   opts = opts || {};
   /* 执行人为必填项：手动运行未填写时弹窗拦截（队列/定时快照与历史重跑自带 opts.by，不受影响） */
   if(!opts.by && !$('triggeredBy').value.trim()){ alert('请先填写「执行人」再运行流水线。'); $('triggeredBy').focus(); return 'no-by'; }
-  if(!running){ return startRun(opts); }
-  if(queue.length >= QUEUE_CAP) return false;
   let pl;
   if(opts.stages){ /* from queue snapshot already */ }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
@@ -2889,11 +2962,43 @@ function runPipeline(opts){
     env, envs, image, release, repoId, branch, strategy, by, prom:(opts.prom!==undefined?opts.prom:(pl?runtimePipelineProm(pl):null)), source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
+  /* 并行调度：目标机器（环境 IP）与在跑运行、以及已在排队的任务都不相交 → 立即并行启动；
+     任一相交 → 入队等待（同一机器的任务保持先进先出，见 drainQueue） */
+  if(!conflictsActive(item) && !queue.some(q=>machineConflict(q,item))){ return startRun(item); }
+  if(queue.length >= QUEUE_CAP) return false;
   queue.push(item);
   renderQueue();
   return 'queued';
 }
-function drainQueue(){ if(!queue.length) return; const next=queue.shift(); startRun(next); }
+/* 机器占用判定：按目标环境 IP 集合是否相交。任一方无目标 IP（未选环境）时按冲突处理——
+   无目标信息的运行保持旧版串行语义，不与任何运行并行 */
+function runIps(x){ const s=new Set(); (((x&&x.envs)||[])).forEach(e=>{ const ip=String((e&&e.ip)||'').trim(); if(ip) s.add(ip); }); return s; }
+function machineConflict(a,b){
+  const A=runIps(a), B=runIps(b);
+  if(!A.size || !B.size) return true;
+  for(const ip of A){ if(B.has(ip)) return true; }
+  return false;
+}
+function conflictsActive(item){ return activeRuns.some(rc=>machineConflict(rc,item)); }
+/* 并行排空：从头扫描队列，目标机器与「在跑运行 + 排在前面的排队任务」均不相交的项立即启动；
+   相交项留在队列等待（同一机器保持先进先出，不同机器的排队任务可被后来者超越）。
+   每启动一项就重新扫描：startRun 可能同步结束运行（全跳过阶段）或校验失败递归 drainQueue，队列/在跑集合已变 */
+function drainQueue(){
+  let again=true;
+  while(again){
+    again=false;
+    for(let i=0;i<queue.length;i++){
+      const it=queue[i];
+      if(conflictsActive(it)) continue;
+      let blocked=false;
+      for(let j=0;j<i;j++){ if(machineConflict(queue[j],it)){ blocked=true; break; } }
+      if(blocked) continue;
+      queue.splice(i,1);
+      try{ startRun(it); }catch(e){ console.warn('[queue] 排队任务启动失败（继续排空其余任务）:', e); }
+      again=true; break;
+    }
+  }
+}
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
@@ -2918,14 +3023,15 @@ function browserTag(){
 let _qPubSig='', _qPubAt=0, _qPubTimer=null, _qPubWarned=false;
 /* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
 function publishQueue(force){
-  const runningSnap=(running&&curRun)?{by:curRun.by,pipelineName:curRun.pipelineName,env:curRun.env,source:curRun.source,startedAt:curRun.startTs}:null;
+  const runsSnap=activeRuns.map(rc=>({by:rc.by,pipelineName:rc.pipelineName,env:rc.env,source:rc.source,startedAt:rc.startTs}));
+  const runningSnap=runsSnap.length?runsSnap[0]:null;   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
   const queueSnap=queue.map(q=>({by:q.by,pipelineName:q.pipelineName,env:q.env,source:q.source,queuedAt:q.queuedAt}));
-  const sig=JSON.stringify([runningSnap,queueSnap]);
+  const sig=JSON.stringify([runsSnap,queueSnap]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
   _qPubSig=sig; _qPubAt=now;
   fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:QCLIENT_ID,label:browserTag(),running:runningSnap,queue:queueSnap})})
+    body:JSON.stringify({id:QCLIENT_ID,label:browserTag(),running:runningSnap,runs:runsSnap,queue:queueSnap})})
     .catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
 }
 /* renderQueue 渲染很频繁（运行期逐帧），上报走 500ms 防抖合并，避免状态抖动时连续发请求 */
@@ -2991,7 +3097,7 @@ async function registerStageTimers(startIdx){
   const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · 定时后缀',
     stages, env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
     branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now(),
-    archive:curRun.archive||null, tag:curRun.tag||null, baseSeq:stageSeq(startIdx)-1,
+    archive:curRun.archive||null, tag:curRun.tag||null, baseSeq:stageSeq(runStages||[], startIdx)-1,
     vars:Object.assign({}, curRun.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
     kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(curRun.tag||'')+' · 立即（周期跟随流水线计划）' };
   try{
@@ -3063,31 +3169,32 @@ function addPlan(){
 function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
-  /* 自愈排空：运行已结束（running=false）却仍有排队任务，说明 finish 收尾异常 / 异步竞态致 drainQueue
-     没排到这一项（任务卡在「待启动」永远不跑）。此处补排一个：drainQueue 内部 queue.shift()+startRun，
-     成功则 running 置 true（本帧后续按「运行中」渲染），失败吞异常继续渲染剩余队列；递归进来的 startSimRun
-     末尾也会调 renderQueue，那时 running 已 true 不再触发，故无重入死循环。 */
-  if(!running && queue.length){ try{ drainQueue(); }catch(e){ console.warn('[queue] 自愈排空失败（不影响渲染）:', e); } }
+  /* 自愈排空：仍有排队任务时尝试排空（在跑运行结束却未触发 drainQueue 的异常竞态，或并行槽位已释放）。
+     drainQueue 只启动机器不相交的项，全部相交时空转无副作用；startSimRun 末尾也会调 renderQueue，
+     那时在跑集合已含新运行，不会重复启动，故无重入死循环。 */
+  if(queue.length){ try{ drainQueue(); }catch(e){ console.warn('[queue] 自愈排空失败（不影响渲染）:', e); } }
   list.innerHTML='';
   $('queueCount').textContent = queue.length? '('+queue.length+' 排队)':'';
   /* 队列状态已并入「流水线任务」首行徽标；明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态不再渲染占位文案 */
   list.style.display = (running||queue.length||remoteQueueClients.length)?'':'none';
   let status='空闲', cls='';
-  if(running && curRun){
-    status='运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
-    const it=document.createElement('div'); it.className='dshell-listItem';
-    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#1</span> '+esc(curRun.by)+' · '+esc(curRun.pipelineName||'')+' <span class="dshell-muted">'+curRun.env+' '+sourceLabel(curRun.source)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
-    list.appendChild(it);
+  if(running){
+    status=activeRuns.length+' 运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
+    activeRuns.forEach((rc,idx)=>{
+      const it=document.createElement('div'); it.className='dshell-listItem';
+      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行" style="cursor:pointer;"><span class="dshell-muted">#'+(idx+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+esc(rc.env)+' '+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
+      list.appendChild(it);
+    });
   } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
   else {
     /* 本地空闲但其他浏览器在跑：徽标提示他端活动（样式保持灰——活动不在本页，避免误导成本页可停止） */
-    const remoteRunning=remoteQueueClients.reduce((a,c)=>a+((c&&c.running)?1:0),0);
+    const remoteRunning=remoteQueueClients.reduce((a,c)=>a+remoteRunsOf(c).length,0);
     if(remoteRunning) status='空闲 · 他端 '+remoteRunning+' 运行';
   }
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
   queue.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
-    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(idx+2)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+q.env+' '+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+q.env+' '+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
     list.appendChild(it);
   });
   /* 其他浏览器标签页的在场快照：只读展示（运行与取消都是本页内存态，远端条目给取消按钮无意义），
@@ -3098,11 +3205,11 @@ function renderQueue(){
     list.appendChild(sep);
     remoteQueueClients.forEach(c=>{
       const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
-      if(c.running){
+      remoteRunsOf(c).forEach(rn=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
-        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(c.running.by)+' · '+esc(c.running.pipelineName||'')+' <span class="dshell-muted">'+esc(c.running.env||'')+' '+esc(sourceLabel(c.running.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(c.running.startedAt)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
+        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(rn.env||'')+' '+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
         list.appendChild(it);
-      }
+      });
       (Array.isArray(c.queue)?c.queue:[]).forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(q.env||'')+' '+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><span class="dshell-muted" style="font-size:10px">排队</span>';
@@ -3111,22 +3218,26 @@ function renderQueue(){
     });
   }
   list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
+  list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(rc) abortRun(rc); }));
+  list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
   scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「运行队列跨浏览器可见」区块）
 }
+/* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
+function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)) return c.runs; return c.running?[c.running]:[]; }
 
 /* ---------- 运行引擎 ---------- */
-/* 串行编排：有脚本的步骤执行脚本，其余本地模拟 */
-function advance(i){
-  const stg=activeStages();
-  if(i>=stg.length){ finish('success'); return; }
+/* 每个运行独立编排（rc 内串行推进各阶段；不同机器的运行并行）：有脚本的步骤执行脚本，其余本地模拟 */
+function advance(rc,i){
+  const stg=rc.stages;
+  if(i>=stg.length){ finish(rc,'success'); return; }
   // 手动运行连续执行全部阶段；sched 仅约束定时计划，不在此拆分后缀或提前结束运行。
   const s=stg[i];
-  if(s.preset){ runPresetStep(i); return; }   // 系统预设任务：脚本取设置页配置，普罗参数取任务内配置，见 runPresetStep
-  if(s.skip){ skipStage(i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
-  if((s.kind==='http'||s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(i); return; }   // 兼容旧数据 kind:'url'/'jenkins'
-  if(s.kind==='evaltokens'){ runEvaltokensStep(i); return; }   // EvalTokens 任务轮询阶段：匹配任务并等待终态（见 runEvaltokensStep）
-  if(s.script && s.script.path){ runScriptStep(i); return; }
-  runStage(i);
+  if(s.preset){ runPresetStep(rc,i); return; }   // 系统预设任务：脚本取设置页配置，普罗参数取任务内配置，见 runPresetStep
+  if(s.skip){ skipStage(rc,i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
+  if((s.kind==='http'||s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(rc,i); return; }   // 兼容旧数据 kind:'url'/'jenkins'
+  if(s.kind==='evaltokens'){ runEvaltokensStep(rc,i); return; }   // EvalTokens 任务轮询阶段：匹配任务并等待终态（见 runEvaltokensStep）
+  if(s.script && s.script.path){ runScriptStep(rc,i); return; }
+  runStage(rc,i);
 }
 /* ---------- 阶段间变量传递（上游 stdout / URL 响应体（Jenkins 控制台）的 KEY=VALUE 行、单行 JSON 对象注入下游） ---------- */
 /* 提取规则：逐行匹配 ^\s*([A-Z_][A-Z0-9_]*)=(.*)$；值取首个 = 之后全部，
@@ -3155,11 +3266,11 @@ function parseStageVars(stdout){
   });
   return out;
 }
-/* 解析本阶段 stdout 的 KEY=VALUE 行 / 单行 JSON 对象，累计到 curRun.vars；返回本阶段产出的变量集（供 varsOut 展示） */
-function mergeStageVars(stdout){
-  if(!curRun) return {};
+/* 解析本阶段 stdout 的 KEY=VALUE 行 / 单行 JSON 对象，累计到 rc.vars；返回本阶段产出的变量集（供 varsOut 展示） */
+function mergeStageVars(rc, stdout){
+  if(!rc) return {};
   const v=parseStageVars(stdout);
-  curRun.vars=Object.assign(curRun.vars||{}, v);
+  rc.vars=Object.assign(rc.vars||{}, v);
   return v;
 }
 /* 提取输出里的单行 JSON（对象或数组；数组仅供「输出变量」JSON 路径取值，顶层标量提取仍只认对象，
@@ -3212,16 +3323,16 @@ function jsonPathGet(obj, path){
      顶层标量提取拿不到数组内容，需用路径显式指定；终点为对象/数组时序列化为 JSON 字符串。
      裸名（如 BRANCHES=items）在变量池未捕获到时，也会回退取单行 JSON 的同名顶层字段（含容器整体）。
    脚本 / HTTP 阶段通用；varsOut 同步补充，供运行详情展示本阶段产出。 */
-function applyOutVars(spec, varsOut, jsonCtx, fullText){
+function applyOutVars(rc, spec, varsOut, jsonCtx, fullText){
   String(spec||'').split(',').forEach(function(pair){
     const p=pair.trim(); if(!p) return;
     const eq=p.indexOf('=');
     const dst=(eq>=0?p.slice(0,eq):p).trim(), src=(eq>=0?p.slice(eq+1):p).trim();
-    if(!dst || !curRun || !curRun.vars) return;
+    if(!dst || !rc || !rc.vars) return;
     let val;
     if(src==='*' || (eq>=0 && src==='')) val=fullText;   // 整段返回值全文（URL 响应体 / 脚本 stdout）
     else{
-      val=curRun.vars[src];
+      val=rc.vars[src];
       if(val===undefined && jsonCtx){
         if(/[.\[\]$]/.test(src)) val=jsonPathGet(jsonCtx, src);   // JSON 路径取嵌套字段
         else if(!Array.isArray(jsonCtx) && Object.prototype.hasOwnProperty.call(jsonCtx, src)) val=jsonCtx[src];   // 顶层容器字段（parseStageVars 只提取标量，对象/数组字段经此整体取出序列化，如 BRANCHES=items）
@@ -3229,7 +3340,7 @@ function applyOutVars(spec, varsOut, jsonCtx, fullText){
     }
     if(val===undefined||val===null) return;
     const out=(typeof val==='object')?JSON.stringify(val):String(val);
-    curRun.vars[dst]=out; if(varsOut) varsOut[dst]=out;
+    rc.vars[dst]=out; if(varsOut) varsOut[dst]=out;
   });
 }
 /* 参数值 ${VAR} 引用替换：取值来源 = 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR 等）+ 上游阶段变量
@@ -3473,51 +3584,49 @@ async function jkGetText(path){
   }
   const r=await fetch(url,{headers:auth,cache:'no-store'}); return r.text();
 }
-async function runUrlStep(i){
-  const stg=activeStages(); const s=stg[i];
+async function runUrlStep(rc, i){
+  const stg=rc.stages; const s=stg[i];
   const raw=stageUrlOf(s);   // 兼容旧数据 kind:'url'/'jenkins' / jenkins.job（见 stageUrlOf）
   const outSpec=(s.url&&s.url.outVars)||(s.jenkins&&s.jenkins.outVars)||'';
-  const tk=curRun?curRun.token:null;
-  const varsIn=curRun?Object.assign({},curRun.vars||{}):{};
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
-  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+  const tk=rc.token;
+  const varsIn=Object.assign({},rc.vars||{});
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
+  runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
-  if(timer) clearInterval(timer);
-  timer=setInterval(function(){ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },500);
+  if(rc.timer) clearInterval(rc.timer);
+  rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },500);
   const isUrl=jkIsUrl(raw);
   const log=['$ '+(isUrl?'GET':'POST')+' '+raw+(isUrl?'':'（旧格式 fullName，建议改为完整 URL，参数经 {GIT_BRANCH} 等占位符传递）')];
   try{
     /* 占位符取值池（旧 fullName 触发时兼作构建参数）：上游阶段（脚本 stdout / URL 响应体）产出的
-       KEY=VALUE / 单行 JSON 变量累计在 curRun.vars，叠加运行级注入（TARGET_IP/IMAGE_NAME/GIT_BRANCH/ARCHIVE_DIR 等），
+       KEY=VALUE / 单行 JSON 变量累计在 rc.vars，叠加运行级注入（TARGET_IP/IMAGE_NAME/GIT_BRANCH/ARCHIVE_DIR 等），
        优先级：上游变量 > 运行级全局默认（与脚本阶段一致）。 */
     const vars={};
-    if(curRun && curRun.vars){
-      for(const k in curRun.vars){ if(vars[k]===undefined) vars[k]=String(curRun.vars[k]); }
+    if(rc.vars){
+      for(const k in rc.vars){ if(vars[k]===undefined) vars[k]=String(rc.vars[k]); }
     }
-    const ctx0=(curRun&&curRun.envs&&curRun.envs[0])||null;
-    if(curRun){
-      if(ctx0&&ctx0.ip&&vars.TARGET_IP===undefined) vars.TARGET_IP=ctx0.ip;
-      if(curRun.envs&&vars.TARGET_IPS===undefined) vars.TARGET_IPS=JSON.stringify(curRun.envs.map(function(e){return e.ip;}));
-      if(curRun.image&&vars.IMAGE_NAME===undefined) vars.IMAGE_NAME=curRun.image;
-      if(curRun.tag&&vars.IMAGE_TAG===undefined) vars.IMAGE_TAG=curRun.tag;
-      if(curRun.pipelineName&&vars.PIPELINE_NAME===undefined) vars.PIPELINE_NAME=curRun.pipelineName;
-      if(curRun.repoUrl&&vars.GIT_URL===undefined) vars.GIT_URL=curRun.repoUrl;
-      if(curRun.branch&&vars.GIT_BRANCH===undefined) vars.GIT_BRANCH=curRun.branch;
-      if(curRun.strategy&&vars.DEPLOY_STRATEGY===undefined) vars.DEPLOY_STRATEGY=curRun.strategy;
-      /* 归档路径：同脚本阶段注入，供下游作业把产物写入归档目录。 */
-      if(curRun.archive){
-        if(vars.ARCHIVE_DIR===undefined) vars.ARCHIVE_DIR=curRun.archive;
-        if(vars.ARCHIVE_FOLDER===undefined) vars.ARCHIVE_FOLDER=curRun.archive;
-        if(curRun.pipelineName&&vars.ARCHIVE_PIPELINE===undefined) vars.ARCHIVE_PIPELINE=curRun.pipelineName;
-        if(curRun.tag&&vars.ARCHIVE_TAG===undefined) vars.ARCHIVE_TAG=curRun.tag;
-      }
-      /* 收集普罗数据：HTTP 阶段同样注入 MODEL_NAME / XDS_NAMESPACE 占位取值（与脚本阶段一致） */
-      if(curRun.prom && curRun.prom.enabled){
-        const mn=substRunVars(curRun.prom.modelName||'', curRun);
-        if(mn && vars.MODEL_NAME===undefined) vars.MODEL_NAME=mn;
-        const ns=substRunVars(curRun.prom.xdsNamespace||'', curRun);
-        if(ns && vars.XDS_NAMESPACE===undefined) vars.XDS_NAMESPACE=ns;
-      }
+    const ctx0=(rc.envs&&rc.envs[0])||null;
+    if(ctx0&&ctx0.ip&&vars.TARGET_IP===undefined) vars.TARGET_IP=ctx0.ip;
+    if(rc.envs&&vars.TARGET_IPS===undefined) vars.TARGET_IPS=JSON.stringify(rc.envs.map(function(e){return e.ip;}));
+    if(rc.image&&vars.IMAGE_NAME===undefined) vars.IMAGE_NAME=rc.image;
+    if(rc.tag&&vars.IMAGE_TAG===undefined) vars.IMAGE_TAG=rc.tag;
+    if(rc.pipelineName&&vars.PIPELINE_NAME===undefined) vars.PIPELINE_NAME=rc.pipelineName;
+    if(rc.repoUrl&&vars.GIT_URL===undefined) vars.GIT_URL=rc.repoUrl;
+    if(rc.branch&&vars.GIT_BRANCH===undefined) vars.GIT_BRANCH=rc.branch;
+    if(rc.strategy&&vars.DEPLOY_STRATEGY===undefined) vars.DEPLOY_STRATEGY=rc.strategy;
+    /* 归档路径：同脚本阶段注入，供下游作业把产物写入归档目录。 */
+    if(rc.archive){
+      if(vars.ARCHIVE_DIR===undefined) vars.ARCHIVE_DIR=rc.archive;
+      if(vars.ARCHIVE_FOLDER===undefined) vars.ARCHIVE_FOLDER=rc.archive;
+      if(rc.pipelineName&&vars.ARCHIVE_PIPELINE===undefined) vars.ARCHIVE_PIPELINE=rc.pipelineName;
+      if(rc.tag&&vars.ARCHIVE_TAG===undefined) vars.ARCHIVE_TAG=rc.tag;
+    }
+    /* 收集普罗数据：HTTP 阶段同样注入 MODEL_NAME / XDS_NAMESPACE 占位取值（与脚本阶段一致） */
+    if(rc.prom && rc.prom.enabled){
+      const mn=substRunVars(rc.prom.modelName||'', rc);
+      if(mn && vars.MODEL_NAME===undefined) vars.MODEL_NAME=mn;
+      const ns=substRunVars(rc.prom.xdsNamespace||'', rc);
+      if(ns && vars.XDS_NAMESPACE===undefined) vars.XDS_NAMESPACE=ns;
     }
     /* {VAR} 占位符用上面注入完成的环境变量替换（URL 编码）后，对完整 URL 直接 GET 触发（等价 curl）；
        jobPath 仅取 URL 路径（已剥掉触发动作段）供拉取 nextBuildNumber 与轮询结果使用 */
@@ -3525,20 +3634,20 @@ async function runUrlStep(i){
     const pollable=/\/job\//.test(jobPath);   // 非标准任务路径（如 webhook 触发地址）无法定位任务，跳过轮询
     log.push('# vars: '+Object.keys(vars).map(function(k){return k+'='+vars[k];}).join(' '));
     if(isUrl) log.push('# trigger url: '+jkSubstUrl(raw, vars));
-    s._out={stdout:log.join('\n'),stderr:'',code:null,url:true,done:false}; renderDetail();
+    s._out={stdout:log.join('\n'),stderr:'',code:null,url:true,done:false}; rcRender(rc);
     let preNum=null;
-    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); renderDetail(); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); } }
+    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; log.push('# nextBuildNumber='+preNum); s._out.stdout=log.join('\n'); rcRender(rc); }catch(e){ log.push('# (无法获取 nextBuildNumber: '+e.message+')'); } }
     let triggerBody='';
     if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars)); }
     else{ await jkTriggerBuild(jobPath, vars); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
-    log.push('# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); renderDetail();
+    log.push('# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out.stdout=log.join('\n'); rcRender(rc);
     const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时，轮询直到出结果
     let result=null, buildNum=null, building=true;
     let consoleRead=0, consoleStarted=false, lastLive=0;   // 控制台增量回显：按已读长度差分，只追加新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
     while(pollable && (!deadline || Date.now()<deadline) && (building||buildNum==null)){
       await new Promise(function(r){ setTimeout(r,2000); });
-      if(!running||!curRun||curRun.token!==tk) return;   // 迟回直接丢弃：不得清全局 timer（此时它属于新运行，见 runScriptStep 同规则）
+      if(rc.over||rc.token!==tk) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
       try{
         const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
         const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration');
@@ -3555,15 +3664,15 @@ async function runUrlStep(i){
               if(!consoleStarted){ consoleStarted=true; log.push(''); }
               tail.split('\n').forEach(function(l){ if(l!=='') log.push(l); });
               s._out={stdout:log.join('\n'),stderr:'',code:null,url:true,done:false};
-              const now=Date.now(); if(selectedId===s.id && now-lastLive>=100){ lastLive=now; renderDetail(); }
+              const now=Date.now(); if(viewRc===rc && selectedId===s.id && now-lastLive>=100){ lastLive=now; renderDetail(); }
             }
           }
         }catch(e){ }
       }
-      const n=nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); applyStatusClasses(); renderDetail(); }
+      const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
     }
-    if(!running||!curRun||curRun.token!==tk) return;   // 先验令牌再动全局 timer：迟回时 timer 已属新运行（中止已由 finish 清过）
-    if(timer){clearInterval(timer);timer=null;}
+    if(rc.over||rc.token!==tk) return;   // 先验令牌再动本运行 timer（中止已由 finish 清过）
+    if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     let consoleText='', bodyFull='';
     if(buildNum!=null){ try{ const full=await jkGetText(jobPath+buildNum+'/consoleText'); if(full.length>consoleRead){ consoleText=full.slice(consoleRead); consoleRead=full.length; } }catch(e){} }
     else if(triggerBody){
@@ -3576,7 +3685,7 @@ async function runUrlStep(i){
       if(body.length>65536) body=body.slice(0,65536)+'…(截断，仅展示；变量捕获用完整响应体)';
       consoleText=body;
     }
-    if(!running||!curRun||curRun.token!==tk) return;   // 收尾拉取控制台（上方 await）期间被中止/切换运行：变量/归档/节点状态不得写入新运行
+    if(rc.over||rc.token!==tk) return;   // 收尾拉取控制台（上方 await）期间被中止：变量/归档/节点状态不得再写入
     const ok=(result==='SUCCESS');
     const preConsoleLen=log.length;   // 本阶段日志中响应体展示文本的起点（归档全量副本用，见下）
     if(consoleText){ if(!consoleStarted){ log.push(''); } consoleText.split('\n').forEach(function(l){ if(l!=='') log.push(l); }); }
@@ -3590,21 +3699,21 @@ async function runUrlStep(i){
       fullLog.push('[HTTP result '+result+']');
       s._archiveStdout=fullLog.join('\n');
     }
-    const varsOut=mergeStageVars(log.join('\n'));
-    if(bodyFull && bodyFull!==consoleText) Object.assign(varsOut, mergeStageVars(bodyFull));   // 响应体被截断展示时，顶层标量改从完整体捕获
-    archiveStageLog(s, stageSeq(i));   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-    applyOutVars(outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：捕获的 key 改名后下传；来源可写 JSON 路径取嵌套字段，或 * / 留空=响应体全文整体赋值（见 applyOutVars）
+    const varsOut=mergeStageVars(rc, log.join('\n'));
+    if(bodyFull && bodyFull!==consoleText) Object.assign(varsOut, mergeStageVars(rc, bodyFull));   // 响应体被截断展示时，顶层标量改从完整体捕获
+    archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
+    applyOutVars(rc, outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：捕获的 key 改名后下传；来源可写 JSON 路径取嵌套字段，或 * / 留空=响应体全文整体赋值（见 applyOutVars）
     const dur=(Date.now()-t0)/1000;
-    if(ok){ nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
-    else{ nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
+    if(ok){ rc.nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; rcRender(rc); advance(rc,i+1); }
+    else{ rc.nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; rcRender(rc); finish(rc,'failed'); }
   }catch(e){
-    if(!running||!curRun||curRun.token!==tk) return;   // 迟回异常（中止/已切换新运行）：不得覆盖节点状态、不得对旧阶段再 finish（否则新运行被误判失败）
-    if(timer){clearInterval(timer);timer=null;}
+    if(rc.over||rc.token!==tk) return;   // 迟回异常（中止后）：不得覆盖节点状态、不得对旧阶段再 finish
+    if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     log.push('✗ '+e.message);
     s._out={stdout:log.join('\n'),stderr:String(e.message),code:1,url:true,done:true};
-    archiveStageLog(s, stageSeq(i));   // 异常路径同样归档本阶段已产生的回显
-    nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
-    applyStatusClasses(); renderDetail(); finish('failed');
+    archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
+    rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
+    rcRender(rc); finish(rc,'failed');
   }
 }
 /* ---------- EvalTokens 任务运行阶段：启动新 run 并等待终态（本地直连 / 远程走 proxy；复用「设置」页 EvalTokens 服务配置 + Bearer 令牌） ----------
@@ -3782,30 +3891,30 @@ function renderEvaltokPickerPanel(i, q){
 }
 /* EvalTokens 阶段运行：匹配 taskId（优先；未命中则把所填值当名称匹配）或 taskName，启动一次新 run，
    再按启动响应的 run_id 等待终态；捕获运行字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
-async function runEvaltokensStep(i){
-  const stg=activeStages(); const s=stg[i]; const et=s.evaltokens||{};
+async function runEvaltokensStep(rc, i){
+  const stg=rc.stages; const s=stg[i]; const et=s.evaltokens||{};
   const attempt=(s._evaltokAttempt||0)+1; s._evaltokAttempt=attempt;   // 识别同一阶段的失败重试，防止旧报告回调污染新一次执行
   /* 任务 ID/名称支持 ${VAR} 引用上游阶段产出变量（如前序脚本输出 TASK_ID=xxx 后此处填 ${TASK_ID}）：
-     运行时用 substRunVars 从 curRun.vars（上游变量同名优先）+ 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR
+     运行时用 substRunVars 从 rc.vars（上游变量同名优先）+ 运行级注入变量（TARGET_IP/IMAGE_NAME/ARCHIVE_DIR
      等）替换后再匹配任务；未定义的单个 ${VAR} 引用按空值处理（空 taskId+空 taskName → 抛「未选择 EvalTokens
      任务」）。与脚本阶段参数值 ${VAR} 替换同一套规则（见 substRunVars）；编辑器内的 taskId/taskName 仍按字面值
      用于任务选择面板与输入参数自动识别，不做运行时替换。 */
-  const taskId=substRunVars(String(et.taskId||''), curRun).trim(); const taskName=substRunVars(String(et.taskName||''), curRun).trim(); const outSpec=et.outVars||'';
-  const rc=curRun; const tk=rc?rc.token:null; const varsIn=rc?Object.assign({},rc.vars||{}):{};
+  const taskId=substRunVars(String(et.taskId||''), rc).trim(); const taskName=substRunVars(String(et.taskName||''), rc).trim(); const outSpec=et.outVars||'';
+  const tk=rc.token; const varsIn=Object.assign({},rc.vars||{});
   const label='EvalTokens · '+(taskName||taskId||'未命名');
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
-  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
+  runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now(); const deadline=s.timeout?t0+s.timeout*1000:0; let lastLive=0, deadlineTimer=null, timedOut=false, waitingRunId='', waitingStatus='';
-  const ctrl=new AbortController(); if(rc) rc.scriptAbort=ctrl;   // 复用运行级中止句柄：停止/重置按钮可取消 EvalTokens 网络请求
+  const ctrl=new AbortController(); rc.scriptAbort=ctrl;   // 复用运行级中止句柄：停止/重置按钮可取消 EvalTokens 网络请求
   const timeoutMessage=()=> 'EvalTokens 任务等待超时（阶段超时 '+secToMinInput(s.timeout)+' 分钟'+(waitingRunId?('，run '+waitingRunId+' 仍为 '+(waitingStatus||'未知状态')):'')+'）';
   const ensureActive=()=>{
-    if(!running||!curRun||curRun.token!==tk) return false;
+    if(rc.over||rc.token!==tk) return false;
     if(timedOut||(deadline&&Date.now()>=deadline)){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); throw new Error(timeoutMessage()); }
     return true;
   };
   if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
-  if(timer) clearInterval(timer);
-  timer=setInterval(function(){ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },1000);
+  if(rc.timer) clearInterval(rc.timer);
+  rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },1000);
   const log=['$ EvalTokens run '+(taskId||taskName||'')];
   try{
     if(!taskId && !taskName) throw new Error('未选择 EvalTokens 任务');
@@ -3819,7 +3928,7 @@ async function runEvaltokensStep(i){
     const resolvedTaskId=idOf(task), resolvedTaskName=nameOf(task)||taskName;
     if(!resolvedTaskId) throw new Error('匹配的 EvalTokens 任务缺少 task_id，无法启动');
     log.push('# service: '+e.url.replace(/\/+$/,'')+'/api/open/v1/tasks/'+encodeURIComponent(resolvedTaskId)+'/run  mode='+(e.mode==='remote'?'remote':'local'));
-    s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; renderDetail();
+    s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; rcRender(rc);
     const started=await evaltokStartRun(e, resolvedTaskId, ctrl.signal); if(!ensureActive()) return;
     const runId=String(started.run_id||'');
     waitingRunId=runId; waitingStatus=String(started.status||started.state||started.phase||'');
@@ -3833,7 +3942,7 @@ async function runEvaltokensStep(i){
       waitingStatus=st;
       const sk=current?evaltokStatusKind(st):'running';
       log.push('# run '+runId+' status='+(current?st:'（等待运行记录）'));
-      s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; const now=Date.now(); if(selectedId===s.id && now-lastLive>=300){ lastLive=now; renderDetail(); }
+      s._out={stdout:log.join('\n'),stderr:'',code:null,evaltokens:true,done:false}; const now=Date.now(); if(viewRc===rc && selectedId===s.id && now-lastLive>=300){ lastLive=now; renderDetail(); }
       if(sk!=='running'){ result=sk; break; }
       await new Promise(function(resolve){
         let done=false, h=null;
@@ -3842,8 +3951,8 @@ async function runEvaltokensStep(i){
       });
       if(!ensureActive()) return;   // 中止立即唤醒轮询等待；迟回直接丢弃（与 runUrlStep 同规则）
     }
-    if(!running||!curRun||curRun.token!==tk) return;
-    if(timer){clearInterval(timer);timer=null;}
+    if(rc.over||rc.token!==tk) return;
+    if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     /* 运行对象规整成单行 JSON 喂给 parseStageVars/parseStageJson（与 HTTP 阶段响应体规则一致） */
     let bodyFull=''; try{ const o=JSON.parse(JSON.stringify(run)); if(o&&typeof o==='object') bodyFull=JSON.stringify(o); }catch(_){ bodyFull=String(run); }
     let bodyShow=bodyFull; if(bodyShow.length>65536) bodyShow=bodyShow.slice(0,65536)+'…(截断，仅展示；变量捕获用完整运行对象)';
@@ -3852,14 +3961,14 @@ async function runEvaltokensStep(i){
     log.push('[EvalTokens result '+result+']');
     log.push('📊 任务报告（EvalTokens 服务）→ '+evaltokReportUrl(e,runId));
     const reportFolder=(et.collectReport!==false)?archiveFolderFor(rc):null;
-    const seq=stageSeq(i);
+    const seq=stageSeq(rc.stages,i);
     const reportPendingLine=reportFolder?('📦 任务报告归档中 → '+reportFolder+'/'+evaltokReportFile(rc,seq,s.name,runId)):'⚠ 任务报告未归档：无法确定本次运行归档目录';
     if(et.collectReport!==false) log.push(reportPendingLine);
     const terminalOut={stdout:log.join('\n'),stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true};
     s._out=terminalOut;
-    const varsOut=mergeStageVars(log.join('\n'));
-    if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(bodyFull));   // 截断展示时顶层标量改从完整运行对象捕获
-    applyOutVars(outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：运行字段改名/JSON 路径/全文赋值（与 HTTP 阶段一致）
+    const varsOut=mergeStageVars(rc, log.join('\n'));
+    if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(rc, bodyFull));   // 截断展示时顶层标量改从完整运行对象捕获
+    applyOutVars(rc, outSpec, varsOut, parseStageJson(bodyFull||log.join('\n')), bodyFull);   // 输出变量映射：运行字段改名/JSON 路径/全文赋值（与 HTTP 阶段一致）
     const dur=(Date.now()-t0)/1000;
     const finalNode={status:ok?'success':'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut};
     let reportJob=null;
@@ -3869,7 +3978,7 @@ async function runEvaltokensStep(i){
       s._reportPendingAttempt=attempt;   // archiveRun 不抢先写尚未补齐报告结果的阶段日志
       const replaceReportLine=function(text){
         if(terminalOut.stdout) terminalOut.stdout=terminalOut.stdout.replace(reportPendingLine,text);
-        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&curRun===rc&&selectedId===s.id) renderDetail();
+        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&viewRc===rc&&selectedId===s.id) renderDetail();
       };
       reportJob=archiveEvaltokensReport(e,rc,seq,s.name,runId).then(file=>{
         replaceReportLine(file?('📦 任务报告已归档 → '+file):'⚠ 任务报告未归档：无法确定本次运行归档目录');
@@ -3892,202 +4001,210 @@ async function runEvaltokensStep(i){
       if(!rc.evaltokensReportWrites) rc.evaltokensReportWrites=[];
       rc.evaltokensReportWrites.push(reportJob);   // archiveRun 的汇总文件/归档脚本等待报告及本阶段日志收尾
     }
-    nodes[s.id]=finalNode;
-    if(!reportJob) archiveStageLog(s,seq);
-    applyStatusClasses(); renderDetail();
-    if(ok) advance(i+1); else finish('failed');
+    rc.nodes[s.id]=finalNode;
+    if(!reportJob) archiveStageLog(s,seq,rc);
+    rcRender(rc);
+    if(ok) advance(rc,i+1); else finish(rc,'failed');
   }catch(e){
-    if(!running||!curRun||curRun.token!==tk) return;   // 迟回异常：不得覆盖节点状态、不得对旧阶段再 finish
-    if(timer){clearInterval(timer);timer=null;}
+    if(rc.over||rc.token!==tk) return;   // 迟回异常：不得覆盖节点状态、不得对旧阶段再 finish
+    if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     const msg=timedOut?timeoutMessage():String(e&&e.message?e.message:e);
     log.push('✗ '+msg);
     s._out={stdout:log.join('\n'),stderr:msg,code:1,evaltokens:true,done:true};
-    archiveStageLog(s, stageSeq(i));   // 异常路径同样归档本阶段已产生的回显
-    nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}};
-    applyStatusClasses(); renderDetail(); finish('failed');
+    archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
+    rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}};
+    rcRender(rc); finish(rc,'failed');
   }finally{
     if(deadlineTimer!==null) clearTimeout(deadlineTimer);
-    if(rc&&rc.scriptAbort===ctrl) rc.scriptAbort=null;
+    if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   }
 }
-async function runScriptStep(i){
-  const stg=activeStages(); const s=stg[i]; const sc=s.script;
-  const tk = curRun ? curRun.token : null;   // 运行令牌：await 期间若本次运行被中止/重置并启动了新运行，下方比对丢弃迟回结果
-  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name,varsIn,varsOut:{}};
-  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+async function runScriptStep(rc, i){
+  const stg=rc.stages; const s=stg[i]; const sc=s.script;
+  const tk = rc.token;   // 运行令牌：await 期间若本次运行被中止/重置，下方比对丢弃迟回结果
+  const varsIn = Object.assign({}, rc.vars||{});
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name,varsIn,varsOut:{}};
+  runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
-  if(timer) clearInterval(timer);
-  timer=setInterval(()=>{ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },300);
+  if(rc.timer) clearInterval(rc.timer);
+  rc.timer=setInterval(()=>{ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },300);
   /* 流式回显：执行中把 stdout/stderr 写入本阶段实时快照（s._out，code:null）并刷新「阶段详情」。
      快速输出按 ~100ms 节流重建；选中的正是本阶段时立即刷新，否则由运行 tick 的 renderDetail 收尾。
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
-  const ctrl=new AbortController(); if(curRun) curRun.scriptAbort=ctrl;
-  const folder=archiveFolderFor(curRun), logFile=folder ? folder+'/'+taskLogFile(curRun,i+1,s.name) : null;
+  const ctrl=new AbortController(); rc.scriptAbort=ctrl;
+  const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,i+1,s.name) : null;
   s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
   let accStdout='', accStderr='', lastLive=0;
-  const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, null, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
-    if(!running || !curRun || curRun.token!==tk) return;   // 迟回片段丢弃（已切换新运行）
+  const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, rc, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
+    if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }   // 接管确认：中止时也不可用浏览器快照覆盖服务端日志
     if(m.type==='out'){ accStdout+=m.text; } else if(m.type==='err'){ accStderr+=m.text; }
     s._out={stdout:accStdout, stderr:accStderr, code:null};   // 实时快照；归档与历史以最终结果为准
-    if(selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
+    if(viewRc===rc && selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(res.logError) console.warn('[archive] 服务端阶段日志写入失败，尝试页面兜底:',res.logError);
-  if(curRun && curRun.scriptAbort===ctrl) curRun.scriptAbort=null;
-  if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验令牌再动全局 timer：迟回时 timer 已属新运行（中止已由 finish 清过）
-  if(timer){ clearInterval(timer); timer=null; }
+  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
+  if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验令牌再动本运行 timer（中止已由 finish 清过）
+  if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;
   s._out=res;
-  const varsOut = mergeStageVars(res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 curRun.vars
-  applyOutVars(sc.outVars, varsOut, parseStageJson(res.stdout), res.stdout);   // 输出变量映射：stdout 捕获的 key 改名后下传；来源可写 JSON 路径取嵌套字段，或 * / 留空=stdout 全文整体赋值（与 HTTP 阶段一致，见 applyOutVars）
-  archiveStageLog(s, stageSeq(i));   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-  if(res.code===0){ nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); advance(i+1); }
-  else { nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; applyStatusClasses(); renderDetail(); finish('failed'); }
+  const varsOut = mergeStageVars(rc, res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 rc.vars
+  applyOutVars(rc, sc.outVars, varsOut, parseStageJson(res.stdout), res.stdout);   // 输出变量映射：stdout 捕获的 key 改名后下传；来源可写 JSON 路径取嵌套字段，或 * / 留空=stdout 全文整体赋值（与 HTTP 阶段一致，见 applyOutVars）
+  archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
+  if(res.code===0){ rc.nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; rcRender(rc); advance(rc,i+1); }
+  else { rc.nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; rcRender(rc); finish(rc,'failed'); }
 }
-function runStage(i){
-  const stg = activeStages();
-  if(i>=stg.length){ finish('success'); return; }
+function runStage(rc, i){
+  const stg = rc.stages;
+  if(i>=stg.length){ finish(rc,'success'); return; }
   const s=stg[i];
-  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
-  selectedId=s.id; renderFlow(); renderDetail();
-  if(s.sub && s.sub.length){ s.sub.forEach(x=> nodes[s.id].sub[x]='running'); }
+  const varsIn = Object.assign({}, rc.vars||{});
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
+  runSetSel(rc,s.id); if(viewRc===rc){ renderFlow(); renderDetail(); }
+  if(s.sub && s.sub.length){ s.sub.forEach(x=> rc.nodes[s.id].sub[x]='running'); }
   const start=Date.now();
   const total=s.dur*1000;
-  if(timer) clearInterval(timer);
-  timer=setInterval(()=>{
+  if(rc.timer) clearInterval(rc.timer);
+  rc.timer=setInterval(()=>{
     let p=(Date.now()-start)/(s.sub&&s.sub.length?total*1.2:total)*100;
     if(p>=100) p=100;
-    nodes[s.id].progress=p; nodes[s.id].dur=(Date.now()-start)/1000;
-    if(s.sub && s.sub.length){ s.sub.forEach((x,idx)=>{ if(p> 50*(idx+1)) nodes[s.id].sub[x]='success'; }); }
-    applyStatusClasses(); renderDetail();
-    if(p>=100){ clearInterval(timer); timer=null;
-      nodes[s.id].status='success'; nodes[s.id].progress=100;
-      archiveStageLog(s, stageSeq(i));   // 本地模拟阶段的回显同样归档
-      applyStatusClasses(); renderDetail();
-      advance(i+1);
+    rc.nodes[s.id].progress=p; rc.nodes[s.id].dur=(Date.now()-start)/1000;
+    if(s.sub && s.sub.length){ s.sub.forEach((x,idx)=>{ if(p> 50*(idx+1)) rc.nodes[s.id].sub[x]='success'; }); }
+    rcRender(rc);
+    if(p>=100){ clearInterval(rc.timer); rc.timer=null;
+      rc.nodes[s.id].status='success'; rc.nodes[s.id].progress=100;
+      archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本地模拟阶段的回显同样归档
+      rcRender(rc);
+      advance(rc,i+1);
     }
   },120);
 }
 /* 「不执行」阶段：直接标记跳过（记入历史与归档，日志为跳过说明），推进到下一阶段 */
-function skipStage(i){
-  const stg = activeStages();
+function skipStage(rc, i){
+  const stg = rc.stages;
   const s=stg[i];
-  const varsIn = curRun ? Object.assign({}, curRun.vars||{}) : {};
-  nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{},varsIn,varsOut:{}};
-  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
-  archiveStageLog(s, stageSeq(i));
-  advance(i+1);
+  const varsIn = Object.assign({}, rc.vars||{});
+  rc.nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{},varsIn,varsOut:{}};
+  runSetSel(rc,s.id); rcRender(rc,true);
+  archiveStageLog(s, stageSeq(rc.stages,i), rc);
+  advance(rc,i+1);
 }
-/* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续 */
+/* 从失败阶段重试：保留本次运行上下文（commit/tag/环境），变量回滚到该阶段入口后从该阶段继续。
+   重试前校验机器占用：该运行结束后其机器可能已被并行运行占去，冲突时拦截（可等占用结束后重试） */
 function retryFromStage(stageId){
-  if(running || !curRun || !runStages) return;
-  const idx=runStages.findIndex(x=>x.id===stageId); if(idx<0) return;
-  const n=nodes[stageId]; if(!n || n.status!=='failed') return;
-  curRun.vars=Object.assign({}, n.varsIn||{});
-  runStages[idx]._out=null; runStages[idx]._archiveStdout=null;   // 清掉上次脚本输出与归档全量副本，避免重跑期间误显示/误归档旧日志
-  for(let j=idx;j<runStages.length;j++){ runStages[j]._logArchived=false; if(j>idx) runStages[j]._archiveStdout=null; const m=nodes[runStages[j].id]; nodes[runStages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
-  running=true; $('stopBtn').disabled=false; syncRunBtn();
-  setOverall('运行中…（重试）','dshell-badgeWait');
-  selectedId=stageId; applyStatusClasses(); renderDetail();
-  advance(idx);
+  const rc=viewRc;
+  if(!rc || !rc.over) return;   // 仅「编排区展示的已结束运行」可重试（按钮也只在此态出现）
+  const idx=rc.stages.findIndex(x=>x.id===stageId); if(idx<0) return;
+  const n=rc.nodes[stageId]; if(!n || n.status!=='failed') return;
+  if(conflictsActive(rc)){ flashRunTip('目标机器正被其他运行占用，暂不能重试（可等其完成后再试）'); return; }
+  rc.vars=Object.assign({}, n.varsIn||{});
+  rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;   // 清掉上次脚本输出与归档全量副本，避免重跑期间误显示/误归档旧日志
+  for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; if(j>idx) rc.stages[j]._archiveStdout=null; const m=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived 复位：重跑完成的阶段会重写其归档日志文件
+  rc.over=false;
+  activeRuns.push(rc); syncRunState();
+  $('stopBtn').disabled=false;
+  rcOverall(rc,'运行中…（重试）','dshell-badgeWait');
+  runSetSel(rc,stageId); rcRender(rc);
+  advance(rc,idx);
 }
-function finish(result){
-  running=false; $('stopBtn').disabled=true; syncRunBtn();
-  if(timer){ clearInterval(timer); timer=null; }
+function finish(rc, result){
+  rc.over=true;
+  if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  activeRuns=activeRuns.filter(r=>r!==rc);
+  syncRunState();
+  $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止
   /* 收尾（徽标 / 历史 / 统计 / 持久化 / 归档 / 详情）尽力而为：任一步异常都不得跳过下方的
      drainQueue()——否则排队任务会卡在「待启动」永远不跑（renderQueue 自愈仅在此处确实调到时才兜底）。
      buildLog 等同步步骤在此前未被 try 包裹（archiveStageLog 内部已包），故这里统一兜底。 */
   try{
     refreshArchiveTip();   // 运行结束：目标回退到历史选中行（未选中则提示选择，不再回退本次运行归档）
-    const elapsed=(Date.now()-curRun.startTs)/1000;
-    if(result==='success'){ setOverall('✓ 已完成','dshell-badgeDone'); }
-    else if(result==='aborted'){ setOverall('⏏ 终止',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
-    else { setOverall('✗ 错误',''); const o=$('overall').firstChild; o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+    const elapsed=(Date.now()-rc.startTs)/1000;
+    if(result==='success'){ rcOverall(rc,'✓ 已完成','dshell-badgeDone'); }
+    else if(result==='aborted'){ rcOverall(rc,'⏏ 终止','','var(--st-idle)'); }   // 与运行历史行/阶段徽标同色（灰）
+    else { rcOverall(rc,'✗ 错误','','var(--st-err)'); }
     buildNo++;
-    const rec={no:buildNo, pipeline:curRun.pipelineName||curPipeline().name, env:curRun.env, commit:curRun.commit.slice(0,7),
+    const rec={no:buildNo, pipeline:rc.pipelineName||curPipeline().name, env:rc.env, commit:rc.commit.slice(0,7),
       status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
-      dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:curRun.startTs, by:curRun.by||'anonymous',
-      pipelineId:curRun.pipelineId||null, repoId:curRun.repoId||null, branch:curRun.branch||'main', strategy:curRun.strategy||'',
-      prom: promSnapshotForRun(curRun),
-      logs: collectRunLogs(),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集
-      tag:curRun.tag, archive:archiveFolderFor(curRun)};
+      dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:rc.startTs, by:rc.by||'anonymous',
+      pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'',
+      prom: promSnapshotForRun(rc),
+      logs: collectRunLogs(rc),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集
+      tag:rc.tag, archive:archiveFolderFor(rc)};
     history.unshift(rec); if(history.length>500) history.length=500;   // 条数上限与服务端一致（服务端 PUT 合并会保留页面未知的记录，页面别再按 200 截）
     histPage=0;
     selHistoryIdx=0;   // 运行完成：自然选中运行历史第一条（本次运行，仅选中不进入回放，保持本次运行的实时编排/详情视图），便于直接对选中行做分析/收集普罗/打开归档
     renderHistory(); renderStats();
     refreshArchiveTip();   // 归档目录目标跟随刚选中的本次运行记录刷新
     persistState();
-    archiveRun(result);
-    renderDetail();   // running 已置 false：失败阶段补出「从本阶段重试」按钮
+    archiveRun(rc, result);
+    if(viewRc===rc) renderDetail();   // 本运行已结束：失败阶段补出「从本阶段重试」按钮
   }catch(e){ console.warn('[pipeline] finish 收尾异常（已兜底，不阻断队列排空）:', e); }
-  try{ drainQueue(); }catch(e){ console.warn('[pipeline] 排空队列失败（交由 renderQueue 自愈兜底）:', e); }   // startRun 抛错时吞掉：被 shift 的该项丢弃，剩余由下方 renderQueue 自愈逐个补排
+  try{ drainQueue(); }catch(e){ console.warn('[pipeline] 排空队列失败（交由 renderQueue 自愈兜底）:', e); }   // startRun 抛错时吞掉：被移除的该项丢弃，剩余由下方 renderQueue 自愈逐个补排
   renderQueue();
 }
 /* 系统预设任务：随阶段列表按编排位置执行（见 advance 分发），
    脚本为设置页配置在启动时的快照（expandRunStages → presetRuntime）；未配置脚本=跳过（不阻断）；
    block=true 的预设任务（环境检查）不通过（脚本非零退出）时阻断后续阶段、按失败计入历史，
    其余预设任务失败不阻断。日志随任务即时归档为 00 号任务日志（见 stageSeq） */
-async function runPresetStep(i){
-  const stg=activeStages(); const s=stg[i]; const def=PRESET_DEF[s.pkey]||{name:s.name, block:false, noScript:'未配置「'+s.name+'」脚本'};
-  const tk = curRun ? curRun.token : null;   // 运行令牌：await 期间若本次运行被中止/重置并启动了新运行，下方比对丢弃迟回结果
+async function runPresetStep(rc, i){
+  const stg=rc.stages; const s=stg[i]; const def=PRESET_DEF[s.pkey]||{name:s.name, block:false, noScript:'未配置「'+s.name+'」脚本'};
+  const tk = rc.token;   // 运行令牌：await 期间若本次运行被中止/重置，下方比对丢弃迟回结果
   const sc=s.script;
   if(!sc || !sc.path){   // 未配置脚本：标记跳过并推进（不阻断）
-    nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{}};
-    selectedId=s.id; applyStatusClasses(); renderDetail();
-    advance(i+1); return;
+    rc.nodes[s.id]={status:'skipped',progress:100,dur:0,sub:{}};
+    runSetSel(rc,s.id); rcRender(rc);
+    advance(rc,i+1); return;
   }
-  setOverall(def.name+'中…','dshell-badgeWait');
-  nodes[s.id]={status:'running',progress:0,dur:0,sub:{}};
-  selectedId=s.id; applyStatusClasses(); renderFlow(); renderDetail();
+  rcOverall(rc,def.name+'中…','dshell-badgeWait');
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{}};
+  runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
-  if(timer) clearInterval(timer);
-  timer=setInterval(()=>{ const n=nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; applyStatusClasses(); renderDetail(); } },300);
+  if(rc.timer) clearInterval(rc.timer);
+  rc.timer=setInterval(()=>{ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },300);
   /* 流式回显与 runScriptStep 同一套（实时快照 s._out + AbortController 断开 + 服务端日志接管确认） */
-  const ctrl=new AbortController(); if(curRun) curRun.scriptAbort=ctrl;
-  const folder=archiveFolderFor(curRun), logFile=folder ? folder+'/'+taskLogFile(curRun,0,s.name) : null;   // 预设任务固定 00 号任务日志（文件名含任务名，互不冲突）
+  const ctrl=new AbortController(); rc.scriptAbort=ctrl;
+  const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,0,s.name) : null;   // 预设任务固定 00 号任务日志（文件名含任务名，互不冲突）
   s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
   let accStdout='', accStderr='', lastLive=0;
   let timeoutMs=120000, extraEnv=null, presetError='';
   if(s.pkey==='promCollect'){
-    const ps=Object.assign({enabled:true},normalizePipelineProm(s.prom||(curRun&&curRun.prom)));
-    let startMs=curRun.startTs, endMs=Date.now();
+    const ps=Object.assign({enabled:true},normalizePipelineProm(s.prom||rc.prom));
+    let startMs=rc.startTs, endMs=Date.now();
     const cs=ps.startTime?dtLocalToMs(ps.startTime):0, ce=ps.endTime?dtLocalToMs(ps.endTime):0;
     if(cs) startMs=cs; if(ce) endMs=ce;
     if(!startMs || !endMs || startMs>=endMs) presetError='时间参数错误：开始时间必须早于结束时间。';
-    else extraEnv=buildPromCollectEnv({prom:ps,archive:curRun.archive||''},startMs,endMs);
+    else extraEnv=buildPromCollectEnv({prom:ps,archive:rc.archive||''},startMs,endMs);
     timeoutMs=0;   // 普罗数据采集与手动收集一致：不设固定超时，可从主控手动中止
   }
-  const res=presetError ? {code:1,stdout:'',stderr:presetError} : await execScript(sc, timeoutMs, extraEnv, null, m=>{
-    if(!running || !curRun || curRun.token!==tk) return;   // 迟回片段丢弃（已切换新运行）
+  const res=presetError ? {code:1,stdout:'',stderr:presetError} : await execScript(sc, timeoutMs, extraEnv, rc, m=>{
+    if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }
     if(m.type==='out'){ accStdout+=m.text; } else if(m.type==='err'){ accStderr+=m.text; }
     s._out={stdout:accStdout, stderr:accStderr, code:null};   // 实时快照；归档与历史以最终结果为准
-    if(selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
+    if(viewRc===rc && selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
-  if(curRun && curRun.scriptAbort===ctrl) curRun.scriptAbort=null;
-  if(!running || !curRun || curRun.token!==tk){ console.warn('[pipeline] 预设任务「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }
-  if(timer){ clearInterval(timer); timer=null; }
+  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
+  if(rc.over || rc.token!==tk){ console.warn('[pipeline] 预设任务「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }
+  if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;
   s._out=res;
-  archiveStageLog(s, 0);   // 预设任务回显即时归档（00 号任务日志，见 stageSeq）
+  archiveStageLog(s, 0, rc);   // 预设任务回显即时归档（00 号任务日志，见 stageSeq）
   if(res.code===0){
-    nodes[s.id]={status:'success',progress:100,dur,sub:{}};
-    setOverall('运行中…','dshell-badgeWait'); applyStatusClasses(); renderDetail(); advance(i+1);
+    rc.nodes[s.id]={status:'success',progress:100,dur,sub:{}};
+    rcOverall(rc,'运行中…','dshell-badgeWait'); rcRender(rc); advance(rc,i+1);
   } else {
-    nodes[s.id]={status:'failed',progress:100,dur,sub:{}};
-    applyStatusClasses(); renderDetail();
+    rc.nodes[s.id]={status:'failed',progress:100,dur,sub:{}};
+    rcRender(rc);
     if(def.block){   // 环境检查不通过：阻断后续阶段，按失败计入历史
-      finish('failed');
-      setOverall('✗ 环境检查未通过',''); const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; }
+      finish(rc,'failed');
+      rcOverall(rc,'✗ 环境检查未通过','','var(--st-err)');
     } else {
-      setOverall('运行中…','dshell-badgeWait'); advance(i+1);   // 清理/Profiling/普罗采集失败不阻断
+      rcOverall(rc,'运行中…','dshell-badgeWait'); advance(rc,i+1);   // 清理/Profiling/普罗采集失败不阻断
     }
   }
 }
@@ -4159,7 +4276,7 @@ async function ensureArchiveFolder(folder){
    命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为预设任务：环境清理/环境检查/Profiling）；失败仅告警，不影响运行结果。 */
 /* 归档序号：预设任务固定 00（文件名含任务名，互不冲突）；正式阶段按剔除预设任务后的位置从 01 起，
    预设任务在阶段列表中的位置（编排顺序）不影响阶段编号 */
-function stageSeq(i){ const stg=activeStages(); let n=0; for(let j=0;j<=i&&j<stg.length;j++){ if(stg[j] && !stg[j].preset) n++; } return (stg[i] && stg[i].preset) ? 0 : n; }
+function stageSeq(stg, i){ let n=0; for(let j=0;j<=i&&j<stg.length;j++){ if(stg[j] && !stg[j].preset) n++; } return (stg[i] && stg[i].preset) ? 0 : n; }
 function taskLogFile(ctx, seq, name){ return 'run-'+ctx.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(name)+'.log'; }
 async function archiveTaskLog(ctx, seq, name, text){
   const folder=archiveFolderFor(ctx);
@@ -4195,33 +4312,33 @@ function archiveStageLog(stage, seq, ctx){
   if(!ctx || stage._logArchived || (stage._reportPendingAttempt&&stage._reportPendingAttempt===stage._evaltokAttempt)) return;
   if(!archiveFolderFor(ctx)) return;   // 未配置归档且保底根不可用：不归档
   stage._logArchived=true;
-  const n=nodes[stage.id]||{status:'idle'};
+  const n=((ctx&&ctx.nodes)?ctx.nodes:nodes)[stage.id]||{status:'idle'};   // 运行上下文自带节点表（并行运行各归各）；缺省回退视图节点表
   let text='';
   /* URL 阶段响应体超 64K 时展示用的是截断版，归档优先换全量副本 _archiveStdout（见 runUrlStep） */
   const st=(stage._archiveStdout!=null && stage._out) ? Object.assign({}, stage, {_out:Object.assign({}, stage._out, {stdout:stage._archiveStdout})}) : stage;
   try{ text=(buildLog(st, ctx, n)||[]).join('\n'); }catch(e){}
   archiveTaskLog(ctx, seq, stage.name, text).catch(e=>{ stage._logArchived=false; console.warn('[archive] 阶段「'+stage.name+'」日志归档失败（不影响运行结果）:', e); });
 }
-function archiveRun(result){
-  const folder=archiveFolderFor(curRun);
+function archiveRun(rc, result){
+  const folder=archiveFolderFor(rc);
   if(!folder) return;
-  const ctx=curRun, stages=activeStages(), reportWrites=(ctx.evaltokensReportWrites||[]).slice();
+  const ctx=rc, stages=rc.stages, runNodes=rc.nodes, reportWrites=(ctx.evaltokensReportWrites||[]).slice();
   const finalizeGeneration=(ctx._archiveFinalizeGeneration||0)+1; ctx._archiveFinalizeGeneration=finalizeGeneration;
   const previousFinalize=ctx._archiveFinalizeTail||Promise.resolve();   // 失败后重试会再次 finish：串行写入，保证最新结果最后落盘
   // 兜底补齐任务级日志：即时归档未覆盖的已完成阶段（如归档失败后重试）统一补写；
   // 未执行且无任何回显的阶段不归档；被中止的任务（running 时被置为 aborted 但已有部分回显）照常归档
   stages.forEach((s,idx)=>{
-    const n=nodes[s.id]||{status:'idle'};
+    const n=runNodes[s.id]||{status:'idle'};
     if(n.status==='running') return;
     const hasEcho=!!(s._out && (s._out.stdout || s._out.stderr));
     if(n.status==='idle' && !hasEcho) return;
-    archiveStageLog(s, stageSeq(idx), ctx);
+    archiveStageLog(s, stageSeq(stages,idx), ctx);
   });
   const endTs=Date.now(), pipelineName=ctx.pipelineName||curPipeline().name;
   const ctxSnapshot=Object.assign({},ctx,{vars:Object.assign({},ctx.vars||{})});
   const stageSnapshots=stages.map(s=>{
     const state=(s._reportArchiveState&&s._reportArchiveState.attempt===s._evaltokAttempt)?s._reportArchiveState:null;
-    return {stage:Object.assign({},s,{_out:s._out}),node:Object.assign({},nodes[s.id]||{status:'idle'},{varsOut:Object.assign({},(nodes[s.id]&&nodes[s.id].varsOut)||{})}),reportState:state};
+    return {stage:Object.assign({},s,{_out:s._out}),node:Object.assign({},runNodes[s.id]||{status:'idle'},{varsOut:Object.assign({},(runNodes[s.id]&&runNodes[s.id].varsOut)||{})}),reportState:state};
   });
   const finalizeWrite=trackArchiveWrite(folder, async()=>{
     if(reportWrites.length) await Promise.allSettled(reportWrites);   // 报告及其阶段日志先落盘，归档脚本随后才能收集到完整目录
@@ -4246,7 +4363,7 @@ function archiveRun(result){
       stages: stageSnapshots.map((item,idx)=>{
         const s=item.stage, n=item.node;
         const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
-        const logFile=item.reportState?item.reportState.logFile:(s._logArchived?folder+'/'+taskLogFile(ctxSnapshot, stageSeq(idx), s.name):null);
+        const logFile=item.reportState?item.reportState.logFile:(s._logArchived?folder+'/'+taskLogFile(ctxSnapshot, stageSeq(stages,idx), s.name):null);
         if(logFile) rec.logFile=logFile;   // 本阶段独立回显日志（任务级归档）
         return rec;
       }),
@@ -4315,9 +4432,9 @@ function dtLocalToMs(s){   // datetime-local 值 → 毫秒（无时区按本地
 }
 let pmcCtxCurrent=null;   // 当前对话框对应的运行上下文（运行中 / 历史选中行），供「还原」与「收集」复用
 let pmcRunning=false, pmcAbort=null;
-function pmcContext(){   // 取收集目标运行上下文：运行中取 curRun；否则取历史选中行（旧记录无 startTs 时用 ts-dur 回推）。起止时间先取运行起止，编辑器设了固定时段则覆盖（留空=自动）
+function pmcContext(){   // 取收集目标运行上下文：编排区展示的在跑运行取该运行；否则取历史选中行（旧记录无 startTs 时用 ts-dur 回推）。起止时间先取运行起止，编辑器设了固定时段则覆盖（留空=自动）
   let startMs=0, endMs=0, ps=null, archive='', label='';
-  if(running && curRun){
+  if(viewActive() && curRun){
     startMs=curRun.startTs; endMs=Date.now(); ps=promSnapshotForRun(curRun); archive=curRun.archive||'';
     label='运行中 · '+esc(curRun.pipelineName||'')+' '+esc(curRun.env||'')+' · 执行人 '+esc(curRun.by||'');
   }else if(selHistoryIdx>=0 && history[selHistoryIdx]){
@@ -4626,7 +4743,8 @@ function rebuildReplayNodes(rec){
   });
 }
 function enterHistoryReplay(rec){
-  if(running){ flashRunTip('运行中暂不能回放历史（可等待完成或点「重置」中止后再试）'); return; }
+  /* 回放是独立的查看模式：脱离当前运行视图（在跑运行转入后台继续，队列区仍可见可中止） */
+  viewRc=null; curRun=null;
   replayRec=rec;
   /* 编排区：切到该次运行的流水线（按 id/名称匹配；不写 localStorage，避免回放污染偏好），
      阶段状态/耗时按阶段名从历史 logs 回填；流水线已删除时按日志阶段名重建只读编排 */
@@ -4652,16 +4770,21 @@ function enterHistoryReplay(rec){
   else if(rec.status==='aborted'){ const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
   $('overallBy').textContent='执行人：'+(rec.by||'—')+' · '+rec.time+'（历史回放）';
   const rt=$('replayTip'); if(rt) rt.textContent='正在回放历史 #'+rec.no+'「'+rec.pipeline+'」 · 再次点击该行退出';
+  $('stopBtn').disabled=true;   // 回放态不挂在任何在跑运行上（在跑运行到队列区各自中止）
   _detailKey='';   // 详情渲染缓存失效，强制按回放数据重绘
   renderFlow(); renderDetail();
   loadReplayLogs(rec).then(()=>{ if(replayRec===rec){ rebuildReplayNodes(rec); _detailKey=''; renderFlow(); renderDetail(); } });   // 按需拉取归档日志 + 校正阶段状态，完成后重算节点并重绘编排/详情
 }
 function exitHistoryReplay(){
   if(!replayRec) return;
-  replayRec=null; runStages=null;
-  const rt=$('replayTip'); if(rt) rt.textContent='';
-  setOverall('未运行',''); $('overallBy').textContent='';
-  resetNodes();   // 恢复主控当前流水线的空闲编排（内部重置 _detailKey 并重绘流程/详情）
+  replayRec=null; const rt=$('replayTip'); if(rt) rt.textContent='';
+  /* 退出回放：有在跑运行则回看最近一个（其节点表保持引擎实写状态，不可重置），否则回到当前流水线的空闲编排 */
+  viewRc=activeRuns.length?activeRuns[activeRuns.length-1]:null;
+  syncViewRun(); applyRunOverall(viewRc);
+  $('stopBtn').disabled=!viewActive();
+  refreshArchiveTip();
+  if(viewRc){ _detailKey=''; renderFlow(); renderDetail(); }
+  else resetNodes();   // 空闲态：恢复主控当前流水线的空闲编排（内部重置 _detailKey 并重绘流程/详情）
 }
 /* 回放态详情渲染：结构与 renderDetail 一致，数据取自历史记录（logs 按阶段名匹配选中阶段） */
 function renderReplayDetail(rec){
@@ -4820,7 +4943,7 @@ const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的�
    未运行且未选中历史行时不回退（不再打开最近一次运行或归档根目录），返回 null，
    由 openArchiveFolder 提示先选择一条运行历史。 */
 function archiveTargetFolder(){
-  if(running && curRun && curRun.archive) return curRun.archive;
+  if(viewActive() && curRun && curRun.archive) return curRun.archive;   // 编排区展示的在跑运行：打开其归档
   if(selHistoryIdx>=0 && history[selHistoryIdx] && history[selHistoryIdx].archive) return history[selHistoryIdx].archive;
   return null;
 }
@@ -5027,10 +5150,10 @@ function renderPipelineSel(){
   pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(cur && p.id===cur.id) o.selected=true; sel.appendChild(o); });
 }
 function selectPipeline(id){
-  if(running && id!==curPipelineId){ renderPipelineSel(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }
+  if(viewActive() && id!==curPipelineId){ renderPipelineSel(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }   // 编排区展示的在跑运行仍绑定其流水线快照
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
-  runStages=null; selectedId=curPipeline().stages[0].id;
+  viewRc=null; syncViewRun();   // 脱离运行结果视图（在跑运行不受影响，转后台继续）
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
 let editFocusIdx=-1;
@@ -5127,7 +5250,7 @@ function deletePipeline(id){
   pipelines=pipelines.filter(p=>p.id!==id);
   if(!pipelines.length){ pipelines=[defaultPipeline()]; }
   savePipelines();
-  if(curPipelineId===id){ curPipelineId=pipelines[0].id; runStages=null; selectedId=curPipeline().stages[0].id; resetNodes(); }
+  if(curPipelineId===id){ curPipelineId=pipelines[0].id; viewRc=null; syncViewRun(); resetNodes(); }
   renderPipelines(); renderFlow(); renderDetail();
 }
 /* 复制流水线：深拷贝阶段及脚本/URL/定时等绑定，生成新 id 与不重名的「副本」名称；
@@ -5166,28 +5289,38 @@ if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListen
 let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
 $('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); });
-/* 中止当前运行：以「已中止」计入历史并消耗队列。
+/* 中止指定运行：以「已中止」计入历史并消耗队列。
    流式执行的脚本经 AbortController 断开会话，服务端随之终止对应子进程（见 runScriptStep/execStreaming）；EvalTokens 阶段取消待响应请求；
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
-$('stopBtn').addEventListener('click', ()=>{
-  if(!running || !curRun) return;
-  if(curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
-  if(timer){ clearInterval(timer); timer=null; }
+function abortRun(rc){
+  if(!rc || rc.over) return;
+  if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
+  if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   // 中止兜底：先把被中断任务（含预设任务）的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
-  activeStages().forEach((s,idx)=>{ const n=nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, stageSeq(idx)); });
+  rc.stages.forEach((s,idx)=>{ const n=rc.nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, stageSeq(rc.stages,idx), rc); });
   // 被中断的运行中阶段置为 aborted（保留已运行进度/耗时/变量），详情面板如实展示「终止」而非误显「未开始」
-  flowStages().forEach(s=>{ const n=nodes[s.id]; if(n && (n.status==='running')) nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
-  finish('aborted');
-  applyStatusClasses(); renderDetail();
+  rc.stages.forEach(s=>{ const n=rc.nodes[s.id]; if(n && (n.status==='running')) rc.nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
+  finish(rc,'aborted');
+  rcRender(rc);
+}
+$('stopBtn').addEventListener('click', ()=>{
+  const rc=viewRc;   // 主控「中止」作用于编排区当前展示的运行；其他在跑运行用队列条目各自的「中止」
+  if(!rc || rc.over) return;
+  abortRun(rc);
 });
 $('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{
-  if(running || queue.length){ if(!confirm('将中止当前运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
+  if(running || queue.length){ if(!confirm('将中止 '+activeRuns.length+' 个运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  if(curRun && curRun.scriptAbort){ try{ curRun.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
-  if(running&&timer){clearInterval(timer);timer=null;} running=false; queue=[]; runStages=null; curRun=null; selectedId=curPipeline().stages[0].id; $('stopBtn').disabled=true; syncRunBtn(); resetNodes(); setOverall('未运行',''); $('overallBy').textContent=''; renderFlow(); renderDetail(); renderQueue();
-  refreshArchiveTip();   // curRun 已清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
+  activeRuns.forEach(rc=>{
+    if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
+    if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+    rc.over=true;   // 标死：在途异步结果按令牌/over 丢弃，不再 finish 入账（重置不计入历史）
+  });
+  activeRuns=[]; queue=[]; viewRc=null; syncViewRun(); syncRunState();
+  $('stopBtn').disabled=true; resetNodes(); applyRunOverall(null); renderQueue();
+  refreshArchiveTip();   // 运行已全部清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
@@ -5335,6 +5468,133 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
+
+/* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
+   导出设置 = 设置页全部配置：服务端部分（collectConfig，剔除流水线——流水线走独立导出——并补回仅存本浏览器的代码仓访问令牌）
+             + 仅存浏览器本地的运行选择（当前流水线/环境/代码仓、分支/部署策略/执行人、历史筛选与分页）；
+   导出流水线 = 全部流水线定义（含内置流水线上的编辑）。
+   导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
+   运行历史不参与导入导出。导出文件含节点密码与令牌明文。 */
+function ioTimestamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+function downloadJson(filename, data){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+  a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+function ioTipShow(msg, bad){ const t=$('ioTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+function collectSettingsForExport(){
+  const cfg=collectConfig();
+  delete cfg.pipelines;   /* 流水线独立导出，见 exportPipelines */
+  /* 导出补回代码仓访问令牌（区别于上送服务端持久化时剔除 pass，见 collectConfig）：导出文件即完整备份 */
+  cfg.repositories=repositories.map(function(r){ return Object.assign({}, r); });
+  return cfg;
+}
+function exportSettings(){
+  downloadJson('pipeline-settings-'+ioTimestamp()+'.json', {
+    app:'worktable-pipeline', kind:'pipeline-settings', version:1, exportedAt:new Date().toISOString(),
+    config:collectSettingsForExport(),
+    local:{ curPipelineId, selectedEnvIds, curRepoId, schedEnvIds, branch:$('branchName').value, strategy:$('deployStrategyName').value, by:$('triggeredBy').value, histFilter, histPageSize },
+  });
+  ioTipShow('✓ 已导出设置配置');
+}
+function exportPipelines(){
+  downloadJson('pipeline-pipelines-'+ioTimestamp()+'.json', {
+    app:'worktable-pipeline', kind:'pipeline-pipelines', version:1, exportedAt:new Date().toISOString(),
+    pipelines:pipelines,
+  });
+  ioTipShow('✓ 已导出 '+pipelines.length+' 条流水线');
+}
+/* 导入的流水线列表归一化：与 loadServerState 同一套迁移（内置默认置顶 + gate/url/预填默认值迁移）；非法列表返回 null */
+function normalizeImportedPipelines(list){
+  if(!Array.isArray(list) || !list.some(p=>p && Array.isArray(p.stages))) return null;
+  const def=list.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+  const customs=list.filter(p=>p && !p.builtIn);
+  return [def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults);
+}
+/* 应用导入的设置配置（不含流水线）：文件为权威，缺省键保持当前值；随后统一落 localStorage + persistState 推服务端 + 全量重渲染 */
+function applyImportedSettings(cfg, loc){
+  cfg=cfg||{}; loc=loc||{};
+  if(Array.isArray(cfg.environments)) environments=cfg.environments.map(normalizeEnv);
+  if(Array.isArray(cfg.repositories)) repositories=cfg.repositories.map(normalizeRepo);   /* 访问令牌按文件内容恢复（含空值） */
+  if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+  if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
+  if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
+  if(cfg.cleanupScript===null || (cfg.cleanupScript && typeof cfg.cleanupScript.name==='string')) cleanupScript=cfg.cleanupScript;
+  if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
+  if(cfg.checkScript===null || (cfg.checkScript && typeof cfg.checkScript.name==='string')) checkScript=cfg.checkScript;
+  if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
+  if(cfg.profilingScript===null || (cfg.profilingScript && typeof cfg.profilingScript.name==='string')) profilingScript=cfg.profilingScript;
+  if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
+  if(typeof cfg.promCollectEnabled==='boolean') $('promCollectEnv').checked=cfg.promCollectEnabled;
+  if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
+  if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
+  else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
+  if(cfg.prom && typeof cfg.prom==='object') prom=Object.assign({}, DEFAULT_PROM, cfg.prom);
+  if(typeof cfg.archiveDir==='string') archiveDir=cfg.archiveDir;
+  if(typeof cfg.archiveScriptName==='string') archiveScriptName=cfg.archiveScriptName;
+  if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
+  if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
+  /* 仅存浏览器本地的运行选择 */
+  if(typeof loc.curPipelineId==='string' && pipelines.some(p=>p.id===loc.curPipelineId)){ curPipelineId=loc.curPipelineId; viewRc=null; syncViewRun(); }
+  if(Array.isArray(loc.selectedEnvIds)) selectedEnvIds=loc.selectedEnvIds.length?loc.selectedEnvIds:null;
+  if(typeof loc.curRepoId==='string') curRepoId=loc.curRepoId;
+  if(Array.isArray(loc.schedEnvIds)) schedEnvIds=loc.schedEnvIds.length?loc.schedEnvIds:null;
+  if(typeof loc.branch==='string') $('branchName').value=loc.branch;
+  if(typeof loc.strategy==='string') $('deployStrategyName').value=loc.strategy;
+  if(typeof loc.by==='string') $('triggeredBy').value=loc.by;
+  if(loc.histFilter && typeof loc.histFilter==='object'){
+    histFilter={kw:String(loc.histFilter.kw||''),status:String(loc.histFilter.status||''),pipeline:String(loc.histFilter.pipeline||'')};
+    $('histFilterKw').value=histFilter.kw; $('histFilterStatus').value=histFilter.status; $('histFilterPipeline').value=histFilter.pipeline;
+  }
+  if(Number.isFinite(loc.histPageSize)){ histPageSize=Math.max(1,parseInt(loc.histPageSize,10)||10); $('histPageSize').value=String(histPageSize); }
+  /* 统一落盘：localStorage（含本地令牌/选择）+ debounce 推服务端 */
+  saveEnvs(); saveEnvSel(); saveRepos(); saveRepoSel(); saveScriptsDir();
+  try{ localStorage.setItem('pip-theme', themePref); localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
+  saveCleanup(); saveCheck(); saveProfiling(); savePromCollectPreset();
+  saveJenkins(); saveEvaltok(); saveProm(); saveArchiveDir(); saveArchiveScript(); savePrompts();
+  saveSchedEnvSel(); saveRunSelLS(); saveHistFilter();
+  try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){}
+  /* 设置页各表单回填 + 全量重渲染（与 loadServerState 同一收尾） */
+  $('cleanupScriptName').value=cleanupScript?cleanupScript.name:''; renderCleanupParams();
+  $('checkScriptName').value=checkScript?checkScript.name:''; renderCheckParams();
+  $('profilingScriptName').value=profilingScript?profilingScript.name:''; renderProfilingParams();
+  $('archiveDir').value=archiveDir; $('archiveScriptName').value=archiveScriptName;
+  renderAll();
+}
+async function importSettingsFile(file){
+  let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
+  if(!data || data.app!=='worktable-pipeline' || data.kind!=='pipeline-settings' || !data.config || typeof data.config!=='object'){
+    ioTipShow('✗ 不是「导出设置」生成的有效文件', true); return;
+  }
+  if(!confirm('导入将按文件内容覆盖当前设置（节点环境 / 代码仓 / 脚本与服务配置等，含文件中的令牌），流水线与运行历史不受影响。确定导入？')) return;
+  if(!stateLoaded){ await loadServerState(); }   /* 等服务端状态落定再覆盖，避免 pushState 写前重载把导入内容冲掉 */
+  applyImportedSettings(data.config, data.local);
+  ioTipShow('✓ 设置已导入并保存');
+}
+async function importPipelinesFile(file){
+  let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
+  const list=(data && data.app==='worktable-pipeline' && data.kind==='pipeline-pipelines') ? normalizeImportedPipelines(data.pipelines) : null;
+  if(!list){ ioTipShow('✗ 不是「导出流水线」生成的有效文件', true); return; }
+  if(!confirm('导入将按文件内容覆盖当前全部流水线（含内置流水线上的改动），其余设置与运行历史不受影响。确定导入？')) return;
+  if(!stateLoaded){ await loadServerState(); }
+  pipelines=list;
+  if(!pipelines.some(p=>p.id===curPipelineId)) curPipelineId=pipelines[0].id;
+  viewRc=null; syncViewRun();
+  savePipelines();
+  try{ localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
+  renderAll();
+  ioTipShow('✓ 已导入 '+pipelines.length+' 条流水线');
+}
+/* 菜单开合（点外关闭，与「环境」多选同一交互）+ 四个入口 wiring；文件框选完即清空 value，保证重复选同一文件仍触发 change */
+$('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
+document.addEventListener('click', (e)=>{ const p=$('ioMenuPanel'); const m=$('ioMenu'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+$('ioExpSettings').addEventListener('click', exportSettings);
+$('ioExpPipelines').addEventListener('click', exportPipelines);
+$('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
+$('ioImpPipelines').addEventListener('click', ()=>{ $('ioImpPipelinesFile').click(); });
+$('ioImpSettingsFile').addEventListener('change', (e)=>{ const f=e.target.files && e.target.files[0]; e.target.value=''; if(f) importSettingsFile(f); });
+$('ioImpPipelinesFile').addEventListener('change', (e)=>{ const f=e.target.files && e.target.files[0]; e.target.value=''; if(f) importPipelinesFile(f); });
 
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });

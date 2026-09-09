@@ -607,7 +607,7 @@ export function apply(ctx: Context) {
   /* 运行队列跨浏览器可见：各 pipeline.html 标签页把自己「正在运行 + 排队中」的快照 PUT 到这里，
      页面再轮询 GET 拉取其他标签页的快照只读展示。在场信息是易失数据，存内存不落盘，重启即清；
      客户端超过 45 秒不上报视为离场（页面关闭 / 断网自动过期，pagehide 时也会 sendBeacon 清态）。 */
-  interface QueuePresence { id: string; label: string; running: any; queue: any[]; seenAt: number }
+  interface QueuePresence { id: string; label: string; running: any; runs: any[]; queue: any[]; seenAt: number }
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
   const QUEUE_PRESENCE_TTL = 45 * 1000    // 页面心跳 10 秒一次，45 秒未见即过期（容忍几次心跳丢失）
@@ -631,6 +631,9 @@ export function apply(ctx: Context) {
           const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
           if (!id) { json(res, 400, { error: 'missing id' }); return }
           const running = body.running === null || body.running === undefined ? null : cleanQueueEntry(body.running, 'startedAt')
+          /* 并行运行（页面按机器不相交同时跑多条流水线）后新增：全部在跑运行列表；running 保留首条兼容旧页面 */
+          const runs = (Array.isArray(body.runs) ? body.runs : []).slice(0, 20)
+            .map((r: any) => cleanQueueEntry(r, 'startedAt')).filter((r: any) => !!r)
           const queue = (Array.isArray(body.queue) ? body.queue : []).slice(0, 20)
             .map((q: any) => cleanQueueEntry(q, 'queuedAt')).filter((q: any) => !!q)
           if (queuePresence.size >= QUEUE_PRESENCE_CAP && !queuePresence.has(id)) {
@@ -642,7 +645,7 @@ export function apply(ctx: Context) {
           queuePresence.set(id, {
             id,
             label: (typeof body.label === 'string' ? body.label : '').slice(0, 64),
-            running, queue, seenAt: Date.now(),
+            running, runs, queue, seenAt: Date.now(),
           })
           json(res, 200, { ok: true })
           return
@@ -652,8 +655,8 @@ export function apply(ctx: Context) {
           for (const [k, v] of queuePresence) if (now - v.seenAt > QUEUE_PRESENCE_TTL) queuePresence.delete(k)
           const clients: any[] = []
           for (const v of queuePresence.values()) {
-            if (!v.running && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
-            clients.push({ id: v.id, label: v.label, seenAgo: Math.max(0, Math.round((now - v.seenAt) / 1000)), running: v.running, queue: v.queue })
+            if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
+            clients.push({ id: v.id, label: v.label, seenAgo: Math.max(0, Math.round((now - v.seenAt) / 1000)), running: v.running, runs: v.runs, queue: v.queue })
           }
           json(res, 200, { clients })
           return

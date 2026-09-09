@@ -1,5 +1,20 @@
 # 本目录 tokens-worktable 的本地改动
 
+- pipeline 项目新增设置 / 流水线导入导出（`projects/pipeline/pipeline.html`）：标题区右上角
+  「⤓⤒ 导入导出」菜单，设置与流水线分开备份恢复——导出设置=设置页全部配置（服务端部分
+  剔除流水线、补回仅存本浏览器的代码仓访问令牌）+ 本地运行选择（当前流水线/环境/代码仓、
+  分支/部署策略/执行人、历史筛选与分页），导出流水线=全部流水线定义（含内置流水线上的编辑）；
+  导入按文件内容整体恢复（文件为权威，缺省键保持当前值），复用 loadServerState 同一套归一化
+  与旧数据迁移，导入后统一落 localStorage 并推服务端持久化；运行历史不参与导入导出。
+  导出文件含密码/令牌明文（菜单内已标注勿提交仓库）。新增
+  `projects/pipeline/tests/test_config_import_export.js` 7 个契约测试。
+
+- 工作台名称可编辑（`src/client/index.tsx` + `src/client/locales.ts`）：侧栏区块标题「工作台」
+  支持自定义——设置面板（视图选项 ⚙）顶部新增「名称」栏，复用项目管理改名的 RenameInput 交互
+  （失焦/回车提交），清空即恢复默认「工作台」；自定义名存 `ViewState.title`（localStorage
+  `dsh.worktable.view.v1`，本机偏好，不推服务端），侧栏标题按 自定义名 → locale 默认 回退显示。
+  `lib/client.js`（+`.map`）已随本改动重建，刷新页面生效。
+
 - 升级命令的 tarball 文件名带版本号（`src/client/index.tsx`）：v1.0.5 发布验证发现 `dsh plugin add`
   按资产文件名缓存 tarball——各版本 URL 路径虽不同，文件名却恒为 `tokens-worktable.tgz`，缓存命中即装回旧版
   （部署机装 v1.0.5 实际装回 v1.0.4）。现改为 `releases/download/<tag>/tokens-worktable-<版本号>.tgz`，

@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/pipeline.html', 'utf8');
+const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
 
 function openingTag(markup, id) {
   const match = markup.match(new RegExp('<(?:button|div|table)[^>]*\\bid="' + id + '"[^>]*>'));

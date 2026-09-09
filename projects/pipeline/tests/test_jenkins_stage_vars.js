@@ -1,7 +1,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/pipeline.html";
+const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html";
 const source = fs.readFileSync(pipelineHtml, "utf8");
 
 // 切片 0：HTTP 阶段统一取 URL（兼容存量 jenkins.job）
@@ -26,38 +26,80 @@ if (s3 < 0 || e3 < 0) throw new Error("runUrlStep not found");
 
 const triggerCalls = [];
 const execRequests = [];
+const overallCalls = [];
 let advancedTo = null;
 let finishedWith = null;
+
+/* 多运行上下文：引擎函数（runUrlStep 等）签名已改为接收 rc，读写 rc.stages/rc.nodes/rc.vars/rc.timer，
+   不再触碰 curRun/runStages/nodes/selectedId/timer 全局单例；此处按真实运行上下文形状构造。 */
+const stages = [
+  { id: "st-jk", name: "Jenkins 兼容阶段", kind: "http", url: {
+    url: "job-a",
+    outVars: "RENAMED=NEW_KEY, DECLARED_ONLY",           // 改名映射 + 无来源声明（后者应跳过）
+  } },
+  { id: "st-jk-url", name: "HTTP URL 阶段", kind: "http", url: {
+    url: "http://jk.local/hooks/{GIT_BRANCH}",           // 非 Jenkins 标准路径：直接 GET，{VAR} 运行时替换
+    outVars: "HOOK_VALUE=value",
+  } },
+];
+const rc = {
+  id: "rc-test",
+  stages: stages,
+  nodes: {},
+  selId: "",
+  timer: null,
+  over: false,
+  overall: null,
+  token: 1,
+  vars: { UP_VER: "1.2.3", SHARED: "from-upstream" },
+  env: "",
+  envs: [{ ip: "192.0.2.10", user: "root", pass: "secret" }],
+  image: "registry.example.com/xds",
+  release: null,
+  commit: null,
+  tag: "test",
+  startTs: Date.now(),
+  by: "tester",
+  source: "test",
+  pipelineId: "pl-test",
+  pipelineName: "contract-test",
+  repoId: null,
+  repoName: null,
+  repoUrl: "",
+  giturl: "",
+  repoUser: "",
+  repoPass: "",
+  branch: "feat/demo",
+  strategy: "",
+  prom: null,
+  archive: "",
+};
+
 const context = {
-  __curRun: {
-    vars: { UP_VER: "1.2.3", SHARED: "from-upstream" },
-    envs: [{ ip: "192.0.2.10", user: "root", pass: "secret" }],
-    image: "registry.example.com/xds",
-    tag: "test",
-    pipelineName: "contract-test",
-    branch: "feat/demo",
-    token: 1,
-  },
-  __stages: [
-    { id: "st-jk", name: "Jenkins 兼容阶段", kind: "http", url: {
-      url: "job-a",
-      outVars: "RENAMED=NEW_KEY, DECLARED_ONLY",           // 改名映射 + 无来源声明（后者应跳过）
-    } },
-    { id: "st-jk-url", name: "HTTP URL 阶段", kind: "http", url: {
-      url: "http://jk.local/hooks/{GIT_BRANCH}",           // 非 Jenkins 标准路径：直接 GET，{VAR} 运行时替换
-      outVars: "HOOK_VALUE=value",
-    } },
-  ],
+  rc: rc,
   JSON, URL, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
+  scriptsDir: "/tmp/scripts",
+  jenkins: { url: "http://jk.local", user: "", token: "", mode: "local" },
+  // 视图层全局（与引擎同文件但在被测切片之外）：按真实语义给轻量桩
+  curRun: rc,                 // execScript 缺省 runCtx 时回退 curRun
+  viewRc: rc,                 // 编排区当前聚焦本运行
+  selectedId: "",             // 视图层选中别名（rcRender/runSetSel 聚焦时同步）
+  activeRuns: [rc],
+  running: true,
+  viewActive: () => !!(context.viewRc && !context.viewRc.over),
+  syncRunState: () => { context.running = context.activeRuns.length > 0; },
+  syncViewRun: () => { const v = context.viewRc; context.curRun = v; context.selectedId = v ? v.selId : ""; },
+  runSetSel: (rc_, id) => { rc_.selId = id; if (context.viewRc === rc_) context.selectedId = id; },
+  rcRender: (rc_, withFlow) => { if (context.viewRc !== rc_) return; context.applyStatusClasses(); if (withFlow) context.renderFlow(); context.renderDetail(); },
+  rcOverall: (rc_, txt, cls, color) => { rc_.overall = { txt: txt, cls: cls, color: color || "" }; overallCalls.push({ rc: rc_, txt: txt, cls: cls }); },
   // 页面侧依赖全部打桩：本测试只关心变量传递链路
-  activeStages: () => context.__stages,
   applyStatusClasses: () => {},
   renderFlow: () => {},
   renderDetail: () => {},
   archiveStageLog: () => {},
-  stageSeq: (i) => i + 1,
-  advance: (i) => { advancedTo = i; },
-  finish: (s) => { finishedWith = s; },
+  stageSeq: (stg, i) => i + 1,
+  advance: (rc_, i) => { advancedTo = i; },
+  finish: (rc_, s) => { finishedWith = s; },
   jkFetchJson: async (_j, url) => {
     if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
     return { number: 7, building: false, result: "SUCCESS", duration: 1 };
@@ -69,11 +111,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(
-  `let curRun = globalThis.__curRun;
-   var nodes = {}; let selectedId = ""; let running = true; let timer = null;
-   let scriptsDir = "/tmp/scripts";
-   let jenkins = { url: "http://jk.local", user: "", token: "", mode: "local" };
-${source.slice(s0, e0)}
+  `${source.slice(s0, e0)}
 ${source.slice(s1, e1)}
 ${source.slice(s2, e2)}
 ${source.slice(s3, e3)}`,
@@ -103,11 +141,11 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   console.log("PASS: parseStageVars 同时识别 KEY=VALUE 行与单行 JSON 对象");
 
   // ② substRunVars + execScript：脚本参数值 ${VAR} 引用替换
-  if (context.substRunVars("pre-${UP_VER}", context.__curRun) !== "pre-1.2.3") throw new Error("嵌段引用应替换");
-  if (context.substRunVars("${UP_VER}", context.__curRun) !== "1.2.3") throw new Error("整值引用应替换");
-  if (context.substRunVars("${NOPE}", context.__curRun) !== "") throw new Error("整值单个未定义引用应按空值处理");
-  if (context.substRunVars("x${NOPE}y", context.__curRun) !== "x${NOPE}y") throw new Error("嵌段未定义引用应原样保留");
-  if (context.substRunVars("${TARGET_IP}", context.__curRun) !== "192.0.2.10") throw new Error("运行级变量应可引用");
+  if (context.substRunVars("pre-${UP_VER}", rc) !== "pre-1.2.3") throw new Error("嵌段引用应替换");
+  if (context.substRunVars("${UP_VER}", rc) !== "1.2.3") throw new Error("整值引用应替换");
+  if (context.substRunVars("${NOPE}", rc) !== "") throw new Error("整值单个未定义引用应按空值处理");
+  if (context.substRunVars("x${NOPE}y", rc) !== "x${NOPE}y") throw new Error("嵌段未定义引用应原样保留");
+  if (context.substRunVars("${TARGET_IP}", rc) !== "192.0.2.10") throw new Error("运行级变量应可引用");
   await context.execScript({
     path: "/tmp/t.sh",
     params: [{ kind: "pos", key: "1", def: "" }, { kind: "env", key: "CFG", def: "" }, { kind: "env", key: "NOPE_ENV", def: "" }],
@@ -120,17 +158,18 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   console.log("PASS: 脚本阶段参数值支持 ${VAR} 引用（位置参数与 env 参数）");
 
   // ③ runUrlStep 兼容旧 Jenkins fullName：上游变量注入构建参数 + 控制台 JSON 回传 + 输出变量改名
-  await context.runUrlStep(0);
+  await context.runUrlStep(rc, 0);
   if (!triggerCalls.length) throw new Error("构建未被触发");
   const params = triggerCalls[0].params;
   if (params.UP_VER !== "1.2.3") throw new Error("上游变量应注入为构建参数，得到 " + JSON.stringify(params.UP_VER));
   if (params.SHARED !== "from-upstream") throw new Error("同名上游变量应原样传入 HTTP/Jenkins 兼容阶段，得到 " + JSON.stringify(params.SHARED));
   if (params.TARGET_IP !== "192.0.2.10") throw new Error("运行级默认注入不应受影响，得到 " + JSON.stringify(params.TARGET_IP));
-  if (context.__curRun.vars.NEW_KEY !== "new-value") throw new Error("控制台单行 JSON 应累计回 curRun.vars");
-  if (context.__curRun.vars.COUNT !== "2") throw new Error("控制台 JSON 数字字段应字符串化累计");
-  if (context.__curRun.vars.RENAMED !== "new-value") throw new Error("输出变量映射应把 NEW_KEY 改名为 RENAMED");
-  if ("DECLARED_ONLY" in context.__curRun.vars) throw new Error("无来源的输出变量声明不应产生变量");
-  if (context.nodes["st-jk"].varsOut.RENAMED !== "new-value") throw new Error("改名后的变量应体现在 varsOut 展示中");
+  if (rc.vars.NEW_KEY !== "new-value") throw new Error("控制台单行 JSON 应累计回 rc.vars");
+  if (rc.vars.COUNT !== "2") throw new Error("控制台 JSON 数字字段应字符串化累计");
+  if (rc.vars.RENAMED !== "new-value") throw new Error("输出变量映射应把 NEW_KEY 改名为 RENAMED");
+  if ("DECLARED_ONLY" in rc.vars) throw new Error("无来源的输出变量声明不应产生变量");
+  if (rc.nodes["st-jk"].varsOut.RENAMED !== "new-value") throw new Error("改名后的变量应体现在 varsOut 展示中");
+  if (rc.timer !== null) throw new Error("阶段结束后本运行的 rc.timer 应已清理");
   if (advancedTo !== 1) throw new Error("成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
   if (finishedWith !== null) throw new Error("成功路径不应 finish，得到 " + JSON.stringify(finishedWith));
   console.log("PASS: HTTP 阶段兼容 Jenkins fullName 双向传递变量（上游注入 / 控制台回传 / 输出变量改名）");
@@ -143,10 +182,10 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   if (context.jkSubstUrl("/job/{EMPTY}/", { EMPTY: "" }) !== "/job/{EMPTY}/") throw new Error("空值变量应原样保留");
   if (context.jkJobRef("a/b", {}) !== "/job/a/job/b/") throw new Error("fullName 仍按 /job/ 段拼接，得到 " + context.jkJobRef("a/b", {}));
   if (context.jkJobRef("http://jk.local:8080/job/app/job/{GIT_BRANCH}/", { GIT_BRANCH: "feat/x" }) !== "/job/app/job/feat%2Fx/") throw new Error("URL 应替换占位符后取路径，得到 " + context.jkJobRef("http://jk.local:8080/job/app/job/{GIT_BRANCH}/", { GIT_BRANCH: "feat/x" }));
-  await context.runUrlStep(1);
+  await context.runUrlStep(rc, 1);
   if (triggerCalls.length !== 2) throw new Error("URL 阶段请求未被触发");
   if (triggerCalls[1].url !== "http://jk.local/hooks/feat%2Fdemo") throw new Error("触发 URL 应由 {GIT_BRANCH} 替换得到，得到 " + JSON.stringify(triggerCalls[1].url));
-  if (context.__curRun.vars.HOOK_VALUE !== "hook-value") throw new Error("HTTP JSON 响应应按输出变量映射回传，得到 " + JSON.stringify(context.__curRun.vars.HOOK_VALUE));
+  if (rc.vars.HOOK_VALUE !== "hook-value") throw new Error("HTTP JSON 响应应按输出变量映射回传，得到 " + JSON.stringify(rc.vars.HOOK_VALUE));
   if (advancedTo !== 2) throw new Error("URL 阶段成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
   console.log("PASS: HTTP URL 支持 {GIT_BRANCH} 等占位符（运行时替换并 URL 编码）");
 })().catch((e) => { console.error(e); process.exit(1); });

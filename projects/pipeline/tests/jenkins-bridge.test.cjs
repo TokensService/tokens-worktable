@@ -49,7 +49,7 @@ test("Jenkins bridge binds to loopback by default", async (t) => {
 
   const env = { ...process.env, BRIDGE_PORT: String(port), BRIDGE_TARGET: "http://127.0.0.1:1" };
   delete env.BRIDGE_BIND;
-  const child = spawn(process.execPath, [path.join(__dirname, "jenkins-bridge.js")], {
+  const child = spawn(process.execPath, [path.join(__dirname, "..", "jenkins-bridge.js")], {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });

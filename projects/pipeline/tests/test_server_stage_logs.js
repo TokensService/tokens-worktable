@@ -1,24 +1,35 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/pipeline.html','utf8');
+const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
 function load(a,b,ctx){ vm.runInContext(source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a))),ctx); }
 test('预设任务请求断网不覆盖仍在服务端写入的文件',async()=>{
   let uploads=0;
   const s={id:'__cleanup__',name:'环境清理',preset:true,pkey:'cleanup',script:{name:'cleanup',path:'/tmp/cleanup.sh'}};
-  const ctx={curRun:{token:1},scriptsDir:'/tmp',PRESET_DEF:{cleanup:{name:'环境清理',block:false}},
-    activeStages:()=>[s],advance(){},finish(){},setOverall(){},$:()=>({firstChild:null}),
+  /* 多运行上下文并行重构后：引擎函数显式接收运行上下文 rc（不再读写 curRun/runStages/nodes/selectedId/timer 全局）；
+     curRun 仅是视图别名回退（execScript 的 runCtx||curRun），这里不提供以验证被测路径不依赖它。 */
+  const rc={id:'r1',stages:[s],nodes:{},selId:null,timer:null,over:false,overall:null,token:1,vars:{},
+    env:'',envs:[],image:'',release:null,commit:null,tag:'t1',startTs:Date.now(),by:'tester',source:'test',
+    pipelineId:'p1',pipelineName:'P',repoId:null,repoName:null,repoUrl:null,giturl:null,repoUser:null,repoPass:null,
+    branch:null,strategy:null,prom:null,archive:null};
+  const ctx={scriptsDir:'/tmp',PRESET_DEF:{cleanup:{name:'环境清理',block:false}},
+    viewRc:rc,selectedId:null,   // 视图别名：流式回调里 viewRc===rc && selectedId===s.id 才实时刷详情
+    runSetSel:(r,id)=>{r.selId=id; if(ctx.viewRc===r) ctx.selectedId=id;},   // 与实现一致：聚焦时同步视图选中
+    rcRender(){},rcOverall:(r,txt,cls,color)=>{r.overall={txt:txt,cls:cls,color:color||''};},
+    advance(){},finish(){},
     archiveFolderFor:()=>'/logs',taskLogFile:()=> 'cleanup.log',buildLog:()=>['partial'],
-    archiveTaskLog:async()=>{uploads++;},fetch:async()=>{throw new Error('disconnected');}};
-  Object.assign(ctx,{running:true,nodes:{},timer:null,selectedId:null,AbortController,TextDecoder,setInterval,clearInterval,renderFlow(){},renderDetail(){},applyStatusClasses(){}});
+    archiveTaskLog:async()=>{uploads++;},fetch:async()=>{throw new Error('disconnected');},
+    AbortController,TextDecoder,setInterval,clearInterval,renderDetail(){},console};
   vm.createContext(ctx);load('async function execStreaming(', 'function jkJobPath(',ctx);
   load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
   load('function archiveStageLog(', 'function archiveRun(',ctx);
-  const result=await ctx.execScript(s.script,0,null,null,null,null,'/logs/cleanup.log');
+  const result=await ctx.execScript(s.script,0,null,rc,null,null,'/logs/cleanup.log');
   assert.equal(result.logPending,true);
-  await ctx.runPresetStep(0);assert.equal(uploads,0);
+  await ctx.runPresetStep(rc,0);assert.equal(uploads,0);
+  assert.equal(rc.timer,null,'收尾应清掉本运行的 rc.timer');
+  assert.equal(rc.scriptAbort,null,'收尾应释放本运行的 rc.scriptAbort');
   ctx.fetch=async()=>({json:async()=>({code:0,stdout:'legacy'})});
   s._serverLogPending=false;s._serverLogFile=null;s._logArchived=false;   // 第二次执行：模拟旧插件一次性响应
-  await ctx.runPresetStep(0);assert.equal(uploads,1,'旧插件正常响应仍兜底');
+  await ctx.runPresetStep(rc,0);assert.equal(uploads,1,'旧插件正常响应仍兜底');
 });
 test('首条事件之前断流仍保留响应头声明的服务端日志归属',async()=>{
   const ctx={TextDecoder,fetch:async()=>new Response(new ReadableStream({start(c){c.error(new Error('disconnected'));}}),{headers:{'x-worktable-log':'server'}})};

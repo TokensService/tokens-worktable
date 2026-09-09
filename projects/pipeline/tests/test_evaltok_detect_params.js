@@ -1,9 +1,9 @@
 /* 测试 EvalTokens 任务输入参数自动识别（detectEvaltokTaskParams）
-   用法：PIPELINE_HTML=projects/pipeline/pipeline.html node projects/pipeline/test_evaltok_detect_params.js */
+   用法：PIPELINE_HTML=projects/pipeline/pipeline.html node projects/pipeline/tests/test_evaltok_detect_params.js */
 const fs = require("fs");
 const vm = require("vm");
 
-const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/pipeline.html";
+const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html";
 const source = fs.readFileSync(pipelineHtml, "utf8");
 
 // 切片：detectEvaltokTaskParams（紧随 evaltokFetchTasksCached 之后）
