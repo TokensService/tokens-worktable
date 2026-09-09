@@ -29,8 +29,8 @@ type DockMode = 'footer' | 'float'
 declare const __WT_VERSION__: string
 const LOCAL_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
 const UPDATE_REPO = 'TokensService/tokens-worktable'
-// 升级命令用带版本号的固定 release URL：latest/download URL 不变，包管理器按 URL 缓存会装回旧版
-const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable.tgz"'
+// 升级命令用带版本号的固定 release URL 且文件名带版本号：URL/文件名恒定不变时，包管理器按文件名缓存 tarball 会装回旧版
+const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable-' + tag.replace(/^v/, '') + '.tgz"'
 const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后提醒我重启 dsh web 并刷新页面'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
