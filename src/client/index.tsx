@@ -29,8 +29,9 @@ type DockMode = 'footer' | 'float'
 declare const __WT_VERSION__: string
 const LOCAL_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
 const UPDATE_REPO = 'TokensService/tokens-worktable'
-const UPGRADE_CMD = 'dsh plugin --profile web add "https://github.com/TokensService/tokens-worktable/releases/latest/download/tokens-worktable.tgz"'
-const UPGRADE_AI = '帮我升级 tokens-worktable：执行 ' + UPGRADE_CMD + '，完成后提醒我重启 dsh web 并刷新页面'
+// 升级命令用带版本号的固定 release URL：latest/download URL 不变，包管理器按 URL 缓存会装回旧版
+const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable.tgz"'
+const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后提醒我重启 dsh web 并刷新页面'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
   <svg viewBox="0 0 16 16" aria-hidden>
@@ -46,7 +47,7 @@ const ICON_SPARK = (
     <path d="M12.6 11.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z" fill="currentColor" />
   </svg>
 )
-type UpdateInfo = { latest: string; notes: string; url: string }
+type UpdateInfo = { latest: string; tag: string; notes: string; url: string }
 function cmpVer(a: string, b: string): number {
   const pa = a.split('.').map(Number)
   const pb = b.split('.').map(Number)
@@ -1362,7 +1363,7 @@ function WorktableSection(props: any) {
       const tag = (d.tag_name ?? '').replace(/^v/, '')
       if (!tag || cmpVer(tag, LOCAL_VERSION) <= 0) { setUpdateStatus('uptodate'); return }
       if ((localStorage.getItem('dsh.worktable.skipVersion.v1') ?? '') === tag) { setUpdateStatus('uptodate'); return }
-      setUpdateInfo({ latest: tag, notes: (d.body ?? '').slice(0, 800), url: d.html_url ?? '' })
+      setUpdateInfo({ latest: tag, tag: (d.tag_name ?? '') || 'v' + tag, notes: (d.body ?? '').slice(0, 800), url: d.html_url ?? '' })
       setUpdateStatus('uptodate')
     } finally {
       updateCheckingRef.current = false
@@ -1370,7 +1371,8 @@ function WorktableSection(props: any) {
   }, [])
   useEffect(() => { if (updateCheckOn) void checkUpdates() }, [updateCheckOn, checkUpdates])
   const copyUpgradeAi = async () => {
-    const ok = await copyText(UPGRADE_AI)
+    if (!updateInfo) return
+    const ok = await copyText(upgradeAiPrompt(updateInfo.tag))
     if (ok) { setUpdateCopied(true); setTimeout(() => setUpdateCopied(false), 2200) }
   }
   const skipUpdate = () => {
@@ -3261,7 +3263,7 @@ function buildCustomLayoutPrompt(req: string): string {
               <div className="dsh-wt_updateHead"><span className="dsh-wt_updateDot" />{t('update.available')} · v{updateInfo.latest}</div>
               <div className="dsh-wt_updateVers">{t('update.current')} v{LOCAL_VERSION} → v{updateInfo.latest}</div>
               {updateInfo.notes && <div className="dsh-wt_updateNotes">{updateInfo.notes}</div>}
-              <div className="dsh-wt_updateCmd">{UPGRADE_CMD}</div>
+              <div className="dsh-wt_updateCmd">{upgradeCmd(updateInfo.tag)}</div>
               <div className="dsh-wt_updateBtns">
                 <button type="button" className="dsh-wt_updateBtn dsh-wt_updateBtnCopy" onClick={() => void copyUpgradeAi()}>
                   {updateCopied ? '✓ ' + t('update.copied') : <>{ICON_SPARK} {t('update.copyAi')}</>}
