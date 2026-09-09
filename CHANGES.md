@@ -3,19 +3,26 @@
 - 修复流水线大量日志 / 长时间任务导致页面与 web 服务卡死（`src/index.ts` +
   `projects/pipeline/pipeline.html`）：
   - `/api/worktable/exec-stream` 原先忽略 `ServerResponse.write()` 背压，浏览器处理稍慢时仍持续读取
-    子进程 stdout/stderr，HTTP 待发送缓冲与日志写入队列会随输出无界增长。现以 1 MiB 为积压水位，
-    达到后同时暂停两路子进程输出，响应触发 `drain` 再恢复；客户端断开、阶段超时和进程组终止语义不变。
+    子进程 stdout/stderr，HTTP 待发送缓冲与异步日志写入队列会随输出无界增长。现分别以 1 MiB 为
+    HTTP / 磁盘积压水位，任一路达到后都暂停两路子进程输出，响应触发 `drain`、磁盘队列降到低水位后
+    再恢复；一次性 `/exec` 的磁盘日志队列也使用同一限制。客户端断开、阶段超时和进程组终止语义不变。
   - 阶段详情对脚本 / HTTP / EvalTokens 回显统一只渲染末尾 1000 行且最多 256 KiB，省略时提示查看
     运行归档。日志 DOM 改经 `DocumentFragment` 批量挂载；普通 / 预设脚本、HTTP/Jenkins 与
     EvalTokens 共用有界实时快照和 250ms 刷新节流，不再在各路径分别无界拼接。
+  - Jenkins 控制台轮询改用 `logText/progressiveText?start=<offset>`，每次只传输服务端新增内容；旧版
+    Jenkins 返回 404/405 时自动降级到 `consoleText`。原始控制台分片不再被额外插入换行，长任务的
+    网络传输与临时字符串分配由重复下载全文的平方级增长降为线性增长。
   - 详情内容指纹改在 `buildLog` 前计算：长任务只有进度变化、没有新输出时只更新进度条，不再每
     300ms 拆分完整 stdout；有界尾窗用递增 `_outputRevision` 标记真实更新，避免等长采样指纹碰撞。
     流读取和轮询日志改为分块收集、结束时仅合并一次；阶段完成后的完整 stdout 与输出变量契约保持不变。
   - 任务 / 汇总归档改为原始字符串分片，不再把大日志 `split` 成百万行后再 `join`；新增
     `/api/worktable/write-stream` 原始请求体接口，浏览器用 Blob 分片上传，服务端边读边写临时文件并原子
-    替换（上限 256 MiB），避免完成时生成整份行数组和 JSON 转义副本。变量 / JSON 提取也改为逐行扫描。
-  - 新增慢客户端 8 MiB 输出的背压 / 完整性测试，以及详情窗口、修订缓存、预设 / Jenkins /
-    EvalTokens 实时快照、刷新节流、分片归档与流式写入测试；实测 32 MiB
+    替换（上限 256 MiB），避免完成时生成整份行数组和 JSON 转义副本；超限、客户端断开或原子替换失败
+    均清理临时文件且不覆盖旧目标。变量 / JSON 提取也改为逐行扫描。
+  - HTTP/Jenkins 与 EvalTokens 运行期间把完整原始分片挂到阶段归档状态；用户在异步轮询返回前中止时，
+    `abortRun` 也能归档已被 256 KiB 实时尾窗淘汰的早期内容。正常终态合并后释放重复分片引用。
+  - 新增慢客户端 8 MiB 输出、慢归档磁盘 4 MiB 输出的背压 / 完整性测试，以及详情窗口、修订缓存、
+    预设 / Jenkins / EvalTokens 实时快照、刷新节流、分片归档与流式写入失败清理测试；实测 32 MiB
     输出且客户端暂停读取时，服务端 HTTP 积压由约 30.4 MiB 降至约 1.01 MiB，恢复读取后继续执行并完整落盘。
 
 - 流水线编辑器 EvalTokens 阶段选中任务后显示任务标题而非任务 ID（`projects/pipeline/pipeline.html`）：

@@ -13,14 +13,14 @@ const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8
 const start = source.indexOf('  // 流水线阶段脚本执行')
 const end = source.indexOf('  // 本地文件写入', start)
 const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const dir = await mkdtemp(tmpdir() + '/exec-log-')
   const routes = new Map()
   let maxWritableLength = 0
   let drainListenerCount = 0
   let drainEventCount = 0
   const json = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
-  vm.runInNewContext(code, { execFile, spawn, fsMkdir, fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
+  vm.runInNewContext(code, { execFile, spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
     webServer: { register: r => routes.set(r.path, r.handler) }, json, dropOversizeEnv: () => '',
     readJsonBody: async req => { let s = ''; for await (const c of req) s += c; return JSON.parse(s) } })
   const server = createServer((req, res) => {
@@ -139,6 +139,32 @@ test('慢客户端下流式响应积压保持有界，恢复读取后脚本完�
   assert.match(log, /finished\n\[exit 0\]/)
   assert.ok(f.drainListenerCount() > 0, '大量输出必须实际进入背压暂停路径')
   assert.ok(f.drainEventCount() > 0, '恢复消费后必须触发 drain 恢复子进程输出')
+})
+test('归档磁盘阻塞时暂停子进程，磁盘恢复后继续且不丢日志', async t => {
+  let releaseWrites
+  const writesBlocked = new Promise(resolve => { releaseWrites = resolve })
+  const slowOpen = async (...args) => {
+    const handle = await fsOpen(...args)
+    return {
+      writeFile: async (...writeArgs) => { await writesBlocked; return handle.writeFile(...writeArgs) },
+      close: (...closeArgs) => handle.close(...closeArgs),
+    }
+  }
+  const f = await fixture(t, { fsOpen: slowOpen })
+  const res = await f.run('yes 0123456789abcdef0123456789abcdef | head -c 4194304\nprintf finished > producer-finished\n')
+  const responseBody = res.text()
+  await new Promise(resolve => setTimeout(resolve, 600))
+  const producerFinishedEarly = await readFile(f.dir + '/producer-finished', 'utf8').then(() => true, () => false)
+  releaseWrites()
+  const events = (await responseBody).trim().split('\n').map(x => JSON.parse(x))
+  assert.equal(producerFinishedEarly, false, '磁盘写入积压时子进程不应继续无限产生日志')
+  assert.equal(events.at(-1).type, 'done')
+  assert.equal(events.at(-1).code, 0)
+  const stdout = events.filter(event => event.type === 'out').map(event => event.text).join('')
+  assert.equal(Buffer.byteLength(stdout), 4194304)
+  const log = await readFile(f.dir + '/nested/stage.log', 'utf8')
+  assert.match(log, /\[exit 0\]\n$/)
+  assert.equal(log.slice(log.indexOf('\n') + 1, -Buffer.byteLength('[exit 0]\n')), stdout + (stdout.endsWith('\n') ? '' : '\n'))
 })
 test('spawn 同步抛错也关闭日志文件', async t => {
   const f = await fixture(t), res = await f.run('echo unused\n', { args: ['\0'] })

@@ -1303,10 +1303,14 @@ export function apply(ctx: Context) {
   // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。
   // 日志由执行端持有：按输出到达顺序串行写入，关闭文件后才确认归档成功；失败不改变脚本退出码。
   async function openExecLog(requested: unknown, header: string) {
+    const backlogLimit = 1024 * 1024
+    const resumeLimit = backlogLimit / 2
     const logFile = typeof requested === 'string' && requested ? pathResolve(requested) : null
     let file: Awaited<ReturnType<typeof fsOpen>> | null = null
     let logError = ''
     let pending = Promise.resolve()
+    let pendingBytes = 0
+    let drainWaiters: Array<() => void> = []
     let ended = false
     let lastNewline = true
     if (logFile) {
@@ -1314,14 +1318,30 @@ export function apply(ctx: Context) {
       catch (e) { logError = String(e) }
     }
     const write = (text: string) => {
-      if (!file || ended || !text || logError) return
+      if (!file || ended || !text || logError) return true
       lastNewline = text.endsWith('\n')
-      pending = pending.then(async () => { if (!logError) await file!.writeFile(text, 'utf8') }).catch(e => { logError = String(e) })
+      const bytes = Buffer.byteLength(text)
+      pendingBytes += bytes
+      pending = pending
+        .then(async () => { if (!logError) await file!.writeFile(text, 'utf8') })
+        .catch(e => { logError = String(e) })
+        .finally(() => {
+          pendingBytes = Math.max(0, pendingBytes - bytes)
+          if (pendingBytes <= resumeLimit && drainWaiters.length) {
+            const waiters = drainWaiters; drainWaiters = []
+            for (const resume of waiters) resume()
+          }
+        })
+      return pendingBytes < backlogLimit
     }
     write(header + '\n')
     return {
       info: () => logFile ? (logError ? { logError } : { logFile }) : {},
       write,
+      onceDrain(resume: () => void) {
+        if (!file || logError || pendingBytes <= resumeLimit) resume()
+        else drainWaiters.push(resume)
+      },
       async close(marker: string) {
         if (!ended) {
           write((lastNewline ? '' : '\n') + marker + '\n')
@@ -1362,10 +1382,21 @@ export function apply(ctx: Context) {
             const logged = await log.close('[exit ' + code + ']')
             if (!res.destroyed) json(res, 200, { code, stdout: String(stdout || ''), stderr: errorText, ...logged })
           })
+        let logBlocked = false
+        const writeLog = (text: string) => {
+          const writable = log.write(text)
+          if (writable || logBlocked) return
+          logBlocked = true
+          child.stdout?.pause(); child.stderr?.pause()
+          log.onceDrain(() => {
+            logBlocked = false
+            child.stdout?.resume(); child.stderr?.resume()
+          })
+        }
         child.stdout?.setEncoding('utf8')
         child.stderr?.setEncoding('utf8')
-        child.stdout?.on('data', (text: string) => log.write(text))
-        child.stderr?.on('data', (text: string) => log.write(text))
+        child.stdout?.on('data', writeLog)
+        child.stderr?.on('data', writeLog)
       } catch (err) {
         await failedLog?.close('[error] ' + String(err))
         json(res, 500, { error: String(err && err.message ? err.message : err) })
@@ -1401,13 +1432,15 @@ export function apply(ctx: Context) {
         let abortTimer: ReturnType<typeof setTimeout> | null = null
         let finished = false
         let outputPaused = false
+        let responseBlocked = false
+        let logBlocked = false
         const STREAM_BACKLOG_LIMIT = 1024 * 1024
         const killTree = (sig: string) => {
           try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, sig); else child?.kill(sig as any) } catch {}
         }
         const resumeOutput = () => {
+          if (responseBlocked || logBlocked || finished || disconnected) return
           outputPaused = false
-          if (finished || disconnected) return
           child?.stdout?.resume()
           child?.stderr?.resume()
         }
@@ -1416,13 +1449,13 @@ export function apply(ctx: Context) {
           outputPaused = true
           child.stdout?.pause()
           child.stderr?.pause()
-          res.once('drain', resumeOutput)
         }
+        const responseDrained = () => { responseBlocked = false; resumeOutput() }
         // 建目录/打开文件也可能正在 await；提前监听断开，避免页面已关闭仍启动脚本。
         res.on('close', () => {
           if (finished) return
           disconnected = true
-          res.off?.('drain', resumeOutput)
+          res.off?.('drain', responseDrained)
           killTree('SIGTERM')
           if (child) abortTimer = setTimeout(() => killTree('SIGKILL'), 1000)
         })
@@ -1433,29 +1466,37 @@ export function apply(ctx: Context) {
         }
         if (disconnected || res.destroyed) { finished = true; await log.close('[aborted]'); return }
         res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', 'x-worktable-log': log.info().logFile ? 'server' : 'none' })
+        const writeLog = (text: string) => {
+          const writable = log.write(text)
+          if (writable || logBlocked) return
+          logBlocked = true; pauseOutput()
+          log.onceDrain(() => { logBlocked = false; resumeOutput() })
+        }
         const send = (obj: unknown) => {
           if (res.writableEnded || res.destroyed) return
           res.write(JSON.stringify(obj) + '\n')
           // 正常的短暂背压仍允许 Node 合并小块；积压达到上限后暂停两个输出流，
           // 防慢浏览器/网络让 ServerResponse 与日志写入 Promise 队列随任务输出无界增长。
-          if (Number(res.writableLength) >= STREAM_BACKLOG_LIMIT) pauseOutput()
+          if (!responseBlocked && Number(res.writableLength) >= STREAM_BACKLOG_LIMIT) {
+            responseBlocked = true; pauseOutput(); res.once('drain', responseDrained)
+          }
         }
         if (body.logFile) send({ type: 'log', ...log.info() })
         // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
         child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
-        if (oversizeWarn) { log.write(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
+        if (oversizeWarn) { writeLog(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
         let timedOut = false
         killTimer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs) : null
         child.stdout!.setEncoding('utf8')
         child.stderr!.setEncoding('utf8')
-        child.stdout!.on('data', (text: string) => { log.write(text); send({ type: 'out', text }) })
-        child.stderr!.on('data', (text: string) => { log.write(text); send({ type: 'err', text }) })
+        child.stdout!.on('data', (text: string) => { writeLog(text); send({ type: 'out', text }) })
+        child.stderr!.on('data', (text: string) => { writeLog(text); send({ type: 'err', text }) })
         child.on('error', async (err: Error) => {               // ENOENT 等无法启动
           if (finished) return
           finished = true
           clearTimeout(killTimer)
           clearTimeout(abortTimer)
-          log.write(String(err.message) + '\n')
+          writeLog(String(err.message) + '\n')
           const logged = await log.close('[exit 1]')
           send({ type: 'error', message: String(err && err.message ? err.message : err) })
           send({ type: 'done', code: 1, ...logged })
@@ -1468,7 +1509,7 @@ export function apply(ctx: Context) {
           clearTimeout(abortTimer)
           if (timedOut) {
             const message = 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's'
-            log.write('\n' + message + '\n'); send({ type: 'error', message })
+            writeLog('\n' + message + '\n'); send({ type: 'error', message })
           }
           const exitCode = typeof code === 'number' ? code : 1
           const logged = await log.close(disconnected ? '[aborted]' : '[exit ' + exitCode + ']')

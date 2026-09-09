@@ -3566,6 +3566,12 @@ function appendLiveLog(log,value){
   const text=(log.parts.length?'\n':'')+String(value==null?'':value);
   log.parts.push(text); appendLiveOutput(log.live,'out',text); return log;
 }
+/* Jenkins progressiveText 返回的 text 已是连续原始字节流；后续分片不能像普通日志行一样
+   自动补换行，否则相邻轮询恰好落在一行中间时会篡改控制台内容。 */
+function appendLiveChunk(log,value){
+  const text=String(value==null?'':value); if(!text) return log;
+  log.parts.push(text); appendLiveOutput(log.live,'out',text); return log;
+}
 function finishLiveLog(log){ return log.parts.join(''); }
 function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
   const now=Date.now(), wait=Math.max(0,Number(minInterval)||250);
@@ -3793,6 +3799,48 @@ async function jkGetText(path){
   }
   const r=await fetch(url,{headers:auth,cache:'no-store'}); return r.text();
 }
+function jkHeaderValue(headers,name){
+  if(!headers) return '';
+  if(typeof headers.get==='function') return headers.get(name)||'';
+  const want=String(name||'').toLowerCase();
+  for(const key in headers){ if(String(key).toLowerCase()===want) return String(headers[key]||''); }
+  return '';
+}
+function jkTextByteLength(text){
+  try{ return new TextEncoder().encode(String(text||'')).length; }catch(e){ return String(text||'').length; }
+}
+/* Jenkins 官方 progressiveText 接口按服务端 offset 只返回新增控制台内容。
+   404/405 代表旧 Jenkins 不支持该接口，调用方会永久降级到 consoleText 兼容路径。 */
+async function jkGetProgressiveText(buildPath,start){
+  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+  const path=String(buildPath||'').replace(/\/+$/,'')+'/logText/progressiveText?start='+encodeURIComponent(String(start||0));
+  const url=base+path;
+  const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
+  let status=0, headers=null, text='';
+  if(j.mode==='remote'){
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const p=await r.json(); if(p&&p.error) throw new Error(p.error);
+    status=Number(p&&p.status)||0; headers=p&&p.headers; text=String((p&&p.body)||'');
+  }else{
+    const r=await fetch(url,{headers:auth,cache:'no-store'});
+    status=r.status; headers=r.headers; text=await r.text();
+  }
+  if(status===404||status===405) return null;
+  if(status<200||status>=300) throw new Error('HTTP '+status);
+  const nextHeader=jkHeaderValue(headers,'x-text-size');
+  const rawNext=nextHeader!==''?Number(nextHeader):NaN;
+  const fallbackNext=start+jkTextByteLength(text);
+  const next=Number.isFinite(rawNext)&&rawNext>=fallbackNext ? rawNext : fallbackNext;
+  return {text:text,next:next};
+}
+async function jkReadConsoleDelta(buildPath,start,useProgressive){
+  if(useProgressive){
+    const delta=await jkGetProgressiveText(buildPath,start);
+    if(delta) return {text:delta.text||'',next:delta.next,progressive:true};
+  }
+  const full=await jkGetText(String(buildPath||'').replace(/\/+$/,'')+'/consoleText');
+  return {text:full.length>start?full.slice(start):'',next:full.length,progressive:false};
+}
 async function runUrlStep(rc, i){
   const stg=rc.stages; const s=stg[i];
   const raw=stageUrlOf(s);   // 兼容旧数据 kind:'url'/'jenkins' / jenkins.job（见 stageUrlOf）
@@ -3806,7 +3854,8 @@ async function runUrlStep(rc, i){
   rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },500);
   const isUrl=jkIsUrl(raw);
   const log=createLiveLog('$ '+(isUrl?'GET':'POST')+' '+raw+(isUrl?'':'（旧格式 fullName，建议改为完整 URL，参数经 {GIT_BRANCH} 等占位符传递）'));
-  s._archiveOutputParts=null; s._archiveStdout=null;
+  /* 运行中详情只看有界尾窗；完整分片持续挂在阶段上，确保 abortRun 能在异步执行返回前归档早期日志。 */
+  s._archiveOutputParts=log.parts; s._archiveStdout=null;
   try{
     /* 占位符取值池（旧 fullName 触发时兼作构建参数）：上游阶段（脚本 stdout / URL 响应体）产出的
        KEY=VALUE / 单行 JSON 变量累计在 rc.vars，叠加运行级注入（TARGET_IP/IMAGE_NAME/GIT_BRANCH/ARCHIVE_DIR 等），
@@ -3853,7 +3902,7 @@ async function runUrlStep(rc, i){
     appendLiveLog(log,'# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时，轮询直到出结果
     let result=null, buildNum=null, building=true;
-    let consoleRead=0, consoleStarted=false, lastLive=0;   // 控制台增量回显：按已读长度差分，只追加新增部分
+    let consoleRead=0, consoleStarted=false, consoleProgressive=true, lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
     while(pollable && (!deadline || Date.now()<deadline) && (building||buildNum==null)){
       await new Promise(function(r){ setTimeout(r,2000); });
@@ -3864,18 +3913,17 @@ async function runUrlStep(rc, i){
         if(buildNum==null && info.number && (preNum==null || info.number>=preNum)) buildNum=info.number;
         if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
       }catch(e){ }
-      /* 实时回显：轮询期间增量拉取 Jenkins 控制台输出（全量取回 + 按长度差分，只展示新增部分；
-         以 JS 长度差分保证相邻两次取回口径一致、不重不漏；consoleStarted 控制首次分隔空行） */
+      /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
+         404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
       if(buildNum!=null){
         try{
-          const full=await jkGetText(jobPath+buildNum+'/consoleText');
-          if(full.length>consoleRead){ const tail=full.slice(consoleRead); consoleRead=full.length;
-            if(tail){
-              if(!consoleStarted){ consoleStarted=true; appendLiveLog(log,''); }
-              appendLiveLog(log,tail);   // 以原始分片保留全文，不为大量行创建中间数组
-              s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
-              lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
-            }
+          const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive);
+          consoleRead=delta.next; consoleProgressive=delta.progressive;
+          if(delta.text){
+            if(!consoleStarted){ consoleStarted=true; appendLiveLog(log,''); }
+            appendLiveChunk(log,delta.text);   // 原始连续分片，不额外插入换行
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
+            lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
           }
         }catch(e){ }
       }
@@ -3884,7 +3932,7 @@ async function runUrlStep(rc, i){
     if(rc.over||rc.token!==tk) return;   // 先验令牌再动本运行 timer（中止已由 finish 清过）
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     let consoleText='', bodyFull='';
-    if(buildNum!=null){ try{ const full=await jkGetText(jobPath+buildNum+'/consoleText'); if(full.length>consoleRead){ consoleText=full.slice(consoleRead); consoleRead=full.length; } }catch(e){} }
+    if(buildNum!=null){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive); consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){} }
     else if(triggerBody){
       /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 规整成单行
          （与脚本阶段「单行 JSON 对象」规则一致，数组响应同样规整，供输出变量 JSON 路径取值）。
@@ -3898,10 +3946,11 @@ async function runUrlStep(rc, i){
     if(rc.over||rc.token!==tk) return;   // 收尾拉取控制台（上方 await）期间被中止：变量/归档/节点状态不得再写入
     const ok=(result==='SUCCESS');
     const preConsoleParts=log.parts.slice();   // 响应体展示文本的起点（归档全量分片用，见下）
-    if(consoleText){ if(!consoleStarted) appendLiveLog(log,''); appendLiveLog(log,consoleText); }
+    if(consoleText){ if(!consoleStarted) appendLiveLog(log,''); if(buildNum!=null) appendLiveChunk(log,consoleText); else appendLiveLog(log,consoleText); }
     appendLiveLog(log,'[HTTP result '+result+']');
     const finalStdout=finishLiveLog(log);   // 结束时合并一次；轮询期间从不重复拼接旧日志
     s._out={stdout:finalStdout,stderr:(result&&result!=='SUCCESS')?('HTTP 请求 '+result):'',code:ok?0:1,url:true,done:true};
+    s._archiveOutputParts=null;   // 正常终态已有完整 finalStdout，释放重复的分片引用
     /* 响应体超 64K 只截断「展示」；归档另存全量分片（日志不丢），archiveStageLog 优先使用 */
     if(bodyFull && bodyFull!==consoleText){
       const fullLog={parts:preConsoleParts.slice(),live:createLiveOutputState()};
@@ -3921,6 +3970,7 @@ async function runUrlStep(rc, i){
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     appendLiveLog(log,'✗ '+e.message);
     s._out={stdout:finishLiveLog(log),stderr:String(e.message),code:1,url:true,done:true};
+    s._archiveOutputParts=null;   // 异常终态同样已合并完整输出；中止早退路径则保留运行中分片
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
     rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
     rcRender(rc); finish(rc,'failed');
@@ -4126,6 +4176,8 @@ async function runEvaltokensStep(rc, i){
   if(rc.timer) clearInterval(rc.timer);
   rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },1000);
   const log=createLiveLog('$ EvalTokens run '+(taskId||taskName||''));
+  /* abortRun 可能在任一轮 await 期间归档；运行中把全文分片挂到阶段，详情仍只渲染 live 尾窗。 */
+  s._archiveOutputParts=log.parts; s._archiveStdout=null;
   try{
     if(!taskId && !taskName) throw new Error('未选择 EvalTokens 任务');
     const e=evaltokConfig(); if(!e.url) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
@@ -4176,6 +4228,7 @@ async function runEvaltokensStep(rc, i){
     if(et.collectReport!==false) appendLiveLog(log,reportPendingLine);
     const finalStdout=finishLiveLog(log);
     const terminalOut={stdout:finalStdout,stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true};
+    s._archiveOutputParts=null;   // 终态改用可被报告回调更新的 terminalOut，避免保留“归档中”旧分片
     s._out=terminalOut;
     const varsOut=mergeStageVars(rc, finalStdout);
     if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(rc, bodyFull));   // 截断展示时顶层标量改从完整运行对象捕获
@@ -4222,6 +4275,7 @@ async function runEvaltokensStep(rc, i){
     const msg=timedOut?timeoutMessage():String(e&&e.message?e.message:e);
     appendLiveLog(log,'✗ '+msg);
     s._out={stdout:finishLiveLog(log),stderr:msg,code:1,evaltokens:true,done:true};
+    s._archiveOutputParts=null;   // 正常异常收尾已合并完整输出；用户中止的迟回早退仍保留分片
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
     rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}};
     rcRender(rc); finish(rc,'failed');

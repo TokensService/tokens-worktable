@@ -82,7 +82,7 @@ const rc = {
 
 const context = {
   rc: rc,
-  JSON, URL, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
+  JSON, URL, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
   scriptsDir: "/tmp/scripts",
   jenkins: { url: "http://jk.local", user: "", token: "", mode: "local" },
   // 视图层全局（与引擎同文件但在被测切片之外）：按真实语义给轻量桩
@@ -123,12 +123,41 @@ ${source.slice(s2, e2)}
 ${source.slice(s3, e3)}`,
   context,
 );
+const realJkGetProgressiveText = context.jkGetProgressiveText;
+const realJkReadConsoleDelta = context.jkReadConsoleDelta;
 // HTTP/Jenkins 请求在切片内有真实实现，eval 后替换为桩，只隔离外部 Jenkins 服务
 context.jkTriggerBuild = async (job, params) => { triggerCalls.push({ job, params }); return true; };
 context.jkGetText = async () => 'build log line\n{"NEW_KEY":"new-value","COUNT":2}\ntrailer';
+context.jkGetProgressiveText = async (_path, start) => {
+  const full = 'build log line\n{"NEW_KEY":"new-value","COUNT":2}\ntrailer';
+  return { text: full.slice(start), next: full.length };
+};
 context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"value":"hook-value"}'; };
 
 (async () => {
+  // progressiveText 未暴露 X-Text-Size（常见于 CORS 未 expose 自定义响应头）时，按 UTF-8 字节数推进；路径自动补斜杠
+  const savedFetch = context.fetch;
+  let progressiveUrl = "";
+  context.fetch = async (url) => {
+    progressiveUrl = url;
+    return { status: 200, headers: { get: () => null }, text: async () => "尾声" };
+  };
+  const noHeaderDelta = await realJkGetProgressiveText("/job/a/7", 11);
+  context.fetch = savedFetch;
+  if (progressiveUrl !== "http://jk.local/job/a/7/logText/progressiveText?start=11") throw new Error("progressiveText 路径拼接错误：" + progressiveUrl);
+  if (noHeaderDelta.next !== 11 + Buffer.byteLength("尾声")) throw new Error("缺少 X-Text-Size 时应按 UTF-8 字节推进，得到 " + noHeaderDelta.next);
+  const savedProgressive = context.jkGetProgressiveText;
+  const savedGetText = context.jkGetText;
+  let fallbackPath = "";
+  context.jkGetProgressiveText = async () => null;
+  context.jkGetText = async path => { fallbackPath = path; return "0123456789"; };
+  const fallbackDelta = await realJkReadConsoleDelta("/job/a/7", 4, true);
+  context.jkGetProgressiveText = savedProgressive;
+  context.jkGetText = savedGetText;
+  if (fallbackPath !== "/job/a/7/consoleText" || fallbackDelta.text !== "456789" || fallbackDelta.next !== 10 || fallbackDelta.progressive !== false) {
+    throw new Error("progressiveText 不支持时未正确降级 consoleText：" + JSON.stringify({ fallbackPath, fallbackDelta }));
+  }
+
   // ① parseStageVars：KEY=VALUE 行 / 单行 JSON 对象 / 混排与同 key 覆盖
   const v = context.parseStageVars([
     "FOO=bar",
@@ -195,17 +224,47 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   if (advancedTo !== 2) throw new Error("URL 阶段成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
   console.log("PASS: HTTP URL 支持 {GIT_BRANCH} 等占位符（运行时替换并 URL 编码）");
 
-  // ⑤ Jenkins 大量控制台输出：运行中 _out 只保留有界尾部，结束后仍保留完整全文
+  // ⑤ Jenkins 大量控制台输出：按服务端 offset 增量读取；运行中回显有界，但中止归档可见完整分片
   const heavy = { id: "st-heavy", name: "Jenkins 大日志", kind: "http", url: { url: "job-heavy", outVars: "" } };
   stages.push(heavy);
-  const heavyConsole = "x".repeat(1200 * 1024);
+  const consoleChunks = [
+    "EARLY-LINE\n" + "a".repeat(410 * 1024) + "\n",
+    "MIDDLE-LINE\n" + "b".repeat(410 * 1024) + "\n",
+    "LATE-LINE\n" + "c".repeat(410 * 1024) + "\n",
+  ];
+  const heavyConsole = consoleChunks.join("");
+  const requestedStarts = [];
+  let buildPolls = 0;
   let maxLiveChars = 0;
-  context.jkGetText = async () => heavyConsole;
+  let liveArchiveText = "";
+  context.setTimeout = (fn) => { fn(); return 1; };
+  context.jkFetchJson = async (_j, url) => {
+    if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
+    buildPolls += 1;
+    return { number: 7, building: buildPolls < 3, result: buildPolls < 3 ? null : "SUCCESS", duration: 1 };
+  };
+  context.jkGetText = async () => { throw new Error("支持 progressiveText 时不得重复下载 consoleText 全文"); };
+  context.jkGetProgressiveText = async (_path, start) => {
+    requestedStarts.push(start);
+    const text = consoleChunks[requestedStarts.length - 1] || "";
+    return { text, next: start + text.length };
+  };
   context.renderDetail = () => {
-    if (heavy._out && heavy._out.code === null) maxLiveChars = Math.max(maxLiveChars, heavy._out.stdout.length);
+    if (heavy._out && heavy._out.code === null) {
+      maxLiveChars = Math.max(maxLiveChars, heavy._out.stdout.length);
+      if (Array.isArray(heavy._archiveOutputParts)) liveArchiveText = heavy._archiveOutputParts.join("");
+    }
   };
   await context.runUrlStep(rc, 2);
+  const firstEnd = consoleChunks[0].length;
+  const secondEnd = firstEnd + consoleChunks[1].length;
+  if (JSON.stringify(requestedStarts) !== JSON.stringify([0, firstEnd, secondEnd, heavyConsole.length])) {
+    throw new Error("Jenkins progressiveText offset 不连续，得到 " + JSON.stringify(requestedStarts));
+  }
   if (maxLiveChars > 256 * 1024) throw new Error("Jenkins 实时快照不得累积全量控制台日志，峰值=" + maxLiveChars);
+  if (!liveArchiveText.includes("EARLY-LINE") || !liveArchiveText.includes("LATE-LINE")) {
+    throw new Error("运行中止归档必须能取得实时回显之外的完整早期/末尾日志");
+  }
   if (!heavy._out.stdout.includes(heavyConsole)) throw new Error("Jenkins 阶段结束后必须保留完整日志");
-  console.log("PASS: Jenkins 大量控制台输出的实时快照有界，最终全文保留");
+  console.log("PASS: Jenkins 大日志按 offset 增量读取，实时快照有界且中止/终态全文保留");
 })().catch((e) => { console.error(e); process.exit(1); });

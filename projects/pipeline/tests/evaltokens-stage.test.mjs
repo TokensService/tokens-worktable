@@ -119,12 +119,16 @@ test('EvalTokens 长时间轮询的实时快照有界，结束后保留完整轮
   let polls = 0
   let now = 1000
   let maxLiveChars = 0
+  let liveArchiveText = ''
   const context = loadEvaltokensRuntime({
     Date: { now: () => { now += 300; return now } },
     viewRc: rc,
     runSetSel: (run, id) => { run.selId = id; context.selectedId = id },
     renderDetail: () => {
-      if (stage._out?.code === null) maxLiveChars = Math.max(maxLiveChars, stage._out.stdout.length)
+      if (stage._out?.code === null) {
+        maxLiveChars = Math.max(maxLiveChars, stage._out.stdout.length)
+        if (Array.isArray(stage._archiveOutputParts)) liveArchiveText = stage._archiveOutputParts.join('')
+      }
     },
     substRunVars: value => value,
     evaltokConfig: () => ({ url: 'http://evaltokens.local', token: '', mode: 'local' }),
@@ -149,6 +153,8 @@ test('EvalTokens 长时间轮询的实时快照有界，结束后保留完整轮
   await context.runEvaltokensStep(rc, 0)
 
   assert.ok(maxLiveChars <= 256 * 1024, `实时快照峰值应有界，实际 ${maxLiveChars}`)
+  assert.match(liveArchiveText, /status=running/, '运行中止归档应能取得已被实时尾窗淘汰的早期轮询记录')
+  assert.match(liveArchiveText, /status=success/, '运行中止归档应能取得中止瞬间的末尾轮询记录')
   assert.match(stage._out.stdout, /status=success/)
   assert.ok(stage._out.stdout.length > 256 * 1024, '终态全文不得按实时尾窗截断')
 })
