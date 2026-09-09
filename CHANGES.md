@@ -1,5 +1,20 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复流水线大量日志 / 长时间任务导致页面与 web 服务卡死（`src/index.ts` +
+  `projects/pipeline/pipeline.html`）：
+  - `/api/worktable/exec-stream` 原先忽略 `ServerResponse.write()` 背压，浏览器处理稍慢时仍持续读取
+    子进程 stdout/stderr，HTTP 待发送缓冲与日志写入队列会随输出无界增长。现以 1 MiB 为积压水位，
+    达到后同时暂停两路子进程输出，响应触发 `drain` 再恢复；客户端断开、阶段超时和进程组终止语义不变。
+  - 阶段详情对脚本 / HTTP / EvalTokens 回显统一只渲染末尾 1000 行且最多 256 KiB，省略时提示查看
+    运行归档；未传展示限制的任务日志、汇总日志及历史兜底仍使用完整内容。日志 DOM 改经
+    `DocumentFragment` 批量挂载，连续输出刷新间隔由约 100ms 放宽到 250ms。
+  - 详情内容指纹改在 `buildLog` 前计算：长任务只有进度变化、没有新输出时只更新进度条，不再每
+    300ms 拆分完整 stdout。运行中页面快照只保留 256 KiB 尾部，流读取改为分块收集、结束时合并一次；
+    阶段完成后的完整 stdout、输出变量与服务端全量归档契约保持不变。变量 / JSON 提取改为逐行扫描，
+    避免完成阶段为大日志额外创建整份行数组。
+  - 新增慢客户端 8 MiB 输出背压测试及详情窗口、缓存命中、实时快照、刷新节流测试；实测 32 MiB
+    输出且客户端暂停读取时，服务端 HTTP 积压由约 30.4 MiB 降至约 1.01 MiB，恢复读取后继续执行并完整落盘。
+
 - 流水线编辑器 EvalTokens 阶段选中任务后显示任务标题而非任务 ID（`projects/pipeline/pipeline.html`）：
   任务选择输入框 `etTaskId` 的回显值由 `taskId` 改为优先取 `taskName`（无标题时回退 `taskId`），并移除
   原本紧随输入框重复展示标题的 `· taskName` 辅助 span（标题已并入输入框，避免冗余）。底层 `taskId`/

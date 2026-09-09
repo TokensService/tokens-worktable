@@ -16,14 +16,23 @@ const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' 
 async function fixture(t) {
   const dir = await mkdtemp(tmpdir() + '/exec-log-')
   const routes = new Map()
+  let maxWritableLength = 0
   const json = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
   vm.runInNewContext(code, { execFile, spawn, fsMkdir, fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
     webServer: { register: r => routes.set(r.path, r.handler) }, json, dropOversizeEnv: () => '',
     readJsonBody: async req => { let s = ''; for await (const c of req) s += c; return JSON.parse(s) } })
-  const server = createServer((req, res) => routes.get(req.url)(req, res))
+  const server = createServer((req, res) => {
+    const write = res.write.bind(res)
+    res.write = (...args) => {
+      const writable = write(...args)
+      maxWritableLength = Math.max(maxWritableLength, res.writableLength)
+      return writable
+    }
+    return routes.get(req.url)(req, res)
+  })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true }) })
-  return { dir, async run(script, extra = {}, route = 'exec-stream') {
+  return { dir, maxWritableLength: () => maxWritableLength, async run(script, extra = {}, route = 'exec-stream') {
     const path = dir + '/script.sh'; await writeFile(path, script)
     return fetch('http://127.0.0.1:' + server.address().port + '/api/worktable/' + route, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, args: [], cwd: dir, logFile: dir + '/nested/stage.log', ...extra }) })
@@ -103,6 +112,16 @@ test('客户端不消费响应时，服务端仍写完日志', async t => {
   const log = await readFile(f.dir + '/nested/stage.log', 'utf8')
   assert.match(log, /finished/); assert.ok(log.length > 100000)
   await res.text()
+})
+test('慢客户端下流式响应积压保持有界，恢复读取后脚本完成', async t => {
+  const f = await fixture(t)
+  const res = await f.run('yes 0123456789abcdef0123456789abcdef | head -c 8388608\necho finished\n')
+  await new Promise(resolve => setTimeout(resolve, 250))
+  assert.ok(f.maxWritableLength() < 2 * 1024 * 1024, 'HTTP 待发送缓冲不应随脚本输出无限增长')
+  const events = (await res.text()).trim().split('\n').map(x => JSON.parse(x))
+  assert.equal(events.at(-1).type, 'done')
+  assert.equal(events.at(-1).code, 0)
+  assert.match(await readFile(f.dir + '/nested/stage.log', 'utf8'), /finished\n\[exit 0\]/)
 })
 test('spawn 同步抛错也关闭日志文件', async t => {
   const f = await fixture(t), res = await f.run('echo unused\n', { args: ['\0'] })

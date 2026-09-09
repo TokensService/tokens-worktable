@@ -1400,13 +1400,29 @@ export function apply(ctx: Context) {
         let killTimer: ReturnType<typeof setTimeout> | null = null
         let abortTimer: ReturnType<typeof setTimeout> | null = null
         let finished = false
+        let outputPaused = false
+        const STREAM_BACKLOG_LIMIT = 1024 * 1024
         const killTree = (sig: string) => {
           try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, sig); else child?.kill(sig as any) } catch {}
+        }
+        const resumeOutput = () => {
+          outputPaused = false
+          if (finished || disconnected) return
+          child?.stdout?.resume()
+          child?.stderr?.resume()
+        }
+        const pauseOutput = () => {
+          if (outputPaused || !child) return
+          outputPaused = true
+          child.stdout?.pause()
+          child.stderr?.pause()
+          res.once('drain', resumeOutput)
         }
         // 建目录/打开文件也可能正在 await；提前监听断开，避免页面已关闭仍启动脚本。
         res.on('close', () => {
           if (finished) return
           disconnected = true
+          res.off?.('drain', resumeOutput)
           killTree('SIGTERM')
           if (child) abortTimer = setTimeout(() => killTree('SIGKILL'), 1000)
         })
@@ -1417,7 +1433,13 @@ export function apply(ctx: Context) {
         }
         if (disconnected || res.destroyed) { finished = true; await log.close('[aborted]'); return }
         res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', 'x-worktable-log': log.info().logFile ? 'server' : 'none' })
-        const send = (obj: unknown) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(obj) + '\n') }
+        const send = (obj: unknown) => {
+          if (res.writableEnded || res.destroyed) return
+          res.write(JSON.stringify(obj) + '\n')
+          // 正常的短暂背压仍允许 Node 合并小块；积压达到上限后暂停两个输出流，
+          // 防慢浏览器/网络让 ServerResponse 与日志写入 Promise 队列随任务输出无界增长。
+          if (Number(res.writableLength) >= STREAM_BACKLOG_LIMIT) pauseOutput()
+        }
         if (body.logFile) send({ type: 'log', ...log.info() })
         // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
         child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })

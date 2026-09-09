@@ -10,9 +10,9 @@ const e0 = source.indexOf("\n", s0) + 1;
 if (s0 < 0 || e0 < 0) throw new Error("stageUrlOf not found");
 
 // 切片 1：parseStageVars + mergeStageVars + substRunVars（KEY=VALUE / 单行 JSON 提取与 ${VAR} 引用替换）
-const s1 = source.indexOf("function parseStageVars(stdout)");
+const s1 = source.indexOf("function forEachOutputLine(output, visit)");
 const e1 = source.indexOf("async function execScript", s1);
-if (s1 < 0 || e1 < 0) throw new Error("parseStageVars not found");
+if (s1 < 0 || e1 < 0) throw new Error("output parsers not found");
 
 // 切片 2：execScript（脚本阶段参数值 ${VAR} 替换的端到端验证，fetch 打桩）
 const s2 = source.indexOf("async function execScript(");

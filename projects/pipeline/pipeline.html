@@ -2771,16 +2771,24 @@ function metaFor(id){
 /* ---------- 详情面板 ---------- */
 /* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（运行 tick 会以 120~300ms 高频调用本函数） */
 let _detailKey='';
+const DETAIL_LOG_LIMIT={maxLines:1000,maxChars:256*1024};
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
   const s = flowStages().find(x=>x.id===selectedId) || flowStages()[0];
   if(!s) return;
   const n = nodes[s.id] || {status:'idle'};
   const ctx = curRun || {commit:'—',env:'dev',branch:'main',image:DEFAULT_IMAGE,release:DEFAULT_IMAGE,tag:'—',by:'—',pipelineName:curPipeline().name,giturl:GITURL};
-  const lines = buildLog(s, ctx, n);
-  const key = s.id+'|'+n.status+'|'+lines.length+'|'+(lines[lines.length-1]||'')+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0);
+  const out=s._out;
+  const textKey=value=>{ const text=String(value||''); return text.length+':'+text.slice(0,24)+':'+text.slice(-96); };
+  const outKey=out ? textKey(out.stdout)+'|'+textKey(out.stderr)+'|'+String(out.code)+'|'+String(out.done)+'|'+(out._stdoutTruncated?1:0)+(out._stderrTruncated?1:0) : '-';
+  /* 脚本/HTTP/EvalTokens 的回显只由 _out 变化驱动；进度 tick 只改进度条。模拟阶段的 health 回显
+     会随进度跨 25% 档位变化，因此仅为无 _out 的普通阶段保留分档键。先比键再 buildLog，避免长任务
+     在日志静止后仍每 300ms 拆分完整 stdout。 */
+  const progressLogKey=out || (s.script&&s.script.path) || s.kind==='http' || s.kind==='url' || s.kind==='jenkins' || s.kind==='evaltokens' ? '' : Math.floor((n.progress||0)/25);
+  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0);
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
+  const lines = buildLog(s, ctx, n, DETAIL_LOG_LIMIT);
   $('detailTitle').textContent = s.name + ' · 阶段详情';
   const badge = $('detailBadge'); badge.innerHTML='';
   const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], skipped:['跳过',''],
@@ -2838,9 +2846,11 @@ function renderDetail(){
   const log=$('detailLog');
   const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;   // 用户停留在底部附近时才跟随最新日志
   log.innerHTML='';
+  const fragment=document.createDocumentFragment();
   lines.forEach(ln=>{
-    const div=document.createElement('div'); div.className=logClass(ln); div.textContent=ln; log.appendChild(div);
+    const div=document.createElement('div'); div.className=logClass(ln); div.textContent=ln; fragment.appendChild(div);
   });
+  log.appendChild(fragment);
   if(n.status==='idle' && !lines.length){ log.textContent='该阶段尚未运行。'; }
   if(stick) log.scrollTop = log.scrollHeight;
 }
@@ -2852,7 +2862,37 @@ function logClass(ln){
   if(/^\[Pipeline\]/.test(ln) || /docker|helm|kubectl/.test(ln)) cls='hi';
   return cls;
 }
-function buildLog(stage, ctx, n){
+/* 详情回显只取有界尾部；未传 limit 的归档/汇总调用仍拿完整内容。stdout/stderr 的旧展示顺序保持不变。 */
+function stageOutputLines(out, limit){
+  const entries=[];
+  let omitted=!!(out && (out._stdoutTruncated||out._stderrTruncated));
+  const add=(text,prefix)=>{
+    const raw=String(text||'');
+    if(!raw) return;
+    if(!limit){ raw.split('\n').forEach(l=>{ if(l!=='') entries.push(prefix+l); }); return; }
+    const maxChars=Math.max(1024,Number(limit.maxChars)||256*1024);
+    let start=Math.max(0,raw.length-maxChars);
+    if(start>0){
+      omitted=true;
+      const newline=raw.indexOf('\n',start);
+      if(newline>=0 && newline<raw.length-1) start=newline+1;
+    }
+    raw.slice(start).split('\n').forEach(l=>{ if(l!=='') entries.push(prefix+l); });
+  };
+  add(out&&out.stdout,''); add(out&&out.stderr,'✗ ');
+  if(!limit) return {lines:entries,omitted};
+  const maxLines=Math.max(1,Number(limit.maxLines)||1000);
+  const maxChars=Math.max(1024,Number(limit.maxChars)||256*1024);
+  let chars=0,start=entries.length;
+  while(start>0 && entries.length-start<maxLines){
+    const next=entries[start-1].length+1;
+    if(chars+next>maxChars && start<entries.length) break;
+    chars+=next; start--;
+  }
+  if(start>0) omitted=true;
+  return {lines:entries.slice(start),omitted};
+}
+function buildLog(stage, ctx, n, displayLimit){
   const id=stage.id;
   if(stage.preset && (!stage.script || !stage.script.path)) return [(PRESET_DEF[stage.pkey]||{}).noScript || ('未配置「'+stage.name+'」脚本')];
   if(stage.skip || n.status==='skipped'){ return ["[Pipeline] stage { ("+stage.name+")", '⏭ 本阶段配置为不执行，已跳过。']; }
@@ -2861,13 +2901,15 @@ function buildLog(stage, ctx, n){
     const out=stage._out;
     if(!out||!out.done){
       // 请求中/被中止：已轮询到的部分回显也输出（归档时保留被中断任务的独立日志）
-      if(out && out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
-      if(out && out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      const shown=stageOutputLines(out,displayLimit);
+      if(shown.omitted) lines.push('… 详情仅显示日志末尾，完整内容请查看运行归档。');
+      shown.lines.forEach(l=>lines.push(l));
       lines.push(n.status==='aborted'?'（HTTP 请求已中止）':'（HTTP 请求进行中…）');
     }
     else{
-      if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
-      if(out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      const shown=stageOutputLines(out,displayLimit);
+      if(shown.omitted) lines.push('… 详情仅显示日志末尾，完整内容请查看运行归档。');
+      shown.lines.forEach(l=>lines.push(l));
       lines.push('[exit '+(out.code===undefined?'?':out.code)+']');
     }
     return lines;
@@ -2877,13 +2919,15 @@ function buildLog(stage, ctx, n){
     const lines=['$ EvalTokens run '+(et.taskId||et.taskName||'')];
     const out=stage._out;
     if(!out||!out.done){
-      if(out && out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
-      if(out && out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      const shown=stageOutputLines(out,displayLimit);
+      if(shown.omitted) lines.push('… 详情仅显示日志末尾，完整内容请查看运行归档。');
+      shown.lines.forEach(l=>lines.push(l));
       lines.push(n.status==='aborted'?'（EvalTokens 轮询已中止）':'（EvalTokens 轮询进行中…）');
     }
     else{
-      if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
-      if(out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      const shown=stageOutputLines(out,displayLimit);
+      if(shown.omitted) lines.push('… 详情仅显示日志末尾，完整内容请查看运行归档。');
+      shown.lines.forEach(l=>lines.push(l));
       lines.push('[exit '+(out.code===undefined?'?':out.code)+']');
     }
     return lines;
@@ -2901,8 +2945,9 @@ function buildLog(stage, ctx, n){
     else{
       /* 执行中实时回显：流式期间 s._out 为 {code:null} 的增量快照，stdout/stderr 照常展示；
          [exit] 仅在拿到退出码后（完成/失败）输出，避免执行中显示占位退出码 */
-      if(out.stdout) out.stdout.split('\n').forEach(l=>{ if(l!=='') lines.push(l); });
-      if(out.stderr) out.stderr.split('\n').forEach(l=>{ if(l!=='') lines.push('✗ '+l); });
+      const shown=stageOutputLines(out,displayLimit);
+      if(shown.omitted) lines.push('… 详情仅显示日志末尾，完整内容请查看运行归档。');
+      shown.lines.forEach(l=>lines.push(l));
       if(typeof out.code==='number') lines.push('[exit '+out.code+']');
     }
     return lines;
@@ -3312,10 +3357,21 @@ function advance(rc,i){
    去尾 \r；首尾双引号包裹则去引号。累计到 curRun.vars（粘性：后续阶段可见，同 key 后写覆盖）。
    另支持整行为 JSON 对象（{"KEY":"VALUE",...}，Jenkins 任务常见的 key=value 结果回显）：
    取顶层标量（字符串/数字/布尔）字段作为变量，键保持原名；与 KEY=VALUE 行可混排，同 key 后写覆盖。 */
+function forEachOutputLine(output, visit){
+  const text=String(output||'');
+  let start=0;
+  while(start<=text.length){
+    let end=text.indexOf('\n',start);
+    if(end<0) end=text.length;
+    visit(text.slice(start,end));
+    if(end===text.length) break;
+    start=end+1;
+  }
+}
 function parseStageVars(stdout){
   const out={};
   if(!stdout) return out;
-  String(stdout).split('\n').forEach(line=>{
+  forEachOutputLine(stdout,line=>{
     const m=/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
     if(m){
       let v=m[2].replace(/\r$/,'');
@@ -3346,7 +3402,7 @@ function mergeStageVars(rc, stdout){
 function parseStageJson(stdout){
   if(!stdout) return null;
   let found=null;
-  String(stdout).split('\n').forEach(function(line){
+  forEachOutputLine(stdout,function(line){
     const t=line.trim();
     if(t.length<2) return;
     const c0=t.charAt(0), c1=t.charAt(t.length-1);
@@ -3443,13 +3499,16 @@ function substRunVars(v, rc){
    AbortController 中止返回 code:null（调用方按令牌丢弃），其余中断按失败返回；
    接口不存在（旧插件构建未含该路由）返回 null，由 execScript 降级为一次性执行。 */
 async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal, logFile){
-  let stdout='', stderr='';
+  const stdoutParts=[], stderrParts=[];
   let logInfo=logFile?{logPending:true}:{};
   const recordLog=m=>{
     if(m.logFile) logInfo={logFile:m.logFile};
     if(m.logError) logInfo={logError:m.logError};
   };
   const emit=(type,text)=>{ if(typeof onStream==='function' && text) onStream({type,text}); };
+  const append=(parts,text)=>{ text=String(text||''); if(text) parts.push(text); return text; };
+  const result=(code,extra)=>({code,stdout:stdoutParts.join(''),stderr:stderrParts.join(''),...logInfo,...(extra||{})});
+  const appendError=message=>{ if(stderrParts.length) stderrParts.push('\n'); stderrParts.push(String(message||'执行流错误')); };
   try{
     const r=await fetch('/api/worktable/exec-stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,args,env,cwd,timeoutMs,logFile}),signal});
     if(!r.ok || !r.body){ await r.json().catch(()=>null); return null; }   // 旧插件构建无此路由：降级为一次性执行
@@ -3462,7 +3521,7 @@ async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal, 
     for(;;){
       let chunk;
       try{ chunk=await reader.read(); }
-      catch(e){ if(e && e.name==='AbortError') return {code:null, stdout, stderr,...logInfo}; throw e; }
+      catch(e){ if(e && e.name==='AbortError') return result(null); throw e; }
       if(chunk.done) break;
       buf+=dec.decode(chunk.value,{stream:true});
       let idx;
@@ -3471,22 +3530,24 @@ async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal, 
         if(!line) continue;
         let m=null; try{ m=JSON.parse(line); }catch(e){ continue; }
         if(m.type==='log'){ recordLog(m); if(typeof onStream==='function') onStream(m); }
-        else if(m.type==='out'){ stdout+=m.text||''; emit('out', m.text||''); }
-        else if(m.type==='err'){ stderr+=m.text||''; emit('err', m.text||''); }
-        else if(m.type==='error'){ const txt=m.message||'执行流错误'; stderr+=(stderr?'\n':'')+txt; emit('err', txt); }
-        else if(m.type==='done'){ recordLog(m); return {code:(typeof m.code==='number')?m.code:1, stdout, stderr,...logInfo}; }
+        else if(m.type==='out'){ const text=append(stdoutParts,m.text); emit('out',text); }
+        else if(m.type==='err'){ const text=append(stderrParts,m.text); emit('err',text); }
+        else if(m.type==='error'){ const txt=m.message||'执行流错误'; appendError(txt); emit('err', txt); }
+        else if(m.type==='done'){ recordLog(m); return result((typeof m.code==='number')?m.code:1); }
       }
     }
     if(buf.trim()){   // 末尾残余（流结束前未换行的最后一块）
       let m=null; try{ m=JSON.parse(buf.trim()); }catch(e){}
-      if(m && m.type==='out'){ stdout+=m.text||''; emit('out', m.text||''); }
-      else if(m && m.type==='err'){ stderr+=m.text||''; emit('err', m.text||''); }
-      else if(m && m.type==='error'){ const txt=m.message||'执行流错误'; stderr+=(stderr?'\n':'')+txt; emit('err', txt); }
-      else if(m && m.type==='done'){ recordLog(m); return {code:(typeof m.code==='number')?m.code:1, stdout, stderr,...logInfo}; }
+      if(m && m.type==='out'){ const text=append(stdoutParts,m.text); emit('out',text); }
+      else if(m && m.type==='err'){ const text=append(stderrParts,m.text); emit('err',text); }
+      else if(m && m.type==='error'){ const txt=m.message||'执行流错误'; appendError(txt); emit('err', txt); }
+      else if(m && m.type==='done'){ recordLog(m); return result((typeof m.code==='number')?m.code:1); }
     }
-    return {code:1, stdout, stderr:(stderr?stderr+'\n':'')+'（输出流意外中断，未收到完成标记）',...logInfo};
+    appendError('（输出流意外中断，未收到完成标记）');
+    return result(1);
   }catch(e){
-    return {code:1, stdout, stderr:(stderr?stderr+'\n':'')+'（执行流中断：'+(e&&e.message?e.message:e)+'）',...logInfo};
+    appendError('（执行流中断：'+(e&&e.message?e.message:e)+'）');
+    return result(1);
   }
 }
 async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, logFile){
@@ -4097,19 +4158,29 @@ async function runScriptStep(rc, i){
   if(rc.timer) clearInterval(rc.timer);
   rc.timer=setInterval(()=>{ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },300);
   /* 流式回显：执行中把 stdout/stderr 写入本阶段实时快照（s._out，code:null）并刷新「阶段详情」。
-     快速输出按 ~100ms 节流重建；选中的正是本阶段时立即刷新，否则由运行 tick 的 renderDetail 收尾。
+     快速输出按 ~250ms 节流重建；选中的正是本阶段时立即刷新，否则由运行 tick 的 renderDetail 收尾。
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
   const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,i+1,s.name) : null;
   s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
-  let accStdout='', accStderr='', lastLive=0;
+  const livePreviewLimit=256*1024;
+  const appendLivePreview=(current,text)=>{
+    const joined=current+String(text||'');
+    if(joined.length<=livePreviewLimit) return {text:joined,truncated:false};
+    return {text:joined.slice(-livePreviewLimit),truncated:true};
+  };
+  let accStdout='', accStderr='', stdoutTruncated=false, stderrTruncated=false, lastLive=0;
   const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, rc, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }   // 接管确认：中止时也不可用浏览器快照覆盖服务端日志
-    if(m.type==='out'){ accStdout+=m.text; } else if(m.type==='err'){ accStderr+=m.text; }
-    s._out={stdout:accStdout, stderr:accStderr, code:null};   // 实时快照；归档与历史以最终结果为准
-    if(viewRc===rc && selectedId===s.id){ const now=Date.now(); if(now-lastLive>=100){ lastLive=now; renderDetail(); } }
+    if(m.type==='out'){
+      const next=appendLivePreview(accStdout,m.text); accStdout=next.text; stdoutTruncated=stdoutTruncated||next.truncated;
+    } else if(m.type==='err'){
+      const next=appendLivePreview(accStderr,m.text); accStderr=next.text; stderrTruncated=stderrTruncated||next.truncated;
+    }
+    s._out={stdout:accStdout, stderr:accStderr, code:null, _stdoutTruncated:stdoutTruncated, _stderrTruncated:stderrTruncated};   // 实时快照仅保留有界尾部；归档与最终变量仍用 execStreaming 的完整结果
+    if(viewRc===rc && selectedId===s.id){ const now=Date.now(); if(now-lastLive>=250){ lastLive=now; renderDetail(); } }
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(res.logError) console.warn('[archive] 服务端阶段日志写入失败，尝试页面兜底:',res.logError);
