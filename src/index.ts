@@ -556,6 +556,79 @@ export function apply(ctx: Context) {
     },
   })
 
+  // ---- 流水线导入导出：服务端备份（导出到服务器 / 从服务器导入）----
+  // 备份文件固定在 <DSH_HOME>/storages/pipeline-exports/ 下（多浏览器共用同一服务器目录，与浏览器本地下载互补），
+  // 文件名白名单校验（禁路径分隔符 / .. / 前导点、必须 .json 结尾），不提供任意路径读写；列表按 mtime 倒序、上限 200 条。
+  // 导出内容含节点密码与访问令牌明文，仅落本目录（页面菜单已标注勿外传）。list 用 GET，save/load 用 POST。
+  const PIPELINE_IO_DIR = pathResolve(DSH_HOME, 'storages', 'pipeline-exports')
+  const pipelineIoName = (name: unknown): string | null => {
+    if (typeof name !== 'string') return null
+    const n = name.trim()
+    if (!n || n.length > 120 || !n.endsWith('.json')) return null
+    if (n.startsWith('.') || n.includes('..') || n.includes('/') || n.includes('\\')) return null
+    return n
+  }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/io/list',
+    handler: async (_req: any, res: any) => {
+      try {
+        let names: string[] = []
+        try { names = await readdir(PIPELINE_IO_DIR) } catch { /* 目录不存在 = 尚无备份 */ }
+        const valid = names.map(pipelineIoName).filter((n): n is string => !!n)   // 白名单 + 规整（trim）后的真实文件名
+        const files = (await Promise.all(valid.map(async (n) => {
+          try {
+            const st = await fsStat(pathResolve(PIPELINE_IO_DIR, n))
+            return st.isFile() ? { name: n, size: st.size, mtime: st.mtimeMs } : null
+          } catch { return null }
+        }))).filter((f): f is { name: string; size: number; mtime: number } => !!f)
+          .sort((a, b) => b.mtime - a.mtime)
+          .slice(0, 200)
+        json(res, 200, { dir: PIPELINE_IO_DIR, files })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/io/save',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const name = pipelineIoName(body.name)
+        if (!name) { json(res, 400, { error: 'invalid name' }); return }
+        if (body.payload === undefined || body.payload === null) { json(res, 400, { error: 'missing payload' }); return }
+        const text = JSON.stringify(body.payload, null, 2)
+        if (text.length > 64 * 1024 * 1024) { json(res, 413, { error: 'payload too large' }); return }
+        await writeJsonAtomic(pathResolve(PIPELINE_IO_DIR, name), text)   // 自带 mkdir -p + tmp/rename 原子落盘
+        json(res, 200, { ok: true, name, path: pathResolve(PIPELINE_IO_DIR, name) })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/io/load',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const name = pipelineIoName(body.name)
+        if (!name) { json(res, 400, { error: 'invalid name' }); return }
+        const abs = pathResolve(PIPELINE_IO_DIR, name)
+        const st = await fsStat(abs)
+        if (st.size > 64 * 1024 * 1024) { json(res, 413, { error: 'file too large' }); return }
+        const text = await readFile(abs, 'utf8')
+        json(res, 200, { ok: true, name, data: JSON.parse(text) })
+      } catch (err: any) {
+        json(res, err?.code === 'ENOENT' ? 404 : 500, { error: String(err) })
+      }
+    },
+  })
+
   // ---- 流水线定时任务（服务端调度，关闭页面也会执行）----
   // 计划存独立文件 worktable-pipeline-plans.json；调度器每 15s 轮询，到期即在服务端执行：
   // 脚本阶段用 bash 真跑（参数/环境注入规则与前端 execScript 一致），模拟阶段按耗时等待，

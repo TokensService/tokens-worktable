@@ -133,7 +133,7 @@
           <option value="auto">跟随系统</option>
         </select>
       </label>
-      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；导出文件含密码与令牌明文 -->
+      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；每个去向可选浏览器本地文件或 dsh 服务器（storages/pipeline-exports/）；导出文件含密码与令牌明文 -->
       <span id="ioMenu" style="position:relative;display:inline-block;">
         <button id="ioMenuBtn" type="button" class="dshell-btn dshell-btnGhost mini" title="设置 / 流水线的导入导出；导出文件含节点密码与访问令牌明文，请妥善保管、勿提交进仓库">⤓⤒ 导入导出</button>
         <div id="ioMenuPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:30;min-width:230px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
@@ -143,8 +143,22 @@
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">流水线（全部流水线定义）</div>
           <button id="ioExpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线定义（含内置流水线上的编辑）">⤓ 导出流水线…</button>
           <button id="ioImpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出流水线」的 JSON 文件，覆盖当前全部流水线">⤒ 导入流水线…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">服务端备份（文件存于 dsh 服务器）</div>
+          <button id="ioExpSettingsSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出设置到服务端…</button>
+          <button id="ioExpPipelinesSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出流水线到服务端…</button>
+          <button id="ioImpSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="列出 dsh 服务器上的备份文件，按文件内容自动识别设置 / 流水线并导入">⤒ 从服务端导入…</button>
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">导出文件含密码 / 令牌明文，勿提交仓库</div>
           <div id="ioTip" class="dshell-muted" style="font-size:11px;padding:2px 6px;"></div>
+        </div>
+        <!-- 服务端备份文件列表面板（「从服务端导入…」）：列出 storages/pipeline-exports/ 下的 .json，逐个导入 -->
+        <div id="ioSrvPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:31;min-width:380px;max-width:560px;max-height:60vh;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+          <div style="display:flex;align-items:center;gap:6px;padding:2px 6px;">
+            <span class="dshell-muted" style="font-size:11px;flex:1;word-break:break-all;" title="服务端备份目录">服务端：<span id="ioSrvDir"></span></span>
+            <button id="ioSrvRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="重新读取服务端备份列表">刷新</button>
+            <button id="ioSrvClose" type="button" class="dshell-btn dshell-btnGhost mini" title="关闭">×</button>
+          </div>
+          <div id="ioSrvList"></div>
+          <div id="ioSrvTip" class="dshell-muted" style="font-size:11px;padding:2px 6px;"></div>
         </div>
         <input id="ioImpSettingsFile" type="file" accept="application/json,.json" style="display:none" />
         <input id="ioImpPipelinesFile" type="file" accept="application/json,.json" style="display:none" />
@@ -5473,6 +5487,8 @@ $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},D
    导出设置 = 设置页全部配置：服务端部分（collectConfig，剔除流水线——流水线走独立导出——并补回仅存本浏览器的代码仓访问令牌）
              + 仅存浏览器本地的运行选择（当前流水线/环境/代码仓、分支/部署策略/执行人、历史筛选与分页）；
    导出流水线 = 全部流水线定义（含内置流水线上的编辑）。
+   每个导出 / 导入都有「浏览器本地文件」与「服务端备份」两个去向：本地下载 / 文件选择框，或落盘 / 读取
+   dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），两种去向共用同一份 payload 与恢复逻辑。
    导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
    运行历史不参与导入导出。导出文件含节点密码与令牌明文。 */
 function ioTimestamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
@@ -5490,19 +5506,25 @@ function collectSettingsForExport(){
   cfg.repositories=repositories.map(function(r){ return Object.assign({}, r); });
   return cfg;
 }
-function exportSettings(){
-  downloadJson('pipeline-settings-'+ioTimestamp()+'.json', {
+function buildSettingsExport(){
+  return {
     app:'worktable-pipeline', kind:'pipeline-settings', version:1, exportedAt:new Date().toISOString(),
     config:collectSettingsForExport(),
     local:{ curPipelineId, selectedEnvIds, curRepoId, schedEnvIds, branch:$('branchName').value, strategy:$('deployStrategyName').value, by:$('triggeredBy').value, histFilter, histPageSize },
-  });
+  };
+}
+function exportSettings(){
+  downloadJson('pipeline-settings-'+ioTimestamp()+'.json', buildSettingsExport());
   ioTipShow('✓ 已导出设置配置');
 }
-function exportPipelines(){
-  downloadJson('pipeline-pipelines-'+ioTimestamp()+'.json', {
+function buildPipelinesExport(){
+  return {
     app:'worktable-pipeline', kind:'pipeline-pipelines', version:1, exportedAt:new Date().toISOString(),
     pipelines:pipelines,
-  });
+  };
+}
+function exportPipelines(){
+  downloadJson('pipeline-pipelines-'+ioTimestamp()+'.json', buildPipelinesExport());
   ioTipShow('✓ 已导出 '+pipelines.length+' 条流水线');
 }
 /* 导入的流水线列表归一化：与 loadServerState 同一套迁移（内置默认置顶 + gate/url/预填默认值迁移）；非法列表返回 null */
@@ -5562,21 +5584,25 @@ function applyImportedSettings(cfg, loc){
   $('archiveDir').value=archiveDir; $('archiveScriptName').value=archiveScriptName;
   renderAll();
 }
-async function importSettingsFile(file){
-  let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
-  if(!data || data.app!=='worktable-pipeline' || data.kind!=='pipeline-settings' || !data.config || typeof data.config!=='object'){
-    ioTipShow('✗ 不是「导出设置」生成的有效文件', true); return;
-  }
-  if(!confirm('导入将按文件内容覆盖当前设置（节点环境 / 代码仓 / 脚本与服务配置等，含文件中的令牌），流水线与运行历史不受影响。确定导入？')) return;
+/* 导入设置数据（已解析的 JSON，本地文件与服务端备份共用）：返回 ok / cancel / invalid 供调用方给提示 */
+async function importSettingsData(data){
+  if(!data || data.app!=='worktable-pipeline' || data.kind!=='pipeline-settings' || !data.config || typeof data.config!=='object') return 'invalid';
+  if(!confirm('导入将按文件内容覆盖当前设置（节点环境 / 代码仓 / 脚本与服务配置等，含文件中的令牌），流水线与运行历史不受影响。确定导入？')) return 'cancel';
   if(!stateLoaded){ await loadServerState(); }   /* 等服务端状态落定再覆盖，避免 pushState 写前重载把导入内容冲掉 */
   applyImportedSettings(data.config, data.local);
-  ioTipShow('✓ 设置已导入并保存');
+  return 'ok';
 }
-async function importPipelinesFile(file){
+async function importSettingsFile(file){
   let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
+  const r=await importSettingsData(data);
+  if(r==='ok') ioTipShow('✓ 设置已导入并保存');
+  else if(r==='invalid') ioTipShow('✗ 不是「导出设置」生成的有效文件', true);
+}
+/* 导入流水线数据（已解析的 JSON，本地文件与服务端备份共用）：返回 ok / cancel / invalid */
+async function importPipelinesData(data){
   const list=(data && data.app==='worktable-pipeline' && data.kind==='pipeline-pipelines') ? normalizeImportedPipelines(data.pipelines) : null;
-  if(!list){ ioTipShow('✗ 不是「导出流水线」生成的有效文件', true); return; }
-  if(!confirm('导入将按文件内容覆盖当前全部流水线（含内置流水线上的改动），其余设置与运行历史不受影响。确定导入？')) return;
+  if(!list) return 'invalid';
+  if(!confirm('导入将按文件内容覆盖当前全部流水线（含内置流水线上的改动），其余设置与运行历史不受影响。确定导入？')) return 'cancel';
   if(!stateLoaded){ await loadServerState(); }
   pipelines=list;
   if(!pipelines.some(p=>p.id===curPipelineId)) curPipelineId=pipelines[0].id;
@@ -5584,17 +5610,134 @@ async function importPipelinesFile(file){
   savePipelines();
   try{ localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
   renderAll();
-  ioTipShow('✓ 已导入 '+pipelines.length+' 条流水线');
+  return 'ok';
 }
-/* 菜单开合（点外关闭，与「环境」多选同一交互）+ 四个入口 wiring；文件框选完即清空 value，保证重复选同一文件仍触发 change */
+async function importPipelinesFile(file){
+  let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
+  const r=await importPipelinesData(data);
+  if(r==='ok') ioTipShow('✓ 已导入 '+pipelines.length+' 条流水线');
+  else if(r==='invalid') ioTipShow('✗ 不是「导出流水线」生成的有效文件', true);
+}
+/* ---------- 服务端备份（导入导出文件存于 dsh 服务器 storages/pipeline-exports/） ----------
+   导出到服务端与浏览器本地下载共用同一份 payload（buildSettingsExport / buildPipelinesExport），经
+   /api/worktable/pipeline/io/save 落盘；「从服务端导入…」列出服务端备份，读取后按 kind 自动识别
+   设置 / 流水线，复用与文件导入完全相同的校验、确认与恢复逻辑（importSettingsData / importPipelinesData）。 */
+function ioSrvTipShow(msg, bad){ const t=$('ioSrvTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+/* 文件名规整：缺省补 .json；与服务端 pipelineIoName 同一套白名单（禁路径分隔符 / .. / 前导点，≤120 字），无效返回 null */
+function ioSrvNormalizeName(name){
+  let n=String(name==null?'':name).trim();
+  if(!n) return null;
+  if(!/\.json$/i.test(n)) n+='.json';
+  if(n.length>120 || n.indexOf('..')>=0 || n.indexOf('/')>=0 || n.indexOf('\\')>=0 || n.charAt(0)==='.') return null;
+  return n;
+}
+async function ioSrvPost(path, body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error((d && d.error)||('HTTP '+r.status));
+  return d;
+}
+function exportSettingsToServer(){
+  const input=prompt('导出到 dsh 服务器的文件名（保存在 storages/pipeline-exports/ 下；文件含密码与令牌明文）：','pipeline-settings-'+ioTimestamp()+'.json');
+  if(input===null || input===undefined) return;
+  const name=ioSrvNormalizeName(input);
+  if(!name){ ioTipShow('✗ 文件名无效：需 120 字以内、不含路径分隔符', true); return; }
+  ioSrvPost('/api/worktable/pipeline/io/save',{name:name,payload:buildSettingsExport()})
+    .then(d=>ioTipShow('✓ 已导出到服务端：'+d.name))
+    .catch(e=>ioTipShow('✗ 导出到服务端失败：'+e.message, true));
+}
+function exportPipelinesToServer(){
+  const input=prompt('导出到 dsh 服务器的文件名（保存在 storages/pipeline-exports/ 下）：','pipeline-pipelines-'+ioTimestamp()+'.json');
+  if(input===null || input===undefined) return;
+  const name=ioSrvNormalizeName(input);
+  if(!name){ ioTipShow('✗ 文件名无效：需 120 字以内、不含路径分隔符', true); return; }
+  ioSrvPost('/api/worktable/pipeline/io/save',{name:name,payload:buildPipelinesExport()})
+    .then(d=>ioTipShow('✓ 已导出 '+pipelines.length+' 条流水线到服务端：'+d.name))
+    .catch(e=>ioTipShow('✗ 导出到服务端失败：'+e.message, true));
+}
+/* 从服务端导入：读取备份内容，按 kind 自动分流到设置 / 流水线导入；kind 不符或形状非法给 ✗ 提示 */
+async function importFromServer(name){
+  try{
+    const d=await ioSrvPost('/api/worktable/pipeline/io/load',{name:name});
+    const data=d && d.data;
+    const kind=(data && data.app==='worktable-pipeline') ? data.kind : '';
+    if(kind==='pipeline-settings'){
+      const r=await importSettingsData(data);
+      if(r==='ok') ioSrvTipShow('✓ 已从服务端导入设置：'+name);
+      else if(r==='invalid') ioSrvTipShow('✗ 不是「导出设置」生成的有效文件', true);
+    }else if(kind==='pipeline-pipelines'){
+      const r=await importPipelinesData(data);
+      if(r==='ok') ioSrvTipShow('✓ 已从服务端导入 '+pipelines.length+' 条流水线：'+name);
+      else if(r==='invalid') ioSrvTipShow('✗ 不是「导出流水线」生成的有效文件', true);
+    }else{
+      ioSrvTipShow('✗ 不是本页「导出设置 / 导出流水线」生成的备份文件', true);
+    }
+  }catch(e){ ioSrvTipShow('✗ 从服务端导入失败：'+e.message, true); }
+}
+function ioSrvFmtMeta(f){
+  const p=n=>String(n).padStart(2,'0');
+  const t=f && f.mtime ? new Date(f.mtime) : null;
+  const ts=t?(''+t.getFullYear()+p(t.getMonth()+1)+p(t.getDate())+' '+p(t.getHours())+':'+p(t.getMinutes())):'';
+  const sz=(f && f.size>=1048576)?(f.size/1048576).toFixed(1)+'M':(f && f.size>=1024?Math.round(f.size/1024)+'K':(f && f.size||0)+'B');
+  return (ts?ts+' · ':'')+sz;
+}
+function renderIoSrvList(d){
+  const box=$('ioSrvList'); if(!box) return;
+  box.innerHTML='';
+  if($('ioSrvDir')) $('ioSrvDir').textContent=(d && d.dir)||'';
+  const files=(d && Array.isArray(d.files)) ? d.files : [];
+  if(!files.length){
+    const empty=document.createElement('div');
+    empty.className='dshell-muted'; empty.style.padding='8px 6px';
+    empty.textContent='（服务端还没有备份文件）';
+    box.appendChild(empty); return;
+  }
+  files.forEach(function(f){
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;align-items:center;gap:8px;padding:4px 6px;border-top:1px solid var(--dsw-alias-border-l2);';
+    const nm=document.createElement('span');
+    nm.style.cssText='flex:1;word-break:break-all;font-family:monospace;font-size:12px;';
+    nm.textContent=f.name; nm.title=f.name;
+    const meta=document.createElement('span');
+    meta.className='dshell-muted'; meta.style.cssText='font-size:11px;white-space:nowrap;';
+    meta.textContent=ioSrvFmtMeta(f);
+    const btn=document.createElement('button');
+    btn.type='button'; btn.className='dshell-btn dshell-btnGhost mini'; btn.textContent='⤒ 导入';
+    btn.title='按文件内容自动识别设置 / 流水线并导入';
+    btn.addEventListener('click',function(){ importFromServer(f.name); });
+    row.appendChild(nm); row.appendChild(meta); row.appendChild(btn);
+    box.appendChild(row);
+  });
+}
+function refreshIoSrvList(){
+  const box=$('ioSrvList');
+  if(box) box.innerHTML='<div class="dshell-muted" style="padding:8px 6px;">加载中…</div>';
+  fetch('/api/worktable/pipeline/io/list')
+    .then(r=>{ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+    .then(renderIoSrvList)
+    .catch(e=>{ if(box) box.innerHTML=''; ioSrvTipShow('✗ 读取服务端备份列表失败：'+(e && e.message || e), true); });
+}
+function toggleIoSrvPanel(show){
+  const p=$('ioSrvPanel'); if(!p) return;
+  p.style.display=show?'block':'none';
+  if(show){ ioSrvTipShow(''); refreshIoSrvList(); }
+}
+/* 菜单开合（点外关闭，与「环境」多选同一交互）+ 各入口 wiring；文件框选完即清空 value，保证重复选同一文件仍触发 change。
+   点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
-document.addEventListener('click', (e)=>{ const p=$('ioMenuPanel'); const m=$('ioMenu'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
+document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
 $('ioExpSettings').addEventListener('click', exportSettings);
 $('ioExpPipelines').addEventListener('click', exportPipelines);
 $('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
 $('ioImpPipelines').addEventListener('click', ()=>{ $('ioImpPipelinesFile').click(); });
 $('ioImpSettingsFile').addEventListener('change', (e)=>{ const f=e.target.files && e.target.files[0]; e.target.value=''; if(f) importSettingsFile(f); });
 $('ioImpPipelinesFile').addEventListener('change', (e)=>{ const f=e.target.files && e.target.files[0]; e.target.value=''; if(f) importPipelinesFile(f); });
+/* 服务端备份入口：导出到服务端（文件名可改，自动补 .json）/ 打开服务端备份列表面板 */
+$('ioExpSettingsSrv').addEventListener('click', exportSettingsToServer);
+$('ioExpPipelinesSrv').addEventListener('click', exportPipelinesToServer);
+$('ioImpSrv').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioSrvPanel'); toggleIoSrvPanel(!p || p.style.display==='none'); });
+$('ioSrvRefresh').addEventListener('click', refreshIoSrvList);
+$('ioSrvClose').addEventListener('click', ()=>toggleIoSrvPanel(false));
 
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
