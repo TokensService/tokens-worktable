@@ -79,40 +79,6 @@ mkdir -p "$RENDER_DIR"
 rm -rf "$CHART_DIR"
 cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
 
-# KubeRay derives Pod names from workerGroupSpecs.groupName. Rewrite the copied
-# Chart only: role names stay independent of the namespace/release name.
-TASK_EXECUTOR_TEMPLATE="$CHART_DIR/templates/raycluster-cluster.yaml"
-if [[ -f "$TASK_EXECUTOR_TEMPLATE" ]]; then
-  python3 - "$TASK_EXECUTOR_TEMPLATE" <<'PY_TEMPLATE'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-container_marker = "          - name: ray-worker"
-te_container = """          - name: {{ if contains "prefill" (lower $teGroupValues.name) }}ray-worker-prefill{{ else if contains "decode" (lower $teGroupValues.name) }}ray-worker-decode{{ else }}ray-worker{{ end }}"""
-worker_container = """          - name: {{ if eq $groupName "ctrlGroup" }}ray-worker-ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}ray-worker-fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}ray-worker-je{{ else }}ray-worker{{ end }}"""
-te_group_marker = "groupName: {{ $teGroupValues.name }}"
-worker_group_marker = "groupName: {{ $groupName }}"
-te_group = """groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else if contains "decode" (lower $teGroupValues.name) }}decode-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else }}{{ $teGroupValues.name }}{{ end }}"""
-worker_group = """groupName: {{ if eq $groupName "ctrlGroup" }}ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je{{ else }}{{ $groupName }}{{ end }}"""
-if te_group_marker not in text and te_group not in text:
-    raise SystemExit(f"task executor groupName marker not found: {path}")
-if worker_group_marker not in text and worker_group not in text:
-    raise SystemExit(f"worker groupName marker not found: {path}")
-if te_group_marker in text:
-    text = text.replace(te_group_marker, te_group)
-if worker_group_marker in text:
-    text = text.replace(worker_group_marker, worker_group)
-if container_marker in text:
-    # Card task executors are emitted before ordinary worker groups.
-    text = text.replace(container_marker, te_container, 1)
-if container_marker in text:
-    text = text.replace(container_marker, worker_container, 1)
-path.write_text(text, encoding="utf-8")
-PY_TEMPLATE
-fi
-
 python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$ARCH_REQUEST_FILE" "$RESOURCE_MANIFEST" "$DEPLOY_IMAGE" "$NUM_PREFILL" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \

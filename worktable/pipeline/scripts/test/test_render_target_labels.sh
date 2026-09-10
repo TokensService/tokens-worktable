@@ -398,53 +398,6 @@ bash "$script_dir/render-config.sh" >"$work_dir/namespace-legacy.out"
 grep -qx 'NAMESPACE=xds-test-arch-test-tag' "$work_dir/namespace-legacy.out"
 
 
-mkdir -p "$work_dir/chart-role/templates"
-printf 'apiVersion: v2\nname: xds-role\nversion: 0.1.0\n' >"$work_dir/chart-role/Chart.yaml"
-cat >"$work_dir/chart-role/templates/raycluster-cluster.yaml" <<'EOF'
-{{- range $groupName, $values := .Values.workerGroups }}
-{{- if eq $groupName "taskExecutorGroup-card" }}
-{{- range $index, $teGroupValues := $.Values.taskExecutorGroups }}
-    groupName: {{ $teGroupValues.name }}
-          - name: ray-worker
-{{- end }}
-{{- else }}
-    groupName: {{ $groupName }}
-          - name: ray-worker
-{{- end }}
-{{- end }}
-EOF
-ARCH_NAME=test-arch \
-RUN_DIR="$work_dir/run-role-container-names" \
-CHART_TEMPLATE_DIR="$work_dir/chart-role" \
-VALUES_TEMPLATE="$work_dir/values.yaml" \
-ARCH_FILE="$work_dir/architectures.json" \
-DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
-TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
-bash "$script_dir/render-config.sh" >/dev/null
-role_template="$work_dir/run-role-container-names/rendered/xds-cluster/templates/raycluster-cluster.yaml"
-grep -Fq 'name: {{ if contains "prefill"' "$role_template"
-grep -Fq 'ray-worker-prefill' "$role_template"
-grep -Fq 'ray-worker-decode' "$role_template"
-grep -Fq 'ray-worker-ctrl' "$role_template"
-grep -Fq 'ray-worker-fe' "$role_template"
-grep -Fq 'ray-worker-je' "$role_template"
-grep -Fq 'groupName: {{ if contains "prefill"' "$role_template"
-grep -Fq 'prefill-' "$role_template"
-grep -Fq 'decode-' "$role_template"
-grep -Fq 'groupName: {{ if eq $groupName "ctrlGroup" }}ctrl' "$role_template"
-grep -Fq '}}fe{{' "$role_template"
-grep -Fq '}}je{{' "$role_template"
-! grep -Fq 'xds-one-node-78-verify' "$role_template"
-
-if command -v helm >/dev/null 2>&1; then
-  helm template role-name-check "$work_dir/run-role-container-names/rendered/xds-cluster" \
-    -f "$work_dir/run-role-container-names/rendered/values.rendered.yaml" \
-    >"$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-ctrl' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-fe' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-je' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-prefill' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-decode' "$work_dir/role-container-names.yaml"
-fi
+# Role names in the copied Chart remain the upstream KubeRay names.
 
 echo "render target-label tests passed"
