@@ -37,9 +37,9 @@ function loadRunRoute(store) {
   const ctx = {
     URL,
     Promise,
+    Buffer,
     console,
     pathResolve,
-    readJsonBody: async req => req.body ?? {},
     json(res, status, body) {
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(body))
@@ -72,8 +72,24 @@ function response() {
 }
 
 async function call(handler, id, body = {}, method = 'POST') {
+  return callRaw(handler, id, method === 'POST' ? JSON.stringify(body) : '', method)
+}
+
+async function callRaw(handler, id, raw = '', method = 'POST', contentType = 'application/json', extraHeaders = {}) {
   const res = response()
-  await handler({ method, url: '/api/worktable/pipeline/run/' + encodeURIComponent(id), body }, res)
+  const chunks = raw === '' ? [] : [Buffer.from(raw)]
+  const headers = { ...extraHeaders }
+  if (contentType) headers['content-type'] = contentType
+  if (!Object.keys(headers).some(key => key.toLowerCase() === 'content-length')) {
+    headers['content-length'] = String(chunks.reduce((sum, chunk) => sum + chunk.length, 0))
+  }
+  const req = {
+    method,
+    url: '/api/worktable/pipeline/run/' + encodeURIComponent(id),
+    headers,
+    async *[Symbol.asyncIterator]() { yield * chunks },
+  }
+  await handler(req, res)
   await Promise.resolve()
   return res
 }
@@ -153,6 +169,29 @@ test('API 请求体可以覆盖全部运行参数，空策略和空预设也是�
   assert.equal(run.by, 'jenkins')
 })
 
+test('API 代码仓对象可单次覆盖地址和凭据且不会写回配置', async () => {
+  const f = loadRunRoute(stored)
+  const res = await call(f.handler, 'pipe-release', {
+    repositoryId: 'repo-app',
+    repository: {
+      name: '临时镜像仓',
+      url: 'https://mirror.example/app.git',
+      user: 'api-bot',
+      pass: 'one-time-token',
+    },
+  })
+
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].repository), {
+    id: 'repo-app',
+    name: '临时镜像仓',
+    url: 'https://mirror.example/app.git',
+    user: 'api-bot',
+    pass: 'one-time-token',
+  })
+  assert.equal(stored.config.repositories[1].pass, '')
+})
+
 test('旧流水线没有默认值时回退首个环境、首个代码仓和安全基础值', async () => {
   const legacy = structuredClone(stored)
   delete legacy.config.pipelines[0].defaults
@@ -174,6 +213,11 @@ test('API 拒绝未知流水线、环境、代码仓、非法预设和非 POST �
     ['missing', {}, 404, 'pipeline not found'],
     ['pipe-release', { environmentIds: ['missing-env'] }, 400, 'environment not found'],
     ['pipe-release', { repositoryId: 'missing-repo' }, 400, 'repository not found'],
+    ['pipe-release', { environmentIds: [] }, 400, 'environmentIds must not be empty'],
+    ['pipe-release', { environmentIds: ['env-prod', 7] }, 400, 'invalid environmentIds'],
+    ['pipe-release', { repository: [] }, 400, 'invalid repository'],
+    ['pipe-release', { repository: { pass: 7 } }, 400, 'invalid repository.pass'],
+    ['pipe-release', { presets: [7] }, 400, 'invalid presets'],
     ['pipe-release', { presets: ['cleanup', 'root-shell'] }, 400, 'invalid preset'],
   ]
   for (const [id, body, status, error] of cases) {
@@ -184,10 +228,61 @@ test('API 拒绝未知流水线、环境、代码仓、非法预设和非 POST �
     assert.equal(f.executions.length, 0)
   }
 
-  const f = loadRunRoute(stored)
-  const res = await call(f.handler, 'pipe-release', {}, 'GET')
+  let f = loadRunRoute(stored)
+  let res = await call(f.handler, 'pipe-release', {}, 'GET')
   assert.equal(res.status, 405)
   assert.equal(f.executions.length, 0)
+
+  const malformedDefault = structuredClone(stored)
+  malformedDefault.config.pipelines[0].defaults.environmentIds = ['env-prod', 7]
+  f = loadRunRoute(malformedDefault)
+  res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 409)
+  assert.equal(res.json().error, 'invalid configured environmentIds')
+  assert.equal(f.executions.length, 0)
+
+  const malformedRepositoryDefault = structuredClone(stored)
+  malformedRepositoryDefault.config.pipelines[0].defaults.repositoryId = 7
+  f = loadRunRoute(malformedRepositoryDefault)
+  res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 409)
+  assert.equal(res.json().error, 'invalid configured repositoryId')
+  assert.equal(f.executions.length, 0)
+})
+
+test('API 拒绝失效的流水线默认引用，不静默改投首个环境或代码仓', async () => {
+  const invalidEnvironment = structuredClone(stored)
+  invalidEnvironment.config.pipelines[0].defaults.environmentIds = ['env-prod', 'removed-env']
+  let f = loadRunRoute(invalidEnvironment)
+  let res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 409)
+  assert.equal(res.json().error, 'configured environment not found')
+  assert.equal(f.executions.length, 0)
+
+  const invalidRepository = structuredClone(stored)
+  invalidRepository.config.pipelines[0].defaults.repositoryId = 'removed-repo'
+  f = loadRunRoute(invalidRepository)
+  res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 409)
+  assert.equal(res.json().error, 'configured repository not found')
+  assert.equal(f.executions.length, 0)
+})
+
+test('API 严格拒绝畸形、非对象、错误媒体类型和超限 JSON，不会误启默认流水线', async () => {
+  const cases = [
+    ['{', 'application/json', {}, 400, 'invalid JSON'],
+    ['[]', 'application/json', {}, 400, 'JSON body must be an object'],
+    ['"deploy"', 'application/json', {}, 400, 'JSON body must be an object'],
+    ['{}', 'text/plain', {}, 415, 'content-type must be application/json'],
+    [JSON.stringify({ padding: 'x'.repeat(70 * 1024) }), 'application/json', {}, 413, 'request body too large'],
+  ]
+  for (const [raw, contentType, headers, status, error] of cases) {
+    const f = loadRunRoute(stored)
+    const res = await callRaw(f.handler, 'pipe-release', raw, 'POST', contentType, headers)
+    assert.equal(res.status, status)
+    assert.equal(res.json().error, error)
+    assert.equal(f.executions.length, 0)
+  }
 })
 
 test('服务端按流水线编排位置展开所选预设任务并忽略未选项', () => {
@@ -231,6 +326,37 @@ test('服务端为缺少预设标记的旧流水线补齐所选预设任务', ()
   assert.equal(expanded.at(-1).script.path, '/opt/pipeline/scripts/collect.py')
 })
 
+test('EvalTokens 终态先判失败且只接受明确成功值', () => {
+  const f = loadRunRoute(stored)
+  assert.equal(f.ctx.serverEvaltokensStatus('completed_with_errors'), 'failed')
+  assert.equal(f.ctx.serverEvaltokensStatus('not_completed'), 'failed')
+  assert.equal(f.ctx.serverEvaltokensStatus('FAILED'), 'failed')
+  assert.equal(f.ctx.serverEvaltokensStatus('completed'), 'success')
+  assert.equal(f.ctx.serverEvaltokensStatus('success'), 'success')
+  assert.equal(f.ctx.serverEvaltokensStatus('success_pending_review'), 'running')
+})
+
+test('无 Content-Length 的分块远端响应也按字节上限中止', async () => {
+  const f = loadRunRoute(stored)
+  let index = 0
+  let cancelled = false
+  const reader = {
+    async read() {
+      index += 1
+      if (index === 1) return { done: false, value: Buffer.from('1234') }
+      if (index === 2) return { done: false, value: Buffer.from('5678') }
+      return { done: true }
+    },
+    async cancel() { cancelled = true },
+    releaseLock() {},
+  }
+  await assert.rejects(
+    f.ctx.readServerResponseText({ headers: { get() { return '' } }, body: { getReader() { return reader } } }, 5, 'HTTP '),
+    /响应正文超过 5 字节上限/,
+  )
+  assert.equal(cancelled, true)
+})
+
 test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', async () => {
   const start = source.indexOf('  // 参数值 ${VAR} 引用替换（同页面 substRunVars）')
   const end = source.indexOf('  /* 任务回显文本：', start)
@@ -250,7 +376,7 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   vm.runInContext(code, ctx)
 
   const result = await ctx.runStageScript(
-    { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [], values: {} },
+    { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [{ key: 'TRIGGERED_BY', kind: 'env' }], values: { TRIGGERED_BY: '${BY}' } },
     {
       env: '10.0.0.2',
       envs: [{ ip: '10.0.0.2', user: 'root', pass: 'node-pass' }],
@@ -259,6 +385,7 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
       strategy: 'blue-green',
       pipelineName: '发布流水线',
       tag: 'api-tag',
+      by: 'jenkins',
     },
     '/scripts',
   )
@@ -269,10 +396,11 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   assert.equal(called.options.env.GIT_PASSWORD, 'git-token')
   assert.equal(called.options.env.GIT_BRANCH, 'release/2026')
   assert.equal(called.options.env.DEPLOY_STRATEGY, 'blue-green')
+  assert.equal(called.options.env.TRIGGERED_BY, 'jenkins')
   assert.equal(called.options.env.KEEP_ME, 'yes')
 })
 
-function loadExecPlan(config, results = {}) {
+function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }) {
   const apiStart = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
@@ -285,8 +413,13 @@ function loadExecPlan(config, results = {}) {
     Buffer,
     Date,
     Math,
-    console,
+    URLSearchParams,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    console: { warn() {}, log() {}, error() {} },
     pathResolve,
+    fetch: fetchImpl,
     readPipelineStore: async () => ({ config }),
     stripSuffixName: value => String(value || '').replace(/\s*·\s*定时后缀\s*$/, '') || 'pipeline',
     hhmm: () => '12:34',
@@ -300,8 +433,8 @@ function loadExecPlan(config, results = {}) {
     parseStageVars: () => ({}),
     parseStageJson: () => null,
     applyOutVars() {},
-    runStageScript: async (script, runContext) => {
-      calls.push({ script: script.name, runContext: plain(runContext) })
+    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv) => {
+      calls.push({ script: script.name, runContext: plain(runContext), scriptsDir, varsPool: plain(varsPool || {}), timeout, extraEnv: plain(extraEnv || {}) })
       return results[script.name] || { code: 0, stdout: '', stderr: '' }
     },
     appendPipelineHistory: async record => history.push(plain(record)),
@@ -315,6 +448,15 @@ const apiExecutionConfig = {
   scriptsDir: '',
   checkScript: { name: 'check.sh', path: '/scripts/check.sh', params: [], values: {} },
   profilingScript: { name: 'profile.sh', path: '/scripts/profile.sh', params: [], values: {} },
+}
+
+function fetchResponse(status, body, headers = {}) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: { get(name) { return headers[String(name).toLowerCase()] || '' } },
+    async text() { return typeof body === 'string' ? body : JSON.stringify(body) },
+  }
 }
 
 function apiExecutionPlan(presets = ['check']) {
@@ -365,4 +507,203 @@ test('非阻断预设失败后继续运行，环境检查失败则阻断后续�
   await checking.execPlan(apiExecutionPlan(['check']))
   assert.deepEqual(checking.calls.map(call => call.script), ['check.sh'])
   assert.equal(checking.history[0].status, 'failed')
+})
+
+test('API 服务端实际执行 HTTP 阶段并替换运行变量，不把未执行请求记为成功', async () => {
+  const requests = []
+  const f = loadExecPlan(apiExecutionConfig, {}, async (url, options = {}) => {
+    requests.push({ url: String(url), options })
+    return fetchResponse(200, '{\n  "image": "registry.example/app:v9"\n}')
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{
+    id: 'trigger', name: '触发发布', kind: 'http',
+    url: { url: 'https://hooks.internal/deploy?branch={GIT_BRANCH}', outVars: 'IMAGE_URL=image' },
+  }]
+
+  await f.execPlan(plan)
+
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].url, 'https://hooks.internal/deploy?branch=release%2F2026')
+  assert.equal(requests[0].options.method, 'GET')
+  assert.equal(f.history[0].status, 'success')
+  assert.match(f.history[0].logs[0].log, /\{"image":"registry\.example\/app:v9"\}/,'多行 JSON 响应应规整为单行供输出变量解析')
+  assert.doesNotMatch(f.history[0].logs[0].log, /暂不支持|已跳过/)
+})
+
+test('API 服务端执行旧 Jenkins fullName 阶段并等待对应构建完成', async () => {
+  const requests = []
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' },
+  }, {}, async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) return fetchResponse(201, '', { location: '/queue/item/99/' })
+    if (value.endsWith('/queue/item/99/api/json')) return fetchResponse(200, { executable: { number: 42 } })
+    if (value.includes('/42/api/json')) return fetchResponse(200, { number: 42, building: false, result: 'SUCCESS' })
+    if (value.endsWith('/42/consoleText')) return fetchResponse(200, 'IMAGE_TAG=from-jenkins')
+    throw new Error('unexpected URL ' + value)
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'jenkins', name: 'Jenkins 构建', kind: 'jenkins', jenkins: { job: 'folder/app' } }]
+
+  await f.execPlan(plan)
+
+  assert.ok(requests.some(request => request.url.endsWith('/job/folder/job/app/buildWithParameters') && request.options.method === 'POST'))
+  assert.ok(requests.some(request => request.url.endsWith('/queue/item/99/api/json')),'应从本次触发返回的 queue item 解析构建号')
+  assert.ok(!requests.some(request => request.url.includes('nextBuildNumber')),'不能用存在并发竞态的 nextBuildNumber 绑定本次构建')
+  assert.ok(requests.some(request => request.url.includes('/job/folder/job/app/42/api/json')))
+  assert.equal(f.history[0].status, 'success')
+})
+
+test('HTTP 完整 Jenkins URL 只向配置的轮询端发送凭据，触发地址不泄露 Basic 认证', async () => {
+  const requests = []
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' },
+  }, {}, async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.startsWith('https://trigger.example/job/folder/job/app/build')) return fetchResponse(201, '', { location: 'https://trigger.example/queue/item/77/' })
+    if (value === 'http://jenkins.internal/queue/item/77/api/json') return fetchResponse(200, { executable: { number: 7 } })
+    if (value.includes('/job/folder/job/app/7/api/json')) return fetchResponse(200, { number: 7, building: false, result: 'SUCCESS' })
+    if (value.endsWith('/job/folder/job/app/7/consoleText')) return fetchResponse(200, '')
+    throw new Error('unexpected URL ' + value)
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{
+    id: 'jenkins-url', name: 'Jenkins URL', kind: 'http',
+    url: { url: 'https://trigger.example/job/folder/job/app/build?token=public-trigger-token' },
+  }]
+
+  await f.execPlan(plan)
+
+  const trigger = requests.find(request => request.url.startsWith('https://trigger.example/'))
+  assert.ok(trigger)
+  assert.equal(trigger.options.headers && trigger.options.headers.Authorization, undefined)
+  const poll = requests.find(request => request.url.startsWith('http://jenkins.internal/job/'))
+  assert.ok(poll)
+  assert.match(poll.options.headers.Authorization, /^Basic /)
+  assert.equal(f.history[0].status, 'success')
+})
+
+test('Jenkins 触发响应缺少 queue Location 时失败，不猜测其他构建号', async () => {
+  const requests = []
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' },
+  }, {}, async (url, options = {}) => {
+    const value = String(url)
+    requests.push(value)
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) return fetchResponse(201, '')
+    throw new Error('unexpected URL ' + value)
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'jenkins', name: 'Jenkins 构建', kind: 'jenkins', jenkins: { job: 'folder/app' } }]
+
+  await f.execPlan(plan)
+
+  assert.equal(f.history[0].status, 'failed')
+  assert.match(f.history[0].logs[0].log, /缺少 queue Location/)
+  assert.ok(!requests.some(url => url.includes('nextBuildNumber')))
+})
+
+test('HTTP 响应正文超过服务端上限时中止读取并把阶段记为失败', async () => {
+  let textRead = false
+  let cancelled = false
+  const f = loadExecPlan(apiExecutionConfig, {}, async () => ({
+    status: 200,
+    headers: { get(name) { return String(name).toLowerCase() === 'content-length' ? String(20 * 1024 * 1024) : '' } },
+    body: { async cancel() { cancelled = true } },
+    async text() { textRead = true; return 'x' },
+  }))
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'large', name: '超大响应', kind: 'http', url: { url: 'https://hooks.internal/large' } }]
+
+  await f.execPlan(plan)
+
+  assert.equal(f.history[0].status, 'failed')
+  assert.match(f.history[0].logs[0].log, /响应正文超过/)
+  assert.equal(textRead, false)
+  assert.equal(cancelled, true)
+})
+
+test('API 服务端执行 EvalTokens 阶段，传入参数覆盖并等待本次 run 终态', async () => {
+  const requests = []
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    evaltok: { url: 'http://evaltokens.internal', token: 'eval-secret' },
+  }, {}, async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { items: [{ id: 'task-42', name: '评分' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-42/run')) return fetchResponse(200, { run_id: 'run-new', status: 'running' })
+    if (value.includes('/api/open/v1/tasks/runs?')) return fetchResponse(200, { runs: [{ run_id: 'run-new', status: 'success', score: 98 }] })
+    throw new Error('unexpected URL ' + value)
+  })
+  const plan = apiExecutionPlan([])
+  plan.vars = { TASK_ID: '42', MODEL_PATH: '/models/demo' }
+  plan.stages = [{
+    id: 'eval', name: '模型评分', kind: 'evaltokens', timeout: 30,
+    evaltokens: { taskId: 'task-${TASK_ID}', taskName: '', values: { model: '${MODEL_PATH}' }, outVars: 'SCORE=score' },
+  }]
+
+  await f.execPlan(plan)
+
+  const start = requests.find(request => request.url.endsWith('/api/open/v1/tasks/task-42/run'))
+  assert.ok(start)
+  assert.equal(start.options.headers.Authorization, 'Bearer eval-secret')
+  assert.deepEqual(JSON.parse(start.options.body), { input: { model: '/models/demo' } })
+  assert.ok(requests.some(request => request.url.includes('task_id=task-42')))
+  assert.equal(f.history[0].status, 'success')
+  assert.doesNotMatch(f.history[0].logs[0].log, /暂不支持|已跳过/)
+})
+
+test('EvalTokens completed_with_errors 终态使 API 流水线失败', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    evaltok: { url: 'http://evaltokens.internal', token: '' },
+  }, {}, async (url) => {
+    const value = String(url)
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, [{ id: 'task-bad', name: '失败评估' }])
+    if (value.endsWith('/api/open/v1/tasks/task-bad/run')) return fetchResponse(200, { run_id: 'run-bad', status: 'running' })
+    if (value.includes('/api/open/v1/tasks/runs?')) return fetchResponse(200, { runs: [{ run_id: 'run-bad', status: 'completed_with_errors' }] })
+    throw new Error('unexpected URL ' + value)
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'eval', name: '失败评估', kind: 'evaltokens', evaltokens: { taskId: 'task-bad' } }]
+
+  await f.execPlan(plan)
+
+  assert.equal(f.history[0].status, 'failed')
+  assert.match(f.history[0].logs[0].log, /EvalTokens failed/)
+})
+
+test('API 普罗采集预设向脚本注入 collect 动作、时间范围、数据源和归档参数', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    archiveDir: '/var/pipeline-runs',
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  })
+  const plan = apiExecutionPlan(['promCollect'])
+  plan.vars = { MODEL_PATH: '/models/demo' }
+  plan.stages.push({
+    id: '__prom_collect__', name: '收集普罗数据', preset: true, pkey: 'promCollect',
+    prom: { modelName: '${MODEL_PATH}', xdsNamespace: '${DEPLOY_STRATEGY}-${BY}', startTime: '', endTime: '' },
+  })
+
+  await f.execPlan(plan)
+
+  const collect = f.calls.find(call => call.script === 'collect.py')
+  assert.ok(collect)
+  assert.equal(collect.timeout, 0)
+  assert.equal(collect.extraEnv.METRICS_ACTION, 'collect')
+  assert.equal(collect.extraEnv.PROMETHEUS_URL, 'http://prom.internal:9090')
+  assert.equal(collect.extraEnv.MODEL_NAME, '/models/demo')
+  assert.equal(collect.extraEnv.XDS_NAMESPACE, 'blue-green-jenkins')
+  assert.match(collect.extraEnv.METRICS_OUTPUT_DIR, /^\/var\/pipeline-runs\/.+\/metrics$/)
+  assert.ok(Date.parse(collect.extraEnv.PROM_START) < Date.parse(collect.extraEnv.PROM_END))
 })

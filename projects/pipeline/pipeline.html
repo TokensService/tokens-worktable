@@ -743,13 +743,14 @@
         <h2 id="pipelineApiTitle" class="dshell-sub" style="margin:0">流水线 API</h2>
         <button id="pipelineApiClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
-      <p class="dshell-muted" style="font-size:11px;margin:0;">POST 接口异步启动流水线并返回运行 ID。请求字段可逐项覆盖流水线默认值；省略字段则使用默认配置。接口受当前 dsh 登录认证保护。</p>
+      <p class="dshell-muted" style="font-size:11px;margin:0;">POST 接口异步启动流水线并返回运行 ID。请求字段可逐项覆盖流水线默认值；省略字段则使用默认配置。代码仓还可用 <code>repository</code> 对象一次性覆盖 <code>name/url/user/pass</code>（凭据不落盘）。接口受当前 dsh 登录认证保护。</p>
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>接口地址</b><button id="pipelineApiCopyEndpoint" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></div>
         <div id="pipelineApiEndpoint" class="logbox" style="max-height:none;word-break:break-all;"></div>
       </div>
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>请求体（全部字段均可设置）</b><button id="pipelineApiCopyBody" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></div>
+        <div id="pipelineApiWarning" style="display:none;color:var(--log-warn);font-size:11px;margin-bottom:5px;"></div>
         <pre id="pipelineApiBody" class="logbox" style="max-height:260px;margin:0;"></pre>
       </div>
       <div>
@@ -1062,13 +1063,21 @@ function normalizePipelineDefaults(value){
   };
 }
 function migratePipelineDefaults(p){ if(p&&typeof p==='object') p.defaults=normalizePipelineDefaults(p.defaults); return p; }
-/* 默认项里的引用失效时安全回退到当前配置的首项；环境顺序遵从流水线保存的 ID 顺序。 */
+/* 仅旧流水线没有保存默认引用时回退当前首项；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
   const d=normalizePipelineDefaults(pl&&pl.defaults);
-  let envs=d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean);
-  if(!envs.length) envs=environments.slice(0,1);
-  const repo=repositories.find(r=>r.id===d.repositoryId)||repositories[0]||null;
+  const envs=d.environmentIds.length?d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean):environments.slice(0,1);
+  const repo=d.repositoryId?repositories.find(r=>r.id===d.repositoryId):(repositories[0]||null);
   return {envs,repoId:repo?repo.id:'',branch:d.branch,strategy:d.strategy,presets:d.presets.slice()};
+}
+function pipelineDefaultRunIssue(pl,overrides){
+  const d=normalizePipelineDefaults(pl&&pl.defaults),issues=[];
+  const hasEnvOverride=!!(overrides&&((Array.isArray(overrides.envs)&&overrides.envs.length)||overrides.env));
+  const hasRepoOverride=!!(overrides&&typeof overrides.repoId==='string'&&overrides.repoId);
+  const missingEnvs=hasEnvOverride?[]:d.environmentIds.filter(id=>!environments.some(e=>e.id===id));
+  if(missingEnvs.length) issues.push('默认环境已失效：'+missingEnvs.join('、'));
+  if(!hasRepoOverride&&d.repositoryId&&!repositories.some(r=>r.id===d.repositoryId)) issues.push('默认代码仓已失效：'+d.repositoryId);
+  return issues.join('；');
 }
 function resolvePipelineRunOptions(pl,opts){
   const input=Object.assign({},opts||{});
@@ -1117,11 +1126,12 @@ function shellSingleQuoted(value){ return "'"+String(value).replace(/'/g,"'\"'\"
 function pipelineApiSpec(pl,origin){
   const defaults=normalizePipelineDefaults(pl&&pl.defaults);
   const effective=pipelineDefaultRunOptions(pl);
+  const warning=pipelineDefaultRunIssue(pl);
   const endpoint='/api/worktable/pipeline/run/'+encodeURIComponent(pl&&pl.id||'');
   const url=String(origin||'').replace(/\/+$/,'')+endpoint;
   const body={
-    environmentIds:effective.envs.length?effective.envs.map(e=>e.id).filter(Boolean):defaults.environmentIds,
-    repositoryId:effective.repoId||defaults.repositoryId,
+    environmentIds:defaults.environmentIds.length?defaults.environmentIds:(effective.envs.length?effective.envs.map(e=>e.id).filter(Boolean):[]),
+    repositoryId:defaults.repositoryId||effective.repoId,
     branch:defaults.branch,
     strategy:defaults.strategy,
     presets:defaults.presets,
@@ -1129,13 +1139,15 @@ function pipelineApiSpec(pl,origin){
   };
   const bodyText=JSON.stringify(body,null,2);
   const curl="curl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -b cookies.txt \\\n  --data "+shellSingleQuoted(JSON.stringify(body));
-  return {endpoint,body,bodyText,curl};
+  return {endpoint,body,bodyText,curl,warning};
 }
 function showPipelineApi(pl){
   if(!pl) return;
   const spec=pipelineApiSpec(pl,location.origin);
   $('pipelineApiTitle').textContent='流水线 API：'+(pl.name||pl.id);
   $('pipelineApiEndpoint').textContent=spec.endpoint;
+  $('pipelineApiWarning').textContent=spec.warning?'⚠ '+spec.warning:'';
+  $('pipelineApiWarning').style.display=spec.warning?'':'none';
   $('pipelineApiBody').textContent=spec.bodyText;
   $('pipelineApiCurl').textContent=spec.curl;
   $('pipelineApiDialog').style.display='flex';
@@ -3397,6 +3409,7 @@ function runPipeline(opts){
   let pl;
   if(opts.stages){ /* from queue snapshot already */ }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
+  if(opts.useDefaults){ const issue=pipelineDefaultRunIssue(pl,opts); if(issue){ alert(issue+'。请先编辑流水线并重新保存默认参数。'); return 'invalid-defaults'; } }
   opts=resolvePipelineRunOptions(pl,opts);
   /* 执行人为必填项：手动运行未填写时弹窗拦截（队列/定时快照与历史重跑自带 opts.by，不受影响） */
   if(!opts.by && !$('triggeredBy').value.trim()){ alert('请先填写「执行人」再运行流水线。'); $('triggeredBy').focus(); return 'no-by'; }
@@ -3531,7 +3544,7 @@ function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans
    旧版稳定 id 会被「执行完按 id 移除计划」的服务端清理误删执行中登记的新计划，导致该次运行后缀不执行、
    归档文件夹缺失每任务独立日志）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
-   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/EvalTokens 阶段服务端跳过；「不执行」阶段自动跳过），
+   服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/Jenkins/EvalTokens 阶段执行并等待终态；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
 async function registerStageTimers(startIdx){
   if(!curRun || !runStages) return;

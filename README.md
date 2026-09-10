@@ -69,6 +69,11 @@ Content-Type: application/json
 {
   "environmentIds": ["env-prod"],
   "repositoryId": "repo-app",
+  "repository": {
+    "url": "https://git.example/app.git",
+    "user": "ci-bot",
+    "pass": "一次性访问令牌"
+  },
   "branch": "release/2026",
   "strategy": "blue-green",
   "presets": ["cleanup", "check", "profiling", "promCollect"],
@@ -78,12 +83,15 @@ Content-Type: application/json
 
 - `environmentIds`：目标环境 ID 数组，可多选。
 - `repositoryId`：代码仓 ID。
+- `repository`：仅覆盖本次运行的代码仓 `name` / `url` / `user` / `pass`；适合传入不落盘的一次性访问令牌，未提供的字段继承所选代码仓。
 - `branch`：分支或 Tag。
 - `strategy`：部署策略，传空字符串可明确覆盖默认策略。
 - `presets`：本次启用的预设任务；传空数组可明确关闭全部预设任务。
 - `by`：触发方标识，默认 `api`。
 
-接受请求后返回 HTTP `202`，响应含 `runId`、`pipelineId` 和 `pipelineName`；运行结果写入流水线历史，可由 `runId` 关联。接口继承 dsh web 的登录守卫，命令行调用需携带有效登录 Cookie。流水线列表中的 `API` 按钮可直接查看并复制当前流水线的端点、默认请求体和 curl 示例。
+接受请求后返回 HTTP `202`，响应含 `runId`、`pipelineId` 和 `pipelineName`；脚本、HTTP/Jenkins、EvalTokens 及所选预设任务均由服务端执行，运行结果写入流水线历史，可由 `runId` 关联。Jenkins 会依据触发响应的 queue `Location` 锁定本次构建号；远端 JSON / 正文读取上限分别为 2 MiB / 16 MiB。一次性代码仓凭据只存在于该次执行内，不写入配置或历史；仍应使用 HTTPS 调用接口，并避免让任务脚本回显凭据。
+
+接口继承 dsh web 的登录守卫，命令行调用需携带有效登录 Cookie。非空请求体必须是 `application/json` 的 JSON 对象，最大 64 KiB；畸形 JSON、数组/标量、错误媒体类型和超限请求会分别被拒绝。显式传入空 `environmentIds` 或不存在的 ID 会返回 `400`；流水线保存的默认环境/代码仓引用已失效时返回 `409`，不会静默改投配置首项。只有没有保存默认引用的旧流水线才兼容回退首个环境/代码仓。流水线列表中的 `API` 按钮可直接查看并复制当前流水线的端点、默认请求体和 curl 示例。
 
 ## 相关文档
 

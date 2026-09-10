@@ -31,9 +31,11 @@ test('API 调用说明包含编码后的流水线端点与全部可覆盖参数'
 });
 
 test('API 调用说明弹窗包含端点、JSON、curl 与复制入口',()=>{
-  ['pipelineApiDialog','pipelineApiEndpoint','pipelineApiBody','pipelineApiCurl','pipelineApiCopyEndpoint','pipelineApiCopyBody','pipelineApiCopyCurl'].forEach(id=>{
+  ['pipelineApiDialog','pipelineApiEndpoint','pipelineApiWarning','pipelineApiBody','pipelineApiCurl','pipelineApiCopyEndpoint','pipelineApiCopyBody','pipelineApiCopyCurl'].forEach(id=>{
     assert.ok(source.includes('id="'+id+'"'),'缺少 API 弹窗元素 '+id);
   });
+  assert.match(source,/repository.*name\/url\/user\/pass/,'弹窗应说明一次性代码仓凭据覆盖字段');
+  assert.match(source,/\$\('pipelineApiBody'\)\.textContent=spec\.bodyText/,'警告不能混入可复制的 JSON 请求体');
 });
 
 test('旧流水线的 API 示例展示实际生效的首个环境和代码仓，而不是无效空 ID',()=>{
@@ -44,4 +46,16 @@ test('旧流水线的 API 示例展示实际生效的首个环境和代码仓，
   const spec=ctx.pipelineApiSpec({id:'legacy',name:'旧流水线'},'https://dsh.example');
   assert.deepEqual(J(spec.body.environmentIds),['env-first']);
   assert.equal(spec.body.repositoryId,'repo-first');
+});
+
+test('API 示例保留已配置但失效的引用并给出警告，不伪装成首项回退',()=>{
+  const ctx=context({
+    environments:[{id:'env-first',ip:'10.0.0.1'}],
+    repositories:[{id:'repo-first',url:'first.git'}],
+  });
+  const spec=ctx.pipelineApiSpec({id:'broken',defaults:{environmentIds:['removed-env'],repositoryId:'removed-repo'}},'https://dsh.example');
+  assert.deepEqual(J(spec.body.environmentIds),['removed-env']);
+  assert.equal(spec.body.repositoryId,'removed-repo');
+  assert.match(spec.warning,/removed-env/);
+  assert.match(spec.warning,/removed-repo/);
 });
