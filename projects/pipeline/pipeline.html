@@ -722,7 +722,7 @@
             <label><input type="checkbox" data-pldefaultpreset="promCollect" /> 收集普罗数据</label>
           </div>
         </div>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删；点击选中任务卡后，其上/下边框中点出现「+」，点击在其上/下方插入新阶段）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删；点击选中任务卡后，其上/下边框中点出现「+」，点击在其上/下方插入新阶段）；每步选「类型」：模拟（按耗时等待，0=不等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;padding:9px 2px;"></div>
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
@@ -2483,7 +2483,7 @@ function normalizeStageKind(s){
   return s;
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
-function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, skip:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
+function newStage(name){ return {id:'', name:name||'新阶段', dur:0, timeout:null, skip:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* dur 默认 0=不设置耗时（本地模拟不等待，运行即结束）；阶段默认支持定时（跟随流水线定时计划），勾选「需本地运行」后 sched 置空 */
 let stageDragFrom=-1;
 /* 编辑器任务卡选中：editSelStage 以对象引用记录选中卡（拖拽/序号/上下移调序后仍跟随同一张卡；删除选中卡时清空；
    打开编辑器重建草稿时重置，见 openPlForm）。选中卡高亮并在上/下边框中点显示「+」插入按钮；
@@ -2596,7 +2596,7 @@ function renderStageEditor(){
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
       +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
       +'<input class="dshell-input" data-f="name" value="'+esc(s.name)+'" placeholder="阶段名" style="width:128px;" />'
-      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="模拟阶段的等待时长（分钟），内部按秒存储">耗时(分钟)<input class="dshell-input" data-f="dur" type="number" min="0.1" step="0.1" value="'+secToMinInput(s.dur||5)+'" style="width:84px;" /></label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="模拟阶段的等待时长（分钟），内部按秒存储；0=不设置耗时，运行即结束">耗时(分钟)<input class="dshell-input" data-f="dur" type="number" min="0" step="0.1" value="'+secToMinInput(s.dur||0)+'" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="阶段执行超时（分钟），脚本与 HTTP/EvalTokens 阶段均生效；留空=无超时">超时(分钟)<input class="dshell-input" data-f="timeout" type="number" min="0.1" step="0.1" value="'+(s.timeout?secToMinInput(s.timeout):'')+'" placeholder="不限" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后运行到本阶段直接跳过"><input type="checkbox" data-f="skip" '+(s.skip?'checked':'')+'/> 不执行</label>'
       +'<span style="flex:1"></span>'
@@ -2729,7 +2729,7 @@ function renderStageActionRow(i){
   const box=row.querySelector('[data-action]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
   if(s.kind==='simulate'){
-    const sp=document.createElement('span'); sp.className='dshell-muted'; sp.style.cssText='font-size:11px;'; sp.textContent='本地模拟（按耗时等待）'; box.appendChild(sp); return;
+    const sp=document.createElement('span'); sp.className='dshell-muted'; sp.style.cssText='font-size:11px;'; sp.textContent='本地模拟（按耗时等待，0=不等待）'; box.appendChild(sp); return;
   }
   if(s.kind==='http'){
     const lab=document.createElement('span'); lab.className='dshell-muted'; lab.style.fontSize='11px'; lab.textContent='请求 URL';
@@ -4662,8 +4662,16 @@ function runStage(rc, i){
   runSetSel(rc,s.id); if(viewRc===rc){ renderFlow(); renderDetail(); }
   if(s.sub && s.sub.length){ s.sub.forEach(x=> rc.nodes[s.id].sub[x]='running'); }
   const start=Date.now();
-  const total=s.dur*1000;
   if(rc.timer) clearInterval(rc.timer);
+  const total=Math.max(0,s.dur||0)*1000;
+  if(total<=0){   /* 耗时 0=不设置：本地模拟不等待，运行即结束（归档/渲染与计时路径一致） */
+    if(s.sub && s.sub.length){ s.sub.forEach(x=>{ rc.nodes[s.id].sub[x]='success'; }); }
+    rc.nodes[s.id].status='success'; rc.nodes[s.id].progress=100;
+    archiveStageLog(s, stageSeq(rc.stages,i), rc);
+    rcRender(rc);
+    advance(rc,i+1);
+    return;
+  }
   rc.timer=setInterval(()=>{
     let p=(Date.now()-start)/(s.sub&&s.sub.length?total*1.2:total)*100;
     if(p>=100) p=100;
@@ -5869,7 +5877,7 @@ function savePlForm(){
   scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
     if(s.preset) return Object.assign({id:s.id, name:s.name, preset:true, pkey:s.pkey},s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom)}:{});   // 预设任务标记：位置随流水线保存，普罗采集参数一并存在该任务中
-    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(1,parseInt(s.dur)||5), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};
+    const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(0,parseInt(s.dur)||0), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};   /* dur 保留编辑器原值（含 0=不设置耗时），不再回退默认 5 秒 */
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
     if(s.url) st.url={url:s.url.url, outVars:(s.url.outVars||'')};
@@ -6022,7 +6030,7 @@ $('plStageList').addEventListener('change', (e)=>{
     return;
   }
   if(f==='name') s.name=e.target.value;
-  else if(f==='dur'){ const mv=parseFloat(e.target.value); s.dur=Math.max(1,Math.round(mv*60)||5); }   /* 输入为分钟，×60 存秒 */
+  else if(f==='dur'){ const mv=parseFloat(e.target.value); s.dur=Math.max(0,Math.round(mv*60)||0); }   /* 输入为分钟，×60 存秒；0/留空=0（不设置耗时，运行即结束），编辑时保留原值 */
   else if(f==='timeout'){ const sec=Math.round(parseFloat(e.target.value)*60); s.timeout=(sec>=1)?sec:null; }   /* 留空=null（无超时） */
   else if(f==='skip') s.skip=e.target.checked;
   else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
