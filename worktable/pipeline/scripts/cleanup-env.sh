@@ -308,25 +308,48 @@ clean_docker() {
     done
 }
 
+containerd_task_uses_gpu() {
+    local ns=$1 cname=$2 task_pid=$3 task_pids gpu_pid ps_output
+    ps_output=$(ctr -n "$ns" tasks ps "$cname" 2>/dev/null || true)
+    task_pids=$(awk 'NR > 1 && $1 ~ /^[0-9]+$/ {print $1}' <<<"$ps_output")
+    # Older ctr clients may not provide `tasks ps`; checking the task PID is
+    # still safe, although it may conservatively retain a GPU container.
+    [[ -n "$task_pids" ]] || task_pids="$task_pid"
+    for gpu_pid in ${GPU_COMPUTE_PIDS:-}; do
+        grep -qx "$gpu_pid" <<<"$task_pids" && return 0
+    done
+    return 1
+}
+
 clean_containerd_naked() {
     have ctr || { log "ctr 不存在, 跳过裸 containerd"; return; }
+    have nvidia-smi || { log "无 nvidia-smi，保留所有裸 containerd 容器"; return; }
+    GPU_COMPUTE_PIDS=$(get_gpu_pids || true)
+    [[ -n "$GPU_COMPUTE_PIDS" ]] || { log "无 GPU 占卡进程，保留所有裸 containerd 容器"; return; }
+
     local ns cname labels tpid
     for ns in k8s.io default; do
         local cs; cs=$(ctr -n "$ns" containers list -q 2>/dev/null)
         [[ -z "$cs" ]] && continue
-        log "扫描裸 containerd (ns=$ns)..."
+        log "扫描裸 containerd (ns=$ns，仅清理占卡容器)..."
         for cname in $cs; do
-            labels=$(ctr -n "$ns" containers info "$cname" 2>/dev/null | grep -oE '"io\.kubernetes\.pod\.name"[^,]*' | head -1)
+            labels=$(ctr -n "$ns" containers info "$cname" 2>/dev/null | grep -oE '"io\.kubernetes\.pod\.name"[^,]*' | head -1 || true)
             [[ -n "$labels" ]] && continue
             tpid=$(ctr -n "$ns" tasks list 2>/dev/null | awk -v c="$cname" '$1==c {print $2}')
-            if [[ -n "$tpid" ]]; then
-                log "  ctr kill $cname (pid=$tpid, ns=$ns)"
-                if [[ "$DRY_RUN" == "1" ]]; then log "    [DRY_RUN]"; else
-                    ctr -n "$ns" tasks kill "$cname" --signal 9 --all >/dev/null 2>&1; sleep 1
-                    ctr -n "$ns" tasks delete "$cname" >/dev/null 2>&1
-                fi
+            if [[ -z "$tpid" ]]; then
+                log "  [SKIP] ctr $cname: no running task"
+                continue
             fi
-            log "  ctr delete $cname (ns=$ns)"
+            if ! containerd_task_uses_gpu "$ns" "$cname" "$tpid"; then
+                log "  [SKIP] ctr $cname: no GPU compute process"
+                continue
+            fi
+            log "  ctr kill $cname (pid=$tpid, ns=$ns, GPU in use)"
+            if [[ "$DRY_RUN" == "1" ]]; then log "    [DRY_RUN]"; else
+                ctr -n "$ns" tasks kill "$cname" --signal 9 --all >/dev/null 2>&1; sleep 1
+                ctr -n "$ns" tasks delete "$cname" >/dev/null 2>&1
+            fi
+            log "  ctr delete $cname (ns=$ns, GPU in use)"
             [[ "$DRY_RUN" == "1" ]] && { log "    [DRY_RUN]"; continue; }
             ctr -n "$ns" containers delete "$cname" >/dev/null 2>&1 || log "    WARN ctr delete 失败: $cname"
         done
