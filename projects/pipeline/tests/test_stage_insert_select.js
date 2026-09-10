@@ -181,3 +181,54 @@ test('整表重渲染后选中卡恢复高亮与 + 按钮（含预设任务卡�
   assert.equal(rows[1].classList.contains('plstage-sel'), true);
   assert.equal(rows[1].insCount, 2);
 });
+
+test('重渲染后仅选中卡高亮：editFocusIdx 不再内联高亮（回归：移动/插入后不得出现两张显亮卡）', () => {
+  const stageList = {
+    children: [],
+    innerHTML: '',
+    appendChild(row) { this.children.push(row); },
+  };
+  const rows = [];
+  const stages = [
+    { id: 'a', name: '构建', kind: 'simulate', dur: 5, skip: false },
+    { id: 'b', name: '部署', kind: 'simulate', dur: 5, skip: false },
+  ];
+  const context = {
+    editStages: stages,
+    editFocusIdx: 1,   // 移动/插入后的焦点序号：只负责聚焦滚动，不产生高亮
+    editSelStage: stages[0],
+    STAGE_KIND_LABEL: { simulate: '模拟', shell: 'Shell', python: 'Python', http: 'HTTP', evaltokens: 'EvalTokens' },
+    $: id => (id === 'plStageList' ? stageList : null),
+    esc: String,
+    secToMinInput: value => String(value / 60),
+    normalizePipelineProm: value => value || {},
+    renderStageActionRow() {},
+    renderStageParams() {},
+    renderStageSched() {},
+    stageCardDragStart() {},
+    stageCardDragOver() {},
+    stageCardDrop() {},
+    stageCardDragEnd() {},
+    document: {
+      createElement() {
+        const row = new FakeRow(rows.length);
+        row.style = {};
+        row.handlers = {};
+        row.addEventListener = function (type, handler) { this.handlers[type] = handler; };
+        rows.push(row);
+        return row;
+      },
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(['renderStageEditor', 'applyEditSel'].map(extractFunction).join('\n'), context);
+  context.renderStageEditor();
+
+  // 选中卡高亮；焦点卡既无 plstage-sel 也不带内联 accent 边框/阴影，任意时刻只有一张显亮卡
+  assert.equal(rows[0].classList.contains('plstage-sel'), true);
+  assert.equal(rows[1].classList.contains('plstage-sel'), false);
+  assert.equal(rows[1].insCount, 0);
+  const focusCss = String(rows[1].style.cssText || '');
+  assert.equal(focusCss.includes('accent-primary'), false, '焦点卡不得内联 accent 边框色');
+  assert.equal(focusCss.includes('box-shadow'), false, '焦点卡不得内联阴影');
+});

@@ -2401,8 +2401,10 @@ function renderStageEditor(){
     row.addEventListener('dragover',stageCardDragOver);
     row.addEventListener('drop',stageCardDrop);
     row.addEventListener('dragend',stageCardDragEnd);
-    row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;'
-      +(i===editFocusIdx?';border-color:var(--dsw-alias-state-accent-primary);box-shadow:0 0 0 2px rgba(79,142,247,.18);':'');
+    /* 高亮只有 plstage-sel 一个通道（applyEditSel 按 editSelStage 原地切换），不再随 editFocusIdx 内联
+       accent 边框/阴影——内联样式随 DOM 留存到下次整表重渲染，移动未选中卡或插入后再改选会出现两张卡同时
+       显亮；editFocusIdx 仅保留末尾的聚焦滚动 */
+    row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;';
     /* 预设任务行：仅可调整执行顺序（序号/上移/下移），内容与脚本在设置页配置，不可改名/删除 */
     if(s.preset){
       const pp=s.pkey==='promCollect'?normalizePipelineProm(s.prom):null;
