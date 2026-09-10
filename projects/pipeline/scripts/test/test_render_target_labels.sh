@@ -246,4 +246,50 @@ grep -q 'name: ray-gcs-head-svc' "$health_service_template"
 grep -q 'publishNotReadyAddresses: true' "$health_service_template"
 grep -q 'ray.io/node-type: head' "$health_service_template"
 
+# Both `arch` and EXECUTOR select the descriptive namespace.  If either input
+# is absent the pre-existing ARCH_NAME-based namespace remains in effect.
+arch='runtime-arch' EXECUTOR='gpu-bnt3' \
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-namespace-arch-executor" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+IMAGE_TAG='test-tag' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+bash "$script_dir/render-config.sh" >"$work_dir/namespace-arch-executor.out"
+grep -qx 'NAMESPACE=xds-runtime-arch-gpu-bnt3-test-tag' "$work_dir/namespace-arch-executor.out"
+
+arch='runtime-arch' \
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-namespace-legacy" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+IMAGE_TAG='test-tag' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+bash "$script_dir/render-config.sh" >"$work_dir/namespace-legacy.out"
+grep -qx 'NAMESPACE=xds-test-arch-test-tag' "$work_dir/namespace-legacy.out"
+
+mkdir -p "$work_dir/chart-role/templates"
+printf 'apiVersion: v2\nname: xds-role\nversion: 0.1.0\n' >"$work_dir/chart-role/Chart.yaml"
+cat >"$work_dir/chart-role/templates/raycluster-cluster.yaml" <<'EOF'
+{{- range $index, $teGroupValues := $.Values.taskExecutorGroups }}
+          - name: ray-worker
+{{- end }}
+EOF
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-role-container-names" \
+CHART_TEMPLATE_DIR="$work_dir/chart-role" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+bash "$script_dir/render-config.sh" >/dev/null
+role_template="$work_dir/run-role-container-names/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq 'name: {{ if contains "prefill"' "$role_template"
+grep -Fq 'ray-worker-prefill' "$role_template"
+grep -Fq 'ray-worker-decode' "$role_template"
+
 echo "render target-label tests passed"

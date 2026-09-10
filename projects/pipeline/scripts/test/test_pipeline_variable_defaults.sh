@@ -44,4 +44,15 @@ printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
 grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
 grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
 
+# Both `arch` and EXECUTOR select a descriptive namespace. When either is
+# absent, preserve the legacy ARCH_NAME behavior.
+namespace_from_arch_executor="$(arch='runtime-arch' EXECUTOR='executor-a' ARCH_NAME='test-arch' IMAGE_TAG='1000.tag' bash -c "$config
+printf 'NAMESPACE=%s\nRELEASE_NAME=%s\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
+grep -Fq 'NAMESPACE=xds-runtime-arch-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+grep -Fq 'RELEASE_NAME=xds-runtime-arch-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+
+namespace_without_arch="$(EXECUTOR='executor-a' ARCH_NAME='test-arch' IMAGE_TAG='1000.tag' bash -c "$config
+printf 'NAMESPACE=%s\nRELEASE_NAME=%s\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
+grep -Fq 'NAMESPACE=xds-test-arch-1000-tag' <<<"$namespace_without_arch"
+
 echo "pipeline variable-default tests passed"

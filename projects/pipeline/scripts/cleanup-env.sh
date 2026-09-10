@@ -159,6 +159,36 @@ step_crond() {
 }
 
 # ---------------- STEP: clean-containers ----------------
+# The deployment stage starts its collector only after cleanup. Stop any
+# collector left by an earlier deployment, but retain its on-disk logs.
+stop_stale_head_log_collectors() {
+    local pid args
+    local -a collector_pids=()
+    while read -r pid args; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$args" == *"follow-xds-head-logs.sh"* ]] || continue
+        collector_pids+=("$pid")
+    done < <(ps -eo pid=,args= 2>/dev/null || true)
+
+    if (( ${#collector_pids[@]} == 0 )); then
+        log "无历史 XDS Head 日志采集进程"
+        return 0
+    fi
+    for pid in "${collector_pids[@]}"; do
+        log "停止历史 XDS Head 日志采集进程: pid=$pid（保留已采集日志）"
+        [[ "$DRY_RUN" == "1" ]] && { log "  [DRY_RUN] kill -TERM $pid"; continue; }
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    [[ "$DRY_RUN" == "1" ]] && return 0
+    sleep 1
+    for pid in "${collector_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            log "历史 XDS Head 日志采集器未退出，SIGKILL: pid=$pid"
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
 handle_top_owner() {
     local ns=$1 ref=$2 kind=${2%%/*} name=${2#*/}
     case "$kind" in
@@ -323,6 +353,7 @@ clean_terminating_pods() {
 
 step_containers() {
     log "=== 清理容器/工作负载 ==="
+    stop_stale_head_log_collectors
     read_whitelist
     probe_k8s
     SCALED_RECORD="/tmp/bnt-scaled-$$.log"
