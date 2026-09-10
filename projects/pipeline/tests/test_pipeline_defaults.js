@@ -41,7 +41,7 @@ test('默认运行参数归一化并过滤重复、空值和未知预设',()=>{
 test('列表直接运行采用有效默认值；仅旧流水线缺省时回退首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
-    repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',url:'b.git'}],
+    repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',name:'仓库 B',url:'b.git'}],
   });
   const resolved=ctx.pipelineDefaultRunOptions({defaults:{
     environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],
@@ -90,11 +90,12 @@ test('runPipeline 把列表运行的流水线默认参数完整快照到本次�
   const ctx=loadDefaults({
     Date,Math,
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
-    repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',url:'b.git'}],
+    repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',name:'仓库 B',url:'b.git'}],
   });
   Object.assign(ctx,{
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,queue:[],
     $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
     curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'current-strategy',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:item=>{started=item;return true;},
   });
@@ -102,6 +103,7 @@ test('runPipeline 把列表运行的流水线默认参数完整快照到本次�
   assert.equal(ctx.runPipeline({pipelineId:'pipe-b',useDefaults:true}),true);
   assert.deepEqual(J(started.envs),[{id:'env-b',ip:'10.0.0.2'}]);
   assert.equal(started.repoId,'repo-b');
+  assert.equal(started.repoName,'仓库 B');
   assert.equal(started.branch,'release');
   assert.equal(started.strategy,'blue-green');
   assert.deepEqual(J(started.presets),['check']);
@@ -119,6 +121,7 @@ test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',
   Object.assign(ctx,{
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,queue:[],
     $:id=>els[id],alert:msg=>{alerted=msg;},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
     curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:()=>{started=true;},
   });
@@ -133,10 +136,11 @@ test('显式环境与代码仓参数可覆盖失效默认引用并继续运行',
   const pipeline={id:'pipe-b',name:'发布',stages:[],defaults:{environmentIds:['removed-env'],repositoryId:'removed-repo',branch:'release'}};
   const explicitEnv={id:'env-a',ip:'10.0.0.1'};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
-  const ctx=loadDefaults({Date,Math,environments:[explicitEnv],repositories:[{id:'repo-a',url:'a.git'}]});
+  const ctx=loadDefaults({Date,Math,environments:[explicitEnv],repositories:[{id:'repo-a',name:'仓库 A',url:'a.git'}]});
   Object.assign(ctx,{
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,queue:[],
     $:id=>els[id],alert:msg=>{alerted=msg;},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
     curEnvs:()=>[explicitEnv],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:item=>{started=item;return true;},
   });
@@ -145,6 +149,7 @@ test('显式环境与代码仓参数可覆盖失效默认引用并继续运行',
   assert.equal(alerted,'');
   assert.deepEqual(J(started.envs),[explicitEnv]);
   assert.equal(started.repoId,'repo-a');
+  assert.equal(started.repoName,'仓库 A');
   assert.equal(started.branch,'release');
 });
 
