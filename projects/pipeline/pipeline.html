@@ -2704,6 +2704,10 @@ function focusRun(rc){
   refreshArchiveTip();
   renderFlow(); renderDetail(); renderQueue();
 }
+/* 流水线维度查在跑运行：流水线任务行「运行中」徽标与点击「查看阶段详情」共用。
+   同一流水线可在不同机器并行多个运行，查看时取最近启动的一个（队列条目仍可各自精确聚焦） */
+function runsOfPipeline(pid){ return activeRuns.filter(rc=>rc.pipelineId===pid); }
+function latestRunOfPipeline(pid){ const rs=runsOfPipeline(pid); return rs.length?rs[rs.length-1]:null; }
 
 const $ = id => document.getElementById(id);
 function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
@@ -3258,7 +3262,7 @@ function runPipeline(opts){
   const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, repoId, branch, strategy, by, prom:(opts.prom!==undefined?opts.prom:(pl?runtimePipelineProm(pl):null)), source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, repoName:(resolveRepo(repoId)||{}).name||'', branch, strategy, by, prom:(opts.prom!==undefined?opts.prom:(pl?runtimePipelineProm(pl):null)), source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   /* 并行调度：目标机器（环境 IP）与在跑运行、以及已在排队的任务都不相交 → 立即并行启动；
@@ -3322,9 +3326,9 @@ function browserTag(){
 let _qPubSig='', _qPubAt=0, _qPubTimer=null, _qPubWarned=false;
 /* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
 function publishQueue(force){
-  const runsSnap=activeRuns.map(rc=>({by:rc.by,pipelineName:rc.pipelineName,env:rc.env,source:rc.source,startedAt:rc.startTs}));
+  const runsSnap=activeRuns.map(rc=>({by:rc.by,pipelineName:rc.pipelineName,env:rc.env,repoName:rc.repoName,branch:rc.branch,strategy:rc.strategy,source:rc.source,startedAt:rc.startTs}));
   const runningSnap=runsSnap.length?runsSnap[0]:null;   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
-  const queueSnap=queue.map(q=>({by:q.by,pipelineName:q.pipelineName,env:q.env,source:q.source,queuedAt:q.queuedAt}));
+  const queueSnap=queue.map(q=>({by:q.by,pipelineName:q.pipelineName,env:q.env,repoName:q.repoName,branch:q.branch,strategy:q.strategy,source:q.source,queuedAt:q.queuedAt}));
   const sig=JSON.stringify([runsSnap,queueSnap]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
@@ -3466,6 +3470,13 @@ function addPlan(){
   pushPlans(); renderPlanList();
 }
 function fmtRelative(ts){ if(!ts) return ''; const d=Math.round((Date.now()-ts)/1000); if(d<60) return '刚刚'; if(d<3600) return Math.floor(d/60)+'分钟前'; if(d<86400) return Math.floor(d/3600)+'小时前'; return Math.floor(d/86400)+'天前'; }
+/* 队列条目运行信息行：环境/代码仓/分支/部署策略（执行人、来源在标题行）。
+   远端旧客户端快照没有 repoName/branch/strategy 字段，按 — 占位展示 */
+function runInfoLine(o){
+  return '<div class="dshell-muted" style="font-size:10px;font-weight:normal;white-space:normal;">'
+    +'环境 '+esc(o.env||'—')+' · 代码仓 '+esc(o.repoName||'—')+' · 分支 '+esc(o.branch||'—')+' · 部署策略 '+esc(o.strategy||'（不使用）')+'</div>';
+}
+let _plRunSig=null;   // 流水线任务表「运行中/查看中」徽标的刷新签名（见 renderQueue 末尾）
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
   /* 自愈排空：仍有排队任务时尝试排空（在跑运行结束却未触发 drainQueue 的异常竞态，或并行槽位已释放）。
@@ -3481,7 +3492,7 @@ function renderQueue(){
     status=activeRuns.length+' 运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
     activeRuns.forEach((rc,idx)=>{
       const it=document.createElement('div'); it.className='dshell-listItem';
-      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行" style="cursor:pointer;"><span class="dshell-muted">#'+(idx+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+esc(rc.env)+' '+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
+      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(idx+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
       list.appendChild(it);
     });
   } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
@@ -3493,7 +3504,7 @@ function renderQueue(){
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
   queue.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
-    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+q.env+' '+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
     list.appendChild(it);
   });
   /* 其他浏览器标签页的在场快照：只读展示（运行与取消都是本页内存态，远端条目给取消按钮无意义），
@@ -3506,12 +3517,12 @@ function renderQueue(){
       const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
       remoteRunsOf(c).forEach(rn=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
-        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(rn.env||'')+' '+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span></span><span class="dshell-badge dshell-badgeWait">运行中</span>';
+        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+runInfoLine(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>';
         list.appendChild(it);
       });
       (Array.isArray(c.queue)?c.queue:[]).forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
-        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(q.env||'')+' '+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span></span><span class="dshell-muted" style="font-size:10px">排队</span>';
+        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+runInfoLine(q)+'</span><span class="dshell-muted" style="font-size:10px">排队</span>';
         list.appendChild(it);
       });
     });
@@ -3519,6 +3530,10 @@ function renderQueue(){
   list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
   list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(rc) abortRun(rc); }));
   list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
+  /* 流水线任务表的「运行中/查看中」徽标跟随在跑运行集与焦点运行刷新；renderQueue 每 5 秒轮询也会进入，
+     按签名判断避免无谓重建任务表（重建会打断行点击） */
+  const plSig=activeRuns.map(rc=>rc.id+':'+rc.pipelineId).join('|')+'#'+(viewRc?viewRc.id:'');
+  if(plSig!==_plRunSig){ _plRunSig=plSig; renderPipelines(); }
   scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「运行队列跨浏览器可见」区块）
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
@@ -5548,14 +5563,16 @@ function renderPipelines(){
   pipelines.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
+    const plRuns = runsOfPipeline(p.id);   // 该流水线的在跑运行：行内给「运行中」徽标，点击查看其阶段详情
+    const viewing = plRuns.length && plRuns.indexOf(viewRc)>=0;
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
     if(isCur) tr.className='sel';
-    tr.title='点击选用该流水线';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
+    tr.title=plRuns.length?'点击查看本次运行的阶段详情':'点击选用该流水线';
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(plRuns.length?' <span class="dshell-badge dshell-badgeWait" style="font-size:10px;">运行中</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':''):'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
-    tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击即选用（运行/编辑/复制/删除按钮已阻止冒泡）
+    tr.addEventListener('click',()=>{ const rc=latestRunOfPipeline(p.id); if(rc){ focusRun(rc); return; } selectPipeline(p.id); });   // 整行点击：有在跑运行→查看其阶段详情；否则选用（运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun')}); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); }));
@@ -5571,6 +5588,10 @@ function renderPipelineSel(){
   pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(cur && p.id===cur.id) o.selected=true; sel.appendChild(o); });
 }
 function selectPipeline(id){
+  if(id!==curPipelineId && running){   // 目标流水线有在跑运行时，任何入口（含运行框下拉）都转为查看其运行阶段详情，而不是切换/拦截
+    const rc=latestRunOfPipeline(id);
+    if(rc){ renderPipelineSel(); focusRun(rc); return; }
+  }
   if(viewActive() && id!==curPipelineId){ renderPipelineSel(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }   // 编排区展示的在跑运行仍绑定其流水线快照
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
