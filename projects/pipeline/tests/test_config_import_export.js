@@ -23,7 +23,7 @@ function makeCtx(overrides={},names=[]){
     console, JSON, Object, Array, String, Number, Boolean, Date, Math, RegExp, Error, Promise, Set, Map,
     parseInt, isFinite, URL, Blob,
     DEFAULT_PIPELINE_ID:'pl-xds',
-    PIPELINE_DEFAULT_PRESET_KEYS:['cleanup','check','profiling','promCollect'],
+    PIPELINE_DEFAULT_PRESET_KEYS:['cleanup','check','profiling'],
     DEFAULT_JENKINS:{url:'http://127.0.0.1:28080',linkUrl:'',user:'',token:'',mode:'local'},
     DEFAULT_EVALTOK:{url:'http://1.95.87.43:9000',linkUrl:'',token:'',mode:'local'},
     DEFAULT_PROM:{url:'http://192.168.10.6:25889',linkUrl:'',mode:'local',collectScript:''},
@@ -83,12 +83,12 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
 });
 
 test('导入流水线归一化：内置默认置顶、剔除非法项、执行旧数据迁移；非法列表返回 null',()=>{
-  const ctx=makeCtx({},['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines']);
+  const ctx=makeCtx({},['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','migratePromPreset','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines']);
   assert.equal(ctx.normalizeImportedPipelines([]),null);
   assert.equal(ctx.normalizeImportedPipelines([{id:'x'}]),null,'没有任何带 stages 的流水线视为非法文件');
   assert.equal(ctx.normalizeImportedPipelines('not-array'),null);
   const out=ctx.normalizeImportedPipelines([
-    {id:'pl-a',name:'A',stages:[{id:'s1',name:'构建',kind:'url',jenkins:{job:'http://jk/job/a'}},{id:'s2',name:'审批',gate:true}]},
+    {id:'pl-a',name:'A',prom:{enabled:true,modelName:'m'},stages:[{id:'s1',name:'构建',kind:'url',jenkins:{job:'http://jk/job/a'}},{id:'s2',name:'审批',gate:true},{id:'__prom_collect__',name:'收集普罗数据',preset:true,pkey:'promCollect',prom:{modelName:'m'}}]},
     {id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0',name:'检出'}]},
     null,
   ]);
@@ -98,6 +98,8 @@ test('导入流水线归一化：内置默认置顶、剔除非法项、执行�
   assert.equal(out[1].stages[0].url.url,'http://jk/job/a','旧 jenkins.job 迁入 url.url');
   assert.equal(out[1].stages[1].skip,true,'旧 gate 迁移为 skip');
   assert.ok(!('gate' in out[1].stages[1]));
+  assert.equal(out[1].stages.length,2,'已下线的收集普罗数据预设标记行随迁移过滤');
+  assert.ok(!('prom' in out[1]),'旧顶层 prom 配置随迁移清除');
   assert.deepEqual(J(out[1].defaults),{environmentIds:[],repositoryId:'',branch:'main',strategy:'',presets:[]},'旧流水线补齐默认运行参数');
   /* 文件缺内置流水线时补默认内置 */
   const noBuiltin=ctx.normalizeImportedPipelines([{id:'pl-a',name:'A',stages:[{id:'s1'}]}]);
@@ -127,7 +129,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     viewRc:{stages:[{id:'s0'}],nodes:{},selId:'s0',token:'t0',over:false,vars:{},timer:null}, runStages:null, selectedId:'s0',
     curPipeline:function(){ return this.pipelines.find(p=>p.id===this.curPipelineId)||this.pipelines[0]; },
   },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','applyImportedSettings']);
-  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','savePromCollectPreset','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
+  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{ ctx[n]=()=>rendered.push(n); });
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
 
@@ -136,7 +138,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     repositories:[{id:'r1',name:'myapp',url:'https://git.example.com/a.git',user:'u',pass:'new-token',fetchMode:'jenkins'}],
     scriptsDir:'/new/scripts', theme:'dark', buildNo:99,
     cleanupScript:null, cleanupEnabled:true, checkScript:{name:'check.sh',params:[]}, checkEnabled:true,
-    profilingEnabled:true, promCollectEnabled:true,
+    profilingEnabled:true,
     jenkins:{url:'http://new-jk',token:'jk-token',mode:'remote'},
     evaltok:{url:'http://new-et',token:'et-token',mode:'remote'},
     prom:{url:'http://new-pm',collectScript:'collect.py'},
@@ -160,7 +162,6 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   assert.equal(els.cleanupEnv.checked,true);
   assert.equal(els.checkEnv.checked,true);
   assert.equal(els.profilingEnv.checked,true);
-  assert.equal(els.promCollectEnv.checked,true);
   assert.deepEqual(J(ctx.jenkins),{url:'http://new-jk',linkUrl:'',user:'',token:'jk-token',mode:'remote'},'Jenkins 配置与默认值合并');
   assert.deepEqual(J(ctx.evaltok),{url:'http://new-et',linkUrl:'',token:'et-token',mode:'remote'});
   assert.deepEqual(J(ctx.prom),{url:'http://new-pm',linkUrl:'',mode:'local',collectScript:'collect.py'});
@@ -180,7 +181,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   assert.equal(els.histFilterKw.value,'err');
   assert.equal(ctx.histPageSize,50);
   assert.equal(els.histPageSize.value,'50');
-  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','savePromCollectPreset','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{
+  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{
     assert.ok(saved.includes(n),`导入后必须调用 ${n} 落盘`);
   });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{
@@ -235,7 +236,7 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
     viewRc:{stages:[{id:'s9'}],nodes:{},selId:'s9',token:'t9',over:false,vars:{},timer:null}, runStages:null, selectedId:'s9',
     savePipelines:()=>saved.push('savePipelines'),
     renderAll:()=>rendered.push('renderAll'),
-  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
+  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','migratePromPreset','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
   const data={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[
     {id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0'}]},
