@@ -53,6 +53,12 @@
     .pipeline-node.fail{ border-color:color-mix(in srgb, var(--st-err) 50%, transparent); background:color-mix(in srgb, var(--st-err) 8%, transparent); }
     .pipeline-node.skip{ border-style:dashed; opacity:.55; }
     .pipeline-node.abort{ border-color:color-mix(in srgb, var(--st-idle) 50%, transparent); background:color-mix(in srgb, var(--st-idle) 6%, transparent); opacity:.7; }
+    /* 主视图节点拖拽改序：仅空闲态置 draggable（见 renderFlow），运行/回放态只读不改序 */
+    .pipeline-node[draggable="true"] { cursor:grab; }
+    .pipeline-node[draggable="true"]:active { cursor:grabbing; }
+    .pipeline-node.flow-dragging { opacity:.42; }
+    .pipeline-node.flow-drag-before { border-left:3px solid var(--dsw-alias-state-accent-primary) !important; }
+    .pipeline-node.flow-drag-after { border-right:3px solid var(--dsw-alias-state-accent-primary) !important; }
     .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
     .pipeline-preset { display:inline-block; margin-bottom:6px; padding:1px 6px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; font-size:10px; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-fill-l1); }
     /* 流水线编辑器任务卡：整卡可拖拽，目标卡上/下边缘提示最终插入位置；
@@ -2758,6 +2764,60 @@ function flowStages(){
   if(runStages) return runStages;   // 运行态/运行后快照：启动时已按勾选展开（见 expandRunStages）
   return withPresetMarkers(activeStages(), curPipeline().prom).flatMap(s=> s.preset ? (presetOn(s.pkey)?[presetRuntime(s.pkey,s)]:[]) : [s]);
 }
+/* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
+   复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
+   运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
+function flowDraggable(){ return !running && !runStages && !replayRec && !viewActive(); }
+/* 工作列表：当前流水线阶段补齐缺失的预设标记（与 flowStages 同源）。
+   真实阶段保留对象引用（含 script/url 等全部字段，原样回写）；预设标记按 id/name/pkey 轻量保存。 */
+function flowWorkList(){ return withPresetMarkers((curPipeline().stages||[]).slice(), curPipeline().prom); }
+let flowDragFromId=null;
+function clearFlowDragMarks(){
+  document.querySelectorAll('#flow .pipeline-node').forEach(n=>n.classList.remove('flow-dragging','flow-drag-before','flow-drag-after'));
+}
+function flowNodeDragStart(e){
+  const n=e.currentTarget; flowDragFromId=n.dataset.id;
+  clearFlowDragMarks(); n.classList.add('flow-dragging');
+  if(e.dataTransfer){ e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',String(flowDragFromId||'')); }
+}
+function flowNodeDragOver(e){
+  if(!flowDragFromId) return;
+  e.preventDefault(); if(e.dataTransfer) e.dataTransfer.dropEffect='move';
+  const n=e.currentTarget, overId=n.dataset.id; clearFlowDragMarks();
+  const src=document.querySelector('#flow .pipeline-node.flow-dragging'); if(src) src.classList.add('flow-dragging');
+  if(overId===flowDragFromId) return;   // 拖到自身：不提示插入位
+  const rect=n.getBoundingClientRect(), after=e.clientX>=rect.left+rect.width/2;   // 横向：右半区=插到它后面
+  n.classList.add(after?'flow-drag-after':'flow-drag-before');
+}
+function flowNodeDrop(e){
+  if(!flowDragFromId) return;
+  e.preventDefault();
+  const fromId=flowDragFromId, overId=e.currentTarget.dataset.id;
+  flowDragFromId=null; clearFlowDragMarks();
+  if(fromId===overId) return;
+  const work=flowWorkList();
+  const fromW=work.findIndex(s=>s.id===fromId), overW=work.findIndex(s=>s.id===overId);
+  if(fromW<0||overW<0) return;
+  const rect=e.currentTarget.getBoundingClientRect(), after=e.clientX>=rect.left+rect.width/2;
+  let to=overW+(after?1:0);   // 源卡移除会让后方插槽左移一位
+  if(fromW<to) to-=1;
+  to=Math.max(0,Math.min(work.length-1,to));
+  if(to===fromW) return;
+  const moved=work.splice(fromW,1)[0]; work.splice(to,0,moved);
+  persistFlowOrder(work);
+}
+function flowNodeDragEnd(){ flowDragFromId=null; clearFlowDragMarks(); }
+/* 落盘：工作列表回写为 stages（预设标记随位置保存，普罗采集参数存于其任务内，并清掉顶层 prom），
+   与编辑器 savePlForm 的归一化一致 */
+function persistFlowOrder(orderedWork){
+  const p=curPipeline(); if(!p) return;
+  p.stages=orderedWork.map(s=> s.preset
+    ? Object.assign({id:s.id,name:s.name,preset:true,pkey:s.pkey}, s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom)}:{})
+    : s);
+  delete p.prom;
+  savePipelines();
+  renderPipelines(); renderFlow(); renderDetail();
+}
 function renderFlow(){
   const f = $('flow'); f.innerHTML='';
   flowStages().forEach((s,i)=>{
@@ -2788,6 +2848,14 @@ function renderFlow(){
       openPlForm(pid, withPresetMarkers(activeStages(),curPipeline().prom).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
     n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):'单击查看详情，双击编辑该阶段';
+    /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
+    if(flowDraggable()){
+      n.draggable=true; n.title+='；可拖拽调整执行顺序';
+      n.addEventListener('dragstart',flowNodeDragStart);
+      n.addEventListener('dragover',flowNodeDragOver);
+      n.addEventListener('drop',flowNodeDrop);
+      n.addEventListener('dragend',flowNodeDragEnd);
+    }
     f.appendChild(n);
   });
   applyStatusClasses();
