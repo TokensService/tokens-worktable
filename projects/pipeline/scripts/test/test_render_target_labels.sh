@@ -22,8 +22,14 @@ common:
       value: old-namespace
     - name: XDS_DATABASE_PORT
       value: {XDS_DATABASE_PORT}
+    - name: EMS_ENABLE
+      value: 'true'
 nodeSelector:
   kubernetes.io/hostname: 192.168.0.243
+rayService:
+  service:
+    ports:
+      - nodePort: {NODE_PORT}
 head:
   nodeSelector: {}
 workerGroups:
@@ -37,6 +43,10 @@ workerGroups:
   jobExecutorGroup:
     minReplicas: 8
     maxReplicas: 8
+    ems:
+      enable: true
+ems:
+  enable: true
 feTemplate:
   default_replica: 10
   nodeSelector:
@@ -54,12 +64,19 @@ global:
   serviceAccountSecretName: old-namespace-sa-secret
 frameworkConfigFiles:
   xds_framework.conf: |
+    [metric]
+    pushgateway = true
+    collector_gateway_url = 192.168.10.6:25888
     [deploy]
     k8s_deploy_namespace = old-namespace
     [fe]
     use_fem_frontend = true
     fem_min_frontend_num = 10
     fem_max_frontend_num = 10
+    [ems_config]
+    ems_enable = true
+    ems_namespace = ems_deploy_ns
+    ems_cluster_id = 00000000-0000-0000-0000-000000000000
 lmcache:
   namespace:
     name: old-namespace
@@ -67,12 +84,29 @@ lmcache:
     image:
       repository: registry.example/old/xds
       tag: old
+lmcacheSidecar:
+  enabled: {LMCACHE_SIDECAR_ENABLED}
+  mpPortBase: {LMCACHE_MP_PORT_BASE}
+  httpPortBase: {LMCACHE_HTTP_PORT_BASE}
+  l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
+  l1SizeGb: {LMCACHE_L1_SIZE_GB}
+  l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
+  maxWorkers: {LMCACHE_MAX_WORKERS}
+  logLevel: {LMCACHE_LOG_LEVEL}
+  resources:
+    requests:
+      cpu: {LMCACHE_CPU_REQUEST}
+      memory: {LMCACHE_MEMORY_REQUEST}
+    limits:
+      cpu: {LMCACHE_CPU_LIMIT}
+      memory: {LMCACHE_MEMORY_LIMIT}
 # disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
 [
   {
     "arch_name": "test-arch",
+    "use_ems": false,
     "deploy_spec_packages": [
       {
         "deploy_specs": [
@@ -105,8 +139,10 @@ ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-one-node-78-verify' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
+TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175","192.168.0.78:2222":"192.168.31.17"}' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
+EMS_NAMESPACE='op-ems' \
 bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run/rendered/values.rendered.yaml" <<'PY'
@@ -117,8 +153,9 @@ import yaml
 with open(sys.argv[1], encoding="utf-8") as source:
     values = yaml.safe_load(source)
 
-expected = {"xds.optest": "node-243-78"}
+expected = {"xds.optest": "node-175-17"}
 assert values["nodeSelector"] == expected, values["nodeSelector"]
+assert values["rayService"]["service"]["ports"][0]["nodePort"] == 31008, values["rayService"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
@@ -129,9 +166,10 @@ assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 8, values["w
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 8, values["workerGroups"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
-assert env["XDS_TE_POD_LABEL_VAL"] == "node-243-78", env
+assert env["XDS_TE_POD_LABEL_VAL"] == "node-175-17", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
 assert env["XDS_DATABASE_PORT"] == "3306", env
+assert env["EMS_ENABLE"] == "false", env
 assert isinstance(env["XDS_DATABASE_PORT"], str), env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
 assert "XCCL_TURBO_FIX_PP_WEIGHT_LOAD" not in env, env
@@ -157,10 +195,69 @@ assert values["lmcache"]["namespace"]["name"] == "xds-one-node-78-verify"
 assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
+assert values["lmcacheSidecar"] == {
+    "enabled": False,
+    "mpPortBase": 18000,
+    "httpPortBase": 18080,
+    "l1InitSizeGb": 0,
+    "l1SizeGb": 0,
+    "l1AlignBytes": 4096,
+    "maxWorkers": 1,
+    "logLevel": "INFO",
+    "resources": {
+        "requests": {"cpu": 1, "memory": "1Gi"},
+        "limits": {"cpu": 1, "memory": "1Gi"},
+    },
+}
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert values["ems"]["enable"] is False, values["ems"]
+assert values["workerGroups"]["jobExecutorGroup"]["ems"]["enable"] is False
+assert "ems_enable = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "ems_namespace = op-ems" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
+
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-override" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-override' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_MP_PORT_BASE":"20000","LMCACHE_L1_SIZE_GB":"512","LMCACHE_MEMORY_LIMIT":"600Gi"}' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-lmcache-override/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+sidecar = values["lmcacheSidecar"]
+assert sidecar["enabled"] is True, sidecar
+assert sidecar["mpPortBase"] == 20000, sidecar
+assert sidecar["l1SizeGb"] == 512, sidecar
+assert sidecar["resources"]["limits"]["memory"] == "600Gi", sidecar
+PY
+
+if ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-missing-map" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-one-node-map-failure' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
+TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175"}' \
+bash "$script_dir/render-config.sh" >"$work_dir/missing-map.out" 2>&1; then
+  echo 'render must reject a node-IP map missing a target SSH endpoint' >&2
+  exit 1
+fi
+grep -Fq 'TARGET_NODE_IP_MAP is missing target endpoint: 192.168.0.78:2222' "$work_dir/missing-map.out"
 
 ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-single" \
@@ -189,6 +286,7 @@ assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 2, values["w
 framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "fem_min_frontend_num = 2" in framework_config, framework_config
 assert "fem_max_frontend_num = 2" in framework_config, framework_config
+assert "collector_gateway_url = 192.168.10.6:25888" in framework_config, framework_config
 assert "mock_db = true" in framework_config, framework_config
 PY
 
@@ -246,6 +344,33 @@ grep -q 'name: ray-gcs-head-svc' "$health_service_template"
 grep -q 'publishNotReadyAddresses: true' "$health_service_template"
 grep -q 'ray.io/node-type: head' "$health_service_template"
 
+sed 's/"use_ems": false/"use_ems": true/' "$work_dir/architectures.json" >"$work_dir/architectures-ems.json"
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-ems-enabled" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures-ems.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-ems-enabled' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+EMS_NAMESPACE='op-ems-enabled' \
+bash "$script_dir/render-config.sh" >/dev/null
+
+python3 - "$work_dir/run-ems-enabled/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
+framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
+assert env["EMS_ENABLE"] == "true", env
+assert values["ems"]["enable"] is True, values["ems"]
+assert values["workerGroups"]["jobExecutorGroup"]["ems"]["enable"] is True
+assert "ems_enable = true" in framework_config, framework_config
+assert "ems_namespace = op-ems-enabled" in framework_config, framework_config
+PY
+
 # Both `arch` and EXECUTOR select the descriptive namespace.  If either input
 # is absent the pre-existing ARCH_NAME-based namespace remains in effect.
 arch='runtime-arch' EXECUTOR='gpu-bnt3' \
@@ -272,53 +397,7 @@ TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 bash "$script_dir/render-config.sh" >"$work_dir/namespace-legacy.out"
 grep -qx 'NAMESPACE=xds-test-arch-test-tag' "$work_dir/namespace-legacy.out"
 
-mkdir -p "$work_dir/chart-role/templates"
-printf 'apiVersion: v2\nname: xds-role\nversion: 0.1.0\n' >"$work_dir/chart-role/Chart.yaml"
-cat >"$work_dir/chart-role/templates/raycluster-cluster.yaml" <<'EOF'
-{{- range $groupName, $values := .Values.workerGroups }}
-{{- if eq $groupName "taskExecutorGroup-card" }}
-{{- range $index, $teGroupValues := $.Values.taskExecutorGroups }}
-    groupName: {{ $teGroupValues.name }}
-          - name: ray-worker
-{{- end }}
-{{- else }}
-    groupName: {{ $groupName }}
-          - name: ray-worker
-{{- end }}
-{{- end }}
-EOF
-ARCH_NAME=test-arch \
-RUN_DIR="$work_dir/run-role-container-names" \
-CHART_TEMPLATE_DIR="$work_dir/chart-role" \
-VALUES_TEMPLATE="$work_dir/values.yaml" \
-ARCH_FILE="$work_dir/architectures.json" \
-DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
-TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
-bash "$script_dir/render-config.sh" >/dev/null
-role_template="$work_dir/run-role-container-names/rendered/xds-cluster/templates/raycluster-cluster.yaml"
-grep -Fq 'name: {{ if contains "prefill"' "$role_template"
-grep -Fq 'ray-worker-prefill' "$role_template"
-grep -Fq 'ray-worker-decode' "$role_template"
-grep -Fq 'ray-worker-ctrl' "$role_template"
-grep -Fq 'ray-worker-fe' "$role_template"
-grep -Fq 'ray-worker-je' "$role_template"
-grep -Fq 'groupName: {{ if contains "prefill"' "$role_template"
-grep -Fq 'prefill-' "$role_template"
-grep -Fq 'decode-' "$role_template"
-grep -Fq 'groupName: {{ if eq $groupName "ctrlGroup" }}ctrl' "$role_template"
-grep -Fq '}}fe{{' "$role_template"
-grep -Fq '}}je{{' "$role_template"
-! grep -Fq 'xds-one-node-78-verify' "$role_template"
 
-if command -v helm >/dev/null 2>&1; then
-  helm template role-name-check "$work_dir/run-role-container-names/rendered/xds-cluster" \
-    -f "$work_dir/run-role-container-names/rendered/values.rendered.yaml" \
-    >"$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-ctrl' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-fe' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-je' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-prefill' "$work_dir/role-container-names.yaml"
-  grep -Fq 'name: ray-worker-decode' "$work_dir/role-container-names.yaml"
-fi
+# Role names in the copied Chart remain the upstream KubeRay names.
 
 echo "render target-label tests passed"
