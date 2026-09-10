@@ -1,5 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 新增仓内构建脚本 `scripts/build.sh`（供 PR 检视台「编译发行」页选用，也可本机直接执行）：在克隆出的仓库根目录
+  依次执行「RELEASE_TAG 与 package.json / dsh.plugin.json 版本一致性校验（`SKIP_VERSION_CHECK=1` 可跳过）→
+  依赖就绪（本仓 node_modules 已随 git 跟踪，浅克隆即可用，缺失时才 `npm ci`）→ 构建（默认 `node build.mjs`，
+  注入 `BUILD_CMD` 时改跑自定义命令）→ `node --check` 产物语法校验 → 测试（默认插件 node 用例，
+  `FULL_TESTS=1` 跑完整 `npm test`，`SKIP_TESTS=1` 跳过）→ `npm pack` 打包并重命名为
+  `dist/tokens-worktable.tgz`（文件名固定，对应 README 安装地址 `releases/latest/download/tokens-worktable.tgz`；
+  发行页「产物路径」配置 `dist/*.tgz` 即随发行版上传）」。README「构建注意事项」同步补充说明。
 - 流水线普罗数据采集改为任务粒度（`projects/pipeline/pipeline.html` + `src/index.ts`）：「收集普罗数据」从系统预设任务
   中下线（主控「预设任务」多选、流水线默认运行参数、阶段列表 promCollect 预设标记行、预设任务内 model/namespace/起止
   时间配置、服务端 API `presets` 的 `promCollect` 值一并移除；旧流水线/导入数据经 `migratePromPreset` 与服务端
