@@ -57,7 +57,9 @@ function makeContext() {
     execScript() { return new Promise((res) => { context.resolveExec = res; }); },
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  const liveStart=source.indexOf("function createLiveOutputState(");
+  const liveEnd=source.indexOf("/* 流式执行：POST",liveStart);
+  vm.runInContext(source.slice(liveStart,liveEnd)+"\n"+source.slice(start, end), context);
   return context;
 }
 

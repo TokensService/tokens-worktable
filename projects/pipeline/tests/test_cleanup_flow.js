@@ -64,6 +64,11 @@ test('已入队的收集普罗任务按入队开关快照展开，不受当前�
   const task=stages.find(s=>s.pkey==='promCollect');
   assert.ok(task);assert.equal(task.prom.modelName,'queued-model');
 });
+test('运行参数携带预设列表时覆盖当前主控复选框',()=>{
+  const {ctx,checkbox,checkBox}=context();checkbox.checked=true;checkBox.checked=false;
+  const stages=ctx.expandRunStages([{id:'first',name:'First'}],null,['check']);
+  assert.deepEqual(stages.map(s=>s.id),['__check__','first']);
+});
 test('运行快照和历史中的预设节点不受当前开关影响',()=>{
   const {ctx,flow,checkbox,checkBox}=context();checkbox.checked=false;checkBox.checked=false;
   // 运行态：runStages 已在启动时按勾选展开（含运行态预设节点），flowStages 原样返回
@@ -102,7 +107,9 @@ function presetCtx(s){
     buildPromCollectEnv:(promCtx,startMs,endMs)=>({PROM_START:String(startMs),PROM_END:String(endMs),MODEL_NAME:promCtx.prom.modelName}),
     dtLocalToMs:()=>0,
     execScript:async(sc,t,e,_r,stream)=>{calls.exec.push({sc,t,e});if(stream)stream({type:'out',text:'live\n'});return new Promise(r=>{ctx._complete=r;});}};
-  vm.createContext(ctx);load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
+  vm.createContext(ctx);
+  load('function createLiveOutputState(', '/* 流式执行：POST',ctx);
+  load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
   return {ctx,calls,rc};
 }
 test('预设任务实时回显到独立节点，失败不阻断（清理/Profiling）并推进下一阶段',async()=>{
@@ -178,8 +185,9 @@ test('流水线编辑器在收集普罗预设任务行内展示 model/namespace/
   const ctx={editStages:[{id:'__prom_collect__',name:'收集普罗数据',preset:true,pkey:'promCollect',prom:{modelName:'model-a',xdsNamespace:'ns-a',startTime:'2026-09-08T10:00',endTime:'2026-09-08T11:00'}}],editFocusIdx:-1,
     $:id=>id==='plStageList'?wrap:null,esc:String,
     normalizePipelineProm:p=>Object.assign({modelName:'',xdsNamespace:'${DEPLOY_STRATEGY}-${BY}',startTime:'',endTime:''},p||{}),
-    document:{createElement:()=>({dataset:{},style:{},innerHTML:'',querySelector(){return null;}})}};
-  vm.createContext(ctx);load('function renderStageEditor(', 'function renderStageParams(',ctx);ctx.renderStageEditor();
+    stageCardDragStart(){},stageCardDragOver(){},stageCardDrop(){},stageCardDragEnd(){},
+    document:{createElement:()=>({dataset:{},style:{},innerHTML:'',classList:{toggle(){},add(){},remove(){},contains(){return false;}},addEventListener(){},querySelector(){return null;}})}};
+  vm.createContext(ctx);load('let editSelStage', 'function renderStageParams(',ctx);ctx.renderStageEditor();
   const html=wrap.children[0].innerHTML;
   assert.match(html,/data-f="promModelName"[^>]*value="model-a"/);
   assert.match(html,/data-f="promXdsNamespace"[^>]*value="ns-a"/);
