@@ -41,6 +41,7 @@
 
 - **必须在插件根目录下构建**：`build.mjs` 会把产物写到当前插件的 `lib/`。
 - 客户端 bundle 保持 window.__ModuleLoader__.load 握手，react/@deepseek-ai/* 全部 external。
+- **一键编译发行**：`scripts/build.sh` 是本仓的仓内构建脚本，供 PR 检视台（`projects/codereview`）「编译发行」页选用——依次完成版本一致性校验、构建、测试与 `npm pack` 打包，产出固定文件名 `dist/tokens-worktable.tgz`（对应方式 A 的 `releases/latest/download/tokens-worktable.tgz`）；发行页「产物路径」填 `dist/*.tgz` 即可随发行版上传。本机也可直接 `bash scripts/build.sh` 验证（可用环境变量见脚本头注释）。
 
 ## 内置项目
 
