@@ -54,6 +54,37 @@
 
 `projects/` 会随 npm 安装包发布。`widget-result.json`、流水线 `runs/`、备份和指标汇总属于运行产物，不进入插件源码或发布包。
 
+## 流水线启动 API
+
+每条流水线都可通过服务端接口异步启动：
+
+```http
+POST /api/worktable/pipeline/run/<pipelineId>
+Content-Type: application/json
+```
+
+请求体中的字段全部可选；未提供的字段使用该流水线在编辑器「默认环境」区域保存的默认值：
+
+```json
+{
+  "environmentIds": ["env-prod"],
+  "repositoryId": "repo-app",
+  "branch": "release/2026",
+  "strategy": "blue-green",
+  "presets": ["cleanup", "check", "profiling", "promCollect"],
+  "by": "jenkins"
+}
+```
+
+- `environmentIds`：目标环境 ID 数组，可多选。
+- `repositoryId`：代码仓 ID。
+- `branch`：分支或 Tag。
+- `strategy`：部署策略，传空字符串可明确覆盖默认策略。
+- `presets`：本次启用的预设任务；传空数组可明确关闭全部预设任务。
+- `by`：触发方标识，默认 `api`。
+
+接受请求后返回 HTTP `202`，响应含 `runId`、`pipelineId` 和 `pipelineName`；运行结果写入流水线历史，可由 `runId` 关联。接口继承 dsh web 的登录守卫，命令行调用需携带有效登录 Cookie。流水线列表中的 `API` 按钮可直接查看并复制当前流水线的端点、默认请求体和 curl 示例。
+
 ## 相关文档
 
 - 更新日志：https://github.com/TokensService/tokens-worktable/blob/main/CHANGES.md

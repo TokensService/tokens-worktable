@@ -239,6 +239,171 @@ function gitExec(args: string[], cwd: string): Promise<string> {
   })
 }
 
+/* ---------- 流水线 API 触发 ---------- */
+const PIPELINE_RUN_API_PATH = '/api/worktable/pipeline/run'
+const PIPELINE_RUN_PRESETS = new Set(['cleanup', 'check', 'profiling', 'promCollect'])
+
+function own(obj: any, key: string): boolean {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key)
+}
+
+function stringList(value: any): string[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean)))
+}
+
+function pipelineRunDefaults(value: any) {
+  const defaults = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    environmentIds: stringList(defaults.environmentIds),
+    repositoryId: typeof defaults.repositoryId === 'string' ? defaults.repositoryId.trim() : '',
+    branch: typeof defaults.branch === 'string' && defaults.branch.trim() ? defaults.branch.trim() : 'main',
+    strategy: typeof defaults.strategy === 'string' ? defaults.strategy.trim() : '',
+    presets: stringList(defaults.presets).filter((key) => PIPELINE_RUN_PRESETS.has(key)),
+  }
+}
+
+const SERVER_PRESET_META: Record<string, { id: string; name: string; block: boolean }> = {
+  cleanup: { id: '__cleanup__', name: '环境清理', block: false },
+  check: { id: '__check__', name: '环境检查', block: true },
+  profiling: { id: '__profiling__', name: 'Profiling', block: false },
+  promCollect: { id: '__prom_collect__', name: '收集普罗数据', block: false },
+}
+
+function serverPresetScript(key: string, config: any): any {
+  if (key === 'cleanup') return config.cleanupScript || null
+  if (key === 'check') return config.checkScript || null
+  if (key === 'profiling') return config.profilingScript || null
+  if (key === 'promCollect') {
+    const name = config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
+    if (!name) return null
+    return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
+  }
+  return null
+}
+
+function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
+  const selected = new Set(stringList(presets).filter((key) => PIPELINE_RUN_PRESETS.has(key)))
+  const seen = new Set<string>()
+  const materialize = (stage: any, key: string) => {
+    const meta = SERVER_PRESET_META[key]
+    seen.add(key)
+    return {
+      ...stage,
+      id: stage.id || meta.id,
+      name: stage.name || meta.name,
+      preset: true,
+      pkey: key,
+      presetBlock: meta.block,
+      script: serverPresetScript(key, config),
+    }
+  }
+  const out: any[] = []
+  for (const raw of Array.isArray(stages) ? stages : []) {
+    const stage = raw && typeof raw === 'object' ? { ...raw } : raw
+    if (!stage || !stage.preset) { if (stage) out.push(stage); continue }
+    const key = typeof stage.pkey === 'string' ? stage.pkey : ''
+    if (!selected.has(key) || !SERVER_PRESET_META[key]) continue
+    out.push(materialize(stage, key))
+  }
+  const missingFront = ['cleanup', 'check'].filter((key) => selected.has(key) && !seen.has(key))
+    .map((key) => materialize({}, key))
+  const missingBack = ['profiling', 'promCollect'].filter((key) => selected.has(key) && !seen.has(key))
+    .map((key) => materialize({}, key))
+  return missingFront.concat(out, missingBack)
+}
+
+function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: string): { plan?: any; status?: number; error?: string } {
+  const config = store && store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+  const pipelines = Array.isArray(config.pipelines) ? config.pipelines : []
+  const pipeline = pipelines.find((item: any) => item && item.id === pipelineId)
+  if (!pipeline) return { status: 404, error: 'pipeline not found' }
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  const defaults = pipelineRunDefaults(pipeline.defaults)
+
+  const environments = Array.isArray(config.environments) ? config.environments.filter((item: any) => item && typeof item.id === 'string') : []
+  if (own(input, 'environmentIds') && !Array.isArray(input.environmentIds)) return { status: 400, error: 'invalid environmentIds' }
+  const requestedEnvironmentIds = own(input, 'environmentIds') ? stringList(input.environmentIds) : defaults.environmentIds
+  let selectedEnvironments = requestedEnvironmentIds.map((id) => environments.find((item: any) => item.id === id)).filter(Boolean)
+  if (own(input, 'environmentIds') && selectedEnvironments.length !== requestedEnvironmentIds.length) return { status: 400, error: 'environment not found' }
+  if (!selectedEnvironments.length && environments.length) selectedEnvironments = [environments[0]]
+  if (!selectedEnvironments.length) return { status: 400, error: 'environment not found' }
+
+  const repositories = Array.isArray(config.repositories) ? config.repositories.filter((item: any) => item && typeof item.id === 'string') : []
+  if (own(input, 'repositoryId') && typeof input.repositoryId !== 'string') return { status: 400, error: 'invalid repositoryId' }
+  const repositoryId = own(input, 'repositoryId') ? input.repositoryId.trim() : defaults.repositoryId
+  let repository = repositories.find((item: any) => item.id === repositoryId)
+  if (own(input, 'repositoryId') && !repository) return { status: 400, error: 'repository not found' }
+  if (!repository && repositories.length) repository = repositories[0]
+
+  if (own(input, 'presets') && !Array.isArray(input.presets)) return { status: 400, error: 'invalid presets' }
+  const presets = own(input, 'presets') ? stringList(input.presets) : defaults.presets
+  if (presets.some((key) => !PIPELINE_RUN_PRESETS.has(key))) return { status: 400, error: 'invalid preset' }
+  if (own(input, 'branch') && typeof input.branch !== 'string') return { status: 400, error: 'invalid branch' }
+  if (own(input, 'strategy') && typeof input.strategy !== 'string') return { status: 400, error: 'invalid strategy' }
+  if (own(input, 'by') && typeof input.by !== 'string') return { status: 400, error: 'invalid by' }
+
+  const branch = own(input, 'branch') && input.branch.trim() ? input.branch.trim() : defaults.branch
+  const strategy = own(input, 'strategy') ? input.strategy.trim() : defaults.strategy
+  const by = own(input, 'by') && input.by.trim() ? input.by.trim() : 'api'
+  const envs = selectedEnvironments.map((item: any) => ({ ...item }))
+  const repo = repository ? { ...repository } : null
+  return {
+    plan: {
+      id: runId,
+      runId,
+      pipelineId: pipeline.id,
+      pipelineName: pipeline.name || pipeline.id,
+      stages: JSON.parse(JSON.stringify(Array.isArray(pipeline.stages) ? pipeline.stages : [])),
+      env: envs.map((item: any) => item.ip || item.name || item.id).join('，'),
+      envs,
+      repository: repo,
+      repoId: repo ? repo.id : null,
+      branch,
+      strategy,
+      presets,
+      by,
+      source: 'api',
+      createdAt: Date.now(),
+    },
+  }
+}
+
+function registerPipelineRunApi(webServer: any, deps: {
+  readStore: () => Promise<any>;
+  execute: (plan: any) => Promise<void>;
+  createRunId?: () => string;
+  warn?: (message: string) => void;
+}) {
+  webServer.register({
+    kind: 'prefix',
+    path: PIPELINE_RUN_API_PATH,
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
+        const suffix = pathname.slice(PIPELINE_RUN_API_PATH.length)
+        if (!suffix.startsWith('/') || suffix.length === 1) { json(res, 400, { error: 'missing pipeline id' }); return }
+        let pipelineId = ''
+        try { pipelineId = decodeURIComponent(suffix.slice(1)) } catch { json(res, 400, { error: 'invalid pipeline id' }); return }
+        if (!pipelineId || pipelineId.includes('/')) { json(res, 400, { error: 'invalid pipeline id' }); return }
+        const body = await readJsonBody(req)
+        const runId = deps.createRunId ? deps.createRunId() : 'api-' + Date.now().toString(36) + '-' + Math.random().toString(16).slice(2, 8)
+        const built = buildPipelineApiRun(await deps.readStore(), pipelineId, body, runId)
+        if (!built.plan) { json(res, built.status || 400, { error: built.error || 'invalid request' }); return }
+        const plan = built.plan
+        Promise.resolve().then(() => deps.execute(plan)).catch((err) => {
+          if (deps.warn) deps.warn('流水线 API 运行 ' + runId + ' 失败：' + String(err && err.message ? err.message : err))
+        })
+        json(res, 202, { ok: true, accepted: true, runId, pipelineId: plan.pipelineId, pipelineName: plan.pipelineName })
+      } catch (err) {
+        json(res, 500, { error: String(err && (err as Error).message ? (err as Error).message : err) })
+      }
+    },
+  })
+}
+/* ---------- 流水线 API 触发结束 ---------- */
+
 /** git 状态快照（porcelain v1 -z；非仓库返回 isRepo:false） */
 async function gitStatus(cwd: string) {
   try {
@@ -1012,6 +1177,7 @@ export function apply(ctx: Context) {
   function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number): Promise<{ code: number; stdout: string; stderr: string }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
+    const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
     // ${VAR} 取值池（同页面 substRunVars）：运行级注入变量 + 上游阶段变量（同名时上游优先）
     const look: Record<string, string> = {}
     if ((ctx0 && ctx0.ip) || runCtx.env) look.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
@@ -1019,8 +1185,11 @@ export function apply(ctx: Context) {
     if (runCtx.image) look.IMAGE_NAME = String(runCtx.image)
     if (runCtx.tag) look.IMAGE_TAG = String(runCtx.tag)
     if (runCtx.pipelineName) look.PIPELINE_NAME = String(runCtx.pipelineName)
+    if (repository.url) look.GIT_URL = String(repository.url)
     if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch)
     if (runCtx.strategy) look.DEPLOY_STRATEGY = String(runCtx.strategy)
+    if (repository.user) look.GIT_USER = String(repository.user)
+    if (repository.pass) look.GIT_PASSWORD = String(repository.pass)
     if (runCtx.archive) { look.ARCHIVE_DIR = String(runCtx.archive); look.ARCHIVE_FOLDER = String(runCtx.archive) }
     Object.assign(look, pool)
     const args: string[] = []
@@ -1041,15 +1210,18 @@ export function apply(ctx: Context) {
     //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
     //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
     //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；
-    //   PIPELINE_NAME=流水线名；GIT_BRANCH/DEPLOY_STRATEGY=分支与部署策略
+    //   PIPELINE_NAME=流水线名；GIT_URL/GIT_BRANCH/GIT_USER/GIT_PASSWORD=代码仓信息；DEPLOY_STRATEGY=部署策略
     if (env.TARGET_IP === undefined) env.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
     if (env.TARGET_IPS === undefined && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e: any) => e.ip))
     if (env.TARGET_HOSTS === undefined && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e: any) => ({ ip: e.ip, user: e.user || '', pass: e.pass || '' })))
     if (env.IMAGE_NAME === undefined && runCtx.image) env.IMAGE_NAME = String(runCtx.image)
     if (env.IMAGE_TAG === undefined && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag)
     if (env.PIPELINE_NAME === undefined && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName)
+    if (env.GIT_URL === undefined && repository.url) env.GIT_URL = String(repository.url)
     if (env.GIT_BRANCH === undefined && runCtx.branch) env.GIT_BRANCH = String(runCtx.branch)
     if (env.DEPLOY_STRATEGY === undefined && runCtx.strategy) env.DEPLOY_STRATEGY = String(runCtx.strategy)
+    if (env.GIT_USER === undefined && repository.user) env.GIT_USER = String(repository.user)
+    if (env.GIT_PASSWORD === undefined && repository.pass) env.GIT_PASSWORD = String(repository.pass)
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
@@ -1133,7 +1305,17 @@ export function apply(ctx: Context) {
       archiveRoot = (dir || '/') + '/runs'
     }
     const folder = isSuffixRun ? String(pl.archive) : (archiveRoot ? archiveRoot + '/' + sanitizeFsName(pipeName) + '_' + nowCompactFull() : null)
-    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || '', branch: pl.branch || '', strategy: pl.strategy || '' }
+    const runCtx = {
+      env: pl.env || '',
+      envs: Array.isArray(pl.envs) ? pl.envs : [],
+      repository: pl.repository && typeof pl.repository === 'object' ? pl.repository : null,
+      archive: folder,
+      tag,
+      pipelineName: pipeName,
+      image: pl.image || '',
+      branch: pl.branch || '',
+      strategy: pl.strategy || '',
+    }
     // 变量池（与页面 curRun.vars 一致）：定时后缀由页面登记时随计划快照上游阶段变量（pl.vars，
     // 见 pipeline.html registerStageTimers）；服务端阶段间同样按 KEY=VALUE 行 / 单行 JSON 累计、
     // 按阶段「输出变量」映射，作为环境变量注入后续阶段（脚本显式参数 > 上游变量 > 运行级默认）
@@ -1151,8 +1333,14 @@ export function apply(ctx: Context) {
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
     }
+    /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；旧定时计划没有该字段，
+       继续沿用全局 cleanupEnabled 行为，避免历史计划语义变化。 */
+    const apiPresetMode = Array.isArray(pl.presets)
+    const executionStages = apiPresetMode
+      ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
+      : (Array.isArray(pl.stages) ? pl.stages : [])
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
-    if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+    if (!apiPresetMode && cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
       const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool)
       const text = stageLogText(cfg.cleanupScript.name, r)
@@ -1162,9 +1350,10 @@ export function apply(ctx: Context) {
       profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
     }
     let seq = baseSeq + 1
-    for (const s of pl.stages || []) {
+    for (const s of executionStages) {
       const st0 = Date.now()
       let entry: any = null
+      let shouldStop = false
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins' || s.kind === 'evaltokens') { entry = { status: 'success', text: '[定时执行] HTTP/EvalTokens 阶段：定时触发暂不支持，已跳过' } }   // 兼容旧计划中的 kind:'url'/'jenkins'（URL 请求阶段已改为 HTTP 阶段；EvalTokens 阶段同样仅前端运行期支持）
       else if (s.script && s.script.path) {
@@ -1174,7 +1363,10 @@ export function apply(ctx: Context) {
         Object.assign(varsPool, parseStageVars(r.stdout))
         applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
-        if (r.code !== 0) status = 'failed'
+        // 环境检查与普通任务失败会阻断；清理 / Profiling / 普罗收集属于非阻断辅助任务。
+        if (r.code !== 0 && (!s.preset || s.presetBlock)) { status = 'failed'; shouldStop = true }
+      } else if (s.preset) {
+        entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
       } else {
         await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
         entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
@@ -1185,7 +1377,7 @@ export function apply(ctx: Context) {
       pushHist(s.name, entry.status, entry.text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
       seq++
-      if (status === 'failed') break
+      if (shouldStop) break
     }
     // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
     //   定时后缀追加到页面登记时已写内容（去掉旧 [result] 行、profile 按阶段 id/name 合并）；独立计划整文件新建。
@@ -1215,7 +1407,7 @@ export function apply(ctx: Context) {
         profile.env = pl.env || ''
         profile.image = pl.image || ''
         profile.by = pl.by || 'schedule'
-        profile.source = isSuffixRun ? '定时后缀' : '定时计划'
+        profile.source = pl.source === 'api' ? 'API' : (isSuffixRun ? '定时后缀' : '定时计划')
         profile.result = status
         if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
         profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
@@ -1247,8 +1439,19 @@ export function apply(ctx: Context) {
       no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
       status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs: histLogs, ts: Date.now(),
       tag, archive: folder || null,
+      runId: pl.runId || null,
+      pipelineId: pl.pipelineId || null,
+      repoId: pl.repoId || (pl.repository && pl.repository.id) || null,
+      branch: pl.branch || '',
+      strategy: pl.strategy || '',
+      source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
+  registerPipelineRunApi(webServer, {
+    readStore: readPipelineStore,
+    execute: execPlan,
+    warn: (message) => ctx.logger?.warn?.('[tokens-worktable] ' + message),
+  })
   async function planTick() {
     const plans = await readPlansFile()
     const now = Date.now()

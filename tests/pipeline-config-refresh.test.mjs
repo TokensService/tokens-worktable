@@ -26,6 +26,7 @@ function loadRefreshFixture(remoteState, fetchError) {
     migrateGate: p => p,
     migrateStageUrl: p => p,
     migratePrefillDefaults: p => p,
+    migratePipelineDefaults: p => p,
     findPipeline: id => ctx.pipelines.find(p => p.id === id),
     curPipeline: () => ctx.pipelines.find(p => p.id === ctx.curPipelineId) || ctx.pipelines[0],
     localStorage: { setItem: (key, value) => stored.set(key, value) },

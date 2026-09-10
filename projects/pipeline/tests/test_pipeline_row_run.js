@@ -56,7 +56,7 @@ function makeContext(runResult) {
   const tbody = new FakeNode('tbody');
   const table = { querySelector: selector => selector === 'tbody' ? tbody : null };
   const count = { textContent: '' };
-  const calls = { run: [], select: [], tips: [], alerts: [] };
+  const calls = { run: [], api: [], select: [], tips: [], alerts: [] };
   const queue = [];
   const context = {
     pipelines: [
@@ -68,6 +68,8 @@ function makeContext(runResult) {
     $: id => id === 'plTable' ? table : count,
     esc: String,
     runPipeline: options => { calls.run.push(options); if (runResult === 'queued') queue.push(options); return runResult; },
+    showPipelineApi: pipeline => calls.api.push(pipeline),
+    findPipeline: id => context.pipelines.find(pipeline => pipeline.id === id),
     selectPipeline: id => calls.select.push(id),
     openPlForm() {}, copyPipeline() {}, deletePipeline() {}, renderPipelineSel() {},
     flashRunTip: text => calls.tips.push(text),
@@ -96,6 +98,7 @@ test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', 
   assert.equal(event.stopped, true);
   assert.equal(calls.run.length, 1);
   assert.equal(calls.run[0].pipelineId, 'pipe-2');
+  assert.equal(calls.run[0].useDefaults, true, '列表直接运行必须使用该流水线保存的默认运行参数');
   assert.deepEqual(calls.select, []);
   assert.deepEqual(calls.tips, ['已加入队列（第 1 位）']);
 });
@@ -114,4 +117,17 @@ test('▶ 在队列已满时沿用现有容量提示', () => {
   button.handlers.click({ stopPropagation() {} });
   assert.equal(calls.alerts.length, 1);
   assert.match(calls.alerts[0], /队列已满（上限 8）/);
+});
+
+test('每条流水线提供 API 按钮并打开对应流水线的调用说明', () => {
+  const { tbody, calls } = makeContext(true);
+  const buttons = tbody.querySelectorAll('[data-plapi]');
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[1].textContent.trim(), 'API');
+  const event = { stopped: false, stopPropagation() { this.stopped = true; } };
+  buttons[1].handlers.click(event);
+  assert.equal(event.stopped, true);
+  assert.equal(calls.api.length, 1);
+  assert.equal(calls.api[0].id, 'pipe-2');
+  assert.deepEqual(calls.select, []);
 });

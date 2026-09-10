@@ -64,6 +64,11 @@ test('已入队的收集普罗任务按入队开关快照展开，不受当前�
   const task=stages.find(s=>s.pkey==='promCollect');
   assert.ok(task);assert.equal(task.prom.modelName,'queued-model');
 });
+test('运行参数携带预设列表时覆盖当前主控复选框',()=>{
+  const {ctx,checkbox,checkBox}=context();checkbox.checked=true;checkBox.checked=false;
+  const stages=ctx.expandRunStages([{id:'first',name:'First'}],null,['check']);
+  assert.deepEqual(stages.map(s=>s.id),['__check__','first']);
+});
 test('运行快照和历史中的预设节点不受当前开关影响',()=>{
   const {ctx,flow,checkbox,checkBox}=context();checkbox.checked=false;checkBox.checked=false;
   // 运行态：runStages 已在启动时按勾选展开（含运行态预设节点），flowStages 原样返回

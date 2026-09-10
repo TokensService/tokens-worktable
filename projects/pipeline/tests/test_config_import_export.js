@@ -23,6 +23,7 @@ function makeCtx(overrides={},names=[]){
     console, JSON, Object, Array, String, Number, Boolean, Date, Math, RegExp, Error, Promise, Set, Map,
     parseInt, isFinite, URL, Blob,
     DEFAULT_PIPELINE_ID:'pl-xds',
+    PIPELINE_DEFAULT_PRESET_KEYS:['cleanup','check','profiling','promCollect'],
     DEFAULT_JENKINS:{url:'http://127.0.0.1:28080',linkUrl:'',user:'',token:'',mode:'local'},
     DEFAULT_EVALTOK:{url:'http://1.95.87.43:9000',linkUrl:'',token:'',mode:'local'},
     DEFAULT_PROM:{url:'http://192.168.10.6:25889',linkUrl:'',mode:'local',collectScript:''},
@@ -82,7 +83,7 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
 });
 
 test('导入流水线归一化：内置默认置顶、剔除非法项、执行旧数据迁移；非法列表返回 null',()=>{
-  const ctx=makeCtx({},['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','normalizeImportedPipelines']);
+  const ctx=makeCtx({},['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines']);
   assert.equal(ctx.normalizeImportedPipelines([]),null);
   assert.equal(ctx.normalizeImportedPipelines([{id:'x'}]),null,'没有任何带 stages 的流水线视为非法文件');
   assert.equal(ctx.normalizeImportedPipelines('not-array'),null);
@@ -97,6 +98,7 @@ test('导入流水线归一化：内置默认置顶、剔除非法项、执行�
   assert.equal(out[1].stages[0].url.url,'http://jk/job/a','旧 jenkins.job 迁入 url.url');
   assert.equal(out[1].stages[1].skip,true,'旧 gate 迁移为 skip');
   assert.ok(!('gate' in out[1].stages[1]));
+  assert.deepEqual(J(out[1].defaults),{environmentIds:[],repositoryId:'',branch:'main',strategy:'',presets:[]},'旧流水线补齐默认运行参数');
   /* 文件缺内置流水线时补默认内置 */
   const noBuiltin=ctx.normalizeImportedPipelines([{id:'pl-a',name:'A',stages:[{id:'s1'}]}]);
   assert.equal(noBuiltin[0].id,'pl-xds');
@@ -233,7 +235,7 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
     viewRc:{stages:[{id:'s9'}],nodes:{},selId:'s9',token:'t9',over:false,vars:{},timer:null}, runStages:null, selectedId:'s9',
     savePipelines:()=>saved.push('savePipelines'),
     renderAll:()=>rendered.push('renderAll'),
-  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
+  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
   const data={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[
     {id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0'}]},
