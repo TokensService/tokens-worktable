@@ -1,5 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线「API」弹窗的请求体与 curl 示例改为按运行框当前填写的运行参数动态生成
+  （`projects/pipeline/pipeline.html` 的 `pipelineApiSpec`）：环境多选、代码仓、分支、部署策略、
+  执行人、预设任务均取主控运行栏当前值（与点「▶ 运行流水线」取数一致），不再读取流水线保存的
+  默认参数；分支留空回退 `main`、执行人留空回退 `api`（服务端缺省），空策略 / 空预设作为显式值
+  逐项覆盖默认配置。当前无有效环境 / 代码仓选择时省略对应字段（显式空数组 / 空串会被服务端判
+  400，省略则调用时回退流水线默认配置）并在弹窗内给出警告。配套更新
+  `projects/pipeline/tests/test_pipeline_api_ui.js`。
 - PR 检视台「编译发行」分支级构建设置云端保存与自动填充（`projects/codereview/code-review-prs.html`）：构建脚本 /
   构建命令 / 超时 / 产物路径 / 预发布按「owner/repo@branch」为键存入服务端云端文件
   `$DSH_HOME/storages/dsh-codereview-relcfg-{gc|gh}.json`（经 `/api/worktable/file|write|mkdir` 读写，按平台分桶，

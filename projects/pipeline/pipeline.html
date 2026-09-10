@@ -736,14 +736,14 @@
       </div>
     </div>
   </div>
-  <!-- 单条流水线 API 调用说明：展示默认参数请求体与可复制 curl；接口受 dsh 登录守卫保护 -->
+  <!-- 单条流水线 API 调用说明：请求体与 curl 按运行框当前填写的参数动态生成；接口受 dsh 登录守卫保护 -->
   <div id="pipelineApiDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:215; align-items:center; justify-content:center;">
     <div class="dshell-card" style="width:92%;max-width:820px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
         <h2 id="pipelineApiTitle" class="dshell-sub" style="margin:0">流水线 API</h2>
         <button id="pipelineApiClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
-      <p class="dshell-muted" style="font-size:11px;margin:0;">POST 接口异步启动流水线并返回运行 ID。请求字段可逐项覆盖流水线默认值；省略字段则使用默认配置。代码仓还可用 <code>repository</code> 对象一次性覆盖 <code>name/url/user/pass</code>（凭据不落盘）。接口受当前 dsh 登录认证保护。</p>
+      <p class="dshell-muted" style="font-size:11px;margin:0;">POST 接口异步启动流水线并返回运行 ID。下方请求体与 curl 按运行框当前填写的参数（环境/代码仓/分支/部署策略/执行人/预设任务）动态生成；请求字段可逐项覆盖流水线默认值，省略字段则使用默认配置。代码仓还可用 <code>repository</code> 对象一次性覆盖 <code>name/url/user/pass</code>（凭据不落盘）。接口受当前 dsh 登录认证保护。</p>
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>接口地址</b><button id="pipelineApiCopyEndpoint" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></div>
         <div id="pipelineApiEndpoint" class="logbox" style="max-height:none;word-break:break-all;"></div>
@@ -1124,22 +1124,32 @@ function renderPipelineDefaultForm(){
 /* ---------- 流水线 API 调用说明 ---------- */
 function shellSingleQuoted(value){ return "'"+String(value).replace(/'/g,"'\"'\"'")+"'"; }
 function pipelineApiSpec(pl,origin){
-  const defaults=normalizePipelineDefaults(pl&&pl.defaults);
-  const effective=pipelineDefaultRunOptions(pl);
-  const warning=pipelineDefaultRunIssue(pl);
+  /* 请求体与 curl 按主控运行框当前填写的运行参数动态生成（与点「▶ 运行流水线」取数一致：
+     环境多选/代码仓/分支/部署策略/执行人/预设任务均取当前值），不再读取流水线保存的默认参数；
+     默认参数仅在 API 调用方省略字段时由服务端逐项回退。 */
+  const envIds=curEnvs().map(e=>e&&e.id).filter(Boolean);
+  const repoId=String(($('repoSel')&&$('repoSel').value)||'').trim();
+  const branch=(($('branchName')&&$('branchName').value)||'').trim()||'main';   // 与 runPipeline 一致：分支留空按 main
+  const strategy=curStrategy();
+  const by=(($('triggeredBy')&&$('triggeredBy').value)||'').trim()||'api';   // 执行人留空按服务端缺省 api
+  const presets=selectedPresetKeys();
+  /* 显式空数组/空串会被服务端判 400（environmentIds must not be empty / invalid repositoryId）：
+     当前无有效选择时省略对应字段（调用时回退流水线默认配置）并给出警告，不生成必败的请求体 */
+  const issues=[];
+  const body={};
+  if(envIds.length) body.environmentIds=envIds;
+  else issues.push('当前未选中目标环境，已省略 environmentIds（调用时回退流水线默认配置）');
+  if(repoId) body.repositoryId=repoId;
+  else issues.push('当前未选中代码仓，已省略 repositoryId（调用时回退流水线默认配置）');
+  body.branch=branch;
+  body.strategy=strategy;   // 显式空串=不使用部署策略（逐项覆盖默认值）
+  body.presets=presets;     // 显式空数组=不执行预设任务（逐项覆盖默认值）
+  body.by=by;
   const endpoint='/api/worktable/pipeline/run/'+encodeURIComponent(pl&&pl.id||'');
   const url=String(origin||'').replace(/\/+$/,'')+endpoint;
-  const body={
-    environmentIds:defaults.environmentIds.length?defaults.environmentIds:(effective.envs.length?effective.envs.map(e=>e.id).filter(Boolean):[]),
-    repositoryId:defaults.repositoryId||effective.repoId,
-    branch:defaults.branch,
-    strategy:defaults.strategy,
-    presets:defaults.presets,
-    by:'api',
-  };
   const bodyText=JSON.stringify(body,null,2);
   const curl="curl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -b cookies.txt \\\n  --data "+shellSingleQuoted(JSON.stringify(body));
-  return {endpoint,body,bodyText,curl,warning};
+  return {endpoint,body,bodyText,curl,warning:issues.join('；')};
 }
 function showPipelineApi(pl){
   if(!pl) return;
