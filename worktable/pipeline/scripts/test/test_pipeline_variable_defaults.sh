@@ -44,4 +44,16 @@ printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
 grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
 grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
 
+namespace_from_arch_executor="$(arch='glm-5.2-nvfp4' EXECUTOR='executor-a' IMAGE_TAG='1000.tag' \
+  bash -c "$config
+printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
+grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+
+# EXECUTOR alone must not change the legacy namespace format.
+namespace_without_arch="$(EXECUTOR='executor-a' ARCH_NAME='glm-5.2-nvfp4' IMAGE_TAG='1000.tag' \
+  bash -c "$config
+printf 'NAMESPACE=%s\\n' \"\$NAMESPACE\"")"
+grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-1000-tag' <<<"$namespace_without_arch"
+
 echo "pipeline variable-default tests passed"

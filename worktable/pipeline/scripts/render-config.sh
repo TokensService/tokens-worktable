@@ -25,7 +25,16 @@ NUM_PREFILL="${NUM_PREFILL:-}"
 NUM_DECODE="${NUM_DECODE:-}"
 PREFILL_GPU="${PREFILL_GPU:-}"
 DECODE_GPU="${DECODE_GPU:-}"
-NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-${IMAGE_TAG:-local}}"
+NAMESPACE_ARCH="${arch:-}"
+EXECUTOR="${EXECUTOR:-}"
+NAMESPACE="${NAMESPACE:-}"
+if [[ -z "$NAMESPACE" ]]; then
+  if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
+    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}-${IMAGE_TAG:-local}"
+  else
+    NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG:-local}"
+  fi
+fi
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
@@ -67,6 +76,24 @@ NODE_LABELS_FILE="$RENDER_DIR/node-labels.json"
 mkdir -p "$RENDER_DIR"
 rm -rf "$CHART_DIR"
 cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
+
+# Generated TE groups carry their role in the group name. Keep the generic
+# name for non-P/D groups while making P and D containers identifiable.
+TASK_EXECUTOR_TEMPLATE="$CHART_DIR/templates/raycluster-cluster.yaml"
+if [[ -f "$TASK_EXECUTOR_TEMPLATE" ]]; then
+  python3 - "$TASK_EXECUTOR_TEMPLATE" <<'PY_TEMPLATE'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "          - name: ray-worker"
+new = """          - name: {{ if contains "prefill" (lower $teGroupValues.name) }}ray-worker-prefill{{ else if contains "decode" (lower $teGroupValues.name) }}ray-worker-decode{{ else }}ray-worker{{ end }}"""
+if old not in text and new not in text:
+    raise SystemExit(f"task executor container marker not found: {path}")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY_TEMPLATE
+fi
 
 python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$ARCH_REQUEST_FILE" "$RESOURCE_MANIFEST" "$DEPLOY_IMAGE" "$NUM_PREFILL" \
