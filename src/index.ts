@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { readdirSync, realpathSync } from 'node:fs'
-import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, stat as fsStat } from 'node:fs/promises'
+import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -43,6 +43,12 @@ function inferDshHomeFromModuleDir(libDir: string): string | null {
   return dirname(profilesDir)
 }
 
+/** 本地编译安装（link:）判定：lib/ 目录 realpath 后不在标准安装布局内——
+ *  link:/junction 安装 realpath 落在源码树；release tgz 副本安装落在 profile 的 node_modules 内。 */
+function isLocalDevInstall(libDir: string): boolean {
+  try { return !inferDshHomeFromModuleDir(realpathSync(libDir)) } catch { return false }
+}
+
 /** 解析 DSH_HOME 环境变量（与宿主 dsh-home-paths 同规则：空白 = 未设；支持 ~ 与 ~/ 展开） */
 function resolveDshHomeEnv(raw: string | undefined, home: string): string | null {
   const v = (raw ?? '').trim()
@@ -58,6 +64,11 @@ const DSH_HOME = (() => {
   try { const h = inferDshHomeFromModuleDir(dirname(fileURLToPath(import.meta.url))); if (h) return h } catch {}
   try { const h = inferDshHomeFromModuleDir(realpathSync(dirname(fileURLToPath(import.meta.url)))); if (h) return h } catch {}
   return resolveDshHomeEnv(process.env.DSH_HOME, homedir()) ?? pathResolve(homedir(), '.dsh')
+})()
+
+/** 本地编译安装（link:）标记：命中则健康路由上报 dev:true，客户端侧栏默认标题追加「（开发中）」 */
+const DEV_INSTALL = (() => {
+  try { return isLocalDevInstall(dirname(fileURLToPath(import.meta.url))) } catch { return false }
 })()
 
 export const HEALTH_PATH = '/api/worktable/health'
@@ -228,6 +239,579 @@ function gitExec(args: string[], cwd: string): Promise<string> {
   })
 }
 
+/* ---------- 流水线 API 触发 ---------- */
+const PIPELINE_RUN_API_PATH = '/api/worktable/pipeline/run'
+const PIPELINE_RUN_PRESETS = new Set(['cleanup', 'check', 'profiling', 'promCollect'])
+const PIPELINE_RUN_BODY_LIMIT = 64 * 1024
+const PIPELINE_REMOTE_JSON_LIMIT = 2 * 1024 * 1024
+const PIPELINE_REMOTE_TEXT_LIMIT = 16 * 1024 * 1024
+
+function own(obj: any, key: string): boolean {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key)
+}
+
+function stringList(value: any): string[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean)))
+}
+
+function pipelineApiRequestError(status: number, message: string): Error {
+  const error: any = new Error(message)
+  error.status = status
+  return error
+}
+
+/** 流水线启动属于有副作用的部署入口：请求体必须严格解析，禁止畸形 JSON 静默退化成默认运行。 */
+async function readPipelineApiBody(req: any): Promise<Record<string, any>> {
+  const rawLength = req && req.headers ? req.headers['content-length'] : undefined
+  const contentLength = Array.isArray(rawLength) ? Number(rawLength[0]) : Number(rawLength)
+  if (Number.isFinite(contentLength) && contentLength > PIPELINE_RUN_BODY_LIMIT) {
+    throw pipelineApiRequestError(413, 'request body too large')
+  }
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const raw of req) {
+    const chunk = typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw)
+    size += chunk.length
+    if (size > PIPELINE_RUN_BODY_LIMIT) throw pipelineApiRequestError(413, 'request body too large')
+    chunks.push(chunk)
+  }
+  if (!size) return {}
+  const rawType = req && req.headers ? req.headers['content-type'] : ''
+  const contentType = String(Array.isArray(rawType) ? rawType[0] : (rawType || '')).split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'application/json') throw pipelineApiRequestError(415, 'content-type must be application/json')
+  let value: any
+  try { value = JSON.parse(Buffer.concat(chunks, size).toString('utf8')) } catch { throw pipelineApiRequestError(400, 'invalid JSON') }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw pipelineApiRequestError(400, 'JSON body must be an object')
+  return value
+}
+
+function pipelineRunDefaults(value: any) {
+  const defaults = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    environmentIds: stringList(defaults.environmentIds),
+    repositoryId: typeof defaults.repositoryId === 'string' ? defaults.repositoryId.trim() : '',
+    branch: typeof defaults.branch === 'string' && defaults.branch.trim() ? defaults.branch.trim() : 'main',
+    strategy: typeof defaults.strategy === 'string' ? defaults.strategy.trim() : '',
+    presets: stringList(defaults.presets).filter((key) => PIPELINE_RUN_PRESETS.has(key)),
+  }
+}
+
+const SERVER_PRESET_META: Record<string, { id: string; name: string; block: boolean }> = {
+  cleanup: { id: '__cleanup__', name: '环境清理', block: false },
+  check: { id: '__check__', name: '环境检查', block: true },
+  profiling: { id: '__profiling__', name: 'Profiling', block: false },
+  promCollect: { id: '__prom_collect__', name: '收集普罗数据', block: false },
+}
+
+function serverPresetScript(key: string, config: any): any {
+  if (key === 'cleanup') return config.cleanupScript || null
+  if (key === 'check') return config.checkScript || null
+  if (key === 'profiling') return config.profilingScript || null
+  if (key === 'promCollect') {
+    const name = config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
+    if (!name) return null
+    return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
+  }
+  return null
+}
+
+function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
+  const selected = new Set(stringList(presets).filter((key) => PIPELINE_RUN_PRESETS.has(key)))
+  const seen = new Set<string>()
+  const materialize = (stage: any, key: string) => {
+    const meta = SERVER_PRESET_META[key]
+    seen.add(key)
+    return {
+      ...stage,
+      id: stage.id || meta.id,
+      name: stage.name || meta.name,
+      preset: true,
+      pkey: key,
+      presetBlock: meta.block,
+      script: serverPresetScript(key, config),
+    }
+  }
+  const out: any[] = []
+  for (const raw of Array.isArray(stages) ? stages : []) {
+    const stage = raw && typeof raw === 'object' ? { ...raw } : raw
+    if (!stage || !stage.preset) { if (stage) out.push(stage); continue }
+    const key = typeof stage.pkey === 'string' ? stage.pkey : ''
+    if (!selected.has(key) || !SERVER_PRESET_META[key]) continue
+    out.push(materialize(stage, key))
+  }
+  const missingFront = ['cleanup', 'check'].filter((key) => selected.has(key) && !seen.has(key))
+    .map((key) => materialize({}, key))
+  const missingBack = ['profiling', 'promCollect'].filter((key) => selected.has(key) && !seen.has(key))
+    .map((key) => materialize({}, key))
+  return missingFront.concat(out, missingBack)
+}
+
+function serverRunVariables(runCtx: any, varsPool?: Record<string, string>): Record<string, string> {
+  const vars: Record<string, string> = {}
+  const first = Array.isArray(runCtx.envs) ? runCtx.envs[0] : null
+  const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
+  if ((first && first.ip) || runCtx.env) vars.TARGET_IP = String((first && first.ip) || runCtx.env)
+  if (Array.isArray(runCtx.envs)) vars.TARGET_IPS = JSON.stringify(runCtx.envs.map((item: any) => item && item.ip))
+  if (runCtx.image) vars.IMAGE_NAME = String(runCtx.image)
+  if (runCtx.tag) vars.IMAGE_TAG = String(runCtx.tag)
+  if (runCtx.pipelineName) vars.PIPELINE_NAME = String(runCtx.pipelineName)
+  if (repository.url) vars.GIT_URL = String(repository.url)
+  if (runCtx.branch) vars.GIT_BRANCH = String(runCtx.branch)
+  if (runCtx.strategy) { vars.DEPLOY_STRATEGY = String(runCtx.strategy); vars.arch = String(runCtx.strategy) }
+  if (runCtx.by) { vars.BY = String(runCtx.by); vars.EXECUTOR = String(runCtx.by) }
+  if (runCtx.archive) {
+    vars.ARCHIVE_DIR = String(runCtx.archive)
+    vars.ARCHIVE_FOLDER = String(runCtx.archive)
+    if (runCtx.pipelineName) vars.ARCHIVE_PIPELINE = String(runCtx.pipelineName)
+    if (runCtx.tag) vars.ARCHIVE_TAG = String(runCtx.tag)
+  }
+  if (varsPool) for (const key of Object.keys(varsPool)) vars[key] = String(varsPool[key])
+  return vars
+}
+
+function substituteServerRunVars(value: any, vars: Record<string, string>): string {
+  const text = String(value === undefined || value === null ? '' : value)
+  const single = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(text)
+  if (single && vars[single[1]] === undefined) return ''
+  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key) => vars[key] === undefined ? match : vars[key])
+}
+
+function substituteServerUrl(value: any, vars: Record<string, string>): string {
+  return String(value || '').replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, key) => {
+    const replacement = vars[key]
+    return replacement === undefined || replacement === '' ? match : encodeURIComponent(replacement)
+  })
+}
+
+function serverStageDeadline(stage: any): number {
+  const seconds = Number(stage && stage.timeout)
+  return Number.isFinite(seconds) && seconds > 0 ? Date.now() + Math.min(Math.max(seconds, 1), 3600) * 1000 : 0
+}
+
+function ensureServerStageTime(deadline: number, label: string) {
+  if (deadline && Date.now() >= deadline) throw new Error(label + '等待超时')
+}
+
+function serverHeaderValue(headers: any, name: string): string {
+  if (!headers) return ''
+  if (typeof headers.get === 'function') return String(headers.get(name) || '')
+  const wanted = name.toLowerCase()
+  for (const key of Object.keys(headers)) if (key.toLowerCase() === wanted) return String(headers[key] || '')
+  return ''
+}
+
+async function readServerResponseText(response: any, maxBytes: number, label: string): Promise<string> {
+  const declared = Number(serverHeaderValue(response && response.headers, 'content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try { if (response.body && typeof response.body.cancel === 'function') await response.body.cancel() } catch {}
+    throw new Error(label + '响应正文超过 ' + maxBytes + ' 字节上限')
+  }
+  const body = response && response.body
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader()
+    const chunks: Buffer[] = []
+    let size = 0
+    try {
+      for (;;) {
+        const item = await reader.read()
+        if (item.done) break
+        const chunk = Buffer.from(item.value)
+        size += chunk.length
+        if (size > maxBytes) { try { await reader.cancel() } catch {}; throw new Error(label + '响应正文超过 ' + maxBytes + ' 字节上限') }
+        chunks.push(chunk)
+      }
+    } finally {
+      try { if (typeof reader.releaseLock === 'function') reader.releaseLock() } catch {}
+    }
+    return Buffer.concat(chunks, size).toString('utf8')
+  }
+  if (body && typeof body[Symbol.asyncIterator] === 'function') {
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const raw of body) {
+      const chunk = Buffer.from(raw)
+      size += chunk.length
+      if (size > maxBytes) { try { if (typeof body.destroy === 'function') body.destroy() } catch {}; throw new Error(label + '响应正文超过 ' + maxBytes + ' 字节上限') }
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks, size).toString('utf8')
+  }
+  const text = String(await response.text())
+  if (Buffer.byteLength(text) > maxBytes) throw new Error(label + '响应正文超过 ' + maxBytes + ' 字节上限')
+  return text
+}
+
+async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, maxBytes = PIPELINE_REMOTE_TEXT_LIMIT): Promise<{ response: any; text: string }> {
+  ensureServerStageTime(deadline, label)
+  const controller = deadline ? new AbortController() : null
+  const timeout = controller ? setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now())) : null
+  try {
+    const response = await fetchFn(url, controller ? { ...(options || {}), signal: controller.signal } : (options || {}))
+    const text = await readServerResponseText(response, maxBytes, label)
+    return { response, text }
+  } catch (error) {
+    if (controller && controller.signal.aborted) throw new Error(label + '等待超时')
+    throw error
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+async function serverFetchJson(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string): Promise<any> {
+  const result = await serverFetchResponse(fetchFn, url, options, deadline, label, PIPELINE_REMOTE_JSON_LIMIT)
+  if (result.response.status < 200 || result.response.status >= 300) {
+    const error: any = new Error(label + ' HTTP ' + result.response.status)
+    error.httpStatus = Number(result.response.status)
+    throw error
+  }
+  try { return JSON.parse(result.text || '{}') } catch { throw new Error(label + ' 返回了无效 JSON') }
+}
+
+function serverBasicAuth(config: any): Record<string, string> {
+  if (!config || (!config.user && !config.token)) return {}
+  return { Authorization: 'Basic ' + Buffer.from(String(config.user || '') + ':' + String(config.token || '')).toString('base64') }
+}
+
+function serverJenkinsJobPath(name: string): string {
+  return '/job/' + String(name).split('/').filter(Boolean).map(encodeURIComponent).join('/job/') + '/'
+}
+
+function serverStageUrl(stage: any): string {
+  if (stage && stage.url && stage.url.url !== undefined) return String(stage.url.url || '').trim()
+  return stage && stage.jenkins && stage.jenkins.job ? String(stage.jenkins.job).trim() : ''
+}
+
+function serverStageOutVars(stage: any): string {
+  if (stage && stage.url && stage.url.outVars) return String(stage.url.outVars)
+  return stage && stage.jenkins && stage.jenkins.outVars ? String(stage.jenkins.outVars) : ''
+}
+
+function normalizeServerHttpBody(text: string): string {
+  try {
+    const value = JSON.parse(text)
+    return value && typeof value === 'object' ? JSON.stringify(value) : text
+  } catch { return text }
+}
+
+async function executeServerHttpStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number) => Promise<void> }): Promise<{ code: number; stdout: string; stderr: string }> {
+  const raw = serverStageUrl(stage)
+  const deadline = serverStageDeadline(stage)
+  try {
+    if (!raw) throw new Error('HTTP 阶段未配置请求地址')
+    const vars = serverRunVariables(runCtx, varsPool)
+    const configuredJenkins = config && config.jenkins && typeof config.jenkins === 'object' ? config.jenkins : {}
+    const auth = serverBasicAuth(configuredJenkins)
+    const isUrl = /^https?:\/\//i.test(raw)
+    const configuredBase = String(configuredJenkins.url || '').replace(/\/+$/, '')
+    let base = configuredBase
+    let pollHeaders: Record<string, string> = auth
+    let jobPath = ''
+    let triggerUrl = ''
+    let triggerOptions: any = {}
+    if (isUrl) {
+      triggerUrl = substituteServerUrl(raw, vars)
+      const parsed = new URL(triggerUrl)
+      const jobAt = parsed.pathname.indexOf('/job/')
+      if (jobAt >= 0) {
+        const triggerBase = parsed.origin + parsed.pathname.slice(0, jobAt).replace(/\/+$/, '')
+        base = configuredBase || triggerBase
+        pollHeaders = configuredBase ? auth : {}
+        jobPath = parsed.pathname.slice(jobAt).replace(/\/+$/, '').replace(/\/(buildWithParameters|build)$/i, '') + '/'
+      }
+      triggerOptions = { method: 'GET', redirect: 'manual' }
+    } else {
+      if (!base) throw new Error('Jenkins 服务地址未配置')
+      jobPath = serverJenkinsJobPath(raw)
+      triggerUrl = base + jobPath + 'buildWithParameters'
+      const safeParams = Object.keys(vars).filter((key) => !/PASSWORD|TOKEN|TARGET_HOSTS/.test(key))
+      const form = new URLSearchParams()
+      safeParams.forEach((key) => form.set(key, vars[key]))
+      const headers: Record<string, string> = { ...auth, 'Content-Type': 'application/x-www-form-urlencoded' }
+      try {
+        const crumb = await serverFetchJson(deps.fetchFn, base + '/crumbIssuer/api/json', { method: 'GET', headers: auth }, deadline, 'Jenkins crumb')
+        if (crumb && crumb.crumbRequestField && crumb.crumb) headers[String(crumb.crumbRequestField)] = String(crumb.crumb)
+      } catch { /* API token 常见配置不要求 crumb */ }
+      triggerOptions = { method: 'POST', headers, body: form.toString(), redirect: 'manual' }
+    }
+
+    const triggered = await serverFetchResponse(deps.fetchFn, triggerUrl, triggerOptions, deadline, isUrl ? 'HTTP 请求' : 'Jenkins 触发')
+    if (triggered.response.status < 200 || triggered.response.status >= 400) {
+      throw new Error((isUrl ? 'HTTP 请求' : 'Jenkins 触发') + ' HTTP ' + triggered.response.status)
+    }
+    if (!jobPath) return { code: 0, stdout: normalizeServerHttpBody(triggered.text), stderr: '' }
+
+    /* nextBuildNumber 在其他调用方并发触发时会绑定错构建。Jenkins 触发响应的 Location 唯一指向
+       本次 queue item，必须先等该队列项给出 executable.number，再轮询精确构建号。 */
+    const location = serverHeaderValue(triggered.response.headers, 'location')
+    if (!location) throw new Error('Jenkins 触发响应缺少 queue Location，无法可靠关联本次构建')
+    let queuePath = ''
+    try {
+      const parsedLocation = new URL(location, triggerUrl)
+      const queueAt = parsedLocation.pathname.indexOf('/queue/item/')
+      if (queueAt >= 0) queuePath = parsedLocation.pathname.slice(queueAt).replace(/\/+$/, '')
+    } catch { /* 下方统一报错 */ }
+    if (!queuePath) throw new Error('Jenkins queue Location 无效，无法可靠关联本次构建')
+    const queueUrl = base + queuePath + '/api/json'
+    let buildNumber: number | null = null
+    while (buildNumber === null) {
+      ensureServerStageTime(deadline, 'Jenkins 排队')
+      try {
+        const queued = await serverFetchJson(deps.fetchFn, queueUrl, { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 队列')
+        if (queued && queued.cancelled) throw new Error('Jenkins 队列任务已取消')
+        const number = Number(queued && queued.executable && queued.executable.number)
+        if (Number.isInteger(number) && number > 0) buildNumber = number
+      } catch (error) {
+        ensureServerStageTime(deadline, 'Jenkins 排队')
+        if (Number(error && (error as any).httpStatus) !== 404) throw error
+      }
+      if (buildNumber === null) await deps.sleep(1000)
+    }
+
+    let result = ''
+    for (;;) {
+      ensureServerStageTime(deadline, 'Jenkins 构建')
+      try {
+        const info = await serverFetchJson(deps.fetchFn, base + jobPath + buildNumber + '/api/json?tree=number,building,result,duration', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 构建')
+        if (Number(info && info.number) === buildNumber && !info.building && info.result) { result = String(info.result); break }
+      } catch (error) {
+        ensureServerStageTime(deadline, 'Jenkins 构建')
+        if (Number(error && (error as any).httpStatus) !== 404) throw error
+      }
+      await deps.sleep(2000)
+    }
+    let consoleText = ''
+    try {
+      const consoleResult = await serverFetchResponse(deps.fetchFn, base + jobPath + buildNumber + '/consoleText', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 控制台')
+      if (consoleResult.response.status >= 200 && consoleResult.response.status < 300) consoleText = consoleResult.text
+    } catch { /* 控制台读取失败不覆盖真实构建结果 */ }
+    const stdout = [triggered.text, consoleText].filter(Boolean).join('\n') || ('Jenkins build #' + buildNumber + ' ' + result)
+    return { code: result === 'SUCCESS' ? 0 : 1, stdout, stderr: result === 'SUCCESS' ? '' : 'Jenkins 构建结果 ' + result }
+  } catch (error) {
+    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
+  }
+}
+
+function serverWrappedList(value: any, keys: string[]): any[] {
+  if (Array.isArray(value)) return value
+  if (!value || typeof value !== 'object') return []
+  for (const key of keys) if (Array.isArray(value[key])) return value[key]
+  return []
+}
+
+function serverEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
+  const status = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  // 失败优先：completed_with_errors / not_completed 等复合值绝不能被 completed 子串误判成功。
+  if (/fail|error|cancel|abort|kill|stop|timeout/.test(status) || /^not_/.test(status)) return 'failed'
+  if (new Set(['success', 'succeeded', 'done', 'completed', 'completed_successfully', 'passed', 'finished']).has(status)) return 'success'
+  return 'running'
+}
+
+async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number) => Promise<void> }): Promise<{ code: number; stdout: string; stderr: string }> {
+  const deadline = serverStageDeadline(stage)
+  try {
+    const service = config && config.evaltok && typeof config.evaltok === 'object' ? config.evaltok : {}
+    const base = String(service.url || '').replace(/\/+$/, '')
+    if (!base) throw new Error('EvalTokens 服务地址未配置')
+    const headers: Record<string, string> = service.token ? { Authorization: 'Bearer ' + String(service.token) } : {}
+    const vars = serverRunVariables(runCtx, varsPool)
+    const detail = stage && stage.evaltokens && typeof stage.evaltokens === 'object' ? stage.evaltokens : {}
+    const requestedId = substituteServerRunVars(detail.taskId || '', vars).trim()
+    const requestedName = substituteServerRunVars(detail.taskName || '', vars).trim()
+    if (!requestedId && !requestedName) throw new Error('未选择 EvalTokens 任务')
+    const tasksData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表')
+    const tasks = serverWrappedList(tasksData, ['data', 'tasks', 'list', 'items', 'results'])
+    const idOf = (item: any) => String((item && (item.id || item.task_id || item.uuid || item._id)) || '')
+    const nameOf = (item: any) => String((item && (item.name || item.title || item.task_name || item.display_name)) || '')
+    const task = (requestedId ? tasks.find((item) => idOf(item) === requestedId) : null)
+      || (requestedId ? tasks.find((item) => nameOf(item) === requestedId) : null)
+      || (requestedName ? tasks.find((item) => nameOf(item) === requestedName) : null)
+    if (!task) throw new Error('未在 EvalTokens 服务找到匹配任务：' + (requestedId || requestedName))
+    const taskId = idOf(task)
+    if (!taskId) throw new Error('匹配的 EvalTokens 任务缺少 task_id')
+    const input: Record<string, string> = {}
+    if (detail.values && typeof detail.values === 'object' && !Array.isArray(detail.values)) {
+      for (const key of Object.keys(detail.values)) {
+        const value = substituteServerRunVars(detail.values[key], vars)
+        if (value !== '') input[key] = value
+      }
+    }
+    const startHeaders = { ...headers, 'Content-Type': 'application/json' }
+    const started = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
+      method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
+    }, deadline, 'EvalTokens 启动任务')
+    const runId = String((started && started.run_id) || '')
+    if (!runId) throw new Error('EvalTokens 启动任务未返回 run_id')
+    let current: any = started
+    for (;;) {
+      ensureServerStageTime(deadline, 'EvalTokens 任务')
+      const runsData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表')
+      const runs = serverWrappedList(runsData, ['runs', 'data', 'items', 'results'])
+      const matched = runs.find((item) => String((item && (item.run_id || item.id)) || '') === runId)
+      if (matched) current = matched
+      const state = matched ? serverEvaltokensStatus(current.status || current.state || current.phase) : 'running'
+      if (state !== 'running') {
+        const stdout = JSON.stringify(current)
+        return { code: state === 'success' ? 0 : 1, stdout, stderr: state === 'success' ? '' : 'EvalTokens ' + state }
+      }
+      await deps.sleep(3000)
+    }
+  } catch (error) {
+    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
+  }
+}
+
+function buildServerPromCollectEnv(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, runStartedAt: number): Record<string, string> {
+  const detail = stage && stage.prom && typeof stage.prom === 'object' ? stage.prom : {}
+  const parseFixed = (value: any) => value ? new Date(String(value)).getTime() : null
+  const fixedStart = parseFixed(detail.startTime)
+  const fixedEnd = parseFixed(detail.endTime)
+  if ((fixedStart !== null && !Number.isFinite(fixedStart)) || (fixedEnd !== null && !Number.isFinite(fixedEnd))) throw new Error('普罗采集时间格式无效')
+  const startMs = fixedStart === null ? runStartedAt : fixedStart
+  const endMs = fixedEnd === null ? Math.max(Date.now(), startMs + 1) : fixedEnd
+  if (startMs >= endMs) throw new Error('普罗采集开始时间必须早于结束时间')
+  const vars = serverRunVariables(runCtx, varsPool)
+  const env: Record<string, string> = {
+    METRICS_ACTION: 'collect',
+    PROM_START: new Date(startMs).toISOString(),
+    PROM_END: new Date(endMs).toISOString(),
+    VLLM_METRICS_START: String(Math.floor(startMs / 1000)),
+    VLLM_METRICS_END: String(Math.floor(endMs / 1000)),
+    PROMETHEUS_URL: String(config && config.prom && config.prom.url ? config.prom.url : '').trim(),
+  }
+  const model = substituteServerRunVars(detail.modelName === undefined ? '${MODEL_PATH}' : detail.modelName, vars).trim()
+  const namespace = substituteServerRunVars(detail.xdsNamespace === undefined ? '${DEPLOY_STRATEGY}-${BY}' : detail.xdsNamespace, vars).trim()
+  if (model) { env.ARCH_NAME = model; env.MODEL_NAME = model }
+  if (namespace) { env.NAMESPACE = namespace; env.XDS_NAMESPACE = namespace }
+  if (runCtx.archive) {
+    env.ARCHIVE_FOLDER = String(runCtx.archive)
+    env.METRICS_OUTPUT_DIR = String(runCtx.archive).replace(/\/+$/, '') + '/metrics'
+  }
+  return env
+}
+
+function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: string): { plan?: any; status?: number; error?: string } {
+  const config = store && store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+  const pipelines = Array.isArray(config.pipelines) ? config.pipelines : []
+  const pipeline = pipelines.find((item: any) => item && item.id === pipelineId)
+  if (!pipeline) return { status: 404, error: 'pipeline not found' }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { status: 400, error: 'JSON body must be an object' }
+  const input = body
+  const rawDefaults = pipeline.defaults && typeof pipeline.defaults === 'object' && !Array.isArray(pipeline.defaults) ? pipeline.defaults : {}
+  const defaults = pipelineRunDefaults(pipeline.defaults)
+
+  const environments = Array.isArray(config.environments) ? config.environments.filter((item: any) => item && typeof item.id === 'string') : []
+  const explicitEnvironments = own(input, 'environmentIds')
+  if (explicitEnvironments && (!Array.isArray(input.environmentIds) || input.environmentIds.some((item: any) => typeof item !== 'string' || !item.trim()))) {
+    return { status: 400, error: 'invalid environmentIds' }
+  }
+  if (!explicitEnvironments && own(rawDefaults, 'environmentIds') && (!Array.isArray(rawDefaults.environmentIds)
+    || rawDefaults.environmentIds.some((item: any) => typeof item !== 'string' || !item.trim()))) {
+    return { status: 409, error: 'invalid configured environmentIds' }
+  }
+  const requestedEnvironmentIds = explicitEnvironments ? stringList(input.environmentIds) : defaults.environmentIds
+  if (explicitEnvironments && !requestedEnvironmentIds.length) return { status: 400, error: 'environmentIds must not be empty' }
+  let selectedEnvironments: any[] = []
+  if (requestedEnvironmentIds.length) {
+    selectedEnvironments = requestedEnvironmentIds.map((id) => environments.find((item: any) => item.id === id))
+    if (selectedEnvironments.some((item) => !item)) {
+      return { status: explicitEnvironments ? 400 : 409, error: explicitEnvironments ? 'environment not found' : 'configured environment not found' }
+    }
+  } else if (environments.length) selectedEnvironments = [environments[0]]   // 仅旧流水线未配置默认环境时兼容首项
+  if (!selectedEnvironments.length) return { status: 400, error: 'environment not found' }
+
+  const repositories = Array.isArray(config.repositories) ? config.repositories.filter((item: any) => item && typeof item.id === 'string') : []
+  const explicitRepository = own(input, 'repositoryId')
+  if (explicitRepository && (typeof input.repositoryId !== 'string' || !input.repositoryId.trim())) return { status: 400, error: 'invalid repositoryId' }
+  if (!explicitRepository && own(rawDefaults, 'repositoryId') && typeof rawDefaults.repositoryId !== 'string') {
+    return { status: 409, error: 'invalid configured repositoryId' }
+  }
+  const repositoryId = explicitRepository ? input.repositoryId.trim() : defaults.repositoryId
+  let repository: any = repositoryId ? repositories.find((item: any) => item.id === repositoryId) : null
+  if (repositoryId && !repository) {
+    return { status: explicitRepository ? 400 : 409, error: explicitRepository ? 'repository not found' : 'configured repository not found' }
+  }
+  if (!repository && !repositoryId && repositories.length) repository = repositories[0]   // 仅旧流水线未配置默认代码仓时兼容首项
+  if (own(input, 'repository')) {
+    if (!input.repository || typeof input.repository !== 'object' || Array.isArray(input.repository)) return { status: 400, error: 'invalid repository' }
+    const allowed = new Set(['name', 'url', 'user', 'pass'])
+    for (const key of Object.keys(input.repository)) {
+      if (!allowed.has(key)) return { status: 400, error: 'invalid repository.' + key }
+      if (typeof input.repository[key] !== 'string') return { status: 400, error: 'invalid repository.' + key }
+    }
+    repository = Object.assign({}, repository || {}, input.repository)
+  }
+
+  if (own(input, 'presets') && (!Array.isArray(input.presets)
+    || input.presets.some((item: any) => typeof item !== 'string' || !item.trim()))) return { status: 400, error: 'invalid presets' }
+  const presets = own(input, 'presets') ? stringList(input.presets) : defaults.presets
+  if (presets.some((key) => !PIPELINE_RUN_PRESETS.has(key))) return { status: 400, error: 'invalid preset' }
+  if (own(input, 'branch') && typeof input.branch !== 'string') return { status: 400, error: 'invalid branch' }
+  if (own(input, 'strategy') && typeof input.strategy !== 'string') return { status: 400, error: 'invalid strategy' }
+  if (own(input, 'by') && typeof input.by !== 'string') return { status: 400, error: 'invalid by' }
+
+  const branch = own(input, 'branch') && input.branch.trim() ? input.branch.trim() : defaults.branch
+  const strategy = own(input, 'strategy') ? input.strategy.trim() : defaults.strategy
+  const by = own(input, 'by') && input.by.trim() ? input.by.trim() : 'api'
+  const envs = selectedEnvironments.map((item: any) => ({ ...item }))
+  const repo = repository ? { ...repository } : null
+  return {
+    plan: {
+      id: runId,
+      runId,
+      pipelineId: pipeline.id,
+      pipelineName: pipeline.name || pipeline.id,
+      stages: JSON.parse(JSON.stringify(Array.isArray(pipeline.stages) ? pipeline.stages : [])),
+      env: envs.map((item: any) => item.ip || item.name || item.id).join('，'),
+      envs,
+      repository: repo,
+      repoId: repository && repository.id ? repository.id : null,
+      branch,
+      strategy,
+      presets,
+      by,
+      source: 'api',
+      createdAt: Date.now(),
+    },
+  }
+}
+
+function registerPipelineRunApi(webServer: any, deps: {
+  readStore: () => Promise<any>;
+  execute: (plan: any) => Promise<void>;
+  createRunId?: () => string;
+  warn?: (message: string) => void;
+}) {
+  webServer.register({
+    kind: 'prefix',
+    path: PIPELINE_RUN_API_PATH,
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
+        const suffix = pathname.slice(PIPELINE_RUN_API_PATH.length)
+        if (!suffix.startsWith('/') || suffix.length === 1) { json(res, 400, { error: 'missing pipeline id' }); return }
+        let pipelineId = ''
+        try { pipelineId = decodeURIComponent(suffix.slice(1)) } catch { json(res, 400, { error: 'invalid pipeline id' }); return }
+        if (!pipelineId || pipelineId.includes('/')) { json(res, 400, { error: 'invalid pipeline id' }); return }
+        const body = await readPipelineApiBody(req)
+        const runId = deps.createRunId ? deps.createRunId() : 'api-' + Date.now().toString(36) + '-' + Math.random().toString(16).slice(2, 8)
+        const built = buildPipelineApiRun(await deps.readStore(), pipelineId, body, runId)
+        if (!built.plan) { json(res, built.status || 400, { error: built.error || 'invalid request' }); return }
+        const plan = built.plan
+        Promise.resolve().then(() => deps.execute(plan)).catch((err) => {
+          if (deps.warn) deps.warn('流水线 API 运行 ' + runId + ' 失败：' + String(err && err.message ? err.message : err))
+        })
+        json(res, 202, { ok: true, accepted: true, runId, pipelineId: plan.pipelineId, pipelineName: plan.pipelineName })
+      } catch (err) {
+        const status = Number(err && (err as any).status) || 500
+        json(res, status, { error: String(err && (err as Error).message ? (err as Error).message : err) })
+      }
+    },
+  })
+}
+/* ---------- 流水线 API 触发结束 ---------- */
+
 /** git 状态快照（porcelain v1 -z；非仓库返回 isRepo:false） */
 async function gitStatus(cwd: string) {
   try {
@@ -310,7 +894,7 @@ export function apply(ctx: Context) {
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, home: DSH_HOME, ok: true })
+      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true })
     },
   })
 
@@ -541,6 +1125,79 @@ export function apply(ctx: Context) {
         res.writeHead(405); res.end()
       } catch (err) {
         json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // ---- 流水线导入导出：服务端备份（导出到服务器 / 从服务器导入）----
+  // 备份文件固定在 <DSH_HOME>/storages/pipeline-exports/ 下（多浏览器共用同一服务器目录，与浏览器本地下载互补），
+  // 文件名白名单校验（禁路径分隔符 / .. / 前导点、必须 .json 结尾），不提供任意路径读写；列表按 mtime 倒序、上限 200 条。
+  // 导出内容含节点密码与访问令牌明文，仅落本目录（页面菜单已标注勿外传）。list 用 GET，save/load 用 POST。
+  const PIPELINE_IO_DIR = pathResolve(DSH_HOME, 'storages', 'pipeline-exports')
+  const pipelineIoName = (name: unknown): string | null => {
+    if (typeof name !== 'string') return null
+    const n = name.trim()
+    if (!n || n.length > 120 || !n.endsWith('.json')) return null
+    if (n.startsWith('.') || n.includes('..') || n.includes('/') || n.includes('\\')) return null
+    return n
+  }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/io/list',
+    handler: async (_req: any, res: any) => {
+      try {
+        let names: string[] = []
+        try { names = await readdir(PIPELINE_IO_DIR) } catch { /* 目录不存在 = 尚无备份 */ }
+        const valid = names.map(pipelineIoName).filter((n): n is string => !!n)   // 白名单 + 规整（trim）后的真实文件名
+        const files = (await Promise.all(valid.map(async (n) => {
+          try {
+            const st = await fsStat(pathResolve(PIPELINE_IO_DIR, n))
+            return st.isFile() ? { name: n, size: st.size, mtime: st.mtimeMs } : null
+          } catch { return null }
+        }))).filter((f): f is { name: string; size: number; mtime: number } => !!f)
+          .sort((a, b) => b.mtime - a.mtime)
+          .slice(0, 200)
+        json(res, 200, { dir: PIPELINE_IO_DIR, files })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/io/save',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const name = pipelineIoName(body.name)
+        if (!name) { json(res, 400, { error: 'invalid name' }); return }
+        if (body.payload === undefined || body.payload === null) { json(res, 400, { error: 'missing payload' }); return }
+        const text = JSON.stringify(body.payload, null, 2)
+        if (text.length > 64 * 1024 * 1024) { json(res, 413, { error: 'payload too large' }); return }
+        await writeJsonAtomic(pathResolve(PIPELINE_IO_DIR, name), text)   // 自带 mkdir -p + tmp/rename 原子落盘
+        json(res, 200, { ok: true, name, path: pathResolve(PIPELINE_IO_DIR, name) })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/io/load',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const name = pipelineIoName(body.name)
+        if (!name) { json(res, 400, { error: 'invalid name' }); return }
+        const abs = pathResolve(PIPELINE_IO_DIR, name)
+        const st = await fsStat(abs)
+        if (st.size > 64 * 1024 * 1024) { json(res, 413, { error: 'file too large' }); return }
+        const text = await readFile(abs, 'utf8')
+        json(res, 200, { ok: true, name, data: JSON.parse(text) })
+      } catch (err: any) {
+        json(res, err?.code === 'ENOENT' ? 404 : 500, { error: String(err) })
       }
     },
   })
@@ -925,9 +1582,10 @@ export function apply(ctx: Context) {
     return dropped.length ? '[warn] 环境变量 ' + dropped.join('、') + ' 超过单变量 128KiB 上限，未注入；请用「输出变量」JSON 路径截取所需字段（如 XDS_BRANCH=items.0.name）' : null
   }
 
-  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number): Promise<{ code: number; stdout: string; stderr: string }> {
+  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
+    const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
     // ${VAR} 取值池（同页面 substRunVars）：运行级注入变量 + 上游阶段变量（同名时上游优先）
     const look: Record<string, string> = {}
     if ((ctx0 && ctx0.ip) || runCtx.env) look.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
@@ -935,10 +1593,14 @@ export function apply(ctx: Context) {
     if (runCtx.image) look.IMAGE_NAME = String(runCtx.image)
     if (runCtx.tag) look.IMAGE_TAG = String(runCtx.tag)
     if (runCtx.pipelineName) look.PIPELINE_NAME = String(runCtx.pipelineName)
+    if (repository.url) look.GIT_URL = String(repository.url)
     if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch)
     if (runCtx.strategy) { look.DEPLOY_STRATEGY = String(runCtx.strategy); look.arch = String(runCtx.strategy) }
     if (runCtx.by) { look.BY = String(runCtx.by); look.EXECUTOR = String(runCtx.by) }
+    if (repository.user) look.GIT_USER = String(repository.user)
+    if (repository.pass) look.GIT_PASSWORD = String(repository.pass)
     if (runCtx.archive) { look.ARCHIVE_DIR = String(runCtx.archive); look.ARCHIVE_FOLDER = String(runCtx.archive) }
+    if (extraEnv) Object.assign(look, extraEnv)
     Object.assign(look, pool)
     const args: string[] = []
     const env: Record<string, string> = {}
@@ -954,22 +1616,32 @@ export function apply(ctx: Context) {
     }
     // 与前端 execScript 一致：上游阶段变量（变量池）作为环境变量注入本阶段（脚本显式参数优先，运行级默认兜底）
     for (const k of Object.keys(pool)) { if (env[k] === undefined) env[k] = String(pool[k]) }
+    // 预设任务附加变量（如普罗 collect 动作/时间范围）：优先级低于脚本显式参数与上游变量，高于运行级默认。
+    if (extraEnv) for (const k of Object.keys(extraEnv)) { if (env[k] === undefined) env[k] = String(extraEnv[k]) }
     // 与前端 execScript 一致：注入运行上下文（脚本显式配置的同名参数优先）：
     //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
     //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
     //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；
-    //   PIPELINE_NAME=流水线名；GIT_BRANCH/DEPLOY_STRATEGY=分支与部署策略
+    //   PIPELINE_NAME=流水线名；GIT_URL/GIT_BRANCH/GIT_USER/GIT_PASSWORD=代码仓信息；DEPLOY_STRATEGY=部署策略
     if (env.TARGET_IP === undefined) env.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
     if (env.TARGET_IPS === undefined && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e: any) => e.ip))
     if (env.TARGET_HOSTS === undefined && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e: any) => ({ ip: e.ip, user: e.user || '', pass: e.pass || '' })))
+    if (env.TARGET_NODE_IP_MAP === undefined && runCtx.envs) {
+      const nodeIpMap: Record<string, string> = {}
+      for (const e of runCtx.envs || []) if (e.ip && e.nodeIp) nodeIpMap[e.ip] = e.nodeIp
+      if (Object.keys(nodeIpMap).length) env.TARGET_NODE_IP_MAP = JSON.stringify(nodeIpMap)
+    }
     if (env.IMAGE_NAME === undefined && runCtx.image) env.IMAGE_NAME = String(runCtx.image)
     if (env.IMAGE_TAG === undefined && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag)
     if (env.PIPELINE_NAME === undefined && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName)
+    if (env.GIT_URL === undefined && repository.url) env.GIT_URL = String(repository.url)
     if (env.GIT_BRANCH === undefined && runCtx.branch) env.GIT_BRANCH = String(runCtx.branch)
     if (env.DEPLOY_STRATEGY === undefined && runCtx.strategy) env.DEPLOY_STRATEGY = String(runCtx.strategy)
     if (env.arch === undefined && runCtx.strategy) env.arch = String(runCtx.strategy)
     if (env.BY === undefined && runCtx.by) env.BY = String(runCtx.by)
     if (env.EXECUTOR === undefined && runCtx.by) env.EXECUTOR = String(runCtx.by)
+    if (env.GIT_USER === undefined && repository.user) env.GIT_USER = String(repository.user)
+    if (env.GIT_PASSWORD === undefined && repository.pass) env.GIT_PASSWORD = String(repository.pass)
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
@@ -1053,7 +1725,18 @@ export function apply(ctx: Context) {
       archiveRoot = (dir || '/') + '/runs'
     }
     const folder = isSuffixRun ? String(pl.archive) : (archiveRoot ? archiveRoot + '/' + sanitizeFsName(pipeName) + '_' + nowCompactFull() : null)
-    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || '', branch: pl.branch || '', strategy: pl.strategy || '', by: pl.by || '' }
+    const runCtx = {
+      env: pl.env || '',
+      envs: Array.isArray(pl.envs) ? pl.envs : [],
+      repository: pl.repository && typeof pl.repository === 'object' ? pl.repository : null,
+      archive: folder,
+      tag,
+      pipelineName: pipeName,
+      image: pl.image || '',
+      branch: pl.branch || '',
+      strategy: pl.strategy || '',
+      by: pl.by || (pl.source === 'api' ? 'api' : 'schedule'),
+    }
     // 变量池（与页面 curRun.vars 一致）：定时后缀由页面登记时随计划快照上游阶段变量（pl.vars，
     // 见 pipeline.html registerStageTimers）；服务端阶段间同样按 KEY=VALUE 行 / 单行 JSON 累计、
     // 按阶段「输出变量」映射，作为环境变量注入后续阶段（脚本显式参数 > 上游变量 > 运行级默认）
@@ -1071,8 +1754,14 @@ export function apply(ctx: Context) {
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
     }
+    /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；旧定时计划没有该字段，
+       继续沿用全局 cleanupEnabled 行为，避免历史计划语义变化。 */
+    const apiPresetMode = Array.isArray(pl.presets)
+    const executionStages = apiPresetMode
+      ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
+      : (Array.isArray(pl.stages) ? pl.stages : [])
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
-    if (cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+    if (!apiPresetMode && cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
       const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool)
       const text = stageLogText(cfg.cleanupScript.name, r)
@@ -1082,19 +1771,46 @@ export function apply(ctx: Context) {
       profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
     }
     let seq = baseSeq + 1
-    for (const s of pl.stages || []) {
+    for (const s of executionStages) {
       const st0 = Date.now()
       let entry: any = null
+      let shouldStop = false
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
-      else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins' || s.kind === 'evaltokens') { entry = { status: 'success', text: '[定时执行] HTTP/EvalTokens 阶段：定时触发暂不支持，已跳过' } }   // 兼容旧计划中的 kind:'url'/'jenkins'（URL 请求阶段已改为 HTTP 阶段；EvalTokens 阶段同样仅前端运行期支持）
+      else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
+        const r = await executeServerHttpStage(s, runCtx, cfg, varsPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
+        Object.assign(varsPool, parseStageVars(r.stdout))
+        applyOutVars(serverStageOutVars(s), varsPool, parseStageJson(r.stdout), r.stdout)
+        entry = { status: r.code === 0 ? 'success' : 'failed', text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
+        if (r.code !== 0) { status = 'failed'; shouldStop = true }
+      } else if (s.kind === 'evaltokens') {
+        const r = await executeServerEvaltokensStage(s, runCtx, cfg, varsPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
+        Object.assign(varsPool, parseStageVars(r.stdout))
+        applyOutVars(s.evaltokens && s.evaltokens.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
+        entry = { status: r.code === 0 ? 'success' : 'failed', text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
+        if (r.code !== 0) { status = 'failed'; shouldStop = true }
+      }
       else if (s.script && s.script.path) {
-        const r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
+        let r: { code: number; stdout: string; stderr: string }
+        let timeout = s.timeout
+        let extraEnv: Record<string, string> | undefined
+        try {
+          if (s.preset && s.pkey === 'promCollect') {
+            extraEnv = buildServerPromCollectEnv(s, runCtx, cfg, varsPool, t0)
+            timeout = 0   // 普罗收集与页面一致：由采集脚本控制耗时，预设本身不套默认 120 秒上限
+          }
+          r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, timeout, extraEnv)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
+        } catch (error) {
+          r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
+        }
         // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
         // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
         Object.assign(varsPool, parseStageVars(r.stdout))
         applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
-        if (r.code !== 0) status = 'failed'
+        // 环境检查与普通任务失败会阻断；清理 / Profiling / 普罗收集属于非阻断辅助任务。
+        if (r.code !== 0 && (!s.preset || s.presetBlock)) { status = 'failed'; shouldStop = true }
+      } else if (s.preset) {
+        entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
       } else {
         await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
         entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
@@ -1105,7 +1821,7 @@ export function apply(ctx: Context) {
       pushHist(s.name, entry.status, entry.text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
       seq++
-      if (status === 'failed') break
+      if (shouldStop) break
     }
     // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
     //   定时后缀追加到页面登记时已写内容（去掉旧 [result] 行、profile 按阶段 id/name 合并）；独立计划整文件新建。
@@ -1135,7 +1851,7 @@ export function apply(ctx: Context) {
         profile.env = pl.env || ''
         profile.image = pl.image || ''
         profile.by = pl.by || 'schedule'
-        profile.source = isSuffixRun ? '定时后缀' : '定时计划'
+        profile.source = pl.source === 'api' ? 'API' : (isSuffixRun ? '定时后缀' : '定时计划')
         profile.result = status
         if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
         profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
@@ -1167,8 +1883,19 @@ export function apply(ctx: Context) {
       no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
       status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs: histLogs, ts: Date.now(),
       tag, archive: folder || null,
+      runId: pl.runId || null,
+      pipelineId: pl.pipelineId || null,
+      repoId: pl.repoId || (pl.repository && pl.repository.id) || null,
+      branch: pl.branch || '',
+      strategy: pl.strategy || '',
+      source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
+  registerPipelineRunApi(webServer, {
+    readStore: readPipelineStore,
+    execute: execPlan,
+    warn: (message) => ctx.logger?.warn?.('[tokens-worktable] ' + message),
+  })
   async function planTick() {
     const plans = await readPlansFile()
     const now = Date.now()
@@ -1223,10 +1950,14 @@ export function apply(ctx: Context) {
   // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。
   // 日志由执行端持有：按输出到达顺序串行写入，关闭文件后才确认归档成功；失败不改变脚本退出码。
   async function openExecLog(requested: unknown, header: string) {
+    const backlogLimit = 1024 * 1024
+    const resumeLimit = backlogLimit / 2
     const logFile = typeof requested === 'string' && requested ? pathResolve(requested) : null
     let file: Awaited<ReturnType<typeof fsOpen>> | null = null
     let logError = ''
     let pending = Promise.resolve()
+    let pendingBytes = 0
+    let drainWaiters: Array<() => void> = []
     let ended = false
     let lastNewline = true
     if (logFile) {
@@ -1234,14 +1965,30 @@ export function apply(ctx: Context) {
       catch (e) { logError = String(e) }
     }
     const write = (text: string) => {
-      if (!file || ended || !text || logError) return
+      if (!file || ended || !text || logError) return true
       lastNewline = text.endsWith('\n')
-      pending = pending.then(async () => { if (!logError) await file!.writeFile(text, 'utf8') }).catch(e => { logError = String(e) })
+      const bytes = Buffer.byteLength(text)
+      pendingBytes += bytes
+      pending = pending
+        .then(async () => { if (!logError) await file!.writeFile(text, 'utf8') })
+        .catch(e => { logError = String(e) })
+        .finally(() => {
+          pendingBytes = Math.max(0, pendingBytes - bytes)
+          if (pendingBytes <= resumeLimit && drainWaiters.length) {
+            const waiters = drainWaiters; drainWaiters = []
+            for (const resume of waiters) resume()
+          }
+        })
+      return pendingBytes < backlogLimit
     }
     write(header + '\n')
     return {
       info: () => logFile ? (logError ? { logError } : { logFile }) : {},
       write,
+      onceDrain(resume: () => void) {
+        if (!file || logError || pendingBytes <= resumeLimit) resume()
+        else drainWaiters.push(resume)
+      },
       async close(marker: string) {
         if (!ended) {
           write((lastNewline ? '' : '\n') + marker + '\n')
@@ -1282,10 +2029,21 @@ export function apply(ctx: Context) {
             const logged = await log.close('[exit ' + code + ']')
             if (!res.destroyed) json(res, 200, { code, stdout: String(stdout || ''), stderr: errorText, ...logged })
           })
+        let logBlocked = false
+        const writeLog = (text: string) => {
+          const writable = log.write(text)
+          if (writable || logBlocked) return
+          logBlocked = true
+          child.stdout?.pause(); child.stderr?.pause()
+          log.onceDrain(() => {
+            logBlocked = false
+            child.stdout?.resume(); child.stderr?.resume()
+          })
+        }
         child.stdout?.setEncoding('utf8')
         child.stderr?.setEncoding('utf8')
-        child.stdout?.on('data', (text: string) => log.write(text))
-        child.stderr?.on('data', (text: string) => log.write(text))
+        child.stdout?.on('data', writeLog)
+        child.stderr?.on('data', writeLog)
       } catch (err) {
         await failedLog?.close('[error] ' + String(err))
         json(res, 500, { error: String(err && err.message ? err.message : err) })
@@ -1320,14 +2078,36 @@ export function apply(ctx: Context) {
         let killTimer: ReturnType<typeof setTimeout> | null = null
         let abortTimer: ReturnType<typeof setTimeout> | null = null
         let finished = false
+        let outputPaused = false
+        let responseBlocked = false
+        let logBlocked = false
+        const STREAM_BACKLOG_LIMIT = 1024 * 1024
         const killTree = (sig: string) => {
           try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, sig); else child?.kill(sig as any) } catch {}
         }
+        const resumeOutput = () => {
+          /* 断连后 HTTP 背压已失效，但仍须受磁盘低水位约束地排空已终止进程的管道，
+             否则 close 可能一直等不到 stdio 收尾，日志文件也无法写入 [aborted] 后关闭。 */
+          if (logBlocked || finished || (!disconnected && responseBlocked)) return
+          outputPaused = false
+          child?.stdout?.resume()
+          child?.stderr?.resume()
+        }
+        const pauseOutput = () => {
+          if (outputPaused || !child) return
+          outputPaused = true
+          child.stdout?.pause()
+          child.stderr?.pause()
+        }
+        const responseDrained = () => { responseBlocked = false; resumeOutput() }
         // 建目录/打开文件也可能正在 await；提前监听断开，避免页面已关闭仍启动脚本。
         res.on('close', () => {
           if (finished) return
           disconnected = true
+          res.off?.('drain', responseDrained)
+          responseBlocked = false   // socket 已关闭，不再等待永远不会到来的 HTTP drain
           killTree('SIGTERM')
+          resumeOutput()             // 无磁盘积压时立即排空；有积压则由 log.onceDrain 恢复
           if (child) abortTimer = setTimeout(() => killTree('SIGKILL'), 1000)
         })
         const log = await openExecLog(body.logFile, '$ ' + interp + ' ' + scriptPath + (args.length ? ' ' + args.join(' ') : ''))
@@ -1337,23 +2117,37 @@ export function apply(ctx: Context) {
         }
         if (disconnected || res.destroyed) { finished = true; await log.close('[aborted]'); return }
         res.writeHead(200, { 'content-type': 'application/x-ndjson; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no', 'x-worktable-log': log.info().logFile ? 'server' : 'none' })
-        const send = (obj: unknown) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(obj) + '\n') }
+        const writeLog = (text: string) => {
+          const writable = log.write(text)
+          if (writable || logBlocked) return
+          logBlocked = true; pauseOutput()
+          log.onceDrain(() => { logBlocked = false; resumeOutput() })
+        }
+        const send = (obj: unknown) => {
+          if (res.writableEnded || res.destroyed) return
+          res.write(JSON.stringify(obj) + '\n')
+          // 正常的短暂背压仍允许 Node 合并小块；积压达到上限后暂停两个输出流，
+          // 防慢浏览器/网络让 ServerResponse 与日志写入 Promise 队列随任务输出无界增长。
+          if (!responseBlocked && Number(res.writableLength) >= STREAM_BACKLOG_LIMIT) {
+            responseBlocked = true; pauseOutput(); res.once('drain', responseDrained)
+          }
+        }
         if (body.logFile) send({ type: 'log', ...log.info() })
         // detached 让子进程成为独立进程组组长，终止时整个进程组一起收（脚本的子进程不残留孤儿）
         child = spawn(interp, [scriptPath, ...args], { cwd, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
-        if (oversizeWarn) { log.write(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
+        if (oversizeWarn) { writeLog(oversizeWarn + '\n'); send({ type: 'err', text: oversizeWarn + '\n' }) }
         let timedOut = false
         killTimer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; killTree('SIGKILL') }, timeoutMs) : null
         child.stdout!.setEncoding('utf8')
         child.stderr!.setEncoding('utf8')
-        child.stdout!.on('data', (text: string) => { log.write(text); send({ type: 'out', text }) })
-        child.stderr!.on('data', (text: string) => { log.write(text); send({ type: 'err', text }) })
+        child.stdout!.on('data', (text: string) => { writeLog(text); send({ type: 'out', text }) })
+        child.stderr!.on('data', (text: string) => { writeLog(text); send({ type: 'err', text }) })
         child.on('error', async (err: Error) => {               // ENOENT 等无法启动
           if (finished) return
           finished = true
           clearTimeout(killTimer)
           clearTimeout(abortTimer)
-          log.write(String(err.message) + '\n')
+          writeLog(String(err.message) + '\n')
           const logged = await log.close('[exit 1]')
           send({ type: 'error', message: String(err && err.message ? err.message : err) })
           send({ type: 'done', code: 1, ...logged })
@@ -1366,7 +2160,7 @@ export function apply(ctx: Context) {
           clearTimeout(abortTimer)
           if (timedOut) {
             const message = 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's'
-            log.write('\n' + message + '\n'); send({ type: 'error', message })
+            writeLog('\n' + message + '\n'); send({ type: 'error', message })
           }
           const exitCode = typeof code === 'number' ? code : 1
           const logged = await log.close(disconnected ? '[aborted]' : '[exit ' + exitCode + ']')
@@ -1397,6 +2191,44 @@ export function apply(ctx: Context) {
         json(res, 200, { ok: true })
       } catch (err) {
         json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 大文件流式写入（流水线归档）：原始请求体边读边写入同目录临时文件，完成后原子替换目标。
+  // 相比 /write 的 JSON {content}，避免大量日志在浏览器和服务端各额外复制 / 转义一整份。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/write-stream',
+    handler: async (req: any, res: any) => {
+      const limit = 256 * 1024 * 1024
+      let temp = ''
+      let file: Awaited<ReturnType<typeof fsOpen>> | null = null
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const u = new URL(req.url ?? '/', 'http://dsh.internal')
+        const p = u.searchParams.get('path') || ''
+        if (!p) { json(res, 400, { error: 'missing path' }); return }
+        const declared = Number(req.headers?.['content-length'])
+        if (Number.isFinite(declared) && declared > limit) { json(res, 413, { error: 'content too large' }); return }
+        const abs = pathResolve(p)
+        temp = abs + '.worktable-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.tmp'
+        file = await fsOpen(temp, 'wx')
+        let size = 0
+        for await (const chunk of req) {
+          const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+          size += data.length
+          if (size > limit) { const err: any = new Error('content too large'); err.statusCode = 413; throw err }
+          await file.writeFile(data)
+        }
+        await file.sync()
+        await file.close(); file = null
+        await fsRename(temp, abs); temp = ''
+        json(res, 200, { ok: true })
+      } catch (err: any) {
+        try { await file?.close() } catch {}
+        if (temp) { try { await fsUnlink(temp) } catch {} }
+        try { if (!res.writableEnded) json(res, err?.statusCode === 413 ? 413 : 500, { error: String(err?.message || err) }) } catch {}
       }
     },
   })

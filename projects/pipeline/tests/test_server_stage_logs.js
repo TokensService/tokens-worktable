@@ -16,10 +16,10 @@ test('预设任务请求断网不覆盖仍在服务端写入的文件',async()=>
     runSetSel:(r,id)=>{r.selId=id; if(ctx.viewRc===r) ctx.selectedId=id;},   // 与实现一致：聚焦时同步视图选中
     rcRender(){},rcOverall:(r,txt,cls,color)=>{r.overall={txt:txt,cls:cls,color:color||''};},
     advance(){},finish(){},
-    archiveFolderFor:()=>'/logs',taskLogFile:()=> 'cleanup.log',buildLog:()=>['partial'],
+    archiveFolderFor:()=>'/logs',taskLogFile:()=> 'cleanup.log',buildLog:()=>['partial'],buildLogParts:()=>['partial'],
     archiveTaskLog:async()=>{uploads++;},fetch:async()=>{throw new Error('disconnected');},
     AbortController,TextDecoder,setInterval,clearInterval,renderDetail(){},console};
-  vm.createContext(ctx);load('async function execStreaming(', 'function jkJobPath(',ctx);
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'function jkJobPath(',ctx);
   load('async function runPresetStep(', '/* ---------- 产物归档',ctx);
   load('function archiveStageLog(', 'function archiveRun(',ctx);
   const result=await ctx.execScript(s.script,0,null,rc,null,null,'/logs/cleanup.log');
@@ -67,10 +67,20 @@ test('完成时写入失败必须撤销早期接管确认',async()=>{
 });
 test('在途和已落盘的服务端日志不被中止/收尾的浏览器归档覆盖',()=>{
   let uploads=0;
-  const ctx={curRun:{},nodes:{},archiveFolderFor:()=>'/logs',buildLog:()=>['partial'],archiveTaskLog:()=>{uploads++;return Promise.resolve();}};
+  const ctx={curRun:{},nodes:{},archiveFolderFor:()=>'/logs',buildLog:()=>['partial'],buildLogParts:()=>['partial'],archiveTaskLog:()=>{uploads++;return Promise.resolve();}};
   vm.createContext(ctx);load('function archiveStageLog(', 'function archiveRun(',ctx);
   ctx.archiveStageLog({id:'a',name:'A',_serverLogPending:true},1);
   ctx.archiveStageLog({id:'a',name:'A',_serverLogFile:'/logs/a.log'},1);
   assert.equal(uploads,0);
   ctx.archiveStageLog({id:'a',name:'A'},1);assert.equal(uploads,1,'旧插件仍须补写');
+});
+test('浏览器归档兜底直接传递日志分片，不先构建逐行数组',async()=>{
+  const expected=['header\n','x'.repeat(1024*1024),'\n[exit 0]'];let uploaded=null;
+  const ctx={curRun:{nodes:{a:{status:'success'}}},nodes:{},archiveFolderFor:()=>'/logs',
+    buildLog:()=>{throw new Error('归档路径不应调用逐行 buildLog');},buildLogParts:()=>expected,
+    archiveTaskLog:async(_rc,_seq,_name,parts)=>{uploaded=parts;}};
+  vm.createContext(ctx);load('function archiveStageLog(', 'function archiveRun(',ctx);
+  ctx.archiveStageLog({id:'a',name:'A'},1,ctx.curRun);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(uploaded,expected);
 });

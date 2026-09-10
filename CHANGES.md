@@ -1,5 +1,137 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线支持按条目通过 API 启动（`src/index.ts` + `projects/pipeline/pipeline.html`）：新增
+  `POST /api/worktable/pipeline/run/<pipelineId>`，请求异步接受并返回 `runId`；可设置目标环境 ID、代码仓 ID、
+  分支、部署策略、预设任务和触发方，任一字段未传时逐项采用该流水线默认值。API 复用服务端计划执行器，
+  按流水线中的预设任务位置展开执行，将代码仓 / 分支 / 策略注入脚本环境，并把 `runId`、流水线 ID、
+  代码仓 ID 等关联信息写入历史。编辑器「载入脚本」下方旧说明已移除，新增「默认环境」配置区，可保存
+  多个目标环境、代码仓、分支、部署策略和预设任务；顶部运行框参数仍作为显式覆盖，列表 `▶` 直接运行
+  使用该条流水线默认值。每行新增 `API` 按钮，展示可复制的端点、完整 JSON 请求体和 curl 示例；接口沿用
+  dsh web 登录守卫。旧流水线、服务端刷新及导入数据自动补齐默认结构，编辑草稿、复制、导入导出与服务端
+  持久化均保留这些默认值。启动接口使用 64 KiB 上限的严格 JSON 对象解析，畸形/错误媒体类型/超限请求不再
+  退化为默认部署；显式空环境以及失效的默认环境/代码仓会直接拒绝，不会静默改投首项。HTTP/Jenkins 与
+  EvalTokens 阶段现可在 API 服务端真实执行并传递输出变量；普罗采集预设注入 `METRICS_ACTION=collect`、运行
+  时间窗、服务地址、模型/命名空间及归档目录。另支持请求内用 `repository` 一次性覆盖代码仓地址和凭据，
+  仅进入本次执行，不写入服务端配置或历史。Jenkins 触发后跟随响应中的 queue `Location` 等待该队列项实际
+  分配的构建号，避免并发触发串号；EvalTokens 终态按明确成功值及失败优先级判定；远端 JSON / 正文读取分别
+  限制为 2 MiB / 16 MiB。新增服务端 API / 执行器测试及客户端默认值、覆盖、预设快照和 API 弹窗测试。
+
+- 流水线阶段「耗时」默认 0 并在编辑时保留原值（`projects/pipeline/pipeline.html`）：`newStage` 默认
+  `dur:5` 改为 `dur:0`，0 表示不设置耗时——本地模拟阶段不再空转等待，运行即结束（`runStage` 对
+  `dur<=0` 走即时完成路径，sub 阶段标记、回显归档、渲染推进与计时路径一致，也不再启动计时器）。
+  原先编辑器三处把 0/空值回退成 5 秒（输入框 `s.dur||5`、change 处理 `Math.max(1,…||5)`、保存
+  `Math.max(1,parseInt(s.dur)||5)`），导致已设为 0 的阶段一编辑就被改回 5 秒；现统一改为保留原值
+  （`s.dur||0` / `Math.max(0,…||0)`），输入框 `min` 放开到 0，留空即 0。编辑器「模拟」类型提示与
+  阶段说明同步标注「0=不等待」。新增 `projects/pipeline/tests/test_stage_dur_default.js`（新建阶段
+  默认 0、编辑器保留 0/非零值、dur=0 即时完成不启动计时器、dur>0 仍按计时器推进）。
+- 流水线多运行并行时支持点击查看阶段详情，运行队列条目展示完整运行信息（`projects/pipeline/pipeline.html`）：
+  - 「流水线任务」行内对有在跑运行的流水线显示「运行中」徽标（焦点运行另标「（查看中）」）；点击该行
+    （或运行框下拉选中）不再弹「暂不能切换」，而是聚焦其最近一次启动的运行，编排区/阶段详情即切换到
+    该次运行的实时视图（同一流水线并行多个运行时队列条目仍可各自精确聚焦）。新增 `runsOfPipeline` /
+    `latestRunOfPipeline` 助手；`selectPipeline` 在有在跑运行时一律转为 `focusRun`。
+  - 运行队列（本页在跑 / 排队 / 其他浏览器在场快照）每个条目在标题行下新增运行信息行：环境、代码仓、
+    分支、部署策略（执行人、来源在标题行）。排队项入队时快照 `repoName`（`runPipeline`）；跨浏览器在场
+    快照 `publishQueue` 的 runs/queue 同步携带 repoName/branch/strategy，远端旧客户端缺字段按 — 占位。
+  - 「流水线任务」表的运行徽标经 `renderQueue` 末尾按签名（在跑运行集 + 焦点运行）联动刷新，避免 5 秒
+    轮询无谓重建表格打断行点击。
+  - `test_pipeline_row_run.js` 补齐新助手/焦点上下文，新增回归测试（行点击聚焦在跑运行不切换选用、
+    无运行行仍走选用、多运行取最近启动、「运行中/查看中」徽标）。
+- 修复流水线编辑器出现两张任务卡同时显亮（`projects/pipeline/pipeline.html`）：`renderStageEditor`
+  原先除选中卡的 `plstage-sel` 高亮外，还按 `editFocusIdx` 给焦点卡内联 accent 边框/阴影，两套通道
+  互不知晓——上移/下移/序号/拖拽移动未选中卡，或插入新卡后再点选其他卡，内联样式随 DOM 一直留存到
+  下次整表重渲染，页面上便有两张卡同时显亮。现移除内联高亮，`editFocusIdx` 只保留聚焦滚动，高亮
+  统一由 `applyEditSel` 按 `editSelStage` 切换 `plstage-sel`，任意时刻仅一张卡显亮。作为配套，
+  `openPlForm` 在编排区双击阶段带焦点序号进入编辑器时把焦点阶段置为选中卡（在草稿恢复之后按
+  `editFocusIdx` 取引用，恢复会整组替换 `editStages`），进入即见该卡的 `plstage-sel` 高亮与「+」
+  插入按钮；另修正同函数注释里 `${RUN_DIR` 缺失 `}` 的笔误（会使按花括号配对提取函数的测试
+  工具无法截取 `openPlForm`）。
+  `test_stage_insert_select.js` 新增回归测试（重渲染后焦点卡不内联高亮、仅选中卡带 `plstage-sel`；
+  进入编辑器焦点阶段即选中卡、新建/焦点越界不选中、草稿恢复后选中引用指向草稿卡）。
+- 流水线编辑器任务卡支持「选中插入」（`projects/pipeline/pipeline.html`）：点击任务卡上任意处（含卡内
+  输入框/按钮）即选中，选中卡 accent 高亮（`plstage-sel`），上/下边框中点各出现一个圆形「+」按钮
+  （`plstage-ins-top/bottom`，仅选中卡挂载），点击分别在其上方/下方插入新阶段，新卡自动选中并聚焦滚动到
+  可见（沿用 editFocusIdx 通道）。选中态以对象引用记录（`editSelStage`），拖拽/序号/上下移调序后仍跟随
+  同一张卡，删除选中卡时自动清除，打开编辑器重建草稿时重置；选中刷新只原地切换 class 与按钮
+  （`applyEditSel`，不重渲染、不打断卡内输入；选中委托先于 data-act 动作委托注册，保证点「+」先完成
+  选中幂等判断再执行插入）。`#plStageList` 增加 9px 上下内边距，给半跨边框的「+」按钮留出空间。
+  新增 `projects/pipeline/tests/test_stage_insert_select.js`（选中高亮与按钮挂载/移除/幂等、上/下插入
+  位置与新卡焦点、越界保护、重渲染后含预设卡恢复选中态）；`test_stage_drag_reorder.js` /
+  `test_cleanup_flow.js` 补齐选中态上下文（FakeClassList.toggle、editSelStage、applyEditSel 加载）。
+
+- 修复流水线大量日志 / 长时间任务导致页面与 web 服务卡死（`src/index.ts` +
+  `projects/pipeline/pipeline.html`）：
+  - `/api/worktable/exec-stream` 原先忽略 `ServerResponse.write()` 背压，浏览器处理稍慢时仍持续读取
+    子进程 stdout/stderr，HTTP 待发送缓冲与异步日志写入队列会随输出无界增长。现分别以 1 MiB 为
+    HTTP / 磁盘积压水位，任一路达到后都暂停两路子进程输出，响应触发 `drain`、磁盘队列降到低水位后
+    再恢复；一次性 `/exec` 的磁盘日志队列也使用同一限制。客户端在背压期间断开时立即废弃 HTTP
+    `drain` 条件，待磁盘降到低水位后继续排空已终止进程的管道，确保写入 `[aborted]` 并关闭日志文件。
+    阶段超时和进程组终止语义不变。
+  - 阶段详情对脚本 / HTTP / EvalTokens 回显统一只渲染末尾 1000 行且最多 256 KiB，省略时提示查看
+    运行归档。日志 DOM 改经 `DocumentFragment` 批量挂载；普通 / 预设脚本、HTTP/Jenkins 与
+    EvalTokens 共用有界实时快照和 250ms 刷新节流，不再在各路径分别无界拼接。
+  - Jenkins 控制台轮询改用 `logText/progressiveText?start=<offset>`，每次只传输服务端新增内容；旧版
+    Jenkins 返回 404/405，或直连 CORS 未暴露 `X-Text-Size`（无法可靠取得原始日志 offset）时自动降级到
+    `consoleText`。原始控制台分片在实时回显与中止归档中均逐字连续，不额外插入换行；长任务的网络传输
+    与临时字符串分配由重复下载全文的平方级增长降为线性增长。
+  - 详情内容指纹改在 `buildLog` 前计算：长任务只有进度变化、没有新输出时只更新进度条，不再每
+    300ms 拆分完整 stdout；有界尾窗用递增 `_outputRevision` 标记真实更新，避免等长采样指纹碰撞。
+    流读取和轮询日志改为分块收集、结束时仅合并一次；阶段完成后的完整 stdout 与输出变量契约保持不变。
+  - 任务 / 汇总归档改为原始字符串分片，不再把大日志 `split` 成百万行后再 `join`；新增
+    `/api/worktable/write-stream` 原始请求体接口，浏览器用 Blob 分片上传，服务端边读边写临时文件并原子
+    替换（上限 256 MiB），避免完成时生成整份行数组和 JSON 转义副本；超限、客户端断开或原子替换失败
+    均清理临时文件且不覆盖旧目标。变量 / JSON 提取也改为逐行扫描。
+  - HTTP/Jenkins 与 EvalTokens 运行期间把完整原始分片挂到阶段归档状态；用户在异步轮询返回前中止时，
+    `abortRun` 也能归档已被 256 KiB 实时尾窗淘汰的早期内容。正常终态合并后释放重复分片引用。
+  - 新增慢客户端 8 MiB 输出、背压后断连、慢归档磁盘 4 MiB 输出的背压 / 完整性测试，以及详情窗口、修订缓存、
+    预设 / Jenkins / EvalTokens 实时快照、刷新节流、分片归档与流式写入失败清理测试；实测 32 MiB
+    输出且客户端暂停读取时，服务端 HTTP 积压由约 30.4 MiB 降至约 1.01 MiB，恢复读取后继续执行并完整落盘。
+
+- 流水线 EvalTokens 阶段任务输入参数支持设置与识别刷新（`projects/pipeline/pipeline.html`）：编辑器参数区由只读改为
+  可编辑——识别到的任务原值填入框中（未改动时弱化色展示、不下发），修改后作为显式覆盖存入 `evaltokens.values`
+  随流水线持久化（`evaltokensStageConfig` 携带 values；`params` 仍为瞬态，不持久化）；动作行新增「识别参数」按钮
+  （清空任务列表 15s 缓存后重新拉取识别），重新识别 / 打开编辑器自动识别均只刷新参数定义与任务原值，已设置的
+  参数值保留不刷新；清空或改回与任务原值一致即取消覆盖（恢复不覆盖语义）。换选任务或手改任务 ID 时清空原任务
+  已设值。运行时把已设参数值（支持 ${VAR} 引用上游产出，替换为空的不下发）作为 `{input:{...}}` 随 run 启动请求体
+  下发（未设置时保持空体 `{}` 不变），并在阶段日志打印实际下发的覆盖。`projects/pipeline/tests/evaltokens-stage.test.mjs`
+  新增 6 个用例：values 持久化与 normalizeStageKind 透传、commitEvaltokParamValue 提交规则、参数区可编辑渲染与
+  change 写入/删除、「识别参数」按钮强制重识别、重新识别保留已设值（含 keepOnError/任务未命中路径）、run 请求体
+  携带 input 覆盖。
+
+- 流水线编辑器 EvalTokens 阶段选中任务后显示任务标题而非任务 ID（`projects/pipeline/pipeline.html`）：
+  任务选择输入框 `etTaskId` 的回显值由 `taskId` 改为优先取 `taskName`（无标题时回退 `taskId`），并移除
+  原本紧随输入框重复展示标题的 `· taskName` 辅助 span（标题已并入输入框，避免冗余）。底层 `taskId`/
+  `taskName` 数据与运行时匹配逻辑不变：选中任务仍回填 `taskId=真实 ID`、`taskName=标题`，运行时按
+  `taskId`（优先）或 `taskName` 匹配任务；手动输入仍走 `change` 事件清空 `taskName` 后异步识别参数。
+  `./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
+
+- 流水线编辑器支持整张任务卡拖拽调序（`projects/pipeline/pipeline.html`）：普通阶段与系统预设阶段均可拖动，
+  拖到目标卡上半区 / 下半区时以强调色边线提示插入到目标前 / 后；松开后只更新编辑草稿，继续由原「保存」
+  动作统一持久化。原序号输入、上移、下移操作保留，并与拖拽复用同一重排函数。
+  新增 `projects/pipeline/tests/test_stage_drag_reorder.js` 覆盖前后移动、插入位置计算、整卡拖放与两类任务卡事件注册。
+
+- pipeline 导入导出支持服务端备份（`src/index.ts` + `projects/pipeline/pipeline.html`）：「⤓⤒ 导入导出」
+  菜单新增「服务端备份」区——「导出设置 / 流水线到服务端…」（与浏览器本地下载同一份 payload，POST 落盘）
+  与「从服务端导入…」（面板列出服务端备份文件：目录 / 文件名 / 修改时间 / 大小，逐个导入，按文件内容
+  kind 自动识别设置 / 流水线，复用与文件导入完全相同的校验、确认与恢复逻辑——importSettingsFile/
+  importPipelinesFile 重构出 importSettingsData/importPipelinesData 数据入口，本地文件与服务端共用）。
+  服务端新增三条路由：GET `/api/worktable/pipeline/io/list`（按 mtime 倒序、上限 200）、POST
+  `/api/worktable/pipeline/io/save`、POST `/api/worktable/pipeline/io/load`；备份文件固定在
+  `<DSH_HOME>/storages/pipeline-exports/` 下，文件名白名单校验（禁路径分隔符 / `..` / 前导点、
+  必须 `.json` 结尾、≤120 字，客户端 `ioSrvNormalizeName` 与服务端 `pipelineIoName` 同一套规则），
+  不提供任意路径读写，写入走 writeJsonAtomic 原子落盘，单文件上限 64MB。新增
+  `tests/pipeline-io.test.mjs` 4 个路由测试（往返 / 白名单 / 方法与参数校验 / 排序与过滤）与
+  `projects/pipeline/tests/test_config_import_export.js` 6 个客户端契约测试。`lib/index.js`
+  （+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
+- 本地编译安装（link:）时侧栏默认标题显示「工作台（开发中）」（`src/index.ts` + `src/client/index.tsx`
+  + `src/client/locales.ts`）：服务端新增 `isLocalDevInstall` 判定——lib/ 目录 realpath 不在标准安装布局
+  `<home>/profiles/<profile>/node_modules/<pkg>/lib` 内即为本地编译安装（link:/junction 安装 realpath 落在
+  源码树；release tgz 副本安装落在 profile 的 node_modules 内），健康路由 `/api/worktable/health` 新增
+  `dev` 字段上报；客户端挂载时随健康路由取一次（与「插件项目目录」共用同一缓存），命中则默认标题
+  「工作台」追加 locale 后缀「（开发中）」（新增 zh/en 键 `title.devSuffix`，「工作台」本字未改）；
+  用户自定义名不受影响，设置面板改名框仍显示/提交无后缀名（避免失焦提交把后缀固化成自定义名）。
+  新增 `tests/dsh-home.test.mjs` 判定测试（release 副本 / 源码树 / link: 符号链接三种形态）。
+  `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
+
 - pipeline 项目新增设置 / 流水线导入导出（`projects/pipeline/pipeline.html`）：标题区右上角
   「⤓⤒ 导入导出」菜单，设置与流水线分开备份恢复——导出设置=设置页全部配置（服务端部分
   剔除流水线、补回仅存本浏览器的代码仓访问令牌）+ 本地运行选择（当前流水线/环境/代码仓、

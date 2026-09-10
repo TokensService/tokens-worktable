@@ -1033,16 +1033,20 @@ function loadDevPrompt(): string {
 function saveDevPrompt(text: string): void {
   try { localStorage.setItem(DEV_PROMPT_KEY, text) } catch {}
 }
-/** 插件项目目录缓存：经健康路由服务端上报（link: 安装时 realpath 即源码目录；file: 安装副本时为副本目录） */
-let pluginDirCache: string | null | undefined
-async function fetchPluginDir(): Promise<string | null> {
-  if (pluginDirCache !== undefined) return pluginDirCache
+/** 健康路由缓存：dir = 插件项目目录（link: 安装时 realpath 即源码目录；file: 安装副本时为副本目录），
+ *  dev = 本地编译安装（link:）标记（侧栏默认标题追加「（开发中）」） */
+let healthCache: { dir: string | null; dev: boolean } | undefined
+async function fetchHealth(): Promise<{ dir: string | null; dev: boolean }> {
+  if (healthCache !== undefined) return healthCache
   try {
     const r = await fetch('/api/worktable/health', { cache: 'no-store' })
     const d = await r.json()
-    pluginDirCache = (r.ok && typeof d?.dir === 'string' && d.dir) ? d.dir : null
-  } catch { pluginDirCache = null }
-  return pluginDirCache
+    healthCache = { dir: (r.ok && typeof d?.dir === 'string' && d.dir) ? d.dir : null, dev: !!(r.ok && d?.dev) }
+  } catch { healthCache = { dir: null, dev: false } }
+  return healthCache
+}
+async function fetchPluginDir(): Promise<string | null> {
+  return (await fetchHealth()).dir
 }
 /** 设置弹窗「新建开发会话」：按提示词模板 + 插件项目目录新建 AI 会话（cwd = 插件目录，提示词只填输入框、不自动发送） */
 async function startPluginDev(): Promise<void> {
@@ -1297,6 +1301,13 @@ function WorktableSection(props: any) {
   const [pageEditPrompt, setPageEditPrompt] = useState<string>(() => loadPageEditPrompt())
   // 开发 tokens-worktable：提示词模板（同「页面修改」存取规则；{tokens_worktable} 替换为插件项目目录）
   const [devPrompt, setDevPrompt] = useState<string>(() => loadDevPrompt())
+  // 本地编译安装（link:）标记：挂载时经健康路由取一次；命中则侧栏默认标题追加「（开发中）」
+  const [devInstall, setDevInstall] = useState(false)
+  useEffect(() => {
+    let alive = true
+    void fetchHealth().then((h) => { if (alive && h.dev) setDevInstall(true) })
+    return () => { alive = false }
+  }, [])
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateCheckOn, setUpdateCheckOn] = useState<boolean>(() => localStorage.getItem('dsh.worktable.updateCheck.v1') !== '0')
@@ -3094,8 +3105,10 @@ function buildCustomLayoutPrompt(req: string): string {
     )
   }
 
-  // 侧栏标题：用户自定义名（设置面板可改）优先，空/缺回退 locale 默认「工作台」
-  const worktableTitle = (view.title ?? '').trim() || t('title')
+  // 侧栏标题：用户自定义名（设置面板可改）优先，空/缺回退 locale 默认「工作台」；
+  // 本地编译安装（link:）时默认名追加「（开发中）」后缀（「工作台」本字不改；自定义名不受影响，改名框也不带后缀）
+  const customTitle = (view.title ?? '').trim()
+  const worktableTitle = customTitle || t('title') + (devInstall ? t('title.devSuffix') : '')
 
   return (
     <div ref={rootRef} className={'dsh-wt_section' + (isFloat ? ' dsh-wt_float' : '')} style={isFloat ? floatStyle : dockedStyle}>
@@ -3288,7 +3301,7 @@ function buildCustomLayoutPrompt(req: string): string {
             <span className="dsh-wt_manageTitle">{t('name.label')}</span>
           </div>
           <div className="dsh-wt_pageEditHint">{t('name.desc')}</div>
-          <RenameInput initial={worktableTitle} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
+          <RenameInput initial={customTitle || t('title')} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
           <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('sort.label')}</span>

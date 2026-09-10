@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Pre-pull deployment images and export render templates on the pipeline execution host.
+# Pull deployment images and export render templates.  By default this runs on
+# the pipeline execution host; PULL_TARGET_IMAGES_ONLY=1 performs only the
+# post-sync target-host image check/pull.
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"
@@ -14,6 +16,93 @@ TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
+TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+[[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
+IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${PROJECT:-}}"
+IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
+IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-}}"
+
+remote_quote() {
+  printf '%q' "$1"
+}
+
+run_target() {
+  local target="$1" port="$2" password="$3"
+  shift 3
+  if [[ -n "$password" ]]; then
+    command -v sshpass >/dev/null 2>&1 || {
+      echo "sshpass is required for password-authenticated target image pulls" >&2
+      return 2
+    }
+    SSHPASS="$password" sshpass -e ssh -p "$port" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+  else
+    ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+  fi
+}
+
+pull_target_images() {
+  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text
+  local -a mapped_targets
+
+  mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
+import base64
+import json
+import re
+import sys
+
+hosts_text, mapping_text = sys.argv[1:]
+try:
+    hosts = json.loads(hosts_text)
+    mapping = json.loads(mapping_text)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid target image-pull configuration: {error}")
+if not isinstance(hosts, list):
+    raise SystemExit("TARGET_HOSTS must be a JSON array")
+if not isinstance(mapping, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+for item in hosts:
+    if not isinstance(item, dict) or not isinstance(item.get("ip"), str) or not item["ip"]:
+        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
+    endpoint = item["ip"]
+    if endpoint not in mapping:
+        continue
+    match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+    if match:
+        host, port = match.groups()
+        if not 1 <= int(port) <= 65535:
+            raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
+    else:
+        host, port = endpoint, "22"
+    payload = {"endpoint": endpoint, "host": host, "port": port,
+               "user": item.get("user") or "root",
+               "password": item.get("pass", item.get("password", "")) or ""}
+    print(base64.b64encode(json.dumps(payload).encode()).decode())
+PY
+  )"
+  [[ -n "$mapped_targets_text" ]] || return 0
+  mapfile -t mapped_targets <<<"$mapped_targets_text"
+
+  for target_line in "${mapped_targets[@]}"; do
+    target_json="$(printf '%s' "$target_line" | base64 -d)"
+    read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
+import json
+import sys
+item = json.loads(sys.argv[1])
+print(item["endpoint"], item["user"], item["host"], item["port"], item["password"])
+PY
+)
+    target="${user}@${host}"
+    # Target image preparation is an optimization. Mapped deployment targets
+    # must not receive registry credentials or fail the pipeline when absent.
+    printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo '[pull] target has no ctr; skip image pre-pull'; exit 0; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else echo '[pull] target image is absent; skip unauthenticated pre-pull'; fi"
+    echo "[pull] target $endpoint: ensure image $image"
+    run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+  done
+}
 
 pull_image() {
   local image="$1" registry_host
@@ -57,6 +146,11 @@ export_templates() {
   cp -a "$work_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
   cp -a "$work_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
 }
+
+if [[ "${PULL_TARGET_IMAGES_ONLY:-0}" == "1" ]]; then
+  pull_target_images "$IMAGE"
+  exit 0
+fi
 
 pull_image "$IMAGE"
 [[ "$TEMPLATE_IMAGE" == "$IMAGE" ]] || pull_image "$TEMPLATE_IMAGE"

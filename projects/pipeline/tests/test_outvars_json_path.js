@@ -5,9 +5,9 @@ const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html
 const source = fs.readFileSync(pipelineHtml, "utf8");
 
 // 切片：parseStageVars / parseStageJson / jsonPathGet / mergeStageVars / applyOutVars / substRunVars
-const s1 = source.indexOf("function parseStageVars(stdout)");
+const s1 = source.indexOf("function forEachOutputLine(output, visit)");
 const e1 = source.indexOf("async function execScript", s1);
-if (s1 < 0 || e1 < 0) throw new Error("parseStageVars not found");
+if (s1 < 0 || e1 < 0) throw new Error("output parsers not found");
 
 const context = {
   JSON, console,
