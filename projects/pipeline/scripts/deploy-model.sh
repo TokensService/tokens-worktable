@@ -41,9 +41,10 @@ XDS_READY_POLL_SECONDS="${XDS_READY_POLL_SECONDS:-5}"
 TASK_EXECUTOR_READY_TIMEOUT_SECONDS="${TASK_EXECUTOR_READY_TIMEOUT_SECONDS:-900}"
 TASK_EXECUTOR_READY_POLL_SECONDS="${TASK_EXECUTOR_READY_POLL_SECONDS:-5}"
 SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
-HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-./logs}"
+HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${RUN_DIR}/logs}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
 
 resolve_container_model_path() {
   local input="${MODEL_PATH_INPUT%/}" weight_name
@@ -202,30 +203,22 @@ fi
 [[ "$TASK_EXECUTOR_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_POLL_SECONDS: $TASK_EXECUTOR_READY_POLL_SECONDS" >&2; exit 2; }
 
 if [[ -z "$XDS_URL" ]]; then
-  target_ip="$(python3 - "$TARGET_HOSTS" <<'PY'
+  target_ip="$(python3 - "$NODE_LABELS_FILE" <<'PY'
 import json
 import sys
 
 try:
-    target_hosts = json.loads(sys.argv[1])
+    labels = json.load(open(sys.argv[1], encoding="utf-8"))
 except json.JSONDecodeError as error:
-    raise SystemExit(f"invalid TARGET_HOSTS: {error}")
+    raise SystemExit(f"invalid node labels file: {error}")
 
-if not isinstance(target_hosts, list) or not target_hosts:
-    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array when XDS_URL is unset")
-first_host = target_hosts[0]
+hosts = labels.get("hosts", [])
+if not isinstance(hosts, list) or not hosts:
+    raise SystemExit("node labels file must contain at least one target node IP when XDS_URL is unset")
+first_host = hosts[0]
 if not isinstance(first_host, dict) or not isinstance(first_host.get("ip"), str) or not first_host["ip"]:
-    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string when XDS_URL is unset")
-endpoint = first_host["ip"]
-import re
-match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
-if match:
-    address, port = match.groups()
-    if not 1 <= int(port) <= 65535:
-        raise SystemExit(f"invalid TARGET_HOSTS[0] port: {endpoint}")
-    print(address)
-else:
-    print(endpoint)
+    raise SystemExit("node labels file host must contain a non-empty IP when XDS_URL is unset")
+print(first_host["ip"])
 PY
 )"
   XDS_API_HOST="$target_ip"
@@ -352,15 +345,19 @@ prepare_available_node_ports() {
   local services_file port_plan changed
   services_file="$(mktemp)"
   "$KUBECTL_BIN" get svc -A -o json >"$services_file"
-  port_plan="$(python3 - "$VALUES_FILE" "$services_file" <<'PY'
+  port_plan="$(python3 - "$VALUES_FILE" "$services_file" "$NODE_PORT_MAP" <<'PY'
 import json
 import sys
 
 import yaml
 
-values_path, services_path = sys.argv[1:]
+values_path, services_path, node_port_map_text = sys.argv[1:]
 values = yaml.safe_load(open(values_path, encoding="utf-8")) or {}
 services = json.load(open(services_path, encoding="utf-8"))
+node_port_map = json.loads(node_port_map_text)
+if not isinstance(node_port_map, dict) or any(type(port) is not int for port in node_port_map.values()):
+    raise SystemExit("NODE_PORT_MAP must be a JSON object with integer ports")
+fixed_ports = set(node_port_map.values())
 
 requested = []
 def collect(value):
@@ -384,6 +381,8 @@ used = {
 plan = []
 for port in requested:
     candidate = port
+    if candidate in used and candidate in fixed_ports:
+        raise SystemExit(f"required NodePort {candidate} is already used by another Service")
     while candidate in used:
         candidate += 10
     if candidate > 32767:
@@ -443,16 +442,13 @@ PY
 }
 
 label_target_nodes() {
-  local inventory
+  local inventory labels
   inventory="$(mktemp)"
-  trap 'rm -f "$inventory"' RETURN
+  labels="$(mktemp)"
+  trap 'rm -f "$inventory" "$labels"' RETURN
   "$KUBECTL_BIN" get nodes -o json >"$inventory"
 
-  while IFS=$'\t' read -r node label; do
-    [[ -n "$node" && -n "$label" ]] || continue
-    echo "[deploy] label node=$node $label"
-    "$KUBECTL_BIN" label node "$node" "$label" --overwrite
-  done < <(python3 - "$NODE_LABELS_FILE" "$inventory" <<'PY'
+  python3 - "$NODE_LABELS_FILE" "$inventory" >"$labels" <<'PY'
 import json
 import sys
 
@@ -469,11 +465,16 @@ for node in inventory.get("items", []):
             by_ip[address.get("address")] = name
 missing = [host["ip"] for host in labels.get("hosts", []) if host["ip"] not in by_ip]
 if missing:
-    raise SystemExit("target host IPs do not match Kubernetes InternalIP: " + ", ".join(missing))
+    raise SystemExit("target node IPs do not match Kubernetes InternalIP: " + ", ".join(missing))
 for host in labels["hosts"]:
     print(by_ip[host["ip"]], f"{key}={value}", sep="\t")
 PY
-)
+
+  while IFS=$'\t' read -r node label; do
+    [[ -n "$node" && -n "$label" ]] || continue
+    echo "[deploy] label node=$node $label"
+    "$KUBECTL_BIN" label node "$node" "$label" --overwrite
+  done <"$labels"
 }
 
 wait_for_release_cleanup() {
@@ -519,23 +520,15 @@ prepare_ctrl_slot_capacity() {
   local holder_namespace holder_pod
   local -a target_ips holders
 
-  mapfile -t target_ips < <(python3 - "$TARGET_HOSTS" <<'PY'
+  mapfile -t target_ips < <(python3 - "$NODE_LABELS_FILE" <<'PY'
 import json
 import sys
 
-hosts = json.loads(sys.argv[1])
-for host in hosts:
+labels = json.load(open(sys.argv[1], encoding="utf-8"))
+for host in labels.get("hosts", []):
     ip = host.get("ip") if isinstance(host, dict) else None
     if isinstance(ip, str) and ip:
-        import re
-        match = re.fullmatch(r"([^:]+):(\d+)", ip)
-        if match:
-            address, port = match.groups()
-            if not 1 <= int(port) <= 65535:
-                raise SystemExit(f"invalid TARGET_HOSTS port: {ip}")
-            print(address)
-        else:
-            print(ip)
+        print(ip)
 PY
 )
 
