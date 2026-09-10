@@ -84,11 +84,19 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-old = "          - name: ray-worker"
-new = """          - name: {{ if contains "prefill" (lower $teGroupValues.name) }}ray-worker-prefill{{ else if contains "decode" (lower $teGroupValues.name) }}ray-worker-decode{{ else }}ray-worker{{ end }}"""
-if old not in text and new not in text:
+marker = "          - name: ray-worker"
+te_name = """          - name: {{ if contains "prefill" (lower $teGroupValues.name) }}ray-worker-prefill{{ else if contains "decode" (lower $teGroupValues.name) }}ray-worker-decode{{ else }}ray-worker{{ end }}"""
+worker_name = """          - name: {{ if eq $groupName "ctrlGroup" }}ray-worker-ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}ray-worker-fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}ray-worker-je{{ else }}ray-worker{{ end }}"""
+if marker not in text and te_name not in text:
     raise SystemExit(f"task executor container marker not found: {path}")
-path.write_text(text.replace(old, new, 1), encoding="utf-8")
+if marker in text:
+    # The card task-executor branch is emitted before ordinary worker groups.
+    text = text.replace(marker, te_name, 1)
+if marker in text:
+    # In the ordinary worker-group branch, `$groupName` identifies ctrl, FE,
+    # and JE. Do not put the namespace or deployment name into container names.
+    text = text.replace(marker, worker_name, 1)
+path.write_text(text, encoding="utf-8")
 PY_TEMPLATE
 fi
 
