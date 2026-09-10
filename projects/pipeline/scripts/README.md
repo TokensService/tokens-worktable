@@ -16,7 +16,7 @@
 
 ## 自动注入的环境变量
 
-每次执行脚本（含环境清理/环境检查/Profiling/收集普罗数据等系统预设任务）都会注入以下变量；**脚本或页面里显式配置的同名参数优先，不会被覆盖**：
+每次执行脚本（含环境清理/环境检查/Profiling 等系统预设任务）都会注入以下变量；**脚本或页面里显式配置的同名参数优先，不会被覆盖**：
 
 | 变量 | 内容 | 示例 |
 |---|---|---|
@@ -87,9 +87,12 @@ XDS 流水线按以下顺序绑定脚本：
 
 ## 收集普罗数据
 
-「设置 → 普罗数据服务配置 → 收集脚本」可配置一个按时间段采集普罗（Prometheus）指标的脚本（在 scripts 目录按名选用，留空=不启用）。主控「预设任务」勾选「收集普罗数据」后，流水线会在编排位置执行该任务（新建/旧流水线默认放在最后，失败不阻断）；也可在运行历史选中某次运行（或运行中的流水线）后，点标题行的「📊 收集普罗数据」手动补采。
+「设置 → 普罗数据服务配置 → 收集脚本」可配置一个按时间段采集普罗（Prometheus）指标的脚本（在 scripts 目录按名选用，留空=不启用）。收集有两种方式：
 
-`model_name`、`xds_namespace`、开始时间和结束时间直接在「编辑流水线」的「收集普罗数据」预设任务行中配置，并随该任务保存。起止时间留空时，预设任务执行会取流水线开始时间与执行到该任务时的时间；手动补采会取所选运行的起止时间，且可在对话框里临时覆盖。打开对话框时会先检测该运行是否已收集过普罗数据（产物目录下存在 `summary.json` 或 `snapshots/*/summary.json` 即视为已收集），并在状态行展示收集归档目录；采集成功后状态行同步刷新为已收集。脚本经流式执行接口运行，输出实时回显；预设任务的输出按普通任务日志规则写入 `run-<tag>-00-收集普罗数据.log`，指标产物写入归档目录的 `metrics` 子目录。采集失败仅标记该任务失败，不影响后续任务和流水线最终结果。
+- **任务级采集**：在「编辑流水线」的任务卡上勾选「收集普罗数据」，该任务进入终态（成功/失败）后即按「本任务开始→结束」时段后台调用收集脚本，产物写入本次运行归档目录的 `{任务名}-{阶段序号}-普罗数据` 文件夹（采集输出落该目录 `collect.log`；后台采集、失败不阻断流水线，未配置归档时落到 scripts 目录 `vllm-metrics/` 下同名子目录）。定时计划与 API（服务端）执行的流水线同样生效，采集结果标注在该任务日志的 `[普罗采集]` 行。
+- **手动补采**：在运行历史选中某次运行（或运行中的流水线）后，点标题行的「📊 收集普罗数据」，弹出对话框按所选运行的起止时间采集（可在对话框里临时覆盖起止时间），指标产物写入归档目录的 `metrics` 子目录。
+
+`model_name` 默认 `${MODEL_PATH}`（按上游 deploy 阶段产出的 `MODEL_PATH` 解析）、`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`（按本次运行的部署策略与执行人解析），均在采集时点解析，解析不出则不注入。打开手动补采对话框时会先检测该运行是否已收集过普罗数据（产物目录下存在 `summary.json` 或 `snapshots/*/summary.json` 即视为已收集），并在状态行展示收集归档目录；采集成功后状态行同步刷新为已收集。手动补采经流式执行接口运行，输出实时回显。
 
 除常规的 `PIPELINE_NAME` 外，「收集」时还会注入以下环境变量（同名时脚本自身参数优先）：
 
@@ -97,9 +100,9 @@ XDS 流水线按以下顺序绑定脚本：
 - `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（兼容旧脚本；`collect_vllm_metrics.py` 优先读取 `PROM_START`/`PROM_END`）
 - `METRICS_ACTION` — 固定 `collect`（`collect_vllm_metrics.py` 默认 action 为 `start` 即后台采集；前台按段采集需 `collect`）
 - `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
-- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 主控启用「收集普罗数据」预设任务时注入（`model_name` 默认 `${MODEL_PATH}`，按上游 deploy 阶段产出的 `MODEL_PATH` 解析；`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
-- `ARCHIVE_FOLDER` — 本次运行（预设任务）/ 选中运行（手动收集）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
-- `METRICS_OUTPUT_DIR` — 采集产物目录（有归档时 = `ARCHIVE_FOLDER/metrics`，采集产物随本次运行归档；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
+- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 按上述默认占位在采集时点解析后注入（`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
+- `ARCHIVE_FOLDER` — 本次运行（任务级采集）/ 选中运行（手动补采）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
+- `METRICS_OUTPUT_DIR` — 采集产物目录（任务级采集 = `ARCHIVE_FOLDER/{任务名}-{阶段序号}-普罗数据`，手动补采 = `ARCHIVE_FOLDER/metrics`；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
 
 示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 优先取 `PROM_START`/`PROM_END`（兼容 `VLLM_METRICS_START`/`VLLM_METRICS_END`）、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集；输出目录默认取 `METRICS_OUTPUT_DIR`，未设置时依次回退 `ARCHIVE_FOLDER/metrics`、`RUN_DIR/vllm-metrics`、执行目录下 `vllm-metrics`。
 

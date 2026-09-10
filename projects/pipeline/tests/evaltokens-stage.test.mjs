@@ -72,6 +72,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     syncRunState: () => {},
     viewActive: () => false,
     applyStatusClasses: () => {},
+    applyPlFormReadOnly: () => {},
     renderFlow: () => {},
     renderDetail: () => {},
     ...overrides,
