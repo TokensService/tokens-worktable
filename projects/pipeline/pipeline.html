@@ -5550,9 +5550,12 @@ function openPlForm(id, focusIdx){
     if(typeof draft.name==='string') $('plName').value=draft.name;
     if(typeof draft.scriptsDir==='string') $('scriptsDir').value=draft.scriptsDir;
   }
+  /* 编排区双击阶段进入（带 focusIdx）时，焦点阶段即选中卡：高亮统一走 plstage-sel 单通道（applyEditSel
+     在 renderStageEditor 末尾恢复）。必须晚于草稿恢复——恢复会整组替换 editStages，早了引用即失效 */
+  if(editFocusIdx>=0 && editFocusIdx<editStages.length) editSelStage=editStages[editFocusIdx];
   loadScripts().then(async ()=>{
     renderStageEditor();
-    /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
+    /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR}），
        重新识别刷新 placeholder 展示；用户真实改动由 detectStageParams 内部合并保留（keepOnError 防止脚本暂不可读时清空） */
     await Promise.all(editStages.map((s,i)=>{
       if(s.preset) return null;   // 预设任务行的脚本在设置页配置，不参与阶段参数识别

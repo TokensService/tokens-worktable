@@ -232,3 +232,80 @@ test('重渲染后仅选中卡高亮：editFocusIdx 不再内联高亮（回归�
   assert.equal(focusCss.includes('accent-primary'), false, '焦点卡不得内联 accent 边框色');
   assert.equal(focusCss.includes('box-shadow'), false, '焦点卡不得内联阴影');
 });
+
+function loadOpenPlFormContext(overrides) {
+  const els = {
+    plForm: { style: {}, dataset: {} },
+    scriptsDir: { value: '' },
+    plFormTitle: { textContent: '' },
+    plName: { value: '', focus() {} },
+  };
+  const pipeline = {
+    id: 'p1',
+    name: 'P',
+    stages: [
+      { id: 'a', name: 'A', kind: 'simulate', dur: 5, skip: false },
+      { id: 'b', name: 'B', kind: 'simulate', dur: 5, skip: false },
+      { id: 'c', name: 'C', kind: 'simulate', dur: 5, skip: false },
+    ],
+  };
+  const context = Object.assign({
+    editStages: [],
+    editFocusIdx: -1,
+    editSelStage: null,
+    scriptsDir: '',
+    $: id => els[id] || null,
+    findPipeline: id => (id === 'p1' ? pipeline : null),
+    curPipeline: () => pipeline,
+    withPresetMarkers: list => list,
+    normalizePipelineProm: value => value || {},
+    normalizeStageKind: stage => stage,
+    evaltokensStageConfig: value => value || {},
+    loadPlDraft: () => null,
+    loadScripts: () => Promise.resolve(),
+    detectStageParams: () => Promise.resolve(),
+    detectEvaltokStageParams: () => Promise.resolve(),
+    renderStageEditor() {},
+  }, overrides);
+  vm.createContext(context);
+  vm.runInContext(['newStage', 'openPlForm'].map(extractFunction).join('\n'), context);
+  return { context, els, pipeline };
+}
+
+test('编排区双击进入编辑器：焦点阶段即选中卡（进入即见 plstage-sel 单通道高亮）', async () => {
+  const { context, pipeline } = loadOpenPlFormContext();
+
+  context.openPlForm('p1', 1);
+  assert.equal(context.editFocusIdx, 1);
+  assert.equal(context.editStages.length, 3);
+  assert.equal(context.editSelStage, context.editStages[1]);
+  assert.equal(context.editSelStage.id, 'b');
+  assert.notEqual(context.editSelStage, pipeline.stages[1], '选中的是编辑器草稿副本而非源阶段');
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+
+test('新建流水线或不带焦点序号进入：无选中卡', () => {
+  const { context } = loadOpenPlFormContext();
+  context.openPlForm('');
+  assert.equal(context.editFocusIdx, -1);
+  assert.equal(context.editSelStage, null);
+  assert.equal(context.editStages.length, 3);   // 检出/校验/构建镜像
+
+  const again = loadOpenPlFormContext();
+  again.context.openPlForm('p1', 99);   // 焦点序号越界：不选中
+  assert.equal(again.context.editFocusIdx, 99);
+  assert.equal(again.context.editSelStage, null);
+});
+
+test('草稿恢复替换 editStages 后，选中引用指向恢复出的草稿卡', () => {
+  const draftStages = [
+    { id: 'x', name: 'X', kind: 'simulate' },
+    { id: 'y', name: 'Y', kind: 'simulate' },
+  ];
+  const { context } = loadOpenPlFormContext({
+    loadPlDraft: () => ({ editId: 'p1', stages: draftStages }),
+  });
+  context.openPlForm('p1', 1);
+  assert.equal(context.editStages, draftStages);
+  assert.equal(context.editSelStage, draftStages[1], '必须在草稿恢复之后按焦点序号取选中引用');
+});
