@@ -138,6 +138,7 @@ test('普通任务卡和系统预设任务卡都注册整卡拖拽事件', () =>
     renderStageActionRow() {},
     renderStageParams() {},
     renderStageSched() {},
+    stageCardMouseDown() {},
     stageCardDragStart() {},
     stageCardDragOver() {},
     stageCardDrop() {},
@@ -157,6 +158,22 @@ test('普通任务卡和系统预设任务卡都注册整卡拖拽事件', () =>
   assert.equal(rows.length, 2);
   rows.forEach(row => {
     assert.equal(row.draggable, true);
-    assert.deepEqual(Object.keys(row.handlers).sort(), ['dragend', 'dragover', 'dragstart', 'drop']);
+    assert.deepEqual(Object.keys(row.handlers).sort(), ['dragend', 'dragover', 'dragstart', 'drop', 'mousedown']);
   });
+});
+
+test('控件上按下关闭整卡拖拽以放行文字划选，卡片空白处按下保持可拖', () => {
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(extractFunction('stageCardMouseDown'), context);
+
+  const row = { draggable: true };
+  const input = { closest: sel => (sel.includes('input') ? input : null) };
+  context.stageCardMouseDown({ target: input, currentTarget: row });
+  assert.equal(row.draggable, false, 'input 上按下：临时关拖拽，输入文字可划选');
+
+  row.draggable = false;
+  const blank = { closest: () => null };
+  context.stageCardMouseDown({ target: blank, currentTarget: row });
+  assert.equal(row.draggable, true, '卡片空白处按下：保持整卡拖拽，且从关闭状态恢复');
 });

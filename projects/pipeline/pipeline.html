@@ -2545,6 +2545,13 @@ function clearStageDragMarks(){
   const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
   for(let i=0;i<wrap.children.length;i+=1) wrap.children[i].classList.remove('plstage-dragging','plstage-drag-before','plstage-drag-after');
 }
+/* 整卡 draggable 会抢占卡内控件的手势：在 input/textarea 等控件上按下拖动时浏览器发起整卡拖拽，
+   输入框文字无法划选。mousedown 时按落点切换 draggable——落在交互控件上即临时关拖拽（走原生划选/控件交互），
+   落在卡片空白处保持可拖；下次按下重新判定，无需恢复 */
+function stageCardMouseDown(e){
+  const t=e.target;
+  e.currentTarget.draggable=!(t && t.closest && t.closest('input,textarea,select,button,a,label,[contenteditable="true"]'));
+}
 function stageCardDragStart(e){
   const row=e.currentTarget; stageDragFrom=parseInt(row.dataset.idx,10);
   clearStageDragMarks(); row.classList.add('plstage-dragging');
@@ -2573,6 +2580,7 @@ function renderStageEditor(){
   editStages.forEach((s,i)=>{
     const row=document.createElement('div'); row.className='plstage'; row.dataset.idx=i;
     row.draggable=true;
+    row.addEventListener('mousedown',stageCardMouseDown);
     row.addEventListener('dragstart',stageCardDragStart);
     row.addEventListener('dragover',stageCardDragOver);
     row.addEventListener('drop',stageCardDrop);

@@ -75,6 +75,7 @@ function loadEditorContext(stages) {
     renderStageActionRow() {},
     renderStageParams() {},
     renderStageSched() {},
+    stageCardMouseDown() {},
     stageCardDragStart() {},
     stageCardDragOver() {},
     stageCardDrop() {},
