@@ -130,6 +130,8 @@ test('普通任务卡和系统预设任务卡都注册整卡拖拽事件', () =>
     ],
     editFocusIdx: -1,
     editSelStage: null,
+    plFormReadOnly: false,
+    applyPlFormReadOnly() {},
     STAGE_KIND_LABEL: { simulate: '模拟', shell: 'Shell', python: 'Python', http: 'HTTP', evaltokens: 'EvalTokens' },
     $: id => id === 'plStageList' ? stageList : null,
     esc: String,

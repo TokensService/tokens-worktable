@@ -2502,8 +2502,9 @@ let editSelStage=null;
 function applyEditSel(){
   const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
   for(let i=0;i<wrap.children.length;i+=1){
-    const row=wrap.children[i]; const on=!!(editStages[i] && editStages[i]===editSelStage);
-    row.classList.toggle('plstage-sel', on);
+    const row=wrap.children[i]; const sel=!!(editStages[i] && editStages[i]===editSelStage);
+    const on=!!(sel && !plFormReadOnly);   // 只读查看（内置流水线）保留选中高亮，但不出「+」插入按钮
+    row.classList.toggle('plstage-sel', sel);
     const has=!!row.querySelector('.plstage-ins');
     if(on && !has){
       row.insertAdjacentHTML('beforeend','<button type="button" class="plstage-ins plstage-ins-top" data-act="insBefore" title="在其上方插入新阶段">+</button><button type="button" class="plstage-ins plstage-ins-bottom" data-act="insAfter" title="在其下方插入新阶段">+</button>');
@@ -2637,6 +2638,7 @@ function renderStageEditor(){
   applyEditSel();   // 重渲染后 DOM 已重建，恢复选中卡高亮与上/下缘「+」插入按钮
   if(editFocusIdx>=0 && wrap.children && wrap.children[editFocusIdx]){ const fr=wrap.children[editFocusIdx]; if(fr.scrollIntoView) fr.scrollIntoView({block:'nearest'}); }
   editFocusIdx=-1;
+  applyPlFormReadOnly();   // 只读模式（内置流水线）：禁用卡内全部编辑控件并禁止拖拽，每次重渲染后重复应用
 }
 function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
@@ -2721,6 +2723,7 @@ async function detectStageParams(i, keepOnError){
     });
   }catch(e){ if(!keepOnError) s.script.params=[]; }
   renderStageParams(i);
+  applyPlFormReadOnly();   // 异步重识别重建了参数输入框，只读模式下需重新禁用
 }
 
 /* 「输出变量」旁的 ? 帮助徽标：区分来源格式与映射写法；srcTxt 为产出全文来源描述 */
@@ -2952,7 +2955,7 @@ function flowStages(){
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
-function flowDraggable(){ return !running && !runStages && !replayRec && !viewActive(); }
+function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && !(p && p.builtIn); }   // 内置（默认）流水线只读，主视图同样禁止拖拽改序
 /* 工作列表：当前流水线阶段补齐缺失的预设标记（与 flowStages 同源）。
    真实阶段保留对象引用（含 script/url 等全部字段，原样回写）；预设标记按 id/name/pkey 轻量保存。 */
 function flowWorkList(){ return withPresetMarkers((curPipeline().stages||[]).slice(), curPipeline().prom); }
@@ -2995,7 +2998,7 @@ function flowNodeDragEnd(){ flowDragFromId=null; clearFlowDragMarks(); }
 /* 落盘：工作列表回写为 stages（预设标记随位置保存，普罗采集参数存于其任务内，并清掉顶层 prom），
    与编辑器 savePlForm 的归一化一致 */
 function persistFlowOrder(orderedWork){
-  const p=curPipeline(); if(!p) return;
+  const p=curPipeline(); if(!p||p.builtIn) return;   // 内置（默认）流水线只读，不写回（入口已由 flowDraggable 拦截，此处兜底）
   p.stages=orderedWork.map(s=> s.preset
     ? Object.assign({id:s.id,name:s.name,preset:true,pkey:s.pkey}, s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom)}:{})
     : s);
@@ -3032,7 +3035,7 @@ function renderFlow(){
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, withPresetMarkers(activeStages(),curPipeline().prom).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
-    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):'单击查看详情，双击编辑该阶段';
+    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((curPipeline()||{}).builtIn?'单击查看详情，双击查看该阶段（内置流水线只读）':'单击查看详情，双击编辑该阶段');
     /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
     if(flowDraggable()){
       n.draggable=true; n.title+='；可拖拽调整执行顺序';
@@ -4432,6 +4435,7 @@ async function detectEvaltokStageParams(i, keepOnError){
     else{ s.evaltokens.params=detectEvaltokTaskParams(task); }
   }catch(e){ if(!keepOnError) s.evaltokens.params=[]; }
   renderStageParams(i);
+  applyPlFormReadOnly();   // 异步重识别重建了参数输入框，只读模式下需重新禁用
 }
 /* EvalTokens 任务状态归类：成功 / 失败 / 运行中（大小写不敏感子串匹配，覆盖 success|done|completed|passed|finished 与 failed|error|cancel|abort|killed 等） */
 function evaltokStatusKind(st){
@@ -5763,7 +5767,7 @@ function renderPipelines(){
     tr.title=plRuns.length?'点击查看本次运行的阶段详情':'点击选用该流水线';
     tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(plRuns.length?' <span class="dshell-badge dshell-badgeWait" style="font-size:10px;">运行中</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':''):'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
     tr.addEventListener('click',()=>{ const rc=latestRunOfPipeline(p.id); if(rc){ focusRun(rc); return; } selectPipeline(p.id); });   // 整行点击：有在跑运行→查看其阶段详情；否则选用（运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
@@ -5814,6 +5818,25 @@ function savePlDraft(){
 function schedulePlDraftSave(){ if(plDraftTimer) clearTimeout(plDraftTimer); plDraftTimer=setTimeout(savePlDraft, 400); }
 function clearPlDraft(){ if(plDraftTimer){ clearTimeout(plDraftTimer); plDraftTimer=null; } try{ localStorage.removeItem('pip-plDraft'); }catch(e){} const tip=$('plDraftTip'); if(tip) tip.textContent=''; }
 function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft')||'null'); }catch(e){ return null; } }
+/* 内置（默认）流水线只读查看：openPlForm 按 p.builtIn 置位，编辑器以只读模式打开——名称/脚本目录/默认环境
+   与阶段卡内全部编辑控件禁用，保存/添加阶段入口隐藏，任务卡禁止拖拽，「+」插入按钮不出现（见 applyEditSel），
+   仅保留「关闭/取消」退出；保存端另有 savePlForm 兜底拦截。因阶段参数识别等为异步重渲染，
+   本函数在 openPlForm、renderStageEditor、detectStageParams、detectEvaltokStageParams 末尾重复应用（幂等）。 */
+let plFormReadOnly=false;
+function applyPlFormReadOnly(){
+  const f=$('plForm'); if(!f) return;
+  /* 顶部静态控件（不随阶段列表重渲染）两种模式下都显式切换；阶段卡内动态控件只在只读时强制禁用——
+     可编辑模式的行内 disabled（如首张卡 ↑）由 renderStageEditor 自身渲染，不在此恢复 */
+  ['plName','scriptsDir','scriptsReload','plDefaultEnvMultiBtn','plDefaultRepo','plDefaultBranch','plDefaultStrategy'].forEach(id=>{ const el=$(id); if(el) el.disabled=plFormReadOnly; });
+  const presets=$('plDefaultPresets'); if(presets) presets.querySelectorAll('input').forEach(el=>{ el.disabled=plFormReadOnly; });
+  const add=$('plStageAdd'); if(add) add.style.display=plFormReadOnly?'none':'';
+  const save=$('plSave'); if(save) save.style.display=plFormReadOnly?'none':'';
+  const wrap=$('plStageList');
+  if(wrap&&wrap.children) for(let i=0;i<wrap.children.length;i+=1){
+    const row=wrap.children[i]; row.draggable=!plFormReadOnly; row.style.cursor=plFormReadOnly?'default':'';
+    if(plFormReadOnly) row.querySelectorAll('input,select,textarea,button').forEach(el=>{ el.disabled=true; });
+  }
+}
 function openPlForm(id, focusIdx){
   const f=$('plForm'); f.style.display='flex';
   editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
@@ -5822,14 +5845,16 @@ function openPlForm(id, focusIdx){
   /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
   const p = id ? (findPipeline(id) || curPipeline()) : null;
   f.dataset.editId = p ? p.id : '';
-  $('plFormTitle').textContent = p ? ('编辑流水线：'+p.name) : '新建流水线';
+  plFormReadOnly=!!(p&&p.builtIn);   // 内置（默认）流水线只读查看，编辑器整体切为只读模式
+  $('plFormTitle').textContent = p ? ((plFormReadOnly?'查看流水线（内置·只读）：':'编辑流水线：')+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? Object.assign({id:s.id, name:s.name, preset:true, pkey:s.pkey},s.pkey==='promCollect'?{prom:normalizePipelineProm(s.prom||p.prom)}:{})   /* 预设标记行原样带入；普罗采集同时带入任务内配置（兼容旧 p.prom） */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages, p&&p.prom);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling/普罗采集最后
-  /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失 */
-  const draft=loadPlDraft();
+  /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
+     只读查看（内置流水线）不恢复草稿——展示内容须为内置定义真值，且只读模式也不会产生新草稿 */
+  const draft=plFormReadOnly?null:loadPlDraft();
   if(draft && Array.isArray(draft.stages) && (draft.editId||'')===$('plForm').dataset.editId){
     editStages=draft.stages;
     if(typeof draft.name==='string') $('plName').value=draft.name;
@@ -5837,6 +5862,7 @@ function openPlForm(id, focusIdx){
     if(draft.defaults) editDefaults=normalizePipelineDefaults(draft.defaults);
   }
   renderPipelineDefaultForm();
+  applyPlFormReadOnly();   // 顶部静态控件与保存/添加入口按只读模式切换（阶段卡内控件在 renderStageEditor 末尾应用）
   /* 编排区双击阶段进入（带 focusIdx）时，焦点阶段即选中卡：高亮统一走 plstage-sel 单通道（applyEditSel
      在 renderStageEditor 末尾恢复）。必须晚于草稿恢复——恢复会整组替换 editStages，早了引用即失效 */
   if(editFocusIdx>=0 && editFocusIdx<editStages.length) editSelStage=editStages[editFocusIdx];
@@ -5851,9 +5877,12 @@ function openPlForm(id, focusIdx){
       return null;
     }));
   });
-  $('plName').focus();
+  if(!plFormReadOnly) $('plName').focus();   // 只读查看不抢焦点（名称输入框已禁用）
 }
 function savePlForm(){
+  /* 内置（默认）流水线只读：保存入口已隐藏，此处兜底拦截一切写回内置定义的路径（如需改动请用列表「复制」生成可编辑副本） */
+  const guardP=findPipeline($('plForm').dataset.editId||'');
+  if(guardP && guardP.builtIn){ alert('内置流水线「'+guardP.name+'」为只读，不可保存修改；可在「流水线任务」列表「复制」为副本后编辑。'); return; }
   const name=$('plName').value.trim()||'未命名流水线';
   if(!editStages.some(s=>!s.preset)){ alert('请至少添加一个阶段（预设任务不计入）'); return; }
   // 校验：阶段名非空/不重复、脚本存在（可警告）、必填参数已填；预设任务行仅参与排序，跳过内容校验

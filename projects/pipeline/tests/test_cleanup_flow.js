@@ -183,6 +183,7 @@ test('预设任务多选按钮文案跟随勾选（全不选显示「（不执�
 test('流水线编辑器在收集普罗预设任务行内展示 model/namespace/起止时间',()=>{
   const wrap={innerHTML:'',children:[],appendChild(n){this.children.push(n);}};
   const ctx={editStages:[{id:'__prom_collect__',name:'收集普罗数据',preset:true,pkey:'promCollect',prom:{modelName:'model-a',xdsNamespace:'ns-a',startTime:'2026-09-08T10:00',endTime:'2026-09-08T11:00'}}],editFocusIdx:-1,
+    plFormReadOnly:false,applyPlFormReadOnly(){},
     $:id=>id==='plStageList'?wrap:null,esc:String,
     normalizePipelineProm:p=>Object.assign({modelName:'',xdsNamespace:'${DEPLOY_STRATEGY}-${BY}',startTime:'',endTime:''},p||{}),
     stageCardMouseDown(){},stageCardDragStart(){},stageCardDragOver(){},stageCardDrop(){},stageCardDragEnd(){},
