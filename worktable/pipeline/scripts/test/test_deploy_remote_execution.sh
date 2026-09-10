@@ -47,6 +47,7 @@ grep -Fq -- '-p 2222' "$work_dir/ssh.log"
 grep -Fq 'DEPLOY_ON_TARGET_HOST=1' "$work_dir/ssh.log"
 grep -Fq "$work_dir/remote-render" "$work_dir/ssh.log"
 grep -Fq "$work_dir/remote-run/scripts/register-model.sh" "$work_dir/ssh.log"
+grep -Fq "$work_dir/remote-run/scripts/cleanup-env.sh" "$work_dir/ssh.log"
 grep -Fq 'Deploy the rendered chart' "$work_dir/ssh.stdin"
 grep -Fq 'DEPLOY_EXECUTION_HOST=192.0.2.10' "$work_dir/output"
 

@@ -6,7 +6,7 @@ work_dir="$(mktemp -d)"
 
 mkdir -p "$work_dir/chart" "$work_dir/bin" "$work_dir/run/rendered"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Chart.yaml"
-printf '{}\n' >"$work_dir/values.yaml"
+printf 'global:\n  network:\n    ports:\n      - nodePort: 31365\n' >"$work_dir/values.yaml"
 cat >"$work_dir/architecture.request.json" <<'JSON'
 {"arch_name":"test-arch","deploy_spec_packages":[{"spec_package_name":"test-package","deploy_specs":[]}]}
 JSON
@@ -38,6 +38,12 @@ case "$*" in
     ;;
 esac
 EOF
+cat >"$work_dir/bin/ss" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$work_dir/bin/ss"
+
 cat >"$work_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 printf 'curl %s\n' "$*" >>"$EVENT_LOG"
