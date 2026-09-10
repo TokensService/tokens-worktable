@@ -61,7 +61,7 @@ PATH="$work_dir/bin:$PATH" \
   DRY_RUN=0 \
   bash "$script" >"$work_dir/output"
 
-grep -Fq 'BNT 标准化开始 steps=[crond containers gpu]' "$work_dir/output"
+grep -Fq 'BNT 标准化开始 steps=[crond release-resources containers gpu]' "$work_dir/output"
 grep -Fq 'service crond stop' "$work_dir/actions.log"
 if grep -Fq '环境健康检查' "$work_dir/output"; then exit 1; fi
 
@@ -90,12 +90,14 @@ TEST_ACTION_LOG="$work_dir/actions.log" \
 LOG_FILE="$work_dir/bnt-remote.log" \
 ACTION=check-health \
 SSH_PASSWORD=test-password \
-TARGET_HOSTS='[{"ip":"192.0.2.10"},{"ip":"192.0.2.11"}]' \
+TARGET_HOSTS='[{"ip":"192.0.2.10:2223"},{"ip":"192.0.2.11"}]' \
 bash "$script" >"$work_dir/remote-output"
 
 grep -Fq 'sshpass password=test-password' "$work_dir/actions.log"
 grep -Fq 'root@192.0.2.10' "$work_dir/actions.log"
 grep -Fq 'root@192.0.2.11' "$work_dir/actions.log"
+grep -Fq -- '-P 2223' "$work_dir/actions.log"
+grep -Fq -- '-p 2223' "$work_dir/actions.log"
 grep -Fq 'REMOTE_EXECUTION=1' "$work_dir/actions.log"
 
 # 两个新入口单独复制后仍能运行，不依赖旧入口或相邻文件。

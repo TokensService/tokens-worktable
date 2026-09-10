@@ -34,3 +34,18 @@ grep -Fq '[DRY_RUN] kill -TERM 101' "$LOG_FILE"
 [[ ! -s "$tmp/kubectl" && ! -s "$tmp/kill" ]]
 
 echo 'current release service/port cleanup test passed'
+
+# Standardize derives the release namespace and chooses ports on the target node:
+# mapped InternalIP uses its assigned NodePort; other nodes use 31365.
+CLEANUP_NAMESPACE=''
+CLEANUP_NODE_PORT=''
+DEPLOY_ARCH='glm-5.3-nvfp4-ems-one-node'
+DEPLOY_EXECUTOR='alice'
+DEPLOY_IMAGE_TAG='1334.77c8b'
+hostname() { [[ "$1" == '-I' ]] && printf '192.168.31.175\n'; }
+[[ "$(resolved_cleanup_node_port)" == '31008' ]]
+hostname() { [[ "$1" == '-I' ]] && printf '192.168.0.128\n'; }
+[[ "$(resolved_cleanup_node_port)" == '31365' ]]
+[[ "$(derive_cleanup_namespace; printf '%s' "$CLEANUP_NAMESPACE")" == 'xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' ]]
+
+echo 'mapped/default NodePort and namespace derivation test passed'

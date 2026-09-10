@@ -121,8 +121,9 @@ def proxy_keys(values):
 def proxy_level(scope, values):
     if not proxy_keys(values):
         return 'PASS'
-    # 宿主机代理存在不等于部署失败；服务进程仍按无代理基准阻断。
-    return 'WARN' if scope in ('检查进程', '/etc/environment') else 'FAIL'
+    # 已明确配置代理的宿主机或运行时仅告警；实际部署连通性由后续镜像拉取、
+    # API 与跨节点检查验证，避免把可由 NO_PROXY 绕过的环境直接判为失败。
+    return 'WARN' if scope in ('检查进程', '/etc/environment', 'containerd运行进程') else 'FAIL'
 
 
 def quantity(value):
@@ -384,18 +385,26 @@ remote_ssh() {
 }
 
 do_remote() {
-    local ip="$1" target self remote_env pair key
-    target="${SSH_USER}@${ip}"
+    local endpoint="$1" host port target self remote_env pair key
+    if [[ "$endpoint" =~ ^([^:]+):([1-9][0-9]*)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+        (( port <= 65535 )) || { log "ERROR: 无效 SSH 端口: $endpoint"; return 2; }
+    else
+        host="$endpoint"
+        port="$SSH_PORT"
+    fi
+    target="${SSH_USER}@${host}"
     local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-    log "推送脚本到 $target:$SSH_PORT 并执行 $ACTION"
-    remote_scp -P "$SSH_PORT" -q "$self" "$target:/tmp/check-env.sh" || return 1
+    log "推送脚本到 $target:$port 并执行 $ACTION"
+    remote_scp -P "$port" -q "$self" "$target:/tmp/check-env.sh" || return 1
 
     remote_env=""
     for key in ACTION LOG_FILE HEALTH_NODE HUGEPAGE_TRIGGER_GIB MIN_AVAILABLE_WITH_HUGEPAGES_GIB NETWORK_TEST_PEER NETWORK_TEST_IMAGE NETWORK_TEST_NAMESPACE; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
-    remote_ssh -p "$SSH_PORT" "$target" \
+    remote_ssh -p "$port" "$target" \
         "env REMOTE_EXECUTION=1 TARGET_HOSTS= $remote_env bash /tmp/check-env.sh"
 }
 

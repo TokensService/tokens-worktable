@@ -10,7 +10,7 @@
 #
 # 环境变量:
 #   ACTION=standardize       动作：standardize|clean-containers|kill-gpu|svc|hugepages|release-resources
-#   STEPS=                   standardize 清理步骤，逗号分隔；默认 crond,containers,gpu；清理完成即退出，不执行环境检查
+#   STEPS=                   standardize 清理步骤，逗号分隔；默认 crond,release-resources,containers,gpu；清理完成即退出，不执行环境检查
 #   CLEANUP_TIMEOUT_SECONDS=300 清理等待上限
 #   CLEANUP_POLL_SECONDS=5     残留 Pod 检查间隔；统一等待满 15 秒后强制删除
 #   DRY_RUN=0|1              仅预演
@@ -21,6 +21,9 @@
 #   CLEANUP_NAMESPACE=       release-resources 动作要删除 Service 的命名空间
 #   CLEANUP_SERVICE_NAME=ray-svc release-resources 动作要删除的 Service 名称
 #   CLEANUP_NODE_PORT=       release-resources 动作要释放的本次 NodePort
+#   DEPLOY_STRATEGY/arch=     本次发布架构；与 BY/EXECUTOR、IMAGE_TAG 一起用于推导 namespace
+#   BY/EXECUTOR=              本次发布执行人；与架构、IMAGE_TAG 一起用于推导 namespace
+#   IMAGE_TAG=                本次镜像标签；与架构、执行人一起用于推导 namespace
 #   HUGEPAGE_PATH=           hugepages 动作的 nr_hugepages 文件路径
 #   TARGET_HOSTS=            逗号分隔 IP；也兼容 TARGET_HOSTS JSON 的 ip 字段
 #   SSH_USER=root            远端 SSH 用户
@@ -48,7 +51,13 @@ NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
 CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
 CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-ray-svc}"
-CLEANUP_NODE_PORT="${CLEANUP_NODE_PORT:-${NODE_PORT:-}}"
+# NODE_PORT describes rendered deployment input and can belong to another
+# target.  Standardization always resolves from the target host itself;
+# only an explicit CLEANUP_NODE_PORT overrides that rule.
+CLEANUP_NODE_PORT="${CLEANUP_NODE_PORT:-}"
+DEPLOY_ARCH="${arch:-${DEPLOY_STRATEGY:-}}"
+DEPLOY_EXECUTOR="${EXECUTOR:-${BY:-}}"
+DEPLOY_IMAGE_TAG="${IMAGE_TAG:-}"
 HUGEPAGE_PATH="${HUGEPAGE_PATH:-}"
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 SSH_USER="${SSH_USER:-root}"
@@ -168,6 +177,47 @@ step_crond() {
 # This is intentionally narrower than `containers`: it only removes resources
 # belonging to the release being deployed and only kills PIDs actually listening
 # on that release's selected NodePort.
+# 映射环境的 Kubernetes InternalIP 有固定 NodePort；其它节点统一走默认端口。
+# 端口要在目标机上按本机 InternalIP 计算，不能以 SSH 跳板地址判断。
+node_port_for_ip() {
+    case "$1" in
+        192.168.31.59) echo 31000 ;; 192.168.31.125) echo 31001 ;;
+        192.168.31.18) echo 31002 ;; 192.168.31.127) echo 31003 ;;
+        192.168.31.190) echo 31004 ;; 192.168.31.104) echo 31005 ;;
+        192.168.31.197) echo 31007 ;; 192.168.31.175) echo 31008 ;;
+        192.168.31.17) echo 31009 ;; 192.168.31.238) echo 31010 ;;
+        192.168.31.163) echo 31011 ;; 192.168.31.70) echo 31012 ;;
+        192.168.31.214) echo 31013 ;; 192.168.31.111) echo 31014 ;;
+        192.168.31.65) echo 31015 ;; 192.168.31.96) echo 31016 ;;
+        192.168.31.105) echo 31017 ;; 192.168.31.89) echo 31018 ;;
+        *) echo 31365 ;;
+    esac
+}
+
+resolved_cleanup_node_port() {
+    [[ "$CLEANUP_NODE_PORT" =~ ^[0-9]+$ ]] && { echo "$CLEANUP_NODE_PORT"; return 0; }
+    local ip
+    for ip in $(hostname -I 2>/dev/null || true); do
+        [[ "$ip" == 192.168.* || "$ip" == 10.* || "$ip" == 172.16.* || "$ip" == 172.17.* || "$ip" == 172.18.* || "$ip" == 172.19.* || "$ip" == 172.2[0-9].* || "$ip" == 172.3[0-1].* ]] || continue
+        node_port_for_ip "$ip"
+        return 0
+    done
+    echo 31365
+}
+
+derive_cleanup_namespace() {
+    [[ -n "$CLEANUP_NAMESPACE" ]] && return 0
+    [[ -n "$DEPLOY_ARCH" && -n "$DEPLOY_EXECUTOR" && -n "$DEPLOY_IMAGE_TAG" ]] || return 1
+    CLEANUP_NAMESPACE="xds-${DEPLOY_ARCH}-${DEPLOY_EXECUTOR}-${DEPLOY_IMAGE_TAG}"
+    CLEANUP_NAMESPACE="$(printf '%s' "$CLEANUP_NAMESPACE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//' | cut -c1-63)"
+    [[ -n "$CLEANUP_NAMESPACE" ]]
+}
+
+prepare_release_cleanup_inputs() {
+    derive_cleanup_namespace || return 1
+    CLEANUP_NODE_PORT="$(resolved_cleanup_node_port)"
+}
+
 port_listener_pids() {
     local port=$1
     if have ss; then
@@ -219,7 +269,7 @@ terminate_port_listener() {
 }
 
 cleanup_current_release_resources() {
-    [[ -n "$CLEANUP_NAMESPACE" ]] || die "release-resources 需要 CLEANUP_NAMESPACE"
+    prepare_release_cleanup_inputs || die "release-resources 需要 CLEANUP_NAMESPACE，或 DEPLOY_STRATEGY/arch、BY/EXECUTOR、IMAGE_TAG"
     [[ "$CLEANUP_SERVICE_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || die "CLEANUP_SERVICE_NAME 非法: $CLEANUP_SERVICE_NAME"
     [[ "$CLEANUP_NODE_PORT" =~ ^[0-9]+$ ]] && (( CLEANUP_NODE_PORT >= 1 && CLEANUP_NODE_PORT <= 65535 )) \
         || die "release-resources 需要 1-65535 的 CLEANUP_NODE_PORT"
@@ -235,7 +285,7 @@ cleanup_current_release_resources() {
 }
 
 # ---------------- STEP: clean-containers ----------------
-# The deployment stage starts its collector only after cleanup. Stop any
+# The deployment stage starts its collector only after cleanup.  Stop any
 # collector left by an earlier deployment, but retain its on-disk logs.
 stop_stale_head_log_collectors() {
     local pid args
@@ -599,7 +649,7 @@ step_hugepages() {
 }
 
 # ---------------- 编排 ----------------
-DEFAULT_STEPS="crond,containers,gpu"
+DEFAULT_STEPS="crond,release-resources,containers,gpu"
 VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages release-resources"
 
 do_standardize() {
@@ -617,7 +667,13 @@ do_standardize() {
             kubelet) step_svc kubelet ;;
             kube-proxy) step_svc kube-proxy ;;
             hugepages) step_hugepages ;;
-            release-resources) cleanup_current_release_resources || return 1 ;;
+            release-resources)
+                if [[ -z "$CLEANUP_NAMESPACE" && ( -z "$DEPLOY_ARCH" || -z "$DEPLOY_EXECUTOR" || -z "$DEPLOY_IMAGE_TAG" ) ]]; then
+                    log "跳过本次发布资源清理：未提供 CLEANUP_NAMESPACE，也未完整提供 DEPLOY_STRATEGY/arch、BY/EXECUTOR、IMAGE_TAG"
+                else
+                    cleanup_current_release_resources || return 1
+                fi
+                ;;
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
     done
@@ -644,18 +700,26 @@ remote_ssh() {
 }
 
 do_remote() {
-    local ip="$1" target self remote_env pair key
-    target="${SSH_USER}@${ip}"
+    local endpoint="$1" host port target self remote_env pair key
+    if [[ "$endpoint" =~ ^([^:]+):([1-9][0-9]*)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+        (( port <= 65535 )) || { log "ERROR: 无效 SSH 端口: $endpoint"; return 2; }
+    else
+        host="$endpoint"
+        port="$SSH_PORT"
+    fi
+    target="${SSH_USER}@${host}"
     local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
-    log "推送脚本到 $target:$SSH_PORT 并执行 $ACTION"
-    remote_scp -P "$SSH_PORT" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
+    log "推送脚本到 $target:$port 并执行 $ACTION"
+    remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
-    remote_ssh -p "$SSH_PORT" "$target" \
+    remote_ssh -p "$port" "$target" \
         "env REMOTE_EXECUTION=1 TARGET_HOSTS= $remote_env bash /tmp/cleanup-env.sh"
 }
 
