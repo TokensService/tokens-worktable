@@ -88,6 +88,7 @@ PIPELINE_NAME='target-sync-test' \
 RUN_DIR="$work_dir/execution-run" \
 TARGET_RUN_DIR="$work_dir/target-run" \
 TARGET_HOSTS='[{"ip":"127.0.0.1","user":"root","pass":"must-not-be-copied"}]' \
+TARGET_NODE_IP_MAP='{"127.0.0.1":"127.0.0.1"}' \
 bash "$script" >/dev/null
 
 test -f "$work_dir/target-run/rendered/xds-cluster/Chart.yaml"
@@ -109,6 +110,7 @@ PIPELINE_NAME='target-port-test' \
 RUN_DIR="$work_dir/port-execution-run" \
 TARGET_RUN_DIR="$work_dir/port-target-run" \
 TARGET_HOSTS='[{"ip":"127.0.0.1:2222","user":"root"}]' \
+TARGET_NODE_IP_MAP='{"127.0.0.1:2222":"127.0.0.1"}' \
 bash "$script" >/dev/null
 
 grep -Fxq '2222' "$work_dir/ssh-ports.log"
@@ -123,6 +125,7 @@ RUN_DIR="$work_dir/target-ips-execution-run" \
 TARGET_RUN_DIR="$work_dir/target-ips-target-run" \
 TARGET_IP='127.0.0.1:2223' \
 TARGET_IPS='["127.0.0.1:2223"]' \
+TARGET_NODE_IP_MAP='{"127.0.0.1:2223":"127.0.0.1"}' \
 bash "$script" >/dev/null
 
 grep -Fxq '2223' "$work_dir/ssh-ports.log"

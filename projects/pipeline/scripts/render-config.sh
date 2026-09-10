@@ -25,7 +25,18 @@ NUM_PREFILL="${NUM_PREFILL:-}"
 NUM_DECODE="${NUM_DECODE:-}"
 PREFILL_GPU="${PREFILL_GPU:-}"
 DECODE_GPU="${DECODE_GPU:-}"
-NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-${IMAGE_TAG:-local}}"
+NAMESPACE_ARCH="${arch:-}"
+[[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
+EXECUTOR="${EXECUTOR:-}"
+[[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
+NAMESPACE="${NAMESPACE:-}"
+if [[ -z "$NAMESPACE" ]]; then
+  if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
+    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}-${IMAGE_TAG:-local}"
+  else
+    NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG:-local}"
+  fi
+fi
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"

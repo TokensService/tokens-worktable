@@ -148,7 +148,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     histFilter:{kw:'err',status:'fail',pipeline:'A'}, histPageSize:50,
   });
 
-  assert.deepEqual(J(ctx.environments),[{id:'env-dev',name:'开发',ip:'192.168.1.10',user:'root',pass:'new-pass'}],'环境按文件恢复并归一化（多余字段剔除）');
+  assert.deepEqual(J(ctx.environments),[{id:'env-dev',name:'开发',ip:'192.168.1.10',nodeIp:'',user:'root',pass:'new-pass'}],'环境按文件恢复并归一化（多余字段剔除）');
   assert.equal(ctx.repositories[0].pass,'new-token','代码仓访问令牌按文件内容恢复');
   assert.equal(ctx.repositories[0].fetchMode,'jenkins-browser','fetchMode 归一化（旧 jenkins 值→jenkins-browser）');
   assert.equal(ctx.scriptsDir,'/new/scripts');

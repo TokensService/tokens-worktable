@@ -371,4 +371,33 @@ assert "ems_enable = true" in framework_config, framework_config
 assert "ems_namespace = op-ems-enabled" in framework_config, framework_config
 PY
 
+# Both `arch` and EXECUTOR select the descriptive namespace.  If either input
+# is absent the pre-existing ARCH_NAME-based namespace remains in effect.
+arch='runtime-arch' EXECUTOR='gpu-bnt3' \
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-namespace-arch-executor" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+IMAGE_TAG='test-tag' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+bash "$script_dir/render-config.sh" >"$work_dir/namespace-arch-executor.out"
+grep -qx 'NAMESPACE=xds-runtime-arch-gpu-bnt3-test-tag' "$work_dir/namespace-arch-executor.out"
+
+arch='runtime-arch' \
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-namespace-legacy" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+IMAGE_TAG='test-tag' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+bash "$script_dir/render-config.sh" >"$work_dir/namespace-legacy.out"
+grep -qx 'NAMESPACE=xds-test-arch-test-tag' "$work_dir/namespace-legacy.out"
+
+
+# Role names in the copied Chart remain the upstream KubeRay names.
+
 echo "render target-label tests passed"

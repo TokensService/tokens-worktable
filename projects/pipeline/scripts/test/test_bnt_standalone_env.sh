@@ -61,7 +61,7 @@ PATH="$work_dir/bin:$PATH" \
   DRY_RUN=0 \
   bash "$script" >"$work_dir/output"
 
-grep -Fq 'BNT 标准化开始 steps=[crond containers gpu]' "$work_dir/output"
+grep -Fq 'BNT 标准化开始 steps=[crond release-resources containers gpu]' "$work_dir/output"
 grep -Fq 'service crond stop' "$work_dir/actions.log"
 if grep -Fq '环境健康检查' "$work_dir/output"; then exit 1; fi
 
