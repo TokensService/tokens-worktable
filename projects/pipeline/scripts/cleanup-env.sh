@@ -9,7 +9,7 @@
 # 可放在任意 BNT(GPU) 机器上独立运行; 也可对远端机器批量执行(内置 SSH 推送+执行)。
 #
 # 环境变量:
-#   ACTION=standardize       动作：standardize|clean-containers|kill-gpu|svc|hugepages
+#   ACTION=standardize       动作：standardize|clean-containers|kill-gpu|svc|hugepages|release-resources
 #   STEPS=                   standardize 清理步骤，逗号分隔；默认 crond,containers,gpu；清理完成即退出，不执行环境检查
 #   CLEANUP_TIMEOUT_SECONDS=300 清理等待上限
 #   CLEANUP_POLL_SECONDS=5     残留 Pod 检查间隔；统一等待满 15 秒后强制删除
@@ -18,6 +18,9 @@
 #   WHITELIST_NS=            白名单命名空间，空格分隔 glob
 #   NO_CROND=0|1             standardize 时不停止 crond
 #   SERVICE=                 svc 动作的服务名：kubelet 或 kube-proxy
+#   CLEANUP_NAMESPACE=       release-resources 动作要删除 Service 的命名空间
+#   CLEANUP_SERVICE_NAME=ray-svc release-resources 动作要删除的 Service 名称
+#   CLEANUP_NODE_PORT=       release-resources 动作要释放的本次 NodePort
 #   HUGEPAGE_PATH=           hugepages 动作的 nr_hugepages 文件路径
 #   TARGET_HOSTS=            逗号分隔 IP；也兼容 TARGET_HOSTS JSON 的 ip 字段
 #   SSH_USER=root            远端 SSH 用户
@@ -43,6 +46,9 @@ NODE="${NODE:-${K8S_NODE_NAME:-}}"
 WHITELIST_NS="${WHITELIST_NS:-}"
 NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
+CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
+CLEANUP_SERVICE_NAME="${CLEANUP_SERVICE_NAME:-ray-svc}"
+CLEANUP_NODE_PORT="${CLEANUP_NODE_PORT:-${NODE_PORT:-}}"
 HUGEPAGE_PATH="${HUGEPAGE_PATH:-}"
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 SSH_USER="${SSH_USER:-root}"
@@ -156,6 +162,76 @@ json_array_len() {
 step_crond() {
     log "=== 停 crond ==="
     run service crond stop 2>/dev/null || log "crond 已停或不存在"
+}
+
+# ---------------- STEP: release-resources ----------------
+# This is intentionally narrower than `containers`: it only removes resources
+# belonging to the release being deployed and only kills PIDs actually listening
+# on that release's selected NodePort.
+port_listener_pids() {
+    local port=$1
+    if have ss; then
+        ss -H -ltnp "sport = :$port" 2>/dev/null \
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true
+        return 0
+    fi
+    if have lsof; then
+        lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true
+        return 0
+    fi
+    log "ERROR: 无 ss/lsof，无法验证 NodePort $port 是否被占用"
+    return 1
+}
+
+terminate_port_listener() {
+    local port=$1 pid attempt pids
+    local -a remaining
+    pids="$(port_listener_pids "$port")" || return 1
+    mapfile -t remaining < <(printf '%s\n' "$pids" | sed '/^$/d')
+    if (( ${#remaining[@]} == 0 )); then
+        log "本次 NodePort $port 无宿主监听进程"
+        return 0
+    fi
+    log "释放本次 NodePort $port，监听 PID: ${remaining[*]}"
+    for pid in "${remaining[@]}"; do
+        [[ "$pid" =~ ^[0-9]+$ ]] || continue
+        [[ "$DRY_RUN" == "1" ]] && { log "  [DRY_RUN] kill -TERM $pid"; continue; }
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    [[ "$DRY_RUN" == "1" ]] && return 0
+    for attempt in 1 2 3; do
+        sleep 1
+        pids="$(port_listener_pids "$port")" || return 1
+        mapfile -t remaining < <(printf '%s\n' "$pids" | sed '/^$/d')
+        (( ${#remaining[@]} == 0 )) && return 0
+    done
+    log "本次 NodePort $port 仍被监听，SIGKILL: ${remaining[*]}"
+    for pid in "${remaining[@]}"; do
+        [[ "$pid" =~ ^[0-9]+$ ]] && kill -KILL "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    pids="$(port_listener_pids "$port")" || return 1
+    mapfile -t remaining < <(printf '%s\n' "$pids" | sed '/^$/d')
+    if (( ${#remaining[@]} )); then
+        log "ERROR: 端口 $port 仍被监听: ${remaining[*]}"
+        return 1
+    fi
+}
+
+cleanup_current_release_resources() {
+    [[ -n "$CLEANUP_NAMESPACE" ]] || die "release-resources 需要 CLEANUP_NAMESPACE"
+    [[ "$CLEANUP_SERVICE_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || die "CLEANUP_SERVICE_NAME 非法: $CLEANUP_SERVICE_NAME"
+    [[ "$CLEANUP_NODE_PORT" =~ ^[0-9]+$ ]] && (( CLEANUP_NODE_PORT >= 1 && CLEANUP_NODE_PORT <= 65535 )) \
+        || die "release-resources 需要 1-65535 的 CLEANUP_NODE_PORT"
+    probe_k8s
+    [[ "$HAS_KUBECTL" == "1" ]] || { log "ERROR: kubectl 不可用，不能删除本次 Service"; return 1; }
+    log "=== 清理本次发布资源 namespace=$CLEANUP_NAMESPACE service=$CLEANUP_SERVICE_NAME nodePort=$CLEANUP_NODE_PORT ==="
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "  [DRY_RUN] kubectl delete service $CLEANUP_SERVICE_NAME -n $CLEANUP_NAMESPACE --ignore-not-found --wait=true"
+    else
+        kubectl delete service "$CLEANUP_SERVICE_NAME" -n "$CLEANUP_NAMESPACE" --ignore-not-found --wait=true || return 1
+    fi
+    terminate_port_listener "$CLEANUP_NODE_PORT"
 }
 
 # ---------------- STEP: clean-containers ----------------
@@ -524,7 +600,7 @@ step_hugepages() {
 
 # ---------------- 编排 ----------------
 DEFAULT_STEPS="crond,containers,gpu"
-VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages"
+VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages release-resources"
 
 do_standardize() {
     local steps="$STEPS"
@@ -541,6 +617,7 @@ do_standardize() {
             kubelet) step_svc kubelet ;;
             kube-proxy) step_svc kube-proxy ;;
             hugepages) step_hugepages ;;
+            release-resources) cleanup_current_release_resources || return 1 ;;
             *) die "未知 step: $s (可选: $VALID_STEPS)";;
         esac
     done
@@ -574,7 +651,7 @@ do_remote() {
     remote_scp -P "$SSH_PORT" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
@@ -610,7 +687,7 @@ main() {
     [[ "$DRY_RUN" =~ ^[01]$ ]] || die "DRY_RUN 必须为 0 或 1"
     [[ "$CLEANUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CLEANUP_TIMEOUT_SECONDS 必须为正整数"
     [[ "$CLEANUP_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CLEANUP_POLL_SECONDS 必须为正整数"
-    case "$ACTION" in standardize|clean-containers|kill-gpu|svc|hugepages) ;; *) die "清理脚本不支持 ACTION=$ACTION";; esac
+    case "$ACTION" in standardize|clean-containers|kill-gpu|svc|hugepages|release-resources) ;; *) die "清理脚本不支持 ACTION=$ACTION";; esac
     if [[ -n "$TARGET_HOSTS" && "$REMOTE_EXECUTION" != "1" ]]; then
         do_targets
         return
@@ -621,6 +698,7 @@ main() {
         kill-gpu) step_kill_gpu; log "完成 (日志 $LOG_FILE)";;
         svc) [[ "$SERVICE" == "kubelet" || "$SERVICE" == "kube-proxy" ]] || die "SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$SERVICE";;
         hugepages) step_hugepages "$HUGEPAGE_PATH";;
+        release-resources) cleanup_current_release_resources;;
         *) die "未知 ACTION: $ACTION";;
     esac
 }

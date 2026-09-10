@@ -170,10 +170,11 @@ PY
   tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
     "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
+  sync_remote_file "$SCRIPT_DIR/cleanup-env.sh" "${remote_script_dir}/cleanup-env.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
   sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
-  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
+  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/cleanup-env.sh") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   if ! run_remote "$target" "$target_port" "$remote_command"; then
@@ -514,6 +515,32 @@ wait_for_release_cleanup() {
   return 1
 }
 
+release_node_port() {
+  python3 - "$VALUES_FILE" <<'PY'
+import sys
+import yaml
+
+values = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+ports = values.get("global", {}).get("network", {}).get("ports", [])
+for item in ports if isinstance(ports, list) else []:
+    if isinstance(item, dict) and item.get("nodePort") is not None:
+        print(item["nodePort"])
+        break
+else:
+    raise SystemExit("rendered values do not contain a NodePort")
+PY
+}
+
+cleanup_current_release_resources() {
+  local node_port
+  node_port="$(release_node_port)" || return 1
+  [[ "$node_port" =~ ^[0-9]+$ ]] || { echo "invalid rendered NodePort: $node_port" >&2; return 1; }
+  echo "[deploy] remove current service and release NodePort $node_port"
+  ACTION=release-resources REMOTE_EXECUTION=1 TARGET_HOSTS= \
+    CLEANUP_NAMESPACE="$NAMESPACE" CLEANUP_SERVICE_NAME="$SERVICE_NAME" \
+    CLEANUP_NODE_PORT="$node_port" bash "$SCRIPT_DIR/cleanup-env.sh"
+}
+
 prepare_ctrl_slot_capacity() {
   local ctrl_replicas current_limit existing_limit new_limit holders_json holder_count
   local holder_namespace holder_pod
@@ -614,6 +641,7 @@ echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
 wait_for_release_cleanup
+cleanup_current_release_resources
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
