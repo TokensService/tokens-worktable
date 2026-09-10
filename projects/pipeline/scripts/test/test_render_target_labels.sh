@@ -64,6 +64,9 @@ global:
   serviceAccountSecretName: old-namespace-sa-secret
 frameworkConfigFiles:
   xds_framework.conf: |
+    [metric]
+    pushgateway = true
+    collector_gateway_url = 192.168.10.6:25888
     [deploy]
     k8s_deploy_namespace = old-namespace
     [fe]
@@ -207,6 +210,7 @@ assert values["lmcacheSidecar"] == {
     },
 }
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "mock_db = true" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert values["ems"]["enable"] is False, values["ems"]
@@ -282,6 +286,7 @@ assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 2, values["w
 framework_config = values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "fem_min_frontend_num = 2" in framework_config, framework_config
 assert "fem_max_frontend_num = 2" in framework_config, framework_config
+assert "collector_gateway_url = 192.168.10.6:25888" in framework_config, framework_config
 assert "mock_db = true" in framework_config, framework_config
 PY
 

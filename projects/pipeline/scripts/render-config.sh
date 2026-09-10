@@ -37,6 +37,7 @@ YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
 NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
+MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
@@ -73,7 +74,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$MAPPED_COLLECTOR_GATEWAY_URL" <<'PY'
 import copy
 import json
 from pathlib import Path
@@ -87,7 +88,7 @@ import yaml
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
- chart_dir, image_pull_secrets_text) = sys.argv[1:]
+ chart_dir, image_pull_secrets_text, mapped_collector_gateway_url) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
@@ -503,6 +504,12 @@ if isinstance(lmcache, dict):
 
 framework_files = values.get("frameworkConfigFiles")
 if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    if target_node_ip_map:
+        framework_files["xds_framework.conf"] = re.sub(
+            r"(?m)^(\s*collector_gateway_url\s*=\s*).*?$",
+            rf"\g<1>{mapped_collector_gateway_url}",
+            framework_files["xds_framework.conf"],
+        )
     framework_files["xds_framework.conf"] = re.sub(
         r"(?m)^(\s*ems_enable\s*=\s*).*$",
         rf"\g<1>{str(use_ems).lower()}",
