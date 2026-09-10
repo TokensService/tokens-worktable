@@ -3250,8 +3250,8 @@ function substRunVars(v, rc){
     if(rc.pipelineName) look.PIPELINE_NAME=rc.pipelineName;
     if(rc.repoUrl) look.GIT_URL=rc.repoUrl;
     if(rc.branch) look.GIT_BRANCH=rc.branch;
-    if(rc.strategy!==undefined) look.DEPLOY_STRATEGY=rc.strategy;   // 部署策略（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用）
-    if(rc.by) look.BY=rc.by;   // 执行人（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用，= 执行人拼音）
+    if(rc.strategy!==undefined) { look.DEPLOY_STRATEGY=rc.strategy; look.arch=rc.strategy; }
+    if(rc.by) { look.BY=rc.by; look.EXECUTOR=rc.by; }
     if(rc.archive){ look.ARCHIVE_DIR=rc.archive; look.ARCHIVE_FOLDER=rc.archive; }
     if(rc.vars) Object.assign(look, rc.vars);   // 上游阶段变量同名优先
   }
@@ -3358,6 +3358,9 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
     if(env.GIT_URL===undefined && rc.repoUrl) env.GIT_URL=rc.repoUrl;
     if(env.GIT_BRANCH===undefined && rc.branch) env.GIT_BRANCH=rc.branch;
     if(env.DEPLOY_STRATEGY===undefined && rc.strategy) env.DEPLOY_STRATEGY=rc.strategy;
+    if(env.arch===undefined && rc.strategy) env.arch=rc.strategy;
+    if(env.BY===undefined && rc.by) env.BY=rc.by;
+    if(env.EXECUTOR===undefined && rc.by) env.EXECUTOR=rc.by;
     if(env.GIT_USER===undefined && rc.repoUser) env.GIT_USER=rc.repoUser;
     if(env.GIT_PASSWORD===undefined && rc.repoPass) env.GIT_PASSWORD=rc.repoPass;
     /* 归档路径：启动时已快照到 rc.archive（archiveFolderFor），按「流水线名称_年月日时分秒」文件夹注入各阶段，

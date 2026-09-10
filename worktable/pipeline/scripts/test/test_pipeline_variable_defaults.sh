@@ -2,6 +2,8 @@
 set -euo pipefail
 
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pull_render_config.sh"
+# The extracted initialization also validates target input; keep this test focused on defaults.
+export TARGET_IP="192.168.0.128"
 
 for variable in PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE NAMESPACE RELEASE_NAME \
   CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST NODE_LABELS_FILE \
@@ -49,6 +51,12 @@ namespace_from_arch_executor="$(arch='glm-5.2-nvfp4' EXECUTOR='executor-a' IMAGE
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
 grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
 grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+
+namespace_from_runtime_vars="$(DEPLOY_STRATEGY='glm-5.3-nvfp4-ems-one-node' BY='alice' IMAGE_TAG='1334.77c8b' \
+  bash -c "$config
+printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
+grep -Fq 'NAMESPACE=xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' <<<"$namespace_from_runtime_vars"
+grep -Fq 'RELEASE_NAME=xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' <<<"$namespace_from_runtime_vars"
 
 # EXECUTOR alone must not change the legacy namespace format.
 namespace_without_arch="$(EXECUTOR='executor-a' ARCH_NAME='glm-5.2-nvfp4' IMAGE_TAG='1000.tag' \
