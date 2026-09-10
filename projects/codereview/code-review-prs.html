@@ -217,7 +217,7 @@
     <!-- 发行视图：选仓库/分支，一键串行「编译构建 → 创建 Tag → 创建 GitCode 发行版」 -->
     <div id="viewRelease" style="display:none">
       <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" id="relCardSubHelp" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" id="relCardSubHelp" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支选择自动缓存本机，各分支的构建设置保存到云端、选中该分支自动填充</span></h2>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">仓库
             <select class="dshell-input" id="relRepo" style="min-width:150px"></select>
@@ -247,6 +247,7 @@
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">超时(s)
             <input class="dshell-input" id="relBuildTimeout" type="number" min="10" max="3600" style="width:80px" />
           </label>
+          <span class="dshell-muted" id="relCfgCloudTip" style="font-size:11px" title="构建脚本/构建命令/超时/产物路径/预发布按「仓库@分支」保存到服务端云端（所有浏览器共享），改动自动保存；再次选中该分支时自动填充"></span>
         </div>
         <div class="pr-tokenRow" id="relBuildScriptCustomRow" style="display:none;margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">自定义脚本路径
@@ -506,6 +507,7 @@
   var buildContainerInput = $("buildContainerInput"), buildExtraEnvInput = $("buildExtraEnvInput");
   var buildProxySel = $("buildProxySel"), buildProxyInput = $("buildProxyInput");
   var relHistEl = $("relHist"), relHistClear = $("relHistClear"), relHistTip = $("relHistTip");
+  var relCfgCloudTip = $("relCfgCloudTip");
 
   var state = {
     prs: [],            // 全部 PR（含 repo 信息）
@@ -1474,7 +1476,7 @@
       state.repos = (repos || []).map(function (r) {
         return { name: r.name, full: r.full_name, owner: (r.owner && (r.owner.login || r.owner.name)) || state.org, updated: r.updated_at };
       }).filter(function (r) { return r.name; });
-      renderRelRepoOptions(); loadRelBranches(true);
+      renderRelRepoOptions(); loadRelBranches(true); applyRelCfgCloud();   // 下拉重填后选中项可能变化：按新选中键尝试云端自动填充
       toast("已拉取 " + state.repos.length + " 个仓库");
     }).catch(function (e) { toast("拉取仓库失败：" + describeApiError(e).title, true); })
       .then(function () { relRepoRefresh.disabled = false; });
@@ -1560,6 +1562,7 @@
     relBuildTimeout.value = relCfg.timeout || DEFAULT_REL_CFG.timeout;
     relArtifacts.value = relCfg.artifacts || "";
     applyBuildScriptSelection();
+    applyRelCfgCloud(); // 云端有该「仓库@分支」的构建设置时覆盖填充（异步，无记录则保留现值）
   }
   /* 仓内构建脚本下拉：按所选仓库与分支经 GitCode contents API 列根目录与 scripts/、ci/ 下的 *.sh；
      选项值为仓内相对路径，含「跳过构建」与「自定义…」（自定义时显示文本框手填仓内相对路径）。 */
@@ -2320,6 +2323,100 @@
   }
   relHistClear.addEventListener("click", function () { saveRelHist([]); renderRelHist(); toast("已清空构建历史"); });
 
+  /* ---------- 分支级编译发行设置：云端存储（服务端 DSH_HOME/storages 下 JSON 文件，按平台分桶，所有浏览器共享） ----------
+     键为 "owner/repo@branch"，值为该分支的构建设置（构建脚本/构建命令/超时/产物路径/预发布）；
+     字段改动（或启动一次发行）即 upsert 本地镜像并防抖写回云端；选中仓库/分支、进入发行页、切换平台时
+     按当前键从云端镜像自动填充（无记录的键保留表单现值）。本机 relCfg（localStorage）仍只记「上次所选仓库/分支」。 */
+  function relCfgCloudFile() { return REL_HIST_STORE_DIR + "/dsh-codereview-relcfg-" + (state.platform === "github" ? "gh" : "gc") + ".json"; }
+  var relCfgCloudCache = null;        // 云端分支级设置的本地镜像（null=尚未拉取）；增删均改此缓存并写回云端
+  var relCfgCloudLoading = false;     // 防并发重复拉取
+  var relCfgCloudLoadGen = 0;         // 拉取代次：过期代次的返回不覆盖（切平台后旧平台的在途拉取直接丢弃）
+  var relCfgCloudSaveTimer = null;    // 写回防抖：连续改动合并为一次云端写入
+  function relCfgCloudWrite(content) {
+    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: relCfgCloudFile(), content: content }) });
+  }
+  // 写云端（目录缺失时建目录重试一次）；返回是否成功（不抛异常）
+  function relCfgCloudWriteRobust(content) {
+    return relCfgCloudWrite(content).then(function (r) {
+      if (r.ok) return true;
+      return fetch("/api/worktable/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: REL_HIST_STORE_DIR }) })
+        .then(function () { return relCfgCloudWrite(content); })
+        .then(function (r2) { return !!r2.ok; })
+        .catch(function () { return false; });
+    }).catch(function () { return false; });
+  }
+  function loadRelCfgCloud() {
+    if (relCfgCloudLoading) return Promise.resolve(relCfgCloudCache || {});
+    relCfgCloudLoading = true;
+    var gen = ++relCfgCloudLoadGen;
+    return fetch("/api/worktable/file?path=" + encodeURIComponent(relCfgCloudFile()), { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) return {};                       // 404 = 云端尚无设置文件（首用）
+        var ct = r.headers.get("content-type") || "";
+        return r.text().then(function (t) {
+          if (ct.indexOf("json") < 0) return {};    // file 路由 404 也回 JSON 错误体，按非数据跳过
+          try { var o = JSON.parse(t); return (o && typeof o === "object" && !Array.isArray(o)) ? o : {}; } catch (e) { return {}; }
+        });
+      })
+      .then(function (map) {
+        if (gen === relCfgCloudLoadGen && relCfgCloudCache === null) relCfgCloudCache = map;   // 过期代次/已有更新缓存不覆盖
+        return relCfgCloudCache || map;
+      })
+      .catch(function () { if (gen === relCfgCloudLoadGen && relCfgCloudCache === null) relCfgCloudCache = {}; return relCfgCloudCache || {}; })
+      .finally(function () { if (gen === relCfgCloudLoadGen) relCfgCloudLoading = false; });
+  }
+  function ensureRelCfgCloudLoaded() {
+    if (relCfgCloudCache !== null) return Promise.resolve(relCfgCloudCache);
+    return loadRelCfgCloud();
+  }
+  function relBranchKey() {           // 当前选中的 "owner/repo@branch" 键；未选仓库或未填分支时为空串
+    var repo = relSelectedRepo(), branch = relBranch.value.trim();
+    return (repo && branch) ? repo.owner + "/" + repo.name + "@" + branch : "";
+  }
+  function readRelFormCfg() {
+    return { script: effectiveBuildScript(), buildCmd: relBuildCmd.value.trim(),
+      timeout: Math.min(Math.max(Number(relBuildTimeout.value) || DEFAULT_REL_CFG.timeout, 10), 3600),
+      artifacts: relArtifacts.value.trim(), prerelease: relPrerelease.checked === true };
+  }
+  // 构建设置改动即按当前键 upsert 云端镜像并防抖写回（先确保镜像已拉取，避免按空缓存覆盖丢其他分支的设置）
+  function rememberRelCfgCloud() {
+    var key = relBranchKey();
+    if (!key) return;
+    ensureRelCfgCloudLoaded().then(function () {
+      if (relBranchKey() !== key) return;           // 等待期间已切换仓库/分支，丢弃
+      relCfgCloudCache[key] = readRelFormCfg();
+      if (relCfgCloudTip) relCfgCloudTip.textContent = "☁ 正在保存该分支的构建设置到云端…";
+      if (relCfgCloudSaveTimer) clearTimeout(relCfgCloudSaveTimer);
+      relCfgCloudSaveTimer = setTimeout(function () {
+        relCfgCloudSaveTimer = null;
+        relCfgCloudWriteRobust(JSON.stringify(relCfgCloudCache)).then(function (ok) {
+          if (relCfgCloudTip) relCfgCloudTip.textContent = ok ? "☁ 该分支的构建设置已保存到云端" : "☁ 写回云端失败（本次仅本机生效）";
+          if (!ok) toast("分支级构建设置写回云端失败（本机仍生效）", true);
+        });
+      }, 600);
+    });
+  }
+  // 选中仓库/分支、进入发行页、切换平台时：按当前键从云端镜像自动填充（无记录则保留表单现值）
+  function applyRelCfgCloud() {
+    var key = relBranchKey();
+    if (!key) return Promise.resolve();
+    return ensureRelCfgCloudLoaded().then(function (map) {
+      if (relBranchKey() !== key) return;           // 等待期间已切换仓库/分支，丢弃
+      var c = map && map[key];
+      if (!c) { if (relCfgCloudTip) relCfgCloudTip.textContent = "该分支暂无云端设置，改动后自动保存"; return; }
+      relCfg.script = c.script || ""; relCfg.timeout = c.timeout || DEFAULT_REL_CFG.timeout; relCfg.artifacts = c.artifacts || "";
+      saveRelCfg();
+      relBuildTimeout.value = relCfg.timeout;
+      relArtifacts.value = relCfg.artifacts;
+      relBuildCmd.value = c.buildCmd || "";
+      relPrerelease.checked = c.prerelease === true;
+      applyBuildScriptSelection();
+      if (relCfgCloudTip) relCfgCloudTip.textContent = "☁ 已从云端自动填充该分支的构建设置";
+    });
+  }
+
   /* ---------- AI 生成发行说明：按「上一发行版 Tag … 当前分支」的提交（commit）区间起草 ----------
      上一发行版取 releases 接口按创建时间最新的非草稿发行版（接口不可用/为空视为无历史发行版）；
      提交区间优先走 compare 接口（{上一发行版 Tag}...{当前分支}，精确区间；无历史发行版、分支名含 /
@@ -2477,6 +2574,7 @@
     if (script && (script[0] === "/" || script.indexOf("..") >= 0)) { fail("构建脚本须为仓内相对路径（如 scripts/build.sh，不含 ..）"); return; }
     if (artifacts && artifacts.split(/\s+/).some(function (p) { return p[0] === "/" || p.indexOf("..") >= 0; })) { fail("产物路径须为仓内相对路径（不含 ..），空格分隔"); return; }
     if (artifacts && !script) { fail("已配置产物路径但未选构建脚本：产物由构建产生，请先选择构建脚本"); return; }
+    rememberRelCfgCloud(); // 启动发行即把该「仓库@分支」的构建设置写回云端（字段未触发 change 也覆盖到）
     relRunning = true; relAbortCtrl = new AbortController();
     relRunBtn.disabled = false; relRunBtn.textContent = "⏹ 停止"; relRunBtn.classList.add("is-stop"); tip.textContent = "";
     relLogClear();
@@ -2611,24 +2709,26 @@
     })();
   }
   relRepoRefresh.addEventListener("click", fetchRelRepos);
-  relRepoSel.addEventListener("change", function () { relCfg.repo = relRepoSel.value; saveRelCfg(); loadRelBranches(true); loadBuildScripts(); });
+  relRepoSel.addEventListener("change", function () { relCfg.repo = relRepoSel.value; saveRelCfg(); loadRelBranches(true); applyRelCfgCloud(); loadBuildScripts(); });
   relBranchRefresh.addEventListener("click", function () { loadRelBranches(true); });
   relBranch.addEventListener("focus", function () { loadRelBranches(); });
-  relBranch.addEventListener("change", function () { relCfg.branch = relBranch.value.trim(); saveRelCfg(); loadBuildScripts(); }); // 分支影响仓内脚本列表
+  relBranch.addEventListener("change", function () { relCfg.branch = relBranch.value.trim(); saveRelCfg(); applyRelCfgCloud(); loadBuildScripts(); }); // 分支影响仓内脚本列表与云端分支级设置
   relTagSuggest.addEventListener("click", suggestRelTag);
   relRunBtn.addEventListener("click", runRelease);
   relBuildScript.addEventListener("change", function () {
     var custom = relBuildScript.value === "__custom__";
     relBuildScriptCustomRow.style.display = custom ? "flex" : "none";
     if (!custom) relBuildScriptCustom.value = "";
-    relCfg.script = effectiveBuildScript(); saveRelCfg();
+    relCfg.script = effectiveBuildScript(); saveRelCfg(); rememberRelCfgCloud();
   });
-  relBuildScriptCustom.addEventListener("change", function () { relCfg.script = effectiveBuildScript(); saveRelCfg(); });
-  relArtifacts.addEventListener("change", function () { relCfg.artifacts = relArtifacts.value.trim(); saveRelCfg(); });
+  relBuildScriptCustom.addEventListener("change", function () { relCfg.script = effectiveBuildScript(); saveRelCfg(); rememberRelCfgCloud(); });
+  relBuildCmd.addEventListener("change", rememberRelCfgCloud);
+  relPrerelease.addEventListener("change", rememberRelCfgCloud);
+  relArtifacts.addEventListener("change", function () { relCfg.artifacts = relArtifacts.value.trim(); saveRelCfg(); rememberRelCfgCloud(); });
   relBuildScriptRefresh.addEventListener("click", function () { loadBuildScripts(); });
   relBuildTimeout.addEventListener("change", function () {
     relCfg.timeout = Math.min(Math.max(Number(relBuildTimeout.value) || DEFAULT_REL_CFG.timeout, 10), 3600);
-    relBuildTimeout.value = relCfg.timeout; saveRelCfg();
+    relBuildTimeout.value = relCfg.timeout; saveRelCfg(); rememberRelCfgCloud();
   });
 
   /* ---------- 主题切换 ---------- */
@@ -2683,7 +2783,7 @@
     if (platformTip) platformTip.textContent = state.platform === "github"
       ? "GitHub REST API · Bearer 头认证 · releases 走 JSON 请求体"
       : "GitCode API v5 · 支持 Bearer / access_token 参数等多种认证";
-    if (relCardSubHelp) relCardSubHelp.textContent = "选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 " + platformLabel() + " 发行版 → 上传构建产物附件（可选）；仓库/分支/脚本选择自动缓存本机，刷新不丢失";
+    if (relCardSubHelp) relCardSubHelp.textContent = "选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 " + platformLabel() + " 发行版 → 上传构建产物附件（可选）；仓库/分支选择自动缓存本机，各分支的构建设置保存到云端、选中该分支自动填充";
     if (relFlowHelp) relFlowHelp.innerHTML = releaseFlowHelpHtml();
     renderAuthModeOptions();
     renderStatus();
@@ -2708,6 +2808,9 @@
     state.issues = []; state.issuesLastErr = ""; state.issuesLastErrObj = null; state.issueRepoDone = 0; state.issuesLoading = false;
     relBranchCache = {};
     relCfg = loadRelCfg();
+    relCfgCloudCache = null; relCfgCloudLoading = false; relCfgCloudLoadGen++;   // 各平台分支级设置独立分桶：丢弃旧平台镜像与在途拉取
+    if (relCfgCloudSaveTimer) { clearTimeout(relCfgCloudSaveTimer); relCfgCloudSaveTimer = null; }
+    if (relCfgCloudTip) relCfgCloudTip.textContent = "";
     state.repoFilter = loadRepoFilter(); // 各平台仓库过滤独立存储
     subOrg.textContent = state.org;
     updatePlatformUI();
@@ -2715,6 +2818,7 @@
     renderRelRepoOptions();
     renderRepoFilterAll();
     relHistCache = null; ensureRelHist();
+    applyRelCfgCloud();           // 拉取新平台的云端分支级设置并按当前选择填充（内部会先确保已加载）
     renderIssueStatus(); renderIssueStats(); renderIssueList();
     loadAll();
     toast("已切换到 " + platformLabel());
@@ -2773,6 +2877,7 @@
   renderIssueStatus(); renderIssueStats(); renderIssueList();
   renderRepoFilterAll();
   ensureRelHist();
+  ensureRelCfgCloudLoaded();      // 预拉云端分支级构建设置，首次进发行页即可即时自动填充
   loadAll();
 })();
 </script>
