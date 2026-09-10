@@ -53,6 +53,7 @@ function loadDragContext(stages) {
     stageDragFrom: -1,
     $: id => id === 'plStageList' ? stageList : null,
     renderStageEditor: () => { renders += 1; },
+    schedulePlDraftSave: () => {},
     Math,
     parseInt,
   };
