@@ -26,6 +26,11 @@ class FakeClassList {
   constructor() { this.values = new Set(); }
   add(value) { this.values.add(value); }
   remove(...values) { values.forEach(value => this.values.delete(value)); }
+  toggle(value, force) {
+    const on = force === undefined ? !this.values.has(value) : !!force;
+    if (on) this.values.add(value); else this.values.delete(value);
+    return on;
+  }
   contains(value) { return this.values.has(value); }
 }
 
@@ -124,6 +129,7 @@ test('普通任务卡和系统预设任务卡都注册整卡拖拽事件', () =>
       { id: 'preset', name: '环境清理', preset: true, pkey: 'cleanup' },
     ],
     editFocusIdx: -1,
+    editSelStage: null,
     STAGE_KIND_LABEL: { simulate: '模拟', shell: 'Shell', python: 'Python', http: 'HTTP', evaltokens: 'EvalTokens' },
     $: id => id === 'plStageList' ? stageList : null,
     esc: String,
@@ -145,7 +151,7 @@ test('普通任务卡和系统预设任务卡都注册整卡拖拽事件', () =>
     },
   };
   vm.createContext(context);
-  vm.runInContext(extractFunction('renderStageEditor'), context);
+  vm.runInContext(['renderStageEditor', 'applyEditSel'].map(extractFunction).join('\n'), context);
   context.renderStageEditor();
 
   assert.equal(rows.length, 2);

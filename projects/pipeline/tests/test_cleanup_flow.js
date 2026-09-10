@@ -181,8 +181,8 @@ test('流水线编辑器在收集普罗预设任务行内展示 model/namespace/
     $:id=>id==='plStageList'?wrap:null,esc:String,
     normalizePipelineProm:p=>Object.assign({modelName:'',xdsNamespace:'${DEPLOY_STRATEGY}-${BY}',startTime:'',endTime:''},p||{}),
     stageCardDragStart(){},stageCardDragOver(){},stageCardDrop(){},stageCardDragEnd(){},
-    document:{createElement:()=>({dataset:{},style:{},innerHTML:'',addEventListener(){},querySelector(){return null;}})}};
-  vm.createContext(ctx);load('function renderStageEditor(', 'function renderStageParams(',ctx);ctx.renderStageEditor();
+    document:{createElement:()=>({dataset:{},style:{},innerHTML:'',classList:{toggle(){},add(){},remove(){},contains(){return false;}},addEventListener(){},querySelector(){return null;}})}};
+  vm.createContext(ctx);load('let editSelStage', 'function renderStageParams(',ctx);ctx.renderStageEditor();
   const html=wrap.children[0].innerHTML;
   assert.match(html,/data-f="promModelName"[^>]*value="model-a"/);
   assert.match(html,/data-f="promXdsNamespace"[^>]*value="ns-a"/);

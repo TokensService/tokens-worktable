@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线编辑器任务卡支持「选中插入」（`projects/pipeline/pipeline.html`）：点击任务卡上任意处（含卡内
+  输入框/按钮）即选中，选中卡 accent 高亮（`plstage-sel`），上/下边框中点各出现一个圆形「+」按钮
+  （`plstage-ins-top/bottom`，仅选中卡挂载），点击分别在其上方/下方插入新阶段，新卡自动选中并聚焦滚动到
+  可见（沿用 editFocusIdx 通道）。选中态以对象引用记录（`editSelStage`），拖拽/序号/上下移调序后仍跟随
+  同一张卡，删除选中卡时自动清除，打开编辑器重建草稿时重置；选中刷新只原地切换 class 与按钮
+  （`applyEditSel`，不重渲染、不打断卡内输入；选中委托先于 data-act 动作委托注册，保证点「+」先完成
+  选中幂等判断再执行插入）。`#plStageList` 增加 9px 上下内边距，给半跨边框的「+」按钮留出空间。
+  新增 `projects/pipeline/tests/test_stage_insert_select.js`（选中高亮与按钮挂载/移除/幂等、上/下插入
+  位置与新卡焦点、越界保护、重渲染后含预设卡恢复选中态）；`test_stage_drag_reorder.js` /
+  `test_cleanup_flow.js` 补齐选中态上下文（FakeClassList.toggle、editSelStage、applyEditSel 加载）。
+
 - 修复流水线大量日志 / 长时间任务导致页面与 web 服务卡死（`src/index.ts` +
   `projects/pipeline/pipeline.html`）：
   - `/api/worktable/exec-stream` 原先忽略 `ServerResponse.write()` 背压，浏览器处理稍慢时仍持续读取

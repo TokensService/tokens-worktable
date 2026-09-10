@@ -55,12 +55,19 @@
     .pipeline-node.abort{ border-color:color-mix(in srgb, var(--st-idle) 50%, transparent); background:color-mix(in srgb, var(--st-idle) 6%, transparent); opacity:.7; }
     .pipeline-nodeName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); margin-bottom:6px; }
     .pipeline-preset { display:inline-block; margin-bottom:6px; padding:1px 6px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; font-size:10px; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-fill-l1); }
-    /* 流水线编辑器任务卡：整卡可拖拽，目标卡上/下边缘提示最终插入位置 */
-    .plstage { cursor:grab; transition:opacity .12s,border-color .12s,box-shadow .12s; }
+    /* 流水线编辑器任务卡：整卡可拖拽，目标卡上/下边缘提示最终插入位置；
+       点击选中任务卡后高亮，上/下边框中点出现「+」按钮，点击在其上/下方插入新阶段 */
+    .plstage { position:relative; cursor:grab; transition:opacity .12s,border-color .12s,box-shadow .12s; }
     .plstage:active { cursor:grabbing; }
     .plstage.plstage-dragging { opacity:.42; }
     .plstage.plstage-drag-before { border-top:3px solid var(--dsw-alias-state-accent-primary) !important; }
     .plstage.plstage-drag-after { border-bottom:3px solid var(--dsw-alias-state-accent-primary) !important; }
+    .plstage.plstage-sel { border-color:var(--dsw-alias-state-accent-primary) !important; box-shadow:0 0 0 2px rgba(79,142,247,.18); }
+    /* 选中卡上/下边框中点的「+」插入按钮：仅选中时挂载（见 applyEditSel），圆形 accent 描边，半跨边框 */
+    .plstage-ins { position:absolute; left:50%; transform:translateX(-50%); z-index:5; width:18px; height:18px; padding:0; border-radius:50%; border:1px solid var(--dsw-alias-state-accent-primary); background:var(--dsw-alias-bg-base); color:var(--dsw-alias-state-accent-primary); font-size:13px; line-height:16px; text-align:center; cursor:pointer; }
+    .plstage-ins-top { top:-9px; }
+    .plstage-ins-bottom { bottom:-9px; }
+    .plstage-ins:hover { background:var(--dsw-alias-state-accent-primary); color:#fff; }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
     .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--st-run); transition:width .12s linear; }
@@ -680,8 +687,8 @@
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
         <span class="dshell-muted" style="font-size:11px;">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
-        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删；点击选中任务卡后，其上/下边框中点出现「+」，点击在其上/下方插入新阶段）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;padding:9px 2px;"></div>
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
       </div>
@@ -2312,6 +2319,37 @@ function normalizeStageKind(s){
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
 function newStage(name){ return {id:'', name:name||'新阶段', dur:5, timeout:null, skip:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* 阶段默认支持定时（跟随流水线定时计划）；勾选「需本地运行」后 sched 置空 */
 let stageDragFrom=-1;
+/* 编辑器任务卡选中：editSelStage 以对象引用记录选中卡（拖拽/序号/上下移调序后仍跟随同一张卡；删除选中卡时清空；
+   打开编辑器重建草稿时重置，见 openPlForm）。选中卡高亮并在上/下边框中点显示「+」插入按钮；
+   选中刷新只原地切换 class 与按钮（不重渲染，不打断卡内输入）。 */
+let editSelStage=null;
+function applyEditSel(){
+  const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
+  for(let i=0;i<wrap.children.length;i+=1){
+    const row=wrap.children[i]; const on=!!(editStages[i] && editStages[i]===editSelStage);
+    row.classList.toggle('plstage-sel', on);
+    const has=!!row.querySelector('.plstage-ins');
+    if(on && !has){
+      row.insertAdjacentHTML('beforeend','<button type="button" class="plstage-ins plstage-ins-top" data-act="insBefore" title="在其上方插入新阶段">+</button><button type="button" class="plstage-ins plstage-ins-bottom" data-act="insAfter" title="在其下方插入新阶段">+</button>');
+    }else if(!on && has){
+      row.querySelectorAll('.plstage-ins').forEach(b=>b.remove());
+    }
+  }
+}
+function selectEditStage(i){
+  const s=(i>=0 && i<editStages.length) ? editStages[i] : null;
+  if(editSelStage===s) return;
+  editSelStage=s; applyEditSel();
+}
+/* 在 i 号任务卡上/下方插入新阶段：选中新卡，并走 editFocusIdx 通道聚焦滚动到可见 */
+function insertEditStage(i, after){
+  if(!editStages.length || !Number.isFinite(i) || i<0 || i>=editStages.length) return;
+  const at=after?i+1:i;
+  const ns=newStage();
+  editStages.splice(at,0,ns);
+  editSelStage=ns; editFocusIdx=at;
+  renderStageEditor();
+}
 /* 编辑器统一重排入口：序号、上下移与拖拽都只修改 editStages 草稿，点「保存」后再持久化。 */
 function moveEditStage(from,to){
   from=parseInt(from,10); to=parseInt(to,10);
@@ -2410,6 +2448,7 @@ function renderStageEditor(){
     renderStageParams(i);
     renderStageSched(i);
   });
+  applyEditSel();   // 重渲染后 DOM 已重建，恢复选中卡高亮与上/下缘「+」插入按钮
   if(editFocusIdx>=0 && wrap.children && wrap.children[editFocusIdx]){ const fr=wrap.children[editFocusIdx]; if(fr.scrollIntoView) fr.scrollIntoView({block:'nearest'}); }
   editFocusIdx=-1;
 }
@@ -5491,6 +5530,7 @@ function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft
 function openPlForm(id, focusIdx){
   const f=$('plForm'); f.style.display='flex';
   editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
+  editSelStage=null;   // 打开编辑器即重建 editStages 草稿，选中引用随之失效
   $('scriptsDir').value=scriptsDir;
   /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
   const p = id ? (findPipeline(id) || curPipeline()) : null;
@@ -5674,12 +5714,19 @@ $('archiveDir').addEventListener('change', e=>{ archiveDir=e.target.value.trim()
 $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
-/* 阶段编辑器：增删/上下移/识别参数（事件委托） */
+/* 任务卡选中委托：点击卡上任意处（含卡内输入框/按钮）选中该卡，高亮并在上/下边框中点显示「+」插入按钮。
+   必须先于下方 data-act 委托注册：选中只原地刷新（applyEditSel，不重渲染、不打断输入），随后按钮动作（含插入/删除）照常执行。 */
+$('plStageList').addEventListener('click', (e)=>{
+  const row=e.target.closest && e.target.closest('.plstage'); if(!row) return;
+  selectEditStage(parseInt(row.dataset.idx,10));
+});
+/* 阶段编辑器：增删/上下移/识别参数/上/下缘插入（事件委托，动作后统一调度草稿自动保存） */
 $('plStageList').addEventListener('click', (e)=>{
   const btn=e.target.closest && e.target.closest('[data-act]'); if(!btn) return;
   const row=btn.closest('.plstage'); const i=parseInt(row.dataset.idx,10);
   const act=btn.getAttribute('data-act');
-  if(act==='del'){ editStages.splice(i,1); renderStageEditor(); }
+  if(act==='del'){ if(editStages[i]===editSelStage) editSelStage=null; editStages.splice(i,1); renderStageEditor(); }
+  else if(act==='insBefore'||act==='insAfter'){ insertEditStage(i, act==='insAfter'); }
   else if(act==='up' && i>0){ moveEditStage(i,i-1); renderStageEditor(); }
   else if(act==='down' && i<editStages.length-1){ moveEditStage(i,i+1); renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
