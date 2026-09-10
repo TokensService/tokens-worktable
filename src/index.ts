@@ -241,7 +241,7 @@ function gitExec(args: string[], cwd: string): Promise<string> {
 
 /* ---------- 流水线 API 触发 ---------- */
 const PIPELINE_RUN_API_PATH = '/api/worktable/pipeline/run'
-const PIPELINE_RUN_PRESETS = new Set(['cleanup', 'check', 'profiling', 'promCollect'])
+const PIPELINE_RUN_PRESETS = new Set(['cleanup', 'check', 'profiling'])
 const PIPELINE_RUN_BODY_LIMIT = 64 * 1024
 const PIPELINE_REMOTE_JSON_LIMIT = 2 * 1024 * 1024
 const PIPELINE_REMOTE_TEXT_LIMIT = 16 * 1024 * 1024
@@ -301,19 +301,20 @@ const SERVER_PRESET_META: Record<string, { id: string; name: string; block: bool
   cleanup: { id: '__cleanup__', name: '环境清理', block: false },
   check: { id: '__check__', name: '环境检查', block: true },
   profiling: { id: '__profiling__', name: 'Profiling', block: false },
-  promCollect: { id: '__prom_collect__', name: '收集普罗数据', block: false },
 }
 
 function serverPresetScript(key: string, config: any): any {
   if (key === 'cleanup') return config.cleanupScript || null
   if (key === 'check') return config.checkScript || null
   if (key === 'profiling') return config.profilingScript || null
-  if (key === 'promCollect') {
-    const name = config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
-    if (!name) return null
-    return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
-  }
   return null
+}
+
+/* 任务级普罗采集的收集脚本（设置 → 普罗数据服务配置 → 收集脚本）：阶段勾选「收集普罗数据」后在任务终态调用（见 execPlan） */
+function serverPromCollectScript(config: any): any {
+  const name = config && config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
+  if (!name) return null
+  return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
 }
 
 function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
@@ -342,7 +343,7 @@ function materializeServerPipelineStages(stages: any[], presets: string[], confi
   }
   const missingFront = ['cleanup', 'check'].filter((key) => selected.has(key) && !seen.has(key))
     .map((key) => materialize({}, key))
-  const missingBack = ['profiling', 'promCollect'].filter((key) => selected.has(key) && !seen.has(key))
+  const missingBack = ['profiling'].filter((key) => selected.has(key) && !seen.has(key))
     .map((key) => materialize({}, key))
   return missingFront.concat(out, missingBack)
 }
@@ -661,15 +662,10 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
   }
 }
 
-function buildServerPromCollectEnv(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, runStartedAt: number): Record<string, string> {
-  const detail = stage && stage.prom && typeof stage.prom === 'object' ? stage.prom : {}
-  const parseFixed = (value: any) => value ? new Date(String(value)).getTime() : null
-  const fixedStart = parseFixed(detail.startTime)
-  const fixedEnd = parseFixed(detail.endTime)
-  if ((fixedStart !== null && !Number.isFinite(fixedStart)) || (fixedEnd !== null && !Number.isFinite(fixedEnd))) throw new Error('普罗采集时间格式无效')
-  const startMs = fixedStart === null ? runStartedAt : fixedStart
-  const endMs = fixedEnd === null ? Math.max(Date.now(), startMs + 1) : fixedEnd
-  if (startMs >= endMs) throw new Error('普罗采集开始时间必须早于结束时间')
+/* 任务级普罗采集环境（与页面 taskPromCollect 一致）：时段=任务开始→结束；模型/命名空间按默认占位
+   ${MODEL_PATH} / ${DEPLOY_STRATEGY}-${BY} 在采集时点解析（解析不出则不注入）；产物目录={任务名}-{阶段序号}-普罗数据 */
+function buildServerTaskPromEnv(runCtx: any, config: any, varsPool: Record<string, string>, startMs: number, endMs: number, outputDir: string): Record<string, string> {
+  if (!(endMs > startMs)) endMs = startMs + 1
   const vars = serverRunVariables(runCtx, varsPool)
   const env: Record<string, string> = {
     METRICS_ACTION: 'collect',
@@ -679,14 +675,12 @@ function buildServerPromCollectEnv(stage: any, runCtx: any, config: any, varsPoo
     VLLM_METRICS_END: String(Math.floor(endMs / 1000)),
     PROMETHEUS_URL: String(config && config.prom && config.prom.url ? config.prom.url : '').trim(),
   }
-  const model = substituteServerRunVars(detail.modelName === undefined ? '${MODEL_PATH}' : detail.modelName, vars).trim()
-  const namespace = substituteServerRunVars(detail.xdsNamespace === undefined ? '${DEPLOY_STRATEGY}-${BY}' : detail.xdsNamespace, vars).trim()
+  const model = substituteServerRunVars('${MODEL_PATH}', vars).trim()
+  const namespace = substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim()
   if (model) { env.ARCH_NAME = model; env.MODEL_NAME = model }
   if (namespace) { env.NAMESPACE = namespace; env.XDS_NAMESPACE = namespace }
-  if (runCtx.archive) {
-    env.ARCHIVE_FOLDER = String(runCtx.archive)
-    env.METRICS_OUTPUT_DIR = String(runCtx.archive).replace(/\/+$/, '') + '/metrics'
-  }
+  if (runCtx.archive) env.ARCHIVE_FOLDER = String(runCtx.archive)
+  env.METRICS_OUTPUT_DIR = outputDir
   return env
 }
 
@@ -1616,7 +1610,7 @@ export function apply(ctx: Context) {
     }
     // 与前端 execScript 一致：上游阶段变量（变量池）作为环境变量注入本阶段（脚本显式参数优先，运行级默认兜底）
     for (const k of Object.keys(pool)) { if (env[k] === undefined) env[k] = String(pool[k]) }
-    // 预设任务附加变量（如普罗 collect 动作/时间范围）：优先级低于脚本显式参数与上游变量，高于运行级默认。
+    // 附加变量（如任务级普罗采集的 collect 动作/时间范围）：优先级低于脚本显式参数与上游变量，高于运行级默认。
     if (extraEnv) for (const k of Object.keys(extraEnv)) { if (env[k] === undefined) env[k] = String(extraEnv[k]) }
     // 与前端 execScript 一致：注入运行上下文（脚本显式配置的同名参数优先）：
     //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
@@ -1783,14 +1777,8 @@ export function apply(ctx: Context) {
       }
       else if (s.script && s.script.path) {
         let r: { code: number; stdout: string; stderr: string }
-        let timeout = s.timeout
-        let extraEnv: Record<string, string> | undefined
         try {
-          if (s.preset && s.pkey === 'promCollect') {
-            extraEnv = buildServerPromCollectEnv(s, runCtx, cfg, varsPool, t0)
-            timeout = 0   // 普罗收集与页面一致：由采集脚本控制耗时，预设本身不套默认 120 秒上限
-          }
-          r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, timeout, extraEnv)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
+          r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
         } catch (error) {
           r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
         }
@@ -1799,13 +1787,36 @@ export function apply(ctx: Context) {
         Object.assign(varsPool, parseStageVars(r.stdout))
         applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
-        // 环境检查与普通任务失败会阻断；清理 / Profiling / 普罗收集属于非阻断辅助任务。
+        // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
         if (r.code !== 0 && (!s.preset || s.presetBlock)) { status = 'failed'; shouldStop = true }
       } else if (s.preset) {
         entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
       } else {
         await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
         entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
+      }
+      /* 任务级普罗采集（与页面 taskPromCollect 一致）：勾选「收集普罗数据」的任务进入终态后，按「任务开始→结束」
+         时段调用设置页收集脚本，产物目录=归档文件夹/{任务名}-{阶段序号}-普罗数据；失败仅标注到本任务日志，不改变任务结果 */
+      if (!s.preset && s.promCollect && entry.status !== 'skipped') {
+        const collectScript = serverPromCollectScript(cfg)
+        const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
+        if (!collectScript) entry.text += '\n[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过'
+        else {
+          try {
+            const penv = buildServerTaskPromEnv(runCtx, cfg, varsPool, st0, Date.now(), promDir)
+            const pr = await runStageScript(collectScript, runCtx, scriptsDir, varsPool, 0, penv)   // 与页面一致不设超时：由采集脚本控制耗时
+            try {
+              const fsx = await import('node:fs/promises')
+              await fsx.mkdir(promDir, { recursive: true })
+              await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
+            } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
+            entry.text += '\n[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir
+            if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
+          } catch (e) {
+            entry.text += '\n[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）'
+            console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
+          }
+        }
       }
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
       const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null

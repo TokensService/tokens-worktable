@@ -309,10 +309,13 @@ test('服务端按流水线编排位置展开所选预设任务并忽略未选�
   ])
 })
 
-test('服务端为缺少预设标记的旧流水线补齐所选预设任务', () => {
+test('服务端为缺少预设标记的旧流水线补齐所选预设任务（promCollect 预设已下线，一律忽略）', () => {
   const f = loadRunRoute(stored)
   const expanded = f.ctx.materializeServerPipelineStages(
-    [{ id: 'build', name: '构建', kind: 'simulate' }],
+    [
+      { id: 'build', name: '构建', kind: 'simulate' },
+      { id: '__prom_collect__', name: '收集普罗数据', preset: true, pkey: 'promCollect' },   // 旧流水线遗留的普罗预设标记行：随预设下线丢弃
+    ],
     ['cleanup', 'profiling', 'promCollect'],
     {
       scriptsDir: '/opt/pipeline/scripts',
@@ -322,8 +325,7 @@ test('服务端为缺少预设标记的旧流水线补齐所选预设任务', ()
     },
   )
 
-  assert.deepEqual(plain(expanded.map(stage => stage.id)), ['__cleanup__', 'build', '__profiling__', '__prom_collect__'])
-  assert.equal(expanded.at(-1).script.path, '/opt/pipeline/scripts/collect.py')
+  assert.deepEqual(plain(expanded.map(stage => stage.id)), ['__cleanup__', 'build', '__profiling__'])
 })
 
 test('EvalTokens 终态先判失败且只接受明确成功值', () => {
@@ -682,18 +684,15 @@ test('EvalTokens completed_with_errors 终态使 API 流水线失败', async () 
   assert.match(f.history[0].logs[0].log, /EvalTokens failed/)
 })
 
-test('API 普罗采集预设向脚本注入 collect 动作、时间范围、数据源和归档参数', async () => {
+test('勾选收集普罗数据的任务在终态按其起止注入 collect 动作、时间范围、数据源与任务级产物目录', async () => {
   const f = loadExecPlan({
     ...apiExecutionConfig,
     archiveDir: '/var/pipeline-runs',
     prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
   })
-  const plan = apiExecutionPlan(['promCollect'])
+  const plan = apiExecutionPlan([])
   plan.vars = { MODEL_PATH: '/models/demo' }
-  plan.stages.push({
-    id: '__prom_collect__', name: '收集普罗数据', preset: true, pkey: 'promCollect',
-    prom: { modelName: '${MODEL_PATH}', xdsNamespace: '${DEPLOY_STRATEGY}-${BY}', startTime: '', endTime: '' },
-  })
+  plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
 
   await f.execPlan(plan)
 
@@ -704,6 +703,22 @@ test('API 普罗采集预设向脚本注入 collect 动作、时间范围、数�
   assert.equal(collect.extraEnv.PROMETHEUS_URL, 'http://prom.internal:9090')
   assert.equal(collect.extraEnv.MODEL_NAME, '/models/demo')
   assert.equal(collect.extraEnv.XDS_NAMESPACE, 'blue-green-jenkins')
-  assert.match(collect.extraEnv.METRICS_OUTPUT_DIR, /^\/var\/pipeline-runs\/.+\/metrics$/)
-  assert.ok(Date.parse(collect.extraEnv.PROM_START) < Date.parse(collect.extraEnv.PROM_END))
+  assert.match(collect.extraEnv.METRICS_OUTPUT_DIR, /^\/var\/pipeline-runs\/.+\/测试模型-01-普罗数据$/)
+  assert.ok(Date.parse(collect.extraEnv.PROM_START) <= Date.parse(collect.extraEnv.PROM_END))
+  assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
+})
+
+test('未勾选收集普罗数据的任务与不配置收集脚本时都不发起任务级采集', async () => {
+  const off = loadExecPlan({ ...apiExecutionConfig, prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' } })
+  const offPlan = apiExecutionPlan([])
+  offPlan.stages = [{ id: 'test-model', name: '测试模型', script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
+  await off.execPlan(offPlan)
+  assert.ok(!off.calls.some(call => call.script === 'collect.py'), '未勾选的任务不采集')
+
+  const noScript = loadExecPlan({ ...apiExecutionConfig, prom: { url: 'http://prom.internal:9090', collectScript: '' } })
+  const skipPlan = apiExecutionPlan([])
+  skipPlan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
+  await noScript.execPlan(skipPlan)
+  assert.ok(!noScript.calls.some(call => call.script === 'collect.py'), '未配置收集脚本不发起采集')
+  assert.match(noScript.history[0].logs[0].log, /\[普罗采集\] 已勾选收集普罗数据，但未配置收集脚本/)
 })

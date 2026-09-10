@@ -30,7 +30,7 @@ test('混合 sched 标记的手动流水线立即进入第二个脚本',()=>{
   const rc={id:'r1',stages:[{script:{path:'/gen.sh'}},{sched:{},script:{path:'/print.sh'}}],nodes:[],selId:null,
     timer:null,over:false,overall:null,token:'t1',vars:{},by:'tester',source:'manual'};
   const ctx={runPresetStep(){},skipStage(){},stageUrlOf:()=>'',runUrlStep(){},runEvaltokensStep(){},
-    runScriptStep:(rc,i)=>called.push(i),runStage(){},finish(){}};
+    runScriptStep:(rc,i)=>called.push(i),runStage(){},finish(){},taskPromFinalize(){}};
   load('function advance(rc,i)', '/* ---------- 阶段间变量传递',ctx);
   ctx.advance(rc,1);
   assert.deepEqual(called,[1]);

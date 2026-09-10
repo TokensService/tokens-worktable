@@ -1,5 +1,17 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线普罗数据采集改为任务粒度（`projects/pipeline/pipeline.html` + `src/index.ts`）：「收集普罗数据」从系统预设任务
+  中下线（主控「预设任务」多选、流水线默认运行参数、阶段列表 promCollect 预设标记行、预设任务内 model/namespace/起止
+  时间配置、服务端 API `presets` 的 `promCollect` 值一并移除；旧流水线/导入数据经 `migratePromPreset` 与服务端
+  materialize 自动过滤遗留标记行与旧顶层 `prom` 配置），改为编辑器任务卡上的「收集普罗数据」开关（`data-f="promCollect"`，
+  随阶段持久化）。勾选的任务进入终态（成功/失败）后，按「本任务开始→结束」时段调用「设置 → 普罗数据服务配置」的收集
+  脚本采集普罗指标：页面运行经 `advance`/`finish` 的 `taskPromFinalize` 后台采集（不阻断流水线，输出落产物目录
+  `collect.log`，失败仅告警；「从失败阶段重试」复位标记后重采），定时计划与 API 服务端执行（`execPlan`）同步采集并把
+  结果标注到该任务日志的 `[普罗采集]` 行。产物目录统一为归档文件夹下 `{任务名}-{阶段序号}-普罗数据`（未配置归档时落到
+  scripts 目录 `vllm-metrics/` 同名子目录）；`model_name` / `xds_namespace` 不再随流水线配置，统一按默认占位
+  `${MODEL_PATH}` / `${DEPLOY_STRATEGY}-${BY}` 在采集时点解析（解析不出则不注入），手动「📊 收集普罗数据」补采同源。
+  文档（`README.md`、`projects/pipeline/scripts/README.md`）与测试（`tests/pipeline-run-api.test.mjs`、
+  `projects/pipeline/tests/test_cleanup_flow.js`、`test_config_import_export.js`、`test_execution_progress.js`）同步更新。
 - 流水线「API」弹窗的请求体与 curl 示例改为按运行框当前填写的运行参数动态生成
   （`projects/pipeline/pipeline.html` 的 `pipelineApiSpec`）：环境多选、代码仓、分支、部署策略、
   执行人、预设任务均取主控运行栏当前值（与点「▶ 运行流水线」取数一致），不再读取流水线保存的
