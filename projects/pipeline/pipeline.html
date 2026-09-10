@@ -2991,7 +2991,7 @@ function renderFlow(){
     n.className='pipeline-node';
     n.dataset.id=s.id;
     n.innerHTML =
-      '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+esc(s.name)+'</div>'+
+      '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+(s.promCollect?'<span title="收集普罗数据：本任务进入终态（成功/失败）后按其起止时段采集普罗指标到归档目录">📊</span> ':'')+esc(s.name)+'</div>'+
       (s.preset?'<span class="pipeline-preset" title="预设任务，执行顺序在流水线编辑中调整；脚本在设置页配置">🔒 系统预设</span>':'')+
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+

@@ -43,6 +43,17 @@ test('旧流水线的收集普罗数据预设标记行随预设下线过滤，�
   assert.equal(flow.children.filter(n=>/收集普罗数据/.test(n.innerHTML)).length,0);
   assert.deepEqual(ctx.expandRunStages(ctx.activeStages(),[]).map(s=>s.id),['first']);
 });
+test('勾选「收集普罗数据」的任务在编排节点上显示采集图标 📊（未勾选不显示，运行快照同样带图标）',()=>{
+  const {ctx,flow}=context();
+  ctx.activeStages=()=>[{id:'a',name:'构建',promCollect:true},{id:'b',name:'测试'}];
+  ctx.renderFlow();
+  // [环境清理, conn, 构建, conn, 测试]
+  assert.match(flow.children[2].innerHTML,/<span title="收集普罗数据：[^"]*">📊<\/span> 构建/);
+  assert.ok(flow.children[4].innerHTML.indexOf('📊')<0);
+  ctx.runStages=[{id:'a',name:'构建',promCollect:true}];ctx.curRun={token:1};   // 运行态快照保留 promCollect 标记
+  flow.children=[];ctx.renderFlow();
+  assert.match(flow.children[0].innerHTML,/📊/);
+});
 test('预设任务按流水线保存的位置展开（编排调序后 Profiling 可排到中间）',()=>{
   const {ctx,flow,checkBox,profilingBox}=context();checkBox.checked=true;profilingBox.checked=true;
   ctx.activeStages=()=>[{id:'first',name:'First'},{id:'__profiling__',name:'Profiling',preset:true,pkey:'profiling'},{id:'second',name:'Second'}];
