@@ -1,5 +1,17 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线多运行并行时支持点击查看阶段详情，运行队列条目展示完整运行信息（`projects/pipeline/pipeline.html`）：
+  - 「流水线任务」行内对有在跑运行的流水线显示「运行中」徽标（焦点运行另标「（查看中）」）；点击该行
+    （或运行框下拉选中）不再弹「暂不能切换」，而是聚焦其最近一次启动的运行，编排区/阶段详情即切换到
+    该次运行的实时视图（同一流水线并行多个运行时队列条目仍可各自精确聚焦）。新增 `runsOfPipeline` /
+    `latestRunOfPipeline` 助手；`selectPipeline` 在有在跑运行时一律转为 `focusRun`。
+  - 运行队列（本页在跑 / 排队 / 其他浏览器在场快照）每个条目在标题行下新增运行信息行：环境、代码仓、
+    分支、部署策略（执行人、来源在标题行）。排队项入队时快照 `repoName`（`runPipeline`）；跨浏览器在场
+    快照 `publishQueue` 的 runs/queue 同步携带 repoName/branch/strategy，远端旧客户端缺字段按 — 占位。
+  - 「流水线任务」表的运行徽标经 `renderQueue` 末尾按签名（在跑运行集 + 焦点运行）联动刷新，避免 5 秒
+    轮询无谓重建表格打断行点击。
+  - `test_pipeline_row_run.js` 补齐新助手/焦点上下文，新增回归测试（行点击聚焦在跑运行不切换选用、
+    无运行行仍走选用、多运行取最近启动、「运行中/查看中」徽标）。
 - 修复流水线编辑器出现两张任务卡同时显亮（`projects/pipeline/pipeline.html`）：`renderStageEditor`
   原先除选中卡的 `plstage-sel` 高亮外，还按 `editFocusIdx` 给焦点卡内联 accent 边框/阴影，两套通道
   互不知晓——上移/下移/序号/拖拽移动未选中卡，或插入新卡后再点选其他卡，内联样式随 DOM 一直留存到
