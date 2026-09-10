@@ -671,7 +671,7 @@
         <h2 class="dshell-sub" style="margin:0" id="plFormTitle">编辑流水线</h2>
         <button id="plFormClose" class="dshell-btn dshell-btnGhost mini">关闭</button>
       </div>
-      <div style="display:flex; flex-direction:column; gap:8px; overflow:auto; min-height:0;">
+      <div style="display:flex; flex-direction:column; gap:8px; overflow:auto; min-height:0; flex:1 1 auto;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">名称
           <input id="plName" class="dshell-input" placeholder="我的流水线" style="width:220px;" />
         </label>
@@ -679,16 +679,18 @@
           <input id="scriptsDir" class="dshell-input" style="width:290px;" placeholder="scripts 目录（绝对路径）" />
           <button id="scriptsReload" class="dshell-btn dshell-btnGhost mini" type="button">载入脚本</button>
         </label>
+        <span class="dshell-muted" style="font-size:11px;">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
         <label class="dshell-muted">阶段（名称/耗时/超时/不执行，可拖拽整张任务卡，或填序号、点上移下移调序、增删）；每步选「类型」：模拟（按耗时等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;"></div>
-        <div><button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button></div>
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button id="plSave" class="dshell-btn mini">保存</button>
-          <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
-          <span class="dshell-muted">阶段名匹配 检出 / 校验 / 审批 / 构建镜像 / 推送镜像 / 部署到 K8s / 健康检查 时显示对应真实日志。</span>
-        </div>
+      </div>
+      <!-- 冻结底栏：添加阶段 / 保存 / 取消 固定在右下角，不随内容滚动 -->
+      <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1);">
+        <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
+        <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
+        <button id="plSave" class="dshell-btn mini">保存</button>
+        <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
       </div>
     </div>
   </div>
@@ -2349,7 +2351,7 @@ function stageCardDrop(e){
   const from=stageDragFrom, row=e.currentTarget, over=parseInt(row.dataset.idx,10);
   const rect=row.getBoundingClientRect(), after=e.clientY>=rect.top+rect.height/2;
   const to=stageDropTarget(from,over,after); stageDragFrom=-1; clearStageDragMarks();
-  if(to!==from){ editFocusIdx=moveEditStage(from,to); renderStageEditor(); }
+  if(to!==from){ editFocusIdx=moveEditStage(from,to); renderStageEditor(); schedulePlDraftSave(); }
 }
 function stageCardDragEnd(){ stageDragFrom=-1; clearStageDragMarks(); }
 function renderStageEditor(){
@@ -5467,6 +5469,25 @@ function selectPipeline(id){
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
 let editFocusIdx=-1;
+/* 编辑器草稿自动存档：值有改动即写入 localStorage（仅本地，不上送服务端——草稿可能含未通过校验的半成品）。
+   关闭/点遮罩/刷新浏览器都不清草稿，只有「保存」成功或「取消」显式丢弃才清，防止误操作退出丢失编辑。
+   下次打开同一流水线（或新建）时自动恢复上次未提交的草稿。 */
+let plDraftTimer=null, plDraftTipTimer=null;
+function savePlDraft(){
+  try{
+    localStorage.setItem('pip-plDraft', JSON.stringify({
+      editId: $('plForm').dataset.editId || '',
+      name: $('plName').value,
+      scriptsDir: $('scriptsDir').value,
+      stages: editStages,
+      savedAt: Date.now()
+    }));
+  }catch(e){}
+  const tip=$('plDraftTip'); if(tip){ tip.textContent='草稿已自动保存'; if(plDraftTipTimer) clearTimeout(plDraftTipTimer); plDraftTipTimer=setTimeout(()=>{ tip.textContent=''; },1800); }
+}
+function schedulePlDraftSave(){ if(plDraftTimer) clearTimeout(plDraftTimer); plDraftTimer=setTimeout(savePlDraft, 400); }
+function clearPlDraft(){ if(plDraftTimer){ clearTimeout(plDraftTimer); plDraftTimer=null; } try{ localStorage.removeItem('pip-plDraft'); }catch(e){} const tip=$('plDraftTip'); if(tip) tip.textContent=''; }
+function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft')||'null'); }catch(e){ return null; } }
 function openPlForm(id, focusIdx){
   const f=$('plForm'); f.style.display='flex';
   editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
@@ -5480,6 +5501,13 @@ function openPlForm(id, focusIdx){
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages, p&&p.prom);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling/普罗采集最后
+  /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失 */
+  const draft=loadPlDraft();
+  if(draft && Array.isArray(draft.stages) && (draft.editId||'')===$('plForm').dataset.editId){
+    editStages=draft.stages;
+    if(typeof draft.name==='string') $('plName').value=draft.name;
+    if(typeof draft.scriptsDir==='string') $('scriptsDir').value=draft.scriptsDir;
+  }
   loadScripts().then(async ()=>{
     renderStageEditor();
     /* 对已绑脚本的阶段自动重新识别参数：存量数据可能带旧版识别器的截断默认值（如 RENDER_DIR 的 ${RUN_DIR），
@@ -5546,7 +5574,7 @@ function savePlForm(){
   const editId=$('plForm').dataset.editId;
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; delete p.prom; } }
   else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, builtIn:false}); }
-  savePipelines(); $('plForm').style.display='none';
+  savePipelines(); clearPlDraft(); $('plForm').style.display='none';
   /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
   if(running){ renderPipelines(); }
   else if(editId && editId===curPipelineId){ selectPipeline(editId); }
@@ -5635,15 +5663,17 @@ $('resetBtn').addEventListener('click', ()=>{
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
 $('plSave').addEventListener('click', savePlForm);
-$('plCancel').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
-$('plFormClose').addEventListener('click', ()=>{ $('plForm').style.display='none'; });
-$('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });
-$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); });
+$('plCancel').addEventListener('click', ()=>{ clearPlDraft(); $('plForm').style.display='none'; });
+$('plFormClose').addEventListener('click', ()=>{ $('plForm').style.display='none'; });   /* 关闭=保留草稿（误操作退出保护），仅「取消」显式丢弃 */
+$('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });   /* 点遮罩同关闭：保留草稿 */
+$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); schedulePlDraftSave(); });
+$('plName').addEventListener('input', schedulePlDraftSave);
+$('scriptsDir').addEventListener('input', schedulePlDraftSave);
 $('archiveDir').value = archiveDir;
 $('archiveDir').addEventListener('change', e=>{ archiveDir=e.target.value.trim(); saveArchiveDir(); });
 $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
-$('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); });
+$('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
 /* 阶段编辑器：增删/上下移/识别参数（事件委托） */
 $('plStageList').addEventListener('click', (e)=>{
   const btn=e.target.closest && e.target.closest('[data-act]'); if(!btn) return;
@@ -5654,6 +5684,7 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='down' && i<editStages.length-1){ moveEditStage(i,i+1); renderStageEditor(); }
   else if(act==='detect'){ detectStageParams(i); }
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
+  schedulePlDraftSave();
 });
 $('plStageList').addEventListener('change', (e)=>{
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
@@ -5680,6 +5711,7 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='promXdsNamespace'){ s.prom=normalizePipelineProm(s.prom); s.prom.xdsNamespace=e.target.value.trim(); }
   else if(f==='promStart'){ s.prom=normalizePipelineProm(s.prom); s.prom.startTime=e.target.value; }
   else if(f==='promEnd'){ s.prom=normalizePipelineProm(s.prom); s.prom.endTime=e.target.value; }
+  schedulePlDraftSave();
 });
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
 /* 节点环境表头排序：升序 → 降序 → 取消 */
