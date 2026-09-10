@@ -38,7 +38,9 @@ IMAGE_TAG="${IMAGE_TAG:-local}"
 # and executor in the namespace. Keep the established ARCH_NAME fallback for
 # existing callers that omit either value.
 NAMESPACE_ARCH="${arch:-}"
+[[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
 EXECUTOR="${EXECUTOR:-}"
+[[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
 NAMESPACE="${NAMESPACE:-}"
 contains_unexpanded_placeholder "$NAMESPACE" && NAMESPACE=""
 if [[ -z "$NAMESPACE" ]]; then

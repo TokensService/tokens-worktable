@@ -936,7 +936,8 @@ export function apply(ctx: Context) {
     if (runCtx.tag) look.IMAGE_TAG = String(runCtx.tag)
     if (runCtx.pipelineName) look.PIPELINE_NAME = String(runCtx.pipelineName)
     if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch)
-    if (runCtx.strategy) look.DEPLOY_STRATEGY = String(runCtx.strategy)
+    if (runCtx.strategy) { look.DEPLOY_STRATEGY = String(runCtx.strategy); look.arch = String(runCtx.strategy) }
+    if (runCtx.by) { look.BY = String(runCtx.by); look.EXECUTOR = String(runCtx.by) }
     if (runCtx.archive) { look.ARCHIVE_DIR = String(runCtx.archive); look.ARCHIVE_FOLDER = String(runCtx.archive) }
     Object.assign(look, pool)
     const args: string[] = []
@@ -966,6 +967,9 @@ export function apply(ctx: Context) {
     if (env.PIPELINE_NAME === undefined && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName)
     if (env.GIT_BRANCH === undefined && runCtx.branch) env.GIT_BRANCH = String(runCtx.branch)
     if (env.DEPLOY_STRATEGY === undefined && runCtx.strategy) env.DEPLOY_STRATEGY = String(runCtx.strategy)
+    if (env.arch === undefined && runCtx.strategy) env.arch = String(runCtx.strategy)
+    if (env.BY === undefined && runCtx.by) env.BY = String(runCtx.by)
+    if (env.EXECUTOR === undefined && runCtx.by) env.EXECUTOR = String(runCtx.by)
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
@@ -1049,7 +1053,7 @@ export function apply(ctx: Context) {
       archiveRoot = (dir || '/') + '/runs'
     }
     const folder = isSuffixRun ? String(pl.archive) : (archiveRoot ? archiveRoot + '/' + sanitizeFsName(pipeName) + '_' + nowCompactFull() : null)
-    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || '', branch: pl.branch || '', strategy: pl.strategy || '' }
+    const runCtx = { env: pl.env || '', envs: Array.isArray(pl.envs) ? pl.envs : [], archive: folder, tag, pipelineName: pipeName, image: pl.image || '', branch: pl.branch || '', strategy: pl.strategy || '', by: pl.by || '' }
     // 变量池（与页面 curRun.vars 一致）：定时后缀由页面登记时随计划快照上游阶段变量（pl.vars，
     // 见 pipeline.html registerStageTimers）；服务端阶段间同样按 KEY=VALUE 行 / 单行 JSON 累计、
     // 按阶段「输出变量」映射，作为环境变量注入后续阶段（脚本显式参数 > 上游变量 > 运行级默认）

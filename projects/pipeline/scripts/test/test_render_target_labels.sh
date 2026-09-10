@@ -278,9 +278,11 @@ cat >"$work_dir/chart-role/templates/raycluster-cluster.yaml" <<'EOF'
 {{- range $groupName, $values := .Values.workerGroups }}
 {{- if eq $groupName "taskExecutorGroup-card" }}
 {{- range $index, $teGroupValues := $.Values.taskExecutorGroups }}
+    groupName: {{ $teGroupValues.name }}
           - name: ray-worker
 {{- end }}
 {{- else }}
+    groupName: {{ $groupName }}
           - name: ray-worker
 {{- end }}
 {{- end }}
@@ -300,6 +302,12 @@ grep -Fq 'ray-worker-decode' "$role_template"
 grep -Fq 'ray-worker-ctrl' "$role_template"
 grep -Fq 'ray-worker-fe' "$role_template"
 grep -Fq 'ray-worker-je' "$role_template"
+grep -Fq 'groupName: {{ if contains "prefill"' "$role_template"
+grep -Fq 'prefill-' "$role_template"
+grep -Fq 'decode-' "$role_template"
+grep -Fq 'groupName: {{ if eq $groupName "ctrlGroup" }}ctrl' "$role_template"
+grep -Fq '}}fe{{' "$role_template"
+grep -Fq '}}je{{' "$role_template"
 ! grep -Fq 'xds-one-node-78-verify' "$role_template"
 
 if command -v helm >/dev/null 2>&1; then

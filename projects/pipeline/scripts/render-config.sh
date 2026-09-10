@@ -28,7 +28,9 @@ DECODE_GPU="${DECODE_GPU:-}"
 # Prefer the explicit arch/executor pair for deployment isolation. Retain the
 # original ARCH_NAME-derived namespace when either is absent.
 NAMESPACE_ARCH="${arch:-}"
+[[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
 EXECUTOR="${EXECUTOR:-}"
+[[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
 NAMESPACE="${NAMESPACE:-}"
 if [[ -z "$NAMESPACE" ]]; then
   if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
@@ -74,8 +76,8 @@ mkdir -p "$RENDER_DIR"
 rm -rf "$CHART_DIR"
 cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
 
-# Generated TE groups carry their role in the container name.  The generic
-# name remains for non-P/D groups so existing chart consumers stay compatible.
+# KubeRay derives Pod names from workerGroupSpecs.groupName. Rewrite the copied
+# Chart only: role names stay independent of the namespace/release name.
 TASK_EXECUTOR_TEMPLATE="$CHART_DIR/templates/raycluster-cluster.yaml"
 if [[ -f "$TASK_EXECUTOR_TEMPLATE" ]]; then
   python3 - "$TASK_EXECUTOR_TEMPLATE" <<'PY_TEMPLATE'
@@ -84,18 +86,26 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-marker = "          - name: ray-worker"
-te_name = """          - name: {{ if contains "prefill" (lower $teGroupValues.name) }}ray-worker-prefill{{ else if contains "decode" (lower $teGroupValues.name) }}ray-worker-decode{{ else }}ray-worker{{ end }}"""
-worker_name = """          - name: {{ if eq $groupName "ctrlGroup" }}ray-worker-ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}ray-worker-fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}ray-worker-je{{ else }}ray-worker{{ end }}"""
-if marker not in text and te_name not in text:
-    raise SystemExit(f"task executor container marker not found: {path}")
-if marker in text:
-    # The card task-executor branch is emitted before ordinary worker groups.
-    text = text.replace(marker, te_name, 1)
-if marker in text:
-    # In the ordinary worker-group branch, `$groupName` identifies ctrl, FE,
-    # and JE. Do not put the namespace or deployment name into container names.
-    text = text.replace(marker, worker_name, 1)
+container_marker = "          - name: ray-worker"
+te_container = """          - name: {{ if contains "prefill" (lower $teGroupValues.name) }}ray-worker-prefill{{ else if contains "decode" (lower $teGroupValues.name) }}ray-worker-decode{{ else }}ray-worker{{ end }}"""
+worker_container = """          - name: {{ if eq $groupName "ctrlGroup" }}ray-worker-ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}ray-worker-fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}ray-worker-je{{ else }}ray-worker{{ end }}"""
+te_group_marker = "groupName: {{ $teGroupValues.name }}"
+worker_group_marker = "groupName: {{ $groupName }}"
+te_group = """groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else if contains "decode" (lower $teGroupValues.name) }}decode-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else }}{{ $teGroupValues.name }}{{ end }}"""
+worker_group = """groupName: {{ if eq $groupName "ctrlGroup" }}ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je{{ else }}{{ $groupName }}{{ end }}"""
+if te_group_marker not in text and te_group not in text:
+    raise SystemExit(f"task executor groupName marker not found: {path}")
+if worker_group_marker not in text and worker_group not in text:
+    raise SystemExit(f"worker groupName marker not found: {path}")
+if te_group_marker in text:
+    text = text.replace(te_group_marker, te_group)
+if worker_group_marker in text:
+    text = text.replace(worker_group_marker, worker_group)
+if container_marker in text:
+    # Card task executors are emitted before ordinary worker groups.
+    text = text.replace(container_marker, te_container, 1)
+if container_marker in text:
+    text = text.replace(container_marker, worker_container, 1)
 path.write_text(text, encoding="utf-8")
 PY_TEMPLATE
 fi
