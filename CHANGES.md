@@ -1,5 +1,14 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 代码仓「部署策略」配置新增脚本来源（`projects/pipeline/pipeline.html`）：代码仓表单在「部署策略 URL」前加
+  「策略·URL / 策略·脚本」来源切换——URL 模式沿用原有按分支（`{branch}` 占位）拉取分页 JSON；脚本模式按主控
+  当前分支经 `/api/worktable/exec` 执行 scripts 目录中的脚本（注入 `GIT_BRANCH` 与 `GIT_URL`/`GIT_USER`/
+  `GIT_PASSWORD`，30 秒超时），stdout 每行解析为一个策略名（去空白、跳过空行、按序去重），脚本缺失 / 非零退出 /
+  空输出视为失败。仓库模型新增 `strategyMode`/`strategyScript` 字段（`normalizeRepo` 归一化，旧数据缺省 URL 模式），
+  「部署策略」列与「策略测试」按来源展示/分流，策略缓存 key 含来源（改配置后旧缓存自动失效），主控与定时页策略
+  面板头部标注来源类型。文档（`projects/pipeline/scripts/README.md` 新增「部署策略脚本」契约）与测试
+  （`projects/pipeline/tests/test_strategy_script.js`：配置归一化 / 来源解析 / 缓存 key / 输出解析 / 执行拉取的
+  成功与失败分支）同步更新。
 - pipeline.html「📂 打开归档目录」修复目标目录不存在时的打开行为（`projects/pipeline/pipeline.html`）：
   打开前新增目录存在性预检（`resolveExistingFolder`，经 `/api/worktable/fs` 探测），目标归档目录
   不存在时（历史归档已清理、归档路径改过等）统一回退打开其父目录（归档根），连归档根都不存在才报
