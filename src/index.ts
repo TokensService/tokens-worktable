@@ -348,6 +348,37 @@ function materializeServerPipelineStages(stages: any[], presets: string[], confi
   return missingFront.concat(out, missingBack)
 }
 
+function serverPipelineStageGroups(stages: any[]): Array<{ start: number; end: number; parallel: boolean; stages: any[] }> {
+  const list = Array.isArray(stages) ? stages : []
+  const groups: Array<{ start: number; end: number; parallel: boolean; stages: any[] }> = []
+  for (let index = 0; index < list.length;) {
+    const first = list[index]
+    if (first && !first.preset && first.parallel === true) {
+      let end = index + 1
+      while (end < list.length && list[end] && !list[end].preset && list[end].parallel === true) end++
+      groups.push({ start: index, end, parallel: true, stages: list.slice(index, end) })
+      index = end
+    } else {
+      groups.push({ start: index, end: index + 1, parallel: false, stages: [first] })
+      index++
+    }
+  }
+  return groups
+}
+
+type ServerStageResult = {
+  index: number;
+  stage: any;
+  status: 'success' | 'failed' | 'skipped' | 'aborted';
+  shouldStop: boolean;
+  text: string;
+  varsOut: Record<string, string>;
+  varsPool: Record<string, string>;
+  startedAt: number;
+  endedAt: number;
+  scriptName: string | null;
+}
+
 function serverRunVariables(runCtx: any, varsPool?: Record<string, string>): Record<string, string> {
   const vars: Record<string, string> = {}
   const first = Array.isArray(runCtx.envs) ? runCtx.envs[0] : null
@@ -1537,7 +1568,7 @@ export function apply(ctx: Context) {
     }
     return cur === null || cur === undefined ? undefined : cur
   }
-  function applyOutVars(spec: string, pool: Record<string, string>, jsonCtx: any, fullText: string) {
+  function applyOutVars(spec: string, pool: Record<string, string>, jsonCtx: any, fullText: string, sink?: Record<string, string>) {
     String(spec || '').split(',').forEach((pair) => {
       const p = pair.trim(); if (!p) return
       const eq = p.indexOf('=')
@@ -1553,7 +1584,9 @@ export function apply(ctx: Context) {
         }
       }
       if (val === undefined || val === null) return
-      pool[dst] = typeof val === 'object' ? JSON.stringify(val) : String(val)
+      const text = typeof val === 'object' ? JSON.stringify(val) : String(val)
+      pool[dst] = text
+      if (sink) sink[dst] = text
     })
   }
   // 参数值 ${VAR} 引用替换（同页面 substRunVars）：未定义引用原样保留；整值即单个未定义 ${VAR} 时按空值处理。
@@ -1756,39 +1789,44 @@ export function apply(ctx: Context) {
       pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
     }
-    let seq = baseSeq + 1
-    for (const s of executionStages) {
-      const st0 = Date.now()
+    const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
+      const startedAt = Date.now()
+      const localPool = { ...baseVars }
+      const varsOut: Record<string, string> = {}
       let entry: any = null
       let shouldStop = false
+      void signal   // Task 6 threads cancellation through the process/network boundaries.
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
-        const r = await executeServerHttpStage(s, runCtx, cfg, varsPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
-        Object.assign(varsPool, parseStageVars(r.stdout))
-        applyOutVars(serverStageOutVars(s), varsPool, parseStageJson(r.stdout), r.stdout)
+        const r = await executeServerHttpStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
+        Object.assign(varsOut, parseStageVars(r.stdout))
+        Object.assign(localPool, varsOut)
+        applyOutVars(serverStageOutVars(s), localPool, parseStageJson(r.stdout), r.stdout, varsOut)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
-        if (r.code !== 0) { status = 'failed'; shouldStop = true }
+        if (r.code !== 0) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, varsPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
-        Object.assign(varsPool, parseStageVars(r.stdout))
-        applyOutVars(s.evaltokens && s.evaltokens.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
+        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
+        Object.assign(varsOut, parseStageVars(r.stdout))
+        Object.assign(localPool, varsOut)
+        applyOutVars(s.evaltokens && s.evaltokens.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
-        if (r.code !== 0) { status = 'failed'; shouldStop = true }
+        if (r.code !== 0) shouldStop = true
       }
       else if (s.script && s.script.path) {
         let r: { code: number; stdout: string; stderr: string }
         try {
-          r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
+          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
         } catch (error) {
           r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
         }
         // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
         // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
-        Object.assign(varsPool, parseStageVars(r.stdout))
-        applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
+        Object.assign(varsOut, parseStageVars(r.stdout))
+        Object.assign(localPool, varsOut)
+        applyOutVars(s.script.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
         entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
         // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
-        if (r.code !== 0 && (!s.preset || s.presetBlock)) { status = 'failed'; shouldStop = true }
+        if (r.code !== 0 && (!s.preset || s.presetBlock)) shouldStop = true
       } else if (s.preset) {
         entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
       } else {
@@ -1799,12 +1837,13 @@ export function apply(ctx: Context) {
          时段调用设置页收集脚本，产物目录=归档文件夹/{任务名}-{阶段序号}-普罗数据；失败仅标注到本任务日志，不改变任务结果 */
       if (!s.preset && s.promCollect && entry.status !== 'skipped') {
         const collectScript = serverPromCollectScript(cfg)
+        const seq = baseSeq + index + 1
         const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
         if (!collectScript) entry.text += '\n[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过'
         else {
           try {
-            const penv = buildServerTaskPromEnv(runCtx, cfg, varsPool, st0, Date.now(), promDir)
-            const pr = await runStageScript(collectScript, runCtx, scriptsDir, varsPool, 0, penv)   // 与页面一致不设超时：由采集脚本控制耗时
+            const penv = buildServerTaskPromEnv(runCtx, cfg, localPool, startedAt, Date.now(), promDir)
+            const pr = await runStageScript(collectScript, runCtx, scriptsDir, localPool, 0, penv)   // 与页面一致不设超时：由采集脚本控制耗时
             try {
               const fsx = await import('node:fs/promises')
               await fsx.mkdir(promDir, { recursive: true })
@@ -1818,13 +1857,41 @@ export function apply(ctx: Context) {
           }
         }
       }
+      return {
+        index,
+        stage: s,
+        status: entry.status,
+        shouldStop,
+        text: entry.text,
+        varsOut,
+        varsPool: localPool,
+        startedAt,
+        endedAt: Date.now(),
+        scriptName: (s.script && s.script.name) || null,
+      }
+    }
+    const recordStageResult = async (result: ServerStageResult, seq: number) => {
+      const s = result.stage
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
-      const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null
-      logs.push({ stage: s.name, status: entry.status, log: entry.text })
-      pushHist(s.name, entry.status, entry.text, logFile, Math.round((Date.now() - st0) / 100) / 10)
-      profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
-      seq++
-      if (shouldStop) break
+      const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, result.text) : null
+      const durSec = Math.round((result.endedAt - result.startedAt) / 100) / 10
+      logs.push({ stage: s.name, status: result.status, log: result.text })
+      pushHist(s.name, result.status, result.text, logFile, durSec)
+      profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, script: result.scriptName, logFile })
+    }
+    for (const group of serverPipelineStageGroups(executionStages)) {
+      const groupBase = { ...varsPool }
+      const controller = new AbortController()
+      const results = await Promise.all(group.stages.map((stage, offset) =>
+        executeStage(stage, group.start + offset, groupBase, controller.signal)))
+      const blockingFailure = results.some(result => result.shouldStop)
+      if (!blockingFailure) {
+        for (const result of results) Object.assign(varsPool, result.varsOut)
+      }
+      for (const result of results) {
+        await recordStageResult(result, baseSeq + result.index + 1)
+      }
+      if (blockingFailure) { status = 'failed'; break }
     }
     // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
     //   定时后缀追加到页面登记时已写内容（去掉旧 [result] 行、profile 按阶段 id/name 合并）；独立计划整文件新建。

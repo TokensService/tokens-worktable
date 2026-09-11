@@ -402,11 +402,18 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   assert.equal(called.options.env.KEEP_ME, 'yes')
 })
 
-function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }) {
+function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl) {
   const apiStart = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
-  const code = stripTypeScriptTypes(source.slice(apiStart, apiEnd) + '\n' + extractFunction('execPlan'), { mode: 'transform' })
+  const code = stripTypeScriptTypes([
+    source.slice(apiStart, apiEnd),
+    extractFunction('parseStageVars'),
+    extractFunction('parseStageJson'),
+    extractFunction('jsonPathGet'),
+    extractFunction('applyOutVars'),
+    extractFunction('execPlan'),
+  ].join('\n'), { mode: 'transform' })
   const calls = []
   const history = []
   const ctx = {
@@ -432,11 +439,9 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     sleepMs: async () => {},
     writeTaskLogFile: async () => null,
     stageLogText: (name, result) => `${name}:${result.code}`,
-    parseStageVars: () => ({}),
-    parseStageJson: () => null,
-    applyOutVars() {},
     runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv) => {
       calls.push({ script: script.name, runContext: plain(runContext), scriptsDir, varsPool: plain(varsPool || {}), timeout, extraEnv: plain(extraEnv || {}) })
+      if (runStageScriptImpl) return runStageScriptImpl(script, runContext, scriptsDir, varsPool, timeout, extraEnv)
       return results[script.name] || { code: 0, stdout: '', stderr: '' }
     },
     appendPipelineHistory: async record => history.push(plain(record)),
@@ -483,6 +488,93 @@ function apiExecutionPlan(presets = ['check']) {
     source: 'api',
   }
 }
+
+const tick = () => new Promise(resolve => setImmediate(resolve))
+
+async function assertParallelServerRun(sourceType) {
+  const deferred = new Map()
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, (script, runContext, scriptsDir, varsPool) => new Promise(resolve => {
+    deferred.set(script.name, resolve)
+    if (script.name === 'a.sh') varsPool.PRIVATE_MUTATION = 'a-only'
+  }))
+  const plan = apiExecutionPlan([])
+  plan.source = sourceType
+  plan.by = sourceType
+  plan.vars = { UPSTREAM: 'snapshot', ORDER: 'entry' }
+  if (sourceType === 'schedule') delete plan.presets
+  plan.stages = [
+    { id: 'a', name: 'A', parallel: true, script: { name: 'a.sh', path: '/a.sh', outVars: '' } },
+    { id: 'b', name: 'B', parallel: true, script: { name: 'b.sh', path: '/b.sh', outVars: 'ORDER=SOURCE' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh', outVars: '' } },
+  ]
+
+  const running = f.execPlan(plan)
+  await tick()
+  assert.deepEqual(f.calls.map(call => call.script), ['a.sh', 'b.sh'])
+  assert.deepEqual(f.calls[0].varsPool, { UPSTREAM: 'snapshot', ORDER: 'entry' })
+  assert.deepEqual(f.calls[1].varsPool, { UPSTREAM: 'snapshot', ORDER: 'entry' })
+
+  deferred.get('b.sh')({ code: 0, stdout: 'SOURCE=entry\nVALUE=b\nB=1', stderr: '' })
+  await tick()
+  assert.deepEqual(f.calls.map(call => call.script), ['a.sh', 'b.sh'])
+
+  deferred.get('a.sh')({ code: 0, stdout: 'ORDER=a\nVALUE=a\nA=1', stderr: '' })
+  await tick()
+  assert.equal(f.calls[2].script, 'after.sh')
+  assert.deepEqual(f.calls[2].varsPool, {
+    UPSTREAM: 'snapshot', ORDER: 'entry', VALUE: 'b', A: '1', SOURCE: 'entry', B: '1',
+  })
+  deferred.get('after.sh')({ code: 0, stdout: '', stderr: '' })
+  await running
+
+  assert.equal(f.history[0].status, 'success')
+  assert.equal(f.history[0].source, sourceType)
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['A', 'B', 'After'])
+}
+
+test('API 并行启动任务、等待汇合并按编排顺序合并输出', async () => {
+  await assertParallelServerRun('api')
+})
+
+test('定时并行启动任务、等待汇合并按编排顺序合并输出', async () => {
+  await assertParallelServerRun('schedule')
+})
+
+test('API 路由运行快照保留 parallel 标记', async () => {
+  const parallelStore = structuredClone(stored)
+  parallelStore.config.pipelines[0].stages[0].parallel = true
+  const f = loadRunRoute(parallelStore)
+
+  const res = await call(f.handler, 'pipe-release')
+
+  assert.equal(res.status, 202)
+  assert.equal(f.executions[0].stages[0].parallel, true)
+})
+
+test('服务端分组保留 parallel 普通阶段且预设仍是串行屏障', () => {
+  const f = loadRunRoute(stored)
+  const groups = f.ctx.serverPipelineStageGroups([
+    { id: 'prepare' },
+    { id: 'a', parallel: true },
+    { id: 'b', parallel: true },
+    { id: '__check__', preset: true, parallel: true },
+    { id: 'c', parallel: true },
+    { id: 'after' },
+  ])
+
+  assert.deepEqual(plain(groups.map(group => ({
+    start: group.start,
+    end: group.end,
+    parallel: group.parallel,
+    ids: group.stages.map(stage => stage.id),
+  }))), [
+    { start: 0, end: 1, parallel: false, ids: ['prepare'] },
+    { start: 1, end: 3, parallel: true, ids: ['a', 'b'] },
+    { start: 3, end: 4, parallel: false, ids: ['__check__'] },
+    { start: 4, end: 5, parallel: true, ids: ['c'] },
+    { start: 5, end: 6, parallel: false, ids: ['after'] },
+  ])
+})
 
 test('API 服务端执行器展开预设、携带代码仓上下文并写入可关联的历史字段', async () => {
   const f = loadExecPlan(apiExecutionConfig)
