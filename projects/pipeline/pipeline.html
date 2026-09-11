@@ -1079,7 +1079,7 @@ function normalizePipelineDefaults(value){
     presets:pipelineDefaultStringList(d.presets).filter(k=>PIPELINE_DEFAULT_PRESET_KEYS.indexOf(k)>=0),
   };
 }
-function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; } return p; }
+function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; } return p; }
 /* 仅旧流水线没有保存默认引用时回退当前首项；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
   const d=normalizePipelineDefaults(pl&&pl.defaults);
@@ -3064,6 +3064,9 @@ function persistFlowOrder(orderedWork){
     ? {id:s.id,name:s.name,preset:true,pkey:s.pkey}
     : s);
   delete p.prom;
+  /* 拖拽改序也是一次修改：署名最后修改人（typeof 守卫：独立测试片段里可能没有这些全局） */
+  const me=(typeof currentUsername!=='undefined'&&currentUsername)||((typeof $==='function'&&$('triggeredBy')&&$('triggeredBy').value.trim())||'');
+  if(me) p.updatedBy=me;
   savePipelines();
   renderPipelines(); renderFlow(); renderDetail();
 }
@@ -6281,6 +6284,7 @@ $('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
 /* plFilter / savePlFilter / currentUsername 声明在前（紧随 histFilter），
    此处仅定义筛选匹配与下拉渲染函数。 */
 function plOwnerOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''; }
+function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updatedBy.trim()) ? p.updatedBy.trim() : ''; }   /* 最后修改人：与创建者同源（/auth/status 登录用户），保存/拖拽改序时刷新 */
 function plFilterMatch(p){
   const kw=plFilter.kw.trim().toLowerCase();
   if(kw){
@@ -6326,10 +6330,11 @@ function renderPipelines(){
     const viewing = plRuns.length && plRuns.indexOf(viewRc)>=0;
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
-    const ownerTag = (!p.builtIn && plOwnerOf(p)) ? ' · @'+esc(plOwnerOf(p)) : '';   // 非内置且署名时显示创建者
+    /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
+    const auditTag = p.builtIn ? '' : ((plOwnerOf(p) ? ' · 创建 @'+esc(plOwnerOf(p)) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwnerOf(p)) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
     if(isCur) tr.className='sel';
     tr.title=plRuns.length?'点击查看本次运行的阶段详情':'点击选用该流水线';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(plRuns.length?' <span class="dshell-badge dshell-badgeWait" style="font-size:10px;">运行中</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':''):'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+ownerTag+'</div></td>'+
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(plRuns.length?' <span class="dshell-badge dshell-badgeWait" style="font-size:10px;">运行中</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':''):'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
     tr.addEventListener('click',()=>{ const rc=latestRunOfPipeline(p.id); if(rc){ focusRun(rc); return; } selectPipeline(p.id); });   // 整行点击：有在跑运行→查看其阶段详情；否则选用（运行/编辑/复制/删除按钮已阻止冒泡）
@@ -6501,8 +6506,8 @@ function savePlForm(){
   const editId=$('plForm').dataset.editId;
   const defaults=collectPipelineDefaultForm();
   const me=currentUsername||$('triggeredBy').value.trim()||'';   // 新建/复制流水线署名：取已缓存的当前登录用户（页面加载时由 fillExecutorFromAuth 预取），未取到时退回「执行人」输入框
-  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动 */
-  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me}); }
+  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动；每次保存都刷新最后修改人 */
+  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}); }
   savePipelines(); clearPlDraft(); $('plForm').style.display='none';
   /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
   if(running){ renderPipelines(); }
@@ -6537,6 +6542,7 @@ function copyPipeline(id){
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
+  clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
   pipelines.push(clone);
   savePipelines();
   /* 运行期复制：不切换当前流水线（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */

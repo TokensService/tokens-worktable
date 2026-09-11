@@ -70,6 +70,7 @@ function makeContext(runResult) {
     plFilterMatch: () => true,   // 筛选桩：所有流水线均命中（行运行测试不涉及筛选语义）
     renderPlFilterOptions: () => {},   // 下拉渲染桩：筛选控件不在本测试范围
     plOwnerOf: () => '',   // 创建者取值桩：行运行测试不涉及署名展示
+    plUpdaterOf: () => '',   // 最后修改人取值桩：行运行测试不涉及署名展示
     currentUsername: '',
     document: { createElement: tag => new FakeNode(tag) },
     $: id => id === 'plTable' ? table : count,
