@@ -4749,10 +4749,10 @@ async function runScriptStep(rc, i){
     s._out=liveOutputSnapshot(live,{code:null});   // 实时快照仅保留有界尾部；归档与最终变量仍用 execStreaming 的完整结果
     lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
   }, ctrl.signal, logFile);
+  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
+  if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验运行状态再写共享 stage 字段：并行重试已复位的新归档所有权不能被旧子上下文迟回覆盖
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(res.logError) console.warn('[archive] 服务端阶段日志写入失败，尝试页面兜底:',res.logError);
-  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
-  if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验令牌再动本运行 timer（中止已由 finish 清过）
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;

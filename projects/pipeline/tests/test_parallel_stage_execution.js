@@ -44,6 +44,7 @@ function parallelContext(stages, options) {
   const finished = [];
   const archived = [];
   const clearedTimers = [];
+  const pendingScripts = [];
   let timerSeq = 0;
   const stopButton = { disabled: false };
   const context = {
@@ -62,6 +63,8 @@ function parallelContext(stages, options) {
     setInterval() { return { id: ++timerSeq }; },
     clearInterval(timer) { clearedTimers.push(timer); },
     taskPromFinalize() {},
+    conflictsActive() { return false; },
+    flashRunTip() {},
     runPresetStep() { throw new Error('preset executor must not run'); },
     skipStage() { throw new Error('skip executor must not run'); },
     stageUrlOf(stage) { return stage && stage.url ? stage.url.url || '' : ''; },
@@ -107,6 +110,10 @@ function parallelContext(stages, options) {
     drainQueue() {},
     renderQueue() {},
     archiveFolderFor() { return ''; },
+    taskLogFile(_run, seq, name) { return 'run-' + seq + '-' + name + '.log'; },
+    mergeStageVars() { return {}; },
+    applyOutVars() {},
+    parseStageJson() { return null; },
     viewRc: null,
     selectedId: null,
     jenkins: { url: 'http://jenkins.local', user: '', token: '', mode: options.jenkinsMode || 'local' },
@@ -127,6 +134,7 @@ function parallelContext(stages, options) {
     'advance',
     'finish',
     'abortRun',
+    'retryFromStage',
   ]);
   const rc = {
     id: 'parent', stages, nodes: {}, selId: null, timer: null, scriptAbort: null,
@@ -136,6 +144,26 @@ function parallelContext(stages, options) {
   };
   context.activeRuns = [rc];
   context.viewRc = rc;
+
+  if (options.realScript) {
+    context.execScript = (script, _timeout, _env, _run, _onStream, signal) => new Promise(resolve => {
+      pendingScripts.push({ name: script.name, signal, resolve });
+    });
+    installFunctions(context, [
+      'createLiveOutputState',
+      'appendLiveOutput',
+      'liveOutputSnapshot',
+      'maybeRenderLiveDetail',
+      'runScriptStep',
+    ]);
+    const runScriptStep = context.runScriptStep;
+    context.runScriptStep = (child, index) => {
+      const call = { child, index, kind: 'script', promise: null };
+      started.push(call);
+      call.promise = runScriptStep(child, index);
+      return call.promise;
+    };
+  }
 
   if (options.realHttp) {
     installFunctions(context, [
@@ -162,7 +190,7 @@ function parallelContext(stages, options) {
     };
   }
 
-  return { context, rc, started, finished, archived, clearedTimers, stopButton };
+  return { context, rc, started, finished, archived, clearedTimers, pendingScripts, stopButton };
 }
 
 function retryContext() {
@@ -283,6 +311,34 @@ test('脚本失败会清除在途模拟任务计时器且迟回推进不改写�
   assert.equal(fixture.rc.nodes.b.status, 'aborted');
   assert.deepEqual(fixture.finished, ['failed']);
   assert.deepEqual(fixture.started.map(call => call.index), [0, 1]);
+});
+
+test('并行取消后重试时旧脚本迟回不能恢复旧归档所有权', async () => {
+  const fixture = parallelContext(parallelThenAfter(), { realScript: true });
+  fixture.context.advance(fixture.rc, 0);
+  const oldA = fixture.started.find(call => call.index === 0);
+  const oldB = fixture.started.find(call => call.index === 1);
+  fixture.pendingScripts[0].resolve({ code: 1, stdout: '', stderr: 'failed' });
+  await oldA.promise;
+  await tick();
+  assert.equal(fixture.rc.nodes.b.status, 'aborted');
+
+  fixture.context.retryFromStage('a');
+  assert.deepEqual(fixture.started.map(call => call.index), [0, 1, 0, 1]);
+  const stage = fixture.rc.stages[1];
+  assert.equal(stage._serverLogPending, false);
+  assert.equal(stage._serverLogFile, null);
+  assert.equal(stage._logArchived, false);
+
+  fixture.pendingScripts[1].resolve({
+    code: 0, stdout: 'OLD=value', stderr: '', logFile: '/archive/old-b.log',
+  });
+  await oldB.promise;
+
+  assert.equal(stage._serverLogPending, false);
+  assert.equal(stage._serverLogFile, null);
+  assert.equal(stage._logArchived, false);
+  assert.equal(fixture.rc.nodes.b.status, 'running');
 });
 
 test('用户中止并行组会取消全部成员并只记录一次 aborted', async () => {
