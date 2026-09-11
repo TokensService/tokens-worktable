@@ -206,7 +206,7 @@ test('renderQueue：其他浏览器的排队/在跑条目只读，不给点击�
 function makeScheduleContext() {
   const calls = { start: [], alerts: [] };
   const context = {
-    DEFAULT_IMAGE: 'myapp', GITURL: 'g', MAX_ACTIVE_RUNS: 4, QUEUE_CAP: 8,
+    DEFAULT_IMAGE: 'myapp', GITURL: 'g', MAX_ACTIVE_RUNS: 4, QUEUE_CAP: 16,
     activeRuns: [], queue: [],
     findPipeline: id => ({ id, name: 'PL-' + id, stages: [{ id: 's1', name: '构建' }] }),
     curPipelineId: 'p1',
@@ -271,7 +271,7 @@ test('runPipeline：并发槽位占满仍可入队，队列满拒绝入队', () 
   assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'E' }], by: 'e' }), 'queued', '槽位占满：即使机器不相交也入队');
   assert.equal(calls.start.length, 0);
   context.queue.length = 0;
-  for (let i = 0; i < 8; i++) context.queue.push({ id: 'q' + i, envs: [{ ip: 'X' + i }] });
-  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'Z' }], by: 'f' }), false, '队列达上限：拒绝入队');
-  assert.equal(context.queue.length, 8);
+  for (let i = 0; i < 16; i++) context.queue.push({ id: 'q' + i, envs: [{ ip: 'X' + i }] });
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'Z' }], by: 'f' }), false, '队列达上限（16）：拒绝入队');
+  assert.equal(context.queue.length, 16);
 });

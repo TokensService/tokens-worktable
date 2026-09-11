@@ -1,5 +1,8 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线运行队列上限 8 → 16（`projects/pipeline/pipeline.html` 的 `QUEUE_CAP`）：并行槽位（4 个）占满后
+  可排队等待的任务数放宽一倍，提示文案随变量联动；同步 `tests/test_queue_item_preview.js` 的边界用例
+  （填满 16 个后拒绝入队）与 `tests/test_pipeline_row_run.js` 的容量提示断言。
 - 流水线运行队列支持点击排队任务查看详情（`projects/pipeline/pipeline.html`）：队列中的排队条目由纯展示
   改为可点击，编排区以只读快照预览该次排队的详情——阶段编排按入队时的阶段快照与「预设任务」勾选快照展开
   （与启动同一 `expandRunStages` 路径，并行组结构原样绘制），详情面板展示入队参数（环境/仓库/分支/策略/
