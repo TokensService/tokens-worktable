@@ -192,7 +192,7 @@ function taskPromCtx(rc,collectScript){
     stageSeq:(stg,i)=>i+1,
     sanitizeFsName:s=>String(s).replace(/\s+/g,'-'),
   };
-  vm.createContext(ctx);load('function taskPromFolderName(','function pmcSay(',ctx);
+  vm.createContext(ctx);load('function pipelineStageGroups(','function pipelineStageGroupAt(',ctx);load('function taskPromFolderName(','function pmcSay(',ctx);
   return {ctx,calls};
 }
 test('勾选收集普罗数据的任务进入终态后按其起止采集到 {任务名}-{阶段序号}-普罗数据 目录',async()=>{

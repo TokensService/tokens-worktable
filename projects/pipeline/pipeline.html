@@ -3776,6 +3776,10 @@ function cancelParallelGroup(parent,exceptChild){
 function settleParallelStage(child,status){
   if(!child || !child.parallelParent || child.parallelSettled) return;
   child.parallelSettled=true; child.parallelStatus=status;
+  if(status==='success'||status==='failed'){
+    const stage=child.stages[child.parallelIndex];
+    if(stage) stage._promT1=Date.now();
+  }
   const parent=child.parallelParent, active=parent.parallelGroup;
   if(status==='failed' && active && active.children.indexOf(child)>=0 && !active.failed){ active.failed=true; cancelParallelGroup(parent,child); }
   if(child.parallelResolve) child.parallelResolve(status);
@@ -4824,12 +4828,12 @@ function retryFromStage(stageId){
       const stage=rc.stages[j], oldNode=rc.nodes[stage.id];
       stage._out=null; stage._archiveStdout=null; stage._archiveOutputParts=null;
       stage._logArchived=false; stage._serverLogPending=false; stage._serverLogFile=null;
-      stage._promT0=null; stage._promCollected=false;
+      stage._promT0=null; stage._promT1=null; stage._promCollected=false; stage._promGroupCollected=false;
       rc.nodes[stage.id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}};
     }
   }else{
     rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;
-    for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; rc.stages[j]._promT0=null; rc.stages[j]._promCollected=false; if(j>idx) rc.stages[j]._archiveStdout=null; const oldNode=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}}; }
+    for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; rc.stages[j]._promT0=null; rc.stages[j]._promT1=null; rc.stages[j]._promCollected=false; rc.stages[j]._promGroupCollected=false; if(j>idx) rc.stages[j]._archiveStdout=null; const oldNode=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}}; }
   }   // 并行组重试清空整组及下游运行态；串行阶段保持原有重试清理范围
   rc.over=false;
   activeRuns.push(rc); syncRunState();
@@ -5225,13 +5229,41 @@ async function taskPromCollect(rc, s, seq, startMs, endMs){
   if(!res || res.code!==0) console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据失败（exit '+(res&&res.code)+'，不影响流水线结果），输出见 '+dir+'/collect.log');
   else console.warn('[pipeline] 任务「'+s.name+'」普罗数据已收集 → '+dir);
 }
+function parallelPromCandidate(rc,group){
+  if(!rc || !group) return null;
+  let picked=null;
+  for(let index=group.start;index<group.end;index++){
+    const stage=rc.stages[index], node=stage&&rc.nodes[stage.id];
+    if(!stage || !stage.promCollect || !stage._promT0 || !stage._promT1 || !node || (node.status!=='success'&&node.status!=='failed')) continue;
+    const candidate={stage,index,startMs:stage._promT0,endMs:stage._promT1};
+    if(!picked || candidate.endMs-candidate.startMs>picked.endMs-picked.startMs) picked=candidate;   // 相同耗时保留更早编排项
+  }
+  return picked;
+}
 function taskPromFinalize(rc){
   if(!rc || !rc.stages) return;
-  rc.stages.forEach((s,idx)=>{
-    if(!s || s.preset || !s.promCollect || !s._promT0 || s._promCollected) return;
-    const n=rc.nodes[s.id]; if(!n || (n.status!=='success' && n.status!=='failed')) return;   // 仅终态采集：跳过/中止/运行中不采
-    s._promCollected=true;
-    taskPromCollect(rc, s, stageSeq(rc.stages,idx), s._promT0, Date.now()).catch(e=>console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据异常（不影响流水线结果）:', e));
+  pipelineStageGroups(rc.stages).forEach(group=>{
+    const parallelGroup=group.parallel&&group.end-group.start>1;
+    if(parallelGroup){
+      const first=rc.stages[group.start];
+      if(!first || first._promGroupCollected) return;
+      const terminal=group.stages.every(stage=>{
+        const node=stage&&rc.nodes[stage.id];
+        return node&&(node.status==='success'||node.status==='failed'||node.status==='skipped'||node.status==='aborted');
+      });
+      if(!terminal) return;
+      const picked=parallelPromCandidate(rc,group);
+      if(!picked) return;
+      group.stages.forEach(stage=>{ if(stage&&stage.promCollect) stage._promCollected=true; });
+      first._promGroupCollected=true;
+      taskPromCollect(rc,picked.stage,stageSeq(rc.stages,picked.index),picked.startMs,picked.endMs).catch(e=>console.warn('[pipeline] 任务「'+picked.stage.name+'」收集普罗数据异常（不影响流水线结果）:', e));
+      return;
+    }
+    const index=group.start, stage=rc.stages[index];
+    if(!stage || stage.preset || !stage.promCollect || !stage._promT0 || stage._promCollected) return;
+    const node=rc.nodes[stage.id]; if(!node || (node.status!=='success'&&node.status!=='failed')) return;   // 串行/单成员并行任务保持逐任务采集
+    stage._promCollected=true;
+    taskPromCollect(rc,stage,stageSeq(rc.stages,index),stage._promT0,Date.now()).catch(e=>console.warn('[pipeline] 任务「'+stage.name+'」收集普罗数据异常（不影响流水线结果）:', e));
   });
 }
 function pmcSay(text, cls){   // 追加文本到收集对话框日志区（cls: ''/ok/warn/err）

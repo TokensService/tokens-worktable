@@ -205,7 +205,9 @@ function retryContext() {
     _serverLogPending: true,
     _serverLogFile: '/archive/stale.log',
     _promT0: 100,
+    _promT1: 200,
     _promCollected: true,
+    _promGroupCollected: true,
   }));
   const rc = {
     id: 'retry-parent', stages,
@@ -236,6 +238,83 @@ function retryContext() {
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+function parallelPromContext(rc) {
+  const calls = [];
+  const context = {
+    console,
+    Object,
+    Array,
+    Date,
+    Promise,
+    taskPromCollect(_rc, stage, seq, startMs, endMs) {
+      calls.push({ name: stage.name, seq, startMs, endMs });
+      return Promise.resolve();
+    },
+    stageSeq(_stages, index) { return index + 1; },
+  };
+  vm.createContext(context);
+  installFunctions(context, ['pipelineStageGroups', 'parallelPromCandidate', 'taskPromFinalize']);
+  return { context, calls };
+}
+
+test('并行组只为运行时间最长的合格勾选任务采集一次', async () => {
+  const rc = {
+    stages: [
+      { id: 'a', name: '短任务', parallel: true, promCollect: true, _promT0: 1000, _promT1: 4000 },
+      { id: 'b', name: '最长任务', parallel: true, promCollect: true, _promT0: 1000, _promT1: 9000 },
+      { id: 'c', name: '已取消', parallel: true, promCollect: true, _promT0: 1000, _promT1: 12000 },
+      { id: 'after', name: '后续串行', promCollect: true, _promT0: 1000, _promT1: 2000 },
+    ],
+    nodes: { a: { status: 'success' }, b: { status: 'failed' }, c: { status: 'aborted' }, after: { status: 'running' } },
+  };
+  const { context, calls } = parallelPromContext(rc);
+  const group = context.pipelineStageGroups(rc.stages)[0];
+  const picked = context.parallelPromCandidate(rc, group);
+  assert.equal(picked.stage, rc.stages[1]);
+  assert.equal(picked.startMs, 1000);
+  assert.equal(picked.endMs, 9000);
+
+  context.taskPromFinalize(rc);
+  context.taskPromFinalize(rc);
+  await tick();
+
+  assert.deepEqual(calls.map(call => call.name), ['最长任务']);
+  assert.equal(rc.stages[0]._promCollected, true);
+  assert.equal(rc.stages[1]._promCollected, true);
+  assert.equal(rc.stages[2]._promCollected, true);
+  assert.equal(rc.stages[0]._promGroupCollected, true);
+});
+
+test('并行普罗采集耗时相同时保留更早编排任务', async () => {
+  const rc = {
+    stages: [
+      { id: 'a', name: '较早任务', parallel: true, promCollect: true, _promT0: 1000, _promT1: 5000 },
+      { id: 'b', name: '较晚任务', parallel: true, promCollect: true, _promT0: 2000, _promT1: 6000 },
+    ],
+    nodes: { a: { status: 'success' }, b: { status: 'success' } },
+  };
+  const { context, calls } = parallelPromContext(rc);
+  const group = context.pipelineStageGroups(rc.stages)[0];
+  assert.equal(context.parallelPromCandidate(rc, group).stage, rc.stages[0]);
+  context.taskPromFinalize(rc);
+  await tick();
+  assert.deepEqual(calls.map(call => call.name), ['较早任务']);
+});
+
+test('失败并行组在所有成员终态后仅采集失败成员的真实窗口', async () => {
+  const rc = {
+    stages: [
+      { id: 'a', name: '失败任务', parallel: true, promCollect: true, _promT0: 1000, _promT1: 7000 },
+      { id: 'b', name: '中止同伴', parallel: true, promCollect: true, _promT0: 1000, _promT1: 9000 },
+    ],
+    nodes: { a: { status: 'failed' }, b: { status: 'aborted' } },
+  };
+  const { context, calls } = parallelPromContext(rc);
+  context.taskPromFinalize(rc);
+  await tick();
+  assert.deepEqual(calls, [{ name: '失败任务', seq: 1, startMs: 1000, endMs: 7000 }]);
+});
 
 test('并行任务同时启动并等待全组成功后才启动后续任务', async () => {
   const { context, rc, started } = parallelContext(parallelThenAfter());
@@ -374,7 +453,9 @@ test('失败阶段重试从并行组首项开始并恢复组入口变量与运�
     assert.equal(stage._serverLogPending, false, stage.id + ' 服务端日志 pending 未复位');
     assert.equal(stage._serverLogFile, null, stage.id + ' 服务端日志路径未复位');
     assert.equal(stage._promT0, null, stage.id + ' 普罗开始时间未复位');
+    assert.equal(stage._promT1, null, stage.id + ' 普罗结束时间未复位');
     assert.equal(stage._promCollected, false, stage.id + ' 普罗采集标记未复位');
+    assert.equal(stage._promGroupCollected, false, stage.id + ' 普罗分组采集标记未复位');
   }
 });
 
