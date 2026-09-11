@@ -79,7 +79,10 @@ test('多任务并行组渲染 fork、任务分支和 join，节点点击仍选�
   assert.equal(flow.children.length,1);
   const group=flow.children[0];
   assert.equal(group.className,'pipeline-parallelGroup');
+  assert.equal(group.style.gap,'0');
   assert.deepEqual(group.children.map(node=>node.className),['pipeline-parallelTitle','pipeline-parallelRailIn','pipeline-parallelTasks','pipeline-parallelRailOut']);
+  assert.equal(group.children[1].style.borderRight,'2px solid var(--dsw-alias-border-l2)');
+  assert.equal(group.children[3].style.borderLeft,'2px solid var(--dsw-alias-border-l2)');
   const tasks=group.children[2];
   assert.equal(tasks.style.flexDirection,'column');
   assert.deepEqual(tasks.children.map(row=>row.className),['pipeline-parallelTaskRow','pipeline-parallelTaskRow']);

@@ -84,11 +84,9 @@
     .pipeline-conn::before { content:''; display:block; width:18px; height:2px; background:var(--dsw-alias-border-l2); }
     .pipeline-conn::after { content:''; border:4px solid transparent; border-left-color:var(--dsw-alias-border-l2); margin-left:-1px; }
     /* 并行任务组：入口/出口导轨明确表达 fork / join，分支节点复用原有 .pipeline-node 交互。 */
-    .pipeline-parallelGroup { flex:0 0 auto; position:relative; display:flex; align-items:stretch; gap:8px; padding:18px 10px 8px; border:1px dashed var(--dsw-alias-border-l2); border-radius:10px; background:color-mix(in srgb, var(--dsw-alias-fill-l1) 75%, transparent); }
+    .pipeline-parallelGroup { flex:0 0 auto; position:relative; display:flex; align-items:stretch; gap:0; padding:18px 10px 8px; border:1px dashed var(--dsw-alias-border-l2); border-radius:10px; background:color-mix(in srgb, var(--dsw-alias-fill-l1) 75%, transparent); }
     .pipeline-parallelTitle { position:absolute; top:3px; left:10px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
-    .pipeline-parallelRailIn,.pipeline-parallelRailOut { flex:0 0 12px; align-self:stretch; position:relative; }
-    .pipeline-parallelRailIn::before,.pipeline-parallelRailOut::before { content:''; position:absolute; top:50%; left:0; right:0; height:2px; background:var(--dsw-alias-border-l2); }
-    .pipeline-parallelRailIn::after,.pipeline-parallelRailOut::after { content:''; position:absolute; top:6px; bottom:6px; left:5px; width:2px; background:var(--dsw-alias-border-l2); }
+    .pipeline-parallelRailIn,.pipeline-parallelRailOut { flex:0 0 12px; align-self:stretch; }
     .pipeline-parallelTasks { display:flex; flex-direction:column; align-items:stretch; gap:8px; }
     .pipeline-parallelTaskRow { display:flex; align-items:center; }
     .pipeline-parallelBranchIn,.pipeline-parallelBranchOut { flex:0 0 14px; height:2px; background:var(--dsw-alias-border-l2); }
@@ -3049,9 +3047,9 @@ function renderFlow(){
   pipelineStageGroups(flowStages()).forEach(group=>{
     if(f.children.length){ const c=document.createElement('div'); c.className='pipeline-conn'; f.appendChild(c); }
     if(group.parallel && group.stages.length>1){
-      const box=document.createElement('div'); box.className='pipeline-parallelGroup';
+      const box=document.createElement('div'); box.className='pipeline-parallelGroup'; box.style.gap='0';
       const title=document.createElement('div'); title.className='pipeline-parallelTitle'; title.innerHTML='⚡ 并行组'; box.appendChild(title);
-      const railIn=document.createElement('div'); railIn.className='pipeline-parallelRailIn'; box.appendChild(railIn);
+      const railIn=document.createElement('div'); railIn.className='pipeline-parallelRailIn'; railIn.style.borderRight='2px solid var(--dsw-alias-border-l2)'; box.appendChild(railIn);
       const tasks=document.createElement('div'); tasks.className='pipeline-parallelTasks'; tasks.style.flexDirection='column';
       group.stages.forEach((s,offset)=>{
         const row=document.createElement('div'); row.className='pipeline-parallelTaskRow'; row.style.display='flex';
@@ -3061,7 +3059,7 @@ function renderFlow(){
         tasks.appendChild(row);
       });
       box.appendChild(tasks);
-      const railOut=document.createElement('div'); railOut.className='pipeline-parallelRailOut'; box.appendChild(railOut);
+      const railOut=document.createElement('div'); railOut.className='pipeline-parallelRailOut'; railOut.style.borderLeft='2px solid var(--dsw-alias-border-l2)'; box.appendChild(railOut);
       f.appendChild(box);
     }else{
       f.appendChild(createFlowNode(group.stages[0],group.start));
