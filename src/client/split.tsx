@@ -29,7 +29,7 @@ export type BuiltinType = 'browser' | 'anim' | 'explorer' | 'scm' | 'tasks' | 't
 
 export type SplitContent =
   | { kind: 'iframe'; url: string; title?: string }
-  | { kind: 'builtin'; type: BuiltinType; url?: string }
+  | { kind: 'builtin'; type: BuiltinType; url?: string; path?: string }
   | { kind: 'file'; path: string }
 
 /** 一个内容标签页 */
@@ -156,7 +156,11 @@ const BUILTIN_LABEL_KEYS: Record<BuiltinType, string> = {
 }
 
 function tabTitleOf(content: SplitContent): string {
-  if (content.kind === 'builtin') return T(BUILTIN_LABEL_KEYS[content.type])
+  if (content.kind === 'builtin') {
+    // 资源管理器带根目录时以目录名作标签标题（多窗根目录可区分）
+    if (content.type === 'explorer' && content.path) return basenameOf(content.path)
+    return T(BUILTIN_LABEL_KEYS[content.type])
+  }
   if (content.kind === 'file') return basenameOf(content.path)
   if (content.kind === 'iframe' && content.title) return content.title
   try {
@@ -177,7 +181,12 @@ function basenameOf(p: string): string {
 function sameContent(a: SplitContent, b: SplitContent): boolean {
   if (a.kind === 'iframe' && b.kind === 'iframe') return a.url === b.url
   if (a.kind === 'file' && b.kind === 'file') return a.path === b.path
-  if (a.kind === 'builtin' && b.kind === 'builtin') return a.type === b.type
+  if (a.kind === 'builtin' && b.kind === 'builtin') {
+    if (a.type !== b.type) return false
+    // 资源管理器按根目录区分：不同目录各开一个标签，同目录复用（无 path 的旧式标签彼此复用）
+    if (a.type === 'explorer') return (a.path ?? '') === (b.path ?? '')
+    return true
+  }
   return false
 }
 
@@ -1176,7 +1185,7 @@ function FileIcon() {
 }
 
 /** 资源管理器窗：树形展开（懒加载子目录；刷新/上一级均可用；.html 点击开浏览器标签） */
-function ExplorerPane(props: { row: PaneRow; index: number }) {
+function ExplorerPane(props: { row: PaneRow; index: number; root?: string }) {
   const cacheRef = useRef<Record<string, any[]>>({})
   const expandedRef = useRef<Set<string>>(new Set())
   const [rootPath, setRootPath] = useState('')
@@ -1204,8 +1213,9 @@ function ExplorerPane(props: { row: PaneRow; index: number }) {
     }
   }, [])
 
+  // 根目录：标签自带 path（如「打开归档目录」开的目标目录）优先，缺省取当前会话工作目录
   const initRoot = useCallback(async () => {
-    const r = await fetchDir(splitEnv?.getScope()?.cwd ?? '')
+    const r = await fetchDir(props.root || splitEnv?.getScope()?.cwd || '')
     setRootPath(r.path)
     rerender()
   }, [fetchDir])
@@ -1779,7 +1789,7 @@ function PaneTabBody(props: { tab: PaneTab; row: PaneRow; index: number; paneTit
   if (content.type === 'browser') return <BrowserPane row={props.row} index={props.index} tabId={props.tab.id} content={content} reloadKey={props.reloadKey} />
   if (content.type === 'anim') return <AnimPane row={props.row} index={props.index} tabId={props.tab.id} content={content} reloadKey={props.reloadKey} />
   if (content.type === 'console') return <ConsolePane />
-  if (content.type === 'explorer') return <ExplorerPane row={props.row} index={props.index} />
+  if (content.type === 'explorer') return <ExplorerPane row={props.row} index={props.index} root={content.path} />
   if (content.type === 'scm') return <GitPane />
   if (content.type === 'tasks') return <JobsPane />
   if (content.type === 'terminal') return <TerminalPane />

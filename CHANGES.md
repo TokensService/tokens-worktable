@@ -1,5 +1,13 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线「打开归档目录」改为工作台内打开（`projects/pipeline/pipeline.html` + `src/client/index.tsx` +
+  `src/client/split.tsx`）：点击后关闭侧边会话窗，在本页所在窗格新开一个以归档目录为根的资源管理器
+  标签（文件浏览窗，同目录按 sameContent 复用同标签），不再优先经 better-sidebar 侧边栏；工作台分栏
+  未打开（独立访问页面、桥不可用）时回退 better-sidebar「文件」面板，再不可用回退服务端系统文件
+  管理器，目录选取与存在性预检/回退归档根逻辑不变。资源管理器窗格新增可选根目录（标签内容携带
+  `path`，缺省仍取会话 cwd），不同根目录各开标签；新增宿主桥
+  `window.__dshOpenFolderInExplorer(path, pageUrl)`（pageUrl 定位调用页所在窗格，找不到回退主行第一窗）。
+  新增桥优先与回退顺序回归测试。
 - 流水线「执行人」缺省取 dsh 登录用户（`projects/pipeline/pipeline.html`）：本地无执行人记录
   （首次使用或清过浏览器数据）时，自动以 dsh-auth-gate `/auth/status` 当前登录用户名填充主控
   「执行人」输入框，定时计划与 API 请求体沿用同一取值随之获得默认；token 共享模式（username 为空）、
