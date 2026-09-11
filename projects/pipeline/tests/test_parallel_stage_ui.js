@@ -122,6 +122,7 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',()=>{
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
     editStages:[stage], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null,
+    currentUsername:'tester', plOwnerOf:()=>'',
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
     STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},
@@ -154,6 +155,7 @@ test('无效 parallel 值在编辑、保存和重新打开中保持串行',()=>{
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
     editStages:[invalid], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null,
+    currentUsername:'tester', plOwnerOf:()=>'',
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
     STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},
