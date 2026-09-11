@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- K8s/通用流水线 · 交互式可视化（多条流水线 + 执行人 + 运行队列（异机并行） + 定时任务） -->
+<!-- K8s/通用流水线 · 交互式可视化（多条流水线 + 执行人 + 运行队列（异机并行 · 点击查看详情） + 定时任务） -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -145,7 +145,7 @@
   <div style="display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:10px;">
     <div>
       <h1 class="dshell-title">流水线工作台</h1>
-      <p class="dshell-sub">多条流水线 · 执行人留痕 · 运行队列（不同机器并行运行） · 定时任务（周期/一次性）· 环境多选（IP）· 本地模拟</p>
+      <p class="dshell-sub">多条流水线 · 执行人留痕 · 运行队列（不同机器并行运行 · 点击查看详情） · 定时任务（周期/一次性）· 环境多选（IP）· 本地模拟</p>
     </div>
     <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
       <div id="overall" style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -257,7 +257,7 @@
       <h2 class="dshell-sub" style="margin:0">流水线任务 <span id="plCount" class="dshell-muted"></span></h2>
       <span class="dshell-muted" style="font-size:11px;" title="统计只计真实运行，不含内置演示数据">总构建 <b id="sTotal">—</b> · 成功率 <b id="sRate">—</b> <span id="sRateDelta"></span> · 平均耗时 <b id="sAvg">—</b> · 最近构建 <b id="sLast">—</b></span>
       <span style="display:flex;align-items:center;gap:8px;">
-        <span class="dshell-muted" style="font-size:11px;">运行队列<span id="queueCount"></span></span>
+        <span class="dshell-muted" style="font-size:11px;" title="目标机器不相交的任务并行运行，同一机器串行排队；点击条目查看运行/排队详情">运行队列<span id="queueCount"></span></span>
         <span id="queueStatus" class="dshell-badge">空闲</span>
         <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即上报本页队列并拉取其他浏览器的在跑/排队任务（平时每 5 秒自动刷新）">↻</button>
         <button id="pipelineRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取流水线任务（不会自动刷新）">↻ 刷新</button>
@@ -2924,7 +2924,7 @@ function applyRunOverall(rc){
   if(ov.color){ const o=$('overall').firstChild; if(o){ o.style.color=ov.color; o.style.borderColor='color-mix(in srgb, '+ov.color+' 40%, transparent)'; } }
   $('overallBy').textContent='执行人：'+rc.by+(rc.source&&rc.source!=='manual'?' · 定时触发':'');
 }
-/* 切换编排区展示的运行（运行队列条目点击）：退出历史回放、重绑别名、恢复徽标/归档提示 */
+/* 切换编排区展示的运行（运行队列条目点击；排队项的只读详情预览也经此进入，见 focusQueueItem/queuePreviewRc）：退出历史回放、重绑别名、恢复徽标/归档提示 */
 function focusRun(rc){
   if(viewRc===rc) return;
   if(replayRec){ replayRec=null; const rt=$('replayTip'); if(rt) rt.textContent=''; }
@@ -3579,6 +3579,29 @@ function drainQueue(){
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
+/* 排队项详情预览：点击队列中的排队任务，编排区只读展示该次排队的阶段编排（预设任务按入队勾选快照展开，
+   与 startSimRun 同一 expandRunStages 路径）与运行参数快照（环境/仓库/分支/策略/执行人）。
+   预览 rc 不进 activeRuns、带 queuedPreview 标记、over=true——引擎不感知，停止/重试/归档目标均不指向它；
+   该项启动时 startSimRun 把焦点切给真实运行，被取消/启动失败时由 renderQueue 开头的自愈清回空闲编排 */
+function queuePreviewRc(item){
+  const stages=expandRunStages(item.stages||[], item.presets);
+  const rc={id:item.id, queuedPreview:true, over:true,
+    stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null,
+    env:item.env, envs:item.envs, image:item.image||DEFAULT_IMAGE, release:item.release||item.image||DEFAULT_IMAGE,
+    commit:'—', tag:'—', startTs:item.queuedAt||Date.now(), by:item.by, source:item.source||'manual',
+    pipelineId:item.pipelineId||null, pipelineName:item.pipelineName||'(自定义)',
+    repoId:item.repoId||null, repoName:item.repoName||'', repoUrl:'', giturl:GITURL,
+    branch:item.branch||'main', strategy:item.strategy||'', vars:{}, token:0,
+    overall:{txt:'排队中（预览）', cls:'dshell-badgeWait', color:''}};
+  stages.forEach(s=>{ rc.nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}}; });
+  return rc;
+}
+function focusQueueItem(id){
+  if(viewRc && viewRc.queuedPreview===true && viewRc.id===id) return;   // 已在预览该排队项，避免重复重建
+  const item=queue.find(q=>q.id===id); if(!item) return;
+  focusRun(queuePreviewRc(item));
+}
+
 /* ---------- 运行队列跨浏览器可见（在场快照上报 + 轮询） ---------- */
 /* 运行队列本是纯浏览器内存态，换台浏览器（或另一标签页）就互相看不见谁在跑。各标签页把自己
    「正在运行 + 排队中」的快照上报到服务端内存暂存（/api/worktable/pipeline/queue，易失不落盘），
@@ -3753,6 +3776,13 @@ function runInfoLine(o){
 let _plRunSig=null;   // 流水线任务表「运行中/查看中」徽标的刷新签名（见 renderQueue 末尾）
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
+  /* 排队预览自愈：预览中的排队项已出队（被取消/清空，或启动校验失败被移出队列）时，编排区回到当前流水线
+     空闲编排。正常启动不走这里——startSimRun 已先把焦点切到真实运行 rc，viewRc 不再是预览 */
+  if(viewRc && viewRc.queuedPreview===true && !queue.some(q=>q.id===viewRc.id)){
+    viewRc=null; syncViewRun(); applyRunOverall(null);
+    $('stopBtn').disabled=true; refreshArchiveTip();
+    resetNodes();   // 空闲编排重建（内部重置 _detailKey 并重绘流程/详情）
+  }
   /* 自愈排空：仍有排队任务时尝试排空（在跑运行结束却未触发 drainQueue 的异常竞态，或并行槽位已释放）。
      drainQueue 只启动机器不相交的项，全部相交时空转无副作用；startSimRun 末尾也会调 renderQueue，
      那时在跑集合已含新运行，不会重复启动，故无重入死循环。 */
@@ -3778,7 +3808,8 @@ function renderQueue(){
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
   queue.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
-    it.innerHTML='<span class="dshell-listItemTitle"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
     list.appendChild(it);
   });
   /* 其他浏览器标签页的在场快照：只读展示（运行与取消都是本页内存态，远端条目给取消按钮无意义），
@@ -3804,6 +3835,7 @@ function renderQueue(){
   list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
   list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(rc) abortRun(rc); }));
   list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
+  list.querySelectorAll('[data-qview]').forEach(el=>el.addEventListener('click',()=>focusQueueItem(el.getAttribute('data-qview'))));   // 排队项点击：编排区预览其阶段编排与参数快照
   /* 流水线任务表的「运行中/查看中」徽标跟随在跑运行集与焦点运行刷新；renderQueue 每 5 秒轮询也会进入，
      按签名判断避免无谓重建任务表（重建会打断行点击） */
   const plSig=activeRuns.map(rc=>rc.id+':'+rc.pipelineId).join('|')+'#'+(viewRc?viewRc.id:'');
