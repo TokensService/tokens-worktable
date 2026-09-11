@@ -5,6 +5,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ACTION="${ACTION:-standardize}"
+export EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 if [[ "$ACTION" == check-health ]]; then
     ENTRY_SCRIPT="$SCRIPT_DIR/check-env.sh"
 else

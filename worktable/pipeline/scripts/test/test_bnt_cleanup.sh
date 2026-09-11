@@ -37,6 +37,14 @@ DRY_RUN=1
 RESIDUAL=1
 clean_namespace old-ns
 DRY_RUN=0
+EMS_NAMESPACE=op-ems
+WHITELIST_NS='default'
+read_whitelist
+is_whitelisted op-ems || { echo '默认 EMS 命名空间不应被清理' >&2; exit 1; }
+EMS_NAMESPACE=custom-ems
+WHITELIST_NS='default'
+read_whitelist
+is_whitelisted custom-ems || { echo '自定义 EMS 命名空间不应被清理' >&2; exit 1; }
 handle_top_owner old-ns raycluster/old-ray
 grep -q 'delete raycluster old-ray' "$tmp/kubectl"
 if grep -q 'patch raycluster' "$tmp/kubectl"; then exit 1; fi
