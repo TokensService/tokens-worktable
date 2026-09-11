@@ -1,5 +1,15 @@
 # 本目录 tokens-worktable 的本地改动
 
+- PR 检视台「编译发行」新增 AI 配置建议与结果自动回填（`projects/codereview/code-review-prs.html`、
+  `src/client/index.tsx`）：构建脚本行新增「✦ AI 建议」，在右侧聊天窗分析当前代码仓/分支后以受标记约束的
+  JSON 同时返回构建脚本和匹配的产物路径；页面校验仓内相对路径、自动回填，并沿用现有分支级云端设置保存。
+  发行说明「✦ AI 生成」改为等待会话完成后直接提取标记内 Markdown 回填文本框，不再要求手工复制。
+  新增 `window.__dshSendChatForResult(text)` 宿主桥：新建并打开右侧会话、自动发送提示，同时订阅真实会话运行态
+  与公开 `eventSource` 事件窗，完成后读取最后一条 AI 文本返回 iframe；当前选中会话不带 `completed` 提醒标志，
+  故以 `running` 停止、`turn/end` 为正常完成且事件窗已有未中止回答为完成条件。生成期间切换平台/仓库/分支/
+  发行信息会尽早停止旧任务；结构化结果字段类型、危险路径或标记解析失败均保留原表单值。新增
+  `tests/ai-chat-result.test.mjs`、`tests/codereview-ai-suggestions.test.mjs` 覆盖结果等待、
+  结构化解析、安全校验、双字段/发行说明回填及过期结果保护。
 - 项目手动排序纳入服务端同步存储（`src/index.ts` + `src/client/index.tsx`）：侧边栏项目列表拖拽落序的
   order（项目 id 序列）从仅 localStorage 扩展为同步进 `/api/worktable/projects` 存储文件，跨浏览器固定顺序——
   客户端同步切片 `syncedSliceOf` 带上 order，落序后随既有「同步切片有变化才推送」比较自动 PUT，全量覆盖写
