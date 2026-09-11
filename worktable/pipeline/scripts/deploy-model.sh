@@ -298,21 +298,34 @@ PY
       -l "ray.io/cluster=${RELEASE_NAME}-kuberay" -o json >"$pods_file" 2>/dev/null || printf '{"items":[]}' >"$pods_file"
     mapfile -t task_pods < <(python3 - "$pods_file" "${expected_groups[@]}" <<'PY'
 import json
+import re
 import sys
 
 try:
     pods = json.load(open(sys.argv[1], encoding="utf-8")).get("items", [])
 except (OSError, json.JSONDecodeError):
     pods = []
-expected = set(sys.argv[2:])
+
+def rendered_group_name(group):
+    # render-config shortens taskExecutorGroup<gpu><role><index> to the
+    # KubeRay group names used as Pod labels, e.g. prefill-1 and decode-1.
+    match = re.search(r"(prefill|decode)([0-9]+)$", group, re.IGNORECASE)
+    if match:
+        return f"{match.group(1).lower()}-{match.group(2)}"
+    return group
+
+expected = sys.argv[2:]
 seen = {}
 for pod in pods:
     labels = pod.get("metadata", {}).get("labels", {})
     group = labels.get("ray.io/group")
     name = pod.get("metadata", {}).get("name")
-    if group in expected and isinstance(name, str) and name:
-        seen[group] = name
-for group in sys.argv[2:]:
+    if not isinstance(name, str) or not name:
+        continue
+    for expected_group in expected:
+        if group in (expected_group, rendered_group_name(expected_group)):
+            seen[expected_group] = name
+for group in expected:
     if group in seen:
         print(f"pod/{seen[group]}")
 PY

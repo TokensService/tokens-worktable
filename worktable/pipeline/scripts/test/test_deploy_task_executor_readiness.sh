@@ -32,7 +32,7 @@ case "$*" in
     printf '{"items":[]}'
     ;;
   *'get pods -l ray.io/cluster=xds-test-arch-local-kuberay -o json')
-    printf '{"items":[{"metadata":{"name":"taskExecutorGroup4prefill1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}},{"metadata":{"name":"taskExecutorGroup4decode1","labels":{"ray.io/group":"taskExecutorGroup4decode1"}}}],"padding":"'
+    printf '{"items":[{"metadata":{"name":"prefill-1-worker","labels":{"ray.io/group":"prefill-1"}}},{"metadata":{"name":"decode-1-worker","labels":{"ray.io/group":"decode-1"}}}],"padding":"'
     head -c 3000000 /dev/zero | tr '\0' x
     printf '"}'
     ;;
@@ -79,7 +79,7 @@ HEAD_LOG_ROOT="$work_dir/logs" \
 XDS_READY_TIMEOUT_SECONDS=5 \
 bash "$script_dir/deploy-model.sh" >/dev/null
 
-wait_line="$(grep -nF 'kubectl -n xds-test-arch-local wait --for=condition=Ready pod/taskExecutorGroup4prefill1 --timeout=5s' "$work_dir/events.log" | cut -d: -f1 || true)"
+wait_line="$(grep -nF 'kubectl -n xds-test-arch-local wait --for=condition=Ready pod/prefill-1-worker --timeout=5s' "$work_dir/events.log" | cut -d: -f1 || true)"
 register_line="$(grep -nF '/models/architectures' "$work_dir/events.log" | head -1 | cut -d: -f1 || true)"
 if [[ -z "$wait_line" ]]; then
   echo "expected deploy-model.sh to wait for task executor readiness before registration" >&2
