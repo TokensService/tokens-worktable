@@ -7,6 +7,11 @@ trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$work_dir/chart"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Chart.yaml"
+mkdir -p "$work_dir/chart/templates"
+cat >"$work_dir/chart/templates/raycluster-cluster.yaml" <<'EOF'
+groupName: {{ $teGroupValues.name }}
+groupName: {{ $groupName }}
+EOF
 cat >"$work_dir/values.yaml" <<'EOF'
 common:
   containerEnv:
@@ -223,6 +228,10 @@ assert values["workerGroups"]["jobExecutorGroup"]["ems"]["enable"] is False
 assert "ems_enable = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "ems_namespace = op-ems" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
+
+rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
+grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
 
 ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-lmcache-override" \

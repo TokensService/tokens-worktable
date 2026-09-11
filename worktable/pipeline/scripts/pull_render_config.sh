@@ -51,7 +51,7 @@ fi
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
 RELEASE_NAME="${RELEASE_NAME:-}"
 contains_unexpanded_placeholder "$RELEASE_NAME" && RELEASE_NAME=""
-[[ -n "$RELEASE_NAME" ]] || RELEASE_NAME="$NAMESPACE"
+[[ -n "$RELEASE_NAME" && "$RELEASE_NAME" != "$NAMESPACE" ]] || RELEASE_NAME="xds"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
 CHART_DIR="${CHART_DIR:-}"
 contains_unexpanded_placeholder "$CHART_DIR" && CHART_DIR=""

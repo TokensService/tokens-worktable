@@ -39,6 +39,7 @@ if [[ -z "$NAMESPACE" ]]; then
 fi
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
+[[ "$RELEASE_NAME" != "$NAMESPACE" ]] || RELEASE_NAME="xds"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
 PREFILL_OVERRIDES_JSON="${PREFILL_OVERRIDES_JSON:-}"
 DECODE_OVERRIDES_JSON="${DECODE_OVERRIDES_JSON:-}"
@@ -83,6 +84,33 @@ NODE_LABELS_FILE="$RENDER_DIR/node-labels.json"
 mkdir -p "$RENDER_DIR"
 rm -rf "$CHART_DIR"
 cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
+
+# KubeRay incorporates workerGroupSpecs.groupName into worker Pod names. Keep
+# role names short so Pod names never inherit namespace or deployment metadata.
+TASK_EXECUTOR_TEMPLATE="$CHART_DIR/templates/raycluster-cluster.yaml"
+if [[ -f "$TASK_EXECUTOR_TEMPLATE" ]]; then
+  python3 - "$TASK_EXECUTOR_TEMPLATE" <<'PY_TEMPLATE'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+task_executor_marker = "groupName: {{ $teGroupValues.name }}"
+worker_marker = "groupName: {{ $groupName }}"
+task_executor_name = '''groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else if contains "decode" (lower $teGroupValues.name) }}decode-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else }}{{ $teGroupValues.name }}{{ end }}'''
+worker_name = '''groupName: {{ if eq $groupName "ctrlGroup" }}ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je{{ else }}{{ $groupName }}{{ end }}'''
+
+if task_executor_marker not in text and task_executor_name not in text:
+    raise SystemExit(f"task executor groupName marker not found: {path}")
+if worker_marker not in text and worker_name not in text:
+    raise SystemExit(f"worker groupName marker not found: {path}")
+if task_executor_marker in text:
+    text = text.replace(task_executor_marker, task_executor_name)
+if worker_marker in text:
+    text = text.replace(worker_marker, worker_name)
+path.write_text(text, encoding="utf-8")
+PY_TEMPLATE
+fi
 
 python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$ARCH_REQUEST_FILE" "$RESOURCE_MANIFEST" "$DEPLOY_IMAGE" "$NUM_PREFILL" \

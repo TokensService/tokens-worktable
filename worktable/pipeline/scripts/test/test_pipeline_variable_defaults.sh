@@ -43,8 +43,15 @@ namespace_resolved="$(ARCH_NAME='glm-5.2-nvfp4-one-node' \
   IMAGE_TAG='1043.ec96f' \
   bash -c "$config
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
-grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
+grep -Fxq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
+grep -Fxq 'RELEASE_NAME=xds' <<<"$namespace_resolved"
+
+same_name_resolved="$(NAMESPACE='xds-glm-5-2-nvfp4-one-node-1626-08dc0' \
+  RELEASE_NAME='xds-glm-5-2-nvfp4-one-node-1626-08dc0' \
+  bash -c "$config
+printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
+grep -Fxq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1626-08dc0' <<<"$same_name_resolved"
+grep -Fxq 'RELEASE_NAME=xds' <<<"$same_name_resolved"
 
 namespace_from_arch_executor="$(arch='glm-5.2-nvfp4' EXECUTOR='executor-a' IMAGE_TAG='1000.tag' \
   bash -c "$config
