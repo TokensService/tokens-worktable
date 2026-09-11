@@ -6770,6 +6770,25 @@ $('branchName').addEventListener('change', saveRunSelLS);
 $('deployStrategyName').addEventListener('change', saveRunSelLS);
 $('triggeredBy').addEventListener('change', saveRunSelLS);
 window.addEventListener('pagehide', saveRunSelLS);
+/* ---------- 执行人缺省取 dsh 登录用户 ---------- */
+/* 「执行人」本地无记录（首次使用或清过浏览器数据）时，以 dsh-auth-gate 当前登录用户名兜底：
+   /auth/status 是同源探针、只认会话 cookie（token 共享模式 username 恒 null，保持留空走「必填」拦截）。
+   仅填空白场景：localStorage 回填值、导入恢复值与等待期间的手动输入都优先，不覆盖。 */
+async function fillExecutorFromAuth(){
+  const input=$('triggeredBy');
+  if(!input || input.value.trim()) return;
+  let username='';
+  try{
+    const res=await fetch('/auth/status');
+    if(!res || !res.ok) return;
+    const data=await res.json();
+    if(data && data.authenticated && typeof data.username==='string') username=data.username.trim();
+  }catch(e){ return; }
+  if(!username || input.value.trim()) return;
+  input.value=username;
+}
+/* ---------- 执行人缺省取 dsh 登录用户结束 ---------- */
+fillExecutorFromAuth();
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
