@@ -342,7 +342,7 @@
           <select id="histFilterPipeline" class="dshell-input" style="min-width:130px;"></select>
         </label>
         <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
-        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支/执行人重新运行（运行中则入队）">↻ 重跑</button>
+        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支重新运行（执行人取当前填写值；运行中则入队）">↻ 重跑</button>
         <button class="dshell-btn dshell-btnDanger mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button>
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <span id="histFilterTip" class="dshell-muted" style="font-size:11px;"></span>
@@ -3521,7 +3521,7 @@ function runPipeline(opts){
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   if(opts.useDefaults){ const issue=pipelineDefaultRunIssue(pl,opts); if(issue){ alert(issue+'。请先编辑流水线并重新保存默认参数。'); return 'invalid-defaults'; } }
   opts=resolvePipelineRunOptions(pl,opts);
-  /* 执行人为必填项：手动运行未填写时弹窗拦截（队列/定时快照与历史重跑自带 opts.by，不受影响） */
+  /* 执行人为必填项：手动运行未填写时弹窗拦截（队列/定时快照自带 opts.by，不受影响；历史重跑同样按当前填写值校验） */
   if(!opts.by && !$('triggeredBy').value.trim()){ alert('请先填写「执行人」再运行流水线。'); $('triggeredBy').focus(); return 'no-by'; }
   const envs = (opts.envs && opts.envs.length) ? opts.envs   // 与 startRun 一致：快照节点对象优先（多选 IP 不退化）
     : opts.env ? [resolveEnv(opts.env)] : curEnvs();
@@ -5872,14 +5872,15 @@ function enterHistoryReplay(rec){
     : logs.map((l,i)=> PRESET_BY_NAME[l.stage] ? presetMarker(PRESET_BY_NAME[l.stage]) : ({id:'replay-st'+i, name:l.stage, dur:5, sub:[]}));
   rebuildReplayNodes(rec);
   selectedId=runStages.length?runStages[0].id:null;
-  /* 主控区其余项同步为该次运行的取值：环境多选按 IP 匹配（同历史重跑），仓库/分支/策略/执行人直接回填 */
+  /* 主控区其余项同步为该次运行的取值：环境多选按 IP 匹配（同历史重跑），仓库/分支/策略直接回填；
+     执行人不回填——回放只是查看模式，原执行人已在下方 overallBy 行展示；若写回输入框会随配置持久化，
+     让后续页面加载跳过 /auth/status 探测（fillExecutorFromAuth 只在输入框为空时探测），执行人长期错署为历史记录作者 */
   const ips=String(rec.env||'').split('，').map(x=>x.trim()).filter(Boolean);
   const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
   if(envs.length){ selectedEnvIds=envs.map(e=>e.id); renderEnvOptions(); }
   if(rec.repoId && repositories.some(r=>r.id===rec.repoId)){ curRepoId=rec.repoId; const rs=$('repoSel'); if(rs) rs.value=rec.repoId; }
   if(rec.branch) $('branchName').value=rec.branch;
   if($('deployStrategyName')) $('deployStrategyName').value=rec.strategy||'';
-  if(rec.by) $('triggeredBy').value=rec.by;
   /* 总状态徽标 + 编排区回放提示 */
   setOverall(labelOf(rec.status)+' · 回放 #'+rec.no, rec.status==='success'?'dshell-badgeDone':'');
   if(rec.status==='failed'){ const o=$('overall').firstChild; if(o){ o.style.color='var(--st-err)'; o.style.borderColor='color-mix(in srgb, var(--st-err) 40%, transparent)'; } }
@@ -6147,7 +6148,9 @@ async function resolveExistingFolder(folder){
   return {folder:null};
 }
 $('openArchiveBtn').addEventListener('click', openArchiveFolder);
-/* 历史重跑：按选中行的流水线 + 环境 IP + 分支 + 执行人重新运行（运行中则入队） */
+/* 历史重跑：按选中行的流水线 + 环境 IP + 分支重新运行（运行中则入队）；
+   执行人不沿用历史记录作者——重跑是一次新运行，执行人取「执行人」输入框当前值（即实际操作人），
+   留空时由 runPipeline 的必填校验拦截 */
 function rerunFromHistory(rec){
   const pl=(rec.pipelineId && findPipeline(rec.pipelineId)) || pipelines.find(p=>p.name===rec.pipeline);
   if(!pl){ alert('找不到该次运行的流水线「'+(rec.pipeline||'')+'」（可能已删除），无法重跑。'); return; }
@@ -6155,9 +6158,10 @@ function rerunFromHistory(rec){
   const ips=String(rec.env||'').split('，').map(s=>s.trim()).filter(Boolean);
   const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
   const repoId=(rec.repoId && repositories.some(r=>r.id===rec.repoId)) ? rec.repoId : undefined;
-  const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, strategy:rec.strategy||'', by:rec.by, source:'manual'});
+  const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, strategy:rec.strategy||'', source:'manual'});
   if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
   else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）');
+  else if(r==='no-by'){ /* 执行人必填拦截：runPipeline 已弹提示并聚焦输入框，不再给「已开始」误导提示 */ }
   else flashRunTip('已开始重跑 #'+rec.no+'（'+pl.name+'）');
 }
 $('histRerun').addEventListener('click', ()=>{
