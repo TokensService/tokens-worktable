@@ -425,6 +425,29 @@ function ensureServerStageTime(deadline: number, label: string) {
   if (deadline && Date.now() >= deadline) throw new Error(label + '等待超时')
 }
 
+function serverAbortReason(signal?: AbortSignal): any {
+  const reason = signal && (signal as any).reason
+  if (reason !== undefined) return reason
+  const error: any = new Error('操作已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function abortableServerSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let listening = false
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      if (signal && listening) { signal.removeEventListener('abort', onAbort); listening = false }
+    }
+    const onAbort = () => { cleanup(); reject(serverAbortReason(signal)) }
+    if (signal && signal.aborted) { onAbort(); return }
+    if (signal) { signal.addEventListener('abort', onAbort, { once: true }); listening = true }
+    timer = setTimeout(() => { cleanup(); resolve() }, Math.max(0, Number(ms) || 0))
+  })
+}
+
 function serverHeaderValue(headers: any, name: string): string {
   if (!headers) return ''
   if (typeof headers.get === 'function') return String(headers.get(name) || '')
@@ -474,24 +497,43 @@ async function readServerResponseText(response: any, maxBytes: number, label: st
   return text
 }
 
-async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, maxBytes = PIPELINE_REMOTE_TEXT_LIMIT): Promise<{ response: any; text: string }> {
+async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, maxBytes = PIPELINE_REMOTE_TEXT_LIMIT, signal?: AbortSignal): Promise<{ response: any; text: string }> {
+  if (signal && signal.aborted) throw serverAbortReason(signal)
   ensureServerStageTime(deadline, label)
-  const controller = deadline ? new AbortController() : null
-  const timeout = controller ? setTimeout(() => controller.abort(), Math.max(1, deadline - Date.now())) : null
+  const controller = deadline || signal ? new AbortController() : null
+  let abortKind: 'deadline' | 'external' | null = null
+  let linked = false
+  const abortFromExternal = () => {
+    if (controller && !controller.signal.aborted) {
+      abortKind = 'external'
+      controller.abort(serverAbortReason(signal))
+    }
+  }
+  if (signal && controller) {
+    signal.addEventListener('abort', abortFromExternal, { once: true })
+    linked = true
+  }
+  const timeout = deadline && controller ? setTimeout(() => {
+    if (!controller.signal.aborted) {
+      abortKind = 'deadline'
+      controller.abort()
+    }
+  }, Math.max(1, deadline - Date.now())) : null
   try {
     const response = await fetchFn(url, controller ? { ...(options || {}), signal: controller.signal } : (options || {}))
     const text = await readServerResponseText(response, maxBytes, label)
     return { response, text }
   } catch (error) {
-    if (controller && controller.signal.aborted) throw new Error(label + '等待超时')
+    if (abortKind === 'deadline') throw new Error(label + '等待超时')
     throw error
   } finally {
     if (timeout) clearTimeout(timeout)
+    if (signal && linked) signal.removeEventListener('abort', abortFromExternal)
   }
 }
 
-async function serverFetchJson(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string): Promise<any> {
-  const result = await serverFetchResponse(fetchFn, url, options, deadline, label, PIPELINE_REMOTE_JSON_LIMIT)
+async function serverFetchJson(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, signal?: AbortSignal): Promise<any> {
+  const result = await serverFetchResponse(fetchFn, url, options, deadline, label, PIPELINE_REMOTE_JSON_LIMIT, signal)
   if (result.response.status < 200 || result.response.status >= 300) {
     const error: any = new Error(label + ' HTTP ' + result.response.status)
     error.httpStatus = Number(result.response.status)
@@ -526,7 +568,7 @@ function normalizeServerHttpBody(text: string): string {
   } catch { return text }
 }
 
-async function executeServerHttpStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number) => Promise<void> }): Promise<{ code: number; stdout: string; stderr: string }> {
+async function executeServerHttpStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const raw = serverStageUrl(stage)
   const deadline = serverStageDeadline(stage)
   try {
@@ -561,13 +603,16 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       safeParams.forEach((key) => form.set(key, vars[key]))
       const headers: Record<string, string> = { ...auth, 'Content-Type': 'application/x-www-form-urlencoded' }
       try {
-        const crumb = await serverFetchJson(deps.fetchFn, base + '/crumbIssuer/api/json', { method: 'GET', headers: auth }, deadline, 'Jenkins crumb')
+        const crumb = await serverFetchJson(deps.fetchFn, base + '/crumbIssuer/api/json', { method: 'GET', headers: auth }, deadline, 'Jenkins crumb', signal)
         if (crumb && crumb.crumbRequestField && crumb.crumb) headers[String(crumb.crumbRequestField)] = String(crumb.crumb)
-      } catch { /* API token 常见配置不要求 crumb */ }
+      } catch (error) {
+        if (signal && signal.aborted) throw error
+        /* API token 常见配置不要求 crumb */
+      }
       triggerOptions = { method: 'POST', headers, body: form.toString(), redirect: 'manual' }
     }
 
-    const triggered = await serverFetchResponse(deps.fetchFn, triggerUrl, triggerOptions, deadline, isUrl ? 'HTTP 请求' : 'Jenkins 触发')
+    const triggered = await serverFetchResponse(deps.fetchFn, triggerUrl, triggerOptions, deadline, isUrl ? 'HTTP 请求' : 'Jenkins 触发', PIPELINE_REMOTE_TEXT_LIMIT, signal)
     if (triggered.response.status < 200 || triggered.response.status >= 400) {
       throw new Error((isUrl ? 'HTTP 请求' : 'Jenkins 触发') + ' HTTP ' + triggered.response.status)
     }
@@ -589,7 +634,7 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
     while (buildNumber === null) {
       ensureServerStageTime(deadline, 'Jenkins 排队')
       try {
-        const queued = await serverFetchJson(deps.fetchFn, queueUrl, { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 队列')
+        const queued = await serverFetchJson(deps.fetchFn, queueUrl, { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 队列', signal)
         if (queued && queued.cancelled) throw new Error('Jenkins 队列任务已取消')
         const number = Number(queued && queued.executable && queued.executable.number)
         if (Number.isInteger(number) && number > 0) buildNumber = number
@@ -597,30 +642,33 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
         ensureServerStageTime(deadline, 'Jenkins 排队')
         if (Number(error && (error as any).httpStatus) !== 404) throw error
       }
-      if (buildNumber === null) await deps.sleep(1000)
+      if (buildNumber === null) await deps.sleep(1000, signal)
     }
 
     let result = ''
     for (;;) {
       ensureServerStageTime(deadline, 'Jenkins 构建')
       try {
-        const info = await serverFetchJson(deps.fetchFn, base + jobPath + buildNumber + '/api/json?tree=number,building,result,duration', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 构建')
+        const info = await serverFetchJson(deps.fetchFn, base + jobPath + buildNumber + '/api/json?tree=number,building,result,duration', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 构建', signal)
         if (Number(info && info.number) === buildNumber && !info.building && info.result) { result = String(info.result); break }
       } catch (error) {
         ensureServerStageTime(deadline, 'Jenkins 构建')
         if (Number(error && (error as any).httpStatus) !== 404) throw error
       }
-      await deps.sleep(2000)
+      await deps.sleep(2000, signal)
     }
     let consoleText = ''
     try {
-      const consoleResult = await serverFetchResponse(deps.fetchFn, base + jobPath + buildNumber + '/consoleText', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 控制台')
+      const consoleResult = await serverFetchResponse(deps.fetchFn, base + jobPath + buildNumber + '/consoleText', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 控制台', PIPELINE_REMOTE_TEXT_LIMIT, signal)
       if (consoleResult.response.status >= 200 && consoleResult.response.status < 300) consoleText = consoleResult.text
-    } catch { /* 控制台读取失败不覆盖真实构建结果 */ }
+    } catch (error) {
+      if (signal && signal.aborted) throw error
+      /* 控制台读取失败不覆盖真实构建结果 */
+    }
     const stdout = [triggered.text, consoleText].filter(Boolean).join('\n') || ('Jenkins build #' + buildNumber + ' ' + result)
     return { code: result === 'SUCCESS' ? 0 : 1, stdout, stderr: result === 'SUCCESS' ? '' : 'Jenkins 构建结果 ' + result }
   } catch (error) {
-    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
+    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
 
@@ -639,7 +687,7 @@ function serverEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
   return 'running'
 }
 
-async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number) => Promise<void> }): Promise<{ code: number; stdout: string; stderr: string }> {
+async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const deadline = serverStageDeadline(stage)
   try {
     const service = config && config.evaltok && typeof config.evaltok === 'object' ? config.evaltok : {}
@@ -651,7 +699,7 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
     const requestedId = substituteServerRunVars(detail.taskId || '', vars).trim()
     const requestedName = substituteServerRunVars(detail.taskName || '', vars).trim()
     if (!requestedId && !requestedName) throw new Error('未选择 EvalTokens 任务')
-    const tasksData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表')
+    const tasksData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表', signal)
     const tasks = serverWrappedList(tasksData, ['data', 'tasks', 'list', 'items', 'results'])
     const idOf = (item: any) => String((item && (item.id || item.task_id || item.uuid || item._id)) || '')
     const nameOf = (item: any) => String((item && (item.name || item.title || item.task_name || item.display_name)) || '')
@@ -671,13 +719,13 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
     const startHeaders = { ...headers, 'Content-Type': 'application/json' }
     const started = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
       method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
-    }, deadline, 'EvalTokens 启动任务')
+    }, deadline, 'EvalTokens 启动任务', signal)
     const runId = String((started && started.run_id) || '')
     if (!runId) throw new Error('EvalTokens 启动任务未返回 run_id')
     let current: any = started
     for (;;) {
       ensureServerStageTime(deadline, 'EvalTokens 任务')
-      const runsData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表')
+      const runsData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表', signal)
       const runs = serverWrappedList(runsData, ['runs', 'data', 'items', 'results'])
       const matched = runs.find((item) => String((item && (item.run_id || item.id)) || '') === runId)
       if (matched) current = matched
@@ -686,10 +734,10 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
         const stdout = JSON.stringify(current)
         return { code: state === 'success' ? 0 : 1, stdout, stderr: state === 'success' ? '' : 'EvalTokens ' + state }
       }
-      await deps.sleep(3000)
+      await deps.sleep(3000, signal)
     }
   } catch (error) {
-    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
+    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
 
@@ -1490,7 +1538,6 @@ export function apply(ctx: Context) {
 
   const planRunning = new Set<string>()
   const planLastRun = new Map<string, number>()
-  const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms))
   const randHex = (n: number) => Math.random().toString(16).slice(2, 2 + n)
   const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') }
   const durText = (sec: number) => (sec < 60 ? Math.round(sec) + 's' : Math.floor(sec / 60) + 'm' + Math.round(sec % 60) + 's')
@@ -1609,7 +1656,7 @@ export function apply(ctx: Context) {
     return dropped.length ? '[warn] 环境变量 ' + dropped.join('、') + ' 超过单变量 128KiB 上限，未注入；请用「输出变量」JSON 路径截取所需字段（如 XDS_BRANCH=items.0.name）' : null
   }
 
-  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
     const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
@@ -1681,19 +1728,20 @@ export function apply(ctx: Context) {
       const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
       /* maxBuffer 256MB：日志保全量，不得因缓冲上限杀进程丢输出（此前 4MB，超大输出 ENOBUFS 截断）；
          页面流式路径（exec-stream spawn）本就无缓冲上限，此处对齐 */
-      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
+      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true, signal },
         (err, stdout, stderr) => {
           const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
+          const aborted = !!(signal && signal.aborted)
           /* 超时/缓冲超限被杀时在 stderr 标注原因（对齐 exec-stream 的 'exec timed out' 提示），
              否则日志戛然而止、无 [exit] 前的任何说明，看起来像被截断 */
           let errText = String(stderr || '')
-          if (err && (err as any).killed) {
+          if (err && (err as any).killed && !aborted) {
             const why = (err as any).code === 'ENOBUFS'
               ? '输出超过 256MB 缓冲上限（ENOBUFS），进程被终止'
               : 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's（阶段超时，进程被终止；可在流水线编辑器调大该阶段「超时(分钟)」）'
             errText = (errText ? errText + '\n' : '') + why
           }
-          resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + errText })
+          resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + errText, ...(aborted ? { aborted: true } : {}) })
         })
     })
   }
@@ -1795,47 +1843,57 @@ export function apply(ctx: Context) {
       const varsOut: Record<string, string> = {}
       let entry: any = null
       let shouldStop = false
-      void signal   // Task 6 threads cancellation through the process/network boundaries.
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
-        const r = await executeServerHttpStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
-        Object.assign(varsOut, parseStageVars(r.stdout))
-        Object.assign(localPool, varsOut)
-        applyOutVars(serverStageOutVars(s), localPool, parseStageJson(r.stdout), r.stdout, varsOut)
-        entry = { status: r.code === 0 ? 'success' : 'failed', text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
-        if (r.code !== 0) shouldStop = true
+        const r = await executeServerHttpStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+        if (!r.aborted) {
+          Object.assign(varsOut, parseStageVars(r.stdout))
+          Object.assign(localPool, varsOut)
+          applyOutVars(serverStageOutVars(s), localPool, parseStageJson(r.stdout), r.stdout, varsOut)
+        }
+        entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
+        if (r.code !== 0 && !r.aborted) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: sleepMs })
-        Object.assign(varsOut, parseStageVars(r.stdout))
-        Object.assign(localPool, varsOut)
-        applyOutVars(s.evaltokens && s.evaltokens.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
-        entry = { status: r.code === 0 ? 'success' : 'failed', text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
-        if (r.code !== 0) shouldStop = true
+        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+        if (!r.aborted) {
+          Object.assign(varsOut, parseStageVars(r.stdout))
+          Object.assign(localPool, varsOut)
+          applyOutVars(s.evaltokens && s.evaltokens.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
+        }
+        entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
+        if (r.code !== 0 && !r.aborted) shouldStop = true
       }
       else if (s.script && s.script.path) {
-        let r: { code: number; stdout: string; stderr: string }
+        let r: { code: number; stdout: string; stderr: string; aborted?: boolean }
         try {
-          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
+          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, signal)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
         } catch (error) {
-          r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
+          r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
         }
         // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
         // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
-        Object.assign(varsOut, parseStageVars(r.stdout))
-        Object.assign(localPool, varsOut)
-        applyOutVars(s.script.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
-        entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
+        if (!r.aborted) {
+          Object.assign(varsOut, parseStageVars(r.stdout))
+          Object.assign(localPool, varsOut)
+          applyOutVars(s.script.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
+        }
+        entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: stageLogText(s.script.name, r) }
         // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
-        if (r.code !== 0 && (!s.preset || s.presetBlock)) shouldStop = true
+        if (r.code !== 0 && !r.aborted && (!s.preset || s.presetBlock)) shouldStop = true
       } else if (s.preset) {
         entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
       } else {
-        await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
-        entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
+        try {
+          await abortableServerSleep(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000, signal)
+          entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
+        } catch (error) {
+          if (signal.aborted) entry = { status: 'aborted', text: '[定时执行] 同组任务失败，模拟阶段已取消' }
+          else throw error
+        }
       }
       /* 任务级普罗采集（与页面 taskPromCollect 一致）：勾选「收集普罗数据」的任务进入终态后，按「任务开始→结束」
          时段调用设置页收集脚本，产物目录=归档文件夹/{任务名}-{阶段序号}-普罗数据；失败仅标注到本任务日志，不改变任务结果 */
-      if (!s.preset && s.promCollect && entry.status !== 'skipped') {
+      if (!s.preset && s.promCollect && entry.status !== 'skipped' && entry.status !== 'aborted') {
         const collectScript = serverPromCollectScript(cfg)
         const seq = baseSeq + index + 1
         const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
@@ -1843,17 +1901,29 @@ export function apply(ctx: Context) {
         else {
           try {
             const penv = buildServerTaskPromEnv(runCtx, cfg, localPool, startedAt, Date.now(), promDir)
-            const pr = await runStageScript(collectScript, runCtx, scriptsDir, localPool, 0, penv)   // 与页面一致不设超时：由采集脚本控制耗时
+            const pr = await runStageScript(collectScript, runCtx, scriptsDir, localPool, 0, penv, signal)   // 与页面一致不设超时：由采集脚本控制耗时
             try {
               const fsx = await import('node:fs/promises')
               await fsx.mkdir(promDir, { recursive: true })
               await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
             } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
-            entry.text += '\n[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir
-            if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
+            if (pr.aborted) {
+              entry.status = 'aborted'
+              shouldStop = false
+              entry.text += '\n[普罗采集] 同组任务失败，采集已取消'
+            } else {
+              entry.text += '\n[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir
+              if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
+            }
           } catch (e) {
-            entry.text += '\n[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）'
-            console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
+            if (signal.aborted) {
+              entry.status = 'aborted'
+              shouldStop = false
+              entry.text += '\n[普罗采集] 同组任务失败，采集已取消'
+            } else {
+              entry.text += '\n[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）'
+              console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
+            }
           }
         }
       }
@@ -1882,8 +1952,12 @@ export function apply(ctx: Context) {
     for (const group of serverPipelineStageGroups(executionStages)) {
       const groupBase = { ...varsPool }
       const controller = new AbortController()
-      const results = await Promise.all(group.stages.map((stage, offset) =>
-        executeStage(stage, group.start + offset, groupBase, controller.signal)))
+      const jobs = group.stages.map((stage, offset) =>
+        executeStage(stage, group.start + offset, groupBase, controller.signal).then(result => {
+          if (result.shouldStop && !controller.signal.aborted) controller.abort()
+          return result
+        }))
+      const results = await Promise.all(jobs)
       const blockingFailure = results.some(result => result.shouldStop)
       if (!blockingFailure) {
         for (const result of results) Object.assign(varsPool, result.varsOut)

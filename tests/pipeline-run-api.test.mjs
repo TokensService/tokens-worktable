@@ -38,6 +38,9 @@ function loadRunRoute(store) {
     URL,
     Promise,
     Buffer,
+    AbortController,
+    setTimeout,
+    clearTimeout,
     console,
     pathResolve,
     json(res, status, body) {
@@ -359,23 +362,28 @@ test('无 Content-Length 的分块远端响应也按字节上限中止', async (
   assert.equal(cancelled, true)
 })
 
-test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', async () => {
+function loadRunStageScript(execFile) {
   const start = source.indexOf('  // 参数值 ${VAR} 引用替换（同页面 substRunVars）')
   const end = source.indexOf('  /* 任务回显文本：', start)
   assert.ok(start >= 0 && end > start, '服务端脚本运行函数未找到')
   const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
-  let called
   const ctx = {
     Buffer,
     Promise,
     process: { env: { KEEP_ME: 'yes' }, platform: process.platform },
-    execFile(command, args, options, callback) {
-      called = { command, args, options }
-      callback(null, '', '')
-    },
+    execFile,
   }
   vm.createContext(ctx)
   vm.runInContext(code, ctx)
+  return ctx
+}
+
+test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', async () => {
+  let called
+  const ctx = loadRunStageScript((command, args, options, callback) => {
+    called = { command, args, options }
+    callback(null, '', '')
+  })
 
   const result = await ctx.runStageScript(
     { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [{ key: 'TRIGGERED_BY', kind: 'env' }], values: { TRIGGERED_BY: '${BY}' } },
@@ -400,6 +408,80 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   assert.equal(called.options.env.DEPLOY_STRATEGY, 'blue-green')
   assert.equal(called.options.env.TRIGGERED_BY, 'jenkins')
   assert.equal(called.options.env.KEEP_ME, 'yes')
+})
+
+test('服务端脚本把取消信号交给 execFile 并保留中止前输出', async () => {
+  const controller = new AbortController()
+  let called
+  const ctx = loadRunStageScript((command, args, options, callback) => {
+    called = { command, args, options }
+    controller.abort()
+    const error = Object.assign(new Error('aborted'), { code: 'ABORT_ERR' })
+    callback(error, 'partial stdout', 'partial stderr')
+  })
+
+  const result = await ctx.runStageScript(
+    { name: 'slow.sh', path: '/scripts/slow.sh', params: [], values: {} },
+    { envs: [], repository: null },
+    '/scripts',
+    {},
+    45,
+    undefined,
+    controller.signal,
+  )
+
+  assert.equal(called.options.signal, controller.signal)
+  assert.equal(called.options.timeout, 45_000)
+  assert.equal(result.code, 1)
+  assert.equal(result.stdout, 'partial stdout')
+  assert.equal(result.stderr, 'partial stderr')
+  assert.equal(result.aborted, true)
+})
+
+test('服务端可取消等待会及时拒绝并移除监听器', { timeout: 200 }, async () => {
+  const f = loadRunRoute(stored)
+  let abortListener
+  let removed = 0
+  const signal = {
+    aborted: false,
+    addEventListener(type, listener) {
+      assert.equal(type, 'abort')
+      abortListener = listener
+    },
+    removeEventListener(type, listener) {
+      assert.equal(type, 'abort')
+      assert.equal(listener, abortListener)
+      removed += 1
+    },
+  }
+
+  const waiting = f.ctx.abortableServerSleep(10_000, signal)
+  signal.aborted = true
+  abortListener()
+
+  await assert.rejects(waiting, error => error?.name === 'AbortError')
+  assert.equal(removed, 1)
+})
+
+test('服务端 fetch 已取消时不发起网络请求且不误报等待超时', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  controller.abort()
+  let fetched = false
+
+  await assert.rejects(
+    f.ctx.serverFetchResponse(
+      async () => { fetched = true; return fetchResponse(200, '') },
+      'https://hooks.internal/never',
+      {},
+      Date.now() + 10_000,
+      'HTTP 请求',
+      1024,
+      controller.signal,
+    ),
+    error => error?.name === 'AbortError' && !/等待超时/.test(String(error.message)),
+  )
+  assert.equal(fetched, false)
 })
 
 function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl) {
@@ -439,9 +521,9 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     sleepMs: async () => {},
     writeTaskLogFile: async () => null,
     stageLogText: (name, result) => `${name}:${result.code}`,
-    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv) => {
+    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv, signal) => {
       calls.push({ script: script.name, runContext: plain(runContext), scriptsDir, varsPool: plain(varsPool || {}), timeout, extraEnv: plain(extraEnv || {}) })
-      if (runStageScriptImpl) return runStageScriptImpl(script, runContext, scriptsDir, varsPool, timeout, extraEnv)
+      if (runStageScriptImpl) return runStageScriptImpl(script, runContext, scriptsDir, varsPool, timeout, extraEnv, signal)
       return results[script.name] || { code: 0, stdout: '', stderr: '' }
     },
     appendPipelineHistory: async record => history.push(plain(record)),
@@ -538,6 +620,97 @@ test('API 并行启动任务、等待汇合并按编排顺序合并输出', asyn
 
 test('定时并行启动任务、等待汇合并按编排顺序合并输出', async () => {
   await assertParallelServerRun('schedule')
+})
+
+test('API 并行任务失败会取消同组在途任务并阻止后续任务', async () => {
+  const calls = []
+  let slowSignal
+  let resolveSlow
+  const runStageScript = (script, runContext, scriptsDir, varsPool, timeout, extraEnv, signal) =>
+    new Promise(resolve => {
+      calls.push(script.name)
+      if (script.name === 'fail.sh') resolve({ code: 7, stdout: '', stderr: 'boom' })
+      else if (script.name === 'slow.sh') {
+        slowSignal = signal
+        resolveSlow = resolve
+        signal?.addEventListener('abort', () =>
+          resolve({ code: 1, stdout: '', stderr: 'aborted', aborted: true }), { once: true })
+      } else resolve({ code: 0, stdout: '', stderr: '' })
+    })
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, runStageScript)
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'slow', name: 'Slow', parallel: true, script: { name: 'slow.sh', path: '/slow.sh' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  const running = f.execPlan(plan)
+  try {
+    await tick()
+    assert.equal(slowSignal?.aborted, true)
+    await running
+    assert.deepEqual(calls, ['fail.sh', 'slow.sh'])
+    assert.equal(f.history[0].status, 'failed')
+    assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+  } finally {
+    resolveSlow?.({ code: 0, stdout: '', stderr: '' })
+    await running
+  }
+})
+
+test('API 并行任务失败会取消同组在途 HTTP 请求', async () => {
+  let fallback
+  let fetchAborted = false
+  const fetchImpl = (url, options = {}) => new Promise((resolve, reject) => {
+    const onAbort = () => {
+      fetchAborted = true
+      clearTimeout(fallback)
+      const error = new Error('peer aborted')
+      error.name = 'AbortError'
+      reject(error)
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    fallback = setTimeout(() => resolve(fetchResponse(200, 'late success')), 50)
+  })
+  const f = loadExecPlan(apiExecutionConfig, {}, fetchImpl, async script =>
+    script.name === 'fail.sh'
+      ? { code: 7, stdout: '', stderr: 'boom' }
+      : { code: 0, stdout: '', stderr: '' })
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'remote', name: 'Remote', parallel: true, kind: 'http', url: { url: 'https://hooks.internal/slow' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  try {
+    await f.execPlan(plan)
+  } finally {
+    clearTimeout(fallback)
+  }
+
+  assert.equal(fetchAborted, true)
+  assert.deepEqual(f.calls.map(call => call.script), ['fail.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+})
+
+test('API 并行任务失败会取消同组模拟等待', async () => {
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, async script =>
+    script.name === 'fail.sh'
+      ? { code: 7, stdout: '', stderr: 'boom' }
+      : { code: 0, stdout: '', stderr: '' })
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'simulate', name: 'Simulate', parallel: true, kind: 'simulate', dur: 30 },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['fail.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
 })
 
 test('API 路由运行快照保留 parallel 标记', async () => {
