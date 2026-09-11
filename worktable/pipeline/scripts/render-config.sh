@@ -412,28 +412,6 @@ for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
 
-# modelCache is evaluated by the Helm chart inside every worker group. The
-# host path must exist on every selected Kubernetes node; the mount path
-# remains the established XDS container path.
-def configure_model_cache(value):
-    updated = 0
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if key == "modelCache" and isinstance(child, dict):
-                child["hostPath"] = model_cache_host_path
-                updated += 1
-            else:
-                updated += configure_model_cache(child)
-    elif isinstance(value, list):
-        for child in value:
-            updated += configure_model_cache(child)
-    return updated
-
-if model_cache_host_path:
-    configured_model_caches = configure_model_cache(values)
-    if configured_model_caches == 0:
-        raise SystemExit("MODEL_CACHE_HOST_PATH was set but the values template has no modelCache entry")
-
 if str(mock_db).lower() == "true":
     framework_files = values.get("frameworkConfigFiles")
     if not isinstance(framework_files, dict) or not isinstance(framework_files.get("xds_framework.conf"), str):
@@ -470,6 +448,15 @@ values["global"] = deep_merge(values.get("global", {}), {
     "storage": {"hostPath": "/mnt/xds/sfs"},
 })
 values = deep_merge(values, yaml_replace_map)
+
+# The chart mounts model weights through global.storage. Only the host path is
+# environment-specific; mountPath remains the established XDS container path.
+if model_cache_host_path:
+    global_storage = values.get("global", {}).get("storage")
+    if not isinstance(global_storage, dict):
+        raise SystemExit("MODEL_CACHE_HOST_PATH was set but the values template has no global.storage entry")
+    global_storage["hostPath"] = model_cache_host_path
+
 
 # The chart substitutes this placeholder per task executor group.  Image
 # templates from older builds hard-code 52365, which makes custom Ray

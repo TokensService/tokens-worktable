@@ -54,9 +54,6 @@ ems:
   enable: true
 feTemplate:
   default_replica: 10
-  modelCache:
-    hostPath: /var/lib/docker/vllm
-    mountPath: /home/service/works/models_ssd
   nodeSelector:
     kubernetes.io/hostname: 192.168.0.243
 global:
@@ -168,7 +165,7 @@ assert values["rayService"]["service"]["ports"][0]["nodePort"] == 31008, values[
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
-assert values["feTemplate"]["modelCache"] == {"hostPath": "/mnt/paas", "mountPath": "/home/service/works/models_ssd"}, values["feTemplate"]
+assert values["global"]["storage"]["hostPath"] == "/mnt/paas", values["global"]
 assert values["feTemplate"]["default_replica"] == 10, values["feTemplate"]
 assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 4, values["workerGroups"]
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 4, values["workerGroups"]
@@ -190,7 +187,7 @@ for group in values["taskExecutorGroups"]:
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["useFemFrontend"] is False, values["global"]
-assert values["global"]["storage"]["hostPath"] == "/mnt/xds/sfs", values["global"]
+assert values["global"]["storage"]["hostPath"] == "/mnt/paas", values["global"]
 assert values["global"]["imagePullSecrets"] == [
     {"name": "default-secret"},
     {"name": "swr-cn-southwest-2"},
