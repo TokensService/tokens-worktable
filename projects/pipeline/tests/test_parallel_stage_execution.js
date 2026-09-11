@@ -128,6 +128,7 @@ function parallelContext(stages, options) {
     'createParallelStageContext',
     'cancelParallelStage',
     'cancelParallelGroup',
+    'disposeRunForReset',
     'settleParallelStage',
     'runParallelStageGroup',
     'startStageAt',
@@ -434,6 +435,36 @@ test('用户中止并行组会取消全部成员并只记录一次 aborted', asy
   assert.deepEqual(fixture.finished, ['aborted']);
   assert.equal(fixture.context.history.length, 1);
   assert.equal(fixture.context.history[0].status, 'aborted');
+});
+
+test('浏览器重置会释放全部并行子任务且迟回结果不归档也不记历史', async () => {
+  const fixture = parallelContext(parallelThenAfter(), { realScript: true });
+  fixture.context.advance(fixture.rc, 0);
+  const children = fixture.started.slice(0, 2).map(call => call.child);
+  const signals = children.map(child => child.scriptAbort.signal);
+  const timers = children.map(child => child.timer);
+
+  assert.equal(typeof fixture.context.disposeRunForReset, 'function', '缺少浏览器重置运行释放入口');
+  fixture.context.disposeRunForReset(fixture.rc);
+
+  const archivesAfterDispose = fixture.archived.length;
+  assert.deepEqual(signals.map(signal => signal.aborted), [true, true]);
+  assert.deepEqual(children.map(child => child.timer), [null, null]);
+  assert.equal(timers.every(timer => fixture.clearedTimers.includes(timer)), true);
+  assert.deepEqual(children.map(child => child.over), [true, true]);
+  assert.equal(fixture.rc.over, true);
+  assert.equal(fixture.context.history.length, 0);
+
+  fixture.pendingScripts[0].resolve({ code: 0, stdout: 'LATE_A=1', stderr: '', logFile: '/archive/late-a.log' });
+  fixture.pendingScripts[1].resolve({ code: 0, stdout: 'LATE_B=1', stderr: '', logFile: '/archive/late-b.log' });
+  await Promise.all(fixture.started.slice(0, 2).map(call => call.promise));
+  await tick();
+
+  assert.deepEqual(plain(fixture.rc.vars), { UPSTREAM: 'snapshot' });
+  assert.deepEqual(fixture.rc.stages.slice(0, 2).map(stage => stage._serverLogFile), [null, null]);
+  assert.equal(fixture.archived.length, archivesAfterDispose);
+  assert.equal(fixture.context.history.length, 0);
+  assert.deepEqual(fixture.finished, []);
 });
 
 test('失败阶段重试从并行组首项开始并恢复组入口变量与运行状态', () => {

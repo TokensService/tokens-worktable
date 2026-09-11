@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { stripTypeScriptTypes } from 'node:module'
-import { resolve as pathResolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join as pathJoin, resolve as pathResolve } from 'node:path'
 import vm from 'node:vm'
 
 const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
@@ -484,7 +485,7 @@ test('服务端 fetch 已取消时不发起网络请求且不误报等待超时'
   assert.equal(fetched, false)
 })
 
-function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl, DateImpl = Date) {
+function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl, DateImpl = Date, options = {}) {
   const apiStart = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
@@ -529,7 +530,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     appendPipelineHistory: async record => history.push(plain(record)),
   }
   vm.createContext(ctx)
-  vm.runInContext(code, ctx)
+  vm.runInContext(code, ctx, options.allowDynamicImport ? { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER } : undefined)
   return { execPlan: ctx.execPlan, calls, history }
 }
 
@@ -620,6 +621,76 @@ test('API 并行启动任务、等待汇合并按编排顺序合并输出', asyn
 
 test('定时并行启动任务、等待汇合并按编排顺序合并输出', async () => {
   await assertParallelServerRun('schedule')
+})
+
+async function assertFailedSingletonVarsPersist(sourceType) {
+  const archiveDir = await mkdtemp(pathJoin(tmpdir(), 'pipeline-failed-singleton-'))
+  try {
+    const f = loadExecPlan(
+      { ...apiExecutionConfig, archiveDir },
+      { 'fail.sh': { code: 9, stdout: 'FAILED_OUTPUT=kept\nSAME=rewritten', stderr: 'boom' } },
+      undefined,
+      undefined,
+      Date,
+      { allowDynamicImport: true },
+    )
+    const plan = apiExecutionPlan([])
+    plan.source = sourceType
+    plan.by = sourceType
+    plan.vars = { UPSTREAM: 'snapshot', SAME: 'entry' }
+    if (sourceType === 'schedule') delete plan.presets
+    plan.stages = [
+      { id: 'fail', name: 'Fail', script: { name: 'fail.sh', path: '/fail.sh' } },
+      { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+    ]
+
+    await f.execPlan(plan)
+
+    const profileFile = pathJoin(archiveDir, '发布流水线_20260910123456', 'run-1234-abcde.profile.json')
+    const profile = JSON.parse(await readFile(profileFile, 'utf8'))
+    assert.equal(f.history[0].status, 'failed')
+    assert.deepEqual(f.calls.map(call => call.script), ['fail.sh'])
+    assert.deepEqual(profile.vars, { UPSTREAM: 'snapshot', SAME: 'rewritten', FAILED_OUTPUT: 'kept' })
+  } finally {
+    await rm(archiveDir, { recursive: true, force: true })
+  }
+}
+
+test('API 与定时串行失败任务仍把输出变量保存在最终 profile', async () => {
+  await assertFailedSingletonVarsPersist('api')
+  await assertFailedSingletonVarsPersist('schedule')
+})
+
+test('服务端失败多成员并行组不把任何成员输出写入最终 profile', async () => {
+  const archiveDir = await mkdtemp(pathJoin(tmpdir(), 'pipeline-failed-parallel-'))
+  try {
+    const f = loadExecPlan(
+      { ...apiExecutionConfig, archiveDir },
+      {
+        'fail.sh': { code: 9, stdout: 'FAILED_OUTPUT=drop', stderr: 'boom' },
+        'peer.sh': { code: 0, stdout: 'PEER_OUTPUT=drop', stderr: '' },
+      },
+      undefined,
+      undefined,
+      Date,
+      { allowDynamicImport: true },
+    )
+    const plan = apiExecutionPlan([])
+    plan.vars = { UPSTREAM: 'snapshot' }
+    plan.stages = [
+      { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+      { id: 'peer', name: 'Peer', parallel: true, script: { name: 'peer.sh', path: '/peer.sh' } },
+    ]
+
+    await f.execPlan(plan)
+
+    const profileFile = pathJoin(archiveDir, '发布流水线_20260910123456', 'run-1234-abcde.profile.json')
+    const profile = JSON.parse(await readFile(profileFile, 'utf8'))
+    assert.equal(f.history[0].status, 'failed')
+    assert.deepEqual(profile.vars, { UPSTREAM: 'snapshot' })
+  } finally {
+    await rm(archiveDir, { recursive: true, force: true })
+  }
 })
 
 test('服务端并行组只选择最长的合格任务采集普罗数据', () => {

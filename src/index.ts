@@ -1963,7 +1963,7 @@ export function apply(ctx: Context) {
         }))
       const results = await Promise.all(jobs)
       const blockingFailure = results.some(result => result.shouldStop)
-      if (!blockingFailure) {
+      if (!blockingFailure || results.length === 1) {
         for (const result of results) Object.assign(varsPool, result.varsOut)
       }
       const promResult = longestServerPromResult(results)

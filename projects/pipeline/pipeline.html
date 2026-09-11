@@ -3773,6 +3773,13 @@ function cancelParallelGroup(parent,exceptChild){
   if(!active) return;
   active.children.forEach(child=>{ if(child!==exceptChild) cancelParallelStage(child,'aborted'); });
 }
+function disposeRunForReset(rc){
+  if(!rc) return;
+  cancelParallelGroup(rc);
+  if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }
+  if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  rc.over=true;
+}
 function settleParallelStage(child,status){
   if(!child || !child.parallelParent || child.parallelSettled) return;
   child.parallelSettled=true; child.parallelStatus=status;
@@ -6203,11 +6210,7 @@ $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSche
 $('resetBtn').addEventListener('click', ()=>{
   if(running || queue.length){ if(!confirm('将中止 '+activeRuns.length+' 个运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  activeRuns.forEach(rc=>{
-    if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
-    if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
-    rc.over=true;   // 标死：在途异步结果按令牌/over 丢弃，不再 finish 入账（重置不计入历史）
-  });
+  activeRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
   activeRuns=[]; queue=[]; viewRc=null; syncViewRun(); syncRunState();
   $('stopBtn').disabled=true; resetNodes(); applyRunOverall(null); renderQueue();
   refreshArchiveTip();   // 运行已全部清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
