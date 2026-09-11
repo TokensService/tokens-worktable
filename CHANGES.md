@@ -3,6 +3,14 @@
 - 流水线运行队列上限 8 → 16（`projects/pipeline/pipeline.html` 的 `QUEUE_CAP`）：并行槽位（4 个）占满后
   可排队等待的任务数放宽一倍，提示文案随变量联动；同步 `tests/test_queue_item_preview.js` 的边界用例
   （填满 16 个后拒绝入队）与 `tests/test_pipeline_row_run.js` 的容量提示断言。
+- 流水线「执行人」改为只读、固定取 dsh 登录用户并移至页面右上角（`projects/pipeline/pipeline.html`）：
+  执行人由主控区可编辑输入框改为标题行右侧（主题切换旁）的只读展示，每次加载都以 dsh-auth-gate
+  `/auth/status` 当前登录用户为准并覆盖任何残留值；不再持久化/恢复执行人（localStorage `pip-by` 与
+  服务端配置 `loc.by` 均停用，旧导出文件里的 `by` 导入时忽略），从根上消除共享配置把他人名字长期
+  错署为执行人的可能。未装认证插件 / token 共享模式 / 未登录 / 探测失败时显示「未登录」占位，
+  运行的必填拦截文案相应改为「未获取到当前登录用户」。`tests/test_executor_auth_default.js` 按
+  新契约重写（覆盖残留值、必然探测、留空路径、「我的」筛选重绘），`test_config_import_export.js`
+  同步去掉导出/恢复 `by` 的断言。
 - 流水线运行队列支持点击排队任务查看详情（`projects/pipeline/pipeline.html`）：队列中的排队条目由纯展示
   改为可点击，编排区以只读快照预览该次排队的详情——阶段编排按入队时的阶段快照与「预设任务」勾选快照展开
   （与启动同一 `expandRunStages` 路径，并行组结构原样绘制），详情面板展示入队参数（环境/仓库/分支/策略/
