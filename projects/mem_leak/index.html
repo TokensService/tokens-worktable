@@ -95,6 +95,10 @@
     .ml-note { font-size:12px; opacity:.7; margin-top:6px; }
     .ml-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .ml-pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; }
+    .dshell-btn:disabled { opacity:.45; cursor:not-allowed; }
+    .ml-select { width:auto; padding:5px 8px; }
+    .ml-select option { background:var(--dsw-alias-bg-base,#0b0e14); color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .ml-procwrap { overflow-x:auto; }
     details > summary { list-style:none; cursor:pointer; }
     details > summary::-webkit-details-marker { display:none; }
     details[open] .ml-pattern-body { display:block; }
@@ -123,7 +127,8 @@
 
   <!-- 标签页 -->
   <div class="dshell-tabs" id="tabs">
-    <button class="dshell-tab dshell-tabOn" data-tab="overview">诊断概览</button>
+    <button class="dshell-tab dshell-tabOn" data-tab="live">在线采样</button>
+    <button class="dshell-tab" data-tab="overview">诊断概览</button>
     <button class="dshell-tab" data-tab="timeline">内存时序</button>
     <button class="dshell-tab" data-tab="patterns">泄漏模式</button>
     <button class="dshell-tab" data-tab="flow">诊断流程</button>
@@ -131,8 +136,75 @@
     <button class="dshell-tab" data-tab="tools">工具与命令</button>
   </div>
 
+  <!-- ============ 在线采样 ============ -->
+  <div class="ml-pane" data-pane="live">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">目标机器</h2>
+      <div class="ml-formrow">
+        <input class="dshell-input" id="lvIp" style="width:210px" placeholder="IP（可带 :端口），如 192.168.1.10" />
+        <input class="dshell-input" id="lvUser" style="width:130px" placeholder="用户名" />
+        <input class="dshell-input" id="lvPass" type="password" style="width:150px" placeholder="密码" autocomplete="off" />
+        <button class="dshell-btn" id="btnConn" type="button">连接并发现 GPU</button>
+      </div>
+      <div class="ml-note" id="lvConnMsg">输入目标机器的 IP、用户名、密码后连接，自动发现使用 GPU 的容器与进程并开始采样。密码仅用于建立 SSH 连接，页面不保存。</div>
+    </div>
+
+    <div class="dshell-card" id="lvGpuCard" style="display:none">
+      <h2 class="dshell-sub" style="margin:0 0 8px">GPU 概览</h2>
+      <div class="dshell-grid" id="lvGpuGrid"></div>
+    </div>
+
+    <div class="dshell-card" id="lvProcCard" style="display:none">
+      <h2 class="dshell-sub" style="margin:0 0 8px">使用 GPU 的容器与进程</h2>
+      <div class="ml-formrow" style="margin-bottom:8px">
+        <button class="dshell-btn" id="btnStart" type="button">开始采样</button>
+        <button class="dshell-btn dshell-btnDanger" id="btnStop" type="button" disabled>停止</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnLvClear" type="button">清空数据</button>
+        <span class="dshell-muted" style="font-size:11.5px">间隔</span>
+        <select class="dshell-input ml-select" id="lvInt">
+          <option value="5000">5 秒</option>
+          <option value="10000" selected>10 秒</option>
+          <option value="30000">30 秒</option>
+          <option value="60000">60 秒</option>
+        </select>
+        <span class="dshell-muted" style="font-size:11.5px" id="lvSampleInfo"></span>
+      </div>
+      <div class="ml-procwrap">
+        <table class="dshell-table">
+          <thead><tr><th title="纳入采样">采</th><th>PID</th><th>进程</th><th>容器</th><th>显存</th><th>RSS</th><th>容器内存</th><th>已运行</th></tr></thead>
+          <tbody id="lvProcBody"></tbody>
+        </table>
+      </div>
+      <div class="ml-note">勾选纳入采样的进程。显存 = nvidia-smi 进程显存，RSS = 进程常驻内存，容器内存 = 进程所属容器的 cgroup 总占用（同一容器只采一条序列）。</div>
+    </div>
+
+    <div class="ml-grid2" id="lvChartWrap" style="display:none">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">显存时序（按进程）</h2>
+        <canvas class="ml-canvas" id="lvChartGpu"></canvas>
+        <div class="ml-legend" id="lvLegendGpu"></div>
+      </div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">内存时序（RSS / 容器）</h2>
+        <canvas class="ml-canvas" id="lvChartMem"></canvas>
+        <div class="ml-legend" id="lvLegendMem"></div>
+      </div>
+    </div>
+
+    <div class="dshell-card" id="lvJudgeCard" style="display:none">
+      <h2 class="dshell-sub" style="margin:0 0 8px">泄漏研判</h2>
+      <div class="ml-procwrap">
+        <table class="dshell-table">
+          <thead><tr><th>目标</th><th>指标</th><th>当前</th><th>样本</th><th>速率</th><th>判定</th><th></th></tr></thead>
+          <tbody id="lvJudgeBody"></tbody>
+        </table>
+      </div>
+      <div class="ml-note">判定复用「诊断概览」的最小二乘回归：斜率 &gt; 8 MiB/m 判疑似泄漏，波动大但斜率小判碎片化。点「分析」把该序列载入诊断概览深入研判。</div>
+    </div>
+  </div>
+
   <!-- ============ 诊断概览 ============ -->
-  <div class="ml-pane" data-pane="overview">
+  <div class="ml-pane" data-pane="overview" style="display:none">
     <div class="dshell-grid">
       <div class="dshell-stat"><div class="dshell-statLabel">GPU 显存占用</div><div class="dshell-statValue" id="ovGpu">—</div><div class="dshell-statDelta" id="ovGpuD"></div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">进程 RSS</div><div class="dshell-statValue" id="ovRss">—</div></div>
@@ -287,16 +359,15 @@ function applyTheme(t) {
 })();
 
 /* ================= 标签页 ================= */
-Array.prototype.forEach.call(document.querySelectorAll("#tabs .dshell-tab"), function (tab) {
-  tab.addEventListener("click", function () {
-    Array.prototype.forEach.call(document.querySelectorAll("#tabs .dshell-tab"), function (t) { t.classList.remove("dshell-tabOn"); });
-    tab.classList.add("dshell-tabOn");
-    var key = tab.getAttribute("data-tab");
-    Array.prototype.forEach.call(document.querySelectorAll(".ml-pane"), function (p) {
-      p.style.display = (p.getAttribute("data-pane") === key) ? "" : "none";
-    });
-    redrawAll();
+function activateTab(key) {
+  Array.prototype.forEach.call(document.querySelectorAll("#tabs .dshell-tab"), function (t) { t.classList.toggle("dshell-tabOn", t.getAttribute("data-tab") === key); });
+  Array.prototype.forEach.call(document.querySelectorAll(".ml-pane"), function (p) {
+    p.style.display = (p.getAttribute("data-pane") === key) ? "" : "none";
   });
+  redrawAll();
+}
+Array.prototype.forEach.call(document.querySelectorAll("#tabs .dshell-tab"), function (tab) {
+  tab.addEventListener("click", function () { activateTab(tab.getAttribute("data-tab")); });
 });
 
 /* ================= 工具函数 ================= */
@@ -453,7 +524,7 @@ function lineChart(id, pts, showTrend, trend) {
   g.fillStyle = blue;
   pts.forEach(function (p) { g.beginPath(); g.arc(X(p.t), Y(p.v), 2.2, 0, Math.PI * 2); g.fill(); });
 }
-function redrawAll() { lineChart("ovChart", CUR.pts, true, CUR.trend); lineChart("bigChart", CUR.pts, true, CUR.trend); }
+function redrawAll() { lineChart("ovChart", CUR.pts, true, CUR.trend); lineChart("bigChart", CUR.pts, true, CUR.trend); lvRenderCharts(); }
 window.addEventListener("resize", redrawAll);
 
 /* ================= 渲染结论 / 概览 ================= */
@@ -662,6 +733,283 @@ var TOOLS = [
   });
 })();
 function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+/* ================= 在线采样：给定机器发现 GPU 容器/进程并跟踪内存 ================= */
+var LV_MAX_PTS = 720; // 每序列上限（10s 间隔约 2 小时），超限丢弃最旧点
+var LV_COLORS = ["#60a5fa", "#f59e0b", "#3fb950", "#f85149", "#a371f7", "#39c5cf", "#d29922", "#db61a2", "#79c0ff", "#56d4dd"];
+var LV_KINDS = { gpu: "显存", rss: "RSS", cg: "容器内存" };
+var LV = { conn: null, running: false, timer: null, intervalMs: 10000, t0: 0, series: {}, selected: {}, errors: 0, rounds: 0, lastData: null, seq: 0 };
+
+function lvEl(id) { return document.getElementById(id); }
+function lvNum(s) { if (s == null || s === "") return null; var n = Number(s); return isFinite(n) ? n : null; }
+// 进程显示名：可执行文件 basename(+pid)，有关联容器时前缀容器名
+function lvProcLabel(p) {
+  var base = (String(p.proc || "").split("/").pop() || "").trim() || ("pid " + p.pid);
+  return p.container ? p.container + " · " + base + "(" + p.pid + ")" : base + "(" + p.pid + ")";
+}
+// 追加采样点：同一时间戳覆盖（重连首轮与手动刷新可能重复），超上限丢弃最旧
+function lvPushPoint(series, key, label, kind, tMin, v) {
+  var s = series[key];
+  if (!s) s = series[key] = { label: label, kind: kind, pts: [] };
+  s.label = label; s.kind = kind;
+  var last = s.pts[s.pts.length - 1];
+  if (last && Math.abs(last.t - tMin) < 1e-9) last.v = v;
+  else s.pts.push({ t: tMin, v: v });
+  if (s.pts.length > LV_MAX_PTS) s.pts.splice(0, s.pts.length - LV_MAX_PTS);
+  return s;
+}
+// 把一轮 /gpu detail 响应并入序列库：每进程 显存(gpu:pid) + RSS(rss:pid)，每容器 cgroup 内存(cg:名称) 一条
+// selected 为 {pid:true/false}；传 null 表示全部进程纳入
+function lvCollectPoints(series, data, selected, tMin) {
+  var seenCg = {};
+  ((data && data.procs) || []).forEach(function (p) {
+    if (selected && !selected[p.pid]) return;
+    var label = lvProcLabel(p);
+    var gm = lvNum(p.gpuMem), rss = lvNum(p.rss), cg = lvNum(p.cgMem);
+    if (gm != null) lvPushPoint(series, "gpu:" + p.pid, label, "gpu", tMin, gm);
+    if (rss != null) lvPushPoint(series, "rss:" + p.pid, label, "rss", tMin, rss);
+    if (cg != null && p.container && !seenCg[p.container]) {
+      seenCg[p.container] = true;
+      lvPushPoint(series, "cg:" + p.container, p.container, "cg", tMin, cg);
+    }
+  });
+  return series;
+}
+// 单序列泄漏研判：复用 analyze() 最小二乘回归；样本不足 3 个给出「样本不足」
+function lvJudgeSeries(pts) {
+  var cur = pts && pts.length ? pts[pts.length - 1].v : null;
+  var a = analyze(pts || []);
+  if (!a.ok) return { ok: false, label: "样本不足", sev: "wait", rateH: null, cur: cur, n: pts ? pts.length : 0 };
+  return { ok: true, label: a.verdict, sev: a.sev, rateH: a.slope * 60, cur: cur, n: a.n };
+}
+
+function lvStatus(msg) { var el = lvEl("lvConnMsg"); if (el) el.textContent = msg; }
+function lvStatusText() {
+  return "已连接 " + LV.conn.ip + " · " + (LV.running ? "采样中（每 " + LV.intervalMs / 1000 + "s，第 " + LV.rounds + " 轮）" : "已停止（第 " + LV.rounds + " 轮）");
+}
+function lvPost(ip, user, pass) {
+  return fetch("/api/worktable/gpu", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ip: ip, user: user, pass: pass, detail: true })
+  }).then(function (r) { return r.json(); }).then(function (j) {
+    if (j && j.error) throw new Error(j.error);
+    return j;
+  });
+}
+// 发现结果渲染：GPU 卡片 + 进程/容器表（勾选状态存 LV.selected，按 pid 保留）
+function lvRenderDiscovery(data) {
+  var gpus = (data && data.gpus) || [], procs = (data && data.procs) || [];
+  ["lvGpuCard", "lvProcCard", "lvChartWrap", "lvJudgeCard"].forEach(function (id) { var el = lvEl(id); if (el) el.style.display = ""; });
+  lvEl("lvGpuGrid").innerHTML = gpus.map(function (g) {
+    var total = lvNum(g.memTotal);
+    return '<div class="dshell-stat"><div class="dshell-statLabel">GPU ' + esc(g.index) + " · 利用率 " + esc(g.util) + "%</div>" +
+      '<div class="dshell-statValue" style="font-size:16px">' + fmtMB(lvNum(g.mem) || 0) + (total ? " / " + fmtMB(total) : "") + "</div></div>";
+  }).join("") || '<div class="dshell-muted">无 GPU 信息</div>';
+  var body = lvEl("lvProcBody");
+  if (!procs.length) {
+    body.innerHTML = '<tr><td colspan="8" class="dshell-muted">未发现使用 GPU 的进程（nvidia-smi --query-compute-apps 为空）</td></tr>';
+    return;
+  }
+  body.innerHTML = procs.map(function (p) {
+    var on = LV.selected[p.pid] !== false;
+    var base = (String(p.proc || "").split("/").pop() || "").trim() || "—";
+    return "<tr>" +
+      '<td><input type="checkbox" data-lvpid="' + esc(p.pid) + '"' + (on ? " checked" : "") + ' style="accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7)" /></td>' +
+      "<td>" + esc(p.pid) + "</td>" +
+      '<td title="' + esc(p.proc || "") + '">' + esc(base) + "</td>" +
+      "<td>" + (p.container ? esc(p.container) : '<span class="dshell-muted">—</span>') + "</td>" +
+      "<td>" + (lvNum(p.gpuMem) != null ? fmtMB(lvNum(p.gpuMem)) : "—") + "</td>" +
+      "<td>" + (lvNum(p.rss) != null ? fmtMB(lvNum(p.rss)) : "—") + "</td>" +
+      "<td>" + (lvNum(p.cgMem) != null ? fmtMB(lvNum(p.cgMem)) : "—") + "</td>" +
+      '<td class="dshell-muted">' + esc(p.up || "—") + "</td></tr>";
+  }).join("");
+  Array.prototype.forEach.call(body.querySelectorAll("input[data-lvpid]"), function (cb) {
+    cb.addEventListener("change", function () { LV.selected[cb.getAttribute("data-lvpid")] = cb.checked; });
+  });
+}
+function lvSeriesList(kinds) {
+  var out = [];
+  Object.keys(LV.series).forEach(function (k) { var s = LV.series[k]; if (kinds.indexOf(s.kind) >= 0) out.push(s); });
+  return out;
+}
+// 多序列折线图：共享坐标轴，颜色按序列序分配，图例带当前值
+function lvChart(id, arr, legendId) {
+  var cv = lvEl(id); if (!cv) return;
+  var r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (r.width < 2) return;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  var g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var W = r.width, H = r.height, pad = { l: 50, r: 12, t: 12, b: 26 };
+  g.clearRect(0, 0, W, H);
+  var fgT = css("--dsw-alias-label-tertiary"), border = css("--dsw-alias-border-l1");
+  arr = (arr || []).filter(function (s) { return s.pts.length > 0; });
+  if (!arr.length) {
+    g.fillStyle = fgT; g.font = "12px -apple-system,'Microsoft YaHei',sans-serif"; g.textAlign = "center";
+    g.fillText("暂无采样数据", W / 2, H / 2);
+    if (legendId) lvEl(legendId).innerHTML = "";
+    return;
+  }
+  var xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+  arr.forEach(function (s) {
+    s.pts.forEach(function (p) {
+      if (p.t < xMin) xMin = p.t; if (p.t > xMax) xMax = p.t;
+      if (p.v < yMin) yMin = p.v; if (p.v > yMax) yMax = p.v;
+    });
+  });
+  var yPad = (yMax - yMin) * 0.12 || 1; yMin = Math.max(0, yMin - yPad); yMax += yPad;
+  var iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  function X(t) { return pad.l + (xMax === xMin ? iw / 2 : (t - xMin) / (xMax - xMin) * iw); }
+  function Y(v) { return pad.t + (1 - (v - yMin) / (yMax - yMin)) * ih; }
+  g.strokeStyle = border; g.fillStyle = fgT; g.font = "10px -apple-system,sans-serif";
+  g.lineWidth = 1; g.textAlign = "right"; g.textBaseline = "middle";
+  var i, y, v;
+  for (i = 0; i <= 4; i++) {
+    v = yMin + (yMax - yMin) * i / 4; y = Y(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.globalAlpha = 0.5; g.stroke(); g.globalAlpha = 1;
+    g.fillText(fmtMB(v), pad.l - 6, y);
+  }
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (i = 0; i <= 4; i++) {
+    var t = xMin + (xMax - xMin) * i / 4;
+    g.fillText(t.toFixed(1) + "m", X(t), H - pad.b + 4);
+  }
+  arr.forEach(function (s, k) {
+    g.strokeStyle = LV_COLORS[k % LV_COLORS.length]; g.lineWidth = 1.8; g.beginPath();
+    s.pts.forEach(function (p, q) { var x = X(p.t), yy = Y(p.v); q ? g.lineTo(x, yy) : g.moveTo(x, yy); });
+    g.stroke();
+  });
+  if (legendId) {
+    lvEl(legendId).innerHTML = arr.map(function (s, k) {
+      var cur = s.pts[s.pts.length - 1].v;
+      return '<span><i class="ml-dot" style="background:' + LV_COLORS[k % LV_COLORS.length] + '"></i>' +
+        esc(s.label) + " · " + LV_KINDS[s.kind] + " <b>" + fmtMB(cur) + "</b></span>";
+    }).join("");
+  }
+}
+function lvRenderCharts() {
+  if (!lvEl("lvChartGpu")) return;
+  lvChart("lvChartGpu", lvSeriesList(["gpu"]), "lvLegendGpu");
+  lvChart("lvChartMem", lvSeriesList(["rss", "cg"]), "lvLegendMem");
+  var info = lvEl("lvSampleInfo");
+  if (info) info.textContent = LV.rounds ? ("已采 " + LV.rounds + " 轮 · " + Object.keys(LV.series).length + " 条序列") : "";
+}
+// 泄漏研判表：按严重度排序（高危 > 关注 > 样本不足 > 正常），可载入诊断概览深入分析
+function lvRenderJudge() {
+  var body = lvEl("lvJudgeBody"); if (!body) return;
+  var rows = Object.keys(LV.series).map(function (k) { return { key: k, s: LV.series[k], j: lvJudgeSeries(LV.series[k].pts) }; });
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="dshell-muted">暂无序列，连接机器后开始采样。</td></tr>'; return; }
+  var rank = { high: 0, mid: 1, wait: 2, low: 3 };
+  rows.sort(function (a, b) { return (rank[a.j.sev] != null ? rank[a.j.sev] : 4) - (rank[b.j.sev] != null ? rank[b.j.sev] : 4); });
+  body.innerHTML = rows.map(function (r) {
+    var badge = r.j.sev === "wait" ? '<span class="dshell-badge">样本不足</span>' : verdictBadge(r.j.sev, r.j.label);
+    return '<tr><td title="' + esc(r.s.label) + '">' + esc(r.s.label) + "</td>" +
+      "<td>" + LV_KINDS[r.s.kind] + "</td>" +
+      "<td>" + (r.j.cur != null ? fmtMB(r.j.cur) : "—") + "</td>" +
+      "<td>" + r.j.n + "</td>" +
+      "<td>" + (r.j.rateH != null ? (r.j.rateH >= 0 ? "+" : "") + r.j.rateH.toFixed(0) + " MiB/h" : "—") + "</td>" +
+      "<td>" + badge + "</td>" +
+      '<td><button class="ml-copy" data-lvan="' + esc(r.key) + '" type="button">分析</button></td></tr>';
+  }).join("");
+  Array.prototype.forEach.call(body.querySelectorAll("[data-lvan]"), function (btn) {
+    btn.addEventListener("click", function () { lvLoadToOverview(btn.getAttribute("data-lvan")); });
+  });
+}
+function lvLoadToOverview(key) {
+  var s = LV.series[key]; if (!s || !s.pts.length) return;
+  document.getElementById("sampleInput").value =
+    "# 在线采样：" + s.label + "（" + LV_KINDS[s.kind] + "，" + LV.rounds + " 轮）\n" +
+    s.pts.map(function (p) { return p.t.toFixed(2) + " " + p.v.toFixed(1); }).join("\n");
+  activateTab("overview");
+  runAnalysis();
+}
+// 采样主循环：setTimeout 链自排程（单次探测繁忙节点约 10s，避免 setInterval 重叠请求）；
+// seq 代次丢弃过期响应（改连别的机器后旧请求的返回不再落数据）
+function lvSchedule() {
+  clearTimeout(LV.timer);
+  if (LV.running) LV.timer = setTimeout(lvTick, LV.intervalMs);
+}
+function lvTick() {
+  if (!LV.running || !LV.conn) return;
+  var seq = LV.seq;
+  lvPost(LV.conn.ip, LV.conn.user, LV.conn.pass).then(function (j) {
+    if (seq !== LV.seq) return;
+    LV.errors = 0; LV.lastData = j;
+    // 采样期间新出现的 GPU 进程默认纳入（勾选状态只记忆用户手动取消的）
+    (j.procs || []).forEach(function (p) { if (!(p.pid in LV.selected)) LV.selected[p.pid] = true; });
+    lvCollectPoints(LV.series, j, LV.selected, (Date.now() - LV.t0) / 60000);
+    LV.rounds += 1;
+    lvRenderDiscovery(j); lvRenderCharts(); lvRenderJudge();
+    lvStatus(lvStatusText());
+  }).catch(function (e) {
+    if (seq !== LV.seq) return;
+    LV.errors += 1;
+    lvStatus(lvStatusText() + " · 本轮失败（连续 " + LV.errors + " 次）：" + (e && e.message ? e.message : e));
+  }).then(function () { if (seq === LV.seq) lvSchedule(); });
+}
+function lvStart() {
+  if (!LV.conn || LV.running) return;
+  LV.running = true;
+  lvEl("btnStart").disabled = true; lvEl("btnStop").disabled = false;
+  lvStatus(lvStatusText());
+  lvTick();
+}
+function lvStop() {
+  LV.running = false; clearTimeout(LV.timer);
+  var b1 = lvEl("btnStart"), b2 = lvEl("btnStop");
+  if (b1) b1.disabled = !LV.conn;
+  if (b2) b2.disabled = true;
+}
+function lvClearData() {
+  LV.series = {}; LV.rounds = 0; LV.errors = 0; LV.t0 = Date.now();
+  lvRenderCharts(); lvRenderJudge();
+  if (LV.conn) lvStatus(lvStatusText() + " · 已清空历史");
+}
+// 连接并发现：首轮探测即第一轮采样，成功后自动开始轮询
+function lvConnect() {
+  var ip = lvEl("lvIp").value.trim(), user = lvEl("lvUser").value.trim(), pass = lvEl("lvPass").value;
+  if (!ip) { lvStatus("请先填写目标机器 IP。"); return; }
+  var btn = lvEl("btnConn"); btn.disabled = true;
+  lvStop();
+  var seq = ++LV.seq;
+  lvStatus("正在连接 " + ip + " 并探测 GPU…");
+  lvPost(ip, user, pass).then(function (j) {
+    if (seq !== LV.seq) return;
+    LV.conn = { ip: ip, user: user, pass: pass };
+    LV.series = {}; LV.rounds = 1; LV.errors = 0; LV.t0 = Date.now(); LV.lastData = j;
+    LV.selected = {};
+    (j.procs || []).forEach(function (p) { LV.selected[p.pid] = true; });
+    try { localStorage.setItem("memLeak.liveIp", ip); localStorage.setItem("memLeak.liveUser", user); } catch (e) {}
+    lvRenderDiscovery(j);
+    lvCollectPoints(LV.series, j, LV.selected, 0);
+    lvRenderCharts(); lvRenderJudge();
+    LV.running = true;
+    lvEl("btnStart").disabled = true; lvEl("btnStop").disabled = false;
+    lvStatus(lvStatusText());
+    lvSchedule();
+  }).catch(function (e) {
+    if (seq !== LV.seq) return;
+    lvStatus("连接失败：" + (e && e.message ? e.message : e) + "。检查 IP/端口、用户名密码与目标机 sshd、nvidia-smi。");
+  }).then(function () { if (seq === LV.seq) btn.disabled = false; });
+}
+(function () {
+  try {
+    var ip = localStorage.getItem("memLeak.liveIp") || "", user = localStorage.getItem("memLeak.liveUser") || "";
+    if (ip) lvEl("lvIp").value = ip;
+    if (user) lvEl("lvUser").value = user;
+  } catch (e) {}
+  lvEl("btnConn").addEventListener("click", lvConnect);
+  lvEl("btnStart").addEventListener("click", lvStart);
+  lvEl("btnStop").addEventListener("click", function () { lvStop(); if (LV.conn) lvStatus(lvStatusText()); });
+  lvEl("btnLvClear").addEventListener("click", lvClearData);
+  lvEl("lvInt").addEventListener("change", function () {
+    var ms = Number(lvEl("lvInt").value);
+    if (isFinite(ms) && ms >= 2000) LV.intervalMs = ms;
+    if (LV.running) lvSchedule();
+    if (LV.conn) lvStatus(lvStatusText());
+  });
+  lvEl("lvPass").addEventListener("keydown", function (ev) { if (ev && ev.key === "Enter") lvConnect(); });
+  lvStop(); // 初始按钮态：未连接时「开始采样」不可点
+})();
 
 /* 初始空状态 */
 render({ ok: false, msg: "粘贴采样或点「载入示例」后开始诊断" });

@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- mem_leak 内存泄漏诊断页入库并新增「在线采样」（`projects/mem_leak/index.html` + `src/index.ts`）：
+  页面原先仅存在于本地未跟踪文件，本次基线入库；新增首个标签页「在线采样」——输入目标机器的
+  IP（可带 :端口）、用户名、密码后连接，经 `/api/worktable/gpu` 发现该机使用 GPU 的容器与进程
+  （GPU 概览卡片 + 进程/容器表格：PID、进程、容器、显存、RSS、容器内存、已运行），勾选目标后按
+  5/10/30/60s 间隔轮询采样，显存（按进程）与内存（RSS/容器）两张多序列时序曲线实时绘制，泄漏研判表
+  复用页面最小二乘回归按序列给出速率（MiB/h）与「疑似泄漏/碎片化/健康」判定（按严重度排序），单条序列
+  可一键载入「诊断概览」深入分析。采样用 setTimeout 链自排程避免请求重叠，改连机器以代次丢弃过期响应，
+  新出现的 GPU 进程默认纳入；每序列上限 720 点；IP/用户名存 localStorage，密码不持久化。服务端
+  `/api/worktable/gpu` 新增 `detail:true` 可选参数：探针追加三段（每进程显存 used_memory、/proc VmRSS、
+  进程所属容器的 cgroup 内存占用——优先 v2 memory.current、回退 v1 memory.usage_in_bytes，不依赖
+  docker/nerdctl CLI），一次 SSH 取回；响应 gpus[] 增 memTotal、procs[] 增 gpuMem/rss/cgMem（均 MiB，
+  取不到为空串）；非 detail 调用响应与探针保持原样（pipeline 环境页不受影响）。新增
+  `tests/gpu-detail.test.mjs`（detail 字段解析、非 detail 兼容、降级空串、parseHostPort）与
+  `projects/mem_leak/index.test.cjs`（数值解析、序列落点/去重/上限、勾选过滤、泄漏判定）。
 - 侧栏工作台标题缺省取 dsh 登录用户（`src/client/index.tsx`）：未自定义名称时，挂载经
   dsh-auth-gate `/auth/status` 探针（同源、只认会话 cookie）以当前登录用户名作为侧栏区块标题；
   未装认证插件（404 / SPA 兜底非 JSON）、token 共享模式（username 恒 null）、未登录或探测失败

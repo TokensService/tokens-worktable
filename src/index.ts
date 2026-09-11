@@ -1427,9 +1427,12 @@ export function apply(ctx: Context) {
     },
   })
 
-  // ---- GPU 状态查询（pipeline.html 环境页/多选面板；本机直连，远程经 sshpass+ssh）----
-  // 响应：{ total, used, gpus:[{index,util,mem}], procs:[{pid,uuid,proc,container,up}], containers:[名称...] }
+  // ---- GPU 状态查询（pipeline.html 环境页/多选面板、mem_leak 在线采样；本机直连，远程经 sshpass+ssh）----
+  // 响应：{ total, used, gpus:[{index,util,mem}], procs:[{pid,uuid,proc,container,up,gpuMem,rss,cgMem}], containers:[名称...] }
   // up 为容器已运行时长（docker/nerdctl 的 RunningFor，如 "Up 3 days"），未能关联容器时为空串
+  // body.detail 为 true 时追加进程级内存明细（探针多跑三段，仍一次 SSH 取回）：
+  //   gpus[] 增 memTotal（MiB）；procs[] 增 gpuMem（进程显存 MiB）、rss（进程常驻内存 MiB）、
+  //   cgMem（进程所属容器 cgroup 内存占用 MiB）；取不到均为空串。非 detail 调用响应字段不变（值为空串）
   // 失败返回 { error }（HTTP 仍 200，前端据 error 字段展示原因）
   function localAddrs(): Set<string> {
     const set = new Set<string>(['127.0.0.1', 'localhost', '::1'])
@@ -1466,6 +1469,23 @@ export function apply(ctx: Context) {
     '(docker ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; ' +
     'nerdctl --namespace k8s.io ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; ' +
     'nerdctl ps --format "{{.ID}}|{{.Names}}|{{.RunningFor}}" 2>/dev/null; true)'
+  // detail=true 时追加的三段（=== 分隔续在基础四段之后，均为瞬间完成的本地读取，不增加 ssh 往返）：
+  //   段5：每进程显存 used_memory（MiB，旧驱动不支持该字段时整段为空，降级为空串）
+  //   段6：每进程 VmRSS（KiB，/proc/<pid>/status）
+  //   段7：每进程所属容器的 cgroup 内存占用（字节）：优先 cgroup v2（0:: 路径 memory.current），
+  //        回退 cgroup v1（memory: 路径 memory.usage_in_bytes）；不依赖 docker/nerdctl CLI，containerd/K8s 同样适用
+  const GPU_PROBE_MEM =
+    'nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null; ' +
+    'echo ===; ' +
+    'for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do ' +
+    'echo "$p:$(' + "awk '/VmRSS/{print $2}'" + ' /proc/$p/status 2>/dev/null)"; done; ' +
+    'echo ===; ' +
+    'for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do b=""; ' +
+    'v2=$(grep "^0::" /proc/$p/cgroup 2>/dev/null | head -1 | cut -d: -f3-); ' +
+    'if [ -n "$v2" ] && [ -r "/sys/fs/cgroup$v2/memory.current" ]; then b=$(cat "/sys/fs/cgroup$v2/memory.current" 2>/dev/null); fi; ' +
+    'if [ -z "$b" ]; then v1=$(grep ":memory:" /proc/$p/cgroup 2>/dev/null | head -1 | cut -d: -f3-); ' +
+    'if [ -n "$v1" ] && [ -r "/sys/fs/cgroup/memory$v1/memory.usage_in_bytes" ]; then b=$(cat "/sys/fs/cgroup/memory$v1/memory.usage_in_bytes" 2>/dev/null); fi; fi; ' +
+    'echo "$p:$b"; done'
   // 解析 pipeline.html 节点环境填写的「IP:端口」（如 115.33.98.101:2222）：
   // 单个冒号且其后为数字 → host:port；否则（无冒号或 IPv6 多冒号）整体作 host，端口留空（默认 22）
   function parseHostPort(ip: string): { host: string; port: string } {
@@ -1473,18 +1493,19 @@ export function apply(ctx: Context) {
     if (m) return { host: m[1], port: m[2] }
     return { host: ip.trim(), port: '' }
   }
-  async function queryGpu(ip: string, user: string, pass: string) {
+  async function queryGpu(ip: string, user: string, pass: string, detail: boolean) {
     let out: string
     // 拆出端口：节点环境可填「IP:端口」指定 SSH 端口；本机判定与 ssh target 均用 host（不含端口），
     // 端口经 ssh -p 传入（ssh 不支持 host:port 形式的 target，须用 -p <port>）
     const { host, port } = parseHostPort(ip)
+    const probe = detail ? GPU_PROBE + '; echo ===; ' + GPU_PROBE_MEM : GPU_PROBE
     if (localAddrs().has(host)) {
-      out = await execText('bash', ['-c', GPU_PROBE])
+      out = await execText('bash', ['-c', probe])
     } else {
       const target = user ? user + '@' + host : host
       // 远程登录 shell 可能是 zsh（如部分 BMS 节点）：`echo ===` 触发 zsh 的 =word 展开报错，
       // $(...) 结果默认不做单词拆分导致 for 循环失效。base64 编码后经管道交给 bash 执行，与登录 shell 解耦。
-      const remoteCmd = 'echo ' + Buffer.from(GPU_PROBE).toString('base64') + ' | base64 -d | bash'
+      const remoteCmd = 'echo ' + Buffer.from(probe).toString('base64') + ' | base64 -d | bash'
       // UserKnownHostsFile=/dev/null：不查不写 known_hosts，首次登录的 yes/no 确认与
       // 重装后指纹变更（REMOTE HOST IDENTIFICATION HAS CHANGED）都不阻塞（内网受信前提）
       // 填了端口时用 ssh -p <port> 连接：sshpass 的 -p 密码在 ssh 命令前已由 sshpass 消费，
@@ -1499,7 +1520,7 @@ export function apply(ctx: Context) {
     const secs = out.split(/^===\s*$/m)
     const gpus = (secs[0] || '').trim().split('\n').filter(Boolean).map((l) => {
       const p = l.split(',').map((s) => s.trim())
-      return { index: p[0], uuid: p[1] || '', util: p[2] || '0', mem: p[3] || '0' }
+      return { index: p[0], uuid: p[1] || '', util: p[2] || '0', mem: p[3] || '0', memTotal: p[4] || '' }
     })
     if (!gpus.length) return { error: 'nvidia-smi 无输出（未安装驱动或无 GPU）' }
     const procs = (secs[1] || '').trim().split('\n').filter(Boolean).map((l) => {
@@ -1516,16 +1537,38 @@ export function apply(ctx: Context) {
       const p = l.trim().split('|')
       return { id: (p[0] || '').trim(), name: (p[1] || '').trim(), up: (p.slice(2).join('|') || '').trim() }
     })
+    // detail 追加段：段5「pid,进程显存MiB」；段6「pid:VmRSS KiB」；段7「pid:容器cgroup内存字节」
+    // 统一折算为 MiB 字符串；探针段为空（旧驱动无 used_memory 字段、无 cgroup 权限等）时对应值为空串
+    const gpuMemOf: Record<string, string> = {}, rssOf: Record<string, string> = {}, cgMemOf: Record<string, string> = {}
+    if (detail) {
+      for (const l of (secs[4] || '').trim().split('\n')) {
+        const p = l.split(',').map((s) => s.trim())
+        if (p[0] && /^\d+$/.test(p[1] || '')) gpuMemOf[p[0]] = p[1]
+      }
+      for (const l of (secs[5] || '').trim().split('\n')) {
+        const m = /^(\d+):(\d+)$/.exec(l.trim()); if (m) rssOf[m[1]] = (Number(m[2]) / 1024).toFixed(1)
+      }
+      for (const l of (secs[6] || '').trim().split('\n')) {
+        const m = /^(\d+):(\d+)$/.exec(l.trim()); if (m) cgMemOf[m[1]] = (Number(m[2]) / 1048576).toFixed(1)
+      }
+    }
     const procsOut = procs.map((p) => {
       let container = '', up = ''
       const hex = cg[p.pid]
       if (hex) { const d = dockers.find((x) => x.id && hex.indexOf(x.id) === 0); if (d) { container = d.name; up = d.up } }
-      return { pid: p.pid, uuid: p.uuid, proc: p.proc, container, up }
+      const row: { pid: string, uuid: string, proc: string, container: string, up: string, gpuMem?: string, rss?: string, cgMem?: string } = { pid: p.pid, uuid: p.uuid, proc: p.proc, container, up }
+      if (detail) { row.gpuMem = gpuMemOf[p.pid] || ''; row.rss = rssOf[p.pid] || ''; row.cgMem = cgMemOf[p.pid] || '' }
+      return row
     })
     const busyUuids = new Set(procs.map((p) => p.uuid))
     const used = gpus.filter((g) => busyUuids.has(g.uuid) || Number(g.mem) > 1024).length
     const containers = Array.from(new Set(procsOut.map((p) => p.container).filter(Boolean)))
-    return { total: gpus.length, used, gpus: gpus.map((g) => ({ index: g.index, util: g.util, mem: g.mem })), procs: procsOut, containers }
+    const gpusOut = gpus.map((g) => {
+      const row: { index: string, util: string, mem: string, memTotal?: string } = { index: g.index, util: g.util, mem: g.mem }
+      if (detail) row.memTotal = g.memTotal
+      return row
+    })
+    return { total: gpus.length, used, gpus: gpusOut, procs: procsOut, containers }
   }
   webServer.register({
     kind: 'exact',
@@ -1536,7 +1579,7 @@ export function apply(ctx: Context) {
         const body = await readJsonBody(req)
         const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
         if (!ip) { json(res, 400, { error: 'missing ip' }); return }
-        const r = await queryGpu(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '')
+        const r = await queryGpu(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', body.detail === true)
         json(res, 200, r)
       } catch (err) {
         json(res, 200, { error: String(err && (err as Error).message ? (err as Error).message : err) })
