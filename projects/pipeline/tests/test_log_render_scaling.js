@@ -195,7 +195,7 @@ test('实时尾窗达到上限后仍按输出修订号刷新', () => {
   assert.equal(buildCount(), 2, '尾窗内容已更新时不得因采样指纹相同而停留在旧画面');
 });
 
-test('共用实时输出状态限制快照、递增修订号并保留分片全文', () => {
+test('共用实时输出状态用有界分片尾窗，快照按修订号惰性拼接', () => {
   const context = { Date };
   vm.createContext(context);
   vm.runInContext(liveHelpersSource(), context);
@@ -206,11 +206,46 @@ test('共用实时输出状态限制快照、递增修订号并保留分片全�
   assert.ok(snapshot.stdout.length <= 256 * 1024);
   assert.equal(snapshot._stdoutTruncated, true);
   assert.equal(snapshot._outputRevision, 6);
+  assert.equal(typeof state.stdout, 'object', '实时状态不得在每次追加时重建大字符串');
+  assert.ok(state.stdout.chars <= 256 * 1024);
+  assert.ok(state.stdout.chunks.reduce((sum, value) => sum + value.length, 0) <= 256 * 1024, '已淘汰分片必须释放引用，不能只移动 head');
+  assert.equal(state.stdout.cacheRevision, state.stdout.revision, '生成快照后才缓存拼接结果');
 
   const log = context.createLiveLog('start');
-  for (let i = 0; i < 6; i++) context.appendLiveLog(log, chunk);
+  const archived = [];
+  const archivedLog = context.createLiveLog('start', { append: value => archived.push(value) });
+  for (let i = 0; i < 6; i++) {
+    context.appendLiveLog(log, chunk);
+    context.appendLiveLog(archivedLog, chunk);
+  }
   assert.ok(context.liveOutputSnapshot(log.live).stdout.length <= 256 * 1024);
-  assert.equal(context.finishLiveLog(log).length, 'start'.length + 6 * (chunk.length + 1), '全文只保留分片，结束时再合并');
+  assert.ok(context.finishLiveLog(log).length <= 256 * 1024, '轮询型长任务也不得在 parts 中保留全文');
+  assert.equal(log.truncated, true);
+  assert.ok(context.finishLiveLog(archivedLog).length <= 256 * 1024, '服务端归档不能导致浏览器重新保留全文');
+  assert.equal(archived.join('').length, 'start'.length + (chunk.length + 1) * 6, '归档 sink 必须收到完整原始输出（含日志行分隔符）');
+
+  // 细碎轮询分片淘汰必须移动 head，不能 Array.shift() 搬移整个尾窗数组。
+  vm.runInContext('Array.prototype.shift=function(){ throw new Error("tail deque must not shift") }', context);
+  const tinyLog = context.createLiveLog();
+  for (let i = 0; i < 3000; i++) context.appendLiveChunk(tinyLog, 'x'.repeat(100));
+  assert.ok(context.finishLiveLog(tinyLog).length <= 256 * 1024);
+  assert.ok(tinyLog.parts.reduce((sum, value) => sum + value.length, 0) <= 256 * 1024, '淘汰分片引用必须释放');
+});
+
+test('流式输出探针跨分片提取早期变量与末尾 JSON，全文映射超过 128KiB 后释放', () => {
+  const context = { Date };
+  vm.createContext(context);
+  vm.runInContext(liveHelpersSource(), context);
+  const probe = context.createOutputProbe('RESP=*,LAST=items[-1].name');
+  context.appendOutputProbe(probe, 'EAR');
+  context.appendOutputProbe(probe, 'LY=kept\n' + 'x'.repeat(140 * 1024));
+  context.appendOutputProbe(probe, '\n{"items":[{"name":"first"},{"name":"last"}]}');
+  const result = context.finishOutputProbe(probe);
+  assert.equal(result.vars.EARLY, 'kept');
+  assert.equal(result.json.items[1].name, 'last');
+  assert.equal(result.fullText, undefined, '超限全文不得继续被浏览器持有');
+  assert.equal(result.fullTextOverflow, true);
+  assert.ok(probe.line.length <= 128 * 1024, '无换行超长行也必须保持有界');
 });
 
 test('预设脚本的实时快照与普通脚本同样有界', async () => {
@@ -240,10 +275,11 @@ test('预设脚本的实时快照与普通脚本同样有界', async () => {
   vm.runInContext(liveHelpersSource() + '\n' + source.slice(start, end), context);
   await context.runPresetStep(rc, 0);
   assert.ok(maxLiveChars <= 256 * 1024, '预设脚本不得在页面快照内累积全量日志');
-  assert.equal(stage._out.stdout.length, fullOutput.length, '结束后仍保留完整结果');
+  assert.ok(stage._out.stdout.length <= 256 * 1024, '结束后页面也只保留尾窗，完整结果由服务端日志持有');
+  assert.equal(stage._out._stdoutTruncated, true);
 });
 
-test('流式运行的实时快照保持有界，最终 stdout 契约仍完整', async () => {
+test('流式运行的实时快照与最终 stdout 都保持有界，同时保留早期输出变量', async () => {
   const start = source.indexOf('async function runScriptStep(rc, i)');
   const end = source.indexOf('function runStage(rc, i)', start);
   if (start < 0 || end < 0) throw new Error('runScriptStep not found');
@@ -255,20 +291,18 @@ test('流式运行的实时快照保持有界，最终 stdout 契约仍完整', 
   const chunk = 'x'.repeat(200 * 1024);
   const fullOutput = chunk.repeat(6);
   let maxLiveChars = 0;
-  let sawTruncated = false;
   const context = {
     console, AbortController, setInterval: () => 1, clearInterval() {},
     viewRc: rc, selectedId: stage.id,
     runSetSel(run, id) { run.selId = id; context.selectedId = id; }, rcRender() {}, renderDetail() {},
     archiveFolderFor: () => '/logs', taskLogFile: () => 'stage.log',
-    mergeStageVars: () => ({}), applyOutVars() {}, parseStageJson: () => null, archiveStageLog() {}, stageSeq: () => 1,
+    applyOutVars() {}, archiveStageLog() {}, stageSeq: () => 1,
     advance() {}, finish() {},
     async execScript(_script, _timeout, _env, _run, onStream) {
       onStream({ type: 'log', logFile: '/logs/stage.log' });
       for (let i = 0; i < 6; i++) {
-        onStream({ type: 'out', text: chunk });
+        onStream({ type: 'out', text: (i === 0 ? 'EARLY=kept\n' : '') + chunk });
         maxLiveChars = Math.max(maxLiveChars, stage._out.stdout.length);
-        sawTruncated = sawTruncated || !!stage._out._stdoutTruncated;
       }
       return { code: 0, stdout: fullOutput, stderr: '', logFile: '/logs/stage.log' };
     },
@@ -277,9 +311,11 @@ test('流式运行的实时快照保持有界，最终 stdout 契约仍完整', 
   vm.runInContext(liveHelpersSource() + '\n' + source.slice(start, end), context);
 
   await context.runScriptStep(rc, 0);
+  assert.equal(stage._serverLogExpectedFile, '/logs/stage.log', '请求发出前必须同步记录预期任务日志路径，供响应头前中止归档等待服务端');
   assert.ok(maxLiveChars <= 256 * 1024, '实时预览不得复制完整 stdout');
-  assert.equal(sawTruncated, true, '详情需知道前部内容已省略');
-  assert.equal(stage._out.stdout.length, fullOutput.length, '阶段完成后仍保留完整 stdout 供变量传递');
+  assert.ok(stage._out.stdout.length <= 256 * 1024, '阶段完成后不得把完整 stdout 放回页面状态');
+  assert.equal(stage._out._stdoutTruncated, true, '高频输出未到下一刷新点时，最终快照仍须标记前部已省略');
+  assert.equal(rc.vars.EARLY, 'kept', '早期变量应由流式探针保留，即使已离开尾窗');
 });
 
 test('持续输出期间详情刷新最多每 250ms 一次', async () => {
@@ -301,6 +337,98 @@ test('持续输出期间详情刷新最多每 250ms 一次', async () => {
   };
   vm.createContext(context);
   vm.runInContext(liveHelpersSource() + '\n' + source.slice(start, end), context);
+  const snapshot = context.liveOutputSnapshot;
+  let snapshotCount = 0;
+  context.liveOutputSnapshot = (...args) => { snapshotCount++; return snapshot(...args); };
   await context.runScriptStep(rc, 0);
   assert.deepEqual(renderedAt, [1000, 1250]);
+  assert.equal(snapshotCount, 3, '4 个高频分片只能在 2 个刷新时点及最终结果各物化一次尾窗');
+});
+
+test('手动普罗收集日志 DOM 与文本总量保持有界', () => {
+  const start = source.indexOf('function pmcResetLog(');
+  const end = source.indexOf('/* 打开对话框时先检测', start);
+  assert.ok(start >= 0 && end > start, '缺少手动采集有界日志实现');
+  const log = {
+    children: [], scrollTop: 0, scrollHeight: 0, _text: '',
+    set textContent(value) { this._text = String(value); this.children = []; },
+    get textContent() { return this.children.map(node => node.textContent).join('') || this._text; },
+    appendChild(node) { this._text = ''; this.children.push(node); this.scrollHeight = this.textContent.length; },
+    removeChild(node) { this.children.splice(this.children.indexOf(node), 1); },
+    get firstChild() { return this.children[0] || null; },
+    get lastChild() { return this.children.at(-1) || null; },
+  };
+  const context = {
+    $: id => id === 'pmcLog' ? log : null,
+    document: { createElement: () => ({ className: '', textContent: '' }) },
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  context.pmcResetLog('');
+  for (let i = 0; i < 100; i++) context.pmcSay('x'.repeat(32 * 1024), '');
+  assert.ok(log.textContent.length <= 256 * 1024);
+  assert.ok(log.children.length <= 9, '旧日志节点应同步淘汰，不能只截字符串');
+  context.pmcResetLog('');
+  for (let i = 0; i < 5000; i++) context.pmcSay('x', i % 2 ? 'ok' : 'warn');
+  assert.ok(log.children.length <= 1000, '交替样式的单字符分片也必须受独立节点上限约束');
+});
+
+test('浏览器直连 HTTP 响应按流中止超限正文', async () => {
+  const start = source.indexOf('async function readBrowserResponseText(');
+  const end = source.indexOf('/* ---------- HTTP 阶段', start);
+  assert.ok(start >= 0 && end > start, '缺少浏览器响应限额 helper');
+  let cancelled = false, index = 0;
+  const reader = {
+    async read() { index++; return index <= 2 ? { done: false, value: new Uint8Array([1,2,3,4,5,6]) } : { done: true }; },
+    async cancel() { cancelled = true; }, releaseLock() {},
+  };
+  const context = { TextDecoder, Uint8Array };
+  vm.createContext(context); vm.runInContext(source.slice(start, end), context);
+  await assert.rejects(context.readBrowserResponseText({ headers: { get: () => '' }, body: { getReader: () => reader } }, 10), /响应正文过大/);
+  assert.equal(cancelled, true);
+});
+
+test('轮询任务日志串行写入服务端：首块替换、后续块追加', async () => {
+  const start = source.indexOf('function createClientStageLogSink(');
+  const end = source.indexOf('/* 是否显式配置了归档根目录', start);
+  assert.ok(start >= 0 && end > start, '缺少轮询任务服务端日志 sink');
+  const calls = [], stage = {};
+  const context = {
+    console,
+    archiveFolderFor: () => '/logs/run', taskLogFile: () => 'stage.log', ensureArchiveFolder: async () => true,
+    apiAppendParts: async (path, parts, append) => { calls.push({ path, text: parts.join(''), append }); },
+    trackArchiveWrite: (_folder, task) => Promise.resolve().then(task),
+  };
+  vm.createContext(context); vm.runInContext(source.slice(start, end), context);
+  const sink = context.createClientStageLogSink(stage, { tag: 'tag' }, 1, '阶段');
+  sink.append('head\n'); sink.append('tail\n');
+  assert.equal(await sink.flush(), '/logs/run/stage.log');
+  assert.deepEqual(calls, [
+    { path: '/logs/run/stage.log', text: 'head\n', append: false },
+    { path: '/logs/run/stage.log', text: 'tail\n', append: true },
+  ]);
+  assert.equal(stage._serverLogPending, false);
+  assert.equal(stage._serverLogFile, '/logs/run/stage.log');
+});
+
+test('轮询日志后续追加仍在途时不得提前清除 pending 标记', async () => {
+  const start = source.indexOf('function createClientStageLogSink(');
+  const end = source.indexOf('/* 是否显式配置了归档根目录', start);
+  const releases = [], calls = [], stage = {};
+  const context = {
+    console,
+    archiveFolderFor: () => '/logs/run', taskLogFile: () => 'stage.log', ensureArchiveFolder: async () => true,
+    apiAppendParts: async (_path, parts) => { calls.push(parts.join('')); await new Promise(resolve => releases.push(resolve)); },
+    trackArchiveWrite: (_folder, task) => Promise.resolve().then(task),
+  };
+  vm.createContext(context); vm.runInContext(source.slice(start, end), context);
+  const sink = context.createClientStageLogSink(stage, { tag: 'tag' }, 1, '阶段');
+  sink.append('first'); sink.append('second');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stage._serverLogPending, true); assert.deepEqual(calls, ['first']);
+  releases.shift()(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stage._serverLogPending, true, '第二块尚未落盘时第一块成功回调不能清掉 pending');
+  assert.deepEqual(calls, ['first', 'second']);
+  releases.shift()(); assert.equal(await sink.flush(), '/logs/run/stage.log');
+  assert.equal(stage._serverLogPending, false);
 });

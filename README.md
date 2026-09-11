@@ -41,6 +41,7 @@
 
 - **必须在插件根目录下构建**：`build.mjs` 会把产物写到当前插件的 `lib/`。
 - 客户端 bundle 保持 window.__ModuleLoader__.load 握手，react/@deepseek-ai/* 全部 external。
+- **一键编译发行**：`scripts/build.sh` 是本仓的仓内构建脚本，供 PR 检视台（`projects/codereview`）「编译发行」页选用——依次完成版本一致性校验、构建、测试与 `npm pack` 打包，产出固定文件名 `dist/tokens-worktable.tgz`（对应方式 A 的 `releases/latest/download/tokens-worktable.tgz`）；发行页「产物路径」填 `dist/*.tgz` 即可随发行版上传，也可点「✦ AI 建议」分析所选代码仓/分支并同时自动回填构建脚本与产物路径；「✦ AI 生成」完成后会把发行说明直接回填。本机也可直接 `bash scripts/build.sh` 验证（可用环境变量见脚本头注释）。
 
 ## 内置项目
 
@@ -76,7 +77,7 @@ Content-Type: application/json
   },
   "branch": "release/2026",
   "strategy": "blue-green",
-  "presets": ["cleanup", "check", "profiling", "promCollect"],
+  "presets": ["cleanup", "check", "profiling"],
   "by": "jenkins"
 }
 ```
@@ -86,7 +87,7 @@ Content-Type: application/json
 - `repository`：仅覆盖本次运行的代码仓 `name` / `url` / `user` / `pass`；适合传入不落盘的一次性访问令牌，未提供的字段继承所选代码仓。
 - `branch`：分支或 Tag。
 - `strategy`：部署策略，传空字符串可明确覆盖默认策略。
-- `presets`：本次启用的预设任务；传空数组可明确关闭全部预设任务。
+- `presets`：本次启用的预设任务（可选值 `cleanup` / `check` / `profiling`）；传空数组可明确关闭全部预设任务。普罗（Prometheus）数据采集不在预设任务中，改为在编辑器任务卡上按任务勾选「收集普罗数据」：该任务进入终态后按「任务开始→结束」时段采集，产物写入归档目录的 `{任务名}-{阶段序号}-普罗数据` 文件夹（服务端执行同样生效，结果标注在任务日志的 `[普罗采集]` 行）。
 - `by`：触发方标识，默认 `api`。
 
 接受请求后返回 HTTP `202`，响应含 `runId`、`pipelineId` 和 `pipelineName`；脚本、HTTP/Jenkins、EvalTokens 及所选预设任务均由服务端执行，运行结果写入流水线历史，可由 `runId` 关联。Jenkins 会依据触发响应的 queue `Location` 锁定本次构建号；远端 JSON / 正文读取上限分别为 2 MiB / 16 MiB。一次性代码仓凭据只存在于该次执行内，不写入配置或历史；仍应使用 HTTPS 调用接口，并避免让任务脚本回显凭据。

@@ -153,6 +153,37 @@ test('显式环境与代码仓参数可覆盖失效默认引用并继续运行',
   assert.equal(started.branch,'release');
 });
 
+test('页面已有 4 条活跃流水线时，无机器冲突的新运行也进入队列',()=>{
+  let starts=0;
+  const pipeline={id:'pipe-b',name:'发布',stages:[]};
+  const env={id:'env-new',ip:'10.0.0.99'};
+  const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
+  const ctx=loadDefaults({Date,Math,environments:[env],repositories:[{id:'repo-a',name:'仓库 A',url:'a.git'}]});
+  Object.assign(ctx,{
+    DEFAULT_IMAGE:'app',QUEUE_CAP:8,MAX_ACTIVE_RUNS:4,queue:[],activeRuns:Array.from({length:4},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.0.'+(i+1)}]})),
+    $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:()=>{starts++;return true;},
+  });
+  vm.runInContext(extractFunction('runPipeline'),ctx);
+  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',presets:[]}),'queued');
+  assert.equal(starts,0);
+  assert.equal(ctx.queue.length,1);
+});
+
+test('队列排空在达到 4 个全局槽位后停止，释放槽位后继续启动',()=>{
+  const ctx={
+    MAX_ACTIVE_RUNS:4,activeRuns:Array.from({length:3},(_,i)=>({id:'r'+i})),queue:[{id:'q1'},{id:'q2'}],
+    conflictsActive:()=>false,machineConflict:()=>false,console,
+  };
+  ctx.startRun=item=>{ ctx.activeRuns.push(item); };
+  vm.createContext(ctx); vm.runInContext(extractFunction('drainQueue'),ctx);
+  ctx.drainQueue();
+  assert.equal(ctx.activeRuns.length,4); assert.equal(ctx.queue.length,1);
+  ctx.activeRuns.pop(); ctx.drainQueue();
+  assert.equal(ctx.activeRuns.length,4); assert.equal(ctx.queue.length,0);
+});
+
 test('编辑器表单完整收集环境、代码仓、分支、策略和预设任务',()=>{
   const presetInputs=[
     {checked:true,getAttribute:()=> 'cleanup'},

@@ -1,5 +1,70 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线「打开归档目录」改为「关闭侧边会话窗 + better-sidebar 侧边窗打开」（`projects/pipeline/pipeline.html`
+  + `src/client/index.tsx`）：点击后仍经 dsh-better-sidebar 侧边窗打开归档目录（文件夹窗口，文件树以
+  归档目录为根，同目录复用同标签），打开成功后经新增宿主桥 `window.__dshCloseSideChat()` 关闭工作台
+  侧边会话窗（聊天列）让出屏幕空间；better-sidebar 不可用时回退服务端系统文件管理器（回退路径不关
+  会话窗），目录选取与存在性预检/回退归档根逻辑不变。新增「侧边窗打开成功后关闭会话窗」「回退系统
+  文件管理器时不关会话窗」回归测试。
+- 流水线「执行人」缺省取 dsh 登录用户（`projects/pipeline/pipeline.html`）：本地无执行人记录
+  （首次使用或清过浏览器数据）时，自动以 dsh-auth-gate `/auth/status` 当前登录用户名填充主控
+  「执行人」输入框，定时计划与 API 请求体沿用同一取值随之获得默认；token 共享模式（username 为空）、
+  未登录或探测失败保持留空走原有「必填」拦截。localStorage 已保存值、导入恢复值与等待探测期间的
+  手动输入均优先、不覆盖。新增 `tests/test_executor_auth_default.js` 覆盖填充、裁剪、不覆盖与失败兜底。
+- 流水线大量日志 / 长时间任务二次性能加固（`projects/pipeline/pipeline.html` + `src/index.ts`）：
+  浏览器实时输出由反复拼接字符串改为 256 KiB 分片尾窗，脚本、预设任务、Jenkins、HTTP 与 EvalTokens
+  的终态也只保留尾窗；完整日志由服务端边执行边落盘，Jenkins / HTTP / EvalTokens 轮询日志通过
+  `/write-stream?mode=append` 串行追加，并在下一轮拉取前等待落盘形成背压，避免浏览器长期持有全文或
+  待写分片无界排队；追加请求中断会回滚本次字节，同一路径替换/追加串行化，运行汇总再由
+  `/concat-stream` 直接流式拼接任务日志文件，浏览器不回读完整日志；脚本任务日志从打开到写完
+  `[exit]` / `[aborted]` 全程持有源文件锁，汇总会等待关闭后再读取；页面请求发出前即记录预期日志路径，即使在
+  建目录/打开文件期间、响应头到达前中止，汇总也会等待服务端写完中止标记，避免丢尾部或被页面尾窗覆盖。输出变量改为随 stdout / Jenkins 控制台
+  增量提取，早期 `KEY=VALUE` 离开尾窗后仍可传给下游；`*=全文` 仅保留 128 KiB，超限时跳过并明确告警。
+  浏览器直连正文和服务端 `/proxy` 均在读取过程中执行 20 MiB 硬上限，声明长度或 chunked 响应超限即
+  中止上游；HTTP/Jenkins 阶段从进入阶段即启动 deadline，并把同一 `AbortSignal` 传到触发、crumb、
+  状态轮询和控制台请求，停止或超时不会继续挂住网络连接；单次控制台响应超过 20 MiB 后禁用本阶段后续拉取并给出日志不完整告警，
+  避免围绕同一 offset 反复下载超大响应。API/定时流水线的 Jenkins 最终控制台请求同样严格服从阶段 deadline，非超时读取失败保留真实构建终态并写入可见告警。
+  页面增加 4 条活跃运行上限，API 与定时计划共用 2 槽 FIFO 执行池（最多排队 100 条）；
+  队列满时 API 返回 503，计划任务保留触发点并在下个 tick 重试，不再返回成功或静默丢弃。
+  服务端计划脚本由 `execFile` 全量缓冲改为 `spawn` 流式写任务日志、内存仅留 256 KiB 尾窗，汇总日志
+  直接流式复制任务文件，EvalTokens HTML 报告也改走原始流上传而非 JSON 正文。历史裁剪由反复
+  `JSON.stringify` 改为每条记录仅序列化一次；后台 Prom 收集
+  强制走流式接口，手动收集日志 DOM / 文本有界（同时限制字符数和 DOM 节点数）；实时详情最多每
+  250ms 物化一次尾窗。失败归档 Promise 会从在途集合清理，最近错误以
+  最多 100 项的可消费映射保留。新增并发池、超大脚本落盘、代理超限、历史线性裁剪、追加归档、
+  完整汇总、请求取消、早期变量保留与各类有界日志回归测试。
+- PR 检视台「编译发行」新增 AI 配置建议与结果自动回填（`projects/codereview/code-review-prs.html`、
+  `src/client/index.tsx`）：构建脚本行新增「✦ AI 建议」，在右侧聊天窗分析当前代码仓/分支后以受标记约束的
+  JSON 同时返回构建脚本和匹配的产物路径；页面校验仓内相对路径、自动回填，并沿用现有分支级云端设置保存。
+  发行说明「✦ AI 生成」改为等待会话完成后直接提取标记内 Markdown 回填文本框，不再要求手工复制。
+  新增 `window.__dshSendChatForResult(text)` 宿主桥：新建并打开右侧会话、自动发送提示，同时订阅真实会话运行态
+  与公开 `eventSource` 事件窗，完成后读取最后一条 AI 文本返回 iframe；当前选中会话不带 `completed` 提醒标志，
+  故以 `running` 停止、`turn/end` 为正常完成且事件窗已有未中止回答为完成条件。生成期间切换平台/仓库/分支/
+  发行信息会尽早停止旧任务；结构化结果字段类型、危险路径或标记解析失败均保留原表单值。新增
+  `tests/ai-chat-result.test.mjs`、`tests/codereview-ai-suggestions.test.mjs` 覆盖结果等待、
+  结构化解析、安全校验、双字段/发行说明回填及过期结果保护。
+- 项目手动排序纳入服务端同步存储（`src/index.ts` + `src/client/index.tsx`）：侧边栏项目列表拖拽落序的
+  order（项目 id 序列）从仅 localStorage 扩展为同步进 `/api/worktable/projects` 存储文件，跨浏览器固定顺序——
+  客户端同步切片 `syncedSliceOf` 带上 order，落序后随既有「同步切片有变化才推送」比较自动 PUT，全量覆盖写
+  last-write-wins 不变；服务端 GET/PUT 白名单新增 order 字段（仅接受字符串数组、过滤非字符串元素、缺省
+  `[]`，1MB 上限与 tmp+rename 原子落盘不变）。启动合并时远端 order 非空则远端优先、本地独有 id 保相对序
+  追加尾部（模块级纯函数 `mergeRemoteOrder`）；远端没存 order（旧存储文件）时保留本地序不动，避免空远端
+  清掉本地序；合并结果与远端不一致（远端缺 order 或合并产生追加）时启动一次性回推完整同步切片自愈。
+  localStorage 中 order 的读写不变，作离线/服务端不可用兜底。测试：`tests/projects-order-sync.test.mjs`
+  新增（服务端 PUT 过滤落盘 / GET 返回与旧文件兜底、客户端远端优先合并与无远端序保留本地）。
+- 项目管理行「✏️ 页面修改」点击后强制打开会话窗（`src/client/index.tsx` 的 `startPageEdit`）：此前会话窗被 💬
+  关闭时（内容窗全宽、会话视图区 display:none）点 ✏️ 只在后台建好新会话并填好草稿，用户看不到任何反馈；
+  现在建会话前先 `splitStore.setChatClosed(false)`——不管会话窗当前是开是关，都打开会话窗再新建会话填入提示词；
+  分栏未打开（无项目在项目视图里）时不受影响（全宽会话视图本就可见），调用失败静默忽略。
+- 代码仓「部署策略」配置新增脚本来源（`projects/pipeline/pipeline.html`）：代码仓表单在「部署策略 URL」前加
+  「策略·URL / 策略·脚本」来源切换——URL 模式沿用原有按分支（`{branch}` 占位）拉取分页 JSON；脚本模式按主控
+  当前分支经 `/api/worktable/exec` 执行 scripts 目录中的脚本（注入 `GIT_BRANCH` 与 `GIT_URL`/`GIT_USER`/
+  `GIT_PASSWORD`，30 秒超时），stdout 每行解析为一个策略名（去空白、跳过空行、按序去重），脚本缺失 / 非零退出 /
+  空输出视为失败。仓库模型新增 `strategyMode`/`strategyScript` 字段（`normalizeRepo` 归一化，旧数据缺省 URL 模式），
+  「部署策略」列与「策略测试」按来源展示/分流，策略缓存 key 含来源（改配置后旧缓存自动失效），主控与定时页策略
+  面板头部标注来源类型。文档（`projects/pipeline/scripts/README.md` 新增「部署策略脚本」契约）与测试
+  （`projects/pipeline/tests/test_strategy_script.js`：配置归一化 / 来源解析 / 缓存 key / 输出解析 / 执行拉取的
+  成功与失败分支）同步更新。
 - pipeline.html「📂 打开归档目录」修复目标目录不存在时的打开行为（`projects/pipeline/pipeline.html`）：
   打开前新增目录存在性预检（`resolveExistingFolder`，经 `/api/worktable/fs` 探测），目标归档目录
   不存在时（历史归档已清理、归档路径改过等）统一回退打开其父目录（归档根），连归档根都不存在才报
@@ -9,6 +74,48 @@
   按钮悬停提示同步重写为现行真实行为（原地经侧边栏/文件管理器打开、保持当前页面与会话、不新建
   会话），移除已下线的「新建 AI 会话并切入其窗口」旧描述。测试：`test_execution_progress.js` 新增
   目标不存在回退 / 根不存在报错 / 探测失败放行三例，「打开目录前等待写入」fetch 桩兼顾预检请求。
+- 新增仓内构建脚本 `scripts/build.sh`（供 PR 检视台「编译发行」页选用，也可本机直接执行）：在克隆出的仓库根目录
+  依次执行「RELEASE_TAG 与 package.json / dsh.plugin.json 版本一致性校验（`SKIP_VERSION_CHECK=1` 可跳过）→
+  依赖就绪（本仓 node_modules 已随 git 跟踪，浅克隆即可用，缺失时才 `npm ci`）→ 构建（默认 `node build.mjs`，
+  注入 `BUILD_CMD` 时改跑自定义命令）→ `node --check` 产物语法校验 → 测试（默认插件 node 用例，
+  `FULL_TESTS=1` 跑完整 `npm test`，`SKIP_TESTS=1` 跳过）→ `npm pack` 打包并重命名为
+  `dist/tokens-worktable.tgz`（文件名固定，对应 README 安装地址 `releases/latest/download/tokens-worktable.tgz`；
+  发行页「产物路径」配置 `dist/*.tgz` 即随发行版上传）」。README「构建注意事项」同步补充说明。
+- 流水线普罗数据采集改为任务粒度（`projects/pipeline/pipeline.html` + `src/index.ts`）：「收集普罗数据」从系统预设任务
+  中下线（主控「预设任务」多选、流水线默认运行参数、阶段列表 promCollect 预设标记行、预设任务内 model/namespace/起止
+  时间配置、服务端 API `presets` 的 `promCollect` 值一并移除；旧流水线/导入数据经 `migratePromPreset` 与服务端
+  materialize 自动过滤遗留标记行与旧顶层 `prom` 配置），改为编辑器任务卡上的「收集普罗数据」开关（`data-f="promCollect"`，
+  随阶段持久化）。勾选的任务进入终态（成功/失败）后，按「本任务开始→结束」时段调用「设置 → 普罗数据服务配置」的收集
+  脚本采集普罗指标：页面运行经 `advance`/`finish` 的 `taskPromFinalize` 后台采集（不阻断流水线，输出落产物目录
+  `collect.log`，失败仅告警；「从失败阶段重试」复位标记后重采），定时计划与 API 服务端执行（`execPlan`）同步采集并把
+  结果标注到该任务日志的 `[普罗采集]` 行。产物目录统一为归档文件夹下 `{任务名}-{阶段序号}-普罗数据`（未配置归档时落到
+  scripts 目录 `vllm-metrics/` 同名子目录）；`model_name` / `xds_namespace` 不再随流水线配置，统一按默认占位
+  `${MODEL_PATH}` / `${DEPLOY_STRATEGY}-${BY}` 在采集时点解析（解析不出则不注入），手动「📊 收集普罗数据」补采同源。
+  文档（`README.md`、`projects/pipeline/scripts/README.md`）与测试（`tests/pipeline-run-api.test.mjs`、
+  `projects/pipeline/tests/test_cleanup_flow.js`、`test_config_import_export.js`、`test_execution_progress.js`）同步更新。
+- 内置（默认）流水线只读查看（`projects/pipeline/pipeline.html`）：内置流水线在「流水线任务」列表的操作
+  由「编辑」改为「查看」，打开的是只读模式编辑器——名称 / 脚本目录 / 默认环境与阶段卡内全部编辑控件禁用，
+  保存 / 添加阶段入口隐藏，任务卡禁止拖拽、选中卡不再出现「+」插入按钮，仅保留「关闭 / 取消」退出；只读
+  模式不恢复编辑草稿（展示内置定义真值），阶段参数异步重识别后重新应用禁用。`savePlForm` 与
+  `persistFlowOrder` 兜底拦截一切写回内置定义的路径；主视图（编排区）对内置流水线同样禁止拖拽改序
+  （`flowDraggable` 统一守卫），节点提示改为「双击查看」。需要调整内置流水线时仍在列表「复制」为可编辑副本。
+  新增 `projects/pipeline/tests/test_pipeline_readonly.js`（只读标志 / 标题 / 草稿跳过、控件禁用与恢复、
+  保存与拖拽落盘兜底、选中卡插入按钮）。
+- 流水线「API」弹窗的请求体与 curl 示例改为按运行框当前填写的运行参数动态生成
+  （`projects/pipeline/pipeline.html` 的 `pipelineApiSpec`）：环境多选、代码仓、分支、部署策略、
+  执行人、预设任务均取主控运行栏当前值（与点「▶ 运行流水线」取数一致），不再读取流水线保存的
+  默认参数；分支留空回退 `main`、执行人留空回退 `api`（服务端缺省），空策略 / 空预设作为显式值
+  逐项覆盖默认配置。当前无有效环境 / 代码仓选择时省略对应字段（显式空数组 / 空串会被服务端判
+  400，省略则调用时回退流水线默认配置）并在弹窗内给出警告。配套更新
+  `projects/pipeline/tests/test_pipeline_api_ui.js`。
+- PR 检视台「编译发行」分支级构建设置云端保存与自动填充（`projects/codereview/code-review-prs.html`）：构建脚本 /
+  构建命令 / 超时 / 产物路径 / 预发布按「owner/repo@branch」为键存入服务端云端文件
+  `$DSH_HOME/storages/dsh-codereview-relcfg-{gc|gh}.json`（经 `/api/worktable/file|write|mkdir` 读写，按平台分桶，
+  所有浏览器共享，与云端构建历史同目录同模式）。字段改动或启动一次发行即 upsert 本地镜像并防抖 600ms 写回；
+  选中仓库 / 分支、进入发行页、拉取仓库列表、切换平台时按当前键从云端镜像自动填充，无记录的键保留表单现值。
+  拉取 / 填充均带代次与键复核（在途旧平台拉取、填充等待期间切换仓库分支均丢弃），写云端前先确保镜像已拉取，
+  避免按空缓存覆盖丢其他分支设置；构建脚本行新增云端状态提示（保存中 / 已保存 / 已自动填充 / 写回失败 toast）。
+  本机 `relcfg`（localStorage）仍只记「上次所选仓库 / 分支」，行为不变。
 - 流水线支持按条目通过 API 启动（`src/index.ts` + `projects/pipeline/pipeline.html`）：新增
   `POST /api/worktable/pipeline/run/<pipelineId>`，请求异步接受并返回 `runId`；可设置目标环境 ID、代码仓 ID、
   分支、部署策略、预设任务和触发方，任一字段未传时逐项采用该流水线默认值。API 复用服务端计划执行器，
@@ -84,13 +191,14 @@
     与临时字符串分配由重复下载全文的平方级增长降为线性增长。
   - 详情内容指纹改在 `buildLog` 前计算：长任务只有进度变化、没有新输出时只更新进度条，不再每
     300ms 拆分完整 stdout；有界尾窗用递增 `_outputRevision` 标记真实更新，避免等长采样指纹碰撞。
-    流读取和轮询日志改为分块收集、结束时仅合并一次；阶段完成后的完整 stdout 与输出变量契约保持不变。
+    流读取和轮询日志改为分块收集、结束时仅合并一次；后续二次加固进一步把终态 stdout 改为有界尾窗，
+    输出变量改在流到达时增量提取，完整回显直接落服务端任务日志（见本文件首条）。
   - 任务 / 汇总归档改为原始字符串分片，不再把大日志 `split` 成百万行后再 `join`；新增
     `/api/worktable/write-stream` 原始请求体接口，浏览器用 Blob 分片上传，服务端边读边写临时文件并原子
     替换（上限 256 MiB），避免完成时生成整份行数组和 JSON 转义副本；超限、客户端断开或原子替换失败
     均清理临时文件且不覆盖旧目标。变量 / JSON 提取也改为逐行扫描。
-  - HTTP/Jenkins 与 EvalTokens 运行期间把完整原始分片挂到阶段归档状态；用户在异步轮询返回前中止时，
-    `abortRun` 也能归档已被 256 KiB 实时尾窗淘汰的早期内容。正常终态合并后释放重复分片引用。
+  - HTTP/Jenkins 与 EvalTokens 运行期间最初由页面保存完整原始分片；后续二次加固改为经服务端追加接口
+    边轮询边落盘，页面的运行中 / 中止兜底也仅保留 256 KiB 尾窗，正常终态不再保留重复全文引用。
   - 新增慢客户端 8 MiB 输出、背压后断连、慢归档磁盘 4 MiB 输出的背压 / 完整性测试，以及详情窗口、修订缓存、
     预设 / Jenkins / EvalTokens 实时快照、刷新节流、分片归档与流式写入失败清理测试；实测 32 MiB
     输出且客户端暂停读取时，服务端 HTTP 积压由约 30.4 MiB 降至约 1.01 MiB，恢复读取后继续执行并完整落盘。

@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
-import { readdirSync, realpathSync } from 'node:fs'
+import { createReadStream, readdirSync, realpathSync } from 'node:fs'
 import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
@@ -167,6 +167,33 @@ function json(res: any, status: number, body: unknown) {
   res.end(JSON.stringify(body))
 }
 
+/** 代理响应在读取过程中执行硬上限，不能等 Buffer.concat 后才发现超限。 */
+function collectProxyResponse(resp: any, maxBytes = 20 * 1024 * 1024): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0, settled = false
+    const cleanup = () => { resp.off?.('data', onData); resp.off?.('end', onEnd); resp.off?.('error', onError) }
+    const finishError = (error: any) => { if (settled) return; settled = true; cleanup(); reject(error) }
+    const tooLarge = () => {
+      const error: any = new Error('response too large'); error.statusCode = 502
+      try { resp.destroy?.() } catch {}
+      finishError(error)
+    }
+    const onData = (raw: any) => {
+      const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
+      size += chunk.length
+      if (size > maxBytes) { tooLarge(); return }
+      chunks.push(chunk)
+    }
+    const onEnd = () => { if (settled) return; settled = true; cleanup(); resolvePromise(Buffer.concat(chunks, size)) }
+    const onError = (error: any) => finishError(error)
+    resp.on('data', onData); resp.on('end', onEnd); resp.on('error', onError)
+    const rawLength = resp.headers?.['content-length']
+    const declared = Number(Array.isArray(rawLength) ? rawLength[0] : rawLength)
+    if (Number.isFinite(declared) && declared > maxBytes) tooLarge()
+  })
+}
+
 async function readJsonBody(req: any): Promise<any> {
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
@@ -230,6 +257,22 @@ function cleanPipelineHistory(history: any[]) {
   })
 }
 
+/** 将历史裁成能放入存储上限的最新前缀；配置和每条候选记录至多序列化一次。 */
+function serializePipelineStore(config: any, history: any[], maxChars = 20 * 1024 * 1024): string {
+  const prefix = '{"config":' + (JSON.stringify(config) ?? '{}') + ',"history":['
+  const suffix = ']}'
+  const records: string[] = []
+  let length = prefix.length + suffix.length
+  for (const record of history) {
+    const text = JSON.stringify(record) ?? 'null'
+    const extra = text.length + (records.length ? 1 : 0)
+    /* 与旧逻辑一致：即使单条最新记录或 config 自身超过上限，也至少保留最新记录。 */
+    if (records.length && length + extra > maxChars) break
+    records.push(text); length += extra
+  }
+  return prefix + records.join(',') + suffix
+}
+
 function gitExec(args: string[], cwd: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     execFile('git', args, { cwd, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
@@ -241,7 +284,7 @@ function gitExec(args: string[], cwd: string): Promise<string> {
 
 /* ---------- 流水线 API 触发 ---------- */
 const PIPELINE_RUN_API_PATH = '/api/worktable/pipeline/run'
-const PIPELINE_RUN_PRESETS = new Set(['cleanup', 'check', 'profiling', 'promCollect'])
+const PIPELINE_RUN_PRESETS = new Set(['cleanup', 'check', 'profiling'])
 const PIPELINE_RUN_BODY_LIMIT = 64 * 1024
 const PIPELINE_REMOTE_JSON_LIMIT = 2 * 1024 * 1024
 const PIPELINE_REMOTE_TEXT_LIMIT = 16 * 1024 * 1024
@@ -301,19 +344,20 @@ const SERVER_PRESET_META: Record<string, { id: string; name: string; block: bool
   cleanup: { id: '__cleanup__', name: '环境清理', block: false },
   check: { id: '__check__', name: '环境检查', block: true },
   profiling: { id: '__profiling__', name: 'Profiling', block: false },
-  promCollect: { id: '__prom_collect__', name: '收集普罗数据', block: false },
 }
 
 function serverPresetScript(key: string, config: any): any {
   if (key === 'cleanup') return config.cleanupScript || null
   if (key === 'check') return config.checkScript || null
   if (key === 'profiling') return config.profilingScript || null
-  if (key === 'promCollect') {
-    const name = config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
-    if (!name) return null
-    return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
-  }
   return null
+}
+
+/* 任务级普罗采集的收集脚本（设置 → 普罗数据服务配置 → 收集脚本）：阶段勾选「收集普罗数据」后在任务终态调用（见 execPlan） */
+function serverPromCollectScript(config: any): any {
+  const name = config && config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
+  if (!name) return null
+  return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
 }
 
 function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
@@ -342,7 +386,7 @@ function materializeServerPipelineStages(stages: any[], presets: string[], confi
   }
   const missingFront = ['cleanup', 'check'].filter((key) => selected.has(key) && !seen.has(key))
     .map((key) => materialize({}, key))
-  const missingBack = ['profiling', 'promCollect'].filter((key) => selected.has(key) && !seen.has(key))
+  const missingBack = ['profiling'].filter((key) => selected.has(key) && !seen.has(key))
     .map((key) => materialize({}, key))
   return missingFront.concat(out, missingBack)
 }
@@ -581,11 +625,21 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       await deps.sleep(2000)
     }
     let consoleText = ''
+    let consoleWarning = ''
     try {
       const consoleResult = await serverFetchResponse(deps.fetchFn, base + jobPath + buildNumber + '/consoleText', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 控制台')
-      if (consoleResult.response.status >= 200 && consoleResult.response.status < 300) consoleText = consoleResult.text
-    } catch { /* 控制台读取失败不覆盖真实构建结果 */ }
-    const stdout = [triggered.text, consoleText].filter(Boolean).join('\n') || ('Jenkins build #' + buildNumber + ' ' + result)
+      if (consoleResult.response.status < 200 || consoleResult.response.status >= 300) throw new Error('Jenkins 控制台 HTTP ' + consoleResult.response.status)
+      consoleText = consoleResult.text
+    } catch (error) {
+      const message = String(error && (error as Error).message ? (error as Error).message : error)
+      /* 构建终态已成功也不能绕过阶段 deadline；serverFetchResponse 的超时必须传递为阶段失败。
+         非超时的控制台故障不改写 Jenkins 真实终态，但不得静默丢日志。 */
+      if (/等待超时/.test(message)) throw error
+      ensureServerStageTime(deadline, 'Jenkins 控制台')
+      consoleWarning = '[warn] Jenkins 控制台读取失败，任务结果仍以 Jenkins 状态为准，日志可能不完整：' + message.slice(0, 512)
+    }
+    const stdoutBase = [triggered.text, consoleText].filter(Boolean).join('\n') || ('Jenkins build #' + buildNumber + ' ' + result)
+    const stdout = stdoutBase + (consoleWarning ? '\n' + consoleWarning : '')
     return { code: result === 'SUCCESS' ? 0 : 1, stdout, stderr: result === 'SUCCESS' ? '' : 'Jenkins 构建结果 ' + result }
   } catch (error) {
     return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
@@ -661,15 +715,10 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
   }
 }
 
-function buildServerPromCollectEnv(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, runStartedAt: number): Record<string, string> {
-  const detail = stage && stage.prom && typeof stage.prom === 'object' ? stage.prom : {}
-  const parseFixed = (value: any) => value ? new Date(String(value)).getTime() : null
-  const fixedStart = parseFixed(detail.startTime)
-  const fixedEnd = parseFixed(detail.endTime)
-  if ((fixedStart !== null && !Number.isFinite(fixedStart)) || (fixedEnd !== null && !Number.isFinite(fixedEnd))) throw new Error('普罗采集时间格式无效')
-  const startMs = fixedStart === null ? runStartedAt : fixedStart
-  const endMs = fixedEnd === null ? Math.max(Date.now(), startMs + 1) : fixedEnd
-  if (startMs >= endMs) throw new Error('普罗采集开始时间必须早于结束时间')
+/* 任务级普罗采集环境（与页面 taskPromCollect 一致）：时段=任务开始→结束；模型/命名空间按默认占位
+   ${MODEL_PATH} / ${DEPLOY_STRATEGY}-${BY} 在采集时点解析（解析不出则不注入）；产物目录={任务名}-{阶段序号}-普罗数据 */
+function buildServerTaskPromEnv(runCtx: any, config: any, varsPool: Record<string, string>, startMs: number, endMs: number, outputDir: string): Record<string, string> {
+  if (!(endMs > startMs)) endMs = startMs + 1
   const vars = serverRunVariables(runCtx, varsPool)
   const env: Record<string, string> = {
     METRICS_ACTION: 'collect',
@@ -679,14 +728,12 @@ function buildServerPromCollectEnv(stage: any, runCtx: any, config: any, varsPoo
     VLLM_METRICS_END: String(Math.floor(endMs / 1000)),
     PROMETHEUS_URL: String(config && config.prom && config.prom.url ? config.prom.url : '').trim(),
   }
-  const model = substituteServerRunVars(detail.modelName === undefined ? '${MODEL_PATH}' : detail.modelName, vars).trim()
-  const namespace = substituteServerRunVars(detail.xdsNamespace === undefined ? '${DEPLOY_STRATEGY}-${BY}' : detail.xdsNamespace, vars).trim()
+  const model = substituteServerRunVars('${MODEL_PATH}', vars).trim()
+  const namespace = substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim()
   if (model) { env.ARCH_NAME = model; env.MODEL_NAME = model }
   if (namespace) { env.NAMESPACE = namespace; env.XDS_NAMESPACE = namespace }
-  if (runCtx.archive) {
-    env.ARCHIVE_FOLDER = String(runCtx.archive)
-    env.METRICS_OUTPUT_DIR = String(runCtx.archive).replace(/\/+$/, '') + '/metrics'
-  }
+  if (runCtx.archive) env.ARCHIVE_FOLDER = String(runCtx.archive)
+  env.METRICS_OUTPUT_DIR = outputDir
   return env
 }
 
@@ -776,6 +823,38 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
   }
 }
 
+/** API 与定时计划共用的有界 FIFO 执行池，避免多个长任务同时创建子进程并争抢日志 I/O。 */
+function createPipelineExecutionQueue(execute: (plan: any) => Promise<void>, limit = 2, queueLimit = 100) {
+  const concurrency = Math.max(1, Math.floor(Number(limit) || 1))
+  const pendingLimit = Math.max(1, Math.floor(Number(queueLimit) || 1))
+  const pending: Array<{ plan: any; resolve: () => void; reject: (error: unknown) => void }> = []
+  let active = 0
+  const drain = () => {
+    while (active < concurrency && pending.length) {
+      const item = pending.shift()!
+      active += 1
+      Promise.resolve().then(() => execute(item.plan)).then(item.resolve, item.reject).finally(() => {
+        active -= 1
+        drain()
+      })
+    }
+  }
+  return {
+    run(plan: any): Promise<void> {
+      if (pending.length >= pendingLimit) {
+        const error: any = new Error('pipeline execution queue full')
+        error.status = 503; error.code = 'PIPELINE_QUEUE_FULL'
+        throw error
+      }
+      return new Promise<void>((resolvePromise, reject) => {
+        pending.push({ plan, resolve: resolvePromise, reject })
+        drain()
+      })
+    },
+    stats: () => ({ active, queued: pending.length, limit: concurrency }),
+  }
+}
+
 function registerPipelineRunApi(webServer: any, deps: {
   readStore: () => Promise<any>;
   execute: (plan: any) => Promise<void>;
@@ -799,7 +878,8 @@ function registerPipelineRunApi(webServer: any, deps: {
         const built = buildPipelineApiRun(await deps.readStore(), pipelineId, body, runId)
         if (!built.plan) { json(res, built.status || 400, { error: built.error || 'invalid request' }); return }
         const plan = built.plan
-        Promise.resolve().then(() => deps.execute(plan)).catch((err) => {
+        const execution = deps.execute(plan)   // 执行池满会同步抛 503；只有真正入池后才可回复 accepted
+        Promise.resolve(execution).catch((err) => {
           if (deps.warn) deps.warn('流水线 API 运行 ' + runId + ' 失败：' + String(err && err.message ? err.message : err))
         })
         json(res, 202, { ok: true, accepted: true, runId, pipelineId: plan.pipelineId, pipelineName: plan.pipelineName })
@@ -1019,6 +1099,7 @@ export function apply(ctx: Context) {
 
   // 跨浏览器同步的项目存储：新建项目一律本地（localStorage），完善后在管理列表点 ☁「发布」，
   // 布局条目转存此文件；任何浏览器启动时 GET 拉取合并，取消发布即移出。
+  // 手动排序 order（项目 id 序列）也存此文件，跨浏览器固定顺序；localStorage 副本仅作离线兜底。
   // 全量覆盖写（last-write-wins），原子落盘（tmp + rename）。
   const PROJECTS_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-projects.json')
   webServer.register({
@@ -1035,6 +1116,7 @@ export function apply(ctx: Context) {
             folders: p.folders && typeof p.folders === 'object' ? p.folders : {},
             workspaces: p.workspaces && typeof p.workspaces === 'object' ? p.workspaces : {},
             prompts: p.prompts && typeof p.prompts === 'object' ? p.prompts : {},
+            order: Array.isArray(p.order) ? p.order.filter((x: unknown) => typeof x === 'string') : [],
           })
           return
         }
@@ -1055,7 +1137,10 @@ export function apply(ctx: Context) {
           if (body.prompts && typeof body.prompts === 'object') {
             for (const [k, v] of Object.entries(body.prompts)) if (typeof v === 'string') prompts[k] = v
           }
-          const text = JSON.stringify({ layouts, folders, workspaces, prompts })
+          const order = Array.isArray(body.order)
+            ? body.order.filter((x: any) => typeof x === 'string')
+            : []
+          const text = JSON.stringify({ layouts, folders, workspaces, prompts, order })
           if (text.length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
           const fsx = await import('node:fs/promises')
           await fsx.mkdir(dirname(PROJECTS_STORE), { recursive: true })
@@ -1112,11 +1197,7 @@ export function apply(ctx: Context) {
             if (merged.length > 500) merged.length = 500
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
-            let text = JSON.stringify({ config, history: merged })
-            while (text.length > 20 * 1024 * 1024 && merged.length > 1) {
-              merged.pop()
-              text = JSON.stringify({ config, history: merged })
-            }
+            const text = serializePipelineStore(config, merged)
             await writeJsonAtomic(PIPELINE_STORE, text)
           })
           json(res, 200, { ok: true })
@@ -1475,14 +1556,71 @@ export function apply(ctx: Context) {
   const stripSuffixName = (name: any) => String(name || '').replace(/\s*·\s*定时后缀\s*$/, '') || 'pipeline'
 
   /** 任务级回显归档（定时执行）：与页面 archiveStageLog 同一约定 run-<tag>-NN-任务名.log；失败仅告警不影响执行 */
+  const taskLogPath = (folder: string, tag: string, seq: number, name: string) => folder + '/run-' + tag + '-' + String(seq).padStart(2, '0') + '-' + sanitizeFsName(name) + '.log'
   async function writeTaskLogFile(folder: string, tag: string, seq: number, name: string, text: string): Promise<string | null> {
     try {
       const fsx = await import('node:fs/promises')
       await fsx.mkdir(folder, { recursive: true })
-      const file = folder + '/run-' + tag + '-' + String(seq).padStart(2, '0') + '-' + sanitizeFsName(name) + '.log'
+      const file = taskLogPath(folder, tag, seq, name)
       await fsx.writeFile(file, text, 'utf8')
       return file
     } catch (e) { console.warn('[archive] 定时任务日志归档失败（不影响执行）:', e); return null }
+  }
+  /** 后缀运行追加前移除旧的末尾结果行，避免同一汇总文件同时出现多个互相矛盾的最终状态。 */
+  async function stripTrailingPipelineResult(file: string) {
+    let handle: Awaited<ReturnType<typeof fsOpen>> | null = null
+    try {
+      handle = await fsOpen(file, 'r+')
+      const stat = await handle.stat()
+      if (!stat.size) return
+      const length = Math.min(stat.size, 64 * 1024)
+      const tail = Buffer.alloc(length)
+      await handle.read(tail, 0, length, stat.size - length)
+      const marker = Buffer.from('[result]')
+      const index = tail.lastIndexOf(marker)
+      if (index < 0) return
+      const absolute = stat.size - length + index
+      if (absolute > 0 && index > 0 && tail[index - 1] !== 10) return
+      if (!/^\[result\][^\r\n]*(?:\r?\n)?[ \t\r\n]*$/.test(tail.subarray(index).toString('utf8'))) return
+      await handle.truncate(absolute)
+      await handle.sync()
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') throw error
+    } finally { try { await handle?.close() } catch {} }
+  }
+  async function writePipelineSummaryFile(file: string, append: boolean, logs: any[], status: string) {
+    const target = pathResolve(file)
+    const unlock = await lockStreamWritePath(target)
+    let handle: Awaited<ReturnType<typeof fsOpen>> | null = null
+    try {
+      await fsMkdir(dirname(target), { recursive: true })
+      if (append) await stripTrailingPipelineResult(target)
+      handle = await fsOpen(target, append ? 'a' : 'w')
+      if (append) await handle.writeFile('\n----- 定时执行（服务端） -----\n', 'utf8')
+      for (const item of logs) {
+        await handle.writeFile('===== ' + item.stage + ' [' + item.status + '] =====\n', 'utf8')
+        if (item.logFile) {
+          try { for await (const chunk of createReadStream(item.logFile)) await handle.writeFile(chunk) }
+          catch { await handle.writeFile(String(item.log || ''), 'utf8') }
+        } else await handle.writeFile(String(item.log || ''), 'utf8')
+        if (item.logSuffix) await handle.writeFile(String(item.logSuffix), 'utf8')
+        await handle.writeFile('\n\n', 'utf8')
+      }
+      await handle.writeFile('[result] ' + status + '\n', 'utf8')
+      await handle.sync()
+    } finally { try { await handle?.close() } finally { unlock() } }
+  }
+  async function appendTaskLogNote(file: string, note: string): Promise<boolean> {
+    let handle: Awaited<ReturnType<typeof fsOpen>> | null = null
+    try {
+      handle = await fsOpen(file, 'a')
+      await handle.writeFile('\n' + note + '\n', 'utf8')
+      await handle.sync()
+      return true
+    } catch (error) {
+      console.warn('[prom] 任务日志追加采集结果失败（不影响执行）:', error)
+      return false
+    } finally { try { await handle?.close() } catch {} }
   }
 
   // ---- 阶段间变量传递（与页面 pipeline.html 同一规则，供服务端定时执行使用）----
@@ -1582,7 +1720,78 @@ export function apply(ctx: Context) {
     return dropped.length ? '[warn] 环境变量 ' + dropped.join('、') + ' 超过单变量 128KiB 上限，未注入；请用「输出变量」JSON 路径截取所需字段（如 XDS_BRANCH=items.0.name）' : null
   }
 
-  function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
+  function createServerTextTail() { return { chunks: [] as string[], head: 0, chars: 0, truncated: false } }
+  function appendServerTextTail(tail: ReturnType<typeof createServerTextTail>, value: unknown) {
+    const text = String(value || ''), limit = 256 * 1024
+    if (!text) return
+    if (text.length >= limit) {
+      const hadText = tail.chars > 0
+      tail.chunks.length = 0; tail.head = 0; tail.chunks.push(text.slice(-limit)); tail.chars = limit
+      tail.truncated = tail.truncated || hadText || text.length > limit
+      return
+    }
+    tail.chunks.push(text); tail.chars += text.length
+    let overflow = tail.chars - limit
+    if (overflow > 0) tail.truncated = true
+    while (overflow > 0 && tail.head < tail.chunks.length) {
+      const first = tail.chunks[tail.head]
+      if (first.length <= overflow) { tail.chunks[tail.head] = ''; tail.head += 1; tail.chars -= first.length; overflow -= first.length }
+      else { tail.chunks[tail.head] = first.slice(overflow); tail.chars -= overflow; overflow = 0 }
+    }
+    if (tail.head > 1024 && tail.head * 2 > tail.chunks.length) { tail.chunks.splice(0, tail.head); tail.head = 0 }
+  }
+  function serverTextTailValue(tail: ReturnType<typeof createServerTextTail>) { return tail.chunks.slice(tail.head).join('') }
+  function serverScriptNeedsFull(spec: unknown) {
+    return String(spec || '').split(',').some(pair => { const p = pair.trim(), eq = p.indexOf('='); if (eq < 0) return false; const src = p.slice(eq + 1).trim(); return src === '' || src === '*' })
+  }
+  function createServerOutputProbe(captureFull: boolean) {
+    return { vars: {} as Record<string, string>, json: null as any, line: '', lineOverflow: false, captureFull, fullParts: [] as string[], fullBytes: 0, fullTextOverflow: false }
+  }
+  function consumeServerOutputLine(probe: ReturnType<typeof createServerOutputProbe>, line: string) {
+    const match = /^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line)
+    if (match) {
+      let value = match[2].replace(/\r$/, '')
+      if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1)
+      probe.vars[match[1]] = value
+    }
+    const text = line.trim()
+    if (text.length < 2 || !((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']')))) return
+    try {
+      const value = JSON.parse(text)
+      if (!value || typeof value !== 'object') return
+      probe.json = value
+      if (!Array.isArray(value)) for (const key of Object.keys(value)) {
+        const item = value[key]
+        if (item !== null && item !== undefined && typeof item !== 'object') probe.vars[key] = String(item)
+      }
+    } catch {}
+  }
+  function appendServerOutputProbe(probe: ReturnType<typeof createServerOutputProbe>, value: unknown) {
+    const text = String(value || '')
+    if (!text) return
+    if (probe.captureFull && !probe.fullTextOverflow) {
+      const bytes = Buffer.byteLength(text)
+      if (probe.fullBytes + bytes <= ENV_VAL_LIMIT) { probe.fullParts.push(text); probe.fullBytes += bytes }
+      else { probe.fullParts.length = 0; probe.fullBytes = 0; probe.fullTextOverflow = true }
+    }
+    let start = 0
+    for (;;) {
+      const end = text.indexOf('\n', start), stop = end < 0 ? text.length : end, part = text.slice(start, stop)
+      if (!probe.lineOverflow) {
+        if (probe.line.length + part.length <= ENV_VAL_LIMIT) probe.line += part
+        else { probe.line = ''; probe.lineOverflow = true }
+      }
+      if (end < 0) break
+      if (!probe.lineOverflow) consumeServerOutputLine(probe, probe.line)
+      probe.line = ''; probe.lineOverflow = false; start = end + 1
+    }
+  }
+  function finishServerOutputProbe(probe: ReturnType<typeof createServerOutputProbe>) {
+    if (!probe.lineOverflow && probe.line) consumeServerOutputLine(probe, probe.line)
+    return { vars: probe.vars, json: probe.json, fullText: probe.captureFull && !probe.fullTextOverflow ? probe.fullParts.join('') : undefined, fullTextOverflow: probe.fullTextOverflow }
+  }
+
+  async function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>, outputFile?: string): Promise<{ code: number; stdout: string; stderr: string; stdoutTruncated?: boolean; stderrTruncated?: boolean; vars?: Record<string, string>; json?: any; fullText?: string; fullTextOverflow?: boolean; logFile?: string; logError?: string }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
     const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
@@ -1616,7 +1825,7 @@ export function apply(ctx: Context) {
     }
     // 与前端 execScript 一致：上游阶段变量（变量池）作为环境变量注入本阶段（脚本显式参数优先，运行级默认兜底）
     for (const k of Object.keys(pool)) { if (env[k] === undefined) env[k] = String(pool[k]) }
-    // 预设任务附加变量（如普罗 collect 动作/时间范围）：优先级低于脚本显式参数与上游变量，高于运行级默认。
+    // 附加变量（如任务级普罗采集的 collect 动作/时间范围）：优先级低于脚本显式参数与上游变量，高于运行级默认。
     if (extraEnv) for (const k of Object.keys(extraEnv)) { if (env[k] === undefined) env[k] = String(extraEnv[k]) }
     // 与前端 execScript 一致：注入运行上下文（脚本显式配置的同名参数优先）：
     //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
@@ -1658,29 +1867,87 @@ export function apply(ctx: Context) {
        此前服务端硬编码 120s，长任务（如大镜像拉取）到点被杀，日志戛然而止且无任何超时说明；
        设置后仍夹取 1s~1h 上限，对齐 exec-stream */
     const timeoutMs = timeoutSec ? Math.min(Math.max(Number(timeoutSec), 1), 3600) * 1000 : 0
-    return new Promise((resolve) => {
-      const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
-      /* maxBuffer 256MB：日志保全量，不得因缓冲上限杀进程丢输出（此前 4MB，超大输出 ENOBUFS 截断）；
-         页面流式路径（exec-stream spawn）本就无缓冲上限，此处对齐 */
-      execFile(isPy ? 'python3' : 'bash', [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, windowsHide: true },
-        (err, stdout, stderr) => {
-          const code = err ? (typeof (err as any).code === 'number' ? (err as any).code : 1) : 0
-          /* 超时/缓冲超限被杀时在 stderr 标注原因（对齐 exec-stream 的 'exec timed out' 提示），
-             否则日志戛然而止、无 [exit] 前的任何说明，看起来像被截断 */
-          let errText = String(stderr || '')
-          if (err && (err as any).killed) {
-            const why = (err as any).code === 'ENOBUFS'
-              ? '输出超过 256MB 缓冲上限（ENOBUFS），进程被终止'
-              : 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's（阶段超时，进程被终止；可在流水线编辑器调大该阶段「超时(分钟)」）'
-            errText = (errText ? errText + '\n' : '') + why
-          }
-          resolve({ code, stdout: String(stdout || ''), stderr: (oversizeWarn ? oversizeWarn + '\n' : '') + errText })
+    const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
+    const interp = isPy ? 'python3' : 'bash'
+    const requestedLog = typeof outputFile === 'string' && outputFile ? pathResolve(outputFile) : ''
+    let file: Awaited<ReturnType<typeof fsOpen>> | null = null
+    let logError = ''
+    if (requestedLog) {
+      try {
+        await fsMkdir(dirname(requestedLog), { recursive: true })
+        file = await fsOpen(requestedLog, 'w')
+        await file.writeFile('$ ' + interp + ' ' + (sc.name || sc.path) + (args.length ? ' ' + args.join(' ') : '') + '\n', 'utf8')
+      } catch (error) { logError = String(error); try { await file?.close() } catch {}; file = null }
+    }
+    return new Promise((resolvePromise) => {
+      const stdoutTail = createServerTextTail(), stderrTail = createServerTextTail()
+      const probe = createServerOutputProbe(serverScriptNeedsFull(sc.outVars))
+      let child: ReturnType<typeof spawn> | null = null
+      let pending = Promise.resolve(), pendingBytes = 0, paused = false, finished = false, timedOut = false
+      let logLineStart = true, lastLogStream = ''
+      const backlogLimit = 1024 * 1024, resumeLimit = backlogLimit / 2
+      const pause = () => { if (!paused) { paused = true; child?.stdout?.pause(); child?.stderr?.pause() } }
+      const resume = () => { if (paused && pendingBytes <= resumeLimit) { paused = false; child?.stdout?.resume(); child?.stderr?.resume() } }
+      const writeLog = (text: string) => {
+        if (!file || !text || logError) return
+        const bytes = Buffer.byteLength(text); pendingBytes += bytes
+        pending = pending.then(() => file!.writeFile(text, 'utf8')).catch(error => { logError = String(error) }).finally(() => { pendingBytes = Math.max(0, pendingBytes - bytes); resume() })
+        if (pendingBytes >= backlogLimit) pause()
+      }
+      /* stdout/stderr 的 data chunk 不等于文本行：只在真实换行后添加 stderr 标记，避免把跨 chunk 的一行撕开。 */
+      const formatLogChunk = (text: string, stream: 'stdout' | 'stderr') => {
+        let out = lastLogStream && lastLogStream !== stream && !logLineStart ? '\n' : ''
+        if (out) logLineStart = true
+        /* stdout 大日志保持整块透传，不能为判断行首逐字符扫描；只有 stderr 才按真实换行加标记。 */
+        if (stream === 'stdout') out += text
+        else {
+          if (logLineStart && text.charAt(0) !== '\n') out += '✗ '
+          out += text.replace(/\n(?=.)/g, '\n✗ ')
+        }
+        logLineStart = text.endsWith('\n')
+        lastLogStream = stream
+        return out
+      }
+      const appendStdout = (text: string) => { appendServerTextTail(stdoutTail, text); appendServerOutputProbe(probe, text); writeLog(formatLogChunk(text, 'stdout')) }
+      const appendStderr = (text: string) => { appendServerTextTail(stderrTail, text); writeLog(formatLogChunk(text, 'stderr')) }
+      const killTree = () => {
+        try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, 'SIGKILL'); else child?.kill('SIGKILL') } catch {}
+      }
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const finish = async (code: number, startError?: string) => {
+        if (finished) return
+        finished = true; if (timer) clearTimeout(timer)
+        if (startError) appendStderr(startError)
+        if (timedOut) appendStderr('exec timed out after ' + Math.round(timeoutMs / 1000) + 's（阶段超时，进程被终止；可在流水线编辑器调大该阶段「超时(分钟)」）')
+        const parsed = finishServerOutputProbe(probe)
+        if (parsed.fullTextOverflow) appendStderr('[warn] stdout 全文超过 128KiB，已跳过「*=全文」输出变量；请改用 KEY=VALUE 或 JSON 路径')
+        writeLog('\n[exit ' + code + ']\n')
+        await pending
+        try { await file?.sync(); await file?.close() } catch (error) { logError = logError || String(error) }
+        file = null
+        resolvePromise({
+          code,
+          stdout: serverTextTailValue(stdoutTail), stderr: serverTextTailValue(stderrTail),
+          stdoutTruncated: stdoutTail.truncated, stderrTruncated: stderrTail.truncated,
+          vars: parsed.vars, json: parsed.json, fullText: parsed.fullText, fullTextOverflow: parsed.fullTextOverflow,
+          ...(requestedLog && !logError ? { logFile: requestedLog } : {}), ...(logError ? { logError } : {}),
         })
+      }
+      if (oversizeWarn) appendStderr(oversizeWarn + '\n')
+      try {
+        child = spawn(interp, [sc.path, ...args], { cwd: scriptsDir || undefined, env: { ...process.env, ...env }, windowsHide: true, detached: process.platform !== 'win32' })
+        child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8')
+        child.stdout?.on('data', (text: string) => appendStdout(String(text)))
+        child.stderr?.on('data', (text: string) => appendStderr(String(text)))
+        child.on('error', (error: Error) => { finish(1, String(error && error.message ? error.message : error)).catch(() => {}) })
+        child.on('close', (code: number | null) => { finish(typeof code === 'number' ? code : 1).catch(() => {}) })
+        if (timeoutMs > 0) timer = setTimeout(() => { timedOut = true; killTree() }, timeoutMs)
+      } catch (error) { finish(1, String(error && (error as Error).message ? (error as Error).message : error)).catch(() => {}) }
     })
   }
-  /* 任务回显文本：与页面 buildLog 同格式（命令行 + stdout + ✗ 前缀 stderr + [exit]）。
-     完整回显不截断：独立任务日志 / 汇总 run-<tag>.log 均保全量，避免长输出任务（如镜像拉取进度）
-     日志被切断；历史记录只存元数据 + logFile 路径指向这些归档文件（见 pushHist） */
+  /* 任务回显文本：这是历史/归档失败兜底，与页面 buildLog 同格式（命令行 + stdout + ✗ 前缀 stderr + [exit]）。
+     脚本正常落盘时 r.stdout/stderr 只是 256 KiB 历史尾窗，完整回显由 runStageScript 直接写任务文件，
+     汇总再从该文件流式复制；没有可用归档目录时才把此有界文本放进历史（见 pushHist）。 */
   function stageLogText(name: string, r: { code: number; stdout: string; stderr: string }) {
     const interp = /\.py$/i.test(name) ? 'python3' : 'bash'
     let t = '$ ' + interp + ' ' + name + '\n' + (r.stdout || '')
@@ -1697,13 +1964,8 @@ export function apply(ctx: Context) {
       rec.no = no
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
       history.unshift(rec)
-      /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前整体 return，新运行记录反而丢失）。
-         逐条 pop 重序列化：超限通常由个别大记录引起，弹出少数几条即回落，无需批量估算 */
-      let text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
-      while (text.length > 20 * 1024 * 1024 && history.length > 1) {
-        history.pop()
-        text = JSON.stringify({ config: cfg, history: history.slice(0, 500) })
-      }
+      /* 20MB 存储上限：只序列化一次配置和各候选记录，保留最新的可容纳前缀。 */
+      const text = serializePipelineStore(cfg, history.slice(0, 500))
       await writeJsonAtomic(PIPELINE_STORE, text)
     })
   }
@@ -1763,10 +2025,11 @@ export function apply(ctx: Context) {
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
     if (!apiPresetMode && cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
-      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool)
+      const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
+      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
       const text = stageLogText(cfg.cleanupScript.name, r)
-      const logFile = folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null
-      logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text })
+      const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
+      logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text, logFile })
       pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
     }
@@ -1774,6 +2037,7 @@ export function apply(ctx: Context) {
     for (const s of executionStages) {
       const st0 = Date.now()
       let entry: any = null
+      let promNote = ''
       let shouldStop = false
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
@@ -1790,24 +2054,19 @@ export function apply(ctx: Context) {
         if (r.code !== 0) { status = 'failed'; shouldStop = true }
       }
       else if (s.script && s.script.path) {
-        let r: { code: number; stdout: string; stderr: string }
-        let timeout = s.timeout
-        let extraEnv: Record<string, string> | undefined
+        let r: any
         try {
-          if (s.preset && s.pkey === 'promCollect') {
-            extraEnv = buildServerPromCollectEnv(s, runCtx, cfg, varsPool, t0)
-            timeout = 0   // 普罗收集与页面一致：由采集脚本控制耗时，预设本身不套默认 120 秒上限
-          }
-          r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, timeout, extraEnv)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
+          const directLog = folder ? taskLogPath(folder, tag, seq, s.name) : undefined
+          r = await runStageScript(s.script, runCtx, scriptsDir, varsPool, s.timeout, undefined, directLog)   // 阶段级超时随计划带入（页面登记时 {...st} 含 timeout 字段，见 registerStageTimers）
         } catch (error) {
           r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error) }
         }
         // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
         // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
-        Object.assign(varsPool, parseStageVars(r.stdout))
-        applyOutVars(s.script.outVars, varsPool, parseStageJson(r.stdout), r.stdout)
-        entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r) }
-        // 环境检查与普通任务失败会阻断；清理 / Profiling / 普罗收集属于非阻断辅助任务。
+        Object.assign(varsPool, r.vars || parseStageVars(r.stdout))
+        applyOutVars(s.script.outVars, varsPool, r.json === undefined ? parseStageJson(r.stdout) : r.json, r.fullTextOverflow ? undefined as any : (r.fullText === undefined ? r.stdout : r.fullText))
+        entry = { status: r.code === 0 ? 'success' : 'failed', text: stageLogText(s.script.name, r), logFile: r.logFile || null }
+        // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
         if (r.code !== 0 && (!s.preset || s.presetBlock)) { status = 'failed'; shouldStop = true }
       } else if (s.preset) {
         entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
@@ -1815,29 +2074,46 @@ export function apply(ctx: Context) {
         await sleepMs(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000)
         entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
       }
+      /* 任务级普罗采集（与页面 taskPromCollect 一致）：勾选「收集普罗数据」的任务进入终态后，按「任务开始→结束」
+         时段调用设置页收集脚本，产物目录=归档文件夹/{任务名}-{阶段序号}-普罗数据；失败仅标注到本任务日志，不改变任务结果 */
+      if (!s.preset && s.promCollect && entry.status !== 'skipped') {
+        const collectScript = serverPromCollectScript(cfg)
+        const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
+        if (!collectScript) promNote = '[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过'
+        else {
+          try {
+            const penv = buildServerTaskPromEnv(runCtx, cfg, varsPool, st0, Date.now(), promDir)
+            const promLog = promDir + '/collect.log'
+            const pr = await runStageScript(collectScript, runCtx, scriptsDir, varsPool, 0, penv, promLog)   // 与页面一致不设超时：完整输出流式落 collect.log
+            if (!pr.logFile) try {
+              const fsx = await import('node:fs/promises')
+              await fsx.mkdir(promDir, { recursive: true })
+              await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
+            } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
+            promNote = '[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir
+            if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
+          } catch (e) {
+            promNote = '[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）'
+            console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
+          }
+        }
+        if (promNote) entry.text += '\n' + promNote
+      }
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
-      const logFile = folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null
-      logs.push({ stage: s.name, status: entry.status, log: entry.text })
+      const logFile = entry.logFile || (folder ? await writeTaskLogFile(folder, tag, seq, s.name, entry.text) : null)
+      const noteWritten = entry.logFile && promNote ? await appendTaskLogNote(entry.logFile, promNote) : true
+      logs.push({ stage: s.name, status: entry.status, log: entry.text, logFile, logSuffix: noteWritten ? '' : ('\n' + promNote) })
       pushHist(s.name, entry.status, entry.text, logFile, Math.round((Date.now() - st0) / 100) / 10)
       profileStages.push({ id: s.id, name: s.name, status: entry.status, durSec: Math.round((Date.now() - st0) / 100) / 10, script: (s.script && s.script.name) || null, logFile })
       seq++
       if (shouldStop) break
     }
     // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
-    //   定时后缀追加到页面登记时已写内容（去掉旧 [result] 行、profile 按阶段 id/name 合并）；独立计划整文件新建。
+    //   任务日志逐文件流式复制进汇总，不把大输出 split/join 成第二份内存；定时后缀追加、独立计划新建。
     if (folder) {
       try {
-        const fsx = await import('node:fs/promises')
-        await fsx.mkdir(folder, { recursive: true })
         const sumFile = folder + '/run-' + tag + '.log'
-        let prev = ''
-        try { prev = await fsx.readFile(sumFile, 'utf8') } catch { /* 首次创建 */ }
-        prev = prev.replace(/\s*\[result\][^\n]*\s*$/, '')   // 去掉页面登记时写入的 result 行，由服务端统一收尾
-        const lines: string[] = []
-        if (prev.trim()) lines.push(prev.replace(/\s+$/, ''), '', '----- 定时执行（服务端） -----')
-        logs.forEach(l => { lines.push('===== ' + l.stage + ' [' + l.status + '] ====='); l.log.split('\n').forEach((x: string) => lines.push(x)); lines.push('') })
-        lines.push('[result] ' + status)
-        await fsx.writeFile(sumFile, lines.join('\n') + '\n', 'utf8')
+        await writePipelineSummaryFile(sumFile, isSuffixRun, logs, status)
       } catch (e) { console.warn('[archive] 定时运行日志汇总失败（不影响执行）:', e) }
       try {
         const fsx = await import('node:fs/promises')
@@ -1891,9 +2167,10 @@ export function apply(ctx: Context) {
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
+  const pipelineExecutions = createPipelineExecutionQueue(execPlan, 2, 100)
   registerPipelineRunApi(webServer, {
     readStore: readPipelineStore,
-    execute: execPlan,
+    execute: plan => pipelineExecutions.run(plan),
     warn: (message) => ctx.logger?.warn?.('[tokens-worktable] ' + message),
   })
   async function planTick() {
@@ -1906,7 +2183,10 @@ export function apply(ctx: Context) {
         planRunning.add(p.id)
         // 一次性：执行完从计划文件中移除——按 id+createdAt 双条件仅移除本次执行的那一份登记，
         //   避免执行期间页面以同 id 重新登记的新计划（如旧版页面稳定 id 的定时后缀）被一并误删
-        execPlan(p).catch(() => {}).finally(async () => {
+        let execution: Promise<void>
+        try { execution = pipelineExecutions.run(p) }
+        catch { planRunning.delete(p.id); continue }   // 队列满：保留 once 计划，下个 tick 重试，不能当作已执行删除
+        execution.catch(() => {}).finally(async () => {
           planRunning.delete(p.id)
           const rest = (await readPlansFile()).filter((x: any) => !x || x.id !== p.id || Number(x.createdAt) !== Number(p.createdAt))
           await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {})
@@ -1938,9 +2218,12 @@ export function apply(ctx: Context) {
           }
         }
         if (next > now) continue
-        planLastRun.set(p.id, now)
         planRunning.add(p.id)
-        execPlan(p).catch(() => {}).finally(() => planRunning.delete(p.id))
+        let execution: Promise<void>
+        try { execution = pipelineExecutions.run(p) }
+        catch { planRunning.delete(p.id); continue }   // 队列满不推进 lastRun，下个 tick 继续尝试本次触发
+        planLastRun.set(p.id, now)
+        execution.catch(() => {}).finally(() => planRunning.delete(p.id))
       }
     }
   }
@@ -1960,9 +2243,14 @@ export function apply(ctx: Context) {
     let drainWaiters: Array<() => void> = []
     let ended = false
     let lastNewline = true
+    let unlockPath = () => {}, pathLocked = false
+    const releasePath = () => { if (pathLocked) { pathLocked = false; unlockPath() } }
     if (logFile) {
-      try { await fsMkdir(dirname(logFile), { recursive: true }); file = await fsOpen(logFile, 'w') }
-      catch (e) { logError = String(e) }
+      try {
+        unlockPath = await lockStreamWritePath(logFile); pathLocked = true
+        await fsMkdir(dirname(logFile), { recursive: true }); file = await fsOpen(logFile, 'w')
+      }
+      catch (e) { logError = String(e); releasePath() }
     }
     const write = (text: string) => {
       if (!file || ended || !text || logError) return true
@@ -1995,6 +2283,7 @@ export function apply(ctx: Context) {
           ended = true
           await pending
           try { await file?.close() } catch (e) { logError = String(e) }
+          releasePath()
         }
         return logFile ? (logError ? { logError } : { logFile }) : {}
       }
@@ -2197,23 +2486,55 @@ export function apply(ctx: Context) {
 
   // 大文件流式写入（流水线归档）：原始请求体边读边写入同目录临时文件，完成后原子替换目标。
   // 相比 /write 的 JSON {content}，避免大量日志在浏览器和服务端各额外复制 / 转义一整份。
+  const streamWriteLocks = new Map<string, Promise<void>>()
+  async function lockStreamWritePath(abs: string): Promise<() => void> {
+    const previous = streamWriteLocks.get(abs) || Promise.resolve()
+    let release = () => {}
+    const current = new Promise<void>(resolvePromise => { release = resolvePromise })
+    streamWriteLocks.set(abs, current)
+    await previous.catch(() => {})
+    return () => { release(); if (streamWriteLocks.get(abs) === current) streamWriteLocks.delete(abs) }
+  }
+  async function lockStreamWritePaths(paths: string[]): Promise<() => void> {
+    const unlocks: Array<() => void> = []
+    try {
+      for (const abs of Array.from(new Set(paths)).sort()) unlocks.push(await lockStreamWritePath(abs))
+      return () => { for (let index = unlocks.length - 1; index >= 0; index -= 1) unlocks[index]() }
+    } catch (error) {
+      for (let index = unlocks.length - 1; index >= 0; index -= 1) unlocks[index]()
+      throw error
+    }
+  }
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/write-stream',
     handler: async (req: any, res: any) => {
       const limit = 256 * 1024 * 1024
       let temp = ''
+      let target = ''
       let file: Awaited<ReturnType<typeof fsOpen>> | null = null
+      let append = false, appendStart = 0, appendExisted = false, appendCommitted = false
+      let unlock = () => {}
       try {
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         const u = new URL(req.url ?? '/', 'http://dsh.internal')
         const p = u.searchParams.get('path') || ''
+        append = u.searchParams.get('mode') === 'append'
         if (!p) { json(res, 400, { error: 'missing path' }); return }
         const declared = Number(req.headers?.['content-length'])
         if (Number.isFinite(declared) && declared > limit) { json(res, 413, { error: 'content too large' }); return }
-        const abs = pathResolve(p)
-        temp = abs + '.worktable-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.tmp'
-        file = await fsOpen(temp, 'wx')
+        const abs = pathResolve(p); target = abs
+        unlock = await lockStreamWritePath(abs)
+        if (req.destroyed) throw new Error('request aborted')
+        if (append) {
+          try { appendStart = (await fsStat(abs)).size; appendExisted = true }
+          catch (error: any) { if (error?.code !== 'ENOENT') throw error }
+          file = await fsOpen(abs, 'a')
+        }
+        else {
+          temp = abs + '.worktable-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.tmp'
+          file = await fsOpen(temp, 'wx')
+        }
         let size = 0
         for await (const chunk of req) {
           const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
@@ -2223,13 +2544,65 @@ export function apply(ctx: Context) {
         }
         await file.sync()
         await file.close(); file = null
-        await fsRename(temp, abs); temp = ''
+        appendCommitted = append
+        if (!append) { await fsRename(temp, abs); temp = '' }
         json(res, 200, { ok: true })
       } catch (err: any) {
+        if (append && !appendCommitted && file) {
+          try { await file.truncate(appendStart); await file.sync() } catch {}
+        }
         try { await file?.close() } catch {}
+        file = null
+        if (append && !appendCommitted && !appendExisted && target) { try { await fsUnlink(target) } catch {} }
         if (temp) { try { await fsUnlink(temp) } catch {} }
         try { if (!res.writableEnded) json(res, err?.statusCode === 413 ? 413 : 500, { error: String(err?.message || err) }) } catch {}
-      }
+      } finally { unlock() }
+    },
+  })
+
+  // 按任务日志路径在服务端流式组合运行汇总；manifest 本身有界，源文件正文不回传浏览器且目标原子替换。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/concat-stream',
+    handler: async (req: any, res: any) => {
+      const manifestLimit = 20 * 1024 * 1024
+      let temp = '', file: Awaited<ReturnType<typeof fsOpen>> | null = null, unlock = () => {}
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const declared = Number(req.headers?.['content-length'])
+        if (Number.isFinite(declared) && declared > manifestLimit) { json(res, 413, { error: 'manifest too large' }); return }
+        const chunks: Buffer[] = []; let size = 0
+        for await (const raw of req) {
+          const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw); size += chunk.length
+          if (size > manifestLimit) { const error: any = new Error('manifest too large'); error.statusCode = 413; throw error }
+          chunks.push(chunk)
+        }
+        let body: any
+        try { body = JSON.parse(Buffer.concat(chunks, size).toString('utf8')) } catch { json(res, 400, { error: 'invalid manifest' }); return }
+        const p = typeof body?.path === 'string' ? body.path : ''
+        const segments = Array.isArray(body?.segments) ? body.segments : null
+        if (!p || !segments || segments.length > 4096 || segments.some((item: any) => !item || typeof item !== 'object' || (typeof item.text !== 'string' && typeof item.path !== 'string'))) {
+          json(res, 400, { error: 'invalid manifest' }); return
+        }
+        const abs = pathResolve(p)
+        const sourcePaths = segments.filter((item: any) => typeof item.text !== 'string').map((item: any) => pathResolve(item.path))
+        /* 与 exec-stream 的任务日志 writer 共用路径锁：中止时须等 [aborted] 落盘并 close 后再读；
+           全部路径排序后一次持有，避免两个组合请求交叉引用时形成锁顺序死锁。 */
+        unlock = await lockStreamWritePaths([abs, ...sourcePaths])
+        temp = abs + '.worktable-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.tmp'
+        file = await fsOpen(temp, 'wx')
+        for (const item of segments) {
+          if (typeof item.text === 'string') await file.writeFile(item.text, 'utf8')
+          else for await (const chunk of createReadStream(pathResolve(item.path))) await file.writeFile(chunk)
+        }
+        await file.sync(); await file.close(); file = null
+        await fsRename(temp, abs); temp = ''
+        json(res, 200, { ok: true })
+      } catch (error: any) {
+        try { await file?.close() } catch {}
+        if (temp) { try { await fsUnlink(temp) } catch {} }
+        try { if (!res.writableEnded) json(res, error?.statusCode === 413 ? 413 : 500, { error: String(error?.message || error) }) } catch {}
+      } finally { unlock() }
     },
   })
 
@@ -2412,17 +2785,16 @@ export function apply(ctx: Context) {
         const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
         const result = await new Promise<{ status: number, headers: any, body: Buffer }>((resolve, reject) => {
           const r = reqLib.request(urlStr, useProxy ? { method, headers: fwdHeaders } : { method, headers: fwdHeaders, agent: new reqLib.Agent() }, (resp: any) => {
-            const chunks: Buffer[] = []
-            resp.on('data', (c: Buffer) => chunks.push(c))
-            resp.on('end', () => resolve({ status: resp.statusCode ?? 0, headers: resp.headers, body: Buffer.concat(chunks) }))
-            resp.on('error', reject)
+            collectProxyResponse(resp, 20 * 1024 * 1024).then(
+              bodyBuffer => resolve({ status: resp.statusCode ?? 0, headers: resp.headers, body: bodyBuffer }),
+              reject,
+            )
           })
           r.on('error', reject)
           r.setTimeout(20000, () => { try { r.destroy(new Error('timeout')) } catch {} })
           if (reqBody) r.write(reqBody)
           r.end()
         })
-        if (result.body.length > 20 * 1024 * 1024) { json(res, 502, { error: 'response too large' }); return }
         const outHeaders: Record<string, string> = {}
         for (const k of Object.keys(result.headers)) outHeaders[k] = String(result.headers[k])
         json(res, 200, {
@@ -2434,7 +2806,7 @@ export function apply(ctx: Context) {
           body: result.body.toString('utf8'),
         })
       } catch (err: any) {
-        json(res, 500, { error: String(err) })
+        json(res, Number(err?.statusCode) || 500, { error: String(err?.message || err) })
       }
     },
   })

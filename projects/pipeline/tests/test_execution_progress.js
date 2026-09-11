@@ -30,7 +30,7 @@ test('混合 sched 标记的手动流水线立即进入第二个脚本',()=>{
   const rc={id:'r1',stages:[{script:{path:'/gen.sh'}},{sched:{},script:{path:'/print.sh'}}],nodes:[],selId:null,
     timer:null,over:false,overall:null,token:'t1',vars:{},by:'tester',source:'manual'};
   const ctx={runPresetStep(){},skipStage(){},stageUrlOf:()=>'',runUrlStep(){},runEvaltokensStep(){},
-    runScriptStep:(rc,i)=>called.push(i),runStage(){},finish(){}};
+    runScriptStep:(rc,i)=>called.push(i),runStage(){},finish(){},taskPromFinalize(){}};
   load('function advance(rc,i)', '/* ---------- 阶段间变量传递',ctx);
   ctx.advance(rc,1);
   assert.deepEqual(called,[1]);
@@ -84,6 +84,34 @@ test('历史归档只打开一次目录，不创建或切换会话',async()=>{
   await ctx.openArchiveFolder();
   assert.equal(sessions,0);assert.deepEqual(folders,['/logs/selected']);
   assert.match(tip.textContent,/已在侧边栏打开/);
+});
+
+test('侧边窗打开成功后关闭侧边会话窗',async()=>{
+  const folders=[],tip={style:{}}; let chatClosed=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},window:{parent:{
+      __dshOpenFolderInSidebar(folder){folders.push(folder);return true;},
+      __dshCloseSideChat(){chatClosed++;}
+    }}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.equal(chatClosed,1,'侧边窗打开成功应关闭侧边会话窗');
+  assert.match(tip.textContent,/已在侧边栏打开/);
+});
+
+test('侧边栏不可用时回退系统文件管理器且不关会话窗',async()=>{
+  const folders=[],tip={style:{}}; let chatClosed=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},openFolderViaFileManager:async folder=>folders.push(folder),
+    window:{parent:{
+      __dshOpenFolderInSidebar(){throw new Error('unavailable');},
+      __dshCloseSideChat(){chatClosed++;}
+    }}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.equal(chatClosed,0,'回退系统文件管理器时不得关会话窗');
 });
 
 test('侧边栏不可用时回退系统文件管理器，不创建会话',async()=>{

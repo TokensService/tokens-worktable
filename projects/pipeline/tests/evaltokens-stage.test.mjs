@@ -54,11 +54,15 @@ function loadEvaltokensRuntime(overrides = {}) {
     Map,
     Set,
     AbortController,
+    TextDecoder,
+    TextEncoder,
     setTimeout,
     clearTimeout,
     archiveWrites: new Map(),
+    archiveWriteErrors: new Map(),
     archiveFolderFor: () => null,
     archiveTaskLog: async () => null,
+    createClientStageLogSink: () => null,
     buildLog: stage => [stage._out?.stdout || ''],
     buildLogParts: stage => [stage._out?.stdout || ''],
     // 视图层桩：引擎经 runSetSel/rcRender/rcOverall 与视图交互，仅当 viewRc===rc 时落地渲染
@@ -72,6 +76,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     syncRunState: () => {},
     viewActive: () => false,
     applyStatusClasses: () => {},
+    applyPlFormReadOnly: () => {},
     renderFlow: () => {},
     renderDetail: () => {},
     ...overrides,
@@ -83,6 +88,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     'evaltokHeaders',
     'evaltokRequestJson',
     'evaltokRequestText',
+    'readBrowserResponseText',
     'evaltokFetchTasks',
     'evaltokStartRun',
     'evaltokFetchRuns',
@@ -94,10 +100,18 @@ function loadEvaltokensRuntime(overrides = {}) {
     'commitEvaltokParamValue',
     'createLiveOutputState',
     'appendLiveOutput',
+    'liveOutputTailText',
     'liveOutputSnapshot',
     'createLiveLog',
+    'appendLiveLogPart',
     'appendLiveLog',
     'finishLiveLog',
+    'outputProbeNeedsFull',
+    'outputProbeUtf8Size',
+    'createOutputProbe',
+    'consumeOutputProbeLine',
+    'appendOutputProbe',
+    'finishOutputProbe',
     'maybeRenderLiveDetail',
     'appendArchivePart',
     'stageSeq',
@@ -113,7 +127,7 @@ function loadEvaltokensRuntime(overrides = {}) {
   return context
 }
 
-test('EvalTokens 长时间轮询的实时快照有界，结束后保留完整轮询记录', async () => {
+test('EvalTokens 长时间轮询的实时与终态记录都保持有界', async () => {
   const stage = {
     id: 'eval-long', name: '长时间评测', timeout: null,
     evaltokens: { taskId: 'task-long', taskName: 'long-task', outVars: '', collectReport: false },
@@ -156,10 +170,10 @@ test('EvalTokens 长时间轮询的实时快照有界，结束后保留完整轮
   await context.runEvaltokensStep(rc, 0)
 
   assert.ok(maxLiveChars <= 256 * 1024, `实时快照峰值应有界，实际 ${maxLiveChars}`)
-  assert.match(liveArchiveText, /status=running/, '运行中止归档应能取得已被实时尾窗淘汰的早期轮询记录')
-  assert.match(liveArchiveText, /status=success/, '运行中止归档应能取得中止瞬间的末尾轮询记录')
+  assert.match(liveArchiveText, /status=success/, '运行中止归档应保留末尾轮询记录')
   assert.match(stage._out.stdout, /status=success/)
-  assert.ok(stage._out.stdout.length > 256 * 1024, '终态全文不得按实时尾窗截断')
+  assert.ok(stage._out.stdout.length <= 256 * 1024, '终态不得重新持有轮询全文')
+  assert.equal(stage._out._stdoutTruncated, true)
 })
 
 function fakeElement(tagName = 'div') {
@@ -519,7 +533,7 @@ test('报告归档从建目录开始纳入写入跟踪', async () => {
     archiveFolderFor: ctx => ctx.archive,
     fetch: async () => htmlResponse('<!DOCTYPE html><title>tracked</title>'),
     ensureArchiveFolder: () => mkdirPending,
-    apiWrite: async () => {},
+    apiWriteParts: async () => {},
   })
   const run = { run_id: 'tracked-run', task_id: 'tracked-task', status: 'success' }
 
@@ -535,11 +549,23 @@ test('报告归档从建目录开始纳入写入跟踪', async () => {
   assert.equal(context.archiveWrites.has('/archive/tracked'), false)
 })
 
+test('失败归档 Promise 从在途集合清理，错误只向等待方报告一次', async () => {
+  const context = loadEvaltokensRuntime()
+  const failed = context.trackArchiveWrite('/archive/failed', async () => { throw new Error('disk full') })
+  await assert.rejects(failed, /disk full/)
+  await Promise.resolve()
+  assert.equal(context.archiveWrites.has('/archive/failed'), false, 'rejected Promise 不得永久留在 Map')
+  await assert.rejects(context.waitArchiveWrites('/archive/failed'), /disk full/)
+  await context.waitArchiveWrites('/archive/failed')
+  assert.equal(context.archiveWriteErrors.has('/archive/failed'), false)
+})
+
 test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
   let releaseReport
   const reportPending = new Promise(resolve => { releaseReport = resolve })
   const writes = []
   const partWrites = []
+  const concatWrites = []
   const stageOut = { stdout: '📦 任务报告归档中', stderr: '', code: 0, evaltokens: true, done: true }
   const reportState = { attempt: 1, logFile: null }
   const stage = {
@@ -564,6 +590,7 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
     ensureArchiveFolder: async () => true,
     apiWrite: async (path, content) => { writes.push({ path, content }) },
     apiWriteParts: async (path, parts) => { partWrites.push({ path, parts }) },
+    apiConcatFile: async (path, segments) => { concatWrites.push({ path, segments, content: segments.map(part => part.text ?? (part.path ? stageOut.stdout : '')).join('') }) },
     buildLogParts: currentStage => [currentStage._out?.stdout || ''],
     archiveScriptName: '',
     archiveConfigured: () => false,
@@ -573,19 +600,52 @@ test('运行汇总归档等待 EvalTokens 报告后再写文件', async () => {
 
   context.archiveRun(rc, 'success')
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(writes.length + partWrites.length, 0, '报告完成前不能先写汇总并启动后续归档链')
+  assert.equal(writes.length + partWrites.length + concatWrites.length, 0, '报告完成前不能先写汇总并启动后续归档链')
 
   releaseReport()
   await context.waitArchiveWrites('/archive/ordered')
-  assert.deepEqual(partWrites.map(write => write.path), ['/archive/ordered/run-ordered.log'])
+  assert.deepEqual(concatWrites.map(write => write.path), ['/archive/ordered/run-ordered.log'])
   assert.deepEqual(writes.map(write => write.path), ['/archive/ordered/run-ordered.profile.json'])
-  const logWrite = partWrites[0]
+  const logWrite = concatWrites[0]
   const profileWrite = writes.find(write => write.path.endsWith('.profile.json'))
   assert.ok(logWrite)
   assert.ok(profileWrite)
-  assert.match(logWrite.parts.join(''), /任务报告已归档/)
-  assert.doesNotMatch(logWrite.parts.join(''), /任务报告归档中/)
+  assert.match(logWrite.content, /任务报告已归档/)
+  assert.doesNotMatch(logWrite.content, /任务报告归档中/)
+  assert.deepEqual(Array.from(logWrite.segments).filter(part => part.path).map(part => part.path), ['/archive/ordered/run-ordered-01-汇总报告.log'])
   assert.equal(JSON.parse(profileWrite.content).stages[0].logFile, '/archive/ordered/run-ordered-01-汇总报告.log')
+})
+
+test('响应头前中止的脚本阶段仍用预期任务日志生成汇总', async () => {
+  const concatWrites = []
+  const expectedLog = '/archive/abort/run-abort-01-慢脚本.log'
+  const stage = {
+    id: 'abort-before-headers', name: '慢脚本', kind: 'script',
+    _out: { stdout: '页面有界尾窗', stderr: '', code: null },
+    _serverLogPending: true, _serverLogExpectedFile: expectedLog,
+  }
+  const rc = makeRc({
+    stages: [stage],
+    nodes: { 'abort-before-headers': { status: 'aborted', progress: 1, dur: 0.1, varsOut: {} } },
+    archive: '/archive/abort', tag: 'abort', startTs: Date.now(), pipelineName: '中止测试',
+  })
+  const context = loadEvaltokensRuntime({
+    archiveFolderFor: current => current.archive,
+    archiveStageLog: () => {},
+    ensureArchiveFolder: async () => true,
+    apiConcatFile: async (path, segments) => { concatWrites.push({ path, segments }) },
+    apiWrite: async () => {},
+    archiveScriptName: '', archiveConfigured: () => false, scriptByName: () => null,
+    curPipeline: () => ({ name: '中止测试' }),
+  })
+
+  context.archiveRun(rc, 'aborted')
+  await context.waitArchiveWrites('/archive/abort')
+  assert.deepEqual(
+    Array.from(concatWrites[0].segments).filter(part => part.path).map(part => part.path),
+    [expectedLog],
+    '服务端已接单但首响应尚未到达时，汇总不得降级为页面尾窗',
+  )
 })
 
 test('同一运行失败后重试时，旧汇总不能覆盖最新成功结果', async () => {
@@ -605,6 +665,7 @@ test('同一运行失败后重试时，旧汇总不能覆盖最新成功结果',
     ensureArchiveFolder: async () => true,
     apiWrite: async (path, content) => { writes.push({ path, content }) },
     apiWriteParts: async (path, parts) => { writes.push({ path, content: parts.join('') }) },
+    apiConcatFile: async (path, segments) => { writes.push({ path, content: segments.map(part => part.text || '').join('') }) },
     archiveScriptName: '',
     archiveConfigured: () => false,
     scriptByName: () => null,
@@ -655,6 +716,7 @@ test('终态先落到阶段并继续流水线，报告慢归档在后台完成',
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: () => { mkdirStarted(); return mkdirPending },
     apiWrite: async () => {},
+    apiWriteParts: async () => {},
     archiveStageLog: () => {},
     archiveTaskLog: async () => {},
     mergeStageVars: () => ({}),
@@ -708,6 +770,7 @@ test('EvalTokens 失败终态不等待慢报告，且旧报告回调不污染重
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: () => { mkdirStarted(); return mkdirPending },
     apiWrite: async () => {},
+    apiWriteParts: async () => {},
     archiveStageLog: () => {},
     archiveTaskLog: async (_ctx, _seq, _name, text) => {
       archivedStageTexts.push(text)
@@ -807,6 +870,7 @@ test('任务报告写入失败只记入回显，不改变 EvalTokens 成功结�
     archiveFolderFor: ctx => ctx.archive,
     ensureArchiveFolder: async () => true,
     apiWrite: async () => { throw new Error('disk full') },
+    apiWriteParts: async () => { throw new Error('disk full') },
     archiveStageLog: () => {},
     mergeStageVars: () => ({}),
     parseStageJson: value => JSON.parse(value),

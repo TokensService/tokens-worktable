@@ -16,12 +16,28 @@ const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' 
 async function fixture(t, options = {}) {
   const dir = await mkdtemp(tmpdir() + '/exec-log-')
   const routes = new Map()
+  const pathLockTails = new Map()
+  const activeLogLocks = new Set()
+  const lockStreamWritePath = async abs => {
+    const previous = pathLockTails.get(abs) || Promise.resolve()
+    let releaseCurrent = () => {}
+    const current = new Promise(resolve => { releaseCurrent = resolve })
+    pathLockTails.set(abs, current)
+    await previous
+    activeLogLocks.add(abs)
+    let released = false
+    return () => {
+      if (released) return
+      released = true; activeLogLocks.delete(abs); releaseCurrent()
+      if (pathLockTails.get(abs) === current) pathLockTails.delete(abs)
+    }
+  }
   let maxWritableLength = 0
   let drainListenerCount = 0
   let drainEventCount = 0
   let activeDrainListeners = 0
   const json = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
-  vm.runInNewContext(code, { execFile, spawn: options.spawn || spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout,
+  vm.runInNewContext(code, { execFile, spawn: options.spawn || spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout, lockStreamWritePath,
     webServer: { register: r => routes.set(r.path, r.handler) }, json, dropOversizeEnv: () => '',
     readJsonBody: async req => { let s = ''; for await (const c of req) s += c; return JSON.parse(s) } })
   const server = createServer((req, res) => {
@@ -63,6 +79,7 @@ async function fixture(t, options = {}) {
     drainListenerCount: () => drainListenerCount,
     drainEventCount: () => drainEventCount,
     activeDrainListeners: () => activeDrainListeners,
+    activeLogLocks: () => activeLogLocks.size,
     async run(script, extra = {}, route = 'exec-stream') {
       const path = dir + '/script.sh'; await writeFile(path, script)
       return fetch('http://127.0.0.1:' + server.address().port + '/api/worktable/' + route, {
@@ -75,6 +92,15 @@ async function fixture(t, options = {}) {
         const req = httpRequest({ hostname: '127.0.0.1', port: server.address().port, path: '/api/worktable/' + route, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, resolve)
         req.on('error', reject); req.end(body)
       })
+    },
+    async startRaw(script, extra = {}, route = 'exec-stream') {
+      const path = dir + '/script.sh'; await writeFile(path, script)
+      const body = JSON.stringify({ path, args: [], cwd: dir, logFile: dir + '/nested/stage.log', ...extra })
+      let resolveResponse, rejectResponse
+      const response = new Promise((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject })
+      const req = httpRequest({ hostname: '127.0.0.1', port: server.address().port, path: '/api/worktable/' + route, method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, resolveResponse)
+      req.on('error', rejectResponse); req.end(body)
+      return { req, response }
     },
   }
 }
@@ -124,8 +150,25 @@ test('客户端中止后保留已经产生的日志和中止标记', async t => 
   const res = await f.run('echo before-abort\nsleep 10\n', { }, 'exec-stream')
   const reader = res.body.getReader(); await reader.read()
   await until(async () => (await readFile(f.dir + '/nested/stage.log', 'utf8').catch(() => '')).includes('before-abort'))
+  assert.equal(f.activeLogLocks(), 1, '任务日志写入期间必须持有路径锁，阻止汇总提前读到 EOF')
   await reader.cancel()
   await until(async () => (await readFile(f.dir + '/nested/stage.log', 'utf8')).includes('[aborted]'))
+  assert.equal(f.activeLogLocks(), 0, '写入 [aborted] 并关闭文件后必须释放路径锁')
+})
+test('建目录/打开日志期间在响应头前中止，仍写入中止标记并释放路径锁', async t => {
+  let releaseOpen, markOpenStarted
+  const openStarted = new Promise(resolve => { markOpenStarted = resolve })
+  const openGate = new Promise(resolve => { releaseOpen = resolve })
+  const slowOpen = async (...args) => { markOpenStarted(); await openGate; return fsOpen(...args) }
+  const f = await fixture(t, { fsOpen: slowOpen })
+  const { req, response } = await f.startRaw('echo must-not-start\n')
+  response.catch(() => {})
+  await openStarted
+  assert.equal(f.activeLogLocks(), 1, '响应头发出前已将预期任务日志路径加锁')
+  req.destroy(new Error('abort before response headers'))
+  releaseOpen()
+  await until(async () => (await readFile(f.dir + '/nested/stage.log', 'utf8').catch(() => '')).includes('[aborted]'))
+  assert.equal(f.activeLogLocks(), 0, '中止标记关闭后必须释放路径锁')
 })
 test('超时保留输出及终止原因', async t => {
   const f = await fixture(t), res = await f.run('echo before-timeout\nsleep 10\n', { timeoutMs: 1000 })
