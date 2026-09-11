@@ -88,6 +88,34 @@ test('历史归档只打开一次目录，不创建或切换会话',async()=>{
   assert.match(tip.textContent,/已在侧边栏打开/);
 });
 
+test('侧边窗打开成功后关闭侧边会话窗',async()=>{
+  const folders=[],tip={style:{}}; let chatClosed=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},window:{parent:{
+      __dshOpenFolderInSidebar(folder){folders.push(folder);return true;},
+      __dshCloseSideChat(){chatClosed++;}
+    }}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.equal(chatClosed,1,'侧边窗打开成功应关闭侧边会话窗');
+  assert.match(tip.textContent,/已在侧边栏打开/);
+});
+
+test('侧边栏不可用时回退系统文件管理器且不关会话窗',async()=>{
+  const folders=[],tip={style:{}}; let chatClosed=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},openFolderViaFileManager:async folder=>folders.push(folder),
+    window:{parent:{
+      __dshOpenFolderInSidebar(){throw new Error('unavailable');},
+      __dshCloseSideChat(){chatClosed++;}
+    }}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.equal(chatClosed,0,'回退系统文件管理器时不得关会话窗');
+});
+
 test('侧边栏不可用时回退系统文件管理器，不创建会话',async()=>{
   const folders=[],tip={style:{}};let sessions=0;
   const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',

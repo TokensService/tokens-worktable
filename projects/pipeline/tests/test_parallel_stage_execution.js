@@ -57,6 +57,7 @@ function parallelContext(stages, options) {
     Date,
     Error,
     AbortController,
+    MAX_ACTIVE_RUNS: 4,
     setImmediate,
     setTimeout,
     clearTimeout,
@@ -111,6 +112,7 @@ function parallelContext(stages, options) {
     renderQueue() {},
     archiveFolderFor() { return ''; },
     taskLogFile(_run, seq, name) { return 'run-' + seq + '-' + name + '.log'; },
+    createClientStageLogSink() { return null; },
     mergeStageVars() { return {}; },
     applyOutVars() {},
     parseStageJson() { return null; },
@@ -153,7 +155,16 @@ function parallelContext(stages, options) {
     installFunctions(context, [
       'createLiveOutputState',
       'appendLiveOutput',
+      'liveOutputTailText',
       'liveOutputSnapshot',
+      'boundedExecutionResult',
+      'outputProbeNeedsFull',
+      'outputProbeUtf8Size',
+      'createOutputProbe',
+      'consumeOutputProbeLine',
+      'appendOutputProbe',
+      'finishOutputProbe',
+      'publishLiveOutput',
       'maybeRenderLiveDetail',
       'runScriptStep',
     ]);
@@ -170,11 +181,21 @@ function parallelContext(stages, options) {
     installFunctions(context, [
       'createLiveOutputState',
       'appendLiveOutput',
+      'liveOutputTailText',
       'liveOutputSnapshot',
       'createLiveLog',
+      'appendLiveLogPart',
       'appendLiveLog',
       'appendLiveChunk',
       'finishLiveLog',
+      'outputProbeNeedsFull',
+      'outputProbeUtf8Size',
+      'createOutputProbe',
+      'consumeOutputProbeLine',
+      'appendOutputProbe',
+      'finishOutputProbe',
+      'maybeRenderLiveDetail',
+      'readBrowserResponseText',
       'jkIsUrl',
       'jkSubstUrl',
       'jkJobPath',
@@ -222,6 +243,7 @@ function retryContext() {
   };
   const context = {
     console, Object, Array,
+    MAX_ACTIVE_RUNS: 4,
     viewRc: rc,
     activeRuns: [],
     conflictsActive() { return false; },
@@ -590,7 +612,7 @@ test('Jenkins 请求链在本地和远程模式都透传同一个 AbortSignal', 
     vm.createContext(context);
     installFunctions(context, [
       'jkFetchJson', 'jkFetchCrumb', 'jkTriggerBuild', 'jkTriggerGet', 'jkGetText',
-      'jkHeaderValue', 'jkGetProgressiveText', 'jkReadConsoleDelta',
+      'readBrowserResponseText', 'jkHeaderValue', 'jkGetProgressiveText', 'jkReadConsoleDelta',
     ]);
     const controller = new AbortController();
     const signal = controller.signal;

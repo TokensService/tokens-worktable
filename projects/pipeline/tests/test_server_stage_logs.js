@@ -33,19 +33,19 @@ test('预设任务请求断网不覆盖仍在服务端写入的文件',async()=>
 });
 test('首条事件之前断流仍保留响应头声明的服务端日志归属',async()=>{
   const ctx={TextDecoder,fetch:async()=>new Response(new ReadableStream({start(c){c.error(new Error('disconnected'));}}),{headers:{'x-worktable-log':'server'}})};
-  vm.createContext(ctx);load('async function execStreaming(', 'async function execScript(',ctx);
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'async function execScript(',ctx);
   const res=await ctx.execStreaming('/script',[],{},'/tmp',0,()=>{},null,'/logs/stage.log');
   assert.equal(res.code,1);assert.equal(res.logFile,'/logs/stage.log');
 });
 test('响应头之前断网不假定旧插件，也不允许覆盖在途日志',async()=>{
   const ctx={TextDecoder,fetch:async()=>{throw new Error('disconnected');}};
-  vm.createContext(ctx);load('async function execStreaming(', 'async function execScript(',ctx);
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'async function execScript(',ctx);
   const res=await ctx.execStreaming('/script',[],{},'/tmp',0,()=>{},null,'/logs/stage.log');
   assert.equal(res.logPending,true);
 });
 test('旧插件在输出前解除 pending，中止时仍可归档已有输出',async()=>{
   const events=[],ctx={TextDecoder,fetch:async()=>new Response('{"type":"out","text":"partial"}\n')};
-  vm.createContext(ctx);load('async function execStreaming(', 'async function execScript(',ctx);
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'async function execScript(',ctx);
   const res=await ctx.execStreaming('/script',[],{},'/tmp',0,e=>events.push(e),null,'/logs/stage.log');
   assert.equal(events[0].type,'log');assert.equal(events[0].logFile,undefined);
   assert.equal(events[1].text,'partial');assert.equal(res.logPending,undefined);
@@ -55,13 +55,23 @@ test('服务端日志接管信息逐块传给阶段，结束保留归档路径',
     assert.equal(JSON.parse(opts.body).logFile,'/logs/stage.log');
     return new Response('{"type":"log","logFile":"/logs/stage.log"}\n{"type":"out","text":"hello"}\n{"type":"done","code":0,"logFile":"/logs/stage.log"}\n');
   }};
-  vm.createContext(ctx);load('async function execStreaming(', 'async function execScript(',ctx);
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'async function execScript(',ctx);
   const res=await ctx.execStreaming('/script',[],{},'/tmp',0,e=>events.push(e),null,'/logs/stage.log');
   assert.equal(res.code,0);assert.equal(res.logFile,'/logs/stage.log');assert.equal(res.stdout,'hello');assert.equal(events[0].type,'log');
 });
+test('流式执行返回值只保留 stdout/stderr 尾窗',async()=>{
+  const chunk='x'.repeat(200*1024);
+  const lines=[];
+  for(let i=0;i<6;i++) lines.push(JSON.stringify({type:'out',text:chunk}));
+  lines.push(JSON.stringify({type:'done',code:0}));
+  const ctx={TextDecoder,fetch:async()=>new Response(lines.join('\n')+'\n')};
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'async function execScript(',ctx);
+  const res=await ctx.execStreaming('/script',[],{},'/tmp',0,()=>{},null,null);
+  assert.equal(res.code,0);assert.ok(res.stdout.length<=256*1024);assert.equal(res._stdoutTruncated,true);
+});
 test('完成时写入失败必须撤销早期接管确认',async()=>{
   const ctx={TextDecoder,fetch:async()=>new Response('{"type":"log","logFile":"/logs/stage.log"}\n{"type":"done","code":0,"logError":"disk full"}')};
-  vm.createContext(ctx);load('async function execStreaming(', 'async function execScript(',ctx);
+  vm.createContext(ctx);load('function createLiveOutputState(', '/* 流式执行：POST',ctx);load('async function execStreaming(', 'async function execScript(',ctx);
   const res=await ctx.execStreaming('/script',[],{},'/tmp',0,()=>{},null,'/logs/stage.log');
   assert.equal(res.logFile,undefined);assert.equal(res.logError,'disk full');
 });

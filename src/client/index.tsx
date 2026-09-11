@@ -19,7 +19,8 @@ import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, peekChatClosed, typ
  * 持久化：dsh.worktable.view.v1（视图）+ dsh.worktable.projects.v1（项目元状态，仅本地条目）；
  *         新建项目一律本地，完善后在管理列表点 ☁「发布」，布局条目转存服务端
  *         ~/.dsh/storages/worktable-projects.json（/api/worktable/projects，跨浏览器可见；
- *         发布后的改名/图标/视图变更/删除随之同步；再点 ☁ 取消发布回到本地）。
+ *         发布后的改名/图标/视图变更/删除随之同步；再点 ☁ 取消发布回到本地）；
+ *         手动排序 order 也经此文件同步（跨浏览器固定顺序），localStorage 副本仅作离线兜底。
  */
 
 type OrderBy = 'manual' | 'recent'
@@ -362,6 +363,16 @@ function loadProjects(): ProjectsState {
   }
 }
 
+/** 启动合并服务端手动排序：远端 order 非空时远端优先，本地独有 id 保相对序追加尾部；
+ * 远端没存 order（响应无此字段或为空数组）时返回 null —— 本地序不动，避免空远端清掉本地序。
+ * 不按 known id 过滤：渲染期 effectiveOrder 已过滤已卸载 id。 */
+function mergeRemoteOrder(remote: unknown, local: string[]): string[] | null {
+  if (!Array.isArray(remote)) return null
+  const remoteOrder = remote.filter((x: unknown): x is string => typeof x === 'string')
+  if (remoteOrder.length === 0) return null
+  return [...remoteOrder, ...local.filter((id) => !remoteOrder.includes(id))]
+}
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
 
 type FloatRect = { top: number }
@@ -601,6 +612,87 @@ const previewCache = new Map<string, string>()
 const previewFetching = new Set<string>()
 let previewSweepBusy = false
 let previewTimer: number | null = null
+
+type AssistantResultOutcome =
+  { state: 'pending' } | { state: 'completed'; text: string } | { state: 'failed'; error: string }
+
+/** 从最后一个已结束回合提取结果；只有正常 completed 且未中止的 AI 文本才可交还 iframe。 */
+function assistantResultOutcome(events: any[]): AssistantResultOutcome {
+  if (!Array.isArray(events)) return { state: 'pending' }
+  let endIndex = -1
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.event?.type === 'turn/end') { endIndex = i; break }
+  }
+  if (endIndex < 0) return { state: 'pending' }
+  const endData = events[endIndex]?.event?.data ?? {}
+  const reason = endData.reason ?? {}
+  const reasonKind = typeof reason.kind === 'string' ? reason.kind : 'unknown'
+  if (reasonKind !== 'completed') {
+    const detail = reason.error?.message ?? reason.failure?.message ?? reason.message
+    return { state: 'failed', error: 'AI 生成未正常完成（' + reasonKind + (detail ? '：' + String(detail) : '') + '）' }
+  }
+  const turn = endData.turn
+  for (let i = endIndex - 1; i >= 0; i--) {
+    const ev = events[i]?.event
+    if (ev?.type === 'turn/start' && (turn === undefined || ev.data?.turn === turn)) break
+    if (ev?.type !== 'assistant/message' || (turn !== undefined && ev.data?.turn !== turn)) continue
+    if (ev.data?.interrupted === true) return { state: 'failed', error: 'AI 生成已中止' }
+    const message = ev.data?.message ?? ev.data ?? {}
+    const blocks = message.content ?? message.blocks
+    if (!Array.isArray(blocks)) continue
+    const parts = blocks
+      .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block: any) => block.text.trim())
+      .filter(Boolean)
+    if (parts.length > 0) return { state: 'completed', text: parts.join('\n').trim() }
+  }
+  return { state: 'failed', error: 'AI 已完成但未返回可回填的文本' }
+}
+
+/** 等待指定新会话完成，并从公开的会话事件窗读取最终 AI 文本。 */
+function waitForSessionAssistant(sessionId: string, timeoutMs = 15 * 60_000): Promise<string> {
+  const bridge = sessionBridge
+  const list = bridge?.list
+  const binding = bridge?.sessions?.binding?.(sessionId)
+  const eventSource = binding?.eventSource
+  if (!bridge || !list || typeof list.getSnapshot !== 'function' || typeof list.subscribe !== 'function' ||
+      !eventSource || typeof eventSource.getSnapshot !== 'function' || typeof eventSource.subscribe !== 'function') {
+    return Promise.reject(new Error('session result bridge unavailable'))
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const disposers: Array<() => void> = []
+    const timer = setTimeout(() => finish(new Error('等待 AI 生成结果超时')), timeoutMs)
+    const finish = (error: Error | null, text = '') => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      for (const dispose of disposers.splice(0)) dispose()
+      if (error) reject(error)
+      else resolve(text)
+    }
+    const check = () => {
+      if (settled) return
+      const entry = list.getSnapshot()?.byId?.[sessionId]
+      if (!entry || entry.running === true) return
+      const agentError = binding?.session?.getSnapshot?.()?.lastAgentError
+      if (typeof agentError === 'string' && agentError) { finish(new Error(agentError)); return }
+      const outcome = assistantResultOutcome(eventSource.getSnapshot()?.entries)
+      if (outcome.state === 'completed') { finish(null, outcome.text); return }
+      if (outcome.state === 'failed') { finish(new Error(outcome.error)); return }
+      // prompt 入列与 running=true、最终事件落窗之间都可能短暂无运行态；
+      // list 与 eventSource 任一后续发布都会重新检查，避免读取半成品或漏掉稍后落窗的回答。
+    }
+    const watch = (source: { subscribe: (listener: () => void) => () => void }) => {
+      const dispose = source.subscribe(check)
+      if (settled) dispose()
+      else disposers.push(dispose)
+    }
+    watch(list)
+    watch(eventSource)
+    check()
+  })
+}
 
 /** 从 history 事件流尾部提取最近一条成品消息文本（优先 text 块；清洗代码后仍太短则回退更早消息） */
 async function coldPreviewOf(face: any): Promise<string> {
@@ -963,6 +1055,20 @@ async function sendChatInProject(text: string, workspaceId: string | null = null
   await promptIntoSession(sessionId, text)
 }
 
+/** 内容页 AI 生成并回填桥：新建右侧会话并自动发送，等待完成后把最终 AI 文本返回调用页。 */
+async function sendChatForResult(text: string, workspaceId: string | null = null, cwd: string | null = null): Promise<string> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const wsId = workspaceId ?? (cwd ? null : defaultWorkspaceId())
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : (cwd ? { cwd } : {}))
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId)
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+  return waitForSessionAssistant(sessionId)
+}
+
 /** pipeline.html「打开归档目录」→ 新桥（经 window.__dshNewChatSessionAtFolder 暴露给 iframe 调用）：
  *  新建会话（cwd=归档根目录）并切过去——与 newChatInProject 相反，刻意不做 markPluginSessionOpen，
  *  让「切会话关项目」联动生效：项目分栏随切换关闭，新窗口只含会话聊天 + 文件夹浏览。
@@ -1014,10 +1120,13 @@ function layoutPagePath(layout: any): string | null {
 /** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开）；
  *  项目设置里选了会话分组时（由组件调用侧读 projects.workspaces 传入），新会话落进该分组；
  *  项目未设分组时由 newChatInProject 回落到设置面板的默认会话分组。
+ *  不管会话窗当前是否打开都强制打开：会话窗被 💬 关掉时（内容窗全宽、会话视图区 display:none），
+ *  不先放开的话新会话建好了用户也看不见，点 ✏️ 像没反应。
  *  template 为项目自定义提示词（项目设置弹窗里设置，projects.prompts[id]）：非空时优先于全局模板。 */
 async function startPageEdit(pagePath: string, projectName: string, workspaceId: string | null = null, template?: string): Promise<void> {
   const tpl = (typeof template === 'string' && template.trim()) ? template : loadPageEditPrompt()
   const prompt = tpl.split('{page}').join(pagePath).split('{name}').join(projectName)
+  try { if (splitStore.active) splitStore.setChatClosed(false) } catch { /* 分栏未开/不可用时忽略，全宽会话视图本就可见 */ }
   await newChatInProject(prompt, workspaceId)
 }
 
@@ -1317,7 +1426,8 @@ function WorktableSection(props: any) {
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
   // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
-  // 仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
+  // 手动排序 order 一并合并：远端非空时远端优先、本地独有 id 追加尾部，远端缺 order 时本地序不动；
+  // 合并结果与远端不一致时回推一次完整同步切片自愈。仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
   useEffect(() => {
     let alive = true
     void (async () => {
@@ -1340,16 +1450,26 @@ function WorktableSection(props: any) {
         if (d.prompts && typeof d.prompts === 'object') {
           for (const [k, v] of Object.entries(d.prompts)) if (typeof v === 'string') remotePrompts[k] = v
         }
+        const remoteOrder = Array.isArray(d.order) ? d.order.filter((x: unknown): x is string => typeof x === 'string') : []
+        // 合并结果暂存局部变量，回推送在 effect 主流程里做（不写在 setProjects updater 里）：
+        // 严格模式双调用 updater 产生的暂存值相同，回推幂等无害
+        let merged: ProjectsState | null = null
         setProjects((prev) => {
           const remoteIds = new Set(remote.map((l) => l.id))
-          return {
+          merged = {
             ...prev,
             layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
             folders: { ...prev.folders, ...remoteFolders },
             workspaces: { ...prev.workspaces, ...remoteWorkspaces },
             prompts: { ...prev.prompts, ...remotePrompts },
+            order: mergeRemoteOrder(remoteOrder, prev.order) ?? prev.order,
           }
+          return merged
         })
+        // 自愈回推：最终 order 与远端不一致（远端缺 order / 合并产生本地独有 id 追加）时推一次完整同步切片
+        if (merged && JSON.stringify(merged.order) !== JSON.stringify(remoteOrder)) {
+          void fetch('/api/worktable/projects', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(syncedSliceOf(merged)) }).catch(() => {})
+        }
       } catch { /* 服务端不可用 = 仅本地模式 */ }
     })()
     return () => { alive = false }
@@ -1695,19 +1815,20 @@ function WorktableSection(props: any) {
     })
   }
 
-  /** 同步条目切片（sync 标记的布局 + 其文件夹/分组/提示词映射）：以服务端文件为准，localStorage 不落。 */
+  /** 同步条目切片（sync 标记的布局 + 其文件夹/分组/提示词映射 + 手动排序 order）：以服务端文件为准，localStorage 不落（order 例外，仍落本地作离线兜底）。 */
   const syncedSliceOf = (s: ProjectsState) => {
     const layouts = s.layouts.filter((l) => l.sync)
     const ids = new Set(layouts.map((l) => l.id))
     const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)))
     const workspaces = Object.fromEntries(Object.entries(s.workspaces).filter(([id]) => ids.has(id)))
     const prompts = Object.fromEntries(Object.entries(s.prompts).filter(([id]) => ids.has(id)))
-    return { layouts, folders, workspaces, prompts }
+    return { layouts, folders, workspaces, prompts, order: s.order }
   }
   const persistProjects = (patch: Partial<ProjectsState> | ((prev: ProjectsState) => ProjectsState)) => {
     setProjects((prev) => {
       const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
-      // localStorage 只落本地条目：sync 布局与其文件夹/分组/提示词映射由服务端托管
+      // localStorage 只落本地条目：sync 布局与其文件夹/分组/提示词映射由服务端托管；
+      // order 随本地条目一并落盘，作离线/服务端不可用时的兜底（在线时以服务端同步为准）
       const syncedIds = new Set(next.layouts.filter((l) => l.sync).map((l) => l.id))
       const local = {
         ...next,
@@ -1717,7 +1838,8 @@ function WorktableSection(props: any) {
         prompts: Object.fromEntries(Object.entries(next.prompts).filter(([id]) => !syncedIds.has(id))),
       }
       try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(local)) } catch {}
-      // 同步切片有变化才推服务端（全量覆盖，last-write-wins；排序/隐藏等本地偏好不触发推送）
+      // 同步切片有变化才推服务端（全量覆盖，last-write-wins；切片含手动排序 order——拖拽落序随之同步，
+      // 隐藏等其余本地偏好不触发推送）
       const prevSync = JSON.stringify(syncedSliceOf(prev))
       const nextSync = JSON.stringify(syncedSliceOf(next))
       if (prevSync !== nextSync) {
@@ -3935,12 +4057,15 @@ export function apply(ctx: any) {
   applyCtx = ctx   // 模块级暂存：openFolderInSidebar 等助手经它取 better-sidebar 服务
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshSendChatForResult = (text: string) => sendChatForResult(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
   // 项目页（pipeline.html「打开归档目录」等）→ dsh-better-sidebar 侧边栏桥：开一个以传入目录为根的
   // 文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；path 相同按
   // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）
   // 或打开抛错时返回 false，由页面回退到系统文件管理器路径。
   try { (window as any).__dshOpenFolderInSidebar = (p: string): boolean => openFolderInSidebar(p) } catch {}
+  // 项目页（pipeline.html「打开归档目录」）→ 工作台分栏桥：关闭侧边会话窗（聊天列），配合
+  // better-sidebar 侧边窗打开目录时让出屏幕空间；无活动布局时为 no-op。
+  try { (window as any).__dshCloseSideChat = (): void => { try { splitStore.setChatClosed(true) } catch {} } } catch {}
 
 
   ctx.effect(() => {

@@ -240,6 +240,7 @@
               <option value="__custom__">自定义…</option>
             </select>
             <button class="dshell-btn dshell-btnGhost" id="relBuildScriptRefresh" title="按当前仓库与分支重新列出仓内脚本（根目录与 scripts/、ci/ 下的 *.sh）" style="padding:4px 8px">⟳</button>
+            <button class="dshell-btn dshell-btnGhost" id="relBuildAiBtn" title="在右侧聊天窗启动 AI，分析当前仓库与分支，完成后同时自动回填构建脚本和产物路径" style="padding:4px 10px">✦ AI 建议</button>
           </label>
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">构建命令
             <input class="dshell-input" id="relBuildCmd" placeholder="可选，作为 BUILD_CMD 注入脚本" autocomplete="off" style="width:200px" />
@@ -247,6 +248,7 @@
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">超时(s)
             <input class="dshell-input" id="relBuildTimeout" type="number" min="10" max="3600" style="width:80px" />
           </label>
+          <span class="dshell-muted" id="relBuildAiTip" style="font-size:11px"></span>
           <span class="dshell-muted" id="relCfgCloudTip" style="font-size:11px" title="构建脚本/构建命令/超时/产物路径/预发布按「仓库@分支」保存到服务端云端（所有浏览器共享），改动自动保存；再次选中该分支时自动填充"></span>
         </div>
         <div class="pr-tokenRow" id="relBuildScriptCustomRow" style="display:none;margin-bottom:8px">
@@ -274,10 +276,10 @@
             <span style="display:flex;align-items:center;gap:8px">
               <span class="dshell-muted" id="relNotesAiTip" style="font-size:11px"></span>
               <button class="dshell-btn dshell-btnGhost" id="relNotesAiBtn" style="padding:3px 10px;font-size:11.5px"
-                title="拉取上一发行版 Tag 与当前分支之间的提交（commit），在右侧聊天窗新建 AI 会话按业界通行格式生成发行说明草稿（生成后从会话复制回本框，可再编辑）">✦ AI 生成</button>
+                title="拉取上一发行版 Tag 与当前分支之间的提交（commit），在右侧聊天窗新建 AI 会话按业界通行格式生成发行说明，完成后自动回填本框（仍可编辑）">✦ AI 生成</button>
             </span>
           </div>
-          <textarea class="dshell-textarea" id="relBody" rows="4" placeholder="本次发行的变更说明（可选；点「✦ AI 生成」由 AI 按上一发行版与当前分支之间的提交起草）" style="font-size:12px"></textarea>
+          <textarea class="dshell-textarea" id="relBody" rows="4" placeholder="本次发行的变更说明（可选；点「✦ AI 生成」后自动起草并回填）" style="font-size:12px"></textarea>
         </div>
         <div class="pr-tokenRow">
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
@@ -503,6 +505,7 @@
   var issueListEl = $("issueList"), issueRefresh = $("issueRefresh");
   var statsEl = $("stats"), listEl = $("list"), statusBar = $("statusBar"), toastEl = $("toast");
   var relBuildScriptRefresh = $("relBuildScriptRefresh"), relBuildScriptCustom = $("relBuildScriptCustom"), relBuildScriptCustomRow = $("relBuildScriptCustomRow");
+  var relBuildAiBtn = $("relBuildAiBtn"), relBuildAiTip = $("relBuildAiTip");
   var relArtifacts = $("relArtifacts"), relNotesAiBtn = $("relNotesAiBtn"), relNotesAiTip = $("relNotesAiTip");
   var buildContainerInput = $("buildContainerInput"), buildExtraEnvInput = $("buildExtraEnvInput");
   var buildProxySel = $("buildProxySel"), buildProxyInput = $("buildProxyInput");
@@ -681,9 +684,10 @@
   }
 
   /* ---------- 分页拉取 ---------- */
-  function fetchAll(pathBase, perPage, mode) {
+  function fetchAll(pathBase, perPage, mode, guard) {
     var out = [];
     function page(n) {
+      if (typeof guard === "function" && !guard()) return Promise.reject(new Error("请求上下文已变更"));
       var sep = pathBase.indexOf("?") >= 0 ? "&" : "?";
       return fetchJSON(pathBase + sep + "page=" + n + "&per_page=" + perPage, mode).then(function (arr) {
         if (!Array.isArray(arr)) return out;
@@ -1243,6 +1247,19 @@
       try { if (w && w.__dshSessions && typeof w.__dshSessions.create === "function") return w; } catch (e) {}
     }
     return null;
+  }
+
+  /* 调用工作台“自动发送并返回最终文本”桥；页面只在拿到完整结果后回填。 */
+  function requestAiResult(prompt) {
+    var host = getHost();
+    if (!host || typeof host.__dshSendChatForResult !== "function") {
+      return Promise.reject(new Error("当前工作台缺少 AI 结果回填桥，请重建插件并刷新页面"));
+    }
+    return Promise.resolve(host.__dshSendChatForResult(prompt)).then(function (text) {
+      text = typeof text === "string" ? text.trim() : "";
+      if (!text) throw new Error("AI 未返回可回填的文本");
+      return text;
+    });
   }
 
   // 尽力为新会话设定默认预设/模型（对齐工作台插件内部流程；任何失败均静默忽略）
@@ -2371,9 +2388,9 @@
     if (relCfgCloudCache !== null) return Promise.resolve(relCfgCloudCache);
     return loadRelCfgCloud();
   }
-  function relBranchKey() {           // 当前选中的 "owner/repo@branch" 键；未选仓库或未填分支时为空串
-    var repo = relSelectedRepo(), branch = relBranch.value.trim();
-    return (repo && branch) ? repo.owner + "/" + repo.name + "@" + branch : "";
+  function relBranchKey() {           // 当前选中的 "owner/repo@branch" 键；空分支与发行逻辑一致按 main
+    var repo = relSelectedRepo(), branch = relBranch.value.trim() || "main";
+    return repo ? repo.owner + "/" + repo.name + "@" + branch : "";
   }
   function readRelFormCfg() {
     return { script: effectiveBuildScript(), buildCmd: relBuildCmd.value.trim(),
@@ -2417,14 +2434,119 @@
     });
   }
 
+  function buildRelBuildSuggestionPrompt(repo, branch) {
+    var tok = state.embed ? (state.token || "").trim() : "";
+    var curlAuth = tok ? ' -H "Authorization: Bearer ' + tok + '"' : "";
+    var contentsApi = apiBase() + "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/contents";
+    return [
+      "请分析 " + platformLabel() + " 仓库 " + repo.owner + "/" + repo.name + " 的 " + branch + " 分支，为工作台『构建发行』表单建议一组相互匹配的构建配置。",
+      "",
+      "先读取仓库根目录，并按需继续读取 scripts/、ci/、构建清单及候选脚本内容：",
+      'curl -sS' + curlAuth + ' "' + contentsApi + "?ref=" + encodeURIComponent(branch) + '"',
+      '读取子目录或文件时使用：curl -sS' + curlAuth + ' "' + contentsApi + '/{path}?ref=' + encodeURIComponent(branch) + '"',
+      tok ? "认证令牌仅用于本次只读分析，不得在回答中复述。" : "若仓库需要认证但以上请求失败，请直接说明无法读取，不要猜测路径。",
+      "",
+      "当前表单值（仅作参考，可替换）：",
+      "- 构建脚本：" + (effectiveBuildScript() || "（未配置）"),
+      "- 产物路径：" + (relArtifacts.value.trim() || "（未配置）"),
+      "",
+      "要求：",
+      "1. script 必须是该分支中实际存在、可从仓库根目录以 bash 执行的脚本相对路径；优先选择专用于 release/package/build 的脚本。",
+      "2. artifacts 必须与该脚本真实产出匹配，是一个以空格分隔的仓内相对路径/通配字符串；支持 * 和 ?，不得使用绝对路径或 ..。",
+      "3. 不要修改仓库；没有足够证据时将两个值都置为空字符串，但仍保持下列协议。",
+      "4. 最终回答只输出以下标记与单行 JSON，不要使用 Markdown 代码围栏，也不要附加其他文字：",
+      "<dsh-release-config>",
+      '{"script":"scripts/build.sh","artifacts":"dist/*.tgz"}',
+      "</dsh-release-config>"
+    ].join("\n") + "\n";
+  }
+
+  /* AI 构建配置采用显式标记包裹 JSON，避免把会话里的解释文字误回填进表单。 */
+  function parseRelBuildSuggestion(raw) {
+    var text = String(raw || "");
+    var open = "<dsh-release-config>", close = "</dsh-release-config>";
+    var start = text.indexOf(open), end = text.indexOf(close, start + open.length);
+    if (start < 0 || end < 0) throw new Error("AI 返回中缺少构建配置标记");
+    var parsed;
+    try { parsed = JSON.parse(text.slice(start + open.length, end).trim()); }
+    catch (e) { throw new Error("AI 返回的构建配置不是有效 JSON"); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("AI 返回的构建配置格式无效");
+    var keys = Object.keys(parsed);
+    if (keys.length !== 2 || !Object.prototype.hasOwnProperty.call(parsed, "script") || !Object.prototype.hasOwnProperty.call(parsed, "artifacts")) {
+      throw new Error("AI 构建配置必须且只能包含 script 与 artifacts");
+    }
+    if (typeof parsed.script !== "string" || typeof parsed.artifacts !== "string") {
+      throw new Error("AI 构建配置的 script 与 artifacts 必须是字符串字段");
+    }
+    var script = parsed.script.trim(), artifacts = parsed.artifacts.trim();
+    var paths = (script ? [script] : []).concat(artifacts ? artifacts.split(/\s+/) : []);
+    if (paths.some(function (path) { return path[0] === "/" || path.indexOf("..") >= 0; })) {
+      throw new Error("AI 建议必须使用不含 .. 的仓内相对路径");
+    }
+    return { script: script, artifacts: artifacts };
+  }
+
+  function applyRelBuildSuggestion(suggestion) {
+    relCfg.script = suggestion.script;
+    relCfg.artifacts = suggestion.artifacts;
+    relArtifacts.value = suggestion.artifacts;
+    applyBuildScriptSelection();
+    saveRelCfg();
+    rememberRelCfgCloud();
+  }
+
+  function parseRelNotesResult(raw) {
+    var text = String(raw || "");
+    var open = "<dsh-release-notes>", close = "</dsh-release-notes>";
+    var start = text.indexOf(open), end = text.indexOf(close, start + open.length);
+    if (start < 0 || end < 0) throw new Error("AI 返回中缺少发行说明标记");
+    var notes = text.slice(start + open.length, end).trim();
+    if (!notes) throw new Error("AI 返回的发行说明为空");
+    return notes;
+  }
+
+  var relBuildAiBusy = false;
+  async function genRelBuildSuggestion() {
+    if (relBuildAiBusy) return;
+    if (!state.token) { toast("请先在『设置』页配置令牌", true); return; }
+    var platform = state.platform;
+    var repo = relSelectedRepo();
+    if (!repo) { toast("请先选择仓库（列表为空时点 ⟳ 拉取）", true); return; }
+    var branch = relBranch.value.trim() || "main";
+    relBuildAiBusy = true;
+    relBuildAiBtn.disabled = true;
+    relBuildAiBtn.textContent = "⏳ AI 分析中…";
+    relBuildAiTip.textContent = "正在右侧聊天窗分析仓库…";
+    try {
+      var raw = await requestAiResult(buildRelBuildSuggestionPrompt(repo, branch));
+      var currentRepo = relSelectedRepo();
+      if (state.platform !== platform || !currentRepo || currentRepo.owner !== repo.owner || currentRepo.name !== repo.name || (relBranch.value.trim() || "main") !== branch) {
+        throw new Error("平台、仓库或分支已变更，已丢弃旧 AI 建议");
+      }
+      var suggestion = parseRelBuildSuggestion(raw);
+      if (!suggestion.script) throw new Error("AI 未找到可信的仓内构建脚本，已保留原配置");
+      applyRelBuildSuggestion(suggestion);
+      relBuildAiTip.textContent = "✓ 已自动回填构建脚本与产物路径";
+      toast("AI 建议已自动回填并保存");
+    } catch (e) {
+      var message = e && e.message ? e.message : String(e);
+      relBuildAiTip.textContent = "✗ " + message;
+      toast("AI 建议失败：" + message, true);
+    } finally {
+      relBuildAiBusy = false;
+      relBuildAiBtn.disabled = false;
+      relBuildAiBtn.textContent = "✦ AI 建议";
+    }
+  }
+
   /* ---------- AI 生成发行说明：按「上一发行版 Tag … 当前分支」的提交（commit）区间起草 ----------
      上一发行版取 releases 接口按创建时间最新的非草稿发行版（接口不可用/为空视为无历史发行版）；
      提交区间优先走 compare 接口（{上一发行版 Tag}...{当前分支}，精确区间；无历史发行版、分支名含 /
      或 compare 不可用时回退为按分支拉提交并以 since=上一发行版时间过滤，无历史发行版时取最近提交），
      上限 REL_NOTES_COMMIT_MAX 条。
      提示词内嵌提交清单（短 hash + 首行 message + 作者），要求 AI 按业界通行格式
-     （Keep a Changelog + Conventional Commits 分组）输出；会话在右侧聊天小窗打开并自动发送
-     （优先插件 __dshSendChatInProject 桥；旧版插件退化为右侧聊天窗草稿，再退化全屏会话），
+     （Keep a Changelog + Conventional Commits 分组）输出；会话在右侧聊天小窗打开并自动发送，
+     经 __dshSendChatForResult 等待完整结果后自动回填发行说明，
      不离开当前发行页；令牌是否随提示携带沿用设置页「评审提示中携带令牌」开关，便于 AI 按需补查提交 diff。 */
   var REL_NOTES_COMMIT_MAX = 100; // 参与生成发行说明的提交上限
   var relNotesAiBusy = false;
@@ -2448,7 +2570,7 @@
       date: (c.author && c.author.date) || ""
     };
   }
-  function fetchRangeCommits(repo, branch, prevRel) {
+  function fetchRangeCommits(repo, branch, prevRel, guard) {
     var repoPath = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name);
     var base = prevRel && prevRel.tag_name;
     var viaCompare = base
@@ -2460,9 +2582,10 @@
           })
       : Promise.reject(new Error("无历史发行版")); // 直接走回退路径
     return viaCompare.catch(function () {
+      if (typeof guard === "function" && !guard()) throw new Error("请求上下文已变更");
       var q = repoPath + "/commits?sha=" + encodeURIComponent(branch);
       if (base && prevRel.created_at) q += "&since=" + encodeURIComponent(prevRel.created_at);
-      return fetchAll(q, 100).then(function (arr) { return arr || []; });
+      return fetchAll(q, 100, null, guard).then(function (arr) { return arr || []; });
     }).then(function (commits) {
       return commits.map(normalizeCommit).filter(function (c) { return c.sha; })
         .slice(0, REL_NOTES_COMMIT_MAX);
@@ -2498,56 +2621,55 @@
       "7. 提交较多时，琐碎提交（typo、ci 微调、版本号回写等）可聚合为一行概述，不必逐条罗列。",
       "8. 如需查看某个提交的详细 diff 再归纳，可执行：",
       '   curl -sS' + curlAuth + ' "' + commitsApi + '/{sha}"',
-      "9. 最终结果单独放在一个 markdown 代码块中输出，方便整体复制粘贴回「发行说明」输入框。"
+      "9. 最终回答只输出 <dsh-release-notes> 与 </dsh-release-notes> 标记，并把完整 Markdown 放在两者之间；不要使用代码围栏或附加解释，页面会自动回填。"
     );
     return lines.join("\n") + "\n";
   }
-  /* 发行说明 AI 生成会话：优先走插件「右侧聊天窗 + 自动发送」桥（__dshSendChatInProject，项目分栏保持打开）；
-     旧版插件无此桥时退化为右侧聊天窗草稿（__dshNewChatSession，需手动发送），再退化为全屏会话（launchNewSession） */
-  function launchRelNotesSession(prompt) {
-    var host = getHost();
-    var okMsg = "已新建 AI 会话生成发行说明（生成后复制回「发行说明」框）";
-    if (host && typeof host.__dshSendChatInProject === "function") {
-      toast("正在右侧聊天窗新建 AI 会话…");
-      Promise.resolve(host.__dshSendChatInProject(prompt)).then(
-        function () { toast("已在右侧聊天窗开始生成发行说明（生成后复制回「发行说明」框）"); },
-        function () { launchNewSession(prompt, okMsg); } // 桥内失败：回退全屏会话路径（含复制兜底）
-      );
-      return;
-    }
-    if (host && typeof host.__dshNewChatSession === "function") {
-      toast("正在右侧聊天窗新建 AI 会话…");
-      Promise.resolve(host.__dshNewChatSession(prompt)).then(
-        function () { toast("提示已填入右侧聊天窗输入框，请确认后发送"); },
-        function () { launchNewSession(prompt, okMsg); }
-      );
-      return;
-    }
-    launchNewSession(prompt, okMsg);
-  }
-  function genRelNotes() {
+  async function genRelNotes() {
     if (relNotesAiBusy) return;
     if (!state.token) { toast("请先在「设置」页配置令牌", true); return; }
+    var platform = state.platform;
     var repo = relSelectedRepo();
     if (!repo) { toast("请先选择仓库（列表为空时点 ⟳ 拉取）", true); return; }
     var branch = relBranch.value.trim() || "main";
     var tag = relTag.value.trim(), name = relName.value.trim();
+    var selectionCurrent = function () {
+      var currentRepo = relSelectedRepo();
+      return state.platform === platform && !!currentRepo && currentRepo.owner === repo.owner && currentRepo.name === repo.name &&
+        (relBranch.value.trim() || "main") === branch && relTag.value.trim() === tag && relName.value.trim() === name;
+    };
     relNotesAiBusy = true; relNotesAiBtn.disabled = true; relNotesAiBtn.textContent = "⏳ 生成中…"; relNotesAiTip.textContent = "";
     var prevRel = null;
-    fetchPrevRelease(repo)
-      .then(function (r) { prevRel = r; return fetchRangeCommits(repo, branch, prevRel); })
-      .then(function (commits) {
-        if (!commits.length) {
-          toast(prevRel ? "上一发行版 " + prevRel.tag_name + " 之后 " + branch + " 分支没有新提交" : branch + " 分支还没有提交", true);
-          return;
-        }
-        relNotesAiTip.textContent = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
-        launchRelNotesSession(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
-      })
-      .catch(function (e) { toast("拉取提交失败：" + describeApiError(e).title, true); })
-      .then(function () { relNotesAiBusy = false; relNotesAiBtn.disabled = false; relNotesAiBtn.textContent = "✦ AI 生成"; });
+    try {
+      prevRel = await fetchPrevRelease(repo);
+      if (!selectionCurrent()) throw new Error("平台、仓库、分支或发行信息已变更，已停止旧 AI 发行说明任务");
+      var commits = await fetchRangeCommits(repo, branch, prevRel, selectionCurrent);
+      if (!selectionCurrent()) throw new Error("平台、仓库、分支或发行信息已变更，已停止旧 AI 发行说明任务");
+      if (!commits.length) {
+        toast(prevRel ? "上一发行版 " + prevRel.tag_name + " 之后 " + branch + " 分支没有新提交" : branch + " 分支还没有提交", true);
+        return;
+      }
+      var rangeTip = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
+      relNotesAiTip.textContent = rangeTip + " · 等待 AI 生成…";
+      var raw = await requestAiResult(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
+      if (!selectionCurrent()) {
+        throw new Error("平台、仓库、分支或发行信息已变更，已丢弃旧 AI 发行说明");
+      }
+      relBody.value = parseRelNotesResult(raw);
+      relNotesAiTip.textContent = rangeTip + " · ✓ 已自动回填";
+      toast("发行说明已由 AI 自动回填");
+    } catch (e) {
+      var message = e && e.message ? e.message : String(e);
+      relNotesAiTip.textContent = "✗ " + message;
+      toast("AI 生成发行说明失败：" + message, true);
+    } finally {
+      relNotesAiBusy = false;
+      relNotesAiBtn.disabled = false;
+      relNotesAiBtn.textContent = "✦ AI 生成";
+    }
   }
   relNotesAiBtn.addEventListener("click", genRelNotes);
+  relBuildAiBtn.addEventListener("click", genRelBuildSuggestion);
 
   function runRelease() {
     // 运行中再次点击：作为「停止」——abort 断开 exec-stream，服务端 res.on('close') 即 SIGTERM 整个进程组

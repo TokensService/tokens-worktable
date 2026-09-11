@@ -79,12 +79,14 @@ bigItems.push({ type: "branch", name: "0830_dev_bnt3" });
 const bigBody = JSON.stringify({ total: bigItems.length, offset: 0, limit: bigItems.length, next_offset: null, items: bigItems });
 if (bigBody.length <= 65536) throw new Error("测试响应体应超过 64K 截断阈值");
 const ctx2 = {
-  JSON, URL, Date, console, setTimeout, clearTimeout, setInterval, clearInterval,
+  JSON, URL, Date, console, AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
   stageUrlOf: (s) => (s.url && s.url.url) || "",
   runSetSel: (rc, id) => { rc.selId = id; },   // 引擎层选中：写 rc.selId（viewRc!==rc 时不再回写视图层 selectedId）
   rcRender: () => {}, renderDetail: () => {}, archiveStageLog: () => {},
   stageSeq: (stg, i) => i + 1,   // 归档序号帮助函数（新签名：阶段数组 + 下标；预设任务改造后由 runUrlStep 调用）
   advance: () => {}, finish: () => {},
+  readBrowserResponseText: async r => r.text(),
+  createClientStageLogSink: () => null,
   jenkins: { url: "", user: "", token: "", mode: "local" },
   fetch: async () => ({ ok: true, text: async () => bigBody }),
 };

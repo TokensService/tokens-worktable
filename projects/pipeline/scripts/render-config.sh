@@ -25,7 +25,18 @@ NUM_PREFILL="${NUM_PREFILL:-}"
 NUM_DECODE="${NUM_DECODE:-}"
 PREFILL_GPU="${PREFILL_GPU:-}"
 DECODE_GPU="${DECODE_GPU:-}"
-NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-${IMAGE_TAG:-local}}"
+NAMESPACE_ARCH="${arch:-}"
+[[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
+EXECUTOR="${EXECUTOR:-}"
+[[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
+NAMESPACE="${NAMESPACE:-}"
+if [[ -z "$NAMESPACE" ]]; then
+  if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
+    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}-${IMAGE_TAG:-local}"
+  else
+    NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG:-local}"
+  fi
+fi
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
@@ -35,8 +46,13 @@ REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"
 EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
+EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
+MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
+TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+[[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 NODE_SELECTOR_KEY="xds.optest"
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
@@ -68,8 +84,8 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
-  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" <<'PY'
+  "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$MAPPED_COLLECTOR_GATEWAY_URL" <<'PY'
 import copy
 import json
 from pathlib import Path
@@ -82,8 +98,8 @@ import yaml
  resource_manifest_file, deploy_image, num_prefill, num_decode,
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
- node_selector_key, target_hosts_json, node_labels_file, template_vars_json,
- chart_dir, image_pull_secrets_text) = sys.argv[1:]
+ node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
+ chart_dir, image_pull_secrets_text, mapped_collector_gateway_url) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
@@ -123,11 +139,39 @@ except json.JSONDecodeError as error:
     raise SystemExit(f"invalid TARGET_HOSTS: {error}")
 if not isinstance(target_hosts, list) or not target_hosts:
     raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
+try:
+    target_node_ip_map = json.loads(target_node_ip_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TARGET_NODE_IP_MAP: {error}")
+if not isinstance(target_node_ip_map, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+try:
+    node_port_map = json.loads(node_port_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid NODE_PORT_MAP: {error}")
+if not isinstance(node_port_map, dict):
+    raise SystemExit("NODE_PORT_MAP must be a JSON object")
+for ip, port in node_port_map.items():
+    if not isinstance(ip, str) or not re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip) or type(port) is not int or not 30000 <= port <= 32767:
+        raise SystemExit("NODE_PORT_MAP entries must map an IPv4 address to a NodePort in 30000-32767")
 target_ips = []
 for host in target_hosts:
     if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-    target_ips.append(host["ip"])
+    endpoint = host["ip"]
+    mapped_ip = target_node_ip_map.get(endpoint)
+    if target_node_ip_map and not isinstance(mapped_ip, str):
+        raise SystemExit(f"TARGET_NODE_IP_MAP is missing target endpoint: {endpoint}")
+    if mapped_ip is not None and (not isinstance(mapped_ip, str) or not mapped_ip):
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
+    endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+    if endpoint_match:
+        address, port = endpoint_match.groups()
+        if not 1 <= int(port) <= 65535:
+            raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
+        target_ips.append(mapped_ip if mapped_ip is not None else address)
+    else:
+        target_ips.append(mapped_ip if mapped_ip is not None else endpoint)
 
 def selector_fragment(ip):
     if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):
@@ -135,6 +179,7 @@ def selector_fragment(ip):
     return re.sub(r"[^a-zA-Z0-9]+", "-", ip).strip("-")
 
 node_selector_value = "node-" + "-".join(selector_fragment(ip) for ip in target_ips)
+target_node_port = node_port_map.get(target_ips[0])
 
 def upsert_container_env(name, value):
     common = values.setdefault("common", {})
@@ -156,6 +201,21 @@ def remove_container_env(name):
         item for item in common["containerEnv"]
         if not isinstance(item, dict) or item.get("name") != name
     ]
+
+def set_ems_switches(value, enabled):
+    if isinstance(value, dict):
+        if value.get("name") == "EMS_ENABLE":
+            value["value"] = str(enabled).lower()
+            value.pop("valueFrom", None)
+        for key, child in value.items():
+            if key.lower() == "ems" and isinstance(child, dict):
+                child["enable"] = enabled
+            elif key.lower() in ("ems_enable", "enable_ems"):
+                value[key] = enabled
+            set_ems_switches(child, enabled)
+    elif isinstance(value, list):
+        for child in value:
+            set_ems_switches(child, enabled)
 
 def split_image_reference(reference):
     image_path, separator, tag = reference.rpartition(":")
@@ -180,6 +240,9 @@ matches = [arch for arch in architectures if arch.get("arch_name") == arch_name]
 if len(matches) != 1:
     raise SystemExit(f"arch_name not found or not unique: {arch_name}")
 arch = copy.deepcopy(matches[0])
+use_ems = arch.get("use_ems", False)
+if type(use_ems) is not bool:
+    raise SystemExit(f"{arch_name}.use_ems must be a boolean when specified")
 
 groups = []
 resources = []
@@ -277,9 +340,26 @@ template_vars.setdefault("XDS_DATABASE_NAME", "xds")
 template_vars.setdefault("XDS_DATABASE_USERNAME", "xds")
 template_vars.setdefault("DATABASE_PASSWORD", "mock")
 template_vars.setdefault("ELB_ID", "unused")
-template_vars.setdefault("NODE_PORT", "31365")
+if target_node_port is not None:
+    template_vars["NODE_PORT"] = str(target_node_port)
+else:
+    template_vars.setdefault("NODE_PORT", "31365")
 template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
+# 新版模板包含可选 LMCache Sidecar。默认关闭以保持没有 Sidecar 的部署行为；
+# 所有字段仍在 values 中填入可解析的值，启用时可由 TEMPLATE_VARS_JSON 覆盖。
+template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "false")
+template_vars.setdefault("LMCACHE_MP_PORT_BASE", "18000")
+template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", "18080")
+template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", "0")
+template_vars.setdefault("LMCACHE_L1_SIZE_GB", "0")
+template_vars.setdefault("LMCACHE_L1_ALIGN_BYTES", "4096")
+template_vars.setdefault("LMCACHE_MAX_WORKERS", "1")
+template_vars.setdefault("LMCACHE_LOG_LEVEL", "INFO")
+template_vars.setdefault("LMCACHE_CPU_REQUEST", "1")
+template_vars.setdefault("LMCACHE_MEMORY_REQUEST", "1Gi")
+template_vars.setdefault("LMCACHE_CPU_LIMIT", "1")
+template_vars.setdefault("LMCACHE_MEMORY_LIMIT", "1Gi")
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -325,6 +405,8 @@ def normalize_container_env_values(value):
             normalize_container_env_values(child)
 
 normalize_container_env_values(values)
+set_ems_switches(values, use_ems)
+upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
 values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
@@ -433,6 +515,23 @@ if isinstance(lmcache, dict):
 
 framework_files = values.get("frameworkConfigFiles")
 if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    if target_node_ip_map:
+        framework_files["xds_framework.conf"] = re.sub(
+            r"(?m)^(\s*collector_gateway_url\s*=\s*).*?$",
+            rf"\g<1>{mapped_collector_gateway_url}",
+            framework_files["xds_framework.conf"],
+        )
+    framework_files["xds_framework.conf"] = re.sub(
+        r"(?m)^(\s*ems_enable\s*=\s*).*$",
+        rf"\g<1>{str(use_ems).lower()}",
+        framework_files["xds_framework.conf"],
+    )
+    if ems_namespace:
+        framework_files["xds_framework.conf"] = re.sub(
+            r"(?m)^(\s*ems_namespace\s*=\s*).*$",
+            rf"\g<1>{ems_namespace}",
+            framework_files["xds_framework.conf"],
+        )
     framework_files["xds_framework.conf"] = re.sub(
         r"(?m)^(\s*use_fem_frontend\s*=\s*).*$",
         r"\g<1>false",
