@@ -81,8 +81,15 @@ test('多任务并行组渲染 fork、任务分支和 join，节点点击仍选�
   assert.equal(group.className,'pipeline-parallelGroup');
   assert.deepEqual(group.children.map(node=>node.className),['pipeline-parallelTitle','pipeline-parallelRailIn','pipeline-parallelTasks','pipeline-parallelRailOut']);
   const tasks=group.children[2];
-  assert.deepEqual(tasks.children.map(node=>node.dataset.id),['build','test']);
-  tasks.children[1].fire('click');
+  assert.equal(tasks.style.flexDirection,'column');
+  assert.deepEqual(tasks.children.map(row=>row.className),['pipeline-parallelTaskRow','pipeline-parallelTaskRow']);
+  assert.ok(tasks.children.every(row=>row.style.display==='flex'));
+  assert.deepEqual(tasks.children.map(row=>row.children.map(node=>node.className)),[
+    ['pipeline-parallelBranchIn','pipeline-node','pipeline-parallelBranchOut'],
+    ['pipeline-parallelBranchIn','pipeline-node','pipeline-parallelBranchOut'],
+  ]);
+  assert.deepEqual(tasks.children.map(row=>row.children[1].dataset.id),['build','test']);
+  tasks.children[1].children[1].fire('click');
   assert.equal(ctx.selectedId,'test');
   assert.equal(ctx.details,1);
 });
@@ -134,4 +141,33 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',()=>{
   assert.equal(pipeline.stages[0].parallel,true);
   ctx.openPlForm('pl-1');
   assert.equal(ctx.editStages[0].parallel,true);
+});
+
+test('无效 parallel 值在编辑、保存和重新打开中保持串行',()=>{
+  const stageList=new FakeNode('div');
+  const invalid={id:'build',name:'构建',dur:0,timeout:null,skip:false,parallel:'false',sub:[],kind:'simulate',script:null,url:null,evaltokens:null,sched:{}};
+  const form={dataset:{editId:'pl-1'},style:{}};
+  const nameInput={value:'并行',focus(){}};
+  const pipeline={id:'pl-1',name:'并行',stages:[]};
+  const ctx={
+    editStages:[invalid], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null,
+    $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
+    document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
+    STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},
+    stageCardMouseDown(){},stageCardDragStart(){},stageCardDragOver(){},stageCardDrop(){},stageCardDragEnd(){},
+    renderStageActionRow(){},renderStageParams(){},renderStageSched(){},applyEditSel(){},applyPlFormReadOnly(){},
+    findPipeline:id=>id==='pl-1'?pipeline:null, PRESET_BY_NAME:{}, scriptByName:()=>null, confirm:()=>true, alert:msg=>{throw new Error(msg);},
+    scriptLangOf:()=> 'sh', stageIdFor:()=> 'build', evaltokensStageConfig:x=>x, saveScriptsDir(){}, collectPipelineDefaultForm:()=>({}),
+    savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
+    normalizePipelineDefaults:x=>x||{}, normalizeStageKind:x=>x, withPresetMarkers:x=>x, currentPipelineDefaultSeed:()=>({}),loadPlDraft:()=>null,
+    renderPipelineDefaultForm(){},loadScripts:()=>Promise.resolve(),
+  };
+  install(ctx,'renderStageEditor','savePlForm','openPlForm');
+  ctx.renderStageEditor();
+  assert.equal(stageList.children[0].querySelector('[data-f="parallel"]').checked,false);
+  ctx.savePlForm();
+  assert.equal(Object.hasOwn(pipeline.stages[0],'parallel'),false);
+  pipeline.stages=[Object.assign({},invalid,{parallel:1})];
+  ctx.openPlForm('pl-1');
+  assert.equal(ctx.editStages[0].parallel,false);
 });

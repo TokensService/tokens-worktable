@@ -89,7 +89,9 @@
     .pipeline-parallelRailIn,.pipeline-parallelRailOut { flex:0 0 12px; align-self:stretch; position:relative; }
     .pipeline-parallelRailIn::before,.pipeline-parallelRailOut::before { content:''; position:absolute; top:50%; left:0; right:0; height:2px; background:var(--dsw-alias-border-l2); }
     .pipeline-parallelRailIn::after,.pipeline-parallelRailOut::after { content:''; position:absolute; top:6px; bottom:6px; left:5px; width:2px; background:var(--dsw-alias-border-l2); }
-    .pipeline-parallelTasks { display:flex; align-items:center; gap:8px; }
+    .pipeline-parallelTasks { display:flex; flex-direction:column; align-items:stretch; gap:8px; }
+    .pipeline-parallelTaskRow { display:flex; align-items:center; }
+    .pipeline-parallelBranchIn,.pipeline-parallelBranchOut { flex:0 0 14px; height:2px; background:var(--dsw-alias-border-l2); }
     .pipeline-sub { display:flex; gap:4px; justify-content:center; margin-top:5px; }
     .pipeline-sub > span { font-size:9.5px; padding:1px 6px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-tertiary); }
     .pipeline-sub > span.ok { color:var(--st-ok); border-color:color-mix(in srgb, var(--st-ok) 40%, transparent); }
@@ -2606,7 +2608,7 @@ function renderStageEditor(){
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="模拟阶段的等待时长（分钟），内部按秒存储；0=不设置耗时，运行即结束">耗时(分钟)<input class="dshell-input" data-f="dur" type="number" min="0" step="0.1" value="'+secToMinInput(s.dur||0)+'" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="阶段执行超时（分钟），脚本与 HTTP/EvalTokens 阶段均生效；留空=无超时">超时(分钟)<input class="dshell-input" data-f="timeout" type="number" min="0.1" step="0.1" value="'+(s.timeout?secToMinInput(s.timeout):'')+'" placeholder="不限" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后运行到本阶段直接跳过"><input type="checkbox" data-f="skip" '+(s.skip?'checked':'')+'/> 不执行</label>'
-      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="与相邻的并行任务同时执行；连续的普通任务会显示为一个并行组"><input type="checkbox" data-f="parallel" '+(s.parallel?'checked':'')+'/> 并行执行</label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="与相邻的并行任务同时执行；连续的普通任务会显示为一个并行组"><input type="checkbox" data-f="parallel" '+(s.parallel===true?'checked':'')+'/> 并行执行</label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后本任务进入终态（成功/失败）时，按本任务开始→结束时段调用「设置 → 普罗数据服务配置」的收集脚本采集普罗指标，产物写入本次运行归档目录的 {任务名}-{阶段序号}-普罗数据 文件夹（后台采集，失败不阻断流水线）"><input type="checkbox" data-f="promCollect" '+(s.promCollect?'checked':'')+'/> 收集普罗数据</label>'
       +'<span style="flex:1"></span>'
       +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
@@ -3050,8 +3052,14 @@ function renderFlow(){
       const box=document.createElement('div'); box.className='pipeline-parallelGroup';
       const title=document.createElement('div'); title.className='pipeline-parallelTitle'; title.innerHTML='⚡ 并行组'; box.appendChild(title);
       const railIn=document.createElement('div'); railIn.className='pipeline-parallelRailIn'; box.appendChild(railIn);
-      const tasks=document.createElement('div'); tasks.className='pipeline-parallelTasks';
-      group.stages.forEach((s,offset)=>tasks.appendChild(createFlowNode(s,group.start+offset)));
+      const tasks=document.createElement('div'); tasks.className='pipeline-parallelTasks'; tasks.style.flexDirection='column';
+      group.stages.forEach((s,offset)=>{
+        const row=document.createElement('div'); row.className='pipeline-parallelTaskRow'; row.style.display='flex';
+        const branchIn=document.createElement('div'); branchIn.className='pipeline-parallelBranchIn'; row.appendChild(branchIn);
+        row.appendChild(createFlowNode(s,group.start+offset));
+        const branchOut=document.createElement('div'); branchOut.className='pipeline-parallelBranchOut'; row.appendChild(branchOut);
+        tasks.appendChild(row);
+      });
       box.appendChild(tasks);
       const railOut=document.createElement('div'); railOut.className='pipeline-parallelRailOut'; box.appendChild(railOut);
       f.appendChild(box);
@@ -5900,7 +5908,7 @@ function openPlForm(id, focusIdx){
   $('plFormTitle').textContent = p ? ((plFormReadOnly?'查看流水线（内置·只读）：':'编辑流水线：')+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
-      : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:!!s.parallel, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
+      : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling 最后
   /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
@@ -5976,7 +5984,7 @@ function savePlForm(){
   const stages=editStages.map((s,i)=>{
     if(s.preset) return {id:s.id, name:s.name, preset:true, pkey:s.pkey};   // 预设任务标记：位置随流水线保存
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(0,parseInt(s.dur)||0), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};   /* dur 保留编辑器原值（含 0=不设置耗时），不再回退默认 5 秒 */
-    if(s.parallel) st.parallel=true;
+    if(s.parallel===true) st.parallel=true;
     if(s.promCollect) st.promCollect=true;   // 任务级普罗采集开关：随阶段持久化，任务进入终态后按其起止采集（见 taskPromFinalize）
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
