@@ -1,5 +1,9 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 项目管理行「✏️ 页面修改」点击后强制打开会话窗（`src/client/index.tsx` 的 `startPageEdit`）：此前会话窗被 💬
+  关闭时（内容窗全宽、会话视图区 display:none）点 ✏️ 只在后台建好新会话并填好草稿，用户看不到任何反馈；
+  现在建会话前先 `splitStore.setChatClosed(false)`——不管会话窗当前是开是关，都打开会话窗再新建会话填入提示词；
+  分栏未打开（无项目在项目视图里）时不受影响（全宽会话视图本就可见），调用失败静默忽略。
 - 代码仓「部署策略」配置新增脚本来源（`projects/pipeline/pipeline.html`）：代码仓表单在「部署策略 URL」前加
   「策略·URL / 策略·脚本」来源切换——URL 模式沿用原有按分支（`{branch}` 占位）拉取分页 JSON；脚本模式按主控
   当前分支经 `/api/worktable/exec` 执行 scripts 目录中的脚本（注入 `GIT_BRANCH` 与 `GIT_URL`/`GIT_USER`/

@@ -1014,10 +1014,13 @@ function layoutPagePath(layout: any): string | null {
 /** 项目管理行「页面修改」：按提示词模板 + 项目页面路径在右侧聊天窗新建 AI 会话（复用 newChatInProject，项目分栏保持打开）；
  *  项目设置里选了会话分组时（由组件调用侧读 projects.workspaces 传入），新会话落进该分组；
  *  项目未设分组时由 newChatInProject 回落到设置面板的默认会话分组。
+ *  不管会话窗当前是否打开都强制打开：会话窗被 💬 关掉时（内容窗全宽、会话视图区 display:none），
+ *  不先放开的话新会话建好了用户也看不见，点 ✏️ 像没反应。
  *  template 为项目自定义提示词（项目设置弹窗里设置，projects.prompts[id]）：非空时优先于全局模板。 */
 async function startPageEdit(pagePath: string, projectName: string, workspaceId: string | null = null, template?: string): Promise<void> {
   const tpl = (typeof template === 'string' && template.trim()) ? template : loadPageEditPrompt()
   const prompt = tpl.split('{page}').join(pagePath).split('{name}').join(projectName)
+  try { if (splitStore.active) splitStore.setChatClosed(false) } catch { /* 分栏未开/不可用时忽略，全宽会话视图本就可见 */ }
   await newChatInProject(prompt, workspaceId)
 }
 
