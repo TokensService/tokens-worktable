@@ -28,9 +28,18 @@
 | `PIPELINE_NAME` | 流水线名 | `安装部署XDS` |
 | `GIT_URL` / `GIT_BRANCH` | 主控选择的代码仓地址 / 分支 | `https://gitcode.com/org/repo.git` / `main` |
 | `GIT_USER` / `GIT_PASSWORD` | 仓库访问令牌（来自「设置」页代码仓列表） | `oauth2` |
-| `DEPLOY_STRATEGY` | 所选分支的部署策略（配置了部署策略 URL 时注入） | `low-latency` |
+| `DEPLOY_STRATEGY` | 所选分支的部署策略（代码仓配置了部署策略来源时注入） | `low-latency` |
 
 节点 IP / 用户名 / 密码来自「设置」页的节点环境列表（每个节点可配各自的用户名、密码）；主控「环境（可多选）」勾选哪些节点，注入的就是哪些。`template.sh` 开头会把上述全部变量连同 `ARCHIVE_*` 一起打印（未注入的显示 `<未注入>`），凭据类变量（`TARGET_PASSWORD` / `TARGET_HOSTS` / `GIT_PASSWORD`）会明文出现在阶段日志与归档日志中，注意脱敏。
+
+## 部署策略脚本（代码仓设置）
+
+「设置」页代码仓的「部署策略」来源可选「策略·脚本」：主控/定时页选择分支后，工作台经 `/api/worktable/exec` 执行本目录中配置的脚本，取其 stdout 作为该分支支持的部署策略列表。约定：
+
+- 注入环境变量：`GIT_BRANCH`（当前分支）、`GIT_URL`、`GIT_USER`、`GIT_PASSWORD`（代码仓凭据）；无运行上下文，TARGET_*/IMAGE_* 等运行级变量不注入；
+- 输出契约：stdout **每行一个策略名**（去首尾空白、跳过空行、按序去重）；
+- 非零退出 / 超时（30 秒）视为拉取失败，错误原因（含 stderr 摘要）显示在策略面板与「策略测试」提示中；
+- 脚本不作为流水线阶段执行，参数识别规则不适用。
 
 ## 快速开始
 

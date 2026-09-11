@@ -1099,6 +1099,7 @@ export function apply(ctx: Context) {
 
   // 跨浏览器同步的项目存储：新建项目一律本地（localStorage），完善后在管理列表点 ☁「发布」，
   // 布局条目转存此文件；任何浏览器启动时 GET 拉取合并，取消发布即移出。
+  // 手动排序 order（项目 id 序列）也存此文件，跨浏览器固定顺序；localStorage 副本仅作离线兜底。
   // 全量覆盖写（last-write-wins），原子落盘（tmp + rename）。
   const PROJECTS_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-projects.json')
   webServer.register({
@@ -1115,6 +1116,7 @@ export function apply(ctx: Context) {
             folders: p.folders && typeof p.folders === 'object' ? p.folders : {},
             workspaces: p.workspaces && typeof p.workspaces === 'object' ? p.workspaces : {},
             prompts: p.prompts && typeof p.prompts === 'object' ? p.prompts : {},
+            order: Array.isArray(p.order) ? p.order.filter((x: unknown) => typeof x === 'string') : [],
           })
           return
         }
@@ -1135,7 +1137,10 @@ export function apply(ctx: Context) {
           if (body.prompts && typeof body.prompts === 'object') {
             for (const [k, v] of Object.entries(body.prompts)) if (typeof v === 'string') prompts[k] = v
           }
-          const text = JSON.stringify({ layouts, folders, workspaces, prompts })
+          const order = Array.isArray(body.order)
+            ? body.order.filter((x: any) => typeof x === 'string')
+            : []
+          const text = JSON.stringify({ layouts, folders, workspaces, prompts, order })
           if (text.length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
           const fsx = await import('node:fs/promises')
           await fsx.mkdir(dirname(PROJECTS_STORE), { recursive: true })

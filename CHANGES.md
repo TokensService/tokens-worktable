@@ -22,6 +22,38 @@
   250ms 物化一次尾窗。失败归档 Promise 会从在途集合清理，最近错误以
   最多 100 项的可消费映射保留。新增并发池、超大脚本落盘、代理超限、历史线性裁剪、追加归档、
   完整汇总、请求取消、早期变量保留与各类有界日志回归测试。
+- PR 检视台「编译发行」新增 AI 配置建议与结果自动回填（`projects/codereview/code-review-prs.html`、
+  `src/client/index.tsx`）：构建脚本行新增「✦ AI 建议」，在右侧聊天窗分析当前代码仓/分支后以受标记约束的
+  JSON 同时返回构建脚本和匹配的产物路径；页面校验仓内相对路径、自动回填，并沿用现有分支级云端设置保存。
+  发行说明「✦ AI 生成」改为等待会话完成后直接提取标记内 Markdown 回填文本框，不再要求手工复制。
+  新增 `window.__dshSendChatForResult(text)` 宿主桥：新建并打开右侧会话、自动发送提示，同时订阅真实会话运行态
+  与公开 `eventSource` 事件窗，完成后读取最后一条 AI 文本返回 iframe；当前选中会话不带 `completed` 提醒标志，
+  故以 `running` 停止、`turn/end` 为正常完成且事件窗已有未中止回答为完成条件。生成期间切换平台/仓库/分支/
+  发行信息会尽早停止旧任务；结构化结果字段类型、危险路径或标记解析失败均保留原表单值。新增
+  `tests/ai-chat-result.test.mjs`、`tests/codereview-ai-suggestions.test.mjs` 覆盖结果等待、
+  结构化解析、安全校验、双字段/发行说明回填及过期结果保护。
+- 项目手动排序纳入服务端同步存储（`src/index.ts` + `src/client/index.tsx`）：侧边栏项目列表拖拽落序的
+  order（项目 id 序列）从仅 localStorage 扩展为同步进 `/api/worktable/projects` 存储文件，跨浏览器固定顺序——
+  客户端同步切片 `syncedSliceOf` 带上 order，落序后随既有「同步切片有变化才推送」比较自动 PUT，全量覆盖写
+  last-write-wins 不变；服务端 GET/PUT 白名单新增 order 字段（仅接受字符串数组、过滤非字符串元素、缺省
+  `[]`，1MB 上限与 tmp+rename 原子落盘不变）。启动合并时远端 order 非空则远端优先、本地独有 id 保相对序
+  追加尾部（模块级纯函数 `mergeRemoteOrder`）；远端没存 order（旧存储文件）时保留本地序不动，避免空远端
+  清掉本地序；合并结果与远端不一致（远端缺 order 或合并产生追加）时启动一次性回推完整同步切片自愈。
+  localStorage 中 order 的读写不变，作离线/服务端不可用兜底。测试：`tests/projects-order-sync.test.mjs`
+  新增（服务端 PUT 过滤落盘 / GET 返回与旧文件兜底、客户端远端优先合并与无远端序保留本地）。
+- 项目管理行「✏️ 页面修改」点击后强制打开会话窗（`src/client/index.tsx` 的 `startPageEdit`）：此前会话窗被 💬
+  关闭时（内容窗全宽、会话视图区 display:none）点 ✏️ 只在后台建好新会话并填好草稿，用户看不到任何反馈；
+  现在建会话前先 `splitStore.setChatClosed(false)`——不管会话窗当前是开是关，都打开会话窗再新建会话填入提示词；
+  分栏未打开（无项目在项目视图里）时不受影响（全宽会话视图本就可见），调用失败静默忽略。
+- 代码仓「部署策略」配置新增脚本来源（`projects/pipeline/pipeline.html`）：代码仓表单在「部署策略 URL」前加
+  「策略·URL / 策略·脚本」来源切换——URL 模式沿用原有按分支（`{branch}` 占位）拉取分页 JSON；脚本模式按主控
+  当前分支经 `/api/worktable/exec` 执行 scripts 目录中的脚本（注入 `GIT_BRANCH` 与 `GIT_URL`/`GIT_USER`/
+  `GIT_PASSWORD`，30 秒超时），stdout 每行解析为一个策略名（去空白、跳过空行、按序去重），脚本缺失 / 非零退出 /
+  空输出视为失败。仓库模型新增 `strategyMode`/`strategyScript` 字段（`normalizeRepo` 归一化，旧数据缺省 URL 模式），
+  「部署策略」列与「策略测试」按来源展示/分流，策略缓存 key 含来源（改配置后旧缓存自动失效），主控与定时页策略
+  面板头部标注来源类型。文档（`projects/pipeline/scripts/README.md` 新增「部署策略脚本」契约）与测试
+  （`projects/pipeline/tests/test_strategy_script.js`：配置归一化 / 来源解析 / 缓存 key / 输出解析 / 执行拉取的
+  成功与失败分支）同步更新。
 - pipeline.html「📂 打开归档目录」修复目标目录不存在时的打开行为（`projects/pipeline/pipeline.html`）：
   打开前新增目录存在性预检（`resolveExistingFolder`，经 `/api/worktable/fs` 探测），目标归档目录
   不存在时（历史归档已清理、归档路径改过等）统一回退打开其父目录（归档根），连归档根都不存在才报

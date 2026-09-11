@@ -215,7 +215,7 @@
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
       <span id="strategyPick" style="position:relative;display:inline-block;">
-        <input id="deployStrategyName" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取支持的部署策略，聚焦弹出面板可搜索/刷新（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）" />
+        <input id="deployStrategyName" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓部署策略配置拉取支持的部署策略（URL 接口或脚本，在「设置」页代码仓中配置），聚焦弹出面板可搜索/刷新" />
         <div id="strategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
       </span>
     </label>
@@ -376,7 +376,7 @@
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
           <span id="schedStrategyPick" style="position:relative;display:inline-block;">
-            <input id="schedStrategy" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓「部署策略 URL」拉取支持的部署策略，聚焦弹出面板可搜索/刷新（URL 在「设置」页代码仓中配置，{branch} 为分支占位符）" />
+            <input id="schedStrategy" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="min-width:130px;" title="按当前分支从代码仓部署策略配置拉取支持的部署策略（URL 接口或脚本，在「设置」页代码仓中配置），聚焦弹出面板可搜索/刷新" />
             <div id="schedStrategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
           </span>
         </label>
@@ -457,7 +457,9 @@
         <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" title="代码仓访问令牌；仅保存到本浏览器 localStorage，不上送服务端存储，刷新/换浏览器需重新填写" />
         <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；Jenkins=多分支任务子任务名即分支（任务框也可直接粘贴 refs 接口地址），浏览器直连=本地浏览器请求 Jenkins，服务端代连=经 /api/worktable/proxy 由 DSH 服务端请求（按仓库各自选择，不跟随全局连接模式）" style="width:128px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins-browser">Jenkins·浏览器直连</option><option value="jenkins-server">Jenkins·服务端代连</option></select>
         <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}；免凭证，不附带 Jenkins 用户名/令牌）" style="width:240px;display:none;" autocomplete="off" />
-        <input id="repoStrategyUrl" class="dshell-input" placeholder="部署策略 URL（{branch} 占位，可留空）" title="按分支拉取支持的部署策略的接口地址：{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}；返回分页 JSON {total,offset,next_offset,items:[{arch_name}]}，自动跟 next_offset 逐页拉全；浏览器直连失败自动改经服务端代取；留空则主控不提供部署策略选择" style="width:250px;" />
+        <select id="repoStrategyMode" class="dshell-input" title="部署策略来源：URL=按分支从接口地址拉取（{branch} 为分支占位符）；脚本=执行 scripts 目录中的脚本（注入 GIT_BRANCH/GIT_URL/GIT_USER/GIT_PASSWORD，stdout 每行一个策略名）；两者都可留空=主控不提供部署策略选择" style="width:104px;"><option value="url">策略·URL</option><option value="script">策略·脚本</option></select>
+        <input id="repoStrategyUrl" class="dshell-input" placeholder="部署策略 URL（{branch} 占位，可留空）" title="按分支拉取支持的部署策略的接口地址：{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}；返回分页 JSON {total,offset,next_offset,items:[{arch_name}]}，自动跟 next_offset 逐页拉全；浏览器直连失败自动改经服务端代取；留空则主控不提供部署策略选择" style="width:220px;" />
+        <input id="repoStrategyScript" class="dshell-input" list="scriptsList" placeholder="部署策略脚本（stdout 每行一个策略）" title="部署策略来源=脚本时：按主控当前分支执行 scripts 目录中的脚本获取支持的部署策略——注入 GIT_BRANCH（当前分支）与 GIT_URL/GIT_USER/GIT_PASSWORD（本仓凭据），stdout 每行输出一个策略名，非零退出视为失败；留空则主控不提供部署策略选择" style="width:220px;display:none;" autocomplete="off" />
         <button id="repoAdd" class="dshell-btn mini">添加</button>
         <button id="repoAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/令牌应用到所有仓库">应用凭证到全部</button>
         <button id="repoCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
@@ -468,7 +470,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。分支获取选 Jenkins（浏览器直连/服务端代连）时仓库 URL 可留空，分支取自 Jenkins 多分支任务子任务名。配置「部署策略 URL」后，主控选择分支即可下拉选择该分支支持的部署策略，运行时额外注入 <code>DEPLOY_STRATEGY</code>（脚本显式配置的同名参数优先）。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「代码仓」从此列表选择目标仓库；执行脚本时自动注入环境变量：<code>GIT_URL</code>（仓库地址）、<code>GIT_BRANCH</code>（主控填写的分支）、<code>GIT_USER</code>/<code>GIT_PASSWORD</code>（访问令牌）；脚本显式配置的同名参数优先。分支获取选 Jenkins（浏览器直连/服务端代连）时仓库 URL 可留空，分支取自 Jenkins 多分支任务子任务名。代码仓「部署策略」有两种来源（策略·URL / 策略·脚本）：URL 按分支（<code>{branch}</code> 占位）从接口拉取分页 JSON；脚本则执行 scripts 目录中的脚本（注入 <code>GIT_BRANCH</code>/<code>GIT_URL</code>/<code>GIT_USER</code>/<code>GIT_PASSWORD</code>，stdout 每行输出一个策略名）。配置后主控选择分支即可下拉选择该分支支持的部署策略，运行时额外注入 <code>DEPLOY_STRATEGY</code>（脚本显式配置的同名参数优先）。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px;">环境清理脚本</h2>
@@ -1436,7 +1438,7 @@ function normalizeFetchMode(m){ return m==='browser'?'browser':(m==='jenkins-ser
 function isJenkinsFetchMode(m){ return m==='jenkins-browser'||m==='jenkins-server'; }
 function fetchModeLabel(m){ return m==='browser'?'浏览器':(m==='jenkins-browser'?'Jenkins·浏览器':(m==='jenkins-server'?'Jenkins·服务端':'服务端')); }
 function fetchModeTitle(m){ return m==='browser'?'浏览器直连 /info/refs（需 CORS）':(m==='jenkins-browser'?'Jenkins 多分支任务子任务名（本地浏览器直连 Jenkins）':(m==='jenkins-server'?'Jenkins 多分支任务子任务名（服务端经 /api/worktable/proxy 代连）':'服务端 git ls-remote')); }
-function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:normalizeFetchMode(r.fetchMode), jenkinsJob:r.jenkinsJob||'', strategyUrl:r.strategyUrl||''}; }
+function normalizeRepo(r){ return {id:r.id, name:r.name, url:r.url, user:r.user||'', pass:r.pass||'', fetchMode:normalizeFetchMode(r.fetchMode), jenkinsJob:r.jenkinsJob||'', strategyUrl:r.strategyUrl||'', strategyMode:r.strategyMode==='script'?'script':'url', strategyScript:r.strategyScript||''}; }
 function loadRepos(){ try{ const a=JSON.parse(localStorage.getItem('pip-repos')); if(Array.isArray(a)&&a.length) return a.map(normalizeRepo); }catch(e){} return null; }
 let repositories = loadRepos() || [
   {id:'repo-1', name:'myapp', url:'https://git.example.com/dev/myapp.git', user:'', pass:'', fetchMode:'server'},
@@ -1458,8 +1460,10 @@ function renderRepos(){
   const tb=$('repoTable').querySelector('tbody'); tb.innerHTML='';
   repositories.forEach(r=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td><td class="dshell-muted" style="font-size:11px;"'+(r.strategyUrl?(' title="'+esc(r.strategyUrl)+'">✓ 已配置'):'>—')+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoststrategy="'+r.id+'" title="按主控当前分支试拉部署策略 URL（{branch} 占位替换）">策略测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
+    const stSrc=strategySourceOf(r);
+    const stCell='<td class="dshell-muted" style="font-size:11px;"'+(stSrc?(' title="'+esc(stSrc.mode==='script'?stSrc.script:stSrc.url)+'">✓ '+(stSrc.mode==='script'?('脚本 · '+esc(stSrc.script)):'URL')):'>—')+'</td>';
+    tr.innerHTML='<td style="font-weight:600">'+esc(r.name)+'</td><td class="dshell-muted">'+esc(r.url||'—')+'</td><td class="dshell-muted">'+esc(r.user||'—')+'</td><td class="dshell-muted">'+(r.pass?'••••••':'—')+'</td><td class="dshell-muted" style="font-size:11px;" title="'+fetchModeTitle(r.fetchMode)+'">'+(isJenkinsFetchMode(r.fetchMode)?(fetchModeLabel(r.fetchMode)+(r.jenkinsJob?(' · '+esc(r.jenkinsJob)):'')):fetchModeLabel(r.fetchMode))+'</td>'+stCell+
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-repotest="'+r.id+'" title="检测连通性并列举远程分支">测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoststrategy="'+r.id+'" title="按主控当前分支试拉部署策略（URL 或脚本）">策略测试</button> <button class="dshell-btn dshell-btnGhost mini" data-repoedit="'+r.id+'">编辑</button> <button class="dshell-btn dshell-btnDanger mini" data-repodel="'+r.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-repotest]').forEach(b=>b.addEventListener('click',()=>{ const r=repositories.find(x=>x.id===b.getAttribute('data-repotest')); if(r) testRepo(r); }));
@@ -1467,18 +1471,20 @@ function renderRepos(){
   tb.querySelectorAll('[data-repoedit]').forEach(b=>b.addEventListener('click',()=>startRepoEdit(b.getAttribute('data-repoedit'))));
   tb.querySelectorAll('[data-repodel]').forEach(b=>b.addEventListener('click',()=>delRepo(b.getAttribute('data-repodel'))));
 }
-function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=normalizeFetchMode(r.fetchMode); $('repoJenkinsJob').value=r.jenkinsJob||''; $('repoStrategyUrl').value=r.strategyUrl||''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
-function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; $('repoStrategyUrl').value=''; toggleRepoJenkinsJobInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
+function startRepoEdit(id){ const r=repositories.find(x=>x.id===id); if(!r) return; repoEditId=id; $('repoName').value=r.name; $('repoUrl').value=r.url; $('repoUser').value=r.user||''; $('repoPass').value=r.pass||''; $('repoFetchMode').value=normalizeFetchMode(r.fetchMode); $('repoJenkinsJob').value=r.jenkinsJob||''; $('repoStrategyMode').value=r.strategyMode==='script'?'script':'url'; $('repoStrategyUrl').value=r.strategyUrl||''; $('repoStrategyScript').value=r.strategyScript||''; toggleRepoJenkinsJobInput(); toggleRepoStrategyInput(); $('repoAdd').textContent='保存'; $('repoCancelEdit').style.display=''; }
+function resetRepoForm(){ repoEditId=null; $('repoName').value=''; $('repoUrl').value=''; $('repoUser').value=''; $('repoPass').value=''; $('repoFetchMode').value='server'; $('repoJenkinsJob').value=''; $('repoStrategyMode').value='url'; $('repoStrategyUrl').value=''; $('repoStrategyScript').value=''; toggleRepoJenkinsJobInput(); toggleRepoStrategyInput(); $('repoAdd').textContent='添加'; $('repoCancelEdit').style.display='none'; }
 function saveRepoForm(){
   const name=$('repoName').value.trim(); const url=$('repoUrl').value.trim(); const user=$('repoUser').value.trim(); const pass=$('repoPass').value;
   const fm=normalizeFetchMode($('repoFetchMode').value);
   const jkJob=($('repoJenkinsJob').value||'').trim();
+  const stMode=$('repoStrategyMode').value==='script'?'script':'url';
   const stUrl=($('repoStrategyUrl').value||'').trim();
+  const stScript=($('repoStrategyScript').value||'').trim();
   /* 分支获取选 Jenkins 时分支取自多分支任务子任务名，仓库 URL 可留空（任务框必填）；其余方式仍必填 URL */
   if(isJenkinsFetchMode(fm)){ if(!jkJob){ alert('分支获取为 Jenkins 时请填写多分支任务或 refs 接口地址'); return; } }
   else if(!url){ alert('请填写仓库 URL'); return; }
-  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url||jkJob; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; r.strategyUrl=stUrl; } }
-  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url||jkJob, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:'', strategyUrl:stUrl}); }
+  if(repoEditId){ const r=repositories.find(x=>x.id===repoEditId); if(r){ r.name=name||url||jkJob; r.url=url; r.user=user; r.pass=pass; r.fetchMode=fm; r.jenkinsJob=isJenkinsFetchMode(fm)?jkJob:''; r.strategyMode=stMode; r.strategyUrl=stUrl; r.strategyScript=stScript; } }
+  else { repositories.push({id:'repo-'+Date.now().toString(36), name:name||url||jkJob, url, user, pass, fetchMode:fm, jenkinsJob:isJenkinsFetchMode(fm)?jkJob:'', strategyMode:stMode, strategyUrl:stUrl, strategyScript:stScript}); }
   if(repoEditId){ delete repoBranches[repoEditId]; } saveRepos(); resetRepoForm(); renderRepos(); renderRepoOptions();
 }
 function delRepo(id){ if(!confirm('删除该代码仓？')) return; repositories=repositories.filter(r=>r.id!==id); if(!repositories.length){ repositories=[{id:'repo-1',name:'默认',url:'',user:'',pass:'',fetchMode:'server'}]; } if(curRepoId===id) curRepoId=repositories[0].id; saveRepos(); saveRepoSel(); renderRepos(); renderRepoOptions(); }
@@ -1493,6 +1499,8 @@ function applyRepoCredAll(){
 
 /* 分支获取方式切换：仅 Jenkins（浏览器直连/服务端代连）时显示任务选择框；Jenkins 模式下 URL 可留空，联动占位提示 */
 function toggleRepoJenkinsJobInput(){ const sel=$('repoFetchMode'); const inp=$('repoJenkinsJob'); if(!sel||!inp) return; const jk=isJenkinsFetchMode(sel.value); inp.style.display = jk?'':'none'; const urlInp=$('repoUrl'); if(urlInp) urlInp.placeholder = jk?'URL（Jenkins 模式可留空）':'URL（如 https://git.example.com/dev/myapp.git）'; }
+/* 部署策略来源切换：URL 模式显示 URL 输入框，脚本模式显示脚本选择框（scripts 目录 datalist） */
+function toggleRepoStrategyInput(){ const sel=$('repoStrategyMode'); if(!sel) return; const sc=sel.value==='script'; const u=$('repoStrategyUrl'); const s=$('repoStrategyScript'); if(u) u.style.display=sc?'none':''; if(s) s.style.display=sc?'':'none'; }
 /* 代码仓联通性检测 + 远程分支/Tag 列举：fetchMode='server'(默认)→/api/worktable/git-remote(git ls-remote)；'browser'→直连 /info/refs 解析 smart-HTTP（需服务器开 CORS）；'jenkins-browser'/'jenkins-server'→经配置的 Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连） */
 let repoBranches={};   // repoId -> {branches:[], tags:[], error:'', loading?}
 
@@ -1606,17 +1614,18 @@ async function testRepo(r){
     tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 连接失败：'+(j && j.error ? String(j.error).slice(0,160) : '未知错误');
   }
 }
-/* 部署策略 URL 单独测试：按主控当前分支（{branch} 占位替换）试拉一次部署策略，
+/* 部署策略单独测试：按主控当前分支试拉一次部署策略（URL 模式 {branch} 占位替换 / 脚本模式注入 GIT_BRANCH 执行），
    报告策略个数或失败原因；测试的是当前选中仓库时顺便刷新主控「部署策略」下拉缓存 */
 async function testRepoStrategy(r){
   const tip=$('repoTestTip'); if(!tip || !r) return;
-  const stUrl=(r.strategyUrl||'').trim();
-  if(!stUrl){ tip.style.color='var(--log-warn)'; tip.textContent='⚠ '+r.name+' 未配置部署策略 URL（点「编辑」在表单中填写）'; return; }
+  const src=strategySourceOf(r);
+  if(!src){ tip.style.color='var(--log-warn)'; tip.textContent='⚠ '+r.name+' 未配置部署策略（URL 或脚本，点「编辑」在表单中填写）'; return; }
   const br=($('branchName') && $('branchName').value.trim())||'0830_dev_bnt3';
-  tip.style.color=''; tip.textContent='测试部署策略中…（'+r.name+' · 分支 '+br+'）';
-  const st=await fetchDeployStrategies(stUrl, br);
-  if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（分支 '+br+'）：'+st.error; }
-  else { tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 部署策略拉取成功（分支 '+br+'）· '+st.items.length+' 个：'+st.items.slice(0,8).join('、')+(st.items.length>8?' …':''); }
+  const srcLabel=src.mode==='script'?('脚本 '+src.script):'URL';
+  tip.style.color=''; tip.textContent='测试部署策略中…（'+r.name+' · '+srcLabel+' · 分支 '+br+'）';
+  const st= src.mode==='script' ? await fetchDeployStrategiesByScript(src.script, r, br) : await fetchDeployStrategies(src.url, br);
+  if(st.error){ tip.style.color='var(--log-err)'; tip.textContent='✗ '+r.name+' 部署策略拉取失败（'+srcLabel+' · 分支 '+br+'）：'+st.error; }
+  else { tip.style.color='var(--log-ok)'; tip.textContent='✓ '+r.name+' 部署策略拉取成功（'+srcLabel+' · 分支 '+br+'）· '+st.items.length+' 个：'+st.items.slice(0,8).join('、')+(st.items.length>8?' …':''); }
   if(r.id===curRepoId){ deployStrategies[deployStrategyKey(r,br)]={items:st.items, error:st.error}; if(strategyPanelOpen()) renderStrategyPanel(); }
 }
 /* 分支/Tag 与部署策略面板上下文：主控（运行流水线设置）与定时页共用同一套拉取/渲染逻辑，
@@ -1675,11 +1684,19 @@ function renderBranchPanel(showAll, which){
   const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(ctx.repo(), true, which));
   const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=ctx.repo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(ctx.repo(), true, which).then(()=>renderBranchPanel(false, which)); });
 }
-/* ---------- 部署策略（按分支从代码仓「部署策略 URL」拉取） ---------- */
-/* 仓库可配置 strategyUrl（{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}）；
+/* ---------- 部署策略（按分支从代码仓部署策略配置拉取：URL 或脚本） ---------- */
+/* URL 模式：仓库可配置 strategyUrl（{branch} 为分支占位符，如 http://127.0.0.1:18080/api/xds/archs/latest?code_refs={branch}）；
    返回分页 JSON {total,offset,limit,next_offset,items:[{arch_name}]}（arch_name 缺省时回退 name），跟 next_offset 逐页拉全。
-   浏览器直连失败（多为 CORS 拦截或网络不可达）时自动改经 /api/worktable/proxy 由 DSH 服务端代取（仅允许回环/内网目标）。 */
-let deployStrategies={};   // repoId+'|'+branch -> {items:[], error:'', loading?}
+   浏览器直连失败（多为 CORS 拦截或网络不可达）时自动改经 /api/worktable/proxy 由 DSH 服务端代取（仅允许回环/内网目标）。
+   脚本模式：仓库可配置 strategyScript（scripts 目录中的脚本名），按分支经 /api/worktable/exec 执行
+   （注入 GIT_BRANCH 当前分支与 GIT_URL/GIT_USER/GIT_PASSWORD 仓库凭据），stdout 每行一个策略名，非零退出视为失败。 */
+let deployStrategies={};   // deployStrategyKey(repo,branch) -> {items:[], error:'', loading?}
+/* 仓库的部署策略来源归一化：脚本模式（strategyMode==='script'）取 strategyScript，否则取 strategyUrl；对应值为空视为未配置 */
+function strategySourceOf(repo){
+  if(!repo) return null;
+  if(repo.strategyMode==='script'){ const s=(repo.strategyScript||'').trim(); return s?{mode:'script',script:s}:null; }
+  const u=(repo.strategyUrl||'').trim(); return u?{mode:'url',url:u}:null;
+}
 async function fetchStrategyJson(url){
   try{
     const r=await fetch(url,{cache:'no-store'});
@@ -1693,7 +1710,8 @@ async function fetchStrategyJson(url){
     return JSON.parse(p.body||'{}');
   }
 }
-function deployStrategyKey(repo,branch){ return repo.id+'|'+(branch||''); }
+/* 缓存 key 含来源（URL/脚本名）：改部署策略配置后旧缓存自动失效 */
+function deployStrategyKey(repo,branch){ const src=strategySourceOf(repo); return repo.id+'|'+(branch||'')+'|'+(!src?'':(src.mode==='script'?('s:'+src.script):('u:'+src.url))); }
 /* 拉取指定分支的部署策略列表：tpl 中 {branch} 替换为分支名；分页 {total,offset,next_offset,items:[{arch_name}]}
    （arch_name 缺省回退 name）跟 next_offset 逐页拉全。返回 {items:[], error:''} */
 async function fetchDeployStrategies(tpl, branch){
@@ -1714,19 +1732,43 @@ async function fetchDeployStrategies(tpl, branch){
     return {items:Array.from(new Set(items)), error:''};
   }catch(e){ return {items:[], error:String(e.message||e).slice(0,160)}; }
 }
+/* 脚本模式输出解析：stdout 每行一个策略名（去首尾空白、跳过空行、按序去重） */
+function parseStrategyScriptOutput(stdout){
+  const items=[];
+  String(stdout||'').split('\n').forEach(l=>{ const n=l.trim(); if(n && items.indexOf(n)<0) items.push(n); });
+  return items;
+}
+/* 脚本模式：按分支执行 scripts 目录中的脚本（注入 GIT_BRANCH 当前分支与 GIT_URL/GIT_USER/GIT_PASSWORD 仓库凭据），
+   stdout 每行解析为一个策略名；脚本缺失 / 非零退出 / 请求失败视为失败。返回 {items:[], error:''} */
+async function fetchDeployStrategiesByScript(scriptName, repo, branch){
+  const sc=scriptByName(scriptName);
+  if(!sc) return {items:[], error:'脚本不存在：'+scriptName+'（需在 scripts 目录下，可到「编辑流水线」重新加载脚本）'.slice(0,160)};
+  const env={GIT_BRANCH:branch||'', GIT_URL:(repo&&repo.url)||'', GIT_USER:(repo&&repo.user)||'', GIT_PASSWORD:(repo&&repo.pass)||''};
+  let j;
+  try{
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path,args:[],env,cwd:scriptsDir,timeoutMs:30000})});
+    j=await r.json();
+  }catch(e){ return {items:[], error:'脚本执行失败：'+String(e.message||e).slice(0,140)}; }
+  if(j && j.error) return {items:[], error:String(j.error).slice(0,160)};
+  const code=(j && j.code!==undefined)?j.code:1;
+  if(code!==0){ const err=String((j&&j.stderr)||'').trim(); return {items:[], error:('脚本退出码 '+code+(err?('：'+err.slice(0,120)):'')).slice(0,160)}; }
+  const items=parseStrategyScriptOutput((j&&j.stdout)||'');
+  if(!items.length) return {items:[], error:'脚本未输出任何策略（stdout 需每行一个策略名）'};
+  return {items:items, error:''};
+}
 /* 主控当前选中的部署策略（input 自由文本，可手输列表外名称；空串=不使用） */
 function curStrategy(){ const i=$('deployStrategyName'); return i?i.value.trim():''; }
 function strategyPanelOpen(which){ const p=pickCtx(which).strategyPanel; return !!(p && p.style.display!=='none'); }
 /* 拉取当前分支的策略列表进缓存；仅面板打开时重绘（初始化调用不弹面板）；which 区分主控 / 定时页面板 */
 async function loadDeployStrategies(force, which){
   const ctx=pickCtx(which); const repo=ctx.repo(); const branch=ctx.branch();
-  const tpl=((repo && repo.strategyUrl)||'').trim();
+  const src=strategySourceOf(repo);
   const key=deployStrategyKey(repo,branch);
-  if(!tpl){ delete deployStrategies[key]; if(strategyPanelOpen(which)) renderStrategyPanel(false, which); return; }
+  if(!src){ delete deployStrategies[key]; if(strategyPanelOpen(which)) renderStrategyPanel(false, which); return; }
   const cached=deployStrategies[key];
   if(!force && cached && !cached.loading){ if(strategyPanelOpen(which)) renderStrategyPanel(false, which); return; }
   deployStrategies[key]={loading:true}; if(strategyPanelOpen(which)) renderStrategyPanel(false, which);
-  deployStrategies[key]=await fetchDeployStrategies(tpl, branch);
+  deployStrategies[key]= src.mode==='script' ? await fetchDeployStrategiesByScript(src.script, repo, branch) : await fetchDeployStrategies(src.url, branch);
   if(strategyPanelOpen(which)) renderStrategyPanel(false, which);
 }
 /* 部署策略搜索面板：与分支/Tag 面板同款——头部仓库/分支/个数 + ⟳ 重新拉取，列表按输入筛选，点选回填 */
@@ -1734,13 +1776,13 @@ function renderStrategyPanel(showAll, which){
   const ctx=pickCtx(which); const panel=ctx.strategyPanel; const inp=ctx.strategyInp; if(!panel||!inp) return;
   const repo=ctx.repo(); const branch=ctx.branch();
   const q=showAll?'':inp.value.trim().toLowerCase();
-  const tpl=((repo && repo.strategyUrl)||'').trim();
-  const st=tpl?deployStrategies[deployStrategyKey(repo,branch)]:null;
+  const src=strategySourceOf(repo);
+  const st=src?deployStrategies[deployStrategyKey(repo,branch)]:null;
   const ready=st&&!st.loading&&!st.error;
   let h='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:4px;">'
-    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+esc(branch)+(ready?(' · '+st.items.length+' 策略'):(' · '+loadingDots()))+'</span>'
+    +'<span class="dshell-muted" style="font-size:10px;">'+esc(repo.name)+' · '+esc(branch)+(src?(' · '+(src.mode==='script'?'脚本':'URL')):'')+(ready?(' · '+st.items.length+' 策略'):(' · '+loadingDots()))+'</span>'
     +'<span data-strategyrefresh style="cursor:pointer;color:var(--dsw-alias-state-accent-primary);font-size:11px;" title="重新拉取">⟳</span></div>';
-  if(!tpl){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">未配置「部署策略 URL」，请在「设置」页代码仓中配置</div>'; }
+  if(!src){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">未配置部署策略（URL 或脚本），请在「设置」页代码仓中配置</div>'; }
   else if(!st || st.loading){ h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">加载中'+loadingDots()+'</div>'; }
   else if(st.error){ h+='<div style="color:var(--log-err);font-size:11px;padding:4px 6px;white-space:pre-wrap;">✗ '+esc(st.error.slice(0,200))+'</div>'; }
   else {
@@ -6382,6 +6424,8 @@ $('repoCancelEdit').addEventListener('click', resetRepoForm);
 $('repoAllApply').addEventListener('click', applyRepoCredAll);
 $('repoFetchMode').addEventListener('change', toggleRepoJenkinsJobInput);
 toggleRepoJenkinsJobInput();
+$('repoStrategyMode').addEventListener('change', toggleRepoStrategyInput);
+toggleRepoStrategyInput();
 $('gpuRefreshAll').addEventListener('click', refreshGpuAll);
 $('gpuDetailClose').addEventListener('click', ()=>{ $('gpuDetail').style.display='none'; });
 $('gpuDetail').addEventListener('click', (e)=>{ if(e.target===$('gpuDetail')) $('gpuDetail').style.display='none'; });
