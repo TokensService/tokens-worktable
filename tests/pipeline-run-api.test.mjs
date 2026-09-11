@@ -713,6 +713,65 @@ test('API 并行任务失败会取消同组模拟等待', async () => {
   assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
 })
 
+test('API 标记失败任务先取消同组任务再串行收集普罗数据', async () => {
+  const events = []
+  let slowSignal
+  let resolveSlow
+  let resolveCollector
+  const runStageScript = (script, runContext, scriptsDir, varsPool, timeout, extraEnv, signal) =>
+    new Promise(resolve => {
+      if (script.name === 'fail.sh') {
+        events.push('fail')
+        resolve({ code: 7, stdout: '', stderr: 'boom' })
+      } else if (script.name === 'slow.sh') {
+        events.push('slow')
+        slowSignal = signal
+        resolveSlow = resolve
+        signal.addEventListener('abort', () => {
+          events.push('slow:aborted')
+          resolve({ code: 1, stdout: '', stderr: 'aborted', aborted: true })
+        }, { once: true })
+      } else if (script.name === 'collect.py') {
+        events.push('collect')
+        resolveCollector = resolve
+        signal?.addEventListener('abort', () =>
+          resolve({ code: 1, stdout: '', stderr: 'aborted', aborted: true }), { once: true })
+      } else {
+        events.push(script.name)
+        resolve({ code: 0, stdout: '', stderr: '' })
+      }
+    })
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  }, {}, undefined, runStageScript)
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, promCollect: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'slow', name: 'Slow', parallel: true, script: { name: 'slow.sh', path: '/slow.sh' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  const running = f.execPlan(plan)
+  await tick()
+  const peerAbortedBeforeCollectorRelease = slowSignal?.aborted === true
+  if (!peerAbortedBeforeCollectorRelease) {
+    resolveSlow?.({ code: 8, stdout: '', stderr: 'cleanup failure' })
+    await tick()
+  }
+  resolveCollector?.({ code: 0, stdout: 'collected', stderr: '' })
+  resolveSlow?.({ code: 0, stdout: '', stderr: '' })
+  await running
+
+  assert.equal(peerAbortedBeforeCollectorRelease, true)
+  assert.ok(events.indexOf('slow:aborted') < events.indexOf('collect'))
+  assert.deepEqual(events.filter(event => event === 'collect'), ['collect'])
+  assert.deepEqual(f.calls.map(call => call.script), ['fail.sh', 'slow.sh', 'collect.py'])
+  assert.equal(f.history[0].status, 'failed')
+  assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+  assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
+})
+
 test('API 路由运行快照保留 parallel 标记', async () => {
   const parallelStore = structuredClone(stored)
   parallelStore.config.pipelines[0].stages[0].parallel = true

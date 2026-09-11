@@ -1891,42 +1891,6 @@ export function apply(ctx: Context) {
           else throw error
         }
       }
-      /* 任务级普罗采集（与页面 taskPromCollect 一致）：勾选「收集普罗数据」的任务进入终态后，按「任务开始→结束」
-         时段调用设置页收集脚本，产物目录=归档文件夹/{任务名}-{阶段序号}-普罗数据；失败仅标注到本任务日志，不改变任务结果 */
-      if (!s.preset && s.promCollect && entry.status !== 'skipped' && entry.status !== 'aborted') {
-        const collectScript = serverPromCollectScript(cfg)
-        const seq = baseSeq + index + 1
-        const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
-        if (!collectScript) entry.text += '\n[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过'
-        else {
-          try {
-            const penv = buildServerTaskPromEnv(runCtx, cfg, localPool, startedAt, Date.now(), promDir)
-            const pr = await runStageScript(collectScript, runCtx, scriptsDir, localPool, 0, penv, signal)   // 与页面一致不设超时：由采集脚本控制耗时
-            try {
-              const fsx = await import('node:fs/promises')
-              await fsx.mkdir(promDir, { recursive: true })
-              await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
-            } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
-            if (pr.aborted) {
-              entry.status = 'aborted'
-              shouldStop = false
-              entry.text += '\n[普罗采集] 同组任务失败，采集已取消'
-            } else {
-              entry.text += '\n[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir
-              if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
-            }
-          } catch (e) {
-            if (signal.aborted) {
-              entry.status = 'aborted'
-              shouldStop = false
-              entry.text += '\n[普罗采集] 同组任务失败，采集已取消'
-            } else {
-              entry.text += '\n[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）'
-              console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
-            }
-          }
-        }
-      }
       return {
         index,
         stage: s,
@@ -1938,6 +1902,33 @@ export function apply(ctx: Context) {
         startedAt,
         endedAt: Date.now(),
         scriptName: (s.script && s.script.name) || null,
+      }
+    }
+    /* 主任务全部进入终态后再串行采集普罗数据。先让阻断结果返回给组协调器，确保失败能立即取消同组在途任务；
+       采集只补充回显，绝不改写已确定的任务状态/阻断权。Task 7 将在此处收敛为仅采集组内最长任务。 */
+    const collectStageProm = async (result: ServerStageResult) => {
+      const s = result.stage
+      if (s.preset || !s.promCollect || (result.status !== 'success' && result.status !== 'failed')) return
+      const collectScript = serverPromCollectScript(cfg)
+      const seq = baseSeq + result.index + 1
+      const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
+      if (!collectScript) {
+        result.text += '\n[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过'
+        return
+      }
+      try {
+        const penv = buildServerTaskPromEnv(runCtx, cfg, result.varsPool, result.startedAt, result.endedAt, promDir)
+        const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, 0, penv)   // 不设超时；组内主任务已全部终态，不复用 fail-fast signal
+        try {
+          const fsx = await import('node:fs/promises')
+          await fsx.mkdir(promDir, { recursive: true })
+          await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
+        } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
+        result.text += '\n[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir
+        if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
+      } catch (e) {
+        result.text += '\n[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）'
+        console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
       }
     }
     const recordStageResult = async (result: ServerStageResult, seq: number) => {
@@ -1962,6 +1953,7 @@ export function apply(ctx: Context) {
       if (!blockingFailure) {
         for (const result of results) Object.assign(varsPool, result.varsOut)
       }
+      for (const result of results) await collectStageProm(result)
       for (const result of results) {
         await recordStageResult(result, baseSeq + result.index + 1)
       }
