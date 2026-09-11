@@ -468,9 +468,13 @@ export const splitStore: SplitState = {
     // 让位观察器：会话视图区 margin 被外部改写（其他未接入协议的分栏引擎接管）时关闭自身
     this.yieldObserver = new MutationObserver(() => {
       if (!this.active || !this.viewArea) return
-      if (this.viewArea.style.marginLeft !== this.lastMarginLeft
-        || this.viewArea.style.marginRight !== this.lastMarginRight
-        || this.viewArea.style.marginTop !== this.lastMarginTop) {
+      // 数值容差比较：浏览器读回内联子像素 margin 只保留 3 位小数（960.671875px → 960.672px），
+      // 本引擎自身写入同样触发本观察器，串等比较会把过渡动画期间自己的逐帧写入误判为外部接管。
+      const drift = (read: string, wrote: string): number =>
+        read === wrote ? 0 : Math.abs(parseFloat(read || '0') - parseFloat(wrote || '0'))
+      if (drift(this.viewArea.style.marginLeft, this.lastMarginLeft) > 0.01
+        || drift(this.viewArea.style.marginRight, this.lastMarginRight) > 0.01
+        || drift(this.viewArea.style.marginTop, this.lastMarginTop) > 0.01) {
         this.close()
       }
     })

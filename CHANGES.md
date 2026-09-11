@@ -1,5 +1,10 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 工作台分栏让位观察器修复子像素误判（`src/client/split.tsx`）：better-sidebar 面板开合的过渡动画期间
+  会话根逐帧缩放，applyMargin 写出子像素 margin（如 960.671875px），浏览器读回内联样式仅保留 3 位小数
+  （960.672px），让位观察器的字符串比较把引擎自身写入误判为「外部接管」而关闭分栏——表现为点
+  better-sidebar 右上角按钮开关侧栏时工作台项目页被一并关掉。改为数值容差比较（漂移 >0.01px 才视为
+  外部改写），其他分栏引擎真正改写 margin 时仍正常让位。
 - 流水线「打开归档目录」改为「关闭侧边会话窗 + better-sidebar 侧边窗打开」（`projects/pipeline/pipeline.html`
   + `src/client/index.tsx`）：点击后仍经 dsh-better-sidebar 侧边窗打开归档目录（文件夹窗口，文件树以
   归档目录为根，同目录复用同标签），打开成功后经新增宿主桥 `window.__dshCloseSideChat()` 关闭工作台
