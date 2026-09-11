@@ -50,5 +50,11 @@ test('侧栏标题取舍：自定义名 > 登录用户名 > 默认「工作台�
   assert.equal(worktableTitleOf('我的台', 'lhf', '工作台'), '我的台', '自定义名优先')
   assert.equal(worktableTitleOf('', 'lhf', '工作台'), 'lhf', '缺省取登录用户名')
   assert.equal(worktableTitleOf('', '', '工作台'), '工作台', '取不到用户名回退默认「工作台」')
-  assert.equal(worktableTitleOf('', '', '工作台（开发中）'), '工作台（开发中）', 'link: 安装的默认名后缀保留')
+})
+
+test('link: 本地编译安装：「（开发中）」后缀追加在缺省标题（登录用户名或「工作台」）后，自定义名不受影响', () => {
+  const { worktableTitleOf } = loadTitleHelpers(authFetch({}))
+  assert.equal(worktableTitleOf('', 'lhf', '工作台', '（开发中）'), 'lhf（开发中）', '登录用户名同样带后缀')
+  assert.equal(worktableTitleOf('', '', '工作台', '（开发中）'), '工作台（开发中）', '默认名带后缀')
+  assert.equal(worktableTitleOf('我的台', 'lhf', '工作台', '（开发中）'), '我的台', '自定义名不带后缀')
 })

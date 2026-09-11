@@ -4,7 +4,8 @@
   dsh-auth-gate `/auth/status` 探针（同源、只认会话 cookie）以当前登录用户名作为侧栏区块标题；
   未装认证插件（404 / SPA 兜底非 JSON）、token 共享模式（username 恒 null）、未登录或探测失败
   均回退默认「工作台」。用户自定义名优先级不变（设置面板改名仍生效），改名框初始值跟随当前
-  显示标题。新增 `tests/auth-username-title.test.mjs` 覆盖探测裁剪、各回退路径与标题优先级。
+  显示标题；link: 本地编译安装时「（开发中）」后缀追加在缺省标题（登录用户名或「工作台」）之后。
+  新增 `tests/auth-username-title.test.mjs` 覆盖探测裁剪、各回退路径与标题优先级（含后缀组合）。
 - 工作台分栏让位观察器修复子像素误判（`src/client/split.tsx`）：better-sidebar 面板开合的过渡动画期间
   会话根逐帧缩放，applyMargin 写出子像素 margin（如 960.671875px），浏览器读回内联样式仅保留 3 位小数
   （960.672px），让位观察器的字符串比较把引擎自身写入误判为「外部接管」而关闭分栏——表现为点
