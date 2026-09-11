@@ -86,31 +86,32 @@ test('历史归档只打开一次目录，不创建或切换会话',async()=>{
   assert.match(tip.textContent,/已在侧边栏打开/);
 });
 
-test('优先经工作台文件浏览窗打开（关闭侧边会话窗由桥内完成），不调侧边栏',async()=>{
-  const explorer=[],sidebar=[],tip={style:{}};
-  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
-    waitArchiveWrites:async()=>{},window:{location:{pathname:'/api/worktable/site/x/pipeline.html'},parent:{
-      __dshOpenFolderInExplorer(folder,page){explorer.push([folder,page]);return true;},
-      __dshOpenFolderInSidebar(folder){sidebar.push(folder);return true;}
-    }}};
-  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
-  await ctx.openArchiveFolder();
-  assert.deepEqual(explorer,[['/logs/selected','/api/worktable/site/x/pipeline.html']]);
-  assert.deepEqual(sidebar,[],'文件浏览窗可用时不得回退侧边栏');
-  assert.match(tip.textContent,/已在文件浏览窗打开/);
-});
-
-test('文件浏览窗桥不可用时回退侧边栏',async()=>{
-  const sidebar=[],tip={style:{}};
+test('侧边窗打开成功后关闭侧边会话窗',async()=>{
+  const folders=[],tip={style:{}}; let chatClosed=0;
   const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
     waitArchiveWrites:async()=>{},window:{parent:{
-      __dshOpenFolderInExplorer(){throw new Error('no split');},
-      __dshOpenFolderInSidebar(folder){sidebar.push(folder);return true;}
+      __dshOpenFolderInSidebar(folder){folders.push(folder);return true;},
+      __dshCloseSideChat(){chatClosed++;}
     }}};
   load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
   await ctx.openArchiveFolder();
-  assert.deepEqual(sidebar,['/logs/selected']);
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.equal(chatClosed,1,'侧边窗打开成功应关闭侧边会话窗');
   assert.match(tip.textContent,/已在侧边栏打开/);
+});
+
+test('侧边栏不可用时回退系统文件管理器且不关会话窗',async()=>{
+  const folders=[],tip={style:{}}; let chatClosed=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},openFolderViaFileManager:async folder=>folders.push(folder),
+    window:{parent:{
+      __dshOpenFolderInSidebar(){throw new Error('unavailable');},
+      __dshCloseSideChat(){chatClosed++;}
+    }}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.equal(chatClosed,0,'回退系统文件管理器时不得关会话窗');
 });
 
 test('侧边栏不可用时回退系统文件管理器，不创建会话',async()=>{

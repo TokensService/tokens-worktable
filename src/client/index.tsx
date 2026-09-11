@@ -1193,33 +1193,6 @@ function openFolderInSidebar(p: string): boolean {
     return true
   } catch { return false }
 }
-
-/** 项目页（pipeline.html「打开归档目录」）→ 工作台分栏桥（经 window.__dshOpenFolderInExplorer 暴露给
- *  iframe 调用）：关闭侧边会话窗（setChatClosed），在调用页所在窗格开一个以 p 为根的资源管理器
- *  标签（文件浏览窗；pageUrl 定位调用页所在窗格，找不到回退主行第一窗）。同目录按 sameContent
- *  复用同标签，幂等可重开；项目未在分栏工作区打开（无活动布局）时返回 false。 */
-function openFolderInExplorerPane(p: string, pageUrl?: string): boolean {
-  try {
-    const spec = splitStore.spec
-    if (!spec || typeof p !== 'string' || !p) return false
-    let row: 'left' | 'top' | 'main' = 'main'
-    let idx = 0
-    if (pageUrl) {
-      let found = false
-      for (const r of ['left', 'top', 'main'] as const) {
-        const panes = r === 'left' ? (spec.left ? [spec.left] : []) : r === 'top' ? (spec.top ?? []) : (spec.main ?? [])
-        for (let i = 0; i < panes.length; i++) {
-          const hit = (panes[i].tabs ?? []).some((t) => t.content?.kind === 'iframe' && (t.content as { url?: string }).url === pageUrl)
-          if (hit) { row = r; idx = i; found = true; break }
-        }
-        if (found) break
-      }
-    }
-    splitStore.setChatClosed(true)
-    splitStore.openTab(row, idx, { kind: 'builtin', type: 'explorer', path: p })
-    return true
-  } catch { return false }
-}
 let lastSessionScopeId = ''
 
 /** 会话作用域快照（模块级；apply 里订阅 ctx.sessions.list 写入，组件与引擎只读） */
@@ -4090,10 +4063,9 @@ export function apply(ctx: any) {
   // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）
   // 或打开抛错时返回 false，由页面回退到系统文件管理器路径。
   try { (window as any).__dshOpenFolderInSidebar = (p: string): boolean => openFolderInSidebar(p) } catch {}
-  // 项目页（pipeline.html「打开归档目录」）→ 工作台分栏桥：关闭侧边会话窗，在调用页所在窗格开一个
-  // 以传入目录为根的资源管理器标签（文件浏览窗）。项目未在分栏工作区打开时返回 false，由页面回退
-  // better-sidebar / 系统文件管理器路径。
-  try { (window as any).__dshOpenFolderInExplorer = (p: string, pageUrl?: string): boolean => openFolderInExplorerPane(p, pageUrl) } catch {}
+  // 项目页（pipeline.html「打开归档目录」）→ 工作台分栏桥：关闭侧边会话窗（聊天列），配合
+  // better-sidebar 侧边窗打开目录时让出屏幕空间；无活动布局时为 no-op。
+  try { (window as any).__dshCloseSideChat = (): void => { try { splitStore.setChatClosed(true) } catch {} } } catch {}
 
 
   ctx.effect(() => {

@@ -1,13 +1,11 @@
 # 本目录 tokens-worktable 的本地改动
 
-- 流水线「打开归档目录」改为工作台内打开（`projects/pipeline/pipeline.html` + `src/client/index.tsx` +
-  `src/client/split.tsx`）：点击后关闭侧边会话窗，在本页所在窗格新开一个以归档目录为根的资源管理器
-  标签（文件浏览窗，同目录按 sameContent 复用同标签），不再优先经 better-sidebar 侧边栏；工作台分栏
-  未打开（独立访问页面、桥不可用）时回退 better-sidebar「文件」面板，再不可用回退服务端系统文件
-  管理器，目录选取与存在性预检/回退归档根逻辑不变。资源管理器窗格新增可选根目录（标签内容携带
-  `path`，缺省仍取会话 cwd），不同根目录各开标签；新增宿主桥
-  `window.__dshOpenFolderInExplorer(path, pageUrl)`（pageUrl 定位调用页所在窗格，找不到回退主行第一窗）。
-  新增桥优先与回退顺序回归测试。
+- 流水线「打开归档目录」改为「关闭侧边会话窗 + better-sidebar 侧边窗打开」（`projects/pipeline/pipeline.html`
+  + `src/client/index.tsx`）：点击后仍经 dsh-better-sidebar 侧边窗打开归档目录（文件夹窗口，文件树以
+  归档目录为根，同目录复用同标签），打开成功后经新增宿主桥 `window.__dshCloseSideChat()` 关闭工作台
+  侧边会话窗（聊天列）让出屏幕空间；better-sidebar 不可用时回退服务端系统文件管理器（回退路径不关
+  会话窗），目录选取与存在性预检/回退归档根逻辑不变。新增「侧边窗打开成功后关闭会话窗」「回退系统
+  文件管理器时不关会话窗」回归测试。
 - 流水线「执行人」缺省取 dsh 登录用户（`projects/pipeline/pipeline.html`）：本地无执行人记录
   （首次使用或清过浏览器数据）时，自动以 dsh-auth-gate `/auth/status` 当前登录用户名填充主控
   「执行人」输入框，定时计划与 API 请求体沿用同一取值随之获得默认；token 共享模式（username 为空）、
