@@ -2049,14 +2049,14 @@ async function testProm(){
 
 /* ---------- Jenkins：拉取任务列表（本地直连 / 远程走 proxy，复用连接模式） ---------- */
 /* 模式自适应取 JSON：本地模式浏览器直连；远程模式经 DSH 服务端 /api/worktable/proxy 代连 */
-async function jkFetchJson(j, url){
+async function jkFetchJson(j, url, signal){
   const auth = (j.user || j.token) ? { Authorization: 'Basic ' + btoa(j.user + ':' + j.token) } : {};
   if (j.mode === 'local') {
-    const r = await fetch(url, { headers: auth, cache: 'no-store' });
+    const r = await fetch(url, { headers: auth, cache: 'no-store', signal:signal });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }
-  const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, method:'GET', headers: auth }) });
+  const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, method:'GET', headers: auth }), signal:signal });
   const p = await r.json();
   if (p && p.error) throw new Error(p.error);
   if ((p.status||0) !== 200) throw new Error('HTTP ' + (p.status||0));
@@ -3337,6 +3337,7 @@ function buildLogParts(stage,ctx,n){
 
 /* ---------- 运行队列 + 调度 ---------- */
 const QUEUE_CAP = 8;
+const MAX_ACTIVE_RUNS = 4;   // 浏览器单标签页全局槽位：避免不同机器的大日志任务同时把 CPU/内存/连接打满
 let queue = [];
 function resetNodes(){
   /* 视图感知：展示某次运行（在跑/结果视图）时重置的是该运行的节点表；空闲态重置当前流水线的空闲编排 */
@@ -3353,7 +3354,7 @@ function setOverall(txt,cls){
 /* 运行按钮不随运行禁用：运行中点击即并行启动（机器不相交）或把当前配置入队（见 runPipeline），文案与提示随运行态切换 */
 function syncRunBtn(){
   const b=$('runBtn'); b.disabled=false;
-  if(running){ b.textContent='▶ 入队运行'; b.title='有流水线运行中：目标机器与在跑/排队任务不相交时立即并行运行，相交则加入队列等待（上限 '+QUEUE_CAP+' 个）'; }
+  if(running){ b.textContent='▶ 入队运行'; b.title='有流水线运行中：目标机器不冲突且未占满 '+MAX_ACTIVE_RUNS+' 个并发槽位时立即运行，否则加入队列等待（上限 '+QUEUE_CAP+' 个）'; }
   else { b.textContent='▶ 运行流水线'; b.title=''; }
 }
 function startRun(opts){
@@ -3431,7 +3432,8 @@ function runPipeline(opts){
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   /* 并行调度：目标机器（环境 IP）与在跑运行、以及已在排队的任务都不相交 → 立即并行启动；
      任一相交 → 入队等待（同一机器的任务保持先进先出，见 drainQueue） */
-  if(!conflictsActive(item) && !queue.some(q=>machineConflict(q,item))){ return startRun(item); }
+  const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length<MAX_ACTIVE_RUNS);   // typeof 兼容测试/旧页面片段抽取
+  if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))){ return startRun(item); }
   if(queue.length >= QUEUE_CAP) return false;
   queue.push(item);
   renderQueue();
@@ -3453,6 +3455,7 @@ function conflictsActive(item){ return activeRuns.some(rc=>machineConflict(rc,it
 function drainQueue(){
   let again=true;
   while(again){
+    if(activeRuns.length>=MAX_ACTIVE_RUNS) return;
     again=false;
     for(let i=0;i<queue.length;i++){
       const it=queue[i];
@@ -3862,46 +3865,149 @@ function substRunVars(v, rc){
 /* 所有长时间 / 高输出阶段共用的实时快照：页面只持有两路各 256 KiB 尾部，
    _outputRevision 每次追加递增，让详情缓存不依赖有碰撞可能的文本采样。 */
 function createLiveOutputState(){
-  return {stdout:'',stderr:'',stdoutTruncated:false,stderrTruncated:false,revision:0};
+  const tail=()=>({chunks:[],head:0,chars:0,truncated:false,revision:0,cache:'',cacheRevision:-1});
+  return {stdout:tail(),stderr:tail(),revision:0};
 }
 function appendLiveOutput(state,type,value){
   const text=String(value||''); if(!text) return state;
-  const key=type==='err'?'stderr':'stdout', truncKey=key==='stderr'?'stderrTruncated':'stdoutTruncated';
-  const limit=256*1024, current=state[key]||'';
-  if(text.length>=limit){ state[key]=text.slice(-limit); state[truncKey]=state[truncKey]||current.length>0||text.length>limit; }
-  else if(current.length+text.length>limit){ state[key]=(current+text).slice(-limit); state[truncKey]=true; }
-  else state[key]=current+text;
+  const tail=type==='err'?state.stderr:state.stdout, limit=256*1024;
+  if(text.length>=limit){
+    const hadText=tail.chars>0;
+    tail.chunks.length=0; tail.head=0; tail.chunks.push(text.slice(-limit)); tail.chars=limit;
+    tail.truncated=tail.truncated||hadText||text.length>limit;
+  }else{
+    tail.chunks.push(text); tail.chars+=text.length;
+    let overflow=tail.chars-limit;
+    if(overflow>0) tail.truncated=true;
+    while(overflow>0 && tail.head<tail.chunks.length){
+      const first=tail.chunks[tail.head];
+      if(first.length<=overflow){ tail.chunks[tail.head]=''; tail.head++; tail.chars-=first.length; overflow-=first.length; }
+      else{ tail.chunks[tail.head]=first.slice(overflow); tail.chars-=overflow; overflow=0; }
+    }
+    if(tail.head>1024 && tail.head*2>tail.chunks.length){ tail.chunks.splice(0,tail.head); tail.head=0; }
+  }
+  tail.revision++; tail.cacheRevision=-1;
   state.revision=(state.revision||0)+1;
   return state;
 }
+function liveOutputTailText(tail){
+  if(tail.cacheRevision!==tail.revision){ tail.cache=tail.chunks.slice(tail.head).join(''); tail.cacheRevision=tail.revision; }
+  return tail.cache;
+}
 function liveOutputSnapshot(state,extra){
   return Object.assign({
-    stdout:state.stdout||'',stderr:state.stderr||'',
-    _stdoutTruncated:!!state.stdoutTruncated,_stderrTruncated:!!state.stderrTruncated,
+    stdout:liveOutputTailText(state.stdout),stderr:liveOutputTailText(state.stderr),
+    _stdoutTruncated:!!state.stdout.truncated,_stderrTruncated:!!state.stderr.truncated,
     _outputRevision:state.revision||0
   },extra||{});
 }
-/* 轮询型阶段的全文用分片保存（结束时只 join 一次），同时把新分片追加到有界快照。 */
-function createLiveLog(first){
-  const log={parts:[],live:createLiveOutputState()};
+function boundedExecutionResult(result){
+  result=result||{};
+  const live=createLiveOutputState();
+  appendLiveOutput(live,'out',result.stdout||''); appendLiveOutput(live,'err',result.stderr||'');
+  const snapshot=liveOutputSnapshot(live,result);
+  snapshot.stdout=liveOutputTailText(live.stdout); snapshot.stderr=liveOutputTailText(live.stderr);
+  snapshot._stdoutTruncated=!!result._stdoutTruncated||!!live.stdout.truncated;
+  snapshot._stderrTruncated=!!result._stderrTruncated||!!live.stderr.truncated;
+  return snapshot;
+}
+/* 轮询型阶段同样只保存 256 KiB 原始分片尾窗，避免 Jenkins / EvalTokens 长任务常驻全文。 */
+function createLiveLog(first,sink){
+  const log={parts:[],partHead:0,partChars:0,truncated:false,hasContent:false,live:createLiveOutputState(),sink:sink||null};
   if(first!==undefined) appendLiveLog(log,first);
   return log;
 }
-function appendLiveLog(log,value){
-  const text=(log.parts.length?'\n':'')+String(value==null?'':value);
-  log.parts.push(text); appendLiveOutput(log.live,'out',text); return log;
+function appendLiveLogPart(log,text){
+  const limit=256*1024;
+  if(text.length>=limit){
+    const hadText=log.partChars>0;
+    log.parts.length=0; log.partHead=0; log.parts.push(text.slice(-limit)); log.partChars=limit;
+    log.truncated=log.truncated||hadText||text.length>limit;
+    return;
+  }
+  log.parts.push(text); log.partChars=(log.partChars||0)+text.length;
+  let overflow=log.partChars-limit;
+  if(overflow>0) log.truncated=true;
+  while(overflow>0 && log.partHead<log.parts.length){
+    const first=log.parts[log.partHead];
+    if(first.length<=overflow){ log.parts[log.partHead]=''; log.partHead++; log.partChars-=first.length; overflow-=first.length; }
+    else{ log.parts[log.partHead]=first.slice(overflow); log.partChars-=overflow; overflow=0; }
+  }
+  if(log.partHead>1024&&log.partHead*2>log.parts.length){ log.parts.splice(0,log.partHead); log.partHead=0; }
+}
+function appendLiveLog(log,value,archiveValue){
+  const prefix=log.hasContent?'\n':'',text=prefix+String(value==null?'':value),archiveText=prefix+String(archiveValue===undefined?value:archiveValue); log.hasContent=true;
+  if(log.sink) log.sink.append(archiveText);
+  appendLiveLogPart(log,text); appendLiveOutput(log.live,'out',text); return log;
 }
 /* Jenkins progressiveText 返回的 text 已是连续原始字节流；后续分片不能像普通日志行一样
    自动补换行，否则相邻轮询恰好落在一行中间时会篡改控制台内容。 */
 function appendLiveChunk(log,value){
   const text=String(value==null?'':value); if(!text) return log;
-  log.parts.push(text); appendLiveOutput(log.live,'out',text); return log;
+  log.hasContent=true; if(log.sink) log.sink.append(text); appendLiveLogPart(log,text); appendLiveOutput(log.live,'out',text); return log;
 }
-function finishLiveLog(log){ return log.parts.join(''); }
+function finishLiveLog(log){ return log.parts.slice(log.partHead||0).join(''); }
+/* stdout 到达时增量提取变量，避免为 KEY=VALUE / 单行 JSON 再保留一份完整输出。
+   单行与全文映射都以 128 KiB 为界：更大的值无法安全注入单个进程环境变量。 */
+function outputProbeNeedsFull(spec){
+  return String(spec||'').split(',').some(function(pair){ const p=pair.trim(),eq=p.indexOf('='); if(eq<0) return false; const src=p.slice(eq+1).trim(); return src===''||src==='*'; });
+}
+function outputProbeUtf8Size(text){
+  let n=0;
+  for(let i=0;i<text.length;i++){ const c=text.charCodeAt(i); if(c<0x80)n++; else if(c<0x800)n+=2; else if(c>=0xD800&&c<=0xDBFF&&i+1<text.length&&text.charCodeAt(i+1)>=0xDC00&&text.charCodeAt(i+1)<=0xDFFF){n+=4;i++;}else n+=3; }
+  return n;
+}
+function createOutputProbe(spec){
+  return {vars:{},json:null,line:'',lineOverflow:false,seen:false,finished:false,captureFull:outputProbeNeedsFull(spec),fullParts:[],fullBytes:0,fullTextOverflow:false};
+}
+function consumeOutputProbeLine(probe,line){
+  const m=/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line);
+  if(m){ let v=m[2].replace(/\r$/,''); if(v.length>=2&&v.charAt(0)==='"'&&v.charAt(v.length-1)==='"') v=v.slice(1,-1); probe.vars[m[1]]=v; }
+  const t=line.trim(); if(t.length<2) return;
+  const c0=t.charAt(0),c1=t.charAt(t.length-1);
+  if(!((c0==='{'&&c1==='}')||(c0==='['&&c1===']'))) return;
+  try{
+    const value=JSON.parse(t); if(!value||typeof value!=='object') return;
+    probe.json=value;
+    if(!Array.isArray(value)) for(const k in value){ const v=value[k]; if(v!==null&&v!==undefined&&typeof v!=='object') probe.vars[k]=String(v); }
+  }catch(e){}
+}
+function appendOutputProbe(probe,value){
+  const text=String(value==null?'':value); if(!text||probe.finished) return probe;
+  probe.seen=true;
+  if(probe.captureFull&&!probe.fullTextOverflow){
+    const bytes=outputProbeUtf8Size(text);
+    if(probe.fullBytes+bytes<=128*1024){ probe.fullParts.push(text); probe.fullBytes+=bytes; }
+    else{ probe.fullParts.length=0; probe.fullBytes=0; probe.fullTextOverflow=true; }
+  }
+  let start=0;
+  for(;;){
+    const end=text.indexOf('\n',start), stop=end<0?text.length:end, part=text.slice(start,stop);
+    if(!probe.lineOverflow){
+      if(probe.line.length+part.length<=128*1024) probe.line+=part;
+      else{ probe.line=''; probe.lineOverflow=true; }
+    }
+    if(end<0) break;
+    if(!probe.lineOverflow) consumeOutputProbeLine(probe,probe.line);
+    probe.line=''; probe.lineOverflow=false; start=end+1;
+  }
+  return probe;
+}
+function finishOutputProbe(probe){
+  if(!probe.finished){ if(!probe.lineOverflow&&probe.line) consumeOutputProbeLine(probe,probe.line); probe.finished=true; }
+  return {vars:probe.vars,json:probe.json,fullText:probe.captureFull&&!probe.fullTextOverflow?probe.fullParts.join(''):undefined,fullTextOverflow:!!probe.fullTextOverflow};
+}
 function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
   const now=Date.now(), wait=Math.max(0,Number(minInterval)||250);
   if(viewRc===rc && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
   return lastLive;
+}
+function publishLiveOutput(rc,stage,live,lastPublished,minInterval,extra){
+  const now=Date.now(),wait=Math.max(0,Number(minInterval)||250);
+  if(now-lastPublished<wait) return lastPublished;
+  stage._out=liveOutputSnapshot(live,extra||{code:null});
+  if(viewRc===rc&&selectedId===stage.id) renderDetail();
+  return now;
 }
 /* 流式执行：POST /api/worktable/exec-stream（插件服务端 spawn 后按行回传 NDJSON：
    {"type":"out"|"err","text":…} / {"type":"done","code":N} / {"type":"error","message":…}）。
@@ -3910,16 +4016,16 @@ function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
    AbortController 中止返回 code:null（调用方按令牌丢弃），其余中断按失败返回；
    接口不存在（旧插件构建未含该路由）返回 null，由 execScript 降级为一次性执行。 */
 async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal, logFile){
-  const stdoutParts=[], stderrParts=[];
+  const output=createLiveOutputState(); let hasStderr=false;
   let logInfo=logFile?{logPending:true}:{};
   const recordLog=m=>{
     if(m.logFile) logInfo={logFile:m.logFile};
     if(m.logError) logInfo={logError:m.logError};
   };
   const emit=(type,text)=>{ if(typeof onStream==='function' && text) onStream({type,text}); };
-  const append=(parts,text)=>{ text=String(text||''); if(text) parts.push(text); return text; };
-  const result=(code,extra)=>({code,stdout:stdoutParts.join(''),stderr:stderrParts.join(''),...logInfo,...(extra||{})});
-  const appendError=message=>{ if(stderrParts.length) stderrParts.push('\n'); stderrParts.push(String(message||'执行流错误')); };
+  const append=(type,text)=>{ text=String(text||''); if(text){ appendLiveOutput(output,type,text); if(type==='err') hasStderr=true; } return text; };
+  const result=(code,extra)=>liveOutputSnapshot(output,{code,...logInfo,...(extra||{})});
+  const appendError=message=>{ append('err',(hasStderr?'\n':'')+String(message||'执行流错误')); };
   try{
     const r=await fetch('/api/worktable/exec-stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path,args,env,cwd,timeoutMs,logFile}),signal});
     if(!r.ok || !r.body){ await r.json().catch(()=>null); return null; }   // 旧插件构建无此路由：降级为一次性执行
@@ -3941,16 +4047,16 @@ async function execStreaming(path, args, env, cwd, timeoutMs, onStream, signal, 
         if(!line) continue;
         let m=null; try{ m=JSON.parse(line); }catch(e){ continue; }
         if(m.type==='log'){ recordLog(m); if(typeof onStream==='function') onStream(m); }
-        else if(m.type==='out'){ const text=append(stdoutParts,m.text); emit('out',text); }
-        else if(m.type==='err'){ const text=append(stderrParts,m.text); emit('err',text); }
+        else if(m.type==='out'){ const text=append('out',m.text); emit('out',text); }
+        else if(m.type==='err'){ const text=append('err',m.text); emit('err',text); }
         else if(m.type==='error'){ const txt=m.message||'执行流错误'; appendError(txt); emit('err', txt); }
         else if(m.type==='done'){ recordLog(m); return result((typeof m.code==='number')?m.code:1); }
       }
     }
     if(buf.trim()){   // 末尾残余（流结束前未换行的最后一块）
       let m=null; try{ m=JSON.parse(buf.trim()); }catch(e){}
-      if(m && m.type==='out'){ const text=append(stdoutParts,m.text); emit('out',text); }
-      else if(m && m.type==='err'){ const text=append(stderrParts,m.text); emit('err',text); }
+      if(m && m.type==='out'){ const text=append('out',m.text); emit('out',text); }
+      else if(m && m.type==='err'){ const text=append('err',m.text); emit('err',text); }
       else if(m && m.type==='error'){ const txt=m.message||'执行流错误'; appendError(txt); emit('err', txt); }
       else if(m && m.type==='done'){ recordLog(m); return result((typeof m.code==='number')?m.code:1); }
     }
@@ -4029,6 +4135,21 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
     return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||'',logFile:j&&j.logFile,logError:j&&j.logError};
   }catch(e){ return {code:1, stdout:'', stderr:String(e.message||e),logPending:!!logFile}; }
 }
+async function readBrowserResponseText(response,maxBytes){
+  const limit=Math.max(1,Number(maxBytes)||20*1024*1024);
+  const declared=Number(response&&response.headers&&response.headers.get?response.headers.get('content-length'):0);
+  if(Number.isFinite(declared)&&declared>limit){ try{ await response.body?.cancel(); }catch(e){} throw new Error('响应正文过大（上限 '+limit+' 字节）'); }
+  if(response&&response.body&&typeof response.body.getReader==='function'){
+    const reader=response.body.getReader(),decoder=new TextDecoder(),parts=[]; let size=0;
+    try{
+      for(;;){ const item=await reader.read(); if(item.done) break; size+=item.value.byteLength; if(size>limit){ try{await reader.cancel();}catch(e){} throw new Error('响应正文过大（上限 '+limit+' 字节）'); } parts.push(decoder.decode(item.value,{stream:true})); }
+      parts.push(decoder.decode()); return parts.join('');
+    }finally{ try{reader.releaseLock();}catch(e){} }
+  }
+  const text=String(await response.text()),bytes=(typeof TextEncoder!=='undefined'?new TextEncoder().encode(text).byteLength:text.length);
+  if(bytes>limit) throw new Error('响应正文过大（上限 '+limit+' 字节）');
+  return text;
+}
 /* ---------- HTTP 阶段：{VAR} 占位符替换后 GET 触发 + 轮询结果（本地直连 / 远程走 proxy；复用连接模式） ----------
    变量传递：上游阶段变量（curRun.vars）自动注入为占位符取值；URL 响应体 / 任务控制台输出的 KEY=VALUE 行 /
    单行 JSON 对象（{"KEY":"VALUE"}）经 mergeStageVars 累计回 curRun.vars，传递给后续阶段。 */
@@ -4056,64 +4177,64 @@ function jkJobRef(job, vars){
    Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
    参数放在 form-urlencoded 请求体中（等价于旧版 query 传参）；
    CSRF 防护开启时需带 crumb——先经 crumbIssuer 尝试获取（API token 认证通常豁免，拿不到则直接 POST）。 */
-async function jkFetchCrumb(j, auth){
+async function jkFetchCrumb(j, auth, signal){
   const url=(j.url||'').replace(/\/+$/,'')+'/crumbIssuer/api/json';
   try{
     if(j.mode==='remote'){
-      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth}),signal:signal});
       const p=await r.json(); if(p&&p.error) return null;
       if((p.status||0)!==200) return null;
       const c=JSON.parse(p.body||'{}'); if(c&&c.crumbRequestField&&c.crumb){ const h={}; h[c.crumbRequestField]=c.crumb; return h; }
       return null;
     }
-    const r=await fetch(url,{headers:auth,cache:'no-store'});
+    const r=await fetch(url,{headers:auth,cache:'no-store',signal:signal});
     if(!r.ok) return null;
     const c=await r.json(); if(c&&c.crumbRequestField&&c.crumb){ const h={}; h[c.crumbRequestField]=c.crumb; return h; }
-  }catch(e){}
+  }catch(e){ if(signal&&signal.aborted) throw e; }
   return null;
 }
 /* jobPath 为已解析的任务路径（fullName 经 jkJobPath / URL 经 jkJobRef 得到，占位符已替换） */
-async function jkTriggerBuild(jobPath, params){
+async function jkTriggerBuild(jobPath, params, signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   const url=base+jobPath+'buildWithParameters';
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
-  const crumb=await jkFetchCrumb(j, auth);
+  const crumb=await jkFetchCrumb(j, auth, signal);
   const headers=Object.assign({}, auth, crumb||{}, {'Content-Type':'application/x-www-form-urlencoded'});
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400 && (p.status||0)!==302 && (p.status||0)!==303) throw new Error('HTTP '+(p.status||0));
     return true;
   }
-  const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store'});
+  const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store',signal:signal});
   if(!r.ok && r.status!==302 && r.status!==303) throw new Error('HTTP '+r.status);
   return true;
 }
 /* 任务 URL 触发：{VAR} 占位符替换后直接 GET 完整地址（等价 curl——此类 URL 本身就是 GET 触发的接口地址）。
    URL 视为自包含：不拼 buildWithParameters、不带 crumb、不附加「Jenkins 服务配置」的用户名/令牌（鉴权信息如
    token 由 URL 自带）；连接模式仍生效：本地=浏览器直连（需 CORS/同源），远程=经 /api/worktable/proxy 代连。 */
-async function jkTriggerGet(url){
+async function jkTriggerGet(url, signal){
   const j=jenkins;
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400) throw new Error('HTTP '+(p.status||0));
     return typeof p.body==='string'?p.body:'';   // 返回响应体：runUrlStep 喂给 parseStageVars 解析产物
   }
-  const r=await fetch(url,{cache:'no-store'});
+  const r=await fetch(url,{cache:'no-store',signal:signal});
   if(!r.ok) throw new Error('HTTP '+r.status);
-  try{ return await r.text(); }catch(e){ return ''; }   // 跨域无 CORS 读不到体时不阻断触发成功
+  try{ return await readBrowserResponseText(r,20*1024*1024); }catch(e){ if(/响应正文过大/.test(String(e&&e.message||e))) throw e; return ''; }   // 跨域无 CORS 读不到体时不阻断触发成功
 }
-async function jkGetText(path){
+async function jkGetText(path, signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const url=base+path;
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error); return p.body||'';
   }
-  const r=await fetch(url,{headers:auth,cache:'no-store'}); return r.text();
+  const r=await fetch(url,{headers:auth,cache:'no-store',signal:signal}); return readBrowserResponseText(r,20*1024*1024);
 }
 function jkHeaderValue(headers,name){
   if(!headers) return '';
@@ -4125,19 +4246,19 @@ function jkHeaderValue(headers,name){
 /* Jenkins 官方 progressiveText 接口按服务端 offset 只返回新增控制台内容。
    404/405 或读不到 X-Text-Size（如 CORS 未 expose 响应头）时降级到 consoleText；不能按响应体长度
    猜 offset，因为 Jenkins 会把原始 LF 规范化成 CRLF 后再返回，而头里的 offset 仍指向原始日志。 */
-async function jkGetProgressiveText(buildPath,start){
+async function jkGetProgressiveText(buildPath,start,signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const path=String(buildPath||'').replace(/\/+$/,'')+'/logText/progressiveText?start='+encodeURIComponent(String(start||0));
   const url=base+path;
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
   let status=0, headers=null, text='';
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     status=Number(p&&p.status)||0; headers=p&&p.headers; text=String((p&&p.body)||'');
   }else{
-    const r=await fetch(url,{headers:auth,cache:'no-store'});
-    status=r.status; headers=r.headers; text=await r.text();
+    const r=await fetch(url,{headers:auth,cache:'no-store',signal:signal});
+    status=r.status; headers=r.headers; text=await readBrowserResponseText(r,20*1024*1024);
   }
   if(status===404||status===405) return null;
   if(status<200||status>=300) throw new Error('HTTP '+status);
@@ -4146,12 +4267,12 @@ async function jkGetProgressiveText(buildPath,start){
   if(!Number.isFinite(rawNext)||rawNext<start||(text&&rawNext===start)) return null;
   return {text:text,next:rawNext};
 }
-async function jkReadConsoleDelta(buildPath,start,useProgressive){
+async function jkReadConsoleDelta(buildPath,start,useProgressive,signal){
   if(useProgressive){
-    const delta=await jkGetProgressiveText(buildPath,start);
+    const delta=await jkGetProgressiveText(buildPath,start,signal);
     if(delta) return {text:delta.text||'',next:delta.next,progressive:true};
   }
-  const full=await jkGetText(String(buildPath||'').replace(/\/+$/,'')+'/consoleText');
+  const full=await jkGetText(String(buildPath||'').replace(/\/+$/,'')+'/consoleText',signal);
   return {text:full.length>start?full.slice(start):'',next:full.length,progressive:false};
 }
 async function runUrlStep(rc, i){
@@ -4163,11 +4284,30 @@ async function runUrlStep(rc, i){
   rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
+  const deadline=s.timeout?t0+s.timeout*1000:0;
+  let deadlineTimer=null, timedOut=false;
+  const ctrl=new AbortController(); rc.scriptAbort=ctrl;   // 停止按钮和阶段 deadline 共用：取消触发、轮询与控制台请求
+  const timeoutMessage=()=> 'HTTP/Jenkins 阶段超时（'+Math.max(0,Number(s.timeout)||0)+' 秒）';
+  const ensureActive=()=>{
+    if(rc.over||rc.token!==tk) return false;
+    if(timedOut||(deadline&&Date.now()>=deadline)){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); throw new Error(timeoutMessage()); }
+    return true;
+  };
+  const waitForPoll=()=>new Promise(function(resolve){
+    let done=false, waitTimer=null;
+    const stop=function(){ if(done) return; done=true; if(waitTimer!==null) clearTimeout(waitTimer); ctrl.signal.removeEventListener('abort',stop); resolve(); };
+    if(ctrl.signal.aborted){ resolve(); return; }
+    ctrl.signal.addEventListener('abort',stop,{once:true});
+    waitTimer=setTimeout(stop,2000);
+  });
+  if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(rc.timer) clearInterval(rc.timer);
   rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },500);
   const isUrl=jkIsUrl(raw);
-  const log=createLiveLog('$ '+(isUrl?'GET':'POST')+' '+raw+(isUrl?'':'（旧格式 fullName，建议改为完整 URL，参数经 {GIT_BRANCH} 等占位符传递）'));
-  /* 运行中详情只看有界尾窗；完整分片持续挂在阶段上，确保 abortRun 能在异步执行返回前归档早期日志。 */
+  const logSink=createClientStageLogSink(s,rc,stageSeq(rc.stages,i),s.name);
+  const log=createLiveLog('$ '+(isUrl?'GET':'POST')+' '+raw+(isUrl?'':'（旧格式 fullName，建议改为完整 URL，参数经 {GIT_BRANCH} 等占位符传递）'),logSink);
+  const outputProbe=createOutputProbe(outSpec);
+  /* 运行中详情与中止兜底只保留有界尾窗；完整分片由服务端日志 sink 持续落盘。 */
   s._archiveOutputParts=log.parts; s._archiveStdout=null;
   try{
     /* 占位符取值池（旧 fullName 触发时兼作构建参数）：上游阶段（脚本 stdout / URL 响应体）产出的
@@ -4201,44 +4341,54 @@ async function runUrlStep(rc, i){
     if(isUrl) appendLiveLog(log,'# trigger url: '+jkSubstUrl(raw, vars));
     s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     let preNum=null;
-    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; appendLiveLog(log,'# nextBuildNumber='+preNum); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc); }catch(e){ appendLiveLog(log,'# (无法获取 nextBuildNumber: '+e.message+')'); } }
+    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber',ctrl.signal); if(!ensureActive()) return; preNum=info.nextBuildNumber; appendLiveLog(log,'# nextBuildNumber='+preNum); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc); }catch(e){ if(!ensureActive()) return; appendLiveLog(log,'# (无法获取 nextBuildNumber: '+e.message+')'); } }
     let triggerBody='';
-    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars)); }
-    else{ await jkTriggerBuild(jobPath, vars); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars),ctrl.signal); }
+    else{ await jkTriggerBuild(jobPath, vars,ctrl.signal); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    if(!ensureActive()) return;
     appendLiveLog(log,'# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
-    const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时，轮询直到出结果
     let result=null, buildNum=null, building=true;
-    let consoleRead=0, consoleStarted=false, consoleProgressive=true, lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
+    let consoleRead=0, consoleStarted=false, consoleProgressive=true, consoleDisabled=false, consoleError='', lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
-    while(pollable && (!deadline || Date.now()<deadline) && (building||buildNum==null)){
-      await new Promise(function(r){ setTimeout(r,2000); });
-      if(rc.over||rc.token!==tk) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
+    while(pollable && (building||buildNum==null)){
+      await waitForPoll();
+      if(!ensureActive()) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
       try{
         const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
-        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration');
+        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration',ctrl.signal);
+        if(!ensureActive()) return;
         if(buildNum==null && info.number && (preNum==null || info.number>=preNum)) buildNum=info.number;
         if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
-      }catch(e){ }
+      }catch(e){ if(!ensureActive()) return; }
       /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
          404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
-      if(buildNum!=null){
+      if(buildNum!=null && !consoleDisabled){
         try{
-          const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive);
+          const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal);
+          if(!ensureActive()) return;
+          consoleError='';
           consoleRead=delta.next; consoleProgressive=delta.progressive;
           if(delta.text){
             if(!consoleStarted){ consoleStarted=true; appendLiveLog(log,''); }
+            appendOutputProbe(outputProbe,delta.text);
             appendLiveChunk(log,delta.text);   // 原始连续分片，不额外插入换行
             s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
             lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
+            if(rc.over||rc.token!==tk) return;
           }
-        }catch(e){ }
+        }catch(e){
+          if(!ensureActive()) return;
+          consoleError=String(e&&e.message?e.message:e).slice(0,512);
+          if(/响应正文过大/.test(consoleError)) consoleDisabled=true;   // 同一 offset 重试仍会下载同一超大块，立即止损
+        }
       }
       const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
     }
     if(rc.over||rc.token!==tk) return;   // 先验令牌再动本运行 timer（中止已由 finish 清过）
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     let consoleText='', bodyFull='';
-    if(buildNum!=null){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive); consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){} }
+    if(buildNum!=null && !consoleDisabled){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal); if(!ensureActive()) return; consoleError=''; consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){ if(!ensureActive()) return; consoleError=String(e&&e.message?e.message:e).slice(0,512); } }
     else if(triggerBody){
       /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 规整成单行
          （与脚本阶段「单行 JSON 对象」规则一致，数组响应同样规整，供输出变量 JSON 路径取值）。
@@ -4251,35 +4401,40 @@ async function runUrlStep(rc, i){
     }
     if(rc.over||rc.token!==tk) return;   // 收尾拉取控制台（上方 await）期间被中止：变量/归档/节点状态不得再写入
     const ok=(result==='SUCCESS');
-    const preConsoleParts=log.parts.slice();   // 响应体展示文本的起点（归档全量分片用，见下）
-    if(consoleText){ if(!consoleStarted) appendLiveLog(log,''); if(buildNum!=null) appendLiveChunk(log,consoleText); else appendLiveLog(log,consoleText); }
+    if(consoleText){
+      if(!consoleStarted) appendLiveLog(log,'');
+      appendOutputProbe(outputProbe,bodyFull||consoleText);
+      if(buildNum!=null) appendLiveChunk(log,consoleText); else appendLiveLog(log,consoleText,bodyFull||consoleText);
+    }
+    if(consoleError) appendLiveLog(log,'[warn] Jenkins 控制台读取失败，任务结果仍以 Jenkins 状态为准，日志可能不完整：'+consoleError);
+    const probed=finishOutputProbe(outputProbe);
+    if(probed.fullTextOverflow) appendLiveLog(log,'[warn] 控制台全文超过 128KiB，已跳过「*=全文」输出变量；请改用 KEY=VALUE 或 JSON 路径截取所需字段');
     appendLiveLog(log,'[HTTP result '+result+']');
     const finalStdout=finishLiveLog(log);   // 结束时合并一次；轮询期间从不重复拼接旧日志
-    s._out={stdout:finalStdout,stderr:(result&&result!=='SUCCESS')?('HTTP 请求 '+result):'',code:ok?0:1,url:true,done:true};
-    s._archiveOutputParts=null;   // 正常终态已有完整 finalStdout，释放重复的分片引用
-    /* 响应体超 64K 只截断「展示」；归档另存全量分片（日志不丢），archiveStageLog 优先使用 */
-    if(bodyFull && bodyFull!==consoleText){
-      const fullLog={parts:preConsoleParts.slice(),live:createLiveOutputState()};
-      if(!consoleStarted) appendLiveLog(fullLog,'');
-      appendLiveLog(fullLog,bodyFull); appendLiveLog(fullLog,'[HTTP result '+result+']');
-      s._archiveOutputParts=fullLog.parts;
-    }
-    const varsOut=mergeStageVars(rc, finalStdout);
+    s._out=liveOutputSnapshot(log.live,{stderr:(result&&result!=='SUCCESS')?('HTTP 请求 '+result):'',code:ok?0:1,url:true,done:true});
+    if(logSink) await logSink.flush();
+    s._archiveOutputParts=null;   // 正常终态完整日志已由 sink 落盘；页面释放运行中尾窗别名
+    const varsOut=Object.assign({},probed.vars); rc.vars=Object.assign(rc.vars||{},varsOut);
     if(bodyFull && bodyFull!==consoleText) Object.assign(varsOut, mergeStageVars(rc, bodyFull));   // 响应体被截断展示时，顶层标量改从完整体捕获
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-    applyOutVars(rc, outSpec, varsOut, parseStageJson(bodyFull||finalStdout), bodyFull);   // 输出变量映射：捕获的 key 改名后下传；来源可写 JSON 路径取嵌套字段，或 * / 留空=响应体全文整体赋值（见 applyOutVars）
+    applyOutVars(rc, outSpec, varsOut, bodyFull?parseStageJson(bodyFull):(probed.json||parseStageJson(finalStdout)), probed.fullText);   // 输出变量映射：控制台增量捕获 key/JSON；正文可用 JSON 路径，全文仅在 128KiB 安全上限内保留
     const dur=(Date.now()-t0)/1000;
     if(ok){ rc.nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; rcRender(rc); advance(rc,i+1); }
     else{ rc.nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; rcRender(rc); finish(rc,'failed'); }
   }catch(e){
     if(rc.over||rc.token!==tk) return;   // 迟回异常（中止后）：不得覆盖节点状态、不得对旧阶段再 finish
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
-    appendLiveLog(log,'✗ '+e.message);
-    s._out={stdout:finishLiveLog(log),stderr:String(e.message),code:1,url:true,done:true};
-    s._archiveOutputParts=null;   // 异常终态同样已合并完整输出；中止早退路径则保留运行中分片
+    const msg=timedOut?timeoutMessage():String(e&&e.message?e.message:e);
+    appendLiveLog(log,'✗ '+msg);
+    s._out=liveOutputSnapshot(log.live,{stderr:msg,code:1,url:true,done:true});
+    if(logSink) await logSink.flush();
+    s._archiveOutputParts=null;   // 异常终态也由 sink 落盘；失败时 archiveStageLog 以页面尾窗兜底
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
     rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
     rcRender(rc); finish(rc,'failed');
+  }finally{
+    if(deadlineTimer!==null) clearTimeout(deadlineTimer);
+    if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   }
 }
 /* ---------- EvalTokens 任务运行阶段：启动新 run 并等待终态（本地直连 / 远程走 proxy；复用「设置」页 EvalTokens 服务配置 + Bearer 令牌） ----------
@@ -4300,8 +4455,10 @@ async function evaltokRequestJson(e, api, method, body, signal){
     return JSON.parse(p.body||'{}');
   }
   const opts={method:verb,cache:'no-store',headers,signal:signal}; if(body!==undefined) opts.body=JSON.stringify(body);
-  const r=await fetch(api,opts); if(!r.ok){ let msg='HTTP '+r.status; try{ const j=await r.json(); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); }
-  return await r.json();
+  const r=await fetch(api,opts), text=await readBrowserResponseText(r,20*1024*1024); let parsed;
+  try{ parsed=JSON.parse(text); }catch(error){ if(r.ok) throw error; }
+  if(!r.ok){ let msg='HTTP '+r.status; if(parsed&&(parsed.error||parsed.message)) msg=String(parsed.error||parsed.message)+'（HTTP '+r.status+'）'; throw new Error(msg); }
+  return parsed;
 }
 /* EvalTokens 文本请求：报告接口返回完整 HTML，不做 JSON 解析；连接模式/鉴权/错误提示与 JSON 请求一致。 */
 async function evaltokRequestText(e, api, signal){
@@ -4313,7 +4470,7 @@ async function evaltokRequestText(e, api, signal){
     if(status<200||status>=300){ let msg='HTTP '+status; try{ const j=JSON.parse(text||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+status+'）'; }catch(_){} throw new Error(msg); }
     return text;
   }
-  const r=await fetch(api,{method:'GET',cache:'no-store',headers:headers,signal:signal}); const text=await r.text();
+  const r=await fetch(api,{method:'GET',cache:'no-store',headers:headers,signal:signal}); const text=await readBrowserResponseText(r,20*1024*1024);
   if(!r.ok){ let msg='HTTP '+r.status; try{ const j=JSON.parse(text||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+r.status+'）'; }catch(_){} throw new Error(msg); }
   return text;
 }
@@ -4490,8 +4647,9 @@ async function runEvaltokensStep(rc, i){
   if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(rc.timer) clearInterval(rc.timer);
   rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },1000);
-  const log=createLiveLog('$ EvalTokens run '+(taskId||taskName||''));
-  /* abortRun 可能在任一轮 await 期间归档；运行中把全文分片挂到阶段，详情仍只渲染 live 尾窗。 */
+  const logSink=createClientStageLogSink(s,rc,stageSeq(rc.stages,i),s.name);
+  const log=createLiveLog('$ EvalTokens run '+(taskId||taskName||''),logSink), outputProbe=createOutputProbe(outSpec);
+  /* abortRun 可能在任一轮 await 期间收尾；服务端 sink 保存全文，阶段仅挂有界尾窗供失败兜底。 */
   s._archiveOutputParts=log.parts; s._archiveStdout=null;
   try{
     if(!taskId && !taskName) throw new Error('未选择 EvalTokens 任务');
@@ -4521,6 +4679,8 @@ async function runEvaltokensStep(rc, i){
       const sk=current?evaltokStatusKind(st):'running';
       appendLiveLog(log,'# run '+runId+' status='+(current?st:'（等待运行记录）'));
       s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
+      if(!ensureActive()) return;
       if(sk!=='running'){ result=sk; break; }
       await new Promise(function(resolve){
         let done=false, h=null;
@@ -4535,7 +4695,9 @@ async function runEvaltokensStep(rc, i){
     let bodyFull=''; try{ const o=JSON.parse(JSON.stringify(run)); if(o&&typeof o==='object') bodyFull=JSON.stringify(o); }catch(_){ bodyFull=String(run); }
     let bodyShow=bodyFull; if(bodyShow.length>65536) bodyShow=bodyShow.slice(0,65536)+'…(截断，仅展示；变量捕获用完整运行对象)';
     const ok=(result==='success');
-    appendLiveLog(log,bodyShow);
+    appendOutputProbe(outputProbe,bodyFull); const probed=finishOutputProbe(outputProbe);
+    appendLiveLog(log,bodyShow,bodyFull);
+    if(probed.fullTextOverflow) appendLiveLog(log,'[warn] 运行对象全文超过 128KiB，已跳过「*=全文」输出变量；请改用 KEY=VALUE 或 JSON 路径截取所需字段');
     appendLiveLog(log,'[EvalTokens result '+result+']');
     appendLiveLog(log,'📊 任务报告（EvalTokens 服务）→ '+evaltokReportUrl(e,runId));
     const reportFolder=(et.collectReport!==false)?archiveFolderFor(rc):null;
@@ -4543,12 +4705,12 @@ async function runEvaltokensStep(rc, i){
     const reportPendingLine=reportFolder?('📦 任务报告归档中 → '+reportFolder+'/'+evaltokReportFile(rc,seq,s.name,runId)):'⚠ 任务报告未归档：无法确定本次运行归档目录';
     if(et.collectReport!==false) appendLiveLog(log,reportPendingLine);
     const finalStdout=finishLiveLog(log);
-    const terminalOut={stdout:finalStdout,stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true};
+    const terminalOut=liveOutputSnapshot(log.live,{stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true});
+    if(logSink) await logSink.flush();
     s._archiveOutputParts=null;   // 终态改用可被报告回调更新的 terminalOut，避免保留“归档中”旧分片
     s._out=terminalOut;
-    const varsOut=mergeStageVars(rc, finalStdout);
-    if(bodyFull!==bodyShow) Object.assign(varsOut, mergeStageVars(rc, bodyFull));   // 截断展示时顶层标量改从完整运行对象捕获
-    applyOutVars(rc, outSpec, varsOut, parseStageJson(bodyFull||finalStdout), bodyFull);   // 输出变量映射：运行字段改名/JSON 路径/全文赋值（与 HTTP 阶段一致）
+    const varsOut=Object.assign({},probed.vars); rc.vars=Object.assign(rc.vars||{},varsOut);
+    applyOutVars(rc, outSpec, varsOut, probed.json||parseStageJson(bodyFull||finalStdout), probed.fullText);   // 输出变量映射：运行字段改名/JSON 路径；全文只在 128KiB 安全上限内保留
     const dur=(Date.now()-t0)/1000;
     const finalNode={status:ok?'success':'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut};
     let reportJob=null;
@@ -4558,6 +4720,7 @@ async function runEvaltokensStep(rc, i){
       s._reportPendingAttempt=attempt;   // archiveRun 不抢先写尚未补齐报告结果的阶段日志
       const replaceReportLine=function(text){
         if(terminalOut.stdout) terminalOut.stdout=terminalOut.stdout.replace(reportPendingLine,text);
+        if(logSink) logSink.append('\n'+text);
         if(s._evaltokAttempt===attempt&&s._out===terminalOut&&viewRc===rc&&selectedId===s.id) renderDetail();
       };
       reportJob=archiveEvaltokensReport(e,rc,seq,s.name,runId).then(file=>{
@@ -4569,6 +4732,9 @@ async function runEvaltokensStep(rc, i){
       }).then(async()=>{
         if(s._evaltokAttempt!==attempt) return;   // 已开始新一次尝试：旧 run 仅保留独立 HTML 报告，不覆写新阶段日志/标记
         try{
+          if(logSink&&await logSink.flush()){
+            reportState.logFile=logSink.file; s._logArchived=true; return;
+          }
           const logStage=Object.assign({},s,{_out:terminalOut});
           const parts=buildLogParts(logStage,rc,finalNode)||[];
           const logFile=await archiveTaskLog(rc,seq,s.name,parts);
@@ -4590,8 +4756,9 @@ async function runEvaltokensStep(rc, i){
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     const msg=timedOut?timeoutMessage():String(e&&e.message?e.message:e);
     appendLiveLog(log,'✗ '+msg);
-    s._out={stdout:finishLiveLog(log),stderr:msg,code:1,evaltokens:true,done:true};
-    s._archiveOutputParts=null;   // 正常异常收尾已合并完整输出；用户中止的迟回早退仍保留分片
+    s._out=liveOutputSnapshot(log.live,{stderr:msg,code:1,evaltokens:true,done:true});
+    if(logSink) await logSink.flush();
+    s._archiveOutputParts=null;   // 正常异常收尾已由 sink 落盘；失败时 archiveStageLog 以页面尾窗兜底
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
     rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}};
     rcRender(rc); finish(rc,'failed');
@@ -4615,14 +4782,13 @@ async function runScriptStep(rc, i){
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
   const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,i+1,s.name) : null;
-  s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
-  const live=createLiveOutputState(); let lastLive=0;
+  s._serverLogPending=!!logFile; s._serverLogExpectedFile=logFile; s._serverLogFile=null; s._logArchived=false;
+  const live=createLiveOutputState(), probe=createOutputProbe(sc.outVars); let lastLive=-Infinity;
   const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, rc, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }   // 接管确认：中止时也不可用浏览器快照覆盖服务端日志
-    appendLiveOutput(live,m.type,m.text);
-    s._out=liveOutputSnapshot(live,{code:null});   // 实时快照仅保留有界尾部；归档与最终变量仍用 execStreaming 的完整结果
-    lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+    appendLiveOutput(live,m.type,m.text); if(m.type==='out') appendOutputProbe(probe,m.text);
+    lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 追加与物化分别节流，避免每个小块都 join 尾窗
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(res.logError) console.warn('[archive] 服务端阶段日志写入失败，尝试页面兜底:',res.logError);
@@ -4631,9 +4797,17 @@ async function runScriptStep(rc, i){
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;
-  s._out=res;
-  const varsOut = mergeStageVars(rc, res.stdout);   // 解析本阶段 stdout 的 KEY=VALUE 行，累计到 rc.vars
-  applyOutVars(rc, sc.outVars, varsOut, parseStageJson(res.stdout), res.stdout);   // 输出变量映射：stdout 捕获的 key 改名后下传；来源可写 JSON 路径取嵌套字段，或 * / 留空=stdout 全文整体赋值（与 HTTP 阶段一致，见 applyOutVars）
+  if(!probe.seen && res.stdout) appendOutputProbe(probe,res.stdout);   // 旧插件一次性 /exec 兼容路径
+  const probed=finishOutputProbe(probe), finalResult=boundedExecutionResult(res);
+  if(probed.fullTextOverflow){
+    const warning='[warn] stdout 全文超过 128KiB，已跳过「*=全文」输出变量；请改用 KEY=VALUE 或 JSON 路径截取所需字段';
+    const errLive=createLiveOutputState(); appendLiveOutput(errLive,'err',finalResult.stderr||''); appendLiveOutput(errLive,'err',(finalResult.stderr?'\n':'')+warning);
+    const errSnapshot=liveOutputSnapshot(errLive);
+    finalResult.stderr=errSnapshot.stderr; finalResult._stderrTruncated=!!finalResult._stderrTruncated||errSnapshot._stderrTruncated;
+  }
+  s._out=finalResult;
+  const varsOut=Object.assign({},probed.vars); rc.vars=Object.assign(rc.vars||{},varsOut);
+  applyOutVars(rc, sc.outVars, varsOut, probed.json, probed.fullText);   // 变量在流到达时提取；超大全文不驻留浏览器，仅保留 KEY=VALUE / JSON 路径结果
   archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
   if(res.code===0){ rc.nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; rcRender(rc); advance(rc,i+1); }
   else { rc.nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; rcRender(rc); finish(rc,'failed'); }
@@ -4688,6 +4862,7 @@ function retryFromStage(stageId){
   if(!rc || !rc.over) return;   // 仅「编排区展示的已结束运行」可重试（按钮也只在此态出现）
   const idx=rc.stages.findIndex(x=>x.id===stageId); if(idx<0) return;
   const n=rc.nodes[stageId]; if(!n || n.status!=='failed') return;
+  if(activeRuns.length>=MAX_ACTIVE_RUNS){ flashRunTip('当前已占满 '+MAX_ACTIVE_RUNS+' 个并发槽位，请等待一条运行结束后重试'); return; }
   if(conflictsActive(rc)){ flashRunTip('目标机器正被其他运行占用，暂不能重试（可等其完成后再试）'); return; }
   rc.vars=Object.assign({}, n.varsIn||{});
   rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;   // 清掉上次脚本输出与归档全量副本，避免重跑期间误显示/误归档旧日志
@@ -4757,14 +4932,13 @@ async function runPresetStep(rc, i){
   /* 流式回显与 runScriptStep 同一套（实时快照 s._out + AbortController 断开 + 服务端日志接管确认） */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
   const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,0,s.name) : null;   // 预设任务固定 00 号任务日志（文件名含任务名，互不冲突）
-  s._serverLogPending=!!logFile; s._serverLogFile=null; s._logArchived=false;
-  const live=createLiveOutputState(); let lastLive=0;
+  s._serverLogPending=!!logFile; s._serverLogExpectedFile=logFile; s._serverLogFile=null; s._logArchived=false;
+  const live=createLiveOutputState(); let lastLive=-Infinity;
   const res=await execScript(sc, 120000, null, rc, m=>{
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }
     appendLiveOutput(live,m.type,m.text);
-    s._out=liveOutputSnapshot(live,{code:null});   // 实时快照；归档与历史以最终结果为准
-    lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+    lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 高频小块只在刷新时点物化尾窗
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
@@ -4772,7 +4946,7 @@ async function runPresetStep(rc, i){
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;
-  s._out=res;
+  s._out=boundedExecutionResult(res);
   archiveStageLog(s, 0, rc);   // 预设任务回显即时归档（00 号任务日志，见 stageSeq）
   if(res.code===0){
     rc.nodes[s.id]={status:'success',progress:100,dur,sub:{}};
@@ -4810,13 +4984,28 @@ async function apiWriteParts(p,parts){
     const j=await r.json().catch(()=>null); if(!r.ok || (j && j.error)) throw new Error((j&&j.error)||('HTTP '+r.status));
   });
 }
+async function apiAppendParts(p,parts,append){
+  const body=new Blob((parts||[]).map(value=>String(value==null?'':value)),{type:'text/plain;charset=utf-8'});
+  const mode=append?'&mode=append':'';
+  const r=await fetch('/api/worktable/write-stream?path='+encodeURIComponent(p)+mode,{method:'POST',headers:{'Content-Type':'text/plain; charset=utf-8'},body:body});
+  const j=await r.json().catch(()=>null); if(!r.ok||(j&&j.error)) throw new Error((j&&j.error)||('HTTP '+r.status));
+}
+async function apiConcatFile(p,segments){
+  const r=await fetch('/api/worktable/concat-stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p,segments:segments||[]})});
+  const j=await r.json().catch(()=>null); if(!r.ok||(j&&j.error)) throw new Error((j&&j.error)||('HTTP '+r.status));
+}
 /* 按目录跟踪完整归档任务（含建目录），打开文件夹前等待落盘，避免切会话卸载页面打断请求。 */
 const archiveWrites=new Map();
+const archiveWriteErrors=new Map();   // 已落定失败与在途 Promise 分离；最多保留 100 个目录的最近错误
 function trackArchiveWrite(folder, task){
   let jobs=archiveWrites.get(folder);
   if(!jobs){ jobs=new Set(); archiveWrites.set(folder,jobs); }
   const job=Promise.resolve().then(task); jobs.add(job);
-  job.then(()=>{ jobs.delete(job); if(!jobs.size) archiveWrites.delete(folder); },()=>{});
+  const cleanup=()=>{ jobs.delete(job); if(!jobs.size&&archiveWrites.get(folder)===jobs) archiveWrites.delete(folder); };
+  job.then(cleanup,error=>{
+    cleanup(); archiveWriteErrors.delete(folder); archiveWriteErrors.set(folder,error);
+    while(archiveWriteErrors.size>100) archiveWriteErrors.delete(archiveWriteErrors.keys().next().value);
+  });
   return job;
 }
 async function waitArchiveWrites(folder){
@@ -4826,8 +5015,35 @@ async function waitArchiveWrites(folder){
     const failed=results.find(r=>r.status==='rejected');
     pending.forEach(job=>jobs.delete(job));
     if(!jobs.size && archiveWrites.get(folder)===jobs) archiveWrites.delete(folder);
-    if(failed) throw failed.reason;
+    if(failed){ archiveWriteErrors.delete(folder); throw failed.reason; }
   }
+  if(archiveWriteErrors.has(folder)){ const error=archiveWriteErrors.get(folder); archiveWriteErrors.delete(folder); throw error; }
+}
+function createClientStageLogSink(stage,ctx,seq,name){
+  const folder=archiveFolderFor(ctx); if(!folder) return null;
+  const file=folder+'/'+taskLogFile(ctx,seq,name);
+  stage._serverLogPending=true; stage._serverLogExpectedFile=file; stage._serverLogFile=null; stage._logArchived=false;
+  let tail=Promise.resolve(),first=true,failure=null,pendingCount=0,wroteAny=false;
+  return {
+    file,
+    append(value){
+      const text=String(value==null?'':value); if(!text) return tail;
+      const previous=tail,appendMode=!first; first=false;
+      pendingCount++; stage._serverLogPending=true;
+      const next=trackArchiveWrite(folder,async()=>{
+        await previous; if(failure) throw failure;
+        if(!appendMode) await ensureArchiveFolder(folder);
+        await apiAppendParts(file,[text],appendMode);
+      });
+      tail=next;
+      next.then(()=>{ wroteAny=true; pendingCount--; stage._serverLogPending=pendingCount>0; stage._serverLogFile=file; stage._logArchived=true; },error=>{
+        failure=error; pendingCount--; stage._serverLogPending=pendingCount>0; stage._serverLogFile=wroteAny?file:null; stage._logArchived=wroteAny;
+        console.warn('[archive] 轮询任务日志流式写入失败'+(wroteAny?'，已保留此前完整前缀':'，改用页面尾窗兜底')+':',error);
+      });
+      return next;
+    },
+    async flush(){ try{ await tail; return failure?(wroteAny?file:null):file; }catch(e){ return wroteAny?file:null; } },
+  };
 }
 /* 是否显式配置了归档根目录（留空=走保底，见 fallbackArchiveRoot） */
 function archiveConfigured(){ return !!(archiveDir||'').trim(); }
@@ -4886,7 +5102,7 @@ async function archiveEvaltokensReport(e, ctx, seq, stageName, runId){
     const report=await evaltokFetchReport(e,runId);
     await ensureArchiveFolder(folder);
     const file=folder+'/'+evaltokReportFile(ctx, seq, stageName, runId);
-    await apiWrite(file, report);
+    await apiWriteParts(file,[report]);   // HTML 可能接近 20MiB：走原始流，避免 JSON 转义再复制整份正文
     return file;
   });
 }
@@ -4903,7 +5119,15 @@ function archiveStageLog(stage, seq, ctx){
   let parts=[];
   /* URL 超大响应体的 _archiveOutputParts / 旧 _archiveStdout 由 buildLogParts 优先使用。 */
   try{ parts=buildLogParts(stage,ctx,n)||[]; }catch(e){}
-  archiveTaskLog(ctx, seq, stage.name, parts).catch(e=>{ stage._logArchived=false; console.warn('[archive] 阶段「'+stage.name+'」日志归档失败（不影响运行结果）:', e); });
+  const job=archiveTaskLog(ctx, seq, stage.name, parts); stage._logArchivePromise=job;
+  job.then(file=>{
+    if(stage._logArchivePromise===job) stage._logArchivePromise=null;
+    if(file){ stage._serverLogFile=file; stage._serverLogPending=false; stage._logArchived=true; }
+  },e=>{
+    if(stage._logArchivePromise===job) stage._logArchivePromise=null;
+    stage._logArchived=false; console.warn('[archive] 阶段「'+stage.name+'」日志归档失败（不影响运行结果）:', e);
+  });
+  return job;
 }
 function archiveRun(rc, result){
   const folder=archiveFolderFor(rc);
@@ -4920,6 +5144,7 @@ function archiveRun(rc, result){
     if(n.status==='idle' && !hasEcho) return;
     archiveStageLog(s, stageSeq(stages,idx), ctx);
   });
+  const pendingTaskWrites=Array.from(archiveWrites.get(folder)||[]);   // finalize 入队前快照，避免把自己纳入等待造成死锁
   const endTs=Date.now(), pipelineName=ctx.pipelineName||curPipeline().name;
   const ctxSnapshot=Object.assign({},ctx,{vars:Object.assign({},ctx.vars||{})});
   const stageSnapshots=stages.map(s=>{
@@ -4927,18 +5152,26 @@ function archiveRun(rc, result){
     return {stage:Object.assign({},s,{_out:s._out}),node:Object.assign({},runNodes[s.id]||{status:'idle'},{varsOut:Object.assign({},(runNodes[s.id]&&runNodes[s.id].varsOut)||{})}),reportState:state};
   });
   const finalizeWrite=trackArchiveWrite(folder, async()=>{
+    if(pendingTaskWrites.length) await Promise.allSettled(pendingTaskWrites);
     if(reportWrites.length) await Promise.allSettled(reportWrites);   // 报告及其阶段日志先落盘，归档脚本随后才能收集到完整目录
     await previousFinalize.catch(()=>{});
     if(ctx._archiveFinalizeGeneration!==finalizeGeneration) return false;   // 旧 finish 尚在等报告时又发生重试：只由最新 finish 写 canonical 汇总
     // 运行日志：等报告回调替换「归档中」后再生成；阶段/节点为 finish 时快照，不受后续重试或队列运行改写。
-    const logParts=[];
-    stageSnapshots.forEach(item=>{
+    /* exec-stream 在建目录/打开日志时可能尚未返回响应头；中止汇总仍引用请求发出前已知的预期路径。
+       /concat-stream 与 writer 共用路径锁，会等 [aborted] 写入并 close 后再读，避免页面尾窗覆盖全量日志。 */
+    const stageLogFiles=stageSnapshots.map((item,idx)=>item.reportState?.logFile||stages[idx]._serverLogFile||(stages[idx]._serverLogPending?stages[idx]._serverLogExpectedFile:null)||null);
+    const logSegments=[];
+    stageSnapshots.forEach((item,idx)=>{
       const s=item.stage, n=item.node;
-      appendArchivePart(logParts,'===== '+s.name+' ['+(n.status||'idle')+'] =====');
-      buildLogParts(s,ctxSnapshot,n).forEach(part=>appendArchivePart(logParts,part));
-      logParts.push('\n\n');
+      logSegments.push({text:'===== '+s.name+' ['+(n.status||'idle')+'] =====\n'});
+      if(stageLogFiles[idx]) logSegments.push({path:stageLogFiles[idx]});
+      else{
+        const fallback=[]; buildLogParts(s,ctxSnapshot,n).forEach(part=>appendArchivePart(fallback,part));
+        logSegments.push({text:fallback.join('')});
+      }
+      logSegments.push({text:'\n\n'});
     });
-    appendArchivePart(logParts,'[result] '+result);
+    logSegments.push({text:'[result] '+result+'\n'});
     // profiling：各阶段耗时/状态 + 总耗时等运行元数据
     const profile={
       pipeline: ctxSnapshot.pipelineName||null, tag: ctxSnapshot.tag, commit: ctxSnapshot.commit,
@@ -4949,13 +5182,13 @@ function archiveRun(rc, result){
       stages: stageSnapshots.map((item,idx)=>{
         const s=item.stage, n=item.node;
         const rec={ id:s.id, name:s.name, status:n.status||'idle', durSec:Math.round((n.dur||0)*10)/10, progress:Math.round(n.progress||0), script:(s.script&&s.script.name)||null, varsOut:n.varsOut||{} };
-        const logFile=item.reportState?item.reportState.logFile:(s._logArchived?folder+'/'+taskLogFile(ctxSnapshot, stageSeq(stages,idx), s.name):null);
+        const logFile=stageLogFiles[idx];
         if(logFile) rec.logFile=logFile;   // 本阶段独立回显日志（任务级归档）
         return rec;
       }),
     };
     await ensureArchiveFolder(folder);
-    await apiWriteParts(folder+'/run-'+ctxSnapshot.tag+'.log',logParts);
+    await apiConcatFile(folder+'/run-'+ctxSnapshot.tag+'.log',logSegments);
     await apiWrite(folder+'/run-'+ctxSnapshot.tag+'.profile.json', JSON.stringify(profile, null, 2));
     return true;
   });
@@ -5081,7 +5314,7 @@ async function taskPromCollect(rc, s, seq, startMs, endMs){
   const ps={enabled:true, modelName:substRunVars(DEFAULT_PIPELINE_PROM.modelName, rc).trim(), xdsNamespace:substRunVars(DEFAULT_PIPELINE_PROM.xdsNamespace, rc).trim()};   // 默认占位按采集时点解析（与手动补采一致）
   const env=buildPromCollectEnv({prom:ps, archive:(rc&&rc.archive)||''}, startMs, endMs);   // 时间段 + 数据源 + 模型/命名空间 + 归档目录
   env.METRICS_OUTPUT_DIR=dir;   // 任务级产物目录覆盖默认 metrics 子目录：{任务名}-{阶段序号}-普罗数据
-  const res=await execScript(sc, 0, env, rc, null, null, dir+'/collect.log');   // 与手动收集一致不设超时；输出落产物目录 collect.log（服务端建目录）
+  const res=await execScript(sc, 0, env, rc, function(){}, null, dir+'/collect.log');   // 强制走流式接口：完整输出直接落 collect.log，页面不接收一次性大 JSON
   if(!res || res.code!==0) console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据失败（exit '+(res&&res.code)+'，不影响流水线结果），输出见 '+dir+'/collect.log');
   else console.warn('[pipeline] 任务「'+s.name+'」普罗数据已收集 → '+dir);
 }
@@ -5094,12 +5327,34 @@ function taskPromFinalize(rc){
     taskPromCollect(rc, s, stageSeq(rc.stages,idx), s._promT0, Date.now()).catch(e=>console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据异常（不影响流水线结果）:', e));
   });
 }
-function pmcSay(text, cls){   // 追加文本到收集对话框日志区（cls: ''/ok/warn/err）
+function pmcResetLog(text){
   const log=$('pmcLog'); if(!log) return;
-  const span=document.createElement('span');
-  if(cls) span.className=cls;
-  span.textContent=text;
-  log.appendChild(span);
+  const value=String(text==null?'':text), limit=256*1024;
+  log.textContent=value.length>limit?value.slice(-limit):value;
+  log._pmcChars=log.textContent.length; log._pmcTruncated=value.length>limit;
+}
+function pmcSay(text, cls){   // 追加文本到收集对话框日志区（cls: ''/ok/warn/err）；总文本与节点同步限制为 256 KiB
+  const log=$('pmcLog'); if(!log) return;
+  const limit=256*1024,nodeLimit=1000; let value=String(text==null?'':text); if(!value) return;
+  if(value.length>=limit){ log.textContent=''; log._pmcChars=0; log._pmcTruncated=true; value=value.slice(-limit); }
+  let overflow=(Number(log._pmcChars)||0)+value.length-limit;
+  while(overflow>0 && log.firstChild){
+    const first=log.firstChild, size=String(first.textContent||'').length;
+    if(size<=overflow){ log.removeChild(first); log._pmcChars=Math.max(0,(Number(log._pmcChars)||0)-size); overflow-=size; }
+    else{ first.textContent=String(first.textContent||'').slice(overflow); log._pmcChars=Math.max(0,(Number(log._pmcChars)||0)-overflow); overflow=0; }
+    log._pmcTruncated=true;
+  }
+  const style=cls||'',last=log.lastChild;
+  if(last&&last._pmcClass===style&&String(last.textContent||'').length+value.length<=32*1024) last.textContent=String(last.textContent||'')+value;
+  else{
+    const span=document.createElement('span'); if(cls) span.className=cls;
+    span._pmcClass=style; span.textContent=value; log.appendChild(span);
+  }
+  log._pmcChars=(Number(log._pmcChars)||0)+value.length;
+  while(((log.children&&log.children.length)||0)>nodeLimit&&log.firstChild){
+    const first=log.firstChild,size=String(first.textContent||'').length; log.removeChild(first);
+    log._pmcChars=Math.max(0,(Number(log._pmcChars)||0)-size); log._pmcTruncated=true;
+  }
   log.scrollTop=log.scrollHeight;
 }
 /* 打开对话框时先检测该运行是否已收集过普罗数据：复用「打开归档目录」的助手脚本模式
@@ -5133,7 +5388,7 @@ async function pmcDetectExisting(ctx){
 function pmcShow(){
   const ctx=pmcContext();
   const dlg=$('pmcDialog'), meta=$('pmcMeta'), log=$('pmcLog');
-  log.textContent='配置收集脚本后点「收集」执行（输出实时回显）。'; log.style.color='';
+  pmcResetLog('配置收集脚本后点「收集」执行（输出实时回显）。'); log.style.color='';
   pmcCtxCurrent=ctx;
   if(!ctx){
     meta.textContent='⚠ 请先点击选择一条运行历史，或运行一条流水线后再收集。'; meta.style.color='var(--log-warn)';
@@ -5161,7 +5416,7 @@ async function pmcCollect(){
   if(!ctx || pmcRunning) return;
   const scName=(prom.collectScript||'').trim();
   const log=$('pmcLog');
-  log.textContent='';
+  pmcResetLog('');
   if(!scName){ pmcSay('✗ 未配置收集脚本：请在「设置 → 普罗数据服务配置 → 收集脚本」选用 scripts 目录中的脚本（如 collect_vllm_metrics.py）。\n','err'); return; }
   const sc=scriptByName(scName);
   if(!sc || !sc.path){ pmcSay('✗ 收集脚本「'+scName+'」未在 scripts 目录找到（已配置目录：'+(scriptsDir||'（未配置）')+'）。\n','err'); return; }

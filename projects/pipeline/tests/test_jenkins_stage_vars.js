@@ -82,7 +82,7 @@ const rc = {
 
 const context = {
   rc: rc,
-  JSON, URL, TextEncoder, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
+  JSON, URL, TextEncoder, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, Date, console,
   scriptsDir: "/tmp/scripts",
   jenkins: { url: "http://jk.local", user: "", token: "", mode: "local" },
   // 视图层全局（与引擎同文件但在被测切片之外）：按真实语义给轻量桩
@@ -102,6 +102,8 @@ const context = {
   renderFlow: () => {},
   renderDetail: () => {},
   archiveStageLog: () => {},
+  createClientStageLogSink: () => null,
+  readBrowserResponseText: async response => response.text(),
   stageSeq: (stg, i) => i + 1,
   advance: (rc_, i) => { advancedTo = i; },
   finish: (rc_, s) => { finishedWith = s; },
@@ -125,6 +127,7 @@ ${source.slice(s3, e3)}`,
 );
 const realJkGetProgressiveText = context.jkGetProgressiveText;
 const realJkReadConsoleDelta = context.jkReadConsoleDelta;
+const realJkTriggerGet = context.jkTriggerGet;
 // HTTP/Jenkins 请求在切片内有真实实现，eval 后替换为桩，只隔离外部 Jenkins 服务
 context.jkTriggerBuild = async (job, params) => { triggerCalls.push({ job, params }); return true; };
 context.jkGetText = async () => 'build log line\n{"NEW_KEY":"new-value","COUNT":2}\ntrailer';
@@ -149,6 +152,17 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   const normalizedDelta = await realJkGetProgressiveText("/job/a/7/", 0);
   context.fetch = savedFetch;
   if (normalizedDelta.next !== 4 || normalizedDelta.text !== "a\r\nb\r\n") throw new Error("必须信任 Jenkins 原始日志 offset，不得按 CRLF 响应长度推进");
+
+  // HTTP/Jenkins 阶段的 AbortSignal 必须一路传到底层 fetch，才能中断卡住的网络请求。
+  const requestController = new AbortController();
+  let requestSignal = null;
+  context.fetch = async (_url, init) => {
+    requestSignal = init && init.signal;
+    return { ok: true, status: 200, text: async () => "ok" };
+  };
+  await realJkTriggerGet("http://jk.local/hooks/test", requestController.signal);
+  context.fetch = savedFetch;
+  if (requestSignal !== requestController.signal) throw new Error("HTTP 触发请求未透传 AbortSignal");
   const savedProgressive = context.jkGetProgressiveText;
   const savedGetText = context.jkGetText;
   let fallbackPath = "";
@@ -227,11 +241,11 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   if (advancedTo !== 2) throw new Error("URL 阶段成功后应推进到下一阶段，得到 " + JSON.stringify(advancedTo));
   console.log("PASS: HTTP URL 支持 {GIT_BRANCH} 等占位符（运行时替换并 URL 编码）");
 
-  // ⑤ Jenkins 大量控制台输出：按服务端 offset 增量读取；运行中回显有界，但中止归档可见完整分片
-  const heavy = { id: "st-heavy", name: "Jenkins 大日志", kind: "http", url: { url: "job-heavy", outVars: "" } };
+  // ⑤ Jenkins 大量控制台输出：按服务端 offset 增量读取；运行中、终态与中止兜底都只保留有界尾窗
+  const heavy = { id: "st-heavy", name: "Jenkins 大日志", kind: "http", url: { url: "job-heavy", outVars: "HEAVY_EARLY=EARLY_KEY" } };
   stages.push(heavy);
   const consoleChunks = [
-    "EARLY-LINE\n" + "a".repeat(410 * 1024) + "\n",
+    "EARLY_KEY=kept\n" + "a".repeat(410 * 1024) + "\n",
     "MIDDLE-LINE\n" + "b".repeat(410 * 1024) + "\n",
     "LATE-LINE\n" + "c".repeat(410 * 1024) + "\n",
   ];
@@ -265,9 +279,47 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
     throw new Error("Jenkins progressiveText offset 不连续，得到 " + JSON.stringify(requestedStarts));
   }
   if (maxLiveChars > 256 * 1024) throw new Error("Jenkins 实时快照不得累积全量控制台日志，峰值=" + maxLiveChars);
-  if (!liveArchiveText.includes("EARLY-LINE") || !liveArchiveText.includes("LATE-LINE")) {
-    throw new Error("运行中止归档必须能取得实时回显之外的完整早期/末尾日志");
+  if (liveArchiveText.length > 256 * 1024 || !liveArchiveText.includes("c".repeat(1024))) {
+    throw new Error("运行中止归档兜底必须只保留有界末尾日志");
   }
-  if (!heavy._out.stdout.includes(heavyConsole)) throw new Error("Jenkins 阶段结束后必须保留完整日志");
-  console.log("PASS: Jenkins 大日志按 offset 增量读取，实时快照有界且中止/终态全文保留");
+  if (heavy._out.stdout.length > 256 * 1024 || !heavy._out.stdout.includes("c".repeat(1024))) throw new Error("Jenkins 阶段结束后必须只保留有界尾窗");
+  if (rc.vars.HEAVY_EARLY !== "kept") throw new Error("已滑出尾窗的早期 Jenkins 输出变量必须由增量探针保留");
+  console.log("PASS: Jenkins 大日志按 offset 增量读取，实时/中止/终态内存均有界且保留早期变量");
+
+  // ⑥ 单次 progressiveText 超过读取上限时，禁用后续控制台拉取，避免每轮重复下载同一份超大响应。
+  const oversized = { id: "st-oversized", name: "Jenkins 超大单块日志", kind: "http", url: { url: "job-oversized", outVars: "" } };
+  stages.push(oversized);
+  let oversizedReads = 0;
+  buildPolls = 0;
+  context.jkFetchJson = async (_j, url) => {
+    if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
+    buildPolls += 1;
+    return { number: 7, building: false, result: "SUCCESS", duration: 1 };
+  };
+  context.jkGetProgressiveText = async () => {
+    oversizedReads += 1;
+    throw new Error("响应正文过大（上限 20971520 字节）");
+  };
+  await context.runUrlStep(rc, 3);
+  if (oversizedReads !== 1) throw new Error("超限后应停止重复拉取 Jenkins 控制台，实际请求次数=" + oversizedReads);
+  if (rc.nodes[oversized.id].status !== "success") throw new Error("控制台日志超限不应改写 Jenkins 任务终态");
+  if (!/控制台读取失败.*日志可能不完整/.test(oversized._out.stdout)) throw new Error("控制台日志不完整必须给出可见告警");
+  console.log("PASS: Jenkins 控制台单块超限后停止重复下载并显示日志不完整告警");
+
+  // 阶段 deadline 从 runUrlStep 启动即生效，不能等触发请求完成后才开始计时。
+  const timeoutStage = { id: "st-timeout", name: "HTTP 卡住", kind: "http", timeout: 1, url: { url: "http://jk.local/hooks/slow", outVars: "" } };
+  stages.push(timeoutStage);
+  let timeoutSignal = null;
+  context.jkTriggerGet = async (_url, signal) => {
+    timeoutSignal = signal;
+    if (!signal || !signal.aborted) throw new Error("stage deadline was not active before trigger");
+    const error = new Error("aborted"); error.name = "AbortError"; throw error;
+  };
+  await context.runUrlStep(rc, 4);
+  if (!timeoutSignal || !timeoutSignal.aborted) throw new Error("阶段超时未取消仍在等待的触发请求");
+  if (rc.nodes[timeoutStage.id].status !== "failed" || !/超时/.test(timeoutStage._out.stderr)) {
+    throw new Error("阶段超时应以明确错误结束，得到 " + JSON.stringify(timeoutStage._out));
+  }
+  if (rc.scriptAbort !== null) throw new Error("HTTP 阶段结束后必须释放 AbortController");
+  console.log("PASS: HTTP/Jenkins 阶段 deadline 覆盖触发前请求并可取消底层 fetch");
 })().catch((e) => { console.error(e); process.exit(1); });
