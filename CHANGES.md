@@ -1,5 +1,10 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线「执行人」缺省取 dsh 登录用户（`projects/pipeline/pipeline.html`）：本地无执行人记录
+  （首次使用或清过浏览器数据）时，自动以 dsh-auth-gate `/auth/status` 当前登录用户名填充主控
+  「执行人」输入框，定时计划与 API 请求体沿用同一取值随之获得默认；token 共享模式（username 为空）、
+  未登录或探测失败保持留空走原有「必填」拦截。localStorage 已保存值、导入恢复值与等待探测期间的
+  手动输入均优先、不覆盖。新增 `tests/test_executor_auth_default.js` 覆盖填充、裁剪、不覆盖与失败兜底。
 - 流水线大量日志 / 长时间任务二次性能加固（`projects/pipeline/pipeline.html` + `src/index.ts`）：
   浏览器实时输出由反复拼接字符串改为 256 KiB 分片尾窗，脚本、预设任务、Jenkins、HTTP 与 EvalTokens
   的终态也只保留尾窗；完整日志由服务端边执行边落盘，Jenkins / HTTP / EvalTokens 轮询日志通过
