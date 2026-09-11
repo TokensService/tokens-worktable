@@ -295,7 +295,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
           <span id="detailBadge"></span>
-          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：关闭侧边会话窗，在本页所在窗格新开以归档目录为根的文件浏览窗（资源管理器标签，同目录复用同标签），保持当前页面与会话、不新建会话（需要 AI 分析时用运行历史标题行的分析按钮）；工作台分栏未打开时回退 better-sidebar 侧边栏「文件」面板，再不可用回退 DSH 服务端系统文件管理器。目录选取：运行中取当前运行的归档文件夹；未运行时取运行历史选中行（点击历史行即刷新目标），未选中则提示先选择一条运行历史（不再回退打开归档根目录）。目标目录不存在时（历史归档已清理等）回退打开其父目录（归档根），连归档根都不存在才报「目录不存在」。">📂 打开归档目录</button>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：经 dsh-better-sidebar 侧边窗打开（文件夹窗口，文件树以归档目录为根），同时关闭侧边会话窗（聊天列）让出空间，保持当前页面与会话、不新建会话（需要 AI 分析时用运行历史标题行的分析按钮）；未装该插件或桥不可用时回退到 DSH 服务端系统文件管理器（回退路径不关会话窗）。目录选取：运行中取当前运行的归档文件夹；未运行时取运行历史选中行（点击历史行即刷新目标），未选中则提示先选择一条运行历史（不再回退打开归档根目录）。目标目录不存在时（历史归档已清理等）回退打开其父目录（归档根），连归档根都不存在才报「目录不存在」。">📂 打开归档目录</button>
         </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
@@ -5838,17 +5838,17 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
   if(!records.length){ alert('请先勾选一至两条运行历史，或点击一行进入回放。'); return; }
   createAnalysisChat(b.getAttribute('data-ract'), records);
 }));
-/* 「📂 打开归档目录」：优先经工作台分栏桥 __dshOpenFolderInExplorer 打开——关闭侧边会话窗，
-   在本页所在窗格新开一个以归档目录为根的资源管理器标签（文件浏览窗，同目录复用同标签）。
-   工作台分栏未打开（独立访问页面等、桥不可用）时回退 dsh-better-sidebar 侧边栏「文件」面板
-   （__dshOpenFolderInSidebar，文件夹窗口）；再不可用回退服务端系统文件管理器（xdg-open/gio/open 依次探测）。
-   保持当前页面与会话，避免新建会话的预设/模型查询和切换后的重复目录加载；需要 AI 分析时使用运行历史的分析按钮。
+/* 「📂 打开归档目录」：经 dsh-better-sidebar 侧边窗打开归档目录（__dshOpenFolderInSidebar
+   桥由工作台插件暴露，开一个以归档目录为根的文件夹窗口）；打开成功后经 __dshCloseSideChat 桥
+   关闭工作台侧边会话窗（聊天列）让出屏幕空间。未装 better-sidebar 或桥不可用时回退到
+   服务端系统文件管理器（xdg-open/gio/open 依次探测，该回退路径不关会话窗）。保持当前页面与会话，
+   避免新建会话的预设/模型查询和切换后的重复目录加载；需要 AI 分析时使用运行历史的分析按钮。
    目录选取（archiveTargetFolder）：运行中取当前运行的归档文件夹（页面展示的是实时运行）；
    否则取运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）。
    未运行且未选中历史行时不回退（不再打开最近一次运行或归档根目录），返回 null，
    由 openArchiveFolder 提示先选择一条运行历史。
    目标目录不存在时（历史归档已清理、归档路径改过等）回退打开其父目录（归档根）：
-   文件浏览窗/侧边栏路径由 resolveExistingFolder 预检后回退（此前不预检，会以不存在目录为根开出空文件树）；
+   侧边栏路径由 resolveExistingFolder 预检后回退（此前不预检，会以不存在目录为根开出空文件树）；
    系统文件管理器路径下助手脚本同样回退到父目录，并把实际打开的目录回显在 stdout 供页面提示；
    连归档根都不存在才报「目录不存在」。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
@@ -5905,22 +5905,19 @@ async function openArchiveFolder(){
   say('正在等待日志落盘并打开目录…');
   try{ await waitArchiveWrites(folder); }
   catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
-  const res=await resolveExistingFolder(folder);   // 预检：不存在则回退归档根，避免文件浏览窗以不存在目录为根开出空文件树
+  const res=await resolveExistingFolder(folder);   // 预检：不存在则回退归档根，避免侧边栏以不存在目录为根开出空文件树
   if(!res.folder){ say('✗ 目录不存在（含归档根目录）：'+folder,'var(--log-err)'); return; }
   const target=res.folder;
   const ok=(m)=>res.fellBack ? say('✓ 目标目录不存在，已回退打开 '+target,'var(--log-warn)') : say(m,'var(--log-ok)');
   const P=window.parent;
-  // 工作台分栏：关闭侧边会话窗，在本页所在窗格打开以归档目录为根的文件浏览窗（资源管理器标签）。
+  // 经 dsh-better-sidebar 侧边窗打开归档目录；成功后关闭工作台侧边会话窗（聊天列）让出空间。
   // 保留本页与执行上下文；不再为浏览目录创建会话。
-  if(P && typeof P.__dshOpenFolderInExplorer==='function'){
-    try{
-      if(P.__dshOpenFolderInExplorer(target, window.location?window.location.pathname:'')){ ok('✓ 已在文件浏览窗打开 '+target); return; }
-    }catch(e){}
-  }
-  // 回退：工作台分栏未打开（独立访问页面等）时经 better-sidebar 侧边栏「文件」面板打开。
   if(P && typeof P.__dshOpenFolderInSidebar==='function'){
     try{
-      if(P.__dshOpenFolderInSidebar(target)){ ok('✓ 已在侧边栏打开 '+target); return; }
+      if(P.__dshOpenFolderInSidebar(target)){
+        try{ if(typeof P.__dshCloseSideChat==='function') P.__dshCloseSideChat(); }catch(e){}
+        ok('✓ 已在侧边栏打开 '+target); return;
+      }
     }catch(e){}
   }
   say('正在打开服务端文件管理器…');
