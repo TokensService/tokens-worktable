@@ -76,7 +76,7 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
   assert.equal(s.data.version,1);
   assert.ok(typeof s.data.exportedAt==='string' && s.data.exportedAt.length>0);
   assert.equal(s.data.config.repositories[0].pass,'tk');
-  assert.deepEqual(J(s.data.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',by:'lhf',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20});
+  assert.deepEqual(J(s.data.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20},'执行人不再随配置导出（只读，固定取当前登录用户）');
   assert.match(p.name,/^pipeline-pipelines-\d{8}-\d{6}\.json$/);
   assert.equal(p.data.kind,'pipeline-pipelines');
   assert.equal(p.data.pipelines.length,2);
@@ -176,7 +176,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   assert.deepEqual(J(ctx.schedEnvIds),['env-dev']);
   assert.equal(els.branchName.value,'main');
   assert.equal(els.deployStrategyName.value,'arch-b');
-  assert.equal(els.triggeredBy.value,'alice');
+  assert.ok(!els.triggeredBy || !els.triggeredBy.value,'旧导出文件里的执行人（by）不再恢复：执行人只读、固定取当前登录用户');
   assert.deepEqual(J(ctx.histFilter),{kw:'err',status:'fail',pipeline:'A'});
   assert.equal(els.histFilterKw.value,'err');
   assert.equal(ctx.histPageSize,50);
