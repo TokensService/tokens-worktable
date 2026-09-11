@@ -2056,14 +2056,14 @@ async function testProm(){
 
 /* ---------- Jenkins：拉取任务列表（本地直连 / 远程走 proxy，复用连接模式） ---------- */
 /* 模式自适应取 JSON：本地模式浏览器直连；远程模式经 DSH 服务端 /api/worktable/proxy 代连 */
-async function jkFetchJson(j, url){
+async function jkFetchJson(j, url, signal){
   const auth = (j.user || j.token) ? { Authorization: 'Basic ' + btoa(j.user + ':' + j.token) } : {};
   if (j.mode === 'local') {
-    const r = await fetch(url, { headers: auth, cache: 'no-store' });
+    const r = await fetch(url, { headers: auth, cache: 'no-store', signal:signal });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }
-  const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, method:'GET', headers: auth }) });
+  const r = await fetch('/api/worktable/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url, method:'GET', headers: auth }), signal:signal });
   const p = await r.json();
   if (p && p.error) throw new Error(p.error);
   if ((p.status||0) !== 200) throw new Error('HTTP ' + (p.status||0));
@@ -2953,6 +2953,9 @@ function pipelineStageGroups(stages){
   }
   return groups;
 }
+function pipelineStageGroupAt(stages,index){
+  return pipelineStageGroups(stages).find(group=>index>=group.start&&index<group.end)||null;
+}
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
@@ -3753,9 +3756,28 @@ function createParallelStageContext(parent,index,varsSnapshot){
   child.parallelPromise=new Promise(resolve=>{ child.parallelResolve=resolve; });
   return child;
 }
+function cancelParallelStage(child,reason){
+  if(!child || !child.parallelParent || child.parallelSettled) return;
+  child.over=true;
+  if(child.scriptAbort){ try{ child.scriptAbort.abort(); }catch(e){} }
+  if(child.timer){ clearInterval(child.timer); child.timer=null; }
+  const stage=child.stages[child.parallelIndex], node=stage&&child.nodes[stage.id];
+  if(stage && node && node.status==='running'){
+    archiveStageLog(stage,stageSeq(child.stages,child.parallelIndex),child);
+    child.nodes[stage.id]={status:'aborted',progress:node.progress||0,dur:node.dur||0,sub:{},script:node.script,varsIn:node.varsIn||{},varsOut:node.varsOut||{}};
+  }
+  settleParallelStage(child,reason||'aborted');
+}
+function cancelParallelGroup(parent,exceptChild){
+  const active=parent&&parent.parallelGroup;
+  if(!active) return;
+  active.children.forEach(child=>{ if(child!==exceptChild) cancelParallelStage(child,'aborted'); });
+}
 function settleParallelStage(child,status){
   if(!child || !child.parallelParent || child.parallelSettled) return;
   child.parallelSettled=true; child.parallelStatus=status;
+  const parent=child.parallelParent, active=parent.parallelGroup;
+  if(status==='failed' && active && active.children.indexOf(child)>=0 && !active.failed){ active.failed=true; cancelParallelGroup(parent,child); }
   if(child.parallelResolve) child.parallelResolve(status);
 }
 function runParallelStageGroup(parent,group){
@@ -3767,14 +3789,14 @@ function runParallelStageGroup(parent,group){
   children.forEach(child=>startStageAt(child,child.parallelIndex));
   active.promise=Promise.all(children.map(child=>child.parallelPromise)).then(statuses=>{
     if(parent.over || parent.parallelGroup!==active) return;
-    children.forEach((child,offset)=>{
-      if(statuses[offset]!=='success') return;
+    const succeeded=!active.failed&&statuses.every(status=>status==='success');
+    if(succeeded) children.forEach(child=>{
       const stage=parent.stages[child.parallelIndex], node=parent.nodes[stage.id];
       if(node && node.varsOut) Object.assign(parent.vars,node.varsOut);
     });
     parent.parallelGroup=null;
     taskPromFinalize(parent);
-    if(statuses.every(status=>status==='success')) advance(parent,group.end);
+    if(succeeded) advance(parent,group.end);
     else finish(parent,'failed');
   });
   return active.promise;
@@ -4137,64 +4159,64 @@ function jkJobRef(job, vars){
    Jenkins 触发构建必须 POST（GET 会返回 405 Method Not Allowed）。
    参数放在 form-urlencoded 请求体中（等价于旧版 query 传参）；
    CSRF 防护开启时需带 crumb——先经 crumbIssuer 尝试获取（API token 认证通常豁免，拿不到则直接 POST）。 */
-async function jkFetchCrumb(j, auth){
+async function jkFetchCrumb(j, auth, signal){
   const url=(j.url||'').replace(/\/+$/,'')+'/crumbIssuer/api/json';
   try{
     if(j.mode==='remote'){
-      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth}),signal:signal});
       const p=await r.json(); if(p&&p.error) return null;
       if((p.status||0)!==200) return null;
       const c=JSON.parse(p.body||'{}'); if(c&&c.crumbRequestField&&c.crumb){ const h={}; h[c.crumbRequestField]=c.crumb; return h; }
       return null;
     }
-    const r=await fetch(url,{headers:auth,cache:'no-store'});
+    const r=await fetch(url,{headers:auth,cache:'no-store',signal:signal});
     if(!r.ok) return null;
     const c=await r.json(); if(c&&c.crumbRequestField&&c.crumb){ const h={}; h[c.crumbRequestField]=c.crumb; return h; }
   }catch(e){}
   return null;
 }
 /* jobPath 为已解析的任务路径（fullName 经 jkJobPath / URL 经 jkJobRef 得到，占位符已替换） */
-async function jkTriggerBuild(jobPath, params){
+async function jkTriggerBuild(jobPath, params, signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   const url=base+jobPath+'buildWithParameters';
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
-  const crumb=await jkFetchCrumb(j, auth);
+  const crumb=await jkFetchCrumb(j, auth, signal);
   const headers=Object.assign({}, auth, crumb||{}, {'Content-Type':'application/x-www-form-urlencoded'});
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400 && (p.status||0)!==302 && (p.status||0)!==303) throw new Error('HTTP '+(p.status||0));
     return true;
   }
-  const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store'});
+  const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store',signal:signal});
   if(!r.ok && r.status!==302 && r.status!==303) throw new Error('HTTP '+r.status);
   return true;
 }
 /* 任务 URL 触发：{VAR} 占位符替换后直接 GET 完整地址（等价 curl——此类 URL 本身就是 GET 触发的接口地址）。
    URL 视为自包含：不拼 buildWithParameters、不带 crumb、不附加「Jenkins 服务配置」的用户名/令牌（鉴权信息如
    token 由 URL 自带）；连接模式仍生效：本地=浏览器直连（需 CORS/同源），远程=经 /api/worktable/proxy 代连。 */
-async function jkTriggerGet(url){
+async function jkTriggerGet(url, signal){
   const j=jenkins;
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400) throw new Error('HTTP '+(p.status||0));
     return typeof p.body==='string'?p.body:'';   // 返回响应体：runUrlStep 喂给 parseStageVars 解析产物
   }
-  const r=await fetch(url,{cache:'no-store'});
+  const r=await fetch(url,{cache:'no-store',signal:signal});
   if(!r.ok) throw new Error('HTTP '+r.status);
   try{ return await r.text(); }catch(e){ return ''; }   // 跨域无 CORS 读不到体时不阻断触发成功
 }
-async function jkGetText(path){
+async function jkGetText(path, signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const url=base+path;
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error); return p.body||'';
   }
-  const r=await fetch(url,{headers:auth,cache:'no-store'}); return r.text();
+  const r=await fetch(url,{headers:auth,cache:'no-store',signal:signal}); return r.text();
 }
 function jkHeaderValue(headers,name){
   if(!headers) return '';
@@ -4206,18 +4228,18 @@ function jkHeaderValue(headers,name){
 /* Jenkins 官方 progressiveText 接口按服务端 offset 只返回新增控制台内容。
    404/405 或读不到 X-Text-Size（如 CORS 未 expose 响应头）时降级到 consoleText；不能按响应体长度
    猜 offset，因为 Jenkins 会把原始 LF 规范化成 CRLF 后再返回，而头里的 offset 仍指向原始日志。 */
-async function jkGetProgressiveText(buildPath,start){
+async function jkGetProgressiveText(buildPath,start,signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const path=String(buildPath||'').replace(/\/+$/,'')+'/logText/progressiveText?start='+encodeURIComponent(String(start||0));
   const url=base+path;
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
   let status=0, headers=null, text='';
   if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth})});
+    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET',headers:auth}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     status=Number(p&&p.status)||0; headers=p&&p.headers; text=String((p&&p.body)||'');
   }else{
-    const r=await fetch(url,{headers:auth,cache:'no-store'});
+    const r=await fetch(url,{headers:auth,cache:'no-store',signal:signal});
     status=r.status; headers=r.headers; text=await r.text();
   }
   if(status===404||status===405) return null;
@@ -4227,19 +4249,34 @@ async function jkGetProgressiveText(buildPath,start){
   if(!Number.isFinite(rawNext)||rawNext<start||(text&&rawNext===start)) return null;
   return {text:text,next:rawNext};
 }
-async function jkReadConsoleDelta(buildPath,start,useProgressive){
+async function jkReadConsoleDelta(buildPath,start,useProgressive,signal){
   if(useProgressive){
-    const delta=await jkGetProgressiveText(buildPath,start);
+    const delta=await jkGetProgressiveText(buildPath,start,signal);
     if(delta) return {text:delta.text||'',next:delta.next,progressive:true};
   }
-  const full=await jkGetText(String(buildPath||'').replace(/\/+$/,'')+'/consoleText');
+  const full=await jkGetText(String(buildPath||'').replace(/\/+$/,'')+'/consoleText',signal);
   return {text:full.length>start?full.slice(start):'',next:full.length,progressive:false};
+}
+function abortablePipelineDelay(ms,signal){
+  return new Promise(function(resolve,reject){
+    let timer=null,done=false;
+    const cleanup=function(){ if(signal) signal.removeEventListener('abort',abort); };
+    const finish=function(){ if(done) return; done=true; cleanup(); resolve(); };
+    const abort=function(){
+      if(done) return; done=true; if(timer!==null) clearTimeout(timer); cleanup();
+      const error=new Error('aborted'); error.name='AbortError'; reject(error);
+    };
+    if(signal&&signal.aborted){ abort(); return; }
+    timer=setTimeout(finish,Math.max(0,Number(ms)||0));
+    if(signal) signal.addEventListener('abort',abort,{once:true});
+  });
 }
 async function runUrlStep(rc, i){
   const stg=rc.stages; const s=stg[i];
   const raw=stageUrlOf(s);   // 兼容旧数据 kind:'url'/'jenkins' / jenkins.job（见 stageUrlOf）
   const outSpec=(s.url&&s.url.outVars)||(s.jenkins&&s.jenkins.outVars)||'';
   const tk=rc.token;
+  const ctrl=typeof AbortController==='function'?new AbortController():{signal:undefined,abort:function(){}}; rc.scriptAbort=ctrl;
   const varsIn=Object.assign({},rc.vars||{});
   rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
   runSetSel(rc,s.id); rcRender(rc,true);
@@ -4282,29 +4319,32 @@ async function runUrlStep(rc, i){
     if(isUrl) appendLiveLog(log,'# trigger url: '+jkSubstUrl(raw, vars));
     s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     let preNum=null;
-    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber'); preNum=info.nextBuildNumber; appendLiveLog(log,'# nextBuildNumber='+preNum); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc); }catch(e){ appendLiveLog(log,'# (无法获取 nextBuildNumber: '+e.message+')'); } }
+    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber',ctrl.signal); preNum=info.nextBuildNumber; appendLiveLog(log,'# nextBuildNumber='+preNum); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc); }catch(e){ appendLiveLog(log,'# (无法获取 nextBuildNumber: '+e.message+')'); } }
+    if(rc.over||rc.token!==tk) return;
     let triggerBody='';
-    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars)); }
-    else{ await jkTriggerBuild(jobPath, vars); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars),ctrl.signal); }
+    else{ await jkTriggerBuild(jobPath, vars,ctrl.signal); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    if(rc.over||rc.token!==tk) return;
     appendLiveLog(log,'# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     const deadline=s.timeout?t0+s.timeout*1000:0;   // 阶段超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时，轮询直到出结果
     let result=null, buildNum=null, building=true;
     let consoleRead=0, consoleStarted=false, consoleProgressive=true, lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
     while(pollable && (!deadline || Date.now()<deadline) && (building||buildNum==null)){
-      await new Promise(function(r){ setTimeout(r,2000); });
+      await abortablePipelineDelay(2000,ctrl.signal);
       if(rc.over||rc.token!==tk) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
       try{
         const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
-        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration');
+        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration',ctrl.signal);
         if(buildNum==null && info.number && (preNum==null || info.number>=preNum)) buildNum=info.number;
         if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
       }catch(e){ }
+      if(rc.over||rc.token!==tk) return;
       /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
          404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
       if(buildNum!=null){
         try{
-          const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive);
+          const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal);
           consoleRead=delta.next; consoleProgressive=delta.progressive;
           if(delta.text){
             if(!consoleStarted){ consoleStarted=true; appendLiveLog(log,''); }
@@ -4314,12 +4354,13 @@ async function runUrlStep(rc, i){
           }
         }catch(e){ }
       }
+      if(rc.over||rc.token!==tk) return;
       const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
     }
     if(rc.over||rc.token!==tk) return;   // 先验令牌再动本运行 timer（中止已由 finish 清过）
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     let consoleText='', bodyFull='';
-    if(buildNum!=null){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive); consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){} }
+    if(buildNum!=null){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal); consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){} }
     else if(triggerBody){
       /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 规整成单行
          （与脚本阶段「单行 JSON 对象」规则一致，数组响应同样规整，供输出变量 JSON 路径取值）。
@@ -4361,6 +4402,8 @@ async function runUrlStep(rc, i){
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
     rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
     rcRender(rc); finish(rc,'failed');
+  }finally{
+    if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   }
 }
 /* ---------- EvalTokens 任务运行阶段：启动新 run 并等待终态（本地直连 / 远程走 proxy；复用「设置」页 EvalTokens 服务配置 + Bearer 令牌） ----------
@@ -4769,20 +4812,34 @@ function skipStage(rc, i){
 function retryFromStage(stageId){
   const rc=viewRc;
   if(!rc || !rc.over) return;   // 仅「编排区展示的已结束运行」可重试（按钮也只在此态出现）
-  const idx=rc.stages.findIndex(x=>x.id===stageId); if(idx<0) return;
-  const n=rc.nodes[stageId]; if(!n || n.status!=='failed') return;
+  const clickedIdx=rc.stages.findIndex(x=>x.id===stageId); if(clickedIdx<0) return;
+  const failedNode=rc.nodes[stageId]; if(!failedNode || failedNode.status!=='failed') return;
   if(conflictsActive(rc)){ flashRunTip('目标机器正被其他运行占用，暂不能重试（可等其完成后再试）'); return; }
-  rc.vars=Object.assign({}, n.varsIn||{});
-  rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;   // 清掉上次脚本输出与归档全量副本，避免重跑期间误显示/误归档旧日志
-  for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; rc.stages[j]._promT0=null; rc.stages[j]._promCollected=false; if(j>idx) rc.stages[j]._archiveStdout=null; const m=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived/_promCollected 复位：重跑完成的阶段会重写其归档日志、重新触发任务级普罗采集（见 taskPromFinalize）
+  const group=pipelineStageGroupAt(rc.stages,clickedIdx);
+  const retryGroup=!!(group&&group.parallel&&group.end-group.start>1), idx=retryGroup?group.start:clickedIdx;
+  const entryNode=rc.nodes[rc.stages[idx].id];
+  rc.vars=Object.assign({},(entryNode&&entryNode.varsIn)||{});
+  if(retryGroup){
+    for(let j=idx;j<rc.stages.length;j++){
+      const stage=rc.stages[j], oldNode=rc.nodes[stage.id];
+      stage._out=null; stage._archiveStdout=null; stage._archiveOutputParts=null;
+      stage._logArchived=false; stage._serverLogPending=false; stage._serverLogFile=null;
+      stage._promT0=null; stage._promCollected=false;
+      rc.nodes[stage.id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}};
+    }
+  }else{
+    rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;
+    for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; rc.stages[j]._promT0=null; rc.stages[j]._promCollected=false; if(j>idx) rc.stages[j]._archiveStdout=null; const oldNode=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}}; }
+  }   // 并行组重试清空整组及下游运行态；串行阶段保持原有重试清理范围
   rc.over=false;
   activeRuns.push(rc); syncRunState();
   $('stopBtn').disabled=false;
   rcOverall(rc,'运行中…（重试）','dshell-badgeWait');
-  runSetSel(rc,stageId); rcRender(rc);
+  runSetSel(rc,rc.stages[idx].id); rcRender(rc);
   advance(rc,idx);
 }
 function finish(rc, result){
+  if(rc&&rc.parallelParent){ settleParallelStage(rc,result); return; }
   rc.over=true;
   try{ taskPromFinalize(rc); }catch(e){ console.warn('[pipeline] 任务级普罗采集触发异常（已兜底，不阻断收尾）:', e); }   // 失败阶段（成功路径已在 advance 触发）勾选「收集普罗数据」时按任务起止采集
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
@@ -6094,6 +6151,7 @@ $('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false)
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
 function abortRun(rc){
   if(!rc || rc.over) return;
+  cancelParallelGroup(rc);   // 并行子上下文各自持有取消器/计时器，先全部终止再按父运行统一记一次中止历史
   if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   // 中止兜底：先把被中断任务（含预设任务）的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
