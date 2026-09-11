@@ -18,9 +18,14 @@ grep -q '/opt/op_test/xds_template/k8s/xds-cluster' "$script"
 grep -q '/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml' "$script"
 grep -q '/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json' "$script"
 grep -Fq 'TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"' "$script"
-if grep -Eq 'sshpass|ssh |TARGET_HOSTS|command -v (ctr|docker)|ctr --namespace|docker (image|create|cp|rm)' "$script"; then
-  echo 'pull and template export must run locally without remote or runtime fallbacks' >&2
+if grep -Eq 'docker (image|create|cp|rm)' "$script"; then
+  echo 'pull and template export must not fall back to docker' >&2
   exit 1
 fi
+
+grep -Fq 'pull_target_images "$IMAGE"' "$script"
+grep -Fq 'TARGET_NODE_IP_MAP' "$script"
+grep -Fq 'ctr_cmd=(ctr)' "$script"
+grep -Fq 'images ls -q' "$script"
 
 echo "pull runtime-selection tests passed"

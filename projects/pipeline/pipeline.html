@@ -431,6 +431,7 @@
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
         <input id="envIp" class="dshell-input" placeholder="IP 或 IP:端口（如 192.168.1.20 / 115.33.98.101:2222）" title="可填纯 IP（默认 22 端口），也可「IP:端口」指定 SSH 端口（如 115.33.98.101:2222）" style="width:200px;" />
+        <input id="envNodeIp" class="dshell-input" placeholder="K8s InternalIP（可选）" title="部署调度使用的 Kubernetes 节点 InternalIP；SSH 入口与 InternalIP 不同时填写，例如 192.168.31.175" style="width:180px;" />
         <input id="envUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
         <input id="envPass" class="dshell-input" type="password" placeholder="密码" style="width:130px;" />
         <button id="envAdd" class="dshell-btn mini">添加</button>
@@ -439,11 +440,11 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
-          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">IP 地址<span class="env-sort-arrow"></span></th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th>操作</th></tr></thead>
+          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>K8s InternalIP</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标 IP（可多选）；节点 IP 可填「IP:端口」指定 SSH 端口（如 115.33.98.101:2222，注入的 TARGET_IP/TARGET_IPS/TARGET_HOSTS 均含端口，脚本自行解析，设备状态查询也走该端口）；执行脚本时自动注入环境变量：<code>TARGET_IP</code>（首个节点 IP，含端口）、<code>TARGET_IPS</code>（全部 IP 的 JSON 数组，含端口）、<code>TARGET_HOSTS</code>（全部节点 [{ip,user,pass}] 的 JSON 数组，多节点各自凭据，ip 含端口）、<code>TARGET_USER</code>/<code>TARGET_PASSWORD</code>（首个节点凭据）、<code>IMAGE_NAME</code>/<code>IMAGE_TAG</code>、<code>PIPELINE_NAME</code>；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
@@ -1195,7 +1196,7 @@ function findPipeline(id){ return pipelines.find(p=>p.id===id); }
 function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} persistState(); }
 
 /* ---------- 环境配置（名称 + IP + 用户名 + 密码） ---------- */
-function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, user:e.user||'', pass:e.pass||''}; }
+function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, nodeIp:e.nodeIp||'', user:e.user||'', pass:e.pass||''}; }
 function loadEnvs(){ try{ const a=JSON.parse(localStorage.getItem('pip-envs')); if(Array.isArray(a)&&a.length) return a.map(normalizeEnv); }catch(e){} return null; }
 let environments = loadEnvs() || [
   {id:'env-dev', name:'开发', ip:'192.168.1.10', user:'root', pass:''},
@@ -1211,7 +1212,7 @@ function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(se
 function curEnvs(){
   let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
   if(!list.length) list = environments.slice(0,1);
-  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}];
+  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',nodeIp:'',user:'',pass:''}];
 }
 function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
 /* 环境多选面板（主控与定时页共用渲染）：勾选状态经 getIds/setIds 回调注入，切换后执行 after 附加动作 */
@@ -1296,7 +1297,7 @@ function renderEnvs(){
   const tb=$('envTable').querySelector('tbody'); tb.innerHTML='';
   list.forEach(e=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
+    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.nodeIp||'—')+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
     tb.appendChild(tr);
@@ -1399,16 +1400,17 @@ function openGpuDetail(e){
   body.innerHTML=h;
   $('gpuDetail').style.display='flex';
 }
-function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envUser').value=e.user||''; $('envPass').value=e.pass||''; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
-function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envUser').value=''; $('envPass').value=''; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
+function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envNodeIp').value=e.nodeIp||''; $('envUser').value=e.user||''; $('envPass').value=e.pass||''; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
+function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envNodeIp').value=''; $('envUser').value=''; $('envPass').value=''; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
 function saveEnvForm(){
-  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const user=$('envUser').value.trim(); const pass=$('envPass').value;
+  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const nodeIp=$('envNodeIp').value.trim(); const user=$('envUser').value.trim(); const pass=$('envPass').value;
   if(!ip){ alert('请填写 IP 地址'); return; }
   // 支持「IP:端口」（如 115.33.98.101:2222）：单个冒号时其后须为数字端口；多冒号（IPv6）或无冒号原样保留
   const cc=(ip.match(/:/g)||[]).length;
   if(cc===1 && !/^([^:]+):(\d+)$/.test(ip)){ alert('端口格式不正确：冒号后须为数字端口，如 115.33.98.101:2222'); return; }
-  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.user=user; e.pass=pass; } }
-  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, user, pass}); }
+  if(nodeIp && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(nodeIp)){ alert('K8s InternalIP 必须是 IPv4 地址'); return; }
+  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.nodeIp=nodeIp; e.user=user; e.pass=pass; } }
+  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, nodeIp, user, pass}); }
   saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
 }
 function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
@@ -4144,6 +4146,11 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
     if(env.TARGET_IP===undefined) env.TARGET_IP=(ctx0 && ctx0.ip) || rc.env || '';
     if(env.TARGET_IPS===undefined && rc.envs) env.TARGET_IPS=JSON.stringify(rc.envs.map(e=>e.ip));
     if(env.TARGET_HOSTS===undefined && rc.envs) env.TARGET_HOSTS=JSON.stringify(rc.envs.map(e=>({ip:e.ip, user:e.user||'', pass:e.pass||''})));
+    if(env.TARGET_NODE_IP_MAP===undefined && rc.envs){
+      const nodeIpMap={};
+      rc.envs.forEach(e=>{ if(e.ip && e.nodeIp) nodeIpMap[e.ip]=e.nodeIp; });
+      if(Object.keys(nodeIpMap).length) env.TARGET_NODE_IP_MAP=JSON.stringify(nodeIpMap);
+    }
     if(env.IMAGE_NAME===undefined && rc.image) env.IMAGE_NAME=rc.image;
     if(env.IMAGE_TAG===undefined && rc.tag) env.IMAGE_TAG=rc.tag;
     if(env.PIPELINE_NAME===undefined && rc.pipelineName) env.PIPELINE_NAME=rc.pipelineName;
