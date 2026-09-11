@@ -43,9 +43,9 @@ NAMESPACE="${NAMESPACE:-}"
 contains_unexpanded_placeholder "$NAMESPACE" && NAMESPACE=""
 if [[ -z "$NAMESPACE" ]]; then
   if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
-    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}-${IMAGE_TAG}"
+    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}"
   else
-    NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG}"
+    NAMESPACE="xds-${ARCH_NAME}"
   fi
 fi
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"

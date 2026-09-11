@@ -43,7 +43,7 @@ namespace_resolved="$(ARCH_NAME='glm-5.2-nvfp4-one-node' \
   IMAGE_TAG='1043.ec96f' \
   bash -c "$config
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fxq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
+grep -Fxq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node' <<<"$namespace_resolved"
 grep -Fxq 'RELEASE_NAME=xds' <<<"$namespace_resolved"
 
 same_name_resolved="$(NAMESPACE='xds-glm-5-2-nvfp4-one-node-1626-08dc0' \
@@ -56,19 +56,19 @@ grep -Fxq 'RELEASE_NAME=xds' <<<"$same_name_resolved"
 namespace_from_arch_executor="$(arch='glm-5.2-nvfp4' EXECUTOR='executor-a' IMAGE_TAG='1000.tag' \
   bash -c "$config
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
-grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-executor-a' <<<"$namespace_from_arch_executor"
+grep -Fq 'RELEASE_NAME=xds' <<<"$namespace_from_arch_executor"
 
 namespace_from_runtime_vars="$(DEPLOY_STRATEGY='glm-5.3-nvfp4-ems-one-node' BY='alice' IMAGE_TAG='1334.77c8b' \
   bash -c "$config
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' <<<"$namespace_from_runtime_vars"
-grep -Fq 'RELEASE_NAME=xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' <<<"$namespace_from_runtime_vars"
+grep -Fq 'NAMESPACE=xds-glm-5-3-nvfp4-ems-one-node-alice' <<<"$namespace_from_runtime_vars"
+grep -Fq 'RELEASE_NAME=xds' <<<"$namespace_from_runtime_vars"
 
 # EXECUTOR alone must not change the legacy namespace format.
 namespace_without_arch="$(EXECUTOR='executor-a' ARCH_NAME='glm-5.2-nvfp4' IMAGE_TAG='1000.tag' \
   bash -c "$config
 printf 'NAMESPACE=%s\\n' \"\$NAMESPACE\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-1000-tag' <<<"$namespace_without_arch"
+grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4' <<<"$namespace_without_arch"
 
 echo "pipeline variable-default tests passed"

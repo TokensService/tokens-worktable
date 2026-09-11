@@ -32,9 +32,9 @@ EXECUTOR="${EXECUTOR:-}"
 NAMESPACE="${NAMESPACE:-}"
 if [[ -z "$NAMESPACE" ]]; then
   if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
-    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}-${IMAGE_TAG:-local}"
+    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}"
   else
-    NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG:-local}"
+    NAMESPACE="xds-${ARCH_NAME}"
   fi
 fi
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
