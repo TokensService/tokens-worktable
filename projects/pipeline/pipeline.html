@@ -295,7 +295,7 @@
         <div style="display:flex;align-items:center;gap:8px;">
           <span id="archiveTip" class="dshell-muted" style="font-size:11px;"></span>
           <span id="detailBadge"></span>
-          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根）；未装该插件时回退到 DSH 服务端系统文件管理器。点击同时新建一个 AI 会话并切入其窗口（工作区=设置的归档目录根目录，空草稿不自动提交）：项目页随之关闭，新窗口只含会话聊天与文件夹浏览（文件夹窗口由插件在会话切换落定后重开，避免被侧边栏刷新刷掉）。目录选取：运行中取当前运行的归档文件夹；未运行时取运行历史选中行（点击历史行即刷新目标），未选中则提示先选择一条运行历史（不再回退打开归档根目录）；系统文件管理器路径下目标目录不存在时回退打开其父目录（归档根）">📂 打开归档目录</button>
+          <button class="dshell-btn dshell-btnGhost mini" type="button" id="openArchiveBtn" title="打开归档目录：优先经 better-sidebar 侧边栏「文件」面板打开（文件夹窗口，文件树以归档目录为根），保持当前页面与会话、不新建会话（需要 AI 分析时用运行历史标题行的分析按钮）；未装该插件或桥不可用时回退到 DSH 服务端系统文件管理器。目录选取：运行中取当前运行的归档文件夹；未运行时取运行历史选中行（点击历史行即刷新目标），未选中则提示先选择一条运行历史（不再回退打开归档根目录）。目标目录不存在时（历史归档已清理等）回退打开其父目录（归档根），连归档根都不存在才报「目录不存在」。">📂 打开归档目录</button>
         </div>
       </div>
       <div class="dshell-kv" id="detailKv"></div>
@@ -5549,8 +5549,10 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
    否则取运行历史选中行的归档目录（点击历史行即刷新该目标，并经 refreshArchiveTip 同步提示）。
    未运行且未选中历史行时不回退（不再打开最近一次运行或归档根目录），返回 null，
    由 openArchiveFolder 提示先选择一条运行历史。
-   系统文件管理器路径下，目标目录不存在时（历史目录已清理等）助手脚本回退到其父目录（归档根），
-   并把实际打开的目录回显在 stdout 供页面提示；连归档根都不存在才报「目录不存在」。 */
+   目标目录不存在时（历史归档已清理、归档路径改过等）回退打开其父目录（归档根）：
+   侧边栏路径由 resolveExistingFolder 预检后回退（此前不预检，会以不存在目录为根开出空文件树）；
+   系统文件管理器路径下助手脚本同样回退到父目录，并把实际打开的目录回显在 stdout 供页面提示；
+   连归档根都不存在才报「目录不存在」。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
 const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的助手脚本：用系统文件管理器打开 $1\n'
   +'d="$1"\n'
@@ -5579,8 +5581,9 @@ function refreshArchiveTip(){
   tip.textContent = f ? ('归档目录：'+f) : '未选中运行，请点击历史行选择';
   tip.style.color='';
 }
-/* 服务端系统文件管理器回退路径（无 better-sidebar 时用）：助手脚本探测 xdg-open/gio/open */
-async function openFolderViaFileManager(folder, say){
+/* 服务端系统文件管理器回退路径（无 better-sidebar 时用）：助手脚本探测 xdg-open/gio/open。
+   fellBack=true 表示传入的 folder 已是预检后的回退目录（原目标不存在），成功提示保持「回退」语义。 */
+async function openFolderViaFileManager(folder, say, fellBack){
   try{
     await apiWrite(FM_HELPER, FM_SCRIPT);   // 幂等重写助手脚本（内容固定）
     const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:FM_HELPER,args:[folder],timeoutMs:10000})});
@@ -5588,7 +5591,7 @@ async function openFolderViaFileManager(folder, say){
     if(j && j.error){ say('✗ '+String(j.error).slice(0,120),'var(--log-err)'); return; }
     if(j.code===0){
       const opened=String(j.stdout||'').trim().split('\n').pop()||folder;   // 助手脚本回显实际打开的目录
-      if(opened===folder) say('✓ 已在服务端打开 '+opened,'var(--log-ok)');
+      if(opened===folder && !fellBack) say('✓ 已在服务端打开 '+opened,'var(--log-ok)');
       else say('✓ 目标目录不存在，已回退打开 '+opened,'var(--log-warn)');
     }
     else if(j.code===2) say('✗ 目录不存在（含归档根目录）：'+folder,'var(--log-err)');
@@ -5604,15 +5607,37 @@ async function openArchiveFolder(){
   say('正在等待日志落盘并打开目录…');
   try{ await waitArchiveWrites(folder); }
   catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
+  const res=await resolveExistingFolder(folder);   // 预检：不存在则回退归档根，避免侧边栏以不存在目录为根开出空文件树
+  if(!res.folder){ say('✗ 目录不存在（含归档根目录）：'+folder,'var(--log-err)'); return; }
+  const target=res.folder;
+  const ok=(m)=>res.fellBack ? say('✓ 目标目录不存在，已回退打开 '+target,'var(--log-warn)') : say(m,'var(--log-ok)');
   const P=window.parent;
   // 直接打开文件夹，保留本页与执行上下文；不再为浏览目录创建会话。
   if(P && typeof P.__dshOpenFolderInSidebar==='function'){
     try{
-      if(P.__dshOpenFolderInSidebar(folder)){ say('✓ 已在侧边栏打开 '+folder,'var(--log-ok)'); return; }
+      if(P.__dshOpenFolderInSidebar(target)){ ok('✓ 已在侧边栏打开 '+target); return; }
     }catch(e){}
   }
   say('正在打开服务端文件管理器…');
-  await openFolderViaFileManager(folder, say);
+  await openFolderViaFileManager(target, say, res.fellBack);
+}
+/* 打开前预检目标目录是否存在（历史归档可能已清理、归档路径已改）：
+   不存在时回退父目录（归档根），返回 {folder, fellBack}；连归档根都不存在返回 {folder:null}。
+   探测请求本身失败（网络/服务端异常）按存在处理、不阻断打开。
+   定义在 openArchiveFolder 之后：页面内函数声明提升不影响调用，测试切片同区间一并加载。 */
+async function resolveExistingFolder(folder){
+  async function exists(d){
+    try{
+      const r=await fetch('/api/worktable/fs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:d})});
+      const j=await r.json().catch(()=>null);
+      return !!(r.ok && j && !j.error);
+    }catch(e){ return null; }   // null=探测失败（按存在处理）
+  }
+  if(await exists(folder)!==false) return {folder, fellBack:false};
+  const parent=folder.slice(0, folder.lastIndexOf('/'))||'/';
+  if(parent===folder) return {folder:null};
+  if(await exists(parent)!==false) return {folder:parent, fellBack:true};
+  return {folder:null};
 }
 $('openArchiveBtn').addEventListener('click', openArchiveFolder);
 /* 历史重跑：按选中行的流水线 + 环境 IP + 分支 + 执行人重新运行（运行中则入队） */
