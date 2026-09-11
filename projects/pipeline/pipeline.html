@@ -2853,11 +2853,12 @@ function syncViewRun(){
   selectedId=rc?rc.selId:(curPipeline().stages[0]?curPipeline().stages[0].id:null);
 }
 function setSel(id){ selectedId=id; if(viewRc) viewRc.selId=id; }          // 视图层选中：写穿到 rc
-function runSetSel(rc,id){ rc.selId=id; if(viewRc===rc) selectedId=id; }   // 引擎层选中：聚焦时同步视图
+function rootRunContext(rc){ return rc&&rc.parallelParent?rc.parallelParent:rc; }
+function runSetSel(rc,id){ const root=rootRunContext(rc); rc.selId=id; if(root) root.selId=id; if(viewRc===root) selectedId=id; }   // 引擎层选中：聚焦时同步视图
 /* 引擎侧渲染：仅当该运行正被编排区展示时落 DOM；rc.nodes/rc.stages 的写入不经过这里，始终生效 */
-function rcRender(rc, withFlow){ if(viewRc!==rc) return; applyStatusClasses(); if(withFlow) renderFlow(); renderDetail(); }
+function rcRender(rc, withFlow){ const root=rootRunContext(rc); if(viewRc!==root) return; applyStatusClasses(); if(withFlow) renderFlow(); renderDetail(); }
 /* 总状态徽标按运行各自留存：切换查看时恢复（含失败/终止的徽标配色） */
-function rcOverall(rc,txt,cls,color){ rc.overall={txt:txt,cls:cls,color:color||''}; if(viewRc===rc) applyRunOverall(rc); }
+function rcOverall(rc,txt,cls,color){ const root=rootRunContext(rc); root.overall={txt:txt,cls:cls,color:color||''}; if(viewRc===root) applyRunOverall(root); }
 function applyRunOverall(rc){
   const ov=rc?rc.overall:null;
   if(!rc || !ov){ setOverall('未运行',''); $('overallBy').textContent=''; return; }
@@ -3747,11 +3748,39 @@ function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)) return c.r
 
 /* ---------- 运行引擎 ---------- */
 /* 每个运行独立编排（rc 内串行推进各阶段；不同机器的运行并行）：有脚本的步骤执行脚本，其余本地模拟 */
-function advance(rc,i){
+function createParallelStageContext(parent,index,varsSnapshot){
+  const child=Object.assign({},parent,{timer:null,scriptAbort:null,vars:Object.assign({},varsSnapshot||parent.vars||{}),parallelParent:parent,parallelIndex:index,parallelGroup:null,parallelSettled:false,parallelStatus:null,parallelResolve:null,parallelPromise:null});
+  child.parallelPromise=new Promise(resolve=>{ child.parallelResolve=resolve; });
+  return child;
+}
+function settleParallelStage(child,status){
+  if(!child || !child.parallelParent || child.parallelSettled) return;
+  child.parallelSettled=true; child.parallelStatus=status;
+  if(child.parallelResolve) child.parallelResolve(status);
+}
+function runParallelStageGroup(parent,group){
+  if(parent.parallelGroup) return parent.parallelGroup.promise;
+  const varsSnapshot=Object.assign({},parent.vars||{});
+  const children=[];
+  for(let i=group.start;i<group.end;i++) children.push(createParallelStageContext(parent,i,varsSnapshot));
+  const active={group:group,children:children,promise:null}; parent.parallelGroup=active;
+  children.forEach(child=>startStageAt(child,child.parallelIndex));
+  active.promise=Promise.all(children.map(child=>child.parallelPromise)).then(statuses=>{
+    if(parent.over || parent.parallelGroup!==active) return;
+    children.forEach((child,offset)=>{
+      if(statuses[offset]!=='success') return;
+      const stage=parent.stages[child.parallelIndex], node=parent.nodes[stage.id];
+      if(node && node.varsOut) Object.assign(parent.vars,node.varsOut);
+    });
+    parent.parallelGroup=null;
+    taskPromFinalize(parent);
+    if(statuses.every(status=>status==='success')) advance(parent,group.end);
+    else finish(parent,'failed');
+  });
+  return active.promise;
+}
+function startStageAt(rc,i){
   const stg=rc.stages;
-  taskPromFinalize(rc);   // 已进入终态（成功/失败）且勾选「收集普罗数据」的任务：按任务起止后台采集普罗数据（去重见 _promCollected）
-  if(i>=stg.length){ finish(rc,'success'); return; }
-  // 手动运行连续执行全部阶段；sched 仅约束定时计划，不在此拆分后缀或提前结束运行。
   const s=stg[i];
   if(s.preset){ runPresetStep(rc,i); return; }   // 系统预设任务：脚本取设置页配置，见 runPresetStep
   if(s.skip){ skipStage(rc,i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
@@ -3760,6 +3789,15 @@ function advance(rc,i){
   if(s.kind==='evaltokens'){ runEvaltokensStep(rc,i); return; }   // EvalTokens 任务轮询阶段：匹配任务并等待终态（见 runEvaltokensStep）
   if(s.script && s.script.path){ runScriptStep(rc,i); return; }
   runStage(rc,i);
+}
+function advance(rc,i){
+  if(rc.parallelParent){ settleParallelStage(rc,'success'); return; }
+  const stg=rc.stages;
+  taskPromFinalize(rc);   // 已进入终态（成功/失败）且勾选「收集普罗数据」的任务：按任务起止后台采集普罗数据（去重见 _promCollected）
+  if(i>=stg.length){ finish(rc,'success'); return; }
+  const group=pipelineStageGroups(stg).find(g=>g.start===i);
+  if(group&&group.parallel&&group.end-group.start>1){ runParallelStageGroup(rc,group); return; }
+  startStageAt(rc,i);
 }
 /* ---------- 阶段间变量传递（上游 stdout / URL 响应体（Jenkins 控制台）的 KEY=VALUE 行、单行 JSON 对象注入下游） ---------- */
 /* 提取规则：逐行匹配 ^\s*([A-Z_][A-Z0-9_]*)=(.*)$；值取首个 = 之后全部，
@@ -3942,7 +3980,8 @@ function appendLiveChunk(log,value){
 function finishLiveLog(log){ return log.parts.join(''); }
 function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
   const now=Date.now(), wait=Math.max(0,Number(minInterval)||250);
-  if(viewRc===rc && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
+  const root=rc&&rc.parallelParent?rc.parallelParent:rc;
+  if(viewRc===root && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
   return lastLive;
 }
 /* 流式执行：POST /api/worktable/exec-stream（插件服务端 spawn 后按行回传 NDJSON：
@@ -4600,7 +4639,8 @@ async function runEvaltokensStep(rc, i){
       s._reportPendingAttempt=attempt;   // archiveRun 不抢先写尚未补齐报告结果的阶段日志
       const replaceReportLine=function(text){
         if(terminalOut.stdout) terminalOut.stdout=terminalOut.stdout.replace(reportPendingLine,text);
-        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&viewRc===rc&&selectedId===s.id) renderDetail();
+        const root=rc&&rc.parallelParent?rc.parallelParent:rc;
+        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&viewRc===root&&selectedId===s.id) renderDetail();
       };
       reportJob=archiveEvaltokensReport(e,rc,seq,s.name,runId).then(file=>{
         replaceReportLine(file?('📦 任务报告已归档 → '+file):'⚠ 任务报告未归档：无法确定本次运行归档目录');
@@ -4686,7 +4726,8 @@ function runStage(rc, i){
   const s=stg[i];
   const varsIn = Object.assign({}, rc.vars||{});
   rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
-  runSetSel(rc,s.id); if(viewRc===rc){ renderFlow(); renderDetail(); }
+  const root=rc&&rc.parallelParent?rc.parallelParent:rc;
+  runSetSel(rc,s.id); if(viewRc===root){ renderFlow(); renderDetail(); }
   if(s.sub && s.sub.length){ s.sub.forEach(x=> rc.nodes[s.id].sub[x]='running'); }
   const start=Date.now();
   if(rc.timer) clearInterval(rc.timer);
