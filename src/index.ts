@@ -402,8 +402,8 @@ function serverRunVariables(runCtx: any, varsPool?: Record<string, string>): Rec
   if (runCtx.pipelineName) vars.PIPELINE_NAME = String(runCtx.pipelineName)
   if (repository.url) vars.GIT_URL = String(repository.url)
   if (runCtx.branch) vars.GIT_BRANCH = String(runCtx.branch)
-  if (runCtx.strategy) vars.DEPLOY_STRATEGY = String(runCtx.strategy)
-  if (runCtx.by) vars.BY = String(runCtx.by)
+  if (runCtx.strategy) { vars.DEPLOY_STRATEGY = String(runCtx.strategy); vars.arch = String(runCtx.strategy) }
+  if (runCtx.by) { vars.BY = String(runCtx.by); vars.EXECUTOR = String(runCtx.by) }
   if (runCtx.archive) {
     vars.ARCHIVE_DIR = String(runCtx.archive)
     vars.ARCHIVE_FOLDER = String(runCtx.archive)
@@ -1804,8 +1804,8 @@ export function apply(ctx: Context) {
     if (runCtx.pipelineName) look.PIPELINE_NAME = String(runCtx.pipelineName)
     if (repository.url) look.GIT_URL = String(repository.url)
     if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch)
-    if (runCtx.strategy) look.DEPLOY_STRATEGY = String(runCtx.strategy)
-    if (runCtx.by) look.BY = String(runCtx.by)
+    if (runCtx.strategy) { look.DEPLOY_STRATEGY = String(runCtx.strategy); look.arch = String(runCtx.strategy) }
+    if (runCtx.by) { look.BY = String(runCtx.by); look.EXECUTOR = String(runCtx.by) }
     if (repository.user) look.GIT_USER = String(repository.user)
     if (repository.pass) look.GIT_PASSWORD = String(repository.pass)
     if (runCtx.archive) { look.ARCHIVE_DIR = String(runCtx.archive); look.ARCHIVE_FOLDER = String(runCtx.archive) }
@@ -1835,12 +1835,20 @@ export function apply(ctx: Context) {
     if (env.TARGET_IP === undefined) env.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
     if (env.TARGET_IPS === undefined && runCtx.envs) env.TARGET_IPS = JSON.stringify((runCtx.envs || []).map((e: any) => e.ip))
     if (env.TARGET_HOSTS === undefined && runCtx.envs) env.TARGET_HOSTS = JSON.stringify((runCtx.envs || []).map((e: any) => ({ ip: e.ip, user: e.user || '', pass: e.pass || '' })))
+    if (env.TARGET_NODE_IP_MAP === undefined && runCtx.envs) {
+      const nodeIpMap: Record<string, string> = {}
+      for (const e of runCtx.envs || []) if (e.ip && e.nodeIp) nodeIpMap[e.ip] = e.nodeIp
+      if (Object.keys(nodeIpMap).length) env.TARGET_NODE_IP_MAP = JSON.stringify(nodeIpMap)
+    }
     if (env.IMAGE_NAME === undefined && runCtx.image) env.IMAGE_NAME = String(runCtx.image)
     if (env.IMAGE_TAG === undefined && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag)
     if (env.PIPELINE_NAME === undefined && runCtx.pipelineName) env.PIPELINE_NAME = String(runCtx.pipelineName)
     if (env.GIT_URL === undefined && repository.url) env.GIT_URL = String(repository.url)
     if (env.GIT_BRANCH === undefined && runCtx.branch) env.GIT_BRANCH = String(runCtx.branch)
     if (env.DEPLOY_STRATEGY === undefined && runCtx.strategy) env.DEPLOY_STRATEGY = String(runCtx.strategy)
+    if (env.arch === undefined && runCtx.strategy) env.arch = String(runCtx.strategy)
+    if (env.BY === undefined && runCtx.by) env.BY = String(runCtx.by)
+    if (env.EXECUTOR === undefined && runCtx.by) env.EXECUTOR = String(runCtx.by)
     if (env.GIT_USER === undefined && repository.user) env.GIT_USER = String(repository.user)
     if (env.GIT_PASSWORD === undefined && repository.pass) env.GIT_PASSWORD = String(repository.pass)
     if (ctx0) {

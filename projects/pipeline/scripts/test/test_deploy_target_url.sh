@@ -16,7 +16,7 @@ cat >"$work_dir/rendered/resources.rendered.json" <<'JSON'
 {"resources":[{"resource_id":"prefill-1","resource_type":"prefill","resource_status":"IDLE","resource_bundles":["127.0.0.1"],"task_executor_group":"taskExecutorGroup4prefill1"}]}
 JSON
 cat >"$work_dir/node-labels.json" <<'EOF'
-{"key":"xds.optest","value":"node-78","hosts":[{"ip":"192.168.0.78"}]}
+{"key":"xds.optest","value":"node-175","hosts":[{"ip":"192.168.31.175"}]}
 EOF
 
 cat >"$work_dir/bin/helm" <<'EOF'
@@ -26,7 +26,7 @@ EOF
 cat >"$work_dir/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "get" && "$2" == "nodes" ]]; then
-  printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
+  printf '{"items":[{"metadata":{"name":"node-175"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.31.175"}]}}]}'
 elif [[ "$*" == 'get svc -A -o json' ]]; then
   printf '{"items":[]}'
 elif [[ "$1" == "-n" && "$3" == "get" && "$4" == "svc" && "$5" == "ray-svc" && "$*" == *"-o json"* ]]; then
@@ -63,7 +63,7 @@ RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
 NODE_LABELS_FILE="$work_dir/node-labels.json" \
 ARCH_NAME='test-arch' \
 MODEL_PATH='/mnt/paas/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1' \
-TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+TARGET_HOSTS='[{"ip":"192.168.0.78:2222"}]' \
 XDS_URL='' \
 HELM_BIN="$work_dir/bin/helm" \
 KUBECTL_BIN="$work_dir/bin/kubectl" \
@@ -72,9 +72,9 @@ HEAD_LOG_ROOT="$work_dir/logs" \
 XDS_READY_TIMEOUT_SECONDS=5 \
 bash "$script_dir/deploy-model.sh" >/dev/null
 
-grep -Fq 'http://192.168.0.78:31465/xds/v1/models/' "$work_dir/curl.log"
-grep -Fq 'http://192.168.0.78:31465/xds/v1/models/architectures' "$work_dir/curl.log"
-grep -Fq 'http://192.168.0.78:31465/xds/v1/models/test-arch' "$work_dir/curl.log"
+grep -Fq 'http://192.168.31.175:31465/xds/v1/models/' "$work_dir/curl.log"
+grep -Fq 'http://192.168.31.175:31465/xds/v1/models/architectures' "$work_dir/curl.log"
+grep -Fq 'http://192.168.31.175:31465/xds/v1/models/test-arch' "$work_dir/curl.log"
 python3 - "$work_dir/model.payload.json" <<'PY'
 import json
 import sys
