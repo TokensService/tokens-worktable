@@ -19,7 +19,8 @@ import { splitStore, SplitWorkspace, setSplitT, setSplitEnv, peekChatClosed, typ
  * 持久化：dsh.worktable.view.v1（视图）+ dsh.worktable.projects.v1（项目元状态，仅本地条目）；
  *         新建项目一律本地，完善后在管理列表点 ☁「发布」，布局条目转存服务端
  *         ~/.dsh/storages/worktable-projects.json（/api/worktable/projects，跨浏览器可见；
- *         发布后的改名/图标/视图变更/删除随之同步；再点 ☁ 取消发布回到本地）。
+ *         发布后的改名/图标/视图变更/删除随之同步；再点 ☁ 取消发布回到本地）；
+ *         手动排序 order 也经此文件同步（跨浏览器固定顺序），localStorage 副本仅作离线兜底。
  */
 
 type OrderBy = 'manual' | 'recent'
@@ -360,6 +361,16 @@ function loadProjects(): ProjectsState {
   } catch {
     return { ...DEFAULT_PROJECTS }
   }
+}
+
+/** 启动合并服务端手动排序：远端 order 非空时远端优先，本地独有 id 保相对序追加尾部；
+ * 远端没存 order（响应无此字段或为空数组）时返回 null —— 本地序不动，避免空远端清掉本地序。
+ * 不按 known id 过滤：渲染期 effectiveOrder 已过滤已卸载 id。 */
+function mergeRemoteOrder(remote: unknown, local: string[]): string[] | null {
+  if (!Array.isArray(remote)) return null
+  const remoteOrder = remote.filter((x: unknown): x is string => typeof x === 'string')
+  if (remoteOrder.length === 0) return null
+  return [...remoteOrder, ...local.filter((id) => !remoteOrder.includes(id))]
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi)
@@ -1415,7 +1426,8 @@ function WorktableSection(props: any) {
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
   // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
-  // 仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
+  // 手动排序 order 一并合并：远端非空时远端优先、本地独有 id 追加尾部，远端缺 order 时本地序不动；
+  // 合并结果与远端不一致时回推一次完整同步切片自愈。仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
   useEffect(() => {
     let alive = true
     void (async () => {
@@ -1438,16 +1450,26 @@ function WorktableSection(props: any) {
         if (d.prompts && typeof d.prompts === 'object') {
           for (const [k, v] of Object.entries(d.prompts)) if (typeof v === 'string') remotePrompts[k] = v
         }
+        const remoteOrder = Array.isArray(d.order) ? d.order.filter((x: unknown): x is string => typeof x === 'string') : []
+        // 合并结果暂存局部变量，回推送在 effect 主流程里做（不写在 setProjects updater 里）：
+        // 严格模式双调用 updater 产生的暂存值相同，回推幂等无害
+        let merged: ProjectsState | null = null
         setProjects((prev) => {
           const remoteIds = new Set(remote.map((l) => l.id))
-          return {
+          merged = {
             ...prev,
             layouts: [...prev.layouts.filter((l) => !l.sync && !remoteIds.has(l.id)), ...remote],
             folders: { ...prev.folders, ...remoteFolders },
             workspaces: { ...prev.workspaces, ...remoteWorkspaces },
             prompts: { ...prev.prompts, ...remotePrompts },
+            order: mergeRemoteOrder(remoteOrder, prev.order) ?? prev.order,
           }
+          return merged
         })
+        // 自愈回推：最终 order 与远端不一致（远端缺 order / 合并产生本地独有 id 追加）时推一次完整同步切片
+        if (merged && JSON.stringify(merged.order) !== JSON.stringify(remoteOrder)) {
+          void fetch('/api/worktable/projects', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(syncedSliceOf(merged)) }).catch(() => {})
+        }
       } catch { /* 服务端不可用 = 仅本地模式 */ }
     })()
     return () => { alive = false }
@@ -1793,19 +1815,20 @@ function WorktableSection(props: any) {
     })
   }
 
-  /** 同步条目切片（sync 标记的布局 + 其文件夹/分组/提示词映射）：以服务端文件为准，localStorage 不落。 */
+  /** 同步条目切片（sync 标记的布局 + 其文件夹/分组/提示词映射 + 手动排序 order）：以服务端文件为准，localStorage 不落（order 例外，仍落本地作离线兜底）。 */
   const syncedSliceOf = (s: ProjectsState) => {
     const layouts = s.layouts.filter((l) => l.sync)
     const ids = new Set(layouts.map((l) => l.id))
     const folders = Object.fromEntries(Object.entries(s.folders).filter(([id]) => ids.has(id)))
     const workspaces = Object.fromEntries(Object.entries(s.workspaces).filter(([id]) => ids.has(id)))
     const prompts = Object.fromEntries(Object.entries(s.prompts).filter(([id]) => ids.has(id)))
-    return { layouts, folders, workspaces, prompts }
+    return { layouts, folders, workspaces, prompts, order: s.order }
   }
   const persistProjects = (patch: Partial<ProjectsState> | ((prev: ProjectsState) => ProjectsState)) => {
     setProjects((prev) => {
       const next = typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
-      // localStorage 只落本地条目：sync 布局与其文件夹/分组/提示词映射由服务端托管
+      // localStorage 只落本地条目：sync 布局与其文件夹/分组/提示词映射由服务端托管；
+      // order 随本地条目一并落盘，作离线/服务端不可用时的兜底（在线时以服务端同步为准）
       const syncedIds = new Set(next.layouts.filter((l) => l.sync).map((l) => l.id))
       const local = {
         ...next,
@@ -1815,7 +1838,8 @@ function WorktableSection(props: any) {
         prompts: Object.fromEntries(Object.entries(next.prompts).filter(([id]) => !syncedIds.has(id))),
       }
       try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(local)) } catch {}
-      // 同步切片有变化才推服务端（全量覆盖，last-write-wins；排序/隐藏等本地偏好不触发推送）
+      // 同步切片有变化才推服务端（全量覆盖，last-write-wins；切片含手动排序 order——拖拽落序随之同步，
+      // 隐藏等其余本地偏好不触发推送）
       const prevSync = JSON.stringify(syncedSliceOf(prev))
       const nextSync = JSON.stringify(syncedSliceOf(next))
       if (prevSync !== nextSync) {
