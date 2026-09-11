@@ -1,0 +1,672 @@
+<!doctype html>
+<!-- 大模型推理系统内存泄漏诊断 · tokens-worktable 原生皮肤 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="worktable-icon" content="🩺" />
+  <title>内存泄漏诊断</title>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <script>
+    /* 首帧前设定主题（浅色 / 深色 / 跟随系统），避免闪烁 */
+    (function () {
+      try {
+        var t = localStorage.getItem("memLeak.theme") || "system";
+        if (t !== "light" && t !== "dark" && t !== "system") t = "system";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) { document.documentElement.setAttribute("data-theme", "system"); }
+    })();
+  </script>
+  <style>
+    /* 主题：深色 / 浅色 / 跟随系统（覆盖 dshell 默认深色；--dshell-fg 供 canvas 取色） */
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+      --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+      --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+      --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+      --dshell-fg:#9aa4b2; --dshell-border:#262b36;
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+      --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+      --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+      --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+      --dshell-fg:#59636e; --dshell-border:#d8dee6;
+    }
+    html[data-theme="system"] { color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="system"] {
+        color-scheme: dark;
+        --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+        --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+        --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+        --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+        --dshell-fg:#9aa4b2; --dshell-border:#262b36;
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      html[data-theme="system"] {
+        color-scheme: light;
+        --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+        --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+        --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+        --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+        --dshell-fg:#59636e; --dshell-border:#d8dee6;
+      }
+    }
+    html[data-theme="light"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); }
+    @media (prefers-color-scheme: light) { html[data-theme="system"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); } }
+
+    /* 主题切换分段控件 */
+    .theme-seg { display:inline-flex; align-items:center; gap:2px; padding:2px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:999px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .theme-seg button { border:none; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); font:inherit; font-size:11px; padding:3px 9px; border-radius:999px; cursor:pointer; line-height:1.4; }
+    .theme-seg button:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .theme-seg button.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+
+    /* 仅本页所需的最小自造样式 */
+    .ml-canvas { width:100%; height:240px; display:block; }
+    .ml-legend { display:flex; flex-wrap:wrap; gap:12px; font-size:12px; opacity:.9; margin-top:8px; }
+    .ml-legend span { display:inline-flex; align-items:center; gap:5px; }
+    .ml-dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+    .ml-grid2 { display:grid; grid-template-columns:1fr; gap:12px; }
+    @media (min-width:760px){ .ml-grid2 { grid-template-columns:1.2fr 1fr; } }
+    .ml-logbox { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+    .ml-code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.6; white-space:pre-wrap; word-break:break-word; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; padding:9px 11px; }
+    .ml-codebar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+    .ml-copy { border:1px solid var(--dsw-alias-border-l1,#262b36); background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); font:inherit; font-size:11px; padding:2px 9px; border-radius:999px; cursor:pointer; }
+    .ml-copy:hover { color:var(--dsw-alias-label-primary,#e6e8eb); border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .ml-flow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; }
+    .ml-flow .ml-node { padding:6px 10px; border:1px solid currentColor; border-radius:8px; opacity:.92; }
+    .ml-flow .ml-arrow { opacity:.55; }
+    .ml-pattern { border-top:3px solid var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    .ml-pattern[data-sev="high"] { border-top-color:#f85149; }
+    .ml-pattern[data-sev="mid"] { border-top-color:#d29922; }
+    .ml-pattern[data-sev="low"] { border-top-color:#3fb950; }
+    .ml-pattern-head { display:flex; align-items:center; justify-content:space-between; gap:8px; cursor:pointer; }
+    .ml-pattern-body { margin-top:8px; }
+    .ml-clist { display:flex; flex-direction:column; gap:6px; }
+    .ml-clist label { display:flex; align-items:flex-start; gap:8px; padding:8px 11px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); cursor:pointer; font-size:12.5px; }
+    .ml-clist label:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .ml-clist input { margin-top:2px; accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7); flex:none; }
+    .ml-sec { font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); margin:2px 0 6px; }
+    .ml-finding { display:flex; align-items:center; gap:10px; padding:8px 12px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .ml-note { font-size:12px; opacity:.7; margin-top:6px; }
+    .ml-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .ml-pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; }
+    details > summary { list-style:none; cursor:pointer; }
+    details > summary::-webkit-details-marker { display:none; }
+    details[open] .ml-pattern-body { display:block; }
+  </style>
+</head>
+<body>
+<div class="dshell">
+  <!-- 标题 + 主题切换 -->
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+    <div>
+      <h1 class="dshell-title">大模型推理系统内存泄漏诊断</h1>
+      <p class="dshell-sub">定位 GPU 显存与进程内存泄漏，覆盖 KV Cache、张量残留、碎片化与引用未释放。</p>
+    </div>
+    <div class="theme-seg" id="themeSeg" title="背景主题（浅色 / 深色 / 跟随系统）">
+      <button type="button" data-theme="system">系统</button>
+      <button type="button" data-theme="dark">深</button>
+      <button type="button" data-theme="light">浅</button>
+    </div>
+  </div>
+
+  <div>
+    <span class="dshell-badge dshell-badgeDone">显存时序分析</span>
+    <span class="dshell-badge dshell-badgeWait">泄漏特征识别</span>
+    <span class="dshell-badge">修复指引</span>
+  </div>
+
+  <!-- 标签页 -->
+  <div class="dshell-tabs" id="tabs">
+    <button class="dshell-tab dshell-tabOn" data-tab="overview">诊断概览</button>
+    <button class="dshell-tab" data-tab="timeline">内存时序</button>
+    <button class="dshell-tab" data-tab="patterns">泄漏模式</button>
+    <button class="dshell-tab" data-tab="flow">诊断流程</button>
+    <button class="dshell-tab" data-tab="checklist">检查清单</button>
+    <button class="dshell-tab" data-tab="tools">工具与命令</button>
+  </div>
+
+  <!-- ============ 诊断概览 ============ -->
+  <div class="ml-pane" data-pane="overview">
+    <div class="dshell-grid">
+      <div class="dshell-stat"><div class="dshell-statLabel">GPU 显存占用</div><div class="dshell-statValue" id="ovGpu">—</div><div class="dshell-statDelta" id="ovGpuD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">进程 RSS</div><div class="dshell-statValue" id="ovRss">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">KV Cache 占用率</div><div class="dshell-statValue" id="ovKv">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">泄漏速率</div><div class="dshell-statValue" id="ovRate">—</div><div class="dshell-statDelta" id="ovRateD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">样本数</div><div class="dshell-statValue" id="ovN">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">诊断结论</div><div class="dshell-statValue" id="ovVerdict" style="font-size:15px">—</div></div>
+    </div>
+
+    <div class="ml-grid2">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">显存时序曲线</h2>
+        <canvas class="ml-canvas" id="ovChart"></canvas>
+        <div class="ml-legend"><span><i class="ml-dot" style="background:#60a5fa"></i>GPU 已分配</span><span><i class="ml-dot" style="background:#f59e0b"></i>泄漏趋势</span></div>
+        <div class="ml-note" id="ovChartNote">粘贴采样或载入示例后自动绘制并研判。曲线持续上扬 = 疑似泄漏。</div>
+      </div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">采样输入</h2>
+        <div class="ml-formrow" style="margin-bottom:8px">
+          <button class="dshell-btn" id="btnAnalyze" type="button">分析采样</button>
+          <button class="dshell-btn dshell-btnGhost" id="btnClear" type="button">清空</button>
+        </div>
+        <div class="ml-formrow" style="margin-bottom:8px">
+          <span class="dshell-muted" style="font-size:11.5px">载入示例：</span>
+          <button class="dshell-btn dshell-btnGhost" data-sample="healthy" type="button">健康平稳</button>
+          <button class="dshell-btn dshell-btnGhost" data-sample="linear" type="button">线性泄漏</button>
+          <button class="dshell-btn dshell-btnGhost" data-sample="step" type="button">阶梯泄漏</button>
+          <button class="dshell-btn dshell-btnGhost" data-sample="saw" type="button">锯齿碎片</button>
+        </div>
+        <textarea class="dshell-textarea" id="sampleInput" rows="9" placeholder="每行一条采样：&#10;时间 数值&#10;时间可省（自动递增）；单位分钟，可带 s/m/h（如 5、5m、90s）&#10;数值为显存，可带 GiB/MiB/MB/GB（如 10000、10.5GiB）&#10;# 开头为注释，忽略空行&#10;&#10;示例：&#10;0  10.0GiB&#10;5m 10.4GiB&#10;10 11.2GiB"></textarea>
+        <div class="ml-note">格式：&#60;时间&#62; &#60;显存&#62;，时间默认分钟；只解析数值与时间两列。结论与速率据此自动研判。</div>
+      </div>
+    </div>
+
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">诊断结论</h2>
+      <div class="dshell-list" id="findings">
+        <div class="dshell-listItem"><span class="dshell-listItemTitle">等待采样数据…</span><span class="dshell-badge">待诊断</span></div>
+      </div>
+      <div class="ml-note">结论由本地最小二乘回归自动研判：斜率 ≈ 0 且方差小 = 健康；斜率显著为正 = 疑似泄漏；均值平稳但方差大 = 碎片化/缓存波动。</div>
+    </div>
+  </div>
+
+  <!-- ============ 内存时序 ============ -->
+  <div class="ml-pane" data-pane="timeline" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">显存时序趋势</h2>
+      <canvas class="ml-canvas" id="bigChart" style="height:320px"></canvas>
+      <div class="ml-legend"><span><i class="ml-dot" style="background:#60a5fa"></i>GPU 已分配</span><span><i class="ml-dot" style="background:#f59e0b"></i>泄漏趋势线</span></div>
+      <div class="ml-note">此图与「诊断概览」共享同一份数据；在概览页载入示例或粘贴采样后更新。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">趋势统计</h2>
+      <div class="dshell-kv" id="trendKv"></div>
+      <div class="dshell-divider"></div>
+      <div class="ml-note" id="trendNote">无数据。先在「诊断概览」载入或粘贴采样。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">如何看懂曲线形状</h2>
+      <table class="dshell-table">
+        <thead><tr><th>形状</th><th>含义</th><th>典型成因</th></tr></thead>
+        <tbody>
+          <tr><td>近乎水平、噪声小</td><td>健康稳态</td><td>分配/释放平衡，无泄漏</td></tr>
+          <tr><td>单调线性上升</td><td>疑似显存泄漏</td><td>张量未释放 / KV block 未回收 / 权重重复加载</td></tr>
+          <tr><td>阶梯式增长</td><td>对象逐步累积</td><td>per-request tensor 存进未清理的列表 / 缓存无上限</td></tr>
+          <tr><td>锯齿状、基线缓升</td><td>碎片化 / 缓存波动</td><td>分配器碎片化、临时缓存周期涨落但未真正释放</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ 泄漏模式 ============ -->
+  <div class="ml-pane" data-pane="patterns" style="display:none">
+    <p class="ml-sec">点开任一卡片查看典型特征、检测方法与修复建议。</p>
+    <div class="dshell-grid" id="patternGrid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))"></div>
+  </div>
+
+  <!-- ============ 诊断流程 ============ -->
+  <div class="ml-pane" data-pane="flow" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">泄漏判定决策流</h2>
+      <div class="ml-flow" style="margin-bottom:10px">
+        <span class="ml-node">显存是否持续上涨？</span><span class="ml-arrow">→</span>
+        <span class="ml-node">否 → 健康 / 碎片</span><span class="ml-arrow">→</span>
+        <span class="ml-node">查 empty_cache 后是否回落</span>
+      </div>
+      <div class="ml-flow" style="margin-bottom:10px">
+        <span class="ml-node">是 → 空载无请求是否仍涨？</span><span class="ml-arrow">→</span>
+        <span class="ml-node">是 → 常驻泄漏（权重/池/闭包）</span>
+      </div>
+      <div class="ml-flow">
+        <span class="ml-node">否 → 仅在有请求时涨 → 请求级泄漏（KV/张量/上下文）</span>
+      </div>
+      <div class="ml-note">空载仍涨指向常驻对象；仅请求时涨指向 per-request 资源未回收。先用此分流再选定位工具。</div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">定位工具选择</h2>
+      <table class="dshell-table">
+        <thead><tr><th>场景</th><th>首选工具</th><th>看什么</th></tr></thead>
+        <tbody>
+          <tr><td>Python 对象级增长</td><td>memray / tracemalloc</td><td>对象增长 Top、分配栈</td></tr>
+          <tr><td>持有者堆栈</td><td>py-spy dump</td><td>哪段代码持有了未释放对象</td></tr>
+          <tr><td>显存曲线对照</td><td>nvidia-smi -l 1</td><td>显存随时间走势</td></tr>
+          <tr><td>框架层分配明细</td><td>torch.cuda 内存快照</td><td>已分配/已保留/碎片</td></tr>
+          <tr><td>vLLM 内部</td><td>/metrics 端点</td><td>KV blocks 占用与抢占</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ 检查清单 ============ -->
+  <div class="ml-pane" data-pane="checklist" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">泄漏排查清单</h2>
+      <div class="dshell-progress" style="margin-bottom:10px"><div class="dshell-progressBar" id="chkBar" style="width:0%"></div></div>
+      <div class="ml-note" id="chkCount" style="margin-bottom:10px">0 / 0</div>
+      <div class="ml-clist" id="chkList"></div>
+      <div class="dshell-divider"></div>
+      <button class="dshell-btn dshell-btnGhost" id="chkReset" type="button">重置清单</button>
+      <div class="ml-note">勾选状态保存在本机浏览器，关窗不丢。</div>
+    </div>
+  </div>
+
+  <!-- ============ 工具与命令 ============ -->
+  <div class="ml-pane" data-pane="tools" style="display:none">
+    <div class="ml-grid2" id="toolGrid"></div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+"use strict";
+
+/* ================= 主题切换 ================= */
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  var seg = document.getElementById("themeSeg");
+  if (seg) Array.prototype.forEach.call(seg.querySelectorAll("button"), function (b) {
+    b.classList.toggle("on", b.getAttribute("data-theme") === t);
+  });
+  try { localStorage.setItem("memLeak.theme", t); } catch (e) {}
+  setTimeout(redrawAll, 0);
+}
+(function () {
+  var cur = document.documentElement.getAttribute("data-theme") || "system";
+  applyTheme(cur);
+  var seg = document.getElementById("themeSeg");
+  Array.prototype.forEach.call(seg.querySelectorAll("button"), function (b) {
+    b.addEventListener("click", function () { applyTheme(b.getAttribute("data-theme")); });
+  });
+})();
+
+/* ================= 标签页 ================= */
+Array.prototype.forEach.call(document.querySelectorAll("#tabs .dshell-tab"), function (tab) {
+  tab.addEventListener("click", function () {
+    Array.prototype.forEach.call(document.querySelectorAll("#tabs .dshell-tab"), function (t) { t.classList.remove("dshell-tabOn"); });
+    tab.classList.add("dshell-tabOn");
+    var key = tab.getAttribute("data-tab");
+    Array.prototype.forEach.call(document.querySelectorAll(".ml-pane"), function (p) {
+      p.style.display = (p.getAttribute("data-pane") === key) ? "" : "none";
+    });
+    redrawAll();
+  });
+});
+
+/* ================= 工具函数 ================= */
+function css(name) { return (getComputedStyle(document.body).getPropertyValue(name) || "").trim() || "#888"; }
+function fmtMB(mb) {
+  if (mb == null || !isFinite(mb)) return "—";
+  var abs = Math.abs(mb);
+  if (abs >= 1024 * 1024) return (mb / (1024 * 1024)).toFixed(2) + "TB";
+  if (abs >= 1024) return (mb / 1024).toFixed(2) + "GiB";
+  return mb.toFixed(1) + "MiB";
+}
+function parseTime(s) {
+  s = String(s).trim().toLowerCase();
+  if (s === "") return NaN;
+  var m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/); // hh:mm[:ss] → minutes
+  if (m) return (parseInt(m[1], 10) * 60 + parseInt(m[2], 10)) + (m[3] ? parseInt(m[3], 10) / 60 : 0);
+  m = s.match(/^([\d.]+)\s*([smh])?$/);
+  if (m) {
+    var n = parseFloat(m[1]), u = m[2] || "m";
+    return u === "s" ? n / 60 : u === "h" ? n * 60 : n; // 全部归一到分钟
+  }
+  return NaN;
+}
+function parseMB(s) {
+  s = String(s).trim().toLowerCase();
+  if (s === "") return null;
+  var m = s.match(/^([\d.]+)\s*(tib|gib|mib|kib|tb|gb|mb|kb|t|g|m|k)?$/);
+  if (!m) return null;
+  var n = parseFloat(m[1]), u = m[2] || "m";
+  var mul = { tib: 1024 * 1024, gib: 1024, mib: 1, kib: 1 / 1024, tb: 1e6, gb: 1000, mb: 1, kb: 0.001, t: 1e6, g: 1000, m: 1, k: 0.001 };
+  return n * (mul[u] != null ? mul[u] : 1);
+}
+function parseSamples(text) {
+  var pts = [], autoIdx = 0;
+  String(text || "").split(/\n/).forEach(function (raw) {
+    var line = raw.trim();
+    if (!line || line.charAt(0) === "#") return;
+    var tok = line.split(/[,\s]+/).filter(Boolean);
+    var t, v;
+    if (tok.length >= 2) { t = parseTime(tok[0]); v = parseMB(tok[1]); }
+    else { v = parseMB(tok[0]); t = NaN; }
+    if (v == null || !isFinite(v)) return;
+    if (!isFinite(t)) t = autoIdx;
+    pts.push({ t: t, v: v });
+    autoIdx = t + 1;
+  });
+  pts.sort(function (a, b) { return a.t - b.t; });
+  return pts;
+}
+
+/* ================= 示例数据 ================= */
+var SAMPLES = {
+  healthy: function () {
+    var out = [];
+    for (var i = 0; i <= 24; i++) out.push(i + " " + (10000 + (Math.sin(i) * 30) + (Math.random() * 40 - 20)).toFixed(0));
+    return "# 健康平稳：显存围绕 10GiB 上下波动，无上升趋势\n" + out.join("\n");
+  },
+  linear: function () {
+    var out = [];
+    for (var i = 0; i <= 24; i++) out.push(i + " " + (10000 + i * 210 + (Math.random() * 60 - 30)).toFixed(0));
+    return "# 线性泄漏：每分钟 +约210MiB，单调上升\n" + out.join("\n");
+  },
+  step: function () {
+    var out = [], base = 10000;
+    for (var i = 0; i <= 24; i++) { if (i > 0 && i % 6 === 0) base += 900; out.push(i + " " + (base + (Math.random() * 50 - 25)).toFixed(0)); }
+    return "# 阶梯泄漏：每若干请求后基线抬升一档，对象累积未释放\n" + out.join("\n");
+  },
+  saw: function () {
+    var out = [];
+    for (var i = 0; i <= 24; i++) { var tri = 600 - Math.abs((i % 4) - 2) * 300; out.push(i + " " + (10000 + i * 25 + tri + (Math.random() * 30)).toFixed(0)); }
+    return "# 锯齿碎片：周期性涨落，基线缓升，多为碎片化/缓存波动\n" + out.join("\n");
+  }
+};
+
+/* ================= 分析（最小二乘回归） ================= */
+function analyze(pts) {
+  if (!pts || pts.length < 3) return { ok: false, msg: "样本不足（至少 3 个有效点）" };
+  var n = pts.length, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  pts.forEach(function (p) { sx += p.t; sy += p.v; sxx += p.t * p.t; sxy += p.t * p.v; });
+  var denom = n * sxx - sx * sx;
+  var slope = denom === 0 ? 0 : (n * sxy - sx * sy) / denom;        // MiB / 分钟
+  var intercept = (sy - slope * sx) / n;
+  // 残差与方差
+  var resid = pts.map(function (p) { return p.v - (intercept + slope * p.t); });
+  var meanResid = resid.reduce(function (a, b) { return a + b; }, 0) / n;
+  var varResid = resid.reduce(function (a, b) { return a + (b - meanResid) * (b - meanResid); }, 0) / n;
+  var sd = Math.sqrt(varResid);
+  var t0 = pts[0].t, t1 = pts[n - 1].t, span = (t1 - t0) || 1;
+  var v0 = pts[0].v, v1 = pts[n - 1].v, delta = v1 - v0;
+  var relSlope = Math.abs(slope) / (Math.abs(sy / n) || 1) * 100;   // 每分钟相对变化 %
+  // 走势分类
+  var verdict, sev;
+  if (Math.abs(slope) < 8 && sd < 250) { verdict = "健康稳态"; sev = "low"; }
+  else if (Math.abs(slope) < 8) { verdict = "碎片化 / 缓存波动"; sev = "mid"; }
+  else if (slope > 0) { verdict = "疑似显存泄漏"; sev = "high"; }
+  else { verdict = "显存回落（释放正常）"; sev = "low"; }
+  return {
+    ok: true, n: n, slope: slope, intercept: intercept, sd: sd, relSlope: relSlope,
+    span: span, t0: t0, t1: t1, v0: v0, v1: v1, delta: delta, verdict: verdict, sev: sev
+  };
+}
+
+/* ================= Canvas 折线图 ================= */
+function lineChart(id, pts, showTrend, trend) {
+  var cv = document.getElementById(id); if (!cv) return;
+  var r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (r.width < 2) { return; }
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  var g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var W = r.width, H = r.height, pad = { l: 50, r: 12, t: 12, b: 26 };
+  g.clearRect(0, 0, W, H);
+  var fg = css("--dsw-alias-label-secondary"), fgT = css("--dsw-alias-label-tertiary"),
+    border = css("--dsw-alias-border-l1"), accent = css("--dsw-alias-state-accent-primary");
+  var blue = "#60a5fa", amber = "#f59e0b";
+  if (!pts || pts.length < 2) {
+    g.fillStyle = fgT; g.font = "12px -apple-system,'Microsoft YaHei',sans-serif";
+    g.textAlign = "center"; g.fillText("暂无数据（粘贴采样或载入示例后绘制）", W / 2, H / 2);
+    return;
+  }
+  var xs = pts.map(function (p) { return p.t; }), ys = pts.map(function (p) { return p.v; });
+  var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+  var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
+  if (trend && showTrend) { yMin = Math.min(yMin, trend.y0, trend.y1); yMax = Math.max(yMax, trend.y0, trend.y1); }
+  var yPad = (yMax - yMin) * 0.12 || 1; yMin -= yPad; yMax += yPad;
+  var iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  function X(t) { return pad.l + (xMax === xMin ? iw / 2 : (t - xMin) / (xMax - xMin) * iw); }
+  function Y(v) { return pad.t + (1 - (v - yMin) / (yMax - yMin)) * ih; }
+  // 网格 + Y 轴
+  g.strokeStyle = border; g.fillStyle = fgT; g.font = "10px -apple-system,sans-serif";
+  g.lineWidth = 1; g.textAlign = "right"; g.textBaseline = "middle";
+  var ticks = 4;
+  for (var i = 0; i <= ticks; i++) {
+    var v = yMin + (yMax - yMin) * i / ticks, y = Y(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(W - pad.r, y); g.globalAlpha = 0.5; g.stroke(); g.globalAlpha = 1;
+    g.fillText(fmtMB(v), pad.l - 6, y);
+  }
+  // X 轴标签
+  g.textAlign = "center"; g.textBaseline = "top";
+  var xticks = Math.min(6, pts.length - 1);
+  for (var j = 0; j <= xticks; j++) {
+    var t = xMin + (xMax - xMin) * j / xticks, x = X(t);
+    g.fillText(t.toFixed(t % 1 === 0 ? 0 : 1) + "m", x, H - pad.b + 4);
+  }
+  // 趋势线
+  if (trend && showTrend) {
+    g.strokeStyle = amber; g.lineWidth = 1.5; g.setLineDash([5, 4]);
+    g.beginPath(); g.moveTo(X(trend.t0), Y(trend.y0)); g.lineTo(X(trend.t1), Y(trend.y1)); g.stroke();
+    g.setLineDash([]);
+  }
+  // 主曲线
+  g.strokeStyle = blue; g.lineWidth = 2; g.beginPath();
+  pts.forEach(function (p, k) { var x = X(p.t), y = Y(p.v); k ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.stroke();
+  g.fillStyle = blue;
+  pts.forEach(function (p) { g.beginPath(); g.arc(X(p.t), Y(p.v), 2.2, 0, Math.PI * 2); g.fill(); });
+}
+function redrawAll() { lineChart("ovChart", CUR.pts, true, CUR.trend); lineChart("bigChart", CUR.pts, true, CUR.trend); }
+window.addEventListener("resize", redrawAll);
+
+/* ================= 渲染结论 / 概览 ================= */
+var CUR = { pts: [], trend: null, analysis: null };
+function verdictBadge(sev, label) {
+  var map = { high: "dshell-badgeDone", mid: "dshell-badgeWait", low: "dshell-badge" };
+  // 用红色表达高危：自造内联样式
+  if (sev === "high") return '<span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.4)"><span style="width:6px;height:6px;border-radius:50%;background:#f85149;box-shadow:0 0 5px #f85149"></span>' + label + '</span>';
+  if (sev === "mid") return '<span class="dshell-badge dshell-badgeWait">' + label + '</span>';
+  return '<span class="dshell-badge dshell-badgeDone">' + label + '</span>';
+}
+function render(a) {
+  if (!a.ok) {
+    setText("ovVerdict", "待诊断");
+    setText("ovN", "—"); setText("ovGpu", "—"); setText("ovRss", "—"); setText("ovKv", "—");
+    setText("ovRate", "—"); setText("ovRateD", ""); setText("ovGpuD", "");
+    document.getElementById("findings").innerHTML = '<div class="dshell-listItem"><span class="dshell-listItemTitle">' + a.msg + '</span><span class="dshell-badge">待诊断</span></div>';
+    setText("trendNote", a.msg); document.getElementById("trendKv").innerHTML = "";
+    setText("ovChartNote", a.msg);
+    return;
+  }
+  setText("ovN", a.n);
+  setText("ovGpu", fmtMB(a.v1));
+  setText("ovGpuD", (a.delta >= 0 ? "+" : "") + fmtMB(a.delta) + " / 区间");
+  // 估算 RSS（显存约占进程 GPU 部分；给出参照提示，不冒充真实值）
+  setText("ovRss", fmtMB(a.v1 * 1.4));
+  setText("ovKv", "需 /metrics");
+  setText("ovRate", a.slope.toFixed(1) + " MiB/m");
+  setText("ovRateD", (a.slope * 60).toFixed(0) + " MiB/h" + (a.slope > 0 ? " · 上升" : a.slope < 0 ? " · 下降" : ""));
+  setText("ovVerdict", a.verdict);
+  var sevColor = a.sev === "high" ? "#f85149" : a.sev === "mid" ? "#d29922" : "#3fb950";
+  var el = document.getElementById("ovVerdict"); if (el) el.style.color = sevColor;
+
+  // 结论列表
+  var rate = a.slope * 60;
+  var findings = [];
+  findings.push({ sev: a.sev, t: a.verdict, d: "区间 " + a.t0.toFixed(1) + "–" + a.t1.toFixed(1) + "m，斜率 " + a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）" });
+  if (a.slope > 8) findings.push({ sev: "high", t: "显存单调上升", d: "约 " + fmtMB(a.delta) + " 未释放，优先查张量残留 / KV block 回收 / 权重重复加载" });
+  if (a.sd > 250 && Math.abs(a.slope) < 8) findings.push({ sev: "mid", t: "波动大但趋势平稳", d: "标准差 " + a.sd.toFixed(0) + " MiB，疑似碎片化或临时缓存波动" });
+  if (a.slope <= 8 && a.sd < 250) findings.push({ sev: "low", t: "稳态健康", d: "斜率与方差均低，分配/释放平衡" });
+  document.getElementById("findings").innerHTML = findings.map(function (f) {
+    return '<div class="dshell-listItem"><span class="dshell-listItemTitle">' + f.t + ' — ' + f.d + '</span>' + verdictBadge(f.sev, f.sev === "high" ? "高危" : f.sev === "mid" ? "关注" : "正常") + '</div>';
+  }).join("");
+
+  // 趋势统计
+  var rows = [
+    ["样本数", a.n], ["时间区间", a.t0.toFixed(1) + " – " + a.t1.toFixed(1) + " m"],
+    ["起点显存", fmtMB(a.v0)], ["终点显存", fmtMB(a.v1)],
+    ["净变化", (a.delta >= 0 ? "+" : "") + fmtMB(a.delta)],
+    ["泄漏速率", a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）"],
+    ["相对速率", a.relSlope.toFixed(3) + " %/m"],
+    ["残差标准差", a.sd.toFixed(0) + " MiB"]
+  ];
+  document.getElementById("trendKv").innerHTML = rows.map(function (r) { return '<div class="dshell-kvRow"><span class="dshell-kvKey">' + r[0] + '</span><span class="dshell-kvValue">' + r[1] + '</span></div>'; }).join("");
+  setText("trendNote", "结论：" + a.verdict + "。斜率为正且显著即判泄漏；方差大、斜率小判碎片化。");
+  setText("ovChartNote", a.verdict + " · 斜率 " + a.slope.toFixed(1) + " MiB/m。");
+}
+function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
+
+function runAnalysis() {
+  var text = document.getElementById("sampleInput").value;
+  CUR.pts = parseSamples(text);
+  var a = analyze(CUR.pts);
+  CUR.analysis = a;
+  if (a.ok) { CUR.trend = { t0: a.t0, t1: a.t1, y0: a.intercept + a.slope * a.t0, y1: a.intercept + a.slope * a.t1 }; }
+  else CUR.trend = null;
+  render(a);
+  redrawAll();
+}
+
+document.getElementById("btnAnalyze").addEventListener("click", runAnalysis);
+document.getElementById("btnClear").addEventListener("click", function () {
+  document.getElementById("sampleInput").value = ""; CUR.pts = []; CUR.trend = null; render({ ok: false, msg: "已清空，粘贴采样或载入示例后分析" }); redrawAll();
+});
+Array.prototype.forEach.call(document.querySelectorAll("[data-sample]"), function (b) {
+  b.addEventListener("click", function () {
+    document.getElementById("sampleInput").value = SAMPLES[b.getAttribute("data-sample")]();
+    runAnalysis();
+  });
+});
+
+/* ================= 泄漏模式卡片 ================= */
+var PATTERNS = [
+  { sev: "high", name: "PyTorch 张量未释放", sig: "显存随推理单调上升，empty_cache 不回落", detect: "torch.cuda.memory_allocated() 逐 step 打印；memray 跑出分配栈", fix: "检查 autograd 是否保留计算图（需 .detach() 或 torch.no_grad）；中间张量不要持有引用；用完即 del + empty_cache" },
+  { sev: "high", name: "KV Cache block 未回收", sig: "vLLM occupied 上升且 preempt 计数增长，请求结束后不下降", detect: "curl /metrics 看 vllm:gpu_cache_usage_perc、num_preemption", fix: "检查序列调度是否泄漏 seq；确认 free_block_set 在请求结束被归还；排查 cancelled/aborted 请求未走释放路径" },
+  { sev: "mid", name: "CUDA 显存碎片化", sig: "显存总量够但 OOM；reserved 高、allocated 低", detect: "torch.cuda.memory_reserved() vs memory_allocated()；PyTorch 内存快照 fragmentation", fix: "设 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True；调大 block 粒度或定期 empty_cache" },
+  { sev: "high", name: "per-request 张量累积", sig: "阶梯式增长，每若干请求抬升一档", detect: "memray --live 看对象增长 Top；审查持有 per-request 输出的 list/dict", fix: "禁止把 outputs/logits 存进无界列表；记录用指标聚合而非保留张量；定期清空缓存结构" },
+  { sev: "mid", name: "Python 引用循环 / 闭包", sig: "RSS 缓慢爬升，GC 后部分回落", detect: "gc.get_referrers / objgraph 找循环；tracemalloc snapshots diff", fix: "打断循环引用；避免闭包捕获大对象；弱引用 weakref 持有可选依赖" },
+  { sev: "high", name: "模型权重重复加载", sig: "每次 reload 后显存跳升且不归还", detect: "审查 from_pretrained / load_state_dict 调用次数与 del 时机", fix: "复用同一实例，load 前显式 del 旧模型并 empty_cache；权重用 meta 设备或共享" },
+  { sev: "mid", name: "通信缓冲区累积", sig: "多卡 all-reduce/NCCL 场景下显存缓升", detect: "监控 NCCL buffer；排查未释放的 send/recv buffer", fix: "复用预分配 buffer；通信完成后及时释放；关闭不必要的 persistent buffer" },
+  { sev: "low", name: "内存池 / 缓存无上限", sig: "缓存命中率指标上涨但显存同步爬升", detect: "审查自定义 LRU/字典缓存大小；监控缓存条目数", fix: "给缓存设 maxlen / TTL；定期淘汰；区分可重建与不可重建缓存" }
+];
+(function () {
+  var grid = document.getElementById("patternGrid");
+  grid.innerHTML = PATTERNS.map(function (p, i) {
+    var sevLabel = p.sev === "high" ? "高危" : p.sev === "mid" ? "关注" : "低危";
+    return '<details class="dshell-card ml-pattern" data-sev="' + p.sev + '">' +
+      '<summary class="ml-pattern-head"><span class="dshell-listItemTitle">' + p.name + '</span>' + verdictBadge(p.sev, sevLabel) + '</summary>' +
+      '<div class="ml-pattern-body">' +
+      '<div class="ml-sec">典型特征</div><div style="font-size:12.5px;margin-bottom:8px">' + p.sig + '</div>' +
+      '<div class="ml-sec">检测方法</div><div class="ml-code" style="margin-bottom:8px">' + p.detect + '</div>' +
+      '<div class="ml-sec">修复建议</div><div class="ml-code">' + p.fix + '</div>' +
+      '</div></details>';
+  }).join("");
+})();
+
+/* ================= 检查清单 ================= */
+var CHECKLIST = [
+  ["基线确认", "空载（无请求）运行 30min，显存是否稳定不上涨"],
+  ["基线确认", "连续重复推理同一固定 prompt，显存是否单调上升"],
+  ["基线确认", "调用 torch.cuda.empty_cache() 后显存是否明显回落"],
+  ["定位手段", "用 memray / tracemalloc 跑出对象增长 Top"],
+  ["定位手段", "用 py-spy dump 抓取堆栈，确认持有者"],
+  ["定位手段", "nvidia-smi -l 1 记录显存曲线对照趋势"],
+  ["常见嫌疑", "检查 autograd 是否未 detach / 保留计算图"],
+  ["常见嫌疑", "检查 per-request tensor 是否存进未清理的 list/dict"],
+  ["常见嫌疑", "检查 KV cache blocks 在请求结束是否 free"],
+  ["常见嫌疑", "检查是否重复 load 模型权重而未 del 旧实例"],
+  ["常见嫌疑", "检查自定义内存池 / 缓存是否无上限增长"],
+  ["验证修复", "修复后空载 60min 显存斜率 ≈ 0"],
+  ["验证修复", "压测下显存进入稳态（不再单调上升）"]
+];
+var chkState = {};
+try { chkState = JSON.parse(localStorage.getItem("memLeak.checklist") || "{}") || {}; } catch (e) {}
+function renderChecklist() {
+  var list = document.getElementById("chkList");
+  list.innerHTML = CHECKLIST.map(function (it, i) {
+    var id = "chk" + i, on = !!chkState[id];
+    return '<label><input type="checkbox" id="' + id + '" ' + (on ? "checked" : "") + ' /><span><span class="ml-pill" style="background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15));color:var(--dsw-alias-label-secondary,#9aa4b2)">' + it[0] + '</span> &nbsp;' + it[1] + '</span></label>';
+  }).join("");
+  CHECKLIST.forEach(function (it, i) {
+    var el = document.getElementById("chk" + i);
+    if (el) el.addEventListener("change", function () {
+      chkState["chk" + i] = el.checked;
+      try { localStorage.setItem("memLeak.checklist", JSON.stringify(chkState)); } catch (e) {}
+      updateChkProgress();
+    });
+  });
+  updateChkProgress();
+}
+function updateChkProgress() {
+  var done = 0; CHECKLIST.forEach(function (_, i) { if (chkState["chk" + i]) done++; });
+  var pct = CHECKLIST.length ? (done / CHECKLIST.length * 100) : 0;
+  document.getElementById("chkBar").style.width = pct + "%";
+  setText("chkCount", done + " / " + CHECKLIST.length + "（" + pct.toFixed(0) + "%）");
+}
+renderChecklist();
+document.getElementById("chkReset").addEventListener("click", function () {
+  chkState = {}; try { localStorage.setItem("memLeak.checklist", "{}"); } catch (e) {} renderChecklist();
+});
+
+/* ================= 工具与命令 ================= */
+var TOOLS = [
+  { title: "显存实时监控", cmds: [
+    "nvidia-smi --query-gpu=memory.used,memory.free --format=csv -l 1",
+    "nvidia-smi dmon -s u"
+  ] },
+  { title: "PyTorch 显存诊断", cmds: [
+    "print('alloc', torch.cuda.memory_allocated()/1024**3, 'GiB')",
+    "print('reserved', torch.cuda.memory_reserved()/1024**3, 'GiB')",
+    "torch.cuda.empty_cache()"
+  ] },
+  { title: "对象级增长定位", cmds: [
+    "memray run -o out.bin python serve.py",
+    "memray stats out.bin           # 分配 Top",
+    "memray flamegraph out.bin      # 火焰图"
+  ] },
+  { title: "持有者堆栈", cmds: [
+    "py-spy dump --pid <pid>        # 抓取当前堆栈",
+    "py-spy top --pid <pid>        # 实时 CPU 热点"
+  ] },
+  { title: "vLLM 内部指标", cmds: [
+    "curl -s http://<host>:8000/metrics | grep -Ei 'cache_usage|num_preempt|requests'",
+    "curl -s http://<host>:8000/metrics | grep vllm"
+  ] },
+  { title: "进程 RSS", cmds: [
+    "grep VmRSS /proc/<pid>/status",
+    "watch -n1 \"awk '/VmRSS/{print \\$2\\\" KiB\\\"}' /proc/<pid>/status\""
+  ] },
+  { title: "显存碎片化", cmds: [
+    "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python serve.py",
+    "# 内存快照：torch.cuda.memory._snapshot() 导出后用可视化分析"
+  ] },
+  { title: "PyTorch 内存快照", cmds: [
+    "import torch.cuda.memory as M",
+    "snap = M._snapshot(); M._dump_snapshot('snap.pickle')",
+    "# 浏览器打开 pytorch.org/memory_stats 可视化"
+  ] }
+];
+(function () {
+  var grid = document.getElementById("toolGrid");
+  grid.innerHTML = TOOLS.map(function (t, i) {
+    var code = t.cmds.join("\n");
+    return '<div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px">' + t.title + '</h2>' +
+      '<div class="ml-codebar"><span class="dshell-muted" style="font-size:11px">命令</span>' +
+      '<button class="ml-copy" data-copy="' + i + '" type="button">复制</button></div>' +
+      '<pre class="ml-code" data-code="' + i + '">' + esc(code) + '</pre></div>';
+  }).join("");
+  Array.prototype.forEach.call(grid.querySelectorAll(".ml-copy"), function (btn) {
+    btn.addEventListener("click", function () {
+      var i = btn.getAttribute("data-copy");
+      var text = TOOLS[i].cmds.join("\n");
+      var done = function () { var o = btn.textContent; btn.textContent = "已复制"; setTimeout(function () { btn.textContent = o; }, 1200); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done); else done();
+    });
+  });
+})();
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+/* 初始空状态 */
+render({ ok: false, msg: "粘贴采样或点「载入示例」后开始诊断" });
+redrawAll();
+})();
+</script>
+</body>
+</html>
