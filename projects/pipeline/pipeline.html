@@ -3443,7 +3443,7 @@ function buildLogParts(stage,ctx,n){
 }
 
 /* ---------- 运行队列 + 调度 ---------- */
-const QUEUE_CAP = 8;
+const QUEUE_CAP = 16;
 const MAX_ACTIVE_RUNS = 4;   // 浏览器单标签页全局槽位：避免不同机器的大日志任务同时把 CPU/内存/连接打满
 let queue = [];
 function resetNodes(){

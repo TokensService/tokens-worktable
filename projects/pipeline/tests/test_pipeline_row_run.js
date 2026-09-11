@@ -85,7 +85,7 @@ function makeContext(runResult) {
     openPlForm() {}, copyPipeline() {}, deletePipeline() {}, renderPipelineSel() {},
     flashRunTip: text => calls.tips.push(text),
     alert: text => calls.alerts.push(text),
-    QUEUE_CAP: 8,
+    QUEUE_CAP: 16,
     queue,
   };
   vm.createContext(context);
@@ -127,7 +127,7 @@ test('▶ 在队列已满时沿用现有容量提示', () => {
   const button = tbody.querySelectorAll('[data-plrun]')[0];
   button.handlers.click({ stopPropagation() {} });
   assert.equal(calls.alerts.length, 1);
-  assert.match(calls.alerts[0], /队列已满（上限 8）/);
+  assert.match(calls.alerts[0], /队列已满（上限 16）/);
 });
 
 test('每条流水线提供 API 按钮并打开对应流水线的调用说明', () => {
