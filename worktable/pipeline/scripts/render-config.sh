@@ -127,7 +127,7 @@ text = path.read_text(encoding="utf-8")
 task_executor_marker = "groupName: {{ $teGroupValues.name }}"
 worker_marker = "groupName: {{ $groupName }}"
 task_executor_name = '''groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else if contains "decode" (lower $teGroupValues.name) }}decode-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else }}{{ $teGroupValues.name }}{{ end }}'''
-worker_name = '''groupName: {{ if eq $groupName "ctrlGroup" }}ctrl{{ else if or (eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je{{ else }}{{ $groupName }}{{ end }}'''
+worker_name = '''groupName: {{ if eq $groupName "ctrlGroup" }}ctrl{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je{{ else }}{{ $groupName }}{{ end }}'''
 
 if task_executor_marker not in text and task_executor_name not in text:
     raise SystemExit(f"task executor groupName marker not found: {path}")

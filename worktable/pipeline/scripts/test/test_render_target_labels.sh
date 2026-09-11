@@ -243,6 +243,11 @@ PY
 rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
 grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
+grep -Fq 'else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je' "$rendered_chart"
+if grep -Fq 'eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe' "$rendered_chart"; then
+  echo "frontGroup must remain the KubeRay group name" >&2
+  exit 1
+fi
 rendered_service="$work_dir/run/rendered/xds-cluster/templates/ray-svc.yaml"
 grep -Fq 'ray.io/group: frontGroup' "$rendered_service"
 if grep -Fq 'app.kubernetes.io/created-by: kuberay-operator' "$rendered_service"; then
