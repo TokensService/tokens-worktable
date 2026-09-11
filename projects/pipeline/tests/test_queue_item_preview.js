@@ -213,7 +213,8 @@ function makeScheduleContext() {
     curPipeline: () => ({ id: 'p1', name: 'PL-p1', stages: [{ id: 's1', name: '构建' }] }),
     resolvePipelineRunOptions: (pl, opts) => opts,
     pipelineDefaultRunIssue: () => null,
-    $: id => ({ value: id === 'triggeredBy' ? 'tester' : '' }),
+    $: id => ({ value: '' }),
+    currentUsername: 'tester',   // 执行人只读、固定取登录用户后的唯一读取点
     curEnvs: () => [{ ip: '10.0.0.1' }],
     resolveEnv: ip => ({ ip }),
     resolveRepo: () => ({ id: 'repo1', name: 'repo1' }),

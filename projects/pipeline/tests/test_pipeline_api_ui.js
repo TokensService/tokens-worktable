@@ -12,7 +12,8 @@ function section(begin,end){
 function context(overrides={}){
   const code=section('/* ---------- 流水线默认运行参数 ---------- */','/* ---------- 流水线默认运行参数结束 ---------- */')+'\n'+
     section('/* ---------- 流水线 API 调用说明 ---------- */','/* ---------- 流水线 API 调用说明结束 ---------- */');
-  const ctx=Object.assign({Array,Object,String,Set,JSON,encodeURIComponent,environments:[],repositories:[],
+  /* currentUsername：执行人只读、固定取登录用户后的唯一读取点；缺省留空（回退 api），用例按需覆盖 */
+  const ctx=Object.assign({Array,Object,String,Set,JSON,encodeURIComponent,environments:[],repositories:[],currentUsername:'',
     $:()=>null,curEnvs:()=>[],curStrategy:()=>'',selectedPresetKeys:()=>[]},overrides);
   vm.createContext(ctx);vm.runInContext(code,ctx);return ctx;
 }
@@ -21,7 +22,8 @@ const J=value=>JSON.parse(JSON.stringify(value));
 
 test('API 请求体与 curl 按运行框当前填写的参数动态生成',()=>{
   const ctx=context({
-    $:form({repoSel:'repo-app',branchName:'release',triggeredBy:'alice'}),
+    $:form({repoSel:'repo-app',branchName:'release'}),
+    currentUsername:'alice',
     curEnvs:()=>[{id:'env-prod',ip:'10.0.0.8'}],
     curStrategy:()=>'blue-green',
     selectedPresetKeys:()=>['cleanup','check'],
