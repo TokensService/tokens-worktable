@@ -602,12 +602,30 @@ const previewFetching = new Set<string>()
 let previewSweepBusy = false
 let previewTimer: number | null = null
 
-/** 从历史事件尾部提取最近一条完整 AI 文本；结果桥据此把最终回答交还 iframe 页面。 */
-function assistantResultText(events: any[]): string {
-  if (!Array.isArray(events)) return ''
+type AssistantResultOutcome =
+  { state: 'pending' } | { state: 'completed'; text: string } | { state: 'failed'; error: string }
+
+/** 从最后一个已结束回合提取结果；只有正常 completed 且未中止的 AI 文本才可交还 iframe。 */
+function assistantResultOutcome(events: any[]): AssistantResultOutcome {
+  if (!Array.isArray(events)) return { state: 'pending' }
+  let endIndex = -1
   for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.event?.type === 'turn/end') { endIndex = i; break }
+  }
+  if (endIndex < 0) return { state: 'pending' }
+  const endData = events[endIndex]?.event?.data ?? {}
+  const reason = endData.reason ?? {}
+  const reasonKind = typeof reason.kind === 'string' ? reason.kind : 'unknown'
+  if (reasonKind !== 'completed') {
+    const detail = reason.error?.message ?? reason.failure?.message ?? reason.message
+    return { state: 'failed', error: 'AI 生成未正常完成（' + reasonKind + (detail ? '：' + String(detail) : '') + '）' }
+  }
+  const turn = endData.turn
+  for (let i = endIndex - 1; i >= 0; i--) {
     const ev = events[i]?.event
-    if (ev?.type !== 'assistant/message') continue
+    if (ev?.type === 'turn/start' && (turn === undefined || ev.data?.turn === turn)) break
+    if (ev?.type !== 'assistant/message' || (turn !== undefined && ev.data?.turn !== turn)) continue
+    if (ev.data?.interrupted === true) return { state: 'failed', error: 'AI 生成已中止' }
     const message = ev.data?.message ?? ev.data ?? {}
     const blocks = message.content ?? message.blocks
     if (!Array.isArray(blocks)) continue
@@ -615,51 +633,53 @@ function assistantResultText(events: any[]): string {
       .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
       .map((block: any) => block.text.trim())
       .filter(Boolean)
-    if (parts.length > 0) return parts.join('\n').trim()
+    if (parts.length > 0) return { state: 'completed', text: parts.join('\n').trim() }
   }
-  return ''
+  return { state: 'failed', error: 'AI 已完成但未返回可回填的文本' }
 }
 
-/** 等待指定新会话完成，并从其持久历史读取最终 AI 文本。 */
+/** 等待指定新会话完成，并从公开的会话事件窗读取最终 AI 文本。 */
 function waitForSessionAssistant(sessionId: string, timeoutMs = 15 * 60_000): Promise<string> {
   const bridge = sessionBridge
   const list = bridge?.list
-  if (!bridge || !list || typeof list.getSnapshot !== 'function' || typeof list.subscribe !== 'function') {
+  const binding = bridge?.sessions?.binding?.(sessionId)
+  const eventSource = binding?.eventSource
+  if (!bridge || !list || typeof list.getSnapshot !== 'function' || typeof list.subscribe !== 'function' ||
+      !eventSource || typeof eventSource.getSnapshot !== 'function' || typeof eventSource.subscribe !== 'function') {
     return Promise.reject(new Error('session result bridge unavailable'))
   }
   return new Promise((resolve, reject) => {
     let settled = false
-    let reading = false
-    let unsubscribe = () => {}
+    const disposers: Array<() => void> = []
     const timer = setTimeout(() => finish(new Error('等待 AI 生成结果超时')), timeoutMs)
     const finish = (error: Error | null, text = '') => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      unsubscribe()
+      for (const dispose of disposers.splice(0)) dispose()
       if (error) reject(error)
       else resolve(text)
     }
-    const check = async () => {
-      if (settled || reading) return
+    const check = () => {
+      if (settled) return
       const entry = list.getSnapshot()?.byId?.[sessionId]
       if (!entry || entry.running === true) return
-      reading = true
-      try {
-        const face = bridge.sessions?.binding?.(sessionId)?.session
-        if (!face || typeof face.history !== 'function') throw new Error('AI 会话历史不可用')
-        const history = await face.history({ maxMessages: 12 })
-        const text = assistantResultText(history?.result?.value?.events)
-        // prompt 入列与 running=true 之间可能短暂无运行态；尚无回答时继续等下一次会话快照。
-        if (text) finish(null, text)
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)))
-      } finally {
-        reading = false
-      }
+      const agentError = binding?.session?.getSnapshot?.()?.lastAgentError
+      if (typeof agentError === 'string' && agentError) { finish(new Error(agentError)); return }
+      const outcome = assistantResultOutcome(eventSource.getSnapshot()?.entries)
+      if (outcome.state === 'completed') { finish(null, outcome.text); return }
+      if (outcome.state === 'failed') { finish(new Error(outcome.error)); return }
+      // prompt 入列与 running=true、最终事件落窗之间都可能短暂无运行态；
+      // list 与 eventSource 任一后续发布都会重新检查，避免读取半成品或漏掉稍后落窗的回答。
     }
-    unsubscribe = list.subscribe(() => { void check() })
-    void check()
+    const watch = (source: { subscribe: (listener: () => void) => () => void }) => {
+      const dispose = source.subscribe(check)
+      if (settled) dispose()
+      else disposers.push(dispose)
+    }
+    watch(list)
+    watch(eventSource)
+    check()
   })
 }
 

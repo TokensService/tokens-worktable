@@ -32,7 +32,7 @@ function loadFunction(name) {
 
 function loadBridgeFunction(name, context) {
   const code = stripTypeScriptTypes(
-    functionSource('assistantResultText') + '\n' + functionSource(name) + '\n;globalThis.__fn = ' + name,
+    functionSource('assistantResultOutcome') + '\n' + functionSource(name) + '\n;globalThis.__fn = ' + name,
     { mode: 'transform' },
   )
   vm.createContext(context)
@@ -40,49 +40,73 @@ function loadBridgeFunction(name, context) {
   return context.__fn
 }
 
-test('从会话历史中返回最后一条 AI 完整文本', () => {
-  const assistantResultText = loadFunction('assistantResultText')
+test('只从正常完成的最后一回合返回 AI 完整文本', () => {
+  const assistantResultOutcome = loadFunction('assistantResultOutcome')
   const events = [
-    { event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧回答' }] } } } },
+    { event: { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '旧回答' }] } } } },
+    { event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } },
     { event: { type: 'user/message', data: { content: [{ type: 'text', text: '用户提示' }] } } },
-    { event: { type: 'assistant/message', data: { message: { content: [
+    { event: { type: 'assistant/message', data: { turn: 2, message: { content: [
       { type: 'text', text: '第一段' },
       { type: 'tool-call', text: '不应回填' },
       { type: 'text', text: '第二段' },
     ] } } } },
+    { event: { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } } },
   ]
 
-  assert.equal(assistantResultText(events), '第一段\n第二段')
+  assert.equal(JSON.stringify(assistantResultOutcome(events)), JSON.stringify({ state: 'completed', text: '第一段\n第二段' }))
+})
+
+test('中止或错误回合即使已有 AI 文本也标记失败', () => {
+  const assistantResultOutcome = loadFunction('assistantResultOutcome')
+  const assistant = interrupted => ({ event: { type: 'assistant/message', data: {
+    turn: 1, ...(interrupted ? { interrupted: true } : {}),
+    message: { content: [{ type: 'text', text: '<dsh-release-config>{}</dsh-release-config>' }] },
+  } } })
+
+  assert.equal(assistantResultOutcome([
+    assistant(true),
+    { event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted' } } } },
+  ]).state, 'failed')
+  assert.equal(assistantResultOutcome([
+    assistant(false),
+    { event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', message: 'boom' } } } },
+  ]).state, 'failed')
 })
 
 test('等待 AI 会话完成后才读取并返回最终回答', async () => {
   let snapshot = { byId: { 'session-1': { running: true, completed: false } } }
-  const listeners = new Set()
-  let historyReads = 0
-  const face = {
-    async history() {
-      historyReads += 1
-      return { result: { ok: true, value: { events: [
-        { event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '最终建议' }] } } } },
-      ] } } }
-    },
+  let entries = []
+  const listListeners = new Set()
+  const eventListeners = new Set()
+  let eventReads = 0
+  const eventSource = {
+    getSnapshot() { eventReads += 1; return { entries } },
+    subscribe(fn) { eventListeners.add(fn); return () => eventListeners.delete(fn) },
   }
   const list = {
     getSnapshot: () => snapshot,
-    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn) },
+    subscribe(fn) { listListeners.add(fn); return () => listListeners.delete(fn) },
   }
   const context = {
     Array, String, Error, setTimeout, clearTimeout,
-    sessionBridge: { list, sessions: { binding: id => id === 'session-1' ? { session: face } : null } },
+    sessionBridge: { list, sessions: { binding: id => id === 'session-1' ? { eventSource } : null } },
   }
   const waitForSessionAssistant = loadBridgeFunction('waitForSessionAssistant', context)
 
   const waiting = waitForSessionAssistant('session-1', 200)
   await new Promise(resolve => setTimeout(resolve, 5))
-  assert.equal(historyReads, 0, '运行中不得读取半成品回答')
+  assert.equal(eventReads, 0, '运行中不得读取半成品回答')
 
   snapshot = { byId: { 'session-1': { running: false, completed: true } } }
-  listeners.forEach(fn => fn())
+  listListeners.forEach(fn => fn())
+  assert.equal(eventReads, 1)
+
+  entries = [
+    { event: { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '最终建议' }] } } } },
+    { event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } },
+  ]
+  eventListeners.forEach(fn => fn())
 
   assert.equal(await waiting, '最终建议')
 })
@@ -90,12 +114,14 @@ test('等待 AI 会话完成后才读取并返回最终回答', async () => {
 test('当前选中的 AI 会话没有 completed 提醒标志时仍在停止后返回回答', async () => {
   let snapshot = { byId: { 'session-current': { running: true } } }
   const listeners = new Set()
-  const face = {
-    async history() {
-      return { result: { ok: true, value: { events: [
-        { event: { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '已生成并完成' }] } } } },
-      ] } } }
+  const eventSource = {
+    getSnapshot() {
+      return { entries: [
+        { event: { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '已生成并完成' }] } } } },
+        { event: { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } } },
+      ] }
     },
+    subscribe() { return () => {} },
   }
   const list = {
     getSnapshot: () => snapshot,
@@ -103,7 +129,7 @@ test('当前选中的 AI 会话没有 completed 提醒标志时仍在停止后�
   }
   const context = {
     Array, String, Error, setTimeout, clearTimeout,
-    sessionBridge: { list, sessions: { binding: () => ({ session: face }) } },
+    sessionBridge: { list, sessions: { binding: () => ({ eventSource }) } },
   }
   const waitForSessionAssistant = loadBridgeFunction('waitForSessionAssistant', context)
   const waiting = waitForSessionAssistant('session-current', 50)

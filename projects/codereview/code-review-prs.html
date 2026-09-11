@@ -684,9 +684,10 @@
   }
 
   /* ---------- 分页拉取 ---------- */
-  function fetchAll(pathBase, perPage, mode) {
+  function fetchAll(pathBase, perPage, mode, guard) {
     var out = [];
     function page(n) {
+      if (typeof guard === "function" && !guard()) return Promise.reject(new Error("请求上下文已变更"));
       var sep = pathBase.indexOf("?") >= 0 ? "&" : "?";
       return fetchJSON(pathBase + sep + "page=" + n + "&per_page=" + perPage, mode).then(function (arr) {
         if (!Array.isArray(arr)) return out;
@@ -2387,9 +2388,9 @@
     if (relCfgCloudCache !== null) return Promise.resolve(relCfgCloudCache);
     return loadRelCfgCloud();
   }
-  function relBranchKey() {           // 当前选中的 "owner/repo@branch" 键；未选仓库或未填分支时为空串
-    var repo = relSelectedRepo(), branch = relBranch.value.trim();
-    return (repo && branch) ? repo.owner + "/" + repo.name + "@" + branch : "";
+  function relBranchKey() {           // 当前选中的 "owner/repo@branch" 键；空分支与发行逻辑一致按 main
+    var repo = relSelectedRepo(), branch = relBranch.value.trim() || "main";
+    return repo ? repo.owner + "/" + repo.name + "@" + branch : "";
   }
   function readRelFormCfg() {
     return { script: effectiveBuildScript(), buildCmd: relBuildCmd.value.trim(),
@@ -2469,8 +2470,15 @@
     var parsed;
     try { parsed = JSON.parse(text.slice(start + open.length, end).trim()); }
     catch (e) { throw new Error("AI 返回的构建配置不是有效 JSON"); }
-    if (!parsed || typeof parsed !== "object") throw new Error("AI 返回的构建配置格式无效");
-    var script = String(parsed.script || "").trim(), artifacts = String(parsed.artifacts || "").trim();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("AI 返回的构建配置格式无效");
+    var keys = Object.keys(parsed);
+    if (keys.length !== 2 || !Object.prototype.hasOwnProperty.call(parsed, "script") || !Object.prototype.hasOwnProperty.call(parsed, "artifacts")) {
+      throw new Error("AI 构建配置必须且只能包含 script 与 artifacts");
+    }
+    if (typeof parsed.script !== "string" || typeof parsed.artifacts !== "string") {
+      throw new Error("AI 构建配置的 script 与 artifacts 必须是字符串字段");
+    }
+    var script = parsed.script.trim(), artifacts = parsed.artifacts.trim();
     var paths = (script ? [script] : []).concat(artifacts ? artifacts.split(/\s+/) : []);
     if (paths.some(function (path) { return path[0] === "/" || path.indexOf("..") >= 0; })) {
       throw new Error("AI 建议必须使用不含 .. 的仓内相对路径");
@@ -2501,6 +2509,7 @@
   async function genRelBuildSuggestion() {
     if (relBuildAiBusy) return;
     if (!state.token) { toast("请先在『设置』页配置令牌", true); return; }
+    var platform = state.platform;
     var repo = relSelectedRepo();
     if (!repo) { toast("请先选择仓库（列表为空时点 ⟳ 拉取）", true); return; }
     var branch = relBranch.value.trim() || "main";
@@ -2511,8 +2520,8 @@
     try {
       var raw = await requestAiResult(buildRelBuildSuggestionPrompt(repo, branch));
       var currentRepo = relSelectedRepo();
-      if (!currentRepo || currentRepo.owner !== repo.owner || currentRepo.name !== repo.name || (relBranch.value.trim() || "main") !== branch) {
-        throw new Error("仓库或分支已变更，已丢弃旧 AI 建议");
+      if (state.platform !== platform || !currentRepo || currentRepo.owner !== repo.owner || currentRepo.name !== repo.name || (relBranch.value.trim() || "main") !== branch) {
+        throw new Error("平台、仓库或分支已变更，已丢弃旧 AI 建议");
       }
       var suggestion = parseRelBuildSuggestion(raw);
       if (!suggestion.script) throw new Error("AI 未找到可信的仓内构建脚本，已保留原配置");
@@ -2561,7 +2570,7 @@
       date: (c.author && c.author.date) || ""
     };
   }
-  function fetchRangeCommits(repo, branch, prevRel) {
+  function fetchRangeCommits(repo, branch, prevRel, guard) {
     var repoPath = "/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name);
     var base = prevRel && prevRel.tag_name;
     var viaCompare = base
@@ -2573,9 +2582,10 @@
           })
       : Promise.reject(new Error("无历史发行版")); // 直接走回退路径
     return viaCompare.catch(function () {
+      if (typeof guard === "function" && !guard()) throw new Error("请求上下文已变更");
       var q = repoPath + "/commits?sha=" + encodeURIComponent(branch);
       if (base && prevRel.created_at) q += "&since=" + encodeURIComponent(prevRel.created_at);
-      return fetchAll(q, 100).then(function (arr) { return arr || []; });
+      return fetchAll(q, 100, null, guard).then(function (arr) { return arr || []; });
     }).then(function (commits) {
       return commits.map(normalizeCommit).filter(function (c) { return c.sha; })
         .slice(0, REL_NOTES_COMMIT_MAX);
@@ -2618,15 +2628,23 @@
   async function genRelNotes() {
     if (relNotesAiBusy) return;
     if (!state.token) { toast("请先在「设置」页配置令牌", true); return; }
+    var platform = state.platform;
     var repo = relSelectedRepo();
     if (!repo) { toast("请先选择仓库（列表为空时点 ⟳ 拉取）", true); return; }
     var branch = relBranch.value.trim() || "main";
     var tag = relTag.value.trim(), name = relName.value.trim();
+    var selectionCurrent = function () {
+      var currentRepo = relSelectedRepo();
+      return state.platform === platform && !!currentRepo && currentRepo.owner === repo.owner && currentRepo.name === repo.name &&
+        (relBranch.value.trim() || "main") === branch && relTag.value.trim() === tag && relName.value.trim() === name;
+    };
     relNotesAiBusy = true; relNotesAiBtn.disabled = true; relNotesAiBtn.textContent = "⏳ 生成中…"; relNotesAiTip.textContent = "";
     var prevRel = null;
     try {
       prevRel = await fetchPrevRelease(repo);
-      var commits = await fetchRangeCommits(repo, branch, prevRel);
+      if (!selectionCurrent()) throw new Error("平台、仓库、分支或发行信息已变更，已停止旧 AI 发行说明任务");
+      var commits = await fetchRangeCommits(repo, branch, prevRel, selectionCurrent);
+      if (!selectionCurrent()) throw new Error("平台、仓库、分支或发行信息已变更，已停止旧 AI 发行说明任务");
       if (!commits.length) {
         toast(prevRel ? "上一发行版 " + prevRel.tag_name + " 之后 " + branch + " 分支没有新提交" : branch + " 分支还没有提交", true);
         return;
@@ -2634,10 +2652,8 @@
       var rangeTip = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
       relNotesAiTip.textContent = rangeTip + " · 等待 AI 生成…";
       var raw = await requestAiResult(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
-      var currentRepo = relSelectedRepo();
-      if (!currentRepo || currentRepo.owner !== repo.owner || currentRepo.name !== repo.name ||
-          (relBranch.value.trim() || "main") !== branch || relTag.value.trim() !== tag || relName.value.trim() !== name) {
-        throw new Error("仓库、分支或发行信息已变更，已丢弃旧 AI 发行说明");
+      if (!selectionCurrent()) {
+        throw new Error("平台、仓库、分支或发行信息已变更，已丢弃旧 AI 发行说明");
       }
       relBody.value = parseRelNotesResult(raw);
       relNotesAiTip.textContent = rangeTip + " · ✓ 已自动回填";

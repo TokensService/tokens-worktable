@@ -59,6 +59,26 @@ test('AI 构建建议拒绝绝对路径和目录穿越，不覆盖为危险配�
   assert.throws(() => parseRelBuildSuggestion(wrapped({ script: 'scripts/build.sh', artifacts: 'dist/../secret' })), /仓内相对路径/)
 })
 
+test('AI 构建建议严格要求仅含两个字符串字段', () => {
+  const parseRelBuildSuggestion = loadFunction('parseRelBuildSuggestion')
+  const wrapped = value => '<dsh-release-config>' + JSON.stringify(value) + '</dsh-release-config>'
+
+  assert.throws(() => parseRelBuildSuggestion(wrapped({ script: true, artifacts: 'dist/*.tgz' })), /字符串字段/)
+  assert.throws(() => parseRelBuildSuggestion(wrapped({ script: 'scripts/build.sh', artifacts: 123 })), /字符串字段/)
+  assert.throws(() => parseRelBuildSuggestion(wrapped({ script: ['scripts/build.sh'], artifacts: 'dist/*.tgz' })), /字符串字段/)
+  assert.throws(() => parseRelBuildSuggestion(wrapped({ script: 'scripts/build.sh' })), /必须且只能包含/)
+  assert.throws(() => parseRelBuildSuggestion(wrapped({ script: 'scripts/build.sh', artifacts: 'dist/*.tgz', note: 'extra' })), /必须且只能包含/)
+})
+
+test('空分支按实际默认 main 生成云端构建配置键', () => {
+  const relBranchKey = loadFunction('relBranchKey', {
+    relSelectedRepo: () => ({ owner: 'TokensService', name: 'demo' }),
+    relBranch: { value: '   ' },
+  })
+
+  assert.equal(relBranchKey(), 'TokensService/demo@main')
+})
+
 test('AI 构建建议同时回填两项并立即保存分支级云端配置', () => {
   const relCfg = { script: 'old.sh', artifacts: 'old/*.zip' }
   const relArtifacts = { value: 'old/*.zip' }
@@ -232,6 +252,35 @@ test('AI 分析期间切换仓库或分支时不把旧构建建议回填到新�
   assert.match(relBuildAiTip.textContent, /已变更/)
 })
 
+test('AI 分析期间切换平台时不把旧构建建议回填到同名仓库', async () => {
+  let resolveResult
+  const result = new Promise(resolve => { resolveResult = resolve })
+  const state = { token: 'configured', platform: 'gitcode' }
+  const relCfg = { script: 'keep.sh', artifacts: 'keep/*.tgz' }
+  const relArtifacts = { value: 'keep/*.tgz' }
+  const relBuildAiBtn = { disabled: false, textContent: '✦ AI 建议' }
+  const relBuildAiTip = { textContent: '' }
+  const ctx = loadFunctions(
+    ['parseRelBuildSuggestion', 'applyRelBuildSuggestion', 'genRelBuildSuggestion'],
+    {
+      state, relCfg, relArtifacts, relBuildAiBtn, relBuildAiTip,
+      relBuildAiBusy: false, relBranch: { value: 'dev' },
+      relSelectedRepo: () => ({ owner: 'TokensService', name: 'demo' }),
+      buildRelBuildSuggestionPrompt: () => 'prompt', requestAiResult: () => result,
+      applyBuildScriptSelection: () => {}, saveRelCfg: () => {}, rememberRelCfgCloud: () => {}, toast: () => {},
+    },
+  )
+
+  const pending = ctx.genRelBuildSuggestion()
+  state.platform = 'github'
+  resolveResult('<dsh-release-config>{"script":"scripts/new.sh","artifacts":"new/*.tgz"}</dsh-release-config>')
+  await pending
+
+  assert.equal(relCfg.script, 'keep.sh')
+  assert.equal(relArtifacts.value, 'keep/*.tgz')
+  assert.match(relBuildAiTip.textContent, /已变更/)
+})
+
 test('AI 生成期间切换发行分支时不把旧发行说明回填到新选择', async () => {
   let resolveResult
   const result = new Promise(resolve => { resolveResult = resolve })
@@ -255,4 +304,54 @@ test('AI 生成期间切换发行分支时不把旧发行说明回填到新选�
 
   assert.equal(relBody.value, '保留的新分支说明')
   assert.match(relNotesAiTip.textContent, /已变更/)
+})
+
+test('AI 生成期间切换平台时不把旧发行说明回填到同名仓库', async () => {
+  let resolveResult
+  const result = new Promise(resolve => { resolveResult = resolve })
+  const state = { token: 'configured', platform: 'gitcode' }
+  const relBody = { value: '保留的新平台说明' }
+  const relNotesAiTip = { textContent: '' }
+  const ctx = loadFunctions(['parseRelNotesResult', 'genRelNotes'], {
+    state, relNotesAiBusy: false, relBody,
+    relBranch: { value: 'dev' }, relTag: { value: 'v2.0.0' }, relName: { value: '' },
+    relNotesAiBtn: { disabled: false, textContent: '✦ AI 生成' }, relNotesAiTip,
+    relSelectedRepo: () => ({ owner: 'TokensService', name: 'demo' }),
+    fetchPrevRelease: async () => null,
+    fetchRangeCommits: async () => [{ sha: 'abc12345', msg: 'feat: 新功能' }],
+    buildRelNotesPrompt: () => 'prompt', requestAiResult: () => result, toast: () => {},
+  })
+
+  const pending = ctx.genRelNotes()
+  state.platform = 'github'
+  resolveResult('<dsh-release-notes>## 旧平台说明</dsh-release-notes>')
+  await pending
+
+  assert.equal(relBody.value, '保留的新平台说明')
+  assert.match(relNotesAiTip.textContent, /已变更/)
+})
+
+test('拉取上一发行版期间切换平台时不再请求提交或启动 AI', async () => {
+  let resolvePrev
+  const prevPending = new Promise(resolve => { resolvePrev = resolve })
+  const state = { token: 'configured', platform: 'gitcode' }
+  const calls = []
+  const ctx = loadFunctions(['parseRelNotesResult', 'genRelNotes'], {
+    state, relNotesAiBusy: false, relBody: { value: '保留' },
+    relBranch: { value: 'dev' }, relTag: { value: 'v2.0.0' }, relName: { value: '' },
+    relNotesAiBtn: { disabled: false, textContent: '✦ AI 生成' }, relNotesAiTip: { textContent: '' },
+    relSelectedRepo: () => ({ owner: 'TokensService', name: 'demo' }),
+    fetchPrevRelease: () => prevPending,
+    fetchRangeCommits: async () => { calls.push('commits'); return [{ sha: 'abc12345', msg: 'feat' }] },
+    buildRelNotesPrompt: () => 'prompt',
+    requestAiResult: async () => { calls.push('ai'); return '<dsh-release-notes>旧平台</dsh-release-notes>' },
+    toast: () => {},
+  })
+
+  const pending = ctx.genRelNotes()
+  state.platform = 'github'
+  resolvePrev(null)
+  await pending
+
+  assert.deepEqual(calls, [])
 })
