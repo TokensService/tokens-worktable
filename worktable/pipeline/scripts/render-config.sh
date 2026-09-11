@@ -54,6 +54,11 @@ TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 NODE_SELECTOR_KEY="xds.optest"
+MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
+
+if [[ -n "$MODEL_CACHE_HOST_PATH" ]]; then
+  [[ "$MODEL_CACHE_HOST_PATH" == /* ]] || { echo "MODEL_CACHE_HOST_PATH must be an absolute host path: $MODEL_CACHE_HOST_PATH" >&2; exit 2; }
+fi
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
 [[ -n "$DECODE_OVERRIDES_JSON" ]] || DECODE_OVERRIDES_JSON='{}'
@@ -85,7 +90,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$MAPPED_COLLECTOR_GATEWAY_URL" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" <<'PY'
 import copy
 import json
 from pathlib import Path
@@ -99,7 +104,7 @@ import yaml
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
- chart_dir, image_pull_secrets_text, mapped_collector_gateway_url) = sys.argv[1:]
+ chart_dir, image_pull_secrets_text, mapped_collector_gateway_url, model_cache_host_path) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
@@ -379,6 +384,28 @@ for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
 
+# modelCache is evaluated by the Helm chart inside every worker group. The
+# host path must exist on every selected Kubernetes node; the mount path
+# remains the established XDS container path.
+def configure_model_cache(value):
+    updated = 0
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "modelCache" and isinstance(child, dict):
+                child["hostPath"] = model_cache_host_path
+                updated += 1
+            else:
+                updated += configure_model_cache(child)
+    elif isinstance(value, list):
+        for child in value:
+            updated += configure_model_cache(child)
+    return updated
+
+if model_cache_host_path:
+    configured_model_caches = configure_model_cache(values)
+    if configured_model_caches == 0:
+        raise SystemExit("MODEL_CACHE_HOST_PATH was set but the values template has no modelCache entry")
+
 if str(mock_db).lower() == "true":
     framework_files = values.get("frameworkConfigFiles")
     if not isinstance(framework_files, dict) or not isinstance(framework_files.get("xds_framework.conf"), str):
@@ -569,5 +596,6 @@ printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
 printf 'RESOURCE_MANIFEST=%s\n' "$RESOURCE_MANIFEST"
 printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
 printf 'DEPLOY_IMAGE=%s\n' "$DEPLOY_IMAGE"
+printf 'MODEL_CACHE_HOST_PATH=%s\n' "$MODEL_CACHE_HOST_PATH"
 printf 'NAMESPACE=%s\n' "$NAMESPACE"
 printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"

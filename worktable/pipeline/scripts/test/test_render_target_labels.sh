@@ -49,6 +49,9 @@ ems:
   enable: true
 feTemplate:
   default_replica: 10
+  modelCache:
+    hostPath: /var/lib/docker/vllm
+    mountPath: /home/service/works/models_ssd
   nodeSelector:
     kubernetes.io/hostname: 192.168.0.243
 global:
@@ -140,6 +143,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-one-node-78-verify' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
 TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175","192.168.0.78:2222":"192.168.31.17"}' \
+MODEL_CACHE_HOST_PATH='/mnt/paas' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
 EMS_NAMESPACE='op-ems' \
@@ -159,6 +163,7 @@ assert values["rayService"]["service"]["ports"][0]["nodePort"] == 31008, values[
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
+assert values["feTemplate"]["modelCache"] == {"hostPath": "/mnt/paas", "mountPath": "/home/service/works/models_ssd"}, values["feTemplate"]
 assert values["feTemplate"]["default_replica"] == 10, values["feTemplate"]
 assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 4, values["workerGroups"]
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 4, values["workerGroups"]
