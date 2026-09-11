@@ -644,6 +644,15 @@ test('服务端并行组只选择最长时排除取消和跳过任务', () => {
   assert.equal(picked.index, 0)
 })
 
+test('服务端并行组只选择最长时排除预设任务', () => {
+  const f = loadRunRoute(stored)
+  const normal = { index: 0, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 2000 }
+  const preset = { index: 1, stage: { preset: true, promCollect: true }, status: 'success', startedAt: 1000, endedAt: 9000 }
+
+  assert.equal(f.ctx.longestServerPromResult([normal, preset]), normal)
+  assert.equal(f.ctx.longestServerPromResult([preset]), null)
+})
+
 test('服务端并行组只选择最长时同长保留源数组较早任务', () => {
   const f = loadRunRoute(stored)
   const earlier = { index: 9, stage: { promCollect: true }, status: 'failed', startedAt: 2000, endedAt: 7000 }

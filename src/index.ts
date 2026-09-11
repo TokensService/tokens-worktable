@@ -383,7 +383,7 @@ function longestServerPromResult(results: ServerStageResult[]): ServerStageResul
   let longest: ServerStageResult | null = null
   let longestDuration = -Infinity
   for (const result of Array.isArray(results) ? results : []) {
-    if (!result || !result.stage || result.stage.promCollect !== true || (result.status !== 'success' && result.status !== 'failed')) continue
+    if (!result || !result.stage || result.stage.preset || result.stage.promCollect !== true || (result.status !== 'success' && result.status !== 'failed')) continue
     const duration = result.endedAt - result.startedAt
     if (longest === null || duration > longestDuration) {
       longest = result
