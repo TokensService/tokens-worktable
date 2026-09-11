@@ -87,7 +87,7 @@ cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
 
 # KubeRay incorporates workerGroupSpecs.groupName into worker Pod names. Keep
 # role names short so Pod names never inherit namespace or deployment metadata.
-# The Service selects the Ray frontGroup label explicitly placed on FE Pods.
+# The Service selects the Ray FE-group label explicitly placed on FE Pods.
 # The operator does not add this label consistently across its versions.
 RAY_SERVICE_TEMPLATE="$CHART_DIR/templates/ray-svc.yaml"
 if [[ -f "$RAY_SERVICE_TEMPLATE" ]]; then
@@ -106,7 +106,7 @@ old_selector = '''  # Ray Serve 模式：Service 指向 Ray frontGroup
 '''
 new_selector = '''  # Ray Serve 模式：Service 指向显式标记的前端 Worker
   selector:
-    ray.io/group: frontGroup
+    ray.io/group: fe
 '''
 if old_selector in text:
     text = text.replace(old_selector, new_selector, 1)
@@ -489,7 +489,7 @@ if not isinstance(front_group, dict):
 front_labels = front_group.setdefault("labels", {})
 if not isinstance(front_labels, dict):
     raise SystemExit("workerGroups.frontGroup.labels must be a mapping")
-front_labels["ray.io/group"] = "frontGroup"
+front_labels["ray.io/group"] = "fe"
 
 # The chart mounts model weights through global.storage. Only the host path is
 # environment-specific; mountPath remains the established XDS container path.

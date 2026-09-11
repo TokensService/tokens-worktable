@@ -183,7 +183,7 @@ assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 4, values["workerGr
 assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 8, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 8, values["workerGroups"]
 assert values["workerGroups"]["frontGroup"]["labels"] == {
-    "ray.io/group": "frontGroup"
+    "ray.io/group": "fe"
 }, values["workerGroups"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
@@ -244,9 +244,9 @@ rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.
 grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
 grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
 rendered_service="$work_dir/run/rendered/xds-cluster/templates/ray-svc.yaml"
-grep -Fq 'ray.io/group: frontGroup' "$rendered_service"
+grep -Fq 'ray.io/group: fe' "$rendered_service"
 if grep -Fq 'app.kubernetes.io/created-by: kuberay-operator' "$rendered_service"; then
-  echo "ray-svc must select only the explicit frontGroup label" >&2
+  echo "ray-svc must select only the explicit FE-group label" >&2
   exit 1
 fi
 
