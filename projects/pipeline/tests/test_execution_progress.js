@@ -48,7 +48,9 @@ test('运行中打开日志目录保留执行页面',async()=>{
 
 test('打开目录前等待写入',async()=>{
   let release, opened=false;
-  const ctx={console,fetch:()=>new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({ok:true})});})};
+  const ctx={console,fetch:url=>String(url).indexOf('/api/worktable/fs')>=0
+    ? Promise.resolve({ok:true,json:async()=>({entries:[]})})   // 打开前的目录存在性预检直接放行
+    : new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({ok:true})});})};
   load('async function apiWrite(', '/* 是否显式配置',ctx);
   Object.assign(ctx,{running:false,$:()=>({style:{}}),archiveTargetFolder:()=>'/logs/run',archiveRootFolder:()=>'/logs',
     window:{parent:{__dshOpenFolderInSidebar(){opened=true;return true;},async __dshNewChatSessionAtFolder(){}}}});
@@ -93,4 +95,47 @@ test('侧边栏不可用时回退系统文件管理器，不创建会话',async(
   load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
   await ctx.openArchiveFolder();
   assert.equal(sessions,0);assert.deepEqual(folders,['/logs/selected']);
+});
+
+/* 目录存在性预检：/api/worktable/fs 对目标 500（不存在）、对父目录 200（存在）。 */
+const fsProbeFallback=(missing,existing)=>async(url,opt)=>{
+  const p=JSON.parse(opt.body).path;
+  if(p===missing) return {ok:false,status:500,json:async()=>({error:'ENOENT'})};
+  if(p===existing) return {ok:true,json:async()=>({entries:[]})};
+  throw new Error('unexpected probe '+p);
+};
+
+test('目标归档目录已清理时回退打开归档根（侧边栏路径）',async()=>{
+  const folders=[],tip={style:{}}; let sessions=0;
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected_run',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},fetch:fsProbeFallback('/logs/selected_run','/logs'),
+    window:{parent:{__dshOpenFolderInSidebar(f){folders.push(f);return true;},
+      async __dshNewChatSessionAtFolder(){sessions++;}}}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.equal(sessions,0);
+  assert.deepEqual(folders,['/logs'],'应以归档根为回退目标打开');
+  assert.match(tip.textContent,/目标目录不存在，已回退打开 \/logs/);
+});
+
+test('目标与归档根都不存在时报错且不打开',async()=>{
+  const folders=[],tip={style:{}};
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected_run',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},fetch:async()=>({ok:false,status:500,json:async()=>({error:'ENOENT'})}),
+    window:{parent:{__dshOpenFolderInSidebar(f){folders.push(f);return true;}}}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,[],'目录不存在时不得打开侧边栏窗口');
+  assert.match(tip.textContent,/✗ 目录不存在（含归档根目录）：\/logs\/selected_run/);
+});
+
+test('存在性探测请求失败时按存在处理，不阻断打开',async()=>{
+  const folders=[],tip={style:{}};
+  const ctx={running:false,console,$:()=>tip,archiveTargetFolder:()=>'/logs/selected',archiveRootFolder:()=>'/logs',
+    waitArchiveWrites:async()=>{},fetch:async()=>{throw new Error('network down');},
+    window:{parent:{__dshOpenFolderInSidebar(f){folders.push(f);return true;}}}};
+  load('async function openArchiveFolder()', "$('openArchiveBtn')",ctx);
+  await ctx.openArchiveFolder();
+  assert.deepEqual(folders,['/logs/selected']);
+  assert.match(tip.textContent,/已在侧边栏打开/);
 });

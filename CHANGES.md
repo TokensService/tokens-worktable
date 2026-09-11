@@ -1,5 +1,14 @@
 # 本目录 tokens-worktable 的本地改动
 
+- pipeline.html「📂 打开归档目录」修复目标目录不存在时的打开行为（`projects/pipeline/pipeline.html`）：
+  打开前新增目录存在性预检（`resolveExistingFolder`，经 `/api/worktable/fs` 探测），目标归档目录
+  不存在时（历史归档已清理、归档路径改过等）统一回退打开其父目录（归档根），连归档根都不存在才报
+  「✗ 目录不存在（含归档根目录）」——此前回退逻辑只存在于系统文件管理器助手脚本路径，better-sidebar
+  侧边栏主路径不预检，会以不存在目录为根开出空文件树；探测请求本身失败（网络/服务端异常）按存在
+  处理、不阻断打开。侧边栏与文件管理器两条路径的回退提示统一为「✓ 目标目录不存在，已回退打开 …」。
+  按钮悬停提示同步重写为现行真实行为（原地经侧边栏/文件管理器打开、保持当前页面与会话、不新建
+  会话），移除已下线的「新建 AI 会话并切入其窗口」旧描述。测试：`test_execution_progress.js` 新增
+  目标不存在回退 / 根不存在报错 / 探测失败放行三例，「打开目录前等待写入」fetch 桩兼顾预检请求。
 - 流水线支持按条目通过 API 启动（`src/index.ts` + `projects/pipeline/pipeline.html`）：新增
   `POST /api/worktable/pipeline/run/<pipelineId>`，请求异步接受并返回 `runId`；可设置目标环境 ID、代码仓 ID、
   分支、部署策略、预设任务和触发方，任一字段未传时逐项采用该流水线默认值。API 复用服务端计划执行器，
