@@ -83,6 +83,13 @@
     .pipeline-conn { flex:0 0 auto; display:flex; align-items:center; height:42px; }
     .pipeline-conn::before { content:''; display:block; width:18px; height:2px; background:var(--dsw-alias-border-l2); }
     .pipeline-conn::after { content:''; border:4px solid transparent; border-left-color:var(--dsw-alias-border-l2); margin-left:-1px; }
+    /* 并行任务组：入口/出口导轨明确表达 fork / join，分支节点复用原有 .pipeline-node 交互。 */
+    .pipeline-parallelGroup { flex:0 0 auto; position:relative; display:flex; align-items:stretch; gap:0; padding:18px 10px 8px; border:1px dashed var(--dsw-alias-border-l2); border-radius:10px; background:color-mix(in srgb, var(--dsw-alias-fill-l1) 75%, transparent); }
+    .pipeline-parallelTitle { position:absolute; top:3px; left:10px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
+    .pipeline-parallelRailIn,.pipeline-parallelRailOut { flex:0 0 12px; align-self:stretch; }
+    .pipeline-parallelTasks { display:flex; flex-direction:column; align-items:stretch; gap:8px; }
+    .pipeline-parallelTaskRow { display:flex; align-items:center; }
+    .pipeline-parallelBranchIn,.pipeline-parallelBranchOut { flex:0 0 14px; height:2px; background:var(--dsw-alias-border-l2); }
     .pipeline-sub { display:flex; gap:4px; justify-content:center; margin-top:5px; }
     .pipeline-sub > span { font-size:9.5px; padding:1px 6px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-tertiary); }
     .pipeline-sub > span.ok { color:var(--st-ok); border-color:color-mix(in srgb, var(--st-ok) 40%, transparent); }
@@ -2539,7 +2546,7 @@ function normalizeStageKind(s){
   return s;
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
-function newStage(name){ return {id:'', name:name||'新阶段', dur:0, timeout:null, skip:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* dur 默认 0=不设置耗时（本地模拟不等待，运行即结束）；阶段默认支持定时（跟随流水线定时计划），勾选「需本地运行」后 sched 置空 */
+function newStage(name){ return {id:'', name:name||'新阶段', dur:0, timeout:null, skip:false, parallel:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* dur 默认 0=不设置耗时（本地模拟不等待，运行即结束）；阶段默认支持定时（跟随流水线定时计划），勾选「需本地运行」后 sched 置空 */
 let stageDragFrom=-1;
 /* 编辑器任务卡选中：editSelStage 以对象引用记录选中卡（拖拽/序号/上下移调序后仍跟随同一张卡；删除选中卡时清空；
    打开编辑器重建草稿时重置，见 openPlForm）。选中卡高亮并在上/下边框中点显示「+」插入按钮；
@@ -2657,6 +2664,7 @@ function renderStageEditor(){
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="模拟阶段的等待时长（分钟），内部按秒存储；0=不设置耗时，运行即结束">耗时(分钟)<input class="dshell-input" data-f="dur" type="number" min="0" step="0.1" value="'+secToMinInput(s.dur||0)+'" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="阶段执行超时（分钟），脚本与 HTTP/EvalTokens 阶段均生效；留空=无超时">超时(分钟)<input class="dshell-input" data-f="timeout" type="number" min="0.1" step="0.1" value="'+(s.timeout?secToMinInput(s.timeout):'')+'" placeholder="不限" style="width:84px;" /></label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后运行到本阶段直接跳过"><input type="checkbox" data-f="skip" '+(s.skip?'checked':'')+'/> 不执行</label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="与相邻的并行任务同时执行；连续的普通任务会显示为一个并行组"><input type="checkbox" data-f="parallel" '+(s.parallel===true?'checked':'')+'/> 并行执行</label>'
       +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="勾选后本任务进入终态（成功/失败）时，按本任务开始→结束时段调用「设置 → 普罗数据服务配置」的收集脚本采集普罗指标，产物写入本次运行归档目录的 {任务名}-{阶段序号}-普罗数据 文件夹（后台采集，失败不阻断流水线）"><input type="checkbox" data-f="promCollect" '+(s.promCollect?'checked':'')+'/> 收集普罗数据</label>'
       +'<span style="flex:1"></span>'
       +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-act="del">删除</button>'
@@ -2903,11 +2911,12 @@ function syncViewRun(){
   selectedId=rc?rc.selId:(curPipeline().stages[0]?curPipeline().stages[0].id:null);
 }
 function setSel(id){ selectedId=id; if(viewRc) viewRc.selId=id; }          // 视图层选中：写穿到 rc
-function runSetSel(rc,id){ rc.selId=id; if(viewRc===rc) selectedId=id; }   // 引擎层选中：聚焦时同步视图
+function rootRunContext(rc){ return rc&&rc.parallelParent?rc.parallelParent:rc; }
+function runSetSel(rc,id){ const root=rootRunContext(rc); rc.selId=id; if(root) root.selId=id; if(viewRc===root) selectedId=id; }   // 引擎层选中：聚焦时同步视图
 /* 引擎侧渲染：仅当该运行正被编排区展示时落 DOM；rc.nodes/rc.stages 的写入不经过这里，始终生效 */
-function rcRender(rc, withFlow){ if(viewRc!==rc) return; applyStatusClasses(); if(withFlow) renderFlow(); renderDetail(); }
+function rcRender(rc, withFlow){ const root=rootRunContext(rc); if(viewRc!==root) return; applyStatusClasses(); if(withFlow) renderFlow(); renderDetail(); }
 /* 总状态徽标按运行各自留存：切换查看时恢复（含失败/终止的徽标配色） */
-function rcOverall(rc,txt,cls,color){ rc.overall={txt:txt,cls:cls,color:color||''}; if(viewRc===rc) applyRunOverall(rc); }
+function rcOverall(rc,txt,cls,color){ const root=rootRunContext(rc); root.overall={txt:txt,cls:cls,color:color||''}; if(viewRc===root) applyRunOverall(root); }
 function applyRunOverall(rc){
   const ov=rc?rc.overall:null;
   if(!rc || !ov){ setOverall('未运行',''); $('overallBy').textContent=''; return; }
@@ -2988,6 +2997,23 @@ function flowStages(){
   if(runStages) return runStages;   // 运行态/运行后快照：启动时已按勾选展开（见 expandRunStages）
   return withPresetMarkers(activeStages()).flatMap(s=> s.preset ? (presetOn(s.pkey)?[presetRuntime(s.pkey)]:[]) : [s]);
 }
+function pipelineStageGroups(stages){
+  const list=Array.isArray(stages)?stages:[], groups=[];
+  for(let i=0;i<list.length;){
+    const first=list[i];
+    if(first && !first.preset && first.parallel===true){
+      let end=i+1;
+      while(end<list.length && list[end] && !list[end].preset && list[end].parallel===true) end++;
+      groups.push({start:i,end:end,parallel:true,stages:list.slice(i,end)}); i=end;
+    }else{
+      groups.push({start:i,end:i+1,parallel:false,stages:[first]}); i++;
+    }
+  }
+  return groups;
+}
+function pipelineStageGroupAt(stages,index){
+  return pipelineStageGroups(stages).find(group=>index>=group.start&&index<group.end)||null;
+}
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
@@ -3041,15 +3067,12 @@ function persistFlowOrder(orderedWork){
   savePipelines();
   renderPipelines(); renderFlow(); renderDetail();
 }
-function renderFlow(){
-  const f = $('flow'); f.innerHTML='';
-  flowStages().forEach((s,i)=>{
-    if(i>0){ const c=document.createElement('div'); c.className='pipeline-conn'; f.appendChild(c); }
+function createFlowNode(s, i){
     const n=document.createElement('div');
     n.className='pipeline-node';
     n.dataset.id=s.id;
     n.innerHTML =
-      '<div class="pipeline-nodeName">'+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+(s.promCollect?'<span title="收集普罗数据：本任务进入终态（成功/失败）后按其起止时段采集普罗指标到归档目录">📊</span> ':'')+esc(s.name)+'</div>'+
+      '<div class="pipeline-nodeName">'+(s.parallel===true&&!s.preset?'<span title="并行任务">⚡</span> ':'')+(s.sched?'<span style="color:var(--st-wait)" title="定时阶段（跟随流水线定时计划）">⏰</span> ':'')+(s.promCollect?'<span title="收集普罗数据：本任务进入终态（成功/失败）后按其起止时段采集普罗指标到归档目录">📊</span> ':'')+esc(s.name)+'</div>'+
       (s.preset?'<span class="pipeline-preset" title="预设任务，执行顺序在流水线编辑中调整；脚本在设置页配置">🔒 系统预设</span>':'')+
       '<div class="pipeline-bar"><i></i></div>'+
       '<div class="pipeline-nodeMeta"></div>'+
@@ -3079,7 +3102,30 @@ function renderFlow(){
       n.addEventListener('drop',flowNodeDrop);
       n.addEventListener('dragend',flowNodeDragEnd);
     }
-    f.appendChild(n);
+    return n;
+}
+function renderFlow(){
+  const f = $('flow'); f.innerHTML='';
+  pipelineStageGroups(flowStages()).forEach(group=>{
+    if(f.children.length){ const c=document.createElement('div'); c.className='pipeline-conn'; f.appendChild(c); }
+    if(group.parallel && group.stages.length>1){
+      const box=document.createElement('div'); box.className='pipeline-parallelGroup'; box.style.gap='0';
+      const title=document.createElement('div'); title.className='pipeline-parallelTitle'; title.innerHTML='⚡ 并行组'; box.appendChild(title);
+      const railIn=document.createElement('div'); railIn.className='pipeline-parallelRailIn'; railIn.style.borderRight='2px solid var(--dsw-alias-border-l2)'; box.appendChild(railIn);
+      const tasks=document.createElement('div'); tasks.className='pipeline-parallelTasks'; tasks.style.flexDirection='column';
+      group.stages.forEach((s,offset)=>{
+        const row=document.createElement('div'); row.className='pipeline-parallelTaskRow'; row.style.display='flex';
+        const branchIn=document.createElement('div'); branchIn.className='pipeline-parallelBranchIn'; row.appendChild(branchIn);
+        row.appendChild(createFlowNode(s,group.start+offset));
+        const branchOut=document.createElement('div'); branchOut.className='pipeline-parallelBranchOut'; row.appendChild(branchOut);
+        tasks.appendChild(row);
+      });
+      box.appendChild(tasks);
+      const railOut=document.createElement('div'); railOut.className='pipeline-parallelRailOut'; railOut.style.borderLeft='2px solid var(--dsw-alias-border-l2)'; box.appendChild(railOut);
+      f.appendChild(box);
+    }else{
+      f.appendChild(createFlowNode(group.stages[0],group.start));
+    }
   });
   applyStatusClasses();
 }
@@ -3766,11 +3812,69 @@ function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)) return c.r
 
 /* ---------- 运行引擎 ---------- */
 /* 每个运行独立编排（rc 内串行推进各阶段；不同机器的运行并行）：有脚本的步骤执行脚本，其余本地模拟 */
-function advance(rc,i){
+function createParallelStageContext(parent,index,varsSnapshot){
+  const child=Object.assign({},parent,{timer:null,scriptAbort:null,vars:Object.assign({},varsSnapshot||parent.vars||{}),parallelParent:parent,parallelIndex:index,parallelGroup:null,parallelSettled:false,parallelStatus:null,parallelResolve:null,parallelPromise:null});
+  child.parallelPromise=new Promise(resolve=>{ child.parallelResolve=resolve; });
+  return child;
+}
+function cancelParallelStage(child,reason){
+  if(!child || !child.parallelParent || child.parallelSettled) return;
+  child.over=true;
+  if(child.scriptAbort){ try{ child.scriptAbort.abort(); }catch(e){} }
+  if(child.timer){ clearInterval(child.timer); child.timer=null; }
+  const stage=child.stages[child.parallelIndex], node=stage&&child.nodes[stage.id];
+  if(stage && node && node.status==='running'){
+    archiveStageLog(stage,stageSeq(child.stages,child.parallelIndex),child);
+    child.nodes[stage.id]={status:'aborted',progress:node.progress||0,dur:node.dur||0,sub:{},script:node.script,varsIn:node.varsIn||{},varsOut:node.varsOut||{}};
+  }
+  settleParallelStage(child,reason||'aborted');
+}
+function cancelParallelGroup(parent,exceptChild){
+  const active=parent&&parent.parallelGroup;
+  if(!active) return;
+  active.children.forEach(child=>{ if(child!==exceptChild) cancelParallelStage(child,'aborted'); });
+}
+function disposeRunForReset(rc){
+  if(!rc) return;
+  cancelParallelGroup(rc);
+  if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }
+  if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  rc.over=true;
+}
+function settleParallelStage(child,status){
+  if(!child || !child.parallelParent || child.parallelSettled) return;
+  child.parallelSettled=true; child.parallelStatus=status;
+  if(status==='success'||status==='failed'){
+    const stage=child.stages[child.parallelIndex];
+    if(stage) stage._promT1=Date.now();
+  }
+  const parent=child.parallelParent, active=parent.parallelGroup;
+  if(status==='failed' && active && active.children.indexOf(child)>=0 && !active.failed){ active.failed=true; cancelParallelGroup(parent,child); }
+  if(child.parallelResolve) child.parallelResolve(status);
+}
+function runParallelStageGroup(parent,group){
+  if(parent.parallelGroup) return parent.parallelGroup.promise;
+  const varsSnapshot=Object.assign({},parent.vars||{});
+  const children=[];
+  for(let i=group.start;i<group.end;i++) children.push(createParallelStageContext(parent,i,varsSnapshot));
+  const active={group:group,children:children,promise:null}; parent.parallelGroup=active;
+  children.forEach(child=>startStageAt(child,child.parallelIndex));
+  active.promise=Promise.all(children.map(child=>child.parallelPromise)).then(statuses=>{
+    if(parent.over || parent.parallelGroup!==active) return;
+    const succeeded=!active.failed&&statuses.every(status=>status==='success');
+    if(succeeded) children.forEach(child=>{
+      const stage=parent.stages[child.parallelIndex], node=parent.nodes[stage.id];
+      if(node && node.varsOut) Object.assign(parent.vars,node.varsOut);
+    });
+    parent.parallelGroup=null;
+    taskPromFinalize(parent);
+    if(succeeded) advance(parent,group.end);
+    else finish(parent,'failed');
+  });
+  return active.promise;
+}
+function startStageAt(rc,i){
   const stg=rc.stages;
-  taskPromFinalize(rc);   // 已进入终态（成功/失败）且勾选「收集普罗数据」的任务：按任务起止后台采集普罗数据（去重见 _promCollected）
-  if(i>=stg.length){ finish(rc,'success'); return; }
-  // 手动运行连续执行全部阶段；sched 仅约束定时计划，不在此拆分后缀或提前结束运行。
   const s=stg[i];
   if(s.preset){ runPresetStep(rc,i); return; }   // 系统预设任务：脚本取设置页配置，见 runPresetStep
   if(s.skip){ skipStage(rc,i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
@@ -3779,6 +3883,15 @@ function advance(rc,i){
   if(s.kind==='evaltokens'){ runEvaltokensStep(rc,i); return; }   // EvalTokens 任务轮询阶段：匹配任务并等待终态（见 runEvaltokensStep）
   if(s.script && s.script.path){ runScriptStep(rc,i); return; }
   runStage(rc,i);
+}
+function advance(rc,i){
+  if(rc.parallelParent){ settleParallelStage(rc,'success'); return; }
+  const stg=rc.stages;
+  taskPromFinalize(rc);   // 已进入终态（成功/失败）且勾选「收集普罗数据」的任务：按任务起止后台采集普罗数据（去重见 _promCollected）
+  if(i>=stg.length){ finish(rc,'success'); return; }
+  const group=pipelineStageGroups(stg).find(g=>g.start===i);
+  if(group&&group.parallel&&group.end-group.start>1){ runParallelStageGroup(rc,group); return; }
+  startStageAt(rc,i);
 }
 /* ---------- 阶段间变量传递（上游 stdout / URL 响应体（Jenkins 控制台）的 KEY=VALUE 行、单行 JSON 对象注入下游） ---------- */
 /* 提取规则：逐行匹配 ^\s*([A-Z_][A-Z0-9_]*)=(.*)$；值取首个 = 之后全部，
@@ -4057,7 +4170,8 @@ function finishOutputProbe(probe){
 }
 function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
   const now=Date.now(), wait=Math.max(0,Number(minInterval)||250);
-  if(viewRc===rc && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
+  const root=rc&&rc.parallelParent?rc.parallelParent:rc;
+  if(viewRc===root && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
   return lastLive;
 }
 function publishLiveOutput(rc,stage,live,lastPublished,minInterval,extra){
@@ -4338,6 +4452,20 @@ async function jkReadConsoleDelta(buildPath,start,useProgressive,signal){
   const full=await jkGetText(String(buildPath||'').replace(/\/+$/,'')+'/consoleText',signal);
   return {text:full.length>start?full.slice(start):'',next:full.length,progressive:false};
 }
+function abortablePipelineDelay(ms,signal){
+  return new Promise(function(resolve,reject){
+    let timer=null,done=false;
+    const cleanup=function(){ if(signal) signal.removeEventListener('abort',abort); };
+    const finish=function(){ if(done) return; done=true; cleanup(); resolve(); };
+    const abort=function(){
+      if(done) return; done=true; if(timer!==null) clearTimeout(timer); cleanup();
+      const error=new Error('aborted'); error.name='AbortError'; reject(error);
+    };
+    if(signal&&signal.aborted){ abort(); return; }
+    timer=setTimeout(finish,Math.max(0,Number(ms)||0));
+    if(signal) signal.addEventListener('abort',abort,{once:true});
+  });
+}
 async function runUrlStep(rc, i){
   const stg=rc.stages; const s=stg[i];
   const raw=stageUrlOf(s);   // 兼容旧数据 kind:'url'/'jenkins' / jenkins.job（见 stageUrlOf）
@@ -4446,6 +4574,7 @@ async function runUrlStep(rc, i){
           if(/响应正文过大/.test(consoleError)) consoleDisabled=true;   // 同一 offset 重试仍会下载同一超大块，立即止损
         }
       }
+      if(rc.over||rc.token!==tk) return;
       const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
     }
     if(rc.over||rc.token!==tk) return;   // 先验令牌再动本运行 timer（中止已由 finish 清过）
@@ -4784,7 +4913,8 @@ async function runEvaltokensStep(rc, i){
       const replaceReportLine=function(text){
         if(terminalOut.stdout) terminalOut.stdout=terminalOut.stdout.replace(reportPendingLine,text);
         if(logSink) logSink.append('\n'+text);
-        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&viewRc===rc&&selectedId===s.id) renderDetail();
+        const root=rc&&rc.parallelParent?rc.parallelParent:rc;
+        if(s._evaltokAttempt===attempt&&s._out===terminalOut&&viewRc===root&&selectedId===s.id) renderDetail();
       };
       reportJob=archiveEvaltokensReport(e,rc,seq,s.name,runId).then(file=>{
         replaceReportLine(file?('📦 任务报告已归档 → '+file):'⚠ 任务报告未归档：无法确定本次运行归档目录');
@@ -4853,10 +4983,10 @@ async function runScriptStep(rc, i){
     appendLiveOutput(live,m.type,m.text); if(m.type==='out') appendOutputProbe(probe,m.text);
     lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 追加与物化分别节流，避免每个小块都 join 尾窗
   }, ctrl.signal, logFile);
+  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
+  if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验运行状态再写共享 stage 字段：并行重试已复位的新归档所有权不能被旧子上下文迟回覆盖
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(res.logError) console.warn('[archive] 服务端阶段日志写入失败，尝试页面兜底:',res.logError);
-  if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
-  if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验令牌再动本运行 timer（中止已由 finish 清过）
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(res.code===null) return;   // AbortController 中止：中止流程已按「已中止」记账，这里直接退出
   const dur=(Date.now()-t0)/1000;
@@ -4881,7 +5011,8 @@ function runStage(rc, i){
   const s=stg[i];
   const varsIn = Object.assign({}, rc.vars||{});
   rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
-  runSetSel(rc,s.id); if(viewRc===rc){ renderFlow(); renderDetail(); }
+  const root=rc&&rc.parallelParent?rc.parallelParent:rc;
+  runSetSel(rc,s.id); if(viewRc===root){ renderFlow(); renderDetail(); }
   if(s.sub && s.sub.length){ s.sub.forEach(x=> rc.nodes[s.id].sub[x]='running'); }
   const start=Date.now();
   if(rc.timer) clearInterval(rc.timer);
@@ -4923,21 +5054,35 @@ function skipStage(rc, i){
 function retryFromStage(stageId){
   const rc=viewRc;
   if(!rc || !rc.over) return;   // 仅「编排区展示的已结束运行」可重试（按钮也只在此态出现）
-  const idx=rc.stages.findIndex(x=>x.id===stageId); if(idx<0) return;
-  const n=rc.nodes[stageId]; if(!n || n.status!=='failed') return;
+  const clickedIdx=rc.stages.findIndex(x=>x.id===stageId); if(clickedIdx<0) return;
+  const failedNode=rc.nodes[stageId]; if(!failedNode || failedNode.status!=='failed') return;
   if(activeRuns.length>=MAX_ACTIVE_RUNS){ flashRunTip('当前已占满 '+MAX_ACTIVE_RUNS+' 个并发槽位，请等待一条运行结束后重试'); return; }
   if(conflictsActive(rc)){ flashRunTip('目标机器正被其他运行占用，暂不能重试（可等其完成后再试）'); return; }
-  rc.vars=Object.assign({}, n.varsIn||{});
-  rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;   // 清掉上次脚本输出与归档全量副本，避免重跑期间误显示/误归档旧日志
-  for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; rc.stages[j]._promT0=null; rc.stages[j]._promCollected=false; if(j>idx) rc.stages[j]._archiveStdout=null; const m=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(m&&m.varsIn)||{},varsOut:{}}; }   // _logArchived/_promCollected 复位：重跑完成的阶段会重写其归档日志、重新触发任务级普罗采集（见 taskPromFinalize）
+  const group=pipelineStageGroupAt(rc.stages,clickedIdx);
+  const retryGroup=!!(group&&group.parallel&&group.end-group.start>1), idx=retryGroup?group.start:clickedIdx;
+  const entryNode=rc.nodes[rc.stages[idx].id];
+  rc.vars=Object.assign({},(entryNode&&entryNode.varsIn)||{});
+  if(retryGroup){
+    for(let j=idx;j<rc.stages.length;j++){
+      const stage=rc.stages[j], oldNode=rc.nodes[stage.id];
+      stage._out=null; stage._archiveStdout=null; stage._archiveOutputParts=null;
+      stage._logArchived=false; stage._serverLogPending=false; stage._serverLogFile=null;
+      stage._promT0=null; stage._promT1=null; stage._promCollected=false; stage._promGroupCollected=false;
+      rc.nodes[stage.id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}};
+    }
+  }else{
+    rc.stages[idx]._out=null; rc.stages[idx]._archiveStdout=null;
+    for(let j=idx;j<rc.stages.length;j++){ rc.stages[j]._logArchived=false; rc.stages[j]._promT0=null; rc.stages[j]._promT1=null; rc.stages[j]._promCollected=false; rc.stages[j]._promGroupCollected=false; if(j>idx) rc.stages[j]._archiveStdout=null; const oldNode=rc.nodes[rc.stages[j].id]; rc.nodes[rc.stages[j].id]={status:'idle',progress:0,dur:0,sub:{},varsIn:(oldNode&&oldNode.varsIn)||{},varsOut:{}}; }
+  }   // 并行组重试清空整组及下游运行态；串行阶段保持原有重试清理范围
   rc.over=false;
   activeRuns.push(rc); syncRunState();
   $('stopBtn').disabled=false;
   rcOverall(rc,'运行中…（重试）','dshell-badgeWait');
-  runSetSel(rc,stageId); rcRender(rc);
+  runSetSel(rc,rc.stages[idx].id); rcRender(rc);
   advance(rc,idx);
 }
 function finish(rc, result){
+  if(rc&&rc.parallelParent){ settleParallelStage(rc,result); return; }
   rc.over=true;
   try{ taskPromFinalize(rc); }catch(e){ console.warn('[pipeline] 任务级普罗采集触发异常（已兜底，不阻断收尾）:', e); }   // 失败阶段（成功路径已在 advance 触发）勾选「收集普罗数据」时按任务起止采集
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
@@ -5381,13 +5526,41 @@ async function taskPromCollect(rc, s, seq, startMs, endMs){
   if(!res || res.code!==0) console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据失败（exit '+(res&&res.code)+'，不影响流水线结果），输出见 '+dir+'/collect.log');
   else console.warn('[pipeline] 任务「'+s.name+'」普罗数据已收集 → '+dir);
 }
+function parallelPromCandidate(rc,group){
+  if(!rc || !group) return null;
+  let picked=null;
+  for(let index=group.start;index<group.end;index++){
+    const stage=rc.stages[index], node=stage&&rc.nodes[stage.id];
+    if(!stage || !stage.promCollect || !stage._promT0 || !stage._promT1 || !node || (node.status!=='success'&&node.status!=='failed')) continue;
+    const candidate={stage,index,startMs:stage._promT0,endMs:stage._promT1};
+    if(!picked || candidate.endMs-candidate.startMs>picked.endMs-picked.startMs) picked=candidate;   // 相同耗时保留更早编排项
+  }
+  return picked;
+}
 function taskPromFinalize(rc){
   if(!rc || !rc.stages) return;
-  rc.stages.forEach((s,idx)=>{
-    if(!s || s.preset || !s.promCollect || !s._promT0 || s._promCollected) return;
-    const n=rc.nodes[s.id]; if(!n || (n.status!=='success' && n.status!=='failed')) return;   // 仅终态采集：跳过/中止/运行中不采
-    s._promCollected=true;
-    taskPromCollect(rc, s, stageSeq(rc.stages,idx), s._promT0, Date.now()).catch(e=>console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据异常（不影响流水线结果）:', e));
+  pipelineStageGroups(rc.stages).forEach(group=>{
+    const parallelGroup=group.parallel&&group.end-group.start>1;
+    if(parallelGroup){
+      const first=rc.stages[group.start];
+      if(!first || first._promGroupCollected) return;
+      const terminal=group.stages.every(stage=>{
+        const node=stage&&rc.nodes[stage.id];
+        return node&&(node.status==='success'||node.status==='failed'||node.status==='skipped'||node.status==='aborted');
+      });
+      if(!terminal) return;
+      const picked=parallelPromCandidate(rc,group);
+      if(!picked) return;
+      group.stages.forEach(stage=>{ if(stage&&stage.promCollect) stage._promCollected=true; });
+      first._promGroupCollected=true;
+      taskPromCollect(rc,picked.stage,stageSeq(rc.stages,picked.index),picked.startMs,picked.endMs).catch(e=>console.warn('[pipeline] 任务「'+picked.stage.name+'」收集普罗数据异常（不影响流水线结果）:', e));
+      return;
+    }
+    const index=group.start, stage=rc.stages[index];
+    if(!stage || stage.preset || !stage.promCollect || !stage._promT0 || stage._promCollected) return;
+    const node=rc.nodes[stage.id]; if(!node || (node.status!=='success'&&node.status!=='failed')) return;   // 串行/单成员并行任务保持逐任务采集
+    stage._promCollected=true;
+    taskPromCollect(rc,stage,stageSeq(rc.stages,index),stage._promT0,Date.now()).catch(e=>console.warn('[pipeline] 任务「'+stage.name+'」收集普罗数据异常（不影响流水线结果）:', e));
   });
 }
 function pmcResetLog(text){
@@ -6240,7 +6413,7 @@ function openPlForm(id, focusIdx){
   $('plFormTitle').textContent = p ? ((plFormReadOnly?'查看流水线（内置·只读）：':'编辑流水线：')+p.name) : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
-      : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
+      : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling 最后
   /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
@@ -6316,6 +6489,7 @@ function savePlForm(){
   const stages=editStages.map((s,i)=>{
     if(s.preset) return {id:s.id, name:s.name, preset:true, pkey:s.pkey};   // 预设任务标记：位置随流水线保存
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(0,parseInt(s.dur)||0), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};   /* dur 保留编辑器原值（含 0=不设置耗时），不再回退默认 5 秒 */
+    if(s.parallel===true) st.parallel=true;
     if(s.promCollect) st.promCollect=true;   // 任务级普罗采集开关：随阶段持久化，任务进入终态后按其起止采集（见 taskPromFinalize）
     if(s.timeout) st.timeout=Math.max(1,parseInt(s.timeout,10)||120);
     if(s.script && s.script.name) st.script={name:s.script.name, path:s.script.path, lang:scriptLangOf(s.script), params:(s.script.params||[]), values:(s.script.values||{}), outVars:(s.script.outVars||'')};
@@ -6389,6 +6563,7 @@ $('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false)
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
 function abortRun(rc){
   if(!rc || rc.over) return;
+  cancelParallelGroup(rc);   // 并行子上下文各自持有取消器/计时器，先全部终止再按父运行统一记一次中止历史
   if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   // 中止兜底：先把被中断任务（含预设任务）的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
@@ -6408,11 +6583,7 @@ $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSche
 $('resetBtn').addEventListener('click', ()=>{
   if(running || queue.length){ if(!confirm('将中止 '+activeRuns.length+' 个运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  activeRuns.forEach(rc=>{
-    if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 断开流式会话 / 取消 EvalTokens 请求
-    if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
-    rc.over=true;   // 标死：在途异步结果按令牌/over 丢弃，不再 finish 入账（重置不计入历史）
-  });
+  activeRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
   activeRuns=[]; queue=[]; viewRc=null; syncViewRun(); syncRunState();
   $('stopBtn').disabled=true; resetNodes(); applyRunOverall(null); renderQueue();
   refreshArchiveTip();   // 运行已全部清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
@@ -6462,7 +6633,7 @@ $('plStageList').addEventListener('click', (e)=>{
   else if(act==='kind'){ setStageKind(i, btn.getAttribute('data-kind')); }
   schedulePlDraftSave();
 });
-$('plStageList').addEventListener('change', (e)=>{
+function updateStageFromEditor(e){
   const f=e.target.getAttribute && e.target.getAttribute('data-f'); if(!f) return;
   const row=e.target.closest('.plstage'); const i=parseInt(row.dataset.idx,10); const s=editStages[i]; if(!s) return;
   if(f==='ord'){   // 数字排序：把该阶段移动到目标序号（1 起，自动夹取到有效范围）
@@ -6475,6 +6646,7 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='dur'){ const mv=parseFloat(e.target.value); s.dur=Math.max(0,Math.round(mv*60)||0); }   /* 输入为分钟，×60 存秒；0/留空=0（不设置耗时，运行即结束），编辑时保留原值 */
   else if(f==='timeout'){ const sec=Math.round(parseFloat(e.target.value)*60); s.timeout=(sec>=1)?sec:null; }   /* 留空=null（无超时） */
   else if(f==='skip') s.skip=e.target.checked;
+  else if(f==='parallel') s.parallel=e.target.checked;
   else if(f==='sched'){ s.sched = e.target.checked ? null : {}; renderStageSched(i); } /* 勾选「需本地运行」置空 sched；取消勾选恢复支持定时（跟随流水线计划） */
   else if(f==='script'){ setStageScript(i, e.target.value.trim()); }
   else if(f==='stageUrl'){ setStageUrl(i, e.target.value); }
@@ -6485,7 +6657,8 @@ $('plStageList').addEventListener('change', (e)=>{
   else if(f==='scriptOutVars'){ if(!s.script) s.script={name:'',path:'',lang:(s.kind==='python'?'py':'sh'),params:[],values:{}}; s.script.outVars=e.target.value; }   /* 未选脚本先存占位，保存时无名脚本不落库（savePlForm） */
   else if(f==='promCollect') s.promCollect=e.target.checked;   // 任务级普罗采集开关：任务终态按其起止采集普罗指标（见 taskPromFinalize）
   schedulePlDraftSave();
-});
+}
+$('plStageList').addEventListener('change', updateStageFromEditor);
 $('envFilter').addEventListener('input', ()=>{ envFilterText=$('envFilter').value; renderEnvs(); });
 /* 节点环境表头排序：升序 → 降序 → 取消 */
 document.querySelectorAll('#envTable th[data-sort]').forEach(th=>{
