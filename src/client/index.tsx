@@ -602,6 +602,67 @@ const previewFetching = new Set<string>()
 let previewSweepBusy = false
 let previewTimer: number | null = null
 
+/** 从历史事件尾部提取最近一条完整 AI 文本；结果桥据此把最终回答交还 iframe 页面。 */
+function assistantResultText(events: any[]): string {
+  if (!Array.isArray(events)) return ''
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i]?.event
+    if (ev?.type !== 'assistant/message') continue
+    const message = ev.data?.message ?? ev.data ?? {}
+    const blocks = message.content ?? message.blocks
+    if (!Array.isArray(blocks)) continue
+    const parts = blocks
+      .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block: any) => block.text.trim())
+      .filter(Boolean)
+    if (parts.length > 0) return parts.join('\n').trim()
+  }
+  return ''
+}
+
+/** 等待指定新会话完成，并从其持久历史读取最终 AI 文本。 */
+function waitForSessionAssistant(sessionId: string, timeoutMs = 15 * 60_000): Promise<string> {
+  const bridge = sessionBridge
+  const list = bridge?.list
+  if (!bridge || !list || typeof list.getSnapshot !== 'function' || typeof list.subscribe !== 'function') {
+    return Promise.reject(new Error('session result bridge unavailable'))
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let reading = false
+    let unsubscribe = () => {}
+    const timer = setTimeout(() => finish(new Error('等待 AI 生成结果超时')), timeoutMs)
+    const finish = (error: Error | null, text = '') => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      unsubscribe()
+      if (error) reject(error)
+      else resolve(text)
+    }
+    const check = async () => {
+      if (settled || reading) return
+      const entry = list.getSnapshot()?.byId?.[sessionId]
+      if (!entry || entry.running === true) return
+      reading = true
+      try {
+        const face = bridge.sessions?.binding?.(sessionId)?.session
+        if (!face || typeof face.history !== 'function') throw new Error('AI 会话历史不可用')
+        const history = await face.history({ maxMessages: 12 })
+        const text = assistantResultText(history?.result?.value?.events)
+        // prompt 入列与 running=true 之间可能短暂无运行态；尚无回答时继续等下一次会话快照。
+        if (text) finish(null, text)
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)))
+      } finally {
+        reading = false
+      }
+    }
+    unsubscribe = list.subscribe(() => { void check() })
+    void check()
+  })
+}
+
 /** 从 history 事件流尾部提取最近一条成品消息文本（优先 text 块；清洗代码后仍太短则回退更早消息） */
 async function coldPreviewOf(face: any): Promise<string> {
   if (!face || typeof face.history !== 'function') return ''
@@ -961,6 +1022,20 @@ async function sendChatInProject(text: string, workspaceId: string | null = null
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
   try { await b.sessions.open?.(sessionId) } catch {}
   await promptIntoSession(sessionId, text)
+}
+
+/** 内容页 AI 生成并回填桥：新建右侧会话并自动发送，等待完成后把最终 AI 文本返回调用页。 */
+async function sendChatForResult(text: string, workspaceId: string | null = null, cwd: string | null = null): Promise<string> {
+  const b = sessionBridge
+  if (!b || typeof b.sessions?.create !== 'function') throw new Error('sessions unavailable')
+  const wsId = workspaceId ?? (cwd ? null : defaultWorkspaceId())
+  const sessionId = await b.sessions.create(wsId ? { workspaceId: wsId } : (cwd ? { cwd } : {}))
+  await ensureSessionPreset(sessionId)
+  await ensureSessionModel(sessionId)
+  markPluginSessionOpen(sessionId)
+  try { await b.sessions.open?.(sessionId) } catch {}
+  await promptIntoSession(sessionId, text)
+  return waitForSessionAssistant(sessionId)
 }
 
 /** pipeline.html「打开归档目录」→ 新桥（经 window.__dshNewChatSessionAtFolder 暴露给 iframe 调用）：
@@ -3935,7 +4010,7 @@ export function apply(ctx: any) {
   applyCtx = ctx   // 模块级暂存：openFolderInSidebar 等助手经它取 better-sidebar 服务
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshSendChatForResult = (text: string) => sendChatForResult(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
   // 项目页（pipeline.html「打开归档目录」等）→ dsh-better-sidebar 侧边栏桥：开一个以传入目录为根的
   // 文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；path 相同按
   // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）
