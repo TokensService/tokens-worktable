@@ -484,7 +484,7 @@ test('服务端 fetch 已取消时不发起网络请求且不误报等待超时'
   assert.equal(fetched, false)
 })
 
-function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl) {
+function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl, DateImpl = Date) {
   const apiStart = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
@@ -502,7 +502,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     URL,
     Promise,
     Buffer,
-    Date,
+    Date: DateImpl,
     Math,
     URLSearchParams,
     AbortController,
@@ -620,6 +620,80 @@ test('API 并行启动任务、等待汇合并按编排顺序合并输出', asyn
 
 test('定时并行启动任务、等待汇合并按编排顺序合并输出', async () => {
   await assertParallelServerRun('schedule')
+})
+
+test('服务端并行组只选择最长的合格任务采集普罗数据', () => {
+  const f = loadRunRoute(stored)
+  const picked = f.ctx.longestServerPromResult([
+    { index: 0, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 5000 },
+    { index: 1, stage: { promCollect: true }, status: 'failed', startedAt: 1000, endedAt: 9000 },
+    { index: 2, stage: { promCollect: 'true' }, status: 'success', startedAt: 1000, endedAt: 12000 },
+  ])
+
+  assert.equal(picked.index, 1)
+})
+
+test('服务端并行组只选择最长时排除取消和跳过任务', () => {
+  const f = loadRunRoute(stored)
+  const picked = f.ctx.longestServerPromResult([
+    { index: 0, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 2000 },
+    { index: 1, stage: { promCollect: true }, status: 'aborted', startedAt: 1000, endedAt: 9000 },
+    { index: 2, stage: { promCollect: true }, status: 'skipped', startedAt: 1000, endedAt: 12000 },
+  ])
+
+  assert.equal(picked.index, 0)
+})
+
+test('服务端并行组只选择最长时同长保留源数组较早任务', () => {
+  const f = loadRunRoute(stored)
+  const earlier = { index: 9, stage: { promCollect: true }, status: 'failed', startedAt: 2000, endedAt: 7000 }
+  const later = { index: 1, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 6000 }
+
+  assert.equal(f.ctx.longestServerPromResult([earlier, later]), earlier)
+})
+
+test('API 并行组只选择最长的标记任务收集一次普罗数据', async () => {
+  let now = 1000
+  class ControlledDate extends Date {
+    static now() { return now }
+  }
+  const deferred = new Map()
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    archiveDir: '/var/pipeline-runs',
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  }, {}, undefined, (script) => {
+    if (script.name === 'collect.py') return Promise.resolve({ code: 0, stdout: 'collected', stderr: '' })
+    return new Promise(resolve => deferred.set(script.name, resolve))
+  }, ControlledDate)
+  const plan = apiExecutionPlan([])
+  plan.vars = { GROUP_INPUT: 'snapshot' }
+  plan.stages = [
+    { id: 'short', name: '较短任务', parallel: true, promCollect: true, script: { name: 'short.sh', path: '/short.sh' } },
+    { id: 'long', name: '较长任务', parallel: true, promCollect: true, script: { name: 'long.sh', path: '/long.sh' } },
+  ]
+
+  const running = f.execPlan(plan)
+  await tick()
+  assert.deepEqual(f.calls.map(call => call.script), ['short.sh', 'long.sh'])
+
+  now = 2000
+  deferred.get('short.sh')({ code: 0, stdout: 'MODEL_PATH=/models/short\nSHORT_ONLY=yes', stderr: '' })
+  await tick()
+  now = 7000
+  deferred.get('long.sh')({ code: 0, stdout: 'MODEL_PATH=/models/long\nLONG_ONLY=yes', stderr: '' })
+  await running
+
+  const collectors = f.calls.filter(call => call.script === 'collect.py')
+  assert.equal(collectors.length, 1)
+  assert.equal(collectors[0].varsPool.MODEL_PATH, '/models/long')
+  assert.equal(collectors[0].varsPool.LONG_ONLY, 'yes')
+  assert.equal(collectors[0].varsPool.SHORT_ONLY, undefined)
+  assert.equal(collectors[0].extraEnv.PROM_START, '1970-01-01T00:00:01.000Z')
+  assert.equal(collectors[0].extraEnv.PROM_END, '1970-01-01T00:00:07.000Z')
+  assert.match(collectors[0].extraEnv.METRICS_OUTPUT_DIR, /\/较长任务-02-普罗数据$/)
+  assert.doesNotMatch(f.history[0].logs[0].log, /\[普罗采集\]/)
+  assert.match(f.history[0].logs[1].log, /\[普罗采集\] 已收集 → .*\/较长任务-02-普罗数据/)
 })
 
 test('API 并行任务失败会取消同组在途任务并阻止后续任务', async () => {

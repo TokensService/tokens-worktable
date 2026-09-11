@@ -379,6 +379,20 @@ type ServerStageResult = {
   scriptName: string | null;
 }
 
+function longestServerPromResult(results: ServerStageResult[]): ServerStageResult | null {
+  let longest: ServerStageResult | null = null
+  let longestDuration = -Infinity
+  for (const result of Array.isArray(results) ? results : []) {
+    if (!result || !result.stage || result.stage.promCollect !== true || (result.status !== 'success' && result.status !== 'failed')) continue
+    const duration = result.endedAt - result.startedAt
+    if (longest === null || duration > longestDuration) {
+      longest = result
+      longestDuration = duration
+    }
+  }
+  return longest
+}
+
 function serverRunVariables(runCtx: any, varsPool?: Record<string, string>): Record<string, string> {
   const vars: Record<string, string> = {}
   const first = Array.isArray(runCtx.envs) ? runCtx.envs[0] : null
@@ -1904,11 +1918,10 @@ export function apply(ctx: Context) {
         scriptName: (s.script && s.script.name) || null,
       }
     }
-    /* 主任务全部进入终态后再串行采集普罗数据。先让阻断结果返回给组协调器，确保失败能立即取消同组在途任务；
-       采集只补充回显，绝不改写已确定的任务状态/阻断权。Task 7 将在此处收敛为仅采集组内最长任务。 */
+    /* 主任务全部进入终态后再采集普罗数据。先让阻断结果返回给组协调器，确保失败能立即取消同组在途任务；
+       每批只采集最长的合格任务，采集只补充其回显，绝不改写已确定的任务状态/阻断权。 */
     const collectStageProm = async (result: ServerStageResult) => {
       const s = result.stage
-      if (s.preset || !s.promCollect || (result.status !== 'success' && result.status !== 'failed')) return
       const collectScript = serverPromCollectScript(cfg)
       const seq = baseSeq + result.index + 1
       const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
@@ -1953,7 +1966,8 @@ export function apply(ctx: Context) {
       if (!blockingFailure) {
         for (const result of results) Object.assign(varsPool, result.varsOut)
       }
-      for (const result of results) await collectStageProm(result)
+      const promResult = longestServerPromResult(results)
+      if (promResult) await collectStageProm(promResult)
       for (const result of results) {
         await recordStageResult(result, baseSeq + result.index + 1)
       }
