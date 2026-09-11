@@ -87,6 +87,35 @@ cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
 
 # KubeRay incorporates workerGroupSpecs.groupName into worker Pod names. Keep
 # role names short so Pod names never inherit namespace or deployment metadata.
+# The Service selects the Ray frontGroup label explicitly placed on FE Pods.
+# The operator does not add this label consistently across its versions.
+RAY_SERVICE_TEMPLATE="$CHART_DIR/templates/ray-svc.yaml"
+if [[ -f "$RAY_SERVICE_TEMPLATE" ]]; then
+  python3 - "$RAY_SERVICE_TEMPLATE" <<'PY_SERVICE'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old_selector = '''  # Ray Serve 模式：Service 指向 Ray frontGroup
+  selector:
+    app.kubernetes.io/created-by: kuberay-operator
+    ray.io/group: frontGroup
+    in_draining_status: "false"
+    app.kubernetes.io/instance: {{ .Release.Name }}
+'''
+new_selector = '''  # Ray Serve 模式：Service 指向显式标记的前端 Worker
+  selector:
+    ray.io/group: frontGroup
+'''
+if old_selector in text:
+    text = text.replace(old_selector, new_selector, 1)
+elif new_selector not in text:
+    raise SystemExit(f"Ray Service selector marker not found: {path}")
+path.write_text(text, encoding="utf-8")
+PY_SERVICE
+fi
+
 TASK_EXECUTOR_TEMPLATE="$CHART_DIR/templates/raycluster-cluster.yaml"
 if [[ -f "$TASK_EXECUTOR_TEMPLATE" ]]; then
   python3 - "$TASK_EXECUTOR_TEMPLATE" <<'PY_TEMPLATE'
@@ -448,6 +477,19 @@ values["global"] = deep_merge(values.get("global", {}), {
     "storage": {"hostPath": "/mnt/xds/sfs"},
 })
 values = deep_merge(values, yaml_replace_map)
+
+# Pair the ray-svc selector with an explicit frontGroup Pod label. This
+# remains stable when the KubeRay operator does not add it itself.
+worker_groups = values.setdefault("workerGroups", {})
+if not isinstance(worker_groups, dict):
+    raise SystemExit("workerGroups must be a mapping")
+front_group = worker_groups.setdefault("frontGroup", {})
+if not isinstance(front_group, dict):
+    raise SystemExit("workerGroups.frontGroup must be a mapping")
+front_labels = front_group.setdefault("labels", {})
+if not isinstance(front_labels, dict):
+    raise SystemExit("workerGroups.frontGroup.labels must be a mapping")
+front_labels["ray.io/group"] = "frontGroup"
 
 # The chart mounts model weights through global.storage. Only the host path is
 # environment-specific; mountPath remains the established XDS container path.

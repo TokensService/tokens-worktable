@@ -12,6 +12,17 @@ cat >"$work_dir/chart/templates/raycluster-cluster.yaml" <<'EOF'
 groupName: {{ $teGroupValues.name }}
 groupName: {{ $groupName }}
 EOF
+cat >"$work_dir/chart/templates/ray-svc.yaml" <<'EOF'
+apiVersion: v1
+kind: Service
+spec:
+  # Ray Serve 模式：Service 指向 Ray frontGroup
+  selector:
+    app.kubernetes.io/created-by: kuberay-operator
+    ray.io/group: frontGroup
+    in_draining_status: "false"
+    app.kubernetes.io/instance: {{ .Release.Name }}
+EOF
 cat >"$work_dir/values.yaml" <<'EOF'
 common:
   containerEnv:
@@ -171,6 +182,9 @@ assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 4, values["workerGr
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 4, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 8, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 8, values["workerGroups"]
+assert values["workerGroups"]["frontGroup"]["labels"] == {
+    "ray.io/group": "frontGroup"
+}, values["workerGroups"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-175-17", env
@@ -229,6 +243,12 @@ PY
 rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
 grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
+rendered_service="$work_dir/run/rendered/xds-cluster/templates/ray-svc.yaml"
+grep -Fq 'ray.io/group: frontGroup' "$rendered_service"
+if grep -Fq 'app.kubernetes.io/created-by: kuberay-operator' "$rendered_service"; then
+  echo "ray-svc must select only the explicit frontGroup label" >&2
+  exit 1
+fi
 
 ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-lmcache-override" \
