@@ -10,6 +10,12 @@
   `tests/test_queue_item_preview.js` 覆盖预览构建/聚焦去重/条目点击与「查看中」/出队自愈/他端只读，
   并用真实 machineConflict/drainQueue 固化异机并行调度语义（不相交立即并行、相交串行排队、
   不同机排队任务可越过同机等待者、并发槽位与队列上限）。
+- 修复流水线「执行人」被历史记录作者长期错署（`projects/pipeline/pipeline.html`）：进入历史回放曾把
+  `rec.by` 回填进「执行人」输入框（内置演示数据的 `release-manager` 即由此进入），该值随后随
+  localStorage 与服务端配置持久化，使 `fillExecutorFromAuth` 因输入框非空而跳过 `/auth/status`
+  探测，执行人（连同新建/复制流水线署名回退值）一直停留在历史记录作者。现回放不再回填执行人
+  （原执行人仍在回放状态行展示），历史重跑也不再沿用记录作者——重跑是新运行，执行人取输入框当前值，
+  留空由必填校验拦截且不再误报「已开始重跑」。新增 `tests/test_replay_executor_attribution.js` 回归。
 - mem_leak 内存泄漏诊断页入库并新增「在线采样」（`projects/mem_leak/index.html` + `src/index.ts`）：
   页面原先仅存在于本地未跟踪文件，本次基线入库；新增首个标签页「在线采样」——输入目标机器的
   IP（可带 :端口）、用户名、密码后连接，经 `/api/worktable/gpu` 发现该机使用 GPU 的容器与进程
