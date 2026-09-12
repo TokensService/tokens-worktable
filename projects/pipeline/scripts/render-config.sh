@@ -243,6 +243,14 @@ arch = copy.deepcopy(matches[0])
 use_ems = arch.get("use_ems", False)
 if type(use_ems) is not bool:
     raise SystemExit(f"{arch_name}.use_ems must be a boolean when specified")
+# arch 的 prefill spec 声明 params.use_lmcache=true 时自动启用 lmcache sidecar；
+# TEMPLATE_VARS_JSON 显式传入 LMCACHE_SIDECAR_ENABLED 时以显式值为准。
+use_lmcache = any(
+    isinstance(spec.get("params"), dict) and spec["params"].get("use_lmcache") is True
+    for package in arch.get("deploy_spec_packages", [])
+    for spec in package.get("deploy_specs", [])
+    if spec.get("role") == "prefill"
+)
 
 groups = []
 resources = []
@@ -369,7 +377,7 @@ template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 # 新版模板包含可选 LMCache Sidecar。默认关闭以保持没有 Sidecar 的部署行为；
 # 所有字段仍在 values 中填入可解析的值，启用时可由 TEMPLATE_VARS_JSON 覆盖。
-template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "false")
+template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "true" if use_lmcache else "false")
 template_vars.setdefault("LMCACHE_MP_PORT_BASE", "18000")
 template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", "18080")
 template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", "0")
