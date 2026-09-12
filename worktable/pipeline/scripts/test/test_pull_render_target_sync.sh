@@ -79,6 +79,7 @@ bash -c "$1"
 EOF
 chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh"
 
+AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
@@ -104,6 +105,7 @@ if grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"; then
   exit 1
 fi
 
+AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
@@ -118,6 +120,7 @@ bash "$script" >/dev/null
 
 grep -Fxq '2222' "$work_dir/ssh-ports.log"
 
+AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
