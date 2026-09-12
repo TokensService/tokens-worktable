@@ -26,3 +26,15 @@ for variable in IMAGE_NAME DEPLOY_IMAGE ARCH_NAME PIPELINE_NAME RUN_DIR RENDER_D
 done
 
 echo "pull-render environment-file tests passed"
+
+# Template export is performed by a child script, so the execution-host
+# contract must retain those paths. Both contracts retain target paths.
+local_writer="$(sed -n '/write_pipeline_env()/,/^}/p' "$script")"
+target_writer="$(sed -n '/write_target_pipeline_env()/,/^}/p' "$script")"
+for variable in CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE; do
+  grep -qw "$variable" <<<"$local_writer"
+done
+for variable in TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE; do
+  grep -qw "$variable" <<<"$local_writer"
+  grep -qw "$variable" <<<"$target_writer"
+done
