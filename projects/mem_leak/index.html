@@ -226,7 +226,7 @@
           <tbody id="lvJudgeBody"></tbody>
         </table>
       </div>
-      <div class="ml-note">研判采用趋势 + 最近两个完整 30 分钟窗口：RSS 两窗均超过 50 MiB/h 才预警，并仍要求拆 anon/file；容器总量只提示分解，GPU 上涨先排除 vLLM 预分配。点「分析」载入概览查看趋势。</div>
+      <div class="ml-note">研判采用最近两个固定 30 分钟窗口（每窗至少覆盖 27 分钟）：RSS 两窗均超过 50 MiB/h 才预警，并仍要求拆 anon/file；容器总量只提示分解，GPU 上涨先排除 vLLM 预分配。点「分析」载入概览查看趋势。</div>
     </div>
   </div>
 
@@ -319,7 +319,7 @@ grep -E '^(active|inactive)_(anon|file)|^cache|^shmem' "$CG/memory.stat"</pre>
         <table class="dshell-table">
           <thead><tr><th>指标/手段</th><th>门槛或用途</th><th>生产要求</th></tr></thead>
           <tbody>
-            <tr><td>anon</td><td>&gt;50 MiB/h，且最近两个完整 30 分钟窗口同向</td><td><span class="dshell-badge dshell-badgeWait">确认泄漏</span> 前仍要排除业务在飞量</td></tr>
+            <tr><td>anon</td><td>&gt;50 MiB/h，且最近两个 30 分钟窗口同向（每窗至少覆盖 27 分钟）</td><td><span class="dshell-badge dshell-badgeWait">确认泄漏</span> 前仍要排除业务在飞量</td></tr>
             <tr><td>VmPin</td><td>&gt;1 MiB/h 指向 RDMA MR 泄漏</td><td><span class="dshell-badge dshell-badgeDone">只读 /proc</span></td></tr>
             <tr><td>线程 / fd</td><td>持续 &gt;5 个/h 指向线程/句柄泄漏</td><td><span class="dshell-badge dshell-badgeDone">只读 /proc</span></td></tr>
             <tr><td>smaps 两次 diff</td><td>区分 heap、arena、库页、/dev/nvidia</td><td><span class="dshell-badge dshell-badgeDone">零侵入</span></td></tr>
@@ -542,7 +542,7 @@ python3 /mnt/paas/lhf/oom/analyze_watch.py</pre>
       <div class="ml-flow" style="margin-bottom:10px">
         <span class="ml-node">anon 上涨</span><span class="ml-arrow">→</span>
         <span class="ml-node">拆到 side / role / PID</span><span class="ml-arrow">→</span>
-        <span class="ml-node">最近两个完整 30 分钟窗口均 &gt;50 MiB/h</span>
+        <span class="ml-node">最近两个 30 分钟窗口均 &gt;50 MiB/h（各覆盖 ≥27 分钟）</span>
       </div>
       <div class="ml-flow">
         <span class="ml-node">VmPin &gt;1 MiB/h → RDMA MR</span><span class="ml-arrow">·</span>
@@ -790,6 +790,7 @@ function verdictBadge(sev, label) {
   if (sev === "mid") return '<span class="dshell-badge dshell-badgeWait">' + label + '</span>';
   return '<span class="dshell-badge dshell-badgeDone">' + label + '</span>';
 }
+function isStableTrend(slope, threshold) { return Math.abs(slope) < threshold; }
 function lvJudgeBadge(j) {
   if (!j || !j.ok) return '<span class="dshell-badge">样本不足</span>';
   return j.sev === "wait" ? verdictBadge("mid", j.label) : verdictBadge(j.sev, j.label);
@@ -821,9 +822,9 @@ function render(a) {
   var threshold = a.trendThreshold;
   var findings = [];
   findings.push({ sev: a.sev, t: a.verdict, d: "区间 " + a.t0.toFixed(1) + "–" + a.t1.toFixed(1) + "m，斜率 " + a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）" });
-  if (a.slope > threshold) findings.push({ sev: "mid", t: "内存序列持续上升", d: "区间净增 " + fmtMB(a.delta) + "；先拆 anon/file/shmem/VmPin，并确认最近两个完整 30 分钟窗口同向" });
-  if (a.sd > 250 && Math.abs(a.slope) < threshold) findings.push({ sev: "mid", t: "波动大但趋势平稳", d: "标准差 " + a.sd.toFixed(0) + " MiB，可能是碎片化、页缓存或业务在飞量" });
-  if (a.slope <= threshold && a.sd < 250) findings.push({ sev: "low", t: "当前窗口进入稳态", d: "本序列斜率与方差均低；仍需结合指标层级和更长窗口确认" });
+  if (a.slope > threshold) findings.push({ sev: "mid", t: "内存序列持续上升", d: "区间净增 " + fmtMB(a.delta) + "；先拆 anon/file/shmem/VmPin，并确认最近两个固定 30 分钟窗口同向（每窗至少覆盖 27 分钟）" });
+  if (a.sd > 250 && isStableTrend(a.slope, threshold)) findings.push({ sev: "mid", t: "波动大但趋势平稳", d: "标准差 " + a.sd.toFixed(0) + " MiB，可能是碎片化、页缓存或业务在飞量" });
+  if (isStableTrend(a.slope, threshold) && a.sd < 250) findings.push({ sev: "low", t: "当前窗口进入稳态", d: "本序列斜率与方差均低；仍需结合指标层级和更长窗口确认" });
   document.getElementById("findings").innerHTML = findings.map(function (f) {
     return '<div class="dshell-listItem"><span class="dshell-listItemTitle">' + f.t + ' — ' + f.d + '</span>' + verdictBadge(f.sev, f.sev === "high" ? "高危" : f.sev === "mid" ? "关注" : "正常") + '</div>';
   }).join("");
@@ -867,7 +868,7 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-sample]"), functio
 
 /* ================= 泄漏模式卡片 ================= */
 var PATTERNS = [
-  { sev: "high", name: "async generator 链未关闭", sig: "task_exec RssAnon 最近两个完整 30 分钟窗口持续上涨，旧 request_id 的生成器年龄与墙钟同步", detect: "watch.csv 按 side/role/PID 看 anon；日志核对旧请求无完成/abort；在线只取 py-spy dump 单快照", fix: "引擎所有终结路径投递终态；每层 finally-await-aclose；调用方 abort；独立失速看门狗兜底" },
+  { sev: "high", name: "async generator 链未关闭", sig: "task_exec RssAnon 最近两个固定 30 分钟窗口持续上涨（每窗至少覆盖 27 分钟），旧 request_id 的生成器年龄与墙钟同步", detect: "watch.csv 按 side/role/PID 看 anon；日志核对旧请求无完成/abort；在线只取 py-spy dump 单快照", fix: "引擎所有终结路径投递终态；每层 finally-await-aclose；调用方 abort；独立失速看门狗兜底" },
   { sev: "high", name: "RDMA MR 注册泄漏", sig: "进程 VmPin 在正常高平台之上持续上涨", detect: "/proc/<pid>/status 连续采 VmPin；>1 MiB/h 即严重告警", fix: "审计 TENT MR register/unregister 配对、异常与重试路径；不要把稳定的 849–943 GiB 高值当泄漏" },
   { sev: "mid", name: "glibc 多 arena 碎片/留存", sig: "worker anon 缓慢抬升，但 memleak 找不到存活陈旧块", detect: "两次 smaps 分桶；重启窗口用 MALLOC_ARENA_MAX=4 或 jemalloc 做 A/B 斜率实验", fix: "限制 arena 数或切换 jemalloc；以相同负载、相同时间窗对照，不在线注入" },
   { sev: "low", name: "file/cache 被误判为泄漏", sig: "working set 或 RSS 突发上涨，但主要增量来自 active_file / RssFile", detect: "cgroup memory.stat + /proc/<pid>/status；观察压力或摘流后的自然回落，强制回收只在隔离副本维护窗口受控执行", fix: "监控面板拆 anon/file/shmem；把 NFS 模型、CUDA 惰性库页和日志 cache 从泄漏告警中分离" },
@@ -896,7 +897,7 @@ var CHECKLIST = [
   ["内存分层", "cgroup v1 已遍历 pod 下每个子容器的 memory.stat 求和"],
   ["内存分层", "进程突增已拆 RssAnon 与 RssFile，排除 CUDA/torch 库页换入"],
   ["趋势确认", "按 side、role、PID 连续采样，并覆盖 pod 重建后的新 PID"],
-  ["趋势确认", "anon 超过 50 MiB/h 且最近两个完整 30 分钟窗口同向，排除短时噪声与单次业务突发"],
+  ["趋势确认", "anon 超过 50 MiB/h 且最近两个固定 30 分钟窗口同向（每窗至少覆盖 27 分钟），排除短时噪声与单次业务突发"],
   ["资源归因", "VmPin 斜率已核对；超过 1 MiB/h 按 RDMA MR 严重告警"],
   ["资源归因", "线程与 fd 斜率已核对；持续超过 5 个/h 继续定位"],
   ["GPU/NVLink", "区分 vLLM 约 95% KV 预分配与稳态后持续上涨"],
@@ -1050,7 +1051,7 @@ function lvCollectPoints(series, data, selected, tMin) {
 }
 // 只比较最近两个固定时间窗，避免把数十秒噪声外推成小时级告警；每窗至少覆盖 90% 且有 3 个样本。
 function hasSustainedRise(pts, thresholdPerHour, windowMinutes) {
-  windowMinutes = windowMinutes || 30;
+  if (windowMinutes == null) windowMinutes = 30;
   if (!pts || pts.length < 6 || !(windowMinutes > 0)) return false;
   var valid = pts.filter(function (p) { return p && Number.isFinite(p.t) && Number.isFinite(p.v); })
     .slice().sort(function (a, b) { return a.t - b.t; });

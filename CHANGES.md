@@ -5,7 +5,8 @@
   anon/file/cache/shmem 分层方法、RssAnon/VmPin/线程/fd 判据、生产插桩红线、Xid 事故时间线、
   task_exec 九层 async generator 僵死链证据、修复三件套与 2026-09-11 上线验证；工具、泄漏模式和
   检查清单同步改成生产安全口径。在线采样不再把 RSS、cgroup 总量或 vLLM 约 95% GPU 预分配直接定性为
-  泄漏：RSS 需最近两个完整 30 分钟窗口均超过 50 MiB/h 才预警并要求拆 anon/file，cgroup 总量始终要求继续分层，
+  泄漏：RSS 需最近两个固定 30 分钟窗口（每窗至少覆盖 27 分钟）均超过 50 MiB/h 才预警并要求拆 anon/file，
+  cgroup 总量始终要求继续分层，
   GPU 上涨先排除预分配；诊断概览删除“显存 × 1.4”虚构 RSS，改为只展示实测要求；有效“待观察”原因不再误显示为
   “样本不足”，负斜率明确显示回落。审查后移除可直接复制的 `memory.force_empty` 命令并补强制回收红线，
   同时为多标签和长代码标识补窄屏适配。`projects/mem_leak/index.test.cjs` 新增固定双窗口、指标来源保守判定、

@@ -204,6 +204,18 @@ test("hasSustainedRise 按时间戳兼容采样间隔变化，并拒绝回落窗
     v: 10000 + t * (50 / 60),
   }));
   assert.equal(ctx.hasSustainedRise(exactThreshold, 50, 30), false);
+  assert.equal(ctx.hasSustainedRise(mixedIntervals, 50, 0), false);
+});
+
+test("hasSustainedRise 的 30 分钟窗口要求至少 90% 时间覆盖", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise"]);
+  const covered = [3, 15, 30, 45, 57, 60].map((t) => ({ t, v: 10000 + t }));
+  const shortFirstWindow = [4, 15, 30, 45, 57, 60].map((t) => ({ t, v: 10000 + t }));
+
+  assert.equal(ctx.hasSustainedRise(covered, 50, 30), true);
+  assert.equal(ctx.hasSustainedRise(shortFirstWindow, 50, 30), false);
+  assert.match(html, /每窗至少覆盖 27 分钟/);
+  assert.doesNotMatch(html, /完整 30 分钟窗口/);
 });
 
 test("lvJudgeSeries 把显著负斜率显示为回落，而不是平稳", () => {
@@ -214,6 +226,14 @@ test("lvJudgeSeries 把显著负斜率显示为回落，而不是平稳", () => 
   assert.equal(ctx.lvJudgeSeries(falling, "rss").label, "RSS 回落（释放正常）");
   assert.equal(ctx.lvJudgeSeries(falling, "cg").label, "容器总量回落");
   assert.equal(ctx.lvJudgeSeries(falling, "gpu").label, "显存回落（释放正常）");
+});
+
+test("诊断概览只把阈值内斜率称为稳态，不给显著回落追加稳态结论", () => {
+  const ctx = loadFunctions(["isStableTrend"]);
+  assert.equal(ctx.isStableTrend(-1, 50 / 60), false);
+  assert.equal(ctx.isStableTrend(0.5, 50 / 60), true);
+  assert.equal(ctx.isStableTrend(50 / 60, 50 / 60), false);
+  assert.match(functionSource("render"), /isStableTrend\(a\.slope, threshold\)/);
 });
 
 test("lvJudgeBadge 保留有效待观察原因，只有无有效分析时显示样本不足", () => {
