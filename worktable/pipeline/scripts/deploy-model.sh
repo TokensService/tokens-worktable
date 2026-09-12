@@ -20,6 +20,7 @@ TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
+PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
 XDS_URL="${XDS_URL:-}"
 XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
@@ -178,10 +179,23 @@ PY
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   if ! run_remote "$target" "$target_port" "$remote_command"; then
-    rm -f "$remote_env"
+    [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
-  rm -f "$remote_env"
+
+  # The target resolves the actual NodePort and writes it to its contract.
+  # Copy that sanitized runtime contract back so later execution-host stages
+  # and print-env.sh observe the same XDS endpoint.
+  local runtime_env
+  mkdir -p "$(dirname "$PIPELINE_ENV_FILE")"
+  runtime_env="$(mktemp "${PIPELINE_ENV_FILE}.tmp.XXXXXX")"
+  if ! run_remote "$target" "$target_port" "cat $(remote_quote "$TARGET_PIPELINE_ENV_FILE")" >"$runtime_env"; then
+    [[ ! -e "$runtime_env" ]] || unlink "$runtime_env"
+    [[ ! -e "$remote_env" ]] || unlink "$remote_env"
+    return 1
+  fi
+  mv "$runtime_env" "$PIPELINE_ENV_FILE"
+  [[ ! -e "$remote_env" ]] || unlink "$remote_env"
   printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
 }
 
@@ -249,6 +263,21 @@ else:
   }
   XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
   echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
+}
+
+persist_runtime_environment() {
+  local variable
+  SERVICE_API="${XDS_URL%/}"
+  MODEL_API="${SERVICE_API}/models/${MODEL_ENDPOINT}"
+  mkdir -p "$(dirname "$PIPELINE_ENV_FILE")"
+  {
+    printf '# Runtime values resolved by deploy-model.sh.\n'
+    for variable in \
+      XDS_URL XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
+      MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID; do
+      printf 'export %s=%q\n' "$variable" "${!variable}"
+    done
+  } >>"$PIPELINE_ENV_FILE"
 }
 
 wait_for_xds_api() {
@@ -634,6 +663,7 @@ nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECON
 HEAD_LOG_COLLECTOR_PID=$!
 printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
   "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
+persist_runtime_environment
 
 wait_for_xds_api
 wait_for_task_executors

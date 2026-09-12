@@ -9,6 +9,15 @@ case "$show_secrets" in
   *) echo 'SHOW_SECRETS must be 0 or 1' >&2; exit 2 ;;
 esac
 
+# A generated pipeline contract holds values resolved by earlier stages. Load
+# it for diagnostics when the caller provides its path; it contains no registry
+# credentials by design.
+if [[ -n "${PIPELINE_ENV_FILE:-}" && -f "$PIPELINE_ENV_FILE" ]]; then
+  set -a
+  source "$PIPELINE_ENV_FILE"
+  set +a
+fi
+
 is_sensitive_name() {
   [[ "$1" =~ (^|_)(AK|SK|TOKEN|PASSWORD|PASS|SECRET|LOGIN_KEY|LOGKEY|AUTH|CREDENTIAL|API_KEY|KEY)$ ]]
 }

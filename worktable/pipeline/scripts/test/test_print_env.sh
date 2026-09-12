@@ -19,4 +19,13 @@ if SHOW_SECRETS=bad bash "$script" >/dev/null 2>&1; then
   exit 1
 fi
 
+
+contract_file="$(mktemp)"
+trap '[[ ! -e "$contract_file" ]] || unlink "$contract_file"' EXIT
+printf 'export XDS_URL=%q\nexport SERVICE_API=%q\n' \
+  'http://192.0.2.10:31465/xds/v1' 'http://192.0.2.10:31465/xds/v1' >"$contract_file"
+output="$(PIPELINE_ENV_FILE="$contract_file" bash "$script")"
+grep -Fxq 'XDS_URL=http://192.0.2.10:31465/xds/v1' <<<"$output"
+grep -Fxq 'SERVICE_API=http://192.0.2.10:31465/xds/v1' <<<"$output"
+
 echo 'print-env tests passed'
