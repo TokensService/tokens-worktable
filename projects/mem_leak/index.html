@@ -66,6 +66,8 @@
     .theme-seg button.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
 
     /* 仅本页所需的最小自造样式 */
+    .dshell-tabs { overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling:touch; }
+    .dshell-tab { flex:0 0 auto; white-space:nowrap; }
     .ml-canvas { width:100%; height:240px; display:block; }
     .ml-legend { display:flex; flex-wrap:wrap; gap:12px; font-size:12px; opacity:.9; margin-top:8px; }
     .ml-legend span { display:inline-flex; align-items:center; gap:5px; }
@@ -95,6 +97,25 @@
     .ml-note { font-size:12px; opacity:.7; margin-top:6px; }
     .ml-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .ml-pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; }
+    .ml-callout { border:1px solid var(--dsw-alias-border-l1,#262b36); border-left:4px solid var(--dsw-alias-state-accent-primary,#4f8ef7); border-radius:8px; padding:10px 12px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); font-size:12.5px; line-height:1.65; }
+    .ml-callout strong { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .ml-callout-danger { border-left-color:#f85149; background:rgba(248,81,73,.06); }
+    .ml-callout-warn { border-left-color:#d29922; background:rgba(210,153,34,.06); }
+    .ml-callout-ok { border-left-color:#3fb950; background:rgba(63,185,80,.06); }
+    .ml-guide-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; }
+    .ml-guide-step { border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:9px; padding:11px 12px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .ml-guide-stepHead { display:flex; align-items:center; gap:8px; margin-bottom:6px; font-weight:600; font-size:13px; }
+    .ml-guide-num { display:inline-grid; place-items:center; min-width:22px; height:22px; padding:0 5px; border-radius:7px; background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; font-size:11px; }
+    .ml-guide-step p { margin:0; color:var(--dsw-alias-label-secondary,#9aa4b2); font-size:12px; line-height:1.6; }
+    .ml-guide-section { margin-top:12px; }
+    .ml-codechain { margin:0; overflow:auto; white-space:pre; }
+    .ml-tablewrap { overflow-x:auto; }
+    .ml-statusline { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-bottom:9px; }
+    .ml-prose { font-size:12.5px; line-height:1.7; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .ml-prose strong { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .ml-prose code, .dshell-table code { overflow-wrap:anywhere; word-break:break-word; }
+    .ml-prose ul, .ml-prose ol { margin:6px 0 0; padding-left:20px; }
+    .ml-prose li + li { margin-top:4px; }
     .dshell-btn:disabled { opacity:.45; cursor:not-allowed; }
     .ml-select { width:auto; padding:5px 8px; }
     .ml-select option { background:var(--dsw-alias-bg-base,#0b0e14); color:var(--dsw-alias-label-primary,#e6e8eb); }
@@ -110,7 +131,7 @@
   <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
     <div>
       <h1 class="dshell-title">大模型推理系统内存泄漏诊断</h1>
-      <p class="dshell-sub">定位 GPU 显存与进程内存泄漏，覆盖 KV Cache、张量残留、碎片化与引用未释放。</p>
+      <p class="dshell-sub">面向 vLLM P/D 分离集群的分层诊断：区分匿名页、页缓存、共享内存、RDMA 固定页与 GPU 预分配。</p>
     </div>
     <div class="theme-seg" id="themeSeg" title="背景主题（浅色 / 深色 / 跟随系统）">
       <button type="button" data-theme="system">系统</button>
@@ -122,12 +143,13 @@
   <div>
     <span class="dshell-badge dshell-badgeDone">显存时序分析</span>
     <span class="dshell-badge dshell-badgeWait">泄漏特征识别</span>
-    <span class="dshell-badge">修复指引</span>
+    <span class="dshell-badge">P/D 生产复盘</span>
   </div>
 
   <!-- 标签页 -->
   <div class="dshell-tabs" id="tabs">
     <button class="dshell-tab dshell-tabOn" data-tab="live">在线采样</button>
+    <button class="dshell-tab" data-tab="fieldguide">P/D 实战手册</button>
     <button class="dshell-tab" data-tab="overview">诊断概览</button>
     <button class="dshell-tab" data-tab="timeline">内存时序</button>
     <button class="dshell-tab" data-tab="patterns">泄漏模式</button>
@@ -138,6 +160,11 @@
 
   <!-- ============ 在线采样 ============ -->
   <div class="ml-pane" data-pane="live">
+    <div class="ml-callout ml-callout-warn" style="margin-bottom:12px">
+      <strong>在线采样只做第一轮趋势筛查。</strong>
+      当前接口提供进程显存、总 RSS 与容器 cgroup 总量；RSS 上涨必须再拆 <code>RssAnon/RssFile</code>，容器总量必须再拆
+      <code>anon/file/cache/shmem</code>。页面不会仅凭 RSS、working set 或容器总量下“泄漏实锤”结论。
+    </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">目标机器</h2>
       <div class="ml-formrow">
@@ -171,11 +198,11 @@
       </div>
       <div class="ml-procwrap">
         <table class="dshell-table">
-          <thead><tr><th title="纳入采样">采</th><th>PID</th><th>进程</th><th>容器</th><th>显存</th><th>RSS</th><th>容器内存</th><th>已运行</th></tr></thead>
+          <thead><tr><th title="纳入采样">采</th><th>PID</th><th>进程</th><th>容器</th><th>显存</th><th>RSS</th><th>容器内存（总量）</th><th>已运行</th></tr></thead>
           <tbody id="lvProcBody"></tbody>
         </table>
       </div>
-      <div class="ml-note">勾选纳入采样的进程。显存 = nvidia-smi 进程显存，RSS = 进程常驻内存，容器内存 = 进程所属容器的 cgroup 总占用（同一容器只采一条序列）。</div>
+      <div class="ml-note">勾选纳入采样的进程。显存 = nvidia-smi 进程显存；RSS 与容器 cgroup 总量都含不可直接定性的组成，同一容器只采一条总量序列。真实泄漏归因请继续看「P/D 实战手册」。</div>
     </div>
 
     <div class="ml-grid2" id="lvChartWrap" style="display:none">
@@ -199,27 +226,248 @@
           <tbody id="lvJudgeBody"></tbody>
         </table>
       </div>
-      <div class="ml-note">判定复用「诊断概览」的最小二乘回归：斜率 &gt; 8 MiB/m 判疑似泄漏，波动大但斜率小判碎片化。点「分析」把该序列载入诊断概览深入研判。</div>
+      <div class="ml-note">研判采用最近两个固定 30 分钟窗口（每窗至少覆盖 27 分钟）：RSS 两窗均超过 50 MiB/h 才预警，并仍要求拆 anon/file；容器总量只提示分解，GPU 上涨先排除 vLLM 预分配。点「分析」载入概览查看趋势。</div>
+    </div>
+  </div>
+
+  <!-- ============ P/D 实战手册 ============ -->
+  <div class="ml-pane" data-pane="fieldguide" style="display:none">
+    <div class="dshell-card">
+      <div class="ml-statusline">
+        <span class="dshell-badge dshell-badgeDone">修复已上线</span>
+        <span class="dshell-badge dshell-badgeWait">上游静默终结待收敛</span>
+        <span class="dshell-badge">记录更新至 2026-09-11</span>
+      </div>
+      <h2 class="dshell-sub" style="margin:0 0 8px">生产案例快照</h2>
+      <div class="ml-prose">
+        集群 <code>xds-glm-5-2-nvfp4-ems-one-node-1928-99bef</code>：kubeRay、vLLM P/D 分离、mooncake TENT KV 传输；
+        单节点 8× NVIDIA H800、3 TiB 主存、cgroup v1、containerd。
+      </div>
+      <div class="dshell-grid" style="margin-top:10px">
+        <div class="dshell-stat"><div class="dshell-statLabel">TENT / RDMA MR</div><div class="dshell-statValue" style="font-size:15px;color:#3fb950">VmPin 恒定</div><div class="dshell-statDelta">数据面无泄漏</div></div>
+        <div class="dshell-stat"><div class="dshell-statLabel">task_exec 生成器链</div><div class="dshell-statValue" style="font-size:15px;color:#3fb950">120s 封顶</div><div class="dshell-statDelta">看门狗 + aclose 已上线</div></div>
+        <div class="dshell-stat"><div class="dshell-statLabel">上游病根活跃度</div><div class="dshell-statValue" style="font-size:15px;color:#d29922">~16 条/分钟</div><div class="dshell-statDelta">prefill 静默终结仍活跃</div></div>
+        <div class="dshell-stat"><div class="dshell-statLabel">worker 慢涨</div><div class="dshell-statValue" style="font-size:15px;color:#d29922">待 arena 实验</div><div class="dshell-statDelta">倾向 glibc 碎片/留存</div></div>
+      </div>
+    </div>
+
+    <div class="ml-callout ml-callout-danger" style="margin-bottom:12px">
+      <strong>生产红线：</strong>集群曾因 gdb 注入崩溃杀死 decode task executor；JE 心跳连续丢失约 5 分钟会成对重建 P/D pod。
+      在线进程只允许只读 <code>/proc</code>、单次 <code>py-spy dump</code> 与日志检查；禁止 gdb Python 注入、memleak、memray attach、<code>py-spy --native</code> 等重型插桩。
+    </div>
+
+    <div class="ml-grid2">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">部署拓扑（2026-09-09 重启后卡位对调）</h2>
+        <div class="ml-tablewrap">
+          <table class="dshell-table">
+            <thead><tr><th>GPU</th><th>side</th><th>关键进程</th></tr></thead>
+            <tbody>
+              <tr><td>0–3</td><td><strong>decode</strong></td><td><code>Worker_DP0-3</code>、<code>XDSDPEngineCoreActor</code>×4、<code>DPCoordinator</code>、infer/task executor</td></tr>
+              <tr><td>4–7</td><td><strong>prefill</strong></td><td><code>Worker_PP0-3</code>、<code>XDSEngineCoreActor</code>、infer executor、<code>DPTaskExecutorActor</code>×1</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="ml-note">pod 名不含 side；只能从 worker 进程名 <code>Worker_PP</code>/<code>Worker_DP</code> 反推。TENT 以库加载在 worker、engine actor、task executor 内，无独立进程。</div>
+      </div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">组件基线</h2>
+        <div class="dshell-kv">
+          <div class="dshell-kvRow"><span class="dshell-kvKey">vLLM</span><span class="dshell-kvValue">0.23.0 · vllm_xds_patch</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">Ray</span><span class="dshell-kvValue">2.48.0</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">mooncake</span><span class="dshell-kvValue">0.3.10.post2</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">TENT</span><span class="dshell-kvValue">MC_USE_TENT=1 · RDMA · 8×mlx5_bond</span></div>
+          <div class="dshell-kvRow"><span class="dshell-kvKey">正常 VmPin</span><span class="dshell-kvValue">decode ≈849 GiB · prefill 851–943 GiB，且应恒定</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 10px">四层定位法</h2>
+      <div class="ml-guide-grid">
+        <div class="ml-guide-step"><div class="ml-guide-stepHead"><span class="ml-guide-num">0</span>先分清内存层</div><p><code>working_set = usage − inactive_file</code>，仍会包含活跃页缓存。先拆 anon、file/cache、shmem，避免把 NFS/CUDA 库页和日志缓存当泄漏。</p></div>
+        <div class="ml-guide-step"><div class="ml-guide-stepHead"><span class="ml-guide-num">1</span>连续趋势采样</div><p>单点 RSS 没有结论价值。先拆 <code>RssAnon/RssFile</code>，再按 PID 与角色看斜率、平台是否抬升以及锯齿是否回落。</p></div>
+        <div class="ml-guide-step"><div class="ml-guide-stepHead"><span class="ml-guide-num">2</span>进程与资源归因</div><p>按 side/role/PID 记录 anon、file、pin、线程和 fd；pod 重建或卡位对调时依靠进程名重新发现。</p></div>
+        <div class="ml-guide-step"><div class="ml-guide-stepHead"><span class="ml-guide-num">3</span>轻量代码归因</div><p>在线先做 smaps 分桶与 py-spy 单快照。只有确认无 JE 心跳看门狗且有维护窗口，才考虑中侵入工具。</p></div>
+      </div>
+
+      <div class="ml-grid2 ml-guide-section">
+        <div>
+          <div class="ml-codebar"><span class="dshell-muted" style="font-size:11px">cgroup v1 分解</span></div>
+          <pre class="ml-code">CG=/sys/fs/cgroup/memory/kubepods/burstable/pod&lt;UID&gt;/&lt;容器ID&gt;
+grep -E '^(active|inactive)_(anon|file)|^cache|^shmem' "$CG/memory.stat"</pre>
+          <div class="ml-note">本环境 pod 级 <code>memory.stat</code> 不聚合子容器，必须遍历 <code>pod&lt;uid&gt;/*/memory.stat</code> 求和；pod 级 <code>memory.usage_in_bytes</code> 才是聚合值。<code>cache</code> 与 active/inactive file 等字段存在总量/子项关系，不可直接相加。</div>
+          <div class="ml-callout ml-callout-danger" style="margin-top:9px"><strong>不要在承载流量的容器执行 <code>memory.force_empty</code>。</strong>它会对目标 cgroup 触发强制回收并尽可能回收页面，不是“只清 page cache”的只读诊断开关。确需验证回收性时，只能在摘流或隔离副本的维护窗口由值班负责人受控执行；参见 <a href="https://docs.kernel.org/admin-guide/cgroup-v1/memory.html" target="_blank" rel="noopener noreferrer">Linux 内核 cgroup v1 文档</a>。</div>
+        </div>
+        <div class="ml-tablewrap">
+          <table class="dshell-table">
+            <thead><tr><th>组成</th><th>解释</th><th>判定</th></tr></thead>
+            <tbody>
+              <tr><td>anon</td><td>进程堆/匿名页</td><td>持续涨才指向真泄漏</td></tr>
+              <tr><td>file/cache</td><td>NFS 模型、CUDA 惰性加载库页、日志页缓存</td><td>通常可回收；结合 dirty/writeback 与压力下回落确认</td></tr>
+              <tr><td>shmem</td><td>Ray plasma、NCCL/TENT 握手段</td><td>持续涨指向共享内存泄漏</td></tr>
+              <tr><td>VmPin</td><td>RDMA MR 固定页</td><td>稳定高值正常；斜率才关键</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">判定门槛与工具边界</h2>
+      <div class="ml-tablewrap">
+        <table class="dshell-table">
+          <thead><tr><th>指标/手段</th><th>门槛或用途</th><th>生产要求</th></tr></thead>
+          <tbody>
+            <tr><td>anon</td><td>&gt;50 MiB/h，且最近两个 30 分钟窗口同向（每窗至少覆盖 27 分钟）</td><td><span class="dshell-badge dshell-badgeWait">确认泄漏</span> 前仍要排除业务在飞量</td></tr>
+            <tr><td>VmPin</td><td>&gt;1 MiB/h 指向 RDMA MR 泄漏</td><td><span class="dshell-badge dshell-badgeDone">只读 /proc</span></td></tr>
+            <tr><td>线程 / fd</td><td>持续 &gt;5 个/h 指向线程/句柄泄漏</td><td><span class="dshell-badge dshell-badgeDone">只读 /proc</span></td></tr>
+            <tr><td>smaps 两次 diff</td><td>区分 heap、arena、库页、/dev/nvidia</td><td><span class="dshell-badge dshell-badgeDone">零侵入</span></td></tr>
+            <tr><td>py-spy dump</td><td>单快照查看线程当前栈</td><td><span class="dshell-badge dshell-badgeDone">低侵入</span> 不加 <code>--native</code></td></tr>
+            <tr><td>bcc memleak / memray attach / gdb</td><td>运行期分配栈、函数归因、arena 统计</td><td><span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.4)">在线禁用</span> 仅维护窗口或无看门狗版本</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="ml-callout ml-callout-warn" style="margin-top:10px"><strong>GPU 侧：</strong>vLLM 以 <code>gpu_memory_utilization≈0.95</code> 预占 KV cache，nvidia-smi 约 95% 是正常预分配；只关注是否在稳态后持续缓慢上涨至 OOM。NVLink 同时检查 Xid 与 FEC 错误。</div>
+    </div>
+
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">当前结论</h2>
+      <div class="ml-tablewrap">
+        <table class="dshell-table">
+          <thead><tr><th>对象</th><th>结论</th><th>证据/后续</th></tr></thead>
+          <tbody>
+            <tr><td>TENT 数据面</td><td><strong style="color:#3fb950">排除泄漏</strong></td><td>全部进程 VmPin 斜率 0.00，MR 注册稳定</td></tr>
+            <tr><td>task_exec</td><td><strong style="color:#f85149">生成器链泄漏已实锤</strong></td><td>历史斜率 decode +53–337 MiB/h、prefill +104–210 MiB/h；修复后 decode 走平</td></tr>
+            <tr><td>worker</td><td><strong style="color:#d29922">倾向 glibc 多 arena 碎片</strong></td><td>memleak 未发现陈旧块；用 <code>MALLOC_ARENA_MAX=4</code> 或 jemalloc 对照验证</td></tr>
+            <tr><td>decode task_exec fd</td><td><strong style="color:#d29922">缓慢泄漏</strong></td><td>+2.8–6.9 个/h，与僵死链挂住的 ZMQ/gRPC 句柄一致</td></tr>
+            <tr><td>cgroup 高占用</td><td><strong>主要是页缓存</strong></td><td>样例 190 GiB 中 cache 159 GiB；回收性只在摘流/隔离副本受控验证</td></tr>
+            <tr><td>pushgateway</td><td><strong style="color:#d29922">确定的资源浪费</strong></td><td><code>192.168.10.6:25888</code> 长期不通，1s push 线程卡在 TCP connect 并持有 payload</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">task_exec 根因：失去取消传播的 async generator 链</h2>
+      <pre class="ml-code ml-codechain">ray._raylet.execute_streaming_generator_async
+└─ DPTaskExecutorActor.chat_completion
+   └─ do_chat_completion
+      └─ stream_chat_completion
+         └─ XDS chat_completion_stream_generator
+            └─ vLLM chat_completion_stream_generator
+               └─ ReasoningTokensCollector.wrap_result_generator
+                  └─ AsyncLLM.generate
+                     └─ RequestOutputCollector.get → ready.wait / q.get</pre>
+      <div class="ml-prose" style="margin-top:9px">
+        客户端断连、abort 或上游重试后，消费端停止拉取但没有关闭内层生成器；引擎侧请求已经终结，却未向旧 collector 投递终态。
+        Ray 流式链顶仍持有九层生成器帧，request context、detokenizer 全量文本/token、reasoning recorder 与句柄一起常驻。
+      </div>
+      <div class="ml-tablewrap" style="margin-top:10px">
+        <table class="dshell-table">
+          <thead><tr><th>代码层</th><th>缺口</th></tr></thead>
+          <tbody>
+            <tr><td><code>RequestOutputCollector.get()</code></td><td>等待无终态、无超时</td></tr>
+            <tr><td><code>XDSAsyncLLM.generate()</code></td><td>旧看门狗只覆盖首 token 前；调用方不关闭就不执行 abort</td></tr>
+            <tr><td><code>stream_pipeline.py</code> / task executor</td><td>包装层缺少 <code>finally → await inner_gen.aclose()</code></td></tr>
+            <tr><td>JE / 前端放弃消费路径</td><td>断连、超时、重试、pod 重建未保证 <code>abort_task(request_id)</code> 到达</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="ml-grid2">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">修复三件套</h2>
+        <div class="ml-prose">
+          <ol>
+            <li><strong>终态完整：</strong>引擎正常、异常、KV 拉取失败或丢弃请求时，都向 collector 投递终态/异常。</li>
+            <li><strong>级联关闭：</strong>所有流式包装层在 <code>finally</code> 中 <code>aclose()</code> 内层，并让放弃消费路径显式 abort。</li>
+            <li><strong>独立兜底：</strong><code>generate/get</code> 加最长存活/失速看门狗，actor 周期扫描超龄链；同步限制/清空 reasoning recorder 的全量 token。</li>
+          </ol>
+        </div>
+      </div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">上线验证（2026-09-11 15:26）</h2>
+        <div class="ml-prose">
+          <ul>
+            <li>容器内已确认 <code>stream_stall_timeout_seconds</code> 与 task executor 级联 <code>aclose</code>。</li>
+            <li>prefill 34 分钟触发 544 次 120s 看门狗，约 16 条/分钟；僵死链生命期被钉在 120s。</li>
+            <li>4 个 decode task_exec 30 分钟斜率约 −49～+2 MiB/h，已走平。</li>
+            <li>prefill 曾 +800 MiB 后回落，判为在飞流量，仍需后续窗口确认不破前高。</li>
+            <li>worker pin 恒定；prefill worker 重建预热后需回到约 6.5 GiB 平台。</li>
+          </ul>
+        </div>
+        <div class="ml-callout ml-callout-warn" style="margin-top:9px">看门狗只把每条链的成本限制到约 120 秒；静默终结产生率尚未消失，仍需审计 KV_wait/抢占/重试、<code>external_req_ids</code> 归属和 <code>drop_stale_output</code> 是否丢终态。</div>
+      </div>
+    </div>
+
+    <details class="dshell-card ml-pattern">
+      <summary class="ml-pattern-head"><span class="dshell-listItemTitle">展开：证据链与 memray 函数级归因</span><span class="dshell-badge">历史证据</span></summary>
+      <div class="ml-pattern-body ml-prose">
+        <ul>
+          <li>GC 历史快照显示九层包装各 35 条且数量完全相等；最老 request 链从 2853s 到 3633s 与墙钟同步衰老。</li>
+          <li>27 个引擎 <code>request_states</code> 不含任何僵死链 request_id：引擎状态已消失，旧 queue 没收到终态。</li>
+          <li>memray 快照中，<code>reasoning_tokens.py</code> recorder 与 XDS detokenizer 的全量 token/text 是每条僵死链的主要持有物，单链成本约 1 MiB。</li>
+          <li>Ray pickle5 的 613 MiB 是在飞反序列化 churn；单快照的 “leaks” 不能单独作为泄漏结论，必须结合栈、对象年龄与源码持有关系。</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="dshell-card ml-pattern">
+      <summary class="ml-pattern-head"><span class="dshell-listItemTitle">展开：2026-09-09～10 事故时间线</span><span class="dshell-badge dshell-badgeWait">操作教训</span></summary>
+      <div class="ml-pattern-body ml-tablewrap">
+        <table class="dshell-table">
+          <thead><tr><th>时刻</th><th>事件与处置</th></tr></thead>
+          <tbody>
+            <tr><td>09-09 12:29</td><td>GPU 2/3/6/7 爆发 Xid 145，CUDA channel 被 Xid 45 清理，P/D 同时停摆。</td></tr>
+            <tr><td>12:34</td><td>JE 检测 TE 心跳丢失 300 次，成对重建两个 worker pod。</td></tr>
+            <tr><td>12:37 起</td><td>NVLink fabric 故障态下新 pod 卡在 <code>ncclCommInitRank</code>，连续重建无效；此类故障应先 taint/cordon 节点再修硬件。</td></tr>
+            <tr><td>约 17:03</td><td>节点重启清除 NVLink 故障；约 19:30 新部署恢复。</td></tr>
+            <tr><td>09-10 09:38</td><td>gdb 注入过程中自身 Aborted，decode task executor 死亡并触发重建；由此确立在线禁止注入红线。</td></tr>
+          </tbody>
+        </table>
+        <div class="ml-note">另见 IPMI 驱动 <code>revision_show</code> 内核 oops，与 GPU/NVLink 故障无关。</div>
+      </div>
+    </details>
+
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px">持续监控设施</h2>
+      <div class="ml-tablewrap">
+        <table class="dshell-table">
+          <thead><tr><th>产物</th><th>用途</th></tr></thead>
+          <tbody>
+            <tr><td><code>watch.sh → watch.csv</code></td><td>按进程名发现 P/D 角色，60s 记录 anon/file/pin/线程/fd，免疫 pod 重建与卡位对调</td></tr>
+            <tr><td><code>syswatch.sh → syswatch.csv</code></td><td>pod usage/anon/cache/active_file 每 60s，GPU 0–3/4–7 显存每 5min</td></tr>
+            <tr><td><code>analyze_watch.py</code></td><td>按 (side, role, pid) 计算端点斜率并按本页阈值标记异常</td></tr>
+            <tr><td><code>tools/bin/py-spy</code></td><td>宿主机单次 attach 容器 PID，只取轻量线程快照</td></tr>
+            <tr><td><code>code/</code> 与历史证据</td><td>泄漏链源码副本、GC 差分、memray Top40 栈与火焰图</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre class="ml-code" style="margin-top:10px">nohup /mnt/paas/lhf/oom/watch.sh &gt;/dev/null 2&gt;&amp;1 &amp;
+nohup /mnt/paas/lhf/oom/syswatch.sh &gt;/dev/null 2&gt;&amp;1 &amp;
+python3 /mnt/paas/lhf/oom/analyze_watch.py</pre>
     </div>
   </div>
 
   <!-- ============ 诊断概览 ============ -->
   <div class="ml-pane" data-pane="overview" style="display:none">
     <div class="dshell-grid">
-      <div class="dshell-stat"><div class="dshell-statLabel">GPU 显存占用</div><div class="dshell-statValue" id="ovGpu">—</div><div class="dshell-statDelta" id="ovGpuD"></div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">进程 RSS</div><div class="dshell-statValue" id="ovRss">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">KV Cache 占用率</div><div class="dshell-statValue" id="ovKv">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">泄漏速率</div><div class="dshell-statValue" id="ovRate">—</div><div class="dshell-statDelta" id="ovRateD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">当前内存值</div><div class="dshell-statValue" id="ovGpu">—</div><div class="dshell-statDelta" id="ovGpuD"></div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">RssAnon / RssFile</div><div class="dshell-statValue" id="ovRss">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">cgroup 分解</div><div class="dshell-statValue" id="ovKv">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">趋势速率</div><div class="dshell-statValue" id="ovRate">—</div><div class="dshell-statDelta" id="ovRateD"></div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">样本数</div><div class="dshell-statValue" id="ovN">—</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">诊断结论</div><div class="dshell-statValue" id="ovVerdict" style="font-size:15px">—</div></div>
     </div>
 
     <div class="ml-grid2">
       <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">显存时序曲线</h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">内存序列时序曲线</h2>
         <canvas class="ml-canvas" id="ovChart"></canvas>
-        <div class="ml-legend"><span><i class="ml-dot" style="background:#60a5fa"></i>GPU 已分配</span><span><i class="ml-dot" style="background:#f59e0b"></i>泄漏趋势</span></div>
-        <div class="ml-note" id="ovChartNote">粘贴采样或载入示例后自动绘制并研判。曲线持续上扬 = 疑似泄漏。</div>
+        <div class="ml-legend"><span><i class="ml-dot" style="background:#60a5fa"></i>观测值</span><span><i class="ml-dot" style="background:#f59e0b"></i>回归趋势</span></div>
+        <div class="ml-note" id="ovChartNote">粘贴任一内存指标后自动绘制。持续上扬只是趋势告警，必须结合指标所属内存层确认。</div>
       </div>
       <div class="dshell-card">
         <h2 class="dshell-sub" style="margin:0 0 8px">采样输入</h2>
@@ -230,12 +478,12 @@
         <div class="ml-formrow" style="margin-bottom:8px">
           <span class="dshell-muted" style="font-size:11.5px">载入示例：</span>
           <button class="dshell-btn dshell-btnGhost" data-sample="healthy" type="button">健康平稳</button>
-          <button class="dshell-btn dshell-btnGhost" data-sample="linear" type="button">线性泄漏</button>
-          <button class="dshell-btn dshell-btnGhost" data-sample="step" type="button">阶梯泄漏</button>
-          <button class="dshell-btn dshell-btnGhost" data-sample="saw" type="button">锯齿碎片</button>
+          <button class="dshell-btn dshell-btnGhost" data-sample="linear" type="button">线性增长</button>
+          <button class="dshell-btn dshell-btnGhost" data-sample="step" type="button">阶梯增长</button>
+          <button class="dshell-btn dshell-btnGhost" data-sample="saw" type="button">锯齿波动</button>
         </div>
-        <textarea class="dshell-textarea" id="sampleInput" rows="9" placeholder="每行一条采样：&#10;时间 数值&#10;时间可省（自动递增）；单位分钟，可带 s/m/h（如 5、5m、90s）&#10;数值为显存，可带 GiB/MiB/MB/GB（如 10000、10.5GiB）&#10;# 开头为注释，忽略空行&#10;&#10;示例：&#10;0  10.0GiB&#10;5m 10.4GiB&#10;10 11.2GiB"></textarea>
-        <div class="ml-note">格式：&#60;时间&#62; &#60;显存&#62;，时间默认分钟；只解析数值与时间两列。结论与速率据此自动研判。</div>
+        <textarea class="dshell-textarea" id="sampleInput" rows="9" placeholder="每行一条采样：&#10;时间 数值&#10;时间可省（自动递增）；单位分钟，可带 s/m/h（如 5、5m、90s）&#10;数值为任一内存指标，可带 GiB/MiB/MB/GB（如 10000、10.5GiB）&#10;# 开头为注释，忽略空行&#10;&#10;示例：&#10;0  10.0GiB&#10;5m 10.4GiB&#10;10 11.2GiB"></textarea>
+        <div class="ml-note">格式：&#60;时间&#62; &#60;内存值&#62;，时间默认分钟。分析器只做通用趋势初筛，不会替代 anon/file/shmem/VmPin 分层归因。</div>
       </div>
     </div>
 
@@ -244,16 +492,16 @@
       <div class="dshell-list" id="findings">
         <div class="dshell-listItem"><span class="dshell-listItemTitle">等待采样数据…</span><span class="dshell-badge">待诊断</span></div>
       </div>
-      <div class="ml-note">结论由本地最小二乘回归自动研判：斜率 ≈ 0 且方差小 = 健康；斜率显著为正 = 疑似泄漏；均值平稳但方差大 = 碎片化/缓存波动。</div>
+      <div class="ml-note">结论由本地最小二乘回归初筛：斜率 ≈ 0 且方差小 = 稳态；斜率显著为正 = 需要分层确认；均值平稳但方差大 = 碎片化/缓存波动。</div>
     </div>
   </div>
 
   <!-- ============ 内存时序 ============ -->
   <div class="ml-pane" data-pane="timeline" style="display:none">
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">显存时序趋势</h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">内存指标时序趋势</h2>
       <canvas class="ml-canvas" id="bigChart" style="height:320px"></canvas>
-      <div class="ml-legend"><span><i class="ml-dot" style="background:#60a5fa"></i>GPU 已分配</span><span><i class="ml-dot" style="background:#f59e0b"></i>泄漏趋势线</span></div>
+      <div class="ml-legend"><span><i class="ml-dot" style="background:#60a5fa"></i>观测值</span><span><i class="ml-dot" style="background:#f59e0b"></i>回归趋势线</span></div>
       <div class="ml-note">此图与「诊断概览」共享同一份数据；在概览页载入示例或粘贴采样后更新。</div>
     </div>
     <div class="dshell-card">
@@ -268,9 +516,9 @@
         <thead><tr><th>形状</th><th>含义</th><th>典型成因</th></tr></thead>
         <tbody>
           <tr><td>近乎水平、噪声小</td><td>健康稳态</td><td>分配/释放平衡，无泄漏</td></tr>
-          <tr><td>单调线性上升</td><td>疑似显存泄漏</td><td>张量未释放 / KV block 未回收 / 权重重复加载</td></tr>
-          <tr><td>阶梯式增长</td><td>对象逐步累积</td><td>per-request tensor 存进未清理的列表 / 缓存无上限</td></tr>
-          <tr><td>锯齿状、基线缓升</td><td>碎片化 / 缓存波动</td><td>分配器碎片化、临时缓存周期涨落但未真正释放</td></tr>
+          <tr><td>单调线性上升</td><td>需要分层确认</td><td>anon 泄漏、file cache 换入、shmem 或业务在飞量都可能造成</td></tr>
+          <tr><td>阶梯式增长</td><td>对象/缓存逐步累积</td><td>请求链未关闭、无界缓存或新 CUDA kernel 路径批量换入</td></tr>
+          <tr><td>锯齿状、基线回落</td><td>分配器/缓存波动</td><td>glibc arena、临时缓存或业务批次变化；重点看底部是否持续抬升</td></tr>
         </tbody>
       </table>
     </div>
@@ -285,33 +533,37 @@
   <!-- ============ 诊断流程 ============ -->
   <div class="ml-pane" data-pane="flow" style="display:none">
     <div class="dshell-card">
-      <h2 class="dshell-sub" style="margin:0 0 8px">泄漏判定决策流</h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">分层判定决策流</h2>
       <div class="ml-flow" style="margin-bottom:10px">
-        <span class="ml-node">显存是否持续上涨？</span><span class="ml-arrow">→</span>
-        <span class="ml-node">否 → 健康 / 碎片</span><span class="ml-arrow">→</span>
-        <span class="ml-node">查 empty_cache 后是否回落</span>
+        <span class="ml-node">working set / usage 上涨</span><span class="ml-arrow">→</span>
+        <span class="ml-node">拆 anon / file / shmem</span><span class="ml-arrow">→</span>
+        <span class="ml-node">file 为主 → 页缓存，不定性泄漏</span>
       </div>
       <div class="ml-flow" style="margin-bottom:10px">
-        <span class="ml-node">是 → 空载无请求是否仍涨？</span><span class="ml-arrow">→</span>
-        <span class="ml-node">是 → 常驻泄漏（权重/池/闭包）</span>
+        <span class="ml-node">anon 上涨</span><span class="ml-arrow">→</span>
+        <span class="ml-node">拆到 side / role / PID</span><span class="ml-arrow">→</span>
+        <span class="ml-node">最近两个 30 分钟窗口均 &gt;50 MiB/h（各覆盖 ≥27 分钟）</span>
       </div>
       <div class="ml-flow">
-        <span class="ml-node">否 → 仅在有请求时涨 → 请求级泄漏（KV/张量/上下文）</span>
+        <span class="ml-node">VmPin &gt;1 MiB/h → RDMA MR</span><span class="ml-arrow">·</span>
+        <span class="ml-node">线程/fd &gt;5/h → 资源句柄</span><span class="ml-arrow">·</span>
+        <span class="ml-node">显存稳态后仍涨 → GPU 路径</span>
       </div>
-      <div class="ml-note">空载仍涨指向常驻对象；仅请求时涨指向 per-request 资源未回收。先用此分流再选定位工具。</div>
+      <div class="ml-note">先确认哪层在涨，再决定工具。单点、单窗口、总 RSS、working set 与 nvidia-smi 95% 都不能单独作为泄漏结论。</div>
     </div>
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">定位工具选择</h2>
       <table class="dshell-table">
         <thead><tr><th>场景</th><th>首选工具</th><th>看什么</th></tr></thead>
         <tbody>
-          <tr><td>Python 对象级增长</td><td>memray / tracemalloc</td><td>对象增长 Top、分配栈</td></tr>
-          <tr><td>持有者堆栈</td><td>py-spy dump</td><td>哪段代码持有了未释放对象</td></tr>
-          <tr><td>显存曲线对照</td><td>nvidia-smi -l 1</td><td>显存随时间走势</td></tr>
-          <tr><td>框架层分配明细</td><td>torch.cuda 内存快照</td><td>已分配/已保留/碎片</td></tr>
-          <tr><td>vLLM 内部</td><td>/metrics 端点</td><td>KV blocks 占用与抢占</td></tr>
+          <tr><td>容器层归因</td><td><code>memory.stat</code></td><td>anon / file / cache / shmem；cgroup v1 要遍历子容器</td></tr>
+          <tr><td>进程映射归因</td><td><code>/proc/PID/status</code> + 两次 smaps</td><td>RssAnon / RssFile / VmPin 与具体内存段</td></tr>
+          <tr><td>线程当前栈</td><td><code>py-spy dump</code> 单快照</td><td>低侵入查看等待点，不使用 native 模式</td></tr>
+          <tr><td>GPU / NVLink</td><td>nvidia-smi + dmesg</td><td>稳态上涨、Xid 145/45、NVLink FEC</td></tr>
+          <tr><td>函数级分配</td><td>memleak / memray / gdb</td><td>在线禁用；仅维护窗口或明确无 JE 看门狗时使用</td></tr>
         </tbody>
       </table>
+      <div class="ml-callout ml-callout-danger" style="margin-top:10px"><strong>禁止：</strong>在线推理进程 gdb 注入执行 Python。历史事故已证明工具自身异常可直接杀死 actor。</div>
     </div>
   </div>
 
@@ -428,17 +680,17 @@ var SAMPLES = {
   linear: function () {
     var out = [];
     for (var i = 0; i <= 24; i++) out.push(i + " " + (10000 + i * 210 + (Math.random() * 60 - 30)).toFixed(0));
-    return "# 线性泄漏：每分钟 +约210MiB，单调上升\n" + out.join("\n");
+    return "# 线性增长：每分钟 +约210MiB；是否泄漏要结合内存层确认\n" + out.join("\n");
   },
   step: function () {
     var out = [], base = 10000;
     for (var i = 0; i <= 24; i++) { if (i > 0 && i % 6 === 0) base += 900; out.push(i + " " + (base + (Math.random() * 50 - 25)).toFixed(0)); }
-    return "# 阶梯泄漏：每若干请求后基线抬升一档，对象累积未释放\n" + out.join("\n");
+    return "# 阶梯增长：每若干请求后基线抬升一档，需区分对象、缓存与库页换入\n" + out.join("\n");
   },
   saw: function () {
     var out = [];
     for (var i = 0; i <= 24; i++) { var tri = 600 - Math.abs((i % 4) - 2) * 300; out.push(i + " " + (10000 + i * 25 + tri + (Math.random() * 30)).toFixed(0)); }
-    return "# 锯齿碎片：周期性涨落，基线缓升，多为碎片化/缓存波动\n" + out.join("\n");
+    return "# 锯齿波动：周期性涨落；关注底部平台是否连续抬升\n" + out.join("\n");
   }
 };
 
@@ -460,13 +712,15 @@ function analyze(pts) {
   var relSlope = Math.abs(slope) / (Math.abs(sy / n) || 1) * 100;   // 每分钟相对变化 %
   // 走势分类
   var verdict, sev;
-  if (Math.abs(slope) < 8 && sd < 250) { verdict = "健康稳态"; sev = "low"; }
-  else if (Math.abs(slope) < 8) { verdict = "碎片化 / 缓存波动"; sev = "mid"; }
-  else if (slope > 0) { verdict = "疑似显存泄漏"; sev = "high"; }
-  else { verdict = "显存回落（释放正常）"; sev = "low"; }
+  var trendThreshold = 50 / 60; // 通用初筛阈值 50 MiB/h；是否泄漏仍需按内存层归因
+  if (Math.abs(slope) < trendThreshold && sd < 250) { verdict = "健康稳态"; sev = "low"; }
+  else if (Math.abs(slope) < trendThreshold) { verdict = "碎片化 / 缓存波动"; sev = "mid"; }
+  else if (slope > 0) { verdict = "持续上升（需分层确认）"; sev = "mid"; }
+  else { verdict = "内存回落（释放正常）"; sev = "low"; }
   return {
     ok: true, n: n, slope: slope, intercept: intercept, sd: sd, relSlope: relSlope,
-    span: span, t0: t0, t1: t1, v0: v0, v1: v1, delta: delta, verdict: verdict, sev: sev
+    span: span, t0: t0, t1: t1, v0: v0, v1: v1, delta: delta,
+    trendThreshold: trendThreshold, verdict: verdict, sev: sev
   };
 }
 
@@ -484,7 +738,7 @@ function lineChart(id, pts, showTrend, trend) {
   var blue = "#60a5fa", amber = "#f59e0b";
   if (!pts || pts.length < 2) {
     g.fillStyle = fgT; g.font = "12px -apple-system,'Microsoft YaHei',sans-serif";
-    g.textAlign = "center"; g.fillText("暂无数据（粘贴采样或载入示例后绘制）", W / 2, H / 2);
+    g.textAlign = "center"; g.fillText("暂无数据（粘贴内存序列或载入示例后绘制）", W / 2, H / 2);
     return;
   }
   var xs = pts.map(function (p) { return p.t; }), ys = pts.map(function (p) { return p.v; });
@@ -536,10 +790,15 @@ function verdictBadge(sev, label) {
   if (sev === "mid") return '<span class="dshell-badge dshell-badgeWait">' + label + '</span>';
   return '<span class="dshell-badge dshell-badgeDone">' + label + '</span>';
 }
+function isStableTrend(slope, threshold) { return Math.abs(slope) < threshold; }
+function lvJudgeBadge(j) {
+  if (!j || !j.ok) return '<span class="dshell-badge">样本不足</span>';
+  return j.sev === "wait" ? verdictBadge("mid", j.label) : verdictBadge(j.sev, j.label);
+}
 function render(a) {
   if (!a.ok) {
     setText("ovVerdict", "待诊断");
-    setText("ovN", "—"); setText("ovGpu", "—"); setText("ovRss", "—"); setText("ovKv", "—");
+    setText("ovN", "—"); setText("ovGpu", "—"); setText("ovRss", "需 /proc"); setText("ovKv", "需 memory.stat");
     setText("ovRate", "—"); setText("ovRateD", ""); setText("ovGpuD", "");
     document.getElementById("findings").innerHTML = '<div class="dshell-listItem"><span class="dshell-listItemTitle">' + a.msg + '</span><span class="dshell-badge">待诊断</span></div>';
     setText("trendNote", a.msg); document.getElementById("trendKv").innerHTML = "";
@@ -549,9 +808,9 @@ function render(a) {
   setText("ovN", a.n);
   setText("ovGpu", fmtMB(a.v1));
   setText("ovGpuD", (a.delta >= 0 ? "+" : "") + fmtMB(a.delta) + " / 区间");
-  // 估算 RSS（显存约占进程 GPU 部分；给出参照提示，不冒充真实值）
-  setText("ovRss", fmtMB(a.v1 * 1.4));
-  setText("ovKv", "需 /metrics");
+  // 不从任意输入序列虚构 RSS/cgroup 组成；二者必须从目标进程与 cgroup 实测。
+  setText("ovRss", "需 /proc 实测");
+  setText("ovKv", "需 memory.stat");
   setText("ovRate", a.slope.toFixed(1) + " MiB/m");
   setText("ovRateD", (a.slope * 60).toFixed(0) + " MiB/h" + (a.slope > 0 ? " · 上升" : a.slope < 0 ? " · 下降" : ""));
   setText("ovVerdict", a.verdict);
@@ -560,11 +819,12 @@ function render(a) {
 
   // 结论列表
   var rate = a.slope * 60;
+  var threshold = a.trendThreshold;
   var findings = [];
   findings.push({ sev: a.sev, t: a.verdict, d: "区间 " + a.t0.toFixed(1) + "–" + a.t1.toFixed(1) + "m，斜率 " + a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）" });
-  if (a.slope > 8) findings.push({ sev: "high", t: "显存单调上升", d: "约 " + fmtMB(a.delta) + " 未释放，优先查张量残留 / KV block 回收 / 权重重复加载" });
-  if (a.sd > 250 && Math.abs(a.slope) < 8) findings.push({ sev: "mid", t: "波动大但趋势平稳", d: "标准差 " + a.sd.toFixed(0) + " MiB，疑似碎片化或临时缓存波动" });
-  if (a.slope <= 8 && a.sd < 250) findings.push({ sev: "low", t: "稳态健康", d: "斜率与方差均低，分配/释放平衡" });
+  if (a.slope > threshold) findings.push({ sev: "mid", t: "内存序列持续上升", d: "区间净增 " + fmtMB(a.delta) + "；先拆 anon/file/shmem/VmPin，并确认最近两个固定 30 分钟窗口同向（每窗至少覆盖 27 分钟）" });
+  if (a.sd > 250 && isStableTrend(a.slope, threshold)) findings.push({ sev: "mid", t: "波动大但趋势平稳", d: "标准差 " + a.sd.toFixed(0) + " MiB，可能是碎片化、页缓存或业务在飞量" });
+  if (isStableTrend(a.slope, threshold) && a.sd < 250) findings.push({ sev: "low", t: "当前窗口进入稳态", d: "本序列斜率与方差均低；仍需结合指标层级和更长窗口确认" });
   document.getElementById("findings").innerHTML = findings.map(function (f) {
     return '<div class="dshell-listItem"><span class="dshell-listItemTitle">' + f.t + ' — ' + f.d + '</span>' + verdictBadge(f.sev, f.sev === "high" ? "高危" : f.sev === "mid" ? "关注" : "正常") + '</div>';
   }).join("");
@@ -572,14 +832,14 @@ function render(a) {
   // 趋势统计
   var rows = [
     ["样本数", a.n], ["时间区间", a.t0.toFixed(1) + " – " + a.t1.toFixed(1) + " m"],
-    ["起点显存", fmtMB(a.v0)], ["终点显存", fmtMB(a.v1)],
+    ["起点值", fmtMB(a.v0)], ["终点值", fmtMB(a.v1)],
     ["净变化", (a.delta >= 0 ? "+" : "") + fmtMB(a.delta)],
-    ["泄漏速率", a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）"],
+    ["趋势速率", a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）"],
     ["相对速率", a.relSlope.toFixed(3) + " %/m"],
     ["残差标准差", a.sd.toFixed(0) + " MiB"]
   ];
   document.getElementById("trendKv").innerHTML = rows.map(function (r) { return '<div class="dshell-kvRow"><span class="dshell-kvKey">' + r[0] + '</span><span class="dshell-kvValue">' + r[1] + '</span></div>'; }).join("");
-  setText("trendNote", "结论：" + a.verdict + "。斜率为正且显著即判泄漏；方差大、斜率小判碎片化。");
+  setText("trendNote", "初筛：" + a.verdict + "。正斜率只说明观测值上涨；泄漏结论取决于 anon/file/shmem/VmPin 分层与连续窗口。");
   setText("ovChartNote", a.verdict + " · 斜率 " + a.slope.toFixed(1) + " MiB/m。");
 }
 function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
@@ -608,14 +868,14 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-sample]"), functio
 
 /* ================= 泄漏模式卡片 ================= */
 var PATTERNS = [
-  { sev: "high", name: "PyTorch 张量未释放", sig: "显存随推理单调上升，empty_cache 不回落", detect: "torch.cuda.memory_allocated() 逐 step 打印；memray 跑出分配栈", fix: "检查 autograd 是否保留计算图（需 .detach() 或 torch.no_grad）；中间张量不要持有引用；用完即 del + empty_cache" },
-  { sev: "high", name: "KV Cache block 未回收", sig: "vLLM occupied 上升且 preempt 计数增长，请求结束后不下降", detect: "curl /metrics 看 vllm:gpu_cache_usage_perc、num_preemption", fix: "检查序列调度是否泄漏 seq；确认 free_block_set 在请求结束被归还；排查 cancelled/aborted 请求未走释放路径" },
-  { sev: "mid", name: "CUDA 显存碎片化", sig: "显存总量够但 OOM；reserved 高、allocated 低", detect: "torch.cuda.memory_reserved() vs memory_allocated()；PyTorch 内存快照 fragmentation", fix: "设 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True；调大 block 粒度或定期 empty_cache" },
-  { sev: "high", name: "per-request 张量累积", sig: "阶梯式增长，每若干请求抬升一档", detect: "memray --live 看对象增长 Top；审查持有 per-request 输出的 list/dict", fix: "禁止把 outputs/logits 存进无界列表；记录用指标聚合而非保留张量；定期清空缓存结构" },
-  { sev: "mid", name: "Python 引用循环 / 闭包", sig: "RSS 缓慢爬升，GC 后部分回落", detect: "gc.get_referrers / objgraph 找循环；tracemalloc snapshots diff", fix: "打断循环引用；避免闭包捕获大对象；弱引用 weakref 持有可选依赖" },
-  { sev: "high", name: "模型权重重复加载", sig: "每次 reload 后显存跳升且不归还", detect: "审查 from_pretrained / load_state_dict 调用次数与 del 时机", fix: "复用同一实例，load 前显式 del 旧模型并 empty_cache；权重用 meta 设备或共享" },
-  { sev: "mid", name: "通信缓冲区累积", sig: "多卡 all-reduce/NCCL 场景下显存缓升", detect: "监控 NCCL buffer；排查未释放的 send/recv buffer", fix: "复用预分配 buffer；通信完成后及时释放；关闭不必要的 persistent buffer" },
-  { sev: "low", name: "内存池 / 缓存无上限", sig: "缓存命中率指标上涨但显存同步爬升", detect: "审查自定义 LRU/字典缓存大小；监控缓存条目数", fix: "给缓存设 maxlen / TTL；定期淘汰；区分可重建与不可重建缓存" }
+  { sev: "high", name: "async generator 链未关闭", sig: "task_exec RssAnon 最近两个固定 30 分钟窗口持续上涨（每窗至少覆盖 27 分钟），旧 request_id 的生成器年龄与墙钟同步", detect: "watch.csv 按 side/role/PID 看 anon；日志核对旧请求无完成/abort；在线只取 py-spy dump 单快照", fix: "引擎所有终结路径投递终态；每层 finally-await-aclose；调用方 abort；独立失速看门狗兜底" },
+  { sev: "high", name: "RDMA MR 注册泄漏", sig: "进程 VmPin 在正常高平台之上持续上涨", detect: "/proc/<pid>/status 连续采 VmPin；>1 MiB/h 即严重告警", fix: "审计 TENT MR register/unregister 配对、异常与重试路径；不要把稳定的 849–943 GiB 高值当泄漏" },
+  { sev: "mid", name: "glibc 多 arena 碎片/留存", sig: "worker anon 缓慢抬升，但 memleak 找不到存活陈旧块", detect: "两次 smaps 分桶；重启窗口用 MALLOC_ARENA_MAX=4 或 jemalloc 做 A/B 斜率实验", fix: "限制 arena 数或切换 jemalloc；以相同负载、相同时间窗对照，不在线注入" },
+  { sev: "low", name: "file/cache 被误判为泄漏", sig: "working set 或 RSS 突发上涨，但主要增量来自 active_file / RssFile", detect: "cgroup memory.stat + /proc/<pid>/status；观察压力或摘流后的自然回落，强制回收只在隔离副本维护窗口受控执行", fix: "监控面板拆 anon/file/shmem；把 NFS 模型、CUDA 惰性库页和日志 cache 从泄漏告警中分离" },
+  { sev: "high", name: "共享内存未释放", sig: "cgroup shmem 持续上涨，常伴 Ray plasma 或 NCCL/TENT 握手对象残留", detect: "逐容器汇总 memory.stat 的 shmem；关联 /dev/shm 对象和请求生命周期", fix: "清理异常/取消路径的共享段；给池和对象存储设置生命周期与上限" },
+  { sev: "mid", name: "GPU 预分配误报", sig: "vLLM 启动后 nvidia-smi 立即稳定在约 95%", detect: "对比启动平台与稳态斜率；结合 gpu_cache_usage、preemption 与 OOM 事件", fix: "预分配本身无需修；仅处理稳态后持续上涨，审计 KV block、tensor 与请求取消路径" },
+  { sev: "high", name: "引擎静默终结未投递终态", sig: "request_state 已消失，但旧 collector 仍永久等待 q.get()", detect: "关联 request_id 的引擎状态、终态日志和调用链年龄；审计 KV_wait、抢占、重试和 drop_stale_output", fix: "任何终结/丢弃路径都 put 终态或异常；重复 request_id 时隔离并关闭旧 queue" },
+  { sev: "mid", name: "不可达指标网关拖住资源", sig: "固定周期 push 线程长期停在 TCP connect 并持有序列化 payload", detect: "线程快照 + fd 趋势 + 网关连通性日志", fix: "修复地址；加入连接超时、退避、熔断与有界 payload，避免 1s 无休止重试" }
 ];
 (function () {
   var grid = document.getElementById("patternGrid");
@@ -633,22 +893,32 @@ var PATTERNS = [
 
 /* ================= 检查清单 ================= */
 var CHECKLIST = [
-  ["基线确认", "空载（无请求）运行 30min，显存是否稳定不上涨"],
-  ["基线确认", "连续重复推理同一固定 prompt，显存是否单调上升"],
-  ["基线确认", "调用 torch.cuda.empty_cache() 后显存是否明显回落"],
-  ["定位手段", "用 memray / tracemalloc 跑出对象增长 Top"],
-  ["定位手段", "用 py-spy dump 抓取堆栈，确认持有者"],
-  ["定位手段", "nvidia-smi -l 1 记录显存曲线对照趋势"],
-  ["常见嫌疑", "检查 autograd 是否未 detach / 保留计算图"],
-  ["常见嫌疑", "检查 per-request tensor 是否存进未清理的 list/dict"],
-  ["常见嫌疑", "检查 KV cache blocks 在请求结束是否 free"],
-  ["常见嫌疑", "检查是否重复 load 模型权重而未 del 旧实例"],
-  ["常见嫌疑", "检查自定义内存池 / 缓存是否无上限增长"],
-  ["验证修复", "修复后空载 60min 显存斜率 ≈ 0"],
-  ["验证修复", "压测下显存进入稳态（不再单调上升）"]
+  ["内存分层", "按容器拆出 anon、file/cache、shmem，不用 working set 直接定性"],
+  ["内存分层", "cgroup v1 已遍历 pod 下每个子容器的 memory.stat 求和"],
+  ["内存分层", "进程突增已拆 RssAnon 与 RssFile，排除 CUDA/torch 库页换入"],
+  ["趋势确认", "按 side、role、PID 连续采样，并覆盖 pod 重建后的新 PID"],
+  ["趋势确认", "anon 超过 50 MiB/h 且最近两个固定 30 分钟窗口同向（每窗至少覆盖 27 分钟），排除短时噪声与单次业务突发"],
+  ["资源归因", "VmPin 斜率已核对；超过 1 MiB/h 按 RDMA MR 严重告警"],
+  ["资源归因", "线程与 fd 斜率已核对；持续超过 5 个/h 继续定位"],
+  ["GPU/NVLink", "区分 vLLM 约 95% KV 预分配与稳态后持续上涨"],
+  ["GPU/NVLink", "检查 dmesg Xid 与 nvidia-smi nvlink FEC 计数"],
+  ["在线安全", "只使用 /proc、日志、smaps diff 与 py-spy dump 单快照"],
+  ["在线安全", "未对在线进程执行 gdb 注入、memleak、memray attach 或 py-spy --native"],
+  ["链路修复", "引擎所有终结路径都向 collector 投递终态或异常"],
+  ["链路修复", "每层 finally 都级联 aclose，断连/超时/重试显式 abort"],
+  ["上线验证", "失速看门狗触发且链寿命不超过 120s，产生率同时纳入告警"],
+  ["上线验证", "修复后连续多个同负载窗口不破前高，anon/pin/fd 均进入平台"]
 ];
-var chkState = {};
-try { chkState = JSON.parse(localStorage.getItem("memLeak.checklist") || "{}") || {}; } catch (e) {}
+function loadChecklistState(storage) {
+  try {
+    var state = JSON.parse(storage.getItem("memLeak.checklist.v2") || "{}");
+    return state && typeof state === "object" && !Array.isArray(state) ? state : {};
+  } catch (e) { return {}; }
+}
+function saveChecklistState(storage, state) {
+  try { storage.setItem("memLeak.checklist.v2", JSON.stringify(state || {})); } catch (e) {}
+}
+var chkState = loadChecklistState(localStorage);
 function renderChecklist() {
   var list = document.getElementById("chkList");
   list.innerHTML = CHECKLIST.map(function (it, i) {
@@ -659,7 +929,7 @@ function renderChecklist() {
     var el = document.getElementById("chk" + i);
     if (el) el.addEventListener("change", function () {
       chkState["chk" + i] = el.checked;
-      try { localStorage.setItem("memLeak.checklist", JSON.stringify(chkState)); } catch (e) {}
+      saveChecklistState(localStorage, chkState);
       updateChkProgress();
     });
   });
@@ -673,45 +943,49 @@ function updateChkProgress() {
 }
 renderChecklist();
 document.getElementById("chkReset").addEventListener("click", function () {
-  chkState = {}; try { localStorage.setItem("memLeak.checklist", "{}"); } catch (e) {} renderChecklist();
+  chkState = {}; saveChecklistState(localStorage, chkState); renderChecklist();
 });
 
 /* ================= 工具与命令 ================= */
 var TOOLS = [
-  { title: "显存实时监控", cmds: [
-    "nvidia-smi --query-gpu=memory.used,memory.free --format=csv -l 1",
-    "nvidia-smi dmon -s u"
+  { title: "cgroup v1 内存分层（零侵入）", cmds: [
+    "CG=/sys/fs/cgroup/memory/kubepods/burstable/pod<UID>/<容器ID>",
+    "grep -E '^(active|inactive)_(anon|file)|^cache|^shmem' \"$CG/memory.stat\"",
+    "# pod 级 memory.stat 不聚合；需遍历 pod<uid>/*/memory.stat 求和"
   ] },
-  { title: "PyTorch 显存诊断", cmds: [
-    "print('alloc', torch.cuda.memory_allocated()/1024**3, 'GiB')",
-    "print('reserved', torch.cuda.memory_reserved()/1024**3, 'GiB')",
-    "torch.cuda.empty_cache()"
+  { title: "进程指标（零侵入）", cmds: [
+    "grep -E '^(VmRSS|RssAnon|RssFile|VmPin|Threads):' /proc/<pid>/status",
+    "find /proc/<pid>/fd -maxdepth 1 -type l 2>/dev/null | wc -l",
+    "# 至少两个同负载窗口；记录 side / role / pid 后算 MiB/h"
   ] },
-  { title: "对象级增长定位", cmds: [
-    "memray run -o out.bin python serve.py",
-    "memray stats out.bin           # 分配 Top",
-    "memray flamegraph out.bin      # 火焰图"
+  { title: "smaps 分桶（零侵入）", cmds: [
+    "cp /proc/<pid>/smaps /tmp/smaps.before",
+    "# 间隔一个观察窗口后再次保存并按映射名汇总 diff",
+    "cp /proc/<pid>/smaps /tmp/smaps.after"
   ] },
-  { title: "持有者堆栈", cmds: [
-    "py-spy dump --pid <pid>        # 抓取当前堆栈",
-    "py-spy top --pid <pid>        # 实时 CPU 热点"
+  { title: "线程快照（低侵入）", cmds: [
+    "tools/bin/py-spy dump --pid <pid>",
+    "# 在线只做单快照；不要使用 --native，也不要持续 top"
   ] },
-  { title: "vLLM 内部指标", cmds: [
-    "curl -s http://<host>:8000/metrics | grep -Ei 'cache_usage|num_preempt|requests'",
-    "curl -s http://<host>:8000/metrics | grep vllm"
+  { title: "GPU / NVLink 健康", cmds: [
+    "nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv -l 60",
+    "dmesg -T | grep -Ei 'NVRM.*Xid|xid'",
+    "nvidia-smi nvlink -e"
   ] },
-  { title: "进程 RSS", cmds: [
-    "grep VmRSS /proc/<pid>/status",
-    "watch -n1 \"awk '/VmRSS/{print \\$2\\\" KiB\\\"}' /proc/<pid>/status\""
+  { title: "持续采样器", cmds: [
+    "nohup /mnt/paas/lhf/oom/watch.sh >/dev/null 2>&1 &",
+    "nohup /mnt/paas/lhf/oom/syswatch.sh >/dev/null 2>&1 &",
+    "python3 /mnt/paas/lhf/oom/analyze_watch.py"
   ] },
-  { title: "显存碎片化", cmds: [
-    "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python serve.py",
-    "# 内存快照：torch.cuda.memory._snapshot() 导出后用可视化分析"
+  { title: "维护窗口：arena 对照实验", cmds: [
+    "MALLOC_ARENA_MAX=4 <service-start-command>",
+    "LD_PRELOAD=/path/to/libjemalloc.so <service-start-command>",
+    "# 用相同负载和窗口对比 anon 斜率"
   ] },
-  { title: "PyTorch 内存快照", cmds: [
-    "import torch.cuda.memory as M",
-    "snap = M._snapshot(); M._dump_snapshot('snap.pickle')",
-    "# 浏览器打开 pytorch.org/memory_stats 可视化"
+  { title: "离线/维护窗口：分配插桩", cmds: [
+    "# 在线进程禁止：memleak / memray attach / gdb / py-spy --native",
+    "/usr/sbin/memleak-bpfcc -p <PID> -o 30000 -T 15 30 1",
+    "# 只有确认无 JE 心跳看门狗、准备好回滚时才可执行"
   ] }
 ];
 (function () {
@@ -737,7 +1011,7 @@ function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").
 /* ================= 在线采样：给定机器发现 GPU 容器/进程并跟踪内存 ================= */
 var LV_MAX_PTS = 720; // 每序列上限（10s 间隔约 2 小时），超限丢弃最旧点
 var LV_COLORS = ["#60a5fa", "#f59e0b", "#3fb950", "#f85149", "#a371f7", "#39c5cf", "#d29922", "#db61a2", "#79c0ff", "#56d4dd"];
-var LV_KINDS = { gpu: "显存", rss: "RSS", cg: "容器内存" };
+var LV_KINDS = { gpu: "显存", rss: "RSS", cg: "容器总量" };
 var LV = { conn: null, running: false, timer: null, intervalMs: 10000, t0: 0, series: {}, selected: {}, errors: 0, rounds: 0, lastData: null, seq: 0 };
 
 function lvEl(id) { return document.getElementById(id); }
@@ -775,12 +1049,53 @@ function lvCollectPoints(series, data, selected, tMin) {
   });
   return series;
 }
-// 单序列泄漏研判：复用 analyze() 最小二乘回归；样本不足 3 个给出「样本不足」
-function lvJudgeSeries(pts) {
+// 只比较最近两个固定时间窗，避免把数十秒噪声外推成小时级告警；每窗至少覆盖 90% 且有 3 个样本。
+function hasSustainedRise(pts, thresholdPerHour, windowMinutes) {
+  if (windowMinutes == null) windowMinutes = 30;
+  if (!pts || pts.length < 6 || !(windowMinutes > 0)) return false;
+  var valid = pts.filter(function (p) { return p && Number.isFinite(p.t) && Number.isFinite(p.v); })
+    .slice().sort(function (a, b) { return a.t - b.t; });
+  if (valid.length < 6) return false;
+  var end = valid[valid.length - 1].t;
+  var middle = end - windowMinutes;
+  var start = middle - windowMinutes;
+  var firstPts = valid.filter(function (p) { return p.t >= start && p.t <= middle; });
+  var secondPts = valid.filter(function (p) { return p.t >= middle && p.t <= end; });
+  function covered(windowPts) {
+    return windowPts.length >= 3 &&
+      windowPts[windowPts.length - 1].t - windowPts[0].t >= windowMinutes * 0.9;
+  }
+  if (!covered(firstPts) || !covered(secondPts)) return false;
+  var first = analyze(firstPts);
+  var second = analyze(secondPts);
+  var epsilon = 1e-6;
+  return first.ok && second.ok &&
+    first.slope * 60 > thresholdPerHour + epsilon &&
+    second.slope * 60 > thresholdPerHour + epsilon;
+}
+// 在线接口当前只有 GPU / RSS / cgroup 总量：它们都只能预警，不能替代 anon/file/shmem/VmPin 归因。
+function lvJudgeSeries(pts, kind) {
   var cur = pts && pts.length ? pts[pts.length - 1].v : null;
-  var a = analyze(pts || []);
+  var all = pts || [];
+  var end = all.length ? all[all.length - 1].t : 0;
+  var recent = all.filter(function (p) { return p.t >= end - 30; });
+  var a = analyze(recent);
+  if (!a.ok) a = analyze(all);
   if (!a.ok) return { ok: false, label: "样本不足", sev: "wait", rateH: null, cur: cur, n: pts ? pts.length : 0 };
-  return { ok: true, label: a.verdict, sev: a.sev, rateH: a.slope * 60, cur: cur, n: a.n };
+  var rateH = a.slope * 60;
+  var sustained = hasSustainedRise(all, 50, 30);
+  var label = a.verdict, sev = a.sev;
+  if (kind === "cg") {
+    label = rateH > 50 ? "容器总量需拆分 anon/cache/shmem" : rateH < -50 ? "容器总量回落" : "容器总量平稳，仍需分层";
+    sev = rateH > 50 ? "wait" : "low";
+  } else if (kind === "rss") {
+    label = rateH > 50 ? (sustained ? "RSS 持续上涨，需拆分 anon/file" : "RSS 上涨，继续观察第二窗口") : rateH < -50 ? "RSS 回落（释放正常）" : "RSS 当前窗口平稳";
+    sev = rateH > 50 ? (sustained ? "mid" : "wait") : "low";
+  } else if (kind === "gpu") {
+    label = rateH > 50 ? (sustained ? "显存持续上涨，需排除预分配" : "显存上涨，继续观察第二窗口") : rateH < -50 ? "显存回落（释放正常）" : "显存当前窗口平稳";
+    sev = rateH > 50 ? (sustained ? "mid" : "wait") : "low";
+  }
+  return { ok: true, label: label, sev: sev, rateH: rateH, cur: cur, n: a.n };
 }
 
 function lvStatus(msg) { var el = lvEl("lvConnMsg"); if (el) el.textContent = msg; }
@@ -893,15 +1208,15 @@ function lvRenderCharts() {
   var info = lvEl("lvSampleInfo");
   if (info) info.textContent = LV.rounds ? ("已采 " + LV.rounds + " 轮 · " + Object.keys(LV.series).length + " 条序列") : "";
 }
-// 泄漏研判表：按严重度排序（高危 > 关注 > 样本不足 > 正常），可载入诊断概览深入分析
+// 泄漏研判表：按严重度排序（高危 > 关注 > 待观察 > 正常），可载入诊断概览深入分析
 function lvRenderJudge() {
   var body = lvEl("lvJudgeBody"); if (!body) return;
-  var rows = Object.keys(LV.series).map(function (k) { return { key: k, s: LV.series[k], j: lvJudgeSeries(LV.series[k].pts) }; });
+  var rows = Object.keys(LV.series).map(function (k) { return { key: k, s: LV.series[k], j: lvJudgeSeries(LV.series[k].pts, LV.series[k].kind) }; });
   if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="dshell-muted">暂无序列，连接机器后开始采样。</td></tr>'; return; }
   var rank = { high: 0, mid: 1, wait: 2, low: 3 };
   rows.sort(function (a, b) { return (rank[a.j.sev] != null ? rank[a.j.sev] : 4) - (rank[b.j.sev] != null ? rank[b.j.sev] : 4); });
   body.innerHTML = rows.map(function (r) {
-    var badge = r.j.sev === "wait" ? '<span class="dshell-badge">样本不足</span>' : verdictBadge(r.j.sev, r.j.label);
+    var badge = lvJudgeBadge(r.j);
     return '<tr><td title="' + esc(r.s.label) + '">' + esc(r.s.label) + "</td>" +
       "<td>" + LV_KINDS[r.s.kind] + "</td>" +
       "<td>" + (r.j.cur != null ? fmtMB(r.j.cur) : "—") + "</td>" +
