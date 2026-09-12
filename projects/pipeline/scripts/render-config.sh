@@ -324,6 +324,27 @@ for group_index, group in enumerate(groups):
     group["rayStartParamsPorts"]["min-worker-port"] = range_start
     group["rayStartParamsPorts"]["max-worker-port"] = range_end
 
+# 单节点部署时按组顺序连续占卡（默认每节点 8 卡）：TE 组依次分得 [0..n)、
+# [n..n+m) 等连续块（如 prefill 0,1,2,3 / decode 4,5,6,7）。kubelet 不会
+# 覆盖显式声明的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；
+# 启用 lmcache 时 sidecar 的卡必须与其 PTE 完全一致（CUDA IPC 按 ordinal
+# 匹配，集合与顺序都不能差），见下方 taskExecutorGroups 写入后的对齐逻辑。
+node_gpu_count = 8
+pinned_single_node = len(target_ips) == 1
+if pinned_single_node:
+    assigned_cards = 0
+    for group in groups:
+        group_gpus = group["rayStartParamsPorts"]["num-gpus"]
+        if assigned_cards + group_gpus > node_gpu_count:
+            raise SystemExit(
+                f"single-node GPU pinning exceeds {node_gpu_count} cards: "
+                f"group {group['name']} needs {group_gpus}, already assigned {assigned_cards}"
+            )
+        group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] = ",".join(
+            str(card) for card in range(assigned_cards, assigned_cards + group_gpus)
+        )
+        assigned_cards += group_gpus
+
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("IMAGE_TAG", deploy_image.rsplit(":", 1)[-1])
@@ -408,11 +429,31 @@ normalize_container_env_values(values)
 set_ems_switches(values, use_ems)
 upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
+lmcache_sidecar = values.get("lmcacheSidecar")
+if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
+    # lmcache-sidecar 仅挂在 prefill 组；cudaVisibleDevices 必须与其 PTE 的
+    # NVIDIA_VISIBLE_DEVICES 完全一致（含顺序），否则 CUDA IPC 映射失败。
+    prefill_pins = [
+        group["containerEnvOverrides"].get("NVIDIA_VISIBLE_DEVICES")
+        for group in groups
+        if "prefill" in group["name"].lower()
+    ]
+    if not prefill_pins:
+        raise SystemExit("lmcache sidecar enabled but no prefill TE group found")
+    if pinned_single_node and any(pin is None for pin in prefill_pins):
+        raise SystemExit("lmcache sidecar enabled but prefill GPU pinning is missing")
+    if len([pin for pin in prefill_pins if pin]) > 1:
+        raise SystemExit(
+            "lmcache sidecar enabled with multiple prefill TE groups: "
+            "cudaVisibleDevices 为全局单值，无法与多个 PTE 一一对齐"
+        )
+    if prefill_pins[0]:
+        lmcache_sidecar["cudaVisibleDevices"] = prefill_pins[0]
 values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
     "enableTaskExecutorGroups": True,
-    "storage": {"hostPath": "/mnt/xds/sfs"},
+    "storage": {"hostPath": "/mnt/paas"},
 })
 values = deep_merge(values, yaml_replace_map)
 
@@ -544,6 +585,11 @@ if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_fra
     )
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
+# helm 的 values 解析走 json-yaml，大整数会变 float64 并被渲染成科学计数法
+# （如 1048576 -> 1.048576e+06），sidecar argparse 接受不了；统一加引号成字符串。
+values_text = Path(values_file).read_text(encoding="utf-8")
+values_text = re.sub(r"(?m)^(\s*l1AlignBytes:\s*)(?!['\"])(\S+)\s*$", r"\1'\2'", values_text)
+Path(values_file).write_text(values_text, encoding="utf-8")
 with open(arch_request_file, "w", encoding="utf-8") as output:
     json.dump(arch, output, ensure_ascii=False, indent=2)
     output.write("\n")
