@@ -1,5 +1,13 @@
 # 本目录 tokens-worktable 的本地改动
 
+- mem_leak 页面补入 vLLM P/D 分离集群生产诊断手册（`projects/mem_leak/index.html`）：
+  新增「P/D 实战手册」标签页，固化 8×H800 kubeRay/TENT 拓扑、cgroup v1 的
+  anon/file/cache/shmem 分层方法、RssAnon/VmPin/线程/fd 判据、生产插桩红线、Xid 事故时间线、
+  task_exec 九层 async generator 僵死链证据、修复三件套与 2026-09-11 上线验证；工具、泄漏模式和
+  检查清单同步改成生产安全口径。在线采样不再把 RSS、cgroup 总量或 vLLM 约 95% GPU 预分配直接定性为
+  泄漏：RSS 需连续两个窗口超过 50 MiB/h 才预警并要求拆 anon/file，cgroup 总量始终要求继续分层，
+  GPU 上涨先排除预分配；诊断概览删除“显存 × 1.4”虚构 RSS，改为只展示实测要求。
+  `projects/mem_leak/index.test.cjs` 新增连续双窗口与按指标来源保守判定回归。
 - 流水线运行队列上限 8 → 16（`projects/pipeline/pipeline.html` 的 `QUEUE_CAP`）：并行槽位（4 个）占满后
   可排队等待的任务数放宽一倍，提示文案随变量联动；同步 `tests/test_queue_item_preview.js` 的边界用例
   （填满 16 个后拒绝入队）与 `tests/test_pipeline_row_run.js` 的容量提示断言。

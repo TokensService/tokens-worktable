@@ -123,18 +123,76 @@ test("lvCollectPoints 只采勾选进程（未勾选的进程与其容器序列�
   assert.deepEqual(Object.keys(series).sort(), ["cg:xds-prefill", "gpu:123", "rss:123"]);
 });
 
-test("lvJudgeSeries 样本不足、线性上升判泄漏、平稳判健康", () => {
-  const ctx = loadFunctions(["analyze", "lvJudgeSeries"]);
-  const few = ctx.lvJudgeSeries([{ t: 0, v: 100 }, { t: 1, v: 110 }]);
+test("analyze 把超过 50 MiB/h 的通用序列标成待分层确认，而非直接宣判显存泄漏", () => {
+  const ctx = loadFunctions(["analyze"]);
+  const rising = [];
+  for (let i = 0; i < 10; i++) rising.push({ t: i, v: 10000 + i });
+
+  const result = ctx.analyze(rising);
+  assert.equal(result.verdict, "持续上升（需分层确认）");
+  assert.equal(result.sev, "mid");
+  assert.equal(result.trendThreshold, 50 / 60);
+});
+
+test("lvJudgeSeries 对 RSS 只做持续增长预警，不把总 RSS 直接定性为泄漏", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise", "lvJudgeSeries"]);
+  const few = ctx.lvJudgeSeries([{ t: 0, v: 100 }, { t: 1, v: 110 }], "rss");
   assert.equal(few.sev, "wait");
   assert.equal(few.cur, 110);
   const rising = [];
-  for (let i = 0; i < 10; i++) rising.push({ t: i, v: 10000 + i * 100 });
-  const j = ctx.lvJudgeSeries(rising);
-  assert.equal(j.sev, "high");
-  assert.equal(j.label, "疑似显存泄漏");
-  assert.equal(Math.round(j.rateH), 6000);
+  for (let i = 0; i < 10; i++) rising.push({ t: i, v: 10000 + i });
+  const j = ctx.lvJudgeSeries(rising, "rss");
+  assert.equal(j.sev, "mid");
+  assert.equal(j.label, "RSS 持续上涨，需拆分 anon/file");
+  assert.equal(Math.round(j.rateH), 60);
   const flat = [];
   for (let i = 0; i < 10; i++) flat.push({ t: i, v: 10000 });
-  assert.equal(ctx.lvJudgeSeries(flat).sev, "low");
+  assert.equal(ctx.lvJudgeSeries(flat, "rss").sev, "low");
+});
+
+test("lvJudgeSeries 要求连续两个窗口同向，单窗口突发只提示继续观察", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise", "lvJudgeSeries"]);
+  const lateRise = [
+    { t: 0, v: 10000 }, { t: 1, v: 10000 }, { t: 2, v: 10000 },
+    { t: 3, v: 10000 }, { t: 4, v: 10000 }, { t: 5, v: 10000 },
+    { t: 6, v: 10010 }, { t: 7, v: 10020 }, { t: 8, v: 10030 },
+  ];
+  const j = ctx.lvJudgeSeries(lateRise, "rss");
+  assert.equal(j.sev, "wait");
+  assert.equal(j.label, "RSS 上涨，继续观察第二窗口");
+});
+
+test("lvJudgeSeries 不用容器总量实锤泄漏，并把显存上涨降级为归因提示", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise", "lvJudgeSeries"]);
+  const rising = [];
+  for (let i = 0; i < 10; i++) rising.push({ t: i, v: 10000 + i * 100 });
+
+  const cgroup = ctx.lvJudgeSeries(rising, "cg");
+  assert.equal(cgroup.sev, "wait");
+  assert.equal(cgroup.label, "容器总量需拆分 anon/cache/shmem");
+
+  const gpu = ctx.lvJudgeSeries(rising, "gpu");
+  assert.equal(gpu.sev, "mid");
+  assert.equal(gpu.label, "显存持续上涨，需排除预分配");
+});
+
+test("新版检查清单不复用旧索引语义，并把状态写入独立版本键", () => {
+  const ctx = loadFunctions(["loadChecklistState", "saveChecklistState"]);
+  const calls = [];
+  const storage = {
+    getItem(key) {
+      calls.push(["get", key]);
+      return key === "memLeak.checklist" ? '{"chk0":true}' : null;
+    },
+    setItem(key, value) {
+      calls.push(["set", key, value]);
+    },
+  };
+
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.loadChecklistState(storage))), {});
+  ctx.saveChecklistState(storage, { chk2: true });
+  assert.deepEqual(calls, [
+    ["get", "memLeak.checklist.v2"],
+    ["set", "memLeak.checklist.v2", '{"chk2":true}'],
+  ]);
 });
