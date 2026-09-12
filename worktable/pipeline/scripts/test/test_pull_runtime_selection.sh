@@ -25,7 +25,10 @@ fi
 
 grep -Fq 'pull_target_images "$IMAGE"' "$script"
 grep -Fq 'TARGET_NODE_IP_MAP' "$script"
-grep -Fq 'ctr_cmd=(ctr)' "$script"
+grep -Fq 'command -v ctr >/dev/null 2>&1' "$script"
 grep -Fq 'images ls -q' "$script"
+grep -Fq 'IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${PROJECT:-cn-southwest-2}}"' "$script"
+grep -Fq 'IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"' "$script"
+grep -Fq 'sudo ctr -n k8s.io image pull --user' "$script"
 
 echo "pull runtime-selection tests passed"
