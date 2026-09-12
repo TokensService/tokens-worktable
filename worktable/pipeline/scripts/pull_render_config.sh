@@ -101,7 +101,14 @@ MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
 AK="${AK:-}"
 LOGKEY="${LOGKEY:-${LOGIN_KEY:-}}"
 LOGIN_KEY="${LOGIN_KEY:-$LOGKEY}"
-PROJECT="${PROJECT:-cn-southwest-2}"
+# PROJECT is also used by some callers for the registry namespace (for example
+# serverlessai). SWR authentication needs the region instead, so prefer the
+# dedicated SWR_PROJECT and only accept PROJECT when it is a region name.
+SWR_PROJECT="${SWR_PROJECT:-}"
+if [[ -z "$SWR_PROJECT" && "${PROJECT:-}" == cn-* ]]; then
+  SWR_PROJECT="$PROJECT"
+fi
+SWR_PROJECT="${SWR_PROJECT:-cn-southwest-2}"
 REGISTRY="${REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
 contains_unexpanded_placeholder "$PIPELINE_ENV_FILE" && PIPELINE_ENV_FILE=""
 [[ -n "$PIPELINE_ENV_FILE" ]] || PIPELINE_ENV_FILE="${RUN_DIR}/pipeline.env"
@@ -169,7 +176,7 @@ export IMAGE_NAME ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME 
   XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
   POLL_INTERVAL_SECONDS PIPELINE_ENV_FILE TARGET_RUN_DIR TARGET_RENDER_DIR \
   TARGET_PIPELINE_ENV_FILE SSH_PASSWORD MODEL_CACHE_HOST_PATH \
-  AK LOGKEY LOGIN_KEY PROJECT REGISTRY
+  AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY
 
 write_pipeline_env() {
   local variable

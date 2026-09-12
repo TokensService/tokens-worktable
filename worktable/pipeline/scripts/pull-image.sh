@@ -19,7 +19,10 @@ TEMPLATE_DIR="$RUN_DIR/template"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
-IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${PROJECT:-cn-southwest-2}}"
+# Use the SWR region in the registry username. IMAGE_PULL_PROJECT retains the
+# explicit override, while SWR_PROJECT avoids collision with a deployment's
+# registry namespace held in PROJECT.
+IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"
 IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
 # LOGKEY is accepted for callers that use the older environment-variable name.
 IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"

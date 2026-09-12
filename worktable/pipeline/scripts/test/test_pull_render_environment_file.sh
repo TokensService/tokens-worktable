@@ -9,13 +9,14 @@ grep -Fq 'export %s=%q' "$script"
 
 grep -Fq 'AK="${AK:-}"' "$script"
 grep -Fq 'LOGKEY="${LOGKEY:-${LOGIN_KEY:-}}"' "$script"
-grep -Fq 'PROJECT="${PROJECT:-cn-southwest-2}"' "$script"
+grep -Fq 'SWR_PROJECT="${SWR_PROJECT:-}"' "$script"
+grep -Fq 'SWR_PROJECT="${SWR_PROJECT:-cn-southwest-2}"' "$script"
 grep -Fq 'REGISTRY="${REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"' "$script"
-grep -Fq 'AK LOGKEY LOGIN_KEY PROJECT REGISTRY' "$script"
+grep -Fq 'AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY' "$script"
 
 # Registry credentials must remain process-only and never be written to either
 # environment file consumed by later pipeline stages.
-if sed -n '/write_pipeline_env()/,/^}/p; /write_target_pipeline_env()/,/^}/p' "$script" | grep -Eq 'AK|LOGKEY|LOGIN_KEY|PROJECT|REGISTRY'; then
+if sed -n '/write_pipeline_env()/,/^}/p; /write_target_pipeline_env()/,/^}/p' "$script" | grep -Eq 'AK|LOGKEY|LOGIN_KEY|SWR_PROJECT|REGISTRY'; then
   echo 'registry credentials must not be serialized into pipeline environment files' >&2
   exit 1
 fi
