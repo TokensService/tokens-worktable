@@ -35,8 +35,6 @@
     #pipelineControls select.dshell-input,
     #pipelineControls button.dshell-input { max-width:220px; }
     #pipelineControls input.dshell-input { max-width:150px; }
-    #triggeredBy { max-width:130px; }
-    #triggeredBy[readonly] { cursor:default; opacity:.85; }
     #pipelineControls #envMultiBtn,
     #pipelineControls #presetMultiBtn { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
     /* 定时页控制区与主控同一限宽规则（第一行设置与「运行流水线」保持一致，「方式」及以后排第二行） */
@@ -153,9 +151,9 @@
         <span class="dshell-badge">未运行</span>
       </div>
       <span id="overallBy" class="dshell-muted"></span>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;" title="执行人取当前登录用户（dsh-auth-gate /auth/status），只读展示、不可编辑">执行人
-        <input id="triggeredBy" class="dshell-input" placeholder="未登录" readonly tabindex="-1" autocomplete="off" />
-      </label>
+      <span class="dshell-muted" style="display:flex;align-items:center;gap:5px;" title="执行人取当前登录用户（dsh-auth-gate /auth/status）">执行人
+        <span id="triggeredBy" style="font-weight:600;">未登录</span>
+      </span>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">主题
         <select id="theme" class="dshell-input" style="min-width:104px;">
           <option value="light">浅色</option>
@@ -1149,7 +1147,7 @@ function pipelineApiSpec(pl,origin){
   const repoId=String(($('repoSel')&&$('repoSel').value)||'').trim();
   const branch=(($('branchName')&&$('branchName').value)||'').trim()||'main';   // 与 runPipeline 一致：分支留空按 main
   const strategy=curStrategy();
-  const by=(($('triggeredBy')&&$('triggeredBy').value)||'').trim()||'api';   // 执行人留空按服务端缺省 api
+  const by=currentUsername||'api';   // 执行人留空（未取到登录用户）按服务端缺省 api
   const presets=selectedPresetKeys();
   /* 显式空数组/空串会被服务端判 400（environmentIds must not be empty / invalid repositoryId）：
      当前无有效选择时省略对应字段（调用时回退流水线默认配置）并给出警告，不生成必败的请求体 */
@@ -3066,7 +3064,7 @@ function persistFlowOrder(orderedWork){
     : s);
   delete p.prom;
   /* 拖拽改序也是一次修改：署名最后修改人（typeof 守卫：独立测试片段里可能没有这些全局） */
-  const me=(typeof currentUsername!=='undefined'&&currentUsername)||((typeof $==='function'&&$('triggeredBy')&&$('triggeredBy').value.trim())||'');
+  const me=(typeof currentUsername!=='undefined'&&currentUsername)||'';
   if(me) p.updatedBy=me;
   savePipelines();
   renderPipelines(); renderFlow(); renderDetail();
@@ -3477,7 +3475,7 @@ function startRun(opts){
   const release = image;                 // Release 字段已移除，内部以镜像名作为 release
   const repo = resolveRepo(opts.repoId || $('repoSel').value);
   const branch = opts.branch || ($('branchName').value.trim()||'main');
-  const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
+  const by = opts.by || (currentUsername||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual'};
   startSimRun(pl, c);
@@ -3522,8 +3520,8 @@ function runPipeline(opts){
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
   if(opts.useDefaults){ const issue=pipelineDefaultRunIssue(pl,opts); if(issue){ alert(issue+'。请先编辑流水线并重新保存默认参数。'); return 'invalid-defaults'; } }
   opts=resolvePipelineRunOptions(pl,opts);
-  /* 执行人为必填项：手动运行未填写时弹窗拦截（队列/定时快照自带 opts.by，不受影响；历史重跑同样按当前填写值校验） */
-  if(!opts.by && !$('triggeredBy').value.trim()){ alert('未获取到当前登录用户：「执行人」只读、取 dsh 登录用户。请确认已登录后刷新页面重试。'); return 'no-by'; }
+  /* 执行人必填：取当前登录用户（只读），未获取到时弹窗拦截（队列/定时快照自带 opts.by，不受影响；历史重跑同样按当前登录用户校验） */
+  if(!opts.by && !currentUsername){ alert('未获取到当前登录用户：「执行人」取 dsh 登录用户。请确认已登录后刷新页面重试。'); return 'no-by'; }
   const envs = (opts.envs && opts.envs.length) ? opts.envs   // 与 startRun 一致：快照节点对象优先（多选 IP 不退化）
     : opts.env ? [resolveEnv(opts.env)] : curEnvs();
   const env = envs.map(e=>e.ip).join('，');
@@ -3531,7 +3529,7 @@ function runPipeline(opts){
   const release = image;
   const repoId = opts.repoId || $('repoSel').value;
   const branch = opts.branch || ($('branchName').value.trim()||'main');
-  const by = opts.by || ($('triggeredBy').value.trim()||'anonymous');
+  const by = opts.by || (currentUsername||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const presets = Array.isArray(opts.presets) ? opts.presets.slice() : selectedPresetKeys();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
@@ -3733,7 +3731,7 @@ function renderSchedForm(){
   const repo=$('schedRepo'); const curRepoId2=repo.value || curRepo().id; repo.innerHTML='';
   repositories.forEach(r=>{ const o=document.createElement('option'); o.value=r.id; o.textContent=r.name; if(r.id===curRepoId2) o.selected=true; repo.appendChild(o); });
   $('schedCleanupEnv').checked=$('cleanupEnv').checked;   // 「清理环境」与主控同一开关（全局配置，服务端定时执行同样生效）
-  if(!$('schedBy').value.trim()) $('schedBy').value=$('triggeredBy').value.trim();
+  if(!$('schedBy').value.trim()) $('schedBy').value=currentUsername||'';
 }
 function addPlan(){
   const mode=$('runSched').value;
@@ -6542,7 +6540,7 @@ function savePlForm(){
   });
   const editId=$('plForm').dataset.editId;
   const defaults=collectPipelineDefaultForm();
-  const me=currentUsername||$('triggeredBy').value.trim()||'';   // 新建/复制流水线署名：取已缓存的当前登录用户（页面加载时由 fillExecutorFromAuth 预取），未取到时退回「执行人」输入框
+  const me=currentUsername||'';   // 新建/复制流水线署名：取已缓存的当前登录用户（页面加载时由 fillExecutorFromAuth 探测写入），未取到则不署名
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动；每次保存都刷新最后修改人 */
   else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}); }
   savePipelines(); clearPlDraft(); $('plForm').style.display='none';
@@ -6573,7 +6571,7 @@ function uniqueCopyName(raw){
 }
 function copyPipeline(id){
   const src=findPipeline(id); if(!src) return;
-  const me=currentUsername||$('triggeredBy').value.trim()||'';   // 副本署名：复制者即创建者
+  const me=currentUsername||'';   // 副本署名：复制者即创建者（当前登录用户），未取到则不署名
   const clone=JSON.parse(JSON.stringify(src));   /* 深拷贝：阶段及 script/url/sched/sub 等绑定均为纯数据 */
   clone.id='pl-'+Date.now().toString(36);
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
@@ -7083,8 +7081,8 @@ async function fillExecutorFromAuth(){
   }catch(e){ return; }
   if(!username) return;
   currentUsername=username;   // 缓存当前登录用户，供流水线署名与默认筛选「我的」取用
-  const input=$('triggeredBy');
-  if(input) input.value=username;
+  const el=$('triggeredBy');   // 右上角纯文本展示（span）：探测成功即更新为登录用户名
+  if(el) el.textContent=username;
   /* 拿到当前用户后重绘「我的」筛选视图（初次加载时尚未拿到，先按「内置+未署名」退化渲染）。
      typeof 守卫：筛选状态在独立测试片段里可能未定义。 */
   if(typeof plFilter!=='undefined' && plFilter && plFilter.owner==='mine' && typeof renderPipelines==='function') renderPipelines();

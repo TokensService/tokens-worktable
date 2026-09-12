@@ -11,6 +11,12 @@
   “样本不足”，负斜率明确显示回落。审查后移除可直接复制的 `memory.force_empty` 命令并补强制回收红线，
   同时为多标签和长代码标识补窄屏适配。`projects/mem_leak/index.test.cjs` 新增固定双窗口、指标来源保守判定、
   待观察徽标、回落文案与生产安全边界回归。
+- 流水线「执行人」展示去输入框化（`projects/pipeline/pipeline.html`）：右上角执行人由只读 `<input>`
+  改为纯文本 `<span>`（初始「未登录」，探测成功替换为登录用户名），不再保留任何表单控件形态；
+  逻辑读取点（运行/入队的 `by`、必填校验、API 说明、定时计划默认值、新建/复制/改序署名）统一改为
+  直读已缓存的 `currentUsername`，与展示彻底解耦。相关测试桩同步由 `triggeredBy.value` 改为
+  `currentUsername`（`test_pipeline_defaults.js` / `test_pipeline_api_ui.js` / `test_queue_item_preview.js`），
+  `test_executor_auth_default.js` 改为断言展示文本。
 - 流水线运行队列上限 8 → 16（`projects/pipeline/pipeline.html` 的 `QUEUE_CAP`）：并行槽位（4 个）占满后
   可排队等待的任务数放宽一倍，提示文案随变量联动；同步 `tests/test_queue_item_preview.js` 的边界用例
   （填满 16 个后拒绝入队）与 `tests/test_pipeline_row_run.js` 的容量提示断言。
