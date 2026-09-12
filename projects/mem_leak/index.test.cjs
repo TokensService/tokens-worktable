@@ -140,7 +140,7 @@ test("lvJudgeSeries 对 RSS 只做持续增长预警，不把总 RSS 直接定�
   assert.equal(few.sev, "wait");
   assert.equal(few.cur, 110);
   const rising = [];
-  for (let i = 0; i < 10; i++) rising.push({ t: i, v: 10000 + i });
+  for (let i = 0; i < 10; i++) rising.push({ t: i * 10, v: 10000 + i * 10 });
   const j = ctx.lvJudgeSeries(rising, "rss");
   assert.equal(j.sev, "mid");
   assert.equal(j.label, "RSS 持续上涨，需拆分 anon/file");
@@ -153,9 +153,9 @@ test("lvJudgeSeries 对 RSS 只做持续增长预警，不把总 RSS 直接定�
 test("lvJudgeSeries 要求连续两个窗口同向，单窗口突发只提示继续观察", () => {
   const ctx = loadFunctions(["analyze", "hasSustainedRise", "lvJudgeSeries"]);
   const lateRise = [
-    { t: 0, v: 10000 }, { t: 1, v: 10000 }, { t: 2, v: 10000 },
-    { t: 3, v: 10000 }, { t: 4, v: 10000 }, { t: 5, v: 10000 },
-    { t: 6, v: 10010 }, { t: 7, v: 10020 }, { t: 8, v: 10030 },
+    { t: 0, v: 10000 }, { t: 10, v: 10000 }, { t: 20, v: 10000 },
+    { t: 30, v: 10000 }, { t: 40, v: 10000 }, { t: 50, v: 10000 },
+    { t: 60, v: 10010 }, { t: 70, v: 10020 }, { t: 80, v: 10030 },
   ];
   const j = ctx.lvJudgeSeries(lateRise, "rss");
   assert.equal(j.sev, "wait");
@@ -165,7 +165,7 @@ test("lvJudgeSeries 要求连续两个窗口同向，单窗口突发只提示继
 test("lvJudgeSeries 不用容器总量实锤泄漏，并把显存上涨降级为归因提示", () => {
   const ctx = loadFunctions(["analyze", "hasSustainedRise", "lvJudgeSeries"]);
   const rising = [];
-  for (let i = 0; i < 10; i++) rising.push({ t: i, v: 10000 + i * 100 });
+  for (let i = 0; i < 10; i++) rising.push({ t: i * 10, v: 10000 + i * 100 });
 
   const cgroup = ctx.lvJudgeSeries(rising, "cg");
   assert.equal(cgroup.sev, "wait");
@@ -174,6 +174,72 @@ test("lvJudgeSeries 不用容器总量实锤泄漏，并把显存上涨降级为
   const gpu = ctx.lvJudgeSeries(rising, "gpu");
   assert.equal(gpu.sev, "mid");
   assert.equal(gpu.label, "显存持续上涨，需排除预分配");
+});
+
+test("hasSustainedRise 使用最近两个固定 30 分钟窗口，短时噪声不会外推告警", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise"]);
+  const shortNoise = [];
+  for (let i = 0; i < 6; i++) shortNoise.push({ t: i, v: 10000 + i * 100 });
+  assert.equal(ctx.hasSustainedRise(shortNoise, 50, 30), false);
+
+  const oldFlatRecentRise = [];
+  for (let t = 0; t <= 60; t += 10) oldFlatRecentRise.push({ t, v: 10000 });
+  for (let t = 70; t <= 120; t += 10) oldFlatRecentRise.push({ t, v: 10000 + (t - 60) });
+  assert.equal(ctx.hasSustainedRise(oldFlatRecentRise, 50, 30), true);
+});
+
+test("hasSustainedRise 按时间戳兼容采样间隔变化，并拒绝回落窗口与精确阈值", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise"]);
+  const mixedIntervals = [0, 10, 20, 30, 31, 40, 50, 60].map((t) => ({ t, v: 10000 + t }));
+  assert.equal(ctx.hasSustainedRise(mixedIntervals, 50, 30), true);
+
+  const riseThenFall = [0, 10, 20, 30, 40, 50, 60].map((t) => ({
+    t,
+    v: t <= 30 ? 10000 + t : 10030 - (t - 30),
+  }));
+  assert.equal(ctx.hasSustainedRise(riseThenFall, 50, 30), false);
+
+  const exactThreshold = [0, 10, 20, 30, 40, 50, 60].map((t) => ({
+    t,
+    v: 10000 + t * (50 / 60),
+  }));
+  assert.equal(ctx.hasSustainedRise(exactThreshold, 50, 30), false);
+});
+
+test("lvJudgeSeries 把显著负斜率显示为回落，而不是平稳", () => {
+  const ctx = loadFunctions(["analyze", "hasSustainedRise", "lvJudgeSeries"]);
+  const falling = [];
+  for (let i = 0; i < 10; i++) falling.push({ t: i * 10, v: 10000 - i * 10 });
+
+  assert.equal(ctx.lvJudgeSeries(falling, "rss").label, "RSS 回落（释放正常）");
+  assert.equal(ctx.lvJudgeSeries(falling, "cg").label, "容器总量回落");
+  assert.equal(ctx.lvJudgeSeries(falling, "gpu").label, "显存回落（释放正常）");
+});
+
+test("lvJudgeBadge 保留有效待观察原因，只有无有效分析时显示样本不足", () => {
+  const ctx = loadFunctions(["verdictBadge", "lvJudgeBadge"]);
+  const waiting = ctx.lvJudgeBadge({
+    ok: true,
+    sev: "wait",
+    label: "容器总量需拆分 anon/cache/shmem",
+  });
+  assert.match(waiting, /容器总量需拆分 anon\/cache\/shmem/);
+  assert.doesNotMatch(waiting, /样本不足/);
+
+  assert.match(ctx.lvJudgeBadge({ ok: false, sev: "wait", label: "样本不足" }), /样本不足/);
+});
+
+test("生产手册不把 memory.force_empty 暴露为在线诊断命令", () => {
+  assert.doesNotMatch(html, /echo\s+0\s+[^\n]*memory\.force_empty/);
+  assert.match(html, /不要在承载流量的容器执行/);
+  assert.match(html, /强制回收/);
+  assert.match(html, /摘流或隔离副本/);
+});
+
+test("多标签与长代码标识在窄屏可滚动或换行", () => {
+  assert.match(html, /\.dshell-tabs\s*\{[^}]*overflow-x\s*:\s*auto[^}]*\}/s);
+  assert.match(html, /\.dshell-tab\s*\{[^}]*white-space\s*:\s*nowrap[^}]*\}/s);
+  assert.match(html, /\.ml-prose code[^\{]*\{[^}]*overflow-wrap\s*:\s*anywhere[^}]*\}/s);
 });
 
 test("新版检查清单不复用旧索引语义，并把状态写入独立版本键", () => {

@@ -66,6 +66,8 @@
     .theme-seg button.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
 
     /* 仅本页所需的最小自造样式 */
+    .dshell-tabs { overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling:touch; }
+    .dshell-tab { flex:0 0 auto; white-space:nowrap; }
     .ml-canvas { width:100%; height:240px; display:block; }
     .ml-legend { display:flex; flex-wrap:wrap; gap:12px; font-size:12px; opacity:.9; margin-top:8px; }
     .ml-legend span { display:inline-flex; align-items:center; gap:5px; }
@@ -111,6 +113,7 @@
     .ml-statusline { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-bottom:9px; }
     .ml-prose { font-size:12.5px; line-height:1.7; color:var(--dsw-alias-label-secondary,#9aa4b2); }
     .ml-prose strong { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .ml-prose code, .dshell-table code { overflow-wrap:anywhere; word-break:break-word; }
     .ml-prose ul, .ml-prose ol { margin:6px 0 0; padding-left:20px; }
     .ml-prose li + li { margin-top:4px; }
     .dshell-btn:disabled { opacity:.45; cursor:not-allowed; }
@@ -223,7 +226,7 @@
           <tbody id="lvJudgeBody"></tbody>
         </table>
       </div>
-      <div class="ml-note">研判采用趋势 + 连续双窗口：RSS 连续两个窗口超过 50 MiB/h 才预警，并仍要求拆 anon/file；容器总量只提示分解，GPU 上涨先排除 vLLM 预分配。点「分析」载入概览查看趋势。</div>
+      <div class="ml-note">研判采用趋势 + 最近两个完整 30 分钟窗口：RSS 两窗均超过 50 MiB/h 才预警，并仍要求拆 anon/file；容器总量只提示分解，GPU 上涨先排除 vLLM 预分配。点「分析」载入概览查看趋势。</div>
     </div>
   </div>
 
@@ -292,18 +295,16 @@
         <div>
           <div class="ml-codebar"><span class="dshell-muted" style="font-size:11px">cgroup v1 分解</span></div>
           <pre class="ml-code">CG=/sys/fs/cgroup/memory/kubepods/burstable/pod&lt;UID&gt;/&lt;容器ID&gt;
-grep -E '^(active|inactive)_(anon|file)|^cache|^shmem' "$CG/memory.stat"
-
-# 仅在维护/验证窗口清本容器可回收 cache
-echo 0 &gt; "$CG/memory.force_empty"</pre>
-          <div class="ml-note">本环境 pod 级 <code>memory.stat</code> 不聚合子容器，必须遍历 <code>pod&lt;uid&gt;/*/memory.stat</code> 求和；pod 级 <code>memory.usage_in_bytes</code> 才是聚合值。</div>
+grep -E '^(active|inactive)_(anon|file)|^cache|^shmem' "$CG/memory.stat"</pre>
+          <div class="ml-note">本环境 pod 级 <code>memory.stat</code> 不聚合子容器，必须遍历 <code>pod&lt;uid&gt;/*/memory.stat</code> 求和；pod 级 <code>memory.usage_in_bytes</code> 才是聚合值。<code>cache</code> 与 active/inactive file 等字段存在总量/子项关系，不可直接相加。</div>
+          <div class="ml-callout ml-callout-danger" style="margin-top:9px"><strong>不要在承载流量的容器执行 <code>memory.force_empty</code>。</strong>它会对目标 cgroup 触发强制回收并尽可能回收页面，不是“只清 page cache”的只读诊断开关。确需验证回收性时，只能在摘流或隔离副本的维护窗口由值班负责人受控执行；参见 <a href="https://docs.kernel.org/admin-guide/cgroup-v1/memory.html" target="_blank" rel="noopener noreferrer">Linux 内核 cgroup v1 文档</a>。</div>
         </div>
         <div class="ml-tablewrap">
           <table class="dshell-table">
             <thead><tr><th>组成</th><th>解释</th><th>判定</th></tr></thead>
             <tbody>
               <tr><td>anon</td><td>进程堆/匿名页</td><td>持续涨才指向真泄漏</td></tr>
-              <tr><td>file/cache</td><td>NFS 模型、CUDA 惰性加载库页、日志页缓存</td><td>可回收，不是泄漏</td></tr>
+              <tr><td>file/cache</td><td>NFS 模型、CUDA 惰性加载库页、日志页缓存</td><td>通常可回收；结合 dirty/writeback 与压力下回落确认</td></tr>
               <tr><td>shmem</td><td>Ray plasma、NCCL/TENT 握手段</td><td>持续涨指向共享内存泄漏</td></tr>
               <tr><td>VmPin</td><td>RDMA MR 固定页</td><td>稳定高值正常；斜率才关键</td></tr>
             </tbody>
@@ -318,7 +319,7 @@ echo 0 &gt; "$CG/memory.force_empty"</pre>
         <table class="dshell-table">
           <thead><tr><th>指标/手段</th><th>门槛或用途</th><th>生产要求</th></tr></thead>
           <tbody>
-            <tr><td>anon</td><td>&gt;50 MiB/h，且连续两个窗口同向</td><td><span class="dshell-badge dshell-badgeWait">确认泄漏</span> 前仍要排除业务在飞量</td></tr>
+            <tr><td>anon</td><td>&gt;50 MiB/h，且最近两个完整 30 分钟窗口同向</td><td><span class="dshell-badge dshell-badgeWait">确认泄漏</span> 前仍要排除业务在飞量</td></tr>
             <tr><td>VmPin</td><td>&gt;1 MiB/h 指向 RDMA MR 泄漏</td><td><span class="dshell-badge dshell-badgeDone">只读 /proc</span></td></tr>
             <tr><td>线程 / fd</td><td>持续 &gt;5 个/h 指向线程/句柄泄漏</td><td><span class="dshell-badge dshell-badgeDone">只读 /proc</span></td></tr>
             <tr><td>smaps 两次 diff</td><td>区分 heap、arena、库页、/dev/nvidia</td><td><span class="dshell-badge dshell-badgeDone">零侵入</span></td></tr>
@@ -340,7 +341,7 @@ echo 0 &gt; "$CG/memory.force_empty"</pre>
             <tr><td>task_exec</td><td><strong style="color:#f85149">生成器链泄漏已实锤</strong></td><td>历史斜率 decode +53–337 MiB/h、prefill +104–210 MiB/h；修复后 decode 走平</td></tr>
             <tr><td>worker</td><td><strong style="color:#d29922">倾向 glibc 多 arena 碎片</strong></td><td>memleak 未发现陈旧块；用 <code>MALLOC_ARENA_MAX=4</code> 或 jemalloc 对照验证</td></tr>
             <tr><td>decode task_exec fd</td><td><strong style="color:#d29922">缓慢泄漏</strong></td><td>+2.8–6.9 个/h，与僵死链挂住的 ZMQ/gRPC 句柄一致</td></tr>
-            <tr><td>cgroup 高占用</td><td><strong>主要是页缓存</strong></td><td>样例 190 GiB 中 cache 159 GiB，可用 <code>memory.force_empty</code> 验证</td></tr>
+            <tr><td>cgroup 高占用</td><td><strong>主要是页缓存</strong></td><td>样例 190 GiB 中 cache 159 GiB；回收性只在摘流/隔离副本受控验证</td></tr>
             <tr><td>pushgateway</td><td><strong style="color:#d29922">确定的资源浪费</strong></td><td><code>192.168.10.6:25888</code> 长期不通，1s push 线程卡在 TCP connect 并持有 payload</td></tr>
           </tbody>
         </table>
@@ -541,7 +542,7 @@ python3 /mnt/paas/lhf/oom/analyze_watch.py</pre>
       <div class="ml-flow" style="margin-bottom:10px">
         <span class="ml-node">anon 上涨</span><span class="ml-arrow">→</span>
         <span class="ml-node">拆到 side / role / PID</span><span class="ml-arrow">→</span>
-        <span class="ml-node">连续双窗口 &gt;50 MiB/h</span>
+        <span class="ml-node">最近两个完整 30 分钟窗口均 &gt;50 MiB/h</span>
       </div>
       <div class="ml-flow">
         <span class="ml-node">VmPin &gt;1 MiB/h → RDMA MR</span><span class="ml-arrow">·</span>
@@ -789,6 +790,10 @@ function verdictBadge(sev, label) {
   if (sev === "mid") return '<span class="dshell-badge dshell-badgeWait">' + label + '</span>';
   return '<span class="dshell-badge dshell-badgeDone">' + label + '</span>';
 }
+function lvJudgeBadge(j) {
+  if (!j || !j.ok) return '<span class="dshell-badge">样本不足</span>';
+  return j.sev === "wait" ? verdictBadge("mid", j.label) : verdictBadge(j.sev, j.label);
+}
 function render(a) {
   if (!a.ok) {
     setText("ovVerdict", "待诊断");
@@ -816,7 +821,7 @@ function render(a) {
   var threshold = a.trendThreshold;
   var findings = [];
   findings.push({ sev: a.sev, t: a.verdict, d: "区间 " + a.t0.toFixed(1) + "–" + a.t1.toFixed(1) + "m，斜率 " + a.slope.toFixed(2) + " MiB/m（" + rate.toFixed(0) + " MiB/h）" });
-  if (a.slope > threshold) findings.push({ sev: "mid", t: "内存序列持续上升", d: "区间净增 " + fmtMB(a.delta) + "；先拆 anon/file/shmem/VmPin，并确认连续两个窗口同向" });
+  if (a.slope > threshold) findings.push({ sev: "mid", t: "内存序列持续上升", d: "区间净增 " + fmtMB(a.delta) + "；先拆 anon/file/shmem/VmPin，并确认最近两个完整 30 分钟窗口同向" });
   if (a.sd > 250 && Math.abs(a.slope) < threshold) findings.push({ sev: "mid", t: "波动大但趋势平稳", d: "标准差 " + a.sd.toFixed(0) + " MiB，可能是碎片化、页缓存或业务在飞量" });
   if (a.slope <= threshold && a.sd < 250) findings.push({ sev: "low", t: "当前窗口进入稳态", d: "本序列斜率与方差均低；仍需结合指标层级和更长窗口确认" });
   document.getElementById("findings").innerHTML = findings.map(function (f) {
@@ -862,10 +867,10 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-sample]"), functio
 
 /* ================= 泄漏模式卡片 ================= */
 var PATTERNS = [
-  { sev: "high", name: "async generator 链未关闭", sig: "task_exec RssAnon 连续双窗口上涨，旧 request_id 的生成器年龄与墙钟同步", detect: "watch.csv 按 side/role/PID 看 anon；日志核对旧请求无完成/abort；在线只取 py-spy dump 单快照", fix: "引擎所有终结路径投递终态；每层 finally-await-aclose；调用方 abort；独立失速看门狗兜底" },
+  { sev: "high", name: "async generator 链未关闭", sig: "task_exec RssAnon 最近两个完整 30 分钟窗口持续上涨，旧 request_id 的生成器年龄与墙钟同步", detect: "watch.csv 按 side/role/PID 看 anon；日志核对旧请求无完成/abort；在线只取 py-spy dump 单快照", fix: "引擎所有终结路径投递终态；每层 finally-await-aclose；调用方 abort；独立失速看门狗兜底" },
   { sev: "high", name: "RDMA MR 注册泄漏", sig: "进程 VmPin 在正常高平台之上持续上涨", detect: "/proc/<pid>/status 连续采 VmPin；>1 MiB/h 即严重告警", fix: "审计 TENT MR register/unregister 配对、异常与重试路径；不要把稳定的 849–943 GiB 高值当泄漏" },
   { sev: "mid", name: "glibc 多 arena 碎片/留存", sig: "worker anon 缓慢抬升，但 memleak 找不到存活陈旧块", detect: "两次 smaps 分桶；重启窗口用 MALLOC_ARENA_MAX=4 或 jemalloc 做 A/B 斜率实验", fix: "限制 arena 数或切换 jemalloc；以相同负载、相同时间窗对照，不在线注入" },
-  { sev: "low", name: "file/cache 被误判为泄漏", sig: "working set 或 RSS 突发上涨，但主要增量来自 active_file / RssFile", detect: "cgroup memory.stat + /proc/<pid>/status；维护窗口可用 memory.force_empty 验证可回收量", fix: "监控面板拆 anon/file/shmem；把 NFS 模型、CUDA 惰性库页和日志 cache 从泄漏告警中分离" },
+  { sev: "low", name: "file/cache 被误判为泄漏", sig: "working set 或 RSS 突发上涨，但主要增量来自 active_file / RssFile", detect: "cgroup memory.stat + /proc/<pid>/status；观察压力或摘流后的自然回落，强制回收只在隔离副本维护窗口受控执行", fix: "监控面板拆 anon/file/shmem；把 NFS 模型、CUDA 惰性库页和日志 cache 从泄漏告警中分离" },
   { sev: "high", name: "共享内存未释放", sig: "cgroup shmem 持续上涨，常伴 Ray plasma 或 NCCL/TENT 握手对象残留", detect: "逐容器汇总 memory.stat 的 shmem；关联 /dev/shm 对象和请求生命周期", fix: "清理异常/取消路径的共享段；给池和对象存储设置生命周期与上限" },
   { sev: "mid", name: "GPU 预分配误报", sig: "vLLM 启动后 nvidia-smi 立即稳定在约 95%", detect: "对比启动平台与稳态斜率；结合 gpu_cache_usage、preemption 与 OOM 事件", fix: "预分配本身无需修；仅处理稳态后持续上涨，审计 KV block、tensor 与请求取消路径" },
   { sev: "high", name: "引擎静默终结未投递终态", sig: "request_state 已消失，但旧 collector 仍永久等待 q.get()", detect: "关联 request_id 的引擎状态、终态日志和调用链年龄；审计 KV_wait、抢占、重试和 drop_stale_output", fix: "任何终结/丢弃路径都 put 终态或异常；重复 request_id 时隔离并关闭旧 queue" },
@@ -891,7 +896,7 @@ var CHECKLIST = [
   ["内存分层", "cgroup v1 已遍历 pod 下每个子容器的 memory.stat 求和"],
   ["内存分层", "进程突增已拆 RssAnon 与 RssFile，排除 CUDA/torch 库页换入"],
   ["趋势确认", "按 side、role、PID 连续采样，并覆盖 pod 重建后的新 PID"],
-  ["趋势确认", "anon 超过 50 MiB/h 且连续两个窗口同向，排除单次业务突发"],
+  ["趋势确认", "anon 超过 50 MiB/h 且最近两个完整 30 分钟窗口同向，排除短时噪声与单次业务突发"],
   ["资源归因", "VmPin 斜率已核对；超过 1 MiB/h 按 RDMA MR 严重告警"],
   ["资源归因", "线程与 fd 斜率已核对；持续超过 5 个/h 继续定位"],
   ["GPU/NVLink", "区分 vLLM 约 95% KV 预分配与稳态后持续上涨"],
@@ -1043,30 +1048,50 @@ function lvCollectPoints(series, data, selected, tMin) {
   });
   return series;
 }
-// 单序列泄漏研判：复用 analyze() 最小二乘回归；样本不足 3 个给出「样本不足」
-function hasSustainedRise(pts, thresholdPerHour) {
-  if (!pts || pts.length < 6) return false;
-  var split = Math.floor(pts.length / 2);
-  var first = analyze(pts.slice(0, split));
-  var second = analyze(pts.slice(split));
-  return first.ok && second.ok && first.slope * 60 > thresholdPerHour && second.slope * 60 > thresholdPerHour;
+// 只比较最近两个固定时间窗，避免把数十秒噪声外推成小时级告警；每窗至少覆盖 90% 且有 3 个样本。
+function hasSustainedRise(pts, thresholdPerHour, windowMinutes) {
+  windowMinutes = windowMinutes || 30;
+  if (!pts || pts.length < 6 || !(windowMinutes > 0)) return false;
+  var valid = pts.filter(function (p) { return p && Number.isFinite(p.t) && Number.isFinite(p.v); })
+    .slice().sort(function (a, b) { return a.t - b.t; });
+  if (valid.length < 6) return false;
+  var end = valid[valid.length - 1].t;
+  var middle = end - windowMinutes;
+  var start = middle - windowMinutes;
+  var firstPts = valid.filter(function (p) { return p.t >= start && p.t <= middle; });
+  var secondPts = valid.filter(function (p) { return p.t >= middle && p.t <= end; });
+  function covered(windowPts) {
+    return windowPts.length >= 3 &&
+      windowPts[windowPts.length - 1].t - windowPts[0].t >= windowMinutes * 0.9;
+  }
+  if (!covered(firstPts) || !covered(secondPts)) return false;
+  var first = analyze(firstPts);
+  var second = analyze(secondPts);
+  var epsilon = 1e-6;
+  return first.ok && second.ok &&
+    first.slope * 60 > thresholdPerHour + epsilon &&
+    second.slope * 60 > thresholdPerHour + epsilon;
 }
 // 在线接口当前只有 GPU / RSS / cgroup 总量：它们都只能预警，不能替代 anon/file/shmem/VmPin 归因。
 function lvJudgeSeries(pts, kind) {
   var cur = pts && pts.length ? pts[pts.length - 1].v : null;
-  var a = analyze(pts || []);
+  var all = pts || [];
+  var end = all.length ? all[all.length - 1].t : 0;
+  var recent = all.filter(function (p) { return p.t >= end - 30; });
+  var a = analyze(recent);
+  if (!a.ok) a = analyze(all);
   if (!a.ok) return { ok: false, label: "样本不足", sev: "wait", rateH: null, cur: cur, n: pts ? pts.length : 0 };
   var rateH = a.slope * 60;
-  var sustained = hasSustainedRise(pts, 50);
+  var sustained = hasSustainedRise(all, 50, 30);
   var label = a.verdict, sev = a.sev;
   if (kind === "cg") {
-    label = rateH > 50 ? "容器总量需拆分 anon/cache/shmem" : "容器总量平稳，仍需分层";
+    label = rateH > 50 ? "容器总量需拆分 anon/cache/shmem" : rateH < -50 ? "容器总量回落" : "容器总量平稳，仍需分层";
     sev = rateH > 50 ? "wait" : "low";
   } else if (kind === "rss") {
-    label = rateH > 50 ? (sustained ? "RSS 持续上涨，需拆分 anon/file" : "RSS 上涨，继续观察第二窗口") : "RSS 当前窗口平稳";
+    label = rateH > 50 ? (sustained ? "RSS 持续上涨，需拆分 anon/file" : "RSS 上涨，继续观察第二窗口") : rateH < -50 ? "RSS 回落（释放正常）" : "RSS 当前窗口平稳";
     sev = rateH > 50 ? (sustained ? "mid" : "wait") : "low";
   } else if (kind === "gpu") {
-    label = rateH > 50 ? (sustained ? "显存持续上涨，需排除预分配" : "显存上涨，继续观察第二窗口") : "显存当前窗口平稳";
+    label = rateH > 50 ? (sustained ? "显存持续上涨，需排除预分配" : "显存上涨，继续观察第二窗口") : rateH < -50 ? "显存回落（释放正常）" : "显存当前窗口平稳";
     sev = rateH > 50 ? (sustained ? "mid" : "wait") : "low";
   }
   return { ok: true, label: label, sev: sev, rateH: rateH, cur: cur, n: a.n };
@@ -1182,7 +1207,7 @@ function lvRenderCharts() {
   var info = lvEl("lvSampleInfo");
   if (info) info.textContent = LV.rounds ? ("已采 " + LV.rounds + " 轮 · " + Object.keys(LV.series).length + " 条序列") : "";
 }
-// 泄漏研判表：按严重度排序（高危 > 关注 > 样本不足 > 正常），可载入诊断概览深入分析
+// 泄漏研判表：按严重度排序（高危 > 关注 > 待观察 > 正常），可载入诊断概览深入分析
 function lvRenderJudge() {
   var body = lvEl("lvJudgeBody"); if (!body) return;
   var rows = Object.keys(LV.series).map(function (k) { return { key: k, s: LV.series[k], j: lvJudgeSeries(LV.series[k].pts, LV.series[k].kind) }; });
@@ -1190,7 +1215,7 @@ function lvRenderJudge() {
   var rank = { high: 0, mid: 1, wait: 2, low: 3 };
   rows.sort(function (a, b) { return (rank[a.j.sev] != null ? rank[a.j.sev] : 4) - (rank[b.j.sev] != null ? rank[b.j.sev] : 4); });
   body.innerHTML = rows.map(function (r) {
-    var badge = r.j.sev === "wait" ? '<span class="dshell-badge">样本不足</span>' : verdictBadge(r.j.sev, r.j.label);
+    var badge = lvJudgeBadge(r.j);
     return '<tr><td title="' + esc(r.s.label) + '">' + esc(r.s.label) + "</td>" +
       "<td>" + LV_KINDS[r.s.kind] + "</td>" +
       "<td>" + (r.j.cur != null ? fmtMB(r.j.cur) : "—") + "</td>" +

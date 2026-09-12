@@ -5,9 +5,11 @@
   anon/file/cache/shmem 分层方法、RssAnon/VmPin/线程/fd 判据、生产插桩红线、Xid 事故时间线、
   task_exec 九层 async generator 僵死链证据、修复三件套与 2026-09-11 上线验证；工具、泄漏模式和
   检查清单同步改成生产安全口径。在线采样不再把 RSS、cgroup 总量或 vLLM 约 95% GPU 预分配直接定性为
-  泄漏：RSS 需连续两个窗口超过 50 MiB/h 才预警并要求拆 anon/file，cgroup 总量始终要求继续分层，
-  GPU 上涨先排除预分配；诊断概览删除“显存 × 1.4”虚构 RSS，改为只展示实测要求。
-  `projects/mem_leak/index.test.cjs` 新增连续双窗口与按指标来源保守判定回归。
+  泄漏：RSS 需最近两个完整 30 分钟窗口均超过 50 MiB/h 才预警并要求拆 anon/file，cgroup 总量始终要求继续分层，
+  GPU 上涨先排除预分配；诊断概览删除“显存 × 1.4”虚构 RSS，改为只展示实测要求；有效“待观察”原因不再误显示为
+  “样本不足”，负斜率明确显示回落。审查后移除可直接复制的 `memory.force_empty` 命令并补强制回收红线，
+  同时为多标签和长代码标识补窄屏适配。`projects/mem_leak/index.test.cjs` 新增固定双窗口、指标来源保守判定、
+  待观察徽标、回落文案与生产安全边界回归。
 - 流水线运行队列上限 8 → 16（`projects/pipeline/pipeline.html` 的 `QUEUE_CAP`）：并行槽位（4 个）占满后
   可排队等待的任务数放宽一倍，提示文案随变量联动；同步 `tests/test_queue_item_preview.js` 的边界用例
   （填满 16 个后拒绝入队）与 `tests/test_pipeline_row_run.js` 的容量提示断言。
