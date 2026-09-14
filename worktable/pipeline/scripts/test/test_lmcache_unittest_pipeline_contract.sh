@@ -21,6 +21,22 @@ fi
 mkdir -p "${@: -1}/lmcache"
 EOF
 chmod +x "$tmp/bin/nerdctl" "$tmp/bin/git"
+
+# 上游变量由工作台变量池自动注入。脚本必须在实际执行时校验它们，
+# 但不得使用 Bash 的“变量为空即退出”展开，否则工作台的静态扫描会把这些字段标为人工必填。
+for script in lmcache-unittest-rebuild.sh lmcache-unittest-run-tests.sh; do
+  if rg -q ': "\$\{LMCACHE_UNITTEST_[A-Z_]+:\?' "$root/$script"; then
+    echo "$script must not declare inherited variables with :?" >&2
+    exit 1
+  fi
+done
+if env -u LMCACHE_UNITTEST_RUN_DIR PATH="$tmp/bin:$PATH" FAKE_LOG="$log" \
+  bash "$root/lmcache-unittest-rebuild.sh" >"$tmp/rebuild-missing.out" 2>&1; then
+  echo 'rebuild must reject a missing inherited run directory' >&2
+  exit 1
+fi
+grep -Fq 'run pull stage first' "$tmp/rebuild-missing.out"
+
 pull_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'pull lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
