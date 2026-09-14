@@ -889,6 +889,7 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
   if (own(input, 'branch') && typeof input.branch !== 'string') return { status: 400, error: 'invalid branch' }
   if (own(input, 'strategy') && typeof input.strategy !== 'string') return { status: 400, error: 'invalid strategy' }
   if (own(input, 'by') && typeof input.by !== 'string') return { status: 400, error: 'invalid by' }
+  if (own(input, 'image') && typeof input.image !== 'string') return { status: 400, error: 'invalid image' }
 
   const branch = own(input, 'branch') && input.branch.trim() ? input.branch.trim() : defaults.branch
   const strategy = own(input, 'strategy') ? input.strategy.trim() : defaults.strategy
@@ -909,8 +910,9 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
       branch,
       strategy,
       presets,
+      image: own(input, 'image') ? input.image.trim() : '',
       by,
-      source: 'api',
+      source: input.source === 'manual' ? 'manual' : 'api',
       createdAt: Date.now(),
     },
   }
@@ -977,22 +979,38 @@ function createPipelineNodeLeases(ttlMs = 90 * 1000, nowFn: () => number = () =>
 }
 
 /**
- * API 与定时计划共用的有界 FIFO 执行池，避免多个长任务同时创建子进程并争抢日志 I/O。
- * 可选 hooks 接入「节点占用」调度：目标节点（环境 IP）与在跑任务相交、或被池外租约（页面手动
- * 运行）占用的计划留在队列等待——同一节点同一时间只跑一条流水线，不同节点可越过同机等待者
+ * 页面手动运行、API 与定时计划共用的有界执行池，避免多个长任务同时创建子进程并争抢日志 I/O。
+ * 可选 hooks 接入「节点占用」调度：目标节点（环境 IP）与在跑任务相交、或被池外旧页面租约
+ * 占用的计划留在队列等待——同一节点同一时间只跑一条流水线，不同节点可越过同机等待者
  * 并行（与页面 drainQueue 同一语义）；被外部占用时按 retryMs 周期重试。无目标 IP 的计划
  * 不按节点约束，保持旧版纯 FIFO 行为。
  */
-function createPipelineExecutionQueue(execute: (plan: any) => Promise<void>, limit = 2, queueLimit = 100, hooks?: {
+type PipelineExecutionRuntime = {
+  signal: AbortSignal;
+  setStages: (stages: any[]) => void;
+  updateStage: (stageId: string, state: any) => void;
+}
+
+function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExecutionRuntime) => Promise<void>, limit = 2, queueLimit = 100, hooks?: {
   ipsOf?: (plan: any) => string[];
   acquire?: (plan: any, ips: string[]) => boolean;
   release?: (plan: any) => void;
   retryMs?: number;
 }) {
+  interface ExecutionItem {
+    plan: any;
+    queuedAt: number;
+    startedAt: number;
+    stages: any[];
+    nodes: Record<string, any>;
+    controller: AbortController | null;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }
   const concurrency = Math.max(1, Math.floor(Number(limit) || 1))
   const pendingLimit = Math.max(1, Math.floor(Number(queueLimit) || 1))
-  const pending: Array<{ plan: any; resolve: () => void; reject: (error: unknown) => void }> = []
-  const running: Array<{ plan: any; ips: string[] }> = []
+  const pending: ExecutionItem[] = []
+  const running: Array<{ item: ExecutionItem; ips: string[] }> = []
   let active = 0
   let retryTimer: any = null
   const retryWait = Math.max(50, Math.floor(Number(hooks && hooks.retryMs) || 5000))
@@ -1008,6 +1026,44 @@ function createPipelineExecutionQueue(execute: (plan: any) => Promise<void>, lim
     if (!hooks || !hooks.release) return
     try { hooks.release(plan) } catch (err) { console.warn('[tokens-worktable] 节点租约释放异常（租约到期会自动清理）:', err) }
   }
+  const runIdOf = (plan: any): string => String(plan && (plan.runId || plan.id) || '')
+  const stageList = (value: any): any[] => Array.isArray(value) ? value.filter((stage) => stage && typeof stage === 'object') : []
+  const idleNode = () => ({ status: 'idle', progress: 0, dur: 0 })
+  const resetStages = (item: ExecutionItem, stages: any[]) => {
+    item.stages = stageList(stages)
+    const nodes: Record<string, any> = {}
+    for (const stage of item.stages) {
+      const id = String(stage.id ?? '')
+      if (id) nodes[id] = item.nodes[id] || idleNode()
+    }
+    item.nodes = nodes
+  }
+  const updateStage = (item: ExecutionItem, stageId: string, state: any) => {
+    const id = String(stageId || '')
+    if (!id) return
+    const previous = item.nodes[id] || idleNode()
+    const next = state && typeof state === 'object' ? state : {}
+    item.nodes[id] = {
+      status: typeof next.status === 'string' ? next.status : previous.status,
+      progress: Number.isFinite(Number(next.progress)) ? Number(next.progress) : previous.progress,
+      dur: Number.isFinite(Number(next.dur)) ? Number(next.dur) : previous.dur,
+      ...(next.sub && typeof next.sub === 'object' && !Array.isArray(next.sub) ? { sub: next.sub } : (previous.sub ? { sub: previous.sub } : {})),
+    }
+  }
+  const snapshotEntry = (item: ExecutionItem, timeKey: 'startedAt' | 'queuedAt') => ({
+    id: runIdOf(item.plan),
+    pipelineId: String(item.plan && item.plan.pipelineId || ''),
+    pipelineName: String(item.plan && item.plan.pipelineName || ''),
+    by: String(item.plan && item.plan.by || ''),
+    env: String(item.plan && item.plan.env || ''),
+    repoName: String(item.plan && item.plan.repository && item.plan.repository.name || ''),
+    branch: String(item.plan && item.plan.branch || ''),
+    strategy: String(item.plan && item.plan.strategy || ''),
+    source: String(item.plan && item.plan.source || ''),
+    [timeKey]: item[timeKey],
+    stages: item.stages,
+    nodes: item.nodes,
+  })
   const drain = () => {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     while (active < concurrency && pending.length) {
@@ -1024,14 +1080,26 @@ function createPipelineExecutionQueue(execute: (plan: any) => Promise<void>, lim
       if (picked < 0) break
       const item = pending.splice(picked, 1)[0]
       active += 1
-      const entry = { plan: item.plan, ips: pickedIps }
+      item.startedAt = Date.now()
+      item.controller = new AbortController()
+      const entry = { item, ips: pickedIps }
       running.push(entry)
-      Promise.resolve().then(() => execute(item.plan)).then(item.resolve, item.reject).finally(() => {
+      const runtime = {
+        signal: item.controller.signal,
+        setStages: (stages: any[]) => resetStages(item, stages),
+        updateStage: (stageId: string, state: any) => updateStage(item, stageId, state),
+      }
+      const settle = () => {
         active -= 1
-        running.splice(running.indexOf(entry), 1)
+        const index = running.indexOf(entry)
+        if (index >= 0) running.splice(index, 1)
         if (entry.ips.length) release(item.plan)
         drain()
-      })
+      }
+      Promise.resolve().then(() => execute(item.plan, runtime)).then(
+        () => { settle(); item.resolve() },
+        (error) => { settle(); item.reject(error) },
+      )
     }
     /* 仍有排队项但被节点占用挡住：周期重试（池外租约释放/到期、在跑结束都会再次 drain） */
     if (pending.length && active < concurrency && !retryTimer) {
@@ -1047,9 +1115,48 @@ function createPipelineExecutionQueue(execute: (plan: any) => Promise<void>, lim
         throw error
       }
       return new Promise<void>((resolvePromise, reject) => {
-        pending.push({ plan, resolve: resolvePromise, reject })
+        const item: ExecutionItem = {
+          plan,
+          queuedAt: Date.now(),
+          startedAt: 0,
+          stages: [],
+          nodes: {},
+          controller: null,
+          resolve: resolvePromise,
+          reject,
+        }
+        resetStages(item, plan && plan.stages)
+        pending.push(item)
         drain()
       })
+    },
+    snapshot: () => ({
+      runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
+      queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
+    }),
+    cancel(runId: string): { ok: boolean; state: 'queued' | 'running' | 'missing' } {
+      const id = String(runId || '')
+      const queuedIndex = pending.findIndex((item) => runIdOf(item.plan) === id)
+      if (queuedIndex >= 0) {
+        const item = pending.splice(queuedIndex, 1)[0]
+        const error: any = new Error('pipeline run cancelled')
+        error.name = 'AbortError'
+        error.code = 'PIPELINE_RUN_CANCELLED'
+        item.reject(error)
+        drain()
+        return { ok: true, state: 'queued' }
+      }
+      const activeEntry = running.find((entry) => runIdOf(entry.item.plan) === id)
+      if (activeEntry) {
+        if (!activeEntry.item.controller?.signal.aborted) {
+          const error: any = new Error('pipeline run cancelled')
+          error.name = 'AbortError'
+          error.code = 'PIPELINE_RUN_CANCELLED'
+          activeEntry.item.controller?.abort(error)
+        }
+        return { ok: true, state: 'running' }
+      }
+      return { ok: false, state: 'missing' }
     },
     stats: () => ({ active, queued: pending.length, limit: concurrency }),
   }
@@ -1517,6 +1624,8 @@ export function apply(ctx: Context) {
       return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
     } catch { return {} }
   }
+  /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */
+  let pipelineExecutions: ReturnType<typeof createPipelineExecutionQueue>
 
   webServer.register({
     kind: 'exact',
@@ -1542,9 +1651,8 @@ export function apply(ctx: Context) {
     },
   })
 
-  /* 运行队列跨浏览器可见：各 pipeline.html 标签页把自己「正在运行 + 排队中」的快照 PUT 到这里，
-     页面再轮询 GET 拉取其他标签页的快照只读展示。在场信息是易失数据，存内存不落盘，重启即清；
-     客户端超过 45 秒不上报视为离场（页面关闭 / 断网自动过期，pagehide 时也会 sendBeacon 清态）。 */
+  /* 服务端权威执行池的状态由本路由 GET 实时下发；PUT/旧式 POST 继续接收旧页面在场快照以兼容
+     滚动升级。兼容快照是易失数据，存内存不落盘，客户端超过 45 秒不上报即过期。 */
   interface QueuePresence { id: string; label: string; schemaVersion: number; running: any; runs: any[]; queue: any[]; seenAt: number }
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
@@ -1608,8 +1716,17 @@ export function apply(ctx: Context) {
     handler: async (req: any, res: any) => {
       try {
         if (req.method === 'PUT' || req.method === 'POST') {
-          /* POST 供页面 pagehide 时 navigator.sendBeacon 清态用（beacon 只能 POST） */
+          /* POST 同时承载服务端任务取消，并兼容旧页面 pagehide 的 sendBeacon 清态。 */
           const body = await readJsonBody(req)
+          if (req.method === 'POST' && body.action === 'cancel') {
+            const runId = typeof body.runId === 'string' ? body.runId.slice(0, 128) : ''
+            if (!runId) { json(res, 400, { error: 'missing runId' }); return }
+            const result = pipelineExecutions && typeof pipelineExecutions.cancel === 'function'
+              ? pipelineExecutions.cancel(runId)
+              : { ok: false, state: 'missing' as const }
+            json(res, result.ok ? 200 : 404, result)
+            return
+          }
           const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
           if (!id) { json(res, 400, { error: 'missing id' }); return }
           const running = body.running === null || body.running === undefined ? null : cleanQueueEntry(body.running, 'startedAt')
@@ -1641,7 +1758,17 @@ export function apply(ctx: Context) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
             clients.push({ id: v.id, label: v.label, schemaVersion: v.schemaVersion, seenAgo: Math.max(0, Math.round((now - v.seenAt) / 1000)), running: v.running, runs: v.runs, queue: v.queue })
           }
-          json(res, 200, { clients })
+          const snapshot = pipelineExecutions && typeof pipelineExecutions.snapshot === 'function'
+            ? pipelineExecutions.snapshot()
+            : { runs: [], queue: [] }
+          const serverRuns = (Array.isArray(snapshot.runs) ? snapshot.runs : []).slice(0, 100)
+            .map((run: any) => cleanQueueEntry(run, 'startedAt')).filter((run: any) => !!run)
+          const serverQueue = (Array.isArray(snapshot.queue) ? snapshot.queue : []).slice(0, 100)
+            .map((run: any) => cleanQueueEntry(run, 'queuedAt')).filter((run: any) => !!run)
+          json(res, 200, {
+            clients,
+            server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue },
+          })
           return
         }
         res.writeHead(405); res.end()
@@ -2303,7 +2430,7 @@ export function apply(ctx: Context) {
       await writeJsonAtomic(PIPELINE_STORE, text)
     })
   }
-  async function execPlan(pl: any) {
+  async function execPlan(pl: any, runtime?: PipelineExecutionRuntime) {
     const t0 = Date.now()
     const store = await readPipelineStore()
     const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
@@ -2356,6 +2483,7 @@ export function apply(ctx: Context) {
     const executionStages = apiPresetMode
       ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
+    runtime?.setStages(executionStages)
     // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
     if (!apiPresetMode && cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
@@ -2369,6 +2497,7 @@ export function apply(ctx: Context) {
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
       const startedAt = Date.now()
+      runtime?.updateStage(String(s && s.id || ''), { status: 'running', progress: 5, dur: 0 })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
@@ -2473,16 +2602,30 @@ export function apply(ctx: Context) {
       logs.push({ stage: s.name, status: result.status, log: result.text, logFile, logSuffix: noteWritten ? '' : (result.promNote ? '\n' + result.promNote : '') })
       pushHist(s.name, result.status, result.text, logFile, durSec)
       profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, script: result.scriptName, logFile })
+      runtime?.updateStage(String(s && s.id || ''), { status: result.status, progress: 100, dur: durSec })
     }
     for (const group of serverPipelineStageGroups(executionStages)) {
+      if (runtime?.signal.aborted) { status = 'aborted'; break }
       const groupBase = { ...varsPool }
       const controller = new AbortController()
-      const jobs = group.stages.map((stage, offset) =>
-        executeStage(stage, group.start + offset, groupBase, controller.signal).then(result => {
-          if (result.shouldStop && !controller.signal.aborted) controller.abort()
-          return result
-        }))
-      const results = await Promise.all(jobs)
+      const abortFromQueue = () => {
+        if (!controller.signal.aborted) controller.abort(serverAbortReason(runtime?.signal))
+      }
+      if (runtime?.signal) {
+        runtime.signal.addEventListener('abort', abortFromQueue, { once: true })
+        if (runtime.signal.aborted) abortFromQueue()
+      }
+      let results: ServerStageResult[]
+      try {
+        const jobs = group.stages.map((stage, offset) =>
+          executeStage(stage, group.start + offset, groupBase, controller.signal).then(result => {
+            if (result.shouldStop && !controller.signal.aborted) controller.abort()
+            return result
+          }))
+        results = await Promise.all(jobs)
+      } finally {
+        runtime?.signal.removeEventListener('abort', abortFromQueue)
+      }
       const blockingFailure = results.some(result => result.shouldStop)
       if (!blockingFailure || results.length === 1) {
         for (const result of results) Object.assign(varsPool, result.varsOut)
@@ -2492,6 +2635,7 @@ export function apply(ctx: Context) {
       for (const result of results) {
         await recordStageResult(result, baseSeq + result.index + 1)
       }
+      if (runtime?.signal.aborted) { status = 'aborted'; break }
       if (blockingFailure) { status = 'failed'; break }
     }
     // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
@@ -2513,7 +2657,7 @@ export function apply(ctx: Context) {
         profile.env = pl.env || ''
         profile.image = pl.image || ''
         profile.by = pl.by || 'schedule'
-        profile.source = pl.source === 'api' ? 'API' : (isSuffixRun ? '定时后缀' : '定时计划')
+        profile.source = pl.source === 'api' ? 'API' : (pl.source === 'manual' ? '手动' : (isSuffixRun ? '定时后缀' : '定时计划'))
         profile.result = status
         if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
         profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
@@ -2553,8 +2697,8 @@ export function apply(ctx: Context) {
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
-  const pipelineExecutions = createPipelineExecutionQueue(execPlan, 2, 100, {
-    /* 节点互斥：与在跑计划同节点、或节点被页面手动运行的租约占用的计划留在队列等待重试 */
+  pipelineExecutions = createPipelineExecutionQueue(execPlan, 2, 100, {
+    /* 节点互斥：与在跑计划同节点、或节点被旧页面本地运行租约占用的计划留在队列等待重试。 */
     ipsOf: (plan: any) => pipelineEnvIps(plan && plan.envs),
     acquire: (plan: any, ips: string[]) => pipelineNodeLeases.acquire(pipelineLeaseOwner(plan), ips, String(plan && plan.pipelineName || ''), String(plan && plan.by || '')).ok,
     release: (plan: any) => { pipelineNodeLeases.release(pipelineLeaseOwner(plan)) },
