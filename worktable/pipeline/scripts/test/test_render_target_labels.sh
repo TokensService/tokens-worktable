@@ -234,12 +234,9 @@ assert sidecar["resources"] == {
     "requests": {"cpu": 4, "memory": "8Gi"},
     "limits": {"cpu": 8, "memory": "240Gi"},
 }
-for probe_name in ("startupProbe", "readinessProbe", "livenessProbe"):
-    assert sidecar[probe_name]["httpGet"] == {
-        "host": "127.0.0.1",
-        "path": "/healthcheck",
-        "port": "lmcache-http",
-    }
+assert not any(probe_name in sidecar for probe_name in (
+    "startupProbe", "readinessProbe", "livenessProbe"
+))
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]

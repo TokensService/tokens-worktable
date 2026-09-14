@@ -76,23 +76,14 @@ assert sidecar["resources"] == {
 assert sidecar["cudaVisibleDevices"] == "0"
 groups = values["taskExecutorGroups"]
 assert [group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] for group in groups] == ["0", "1"]
-for name in ("startupProbe", "readinessProbe", "livenessProbe"):
-    probe = sidecar[name]
-    assert probe["httpGet"] == {
-        "host": "127.0.0.1",
-        "path": "/healthcheck",
-        "port": "lmcache-http",
-    }, probe
-assert sidecar["startupProbe"]["failureThreshold"] == 120
-assert sidecar["readinessProbe"]["failureThreshold"] == 3
-assert sidecar["livenessProbe"]["failureThreshold"] == 6
+assert not any(name in sidecar for name in ("startupProbe", "readinessProbe", "livenessProbe"))
 PY
 
 template="$WORK/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
-for probe in startupProbe readinessProbe livenessProbe; do
-  grep -Fq "{{- if \$lmcache.${probe} }}" "$template"
-  grep -Fq "${probe}:" "$template"
-done
+if grep -Eq 'startupProbe|readinessProbe|livenessProbe|healthcheck' "$template"; then
+  echo 'render-config.sh must not inject LMCache health checks into the Chart' >&2
+  exit 1
+fi
 grep -Fq 'resources: {{- toYaml $lmcache.resources | nindent 6 }}' "$template"
 
-echo 'PASS: LMCache sidecar probe defaults and template rendering are configured'
+echo 'PASS: LMCache health checks remain owned by the Chart and values templates'
