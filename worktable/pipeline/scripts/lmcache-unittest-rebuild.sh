@@ -70,11 +70,26 @@ else
     git clone --branch "\$2" --single-branch "\$3" "\$1"
   ' _ "\$repo_dir" "\$branch" "\$url"
 fi
-[[ -d "\$repo_dir" ]] || { echo "[lmcache-debug] clone: repository directory missing: \$repo_dir" >&2; exit 1; }
-tracked_files="\$(git -C "\$repo_dir" ls-files | wc -l | tr -d ' ')"
-regular_files="\$(find "\$repo_dir" -path "\$repo_dir/.git" -prune -o -type f -print | wc -l | tr -d ' ')"
-[[ "\$regular_files" -gt 0 ]] || { echo "[lmcache-debug] clone: repository has no regular files" >&2; exit 1; }
-commit="\$(git -C "\$repo_dir" rev-parse --short HEAD)"
+# /workspace/LMCache belongs to the container, not the target host. Keep all
+# clone validation in the same container to avoid checking a host-side path.
+if ! repo_stats="\$(nerdctl --namespace "\$namespace" exec "\$container" bash -lc '
+  set -euo pipefail
+  repo_dir="\$1"
+  [[ -d "\$repo_dir" ]] || { echo "repository directory missing: \$repo_dir" >&2; exit 1; }
+  tracked_files="\$(git -C "\$repo_dir" ls-files | wc -l | tr -d " ")"
+  regular_files="\$(find "\$repo_dir" -path "\$repo_dir/.git" -prune -o -type f -print | wc -l | tr -d " ")"
+  [[ "\$regular_files" -gt 0 ]] || { echo "repository has no regular files: \$repo_dir" >&2; exit 1; }
+  commit="\$(git -C "\$repo_dir" rev-parse --short HEAD)"
+  printf "__LMCACHE_REPO_STATS__\\t%s\\t%s\\t%s\\n" "\$tracked_files" "\$regular_files" "\$commit"
+' _ "\$repo_dir")"; then
+  echo "[lmcache-debug] clone: container-side repository validation failed: \$repo_dir" >&2
+  exit 1
+fi
+IFS=\$'\t' read -r marker tracked_files regular_files commit <<<"\$repo_stats"
+if [[ "\$marker" != __LMCACHE_REPO_STATS__ || -z "\$tracked_files" || -z "\$regular_files" || -z "\$commit" ]]; then
+  echo "[lmcache-debug] clone: invalid container-side repository statistics" >&2
+  exit 1
+fi
 echo '[lmcache-debug] clone: completed'
 echo "[lmcache-debug] repository files: tracked: \$tracked_files, regular: \$regular_files, commit: \$commit"
 echo "[lmcache-debug] build: started; log: \$build_log"

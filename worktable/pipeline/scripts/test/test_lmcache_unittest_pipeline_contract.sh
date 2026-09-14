@@ -34,6 +34,10 @@ if [[ "$*" == *'clone --branch'* ]]; then
   git -C "$FAKE_REPO_DIR" add README.md
   git -C "$FAKE_REPO_DIR" -c user.name=test -c user.email=test@example.invalid commit -qm initial
 fi
+if [[ "$*" == *'__LMCACHE_REPO_STATS__'* ]]; then
+  printf '__LMCACHE_REPO_STATS__\t1\t1\tdeadbeef\n'
+  exit 0
+fi
 if [[ "${3:-}" == image && "${4:-}" == rm ]]; then exit 0; fi
 case "${3:-}" in
   image) exit 1;;
@@ -193,6 +197,7 @@ rebuild_remove_image="$(awk -F= '$1 == "LMCACHE_UNITTEST_REMOVE_IMAGE" { print s
 [[ "$rebuild_remove_image" == "$pull_remove_image" ]]
 grep -Fq '[lmcache-debug] clone: completed' <<<"$rebuild_output"
 grep -Fq '[lmcache-debug] repository files:' <<<"$rebuild_output"
+grep -Fq '__LMCACHE_REPO_STATS__' "$log"
 
 test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
   FAKE_PYTEST_COUNT_FILE="$tmp/pytest-count" \
