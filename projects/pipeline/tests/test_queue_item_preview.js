@@ -489,9 +489,9 @@ test('renderQueue：预览中的排队项带「查看中」标记；在跑运行
   context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1 });
   context.viewRc = { id: 'q1', queuedPreview: true, over: true };
   context.renderQueue();
-  assert.match(list.children[0].innerHTML, /data-qfocus="r1"/);
-  assert.match(list.children[0].innerHTML, /运行中/);
-  assert.match(list.children[1].innerHTML, /（查看中）/);
+  assert.match(list.children[0].innerHTML, /（查看中）/);
+  assert.match(list.children[1].innerHTML, /data-qfocus="r1"/);
+  assert.match(list.children[1].innerHTML, /运行中/);
   list.querySelectorAll('[data-qfocus]')[0].handlers.click();
   assert.deepEqual(calls.focusRun, [rc]);
   list.querySelectorAll('[data-qabort]')[0].handlers.click();
@@ -507,13 +507,13 @@ test('renderQueue：非 admin 仅对自己的条目显示中止/取消按钮（�
   context.queue.push({ id: 'q-mine', by: 'tester', pipelineName: '排队-我的', source: 'manual', queuedAt: 1 });
   context.queue.push({ id: 'q-other', by: 'alice', pipelineName: '排队-他人', source: 'manual', queuedAt: 2 });
   context.renderQueue();
-  // 倒序展示：r-other(运行) 在最上，r-mine(运行) 次之；排队项同样倒序 q-other 在上、q-mine 在下
-  const runOther = list.children[0].innerHTML;
-  const runMine = list.children[1].innerHTML;
+  // 整体按编号倒序：排队项在运行项上方，各自内部仍是后加入在上
+  const qOther = list.children[0].innerHTML;
+  const qMine = list.children[1].innerHTML;
+  const runOther = list.children[2].innerHTML;
+  const runMine = list.children[3].innerHTML;
   assert.doesNotMatch(runOther, /data-qabort/);   // 他人运行：无中止按钮
   assert.match(runMine, /data-qabort="r-mine"/);  // 自己运行：有中止按钮
-  const qOther = list.children[2].innerHTML;
-  const qMine = list.children[3].innerHTML;
   assert.doesNotMatch(qOther, /data-qcancel/);    // 他人排队：无取消按钮
   assert.match(qMine, /data-qcancel="q-mine"/);  // 自己排队：有取消按钮
 });
@@ -547,7 +547,7 @@ test('renderQueue：节点租约申请中的条目继续显示、可点击且不
   assert.equal(calls.resetNodes, 0, 'pending 仍属本地队列生命周期，不应把预览清回空闲编排');
 });
 
-test('renderQueue：其他浏览器的排队/在跑条目都可点击查看阶段详情', () => {
+test('renderQueue：其他浏览器同样让后入队条目显示在较早运行条目上方', () => {
   const { context, list, calls } = makeQueueContext();
   context.remoteQueueClients.push({
     id: 'c2', label: 'Chrome·xy12',
@@ -555,18 +555,18 @@ test('renderQueue：其他浏览器的排队/在跑条目都可点击查看阶�
     queue: [{ id: 'q2', by: 'frank', pipelineName: 'P2', source: 'manual', queuedAt: 2, stages: [{ id: 's2', name: '部署' }], nodes: { s2: { status: 'idle' } } }],
   });
   context.renderQueue();
-  assert.equal(list.children.length, 3);   // 分隔行 + 他端运行 + 他端排队
+  assert.equal(list.children.length, 3);   // 分隔行 + 他端排队 + 他端运行
   assert.match(list.children[0].innerHTML, /其他浏览器/);
-  assert.match(list.children[1].innerHTML, /data-qremote-id="r2"/);
-  assert.match(list.children[1].innerHTML, /点击查看该运行的阶段详情/);
-  assert.match(list.children[2].innerHTML, /data-qremote-id="q2"/);
-  assert.match(list.children[2].innerHTML, /点击查看该排队流水线的阶段详情/);
+  assert.match(list.children[1].innerHTML, /data-qremote-id="q2"/);
+  assert.match(list.children[1].innerHTML, /点击查看该排队流水线的阶段详情/);
+  assert.match(list.children[2].innerHTML, /data-qremote-id="r2"/);
+  assert.match(list.children[2].innerHTML, /点击查看该运行的阶段详情/);
   const remote = list.querySelectorAll('[data-qremote-id]');
   assert.equal(remote.length, 2);
   remote.forEach(element => element.handlers.click());
   assert.deepEqual(calls.focusRemoteQueueItem, [
-    { clientId: 'c2', itemId: 'r2', kind: 'running' },
     { clientId: 'c2', itemId: 'q2', kind: 'queued' },
+    { clientId: 'c2', itemId: 'r2', kind: 'running' },
   ]);
 });
 
@@ -586,10 +586,10 @@ test('renderQueue：服务端运行与排队任务在任一浏览器显示中止
 
   const buttons = list.querySelectorAll('[data-qserver-cancel]');
   assert.equal(buttons.length, 2, '只给服务端权威任务提供跨浏览器取消入口');
-  assert.match(list.children[1].innerHTML, />中止<\/button>/);
-  assert.match(list.children[2].innerHTML, />取消<\/button>/);
+  assert.match(list.children[1].innerHTML, />取消<\/button>/);
+  assert.match(list.children[2].innerHTML, />中止<\/button>/);
   buttons.forEach(button => button.handlers.click());
-  assert.deepEqual(calls.cancelServer, ['r-server', 'q-server']);
+  assert.deepEqual(calls.cancelServer, ['q-server', 'r-server']);
   assert.doesNotMatch(list.children[3].innerHTML, /data-qserver-cancel/);
 });
 
@@ -610,9 +610,9 @@ test('renderQueue：非 admin 只能中止或取消自己署名的服务端任�
   context.renderQueue();
 
   const buttons = list.querySelectorAll('[data-qserver-cancel]');
-  assert.deepEqual(buttons.map(button => button.getAttribute('data-qserver-cancel')), ['r-mine', 'q-mine']);
+  assert.deepEqual(buttons.map(button => button.getAttribute('data-qserver-cancel')), ['q-mine', 'r-mine']);
   buttons.forEach(button => button.handlers.click());
-  assert.deepEqual(calls.cancelServer, ['r-mine', 'q-mine']);
+  assert.deepEqual(calls.cancelServer, ['q-mine', 'r-mine']);
 });
 
 test('renderQueue：旧浏览器快照缺少阶段数据时不可点击并提示刷新来源页面', () => {
@@ -634,11 +634,11 @@ test('renderQueue：排队项显示「排队中」徽标，运行项显示「运
   context.running = true;
   context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1 });
   context.renderQueue();
-  assert.match(list.children[0].innerHTML, /<span class="dshell-badge dshell-badgeWait">运行中<\/span>/);
-  assert.match(list.children[1].innerHTML, /<span class="dshell-badge dshell-badgeWait"[^>]*>排队中<\/span>/);
+  assert.match(list.children[0].innerHTML, /<span class="dshell-badge dshell-badgeWait"[^>]*>排队中<\/span>/);
+  assert.match(list.children[1].innerHTML, /<span class="dshell-badge dshell-badgeWait">运行中<\/span>/);
 });
 
-test('renderQueue：后加入的条目显示在上面，先加入的仍是队列首部（编号不变）', () => {
+test('renderQueue：整个队列按编号倒序展示，最早的 #1 位于底部', () => {
   const { context, list } = makeQueueContext();
   context.activeRuns.push(
     { id: 'r1', by: 'bob', pipelineName: 'P1', source: 'manual' },
@@ -654,9 +654,11 @@ test('renderQueue：后加入的条目显示在上面，先加入的仍是队列
     const m = row.innerHTML.match(/data-qfocus="([^"]+)"/) || row.innerHTML.match(/data-qview="([^"]+)"/);
     return m ? m[1] : '';
   });
-  assert.deepEqual(order, ['r2', 'r1', 'q2', 'q1'], '后开始/后加入的显示在上面（仅展示倒序）');
-  assert.match(list.children[1].innerHTML, /#1</, '先开始的运行仍是 #1（队列首部）');
-  assert.match(list.children[3].innerHTML, /#3</, '先入队的排队项编号不变');
+  const numbers = list.children.map(row => Number((row.innerHTML.match(/#(\d+)</) || [])[1]));
+  assert.deepEqual(order, ['q2', 'q1', 'r2', 'r1'], '整个队列从最新到最早展示，不按运行/排队状态分段打乱编号');
+  assert.deepEqual(numbers, [4, 3, 2, 1], '编号应从顶部到底部严格递减');
+  assert.match(list.children[0].innerHTML, /#4</, '最后入队的 #4 显示在顶部');
+  assert.match(list.children[3].innerHTML, /#1</, '最早开始的 #1 显示在底部');
 });
 
 test('renderQueue：正在查看的条目整框高亮，未查看的保持默认背景', () => {
@@ -733,8 +735,8 @@ test('renderQueue：排队原因——同机有本页运行在跑', () => {
   context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1, envs: [{ ip: 'X' }] });
   context.renderQueue();
   list.querySelectorAll('[data-qreason]')[0].handlers.click();
-  assert.match(list.children[1].innerHTML, /节点 X 上正在运行「部署」（bob）/);
-  assert.match(list.children[1].innerHTML, /同一节点同一时间只跑一条流水线/);
+  assert.match(list.children[0].innerHTML, /节点 X 上正在运行「部署」（bob）/);
+  assert.match(list.children[0].innerHTML, /同一节点同一时间只跑一条流水线/);
 });
 
 test('renderQueue：排队原因——同机排队任务排在前面（FIFO）', () => {
@@ -759,7 +761,7 @@ test('renderQueue：排队原因——并发槽位已满', () => {
   context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1, envs: [{ ip: 'Z' }] });
   context.renderQueue();
   list.querySelectorAll('[data-qreason]')[0].handlers.click();
-  assert.match(list.children[4].innerHTML, /并发槽位已满（4\/4）/);
+  assert.match(list.children[0].innerHTML, /并发槽位已满（4\/4）/);
 });
 
 test('renderQueue：排队原因——未选择目标节点按串行处理', () => {
@@ -769,7 +771,7 @@ test('renderQueue：排队原因——未选择目标节点按串行处理', () 
   context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1 });
   context.renderQueue();
   list.querySelectorAll('[data-qreason]')[0].handlers.click();
-  assert.match(list.children[1].innerHTML, /未选择目标节点的运行按串行处理/);
+  assert.match(list.children[0].innerHTML, /未选择目标节点的运行按串行处理/);
 });
 
 test('renderQueue：「申请节点中」徽标同样可点击查看原因', () => {
@@ -795,16 +797,16 @@ test('renderQueue：点击条目空白处等同点击标题选中流水线，交
   const onTitle = { target: { closest: sel => (sel === '.dshell-listItemTitle' ? {} : null) } };
   const onReason = { target: { closest: sel => (sel === '[data-qreason]' ? {} : null) } };
   const onButton = { target: { closest: sel => (sel === 'button' ? {} : null) } };
-  // 行序：[0]=运行 r1，[1]=排队 q1，[2]=分隔行，[3]=他端排队 q2
-  list.children[0].handlers.click(blank());
-  assert.deepEqual(calls.focusRun, [rc], '运行条目空白处点击选中该运行');
-  list.children[0].handlers.click(onTitle);
-  assert.equal(calls.focusRun.length, 1, '标题区域由标题自带点击处理，不重复触发');
-  list.children[0].handlers.click(onButton);
-  assert.equal(calls.focusRun.length, 1, '中止按钮区域不触发选中');
+  // 行序：[0]=排队 q1，[1]=运行 r1，[2]=分隔行，[3]=他端排队 q2
   list.children[1].handlers.click(blank());
+  assert.deepEqual(calls.focusRun, [rc], '运行条目空白处点击选中该运行');
+  list.children[1].handlers.click(onTitle);
+  assert.equal(calls.focusRun.length, 1, '标题区域由标题自带点击处理，不重复触发');
+  list.children[1].handlers.click(onButton);
+  assert.equal(calls.focusRun.length, 1, '中止按钮区域不触发选中');
+  list.children[0].handlers.click(blank());
   assert.deepEqual(calls.focusQueueItem, ['q1'], '排队条目空白处点击查看排队详情');
-  list.children[1].handlers.click(onReason);
+  list.children[0].handlers.click(onReason);
   assert.equal(calls.focusQueueItem.length, 1, '徽标区域只展开排队原因，不触发选中');
   assert.equal(typeof list.children[2].handlers.click, 'undefined', '分隔行不可点击');
   list.children[3].handlers.click(blank());

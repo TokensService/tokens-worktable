@@ -4086,15 +4086,6 @@ function renderQueue(){
   let status='空闲', cls='';
   if(running){
     status=activeRuns.length+' 运行中'+(localItems.length?' · '+localItems.length+' 排队':''); cls='dshell-badgeWait';
-    /* 展示倒序：后开始的运行显示在上面（仅展示顺序；编号仍按开始先后递增，先开始者仍是队列首部 #1） */
-    for(let i=activeRuns.length-1;i>=0;i--){
-      const rc=activeRuns[i];
-      const it=document.createElement('div'); it.className='dshell-listItem';
-      if(viewRc===rc) markViewing(it);
-      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(i+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(canControlRun(rc.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>':'');
-      it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRun(rc); });   // 空白处点击同标题：选中该运行
-      list.appendChild(it);
-    }
   } else if(localItems.length){ status=localItems.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
   if(remoteRunningCount||remoteQueuedCount){
     const statusParts=[];
@@ -4153,6 +4144,18 @@ function renderQueue(){
     it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusQueueItem(q.id); });   // 空白处点击同标题：查看该排队流水线详情
     list.appendChild(it);
   }
+  /* 队列编号把在跑项排在排队项之前，因此展示时先画编号更大的排队项、再画在跑项，
+     使整个列表严格按编号倒序，最早开始的 #1 固定在底部；只改展示，不改数组与 FIFO 调度顺序。 */
+  if(running){
+    for(let i=activeRuns.length-1;i>=0;i--){
+      const rc=activeRuns[i];
+      const it=document.createElement('div'); it.className='dshell-listItem';
+      if(viewRc===rc) markViewing(it);
+      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(i+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(canControlRun(rc.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>':'');
+      it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRun(rc); });   // 空白处点击同标题：选中该运行
+      list.appendChild(it);
+    }
+  }
   /* 服务端权威任务可从任一浏览器中止/取消；旧浏览器在场快照仍由来源页持有，只读展示。
      标题前带来源标签（服务端或 Chrome·a1b2）以区分归属。 */
   if(remoteQueueClients.length){
@@ -4162,21 +4165,21 @@ function renderQueue(){
     remoteQueueClients.forEach(c=>{
       const serverOwned=String(c&&c.id||'')==='server';
       const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
-      /* 他端条目同样倒序展示（后开始的运行/后加入的排队在上面），查看中的整框高亮 */
-      remoteRunsOf(c).slice().reverse().forEach(rn=>{
-        const it=document.createElement('div'); it.className='dshell-listItem';
-        const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(rn.id)&&viewRc.remoteKind==='running';
-        if(viewing) markViewing(it);
-        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(serverOwned&&canControlRun(rn.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(rn.id)+'">中止</button>':'');
-        if(remoteQueueDetailAvailable(rn)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(rn.id),'running'); });   // 空白处点击同标题
-        list.appendChild(it);
-      });
+      /* 他端与服务端同样先画较新的排队项、再画较早的在跑项，让整组从新到旧展示。 */
       (Array.isArray(c.queue)?c.queue:[]).slice().reverse().forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(q.id)&&viewRc.remoteKind==='queued';
         if(viewing) markViewing(it);
         it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-badge dshell-badgeWait">排队中</span>'+(serverOwned&&canControlRun(q.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(q.id)+'">取消</button>':'');
         if(remoteQueueDetailAvailable(q)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(q.id),'queued'); });   // 空白处点击同标题
+        list.appendChild(it);
+      });
+      remoteRunsOf(c).slice().reverse().forEach(rn=>{
+        const it=document.createElement('div'); it.className='dshell-listItem';
+        const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(rn.id)&&viewRc.remoteKind==='running';
+        if(viewing) markViewing(it);
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(serverOwned&&canControlRun(rn.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(rn.id)+'">中止</button>':'');
+        if(remoteQueueDetailAvailable(rn)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(rn.id),'running'); });   // 空白处点击同标题
         list.appendChild(it);
       });
     });
