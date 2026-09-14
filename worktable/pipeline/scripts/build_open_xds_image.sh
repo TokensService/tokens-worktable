@@ -15,7 +15,9 @@ GITHUB_TOKEN=${GITHUB_TOKEN:-${GH_TOKEN:-}}
 GIT_PROXY=${GIT_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}
 
 if [[ -z "${GITHUB_TOKEN}" ]] && command -v gh >/dev/null 2>&1; then
-  GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
+  if gh api --hostname github.com /user >/dev/null 2>&1; then
+    GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
+  fi
 fi
 
 if [[ -z "${GIT_BRANCH}" ]]; then
