@@ -53,6 +53,7 @@ git_user=$(printf '%q' "$git_user")
 git_token=$(printf '%q' "$git_token")
 mkdir -p "\$(dirname "\$build_log")"
 git_env=(-e "http_proxy=\$proxy" -e "https_proxy=\$proxy" -e 'NO_PROXY=localhost,127.0.0.1' -e 'no_proxy=localhost,127.0.0.1')
+echo "[lmcache-debug] clone: started; branch: \$branch; repository: \$repo_dir"
 if [[ -n "\$git_user" ]]; then
   printf '%s\n%s\n' "\$git_user" "\$git_token" | nerdctl --namespace "\$namespace" exec -i "\${git_env[@]}" "\$container" bash -lc '
     set -euo pipefail
@@ -69,9 +70,18 @@ else
     git clone --branch "\$2" --single-branch "\$3" "\$1"
   ' _ "\$repo_dir" "\$branch" "\$url"
 fi
+[[ -d "\$repo_dir" ]] || { echo "[lmcache-debug] clone: repository directory missing: \$repo_dir" >&2; exit 1; }
+tracked_files="\$(git -C "\$repo_dir" ls-files | wc -l | tr -d ' ')"
+regular_files="\$(find "\$repo_dir" -path "\$repo_dir/.git" -prune -o -type f -print | wc -l | tr -d ' ')"
+[[ "\$regular_files" -gt 0 ]] || { echo "[lmcache-debug] clone: repository has no regular files" >&2; exit 1; }
+commit="\$(git -C "\$repo_dir" rev-parse --short HEAD)"
+echo '[lmcache-debug] clone: completed'
+echo "[lmcache-debug] repository files: tracked: \$tracked_files, regular: \$regular_files, commit: \$commit"
+echo "[lmcache-debug] build: started; log: \$build_log"
 nerdctl --namespace "\$namespace" exec "\$container" bash -lc \
   '. /opt/lmcache-test-venv/bin/activate && cd /workspace/LMCache && BUILD_WITH_CUDA=1 LMCACHE_CUDA_MAJOR=13 TORCH_CUDA_ARCH_LIST="9.0;10.0+PTX" ENABLE_CXX11_ABI=1 MAX_JOBS=8 pip install -v --no-build-isolation --no-deps -e . && python -c "import lmcache.cuda_ops; print(lmcache.cuda_ops.__file__)"' \
   >"\$build_log" 2>&1
+echo '[lmcache-debug] build: completed'
 EOF
 
 printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$RUN_DIR"

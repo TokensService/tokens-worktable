@@ -77,11 +77,44 @@ if [[ "\$rc" == 0 && "\$keep_container" != 1 ]]; then
     if nerdctl --namespace "\$namespace" image rm "\$image" >/dev/null; then image_removed=1; fi
   fi
 fi
+summary_logs=("\$test_log")
+[[ -n "\$isolate_log" ]] && summary_logs+=("\$isolate_log")
+pytest_count() {
+  local label="\$1"
+  awk -v label="\$label" '
+    {
+      for (i = 1; i < NF; i++) {
+        status = \$(i + 1)
+        gsub(/[,:]/, "", status)
+        if (\$(i) ~ /^[0-9]+$/ && status == label) total += \$(i)
+      }
+    }
+    END { print total + 0 }
+  ' "\${summary_logs[@]}"
+}
+pytest_cases() {
+  local marker="\$1" names
+  names="\$(awk -v marker="\$marker" '\$1 == marker { print \$2 }' "\${summary_logs[@]}" | sort -u | paste -sd ',' -)"
+  [[ -n "\$names" ]] || names=none
+  printf '%s' "\$names"
+}
+passed="\$(pytest_count passed)"
+failed="\$(pytest_count failed)"
+skipped="\$(pytest_count skipped)"
+xpassed="\$(pytest_count xpassed)"
+failed_cases="\$(pytest_cases FAILED)"
+xpassed_cases="\$(pytest_cases XPASS)"
+echo "[lmcache-debug] pytest logs: main: \$test_log; isolated: \${isolate_log:-none}"
+echo "[lmcache-debug] pytest summary: passed: \$passed, failed: \$failed, skipped: \$skipped, xpassed: \$xpassed"
+echo "[lmcache-debug] pytest failed tests: \$failed_cases"
+echo "[lmcache-debug] pytest xpassed tests: \$xpassed_cases"
 printf 'RESULT=%s\nIMAGE_REMOVED=%s\nISOLATED_LOG=%s\n' "\$rc" "\$image_removed" "\$isolate_log"
 exit "\$rc"
 EOF
 )" || remote_rc=$?
 remote_rc="${remote_rc:-0}"
+# 仅转发诊断行，不把 RESULT= 等内部控制行暴露为工作台阶段变量。
+printf '%s\n' "$remote_result" | awk '/^\[lmcache-debug\]/'
 LMCACHE_UNITTEST_TEST_RESULT="$remote_rc"
 LMCACHE_UNITTEST_IMAGE_REMOVED="$(awk -F= '$1 == "IMAGE_REMOVED" { print $2 }' <<<"$remote_result")"
 LMCACHE_UNITTEST_ISOLATED_TEST_LOG="$(awk -F= '$1 == "ISOLATED_LOG" { sub(/^[^=]*=/, ""); print }' <<<"$remote_result")"

@@ -48,13 +48,26 @@ project=$(printf '%q' "$PROJECT")
 login_key=$(printf '%q' "$LOGIN_KEY")
 command -v nerdctl >/dev/null || { echo 'nerdctl is required on target host' >&2; exit 2; }
 mkdir -p "\$log_dir"
-if ! nerdctl --namespace "\$namespace" image inspect "\$image" >/dev/null 2>&1; then
+if nerdctl --namespace "\$namespace" image inspect "\$image" >/dev/null 2>&1; then
+  echo '[lmcache-debug] image cache: hit; skipping pull'
+else
+  echo '[lmcache-debug] image cache: miss; pulling image'
   command -v ctr >/dev/null || { echo 'ctr is required on target host' >&2; exit 2; }
   sudo ctr -n "\$namespace" image pull --user "\${project}@\${ak}:\${login_key}" "\$image"
+  echo '[lmcache-debug] image pull: completed'
 fi
-nerdctl --namespace "\$namespace" run -d --name "\$container" --net=host --gpus all \\
+echo "[lmcache-debug] container create: \$container"
+container_id="\$(nerdctl --namespace "\$namespace" run -d --name "\$container" --net=host --gpus all \\
   --cap-add "\$cap_add" -v /dev/shm:/dev/shm -v "\$run_dir:\$run_dir" \\
-  --entrypoint bash "\$image" -lc 'exec sleep infinity' >/dev/null
+  --entrypoint bash "\$image" -lc 'exec sleep infinity')"
+echo "[lmcache-debug] container id: \$container_id"
+container_status="\$(nerdctl --namespace "\$namespace" inspect -f '{{.State.Status}}' "\$container")"
+echo "[lmcache-debug] container status: \$container_status"
+if [[ "\$container_status" != running ]]; then
+  echo "[lmcache-debug] container inspect: \$(nerdctl --namespace "\$namespace" inspect "\$container" 2>&1 || true)" >&2
+  nerdctl --namespace "\$namespace" logs "\$container" >&2 || true
+  exit 1
+fi
 EOF
 
 printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$RUN_DIR"

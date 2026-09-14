@@ -10,8 +10,37 @@ cat >"$tmp/bin/nerdctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_LOG"
 printf 'NERDCTL_PATH=%s\n' "$PATH" >>"$FAKE_LOG"
+if [[ "$*" == *'pytest -q -ra'* ]]; then
+  pytest_count=0
+  [[ -f "$FAKE_PYTEST_COUNT_FILE" ]] && pytest_count="$(<"$FAKE_PYTEST_COUNT_FILE")"
+  pytest_count=$((pytest_count + 1))
+  printf '%s' "$pytest_count" >"$FAKE_PYTEST_COUNT_FILE"
+  if [[ "$pytest_count" -gt 1 ]]; then
+    cat <<'PYTEST'
+=========================== short test summary info ============================
+FAILED tests/fake_failure.py::test_failure - simulated failure
+XPASS tests/fake_xpass.py::test_xpass - simulated xpass
+1 failed, 2 skipped, 3 passed, 1 xpassed in 0.01s
+PYTEST
+  else
+    printf '1 passed in 0.01s\n'
+  fi
+  exit 0
+fi
+if [[ "$*" == *'clone --branch'* ]]; then
+  mkdir -p "$FAKE_REPO_DIR"
+  printf 'fake repository\n' >"$FAKE_REPO_DIR/README.md"
+  git -C "$FAKE_REPO_DIR" init -q
+  git -C "$FAKE_REPO_DIR" add README.md
+  git -C "$FAKE_REPO_DIR" -c user.name=test -c user.email=test@example.invalid commit -qm initial
+fi
 if [[ "${3:-}" == image && "${4:-}" == rm ]]; then exit 0; fi
-case "${3:-}" in image) exit 1;; pull|run|exec|rm) exit 0;; esac
+case "${3:-}" in
+  image) exit 1;;
+  inspect) printf 'running\n';;
+  run) printf 'fake-container-id\n';;
+  pull|exec|rm) exit 0;;
+esac
 EOF
 cat >"$tmp/bin/ctr" <<'EOF'
 #!/usr/bin/env bash
@@ -28,6 +57,14 @@ EOF
 cat >"$tmp/bin/git" <<'EOF'
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"$FAKE_LOG"
+if [[ "$*" == *' ls-files'* ]]; then
+  printf 'README.md\n'
+  exit 0
+fi
+if [[ "$*" == *' rev-parse --short HEAD'* ]]; then
+  printf 'deadbeef\n'
+  exit 0
+fi
 if [[ "${GIT_CONFIG_COUNT:-}" == 1 && "${GIT_CONFIG_KEY_0:-}" == 'http.extraHeader' && -n "${GIT_CONFIG_VALUE_0:-}" ]]; then
   printf '%s\n' 'git auth header configured' >>"$FAKE_LOG"
 fi
@@ -121,9 +158,13 @@ pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr
 [[ "$pull_http_proxy" == 'http://192.168.10.6:3128' ]]
 [[ "$pull_remove_image" == 1 ]]
 [[ "$pull_target_ip" == '192.0.2.78' && "$pull_target_port" == 22 && "$pull_target_user" == root ]]
+grep -Fq '[lmcache-debug] image cache: miss; pulling image' <<<"$pull_output"
+grep -Fq '[lmcache-debug] image pull: completed' <<<"$pull_output"
+grep -Fq '[lmcache-debug] container status: running' <<<"$pull_output"
 
 # 后续阶段只消费 pull 阶段的非敏感目标状态；密码仍由当次执行环境提供。
 rebuild_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
+  FAKE_REPO_DIR="$tmp/repo" \
   LMCACHE_UNITTEST_RUN_DIR="$pull_run_dir" \
   LMCACHE_UNITTEST_IMAGE="$pull_image" \
   LMCACHE_UNITTEST_CONTAINER="$pull_container" \
@@ -135,6 +176,7 @@ rebuild_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target
   LMCACHE_UNITTEST_TARGET_IP="$pull_target_ip" \
   LMCACHE_UNITTEST_TARGET_PORT="$pull_target_port" \
   LMCACHE_UNITTEST_TARGET_USER="$pull_target_user" \
+  LMCACHE_UNITTEST_REPO_DIR="$tmp/repo" \
   LMCACHE_UNITTEST_GIT_URL='https://gitcode.com/TokensService/LMCache.git' \
   LMCACHE_UNITTEST_GIT_BRANCH='dev' \
   LMCACHE_UNITTEST_GIT_USER='oauth2' \
@@ -149,8 +191,11 @@ rebuild_remove_image="$(awk -F= '$1 == "LMCACHE_UNITTEST_REMOVE_IMAGE" { print s
 [[ "$rebuild_container" == "$pull_container" ]]
 [[ "$rebuild_http_proxy" == "$pull_http_proxy" ]]
 [[ "$rebuild_remove_image" == "$pull_remove_image" ]]
+grep -Fq '[lmcache-debug] clone: completed' <<<"$rebuild_output"
+grep -Fq '[lmcache-debug] repository files:' <<<"$rebuild_output"
 
 test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
+  FAKE_PYTEST_COUNT_FILE="$tmp/pytest-count" \
   LMCACHE_UNITTEST_RUN_DIR="$pull_run_dir" \
   LMCACHE_UNITTEST_IMAGE="$pull_image" \
   LMCACHE_UNITTEST_CONTAINER="$rebuild_container" \
@@ -185,4 +230,7 @@ fi
 [[ ! -e "$tmp/default/state.env" ]]
 grep -Fq 'LMCACHE_UNITTEST_TEST_RESULT=0' <<<"$test_output"
 grep -Fq 'LMCACHE_UNITTEST_IMAGE_REMOVED=1' <<<"$test_output"
+grep -Fq '[lmcache-debug] pytest summary: passed: 4, failed: 1, skipped: 2, xpassed: 1' <<<"$test_output"
+grep -Fq '[lmcache-debug] pytest failed tests: tests/fake_failure.py::test_failure' <<<"$test_output"
+grep -Fq '[lmcache-debug] pytest xpassed tests: tests/fake_xpass.py::test_xpass' <<<"$test_output"
 echo 'lmcache unittest pipeline contract passed'
