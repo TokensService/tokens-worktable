@@ -51,10 +51,10 @@ test('队列在场接口仅转发可展示的阶段状态，过滤日志、变�
     varsIn: { TOKEN: 'secret' }, varsOut: { RESULT: 'secret' },
   }
   const put = await call(handler, 'PUT', {
-    id: 'client-1', label: 'Chrome·abcd',
+    id: 'client-1', label: 'Chrome·abcd', schemaVersion: 2,
     running: null,
     runs: [{
-      id: 'run-1', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1',
+      id: 'run-1', originQueueId: 'queue-origin', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1',
       repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
       stages: [stage], nodes: { build: node },
     }],
@@ -69,8 +69,9 @@ test('队列在场接口仅转发可展示的阶段状态，过滤日志、变�
   const get = await call(handler, 'GET')
   assert.equal(get.status, 200)
   const client = get.json().clients[0]
+  assert.equal(client.schemaVersion, 2)
   assert.deepEqual(plain(client.runs[0]), {
-    id: 'run-1', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1',
+    id: 'run-1', originQueueId: 'queue-origin', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1',
     repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
     stages: [{ id: 'build', name: '构建', parallel: true, sub: ['编译'] }],
     nodes: { build: { status: 'running', progress: 37, dur: 6.5, sub: { 编译: 'success' } } },

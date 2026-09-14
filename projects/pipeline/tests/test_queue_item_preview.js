@@ -61,7 +61,6 @@ function makePreviewContext() {
     viewRc: null,
     queue: [],
     remoteQueueClients: [],
-    remoteRunsOf: c => Array.isArray(c.runs) ? c.runs : (c.running ? [c.running] : []),
     expandRunStages: (stages, presets) => { calls.expand.push({ stages, presets }); return stages.map(s => ({ ...s })); },
     focusRun: rc => { calls.focus.push(rc); context.viewRc = rc; },
   };
@@ -71,6 +70,7 @@ function makePreviewContext() {
   assert.ok(presenceStart >= 0 && presenceEnd > presenceStart, '缺少运行队列安全快照函数');
   vm.runInContext(source.slice(presenceStart, presenceEnd), context);
   vm.runInContext(extract('function queuePreviewRc', '/* ---------- 运行队列跨浏览器可见'), context);
+  vm.runInContext(extract('function remoteRunsOf', '/* ---------- 运行引擎'), context);
   return { context, calls };
 }
 
@@ -145,6 +145,8 @@ test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进
   assert.equal(rc.nodes.deploy.progress, 42);
   assert.equal(rc.pipelineName, '远端部署');
   assert.equal(rc.remoteClientLabel, 'Chrome·xy12');
+  assert.equal(rc.image, '', '他端未同步镜像时不能伪造本页默认镜像');
+  assert.equal(rc.release, '', '他端未同步 Release 时不能伪造本页默认值');
 });
 
 test('focusRemoteQueueItem：他端在跑与排队条目都能聚焦，未知条目忽略', () => {
@@ -182,6 +184,33 @@ test('refreshRemoteQueuePreviewRc：轮询后刷新阶段状态并保留当前�
   assert.equal(context.refreshRemoteQueuePreviewRc({ ...previous, remoteItemId: 'gone' }), null);
 });
 
+test('refreshRemoteQueuePreviewRc：他端排队项启动后按来源队列 id 跟随到运行快照', () => {
+  const { context } = makePreviewContext();
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12', queue: [],
+    runs: [{
+      id: 'r-new', originQueueId: 'q-old', pipelineName: 'P1',
+      stages: [{ id: 's1', name: '构建' }, { id: 's2', name: '部署' }],
+      nodes: { s1: { status: 'success', progress: 100 }, s2: { status: 'running', progress: 35 } },
+    }],
+  });
+  const previous = {
+    remotePreview: true, remoteClientId: 'c2', remoteItemId: 'q-old', remoteKind: 'queued', selId: 's2',
+  };
+
+  const refreshed = context.refreshRemoteQueuePreviewRc(previous);
+  assert.equal(refreshed.remoteKind, 'running');
+  assert.equal(refreshed.remoteItemId, 'r-new');
+  assert.equal(refreshed.selId, 's2');
+  assert.equal(refreshed.nodes.s2.progress, 35);
+});
+
+test('remoteRunsOf：新版 runs 为空时仍兼容旧版 running 单条快照', () => {
+  const { context } = makePreviewContext();
+  const legacy = { id: 'legacy-run' };
+  assert.deepEqual(Array.from(context.remoteRunsOf({ runs: [], running: legacy })), [legacy]);
+});
+
 test('runPreviewReadOnly：本页排队预览和他端预览都禁止编辑或重试', () => {
   const start = source.indexOf('function runPreviewReadOnly');
   const end = source.indexOf('\n}', start) + 3;
@@ -212,6 +241,19 @@ test('detailLogLinesFor：他端预览明确提示不传日志，本页详情仍
   assert.equal(calls.length, 1);
 });
 
+test('detailContextRows：他端详情把未同步的镜像和 Commit 明确标为未同步', () => {
+  const context = { REGISTRY: 'registry.example.com', curPipeline: () => ({ name: '当前流水线' }) };
+  vm.createContext(context);
+  vm.runInContext(extract('function detailContextRows', 'function renderDetail'), context);
+  const rows = Array.from(context.detailContextRows(
+    { name: '构建' }, '进行中',
+    { remotePreview: true, pipelineName: '远端流水线', branch: 'dev', strategy: '', by: 'alice', env: '10.0.0.1', image: '', tag: '—', commit: '—' },
+  ), row => Array.from(row));
+  assert.deepEqual(rows.find(row => row[0] === '镜像'), ['镜像', '未同步']);
+  assert.deepEqual(rows.find(row => row[0] === 'Commit'), ['Commit', '未同步']);
+  assert.equal(JSON.stringify(rows).includes('registry.example.com'), false);
+});
+
 /* ---------- 跨浏览器上报快照（只包含安全的阶段状态字段） ---------- */
 function loadPresenceSnapshotContext() {
   const start = source.indexOf('function queueStagePresence');
@@ -228,13 +270,13 @@ function loadPresenceSnapshotContext() {
 test('runningPresenceEntry：上报阶段状态但不携带日志、变量或脚本参数', () => {
   const context = loadPresenceSnapshotContext();
   const snap = context.runningPresenceEntry({
-    id: 'r1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startTs: 100,
+    id: 'r1', originQueueId: 'q1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startTs: 100,
     stages: [{ id: 's1', name: '构建', kind: 'shell', script: { values: { TOKEN: 'secret' } }, _out: { stdout: 'secret log' }, parallel: true, sub: ['a'] }],
     nodes: { s1: { status: 'running', progress: 35, dur: 4, varsIn: { TOKEN: 'secret' }, varsOut: { RESULT: 'secret' }, sub: { a: 'success' } } },
   });
 
   assert.deepEqual(JSON.parse(JSON.stringify(snap)), {
-    id: 'r1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
+    id: 'r1', originQueueId: 'q1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
     stages: [{ id: 's1', name: '构建', parallel: true, sub: ['a'] }],
     nodes: { s1: { status: 'running', progress: 35, dur: 4, sub: { a: 'success' } } },
   });
@@ -251,6 +293,11 @@ test('queuedPresenceEntry：排队快照展开预设阶段并全部标为未开�
   assert.equal(snap.nodes.s1.status, 'idle');
   assert.equal(snap.nodes.__check.status, 'idle');
   assert.equal(JSON.stringify(snap).includes('secret'), false);
+});
+
+test('publishQueue：上报声明可点击阶段快照协议版本', () => {
+  const publishSource = extract('function publishQueue', '/* renderQueue 渲染很频繁');
+  assert.match(publishSource, /schemaVersion\s*:\s*2/);
 });
 
 /* ---------- 队列区渲染（renderQueue：排队项可点击 + 预览自愈） ---------- */
@@ -280,6 +327,7 @@ function makeQueueContext() {
     console,
   };
   vm.createContext(context);
+  vm.runInContext(extract('function remoteQueueDetailAvailable', 'function remoteQueuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueViewAttrs', 'let _plRunSig'), context);
   vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
   return { context, list, els, calls };
@@ -354,6 +402,35 @@ test('renderQueue：其他浏览器的排队/在跑条目都可点击查看阶�
     { clientId: 'c2', itemId: 'r2', kind: 'running' },
     { clientId: 'c2', itemId: 'q2', kind: 'queued' },
   ]);
+});
+
+test('renderQueue：旧浏览器快照缺少阶段数据时不可点击并提示刷新来源页面', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.remoteQueueClients.push({
+    id: 'legacy', label: '旧版浏览器',
+    runs: [], running: { id: '', by: 'eve', pipelineName: '旧运行', stages: [] },
+    queue: [{ id: '', by: 'frank', pipelineName: '旧排队', stages: [] }],
+  });
+  context.renderQueue();
+  assert.equal(list.querySelectorAll('[data-qremote-id]').length, 0);
+  assert.equal(calls.focusRemoteQueueItem.length, 0);
+  assert.equal(list.children.filter(row => /来源页面需刷新，暂无阶段快照/.test(row.innerHTML)).length, 2);
+});
+
+test('startRun：队列项启动时把原队列 id 传给运行上下文', () => {
+  const calls = [];
+  const context = {
+    DEFAULT_IMAGE: 'myapp', GITURL: 'g', currentUsername: 'tester',
+    findPipeline: id => ({ id, name: 'P1', stages: [] }), curPipeline: () => ({ id: 'p1', name: 'P1', stages: [] }),
+    resolveEnv: ip => ({ ip }), curEnvs: () => [{ ip: 'A' }],
+    resolveRepo: () => ({ id: 'repo1', name: 'repo1', url: '' }),
+    $: () => ({ value: '' }), curStrategy: () => '', selectedPresetKeys: () => [],
+    startSimRun: (pl, runContext) => calls.push({ pl, runContext }),
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('function startRun(opts){', 'function startSimRun'), context);
+  context.startRun({ id: 'q1', pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'alice' });
+  assert.equal(calls[0].runContext.originQueueId, 'q1');
 });
 
 /* ---------- 异机并行调度（runPipeline / machineConflict / drainQueue 真实实现） ---------- */

@@ -3196,6 +3196,20 @@ function detailLogLinesFor(stage,ctx,node){
   if(ctx&&ctx.remotePreview===true) return ['其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
   return buildLog(stage,ctx,node,DETAIL_LOG_LIMIT);
 }
+function detailContextRows(stage,statusText,ctx){
+  const rows = [
+    ['阶段', stage.name],
+    ['状态', statusText],
+    ['流水线', ctx.pipelineName||curPipeline().name],
+    ['分支', ctx.branch||'main'],
+    ['策略', ctx.strategy||'—'],
+    ['执行人', ctx.by||'—'],
+    ['环境', ctx.env],
+  ];
+  if(ctx.remotePreview===true) rows.push(['镜像','未同步'],['Commit','未同步']);
+  else rows.push(['镜像',(ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],['Commit',ctx.commit]);
+  return rows;
+}
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
   const s = flowStages().find(x=>x.id===selectedId) || flowStages()[0];
@@ -3234,17 +3248,7 @@ function renderDetail(){
   }
 
   const kv = $('detailKv'); kv.innerHTML='';
-  const rows = [
-    ['阶段', s.name],
-    ['状态', txt],
-    ['流水线', ctx.pipelineName||curPipeline().name],
-    ['分支', ctx.branch||'main'],
-    ['策略', ctx.strategy||'—'],
-    ['执行人', ctx.by||'—'],
-    ['环境', ctx.env],
-    ['镜像', (ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],
-    ['Commit', ctx.commit],
-  ];
+  const rows = detailContextRows(s,txt,ctx);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
@@ -3495,7 +3499,7 @@ function startRun(opts){
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || (currentUsername||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
-  const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual'};
+  const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual', originQueueId:opts.originQueueId||opts.id||''};
   startSimRun(pl, c);
   return true;
 }
@@ -3513,7 +3517,7 @@ function startSimRun(pl, c){
   // 手动运行（含入队/历史重跑）在页面内执行；目标机器不相交的运行并行推进（见 drainQueue/runPipeline）。定时页仍由服务端执行计划。
   const rc={id:'r'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
     stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null, over:false, overall:null,
-    env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual',
+    env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual', originQueueId:c.originQueueId||'',
     pipelineId:pl.id||null, pipelineName:pl.name, repoId:c.repo.id||null, repoName:c.repo.name, repoUrl:c.repo.url, giturl:c.repo.url||GITURL,
     repoUser:c.repo.user||'', repoPass:c.repo.pass||'', branch:c.branch, strategy:c.strategy||'', vars:{}, token:++runSeq};
   stages.forEach(s=>{ rc.nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}}; });
@@ -3621,6 +3625,12 @@ function focusQueueItem(id){
 
 /* 其他浏览器条目详情：只消费服务端白名单后的阶段/状态快照，不进入本页执行引擎。
    running 展示实时状态，queued 展示全部 idle 的待运行编排；日志、脚本参数和凭据均不跨浏览器传输。 */
+function remoteQueueDetailAvailable(item){
+  return !!(item&&String(item.id||'').trim()&&Array.isArray(item.stages)&&item.stages.some(stage=>stage&&String(stage.id||'').trim()));
+}
+function remoteQueueDetailHint(item){
+  return remoteQueueDetailAvailable(item)?'':'<div class="dshell-muted" style="font-size:10px;font-weight:normal;">来源页面需刷新，暂无阶段快照</div>';
+}
 function remoteQueuePreviewRc(client,item,kind){
   const stages=(Array.isArray(item&&item.stages)?item.stages:[]).map(queueStagePresence).filter(Boolean);
   const incomingNodes=item&&item.nodes&&typeof item.nodes==='object'?item.nodes:{};
@@ -3631,7 +3641,7 @@ function remoteQueuePreviewRc(client,item,kind){
     remoteClientId:String(client&&client.id||''), remoteClientLabel:String(client&&(client.label||client.id)||'其他浏览器'),
     remoteItemId:String(item&&item.id||''), remoteKind:runningKind?'running':'queued',
     stages:stages, nodes:previewNodes, selId:stages.length?stages[0].id:null, timer:null,
-    env:item&&item.env||'', envs:[], image:DEFAULT_IMAGE, release:DEFAULT_IMAGE,
+    env:item&&item.env||'', envs:[], image:'', release:'',
     commit:'—', tag:'—', startTs:(runningKind?item&&item.startedAt:item&&item.queuedAt)||Date.now(), by:item&&item.by||'—', source:item&&item.source||'manual',
     pipelineId:item&&item.pipelineId||null, pipelineName:item&&item.pipelineName||'(自定义)',
     repoId:null, repoName:item&&item.repoName||'', repoUrl:'', giturl:GITURL,
@@ -3643,7 +3653,7 @@ function remoteQueueItem(clientId,itemId,kind){
   if(!client) return null;
   const items=kind==='running'?remoteRunsOf(client):(Array.isArray(client.queue)?client.queue:[]);
   const item=items.find(entry=>String(entry&&entry.id||'')===String(itemId));
-  return item?{client,item}:null;
+  return item&&remoteQueueDetailAvailable(item)?{client,item}:null;
 }
 function focusRemoteQueueItem(clientId,itemId,kind){
   if(viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(clientId)&&viewRc.remoteItemId===String(itemId)&&viewRc.remoteKind===kind) return;
@@ -3652,9 +3662,17 @@ function focusRemoteQueueItem(clientId,itemId,kind){
 }
 function refreshRemoteQueuePreviewRc(previous){
   if(!previous||previous.remotePreview!==true) return previous||null;
-  const found=remoteQueueItem(previous.remoteClientId,previous.remoteItemId,previous.remoteKind);
+  let kind=previous.remoteKind;
+  let found=remoteQueueItem(previous.remoteClientId,previous.remoteItemId,kind);
+  /* 来源页会给真正运行分配新的 r... id；用入队 id 关联 q... → r...，避免正在查看的排队详情
+     在任务启动的那次轮询里突然消失。 */
+  if(!found&&kind==='queued'){
+    const client=remoteQueueClients.find(c=>String(c&&c.id||'')===String(previous.remoteClientId));
+    const item=client&&remoteRunsOf(client).find(entry=>String(entry&&entry.originQueueId||'')===String(previous.remoteItemId)&&remoteQueueDetailAvailable(entry));
+    if(item){ found={client,item}; kind='running'; }
+  }
   if(!found) return null;
-  const next=remoteQueuePreviewRc(found.client,found.item,previous.remoteKind);
+  const next=remoteQueuePreviewRc(found.client,found.item,kind);
   if(next.stages.some(s=>s.id===previous.selId)) next.selId=previous.selId;
   return next;
 }
@@ -3713,7 +3731,7 @@ function queueNodePresence(node){
 }
 function queuePresenceEntry(item,timeKey,stages,nodes){
   const out={};
-  ['id','pipelineId','pipelineName','by','env','repoName','branch','strategy','source'].forEach(key=>{
+  ['id','originQueueId','pipelineId','pipelineName','by','env','repoName','branch','strategy','source'].forEach(key=>{
     if(item&&item[key]!==undefined&&item[key]!==null) out[key]=String(item[key]);
   });
   const time=Number(item&&item[timeKey]); out[timeKey]=Number.isFinite(time)?time:0;
@@ -3737,7 +3755,7 @@ function publishQueue(force){
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
   _qPubSig=sig; _qPubAt=now;
   fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:QCLIENT_ID,label:browserTag(),running:runningSnap,runs:runsSnap,queue:queueSnap})})
+    body:JSON.stringify({schemaVersion:2,id:QCLIENT_ID,label:browserTag(),running:runningSnap,runs:runsSnap,queue:queueSnap})})
     .catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
 }
 /* renderQueue 渲染很频繁（运行期逐帧），上报走 500ms 防抖合并，避免状态抖动时连续发请求 */
@@ -3883,7 +3901,7 @@ function runInfoLine(o){
     +'环境 '+esc(o.env||'—')+' · 代码仓 '+esc(o.repoName||'—')+' · 分支 '+esc(o.branch||'—')+' · 部署策略 '+esc(o.strategy||'（不使用）')+'</div>';
 }
 function remoteQueueViewAttrs(client,item,kind,title){
-  if(!item||item.id===undefined||item.id===null||!Array.isArray(item.stages)) return '';
+  if(!remoteQueueDetailAvailable(item)) return '';
   return ' data-qremote-client="'+esc(client&&client.id||'')+'" data-qremote-id="'+esc(item.id)+'" data-qremote-kind="'+kind+'" title="'+title+'" style="cursor:pointer;"';
 }
 let _plRunSig=null;   // 流水线任务表「运行中/查看中」徽标的刷新签名（见 renderQueue 末尾）
@@ -3941,13 +3959,13 @@ function renderQueue(){
       remoteRunsOf(c).forEach(rn=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(rn.id)&&viewRc.remoteKind==='running';
-        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>';
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>';
         list.appendChild(it);
       });
       (Array.isArray(c.queue)?c.queue:[]).forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(q.id)&&viewRc.remoteKind==='queued';
-        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+'</span><span class="dshell-muted" style="font-size:10px">排队</span>';
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-muted" style="font-size:10px">排队</span>';
         list.appendChild(it);
       });
     });
@@ -3964,7 +3982,7 @@ function renderQueue(){
   scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「运行队列跨浏览器可见」区块）
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
-function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)) return c.runs; return c.running?[c.running]:[]; }
+function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)&&c.runs.length) return c.runs; return c.running?[c.running]:[]; }
 
 /* ---------- 运行引擎 ---------- */
 /* 每个运行独立编排（rc 内串行推进各阶段；不同机器的运行并行）：有脚本的步骤执行脚本，其余本地模拟 */

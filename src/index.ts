@@ -1438,7 +1438,7 @@ export function apply(ctx: Context) {
   /* 运行队列跨浏览器可见：各 pipeline.html 标签页把自己「正在运行 + 排队中」的快照 PUT 到这里，
      页面再轮询 GET 拉取其他标签页的快照只读展示。在场信息是易失数据，存内存不落盘，重启即清；
      客户端超过 45 秒不上报视为离场（页面关闭 / 断网自动过期，pagehide 时也会 sendBeacon 清态）。 */
-  interface QueuePresence { id: string; label: string; running: any; runs: any[]; queue: any[]; seenAt: number }
+  interface QueuePresence { id: string; label: string; schemaVersion: number; running: any; runs: any[]; queue: any[]; seenAt: number }
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
   const QUEUE_PRESENCE_TTL = 45 * 1000    // 页面心跳 10 秒一次，45 秒未见即过期（容忍几次心跳丢失）
@@ -1484,6 +1484,7 @@ export function apply(ctx: Context) {
     for (const k of ['id', 'pipelineId', 'pipelineName', 'by', 'env', 'repoName', 'branch', 'strategy', 'source']) {
       o[k] = String(e[k] ?? '').slice(0, 200)
     }
+    if (typeof e.originQueueId === 'string' && e.originQueueId) o.originQueueId = e.originQueueId.slice(0, 200)
     const t = Number(e[timeKey])
     o[timeKey] = Number.isFinite(t) ? t : 0
     o.stages = (Array.isArray(e.stages) ? e.stages : []).slice(0, QUEUE_STAGE_CAP)
@@ -1519,6 +1520,7 @@ export function apply(ctx: Context) {
           queuePresence.set(id, {
             id,
             label: (typeof body.label === 'string' ? body.label : '').slice(0, 64),
+            schemaVersion: Number(body.schemaVersion) === 2 ? 2 : 1,
             running, runs, queue, seenAt: Date.now(),
           })
           json(res, 200, { ok: true })
@@ -1530,7 +1532,7 @@ export function apply(ctx: Context) {
           const clients: any[] = []
           for (const v of queuePresence.values()) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
-            clients.push({ id: v.id, label: v.label, seenAgo: Math.max(0, Math.round((now - v.seenAt) / 1000)), running: v.running, runs: v.runs, queue: v.queue })
+            clients.push({ id: v.id, label: v.label, schemaVersion: v.schemaVersion, seenAgo: Math.max(0, Math.round((now - v.seenAt) / 1000)), running: v.running, runs: v.runs, queue: v.queue })
           }
           json(res, 200, { clients })
           return
