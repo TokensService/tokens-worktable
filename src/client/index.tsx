@@ -30,6 +30,8 @@ type DockMode = 'footer' | 'float'
 declare const __WT_VERSION__: string
 const LOCAL_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
 const UPDATE_REPO = 'TokensService/tokens-worktable'
+// 设置弹窗首行说明里的「提 issue」链接（GitHub Issues）
+const ISSUES_URL = 'https://github.com/' + UPDATE_REPO + '/issues'
 // 升级命令用带版本号的固定 release URL 且文件名带版本号：URL/文件名恒定不变时，包管理器按文件名缓存 tarball 会装回旧版
 const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable-' + tag.replace(/^v/, '') + '.tgz"'
 const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后提醒我重启 dsh web 并刷新页面'
@@ -3534,7 +3536,7 @@ function buildCustomLayoutPrompt(req: string): string {
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('name.label')}</span>
           </div>
-          <div className="dsh-wt_pageEditHint">{t('name.desc')}</div>
+          <a className="dsh-wt_issueLink" href={ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('name.desc')}</a>
           <RenameInput initial={worktableTitleOf(customTitle, authUsername, t('title'))} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
           <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
