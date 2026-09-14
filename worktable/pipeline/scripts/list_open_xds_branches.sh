@@ -10,7 +10,7 @@ github_proxy_explicit=false
 if [[ -v GITHUB_PROXY ]]; then
   github_proxy_explicit=true
 else
-  GITHUB_PROXY=${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}
+  GITHUB_PROXY=${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}
 fi
 
 curl_args=(-fsSL -H 'Accept: application/vnd.github+json')
