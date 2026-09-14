@@ -4017,14 +4017,19 @@ function renderQueue(){
   $('queueCount').textContent = totalQueueItems?'('+totalQueueItems+' 项)':'';
   /* 明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态由独立卡片首行的「空闲」徽标表达 */
   list.style.display = (running||localItems.length||remoteQueueClients.length)?'':'none';
+  /* 正在编排区查看的条目（本页在跑/排队预览/他端只读预览）：整框背景与边框高亮，呼应「（查看中）」标记 */
+  const markViewing=it=>{ it.style.background='color-mix(in srgb, var(--dsw-alias-state-accent-primary, #4f8ef7) 14%, transparent)'; it.style.borderColor='var(--dsw-alias-state-accent-primary, #4f8ef7)'; };
   let status='空闲', cls='';
   if(running){
     status=activeRuns.length+' 运行中'+(localItems.length?' · '+localItems.length+' 排队':''); cls='dshell-badgeWait';
-    activeRuns.forEach((rc,idx)=>{
+    /* 展示倒序：后开始的运行显示在上面（仅展示顺序；编号仍按开始先后递增，先开始者仍是队列首部 #1） */
+    for(let i=activeRuns.length-1;i>=0;i--){
+      const rc=activeRuns[i];
       const it=document.createElement('div'); it.className='dshell-listItem';
-      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(idx+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
+      if(viewRc===rc) markViewing(it);
+      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(i+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
       list.appendChild(it);
-    });
+    }
   } else if(localItems.length){ status=localItems.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
   if(remoteRunningCount||remoteQueuedCount){
     const remoteStatus=[];
@@ -4042,13 +4047,16 @@ function renderQueue(){
     if(!cs.length) return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点空闲</span>';
     return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点 '+cs.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+'</span>';
   };
-  localItems.forEach((q,idx)=>{
+  /* 展示倒序：后加入的排队项显示在上面（仅展示顺序；编号仍按入队先后递增，先入队者排在队列首部） */
+  for(let i=localItems.length-1;i>=0;i--){
+    const q=localItems[i];
     const it=document.createElement('div'); it.className='dshell-listItem';
     const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
     const pending=isPendingQueueItem(q);
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait">申请节点中</span>':'<button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
+    if(viewing) markViewing(it);
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+i+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait">申请节点中</span>':'<span class="dshell-badge dshell-badgeWait">排队中</span> <button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
     list.appendChild(it);
-  });
+  }
   /* 其他浏览器标签页的在场快照：可点击查看脱敏后的阶段状态；运行/取消仍是来源页内存态，
      因而本页不给中止/取消按钮。标题前带客户端标签（如 [Chrome·a1b2]）区分来源。 */
   if(remoteQueueClients.length){
@@ -4057,16 +4065,19 @@ function renderQueue(){
     list.appendChild(sep);
     remoteQueueClients.forEach(c=>{
       const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
-      remoteRunsOf(c).forEach(rn=>{
+      /* 他端条目同样倒序展示（后开始的运行/后加入的排队在上面），查看中的整框高亮 */
+      remoteRunsOf(c).slice().reverse().forEach(rn=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(rn.id)&&viewRc.remoteKind==='running';
+        if(viewing) markViewing(it);
         it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>';
         list.appendChild(it);
       });
-      (Array.isArray(c.queue)?c.queue:[]).forEach(q=>{
+      (Array.isArray(c.queue)?c.queue:[]).slice().reverse().forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(q.id)&&viewRc.remoteKind==='queued';
-        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-muted" style="font-size:10px">排队</span>';
+        if(viewing) markViewing(it);
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-badge dshell-badgeWait">排队中</span>';
         list.appendChild(it);
       });
     });

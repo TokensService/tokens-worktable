@@ -504,6 +504,84 @@ test('renderQueue：旧浏览器快照缺少阶段数据时不可点击并提示
   assert.equal(list.children.filter(row => /来源页面需刷新，暂无阶段快照/.test(row.innerHTML)).length, 2);
 });
 
+test('renderQueue：排队项显示「排队中」徽标，运行项显示「运行中」徽标', () => {
+  const { context, list } = makeQueueContext();
+  context.activeRuns.push({ id: 'r1', by: 'bob', pipelineName: '部署', source: 'manual' });
+  context.running = true;
+  context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1 });
+  context.renderQueue();
+  assert.match(list.children[0].innerHTML, /<span class="dshell-badge dshell-badgeWait">运行中<\/span>/);
+  assert.match(list.children[1].innerHTML, /<span class="dshell-badge dshell-badgeWait">排队中<\/span>/);
+});
+
+test('renderQueue：后加入的条目显示在上面，先加入的仍是队列首部（编号不变）', () => {
+  const { context, list } = makeQueueContext();
+  context.activeRuns.push(
+    { id: 'r1', by: 'bob', pipelineName: 'P1', source: 'manual' },
+    { id: 'r2', by: 'cat', pipelineName: 'P2', source: 'manual' },
+  );
+  context.running = true;
+  context.queue.push(
+    { id: 'q1', by: 'alice', pipelineName: 'P3', source: 'manual', queuedAt: 1 },
+    { id: 'q2', by: 'dave', pipelineName: 'P4', source: 'manual', queuedAt: 2 },
+  );
+  context.renderQueue();
+  const order = list.children.map(row => {
+    const m = row.innerHTML.match(/data-qfocus="([^"]+)"/) || row.innerHTML.match(/data-qview="([^"]+)"/);
+    return m ? m[1] : '';
+  });
+  assert.deepEqual(order, ['r2', 'r1', 'q2', 'q1'], '后开始/后加入的显示在上面（仅展示倒序）');
+  assert.match(list.children[1].innerHTML, /#1</, '先开始的运行仍是 #1（队列首部）');
+  assert.match(list.children[3].innerHTML, /#3</, '先入队的排队项编号不变');
+});
+
+test('renderQueue：正在查看的条目整框高亮，未查看的保持默认背景', () => {
+  const { context, list } = makeQueueContext();
+  context.queue.push(
+    { id: 'q1', by: 'alice', pipelineName: 'P1', source: 'manual', queuedAt: 1 },
+    { id: 'q2', by: 'bob', pipelineName: 'P2', source: 'manual', queuedAt: 2 },
+  );
+  context.viewRc = { id: 'q1', queuedPreview: true, over: true };
+  context.renderQueue();
+  const viewingRow = list.children.find(row => /data-qview="q1"/.test(row.innerHTML));
+  const otherRow = list.children.find(row => /data-qview="q2"/.test(row.innerHTML));
+  assert.ok(viewingRow.style.background, '查看中的排队条目背景高亮');
+  assert.ok(viewingRow.style.borderColor, '查看中的排队条目边框高亮');
+  assert.match(viewingRow.innerHTML, /（查看中）/);
+  assert.equal(otherRow.style.background || '', '', '未查看的条目保持默认背景');
+});
+
+test('renderQueue：正在查看的运行条目同样整框高亮', () => {
+  const { context, list } = makeQueueContext();
+  const rc = { id: 'r1', by: 'bob', pipelineName: '部署', source: 'manual' };
+  context.activeRuns.push(rc);
+  context.running = true;
+  context.viewRc = rc;
+  context.renderQueue();
+  assert.ok(list.children[0].style.background, '查看中的运行条目背景高亮');
+  assert.ok(list.children[0].style.borderColor);
+});
+
+test('renderQueue：他端排队条目显示「排队中」，查看中的他端条目整框高亮', () => {
+  const { context, list } = makeQueueContext();
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12', runs: [],
+    queue: [
+      { id: 'q2', by: 'frank', pipelineName: 'P2', source: 'manual', queuedAt: 1, stages: [{ id: 's2', name: '部署' }], nodes: {} },
+      { id: 'q3', by: 'grace', pipelineName: 'P3', source: 'manual', queuedAt: 2, stages: [{ id: 's3', name: '测试' }], nodes: {} },
+    ],
+  });
+  context.viewRc = { remotePreview: true, remoteClientId: 'c2', remoteItemId: 'q2', remoteKind: 'queued', over: true };
+  context.renderQueue();
+  const rows = list.children.slice(1);   // 跳过分隔行
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].innerHTML, /data-qremote-id="q3"/, '他端后加入的排队条目显示在上面');
+  assert.match(rows[1].innerHTML, /data-qremote-id="q2"/);
+  rows.forEach(row => assert.match(row.innerHTML, /<span class="dshell-badge dshell-badgeWait">排队中<\/span>/));
+  assert.ok(rows[1].style.background, '查看中的他端条目整框高亮');
+  assert.equal(rows[0].style.background || '', '');
+});
+
 test('startRun：队列项启动时把原队列 id 传给运行上下文', () => {
   const calls = [];
   const context = {
