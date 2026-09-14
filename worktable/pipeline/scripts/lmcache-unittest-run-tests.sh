@@ -29,9 +29,11 @@ ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
 # 与重编译阶段使用相同的目标节点代理，允许调用方覆盖。
 http_proxy="${LMCACHE_UNITTEST_HTTP_PROXY:-http://192.168.10.6:3128}"
 LMCACHE_UNITTEST_TEST_LOG="$LMCACHE_UNITTEST_LOG_DIR/pytest.log"
+LMCACHE_UNITTEST_CPU_ONLY="${LMCACHE_UNITTEST_CPU_ONLY:-0}"
 blocks_first_target='tests/v1/gpu_connector/test_blocks_first_cs_kv_format.py::test_mp_gather_scatter_roundtrip'
 LMCACHE_UNITTEST_ISOLATED_TEST_LOG=''
 [[ "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST must be 0 or 1' >&2; exit 2; }
+[[ "$LMCACHE_UNITTEST_CPU_ONLY" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_CPU_ONLY must be 0 or 1' >&2; exit 2; }
 lmcache_remote_init
 
 # The remote script writes large pytest logs on the target. Its final marker is
@@ -49,9 +51,17 @@ isolate=$(printf '%q' "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST")
 remove_image=$(printf '%q' "$LMCACHE_UNITTEST_REMOVE_IMAGE")
 keep_container=$(printf '%q' "${LMCACHE_UNITTEST_KEEP_CONTAINER:-0}")
 target=$(printf '%q' "$blocks_first_target")
+cpu_only=$(printf '%q' "$LMCACHE_UNITTEST_CPU_ONLY")
 mkdir -p "\$(dirname "\$test_log")"
 pytest_env=(-e "http_proxy=\$proxy" -e "https_proxy=\$proxy" -e 'NO_PROXY=localhost,127.0.0.1' -e 'no_proxy=localhost,127.0.0.1')
-if [[ "\$isolate" == 1 ]]; then
+pytest_args=()
+if [[ "\$cpu_only" == 1 ]]; then
+  # 防止没有完整 CUDA marker 的历史用例因可见 GPU 而进入 GPU 分支。
+  pytest_env+=(-e 'CUDA_VISIBLE_DEVICES=')
+  pytest_args=(-m 'not cuda and not xpu and not musa')
+  echo '[lmcache-debug] pytest mode: cpu-only; CUDA devices hidden and device tests excluded'
+fi
+if [[ "\$isolate" == 1 && "\$cpu_only" != 1 ]]; then
   set +e
   nerdctl --namespace "\$namespace" exec "\${pytest_env[@]}" "\$container" bash -lc \
     '. /opt/lmcache-test-venv/bin/activate && cd /workspace/LMCache && pytest -q -ra "\$1"' _ "\$target" >"\$isolate_log" 2>&1
@@ -66,7 +76,7 @@ else
   isolate_log=''
   set +e
   nerdctl --namespace "\$namespace" exec "\${pytest_env[@]}" "\$container" bash -lc \
-    '. /opt/lmcache-test-venv/bin/activate && cd /workspace/LMCache && pytest -q -ra' >"\$test_log" 2>&1
+    '. /opt/lmcache-test-venv/bin/activate && cd /workspace/LMCache && pytest -q -ra "\$@"' _ "\${pytest_args[@]}" >"\$test_log" 2>&1
   rc=\$?
   set -e
 fi
@@ -127,6 +137,7 @@ printf 'LMCACHE_UNITTEST_CAP_ADD=%s\n' "$LMCACHE_UNITTEST_CAP_ADD"
 printf 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST=%s\n' "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST"
 printf 'LMCACHE_UNITTEST_HTTP_PROXY=%s\n' "$http_proxy"
 printf 'LMCACHE_UNITTEST_REMOVE_IMAGE=%s\n' "$LMCACHE_UNITTEST_REMOVE_IMAGE"
+printf 'LMCACHE_UNITTEST_CPU_ONLY=%s\n' "$LMCACHE_UNITTEST_CPU_ONLY"
 printf 'LMCACHE_UNITTEST_IMAGE_REMOVED=%s\n' "$LMCACHE_UNITTEST_IMAGE_REMOVED"
 printf 'LMCACHE_UNITTEST_TEST_LOG=%s\n' "$LMCACHE_UNITTEST_TEST_LOG"
 printf 'LMCACHE_UNITTEST_ISOLATED_TEST_LOG=%s\n' "$LMCACHE_UNITTEST_ISOLATED_TEST_LOG"

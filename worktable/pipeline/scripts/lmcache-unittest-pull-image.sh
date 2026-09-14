@@ -23,6 +23,8 @@ LMCACHE_UNITTEST_CONTAINER="${LMCACHE_UNITTEST_CONTAINER:-lmcache-unittest-$(bas
 # 128 节点通过该代理访问 GitCode/Hugging Face；调用方可按目标节点覆盖。
 LMCACHE_UNITTEST_HTTP_PROXY="${LMCACHE_UNITTEST_HTTP_PROXY:-http://192.168.10.6:3128}"
 LMCACHE_UNITTEST_REMOVE_IMAGE="${LMCACHE_UNITTEST_REMOVE_IMAGE:-0}"
+# CPU-only 模式不向容器挂载 GPU；pytest 阶段会再筛选设备相关用例。
+LMCACHE_UNITTEST_CPU_ONLY="${LMCACHE_UNITTEST_CPU_ONLY:-0}"
 ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
 AK="${AK:-}"
 PROJECT="${PROJECT:-}"
@@ -30,6 +32,7 @@ LOGIN_KEY="${LOGIN_KEY:-}"
 
 [[ "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST must be 0 or 1' >&2; exit 2; }
 [[ "$LMCACHE_UNITTEST_REMOVE_IMAGE" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_REMOVE_IMAGE must be 0 or 1' >&2; exit 2; }
+[[ "$LMCACHE_UNITTEST_CPU_ONLY" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_CPU_ONLY must be 0 or 1' >&2; exit 2; }
 lmcache_remote_init
 
 # Credentials are transmitted only as SSH stdin, never as an SSH argument or
@@ -46,6 +49,7 @@ namespace=$(printf '%q' "$ns")
 ak=$(printf '%q' "$AK")
 project=$(printf '%q' "$PROJECT")
 login_key=$(printf '%q' "$LOGIN_KEY")
+cpu_only=$(printf '%q' "$LMCACHE_UNITTEST_CPU_ONLY")
 command -v nerdctl >/dev/null || { echo 'nerdctl is required on target host' >&2; exit 2; }
 mkdir -p "\$log_dir"
 if nerdctl --namespace "\$namespace" image inspect "\$image" >/dev/null 2>&1; then
@@ -57,7 +61,12 @@ else
   echo '[lmcache-debug] image pull: completed'
 fi
 echo "[lmcache-debug] container create: \$container"
-container_id="\$(nerdctl --namespace "\$namespace" run -d --name "\$container" --net=host --gpus all \\
+gpu_args=(--gpus all)
+if [[ "\$cpu_only" == 1 ]]; then
+  gpu_args=()
+  echo '[lmcache-debug] execution mode: cpu-only; GPU devices are not attached'
+fi
+container_id="\$(nerdctl --namespace "\$namespace" run -d --name "\$container" --net=host "\${gpu_args[@]}" \\
   --cap-add "\$cap_add" -v /dev/shm:/dev/shm -v "\$run_dir:\$run_dir" \\
   --entrypoint bash "\$image" -lc 'exec sleep infinity')"
 echo "[lmcache-debug] container id: \$container_id"
@@ -78,6 +87,7 @@ printf 'LMCACHE_UNITTEST_LOG_DIR=%s\n' "$LMCACHE_UNITTEST_LOG_DIR"
 printf 'LMCACHE_UNITTEST_CONTAINER=%s\n' "$LMCACHE_UNITTEST_CONTAINER"
 printf 'LMCACHE_UNITTEST_HTTP_PROXY=%s\n' "$LMCACHE_UNITTEST_HTTP_PROXY"
 printf 'LMCACHE_UNITTEST_REMOVE_IMAGE=%s\n' "$LMCACHE_UNITTEST_REMOVE_IMAGE"
+printf 'LMCACHE_UNITTEST_CPU_ONLY=%s\n' "$LMCACHE_UNITTEST_CPU_ONLY"
 printf 'LMCACHE_UNITTEST_TARGET_IP=%s\n' "$LMCACHE_UNITTEST_TARGET_IP"
 printf 'LMCACHE_UNITTEST_TARGET_PORT=%s\n' "$LMCACHE_UNITTEST_TARGET_PORT"
 printf 'LMCACHE_UNITTEST_TARGET_USER=%s\n' "$LMCACHE_UNITTEST_TARGET_USER"
