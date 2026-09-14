@@ -378,6 +378,7 @@ function makeQueueContext() {
     document: { createElement: tag => new FakeNode(tag) },
     $: id => els[id] || new FakeNode('div'),
     queue: [], pendingLeaseStarts: [], activeRuns: [], viewRc: null, running: false, remoteQueueClients: [],
+    queueReasonOpen: new Set(), MAX_ACTIVE_RUNS: 4,
     esc: String, sourceLabel: s => (s === 'manual' ? '手动' : s), fmtRelative: () => '刚刚',
     runInfoLine: () => '<div class="dshell-muted">info</div>',
     drainQueue: () => { calls.drain++; },
@@ -511,7 +512,7 @@ test('renderQueue：排队项显示「排队中」徽标，运行项显示「运
   context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1 });
   context.renderQueue();
   assert.match(list.children[0].innerHTML, /<span class="dshell-badge dshell-badgeWait">运行中<\/span>/);
-  assert.match(list.children[1].innerHTML, /<span class="dshell-badge dshell-badgeWait">排队中<\/span>/);
+  assert.match(list.children[1].innerHTML, /<span class="dshell-badge dshell-badgeWait"[^>]*>排队中<\/span>/);
 });
 
 test('renderQueue：后加入的条目显示在上面，先加入的仍是队列首部（编号不变）', () => {
@@ -580,6 +581,82 @@ test('renderQueue：他端排队条目显示「排队中」，查看中的他端
   rows.forEach(row => assert.match(row.innerHTML, /<span class="dshell-badge dshell-badgeWait">排队中<\/span>/));
   assert.ok(rows[1].style.background, '查看中的他端条目整框高亮');
   assert.equal(rows[0].style.background || '', '');
+});
+
+test('renderQueue：点击「排队中」徽标展开/收起排队原因（他端租约占用）', () => {
+  const { context, list } = makeQueueContext();
+  context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1,
+    envs: [{ ip: '10.0.0.1' }],
+    nodeWait: { until: Date.now() + 60000, conflicts: [{ ip: '10.0.0.1', by: 'bob', label: '部署' }] } });
+  context.renderQueue();
+  assert.doesNotMatch(list.children[0].innerHTML, /排队原因：/, '默认收起排队原因');
+  const reasonBtn = list.querySelectorAll('[data-qreason]')[0];
+  assert.equal(reasonBtn.getAttribute('data-qreason'), 'q1');
+  reasonBtn.handlers.click();
+  assert.ok(context.queueReasonOpen.has('q1'));
+  const html = list.children[0].innerHTML;   // 点击后已重绘
+  assert.match(html, /排队原因：/);
+  assert.match(html, /10\.0\.0\.1（bob · 部署）/);
+  assert.match(html, /被他端运行占用/);
+  list.querySelectorAll('[data-qreason]')[0].handlers.click();
+  assert.equal(context.queueReasonOpen.has('q1'), false, '再次点击收起');
+  assert.doesNotMatch(list.children[0].innerHTML, /排队原因：/);
+});
+
+test('renderQueue：排队原因——同机有本页运行在跑', () => {
+  const { context, list } = makeQueueContext();
+  context.activeRuns.push({ id: 'r1', by: 'bob', pipelineName: '部署', source: 'manual', envs: [{ ip: 'X' }] });
+  context.running = true;
+  context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1, envs: [{ ip: 'X' }] });
+  context.renderQueue();
+  list.querySelectorAll('[data-qreason]')[0].handlers.click();
+  assert.match(list.children[1].innerHTML, /节点 X 上正在运行「部署」（bob）/);
+  assert.match(list.children[1].innerHTML, /同一节点同一时间只跑一条流水线/);
+});
+
+test('renderQueue：排队原因——同机排队任务排在前面（FIFO）', () => {
+  const { context, list } = makeQueueContext();
+  context.queue.push(
+    { id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1, envs: [{ ip: 'X' }] },
+    { id: 'q2', by: 'bob', pipelineName: 'CD', source: 'manual', queuedAt: 2, envs: [{ ip: 'X' }] },
+  );
+  context.renderQueue();
+  const btns = list.querySelectorAll('[data-qreason]');
+  assert.equal(btns[0].getAttribute('data-qreason'), 'q2', '展示倒序：后加入的 q2 在第一行');
+  assert.equal(btns[1].getAttribute('data-qreason'), 'q1');
+  btns[0].handlers.click();
+  assert.match(list.children[0].innerHTML, /同机任务「CI」（#1 · alice）排在前面/);
+  assert.match(list.children[0].innerHTML, /先入先出/);
+});
+
+test('renderQueue：排队原因——并发槽位已满', () => {
+  const { context, list } = makeQueueContext();
+  ['A', 'B', 'C', 'D'].forEach((ip, i) => context.activeRuns.push({ id: 'r' + i, by: 'u' + i, pipelineName: 'P' + i, source: 'manual', envs: [{ ip }] }));
+  context.running = true;
+  context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1, envs: [{ ip: 'Z' }] });
+  context.renderQueue();
+  list.querySelectorAll('[data-qreason]')[0].handlers.click();
+  assert.match(list.children[4].innerHTML, /并发槽位已满（4\/4）/);
+});
+
+test('renderQueue：排队原因——未选择目标节点按串行处理', () => {
+  const { context, list } = makeQueueContext();
+  context.activeRuns.push({ id: 'r1', by: 'bob', pipelineName: '部署', source: 'manual' });
+  context.running = true;
+  context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1 });
+  context.renderQueue();
+  list.querySelectorAll('[data-qreason]')[0].handlers.click();
+  assert.match(list.children[1].innerHTML, /未选择目标节点的运行按串行处理/);
+});
+
+test('renderQueue：「申请节点中」徽标同样可点击查看原因', () => {
+  const { context, list } = makeQueueContext();
+  const pending = { id: 'qP', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1, envs: [{ ip: 'X' }] };
+  context.pendingLeaseStarts.push({ queueItem: pending });
+  context.renderQueue();
+  assert.match(list.children[0].innerHTML, /data-qreason="qP"[^>]*>申请节点中/);
+  list.querySelectorAll('[data-qreason]')[0].handlers.click();
+  assert.match(list.children[0].innerHTML, /正在向服务端申请节点租约/);
 });
 
 test('startRun：队列项启动时把原队列 id 传给运行上下文', () => {
