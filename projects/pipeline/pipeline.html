@@ -554,7 +554,7 @@
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话（单次分析工作目录取该次运行的归档文件夹；对比分析取归档根目录；未归档时回退归档根目录），把对应提示词填入输入框，确认无误后手动发送。
+        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会打开侧边会话框，并在本项目设置的工作区中新建 AI 会话；项目尚未设置工作区时会先弹出工作区选择，选定后继续创建。对应提示词包含归档文件绝对路径，只填入输入框，确认无误后手动发送。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -6092,15 +6092,20 @@ function buildAnalysisRequest(kind, records){
   /* 双运行从记录自身路径推导共同目录；配置后来改变时仍能读取旧归档。 */
   return {text:buildComparisonPrompt(kind,recs),cwd:commonAnalysisArchiveFolder(recs)};
 }
-/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：单次分析工作目录 = 该次运行归档目录，
-   双运行对比工作目录 = 归档根目录，提示词包含两边归档文件的绝对路径；
-   记录未归档（archive 为空）时同样回退归档根目录（archiveRootFolder），保证新会话始终有工作区；
-   提示词只填入输入框草稿（不自动提交，用户确认后手动发送）；
-   旧版插件无此桥时退化为 __dshSessions/__dshPromptIntoSession 原自动发送路径 */
+/* 优先经父页面（工作台）暴露的 __dshNewChatSessionForCurrentProject 新建会话：
+   会话归入当前项目设置的工作区；未设置/已失效时由工作台弹出本项目工作区选择，选定后继续；
+   会话聊天列关闭时先打开。单次/双运行仍按归档目录生成 cwd 提示，绝对路径写进提示词供读取；
+   提示词只填入输入框草稿（不自动提交，用户确认后手动发送）。旧版插件无新桥时依次退化为
+   __dshNewChatSessionAt（归档目录 cwd + 草稿）及 __dshSessions/__dshPromptIntoSession（自动发送）路径。 */
 async function createAnalysisChat(kind, records){
   const P = window.parent;
   const request = buildAnalysisRequest(kind, records);
   const text = request.text, cwd = request.cwd;
+  if(P && typeof P.__dshNewChatSessionForCurrentProject==='function'){
+    try{ await P.__dshNewChatSessionForCurrentProject(text, cwd || null); }
+    catch(e){ alert('创建 AI 会话失败：'+(e && e.message ? e.message : e)); }
+    return;
+  }
   if(P && typeof P.__dshNewChatSessionAt==='function'){
     try{ await P.__dshNewChatSessionAt(text, cwd || null); }
     catch(e){ alert('创建 AI 会话失败：'+(e && e.message ? e.message : e)); }
