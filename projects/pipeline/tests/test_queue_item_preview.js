@@ -659,6 +659,45 @@ test('renderQueue：「申请节点中」徽标同样可点击查看原因', () 
   assert.match(list.children[0].innerHTML, /正在向服务端申请节点租约/);
 });
 
+test('renderQueue：点击条目空白处等同点击标题选中流水线，交互区域不重复触发', () => {
+  const { context, list, calls } = makeQueueContext();
+  const rc = { id: 'r1', by: 'bob', pipelineName: '部署', source: 'manual' };
+  context.activeRuns.push(rc);
+  context.running = true;
+  context.queue.push({ id: 'q1', by: 'alice', pipelineName: 'CI', source: 'manual', queuedAt: 1 });
+  context.remoteQueueClients.push({ id: 'c2', label: 'Chrome·xy12', runs: [],
+    queue: [{ id: 'q2', by: 'frank', pipelineName: 'P2', source: 'manual', queuedAt: 2, stages: [{ id: 's2', name: '部署' }], nodes: {} }] });
+  context.renderQueue();
+  const blank = () => ({ target: { closest: () => null } });
+  const onTitle = { target: { closest: sel => (sel === '.dshell-listItemTitle' ? {} : null) } };
+  const onReason = { target: { closest: sel => (sel === '[data-qreason]' ? {} : null) } };
+  const onButton = { target: { closest: sel => (sel === 'button' ? {} : null) } };
+  // 行序：[0]=运行 r1，[1]=排队 q1，[2]=分隔行，[3]=他端排队 q2
+  list.children[0].handlers.click(blank());
+  assert.deepEqual(calls.focusRun, [rc], '运行条目空白处点击选中该运行');
+  list.children[0].handlers.click(onTitle);
+  assert.equal(calls.focusRun.length, 1, '标题区域由标题自带点击处理，不重复触发');
+  list.children[0].handlers.click(onButton);
+  assert.equal(calls.focusRun.length, 1, '中止按钮区域不触发选中');
+  list.children[1].handlers.click(blank());
+  assert.deepEqual(calls.focusQueueItem, ['q1'], '排队条目空白处点击查看排队详情');
+  list.children[1].handlers.click(onReason);
+  assert.equal(calls.focusQueueItem.length, 1, '徽标区域只展开排队原因，不触发选中');
+  assert.equal(typeof list.children[2].handlers.click, 'undefined', '分隔行不可点击');
+  list.children[3].handlers.click(blank());
+  assert.deepEqual(calls.focusRemoteQueueItem, [{ clientId: 'c2', itemId: 'q2', kind: 'queued' }], '他端条目空白处点击查看他端详情');
+});
+
+test('renderQueue：缺少阶段数据的旧他端条目空白处点击不触发查看', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.remoteQueueClients.push({ id: 'legacy', label: '旧版浏览器', runs: [], running: null,
+    queue: [{ id: '', by: 'frank', pipelineName: '旧排队', stages: [] }] });
+  context.renderQueue();
+  const row = list.children[1];
+  if (row.handlers.click) row.handlers.click({ target: { closest: () => null } });
+  assert.equal(calls.focusRemoteQueueItem.length, 0);
+});
+
 test('startRun：队列项启动时把原队列 id 传给运行上下文', () => {
   const calls = [];
   const context = {
