@@ -303,9 +303,38 @@ matches = [arch for arch in architectures if arch.get("arch_name") == arch_name]
 if len(matches) != 1:
     raise SystemExit(f"arch_name not found or not unique: {arch_name}")
 arch = copy.deepcopy(matches[0])
-use_ems = arch.get("use_ems", False)
-if type(use_ems) is not bool:
+root_use_ems = arch.get("use_ems")
+if root_use_ems is not None and type(root_use_ems) is not bool:
     raise SystemExit(f"{arch_name}.use_ems must be a boolean when specified")
+
+# Current model-arch entries place use_ems in each Prefill/Decode params
+# mapping.  Keep the root-level field as a fallback for older entries, but
+# reject conflicting role settings rather than silently deploying a partial
+# EMS configuration.
+params_use_ems = []
+for package in arch.get("deploy_spec_packages", []):
+    if not isinstance(package, dict):
+        raise SystemExit(f"{arch_name}.deploy_spec_packages entries must be mappings")
+    for spec in package.get("deploy_specs", []):
+        if not isinstance(spec, dict) or spec.get("role") not in ("prefill", "decode"):
+            continue
+        params = spec.get("params", {})
+        if not isinstance(params, dict):
+            raise SystemExit(f"{arch_name}.{spec.get('role')}.params must be a mapping")
+        if "use_ems" in params:
+            value = params["use_ems"]
+            if type(value) is not bool:
+                raise SystemExit(f"{arch_name}.{spec.get('role')}.params.use_ems must be a boolean")
+            params_use_ems.append(value)
+
+if params_use_ems:
+    if len(set(params_use_ems)) != 1:
+        raise SystemExit(f"{arch_name} has conflicting params.use_ems values across Prefill/Decode specs")
+    use_ems = params_use_ems[0]
+    if root_use_ems is not None and root_use_ems != use_ems:
+        raise SystemExit(f"{arch_name}.use_ems conflicts with deploy_specs.params.use_ems")
+else:
+    use_ems = root_use_ems if root_use_ems is not None else False
 
 groups = []
 resources = []
