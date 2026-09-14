@@ -177,6 +177,7 @@ pull_log_dir="$(awk -F= '$1 == "LMCACHE_UNITTEST_LOG_DIR" { print substr($0, ind
 pull_http_proxy="$(awk -F= '$1 == "LMCACHE_UNITTEST_HTTP_PROXY" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_remove_image="$(awk -F= '$1 == "LMCACHE_UNITTEST_REMOVE_IMAGE" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_cpu_only="$(awk -F= '$1 == "LMCACHE_UNITTEST_CPU_ONLY" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
+pull_gpu_devices="$(awk -F= '$1 == "LMCACHE_UNITTEST_GPU_DEVICES" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_target_ip="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_IP" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_target_port="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_PORT" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
@@ -188,6 +189,7 @@ pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr
 [[ "$pull_http_proxy" == 'http://192.168.10.6:3128' ]]
 [[ "$pull_remove_image" == 1 ]]
 [[ "$pull_cpu_only" == 0 ]]
+[[ "$pull_gpu_devices" == all ]]
 [[ "$pull_target_ip" == '192.0.2.78' && "$pull_target_port" == 22 && "$pull_target_user" == root ]]
 grep -Fq '[lmcache-debug] image cache: miss; pulling image' <<<"$pull_output"
 grep -Fq '[lmcache-debug] image pull: completed' <<<"$pull_output"
@@ -206,6 +208,7 @@ rebuild_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target
   LMCACHE_UNITTEST_HTTP_PROXY="$pull_http_proxy" \
   LMCACHE_UNITTEST_REMOVE_IMAGE="$pull_remove_image" \
   LMCACHE_UNITTEST_CPU_ONLY="$pull_cpu_only" \
+  LMCACHE_UNITTEST_GPU_DEVICES="$pull_gpu_devices" \
   LMCACHE_UNITTEST_TARGET_IP="$pull_target_ip" \
   LMCACHE_UNITTEST_TARGET_PORT="$pull_target_port" \
   LMCACHE_UNITTEST_TARGET_USER="$pull_target_user" \
@@ -240,6 +243,7 @@ test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-se
   LMCACHE_UNITTEST_HTTP_PROXY="$rebuild_http_proxy" \
   LMCACHE_UNITTEST_REMOVE_IMAGE="$rebuild_remove_image" \
   LMCACHE_UNITTEST_CPU_ONLY="$pull_cpu_only" \
+  LMCACHE_UNITTEST_GPU_DEVICES="$pull_gpu_devices" \
   LMCACHE_UNITTEST_TARGET_IP="$pull_target_ip" \
   LMCACHE_UNITTEST_TARGET_PORT="$pull_target_port" \
   LMCACHE_UNITTEST_TARGET_USER="$pull_target_user" \
@@ -284,6 +288,16 @@ grep -Fq 'LMCACHE_UNITTEST_CPU_ONLY=1' <<<"$cpu_pull_output"
 grep -Fq '[lmcache-debug] execution mode: cpu-only; GPU devices are not attached' <<<"$cpu_pull_output"
 cpu_run_line="$(grep 'lmcache-unittest-cpu-execution' "$log" | grep ' run ' | tail -1)"
 [[ "$cpu_run_line" != *'--gpus all'* ]]
+
+selected_gpu_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" \
+  RUN_DIR="$tmp/selected-gpu-execution" LMCACHE_UNITTEST_RUN_DIR="$tmp/selected-gpu-target" \
+  LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_GPU_DEVICES='0,1' \
+  AK='test-ak' PROJECT='test-project' LOGIN_KEY='test-login-key' \
+  bash "$root/lmcache-unittest-pull-image.sh")"
+grep -Fq 'LMCACHE_UNITTEST_GPU_DEVICES=0,1' <<<"$selected_gpu_output"
+grep -Fq '[lmcache-debug] execution mode: gpu; GPU devices: 0,1' <<<"$selected_gpu_output"
+selected_gpu_run_line="$(grep 'lmcache-unittest-selected-gpu-execution' "$log" | grep ' run ' | tail -1)"
+[[ "$selected_gpu_run_line" == *'--gpus device=0,1'* ]]
 
 cpu_test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
   RUN_DIR="$tmp/cpu-execution" \

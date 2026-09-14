@@ -33,6 +33,7 @@ http_proxy="${LMCACHE_UNITTEST_HTTP_PROXY:-http://192.168.10.6:3128}"
 ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
 LMCACHE_UNITTEST_BUILD_LOG="$LMCACHE_UNITTEST_LOG_DIR/build.log"
 LMCACHE_UNITTEST_CPU_ONLY="${LMCACHE_UNITTEST_CPU_ONLY:-0}"
+LMCACHE_UNITTEST_GPU_DEVICES="${LMCACHE_UNITTEST_GPU_DEVICES:-all}"
 git_user="${LMCACHE_UNITTEST_GIT_USER:-}"
 git_token="${LMCACHE_UNITTEST_GIT_TOKEN:-}"
 if [[ -n "$git_user" || -n "$git_token" ]] && [[ -z "$git_user" || -z "$git_token" ]]; then
@@ -40,6 +41,10 @@ if [[ -n "$git_user" || -n "$git_token" ]] && [[ -z "$git_user" || -z "$git_toke
   exit 2
 fi
 [[ "$LMCACHE_UNITTEST_CPU_ONLY" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_CPU_ONLY must be 0 or 1' >&2; exit 2; }
+[[ "$LMCACHE_UNITTEST_GPU_DEVICES" == all || "$LMCACHE_UNITTEST_GPU_DEVICES" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+  echo 'LMCACHE_UNITTEST_GPU_DEVICES must be all or comma-separated GPU IDs such as 0,1' >&2
+  exit 2
+}
 lmcache_remote_init
 
 lmcache_remote bash -s <<EOF
@@ -114,6 +119,7 @@ printf 'LMCACHE_UNITTEST_BUILD_LOG=%s\n' "$LMCACHE_UNITTEST_BUILD_LOG"
 printf 'LMCACHE_UNITTEST_HTTP_PROXY=%s\n' "$http_proxy"
 printf 'LMCACHE_UNITTEST_REMOVE_IMAGE=%s\n' "$LMCACHE_UNITTEST_REMOVE_IMAGE"
 printf 'LMCACHE_UNITTEST_CPU_ONLY=%s\n' "$LMCACHE_UNITTEST_CPU_ONLY"
+printf 'LMCACHE_UNITTEST_GPU_DEVICES=%s\n' "$LMCACHE_UNITTEST_GPU_DEVICES"
 printf 'LMCACHE_UNITTEST_TARGET_IP=%s\n' "$LMCACHE_UNITTEST_TARGET_IP"
 printf 'LMCACHE_UNITTEST_TARGET_PORT=%s\n' "$LMCACHE_UNITTEST_TARGET_PORT"
 printf 'LMCACHE_UNITTEST_TARGET_USER=%s\n' "$LMCACHE_UNITTEST_TARGET_USER"
