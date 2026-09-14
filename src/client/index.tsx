@@ -3536,8 +3536,8 @@ function buildCustomLayoutPrompt(req: string): string {
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('name.label')}</span>
           </div>
-          <a className="dsh-wt_issueLink" href={ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('name.desc')}</a>
           <RenameInput initial={worktableTitleOf(customTitle, authUsername, t('title'))} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
+          <a className="dsh-wt_issueLink" href={ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('name.desc', { user: worktableTitleOf(customTitle, authUsername, t('title')) })}</a>
           <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('sort.label')}</span>
