@@ -4019,8 +4019,9 @@ function renderQueue(){
   $('queueCount').textContent = totalQueueItems?'('+totalQueueItems+' 项)':'';
   /* 明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态由独立卡片首行的「空闲」徽标表达 */
   list.style.display = (running||localItems.length||remoteQueueClients.length)?'':'none';
-  /* 正在编排区查看的条目（本页在跑/排队预览/他端只读预览）：整框背景与边框高亮，呼应「（查看中）」标记 */
-  const markViewing=it=>{ it.style.background='color-mix(in srgb, var(--dsw-alias-state-accent-primary, #4f8ef7) 14%, transparent)'; it.style.borderColor='var(--dsw-alias-state-accent-primary, #4f8ef7)'; };
+  /* 正在编排区查看的条目（本页在跑/排队预览/他端只读预览）：整框背景高亮，与运行历史选中行
+     背景色保持一致（#historyTable tbody tr.sel td 同一 rgba(79,142,247,.12)），呼应「（查看中）」标记 */
+  const markViewing=it=>{ it.style.background='rgba(79,142,247,.12)'; };
   /* 整行可点选中：点击条目空白处等同于点击标题（在编排区查看该流水线阶段详情）。
      标题/徽标/按钮等自带点击行为的区域命中时返回 true，行级处理直接放行，不重复触发 */
   const rowInnerHit=e=>{

@@ -546,8 +546,8 @@ test('renderQueue：正在查看的条目整框高亮，未查看的保持默认
   context.renderQueue();
   const viewingRow = list.children.find(row => /data-qview="q1"/.test(row.innerHTML));
   const otherRow = list.children.find(row => /data-qview="q2"/.test(row.innerHTML));
-  assert.ok(viewingRow.style.background, '查看中的排队条目背景高亮');
-  assert.ok(viewingRow.style.borderColor, '查看中的排队条目边框高亮');
+  assert.equal(viewingRow.style.background, 'rgba(79,142,247,.12)', '查看中的排队条目背景与运行历史选中行一致');
+  assert.equal(viewingRow.style.borderColor || '', '', '与运行历史选中行一致：不额外改边框');
   assert.match(viewingRow.innerHTML, /（查看中）/);
   assert.equal(otherRow.style.background || '', '', '未查看的条目保持默认背景');
 });
@@ -559,8 +559,8 @@ test('renderQueue：正在查看的运行条目同样整框高亮', () => {
   context.running = true;
   context.viewRc = rc;
   context.renderQueue();
-  assert.ok(list.children[0].style.background, '查看中的运行条目背景高亮');
-  assert.ok(list.children[0].style.borderColor);
+  assert.equal(list.children[0].style.background, 'rgba(79,142,247,.12)', '查看中的运行条目背景与运行历史选中行一致');
+  assert.equal(list.children[0].style.borderColor || '', '');
 });
 
 test('renderQueue：他端排队条目显示「排队中」，查看中的他端条目整框高亮', () => {
@@ -579,7 +579,7 @@ test('renderQueue：他端排队条目显示「排队中」，查看中的他端
   assert.match(rows[0].innerHTML, /data-qremote-id="q3"/, '他端后加入的排队条目显示在上面');
   assert.match(rows[1].innerHTML, /data-qremote-id="q2"/);
   rows.forEach(row => assert.match(row.innerHTML, /<span class="dshell-badge dshell-badgeWait">排队中<\/span>/));
-  assert.ok(rows[1].style.background, '查看中的他端条目整框高亮');
+  assert.equal(rows[1].style.background, 'rgba(79,142,247,.12)', '查看中的他端条目背景与运行历史选中行一致');
   assert.equal(rows[0].style.background || '', '');
 });
 
