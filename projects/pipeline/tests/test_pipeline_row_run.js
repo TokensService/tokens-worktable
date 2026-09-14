@@ -80,8 +80,6 @@ function makeContext(runResult) {
     findPipeline: id => context.pipelines.find(pipeline => pipeline.id === id),
     selectPipeline: id => calls.select.push(id),
     openPlForm() {}, copyPipeline() {}, deletePipeline() {}, renderPipelineSel() {},
-    plMenuOpenId: null,   // 行内「⋯」菜单展开状态桩：行运行测试不展开菜单
-    togglePipelinePin() {},   // 置顶切换桩：行运行测试不涉及置顶
     flashRunTip: text => calls.tips.push(text),
     alert: text => calls.alerts.push(text),
     QUEUE_CAP: 16,

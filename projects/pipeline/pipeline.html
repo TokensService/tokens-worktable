@@ -31,6 +31,9 @@
     /* ===== 流水线专属样式（色板走上述变量，最小自造范围） ===== */
     .pipeline-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
     .pipeline-controls .dshell-input { width:auto; min-width:96px; }
+    /* 流水线行内「⋯」菜单项：列表行形态（纯文字行，无按钮边框/圆角），悬停底色高亮 */
+    .pl-row-menu-item { padding:6px 14px; font-size:12px; white-space:nowrap; cursor:pointer; }
+    .pl-row-menu-item:hover { background:var(--dsw-alias-fill-l1); }
     /* 主控区各选择框限宽：超长省略号显示，保证右侧「运行流水线」按钮位置稳定 */
     #pipelineControls select.dshell-input,
     #pipelineControls button.dshell-input { max-width:220px; }
@@ -813,6 +816,12 @@
       <div class="logbox" id="pmcLog" style="flex:1; min-height:160px; max-height:46vh; margin:0;">配置收集脚本后点「收集」执行（输出实时回显）。</div>
     </div>
   </div>
+</div>
+
+<!-- 流水线行内「⋯」菜单：全局悬浮层（fixed 定位）——悬浮于最上层（z-index 高于吸顶导航），不被表格 overflow 容器裁剪；
+     不占文档流，展开时不撑大流水线行高；菜单项为列表行形态（.pl-row-menu-item），非圆边按钮 -->
+<div id="plRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:88px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+  <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
 </div>
 
 <script>
@@ -6713,14 +6722,34 @@ function renderPlFilterOptions(){
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
-/* 行内「⋯」菜单当前展开项的流水线 id：重渲染驱动开合（点 ⋯ 置位/清空后重渲染；点菜单外任意处由文档级监听清空，见文件尾绑定区） */
+/* 行内「⋯」菜单当前展开项的流水线 id：菜单是全局悬浮层 #plRowMenuPanel（fixed 定位，悬浮最上层、不撑大行高），
+   开合只动该层、不重渲染任务表；点 ⋯/置顶项/菜单外任意处/滚动/缩放收起（绑定见文件尾） */
 let plMenuOpenId=null;
+function closePlRowMenu(){
+  if(!plMenuOpenId) return;
+  plMenuOpenId=null;
+  const panel=$('plRowMenuPanel'); if(panel) panel.style.display='none';
+}
+/* 展开行内「⋯」菜单：列表项文案随置顶态刷新；fixed 定位——右缘对齐 ⋯ 按钮、下缘贴按钮底部，
+   不占用文档流，故不被 overflow 容器裁剪、也不撑大流水线行高 */
+function openPlRowMenu(id, anchorBtn){
+  const pl=findPipeline(id); if(!pl) return;
+  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'); if(!panel||!item) return;
+  plMenuOpenId=id;
+  item.textContent = pl.pinnedAt ? '取消置顶' : '置顶';
+  item.title = pl.pinnedAt ? '取消置顶，恢复数组原顺序' : '置顶到列表最前，随服务端同步';
+  panel.style.display='block';
+  if(anchorBtn && anchorBtn.getBoundingClientRect){
+    const r=anchorBtn.getBoundingClientRect();
+    panel.style.left=Math.max(4, r.right-(panel.offsetWidth||0))+'px';   // 先 display:block 再量宽，右缘对齐锚按钮
+    panel.style.top=(r.bottom+4)+'px';
+  }
+}
 /* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
    pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
 function togglePipelinePin(id){
   const p=findPipeline(id); if(!p) return;
   p.pinnedAt=p.pinnedAt?0:Date.now();
-  plMenuOpenId=null;
   savePipelines();
   renderPipelines();
 }
@@ -6746,7 +6775,7 @@ function renderPipelines(){
     tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
-      ' <span data-plmenuwrap="'+p.id+'" style="position:relative;display:inline-block;"><button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button><span data-plmenupanel="'+p.id+'" style="display:'+(plMenuOpenId===p.id?'block':'none')+';position:absolute;right:0;top:calc(100% + 2px);z-index:30;min-width:92px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"><button class="dshell-btn dshell-btnGhost mini" data-plpin="'+p.id+'" style="display:block;width:100%;text-align:left;white-space:nowrap;" title="'+(isPinned?'取消置顶，恢复数组原顺序':'置顶到列表最前，随服务端同步')+'">'+(isPinned?'取消置顶':'置顶')+'</button></span></span></td>';
+      ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
     tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
@@ -6755,9 +6784,7 @@ function renderPipelines(){
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
   tb.querySelectorAll('[data-plcopy]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); copyPipeline(b.getAttribute('data-plcopy')); }));
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
-  tb.querySelectorAll('[data-plmenuwrap]').forEach(w=>w.addEventListener('click',e=>e.stopPropagation()));   // 「⋯」菜单（含面板留白）点击不触发行选用
-  tb.querySelectorAll('[data-plmenu]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const id=b.getAttribute('data-plmenu'); plMenuOpenId=(plMenuOpenId===id?null:id); renderPipelines(); }));
-  tb.querySelectorAll('[data-plpin]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); togglePipelinePin(b.getAttribute('data-plpin')); }));
+  tb.querySelectorAll('[data-plmenu]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const id=b.getAttribute('data-plmenu'); if(plMenuOpenId===id) closePlRowMenu(); else openPlRowMenu(id, b); }));
   renderPipelineSel();
 }
 /* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中也可切换（selectPipeline 脱离运行视图，在跑任务转后台继续） */
@@ -7438,8 +7465,12 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
-/* 流水线行内「⋯」菜单：点菜单外任意处收起（菜单包裹内点击已 stopPropagation，不会冒泡到这里） */
-document.addEventListener('click', (e)=>{ if(!plMenuOpenId) return; const t=e.target; if(t && t.closest && t.closest('[data-plmenuwrap]')) return; plMenuOpenId=null; renderPipelines(); });
+/* 流水线行内「⋯」菜单：「置顶」列表项对当前展开行切换置顶（先收起菜单再切换）；
+   点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
+$('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
+document.addEventListener('click', closePlRowMenu);
+window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
+window.addEventListener('resize', closePlRowMenu);
 $('ioExpSettings').addEventListener('click', exportSettings);
 $('ioExpPipelines').addEventListener('click', exportPipelines);
 $('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
