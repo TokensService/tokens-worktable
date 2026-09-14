@@ -598,8 +598,20 @@ if isinstance(lmcache, dict):
         direct["image"]["repository"] = image_repository
         direct["image"]["tag"] = image_tag
 
+def has_external_node_ip_mapping():
+    for host in target_hosts:
+        endpoint = host["ip"]
+        endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+        host_address = endpoint_match.group(1) if endpoint_match else endpoint
+        mapped_ip = target_node_ip_map.get(endpoint)
+        if isinstance(mapped_ip, str) and mapped_ip and mapped_ip != host_address:
+            return True
+    return False
+
 selected_collector_gateway_url = (
-    mapped_collector_gateway_url if target_node_ip_map else collector_gateway_url
+    mapped_collector_gateway_url
+    if has_external_node_ip_mapping()
+    else collector_gateway_url
 )
 
 def render_collector_gateway_url(config_text):

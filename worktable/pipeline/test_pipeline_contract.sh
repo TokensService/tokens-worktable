@@ -116,6 +116,28 @@ assert '"collector_gateway_url": "192.168.16.146:25888"' in values["XDSCppServer
 print("PASS: collector gateway selects default or mapped target endpoint")
 PY_COLLECTOR
 
+python3 - "$WORK" "$SCRIPTS/render-config.sh" <<'PY_SAME_IP_MAPPING'
+import os, pathlib, subprocess, sys, yaml
+
+work = pathlib.Path(sys.argv[1])
+env = dict(
+    os.environ,
+    RUN_DIR=str(work / "same-ip-mapping"),
+    CHART_TEMPLATE_DIR=str(work / "xds-cluster"),
+    VALUES_TEMPLATE=str(work / "values.template.yaml"),
+    ARCH_FILE=str(work / "model_arch.json"),
+    ARCH_NAME="glm-5.2-nvfp4",
+    TARGET_HOSTS='[{"ip":"192.0.2.10"}]',
+    TARGET_NODE_IP_MAP='{"192.0.2.10":"192.0.2.10"}',
+    DEPLOY_IMAGE="registry.example.com/xds:test",
+)
+subprocess.run(["bash", sys.argv[2]], env=env, check=True, stdout=subprocess.DEVNULL)
+values = yaml.safe_load((work / "same-ip-mapping" / "rendered" / "values.rendered.yaml").read_text())
+assert "collector_gateway_url = 192.168.10.6:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert '"collector_gateway_url": "192.168.10.6:25888"' in values["XDSCppServerConfigFile"]["xds_dps_server.config"]
+print("PASS: same-IP node resolution keeps the default collector gateway")
+PY_SAME_IP_MAPPING
+
 FAKE_BIN="$WORK/fake-bin"
 FAKE_IMAGE_ROOT="$WORK/fake-image"
 mkdir -p "$FAKE_BIN" \
