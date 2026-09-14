@@ -3478,6 +3478,8 @@ function buildLogParts(stage,ctx,n){
 const QUEUE_CAP = 16;
 const MAX_ACTIVE_RUNS = 4;   // 浏览器单标签页全局槽位：避免不同机器的大日志任务同时把 CPU/内存/连接打满
 let queue = [];
+/* 「排队中」徽标点击展开/收起排队原因（按条目 id 记忆展开态，重绘保留；条目出队后由 cancelQueue 清理） */
+const queueReasonOpen=new Set();
 function resetNodes(){
   /* 视图感知：展示某次运行（在跑/结果视图）时重置的是该运行的节点表；空闲态重置当前流水线的空闲编排 */
   if(viewRc){ viewRc.nodes={}; nodes=viewRc.nodes; }
@@ -3668,7 +3670,7 @@ function drainQueue(){
     }
   }
 }
-function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
+function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); if(typeof queueReasonOpen!=='undefined') queueReasonOpen.delete(id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
 /* 本地运行队列视图还包含「已出队、正在申请节点租约、尚未进入 activeRuns」的短暂状态。
@@ -4047,14 +4049,33 @@ function renderQueue(){
     if(!cs.length) return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点空闲</span>';
     return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点 '+cs.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+'</span>';
   };
+  /* 排队原因（点击「排队中/申请节点中」徽标展开/收起）：按当前调度状态即时推算——租约被他端占用
+     （nodeWait 快照）> 同机在跑 > 同机前排 > 并发槽位满 > 调度中。自包含实现，不依赖引擎函数 */
+  const reasonOpenSet=(typeof queueReasonOpen!=='undefined')?queueReasonOpen:null;   // typeof 兼容测试/旧页面片段抽取
+  const qIps=x=>{ const s=new Set(); (((x&&x.envs)||[])).forEach(e=>{ const ip=String((e&&e.ip)||'').trim(); if(ip) s.add(ip); }); return s; };
+  const qIpHit=(a,b)=>{ for(const ip of a){ if(b.has(ip)) return ip; } return null; };
+  const slotCount=()=>activeRuns.length+(typeof pendingLeaseStarts!=='undefined'?pendingLeaseStarts.length:0);
+  const queueReasonText=(q,idx)=>{
+    if(isPendingQueueItem(q)) return '正在向服务端申请节点租约，通常几秒内完成；节点被他端占用时自动转为等待节点，拿到后自动启动。';
+    const w=q&&q.nodeWait;
+    if(w&&Array.isArray(w.conflicts)&&w.conflicts.length) return '节点 '+w.conflicts.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+' 被他端运行占用，租约释放后自动启动（每 5 秒重试）。';
+    const mine=qIps(q);
+    if(!mine.size) return activeRuns.length?'未选择目标节点的运行按串行处理：等待在跑任务全部结束后启动。':'调度中，即将自动启动。';
+    for(let i=0;i<activeRuns.length;i++){ const hit=qIpHit(mine,qIps(activeRuns[i])); if(hit) return '节点 '+esc(hit)+' 上正在运行「'+esc(activeRuns[i].pipelineName||'')+'」（'+esc(activeRuns[i].by||'')+'）：同一节点同一时间只跑一条流水线，等其结束后自动启动。'; }
+    for(let j=0;j<idx;j++){ const prev=localItems[j]; if(!prev||prev===q) continue; const hit=qIpHit(mine,qIps(prev)); if(hit) return '同机任务「'+esc(prev.pipelineName||'')+'」（#'+(activeRuns.length+j+1)+' · '+esc(prev.by||'')+'）排在前面：同一节点先入先出，等其启动并结束后轮到自己。'; }
+    if(typeof MAX_ACTIVE_RUNS!=='undefined'&&slotCount()>=MAX_ACTIVE_RUNS) return '并发槽位已满（'+slotCount()+'/'+MAX_ACTIVE_RUNS+'）：目标机器不冲突，等待在跑任务结束空出槽位后立即启动。';
+    return '调度中，即将自动启动（目标机器不冲突且有并发空槽时立即运行）。';
+  };
+  const queueReasonLine=q=>'<div class="dshell-muted" style="font-size:10px;font-weight:normal;white-space:normal;">排队原因：'+queueReasonText(q,localItems.indexOf(q))+'</div>';
   /* 展示倒序：后加入的排队项显示在上面（仅展示顺序；编号仍按入队先后递增，先入队者排在队列首部） */
   for(let i=localItems.length-1;i>=0;i--){
     const q=localItems[i];
     const it=document.createElement('div'); it.className='dshell-listItem';
     const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
     const pending=isPendingQueueItem(q);
+    const reasonOpen=reasonOpenSet&&reasonOpenSet.has(q.id);
     if(viewing) markViewing(it);
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+i+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait">申请节点中</span>':'<span class="dshell-badge dshell-badgeWait">排队中</span> <button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+i+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+(reasonOpen?queueReasonLine(q):'')+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">申请节点中</span>':'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">排队中</span> <button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
     list.appendChild(it);
   }
   /* 其他浏览器标签页的在场快照：可点击查看脱敏后的阶段状态；运行/取消仍是来源页内存态，
@@ -4086,6 +4107,13 @@ function renderQueue(){
   list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(rc) abortRun(rc); }));
   list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
   list.querySelectorAll('[data-qview]').forEach(el=>el.addEventListener('click',()=>focusQueueItem(el.getAttribute('data-qview'))));   // 排队项点击：编排区预览其阶段编排与参数快照
+  /* 「排队中/申请节点中」徽标点击：展开/收起排队原因（只影响展示，不触碰调度与详情预览焦点） */
+  list.querySelectorAll('[data-qreason]').forEach(el=>el.addEventListener('click',()=>{
+    if(!reasonOpenSet) return;
+    const id=el.getAttribute('data-qreason');
+    if(reasonOpenSet.has(id)) reasonOpenSet.delete(id); else reasonOpenSet.add(id);
+    renderQueue();
+  }));
   list.querySelectorAll('[data-qremote-id]').forEach(el=>el.addEventListener('click',()=>focusRemoteQueueItem(el.getAttribute('data-qremote-client'),el.getAttribute('data-qremote-id'),el.getAttribute('data-qremote-kind'))));
   /* 流水线任务表的「运行中/查看中」徽标跟随在跑运行集与焦点运行刷新；renderQueue 每 5 秒轮询也会进入，
      按签名判断避免无谓重建任务表（重建会打断行点击） */
