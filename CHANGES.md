@@ -1,5 +1,13 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线任务列表支持置顶（`projects/pipeline/pipeline.html`）：每行操作列末尾新增「⋯」菜单，
+  点击展开「置顶 / 取消置顶」（菜单开合由 `plMenuOpenId` 驱动重渲染，点菜单外任意处经文档级监听收起，
+  面板内点击不冒泡触发行选用）。置顶态记在流水线 `pinnedAt` 时间戳上，随 config 经 persistState
+  上送服务端、随导出文件保存，各浏览器刷新后一致；任务列表与运行框选用下拉同一排序——已置顶排最前
+  （多条按置顶时间新→旧），未置顶保持数组原序（内置经加载迁移居首），置顶行名称区显示「置顶」徽标；
+  取消置顶清空 pinnedAt 恢复原序；复制副本 pinnedAt 清零不继承。新增
+  `projects/pipeline/tests/test_pipeline_pin.js`（排序/徽标/菜单开合/置顶落盘/副本不继承），
+  `test_pipeline_row_run.js`、`test_pipeline_audit_trail.js` 补菜单状态与置顶切换桩。
 - 流水线运行历史「AI 日志分析 / Profiling 分析 / 性能诊断」统一按当前项目工作区新建会话
   （`projects/pipeline/pipeline.html` + `src/client/index.tsx`）：页面优先调用新增宿主桥
   `window.__dshNewChatSessionForCurrentProject(text, cwd)`，工作台从当前分栏项目读取
