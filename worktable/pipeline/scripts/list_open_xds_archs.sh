@@ -1,63 +1,67 @@
 #!/usr/bin/env bash
-# 输出指定 open-xds 分支 model_arch JSON 中的全部 arch_name，每行一个。
-# 用法：OPEN_XDS_BRANCH=<branch> list_open_xds_archs.sh
-# 可覆盖：OPEN_XDS_REPO、OPEN_XDS_BRANCH、OPEN_XDS_ARCH_PATH、GITHUB_API_URL、
-#          GITHUB_TOKEN、GITHUB_PROXY。
+# 输出 GIT_BRANCH 中 Open-XDS 架构文件的 arch_name；标准输出每行一个名称。
+# 必填环境变量：GIT_BRANCH、GIT_URL、GIT_USER、GIT_PASSWORD。
 set -euo pipefail
 
 if (($# != 0)); then
-  echo 'list_open_xds_archs.sh does not accept positional arguments; set OPEN_XDS_BRANCH instead' >&2
+  echo 'list_open_xds_archs.sh does not accept positional arguments' >&2
   exit 2
 fi
-branch=${OPEN_XDS_BRANCH:-main}
-OPEN_XDS_REPO=${OPEN_XDS_REPO:-TokensService/open-xds}
-OPEN_XDS_ARCH_PATH=${OPEN_XDS_ARCH_PATH:-deploy/xds/A3/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json}
-GITHUB_API_URL=${GITHUB_API_URL:-https://api.github.com}
-GITHUB_TOKEN=${GITHUB_TOKEN:-}
-github_proxy_explicit=false
-if [[ -v GITHUB_PROXY ]]; then
-  github_proxy_explicit=true
-else
-  GITHUB_PROXY=${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}
-fi
 
-curl_args=(-fsSL -H 'Accept: application/vnd.github+json')
-if [[ -n "${GITHUB_TOKEN}" ]]; then
-  curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-fi
-if [[ -n "${GITHUB_PROXY}" ]]; then
-  curl_args+=(--proxy "${GITHUB_PROXY}")
-elif [[ "${github_proxy_explicit}" == true ]]; then
-  curl_args+=(--noproxy '*')
-fi
+for required_var in GIT_BRANCH GIT_URL GIT_USER GIT_PASSWORD; do
+  if [[ -z "${!required_var:-}" ]]; then
+    echo "${required_var} is required" >&2
+    exit 2
+  fi
+done
 
-if ! response=$(curl "${curl_args[@]}" --get \
-  --data-urlencode "ref=${branch}" \
-  "${GITHUB_API_URL%/}/repos/${OPEN_XDS_REPO}/contents/${OPEN_XDS_ARCH_PATH}"); then
-  echo "cannot read architecture file for branch ${branch}; set GITHUB_TOKEN for this private repository" >&2
+arch_path='deploy/xds/A3/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json'
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/open-xds-archs.XXXXXX")"
+askpass_file="${work_dir}/git-askpass"
+cleanup() {
+  rm -rf "${work_dir}"
+}
+trap cleanup EXIT
+
+cat >"${askpass_file}" <<'ASKPASS'
+#!/usr/bin/env bash
+case "$1" in
+  *Username*) printf '%s\n' "${GIT_USER}" ;;
+  *Password*) printf '%s\n' "${GIT_PASSWORD}" ;;
+esac
+ASKPASS
+chmod 700 "${askpass_file}"
+
+export GIT_ASKPASS="${askpass_file}"
+export GIT_TERMINAL_PROMPT=0
+# Do not let a host-level credential helper override the supplied environment
+# credentials. --quiet keeps successful Git operations out of stdout.
+git -c credential.helper= clone --quiet --depth 1 --branch "${GIT_BRANCH}" \
+  --single-branch "${GIT_URL}" "${work_dir}/repo"
+
+arch_file="${work_dir}/repo/${arch_path}"
+if [[ ! -f "${arch_file}" ]]; then
+  echo "architecture file not found in branch ${GIT_BRANCH}: ${arch_path}" >&2
   exit 1
 fi
 
-python3 -c '
-import base64
+python3 - "${arch_file}" <<'PY'
 import json
+from pathlib import Path
 import sys
 
-response = json.load(sys.stdin)
-if not isinstance(response, dict) or "content" not in response:
-    message = response.get("message", "missing content") if isinstance(response, dict) else "invalid response"
-    raise SystemExit(f"GitHub Contents API did not return the architecture file: {message}")
-
 try:
-    architectures = json.loads(base64.b64decode(response["content"]).decode("utf-8"))
-except (KeyError, TypeError, ValueError, UnicodeDecodeError) as error:
+    catalog = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
     raise SystemExit(f"invalid architecture JSON: {error}")
 
+architectures = catalog if isinstance(catalog, list) else catalog.get("architectures") if isinstance(catalog, dict) else None
 if not isinstance(architectures, list):
     raise SystemExit("architecture JSON root must be an array")
+
 for index, architecture in enumerate(architectures):
     name = architecture.get("arch_name") if isinstance(architecture, dict) else None
     if not isinstance(name, str) or not name:
         raise SystemExit(f"architecture entry {index} has no arch_name")
     print(name)
-' <<< "${response}"
+PY
