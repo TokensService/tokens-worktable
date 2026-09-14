@@ -186,8 +186,6 @@ function loadRender(pipelines){
     findPipeline:id=>pipelines.find(p=>p.id===id),
     selectPipeline:()=>{},
     openPlForm(){}, copyPipeline(){}, deletePipeline(){}, renderPipelineSel(){},
-    plMenuOpenId:null,   // 行内「⋯」菜单展开状态桩：署名展示测试不展开菜单
-    togglePipelinePin(){},   // 置顶切换桩：署名展示测试不涉及置顶
     flashRunTip:()=>{},
     alert:()=>{},
     QUEUE_CAP:8,
