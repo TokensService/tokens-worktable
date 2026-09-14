@@ -29,7 +29,7 @@ pluginVer=$(node -p 'JSON.parse(require("fs").readFileSync("dsh.plugin.json","ut
 [ "$pkgVer" = "$pluginVer" ] || fail "package.json version（$pkgVer）!= dsh.plugin.json version（$pluginVer）——发版前先统一两处版本号"
 if [ -n "${RELEASE_TAG:-}" ] && [ "${SKIP_VERSION_CHECK:-}" != "1" ]; then
   tagVer=$(printf '%s' "$RELEASE_TAG" | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-  [ "$tagVer" = "$pkgVer" ] || fail "RELEASE_TAG（$RELEASE_TAG → $tagVer）与 package.json version（$pkgVer）不一致——先 bump 版本号再发行（或设 SKIP_VERSION_CHECK=1 跳过）"
+  [ "$tagVer" = "$pkgVer" ] || fail "RELEASE_TAG（$RELEASE_TAG → $tagVer）与 package.json version（$pkgVer）不一致——先 bump 版本号再发行（npm run bump -- $tagVer 同步三处后提交推送；或设 SKIP_VERSION_CHECK=1 跳过）"
   echo "✓ 版本一致：$RELEASE_TAG ↔ $pkgVer"
 fi
 
