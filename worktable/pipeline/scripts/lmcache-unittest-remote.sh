@@ -79,3 +79,22 @@ lmcache_remote() {
       -o LogLevel=ERROR -o ConnectTimeout=30 "$LMCACHE_UNITTEST_TARGET" "$@"
   fi
 }
+
+# Copy files from the selected target host to the pipeline execution host.
+# Callers pass normal scp source/destination arguments after this helper.
+lmcache_remote_scp() {
+  if [[ -n "${LMCACHE_UNITTEST_TARGET_PASSWORD:-}" ]]; then
+    command -v sshpass >/dev/null 2>&1 || {
+      echo 'sshpass is required for password-authenticated target log copy' >&2
+      return 2
+    }
+    SSHPASS="$LMCACHE_UNITTEST_TARGET_PASSWORD" sshpass -e scp \
+      -P "$LMCACHE_UNITTEST_TARGET_PORT" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$@"
+  else
+    scp -P "$LMCACHE_UNITTEST_TARGET_PORT" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR -o ConnectTimeout=30 "$@"
+  fi
+}

@@ -14,11 +14,14 @@ TARGET_IP="${TARGET_IP:-}"
 SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
 TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
-RUN_DIR="${LMCACHE_UNITTEST_RUN_DIR:-${TARGET_RUN_DIR:-/tmp/lmcache-unittest/$(date +%Y%m%d_%H%M%S)}}"
+# RUN_DIR 属于执行机：脚本三将测试日志回传到这里。目标节点仍使用独立的
+# LMCACHE_UNITTEST_RUN_DIR，避免混淆两台机器上的同名路径。
+RUN_DIR="${RUN_DIR:-/tmp/LMCache仓-单元测试-$(date +%Y%m%d_%H%M%S)}"
+LMCACHE_UNITTEST_RUN_DIR="${LMCACHE_UNITTEST_RUN_DIR:-${TARGET_RUN_DIR:-/tmp/lmcache-unittest/$(date +%Y%m%d_%H%M%S)}}"
 LMCACHE_UNITTEST_IMAGE="${LMCACHE_UNITTEST_IMAGE:-lmcache-vllm-openai-0.5.4-unitest:latest}"
 LMCACHE_UNITTEST_CAP_ADD="${LMCACHE_UNITTEST_CAP_ADD:-SYS_NICE}"
 LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST="${LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST:-1}"
-LMCACHE_UNITTEST_LOG_DIR="${LMCACHE_UNITTEST_LOG_DIR:-$RUN_DIR/logs}"
+LMCACHE_UNITTEST_LOG_DIR="${LMCACHE_UNITTEST_LOG_DIR:-$LMCACHE_UNITTEST_RUN_DIR/logs}"
 LMCACHE_UNITTEST_CONTAINER="${LMCACHE_UNITTEST_CONTAINER:-lmcache-unittest-$(basename "$RUN_DIR")}"
 # 128 节点通过该代理访问 GitCode/Hugging Face；调用方可按目标节点覆盖。
 LMCACHE_UNITTEST_HTTP_PROXY="${LMCACHE_UNITTEST_HTTP_PROXY:-http://192.168.10.6:3128}"
@@ -40,7 +43,7 @@ lmcache_remote_init
 lmcache_remote bash -s <<EOF
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH:-}"
-run_dir=$(printf '%q' "$RUN_DIR")
+run_dir=$(printf '%q' "$LMCACHE_UNITTEST_RUN_DIR")
 log_dir=$(printf '%q' "$LMCACHE_UNITTEST_LOG_DIR")
 image=$(printf '%q' "$LMCACHE_UNITTEST_IMAGE")
 container=$(printf '%q' "$LMCACHE_UNITTEST_CONTAINER")
@@ -79,7 +82,8 @@ if [[ "\$container_status" != running ]]; then
 fi
 EOF
 
-printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$RUN_DIR"
+printf 'RUN_DIR=%s\n' "$RUN_DIR"
+printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$LMCACHE_UNITTEST_RUN_DIR"
 printf 'LMCACHE_UNITTEST_IMAGE=%s\n' "$LMCACHE_UNITTEST_IMAGE"
 printf 'LMCACHE_UNITTEST_CAP_ADD=%s\n' "$LMCACHE_UNITTEST_CAP_ADD"
 printf 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST=%s\n' "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST"

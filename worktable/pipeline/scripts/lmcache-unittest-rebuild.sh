@@ -23,7 +23,8 @@ for variable in LMCACHE_UNITTEST_RUN_DIR LMCACHE_UNITTEST_IMAGE LMCACHE_UNITTEST
   require_inherited "$variable"
 done
 
-RUN_DIR="$LMCACHE_UNITTEST_RUN_DIR"
+# 执行机日志回传目录由 pull 阶段生成并通过变量池传入。
+RUN_DIR="${RUN_DIR:-/tmp/LMCache仓-单元测试-$(date +%Y%m%d_%H%M%S)}"
 LMCACHE_UNITTEST_REPO_DIR="${LMCACHE_UNITTEST_REPO_DIR:-/workspace/LMCache}"
 url="${LMCACHE_UNITTEST_GIT_URL:-https://gitcode.com/TokensService/LMCache.git}"
 branch="${LMCACHE_UNITTEST_GIT_BRANCH:-dev}"
@@ -101,7 +102,8 @@ nerdctl --namespace "\$namespace" exec "\$container" bash -lc \
 echo '[lmcache-debug] build: completed'
 EOF
 
-printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$RUN_DIR"
+printf 'RUN_DIR=%s\n' "$RUN_DIR"
+printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$LMCACHE_UNITTEST_RUN_DIR"
 printf 'LMCACHE_UNITTEST_IMAGE=%s\n' "$LMCACHE_UNITTEST_IMAGE"
 printf 'LMCACHE_UNITTEST_CAP_ADD=%s\n' "$LMCACHE_UNITTEST_CAP_ADD"
 printf 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST=%s\n' "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST"

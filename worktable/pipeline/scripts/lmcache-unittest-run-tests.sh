@@ -24,7 +24,9 @@ require_inherited LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST 'run pull stage first'
 require_inherited LMCACHE_UNITTEST_LOG_DIR 'run pull stage first'
 require_inherited LMCACHE_UNITTEST_REMOVE_IMAGE 'run pull stage first'
 
-RUN_DIR="$LMCACHE_UNITTEST_RUN_DIR"
+# RUN_DIR 是执行机回传日志目录；目标节点日志仍由
+# LMCACHE_UNITTEST_LOG_DIR 指定。
+RUN_DIR="${RUN_DIR:-/tmp/LMCache仓-单元测试-$(date +%Y%m%d_%H%M%S)}"
 ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
 # 与重编译阶段使用相同的目标节点代理，允许调用方覆盖。
 http_proxy="${LMCACHE_UNITTEST_HTTP_PROXY:-http://192.168.10.6:3128}"
@@ -125,12 +127,30 @@ EOF
 remote_rc="${remote_rc:-0}"
 # 仅转发诊断行，不把 RESULT= 等内部控制行暴露为工作台阶段变量。
 printf '%s\n' "$remote_result" | awk '/^\[lmcache-debug\]/'
-LMCACHE_UNITTEST_TEST_RESULT="$remote_rc"
+# pytest 无论成功或失败，都尝试将目标节点已有日志复制到执行机 RUN_DIR。
+LMCACHE_UNITTEST_LOCAL_LOG_DIR="${LMCACHE_UNITTEST_LOCAL_LOG_DIR:-$RUN_DIR}"
+mkdir -p "$LMCACHE_UNITTEST_LOCAL_LOG_DIR"
+log_copy_rc=0
+if lmcache_remote_scp -r \
+  "${LMCACHE_UNITTEST_TARGET}:${LMCACHE_UNITTEST_LOG_DIR}/." \
+  "$LMCACHE_UNITTEST_LOCAL_LOG_DIR/"; then
+  echo "[lmcache-debug] test logs copied to execution host: $LMCACHE_UNITTEST_LOCAL_LOG_DIR"
+else
+  log_copy_rc=$?
+  echo "[lmcache-debug] test log copy failed; target: $LMCACHE_UNITTEST_LOG_DIR; execution host: $LMCACHE_UNITTEST_LOCAL_LOG_DIR" >&2
+fi
+# 保留 pytest 的失败结果；只有 pytest 成功但日志回传失败时，才将阶段置为失败。
+stage_rc="$remote_rc"
+if [[ "$remote_rc" == 0 && "$log_copy_rc" != 0 ]]; then
+  stage_rc="$log_copy_rc"
+fi
+LMCACHE_UNITTEST_TEST_RESULT="$stage_rc"
 LMCACHE_UNITTEST_IMAGE_REMOVED="$(awk -F= '$1 == "IMAGE_REMOVED" { print $2 }' <<<"$remote_result")"
 LMCACHE_UNITTEST_ISOLATED_TEST_LOG="$(awk -F= '$1 == "ISOLATED_LOG" { sub(/^[^=]*=/, ""); print }' <<<"$remote_result")"
 [[ -n "$LMCACHE_UNITTEST_IMAGE_REMOVED" ]] || LMCACHE_UNITTEST_IMAGE_REMOVED=0
 
-printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$RUN_DIR"
+printf 'RUN_DIR=%s\n' "$RUN_DIR"
+printf 'LMCACHE_UNITTEST_RUN_DIR=%s\n' "$LMCACHE_UNITTEST_RUN_DIR"
 printf 'LMCACHE_UNITTEST_LOG_DIR=%s\n' "$LMCACHE_UNITTEST_LOG_DIR"
 printf 'LMCACHE_UNITTEST_CONTAINER=%s\n' "$LMCACHE_UNITTEST_CONTAINER"
 printf 'LMCACHE_UNITTEST_CAP_ADD=%s\n' "$LMCACHE_UNITTEST_CAP_ADD"
@@ -138,8 +158,9 @@ printf 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST=%s\n' "$LMCACHE_UNITTEST_ISOLATE_B
 printf 'LMCACHE_UNITTEST_HTTP_PROXY=%s\n' "$http_proxy"
 printf 'LMCACHE_UNITTEST_REMOVE_IMAGE=%s\n' "$LMCACHE_UNITTEST_REMOVE_IMAGE"
 printf 'LMCACHE_UNITTEST_CPU_ONLY=%s\n' "$LMCACHE_UNITTEST_CPU_ONLY"
+printf 'LMCACHE_UNITTEST_LOCAL_LOG_DIR=%s\n' "$LMCACHE_UNITTEST_LOCAL_LOG_DIR"
 printf 'LMCACHE_UNITTEST_IMAGE_REMOVED=%s\n' "$LMCACHE_UNITTEST_IMAGE_REMOVED"
 printf 'LMCACHE_UNITTEST_TEST_LOG=%s\n' "$LMCACHE_UNITTEST_TEST_LOG"
 printf 'LMCACHE_UNITTEST_ISOLATED_TEST_LOG=%s\n' "$LMCACHE_UNITTEST_ISOLATED_TEST_LOG"
 printf 'LMCACHE_UNITTEST_TEST_RESULT=%s\n' "$LMCACHE_UNITTEST_TEST_RESULT"
-[[ "$remote_rc" == 0 ]]
+[[ "$stage_rc" == 0 ]]
