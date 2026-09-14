@@ -77,6 +77,8 @@ fi
 export DEPLOY_STRATEGY
 export arch="${DEPLOY_STRATEGY}"
 export OPEN_XDS_BRANCH="${GIT_BRANCH}"
+GITCODE_RELEASE_TOKEN=${GITCODE_RELEASE_TOKEN:-${GITCODE_TOKEN:-}}
+export GITCODE_RELEASE_TOKEN
 
 echo "[open-xds-build] branch=${GIT_BRANCH} deploy_strategy=${DEPLOY_STRATEGY} checkout=${OPEN_XDS_DIR}"
 (

@@ -26,8 +26,8 @@ exit 1
 GH
 cat >"$work_dir/open-xds/start.sh" <<'START'
 #!/usr/bin/env bash
-printf 'DEPLOY_STRATEGY=%s\narch=%s\nOPEN_XDS_BRANCH=%s\n' \
-  "$DEPLOY_STRATEGY" "$arch" "$OPEN_XDS_BRANCH" > "$START_ENV_LOG"
+printf 'DEPLOY_STRATEGY=%s\narch=%s\nOPEN_XDS_BRANCH=%s\nGITCODE_RELEASE_TOKEN=%s\n' \
+  "$DEPLOY_STRATEGY" "$arch" "$OPEN_XDS_BRANCH" "$GITCODE_RELEASE_TOKEN" > "$START_ENV_LOG"
 START
 chmod +x "$work_dir/bin/git" "$work_dir/bin/gh" "$work_dir/open-xds/start.sh"
 
@@ -39,6 +39,7 @@ DEPLOY_STRATEGY='glm-test' \
 OPEN_XDS_DIR="$work_dir/open-xds" \
 GIT_PROXY='http://proxy.test:8080' \
 GH_TOKEN='token-from-gh-env' \
+GITCODE_TOKEN='token-from-gitcode-env' \
 bash "$script"
 
 grep -Fq -- 'http.proxy=http://proxy.test:8080' "$work_dir/git.log"
@@ -51,6 +52,7 @@ grep -Fq -- 'pull --ff-only origin feature/blue-build' "$work_dir/git.log"
 grep -Fxq 'DEPLOY_STRATEGY=glm-test' "$work_dir/start.env"
 grep -Fxq 'arch=glm-test' "$work_dir/start.env"
 grep -Fxq 'OPEN_XDS_BRANCH=feature/blue-build' "$work_dir/start.env"
+grep -Fxq 'GITCODE_RELEASE_TOKEN=token-from-gitcode-env' "$work_dir/start.env"
 
 set +e
 missing_token_output="$(env -u GITHUB_TOKEN -u GH_TOKEN \
