@@ -33,7 +33,22 @@ if [[ -z "${GITHUB_TOKEN}" ]]; then
   exit 2
 fi
 
-git_args=()
+GIT_ASKPASS_SCRIPT="$(mktemp "${TMPDIR:-/tmp}/open-xds-git-askpass.XXXXXX")"
+trap 'rm -f "$GIT_ASKPASS_SCRIPT"' EXIT
+cat >"$GIT_ASKPASS_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  *Username*) printf '%s\n' 'x-access-token' ;;
+  *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
+esac
+EOF
+chmod 700 "$GIT_ASKPASS_SCRIPT"
+export GIT_ASKPASS="$GIT_ASKPASS_SCRIPT"
+export GIT_TERMINAL_PROMPT=0
+
+# Disable credential helpers so a stale local Basic credential cannot override
+# the supplied token. GitHub accepts the token both through AskPass and Bearer.
+git_args=(-c credential.helper=)
 if [[ -n "${GIT_PROXY}" ]]; then
   git_args+=(-c "http.proxy=${GIT_PROXY}")
 fi

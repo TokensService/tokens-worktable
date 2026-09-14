@@ -41,6 +41,7 @@ GH_TOKEN='token-from-gh-env' \
 bash "$script"
 
 grep -Fq -- 'http.proxy=http://proxy.test:8080' "$work_dir/git.log"
+grep -Fq -- 'credential.helper=' "$work_dir/git.log"
 grep -Fq -- 'http.extraHeader=Authorization: Bearer token-from-gh-env' "$work_dir/git.log"
 grep -Fq -- 'fetch --prune origin feature/blue-build' "$work_dir/git.log"
 grep -Fq -- 'checkout -b feature/blue-build origin/feature/blue-build' "$work_dir/git.log"
