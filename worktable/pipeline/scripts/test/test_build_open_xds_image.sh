@@ -10,6 +10,7 @@ mkdir -p "$work_dir/bin" "$work_dir/open-xds/.git"
 cat >"$work_dir/bin/git" <<'GIT'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GIT_CALL_LOG"
+printf 'askpass-token=%s\n' "$("$GIT_ASKPASS" Password)" >> "$GIT_CALL_LOG"
 for argument in "$@"; do
   [[ "$argument" == "show-ref" ]] && exit 1
 done
@@ -42,7 +43,8 @@ bash "$script"
 
 grep -Fq -- 'http.proxy=http://proxy.test:8080' "$work_dir/git.log"
 grep -Fq -- 'credential.helper=' "$work_dir/git.log"
-grep -Fq -- 'http.extraHeader=Authorization: Bearer token-from-gh-env' "$work_dir/git.log"
+! grep -Fq -- 'http.extraHeader=' "$work_dir/git.log"
+grep -Fqx -- 'askpass-token=token-from-gh-env' "$work_dir/git.log"
 grep -Fq -- 'fetch --prune origin feature/blue-build' "$work_dir/git.log"
 grep -Fq -- 'checkout -b feature/blue-build origin/feature/blue-build' "$work_dir/git.log"
 grep -Fq -- 'pull --ff-only origin feature/blue-build' "$work_dir/git.log"
