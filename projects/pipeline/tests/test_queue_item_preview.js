@@ -70,7 +70,7 @@ function makePreviewContext() {
   const presenceEnd = source.indexOf('function publishQueue', presenceStart);
   assert.ok(presenceStart >= 0 && presenceEnd > presenceStart, '缺少运行队列安全快照函数');
   vm.runInContext(source.slice(presenceStart, presenceEnd), context);
-  vm.runInContext(extract('function localQueueItems', '/* ---------- 运行队列跨浏览器可见'), context);
+  vm.runInContext(extract('function localQueueItems', '/* ---------- 服务端权威运行队列实时同步'), context);
   vm.runInContext(extract('function remoteRunsOf', '/* ---------- 运行引擎'), context);
   return { context, calls };
 }
@@ -259,6 +259,61 @@ test('remoteRunsOf：新版 runs 为空时仍兼容旧版 running 单条快照',
   assert.deepEqual(Array.from(context.remoteRunsOf({ runs: [], running: legacy })), [legacy]);
 });
 
+test('pullRemoteQueue：每次轮询把服务端权威队列与旧浏览器在场快照一起展示', async () => {
+  let previews = 0, renders = 0;
+  const server = { id: 'server', label: '服务端', schemaVersion: 3, runs: [{ id: 'r-server' }], queue: [{ id: 'q-server' }] };
+  const context = {
+    QCLIENT_ID: 'self', remoteQueueClients: [],
+    fetch: async () => ({ ok: true, json: async () => ({ server, clients: [{ id: 'self' }, { id: 'legacy-other' }] }) }),
+    applyRemoteQueuePreviewRefresh: () => { previews += 1; },
+    renderQueue: () => { renders += 1; },
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('async function pullRemoteQueue', "$('queueRefresh')"), context);
+  await context.pullRemoteQueue();
+  assert.deepEqual(Array.from(context.remoteQueueClients, client => client.id), ['server', 'legacy-other']);
+  assert.equal(previews, 1);
+  assert.equal(renders, 1);
+});
+
+test('cancelServerRun：任一浏览器都可取消服务端排队或运行中的任务并立即刷新', async () => {
+  const requests = [];
+  let pulls = 0;
+  const context = {
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true, state: 'running' }) };
+    },
+    pullRemoteQueue: async () => { pulls += 1; },
+    alert: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('async function cancelServerRun', 'async function pullRemoteQueue'), context);
+
+  const result = await context.cancelServerRun('manual-1');
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: true, state: 'running' });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/worktable/pipeline/queue');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[0].options.body), { action: 'cancel', runId: 'manual-1' });
+  assert.equal(pulls, 1);
+});
+
+test('页面离场不再清除服务端队列或释放服务端持有的节点租约', () => {
+  const listeners = {};
+  const beacons = [];
+  const context = {
+    window: { addEventListener: (type, listener) => { listeners[type] = listener; } },
+    navigator: { sendBeacon: (...args) => { beacons.push(args); return true; } },
+    $: () => ({ addEventListener() {}, disabled: false }),
+    Blob, QCLIENT_ID: 'self', activeRuns: [{ leaseId: 'server-owned' }],
+  };
+  vm.createContext(context);
+  vm.runInContext(extract("$('queueRefresh').addEventListener", '/* ---------- 运行定时'), context);
+  if (listeners.pagehide) listeners.pagehide();
+  assert.deepEqual(beacons, [], '浏览器离场不得改变服务端任务生命周期');
+});
+
 test('runPreviewReadOnly：本页排队预览和他端预览都禁止编辑或重试', () => {
   const start = source.indexOf('function runPreviewReadOnly');
   const end = source.indexOf('\n}', start) + 3;
@@ -373,7 +428,7 @@ test('publishQueue：节点租约申请期间继续把待启动项作为可查�
 function makeQueueContext() {
   const list = new FakeNode('div');
   const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
-  const calls = { cancel: [], abort: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
+  const calls = { cancel: [], abort: [], cancelServer: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
     document: { createElement: tag => new FakeNode(tag) },
     $: id => els[id] || new FakeNode('div'),
@@ -384,6 +439,7 @@ function makeQueueContext() {
     drainQueue: () => { calls.drain++; },
     cancelQueue: id => calls.cancel.push(id),
     abortRun: rc => calls.abort.push(rc),
+    cancelServerRun: id => calls.cancelServer.push(id),
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
     focusRemoteQueueItem: (clientId, itemId, kind) => calls.focusRemoteQueueItem.push({ clientId, itemId, kind }),
@@ -488,6 +544,29 @@ test('renderQueue：其他浏览器的排队/在跑条目都可点击查看阶�
     { clientId: 'c2', itemId: 'r2', kind: 'running' },
     { clientId: 'c2', itemId: 'q2', kind: 'queued' },
   ]);
+});
+
+test('renderQueue：服务端运行与排队任务在任一浏览器显示中止/取消按钮', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.remoteQueueClients.push({
+    id: 'server', label: '服务端',
+    runs: [{ id: 'r-server', by: 'eve', pipelineName: 'P1', source: 'manual', startedAt: 1, stages: [{ id: 's1', name: '构建' }], nodes: { s1: { status: 'running' } } }],
+    queue: [{ id: 'q-server', by: 'frank', pipelineName: 'P2', source: 'manual', queuedAt: 2, stages: [{ id: 's2', name: '部署' }], nodes: { s2: { status: 'idle' } } }],
+  });
+  context.remoteQueueClients.push({
+    id: 'legacy', label: '旧浏览器',
+    runs: [{ id: 'r-legacy', by: 'old', pipelineName: '旧任务', stages: [{ id: 's3', name: '构建' }] }],
+    queue: [],
+  });
+  context.renderQueue();
+
+  const buttons = list.querySelectorAll('[data-qserver-cancel]');
+  assert.equal(buttons.length, 2, '只给服务端权威任务提供跨浏览器取消入口');
+  assert.match(list.children[1].innerHTML, />中止<\/button>/);
+  assert.match(list.children[2].innerHTML, />取消<\/button>/);
+  buttons.forEach(button => button.handlers.click());
+  assert.deepEqual(calls.cancelServer, ['r-server', 'q-server']);
+  assert.doesNotMatch(list.children[3].innerHTML, /data-qserver-cancel/);
 });
 
 test('renderQueue：旧浏览器快照缺少阶段数据时不可点击并提示刷新来源页面', () => {
@@ -715,7 +794,7 @@ test('startRun：队列项启动时把原队列 id 传给运行上下文', () =>
 
 /* ---------- 异机并行调度（runPipeline / machineConflict / drainQueue 真实实现） ---------- */
 function makeScheduleContext() {
-  const calls = { start: [], alerts: [] };
+  const calls = { start: [], submit: [], alerts: [] };
   const context = {
     DEFAULT_IMAGE: 'myapp', GITURL: 'g', MAX_ACTIVE_RUNS: 4, QUEUE_CAP: 16,
     activeRuns: [], queue: [],
@@ -732,6 +811,7 @@ function makeScheduleContext() {
     curStrategy: () => '',
     selectedPresetKeys: () => [],
     startRun: item => { calls.start.push(item); context.activeRuns.push(item); return true; },
+    submitServerRun: item => { calls.submit.push(item); },
     renderQueue() {},
     alert: msg => calls.alerts.push(msg),
     console,
@@ -752,16 +832,15 @@ test('machineConflict：目标 IP 相交即冲突；任一方无目标 IP 按冲
   assert.equal(context.machineConflict({}, {}), true);
 });
 
-test('runPipeline：空闲立即运行；不同机器的运行并行启动，同一机器入队等待', () => {
+test('runPipeline：浏览器不再本地调度，所有手动运行都提交服务端权威队列', () => {
   const { context, calls } = makeScheduleContext();
-  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'a' }), true);
-  assert.equal(calls.start.length, 1);
-  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'B' }], by: 'b' }), true, '目标机器不相交：并行启动不入队');
-  assert.equal(calls.start.length, 2);
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'a' }), 'submitted');
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'B' }], by: 'b' }), 'submitted');
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'c' }), 'submitted');
+  assert.equal(calls.submit.length, 3);
+  assert.deepEqual(calls.submit.map(item => item.by), ['a', 'b', 'c']);
+  assert.equal(calls.start.length, 0, '浏览器执行器不得启动');
   assert.equal(context.queue.length, 0);
-  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'c' }), 'queued', '与在跑运行同机：入队');
-  assert.equal(context.queue.length, 1);
-  assert.equal(calls.start.length, 2);
 });
 
 test('drainQueue：不同机器的排队任务可越过同机等待者启动，同机保持先进先出', () => {
@@ -777,13 +856,12 @@ test('drainQueue：不同机器的排队任务可越过同机等待者启动，�
   assert.equal(context.queue.length, 0);
 });
 
-test('runPipeline：并发槽位占满仍可入队，队列满拒绝入队', () => {
+test('runPipeline：浏览器本地并发与队列容量不再拦截服务端提交', () => {
   const { context, calls } = makeScheduleContext();
   ['A', 'B', 'C', 'D'].forEach(ip => context.activeRuns.push({ envs: [{ ip }] }));   // 占满 4 个槽位
-  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'E' }], by: 'e' }), 'queued', '槽位占满：即使机器不相交也入队');
-  assert.equal(calls.start.length, 0);
-  context.queue.length = 0;
   for (let i = 0; i < 16; i++) context.queue.push({ id: 'q' + i, envs: [{ ip: 'X' + i }] });
-  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'Z' }], by: 'f' }), false, '队列达上限（16）：拒绝入队');
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'Z' }], by: 'f' }), 'submitted');
+  assert.equal(calls.submit.length, 1);
+  assert.equal(calls.start.length, 0);
   assert.equal(context.queue.length, 16);
 });

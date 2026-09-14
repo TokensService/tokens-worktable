@@ -92,7 +92,7 @@ function makeContext(runResult) {
 }
 
 test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', () => {
-  const { tbody, calls } = makeContext('queued');
+  const { tbody, calls } = makeContext('submitted');
   const buttons = tbody.querySelectorAll('[data-plrun]');
   assert.equal(buttons.length, 2);
   assert.equal(buttons[1].textContent.trim(), '▶');
@@ -108,7 +108,7 @@ test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', 
   assert.equal(calls.run[0].pipelineId, 'pipe-2');
   assert.equal(calls.run[0].useDefaults, true, '列表直接运行必须使用该流水线保存的默认运行参数');
   assert.deepEqual(calls.select, []);
-  assert.deepEqual(calls.tips, ['已加入队列（第 1 位）']);
+  assert.deepEqual(calls.tips, ['已提交服务端运行队列']);
 });
 
 test('▶ 直接启动时不显示入队或队列已满提示', () => {
@@ -119,12 +119,14 @@ test('▶ 直接启动时不显示入队或队列已满提示', () => {
   assert.deepEqual(calls.alerts, []);
 });
 
-test('▶ 在队列已满时沿用现有容量提示', () => {
-  const { tbody, calls } = makeContext(false);
+test('▶ 不受浏览器本地队列容量影响，始终提交服务端调度', () => {
+  const { context, tbody, calls } = makeContext('submitted');
+  for (let i = 0; i < 16; i++) context.queue.push({ id: 'legacy-' + i });
   const button = tbody.querySelectorAll('[data-plrun]')[0];
   button.handlers.click({ stopPropagation() {} });
-  assert.equal(calls.alerts.length, 1);
-  assert.match(calls.alerts[0], /队列已满（上限 16）/);
+  assert.equal(calls.run.length, 1);
+  assert.deepEqual(calls.tips, ['已提交服务端运行队列']);
+  assert.deepEqual(calls.alerts, []);
 });
 
 test('每条流水线提供 API 按钮并打开对应流水线的调用说明', () => {

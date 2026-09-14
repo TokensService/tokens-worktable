@@ -178,6 +178,65 @@ test('服务端 API 与定时计划共用的执行队列最多并发 2 条并按
   assert.deepEqual(plain(pool.stats()), { active: 0, queued: 0, limit: 2 })
 })
 
+test('服务端执行池持有可实时查询的运行状态，排队与运行任务均可取消', async () => {
+  const f = loadRunRoute(stored)
+  const started = []
+  const releases = new Map()
+  const aborted = []
+  const pool = f.ctx.createPipelineExecutionQueue(async (plan, runtime) => {
+    started.push(plan.id)
+    runtime.setStages([
+      { id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } },
+      { id: 'deploy', name: '部署' },
+    ])
+    runtime.updateStage('build', { status: 'running', progress: 25 })
+    await new Promise(resolve => {
+      releases.set(plan.id, resolve)
+      runtime.signal.addEventListener('abort', () => { aborted.push(plan.id); resolve() }, { once: true })
+    })
+  }, 1, 10)
+
+  const running = pool.run({
+    id: 'manual-1', runId: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线',
+    stages: [{ id: 'build', name: '构建' }], env: '10.0.0.2', envs: [{ ip: '10.0.0.2', pass: 'node-secret' }],
+    repository: { id: 'repo-app', name: '应用库', pass: 'git-secret' }, branch: 'dev', strategy: 'rolling', by: 'alice', source: 'manual',
+  })
+  const queued = pool.run({
+    id: 'manual-2', runId: 'manual-2', pipelineId: 'pipe-release', pipelineName: '发布流水线',
+    stages: [{ id: 'deploy', name: '部署' }], env: '10.0.0.3', envs: [{ ip: '10.0.0.3', pass: 'queued-secret' }],
+    repository: { id: 'repo-app', name: '应用库', pass: 'queued-git-secret' }, branch: 'main', strategy: '', by: 'bob', source: 'manual',
+  })
+  queued.catch(() => {})
+  await Promise.resolve()
+
+  assert.deepEqual(plain(started), ['manual-1'])
+  assert.deepEqual(plain(pool.snapshot()), {
+    runs: [{
+      id: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'alice', env: '10.0.0.2', repoName: '应用库',
+      branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: pool.snapshot().runs[0].startedAt,
+      stages: [{ id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } }, { id: 'deploy', name: '部署' }],
+      nodes: { build: { status: 'running', progress: 25, dur: 0 }, deploy: { status: 'idle', progress: 0, dur: 0 } },
+    }],
+    queue: [{
+      id: 'manual-2', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'bob', env: '10.0.0.3', repoName: '应用库',
+      branch: 'main', strategy: '', source: 'manual', queuedAt: pool.snapshot().queue[0].queuedAt,
+      stages: [{ id: 'deploy', name: '部署' }], nodes: { deploy: { status: 'idle', progress: 0, dur: 0 } },
+    }],
+  })
+  assert.equal(JSON.stringify(pool.snapshot()).includes('node-secret'), false, '执行池快照不得暴露节点凭据')
+  assert.equal(JSON.stringify(pool.snapshot()).includes('git-secret'), false, '执行池快照不得暴露代码仓凭据')
+
+  assert.deepEqual(plain(pool.cancel('manual-2')), { ok: true, state: 'queued' })
+  await assert.rejects(queued, error => error?.code === 'PIPELINE_RUN_CANCELLED')
+  assert.equal(pool.snapshot().queue.length, 0)
+
+  assert.deepEqual(plain(pool.cancel('manual-1')), { ok: true, state: 'running' })
+  await running
+  assert.deepEqual(aborted, ['manual-1'])
+  assert.deepEqual(plain(pool.snapshot()), { runs: [], queue: [] })
+  assert.deepEqual(plain(pool.cancel('missing')), { ok: false, state: 'missing' })
+})
+
 test('服务端执行队列满时拒绝继续持有任务，API 不返回虚假的 202', async () => {
   const f = loadRunRoute(stored)
   const releases = []
@@ -216,6 +275,19 @@ test('API 请求体可以覆盖全部运行参数，空策略和空预设也是�
   assert.equal(run.strategy, '')
   assert.deepEqual(plain(run.presets), [])
   assert.equal(run.by, 'jenkins')
+})
+
+test('页面手动运行可显式标记来源，外部 API 未标记时仍保持 api 来源', async () => {
+  const manual = loadRunRoute(stored)
+  let res = await call(manual.handler, 'pipe-release', { source: 'manual', by: 'alice' })
+  assert.equal(res.status, 202)
+  assert.equal(manual.executions[0].source, 'manual')
+  assert.equal(manual.executions[0].by, 'alice')
+
+  const external = loadRunRoute(stored)
+  res = await call(external.handler, 'pipe-release', { by: 'jenkins' })
+  assert.equal(res.status, 202)
+  assert.equal(external.executions[0].source, 'api')
 })
 
 test('API 代码仓对象可单次覆盖地址和凭据且不会写回配置', async () => {
@@ -1131,6 +1203,46 @@ test('API 服务端执行器展开预设、携带代码仓上下文并写入可�
   assert.equal(f.history[0].repoId, 'repo-app')
   assert.equal(f.history[0].source, 'api')
   assert.equal(f.history[0].status, 'success')
+})
+
+test('服务端执行器实时上报阶段状态，并在队列取消后中止当前任务且不启动后续任务', async () => {
+  const updates = []
+  const stageLists = []
+  const controller = new AbortController()
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) =>
+    new Promise(resolve => {
+      const fallback = setTimeout(() => resolve({ code: 0, stdout: 'late success', stderr: '' }), 40)
+      signal?.addEventListener('abort', () => {
+        clearTimeout(fallback)
+        resolve({ code: 1, stdout: 'partial', stderr: 'cancelled', aborted: true })
+      }, { once: true })
+    }))
+  const plan = apiExecutionPlan([])
+  plan.source = 'manual'
+  plan.by = 'alice'
+  plan.stages = [
+    { id: 'slow', name: '慢任务', script: { name: 'slow.sh', path: '/slow.sh' } },
+    { id: 'after', name: '后续任务', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+  const runtime = {
+    signal: controller.signal,
+    setStages(stages) { stageLists.push(plain(stages)) },
+    updateStage(stageId, state) { updates.push({ stageId, state: plain(state) }) },
+  }
+
+  const running = f.execPlan(plan, runtime)
+  await tick()
+  assert.deepEqual(stageLists.map(stages => stages.map(stage => stage.id)), [['slow', 'after']])
+  assert.deepEqual(updates[0], { stageId: 'slow', state: { status: 'running', progress: 5, dur: 0 } })
+
+  controller.abort(Object.assign(new Error('cancelled from queue'), { code: 'PIPELINE_RUN_CANCELLED' }))
+  await running
+
+  assert.deepEqual(f.calls.map(call => call.script), ['slow.sh'])
+  assert.equal(f.history[0].status, 'aborted')
+  assert.equal(f.history[0].source, 'manual')
+  assert.ok(updates.some(update => update.stageId === 'slow' && update.state.status === 'aborted' && update.state.progress === 100))
+  assert.ok(!updates.some(update => update.stageId === 'after' && update.state.status === 'running'))
 })
 
 test('非阻断预设失败后继续运行，环境检查失败则阻断后续阶段', async () => {

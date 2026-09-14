@@ -92,6 +92,8 @@ Content-Type: application/json
 
 接受请求后返回 HTTP `202`，响应含 `runId`、`pipelineId` 和 `pipelineName`；脚本、HTTP/Jenkins、EvalTokens 及所选预设任务均由服务端执行，运行结果写入流水线历史，可由 `runId` 关联。Jenkins 会依据触发响应的 queue `Location` 锁定本次构建号；远端 JSON / 正文读取上限分别为 2 MiB / 16 MiB。一次性代码仓凭据只存在于该次执行内，不写入配置或历史；仍应使用 HTTPS 调用接口，并避免让任务脚本回显凭据。
 
+页面中的手动运行也使用此服务端执行池。运行与排队状态由 `GET /api/worktable/pipeline/queue` 返回，所有打开的浏览器每秒同步同一份阶段快照；关闭或刷新发起页面不会终止任务。服务端条目可在任一浏览器中止或取消，状态仅保留在当前 dsh 进程内，服务重启后清空。
+
 接口继承 dsh web 的登录守卫，命令行调用需携带有效登录 Cookie。非空请求体必须是 `application/json` 的 JSON 对象，最大 64 KiB；畸形 JSON、数组/标量、错误媒体类型和超限请求会分别被拒绝。显式传入空 `environmentIds` 或不存在的 ID 会返回 `400`；流水线保存的默认环境/代码仓引用已失效时返回 `409`，不会静默改投配置首项。只有没有保存默认引用的旧流水线才兼容回退首个环境/代码仓。流水线列表中的 `API` 按钮可直接查看并复制当前流水线的端点、默认请求体和 curl 示例。
 
 ## 相关文档

@@ -7,8 +7,8 @@ import vm from 'node:vm'
 const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
 const plain = value => JSON.parse(JSON.stringify(value))
 
-function loadQueueRoute() {
-  const start = source.indexOf('  /* 运行队列跨浏览器可见：')
+function loadQueueRoute(overrides = {}) {
+  const start = source.indexOf('  /* 服务端权威执行池的状态由本路由 GET 实时下发；')
   const end = source.indexOf('  /* 节点占用租约（跨标签页/跨浏览器/API/定时统一的节点互斥', start)
   assert.ok(start >= 0 && end > start, '运行队列在场路由未找到')
   const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
@@ -17,6 +17,7 @@ function loadQueueRoute() {
     webServer: { register(route) { handler = route.handler } },
     readJsonBody: async req => req.body || {},
     json(res, status, body) { res.writeHead(status); res.end(JSON.stringify(body)) },
+    pipelineExecutions: overrides.pipelineExecutions || { snapshot: () => ({ runs: [], queue: [] }), cancel: () => ({ ok: false, state: 'missing' }) },
     console,
   }
   vm.createContext(context)
@@ -84,4 +85,57 @@ test('队列在场接口仅转发可展示的阶段状态，过滤日志、变�
   })
   assert.equal(JSON.stringify(client).includes('secret'), false)
   assert.equal(JSON.stringify(client).includes('build.sh'), false)
+})
+
+test('队列接口返回服务端权威状态，页面离场清理只影响旧在场快照且可取消服务端任务', async () => {
+  const cancelled = []
+  const serverState = {
+    runs: [{
+      id: 'run-server', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app',
+      branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
+      stages: [{ id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } }],
+      nodes: { build: { status: 'running', progress: 25, dur: 3, varsIn: { TOKEN: 'secret' } } },
+    }],
+    queue: [{
+      id: 'queue-server', pipelineId: 'pipe-2', pipelineName: '测试', by: 'bob', env: '10.0.0.2', repoName: 'test',
+      branch: 'main', strategy: '', source: 'manual', queuedAt: 200,
+      stages: [{ id: 'test', name: '测试' }], nodes: { test: { status: 'idle', progress: 0, dur: 0 } },
+    }],
+  }
+  const handler = loadQueueRoute({
+    pipelineExecutions: {
+      snapshot: () => serverState,
+      cancel: id => { cancelled.push(id); return id === 'run-server' ? { ok: true, state: 'running' } : { ok: false, state: 'missing' } },
+    },
+  })
+
+  await call(handler, 'PUT', { id: 'legacy-client', label: 'Chrome', running: null, queue: [] })
+  const beforeLeave = await call(handler, 'GET')
+  assert.deepEqual(plain(beforeLeave.json().server), {
+    id: 'server', label: '服务端', schemaVersion: 3,
+    runs: [{
+      id: 'run-server', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app',
+      branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
+      stages: [{ id: 'build', name: '构建' }], nodes: { build: { status: 'running', progress: 25, dur: 3 } },
+    }],
+    queue: [{
+      id: 'queue-server', pipelineId: 'pipe-2', pipelineName: '测试', by: 'bob', env: '10.0.0.2', repoName: 'test',
+      branch: 'main', strategy: '', source: 'manual', queuedAt: 200,
+      stages: [{ id: 'test', name: '测试' }], nodes: { test: { status: 'idle', progress: 0, dur: 0 } },
+    }],
+  })
+  assert.equal(JSON.stringify(beforeLeave.json().server).includes('secret'), false)
+
+  await call(handler, 'POST', { id: 'legacy-client', running: null, queue: [] })
+  const afterLeave = await call(handler, 'GET')
+  assert.deepEqual(plain(afterLeave.json().server), plain(beforeLeave.json().server), '页面离场不得删除服务端运行或队列')
+
+  const cancel = await call(handler, 'POST', { action: 'cancel', runId: 'run-server' })
+  assert.equal(cancel.status, 200)
+  assert.deepEqual(cancel.json(), { ok: true, state: 'running' })
+  assert.deepEqual(cancelled, ['run-server'])
+
+  const missing = await call(handler, 'POST', { action: 'cancel', runId: 'missing' })
+  assert.equal(missing.status, 404)
+  assert.deepEqual(missing.json(), { ok: false, state: 'missing' })
 })
