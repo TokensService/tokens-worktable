@@ -205,7 +205,7 @@
   <!-- 控制区 -->
   <div class="dshell-card pipeline-controls" id="pipelineControls">
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-      <select id="pipelineSel" class="dshell-input" style="min-width:130px;font-weight:600;" title="下拉选用流水线（也可在下方「流水线任务」列表点击行选用）；运行中不可切换"></select>
+      <select id="pipelineSel" class="dshell-input" style="min-width:130px;font-weight:600;" title="下拉选用流水线（也可在下方「流水线任务」列表点击行选用）；运行中也可切换，在跑/排队任务统一在「运行队列」查看"></select>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
       <span id="envMulti" style="position:relative;display:inline-block;">
@@ -2947,10 +2947,6 @@ function focusRun(rc){
   refreshArchiveTip();
   renderFlow(); renderDetail(); renderQueue();
 }
-/* 流水线维度查在跑运行：流水线任务行「运行中」徽标与点击「查看阶段详情」共用。
-   同一流水线可在不同机器并行多个运行，查看时取最近启动的一个（队列条目仍可各自精确聚焦） */
-function runsOfPipeline(pid){ return activeRuns.filter(rc=>rc.pipelineId===pid); }
-function latestRunOfPipeline(pid){ const rs=runsOfPipeline(pid); return rs.length?rs[rs.length-1]:null; }
 
 const $ = id => document.getElementById(id);
 function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
@@ -3997,7 +3993,6 @@ function remoteQueueViewAttrs(client,item,kind,title){
   if(!remoteQueueDetailAvailable(item)) return '';
   return ' data-qremote-client="'+esc(client&&client.id||'')+'" data-qremote-id="'+esc(item.id)+'" data-qremote-kind="'+kind+'" title="'+title+'" style="cursor:pointer;"';
 }
-let _plRunSig=null;   // 流水线任务表「运行中/查看中」徽标的刷新签名（见 renderQueue 末尾）
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
   /* 排队预览自愈：预览中的排队项已出队（被取消/清空，或启动校验失败被移出队列）时，编排区回到当前流水线
@@ -4127,10 +4122,6 @@ function renderQueue(){
     renderQueue();
   }));
   list.querySelectorAll('[data-qremote-id]').forEach(el=>el.addEventListener('click',()=>focusRemoteQueueItem(el.getAttribute('data-qremote-client'),el.getAttribute('data-qremote-id'),el.getAttribute('data-qremote-kind'))));
-  /* 流水线任务表的「运行中/查看中」徽标跟随在跑运行集与焦点运行刷新；renderQueue 每 5 秒轮询也会进入，
-     按签名判断避免无谓重建任务表（重建会打断行点击） */
-  const plSig=activeRuns.map(rc=>rc.id+':'+rc.pipelineId).join('|')+'#'+(viewRc?viewRc.id:'');
-  if(plSig!==_plRunSig){ _plRunSig=plSig; renderPipelines(); }
   scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「运行队列跨浏览器可见」区块）
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
@@ -6657,18 +6648,17 @@ function renderPipelines(){
   view.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
-    const plRuns = runsOfPipeline(p.id);   // 该流水线的在跑运行：行内给「运行中」徽标，点击查看其阶段详情
-    const viewing = plRuns.length && plRuns.indexOf(viewRc)>=0;
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
     /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
     const auditTag = p.builtIn ? '' : ((plOwnerOf(p) ? ' · 创建 @'+esc(plOwnerOf(p)) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwnerOf(p)) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
     if(isCur) tr.className='sel';
-    tr.title=plRuns.length?'点击查看本次运行的阶段详情':'点击选用该流水线';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(plRuns.length?' <span class="dshell-badge dshell-badgeWait" style="font-size:10px;">运行中</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':''):'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    /* 是否在运行不在本表展示：在跑/排队信息统一在「运行队列」查看（点队列条目看阶段详情），本表整行点击即选用 */
+    tr.title='点击选用该流水线';
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
-    tr.addEventListener('click',()=>{ const rc=latestRunOfPipeline(p.id); if(rc){ focusRun(rc); return; } selectPipeline(p.id); });   // 整行点击：有在跑运行→查看其阶段详情；否则选用（运行/编辑/复制/删除按钮已阻止冒泡）
+    tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun'),useDefaults:true}); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); }));
@@ -6678,21 +6668,20 @@ function renderPipelines(){
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
   renderPipelineSel();
 }
-/* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中切换被 selectPipeline 拦截后重绘回弹到当前流水线 */
+/* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中也可切换（selectPipeline 脱离运行视图，在跑任务转后台继续） */
 function renderPipelineSel(){
   const sel=$('pipelineSel'); if(!sel) return;
   const cur=curPipeline(); sel.innerHTML='';
   pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(cur && p.id===cur.id) o.selected=true; sel.appendChild(o); });
 }
 function selectPipeline(id){
-  if(id!==curPipelineId && running){   // 目标流水线有在跑运行时，任何入口（含运行框下拉）都转为查看其运行阶段详情，而不是切换/拦截
-    const rc=latestRunOfPipeline(id);
-    if(rc){ renderPipelineSel(); focusRun(rc); return; }
-  }
-  if(viewActive() && id!==curPipelineId){ renderPipelineSel(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }   // 编排区展示的在跑运行仍绑定其流水线快照
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
-  viewRc=null; syncViewRun();   // 脱离运行结果视图（在跑运行不受影响，转后台继续）
+  /* 运行中也可切换：脱离运行/结果视图，回到所选流水线的空闲编排；在跑运行不受影响、转后台继续
+     （运行状态统一在「运行队列」展示，点击队列条目可回看该次运行的阶段详情） */
+  viewRc=null; syncViewRun(); applyRunOverall(null);
+  $('stopBtn').disabled=true;
+  refreshArchiveTip();
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
 let editFocusIdx=-1;
@@ -6840,7 +6829,7 @@ function savePlForm(){
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动；每次保存都刷新最后修改人 */
   else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}); }
   savePipelines(); clearPlDraft(); $('plForm').style.display='none';
-  /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
+  /* 运行期保存：不触发 selectPipeline（避免脱离正在查看的运行视图），仅刷新列表 */
   if(running){ renderPipelines(); }
   else if(editId && editId===curPipelineId){ selectPipeline(editId); }
   else if(!editId){ selectPipeline(pipelines[pipelines.length-1].id); }
@@ -6876,7 +6865,7 @@ function copyPipeline(id){
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
   pipelines.push(clone);
   savePipelines();
-  /* 运行期复制：不切换当前流水线（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
+  /* 运行期复制：不切换当前流水线（避免脱离正在查看的运行视图），仅刷新列表 */
   if(running){ renderPipelines(); }
   else { selectPipeline(clone.id); }
 }
