@@ -1,5 +1,15 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线运行历史「AI 日志分析 / Profiling 分析 / 性能诊断」统一按当前项目工作区新建会话
+  （`projects/pipeline/pipeline.html` + `src/client/index.tsx`）：页面优先调用新增宿主桥
+  `window.__dshNewChatSessionForCurrentProject(text, cwd)`，工作台从当前分栏项目读取
+  `projects.workspaces[projectId]`；工作区有效时，若聊天列已关闭则先打开，再以该 `workspaceId`
+  新建会话并把分析提示词填入草稿（不自动发送）。项目工作区未设置或已被删除时不再回退默认分组/
+  归档 cwd 创建无分组会话，而是暂存本次请求并直接弹出该项目的工作区选择列表（工作台左栏折叠时
+  先自动展开）；用户选定后自动继续原请求，关闭设置弹窗则取消暂存。提示词中的归档绝对路径保持
+  不变；旧版工作台无新桥时继续沿用
+  `__dshNewChatSessionAt` 兼容路径。新增 `tests/project-analysis-chat.test.mjs`，并扩充
+  `projects/pipeline/tests/test_history_analysis_compare.js` 覆盖工作区门禁、会话框开合、续建与新旧桥优先级。
 - 运行队列「查看中」高亮与运行历史选中行对齐（`projects/pipeline/pipeline.html`）：队列条目（在跑/
   排队预览/他端只读预览）的选中背景统一为与 `#historyTable tbody tr.sel td` 相同的
   rgba(79,142,247,.12)，去掉此前自定的 color-mix 背景与强调色边框，两处选中态观感一致。
