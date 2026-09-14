@@ -40,7 +40,9 @@ class FakeNode {
         const key = attr + ':' + valueMatch[1];
         row._els = row._els || {};
         const el = row._els[key] || new FakeNode(match[1]);
-        el.attributes = Object.assign({}, el.attributes, { [attr]: valueMatch[1] });
+        const attributes = {};
+        for (const item of match[2].matchAll(/([\w:-]+)="([^"]*)"/g)) attributes[item[1]] = item[2];
+        el.attributes = Object.assign({}, el.attributes, attributes);
         el.getAttribute = name => (el.attributes || {})[name] || null;
         row._els[key] = el;
         found.push(el);
@@ -58,10 +60,16 @@ function makePreviewContext() {
     GITURL: 'https://git.example.com/dev/myapp',
     viewRc: null,
     queue: [],
+    remoteQueueClients: [],
+    remoteRunsOf: c => Array.isArray(c.runs) ? c.runs : (c.running ? [c.running] : []),
     expandRunStages: (stages, presets) => { calls.expand.push({ stages, presets }); return stages.map(s => ({ ...s })); },
     focusRun: rc => { calls.focus.push(rc); context.viewRc = rc; },
   };
   vm.createContext(context);
+  const presenceStart = source.indexOf('function queueStagePresence');
+  const presenceEnd = source.indexOf('function publishQueue', presenceStart);
+  assert.ok(presenceStart >= 0 && presenceEnd > presenceStart, '缺少运行队列安全快照函数');
+  vm.runInContext(source.slice(presenceStart, presenceEnd), context);
   vm.runInContext(extract('function queuePreviewRc', '/* ---------- 运行队列跨浏览器可见'), context);
   return { context, calls };
 }
@@ -110,11 +118,146 @@ test('focusQueueItem：点击排队项聚焦其详情预览，重复点击/未�
   assert.equal(calls.focus.length, 1);
 });
 
+test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进度和耗时', () => {
+  const { context } = makePreviewContext();
+  assert.equal(typeof context.remoteQueuePreviewRc, 'function', '应提供他端队列详情预览构造函数');
+  const client = { id: 'c2', label: 'Chrome·xy12' };
+  const item = {
+    id: 'r2', pipelineId: 'p2', pipelineName: '远端部署', by: 'eve', source: 'manual', startedAt: 123,
+    env: '10.0.0.2', repoName: 'app', branch: 'dev', strategy: 'rolling',
+    stages: [{ id: 'checkout', name: '检出' }, { id: 'deploy', name: '部署' }],
+    nodes: {
+      checkout: { status: 'success', progress: 100, dur: 3.5, sub: {} },
+      deploy: { status: 'running', progress: 42, dur: 7, sub: {} },
+    },
+  };
+
+  const rc = context.remoteQueuePreviewRc(client, item, 'running');
+  assert.equal(rc.remotePreview, true);
+  assert.equal(rc.remoteClientId, 'c2');
+  assert.equal(rc.remoteItemId, 'r2');
+  assert.equal(rc.remoteKind, 'running');
+  assert.equal(rc.over, true, '他端快照必须只读，不进入本页运行引擎');
+  assert.equal(rc.overall.txt, '他端运行中（只读）');
+  assert.equal(rc.nodes.checkout.status, 'success');
+  assert.equal(rc.nodes.checkout.dur, 3.5);
+  assert.equal(rc.nodes.deploy.status, 'running');
+  assert.equal(rc.nodes.deploy.progress, 42);
+  assert.equal(rc.pipelineName, '远端部署');
+  assert.equal(rc.remoteClientLabel, 'Chrome·xy12');
+});
+
+test('focusRemoteQueueItem：他端在跑与排队条目都能聚焦，未知条目忽略', () => {
+  const { context, calls } = makePreviewContext();
+  assert.equal(typeof context.focusRemoteQueueItem, 'function', '应提供他端队列点击入口');
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12',
+    runs: [{ id: 'r2', pipelineName: 'P1', stages: [{ id: 's1', name: '构建' }], nodes: { s1: { status: 'running' } } }],
+    queue: [{ id: 'q2', pipelineName: 'P2', stages: [{ id: 's2', name: '部署' }], nodes: { s2: { status: 'idle' } } }],
+  });
+
+  context.focusRemoteQueueItem('c2', 'r2', 'running');
+  context.focusRemoteQueueItem('c2', 'q2', 'queued');
+  context.focusRemoteQueueItem('c2', 'missing', 'queued');
+  assert.equal(calls.focus.length, 2);
+  assert.equal(calls.focus[0].remoteKind, 'running');
+  assert.equal(calls.focus[1].remoteKind, 'queued');
+});
+
+test('refreshRemoteQueuePreviewRc：轮询后刷新阶段状态并保留当前选中阶段', () => {
+  const { context } = makePreviewContext();
+  assert.equal(typeof context.refreshRemoteQueuePreviewRc, 'function', '应提供他端预览刷新函数');
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12',
+    runs: [{
+      id: 'r2', pipelineName: 'P1', stages: [{ id: 's1', name: '构建' }, { id: 's2', name: '部署' }],
+      nodes: { s1: { status: 'success', progress: 100, dur: 2 }, s2: { status: 'running', progress: 80, dur: 8 } },
+    }], queue: [],
+  });
+  const previous = { remotePreview: true, remoteClientId: 'c2', remoteItemId: 'r2', remoteKind: 'running', selId: 's2' };
+
+  const refreshed = context.refreshRemoteQueuePreviewRc(previous);
+  assert.equal(refreshed.selId, 's2');
+  assert.equal(refreshed.nodes.s2.progress, 80);
+  assert.equal(context.refreshRemoteQueuePreviewRc({ ...previous, remoteItemId: 'gone' }), null);
+});
+
+test('runPreviewReadOnly：本页排队预览和他端预览都禁止编辑或重试', () => {
+  const start = source.indexOf('function runPreviewReadOnly');
+  const end = source.indexOf('\n}', start) + 3;
+  assert.ok(start >= 0 && end > start, '缺少运行预览只读判定');
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  assert.equal(context.runPreviewReadOnly({ queuedPreview: true }), true);
+  assert.equal(context.runPreviewReadOnly({ remotePreview: true }), true);
+  assert.equal(context.runPreviewReadOnly({}), false);
+  assert.equal(context.runPreviewReadOnly(null), false);
+});
+
+test('detailLogLinesFor：他端预览明确提示不传日志，本页详情仍使用真实日志构建器', () => {
+  const start = source.indexOf('function detailLogLinesFor');
+  const end = source.indexOf('\n}', start) + 3;
+  assert.ok(start >= 0 && end > start, '缺少详情日志来源判定');
+  const calls = [];
+  const context = { DETAIL_LOG_LIMIT: { maxLines: 1 }, buildLog: (...args) => { calls.push(args); return ['本页日志']; } };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  const stage = { id: 's1', name: '构建' };
+  const node = { status: 'running' };
+  assert.deepEqual(Array.from(context.detailLogLinesFor(stage, { remotePreview: true }, node)), [
+    '其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。',
+  ]);
+  assert.deepEqual(Array.from(context.detailLogLinesFor(stage, {}, node)), ['本页日志']);
+  assert.equal(calls.length, 1);
+});
+
+/* ---------- 跨浏览器上报快照（只包含安全的阶段状态字段） ---------- */
+function loadPresenceSnapshotContext() {
+  const start = source.indexOf('function queueStagePresence');
+  const end = source.indexOf('function publishQueue', start);
+  assert.ok(start >= 0 && end > start, '缺少运行队列安全快照函数');
+  const context = {
+    expandRunStages: (stages, presets) => stages.concat((presets || []).map(key => ({ id: '__' + key, name: key, preset: true, pkey: key }))),
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  return context;
+}
+
+test('runningPresenceEntry：上报阶段状态但不携带日志、变量或脚本参数', () => {
+  const context = loadPresenceSnapshotContext();
+  const snap = context.runningPresenceEntry({
+    id: 'r1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startTs: 100,
+    stages: [{ id: 's1', name: '构建', kind: 'shell', script: { values: { TOKEN: 'secret' } }, _out: { stdout: 'secret log' }, parallel: true, sub: ['a'] }],
+    nodes: { s1: { status: 'running', progress: 35, dur: 4, varsIn: { TOKEN: 'secret' }, varsOut: { RESULT: 'secret' }, sub: { a: 'success' } } },
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(snap)), {
+    id: 'r1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
+    stages: [{ id: 's1', name: '构建', parallel: true, sub: ['a'] }],
+    nodes: { s1: { status: 'running', progress: 35, dur: 4, sub: { a: 'success' } } },
+  });
+});
+
+test('queuedPresenceEntry：排队快照展开预设阶段并全部标为未开始', () => {
+  const context = loadPresenceSnapshotContext();
+  const snap = context.queuedPresenceEntry({
+    id: 'q1', pipelineId: 'p1', pipelineName: '发布', queuedAt: 200,
+    stages: [{ id: 's1', name: '构建', script: { values: { TOKEN: 'secret' } } }], presets: ['check'],
+  });
+
+  assert.deepEqual(snap.stages.map(stage => stage.id), ['s1', '__check']);
+  assert.equal(snap.nodes.s1.status, 'idle');
+  assert.equal(snap.nodes.__check.status, 'idle');
+  assert.equal(JSON.stringify(snap).includes('secret'), false);
+});
+
 /* ---------- 队列区渲染（renderQueue：排队项可点击 + 预览自愈） ---------- */
 function makeQueueContext() {
   const list = new FakeNode('div');
   const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
-  const calls = { cancel: [], abort: [], focusRun: [], focusQueueItem: [], renderPipelines: 0, publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
+  const calls = { cancel: [], abort: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], renderPipelines: 0, publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
     document: { createElement: tag => new FakeNode(tag) },
     $: id => els[id] || new FakeNode('div'),
@@ -126,6 +269,7 @@ function makeQueueContext() {
     abortRun: rc => calls.abort.push(rc),
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
+    focusRemoteQueueItem: (clientId, itemId, kind) => calls.focusRemoteQueueItem.push({ clientId, itemId, kind }),
     renderPipelines: () => { calls.renderPipelines++; },
     scheduleQueuePublish: () => { calls.publish++; },
     syncViewRun: () => { calls.syncView++; },
@@ -136,6 +280,7 @@ function makeQueueContext() {
     console,
   };
   vm.createContext(context);
+  vm.runInContext(extract('function remoteQueueViewAttrs', 'let _plRunSig'), context);
   vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
   return { context, list, els, calls };
 }
@@ -188,18 +333,27 @@ test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () 
   assert.equal(calls.resetNodes, 1);
 });
 
-test('renderQueue：其他浏览器的排队/在跑条目只读，不给点击查看', () => {
-  const { context, list } = makeQueueContext();
+test('renderQueue：其他浏览器的排队/在跑条目都可点击查看阶段详情', () => {
+  const { context, list, calls } = makeQueueContext();
   context.remoteQueueClients.push({
     id: 'c2', label: 'Chrome·xy12',
-    runs: [{ by: 'eve', pipelineName: 'P1', source: 'manual', startedAt: 1 }],
-    queue: [{ by: 'frank', pipelineName: 'P2', source: 'manual', queuedAt: 2 }],
+    runs: [{ id: 'r2', by: 'eve', pipelineName: 'P1', source: 'manual', startedAt: 1, stages: [{ id: 's1', name: '构建' }], nodes: { s1: { status: 'running' } } }],
+    queue: [{ id: 'q2', by: 'frank', pipelineName: 'P2', source: 'manual', queuedAt: 2, stages: [{ id: 's2', name: '部署' }], nodes: { s2: { status: 'idle' } } }],
   });
   context.renderQueue();
   assert.equal(list.children.length, 3);   // 分隔行 + 他端运行 + 他端排队
   assert.match(list.children[0].innerHTML, /其他浏览器/);
-  assert.doesNotMatch(list.children[1].innerHTML, /data-qview|data-qfocus|data-qcancel|data-qabort/);
-  assert.doesNotMatch(list.children[2].innerHTML, /data-qview|data-qfocus|data-qcancel|data-qabort/);
+  assert.match(list.children[1].innerHTML, /data-qremote-id="r2"/);
+  assert.match(list.children[1].innerHTML, /点击查看该运行的阶段详情/);
+  assert.match(list.children[2].innerHTML, /data-qremote-id="q2"/);
+  assert.match(list.children[2].innerHTML, /点击查看该排队流水线的阶段详情/);
+  const remote = list.querySelectorAll('[data-qremote-id]');
+  assert.equal(remote.length, 2);
+  remote.forEach(element => element.handlers.click());
+  assert.deepEqual(calls.focusRemoteQueueItem, [
+    { clientId: 'c2', itemId: 'r2', kind: 'running' },
+    { clientId: 'c2', itemId: 'q2', kind: 'queued' },
+  ]);
 });
 
 /* ---------- 异机并行调度（runPipeline / machineConflict / drainQueue 真实实现） ---------- */

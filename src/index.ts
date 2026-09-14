@@ -1442,13 +1442,56 @@ export function apply(ctx: Context) {
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
   const QUEUE_PRESENCE_TTL = 45 * 1000    // 页面心跳 10 秒一次，45 秒未见即过期（容忍几次心跳丢失）
-  // running / queue 条目逐字段白名单清洗：只透传展示所需字段，防任意字段注入与体积膨胀
+  const QUEUE_STAGE_CAP = 100
+  const QUEUE_SUB_CAP = 50
+  const QUEUE_NODE_STATUSES = new Set(['idle', 'running', 'success', 'failed', 'skipped', 'aborted'])
+  function cleanQueueStage(stage: any): any {
+    if (!stage || typeof stage !== 'object' || typeof stage.id !== 'string' || !stage.id) return null
+    const out: any = { id: stage.id.slice(0, 128), name: String(stage.name ?? '').slice(0, 200) }
+    if (stage.preset === true) out.preset = true
+    if (typeof stage.pkey === 'string' && stage.pkey) out.pkey = stage.pkey.slice(0, 64)
+    if (stage.parallel === true) out.parallel = true
+    if (stage.skip === true) out.skip = true
+    if (Array.isArray(stage.sub)) {
+      const sub = stage.sub.slice(0, QUEUE_SUB_CAP).map((name: any) => String(name).slice(0, 128))
+      if (sub.length) out.sub = sub
+    }
+    return out
+  }
+  function cleanQueueNode(node: any): any {
+    const raw = node && typeof node === 'object' ? node : {}
+    const status = QUEUE_NODE_STATUSES.has(raw.status) ? raw.status : 'idle'
+    const progress = Number(raw.progress), dur = Number(raw.dur)
+    const out: any = {
+      status,
+      progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
+      dur: Number.isFinite(dur) ? Math.max(0, dur) : 0,
+    }
+    if (raw.sub && typeof raw.sub === 'object' && !Array.isArray(raw.sub)) {
+      const sub: any = Object.create(null)
+      for (const name of Object.keys(raw.sub).slice(0, QUEUE_SUB_CAP)) {
+        const value = raw.sub[name]
+        if (QUEUE_NODE_STATUSES.has(value)) sub[String(name).slice(0, 128)] = value
+      }
+      if (Object.keys(sub).length) out.sub = sub
+    }
+    return out
+  }
+  // running / queue 条目逐字段白名单清洗：阶段仅透传名称、编排标记和状态，不透传日志、变量、脚本参数或凭据
   function cleanQueueEntry(e: any, timeKey: 'startedAt' | 'queuedAt'): any {
     if (!e || typeof e !== 'object') return null
     const o: any = {}
-    for (const k of ['by', 'pipelineName', 'env', 'source']) o[k] = String(e[k] ?? '').slice(0, 200)
+    for (const k of ['id', 'pipelineId', 'pipelineName', 'by', 'env', 'repoName', 'branch', 'strategy', 'source']) {
+      o[k] = String(e[k] ?? '').slice(0, 200)
+    }
     const t = Number(e[timeKey])
     o[timeKey] = Number.isFinite(t) ? t : 0
+    o.stages = (Array.isArray(e.stages) ? e.stages : []).slice(0, QUEUE_STAGE_CAP)
+      .map(cleanQueueStage).filter((stage: any) => !!stage)
+    const rawNodes = e.nodes && typeof e.nodes === 'object' && !Array.isArray(e.nodes) ? e.nodes : {}
+    const nodes: any = Object.create(null)
+    for (const stage of o.stages) nodes[stage.id] = cleanQueueNode(rawNodes[stage.id])
+    o.nodes = nodes
     return o
   }
   webServer.register({
