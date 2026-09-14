@@ -598,15 +598,26 @@ if isinstance(lmcache, dict):
         direct["image"]["repository"] = image_repository
         direct["image"]["tag"] = image_tag
 
-framework_files = values.get("frameworkConfigFiles")
-if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
-    selected_collector_gateway_url = (
-        mapped_collector_gateway_url if target_node_ip_map else collector_gateway_url
-    )
-    framework_files["xds_framework.conf"] = re.sub(
+selected_collector_gateway_url = (
+    mapped_collector_gateway_url if target_node_ip_map else collector_gateway_url
+)
+
+def render_collector_gateway_url(config_text):
+    config_text = re.sub(
         r"(?m)^(\s*collector_gateway_url\s*=\s*).*?$",
         rf"\g<1>{selected_collector_gateway_url}",
-        framework_files["xds_framework.conf"],
+        config_text,
+    )
+    return re.sub(
+        r'("collector_gateway_url"\s*:\s*")\$?[^"]*(")',
+        rf"\g<1>{selected_collector_gateway_url}\g<2>",
+        config_text,
+    )
+
+framework_files = values.get("frameworkConfigFiles")
+if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
+    framework_files["xds_framework.conf"] = render_collector_gateway_url(
+        framework_files["xds_framework.conf"]
     )
     framework_files["xds_framework.conf"] = re.sub(
         r"(?m)^(\s*ems_enable\s*=\s*).*$",
@@ -629,6 +640,12 @@ if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_fra
         rf"\g<1>{namespace}",
         framework_files["xds_framework.conf"],
     )
+
+cpp_server_config_files = values.get("XDSCppServerConfigFile")
+if isinstance(cpp_server_config_files, dict):
+    for filename, config_text in cpp_server_config_files.items():
+        if isinstance(config_text, str):
+            cpp_server_config_files[filename] = render_collector_gateway_url(config_text)
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
 with open(arch_request_file, "w", encoding="utf-8") as output:

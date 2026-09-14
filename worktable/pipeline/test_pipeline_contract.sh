@@ -21,6 +21,9 @@ frameworkConfigFiles:
   xds_framework.conf: |
     mock_db = false
     collector_gateway_url = template-default:25888
+XDSCppServerConfigFile:
+  xds_dps_server.config: |
+    {"metrics": {"collector_gateway_url": "$template-default:25888"}}
 EOF
 cat >"$WORK/model_arch.json" <<'EOF'
 [
@@ -86,6 +89,7 @@ assert values["global"]["extra"] == "enabled"
 assert values["global"]["enableTaskExecutorGroups"] is True
 assert all(group["nodeSelector"] == {"xds.optest": "node-10"} for group in values["taskExecutorGroups"])
 assert "collector_gateway_url = 192.168.10.6:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert '"collector_gateway_url": "192.168.10.6:25888"' in values["XDSCppServerConfigFile"]["xds_dps_server.config"]
 PY
 
 echo "PASS: render-config produces one coherent P/D deployment contract"
@@ -108,6 +112,7 @@ env = dict(
 subprocess.run(["bash", sys.argv[2]], env=env, check=True, stdout=subprocess.DEVNULL)
 values = yaml.safe_load((work / "mapped-collector" / "rendered" / "values.rendered.yaml").read_text())
 assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
+assert '"collector_gateway_url": "192.168.16.146:25888"' in values["XDSCppServerConfigFile"]["xds_dps_server.config"]
 print("PASS: collector gateway selects default or mapped target endpoint")
 PY_COLLECTOR
 
