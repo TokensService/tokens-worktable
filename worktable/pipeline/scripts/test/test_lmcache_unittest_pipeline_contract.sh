@@ -33,10 +33,41 @@ if [[ "${GIT_CONFIG_COUNT:-}" == 1 && "${GIT_CONFIG_KEY_0:-}" == 'http.extraHead
 fi
 mkdir -p "${@: -1}/lmcache"
 EOF
+cat >"$tmp/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf 'ssh %s\n' "$*" >>"$FAKE_LOG"
+args=("$@")
+i=0
+while (( i < ${#args[@]} )); do
+  case "${args[i]}" in
+    -p) ((i += 2));;
+    -o) ((i += 2));;
+    *) break;;
+  esac
+done
+target="${args[i]}"
+((i += 1))
+[[ "$target" == 'root@192.0.2.78' ]] || {
+  echo "unexpected target: $target" >&2
+  exit 98
+}
+if [[ "${args[i]:-}" == 'bash -s' ]]; then
+  bash -s
+else
+  bash -lc "${args[i]:-}"
+fi
+EOF
+cat >"$tmp/bin/sshpass" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == '-e' ]] && shift
+[[ "${1:-}" == 'ssh' ]] && shift
+exec ssh "$@"
+EOF
 chmod +x "$tmp/bin/nerdctl" "$tmp/bin/ctr" "$tmp/bin/sudo" "$tmp/bin/git"
+chmod +x "$tmp/bin/ssh" "$tmp/bin/sshpass"
 
-# 工作台服务可能以精简 PATH 启动；GPU runtime 的宿主 CLI 位于 /usr/bin。
-grep -Fq 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"' "$root/lmcache-unittest-pull-image.sh"
+# 目标节点上的远端 Bash 会话补齐 GPU runtime 的标准 PATH。
+grep -Fq 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH:-}"' "$root/lmcache-unittest-pull-image.sh"
 
 # 上游变量由工作台变量池自动注入。脚本必须在实际执行时校验它们，
 # 但不得使用 Bash 的“变量为空即退出”展开，否则工作台的静态扫描会把这些字段标为人工必填。
@@ -65,7 +96,8 @@ sudo() {
 }
 export -f sudo
 
-pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
+targets='[{"ip":"192.0.2.78","user":"root","pass":"target-secret"},{"ip":"192.0.2.79","user":"root","pass":"must-not-be-used"}]'
+pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
   AK='test-ak' PROJECT='test-project' REGISTRY='swr.example.test' LOGIN_KEY='test-login-key' \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'ctr -n k8s.io image pull --user test-project@test-ak:test-login-key lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
@@ -79,14 +111,19 @@ pull_isolate_blocks_first="$(awk -F= '$1 == "LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIR
 pull_log_dir="$(awk -F= '$1 == "LMCACHE_UNITTEST_LOG_DIR" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_http_proxy="$(awk -F= '$1 == "LMCACHE_UNITTEST_HTTP_PROXY" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_remove_image="$(awk -F= '$1 == "LMCACHE_UNITTEST_REMOVE_IMAGE" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
+pull_target_ip="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_IP" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
+pull_target_port="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_PORT" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
+pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 [[ "$pull_run_dir" == "$tmp/default" ]]
 [[ "$pull_image" == 'lmcache-vllm-openai-0.5.4-unitest:latest' ]]
 [[ "$pull_isolate_blocks_first" == 1 ]]
 [[ -n "$pull_container" ]]
 [[ "$pull_http_proxy" == 'http://127.0.0.1:8889' ]]
 [[ "$pull_remove_image" == 1 ]]
+[[ "$pull_target_ip" == '192.0.2.78' && "$pull_target_port" == 22 && "$pull_target_user" == root ]]
 
-rebuild_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" \
+# 后续阶段只消费 pull 阶段的非敏感目标状态；密码仍由当次执行环境提供。
+rebuild_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
   LMCACHE_UNITTEST_RUN_DIR="$pull_run_dir" \
   LMCACHE_UNITTEST_IMAGE="$pull_image" \
   LMCACHE_UNITTEST_CONTAINER="$pull_container" \
@@ -95,6 +132,9 @@ rebuild_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" \
   LMCACHE_UNITTEST_LOG_DIR="$pull_log_dir" \
   LMCACHE_UNITTEST_HTTP_PROXY="$pull_http_proxy" \
   LMCACHE_UNITTEST_REMOVE_IMAGE="$pull_remove_image" \
+  LMCACHE_UNITTEST_TARGET_IP="$pull_target_ip" \
+  LMCACHE_UNITTEST_TARGET_PORT="$pull_target_port" \
+  LMCACHE_UNITTEST_TARGET_USER="$pull_target_user" \
   LMCACHE_UNITTEST_GIT_URL='https://gitcode.com/TokensService/LMCache.git' \
   LMCACHE_UNITTEST_GIT_BRANCH='dev' \
   LMCACHE_UNITTEST_GIT_USER='oauth2' \
@@ -110,7 +150,7 @@ rebuild_remove_image="$(awk -F= '$1 == "LMCACHE_UNITTEST_REMOVE_IMAGE" { print s
 [[ "$rebuild_http_proxy" == "$pull_http_proxy" ]]
 [[ "$rebuild_remove_image" == "$pull_remove_image" ]]
 
-test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" \
+test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
   LMCACHE_UNITTEST_RUN_DIR="$pull_run_dir" \
   LMCACHE_UNITTEST_IMAGE="$pull_image" \
   LMCACHE_UNITTEST_CONTAINER="$rebuild_container" \
@@ -119,6 +159,9 @@ test_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" \
   LMCACHE_UNITTEST_LOG_DIR="$rebuild_log_dir" \
   LMCACHE_UNITTEST_HTTP_PROXY="$rebuild_http_proxy" \
   LMCACHE_UNITTEST_REMOVE_IMAGE="$rebuild_remove_image" \
+  LMCACHE_UNITTEST_TARGET_IP="$pull_target_ip" \
+  LMCACHE_UNITTEST_TARGET_PORT="$pull_target_port" \
+  LMCACHE_UNITTEST_TARGET_USER="$pull_target_user" \
   bash "$root/lmcache-unittest-run-tests.sh")"
 grep -Fq -- '--net=host --gpus all --cap-add SYS_NICE -v /dev/shm:/dev/shm' "$log"
 # 认证 clone 的命令主体也必须作为 nerdctl exec 的容器内脚本下发；
@@ -133,6 +176,12 @@ grep -Fq -- 'http_proxy=http://127.0.0.1:8889' "$log"
 grep -Fq -- 'test_mp_gather_scatter_roundtrip' "$log"
 grep -Fq -- '--deselect "$1"' "$log"
 grep -Fq -- 'pytest -q -ra' "$log"
+grep -Fq 'ssh -p 22 ' "$log"
+grep -Fq 'root@192.0.2.78' "$log"
+if grep -Fq '192.0.2.79' "$log" || grep -Fq 'target-secret' "$log" || grep -Fq 'must-not-be-used' "$log"; then
+  echo 'only the first target may be used and passwords must not be logged' >&2
+  exit 1
+fi
 [[ ! -e "$tmp/default/state.env" ]]
 grep -Fq 'LMCACHE_UNITTEST_TEST_RESULT=0' <<<"$test_output"
 grep -Fq 'LMCACHE_UNITTEST_IMAGE_REMOVED=1' <<<"$test_output"
