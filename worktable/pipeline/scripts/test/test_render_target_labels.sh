@@ -223,16 +223,16 @@ assert values["lmcache"]["direct"]["image"] == {
 }
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is False
-assert sidecar["mpPortBase"] == 18000
-assert sidecar["httpPortBase"] == 18080
-assert sidecar["l1InitSizeGb"] == 0
-assert sidecar["l1SizeGb"] == 0
-assert sidecar["l1AlignBytes"] == 4096
+assert sidecar["mpPortBase"] == 5555
+assert sidecar["httpPortBase"] == 5565
+assert sidecar["l1InitSizeGb"] == 20
+assert sidecar["l1SizeGb"] == 200
+assert sidecar["l1AlignBytes"] == "4096"
 assert sidecar["maxWorkers"] == 1
 assert sidecar["logLevel"] == "INFO"
 assert sidecar["resources"] == {
-    "requests": {"cpu": 1, "memory": "1Gi"},
-    "limits": {"cpu": 1, "memory": "1Gi"},
+    "requests": {"cpu": 4, "memory": "8Gi"},
+    "limits": {"cpu": 8, "memory": "240Gi"},
 }
 for probe_name in ("startupProbe", "readinessProbe", "livenessProbe"):
     assert sidecar[probe_name]["httpGet"] == {
@@ -429,7 +429,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 IMAGE_TAG='test-tag' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 bash "$script_dir/render-config.sh" >"$work_dir/namespace-arch-executor.out"
-grep -qx 'NAMESPACE=xds-runtime-arch-gpu-bnt3-test-tag' "$work_dir/namespace-arch-executor.out"
+grep -qx 'NAMESPACE=xds-runtime-arch-gpu-bnt3' "$work_dir/namespace-arch-executor.out"
 
 arch='runtime-arch' \
 ARCH_NAME=test-arch \
@@ -441,7 +441,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 IMAGE_TAG='test-tag' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 bash "$script_dir/render-config.sh" >"$work_dir/namespace-legacy.out"
-grep -qx 'NAMESPACE=xds-test-arch-test-tag' "$work_dir/namespace-legacy.out"
+grep -qx 'NAMESPACE=xds-test-arch' "$work_dir/namespace-legacy.out"
 
 
 # Role names in the copied Chart remain the upstream KubeRay names.

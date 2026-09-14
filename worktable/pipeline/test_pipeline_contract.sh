@@ -45,7 +45,7 @@ CHART_TEMPLATE_DIR="$WORK/xds-cluster" \
 VALUES_TEMPLATE="$WORK/values.template.yaml" \
 ARCH_FILE="$WORK/model_arch.json" \
 ARCH_NAME="glm-5.2-nvfp4" \
-TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test"}]' \
+TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test"},{"ip":"192.0.2.11","user":"root","pass":"test"}]' \
 NUM_PREFILL=2 NUM_DECODE=1 PREFILL_GPU=4 DECODE_GPU=4 \
 DEPLOY_IMAGE="registry.example.com/xds:test" \
 NAMESPACE="xds-test" RELEASE_NAME="xds-test" \
@@ -87,7 +87,7 @@ assert len(values["taskExecutorGroups"]) == 3
 assert values["global"]["sentinel"] == "replaced"
 assert values["global"]["extra"] == "enabled"
 assert values["global"]["enableTaskExecutorGroups"] is True
-assert all(group["nodeSelector"] == {"xds.optest": "node-10"} for group in values["taskExecutorGroups"])
+assert all(group["nodeSelector"] == {"xds.optest": "node-10-11"} for group in values["taskExecutorGroups"])
 assert "collector_gateway_url = 192.168.10.6:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert '"collector_gateway_url": "192.168.10.6:25888"' in values["XDSCppServerConfigFile"]["xds_dps_server.config"]
 PY
@@ -107,6 +107,7 @@ env = dict(
     ARCH_NAME="glm-5.2-nvfp4",
     TARGET_HOSTS='[{"ip":"ssh.example.test:2222"}]',
     TARGET_NODE_IP_MAP='{"ssh.example.test:2222":"192.0.2.10"}',
+    NUM_PREFILL="1", NUM_DECODE="1", PREFILL_GPU="4", DECODE_GPU="4",
     DEPLOY_IMAGE="registry.example.com/xds:test",
 )
 subprocess.run(["bash", sys.argv[2]], env=env, check=True, stdout=subprocess.DEVNULL)
@@ -129,6 +130,7 @@ env = dict(
     ARCH_NAME="glm-5.2-nvfp4",
     TARGET_HOSTS='[{"ip":"192.0.2.10"}]',
     TARGET_NODE_IP_MAP='{"192.0.2.10":"192.0.2.10"}',
+    NUM_PREFILL="1", NUM_DECODE="1", PREFILL_GPU="4", DECODE_GPU="4",
     DEPLOY_IMAGE="registry.example.com/xds:test",
 )
 subprocess.run(["bash", sys.argv[2]], env=env, check=True, stdout=subprocess.DEVNULL)
@@ -180,7 +182,7 @@ set -euo pipefail
 all="$*"
 case "$all" in
   "get nodes -o json")
-    echo '{"items":[{"metadata":{"name":"node-a"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}}]}' ;;
+    echo '{"items":[{"metadata":{"name":"node-a"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.10"}]}},{"metadata":{"name":"node-b"},"status":{"addresses":[{"type":"InternalIP","address":"192.0.2.11"}]}}]}' ;;
   *"get svc -A -o json") echo '{"items":[]}' ;;
   *"get configmap "*) echo '{}' ;;
   *"get pods "*"-o name") exit 0 ;;
@@ -257,7 +259,7 @@ set -a
 source <(grep -E '^(RUN_DIR|CHART_DIR|VALUES_FILE|ARCH_REQUEST_FILE|RESOURCE_MANIFEST|ARCH_FILE|ARCH_NAME|NAMESPACE|RELEASE_NAME)=' "$WORK/render.out")
 set +a
 PATH="$FAKE_BIN:$PATH" CAPTURE_DIR="$CAPTURE_DIR" XDS_URL="http://xds.test/xds/v1" DEPLOY_ON_TARGET_HOST=1 \
-  TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test"}]' HEAD_LOG_ROOT="$WORK/head-logs" \
+  TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root","pass":"test"},{"ip":"192.0.2.11","user":"root","pass":"test"}]' HEAD_LOG_ROOT="$WORK/head-logs" \
   RELEASE_CLEANUP_TIMEOUT_SECONDS=1 RELEASE_CLEANUP_POLL_SECONDS=1 \
   XDS_READY_TIMEOUT_SECONDS=1 XDS_READY_POLL_SECONDS=1 \
   TASK_EXECUTOR_READY_TIMEOUT_SECONDS=1 TASK_EXECUTOR_READY_POLL_SECONDS=1 \
@@ -294,7 +296,7 @@ d['params']={'tensor_parallel_size':2,'pipeline_parallel_size':1,'data_parallel_
 source=work/'inherit.json';source.write_text(json.dumps(arch))
 env=dict(os.environ, RUN_DIR=str(work/'inherit'), RENDER_DIR=str(work/'inherit/rendered'),
  CHART_TEMPLATE_DIR=str(work/'xds-cluster'), VALUES_TEMPLATE=str(work/'values.template.yaml'),
- ARCH_FILE=str(source), ARCH_NAME='glm-5.2-nvfp4', TARGET_HOSTS='[{"ip":"192.0.2.10"}]',
+ ARCH_FILE=str(source), ARCH_NAME='glm-5.2-nvfp4', TARGET_HOSTS='[{"ip":"192.0.2.10"},{"ip":"192.0.2.11"}]',
  DEPLOY_IMAGE='registry.example.com/xds:test')
 for key in ('NUM_PREFILL','NUM_DECODE','PREFILL_GPU','DECODE_GPU','PREFILL_OVERRIDES_JSON','DECODE_OVERRIDES_JSON'):
  env.pop(key,None)

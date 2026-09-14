@@ -25,7 +25,7 @@ workerGroups:
         command: [bash, -c, 'wget -q -O- http://localhost:52365/api/local_raylet_healthz | grep success']
 EOF
 cat >"$WORK/architecture.json" <<'EOF'
-[{"arch_name":"probe-port-test","deploy_spec_packages":[{"spec_package_name":"probe-port-test","deploy_specs":[{"name":"prefill","role":"prefill","params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}]},{"name":"decode","role":"decode","params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}]}]}]}]
+[{"arch_name":"probe-port-test","deploy_spec_packages":[{"spec_package_name":"probe-port-test","deploy_specs":[{"name":"prefill","role":"prefill","params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}],"min":1,"max":1,"default":1},{"name":"decode","role":"decode","params":{},"resources":[{"gpu":4,"cpu":1,"memory":"1G"}],"min":1,"max":1,"default":1}]}]}]
 EOF
 
 RUN_DIR="$WORK/run" \
@@ -62,6 +62,9 @@ assert port_ranges[0][1] < port_ranges[1][0]
 ray_start_params = values["workerGroups"]["taskExecutorGroup-card"]["rayStartParams"]
 assert "min-worker-port" in ray_start_params
 assert "max-worker-port" in ray_start_params
+assert [group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] for group in groups] == [
+    "0,1,2,3", "4,5,6,7"
+]
 PY
 
 echo "PASS: task executor probes use each group's dashboard agent port"

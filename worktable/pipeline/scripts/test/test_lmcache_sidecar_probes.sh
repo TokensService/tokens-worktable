@@ -29,11 +29,22 @@ TEMPLATE
 cat >"$WORK/values.yaml" <<'VALUES'
 global: {}
 lmcacheSidecar:
-  enabled: true
-  resources: {}
+  enabled: {LMCACHE_SIDECAR_ENABLED}
+  mpPortBase: {LMCACHE_MP_PORT_BASE}
+  httpPortBase: {LMCACHE_HTTP_PORT_BASE}
+  l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
+  l1SizeGb: {LMCACHE_L1_SIZE_GB}
+  l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
+  resources:
+    requests:
+      cpu: {LMCACHE_CPU_REQUEST}
+      memory: {LMCACHE_MEMORY_REQUEST}
+    limits:
+      cpu: {LMCACHE_CPU_LIMIT}
+      memory: {LMCACHE_MEMORY_LIMIT}
 VALUES
 cat >"$WORK/architecture.json" <<'ARCH'
-[{"arch_name":"lmcache-probe-test","deploy_spec_packages":[{"deploy_specs":[{"role":"prefill","min":2,"max":2,"default":2,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]}]}]}]
+[{"arch_name":"lmcache-probe-test","deploy_spec_packages":[{"deploy_specs":[{"role":"prefill","params":{"use_lmcache":true},"min":1,"max":1,"default":1,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]},{"role":"decode","min":1,"max":1,"default":1,"resources":[{"gpu":1,"cpu":1,"memory":"1G"}]}]}]}]
 ARCH
 
 RUN_DIR="$WORK/run" \
@@ -52,6 +63,19 @@ import yaml
 
 values = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 sidecar = values["lmcacheSidecar"]
+assert sidecar["enabled"] is True
+assert sidecar["mpPortBase"] == 5555
+assert sidecar["httpPortBase"] == 5565
+assert sidecar["l1InitSizeGb"] == 20
+assert sidecar["l1SizeGb"] == 200
+assert sidecar["l1AlignBytes"] == "4096"
+assert sidecar["resources"] == {
+    "requests": {"cpu": 4, "memory": "8Gi"},
+    "limits": {"cpu": 8, "memory": "240Gi"},
+}
+assert sidecar["cudaVisibleDevices"] == "0"
+groups = values["taskExecutorGroups"]
+assert [group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] for group in groups] == ["0", "1"]
 for name in ("startupProbe", "readinessProbe", "livenessProbe"):
     probe = sidecar[name]
     assert probe["httpGet"] == {

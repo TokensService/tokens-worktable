@@ -336,6 +336,17 @@ if params_use_ems:
 else:
     use_ems = root_use_ems if root_use_ems is not None else False
 
+# A Prefill spec explicitly opting into LMCache enables its colocated sidecar.
+# An explicit TEMPLATE_VARS_JSON value remains authoritative because the
+# template default is only filled when that key is absent.
+use_lmcache = any(
+    isinstance(spec.get("params"), dict) and spec["params"].get("use_lmcache") is True
+    for package in arch.get("deploy_spec_packages", [])
+    if isinstance(package, dict)
+    for spec in package.get("deploy_specs", [])
+    if isinstance(spec, dict) and spec.get("role") == "prefill"
+)
+
 groups = []
 resources = []
 bundle_index = 1
@@ -416,6 +427,25 @@ for group_index, group in enumerate(groups):
     group["rayStartParamsPorts"]["min-worker-port"] = range_start
     group["rayStartParamsPorts"]["max-worker-port"] = range_end
 
+# A single-node deployment shares the host GPU namespace. Pin groups in their
+# render order so device-plugin allocation cannot reorder CUDA devices between
+# a Prefill PTE and its LMCache sidecar.
+node_gpu_count = 8
+pinned_single_node = len(target_ips) == 1
+if pinned_single_node:
+    assigned_cards = 0
+    for group in groups:
+        group_gpus = group["rayStartParamsPorts"]["num-gpus"]
+        if assigned_cards + group_gpus > node_gpu_count:
+            raise SystemExit(
+                f"single-node GPU pinning exceeds {node_gpu_count} cards: "
+                f"group {group['name']} needs {group_gpus}, already assigned {assigned_cards}"
+            )
+        group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] = ",".join(
+            str(card) for card in range(assigned_cards, assigned_cards + group_gpus)
+        )
+        assigned_cards += group_gpus
+
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
 template_vars.setdefault("IMAGE_TAG", deploy_image.rsplit(":", 1)[-1])
@@ -440,18 +470,18 @@ template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 # 新版模板包含可选 LMCache Sidecar。默认关闭以保持没有 Sidecar 的部署行为；
 # 所有字段仍在 values 中填入可解析的值，启用时可由 TEMPLATE_VARS_JSON 覆盖。
-template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "false")
-template_vars.setdefault("LMCACHE_MP_PORT_BASE", "18000")
-template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", "18080")
-template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", "0")
-template_vars.setdefault("LMCACHE_L1_SIZE_GB", "0")
+template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "true" if use_lmcache else "false")
+template_vars.setdefault("LMCACHE_MP_PORT_BASE", "5555")
+template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", "5565")
+template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", "20")
+template_vars.setdefault("LMCACHE_L1_SIZE_GB", "200")
 template_vars.setdefault("LMCACHE_L1_ALIGN_BYTES", "4096")
 template_vars.setdefault("LMCACHE_MAX_WORKERS", "1")
 template_vars.setdefault("LMCACHE_LOG_LEVEL", "INFO")
-template_vars.setdefault("LMCACHE_CPU_REQUEST", "1")
-template_vars.setdefault("LMCACHE_MEMORY_REQUEST", "1Gi")
-template_vars.setdefault("LMCACHE_CPU_LIMIT", "1")
-template_vars.setdefault("LMCACHE_MEMORY_LIMIT", "1Gi")
+template_vars.setdefault("LMCACHE_CPU_REQUEST", "4")
+template_vars.setdefault("LMCACHE_MEMORY_REQUEST", "8Gi")
+template_vars.setdefault("LMCACHE_CPU_LIMIT", "8")
+template_vars.setdefault("LMCACHE_MEMORY_LIMIT", "240Gi")
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -507,6 +537,32 @@ values["global"] = deep_merge(values.get("global", {}), {
     "storage": {"hostPath": "/mnt/xds/sfs"},
 })
 values = deep_merge(values, yaml_replace_map)
+
+lmcache_sidecar = values.get("lmcacheSidecar")
+if lmcache_sidecar is not None and not isinstance(lmcache_sidecar, dict):
+    raise SystemExit("lmcacheSidecar must be a mapping")
+if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled", False):
+    # The sidecar is attached only to Prefill Pods. CUDA IPC requires its
+    # visible devices to be identical to the colocated Prefill PTE, including
+    # ordering; a global sidecar setting cannot represent multiple Prefill
+    # groups with different pinned devices.
+    prefill_pins = [
+        group["containerEnvOverrides"].get("NVIDIA_VISIBLE_DEVICES")
+        for group in groups
+        if "prefill" in group["name"].lower()
+    ]
+    if not prefill_pins:
+        raise SystemExit("lmcache sidecar enabled but no prefill TE group found")
+    if pinned_single_node and any(pin is None for pin in prefill_pins):
+        raise SystemExit("lmcache sidecar enabled but prefill GPU pinning is missing")
+    populated_prefill_pins = [pin for pin in prefill_pins if pin]
+    if len(populated_prefill_pins) > 1:
+        raise SystemExit(
+            "lmcache sidecar enabled with multiple prefill TE groups: "
+            "cudaVisibleDevices cannot align with more than one PTE"
+        )
+    if populated_prefill_pins:
+        lmcache_sidecar["cudaVisibleDevices"] = populated_prefill_pins[0]
 
 # Pair the ray-svc selector with an explicit frontGroup Pod label. This
 # remains stable when the KubeRay operator does not add it itself.
@@ -758,6 +814,16 @@ if isinstance(cpp_server_config_files, dict):
             cpp_server_config_files[filename] = render_collector_gateway_url(config_text)
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
+# Helm's JSON/YAML path can convert large numeric values to scientific
+# notation.  Keep the LMCache alignment value a literal string so argparse
+# receives the exact integer supplied by the values template.
+rendered_values_text = Path(values_file).read_text(encoding="utf-8")
+rendered_values_text = re.sub(
+    r"(?m)^(\s*l1AlignBytes:\s*)(?!['\"])(\S+)\s*$",
+    r"\1'\2'",
+    rendered_values_text,
+)
+Path(values_file).write_text(rendered_values_text, encoding="utf-8")
 with open(arch_request_file, "w", encoding="utf-8") as output:
     json.dump(arch, output, ensure_ascii=False, indent=2)
     output.write("\n")
