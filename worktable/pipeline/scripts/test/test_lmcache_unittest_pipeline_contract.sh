@@ -46,8 +46,7 @@ fi
 grep -Fq 'run pull stage first' "$tmp/rebuild-missing.out"
 
 pull_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
-  LMCACHE_UNITTEST_SWR_AK='test-ak' LMCACHE_UNITTEST_SWR_PROJECT='test-project' \
-  LMCACHE_UNITTEST_SWR_REGISTRY='swr.example.test' LMCACHE_UNITTEST_SWR_LOGIN_KEY='test-login-key' \
+  AK='test-ak' PROJECT='test-project' REGISTRY='swr.example.test' LOGIN_KEY='test-login-key' \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'ctr -n k8s.io image pull --user test-project@test-ak:test-login-key lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
 [[ ! -e "$tmp/default/state.env" ]]
