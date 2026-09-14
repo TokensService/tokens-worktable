@@ -449,6 +449,13 @@ upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
 lmcache_sidecar = values.get("lmcacheSidecar")
 if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
+    # lmcache 开启时 KV offload 由 sidecar L1 承担，缩小 TE 内存申请：
+    # arch（OffloadingConnector/1M ctx）预估的 memory request 可能超出
+    # 大页节点 allocatable（如 2000Gi hugepages 后仅 ~944Gi）导致 TE 永久 Pending。
+    te_memory = "200G"
+    for group in groups:
+        for quota in ("limits", "requests"):
+            group["containerResources"][quota]["memory"] = te_memory
     # lmcache-sidecar 仅挂在 prefill 组；cudaVisibleDevices 必须与其 PTE 的
     # NVIDIA_VISIBLE_DEVICES 完全一致（含顺序），否则 CUDA IPC 映射失败。
     prefill_pins = [
