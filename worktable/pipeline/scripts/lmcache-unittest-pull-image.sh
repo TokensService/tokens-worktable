@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 工作台服务可能以精简 PATH 启动；NVIDIA Container Toolkit 的宿主 CLI
+# 位于 /usr/bin，必须让 nerdctl 及其 runtime 子进程继承该标准搜索路径。
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 # 输入变量（均可选）：
 # - LMCACHE_UNITTEST_RUN_DIR：本轮运行目录；未设置时自动生成时间戳目录。
 # - LMCACHE_UNITTEST_IMAGE：待拉取的单测镜像；未设置时使用脚本默认值。
