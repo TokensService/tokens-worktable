@@ -3660,6 +3660,21 @@ function drainQueue(){
 function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
+/* 本地运行队列视图还包含「已出队、正在申请节点租约、尚未进入 activeRuns」的短暂状态。
+   统一从这里取数，确保列表、点击预览与跨浏览器快照对该过渡状态口径一致。 */
+function localQueueItems(){
+  const items=queue.slice();
+  if(typeof pendingLeaseStarts!=='undefined') pendingLeaseStarts.forEach(p=>{
+    const item=p&&p.queueItem;
+    if(item&&!items.some(q=>q===item||(String(item.id||'')&&String(q&&q.id||'')===String(item.id)))) items.push(item);
+  });
+  return items;
+}
+function isPendingQueueItem(item){
+  if(typeof pendingLeaseStarts==='undefined') return false;
+  return pendingLeaseStarts.some(p=>p&&p.queueItem&&(p.queueItem===item||(String(item&&item.id||'')&&String(p.queueItem.id||'')===String(item.id))));
+}
+
 /* 排队项详情预览：点击队列中的排队任务，编排区只读展示该次排队的阶段编排（预设任务按入队勾选快照展开，
    与 startSimRun 同一 expandRunStages 路径）与运行参数快照（环境/仓库/分支/策略/执行人）。
    预览 rc 不进 activeRuns、带 queuedPreview 标记、over=true——引擎不感知，停止/重试/归档目标均不指向它；
@@ -3679,7 +3694,7 @@ function queuePreviewRc(item){
 }
 function focusQueueItem(id){
   if(viewRc && viewRc.queuedPreview===true && viewRc.id===id) return;   // 已在预览该排队项，避免重复重建
-  const item=queue.find(q=>q.id===id); if(!item) return;
+  const item=localQueueItems().find(q=>q.id===id); if(!item) return;
   focusRun(queuePreviewRc(item));
 }
 
@@ -3809,14 +3824,7 @@ function queuedPresenceEntry(item){
 function publishQueue(force){
   const runsSnap=activeRuns.map(runningPresenceEntry);
   const runningSnap=runsSnap.length?runsSnap[0]:null;   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
-  const queueItems=queue.slice();
-  /* 节点租约申请可能慢于一次在场上报：已从 queue 取出但尚未进入 activeRuns 的条目继续作为 queued
-     发布，等拿到租约后再由 originQueueId 无缝切换到真实运行。 */
-  if(typeof pendingLeaseStarts!=='undefined') pendingLeaseStarts.forEach(p=>{
-    const item=p&&p.queueItem;
-    if(item&&!queueItems.some(q=>q===item||String(q&&q.id||'')===String(item.id||''))) queueItems.push(item);
-  });
-  const queueSnap=queueItems.map(queuedPresenceEntry);
+  const queueSnap=localQueueItems().map(queuedPresenceEntry);
   const sig=JSON.stringify([runsSnap,queueSnap]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
@@ -3981,7 +3989,7 @@ function renderQueue(){
   const list=$('queueList'); if(!list) return;
   /* 排队预览自愈：预览中的排队项已出队（被取消/清空，或启动校验失败被移出队列）时，编排区回到当前流水线
      空闲编排。正常启动不走这里——startSimRun 已先把焦点切到真实运行 rc，viewRc 不再是预览 */
-  if(viewRc && viewRc.queuedPreview===true && !queue.some(q=>q.id===viewRc.id)){
+  if(viewRc && viewRc.queuedPreview===true && !localQueueItems().some(q=>q.id===viewRc.id)){
     viewRc=null; syncViewRun(); applyRunOverall(null);
     $('stopBtn').disabled=true; refreshArchiveTip();
     resetNodes();   // 空闲编排重建（内部重置 _detailKey 并重绘流程/详情）
@@ -3990,22 +3998,23 @@ function renderQueue(){
      drainQueue 只启动机器不相交的项，全部相交时空转无副作用；startSimRun 末尾也会调 renderQueue，
      那时在跑集合已含新运行，不会重复启动，故无重入死循环。 */
   if(queue.length){ try{ drainQueue(); }catch(e){ console.warn('[queue] 自愈排空失败（不影响渲染）:', e); } }
+  const localItems=localQueueItems();   // drainQueue 可能刚把排队项转成租约申请中，排空后重新取一次
   list.innerHTML='';
   const remoteRunningCount=remoteQueueClients.reduce((sum,client)=>sum+remoteRunsOf(client).length,0);
   const remoteQueuedCount=remoteQueueClients.reduce((sum,client)=>sum+(Array.isArray(client&&client.queue)?client.queue.length:0),0);
-  const totalQueueItems=activeRuns.length+queue.length+remoteRunningCount+remoteQueuedCount;
+  const totalQueueItems=activeRuns.length+localItems.length+remoteRunningCount+remoteQueuedCount;
   $('queueCount').textContent = totalQueueItems?'('+totalQueueItems+' 项)':'';
   /* 明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态由独立卡片首行的「空闲」徽标表达 */
-  list.style.display = (running||queue.length||remoteQueueClients.length)?'':'none';
+  list.style.display = (running||localItems.length||remoteQueueClients.length)?'':'none';
   let status='空闲', cls='';
   if(running){
-    status=activeRuns.length+' 运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
+    status=activeRuns.length+' 运行中'+(localItems.length?' · '+localItems.length+' 排队':''); cls='dshell-badgeWait';
     activeRuns.forEach((rc,idx)=>{
       const it=document.createElement('div'); it.className='dshell-listItem';
       it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(idx+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
       list.appendChild(it);
     });
-  } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
+  } else if(localItems.length){ status=localItems.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
   if(remoteRunningCount||remoteQueuedCount){
     const remoteStatus=[];
     if(remoteRunningCount) remoteStatus.push(remoteRunningCount+' 运行');
@@ -4022,10 +4031,11 @@ function renderQueue(){
     if(!cs.length) return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点空闲</span>';
     return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点 '+cs.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+'</span>';
   };
-  queue.forEach((q,idx)=>{
+  localItems.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
     const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+nodeWaitText(q)+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    const pending=isPendingQueueItem(q);
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+nodeWaitText(q)+runInfoLine(q)+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait">申请节点中</span>':'<button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
     list.appendChild(it);
   });
   /* 其他浏览器标签页的在场快照：可点击查看脱敏后的阶段状态；运行/取消仍是来源页内存态，

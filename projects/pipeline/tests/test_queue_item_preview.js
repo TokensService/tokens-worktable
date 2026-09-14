@@ -60,6 +60,7 @@ function makePreviewContext() {
     GITURL: 'https://git.example.com/dev/myapp',
     viewRc: null,
     queue: [],
+    pendingLeaseStarts: [],
     remoteQueueClients: [],
     expandRunStages: (stages, presets) => { calls.expand.push({ stages, presets }); return stages.map(s => ({ ...s })); },
     focusRun: rc => { calls.focus.push(rc); context.viewRc = rc; },
@@ -69,7 +70,7 @@ function makePreviewContext() {
   const presenceEnd = source.indexOf('function publishQueue', presenceStart);
   assert.ok(presenceStart >= 0 && presenceEnd > presenceStart, '缺少运行队列安全快照函数');
   vm.runInContext(source.slice(presenceStart, presenceEnd), context);
-  vm.runInContext(extract('function queuePreviewRc', '/* ---------- 运行队列跨浏览器可见'), context);
+  vm.runInContext(extract('function localQueueItems', '/* ---------- 运行队列跨浏览器可见'), context);
   vm.runInContext(extract('function remoteRunsOf', '/* ---------- 运行引擎'), context);
   return { context, calls };
 }
@@ -116,6 +117,15 @@ test('focusQueueItem：点击排队项聚焦其详情预览，重复点击/未�
   assert.equal(calls.focus.length, 1);
   context.focusQueueItem('qX');   // 队列里不存在：忽略
   assert.equal(calls.focus.length, 1);
+});
+
+test('focusQueueItem：节点租约申请中的待启动项仍能聚焦详情', () => {
+  const { context, calls } = makePreviewContext();
+  context.pendingLeaseStarts.push({ queueItem });
+  context.focusQueueItem('q1');
+  assert.equal(calls.focus.length, 1);
+  assert.equal(calls.focus[0].id, 'q1');
+  assert.equal(calls.focus[0].queuedPreview, true);
 });
 
 test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进度和耗时', () => {
@@ -312,6 +322,7 @@ test('publishQueue：节点租约申请期间继续把待启动项作为可查�
     console,
   };
   vm.createContext(context);
+  vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function queueStagePresence', '/* renderQueue 渲染很频繁'), context);
   context.publishQueue(true);
   const body = JSON.parse(calls[0].options.body);
@@ -328,7 +339,7 @@ function makeQueueContext() {
   const context = {
     document: { createElement: tag => new FakeNode(tag) },
     $: id => els[id] || new FakeNode('div'),
-    queue: [], activeRuns: [], viewRc: null, running: false, remoteQueueClients: [],
+    queue: [], pendingLeaseStarts: [], activeRuns: [], viewRc: null, running: false, remoteQueueClients: [],
     esc: String, sourceLabel: s => (s === 'manual' ? '手动' : s), fmtRelative: () => '刚刚',
     runInfoLine: () => '<div class="dshell-muted">info</div>',
     drainQueue: () => { calls.drain++; },
@@ -347,6 +358,7 @@ function makeQueueContext() {
     console,
   };
   vm.createContext(context);
+  vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueDetailAvailable', 'function remoteQueuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueViewAttrs', 'let _plRunSig'), context);
   vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
@@ -399,6 +411,22 @@ test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () 
   assert.equal(els.stopBtn.disabled, true);
   assert.equal(calls.archiveTip, 1);
   assert.equal(calls.resetNodes, 1);
+});
+
+test('renderQueue：节点租约申请中的条目继续显示、可点击且不会误触发预览自愈', () => {
+  const { context, list, els, calls } = makeQueueContext();
+  const pending = { ...queueItem, id: 'q-pending' };
+  context.pendingLeaseStarts.push({ queueItem: pending });
+  context.viewRc = { id: 'q-pending', queuedPreview: true, over: true };
+  context.renderQueue();
+  assert.equal(els.queueCount.textContent, '(1 项)');
+  assert.match(list.children[0].innerHTML, /data-qview="q-pending"/);
+  assert.match(list.children[0].innerHTML, /申请节点中/);
+  assert.match(list.children[0].innerHTML, /（查看中）/);
+  assert.equal(list.querySelectorAll('[data-qcancel]').length, 0, '异步申请中的条目没有安全取消协议，不显示无效取消按钮');
+  list.querySelectorAll('[data-qview]')[0].handlers.click();
+  assert.deepEqual(calls.focusQueueItem, ['q-pending']);
+  assert.equal(calls.resetNodes, 0, 'pending 仍属本地队列生命周期，不应把预览清回空闲编排');
 });
 
 test('renderQueue：其他浏览器的排队/在跑条目都可点击查看阶段详情', () => {

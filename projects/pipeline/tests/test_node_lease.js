@@ -256,7 +256,7 @@ test('renderQueue：等待节点的排队项展示占用节点与占用者', () 
     $: id => els[id] || new FakeNode('div'),
     queue: [{ id: 'q1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1,
       nodeWait: { until: Date.now() + 5000, conflicts: [{ ip: '10.0.0.1', by: 'bob', label: '部署' }] } }],
-    activeRuns: [], viewRc: null, running: false, remoteQueueClients: [],
+    pendingLeaseStarts: [], activeRuns: [], viewRc: null, running: false, remoteQueueClients: [],
     esc: String, sourceLabel: s => s, fmtRelative: () => '刚刚',
     runInfoLine: () => '<div class="dshell-muted">info</div>',
     drainQueue: () => {}, cancelQueue: () => {}, abortRun: () => {}, focusRun: () => {},
@@ -265,6 +265,7 @@ test('renderQueue：等待节点的排队项展示占用节点与占用者', () 
     _plRunSig: null, console,
   };
   vm.createContext(context);
+  vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
   context.renderQueue();
   assert.equal(list.children.length, 1);
