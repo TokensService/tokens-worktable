@@ -3145,9 +3145,20 @@ function renderFlow(){
   });
   applyStatusClasses();
 }
+/* 阶段 id / 子阶段名可能来自其他浏览器的在场快照；按 dataset 精确比较，避免把不可信值拼进 CSS selector。 */
+function flowNodeElementById(id){
+  const wanted=String(id), all=document.querySelectorAll('.pipeline-node[data-id]');
+  for(let i=0;i<all.length;i++) if(all[i].dataset&&all[i].dataset.id===wanted) return all[i];
+  return null;
+}
+function flowSubElementByName(node,name){
+  const wanted=String(name), all=node.querySelectorAll('.pipeline-sub span[data-sub]');
+  for(let i=0;i<all.length;i++) if(all[i].dataset&&all[i].dataset.sub===wanted) return all[i];
+  return null;
+}
 function applyStatusClasses(){
   flowStages().forEach(s=>{
-    const el = document.querySelector('.pipeline-node[data-id="'+s.id+'"]');
+    const el = flowNodeElementById(s.id);
     if(!el) return;
     const st = nodes[s.id] ? nodes[s.id].status : 'idle';
     el.classList.remove('run','ok','fail','skip','abort','sel');
@@ -3167,7 +3178,7 @@ function applyStatusClasses(){
     meta.textContent = metaFor(s.id);
     if(s.sub && s.sub.length){
       s.sub.forEach(x=>{
-        const sp = el.querySelector('.pipeline-sub span[data-sub="'+x+'"]');
+        const sp = flowSubElementByName(el,x);
         if(sp){ sp.className=''; const ss=nodes[s.id]&&nodes[s.id].sub?nodes[s.id].sub[x]:'idle';
           if(ss==='running') sp.classList.add('run');
           else if(ss==='success') sp.classList.add('ok');
@@ -4035,7 +4046,7 @@ function renderQueue(){
     const it=document.createElement('div'); it.className='dshell-listItem';
     const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
     const pending=isPendingQueueItem(q);
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+nodeWaitText(q)+runInfoLine(q)+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait">申请节点中</span>':'<button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait">申请节点中</span>':'<button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
     list.appendChild(it);
   });
   /* 其他浏览器标签页的在场快照：可点击查看脱敏后的阶段状态；运行/取消仍是来源页内存态，

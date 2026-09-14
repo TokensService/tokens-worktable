@@ -159,6 +159,44 @@ test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进
   assert.equal(rc.release, '', '他端未同步 Release 时不能伪造本页默认值');
 });
 
+test('applyStatusClasses：远端异常阶段 id 与子阶段名不进入 CSS selector', () => {
+  const stageId = 'build\"] [data-id="other';
+  const subName = '子项\"] .other[';
+  const classes = () => ({ values: new Set(), remove(...names) { names.forEach(name => this.values.delete(name)); }, add(name) { this.values.add(name); } });
+  const bar = { style: {} };
+  const meta = { textContent: '' };
+  const sub = { dataset: { sub: subName }, className: '', classList: classes() };
+  const node = {
+    dataset: { id: stageId }, classList: classes(),
+    querySelector(selector) {
+      if (selector === '.pipeline-bar > i') return bar;
+      if (selector === '.pipeline-nodeMeta') return meta;
+      throw new Error('不应使用动态 selector: ' + selector);
+    },
+    querySelectorAll(selector) {
+      assert.equal(selector, '.pipeline-sub span[data-sub]');
+      return [sub];
+    },
+  };
+  const context = {
+    document: {
+      querySelector() { throw new SyntaxError('异常 id 被拼入 selector'); },
+      querySelectorAll(selector) { assert.equal(selector, '.pipeline-node[data-id]'); return [node]; },
+    },
+    flowStages: () => [{ id: stageId, name: '构建', sub: [subName] }],
+    nodes: { [stageId]: { status: 'running', progress: 47, sub: { [subName]: 'success' } } },
+    selectedId: stageId,
+    metaFor: () => '47%',
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('function flowNodeElementById', 'function metaFor'), context);
+  assert.doesNotThrow(() => context.applyStatusClasses());
+  assert.equal(bar.style.width, '47%');
+  assert.equal(node.classList.values.has('run'), true);
+  assert.equal(node.classList.values.has('sel'), true);
+  assert.equal(sub.classList.values.has('ok'), true);
+});
+
 test('focusRemoteQueueItem：他端在跑与排队条目都能聚焦，未知条目忽略', () => {
   const { context, calls } = makePreviewContext();
   assert.equal(typeof context.focusRemoteQueueItem, 'function', '应提供他端队列点击入口');
@@ -415,13 +453,14 @@ test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () 
 
 test('renderQueue：节点租约申请中的条目继续显示、可点击且不会误触发预览自愈', () => {
   const { context, list, els, calls } = makeQueueContext();
-  const pending = { ...queueItem, id: 'q-pending' };
+  const pending = { ...queueItem, id: 'q-pending', nodeWait: { until: 1, conflicts: [{ ip: '10.0.0.9', by: 'bob' }] } };
   context.pendingLeaseStarts.push({ queueItem: pending });
   context.viewRc = { id: 'q-pending', queuedPreview: true, over: true };
   context.renderQueue();
   assert.equal(els.queueCount.textContent, '(1 项)');
   assert.match(list.children[0].innerHTML, /data-qview="q-pending"/);
   assert.match(list.children[0].innerHTML, /申请节点中/);
+  assert.doesNotMatch(list.children[0].innerHTML, /等待节点/, '重新申请期间不应同时展示上一次租约冲突');
   assert.match(list.children[0].innerHTML, /（查看中）/);
   assert.equal(list.querySelectorAll('[data-qcancel]').length, 0, '异步申请中的条目没有安全取消协议，不显示无效取消按钮');
   list.querySelectorAll('[data-qview]')[0].handlers.click();
