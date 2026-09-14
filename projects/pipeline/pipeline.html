@@ -2913,6 +2913,17 @@ let activeRuns = [];
 let viewRc = null;
 function viewRun(){ return viewRc; }
 function viewActive(){ return !!(viewRc && !viewRc.over); }   // 编排区展示的运行仍在跑（区别于「任一运行在跑」的 running）
+/* 非 admin 用户不可中止/重置他人的流水线：admin 全权；password 模式下非 admin 仅可控制
+   自己署名（by）的运行；token 模式（无用户身份）退化为全权，与既有行为一致。runOwner
+   缺省时按「无法判定归属」处理——admin 仍可控制，非 admin 视为他人（拒绝）。 */
+function canControlRun(by){
+  if(!currentUsername) return true;                  // token 模式 / 未装 admin 插件：无用户身份概念，退化为全权
+  if(currentUserIsAdmin) return true;                // admin 可控制任意运行
+  return !!(by && by===currentUsername);             // 非 admin 仅可控制自己署名的运行
+}
+/* 编排区「中止」按钮可用：运行在跑且当前用户对该运行有控制权 */
+function canStopViewRun(){ return viewActive() && canControlRun(viewRc && viewRc.by); }
+function updateStopBtn(){ $('stopBtn').disabled=!canStopViewRun(); }   // admin 探测到达后亦调此重算
 function runPreviewReadOnly(rc){
   return !!(rc && (rc.queuedPreview===true || rc.remotePreview===true));
 }
@@ -2943,7 +2954,7 @@ function focusRun(rc){
   if(replayRec){ replayRec=null; const rt=$('replayTip'); if(rt) rt.textContent=''; }
   viewRc=rc||null; syncViewRun(); applyRunOverall(viewRc);
   _detailKey='';
-  $('stopBtn').disabled=!viewActive();
+  updateStopBtn();
   refreshArchiveTip();
   renderFlow(); renderDetail(); renderQueue();
 }
@@ -3571,7 +3582,7 @@ function startSimRun(pl, c){
   }
   viewRc=rc; syncViewRun(); syncRunState();   // 新运行获得编排区焦点
   _detailKey='';   // 视图切到新运行，详情渲染缓存一并失效
-  $('stopBtn').disabled=false;
+  $('stopBtn').disabled=false;   // 本人刚启动的运行可中止（by 取当前登录用户）；控制权在 click 与 focusRun 处再守卫
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   rcOverall(rc,'运行中…','dshell-badgeWait');
   renderFlow(); renderDetail();
@@ -4032,7 +4043,7 @@ function renderQueue(){
       const rc=activeRuns[i];
       const it=document.createElement('div'); it.className='dshell-listItem';
       if(viewRc===rc) markViewing(it);
-      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(i+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
+      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(i+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(canControlRun(rc.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>':'');
       it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRun(rc); });   // 空白处点击同标题：选中该运行
       list.appendChild(it);
     }
@@ -4079,7 +4090,7 @@ function renderQueue(){
     const pending=isPendingQueueItem(q);
     const reasonOpen=reasonOpenSet&&reasonOpenSet.has(q.id);
     if(viewing) markViewing(it);
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+i+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+(reasonOpen?queueReasonLine(q):'')+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">申请节点中</span>':'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">排队中</span> <button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>');
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+i+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+(reasonOpen?queueReasonLine(q):'')+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">申请节点中</span>':'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">排队中</span>'+(canControlRun(q.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>':''));
     it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusQueueItem(q.id); });   // 空白处点击同标题：查看该排队流水线详情
     list.appendChild(it);
   }
@@ -4110,8 +4121,8 @@ function renderQueue(){
       });
     });
   }
-  list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
-  list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(rc) abortRun(rc); }));
+  list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>{ const q=queue.find(x=>x.id===b.getAttribute('data-qcancel')); if(q && !canControlRun(q.by)){ alert('无权限：仅管理员可取消其他用户（'+esc(q.by||'')+'）的排队任务。'); return; } cancelQueue(b.getAttribute('data-qcancel')); }));
+  list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(!rc) return; if(!canControlRun(rc.by)){ alert('无权限：仅管理员可中止其他用户（'+esc(rc.by||'')+'）的流水线。'); return; } abortRun(rc); }));
   list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
   list.querySelectorAll('[data-qview]').forEach(el=>el.addEventListener('click',()=>focusQueueItem(el.getAttribute('data-qview'))));   // 排队项点击：编排区预览其阶段编排与参数快照
   /* 「排队中/申请节点中」徽标点击：展开/收起排队原因（只影响展示，不触碰调度与详情预览焦点） */
@@ -5395,7 +5406,7 @@ function retryFromStage(stageId){
   }   // 并行组重试清空整组及下游运行态；串行阶段保持原有重试清理范围
   rc.over=false;
   activeRuns.push(rc); syncRunState();
-  $('stopBtn').disabled=false;
+  $('stopBtn').disabled=false;   // 重试本人运行的阶段可中止；他人 by 时由 focusRun/click 守卫
   rcOverall(rc,'运行中…（重试）','dshell-badgeWait');
   runSetSel(rc,rc.stages[idx].id); rcRender(rc);
   advance(rc,idx);
@@ -5409,7 +5420,7 @@ function finish(rc, result){
   if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 释放节点租约：等待同节点的排队任务（含他端）随即可启动
   activeRuns=activeRuns.filter(r=>r!==rc);
   syncRunState();
-  $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止
+  $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止（控制权由 click/focusRun 守卫）
   /* 收尾（徽标 / 历史 / 统计 / 持久化 / 归档 / 详情）尽力而为：任一步异常都不得跳过下方的
      drainQueue()——否则排队任务会卡在「待启动」永远不跑（renderQueue 自愈仅在此处确实调到时才兜底）。
      buildLog 等同步步骤在此前未被 try 包裹（archiveStageLog 内部已包），故这里统一兜底。 */
@@ -6216,7 +6227,7 @@ function exitHistoryReplay(){
   /* 退出回放：有在跑运行则回看最近一个（其节点表保持引擎实写状态，不可重置），否则回到当前流水线的空闲编排 */
   viewRc=activeRuns.length?activeRuns[activeRuns.length-1]:null;
   syncViewRun(); applyRunOverall(viewRc);
-  $('stopBtn').disabled=!viewActive();
+  updateStopBtn();
   refreshArchiveTip();
   if(viewRc){ _detailKey=''; renderFlow(); renderDetail(); }
   else resetNodes();   // 空闲态：恢复主控当前流水线的空闲编排（内部重置 _detailKey 并重绘流程/详情）
@@ -6293,6 +6304,10 @@ function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringif
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
    供同步路径（新建/复制流水线署名、默认筛选「我的」）取用。声明在此处以保证声明顺序早于筛选事件绑定。 */
 let currentUsername='';
+/* 当前会话是否为 admin（仅 password 模式 + 已装 dsh-auth-gate-wt-admin-role 时为 true）。
+   由 fillExecutorFromAuth 在拿到登录用户后异步探测 /auth/users 写入；token 模式 / 未装
+   admin 插件 / 探测失败时为 false（此时 currentUsername 亦为空，canControlRun 退化为全权）。 */
+let currentUserIsAdmin=false;
 function filteredHistory(){
   const kw=histFilter.kw.trim().toLowerCase();
   if(!kw && !histFilter.status && !histFilter.pipeline) return history;
@@ -6902,16 +6917,36 @@ function abortRun(rc){
 $('stopBtn').addEventListener('click', ()=>{
   const rc=viewRc;   // 主控「中止」作用于编排区当前展示的运行；其他在跑运行用队列条目各自的「中止」
   if(!rc || rc.over) return;
+  if(!canControlRun(rc.by)){ alert('无权限：仅管理员可中止其他用户（'+esc(rc.by||'')+'）的流水线。'); return; }
   abortRun(rc);
 });
 $('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{
-  if(running || queue.length){ if(!confirm('将中止 '+activeRuns.length+' 个运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
+  /* 非 admin 不可重置他人流水线：仅中止/清空自己署名（by）的运行与排队任务，他人条目原样保留。
+     admin 全量重置（既有行为）。token 模式（currentUsername 为空）退化为全量。 */
+  const adminAll = currentUserIsAdmin || !currentUsername;
+  const mine = r=>canControlRun(r && r.by);
+  const ownRuns = adminAll ? activeRuns : activeRuns.filter(mine);
+  const ownQueue = adminAll ? queue : queue.filter(mine);
+  const otherRunsN = adminAll ? 0 : activeRuns.length - ownRuns.length;
+  const otherQueueN = adminAll ? 0 : queue.length - ownQueue.length;
+  if(ownRuns.length || ownQueue.length){
+    let msg='将中止 '+(adminAll?activeRuns.length:ownRuns.length)+' 个运行'+((adminAll?queue.length:ownQueue.length)?('并清空 '+(adminAll?queue.length:ownQueue.length)+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。';
+    if(!adminAll && (otherRunsN||otherQueueN)) msg+='\n其中他人的 '+otherRunsN+' 个运行 / '+otherQueueN+' 个排队任务无权清空，将保留。';
+    if(!confirm(msg+'继续？')) return;
+  }else if(!adminAll && (otherRunsN||otherQueueN)){
+    alert('无可重置的本人流水线；其余 '+(otherRunsN+otherQueueN)+' 个为他人条目，仅管理员可重置。'); return;
+  }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  activeRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
-  activeRuns=[]; queue=[]; viewRc=null; syncViewRun(); syncRunState();
-  $('stopBtn').disabled=true; resetNodes(); applyRunOverall(null); renderQueue();
+  ownRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
+  if(adminAll){ activeRuns=[]; queue=[]; }
+  else { activeRuns=activeRuns.filter(r=>!mine(r)); queue=queue.filter(q=>!mine(q)); }
+  /* 编排区焦点若落在被清空的本人运行上则回到空闲；他人运行仍可保留为焦点（不重置其节点视图） */
+  const clearView = !viewRc || (adminAll || mine(viewRc.by));
+  if(clearView){ viewRc=null; syncViewRun(); syncRunState(); resetNodes(); applyRunOverall(null); }
+  else { syncRunState(); renderFlow(); renderDetail(); }
+  updateStopBtn(); renderQueue();
   refreshArchiveTip();   // 运行已全部清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
@@ -7368,6 +7403,23 @@ async function fillExecutorFromAuth(){
   currentUsername=username;   // 缓存当前登录用户，供流水线署名与默认筛选「我的」取用
   const el=$('triggeredBy');   // 右上角纯文本展示（span）：探测成功即更新为登录用户名
   if(el) el.textContent=username;
+  /* 探测 admin 角色：/auth/users 由 dsh-auth-gate-wt-admin-role 注册（password 模式专属），
+     GET 对任意会话开放，返回 {users:[{username,admin,current,...}]}。未装该插件 / token 模式
+     → 404 或非 JSON，currentUserIsAdmin 维持 false（currentUsername 为空时 canControlRun
+     退化为全权，故 token 模式不受限）。失败不阻断主流程。 */
+  try{
+    const ru=await fetch('/auth/users');
+    if(ru && ru.ok){
+      const ud=await ru.json();
+      if(ud && Array.isArray(ud.users)){
+        const me=ud.users.find(u=>u && u.current===true);
+        if(me && me.admin===true) currentUserIsAdmin=true;
+      }
+    }
+  }catch(e){ /* admin 探测失败：按非 admin 退化，不影响其他功能 */ }
+  /* admin 角色可能晚于队列渲染到达——拿到后重绘队列按钮（中止/取消按权限显隐） */
+  if(typeof renderQueue==='function') renderQueue();
+  if(typeof updateStopBtn==='function') updateStopBtn();
   /* 拿到当前用户后重绘「我的」筛选视图（初次加载时尚未拿到，先按「内置+未署名」退化渲染）。
      typeof 守卫：筛选状态在独立测试片段里可能未定义。 */
   if(typeof plFilter!=='undefined' && plFilter && plFilter.owner==='mine' && typeof renderPipelines==='function') renderPipelines();

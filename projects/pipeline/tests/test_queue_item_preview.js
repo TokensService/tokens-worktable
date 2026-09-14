@@ -384,6 +384,7 @@ function makeQueueContext() {
     drainQueue: () => { calls.drain++; },
     cancelQueue: id => calls.cancel.push(id),
     abortRun: rc => calls.abort.push(rc),
+    canControlRun: () => true,   // 非 admin 控制权守卫：默认放行，使既有「按钮存在」断言成立；专门用例在下文覆盖
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
     focusRemoteQueueItem: (clientId, itemId, kind) => calls.focusRemoteQueueItem.push({ clientId, itemId, kind }),
@@ -436,6 +437,26 @@ test('renderQueue：预览中的排队项带「查看中」标记；在跑运行
   assert.deepEqual(calls.focusRun, [rc]);
   list.querySelectorAll('[data-qabort]')[0].handlers.click();
   assert.deepEqual(calls.abort, [rc]);
+});
+
+test('renderQueue：非 admin 仅对自己的条目显示中止/取消按钮（他人条目按控制权隐藏）', () => {
+  const { context, list } = makeQueueContext();
+  context.canControlRun = by => by === 'tester';   // 非 admin：仅自己署名的条目可控
+  context.activeRuns.push({ id: 'r-mine', by: 'tester', pipelineName: '我的', source: 'manual' });
+  context.activeRuns.push({ id: 'r-other', by: 'bob', pipelineName: '他人', source: 'manual' });
+  context.running = true;
+  context.queue.push({ id: 'q-mine', by: 'tester', pipelineName: '排队-我的', source: 'manual', queuedAt: 1 });
+  context.queue.push({ id: 'q-other', by: 'alice', pipelineName: '排队-他人', source: 'manual', queuedAt: 2 });
+  context.renderQueue();
+  // 倒序展示：r-other(运行) 在最上，r-mine(运行) 次之；排队项同样倒序 q-other 在上、q-mine 在下
+  const runOther = list.children[0].innerHTML;
+  const runMine = list.children[1].innerHTML;
+  assert.doesNotMatch(runOther, /data-qabort/);   // 他人运行：无中止按钮
+  assert.match(runMine, /data-qabort="r-mine"/);  // 自己运行：有中止按钮
+  const qOther = list.children[2].innerHTML;
+  const qMine = list.children[3].innerHTML;
+  assert.doesNotMatch(qOther, /data-qcancel/);    // 他人排队：无取消按钮
+  assert.match(qMine, /data-qcancel="q-mine"/);  // 自己排队：有取消按钮
 });
 
 test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () => {
