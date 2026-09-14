@@ -11,6 +11,11 @@ mkdir -p "$work_dir/chart/templates"
 cat >"$work_dir/chart/templates/raycluster-cluster.yaml" <<'EOF'
 groupName: {{ $teGroupValues.name }}
 groupName: {{ $groupName }}
+{{- $lmcache := $.Values.lmcacheSidecar | default dict }}
+{{- if $lmcache.enabled }}
+- name: lmcache-sidecar
+  resources: {{- toYaml $lmcache.resources | nindent 4 }}
+{{- end }}
 EOF
 cat >"$work_dir/chart/templates/ray-svc.yaml" <<'EOF'
 apiVersion: v1
@@ -216,20 +221,25 @@ assert values["lmcache"]["namespace"]["name"] == "xds-one-node-78-verify"
 assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
-assert values["lmcacheSidecar"] == {
-    "enabled": False,
-    "mpPortBase": 18000,
-    "httpPortBase": 18080,
-    "l1InitSizeGb": 0,
-    "l1SizeGb": 0,
-    "l1AlignBytes": 4096,
-    "maxWorkers": 1,
-    "logLevel": "INFO",
-    "resources": {
-        "requests": {"cpu": 1, "memory": "1Gi"},
-        "limits": {"cpu": 1, "memory": "1Gi"},
-    },
+sidecar = values["lmcacheSidecar"]
+assert sidecar["enabled"] is False
+assert sidecar["mpPortBase"] == 18000
+assert sidecar["httpPortBase"] == 18080
+assert sidecar["l1InitSizeGb"] == 0
+assert sidecar["l1SizeGb"] == 0
+assert sidecar["l1AlignBytes"] == 4096
+assert sidecar["maxWorkers"] == 1
+assert sidecar["logLevel"] == "INFO"
+assert sidecar["resources"] == {
+    "requests": {"cpu": 1, "memory": "1Gi"},
+    "limits": {"cpu": 1, "memory": "1Gi"},
 }
+for probe_name in ("startupProbe", "readinessProbe", "livenessProbe"):
+    assert sidecar[probe_name]["httpGet"] == {
+        "host": "127.0.0.1",
+        "path": "/healthcheck",
+        "port": "lmcache-http",
+    }
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
