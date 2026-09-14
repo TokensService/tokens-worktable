@@ -29,9 +29,11 @@ GIT_BRANCH='feature/blue-build' \
 DEPLOY_STRATEGY='glm-test' \
 OPEN_XDS_DIR="$work_dir/open-xds" \
 GIT_PROXY='http://proxy.test:8080' \
+GH_TOKEN='token-from-gh-env' \
 bash "$script"
 
-grep -Fq -- '-c http.proxy=http://proxy.test:8080 -C ' "$work_dir/git.log"
+grep -Fq -- 'http.proxy=http://proxy.test:8080' "$work_dir/git.log"
+grep -Fq -- 'http.extraHeader=Authorization: Bearer token-from-gh-env' "$work_dir/git.log"
 grep -Fq -- 'fetch --prune origin feature/blue-build' "$work_dir/git.log"
 grep -Fq -- 'checkout -b feature/blue-build origin/feature/blue-build' "$work_dir/git.log"
 grep -Fq -- 'pull --ff-only origin feature/blue-build' "$work_dir/git.log"

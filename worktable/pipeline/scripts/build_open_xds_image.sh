@@ -11,8 +11,12 @@ GIT_BRANCH=${GIT_BRANCH:-}
 DEPLOY_STRATEGY=${DEPLOY_STRATEGY:-${arch:-${ARCH:-}}}
 OPEN_XDS_GIT_URL=${OPEN_XDS_GIT_URL:-https://github.com/TokensService/open-xds.git}
 OPEN_XDS_DIR=${OPEN_XDS_DIR:-"${op_test_root}/.open-xds"}
-GITHUB_TOKEN=${GITHUB_TOKEN:-}
+GITHUB_TOKEN=${GITHUB_TOKEN:-${GH_TOKEN:-}}
 GIT_PROXY=${GIT_PROXY:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}
+
+if [[ -z "${GITHUB_TOKEN}" ]] && command -v gh >/dev/null 2>&1; then
+  GITHUB_TOKEN="$(gh auth token 2>/dev/null || true)"
+fi
 
 if [[ -z "${GIT_BRANCH}" ]]; then
   echo 'GIT_BRANCH is required' >&2
@@ -20,6 +24,10 @@ if [[ -z "${GIT_BRANCH}" ]]; then
 fi
 if [[ -z "${DEPLOY_STRATEGY}" ]]; then
   echo 'DEPLOY_STRATEGY or arch is required' >&2
+  exit 2
+fi
+if [[ -z "${GITHUB_TOKEN}" ]]; then
+  echo 'a GitHub token is required; set GITHUB_TOKEN or GH_TOKEN, or authenticate with gh auth login' >&2
   exit 2
 fi
 
