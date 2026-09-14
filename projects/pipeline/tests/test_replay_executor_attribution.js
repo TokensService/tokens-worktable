@@ -57,7 +57,7 @@ test('历史重跑不沿用记录作者：执行人由 runPipeline 取当前输�
     findPipeline:()=>null,
     pipelines:[{id:'pl-a',name:'K8s 应用安装'}],
     environments:[], repositories:[],
-    runPipeline:opts=>{ calls.opts.push(opts); return true; },
+    runPipeline:opts=>{ calls.opts.push(opts); return 'submitted'; },
     alert:t=>calls.alerts.push(t),
     flashRunTip:t=>calls.tips.push(t),
     QUEUE_CAP:8, queue:[],
@@ -67,7 +67,7 @@ test('历史重跑不沿用记录作者：执行人由 runPipeline 取当前输�
   ctx.rerunFromHistory({no:46, pipeline:'K8s 应用安装', by:'release-manager', branch:'main', strategy:'', env:''});
   assert.equal(calls.opts.length,1);
   assert.ok(!('by' in calls.opts[0]),'重跑不得把历史记录作者作为执行人传给 runPipeline（应取当前输入框值）');
-  assert.match(calls.tips[0],/已开始重跑 #46/);
+  assert.match(calls.tips[0],/已提交服务端重跑 #46/);
 
   /* 执行人必填被 runPipeline 拦截（返回 no-by）时，不再叠加「已开始重跑」误导提示 */
   calls.opts.length=0; calls.tips.length=0;

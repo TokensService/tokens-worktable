@@ -31,6 +31,9 @@
     /* ===== 流水线专属样式（色板走上述变量，最小自造范围） ===== */
     .pipeline-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
     .pipeline-controls .dshell-input { width:auto; min-width:96px; }
+    /* 流水线行内「⋯」菜单项：列表行形态（纯文字行，无按钮边框/圆角），悬停底色高亮 */
+    .pl-row-menu-item { padding:6px 14px; font-size:12px; white-space:nowrap; cursor:pointer; }
+    .pl-row-menu-item:hover { background:var(--dsw-alias-fill-l1); }
     /* 主控区各选择框限宽：超长省略号显示，保证右侧「运行流水线」按钮位置稳定 */
     #pipelineControls select.dshell-input,
     #pipelineControls button.dshell-input { max-width:220px; }
@@ -202,10 +205,10 @@
   </div>
   <div id="pageMain">
 
-  <!-- 控制区（统计与运行队列信息已并入下方「流水线任务」卡片首行） -->
+  <!-- 控制区 -->
   <div class="dshell-card pipeline-controls" id="pipelineControls">
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-      <select id="pipelineSel" class="dshell-input" style="min-width:130px;font-weight:600;" title="下拉选用流水线（也可在下方「流水线任务」列表点击行选用）；运行中不可切换"></select>
+      <select id="pipelineSel" class="dshell-input" style="min-width:130px;font-weight:600;" title="下拉选用流水线（也可在下方「流水线任务」列表点击行选用）；运行中也可切换，在跑/排队任务统一在「运行队列」查看"></select>
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
       <span id="envMulti" style="position:relative;display:inline-block;">
@@ -250,20 +253,31 @@
     <span id="runTip" class="dshell-muted" style="font-size:11px;"></span>
   </div>
 
-  <!-- 流水线任务（多条流水线）：首行内嵌统计（总构建/成功率/平均耗时/最近构建）与运行队列状态 -->
-  <div class="dshell-card">
+  <!-- 运行队列：与流水线定义列表分卡展示，避免把「正在执行/等待执行」误认成「可选流水线定义」 -->
+  <div class="dshell-card" id="queueCard">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
-      <h2 class="dshell-sub" style="margin:0">流水线任务 <span id="plCount" class="dshell-muted"></span></h2>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <h2 class="dshell-sub" style="margin:0" title="目标机器不相交的任务并行运行，同一机器串行排队；点击任意条目查看阶段详情">运行队列 <span id="queueCount" class="dshell-muted"></span></h2>
+        <span id="queueStatus" class="dshell-badge">空闲</span>
+      </span>
+      <span style="display:flex;align-items:center;gap:8px;">
+        <span class="dshell-muted" style="font-size:11px;">不同机器并行 · 同一机器串行 · 点击条目查看阶段</span>
+        <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即拉取服务端的在跑/排队任务（平时每秒自动同步）">↻ 刷新</button>
+      </span>
+    </div>
+    <div id="queueList" class="dshell-list" style="display:none;"></div>
+  </div>
+
+  <!-- 流水线任务定义（多条流水线）：首行内嵌统计（总构建/成功率/平均耗时/最近构建） -->
+  <div class="dshell-card" id="pipelineTaskCard">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+      <h2 class="dshell-sub" style="margin:0">流水线任务列表 <span id="plCount" class="dshell-muted"></span></h2>
       <span class="dshell-muted" style="font-size:11px;" title="统计只计真实运行，不含内置演示数据">总构建 <b id="sTotal">—</b> · 成功率 <b id="sRate">—</b> <span id="sRateDelta"></span> · 平均耗时 <b id="sAvg">—</b> · 最近构建 <b id="sLast">—</b></span>
       <span style="display:flex;align-items:center;gap:8px;">
-        <span class="dshell-muted" style="font-size:11px;" title="目标机器不相交的任务并行运行，同一机器串行排队；点击条目查看运行/排队详情">运行队列<span id="queueCount"></span></span>
-        <span id="queueStatus" class="dshell-badge">空闲</span>
-        <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即上报本页队列并拉取其他浏览器的在跑/排队任务（平时每 5 秒自动刷新）">↻</button>
         <button id="pipelineRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取流水线任务（不会自动刷新）">↻ 刷新</button>
         <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
       </span>
     </div>
-    <div id="queueList" class="dshell-list" style="display:none;margin-bottom:8px;"></div>
     <div class="pipeline-controls" id="plFilterBar" style="margin-bottom:8px;">
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
         <input id="plFilterKw" class="dshell-input" placeholder="搜索 流水线名 / 阶段" autocomplete="off" style="min-width:200px;" />
@@ -543,7 +557,7 @@
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会新建一个 AI 会话（单次分析工作目录取该次运行的归档文件夹；对比分析取归档根目录；未归档时回退归档根目录），把对应提示词填入输入框，确认无误后手动发送。
+        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会打开侧边会话框，并在本项目设置的工作区中新建 AI 会话；项目尚未设置工作区时会先弹出工作区选择，选定后继续创建。对应提示词包含归档文件绝对路径，只填入输入框，确认无误后手动发送。
         模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
@@ -802,6 +816,12 @@
       <div class="logbox" id="pmcLog" style="flex:1; min-height:160px; max-height:46vh; margin:0;">配置收集脚本后点「收集」执行（输出实时回显）。</div>
     </div>
   </div>
+</div>
+
+<!-- 流水线行内「⋯」菜单：全局悬浮层（fixed 定位）——悬浮于最上层（z-index 高于吸顶导航），不被表格 overflow 容器裁剪；
+     不占文档流，展开时不撑大流水线行高；菜单项为列表行形态（.pl-row-menu-item），非圆边按钮 -->
+<div id="plRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:88px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+  <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
 </div>
 
 <script>
@@ -2902,6 +2922,20 @@ let activeRuns = [];
 let viewRc = null;
 function viewRun(){ return viewRc; }
 function viewActive(){ return !!(viewRc && !viewRc.over); }   // 编排区展示的运行仍在跑（区别于「任一运行在跑」的 running）
+/* 非 admin 用户不可中止/重置他人的流水线：admin 全权；password 模式下非 admin 仅可控制
+   自己署名（by）的运行；token 模式（无用户身份）退化为全权，与既有行为一致。runOwner
+   缺省时按「无法判定归属」处理——admin 仍可控制，非 admin 视为他人（拒绝）。 */
+function canControlRun(by){
+  if(!currentUsername) return true;                  // token 模式 / 未装 admin 插件：无用户身份概念，退化为全权
+  if(currentUserIsAdmin) return true;                // admin 可控制任意运行
+  return !!(by && by===currentUsername);             // 非 admin 仅可控制自己署名的运行
+}
+/* 编排区「中止」按钮可用：运行在跑且当前用户对该运行有控制权 */
+function canStopViewRun(){ return viewActive() && canControlRun(viewRc && viewRc.by); }
+function updateStopBtn(){ $('stopBtn').disabled=!canStopViewRun(); }   // admin 探测到达后亦调此重算
+function runPreviewReadOnly(rc){
+  return !!(rc && (rc.queuedPreview===true || rc.remotePreview===true));
+}
 function syncRunState(){ running = activeRuns.length>0; syncRunBtn(); }
 /* 视图别名重绑定：curRun/runStages/nodes/selectedId 指向当前展示运行的对应字段（对象同引用，引擎写入即见） */
 function syncViewRun(){
@@ -2929,14 +2963,10 @@ function focusRun(rc){
   if(replayRec){ replayRec=null; const rt=$('replayTip'); if(rt) rt.textContent=''; }
   viewRc=rc||null; syncViewRun(); applyRunOverall(viewRc);
   _detailKey='';
-  $('stopBtn').disabled=!viewActive();
+  updateStopBtn();
   refreshArchiveTip();
   renderFlow(); renderDetail(); renderQueue();
 }
-/* 流水线维度查在跑运行：流水线任务行「运行中」徽标与点击「查看阶段详情」共用。
-   同一流水线可在不同机器并行多个运行，查看时取最近启动的一个（队列条目仍可各自精确聚焦） */
-function runsOfPipeline(pid){ return activeRuns.filter(rc=>rc.pipelineId===pid); }
-function latestRunOfPipeline(pid){ const rs=runsOfPipeline(pid); return rs.length?rs[rs.length-1]:null; }
 
 const $ = id => document.getElementById(id);
 function lsGet(k, def){ try{ return localStorage.getItem(k) || def; }catch(e){ return def; } }
@@ -3091,7 +3121,7 @@ function createFlowNode(s, i){
     /* 双击编辑：编排区可能显示某次运行的快照（runStages），此时编辑对象应是该次运行的流水线，
        而不是主控当前选中的流水线；openPlForm 内另有 id 失效兜底 */
     n.addEventListener('dblclick',()=>{
-      if(viewActive() || replayRec || s.preset) return;   // 系统预设任务的脚本在设置页配置、顺序在流水线编辑器配置；回放态只读
+      if(viewActive() || replayRec || runPreviewReadOnly(curRun) || s.preset) return;   // 系统预设任务、排队/他端快照与回放态只读
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
@@ -3131,9 +3161,20 @@ function renderFlow(){
   });
   applyStatusClasses();
 }
+/* 阶段 id / 子阶段名可能来自其他浏览器的在场快照；按 dataset 精确比较，避免把不可信值拼进 CSS selector。 */
+function flowNodeElementById(id){
+  const wanted=String(id), all=document.querySelectorAll('.pipeline-node[data-id]');
+  for(let i=0;i<all.length;i++) if(all[i].dataset&&all[i].dataset.id===wanted) return all[i];
+  return null;
+}
+function flowSubElementByName(node,name){
+  const wanted=String(name), all=node.querySelectorAll('.pipeline-sub span[data-sub]');
+  for(let i=0;i<all.length;i++) if(all[i].dataset&&all[i].dataset.sub===wanted) return all[i];
+  return null;
+}
 function applyStatusClasses(){
   flowStages().forEach(s=>{
-    const el = document.querySelector('.pipeline-node[data-id="'+s.id+'"]');
+    const el = flowNodeElementById(s.id);
     if(!el) return;
     const st = nodes[s.id] ? nodes[s.id].status : 'idle';
     el.classList.remove('run','ok','fail','skip','abort','sel');
@@ -3153,7 +3194,7 @@ function applyStatusClasses(){
     meta.textContent = metaFor(s.id);
     if(s.sub && s.sub.length){
       s.sub.forEach(x=>{
-        const sp = el.querySelector('.pipeline-sub span[data-sub="'+x+'"]');
+        const sp = flowSubElementByName(el,x);
         if(sp){ sp.className=''; const ss=nodes[s.id]&&nodes[s.id].sub?nodes[s.id].sub[x]:'idle';
           if(ss==='running') sp.classList.add('run');
           else if(ss==='success') sp.classList.add('ok');
@@ -3178,6 +3219,26 @@ function metaFor(id){
 /* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（运行 tick 会以 120~300ms 高频调用本函数） */
 let _detailKey='';
 const DETAIL_LOG_LIMIT={maxLines:1000,maxChars:256*1024};
+function detailLogLinesFor(stage,ctx,node){
+  if(ctx&&ctx.remotePreview===true) return [ctx.remoteClientId==='server'
+    ? '服务端队列仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会下发到浏览器。'
+    : '其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
+  return buildLog(stage,ctx,node,DETAIL_LOG_LIMIT);
+}
+function detailContextRows(stage,statusText,ctx){
+  const rows = [
+    ['阶段', stage.name],
+    ['状态', statusText],
+    ['流水线', ctx.pipelineName||curPipeline().name],
+    ['分支', ctx.branch||'main'],
+    ['策略', ctx.strategy||'—'],
+    ['执行人', ctx.by||'—'],
+    ['环境', ctx.env],
+  ];
+  if(ctx.remotePreview===true) rows.push(['镜像','未同步'],['Commit','未同步']);
+  else rows.push(['镜像',(ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],['Commit',ctx.commit]);
+  return rows;
+}
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
   const s = flowStages().find(x=>x.id===selectedId) || flowStages()[0];
@@ -3195,7 +3256,7 @@ function renderDetail(){
   const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0);
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
-  const lines = buildLog(s, ctx, n, DETAIL_LOG_LIMIT);
+  const lines = detailLogLinesFor(s, ctx, n);
   $('detailTitle').textContent = s.name + ' · 阶段详情';
   const badge = $('detailBadge'); badge.innerHTML='';
   const map = {idle:['未开始',''], running:['进行中','dshell-badgeWait'], skipped:['跳过',''],
@@ -3208,7 +3269,7 @@ function renderDetail(){
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
   /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
-  if(n.status==='failed' && !viewActive() && curRun && runStages && !s.preset){
+  if(n.status==='failed' && !viewActive() && curRun && runStages && !runPreviewReadOnly(curRun) && !s.preset){
     const rb=document.createElement('button'); rb.className='dshell-btn dshell-btnGhost mini'; rb.style.marginLeft='6px';
     rb.textContent='↻ 从本阶段重试'; rb.title='保留本次运行的 commit/tag/环境，从本阶段继续执行';
     rb.addEventListener('click', ()=>retryFromStage(s.id));
@@ -3216,17 +3277,7 @@ function renderDetail(){
   }
 
   const kv = $('detailKv'); kv.innerHTML='';
-  const rows = [
-    ['阶段', s.name],
-    ['状态', txt],
-    ['流水线', ctx.pipelineName||curPipeline().name],
-    ['分支', ctx.branch||'main'],
-    ['策略', ctx.strategy||'—'],
-    ['执行人', ctx.by||'—'],
-    ['环境', ctx.env],
-    ['镜像', (ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],
-    ['Commit', ctx.commit],
-  ];
+  const rows = detailContextRows(s,txt,ctx);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
@@ -3445,6 +3496,8 @@ function buildLogParts(stage,ctx,n){
 const QUEUE_CAP = 16;
 const MAX_ACTIVE_RUNS = 4;   // 浏览器单标签页全局槽位：避免不同机器的大日志任务同时把 CPU/内存/连接打满
 let queue = [];
+/* 「排队中」徽标点击展开/收起排队原因（按条目 id 记忆展开态，重绘保留；条目出队后由 cancelQueue 清理） */
+const queueReasonOpen=new Set();
 function resetNodes(){
   /* 视图感知：展示某次运行（在跑/结果视图）时重置的是该运行的节点表；空闲态重置当前流水线的空闲编排 */
   if(viewRc){ viewRc.nodes={}; nodes=viewRc.nodes; }
@@ -3477,8 +3530,36 @@ function startRun(opts){
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || (currentUsername||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
-  const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual'};
-  startSimRun(pl, c);
+  const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual', originQueueId:opts.originQueueId||opts.id||''};
+  /* 节点占用租约：目标节点（环境 IP）先向服务端申请租约，拿到才真正开跑——同一节点同一时间
+     只跑一条流水线（跨标签页/跨浏览器/API/定时统一互斥，见「节点占用租约」区块）。无目标 IP
+     时没有可互斥的节点，保持旧行为直接启动；抽取测试环境无租约实现时同样按旧行为处理。 */
+  const leaseIps=Array.from(runIps(c));
+  if(!leaseIps.length || typeof nodeLeaseRequest!=='function'){ startSimRun(pl, c); return true; }
+  c.leaseId=(opts.id||'')||('q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5));
+  c.leaseIps=leaseIps;
+  /* 租约申请在途期间占一个调度槽位并参与机器冲突判定（conflictsActive/runPipeline），
+     防止快速连续运行/同一次 drain 越过页内互斥 */
+  const pend={envs:c.envs,queueItem:opts};   // 申请期间仍按排队快照上报，避免他端详情在 q → r 过渡中闪断
+  if(typeof pendingLeaseStarts!=='undefined') pendingLeaseStarts.push(pend);
+  const settle=()=>{ if(typeof pendingLeaseStarts!=='undefined'){ const i=pendingLeaseStarts.indexOf(pend); if(i>=0) pendingLeaseStarts.splice(i,1); } };
+  nodeLeaseRequest({action:'acquire', runId:c.leaseId, ips:leaseIps, label:pl.name||'', by:c.by}).then(r=>{
+    settle();
+    if(r && r.ok===false){
+      /* 节点被他端运行占用：回队等待（nodeWait 供队列区展示与重试节流，drainQueue 到点重新申请） */
+      if(opts && opts.id){
+        opts.nodeWait={until:Date.now()+(typeof NODE_WAIT_RETRY_MS==='undefined'?5000:NODE_WAIT_RETRY_MS), conflicts:Array.isArray(r.conflicts)?r.conflicts:[]};
+        if(!queue.some(q=>q.id===opts.id)) queue.unshift(opts);
+      } else console.warn('[pipeline] 节点被占用且排队项无 id，无法回队等待:', r.conflicts);
+      renderQueue();
+      return;
+    }
+    startSimRun(pl, c);
+  }).catch(e=>{
+    settle();   // 服务端不可达/旧插件无租约路由：降级为仅页内互斥的旧行为，不阻断运行
+    console.warn('[pipeline] 节点租约申请失败，按仅页内互斥的旧行为直接启动:', e);
+    startSimRun(pl, c);
+  });
   return true;
 }
 function startSimRun(pl, c){
@@ -3489,13 +3570,14 @@ function startSimRun(pl, c){
   {
     let started=false, badIdx=-1;
     for(let i=0;i<stages.length;i++){ if(stages[i].preset) continue; const has=!!stages[i].sched; if(has) started=true; else if(started){ badIdx=i; break; } }
-    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
+    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); releaseNodeLease(c.leaseId, c.leaseIps); drainQueue(); return; }   // 启动校验失败：已拿到的节点租约立即释放
   }
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  // 手动运行（含入队/历史重跑）在页面内执行；目标机器不相交的运行并行推进（见 drainQueue/runPipeline）。定时页仍由服务端执行计划。
+  // 旧页面本地执行器兼容路径；新手动运行与历史重跑均由 submitServerRun 交给服务端权威执行池。
   const rc={id:'r'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
     stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null, over:false, overall:null,
-    env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual',
+    leaseTimer:null, leaseId:c.leaseId||null, leaseIps:c.leaseIps||[],   // 节点占用租约：finish/中止/重置时释放
+    env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual', originQueueId:c.originQueueId||'',
     pipelineId:pl.id||null, pipelineName:pl.name, repoId:c.repo.id||null, repoName:c.repo.name, repoUrl:c.repo.url, giturl:c.repo.url||GITURL,
     repoUser:c.repo.user||'', repoPass:c.repo.pass||'', branch:c.branch, strategy:c.strategy||'', vars:{}, token:++runSeq};
   stages.forEach(s=>{ rc.nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}}; });
@@ -3504,14 +3586,46 @@ function startSimRun(pl, c){
     ensureArchiveFolder(rc.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', rc.archive); });
   }
   activeRuns.push(rc);
+  /* 持有节点租约的运行：周期续租（服务端 TTL 90s，25s 心跳容忍丢失；续租失败静默——finish/中止/重置
+     显式释放，页面崩溃由租约到期自动清理） */
+  if(rc.leaseId && rc.leaseIps.length){
+    rc.leaseTimer=setInterval(()=>{ nodeLeaseRequest({action:'acquire', runId:rc.leaseId, ips:rc.leaseIps, label:rc.pipelineName||'', by:rc.by||''}).catch(()=>{}); }, NODE_LEASE_RENEW_MS);
+  }
   viewRc=rc; syncViewRun(); syncRunState();   // 新运行获得编排区焦点
   _detailKey='';   // 视图切到新运行，详情渲染缓存一并失效
-  $('stopBtn').disabled=false;
+  $('stopBtn').disabled=false;   // 本人刚启动的运行可中止（by 取当前登录用户）；控制权在 click 与 focusRun 处再守卫
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   rcOverall(rc,'运行中…','dshell-badgeWait');
   renderFlow(); renderDetail();
   advance(rc,0);
   renderQueue();
+}
+/* 手动运行只把参数提交给服务端权威执行池。请求体只含配置引用和运行参数；阶段定义、节点/代码仓
+   凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。 */
+async function submitServerRun(item){
+  const body={
+    environmentIds:(Array.isArray(item&&item.envs)?item.envs:[]).map(e=>e&&e.id).filter(Boolean),
+    repositoryId:item&&item.repoId||undefined,
+    branch:item&&item.branch||'main',
+    strategy:item&&item.strategy||'',
+    presets:Array.isArray(item&&item.presets)?item.presets:[],
+    image:item&&item.image||DEFAULT_IMAGE,
+    by:item&&item.by||'',
+    source:'manual',
+  };
+  if(!body.environmentIds.length) delete body.environmentIds;
+  try{
+    const response=await fetch('/api/worktable/pipeline/run/'+encodeURIComponent(item&&item.pipelineId||''),{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:true,
+    });
+    let result={}; try{ result=await response.json(); }catch(e){}
+    if(!response.ok) throw new Error((result&&result.error)||('HTTP '+response.status));
+    await pullRemoteQueue();
+    return result;
+  }catch(error){
+    alert('提交服务端运行失败：'+String(error&&error.message||error));
+    return null;
+  }
 }
 function runPipeline(opts){
   opts = opts || {};
@@ -3536,14 +3650,8 @@ function runPipeline(opts){
     env, envs, image, release, repoId, repoName:(resolveRepo(repoId)||{}).name||'', branch, strategy, presets, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
-  /* 并行调度：目标机器（环境 IP）与在跑运行、以及已在排队的任务都不相交 → 立即并行启动；
-     任一相交 → 入队等待（同一机器的任务保持先进先出，见 drainQueue） */
-  const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length<MAX_ACTIVE_RUNS);   // typeof 兼容测试/旧页面片段抽取
-  if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))){ return startRun(item); }
-  if(queue.length >= QUEUE_CAP) return false;
-  queue.push(item);
-  renderQueue();
-  return 'queued';
+  submitServerRun(item);
+  return 'submitted';
 }
 /* 机器占用判定：按目标环境 IP 集合是否相交。任一方无目标 IP（未选环境）时按冲突处理——
    无目标信息的运行保持旧版串行语义，不与任何运行并行 */
@@ -3554,7 +3662,31 @@ function machineConflict(a,b){
   for(const ip of A){ if(B.has(ip)) return true; }
   return false;
 }
-function conflictsActive(item){ return activeRuns.some(rc=>machineConflict(rc,item)); }
+function conflictsActive(item){
+  if(activeRuns.some(rc=>machineConflict(rc,item))) return true;
+  /* 租约申请在途的启动同样视为占用：startRun 异步等租约期间运行尚未进 activeRuns，
+     不占住的话快速连续运行/同一次 drain 会越过页内互斥（测试沙盒无此变量时按无在途处理） */
+  if(typeof pendingLeaseStarts!=='undefined' && pendingLeaseStarts.some(p=>machineConflict(p,item))) return true;
+  return false;
+}
+
+/* ---------- 节点占用租约（服务端权威互斥） ---------- */
+/* 页内调度（machineConflict/drainQueue）只管本标签页；租约把「同一节点同一时间只跑一条流水线」
+   扩到跨标签页/跨浏览器与服务端 API/定时计划：startRun 申请成功才开跑并周期续租，finish/中止/
+   重置释放，服务端 TTL 90s 兜底页面崩溃未释放。服务端不可达（旧插件无此路由）时降级为仅页内互斥。 */
+const NODE_LEASE_PATH='/api/worktable/pipeline/leases';
+const NODE_LEASE_RENEW_MS=25000;   // 服务端 TTL 90s，25s 续租容忍几次丢失
+const NODE_WAIT_RETRY_MS=5000;     // 租约被占用时回队重试间隔（drainQueue 到点重发申请）
+const pendingLeaseStarts=[];       // 租约申请在途的启动：占调度槽位、参与机器冲突判定（见 conflictsActive/runPipeline）
+async function nodeLeaseRequest(body){
+  const resp=await fetch(NODE_LEASE_PATH,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!resp.ok) throw new Error('node lease http '+resp.status);
+  return await resp.json();
+}
+function releaseNodeLease(leaseId, ips){
+  if(!leaseId) return;
+  nodeLeaseRequest({action:'release', runId:leaseId, ips:ips||[]}).catch(()=>{});   // 失败静默：TTL 到期自动清理
+}
 /* 并行排空：从头扫描队列，目标机器与「在跑运行 + 排在前面的排队任务」均不相交的项立即启动；
    相交项留在队列等待（同一机器保持先进先出，不同机器的排队任务可被后来者超越）。
    每启动一项就重新扫描：startRun 可能同步结束运行（全跳过阶段）或校验失败递归 drainQueue，队列/在跑集合已变 */
@@ -3565,6 +3697,7 @@ function drainQueue(){
     again=false;
     for(let i=0;i<queue.length;i++){
       const it=queue[i];
+      if(it.nodeWait && it.nodeWait.until>Date.now()) continue;   // 节点被他端占用刚被拒：节流重试（到点后重新申请租约）；不阻塞异机后来者
       if(conflictsActive(it)) continue;
       let blocked=false;
       for(let j=0;j<i;j++){ if(machineConflict(queue[j],it)){ blocked=true; break; } }
@@ -3575,8 +3708,23 @@ function drainQueue(){
     }
   }
 }
-function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); renderQueue(); }
+function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); if(typeof queueReasonOpen!=='undefined') queueReasonOpen.delete(id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
+
+/* 本地运行队列视图还包含「已出队、正在申请节点租约、尚未进入 activeRuns」的短暂状态。
+   统一从这里取数，确保列表、点击预览与跨浏览器快照对该过渡状态口径一致。 */
+function localQueueItems(){
+  const items=queue.slice();
+  if(typeof pendingLeaseStarts!=='undefined') pendingLeaseStarts.forEach(p=>{
+    const item=p&&p.queueItem;
+    if(item&&!items.some(q=>q===item||(String(item.id||'')&&String(q&&q.id||'')===String(item.id)))) items.push(item);
+  });
+  return items;
+}
+function isPendingQueueItem(item){
+  if(typeof pendingLeaseStarts==='undefined') return false;
+  return pendingLeaseStarts.some(p=>p&&p.queueItem&&(p.queueItem===item||(String(item&&item.id||'')&&String(p.queueItem.id||'')===String(item.id))));
+}
 
 /* 排队项详情预览：点击队列中的排队任务，编排区只读展示该次排队的阶段编排（预设任务按入队勾选快照展开，
    与 startSimRun 同一 expandRunStages 路径）与运行参数快照（环境/仓库/分支/策略/执行人）。
@@ -3597,14 +3745,79 @@ function queuePreviewRc(item){
 }
 function focusQueueItem(id){
   if(viewRc && viewRc.queuedPreview===true && viewRc.id===id) return;   // 已在预览该排队项，避免重复重建
-  const item=queue.find(q=>q.id===id); if(!item) return;
+  const item=localQueueItems().find(q=>q.id===id); if(!item) return;
   focusRun(queuePreviewRc(item));
 }
 
-/* ---------- 运行队列跨浏览器可见（在场快照上报 + 轮询） ---------- */
-/* 运行队列本是纯浏览器内存态，换台浏览器（或另一标签页）就互相看不见谁在跑。各标签页把自己
-   「正在运行 + 排队中」的快照上报到服务端内存暂存（/api/worktable/pipeline/queue，易失不落盘），
-   并轮询拉取其他标签页的快照只读展示；服务端侧 45 秒不上报即过期，pagehide 时 sendBeacon 清态。 */
+/* 服务端权威队列与旧浏览器在场条目的详情：只消费服务端白名单后的阶段/状态快照，不进入本页执行引擎。
+   running 展示实时状态，queued 展示全部 idle 的待运行编排；日志、脚本参数和凭据均不传到浏览器。 */
+function remoteQueueDetailAvailable(item){
+  return !!(item&&String(item.id||'').trim()&&Array.isArray(item.stages)&&item.stages.some(stage=>stage&&String(stage.id||'').trim()));
+}
+function remoteQueueDetailHint(item){
+  return remoteQueueDetailAvailable(item)?'':'<div class="dshell-muted" style="font-size:10px;font-weight:normal;">来源页面需刷新，暂无阶段快照</div>';
+}
+function remoteQueuePreviewRc(client,item,kind){
+  const stages=(Array.isArray(item&&item.stages)?item.stages:[]).map(queueStagePresence).filter(Boolean);
+  const incomingNodes=item&&item.nodes&&typeof item.nodes==='object'?item.nodes:{};
+  const previewNodes={};
+  stages.forEach(s=>{ previewNodes[s.id]=queueNodePresence(incomingNodes[s.id]); });
+  const runningKind=kind==='running';
+  const serverOwned=String(client&&client.id||'')==='server';
+  return {id:'remote:'+String(client&&client.id||'')+':'+kind+':'+String(item&&item.id||''), remotePreview:true, over:true,
+    remoteClientId:String(client&&client.id||''), remoteClientLabel:String(client&&(client.label||client.id)||'其他浏览器'),
+    remoteItemId:String(item&&item.id||''), remoteKind:runningKind?'running':'queued',
+    stages:stages, nodes:previewNodes, selId:stages.length?stages[0].id:null, timer:null,
+    env:item&&item.env||'', envs:[], image:'', release:'',
+    commit:'—', tag:'—', startTs:(runningKind?item&&item.startedAt:item&&item.queuedAt)||Date.now(), by:item&&item.by||'—', source:item&&item.source||'manual',
+    pipelineId:item&&item.pipelineId||null, pipelineName:item&&item.pipelineName||'(自定义)',
+    repoId:null, repoName:item&&item.repoName||'', repoUrl:'', giturl:GITURL,
+    branch:item&&item.branch||'main', strategy:item&&item.strategy||'', vars:{}, token:0,
+    overall:{txt:serverOwned?(runningKind?'服务端运行中（只读）':'服务端排队中（只读）'):(runningKind?'他端运行中（只读）':'他端排队中（只读）'), cls:'dshell-badgeWait', color:''}};
+}
+function remoteQueueItem(clientId,itemId,kind){
+  const client=remoteQueueClients.find(c=>String(c&&c.id||'')===String(clientId));
+  if(!client) return null;
+  const items=kind==='running'?remoteRunsOf(client):(Array.isArray(client.queue)?client.queue:[]);
+  const item=items.find(entry=>String(entry&&entry.id||'')===String(itemId));
+  return item&&remoteQueueDetailAvailable(item)?{client,item}:null;
+}
+function focusRemoteQueueItem(clientId,itemId,kind){
+  if(viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(clientId)&&viewRc.remoteItemId===String(itemId)&&viewRc.remoteKind===kind) return;
+  const found=remoteQueueItem(clientId,itemId,kind); if(!found) return;
+  focusRun(remoteQueuePreviewRc(found.client,found.item,kind));
+}
+function refreshRemoteQueuePreviewRc(previous){
+  if(!previous||previous.remotePreview!==true) return previous||null;
+  let kind=previous.remoteKind;
+  let found=remoteQueueItem(previous.remoteClientId,previous.remoteItemId,kind);
+  /* 来源页会给真正运行分配新的 r... id；用入队 id 关联 q... → r...，避免正在查看的排队详情
+     在任务启动的那次轮询里突然消失。 */
+  if(!found&&kind==='queued'){
+    const client=remoteQueueClients.find(c=>String(c&&c.id||'')===String(previous.remoteClientId));
+    const item=client&&remoteRunsOf(client).find(entry=>String(entry&&entry.originQueueId||'')===String(previous.remoteItemId)&&remoteQueueDetailAvailable(entry));
+    if(item){ found={client,item}; kind='running'; }
+  }
+  if(!found) return null;
+  const next=remoteQueuePreviewRc(found.client,found.item,kind);
+  if(next.stages.some(s=>s.id===previous.selId)) next.selId=previous.selId;
+  return next;
+}
+function applyRemoteQueuePreviewRefresh(){
+  if(!viewRc||viewRc.remotePreview!==true) return;
+  const next=refreshRemoteQueuePreviewRc(viewRc);
+  if(!next){
+    viewRc=null; syncViewRun(); applyRunOverall(null);
+    $('stopBtn').disabled=true; refreshArchiveTip(); resetNodes();
+    return;
+  }
+  viewRc=next; syncViewRun(); applyRunOverall(next); _detailKey='';
+  $('stopBtn').disabled=true; refreshArchiveTip(); renderFlow(); renderDetail();
+}
+
+/* ---------- 服务端权威运行队列实时同步 ---------- */
+/* 新页面只向服务端提交运行参数，执行池及任务生命周期都由服务端持有；页面关闭不终止任务。
+   GET /api/worktable/pipeline/queue 每秒返回服务端权威快照，同时保留旧页面的在场快照兼容展示。 */
 const QCLIENT_ID=(function(){
   /* 同标签页内刷新/重开保持同一 id（避免刷新瞬间旧 id 未过期 + 新 id 入场造成短暂双份在场）；
      sessionStorage 不可用时退化为纯随机 id */
@@ -3620,36 +3833,93 @@ function browserTag(){
   return b+'·'+QCLIENT_ID.slice(-4);
 }
 let _qPubSig='', _qPubAt=0, _qPubTimer=null, _qPubWarned=false;
+function queueStagePresence(stage){
+  if(!stage||stage.id===undefined||stage.id===null) return null;
+  const out={id:String(stage.id),name:String(stage.name||'')};
+  if(stage.preset===true) out.preset=true;
+  if(stage.pkey) out.pkey=String(stage.pkey);
+  if(stage.parallel===true) out.parallel=true;
+  if(stage.skip===true) out.skip=true;
+  if(Array.isArray(stage.sub)&&stage.sub.length) out.sub=stage.sub.map(name=>String(name));
+  return out;
+}
+function queueNodePresence(node){
+  const valid=['idle','running','success','failed','skipped','aborted'];
+  const raw=node&&typeof node==='object'?node:{};
+  const status=valid.indexOf(raw.status)>=0?raw.status:'idle';
+  const progress=Number(raw.progress), dur=Number(raw.dur);
+  const out={status:status,progress:Number.isFinite(progress)?Math.max(0,Math.min(100,progress)):0,dur:Number.isFinite(dur)?Math.max(0,dur):0};
+  if(raw.sub&&typeof raw.sub==='object'){
+    const sub={}; Object.keys(raw.sub).forEach(name=>{ const value=raw.sub[name]; if(valid.indexOf(value)>=0) sub[String(name)]=value; });
+    if(Object.keys(sub).length) out.sub=sub;
+  }
+  return out;
+}
+function queuePresenceEntry(item,timeKey,stages,nodes){
+  const out={};
+  ['id','originQueueId','pipelineId','pipelineName','by','env','repoName','branch','strategy','source'].forEach(key=>{
+    if(item&&item[key]!==undefined&&item[key]!==null) out[key]=String(item[key]);
+  });
+  const time=Number(item&&item[timeKey]); out[timeKey]=Number.isFinite(time)?time:0;
+  out.stages=(Array.isArray(stages)?stages:[]).map(queueStagePresence).filter(Boolean);
+  out.nodes={};
+  out.stages.forEach(stage=>{ out.nodes[stage.id]=queueNodePresence(nodes&&nodes[stage.id]); });
+  return out;
+}
+function runningPresenceEntry(rc){ return queuePresenceEntry(Object.assign({},rc,{startedAt:rc&&rc.startTs}),'startedAt',rc&&rc.stages,rc&&rc.nodes); }
+function queuedPresenceEntry(item){
+  const stages=expandRunStages(item&&item.stages||[],item&&item.presets);
+  return queuePresenceEntry(item,'queuedAt',stages,null);
+}
 /* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
 function publishQueue(force){
-  const runsSnap=activeRuns.map(rc=>({by:rc.by,pipelineName:rc.pipelineName,env:rc.env,repoName:rc.repoName,branch:rc.branch,strategy:rc.strategy,source:rc.source,startedAt:rc.startTs}));
+  const runsSnap=activeRuns.map(runningPresenceEntry);
   const runningSnap=runsSnap.length?runsSnap[0]:null;   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
-  const queueSnap=queue.map(q=>({by:q.by,pipelineName:q.pipelineName,env:q.env,repoName:q.repoName,branch:q.branch,strategy:q.strategy,source:q.source,queuedAt:q.queuedAt}));
+  const queueSnap=localQueueItems().map(queuedPresenceEntry);
   const sig=JSON.stringify([runsSnap,queueSnap]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
   _qPubSig=sig; _qPubAt=now;
   fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:QCLIENT_ID,label:browserTag(),running:runningSnap,runs:runsSnap,queue:queueSnap})})
+    body:JSON.stringify({schemaVersion:2,id:QCLIENT_ID,label:browserTag(),running:runningSnap,runs:runsSnap,queue:queueSnap})})
     .catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
 }
 /* renderQueue 渲染很频繁（运行期逐帧），上报走 500ms 防抖合并，避免状态抖动时连续发请求 */
 function scheduleQueuePublish(){ if(_qPubTimer) clearTimeout(_qPubTimer); _qPubTimer=setTimeout(()=>{ _qPubTimer=null; publishQueue(false); },500); }
-/* 拉取其他标签页的在场快照（过滤掉自己）并重绘队列区 */
+/* 取消服务端权威任务：运行中会中止，排队中会从队列移除；任一已登录浏览器均可操作。 */
+async function cancelServerRun(runId){
+  try{
+    const response=await fetch('/api/worktable/pipeline/queue',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',runId:String(runId||'')}),
+    });
+    let result={}; try{ result=await response.json(); }catch(e){}
+    if(!response.ok) throw new Error((result&&result.error)||('HTTP '+response.status));
+    await pullRemoteQueue();
+    return result;
+  }catch(error){
+    alert('取消服务端运行失败：'+String(error&&error.message||error));
+    await pullRemoteQueue();
+    return null;
+  }
+}
+/* 拉取服务端权威队列及旧标签页在场快照（过滤掉自己）并重绘队列区 */
 async function pullRemoteQueue(){
   try{
     const r=await fetch('/api/worktable/pipeline/queue');
-    if(r.ok){ const j=await r.json(); remoteQueueClients=(Array.isArray(j.clients)?j.clients:[]).filter(c=>c && c.id!==QCLIENT_ID); }
+    if(r.ok){
+      const j=await r.json();
+      const clients=(Array.isArray(j.clients)?j.clients:[]).filter(c=>c && c.id!==QCLIENT_ID);
+      const server=j&&j.server;
+      const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
+      remoteQueueClients=(serverActive?[server]:[]).concat(clients);
+      applyRemoteQueuePreviewRefresh();
+    }
   }catch(e){}
   renderQueue();
 }
 $('queueRefresh').addEventListener('click', async ()=>{
   const b=$('queueRefresh'); b.disabled=true;
-  try{ publishQueue(true); await pullRemoteQueue(); } finally{ b.disabled=false; }
-});
-/* 关页/切走时 beacon 清掉自己的在场信息（beacon 只能 POST，服务端同路由接受 POST 即为此设计）；失败静默 */
-window.addEventListener('pagehide', ()=>{
-  try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify({id:QCLIENT_ID,running:null,queue:[]})],{type:'application/json'})); }catch(e){}
+  try{ await pullRemoteQueue(); } finally{ b.disabled=false; }
 });
 
 /* ---------- 运行定时（周期 / 一次性，服务端调度，关闭页面也会执行） ---------- */
@@ -3772,12 +4042,15 @@ function runInfoLine(o){
   return '<div class="dshell-muted" style="font-size:10px;font-weight:normal;white-space:normal;">'
     +'环境 '+esc(o.env||'—')+' · 代码仓 '+esc(o.repoName||'—')+' · 分支 '+esc(o.branch||'—')+' · 部署策略 '+esc(o.strategy||'（不使用）')+'</div>';
 }
-let _plRunSig=null;   // 流水线任务表「运行中/查看中」徽标的刷新签名（见 renderQueue 末尾）
+function remoteQueueViewAttrs(client,item,kind,title){
+  if(!remoteQueueDetailAvailable(item)) return '';
+  return ' data-qremote-client="'+esc(client&&client.id||'')+'" data-qremote-id="'+esc(item.id)+'" data-qremote-kind="'+kind+'" title="'+title+'" style="cursor:pointer;"';
+}
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
   /* 排队预览自愈：预览中的排队项已出队（被取消/清空，或启动校验失败被移出队列）时，编排区回到当前流水线
      空闲编排。正常启动不走这里——startSimRun 已先把焦点切到真实运行 rc，viewRc 不再是预览 */
-  if(viewRc && viewRc.queuedPreview===true && !queue.some(q=>q.id===viewRc.id)){
+  if(viewRc && viewRc.queuedPreview===true && !localQueueItems().some(q=>q.id===viewRc.id)){
     viewRc=null; syncViewRun(); applyRunOverall(null);
     $('stopBtn').disabled=true; refreshArchiveTip();
     resetNodes();   // 空闲编排重建（内部重置 _detailKey 并重绘流程/详情）
@@ -3786,63 +4059,153 @@ function renderQueue(){
      drainQueue 只启动机器不相交的项，全部相交时空转无副作用；startSimRun 末尾也会调 renderQueue，
      那时在跑集合已含新运行，不会重复启动，故无重入死循环。 */
   if(queue.length){ try{ drainQueue(); }catch(e){ console.warn('[queue] 自愈排空失败（不影响渲染）:', e); } }
+  const localItems=localQueueItems();   // drainQueue 可能刚把排队项转成租约申请中，排空后重新取一次
   list.innerHTML='';
-  $('queueCount').textContent = queue.length? '('+queue.length+' 排队)':'';
-  /* 队列状态已并入「流水线任务」首行徽标；明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态不再渲染占位文案 */
-  list.style.display = (running||queue.length||remoteQueueClients.length)?'':'none';
+  const serverClient=remoteQueueClients.find(client=>String(client&&client.id||'')==='server');
+  const legacyClients=remoteQueueClients.filter(client=>String(client&&client.id||'')!=='server');
+  const serverRunningCount=remoteRunsOf(serverClient).length;
+  const serverQueuedCount=serverClient&&Array.isArray(serverClient.queue)?serverClient.queue.length:0;
+  const legacyRunningCount=legacyClients.reduce((sum,client)=>sum+remoteRunsOf(client).length,0);
+  const legacyQueuedCount=legacyClients.reduce((sum,client)=>sum+(Array.isArray(client&&client.queue)?client.queue.length:0),0);
+  const remoteRunningCount=serverRunningCount+legacyRunningCount;
+  const remoteQueuedCount=serverQueuedCount+legacyQueuedCount;
+  const totalQueueItems=activeRuns.length+localItems.length+remoteRunningCount+remoteQueuedCount;
+  $('queueCount').textContent = totalQueueItems?'('+totalQueueItems+' 项)':'';
+  /* 明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态由独立卡片首行的「空闲」徽标表达 */
+  list.style.display = (running||localItems.length||remoteQueueClients.length)?'':'none';
+  /* 正在编排区查看的条目（本页在跑/排队预览/他端只读预览）：整框背景高亮，与运行历史选中行
+     背景色保持一致（#historyTable tbody tr.sel td 同一 rgba(79,142,247,.12)），呼应「（查看中）」标记 */
+  const markViewing=it=>{ it.style.background='rgba(79,142,247,.12)'; };
+  /* 整行可点选中：点击条目空白处等同于点击标题（在编排区查看该流水线阶段详情）。
+     标题/徽标/按钮等自带点击行为的区域命中时返回 true，行级处理直接放行，不重复触发 */
+  const rowInnerHit=e=>{
+    const t=e&&e.target;
+    if(!t||typeof t.closest!=='function') return true;
+    return !!(t.closest('.dshell-listItemTitle')||t.closest('[data-qreason]')||t.closest('[data-qcancel]')||t.closest('[data-qabort]')||t.closest('button'));
+  };
   let status='空闲', cls='';
   if(running){
-    status=activeRuns.length+' 运行中'+(queue.length?' · '+queue.length+' 排队':''); cls='dshell-badgeWait';
-    activeRuns.forEach((rc,idx)=>{
-      const it=document.createElement('div'); it.className='dshell-listItem';
-      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(idx+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span> <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>';
-      list.appendChild(it);
-    });
-  } else if(queue.length){ status=queue.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
-  else {
-    /* 本地空闲但其他浏览器在跑：徽标提示他端活动（样式保持灰——活动不在本页，避免误导成本页可停止） */
-    const remoteRunning=remoteQueueClients.reduce((a,c)=>a+remoteRunsOf(c).length,0);
-    if(remoteRunning) status='空闲 · 他端 '+remoteRunning+' 运行';
+    status=activeRuns.length+' 运行中'+(localItems.length?' · '+localItems.length+' 排队':''); cls='dshell-badgeWait';
+  } else if(localItems.length){ status=localItems.length+' 排队（待启动）'; cls='dshell-badgeWait'; }
+  if(remoteRunningCount||remoteQueuedCount){
+    const statusParts=[];
+    if(status!=='空闲') statusParts.push('本页 '+status);
+    if(serverRunningCount||serverQueuedCount){
+      const serverStatus=[];
+      if(serverRunningCount) serverStatus.push(serverRunningCount+' 运行');
+      if(serverQueuedCount) serverStatus.push(serverQueuedCount+' 排队');
+      statusParts.push('服务端 '+serverStatus.join(' · '));
+    }
+    if(legacyRunningCount||legacyQueuedCount){
+      const legacyStatus=[];
+      if(legacyRunningCount) legacyStatus.push(legacyRunningCount+' 运行');
+      if(legacyQueuedCount) legacyStatus.push(legacyQueuedCount+' 排队');
+      statusParts.push('其他浏览器 '+legacyStatus.join(' · '));
+    }
+    status=statusParts.join(' · ');
+    cls='dshell-badgeWait';
   }
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
-  queue.forEach((q,idx)=>{
+  /* 排队项「等待节点」标注：节点被他端（其他标签页/浏览器/API/定时）运行占用时展示占用节点与占用者，
+     租约释放后 drainQueue 自动重启该项 */
+  const nodeWaitText=q=>{
+    const w=q&&q.nodeWait; if(!w) return '';
+    const cs=Array.isArray(w.conflicts)?w.conflicts:[];
+    if(!cs.length) return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点空闲</span>';
+    return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点 '+cs.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+'</span>';
+  };
+  /* 排队原因（点击「排队中/申请节点中」徽标展开/收起）：按当前调度状态即时推算——租约被他端占用
+     （nodeWait 快照）> 同机在跑 > 同机前排 > 并发槽位满 > 调度中。自包含实现，不依赖引擎函数 */
+  const reasonOpenSet=(typeof queueReasonOpen!=='undefined')?queueReasonOpen:null;   // typeof 兼容测试/旧页面片段抽取
+  const qIps=x=>{ const s=new Set(); (((x&&x.envs)||[])).forEach(e=>{ const ip=String((e&&e.ip)||'').trim(); if(ip) s.add(ip); }); return s; };
+  const qIpHit=(a,b)=>{ for(const ip of a){ if(b.has(ip)) return ip; } return null; };
+  const slotCount=()=>activeRuns.length+(typeof pendingLeaseStarts!=='undefined'?pendingLeaseStarts.length:0);
+  const queueReasonText=(q,idx)=>{
+    if(isPendingQueueItem(q)) return '正在向服务端申请节点租约，通常几秒内完成；节点被他端占用时自动转为等待节点，拿到后自动启动。';
+    const w=q&&q.nodeWait;
+    if(w&&Array.isArray(w.conflicts)&&w.conflicts.length) return '节点 '+w.conflicts.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+' 被他端运行占用，租约释放后自动启动（每 5 秒重试）。';
+    const mine=qIps(q);
+    if(!mine.size) return activeRuns.length?'未选择目标节点的运行按串行处理：等待在跑任务全部结束后启动。':'调度中，即将自动启动。';
+    for(let i=0;i<activeRuns.length;i++){ const hit=qIpHit(mine,qIps(activeRuns[i])); if(hit) return '节点 '+esc(hit)+' 上正在运行「'+esc(activeRuns[i].pipelineName||'')+'」（'+esc(activeRuns[i].by||'')+'）：同一节点同一时间只跑一条流水线，等其结束后自动启动。'; }
+    for(let j=0;j<idx;j++){ const prev=localItems[j]; if(!prev||prev===q) continue; const hit=qIpHit(mine,qIps(prev)); if(hit) return '同机任务「'+esc(prev.pipelineName||'')+'」（#'+(activeRuns.length+j+1)+' · '+esc(prev.by||'')+'）排在前面：同一节点先入先出，等其启动并结束后轮到自己。'; }
+    if(typeof MAX_ACTIVE_RUNS!=='undefined'&&slotCount()>=MAX_ACTIVE_RUNS) return '并发槽位已满（'+slotCount()+'/'+MAX_ACTIVE_RUNS+'）：目标机器不冲突，等待在跑任务结束空出槽位后立即启动。';
+    return '调度中，即将自动启动（目标机器不冲突且有并发空槽时立即运行）。';
+  };
+  const queueReasonLine=q=>'<div class="dshell-muted" style="font-size:10px;font-weight:normal;white-space:normal;">排队原因：'+queueReasonText(q,localItems.indexOf(q))+'</div>';
+  /* 展示倒序：后加入的排队项显示在上面（仅展示顺序；编号仍按入队先后递增，先入队者排在队列首部） */
+  for(let i=localItems.length-1;i>=0;i--){
+    const q=localItems[i];
     const it=document.createElement('div'); it.className='dshell-listItem';
     const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    const pending=isPendingQueueItem(q);
+    const reasonOpen=reasonOpenSet&&reasonOpenSet.has(q.id);
+    if(viewing) markViewing(it);
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+i+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+(pending?'':nodeWaitText(q))+runInfoLine(q)+(reasonOpen?queueReasonLine(q):'')+'</span>'+(pending?'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">申请节点中</span>':'<span class="dshell-badge dshell-badgeWait" data-qreason="'+q.id+'" title="点击查看排队原因" style="cursor:pointer;">排队中</span>'+(canControlRun(q.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>':''));
+    it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusQueueItem(q.id); });   // 空白处点击同标题：查看该排队流水线详情
     list.appendChild(it);
-  });
-  /* 其他浏览器标签页的在场快照：只读展示（运行与取消都是本页内存态，远端条目给取消按钮无意义），
-     标题前带 muted 的客户端标签（如 [Chrome·a1b2]）区分来源 */
+  }
+  /* 队列编号把在跑项排在排队项之前，因此展示时先画编号更大的排队项、再画在跑项，
+     使整个列表严格按编号倒序，最早开始的 #1 固定在底部；只改展示，不改数组与 FIFO 调度顺序。 */
+  if(running){
+    for(let i=activeRuns.length-1;i>=0;i--){
+      const rc=activeRuns[i];
+      const it=document.createElement('div'); it.className='dshell-listItem';
+      if(viewRc===rc) markViewing(it);
+      it.innerHTML='<span class="dshell-listItemTitle" data-qfocus="'+rc.id+'" title="点击在编排区查看本次运行的阶段详情" style="cursor:pointer;"><span class="dshell-muted">#'+(i+1)+'</span> '+esc(rc.by)+' · '+esc(rc.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(rc.source)+'</span>'+(viewRc===rc?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rc)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(canControlRun(rc.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qabort="'+rc.id+'">中止</button>':'');
+      it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRun(rc); });   // 空白处点击同标题：选中该运行
+      list.appendChild(it);
+    }
+  }
+  /* 服务端权威任务可从任一浏览器中止/取消；旧浏览器在场快照仍由来源页持有，只读展示。
+     标题前带来源标签（服务端或 Chrome·a1b2）以区分归属。 */
   if(remoteQueueClients.length){
     const sep=document.createElement('div'); sep.className='dshell-listItem';
-    sep.innerHTML='<span class="dshell-muted" style="font-size:10px">— 其他浏览器 —</span>';
+    sep.innerHTML='<span class="dshell-muted" style="font-size:10px">— 服务端队列 / 其他浏览器 —</span>';
     list.appendChild(sep);
     remoteQueueClients.forEach(c=>{
+      const serverOwned=String(c&&c.id||'')==='server';
       const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
-      remoteRunsOf(c).forEach(rn=>{
+      /* 他端与服务端同样先画较新的排队项、再画较早的在跑项，让整组从新到旧展示。 */
+      (Array.isArray(c.queue)?c.queue:[]).slice().reverse().forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
-        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+runInfoLine(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>';
+        const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(q.id)&&viewRc.remoteKind==='queued';
+        if(viewing) markViewing(it);
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-badge dshell-badgeWait">排队中</span>'+(serverOwned&&canControlRun(q.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(q.id)+'">取消</button>':'');
+        if(remoteQueueDetailAvailable(q)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(q.id),'queued'); });   // 空白处点击同标题
         list.appendChild(it);
       });
-      (Array.isArray(c.queue)?c.queue:[]).forEach(q=>{
+      remoteRunsOf(c).slice().reverse().forEach(rn=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
-        it.innerHTML='<span class="dshell-listItemTitle">'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+runInfoLine(q)+'</span><span class="dshell-muted" style="font-size:10px">排队</span>';
+        const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(rn.id)&&viewRc.remoteKind==='running';
+        if(viewing) markViewing(it);
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(serverOwned&&canControlRun(rn.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(rn.id)+'">中止</button>':'');
+        if(remoteQueueDetailAvailable(rn)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(rn.id),'running'); });   // 空白处点击同标题
         list.appendChild(it);
       });
     });
   }
-  list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>cancelQueue(b.getAttribute('data-qcancel'))));
-  list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(rc) abortRun(rc); }));
+  list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>{ const q=queue.find(x=>x.id===b.getAttribute('data-qcancel')); if(q && !canControlRun(q.by)){ alert('无权限：仅管理员可取消其他用户（'+esc(q.by||'')+'）的排队任务。'); return; } cancelQueue(b.getAttribute('data-qcancel')); }));
+  list.querySelectorAll('[data-qserver-cancel]').forEach(b=>b.addEventListener('click',()=>{
+    const id=b.getAttribute('data-qserver-cancel');
+    const server=remoteQueueClients.find(c=>String(c&&c.id||'')==='server');
+    const item=remoteRunsOf(server).concat(server&&Array.isArray(server.queue)?server.queue:[]).find(x=>String(x&&x.id||'')===String(id));
+    if(item && !canControlRun(item.by)){ alert('无权限：仅管理员可中止或取消其他用户（'+esc(item.by||'')+'）的流水线。'); return; }
+    cancelServerRun(id);
+  }));
+  list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(!rc) return; if(!canControlRun(rc.by)){ alert('无权限：仅管理员可中止其他用户（'+esc(rc.by||'')+'）的流水线。'); return; } abortRun(rc); }));
   list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
   list.querySelectorAll('[data-qview]').forEach(el=>el.addEventListener('click',()=>focusQueueItem(el.getAttribute('data-qview'))));   // 排队项点击：编排区预览其阶段编排与参数快照
-  /* 流水线任务表的「运行中/查看中」徽标跟随在跑运行集与焦点运行刷新；renderQueue 每 5 秒轮询也会进入，
-     按签名判断避免无谓重建任务表（重建会打断行点击） */
-  const plSig=activeRuns.map(rc=>rc.id+':'+rc.pipelineId).join('|')+'#'+(viewRc?viewRc.id:'');
-  if(plSig!==_plRunSig){ _plRunSig=plSig; renderPipelines(); }
-  scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「运行队列跨浏览器可见」区块）
+  /* 「排队中/申请节点中」徽标点击：展开/收起排队原因（只影响展示，不触碰调度与详情预览焦点） */
+  list.querySelectorAll('[data-qreason]').forEach(el=>el.addEventListener('click',()=>{
+    if(!reasonOpenSet) return;
+    const id=el.getAttribute('data-qreason');
+    if(reasonOpenSet.has(id)) reasonOpenSet.delete(id); else reasonOpenSet.add(id);
+    renderQueue();
+  }));
+  list.querySelectorAll('[data-qremote-id]').forEach(el=>el.addEventListener('click',()=>focusRemoteQueueItem(el.getAttribute('data-qremote-client'),el.getAttribute('data-qremote-id'),el.getAttribute('data-qremote-kind'))));
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
-function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)) return c.runs; return c.running?[c.running]:[]; }
+function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)&&c.runs.length) return c.runs; return c.running?[c.running]:[]; }
 
 /* ---------- 运行引擎 ---------- */
 /* 每个运行独立编排（rc 内串行推进各阶段；不同机器的运行并行）：有脚本的步骤执行脚本，其余本地模拟 */
@@ -3873,6 +4236,8 @@ function disposeRunForReset(rc){
   cancelParallelGroup(rc);
   if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
+  if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 重置（不计入历史）同样释放节点租约
   rc.over=true;
 }
 function settleParallelStage(child,status){
@@ -5110,7 +5475,7 @@ function retryFromStage(stageId){
   }   // 并行组重试清空整组及下游运行态；串行阶段保持原有重试清理范围
   rc.over=false;
   activeRuns.push(rc); syncRunState();
-  $('stopBtn').disabled=false;
+  $('stopBtn').disabled=false;   // 重试本人运行的阶段可中止；他人 by 时由 focusRun/click 守卫
   rcOverall(rc,'运行中…（重试）','dshell-badgeWait');
   runSetSel(rc,rc.stages[idx].id); rcRender(rc);
   advance(rc,idx);
@@ -5120,9 +5485,11 @@ function finish(rc, result){
   rc.over=true;
   try{ taskPromFinalize(rc); }catch(e){ console.warn('[pipeline] 任务级普罗采集触发异常（已兜底，不阻断收尾）:', e); }   // 失败阶段（成功路径已在 advance 触发）勾选「收集普罗数据」时按任务起止采集
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
+  if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 释放节点租约：等待同节点的排队任务（含他端）随即可启动
   activeRuns=activeRuns.filter(r=>r!==rc);
   syncRunState();
-  $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止
+  $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止（控制权由 click/focusRun 守卫）
   /* 收尾（徽标 / 历史 / 统计 / 持久化 / 归档 / 详情）尽力而为：任一步异常都不得跳过下方的
      drainQueue()——否则排队任务会卡在「待启动」永远不跑（renderQueue 自愈仅在此处确实调到时才兜底）。
      buildLog 等同步步骤在此前未被 try 包裹（archiveStageLog 内部已包），故这里统一兜底。 */
@@ -5805,15 +6172,20 @@ function buildAnalysisRequest(kind, records){
   /* 双运行从记录自身路径推导共同目录；配置后来改变时仍能读取旧归档。 */
   return {text:buildComparisonPrompt(kind,recs),cwd:commonAnalysisArchiveFolder(recs)};
 }
-/* 经父页面（工作台）暴露的 __dshNewChatSessionAt 新建会话：单次分析工作目录 = 该次运行归档目录，
-   双运行对比工作目录 = 归档根目录，提示词包含两边归档文件的绝对路径；
-   记录未归档（archive 为空）时同样回退归档根目录（archiveRootFolder），保证新会话始终有工作区；
-   提示词只填入输入框草稿（不自动提交，用户确认后手动发送）；
-   旧版插件无此桥时退化为 __dshSessions/__dshPromptIntoSession 原自动发送路径 */
+/* 优先经父页面（工作台）暴露的 __dshNewChatSessionForCurrentProject 新建会话：
+   会话归入当前项目设置的工作区；未设置/已失效时由工作台弹出本项目工作区选择，选定后继续；
+   会话聊天列关闭时先打开。单次/双运行仍按归档目录生成 cwd 提示，绝对路径写进提示词供读取；
+   提示词只填入输入框草稿（不自动提交，用户确认后手动发送）。旧版插件无新桥时依次退化为
+   __dshNewChatSessionAt（归档目录 cwd + 草稿）及 __dshSessions/__dshPromptIntoSession（自动发送）路径。 */
 async function createAnalysisChat(kind, records){
   const P = window.parent;
   const request = buildAnalysisRequest(kind, records);
   const text = request.text, cwd = request.cwd;
+  if(P && typeof P.__dshNewChatSessionForCurrentProject==='function'){
+    try{ await P.__dshNewChatSessionForCurrentProject(text, cwd || null); }
+    catch(e){ alert('创建 AI 会话失败：'+(e && e.message ? e.message : e)); }
+    return;
+  }
   if(P && typeof P.__dshNewChatSessionAt==='function'){
     try{ await P.__dshNewChatSessionAt(text, cwd || null); }
     catch(e){ alert('创建 AI 会话失败：'+(e && e.message ? e.message : e)); }
@@ -5929,7 +6301,7 @@ function exitHistoryReplay(){
   /* 退出回放：有在跑运行则回看最近一个（其节点表保持引擎实写状态，不可重置），否则回到当前流水线的空闲编排 */
   viewRc=activeRuns.length?activeRuns[activeRuns.length-1]:null;
   syncViewRun(); applyRunOverall(viewRc);
-  $('stopBtn').disabled=!viewActive();
+  updateStopBtn();
   refreshArchiveTip();
   if(viewRc){ _detailKey=''; renderFlow(); renderDetail(); }
   else resetNodes();   // 空闲态：恢复主控当前流水线的空闲编排（内部重置 _detailKey 并重绘流程/详情）
@@ -6006,6 +6378,10 @@ function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringif
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
    供同步路径（新建/复制流水线署名、默认筛选「我的」）取用。声明在此处以保证声明顺序早于筛选事件绑定。 */
 let currentUsername='';
+/* 当前会话是否为 admin（仅 password 模式 + 已装 dsh-auth-gate-wt-admin-role 时为 true）。
+   由 fillExecutorFromAuth 在拿到登录用户后异步探测 /auth/users 写入；token 模式 / 未装
+   admin 插件 / 探测失败时为 false（此时 currentUsername 亦为空，canControlRun 退化为全权）。 */
+let currentUserIsAdmin=false;
 function filteredHistory(){
   const kw=histFilter.kw.trim().toLowerCase();
   if(!kw && !histFilter.status && !histFilter.pipeline) return history;
@@ -6190,10 +6566,8 @@ function rerunFromHistory(rec){
   const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
   const repoId=(rec.repoId && repositories.some(r=>r.id===rec.repoId)) ? rec.repoId : undefined;
   const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, strategy:rec.strategy||'', source:'manual'});
-  if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
-  else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）');
-  else if(r==='no-by'){ /* 执行人必填拦截：runPipeline 已弹提示并聚焦输入框，不再给「已开始」误导提示 */ }
-  else flashRunTip('已开始重跑 #'+rec.no+'（'+pl.name+'）');
+  if(r==='submitted') flashRunTip('已提交服务端重跑 #'+rec.no+'（'+pl.name+'）');
+  else if(r==='no-by'){ /* 执行人必填拦截：runPipeline 已弹提示，不再给「已开始」误导提示 */ }
 }
 $('histRerun').addEventListener('click', ()=>{
   const rec=(selHistoryIdx>=0)?history[selHistoryIdx]:null;
@@ -6351,9 +6725,41 @@ function renderPlFilterOptions(){
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
+/* 行内「⋯」菜单当前展开项的流水线 id：菜单是全局悬浮层 #plRowMenuPanel（fixed 定位，悬浮最上层、不撑大行高），
+   开合只动该层、不重渲染任务表；点 ⋯/置顶项/菜单外任意处/滚动/缩放收起（绑定见文件尾） */
+let plMenuOpenId=null;
+function closePlRowMenu(){
+  if(!plMenuOpenId) return;
+  plMenuOpenId=null;
+  const panel=$('plRowMenuPanel'); if(panel) panel.style.display='none';
+}
+/* 展开行内「⋯」菜单：列表项文案随置顶态刷新；fixed 定位——右缘对齐 ⋯ 按钮、下缘贴按钮底部，
+   不占用文档流，故不被 overflow 容器裁剪、也不撑大流水线行高 */
+function openPlRowMenu(id, anchorBtn){
+  const pl=findPipeline(id); if(!pl) return;
+  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'); if(!panel||!item) return;
+  plMenuOpenId=id;
+  item.textContent = pl.pinnedAt ? '取消置顶' : '置顶';
+  item.title = pl.pinnedAt ? '取消置顶，恢复数组原顺序' : '置顶到列表最前，随服务端同步';
+  panel.style.display='block';
+  if(anchorBtn && anchorBtn.getBoundingClientRect){
+    const r=anchorBtn.getBoundingClientRect();
+    panel.style.left=Math.max(4, r.right-(panel.offsetWidth||0))+'px';   // 先 display:block 再量宽，右缘对齐锚按钮
+    panel.style.top=(r.bottom+4)+'px';
+  }
+}
+/* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
+   pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
+function togglePipelinePin(id){
+  const p=findPipeline(id); if(!p) return;
+  p.pinnedAt=p.pinnedAt?0:Date.now();
+  savePipelines();
+  renderPipelines();
+}
 function renderPipelines(){
   renderPlFilterOptions();
-  const view=pipelines.filter(plFilterMatch);
+  /* 已置顶（pinnedAt）排最前，多条按置顶时间新→旧；未置顶保持数组原序（内置经加载迁移居首）——Array.sort 稳定，键相同不动相对位置 */
+  const view=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
   $('plCount').textContent = pipelines.length ? ('('+view.length+'/'+pipelines.length+')') : '';
   const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw) ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
   const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
@@ -6361,42 +6767,44 @@ function renderPipelines(){
   view.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
-    const plRuns = runsOfPipeline(p.id);   // 该流水线的在跑运行：行内给「运行中」徽标，点击查看其阶段详情
-    const viewing = plRuns.length && plRuns.indexOf(viewRc)>=0;
+    const isPinned = !!p.pinnedAt;
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
     /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
     const auditTag = p.builtIn ? '' : ((plOwnerOf(p) ? ' · 创建 @'+esc(plOwnerOf(p)) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwnerOf(p)) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
     if(isCur) tr.className='sel';
-    tr.title=plRuns.length?'点击查看本次运行的阶段详情':'点击选用该流水线';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(plRuns.length?' <span class="dshell-badge dshell-badgeWait" style="font-size:10px;">运行中</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':''):'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    /* 是否在运行不在本表展示：在跑/排队信息统一在「运行队列」查看（点队列条目看阶段详情），本表整行点击即选用 */
+    tr.title='点击选用该流水线';
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+'</td>';
-    tr.addEventListener('click',()=>{ const rc=latestRunOfPipeline(p.id); if(rc){ focusRun(rc); return; } selectPipeline(p.id); });   // 整行点击：有在跑运行→查看其阶段详情；否则选用（运行/编辑/复制/删除按钮已阻止冒泡）
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
+      ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
+    tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
-  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun'),useDefaults:true}); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); }));
+  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun'),useDefaults:true}); if(r==='submitted') flashRunTip('已提交服务端运行队列'); }));
   tb.querySelectorAll('[data-plapi]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); showPipelineApi(findPipeline(b.getAttribute('data-plapi'))); }));
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
   tb.querySelectorAll('[data-plcopy]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); copyPipeline(b.getAttribute('data-plcopy')); }));
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
+  tb.querySelectorAll('[data-plmenu]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const id=b.getAttribute('data-plmenu'); if(plMenuOpenId===id) closePlRowMenu(); else openPlRowMenu(id, b); }));
   renderPipelineSel();
 }
-/* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中切换被 selectPipeline 拦截后重绘回弹到当前流水线 */
+/* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中也可切换（selectPipeline 脱离运行视图，在跑任务转后台继续） */
 function renderPipelineSel(){
   const sel=$('pipelineSel'); if(!sel) return;
   const cur=curPipeline(); sel.innerHTML='';
-  pipelines.forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(cur && p.id===cur.id) o.selected=true; sel.appendChild(o); });
+  /* 与任务列表同一排序：已置顶在前（置顶时间新→旧），其余保持数组原序 */
+  pipelines.slice().sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0))).forEach(p=>{ const o=document.createElement('option'); o.value=p.id; o.textContent=p.name; if(cur && p.id===cur.id) o.selected=true; sel.appendChild(o); });
 }
 function selectPipeline(id){
-  if(id!==curPipelineId && running){   // 目标流水线有在跑运行时，任何入口（含运行框下拉）都转为查看其运行阶段详情，而不是切换/拦截
-    const rc=latestRunOfPipeline(id);
-    if(rc){ renderPipelineSel(); focusRun(rc); return; }
-  }
-  if(viewActive() && id!==curPipelineId){ renderPipelineSel(); alert('流水线运行中，暂不能切换（可点「重置」中止当前运行）。'); return; }   // 编排区展示的在跑运行仍绑定其流水线快照
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
-  viewRc=null; syncViewRun();   // 脱离运行结果视图（在跑运行不受影响，转后台继续）
+  /* 运行中也可切换：脱离运行/结果视图，回到所选流水线的空闲编排；在跑运行不受影响、转后台继续
+     （运行状态统一在「运行队列」展示，点击队列条目可回看该次运行的阶段详情） */
+  viewRc=null; syncViewRun(); applyRunOverall(null);
+  $('stopBtn').disabled=true;
+  refreshArchiveTip();
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
 let editFocusIdx=-1;
@@ -6544,7 +6952,7 @@ function savePlForm(){
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动；每次保存都刷新最后修改人 */
   else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}); }
   savePipelines(); clearPlDraft(); $('plForm').style.display='none';
-  /* 运行期保存：不触发 selectPipeline（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
+  /* 运行期保存：不触发 selectPipeline（避免脱离正在查看的运行视图），仅刷新列表 */
   if(running){ renderPipelines(); }
   else if(editId && editId===curPipelineId){ selectPipeline(editId); }
   else if(!editId){ selectPipeline(pipelines[pipelines.length-1].id); }
@@ -6575,12 +6983,13 @@ function copyPipeline(id){
   const clone=JSON.parse(JSON.stringify(src));   /* 深拷贝：阶段及 script/url/sched/sub 等绑定均为纯数据 */
   clone.id='pl-'+Date.now().toString(36);
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
+  clone.pinnedAt=0;   /* 副本不继承置顶：置顶随源条目，不随复制扩散 */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
   pipelines.push(clone);
   savePipelines();
-  /* 运行期复制：不切换当前流水线（避免冲掉运行快照/误报「不能切换」），仅刷新列表 */
+  /* 运行期复制：不切换当前流水线（避免脱离正在查看的运行视图），仅刷新列表 */
   if(running){ renderPipelines(); }
   else { selectPipeline(clone.id); }
 }
@@ -6598,7 +7007,7 @@ if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListen
 /* 运行按钮旁短暂提示（入队 / 重跑反馈） */
 let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
-$('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false) alert('队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入队列（第 '+queue.length+' 位）'); });
+$('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r==='submitted') flashRunTip('已提交服务端运行队列'); });
 /* 中止指定运行：以「已中止」计入历史并消耗队列。
    流式执行的脚本经 AbortController 断开会话，服务端随之终止对应子进程（见 runScriptStep/execStreaming）；EvalTokens 阶段取消待响应请求；
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
@@ -6617,16 +7026,36 @@ function abortRun(rc){
 $('stopBtn').addEventListener('click', ()=>{
   const rc=viewRc;   // 主控「中止」作用于编排区当前展示的运行；其他在跑运行用队列条目各自的「中止」
   if(!rc || rc.over) return;
+  if(!canControlRun(rc.by)){ alert('无权限：仅管理员可中止其他用户（'+esc(rc.by||'')+'）的流水线。'); return; }
   abortRun(rc);
 });
 $('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{
-  if(running || queue.length){ if(!confirm('将中止 '+activeRuns.length+' 个运行'+(queue.length?('并清空 '+queue.length+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。继续？')) return; }
+  /* 非 admin 不可重置他人流水线：仅中止/清空自己署名（by）的运行与排队任务，他人条目原样保留。
+     admin 全量重置（既有行为）。token 模式（currentUsername 为空）退化为全量。 */
+  const adminAll = currentUserIsAdmin || !currentUsername;
+  const mine = r=>canControlRun(r && r.by);
+  const ownRuns = adminAll ? activeRuns : activeRuns.filter(mine);
+  const ownQueue = adminAll ? queue : queue.filter(mine);
+  const otherRunsN = adminAll ? 0 : activeRuns.length - ownRuns.length;
+  const otherQueueN = adminAll ? 0 : queue.length - ownQueue.length;
+  if(ownRuns.length || ownQueue.length){
+    let msg='将中止 '+(adminAll?activeRuns.length:ownRuns.length)+' 个运行'+((adminAll?queue.length:ownQueue.length)?('并清空 '+(adminAll?queue.length:ownQueue.length)+' 个排队任务'):'')+'（进行中的脚本将终止，且不计入历史）。';
+    if(!adminAll && (otherRunsN||otherQueueN)) msg+='\n其中他人的 '+otherRunsN+' 个运行 / '+otherQueueN+' 个排队任务无权清空，将保留。';
+    if(!confirm(msg+'继续？')) return;
+  }else if(!adminAll && (otherRunsN||otherQueueN)){
+    alert('无可重置的本人流水线；其余 '+(otherRunsN+otherQueueN)+' 个为他人条目，仅管理员可重置。'); return;
+  }
   exitHistoryReplay();   // 重置一并退出历史回放态
-  activeRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
-  activeRuns=[]; queue=[]; viewRc=null; syncViewRun(); syncRunState();
-  $('stopBtn').disabled=true; resetNodes(); applyRunOverall(null); renderQueue();
+  ownRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
+  if(adminAll){ activeRuns=[]; queue=[]; }
+  else { activeRuns=activeRuns.filter(r=>!mine(r)); queue=queue.filter(q=>!mine(q)); }
+  /* 编排区焦点若落在被清空的本人运行上则回到空闲；他人运行仍可保留为焦点（不重置其节点视图） */
+  const clearView = !viewRc || (adminAll || mine(viewRc.by));
+  if(clearView){ viewRc=null; syncViewRun(); syncRunState(); resetNodes(); applyRunOverall(null); }
+  else { syncRunState(); renderFlow(); renderDetail(); }
+  updateStopBtn(); renderQueue();
   refreshArchiveTip();   // 运行已全部清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
@@ -7039,6 +7468,12 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
+/* 流水线行内「⋯」菜单：「置顶」列表项对当前展开行切换置顶（先收起菜单再切换）；
+   点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
+$('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
+document.addEventListener('click', closePlRowMenu);
+window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
+window.addEventListener('resize', closePlRowMenu);
 $('ioExpSettings').addEventListener('click', exportSettings);
 $('ioExpPipelines').addEventListener('click', exportPipelines);
 $('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
@@ -7083,6 +7518,23 @@ async function fillExecutorFromAuth(){
   currentUsername=username;   // 缓存当前登录用户，供流水线署名与默认筛选「我的」取用
   const el=$('triggeredBy');   // 右上角纯文本展示（span）：探测成功即更新为登录用户名
   if(el) el.textContent=username;
+  /* 探测 admin 角色：/auth/users 由 dsh-auth-gate-wt-admin-role 注册（password 模式专属），
+     GET 对任意会话开放，返回 {users:[{username,admin,current,...}]}。未装该插件 / token 模式
+     → 404 或非 JSON，currentUserIsAdmin 维持 false（currentUsername 为空时 canControlRun
+     退化为全权，故 token 模式不受限）。失败不阻断主流程。 */
+  try{
+    const ru=await fetch('/auth/users');
+    if(ru && ru.ok){
+      const ud=await ru.json();
+      if(ud && Array.isArray(ud.users)){
+        const me=ud.users.find(u=>u && u.current===true);
+        if(me && me.admin===true) currentUserIsAdmin=true;
+      }
+    }
+  }catch(e){ /* admin 探测失败：按非 admin 退化，不影响其他功能 */ }
+  /* admin 角色可能晚于队列渲染到达——拿到后重绘队列按钮（中止/取消按权限显隐） */
+  if(typeof renderQueue==='function') renderQueue();
+  if(typeof updateStopBtn==='function') updateStopBtn();
   /* 拿到当前用户后重绘「我的」筛选视图（初次加载时尚未拿到，先按「内置+未署名」退化渲染）。
      typeof 守卫：筛选状态在独立测试片段里可能未定义。 */
   if(typeof plFilter!=='undefined' && plFilter && plFilter.owner==='mine' && typeof renderPipelines==='function') renderPipelines();
@@ -7154,9 +7606,9 @@ function scheduleGpuRefresh(){
 loadServerState().finally(scheduleGpuRefresh);
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
-/* 其他浏览器标签页的在场快照：启动即拉一次，之后每 5 秒轮询（见「运行队列跨浏览器可见」区块） */
+/* 服务端权威运行队列：启动即拉一次，之后每秒同步；旧浏览器在场快照仍兼容展示。 */
 pullRemoteQueue();
-setInterval(pullRemoteQueue, 5000);
+setInterval(pullRemoteQueue, 1000);
 </script>
 </body>
 </html>
