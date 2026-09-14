@@ -337,21 +337,31 @@ for group_index, group in enumerate(groups):
 # 覆盖显式声明的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；
 # 启用 lmcache 时 sidecar 的卡必须与其 PTE 完全一致（CUDA IPC 按 ordinal
 # 匹配，集合与顺序都不能差），见下方 taskExecutorGroups 写入后的对齐逻辑。
+# TE 组按顺序在节点内连续占卡（默认每节点 8 卡），节点填满换下一个节点
+# （bin-packing，arch 顺序即 prefill 优先）：如 2 节点 3P1D → 节点A prefill1(0-3)
+# + prefill2(4-7)，节点B prefill3(0-3)+decode1(4-7)。kubelet 不会覆盖显式声明
+# 的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；同时用
+# kubernetes.io/hostname 把组钉到具体节点。启用 lmcache 时 sidecar 的卡必须
+# 与其 PTE 完全一致（CUDA IPC 按 ordinal 匹配，集合与顺序都不能差），见下方
+# taskExecutorGroups 写入后的对齐逻辑。
 node_gpu_count = 8
-pinned_single_node = len(target_ips) == 1
-if pinned_single_node:
-    assigned_cards = 0
-    for group in groups:
-        group_gpus = group["rayStartParamsPorts"]["num-gpus"]
-        if assigned_cards + group_gpus > node_gpu_count:
+node_index = 0
+assigned_cards = 0
+for group in groups:
+    group_gpus = group["rayStartParamsPorts"]["num-gpus"]
+    if assigned_cards + group_gpus > node_gpu_count:
+        node_index += 1
+        assigned_cards = 0
+        if node_index >= len(target_ips):
             raise SystemExit(
-                f"single-node GPU pinning exceeds {node_gpu_count} cards: "
-                f"group {group['name']} needs {group_gpus}, already assigned {assigned_cards}"
+                f"GPU pinning exceeds {node_gpu_count} cards x {len(target_ips)} node(s): "
+                f"group {group['name']} needs {group_gpus}, no node left"
             )
-        group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] = ",".join(
-            str(card) for card in range(assigned_cards, assigned_cards + group_gpus)
-        )
-        assigned_cards += group_gpus
+    group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] = ",".join(
+        str(card) for card in range(assigned_cards, assigned_cards + group_gpus)
+    )
+    group["nodeSelector"]["kubernetes.io/hostname"] = target_ips[node_index]
+    assigned_cards += group_gpus
 
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
@@ -439,6 +449,13 @@ upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
 lmcache_sidecar = values.get("lmcacheSidecar")
 if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
+    # lmcache 开启时 KV offload 由 sidecar L1 承担，缩小 TE 内存申请：
+    # arch（OffloadingConnector/1M ctx）预估的 memory request 可能超出
+    # 大页节点 allocatable（如 2000Gi hugepages 后仅 ~944Gi）导致 TE 永久 Pending。
+    te_memory = "200G"
+    for group in groups:
+        for quota in ("limits", "requests"):
+            group["containerResources"][quota]["memory"] = te_memory
     # lmcache-sidecar 仅挂在 prefill 组；cudaVisibleDevices 必须与其 PTE 的
     # NVIDIA_VISIBLE_DEVICES 完全一致（含顺序），否则 CUDA IPC 映射失败。
     prefill_pins = [
@@ -448,15 +465,21 @@ if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
     ]
     if not prefill_pins:
         raise SystemExit("lmcache sidecar enabled but no prefill TE group found")
-    if pinned_single_node and any(pin is None for pin in prefill_pins):
+    if any(pin is None for pin in prefill_pins):
         raise SystemExit("lmcache sidecar enabled but prefill GPU pinning is missing")
-    if len([pin for pin in prefill_pins if pin]) > 1:
-        raise SystemExit(
-            "lmcache sidecar enabled with multiple prefill TE groups: "
-            "cudaVisibleDevices 为全局单值，无法与多个 PTE 一一对齐"
+    distinct_pins = list(dict.fromkeys(pin for pin in prefill_pins if pin))
+    if len(distinct_pins) > 1:
+        # 同节点多个 prefill 组（如 2 节点 3P1D 的节点A：0-3 与 4-7）时各 PTE
+        # 卡块不同。cudaVisibleDevices 为全局单值，仅表达首个组；需要 chart 支持
+        # sidecar 按组继承 ray-worker 的 NVIDIA_VISIBLE_DEVICES 才能全部对齐，
+        # 旧 chart 上其余组的 sidecar 会 CUDA IPC 失配。
+        print(
+            "WARNING: prefill TE groups have different GPU pins "
+            f"({', '.join(distinct_pins)}); requires chart with per-group "
+            "sidecar cudaVisibleDevices inheritance",
+            file=sys.stderr,
         )
-    if prefill_pins[0]:
-        lmcache_sidecar["cudaVisibleDevices"] = prefill_pins[0]
+    lmcache_sidecar["cudaVisibleDevices"] = prefill_pins[0]
 values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
