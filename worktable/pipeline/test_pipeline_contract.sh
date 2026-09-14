@@ -20,6 +20,7 @@ taskExecutorGroups: []
 frameworkConfigFiles:
   xds_framework.conf: |
     mock_db = false
+    collector_gateway_url = template-default:25888
 EOF
 cat >"$WORK/model_arch.json" <<'EOF'
 [
@@ -84,9 +85,31 @@ assert values["global"]["sentinel"] == "replaced"
 assert values["global"]["extra"] == "enabled"
 assert values["global"]["enableTaskExecutorGroups"] is True
 assert all(group["nodeSelector"] == {"xds.optest": "node-10"} for group in values["taskExecutorGroups"])
+assert "collector_gateway_url = 192.168.10.6:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
 
 echo "PASS: render-config produces one coherent P/D deployment contract"
+
+python3 - "$WORK" "$SCRIPTS/render-config.sh" <<'PY_COLLECTOR'
+import os, pathlib, subprocess, sys, yaml
+
+work = pathlib.Path(sys.argv[1])
+env = dict(
+    os.environ,
+    RUN_DIR=str(work / "mapped-collector"),
+    CHART_TEMPLATE_DIR=str(work / "xds-cluster"),
+    VALUES_TEMPLATE=str(work / "values.template.yaml"),
+    ARCH_FILE=str(work / "model_arch.json"),
+    ARCH_NAME="glm-5.2-nvfp4",
+    TARGET_HOSTS='[{"ip":"ssh.example.test:2222"}]',
+    TARGET_NODE_IP_MAP='{"ssh.example.test:2222":"192.0.2.10"}',
+    DEPLOY_IMAGE="registry.example.com/xds:test",
+)
+subprocess.run(["bash", sys.argv[2]], env=env, check=True, stdout=subprocess.DEVNULL)
+values = yaml.safe_load((work / "mapped-collector" / "rendered" / "values.rendered.yaml").read_text())
+assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
+print("PASS: collector gateway selects default or mapped target endpoint")
+PY_COLLECTOR
 
 FAKE_BIN="$WORK/fake-bin"
 FAKE_IMAGE_ROOT="$WORK/fake-image"
