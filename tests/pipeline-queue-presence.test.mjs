@@ -9,7 +9,7 @@ const plain = value => JSON.parse(JSON.stringify(value))
 
 function loadQueueRoute() {
   const start = source.indexOf('  /* 运行队列跨浏览器可见：')
-  const end = source.indexOf('  // AI 日志分析：', start)
+  const end = source.indexOf('  /* 节点占用租约（跨标签页/跨浏览器/API/定时统一的节点互斥', start)
   assert.ok(start >= 0 && end > start, '运行队列在场路由未找到')
   const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
   let handler

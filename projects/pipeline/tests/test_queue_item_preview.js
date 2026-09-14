@@ -300,6 +300,26 @@ test('publishQueue：上报声明可点击阶段快照协议版本', () => {
   assert.match(publishSource, /schemaVersion\s*:\s*2/);
 });
 
+test('publishQueue：节点租约申请期间继续把待启动项作为可查看的排队快照上报', () => {
+  const calls = [];
+  const context = {
+    activeRuns: [], queue: [],
+    pendingLeaseStarts: [{ queueItem: { id: 'q-pending', queuedAt: 1, stages: [{ id: 's1', name: '构建' }], presets: [] } }],
+    expandRunStages: stages => stages,
+    _qPubSig: '', _qPubAt: 0, _qPubWarned: false,
+    QCLIENT_ID: 'c1', browserTag: () => 'Chrome·c1',
+    fetch: (url, options) => { calls.push({ url, options }); return Promise.resolve({}); },
+    console,
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('function queueStagePresence', '/* renderQueue 渲染很频繁'), context);
+  context.publishQueue(true);
+  const body = JSON.parse(calls[0].options.body);
+  assert.equal(body.queue.length, 1);
+  assert.equal(body.queue[0].id, 'q-pending');
+  assert.equal(body.queue[0].stages[0].id, 's1');
+});
+
 /* ---------- 队列区渲染（renderQueue：排队项可点击 + 预览自愈） ---------- */
 function makeQueueContext() {
   const list = new FakeNode('div');
@@ -425,6 +445,7 @@ test('startRun：队列项启动时把原队列 id 传给运行上下文', () =>
     resolveEnv: ip => ({ ip }), curEnvs: () => [{ ip: 'A' }],
     resolveRepo: () => ({ id: 'repo1', name: 'repo1', url: '' }),
     $: () => ({ value: '' }), curStrategy: () => '', selectedPresetKeys: () => [],
+    runIps: run => new Set((run.envs || []).map(env => env.ip).filter(Boolean)),
     startSimRun: (pl, runContext) => calls.push({ pl, runContext }),
   };
   vm.createContext(context);

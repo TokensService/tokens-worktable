@@ -3500,7 +3500,35 @@ function startRun(opts){
   const by = opts.by || (currentUsername||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual', originQueueId:opts.originQueueId||opts.id||''};
-  startSimRun(pl, c);
+  /* 节点占用租约：目标节点（环境 IP）先向服务端申请租约，拿到才真正开跑——同一节点同一时间
+     只跑一条流水线（跨标签页/跨浏览器/API/定时统一互斥，见「节点占用租约」区块）。无目标 IP
+     时没有可互斥的节点，保持旧行为直接启动；抽取测试环境无租约实现时同样按旧行为处理。 */
+  const leaseIps=Array.from(runIps(c));
+  if(!leaseIps.length || typeof nodeLeaseRequest!=='function'){ startSimRun(pl, c); return true; }
+  c.leaseId=(opts.id||'')||('q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5));
+  c.leaseIps=leaseIps;
+  /* 租约申请在途期间占一个调度槽位并参与机器冲突判定（conflictsActive/runPipeline），
+     防止快速连续运行/同一次 drain 越过页内互斥 */
+  const pend={envs:c.envs,queueItem:opts};   // 申请期间仍按排队快照上报，避免他端详情在 q → r 过渡中闪断
+  if(typeof pendingLeaseStarts!=='undefined') pendingLeaseStarts.push(pend);
+  const settle=()=>{ if(typeof pendingLeaseStarts!=='undefined'){ const i=pendingLeaseStarts.indexOf(pend); if(i>=0) pendingLeaseStarts.splice(i,1); } };
+  nodeLeaseRequest({action:'acquire', runId:c.leaseId, ips:leaseIps, label:pl.name||'', by:c.by}).then(r=>{
+    settle();
+    if(r && r.ok===false){
+      /* 节点被他端运行占用：回队等待（nodeWait 供队列区展示与重试节流，drainQueue 到点重新申请） */
+      if(opts && opts.id){
+        opts.nodeWait={until:Date.now()+(typeof NODE_WAIT_RETRY_MS==='undefined'?5000:NODE_WAIT_RETRY_MS), conflicts:Array.isArray(r.conflicts)?r.conflicts:[]};
+        if(!queue.some(q=>q.id===opts.id)) queue.unshift(opts);
+      } else console.warn('[pipeline] 节点被占用且排队项无 id，无法回队等待:', r.conflicts);
+      renderQueue();
+      return;
+    }
+    startSimRun(pl, c);
+  }).catch(e=>{
+    settle();   // 服务端不可达/旧插件无租约路由：降级为仅页内互斥的旧行为，不阻断运行
+    console.warn('[pipeline] 节点租约申请失败，按仅页内互斥的旧行为直接启动:', e);
+    startSimRun(pl, c);
+  });
   return true;
 }
 function startSimRun(pl, c){
@@ -3511,12 +3539,13 @@ function startSimRun(pl, c){
   {
     let started=false, badIdx=-1;
     for(let i=0;i<stages.length;i++){ if(stages[i].preset) continue; const has=!!stages[i].sched; if(has) started=true; else if(started){ badIdx=i; break; } }
-    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); drainQueue(); return; }
+    if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); releaseNodeLease(c.leaseId, c.leaseIps); drainQueue(); return; }   // 启动校验失败：已拿到的节点租约立即释放
   }
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
   // 手动运行（含入队/历史重跑）在页面内执行；目标机器不相交的运行并行推进（见 drainQueue/runPipeline）。定时页仍由服务端执行计划。
   const rc={id:'r'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
     stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null, over:false, overall:null,
+    leaseTimer:null, leaseId:c.leaseId||null, leaseIps:c.leaseIps||[],   // 节点占用租约：finish/中止/重置时释放
     env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual', originQueueId:c.originQueueId||'',
     pipelineId:pl.id||null, pipelineName:pl.name, repoId:c.repo.id||null, repoName:c.repo.name, repoUrl:c.repo.url, giturl:c.repo.url||GITURL,
     repoUser:c.repo.user||'', repoPass:c.repo.pass||'', branch:c.branch, strategy:c.strategy||'', vars:{}, token:++runSeq};
@@ -3526,6 +3555,11 @@ function startSimRun(pl, c){
     ensureArchiveFolder(rc.archive).then(ok=>{ if(!ok) console.warn('[archive] 预建归档文件夹失败（不影响运行结果）:', rc.archive); });
   }
   activeRuns.push(rc);
+  /* 持有节点租约的运行：周期续租（服务端 TTL 90s，25s 心跳容忍丢失；续租失败静默——finish/中止/重置
+     显式释放，页面崩溃由租约到期自动清理） */
+  if(rc.leaseId && rc.leaseIps.length){
+    rc.leaseTimer=setInterval(()=>{ nodeLeaseRequest({action:'acquire', runId:rc.leaseId, ips:rc.leaseIps, label:rc.pipelineName||'', by:rc.by||''}).catch(()=>{}); }, NODE_LEASE_RENEW_MS);
+  }
   viewRc=rc; syncViewRun(); syncRunState();   // 新运行获得编排区焦点
   _detailKey='';   // 视图切到新运行，详情渲染缓存一并失效
   $('stopBtn').disabled=false;
@@ -3560,7 +3594,8 @@ function runPipeline(opts){
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   /* 并行调度：目标机器（环境 IP）与在跑运行、以及已在排队的任务都不相交 → 立即并行启动；
      任一相交 → 入队等待（同一机器的任务保持先进先出，见 drainQueue） */
-  const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length<MAX_ACTIVE_RUNS);   // typeof 兼容测试/旧页面片段抽取
+  const pendingLeaseCount=(typeof pendingLeaseStarts==='undefined')?0:pendingLeaseStarts.length;   // 租约申请在途的启动同样占槽（typeof 兼容测试/旧页面片段抽取）
+  const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length+pendingLeaseCount<MAX_ACTIVE_RUNS);   // typeof 兼容测试/旧页面片段抽取
   if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))){ return startRun(item); }
   if(queue.length >= QUEUE_CAP) return false;
   queue.push(item);
@@ -3576,7 +3611,31 @@ function machineConflict(a,b){
   for(const ip of A){ if(B.has(ip)) return true; }
   return false;
 }
-function conflictsActive(item){ return activeRuns.some(rc=>machineConflict(rc,item)); }
+function conflictsActive(item){
+  if(activeRuns.some(rc=>machineConflict(rc,item))) return true;
+  /* 租约申请在途的启动同样视为占用：startRun 异步等租约期间运行尚未进 activeRuns，
+     不占住的话快速连续运行/同一次 drain 会越过页内互斥（测试沙盒无此变量时按无在途处理） */
+  if(typeof pendingLeaseStarts!=='undefined' && pendingLeaseStarts.some(p=>machineConflict(p,item))) return true;
+  return false;
+}
+
+/* ---------- 节点占用租约（服务端权威互斥） ---------- */
+/* 页内调度（machineConflict/drainQueue）只管本标签页；租约把「同一节点同一时间只跑一条流水线」
+   扩到跨标签页/跨浏览器与服务端 API/定时计划：startRun 申请成功才开跑并周期续租，finish/中止/
+   重置释放，服务端 TTL 90s 兜底页面崩溃未释放。服务端不可达（旧插件无此路由）时降级为仅页内互斥。 */
+const NODE_LEASE_PATH='/api/worktable/pipeline/leases';
+const NODE_LEASE_RENEW_MS=25000;   // 服务端 TTL 90s，25s 续租容忍几次丢失
+const NODE_WAIT_RETRY_MS=5000;     // 租约被占用时回队重试间隔（drainQueue 到点重发申请）
+const pendingLeaseStarts=[];       // 租约申请在途的启动：占调度槽位、参与机器冲突判定（见 conflictsActive/runPipeline）
+async function nodeLeaseRequest(body){
+  const resp=await fetch(NODE_LEASE_PATH,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!resp.ok) throw new Error('node lease http '+resp.status);
+  return await resp.json();
+}
+function releaseNodeLease(leaseId, ips){
+  if(!leaseId) return;
+  nodeLeaseRequest({action:'release', runId:leaseId, ips:ips||[]}).catch(()=>{});   // 失败静默：TTL 到期自动清理
+}
 /* 并行排空：从头扫描队列，目标机器与「在跑运行 + 排在前面的排队任务」均不相交的项立即启动；
    相交项留在队列等待（同一机器保持先进先出，不同机器的排队任务可被后来者超越）。
    每启动一项就重新扫描：startRun 可能同步结束运行（全跳过阶段）或校验失败递归 drainQueue，队列/在跑集合已变 */
@@ -3587,6 +3646,7 @@ function drainQueue(){
     again=false;
     for(let i=0;i<queue.length;i++){
       const it=queue[i];
+      if(it.nodeWait && it.nodeWait.until>Date.now()) continue;   // 节点被他端占用刚被拒：节流重试（到点后重新申请租约）；不阻塞异机后来者
       if(conflictsActive(it)) continue;
       let blocked=false;
       for(let j=0;j<i;j++){ if(machineConflict(queue[j],it)){ blocked=true; break; } }
@@ -3749,7 +3809,14 @@ function queuedPresenceEntry(item){
 function publishQueue(force){
   const runsSnap=activeRuns.map(runningPresenceEntry);
   const runningSnap=runsSnap.length?runsSnap[0]:null;   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
-  const queueSnap=queue.map(queuedPresenceEntry);
+  const queueItems=queue.slice();
+  /* 节点租约申请可能慢于一次在场上报：已从 queue 取出但尚未进入 activeRuns 的条目继续作为 queued
+     发布，等拿到租约后再由 originQueueId 无缝切换到真实运行。 */
+  if(typeof pendingLeaseStarts!=='undefined') pendingLeaseStarts.forEach(p=>{
+    const item=p&&p.queueItem;
+    if(item&&!queueItems.some(q=>q===item||String(q&&q.id||'')===String(item.id||''))) queueItems.push(item);
+  });
+  const queueSnap=queueItems.map(queuedPresenceEntry);
   const sig=JSON.stringify([runsSnap,queueSnap]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
@@ -3778,6 +3845,11 @@ $('queueRefresh').addEventListener('click', async ()=>{
 /* 关页/切走时 beacon 清掉自己的在场信息（beacon 只能 POST，服务端同路由接受 POST 即为此设计）；失败静默 */
 window.addEventListener('pagehide', ()=>{
   try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify({id:QCLIENT_ID,running:null,queue:[]})],{type:'application/json'})); }catch(e){}
+  /* 一并释放本页持有的节点租约（等待同节点的他端任务随即可启动；失败静默，服务端 TTL 90s 兜底） */
+  try{
+    const leaseIds=activeRuns.map(rc=>rc.leaseId).filter(Boolean);
+    if(leaseIds.length) navigator.sendBeacon('/api/worktable/pipeline/leases', new Blob([JSON.stringify({action:'release', runIds:leaseIds})],{type:'application/json'}));
+  }catch(e){}
 });
 
 /* ---------- 运行定时（周期 / 一次性，服务端调度，关闭页面也会执行） ---------- */
@@ -3942,10 +4014,18 @@ function renderQueue(){
     cls='dshell-badgeWait';
   }
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
+  /* 排队项「等待节点」标注：节点被他端（其他标签页/浏览器/API/定时）运行占用时展示占用节点与占用者，
+     租约释放后 drainQueue 自动重启该项 */
+  const nodeWaitText=q=>{
+    const w=q&&q.nodeWait; if(!w) return '';
+    const cs=Array.isArray(w.conflicts)?w.conflicts:[];
+    if(!cs.length) return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点空闲</span>';
+    return ' <span class="dshell-muted" style="font-size:10px" title="节点被其他运行占用，释放后自动启动">等待节点 '+cs.map(c=>esc(c.ip)+(c.by||c.label?'（'+esc([c.by,c.label].filter(Boolean).join(' · '))+'）':'')).join('、')+'</span>';
+  };
   queue.forEach((q,idx)=>{
     const it=document.createElement('div'); it.className='dshell-listItem';
     const viewing=viewRc&&viewRc.queuedPreview===true&&viewRc.id===q.id;
-    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
+    it.innerHTML='<span class="dshell-listItemTitle" data-qview="'+q.id+'" title="点击查看该排队流水线的详情（阶段编排与运行参数快照）" style="cursor:pointer;"><span class="dshell-muted">#'+(activeRuns.length+idx+1)+'</span> '+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+sourceLabel(q.source)+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+nodeWaitText(q)+runInfoLine(q)+'</span><button class="dshell-btn dshell-btnGhost mini" data-qcancel="'+q.id+'">取消</button>';
     list.appendChild(it);
   });
   /* 其他浏览器标签页的在场快照：可点击查看脱敏后的阶段状态；运行/取消仍是来源页内存态，
@@ -4013,6 +4093,8 @@ function disposeRunForReset(rc){
   cancelParallelGroup(rc);
   if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
+  if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 重置（不计入历史）同样释放节点租约
   rc.over=true;
 }
 function settleParallelStage(child,status){
@@ -5260,6 +5342,8 @@ function finish(rc, result){
   rc.over=true;
   try{ taskPromFinalize(rc); }catch(e){ console.warn('[pipeline] 任务级普罗采集触发异常（已兜底，不阻断收尾）:', e); }   // 失败阶段（成功路径已在 advance 触发）勾选「收集普罗数据」时按任务起止采集
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
+  if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
+  if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 释放节点租约：等待同节点的排队任务（含他端）随即可启动
   activeRuns=activeRuns.filter(r=>r!==rc);
   syncRunState();
   $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止
