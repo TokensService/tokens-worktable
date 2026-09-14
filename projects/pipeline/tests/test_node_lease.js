@@ -260,6 +260,7 @@ test('renderQueue：等待节点的排队项展示占用节点与占用者', () 
     esc: String, sourceLabel: s => s, fmtRelative: () => '刚刚',
     runInfoLine: () => '<div class="dshell-muted">info</div>',
     drainQueue: () => {}, cancelQueue: () => {}, abortRun: () => {}, focusRun: () => {},
+    canControlRun: () => true,   // 控制权守卫：本用例聚焦节点等待标注，放行使按钮按原行为渲染
     focusQueueItem: () => {}, renderPipelines: () => {}, scheduleQueuePublish: () => {},
     syncViewRun: () => {}, applyRunOverall: () => {}, refreshArchiveTip: () => {}, resetNodes: () => {},
     console,

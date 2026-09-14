@@ -1716,7 +1716,7 @@ export function apply(ctx: Context) {
     handler: async (req: any, res: any) => {
       try {
         if (req.method === 'PUT' || req.method === 'POST') {
-          /* POST 供页面 pagehide 时 navigator.sendBeacon 清态用（beacon 只能 POST） */
+          /* POST 同时承载服务端任务取消，并兼容旧页面 pagehide 的 sendBeacon 清态。 */
           const body = await readJsonBody(req)
           if (req.method === 'POST' && body.action === 'cancel') {
             const runId = typeof body.runId === 'string' ? body.runId.slice(0, 128) : ''
@@ -2698,7 +2698,7 @@ export function apply(ctx: Context) {
     })
   }
   pipelineExecutions = createPipelineExecutionQueue(execPlan, 2, 100, {
-    /* 节点互斥：与在跑计划同节点、或节点被页面手动运行的租约占用的计划留在队列等待重试 */
+    /* 节点互斥：与在跑计划同节点、或节点被旧页面本地运行租约占用的计划留在队列等待重试。 */
     ipsOf: (plan: any) => pipelineEnvIps(plan && plan.envs),
     acquire: (plan: any, ips: string[]) => pipelineNodeLeases.acquire(pipelineLeaseOwner(plan), ips, String(plan && plan.pipelineName || ''), String(plan && plan.by || '')).ok,
     release: (plan: any) => { pipelineNodeLeases.release(pipelineLeaseOwner(plan)) },

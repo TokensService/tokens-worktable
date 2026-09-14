@@ -340,6 +340,9 @@ test('detailLogLinesFor：他端预览明确提示不传日志，本页详情仍
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, { remotePreview: true }, node)), [
     '其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。',
   ]);
+  assert.deepEqual(Array.from(context.detailLogLinesFor(stage, { remotePreview: true, remoteClientId: 'server' }, node)), [
+    '服务端队列仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会下发到浏览器。',
+  ]);
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, {}, node)), ['本页日志']);
   assert.equal(calls.length, 1);
 });
@@ -440,6 +443,7 @@ function makeQueueContext() {
     cancelQueue: id => calls.cancel.push(id),
     abortRun: rc => calls.abort.push(rc),
     cancelServerRun: id => calls.cancelServer.push(id),
+    canControlRun: () => true,   // 非 admin 控制权守卫：默认放行，使既有「按钮存在」断言成立；专门用例在下文覆盖
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
     focusRemoteQueueItem: (clientId, itemId, kind) => calls.focusRemoteQueueItem.push({ clientId, itemId, kind }),
@@ -492,6 +496,26 @@ test('renderQueue：预览中的排队项带「查看中」标记；在跑运行
   assert.deepEqual(calls.focusRun, [rc]);
   list.querySelectorAll('[data-qabort]')[0].handlers.click();
   assert.deepEqual(calls.abort, [rc]);
+});
+
+test('renderQueue：非 admin 仅对自己的条目显示中止/取消按钮（他人条目按控制权隐藏）', () => {
+  const { context, list } = makeQueueContext();
+  context.canControlRun = by => by === 'tester';   // 非 admin：仅自己署名的条目可控
+  context.activeRuns.push({ id: 'r-mine', by: 'tester', pipelineName: '我的', source: 'manual' });
+  context.activeRuns.push({ id: 'r-other', by: 'bob', pipelineName: '他人', source: 'manual' });
+  context.running = true;
+  context.queue.push({ id: 'q-mine', by: 'tester', pipelineName: '排队-我的', source: 'manual', queuedAt: 1 });
+  context.queue.push({ id: 'q-other', by: 'alice', pipelineName: '排队-他人', source: 'manual', queuedAt: 2 });
+  context.renderQueue();
+  // 倒序展示：r-other(运行) 在最上，r-mine(运行) 次之；排队项同样倒序 q-other 在上、q-mine 在下
+  const runOther = list.children[0].innerHTML;
+  const runMine = list.children[1].innerHTML;
+  assert.doesNotMatch(runOther, /data-qabort/);   // 他人运行：无中止按钮
+  assert.match(runMine, /data-qabort="r-mine"/);  // 自己运行：有中止按钮
+  const qOther = list.children[2].innerHTML;
+  const qMine = list.children[3].innerHTML;
+  assert.doesNotMatch(qOther, /data-qcancel/);    // 他人排队：无取消按钮
+  assert.match(qMine, /data-qcancel="q-mine"/);  // 自己排队：有取消按钮
 });
 
 test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () => {
@@ -567,6 +591,28 @@ test('renderQueue：服务端运行与排队任务在任一浏览器显示中止
   buttons.forEach(button => button.handlers.click());
   assert.deepEqual(calls.cancelServer, ['r-server', 'q-server']);
   assert.doesNotMatch(list.children[3].innerHTML, /data-qserver-cancel/);
+});
+
+test('renderQueue：非 admin 只能中止或取消自己署名的服务端任务', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.canControlRun = by => by === 'tester';
+  context.remoteQueueClients.push({
+    id: 'server', label: '服务端',
+    runs: [
+      { id: 'r-mine', by: 'tester', pipelineName: '我的运行', stages: [{ id: 's1', name: '构建' }] },
+      { id: 'r-other', by: 'bob', pipelineName: '他人运行', stages: [{ id: 's2', name: '部署' }] },
+    ],
+    queue: [
+      { id: 'q-mine', by: 'tester', pipelineName: '我的排队', stages: [{ id: 's3', name: '测试' }] },
+      { id: 'q-other', by: 'alice', pipelineName: '他人排队', stages: [{ id: 's4', name: '发布' }] },
+    ],
+  });
+  context.renderQueue();
+
+  const buttons = list.querySelectorAll('[data-qserver-cancel]');
+  assert.deepEqual(buttons.map(button => button.getAttribute('data-qserver-cancel')), ['r-mine', 'q-mine']);
+  buttons.forEach(button => button.handlers.click());
+  assert.deepEqual(calls.cancelServer, ['r-mine', 'q-mine']);
 });
 
 test('renderQueue：旧浏览器快照缺少阶段数据时不可点击并提示刷新来源页面', () => {
