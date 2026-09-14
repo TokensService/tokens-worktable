@@ -1157,6 +1157,26 @@ async function fetchHealth(): Promise<{ dir: string | null; dev: boolean }> {
 async function fetchPluginDir(): Promise<string | null> {
   return (await fetchHealth()).dir
 }
+/* ---------- 侧栏标题取 dsh 登录用户 ---------- */
+/** 探测 dsh-auth-gate 当前登录用户名（/auth/status 同源探针、只认会话 cookie）；
+ *  未装认证插件（404 / SPA 兜底非 JSON）、token 共享模式（username 恒 null）、未登录、
+ *  探测失败均回退空串——侧栏标题随之回退默认「工作台」。 */
+async function probeAuthUsername(): Promise<string> {
+  try {
+    const r = await fetch('/auth/status')
+    if (!r || !r.ok) return ''
+    const d = await r.json()
+    if (d && d.authenticated && typeof d.username === 'string') return d.username.trim()
+  } catch { /* 回退空串 */ }
+  return ''
+}
+/** 侧栏标题取舍：用户自定义名（设置面板可改）优先；缺省取 dsh 登录用户名，
+ *  连用户名也没有（未装认证插件 / token 模式 / 未登录 / 探测失败）时回退默认「工作台」；
+ *  devSuffix（link: 本地编译安装的「（开发中）」）追加在缺省标题（登录用户名或「工作台」）之后，自定义名不受影响。 */
+function worktableTitleOf(customTitle: string, authUsername: string, fallback: string, devSuffix = ''): string {
+  return customTitle || (authUsername || fallback) + devSuffix
+}
+/* ---------- 侧栏标题取 dsh 登录用户结束 ---------- */
 /** 设置弹窗「新建开发会话」：按提示词模板 + 插件项目目录新建 AI 会话（cwd = 插件目录，提示词只填输入框、不自动发送） */
 async function startPluginDev(): Promise<void> {
   const dir = await fetchPluginDir()
@@ -1415,6 +1435,14 @@ function WorktableSection(props: any) {
   useEffect(() => {
     let alive = true
     void fetchHealth().then((h) => { if (alive && h.dev) setDevInstall(true) })
+    return () => { alive = false }
+  }, [])
+  // 当前登录用户名：挂载时向 dsh-auth-gate 的 /auth/status 探一次（同源、只认会话 cookie）；
+  // 空串 = 未装认证插件 / token 共享模式 / 未登录 / 探测失败，侧栏标题回退默认「工作台」
+  const [authUsername, setAuthUsername] = useState('')
+  useEffect(() => {
+    let alive = true
+    void probeAuthUsername().then((name) => { if (alive && name) setAuthUsername(name) })
     return () => { alive = false }
   }, [])
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
@@ -3227,10 +3255,11 @@ function buildCustomLayoutPrompt(req: string): string {
     )
   }
 
-  // 侧栏标题：用户自定义名（设置面板可改）优先，空/缺回退 locale 默认「工作台」；
-  // 本地编译安装（link:）时默认名追加「（开发中）」后缀（「工作台」本字不改；自定义名不受影响，改名框也不带后缀）
+  // 侧栏标题：用户自定义名（设置面板可改）优先；缺省取 dsh-auth-gate 当前登录用户名，
+  // 取不到（未装认证插件 / token 共享模式 / 未登录 / 探测失败）回退 locale 默认「工作台」；
+  // 本地编译安装（link:）时缺省标题（登录用户名或「工作台」）追加「（开发中）」后缀（自定义名不受影响，改名框也不带后缀）
   const customTitle = (view.title ?? '').trim()
-  const worktableTitle = customTitle || t('title') + (devInstall ? t('title.devSuffix') : '')
+  const worktableTitle = worktableTitleOf(customTitle, authUsername, t('title'), devInstall ? t('title.devSuffix') : '')
 
   return (
     <div ref={rootRef} className={'dsh-wt_section' + (isFloat ? ' dsh-wt_float' : '')} style={isFloat ? floatStyle : dockedStyle}>
@@ -3418,12 +3447,12 @@ function buildCustomLayoutPrompt(req: string): string {
               <div className="dsh-wt_updateHint">{t('update.upgradeHint')}</div>
             </div>
           )}
-          {/* 工作台名称：自定义侧栏区块标题；清空提交 = 恢复默认「工作台」（复用项目管理改名的 RenameInput 交互） */}
+          {/* 工作台名称：自定义侧栏区块标题；清空提交 = 恢复默认（登录用户名，取不到则「工作台」）（复用项目管理改名的 RenameInput 交互） */}
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('name.label')}</span>
           </div>
           <div className="dsh-wt_pageEditHint">{t('name.desc')}</div>
-          <RenameInput initial={customTitle || t('title')} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
+          <RenameInput initial={worktableTitleOf(customTitle, authUsername, t('title'))} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
           <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('sort.label')}</span>

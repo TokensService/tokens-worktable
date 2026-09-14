@@ -1,5 +1,86 @@
 # 本目录 tokens-worktable 的本地改动
 
+- mem_leak 页面补入 vLLM P/D 分离集群生产诊断手册（`projects/mem_leak/index.html`）：
+  新增「P/D 实战手册」标签页，固化 8×H800 kubeRay/TENT 拓扑、cgroup v1 的
+  anon/file/cache/shmem 分层方法、RssAnon/VmPin/线程/fd 判据、生产插桩红线、Xid 事故时间线、
+  task_exec 九层 async generator 僵死链证据、修复三件套与 2026-09-11 上线验证；工具、泄漏模式和
+  检查清单同步改成生产安全口径。在线采样不再把 RSS、cgroup 总量或 vLLM 约 95% GPU 预分配直接定性为
+  泄漏：RSS 需最近两个固定 30 分钟窗口（每窗至少覆盖 27 分钟）均超过 50 MiB/h 才预警并要求拆 anon/file，
+  cgroup 总量始终要求继续分层，
+  GPU 上涨先排除预分配；诊断概览删除“显存 × 1.4”虚构 RSS，改为只展示实测要求；有效“待观察”原因不再误显示为
+  “样本不足”，负斜率明确显示回落。审查后移除可直接复制的 `memory.force_empty` 命令并补强制回收红线，
+  同时为多标签和长代码标识补窄屏适配。`projects/mem_leak/index.test.cjs` 新增固定双窗口、指标来源保守判定、
+  待观察徽标、回落文案与生产安全边界回归。
+- 流水线「执行人」展示去输入框化（`projects/pipeline/pipeline.html`）：右上角执行人由只读 `<input>`
+  改为纯文本 `<span>`（初始「未登录」，探测成功替换为登录用户名），不再保留任何表单控件形态；
+  逻辑读取点（运行/入队的 `by`、必填校验、API 说明、定时计划默认值、新建/复制/改序署名）统一改为
+  直读已缓存的 `currentUsername`，与展示彻底解耦。相关测试桩同步由 `triggeredBy.value` 改为
+  `currentUsername`（`test_pipeline_defaults.js` / `test_pipeline_api_ui.js` / `test_queue_item_preview.js`），
+  `test_executor_auth_default.js` 改为断言展示文本。
+- 流水线运行队列上限 8 → 16（`projects/pipeline/pipeline.html` 的 `QUEUE_CAP`）：并行槽位（4 个）占满后
+  可排队等待的任务数放宽一倍，提示文案随变量联动；同步 `tests/test_queue_item_preview.js` 的边界用例
+  （填满 16 个后拒绝入队）与 `tests/test_pipeline_row_run.js` 的容量提示断言。
+- 流水线「执行人」改为只读、固定取 dsh 登录用户并移至页面右上角（`projects/pipeline/pipeline.html`）：
+  执行人由主控区可编辑输入框改为标题行右侧（主题切换旁）的只读展示，每次加载都以 dsh-auth-gate
+  `/auth/status` 当前登录用户为准并覆盖任何残留值；不再持久化/恢复执行人（localStorage `pip-by` 与
+  服务端配置 `loc.by` 均停用，旧导出文件里的 `by` 导入时忽略），从根上消除共享配置把他人名字长期
+  错署为执行人的可能。未装认证插件 / token 共享模式 / 未登录 / 探测失败时显示「未登录」占位，
+  运行的必填拦截文案相应改为「未获取到当前登录用户」。`tests/test_executor_auth_default.js` 按
+  新契约重写（覆盖残留值、必然探测、留空路径、「我的」筛选重绘），`test_config_import_export.js`
+  同步去掉导出/恢复 `by` 的断言。
+- 流水线运行队列支持点击排队任务查看详情（`projects/pipeline/pipeline.html`）：队列中的排队条目由纯展示
+  改为可点击，编排区以只读快照预览该次排队的详情——阶段编排按入队时的阶段快照与「预设任务」勾选快照展开
+  （与启动同一 `expandRunStages` 路径，并行组结构原样绘制），详情面板展示入队参数（环境/仓库/分支/策略/
+  执行人），总状态徽标显示「排队中（预览）」，队列条目随焦点标「（查看中）」。预览上下文不进在跑集合、
+  以 queuedPreview 标记且 over=true：引擎不感知，停止/阶段重试/归档目标均不指向它；该项被启动时焦点
+  自动切给真实运行，被取消或启动失败时由 renderQueue 开头的自愈清回当前流水线空闲编排。他端浏览器
+  上报的只读条目不挂点击。「运行队列」标签补 title 说明（异机并行、同机串行、点击查看详情）。新增
+  `tests/test_queue_item_preview.js` 覆盖预览构建/聚焦去重/条目点击与「查看中」/出队自愈/他端只读，
+  并用真实 machineConflict/drainQueue 固化异机并行调度语义（不相交立即并行、相交串行排队、
+  不同机排队任务可越过同机等待者、并发槽位与队列上限）。
+- 修复流水线「执行人」被历史记录作者长期错署（`projects/pipeline/pipeline.html`）：进入历史回放曾把
+  `rec.by` 回填进「执行人」输入框（内置演示数据的 `release-manager` 即由此进入），该值随后随
+  localStorage 与服务端配置持久化，使 `fillExecutorFromAuth` 因输入框非空而跳过 `/auth/status`
+  探测，执行人（连同新建/复制流水线署名回退值）一直停留在历史记录作者。现回放不再回填执行人
+  （原执行人仍在回放状态行展示），历史重跑也不再沿用记录作者——重跑是新运行，执行人取输入框当前值，
+  留空由必填校验拦截且不再误报「已开始重跑」。新增 `tests/test_replay_executor_attribution.js` 回归。
+- mem_leak 内存泄漏诊断页入库并新增「在线采样」（`projects/mem_leak/index.html` + `src/index.ts`）：
+  页面原先仅存在于本地未跟踪文件，本次基线入库；新增首个标签页「在线采样」——输入目标机器的
+  IP（可带 :端口）、用户名、密码后连接，经 `/api/worktable/gpu` 发现该机使用 GPU 的容器与进程
+  （GPU 概览卡片 + 进程/容器表格：PID、进程、容器、显存、RSS、容器内存、已运行），勾选目标后按
+  5/10/30/60s 间隔轮询采样，显存（按进程）与内存（RSS/容器）两张多序列时序曲线实时绘制，泄漏研判表
+  复用页面最小二乘回归按序列给出速率（MiB/h）与「疑似泄漏/碎片化/健康」判定（按严重度排序），单条序列
+  可一键载入「诊断概览」深入分析。采样用 setTimeout 链自排程避免请求重叠，改连机器以代次丢弃过期响应，
+  新出现的 GPU 进程默认纳入；每序列上限 720 点；IP/用户名存 localStorage，密码不持久化。服务端
+  `/api/worktable/gpu` 新增 `detail:true` 可选参数：探针追加三段（每进程显存 used_memory、/proc VmRSS、
+  进程所属容器的 cgroup 内存占用——优先 v2 memory.current、回退 v1 memory.usage_in_bytes，不依赖
+  docker/nerdctl CLI），一次 SSH 取回；响应 gpus[] 增 memTotal、procs[] 增 gpuMem/rss/cgMem（均 MiB，
+  取不到为空串）；非 detail 调用响应与探针保持原样（pipeline 环境页不受影响）。新增
+  `tests/gpu-detail.test.mjs`（detail 字段解析、非 detail 兼容、降级空串、parseHostPort）与
+  `projects/mem_leak/index.test.cjs`（数值解析、序列落点/去重/上限、勾选过滤、泄漏判定）。
+- 流水线任务支持显式并行执行（`projects/pipeline/pipeline.html` + `src/index.ts`）：普通任务可勾选“并行执行”，
+  编排区直接绘制连续并行任务的分叉 / 汇合结构，阶段详情仅显示当前所选任务的独立日志；页面手动运行、API
+  与定时运行统一按组并发并等待汇合，任一阻断失败会立即取消组内在途任务，同组任务读取相同入口变量快照且
+  输出按编排顺序确定性合并。从并行组内失败任务重试会恢复入口变量并重跑整组；每组仅按最长的合格任务时段
+  保存一份普罗数据，串行任务原有采集行为不变。
+- 流水线任务署名审计（`projects/pipeline/pipeline.html`）：在既有「创建者」署名（createdBy）之上
+  新增「最后修改人」（updatedBy），同样取 dsh-auth-gate `/auth/status` 当前登录用户（未取到时退回
+  「执行人」输入框、再取不到则不署名）。编辑器每次保存、主视图拖拽改序都会刷新最后修改人；新建与
+  复制流水线同时落创建者与最后修改人；存量数据经 migrate 补空字段，导出/导入随 JSON 原样保留。
+  流水线任务列表行由「· @创建者」改为明示「· 创建 @某人 · 修改 @某人」，修改人与创建者相同不重复
+  显示，内置与未署名流水线不显示。新增 `tests/test_pipeline_audit_trail.js` 覆盖迁移、新建/编辑/
+  复制/改序署名与列表展示。
+- 侧栏工作台标题缺省取 dsh 登录用户（`src/client/index.tsx`）：未自定义名称时，挂载经
+  dsh-auth-gate `/auth/status` 探针（同源、只认会话 cookie）以当前登录用户名作为侧栏区块标题；
+  未装认证插件（404 / SPA 兜底非 JSON）、token 共享模式（username 恒 null）、未登录或探测失败
+  均回退默认「工作台」。用户自定义名优先级不变（设置面板改名仍生效），改名框初始值跟随当前
+  显示标题；link: 本地编译安装时「（开发中）」后缀追加在缺省标题（登录用户名或「工作台」）之后。
+  新增 `tests/auth-username-title.test.mjs` 覆盖探测裁剪、各回退路径与标题优先级（含后缀组合）。
+- 工作台分栏让位观察器修复子像素误判（`src/client/split.tsx`）：better-sidebar 面板开合的过渡动画期间
+  会话根逐帧缩放，applyMargin 写出子像素 margin（如 960.671875px），浏览器读回内联样式仅保留 3 位小数
+  （960.672px），让位观察器的字符串比较把引擎自身写入误判为「外部接管」而关闭分栏——表现为点
+  better-sidebar 右上角按钮开关侧栏时工作台项目页被一并关掉。改为数值容差比较（漂移 >0.01px 才视为
+  外部改写），其他分栏引擎真正改写 margin 时仍正常让位。
 - 流水线「打开归档目录」改为「关闭侧边会话窗 + better-sidebar 侧边窗打开」（`projects/pipeline/pipeline.html`
   + `src/client/index.tsx`）：点击后仍经 dsh-better-sidebar 侧边窗打开归档目录（文件夹窗口，文件树以
   归档目录为根，同目录复用同标签），打开成功后经新增宿主桥 `window.__dshCloseSideChat()` 关闭工作台

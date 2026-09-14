@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, open as fsOpen, readFile, rm, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
-import { dirname, resolve as pathResolve } from 'node:path'
+import { dirname, join as pathJoin, resolve as pathResolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
@@ -42,6 +42,9 @@ function loadRunRoute(store, overrides = {}) {
     URL,
     Promise,
     Buffer,
+    AbortController,
+    setTimeout,
+    clearTimeout,
     console,
     pathResolve,
     json(res, status, body) {
@@ -405,7 +408,7 @@ test('无 Content-Length 的分块远端响应也按字节上限中止', async (
   assert.equal(cancelled, true)
 })
 
-test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', async () => {
+function loadRunStageScript(spawnImpl) {
   const start = source.indexOf('  // 参数值 ${VAR} 引用替换（同页面 substRunVars）')
   const end = source.indexOf('  /* 任务回显文本：', start)
   assert.ok(start >= 0 && end > start, '服务端脚本运行函数未找到')
@@ -414,11 +417,16 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   const ctx = {
     Buffer,
     Promise,
-    process: { env: { KEEP_ME: 'yes' }, platform: process.platform },
+    process: { env: { KEEP_ME: 'yes' }, platform: 'win32' },
+    fsMkdir: mkdir,
+    fsOpen,
+    dirname,
+    pathResolve,
     setTimeout,
     clearTimeout,
     spawn(command, args, options) {
       called = { command, args, options }
+      if (spawnImpl) return spawnImpl(command, args, options)
       const child = new EventEmitter()
       child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.pid = 12345; child.kill = () => true
       queueMicrotask(() => { child.stdout.end(); child.stderr.end(); child.emit('close', 0) })
@@ -427,8 +435,13 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   }
   vm.createContext(ctx)
   vm.runInContext(code, ctx)
+  return { ctx, getCalled: () => called }
+}
 
-  const result = await ctx.runStageScript(
+test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', async () => {
+  const loaded = loadRunStageScript()
+
+  const result = await loaded.ctx.runStageScript(
     { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [{ key: 'TRIGGERED_BY', kind: 'env' }], values: { TRIGGERED_BY: '${BY}' } },
     {
       env: '10.0.0.2',
@@ -443,6 +456,7 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
     '/scripts',
   )
 
+  const called = loaded.getCalled()
   assert.equal(result.code, 0)
   assert.equal(called.options.env.GIT_URL, 'https://git.example/app.git')
   assert.equal(called.options.env.GIT_USER, 'git-bot')
@@ -451,6 +465,95 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   assert.equal(called.options.env.DEPLOY_STRATEGY, 'blue-green')
   assert.equal(called.options.env.TRIGGERED_BY, 'jenkins')
   assert.equal(called.options.env.KEEP_ME, 'yes')
+})
+
+test('服务端脚本收到取消信号后终止子进程并保留中止前输出', async () => {
+  const controller = new AbortController()
+  let killed = false
+  const loaded = loadRunStageScript(() => {
+    const child = new EventEmitter()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.pid = 12345
+    child.kill = () => {
+      killed = true
+      queueMicrotask(() => {
+        child.stdout.end()
+        child.stderr.end()
+        child.emit('close', 1)
+      })
+      return true
+    }
+    queueMicrotask(() => {
+      child.stdout.write('partial stdout')
+      child.stderr.write('partial stderr')
+      controller.abort()
+    })
+    return child
+  })
+
+  const result = await loaded.ctx.runStageScript(
+    { name: 'slow.sh', path: '/scripts/slow.sh', params: [], values: {} },
+    { envs: [], repository: null },
+    '/scripts',
+    {},
+    45,
+    undefined,
+    undefined,
+    controller.signal,
+  )
+
+  assert.equal(killed, true)
+  assert.equal(result.code, 1)
+  assert.equal(result.stdout, 'partial stdout')
+  assert.equal(result.stderr, 'partial stderr')
+  assert.equal(result.aborted, true)
+})
+
+test('服务端可取消等待会及时拒绝并移除监听器', { timeout: 200 }, async () => {
+  const f = loadRunRoute(stored)
+  let abortListener
+  let removed = 0
+  const signal = {
+    aborted: false,
+    addEventListener(type, listener) {
+      assert.equal(type, 'abort')
+      abortListener = listener
+    },
+    removeEventListener(type, listener) {
+      assert.equal(type, 'abort')
+      assert.equal(listener, abortListener)
+      removed += 1
+    },
+  }
+
+  const waiting = f.ctx.abortableServerSleep(10_000, signal)
+  signal.aborted = true
+  abortListener()
+
+  await assert.rejects(waiting, error => error?.name === 'AbortError')
+  assert.equal(removed, 1)
+})
+
+test('服务端 fetch 已取消时不发起网络请求且不误报等待超时', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  controller.abort()
+  let fetched = false
+
+  await assert.rejects(
+    f.ctx.serverFetchResponse(
+      async () => { fetched = true; return fetchResponse(200, '') },
+      'https://hooks.internal/never',
+      {},
+      Date.now() + 10_000,
+      'HTTP 请求',
+      1024,
+      controller.signal,
+    ),
+    error => error?.name === 'AbortError' && !/等待超时/.test(String(error.message)),
+  )
+  assert.equal(fetched, false)
 })
 
 test('服务端脚本把完整大日志流式落盘，内存结果有界且保留早期变量', async t => {
@@ -530,11 +633,18 @@ test('服务端直写任务日志追加普罗结果，流式汇总保留完整�
   assert.equal(activeLocks, 0)
 })
 
-function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }) {
+function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new Error('unexpected fetch') }, runStageScriptImpl, DateImpl = Date, options = {}) {
   const apiStart = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
-  const code = stripTypeScriptTypes(source.slice(apiStart, apiEnd) + '\n' + extractFunction('execPlan'), { mode: 'transform' })
+  const code = stripTypeScriptTypes([
+    source.slice(apiStart, apiEnd),
+    extractFunction('parseStageVars'),
+    extractFunction('parseStageJson'),
+    extractFunction('jsonPathGet'),
+    extractFunction('applyOutVars'),
+    extractFunction('execPlan'),
+  ].join('\n'), { mode: 'transform' })
   const calls = []
   const history = []
   const notes = []
@@ -543,7 +653,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     URL,
     Promise,
     Buffer,
-    Date,
+    Date: DateImpl,
     Math,
     URLSearchParams,
     AbortController,
@@ -563,19 +673,20 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     taskLogPath: (folder, tag, seq, name) => `${folder}/run-${tag}-${String(seq).padStart(2, '0')}-${name}.log`,
     writeTaskLogFile: async () => null,
     appendTaskLogNote: async (file, note) => { notes.push({ file, note }); return true },
-    writePipelineSummaryFile: async (file, append, logs, status) => { summaries.push({ file, append, logs: plain(logs), status }) },
+    writePipelineSummaryFile: async (file, append, logs, status) => {
+      if (options.allowDynamicImport) await mkdir(dirname(file), { recursive: true })
+      summaries.push({ file, append, logs: plain(logs), status })
+    },
     stageLogText: (name, result) => `${name}:${result.code}`,
-    parseStageVars: () => ({}),
-    parseStageJson: () => null,
-    applyOutVars() {},
-    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile) => {
+    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) => {
       calls.push({ script: script.name, runContext: plain(runContext), scriptsDir, varsPool: plain(varsPool || {}), timeout, extraEnv: plain(extraEnv || {}), outputFile })
+      if (runStageScriptImpl) return runStageScriptImpl(script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal)
       return results[script.name] || { code: 0, stdout: '', stderr: '' }
     },
     appendPipelineHistory: async record => history.push(plain(record)),
   }
   vm.createContext(ctx)
-  vm.runInContext(code, ctx)
+  vm.runInContext(code, ctx, options.allowDynamicImport ? { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER } : undefined)
   return { execPlan: ctx.execPlan, calls, history, notes, summaries }
 }
 
@@ -616,6 +727,396 @@ function apiExecutionPlan(presets = ['check']) {
     source: 'api',
   }
 }
+
+const tick = () => new Promise(resolve => setImmediate(resolve))
+
+async function assertParallelServerRun(sourceType) {
+  const deferred = new Map()
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, (script, runContext, scriptsDir, varsPool) => new Promise(resolve => {
+    deferred.set(script.name, resolve)
+    if (script.name === 'a.sh') varsPool.PRIVATE_MUTATION = 'a-only'
+  }))
+  const plan = apiExecutionPlan([])
+  plan.source = sourceType
+  plan.by = sourceType
+  plan.vars = { UPSTREAM: 'snapshot', ORDER: 'entry' }
+  if (sourceType === 'schedule') delete plan.presets
+  plan.stages = [
+    { id: 'a', name: 'A', parallel: true, script: { name: 'a.sh', path: '/a.sh', outVars: '' } },
+    { id: 'b', name: 'B', parallel: true, script: { name: 'b.sh', path: '/b.sh', outVars: 'ORDER=SOURCE' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh', outVars: '' } },
+  ]
+
+  const running = f.execPlan(plan)
+  await tick()
+  assert.deepEqual(f.calls.map(call => call.script), ['a.sh', 'b.sh'])
+  assert.deepEqual(f.calls[0].varsPool, { UPSTREAM: 'snapshot', ORDER: 'entry' })
+  assert.deepEqual(f.calls[1].varsPool, { UPSTREAM: 'snapshot', ORDER: 'entry' })
+
+  deferred.get('b.sh')({ code: 0, stdout: 'SOURCE=entry\nVALUE=b\nB=1', stderr: '' })
+  await tick()
+  assert.deepEqual(f.calls.map(call => call.script), ['a.sh', 'b.sh'])
+
+  deferred.get('a.sh')({ code: 0, stdout: 'ORDER=a\nVALUE=a\nA=1', stderr: '' })
+  await tick()
+  assert.equal(f.calls[2].script, 'after.sh')
+  assert.deepEqual(f.calls[2].varsPool, {
+    UPSTREAM: 'snapshot', ORDER: 'entry', VALUE: 'b', A: '1', SOURCE: 'entry', B: '1',
+  })
+  deferred.get('after.sh')({ code: 0, stdout: '', stderr: '' })
+  await running
+
+  assert.equal(f.history[0].status, 'success')
+  assert.equal(f.history[0].source, sourceType)
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['A', 'B', 'After'])
+}
+
+test('API 并行启动任务、等待汇合并按编排顺序合并输出', async () => {
+  await assertParallelServerRun('api')
+})
+
+test('定时并行启动任务、等待汇合并按编排顺序合并输出', async () => {
+  await assertParallelServerRun('schedule')
+})
+
+async function assertFailedSingletonVarsPersist(sourceType) {
+  const archiveDir = await mkdtemp(pathJoin(tmpdir(), 'pipeline-failed-singleton-'))
+  try {
+    const f = loadExecPlan(
+      { ...apiExecutionConfig, archiveDir },
+      { 'fail.sh': { code: 9, stdout: 'FAILED_OUTPUT=kept\nSAME=rewritten', stderr: 'boom' } },
+      undefined,
+      undefined,
+      Date,
+      { allowDynamicImport: true },
+    )
+    const plan = apiExecutionPlan([])
+    plan.source = sourceType
+    plan.by = sourceType
+    plan.vars = { UPSTREAM: 'snapshot', SAME: 'entry' }
+    if (sourceType === 'schedule') delete plan.presets
+    plan.stages = [
+      { id: 'fail', name: 'Fail', script: { name: 'fail.sh', path: '/fail.sh' } },
+      { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+    ]
+
+    await f.execPlan(plan)
+
+    const profileFile = pathJoin(archiveDir, '发布流水线_20260910123456', 'run-1234-abcde.profile.json')
+    const profile = JSON.parse(await readFile(profileFile, 'utf8'))
+    assert.equal(f.history[0].status, 'failed')
+    assert.deepEqual(f.calls.map(call => call.script), ['fail.sh'])
+    assert.deepEqual(profile.vars, { UPSTREAM: 'snapshot', SAME: 'rewritten', FAILED_OUTPUT: 'kept' })
+  } finally {
+    await rm(archiveDir, { recursive: true, force: true })
+  }
+}
+
+test('API 与定时串行失败任务仍把输出变量保存在最终 profile', async () => {
+  await assertFailedSingletonVarsPersist('api')
+  await assertFailedSingletonVarsPersist('schedule')
+})
+
+test('服务端失败多成员并行组不把任何成员输出写入最终 profile', async () => {
+  const archiveDir = await mkdtemp(pathJoin(tmpdir(), 'pipeline-failed-parallel-'))
+  try {
+    const f = loadExecPlan(
+      { ...apiExecutionConfig, archiveDir },
+      {
+        'fail.sh': { code: 9, stdout: 'FAILED_OUTPUT=drop', stderr: 'boom' },
+        'peer.sh': { code: 0, stdout: 'PEER_OUTPUT=drop', stderr: '' },
+      },
+      undefined,
+      undefined,
+      Date,
+      { allowDynamicImport: true },
+    )
+    const plan = apiExecutionPlan([])
+    plan.vars = { UPSTREAM: 'snapshot' }
+    plan.stages = [
+      { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+      { id: 'peer', name: 'Peer', parallel: true, script: { name: 'peer.sh', path: '/peer.sh' } },
+    ]
+
+    await f.execPlan(plan)
+
+    const profileFile = pathJoin(archiveDir, '发布流水线_20260910123456', 'run-1234-abcde.profile.json')
+    const profile = JSON.parse(await readFile(profileFile, 'utf8'))
+    assert.equal(f.history[0].status, 'failed')
+    assert.deepEqual(profile.vars, { UPSTREAM: 'snapshot' })
+  } finally {
+    await rm(archiveDir, { recursive: true, force: true })
+  }
+})
+
+test('服务端并行组只选择最长的合格任务采集普罗数据', () => {
+  const f = loadRunRoute(stored)
+  const picked = f.ctx.longestServerPromResult([
+    { index: 0, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 5000 },
+    { index: 1, stage: { promCollect: true }, status: 'failed', startedAt: 1000, endedAt: 9000 },
+    { index: 2, stage: { promCollect: 'true' }, status: 'success', startedAt: 1000, endedAt: 12000 },
+  ])
+
+  assert.equal(picked.index, 1)
+})
+
+test('服务端并行组只选择最长时排除取消和跳过任务', () => {
+  const f = loadRunRoute(stored)
+  const picked = f.ctx.longestServerPromResult([
+    { index: 0, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 2000 },
+    { index: 1, stage: { promCollect: true }, status: 'aborted', startedAt: 1000, endedAt: 9000 },
+    { index: 2, stage: { promCollect: true }, status: 'skipped', startedAt: 1000, endedAt: 12000 },
+  ])
+
+  assert.equal(picked.index, 0)
+})
+
+test('服务端并行组只选择最长时排除预设任务', () => {
+  const f = loadRunRoute(stored)
+  const normal = { index: 0, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 2000 }
+  const preset = { index: 1, stage: { preset: true, promCollect: true }, status: 'success', startedAt: 1000, endedAt: 9000 }
+
+  assert.equal(f.ctx.longestServerPromResult([normal, preset]), normal)
+  assert.equal(f.ctx.longestServerPromResult([preset]), null)
+})
+
+test('服务端并行组只选择最长时同长保留源数组较早任务', () => {
+  const f = loadRunRoute(stored)
+  const earlier = { index: 9, stage: { promCollect: true }, status: 'failed', startedAt: 2000, endedAt: 7000 }
+  const later = { index: 1, stage: { promCollect: true }, status: 'success', startedAt: 1000, endedAt: 6000 }
+
+  assert.equal(f.ctx.longestServerPromResult([earlier, later]), earlier)
+})
+
+test('API 并行组只选择最长的标记任务收集一次普罗数据', async () => {
+  let now = 1000
+  class ControlledDate extends Date {
+    static now() { return now }
+  }
+  const deferred = new Map()
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    archiveDir: '/var/pipeline-runs',
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  }, {}, undefined, (script) => {
+    if (script.name === 'collect.py') return Promise.resolve({ code: 0, stdout: 'collected', stderr: '' })
+    return new Promise(resolve => deferred.set(script.name, resolve))
+  }, ControlledDate)
+  const plan = apiExecutionPlan([])
+  plan.vars = { GROUP_INPUT: 'snapshot' }
+  plan.stages = [
+    { id: 'short', name: '较短任务', parallel: true, promCollect: true, script: { name: 'short.sh', path: '/short.sh' } },
+    { id: 'long', name: '较长任务', parallel: true, promCollect: true, script: { name: 'long.sh', path: '/long.sh' } },
+  ]
+
+  const running = f.execPlan(plan)
+  await tick()
+  assert.deepEqual(f.calls.map(call => call.script), ['short.sh', 'long.sh'])
+
+  now = 2000
+  deferred.get('short.sh')({ code: 0, stdout: 'MODEL_PATH=/models/short\nSHORT_ONLY=yes', stderr: '' })
+  await tick()
+  now = 7000
+  deferred.get('long.sh')({ code: 0, stdout: 'MODEL_PATH=/models/long\nLONG_ONLY=yes', stderr: '' })
+  await running
+
+  const collectors = f.calls.filter(call => call.script === 'collect.py')
+  assert.equal(collectors.length, 1)
+  assert.equal(collectors[0].varsPool.MODEL_PATH, '/models/long')
+  assert.equal(collectors[0].varsPool.LONG_ONLY, 'yes')
+  assert.equal(collectors[0].varsPool.SHORT_ONLY, undefined)
+  assert.equal(collectors[0].extraEnv.PROM_START, '1970-01-01T00:00:01.000Z')
+  assert.equal(collectors[0].extraEnv.PROM_END, '1970-01-01T00:00:07.000Z')
+  assert.match(collectors[0].extraEnv.METRICS_OUTPUT_DIR, /\/较长任务-02-普罗数据$/)
+  assert.doesNotMatch(f.history[0].logs[0].log, /\[普罗采集\]/)
+  assert.match(f.history[0].logs[1].log, /\[普罗采集\] 已收集 → .*\/较长任务-02-普罗数据/)
+})
+
+test('API 并行任务失败会取消同组在途任务并阻止后续任务', async () => {
+  const calls = []
+  let slowSignal
+  let resolveSlow
+  const runStageScript = (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) =>
+    new Promise(resolve => {
+      calls.push(script.name)
+      if (script.name === 'fail.sh') resolve({ code: 7, stdout: '', stderr: 'boom' })
+      else if (script.name === 'slow.sh') {
+        slowSignal = signal
+        resolveSlow = resolve
+        signal?.addEventListener('abort', () =>
+          resolve({ code: 1, stdout: '', stderr: 'aborted', aborted: true }), { once: true })
+      } else resolve({ code: 0, stdout: '', stderr: '' })
+    })
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, runStageScript)
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'slow', name: 'Slow', parallel: true, script: { name: 'slow.sh', path: '/slow.sh' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  const running = f.execPlan(plan)
+  try {
+    await tick()
+    assert.equal(slowSignal?.aborted, true)
+    await running
+    assert.deepEqual(calls, ['fail.sh', 'slow.sh'])
+    assert.equal(f.history[0].status, 'failed')
+    assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+  } finally {
+    resolveSlow?.({ code: 0, stdout: '', stderr: '' })
+    await running
+  }
+})
+
+test('API 并行任务失败会取消同组在途 HTTP 请求', async () => {
+  let fallback
+  let fetchAborted = false
+  const fetchImpl = (url, options = {}) => new Promise((resolve, reject) => {
+    const onAbort = () => {
+      fetchAborted = true
+      clearTimeout(fallback)
+      const error = new Error('peer aborted')
+      error.name = 'AbortError'
+      reject(error)
+    }
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    fallback = setTimeout(() => resolve(fetchResponse(200, 'late success')), 50)
+  })
+  const f = loadExecPlan(apiExecutionConfig, {}, fetchImpl, async script =>
+    script.name === 'fail.sh'
+      ? { code: 7, stdout: '', stderr: 'boom' }
+      : { code: 0, stdout: '', stderr: '' })
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'remote', name: 'Remote', parallel: true, kind: 'http', url: { url: 'https://hooks.internal/slow' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  try {
+    await f.execPlan(plan)
+  } finally {
+    clearTimeout(fallback)
+  }
+
+  assert.equal(fetchAborted, true)
+  assert.deepEqual(f.calls.map(call => call.script), ['fail.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+})
+
+test('API 并行任务失败会取消同组模拟等待', async () => {
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, async script =>
+    script.name === 'fail.sh'
+      ? { code: 7, stdout: '', stderr: 'boom' }
+      : { code: 0, stdout: '', stderr: '' })
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'simulate', name: 'Simulate', parallel: true, kind: 'simulate', dur: 30 },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['fail.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+})
+
+test('API 标记失败任务先取消同组任务再串行收集普罗数据', async () => {
+  const events = []
+  let slowSignal
+  let resolveSlow
+  let resolveCollector
+  const runStageScript = (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) =>
+    new Promise(resolve => {
+      if (script.name === 'fail.sh') {
+        events.push('fail')
+        resolve({ code: 7, stdout: '', stderr: 'boom' })
+      } else if (script.name === 'slow.sh') {
+        events.push('slow')
+        slowSignal = signal
+        resolveSlow = resolve
+        signal.addEventListener('abort', () => {
+          events.push('slow:aborted')
+          resolve({ code: 1, stdout: '', stderr: 'aborted', aborted: true })
+        }, { once: true })
+      } else if (script.name === 'collect.py') {
+        events.push('collect')
+        resolveCollector = resolve
+        signal?.addEventListener('abort', () =>
+          resolve({ code: 1, stdout: '', stderr: 'aborted', aborted: true }), { once: true })
+      } else {
+        events.push(script.name)
+        resolve({ code: 0, stdout: '', stderr: '' })
+      }
+    })
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  }, {}, undefined, runStageScript)
+  const plan = apiExecutionPlan([])
+  plan.stages = [
+    { id: 'fail', name: 'Fail', parallel: true, promCollect: true, script: { name: 'fail.sh', path: '/fail.sh' } },
+    { id: 'slow', name: 'Slow', parallel: true, script: { name: 'slow.sh', path: '/slow.sh' } },
+    { id: 'after', name: 'After', script: { name: 'after.sh', path: '/after.sh' } },
+  ]
+
+  const running = f.execPlan(plan)
+  await tick()
+  const peerAbortedBeforeCollectorRelease = slowSignal?.aborted === true
+  if (!peerAbortedBeforeCollectorRelease) {
+    resolveSlow?.({ code: 8, stdout: '', stderr: 'cleanup failure' })
+    await tick()
+  }
+  resolveCollector?.({ code: 0, stdout: 'collected', stderr: '' })
+  resolveSlow?.({ code: 0, stdout: '', stderr: '' })
+  await running
+
+  assert.equal(peerAbortedBeforeCollectorRelease, true)
+  assert.ok(events.indexOf('slow:aborted') < events.indexOf('collect'))
+  assert.deepEqual(events.filter(event => event === 'collect'), ['collect'])
+  assert.deepEqual(f.calls.map(call => call.script), ['fail.sh', 'slow.sh', 'collect.py'])
+  assert.equal(f.history[0].status, 'failed')
+  assert.deepEqual(f.history[0].logs.map(log => log.status), ['failed', 'aborted'])
+  assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
+})
+
+test('API 路由运行快照保留 parallel 标记', async () => {
+  const parallelStore = structuredClone(stored)
+  parallelStore.config.pipelines[0].stages[0].parallel = true
+  const f = loadRunRoute(parallelStore)
+
+  const res = await call(f.handler, 'pipe-release')
+
+  assert.equal(res.status, 202)
+  assert.equal(f.executions[0].stages[0].parallel, true)
+})
+
+test('服务端分组保留 parallel 普通阶段且预设仍是串行屏障', () => {
+  const f = loadRunRoute(stored)
+  const groups = f.ctx.serverPipelineStageGroups([
+    { id: 'prepare' },
+    { id: 'a', parallel: true },
+    { id: 'b', parallel: true },
+    { id: '__check__', preset: true, parallel: true },
+    { id: 'c', parallel: true },
+    { id: 'after' },
+  ])
+
+  assert.deepEqual(plain(groups.map(group => ({
+    start: group.start,
+    end: group.end,
+    parallel: group.parallel,
+    ids: group.stages.map(stage => stage.id),
+  }))), [
+    { start: 0, end: 1, parallel: false, ids: ['prepare'] },
+    { start: 1, end: 3, parallel: true, ids: ['a', 'b'] },
+    { start: 3, end: 4, parallel: false, ids: ['__check__'] },
+    { start: 4, end: 5, parallel: true, ids: ['c'] },
+    { start: 5, end: 6, parallel: false, ids: ['after'] },
+  ])
+})
 
 test('API 服务端执行器展开预设、携带代码仓上下文并写入可关联的历史字段', async () => {
   const f = loadExecPlan(apiExecutionConfig)

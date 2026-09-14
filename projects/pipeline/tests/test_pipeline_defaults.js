@@ -18,7 +18,8 @@ function loadDefaults(overrides={}){
   const start=source.indexOf('/* ---------- 流水线默认运行参数 ---------- */');
   const end=source.indexOf('/* ---------- 流水线默认运行参数结束 ---------- */',start);
   assert.ok(start>=0&&end>start,'pipeline.html 缺少流水线默认运行参数实现');
-  const ctx=Object.assign({Array,Object,String,Set},overrides);
+  /* currentUsername：执行人只读、固定取登录用户后的唯一读取点；runPipeline 用例统一按 operator 桩 */
+  const ctx=Object.assign({Array,Object,String,Set,currentUsername:'operator'},overrides);
   vm.createContext(ctx);
   vm.runInContext(source.slice(start,end),ctx);
   return ctx;
