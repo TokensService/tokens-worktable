@@ -26,7 +26,8 @@ require_inherited LMCACHE_UNITTEST_REMOVE_IMAGE 'run pull stage first'
 
 RUN_DIR="$LMCACHE_UNITTEST_RUN_DIR"
 ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
-http_proxy="${LMCACHE_UNITTEST_HTTP_PROXY:-http://127.0.0.1:8889}"
+# 与重编译阶段使用相同的目标节点代理，允许调用方覆盖。
+http_proxy="${LMCACHE_UNITTEST_HTTP_PROXY:-http://192.168.10.6:3128}"
 LMCACHE_UNITTEST_TEST_LOG="$LMCACHE_UNITTEST_LOG_DIR/pytest.log"
 blocks_first_target='tests/v1/gpu_connector/test_blocks_first_cs_kv_format.py::test_mp_gather_scatter_roundtrip'
 LMCACHE_UNITTEST_ISOLATED_TEST_LOG=''

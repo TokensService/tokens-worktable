@@ -118,7 +118,7 @@ pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr
 [[ "$pull_image" == 'lmcache-vllm-openai-0.5.4-unitest:latest' ]]
 [[ "$pull_isolate_blocks_first" == 1 ]]
 [[ -n "$pull_container" ]]
-[[ "$pull_http_proxy" == 'http://127.0.0.1:8889' ]]
+[[ "$pull_http_proxy" == 'http://192.168.10.6:3128' ]]
 [[ "$pull_remove_image" == 1 ]]
 [[ "$pull_target_ip" == '192.0.2.78' && "$pull_target_port" == 22 && "$pull_target_user" == root ]]
 
@@ -167,12 +167,12 @@ grep -Fq -- '--net=host --gpus all --cap-add SYS_NICE -v /dev/shm:/dev/shm' "$lo
 # 认证 clone 的命令主体也必须作为 nerdctl exec 的容器内脚本下发；
 # token 只走 stdin，因而不能出现在 nerdctl 参数记录中。
 grep -Fq -- 'git -c "http.extraHeader=Authorization: Basic $git_auth_b64" clone' "$log"
-grep -Fq -- 'http_proxy=http://127.0.0.1:8889' "$log"
+grep -Fq -- 'http_proxy=http://192.168.10.6:3128' "$log"
 grep -Fq -- 'image rm lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
 if grep -Fq 'git https://gitcode.com/TokensService/LMCache.git' "$log"; then exit 1; fi
 if grep -Fq 'secret-token' "$log"; then exit 1; fi
 grep -Fq -- 'BUILD_WITH_CUDA=1' "$log"
-grep -Fq -- 'http_proxy=http://127.0.0.1:8889' "$log"
+grep -Fq -- 'http_proxy=http://192.168.10.6:3128' "$log"
 grep -Fq -- 'test_mp_gather_scatter_roundtrip' "$log"
 grep -Fq -- '--deselect "$1"' "$log"
 grep -Fq -- 'pytest -q -ra' "$log"
