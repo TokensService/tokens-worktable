@@ -262,7 +262,7 @@ test('renderQueue：等待节点的排队项展示占用节点与占用者', () 
     drainQueue: () => {}, cancelQueue: () => {}, abortRun: () => {}, focusRun: () => {},
     focusQueueItem: () => {}, renderPipelines: () => {}, scheduleQueuePublish: () => {},
     syncViewRun: () => {}, applyRunOverall: () => {}, refreshArchiveTip: () => {}, resetNodes: () => {},
-    _plRunSig: null, console,
+    console,
   };
   vm.createContext(context);
   vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);

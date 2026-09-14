@@ -373,7 +373,7 @@ test('publishQueue：节点租约申请期间继续把待启动项作为可查�
 function makeQueueContext() {
   const list = new FakeNode('div');
   const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
-  const calls = { cancel: [], abort: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], renderPipelines: 0, publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
+  const calls = { cancel: [], abort: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
     document: { createElement: tag => new FakeNode(tag) },
     $: id => els[id] || new FakeNode('div'),
@@ -387,19 +387,17 @@ function makeQueueContext() {
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
     focusRemoteQueueItem: (clientId, itemId, kind) => calls.focusRemoteQueueItem.push({ clientId, itemId, kind }),
-    renderPipelines: () => { calls.renderPipelines++; },
     scheduleQueuePublish: () => { calls.publish++; },
     syncViewRun: () => { calls.syncView++; },
     applyRunOverall: rc => calls.overall.push(rc),
     refreshArchiveTip: () => { calls.archiveTip++; },
     resetNodes: () => { calls.resetNodes++; },
-    _plRunSig: null,
     console,
   };
   vm.createContext(context);
   vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueDetailAvailable', 'function remoteQueuePreviewRc'), context);
-  vm.runInContext(extract('function remoteQueueViewAttrs', 'let _plRunSig'), context);
+  vm.runInContext(extract('function remoteQueueViewAttrs', 'function renderQueue(){'), context);
   vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
   return { context, list, els, calls };
 }

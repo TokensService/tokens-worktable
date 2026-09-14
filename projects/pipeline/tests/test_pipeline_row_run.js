@@ -56,7 +56,7 @@ function makeContext(runResult) {
   const tbody = new FakeNode('tbody');
   const table = { querySelector: selector => selector === 'tbody' ? tbody : null };
   const count = { textContent: '' };
-  const calls = { run: [], api: [], select: [], tips: [], alerts: [], focus: [] };
+  const calls = { run: [], api: [], select: [], tips: [], alerts: [] };
   const queue = [];
   const context = {
     pipelines: [
@@ -79,9 +79,6 @@ function makeContext(runResult) {
     showPipelineApi: pipeline => calls.api.push(pipeline),
     findPipeline: id => context.pipelines.find(pipeline => pipeline.id === id),
     selectPipeline: id => calls.select.push(id),
-    runsOfPipeline: pid => context.activeRuns.filter(rc => rc.pipelineId === pid),
-    latestRunOfPipeline: pid => { const rs = context.activeRuns.filter(rc => rc.pipelineId === pid); return rs.length ? rs[rs.length - 1] : null; },
-    focusRun: rc => calls.focus.push(rc),
     openPlForm() {}, copyPipeline() {}, deletePipeline() {}, renderPipelineSel() {},
     flashRunTip: text => calls.tips.push(text),
     alert: text => calls.alerts.push(text),
@@ -143,34 +140,31 @@ test('每条流水线提供 API 按钮并打开对应流水线的调用说明', 
   assert.deepEqual(calls.select, []);
 });
 
-test('行点击：有在跑运行的流水线聚焦其运行查看阶段详情，不切换选用', () => {
+test('行点击：在跑运行不在任务列表展示，点击行仍选用该流水线', () => {
   const { context, tbody, calls } = makeContext(true);
-  const rc = { id: 'r1', pipelineId: 'pipe-2' };
-  context.activeRuns.push(rc);
+  context.activeRuns.push({ id: 'r1', pipelineId: 'pipe-2' });
   context.renderPipelines();
 
   const row = tbody.children[1];
-  assert.match(row.innerHTML, /运行中/);
-  assert.equal(row.title, '点击查看本次运行的阶段详情');
+  assert.doesNotMatch(row.innerHTML, /运行中/);   // 是否在运行不在任务列表展示，统一在运行队列查看
+  assert.doesNotMatch(row.innerHTML, /（查看中）/);
+  assert.equal(row.title, '点击选用该流水线');
   row.handlers.click();
 
-  assert.deepEqual(calls.focus, [rc]);
-  assert.deepEqual(calls.select, []);
+  assert.deepEqual(calls.select, ['pipe-2']);   // 运行中也可切换选用，不再转为聚焦运行
 });
 
-test('行点击：无在跑运行的流水线仍走选用，在跑行按最近启动聚焦并标记查看中', () => {
+test('行点击：正在查看其运行的流水线同样走选用，无「查看中」标记', () => {
   const { context, tbody, calls } = makeContext(true);
-  const rc1 = { id: 'r1', pipelineId: 'pipe-2' };
-  const rc2 = { id: 'r2', pipelineId: 'pipe-2' };
-  context.activeRuns.push(rc1, rc2);
-  context.viewRc = rc1;
+  context.activeRuns.push({ id: 'r1', pipelineId: 'pipe-2' }, { id: 'r2', pipelineId: 'pipe-2' });
+  context.viewRc = context.activeRuns[0];
   context.renderPipelines();
 
-  tbody.children[0].handlers.click();   // 流水线一无在跑运行：仍 selectPipeline
+  tbody.children[0].handlers.click();   // 流水线一无在跑运行：selectPipeline
   assert.deepEqual(calls.select, ['pipe-1']);
 
   const row = tbody.children[1];
-  assert.match(row.innerHTML, /（查看中）/);   // viewRc 是该流水线的在跑运行
+  assert.doesNotMatch(row.innerHTML, /（查看中）/);   // 「查看中」只在运行队列条目标记
   row.handlers.click();
-  assert.deepEqual(calls.focus, [rc2]);   // 多个在跑运行取最近启动的一个
+  assert.deepEqual(calls.select, ['pipe-1', 'pipe-2']);
 });
