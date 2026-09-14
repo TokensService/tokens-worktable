@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # 输出指定 open-xds 分支 model_arch JSON 中的全部 arch_name，每行一个。
-# 用法：list_open_xds_archs.sh [branch]
+# 用法：OPEN_XDS_BRANCH=<branch> list_open_xds_archs.sh
 # 可覆盖：OPEN_XDS_REPO、OPEN_XDS_BRANCH、OPEN_XDS_ARCH_PATH、GITHUB_API_URL、
 #          GITHUB_TOKEN、GITHUB_PROXY。
 set -euo pipefail
 
-branch=${1:-${OPEN_XDS_BRANCH:-main}}
+if (($# != 0)); then
+  echo 'list_open_xds_archs.sh does not accept positional arguments; set OPEN_XDS_BRANCH instead' >&2
+  exit 2
+fi
+branch=${OPEN_XDS_BRANCH:-main}
 OPEN_XDS_REPO=${OPEN_XDS_REPO:-TokensService/open-xds}
 OPEN_XDS_ARCH_PATH=${OPEN_XDS_ARCH_PATH:-deploy/xds/A3/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json}
 GITHUB_API_URL=${GITHUB_API_URL:-https://api.github.com}
