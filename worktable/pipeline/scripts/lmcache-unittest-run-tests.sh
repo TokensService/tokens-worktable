@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 必填上游输入（由 pull-image.sh / rebuild.sh 的 KEY=VALUE 输出自动注入；单独执行时必须提供）：
+# 上游输入（由 pull-image.sh / rebuild.sh 的 KEY=VALUE 输出自动注入；单独执行时必须提供）：
 # - LMCACHE_UNITTEST_RUN_DIR、LMCACHE_UNITTEST_CONTAINER、LMCACHE_UNITTEST_CAP_ADD、
 #   LMCACHE_UNITTEST_LOG_DIR。
 # 可选覆盖输入：LMCACHE_NERDCTL_NAMESPACE、LMCACHE_UNITTEST_HTTP_PROXY、
@@ -11,14 +11,22 @@ set -euo pipefail
 # 本阶段输出 pytest 日志路径和退出码，供工作台归档或下游任务引用。
 # 第三阶段：在重编译完成的同一容器中执行 LMCache pytest。
 command -v nerdctl >/dev/null || { echo 'nerdctl is required' >&2; exit 2; }
-# 容器名、日志目录和 capability 均由前序阶段经工作台变量池传入。
-: "${LMCACHE_UNITTEST_RUN_DIR:?run pull stage first}"
-: "${LMCACHE_UNITTEST_IMAGE:?run pull stage first}"
-: "${LMCACHE_UNITTEST_CONTAINER:?run rebuild stage first}"
-: "${LMCACHE_UNITTEST_CAP_ADD:?run pull stage first}"
-: "${LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST:?run pull stage first}"
-: "${LMCACHE_UNITTEST_LOG_DIR:?run pull stage first}"
-: "${LMCACHE_UNITTEST_REMOVE_IMAGE:?run pull stage first}"
+# 不使用 Bash 的“变量为空即退出”展开：工作台会静态识别它并要求用户在编辑器中手填。
+# 正常串行运行时变量池已自动注入；单独运行本阶段时仍在这里给出明确错误。
+require_inherited() {
+  local name="$1" prerequisite="$2"
+  if [[ -z "${!name:-}" ]]; then
+    printf '%s is required; %s\n' "$name" "$prerequisite" >&2
+    exit 2
+  fi
+}
+require_inherited LMCACHE_UNITTEST_RUN_DIR 'run pull stage first'
+require_inherited LMCACHE_UNITTEST_IMAGE 'run pull stage first'
+require_inherited LMCACHE_UNITTEST_CONTAINER 'run rebuild stage first'
+require_inherited LMCACHE_UNITTEST_CAP_ADD 'run pull stage first'
+require_inherited LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST 'run pull stage first'
+require_inherited LMCACHE_UNITTEST_LOG_DIR 'run pull stage first'
+require_inherited LMCACHE_UNITTEST_REMOVE_IMAGE 'run pull stage first'
 RUN_DIR="$LMCACHE_UNITTEST_RUN_DIR"
 ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
 LMCACHE_UNITTEST_TEST_LOG="$LMCACHE_UNITTEST_LOG_DIR/pytest.log"

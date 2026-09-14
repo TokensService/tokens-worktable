@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 必填上游输入（由 pull-image.sh 的 KEY=VALUE 输出自动注入；单独执行时必须提供）：
+# 上游输入（由 pull-image.sh 的 KEY=VALUE 输出自动注入；单独执行时必须提供）：
 # - LMCACHE_UNITTEST_RUN_DIR、LMCACHE_UNITTEST_IMAGE、LMCACHE_UNITTEST_CONTAINER、LMCACHE_UNITTEST_CAP_ADD、LMCACHE_UNITTEST_LOG_DIR。
 # 可选覆盖输入：LMCACHE_UNITTEST_REPO_DIR、LMCACHE_UNITTEST_GIT_URL、
 # LMCACHE_UNITTEST_GIT_BRANCH、LMCACHE_UNITTEST_GIT_USER、LMCACHE_UNITTEST_GIT_TOKEN、
@@ -10,14 +10,22 @@ set -euo pipefail
 # 本阶段会输出容器名、源码目录和构建日志路径，供 run-tests 阶段及归档任务使用。
 # 第二阶段：使用 pull 阶段下传的镜像，在 GPU 容器中重新编译 LMCache。
 command -v nerdctl >/dev/null || { echo 'nerdctl is required' >&2; exit 2; }
-# 这些变量由工作台从上一阶段的 KEY=VALUE 输出自动注入。
-: "${LMCACHE_UNITTEST_RUN_DIR:?run pull stage first}"
-: "${LMCACHE_UNITTEST_IMAGE:?run pull stage first}"
-: "${LMCACHE_UNITTEST_CONTAINER:?run pull stage first}"
-: "${LMCACHE_UNITTEST_CAP_ADD:?run pull stage first}"
-: "${LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST:?run pull stage first}"
-: "${LMCACHE_UNITTEST_LOG_DIR:?run pull stage first}"
-: "${LMCACHE_UNITTEST_REMOVE_IMAGE:?run pull stage first}"
+# 不使用 Bash 的“变量为空即退出”展开：工作台会静态识别它并要求用户在编辑器中手填。
+# 正常串行运行时变量池已自动注入；单独运行本阶段时仍在这里给出明确错误。
+require_inherited() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    printf '%s is required; run pull stage first\n' "$name" >&2
+    exit 2
+  fi
+}
+require_inherited LMCACHE_UNITTEST_RUN_DIR
+require_inherited LMCACHE_UNITTEST_IMAGE
+require_inherited LMCACHE_UNITTEST_CONTAINER
+require_inherited LMCACHE_UNITTEST_CAP_ADD
+require_inherited LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST
+require_inherited LMCACHE_UNITTEST_LOG_DIR
+require_inherited LMCACHE_UNITTEST_REMOVE_IMAGE
 RUN_DIR="$LMCACHE_UNITTEST_RUN_DIR"
 mkdir -p "$LMCACHE_UNITTEST_LOG_DIR"
 # 每次重建使用容器内的干净源码目录；不会在宿主机 clone 或挂载源码。
@@ -30,8 +38,10 @@ git_exec_env=(-e "http_proxy=$http_proxy" -e "https_proxy=$http_proxy" -e 'NO_PR
 # Git clone 在容器内进行。凭据经 stdin 传入，并仅在容器内转为临时 Git header，
 # 防止 token 出现在 nerdctl 参数、日志和工作台变量池中。
 if [[ -n "${LMCACHE_UNITTEST_GIT_USER:-}" || -n "${LMCACHE_UNITTEST_GIT_TOKEN:-}" ]]; then
-  : "${LMCACHE_UNITTEST_GIT_USER:?set LMCACHE_UNITTEST_GIT_USER and LMCACHE_UNITTEST_GIT_TOKEN together}"
-  : "${LMCACHE_UNITTEST_GIT_TOKEN:?set LMCACHE_UNITTEST_GIT_USER and LMCACHE_UNITTEST_GIT_TOKEN together}"
+  if [[ -z "${LMCACHE_UNITTEST_GIT_USER:-}" || -z "${LMCACHE_UNITTEST_GIT_TOKEN:-}" ]]; then
+    echo 'set LMCACHE_UNITTEST_GIT_USER and LMCACHE_UNITTEST_GIT_TOKEN together' >&2
+    exit 2
+  fi
   printf '%s\n%s\n' "$LMCACHE_UNITTEST_GIT_USER" "$LMCACHE_UNITTEST_GIT_TOKEN" | \
     nerdctl --namespace "$ns" exec -i "${git_exec_env[@]}" "$LMCACHE_UNITTEST_CONTAINER" bash -lc '
       set -euo pipefail
