@@ -12,6 +12,14 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 if [[ "${3:-}" == image && "${4:-}" == rm ]]; then exit 0; fi
 case "${3:-}" in image) exit 1;; pull|run|exec|rm) exit 0;; esac
 EOF
+cat >"$tmp/bin/ctr" <<'EOF'
+#!/usr/bin/env bash
+printf 'ctr %s\n' "$*" >>"$FAKE_LOG"
+EOF
+cat >"$tmp/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+exec "$@"
+EOF
 cat >"$tmp/bin/git" <<'EOF'
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"$FAKE_LOG"
@@ -20,7 +28,7 @@ if [[ "${GIT_CONFIG_COUNT:-}" == 1 && "${GIT_CONFIG_KEY_0:-}" == 'http.extraHead
 fi
 mkdir -p "${@: -1}/lmcache"
 EOF
-chmod +x "$tmp/bin/nerdctl" "$tmp/bin/git"
+chmod +x "$tmp/bin/nerdctl" "$tmp/bin/ctr" "$tmp/bin/sudo" "$tmp/bin/git"
 
 # 上游变量由工作台变量池自动注入。脚本必须在实际执行时校验它们，
 # 但不得使用 Bash 的“变量为空即退出”展开，否则工作台的静态扫描会把这些字段标为人工必填。
@@ -38,8 +46,10 @@ fi
 grep -Fq 'run pull stage first' "$tmp/rebuild-missing.out"
 
 pull_output="$(env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
+  LMCACHE_UNITTEST_SWR_AK='test-ak' LMCACHE_UNITTEST_SWR_PROJECT='test-project' \
+  LMCACHE_UNITTEST_SWR_REGISTRY='swr.example.test' LMCACHE_UNITTEST_SWR_LOGIN_KEY='test-login-key' \
   bash "$root/lmcache-unittest-pull-image.sh")"
-grep -Fq 'pull lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
+grep -Fq 'ctr -n k8s.io image pull --user test-project@test-ak:test-login-key lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
 [[ ! -e "$tmp/default/state.env" ]]
 pull_run_dir="$(awk -F= '$1 == "LMCACHE_UNITTEST_RUN_DIR" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 pull_image="$(awk -F= '$1 == "LMCACHE_UNITTEST_IMAGE" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"

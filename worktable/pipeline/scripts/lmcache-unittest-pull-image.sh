@@ -7,6 +7,9 @@ set -euo pipefail
 # - LMCACHE_UNITTEST_CAP_ADD：容器所需 Linux capability；默认 SYS_NICE。
 # - LMCACHE_NERDCTL_NAMESPACE、LMCACHE_UNITTEST_LOG_DIR、LMCACHE_UNITTEST_CONTAINER、
 #   LMCACHE_UNITTEST_HTTP_PROXY、LMCACHE_UNITTEST_REMOVE_IMAGE：运行配置。
+# - LMCACHE_UNITTEST_SWR_AK、LMCACHE_UNITTEST_SWR_PROJECT、
+#   LMCACHE_UNITTEST_SWR_REGISTRY、LMCACHE_UNITTEST_SWR_LOGIN_KEY：SWR 拉取认证信息。
+#   均为可选环境变量；LOGIN_KEY 绝不输出到 stdout 或阶段变量池。
 # 本阶段末尾的 KEY=VALUE 输出会由工作台捕获并注入 rebuild 阶段。
 # 第一阶段：准备后续编译和测试共用的镜像、运行目录及日志目录。
 command -v nerdctl >/dev/null || { echo 'nerdctl is required' >&2; exit 2; }
@@ -32,10 +35,17 @@ LMCACHE_UNITTEST_REMOVE_IMAGE="${LMCACHE_UNITTEST_REMOVE_IMAGE:-0}"
   echo 'LMCACHE_UNITTEST_REMOVE_IMAGE must be 0 or 1' >&2
   exit 2
 }
+# SWR 凭据由工作台环境变量注入；不要使用 :?，避免平台要求人工必填。
+AK="${LMCACHE_UNITTEST_SWR_AK:-}"
+PROJECT="${LMCACHE_UNITTEST_SWR_PROJECT:-}"
+REGISTRY="${LMCACHE_UNITTEST_SWR_REGISTRY:-}"
+LOGIN_KEY="${LMCACHE_UNITTEST_SWR_LOGIN_KEY:-}"
 mkdir -p "$LMCACHE_UNITTEST_LOG_DIR"
 
-# 镜像已存在则复用；否则仅在指定 containerd 命名空间内拉取。
-nerdctl --namespace "$ns" image inspect "$LMCACHE_UNITTEST_IMAGE" >/dev/null 2>&1 || nerdctl --namespace "$ns" pull "$LMCACHE_UNITTEST_IMAGE"
+# 镜像已存在则复用；否则使用 SWR 的 project@AK:login-key 认证拉取到 k8s.io。
+# REGISTRY 由镜像引用本身指定，保留该变量供工作台统一注入 SWR 配置。
+nerdctl --namespace "$ns" image inspect "$LMCACHE_UNITTEST_IMAGE" >/dev/null 2>&1 || \
+  sudo ctr -n "$ns" image pull --user "${PROJECT}@${AK}:${LOGIN_KEY}" "$LMCACHE_UNITTEST_IMAGE"
 
 # 后续 clone、编译和测试均在此容器内执行。只挂载共享内存和宿主日志目录，
 # 不挂载源码，避免把宿主网络/文件系统状态带入构建过程。
