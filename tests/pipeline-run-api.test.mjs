@@ -51,6 +51,9 @@ function loadRunRoute(store, overrides = {}) {
     clearTimeout,
     console,
     pathResolve,
+    PROXY_PATH: '/api/worktable/proxy',
+    readJsonBody: async req => req.testBody || {},
+    collectProxyResponse: async body => body,
     json(res, status, body) {
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(body))
@@ -842,6 +845,22 @@ test('服务端内网直连在响应前提前 close 时明确失败而不永久�
   assert.equal(observed?.pending, undefined, '连接关闭后请求仍保持 pending')
   assert.equal(observed?.resolved, undefined)
   assert.equal(observed?.error?.code, 'ECONNRESET')
+})
+
+test('服务端代理路由拒绝让系统代理重新解析内网域名', async () => {
+  const f = loadRunRoute(stored)
+  let handler
+  f.ctx.registerWorktableProxyRoute({ register(route) { handler = route.handler } })
+  assert.equal(typeof handler, 'function')
+  const res = response()
+
+  await handler({
+    method: 'POST',
+    testBody: { url: 'http://dsh.internal:9000/metrics', useProxy: true },
+  }, res)
+
+  assert.equal(res.status, 403)
+  assert.match(res.json().error, /系统代理.*IP/)
 })
 
 test('服务端脚本把完整大日志流式落盘，内存结果有界且保留早期变量', async t => {

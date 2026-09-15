@@ -8,7 +8,8 @@
   DNS 重绑定，响应前异常关闭也会立即失败而不会永久挂起。任务列表和本次 run 的状态轮询对网络错误、
   408/429/5xx 最多重试两次，有副作用的启动 POST 始终只调用一次。网络错误会带上请求阶段和底层错误码，
   并清洗 URL 凭据与常见敏感查询参数。`tests/pipeline-run-api.test.mjs` 新增真实本地 HTTP 服务、超时、取消竞态、
-  DNS 校验与固定、提前断连、目标限制、GET 重试及 POST 单次调用测试。
+  DNS 校验与固定、提前断连、目标限制、GET 重试及 POST 单次调用测试；同时收紧 `/api/worktable/proxy`：直连域名
+  复用 DNS 校验与固定，`useProxy:true` 因代理端会自行解析而仅接受内网 IP 字面量。
 - 修复流水线脚本测试在 `dev` 上的既有回归：`render-config.sh` 恢复既定模型存储路径 `/mnt/xds/sfs`；
   `test_render_target_labels.sh` 同步此前已经调整的 LMCache 生产默认值和字符串化对齐值；
   `test_pipeline_contract.sh` 将需要 12/14 张 GPU 的夹具改为双节点，避免与单节点 8 卡容量保护互相矛盾。

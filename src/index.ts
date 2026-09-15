@@ -566,6 +566,7 @@ function serverTargetPolicyError(message: string): any {
   const error: any = new Error(message)
   error.code = 'ELOCALTARGET'
   error.serverPolicyError = true
+  error.statusCode = 403
   return error
 }
 
@@ -711,8 +712,73 @@ async function serverDirectFetch(url: string, options: any = {}, timeoutMs = 20_
   })
 }
 
-function serverLocalFetch(url: string, options: any = {}): Promise<any> {
-  return serverDirectFetch(url, { ...(options || {}), requireLocalTarget: true })
+function serverLocalFetch(url: string, options: any = {}, timeoutMs = 20_000): Promise<any> {
+  return serverDirectFetch(url, { ...(options || {}), requireLocalTarget: true }, timeoutMs)
+}
+
+function serverProxyTargetFetch(url: string, options: any, timeoutMs: number): Promise<any> {
+  const target = new URL(url)
+  if (!/^https?:$/.test(target.protocol)) throw new Error('unsupported protocol')
+  if (!isLocalTarget(target.hostname)) throw serverTargetPolicyError('only loopback/private targets allowed')
+  const useProxy = options && options.useProxy === true
+  if (useProxy && serverIpFamily(target.hostname) === 0) {
+    throw serverTargetPolicyError('使用系统代理时目标必须是回环或内网 IP 字面量')
+  }
+  return useProxy
+    ? serverDirectFetch(url, options, timeoutMs)
+    : serverLocalFetch(url, options, timeoutMs)
+}
+
+function registerWorktableProxyRoute(webServer: any): void {
+  webServer.register({
+    kind: 'exact',
+    path: PROXY_PATH,
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const urlStr = typeof body.url === 'string' ? body.url.trim() : ''
+        const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase()
+        if (!urlStr) { json(res, 400, { error: 'missing url' }); return }
+        let target: URL
+        try { target = new URL(urlStr) } catch { json(res, 400, { error: 'bad url' }); return }
+        if (!/^https?:$/.test(target.protocol)) { json(res, 400, { error: 'unsupported protocol' }); return }
+        if (!isLocalTarget(target.hostname)) { json(res, 403, { error: 'only loopback/private targets allowed' }); return }
+        const headers: Record<string, string> = {}
+        if (body.headers && typeof body.headers === 'object') {
+          for (const [key, value] of Object.entries(body.headers)) {
+            if (typeof value === 'string') headers[key] = value
+          }
+        }
+        const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (typeof body.body === 'string' ? body.body : undefined)
+        const useProxy = body.useProxy === true
+        const fwdHeaders: Record<string, string> = {}
+        for (const [key, value] of Object.entries(headers)) {
+          const lowerKey = key.toLowerCase()
+          if (lowerKey === 'host' || lowerKey === 'content-length' || lowerKey === 'connection') continue
+          fwdHeaders[key] = value
+        }
+        const upstream = await serverProxyTargetFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, 20_000)
+        const result = {
+          status: upstream.status,
+          headers: upstream.headers,
+          body: await collectProxyResponse(upstream.body, 20 * 1024 * 1024),
+        }
+        const outHeaders: Record<string, string> = {}
+        for (const key of Object.keys(result.headers)) outHeaders[key] = String(result.headers[key])
+        json(res, 200, {
+          status: result.status,
+          statusText: '',
+          headers: outHeaders,
+          contentType: String(result.headers['content-type'] ?? ''),
+          finalUrl: urlStr,
+          body: result.body.toString('utf8'),
+        })
+      } catch (error: any) {
+        json(res, Number(error?.statusCode) || 500, { error: String(error?.message || error) })
+      }
+    },
+  })
 }
 
 function abortableServerSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -3605,58 +3671,6 @@ export function apply(ctx: Context) {
   // 背景：用户浏览器多经 SSH 隧道反代访问本机，且跨域直连 Jenkins 会被 CORS 拦截；
   // 改为由本机插件服务端代联请求，浏览器只与本插件同源交互，彻底绕开 CORS 与隧道可达性问题。
   // 安全约束：仅允许回环 / 内网（RFC1918 / 链路本地）目标，拒绝公网地址。
-  webServer.register({
-    kind: 'exact',
-    path: PROXY_PATH,
-    handler: async (req: any, res: any) => {
-      try {
-        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
-        const body = await readJsonBody(req)
-        const urlStr = typeof body.url === 'string' ? body.url.trim() : ''
-        const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase()
-        if (!urlStr) { json(res, 400, { error: 'missing url' }); return }
-        let target: URL
-        try { target = new URL(urlStr) } catch { json(res, 400, { error: 'bad url' }); return }
-        if (!/^https?:$/.test(target.protocol)) { json(res, 400, { error: 'unsupported protocol' }); return }
-        if (!isLocalTarget(target.hostname)) { json(res, 403, { error: 'only loopback/private targets allowed' }); return }
-        const headers: Record<string, string> = {}
-        if (body.headers && typeof body.headers === 'object') {
-          for (const [k, v] of Object.entries(body.headers)) {
-            if (typeof v === 'string') headers[k] = v
-          }
-        }
-        const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (typeof body.body === 'string' ? body.body : undefined)
-        // 默认用 node:http/https + 显式独立 Agent 直连，忽略系统代理
-        // （Node 24 起 NODE_USE_ENV_PROXY=1 时 node:http 同样会走系统代理，
-        // 本机 127.0.0.1:8118 不通部分内网目标会挂起直到超时）。
-        // 调用方传 useProxy:true 时不注入 Agent，按进程环境走系统代理
-        // （需 NODE_USE_ENV_PROXY=1 才生效，否则 node:http 恒为直连）。
-        const useProxy = body.useProxy === true
-        const fwdHeaders: Record<string, string> = {}
-        for (const [k, v] of Object.entries(headers)) {
-          const lk = k.toLowerCase()
-          if (lk === 'host' || lk === 'content-length' || lk === 'connection') continue
-          fwdHeaders[k] = v
-        }
-        const upstream = await serverDirectFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, 20_000)
-        const result = {
-          status: upstream.status,
-          headers: upstream.headers,
-          body: await collectProxyResponse(upstream.body, 20 * 1024 * 1024),
-        }
-        const outHeaders: Record<string, string> = {}
-        for (const k of Object.keys(result.headers)) outHeaders[k] = String(result.headers[k])
-        json(res, 200, {
-          status: result.status,
-          statusText: '',
-          headers: outHeaders,
-          contentType: String(result.headers['content-type'] ?? ''),
-          finalUrl: urlStr,
-          body: result.body.toString('utf8'),
-        })
-      } catch (err: any) {
-        json(res, Number(err?.statusCode) || 500, { error: String(err?.message || err) })
-      }
-    },
-  })
+  // 直连模式校验并固定 DNS；系统代理会自行解析目标，因此只允许无法重绑定的内网 IP 字面量。
+  registerWorktableProxyRoute(webServer)
 }
