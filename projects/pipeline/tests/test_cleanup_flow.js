@@ -12,6 +12,7 @@ function context(){
     document:{createElement:()=>({dataset:{},addEventListener(type,fn){this[type]=fn;}})},esc:String,
     applyStatusClasses(){},renderDetail(){},openPlForm(_pid,i){ctx.edited=i;},curPipelineId:'pl',
     viewActive:()=>!!(ctx.viewRc&&!ctx.viewRc.over),
+    runPreviewReadOnly:rc=>!!(rc&&(rc.queuedPreview===true||rc.remotePreview===true)),
     setSel:id=>{ctx.selectedId=id;if(ctx.viewRc)ctx.viewRc.selId=id;}};
   vm.createContext(ctx);load('/* ---------- 渲染流水线编排 ---------- */','function applyStatusClasses(',ctx);
   return {ctx,flow,checkbox,checkBox,profilingBox};

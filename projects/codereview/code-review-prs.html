@@ -217,7 +217,7 @@
     <!-- 发行视图：选仓库/分支，一键串行「编译构建 → 创建 Tag → 创建 GitCode 发行版」 -->
     <div id="viewRelease" style="display:none">
       <div class="dshell-card">
-        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" id="relCardSubHelp" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；仓库/分支选择自动缓存本机，各分支的构建设置保存到云端、选中该分支自动填充</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">构建发行 <span class="dshell-muted" id="relCardSubHelp" style="font-size:11px;font-weight:normal">选择仓库与分支，一键串行：编译构建 → 创建 Tag → 创建 GitCode 发行版 → 上传构建产物附件（可选）；勾选「AI 生成发行说明」时先由 AI 起草并回填发行说明再进入构建；仓库/分支选择自动缓存本机，各分支的构建设置保存到云端、选中该分支自动填充</span></h2>
         <div class="pr-tokenRow" style="margin-bottom:8px">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px">仓库
             <select class="dshell-input" id="relRepo" style="min-width:150px"></select>
@@ -283,12 +283,15 @@
         </div>
         <div class="pr-tokenRow">
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;cursor:pointer" title="勾选后点「构建并发行」一气呵成：先拉取「上一发行版 Tag … 当前分支」的提交，在右侧聊天窗由 AI 生成发行说明并自动回填（覆盖发行说明框现有内容；无新提交则跳过并沿用现有内容；AI 生成失败即中止本次发行——此时尚未构建/打 Tag，可修正后重试），随后继续 编译构建 → 创建 Tag → 创建发行版 → 上传产物">
+            <input type="checkbox" id="relAutoNotes" /> AI 生成发行说明
+          </label>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：勾选「AI 生成发行说明」时先执行第 ⓪ 步——拉取「上一发行版 Tag … 当前分支」的提交，经右侧聊天窗由 AI 起草发行说明并自动回填（无新提交跳过并沿用现有说明；失败即中止，不进入后续步骤）→ ① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版（发行说明取本页文本框当时内容）→ ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
-        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）；发行中可点「⏹ 停止」中止，服务端进程组即被终止并自动清理克隆目录 / 构建容器 / 暂存产物</span></h2>
+        <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">勾选「AI 生成发行说明」时最前插入「AI 发行说明」步；每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）；发行中可点「⏹ 停止」中止，服务端进程组即被终止并自动清理克隆目录 / 构建容器 / 暂存产物</span></h2>
         <div id="relSteps"></div>
         <div id="relResult" style="margin-top:8px"></div>
         <div class="rel-log" id="relLog" style="display:none"></div>
@@ -498,6 +501,7 @@
   var relTag = $("relTag"), relTagSuggest = $("relTagSuggest"), relBuildScript = $("relBuildScript"), relBuildCmd = $("relBuildCmd");
   var relBuildTimeout = $("relBuildTimeout"), relName = $("relName"), relPrerelease = $("relPrerelease"), relBody = $("relBody");
   var relRunBtn = $("relRunBtn"), relRunTip = $("relRunTip"), relSteps = $("relSteps"), relResult = $("relResult"), relLogEl = $("relLog");
+  var relAutoNotes = $("relAutoNotes");
   var searchInput = $("searchInput"), stateTabs = $("stateTabs"), toolbar = $("toolbar");
   var repoFilterBox = $("repoFilter");
   var issueStatusBar = $("issueStatusBar"), issueStatsEl = $("issueStats"), issueToolbar = $("issueToolbar");
@@ -1437,7 +1441,9 @@
       });
   }
 
-  /* ---------- 编译发行：构建分支 → 创建 Tag → 创建发行版 → 上传产物附件（一键串行） ----------
+  /* ---------- 编译发行：（可选 AI 发行说明 →）构建分支 → 创建 Tag → 创建发行版 → 上传产物附件（一键串行） ----------
+     勾选「AI 生成发行说明」时先执行 genRelNotesForRun：拉「上一发行版 Tag … 当前分支」提交区间经右侧聊天窗
+     AI 起草发行说明并回填 relBody（创建发行版时取 relBody.value 送出），无新提交跳过、AI 失败即中止（尚未构建/打 Tag）；
      构建经 /api/worktable/exec 在服务端执行包装脚本：浅克隆所选分支后运行仓内脚本（留空=跳过）；
      配置「产物路径」时构建后按仓内相对路径/通配收集产物到 ARTIFACT_DIR（服务端 /tmp 暂存目录）；
      Tag：GitCode 走 v5 API（POST /repos/{owner}/{repo}/tags）；GitHub 走 Git Data API（分支 HEAD → 建 tag 对象 → 建 ref）；
@@ -1906,19 +1912,21 @@
     });
   }
   var REL_STEPS = ["编译构建", "创建 Tag", "创建发行版", "上传产物"];
+  var REL_STEP_AI_NOTES = "AI 发行说明";   // 勾选「AI 生成发行说明」时在发行步骤最前插入的一步
   var REL_STEP_LABEL = { idle: "未开始", run: "进行中", ok: "成功", err: "失败", skip: "跳过", abort: "已停止" };
   var REL_HIST_MAX = 30;          // 构建历史最多保留条数
   var REL_STEP_LOG_MAX = 300;     // 归档时每步回显最多保留行数（超出截断前部）
   var REL_LIVE_TAIL = 20;         // 实时回显仅保留末尾行数（每步回显块与总日志共用，避免输出过多撑爆 DOM 卡死页面）
   var relStates = [];             // 当前发行的步骤状态（供逐步回显就地刷新时重绘）
   var relCurStep = -1;            // 当前回显归属的步骤下标（-1=公共行，只进总日志）
+  var relStepNames = REL_STEPS.slice(); // 当前发行的步骤列表：runRelease 按「AI 生成发行说明」勾选态重算
   var relStepLogs = [[], [], [], []]; // 每步回显缓存：发行中就地展开 + 结束后归档
   function relLogLineHtml(l) { return '<div class="rel-line' + (l.cls ? " rel-" + l.cls : "") + '">' + esc(l.msg) + "</div>"; }
   function relStepSumText(total) { return total > REL_LIVE_TAIL ? "回显 " + total + " 行（实时仅显示最近 " + REL_LIVE_TAIL + " 行）▾" : "回显 " + total + " 行 ▾"; }
   function relStepBadgeCls(st) { return st === "run" ? " dshell-badgeWait" : (st === "ok" ? " dshell-badgeDone" : ""); }
   function relSetSteps(states) {
     relStates = states;
-    relSteps.innerHTML = REL_STEPS.map(function (n, i) {
+    relSteps.innerHTML = relStepNames.map(function (n, i) {
       var s = states[i] || { st: "idle" };
       var dot = s.st === "run" ? "rel-dot rel-dotRun" : s.st === "ok" ? "rel-dot rel-dotOk" : s.st === "err" ? "rel-dot rel-dotErr" : s.st === "abort" ? "rel-dot" : "rel-dot";
       var badge = '<span class="dshell-badge' + relStepBadgeCls(s.st) + '"' +
@@ -1937,7 +1945,7 @@
   }
   function relLogClear() {
     relLogEl.style.display = "none"; relLogEl.innerHTML = ""; relResult.innerHTML = "";
-    relCurStep = -1; relStepLogs = [[], [], [], []];
+    relCurStep = -1; relStepLogs = relStepNames.map(function () { return []; });
   }
   function relLog(msg, cls) {
     relLogEl.style.display = "block";
@@ -1948,7 +1956,7 @@
     while (relLogEl.childNodes.length > REL_LIVE_TAIL) relLogEl.removeChild(relLogEl.firstChild);   // 总日志仅保留末尾若干行，避免输出过多撑爆 DOM 卡死页面
     relLogEl.scrollTop = relLogEl.scrollHeight;
     // 同步计入当前步骤的回显缓存，并就地更新该步的展开块
-    if (relCurStep >= 0 && relCurStep < REL_STEPS.length) {
+    if (relCurStep >= 0 && relCurStep < relStepNames.length) {
       relStepLogs[relCurStep].push({ msg: msg, cls: cls || "" });
       var box = $("relStepLog" + relCurStep);
       if (!box) { relSetSteps(relStates); return; } // 该步首行回显：重绘补出折叠块
@@ -2395,7 +2403,8 @@
   function readRelFormCfg() {
     return { script: effectiveBuildScript(), buildCmd: relBuildCmd.value.trim(),
       timeout: Math.min(Math.max(Number(relBuildTimeout.value) || DEFAULT_REL_CFG.timeout, 10), 3600),
-      artifacts: relArtifacts.value.trim(), prerelease: relPrerelease.checked === true };
+      artifacts: relArtifacts.value.trim(), prerelease: relPrerelease.checked === true,
+      autoNotes: relAutoNotes.checked === true };
   }
   // 构建设置改动即按当前键 upsert 云端镜像并防抖写回（先确保镜像已拉取，避免按空缓存覆盖丢其他分支的设置）
   function rememberRelCfgCloud() {
@@ -2429,6 +2438,7 @@
       relArtifacts.value = relCfg.artifacts;
       relBuildCmd.value = c.buildCmd || "";
       relPrerelease.checked = c.prerelease === true;
+      relAutoNotes.checked = c.autoNotes === true;   // 旧记录无该字段时回落为不勾选
       applyBuildScriptSelection();
       if (relCfgCloudTip) relCfgCloudTip.textContent = "☁ 已从云端自动填充该分支的构建设置";
     });
@@ -2671,6 +2681,25 @@
   relNotesAiBtn.addEventListener("click", genRelNotes);
   relBuildAiBtn.addEventListener("click", genRelBuildSuggestion);
 
+  /* 发行流程内联的「AI 发行说明」步（勾选「AI 生成发行说明」时 runRelease 第 0 步调用）：
+     拉上一发行版与「上一发行版 Tag … 当前分支」提交区间 → 右侧聊天窗 AI 起草 → 解析返回；
+     返回 { notes, rangeTip }；无新提交返回 notes:""（调用方标记跳过并沿用发行说明框现有内容）；
+     signal 中止（点「⏹ 停止」）时抛 relStopErr，由 runRelease 按「已停止」而非失败归档；
+     AI 生成本身经宿主结果桥等待完整文本，无法随 abort 即时取消，但发行流程即停、不再进入构建。 */
+  async function genRelNotesForRun(repo, branch, tag, name, signal) {
+    var aborted = function () { return !!(signal && signal.aborted); };
+    var prevRel = await fetchPrevRelease(repo);
+    if (aborted()) throw relStopErr();
+    var commits = await fetchRangeCommits(repo, branch, prevRel, function () { return !aborted(); });
+    if (aborted()) throw relStopErr();
+    if (!commits.length) return { notes: "", rangeTip: "" };
+    var rangeTip = (prevRel ? prevRel.tag_name + "…" + branch : branch + " 最近") + " · " + commits.length + " 个提交";
+    relLog("→ " + rangeTip + "，等待 AI 生成发行说明（右侧聊天窗）…", "dim");
+    var raw = await requestAiResult(buildRelNotesPrompt(repo, branch, tag, name, prevRel, commits));
+    if (aborted()) throw relStopErr();
+    return { notes: parseRelNotesResult(raw), rangeTip: rangeTip };
+  }
+
   function runRelease() {
     // 运行中再次点击：作为「停止」——abort 断开 exec-stream，服务端 res.on('close') 即 SIGTERM 整个进程组
     if (relRunning) {
@@ -2699,6 +2728,10 @@
     rememberRelCfgCloud(); // 启动发行即把该「仓库@分支」的构建设置写回云端（字段未触发 change 也覆盖到）
     relRunning = true; relAbortCtrl = new AbortController();
     relRunBtn.disabled = false; relRunBtn.textContent = "⏹ 停止"; relRunBtn.classList.add("is-stop"); tip.textContent = "";
+    // 勾选「AI 生成发行说明」：发行步骤最前插入「AI 发行说明」步（stepOff 统一偏移后续步骤下标）
+    var autoNotes = relAutoNotes.checked === true;
+    var stepOff = autoNotes ? 1 : 0;
+    relStepNames = autoNotes ? [REL_STEP_AI_NOTES].concat(REL_STEPS) : REL_STEPS.slice();
     relLogClear();
     var artifactDir = "/tmp/dsh-codereview-assets/" + repo.name + "-" + tag.replace(/[^A-Za-z0-9._-]/g, "-") + "-" + Date.now();
     // 构建历史记录：依赖信息先行登记，步骤状态/回显/产物在结束时归档
@@ -2714,15 +2747,29 @@
       status: "run", error: "", releaseUrl: "", artifactFiles: [], steps: []
     };
     var relErr = "", relStopped = false;
-    var states = [{ st: script ? "idle" : "skip" }, { st: "idle" }, { st: "idle" }, { st: artifacts ? "idle" : "skip" }];
-    if (!script) states[0].note = "未配置构建脚本";
-    if (!artifacts) states[3].note = "未配置产物路径";
+    var states = relStepNames.map(function () { return { st: "idle" }; });
+    if (!script) { states[stepOff].st = "skip"; states[stepOff].note = "未配置构建脚本"; }
+    if (!artifacts) { states[3 + stepOff].st = "skip"; states[3 + stepOff].note = "未配置产物路径"; }
     relSetSteps(states);
-    relLog("发布 " + repo.owner + "/" + repo.name + " · " + branch + " → " + tag, "hi");
+    relLog("发布 " + repo.owner + "/" + repo.name + " · " + branch + " → " + tag + (autoNotes ? "（含 AI 发行说明）" : ""), "hi");
     (async function () {
       try {
-        if (script) {
+        if (autoNotes) {
           states[0] = { st: "run" }; relSetSteps(states); relCurStep = 0;
+          relLog("→ 拉取上一发行版与「上一发行版 Tag … " + branch + "」提交区间，交由 AI 生成发行说明…", "dim");
+          var gen = await genRelNotesForRun(repo, branch, tag, name, relAbortCtrl.signal);
+          if (gen.notes) {
+            relBody.value = gen.notes;   // 创建发行版时取 relBody.value，AI 回填内容随之送出
+            states[0] = { st: "ok", note: gen.rangeTip };
+            relLog("✓ 发行说明已由 AI 生成并自动回填（" + gen.rangeTip + "）", "ok");
+          } else {
+            states[0] = { st: "skip", note: "无新提交，沿用现有发行说明" };
+            relLog("… 没有可用于生成发行说明的新提交（上一发行版后无变更或空分支），跳过 AI 生成，沿用发行说明框现有内容", "warn");
+          }
+          relSetSteps(states);
+        }
+        if (script) {
+          states[stepOff] = { st: "run" }; relSetSteps(states); relCurStep = stepOff;
           var container = (state.buildContainer || "").trim();
           if (container) relLog("→ 浅克隆 " + branch + " 后在容器 " + container + " 内执行仓内脚本 " + script + " …", "dim");
           else relLog("→ 浅克隆 " + branch + " 后执行仓内脚本 " + script + " …", "dim");
@@ -2741,11 +2788,11 @@
             "，网络代理=" + proxyModeLabel(proxyMode) + "）", "dim");
           var res = await execRepoBuild(script, container, env, timeoutMs, relAbortCtrl.signal);   // 流式实时回显已在 execRepoBuild→execStreamLines 内完成（末尾仅保留最近 REL_LIVE_TAIL 行）
           if (res.aborted) throw relStopErr();
-          if (res.code !== 0) { states[0] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
-          states[0] = { st: "ok" }; relSetSteps(states);
+          if (res.code !== 0) { states[stepOff] = { st: "err", note: "退出码 " + res.code }; relSetSteps(states); throw new Error("构建失败（退出码 " + res.code + "）"); }
+          states[stepOff] = { st: "ok" }; relSetSteps(states);
         }
         if (relAbortCtrl.signal.aborted) throw relStopErr();
-        states[1] = { st: "run" }; relSetSteps(states); relCurStep = 1;
+        states[1 + stepOff] = { st: "run" }; relSetSteps(states); relCurStep = 1 + stepOff;
         if (relAbortCtrl.signal.aborted) throw relStopErr();
         var tagDone = false;
         if (state.platform === "github") {
@@ -2766,23 +2813,26 @@
         }
         if (!tagDone) await pushReleaseTag(repo, branch, tag, name, relAbortCtrl.signal);
         if (relAbortCtrl.signal.aborted) throw relStopErr();
-        states[1] = { st: "ok" }; relSetSteps(states);
-        states[2] = { st: "run" }; relSetSteps(states); relCurStep = 2;
+        states[1 + stepOff] = { st: "ok" }; relSetSteps(states);
+        states[2 + stepOff] = { st: "run" }; relSetSteps(states); relCurStep = 2 + stepOff;
         if (relAbortCtrl.signal.aborted) throw relStopErr();
         relLog("+ POST " + apiBase() + "/repos/" + repo.owner + "/" + repo.name + "/releases（tag_name=" + tag + ", name=" + (name || tag) + ", prerelease=" + (relPrerelease.checked ? "true" : "false") + "）", "dim");
         var relObj = await fetchPost("/repos/" + encodeURIComponent(repo.owner) + "/" + encodeURIComponent(repo.name) + "/releases",
           { tag_name: tag, name: name || tag, body: relBody.value || "", target_commitish: branch, prerelease: relPrerelease.checked }, relAbortCtrl.signal);
         if (relAbortCtrl.signal.aborted) throw relStopErr();
-        states[2] = { st: "ok", note: name || tag }; relSetSteps(states);
+        states[2 + stepOff] = { st: "ok", note: name || tag }; relSetSteps(states);
         var webUrl = webBase() + "/" + repo.owner + "/" + repo.name;
         rec.releaseUrl = webUrl + "/releases";
         relResult.innerHTML = '<span style="color:#3fb950">✓ 发行版已创建</span> <a class="pr-link" href="' + esc(webUrl + "/releases") + '" target="_blank" rel="noopener">打开仓库发行版列表 →</a>';
         relLog("✓ 发行版 " + (name || tag) + " 创建完成", "ok");
         if (artifacts) {
-          states[3] = { st: "run" }; relSetSteps(states); relCurStep = 3;
+          states[3 + stepOff] = { st: "run" }; relSetSteps(states); relCurStep = 3 + stepOff;
           if (state.platform === "github") {
             // GitHub：发行版响应带 upload_url（uploads.github.com，去 {?name,label} 模板）→ POST 文件二进制
-            var upBase = relObj && relObj.upload_url ? String(relObj.upload_url).replace(/\{.*$/, "") : "";
+            // 注：花括号用 fromCharCode(123) 定位，避免源码里出现不配对字面花括号（测试按配对花括号切取函数体）
+            var upRaw = relObj && relObj.upload_url ? String(relObj.upload_url) : "";
+            var upTplAt = upRaw.indexOf(String.fromCharCode(123));
+            var upBase = upTplAt >= 0 ? upRaw.slice(0, upTplAt) : upRaw;
             if (!upBase) throw new Error("发行版响应缺少 upload_url（无法上传产物）");
             relLog("→ 上传构建产物到发行版（GitHub upload_url，POST 文件二进制）…", "dim");
             await uploadGithubAssets(repo, artifactDir, upBase, relAbortCtrl.signal);
@@ -2792,7 +2842,7 @@
             await uploadReleaseAssets(repo, tag, artifactDir, relAbortCtrl.signal);
           }
           if (relAbortCtrl.signal.aborted) throw relStopErr();
-          states[3] = { st: "ok" }; relSetSteps(states);
+          states[3 + stepOff] = { st: "ok" }; relSetSteps(states);
         }
         tip.textContent = "✓ 发行完成";
       } catch (e) {
@@ -2816,12 +2866,12 @@
         rec.status = relStopped ? "stop" : (relErr ? "err" : "ok");
         rec.error = relStopped ? "已手动停止" : relErr;
         rec.steps = states.map(function (s, si) {
-          return { name: REL_STEPS[si], st: s.st, note: s.note || "", lines: archiveStepLines(relStepLogs[si] || []) };
+          return { name: relStepNames[si], st: s.st, note: s.note || "", lines: archiveStepLines(relStepLogs[si] || []) };
         });
-        rec.artifactFiles = (relStepLogs[0] || []).filter(function (l) { return l.msg.indexOf("  + ") === 0; })
+        rec.artifactFiles = (relStepLogs[stepOff] || []).filter(function (l) { return l.msg.indexOf("  + ") === 0; })
           .map(function (l) { return l.msg.slice(4); });
         if (!rec.artifactFiles.length) {
-          rec.artifactFiles = (relStepLogs[3] || []).filter(function (l) { return l.msg.indexOf("✓ 已上传 ") === 0; })
+          rec.artifactFiles = (relStepLogs[3 + stepOff] || []).filter(function (l) { return l.msg.indexOf("✓ 已上传 ") === 0; })
             .map(function (l) { return l.msg.slice(6); });
         }
         var hist = await ensureRelHistLoaded(); hist.unshift(rec); saveRelHist(hist); renderRelHist();
@@ -2846,6 +2896,7 @@
   relBuildScriptCustom.addEventListener("change", function () { relCfg.script = effectiveBuildScript(); saveRelCfg(); rememberRelCfgCloud(); });
   relBuildCmd.addEventListener("change", rememberRelCfgCloud);
   relPrerelease.addEventListener("change", rememberRelCfgCloud);
+  relAutoNotes.addEventListener("change", rememberRelCfgCloud);   // 「AI 生成发行说明」勾选态随分支级构建设置存云端
   relArtifacts.addEventListener("change", function () { relCfg.artifacts = relArtifacts.value.trim(); saveRelCfg(); rememberRelCfgCloud(); });
   relBuildScriptRefresh.addEventListener("click", function () { loadBuildScripts(); });
   relBuildTimeout.addEventListener("change", function () {

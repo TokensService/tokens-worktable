@@ -19,9 +19,13 @@ TEMPLATE_DIR="$RUN_DIR/template"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
-IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${PROJECT:-}}"
+# Use the SWR region in the registry username. IMAGE_PULL_PROJECT retains the
+# explicit override, while SWR_PROJECT avoids collision with a deployment's
+# registry namespace held in PROJECT.
+IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"
 IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
-IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-}}"
+# LOGKEY is accepted for callers that use the older environment-variable name.
+IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"
 
 remote_quote() {
   printf '%q' "$1"
@@ -96,9 +100,15 @@ print(item["endpoint"], item["user"], item["host"], item["port"], item["password
 PY
 )
     target="${user}@${host}"
-    # Target image preparation is an optimization. Mapped deployment targets
-    # must not receive registry credentials or fail the pipeline when absent.
-    printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo '[pull] target has no ctr; skip image pre-pull'; exit 0; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else echo '[pull] target image is absent; skip unauthenticated pre-pull'; fi"
+    # A cached image needs no registry credentials. When absent, pre-pull it
+    # into Kubernetes' containerd namespace using the supplied SWR account.
+    if [[ -n "$IMAGE_PULL_AK" && -n "$IMAGE_PULL_LOGIN_KEY" ]]; then
+      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if sudo ctr -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else sudo ctr -n k8s.io image pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image"); fi"
+    else
+      # Never attempt an unauthenticated pull or probe the target runtime when
+      # credentials were not supplied for this pipeline invocation.
+      printf -v remote_command '%s' "echo '[pull] target image pre-pull skipped: AK and LOGIN_KEY are not set'"
+    fi
     echo "[pull] target $endpoint: ensure image $image"
     run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
   done
