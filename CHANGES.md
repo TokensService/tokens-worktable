@@ -1,5 +1,11 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复运行历史刷新在旧版插件下报 HTTP 404（`projects/pipeline/pipeline.html`）：轻量历史接口
+  `/api/worktable/pipeline/history` 是后加的服务端路由，而工作台经 `/api/worktable/site` 直接从源码目录
+  托管页面时，前端可能新于正在运行的旧版插件（如 v1.1.2 发行包无此路由），手动与自动刷新均失败弹窗。
+  首次收到 404 即永久降级为 `GET /api/worktable/pipeline` 全量存储接口（与旧版手动刷新同一载荷），
+  清掉只对轻量接口有意义的 ETag，本次会话内不再请求缺失路由；新插件下行为不变。
+  `projects/pipeline/tests/test_history_auto_refresh.js` 新增 404 降级与降级记忆回归用例。
 - 流水线运行队列支持查看服务端最新日志，运行历史支持自动刷新（`src/index.ts` +
   `projects/pipeline/pipeline.html`）：服务端执行池为每条运行的各阶段维护独立、按 UTF-8 字节限制为最大 256 KiB 的日志尾窗，
   脚本 stdout/stderr 在进程结束前即增量写入；普通队列快照继续只含安全状态字段，页面仅在查看服务端

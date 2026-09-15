@@ -64,7 +64,7 @@ test('refreshHistoryFromServer：自动刷新合并在途请求并保持页码�
   const ctx = loadHistoryFunctions({
     history: [oldRun], buildNo: 7, histClearedAt: 0,
     selHistoryIdx: 0, replayRec: oldRun, histPage: 3,
-    analysisHistoryKeys: ['tag:stable-run'], _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '',
+    analysisHistoryKeys: ['tag:stable-run'], _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '', _historyLightApiMissing: false,
     _detailKey: 'cached-detail',
     fetch: (url, options) => {
       assert.equal(url, '/api/worktable/pipeline/history');
@@ -105,7 +105,7 @@ test('refreshHistoryFromServer：历史版本未变化时 304 不替换列表也
   let renders = 0;
   const ctx = loadHistoryFunctions({
     history: [current], buildNo: 7, histClearedAt: 0, selHistoryIdx: -1, replayRec: null,
-    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"',
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"', _historyLightApiMissing: false,
     fetch: async (url, options) => {
       assert.equal(url, '/api/worktable/pipeline/history');
       assert.equal(options.headers['If-None-Match'], '"hist-7"');
@@ -127,7 +127,7 @@ test('refreshHistoryFromServer：200 正文解析失败时不提交新 ETag，�
   const current = { no: 7, tag: 'stable-run' };
   const ctx = loadHistoryFunctions({
     history: [current], buildNo: 7, histClearedAt: 0, selHistoryIdx: -1, replayRec: null,
-    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"',
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"', _historyLightApiMissing: false,
     fetch: async (_url, options) => {
       calls += 1;
       assert.equal(options.headers['If-None-Match'], '"hist-7"', '失败响应不得推进下次请求携带的版本');
@@ -156,7 +156,7 @@ test('refreshHistoryFromServer：200 正文解析失败时不提交新 ETag，�
 test('refreshHistoryFromServer：清空版本保护拒绝正文时不提交该响应的 ETag', async () => {
   const ctx = loadHistoryFunctions({
     history: [], buildNo: 7, histClearedAt: 200, selHistoryIdx: -1, replayRec: null,
-    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"',
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"', _historyLightApiMissing: false,
     fetch: async () => ({
       ok: true, status: 200, headers: { get: () => '"hist-stale"' },
       json: async () => ({ config: { buildNo: 8, histClearedAt: 100 }, history: [{ no: 8, tag: 'stale' }] }),
@@ -169,6 +169,44 @@ test('refreshHistoryFromServer：清空版本保护拒绝正文时不提交该�
 
   assert.equal(await ctx.refreshHistoryFromServer(false), false);
   assert.equal(ctx._historyEtag, '"hist-7"');
+});
+
+test('refreshHistoryFromServer：轻量历史接口 404（旧版插件无此路由）时降级全量存储接口并记住降级', async () => {
+  const current = { no: 7, tag: 'stable-run' };
+  const requested = [];
+  let renders = 0;
+  const ctx = loadHistoryFunctions({
+    history: [current], buildNo: 7, histClearedAt: 0, selHistoryIdx: -1, replayRec: null,
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"', _historyLightApiMissing: false,
+    fetch: async (url, options) => {
+      requested.push(url);
+      if (requested.length === 1) {
+        assert.equal(url, '/api/worktable/pipeline/history');
+        assert.equal(options.headers['If-None-Match'], '"hist-7"');
+        return { ok: false, status: 404, headers: { get: () => null } };
+      }
+      assert.equal(url, '/api/worktable/pipeline', '降级后改走旧版插件也有的全量存储接口');
+      assert.deepEqual(Object.keys(options.headers), [], '降级请求不携带轻量接口的 ETag');
+      return {
+        ok: true, status: 200, headers: { get: () => null },
+        json: async () => ({ config: { buildNo: 8 }, history: [{ no: 8, tag: 'new-run' }, current] }),
+      };
+    },
+    applyHistoryRefreshPayload: state => { ctx.history = state.history; return true; },
+    rebindHistoryRefreshSelection: () => null,
+    renderHistory: () => { renders += 1; }, renderStats: () => {}, refreshArchiveTip: () => {},
+    alert: () => assert.fail('404 降级是正常兼容路径，不应告警'),
+  }, ['refreshHistoryFromServer']);
+
+  assert.equal(await ctx.refreshHistoryFromServer(false), true);
+  assert.equal(ctx._historyLightApiMissing, true);
+  assert.equal(ctx._historyEtag, '', '全量接口没有 ETag，不得保留轻量接口的版本标识');
+  assert.equal(ctx.history[0].tag, 'new-run');
+  assert.equal(renders, 1);
+  assert.deepEqual(requested, ['/api/worktable/pipeline/history', '/api/worktable/pipeline']);
+
+  assert.equal(await ctx.refreshHistoryFromServer(false), true);
+  assert.deepEqual(requested.slice(2), ['/api/worktable/pipeline'], '记住降级后不再请求缺失的轻量路由');
 });
 
 test('回放 profile 校正在历史刷新期间完成时，会同步应用到重新绑定的新记录', async () => {
