@@ -313,6 +313,14 @@ async function handlePipelineHistoryRequest(req: any, res: any, deps: {
   }
 }
 
+/** history 轮询必须暴露真实读取失败；只有首次尚未创建存储文件时才返回空状态。 */
+async function readPipelineHistoryStore(file: string): Promise<any> {
+  let raw: string
+  try { raw = await readFile(file, 'utf8') }
+  catch (error: any) { if (error?.code === 'ENOENT') return {}; throw error }
+  return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+}
+
 /** 将历史裁成能放入存储上限的最新前缀；配置和每条候选记录至多序列化一次。 */
 function serializePipelineStore(config: any, history: any[], maxChars = 20 * 1024 * 1024): string {
   const prefix = '{"config":' + (JSON.stringify(config) ?? '{}') + ',"history":['
@@ -1710,7 +1718,7 @@ export function apply(ctx: Context) {
     path: '/api/worktable/pipeline/history',
     handler: (req: any, res: any) => handlePipelineHistoryRequest(req, res, {
       statStore: async () => { try { return await fsStat(PIPELINE_STORE) } catch (error: any) { if (error?.code === 'ENOENT') return null; throw error } },
-      readStore: readPipelineStore,
+      readStore: () => readPipelineHistoryStore(PIPELINE_STORE),
     }),
   })
   /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */

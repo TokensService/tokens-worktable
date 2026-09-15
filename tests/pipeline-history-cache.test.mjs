@@ -91,3 +91,27 @@ test('轻量历史接口只返回版本字段和历史，ETag 未变化时不再
   assert.equal(unchanged.body, '')
   assert.equal(reads, 1, '版本未变化时不得再次读取和解析完整 pipeline store')
 })
+
+test('轻量历史存储读取只把文件不存在视为空，读取与 JSON 错误向上传播', async () => {
+  const start = source.indexOf('function cleanPipelineHistory(')
+  const end = source.indexOf('/** git 状态快照', start)
+  const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
+  const missing = Object.assign(new Error('missing'), { code: 'ENOENT' })
+  let mode = 'missing'
+  const ctx = {
+    readFile: async () => {
+      if (mode === 'missing') throw missing
+      if (mode === 'read-error') throw new Error('disk error')
+      return '{broken json'
+    },
+  }
+  vm.createContext(ctx); vm.runInContext(code, ctx)
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await ctx.readPipelineHistoryStore('/store.json'))), {})
+  mode = 'read-error'
+  await assert.rejects(ctx.readPipelineHistoryStore('/store.json'), /disk error/)
+  mode = 'parse-error'
+  await assert.rejects(ctx.readPipelineHistoryStore('/store.json'), error => error?.name === 'SyntaxError')
+  assert.match(source, /readStore:\s*\(\)\s*=>\s*readPipelineHistoryStore\(PIPELINE_STORE\)/,
+    '生产 history 路由必须注入严格读取函数')
+})

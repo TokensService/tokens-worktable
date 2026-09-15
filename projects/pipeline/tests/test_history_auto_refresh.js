@@ -122,6 +122,55 @@ test('refreshHistoryFromServer：历史版本未变化时 304 不替换列表也
   assert.equal(renders, 0);
 });
 
+test('refreshHistoryFromServer：200 正文解析失败时不提交新 ETag，下一次仍请求正文', async () => {
+  let calls = 0;
+  const current = { no: 7, tag: 'stable-run' };
+  const ctx = loadHistoryFunctions({
+    history: [current], buildNo: 7, histClearedAt: 0, selHistoryIdx: -1, replayRec: null,
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"',
+    fetch: async (_url, options) => {
+      calls += 1;
+      assert.equal(options.headers['If-None-Match'], '"hist-7"', '失败响应不得推进下次请求携带的版本');
+      if(calls === 1) return {
+        ok: true, status: 200, headers: { get: () => '"hist-8"' },
+        json: async () => { throw new Error('truncated json'); },
+      };
+      return {
+        ok: true, status: 200, headers: { get: () => '"hist-8"' },
+        json: async () => ({ config: { buildNo: 8 }, history: [{ no: 8, tag: 'new-run' }] }),
+      };
+    },
+    applyHistoryRefreshPayload: state => { ctx.history = state.history; return true; },
+    rebindHistoryRefreshSelection: () => null,
+    renderHistory: () => {}, renderStats: () => {}, refreshArchiveTip: () => {},
+    alert: () => assert.fail('后台刷新解析失败不弹窗'),
+  }, ['refreshHistoryFromServer']);
+
+  assert.equal(await ctx.refreshHistoryFromServer(false), false);
+  assert.equal(ctx._historyEtag, '"hist-7"');
+  assert.equal(await ctx.refreshHistoryFromServer(false), true);
+  assert.equal(ctx._historyEtag, '"hist-8"');
+  assert.equal(ctx.history[0].tag, 'new-run');
+});
+
+test('refreshHistoryFromServer：清空版本保护拒绝正文时不提交该响应的 ETag', async () => {
+  const ctx = loadHistoryFunctions({
+    history: [], buildNo: 7, histClearedAt: 200, selHistoryIdx: -1, replayRec: null,
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"',
+    fetch: async () => ({
+      ok: true, status: 200, headers: { get: () => '"hist-stale"' },
+      json: async () => ({ config: { buildNo: 8, histClearedAt: 100 }, history: [{ no: 8, tag: 'stale' }] }),
+    }),
+    applyHistoryRefreshPayload: () => false,
+    rebindHistoryRefreshSelection: () => assert.fail('被拒绝的正文不应重绑选择'),
+    renderHistory: () => assert.fail('被拒绝的正文不应重绘'),
+    renderStats: () => {}, refreshArchiveTip: () => {}, alert: () => {},
+  }, ['refreshHistoryFromServer']);
+
+  assert.equal(await ctx.refreshHistoryFromServer(false), false);
+  assert.equal(ctx._historyEtag, '"hist-7"');
+});
+
 test('回放 profile 校正在历史刷新期间完成时，会同步应用到重新绑定的新记录', async () => {
   let releaseProfile;
   const profileResponse = new Promise(resolve => { releaseProfile = resolve; });

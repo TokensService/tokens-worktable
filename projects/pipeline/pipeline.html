@@ -6771,7 +6771,7 @@ async function refreshHistoryFromServer(showError){
       const response=await fetch('/api/worktable/pipeline/history',{cache:'no-store',headers:headers});
       if(response.status===304) return true;
       if(!response.ok) throw new Error('HTTP '+response.status);
-      const etag=response.headers&&response.headers.get('etag'); if(etag) _historyEtag=etag;
+      const etag=response.headers&&response.headers.get('etag');
       const state=await response.json();
       /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
          防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录。 */
@@ -6785,6 +6785,7 @@ async function refreshHistoryFromServer(showError){
         else exitHistoryReplay();
       }
       renderHistory(); renderStats(); refreshArchiveTip();
+      if(etag) _historyEtag=etag;
       return true;
     }catch(error){
       if(_historyRefreshNotifyError) alert('从服务端拉取运行历史失败：'+String(error&&error.message||error));
