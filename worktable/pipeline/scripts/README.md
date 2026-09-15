@@ -116,6 +116,10 @@ XDS 流水线按以下顺序绑定脚本：
 DRY_RUN=1 bash cleanup-env.sh
 bash cleanup-env.sh
 
+# 仅处理目标节点上的 EMS Pod，并在它们退出后释放 2 MiB 大页。
+# 未设置 DRY_RUN 时该独立脚本默认预演；设为 0 才会删除 Pod 和写 nr_hugepages。
+NODE=node-128 DRY_RUN=0 bash evict-ems-hugepages.sh
+
 # 仅检查，不清理工作负载、不启停服务
 bash check-env.sh
 ```
@@ -128,6 +132,10 @@ bash check-env.sh
 `ACTION=check-health` 转到检查；不再提供默认「清理后自动检查」行为。
 若只复制一个脚本到目标机，应使用上述独立入口。页面已有保存的脚本选择不会自动改写，
 可分别在两个脚本设置中选择新文件。页面是否因清理失败而中断，仍由流水线执行策略决定。
+
+`evict-ems-hugepages.sh` 不需要命名空间参数：它查询目标节点的全部 Pod，以 EMS 容器或
+`/dev/shm/ems` 挂载识别 EMS Pod；同一命名空间位于其他节点的 Pod 不会被删除。可用
+`HUGEPAGE_PATH` 指定其他 `nr_hugepages` 路径，未设置时使用 2 MiB 默认路径。
 
 
 ### check-env.sh 深入检查（128 基准，2026-09-08）
