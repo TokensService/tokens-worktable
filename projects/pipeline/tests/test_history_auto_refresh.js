@@ -29,6 +29,7 @@ function loadHistoryFunctions(ctx, names) {
 const oldRun = {
   no: 7, tag: 'stable-run', pipeline: '部署', logs: [{ stage: '构建', logFile: '/old/build.log' }],
   _lc: { 构建: 'cached tail' }, _lm: { 构建: { truncated: true } }, _ll: { 构建: Promise.resolve() }, _profChecked: true,
+  _profState: { checked: true, promise: null, stages: [{ name: '构建', status: 'success', durSec: 9.5 }] },
 };
 
 test('rebindHistoryRefreshSelection：列表重排后按稳定主键保留选择、回放对象和懒加载缓存', () => {
@@ -37,7 +38,7 @@ test('rebindHistoryRefreshSelection：列表重排后按稳定主键保留选择
     history: [{ no: 8, tag: 'new-run' }, refreshed],
     selHistoryIdx: 0,
     replayRec: oldRun,
-  }, ['analysisHistoryKey', 'preserveHistoryRuntimeCache', 'rebindHistoryRefreshSelection']);
+  }, ['analysisHistoryKey', 'applyReplayProfileStages', 'preserveHistoryRuntimeCache', 'rebindHistoryRefreshSelection']);
 
   const rebound = ctx.rebindHistoryRefreshSelection(oldRun, true);
 
@@ -48,6 +49,9 @@ test('rebindHistoryRefreshSelection：列表重排后按稳定主键保留选择
   assert.equal(refreshed._lm, oldRun._lm);
   assert.equal(refreshed._ll, oldRun._ll);
   assert.equal(refreshed._profChecked, true);
+  assert.equal(refreshed._profState, oldRun._profState);
+  assert.equal(refreshed.logs[0].status, 'success', '已完成的 profile 校正应在第一次重绘前重放到新记录');
+  assert.equal(refreshed.logs[0].dur, 9.5);
 });
 
 test('refreshHistoryFromServer：自动刷新合并在途请求并保持页码、分析勾选和当前回放', async () => {
@@ -60,23 +64,28 @@ test('refreshHistoryFromServer：自动刷新合并在途请求并保持页码�
   const ctx = loadHistoryFunctions({
     history: [oldRun], buildNo: 7, histClearedAt: 0,
     selHistoryIdx: 0, replayRec: oldRun, histPage: 3,
-    analysisHistoryKeys: ['tag:stable-run'], _historyRefreshPromise: null, _historyRefreshNotifyError: false,
+    analysisHistoryKeys: ['tag:stable-run'], _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '',
     _detailKey: 'cached-detail',
-    fetch: () => { fetches += 1; return response; },
+    fetch: (url, options) => {
+      assert.equal(url, '/api/worktable/pipeline/history');
+      assert.equal(Object.keys(options.headers).length, 0);
+      fetches += 1; return response;
+    },
     renderHistory: () => { renders += 1; }, renderStats: () => { renders += 1; }, refreshArchiveTip: () => { renders += 1; },
     rebuildReplayNodes: rec => { assert.equal(rec, refreshed); replayRenders += 1; },
     renderFlow: () => { replayRenders += 1; }, renderDetail: () => { replayRenders += 1; },
+    loadReplayLogs: async () => {},
     exitHistoryReplay: () => assert.fail('稳定记录仍存在时不应退出回放'),
     alert: () => assert.fail('成功刷新不应告警'),
   }, [
-    'analysisHistoryKey', 'preserveHistoryRuntimeCache', 'rebindHistoryRefreshSelection',
+    'analysisHistoryKey', 'applyReplayProfileStages', 'preserveHistoryRuntimeCache', 'rebindHistoryRefreshSelection',
     'applyHistoryRefreshPayload', 'refreshHistoryFromServer',
   ]);
 
   const first = ctx.refreshHistoryFromServer(false);
   const second = ctx.refreshHistoryFromServer(true);
   assert.equal(fetches, 1, '已有刷新在途时应复用同一请求');
-  release({ ok: true, json: async () => ({ config: { buildNo: 8 }, history: [{ no: 8, tag: 'new-run' }, refreshed] }) });
+  release({ ok: true, status: 200, headers: { get: name => name.toLowerCase() === 'etag' ? '"hist-8"' : null }, json: async () => ({ config: { buildNo: 8 }, history: [{ no: 8, tag: 'new-run' }, refreshed] }) });
   assert.equal(await first, true);
   assert.equal(await second, true);
 
@@ -86,8 +95,67 @@ test('refreshHistoryFromServer：自动刷新合并在途请求并保持页码�
   assert.equal(ctx.replayRec, refreshed);
   assert.equal(refreshed._lc, oldRun._lc);
   assert.equal(ctx._detailKey, '');
+  assert.equal(ctx._historyEtag, '"hist-8"');
   assert.equal(renders, 3);
-  assert.equal(replayRenders, 3);
+  assert.equal(replayRenders, 6, '刷新后先保留当前回放，再在 profile/日志缓存应用完成后校正重绘');
+});
+
+test('refreshHistoryFromServer：历史版本未变化时 304 不替换列表也不重绘', async () => {
+  const current = { no: 7, tag: 'stable-run' };
+  let renders = 0;
+  const ctx = loadHistoryFunctions({
+    history: [current], buildNo: 7, histClearedAt: 0, selHistoryIdx: -1, replayRec: null,
+    _historyRefreshPromise: null, _historyRefreshNotifyError: false, _historyEtag: '"hist-7"',
+    fetch: async (url, options) => {
+      assert.equal(url, '/api/worktable/pipeline/history');
+      assert.equal(options.headers['If-None-Match'], '"hist-7"');
+      return { ok: false, status: 304, headers: { get: () => '"hist-7"' } };
+    },
+    applyHistoryRefreshPayload: () => assert.fail('304 不应应用历史正文'),
+    rebindHistoryRefreshSelection: () => assert.fail('304 不应重绑选择'),
+    renderHistory: () => { renders += 1; }, renderStats: () => { renders += 1; }, refreshArchiveTip: () => { renders += 1; },
+    alert: () => assert.fail('304 是正常未变化，不应告警'),
+  }, ['refreshHistoryFromServer']);
+
+  assert.equal(await ctx.refreshHistoryFromServer(false), true);
+  assert.equal(ctx.history[0], current);
+  assert.equal(renders, 0);
+});
+
+test('回放 profile 校正在历史刷新期间完成时，会同步应用到重新绑定的新记录', async () => {
+  let releaseProfile;
+  const profileResponse = new Promise(resolve => { releaseProfile = resolve; });
+  const previous = {
+    no: 7, tag: 'stable-run', archive: '/archive/run',
+    logs: [{ stage: '构建', status: 'idle', dur: 0, logFile: '/archive/build.log' }],
+  };
+  const refreshed = {
+    no: 7, tag: 'stable-run', archive: '/archive/run',
+    logs: [{ stage: '构建', status: 'idle', dur: 0, logFile: '/archive/build.log' }],
+  };
+  const ctx = loadHistoryFunctions({
+    history: [refreshed], selHistoryIdx: 0, replayRec: previous, selectedId: 'build',
+    flowStages: () => [{ id: 'build', name: '构建' }],
+    loadReplayLog: async () => {},
+    fetch: () => profileResponse,
+  }, [
+    'analysisHistoryKey', 'preserveHistoryRuntimeCache', 'rebindHistoryRefreshSelection',
+    'applyReplayProfileStages', 'loadReplayLogs',
+  ]);
+
+  const oldLoading = ctx.loadReplayLogs(previous);
+  await new Promise(resolve => setImmediate(resolve));
+  const rebound = ctx.rebindHistoryRefreshSelection(previous, true);
+  const newLoading = ctx.loadReplayLogs(rebound);
+  assert.equal(rebound._profState, previous._profState, '新旧记录应共享同一个 profile 加载状态');
+
+  releaseProfile({ ok: true, text: async () => JSON.stringify({
+    stages: [{ name: '构建', status: 'success', durSec: 12.5 }],
+  }) });
+  await Promise.all([oldLoading, newLoading]);
+
+  assert.equal(refreshed.logs[0].status, 'success');
+  assert.equal(refreshed.logs[0].dur, 12.5);
 });
 
 test('startHistoryAutoRefresh：每 3 秒仅在页面可见时刷新，并由初始加载完成后启动', async () => {

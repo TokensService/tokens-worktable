@@ -321,6 +321,15 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
   });
   assert.equal(context._detailKey, '');
   assert.equal(renderDetailCalls, 1);
+
+  context.fetch = async url => {
+    requests.push(url);
+    return { ok: false, status: 304 };
+  };
+  await context.pullRemoteQueueLog();
+  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2');
+  assert.equal(renderDetailCalls, 1, '日志版本未变化时不得重复重绘详情');
+  assert.equal(context.viewRc.remoteLogs['build/one'].text, 'first\nlatest\n');
 });
 
 test('cancelServerRun：任一浏览器都可取消服务端排队或运行中的任务并立即刷新', async () => {

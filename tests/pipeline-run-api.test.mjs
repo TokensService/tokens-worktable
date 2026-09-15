@@ -265,6 +265,13 @@ test('服务端执行池按运行和阶段保存有界实时日志尾部', async
   assert.equal(tail.truncated, true)
   assert.ok(tail.text.length <= 256 * 1024)
   assert.match(tail.text, /TAIL$/)
+
+  liveRuntime.replaceLog('deploy', '中'.repeat(100 * 1024) + '中文结尾')
+  const utf8Tail = pool.log('live-1', 'deploy')
+  assert.equal(utf8Tail.truncated, true, '多字节日志也应按字节上限截尾')
+  assert.ok(Buffer.byteLength(utf8Tail.text, 'utf8') <= 256 * 1024)
+  assert.match(utf8Tail.text, /中文结尾$/)
+  assert.equal(utf8Tail.text.includes('\uFFFD'), false, '截尾不得从 UTF-8 字符中间开始')
   release()
   await running
   assert.equal(pool.log('live-1', 'build'), null, '运行离开执行池后实时日志一并释放')

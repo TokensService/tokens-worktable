@@ -161,6 +161,10 @@ test('队列接口按运行和阶段返回实时日志，不把日志混入普�
   assert.deepEqual(found.json(), { text: 'first\nlatest\n', truncated: false, revision: 2 })
   assert.deepEqual(calls, [['run-1', 'build']])
 
+  const unchanged = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2')
+  assert.equal(unchanged.status, 304)
+  assert.equal(unchanged.body, '')
+
   const missing = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=missing')
   assert.equal(missing.status, 404)
   assert.deepEqual(missing.json(), { error: 'run or stage not found' })

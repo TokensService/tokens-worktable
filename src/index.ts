@@ -259,13 +259,58 @@ async function readLocalFile(abs: string, tailBytesRaw: string | null) {
 
 /** 回放日志与 profile 校正缓存只属于浏览器内存，不得进入共享历史存储。 */
 function cleanPipelineHistory(history: any[]) {
-  const transient = new Set(['_lc', '_lm', '_ll', '_profChecked'])
+  const transient = new Set(['_lc', '_lm', '_ll', '_profChecked', '_profState'])
   return history.map((record: any) => {
     if (!record || typeof record !== 'object' || Array.isArray(record)) return record
     const clean: any = {}
     for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value
     return clean
   })
+}
+
+/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
+function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
+  const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
+  const diskCfg = diskConfig && typeof diskConfig === 'object' ? diskConfig : {}
+  const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
+  if (clearedAt) config.histClearedAt = clearedAt
+  config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0)
+  const afterClear = (record: any) => !clearedAt || (Number(record && record.ts) || 0) > clearedAt
+  const acceptedClient = clientHistory.filter(afterClear)
+  const keyOf = (record: any) => (record && record.tag) ? 'tag:' + record.tag : ((record && record.ts) ? 'ts:' + record.ts : 'no:' + (record && record.no) + ':' + (record && record.pipeline))
+  const seen = new Set(acceptedClient.map(keyOf))
+  const serverOnly = diskHistory.filter((record: any) => afterClear(record) && !seen.has(keyOf(record)))
+  const history = acceptedClient.concat(serverOnly)
+  history.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))
+  if (history.length > 500) history.length = 500
+  return { config, history }
+}
+
+/** 自动刷新专用轻量接口：只在存储版本变化时读取正文，不下发流水线/环境/仓库等完整配置。 */
+async function handlePipelineHistoryRequest(req: any, res: any, deps: {
+  statStore: () => Promise<{ ino?: number | bigint; size: number | bigint; mtimeMs: number } | null>;
+  readStore: () => Promise<any>;
+}) {
+  try {
+    if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+    const stat = await deps.statStore()
+    const etag = stat ? '"' + String(stat.ino || 0) + '-' + String(stat.size) + '-' + String(stat.mtimeMs) + '"' : '"missing"'
+    if (String(req.headers?.['if-none-match'] || '') === etag) {
+      res.writeHead(304, { etag, 'cache-control': 'no-store' }); res.end(); return
+    }
+    const store = await deps.readStore()
+    const sourceConfig = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+    const config = {
+      buildNo: Number.isFinite(sourceConfig.buildNo) ? sourceConfig.buildNo : 0,
+      histClearedAt: Number.isFinite(sourceConfig.histClearedAt) ? sourceConfig.histClearedAt : 0,
+    }
+    const history = Array.isArray(store.history) ? cleanPipelineHistory(store.history) : []
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', etag })
+    res.end(JSON.stringify({ config, history }))
+  } catch (error) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify({ error: String(error) }))
+  }
 }
 
 /** 将历史裁成能放入存储上限的最新前缀；配置和每条候选记录至多序列化一次。 */
@@ -1044,14 +1089,19 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const stageList = (value: any): any[] => Array.isArray(value) ? value.filter((stage) => stage && typeof stage === 'object') : []
   const idleNode = () => ({ status: 'idle', progress: 0, dur: 0 })
   const liveLogLimit = 256 * 1024
+  const clipLiveLogTail = (value: string) => {
+    const bytes = Buffer.from(value, 'utf8')
+    if (bytes.length <= liveLogLimit) return { text: value, truncated: false }
+    let start = bytes.length - liveLogLimit
+    while (start < bytes.length && (bytes[start] & 0xC0) === 0x80) start += 1
+    return { text: bytes.subarray(start).toString('utf8'), truncated: true }
+  }
   const writeLog = (item: ExecutionItem, stageId: string, value: unknown, append: boolean) => {
     const id = String(stageId || '')
     if (!id || !item.nodes[id]) return
     const previous = item.logs[id]
-    let text = (append && previous ? previous.text : '') + String(value ?? '')
-    let truncated = append && previous ? previous.truncated : false
-    if (text.length > liveLogLimit) { text = text.slice(-liveLogLimit); truncated = true }
-    item.logs[id] = { text, truncated, revision: (previous?.revision || 0) + 1 }
+    const clipped = clipLiveLogTail((append && previous ? previous.text : '') + String(value ?? ''))
+    item.logs[id] = { text: clipped.text, truncated: (append && previous ? previous.truncated : false) || clipped.truncated, revision: (previous?.revision || 0) + 1 }
   }
   const resetStages = (item: ExecutionItem, stages: any[]) => {
     item.stages = stageList(stages)
@@ -1532,18 +1582,10 @@ export function apply(ctx: Context) {
             const disk = await readPipelineStore()
             const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
             const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
-            const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
-            if (clearedAt) config.histClearedAt = clearedAt
-            config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0)
-            const keyOf = (r: any) => (r && r.tag) ? 'tag:' + r.tag : ((r && r.ts) ? 'ts:' + r.ts : 'no:' + (r && r.no) + ':' + (r && r.pipeline))
-            const seen = new Set(history.map(keyOf))
-            const serverOnly = diskHistory.filter((r: any) => !seen.has(keyOf(r)) && (clearedAt ? (Number(r && r.ts) || 0) > clearedAt : true))
-            const merged = history.concat(serverOnly)
-            merged.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))   // ts 倒序（新在前）；无 ts 的存量记录沉底
-            if (merged.length > 500) merged.length = 500
+            const merged = mergePipelineHistoryForWrite(config, diskCfg, history, diskHistory)
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
-            const text = serializePipelineStore(config, merged)
+            const text = serializePipelineStore(merged.config, merged.history)
             await writeJsonAtomic(PIPELINE_STORE, text)
           })
           json(res, 200, { ok: true })
@@ -1663,6 +1705,14 @@ export function apply(ctx: Context) {
       return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
     } catch { return {} }
   }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/history',
+    handler: (req: any, res: any) => handlePipelineHistoryRequest(req, res, {
+      statStore: async () => { try { return await fsStat(PIPELINE_STORE) } catch (error: any) { if (error?.code === 'ENOENT') return null; throw error } },
+      readStore: readPipelineStore,
+    }),
+  })
   /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */
   let pipelineExecutions: ReturnType<typeof createPipelineExecutionQueue>
 
@@ -1797,10 +1847,17 @@ export function apply(ctx: Context) {
             if (!logRunId || !logStageId || logRunId.length > 128 || logStageId.length > 128) {
               json(res, 400, { error: 'invalid runId or stageId' }); return
             }
+            const revisionRaw = url.searchParams.get('revision')
+            if (revisionRaw !== null && (!/^\d{1,16}$/.test(revisionRaw) || !Number.isSafeInteger(Number(revisionRaw)))) {
+              json(res, 400, { error: 'invalid revision' }); return
+            }
             const log = pipelineExecutions && typeof pipelineExecutions.log === 'function'
               ? pipelineExecutions.log(logRunId, logStageId)
               : null
             if (!log) { json(res, 404, { error: 'run or stage not found' }); return }
+            if (revisionRaw !== null && Number(revisionRaw) === log.revision) {
+              res.writeHead(304, { 'cache-control': 'no-store' }); res.end(); return
+            }
             json(res, 200, log)
             return
           }

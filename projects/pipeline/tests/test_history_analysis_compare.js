@@ -209,6 +209,22 @@ test('清空发生在刷新请求期间时，迟到响应不得复活历史', ()
   assert.equal(ctx.histClearedAt, 200);
 });
 
+test('本地清空尚未持久化时，服务端旧清空版本不得复活历史', () => {
+  const ctx = { history: [], buildNo: 9, histClearedAt: 200 };
+  vm.createContext(ctx);
+  vm.runInContext(functionSource('applyHistoryRefreshPayload'), ctx);
+
+  const applied = ctx.applyHistoryRefreshPayload({
+    config: { buildNo: 10, histClearedAt: 100 },
+    history: [runA],
+  }, 200);
+
+  assert.equal(applied, false);
+  assert.deepEqual(Array.from(ctx.history), []);
+  assert.equal(ctx.buildNo, 9);
+  assert.equal(ctx.histClearedAt, 200);
+});
+
 test('未发生本地清空时正常应用刷新历史并同步版本字段', () => {
   const ctx = { history: [], buildNo: 9, histClearedAt: 100 };
   vm.createContext(ctx);

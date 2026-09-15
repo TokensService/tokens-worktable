@@ -954,7 +954,7 @@ function persistState(){
 }
 function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态仅跨浏览器同步（定时计划的服务端执行暂不支持这两项预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) }; }
 function historyForPersist(){
-  const transient=['_lc','_lm','_ll','_profChecked'];
+  const transient=['_lc','_lm','_ll','_profChecked','_profState'];
   return history.filter(h=>!h.demo).map(h=>{
     const clean={}; Object.keys(h).forEach(k=>{ if(transient.indexOf(k)<0) clean[k]=h[k]; }); return clean;
   });
@@ -3992,7 +3992,12 @@ async function pullRemoteQueueLog(){
   const seq=++_remoteLogPullSeq;
   const request=(async()=>{
     try{
-      const response=await fetch('/api/worktable/pipeline/queue?runId='+encodeURIComponent(runId)+'&stageId='+encodeURIComponent(stageId),{cache:'no-store'});
+      const cached=rc.remoteLogs&&rc.remoteLogs[stageId];
+      const knownRevision=Number(cached&&cached.revision);
+      let url='/api/worktable/pipeline/queue?runId='+encodeURIComponent(runId)+'&stageId='+encodeURIComponent(stageId);
+      if(Number.isSafeInteger(knownRevision)&&knownRevision>=0) url+='&revision='+knownRevision;
+      const response=await fetch(url,{cache:'no-store'});
+      if(response.status===304) return cached||null;
       if(!response.ok) return null;
       const data=await response.json();
       const current=viewRc;
@@ -6339,6 +6344,16 @@ async function loadReplayLog(rec, stageName){
   rec._ll[l.stage]=job;
   return job;
 }
+function applyReplayProfileStages(rec,profileStages){
+  if(!rec||!Array.isArray(rec.logs)||!Array.isArray(profileStages)) return;
+  const byName={}; profileStages.forEach(stage=>{ if(stage&&stage.name) byName[stage.name]=stage; });
+  rec.logs.forEach(log=>{
+    const stage=log&&byName[log.stage];
+    if(!stage||!stage.status) return;
+    log.status=stage.status;
+    if(typeof stage.durSec==='number') log.dur=stage.durSec;
+  });
+}
 async function loadReplayLogs(rec){
   const jobs=[];
   const selected=flowStages().find(s=>s.id===selectedId);
@@ -6346,16 +6361,25 @@ async function loadReplayLogs(rec){
   /* 阶段状态校正：服务端定时执行的真实结果写入了归档目录的 run-<tag>.profile.json；
      历史条目里的阶段状态可能因页面/服务端记录按 tag 合并而被回退为 idle（未反映服务端实际执行），
      回放时按 profile.stages 覆盖各阶段 status/dur，使详情如实展示「已完成/跳过/错误/终止」。 */
-  if(rec.archive && rec.tag && !rec._profChecked){
-    rec._profChecked=true;
-    jobs.push(fetch('/api/worktable/file?path='+encodeURIComponent(rec.archive+'/run-'+rec.tag+'.profile.json'))
-      .then(r=> r.ok ? r.text() : null)
-      .then(t=>{ if(!t) return; let prof; try{ prof=JSON.parse(t); }catch(e){ return; }
-        if(!prof || !Array.isArray(prof.stages)) return;
-        const m={}; prof.stages.forEach(s=>{ if(s && s.name) m[s.name]=s; });
-        logs.forEach(l=>{ if(l && l.stage && m[l.stage] && m[l.stage].status){ l.status=m[l.stage].status; if(typeof m[l.stage].durSec==='number') l.dur=m[l.stage].durSec; } });
-      })
-      .catch(()=>{}));
+  if(rec.archive && rec.tag){
+    let state=rec._profState;
+    if(!state||typeof state!=='object'){
+      state={checked:!!rec._profChecked,promise:null,stages:null};
+      rec._profState=state;
+    }
+    if(Array.isArray(state.stages)) applyReplayProfileStages(rec,state.stages);
+    else{
+      if(!state.checked&&!state.promise){
+        state.checked=true; rec._profChecked=true;
+        state.promise=fetch('/api/worktable/file?path='+encodeURIComponent(rec.archive+'/run-'+rec.tag+'.profile.json'))
+          .then(r=>r.ok?r.text():null)
+          .then(text=>{ if(!text) return; let profile; try{ profile=JSON.parse(text); }catch(e){ return; } if(profile&&Array.isArray(profile.stages)) state.stages=profile.stages; })
+          .catch(()=>{})
+          .finally(()=>{ state.promise=null; });
+      }
+      /* state 在同 tag 的刷新前后共享：无论 profile 已完成还是仍在途，每个回放对象都从同一结果重放校正。 */
+      if(state.promise) jobs.push(state.promise.then(()=>{ if(Array.isArray(state.stages)) applyReplayProfileStages(rec,state.stages); }));
+    }
   }
   if(jobs.length) await Promise.all(jobs);
 }
@@ -6700,6 +6724,10 @@ $('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!c
 function applyHistoryRefreshPayload(st, clearAtStart){
   if(histClearedAt!==clearAtStart) return false;
   const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+  const remoteClearedAt=Number.isFinite(cfg.histClearedAt)?cfg.histClearedAt:0;
+  /* 本页刚清空但 400ms 防抖 PUT 尚未落盘时，服务端仍会返回旧版本；版本落后也必须丢弃，
+     不能只防“请求发出后才清空”这一种竞态。 */
+  if(remoteClearedAt<clearAtStart) return false;
   if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
   if(Array.isArray(st&&st.history) && st.history.length) history=st.history;
@@ -6710,7 +6738,7 @@ function applyHistoryRefreshPayload(st, clearAtStart){
    重读日志文件，也避免列表头部插入记录后按旧下标误选另一条运行。 */
 function preserveHistoryRuntimeCache(previous,next){
   if(!previous||!next) return;
-  ['_lc','_lm','_ll','_profChecked'].forEach(key=>{
+  ['_lc','_lm','_ll','_profChecked','_profState'].forEach(key=>{
     if(Object.prototype.hasOwnProperty.call(previous,key)) next[key]=previous[key];
   });
 }
@@ -6721,11 +6749,13 @@ function rebindHistoryRefreshSelection(previousSelection,wasReplay){
   if(index<0){ selHistoryIdx=-1; return null; }
   const next=history[index];
   preserveHistoryRuntimeCache(previousSelection,next);
+  if(next._profState&&Array.isArray(next._profState.stages)) applyReplayProfileStages(next,next._profState.stages);
   selHistoryIdx=index;
   if(wasReplay) replayRec=next;
   return next;
 }
 let _historyRefreshPromise=null, _historyRefreshNotifyError=false;
+let _historyEtag='';
 const HISTORY_REFRESH_MS=3000;
 /* 手动与自动刷新共用同一个在途请求。筛选、页码和分析勾选本来就是独立状态，只更新 history；
    当前回放按 tag（旧记录按稳定元数据）重新绑定，并保留已经加载的日志尾部。 */
@@ -6737,15 +6767,21 @@ async function refreshHistoryFromServer(showError){
   const wasReplay=!!replayRec;
   const request=(async()=>{
     try{
-      const response=await fetch('/api/worktable/pipeline',{cache:'no-store'});
+      const headers={}; if(_historyEtag) headers['If-None-Match']=_historyEtag;
+      const response=await fetch('/api/worktable/pipeline/history',{cache:'no-store',headers:headers});
+      if(response.status===304) return true;
       if(!response.ok) throw new Error('HTTP '+response.status);
+      const etag=response.headers&&response.headers.get('etag'); if(etag) _historyEtag=etag;
       const state=await response.json();
       /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
          防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录。 */
       if(!applyHistoryRefreshPayload(state,clearAtStart)) return false;
       const rebound=rebindHistoryRefreshSelection(previousSelection,wasReplay);
       if(wasReplay){
-        if(rebound){ rebuildReplayNodes(rebound); _detailKey=''; renderFlow(); renderDetail(); }
+        if(rebound){
+          rebuildReplayNodes(rebound); _detailKey=''; renderFlow(); renderDetail();
+          loadReplayLogs(rebound).then(()=>{ if(replayRec===rebound){ rebuildReplayNodes(rebound); _detailKey=''; renderFlow(); renderDetail(); } });
+        }
         else exitHistoryReplay();
       }
       renderHistory(); renderStats(); refreshArchiveTip();
