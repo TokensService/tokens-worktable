@@ -62,10 +62,12 @@ XDS 流水线按以下顺序绑定脚本：
 镜像必须包含以下模板路径，否则 `pull-image.sh` 会失败：
 
 ```text
-/opt/op_test/xds_template/k8s/xds-cluster
-/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml
-/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json
+/opt/deploy_template/xds_template/k8s/xds-cluster
+/opt/deploy_template/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml
+/opt/deploy_template/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json
 ```
+
+缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
 
 ## 归档与 AI 分析
 

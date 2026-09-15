@@ -31,7 +31,8 @@ Optional environment variables include `RUN_DIR`, `DEPLOY_IMAGE`,
 `model-health.sh` stages.
 
 `TEMPLATE_IMAGE` defaults to `IMAGE_NAME`. Set it to the image that carries
-`/opt/op_test/xds_template` when the deployment image is a runtime-only image.
+`/opt/deploy_template/xds_template` when the deployment image is a runtime-only image;
+if that directory is absent, the script falls back to `/opt/op_test/xds_template`.
 Alternatively, set `CHART_TEMPLATE_DIR`, `VALUES_TEMPLATE`, and `ARCH_FILE`
 together to bypass template-image export.
 
