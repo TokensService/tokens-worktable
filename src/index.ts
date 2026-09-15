@@ -556,41 +556,163 @@ function serverAbortReason(signal?: AbortSignal): any {
   return error
 }
 
-/** DSH 开启环境代理时，远程连接模式仍须像 /api/worktable/proxy 一样直连内网服务。 */
-async function serverDirectFetch(url: string, options: any = {}, timeoutMs = 20_000): Promise<any> {
-  const target = new URL(url)
-  if (!/^https?:$/.test(target.protocol)) throw new Error('unsupported protocol')
-  const signal: AbortSignal | undefined = options && options.signal
+function serverRequestTimeoutError(): any {
+  const error: any = new Error('request timeout')
+  error.code = 'ETIMEDOUT'
+  return error
+}
+
+function serverTargetPolicyError(message: string): any {
+  const error: any = new Error(message)
+  error.code = 'ELOCALTARGET'
+  error.serverPolicyError = true
+  return error
+}
+
+function serverIpFamily(hostname: string): 0 | 4 | 6 {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const nums = h.split('.').map((part) => (part && /^\d+$/.test(part) ? Number(part) : NaN))
+  if (nums.length === 4 && nums.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) return 4
+  return h.includes(':') ? 6 : 0
+}
+
+async function serverResolveLocalAddresses(hostname: string, signal: AbortSignal | undefined, timeoutMs: number, resolveFn?: any): Promise<Array<{ address: string; family: 4 | 6 }>> {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (!isLocalTarget(host)) throw serverTargetPolicyError('目标仅允许回环或内网地址')
+  const literalFamily = serverIpFamily(host)
+  if (literalFamily) return [{ address: host, family: literalFamily }]
   if (signal && signal.aborted) throw serverAbortReason(signal)
-  const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
+  const resolver = resolveFn || (await import('node:dns/promises')).lookup
   if (signal && signal.aborted) throw serverAbortReason(signal)
-  return new Promise((resolve, reject) => {
-    let request: any = null
+  const records: any = await new Promise((resolve, reject) => {
+    let settled = false
     let timer: ReturnType<typeof setTimeout> | null = null
     let listening = false
     const cleanup = () => {
       if (timer !== null) { clearTimeout(timer); timer = null }
       if (signal && listening) { signal.removeEventListener('abort', onAbort); listening = false }
     }
+    const finish = (error: any, value?: any) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error); else resolve(value)
+    }
+    const onAbort = () => finish(serverAbortReason(signal))
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+      listening = true
+      if (signal.aborted) { onAbort(); return }
+    }
+    timer = setTimeout(() => finish(serverRequestTimeoutError()), Math.max(1, timeoutMs))
+    Promise.resolve()
+      .then(() => resolver(host, { all: true, verbatim: true }))
+      .then((value) => finish(null, value), (error) => finish(error))
+  })
+  const addresses = Array.isArray(records) ? records.map((record: any) => ({
+    address: String(record && record.address || '').toLowerCase().replace(/^\[|\]$/g, ''),
+    family: Number(record && record.family),
+  })) : []
+  if (!addresses.length) {
+    const error: any = new Error('目标 DNS 未返回地址')
+    error.code = 'ENOTFOUND'
+    throw error
+  }
+  const invalid = addresses.find((record: any) => (record.family !== 4 && record.family !== 6)
+    || serverIpFamily(record.address) !== record.family
+    || !isLocalTarget(record.address))
+  if (invalid) throw serverTargetPolicyError('目标解析到了回环或内网之外的地址：' + invalid.address)
+  return addresses as Array<{ address: string; family: 4 | 6 }>
+}
+
+function serverPinnedLookup(addresses: Array<{ address: string; family: 4 | 6 }>): any {
+  let cursor = 0
+  return (_hostname: string, options: any, callback: any) => {
+    const requestedFamily = typeof options === 'number' ? Number(options) : Number(options && options.family)
+    const candidates = requestedFamily === 4 || requestedFamily === 6
+      ? addresses.filter((record) => record.family === requestedFamily)
+      : addresses
+    if (!candidates.length) {
+      const error: any = new Error('validated target has no address for requested family')
+      error.code = 'ENOTFOUND'
+      callback(error)
+      return
+    }
+    if (options && typeof options === 'object' && options.all === true) {
+      callback(null, candidates.map((record) => ({ ...record })))
+      return
+    }
+    const selected = candidates[cursor++ % candidates.length]
+    callback(null, selected.address, selected.family)
+  }
+}
+
+/** DSH 开启环境代理时，远程连接模式仍须像 /api/worktable/proxy 一样直连内网服务。 */
+async function serverDirectFetch(url: string, options: any = {}, timeoutMs = 20_000): Promise<any> {
+  const startedAt = Date.now()
+  const totalTimeoutMs = Math.max(1, Number(timeoutMs) || 20_000)
+  const target = new URL(url)
+  if (!/^https?:$/.test(target.protocol)) throw new Error('unsupported protocol')
+  const signal: AbortSignal | undefined = options && options.signal
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const addresses = options && options.requireLocalTarget === true
+    ? await serverResolveLocalAddresses(target.hostname, signal, totalTimeoutMs, options.resolveFn)
+    : null
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
+  if (remainingMs <= 0) throw serverRequestTimeoutError()
+  return new Promise((resolve, reject) => {
+    let request: any = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let listening = false
+    let responseReceived = false
+    let promiseSettled = false
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      if (signal && listening) { signal.removeEventListener('abort', onAbort); listening = false }
+    }
     const onAbort = () => { try { request?.destroy(serverAbortReason(signal)) } catch {} }
-    request = reqLib.request(url, {
+    const requestOptions: any = {
       method: String(options && options.method || 'GET').toUpperCase(),
       headers: options && options.headers ? options.headers : {},
       agent: options && options.useProxy === true ? undefined : new reqLib.Agent(),
-    }, (response: any) => {
+    }
+    if (addresses) requestOptions.lookup = serverPinnedLookup(addresses)
+    request = reqLib.request(url, requestOptions, (response: any) => {
+      responseReceived = true
+      promiseSettled = true
       resolve({ status: Number(response.statusCode) || 0, headers: response.headers || {}, body: response })
     })
-    request.once('error', (error: any) => { cleanup(); reject(error) })
-    request.once('close', cleanup)
-    if (signal) { signal.addEventListener('abort', onAbort, { once: true }); listening = true }
+    request.once('error', (error: any) => {
+      cleanup()
+      if (!promiseSettled) { promiseSettled = true; reject(error) }
+    })
+    request.once('close', () => {
+      cleanup()
+      if (!responseReceived && !promiseSettled) {
+        const error: any = new Error('connection closed before response')
+        error.code = 'ECONNRESET'
+        promiseSettled = true
+        reject(error)
+      }
+    })
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+      listening = true
+      if (signal.aborted) { onAbort(); return }
+    }
     timer = setTimeout(() => {
-      const error: any = new Error('request timeout')
-      error.code = 'ETIMEDOUT'
-      try { request.destroy(error) } catch {}
-    }, Math.max(1, Number(timeoutMs) || 20_000))
+      try { request.destroy(serverRequestTimeoutError()) } catch {}
+    }, Math.max(1, remainingMs))
     if (options && options.body !== undefined) request.write(options.body)
     request.end()
   })
+}
+
+function serverLocalFetch(url: string, options: any = {}): Promise<any> {
+  return serverDirectFetch(url, { ...(options || {}), requireLocalTarget: true })
 }
 
 function abortableServerSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -663,7 +785,7 @@ function serverFetchErrorDetail(error: any): string {
   let message = String((cause && cause.message) || (error && error.message) || error || 'unknown network error')
     .replace(/[\r\n]+/g, ' ')
     .replace(/(https?:\/\/)[^@\s/]+@/gi, '$1***@')
-    .replace(/([?&](?:access_token|token|api_key|key|password|pass|secret)=)[^&\s]+/gi, '$1***')
+    .replace(/([?&](?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|api[_-]?key|apikey|key|password|passwd|pass|secret|auth|authorization|credential|signature|sig)=)[^&\s]+/gi, '$1***')
     .trim()
     .slice(0, 500)
   if (!message) message = 'unknown network error'
@@ -701,7 +823,7 @@ async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: 
     if (abortKind === 'external' || (signal && signal.aborted)) throw serverAbortReason(signal)
     if (String(error && (error as Error).message || '').startsWith(label)) throw error
     const wrapped: any = new Error(label + '请求失败：' + serverFetchErrorDetail(error))
-    wrapped.networkError = true
+    wrapped.networkError = !(error && (error as any).serverPolicyError)
     wrapped.cause = error
     throw wrapped
   } finally {
@@ -2711,7 +2833,7 @@ export function apply(ctx: Context) {
         entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
         if (r.code !== 0 && !r.aborted) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverDirectFetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)

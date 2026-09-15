@@ -709,7 +709,7 @@ test('服务端 fetch 已取消时不发起网络请求且不误报等待超时'
 
 test('服务端 fetch 网络错误保留请求阶段和底层错误码且不回显 URL 凭据', async () => {
   const f = loadRunRoute(stored)
-  const cause = Object.assign(new Error('connect ECONNREFUSED 192.168.1.101:9000'), { code: 'ECONNREFUSED' })
+  const cause = Object.assign(new Error('connect ECONNREFUSED https://user:do-not-log@example.internal/tasks?signature=do-not-log-signature'), { code: 'ECONNREFUSED' })
 
   await assert.rejects(
     f.ctx.serverFetchResponse(
@@ -722,6 +722,7 @@ test('服务端 fetch 网络错误保留请求阶段和底层错误码且不回�
     error => {
       assert.match(String(error?.message), /^EvalTokens 任务列表请求失败：.*ECONNREFUSED/)
       assert.doesNotMatch(String(error?.message), /do-not-log/)
+      assert.doesNotMatch(String(error?.message), /do-not-log-signature/)
       return true
     },
   )
@@ -771,6 +772,76 @@ test('服务端内网直连在加载传输模块期间收到取消时不会发�
 
   await assert.rejects(pending, error => error?.name === 'AbortError')
   assert.equal(requests, 0)
+})
+
+test('服务端内网直连拒绝字面白名单主机解析出的公网地址且不发请求', async t => {
+  let requests = 0
+  const service = createServer((_req, res) => { requests += 1; res.end('{}') })
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, resolve)
+  })
+  t.after(() => new Promise(resolve => service.close(resolve)))
+  const address = service.address()
+  assert.ok(address && typeof address === 'object')
+  const f = loadRunRoute(stored)
+
+  await assert.rejects(
+    f.ctx.serverDirectFetch(`http://localhost:${address.port}/must-not-connect`, {
+      requireLocalTarget: true,
+      resolveFn: async () => [{ address: '203.0.113.7', family: 4 }],
+    }, 500),
+    /目标解析到了回环或内网之外的地址/,
+  )
+  assert.equal(requests, 0)
+})
+
+test('服务端内网直连固定已校验的 DNS 结果而不进行第二次解析', async t => {
+  let requests = 0
+  const service = createServer((_req, res) => { requests += 1; res.end('{}') })
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise(resolve => service.close(resolve)))
+  const address = service.address()
+  assert.ok(address && typeof address === 'object')
+  const f = loadRunRoute(stored)
+
+  const response = await f.ctx.serverDirectFetch(`http://dsh.internal:${address.port}/pinned`, {
+    requireLocalTarget: true,
+    resolveFn: async () => [{ address: '127.0.0.1', family: 4 }],
+  }, 500)
+  for await (const _chunk of response.body) { /* drain */ }
+
+  assert.equal(response.status, 200)
+  assert.equal(requests, 1)
+})
+
+test('服务端内网直连在响应前提前 close 时明确失败而不永久挂起', async t => {
+  const service = createServer()
+  service.on('upgrade', (_req, socket) => {
+    socket.end('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n')
+  })
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise(resolve => service.close(resolve)))
+  const address = service.address()
+  assert.ok(address && typeof address === 'object')
+  const f = loadRunRoute(stored)
+
+  const observed = await Promise.race([
+    f.ctx.serverDirectFetch(`http://127.0.0.1:${address.port}/upgrade`, {
+      headers: { Connection: 'Upgrade', Upgrade: 'test' },
+    }, 25).then(() => ({ resolved: true }), error => ({ error })),
+    new Promise(resolve => setTimeout(() => resolve({ pending: true }), 150)),
+  ])
+
+  assert.equal(observed?.pending, undefined, '连接关闭后请求仍保持 pending')
+  assert.equal(observed?.resolved, undefined)
+  assert.equal(observed?.error?.code, 'ECONNRESET')
 })
 
 test('服务端脚本把完整大日志流式落盘，内存结果有界且保留早期变量', async t => {
