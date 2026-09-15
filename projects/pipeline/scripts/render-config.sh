@@ -332,11 +332,6 @@ for group_index, group in enumerate(groups):
     group["rayStartParamsPorts"]["min-worker-port"] = range_start
     group["rayStartParamsPorts"]["max-worker-port"] = range_end
 
-# 单节点部署时按组顺序连续占卡（默认每节点 8 卡）：TE 组依次分得 [0..n)、
-# [n..n+m) 等连续块（如 prefill 0,1,2,3 / decode 4,5,6,7）。kubelet 不会
-# 覆盖显式声明的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；
-# 启用 lmcache 时 sidecar 的卡必须与其 PTE 完全一致（CUDA IPC 按 ordinal
-# 匹配，集合与顺序都不能差），见下方 taskExecutorGroups 写入后的对齐逻辑。
 # TE 组按顺序在节点内连续占卡（默认每节点 8 卡），节点填满换下一个节点
 # （bin-packing，arch 顺序即 prefill 优先）：如 2 节点 3P1D → 节点A prefill1(0-3)
 # + prefill2(4-7)，节点B prefill3(0-3)+decode1(4-7)。kubelet 不会覆盖显式声明
@@ -399,6 +394,12 @@ template_vars.setdefault("LMCACHE_CPU_REQUEST", "4")
 template_vars.setdefault("LMCACHE_MEMORY_REQUEST", "8Gi")
 template_vars.setdefault("LMCACHE_CPU_LIMIT", "8")
 template_vars.setdefault("LMCACHE_MEMORY_LIMIT", "240Gi")
+# L2(fs_native 磁盘缓存)：默认关闭；配置值对齐 78 节点已验证部署
+# (/mnt/paas/lichangsong/xds_bnt3_standalone/render_values.py)。
+template_vars.setdefault("LMCACHE_L2_ENABLED", "true")
+template_vars.setdefault("LMCACHE_L2_BASE_PATH", "")
+template_vars.setdefault("LMCACHE_L2_MAX_CAPACITY_GB", "10240")
+template_vars.setdefault("LMCACHE_L2_NUM_WORKERS", "64")
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -449,6 +450,17 @@ upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
 lmcache_sidecar = values.get("lmcacheSidecar")
 if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
+    # L1 lazy 分配：不在启动时预分配全量池（多实例共享 tmpfs /dev/shm 时
+    # 避免 2×L1 > tmpfs 容量的 ENOSPC）；默认值由 values 模板控制。
+    # L2 fs_native 磁盘缓存(可选)：base_path 缺省按架构名自动生成；adapter
+    # JSON 由 chart 模板按 l2BasePath/l2MaxCapacityGb/l2NumWorkers 组装
+    # （LRU/0.2/0.8，use_odirect false，与 78 已验证部署一致）。
+    l2_enabled = str(template_vars.get("LMCACHE_L2_ENABLED", "false")).lower() == "true"
+    lmcache_sidecar["l2Enabled"] = l2_enabled
+    if l2_enabled:
+        lmcache_sidecar["l2BasePath"] = template_vars.get("LMCACHE_L2_BASE_PATH") or (
+            "/mnt/paas/lmcache/" + arch_name.lower() + "-l2/shared"
+        )
     # lmcache 开启时 KV offload 由 sidecar L1 承担，缩小 TE 内存申请：
     # arch（OffloadingConnector/1M ctx）预估的 memory request 可能超出
     # 大页节点 allocatable（如 2000Gi hugepages 后仅 ~944Gi）导致 TE 永久 Pending。
@@ -616,11 +628,6 @@ if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_fra
     )
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
-# helm 的 values 解析走 json-yaml，大整数会变 float64 并被渲染成科学计数法
-# （如 1048576 -> 1.048576e+06），sidecar argparse 接受不了；统一加引号成字符串。
-values_text = Path(values_file).read_text(encoding="utf-8")
-values_text = re.sub(r"(?m)^(\s*l1AlignBytes:\s*)(?!['\"])(\S+)\s*$", r"\1'\2'", values_text)
-Path(values_file).write_text(values_text, encoding="utf-8")
 with open(arch_request_file, "w", encoding="utf-8") as output:
     json.dump(arch, output, ensure_ascii=False, indent=2)
     output.write("\n")
