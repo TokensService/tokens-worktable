@@ -164,7 +164,7 @@ test('普通任务卡和系统预设任务卡都注册整卡拖拽事件', () =>
   });
 });
 
-test('控件上按下关闭整卡拖拽以放行文字划选，卡片空白处按下保持可拖', () => {
+test('控件或折叠标题上按下关闭整卡拖拽，卡片空白处按下保持可拖', () => {
   const context = {};
   vm.createContext(context);
   vm.runInContext(extractFunction('stageCardMouseDown'), context);
@@ -173,6 +173,11 @@ test('控件上按下关闭整卡拖拽以放行文字划选，卡片空白处�
   const input = { closest: sel => (sel.includes('input') ? input : null) };
   context.stageCardMouseDown({ target: input, currentTarget: row });
   assert.equal(row.draggable, false, 'input 上按下：临时关拖拽，输入文字可划选');
+
+  row.draggable = true;
+  const summary = { closest: sel => (sel.includes('summary') ? summary : null) };
+  context.stageCardMouseDown({ target: summary, currentTarget: row });
+  assert.equal(row.draggable, false, 'summary 上按下：临时关拖拽，允许原生展开/折叠');
 
   row.draggable = false;
   const blank = { closest: () => null };

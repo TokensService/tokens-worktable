@@ -76,6 +76,8 @@
     .plstage-ins-top { top:-9px; }
     .plstage-ins-bottom { bottom:-9px; }
     .plstage-ins:hover { background:var(--dsw-alias-state-accent-primary); color:#fff; }
+    .plstage-params > summary { width:max-content; color:var(--dsw-alias-label-secondary); font-size:11px; cursor:pointer; user-select:none; }
+    .plstage-params[open] > summary { margin-bottom:7px; }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
     .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--st-run); transition:width .12s linear; }
@@ -2660,12 +2662,12 @@ function clearStageDragMarks(){
   const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
   for(let i=0;i<wrap.children.length;i+=1) wrap.children[i].classList.remove('plstage-dragging','plstage-drag-before','plstage-drag-after');
 }
-/* 整卡 draggable 会抢占卡内控件的手势：在 input/textarea 等控件上按下拖动时浏览器发起整卡拖拽，
+/* 整卡 draggable 会抢占卡内控件的手势：在 input/textarea/summary 等控件上按下拖动时浏览器发起整卡拖拽，
    输入框文字无法划选。mousedown 时按落点切换 draggable——落在交互控件上即临时关拖拽（走原生划选/控件交互），
    落在卡片空白处保持可拖；下次按下重新判定，无需恢复 */
 function stageCardMouseDown(e){
   const t=e.target;
-  e.currentTarget.draggable=!(t && t.closest && t.closest('input,textarea,select,button,a,label,[contenteditable="true"]'));
+  e.currentTarget.draggable=!(t && t.closest && t.closest('input,textarea,select,button,a,label,summary,[contenteditable="true"]'));
 }
 function stageCardDragStart(e){
   const row=e.currentTarget; stageDragFrom=parseInt(row.dataset.idx,10);
@@ -2737,7 +2739,10 @@ function renderStageEditor(){
       +'</div>'
       +'</div>'
       +'<div data-action style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>'
+      +'<details class="plstage-params" data-param-panel style="display:none;">'
+      +'<summary data-param-summary>任务参数（0）</summary>'
       +'<div data-params style="display:flex;gap:10px;flex-wrap:wrap;"></div>'
+      +'</details>'
       +'<div data-sched style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>';
     wrap.appendChild(row);
     renderStageActionRow(i);
@@ -2751,16 +2756,26 @@ function renderStageEditor(){
 }
 function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
-  const box=row.querySelector('[data-params]'); box.innerHTML='';
+  const panel=row.querySelector('[data-param-panel]');
+  const panelTitle=panel&&panel.querySelector('[data-param-summary]');
+  function setPanelCount(count){
+    if(!panel) return;
+    panel.style.display=count?'':'none';
+    if(panelTitle) panelTitle.textContent='任务参数（'+count+'）';
+  }
+  setPanelCount(0);
+  const box=row.querySelector('[data-params]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
-  /* HTTP 阶段无脚本参数表单：参数经 URL 的 {GIT_BRANCH} 等占位符传递 */
-  if(s.kind==='http') return;
+  /* 模拟阶段无参数；HTTP 参数经 URL 的 {GIT_BRANCH} 等占位符传递。切换类型时会保留旧 script 元数据，
+     因此脚本参数分支须按当前 kind 限定，不能仅凭 s.script 是否存在判断。 */
+  if(s.kind==='simulate'||s.kind==='http') return;
   /* EvalTokens 阶段：任务输入参数可设置——识别到的任务原值填入框中（未改动时弱化色显示，仅展示、不下发），
      修改后写入 evaltokens.values 随流水线持久化，运行时作为输入覆盖随 run 启动请求下发（见 runEvaltokensStep）；
      清空或改回与任务原值一致=不覆盖（任务按创建时的输入运行）。「识别参数」重新识别时保留已设置的值不刷新 */
   if(s.kind==='evaltokens'){
     const et=s.evaltokens; const ps=et && et.params;
     if(!ps || !ps.length) return;
+    setPanelCount(ps.length);
     et.values=et.values||{};
     const title=document.createElement('span'); title.className='dshell-muted'; title.style.fontSize='11px'; title.textContent='任务输入参数（自动识别，可设置覆盖）';
     box.appendChild(title);
@@ -2782,7 +2797,8 @@ function renderStageParams(i){
     });
     return;
   }
-  if(!s.script||!s.script.params) return;
+  if((s.kind!=='shell'&&s.kind!=='python')||!s.script||!s.script.params) return;
+  setPanelCount(s.script.params.length);
   s.script.params.forEach(p=>{
     /* 识别到的默认值以可编辑文本填入框中（未改动时弱化色显示，仅为展示：不写进 values、不随执行下发，
        留空语义=继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/上游同名变量，未注入则由脚本自身 :- 默认兜底；
