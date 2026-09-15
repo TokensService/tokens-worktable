@@ -302,7 +302,7 @@
     </div>
     <div style="overflow:auto;">
       <table class="dshell-table" id="plTable">
-        <thead><tr><th>流水线</th><th>阶段数</th><th>操作</th></tr></thead>
+        <thead><tr><th>流水线</th><th>阶段数</th><th>运行队列</th><th>操作</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -4162,6 +4162,40 @@ function remoteQueueViewAttrs(client,item,kind,title){
   if(!remoteQueueDetailAvailable(item)) return '';
   return ' data-qremote-client="'+esc(client&&client.id||'')+'" data-qremote-id="'+esc(item.id)+'" data-qremote-kind="'+kind+'" title="'+title+'" style="cursor:pointer;"';
 }
+/* 流水线任务列表的运行队列计数：本页运行/排队（含节点租约申请中）与服务端、其他浏览器
+   快照统一按稳定 pipelineId 汇总；自定义运行没有 pipelineId，不归到同名流水线，避免重名误计。 */
+function pipelineQueueCounts(){
+  const counts=Object.create(null);
+  const add=(item,kind)=>{
+    const id=String(item&&item.pipelineId||''); if(!id) return;
+    if(!counts[id]) counts[id]={running:0,queued:0};
+    counts[id][kind]+=1;
+  };
+  activeRuns.forEach(item=>add(item,'running'));
+  localQueueItems().forEach(item=>add(item,'queued'));
+  remoteQueueClients.forEach(client=>{
+    remoteRunsOf(client).forEach(item=>add(item,'running'));
+    (Array.isArray(client&&client.queue)?client.queue:[]).forEach(item=>add(item,'queued'));
+  });
+  return counts;
+}
+function pipelineQueueCountHtml(count){
+  const running=Number(count&&count.running)||0, queued=Number(count&&count.queued)||0;
+  if(!running&&!queued) return '—';
+  const parts=[];
+  if(running) parts.push('<span class="dshell-badge dshell-badgeWait" style="color:var(--st-run)">运行 '+running+'</span>');
+  if(queued) parts.push('<span class="dshell-badge dshell-badgeWait" style="color:var(--st-wait)">排队 '+queued+'</span>');
+  return parts.join(' ');
+}
+function refreshPipelineQueueCounts(){
+  if(typeof document==='undefined'||typeof document.querySelectorAll!=='function') return;
+  const counts=pipelineQueueCounts();
+  document.querySelectorAll('[data-plqueue]').forEach(cell=>{
+    const count=counts[cell.getAttribute('data-plqueue')]||{running:0,queued:0};
+    cell.innerHTML=pipelineQueueCountHtml(count);
+    cell.title=(count.running||count.queued)?('运行 '+count.running+' · 排队 '+count.queued):'当前无运行或排队任务';
+  });
+}
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
   /* 排队预览自愈：预览中的排队项已出队（被取消/清空，或启动校验失败被移出队列）时，编排区回到当前流水线
@@ -4319,6 +4353,7 @@ function renderQueue(){
     renderQueue();
   }));
   list.querySelectorAll('[data-qremote-id]').forEach(el=>el.addEventListener('click',()=>focusRemoteQueueItem(el.getAttribute('data-qremote-client'),el.getAttribute('data-qremote-id'),el.getAttribute('data-qremote-kind'))));
+  refreshPipelineQueueCounts();   // 每秒队列同步只更新现有计数单元格，不重建任务表（保留筛选与行交互）
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
 function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)&&c.runs.length) return c.runs; return c.running?[c.running]:[]; }
@@ -6987,10 +7022,11 @@ function renderPipelines(){
   renderPlFilterOptions();
   /* 已置顶（pinnedAt）排最前，多条按置顶时间新→旧；未置顶保持数组原序（内置经加载迁移居首）——Array.sort 稳定，键相同不动相对位置 */
   const view=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
+  const queueCounts=pipelineQueueCounts();
   $('plCount').textContent = pipelines.length ? ('('+view.length+'/'+pipelines.length+')') : '';
   const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw || plFilter.favorite==='favorite') ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
   const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="3" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="4" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
   view.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
@@ -7001,10 +7037,14 @@ function renderPipelines(){
     /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
     const auditTag = p.builtIn ? '' : ((plOwnerOf(p) ? ' · 创建 @'+esc(plOwnerOf(p)) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwnerOf(p)) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
     if(isCur) tr.className='sel';
-    /* 是否在运行不在本表展示：在跑/排队信息统一在「运行队列」查看（点队列条目看阶段详情），本表整行点击即选用 */
+    /* 本表只展示该流水线在全部来源中的运行/排队汇总，不把某一次运行或「查看中」状态绑进行点击；
+       逐次详情仍统一在「运行队列」查看，本表整行点击始终选用流水线。 */
     tr.title='点击选用该流水线';
+    const queueCount=queueCounts[p.id]||{running:0,queued:0};
+    const queueTitle=(queueCount.running||queueCount.queued)?('运行 '+queueCount.running+' · 排队 '+queueCount.queued):'当前无运行或排队任务';
     tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
+      '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
       ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
     tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）

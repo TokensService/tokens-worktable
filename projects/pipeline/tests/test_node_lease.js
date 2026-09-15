@@ -262,6 +262,7 @@ test('renderQueue：等待节点的排队项展示占用节点与占用者', () 
     drainQueue: () => {}, cancelQueue: () => {}, abortRun: () => {}, focusRun: () => {},
     canControlRun: () => true,   // 控制权守卫：本用例聚焦节点等待标注，放行使按钮按原行为渲染
     focusQueueItem: () => {}, renderPipelines: () => {}, scheduleQueuePublish: () => {},
+    refreshPipelineQueueCounts: () => {},   // 本用例不挂载任务列表，只验证队列的节点等待文案
     syncViewRun: () => {}, applyRunOverall: () => {}, refreshArchiveTip: () => {}, resetNodes: () => {},
     console,
   };

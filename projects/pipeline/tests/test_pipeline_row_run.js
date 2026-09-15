@@ -65,6 +65,8 @@ function makeContext(runResult) {
     ],
     curPipelineId: 'pipe-1',
     activeRuns: [],
+    pendingLeaseStarts: [],
+    remoteQueueClients: [],
     viewRc: null,
     plFilter: { kw: '', owner: 'all' },   // 筛选状态桩：本测试只验证行内运行按钮，不关心筛选；用 all 让全部行进视图
     plFilterMatch: () => true,   // 筛选桩：所有流水线均命中（行运行测试不涉及筛选语义）
@@ -87,6 +89,18 @@ function makeContext(runResult) {
     queue,
   };
   vm.createContext(context);
+  const localQueueStart = source.indexOf('function localQueueItems');
+  const localQueueEnd = source.indexOf('function queuePreviewRc', localQueueStart);
+  const remoteRunsStart = source.indexOf('function remoteRunsOf');
+  const remoteRunsEnd = source.indexOf('/* ---------- 运行引擎', remoteRunsStart);
+  const queueCountsStart = source.indexOf('function pipelineQueueCounts(){');
+  const queueCountsEnd = source.indexOf('function renderQueue(){', queueCountsStart);
+  assert.ok(localQueueStart >= 0 && localQueueEnd > localQueueStart, 'localQueueItems not found');
+  assert.ok(remoteRunsStart >= 0 && remoteRunsEnd > remoteRunsStart, 'remoteRunsOf not found');
+  assert.ok(queueCountsStart >= 0 && queueCountsEnd > queueCountsStart, 'pipelineQueueCounts not found');
+  vm.runInContext(source.slice(localQueueStart, localQueueEnd), context);
+  vm.runInContext(source.slice(remoteRunsStart, remoteRunsEnd), context);
+  vm.runInContext(source.slice(queueCountsStart, queueCountsEnd), context);
   vm.runInContext(source.slice(start, end), context);
   context.renderPipelines();
   return { context, tbody, calls };

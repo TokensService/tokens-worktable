@@ -495,10 +495,15 @@ test('publishQueue：节点租约申请期间继续把待启动项作为可查�
 /* ---------- 队列区渲染（renderQueue：排队项可点击 + 预览自愈） ---------- */
 function makeQueueContext() {
   const list = new FakeNode('div');
+  const countCell = new FakeNode('td');
+  countCell.getAttribute = name => name === 'data-plqueue' ? 'p1' : null;
   const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
   const calls = { cancel: [], abort: [], cancelServer: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
-    document: { createElement: tag => new FakeNode(tag) },
+    document: {
+      createElement: tag => new FakeNode(tag),
+      querySelectorAll: selector => selector === '[data-plqueue]' ? [countCell] : [],
+    },
     $: id => els[id] || new FakeNode('div'),
     queue: [], pendingLeaseStarts: [], activeRuns: [], viewRc: null, running: false, remoteQueueClients: [],
     queueReasonOpen: new Set(), MAX_ACTIVE_RUNS: 4,
@@ -524,8 +529,18 @@ function makeQueueContext() {
   vm.runInContext(extract('function remoteQueueDetailAvailable', 'function remoteQueuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueViewAttrs', 'function renderQueue(){'), context);
   vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
-  return { context, list, els, calls };
+  return { context, list, countCell, els, calls };
 }
+
+test('renderQueue：队列重绘同步刷新任务列表中的流水线计数', () => {
+  const { context, countCell } = makeQueueContext();
+  context.queue.push({ id: 'q1', pipelineId: 'p1', by: 'alice', pipelineName: 'CI 构建', source: 'manual', queuedAt: 1 });
+
+  context.renderQueue();
+
+  assert.match(countCell.innerHTML, /排队 1/);
+  assert.equal(countCell.title, '运行 0 · 排队 1');
+});
 
 test('renderQueue：排队项标题可点击（data-qview）触发详情预览，取消按钮不受影响', () => {
   const { context, list, calls } = makeQueueContext();

@@ -1,5 +1,11 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线任务列表展示各流水线的运行队列数量（`projects/pipeline/pipeline.html`）：新增「运行队列」列，
+  按稳定流水线 ID 汇总当前页面、节点租约申请中、服务端 API/定时任务以及其他浏览器的全部在跑与排队条目，
+  分别显示「运行 N」「排队 M」，无活动时显示「—」；自定义运行没有流水线 ID，不按重名误归类。
+  每秒队列同步只定向更新现有计数单元格，不重建任务表，保留筛选与行交互状态；兼容旧浏览器仅上报单条
+  `running` 的快照。新增 `projects/pipeline/tests/test_pipeline_queue_counts.js`，并扩充
+  `test_queue_item_preview.js`、`test_pipeline_row_run.js` 覆盖全来源聚合、列表展示、实时刷新与既有行操作。
 - 修复运行历史刷新在旧版插件下报 HTTP 404（`projects/pipeline/pipeline.html`）：轻量历史接口
   `/api/worktable/pipeline/history` 是后加的服务端路由，而工作台经 `/api/worktable/site` 直接从源码目录
   托管页面时，前端可能新于正在运行的旧版插件（如 v1.1.2 发行包无此路由），手动与自动刷新均失败弹窗。
