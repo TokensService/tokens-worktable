@@ -457,10 +457,12 @@ template_vars.setdefault("XDS_TE_POD_LABEL_VAL", node_selector_value)
 # 数据库五项为 mock 参考值（MOCK_DB=true 时不真正连库）；ELB_ID 仅用于注解；
 # NODE_PORT/SERVICE_PORT/COLLECTOR_GATEWAY_URL 为本环境固定配置。
 template_vars.setdefault("XDS_DATABASE_HOST", "127.0.0.1")
-template_vars.setdefault("XDS_DATABASE_PORT", "5432")
-template_vars.setdefault("XDS_DATABASE_NAME", "xds")
-template_vars.setdefault("XDS_DATABASE_USERNAME", "xds")
-template_vars.setdefault("DATABASE_PASSWORD", "mock")
+# 数据库连接配置由渲染流程统一覆盖，避免模板或 TEMPLATE_VARS_JSON 带入旧值。
+template_vars["XDS_DATABASE_NAME"] = "xds_db"
+template_vars["XDS_DATABASE_PORT"] = "31106"
+template_vars["XDS_DATABASE_USERNAME"] = "xds"
+template_vars["DATABASE_PASSWORD"] = "XDS@2026"
+template_vars["XDS_DATABASE_PASSWORD"] = "XDS@2026"
 template_vars.setdefault("ELB_ID", "unused")
 if target_node_port is not None:
     template_vars["NODE_PORT"] = str(target_node_port)
@@ -500,6 +502,20 @@ for key, value in replace_map.items():
 for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
+
+# 兼容模板直接写入数据库环境变量的场景：占位符替换后仍强制统一为部署配置。
+database_env = {
+    "XDS_DATABASE_NAME": "xds_db",
+    "XDS_DATABASE_PORT": "31106",
+    "XDS_DATABASE_USERNAME": "xds",
+    "XDS_DATABASE_PASSWORD": "XDS@2026",
+}
+common_env = values.get("common", {}).get("containerEnv", [])
+if isinstance(common_env, list):
+    for entry in common_env:
+        if isinstance(entry, dict) and entry.get("name") in database_env:
+            entry["value"] = database_env[entry["name"]]
+            entry.pop("valueFrom", None)
 
 if str(mock_db).lower() == "true":
     framework_files = values.get("frameworkConfigFiles")

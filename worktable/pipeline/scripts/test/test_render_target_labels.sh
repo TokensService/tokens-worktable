@@ -41,8 +41,14 @@ common:
       value: 192.168.0.243
     - name: XDS_NAMESPACE
       value: old-namespace
+    - name: XDS_DATABASE_NAME
+      value: {XDS_DATABASE_NAME}
     - name: XDS_DATABASE_PORT
       value: {XDS_DATABASE_PORT}
+    - name: XDS_DATABASE_USERNAME
+      value: {XDS_DATABASE_USERNAME}
+    - name: XDS_DATABASE_PASSWORD
+      value: {DATABASE_PASSWORD}
     - name: EMS_ENABLE
       value: 'true'
 nodeSelector:
@@ -194,7 +200,10 @@ env = {entry["name"]: entry.get("value") for entry in values["common"]["containe
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-175-17", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
-assert env["XDS_DATABASE_PORT"] == "3306", env
+assert env["XDS_DATABASE_NAME"] == "xds_db", env
+assert env["XDS_DATABASE_PORT"] == "31106", env
+assert env["XDS_DATABASE_USERNAME"] == "xds", env
+assert env["XDS_DATABASE_PASSWORD"] == "XDS@2026", env
 assert env["EMS_ENABLE"] == "false", env
 assert isinstance(env["XDS_DATABASE_PORT"], str), env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
