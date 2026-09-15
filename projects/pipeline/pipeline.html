@@ -5091,6 +5091,13 @@ async function runUrlStep(rc, i){
     let result=null, buildNum=null, building=true;
     let consoleRead=0, consoleStarted=false, consoleProgressive=true, consoleDisabled=false, consoleError='', lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
+    /* 构建状态轮询的持续性故障（「Jenkins 服务配置」地址不对 / 桥接未启动 / CORS 拦截 / 401·403）不得静默
+       无限重试：此前 catch 吞掉一切错误、buildNum 永远拿不到，阶段超时默认留空（无超时）时没有任何兜底，
+       阶段永远卡在「等待执行…」且日志看不到原因。现按连续失败计数：首次与每 15 次回显原因，
+       连续 30 次（约 1 分钟）按阶段失败收尾；成功一次即清零。
+       例外：已确认任务存在（拿到 nextBuildNumber）时 lastBuild 404 = 首次构建尚未开始，属合法排队等待，不计失败。 */
+    let pollFails=0;
+    const pollFailCap=30;
     while(pollable && (building||buildNum==null)){
       await waitForPoll();
       if(!ensureActive()) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
@@ -5098,9 +5105,22 @@ async function runUrlStep(rc, i){
         const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
         const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration',ctrl.signal);
         if(!ensureActive()) return;
+        pollFails=0;
         if(buildNum==null && info.number && (preNum==null || info.number>=preNum)) buildNum=info.number;
         if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
-      }catch(e){ if(!ensureActive()) return; }
+      }catch(e){
+        if(!ensureActive()) return;
+        const pollErr=String(e&&e.message?e.message:e).slice(0,512);
+        const queueWait=/^HTTP 404\b/.test(pollErr)&&buildNum==null&&preNum!=null;   // 任务已确认存在、首次构建尚未开始：合法等待（见上方注释）
+        if(!queueWait){
+          pollFails+=1;
+          if(pollFails===1||pollFails%15===0){
+            appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+          }
+          if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
+        }
+      }
       /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
          404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
       if(buildNum!=null && !consoleDisabled){
