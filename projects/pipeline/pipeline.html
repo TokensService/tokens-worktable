@@ -537,6 +537,17 @@
       </div>
       <div id="profilingParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
+    <!-- 脚本目录：全部脚本（阶段/清理/检查/Profiling/归档/部署策略/普罗收集）按名选用的根目录；默认=插件安装后的 scripts 路径 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;">脚本目录</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="cfgScriptsDir" class="dshell-input" style="width:340px;" placeholder="scripts 目录（绝对路径，留空=安装默认）" title="流水线全部脚本按名称从此目录选用；留空保存=恢复安装默认（插件安装后的 projects/pipeline/scripts）" />
+        <button id="cfgScriptsDirSave" class="dshell-btn mini" type="button">保存</button>
+        <button id="cfgScriptsDirReset" class="dshell-btn dshell-btnGhost mini" type="button" title="清除自定义配置，恢复为插件安装后的 scripts 路径">重置为安装默认</button>
+        <span id="cfgScriptsDirTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">流水线阶段、环境清理/检查/Profiling、归档、部署策略与普罗收集脚本都按名称从此目录选用。默认路径为插件安装后的 scripts 目录（随安装位置自动解析，升级插件后跟随新安装位置）；自定义后随设置持久化到服务端（worktable-pipeline.json）并跨浏览器同步，「导出设置」文件同样携带；定时任务与 API 触发的服务端执行使用同一份配置，未配置时服务端也按安装默认路径兜底。</p>
+    </div>
     <!-- 归档配置：运行日志与 profiling 产物的归档根目录 -->
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px">归档配置</h2>
@@ -967,7 +978,8 @@ async function loadServerState(){
         repositories.forEach(function(r){ if(prevPass[r.id]) r.pass=prevPass[r.id]; });
       }
       // 当前代码仓 curRepoId 仅存浏览器本地，不从服务端覆盖（仓库定义仍从服务端加载，见上 repositories 块）；见 collectConfig
-      if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+      if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir){ scriptsDir=cfg.scriptsDir; scriptsDirIsFallback=false; }
+      else maybeAdoptInstalledScriptsDir();   // 服务端设置文件未配置 scriptsDir：fallback 态改用安装默认（health 未到时由 health 回调再试）
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
       if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
       if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
@@ -1869,7 +1881,37 @@ function detectScriptsDir(){
   return 'scripts';
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
+/* 脚本目录来源标记：true=当前值未经任何设置配置（localStorage/服务端设置文件都没有），
+   允许安装默认路径（/api/worktable/health 的 dir 解析）到达后升级为安装后 scripts 路径 */
+let scriptsDirIsFallback = !(function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })();
+let installedScriptsDir = null;   // 插件安装后的 scripts 绝对路径：<health.dir>/projects/pipeline/scripts
 function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
+/* 脚本目录默认值：安装默认已解析则优先（安装后的 scripts 路径），否则退回 URL 嗅探（detectScriptsDir） */
+function scriptsDirDefault(){ return installedScriptsDir || detectScriptsDir(); }
+/* 安装默认到达或服务端设置无 scriptsDir 时调用：fallback 态生效值升级为安装默认并落盘、刷新脚本列表 */
+function maybeAdoptInstalledScriptsDir(){
+  if(!scriptsDirIsFallback || !installedScriptsDir || scriptsDir===installedScriptsDir) return;
+  scriptsDir=installedScriptsDir;
+  saveScriptsDir();
+  loadScripts();
+  renderScriptsDirCfg();
+}
+/* 设置页「脚本目录」卡片回显：生效值 + 安装默认路径（health 未解析时显示构成规则） */
+function renderScriptsDirCfg(){
+  const inp=$('cfgScriptsDir'); if(!inp) return;
+  if(document.activeElement!==inp) inp.value=scriptsDir||'';
+  const tip=$('cfgScriptsDirTip');
+  if(tip) tip.textContent='安装默认：'+(installedScriptsDir||'插件安装目录/projects/pipeline/scripts')+(scriptsDirIsFallback?'（当前生效）':'');
+}
+/* 设置页保存/重置脚本目录：留空=恢复安装默认（回到 fallback 态）；自定义值随设置持久化到服务端并跨浏览器同步 */
+function applyScriptsDirInput(raw){
+  const v=(raw||'').trim();
+  scriptsDir=v||scriptsDirDefault();
+  scriptsDirIsFallback=!v;
+  saveScriptsDir();
+  loadScripts();
+  renderScriptsDirCfg();
+}
 /* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_年月日时分秒」文件夹组织（见 archiveRun） */
 let archiveDir = lsGet('pip-archiveDir', '/var/log/op_test');
 function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
@@ -6933,7 +6975,7 @@ function savePlForm(){
       }
     }
   }
-  scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
+  scriptsDir=$('scriptsDir').value.trim()||scriptsDir; scriptsDirIsFallback=false; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
     if(s.preset) return {id:s.id, name:s.name, preset:true, pkey:s.pkey};   // 预设任务标记：位置随流水线保存
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(0,parseInt(s.dur)||0), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};   /* dur 保留编辑器原值（含 0=不设置耗时），不再回退默认 5 秒 */
@@ -7069,7 +7111,7 @@ $('plSave').addEventListener('click', savePlForm);
 $('plCancel').addEventListener('click', ()=>{ clearPlDraft(); $('plForm').style.display='none'; });
 $('plFormClose').addEventListener('click', ()=>{ $('plForm').style.display='none'; });   /* 关闭=保留草稿（误操作退出保护），仅「取消」显式丢弃 */
 $('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });   /* 点遮罩同关闭：保留草稿 */
-$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); schedulePlDraftSave(); });
+$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; scriptsDirIsFallback=false; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); schedulePlDraftSave(); });
 $('plName').addEventListener('input', schedulePlDraftSave);
 $('scriptsDir').addEventListener('input', schedulePlDraftSave);
 $('plDefaultEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const p=$('plDefaultEnvMultiPanel'); p.style.display=p.style.display==='none'?'block':'none'; });
@@ -7081,6 +7123,8 @@ $('plDefaultStrategy').addEventListener('input',pipelineDefaultFormChanged);
 $('plDefaultPresets').querySelectorAll('[data-pldefaultpreset]').forEach(el=>el.addEventListener('change',pipelineDefaultFormChanged));
 $('archiveDir').value = archiveDir;
 $('archiveDir').addEventListener('change', e=>{ archiveDir=e.target.value.trim(); saveArchiveDir(); });
+$('cfgScriptsDirSave').addEventListener('click', ()=>applyScriptsDirInput($('cfgScriptsDir').value));
+$('cfgScriptsDirReset').addEventListener('click', ()=>applyScriptsDirInput(''));
 $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
@@ -7282,7 +7326,7 @@ function applyImportedSettings(cfg, loc){
   cfg=cfg||{}; loc=loc||{};
   if(Array.isArray(cfg.environments)) environments=cfg.environments.map(normalizeEnv);
   if(Array.isArray(cfg.repositories)) repositories=cfg.repositories.map(normalizeRepo);   /* 访问令牌按文件内容恢复（含空值） */
-  if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+  if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir){ scriptsDir=cfg.scriptsDir; scriptsDirIsFallback=false; }   /* 导入文件为权威：含 scriptsDir 即转为显式配置 */
   if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
   if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
   if(cfg.cleanupScript===null || (cfg.cleanupScript && typeof cfg.cleanupScript.name==='string')) cleanupScript=cfg.cleanupScript;
@@ -7586,11 +7630,18 @@ function renderAll(){
   renderDetail();
   renderPresetMultiBtn();
   fillCfgForm();
+  renderScriptsDirCfg();
   applyJenkinsForm();
   applyEvaltokForm();
   applyPromForm();
 }
 renderAll();
+/* 解析插件安装目录：health 的 dir → 安装默认脚本目录；fallback 态生效值升级为安装默认（见 maybeAdoptInstalledScriptsDir），并刷新设置页回显 */
+fetch('/api/worktable/health').then(r=>r.ok?r.json():null).then(h=>{
+  if(h && typeof h.dir==='string' && h.dir.trim()) installedScriptsDir=h.dir.trim().replace(/\/+$/,'')+'/projects/pipeline/scripts';
+  maybeAdoptInstalledScriptsDir();
+  renderScriptsDirCfg();
+}).catch(()=>{ renderScriptsDirCfg(); });
 /* 当前浏览器标签页首次载入自动查询一次；切换项目重建 iframe 时复用结果，之后仅手动刷新。 */
 let _gpuInited=!!gpuSession.initialized;
 function scheduleGpuRefresh(){

@@ -30,6 +30,17 @@ const PLUGIN_DIR = (() => {
   return process.cwd()
 })()
 
+/** 流水线脚本目录的安装默认：插件安装后的 projects/pipeline/scripts（tgz 安装即 profile
+ *  node_modules 下的包内路径，link: 安装即源码树内路径；包 files 含 projects 目录）。
+ *  设置文件（worktable-pipeline.json 的 config.scriptsDir）未配置时服务端执行器兜底到它。 */
+const DEFAULT_PIPELINE_SCRIPTS_DIR = pathResolve(PLUGIN_DIR, 'projects', 'pipeline', 'scripts')
+
+/** 解析流水线脚本目录：设置文件已配置 scriptsDir（trim 后非空）即用，否则用安装默认路径。 */
+function resolvePipelineScriptsDir(config: any, installedDir: string): string {
+  const configured = config && typeof config.scriptsDir === 'string' ? config.scriptsDir.trim() : ''
+  return configured || installedDir
+}
+
 /** 从插件模块所在 lib/ 目录推断 DSH home：标准安装路径为
  *  <home>/profiles/<profile>/node_modules/<pkg>/lib（scoped 包多一层 @scope）。
  *  宿主既然从这里加载本插件，该 home 就是活跃 home（覆盖启动器未注入 DSH_HOME 的部署）。 */
@@ -357,7 +368,7 @@ function serverPresetScript(key: string, config: any): any {
 function serverPromCollectScript(config: any): any {
   const name = config && config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
   if (!name) return null
-  return { name, path: pathResolve(typeof config.scriptsDir === 'string' ? config.scriptsDir : '', name), params: [], values: {} }
+  return { name, path: pathResolve(resolvePipelineScriptsDir(config, DEFAULT_PIPELINE_SCRIPTS_DIR), name), params: [], values: {} }
 }
 
 function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
@@ -2434,7 +2445,7 @@ export function apply(ctx: Context) {
     const t0 = Date.now()
     const store = await readPipelineStore()
     const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
-    const scriptsDir = typeof cfg.scriptsDir === 'string' ? cfg.scriptsDir : ''
+    const scriptsDir = resolvePipelineScriptsDir(cfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 设置文件未配置 scriptsDir 时兜底到插件安装后的 scripts 路径
     // 归档上下文（与页面约定一致）：
     //   阶段定时后缀沿用页面传入的 pl.archive/pl.tag/baseSeq——回显写入本地前缀同一归档文件夹、编号连贯；
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。

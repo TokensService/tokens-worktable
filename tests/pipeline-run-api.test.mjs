@@ -711,6 +711,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
   const code = stripTypeScriptTypes([
     source.slice(apiStart, apiEnd),
+    extractFunction('resolvePipelineScriptsDir'),
     extractFunction('parseStageVars'),
     extractFunction('parseStageJson'),
     extractFunction('jsonPathGet'),
@@ -733,6 +734,8 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
     clearTimeout,
     console: { warn() {}, log() {}, error() {} },
     pathResolve,
+    /* 测试环境注入空串安装默认：scriptsDir 未配置时保持既有用例的空目录语义（归档兜底/产物路径不变） */
+    DEFAULT_PIPELINE_SCRIPTS_DIR: '',
     fetch: fetchImpl,
     readPipelineStore: async () => ({ config }),
     stripSuffixName: value => String(value || '').replace(/\s*·\s*定时后缀\s*$/, '') || 'pipeline',
