@@ -6756,6 +6756,10 @@ function rebindHistoryRefreshSelection(previousSelection,wasReplay){
 }
 let _historyRefreshPromise=null, _historyRefreshNotifyError=false;
 let _historyEtag='';
+/* 轻量历史接口（/pipeline/history）是后加的服务端路由：页面被工作台经 /api/worktable/site 从源码目录
+   直接托管时，前端可能新于正在运行的旧版插件（如 v1.1.2 发行包无此路由）。首次收到 404 即永久降级为
+   GET /api/worktable/pipeline 全量存储（与旧版手动刷新同一载荷，无 ETag 短路），本次会话内不再打缺失路由。 */
+let _historyLightApiMissing=false;
 const HISTORY_REFRESH_MS=3000;
 /* 手动与自动刷新共用同一个在途请求。筛选、页码和分析勾选本来就是独立状态，只更新 history；
    当前回放按 tag（旧记录按稳定元数据）重新绑定，并保留已经加载的日志尾部。 */
@@ -6768,10 +6772,15 @@ async function refreshHistoryFromServer(showError){
   const request=(async()=>{
     try{
       const headers={}; if(_historyEtag) headers['If-None-Match']=_historyEtag;
-      const response=await fetch('/api/worktable/pipeline/history',{cache:'no-store',headers:headers});
+      let response=await fetch(_historyLightApiMissing?'/api/worktable/pipeline':'/api/worktable/pipeline/history',{cache:'no-store',headers:headers});
+      if(response.status===404&&!_historyLightApiMissing){
+        /* 旧版插件无轻量历史路由：降级全量存储接口，清掉只对轻量接口有意义的 ETag。 */
+        _historyLightApiMissing=true; _historyEtag='';
+        response=await fetch('/api/worktable/pipeline',{cache:'no-store',headers:{}});
+      }
       if(response.status===304) return true;
       if(!response.ok) throw new Error('HTTP '+response.status);
-      const etag=response.headers&&response.headers.get('etag');
+      const etag=_historyLightApiMissing?null:(response.headers&&response.headers.get('etag'));
       const state=await response.json();
       /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
          防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录。 */
