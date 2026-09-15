@@ -83,7 +83,7 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
 });
 
 test('导入流水线归一化：内置默认置顶、剔除非法项、执行旧数据迁移；非法列表返回 null',()=>{
-  const ctx=makeCtx({},['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','migratePromPreset','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines']);
+  const ctx=makeCtx({},['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','migratePromPreset','pipelineDefaultStringList','normalizePipelineDefaults','pipelineFavoriteUsers','migratePipelineDefaults','normalizeImportedPipelines']);
   assert.equal(ctx.normalizeImportedPipelines([]),null);
   assert.equal(ctx.normalizeImportedPipelines([{id:'x'}]),null,'没有任何带 stages 的流水线视为非法文件');
   assert.equal(ctx.normalizeImportedPipelines('not-array'),null);
@@ -236,7 +236,7 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
     viewRc:{stages:[{id:'s9'}],nodes:{},selId:'s9',token:'t9',over:false,vars:{},timer:null}, runStages:null, selectedId:'s9',
     savePipelines:()=>saved.push('savePipelines'),
     renderAll:()=>rendered.push('renderAll'),
-  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','migratePromPreset','pipelineDefaultStringList','normalizePipelineDefaults','migratePipelineDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
+  },['migrateGate','migrateStageUrl','cleanScriptValues','migratePrefillDefaults','migratePromPreset','pipelineDefaultStringList','normalizePipelineDefaults','pipelineFavoriteUsers','migratePipelineDefaults','normalizeImportedPipelines','syncViewRun','importPipelinesData','importPipelinesFile']);
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
   const data={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[
     {id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0'}]},

@@ -291,6 +291,12 @@
           <option value="builtin">仅内置</option>
         </select>
       </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收藏
+        <select id="plFilterFavorite" class="dshell-input" style="min-width:100px;">
+          <option value="all">全部</option>
+          <option value="favorite">仅看收藏</option>
+        </select>
+      </label>
       <button id="plFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
       <span id="plFilterTip" class="dshell-muted" style="font-size:11px;"></span>
     </div>
@@ -832,9 +838,10 @@
 </div>
 
 <!-- 流水线行内「⋯」菜单：全局悬浮层（fixed 定位）——悬浮于最上层（z-index 高于吸顶导航），不被表格 overflow 容器裁剪；
-     不占文档流，展开时不撑大流水线行高；菜单项为列表行形态（.pl-row-menu-item），非圆边按钮 -->
+     不占文档流，展开时不撑大流水线行高；置顶/收藏菜单项为列表行形态（.pl-row-menu-item），非圆边按钮 -->
 <div id="plRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:88px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
   <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
+  <div id="plRowMenuFavorite" class="pl-row-menu-item">收藏</div>
 </div>
 
 <script>
@@ -1112,7 +1119,7 @@ function normalizePipelineDefaults(value){
     presets:pipelineDefaultStringList(d.presets).filter(k=>PIPELINE_DEFAULT_PRESET_KEYS.indexOf(k)>=0),
   };
 }
-function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; } return p; }
+function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
 /* 仅旧流水线没有保存默认引用时回退当前首项；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
   const d=normalizePipelineDefaults(pl&&pl.defaults);
@@ -6428,10 +6435,10 @@ let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
 function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
-/* 流水线任务筛选状态（关键字 + 创建者），与 histFilter 同样仅存浏览器本地；
+/* 流水线任务筛选状态（关键字 + 创建者 + 当前用户收藏），与 histFilter 同样仅存浏览器本地；
    在此提前声明，供下方筛选控件初始化与 renderPipelines 取用（声明顺序早于事件绑定） */
-let plFilter={kw:'',owner:'mine'};
-try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine')}; }catch(e){}
+let plFilter={kw:'',owner:'mine',favorite:'all'};
+try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine'),favorite:_pf.favorite==='favorite'?'favorite':'all'}; }catch(e){}
 function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringify(plFilter)); }catch(e){} }
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
    供同步路径（新建/复制流水线署名、默认筛选「我的」）取用。声明在此处以保证声明顺序早于筛选事件绑定。 */
@@ -6678,12 +6685,14 @@ $('histFilterKw').addEventListener('input', e=>{ histFilter.kw=e.target.value; h
 $('histFilterStatus').addEventListener('change', e=>{ histFilter.status=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterPipeline').addEventListener('change', e=>{ histFilter.pipeline=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
-/* 流水线任务筛选：关键字 + 创建者；默认「我的（含内置）」 */
+/* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含内置）」+ 全部收藏状态 */
 $('plFilterKw').value=plFilter.kw;
 $('plFilterOwner').value=plFilter.owner;
+$('plFilterFavorite').value=plFilter.favorite;
 $('plFilterKw').addEventListener('input', e=>{ plFilter.kw=e.target.value; savePlFilter(); renderPipelines(); });
 $('plFilterOwner').addEventListener('change', e=>{ plFilter.owner=e.target.value; savePlFilter(); renderPipelines(); });
-$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine'}; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; savePlFilter(); renderPipelines(); });
+$('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; savePlFilter(); renderPipelines(); });
+$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
 function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
 /* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
 function fmtHistTime(h){
@@ -6747,17 +6756,35 @@ async function refreshPipelinesFromServer(){
 }
 $('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
 
-/* ---------- 流水线任务筛选（关键字 + 创建者） ---------- */
+/* ---------- 流水线任务筛选（关键字 + 创建者 + 当前用户收藏） ---------- */
 /* plFilter / savePlFilter / currentUsername 声明在前（紧随 histFilter），
    此处仅定义筛选匹配与下拉渲染函数。 */
 function plOwnerOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''; }
 function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updatedBy.trim()) ? p.updatedBy.trim() : ''; }   /* 最后修改人：与创建者同源（/auth/status 登录用户），保存/拖拽改序时刷新 */
+function pipelineFavoriteUsers(p){
+  const users=p&&Array.isArray(p.favoriteUsers)?p.favoriteUsers:[];
+  return Array.from(new Set(users.filter(u=>typeof u==='string').map(u=>u.trim()).filter(Boolean)));
+}
+function isPipelineFavorite(p){
+  const me=(currentUsername||'').trim();
+  return !!me && pipelineFavoriteUsers(p).indexOf(me)>=0;
+}
+function togglePipelineFavorite(id){
+  const p=findPipeline(id); if(!p) return;
+  const me=(currentUsername||'').trim();
+  if(!me){ alert('未获取到当前登录用户，无法收藏流水线。'); return; }
+  const users=pipelineFavoriteUsers(p);
+  p.favoriteUsers=users.indexOf(me)>=0?users.filter(u=>u!==me):users.concat(me);
+  savePipelines();
+  renderPipelines();
+}
 function plFilterMatch(p){
   const kw=plFilter.kw.trim().toLowerCase();
   if(kw){
     const hay=[p.name,p.id].concat((p.stages||[]).map(s=>s&&s.name).filter(Boolean)).join(' ').toLowerCase();
     if(hay.indexOf(kw)<0) return false;
   }
+  if(plFilter.favorite==='favorite' && !isPipelineFavorite(p)) return false;
   const owner=plFilter.owner;
   if(owner==='all') return true;
   if(owner==='builtin') return !!p.builtIn;
@@ -6795,10 +6822,12 @@ function closePlRowMenu(){
    不占用文档流，故不被 overflow 容器裁剪、也不撑大流水线行高 */
 function openPlRowMenu(id, anchorBtn){
   const pl=findPipeline(id); if(!pl) return;
-  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'); if(!panel||!item) return;
+  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'), favoriteItem=$('plRowMenuFavorite'); if(!panel||!item||!favoriteItem) return;
   plMenuOpenId=id;
   item.textContent = pl.pinnedAt ? '取消置顶' : '置顶';
   item.title = pl.pinnedAt ? '取消置顶，恢复数组原顺序' : '置顶到列表最前，随服务端同步';
+  favoriteItem.textContent = isPipelineFavorite(pl) ? '取消收藏' : '收藏';
+  favoriteItem.title = currentUsername ? '收藏状态按当前登录用户独立保存并随服务端同步' : '登录后可收藏流水线';
   panel.style.display='block';
   if(anchorBtn && anchorBtn.getBoundingClientRect){
     const r=anchorBtn.getBoundingClientRect();
@@ -6819,13 +6848,14 @@ function renderPipelines(){
   /* 已置顶（pinnedAt）排最前，多条按置顶时间新→旧；未置顶保持数组原序（内置经加载迁移居首）——Array.sort 稳定，键相同不动相对位置 */
   const view=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
   $('plCount').textContent = pipelines.length ? ('('+view.length+'/'+pipelines.length+')') : '';
-  const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw) ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
+  const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw || plFilter.favorite==='favorite') ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
   const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
   if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="3" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
   view.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
     const isPinned = !!p.pinnedAt;
+    const isFavorite = isPipelineFavorite(p);
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
     /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
@@ -6833,7 +6863,7 @@ function renderPipelines(){
     if(isCur) tr.className='sel';
     /* 是否在运行不在本表展示：在跑/排队信息统一在「运行队列」查看（点队列条目看阶段详情），本表整行点击即选用 */
     tr.title='点击选用该流水线';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
       ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
@@ -7042,6 +7072,7 @@ function copyPipeline(id){
   clone.id='pl-'+Date.now().toString(36);
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
   clone.pinnedAt=0;   /* 副本不继承置顶：置顶随源条目，不随复制扩散 */
+  clone.favoriteUsers=[];   /* 副本不继承任何用户的收藏：收藏关系属于源流水线 */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
@@ -7528,9 +7559,10 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
-/* 流水线行内「⋯」菜单：「置顶」列表项对当前展开行切换置顶（先收起菜单再切换）；
+/* 流水线行内「⋯」菜单：「置顶 / 收藏」列表项对当前展开行切换对应状态（先收起菜单再切换）；
    点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
 $('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
+$('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineFavorite(id); });
 document.addEventListener('click', closePlRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
@@ -7595,9 +7627,10 @@ async function fillExecutorFromAuth(){
   /* admin 角色可能晚于队列渲染到达——拿到后重绘队列按钮（中止/取消按权限显隐） */
   if(typeof renderQueue==='function') renderQueue();
   if(typeof updateStopBtn==='function') updateStopBtn();
-  /* 拿到当前用户后重绘「我的」筛选视图（初次加载时尚未拿到，先按「内置+未署名」退化渲染）。
+  /* 拿到当前用户后重绘依赖身份的「我的 / 仅看收藏」筛选视图（初次加载时尚未拿到，
+     「我的」先按「内置+未署名」退化渲染，「仅看收藏」先为空）。
      typeof 守卫：筛选状态在独立测试片段里可能未定义。 */
-  if(typeof plFilter!=='undefined' && plFilter && plFilter.owner==='mine' && typeof renderPipelines==='function') renderPipelines();
+  if(typeof plFilter!=='undefined' && plFilter && (plFilter.owner==='mine'||plFilter.favorite==='favorite') && typeof renderPipelines==='function') renderPipelines();
 }
 /* ---------- 执行人固定取 dsh 登录用户（只读）结束 ---------- */
 fillExecutorFromAuth();

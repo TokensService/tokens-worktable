@@ -56,6 +56,7 @@ function load(pinStates){
   const selNode=new FakeNode('select');
   const panel=new FakeNode('div'); panel.style.display='none';   // 与页面内联样式一致：默认收起
   const pinItem=new FakeNode('div');
+  const favoriteItem=new FakeNode('div');
   const saves=[];
   const ctx={
     pipelines:[
@@ -68,9 +69,10 @@ function load(pinStates){
     plFilterMatch:()=>true,   // 筛选桩：置顶测试不涉及筛选语义，全部行进视图
     renderPlFilterOptions:()=>{},
     plOwnerOf:()=>'', plUpdaterOf:()=>'',   // 署名桩：置顶测试不涉及署名展示
+    isPipelineFavorite:()=>false,
     currentUsername:'',
     document:{createElement:tag=>new FakeNode(tag)},
-    $:id=>({plTable:table, pipelineSel:selNode, plRowMenuPanel:panel, plRowMenuPin:pinItem})[id]||count,
+    $:id=>({plTable:table, pipelineSel:selNode, plRowMenuPanel:panel, plRowMenuPin:pinItem, plRowMenuFavorite:favoriteItem})[id]||count,
     esc:String,
     curPipeline:()=>null,
     runPipeline:()=>true,

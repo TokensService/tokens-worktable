@@ -71,6 +71,7 @@ function makeContext(runResult) {
     renderPlFilterOptions: () => {},   // 下拉渲染桩：筛选控件不在本测试范围
     plOwnerOf: () => '',   // 创建者取值桩：行运行测试不涉及署名展示
     plUpdaterOf: () => '',   // 最后修改人取值桩：行运行测试不涉及署名展示
+    isPipelineFavorite: () => false,   // 收藏状态桩：行运行测试不涉及收藏展示
     currentUsername: '',
     document: { createElement: tag => new FakeNode(tag) },
     $: id => id === 'plTable' ? table : count,
