@@ -74,6 +74,10 @@ if [[ "${GIT_CONFIG_COUNT:-}" == 1 && "${GIT_CONFIG_KEY_0:-}" == 'http.extraHead
 fi
 mkdir -p "${@: -1}/lmcache"
 EOF
+cat >"$tmp/bin/date" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_DATE:-20260915_093213}"
+EOF
 cat >"$tmp/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf 'ssh %s\n' "$*" >>"$FAKE_LOG"
@@ -129,7 +133,7 @@ source_path="${source_path%/.}"
 mkdir -p "$destination"
 cp -a "$source_path/." "$destination/"
 EOF
-chmod +x "$tmp/bin/nerdctl" "$tmp/bin/ctr" "$tmp/bin/sudo" "$tmp/bin/git"
+chmod +x "$tmp/bin/nerdctl" "$tmp/bin/ctr" "$tmp/bin/sudo" "$tmp/bin/git" "$tmp/bin/date"
 chmod +x "$tmp/bin/ssh" "$tmp/bin/sshpass" "$tmp/bin/scp"
 
 # 目标节点上的远端 Bash 会话补齐 GPU runtime 的标准 PATH。
@@ -163,7 +167,7 @@ sudo() {
 export -f sudo
 
 targets='[{"ip":"192.0.2.78","user":"root","pass":"target-secret"},{"ip":"192.0.2.79","user":"root","pass":"must-not-be-used"}]'
-execution_run_dir="$tmp/execution-run"
+execution_run_dir="$tmp/LMCache仓-单元测试-20260915_093213"
 pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" RUN_DIR="$execution_run_dir" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
   AK='test-ak' PROJECT='test-project' REGISTRY='swr.example.test' LOGIN_KEY='test-login-key' \
   bash "$root/lmcache-unittest-pull-image.sh")"
@@ -188,7 +192,7 @@ pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr
 [[ "$execution_run_dir_out" == "$execution_run_dir" ]]
 [[ "$pull_image" == 'lmcache-vllm-openai-0.5.4-unitest:latest' ]]
 [[ "$pull_isolate_blocks_first" == 1 ]]
-[[ -n "$pull_container" ]]
+[[ "$pull_container" == 'lmcache-unittest-20260915_093213' ]]
 [[ "$pull_http_proxy" == 'http://192.168.10.6:3128' ]]
 [[ "$pull_remove_image" == 1 ]]
 [[ "$pull_cpu_only" == 0 ]]
@@ -286,7 +290,7 @@ grep -Fq '[lmcache-debug] pytest failed tests: tests/fake_failure.py::test_failu
 grep -Fq '[lmcache-debug] pytest xpassed tests: tests/fake_xpass.py::test_xpass' <<<"$test_output"
 
 cpu_pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" \
-  RUN_DIR="$tmp/cpu-execution" LMCACHE_UNITTEST_RUN_DIR="$tmp/cpu" LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_CPU_ONLY=1 \
+  RUN_DIR="$tmp/cpu-execution" LMCACHE_UNITTEST_RUN_DIR="$tmp/cpu" LMCACHE_UNITTEST_CONTAINER='lmcache-unittest-cpu-execution' LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_CPU_ONLY=1 \
   AK='test-ak' PROJECT='test-project' LOGIN_KEY='test-login-key' \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'LMCACHE_UNITTEST_CPU_ONLY=1' <<<"$cpu_pull_output"
@@ -296,7 +300,7 @@ cpu_run_line="$(grep 'lmcache-unittest-cpu-execution' "$log" | grep ' run ' | ta
 
 selected_gpu_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" \
   RUN_DIR="$tmp/selected-gpu-execution" LMCACHE_UNITTEST_RUN_DIR="$tmp/selected-gpu-target" \
-  LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_GPU_DEVICES='0,1' \
+  LMCACHE_UNITTEST_CONTAINER='lmcache-unittest-selected-gpu-execution' LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_GPU_DEVICES='0,1' \
   AK='test-ak' PROJECT='test-project' LOGIN_KEY='test-login-key' \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'LMCACHE_UNITTEST_GPU_DEVICES=0,1' <<<"$selected_gpu_output"
