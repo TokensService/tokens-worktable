@@ -49,7 +49,7 @@ function loadSavePlForm({editId,pipeline,username}){
 }
 
 test('迁移：旧流水线补齐空 updatedBy，已有值原样保留',()=>{
-  const ctx={normalizePipelineDefaults:d=>d||{}};
+  const ctx={normalizePipelineDefaults:d=>d||{},pipelineFavoriteUsers:()=>[]};
   vm.createContext(ctx);
   vm.runInContext(extractFunction('migratePipelineDefaults'),ctx);
   const p=ctx.migratePipelineDefaults({id:'pl-a',createdBy:'alice'});
@@ -177,6 +177,7 @@ function loadRender(pipelines){
     plFilter:{kw:'',owner:'all'},
     plFilterMatch:()=>true,
     renderPlFilterOptions:()=>{},
+    isPipelineFavorite:()=>false,
     currentUsername:'alice',
     document:{createElement:tag=>new FakeNode(tag)},
     $:id=>id==='plTable'?table:count,

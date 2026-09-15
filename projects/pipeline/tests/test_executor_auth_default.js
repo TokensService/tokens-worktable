@@ -79,3 +79,17 @@ test('拿到登录用户后按「我的」筛选视图重绘流水线列表',asy
   await ctx.fillExecutorFromAuth();
   assert.equal(renders,1);
 });
+
+test('拿到登录用户后按「仅看收藏」筛选重绘，即使创建者选择全部',async()=>{
+  const el={textContent:'未登录'};
+  let renders=0;
+  const ctx=loadSection({
+    $:()=>el,
+    fetch:authFetch({authenticated:true,username:'lhf'}),
+    currentUsername:'',
+    plFilter:{kw:'',owner:'all',favorite:'favorite'},
+    renderPipelines:()=>{renders+=1;},
+  });
+  await ctx.fillExecutorFromAuth();
+  assert.equal(renders,1,'认证前收藏匹配为空，认证成功后必须重绘');
+});
