@@ -348,6 +348,7 @@
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="勾选一条做 AI 日志分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="勾选一条做 Profiling 分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="勾选一条做性能诊断，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
+        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
         </label>
@@ -365,7 +366,6 @@
         <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支重新运行（执行人取当前填写值；运行中则入队）">↻ 重跑</button>
         <button class="dshell-btn dshell-btnDanger mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button>
-        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <span id="histFilterTip" class="dshell-muted" style="font-size:11px;"></span>
       </div>
       <div style="overflow:auto;">
