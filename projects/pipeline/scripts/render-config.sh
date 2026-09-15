@@ -32,13 +32,14 @@ EXECUTOR="${EXECUTOR:-}"
 NAMESPACE="${NAMESPACE:-}"
 if [[ -z "$NAMESPACE" ]]; then
   if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
-    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}-${IMAGE_TAG:-local}"
+    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}"
   else
-    NAMESPACE="xds-${ARCH_NAME}-${IMAGE_TAG:-local}"
+    NAMESPACE="xds-${ARCH_NAME}"
   fi
 fi
 RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
+[[ "$RELEASE_NAME" != "$NAMESPACE" ]] || RELEASE_NAME="xds"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
 PREFILL_OVERRIDES_JSON="${PREFILL_OVERRIDES_JSON:-}"
 DECODE_OVERRIDES_JSON="${DECODE_OVERRIDES_JSON:-}"
@@ -48,12 +49,18 @@ YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
 NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
+COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 NODE_SELECTOR_KEY="xds.optest"
+MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
+
+if [[ -n "$MODEL_CACHE_HOST_PATH" ]]; then
+  [[ "$MODEL_CACHE_HOST_PATH" == /* ]] || { echo "MODEL_CACHE_HOST_PATH must be an absolute host path: $MODEL_CACHE_HOST_PATH" >&2; exit 2; }
+fi
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
 [[ -n "$DECODE_OVERRIDES_JSON" ]] || DECODE_OVERRIDES_JSON='{}'
@@ -79,13 +86,69 @@ mkdir -p "$RENDER_DIR"
 rm -rf "$CHART_DIR"
 cp -a "$CHART_TEMPLATE_DIR" "$CHART_DIR"
 
+# KubeRay incorporates workerGroupSpecs.groupName into worker Pod names. Keep
+# role names short so Pod names never inherit namespace or deployment metadata.
+# The Service selects the Ray FE-group label explicitly placed on FE Pods.
+# The operator does not add this label consistently across its versions.
+RAY_SERVICE_TEMPLATE="$CHART_DIR/templates/ray-svc.yaml"
+if [[ -f "$RAY_SERVICE_TEMPLATE" ]]; then
+  python3 - "$RAY_SERVICE_TEMPLATE" <<'PY_SERVICE'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old_selector = '''  # Ray Serve 模式：Service 指向 Ray frontGroup
+  selector:
+    app.kubernetes.io/created-by: kuberay-operator
+    ray.io/group: frontGroup
+    in_draining_status: "false"
+    app.kubernetes.io/instance: {{ .Release.Name }}
+'''
+new_selector = '''  # Ray Serve 模式：Service 指向显式标记的前端 Worker
+  selector:
+    ray.io/group: frontGroup
+'''
+if old_selector in text:
+    text = text.replace(old_selector, new_selector, 1)
+elif new_selector not in text:
+    raise SystemExit(f"Ray Service selector marker not found: {path}")
+path.write_text(text, encoding="utf-8")
+PY_SERVICE
+fi
+
+TASK_EXECUTOR_TEMPLATE="$CHART_DIR/templates/raycluster-cluster.yaml"
+if [[ -f "$TASK_EXECUTOR_TEMPLATE" ]]; then
+  python3 - "$TASK_EXECUTOR_TEMPLATE" <<'PY_TEMPLATE'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+task_executor_marker = "groupName: {{ $teGroupValues.name }}"
+worker_marker = "groupName: {{ $groupName }}"
+task_executor_name = '''groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else if contains "decode" (lower $teGroupValues.name) }}decode-{{ regexFind "[0-9]+$" $teGroupValues.name | default (printf "%d" (add $index 1)) }}{{ else }}{{ $teGroupValues.name }}{{ end }}'''
+worker_name = '''groupName: {{ if eq $groupName "ctrlGroup" }}ctrl{{ else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je{{ else }}{{ $groupName }}{{ end }}'''
+
+if task_executor_marker not in text and task_executor_name not in text:
+    raise SystemExit(f"task executor groupName marker not found: {path}")
+if worker_marker not in text and worker_name not in text:
+    raise SystemExit(f"worker groupName marker not found: {path}")
+if task_executor_marker in text:
+    text = text.replace(task_executor_marker, task_executor_name)
+if worker_marker in text:
+    text = text.replace(worker_marker, worker_name)
+path.write_text(text, encoding="utf-8")
+PY_TEMPLATE
+fi
+
 python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$ARCH_REQUEST_FILE" "$RESOURCE_MANIFEST" "$DEPLOY_IMAGE" "$NUM_PREFILL" \
   "$NUM_DECODE" "$PREFILL_GPU" "$DECODE_GPU" "$NAMESPACE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$MAPPED_COLLECTOR_GATEWAY_URL" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" <<'PY'
 import copy
 import json
 from pathlib import Path
@@ -99,7 +162,7 @@ import yaml
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
- chart_dir, image_pull_secrets_text, mapped_collector_gateway_url) = sys.argv[1:]
+ chart_dir, image_pull_secrets_text, collector_gateway_url, mapped_collector_gateway_url, model_cache_host_path) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
@@ -240,16 +303,48 @@ matches = [arch for arch in architectures if arch.get("arch_name") == arch_name]
 if len(matches) != 1:
     raise SystemExit(f"arch_name not found or not unique: {arch_name}")
 arch = copy.deepcopy(matches[0])
-use_ems = arch.get("use_ems", False)
-if type(use_ems) is not bool:
+root_use_ems = arch.get("use_ems")
+if root_use_ems is not None and type(root_use_ems) is not bool:
     raise SystemExit(f"{arch_name}.use_ems must be a boolean when specified")
-# arch 的 prefill spec 声明 params.use_lmcache=true 时自动启用 lmcache sidecar；
-# TEMPLATE_VARS_JSON 显式传入 LMCACHE_SIDECAR_ENABLED 时以显式值为准。
+
+# Current model-arch entries place use_ems in each Prefill/Decode params
+# mapping.  Keep the root-level field as a fallback for older entries, but
+# reject conflicting role settings rather than silently deploying a partial
+# EMS configuration.
+params_use_ems = []
+for package in arch.get("deploy_spec_packages", []):
+    if not isinstance(package, dict):
+        raise SystemExit(f"{arch_name}.deploy_spec_packages entries must be mappings")
+    for spec in package.get("deploy_specs", []):
+        if not isinstance(spec, dict) or spec.get("role") not in ("prefill", "decode"):
+            continue
+        params = spec.get("params", {})
+        if not isinstance(params, dict):
+            raise SystemExit(f"{arch_name}.{spec.get('role')}.params must be a mapping")
+        if "use_ems" in params:
+            value = params["use_ems"]
+            if type(value) is not bool:
+                raise SystemExit(f"{arch_name}.{spec.get('role')}.params.use_ems must be a boolean")
+            params_use_ems.append(value)
+
+if params_use_ems:
+    if len(set(params_use_ems)) != 1:
+        raise SystemExit(f"{arch_name} has conflicting params.use_ems values across Prefill/Decode specs")
+    use_ems = params_use_ems[0]
+    if root_use_ems is not None and root_use_ems != use_ems:
+        raise SystemExit(f"{arch_name}.use_ems conflicts with deploy_specs.params.use_ems")
+else:
+    use_ems = root_use_ems if root_use_ems is not None else False
+
+# A Prefill spec explicitly opting into LMCache enables its colocated sidecar.
+# An explicit TEMPLATE_VARS_JSON value remains authoritative because the
+# template default is only filled when that key is absent.
 use_lmcache = any(
     isinstance(spec.get("params"), dict) and spec["params"].get("use_lmcache") is True
     for package in arch.get("deploy_spec_packages", [])
+    if isinstance(package, dict)
     for spec in package.get("deploy_specs", [])
-    if spec.get("role") == "prefill"
+    if isinstance(spec, dict) and spec.get("role") == "prefill"
 )
 
 groups = []
@@ -332,11 +427,9 @@ for group_index, group in enumerate(groups):
     group["rayStartParamsPorts"]["min-worker-port"] = range_start
     group["rayStartParamsPorts"]["max-worker-port"] = range_end
 
-# 单节点部署时按组顺序连续占卡（默认每节点 8 卡）：TE 组依次分得 [0..n)、
-# [n..n+m) 等连续块（如 prefill 0,1,2,3 / decode 4,5,6,7）。kubelet 不会
-# 覆盖显式声明的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；
-# 启用 lmcache 时 sidecar 的卡必须与其 PTE 完全一致（CUDA IPC 按 ordinal
-# 匹配，集合与顺序都不能差），见下方 taskExecutorGroups 写入后的对齐逻辑。
+# A single-node deployment shares the host GPU namespace. Pin groups in their
+# render order so device-plugin allocation cannot reorder CUDA devices between
+# a Prefill PTE and its LMCache sidecar.
 node_gpu_count = 8
 pinned_single_node = len(target_ips) == 1
 if pinned_single_node:
@@ -437,10 +530,22 @@ normalize_container_env_values(values)
 set_ems_switches(values, use_ems)
 upsert_container_env("EMS_ENABLE", str(use_ems).lower())
 values["taskExecutorGroups"] = groups
+values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
+values["global"] = deep_merge(values.get("global", {}), {
+    "namespace": namespace,
+    "enableTaskExecutorGroups": True,
+    "storage": {"hostPath": "/mnt/xds/sfs"},
+})
+values = deep_merge(values, yaml_replace_map)
+
 lmcache_sidecar = values.get("lmcacheSidecar")
-if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
-    # lmcache-sidecar 仅挂在 prefill 组；cudaVisibleDevices 必须与其 PTE 的
-    # NVIDIA_VISIBLE_DEVICES 完全一致（含顺序），否则 CUDA IPC 映射失败。
+if lmcache_sidecar is not None and not isinstance(lmcache_sidecar, dict):
+    raise SystemExit("lmcacheSidecar must be a mapping")
+if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled", False):
+    # The sidecar is attached only to Prefill Pods. CUDA IPC requires its
+    # visible devices to be identical to the colocated Prefill PTE, including
+    # ordering; a global sidecar setting cannot represent multiple Prefill
+    # groups with different pinned devices.
     prefill_pins = [
         group["containerEnvOverrides"].get("NVIDIA_VISIBLE_DEVICES")
         for group in groups
@@ -450,20 +555,36 @@ if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled"):
         raise SystemExit("lmcache sidecar enabled but no prefill TE group found")
     if pinned_single_node and any(pin is None for pin in prefill_pins):
         raise SystemExit("lmcache sidecar enabled but prefill GPU pinning is missing")
-    if len([pin for pin in prefill_pins if pin]) > 1:
+    populated_prefill_pins = [pin for pin in prefill_pins if pin]
+    if len(populated_prefill_pins) > 1:
         raise SystemExit(
             "lmcache sidecar enabled with multiple prefill TE groups: "
-            "cudaVisibleDevices 为全局单值，无法与多个 PTE 一一对齐"
+            "cudaVisibleDevices cannot align with more than one PTE"
         )
-    if prefill_pins[0]:
-        lmcache_sidecar["cudaVisibleDevices"] = prefill_pins[0]
-values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
-values["global"] = deep_merge(values.get("global", {}), {
-    "namespace": namespace,
-    "enableTaskExecutorGroups": True,
-    "storage": {"hostPath": "/mnt/xds/sfs"},
-})
-values = deep_merge(values, yaml_replace_map)
+    if populated_prefill_pins:
+        lmcache_sidecar["cudaVisibleDevices"] = populated_prefill_pins[0]
+
+# Pair the ray-svc selector with an explicit frontGroup Pod label. This
+# remains stable when the KubeRay operator does not add it itself.
+worker_groups = values.setdefault("workerGroups", {})
+if not isinstance(worker_groups, dict):
+    raise SystemExit("workerGroups must be a mapping")
+front_group = worker_groups.setdefault("frontGroup", {})
+if not isinstance(front_group, dict):
+    raise SystemExit("workerGroups.frontGroup must be a mapping")
+front_labels = front_group.setdefault("labels", {})
+if not isinstance(front_labels, dict):
+    raise SystemExit("workerGroups.frontGroup.labels must be a mapping")
+front_labels["ray.io/group"] = "frontGroup"
+
+# The chart mounts model weights through global.storage. Only the host path is
+# environment-specific; mountPath remains the established XDS container path.
+if model_cache_host_path:
+    global_storage = values.get("global", {}).get("storage")
+    if not isinstance(global_storage, dict):
+        raise SystemExit("MODEL_CACHE_HOST_PATH was set but the values template has no global.storage entry")
+    global_storage["hostPath"] = model_cache_host_path
+
 
 # The chart substitutes this placeholder per task executor group.  Image
 # templates from older builds hard-code 52365, which makes custom Ray
@@ -562,14 +683,39 @@ if isinstance(lmcache, dict):
         direct["image"]["repository"] = image_repository
         direct["image"]["tag"] = image_tag
 
+def has_external_node_ip_mapping():
+    for host in target_hosts:
+        endpoint = host["ip"]
+        endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+        host_address = endpoint_match.group(1) if endpoint_match else endpoint
+        mapped_ip = target_node_ip_map.get(endpoint)
+        if isinstance(mapped_ip, str) and mapped_ip and mapped_ip != host_address:
+            return True
+    return False
+
+selected_collector_gateway_url = (
+    mapped_collector_gateway_url
+    if has_external_node_ip_mapping()
+    else collector_gateway_url
+)
+
+def render_collector_gateway_url(config_text):
+    config_text = re.sub(
+        r"(?m)^(\s*collector_gateway_url\s*=\s*).*?$",
+        rf"\g<1>{selected_collector_gateway_url}",
+        config_text,
+    )
+    return re.sub(
+        r'("collector_gateway_url"\s*:\s*")\$?[^"]*(")',
+        rf"\g<1>{selected_collector_gateway_url}\g<2>",
+        config_text,
+    )
+
 framework_files = values.get("frameworkConfigFiles")
 if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_framework.conf"), str):
-    if target_node_ip_map:
-        framework_files["xds_framework.conf"] = re.sub(
-            r"(?m)^(\s*collector_gateway_url\s*=\s*).*?$",
-            rf"\g<1>{mapped_collector_gateway_url}",
-            framework_files["xds_framework.conf"],
-        )
+    framework_files["xds_framework.conf"] = render_collector_gateway_url(
+        framework_files["xds_framework.conf"]
+    )
     framework_files["xds_framework.conf"] = re.sub(
         r"(?m)^(\s*ems_enable\s*=\s*).*$",
         rf"\g<1>{str(use_ems).lower()}",
@@ -591,13 +737,24 @@ if isinstance(framework_files, dict) and isinstance(framework_files.get("xds_fra
         rf"\g<1>{namespace}",
         framework_files["xds_framework.conf"],
     )
+
+cpp_server_config_files = values.get("XDSCppServerConfigFile")
+if isinstance(cpp_server_config_files, dict):
+    for filename, config_text in cpp_server_config_files.items():
+        if isinstance(config_text, str):
+            cpp_server_config_files[filename] = render_collector_gateway_url(config_text)
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
-# helm 的 values 解析走 json-yaml，大整数会变 float64 并被渲染成科学计数法
-# （如 1048576 -> 1.048576e+06），sidecar argparse 接受不了；统一加引号成字符串。
-values_text = Path(values_file).read_text(encoding="utf-8")
-values_text = re.sub(r"(?m)^(\s*l1AlignBytes:\s*)(?!['\"])(\S+)\s*$", r"\1'\2'", values_text)
-Path(values_file).write_text(values_text, encoding="utf-8")
+# Helm's JSON/YAML path can convert large numeric values to scientific
+# notation.  Keep the LMCache alignment value a literal string so argparse
+# receives the exact integer supplied by the values template.
+rendered_values_text = Path(values_file).read_text(encoding="utf-8")
+rendered_values_text = re.sub(
+    r"(?m)^(\s*l1AlignBytes:\s*)(?!['\"])(\S+)\s*$",
+    r"\1'\2'",
+    rendered_values_text,
+)
+Path(values_file).write_text(rendered_values_text, encoding="utf-8")
 with open(arch_request_file, "w", encoding="utf-8") as output:
     json.dump(arch, output, ensure_ascii=False, indent=2)
     output.write("\n")
@@ -623,5 +780,6 @@ printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
 printf 'RESOURCE_MANIFEST=%s\n' "$RESOURCE_MANIFEST"
 printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
 printf 'DEPLOY_IMAGE=%s\n' "$DEPLOY_IMAGE"
+printf 'MODEL_CACHE_HOST_PATH=%s\n' "$MODEL_CACHE_HOST_PATH"
 printf 'NAMESPACE=%s\n' "$NAMESPACE"
 printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"

@@ -16,6 +16,7 @@
 #   DRY_RUN=0|1              仅预演
 #   NODE=                    指定 Kubernetes nodeName
 #   WHITELIST_NS=            白名单命名空间，空格分隔 glob
+#   EMS_NAMESPACE=op-ems     EMS 命名空间；始终跳过清理
 #   NO_CROND=0|1             standardize 时不停止 crond
 #   SERVICE=                 svc 动作的服务名：kubelet 或 kube-proxy
 #   CLEANUP_NAMESPACE=       release-resources 动作要删除 Service 的命名空间
@@ -47,6 +48,7 @@ LOG_PREFIX="[bnt]"
 LOG_FILE="${LOG_FILE:-/tmp/cleanup-env_$(date +%Y%m%d_%H%M%S).log}"
 NODE="${NODE:-${K8S_NODE_NAME:-}}"
 WHITELIST_NS="${WHITELIST_NS:-}"
+EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 NO_CROND="${NO_CROND:-0}"
 SERVICE="${SERVICE:-}"
 CLEANUP_NAMESPACE="${CLEANUP_NAMESPACE:-${NAMESPACE:-}}"
@@ -98,6 +100,7 @@ read_whitelist() {
 }
 is_whitelisted() {
     local ns=$1 pat
+    [[ "$ns" == "$EMS_NAMESPACE" ]] && return 0
     for pat in "${WHITELIST_NS_ARR[@]}"; do
         # shellcheck disable=SC2053
         [[ "$ns" == $pat ]] && return 0
@@ -512,7 +515,7 @@ step_containers() {
     if [[ "$HAS_KUBECTL" == "1" ]]; then
         log "nodeName=$NODE (hostname=$(hostname)) DRY_RUN=$DRY_RUN"
         # 先固定命名空间清单，再逐个删除控制器，避免提前缩容改变发现结果。
-        log "白名单 ns: ${WHITELIST_NS_ARR[*]}"
+        log "白名单 ns: ${WHITELIST_NS_ARR[*]} (EMS: $EMS_NAMESPACE)"
         local -a NS_LIST=()
         local namespace_names
         namespace_names=$(kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}') || return 1
@@ -715,7 +718,7 @@ do_remote() {
     remote_scp -P "$port" -q "$self" "$target:/tmp/cleanup-env.sh" || return 1
 
     remote_env=""
-    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
+    for key in ACTION STEPS DRY_RUN NODE WHITELIST_NS EMS_NAMESPACE NO_CROND SERVICE CLEANUP_NAMESPACE CLEANUP_SERVICE_NAME CLEANUP_NODE_PORT DEPLOY_STRATEGY arch EXECUTOR BY IMAGE_TAG HUGEPAGE_PATH LOG_FILE CLEANUP_TIMEOUT_SECONDS CLEANUP_POLL_SECONDS; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
