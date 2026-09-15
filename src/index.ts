@@ -556,6 +556,43 @@ function serverAbortReason(signal?: AbortSignal): any {
   return error
 }
 
+/** DSH 开启环境代理时，远程连接模式仍须像 /api/worktable/proxy 一样直连内网服务。 */
+async function serverDirectFetch(url: string, options: any = {}, timeoutMs = 20_000): Promise<any> {
+  const target = new URL(url)
+  if (!/^https?:$/.test(target.protocol)) throw new Error('unsupported protocol')
+  const signal: AbortSignal | undefined = options && options.signal
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  return new Promise((resolve, reject) => {
+    let request: any = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let listening = false
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      if (signal && listening) { signal.removeEventListener('abort', onAbort); listening = false }
+    }
+    const onAbort = () => { try { request?.destroy(serverAbortReason(signal)) } catch {} }
+    request = reqLib.request(url, {
+      method: String(options && options.method || 'GET').toUpperCase(),
+      headers: options && options.headers ? options.headers : {},
+      agent: options && options.useProxy === true ? undefined : new reqLib.Agent(),
+    }, (response: any) => {
+      resolve({ status: Number(response.statusCode) || 0, headers: response.headers || {}, body: response })
+    })
+    request.once('error', (error: any) => { cleanup(); reject(error) })
+    request.once('close', cleanup)
+    if (signal) { signal.addEventListener('abort', onAbort, { once: true }); listening = true }
+    timer = setTimeout(() => {
+      const error: any = new Error('request timeout')
+      error.code = 'ETIMEDOUT'
+      try { request.destroy(error) } catch {}
+    }, Math.max(1, Number(timeoutMs) || 20_000))
+    if (options && options.body !== undefined) request.write(options.body)
+    request.end()
+  })
+}
+
 function abortableServerSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -620,6 +657,19 @@ async function readServerResponseText(response: any, maxBytes: number, label: st
   return text
 }
 
+function serverFetchErrorDetail(error: any): string {
+  const cause = error && error.cause && typeof error.cause === 'object' ? error.cause : null
+  const code = String((cause && cause.code) || (error && error.code) || '').trim()
+  let message = String((cause && cause.message) || (error && error.message) || error || 'unknown network error')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/(https?:\/\/)[^@\s/]+@/gi, '$1***@')
+    .replace(/([?&](?:access_token|token|api_key|key|password|pass|secret)=)[^&\s]+/gi, '$1***')
+    .trim()
+    .slice(0, 500)
+  if (!message) message = 'unknown network error'
+  return code && !message.toUpperCase().includes(code.toUpperCase()) ? code + ': ' + message : message
+}
+
 async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, maxBytes = PIPELINE_REMOTE_TEXT_LIMIT, signal?: AbortSignal): Promise<{ response: any; text: string }> {
   if (signal && signal.aborted) throw serverAbortReason(signal)
   ensureServerStageTime(deadline, label)
@@ -648,7 +698,12 @@ async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: 
     return { response, text }
   } catch (error) {
     if (abortKind === 'deadline') throw new Error(label + '等待超时')
-    throw error
+    if (abortKind === 'external' || (signal && signal.aborted)) throw serverAbortReason(signal)
+    if (String(error && (error as Error).message || '').startsWith(label)) throw error
+    const wrapped: any = new Error(label + '请求失败：' + serverFetchErrorDetail(error))
+    wrapped.networkError = true
+    wrapped.cause = error
+    throw wrapped
   } finally {
     if (timeout) clearTimeout(timeout)
     if (signal && linked) signal.removeEventListener('abort', abortFromExternal)
@@ -663,6 +718,20 @@ async function serverFetchJson(fetchFn: typeof fetch, url: string, options: any,
     throw error
   }
   try { return JSON.parse(result.text || '{}') } catch { throw new Error(label + ' 返回了无效 JSON') }
+}
+
+async function serverFetchJsonWithRetry(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, sleep: (ms: number, signal?: AbortSignal) => Promise<void>, signal?: AbortSignal): Promise<any> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await serverFetchJson(fetchFn, url, options, deadline, label, signal)
+    } catch (error) {
+      const status = Number(error && (error as any).httpStatus)
+      const retryable = !!(error && (error as any).networkError) || status === 408 || status === 429 || (status >= 500 && status <= 599)
+      if (!retryable || attempt >= 3 || (signal && signal.aborted)) throw error
+      ensureServerStageTime(deadline, label)
+      await sleep(attempt * 250, signal)
+    }
+  }
 }
 
 function serverBasicAuth(config: any): Record<string, string> {
@@ -818,19 +887,24 @@ function serverEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
   return 'running'
 }
 
-async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
+async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; directFetchFn?: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const deadline = serverStageDeadline(stage)
   try {
     const service = config && config.evaltok && typeof config.evaltok === 'object' ? config.evaltok : {}
     const base = String(service.url || '').replace(/\/+$/, '')
     if (!base) throw new Error('EvalTokens 服务地址未配置')
+    if (service.mode === 'remote' && !isLocalTarget(new URL(base).hostname)) {
+      throw new Error('EvalTokens 远程服务器端连接仅允许回环或内网地址')
+    }
+    if (service.mode === 'remote' && !deps.directFetchFn) throw new Error('EvalTokens 内网直连传输不可用')
+    const fetchFn = service.mode === 'remote' ? deps.directFetchFn! : deps.fetchFn
     const headers: Record<string, string> = service.token ? { Authorization: 'Bearer ' + String(service.token) } : {}
     const vars = serverRunVariables(runCtx, varsPool)
     const detail = stage && stage.evaltokens && typeof stage.evaltokens === 'object' ? stage.evaltokens : {}
     const requestedId = substituteServerRunVars(detail.taskId || '', vars).trim()
     const requestedName = substituteServerRunVars(detail.taskName || '', vars).trim()
     if (!requestedId && !requestedName) throw new Error('未选择 EvalTokens 任务')
-    const tasksData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表', signal)
+    const tasksData = await serverFetchJsonWithRetry(fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表', deps.sleep, signal)
     const tasks = serverWrappedList(tasksData, ['data', 'tasks', 'list', 'items', 'results'])
     const idOf = (item: any) => String((item && (item.id || item.task_id || item.uuid || item._id)) || '')
     const nameOf = (item: any) => String((item && (item.name || item.title || item.task_name || item.display_name)) || '')
@@ -848,7 +922,7 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
       }
     }
     const startHeaders = { ...headers, 'Content-Type': 'application/json' }
-    const started = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
+    const started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
       method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
     }, deadline, 'EvalTokens 启动任务', signal)
     const runId = String((started && started.run_id) || '')
@@ -856,7 +930,7 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
     let current: any = started
     for (;;) {
       ensureServerStageTime(deadline, 'EvalTokens 任务')
-      const runsData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表', signal)
+      const runsData = await serverFetchJsonWithRetry(fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表', deps.sleep, signal)
       const runs = serverWrappedList(runsData, ['runs', 'data', 'items', 'results'])
       const matched = runs.find((item) => String((item && (item.run_id || item.id)) || '') === runId)
       if (matched) current = matched
@@ -2637,7 +2711,7 @@ export function apply(ctx: Context) {
         entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
         if (r.code !== 0 && !r.aborted) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverDirectFetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)
@@ -3442,19 +3516,12 @@ export function apply(ctx: Context) {
           if (lk === 'host' || lk === 'content-length' || lk === 'connection') continue
           fwdHeaders[k] = v
         }
-        const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
-        const result = await new Promise<{ status: number, headers: any, body: Buffer }>((resolve, reject) => {
-          const r = reqLib.request(urlStr, useProxy ? { method, headers: fwdHeaders } : { method, headers: fwdHeaders, agent: new reqLib.Agent() }, (resp: any) => {
-            collectProxyResponse(resp, 20 * 1024 * 1024).then(
-              bodyBuffer => resolve({ status: resp.statusCode ?? 0, headers: resp.headers, body: bodyBuffer }),
-              reject,
-            )
-          })
-          r.on('error', reject)
-          r.setTimeout(20000, () => { try { r.destroy(new Error('timeout')) } catch {} })
-          if (reqBody) r.write(reqBody)
-          r.end()
-        })
+        const upstream = await serverDirectFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, 20_000)
+        const result = {
+          status: upstream.status,
+          headers: upstream.headers,
+          body: await collectProxyResponse(upstream.body, 20 * 1024 * 1024),
+        }
         const outHeaders: Record<string, string> = {}
         for (const k of Object.keys(result.headers)) outHeaders[k] = String(result.headers[k])
         json(res, 200, {

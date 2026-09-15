@@ -1,5 +1,15 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复流水线服务端执行 EvalTokens 远程连接时误走系统代理（`src/index.ts`）：手动运行迁移到服务端权威队列后，
+  EvalTokens 阶段此前无视设置页的「远程服务器端连接」语义，直接调用启用了 `NODE_USE_ENV_PROXY` 的全局
+  `fetch`，内网请求会被送往 HTTP 代理并在约 135 秒后仅报 `fetch failed`。远程模式现与
+  `/api/worktable/proxy` 共用显式独立 Agent 的内网直连传输，保持回环/RFC1918/链路本地目标限制，单次请求
+  20 秒超时且完整传递运行取消；任务列表和本次 run 的状态轮询对网络错误、408/429/5xx 最多重试两次，
+  有副作用的启动 POST 始终只调用一次。网络错误会带上请求阶段和底层错误码，并清洗 URL 凭据与敏感查询参数。
+  `tests/pipeline-run-api.test.mjs` 新增真实本地 HTTP 服务、超时、取消竞态、目标限制、GET 重试及 POST 单次调用测试。
+- 修复流水线脚本测试在 `dev` 上的既有回归：`render-config.sh` 恢复既定模型存储路径 `/mnt/xds/sfs`；
+  `test_render_target_labels.sh` 同步此前已经调整的 LMCache 生产默认值和字符串化对齐值；
+  `test_pipeline_contract.sh` 将需要 12/14 张 GPU 的夹具改为双节点，避免与单节点 8 卡容量保护互相矛盾。
 - 流水线任务列表展示各流水线的运行队列数量（`projects/pipeline/pipeline.html`）：新增「运行队列」列，
   按稳定流水线 ID 汇总当前页面、节点租约申请中、服务端 API/定时任务以及其他浏览器的全部在跑与排队条目，
   分别显示「运行 N」「排队 M」，无活动时显示「—」；自定义运行没有流水线 ID，不按重名误归类。

@@ -461,7 +461,7 @@ values.setdefault("global", {})["imagePullSecrets"] = image_pull_secrets
 values["global"] = deep_merge(values.get("global", {}), {
     "namespace": namespace,
     "enableTaskExecutorGroups": True,
-    "storage": {"hostPath": "/mnt/paas"},
+    "storage": {"hostPath": "/mnt/xds/sfs"},
 })
 values = deep_merge(values, yaml_replace_map)
 

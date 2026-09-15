@@ -6,6 +6,7 @@ import { stripTypeScriptTypes } from 'node:module'
 import { dirname, join as pathJoin, resolve as pathResolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { EventEmitter } from 'node:events'
+import { createServer } from 'node:http'
 import { PassThrough } from 'node:stream'
 import vm from 'node:vm'
 
@@ -33,7 +34,10 @@ function loadRunRoute(store, overrides = {}) {
   const start = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const end = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', start)
   assert.ok(start >= 0 && end > start, '流水线 API 触发实现未找到')
-  const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
+  const code = stripTypeScriptTypes([
+    extractFunction('isLocalTarget'),
+    source.slice(start, end),
+  ].join('\n'), { mode: 'transform' })
   const handlers = {}
   const executions = []
   const warnings = []
@@ -53,7 +57,7 @@ function loadRunRoute(store, overrides = {}) {
     },
   }
   vm.createContext(ctx)
-  vm.runInContext(code, ctx)
+  vm.runInContext(code, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER })
   ctx.registerPipelineRunApi(
     { register(route) { handlers[route.path] = route.handler } },
     {
@@ -703,6 +707,72 @@ test('服务端 fetch 已取消时不发起网络请求且不误报等待超时'
   assert.equal(fetched, false)
 })
 
+test('服务端 fetch 网络错误保留请求阶段和底层错误码且不回显 URL 凭据', async () => {
+  const f = loadRunRoute(stored)
+  const cause = Object.assign(new Error('connect ECONNREFUSED 192.168.1.101:9000'), { code: 'ECONNREFUSED' })
+
+  await assert.rejects(
+    f.ctx.serverFetchResponse(
+      async () => { throw new TypeError('fetch failed', { cause }) },
+      'http://user:do-not-log@example.internal/tasks',
+      {},
+      0,
+      'EvalTokens 任务列表',
+    ),
+    error => {
+      assert.match(String(error?.message), /^EvalTokens 任务列表请求失败：.*ECONNREFUSED/)
+      assert.doesNotMatch(String(error?.message), /do-not-log/)
+      return true
+    },
+  )
+})
+
+test('服务端内网直连请求按单次请求上限结束无响应连接', async t => {
+  const service = createServer(() => {})
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise(resolve => service.close(resolve)))
+  const address = service.address()
+  assert.ok(address && typeof address === 'object')
+  const controller = new AbortController()
+  const f = loadRunRoute(stored)
+  let observed
+  try {
+    observed = await Promise.race([
+      f.ctx.serverDirectFetch(`http://127.0.0.1:${address.port}/hang`, { signal: controller.signal }, 25)
+        .then(() => ({ resolved: true }), error => ({ error })),
+      new Promise(resolve => setTimeout(() => resolve({ pending: true }), 150)),
+    ])
+  } finally {
+    controller.abort()
+  }
+
+  assert.equal(observed?.pending, undefined, '请求上限到达后仍未结束')
+  assert.equal(observed?.error?.code, 'ETIMEDOUT')
+})
+
+test('服务端内网直连在加载传输模块期间收到取消时不会发出请求', async t => {
+  let requests = 0
+  const service = createServer((_req, res) => { requests += 1; res.end('{}') })
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise(resolve => service.close(resolve)))
+  const address = service.address()
+  assert.ok(address && typeof address === 'object')
+  const controller = new AbortController()
+  const f = loadRunRoute(stored)
+
+  const pending = f.ctx.serverDirectFetch(`http://127.0.0.1:${address.port}/cancelled`, { signal: controller.signal }, 500)
+  controller.abort()
+
+  await assert.rejects(pending, error => error?.name === 'AbortError')
+  assert.equal(requests, 0)
+})
+
 test('服务端脚本把完整大日志流式落盘，内存结果有界且保留早期变量', async t => {
   const dir = await mkdtemp(tmpdir() + '/pipeline-server-log-')
   t.after(() => rm(dir, { recursive: true, force: true }))
@@ -785,6 +855,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
   const code = stripTypeScriptTypes([
+    extractFunction('isLocalTarget'),
     source.slice(apiStart, apiEnd),
     extractFunction('resolvePipelineScriptsDir'),
     extractFunction('parseStageVars'),
@@ -1562,6 +1633,166 @@ test('API 服务端执行 EvalTokens 阶段，传入参数覆盖并等待本次 
   assert.ok(requests.some(request => request.url.includes('task_id=task-42')))
   assert.equal(f.history[0].status, 'success')
   assert.doesNotMatch(f.history[0].logs[0].log, /暂不支持|已跳过/)
+})
+
+test('远程模式的服务端 EvalTokens 阶段直连内网服务而不使用环境代理 fetch', async t => {
+  const requests = []
+  const service = createServer(async (req, res) => {
+    let body = ''
+    for await (const chunk of req) body += chunk
+    requests.push({ method: req.method, url: req.url, body })
+    res.setHeader('content-type', 'application/json')
+    if (req.url === '/api/open/v1/tasks') res.end(JSON.stringify({ items: [{ id: 'task-direct', name: '直连评估' }] }))
+    else if (req.url === '/api/open/v1/tasks/task-direct/run') res.end(JSON.stringify({ run_id: 'run-direct', status: 'running' }))
+    else if (req.url === '/api/open/v1/tasks/runs?task_id=task-direct') res.end(JSON.stringify({ runs: [{ run_id: 'run-direct', status: 'success' }] }))
+    else { res.statusCode = 404; res.end('{}') }
+  })
+  await new Promise((resolve, reject) => {
+    service.once('error', reject)
+    service.listen(0, '127.0.0.1', resolve)
+  })
+  t.after(() => new Promise(resolve => service.close(resolve)))
+  const address = service.address()
+  assert.ok(address && typeof address === 'object')
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    evaltok: { url: `http://127.0.0.1:${address.port}`, token: '', mode: 'remote' },
+  }, {}, async () => { throw new Error('environment proxy fetch must not be used') }, undefined, Date, { allowDynamicImport: true })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'eval', name: '直连评估', kind: 'evaltokens', evaltokens: { taskId: 'task-direct' } }]
+
+  await f.execPlan(plan)
+
+  assert.equal(f.history[0].status, 'success')
+  assert.deepEqual(requests.map(request => `${request.method} ${request.url}`), [
+    'GET /api/open/v1/tasks',
+    'POST /api/open/v1/tasks/task-direct/run',
+    'GET /api/open/v1/tasks/runs?task_id=task-direct',
+  ])
+})
+
+test('远程模式的服务端 EvalTokens 阶段拒绝公网目标', async () => {
+  const f = loadRunRoute(stored)
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-public' } },
+    {},
+    { evaltok: { url: 'https://evaltokens.example.com', token: '', mode: 'remote' } },
+    {},
+    {
+      fetchFn: async () => fetchResponse(200, { items: [{ id: 'task-public' }] }),
+      directFetchFn: async url => {
+        if (String(url).endsWith('/api/open/v1/tasks')) return fetchResponse(200, { items: [{ id: 'task-public' }] })
+        if (String(url).endsWith('/run')) return fetchResponse(200, { run_id: 'run-public', status: 'success' })
+        return fetchResponse(200, { runs: [{ run_id: 'run-public', status: 'success' }] })
+      },
+      sleep: async () => {},
+    },
+  )
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /远程服务器端连接仅允许回环或内网地址/)
+})
+
+test('远程模式缺少直连传输时不回退到环境代理 fetch', async () => {
+  const f = loadRunRoute(stored)
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-no-direct' } },
+    {},
+    { evaltok: { url: 'http://127.0.0.1:9000', token: '', mode: 'remote' } },
+    {},
+    {
+      fetchFn: async url => {
+        if (String(url).endsWith('/api/open/v1/tasks')) return fetchResponse(200, { items: [{ id: 'task-no-direct' }] })
+        if (String(url).endsWith('/run')) return fetchResponse(200, { run_id: 'run-proxied', status: 'success' })
+        return fetchResponse(200, { runs: [{ run_id: 'run-proxied', status: 'success' }] })
+      },
+      sleep: async () => {},
+    },
+  )
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /EvalTokens 内网直连传输不可用/)
+})
+
+test('服务端 EvalTokens 任务列表遇到瞬时网络错误后重试并继续运行', async () => {
+  const f = loadRunRoute(stored)
+  let taskListAttempts = 0
+  const fetchFn = async url => {
+    const value = String(url)
+    if (value.endsWith('/api/open/v1/tasks')) {
+      taskListAttempts += 1
+      if (taskListAttempts === 1) throw Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+      return fetchResponse(200, { items: [{ id: 'task-retry', name: '重试评估' }] })
+    }
+    if (value.endsWith('/api/open/v1/tasks/task-retry/run')) return fetchResponse(200, { run_id: 'run-retry', status: 'running' })
+    if (value.includes('/api/open/v1/tasks/runs?')) return fetchResponse(200, { runs: [{ run_id: 'run-retry', status: 'success' }] })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-retry' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: '', mode: 'local' } },
+    {},
+    { fetchFn, sleep: async () => {} },
+  )
+
+  assert.equal(result.code, 0)
+  assert.equal(taskListAttempts, 2)
+})
+
+test('服务端 EvalTokens 状态轮询遇到瞬时网络错误后重试本次 run', async () => {
+  const f = loadRunRoute(stored)
+  let runListAttempts = 0
+  const fetchFn = async url => {
+    const value = String(url)
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { items: [{ id: 'task-poll', name: '轮询评估' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-poll/run')) return fetchResponse(200, { run_id: 'run-poll', status: 'running' })
+    if (value.includes('/api/open/v1/tasks/runs?')) {
+      runListAttempts += 1
+      if (runListAttempts === 1) throw Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+      return fetchResponse(200, { runs: [{ run_id: 'run-poll', status: 'success' }] })
+    }
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-poll' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: '', mode: 'local' } },
+    {},
+    { fetchFn, sleep: async () => {} },
+  )
+
+  assert.equal(result.code, 0)
+  assert.equal(runListAttempts, 2)
+})
+
+test('服务端 EvalTokens 启动任务 POST 失败时不自动重试', async () => {
+  const f = loadRunRoute(stored)
+  let startAttempts = 0
+  const fetchFn = async url => {
+    const value = String(url)
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { items: [{ id: 'task-once', name: '单次启动' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-once/run')) {
+      startAttempts += 1
+      if (startAttempts === 1) throw Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
+      return fetchResponse(200, { run_id: 'run-duplicate', status: 'success' })
+    }
+    return fetchResponse(200, { runs: [] })
+  }
+
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-once' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: '', mode: 'local' } },
+    {},
+    { fetchFn, sleep: async () => {} },
+  )
+
+  assert.equal(result.code, 1)
+  assert.equal(startAttempts, 1)
+  assert.match(result.stderr, /EvalTokens 启动任务请求失败：.*ECONNRESET/)
 })
 
 test('EvalTokens completed_with_errors 终态使 API 流水线失败', async () => {
