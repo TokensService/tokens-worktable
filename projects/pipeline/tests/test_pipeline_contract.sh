@@ -94,6 +94,8 @@ mkdir -p "$FAKE_BIN" \
   "$FAKE_IMAGE_ROOT/opt/op_test/xds_template/k8s/xds-cluster" \
   "$FAKE_IMAGE_ROOT/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s" \
   "$FAKE_IMAGE_ROOT/opt/op_test/xds_template/cap/model_arch"
+# Intentionally provide only the legacy tree: pull-image.sh must fall back
+# after the preferred /opt/deploy_template tree is absent.
 cp "$WORK/xds-cluster/Chart.yaml" "$FAKE_IMAGE_ROOT/opt/op_test/xds_template/k8s/xds-cluster/Chart.yaml"
 cp "$WORK/values.template.yaml" "$FAKE_IMAGE_ROOT/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml"
 cp "$WORK/model_arch.json" "$FAKE_IMAGE_ROOT/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"

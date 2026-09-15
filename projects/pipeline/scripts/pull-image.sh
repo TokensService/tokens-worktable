@@ -14,6 +14,8 @@ else
 fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
+DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"
+FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
@@ -131,7 +133,7 @@ pull_image() {
 }
 
 export_templates() {
-  local work_dir container_name
+  local work_dir container_name source_dir
   work_dir="$(mktemp -d)"
   container_name="op-test-template-$$"
   cleanup() {
@@ -143,18 +145,35 @@ export_templates() {
   echo "[pull] execution host: export render templates from $TEMPLATE_IMAGE"
   mkdir -p "$TEMPLATE_DIR"
   nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
+  copy_template_set() {
+    local template_root=$1 output_dir=$2
+    mkdir -p "$output_dir"
+    nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template/k8s/xds-cluster" "$output_dir/xds-cluster" \
+      && nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$output_dir/values-16Node-je-cpp-bnt3.yaml" \
+      && nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$output_dir/model_arch-lt-je-cpp-bnt3.json"
+  }
+  source_dir="$work_dir/deploy-template"
+  if ! copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir"; then
+    [[ "$DEPLOY_TEMPLATE_DIR" != "$FALLBACK_DEPLOY_TEMPLATE_DIR" ]] || {
+      echo "template export failed from $DEPLOY_TEMPLATE_DIR" >&2
+      return 1
+    }
+    echo "[pull] template root $DEPLOY_TEMPLATE_DIR is unavailable; fallback to $FALLBACK_DEPLOY_TEMPLATE_DIR"
+    source_dir="$work_dir/op-test-template"
+    copy_template_set "$FALLBACK_DEPLOY_TEMPLATE_DIR" "$source_dir" || {
+      echo "template export failed from fallback $FALLBACK_DEPLOY_TEMPLATE_DIR" >&2
+      return 1
+    }
+  fi
 
   if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
     [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
-    cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+    cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"
   fi
 
-  cp -a "$work_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
-  cp -a "$work_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
-  cp -a "$work_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
+  cp -a "$source_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
+  cp -a "$source_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
+  cp -a "$source_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
 }
 
 if [[ "${PULL_TARGET_IMAGES_ONLY:-0}" == "1" ]]; then
