@@ -237,6 +237,39 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
   assert.deepEqual(plain(pool.cancel('missing')), { ok: false, state: 'missing' })
 })
 
+test('服务端执行池按运行和阶段保存有界实时日志尾部', async () => {
+  const f = loadRunRoute(stored)
+  let release, liveRuntime
+  const pool = f.ctx.createPipelineExecutionQueue(async (_plan, runtime) => {
+    liveRuntime = runtime
+    runtime.setStages([{ id: 'build', name: '构建' }, { id: 'deploy', name: '部署' }])
+    runtime.replaceLog('build', '$ bash build.sh\n')
+    runtime.appendLog('build', 'first line\n')
+    runtime.appendLog('build', 'latest line\n')
+    await new Promise(resolve => { release = resolve })
+  }, 1, 10)
+  const running = pool.run({ id: 'live-1', runId: 'live-1', stages: [{ id: 'build', name: '构建' }] })
+  await Promise.resolve()
+
+  assert.deepEqual(plain(pool.log('live-1', 'build')), {
+    text: '$ bash build.sh\nfirst line\nlatest line\n',
+    truncated: false,
+    revision: 3,
+  })
+  assert.equal(pool.log('live-1', 'missing'), null)
+  assert.equal(pool.log('missing', 'build'), null)
+  assert.equal(JSON.stringify(pool.snapshot()).includes('latest line'), false, '普通队列快照不得夹带日志正文')
+
+  liveRuntime.appendLog('build', 'x'.repeat(300 * 1024) + 'TAIL')
+  const tail = pool.log('live-1', 'build')
+  assert.equal(tail.truncated, true)
+  assert.ok(tail.text.length <= 256 * 1024)
+  assert.match(tail.text, /TAIL$/)
+  release()
+  await running
+  assert.equal(pool.log('live-1', 'build'), null, '运行离开执行池后实时日志一并释放')
+})
+
 test('服务端执行队列满时拒绝继续持有任务，API 不返回虚假的 202', async () => {
   const f = loadRunRoute(stored)
   const releases = []
@@ -582,6 +615,41 @@ test('服务端脚本收到取消信号后终止子进程并保留中止前输�
   assert.equal(result.aborted, true)
 })
 
+test('服务端脚本在进程结束前逐块推送最新日志', async () => {
+  let child
+  const live = []
+  const loaded = loadRunStageScript(() => {
+    child = new EventEmitter()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.pid = 12345
+    child.kill = () => true
+    return child
+  })
+
+  const running = loaded.ctx.runStageScript(
+    { name: 'live.sh', path: '/scripts/live.sh', params: [], values: {} },
+    { envs: [], repository: null },
+    '/scripts',
+    {},
+    0,
+    undefined,
+    undefined,
+    undefined,
+    text => live.push(String(text)),
+  )
+  await new Promise(resolve => setImmediate(resolve))
+  child.stdout.write('first line\n')
+  child.stderr.write('latest error\n')
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.match(live.join(''), /^\$ bash live\.sh\n[\s\S]*first line\n[\s\S]*✗ latest error\n/)
+  child.stdout.end(); child.stderr.end(); child.emit('close', 0)
+  const result = await running
+  assert.equal(result.code, 0)
+  assert.match(live.join(''), /\[exit 0\]\n$/)
+})
+
 test('服务端可取消等待会及时拒绝并移除监听器', { timeout: 200 }, async () => {
   const f = loadRunRoute(stored)
   let abortListener
@@ -753,9 +821,9 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
       summaries.push({ file, append, logs: plain(logs), status })
     },
     stageLogText: (name, result) => `${name}:${result.code}`,
-    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) => {
+    runStageScript: async (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal, onLog) => {
       calls.push({ script: script.name, runContext: plain(runContext), scriptsDir, varsPool: plain(varsPool || {}), timeout, extraEnv: plain(extraEnv || {}), outputFile })
-      if (runStageScriptImpl) return runStageScriptImpl(script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal)
+      if (runStageScriptImpl) return runStageScriptImpl(script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal, onLog)
       return results[script.name] || { code: 0, stdout: '', stderr: '' }
     },
     appendPipelineHistory: async record => history.push(plain(record)),
@@ -804,6 +872,32 @@ function apiExecutionPlan(presets = ['check']) {
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
+
+test('服务端执行器把脚本实时输出绑定到对应运行阶段', async () => {
+  const events = []
+  const f = loadExecPlan(apiExecutionConfig, {}, undefined, (_script, _runContext, _scriptsDir, _varsPool, _timeout, _extraEnv, _outputFile, _signal, onLog) => {
+    onLog('first line\n')
+    onLog('latest line\n')
+    return Promise.resolve({ code: 0, stdout: 'first line\nlatest line\n', stderr: '' })
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/scripts/build.sh', params: [], values: {} } }]
+  const runtime = {
+    signal: new AbortController().signal,
+    setStages() {},
+    updateStage() {},
+    replaceLog: (stageId, text) => events.push(['replace', stageId, text]),
+    appendLog: (stageId, text) => events.push(['append', stageId, text]),
+  }
+
+  await f.execPlan(plan, runtime)
+
+  assert.deepEqual(events, [
+    ['replace', 'build', ''],
+    ['append', 'build', 'first line\n'],
+    ['append', 'build', 'latest line\n'],
+  ])
+})
 
 async function assertParallelServerRun(sourceType) {
   const deferred = new Map()

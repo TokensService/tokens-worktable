@@ -1000,6 +1000,8 @@ type PipelineExecutionRuntime = {
   signal: AbortSignal;
   setStages: (stages: any[]) => void;
   updateStage: (stageId: string, state: any) => void;
+  replaceLog: (stageId: string, text: unknown) => void;
+  appendLog: (stageId: string, text: unknown) => void;
 }
 
 function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExecutionRuntime) => Promise<void>, limit = 2, queueLimit = 100, hooks?: {
@@ -1014,6 +1016,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     startedAt: number;
     stages: any[];
     nodes: Record<string, any>;
+    logs: Record<string, { text: string; truncated: boolean; revision: number }>;
     controller: AbortController | null;
     resolve: () => void;
     reject: (error: unknown) => void;
@@ -1040,14 +1043,29 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const runIdOf = (plan: any): string => String(plan && (plan.runId || plan.id) || '')
   const stageList = (value: any): any[] => Array.isArray(value) ? value.filter((stage) => stage && typeof stage === 'object') : []
   const idleNode = () => ({ status: 'idle', progress: 0, dur: 0 })
+  const liveLogLimit = 256 * 1024
+  const writeLog = (item: ExecutionItem, stageId: string, value: unknown, append: boolean) => {
+    const id = String(stageId || '')
+    if (!id || !item.nodes[id]) return
+    const previous = item.logs[id]
+    let text = (append && previous ? previous.text : '') + String(value ?? '')
+    let truncated = append && previous ? previous.truncated : false
+    if (text.length > liveLogLimit) { text = text.slice(-liveLogLimit); truncated = true }
+    item.logs[id] = { text, truncated, revision: (previous?.revision || 0) + 1 }
+  }
   const resetStages = (item: ExecutionItem, stages: any[]) => {
     item.stages = stageList(stages)
     const nodes: Record<string, any> = {}
+    const logs: Record<string, { text: string; truncated: boolean; revision: number }> = {}
     for (const stage of item.stages) {
       const id = String(stage.id ?? '')
-      if (id) nodes[id] = item.nodes[id] || idleNode()
+      if (id) {
+        nodes[id] = item.nodes[id] || idleNode()
+        if (item.logs[id]) logs[id] = item.logs[id]
+      }
     }
     item.nodes = nodes
+    item.logs = logs
   }
   const updateStage = (item: ExecutionItem, stageId: string, state: any) => {
     const id = String(stageId || '')
@@ -1099,6 +1117,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         signal: item.controller.signal,
         setStages: (stages: any[]) => resetStages(item, stages),
         updateStage: (stageId: string, state: any) => updateStage(item, stageId, state),
+        replaceLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, false),
+        appendLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, true),
       }
       const settle = () => {
         active -= 1
@@ -1132,6 +1152,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
           startedAt: 0,
           stages: [],
           nodes: {},
+          logs: {},
           controller: null,
           resolve: resolvePromise,
           reject,
@@ -1145,6 +1166,13 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
       queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
     }),
+    log(runId: string, stageId: string): { text: string; truncated: boolean; revision: number } | null {
+      const id = String(runId || ''), sid = String(stageId || '')
+      const entry = running.find(({ item }) => runIdOf(item.plan) === id)
+      if (!entry || !entry.item.nodes[sid]) return null
+      const current = entry.item.logs[sid]
+      return current ? { ...current } : { text: '', truncated: false, revision: 0 }
+    },
     cancel(runId: string): { ok: boolean; state: 'queued' | 'running' | 'missing' } {
       const id = String(runId || '')
       const queuedIndex = pending.findIndex((item) => runIdOf(item.plan) === id)
@@ -1762,6 +1790,20 @@ export function apply(ctx: Context) {
           return
         }
         if (req.method === 'GET') {
+          const url = new URL(req.url ?? '/api/worktable/pipeline/queue', 'http://dsh.internal')
+          const logRunId = url.searchParams.get('runId')
+          const logStageId = url.searchParams.get('stageId')
+          if (logRunId !== null || logStageId !== null) {
+            if (!logRunId || !logStageId || logRunId.length > 128 || logStageId.length > 128) {
+              json(res, 400, { error: 'invalid runId or stageId' }); return
+            }
+            const log = pipelineExecutions && typeof pipelineExecutions.log === 'function'
+              ? pipelineExecutions.log(logRunId, logStageId)
+              : null
+            if (!log) { json(res, 404, { error: 'run or stage not found' }); return }
+            json(res, 200, log)
+            return
+          }
           const now = Date.now()
           for (const [k, v] of queuePresence) if (now - v.seenAt > QUEUE_PRESENCE_TTL) queuePresence.delete(k)
           const clients: any[] = []
@@ -2253,7 +2295,7 @@ export function apply(ctx: Context) {
     return { vars: probe.vars, json: probe.json, fullText: probe.captureFull && !probe.fullTextOverflow ? probe.fullParts.join('') : undefined, fullTextOverflow: probe.fullTextOverflow }
   }
 
-  async function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>, outputFile?: string, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean; vars?: Record<string, string>; json?: any; fullText?: string; fullTextOverflow?: boolean; logFile?: string; logError?: string }> {
+  async function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>, outputFile?: string, signal?: AbortSignal, onLog?: (text: string) => void): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean; vars?: Record<string, string>; json?: any; fullText?: string; fullTextOverflow?: boolean; logFile?: string; logError?: string }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
     const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
@@ -2332,6 +2374,8 @@ export function apply(ctx: Context) {
     if (signal?.aborted) return { code: 1, stdout: '', stderr: '', aborted: true }
     const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
     const interp = isPy ? 'python3' : 'bash'
+    const commandLine = '$ ' + interp + ' ' + (sc.name || sc.path) + (args.length ? ' ' + args.join(' ') : '') + '\n'
+    const pushLiveLog = (text: string) => { if (text && onLog) try { onLog(text) } catch {} }
     const requestedLog = typeof outputFile === 'string' && outputFile ? pathResolve(outputFile) : ''
     let file: Awaited<ReturnType<typeof fsOpen>> | null = null
     let logError = ''
@@ -2339,9 +2383,10 @@ export function apply(ctx: Context) {
       try {
         await fsMkdir(dirname(requestedLog), { recursive: true })
         file = await fsOpen(requestedLog, 'w')
-        await file.writeFile('$ ' + interp + ' ' + (sc.name || sc.path) + (args.length ? ' ' + args.join(' ') : '') + '\n', 'utf8')
+        await file.writeFile(commandLine, 'utf8')
       } catch (error) { logError = String(error); try { await file?.close() } catch {}; file = null }
     }
+    pushLiveLog(commandLine)
     return new Promise((resolvePromise) => {
       const stdoutTail = createServerTextTail(), stderrTail = createServerTextTail()
       const probe = createServerOutputProbe(serverScriptNeedsFull(sc.outVars))
@@ -2357,6 +2402,7 @@ export function apply(ctx: Context) {
         pending = pending.then(() => file!.writeFile(text, 'utf8')).catch(error => { logError = String(error) }).finally(() => { pendingBytes = Math.max(0, pendingBytes - bytes); resume() })
         if (pendingBytes >= backlogLimit) pause()
       }
+      const emitLog = (text: string) => { writeLog(text); pushLiveLog(text) }
       /* stdout/stderr 的 data chunk 不等于文本行：只在真实换行后添加 stderr 标记，避免把跨 chunk 的一行撕开。 */
       const formatLogChunk = (text: string, stream: 'stdout' | 'stderr') => {
         let out = lastLogStream && lastLogStream !== stream && !logLineStart ? '\n' : ''
@@ -2371,8 +2417,8 @@ export function apply(ctx: Context) {
         lastLogStream = stream
         return out
       }
-      const appendStdout = (text: string) => { appendServerTextTail(stdoutTail, text); appendServerOutputProbe(probe, text); writeLog(formatLogChunk(text, 'stdout')) }
-      const appendStderr = (text: string) => { appendServerTextTail(stderrTail, text); writeLog(formatLogChunk(text, 'stderr')) }
+      const appendStdout = (text: string) => { appendServerTextTail(stdoutTail, text); appendServerOutputProbe(probe, text); emitLog(formatLogChunk(text, 'stdout')) }
+      const appendStderr = (text: string) => { appendServerTextTail(stderrTail, text); emitLog(formatLogChunk(text, 'stderr')) }
       const killTree = () => {
         try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, 'SIGKILL'); else child?.kill('SIGKILL') } catch {}
       }
@@ -2387,7 +2433,7 @@ export function apply(ctx: Context) {
         if (timedOut) appendStderr('exec timed out after ' + Math.round(timeoutMs / 1000) + 's（阶段超时，进程被终止；可在流水线编辑器调大该阶段「超时(分钟)」）')
         const parsed = finishServerOutputProbe(probe)
         if (parsed.fullTextOverflow) appendStderr('[warn] stdout 全文超过 128KiB，已跳过「*=全文」输出变量；请改用 KEY=VALUE 或 JSON 路径')
-        writeLog(externallyAborted ? '\n[aborted]\n' : '\n[exit ' + code + ']\n')
+        emitLog(externallyAborted ? '\n[aborted]\n' : '\n[exit ' + code + ']\n')
         await pending
         try { await file?.sync(); await file?.close() } catch (error) { logError = logError || String(error) }
         file = null
@@ -2508,7 +2554,9 @@ export function apply(ctx: Context) {
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
       const startedAt = Date.now()
-      runtime?.updateStage(String(s && s.id || ''), { status: 'running', progress: 5, dur: 0 })
+      const stageId = String(s && s.id || '')
+      runtime?.replaceLog?.(stageId, '')
+      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0 })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
@@ -2537,7 +2585,7 @@ export function apply(ctx: Context) {
         let r: any
         try {
           const directLog = folder ? taskLogPath(folder, tag, baseSeq + index + 1, s.name) : undefined
-          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal)   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志
+          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
         } catch (error) {
           r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
         }
@@ -2562,6 +2610,7 @@ export function apply(ctx: Context) {
           else throw error
         }
       }
+      if (!(s.script && s.script.path)) runtime?.replaceLog?.(stageId, entry.text)
       return {
         index,
         stage: s,
