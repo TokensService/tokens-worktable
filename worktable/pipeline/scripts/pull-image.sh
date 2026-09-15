@@ -14,6 +14,7 @@ else
 fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
+DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
@@ -143,9 +144,9 @@ export_templates() {
   echo "[pull] execution host: export render templates from $TEMPLATE_IMAGE"
   mkdir -p "$TEMPLATE_DIR"
   nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
+  nerdctl --namespace k8s.io cp "$container_name:$DEPLOY_TEMPLATE_DIR/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
+  nerdctl --namespace k8s.io cp "$container_name:$DEPLOY_TEMPLATE_DIR/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+  nerdctl --namespace k8s.io cp "$container_name:$DEPLOY_TEMPLATE_DIR/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
 
   if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
     [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
