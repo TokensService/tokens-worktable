@@ -84,7 +84,7 @@ test('显式运行参数可以逐项覆盖流水线默认值，包括空策略�
 
 test('runPipeline 把列表运行的默认参数提交到服务端，不启动浏览器执行器',()=>{
   let submitted=null;
-  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署'}],defaults:{
+  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署',sched:{}}],defaults:{
     environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],
   }};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};

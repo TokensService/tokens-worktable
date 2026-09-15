@@ -126,12 +126,29 @@ test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', 
   assert.deepEqual(calls.tips, ['已提交服务端运行队列']);
 });
 
-test('▶ 直接启动时不显示入队或队列已满提示', () => {
+test('▶ 本地直接启动时不显示入队或队列已满提示', () => {
   const { tbody, calls } = makeContext(true);
   const button = tbody.querySelectorAll('[data-plrun]')[0];
   button.handlers.click({ stopPropagation() {} });
   assert.deepEqual(calls.tips, []);
   assert.deepEqual(calls.alerts, []);
+});
+
+test('▶ 本地任务排队时显示本地队列位置', () => {
+  const { tbody, calls } = makeContext('queued');
+  const button = tbody.querySelectorAll('[data-plrun]')[0];
+  button.handlers.click({ stopPropagation() {} });
+  assert.deepEqual(calls.tips, ['已加入本地队列（第 1 位）']);
+  assert.deepEqual(calls.alerts, []);
+});
+
+test('▶ 本地队列已满时提示并拒绝继续排队', () => {
+  const { tbody, calls } = makeContext(false);
+  const button = tbody.querySelectorAll('[data-plrun]')[0];
+  button.handlers.click({ stopPropagation() {} });
+  assert.deepEqual(calls.tips, []);
+  assert.equal(calls.alerts.length, 1);
+  assert.match(calls.alerts[0], /本地队列已满/);
 });
 
 test('▶ 不受浏览器本地队列容量影响，始终提交服务端调度', () => {

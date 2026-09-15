@@ -3647,7 +3647,7 @@ function startSimRun(pl, c){
     if(badIdx>=0){ alert('阶段「'+stages[badIdx].name+'」需本地运行却排在定时阶段之后，无法运行。请在流水线编辑器修正。'); releaseNodeLease(c.leaseId, c.leaseIps); drainQueue(); return; }   // 启动校验失败：已拿到的节点租约立即释放
   }
   const commit=randCommit(), tag=nowHM().replace(':','')+'-'+commit.slice(0,5);
-  // 旧页面本地执行器兼容路径；新手动运行与历史重跑均由 submitServerRun 交给服务端权威执行池。
+  // 浏览器本地执行路径：含「需本地运行」阶段的手动运行与历史重跑由 runPipeline 分流到这里。
   const rc={id:'r'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
     stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null, over:false, overall:null,
     leaseTimer:null, leaseId:c.leaseId||null, leaseIps:c.leaseIps||[],   // 节点占用租约：finish/中止/重置时释放
@@ -3674,8 +3674,8 @@ function startSimRun(pl, c){
   advance(rc,0);
   renderQueue();
 }
-/* 手动运行只把参数提交给服务端权威执行池。请求体只含配置引用和运行参数；阶段定义、节点/代码仓
-   凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。 */
+/* 全部阶段均支持服务端执行的手动运行只把参数提交给服务端权威执行池。请求体只含配置引用和运行参数；
+   阶段定义、节点/代码仓凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。 */
 async function submitServerRun(item){
   const body={
     environmentIds:(Array.isArray(item&&item.envs)?item.envs:[]).map(e=>e&&e.id).filter(Boolean),
@@ -3724,6 +3724,17 @@ function runPipeline(opts){
     env, envs, image, release, repoId, repoName:(resolveRepo(repoId)||{}).name||'', branch, strategy, presets, by, source:opts.source||'manual', queuedAt:Date.now()};
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
   else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
+  /* 「需本地运行」意味着目标服务只保证浏览器可达，不能交给 dsh 服务进程 fetch；复用既有页内并发、
+     机器互斥和节点租约调度。全部普通阶段都支持定时时，仍提交服务端权威队列。 */
+  if(Array.isArray(item.stages) && item.stages.some(s=>s && !s.preset && !s.sched)){
+    const pendingLeaseCount=(typeof pendingLeaseStarts==='undefined')?0:pendingLeaseStarts.length;
+    const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length+pendingLeaseCount<MAX_ACTIVE_RUNS);
+    if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))) return startRun(item);
+    if(queue.length>=QUEUE_CAP) return false;
+    queue.push(item);
+    renderQueue();
+    return 'queued';
+  }
   submitServerRun(item);
   return 'submitted';
 }
@@ -6736,7 +6747,10 @@ function rerunFromHistory(rec){
   const envs=ips.map(ip=>environments.find(e=>e.ip===ip)).filter(Boolean);
   const repoId=(rec.repoId && repositories.some(r=>r.id===rec.repoId)) ? rec.repoId : undefined;
   const r=runPipeline({pipelineId:pl.id, envs:envs.length?envs:undefined, repoId, branch:rec.branch, strategy:rec.strategy||'', source:'manual'});
-  if(r==='submitted') flashRunTip('已提交服务端重跑 #'+rec.no+'（'+pl.name+'）');
+  if(r===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
+  else if(r==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）');
+  else if(r==='submitted') flashRunTip('已提交服务端重跑 #'+rec.no+'（'+pl.name+'）');
+  else if(r===true) flashRunTip('已开始本地重跑 #'+rec.no+'（'+pl.name+'）');
   else if(r==='no-by'){ /* 执行人必填拦截：runPipeline 已弹提示，不再给「已开始」误导提示 */ }
 }
 $('histRerun').addEventListener('click', ()=>{
@@ -7050,7 +7064,7 @@ function renderPipelines(){
     tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
-  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun'),useDefaults:true}); if(r==='submitted') flashRunTip('已提交服务端运行队列'); }));
+  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun'),useDefaults:true}); if(r===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）'); else if(r==='submitted') flashRunTip('已提交服务端运行队列'); }));
   tb.querySelectorAll('[data-plapi]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); showPipelineApi(findPipeline(b.getAttribute('data-plapi'))); }));
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
   tb.querySelectorAll('[data-plcopy]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); copyPipeline(b.getAttribute('data-plcopy')); }));
@@ -7276,7 +7290,7 @@ if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListen
 /* 运行按钮旁短暂提示（入队 / 重跑反馈） */
 let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
-$('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r==='submitted') flashRunTip('已提交服务端运行队列'); });
+$('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）'); else if(r==='submitted') flashRunTip('已提交服务端运行队列'); });
 /* 中止指定运行：以「已中止」计入历史并消耗队列。
    流式执行的脚本经 AbortController 断开会话，服务端随之终止对应子进程（见 runScriptStep/execStreaming）；EvalTokens 阶段取消待响应请求；
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
