@@ -136,18 +136,30 @@ printf '%s\n' "$remote_result" | awk '/^\[lmcache-debug\]/'
 LMCACHE_UNITTEST_LOCAL_LOG_DIR="${LMCACHE_UNITTEST_LOCAL_LOG_DIR:-$RUN_DIR}"
 mkdir -p "$LMCACHE_UNITTEST_LOCAL_LOG_DIR"
 log_copy_rc=0
+log_cleanup_rc=0
+log_cleanup_command=''
 if lmcache_remote_scp -r \
   "${LMCACHE_UNITTEST_TARGET}:${LMCACHE_UNITTEST_LOG_DIR}/." \
   "$LMCACHE_UNITTEST_LOCAL_LOG_DIR/"; then
   echo "[lmcache-debug] test logs copied to execution host: $LMCACHE_UNITTEST_LOCAL_LOG_DIR"
+  # 仅在执行机已完整收到日志后清理目标节点副本；回传失败时保留它供排查。
+  printf -v log_cleanup_command 'rm -rf -- %q' "$LMCACHE_UNITTEST_LOG_DIR"
+  if lmcache_remote "$log_cleanup_command"; then
+    echo "[lmcache-debug] target test logs removed after copy: $LMCACHE_UNITTEST_LOG_DIR"
+  else
+    log_cleanup_rc=$?
+    echo "[lmcache-debug] target test log cleanup failed; target: $LMCACHE_UNITTEST_LOG_DIR" >&2
+  fi
 else
   log_copy_rc=$?
   echo "[lmcache-debug] test log copy failed; target: $LMCACHE_UNITTEST_LOG_DIR; execution host: $LMCACHE_UNITTEST_LOCAL_LOG_DIR" >&2
 fi
-# 保留 pytest 的失败结果；只有 pytest 成功但日志回传失败时，才将阶段置为失败。
+# 保留 pytest 的失败结果；pytest 成功时，日志回传或回传后的目标清理失败均使阶段失败。
 stage_rc="$remote_rc"
 if [[ "$remote_rc" == 0 && "$log_copy_rc" != 0 ]]; then
   stage_rc="$log_copy_rc"
+elif [[ "$remote_rc" == 0 && "$log_cleanup_rc" != 0 ]]; then
+  stage_rc="$log_cleanup_rc"
 fi
 LMCACHE_UNITTEST_TEST_RESULT="$stage_rc"
 LMCACHE_UNITTEST_IMAGE_REMOVED="$(awk -F= '$1 == "IMAGE_REMOVED" { print $2 }' <<<"$remote_result")"
@@ -165,6 +177,7 @@ printf 'LMCACHE_UNITTEST_REMOVE_IMAGE=%s\n' "$LMCACHE_UNITTEST_REMOVE_IMAGE"
 printf 'LMCACHE_UNITTEST_CPU_ONLY=%s\n' "$LMCACHE_UNITTEST_CPU_ONLY"
 printf 'LMCACHE_UNITTEST_GPU_DEVICES=%s\n' "$LMCACHE_UNITTEST_GPU_DEVICES"
 printf 'LMCACHE_UNITTEST_LOCAL_LOG_DIR=%s\n' "$LMCACHE_UNITTEST_LOCAL_LOG_DIR"
+printf 'LMCACHE_UNITTEST_LOG_CLEANUP_RESULT=%s\n' "$log_cleanup_rc"
 printf 'LMCACHE_UNITTEST_IMAGE_REMOVED=%s\n' "$LMCACHE_UNITTEST_IMAGE_REMOVED"
 printf 'LMCACHE_UNITTEST_TEST_LOG=%s\n' "$LMCACHE_UNITTEST_TEST_LOG"
 printf 'LMCACHE_UNITTEST_ISOLATED_TEST_LOG=%s\n' "$LMCACHE_UNITTEST_ISOLATED_TEST_LOG"

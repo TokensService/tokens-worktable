@@ -110,6 +110,9 @@ EOF
 cat >"$tmp/bin/scp" <<'EOF'
 #!/usr/bin/env bash
 printf 'scp %s\n' "$*" >>"$FAKE_LOG"
+if [[ "${FAKE_SCP_EXIT:-0}" != 0 ]]; then
+  exit "$FAKE_SCP_EXIT"
+fi
 args=("$@")
 i=0
 while (( i < ${#args[@]} )); do
@@ -276,6 +279,8 @@ grep -Fq "LMCACHE_UNITTEST_LOCAL_LOG_DIR=$execution_run_dir" <<<"$test_output"
 [[ -f "$execution_run_dir/pytest-blocks-first.log" ]]
 grep -Fq "root@192.0.2.78:$pull_log_dir/." "$log"
 grep -Fq "$execution_run_dir/" "$log"
+# 日志仅能在回传完成后删除。
+[[ ! -d "$pull_log_dir" ]]
 grep -Fq '[lmcache-debug] pytest summary: passed: 4, failed: 1, skipped: 2, xpassed: 1' <<<"$test_output"
 grep -Fq '[lmcache-debug] pytest failed tests: tests/fake_failure.py::test_failure' <<<"$test_output"
 grep -Fq '[lmcache-debug] pytest xpassed tests: tests/fake_xpass.py::test_xpass' <<<"$test_output"
@@ -343,4 +348,30 @@ if env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
 fi
 [[ -f "$tmp/failure-execution/pytest.log" ]]
 grep -Fq '[lmcache-debug] test logs copied to execution host:' "$tmp/failure.out"
+[[ ! -d "$failure_remote_log_dir" ]]
+
+# SCP 回传失败时，目标节点日志是唯一的排障副本，绝不能清理。
+copy_failure_remote_log_dir="$tmp/copy-failure-remote/logs"
+if env PATH="$tmp/bin:$PATH" FAKE_LOG="$log" SSH_PASSWORD='target-secret' \
+  FAKE_PYTEST_COUNT_FILE="$tmp/copy-failure-pytest-count" FAKE_SCP_EXIT=17 \
+  RUN_DIR="$tmp/copy-failure-execution" \
+  LMCACHE_UNITTEST_RUN_DIR="$tmp/copy-failure-remote" \
+  LMCACHE_UNITTEST_IMAGE="$pull_image" \
+  LMCACHE_UNITTEST_CONTAINER='lmcache-unittest-copy-failure' \
+  LMCACHE_UNITTEST_CAP_ADD='SYS_NICE' LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST=0 \
+  LMCACHE_UNITTEST_LOG_DIR="$copy_failure_remote_log_dir" \
+  LMCACHE_UNITTEST_HTTP_PROXY="$pull_http_proxy" LMCACHE_UNITTEST_REMOVE_IMAGE=0 \
+  LMCACHE_UNITTEST_CPU_ONLY=1 \
+  LMCACHE_UNITTEST_TARGET_IP="$pull_target_ip" LMCACHE_UNITTEST_TARGET_PORT="$pull_target_port" \
+  LMCACHE_UNITTEST_TARGET_USER="$pull_target_user" \
+  bash "$root/lmcache-unittest-run-tests.sh" >"$tmp/copy-failure.out" 2>&1; then
+  echo 'successful pytest with failed SCP must fail the test stage' >&2
+  exit 1
+fi
+[[ -d "$copy_failure_remote_log_dir" ]]
+grep -Fq '[lmcache-debug] test log copy failed;' "$tmp/copy-failure.out"
+if grep -Fq "target test logs removed after copy: $copy_failure_remote_log_dir" "$tmp/copy-failure.out"; then
+  echo 'target logs must not be removed when SCP fails' >&2
+  exit 1
+fi
 echo 'lmcache unittest pipeline contract passed'
