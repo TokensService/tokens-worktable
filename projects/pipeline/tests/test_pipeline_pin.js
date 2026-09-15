@@ -70,6 +70,7 @@ function load(pinStates){
     renderPlFilterOptions:()=>{},
     plOwnerOf:()=>'', plUpdaterOf:()=>'',   // 署名桩：置顶测试不涉及署名展示
     isPipelineFavorite:()=>false,
+    pipelineQueueCounts:()=>({}), pipelineQueueCountHtml:()=>'—',   // 置顶测试不涉及队列计数
     currentUsername:'',
     document:{createElement:tag=>new FakeNode(tag)},
     $:id=>({plTable:table, pipelineSel:selNode, plRowMenuPanel:panel, plRowMenuPin:pinItem, plRowMenuFavorite:favoriteItem})[id]||count,

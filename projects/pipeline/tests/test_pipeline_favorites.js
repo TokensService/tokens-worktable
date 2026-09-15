@@ -106,6 +106,7 @@ function loadFavoriteUi(username){
     ],
     curPipelineId:'pipe-a',currentUsername:username,plFilter:{kw:'',owner:'all',favorite:'all'},
     plFilterMatch:()=>true,renderPlFilterOptions:()=>{},plOwnerOf:()=>'',plUpdaterOf:()=>'',
+    pipelineQueueCounts:()=>({}),pipelineQueueCountHtml:()=>'—',   // 收藏用例隔离运行队列计数
     document:{createElement:tag=>new FakeNode(tag)},
     $:id=>({plTable:table,pipelineSel:select,plCount:count,plFilterTip:tip,plRowMenuPanel:panel,plRowMenuPin:pinItem,plRowMenuFavorite:favoriteItem})[id],
     esc:String,curPipeline:()=>ctx.pipelines[0],findPipeline:id=>ctx.pipelines.find(p=>p.id===id),
