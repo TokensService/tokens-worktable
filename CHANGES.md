@@ -1,5 +1,31 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线任务支持按用户收藏与收藏筛选（`projects/pipeline/pipeline.html`）：任务行「⋯」悬浮菜单新增
+  「收藏 / 取消收藏」，列表名称区以「★ 收藏」标识当前用户的收藏；筛选栏新增「全部 / 仅看收藏」，
+  可与关键字、创建者条件组合并在浏览器本地保留筛选选择。收藏关系以流水线 `favoriteUsers` 用户名数组
+  保存，经既有 `savePipelines` / `persistState` 链路同步到服务端与导出文件，同一登录用户跨浏览器可见、
+  不同用户互不影响；未获取登录用户名时拒绝写入，复制副本不继承任何用户的收藏。新增
+  `projects/pipeline/tests/test_pipeline_favorites.js` 覆盖用户隔离、未登录保护、筛选状态、列表与菜单交互、
+  保存链路及副本语义，并为既有置顶、行运行与署名测试补齐收藏状态依赖桩。
+- 流水线编辑器任务参数支持折叠（`projects/pipeline/pipeline.html`）：Shell/Python 自动识别参数与 EvalTokens
+  任务输入参数统一放入原生 `details` 面板，标题显示参数数量，首次渲染默认折叠；无参数的模拟、HTTP 或未识别到
+  参数的任务隐藏整栏。展开后修改参数只重绘字段，不重建折叠容器；折叠标题加入任务卡拖拽手势保护，点击时正常
+  展开/收起而不触发整卡拖拽。新增 `projects/pipeline/tests/test_stage_params_collapse.js`，并扩充
+  `test_stage_drag_reorder.js` 覆盖默认折叠、按类型显示/隐藏、数量标题与折叠点击手势。
+- 流水线脚本目录可在设置中配置，默认路径改为插件安装后的 scripts 路径（`projects/pipeline/pipeline.html` +
+  `src/index.ts`）：「设置」页新增「脚本目录」卡片（Profiling 脚本与归档配置之间），可保存自定义目录、
+  留空或点「重置为安装默认」恢复默认；自定义值随设置持久化到服务端（worktable-pipeline.json）并跨浏览器
+  同步，「导出设置」文件同样携带。默认路径不再只靠页面 URL 嗅探：页面启动时经 `/api/worktable/health` 的
+  `dir` 解析出安装默认 `<插件安装目录>/projects/pipeline/scripts`，凡未经任何设置配置（localStorage 与服务端
+  设置文件都没有 scriptsDir，新增 `scriptsDirIsFallback` 标记）的生效值自动升级为该安装默认并落盘；已配置
+  值（含「编辑流水线」弹窗与「导入设置」）一律不被覆盖。服务端执行器（定时任务 / API 触发 / 普罗收集脚本）
+  经新增 `resolvePipelineScriptsDir` 同一规则解析——设置文件未配置 scriptsDir 时从原来的进程 cwd 相对路径
+  改为兜底到安装默认 `DEFAULT_PIPELINE_SCRIPTS_DIR`（PLUGIN_DIR/projects/pipeline/scripts，tgz 包的 files 含
+  projects 目录）。新增 `tests/pipeline-scripts-dir.test.mjs`（解析规则 + 普罗收集脚本路径 + 源码契约）与
+  `projects/pipeline/tests/test_scripts_dir_default.js`（默认解析、fallback 升级、设置页保存/重置与回显）；
+  `tests/pipeline-run-api.test.mjs` 的执行器 vm 上下文补注 `resolvePipelineScriptsDir` 与空串安装默认（保持
+  既有用例语义）。`projects/pipeline/scripts/test/test_render_target_labels.sh` 在 dev 上即失败（既有问题，
+  与本次改动无关）。
 - PR 检视台「编译发行」新增「AI 生成发行说明」一键选项（`projects/codereview/code-review-prs.html`）：「🚀 构建并发行」
   按钮旁新增勾选框；勾选后点按钮一气呵成——先把「上一发行版 Tag … 当前分支」的提交送入右侧聊天窗由 AI 起草
   发行说明并自动回填（无新提交则跳过并沿用发行说明框现有内容；AI 生成失败即中止，此时尚未构建/打 Tag，可修正后

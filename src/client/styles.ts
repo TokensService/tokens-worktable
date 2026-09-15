@@ -59,6 +59,9 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_manageDone:hover{background:var(--dsw-alias-fill-l1,rgba(255,255,255,.05))}',
   // 页面修改：设置弹窗内提示词模板编辑（{page}/{name} 占位符，随主题变量适配浅色/深色）
   '.dsh-wt_pageEditHint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5);padding:0 2px 5px}',
+  // 设置弹窗首行「提 issue」链接（复用 pageEditHint 字号/行高/留白，改用强调色，悬停下划线）
+  '.dsh-wt_issueLink{display:block;font-size:11px;line-height:1.5;padding:0 2px 5px;color:var(--dsw-alias-state-accent-primary,#4f8ef7);text-decoration:none;cursor:pointer}',
+  '.dsh-wt_issueLink:hover{text-decoration:underline}',
   '.dsh-wt_pageEditPrompt{width:100%;box-sizing:border-box;resize:vertical;min-height:72px;font-family:inherit;font-size:11px;line-height:1.5;padding:6px 8px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#262b36);background:var(--dsw-alias-bg-base,#0b0e14);color:var(--dsw-alias-label-primary,#dbe4f3);outline:none}',
   '.dsh-wt_pageEditPrompt:focus{border-color:var(--dsw-alias-state-accent-primary,#4f8ef7)}',
   '.dsh-wt_pageEditOps{display:flex;justify-content:flex-end;gap:6px;padding:4px 0 2px}',

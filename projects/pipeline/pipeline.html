@@ -76,6 +76,8 @@
     .plstage-ins-top { top:-9px; }
     .plstage-ins-bottom { bottom:-9px; }
     .plstage-ins:hover { background:var(--dsw-alias-state-accent-primary); color:#fff; }
+    .plstage-params > summary { width:max-content; color:var(--dsw-alias-label-secondary); font-size:11px; cursor:pointer; user-select:none; }
+    .plstage-params[open] > summary { margin-bottom:7px; }
     .pipeline-nodeMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-top:6px; min-height:13px; }
     .pipeline-bar { height:5px; border-radius:3px; background:var(--dsw-alias-fill-l1); overflow:hidden; margin-top:2px; }
     .pipeline-bar > i { display:block; height:100%; width:0; border-radius:3px; background:var(--st-run); transition:width .12s linear; }
@@ -287,6 +289,12 @@
           <option value="mine">我的（含内置）</option>
           <option value="all">全部</option>
           <option value="builtin">仅内置</option>
+        </select>
+      </label>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收藏
+        <select id="plFilterFavorite" class="dshell-input" style="min-width:100px;">
+          <option value="all">全部</option>
+          <option value="favorite">仅看收藏</option>
         </select>
       </label>
       <button id="plFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
@@ -536,6 +544,17 @@
         <span class="dshell-muted" style="font-size:11px;">勾选主控「预设任务」中的「Profiling」后，流水线运行到其编排位置时执行该脚本（默认放在流水线的最后，失败不阻断），同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量。</span>
       </div>
       <div id="profilingParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
+    </div>
+    <!-- 脚本目录：全部脚本（阶段/清理/检查/Profiling/归档/部署策略/普罗收集）按名选用的根目录；默认=插件安装后的 scripts 路径 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;">脚本目录</h2>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="cfgScriptsDir" class="dshell-input" style="width:340px;" placeholder="scripts 目录（绝对路径，留空=安装默认）" title="流水线全部脚本按名称从此目录选用；留空保存=恢复安装默认（插件安装后的 projects/pipeline/scripts）" />
+        <button id="cfgScriptsDirSave" class="dshell-btn mini" type="button">保存</button>
+        <button id="cfgScriptsDirReset" class="dshell-btn dshell-btnGhost mini" type="button" title="清除自定义配置，恢复为插件安装后的 scripts 路径">重置为安装默认</button>
+        <span id="cfgScriptsDirTip" class="dshell-muted" style="font-size:11px;"></span>
+      </div>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">流水线阶段、环境清理/检查/Profiling、归档、部署策略与普罗收集脚本都按名称从此目录选用。默认路径为插件安装后的 scripts 目录（随安装位置自动解析，升级插件后跟随新安装位置）；自定义后随设置持久化到服务端（worktable-pipeline.json）并跨浏览器同步，「导出设置」文件同样携带；定时任务与 API 触发的服务端执行使用同一份配置，未配置时服务端也按安装默认路径兜底。</p>
     </div>
     <!-- 归档配置：运行日志与 profiling 产物的归档根目录 -->
     <div class="dshell-card" style="margin-top:10px;">
@@ -819,9 +838,10 @@
 </div>
 
 <!-- 流水线行内「⋯」菜单：全局悬浮层（fixed 定位）——悬浮于最上层（z-index 高于吸顶导航），不被表格 overflow 容器裁剪；
-     不占文档流，展开时不撑大流水线行高；菜单项为列表行形态（.pl-row-menu-item），非圆边按钮 -->
+     不占文档流，展开时不撑大流水线行高；置顶/收藏菜单项为列表行形态（.pl-row-menu-item），非圆边按钮 -->
 <div id="plRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:88px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
   <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
+  <div id="plRowMenuFavorite" class="pl-row-menu-item">收藏</div>
 </div>
 
 <script>
@@ -967,7 +987,8 @@ async function loadServerState(){
         repositories.forEach(function(r){ if(prevPass[r.id]) r.pass=prevPass[r.id]; });
       }
       // 当前代码仓 curRepoId 仅存浏览器本地，不从服务端覆盖（仓库定义仍从服务端加载，见上 repositories 块）；见 collectConfig
-      if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+      if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir){ scriptsDir=cfg.scriptsDir; scriptsDirIsFallback=false; }
+      else maybeAdoptInstalledScriptsDir();   // 服务端设置文件未配置 scriptsDir：fallback 态改用安装默认（health 未到时由 health 回调再试）
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
       if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
       if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
@@ -1098,7 +1119,7 @@ function normalizePipelineDefaults(value){
     presets:pipelineDefaultStringList(d.presets).filter(k=>PIPELINE_DEFAULT_PRESET_KEYS.indexOf(k)>=0),
   };
 }
-function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; } return p; }
+function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
 /* 仅旧流水线没有保存默认引用时回退当前首项；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
   const d=normalizePipelineDefaults(pl&&pl.defaults);
@@ -1869,7 +1890,37 @@ function detectScriptsDir(){
   return 'scripts';
 }
 let scriptsDir = (function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })() || detectScriptsDir();
+/* 脚本目录来源标记：true=当前值未经任何设置配置（localStorage/服务端设置文件都没有），
+   允许安装默认路径（/api/worktable/health 的 dir 解析）到达后升级为安装后 scripts 路径 */
+let scriptsDirIsFallback = !(function(){ try{ return localStorage.getItem('pip-scriptsDir')||null; }catch(e){ return null; } })();
+let installedScriptsDir = null;   // 插件安装后的 scripts 绝对路径：<health.dir>/projects/pipeline/scripts
 function saveScriptsDir(){ try{ localStorage.setItem('pip-scriptsDir', scriptsDir); }catch(e){} persistState(); }
+/* 脚本目录默认值：安装默认已解析则优先（安装后的 scripts 路径），否则退回 URL 嗅探（detectScriptsDir） */
+function scriptsDirDefault(){ return installedScriptsDir || detectScriptsDir(); }
+/* 安装默认到达或服务端设置无 scriptsDir 时调用：fallback 态生效值升级为安装默认并落盘、刷新脚本列表 */
+function maybeAdoptInstalledScriptsDir(){
+  if(!scriptsDirIsFallback || !installedScriptsDir || scriptsDir===installedScriptsDir) return;
+  scriptsDir=installedScriptsDir;
+  saveScriptsDir();
+  loadScripts();
+  renderScriptsDirCfg();
+}
+/* 设置页「脚本目录」卡片回显：生效值 + 安装默认路径（health 未解析时显示构成规则） */
+function renderScriptsDirCfg(){
+  const inp=$('cfgScriptsDir'); if(!inp) return;
+  if(document.activeElement!==inp) inp.value=scriptsDir||'';
+  const tip=$('cfgScriptsDirTip');
+  if(tip) tip.textContent='安装默认：'+(installedScriptsDir||'插件安装目录/projects/pipeline/scripts')+(scriptsDirIsFallback?'（当前生效）':'');
+}
+/* 设置页保存/重置脚本目录：留空=恢复安装默认（回到 fallback 态）；自定义值随设置持久化到服务端并跨浏览器同步 */
+function applyScriptsDirInput(raw){
+  const v=(raw||'').trim();
+  scriptsDir=v||scriptsDirDefault();
+  scriptsDirIsFallback=!v;
+  saveScriptsDir();
+  loadScripts();
+  renderScriptsDirCfg();
+}
 /* 归档根目录：留空=保底写到 scripts 同级 runs/（见 fallbackArchiveRoot）；归档按「流水线名称_年月日时分秒」文件夹组织（见 archiveRun） */
 let archiveDir = lsGet('pip-archiveDir', '/var/log/op_test');
 function saveArchiveDir(){ try{ localStorage.setItem('pip-archiveDir', archiveDir); }catch(e){} persistState(); }
@@ -2618,12 +2669,12 @@ function clearStageDragMarks(){
   const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
   for(let i=0;i<wrap.children.length;i+=1) wrap.children[i].classList.remove('plstage-dragging','plstage-drag-before','plstage-drag-after');
 }
-/* 整卡 draggable 会抢占卡内控件的手势：在 input/textarea 等控件上按下拖动时浏览器发起整卡拖拽，
+/* 整卡 draggable 会抢占卡内控件的手势：在 input/textarea/summary 等控件上按下拖动时浏览器发起整卡拖拽，
    输入框文字无法划选。mousedown 时按落点切换 draggable——落在交互控件上即临时关拖拽（走原生划选/控件交互），
    落在卡片空白处保持可拖；下次按下重新判定，无需恢复 */
 function stageCardMouseDown(e){
   const t=e.target;
-  e.currentTarget.draggable=!(t && t.closest && t.closest('input,textarea,select,button,a,label,[contenteditable="true"]'));
+  e.currentTarget.draggable=!(t && t.closest && t.closest('input,textarea,select,button,a,label,summary,[contenteditable="true"]'));
 }
 function stageCardDragStart(e){
   const row=e.currentTarget; stageDragFrom=parseInt(row.dataset.idx,10);
@@ -2695,7 +2746,10 @@ function renderStageEditor(){
       +'</div>'
       +'</div>'
       +'<div data-action style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>'
+      +'<details class="plstage-params" data-param-panel style="display:none;">'
+      +'<summary data-param-summary>任务参数（0）</summary>'
       +'<div data-params style="display:flex;gap:10px;flex-wrap:wrap;"></div>'
+      +'</details>'
       +'<div data-sched style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;"></div>';
     wrap.appendChild(row);
     renderStageActionRow(i);
@@ -2709,16 +2763,26 @@ function renderStageEditor(){
 }
 function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
-  const box=row.querySelector('[data-params]'); box.innerHTML='';
+  const panel=row.querySelector('[data-param-panel]');
+  const panelTitle=panel&&panel.querySelector('[data-param-summary]');
+  function setPanelCount(count){
+    if(!panel) return;
+    panel.style.display=count?'':'none';
+    if(panelTitle) panelTitle.textContent='任务参数（'+count+'）';
+  }
+  setPanelCount(0);
+  const box=row.querySelector('[data-params]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
-  /* HTTP 阶段无脚本参数表单：参数经 URL 的 {GIT_BRANCH} 等占位符传递 */
-  if(s.kind==='http') return;
+  /* 模拟阶段无参数；HTTP 参数经 URL 的 {GIT_BRANCH} 等占位符传递。切换类型时会保留旧 script 元数据，
+     因此脚本参数分支须按当前 kind 限定，不能仅凭 s.script 是否存在判断。 */
+  if(s.kind==='simulate'||s.kind==='http') return;
   /* EvalTokens 阶段：任务输入参数可设置——识别到的任务原值填入框中（未改动时弱化色显示，仅展示、不下发），
      修改后写入 evaltokens.values 随流水线持久化，运行时作为输入覆盖随 run 启动请求下发（见 runEvaltokensStep）；
      清空或改回与任务原值一致=不覆盖（任务按创建时的输入运行）。「识别参数」重新识别时保留已设置的值不刷新 */
   if(s.kind==='evaltokens'){
     const et=s.evaltokens; const ps=et && et.params;
     if(!ps || !ps.length) return;
+    setPanelCount(ps.length);
     et.values=et.values||{};
     const title=document.createElement('span'); title.className='dshell-muted'; title.style.fontSize='11px'; title.textContent='任务输入参数（自动识别，可设置覆盖）';
     box.appendChild(title);
@@ -2740,7 +2804,8 @@ function renderStageParams(i){
     });
     return;
   }
-  if(!s.script||!s.script.params) return;
+  if((s.kind!=='shell'&&s.kind!=='python')||!s.script||!s.script.params) return;
+  setPanelCount(s.script.params.length);
   s.script.params.forEach(p=>{
     /* 识别到的默认值以可编辑文本填入框中（未改动时弱化色显示，仅为展示：不写进 values、不随执行下发，
        留空语义=继承运行级注入值（TARGET_IP/IMAGE_NAME 等）/上游同名变量，未注入则由脚本自身 :- 默认兜底；
@@ -6370,10 +6435,10 @@ let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
 function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
-/* 流水线任务筛选状态（关键字 + 创建者），与 histFilter 同样仅存浏览器本地；
+/* 流水线任务筛选状态（关键字 + 创建者 + 当前用户收藏），与 histFilter 同样仅存浏览器本地；
    在此提前声明，供下方筛选控件初始化与 renderPipelines 取用（声明顺序早于事件绑定） */
-let plFilter={kw:'',owner:'mine'};
-try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine')}; }catch(e){}
+let plFilter={kw:'',owner:'mine',favorite:'all'};
+try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine'),favorite:_pf.favorite==='favorite'?'favorite':'all'}; }catch(e){}
 function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringify(plFilter)); }catch(e){} }
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
    供同步路径（新建/复制流水线署名、默认筛选「我的」）取用。声明在此处以保证声明顺序早于筛选事件绑定。 */
@@ -6620,12 +6685,14 @@ $('histFilterKw').addEventListener('input', e=>{ histFilter.kw=e.target.value; h
 $('histFilterStatus').addEventListener('change', e=>{ histFilter.status=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterPipeline').addEventListener('change', e=>{ histFilter.pipeline=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
-/* 流水线任务筛选：关键字 + 创建者；默认「我的（含内置）」 */
+/* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含内置）」+ 全部收藏状态 */
 $('plFilterKw').value=plFilter.kw;
 $('plFilterOwner').value=plFilter.owner;
+$('plFilterFavorite').value=plFilter.favorite;
 $('plFilterKw').addEventListener('input', e=>{ plFilter.kw=e.target.value; savePlFilter(); renderPipelines(); });
 $('plFilterOwner').addEventListener('change', e=>{ plFilter.owner=e.target.value; savePlFilter(); renderPipelines(); });
-$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine'}; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; savePlFilter(); renderPipelines(); });
+$('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; savePlFilter(); renderPipelines(); });
+$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
 function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
 /* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
 function fmtHistTime(h){
@@ -6689,17 +6756,35 @@ async function refreshPipelinesFromServer(){
 }
 $('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
 
-/* ---------- 流水线任务筛选（关键字 + 创建者） ---------- */
+/* ---------- 流水线任务筛选（关键字 + 创建者 + 当前用户收藏） ---------- */
 /* plFilter / savePlFilter / currentUsername 声明在前（紧随 histFilter），
    此处仅定义筛选匹配与下拉渲染函数。 */
 function plOwnerOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''; }
 function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updatedBy.trim()) ? p.updatedBy.trim() : ''; }   /* 最后修改人：与创建者同源（/auth/status 登录用户），保存/拖拽改序时刷新 */
+function pipelineFavoriteUsers(p){
+  const users=p&&Array.isArray(p.favoriteUsers)?p.favoriteUsers:[];
+  return Array.from(new Set(users.filter(u=>typeof u==='string').map(u=>u.trim()).filter(Boolean)));
+}
+function isPipelineFavorite(p){
+  const me=(currentUsername||'').trim();
+  return !!me && pipelineFavoriteUsers(p).indexOf(me)>=0;
+}
+function togglePipelineFavorite(id){
+  const p=findPipeline(id); if(!p) return;
+  const me=(currentUsername||'').trim();
+  if(!me){ alert('未获取到当前登录用户，无法收藏流水线。'); return; }
+  const users=pipelineFavoriteUsers(p);
+  p.favoriteUsers=users.indexOf(me)>=0?users.filter(u=>u!==me):users.concat(me);
+  savePipelines();
+  renderPipelines();
+}
 function plFilterMatch(p){
   const kw=plFilter.kw.trim().toLowerCase();
   if(kw){
     const hay=[p.name,p.id].concat((p.stages||[]).map(s=>s&&s.name).filter(Boolean)).join(' ').toLowerCase();
     if(hay.indexOf(kw)<0) return false;
   }
+  if(plFilter.favorite==='favorite' && !isPipelineFavorite(p)) return false;
   const owner=plFilter.owner;
   if(owner==='all') return true;
   if(owner==='builtin') return !!p.builtIn;
@@ -6737,10 +6822,12 @@ function closePlRowMenu(){
    不占用文档流，故不被 overflow 容器裁剪、也不撑大流水线行高 */
 function openPlRowMenu(id, anchorBtn){
   const pl=findPipeline(id); if(!pl) return;
-  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'); if(!panel||!item) return;
+  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'), favoriteItem=$('plRowMenuFavorite'); if(!panel||!item||!favoriteItem) return;
   plMenuOpenId=id;
   item.textContent = pl.pinnedAt ? '取消置顶' : '置顶';
   item.title = pl.pinnedAt ? '取消置顶，恢复数组原顺序' : '置顶到列表最前，随服务端同步';
+  favoriteItem.textContent = isPipelineFavorite(pl) ? '取消收藏' : '收藏';
+  favoriteItem.title = currentUsername ? '收藏状态按当前登录用户独立保存并随服务端同步' : '登录后可收藏流水线';
   panel.style.display='block';
   if(anchorBtn && anchorBtn.getBoundingClientRect){
     const r=anchorBtn.getBoundingClientRect();
@@ -6761,13 +6848,14 @@ function renderPipelines(){
   /* 已置顶（pinnedAt）排最前，多条按置顶时间新→旧；未置顶保持数组原序（内置经加载迁移居首）——Array.sort 稳定，键相同不动相对位置 */
   const view=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
   $('plCount').textContent = pipelines.length ? ('('+view.length+'/'+pipelines.length+')') : '';
-  const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw) ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
+  const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw || plFilter.favorite==='favorite') ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
   const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
   if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="3" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
   view.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
     const isPinned = !!p.pinnedAt;
+    const isFavorite = isPipelineFavorite(p);
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
     /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
@@ -6775,7 +6863,7 @@ function renderPipelines(){
     if(isCur) tr.className='sel';
     /* 是否在运行不在本表展示：在跑/排队信息统一在「运行队列」查看（点队列条目看阶段详情），本表整行点击即选用 */
     tr.title='点击选用该流水线';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
       ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
@@ -6933,7 +7021,7 @@ function savePlForm(){
       }
     }
   }
-  scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir();
+  scriptsDir=$('scriptsDir').value.trim()||scriptsDir; scriptsDirIsFallback=false; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
     if(s.preset) return {id:s.id, name:s.name, preset:true, pkey:s.pkey};   // 预设任务标记：位置随流水线保存
     const st={id:stageIdFor(s.name)||('st'+i), name:s.name, dur:Math.max(0,parseInt(s.dur)||0), skip:!!s.skip, sub:(s.sub||[]), kind:s.kind||'simulate'};   /* dur 保留编辑器原值（含 0=不设置耗时），不再回退默认 5 秒 */
@@ -6984,6 +7072,7 @@ function copyPipeline(id){
   clone.id='pl-'+Date.now().toString(36);
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
   clone.pinnedAt=0;   /* 副本不继承置顶：置顶随源条目，不随复制扩散 */
+  clone.favoriteUsers=[];   /* 副本不继承任何用户的收藏：收藏关系属于源流水线 */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
@@ -7069,7 +7158,7 @@ $('plSave').addEventListener('click', savePlForm);
 $('plCancel').addEventListener('click', ()=>{ clearPlDraft(); $('plForm').style.display='none'; });
 $('plFormClose').addEventListener('click', ()=>{ $('plForm').style.display='none'; });   /* 关闭=保留草稿（误操作退出保护），仅「取消」显式丢弃 */
 $('plForm').addEventListener('click', (e)=>{ if(e.target===$('plForm')) $('plForm').style.display='none'; });   /* 点遮罩同关闭：保留草稿 */
-$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); schedulePlDraftSave(); });
+$('scriptsReload').addEventListener('click', ()=>{ scriptsDir=$('scriptsDir').value.trim()||scriptsDir; scriptsDirIsFallback=false; saveScriptsDir(); loadScripts().then(()=>renderStageEditor()); schedulePlDraftSave(); });
 $('plName').addEventListener('input', schedulePlDraftSave);
 $('scriptsDir').addEventListener('input', schedulePlDraftSave);
 $('plDefaultEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const p=$('plDefaultEnvMultiPanel'); p.style.display=p.style.display==='none'?'block':'none'; });
@@ -7081,6 +7170,8 @@ $('plDefaultStrategy').addEventListener('input',pipelineDefaultFormChanged);
 $('plDefaultPresets').querySelectorAll('[data-pldefaultpreset]').forEach(el=>el.addEventListener('change',pipelineDefaultFormChanged));
 $('archiveDir').value = archiveDir;
 $('archiveDir').addEventListener('change', e=>{ archiveDir=e.target.value.trim(); saveArchiveDir(); });
+$('cfgScriptsDirSave').addEventListener('click', ()=>applyScriptsDirInput($('cfgScriptsDir').value));
+$('cfgScriptsDirReset').addEventListener('click', ()=>applyScriptsDirInput(''));
 $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
@@ -7282,7 +7373,7 @@ function applyImportedSettings(cfg, loc){
   cfg=cfg||{}; loc=loc||{};
   if(Array.isArray(cfg.environments)) environments=cfg.environments.map(normalizeEnv);
   if(Array.isArray(cfg.repositories)) repositories=cfg.repositories.map(normalizeRepo);   /* 访问令牌按文件内容恢复（含空值） */
-  if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir) scriptsDir=cfg.scriptsDir;
+  if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir){ scriptsDir=cfg.scriptsDir; scriptsDirIsFallback=false; }   /* 导入文件为权威：含 scriptsDir 即转为显式配置 */
   if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
   if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
   if(cfg.cleanupScript===null || (cfg.cleanupScript && typeof cfg.cleanupScript.name==='string')) cleanupScript=cfg.cleanupScript;
@@ -7468,9 +7559,10 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
-/* 流水线行内「⋯」菜单：「置顶」列表项对当前展开行切换置顶（先收起菜单再切换）；
+/* 流水线行内「⋯」菜单：「置顶 / 收藏」列表项对当前展开行切换对应状态（先收起菜单再切换）；
    点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
 $('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
+$('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineFavorite(id); });
 document.addEventListener('click', closePlRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
@@ -7535,9 +7627,10 @@ async function fillExecutorFromAuth(){
   /* admin 角色可能晚于队列渲染到达——拿到后重绘队列按钮（中止/取消按权限显隐） */
   if(typeof renderQueue==='function') renderQueue();
   if(typeof updateStopBtn==='function') updateStopBtn();
-  /* 拿到当前用户后重绘「我的」筛选视图（初次加载时尚未拿到，先按「内置+未署名」退化渲染）。
+  /* 拿到当前用户后重绘依赖身份的「我的 / 仅看收藏」筛选视图（初次加载时尚未拿到，
+     「我的」先按「内置+未署名」退化渲染，「仅看收藏」先为空）。
      typeof 守卫：筛选状态在独立测试片段里可能未定义。 */
-  if(typeof plFilter!=='undefined' && plFilter && plFilter.owner==='mine' && typeof renderPipelines==='function') renderPipelines();
+  if(typeof plFilter!=='undefined' && plFilter && (plFilter.owner==='mine'||plFilter.favorite==='favorite') && typeof renderPipelines==='function') renderPipelines();
 }
 /* ---------- 执行人固定取 dsh 登录用户（只读）结束 ---------- */
 fillExecutorFromAuth();
@@ -7586,11 +7679,18 @@ function renderAll(){
   renderDetail();
   renderPresetMultiBtn();
   fillCfgForm();
+  renderScriptsDirCfg();
   applyJenkinsForm();
   applyEvaltokForm();
   applyPromForm();
 }
 renderAll();
+/* 解析插件安装目录：health 的 dir → 安装默认脚本目录；fallback 态生效值升级为安装默认（见 maybeAdoptInstalledScriptsDir），并刷新设置页回显 */
+fetch('/api/worktable/health').then(r=>r.ok?r.json():null).then(h=>{
+  if(h && typeof h.dir==='string' && h.dir.trim()) installedScriptsDir=h.dir.trim().replace(/\/+$/,'')+'/projects/pipeline/scripts';
+  maybeAdoptInstalledScriptsDir();
+  renderScriptsDirCfg();
+}).catch(()=>{ renderScriptsDirCfg(); });
 /* 当前浏览器标签页首次载入自动查询一次；切换项目重建 iframe 时复用结果，之后仅手动刷新。 */
 let _gpuInited=!!gpuSession.initialized;
 function scheduleGpuRefresh(){
