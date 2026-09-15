@@ -151,6 +151,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" <<'PY'
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -454,15 +455,18 @@ template_vars.setdefault("DEPLOY_NAMESPACE", namespace)
 template_vars.setdefault("XDS_TE_POD_LABEL_KEY", node_selector_key)
 template_vars.setdefault("XDS_TE_POD_LABEL_VAL", node_selector_value)
 # 环境相关占位符默认值，均可被 TEMPLATE_VARS_JSON 覆盖：
-# 数据库五项为 mock 参考值（MOCK_DB=true 时不真正连库）；ELB_ID 仅用于注解；
+# 数据库连接配置为 mock 参考值（MOCK_DB=true 时不真正连库）；ELB_ID 仅用于注解；
 # NODE_PORT/SERVICE_PORT/COLLECTOR_GATEWAY_URL 为本环境固定配置。
 template_vars.setdefault("XDS_DATABASE_HOST", "127.0.0.1")
-# 数据库连接配置由渲染流程统一覆盖，避免模板或 TEMPLATE_VARS_JSON 带入旧值。
-template_vars["XDS_DATABASE_NAME"] = "xds_db"
-template_vars["XDS_DATABASE_PORT"] = "31106"
-template_vars["XDS_DATABASE_USERNAME"] = "xds"
-template_vars["DATABASE_PASSWORD"] = "XDS@2026"
-template_vars["XDS_DATABASE_PASSWORD"] = "XDS@2026"
+# 数据库连接配置可由环境变量覆盖；未设置时使用蓝区默认值。
+database_config = {
+    "XDS_DATABASE_NAME": os.environ.get("XDS_DATABASE_NAME", "xds_db"),
+    "XDS_DATABASE_PORT": os.environ.get("XDS_DATABASE_PORT", "31106"),
+    "XDS_DATABASE_USERNAME": os.environ.get("XDS_DATABASE_USERNAME", "xds"),
+    "XDS_DATABASE_PASSWORD": os.environ.get("XDS_DATABASE_PASSWORD", "XDS@2026"),
+}
+template_vars.update(database_config)
+template_vars["DATABASE_PASSWORD"] = database_config["XDS_DATABASE_PASSWORD"]
 template_vars.setdefault("ELB_ID", "unused")
 if target_node_port is not None:
     template_vars["NODE_PORT"] = str(target_node_port)
@@ -503,13 +507,8 @@ for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
 
-# 兼容模板直接写入数据库环境变量的场景：占位符替换后仍强制统一为部署配置。
-database_env = {
-    "XDS_DATABASE_NAME": "xds_db",
-    "XDS_DATABASE_PORT": "31106",
-    "XDS_DATABASE_USERNAME": "xds",
-    "XDS_DATABASE_PASSWORD": "XDS@2026",
-}
+# 兼容模板直接写入数据库环境变量的场景：占位符替换后覆盖为当前渲染配置。
+database_env = database_config
 common_env = values.get("common", {}).get("containerEnv", [])
 if isinstance(common_env, list):
     for entry in common_env:
