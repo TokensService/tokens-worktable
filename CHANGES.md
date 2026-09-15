@@ -3,10 +3,12 @@
 - 修复流水线勾选「需本地运行，不支持定时」后，手动运行与历史重跑仍被提交到服务端执行的问题
   （`projects/pipeline/pipeline.html`）：只要编排中存在 `sched: null` 的普通阶段，整次运行就复用浏览器执行器，
   使浏览器可达、dsh 服务进程不可达的 Jenkins/HTTP 地址正常触发，并恢复本地脚本、环境清理等运行上下文；
-  同机互斥、4 个浏览器并发槽位、16 条本地队列上限及排队/满额提示继续生效。全部普通阶段均支持定时时，
+  同机互斥、4 个浏览器并发槽位、16 条本地队列上限及排队/满额提示继续生效；节点租约申请在途会同时
+  占用并发槽位并预留回队容量，避免异步申请期间超发或拒绝后溢出队列。全部普通阶段均支持定时时，
   手动运行仍提交服务端权威队列；预设标记不参与分流，服务端 API 与定时计划路径保持不变。扩充
-  `test_queue_item_preview.js`、`test_pipeline_row_run.js`、`test_replay_executor_attribution.js` 与
-  `test_pipeline_defaults.js`，覆盖本地/服务端分流、冲突排队、容量拒绝和三个运行入口的反馈。
+  `test_queue_item_preview.js`、`test_pipeline_row_run.js`、`test_replay_executor_attribution.js`、
+  `test_pipeline_defaults.js` 与 `test_node_lease.js`，覆盖本地/服务端分流、冲突排队、容量拒绝、租约竞态和
+  三个运行入口的反馈。
 - 修复流水线服务端执行 EvalTokens 远程连接时误走系统代理（`src/index.ts`）：手动运行迁移到服务端权威队列后，
   EvalTokens 阶段此前无视设置页的「远程服务器端连接」语义，直接调用启用了 `NODE_USE_ENV_PROXY` 的全局
   `fetch`，内网请求会被送往 HTTP 代理并在约 135 秒后仅报 `fetch failed`。远程模式现与

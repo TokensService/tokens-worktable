@@ -3567,7 +3567,7 @@ function buildLogParts(stage,ctx,n){
 }
 
 /* ---------- 运行队列 + 调度 ---------- */
-const QUEUE_CAP = 16;
+const QUEUE_CAP = 16;          // 本地等待上限：queue + 租约申请在途项合计，给被拒租约保留回队名额
 const MAX_ACTIVE_RUNS = 4;   // 浏览器单标签页全局槽位：避免不同机器的大日志任务同时把 CPU/内存/连接打满
 let queue = [];
 /* 「排队中」徽标点击展开/收起排队原因（按条目 id 记忆展开态，重绘保留；条目出队后由 cancelQueue 清理） */
@@ -3730,7 +3730,7 @@ function runPipeline(opts){
     const pendingLeaseCount=(typeof pendingLeaseStarts==='undefined')?0:pendingLeaseStarts.length;
     const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length+pendingLeaseCount<MAX_ACTIVE_RUNS);
     if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))) return startRun(item);
-    if(queue.length>=QUEUE_CAP) return false;
+    if(queue.length+pendingLeaseCount>=QUEUE_CAP) return false;
     queue.push(item);
     renderQueue();
     return 'queued';
@@ -3778,7 +3778,8 @@ function releaseNodeLease(leaseId, ips){
 function drainQueue(){
   let again=true;
   while(again){
-    if(activeRuns.length>=MAX_ACTIVE_RUNS) return;
+    const pendingLeaseCount=(typeof pendingLeaseStarts==='undefined')?0:pendingLeaseStarts.length;
+    if(activeRuns.length+pendingLeaseCount>=MAX_ACTIVE_RUNS) return;
     again=false;
     for(let i=0;i<queue.length;i++){
       const it=queue[i];
