@@ -178,6 +178,7 @@ function loadRender(pipelines){
     plFilterMatch:()=>true,
     renderPlFilterOptions:()=>{},
     isPipelineFavorite:()=>false,
+    pipelineQueueCounts:()=>({}), pipelineQueueCountHtml:()=>'—',   // 队列计数由专门用例覆盖
     currentUsername:'alice',
     document:{createElement:tag=>new FakeNode(tag)},
     $:id=>id==='plTable'?table:count,
