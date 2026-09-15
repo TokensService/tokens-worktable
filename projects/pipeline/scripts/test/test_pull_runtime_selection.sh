@@ -12,11 +12,12 @@ grep -Fq 'VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"' "$script"
 grep -Fq 'execution host: pull' "$script"
 grep -Fq 'nerdctl is required on the pipeline execution host' "$script"
 grep -Fq 'nerdctl --namespace k8s.io create --net=none' "$script"
-grep -Fq 'cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"' "$script"
+grep -Fq 'cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"' "$script"
 grep -Fq 'if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then' "$script"
-grep -q '/opt/op_test/xds_template/k8s/xds-cluster' "$script"
-grep -q '/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml' "$script"
-grep -q '/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json' "$script"
+grep -Fq 'DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"' "$script"
+grep -Fq 'FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"' "$script"
+grep -Fq 'copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir"' "$script"
+grep -Fq 'copy_template_set "$FALLBACK_DEPLOY_TEMPLATE_DIR" "$source_dir"' "$script"
 grep -Fq 'TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"' "$script"
 if grep -Eq 'docker (image|create|cp|rm)' "$script"; then
   echo 'pull and template export must not fall back to docker' >&2
@@ -25,7 +26,8 @@ fi
 
 grep -Fq 'pull_target_images "$IMAGE"' "$script"
 grep -Fq 'TARGET_NODE_IP_MAP' "$script"
-grep -Fq 'ctr_cmd=(ctr)' "$script"
+grep -Fq 'command -v ctr >/dev/null 2>&1' "$script"
+grep -Fq 'sudo ctr -n k8s.io image pull --user' "$script"
 grep -Fq 'images ls -q' "$script"
 
 echo "pull runtime-selection tests passed"
