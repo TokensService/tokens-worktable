@@ -35,13 +35,10 @@ lmcacheSidecar:
   l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
   l1SizeGb: {LMCACHE_L1_SIZE_GB}
   l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
-  l2:
-    enabled: {LMCACHE_L2_ENABLED}
-    hostPath: {LMCACHE_L2_HOST_PATH}
-    mountPath: {LMCACHE_L2_MOUNT_PATH}
-    maxCapacityGb: {LMCACHE_L2_MAX_CAPACITY_GB}
-    numWorkers: {LMCACHE_L2_NUM_WORKERS}
-    useOdirect: {LMCACHE_L2_USE_ODIRECT}
+  l2Enabled: {LMCACHE_L2_ENABLED}
+  l2BasePath: {LMCACHE_L2_BASE_PATH}
+  l2MaxCapacityGb: {LMCACHE_L2_MAX_CAPACITY_GB}
+  l2NumWorkers: {LMCACHE_L2_NUM_WORKERS}
   resources:
     requests:
       cpu: {LMCACHE_CPU_REQUEST}
@@ -76,14 +73,10 @@ assert sidecar["httpPortBase"] == 5565
 assert sidecar["l1InitSizeGb"] == 20
 assert sidecar["l1SizeGb"] == 200
 assert sidecar["l1AlignBytes"] == "4096"
-assert sidecar["l2"] == {
-    "enabled": False,
-    "hostPath": "/mnt/paas/lmcache/glm52-l2",
-    "mountPath": "/mnt/paas/lmcache/glm52-l2",
-    "maxCapacityGb": 10240,
-    "numWorkers": 32,
-    "useOdirect": False,
-}
+assert sidecar["l2Enabled"] is False
+assert sidecar["l2BasePath"] == "/mnt/paas/lmcache/lmcache-l2/shared"
+assert sidecar["l2MaxCapacityGb"] == 10240
+assert sidecar["l2NumWorkers"] == 64
 assert sidecar["resources"] == {
     "requests": {"cpu": 4, "memory": "8Gi"},
     "limits": {"cpu": 8, "memory": "240Gi"},
@@ -110,26 +103,20 @@ DEPLOY_IMAGE=registry.example.com/xds:test \
 TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root"}]' \
 MOCK_DB=false \
 LMCACHE_L2_ENABLED=true \
-LMCACHE_L2_HOST_PATH=/data/lmcache-l2 \
-LMCACHE_L2_MOUNT_PATH=/cache/l2 \
+LMCACHE_L2_BASE_PATH=/data/lmcache-l2 \
 LMCACHE_L2_MAX_CAPACITY_GB=2048 \
 LMCACHE_L2_NUM_WORKERS=16 \
-LMCACHE_L2_USE_ODIRECT=true \
 bash "$ROOT/render-config.sh" >/dev/null
 
 python3 - "$WORK/run-l2/rendered/values.rendered.yaml" <<'PY'
 import sys
 import yaml
 
-values = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-assert values["lmcacheSidecar"]["l2"] == {
-    "enabled": True,
-    "hostPath": "/data/lmcache-l2",
-    "mountPath": "/cache/l2",
-    "maxCapacityGb": 2048,
-    "numWorkers": 16,
-    "useOdirect": True,
-}
+sidecar = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["lmcacheSidecar"]
+assert sidecar["l2Enabled"] is True
+assert sidecar["l2BasePath"] == "/data/lmcache-l2"
+assert sidecar["l2MaxCapacityGb"] == 2048
+assert sidecar["l2NumWorkers"] == 16
 PY
 
 echo 'PASS: LMCache health checks remain owned by the Chart and values templates'
