@@ -1946,6 +1946,46 @@ test('勾选收集普罗数据的任务在终态按其起止注入 collect 动�
   assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
 })
 
+test('任务级普罗采集在部署策略解析不出时不注入命名空间残段', async () => {
+  const load = () => loadExecPlan({
+    ...apiExecutionConfig,
+    archiveDir: '/var/pipeline-runs',
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  })
+  const promPlan = () => {
+    const plan = apiExecutionPlan([])
+    plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
+    return plan
+  }
+
+  const noStrategy = load()
+  const noStrategyPlan = promPlan()
+  noStrategyPlan.strategy = ''   // 未选择部署策略（「（不使用）」）
+  await noStrategy.execPlan(noStrategyPlan)
+  const noStrategyCollect = noStrategy.calls.find(call => call.script === 'collect.py')
+  assert.ok(noStrategyCollect)
+  assert.equal(noStrategyCollect.extraEnv.XDS_NAMESPACE, undefined)
+  assert.equal(noStrategyCollect.extraEnv.NAMESPACE, undefined)
+  assert.equal(noStrategyCollect.extraEnv.MODEL_NAME, undefined)   // MODEL_PATH 未产出同样不注入
+
+  const noBy = load()
+  const noByPlan = promPlan()
+  noByPlan.by = ''   // 执行人缺省时服务端按来源兜底（api/schedule），BY 恒可解析，命名空间照常注入
+  await noBy.execPlan(noByPlan)
+  const noByCollect = noBy.calls.find(call => call.script === 'collect.py')
+  assert.ok(noByCollect)
+  assert.equal(noByCollect.extraEnv.XDS_NAMESPACE, 'blue-green-api')
+
+  const ok = load()
+  const okPlan = promPlan()
+  okPlan.vars = { MODEL_PATH: '/models/demo' }
+  await ok.execPlan(okPlan)
+  const okCollect = ok.calls.find(call => call.script === 'collect.py')
+  assert.ok(okCollect)
+  assert.equal(okCollect.extraEnv.XDS_NAMESPACE, 'blue-green-jenkins')
+  assert.equal(okCollect.extraEnv.MODEL_NAME, '/models/demo')
+})
+
 test('普罗采集结果追加到服务端已直写的任务日志并由汇总复用', async () => {
   const taskLog = '/var/pipeline-runs/direct-task.log'
   const f = loadExecPlan({

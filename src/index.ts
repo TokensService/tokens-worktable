@@ -1147,8 +1147,11 @@ function buildServerTaskPromEnv(runCtx: any, config: any, varsPool: Record<strin
     VLLM_METRICS_END: String(Math.floor(endMs / 1000)),
     PROMETHEUS_URL: String(config && config.prom && config.prom.url ? config.prom.url : '').trim(),
   }
-  const model = substituteServerRunVars('${MODEL_PATH}', vars).trim()
-  const namespace = substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim()
+  /* 解析不出则不注入：替换后仍残留未解析 ${...} 占位（未选部署策略、无执行人等）按空值处理，
+     否则未选策略时会把字面 ${DEPLOY_STRATEGY}-<执行人> 残段注入采集脚本（与页面 substPromTemplate 一致） */
+  const resolved = (text: string) => (text.indexOf('${') >= 0 ? '' : text)
+  const model = resolved(substituteServerRunVars('${MODEL_PATH}', vars).trim())
+  const namespace = resolved(substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim())
   if (model) { env.ARCH_NAME = model; env.MODEL_NAME = model }
   if (namespace) { env.NAMESPACE = namespace; env.XDS_NAMESPACE = namespace }
   if (runCtx.archive) env.ARCHIVE_FOLDER = String(runCtx.archive)

@@ -4765,7 +4765,7 @@ function substRunVars(v, rc){
     if(rc.pipelineName) look.PIPELINE_NAME=rc.pipelineName;
     if(rc.repoUrl) look.GIT_URL=rc.repoUrl;
     if(rc.branch) look.GIT_BRANCH=rc.branch;
-    if(rc.strategy!==undefined) look.DEPLOY_STRATEGY=rc.strategy;   // 部署策略（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用）
+    if(rc.strategy) look.DEPLOY_STRATEGY=rc.strategy;   // 部署策略（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用）；未选择（空串）不注入，保持占位符未解析
     if(rc.by) look.BY=rc.by;   // 执行人（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用，= 执行人拼音）
     if(rc.archive){ look.ARCHIVE_DIR=rc.archive; look.ARCHIVE_FOLDER=rc.archive; }
     if(rc.vars) Object.assign(look, rc.vars);   // 上游阶段变量同名优先
@@ -4774,6 +4774,9 @@ function substRunVars(v, rc){
   if(single && look[single[1]]===undefined) return '';
   return v.replace(/\${([A-Za-z_][A-Za-z0-9_]*)}/g, function(m,k){ return look[k]!==undefined?String(look[k]):m; });
 }
+/* 普罗 model/namespace 占位模板（${MODEL_PATH} / ${DEPLOY_STRATEGY}-${BY}）采集时点解析：
+   替换后仍残留未解析 ${...} 占位（未选部署策略、无执行人等）按「解析不出则不注入」处理（返回空）。 */
+function substPromTemplate(v, rc){ const out=substRunVars(v, rc).trim(); return out.indexOf('${')>=0?'':out; }
 /* 所有长时间 / 高输出阶段共用的实时快照：页面只持有两路各 256 KiB 尾部，
    _outputRevision 每次追加递增，让详情缓存不依赖有碰撞可能的文本采样。 */
 function createLiveOutputState(){
@@ -6205,7 +6208,7 @@ function archiveRun(rc, result){
    已在状态行展示收集归档目录。 */
 function promSnapshotForRun(rc){   // 手动补采用：把默认 model_name/xds_namespace 占位按本次运行上下文解析为实际值，随历史记录保存（都解析不出则不注入）
   if(!rc) return null;
-  const modelName=substRunVars(DEFAULT_PIPELINE_PROM.modelName, rc).trim(), xdsNamespace=substRunVars(DEFAULT_PIPELINE_PROM.xdsNamespace, rc).trim();
+  const modelName=substPromTemplate(DEFAULT_PIPELINE_PROM.modelName, rc), xdsNamespace=substPromTemplate(DEFAULT_PIPELINE_PROM.xdsNamespace, rc);
   if(!modelName && !xdsNamespace) return null;
   return { enabled:true, modelName, xdsNamespace, startTime:'', endTime:'' };
 }
@@ -6282,7 +6285,7 @@ async function taskPromCollect(rc, s, seq, startMs, endMs){
   const sc=scriptByName(scName);
   if(!sc || !sc.path){ console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据跳过：收集脚本「'+scName+'」未在 scripts 目录找到'); return; }
   if(!(endMs>startMs)) endMs=startMs+1;
-  const ps={enabled:true, modelName:substRunVars(DEFAULT_PIPELINE_PROM.modelName, rc).trim(), xdsNamespace:substRunVars(DEFAULT_PIPELINE_PROM.xdsNamespace, rc).trim()};   // 默认占位按采集时点解析（与手动补采一致）
+  const ps={enabled:true, modelName:substPromTemplate(DEFAULT_PIPELINE_PROM.modelName, rc), xdsNamespace:substPromTemplate(DEFAULT_PIPELINE_PROM.xdsNamespace, rc)};   // 默认占位按采集时点解析（与手动补采一致）
   const env=buildPromCollectEnv({prom:ps, archive:(rc&&rc.archive)||''}, startMs, endMs);   // 时间段 + 数据源 + 模型/命名空间 + 归档目录
   env.METRICS_OUTPUT_DIR=dir;   // 任务级产物目录覆盖默认 metrics 子目录：{任务名}-{阶段序号}-普罗数据
   const res=await execScript(sc, 0, env, rc, function(){}, null, dir+'/collect.log');   // 强制走流式接口：完整输出直接落 collect.log，页面不接收一次性大 JSON

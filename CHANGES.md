@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复未选择部署策略时 `DEPLOY_STRATEGY` 被当作「已解析的空值」参与替换的问题（`projects/pipeline/pipeline.html`）：
+  `substRunVars` 取值池此前用 `rc.strategy!==undefined` 注入 `DEPLOY_STRATEGY`，而运行上下文一律把未选择的策略
+  兜底为空串，条件恒真——未选策略（「（不使用）」）时 `${DEPLOY_STRATEGY}` 静默解析为空，普罗命名空间模板
+  `${DEPLOY_STRATEGY}-${BY}` 随之解析成 `-<执行人>` 残段并当作有效值注入采集脚本（`NAMESPACE`/`XDS_NAMESPACE`，
+  任务级采集与手动补采同源），与文档约定的「解析不出则不注入」及阶段 env、HTTP 阶段取值池、服务端
+  `runStageScript` 等其余注入点的 truthy 语义不一致。现改为 truthy 检查：未选策略时 `${DEPLOY_STRATEGY}`
+  保持未解析（复合引用占位符原样保留；整值单个引用按空值=继承上游/运行级同名变量），上游阶段 stdout
+  产出的同名变量仍优先。同时新增 `substPromTemplate` 兜底：普罗 model/namespace 模板替换后仍残留未解析
+  `${...}` 占位（未选策略、无执行人等）即按解析不出处理、不注入；`promSnapshotForRun`/`taskPromCollect`
+  与服务端 `buildServerTaskPromEnv`（`src/index.ts`，定时计划/API 运行的任务级采集此前会注入字面
+  `${DEPLOY_STRATEGY}-<执行人>` 残段）统一接入。新增 `projects/pipeline/tests/test_deploy_strategy_vars.js`，
+  `tests/pipeline-run-api.test.mjs` 增补服务端采集环境用例，`test_cleanup_flow.js` 采集桩同步补
+  `substPromTemplate`；`lib/index.js`（+ `.map`）已随本修复重建。
+
 - 流水线任务列表的「▶」运行改为先确认本次运行参数（`projects/pipeline/pipeline.html`）：点击后不再立即
   启动，而是弹出「运行流水线」窗口，默认继承页面顶部「运行流水线」控件当前的环境、代码仓、分支/Tag、
   部署策略和预设任务；分支/Tag 与部署策略复用主控的可搜索选择面板，用户可只为本次运行临时调整，确认后以显式参数进入既有本地/服务端调度流程，
