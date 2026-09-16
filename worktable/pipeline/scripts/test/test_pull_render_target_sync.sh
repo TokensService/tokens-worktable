@@ -79,9 +79,18 @@ done
 shift
 bash -c "$1"
 EOF
-chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh"
+cat >"$fake_bin/ctr" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == '-n k8s.io images pull --user cn-southwest-2@test-ak:test-login-key registry.example/xds:test' ]]
+EOF
+cat >"$fake_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+exec "$@"
+EOF
+chmod 0755 "$fake_bin/nerdctl" "$fake_bin/ssh" "$fake_bin/ctr" "$fake_bin/sudo"
 
-AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
+AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
@@ -104,7 +113,7 @@ grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/target-run/pipeline.env"
 grep -Fq "export RENDER_DIR=$work_dir/target-run/rendered" "$work_dir/target-run/pipeline.env"
 grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"
 
-AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
+AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
@@ -119,7 +128,7 @@ bash "$script" >/dev/null
 
 grep -Fxq '2222' "$work_dir/ssh-ports.log"
 
-AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
+AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
 FAKE_TEMPLATE_DIR="$template_dir" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \

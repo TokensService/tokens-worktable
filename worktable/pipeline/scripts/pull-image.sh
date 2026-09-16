@@ -92,6 +92,11 @@ PY
   [[ -n "$mapped_targets_text" ]] || return 0
   mapfile -t mapped_targets <<<"$mapped_targets_text"
 
+  if [[ -z "$IMAGE_PULL_AK" || -z "$IMAGE_PULL_LOGIN_KEY" ]]; then
+    echo "AK and LOGIN_KEY are required for mapped target image pulls" >&2
+    return 2
+  fi
+
   for target_line in "${mapped_targets[@]}"; do
     target_json="$(printf '%s' "$target_line" | base64 -d)"
     read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
@@ -100,17 +105,12 @@ import sys
 item = json.loads(sys.argv[1])
 print(item["endpoint"], item["user"], item["host"], item["port"], item["password"])
 PY
-)
+    )
     target="${user}@${host}"
-    # A cached image needs no registry credentials. When absent, pre-pull it
-    # into Kubernetes' containerd namespace using the supplied SWR account.
-    if [[ -n "$IMAGE_PULL_AK" && -n "$IMAGE_PULL_LOGIN_KEY" ]]; then
-      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if sudo ctr -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else sudo ctr -n k8s.io image pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image"); fi"
-    else
-      # Never attempt an unauthenticated pull or probe the target runtime when
-      # credentials were not supplied for this pipeline invocation.
-      printf -v remote_command '%s' "echo '[pull] target image pre-pull skipped: AK and LOGIN_KEY are not set'"
-    fi
+    # Always perform an authenticated pull on mapped nodes. containerd reuses
+    # existing layers, so a separate image-cache probe can only hide auth or
+    # manifest failures that should stop deployment.
+    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
     echo "[pull] target $endpoint: ensure image $image"
     run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
   done

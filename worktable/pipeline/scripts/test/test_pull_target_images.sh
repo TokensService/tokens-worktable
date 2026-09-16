@@ -42,13 +42,13 @@ REMOTE_PORT="$remote_port" bash -c "$1"
 EOF
 cat >"$work_dir/bin/ctr" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$*" == '-n k8s.io images ls -q' && "${REMOTE_PORT:-}" == '2223' ]]; then
-  printf '%s\n' 'swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test'
-  exit 0
-fi
-printf '%s\n' "$*" >>"$CTR_LOG"
+printf '%s|%s\n' "${REMOTE_PORT:-}" "$*" >>"$CTR_LOG"
 EOF
-chmod 0755 "$work_dir/bin/nerdctl" "$work_dir/bin/ssh" "$work_dir/bin/ctr"
+cat >"$work_dir/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+exec "$@"
+EOF
+chmod 0755 "$work_dir/bin/nerdctl" "$work_dir/bin/ssh" "$work_dir/bin/ctr" "$work_dir/bin/sudo"
 
 PATH="$work_dir/bin:$PATH" \
 FAKE_TEMPLATE_DIR="$work_dir/template" \
@@ -58,6 +58,8 @@ IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
 RUN_DIR="$work_dir/run" \
 TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"},{"ip":"115.33.98.101:2222","user":"root"},{"ip":"115.33.98.101:2224","user":"root"}]' \
 TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175","115.33.98.101:2222":"192.168.31.17"}' \
+AK='test-ak' \
+LOGIN_KEY='test-login-key' \
 PULL_TARGET_IMAGES_ONLY=1 \
 bash "$script" >/dev/null
 
@@ -67,9 +69,26 @@ if grep -Fxq '2224' "$work_dir/ssh-ports.log"; then
   echo 'unmapped SSH endpoint must not receive registry credentials' >&2
   exit 1
 fi
-if [[ -s "$work_dir/ctr.log" ]] && grep -Fq -- ' image pull ' "$work_dir/ctr.log"; then
-  echo 'target pre-pull must not require or send registry credentials' >&2
+expected_pull='-n k8s.io images pull --user cn-southwest-2@test-ak:test-login-key swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test'
+grep -Fxq "2223|$expected_pull" "$work_dir/ctr.log"
+grep -Fxq "2222|$expected_pull" "$work_dir/ctr.log"
+if grep -Fq 'images ls -q' "$work_dir/ctr.log"; then
+  echo 'mapped target pull must not be skipped by a local image-cache probe' >&2
   exit 1
 fi
 
-echo 'pull target-image tests passed (mapped targets do not require registry auth)'
+missing_credentials_log="$work_dir/missing-credentials.log"
+if PATH="$work_dir/bin:$PATH" \
+  SSH_PORT_LOG="$work_dir/missing-credentials-ssh.log" \
+  CTR_LOG="$work_dir/missing-credentials-ctr.log" \
+  IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
+  TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"}]' \
+  TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175"}' \
+  PULL_TARGET_IMAGES_ONLY=1 \
+  bash "$script" >"$missing_credentials_log" 2>&1; then
+  echo 'mapped target pull must fail when registry credentials are missing' >&2
+  exit 1
+fi
+grep -Fq 'AK and LOGIN_KEY are required' "$missing_credentials_log"
+
+echo 'pull target-image tests passed (mapped targets use authenticated ctr pulls)'
