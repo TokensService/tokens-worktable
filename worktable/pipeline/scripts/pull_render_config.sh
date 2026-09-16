@@ -75,8 +75,20 @@ contains_unexpanded_placeholder "$NODE_LABELS_FILE" && NODE_LABELS_FILE=""
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 TARGET_IP="${TARGET_IP:-}"
 TARGET_IPS="${TARGET_IPS:-}"
+DEFAULT_TARGET_NODE_IP_MAP='{"115.33.98.101:2224":"192.168.31.140","115.33.98.101:2225":"192.168.31.120","115.33.98.101:2226":"192.168.31.113","115.33.98.101:2227":"192.168.31.164","115.33.98.101:2228":"192.168.31.7"}'
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
+TARGET_NODE_IP_MAP="$(python3 - "$DEFAULT_TARGET_NODE_IP_MAP" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import sys
+
+default_map, override_map = map(json.loads, sys.argv[1:])
+if not isinstance(override_map, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+default_map.update(override_map)
+print(json.dumps(default_map, separators=(",", ":"), sort_keys=True))
+PY
+)"
 TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
 contains_unexpanded_placeholder "$TARGET_RUN_DIR" && TARGET_RUN_DIR=""
