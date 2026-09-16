@@ -207,3 +207,72 @@ test("当前 Prometheus 轮次无数据时清空上一轮指标与 A/B 对比", 
   assert.deepEqual(JSON.parse(JSON.stringify(ctx.DATA.ts)), ["new"]);
   assert.equal(ctx.LIVE, false);
 });
+
+test("流水线运行耗时字符串解析为秒", () => {
+  const ctx = loadFunctions(["parseRunDur"]);
+
+  assert.equal(ctx.parseRunDur("45s"), 45);
+  assert.equal(ctx.parseRunDur("2m14s"), 134);
+  assert.equal(ctx.parseRunDur("10m0s"), 600);
+  assert.equal(ctx.parseRunDur("3m"), 180);
+  assert.equal(ctx.parseRunDur(""), 0);
+  assert.equal(ctx.parseRunDur(null), 0);
+  assert.equal(ctx.parseRunDur("abc"), 0);
+});
+
+test("运行导入窗口优先取运行起止，缺起点时用耗时回推", () => {
+  const ctx = loadFunctions(["parseRunDur", "runImportWindow"]);
+
+  assert.deepEqual(
+    { ...ctx.runImportWindow({ ts: 1789517405110, startTs: 1789517271275, dur: "2m14s" }, 240) },
+    { from: 1789517271, to: 1789517405 },
+  );
+  assert.deepEqual(
+    { ...ctx.runImportWindow({ ts: 1789517405110, startTs: null, dur: "2m14s" }, 240) },
+    { from: 1789517405 - 134, to: 1789517405 },
+  );
+  assert.deepEqual(
+    { ...ctx.runImportWindow({ ts: 1789517405110, dur: "" }, 240) },
+    { from: 1789517405 - 14400, to: 1789517405 },
+  );
+  assert.equal(ctx.runImportWindow({ ts: 0, startTs: 0 }, 240), null);
+  assert.equal(ctx.runImportWindow({ ts: 100000, startTs: 200000 }, 240), null);
+});
+
+test("运行导入填充：普罗标签非空才覆盖，归档目录作为日志目录", () => {
+  const ctx = loadFunctions(["parseRunDur", "runImportWindow", "runImportPatch"]);
+  const ds = { model_name: "old-model", xds_namespace: "old-ns", rangeM: 240, abs: null, logDir: "/logs/old", profDir: "" };
+
+  const full = ctx.runImportPatch(
+    { ts: 1789517405110, startTs: 1789517271275, archive: "/var/log/op_test/x/", prom: { enabled: true, modelName: "m1", xdsNamespace: "ns1" } },
+    ds,
+  );
+  assert.equal(full.model_name, "m1");
+  assert.equal(full.xds_namespace, "ns1");
+  assert.deepEqual(JSON.parse(JSON.stringify(full.abs)), { from: 1789517271, to: 1789517405 });
+  assert.equal(full.logDir, "/var/log/op_test/x");
+
+  const noProm = ctx.runImportPatch({ ts: 1789517405110, startTs: 1789517271275, archive: "", prom: null }, ds);
+  assert.equal(noProm.model_name, "old-model");
+  assert.equal(noProm.xds_namespace, "old-ns");
+  assert.equal(noProm.logDir, "/logs/old");
+
+  const emptyLabels = ctx.runImportPatch(
+    { ts: 1789517405110, startTs: 1789517271275, prom: { enabled: true, modelName: "", xdsNamespace: "-ns" } },
+    ds,
+  );
+  assert.equal(emptyLabels.model_name, "old-model");
+  assert.equal(emptyLabels.xds_namespace, "-ns");
+});
+
+test("运行列表过滤按编号/tag/流水线/环境/提交/操作人匹配", () => {
+  const ctx = loadFunctions(["runMatchesFilter"]);
+  const rec = { no: 109, tag: "0807-805fd", pipeline: "test", env: "115.33.98.101:2222", commit: "805fd38", by: "lihaifeng", status: "failed" };
+
+  assert.equal(ctx.runMatchesFilter(rec, ""), true);
+  assert.equal(ctx.runMatchesFilter(rec, "  "), true);
+  assert.equal(ctx.runMatchesFilter(rec, "805fd"), true);
+  assert.equal(ctx.runMatchesFilter(rec, "LIHAIFENG"), true);
+  assert.equal(ctx.runMatchesFilter(rec, "109"), true);
+  assert.equal(ctx.runMatchesFilter(rec, "prod"), false);
+});
