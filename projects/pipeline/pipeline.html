@@ -4071,40 +4071,70 @@ function renderPlanList(){
   el.querySelectorAll('[data-plandel]').forEach(b=>b.addEventListener('click',()=>cancelPlan(b.getAttribute('data-plandel'))));
 }
 function cancelPlan(id){ serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList(); }
-/* 阶段级定时：流水线运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
+/* 阶段级定时：本地（浏览器）运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
    （id 带本次运行 tag 逐次运行独立登记：每次运行各自执行、各自归档，重跑不再互替——
    旧版稳定 id 会被「执行完按 id 移除计划」的服务端清理误删执行中登记的新计划，导致该次运行后缀不执行、
    归档文件夹缺失每任务独立日志）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
    服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/Jenkins/EvalTokens 阶段执行并等待终态；「不执行」阶段自动跳过），
-   关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。 */
-async function registerStageTimers(startIdx){
-  if(!curRun || !runStages) return;
+   关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。
+   返回 true=登记成功；接口不可达/写计划失败返回 false——调用方（handoffSchedSuffix）据此弹窗并按失败收尾，
+   后缀不得静默丢失。 */
+async function registerStageTimers(rc, startIdx){
   const stages=[];
-  for(let i=startIdx;i<runStages.length;i++){
-    const st=runStages[i]; if(!st || st.preset || !st.sched) continue;   // 预设任务是页面运行期概念，不进服务端计划
+  for(let i=startIdx;i<rc.stages.length;i++){
+    const st=rc.stages[i]; if(!st || st.preset || !st.sched) continue;   // 预设任务是页面运行期概念，不进服务端计划
     const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
     stages.push(ps);
   }
-  if(!stages.length) return;
-  const sid='stimer-'+(curRun.pipelineId||'pl')+'-'+(curRun.tag||Date.now())+'-suffix';   // 逐次运行唯一：同一次运行内重复登记（如从失败阶段重试再到分界）仍按同 id 替换去重
+  if(!stages.length) return false;
+  const sid='stimer-'+(rc.pipelineId||'pl')+'-'+(rc.tag||Date.now())+'-suffix';   // 逐次运行唯一：同一次运行内重复登记（如从失败阶段重试再到分界）仍按同 id 替换去重
   // 把本次运行的归档上下文（文件夹/tag/起始序号）随计划交给服务端：
   // 定时后缀各任务回显由服务端写入同一归档文件夹、独立任务日志（run-<tag>-NN-任务名.log），与前缀日志连贯编号
   //（baseSeq=分界前的正式阶段数，预设任务不占阶段序号，见 stageSeq）
-  const plan={ id:sid, pipelineId:curRun.pipelineId||null, pipelineName:(curRun.pipelineName||'')+' · 定时后缀',
-    stages, env:curRun.env, envs:curRun.envs, image:curRun.image, repoId:curRun.repoId||null,
-    branch:curRun.branch||'main', by:(curRun.by||'anonymous')+' ⏰', createdAt:Date.now(),
-    archive:curRun.archive||null, tag:curRun.tag||null, baseSeq:stageSeq(runStages||[], startIdx)-1,
-    vars:Object.assign({}, curRun.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
-    kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(curRun.tag||'')+' · 立即（周期跟随流水线计划）' };
+  const plan={ id:sid, pipelineId:rc.pipelineId||null, pipelineName:(rc.pipelineName||'')+' · 定时后缀',
+    stages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null,
+    branch:rc.branch||'main', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
+    archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
+    vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
+    kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(rc.tag||'')+' · 立即（周期跟随流水线计划）' };
   try{
     const r=await fetch('/api/worktable/pipeline/plans');
     let fresh=[]; if(r.ok){ const j=await r.json(); fresh=Array.isArray(j.plans)?j.plans:[]; }
     const kept=fresh.filter(p=>!p || p.id!==sid);   // 去重：仅替换同一次运行的旧登记（sid 含 tag），不影响其他运行的待执行计划
     const merged=kept.concat([plan]);
-    await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:merged})});
+    const w=await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:merged})});
+    if(!w||!w.ok) throw new Error('plans http '+(w&&w.status));
     serverPlans=merged; renderPlanList();
-  }catch(e){ console.warn('[stage-timer] 登记失败：', e); }
+    return true;
+  }catch(e){ console.warn('[stage-timer] 登记失败：', e); return false; }
+}
+/* 定时分界移交（原设计：混合编排手动运行时，「需本地运行」前缀在浏览器立即跑完，定时后缀移交服务端执行）。
+   后缀各阶段在编排区标记为「移交服务端」（skipped 渲染，结果由服务端「定时后缀」运行记录承载）；
+   登记成功：弹窗告知并按成功收尾本次运行；登记失败：弹窗告知后缀未执行、分界阶段标 failed（可从失败阶段重试），
+   本次运行按失败收尾——后缀不得静默丢失，也不得改在本地落地执行（定时阶段语义=服务端执行，见 runPipeline 分流）。 */
+async function handoffSchedSuffix(rc, i){
+  const stg=rc.stages;
+  let count=0;
+  for(let j=i;j<stg.length;j++){
+    const st=stg[j]; if(!st||st.preset) continue;
+    if(st.sched) count++;
+    rc.nodes[st.id]={status:'skipped',progress:100,dur:0,sub:{},varsIn:Object.assign({},rc.vars||{}),varsOut:{}};
+  }
+  rcRender(rc,true);
+  if(!count){ finish(rc,'success'); return; }   // 分界后只剩预设任务：无后缀可移交，直接收尾（防御，正常不会走到）
+  const ok=await registerStageTimers(rc,i);
+  if(rc.over) return;   // 等待登记期间被中止/重置：中止路径已收尾，不再弹窗不再写状态
+  if(ok){
+    alert('本地阶段已完成，后续 '+count+' 个定时阶段已移交服务端立即执行（约 15 秒内开始，可在「定时」页查看或取消）。');
+    finish(rc,'success');
+    rcOverall(rc,'✓ 已完成（后缀 '+count+' 个定时阶段已移交服务端）','dshell-badgeDone');
+  }else{
+    const boundary=stg[i];
+    if(boundary&&!boundary.preset) rc.nodes[boundary.id]={status:'failed',progress:100,dur:0,sub:{},varsIn:Object.assign({},rc.vars||{}),varsOut:{}};
+    alert('定时阶段移交服务端失败：计划接口不可达，后续 '+count+' 个阶段未执行。请检查 dsh 服务后从失败阶段重试。');
+    finish(rc,'failed');
+  }
 }
 /* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化；未单独选择过则跟随主控当前环境 */
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
@@ -4451,6 +4481,7 @@ function advance(rc,i){
   const stg=rc.stages;
   taskPromFinalize(rc);   // 已进入终态（成功/失败）且勾选「收集普罗数据」的任务：按任务起止后台采集普罗数据（去重见 _promCollected）
   if(i>=stg.length){ finish(rc,'success'); return; }
+  if(stg[i] && stg[i].sched && !stg[i].preset){ handoffSchedSuffix(rc,i); return; }   // 定时分界：本地前缀已跑完，定时后缀移交服务端执行并弹窗告知（原设计，见 handoffSchedSuffix）
   const group=pipelineStageGroups(stg).find(g=>g.start===i);
   if(group&&group.parallel&&group.end-group.start>1){ runParallelStageGroup(rc,group); return; }
   startStageAt(rc,i);
