@@ -84,6 +84,13 @@ function makeContext(runResult = 'submitted') {
     branchName: { value: 'main-control-branch' },
     deployStrategyName: { value: 'main-control-strategy' },
   };
+  const body = {
+    children: [],
+    appendChild(node) {
+      node.parentNode = this;
+      this.children.push(node);
+    },
+  };
   const calls = { run: [], tips: [], alerts: [] };
   let envControl = null;
   const context = {
@@ -107,7 +114,7 @@ function makeContext(runResult = 'submitted') {
     curRepoId: 'repo-a',
     queue: [],
     $: id => elements[id] || null,
-    document: { createElement: tag => ({ tag, value: '', textContent: '' }) },
+    document: { body, createElement: tag => ({ tag, value: '', textContent: '' }) },
     curEnvs: () => [context.environments[0]],
     curRepo: () => context.repositories.find(repo => repo.id === elements.repoSel.value) || context.repositories[0],
     curStrategy: () => elements.deployStrategyName.value,
@@ -138,7 +145,7 @@ function makeContext(runResult = 'submitted') {
     '/* ---------- 流水线任务列表运行弹窗 ---------- */',
     '/* ---------- 流水线任务列表运行弹窗结束 ---------- */',
   ), context);
-  return { context, elements, presetInputs, calls, getEnvControl: () => envControl };
+  return { context, elements, presetInputs, calls, body, getEnvControl: () => envControl };
 }
 
 const J = value => JSON.parse(JSON.stringify(value));
@@ -165,6 +172,15 @@ test('打开弹窗继承运行流水线当前值，不改动或启动当前流�
   assert.equal(elements.pipelineRunStrategy.value, 'main-control-strategy');
   assert.deepEqual(presetInputs.filter(input => input.checked).map(input => input.getAttribute('data-pipelinerunpreset')), ['cleanup']);
   assert.deepEqual(calls.run, []);
+});
+
+test('打开运行弹窗将分支与策略列表提升到 body 浮层', () => {
+  const { context, elements, body } = makeContext();
+
+  context.openPipelineRunDialog('pipe-2');
+
+  assert.ok(body.children.includes(elements.pipelineRunBranchPanel));
+  assert.ok(body.children.includes(elements.pipelineRunStrategyPanel));
 });
 
 test('运行弹窗的分支与策略面板使用弹窗输入和代码仓上下文', () => {

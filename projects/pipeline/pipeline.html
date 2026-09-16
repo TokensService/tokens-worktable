@@ -1236,6 +1236,25 @@ function renderPipelineDefaultForm(){
 /* ---------- 流水线任务列表运行弹窗 ---------- */
 let pipelineRunDialogPipelineId='';
 let pipelineRunDialogEnvIds=[];
+function portalPipelineRunPanels(){
+  const body=document.body; if(!body) return;
+  ['pipelineRunBranchPanel','pipelineRunStrategyPanel'].forEach(id=>{
+    const panel=$(id); if(panel&&panel.parentNode!==body) body.appendChild(panel);
+  });
+}
+function positionPipelineRunPanel(panelId,anchorId){
+  const panel=$(panelId),anchor=$(anchorId); if(!panel||!anchor||typeof anchor.getBoundingClientRect!=='function') return;
+  const rect=anchor.getBoundingClientRect();
+  panel.style.position='fixed';
+  panel.style.left=Math.max(8,rect.left)+'px';
+  panel.style.top=Math.max(8,rect.bottom+4)+'px';
+  panel.style.minWidth=Math.max(200,rect.width)+'px';
+  panel.style.zIndex='1000';
+}
+function positionPipelineRunPanels(){
+  positionPipelineRunPanel('pipelineRunBranchPanel','pipelineRunBranch');
+  positionPipelineRunPanel('pipelineRunStrategyPanel','pipelineRunStrategy');
+}
 function closePipelineRunDialog(){
   pipelineRunDialogPipelineId=''; pipelineRunDialogEnvIds=[];
   $('pipelineRunDialog').style.display='none';
@@ -1253,6 +1272,7 @@ function renderPipelineRunDialogEnvs(){
 function openPipelineRunDialog(id){
   const pl=findPipeline(id); if(!pl) return;
   const defaults=currentPipelineRunOptions();
+  portalPipelineRunPanels();
   pipelineRunDialogPipelineId=pl.id;
   pipelineRunDialogEnvIds=defaults.envs.map(env=>env&&env.id).filter(Boolean);
   $('pipelineRunTitle').textContent='运行流水线：'+(pl.name||pl.id);
@@ -1860,6 +1880,7 @@ function renderBranchPanel(showAll, which){
     else { h+=head('分支',br.length)+br.map(item).join('')+head('Tag',tg.length)+tg.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
+  if(which==='run') positionPipelineRunPanel('pipelineRunBranchPanel','pipelineRunBranch');
   panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); loadDeployStrategies(false, which); }));
   const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(ctx.repo(), true, which));
   const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=ctx.repo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(ctx.repo(), true, which).then(()=>renderBranchPanel(false, which)); });
@@ -1974,6 +1995,7 @@ function renderStrategyPanel(showAll, which){
     else { h+='<div class="dshell-muted" style="font-size:10px;padding:3px 8px 2px;opacity:.7;">策略（'+items.length+'）</div>'+items.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
+  if(which==='run') positionPipelineRunPanel('pipelineRunStrategyPanel','pipelineRunStrategy');
   panel.querySelectorAll('[data-strategy]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-strategy'); panel.style.display='none'; inp.focus(); }));
   const rb=panel.querySelector('[data-strategyrefresh]'); if(rb) rb.addEventListener('click', ()=>loadDeployStrategies(true, which));
 }
@@ -7556,10 +7578,12 @@ $('pipelineRunRepo').addEventListener('change',()=>{ const bp=$('pipelineRunBran
 $('pipelineRunBranch').addEventListener('focus',()=>{ const ctx=pickCtx('run'),repo=ctx.repo(); if(repo) loadRepoBranches(repo,false,'run').then(()=>renderBranchPanel(true,'run')); });
 $('pipelineRunBranch').addEventListener('change',()=>loadDeployStrategies(false,'run'));
 $('pipelineRunBranch').addEventListener('input',()=>{ const panel=$('pipelineRunBranchPanel'); if(panel.style.display==='none'){ loadRepoBranches(pickCtx('run').repo(),false,'run').then(()=>renderBranchPanel(false,'run')); } else renderBranchPanel(false,'run'); });
-document.addEventListener('click',e=>{ const panel=$('pipelineRunBranchPanel'),wrap=$('pipelineRunBranchPick'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunBranchPanel'),wrap=$('pipelineRunBranchPick'); if(panel&&wrap&&!wrap.contains(e.target)&&!panel.contains(e.target)) panel.style.display='none'; });
 $('pipelineRunStrategy').addEventListener('focus',()=>{ renderStrategyPanel(true,'run'); loadDeployStrategies(false,'run').then(()=>renderStrategyPanel(true,'run')); });
 $('pipelineRunStrategy').addEventListener('input',()=>{ const panel=$('pipelineRunStrategyPanel'); if(panel.style.display==='none'){ loadDeployStrategies(false,'run').then(()=>renderStrategyPanel(false,'run')); } else renderStrategyPanel(false,'run'); });
-document.addEventListener('click',e=>{ const panel=$('pipelineRunStrategyPanel'),wrap=$('pipelineRunStrategyPick'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunStrategyPanel'),wrap=$('pipelineRunStrategyPick'); if(panel&&wrap&&!wrap.contains(e.target)&&!panel.contains(e.target)) panel.style.display='none'; });
+window.addEventListener('resize',positionPipelineRunPanels);
+window.addEventListener('scroll',positionPipelineRunPanels,true);
 $('pipelineApiClose').addEventListener('click',()=>$('pipelineApiDialog').style.display='none');
 $('pipelineApiDialog').addEventListener('click',e=>{ if(e.target===$('pipelineApiDialog')) $('pipelineApiDialog').style.display='none'; });
 $('pipelineApiCopyEndpoint').addEventListener('click',e=>copyText($('pipelineApiEndpoint').textContent,e.currentTarget));
