@@ -486,7 +486,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选，也可一个不选——不选即按无目标节点运行）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
@@ -748,7 +748,7 @@
         <div class="dshell-card" style="padding:10px;display:flex;flex-direction:column;gap:8px;">
           <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
             <b>默认环境</b>
-            <span class="dshell-muted" style="font-size:11px;">列表直接运行或 API 未传参数时使用；运行框与 API 参数均可逐项覆盖。</span>
+            <span class="dshell-muted" style="font-size:11px;">API 未传参数时使用；任务列表运行弹窗默认继承当前「运行流水线」控件值，弹窗、运行框与 API 参数均可逐项覆盖。</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">目标环境
@@ -785,6 +785,49 @@
         <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
         <button id="plSave" class="dshell-btn mini">保存</button>
         <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
+      </div>
+    </div>
+  </div>
+  <!-- 流水线任务列表运行参数：先确认/临时调整该流水线默认值，再提交运行；执行人固定取当前登录用户 -->
+  <div id="pipelineRunDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:214; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%;max-width:820px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <h2 id="pipelineRunTitle" class="dshell-sub" style="margin:0">运行流水线</h2>
+        <button id="pipelineRunClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <div id="pipelineRunWarning" style="display:none;color:var(--log-warn);font-size:11px;"></div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">环境
+          <span id="pipelineRunEnvMulti" style="position:relative;display:inline-block;">
+            <button id="pipelineRunEnvMultiBtn" type="button" class="dshell-input" style="min-width:170px;max-width:300px;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">选择 IP</button>
+            <span id="pipelineRunEnvMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:40;min-width:240px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></span>
+          </span>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">代码仓
+          <select id="pipelineRunRepo" class="dshell-input" style="min-width:180px;"></select>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支/Tag
+          <span id="pipelineRunBranchPick" style="position:relative;display:inline-block;">
+            <input id="pipelineRunBranch" class="dshell-input" value="main" placeholder="main" autocomplete="off" style="width:160px;" />
+            <div id="pipelineRunBranchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
+        </label>
+        <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
+          <span id="pipelineRunStrategyPick" style="position:relative;display:inline-block;">
+            <input id="pipelineRunStrategy" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="width:160px;" title="按当前分支从代码仓部署策略配置拉取支持的部署策略，聚焦弹出面板可搜索/刷新" />
+            <div id="pipelineRunStrategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
+        </label>
+      </div>
+      <div id="pipelineRunPresets" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span class="dshell-muted">预设任务</span>
+        <label><input type="checkbox" data-pipelinerunpreset="cleanup" /> 环境清理</label>
+        <label><input type="checkbox" data-pipelinerunpreset="check" /> 环境检查</label>
+        <label><input type="checkbox" data-pipelinerunpreset="profiling" /> Profiling</label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
+        <button id="pipelineRunCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
+        <button id="pipelineRunSubmit" type="button" class="dshell-btn mini">▶ 确认运行</button>
       </div>
     </div>
   </div>
@@ -1120,10 +1163,12 @@ function normalizePipelineDefaults(value){
   };
 }
 function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
-/* 仅旧流水线没有保存默认引用时回退当前首项；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
+/* 仅旧流水线从未保存过默认环境引用（无 environmentIds 字段）时回退当前首项；编辑器保存过的空环境
+   列表 = 显式不选择任何节点（无目标节点运行）；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
-  const d=normalizePipelineDefaults(pl&&pl.defaults);
-  const envs=d.environmentIds.length?d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean):environments.slice(0,1);
+  const raw=pl&&pl.defaults&&typeof pl.defaults==='object'&&!Array.isArray(pl.defaults)?pl.defaults:null;
+  const d=normalizePipelineDefaults(raw);
+  const envs=(raw&&Array.isArray(raw.environmentIds))?d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean):environments.slice(0,1);
   const repo=d.repositoryId?repositories.find(r=>r.id===d.repositoryId):(repositories[0]||null);
   return {envs,repoId:repo?repo.id:'',branch:d.branch,strategy:d.strategy,presets:d.presets.slice()};
 }
@@ -1162,6 +1207,16 @@ function currentPipelineDefaultSeed(){
     presets:selectedPresetKeys(),
   });
 }
+function currentPipelineRunOptions(){
+  const seed=currentPipelineDefaultSeed();
+  return {
+    envs:seed.environmentIds.map(id=>environments.find(env=>env.id===id)).filter(Boolean),
+    repoId:seed.repositoryId,
+    branch:seed.branch,
+    strategy:seed.strategy,
+    presets:seed.presets.slice(),
+  };
+}
 function renderPipelineDefaultForm(){
   editDefaults=normalizePipelineDefaults(editDefaults);
   renderEnvMulti({btnId:'plDefaultEnvMultiBtn',panelId:'plDefaultEnvMultiPanel',
@@ -1178,6 +1233,84 @@ function renderPipelineDefaultForm(){
   $('plDefaultPresets').querySelectorAll('[data-pldefaultpreset]').forEach(el=>{ el.checked=editDefaults.presets.indexOf(el.getAttribute('data-pldefaultpreset'))>=0; });
 }
 /* ---------- 流水线默认运行参数结束 ---------- */
+/* ---------- 流水线任务列表运行弹窗 ---------- */
+let pipelineRunDialogPipelineId='';
+let pipelineRunDialogEnvIds=[];
+function portalPipelineRunPanels(){
+  const body=document.body; if(!body) return;
+  ['pipelineRunBranchPanel','pipelineRunStrategyPanel'].forEach(id=>{
+    const panel=$(id); if(panel&&panel.parentNode!==body) body.appendChild(panel);
+  });
+}
+function positionPipelineRunPanel(panelId,anchorId){
+  const panel=$(panelId),anchor=$(anchorId); if(!panel||!anchor||typeof anchor.getBoundingClientRect!=='function') return;
+  const rect=anchor.getBoundingClientRect();
+  panel.style.position='fixed';
+  panel.style.left=Math.max(8,rect.left)+'px';
+  panel.style.top=Math.max(8,rect.bottom+4)+'px';
+  panel.style.minWidth=Math.max(200,rect.width)+'px';
+  panel.style.zIndex='1000';
+}
+function positionPipelineRunPanels(){
+  positionPipelineRunPanel('pipelineRunBranchPanel','pipelineRunBranch');
+  positionPipelineRunPanel('pipelineRunStrategyPanel','pipelineRunStrategy');
+}
+function closePipelineRunDialog(){
+  pipelineRunDialogPipelineId=''; pipelineRunDialogEnvIds=[];
+  $('pipelineRunDialog').style.display='none';
+  const panel=$('pipelineRunEnvMultiPanel'); if(panel) panel.style.display='none';
+  const branchPanel=$('pipelineRunBranchPanel'); if(branchPanel) branchPanel.style.display='none';
+  const strategyPanel=$('pipelineRunStrategyPanel'); if(strategyPanel) strategyPanel.style.display='none';
+}
+function renderPipelineRunDialogEnvs(){
+  renderEnvMulti({
+    btnId:'pipelineRunEnvMultiBtn',panelId:'pipelineRunEnvMultiPanel',
+    getIds:()=>pipelineRunDialogEnvIds,
+    setIds:ids=>{ pipelineRunDialogEnvIds=ids.slice(); },
+  });
+}
+function openPipelineRunDialog(id){
+  const pl=findPipeline(id); if(!pl) return;
+  const defaults=currentPipelineRunOptions();
+  portalPipelineRunPanels();
+  pipelineRunDialogPipelineId=pl.id;
+  pipelineRunDialogEnvIds=defaults.envs.map(env=>env&&env.id).filter(Boolean);
+  $('pipelineRunTitle').textContent='运行流水线：'+(pl.name||pl.id);
+  renderPipelineRunDialogEnvs();
+  const repoSel=$('pipelineRunRepo'); repoSel.innerHTML='';
+  const placeholder=document.createElement('option'); placeholder.value=''; placeholder.textContent='请选择代码仓'; repoSel.appendChild(placeholder);
+  repositories.forEach(repo=>{ const option=document.createElement('option'); option.value=repo.id; option.textContent=repo.name||repo.url||repo.id; repoSel.appendChild(option); });
+  repoSel.value=defaults.repoId;
+  $('pipelineRunBranch').value=defaults.branch||'main';
+  $('pipelineRunStrategy').value=defaults.strategy||'';
+  $('pipelineRunPresets').querySelectorAll('[data-pipelinerunpreset]').forEach(input=>{ input.checked=defaults.presets.indexOf(input.getAttribute('data-pipelinerunpreset'))>=0; });
+  const warning=$('pipelineRunWarning');
+  warning.textContent='';
+  warning.style.display='none';
+  $('pipelineRunDialog').style.display='flex';
+}
+function collectPipelineRunDialogOptions(){
+  const presets=Array.from($('pipelineRunPresets').querySelectorAll('[data-pipelinerunpreset]')).filter(input=>input.checked).map(input=>input.getAttribute('data-pipelinerunpreset'));
+  return {
+    pipelineId:pipelineRunDialogPipelineId,
+    envs:pipelineRunDialogEnvIds.map(id=>environments.find(env=>env.id===id)).filter(Boolean),
+    repoId:$('pipelineRunRepo').value,
+    branch:$('pipelineRunBranch').value.trim()||'main',
+    strategy:$('pipelineRunStrategy').value.trim(),
+    presets,
+  };
+}
+function submitPipelineRunDialog(){
+  const options=collectPipelineRunDialogOptions(); if(!options.pipelineId) return;
+  if(!findPipeline(options.pipelineId)){ closePipelineRunDialog(); alert('流水线已不存在，请刷新任务列表后重试。'); return; }
+  if(!options.repoId || !repositories.some(repo=>repo.id===options.repoId)){ alert('请选择代码仓。'); return; }
+  const result=runPipeline(options);
+  if(result===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
+  else if(result==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）');
+  else if(result==='submitted') flashRunTip('已提交服务端运行队列');
+  if(result===true || result==='queued' || result==='submitted') closePipelineRunDialog();
+}
+/* ---------- 流水线任务列表运行弹窗结束 ---------- */
 /* ---------- 流水线 API 调用说明 ---------- */
 function shellSingleQuoted(value){ return "'"+String(value).replace(/'/g,"'\"'\"'")+"'"; }
 function pipelineApiSpec(pl,origin){
@@ -1190,12 +1323,13 @@ function pipelineApiSpec(pl,origin){
   const strategy=curStrategy();
   const by=currentUsername||'api';   // 执行人留空（未取到登录用户）按服务端缺省 api
   const presets=selectedPresetKeys();
-  /* 显式空数组/空串会被服务端判 400（environmentIds must not be empty / invalid repositoryId）：
-     当前无有效选择时省略对应字段（调用时回退流水线默认配置）并给出警告，不生成必败的请求体 */
+  /* environmentIds 显式空数组 = 不选择任何节点（无目标节点运行），服务端按空数组执行；
+     代码仓显式空串仍会被服务端判 400（invalid repositoryId）：无有效选择时省略该字段
+     （调用时回退流水线默认配置）并给出警告，不生成必败的请求体 */
   const issues=[];
   const body={};
-  if(envIds.length) body.environmentIds=envIds;
-  else issues.push('当前未选中目标环境，已省略 environmentIds（调用时回退流水线默认配置）');
+  body.environmentIds=envIds;   // 与运行框一致：未选中任何节点即显式空数组（无目标节点运行）
+  if(!envIds.length) issues.push('当前未选中目标环境：environmentIds 为空数组，即不选择任何节点（无目标节点运行）');
   if(repoId) body.repositoryId=repoId;
   else issues.push('当前未选中代码仓，已省略 repositoryId（调用时回退流水线默认配置）');
   body.branch=branch;
@@ -1267,22 +1401,20 @@ function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(enviro
 function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}; }
 function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),user:'',pass:''}; }
 function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
-/* 环境多选（主控，可选多个目标 IP） */
-let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
+/* 环境多选（主控，可选多个目标 IP；默认不选择任何节点——不选即按无目标节点运行，排队按同机串行处理） */
+let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
 function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} persistState(); }
 function curEnvs(){
-  let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
-  if(!list.length) list = environments.slice(0,1);
-  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',nodeIp:'',user:'',pass:''}];
+  return environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
 }
 function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
-/* 环境多选面板（主控与定时页共用渲染）：勾选状态经 getIds/setIds 回调注入，切换后执行 after 附加动作 */
+/* 环境多选面板（主控、定时页与流水线编辑器「默认环境」共用渲染）：勾选状态经 getIds/setIds 回调注入，
+   切换后执行 after 附加动作；允许一个不选（默认即不选择任何节点），无选择时按钮显示占位「选择 IP」 */
 function renderEnvMulti(o){
   const btn=$(o.btnId); const panel=$(o.panelId); if(!btn||!panel) return;
-  let ids=o.getIds();
-  if(!ids || !ids.length){ ids=environments.slice(0,1).map(e=>e.id); o.setIds(ids); }
+  const ids=o.getIds()||[];
   const sel=environments.filter(e=>ids.indexOf(e.id)>=0);
-  btn.textContent = (sel.length?sel:environments.slice(0,1)).map(e=>e.ip).join('，') || '选择 IP';
+  btn.textContent = sel.map(e=>e.ip).join('，') || '选择 IP';
   btn.title = btn.textContent;   // 限宽省略时悬浮可见完整 IP 列表
   panel.innerHTML='';
   environments.forEach(e=>{
@@ -1298,8 +1430,7 @@ function renderEnvMulti(o){
     const id=cb.getAttribute('data-envcb');
     let cur=(o.getIds()||[]).slice();
     if(cb.checked){ if(cur.indexOf(id)<0) cur.push(id); }
-    else { cur=cur.filter(x=>x!==id); }
-    if(!cur.length){ cur=[id]; cb.checked=true; }   // 至少保留一个
+    else { cur=cur.filter(x=>x!==id); }   // 允许全部取消：不选择任何节点即无目标节点运行
     o.setIds(cur); renderEnvMulti(o);
     if(o.after) o.after();
   }));
@@ -1694,6 +1825,12 @@ async function testRepoStrategy(r){
 /* 分支/Tag 与部署策略面板上下文：主控（运行流水线设置）与定时页共用同一套拉取/渲染逻辑，
    仅输入框、面板元素与目标代码仓不同（which 缺省='main' 主控，'sched'=定时页） */
 function pickCtx(which){
+  if(which==='run') return {
+    inp:$('pipelineRunBranch'), panel:$('pipelineRunBranchPanel'),
+    repo:function(){ return resolveRepo(($('pipelineRunRepo') && $('pipelineRunRepo').value) || curRepoId) || curRepo(); },
+    branch:function(){ return ($('pipelineRunBranch').value.trim()||'main'); },
+    strategyInp:$('pipelineRunStrategy'), strategyPanel:$('pipelineRunStrategyPanel'),
+  };
   if(which==='sched') return {
     inp:$('schedBranch'), panel:$('schedBranchPanel'),
     repo:function(){ return resolveRepo(($('schedRepo') && $('schedRepo').value) || curRepoId); },
@@ -1743,6 +1880,7 @@ function renderBranchPanel(showAll, which){
     else { h+=head('分支',br.length)+br.map(item).join('')+head('Tag',tg.length)+tg.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
+  if(which==='run') positionPipelineRunPanel('pipelineRunBranchPanel','pipelineRunBranch');
   panel.querySelectorAll('[data-branch]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-branch'); panel.style.display='none'; inp.focus(); loadDeployStrategies(false, which); }));
   const rb=panel.querySelector('[data-branchrefresh]'); if(rb) rb.addEventListener('click', ()=>loadRepoBranches(ctx.repo(), true, which));
   const fb=panel.querySelector('[data-branchfallback]'); if(fb) fb.addEventListener('click', ()=>{ const rr=ctx.repo(); if(rr){ rr.fetchMode='server'; saveRepos(); renderRepos(); renderRepoOptions(); } loadRepoBranches(ctx.repo(), true, which).then(()=>renderBranchPanel(false, which)); });
@@ -1857,6 +1995,7 @@ function renderStrategyPanel(showAll, which){
     else { h+='<div class="dshell-muted" style="font-size:10px;padding:3px 8px 2px;opacity:.7;">策略（'+items.length+'）</div>'+items.map(item).join(''); }
   }
   panel.innerHTML=h; panel.style.display='block';
+  if(which==='run') positionPipelineRunPanel('pipelineRunStrategyPanel','pipelineRunStrategy');
   panel.querySelectorAll('[data-strategy]').forEach(el=>el.addEventListener('click',()=>{ inp.value=el.getAttribute('data-strategy'); panel.style.display='none'; inp.focus(); }));
   const rb=panel.querySelector('[data-strategyrefresh]'); if(rb) rb.addEventListener('click', ()=>loadDeployStrategies(true, which));
 }
@@ -3595,8 +3734,8 @@ function startRun(opts){
   let pl;
   if(opts.stages){ pl={stages:opts.stages, id:opts.pipelineId||null, name:opts.pipelineName||'(自定义)'}; }
   else { pl = findPipeline(opts.pipelineId||curPipelineId) || curPipeline(); }
-  const envs = (opts.envs && opts.envs.length) ? opts.envs      // 队列/定时快照：复用入队时的节点对象（多选 IP 不丢失）
-    : opts.env ? [resolveEnv(opts.env)] : curEnvs();             // 手动运行/定时计划：均可多选 IP（快照节点对象优先）
+  const envs = Array.isArray(opts.envs) ? opts.envs              // 队列/弹窗/定时快照：复用显式节点数组；空数组=不选择节点
+    : opts.env ? [resolveEnv(opts.env)] : curEnvs();             // 未显式传节点时才读取主运行框选择
   const env = envs.map(e=>e.ip).join('，');
   const image = opts.image || DEFAULT_IMAGE;
   const release = image;                 // Release 字段已移除，内部以镜像名作为 release
@@ -3675,7 +3814,8 @@ function startSimRun(pl, c){
   renderQueue();
 }
 /* 全部阶段均支持服务端执行的手动运行只把参数提交给服务端权威执行池。请求体只含配置引用和运行参数；
-   阶段定义、节点/代码仓凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。 */
+   阶段定义、节点/代码仓凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。
+   未选择任何节点时 environmentIds 为显式空数组（= 不选择任何节点，无目标节点运行），不回退流水线默认环境。 */
 async function submitServerRun(item){
   const body={
     environmentIds:(Array.isArray(item&&item.envs)?item.envs:[]).map(e=>e&&e.id).filter(Boolean),
@@ -3687,7 +3827,6 @@ async function submitServerRun(item){
     by:item&&item.by||'',
     source:'manual',
   };
-  if(!body.environmentIds.length) delete body.environmentIds;
   try{
     const response=await fetch('/api/worktable/pipeline/run/'+encodeURIComponent(item&&item.pipelineId||''),{
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:true,
@@ -3716,7 +3855,7 @@ function runPipeline(opts){
   opts=resolvePipelineRunOptions(pl,opts);
   /* 执行人必填：取当前登录用户（只读），未获取到时弹窗拦截（队列/定时快照自带 opts.by，不受影响；历史重跑同样按当前登录用户校验） */
   if(!opts.by && !currentUsername){ alert('未获取到当前登录用户：「执行人」取 dsh 登录用户。请确认已登录后刷新页面重试。'); return 'no-by'; }
-  const envs = (opts.envs && opts.envs.length) ? opts.envs   // 与 startRun 一致：快照节点对象优先（多选 IP 不退化）
+  const envs = Array.isArray(opts.envs) ? opts.envs           // 与 startRun 一致：显式空数组=不选择节点，不回退主运行框
     : opts.env ? [resolveEnv(opts.env)] : curEnvs();
   const env = envs.map(e=>e.ip).join('，');
   const image = opts.image || DEFAULT_IMAGE;
@@ -4173,10 +4312,8 @@ async function handoffSchedSuffix(rc, i){
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
 function saveSchedEnvSel(){ try{ localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds)); }catch(e){} }
 function schedEnvs(){
-  const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）
-  let list=environments.filter(e=>ids.indexOf(e.id)>=0);
-  if(!list.length) list=environments.slice(0,1);
-  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}];
+  const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）；都不选即无目标节点
+  return environments.filter(e=>ids.indexOf(e.id)>=0);
 }
 function renderSchedEnvOptions(){
   renderEnvMulti({btnId:'schedEnvMultiBtn', panelId:'schedEnvMultiPanel',
@@ -4650,7 +4787,7 @@ function substRunVars(v, rc){
     if(rc.pipelineName) look.PIPELINE_NAME=rc.pipelineName;
     if(rc.repoUrl) look.GIT_URL=rc.repoUrl;
     if(rc.branch) look.GIT_BRANCH=rc.branch;
-    if(rc.strategy!==undefined) look.DEPLOY_STRATEGY=rc.strategy;   // 部署策略（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用）
+    if(rc.strategy) look.DEPLOY_STRATEGY=rc.strategy;   // 部署策略（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用）；未选择（空串）不注入，保持占位符未解析
     if(rc.by) look.BY=rc.by;   // 执行人（普罗 xds_namespace 默认 ${DEPLOY_STRATEGY}-${BY} 用，= 执行人拼音）
     if(rc.archive){ look.ARCHIVE_DIR=rc.archive; look.ARCHIVE_FOLDER=rc.archive; }
     if(rc.vars) Object.assign(look, rc.vars);   // 上游阶段变量同名优先
@@ -4659,6 +4796,9 @@ function substRunVars(v, rc){
   if(single && look[single[1]]===undefined) return '';
   return v.replace(/\${([A-Za-z_][A-Za-z0-9_]*)}/g, function(m,k){ return look[k]!==undefined?String(look[k]):m; });
 }
+/* 普罗 model/namespace 占位模板（${MODEL_PATH} / ${DEPLOY_STRATEGY}-${BY}）采集时点解析：
+   替换后仍残留未解析 ${...} 占位（未选部署策略、无执行人等）按「解析不出则不注入」处理（返回空）。 */
+function substPromTemplate(v, rc){ const out=substRunVars(v, rc).trim(); return out.indexOf('${')>=0?'':out; }
 /* 所有长时间 / 高输出阶段共用的实时快照：页面只持有两路各 256 KiB 尾部，
    _outputRevision 每次追加递增，让详情缓存不依赖有碰撞可能的文本采样。 */
 function createLiveOutputState(){
@@ -6090,7 +6230,7 @@ function archiveRun(rc, result){
    已在状态行展示收集归档目录。 */
 function promSnapshotForRun(rc){   // 手动补采用：把默认 model_name/xds_namespace 占位按本次运行上下文解析为实际值，随历史记录保存（都解析不出则不注入）
   if(!rc) return null;
-  const modelName=substRunVars(DEFAULT_PIPELINE_PROM.modelName, rc).trim(), xdsNamespace=substRunVars(DEFAULT_PIPELINE_PROM.xdsNamespace, rc).trim();
+  const modelName=substPromTemplate(DEFAULT_PIPELINE_PROM.modelName, rc), xdsNamespace=substPromTemplate(DEFAULT_PIPELINE_PROM.xdsNamespace, rc);
   if(!modelName && !xdsNamespace) return null;
   return { enabled:true, modelName, xdsNamespace, startTime:'', endTime:'' };
 }
@@ -6167,7 +6307,7 @@ async function taskPromCollect(rc, s, seq, startMs, endMs){
   const sc=scriptByName(scName);
   if(!sc || !sc.path){ console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据跳过：收集脚本「'+scName+'」未在 scripts 目录找到'); return; }
   if(!(endMs>startMs)) endMs=startMs+1;
-  const ps={enabled:true, modelName:substRunVars(DEFAULT_PIPELINE_PROM.modelName, rc).trim(), xdsNamespace:substRunVars(DEFAULT_PIPELINE_PROM.xdsNamespace, rc).trim()};   // 默认占位按采集时点解析（与手动补采一致）
+  const ps={enabled:true, modelName:substPromTemplate(DEFAULT_PIPELINE_PROM.modelName, rc), xdsNamespace:substPromTemplate(DEFAULT_PIPELINE_PROM.xdsNamespace, rc)};   // 默认占位按采集时点解析（与手动补采一致）
   const env=buildPromCollectEnv({prom:ps, archive:(rc&&rc.archive)||''}, startMs, endMs);   // 时间段 + 数据源 + 模型/命名空间 + 归档目录
   env.METRICS_OUTPUT_DIR=dir;   // 任务级产物目录覆盖默认 metrics 子目录：{任务名}-{阶段序号}-普罗数据
   const res=await execScript(sc, 0, env, rc, function(){}, null, dir+'/collect.log');   // 强制走流式接口：完整输出直接落 collect.log，页面不接收一次性大 JSON
@@ -7149,7 +7289,7 @@ function renderPipelines(){
     tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
   });
-  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const r=runPipeline({pipelineId:b.getAttribute('data-plrun'),useDefaults:true}); if(r===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）'); else if(r==='submitted') flashRunTip('已提交服务端运行队列'); }));
+  tb.querySelectorAll('[data-plrun]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPipelineRunDialog(b.getAttribute('data-plrun')); }));
   tb.querySelectorAll('[data-plapi]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); showPipelineApi(findPipeline(b.getAttribute('data-plapi'))); }));
   tb.querySelectorAll('[data-pledit]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); openPlForm(b.getAttribute('data-pledit')); }));
   tb.querySelectorAll('[data-plcopy]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); copyPipeline(b.getAttribute('data-plcopy')); }));
@@ -7428,6 +7568,22 @@ $('resetBtn').addEventListener('click', ()=>{
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
 $('addPlBtn').addEventListener('click', ()=>openPlForm(''));
+$('pipelineRunClose').addEventListener('click',closePipelineRunDialog);
+$('pipelineRunCancel').addEventListener('click',closePipelineRunDialog);
+$('pipelineRunSubmit').addEventListener('click',submitPipelineRunDialog);
+$('pipelineRunDialog').addEventListener('click',e=>{ if(e.target===$('pipelineRunDialog')) closePipelineRunDialog(); });
+$('pipelineRunEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const panel=$('pipelineRunEnvMultiPanel'); panel.style.display=panel.style.display==='none'?'block':'none'; });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunEnvMultiPanel'),wrap=$('pipelineRunEnvMulti'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
+$('pipelineRunRepo').addEventListener('change',()=>{ const bp=$('pipelineRunBranchPanel'),sp=$('pipelineRunStrategyPanel'); if(bp) bp.style.display='none'; if(sp) sp.style.display='none'; loadDeployStrategies(true,'run'); });
+$('pipelineRunBranch').addEventListener('focus',()=>{ const ctx=pickCtx('run'),repo=ctx.repo(); if(repo) loadRepoBranches(repo,false,'run').then(()=>renderBranchPanel(true,'run')); });
+$('pipelineRunBranch').addEventListener('change',()=>loadDeployStrategies(false,'run'));
+$('pipelineRunBranch').addEventListener('input',()=>{ const panel=$('pipelineRunBranchPanel'); if(panel.style.display==='none'){ loadRepoBranches(pickCtx('run').repo(),false,'run').then(()=>renderBranchPanel(false,'run')); } else renderBranchPanel(false,'run'); });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunBranchPanel'),wrap=$('pipelineRunBranchPick'); if(panel&&wrap&&!wrap.contains(e.target)&&!panel.contains(e.target)) panel.style.display='none'; });
+$('pipelineRunStrategy').addEventListener('focus',()=>{ renderStrategyPanel(true,'run'); loadDeployStrategies(false,'run').then(()=>renderStrategyPanel(true,'run')); });
+$('pipelineRunStrategy').addEventListener('input',()=>{ const panel=$('pipelineRunStrategyPanel'); if(panel.style.display==='none'){ loadDeployStrategies(false,'run').then(()=>renderStrategyPanel(false,'run')); } else renderStrategyPanel(false,'run'); });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunStrategyPanel'),wrap=$('pipelineRunStrategyPick'); if(panel&&wrap&&!wrap.contains(e.target)&&!panel.contains(e.target)) panel.style.display='none'; });
+window.addEventListener('resize',positionPipelineRunPanels);
+window.addEventListener('scroll',positionPipelineRunPanels,true);
 $('pipelineApiClose').addEventListener('click',()=>$('pipelineApiDialog').style.display='none');
 $('pipelineApiDialog').addEventListener('click',e=>{ if(e.target===$('pipelineApiDialog')) $('pipelineApiDialog').style.display='none'; });
 $('pipelineApiCopyEndpoint').addEventListener('click',e=>copyText($('pipelineApiEndpoint').textContent,e.currentTarget));

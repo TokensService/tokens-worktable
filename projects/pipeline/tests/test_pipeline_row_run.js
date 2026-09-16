@@ -1,4 +1,4 @@
-// 流水线任务行运行按钮：直接运行对应流水线，不切换当前选中项。
+// 流水线任务行运行按钮：先弹出本次运行参数，不直接启动或切换当前选中项。
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -56,7 +56,7 @@ function makeContext(runResult) {
   const tbody = new FakeNode('tbody');
   const table = { querySelector: selector => selector === 'tbody' ? tbody : null };
   const count = { textContent: '' };
-  const calls = { run: [], api: [], select: [], tips: [], alerts: [] };
+  const calls = { run: [], dialog: [], api: [], select: [], tips: [], alerts: [] };
   const queue = [];
   const context = {
     pipelines: [
@@ -79,6 +79,7 @@ function makeContext(runResult) {
     $: id => id === 'plTable' ? table : count,
     esc: String,
     runPipeline: options => { calls.run.push(options); if (runResult === 'queued') queue.push(options); return runResult; },
+    openPipelineRunDialog: id => calls.dialog.push(id),
     showPipelineApi: pipeline => calls.api.push(pipeline),
     findPipeline: id => context.pipelines.find(pipeline => pipeline.id === id),
     selectPipeline: id => calls.select.push(id),
@@ -106,7 +107,7 @@ function makeContext(runResult) {
   return { context, tbody, calls };
 }
 
-test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', () => {
+test('每条流水线的 ▶ 按钮打开对应流水线的运行参数弹窗且不立即运行', () => {
   const { tbody, calls } = makeContext('submitted');
   const buttons = tbody.querySelectorAll('[data-plrun]');
   assert.equal(buttons.length, 2);
@@ -119,45 +120,10 @@ test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', 
   buttons[1].handlers.click(event);
 
   assert.equal(event.stopped, true);
-  assert.equal(calls.run.length, 1);
-  assert.equal(calls.run[0].pipelineId, 'pipe-2');
-  assert.equal(calls.run[0].useDefaults, true, '列表直接运行必须使用该流水线保存的默认运行参数');
+  assert.deepEqual(calls.dialog, ['pipe-2']);
+  assert.deepEqual(calls.run, [], '打开参数弹窗前不得启动流水线');
   assert.deepEqual(calls.select, []);
-  assert.deepEqual(calls.tips, ['已提交服务端运行队列']);
-});
-
-test('▶ 本地直接启动时不显示入队或队列已满提示', () => {
-  const { tbody, calls } = makeContext(true);
-  const button = tbody.querySelectorAll('[data-plrun]')[0];
-  button.handlers.click({ stopPropagation() {} });
   assert.deepEqual(calls.tips, []);
-  assert.deepEqual(calls.alerts, []);
-});
-
-test('▶ 本地任务排队时显示本地队列位置', () => {
-  const { tbody, calls } = makeContext('queued');
-  const button = tbody.querySelectorAll('[data-plrun]')[0];
-  button.handlers.click({ stopPropagation() {} });
-  assert.deepEqual(calls.tips, ['已加入本地队列（第 1 位）']);
-  assert.deepEqual(calls.alerts, []);
-});
-
-test('▶ 本地队列已满时提示并拒绝继续排队', () => {
-  const { tbody, calls } = makeContext(false);
-  const button = tbody.querySelectorAll('[data-plrun]')[0];
-  button.handlers.click({ stopPropagation() {} });
-  assert.deepEqual(calls.tips, []);
-  assert.equal(calls.alerts.length, 1);
-  assert.match(calls.alerts[0], /本地队列已满/);
-});
-
-test('▶ 不受浏览器本地队列容量影响，始终提交服务端调度', () => {
-  const { context, tbody, calls } = makeContext('submitted');
-  for (let i = 0; i < 16; i++) context.queue.push({ id: 'legacy-' + i });
-  const button = tbody.querySelectorAll('[data-plrun]')[0];
-  button.handlers.click({ stopPropagation() {} });
-  assert.equal(calls.run.length, 1);
-  assert.deepEqual(calls.tips, ['已提交服务端运行队列']);
   assert.deepEqual(calls.alerts, []);
 });
 
