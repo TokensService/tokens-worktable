@@ -1,5 +1,13 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线任务列表的「▶」运行改为先确认本次运行参数（`projects/pipeline/pipeline.html`）：点击后不再立即
+  按默认值启动，而是弹出「运行流水线」窗口，按目标流水线保存的默认配置回显环境、代码仓、分支/Tag、
+  部署策略和预设任务；用户可只为本次运行临时调整，确认后以显式参数进入既有本地/服务端调度流程，
+  不改写流水线默认配置或主运行框。执行人仍统一取当前 dsh 登录用户，弹窗不提供执行人设置；无目标节点
+  运行继续支持显式空环境，代码仓未选择时阻止提交。新增
+  `projects/pipeline/tests/test_pipeline_run_dialog.js`，并更新 `test_pipeline_row_run.js` 覆盖点击只打开弹窗、
+  默认值回显、临时参数提交、登录用户署名边界和空环境/代码仓校验。
+
 - 服务端运行接口贯通「不选择任何节点」语义（`src/index.ts`）：`POST /api/worktable/pipeline/run/<id>` 此前
   对显式空 `environmentIds` 判 400（`environmentIds must not be empty`）、默认环境为空时回退首个环境，
   与页面「默认不选择任何节点」的新语义矛盾——运行框全不选时走服务端权威队列会静默改投默认/首个节点。

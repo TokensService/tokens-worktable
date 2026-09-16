@@ -39,7 +39,7 @@ test('默认运行参数归一化并过滤重复、空值和未知预设',()=>{
   });
 });
 
-test('列表直接运行采用有效默认值；仅旧流水线缺省时回退首项',()=>{
+test('任务列表运行弹窗采用有效默认值；仅旧流水线缺省时回退首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',name:'仓库 B',url:'b.git'}],
@@ -57,7 +57,7 @@ test('列表直接运行采用有效默认值；仅旧流水线缺省时回退�
   });
 });
 
-test('列表运行检测失效的默认环境和代码仓，不静默改投首项',()=>{
+test('任务列表运行弹窗检测失效的默认环境和代码仓，不静默改投首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',url:'b.git'}],
