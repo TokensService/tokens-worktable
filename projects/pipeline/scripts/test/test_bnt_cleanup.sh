@@ -9,6 +9,9 @@ LOG_FILE="$tmp/log"
 SCALED_RECORD="$tmp/scaled"
 HAS_HELM=1
 NODE=node-128
+WHITELIST_NS=''
+read_whitelist
+is_whitelisted xds-kuberay-op || { echo 'xds-kuberay-op 应在默认白名单中' >&2; exit 1; }
 CLEANUP_TIMEOUT_SECONDS=1
 CLEANUP_POLL_SECONDS=1
 helm() {

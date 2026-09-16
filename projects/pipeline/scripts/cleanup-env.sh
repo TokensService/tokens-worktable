@@ -76,6 +76,7 @@ HEALTH_FAIL=0
 DEFAULT_WHITELIST_NS=(
     default kube-flannel kube-system 'ems*' lws-system
     volcano-monitoring volcano-system gpu-operator nvidia-gpu-operator monitoring
+    xds-kuberay-op
 )
 
 log() {
