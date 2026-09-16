@@ -48,6 +48,12 @@ esac
 EOF
 cat >"$tmp/bin/ctr" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == -n && "${2:-}" == k8s.io && "${3:-}" == images && "${4:-}" == pull \
+  && "${5:-}" == --user && "${6:-}" == cn-southwest-2@test-image-pull-token \
+  && "${7:-}" == swr.cn-southwest-2.myhuaweicloud.com/serverlessai/lmcache-vllm-openai-0.5.4-unitest:v0.0.1_x86_64 ]]; then
+  printf '%s\n' 'ctr authenticated image pull' >>"$FAKE_LOG"
+  exit 0
+fi
 printf 'ctr %s\n' "$*" >>"$FAKE_LOG"
 EOF
 cat >"$tmp/bin/sudo" <<'EOF'
@@ -136,6 +142,15 @@ EOF
 chmod +x "$tmp/bin/nerdctl" "$tmp/bin/ctr" "$tmp/bin/sudo" "$tmp/bin/git" "$tmp/bin/date"
 chmod +x "$tmp/bin/ssh" "$tmp/bin/sshpass" "$tmp/bin/scp"
 
+# 工作台参数识别器不支持嵌套默认表达式；三个阶段均须拆为顺序赋值。
+if rg -q '=\"\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' \
+  "$root/lmcache-unittest-pull-image.sh" \
+  "$root/lmcache-unittest-rebuild.sh" \
+  "$root/lmcache-unittest-run-tests.sh"; then
+  echo 'lmcache stages must not use nested parameter defaults' >&2
+  exit 1
+fi
+
 # 目标节点上的远端 Bash 会话补齐 GPU runtime 的标准 PATH。
 grep -Fq 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH:-}"' "$root/lmcache-unittest-pull-image.sh"
 
@@ -154,24 +169,24 @@ if env -u LMCACHE_UNITTEST_RUN_DIR PATH="$tmp/bin:$PATH" FAKE_LOG="$log" \
 fi
 grep -Fq 'run pull stage first' "$tmp/rebuild-missing.out"
 
-# 生产脚本补齐 PATH 后会优先解析宿主机的 sudo；以导出的 Bash 函数模拟
-# sudo ctr，使测试仍只记录临时 ctr 桩，不接触真实 containerd。
-sudo() {
-  if [[ "${1:-}" == ctr && -n "${FAKE_CTR:-}" ]]; then
-    shift
+# 生产脚本补齐 PATH 后仍可继承导出的 Bash 函数；以此模拟目标节点 ctr，
+# 使测试不接触真实 containerd。
+ctr() {
+  if [[ -n "${FAKE_CTR:-}" ]]; then
     "$FAKE_CTR" "$@"
     return
   fi
-  command sudo "$@"
+  command ctr "$@"
 }
-export -f sudo
+export -f ctr
 
 targets='[{"ip":"192.0.2.78","user":"root","pass":"target-secret"},{"ip":"192.0.2.79","user":"root","pass":"must-not-be-used"}]'
 execution_run_dir="$tmp/LMCache仓-单元测试-20260915_093213"
 pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" RUN_DIR="$execution_run_dir" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
-  AK='test-ak' PROJECT='test-project' REGISTRY='swr.example.test' LOGIN_KEY='test-login-key' \
+  IMAGE_PULL_TOKEN='test-image-pull-token' \
   bash "$root/lmcache-unittest-pull-image.sh")"
-grep -Fq 'ctr -n k8s.io image pull --user test-project@test-ak:test-login-key lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
+grep -Fq 'ctr authenticated image pull' "$log"
+if grep -Fq 'test-image-pull-token' "$log"; then exit 1; fi
 first_nerdctl_path="$(awk -F= '/^NERDCTL_PATH=/{ print substr($0, index($0, "=") + 1); exit }' "$log")"
 [[ "$first_nerdctl_path" == /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:* ]]
 [[ ! -e "$tmp/default/state.env" ]]
@@ -190,7 +205,7 @@ pull_target_port="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_PORT" { print substr
 pull_target_user="$(awk -F= '$1 == "LMCACHE_UNITTEST_TARGET_USER" { print substr($0, index($0, "=") + 1) }' <<<"$pull_output")"
 [[ "$pull_run_dir" == "$tmp/default" ]]
 [[ "$execution_run_dir_out" == "$execution_run_dir" ]]
-[[ "$pull_image" == 'lmcache-vllm-openai-0.5.4-unitest:latest' ]]
+[[ "$pull_image" == 'swr.cn-southwest-2.myhuaweicloud.com/serverlessai/lmcache-vllm-openai-0.5.4-unitest:v0.0.1_x86_64' ]]
 [[ "$pull_isolate_blocks_first" == 1 ]]
 [[ "$pull_container" == 'lmcache-unittest-20260915_093213' ]]
 [[ "$pull_http_proxy" == 'http://192.168.10.6:3128' ]]
@@ -260,7 +275,7 @@ grep -Fq -- '--net=host --gpus all --cap-add SYS_NICE -v /dev/shm:/dev/shm' "$lo
 # token 只走 stdin，因而不能出现在 nerdctl 参数记录中。
 grep -Fq -- 'git -c "http.extraHeader=Authorization: Basic $git_auth_b64" clone' "$log"
 grep -Fq -- 'http_proxy=http://192.168.10.6:3128' "$log"
-grep -Fq -- 'image rm lmcache-vllm-openai-0.5.4-unitest:latest' "$log"
+grep -Fq -- 'image rm swr.cn-southwest-2.myhuaweicloud.com/serverlessai/lmcache-vllm-openai-0.5.4-unitest:v0.0.1_x86_64' "$log"
 if grep -Fq 'git https://gitcode.com/TokensService/LMCache.git' "$log"; then exit 1; fi
 if grep -Fq 'secret-token' "$log"; then exit 1; fi
 grep -Fq -- 'BUILD_WITH_CUDA=1' "$log"
@@ -291,7 +306,7 @@ grep -Fq '[lmcache-debug] pytest xpassed tests: tests/fake_xpass.py::test_xpass'
 
 cpu_pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" \
   RUN_DIR="$tmp/cpu-execution" LMCACHE_UNITTEST_RUN_DIR="$tmp/cpu" LMCACHE_UNITTEST_CONTAINER='lmcache-unittest-cpu-execution' LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_CPU_ONLY=1 \
-  AK='test-ak' PROJECT='test-project' LOGIN_KEY='test-login-key' \
+  IMAGE_PULL_TOKEN='test-image-pull-token' \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'LMCACHE_UNITTEST_CPU_ONLY=1' <<<"$cpu_pull_output"
 grep -Fq '[lmcache-debug] execution mode: cpu-only; GPU devices are not attached' <<<"$cpu_pull_output"
@@ -301,7 +316,7 @@ cpu_run_line="$(grep 'lmcache-unittest-cpu-execution' "$log" | grep ' run ' | ta
 selected_gpu_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" \
   RUN_DIR="$tmp/selected-gpu-execution" LMCACHE_UNITTEST_RUN_DIR="$tmp/selected-gpu-target" \
   LMCACHE_UNITTEST_CONTAINER='lmcache-unittest-selected-gpu-execution' LMCACHE_UNITTEST_REMOVE_IMAGE=0 LMCACHE_UNITTEST_GPU_DEVICES='0,1' \
-  AK='test-ak' PROJECT='test-project' LOGIN_KEY='test-login-key' \
+  IMAGE_PULL_TOKEN='test-image-pull-token' \
   bash "$root/lmcache-unittest-pull-image.sh")"
 grep -Fq 'LMCACHE_UNITTEST_GPU_DEVICES=0,1' <<<"$selected_gpu_output"
 grep -Fq '[lmcache-debug] execution mode: gpu; GPU devices: 0,1' <<<"$selected_gpu_output"

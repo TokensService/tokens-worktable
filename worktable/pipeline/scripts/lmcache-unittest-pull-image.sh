@@ -11,14 +11,17 @@ source "$SCRIPT_DIR/lmcache-unittest-remote.sh"
 # 是目标节点目录。显式声明也让工作台能够把这些运行变量注入脚本。
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 TARGET_IP="${TARGET_IP:-}"
-SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
+SSH_PASSWORD="${SSH_PASSWORD:-}"
+[[ -n "$SSH_PASSWORD" ]] || SSH_PASSWORD="${TARGET_PASSWORD:-}"
 TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
 # RUN_DIR 属于执行机：脚本三将测试日志回传到这里。目标节点仍使用独立的
 # LMCACHE_UNITTEST_RUN_DIR，避免混淆两台机器上的同名路径。
 RUN_DIR="${RUN_DIR:-/tmp/LMCache仓-单元测试-$(date +%Y%m%d_%H%M%S)}"
-LMCACHE_UNITTEST_RUN_DIR="${LMCACHE_UNITTEST_RUN_DIR:-${TARGET_RUN_DIR:-/tmp/lmcache-unittest/$(date +%Y%m%d_%H%M%S)}}"
-LMCACHE_UNITTEST_IMAGE="${LMCACHE_UNITTEST_IMAGE:-lmcache-vllm-openai-0.5.4-unitest:latest}"
+LMCACHE_UNITTEST_RUN_DIR="${LMCACHE_UNITTEST_RUN_DIR:-}"
+[[ -n "$LMCACHE_UNITTEST_RUN_DIR" ]] || LMCACHE_UNITTEST_RUN_DIR="$TARGET_RUN_DIR"
+[[ -n "$LMCACHE_UNITTEST_RUN_DIR" ]] || LMCACHE_UNITTEST_RUN_DIR="/tmp/lmcache-unittest/$(date +%Y%m%d_%H%M%S)"
+LMCACHE_UNITTEST_IMAGE="${LMCACHE_UNITTEST_IMAGE:-swr.cn-southwest-2.myhuaweicloud.com/serverlessai/lmcache-vllm-openai-0.5.4-unitest:v0.0.1_x86_64}"
 LMCACHE_UNITTEST_CAP_ADD="${LMCACHE_UNITTEST_CAP_ADD:-SYS_NICE}"
 LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST="${LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST:-1}"
 LMCACHE_UNITTEST_LOG_DIR="${LMCACHE_UNITTEST_LOG_DIR:-$LMCACHE_UNITTEST_RUN_DIR/logs}"
@@ -32,9 +35,8 @@ LMCACHE_UNITTEST_CPU_ONLY="${LMCACHE_UNITTEST_CPU_ONLY:-0}"
 # GPU 模式下可指定 0,1 这类宿主机 GPU 编号；all 保持当前默认行为。
 LMCACHE_UNITTEST_GPU_DEVICES="${LMCACHE_UNITTEST_GPU_DEVICES:-all}"
 ns="${LMCACHE_NERDCTL_NAMESPACE:-k8s.io}"
-AK="${AK:-}"
-PROJECT="${PROJECT:-}"
-LOGIN_KEY="${LOGIN_KEY:-}"
+# 私有镜像仓库认证 token；仅在目标节点本地缺镜像、需要拉取时校验。
+IMAGE_PULL_TOKEN="${IMAGE_PULL_TOKEN:-}"
 
 [[ "$LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_ISOLATE_BLOCKS_FIRST must be 0 or 1' >&2; exit 2; }
 [[ "$LMCACHE_UNITTEST_REMOVE_IMAGE" =~ ^[01]$ ]] || { echo 'LMCACHE_UNITTEST_REMOVE_IMAGE must be 0 or 1' >&2; exit 2; }
@@ -60,9 +62,7 @@ image=$(printf '%q' "$LMCACHE_UNITTEST_IMAGE")
 container=$(printf '%q' "$LMCACHE_UNITTEST_CONTAINER")
 cap_add=$(printf '%q' "$LMCACHE_UNITTEST_CAP_ADD")
 namespace=$(printf '%q' "$ns")
-ak=$(printf '%q' "$AK")
-project=$(printf '%q' "$PROJECT")
-login_key=$(printf '%q' "$LOGIN_KEY")
+image_pull_token=$(printf '%q' "$IMAGE_PULL_TOKEN")
 cpu_only=$(printf '%q' "$LMCACHE_UNITTEST_CPU_ONLY")
 gpu_devices=$(printf '%q' "$LMCACHE_UNITTEST_GPU_DEVICES")
 command -v nerdctl >/dev/null || { echo 'nerdctl is required on target host' >&2; exit 2; }
@@ -72,7 +72,8 @@ if nerdctl --namespace "\$namespace" image inspect "\$image" >/dev/null 2>&1; th
 else
   echo '[lmcache-debug] image cache: miss; pulling image'
   command -v ctr >/dev/null || { echo 'ctr is required on target host' >&2; exit 2; }
-  sudo ctr -n "\$namespace" image pull --user "\${project}@\${ak}:\${login_key}" "\$image"
+  [[ -n "\$image_pull_token" ]] || { echo 'IMAGE_PULL_TOKEN is required when pulling an uncached image' >&2; exit 2; }
+  ctr -n "\$namespace" images pull --user "cn-southwest-2@\${image_pull_token}" "\$image"
   echo '[lmcache-debug] image pull: completed'
 fi
 echo "[lmcache-debug] container create: \$container"

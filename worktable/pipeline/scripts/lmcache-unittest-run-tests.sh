@@ -9,7 +9,8 @@ source "$SCRIPT_DIR/lmcache-unittest-remote.sh"
 # 与第一阶段相同的目标连接参数；容器和日志目录始终属于目标节点。
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 TARGET_IP="${TARGET_IP:-}"
-SSH_PASSWORD="${SSH_PASSWORD:-${TARGET_PASSWORD:-}}"
+SSH_PASSWORD="${SSH_PASSWORD:-}"
+[[ -n "$SSH_PASSWORD" ]] || SSH_PASSWORD="${TARGET_PASSWORD:-}"
 TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
 require_inherited() {
