@@ -21,7 +21,7 @@ if sed -n '/write_pipeline_env()/,/^}/p; /write_target_pipeline_env()/,/^}/p' "$
   exit 1
 fi
 
-for variable in IMAGE_NAME DEPLOY_IMAGE ARCH_NAME PIPELINE_NAME RUN_DIR RENDER_DIR CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST NODE_LABELS_FILE NAMESPACE RELEASE_NAME PIPELINE_ENV_FILE MOCK_DB XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD; do
+for variable in IMAGE_NAME DEPLOY_IMAGE ARCH_NAME PIPELINE_NAME RUN_DIR RENDER_DIR CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST NODE_LABELS_FILE NAMESPACE RELEASE_NAME PIPELINE_ENV_FILE MOCK_DB XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD LMCACHE_L2_ENABLED LMCACHE_L2_HOST_PATH LMCACHE_L2_MOUNT_PATH LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS LMCACHE_L2_USE_ODIRECT; do
   grep -qw "$variable" "$script"
 done
 
@@ -32,9 +32,18 @@ echo "pull-render environment-file tests passed"
 local_writer="$(sed -n '/write_pipeline_env()/,/^}/p' "$script")"
 target_writer="$(sed -n '/write_target_pipeline_env()/,/^}/p' "$script")"
 for variable in CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE; do
-  grep -qw "$variable" <<<"$local_writer"
+  grep -qw "$variable" <<<"$local_writer" || {
+    echo "$variable missing from local pipeline environment" >&2
+    exit 1
+  }
 done
-for variable in TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE MOCK_DB XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD; do
-  grep -qw "$variable" <<<"$local_writer"
-  grep -qw "$variable" <<<"$target_writer"
+for variable in TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE MOCK_DB XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD LMCACHE_L2_ENABLED LMCACHE_L2_HOST_PATH LMCACHE_L2_MOUNT_PATH LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS LMCACHE_L2_USE_ODIRECT; do
+  grep -qw "$variable" <<<"$local_writer" || {
+    echo "$variable missing from local pipeline environment" >&2
+    exit 1
+  }
+  grep -qw "$variable" <<<"$target_writer" || {
+    echo "$variable missing from target pipeline environment" >&2
+    exit 1
+  }
 done
