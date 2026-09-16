@@ -76,6 +76,9 @@ for item in hosts:
     endpoint = item["ip"]
     if endpoint not in mapping:
         continue
+    mapped_ip = mapping[endpoint]
+    if not isinstance(mapped_ip, str) or not mapped_ip:
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     if match:
         host, port = match.groups()
@@ -83,6 +86,11 @@ for item in hosts:
             raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
     else:
         host, port = endpoint, "22"
+    # TARGET_NODE_IP_MAP also contains resolved direct targets.  Registry
+    # credentials and explicit target pre-pulls are only needed for endpoints
+    # translated to a different Kubernetes InternalIP.
+    if mapped_ip == host:
+        continue
     payload = {"endpoint": endpoint, "host": host, "port": port,
                "user": item.get("user") or "root",
                "password": item.get("pass", item.get("password", "")) or ""}
