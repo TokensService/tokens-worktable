@@ -38,6 +38,9 @@ RESIDUAL=1
 clean_namespace old-ns
 DRY_RUN=0
 EMS_NAMESPACE=op-ems
+WHITELIST_NS=''
+read_whitelist
+is_whitelisted xds-kuberay-op || { echo 'xds-kuberay-op 应在默认白名单中' >&2; exit 1; }
 WHITELIST_NS='default'
 read_whitelist
 is_whitelisted op-ems || { echo '默认 EMS 命名空间不应被清理' >&2; exit 1; }
