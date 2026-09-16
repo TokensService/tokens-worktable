@@ -96,7 +96,7 @@ if [[ ! -f "$runtime_env" ]]; then
   echo 'deployment did not persist its runtime environment file' >&2
   exit 1
 fi
-grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1' "$runtime_env"
+grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$runtime_env"
 grep -Fxq 'export SERVICE_API=http://192.168.31.175:31465/xds/v1' "$runtime_env"
 grep -Fxq 'export MODEL_API=http://192.168.31.175:31465/xds/v1/models/test-arch' "$runtime_env"
 
