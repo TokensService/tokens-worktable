@@ -22,6 +22,8 @@ TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
 XDS_URL="${XDS_URL:-}"
+XDS_URL="${XDS_URL%/}"
+XDS_URL="${XDS_URL%/chat/completions}"
 XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
 XDS_API_HOST=""
@@ -268,12 +270,14 @@ else:
 persist_runtime_environment() {
   local variable
   SERVICE_API="${XDS_URL%/}"
+  XDS_CHAT_COMPLETIONS_URL="${SERVICE_API}/chat/completions"
   MODEL_API="${SERVICE_API}/models/${MODEL_ENDPOINT}"
   mkdir -p "$(dirname "$PIPELINE_ENV_FILE")"
   {
     printf '# Runtime values resolved by deploy-model.sh.\n'
+    printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
     for variable in \
-      XDS_URL XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
+      XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
       MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID; do
       printf 'export %s=%q\n' "$variable" "${!variable}"
     done
@@ -694,13 +698,13 @@ printf 'ARCH_NAME=%s\n' "$ARCH_NAME"
 printf 'NAMESPACE=%s\n' "$NAMESPACE"
 printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
 printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
-printf 'XDS_URL=%s\n' "$XDS_URL"
+printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
 printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
-printf 'SERVICE_API=%s\n' "${XDS_URL%/}"
+printf 'SERVICE_API=%s\n' "$SERVICE_API"
 printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
 printf 'MODEL=%s\n' "$MODEL_NAME"
 printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
 printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
-printf 'MODEL_API=%s/models/%s\n' "${XDS_URL%/}" "$MODEL_ENDPOINT"
+printf 'MODEL_API=%s\n' "$MODEL_API"
 printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
 printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"

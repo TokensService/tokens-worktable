@@ -102,6 +102,7 @@ grep -Fq 'http://192.168.0.78:31375/xds/v1/models/' "$work_dir/api-requests.log"
 
 grep -Fxq 'SERVICE_NAME=ray-svc' "$work_dir/output"
 grep -Fxq 'SERVICE_API=http://192.168.0.78:31375/xds/v1' "$work_dir/output"
+grep -Fxq 'XDS_URL=http://192.168.0.78:31375/xds/v1/chat/completions' "$work_dir/output"
 grep -Fxq 'MODEL=test-arch' "$work_dir/output"
 grep -Fxq 'MODEL_ENDPOINT=test-arch' "$work_dir/output"
 grep -Fxq 'MODEL_VERSION=v1' "$work_dir/output"
