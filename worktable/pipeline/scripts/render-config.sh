@@ -12,8 +12,12 @@ normalize_kubernetes_name() {
   printf '%s' "$value"
 }
 
-# 架构名优先使用流水线 arch_name，其次 DEPLOY_STRATEGY；兼容旧 ARCH_NAME。
-ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"
+# 架构名优先使用流水线 arch_name、DEPLOY_STRATEGY 和显式 ARCH_NAME；arch 作为运行时兼容别名。
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-$RUN_DIR/template/xds-cluster}"
