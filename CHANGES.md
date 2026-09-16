@@ -1,5 +1,15 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 服务端运行接口贯通「不选择任何节点」语义（`src/index.ts`）：`POST /api/worktable/pipeline/run/<id>` 此前
+  对显式空 `environmentIds` 判 400（`environmentIds must not be empty`）、默认环境为空时回退首个环境，
+  与页面「默认不选择任何节点」的新语义矛盾——运行框全不选时走服务端权威队列会静默改投默认/首个节点。
+  现显式空 `environmentIds` 或默认环境保存为空列表即按无目标节点运行（执行池本就按纯 FIFO 处理无目标
+  IP 的计划，`TARGET_*` 注入为空值）；首项兼容回退仅限从未保存过默认环境字段的旧流水线。页面
+  `submitServerRun` 相应改为始终显式携带 `environmentIds`（空选择即空数组，不再省略回退默认环境），
+  API 调用说明弹窗的空环境请求体同步展示显式空数组并更新警告文案，README 接口契约同步更新。
+  `tests/pipeline-run-api.test.mjs` 移除旧 400 用例、新增显式空/默认空两例；`test_pipeline_api_ui.js`、
+  `test_pipeline_defaults.js` 同步扩充。
+
 - 流水线运行与编辑器「默认环境」支持不选择任何节点，且默认即不选择（`projects/pipeline/pipeline.html`）：
   主控「选择 IP」多选此前空选择时自动回写首个节点、勾选变更强制「至少保留一个」，无法表达「无目标节点
   运行」；现默认不选择任何节点（本地存储的空数组选择按显式空保留），允许全部取消勾选，按钮无选择时
@@ -8,8 +18,8 @@
   `TARGET_HOSTS` 为空值/空数组。流水线编辑器「默认环境」同样默认不选择任何节点；`pipelineDefaultRunOptions`
   区分「编辑器显式保存的空环境列表」（= 不选择任何节点，不再改投首项）与「旧流水线从未保存过该字段」
   （维持回退首项兼容），失效引用仍由 `pipelineDefaultRunIssue` 阻断。定时页环境多选跟随主控，均未选择
-  时同样按无目标节点处理。服务端运行接口契约不变（显式空 `environmentIds` 仍 400、页面提交省略该字段时
-  回退流水线默认配置）。新增 `projects/pipeline/tests/test_env_selection_default_none.js`。
+  时同样按无目标节点处理。服务端权威队列路径的无目标节点语义由后续变更贯通（见上一条）。新增
+  `projects/pipeline/tests/test_env_selection_default_none.js`。
 
 - 流水线运行导入弹层增加第二步「按运行窗口挑选普罗标签」（`projects/diag_perf/index.html`）：运行记录的
   `prom.modelName`/`xdsNamespace` 是占位模板（`${MODEL_PATH}`/`${DEPLOY_STRATEGY}-${BY}`）在采集时点的解析

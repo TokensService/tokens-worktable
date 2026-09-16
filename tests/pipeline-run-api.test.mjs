@@ -376,12 +376,29 @@ test('旧流水线没有默认值时回退首个环境、首个代码仓和安�
   assert.equal(run.by, 'api')
 })
 
+test('支持不选择任何节点运行：显式空 environmentIds 或默认环境保存为空列表即无目标节点', async () => {
+  // 显式空 environmentIds = 本次运行不选择任何节点（不再 400）
+  let f = loadRunRoute(stored)
+  let res = await call(f.handler, 'pipe-release', { environmentIds: [] })
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].envs), [])
+  assert.equal(f.executions[0].env, '')
+
+  // 省略 environmentIds 且默认环境显式保存为空列表 = 不选择任何节点，不再改投首项
+  const emptyDefaults = structuredClone(stored)
+  emptyDefaults.config.pipelines[0].defaults.environmentIds = []
+  f = loadRunRoute(emptyDefaults)
+  res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].envs), [])
+  assert.equal(f.executions[0].env, '')
+})
+
 test('API 拒绝未知流水线、环境、代码仓、非法预设和非 POST 方法', async () => {
   const cases = [
     ['missing', {}, 404, 'pipeline not found'],
     ['pipe-release', { environmentIds: ['missing-env'] }, 400, 'environment not found'],
     ['pipe-release', { repositoryId: 'missing-repo' }, 400, 'repository not found'],
-    ['pipe-release', { environmentIds: [] }, 400, 'environmentIds must not be empty'],
     ['pipe-release', { environmentIds: ['env-prod', 7] }, 400, 'invalid environmentIds'],
     ['pipe-release', { repository: [] }, 400, 'invalid repository'],
     ['pipe-release', { repository: { pass: 7 } }, 400, 'invalid repository.pass'],

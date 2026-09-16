@@ -1176,15 +1176,17 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
     return { status: 409, error: 'invalid configured environmentIds' }
   }
   const requestedEnvironmentIds = explicitEnvironments ? stringList(input.environmentIds) : defaults.environmentIds
-  if (explicitEnvironments && !requestedEnvironmentIds.length) return { status: 400, error: 'environmentIds must not be empty' }
   let selectedEnvironments: any[] = []
   if (requestedEnvironmentIds.length) {
     selectedEnvironments = requestedEnvironmentIds.map((id) => environments.find((item: any) => item.id === id))
     if (selectedEnvironments.some((item) => !item)) {
       return { status: explicitEnvironments ? 400 : 409, error: explicitEnvironments ? 'environment not found' : 'configured environment not found' }
     }
-  } else if (environments.length) selectedEnvironments = [environments[0]]   // 仅旧流水线未配置默认环境时兼容首项
-  if (!selectedEnvironments.length) return { status: 400, error: 'environment not found' }
+  } else if (!explicitEnvironments && !own(rawDefaults, 'environmentIds') && environments.length) {
+    selectedEnvironments = [environments[0]]   // 仅旧流水线从未保存过默认环境字段时兼容首项
+  }
+  /* 允许不选择任何节点：显式空 environmentIds 或默认环境保存为空列表即无目标节点运行
+     （无节点互斥约束，执行池按纯 FIFO，注入的 TARGET_ 系列变量为空值）。 */
 
   const repositories = Array.isArray(config.repositories) ? config.repositories.filter((item: any) => item && typeof item.id === 'string') : []
   const explicitRepository = own(input, 'repositoryId')

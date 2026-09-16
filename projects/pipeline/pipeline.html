@@ -1192,12 +1192,13 @@ function pipelineApiSpec(pl,origin){
   const strategy=curStrategy();
   const by=currentUsername||'api';   // 执行人留空（未取到登录用户）按服务端缺省 api
   const presets=selectedPresetKeys();
-  /* 显式空数组/空串会被服务端判 400（environmentIds must not be empty / invalid repositoryId）：
-     当前无有效选择时省略对应字段（调用时回退流水线默认配置）并给出警告，不生成必败的请求体 */
+  /* environmentIds 显式空数组 = 不选择任何节点（无目标节点运行），服务端按空数组执行；
+     代码仓显式空串仍会被服务端判 400（invalid repositoryId）：无有效选择时省略该字段
+     （调用时回退流水线默认配置）并给出警告，不生成必败的请求体 */
   const issues=[];
   const body={};
-  if(envIds.length) body.environmentIds=envIds;
-  else issues.push('当前未选中目标环境，已省略 environmentIds（调用时回退流水线默认配置）');
+  body.environmentIds=envIds;   // 与运行框一致：未选中任何节点即显式空数组（无目标节点运行）
+  if(!envIds.length) issues.push('当前未选中目标环境：environmentIds 为空数组，即不选择任何节点（无目标节点运行）');
   if(repoId) body.repositoryId=repoId;
   else issues.push('当前未选中代码仓，已省略 repositoryId（调用时回退流水线默认配置）');
   body.branch=branch;
@@ -3674,7 +3675,8 @@ function startSimRun(pl, c){
   renderQueue();
 }
 /* 全部阶段均支持服务端执行的手动运行只把参数提交给服务端权威执行池。请求体只含配置引用和运行参数；
-   阶段定义、节点/代码仓凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。 */
+   阶段定义、节点/代码仓凭据均由服务端从已保存配置解析。keepalive 保证用户点击后立即关闭/跳转页面时提交仍可送达。
+   未选择任何节点时 environmentIds 为显式空数组（= 不选择任何节点，无目标节点运行），不回退流水线默认环境。 */
 async function submitServerRun(item){
   const body={
     environmentIds:(Array.isArray(item&&item.envs)?item.envs:[]).map(e=>e&&e.id).filter(Boolean),
@@ -3686,7 +3688,6 @@ async function submitServerRun(item){
     by:item&&item.by||'',
     source:'manual',
   };
-  if(!body.environmentIds.length) delete body.environmentIds;
   try{
     const response=await fetch('/api/worktable/pipeline/run/'+encodeURIComponent(item&&item.pipelineId||''),{
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:true,

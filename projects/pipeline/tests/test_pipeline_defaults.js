@@ -135,6 +135,22 @@ test('submitServerRun 用 keepalive 提交脱敏运行参数并立即刷新权�
   assert.equal(pulls,1);
 });
 
+test('submitServerRun 未选择任何节点时上送显式空环境数组，不回退流水线默认环境',async()=>{
+  const requests=[];
+  const ctx={
+    fetch:async(url,options)=>{ requests.push({url,options}); return {ok:true,status:202,json:async()=>({ok:true,runId:'manual-2'})}; },
+    pullRemoteQueue:async()=>{},alert:()=>{},console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('submitServerRun'),ctx);
+  await ctx.submitServerRun({
+    pipelineId:'pipe-b',envs:[],repoId:'repo-b',branch:'release',strategy:'',presets:[],image:'app',by:'operator',stages:[],
+  });
+  const body=JSON.parse(requests[0].options.body);
+  assert.ok('environmentIds' in body,'空选择也必须显式携带 environmentIds（省略=回退流水线默认环境）');
+  assert.deepEqual(body.environmentIds,[],'显式空数组 = 不选择任何节点（无目标节点运行）');
+});
+
 test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',()=>{
   let started=false,alerted='';
   const pipeline={id:'pipe-b',name:'发布',stages:[],defaults:{environmentIds:['removed-env'],repositoryId:'repo-b'}};
