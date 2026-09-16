@@ -96,17 +96,19 @@ release_hugepages() {
 remote_scp() {
     if [[ -n "$SSH_PASSWORD" ]]; then
         have sshpass || die 'SSH_PASSWORD 已设置但未找到 sshpass'
-        SSHPASS="$SSH_PASSWORD" sshpass -e scp "$@"
+        SSHPASS="$SSH_PASSWORD" sshpass -e scp \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     else
-        scp "$@"
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     fi
 }
 remote_ssh() {
     if [[ -n "$SSH_PASSWORD" ]]; then
         have sshpass || die 'SSH_PASSWORD 已设置但未找到 sshpass'
-        SSHPASS="$SSH_PASSWORD" sshpass -e ssh "$@"
+        SSHPASS="$SSH_PASSWORD" sshpass -e ssh \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     else
-        ssh "$@"
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     fi
 }
 target_ips() {
