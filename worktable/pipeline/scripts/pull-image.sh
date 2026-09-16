@@ -51,7 +51,7 @@ run_target() {
 }
 
 pull_target_images() {
-  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text
+  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status
   local -a mapped_targets
 
   mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
@@ -92,11 +92,6 @@ PY
   [[ -n "$mapped_targets_text" ]] || return 0
   mapfile -t mapped_targets <<<"$mapped_targets_text"
 
-  if [[ -z "$IMAGE_PULL_AK" || -z "$IMAGE_PULL_LOGIN_KEY" ]]; then
-    echo "AK and LOGIN_KEY are required for mapped target image pulls" >&2
-    return 2
-  fi
-
   for target_line in "${mapped_targets[@]}"; do
     target_json="$(printf '%s' "$target_line" | base64 -d)"
     read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
@@ -107,11 +102,23 @@ print(item["endpoint"], item["user"], item["host"], item["port"], item["password
 PY
     )
     target="${user}@${host}"
-    # Always perform an authenticated pull on mapped nodes. containerd reuses
-    # existing layers, so a separate image-cache probe can only hide auth or
-    # manifest failures that should stop deployment.
-    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
+    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images ls -q | grep -Fqx -- $(remote_quote "$image")"
     echo "[pull] target $endpoint: ensure image $image"
+    if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+      echo "[pull] target image already exists: $image"
+      continue
+    else
+      image_check_status=$?
+    fi
+    if [[ "$image_check_status" -ne 1 ]]; then
+      echo "[pull] target $endpoint: image-cache check failed (exit $image_check_status)" >&2
+      return "$image_check_status"
+    fi
+    if [[ -z "$IMAGE_PULL_AK" || -z "$IMAGE_PULL_LOGIN_KEY" ]]; then
+      echo "AK and LOGIN_KEY are required when the mapped target image is absent" >&2
+      return 2
+    fi
+    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
     run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
   done
 }

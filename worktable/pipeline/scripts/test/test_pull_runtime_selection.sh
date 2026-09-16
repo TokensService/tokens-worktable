@@ -31,9 +31,7 @@ grep -Fq 'IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-
 grep -Fq 'IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"' "$script"
 grep -Fq 'sudo ctr -n k8s.io images pull --user' "$script"
 grep -Fq 'AK and LOGIN_KEY are required' "$script"
-if grep -Fq 'images ls -q' "$script"; then
-  echo 'mapped targets must try authenticated ctr pull before any image-cache probe' >&2
-  exit 1
-fi
+grep -Fq 'sudo ctr -n k8s.io images ls -q' "$script"
+grep -Fq 'target image already exists' "$script"
 
 echo "pull runtime-selection tests passed"
