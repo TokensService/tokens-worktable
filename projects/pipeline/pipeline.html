@@ -3695,6 +3695,12 @@ async function submitServerRun(item){
     let result={}; try{ result=await response.json(); }catch(e){}
     if(!response.ok) throw new Error((result&&result.error)||('HTTP '+response.status));
     await pullRemoteQueue();
+    /* 提交成功即自动跟随本次运行：runId 在服务端权威快照（排队/在跑）中可见后，
+       把编排区/阶段详情切过去；快照未刷新前跨轮询等待（见 followPendingServerRun） */
+    if(result&&result.runId&&typeof followPendingServerRun==='function'&&typeof SERVER_RUN_FOCUS_MS==='number'){
+      pendingServerRunFocus={runId:String(result.runId),until:Date.now()+SERVER_RUN_FOCUS_MS};
+      followPendingServerRun();
+    }
     return result;
   }catch(error){
     alert('提交服务端运行失败：'+String(error&&error.message||error));
@@ -3729,10 +3735,17 @@ function runPipeline(opts){
   if(Array.isArray(item.stages) && item.stages.some(s=>s && !s.preset && !s.sched)){
     const pendingLeaseCount=(typeof pendingLeaseStarts==='undefined')?0:pendingLeaseStarts.length;
     const slotAvailable=(typeof MAX_ACTIVE_RUNS==='undefined'||typeof activeRuns==='undefined'||activeRuns.length+pendingLeaseCount<MAX_ACTIVE_RUNS);
-    if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))) return startRun(item);
+    if(slotAvailable && !conflictsActive(item) && !queue.some(q=>machineConflict(q,item))){
+      const started=startRun(item);
+      /* 节点租约在途（队列区「申请节点中」）也立即把编排区/阶段详情切到该次任务的排队预览；
+         租约拿到后 startSimRun 接过焦点。无租约环节同步启动时焦点已是真实运行，不再覆盖回预览。 */
+      if(typeof isPendingQueueItem==='function'&&typeof focusQueueItem==='function'&&isPendingQueueItem(item)) focusQueueItem(item.id);
+      return started;
+    }
     if(queue.length+pendingLeaseCount>=QUEUE_CAP) return false;
     queue.push(item);
     renderQueue();
+    if(typeof focusQueueItem==='function') focusQueueItem(item.id);   // 手动运行入队即把编排区/阶段详情切到该次排队（只读预览）；启动后 startSimRun 跟随成运行视图
     return 'queued';
   }
   submitServerRun(item);
@@ -3875,15 +3888,34 @@ function focusRemoteQueueItem(clientId,itemId,kind){
   focusRun(remoteQueuePreviewRc(found.client,found.item,kind));
   if(typeof pullRemoteQueueLog==='function') pullRemoteQueueLog();
 }
+
+/* 手动提交服务端运行后的自动跟随：提交响应的 runId 出现在服务端权威快照（排队或在跑）时，把编排区/
+   阶段详情切到该次运行（只读预览；排队→在跑由 refreshRemoteQueuePreviewRc 平滑跟随）。快照每秒轮询
+   才刷新，runId 未出现前跨轮询等待；超时自动放弃，不抢占用户后续手动切换的视图。 */
+const SERVER_RUN_FOCUS_MS=15000;
+let pendingServerRunFocus=null;   // {runId, until}
+function focusServerRunById(runId){
+  const id=String(runId||''); if(!id) return false;
+  if(remoteQueueItem('server',id,'running')){ focusRemoteQueueItem('server',id,'running'); return true; }
+  if(remoteQueueItem('server',id,'queued')){ focusRemoteQueueItem('server',id,'queued'); return true; }
+  return false;
+}
+function followPendingServerRun(){
+  const pend=pendingServerRunFocus; if(!pend) return;
+  if(Date.now()>pend.until){ pendingServerRunFocus=null; return; }
+  if(focusServerRunById(pend.runId)) pendingServerRunFocus=null;
+}
 function refreshRemoteQueuePreviewRc(previous){
   if(!previous||previous.remotePreview!==true) return previous||null;
   let kind=previous.remoteKind;
   let found=remoteQueueItem(previous.remoteClientId,previous.remoteItemId,kind);
-  /* 来源页会给真正运行分配新的 r... id；用入队 id 关联 q... → r...，避免正在查看的排队详情
-     在任务启动的那次轮询里突然消失。 */
+  /* 服务端权威条目排队→在跑沿用同一 runId，按同 id 直接续看；旧浏览器在场条目启动后另分配 r... id，
+     用入队 id 关联 q... → r...，避免正在查看的排队详情在任务启动的那次轮询里突然消失。 */
   if(!found&&kind==='queued'){
     const client=remoteQueueClients.find(c=>String(c&&c.id||'')===String(previous.remoteClientId));
-    const item=client&&remoteRunsOf(client).find(entry=>String(entry&&entry.originQueueId||'')===String(previous.remoteItemId)&&remoteQueueDetailAvailable(entry));
+    const runs=client?remoteRunsOf(client):[];
+    const item=runs.find(entry=>String(entry&&entry.id||'')===String(previous.remoteItemId)&&remoteQueueDetailAvailable(entry))
+      ||runs.find(entry=>String(entry&&entry.originQueueId||'')===String(previous.remoteItemId)&&remoteQueueDetailAvailable(entry));
     if(item){ found={client,item}; kind='running'; }
   }
   if(!found) return null;
@@ -4040,6 +4072,7 @@ async function pullRemoteQueue(){
       const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
       remoteQueueClients=(serverActive?[server]:[]).concat(clients);
       applyRemoteQueuePreviewRefresh();
+      if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点
       await pullRemoteQueueLog();
     }
   }catch(e){}
