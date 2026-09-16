@@ -84,7 +84,7 @@ test('显式运行参数可以逐项覆盖流水线默认值，包括空策略�
 
 test('runPipeline 把列表运行的默认参数提交到服务端，不启动浏览器执行器',()=>{
   let submitted=null;
-  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署'}],defaults:{
+  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署',sched:{}}],defaults:{
     environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],
   }};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
@@ -195,6 +195,27 @@ test('页面已有本地旧运行时，新运行仍交给服务端统一调度',
   assert.equal(ctx.runPipeline({pipelineId:'pipe-b',presets:[]}),'submitted');
   assert.equal(submitted.pipelineId,'pipe-b');
   assert.equal(ctx.queue.length,0);
+});
+
+test('本地运行的租约申请在途时预留队列容量，避免租约拒绝回队后超过上限',()=>{
+  const pipeline={id:'pipe-local',name:'本地发布',stages:[{id:'build',name:'构建镜像',kind:'http',sched:null}]};
+  const env={id:'env-new',ip:'10.0.0.99'};
+  const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
+  const ctx=loadDefaults({Date,Math,environments:[env],repositories:[{id:'repo-a',name:'仓库 A',url:'a.git'}]});
+  Object.assign(ctx,{
+    DEFAULT_IMAGE:'app',QUEUE_CAP:16,MAX_ACTIVE_RUNS:4,
+    queue:Array.from({length:15},(_,i)=>({id:'q'+i,envs:[{ip:'10.0.1.'+i}]})),
+    activeRuns:Array.from({length:3},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.2.'+i}]})),
+    pendingLeaseStarts:[{envs:[{ip:'10.0.3.1'}],queueItem:{id:'pending'}}],
+    $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},
+    startRun:()=>{throw new Error('浏览器执行槽位已满，不应直接启动');},
+    submitServerRun:()=>{throw new Error('本地阶段不得提交服务端');},
+  });
+  vm.runInContext(extractFunction('runPipeline'),ctx);
+  assert.equal(ctx.runPipeline({pipelineId:pipeline.id,presets:[]}),false);
+  assert.equal(ctx.queue.length,15,'在途任务已占用第 16 个本地队列名额');
 });
 
 test('队列排空在达到 4 个全局槽位后停止，释放槽位后继续启动',()=>{

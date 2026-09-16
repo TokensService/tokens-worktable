@@ -1,5 +1,65 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线运行导入弹层增加第二步「按运行窗口挑选普罗标签」（`projects/diag_perf/index.html`）：运行记录的
+  `prom.modelName`/`xdsNamespace` 是占位模板（`${MODEL_PATH}`/`${DEPLOY_STRATEGY}-${BY}`）在采集时点的解析
+  快照，解析不出时只剩空串或 `-<操作人>` 残段，直接拿来当标签过滤查不到数据。现点选运行后进入第二步：
+  按该运行起止的绝对时间窗口查询 Prometheus 当时实际存在的序列标签（`/api/v1/series?match[]=
+  vllm:num_requests_running{exported_job=~".*vllmp.*"}&start=&end=`，与画板标签候选同口径），model_name 与
+  xds_namespace 各给下拉挑选——运行记录值优先保留并默认选中，窗口内仅一个候选时自动选中，也可选「不过滤」；
+  查询失败保留下拉中的运行记录值，导入后仍可在数据集卡片上调整。「应用导入」按所选标签 + 运行窗口 +
+  归档日志目录落数据集，「返回重选运行」可回第一步。新增纯函数 `seriesLabelValues`/`importLabelChoices`
+  及配套测试（`projects/diag_perf/index.test.cjs`）。
+
+- 性能诊断页支持从流水线运行历史一键导入数据集（`projects/diag_perf/index.html`）：数据集 A/B 卡片各新增
+  「从流水线运行导入」按钮，弹层经 `/api/worktable/pipeline/history` 拉取运行列表（旧版插件无此路由时回退
+  全量 `/api/worktable/pipeline`），支持按编号/tag/流水线/环境/提交/操作人过滤、显示状态徽章与普罗采集标记，
+  点选即把该运行的普罗标签（`prom.modelName`/`xdsNamespace`，仅非空覆盖）、运行起止转绝对时间窗口
+  （`startTs`/`ts`，旧记录无 `startTs` 时按 `dur` 回推，再无耗时回退当前相对窗口）与归档目录（`archive`，
+  内含 `run-<tag>.log` 汇总日志，作为日志证据目录）填充进数据集并立即生效；对比模式下 A 导入基线运行、
+  B 导入劣化运行即构成 A/B 对比，无需手工抄标签与起止时间。新增纯函数 `parseRunDur`/`runImportWindow`/
+  `runImportPatch`/`runMatchesFilter` 及配套测试（`projects/diag_perf/index.test.cjs`）。
+
+- 点击「运行」后流水线编排与阶段详情自动跳到刚提交的那次任务（`projects/pipeline/pipeline.html`）：此前只有
+  本地立即开跑会切编排区焦点，本地排队、节点租约在途（「申请节点中」）和提交服务端权威队列的任务都要用户
+  自己到运行队列里点选才能看到。现三个运行入口（主控「运行流水线」、任务行 ▶、历史重跑）统一在提交后立即
+  聚焦：本地入队/租约在途经 `focusQueueItem` 展示该次排队的只读编排与参数快照（启动后 `startSimRun` 照旧
+  接过焦点，无租约环节同步启动时不覆盖回预览）；服务端提交按响应 `runId` 在每秒轮询的权威快照中等待出现
+  （`pendingServerRunFocus`，15s 超时自动放弃，不抢占用户后续手动切换的视图），出现即经
+  `focusRemoteQueueItem` 切到只读预览。配套修复服务端权威条目「排队→在跑」沿用同一 runId 时正在查看的
+  排队预览被清空回空闲编排的问题：`refreshRemoteQueuePreviewRc` 先按同 id 续看，再按 `originQueueId`
+  兼容旧浏览器在场条目的 q…→r… 换 id。新增 `projects/pipeline/tests/test_run_autofocus.js`（本地排队/
+  满额拒绝/租约在途/同步启动、服务端立即可见/延迟可见/超时放弃/提交失败、两类排队→在跑跟随）。
+
+- 恢复混合编排流水线手动运行的「定时分界移交」原设计（`projects/pipeline/pipeline.html`）：编排中同时存在
+  「需本地运行」与「定时」阶段时，需本地运行的前缀在浏览器立即跑完，运行到达首个定时阶段（分界）即把
+  后缀定时阶段整体登记为一条「立即执行一次」的服务端计划（归档文件夹/tag/baseSeq/上游变量快照随计划移交，
+  服务端 15s 轮询到期执行，回显写入同一归档文件夹、任务日志编号连贯，计划出现在「定时」页可查看/取消），
+  并弹窗告知；后缀各阶段在编排区标记为移交态（skipped 渲染），其执行结果由服务端「定时后缀」运行记录承载。
+  登记接口不可达时弹窗告知后缀未执行、分界阶段标 failed（可从失败阶段重试）、运行按失败收尾——后缀不
+  静默丢失，也不改在本地落地执行。此前 `registerStageTimers` 自始没有调用方（移交机制断线，服务端对
+  `pl.archive/pl.tag/baseSeq/vars` 的支持一直在），本地执行分流恢复后混合编排被整次留在浏览器执行；本次
+  把移交接入 `advance` 的定时分界（定时阶段在并行组起始同样移交）。新增
+  `projects/pipeline/tests/test_sched_suffix_handoff.js`（移交计划内容/弹窗/失败收尾/纯本地不触碰计划接口），
+  `test_execution_progress.js` 的混合 sched 用例同步改为断言分界移交。
+- 修复流水线勾选「需本地运行，不支持定时」后，手动运行与历史重跑仍被提交到服务端执行的问题
+  （`projects/pipeline/pipeline.html`）：只要编排中存在 `sched: null` 的普通阶段，整次运行就复用浏览器执行器，
+  使浏览器可达、dsh 服务进程不可达的 Jenkins/HTTP 地址正常触发，并恢复本地脚本、环境清理等运行上下文；
+  同机互斥、4 个浏览器并发槽位、16 条本地队列上限及排队/满额提示继续生效；节点租约申请在途会同时
+  占用并发槽位并预留回队容量，避免异步申请期间超发或拒绝后溢出队列。全部普通阶段均支持定时时，
+  手动运行仍提交服务端权威队列；预设标记不参与分流，服务端 API 与定时计划路径保持不变。扩充
+  `test_queue_item_preview.js`、`test_pipeline_row_run.js`、`test_replay_executor_attribution.js`、
+  `test_pipeline_defaults.js` 与 `test_node_lease.js`，覆盖本地/服务端分流、冲突排队、容量拒绝、租约竞态和
+  三个运行入口的反馈。
+- 修复流水线 HTTP 阶段在浏览器本地执行时构建状态轮询静默死循环（`projects/pipeline/pipeline.html`）：
+  阶段 URL 含 `/job/` 的标准 Jenkins 任务路径在 GET 触发后会轮询构建结果，轮询目标固定为「Jenkins 服务
+  配置」的地址 + 阶段 URL 路径，而轮询循环的 catch 吞掉一切错误且无限重试——服务配置地址不对、本地桥接
+  未启动、跨域被浏览器拦截（CORS）、401/403 等持续性故障会让 `buildNum` 永远拿不到，阶段在默认「无超时」
+  配置下没有任何兜底，永远卡在「已触发请求，等待执行…」，且运行日志里看不到任何错误原因，只能手动「中止」。
+  现按连续失败计数：首次与每 15 次失败在运行日志回显原因与排查指引（检查服务配置地址/凭据/连接模式、
+  目标需允许 CORS），连续 30 次（约 1 分钟）按阶段失败收尾，成功一次即清零；已确认任务存在（拿到
+  nextBuildNumber）时 lastBuild 404 = 首次构建尚未开始，属合法排队等待，不计失败。
+  新增 `projects/pipeline/tests/test_http_stage_poll_failure.js`，覆盖持续失败有界收尾与原因回显、
+  排队中 404 豁免、瞬时故障恢复三个用例。
 - 修复流水线服务端执行 EvalTokens 远程连接时误走系统代理（`src/index.ts`）：手动运行迁移到服务端权威队列后，
   EvalTokens 阶段此前无视设置页的「远程服务器端连接」语义，直接调用启用了 `NODE_USE_ENV_PROXY` 的全局
   `fetch`，内网请求会被送往 HTTP 代理并在约 135 秒后仅报 `fetch failed`。远程模式现与
