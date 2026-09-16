@@ -82,6 +82,19 @@ grep -Fxq '2223|-n k8s.io images ls -q' "$work_dir/ctr.log"
 grep -Fxq '2222|-n k8s.io images ls -q' "$work_dir/ctr.log"
 
 PATH="$work_dir/bin:$PATH" \
+SSH_PORT_LOG="$work_dir/direct-target-ssh.log" \
+CTR_LOG="$work_dir/direct-target-ctr.log" \
+IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
+TARGET_HOSTS='[{"ip":"192.168.0.128","user":"root"}]' \
+TARGET_NODE_IP_MAP='{"192.168.0.128":"192.168.0.128"}' \
+PULL_TARGET_IMAGES_ONLY=1 \
+bash "$script" >/dev/null
+if [[ -s "$work_dir/direct-target-ssh.log" || -s "$work_dir/direct-target-ctr.log" ]]; then
+  echo 'direct non-mapped targets must not require credentials or run a target pre-pull' >&2
+  exit 1
+fi
+
+PATH="$work_dir/bin:$PATH" \
 SSH_PORT_LOG="$work_dir/cached-without-credentials-ssh.log" \
 CTR_LOG="$work_dir/cached-without-credentials-ctr.log" \
 IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
