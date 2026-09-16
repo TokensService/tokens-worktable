@@ -43,6 +43,9 @@ EOF
 cat >"$work_dir/bin/ctr" <<'EOF'
 #!/usr/bin/env bash
 printf '%s|%s\n' "${REMOTE_PORT:-}" "$*" >>"$CTR_LOG"
+if [[ "$*" == '-n k8s.io images ls -q' && "${REMOTE_PORT:-}" == '2223' ]]; then
+  printf '%s\n' 'swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test'
+fi
 EOF
 cat >"$work_dir/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
@@ -70,10 +73,24 @@ if grep -Fxq '2224' "$work_dir/ssh-ports.log"; then
   exit 1
 fi
 expected_pull='-n k8s.io images pull --user cn-southwest-2@test-ak:test-login-key swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test'
-grep -Fxq "2223|$expected_pull" "$work_dir/ctr.log"
+if grep -Fxq "2223|$expected_pull" "$work_dir/ctr.log"; then
+  echo 'mapped target pull must be skipped when the exact image already exists' >&2
+  exit 1
+fi
 grep -Fxq "2222|$expected_pull" "$work_dir/ctr.log"
-if grep -Fq 'images ls -q' "$work_dir/ctr.log"; then
-  echo 'mapped target pull must not be skipped by a local image-cache probe' >&2
+grep -Fxq '2223|-n k8s.io images ls -q' "$work_dir/ctr.log"
+grep -Fxq '2222|-n k8s.io images ls -q' "$work_dir/ctr.log"
+
+PATH="$work_dir/bin:$PATH" \
+SSH_PORT_LOG="$work_dir/cached-without-credentials-ssh.log" \
+CTR_LOG="$work_dir/cached-without-credentials-ctr.log" \
+IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
+TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"}]' \
+TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175"}' \
+PULL_TARGET_IMAGES_ONLY=1 \
+bash "$script" >/dev/null
+if grep -Fq 'images pull' "$work_dir/cached-without-credentials-ctr.log"; then
+  echo 'cached mapped target must not require credentials or execute a pull' >&2
   exit 1
 fi
 
@@ -82,13 +99,13 @@ if PATH="$work_dir/bin:$PATH" \
   SSH_PORT_LOG="$work_dir/missing-credentials-ssh.log" \
   CTR_LOG="$work_dir/missing-credentials-ctr.log" \
   IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
-  TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"}]' \
-  TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175"}' \
+  TARGET_HOSTS='[{"ip":"115.33.98.101:2222","user":"root"}]' \
+  TARGET_NODE_IP_MAP='{"115.33.98.101:2222":"192.168.31.17"}' \
   PULL_TARGET_IMAGES_ONLY=1 \
   bash "$script" >"$missing_credentials_log" 2>&1; then
   echo 'mapped target pull must fail when registry credentials are missing' >&2
   exit 1
 fi
-grep -Fq 'AK and LOGIN_KEY are required' "$missing_credentials_log"
+grep -Fq 'AK and LOGIN_KEY are required when the mapped target image is absent' "$missing_credentials_log"
 
-echo 'pull target-image tests passed (mapped targets use authenticated ctr pulls)'
+echo 'pull target-image tests passed (cached images skip authenticated ctr pulls)'
