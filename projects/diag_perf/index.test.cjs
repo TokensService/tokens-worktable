@@ -276,3 +276,43 @@ test("运行列表过滤按编号/tag/流水线/环境/提交/操作人匹配", 
   assert.equal(ctx.runMatchesFilter(rec, "109"), true);
   assert.equal(ctx.runMatchesFilter(rec, "prod"), false);
 });
+
+test("series 标签值提取去重排序并容错", () => {
+  const ctx = loadFunctions(["seriesLabelValues"]);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.seriesLabelValues(
+      [{ model_name: "b", xds_namespace: "n1" }, { model_name: "a" }, { model_name: "a" }, { xds_namespace: "n2" }, null],
+      "model_name",
+    ))),
+    ["a", "b"],
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.seriesLabelValues([{ model_name: "m" }], "xds_namespace"))), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.seriesLabelValues([], "model_name"))), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.seriesLabelValues(null, "model_name"))), []);
+});
+
+test("导入标签选项：运行记录值优先，唯一候选自动选中", () => {
+  const ctx = loadFunctions(["importLabelChoices"]);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.importLabelChoices("-lihaifeng", ["ns-a", "-lihaifeng"]))),
+    { options: ["-lihaifeng", "ns-a"], selected: "-lihaifeng" },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.importLabelChoices("", ["only"]))),
+    { options: ["only"], selected: "only" },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.importLabelChoices("", ["a", "b"]))),
+    { options: ["a", "b"], selected: "" },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.importLabelChoices("", []))),
+    { options: [], selected: "" },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(ctx.importLabelChoices("", null))),
+    { options: [], selected: "" },
+  );
+});
