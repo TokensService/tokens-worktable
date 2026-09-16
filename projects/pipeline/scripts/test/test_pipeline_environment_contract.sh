@@ -28,9 +28,12 @@ fi
 grep -Fq 'IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"' "$script_dir/pull-image.sh"
 grep -Fq 'TARGET_HOSTS="${TARGET_HOSTS:-}"' "$script_dir/pull_render_config.sh"
 grep -Fq 'TARGET_HOSTS="${TARGET_HOSTS:-[]}"' "$script_dir/deploy-model.sh"
-grep -Fq 'TARGET_HOSTS TARGET_NODE_IP_MAP XDS_URL' "$script_dir/pull_render_config.sh"
+for variable in TARGET_HOSTS XDS_URL CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE; do
+  grep -qw "$variable" "$script_dir/pull_render_config.sh"
+done
 grep -Fq 'sync_rendered_to_targets' "$script_dir/pull_render_config.sh"
-grep -Fq 'ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"' "$script_dir/render-config.sh"
+grep -Fq 'resolved_arch_name="${arch:-}"' "$script_dir/render-config.sh"
+grep -Fq 'ARCH_NAME="${resolved_arch_name:-default}"' "$script_dir/render-config.sh"
 grep -Fq 'RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"' "$script_dir/render-config.sh"
 grep -Fq "printf 'RENDER_DIR=%s\\n' \"\$RENDER_DIR\"" "$script_dir/render-config.sh"
 grep -Fq 'MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"' "$script_dir/register-model.sh"

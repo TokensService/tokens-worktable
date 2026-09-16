@@ -69,6 +69,7 @@ HELM_BIN="$work_dir/bin/helm" \
 KUBECTL_BIN="$work_dir/bin/kubectl" \
 PATH="$work_dir/bin:$PATH" \
 HEAD_LOG_ROOT="$work_dir/logs" \
+PIPELINE_ENV_FILE="$work_dir/run/pipeline.env" \
 XDS_READY_TIMEOUT_SECONDS=5 \
 bash "$script_dir/deploy-model.sh" >/dev/null
 
@@ -86,5 +87,17 @@ assert payload["arch_name"] == "test-arch", payload
 assert payload["spec_package"] == "test-package", payload
 assert payload["local_info"]["path"] == "/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1", payload
 PY
+
+
+# The NodePort is discovered only during deployment. Persist that resolved
+# runtime contract for later pipeline scripts and diagnostics.
+runtime_env="$work_dir/run/pipeline.env"
+if [[ ! -f "$runtime_env" ]]; then
+  echo 'deployment did not persist its runtime environment file' >&2
+  exit 1
+fi
+grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$runtime_env"
+grep -Fxq 'export SERVICE_API=http://192.168.31.175:31465/xds/v1' "$runtime_env"
+grep -Fxq 'export MODEL_API=http://192.168.31.175:31465/xds/v1/models/test-arch' "$runtime_env"
 
 echo "deploy target-url tests passed"

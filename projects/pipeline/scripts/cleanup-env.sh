@@ -76,6 +76,7 @@ HEALTH_FAIL=0
 DEFAULT_WHITELIST_NS=(
     default kube-flannel kube-system 'ems*' lws-system
     volcano-monitoring volcano-system gpu-operator nvidia-gpu-operator monitoring
+    xds-kuberay-op
 )
 
 log() {
@@ -193,6 +194,9 @@ node_port_for_ip() {
         192.168.31.214) echo 31013 ;; 192.168.31.111) echo 31014 ;;
         192.168.31.65) echo 31015 ;; 192.168.31.96) echo 31016 ;;
         192.168.31.105) echo 31017 ;; 192.168.31.89) echo 31018 ;;
+        192.168.31.140) echo 31000 ;; 192.168.31.120) echo 31001 ;;
+        192.168.31.113) echo 31002 ;; 192.168.31.164) echo 31003 ;;
+        192.168.31.7) echo 31004 ;;
         *) echo 31365 ;;
     esac
 }

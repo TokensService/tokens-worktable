@@ -22,8 +22,12 @@ contains_unexpanded_placeholder "$IMAGE_NAME" && IMAGE_NAME=""
 contains_unexpanded_placeholder "$DEPLOY_IMAGE" && DEPLOY_IMAGE=""
 [[ -n "$IMAGE_NAME" ]] || IMAGE_NAME="${DEPLOY_IMAGE:-myapp}"
 [[ -n "$DEPLOY_IMAGE" ]] || DEPLOY_IMAGE="$IMAGE_NAME"
-# 架构名优先使用流水线 arch_name，其次 DEPLOY_STRATEGY；兼容旧 ARCH_NAME。
-ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"
+# 架构名优先使用流水线 arch_name、DEPLOY_STRATEGY 和显式 ARCH_NAME；arch 作为运行时兼容别名。
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
 EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 PIPELINE_NAME="${PIPELINE_NAME:-}"
 contains_unexpanded_placeholder "$PIPELINE_NAME" && PIPELINE_NAME=""
@@ -71,8 +75,20 @@ contains_unexpanded_placeholder "$NODE_LABELS_FILE" && NODE_LABELS_FILE=""
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 TARGET_IP="${TARGET_IP:-}"
 TARGET_IPS="${TARGET_IPS:-}"
+DEFAULT_TARGET_NODE_IP_MAP='{"115.33.98.101:2224":"192.168.31.140","115.33.98.101:2225":"192.168.31.120","115.33.98.101:2226":"192.168.31.113","115.33.98.101:2227":"192.168.31.164","115.33.98.101:2228":"192.168.31.7"}'
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
+TARGET_NODE_IP_MAP="$(python3 - "$DEFAULT_TARGET_NODE_IP_MAP" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import sys
+
+default_map, override_map = map(json.loads, sys.argv[1:])
+if not isinstance(override_map, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+default_map.update(override_map)
+print(json.dumps(default_map, separators=(",", ":"), sort_keys=True))
+PY
+)"
 TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
 contains_unexpanded_placeholder "$TARGET_RUN_DIR" && TARGET_RUN_DIR=""
@@ -95,7 +111,8 @@ HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-./logs}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-}"
 MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
-# Preserve rendering inputs in the execution and target pipeline contracts.
+# Render inputs are retained in both pipeline environment contracts so the
+# deployment stage can reproduce the configuration selected by the caller.
 MOCK_DB="${MOCK_DB:-true}"
 XDS_DATABASE_NAME="${XDS_DATABASE_NAME:-xds_db}"
 XDS_DATABASE_PORT="${XDS_DATABASE_PORT:-31106}"
