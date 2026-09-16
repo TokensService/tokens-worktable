@@ -56,6 +56,8 @@ lmcache_remote_init
 lmcache_remote bash -s <<EOF
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH:-}"
+# 目标节点的镜像仓库访问经本地代理转发；ctr 会继承这两个环境变量。
+export http_proxy=http://127.0.0.1:18118 https_proxy=http://127.0.0.1:18118
 run_dir=$(printf '%q' "$LMCACHE_UNITTEST_RUN_DIR")
 log_dir=$(printf '%q' "$LMCACHE_UNITTEST_LOG_DIR")
 image=$(printf '%q' "$LMCACHE_UNITTEST_IMAGE")

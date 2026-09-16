@@ -51,7 +51,11 @@ cat >"$tmp/bin/ctr" <<'EOF'
 if [[ "${1:-}" == -n && "${2:-}" == k8s.io && "${3:-}" == images && "${4:-}" == pull \
   && "${5:-}" == --user && "${6:-}" == cn-southwest-2@test-image-pull-token \
   && "${7:-}" == swr.cn-southwest-2.myhuaweicloud.com/serverlessai/lmcache-vllm-openai-0.5.4-unitest:v0.0.1_x86_64 ]]; then
-  printf '%s\n' 'ctr authenticated image pull' >>"$FAKE_LOG"
+  if [[ "${http_proxy:-}" == 'http://127.0.0.1:18118' && "${https_proxy:-}" == 'http://127.0.0.1:18118' ]]; then
+    printf '%s\n' 'ctr authenticated image pull via loopback proxy' >>"$FAKE_LOG"
+  else
+    printf '%s\n' 'ctr authenticated image pull missing loopback proxy' >>"$FAKE_LOG"
+  fi
   exit 0
 fi
 printf 'ctr %s\n' "$*" >>"$FAKE_LOG"
@@ -185,7 +189,7 @@ execution_run_dir="$tmp/LMCache仓-单元测试-20260915_093213"
 pull_output="$(env PATH="$tmp/bin:/bin" FAKE_LOG="$log" FAKE_CTR="$tmp/bin/ctr" TARGET_HOSTS="$targets" RUN_DIR="$execution_run_dir" LMCACHE_UNITTEST_RUN_DIR="$tmp/default" LMCACHE_UNITTEST_REMOVE_IMAGE=1 \
   IMAGE_PULL_TOKEN='test-image-pull-token' \
   bash "$root/lmcache-unittest-pull-image.sh")"
-grep -Fq 'ctr authenticated image pull' "$log"
+grep -Fq 'ctr authenticated image pull via loopback proxy' "$log"
 if grep -Fq 'test-image-pull-token' "$log"; then exit 1; fi
 first_nerdctl_path="$(awk -F= '/^NERDCTL_PATH=/{ print substr($0, index($0, "=") + 1); exit }' "$log")"
 [[ "$first_nerdctl_path" == /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:* ]]
