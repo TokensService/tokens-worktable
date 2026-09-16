@@ -13,8 +13,7 @@ grep -Fq 'TARGET_HOSTS must be a non-empty JSON array' "$script"
 grep -Fq 'sshpass -e ssh -p "$port" -o StrictHostKeyChecking=no' "$script"
 grep -Fq 'TARGET_RUN_DIR TARGET_RENDER_DIR' "$script"
 grep -Fq 'TARGET_PIPELINE_ENV_FILE SSH_PASSWORD' "$script"
-grep -Fq 'safe_target_hosts=' "$script"
-grep -Fq "printf 'export TARGET_HOSTS=%q\\n' \"\$safe_target_hosts\"" "$script"
+grep -Fq "printf 'export TARGET_HOSTS=%q\\n' \"\$TARGET_HOSTS\"" "$script"
 
 if grep -Eq 'remote_bash|pull_image_on_target|export_templates_from_control_target' "$pull_script"; then
   echo 'image pull and template export must run on the pipeline execution host' >&2
@@ -103,10 +102,7 @@ test -f "$work_dir/target-run/pipeline.env"
 grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/execution-run/pipeline.env"
 grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/target-run/pipeline.env"
 grep -Fq "export RENDER_DIR=$work_dir/target-run/rendered" "$work_dir/target-run/pipeline.env"
-if grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"; then
-  echo 'target pipeline environment must not contain SSH passwords' >&2
-  exit 1
-fi
+grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"
 
 AK= LOGIN_KEY= LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \

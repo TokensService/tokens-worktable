@@ -25,7 +25,7 @@ cat >"$work_dir/bin/ssh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$TEST_SSH_LOG"
-if [[ "$*" == *"cat "*"pipeline.env"* ]]; then
+if [[ "$*" == *"cat "*"pipeline.env"* && "$*" != *"cat >"* ]]; then
   printf 'export XDS_URL=%q\n' 'http://192.0.2.10:31465/xds/v1/chat/completions'
   exit 0
 fi
@@ -57,6 +57,7 @@ if grep -Fq "$work_dir/remote-run/scripts/cleanup-env.sh" "$work_dir/ssh.log"; t
   exit 1
 fi
 grep -Fq 'Deploy the rendered chart' "$work_dir/ssh.stdin"
+grep -Fq 'test-password' "$work_dir/ssh.stdin"
 grep -Fq 'DEPLOY_EXECUTION_HOST=192.0.2.10' "$work_dir/output"
 grep -Fxq 'export XDS_URL=http://192.0.2.10:31465/xds/v1/chat/completions' "$work_dir/local.pipeline.env"
 
