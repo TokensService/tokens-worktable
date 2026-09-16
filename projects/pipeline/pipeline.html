@@ -486,7 +486,7 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选，也可一个不选——不选即按无目标节点运行）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。</p>
     </div>
     <div class="dshell-card" style="margin-top:10px;">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
@@ -1120,10 +1120,12 @@ function normalizePipelineDefaults(value){
   };
 }
 function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
-/* 仅旧流水线没有保存默认引用时回退当前首项；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
+/* 仅旧流水线从未保存过默认环境引用（无 environmentIds 字段）时回退当前首项；编辑器保存过的空环境
+   列表 = 显式不选择任何节点（无目标节点运行）；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
-  const d=normalizePipelineDefaults(pl&&pl.defaults);
-  const envs=d.environmentIds.length?d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean):environments.slice(0,1);
+  const raw=pl&&pl.defaults&&typeof pl.defaults==='object'&&!Array.isArray(pl.defaults)?pl.defaults:null;
+  const d=normalizePipelineDefaults(raw);
+  const envs=(raw&&Array.isArray(raw.environmentIds))?d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean):environments.slice(0,1);
   const repo=d.repositoryId?repositories.find(r=>r.id===d.repositoryId):(repositories[0]||null);
   return {envs,repoId:repo?repo.id:'',branch:d.branch,strategy:d.strategy,presets:d.presets.slice()};
 }
@@ -1267,22 +1269,20 @@ function saveEnvs(){ try{ localStorage.setItem('pip-envs', JSON.stringify(enviro
 function curEnv(){ return environments[0] || {id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}; }
 function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id===v)||environments.find(e=>e.ip===v)||environments.find(e=>e.name===v)||{id:'',name:String(v),ip:String(v),user:'',pass:''}; }
 function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
-/* 环境多选（主控，可选多个目标 IP） */
-let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
+/* 环境多选（主控，可选多个目标 IP；默认不选择任何节点——不选即按无目标节点运行，排队按同机串行处理） */
+let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
 function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} persistState(); }
 function curEnvs(){
-  let list = environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
-  if(!list.length) list = environments.slice(0,1);
-  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',nodeIp:'',user:'',pass:''}];
+  return environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
 }
 function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
-/* 环境多选面板（主控与定时页共用渲染）：勾选状态经 getIds/setIds 回调注入，切换后执行 after 附加动作 */
+/* 环境多选面板（主控、定时页与流水线编辑器「默认环境」共用渲染）：勾选状态经 getIds/setIds 回调注入，
+   切换后执行 after 附加动作；允许一个不选（默认即不选择任何节点），无选择时按钮显示占位「选择 IP」 */
 function renderEnvMulti(o){
   const btn=$(o.btnId); const panel=$(o.panelId); if(!btn||!panel) return;
-  let ids=o.getIds();
-  if(!ids || !ids.length){ ids=environments.slice(0,1).map(e=>e.id); o.setIds(ids); }
+  const ids=o.getIds()||[];
   const sel=environments.filter(e=>ids.indexOf(e.id)>=0);
-  btn.textContent = (sel.length?sel:environments.slice(0,1)).map(e=>e.ip).join('，') || '选择 IP';
+  btn.textContent = sel.map(e=>e.ip).join('，') || '选择 IP';
   btn.title = btn.textContent;   // 限宽省略时悬浮可见完整 IP 列表
   panel.innerHTML='';
   environments.forEach(e=>{
@@ -1298,8 +1298,7 @@ function renderEnvMulti(o){
     const id=cb.getAttribute('data-envcb');
     let cur=(o.getIds()||[]).slice();
     if(cb.checked){ if(cur.indexOf(id)<0) cur.push(id); }
-    else { cur=cur.filter(x=>x!==id); }
-    if(!cur.length){ cur=[id]; cb.checked=true; }   // 至少保留一个
+    else { cur=cur.filter(x=>x!==id); }   // 允许全部取消：不选择任何节点即无目标节点运行
     o.setIds(cur); renderEnvMulti(o);
     if(o.after) o.after();
   }));
@@ -4173,10 +4172,8 @@ async function handoffSchedSuffix(rc, i){
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
 function saveSchedEnvSel(){ try{ localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds)); }catch(e){} }
 function schedEnvs(){
-  const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）
-  let list=environments.filter(e=>ids.indexOf(e.id)>=0);
-  if(!list.length) list=environments.slice(0,1);
-  return list.length? list : [{id:'',name:'默认',ip:'127.0.0.1',user:'',pass:''}];
+  const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）；都不选即无目标节点
+  return environments.filter(e=>ids.indexOf(e.id)>=0);
 }
 function renderSchedEnvOptions(){
   renderEnvMulti({btnId:'schedEnvMultiBtn', panelId:'schedEnvMultiPanel',

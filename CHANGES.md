@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线运行与编辑器「默认环境」支持不选择任何节点，且默认即不选择（`projects/pipeline/pipeline.html`）：
+  主控「选择 IP」多选此前空选择时自动回写首个节点、勾选变更强制「至少保留一个」，无法表达「无目标节点
+  运行」；现默认不选择任何节点（本地存储的空数组选择按显式空保留），允许全部取消勾选，按钮无选择时
+  显示占位「选择 IP」。不选节点按既有无目标 IP 语义运行：跳过节点租约申请、页内调度与队列按同机串行
+  处理（排队原因文案本就有「未选择目标节点的运行按串行处理」），脚本注入的 `TARGET_IP`/`TARGET_IPS`/
+  `TARGET_HOSTS` 为空值/空数组。流水线编辑器「默认环境」同样默认不选择任何节点；`pipelineDefaultRunOptions`
+  区分「编辑器显式保存的空环境列表」（= 不选择任何节点，不再改投首项）与「旧流水线从未保存过该字段」
+  （维持回退首项兼容），失效引用仍由 `pipelineDefaultRunIssue` 阻断。定时页环境多选跟随主控，均未选择
+  时同样按无目标节点处理。服务端运行接口契约不变（显式空 `environmentIds` 仍 400、页面提交省略该字段时
+  回退流水线默认配置）。新增 `projects/pipeline/tests/test_env_selection_default_none.js`。
+
 - 流水线运行导入弹层增加第二步「按运行窗口挑选普罗标签」（`projects/diag_perf/index.html`）：运行记录的
   `prom.modelName`/`xdsNamespace` 是占位模板（`${MODEL_PATH}`/`${DEPLOY_STRATEGY}-${BY}`）在采集时点的解析
   快照，解析不出时只剩空串或 `-<操作人>` 残段，直接拿来当标签过滤查不到数据。现点选运行后进入第二步：
