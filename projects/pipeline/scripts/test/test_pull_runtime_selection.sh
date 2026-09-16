@@ -27,7 +27,11 @@ fi
 grep -Fq 'pull_target_images "$IMAGE"' "$script"
 grep -Fq 'TARGET_NODE_IP_MAP' "$script"
 grep -Fq 'command -v ctr >/dev/null 2>&1' "$script"
-grep -Fq 'sudo ctr -n k8s.io image pull --user' "$script"
-grep -Fq 'images ls -q' "$script"
+grep -Fq 'sudo ctr -n k8s.io images pull --user' "$script"
+grep -Fq 'AK and LOGIN_KEY are required' "$script"
+if grep -Fq 'images ls -q' "$script"; then
+  echo 'mapped targets must try authenticated ctr pull before any image-cache probe' >&2
+  exit 1
+fi
 
 echo "pull runtime-selection tests passed"
