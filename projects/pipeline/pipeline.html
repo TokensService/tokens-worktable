@@ -748,7 +748,7 @@
         <div class="dshell-card" style="padding:10px;display:flex;flex-direction:column;gap:8px;">
           <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
             <b>默认环境</b>
-            <span class="dshell-muted" style="font-size:11px;">任务列表运行弹窗的初始值，API 未传参数时同样使用；弹窗、运行框与 API 参数均可逐项覆盖。</span>
+            <span class="dshell-muted" style="font-size:11px;">API 未传参数时使用；任务列表运行弹窗默认继承当前「运行流水线」控件值，弹窗、运行框与 API 参数均可逐项覆盖。</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">目标环境
@@ -807,10 +807,16 @@
           <select id="pipelineRunRepo" class="dshell-input" style="min-width:180px;"></select>
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">分支/Tag
-          <input id="pipelineRunBranch" class="dshell-input" value="main" placeholder="main" style="width:160px;" />
+          <span id="pipelineRunBranchPick" style="position:relative;display:inline-block;">
+            <input id="pipelineRunBranch" class="dshell-input" value="main" placeholder="main" autocomplete="off" style="width:160px;" />
+            <div id="pipelineRunBranchPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">部署策略
-          <input id="pipelineRunStrategy" class="dshell-input" placeholder="可留空" style="width:160px;" />
+          <span id="pipelineRunStrategyPick" style="position:relative;display:inline-block;">
+            <input id="pipelineRunStrategy" class="dshell-input" placeholder="（不使用）" autocomplete="off" style="width:160px;" title="按当前分支从代码仓部署策略配置拉取支持的部署策略，聚焦弹出面板可搜索/刷新" />
+            <div id="pipelineRunStrategyPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
         </label>
       </div>
       <div id="pipelineRunPresets" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -1201,6 +1207,16 @@ function currentPipelineDefaultSeed(){
     presets:selectedPresetKeys(),
   });
 }
+function currentPipelineRunOptions(){
+  const seed=currentPipelineDefaultSeed();
+  return {
+    envs:seed.environmentIds.map(id=>environments.find(env=>env.id===id)).filter(Boolean),
+    repoId:seed.repositoryId,
+    branch:seed.branch,
+    strategy:seed.strategy,
+    presets:seed.presets.slice(),
+  };
+}
 function renderPipelineDefaultForm(){
   editDefaults=normalizePipelineDefaults(editDefaults);
   renderEnvMulti({btnId:'plDefaultEnvMultiBtn',panelId:'plDefaultEnvMultiPanel',
@@ -1224,6 +1240,8 @@ function closePipelineRunDialog(){
   pipelineRunDialogPipelineId=''; pipelineRunDialogEnvIds=[];
   $('pipelineRunDialog').style.display='none';
   const panel=$('pipelineRunEnvMultiPanel'); if(panel) panel.style.display='none';
+  const branchPanel=$('pipelineRunBranchPanel'); if(branchPanel) branchPanel.style.display='none';
+  const strategyPanel=$('pipelineRunStrategyPanel'); if(strategyPanel) strategyPanel.style.display='none';
 }
 function renderPipelineRunDialogEnvs(){
   renderEnvMulti({
@@ -1234,7 +1252,7 @@ function renderPipelineRunDialogEnvs(){
 }
 function openPipelineRunDialog(id){
   const pl=findPipeline(id); if(!pl) return;
-  const defaults=pipelineDefaultRunOptions(pl);
+  const defaults=currentPipelineRunOptions();
   pipelineRunDialogPipelineId=pl.id;
   pipelineRunDialogEnvIds=defaults.envs.map(env=>env&&env.id).filter(Boolean);
   $('pipelineRunTitle').textContent='运行流水线：'+(pl.name||pl.id);
@@ -1246,9 +1264,9 @@ function openPipelineRunDialog(id){
   $('pipelineRunBranch').value=defaults.branch||'main';
   $('pipelineRunStrategy').value=defaults.strategy||'';
   $('pipelineRunPresets').querySelectorAll('[data-pipelinerunpreset]').forEach(input=>{ input.checked=defaults.presets.indexOf(input.getAttribute('data-pipelinerunpreset'))>=0; });
-  const issue=pipelineDefaultRunIssue(pl),warning=$('pipelineRunWarning');
-  warning.textContent=issue?('⚠ '+issue+'；请为本次运行重新选择有效参数。'):'';
-  warning.style.display=issue?'':'none';
+  const warning=$('pipelineRunWarning');
+  warning.textContent='';
+  warning.style.display='none';
   $('pipelineRunDialog').style.display='flex';
 }
 function collectPipelineRunDialogOptions(){
@@ -1787,6 +1805,12 @@ async function testRepoStrategy(r){
 /* 分支/Tag 与部署策略面板上下文：主控（运行流水线设置）与定时页共用同一套拉取/渲染逻辑，
    仅输入框、面板元素与目标代码仓不同（which 缺省='main' 主控，'sched'=定时页） */
 function pickCtx(which){
+  if(which==='run') return {
+    inp:$('pipelineRunBranch'), panel:$('pipelineRunBranchPanel'),
+    repo:function(){ return resolveRepo(($('pipelineRunRepo') && $('pipelineRunRepo').value) || curRepoId) || curRepo(); },
+    branch:function(){ return ($('pipelineRunBranch').value.trim()||'main'); },
+    strategyInp:$('pipelineRunStrategy'), strategyPanel:$('pipelineRunStrategyPanel'),
+  };
   if(which==='sched') return {
     inp:$('schedBranch'), panel:$('schedBranchPanel'),
     repo:function(){ return resolveRepo(($('schedRepo') && $('schedRepo').value) || curRepoId); },
@@ -7525,6 +7549,14 @@ $('pipelineRunSubmit').addEventListener('click',submitPipelineRunDialog);
 $('pipelineRunDialog').addEventListener('click',e=>{ if(e.target===$('pipelineRunDialog')) closePipelineRunDialog(); });
 $('pipelineRunEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const panel=$('pipelineRunEnvMultiPanel'); panel.style.display=panel.style.display==='none'?'block':'none'; });
 document.addEventListener('click',e=>{ const panel=$('pipelineRunEnvMultiPanel'),wrap=$('pipelineRunEnvMulti'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
+$('pipelineRunRepo').addEventListener('change',()=>{ const bp=$('pipelineRunBranchPanel'),sp=$('pipelineRunStrategyPanel'); if(bp) bp.style.display='none'; if(sp) sp.style.display='none'; loadDeployStrategies(true,'run'); });
+$('pipelineRunBranch').addEventListener('focus',()=>{ const ctx=pickCtx('run'),repo=ctx.repo(); if(repo) loadRepoBranches(repo,false,'run').then(()=>renderBranchPanel(true,'run')); });
+$('pipelineRunBranch').addEventListener('change',()=>loadDeployStrategies(false,'run'));
+$('pipelineRunBranch').addEventListener('input',()=>{ const panel=$('pipelineRunBranchPanel'); if(panel.style.display==='none'){ loadRepoBranches(pickCtx('run').repo(),false,'run').then(()=>renderBranchPanel(false,'run')); } else renderBranchPanel(false,'run'); });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunBranchPanel'),wrap=$('pipelineRunBranchPick'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
+$('pipelineRunStrategy').addEventListener('focus',()=>{ renderStrategyPanel(true,'run'); loadDeployStrategies(false,'run').then(()=>renderStrategyPanel(true,'run')); });
+$('pipelineRunStrategy').addEventListener('input',()=>{ const panel=$('pipelineRunStrategyPanel'); if(panel.style.display==='none'){ loadDeployStrategies(false,'run').then(()=>renderStrategyPanel(false,'run')); } else renderStrategyPanel(false,'run'); });
+document.addEventListener('click',e=>{ const panel=$('pipelineRunStrategyPanel'),wrap=$('pipelineRunStrategyPick'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
 $('pipelineApiClose').addEventListener('click',()=>$('pipelineApiDialog').style.display='none');
 $('pipelineApiDialog').addEventListener('click',e=>{ if(e.target===$('pipelineApiDialog')) $('pipelineApiDialog').style.display='none'; });
 $('pipelineApiCopyEndpoint').addEventListener('click',e=>copyText($('pipelineApiEndpoint').textContent,e.currentTarget));

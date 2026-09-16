@@ -47,6 +47,24 @@ class FakeSelect {
   get value() { return this._value; }
 }
 
+class FakePanel {
+  constructor() {
+    this.style = { display: 'none' };
+    this.innerHTML = '';
+    this.handlers = [];
+  }
+  querySelectorAll(selector) {
+    const attribute = selector === '[data-branch]' ? 'data-branch' : selector === '[data-strategy]' ? 'data-strategy' : null;
+    if (!attribute) return [];
+    const pattern = new RegExp(attribute + '="([^"]*)"', 'g');
+    return Array.from(this.innerHTML.matchAll(pattern), match => ({
+      getAttribute: name => name === attribute ? match[1] : null,
+      addEventListener: (event, handler) => this.handlers.push({ event, handler, value: match[1] }),
+    }));
+  }
+  querySelector() { return null; }
+}
+
 function makeContext(runResult = 'submitted') {
   const presetInputs = ['cleanup', 'check', 'profiling'].map(key => ({
     checked: false,
@@ -55,11 +73,16 @@ function makeContext(runResult = 'submitted') {
   const elements = {
     pipelineRunDialog: { style: { display: 'none' } },
     pipelineRunTitle: { textContent: '' },
+    pipelineRunBranch: { value: '', focus() {} },
+    pipelineRunBranchPanel: new FakePanel(),
+    pipelineRunStrategy: { value: '', focus() {} },
+    pipelineRunStrategyPanel: new FakePanel(),
     pipelineRunRepo: new FakeSelect(),
-    pipelineRunBranch: { value: '' },
-    pipelineRunStrategy: { value: '' },
     pipelineRunPresets: { querySelectorAll: () => presetInputs },
     pipelineRunWarning: { textContent: '', style: { display: 'none' } },
+    repoSel: new FakeSelect(),
+    branchName: { value: 'main-control-branch' },
+    deployStrategyName: { value: 'main-control-strategy' },
   };
   const calls = { run: [], tips: [], alerts: [] };
   let envControl = null;
@@ -81,11 +104,22 @@ function makeContext(runResult = 'submitted') {
       },
     }],
     currentUsername: 'operator',
+    curRepoId: 'repo-a',
     queue: [],
     $: id => elements[id] || null,
     document: { createElement: tag => ({ tag, value: '', textContent: '' }) },
+    curEnvs: () => [context.environments[0]],
+    curRepo: () => context.repositories.find(repo => repo.id === elements.repoSel.value) || context.repositories[0],
+    curStrategy: () => elements.deployStrategyName.value,
+    selectedPresetKeys: () => ['cleanup'],
+    resolveRepo: id => context.repositories.find(repo => repo.id === id),
+    esc: value => String(value),
+    isJenkinsFetchMode: () => false,
+    fetchModeLabel: () => '服务端',
+    loadingDots: () => '...',
     findPipeline: id => context.pipelines.find(pipeline => pipeline.id === id),
     renderEnvMulti: options => { envControl = options; },
+    loadDeployStrategies: () => Promise.resolve(),
     runPipeline: options => {
       calls.run.push(options);
       if (runResult === 'queued') context.queue.push(options);
@@ -114,23 +148,65 @@ test('运行弹窗包含运行参数字段且不提供执行人设置', () => {
   const end = source.indexOf('<!-- 单条流水线 API 调用说明', start);
   assert.ok(start >= 0 && end > start, '缺少流水线运行弹窗');
   const html = source.slice(start, end);
-  ['pipelineRunEnvMultiBtn', 'pipelineRunRepo', 'pipelineRunBranch', 'pipelineRunStrategy', 'pipelineRunPresets', 'pipelineRunSubmit']
+  ['pipelineRunEnvMultiBtn', 'pipelineRunRepo', 'pipelineRunBranch', 'pipelineRunBranchPanel', 'pipelineRunStrategy', 'pipelineRunStrategyPanel', 'pipelineRunPresets', 'pipelineRunSubmit']
     .forEach(id => assert.match(html, new RegExp('id="' + id + '"')));
   assert.doesNotMatch(html, /执行人|triggeredBy|pipelineRunBy/);
 });
 
-test('打开弹窗按目标流水线默认值填充参数，不改动或启动当前流水线', () => {
+test('打开弹窗继承运行流水线当前值，不改动或启动当前流水线', () => {
   const { context, elements, presetInputs, calls, getEnvControl } = makeContext();
   context.openPipelineRunDialog('pipe-2');
 
   assert.equal(elements.pipelineRunDialog.style.display, 'flex');
   assert.equal(elements.pipelineRunTitle.textContent, '运行流水线：流水线二');
-  assert.deepEqual(J(getEnvControl().getIds()), ['env-b']);
-  assert.equal(elements.pipelineRunRepo.value, 'repo-b');
-  assert.equal(elements.pipelineRunBranch.value, 'release/2026.09');
-  assert.equal(elements.pipelineRunStrategy.value, 'blue-green');
-  assert.deepEqual(presetInputs.filter(input => input.checked).map(input => input.getAttribute('data-pipelinerunpreset')), ['check', 'profiling']);
+  assert.deepEqual(J(getEnvControl().getIds()), ['env-a']);
+  assert.equal(elements.pipelineRunRepo.value, 'repo-a');
+  assert.equal(elements.pipelineRunBranch.value, 'main-control-branch');
+  assert.equal(elements.pipelineRunStrategy.value, 'main-control-strategy');
+  assert.deepEqual(presetInputs.filter(input => input.checked).map(input => input.getAttribute('data-pipelinerunpreset')), ['cleanup']);
   assert.deepEqual(calls.run, []);
+});
+
+test('运行弹窗的分支与策略面板使用弹窗输入和代码仓上下文', () => {
+  const { context, elements } = makeContext();
+  context.openPipelineRunDialog('pipe-2');
+  vm.runInContext(extractFunction('pickCtx'), context);
+  const runCtx = context.pickCtx('run');
+
+  assert.equal(runCtx.inp, elements.pipelineRunBranch);
+  assert.equal(runCtx.panel, elements.pipelineRunBranchPanel);
+  assert.equal(runCtx.strategyInp, elements.pipelineRunStrategy);
+  assert.equal(runCtx.strategyPanel, elements.pipelineRunStrategyPanel);
+  elements.pipelineRunRepo.value = 'repo-b';
+  assert.equal(runCtx.repo().id, 'repo-b');
+  assert.equal(runCtx.branch(), 'main-control-branch');
+});
+
+test('运行弹窗点选分支与部署策略会回填弹窗字段', () => {
+  const { context, elements } = makeContext();
+  context.openPipelineRunDialog('pipe-2');
+  context.repoBranches = { 'repo-a': { branches: ['feature/dialog'], tags: ['v2026.09'], error: '' } };
+  context.deployStrategies = { 'repo-a|feature/dialog|u:strategy-url': { items: ['blue-green'], error: '' } };
+  vm.runInContext(extractFunction('pickCtx'), context);
+  vm.runInContext(extractFunction('renderBranchPanel'), context);
+  vm.runInContext(extractFunction('strategySourceOf'), context);
+  vm.runInContext(extractFunction('deployStrategyKey'), context);
+  vm.runInContext(extractFunction('renderStrategyPanel'), context);
+  context.repositories[0].strategyUrl = 'strategy-url';
+
+  context.renderBranchPanel(true, 'run');
+  const branchItem = elements.pipelineRunBranchPanel.querySelectorAll('[data-branch]')[0];
+  branchItem.handlers = [];
+  elements.pipelineRunBranchPanel.handlers[0].handler();
+  assert.equal(elements.pipelineRunBranch.value, 'feature/dialog');
+
+  context.renderStrategyPanel(true, 'run');
+  const strategyItem = elements.pipelineRunStrategyPanel.querySelectorAll('[data-strategy]')
+    .find(item => item.getAttribute('data-strategy') === 'blue-green');
+  assert.ok(strategyItem);
+  const strategyHandler = elements.pipelineRunStrategyPanel.handlers.find(entry => entry.value === 'blue-green');
+  strategyHandler.handler();
+  assert.equal(elements.pipelineRunStrategy.value, 'blue-green');
 });
 
 test('确认弹窗把临时参数显式交给运行流程，执行人仍由登录用户统一注入', () => {
