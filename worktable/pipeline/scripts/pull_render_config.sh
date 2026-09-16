@@ -224,29 +224,12 @@ write_pipeline_env() {
 
 write_target_pipeline_env() {
   local variable target_chart_dir target_values_file target_arch_request_file
-  local target_resource_manifest target_node_labels_file safe_target_hosts
+  local target_resource_manifest target_node_labels_file
   target_chart_dir="${TARGET_RENDER_DIR}/xds-cluster"
   target_values_file="${TARGET_RENDER_DIR}/values.rendered.yaml"
   target_arch_request_file="${TARGET_RENDER_DIR}/architecture.request.json"
   target_resource_manifest="${TARGET_RENDER_DIR}/resources.rendered.json"
   target_node_labels_file="${TARGET_RENDER_DIR}/node-labels.json"
-  safe_target_hosts="$(python3 - "$TARGET_HOSTS" <<'PY'
-import json
-import re
-import sys
-
-hosts = json.loads(sys.argv[1])
-if not isinstance(hosts, list):
-    raise SystemExit("TARGET_HOSTS must be a JSON array")
-safe_hosts = []
-for host in hosts:
-    if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
-        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-    safe_hosts.append({"ip": host["ip"], "user": host.get("user") or "root"})
-print(json.dumps(safe_hosts, separators=(",", ":")))
-PY
-)"
-
   (
     umask 077
     {
@@ -259,7 +242,7 @@ PY
       printf 'export RESOURCE_MANIFEST=%q\n' "$target_resource_manifest"
       printf 'export NODE_LABELS_FILE=%q\n' "$target_node_labels_file"
       printf 'export PIPELINE_ENV_FILE=%q\n' "$TARGET_PIPELINE_ENV_FILE"
-      printf 'export TARGET_HOSTS=%q\n' "$safe_target_hosts"
+      printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
       for variable in \
         IMAGE_NAME DEPLOY_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME NAMESPACE RELEASE_NAME \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \

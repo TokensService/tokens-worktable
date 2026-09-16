@@ -96,7 +96,7 @@ sync_remote_file() {
 }
 
 deploy_from_target_host() {
-  local parsed target_ip target_port target_user safe_target_hosts target remote_script_dir remote_script
+  local parsed target_ip target_port target_user target remote_script_dir remote_script
   local remote_env remote_xds_url remote_head_log_root remote_command
 
   command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
@@ -130,14 +130,10 @@ if password is None:
     password = ""
 if not isinstance(password, str):
     raise SystemExit("TARGET_HOSTS[0].pass must be a string when specified")
-safe_hosts = []
-for item in hosts:
-    if isinstance(item, dict) and isinstance(item.get("ip"), str) and item["ip"]:
-        safe_hosts.append({"ip": item["ip"], "user": item.get("user") or "root"})
-print(target_ip, target_port, user, password, json.dumps(safe_hosts, separators=(",", ":")), sep="\t")
+print(target_ip, target_port, user, password, sep="\t")
 PY
 )"
-  IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD safe_target_hosts <<<"$parsed"
+  IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD <<<"$parsed"
   target="${target_user}@${target_ip}"
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
@@ -156,7 +152,7 @@ PY
     printf 'export ARCH_REQUEST_FILE=%q\n' "${TARGET_RENDER_DIR}/architecture.request.json"
     printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
     printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
-    printf 'export TARGET_HOSTS=%q\n' "$safe_target_hosts"
+    printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
     if [[ -n "$remote_xds_url" ]]; then
       printf 'export XDS_URL=%q\n' "$remote_xds_url"
     fi
