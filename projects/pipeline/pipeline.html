@@ -302,7 +302,7 @@
     </div>
     <div style="overflow:auto;">
       <table class="dshell-table" id="plTable">
-        <thead><tr><th>流水线</th><th>阶段数</th><th>操作</th></tr></thead>
+        <thead><tr><th>流水线</th><th>阶段数</th><th>运行队列</th><th>操作</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -348,6 +348,7 @@
     <div class="dshell-card">
       <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="勾选一条做 AI 日志分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="勾选一条做 Profiling 分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="勾选一条做性能诊断，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
+        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
         </label>
@@ -365,7 +366,6 @@
         <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支重新运行（执行人取当前填写值；运行中则入队）">↻ 重跑</button>
         <button class="dshell-btn dshell-btnDanger mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button>
-        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <span id="histFilterTip" class="dshell-muted" style="font-size:11px;"></span>
       </div>
       <div style="overflow:auto;">
@@ -954,7 +954,7 @@ function persistState(){
 }
 function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态仅跨浏览器同步（定时计划的服务端执行暂不支持这两项预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) }; }
 function historyForPersist(){
-  const transient=['_lc','_lm','_ll','_profChecked'];
+  const transient=['_lc','_lm','_ll','_profChecked','_profState'];
   return history.filter(h=>!h.demo).map(h=>{
     const clean={}; Object.keys(h).forEach(k=>{ if(transient.indexOf(k)<0) clean[k]=h[k]; }); return clean;
   });
@@ -3178,6 +3178,7 @@ function createFlowNode(s, i){
        否则第一次单击就重建节点元素，第二次单击落在新元素上，dblclick 永远触发不了 */
     n.addEventListener('click',()=>{
       setSel(s.id); applyStatusClasses(); renderDetail();
+      if(typeof pullRemoteQueueLog==='function') pullRemoteQueueLog();
       if(replayRec){
         const rec=replayRec;
         loadReplayLog(rec,s.name).then(()=>{ if(replayRec===rec && selectedId===s.id){ _detailKey=''; renderDetail(); } });
@@ -3285,9 +3286,17 @@ function metaFor(id){
 let _detailKey='';
 const DETAIL_LOG_LIMIT={maxLines:1000,maxChars:256*1024};
 function detailLogLinesFor(stage,ctx,node){
-  if(ctx&&ctx.remotePreview===true) return [ctx.remoteClientId==='server'
-    ? '服务端队列仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会下发到浏览器。'
-    : '其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
+  if(ctx&&ctx.remotePreview===true){
+    if(ctx.remoteClientId!=='server') return ['其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
+    const live=ctx.remoteLogs&&ctx.remoteLogs[stage.id];
+    if(!live) return ['正在获取该阶段的最新运行日志…'];
+    const shown=stageOutputLines({stdout:live.text,_stdoutTruncated:live.truncated},DETAIL_LOG_LIMIT);
+    const lines=[];
+    if(shown.omitted) lines.push('… 详情仅显示服务端日志末尾，完整内容请查看运行归档。');
+    shown.lines.forEach(line=>lines.push(line));
+    if(!lines.length) lines.push('该阶段暂时没有日志输出。');
+    return lines;
+  }
   return buildLog(stage,ctx,node,DETAIL_LOG_LIMIT);
 }
 function detailContextRows(stage,statusText,ctx){
@@ -3815,7 +3824,8 @@ function focusQueueItem(id){
 }
 
 /* 服务端权威队列与旧浏览器在场条目的详情：只消费服务端白名单后的阶段/状态快照，不进入本页执行引擎。
-   running 展示实时状态，queued 展示全部 idle 的待运行编排；日志、脚本参数和凭据均不传到浏览器。 */
+   running 展示实时状态，queued 展示全部 idle 的待运行编排；普通队列快照不传日志、脚本参数和凭据，
+   仅在用户查看服务端运行时按 runId + stageId 单独拉取该阶段的有界日志尾部。 */
 function remoteQueueDetailAvailable(item){
   return !!(item&&String(item.id||'').trim()&&Array.isArray(item.stages)&&item.stages.some(stage=>stage&&String(stage.id||'').trim()));
 }
@@ -3832,7 +3842,7 @@ function remoteQueuePreviewRc(client,item,kind){
   return {id:'remote:'+String(client&&client.id||'')+':'+kind+':'+String(item&&item.id||''), remotePreview:true, over:true,
     remoteClientId:String(client&&client.id||''), remoteClientLabel:String(client&&(client.label||client.id)||'其他浏览器'),
     remoteItemId:String(item&&item.id||''), remoteKind:runningKind?'running':'queued',
-    stages:stages, nodes:previewNodes, selId:stages.length?stages[0].id:null, timer:null,
+    stages:stages, nodes:previewNodes, remoteLogs:{}, selId:stages.length?stages[0].id:null, timer:null,
     env:item&&item.env||'', envs:[], image:'', release:'',
     commit:'—', tag:'—', startTs:(runningKind?item&&item.startedAt:item&&item.queuedAt)||Date.now(), by:item&&item.by||'—', source:item&&item.source||'manual',
     pipelineId:item&&item.pipelineId||null, pipelineName:item&&item.pipelineName||'(自定义)',
@@ -3851,6 +3861,7 @@ function focusRemoteQueueItem(clientId,itemId,kind){
   if(viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(clientId)&&viewRc.remoteItemId===String(itemId)&&viewRc.remoteKind===kind) return;
   const found=remoteQueueItem(clientId,itemId,kind); if(!found) return;
   focusRun(remoteQueuePreviewRc(found.client,found.item,kind));
+  if(typeof pullRemoteQueueLog==='function') pullRemoteQueueLog();
 }
 function refreshRemoteQueuePreviewRc(previous){
   if(!previous||previous.remotePreview!==true) return previous||null;
@@ -3866,6 +3877,7 @@ function refreshRemoteQueuePreviewRc(previous){
   if(!found) return null;
   const next=remoteQueuePreviewRc(found.client,found.item,kind);
   if(next.stages.some(s=>s.id===previous.selId)) next.selId=previous.selId;
+  next.remoteLogs=previous.remoteLogs||{};
   return next;
 }
 function applyRemoteQueuePreviewRefresh(){
@@ -3967,6 +3979,44 @@ async function cancelServerRun(runId){
     return null;
   }
 }
+/* 当前详情的服务端日志独立于普通队列快照拉取：同一阶段请求在途时复用 Promise；用户切换运行或
+   阶段后，迟到响应按序号和当前选择双重丢弃，避免旧日志覆盖新详情。 */
+let _remoteLogPullSeq=0, _remoteLogPullKey='', _remoteLogPullPromise=null;
+async function pullRemoteQueueLog(){
+  const rc=viewRc, stageId=String(selectedId||'');
+  if(!rc||rc.remotePreview!==true||rc.remoteClientId!=='server'||rc.remoteKind!=='running'||!stageId) return null;
+  const runId=String(rc.remoteItemId||'');
+  if(!runId) return null;
+  const key=runId+'\n'+stageId;
+  if(_remoteLogPullPromise&&_remoteLogPullKey===key) return _remoteLogPullPromise;
+  const seq=++_remoteLogPullSeq;
+  const request=(async()=>{
+    try{
+      const cached=rc.remoteLogs&&rc.remoteLogs[stageId];
+      const knownRevision=Number(cached&&cached.revision);
+      let url='/api/worktable/pipeline/queue?runId='+encodeURIComponent(runId)+'&stageId='+encodeURIComponent(stageId);
+      if(Number.isSafeInteger(knownRevision)&&knownRevision>=0) url+='&revision='+knownRevision;
+      const response=await fetch(url,{cache:'no-store'});
+      if(response.status===304) return cached||null;
+      if(!response.ok) return null;
+      const data=await response.json();
+      const current=viewRc;
+      if(seq!==_remoteLogPullSeq||!current||current.remotePreview!==true||current.remoteClientId!=='server'||current.remoteKind!=='running'||String(current.remoteItemId||'')!==runId||String(selectedId||'')!==stageId) return null;
+      const text=String(data&&data.text||'');
+      const revision=Number(data&&data.revision);
+      const log={text:text,truncated:!!(data&&data.truncated),revision:Number.isFinite(revision)?revision:0};
+      if(!current.remoteLogs) current.remoteLogs={};
+      const old=current.remoteLogs[stageId];
+      if(old&&old.text===log.text&&old.truncated===log.truncated&&old.revision===log.revision) return log;
+      current.remoteLogs[stageId]=log;
+      _detailKey=''; renderDetail();
+      return log;
+    }catch(e){ return null; }
+  })();
+  _remoteLogPullKey=key; _remoteLogPullPromise=request;
+  try{ return await request; }
+  finally{ if(_remoteLogPullPromise===request){ _remoteLogPullPromise=null; _remoteLogPullKey=''; } }
+}
 /* 拉取服务端权威队列及旧标签页在场快照（过滤掉自己）并重绘队列区 */
 async function pullRemoteQueue(){
   try{
@@ -3978,6 +4028,7 @@ async function pullRemoteQueue(){
       const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
       remoteQueueClients=(serverActive?[server]:[]).concat(clients);
       applyRemoteQueuePreviewRefresh();
+      await pullRemoteQueueLog();
     }
   }catch(e){}
   renderQueue();
@@ -4110,6 +4161,40 @@ function runInfoLine(o){
 function remoteQueueViewAttrs(client,item,kind,title){
   if(!remoteQueueDetailAvailable(item)) return '';
   return ' data-qremote-client="'+esc(client&&client.id||'')+'" data-qremote-id="'+esc(item.id)+'" data-qremote-kind="'+kind+'" title="'+title+'" style="cursor:pointer;"';
+}
+/* 流水线任务列表的运行队列计数：本页运行/排队（含节点租约申请中）与服务端、其他浏览器
+   快照统一按稳定 pipelineId 汇总；自定义运行没有 pipelineId，不归到同名流水线，避免重名误计。 */
+function pipelineQueueCounts(){
+  const counts=Object.create(null);
+  const add=(item,kind)=>{
+    const id=String(item&&item.pipelineId||''); if(!id) return;
+    if(!counts[id]) counts[id]={running:0,queued:0};
+    counts[id][kind]+=1;
+  };
+  activeRuns.forEach(item=>add(item,'running'));
+  localQueueItems().forEach(item=>add(item,'queued'));
+  remoteQueueClients.forEach(client=>{
+    remoteRunsOf(client).forEach(item=>add(item,'running'));
+    (Array.isArray(client&&client.queue)?client.queue:[]).forEach(item=>add(item,'queued'));
+  });
+  return counts;
+}
+function pipelineQueueCountHtml(count){
+  const running=Number(count&&count.running)||0, queued=Number(count&&count.queued)||0;
+  if(!running&&!queued) return '—';
+  const parts=[];
+  if(running) parts.push('<span class="dshell-badge dshell-badgeWait" style="color:var(--st-run)">运行 '+running+'</span>');
+  if(queued) parts.push('<span class="dshell-badge dshell-badgeWait" style="color:var(--st-wait)">排队 '+queued+'</span>');
+  return parts.join(' ');
+}
+function refreshPipelineQueueCounts(){
+  if(typeof document==='undefined'||typeof document.querySelectorAll!=='function') return;
+  const counts=pipelineQueueCounts();
+  document.querySelectorAll('[data-plqueue]').forEach(cell=>{
+    const count=counts[cell.getAttribute('data-plqueue')]||{running:0,queued:0};
+    cell.innerHTML=pipelineQueueCountHtml(count);
+    cell.title=(count.running||count.queued)?('运行 '+count.running+' · 排队 '+count.queued):'当前无运行或排队任务';
+  });
 }
 function renderQueue(){
   const list=$('queueList'); if(!list) return;
@@ -4268,6 +4353,7 @@ function renderQueue(){
     renderQueue();
   }));
   list.querySelectorAll('[data-qremote-id]').forEach(el=>el.addEventListener('click',()=>focusRemoteQueueItem(el.getAttribute('data-qremote-client'),el.getAttribute('data-qremote-id'),el.getAttribute('data-qremote-kind'))));
+  refreshPipelineQueueCounts();   // 每秒队列同步只更新现有计数单元格，不重建任务表（保留筛选与行交互）
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
 function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)&&c.runs.length) return c.runs; return c.running?[c.running]:[]; }
@@ -6293,6 +6379,16 @@ async function loadReplayLog(rec, stageName){
   rec._ll[l.stage]=job;
   return job;
 }
+function applyReplayProfileStages(rec,profileStages){
+  if(!rec||!Array.isArray(rec.logs)||!Array.isArray(profileStages)) return;
+  const byName={}; profileStages.forEach(stage=>{ if(stage&&stage.name) byName[stage.name]=stage; });
+  rec.logs.forEach(log=>{
+    const stage=log&&byName[log.stage];
+    if(!stage||!stage.status) return;
+    log.status=stage.status;
+    if(typeof stage.durSec==='number') log.dur=stage.durSec;
+  });
+}
 async function loadReplayLogs(rec){
   const jobs=[];
   const selected=flowStages().find(s=>s.id===selectedId);
@@ -6300,16 +6396,25 @@ async function loadReplayLogs(rec){
   /* 阶段状态校正：服务端定时执行的真实结果写入了归档目录的 run-<tag>.profile.json；
      历史条目里的阶段状态可能因页面/服务端记录按 tag 合并而被回退为 idle（未反映服务端实际执行），
      回放时按 profile.stages 覆盖各阶段 status/dur，使详情如实展示「已完成/跳过/错误/终止」。 */
-  if(rec.archive && rec.tag && !rec._profChecked){
-    rec._profChecked=true;
-    jobs.push(fetch('/api/worktable/file?path='+encodeURIComponent(rec.archive+'/run-'+rec.tag+'.profile.json'))
-      .then(r=> r.ok ? r.text() : null)
-      .then(t=>{ if(!t) return; let prof; try{ prof=JSON.parse(t); }catch(e){ return; }
-        if(!prof || !Array.isArray(prof.stages)) return;
-        const m={}; prof.stages.forEach(s=>{ if(s && s.name) m[s.name]=s; });
-        logs.forEach(l=>{ if(l && l.stage && m[l.stage] && m[l.stage].status){ l.status=m[l.stage].status; if(typeof m[l.stage].durSec==='number') l.dur=m[l.stage].durSec; } });
-      })
-      .catch(()=>{}));
+  if(rec.archive && rec.tag){
+    let state=rec._profState;
+    if(!state||typeof state!=='object'){
+      state={checked:!!rec._profChecked,promise:null,stages:null};
+      rec._profState=state;
+    }
+    if(Array.isArray(state.stages)) applyReplayProfileStages(rec,state.stages);
+    else{
+      if(!state.checked&&!state.promise){
+        state.checked=true; rec._profChecked=true;
+        state.promise=fetch('/api/worktable/file?path='+encodeURIComponent(rec.archive+'/run-'+rec.tag+'.profile.json'))
+          .then(r=>r.ok?r.text():null)
+          .then(text=>{ if(!text) return; let profile; try{ profile=JSON.parse(text); }catch(e){ return; } if(profile&&Array.isArray(profile.stages)) state.stages=profile.stages; })
+          .catch(()=>{})
+          .finally(()=>{ state.promise=null; });
+      }
+      /* state 在同 tag 的刷新前后共享：无论 profile 已完成还是仍在途，每个回放对象都从同一结果重放校正。 */
+      if(state.promise) jobs.push(state.promise.then(()=>{ if(Array.isArray(state.stages)) applyReplayProfileStages(rec,state.stages); }));
+    }
   }
   if(jobs.length) await Promise.all(jobs);
 }
@@ -6654,28 +6759,98 @@ $('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!c
 function applyHistoryRefreshPayload(st, clearAtStart){
   if(histClearedAt!==clearAtStart) return false;
   const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+  const remoteClearedAt=Number.isFinite(cfg.histClearedAt)?cfg.histClearedAt:0;
+  /* 本页刚清空但 400ms 防抖 PUT 尚未落盘时，服务端仍会返回旧版本；版本落后也必须丢弃，
+     不能只防“请求发出后才清空”这一种竞态。 */
+  if(remoteClearedAt<clearAtStart) return false;
   if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
   if(Array.isArray(st&&st.history) && st.history.length) history=st.history;
   else if(histClearedAt) history=[];
   return true;
 }
-/* 「↻ 刷新」运行历史：从服务端重新拉取——本页加载后，其他浏览器的保存与服务端定时运行追加的记录
-   已在服务端落盘合并（PUT 按 tag/ts 合并），本地不会自己出现，手动拉取才合并进来 */
+/* 服务端刷新会用新对象替换历史列表；把回放懒加载缓存移交给稳定主键对应的新对象，避免每 3 秒
+   重读日志文件，也避免列表头部插入记录后按旧下标误选另一条运行。 */
+function preserveHistoryRuntimeCache(previous,next){
+  if(!previous||!next) return;
+  ['_lc','_lm','_ll','_profChecked','_profState'].forEach(key=>{
+    if(Object.prototype.hasOwnProperty.call(previous,key)) next[key]=previous[key];
+  });
+}
+function rebindHistoryRefreshSelection(previousSelection,wasReplay){
+  if(!previousSelection) return null;
+  const key=analysisHistoryKey(previousSelection);
+  const index=history.findIndex(rec=>analysisHistoryKey(rec)===key);
+  if(index<0){ selHistoryIdx=-1; return null; }
+  const next=history[index];
+  preserveHistoryRuntimeCache(previousSelection,next);
+  if(next._profState&&Array.isArray(next._profState.stages)) applyReplayProfileStages(next,next._profState.stages);
+  selHistoryIdx=index;
+  if(wasReplay) replayRec=next;
+  return next;
+}
+let _historyRefreshPromise=null, _historyRefreshNotifyError=false;
+let _historyEtag='';
+/* 轻量历史接口（/pipeline/history）是后加的服务端路由：页面被工作台经 /api/worktable/site 从源码目录
+   直接托管时，前端可能新于正在运行的旧版插件（如 v1.1.2 发行包无此路由）。首次收到 404 即永久降级为
+   GET /api/worktable/pipeline 全量存储（与旧版手动刷新同一载荷，无 ETag 短路），本次会话内不再打缺失路由。 */
+let _historyLightApiMissing=false;
+const HISTORY_REFRESH_MS=3000;
+/* 手动与自动刷新共用同一个在途请求。筛选、页码和分析勾选本来就是独立状态，只更新 history；
+   当前回放按 tag（旧记录按稳定元数据）重新绑定，并保留已经加载的日志尾部。 */
+async function refreshHistoryFromServer(showError){
+  if(_historyRefreshPromise){ if(showError) _historyRefreshNotifyError=true; return _historyRefreshPromise; }
+  _historyRefreshNotifyError=!!showError;
+  const clearAtStart=histClearedAt;
+  const previousSelection=(selHistoryIdx>=0&&history[selHistoryIdx])||replayRec||null;
+  const wasReplay=!!replayRec;
+  const request=(async()=>{
+    try{
+      const headers={}; if(_historyEtag) headers['If-None-Match']=_historyEtag;
+      let response=await fetch(_historyLightApiMissing?'/api/worktable/pipeline':'/api/worktable/pipeline/history',{cache:'no-store',headers:headers});
+      if(response.status===404&&!_historyLightApiMissing){
+        /* 旧版插件无轻量历史路由：降级全量存储接口，清掉只对轻量接口有意义的 ETag。 */
+        _historyLightApiMissing=true; _historyEtag='';
+        response=await fetch('/api/worktable/pipeline',{cache:'no-store',headers:{}});
+      }
+      if(response.status===304) return true;
+      if(!response.ok) throw new Error('HTTP '+response.status);
+      const etag=_historyLightApiMissing?null:(response.headers&&response.headers.get('etag'));
+      const state=await response.json();
+      /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
+         防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录。 */
+      if(!applyHistoryRefreshPayload(state,clearAtStart)) return false;
+      const rebound=rebindHistoryRefreshSelection(previousSelection,wasReplay);
+      if(wasReplay){
+        if(rebound){
+          rebuildReplayNodes(rebound); _detailKey=''; renderFlow(); renderDetail();
+          loadReplayLogs(rebound).then(()=>{ if(replayRec===rebound){ rebuildReplayNodes(rebound); _detailKey=''; renderFlow(); renderDetail(); } });
+        }
+        else exitHistoryReplay();
+      }
+      renderHistory(); renderStats(); refreshArchiveTip();
+      if(etag) _historyEtag=etag;
+      return true;
+    }catch(error){
+      if(_historyRefreshNotifyError) alert('从服务端拉取运行历史失败：'+String(error&&error.message||error));
+      return false;
+    }
+  })();
+  _historyRefreshPromise=request;
+  try{ return await request; }
+  finally{
+    if(_historyRefreshPromise===request){ _historyRefreshPromise=null; _historyRefreshNotifyError=false; }
+  }
+}
+let _historyRefreshTimer=null;
+function startHistoryAutoRefresh(){
+  if(_historyRefreshTimer!==null) return;
+  _historyRefreshTimer=setInterval(()=>{ if(document.hidden===true) return; refreshHistoryFromServer(false); },HISTORY_REFRESH_MS);
+}
+/* 「↻ 刷新」仍保留即时手动入口；页面可见时还会每 3 秒自动同步其他浏览器与服务端运行新增的记录。 */
 $('histRefresh').addEventListener('click', async ()=>{
   const b=$('histRefresh'); b.disabled=true;
-  const clearAtStart=histClearedAt;
-  try{
-    const r=await fetch('/api/worktable/pipeline');
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const st=await r.json();
-    /* buildNo / histClearedAt 取双方较大值回填（与服务端合并、loadServerState 同规则）：
-       防另一浏览器跑过后本地 buildNo 回退重号、清空标记回退复活旧记录 */
-    if(!applyHistoryRefreshPayload(st,clearAtStart)) return;
-    /* 历史回放基于行下标，列表整体变了必须退出回放并清选中，否则指向错误的记录 */
-    if(selHistoryIdx>=0){ exitHistoryReplay(); selHistoryIdx=-1; }
-    histPage=0; renderHistory(); renderStats(); refreshArchiveTip();
-  }catch(e){ alert('从服务端拉取运行历史失败：'+String(e && e.message || e)); }
+  try{ await refreshHistoryFromServer(true); }
   finally{ b.disabled=false; }
 });
 /* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
@@ -6847,10 +7022,11 @@ function renderPipelines(){
   renderPlFilterOptions();
   /* 已置顶（pinnedAt）排最前，多条按置顶时间新→旧；未置顶保持数组原序（内置经加载迁移居首）——Array.sort 稳定，键相同不动相对位置 */
   const view=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
+  const queueCounts=pipelineQueueCounts();
   $('plCount').textContent = pipelines.length ? ('('+view.length+'/'+pipelines.length+')') : '';
   const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw || plFilter.favorite==='favorite') ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
   const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="3" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="4" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
   view.forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
@@ -6861,10 +7037,14 @@ function renderPipelines(){
     /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
     const auditTag = p.builtIn ? '' : ((plOwnerOf(p) ? ' · 创建 @'+esc(plOwnerOf(p)) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwnerOf(p)) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
     if(isCur) tr.className='sel';
-    /* 是否在运行不在本表展示：在跑/排队信息统一在「运行队列」查看（点队列条目看阶段详情），本表整行点击即选用 */
+    /* 本表只展示该流水线在全部来源中的运行/排队汇总，不把某一次运行或「查看中」状态绑进行点击；
+       逐次详情仍统一在「运行队列」查看，本表整行点击始终选用流水线。 */
     tr.title='点击选用该流水线';
+    const queueCount=queueCounts[p.id]||{running:0,queued:0};
+    const queueTitle=(queueCount.running||queueCount.queued)?('运行 '+queueCount.running+' · 排队 '+queueCount.queued):'当前无运行或排队任务';
     tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
+      '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
       ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
     tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
@@ -7703,7 +7883,7 @@ function scheduleGpuRefresh(){
 /* 从服务端拉取配置与历史（历史条目只含元数据 + 日志文件路径，全量日志在归档文件按需读取）；
    服务端有数据则覆盖本地并重渲染；拉取失败不打开写门（stateLoaded 保持 false，防覆盖服务端数据）。
    状态就绪（成功覆盖或失败保留本地）后用最终环境列表延迟刷新一次 GPU，不再阻塞首屏 */
-loadServerState().finally(scheduleGpuRefresh);
+loadServerState().finally(()=>{ scheduleGpuRefresh(); startHistoryAutoRefresh(); });
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
 /* 服务端权威运行队列：启动即拉一次，之后每秒同步；旧浏览器在场快照仍兼容展示。 */

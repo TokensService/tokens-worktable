@@ -44,20 +44,25 @@ function directChildren(markup) {
   return children;
 }
 
-test('运行历史操作紧跟清除筛选并按重跑、清空、刷新排列', () => {
-  const actionIds = ['histFilterClear', 'histRerun', 'histClear', 'histRefresh'];
+test('运行历史「刷新」排在关键字之前，其余操作按清除筛选、重跑、清空排列', () => {
+  const actionIds = ['histRefresh', 'histFilterClear', 'histRerun', 'histClear'];
   for (const id of actionIds) {
     assert.equal((source.match(new RegExp('\\bid="' + id + '"', 'g')) || []).length, 1, '#' + id + ' 应只出现一次');
   }
   const children = directChildren(elementMarkup(source, 'histFilterBar'));
+
+  assert.equal(children[0], 'button#histRefresh', '刷新应是筛选栏的第一个直接子元素（位于关键字之前）');
+  assert.ok(
+    source.indexOf('id="histRefresh"') < source.indexOf('id="histFilterKw"'),
+    '刷新按钮应出现在关键字输入框之前'
+  );
   const clearFilterIndex = children.indexOf('button#histFilterClear');
 
   assert.notEqual(clearFilterIndex, -1, '清除筛选应是筛选栏的直接子元素');
-  assert.deepEqual(children.slice(clearFilterIndex, clearFilterIndex + 4), [
+  assert.deepEqual(children.slice(clearFilterIndex, clearFilterIndex + 3), [
     'button#histFilterClear',
     'button#histRerun',
     'button#histClear',
-    'button#histRefresh',
   ]);
 });
 

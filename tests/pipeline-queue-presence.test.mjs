@@ -14,6 +14,7 @@ function loadQueueRoute(overrides = {}) {
   const code = stripTypeScriptTypes(source.slice(start, end), { mode: 'transform' })
   let handler
   const context = {
+    URL,
     webServer: { register(route) { handler = route.handler } },
     readJsonBody: async req => req.body || {},
     json(res, status, body) { res.writeHead(status); res.end(JSON.stringify(body)) },
@@ -34,9 +35,9 @@ function response() {
   }
 }
 
-async function call(handler, method, body) {
+async function call(handler, method, body, url = '/api/worktable/pipeline/queue') {
   const res = response()
-  await handler({ method, body }, res)
+  await handler({ method, body, url }, res)
   return res
 }
 
@@ -138,4 +139,36 @@ test('队列接口返回服务端权威状态，页面离场清理只影响旧�
   const missing = await call(handler, 'POST', { action: 'cancel', runId: 'missing' })
   assert.equal(missing.status, 404)
   assert.deepEqual(missing.json(), { ok: false, state: 'missing' })
+})
+
+test('队列接口按运行和阶段返回实时日志，不把日志混入普通队列快照', async () => {
+  const calls = []
+  const handler = loadQueueRoute({
+    pipelineExecutions: {
+      snapshot: () => ({ runs: [{ id: 'run-1', stages: [], nodes: {} }], queue: [] }),
+      cancel: () => ({ ok: false, state: 'missing' }),
+      log: (runId, stageId) => {
+        calls.push([runId, stageId])
+        return runId === 'run-1' && stageId === 'build'
+          ? { text: 'first\nlatest\n', truncated: false, revision: 2 }
+          : null
+      },
+    },
+  })
+
+  const found = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build')
+  assert.equal(found.status, 200)
+  assert.deepEqual(found.json(), { text: 'first\nlatest\n', truncated: false, revision: 2 })
+  assert.deepEqual(calls, [['run-1', 'build']])
+
+  const unchanged = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2')
+  assert.equal(unchanged.status, 304)
+  assert.equal(unchanged.body, '')
+
+  const missing = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=missing')
+  assert.equal(missing.status, 404)
+  assert.deepEqual(missing.json(), { error: 'run or stage not found' })
+
+  const snapshot = await call(handler, 'GET')
+  assert.equal(JSON.stringify(snapshot.json()).includes('latest'), false)
 })

@@ -197,16 +197,16 @@ assert values["lmcache"]["direct"]["image"] == {
 }
 assert values["lmcacheSidecar"] == {
     "enabled": False,
-    "mpPortBase": 18000,
-    "httpPortBase": 18080,
-    "l1InitSizeGb": 0,
-    "l1SizeGb": 0,
-    "l1AlignBytes": 4096,
+    "mpPortBase": 5555,
+    "httpPortBase": 5565,
+    "l1InitSizeGb": 20,
+    "l1SizeGb": 200,
+    "l1AlignBytes": "4096",
     "maxWorkers": 1,
     "logLevel": "INFO",
     "resources": {
-        "requests": {"cpu": 1, "memory": "1Gi"},
-        "limits": {"cpu": 1, "memory": "1Gi"},
+        "requests": {"cpu": 4, "memory": "8Gi"},
+        "limits": {"cpu": 8, "memory": "240Gi"},
     },
 }
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]

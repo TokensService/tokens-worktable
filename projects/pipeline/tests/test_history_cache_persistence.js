@@ -7,7 +7,7 @@ test('服务端持久化历史剔除回放缓存但保留业务字段',()=>{
   const end=source.indexOf('async function pushState(',start);
   assert.ok(start>=0 && end>start,'historyForPersist not found');
   const ctx={history:[
-    {no:1,tag:'t1',pipeline:'部署',logs:[{stage:'构建',logFile:'/logs/a.log'}],_lc:{构建:'x'.repeat(1024)},_lm:{构建:{size:1024}},_ll:{构建:{}},_profChecked:true},
+    {no:1,tag:'t1',pipeline:'部署',logs:[{stage:'构建',logFile:'/logs/a.log'}],_lc:{构建:'x'.repeat(1024)},_lm:{构建:{size:1024}},_ll:{构建:{}},_profChecked:true,_profState:{checked:true,stages:[]}},
     {no:0,demo:true,_lc:{演示:'demo'}},
   ]};
   vm.createContext(ctx); vm.runInContext(source.slice(start,end),ctx);

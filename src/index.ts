@@ -259,13 +259,66 @@ async function readLocalFile(abs: string, tailBytesRaw: string | null) {
 
 /** 回放日志与 profile 校正缓存只属于浏览器内存，不得进入共享历史存储。 */
 function cleanPipelineHistory(history: any[]) {
-  const transient = new Set(['_lc', '_lm', '_ll', '_profChecked'])
+  const transient = new Set(['_lc', '_lm', '_ll', '_profChecked', '_profState'])
   return history.map((record: any) => {
     if (!record || typeof record !== 'object' || Array.isArray(record)) return record
     const clean: any = {}
     for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value
     return clean
   })
+}
+
+/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
+function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
+  const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
+  const diskCfg = diskConfig && typeof diskConfig === 'object' ? diskConfig : {}
+  const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
+  if (clearedAt) config.histClearedAt = clearedAt
+  config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0)
+  const afterClear = (record: any) => !clearedAt || (Number(record && record.ts) || 0) > clearedAt
+  const acceptedClient = clientHistory.filter(afterClear)
+  const keyOf = (record: any) => (record && record.tag) ? 'tag:' + record.tag : ((record && record.ts) ? 'ts:' + record.ts : 'no:' + (record && record.no) + ':' + (record && record.pipeline))
+  const seen = new Set(acceptedClient.map(keyOf))
+  const serverOnly = diskHistory.filter((record: any) => afterClear(record) && !seen.has(keyOf(record)))
+  const history = acceptedClient.concat(serverOnly)
+  history.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))
+  if (history.length > 500) history.length = 500
+  return { config, history }
+}
+
+/** 自动刷新专用轻量接口：只在存储版本变化时读取正文，不下发流水线/环境/仓库等完整配置。 */
+async function handlePipelineHistoryRequest(req: any, res: any, deps: {
+  statStore: () => Promise<{ ino?: number | bigint; size: number | bigint; mtimeMs: number } | null>;
+  readStore: () => Promise<any>;
+}) {
+  try {
+    if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+    const stat = await deps.statStore()
+    const etag = stat ? '"' + String(stat.ino || 0) + '-' + String(stat.size) + '-' + String(stat.mtimeMs) + '"' : '"missing"'
+    if (String(req.headers?.['if-none-match'] || '') === etag) {
+      res.writeHead(304, { etag, 'cache-control': 'no-store' }); res.end(); return
+    }
+    const store = await deps.readStore()
+    const sourceConfig = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+    const config = {
+      buildNo: Number.isFinite(sourceConfig.buildNo) ? sourceConfig.buildNo : 0,
+      histClearedAt: Number.isFinite(sourceConfig.histClearedAt) ? sourceConfig.histClearedAt : 0,
+    }
+    const history = Array.isArray(store.history) ? cleanPipelineHistory(store.history) : []
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', etag })
+    res.end(JSON.stringify({ config, history }))
+  } catch (error) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify({ error: String(error) }))
+  }
+}
+
+/** history 轮询必须暴露真实读取失败；只有首次尚未创建存储文件时才返回空状态。 */
+async function readPipelineHistoryStore(file: string): Promise<any> {
+  let raw: string
+  try { raw = await readFile(file, 'utf8') }
+  catch (error: any) { if (error?.code === 'ENOENT') return {}; throw error }
+  return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
 }
 
 /** 将历史裁成能放入存储上限的最新前缀；配置和每条候选记录至多序列化一次。 */
@@ -503,6 +556,231 @@ function serverAbortReason(signal?: AbortSignal): any {
   return error
 }
 
+function serverRequestTimeoutError(): any {
+  const error: any = new Error('request timeout')
+  error.code = 'ETIMEDOUT'
+  return error
+}
+
+function serverTargetPolicyError(message: string): any {
+  const error: any = new Error(message)
+  error.code = 'ELOCALTARGET'
+  error.serverPolicyError = true
+  error.statusCode = 403
+  return error
+}
+
+function serverIpFamily(hostname: string): 0 | 4 | 6 {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const nums = h.split('.').map((part) => (part && /^\d+$/.test(part) ? Number(part) : NaN))
+  if (nums.length === 4 && nums.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) return 4
+  return h.includes(':') ? 6 : 0
+}
+
+async function serverResolveLocalAddresses(hostname: string, signal: AbortSignal | undefined, timeoutMs: number, resolveFn?: any): Promise<Array<{ address: string; family: 4 | 6 }>> {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (!isLocalTarget(host)) throw serverTargetPolicyError('目标仅允许回环或内网地址')
+  const literalFamily = serverIpFamily(host)
+  if (literalFamily) return [{ address: host, family: literalFamily }]
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const resolver = resolveFn || (await import('node:dns/promises')).lookup
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const records: any = await new Promise((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let listening = false
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      if (signal && listening) { signal.removeEventListener('abort', onAbort); listening = false }
+    }
+    const finish = (error: any, value?: any) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error); else resolve(value)
+    }
+    const onAbort = () => finish(serverAbortReason(signal))
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+      listening = true
+      if (signal.aborted) { onAbort(); return }
+    }
+    timer = setTimeout(() => finish(serverRequestTimeoutError()), Math.max(1, timeoutMs))
+    Promise.resolve()
+      .then(() => resolver(host, { all: true, verbatim: true }))
+      .then((value) => finish(null, value), (error) => finish(error))
+  })
+  const addresses = Array.isArray(records) ? records.map((record: any) => ({
+    address: String(record && record.address || '').toLowerCase().replace(/^\[|\]$/g, ''),
+    family: Number(record && record.family),
+  })) : []
+  if (!addresses.length) {
+    const error: any = new Error('目标 DNS 未返回地址')
+    error.code = 'ENOTFOUND'
+    throw error
+  }
+  const invalid = addresses.find((record: any) => (record.family !== 4 && record.family !== 6)
+    || serverIpFamily(record.address) !== record.family
+    || !isLocalTarget(record.address))
+  if (invalid) throw serverTargetPolicyError('目标解析到了回环或内网之外的地址：' + invalid.address)
+  return addresses as Array<{ address: string; family: 4 | 6 }>
+}
+
+function serverPinnedLookup(addresses: Array<{ address: string; family: 4 | 6 }>): any {
+  let cursor = 0
+  return (_hostname: string, options: any, callback: any) => {
+    const requestedFamily = typeof options === 'number' ? Number(options) : Number(options && options.family)
+    const candidates = requestedFamily === 4 || requestedFamily === 6
+      ? addresses.filter((record) => record.family === requestedFamily)
+      : addresses
+    if (!candidates.length) {
+      const error: any = new Error('validated target has no address for requested family')
+      error.code = 'ENOTFOUND'
+      callback(error)
+      return
+    }
+    if (options && typeof options === 'object' && options.all === true) {
+      callback(null, candidates.map((record) => ({ ...record })))
+      return
+    }
+    const selected = candidates[cursor++ % candidates.length]
+    callback(null, selected.address, selected.family)
+  }
+}
+
+/** DSH 开启环境代理时，远程连接模式仍须像 /api/worktable/proxy 一样直连内网服务。 */
+async function serverDirectFetch(url: string, options: any = {}, timeoutMs = 20_000): Promise<any> {
+  const startedAt = Date.now()
+  const totalTimeoutMs = Math.max(1, Number(timeoutMs) || 20_000)
+  const target = new URL(url)
+  if (!/^https?:$/.test(target.protocol)) throw new Error('unsupported protocol')
+  const signal: AbortSignal | undefined = options && options.signal
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const addresses = options && options.requireLocalTarget === true
+    ? await serverResolveLocalAddresses(target.hostname, signal, totalTimeoutMs, options.resolveFn)
+    : null
+  if (signal && signal.aborted) throw serverAbortReason(signal)
+  const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
+  if (remainingMs <= 0) throw serverRequestTimeoutError()
+  return new Promise((resolve, reject) => {
+    let request: any = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let listening = false
+    let responseReceived = false
+    let promiseSettled = false
+    const cleanup = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      if (signal && listening) { signal.removeEventListener('abort', onAbort); listening = false }
+    }
+    const onAbort = () => { try { request?.destroy(serverAbortReason(signal)) } catch {} }
+    const requestOptions: any = {
+      method: String(options && options.method || 'GET').toUpperCase(),
+      headers: options && options.headers ? options.headers : {},
+      agent: options && options.useProxy === true ? undefined : new reqLib.Agent(),
+    }
+    if (addresses) requestOptions.lookup = serverPinnedLookup(addresses)
+    request = reqLib.request(url, requestOptions, (response: any) => {
+      responseReceived = true
+      promiseSettled = true
+      resolve({ status: Number(response.statusCode) || 0, headers: response.headers || {}, body: response })
+    })
+    request.once('error', (error: any) => {
+      cleanup()
+      if (!promiseSettled) { promiseSettled = true; reject(error) }
+    })
+    request.once('close', () => {
+      cleanup()
+      if (!responseReceived && !promiseSettled) {
+        const error: any = new Error('connection closed before response')
+        error.code = 'ECONNRESET'
+        promiseSettled = true
+        reject(error)
+      }
+    })
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true })
+      listening = true
+      if (signal.aborted) { onAbort(); return }
+    }
+    timer = setTimeout(() => {
+      try { request.destroy(serverRequestTimeoutError()) } catch {}
+    }, Math.max(1, remainingMs))
+    if (options && options.body !== undefined) request.write(options.body)
+    request.end()
+  })
+}
+
+function serverLocalFetch(url: string, options: any = {}, timeoutMs = 20_000): Promise<any> {
+  return serverDirectFetch(url, { ...(options || {}), requireLocalTarget: true }, timeoutMs)
+}
+
+function serverProxyTargetFetch(url: string, options: any, timeoutMs: number): Promise<any> {
+  const target = new URL(url)
+  if (!/^https?:$/.test(target.protocol)) throw new Error('unsupported protocol')
+  if (!isLocalTarget(target.hostname)) throw serverTargetPolicyError('only loopback/private targets allowed')
+  const useProxy = options && options.useProxy === true
+  if (useProxy && serverIpFamily(target.hostname) === 0) {
+    throw serverTargetPolicyError('使用系统代理时目标必须是回环或内网 IP 字面量')
+  }
+  return useProxy
+    ? serverDirectFetch(url, options, timeoutMs)
+    : serverLocalFetch(url, options, timeoutMs)
+}
+
+function registerWorktableProxyRoute(webServer: any): void {
+  webServer.register({
+    kind: 'exact',
+    path: PROXY_PATH,
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const urlStr = typeof body.url === 'string' ? body.url.trim() : ''
+        const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase()
+        if (!urlStr) { json(res, 400, { error: 'missing url' }); return }
+        let target: URL
+        try { target = new URL(urlStr) } catch { json(res, 400, { error: 'bad url' }); return }
+        if (!/^https?:$/.test(target.protocol)) { json(res, 400, { error: 'unsupported protocol' }); return }
+        if (!isLocalTarget(target.hostname)) { json(res, 403, { error: 'only loopback/private targets allowed' }); return }
+        const headers: Record<string, string> = {}
+        if (body.headers && typeof body.headers === 'object') {
+          for (const [key, value] of Object.entries(body.headers)) {
+            if (typeof value === 'string') headers[key] = value
+          }
+        }
+        const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (typeof body.body === 'string' ? body.body : undefined)
+        const useProxy = body.useProxy === true
+        const fwdHeaders: Record<string, string> = {}
+        for (const [key, value] of Object.entries(headers)) {
+          const lowerKey = key.toLowerCase()
+          if (lowerKey === 'host' || lowerKey === 'content-length' || lowerKey === 'connection') continue
+          fwdHeaders[key] = value
+        }
+        const upstream = await serverProxyTargetFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, 20_000)
+        const result = {
+          status: upstream.status,
+          headers: upstream.headers,
+          body: await collectProxyResponse(upstream.body, 20 * 1024 * 1024),
+        }
+        const outHeaders: Record<string, string> = {}
+        for (const key of Object.keys(result.headers)) outHeaders[key] = String(result.headers[key])
+        json(res, 200, {
+          status: result.status,
+          statusText: '',
+          headers: outHeaders,
+          contentType: String(result.headers['content-type'] ?? ''),
+          finalUrl: urlStr,
+          body: result.body.toString('utf8'),
+        })
+      } catch (error: any) {
+        json(res, Number(error?.statusCode) || 500, { error: String(error?.message || error) })
+      }
+    },
+  })
+}
+
 function abortableServerSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -567,6 +845,19 @@ async function readServerResponseText(response: any, maxBytes: number, label: st
   return text
 }
 
+function serverFetchErrorDetail(error: any): string {
+  const cause = error && error.cause && typeof error.cause === 'object' ? error.cause : null
+  const code = String((cause && cause.code) || (error && error.code) || '').trim()
+  let message = String((cause && cause.message) || (error && error.message) || error || 'unknown network error')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/(https?:\/\/)[^@\s/]+@/gi, '$1***@')
+    .replace(/([?&](?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|api[_-]?key|apikey|key|password|passwd|pass|secret|auth|authorization|credential|signature|sig)=)[^&\s]+/gi, '$1***')
+    .trim()
+    .slice(0, 500)
+  if (!message) message = 'unknown network error'
+  return code && !message.toUpperCase().includes(code.toUpperCase()) ? code + ': ' + message : message
+}
+
 async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, maxBytes = PIPELINE_REMOTE_TEXT_LIMIT, signal?: AbortSignal): Promise<{ response: any; text: string }> {
   if (signal && signal.aborted) throw serverAbortReason(signal)
   ensureServerStageTime(deadline, label)
@@ -595,7 +886,12 @@ async function serverFetchResponse(fetchFn: typeof fetch, url: string, options: 
     return { response, text }
   } catch (error) {
     if (abortKind === 'deadline') throw new Error(label + '等待超时')
-    throw error
+    if (abortKind === 'external' || (signal && signal.aborted)) throw serverAbortReason(signal)
+    if (String(error && (error as Error).message || '').startsWith(label)) throw error
+    const wrapped: any = new Error(label + '请求失败：' + serverFetchErrorDetail(error))
+    wrapped.networkError = !(error && (error as any).serverPolicyError)
+    wrapped.cause = error
+    throw wrapped
   } finally {
     if (timeout) clearTimeout(timeout)
     if (signal && linked) signal.removeEventListener('abort', abortFromExternal)
@@ -610,6 +906,20 @@ async function serverFetchJson(fetchFn: typeof fetch, url: string, options: any,
     throw error
   }
   try { return JSON.parse(result.text || '{}') } catch { throw new Error(label + ' 返回了无效 JSON') }
+}
+
+async function serverFetchJsonWithRetry(fetchFn: typeof fetch, url: string, options: any, deadline: number, label: string, sleep: (ms: number, signal?: AbortSignal) => Promise<void>, signal?: AbortSignal): Promise<any> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await serverFetchJson(fetchFn, url, options, deadline, label, signal)
+    } catch (error) {
+      const status = Number(error && (error as any).httpStatus)
+      const retryable = !!(error && (error as any).networkError) || status === 408 || status === 429 || (status >= 500 && status <= 599)
+      if (!retryable || attempt >= 3 || (signal && signal.aborted)) throw error
+      ensureServerStageTime(deadline, label)
+      await sleep(attempt * 250, signal)
+    }
+  }
 }
 
 function serverBasicAuth(config: any): Record<string, string> {
@@ -765,19 +1075,24 @@ function serverEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
   return 'running'
 }
 
-async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
+async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; directFetchFn?: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const deadline = serverStageDeadline(stage)
   try {
     const service = config && config.evaltok && typeof config.evaltok === 'object' ? config.evaltok : {}
     const base = String(service.url || '').replace(/\/+$/, '')
     if (!base) throw new Error('EvalTokens 服务地址未配置')
+    if (service.mode === 'remote' && !isLocalTarget(new URL(base).hostname)) {
+      throw new Error('EvalTokens 远程服务器端连接仅允许回环或内网地址')
+    }
+    if (service.mode === 'remote' && !deps.directFetchFn) throw new Error('EvalTokens 内网直连传输不可用')
+    const fetchFn = service.mode === 'remote' ? deps.directFetchFn! : deps.fetchFn
     const headers: Record<string, string> = service.token ? { Authorization: 'Bearer ' + String(service.token) } : {}
     const vars = serverRunVariables(runCtx, varsPool)
     const detail = stage && stage.evaltokens && typeof stage.evaltokens === 'object' ? stage.evaltokens : {}
     const requestedId = substituteServerRunVars(detail.taskId || '', vars).trim()
     const requestedName = substituteServerRunVars(detail.taskName || '', vars).trim()
     if (!requestedId && !requestedName) throw new Error('未选择 EvalTokens 任务')
-    const tasksData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表', signal)
+    const tasksData = await serverFetchJsonWithRetry(fetchFn, base + '/api/open/v1/tasks', { method: 'GET', headers }, deadline, 'EvalTokens 任务列表', deps.sleep, signal)
     const tasks = serverWrappedList(tasksData, ['data', 'tasks', 'list', 'items', 'results'])
     const idOf = (item: any) => String((item && (item.id || item.task_id || item.uuid || item._id)) || '')
     const nameOf = (item: any) => String((item && (item.name || item.title || item.task_name || item.display_name)) || '')
@@ -795,7 +1110,7 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
       }
     }
     const startHeaders = { ...headers, 'Content-Type': 'application/json' }
-    const started = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
+    const started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
       method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
     }, deadline, 'EvalTokens 启动任务', signal)
     const runId = String((started && started.run_id) || '')
@@ -803,7 +1118,7 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
     let current: any = started
     for (;;) {
       ensureServerStageTime(deadline, 'EvalTokens 任务')
-      const runsData = await serverFetchJson(deps.fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表', signal)
+      const runsData = await serverFetchJsonWithRetry(fetchFn, base + '/api/open/v1/tasks/runs?task_id=' + encodeURIComponent(taskId), { method: 'GET', headers }, deadline, 'EvalTokens 运行列表', deps.sleep, signal)
       const runs = serverWrappedList(runsData, ['runs', 'data', 'items', 'results'])
       const matched = runs.find((item) => String((item && (item.run_id || item.id)) || '') === runId)
       if (matched) current = matched
@@ -1000,6 +1315,8 @@ type PipelineExecutionRuntime = {
   signal: AbortSignal;
   setStages: (stages: any[]) => void;
   updateStage: (stageId: string, state: any) => void;
+  replaceLog: (stageId: string, text: unknown) => void;
+  appendLog: (stageId: string, text: unknown) => void;
 }
 
 function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExecutionRuntime) => Promise<void>, limit = 2, queueLimit = 100, hooks?: {
@@ -1014,6 +1331,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     startedAt: number;
     stages: any[];
     nodes: Record<string, any>;
+    logs: Record<string, { text: string; truncated: boolean; revision: number }>;
     controller: AbortController | null;
     resolve: () => void;
     reject: (error: unknown) => void;
@@ -1040,14 +1358,34 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const runIdOf = (plan: any): string => String(plan && (plan.runId || plan.id) || '')
   const stageList = (value: any): any[] => Array.isArray(value) ? value.filter((stage) => stage && typeof stage === 'object') : []
   const idleNode = () => ({ status: 'idle', progress: 0, dur: 0 })
+  const liveLogLimit = 256 * 1024
+  const clipLiveLogTail = (value: string) => {
+    const bytes = Buffer.from(value, 'utf8')
+    if (bytes.length <= liveLogLimit) return { text: value, truncated: false }
+    let start = bytes.length - liveLogLimit
+    while (start < bytes.length && (bytes[start] & 0xC0) === 0x80) start += 1
+    return { text: bytes.subarray(start).toString('utf8'), truncated: true }
+  }
+  const writeLog = (item: ExecutionItem, stageId: string, value: unknown, append: boolean) => {
+    const id = String(stageId || '')
+    if (!id || !item.nodes[id]) return
+    const previous = item.logs[id]
+    const clipped = clipLiveLogTail((append && previous ? previous.text : '') + String(value ?? ''))
+    item.logs[id] = { text: clipped.text, truncated: (append && previous ? previous.truncated : false) || clipped.truncated, revision: (previous?.revision || 0) + 1 }
+  }
   const resetStages = (item: ExecutionItem, stages: any[]) => {
     item.stages = stageList(stages)
     const nodes: Record<string, any> = {}
+    const logs: Record<string, { text: string; truncated: boolean; revision: number }> = {}
     for (const stage of item.stages) {
       const id = String(stage.id ?? '')
-      if (id) nodes[id] = item.nodes[id] || idleNode()
+      if (id) {
+        nodes[id] = item.nodes[id] || idleNode()
+        if (item.logs[id]) logs[id] = item.logs[id]
+      }
     }
     item.nodes = nodes
+    item.logs = logs
   }
   const updateStage = (item: ExecutionItem, stageId: string, state: any) => {
     const id = String(stageId || '')
@@ -1099,6 +1437,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         signal: item.controller.signal,
         setStages: (stages: any[]) => resetStages(item, stages),
         updateStage: (stageId: string, state: any) => updateStage(item, stageId, state),
+        replaceLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, false),
+        appendLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, true),
       }
       const settle = () => {
         active -= 1
@@ -1132,6 +1472,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
           startedAt: 0,
           stages: [],
           nodes: {},
+          logs: {},
           controller: null,
           resolve: resolvePromise,
           reject,
@@ -1145,6 +1486,13 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
       queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
     }),
+    log(runId: string, stageId: string): { text: string; truncated: boolean; revision: number } | null {
+      const id = String(runId || ''), sid = String(stageId || '')
+      const entry = running.find(({ item }) => runIdOf(item.plan) === id)
+      if (!entry || !entry.item.nodes[sid]) return null
+      const current = entry.item.logs[sid]
+      return current ? { ...current } : { text: '', truncated: false, revision: 0 }
+    },
     cancel(runId: string): { ok: boolean; state: 'queued' | 'running' | 'missing' } {
       const id = String(runId || '')
       const queuedIndex = pending.findIndex((item) => runIdOf(item.plan) === id)
@@ -1504,18 +1852,10 @@ export function apply(ctx: Context) {
             const disk = await readPipelineStore()
             const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
             const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
-            const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
-            if (clearedAt) config.histClearedAt = clearedAt
-            config.buildNo = Math.max(Number(config.buildNo) || 0, Number(diskCfg.buildNo) || 0)
-            const keyOf = (r: any) => (r && r.tag) ? 'tag:' + r.tag : ((r && r.ts) ? 'ts:' + r.ts : 'no:' + (r && r.no) + ':' + (r && r.pipeline))
-            const seen = new Set(history.map(keyOf))
-            const serverOnly = diskHistory.filter((r: any) => !seen.has(keyOf(r)) && (clearedAt ? (Number(r && r.ts) || 0) > clearedAt : true))
-            const merged = history.concat(serverOnly)
-            merged.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))   // ts 倒序（新在前）；无 ts 的存量记录沉底
-            if (merged.length > 500) merged.length = 500
+            const merged = mergePipelineHistoryForWrite(config, diskCfg, history, diskHistory)
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
-            const text = serializePipelineStore(config, merged)
+            const text = serializePipelineStore(merged.config, merged.history)
             await writeJsonAtomic(PIPELINE_STORE, text)
           })
           json(res, 200, { ok: true })
@@ -1635,6 +1975,14 @@ export function apply(ctx: Context) {
       return JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
     } catch { return {} }
   }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/history',
+    handler: (req: any, res: any) => handlePipelineHistoryRequest(req, res, {
+      statStore: async () => { try { return await fsStat(PIPELINE_STORE) } catch (error: any) { if (error?.code === 'ENOENT') return null; throw error } },
+      readStore: () => readPipelineHistoryStore(PIPELINE_STORE),
+    }),
+  })
   /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */
   let pipelineExecutions: ReturnType<typeof createPipelineExecutionQueue>
 
@@ -1762,6 +2110,27 @@ export function apply(ctx: Context) {
           return
         }
         if (req.method === 'GET') {
+          const url = new URL(req.url ?? '/api/worktable/pipeline/queue', 'http://dsh.internal')
+          const logRunId = url.searchParams.get('runId')
+          const logStageId = url.searchParams.get('stageId')
+          if (logRunId !== null || logStageId !== null) {
+            if (!logRunId || !logStageId || logRunId.length > 128 || logStageId.length > 128) {
+              json(res, 400, { error: 'invalid runId or stageId' }); return
+            }
+            const revisionRaw = url.searchParams.get('revision')
+            if (revisionRaw !== null && (!/^\d{1,16}$/.test(revisionRaw) || !Number.isSafeInteger(Number(revisionRaw)))) {
+              json(res, 400, { error: 'invalid revision' }); return
+            }
+            const log = pipelineExecutions && typeof pipelineExecutions.log === 'function'
+              ? pipelineExecutions.log(logRunId, logStageId)
+              : null
+            if (!log) { json(res, 404, { error: 'run or stage not found' }); return }
+            if (revisionRaw !== null && Number(revisionRaw) === log.revision) {
+              res.writeHead(304, { 'cache-control': 'no-store' }); res.end(); return
+            }
+            json(res, 200, log)
+            return
+          }
           const now = Date.now()
           for (const [k, v] of queuePresence) if (now - v.seenAt > QUEUE_PRESENCE_TTL) queuePresence.delete(k)
           const clients: any[] = []
@@ -2253,7 +2622,7 @@ export function apply(ctx: Context) {
     return { vars: probe.vars, json: probe.json, fullText: probe.captureFull && !probe.fullTextOverflow ? probe.fullParts.join('') : undefined, fullTextOverflow: probe.fullTextOverflow }
   }
 
-  async function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>, outputFile?: string, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean; vars?: Record<string, string>; json?: any; fullText?: string; fullTextOverflow?: boolean; logFile?: string; logError?: string }> {
+  async function runStageScript(sc: any, runCtx: any, scriptsDir: string, varsPool?: Record<string, string>, timeoutSec?: number, extraEnv?: Record<string, string>, outputFile?: string, signal?: AbortSignal, onLog?: (text: string) => void): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean; stdoutTruncated?: boolean; stderrTruncated?: boolean; vars?: Record<string, string>; json?: any; fullText?: string; fullTextOverflow?: boolean; logFile?: string; logError?: string }> {
     const pool = varsPool || {}
     const ctx0 = (runCtx.envs && runCtx.envs[0]) || null
     const repository = runCtx.repository && typeof runCtx.repository === 'object' ? runCtx.repository : {}
@@ -2332,6 +2701,8 @@ export function apply(ctx: Context) {
     if (signal?.aborted) return { code: 1, stdout: '', stderr: '', aborted: true }
     const isPy = sc.lang === 'py' || /\.py$/i.test(sc.name || '')
     const interp = isPy ? 'python3' : 'bash'
+    const commandLine = '$ ' + interp + ' ' + (sc.name || sc.path) + (args.length ? ' ' + args.join(' ') : '') + '\n'
+    const pushLiveLog = (text: string) => { if (text && onLog) try { onLog(text) } catch {} }
     const requestedLog = typeof outputFile === 'string' && outputFile ? pathResolve(outputFile) : ''
     let file: Awaited<ReturnType<typeof fsOpen>> | null = null
     let logError = ''
@@ -2339,9 +2710,10 @@ export function apply(ctx: Context) {
       try {
         await fsMkdir(dirname(requestedLog), { recursive: true })
         file = await fsOpen(requestedLog, 'w')
-        await file.writeFile('$ ' + interp + ' ' + (sc.name || sc.path) + (args.length ? ' ' + args.join(' ') : '') + '\n', 'utf8')
+        await file.writeFile(commandLine, 'utf8')
       } catch (error) { logError = String(error); try { await file?.close() } catch {}; file = null }
     }
+    pushLiveLog(commandLine)
     return new Promise((resolvePromise) => {
       const stdoutTail = createServerTextTail(), stderrTail = createServerTextTail()
       const probe = createServerOutputProbe(serverScriptNeedsFull(sc.outVars))
@@ -2357,6 +2729,7 @@ export function apply(ctx: Context) {
         pending = pending.then(() => file!.writeFile(text, 'utf8')).catch(error => { logError = String(error) }).finally(() => { pendingBytes = Math.max(0, pendingBytes - bytes); resume() })
         if (pendingBytes >= backlogLimit) pause()
       }
+      const emitLog = (text: string) => { writeLog(text); pushLiveLog(text) }
       /* stdout/stderr 的 data chunk 不等于文本行：只在真实换行后添加 stderr 标记，避免把跨 chunk 的一行撕开。 */
       const formatLogChunk = (text: string, stream: 'stdout' | 'stderr') => {
         let out = lastLogStream && lastLogStream !== stream && !logLineStart ? '\n' : ''
@@ -2371,8 +2744,8 @@ export function apply(ctx: Context) {
         lastLogStream = stream
         return out
       }
-      const appendStdout = (text: string) => { appendServerTextTail(stdoutTail, text); appendServerOutputProbe(probe, text); writeLog(formatLogChunk(text, 'stdout')) }
-      const appendStderr = (text: string) => { appendServerTextTail(stderrTail, text); writeLog(formatLogChunk(text, 'stderr')) }
+      const appendStdout = (text: string) => { appendServerTextTail(stdoutTail, text); appendServerOutputProbe(probe, text); emitLog(formatLogChunk(text, 'stdout')) }
+      const appendStderr = (text: string) => { appendServerTextTail(stderrTail, text); emitLog(formatLogChunk(text, 'stderr')) }
       const killTree = () => {
         try { if (process.platform !== 'win32' && child?.pid) process.kill(-child.pid, 'SIGKILL'); else child?.kill('SIGKILL') } catch {}
       }
@@ -2387,7 +2760,7 @@ export function apply(ctx: Context) {
         if (timedOut) appendStderr('exec timed out after ' + Math.round(timeoutMs / 1000) + 's（阶段超时，进程被终止；可在流水线编辑器调大该阶段「超时(分钟)」）')
         const parsed = finishServerOutputProbe(probe)
         if (parsed.fullTextOverflow) appendStderr('[warn] stdout 全文超过 128KiB，已跳过「*=全文」输出变量；请改用 KEY=VALUE 或 JSON 路径')
-        writeLog(externallyAborted ? '\n[aborted]\n' : '\n[exit ' + code + ']\n')
+        emitLog(externallyAborted ? '\n[aborted]\n' : '\n[exit ' + code + ']\n')
         await pending
         try { await file?.sync(); await file?.close() } catch (error) { logError = logError || String(error) }
         file = null
@@ -2508,7 +2881,9 @@ export function apply(ctx: Context) {
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
       const startedAt = Date.now()
-      runtime?.updateStage(String(s && s.id || ''), { status: 'running', progress: 5, dur: 0 })
+      const stageId = String(s && s.id || '')
+      runtime?.replaceLog?.(stageId, '')
+      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0 })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
@@ -2524,7 +2899,7 @@ export function apply(ctx: Context) {
         entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
         if (r.code !== 0 && !r.aborted) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)
@@ -2537,7 +2912,7 @@ export function apply(ctx: Context) {
         let r: any
         try {
           const directLog = folder ? taskLogPath(folder, tag, baseSeq + index + 1, s.name) : undefined
-          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal)   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志
+          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
         } catch (error) {
           r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
         }
@@ -2562,6 +2937,7 @@ export function apply(ctx: Context) {
           else throw error
         }
       }
+      if (!(s.script && s.script.path)) runtime?.replaceLog?.(stageId, entry.text)
       return {
         index,
         stage: s,
@@ -3295,65 +3671,6 @@ export function apply(ctx: Context) {
   // 背景：用户浏览器多经 SSH 隧道反代访问本机，且跨域直连 Jenkins 会被 CORS 拦截；
   // 改为由本机插件服务端代联请求，浏览器只与本插件同源交互，彻底绕开 CORS 与隧道可达性问题。
   // 安全约束：仅允许回环 / 内网（RFC1918 / 链路本地）目标，拒绝公网地址。
-  webServer.register({
-    kind: 'exact',
-    path: PROXY_PATH,
-    handler: async (req: any, res: any) => {
-      try {
-        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
-        const body = await readJsonBody(req)
-        const urlStr = typeof body.url === 'string' ? body.url.trim() : ''
-        const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase()
-        if (!urlStr) { json(res, 400, { error: 'missing url' }); return }
-        let target: URL
-        try { target = new URL(urlStr) } catch { json(res, 400, { error: 'bad url' }); return }
-        if (!/^https?:$/.test(target.protocol)) { json(res, 400, { error: 'unsupported protocol' }); return }
-        if (!isLocalTarget(target.hostname)) { json(res, 403, { error: 'only loopback/private targets allowed' }); return }
-        const headers: Record<string, string> = {}
-        if (body.headers && typeof body.headers === 'object') {
-          for (const [k, v] of Object.entries(body.headers)) {
-            if (typeof v === 'string') headers[k] = v
-          }
-        }
-        const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (typeof body.body === 'string' ? body.body : undefined)
-        // 默认用 node:http/https + 显式独立 Agent 直连，忽略系统代理
-        // （Node 24 起 NODE_USE_ENV_PROXY=1 时 node:http 同样会走系统代理，
-        // 本机 127.0.0.1:8118 不通部分内网目标会挂起直到超时）。
-        // 调用方传 useProxy:true 时不注入 Agent，按进程环境走系统代理
-        // （需 NODE_USE_ENV_PROXY=1 才生效，否则 node:http 恒为直连）。
-        const useProxy = body.useProxy === true
-        const fwdHeaders: Record<string, string> = {}
-        for (const [k, v] of Object.entries(headers)) {
-          const lk = k.toLowerCase()
-          if (lk === 'host' || lk === 'content-length' || lk === 'connection') continue
-          fwdHeaders[k] = v
-        }
-        const reqLib: any = await import(target.protocol === 'https:' ? 'node:https' : 'node:http')
-        const result = await new Promise<{ status: number, headers: any, body: Buffer }>((resolve, reject) => {
-          const r = reqLib.request(urlStr, useProxy ? { method, headers: fwdHeaders } : { method, headers: fwdHeaders, agent: new reqLib.Agent() }, (resp: any) => {
-            collectProxyResponse(resp, 20 * 1024 * 1024).then(
-              bodyBuffer => resolve({ status: resp.statusCode ?? 0, headers: resp.headers, body: bodyBuffer }),
-              reject,
-            )
-          })
-          r.on('error', reject)
-          r.setTimeout(20000, () => { try { r.destroy(new Error('timeout')) } catch {} })
-          if (reqBody) r.write(reqBody)
-          r.end()
-        })
-        const outHeaders: Record<string, string> = {}
-        for (const k of Object.keys(result.headers)) outHeaders[k] = String(result.headers[k])
-        json(res, 200, {
-          status: result.status,
-          statusText: '',
-          headers: outHeaders,
-          contentType: String(result.headers['content-type'] ?? ''),
-          finalUrl: urlStr,
-          body: result.body.toString('utf8'),
-        })
-      } catch (err: any) {
-        json(res, Number(err?.statusCode) || 500, { error: String(err?.message || err) })
-      }
-    },
-  })
+  // 直连模式校验并固定 DNS；系统代理会自行解析目标，因此只允许无法重绑定的内网 IP 字面量。
+  registerWorktableProxyRoute(webServer)
 }
