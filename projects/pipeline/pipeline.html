@@ -5251,13 +5251,15 @@ async function jkFetchCrumb(j, auth, signal){
   return null;
 }
 /* jobPath 为已解析的任务路径（fullName 经 jkJobPath / URL 经 jkJobRef 得到，占位符已替换） */
-async function jkTriggerBuild(jobPath, params, signal){
+async function jkTriggerBuild(jobPath, params, preflightSignal, dispatchSignal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   const url=base+jobPath+'buildWithParameters';
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
-  const crumb=await jkFetchCrumb(j, auth, signal);
+  const crumb=await jkFetchCrumb(j, auth, preflightSignal);
+  if(preflightSignal&&preflightSignal.aborted){ const aborted=new Error('aborted'); aborted.name='AbortError'; throw aborted; }
   const headers=Object.assign({}, auth, crumb||{}, {'Content-Type':'application/x-www-form-urlencoded'});
+  const signal=dispatchSignal||preflightSignal;
   if(j.mode==='remote'){
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
@@ -5336,37 +5338,43 @@ async function jkReadConsoleDelta(buildPath,start,useProgressive,signal){
 }
 /* Jenkins 外部任务终止：已拿到构建号时 POST build/stop；仍在队列时按触发响应的 queue Location
    调 cancelItem。取消请求使用独立网络生命周期，不能复用已 aborted 的阶段 signal。 */
-async function jkPostAction(url){
+async function jkPostAction(url, signal){
   const j=jenkins; const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
-  const actionCtrl=new AbortController(); const timeout=setTimeout(function(){ actionCtrl.abort(); },10000);
+  const actionCtrl=signal?null:new AbortController(); const actionSignal=signal||(actionCtrl&&actionCtrl.signal);
+  const timeout=actionCtrl?setTimeout(function(){ actionCtrl.abort(); },10000):null;
   try{
-    const crumb=await jkFetchCrumb(j,auth,actionCtrl.signal); const headers=Object.assign({},auth,crumb||{});
+    const crumb=await jkFetchCrumb(j,auth,actionSignal); const headers=Object.assign({},auth,crumb||{});
     if(j.mode==='remote'){
-      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:''}),signal:actionCtrl.signal});
+      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:''}),signal:actionSignal});
       const p=await r.json(); if(p&&p.error) throw new Error(p.error); const status=Number(p&&p.status)||0;
       if(status<200||status>=400) throw new Error('HTTP '+status);
       return;
     }
-    const r=await fetch(url,{method:'POST',headers:headers,body:'',cache:'no-store',signal:actionCtrl.signal});
+    const r=await fetch(url,{method:'POST',headers:headers,body:'',cache:'no-store',signal:actionSignal});
     if(!r.ok&&r.status!==302&&r.status!==303) throw new Error('HTTP '+r.status);
   }finally{
-    clearTimeout(timeout);
+    if(timeout!==null) clearTimeout(timeout);
   }
 }
 async function jkCancelExecution(jobPath,buildNum,queueLocation){
   const base=(jenkins.url||'').replace(/\/+$/,'');
-  if(buildNum!=null){ await jkPostAction(base+jobPath+buildNum+'/stop'); return; }
-  let queuePath='';
-  try{ const u=new URL(queueLocation,base||undefined); const at=u.pathname.indexOf('/queue/item/'); if(at>=0) queuePath=u.pathname.slice(at).replace(/\/+$/,''); }catch(e){}
-  const m=/\/queue\/item\/([^/]+)/.exec(queuePath);
-  if(m){
-    try{ await jkPostAction(base+'/queue/cancelItem?id='+encodeURIComponent(decodeURIComponent(m[1]))); return; }
-    catch(cancelError){
-      try{ const info=await jkFetchJson(jenkins,base+queuePath+'/api/json'); const n=Number(info&&info.executable&&info.executable.number); if(Number.isInteger(n)&&n>0){ await jkPostAction(base+jobPath+n+'/stop'); return; } }catch(e){}
-      throw cancelError;
+  const cancelCtrl=new AbortController(); const timeout=setTimeout(function(){ cancelCtrl.abort(); },10000);
+  try{
+    if(buildNum!=null){ await jkPostAction(base+jobPath+buildNum+'/stop',cancelCtrl.signal); return; }
+    let queuePath='';
+    try{ const u=new URL(queueLocation,base||undefined); const at=u.pathname.indexOf('/queue/item/'); if(at>=0) queuePath=u.pathname.slice(at).replace(/\/+$/,''); }catch(e){}
+    const m=/\/queue\/item\/([^/]+)/.exec(queuePath);
+    if(m){
+      try{ await jkPostAction(base+'/queue/cancelItem?id='+encodeURIComponent(decodeURIComponent(m[1])),cancelCtrl.signal); return; }
+      catch(cancelError){
+        try{ const info=await jkFetchJson(jenkins,base+queuePath+'/api/json',cancelCtrl.signal); const n=Number(info&&info.executable&&info.executable.number); if(Number.isInteger(n)&&n>0){ await jkPostAction(base+jobPath+n+'/stop',cancelCtrl.signal); return; } }catch(e){ if(cancelCtrl.signal.aborted) throw e; }
+        throw cancelError;
+      }
     }
+    throw new Error('Jenkins 取消缺少 queue item 或构建号');
+  }finally{
+    clearTimeout(timeout);
   }
-  throw new Error('Jenkins 取消缺少 queue item 或构建号');
 }
 function abortablePipelineDelay(ms,signal){
   return new Promise(function(resolve,reject){
@@ -5455,7 +5463,7 @@ async function runUrlStep(rc, i){
     s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     let triggerBody='', triggered=null;
     if(isUrl){ triggered=await jkTriggerGet(jkSubstUrl(raw, vars),pollable?triggerCtrl.signal:ctrl.signal); }
-    else{ triggered=await jkTriggerBuild(jobPath, vars,triggerCtrl.signal); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    else{ triggered=await jkTriggerBuild(jobPath, vars,ctrl.signal,triggerCtrl.signal); }   // crumb 属触发前准备，随流水线立即中止；只有已发出的 build POST 获得清理宽限
     triggerBody=triggered&&typeof triggered.body==='string'?triggered.body:'';
     cancelQueueLocation=triggered&&typeof triggered.location==='string'?triggered.location:'';
     externalJenkinsActive=pollable;

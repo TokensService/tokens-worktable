@@ -328,9 +328,10 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return { bod
   stages.push(startRaceStage);
   context.setTimeout = setTimeout; context.clearTimeout = clearTimeout;
   let triggerWasAborted = null, cancelArgs = null;
-  context.jkTriggerBuild = async (_job, _params, signal) => {
+  context.jkTriggerBuild = async (_job, _params, preflightSignal, dispatchSignal) => {
     await new Promise(resolve => setTimeout(resolve, 30));
-    triggerWasAborted = signal.aborted;
+    if (!preflightSignal.aborted) throw new Error("deadline 到达后 crumb/preflight signal 应立即中止");
+    triggerWasAborted = dispatchSignal.aborted;
     return { body: "", location: "/queue/item/88/" };
   };
   context.jkCancelExecution = async (...args) => { cancelArgs = args; };

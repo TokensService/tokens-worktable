@@ -1668,6 +1668,34 @@ test('服务端在 Jenkins 触发响应返回前收到取消仍会取消随后�
     '中止不得让刚创建但响应迟回的 Jenkins queue item 遗留')
 })
 
+test('服务端 Jenkins crumb 到达阶段 deadline 时不得继续发送 build POST', async () => {
+  const f = loadRunRoute(stored)
+  const requests = []
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) {
+      return new Promise((resolve, reject) => options.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))
+    }
+    if (value.endsWith('/buildWithParameters')) return fetchResponse(201, '', { location: '/queue/item/never/' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', timeout: 1, jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+  )
+  const result = await pending
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /超时/)
+  assert.equal(requests.some(request => request.url.endsWith('/buildWithParameters')), false,
+    'crumb/preflight 未完成便到 deadline 时不得创建 Jenkins 外部任务')
+})
+
 test('服务端 Jenkins 触发响应迟于阶段 deadline 时仍会取消随后返回的 queue item', async () => {
   const f = loadRunRoute(stored)
   const requests = []

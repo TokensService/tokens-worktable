@@ -1108,6 +1108,7 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
     /* Jenkins 触发一旦发出便可能已经创建外部任务。终止/deadline 后给响应 10s 清理宽限，
        以便拿到 queue Location 后补发取消；普通 webhook 仍立即中止。 */
     if (signal && signal.aborted) throw serverAbortReason(signal)
+    if (jobPath) ensureServerStageTime(deadline, 'Jenkins 触发')
     const startGuard = jobPath ? serverStartCleanupSignal(signal) : null
     let triggered
     try {

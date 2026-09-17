@@ -695,6 +695,65 @@ test('浏览器 Jenkins 触发 helpers 保留响应体和精确 queue Location',
   }
 });
 
+test('浏览器 Jenkins 在 crumb 阶段中止时不得继续发送 build POST', async () => {
+  const calls = [];
+  let markCrumbStarted;
+  const crumbStarted = new Promise(resolve => { markCrumbStarted = resolve; });
+  const context = {
+    console, Promise, JSON, Error, AbortController,
+    jenkins: { url: 'http://jenkins.local', user: 'user', token: 'token', mode: 'local' },
+    btoa(value) { return Buffer.from(value).toString('base64'); },
+    fetch: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes('crumbIssuer')) {
+        markCrumbStarted();
+        return new Promise((resolve, reject) => init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }));
+      }
+      return { ok: true, status: 201, headers: { get: () => '/queue/item/1/' } };
+    },
+  };
+  vm.createContext(context);
+  installFunctions(context, ['jkHeaderValue', 'jkFetchCrumb', 'jkTriggerBuild']);
+  const preflight = new AbortController();
+  const dispatched = new AbortController();
+  const pending = context.jkTriggerBuild('/job/demo/', {}, preflight.signal, dispatched.signal);
+  await crumbStarted;
+  preflight.abort();
+  await assert.rejects(pending, error => error && error.name === 'AbortError');
+  assert.equal(calls.some(call => call.url.endsWith('/job/demo/buildWithParameters')), false,
+    'crumb 尚未完成时中止不得再创建 Jenkins 外部任务');
+});
+
+test('浏览器 Jenkins queue 转 build 回查受同一个终止超时约束', async () => {
+  let fireTimeout = null;
+  let markLookupStarted;
+  const lookupStarted = new Promise(resolve => { markLookupStarted = resolve; });
+  const context = {
+    console, Promise, JSON, Error, URL, encodeURIComponent, AbortController,
+    setTimeout(fn) { fireTimeout = fn; return 1; },
+    clearTimeout() {},
+    jenkins: { url: 'http://jenkins.local', user: '', token: '', mode: 'local' },
+    btoa(value) { return Buffer.from(value).toString('base64'); },
+    fetch: async (url, init = {}) => {
+      const value = String(url);
+      if (value.includes('crumbIssuer')) return { ok: false, status: 404, json: async () => ({}) };
+      if (value.endsWith('/queue/cancelItem?id=9')) return { ok: false, status: 500, json: async () => ({}) };
+      if (value.endsWith('/queue/item/9/api/json')) {
+        markLookupStarted();
+        return new Promise((resolve, reject) => init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }));
+      }
+      throw new Error('unexpected URL ' + value);
+    },
+  };
+  vm.createContext(context);
+  installFunctions(context, ['jkFetchJson', 'jkFetchCrumb', 'jkPostAction', 'jkCancelExecution']);
+  const pending = context.jkCancelExecution('/job/demo/', null, '/queue/item/9/');
+  await lookupStarted;
+  assert.equal(typeof fireTimeout, 'function');
+  fireTimeout();
+  await assert.rejects(pending, error => error && error.name === 'AbortError');
+});
+
 test('HTTP 轮询等待可由 AbortSignal 立即取消', async () => {
   const context = { Promise, Error, setTimeout, clearTimeout };
   vm.createContext(context);
