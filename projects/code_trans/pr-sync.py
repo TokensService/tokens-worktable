@@ -9,7 +9,7 @@ pr-sync.py — tokens-worktable「代码同步」窗口的服务端 PR 同步器
 
 spec 结构:
 {
-  "source": {"platform":"github|gitlab|gitee","repo":"owner/repo","token":"..."},
+  "source": {"platform":"github|gitlab|gitee|gitcode","repo":"owner/repo","token":"..."},
   "target": {"platform":"...","repo":"...","token":"...","baseBranch":"main"},
   "workDir": "/abs/path",            // 克隆存放目录（可复用）
   "branchPrefix": "sync",            // 目标分支前缀
@@ -95,7 +95,7 @@ def inject_token(url, token, platform):
         return url
     proto, _auth, rest = m.group(1), m.group(2), m.group(3)
     # 用户名按平台约定
-    user = {"github": "x-access-token", "gitlab": "oauth2", "gitee": "oauth2"}.get(platform, "oauth2")
+    user = {"github": "x-access-token", "gitlab": "oauth2", "gitee": "oauth2", "gitcode": "oauth2"}.get(platform, "oauth2")
     token_q = urllib.parse.quote(token, safe="")
     return "%s%s:%s@%s" % (proto, user, token_q, rest)
 
@@ -105,7 +105,8 @@ def api_call(url, token, platform, method="POST", data=None, accept="application
     r.add_header("User-Agent", UA)
     r.add_header("Accept", accept)
     if token:
-        if platform == "gitlab":
+        if platform in ("gitlab", "gitcode"):
+            # GitLab v4 与 GitCode v5 均用 PRIVATE-TOKEN 鉴权
             r.add_header("PRIVATE-TOKEN", token)
         elif platform == "gitee":
             r.add_header("Authorization", "Bearer " + token)
@@ -156,6 +157,13 @@ def open_pr(platform, target_repo, token, branch, base_branch, title, body):
         d = api_call(url, token, "gitee", method="POST",
                      data={"title": title, "head": branch, "base": base_branch, "body": body_txt})
         return d.get("html_url"), d.get("number")
+    if platform == "gitcode":
+        # GitCode v5（Gitee 兼容）：创建 PR，官方要求 access_token 入 query
+        url = "https://api.gitcode.com/api/v5/repos/" + target_repo + "/pulls"
+        url = url + "?" + urllib.parse.urlencode({"access_token": token})
+        d = api_call(url, token, platform, method="POST",
+                     data={"title": title, "head": branch, "base": base_branch, "body": body_txt})
+        return d.get("html_url") or d.get("web_url"), d.get("number") or d.get("iid")
     raise RuntimeError("不支持的目标平台: " + str(platform))
 
 
@@ -166,7 +174,7 @@ def ensure_clone(target, work_dir):
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", "%s-%s" % (platform, repo)).strip("-") or "target"
     clone_dir = os.path.join(work_dir, safe)
     clone_url = "https://%s.com/%s.git" % (
-        "github" if platform == "github" else ("gitlab" if platform == "gitlab" else "gitee"), repo)
+        "github" if platform == "github" else ("gitlab" if platform == "gitlab" else ("gitcode" if platform == "gitcode" else "gitee")), repo)
     auth_url = inject_token(clone_url, target.get("token"), platform)
     if os.path.isdir(os.path.join(clone_dir, ".git")):
         emit({"event": "clone", "status": "refresh", "dir": clone_dir})
@@ -252,7 +260,7 @@ def sync_one(pr, ctx):
     target_platform = target["platform"]
     push_url = inject_token(
         "https://%s.com/%s.git" % (
-            "github" if target_platform == "github" else ("gitlab" if target_platform == "gitlab" else "gitee"),
+            "github" if target_platform == "github" else ("gitlab" if target_platform == "gitlab" else ("gitcode" if target_platform == "gitcode" else "gitee")),
             target["repo"]),
         target.get("token"), target_platform)
     r = git(["push", "--quiet", push_url, "HEAD:refs/heads/" + branch], clone_dir, capture=True)

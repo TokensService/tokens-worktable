@@ -80,7 +80,7 @@
     <div class="ct-row between">
       <div>
         <h1 class="dshell-title">🔁 代码同步 · PR 双向同步</h1>
-        <p class="dshell-sub">选择两个代码仓的 PR，按方向把源 PR 的提交 cherry-pick 到目标仓并自动建 PR（支持 GitHub / GitLab / Gitee）。</p>
+        <p class="dshell-sub">选择两个代码仓的 PR，按方向把源 PR 的提交 cherry-pick 到目标仓并自动建 PR（支持 GitHub / GitLab / Gitee / GitCode）。</p>
       </div>
       <div class="ct-themeswitch" role="group" aria-label="主题">
         <button class="ct-tsbtn" data-theme-btn="auto" title="跟随系统">🖥️</button>
@@ -113,7 +113,7 @@
           <div class="ct-cardhd"><h2>仓库 A（源 / 目标）</h2><span class="dshell-badge" id="badgeA">未连接</span></div>
           <div class="ct-row" style="gap:8px">
             <select class="dshell-input ct-grow" data-prop="platform" style="flex:0 0 110px">
-              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option>
+              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option><option value="gitcode">GitCode</option>
             </select>
             <input class="dshell-input ct-grow" data-prop="repo" placeholder="owner/repo 或 group/project" />
           </div>
@@ -132,7 +132,7 @@
           <div class="ct-cardhd"><h2>仓库 B（源 / 目标）</h2><span class="dshell-badge" id="badgeB">未连接</span></div>
           <div class="ct-row" style="gap:8px">
             <select class="dshell-input ct-grow" data-prop="platform" style="flex:0 0 110px">
-              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option>
+              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option><option value="gitcode">GitCode</option>
             </select>
             <input class="dshell-input ct-grow" data-prop="repo" placeholder="owner/repo 或 group/project" />
           </div>

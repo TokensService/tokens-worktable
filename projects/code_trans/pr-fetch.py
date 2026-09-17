@@ -9,8 +9,8 @@ pr-fetch.py — tokens-worktable「代码同步」窗口的服务端 PR 抓取�
   python3 pr-fetch.py info  <platform> <repo> [token]
   python3 pr-fetch.py list  <platform> <repo> [token] [state] [per_page]
 
-platform: github | gitlab | gitee
-  github/gitee: <repo> = owner/repo     (如 octocat/Hello-World)
+platform: github | gitlab | gitee | gitcode
+  github/gitee/gitcode: <repo> = owner/repo  (如 octocat/Hello-World)
   gitlab:        <repo> = group/project (如 gitlab-org/gitlab)，内部自动 URL 编码)
 
 info  返回: { ok, default_branch, branches:[...], clone_url, private }
@@ -56,7 +56,8 @@ def req(url, token=None, platform=None, accept=None, method="GET", data=None):
     r.add_header("User-Agent", UA)
     r.add_header("Accept", accept or "application/json")
     if token:
-        if platform == "gitlab":
+        if platform in ("gitlab", "gitcode"):
+            # GitLab v4 与 GitCode v5 均用 PRIVATE-TOKEN 鉴权
             r.add_header("PRIVATE-TOKEN", token)
         elif platform == "gitee":
             # Gitee 也接受 header
@@ -115,6 +116,15 @@ def gitee_api(path, token, qs=None, accept=None):
     return req(url, token, "gitee", accept=accept)
 
 
+def gc_api(path, token, qs=None, accept=None):
+    # GitCode 用 Gitee 兼容 v5 API：host 为 api.gitcode.com；鉴权 PRIVATE-TOKEN（req 已按平台处理）
+    base = "https://api.gitcode.com/api/v5"
+    url = base + path
+    if qs:
+        url += "?" + urllib.parse.urlencode(qs)
+    return req(url, token, "gitcode", accept=accept)
+
+
 def encode_gitlab_project(repo):
     return urllib.parse.quote(repo, safe="")
 
@@ -154,6 +164,19 @@ def info(platform, repo, token):
             "default_branch": d.get("default_branch", "master"),
             "branches": branches,
             "clone_url": d.get("ssh_url") or d.get("clone_url"),
+            "private": d.get("private"),
+            "full_name": d.get("full_name"),
+        }
+    if platform == "gitcode":
+        # GitCode v5（Gitee 兼容）：info —— repo 信息与分支列表
+        d = gc_api("/repos/" + repo, token)
+        branches_raw = gc_api("/repos/" + repo + "/branches", token, qs={"per_page": 100})
+        branches = [b["name"] for b in branches_raw if isinstance(b, dict) and "name" in b]
+        return {
+            "ok": True,
+            "default_branch": d.get("default_branch", "main"),
+            "branches": branches,
+            "clone_url": d.get("http_url_to_repo") or ("https://gitcode.com/%s.git" % repo),
             "private": d.get("private"),
             "full_name": d.get("full_name"),
         }
@@ -271,6 +294,40 @@ def list_prs(platform, repo, token, state="open", per_page=30):
                 "sourceCloneUrl": src_clone,
                 "baseCloneUrl": "https://gitee.com/%s.git" % repo,
                 "htmlUrl": p.get("html_url"),
+                "createdAt": p.get("created_at"),
+                "updatedAt": p.get("updated_at"),
+                "mergedAt": p.get("merged_at"),
+                "sourceRefKind": "branch",
+            })
+    elif platform == "gitcode":
+        # GitCode v5（Gitee 兼容）：list PRs —— state 取 all/open/closed，按 updated 倒序
+        state_q = "open" if state == "open" else ("closed" if state == "closed" else "all")
+        pulls = gc_api("/repos/" + repo + "/pulls", token,
+                       qs={"state": state_q, "per_page": min(int(per_page), 100), "direction": "desc", "sort": "updated"})
+        for p in pulls:
+            head = p.get("head") or {}
+            base = p.get("base") or {}
+            head_repo = head.get("repo") or {}
+            src_clone = "https://gitcode.com/%s.git" % repo
+            # fork PR：head.repo.full_name 指向源仓
+            if head_repo.get("full_name") and head_repo.get("full_name") != repo:
+                src_clone = "https://gitcode.com/%s.git" % head_repo.get("full_name")
+            out.append({
+                "platform": "gitcode",
+                "number": p.get("number"),
+                "title": p.get("title") or "",
+                "state": p.get("state"),
+                "draft": bool(p.get("draft")),
+                "author": (p.get("user") or {}).get("login"),
+                "sourceBranch": p.get("source_branch") or head.get("ref"),
+                "targetBranch": p.get("target_branch") or base.get("ref"),
+                "baseSha": base.get("sha"),
+                "headSha": head.get("sha"),
+                "baseRef": base.get("ref"),
+                "headRef": head.get("ref"),
+                "sourceCloneUrl": src_clone,
+                "baseCloneUrl": "https://gitcode.com/%s.git" % repo,
+                "htmlUrl": p.get("html_url") or p.get("web_url"),
                 "createdAt": p.get("created_at"),
                 "updatedAt": p.get("updated_at"),
                 "mergedAt": p.get("merged_at"),
