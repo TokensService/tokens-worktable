@@ -14,7 +14,15 @@ cat >"$work_dir/run/rendered/resources.rendered.json" <<'JSON'
 {"resources":[{"resource_id":"prefill-1","resource_type":"prefill","resource_status":"IDLE","resource_bundles":["127.0.0.1"],"task_executor_group":"taskExecutorGroup4prefill1"},{"resource_id":"decode-1","resource_type":"decode","resource_status":"IDLE","resource_bundles":["127.0.0.2"],"task_executor_group":"taskExecutorGroup4decode1"}]}
 JSON
 cat >"$work_dir/node-labels.json" <<'JSON'
-{"key":"xds.optest","value":"node-78","hosts":[{"ip":"192.168.0.78"}]}
+{
+  "key":"xds.optest",
+  "value":"node-78-79-80",
+  "hosts":[{"ip":"192.168.0.78"},{"ip":"192.168.0.79"},{"ip":"192.168.0.80"}],
+  "assignments":[
+    {"key":"xds.optest/te-role","value":"decode","hosts":[{"ip":"192.168.0.78"}]},
+    {"key":"xds.optest/te-role","value":"prefill","hosts":[{"ip":"192.168.0.79"},{"ip":"192.168.0.80"}]}
+  ]
+}
 JSON
 
 cat >"$work_dir/bin/helm" <<'EOF'
@@ -26,7 +34,7 @@ cat >"$work_dir/bin/kubectl" <<'EOF'
 printf 'kubectl %s\n' "$*" >>"$EVENT_LOG"
 case "$*" in
   'get nodes -o json')
-    printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}}]}'
+    printf '{"items":[{"metadata":{"name":"node-78"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.78"}]}},{"metadata":{"name":"node-79"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.79"}]}},{"metadata":{"name":"node-80"},"status":{"addresses":[{"type":"InternalIP","address":"192.168.0.80"}]}}]}'
     ;;
   'get svc -A -o json')
     printf '{"items":[]}'
@@ -89,5 +97,12 @@ if [[ -z "$register_line" || "$wait_line" -ge "$register_line" ]]; then
   echo "task executor readiness wait must precede architecture registration" >&2
   exit 1
 fi
+
+grep -Fq 'kubectl label node node-78 xds.optest=node-78-79-80 --overwrite' "$work_dir/events.log"
+grep -Fq 'kubectl label node node-79 xds.optest=node-78-79-80 --overwrite' "$work_dir/events.log"
+grep -Fq 'kubectl label node node-80 xds.optest=node-78-79-80 --overwrite' "$work_dir/events.log"
+grep -Fq 'kubectl label node node-78 xds.optest/te-role=decode --overwrite' "$work_dir/events.log"
+grep -Fq 'kubectl label node node-79 xds.optest/te-role=prefill --overwrite' "$work_dir/events.log"
+grep -Fq 'kubectl label node node-80 xds.optest/te-role=prefill --overwrite' "$work_dir/events.log"
 
 echo "deploy task-executor readiness test passed"
