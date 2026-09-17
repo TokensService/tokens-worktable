@@ -68,6 +68,10 @@ if grep -Fq '环境健康检查' "$work_dir/output"; then exit 1; fi
 cat >"$work_dir/bin/scp" <<'EOF'
 #!/usr/bin/env bash
 printf 'scp %s\n' "$*" >>"$TEST_ACTION_LOG"
+if [[ -n "${FAIL_SCP_PORT:-}" && " $* " == *" -P $FAIL_SCP_PORT "* ]]; then
+  echo "ssh: connect to host test port $FAIL_SCP_PORT: Connection refused" >&2
+  exit 1
+fi
 EOF
 
 cat >"$work_dir/bin/ssh" <<'EOF'
@@ -99,6 +103,19 @@ grep -Fq 'root@192.0.2.11' "$work_dir/actions.log"
 grep -Fq -- '-P 2223' "$work_dir/actions.log"
 grep -Fq -- '-p 2223' "$work_dir/actions.log"
 grep -Fq 'REMOTE_EXECUTION=1' "$work_dir/actions.log"
+
+if PATH="$work_dir/bin:$PATH" \
+  TEST_ACTION_LOG="$work_dir/actions.log" \
+  LOG_FILE="$work_dir/bnt-remote-failure.log" \
+  ACTION=check-health \
+  SSH_PASSWORD=test-password \
+  FAIL_SCP_PORT=2229 \
+  TARGET_HOSTS='[{"ip":"115.33.98.101:2229"}]' \
+  bash "$script" >"$work_dir/remote-failure-output" 2>&1; then
+  echo 'SCP failure must fail the remote health check' >&2
+  exit 1
+fi
+grep -Fq 'ERROR: SCP 推送失败: root@115.33.98.101:2229' "$work_dir/remote-failure-output"
 
 # 两个新入口单独复制后仍能运行，不依赖旧入口或相邻文件。
 cp "$script_dir/cleanup-env.sh" "$work_dir/cleanup-env.sh"

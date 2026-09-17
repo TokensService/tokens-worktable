@@ -399,15 +399,21 @@ do_remote() {
     target="${SSH_USER}@${host}"
     local self; self=$(readlink -f "$0" 2>/dev/null || echo "$0")
     log "推送脚本到 $target:$port 并执行 $ACTION"
-    remote_scp -P "$port" -q "$self" "$target:/tmp/check-env.sh" || return 1
+    if ! remote_scp -P "$port" "$self" "$target:/tmp/check-env.sh"; then
+        log "ERROR: SCP 推送失败: $target:$port"
+        return 1
+    fi
 
     remote_env=""
     for key in ACTION LOG_FILE HEALTH_NODE HUGEPAGE_TRIGGER_GIB MIN_AVAILABLE_WITH_HUGEPAGES_GIB NETWORK_TEST_PEER NETWORK_TEST_IMAGE NETWORK_TEST_NAMESPACE; do
         printf -v pair '%q' "$key=${!key:-}"
         remote_env+=" $pair"
     done
-    remote_ssh -p "$port" "$target" \
-        "env REMOTE_EXECUTION=1 TARGET_HOSTS= $remote_env bash /tmp/check-env.sh"
+    if ! remote_ssh -p "$port" "$target" \
+        "env REMOTE_EXECUTION=1 TARGET_HOSTS= $remote_env bash /tmp/check-env.sh"; then
+        log "ERROR: SSH 远端执行失败: $target:$port action=$ACTION"
+        return 1
+    fi
 }
 
 target_ips() {
