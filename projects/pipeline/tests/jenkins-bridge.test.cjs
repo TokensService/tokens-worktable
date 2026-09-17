@@ -61,4 +61,5 @@ test("Jenkins bridge binds to loopback by default", async (t) => {
   const response = await requestOptions(port);
   response.resume();
   assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["access-control-expose-headers"], "Location, X-Text-Size, X-More-Data");
 });
