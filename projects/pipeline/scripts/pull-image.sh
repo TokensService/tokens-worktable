@@ -51,7 +51,7 @@ run_target() {
 }
 
 pull_target_images() {
-  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status
+  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status pull_status
   local -a mapped_targets
 
   mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
@@ -127,7 +127,26 @@ PY
       return 2
     fi
     printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
-    run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+    if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+      continue
+    else
+      pull_status=$?
+    fi
+
+    echo "[pull] target $endpoint: registry pull failed (exit $pull_status); import image from execution host" >&2
+    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images import -"
+    if ! nerdctl --namespace k8s.io save "$image" \
+      | run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+      echo "[pull] target $endpoint: streamed image import failed" >&2
+      return 1
+    fi
+
+    printf -v remote_command '%s' "sudo ctr -n k8s.io images ls -q | grep -Fqx -- $(remote_quote "$image")"
+    if ! run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+      echo "[pull] target $endpoint: imported archive does not contain the expected image reference: $image" >&2
+      return 1
+    fi
+    echo "[pull] target $endpoint: target image import completed"
   done
 }
 

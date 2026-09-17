@@ -27,9 +27,13 @@ fi
 grep -Fq 'pull_target_images "$IMAGE"' "$script"
 grep -Fq 'TARGET_NODE_IP_MAP' "$script"
 grep -Fq 'command -v ctr >/dev/null 2>&1' "$script"
+grep -Fq 'IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"' "$script"
+grep -Fq 'IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"' "$script"
 grep -Fq 'sudo ctr -n k8s.io images pull --user' "$script"
 grep -Fq 'AK and LOGIN_KEY are required' "$script"
 grep -Fq 'sudo ctr -n k8s.io images ls -q' "$script"
 grep -Fq 'target image already exists' "$script"
+grep -Fq 'nerdctl --namespace k8s.io save "$image"' "$script"
+grep -Fq 'sudo ctr -n k8s.io images import -' "$script"
 
 echo "pull runtime-selection tests passed"
