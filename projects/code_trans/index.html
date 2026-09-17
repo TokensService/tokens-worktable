@@ -1,0 +1,776 @@
+<!doctype html>
+<!-- tokens-worktable「代码同步」窗口1：两个代码仓 PR 双向同步
+     皮肤：<link dshell.css>；组件类参考 /api/worktable/template/dshell.html
+     服务端能力经 /api/worktable/exec(-stream) 调用同目录 pr-fetch.py / pr-sync.py -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="worktable-icon" content="🔁" />
+  <title>代码同步 · PR 双向同步</title>
+  <script>(function(){try{var t=localStorage.getItem('code_trans_theme')||'auto';}catch(e){var t='auto';}document.documentElement.setAttribute('data-theme',t);})();</script>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <style>
+    /* 主题：跟随系统 / 浅色 / 深色 —— 定义 dshell.css 依赖的 --dsw-alias-* 调色板。
+       iframe 内父主题变量不可达，故显式提供两套；dshell 组件即随主题适配。
+       data-theme 由上方内联脚本在首绘前设置，避免闪烁。 */
+    :root[data-theme="dark"]{color-scheme:dark;--dsw-alias-bg-base:#0b0e14;--dsw-alias-label-primary:#e6e8eb;--dsw-alias-label-secondary:#9aa4b2;--dsw-alias-label-tertiary:#6b7280;--dsw-alias-border-l1:#262b36;--dsw-alias-border-l2:#3a4150;--dsw-alias-fill-l1:rgba(255,255,255,.02);--dsw-alias-state-accent-primary:#4f8ef7;}
+    :root[data-theme="light"]{color-scheme:light;--dsw-alias-bg-base:#ffffff;--dsw-alias-label-primary:#1f2328;--dsw-alias-label-secondary:#59636e;--dsw-alias-label-tertiary:#818b98;--dsw-alias-border-l1:#d0d7de;--dsw-alias-border-l2:#afb8c1;--dsw-alias-fill-l1:rgba(31,35,40,.04);--dsw-alias-state-accent-primary:#0969da;}
+    :root[data-theme="auto"]{color-scheme:dark;--dsw-alias-bg-base:#0b0e14;--dsw-alias-label-primary:#e6e8eb;--dsw-alias-label-secondary:#9aa4b2;--dsw-alias-label-tertiary:#6b7280;--dsw-alias-border-l1:#262b36;--dsw-alias-border-l2:#3a4150;--dsw-alias-fill-l1:rgba(255,255,255,.02);--dsw-alias-state-accent-primary:#4f8ef7;}
+    @media (prefers-color-scheme: light){:root[data-theme="auto"]{color-scheme:light;--dsw-alias-bg-base:#ffffff;--dsw-alias-label-primary:#1f2328;--dsw-alias-label-secondary:#59636e;--dsw-alias-label-tertiary:#818b98;--dsw-alias-border-l1:#d0d7de;--dsw-alias-border-l2:#afb8c1;--dsw-alias-fill-l1:rgba(31,35,40,.04);--dsw-alias-state-accent-primary:#0969da;}}
+    /* 仅在原生皮肤上做最小布局补强，颜色一律沿用 DSH 主题变量 */
+    .ct-grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    @media (max-width:760px){ .ct-grid2 { grid-template-columns:1fr; } }
+    .ct-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .ct-row.between { justify-content:space-between; }
+    .ct-grow { flex:1 1 auto; min-width:0; }
+    .ct-field { display:flex; flex-direction:column; gap:4px; }
+    .ct-label { font-size:11px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .ct-hint { font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); }
+    select.dshell-input { appearance:none; cursor:pointer; padding-right:24px;
+      background-image:linear-gradient(45deg,transparent 50%,var(--dsw-alias-label-tertiary,#6b7280) 50%),linear-gradient(135deg,var(--dsw-alias-label-tertiary,#6b7280) 50%,transparent 50%);
+      background-position:calc(100% - 14px) 50%,calc(100% - 9px) 50%; background-size:5px 5px,5px 5px; background-repeat:no-repeat; }
+    .ct-link { color:var(--dsw-alias-state-accent-primary,#4f8ef7); text-decoration:none; word-break:break-all; }
+    .ct-link:hover { text-decoration:underline; }
+    .ct-prrow { display:flex; align-items:flex-start; gap:8px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px;
+      background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); cursor:pointer; }
+    .ct-prrow:hover { border-color:var(--dsw-alias-border-l2,#3a4150); background:var(--dsw-alias-fill-l1,rgba(255,255,255,.05)); }
+    .ct-prrow.sel { border-color:rgba(63,185,80,.5); background:rgba(63,185,80,.06); }
+    .ct-prrow input[type=checkbox] { margin-top:3px; flex:none; }
+    .ct-prtitle { font-size:12.5px; color:var(--dsw-alias-label-primary,#e6e8eb); line-height:1.4; }
+    .ct-prmeta { font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); margin-top:3px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .ct-prmeta .ct-num { color:var(--dsw-alias-state-accent-primary,#4f8ef7); font-weight:600; }
+    .ct-prstatus { font-size:11px; flex:none; }
+    .ct-prstatus.ok { color:#3fb950; }
+    .ct-prstatus.fail { color:#f85149; }
+    .ct-prstatus.skip { color:#d29922; }
+    .ct-log { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5;
+      background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px;
+      padding:10px 12px; height:340px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    .ct-log .ev { color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .ct-log .ev-ok { color:#3fb950; }
+    .ct-log .ev-err { color:#f85149; }
+    .ct-log .ev-warn { color:#d29922; }
+    .ct-log .plain { color:var(--dsw-alias-label-tertiary,#6b7280); }
+    .ct-empty { padding:24px; text-align:center; color:var(--dsw-alias-label-tertiary,#6b7280); font-size:12px; }
+    .ct-dirbtn { padding:8px 14px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1,#262b36);
+      background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); cursor:pointer; font:inherit; font-size:12.5px; }
+    .ct-dirbtn.on { color:#0b0e14; background:#3fb950; border-color:transparent; }
+    .ct-sep { height:1px; background:var(--dsw-alias-border-l1,#262b36); margin:4px 0; }
+    .ct-cardhd { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+    .ct-cardhd h2 { margin:0; font-size:13px; font-weight:600; }
+    .ct-spin { display:inline-block; width:13px; height:13px; border:2px solid var(--dsw-alias-border-l1,#262b36); border-top-color:#3fb950; border-radius:50%; animation:ctspin .7s linear infinite; }
+    @keyframes ctspin { to { transform:rotate(360deg); } }
+    .ct-togg { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .ct-togg input { accent-color:#3fb950; }
+    .ct-pagelist { display:flex; flex-direction:column; gap:6px; max-height:460px; overflow:auto; }
+    .ct-chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+    .ct-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 11px; border-radius:999px; border:1px solid var(--dsw-alias-border-l1,#262b36); background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); cursor:pointer; font:inherit; font-size:11.5px; }
+    .ct-chip:hover { color:var(--dsw-alias-label-primary,#e6e8eb); border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .ct-chip.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; border-color:transparent; }
+    .ct-chipAll.on { background:#3fb950; }
+    .ct-themeswitch { display:inline-flex; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:999px; overflow:hidden; }
+    .ct-tsbtn { border:0; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); cursor:pointer; font:inherit; font-size:12.5px; padding:5px 10px; line-height:1; }
+    .ct-tsbtn:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .ct-tsbtn.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="dshell">
+    <div class="ct-row between">
+      <div>
+        <h1 class="dshell-title">🔁 代码同步 · PR 双向同步</h1>
+        <p class="dshell-sub">选择两个代码仓的 PR，按方向把源 PR 的提交 cherry-pick 到目标仓并自动建 PR（支持 GitHub / GitLab / Gitee）。</p>
+      </div>
+      <div class="ct-themeswitch" role="group" aria-label="主题">
+        <button class="ct-tsbtn" data-theme-btn="auto" title="跟随系统">🖥️</button>
+        <button class="ct-tsbtn" data-theme-btn="light" title="浅色">☀️</button>
+        <button class="ct-tsbtn" data-theme-btn="dark" title="深色">🌙️</button>
+      </div>
+    </div>
+
+    <!-- 统计 -->
+    <div class="dshell-grid">
+      <div class="dshell-stat"><div class="dshell-statLabel">仓A 开放 PR</div><div class="dshell-statValue" id="statA">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">仓B 开放 PR</div><div class="dshell-statValue" id="statB">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">已选</div><div class="dshell-statValue" id="statSel">0</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">本次已同步</div><div class="dshell-statValue" id="statOk">0</div></div>
+    </div>
+
+    <!-- 标签页 -->
+    <div class="dshell-tabs">
+      <button class="dshell-tab dshell-tabOn" data-tab="sync">同步</button>
+      <button class="dshell-tab" data-tab="log">日志</button>
+      <button class="dshell-tab" data-tab="set">设置</button>
+    </div>
+
+    <!-- 同步页 -->
+    <div data-pane="sync">
+      <!-- 两个仓库配置 -->
+      <div class="ct-grid2">
+        <!-- 仓 A -->
+        <div class="dshell-card" id="repoA">
+          <div class="ct-cardhd"><h2>仓库 A（源 / 目标）</h2><span class="dshell-badge" id="badgeA">未连接</span></div>
+          <div class="ct-row" style="gap:8px">
+            <select class="dshell-input ct-grow" data-prop="platform" style="flex:0 0 110px">
+              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option>
+            </select>
+            <input class="dshell-input ct-grow" data-prop="repo" placeholder="owner/repo 或 group/project" />
+          </div>
+          <div class="ct-row" style="margin-top:8px;gap:8px">
+            <input class="dshell-input ct-grow" data-prop="token" type="password" placeholder="访问令牌（私有仓必填）" />
+            <button class="dshell-btn dshell-btnGhost" data-act="test">测试</button>
+            <button class="dshell-btn dshell-btnGhost" data-act="load">加载 PR</button>
+          </div>
+          <div class="dshell-kv" style="margin-top:8px">
+            <div class="dshell-kvRow"><span class="dshell-kvKey">默认分支</span><span class="dshell-kvValue" data-prop="defaultBranch">—</span></div>
+            <div class="dshell-kvRow"><span class="dshell-kvKey">分支数</span><span class="dshell-kvValue" data-prop="branchCount">—</span></div>
+          </div>
+        </div>
+        <!-- 仓 B -->
+        <div class="dshell-card" id="repoB">
+          <div class="ct-cardhd"><h2>仓库 B（源 / 目标）</h2><span class="dshell-badge" id="badgeB">未连接</span></div>
+          <div class="ct-row" style="gap:8px">
+            <select class="dshell-input ct-grow" data-prop="platform" style="flex:0 0 110px">
+              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option>
+            </select>
+            <input class="dshell-input ct-grow" data-prop="repo" placeholder="owner/repo 或 group/project" />
+          </div>
+          <div class="ct-row" style="margin-top:8px;gap:8px">
+            <input class="dshell-input ct-grow" data-prop="token" type="password" placeholder="访问令牌（私有仓必填）" />
+            <button class="dshell-btn dshell-btnGhost" data-act="test">测试</button>
+            <button class="dshell-btn dshell-btnGhost" data-act="load">加载 PR</button>
+          </div>
+          <div class="dshell-kv" style="margin-top:8px">
+            <div class="dshell-kvRow"><span class="dshell-kvKey">默认分支</span><span class="dshell-kvValue" data-prop="defaultBranch">—</span></div>
+            <div class="dshell-kvRow"><span class="dshell-kvKey">分支数</span><span class="dshell-kvValue" data-prop="branchCount">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 方向 -->
+      <div class="dshell-card">
+        <div class="ct-row between">
+          <div class="ct-row">
+            <span class="ct-label">同步方向</span>
+            <button class="ct-dirbtn on" data-dir="AB" id="dirAB">仓 A → 仓 B</button>
+            <button class="ct-dirbtn" data-dir="BA" id="dirBA">仓 B → 仓 A</button>
+          </div>
+          <div class="ct-row">
+            <label class="ct-togg"><input type="checkbox" id="dryRun" checked /> 试运行（不 push / 不建 PR）</label>
+          </div>
+        </div>
+        <div class="ct-sep"></div>
+        <div class="ct-row between">
+          <div class="ct-row">
+            <span class="ct-label">同步到分支</span>
+            <input class="dshell-input" id="baseBranch" list="baseBranchList" placeholder="如 main（可手输或选择）" style="flex:0 0 190px" autocomplete="off" />
+            <datalist id="baseBranchList"></datalist>
+            <button class="dshell-btn dshell-btnGhost" id="refreshBase" title="拉取目标仓分支列表">🔄</button>
+            <button class="dshell-btn dshell-btnGhost" id="tgtFromSrc" title="把目标仓设为与源仓相同（同仓不同分支同步）">目标=源仓</button>
+          </div>
+          <div class="ct-row">
+            <button class="dshell-btn dshell-btnGhost" id="selAll">全选</button>
+            <button class="dshell-btn dshell-btnGhost" id="selNone">清空</button>
+            <button class="dshell-btn" id="doSync">同步选中 PR（0）</button>
+          </div>
+        </div>
+        <p class="ct-hint" id="baseHint" style="margin:2px 0 0">目标仓 = 当前方向右侧的仓库；填好仓库+令牌后点 🔄 自动拉分支，也可直接输入分支名。</p>
+      </div>
+
+      <!-- 源 PR 列表 -->
+      <div class="dshell-card">
+        <div class="ct-cardhd"><h2 id="srcTitle">源仓 PR（先选择方向并加载 PR）</h2>
+          <span class="dshell-muted" id="srcCount"></span></div>
+        <div class="ct-row" id="srcFilterRow" style="margin-bottom:8px;align-items:center">
+          <span class="ct-label">合入分支</span>
+          <div class="ct-chips" id="srcBranchFilter"></div>
+        </div>
+        <div class="ct-pagelist" id="prList"><div class="ct-empty">尚未加载 PR。配置好源仓后点「加载 PR」。</div></div>
+      </div>
+    </div>
+
+    <!-- 日志页 -->
+    <div data-pane="log" style="display:none">
+      <div class="dshell-card">
+        <div class="ct-cardhd">
+          <h2>同步日志</h2>
+          <div class="ct-row">
+            <span class="dshell-muted" id="logStat"></span>
+            <button class="dshell-btn dshell-btnGhost" id="clearLog">清空</button>
+          </div>
+        </div>
+        <div class="ct-log" id="log"><span class="plain">暂无日志。运行一次同步后这里会实时显示服务端输出。</span></div>
+      </div>
+      <div class="dshell-card" style="margin-top:10px">
+        <div class="ct-cardhd"><h2>本次结果</h2></div>
+        <table class="dshell-table" id="resTable" style="display:none">
+          <thead><tr><th>源 PR</th><th>标题</th><th>目标 PR</th><th>状态</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="ct-empty" id="resEmpty">尚未运行同步。</div>
+      </div>
+    </div>
+
+    <!-- 设置页 -->
+    <div data-pane="set" style="display:none">
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 10px">运行环境</h2>
+        <div class="ct-field"><span class="ct-label">项目目录（脚本所在）</span>
+          <input class="dshell-input" id="setDir" placeholder="自动检测；若为空请粘贴项目文件夹绝对路径" /></div>
+        <div class="ct-hint" id="dirDetect" style="margin-top:6px"></div>
+        <div class="ct-sep" style="margin:10px 0"></div>
+        <div class="ct-row" style="gap:16px">
+          <div class="ct-field"><span class="ct-label">同步分支前缀</span><input class="dshell-input" id="setPrefix" value="sync" style="max-width:140px" /></div>
+          <div class="ct-field"><span class="ct-label">每次抓取 PR 数</span><input class="dshell-input" id="setPer" value="50" style="max-width:90px" /></div>
+          <div class="ct-field"><span class="ct-label">PR 状态</span>
+            <select class="dshell-input" id="setState" style="max-width:120px"><option value="open">open</option><option value="closed">closed</option><option value="all">all</option></select>
+          </div>
+        </div>
+        <div class="ct-sep" style="margin:10px 0"></div>
+        <div class="ct-row">
+          <button class="dshell-btn dshell-btnGhost" id="saveSet">保存设置</button>
+          <button class="dshell-btn dshell-btnGhost" id="clearStore">清除本地缓存</button>
+        </div>
+      </div>
+      <div class="dshell-card" style="margin-top:10px">
+        <h2 class="dshell-sub" style="margin:0 0 8px">使用说明</h2>
+        <ul class="dshell-muted" style="margin:0;padding-left:18px;line-height:1.8">
+          <li>令牌仅在本机服务端调用平台 API 时使用，不经过浏览器直连，避免 CORS 与泄露。</li>
+          <li>同步机制：克隆目标仓 → 抓取源 PR 提交 → cherry-pick 到 <code>sync/&lt;平台&gt;-&lt;编号&gt;</code> 分支 → push → 调用 API 建 PR/MR。</li>
+          <li>冲突会自动中止该 PR 并继续其余；查看日志了解失败原因。</li>
+          <li>「合入分支」筛选按 PR 的目标分支多选过滤源仓 PR 列表（chips 带各分支计数）；「全选」只选中当前筛选结果。</li>
+          <li>「试运行」会执行 cherry-pick 自检但不会 push 也不会建 PR，适合先验证。</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+function normalizeRepo(s){
+  s = (s || "").trim();
+  if (!s) return "";
+  let m = /^git@[^:]+:(.+)$/.exec(s);
+  if (m) s = m[1];
+  else if (/^https?:\/\//i.test(s)) { try { s = new URL(s).pathname.replace(/^\/+/, ""); } catch {} }
+  s = s.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+  return s;
+}
+const LS_KEY = "code_trans_sync_v1";
+const THEME_KEY = "code_trans_theme";
+function applyTheme(t){
+  t = ({auto:1,light:1,dark:1})[t] ? t : "auto";
+  document.documentElement.setAttribute("data-theme", t);
+  try { localStorage.setItem(THEME_KEY, t); } catch {}
+  $$("[data-theme-btn]").forEach(b => b.classList.toggle("on", b.dataset.themeBtn === t));
+}
+
+// ── 项目目录自检：从挂载 URL 解析 /api/worktable/site/<编码目录>/<文件> ──
+function detectProjectDir() {
+  const SITE = "/api/worktable/site/";
+  const p = location.pathname;
+  const i = p.indexOf(SITE);
+  if (i >= 0) {
+    const rest = p.slice(i + SITE.length);
+    const slash = rest.indexOf("/");
+    const token = slash >= 0 ? rest.slice(0, slash) : rest;
+    try { return decodeURIComponent(token); } catch { return token; }
+  }
+  const pathParam = new URLSearchParams(location.search).get("path");
+  if (pathParam) return pathParam.replace(/\/[^/]*$/, "");
+  return "";
+}
+let SCRIPT_DIR = "";
+function paths() {
+  return {
+    fetch: SCRIPT_DIR + "/pr-fetch.py",
+    sync: SCRIPT_DIR + "/pr-sync.py",
+    spec: SCRIPT_DIR + "/sync-spec.json",
+    work: SCRIPT_DIR + "/work",
+  };
+}
+
+// ── 状态 ──
+const state = {
+  repos: { A: {platform:"github", repo:"", token:"", info:null, prs:[]}, B: {platform:"github", repo:"", token:"", info:null, prs:[]} },
+  direction: "AB", // AB: 源A→目标B ; BA: 源B→目标A
+  selected: new Set(), // key: side + ":" + number
+  results: {}, // key -> {ok, url, reason, branch}
+  syncing: false,
+  srcBranchFilter: new Set(), // 源 PR 按合入分支多选过滤；空集=全部
+  set: { prefix:"sync", per:50, prState:"open" },
+};
+
+function sourceSide(){ return state.direction === "AB" ? "A" : "B"; }
+function targetSide(){ return state.direction === "AB" ? "B" : "A"; }
+function prKey(side, num){ return side + ":" + num; }
+
+// ── 持久化 ──
+function save(){
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      repos: { A:{platform:state.repos.A.platform, repo:state.repos.A.repo, token:state.repos.A.token},
+               B:{platform:state.repos.B.platform, repo:state.repos.B.repo, token:state.repos.B.token} },
+      direction: state.direction,
+      set: state.set,
+    }));
+  } catch {}
+}
+function load(){
+  try {
+    const d = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+    if (d.repos) for (const s of ["A","B"]) Object.assign(state.repos[s], d.repos[s] || {});
+    if (d.direction) state.direction = d.direction;
+    if (d.set) Object.assign(state.set, d.set);
+  } catch {}
+}
+
+// ── 服务端调用 ──
+async function execOnce(scriptPath, args){
+  const res = await fetch("/api/worktable/exec", {
+    method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ path: scriptPath, args, cwd: SCRIPT_DIR || undefined })
+  });
+  if (!res.ok) throw new Error("exec HTTP " + res.status);
+  return await res.json(); // {code, stdout, stderr}
+}
+
+function appendLog(html, cls){
+  const el = $("#log");
+  if (el.querySelector(".plain") && el.children.length === 1 && el.firstChild.classList?.contains("plain")) el.innerHTML = "";
+  const line = document.createElement("div");
+  if (cls) line.className = cls; else line.className = "plain";
+  line.innerHTML = html;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+function clearLog(){ $("#log").innerHTML = '<span class="plain">暂无日志。</span>'; }
+
+async function runSyncStream(specPath){
+  const P = paths();
+  return new Promise((resolve) => {
+    fetch("/api/worktable/exec-stream", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ path: P.sync, args:[specPath], cwd: SCRIPT_DIR || undefined })
+    }).then(res => {
+      if (!res.ok || !res.body) { appendLog("exec-stream 启动失败：HTTP " + res.status, "ev ev-err"); resolve(); return; }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      const pump = () => reader.read().then(({value, done}) => {
+        if (done) { if (buf) handlePlain(buf); resolve(); return; }
+        buf += dec.decode(value, {stream:true});
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          processStreamLine(line);
+        }
+        pump();
+      });
+      pump();
+    }).catch(e => { appendLog("请求失败：" + e, "ev ev-err"); resolve(); });
+  });
+}
+
+function processStreamLine(line){
+  // exec-stream 的每一行是一个 JSON 对象 {type:...}
+  if (!line.trim()) return;
+  let obj;
+  try { obj = JSON.parse(line); } catch {
+    // 非标准行（理论上不应出现）直接显示
+    handlePlain(line);
+    return;
+  }
+  if (obj.type === "out" || obj.type === "err") { handlePlain(obj.text || ""); }
+  else if (obj.type === "done") { appendLog("── 执行结束，exit code " + obj.code + " ──", "ev" + (obj.code === 0 ? " ev-ok" : " ev-err")); }
+  else if (obj.type === "error") { appendLog("错误：" + (obj.message||""), "ev ev-err"); }
+  else if (obj.type === "log") { /* 服务端日志文件提示，忽略 */ }
+}
+let _plainBuf = "";
+function flushPlain(){ if (_plainBuf) { renderPlainLine(_plainBuf); _plainBuf = ""; } }
+function handlePlain(text){
+  // 脚本输出可能含多行，且 @@PRSYNC@@ 事件行需要单独解析
+  _plainBuf += text;
+  let nl;
+  while ((nl = _plainBuf.indexOf("\n")) >= 0) {
+    const line = _plainBuf.slice(0, nl); _plainBuf = _plainBuf.slice(nl + 1);
+    renderPlainLine(line);
+  }
+}
+function renderPlainLine(line){
+  if (!line) { appendLog("&nbsp;"); return; }
+  const M = "@@PRSYNC@@ ";
+  const i = line.indexOf(M);
+  if (i === 0 || (i > 0 && /^\s*$/.test(line.slice(0,i)))) {
+    let ev; try { ev = JSON.parse(line.slice(i + M.length)); } catch { appendLog(esc(line)); return; }
+    handleEvent(ev);
+    return;
+  }
+  appendLog(esc(line), "plain");
+}
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+function handleEvent(ev){
+  switch (ev.event) {
+    case "start": appendLog("▶ 开始同步：目标 " + esc(ev.target) + " 基分支 " + esc(ev.base||"") + "，共 " + ev.count + " 个 PR" + (ev.dryRun?"（试运行）":""), "ev"); break;
+    case "clone": appendLog((ev.status==="cloning"?"克隆目标仓":"刷新已有克隆") + " → " + esc(ev.url||ev.dir||""), "ev"); break;
+    case "pr_begin": appendLog("• PR #" + ev.number + " " + esc(ev.title||"") + " → 分支 " + esc(ev.branch||"") + "（来自 " + esc(ev.source||"") + "）", "ev"); break;
+    case "pr_fetch": if (ev.ok) appendLog("  抓取源提交：head " + esc(ev.head||"") + " base " + esc(ev.base||"") + " 共 " + ev.commits + " 个提交", "plain"); break;
+    case "pr_cherry": appendLog(ev.ok ? "  cherry-pick 完成" : "  cherry-pick 失败", ev.ok ? "plain" : "ev ev-err"); break;
+    case "pr_push": appendLog(ev.ok ? "  push 分支 " + esc(ev.branch||"") + " 成功" : "  push 失败", ev.ok ? "plain" : "ev ev-err"); break;
+    case "pr_open": appendLog(ev.ok ? "  已建目标 PR：" + link(ev.url) + " (#" + ev.number + ")" : "  建目标 PR 失败", ev.ok ? "ev ev-ok" : "ev ev-err"); break;
+    case "pr_done": {
+      const side = sourceSide();
+      const key = prKey(side, ev.number);
+      state.results[key] = { ok: ev.ok, url: ev.url || null, reason: ev.reason || (ev.ok?"成功":"失败"), branch: ev.branch, targetNumber: ev.targetNumber };
+      renderPrRowStatus(side, ev.number);
+      const cls = ev.ok ? "ev ev-ok" : "ev ev-err";
+      appendLog(ev.ok ? "✓ PR #" + ev.number + " " + (ev.reason||"完成") + (ev.url?" → "+link(ev.url):"") : "✗ PR #" + ev.number + " 失败：" + esc(ev.reason||""), cls);
+      updateStats(); renderResultsTable();
+      break;
+    }
+    case "finish": {
+      flushPlain();
+      appendLog("══ 完成：成功 " + ev.ok + " / 失败 " + ev.failed + " ══", ev.failed === 0 ? "ev ev-ok" : "ev ev-warn");
+      $("#logStat").textContent = "成功 " + ev.ok + " · 失败 " + ev.failed;
+      state.syncing = false; setSyncBtn();
+      break;
+    }
+    case "error": appendLog("✗ " + esc(ev.reason||"错误"), "ev ev-err"); state.syncing = false; setSyncBtn(); break;
+  }
+}
+function link(url){ return url ? '<a class="ct-link" target="_blank" href="' + esc(url) + '">' + esc(url) + '</a>' : ''; }
+
+// ── 渲染 ──
+function setSyncBtn(){
+  const n = state.selected.size;
+  $("#doSync").textContent = "同步选中 PR（" + n + "）";
+  $("#doSync").disabled = state.syncing || n === 0;
+  $("#doSync").style.opacity = (state.syncing || n===0) ? .5 : 1;
+}
+function updateStats(){
+  $("#statA").textContent = state.repos.A.prs.length || "—";
+  $("#statB").textContent = state.repos.B.prs.length || "—";
+  $("#statSel").textContent = state.selected.size;
+  const ok = Object.values(state.results).filter(r=>r.ok).length;
+  $("#statOk").textContent = ok;
+}
+function fmtTime(s){ try { const d=new Date(s); if(isNaN(d)) return s||""; return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); } catch { return s||""; } }
+
+function visiblePrs(side){
+  const f = state.srcBranchFilter; // Set<string>；空集=全部
+  const prs = state.repos[side].prs;
+  if (!f || !f.size) return prs;
+  return prs.filter(p => f.has(p.targetBranch));
+}
+function renderBranchFilter(side){
+  const box = $("#srcBranchFilter");
+  if (!box) return;
+  const prs = state.repos[side].prs;
+  // 未加载 PR 时隐藏整个筛选行，避免只剩一个「合入分支」标签
+  const row = $("#srcFilterRow");
+  if (row) row.style.display = prs.length ? "" : "none";
+  const counts = new Map(); // 目标分支 -> PR 数
+  for (const p of prs) {
+    const b = p.targetBranch;
+    if (b) counts.set(b, (counts.get(b) || 0) + 1);
+  }
+  const set = Array.from(counts.keys());
+  set.sort((a,b) => a.localeCompare(b, undefined, {sensitivity:"base"}));
+  const f = state.srcBranchFilter;
+  // 丢弃已不存在的选中分支
+  for (const b of Array.from(f)) if (!set.includes(b)) f.delete(b);
+  box.innerHTML = "";
+  const allOn = f.size === 0;
+  const mkChip = (label, on, cls, title, onClick) => {
+    const c = document.createElement("button");
+    c.type = "button"; c.className = "ct-chip" + (cls ? " " + cls : "") + (on ? " on" : "");
+    c.textContent = label; c.title = title; c.addEventListener("click", onClick);
+    return c;
+  };
+  box.appendChild(mkChip("全部 (" + prs.length + ")", allOn, "ct-chipAll", "不按分支过滤", () => { f.clear(); renderPrList(); updateStats(); setSyncBtn(); }));
+  for (const b of set) {
+    box.appendChild(mkChip(b + " (" + counts.get(b) + ")", f.has(b), "", "仅显示合入 " + b + " 的 PR", () => {
+      if (f.has(b)) f.delete(b); else f.add(b);
+      renderPrList(); updateStats(); setSyncBtn();
+    }));
+  }
+}
+function renderPrList(){
+  const side = sourceSide();
+  const repo = state.repos[side];
+  const box = $("#prList");
+  renderBranchFilter(side);
+  const list = visiblePrs(side);
+  $("#srcTitle").textContent = "源仓 PR · " + (repo.repo || ("仓"+side));
+  $("#srcCount").textContent = list.length + " / " + repo.prs.length + (repo.info ? " · 默认 " + (repo.info.default_branch||"-") : "");
+  if (!repo.prs.length) { box.innerHTML = '<div class="ct-empty">该仓暂无 PR（或尚未加载）。点上方「加载 PR」。</div>'; setSyncBtn(); return; }
+  if (!list.length) { box.innerHTML = '<div class="ct-empty">当前「合入分支」过滤下无 PR，换个分支或选「全部」。</div>'; setSyncBtn(); return; }
+  box.innerHTML = "";
+  for (const pr of list) {
+    const key = prKey(side, pr.number);
+    const sel = state.selected.has(key);
+    const row = document.createElement("div");
+    row.className = "ct-prrow" + (sel?" sel":"");
+    row.dataset.key = key;
+    row.dataset.num = pr.number;
+    const res = state.results[key];
+    let statusHtml = "";
+    if (res) statusHtml = '<span class="ct-prstatus ' + (res.ok?"ok":"fail") + '">' + (res.ok?"已同步":"失败") + "</span>";
+    else if (pr.draft) statusHtml = '<span class="dshell-badge dshell-badgeWait">草稿</span>';
+    row.innerHTML =
+      '<input type="checkbox" ' + (sel?"checked":"") + ' />' +
+      '<div class="ct-grow"><div class="ct-prtitle">' + esc(pr.title || ("#"+pr.number)) + '</div>' +
+      '<div class="ct-prmeta"><span class="ct-num">#' + esc(pr.number) + '</span>' +
+      '<span>' + esc(pr.author||"-") + '</span>' +
+      '<span>' + esc(pr.sourceBranch||"-") + ' → ' + esc(pr.targetBranch||"-") + '</span>' +
+      '<span>' + fmtTime(pr.updatedAt) + '</span>' +
+      (pr.htmlUrl?'<a class="ct-link" target="_blank" href="'+esc(pr.htmlUrl)+'">查看</a>':'') +
+      statusHtml + '</div></div>';
+    row.addEventListener("click", (e) => {
+      if (e.target.tagName === "A") return;
+      const cb = row.querySelector("input"); cb.checked = !cb.checked;
+      togglePr(key, cb.checked, row);
+    });
+    const cb = row.querySelector("input");
+    cb.addEventListener("click", (e) => { e.stopPropagation(); togglePr(key, cb.checked, row); });
+    box.appendChild(row);
+  }
+  setSyncBtn();
+}
+function togglePr(key, on, row){
+  if (on) state.selected.add(key); else state.selected.delete(key);
+  row.classList.toggle("sel", on);
+  updateStats(); setSyncBtn();
+}
+function renderPrRowStatus(side, num){
+  const key = prKey(side, num);
+  const row = $('#prList .ct-prrow[data-key="' + CSS.escape(key) + '"]');
+  if (!row) return;
+  const res = state.results[key];
+  const meta = row.querySelector(".ct-prmeta");
+  let s = meta.querySelector(".ct-prstatus"); if (s) s.remove();
+  if (res) { const b=document.createElement("span"); b.className="ct-prstatus "+(res.ok?"ok":"fail"); b.textContent = res.ok?"已同步":"失败"; meta.appendChild(b); }
+}
+
+function renderResultsTable(){
+  const t = $("#resTable"), e = $("#resEmpty");
+  const side = sourceSide();
+  const rows = Object.entries(state.results);
+  if (!rows.length) { t.style.display="none"; e.style.display=""; return; }
+  t.style.display=""; e.style.display="none";
+  const tb = t.querySelector("tbody"); tb.innerHTML="";
+  for (const [key, r] of rows) {
+    const num = key.split(":")[1];
+    const pr = (state.repos[side].prs.find(p=>String(p.number)===String(num)) || {});
+    const tr = document.createElement("tr");
+    const st = r.ok ? '<span class="dshell-badge dshell-badgeDone">成功</span>' : '<span class="dshell-badge" style="color:#f85149;border-color:#f85149">失败</span>';
+    tr.innerHTML = '<td>#' + esc(num) + '</td><td>' + esc(pr.title||"") + '</td><td>' + (r.url?link(r.url):'<span class="dshell-muted">—</span>') + '</td><td>' + st + (r.reason && !r.ok?'<div class="dshell-muted">'+esc(r.reason)+'</div>':'') + '</td>';
+    tb.appendChild(tr);
+  }
+}
+
+// ── 仓库配置交互 ──
+function bindRepo(side){
+  const card = $("#repo" + side);
+  card.querySelectorAll("[data-prop]").forEach(el => {
+    el.addEventListener("change", () => {
+      if (el.dataset.prop === "repo") { const n = normalizeRepo(el.value); el.value = n; state.repos[side].repo = n; }
+      else state.repos[side][el.dataset.prop] = el.value;
+      if (el.dataset.prop === "platform" || el.dataset.prop === "repo") {
+        state.repos[side].info = null; state.repos[side].prs = [];
+        setBadge(side, "未连接", "");
+        card.querySelector('[data-prop="defaultBranch"]').textContent = "—";
+        card.querySelector('[data-prop="branchCount"]').textContent = "—";
+        if (side === sourceSide()) renderPrList();
+        if (side === targetSide()) { refreshBaseSelect(); if (el.dataset.prop === "repo" || el.dataset.prop === "platform") connectTarget(); }
+      }
+      save();
+    });
+  });
+  card.querySelector('[data-act="test"]').addEventListener("click", () => testConn(side));
+  card.querySelector('[data-act="load"]').addEventListener("click", () => loadPrs(side));
+}
+function setBadge(side, text, cls){
+  const b = $("#badge" + side); b.textContent = text;
+  b.className = "dshell-badge" + (cls ? " " + cls : "");
+}
+function fillRepoForm(side){
+  const card = $("#repo" + side);
+  card.querySelectorAll("[data-prop]").forEach(el => { el.value = state.repos[side][el.dataset.prop] || ""; });
+}
+
+async function testConn(side, quiet){
+  const r = state.repos[side];
+  if (!r.repo) { if (!quiet) setBadge(side, "请填仓库", "dshell-badgeWait"); return false; }
+  setBadge(side, "连接中…", "dshell-badgeWait");
+  try {
+    const out = await execOnce(paths().fetch, ["info", r.platform, r.repo, r.token||""]);
+    if (out.code !== 0) throw new Error((out.stderr || out.stdout || "失败").slice(0,200));
+    let d; try { d = JSON.parse(out.stdout); } catch { throw new Error("返回解析失败: " + out.stdout.slice(0,200)); }
+    if (!d.ok) throw new Error(d.error || "未知错误");
+    r.info = d;
+    const card = $("#repo" + side);
+    card.querySelector('[data-prop="defaultBranch"]').textContent = d.default_branch || "—";
+    card.querySelector('[data-prop="branchCount"]').textContent = (d.branches||[]).length;
+    setBadge(side, "已连接", "dshell-badgeDone");
+    if (side === targetSide()) refreshBaseSelect();
+    return true;
+  } catch (e) {
+    const b = $("#badge" + side); b.textContent = "失败"; b.className = "dshell-badge"; b.style.color = "#f85149"; b.style.borderColor = "#f85149";
+    appendLog("[" + side + "] 连接失败：" + esc(e.message), "ev ev-err");
+    if (!quiet) switchTab("log");
+    return false;
+  }
+}
+
+/** 连接目标仓并拉取分支（静默：失败不跳页）。force=true 强制刷新。 */
+async function connectTarget(force){
+  const side = targetSide();
+  const r = state.repos[side];
+  const hint = $("#baseHint");
+  if (!r.repo) { if (hint) hint.textContent = "目标仓（仓" + side + "）未配置：请在右侧填写仓库地址与令牌。"; return; }
+  if (r.info && !force) { refreshBaseSelect(); if (hint) hint.textContent = "目标仓已连接，分支列表已就绪；可直接选择或输入。"; return; }
+  if (hint) hint.textContent = "正在拉取目标仓分支…";
+  const ok = await testConn(side, true);
+  if (ok) { if (hint) hint.textContent = "目标仓已连接，分支列表已就绪；可直接选择或输入。"; }
+  else { if (hint) hint.textContent = "目标仓连接失败，请检查仓库地址与令牌；点 🔄 重试，或直接输入分支名。"; }
+}
+
+async function loadPrs(side){
+  const r = state.repos[side];
+  if (!r.repo) { setBadge(side, "请填仓库", "dshell-badgeWait"); return; }
+  setBadge(side, "加载中…", "dshell-badgeWait");
+  const btn = $("#repo"+side).querySelector('[data-act="load"]'); const old = btn.textContent; btn.disabled = true; btn.textContent = "加载中";
+  try {
+    const out = await execOnce(paths().fetch, ["list", r.platform, r.repo, r.token||"", state.set.prState, String(state.set.per)]);
+    if (out.code !== 0) throw new Error((out.stderr || out.stdout || "失败").slice(0,300));
+    let arr; try { arr = JSON.parse(out.stdout); } catch { throw new Error("返回解析失败: " + out.stdout.slice(0,200)); }
+    if (arr && arr.error) throw new Error(arr.error);
+    r.prs = Array.isArray(arr) ? arr : [];
+    setBadge(side, r.info ? "已连接" : "已加载", r.info ? "dshell-badgeDone" : "");
+    if (side === sourceSide()) { state.results = {}; state.srcBranchFilter.clear(); renderPrList(); }
+    updateStats();
+    appendLog("[" + side + "] 加载到 " + r.prs.length + " 个 PR", "ev");
+  } catch (e) {
+    setBadge(side, "加载失败", "");
+    appendLog("[" + side + "] 加载失败：" + esc(e.message), "ev ev-err");
+    switchTab("log");
+  } finally { btn.disabled = false; btn.textContent = old; }
+}
+
+function refreshBaseSelect(){
+  const t = state.repos[targetSide()];
+  const inp = $("#baseBranch");
+  const dl = $("#baseBranchList");
+  if (!t.info) { if (dl) dl.innerHTML = ""; return; }
+  const def = t.info.default_branch || "";
+  const branches = t.info.branches || [];
+  if (dl) dl.innerHTML = branches.map(b => '<option value="'+esc(b)+'">').join("");
+  if (inp && !inp.value && def) inp.value = def;
+}
+
+// ── 方向 ──
+function setDirection(dir){
+  state.direction = dir;
+  $("#dirAB").classList.toggle("on", dir === "AB");
+  $("#dirBA").classList.toggle("on", dir === "BA");
+  // 选中集与方向无关（按 side+number），但源仓变化后需重新渲染
+  state.results = {};
+  state.srcBranchFilter.clear();
+  const binp = $("#baseBranch"); if (binp) binp.value = "";
+  renderPrList();
+  void connectTarget();
+  updateStats();
+  save();
+}
+
+// ── 同步执行 ──
+async function doSync(){
+  const src = state.repos[sourceSide()];
+  const tgt = state.repos[targetSide()];
+  if (!src.prs.length) { switchTab("log"); appendLog("源仓无 PR，请先「加载 PR」。", "ev ev-err"); return; }
+  if (!tgt.repo) { switchTab("log"); appendLog("目标仓（仓"+targetSide()+"）未配置，请在右侧填写仓库地址与令牌。", "ev ev-err"); return; }
+  const sel = src.prs.filter(p => state.selected.has(prKey(sourceSide(), p.number)));
+  if (!sel.length) { switchTab("log"); appendLog("未选中任何 PR。", "ev ev-err"); return; }
+  const base = $("#baseBranch").value || (tgt.info && tgt.info.default_branch) || "";
+  if (!base) { switchTab("log"); appendLog("请先在「同步到分支」选择或输入目标分支。", "ev ev-err"); return; }
+  const dry = $("#dryRun").checked;
+  const P = paths();
+  const spec = {
+    source: { platform: src.platform, repo: src.repo, token: src.token||"" },
+    target: { platform: tgt.platform, repo: tgt.repo, token: tgt.token||"", baseBranch: base },
+    workDir: P.work, branchPrefix: state.set.prefix || "sync",
+    dryRun: dry, keepClone: true, prs: sel,
+  };
+  // 写 spec 文件
+  try {
+    const wres = await fetch("/api/worktable/write", { method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ path: P.spec, content: JSON.stringify(spec, null, 2) }) });
+    if (!wres.ok) throw new Error("HTTP " + wres.status);
+  } catch (e) { switchTab("log"); appendLog("写入 spec 失败：" + esc(e.message), "ev ev-err"); return; }
+  state.syncing = true; state.results = {}; setSyncBtn();
+  clearLog(); renderPrList(); switchTab("log");
+  appendLog("▶ 同步 " + sel.length + " 个 PR：" + esc(src.repo||("仓"+sourceSide())) + " → " + esc(tgt.repo||("仓"+targetSide())) + "（目标分支 " + esc(base) + "，" + (dry?"试运行":"将 push + 建 PR") + "）", "ev");
+  await runSyncStream(P.spec);
+  renderResultsTable();
+}
+
+// ── 标签页 ──
+function switchTab(name){
+  $$(".dshell-tab").forEach(t => t.classList.toggle("dshell-tabOn", t.dataset.tab === name));
+  $$("[data-pane]").forEach(p => p.style.display = (p.dataset.pane === name) ? "" : "none");
+}
+
+// ── 初始化 ──
+function init(){
+  load();
+  SCRIPT_DIR = state.set.dir || detectProjectDir();
+  $("#setDir").value = SCRIPT_DIR;
+  $("#dirDetect").textContent = SCRIPT_DIR ? ("已检测：" + SCRIPT_DIR) : "未能自动检测，请手动粘贴项目文件夹绝对路径";
+  $("#setPrefix").value = state.set.prefix; $("#setPer").value = state.set.per; $("#setState").value = state.set.prState;
+  for (const s of ["A","B"]) { bindRepo(s); fillRepoForm(s); }
+  setDirection(state.direction || "AB");
+  $$(".dshell-tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+  $("#dirAB").addEventListener("click", () => setDirection("AB"));
+  $("#dirBA").addEventListener("click", () => setDirection("BA"));
+  $("#selAll").addEventListener("click", () => {
+    const side = sourceSide();
+    visiblePrs(side).forEach(p => state.selected.add(prKey(side, p.number)));
+    renderPrList(); updateStats();
+  });
+  $("#selNone").addEventListener("click", () => { state.selected.clear(); renderPrList(); updateStats(); });
+  $("#doSync").addEventListener("click", doSync);
+  $("#refreshBase").addEventListener("click", () => connectTarget(true));
+  $("#tgtFromSrc").addEventListener("click", () => {
+    const s = sourceSide(), t = targetSide();
+    const src = state.repos[s], tgt = state.repos[t];
+    if (!src.repo) { appendLog("源仓未配置，无法复制到目标仓。", "ev ev-err"); switchTab("log"); return; }
+    tgt.platform = src.platform; tgt.repo = src.repo; tgt.token = src.token; tgt.info = null; tgt.prs = [];
+    fillRepoForm(t); setBadge(t, "未连接", ""); save();
+    appendLog("已把目标仓（仓" + t + "）设为与源仓相同：" + esc(src.repo) + "；可选择不同分支做同仓同步。", "ev");
+    connectTarget(true);
+  });
+  $("#clearLog").addEventListener("click", () => { clearLog(); });
+  $("#saveSet").addEventListener("click", () => {
+    state.set.prefix = $("#setPrefix").value.trim() || "sync";
+    state.set.per = Math.max(1, parseInt($("#setPer").value)||50);
+    state.set.prState = $("#setState").value;
+    const nd = $("#setDir").value.trim();
+    if (nd && nd !== SCRIPT_DIR) { SCRIPT_DIR = nd; state.set.dir = nd; }
+    save();
+    $("#dirDetect").textContent = "已设置：" + SCRIPT_DIR;
+    appendLog("设置已保存。项目目录：" + esc(SCRIPT_DIR), "ev");
+  });
+  $("#clearStore").addEventListener("click", () => { localStorage.removeItem(LS_KEY); appendLog("已清除本地缓存（刷新后恢复默认）。", "ev"); });
+  applyTheme((function(){ try { return localStorage.getItem(THEME_KEY) || "auto"; } catch { return "auto"; } })());
+  $$("[data-theme-btn]").forEach(b => b.addEventListener("click", () => applyTheme(b.dataset.themeBtn)));
+  updateStats(); setSyncBtn();
+}
+init();
+</script>
+</body>
+</html>

@@ -1,5 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 「代码同步」项目页（`projects/code_trans/`，窗口1：两个代码仓 PR 双向同步）入库，PR 选择支持按目标分支筛选：
+  源仓 PR 列表上方的「合入分支」chips 按各 PR 的 `targetBranch` 多选过滤（chips 带各分支 PR 计数与「全部 (N)」，
+  默认不过滤；加载 PR / 切换同步方向后自动重置，已加载列表为空时整行隐藏），「全选」仅选中当前筛选结果，
+  「使用说明」同步补充筛选说明。配套服务端脚本一并入库：`pr-fetch.py`（GitHub / GitLab / Gitee 仓信息与
+  PR 列表抓取，归一化 `sourceBranch` / `targetBranch` 等字段，经 `/api/worktable/exec` 调用规避 CORS 与令牌暴露）、
+  `pr-sync.py`（克隆目标仓 → 抓取源 PR 提交 → cherry-pick → push → 调 API 建 PR/MR，`@@PRSYNC@@` 事件流回显页面日志）。
+
 - 修复未选择部署策略时 `DEPLOY_STRATEGY` 被当作「已解析的空值」参与替换的问题（`projects/pipeline/pipeline.html`）：
   `substRunVars` 取值池此前用 `rc.strategy!==undefined` 注入 `DEPLOY_STRATEGY`，而运行上下文一律把未选择的策略
   兜底为空串，条件恒真——未选策略（「（不使用）」）时 `${DEPLOY_STRATEGY}` 静默解析为空，普罗命名空间模板
