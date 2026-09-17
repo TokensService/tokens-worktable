@@ -47,6 +47,9 @@ EOF
 cat >"$work_dir/bin/ctr" <<'EOF'
 #!/usr/bin/env bash
 printf '%s|%s\n' "${REMOTE_PORT:-}" "$*" >>"$CTR_LOG"
+if [[ "$*" == *'images pull --user'* && -n "${PROXY_LOG:-}" ]]; then
+  printf '%s|%s|%s|%s|%s\n' "${REMOTE_PORT:-}" "${http_proxy:-}" "${https_proxy:-}" "${HTTP_PROXY:-}" "${HTTPS_PROXY:-}" >>"$PROXY_LOG"
+fi
 if [[ "$*" == '-n k8s.io images ls -q' ]]; then
   if [[ "${REMOTE_PORT:-}" == '2223' || ( -n "${FAKE_IMPORTED_STATE:-}" && -f "$FAKE_IMPORTED_STATE" ) ]]; then
     printf '%s\n' 'swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test'
@@ -68,6 +71,7 @@ PATH="$work_dir/bin:$PATH" \
 FAKE_TEMPLATE_DIR="$work_dir/template" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
 CTR_LOG="$work_dir/ctr.log" \
+PROXY_LOG="$work_dir/proxy.log" \
 IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
 RUN_DIR="$work_dir/run" \
 TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"},{"ip":"115.33.98.101:2222","user":"root"},{"ip":"115.33.98.101:2224","user":"root"}]' \
@@ -89,6 +93,7 @@ if grep -Fxq "2223|$expected_pull" "$work_dir/ctr.log"; then
   exit 1
 fi
 grep -Fxq "2222|$expected_pull" "$work_dir/ctr.log"
+grep -Fxq '2222|http://127.0.0.1:18118|http://127.0.0.1:18118|http://127.0.0.1:18118|http://127.0.0.1:18118' "$work_dir/proxy.log"
 grep -Fxq '2223|-n k8s.io images ls -q' "$work_dir/ctr.log"
 grep -Fxq '2222|-n k8s.io images ls -q' "$work_dir/ctr.log"
 

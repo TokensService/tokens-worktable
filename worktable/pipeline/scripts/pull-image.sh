@@ -28,6 +28,10 @@ IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"
 IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
 # LOGKEY is accepted for callers that use the older environment-variable name.
 IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"
+# Mapped targets expose a loopback proxy through their SSH/NAT setup.  The
+# remote command runs non-interactively and through sudo, so inject the proxy
+# into ctr explicitly instead of depending on shell profiles or sudo env_keep.
+MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
 
 remote_quote() {
   printf '%q' "$1"
@@ -126,7 +130,7 @@ PY
       echo "AK and LOGIN_KEY are required when the mapped target image is absent" >&2
       return 2
     fi
-    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
+    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo env http_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") https_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") HTTP_PROXY=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") HTTPS_PROXY=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
     if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
       continue
     else
