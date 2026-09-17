@@ -506,19 +506,46 @@ import sys
 labels_file, inventory_file = sys.argv[1:]
 labels = json.load(open(labels_file, encoding="utf-8"))
 inventory = json.load(open(inventory_file, encoding="utf-8"))
-key = labels["key"]
-value = labels["value"]
 by_ip = {}
 for node in inventory.get("items", []):
     name = node.get("metadata", {}).get("name")
     for address in node.get("status", {}).get("addresses", []):
         if address.get("type") == "InternalIP" and name:
             by_ip[address.get("address")] = name
-missing = [host["ip"] for host in labels.get("hosts", []) if host["ip"] not in by_ip]
+
+assignments = [{
+    "key": labels["key"],
+    "value": labels["value"],
+    "hosts": labels.get("hosts", []),
+}]
+extra_assignments = labels.get("assignments", [])
+if not isinstance(extra_assignments, list):
+    raise SystemExit("node label assignments must be a list")
+assignments.extend(extra_assignments)
+
+all_hosts = []
+for assignment in assignments:
+    if not isinstance(assignment, dict):
+        raise SystemExit("node label assignment must be an object")
+    key = assignment.get("key")
+    value = assignment.get("value")
+    hosts = assignment.get("hosts", [])
+    if not isinstance(key, str) or not key or not isinstance(value, str) or not value:
+        raise SystemExit("node label assignment requires non-empty key and value")
+    if not isinstance(hosts, list):
+        raise SystemExit("node label assignment hosts must be a list")
+    all_hosts.extend(hosts)
+
+missing = [host["ip"] for host in all_hosts if host["ip"] not in by_ip]
 if missing:
     raise SystemExit("target node IPs do not match Kubernetes InternalIP: " + ", ".join(missing))
-for host in labels["hosts"]:
-    print(by_ip[host["ip"]], f"{key}={value}", sep="\t")
+for assignment in assignments:
+    for host in assignment["hosts"]:
+        print(
+            by_ip[host["ip"]],
+            f"{assignment['key']}={assignment['value']}",
+            sep="\t",
+        )
 PY
 
   while IFS=$'\t' read -r node label; do
