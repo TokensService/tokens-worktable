@@ -33,5 +33,7 @@ grep -Fq 'sudo ctr -n k8s.io images pull --user' "$script"
 grep -Fq 'AK and LOGIN_KEY are required' "$script"
 grep -Fq 'sudo ctr -n k8s.io images ls -q' "$script"
 grep -Fq 'target image already exists' "$script"
+grep -Fq 'nerdctl --namespace k8s.io save "$image"' "$script"
+grep -Fq 'sudo ctr -n k8s.io images import -' "$script"
 
 echo "pull runtime-selection tests passed"
