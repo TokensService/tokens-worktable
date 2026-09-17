@@ -49,6 +49,8 @@
     .ct-srvrow .ct-srvname { font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); font-size:12.5px; }
     .ct-srvrow .ct-srvmeta { font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); word-break:break-all; }
     .ct-srvrow .ct-srvact { margin-left:auto; display:flex; gap:6px; }
+    textarea.dshell-input { width:100%; box-sizing:border-box; font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11px; line-height:1.4; resize:vertical; }
+    .ct-field.full { grid-column:1 / -1; }
     .ct-log { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5;
       background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px;
       padding:10px 12px; height:340px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
@@ -252,21 +254,30 @@
         <div class="ct-cardhd"><h2>远程服务器（SSH 远程执行）</h2><span class="dshell-muted" id="srvCount"></span></div>
         <div class="ct-pagelist" id="srvList" style="max-height:220px;margin-bottom:8px"><div class="ct-empty">尚未配置服务器。在下方填写并保存。</div></div>
         <div class="ct-sep" style="margin:6px 0 10px"></div>
+        <div class="ct-field" style="margin-bottom:8px"><span class="ct-label">认证方式</span>
+          <select class="dshell-input" id="srvAuth" style="max-width:160px"><option value="password">密码</option><option value="key">密钥</option></select>
+          <span class="ct-hint" style="margin-left:8px">密钥支持粘贴 PEM 或本地文件路径，可选口令</span>
+        </div>
         <div class="ct-grid2">
           <div class="ct-field"><span class="ct-label">名称</span><input class="dshell-input" id="srvName" placeholder="如 构建机A" autocomplete="off" /></div>
           <div class="ct-field"><span class="ct-label">主机 Host</span><input class="dshell-input" id="srvHost" placeholder="1.2.3.4 或 host" autocomplete="off" /></div>
           <div class="ct-field"><span class="ct-label">端口 Port</span><input class="dshell-input" id="srvPort" value="22" style="max-width:120px" autocomplete="off" /></div>
           <div class="ct-field"><span class="ct-label">账号 User</span><input class="dshell-input" id="srvUser" placeholder="root" autocomplete="off" /></div>
-          <div class="ct-field"><span class="ct-label">密码 Password</span><input class="dshell-input" id="srvPass" type="password" placeholder="SSH 密码" autocomplete="new-password" /></div>
+          <div class="ct-field" id="fldPass"><span class="ct-label">密码 Password</span><input class="dshell-input" id="srvPass" type="password" placeholder="SSH 密码" autocomplete="new-password" /></div>
+          <div class="ct-field" id="fldKeyPath" style="display:none"><span class="ct-label">私钥文件路径（可选）</span><input class="dshell-input" id="srvKeyPath" placeholder="/root/.ssh/id_rsa" autocomplete="off" /></div>
+          <div class="ct-field" id="fldKeyPass" style="display:none"><span class="ct-label">密钥口令（可空）</span><input class="dshell-input" id="srvKeyPass" type="password" placeholder="私钥口令" autocomplete="new-password" /></div>
           <div class="ct-field"><span class="ct-label">远程工作目录</span><input class="dshell-input" id="srvDir" placeholder="/opt/code-sync" autocomplete="off" /></div>
         </div>
+        <div class="ct-field full" id="fldKeyContent" style="display:none;margin-top:8px"><span class="ct-label">私钥内容（粘贴 PEM，与路径二选一）</span>
+          <textarea class="dshell-input" id="srvKeyContent" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea></div>
         <div class="ct-row" style="margin-top:8px;gap:8px">
           <button class="dshell-btn dshell-btnGhost" id="srvTest">测试连接</button>
+          <button class="dshell-btn dshell-btnGhost" id="srvForget" title="清除本机记住的该主机指纹，下次连接重新接受（指纹变更时用）">重置主机指纹</button>
           <button class="dshell-btn" id="srvSave">保存服务器</button>
           <button class="dshell-btn dshell-btnGhost" id="srvReset">清空表单</button>
           <span class="ct-hint" id="srvMsg"></span>
         </div>
-        <p class="ct-hint" style="margin:6px 0 0">远程服务器需具备 python3 与 git；同步时把 pr-sync.py / pr-fetch.py 与 spec 传到该目录并执行，输出实时回流。凭据仅用于本机服务端 SSH，不经浏览器直连。</p>
+        <p class="ct-hint" style="margin:6px 0 0">认证可选「密码」或「密钥」（密钥可粘贴 PEM 或填本地路径，可带口令）。主机指纹采用 TOFU：首次连接自动接受并记入本机 known_hosts，之后指纹变更会拒绝——此时点「重置主机指纹」清除后重连。远端需具备 python3 与 git；同步时把脚本与 spec 传到该目录执行，输出实时回流。凭据仅用于本机服务端 SSH，不经浏览器直连。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">使用说明</h2>
@@ -277,7 +288,7 @@
           <li>「状态」与「合入分支」chips 叠加过滤源仓 PR 列表：状态按 开放 / 已合并 / 全部 单选，合入分支按目标分支多选，各 chip 带分类计数；「全选」仅选中当前筛选结果。</li>
           <li>设置页「抓取状态」控制向平台请求的 PR 范围（默认 all = 全部状态）；页面 chips 仅在已抓取范围内做显示筛选，切换即时生效。</li>
           <li>「试运行」会执行 cherry-pick 自检但不会 push 也不会建 PR，适合先验证。</li>
-          <li>「执行位置」可选本地或已配置的远程服务器：选远程时，本机 SSH 到该服务器、把脚本与 spec 传过去后执行 <code>pr-sync.py</code>，输出实时回流；服务器需有 python3 与 git。PR 抓取（列表 / 测试连接）始终在本地。</li>
+          <li>「执行位置」可选本地或已配置的远程服务器：选远程时，本机 SSH 到该服务器、把脚本与 spec 传过去后执行 <code>pr-sync.py</code>，输出实时回流；服务器需有 python3 与 git。认证支持密码 / 密钥；主机指纹 TOFU（首次接受并记住，变更可「重置主机指纹」）。PR 抓取（列表 / 测试连接）始终在本地。</li>
         </ul>
       </div>
     </div>
@@ -389,7 +400,9 @@ function load(){
     if (d.direction) state.direction = d.direction;
     if (d.set) Object.assign(state.set, d.set);
     if (Array.isArray(d.servers)) {
-      state.servers = d.servers.filter(s => s && s.host).map(s => Object.assign({id:"", name:"", host:"", port:22, user:"", password:"", dir:""}, s, {id: s.id || ("srv_" + Math.random().toString(36).slice(2,9))}));
+      state.servers = d.servers.filter(s => s && s.host).map(s => Object.assign(
+        {id:"", name:"", host:"", port:22, user:"", password:"", dir:"", auth:"password", keyPath:"", keyPass:"", keyContent:""},
+        s, {id: s.id || ("srv_" + Math.random().toString(36).slice(2,9)), auth: (s.auth === "key" ? "key" : "password")}));
     }
     if (d.execLoc) state.execLoc = d.execLoc;
     // 选中了已不存在的服务器则回退本地
@@ -794,9 +807,20 @@ function srvFields(){
     host: $("#srvHost").value.trim(),
     port: parseInt($("#srvPort").value) || 22,
     user: $("#srvUser").value.trim(),
+    auth: $("#srvAuth").value === "key" ? "key" : "password",
     password: $("#srvPass").value,
+    keyPath: $("#srvKeyPath").value.trim(),
+    keyPass: $("#srvKeyPass").value,
+    keyContent: $("#srvKeyContent").value,
     dir: $("#srvDir").value.trim(),
   };
+}
+function toggleSrvAuth(){
+  const key = $("#srvAuth").value === "key";
+  $("#fldPass").style.display = key ? "none" : "";
+  $("#fldKeyPath").style.display = key ? "" : "none";
+  $("#fldKeyPass").style.display = key ? "" : "none";
+  $("#fldKeyContent").style.display = key ? "" : "none";
 }
 function fillSrvForm(s){
   editingSrvId = s ? s.id : null;
@@ -804,8 +828,13 @@ function fillSrvForm(s){
   $("#srvHost").value = s ? s.host : "";
   $("#srvPort").value = s ? s.port : 22;
   $("#srvUser").value = s ? s.user : "";
+  $("#srvAuth").value = s && s.auth === "key" ? "key" : "password";
   $("#srvPass").value = s ? s.password : "";
+  $("#srvKeyPath").value = s ? (s.keyPath || "") : "";
+  $("#srvKeyPass").value = s ? (s.keyPass || "") : "";
+  $("#srvKeyContent").value = s ? (s.keyContent || "") : "";
   $("#srvDir").value = s ? s.dir : "";
+  toggleSrvAuth();
   $("#srvSave").textContent = s ? "更新服务器" : "保存服务器";
 }
 function clearSrvForm(){ fillSrvForm(null); $("#srvMsg").textContent = ""; }
@@ -816,10 +845,11 @@ function renderSrvList(){
   box.innerHTML = "";
   for (const s of state.servers) {
     const isSel = state.execLoc === s.id;
+    const authTxt = s.auth === "key" ? "密钥" : "密码";
     const row = document.createElement("div"); row.className = "ct-srvrow";
     row.innerHTML =
       '<div class="ct-srvname">' + esc(s.name || s.host) + (isSel ? ' <span class="dshell-badge dshell-badgeDone">当前</span>' : '') + '</div>' +
-      '<div class="ct-srvmeta">' + esc(s.user || "-") + '@' + esc(s.host) + ':' + esc(s.port) + ' → ' + esc(s.dir || "-") + '</div>' +
+      '<div class="ct-srvmeta">' + esc(s.user || "-") + '@' + esc(s.host) + ':' + esc(s.port) + ' · ' + authTxt + ' → ' + esc(s.dir || "-") + '</div>' +
       '<div class="ct-srvact">' +
         '<button class="dshell-btn dshell-btnGhost" data-act="edit">编辑</button>' +
         '<button class="dshell-btn dshell-btnGhost" data-act="use"' + (isSel ? ' disabled' : '') + '>' + (isSel ? '已选用' : '选用') + '</button>' +
@@ -855,6 +885,7 @@ function renderExecLoc(){
 function srvSave(){
   const f = srvFields();
   if (!f.host || !f.user || !f.dir) { $("#srvMsg").textContent = "请填写主机 / 账号 / 远程目录。"; return; }
+  if (f.auth === "key" && !f.keyContent && !f.keyPath) { $("#srvMsg").textContent = "密钥认证需提供私钥内容或私钥文件路径。"; return; }
   if (!f.name) f.name = f.user + "@" + f.host;
   if (editingSrvId) {
     const i = state.servers.findIndex(s => s.id === editingSrvId);
@@ -867,25 +898,49 @@ function srvSave(){
   save(); renderSrvList(); renderExecLoc();
   $("#srvSave").textContent = "保存服务器";
   $("#srvMsg").textContent = "已保存。";
-  $("#srvName").value = $("#srvHost").value = $("#srvUser").value = $("#srvPass").value = $("#srvDir").value = "";
+  ["#srvName","#srvHost","#srvUser","#srvPass","#srvKeyPath","#srvKeyPass","#srvKeyContent","#srvDir"].forEach(s => $(s).value = "");
   $("#srvPort").value = 22;
+  toggleSrvAuth();
+}
+// 写一个只含 remote 的 spec 到 testSpec，调桥接脚本的 --test / --forget
+async function runRemote(mode, remote){
+  const P = paths();
+  const wres = await fetch("/api/worktable/write", { method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ path: P.testSpec, content: JSON.stringify({ remote: remote }, null, 2) }) });
+  if (!wres.ok) throw new Error("HTTP " + wres.status);
+  return await execOnce(P.remote, [mode, P.testSpec]);
 }
 async function srvTest(){
   const f = srvFields();
   if (!f.host || !f.user || !f.dir) { $("#srvMsg").textContent = "请先填写主机 / 账号 / 远程目录。"; return; }
+  if (f.auth === "key" && !f.keyContent && !f.keyPath) { $("#srvMsg").textContent = "密钥认证需提供私钥内容或私钥文件路径。"; return; }
   if (!f.name) f.name = f.user + "@" + f.host;
   const msg = $("#srvMsg"); msg.textContent = "测试中…";
   const btn = $("#srvTest"); const old = btn.textContent; btn.disabled = true; btn.textContent = "测试中";
   try {
-    const P = paths();
-    const spec = { remote: { name: f.name, host: f.host, port: f.port, user: f.user, password: f.password, dir: f.dir } };
-    const wres = await fetch("/api/worktable/write", { method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ path: P.testSpec, content: JSON.stringify(spec, null, 2) }) });
-    if (!wres.ok) throw new Error("HTTP " + wres.status);
-    const out = await execOnce(P.remote, ["--test", P.testSpec]);
+    const out = await runRemote("--test", { name:f.name, host:f.host, port:f.port, user:f.user, dir:f.dir, auth:f.auth, password:f.password, keyPath:f.keyPath, keyPass:f.keyPass, keyContent:f.keyContent });
     let d; try { d = JSON.parse(out.stdout); } catch { d = { ok:false, error: (out.stderr || out.stdout || "返回解析失败").slice(0,200) }; }
-    if (d.ok) { msg.textContent = "✓ 连接成功：python3 / git 就绪" + (d.stdout ? "（" + d.stdout.replace(/\n/g, " ") + "）" : ""); }
-    else { msg.textContent = "✗ " + (d.error || "失败"); appendLog("[srv] 测试失败：" + esc(d.error || ""), "ev ev-err"); }
+    if (d.ok) {
+      const hk = d.hostKey ? " · 主机指纹：" + d.hostKey : "";
+      msg.textContent = "✓ 连接成功：python3 / git 就绪" + hk + (d.stdout ? "（" + d.stdout.replace(/\n/g, " ") + "）" : "");
+    } else {
+      msg.textContent = "✗ " + (d.error || "失败");
+      appendLog("[srv] 测试失败：" + esc(d.error || ""), "ev ev-err");
+    }
+  } catch (e) {
+    msg.textContent = "✗ " + e.message;
+  } finally { btn.disabled = false; btn.textContent = old; }
+}
+async function srvForget(){
+  const host = $("#srvHost").value.trim();
+  if (!host) { $("#srvMsg").textContent = "请先填写主机。"; return; }
+  const port = parseInt($("#srvPort").value) || 22;
+  const msg = $("#srvMsg"); msg.textContent = "重置中…";
+  const btn = $("#srvForget"); const old = btn.textContent; btn.disabled = true; btn.textContent = "重置中";
+  try {
+    const out = await runRemote("--forget", { host, port });
+    let d; try { d = JSON.parse(out.stdout); } catch { d = { ok:false, error: (out.stderr || out.stdout || "返回解析失败").slice(0,200) }; }
+    msg.textContent = d.ok ? "✓ 已清除主机指纹（" + (d.removed || host) + "），下次连接重新接受" : "✗ " + (d.error || "失败");
   } catch (e) {
     msg.textContent = "✗ " + e.message;
   } finally { btn.disabled = false; btn.textContent = old; }
@@ -912,7 +967,7 @@ async function doSync(){
     branchPrefix: state.set.prefix || "sync",
     dryRun: dry, keepClone: true, prs: sel,
   };
-  if (srv) spec.remote = { name: srv.name, host: srv.host, port: srv.port, user: srv.user, password: srv.password, dir: srv.dir };
+  if (srv) spec.remote = { name: srv.name, host: srv.host, port: srv.port, user: srv.user, dir: srv.dir, auth: srv.auth || "password", password: srv.password || "", keyPath: srv.keyPath || "", keyPass: srv.keyPass || "", keyContent: srv.keyContent || "" };
   // 写 spec 文件
   try {
     const wres = await fetch("/api/worktable/write", { method:"POST", headers:{"content-type":"application/json"},
@@ -981,6 +1036,9 @@ function init(){
   $("#srvSave").addEventListener("click", srvSave);
   $("#srvTest").addEventListener("click", srvTest);
   $("#srvReset").addEventListener("click", clearSrvForm);
+  $("#srvAuth").addEventListener("change", toggleSrvAuth);
+  $("#srvForget").addEventListener("click", srvForget);
+  toggleSrvAuth();
   renderSrvList(); renderExecLoc();
   updateStats(); setSyncBtn();
 }
