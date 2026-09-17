@@ -38,6 +38,9 @@ set -euo pipefail
 while [[ "$1" == -* ]]; do
   if [[ "$1" == '-o' ]]; then shift 2
   elif [[ "$1" == '-p' ]]; then remote_port="$2"; printf '%s\n' "$2" >>"$SSH_PORT_LOG"; shift 2
+  elif [[ "$1" == '-R' ]]; then
+    [[ -z "${SSH_REVERSE_FORWARD_LOG:-}" ]] || printf '%s\n' "$2" >>"$SSH_REVERSE_FORWARD_LOG"
+    shift 2
   else shift
   fi
 done
@@ -70,6 +73,7 @@ chmod 0755 "$work_dir/bin/nerdctl" "$work_dir/bin/ssh" "$work_dir/bin/ctr" "$wor
 PATH="$work_dir/bin:$PATH" \
 FAKE_TEMPLATE_DIR="$work_dir/template" \
 SSH_PORT_LOG="$work_dir/ssh-ports.log" \
+SSH_REVERSE_FORWARD_LOG="$work_dir/ssh-reverse-forwards.log" \
 CTR_LOG="$work_dir/ctr.log" \
 PROXY_LOG="$work_dir/proxy.log" \
 IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
@@ -93,6 +97,7 @@ if grep -Fxq "2223|$expected_pull" "$work_dir/ctr.log"; then
   exit 1
 fi
 grep -Fxq "2222|$expected_pull" "$work_dir/ctr.log"
+grep -Fxq '18118:127.0.0.1:8118' "$work_dir/ssh-reverse-forwards.log"
 grep -Fxq '2222|http://127.0.0.1:18118|http://127.0.0.1:18118|http://127.0.0.1:18118|http://127.0.0.1:18118' "$work_dir/proxy.log"
 grep -Fxq '2223|-n k8s.io images ls -q' "$work_dir/ctr.log"
 grep -Fxq '2222|-n k8s.io images ls -q' "$work_dir/ctr.log"
