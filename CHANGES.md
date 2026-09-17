@@ -1,5 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复终止流水线时只中止页面/服务端编排、未停止外部任务的问题（`projects/pipeline/pipeline.html`、
+  `src/index.ts`）：Jenkins 触发后保存 queue `Location` 与最终构建号，终止时对排队项调用
+  `POST /queue/cancelItem`、对已运行构建调用 `POST <build>/stop`，并为终止 POST 独立获取 crumb；
+  EvalTokens 启动后保存 `run_id`，终止时调用 `POST /api/v1/tasks/runs/<run_id>/stop`。浏览器本地执行与
+  服务端权威队列执行均覆盖，并将启动请求与流水线中止信号解耦到取得外部任务标识为止，避免用户恰在
+  启动响应返回前点击终止而遗留任务。新增 Jenkins 排队/运行取消、EvalTokens run 停止及页面协议回归测试。
+
 - 「定时」页计划列表新增当前执行的终止能力（`projects/pipeline/pipeline.html`）：计划触发后在服务端执行池
   运行/排队的任务，此前只能去「运行队列」里找条目中止，定时页只有「取消」（仅删除计划、不动当前执行），
   且计划执行人署名带「 ⏰」后缀使按署名精确匹配的控制权判定永远失败，非管理员连自己的定时运行也无法中止。

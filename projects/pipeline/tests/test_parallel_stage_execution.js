@@ -629,6 +629,34 @@ test('Jenkins 请求链在本地和远程模式都透传同一个 AbortSignal', 
   }
 });
 
+test('浏览器 Jenkins 取消协议会停止已运行构建并取消排队项', async () => {
+  const calls = [];
+  const context = {
+    console, Promise, JSON, Error, URL, encodeURIComponent,
+    jenkins: { url: 'http://jenkins.local', user: 'user', token: 'token', mode: 'local' },
+    btoa(value) { return Buffer.from(value).toString('base64'); },
+    fetch: async (url, init = {}) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes('crumbIssuer')) return { ok: false, status: 404, json: async () => ({}) };
+      if (String(url).endsWith('/queue/item/9/api/json')) return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({}) };
+    },
+  };
+  vm.createContext(context);
+  installFunctions(context, ['jkFetchJson', 'jkFetchCrumb', 'jkPostAction', 'jkCancelExecution']);
+  assert.equal(typeof context.jkCancelExecution, 'function', '缺少 Jenkins 外部任务取消协议');
+
+  await context.jkCancelExecution('/job/demo/', 42, '');
+  await context.jkCancelExecution('/job/demo/', null, '/queue/item/9/');
+
+  const stop = calls.find(call => call.url.endsWith('/job/demo/42/stop'));
+  assert.ok(stop, '已运行构建必须调用 build /stop');
+  assert.equal(stop.init.method, 'POST');
+  const cancel = calls.find(call => call.url.endsWith('/queue/cancelItem?id=9'));
+  assert.ok(cancel, '排队项必须调用 queue/cancelItem');
+  assert.equal(cancel.init.method, 'POST');
+});
+
 test('HTTP 轮询等待可由 AbortSignal 立即取消', async () => {
   const context = { Promise, Error, setTimeout, clearTimeout };
   vm.createContext(context);

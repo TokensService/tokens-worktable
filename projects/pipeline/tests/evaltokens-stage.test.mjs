@@ -91,6 +91,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     'readBrowserResponseText',
     'evaltokFetchTasks',
     'evaltokStartRun',
+    'evaltokStopRun',
     'evaltokFetchRuns',
     'evaltokReportUrl',
     'evaltokFetchReport',
@@ -1172,11 +1173,12 @@ test('阶段超时会中断卡住的 EvalTokens 请求', async () => {
   assert.match(stage._out.stderr, /等待超时/)
 })
 
-test('用户中止会取消正在等待的 EvalTokens 请求且不覆盖中止状态', async () => {
+test('用户中止会取消轮询、停止 EvalTokens 实际 run 且不覆盖中止状态', async () => {
   let requestAborted = false
   let finishCalls = 0
   let markRequestStarted
   const requestStarted = new Promise(resolve => { markRequestStarted = resolve })
+  const requests = []
   const evaltokConfig = { url: 'http://evaltokens.local', token: '', mode: 'local' }
   const stage = {
     id: 'eval-abort',
@@ -1189,8 +1191,15 @@ test('用户中止会取消正在等待的 EvalTokens 请求且不覆盖中止�
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url, options = {}) => {
+      requests.push({ url: String(url), options })
       if (url.endsWith('/api/open/v1/tasks')) {
         return jsonResponse({ tasks: [{ task_id: 'task-abort', name: 'abort-task' }] })
+      }
+      if (url.endsWith('/api/open/v1/tasks/task-abort/run')) {
+        return jsonResponse({ run_id: 'run-abort', status: 'running' })
+      }
+      if (url.endsWith('/api/v1/tasks/runs/run-abort/stop')) {
+        return jsonResponse({ status: 'stopped' })
       }
       markRequestStarted()
       return await new Promise((resolve, reject) => {
@@ -1221,5 +1230,56 @@ test('用户中止会取消正在等待的 EvalTokens 请求且不覆盖中止�
   await pending
 
   assert.equal(requestAborted, true)
+  const stop = requests.find(request => request.url.endsWith('/api/v1/tasks/runs/run-abort/stop'))
+  assert.ok(stop, '页面中止后必须停止 EvalTokens 实际 run')
+  assert.equal(stop.options.method, 'POST')
   assert.equal(finishCalls, 0)
+})
+
+test('用户在启动响应返回前中止仍会在取得 run_id 后停止 EvalTokens run', async () => {
+  let releaseStart
+  let markStartRequested
+  const startRequested = new Promise(resolve => { markStartRequested = resolve })
+  const startResponse = new Promise(resolve => { releaseStart = resolve })
+  const requests = []
+  const stage = {
+    id: 'eval-abort-start',
+    name: '启动竞态任务',
+    timeout: null,
+    evaltokens: { taskId: 'task-start-race', taskName: 'start-race', outVars: '' },
+  }
+  const rc = makeRc({ stages: [stage] })
+  const context = loadEvaltokensRuntime({
+    substRunVars: value => value,
+    evaltokConfig: () => ({ url: 'http://evaltokens.local', token: '', mode: 'local' }),
+    fetch: async (url, options = {}) => {
+      requests.push({ url: String(url), options })
+      if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-start-race', name: 'start-race' }] })
+      if (url.endsWith('/api/open/v1/tasks/task-start-race/run')) {
+        markStartRequested()
+        return startResponse
+      }
+      if (url.endsWith('/api/v1/tasks/runs/run-start-race/stop')) return jsonResponse({ status: 'stopped' })
+      throw new Error('unexpected URL ' + url)
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    archiveStageLog: () => {},
+    mergeStageVars: () => ({}),
+    parseStageJson: value => JSON.parse(value),
+    applyOutVars: () => {},
+    secToMinInput: value => String(value),
+    advance: () => {},
+    finish: () => {},
+  })
+
+  const pending = context.runEvaltokensStep(rc, 0)
+  await startRequested
+  rc.over = true
+  rc.scriptAbort.abort()
+  releaseStart(jsonResponse({ run_id: 'run-start-race', status: 'running' }))
+  await pending
+
+  assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-start-race/stop')),
+    '启动响应迟回时也必须用返回的 run_id 停止实际任务')
 })
