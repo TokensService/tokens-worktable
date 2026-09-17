@@ -561,6 +561,29 @@ values["global"] = deep_merge(values.get("global", {}), {
 })
 values = deep_merge(values, yaml_replace_map)
 
+# Some released images carry a literal default NodePort instead of the
+# {NODE_PORT} placeholder.  Apply the target mapping to the parsed values as
+# well so both template forms produce the same service port.
+if target_node_port is not None:
+    for path in (("global", "network", "ports"), ("rayService", "service", "ports")):
+        current = values
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        if not isinstance(current, list):
+            continue
+        frontend_ports = [
+            item for item in current
+            if isinstance(item, dict) and item.get("name") == "frontend-port"
+        ]
+        candidates = frontend_ports or [
+            item for item in current if isinstance(item, dict) and "nodePort" in item
+        ]
+        if candidates:
+            candidates[0]["nodePort"] = target_node_port
+
 lmcache_sidecar = values.get("lmcacheSidecar")
 if lmcache_sidecar is not None and not isinstance(lmcache_sidecar, dict):
     raise SystemExit("lmcacheSidecar must be a mapping")

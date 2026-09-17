@@ -56,7 +56,9 @@ nodeSelector:
 rayService:
   service:
     ports:
-      - nodePort: {NODE_PORT}
+      # Image templates may carry a literal default instead of {NODE_PORT};
+      # the renderer must still apply the mapped target's fixed NodePort.
+      - nodePort: 31365
 head:
   nodeSelector: {}
 workerGroups:
@@ -80,6 +82,10 @@ feTemplate:
     kubernetes.io/hostname: 192.168.0.243
 global:
   useFemFrontend: true
+  network:
+    ports:
+      - name: frontend-port
+        nodePort: 31365
   storage:
     hostPath: /mnt/paas
   imageRegistry: registry.example/old
@@ -188,6 +194,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 expected = {"xds.optest": "node-175-17"}
 assert values["nodeSelector"] == expected, values["nodeSelector"]
 assert values["rayService"]["service"]["ports"][0]["nodePort"] == 31008, values["rayService"]
+assert values["global"]["network"]["ports"][0]["nodePort"] == 31008, values["global"]["network"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
