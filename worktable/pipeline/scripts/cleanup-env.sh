@@ -346,7 +346,10 @@ handle_top_owner() {
 clean_namespace() {
     local ns=$1 pod owner res pod_names
     if [[ "$HAS_HELM" == "1" ]]; then
-        local rels; rels=$(helm list -n "$ns" --all -q) || return 1
+        # Some target Helm builds do not support --all.  These namespaces were
+        # discovered from live Pods, so the default deployed/failed release
+        # set is sufficient for deciding whether Helm should clean them.
+        local rels; rels=$(helm list -n "$ns" -q) || return 1
         if [[ -n "$rels" ]]; then
             log "[CLEAN] ns=$ns (Helm)"
             while read -r rel; do

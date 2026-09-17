@@ -13,6 +13,10 @@ CLEANUP_TIMEOUT_SECONDS=1
 CLEANUP_POLL_SECONDS=1
 helm() {
     printf '%s\n' "$*" >>"$tmp/helm"
+    if [[ " $* " == *' --all '* ]]; then
+        echo 'Error: unknown flag: --all' >&2
+        return 1
+    fi
     if [[ "$1" == list ]]; then echo old-release; else return "${HELM_RC:-0}"; fi
 }
 kubectl() {
