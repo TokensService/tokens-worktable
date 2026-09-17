@@ -46,7 +46,7 @@ for pod in pods:
     name = metadata.get("name", "")
     containers = pod.get("spec", {}).get("containers", [])
     container_names = {item.get("name") for item in containers if isinstance(item, dict)}
-    if ("prefill" in group.lower() or "decode" in group.lower()) and name and container_name in container_names:
+    if "prefill" in group.lower() and name and container_name in container_names:
         print(name)
 PY
   status=$?

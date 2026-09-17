@@ -63,9 +63,9 @@ EMS_LOG_SYNC_INTERVAL_SECONDS=1 \
 bash "$script_dir/follow-xds-head-logs.sh" test-ns "$work_dir/logs"
 
 grep -Fxq 'prefill ems log' "$work_dir/logs/ems/prefill-pod/nested/p.log"
-grep -Fxq 'decode ems log' "$work_dir/logs/ems/decode-pod/d.log"
+[[ ! -e "$work_dir/logs/ems/decode-pod" ]]
 [[ ! -e "$work_dir/logs/ems/ctrl-pod" ]]
 grep -Fq 'ems_pod=prefill-pod' "$work_dir/logs/metadata"
-grep -Fq 'ems_pod=decode-pod' "$work_dir/logs/metadata"
+! grep -Fq 'ems_pod=decode-pod' "$work_dir/logs/metadata"
 
-echo 'follow head and Prefill/Decode EMS logs test passed'
+echo 'follow head and Prefill EMS logs test passed'
