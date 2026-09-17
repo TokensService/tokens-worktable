@@ -407,30 +407,9 @@ for group_index, group in enumerate(groups):
     group["rayStartParamsPorts"]["min-worker-port"] = range_start
     group["rayStartParamsPorts"]["max-worker-port"] = range_end
 
-# TE 组按顺序在节点内连续占卡（默认每节点 8 卡），节点填满换下一个节点
-# （bin-packing，arch 顺序即 prefill 优先）：如 2 节点 3P1D → 节点A prefill1(0-3)
-# + prefill2(4-7)，节点B prefill3(0-3)+decode1(4-7)。kubelet 不会覆盖显式声明
-# 的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；同时用
-# kubernetes.io/hostname 把组钉到具体节点。sidecar 的卡对齐由 chart 按组
-# 继承 ray-worker 的 NVIDIA_VISIBLE_DEVICES 完成。
-node_gpu_count = 8
-node_index = 0
-assigned_cards = 0
-for group in groups:
-    group_gpus = group["rayStartParamsPorts"]["num-gpus"]
-    if assigned_cards + group_gpus > node_gpu_count:
-        node_index += 1
-        assigned_cards = 0
-        if node_index >= len(target_ips):
-            raise SystemExit(
-                f"GPU pinning exceeds {node_gpu_count} cards x {len(target_ips)} node(s): "
-                f"group {group['name']} needs {group_gpus}, no node left"
-            )
-    group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] = ",".join(
-        str(card) for card in range(assigned_cards, assigned_cards + group_gpus)
-    )
-    group["nodeSelector"]["kubernetes.io/hostname"] = target_ips[node_index]
-    assigned_cards += group_gpus
+# lite 版不做占卡/钉节点：分卡交给 device plugin，sidecar 卡对齐由 chart
+# 兜底（ray-worker 写 /etc/lmcache-gpu/devices，kubelet 注入的
+# NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES）完成。
 
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
