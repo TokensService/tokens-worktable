@@ -5262,11 +5262,11 @@ async function jkTriggerBuild(jobPath, params, signal){
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:body}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400 && (p.status||0)!==302 && (p.status||0)!==303) throw new Error('HTTP '+(p.status||0));
-    return jkHeaderValue(p.headers,'location');
+    return {body:'',location:jkHeaderValue(p.headers,'location')};
   }
   const r=await fetch(url,{method:'POST',headers:headers,body:body,cache:'no-store',signal:signal});
   if(!r.ok && r.status!==302 && r.status!==303) throw new Error('HTTP '+r.status);
-  return jkHeaderValue(r.headers,'location');
+  return {body:'',location:jkHeaderValue(r.headers,'location')};
 }
 /* 任务 URL 触发：{VAR} 占位符替换后直接 GET 完整地址（等价 curl——此类 URL 本身就是 GET 触发的接口地址）。
    URL 视为自包含：不拼 buildWithParameters、不带 crumb、不附加「Jenkins 服务配置」的用户名/令牌（鉴权信息如
@@ -5277,11 +5277,13 @@ async function jkTriggerGet(url, signal){
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
     if((p.status||0)>=400) throw new Error('HTTP '+(p.status||0));
-    return typeof p.body==='string'?p.body:'';   // 返回响应体：runUrlStep 喂给 parseStageVars 解析产物
+    return {body:typeof p.body==='string'?p.body:'',location:jkHeaderValue(p.headers,'location')};   // 响应体供变量解析，Location 精确关联本次 queue item
   }
   const r=await fetch(url,{cache:'no-store',signal:signal});
   if(!r.ok) throw new Error('HTTP '+r.status);
-  try{ return await readBrowserResponseText(r,20*1024*1024); }catch(e){ if(/响应正文过大/.test(String(e&&e.message||e))) throw e; return ''; }   // 跨域无 CORS 读不到体时不阻断触发成功
+  let body='';
+  try{ body=await readBrowserResponseText(r,20*1024*1024); }catch(e){ if(/响应正文过大/.test(String(e&&e.message||e))) throw e; }   // 跨域无 CORS 读不到体时不阻断触发成功
+  return {body:body,location:jkHeaderValue(r.headers,'location')};
 }
 async function jkGetText(path, signal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
@@ -5336,17 +5338,22 @@ async function jkReadConsoleDelta(buildPath,start,useProgressive,signal){
    调 cancelItem。取消请求使用独立网络生命周期，不能复用已 aborted 的阶段 signal。 */
 async function jkPostAction(url){
   const j=jenkins; const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
-  const crumb=await jkFetchCrumb(j,auth); const headers=Object.assign({},auth,crumb||{});
-  if(j.mode==='remote'){
-    const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:''})});
-    const p=await r.json(); if(p&&p.error) throw new Error(p.error); const status=Number(p&&p.status)||0;
-    if(status<200||status>=400) throw new Error('HTTP '+status);
-    return;
+  const actionCtrl=new AbortController(); const timeout=setTimeout(function(){ actionCtrl.abort(); },10000);
+  try{
+    const crumb=await jkFetchCrumb(j,auth,actionCtrl.signal); const headers=Object.assign({},auth,crumb||{});
+    if(j.mode==='remote'){
+      const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'POST',headers:headers,body:''}),signal:actionCtrl.signal});
+      const p=await r.json(); if(p&&p.error) throw new Error(p.error); const status=Number(p&&p.status)||0;
+      if(status<200||status>=400) throw new Error('HTTP '+status);
+      return;
+    }
+    const r=await fetch(url,{method:'POST',headers:headers,body:'',cache:'no-store',signal:actionCtrl.signal});
+    if(!r.ok&&r.status!==302&&r.status!==303) throw new Error('HTTP '+r.status);
+  }finally{
+    clearTimeout(timeout);
   }
-  const r=await fetch(url,{method:'POST',headers:headers,body:'',cache:'no-store'});
-  if(!r.ok&&r.status!==302&&r.status!==303) throw new Error('HTTP '+r.status);
 }
-async function jkCancelExecution(jobPath,buildNum,queueLocation,fallbackBuildNum){
+async function jkCancelExecution(jobPath,buildNum,queueLocation){
   const base=(jenkins.url||'').replace(/\/+$/,'');
   if(buildNum!=null){ await jkPostAction(base+jobPath+buildNum+'/stop'); return; }
   let queuePath='';
@@ -5359,7 +5366,6 @@ async function jkCancelExecution(jobPath,buildNum,queueLocation,fallbackBuildNum
       throw cancelError;
     }
   }
-  if(fallbackBuildNum!=null){ await jkPostAction(base+jobPath+fallbackBuildNum+'/stop'); return; }
   throw new Error('Jenkins 取消缺少 queue item 或构建号');
 }
 function abortablePipelineDelay(ms,signal){
@@ -5386,9 +5392,13 @@ async function runUrlStep(rc, i){
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
   const deadline=s.timeout?t0+s.timeout*1000:0;
-  let deadlineTimer=null, timedOut=false, triggerCtrl=new AbortController();
-  let cancelJobPath='', cancelQueueLocation='', cancelBuildNum=null, cancelFallbackBuildNum=null, externalJenkinsActive=false;
+  let deadlineTimer=null, startAbortTimer=null, timedOut=false, triggerCtrl=new AbortController();
+  let cancelJobPath='', cancelQueueLocation='', cancelBuildNum=null, externalJenkinsActive=false;
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;   // 停止按钮和阶段 deadline 共用：取消触发、轮询与控制台请求
+  const scheduleTriggerAbort=function(){
+    if(startAbortTimer===null&&!triggerCtrl.signal.aborted) startAbortTimer=setTimeout(function(){ triggerCtrl.abort(); },10000);
+  };
+  ctrl.signal.addEventListener('abort',scheduleTriggerAbort,{once:true});   // 给已发出的触发请求 10s 清理宽限，尽量取回 queue Location 后再取消
   const timeoutMessage=()=> 'HTTP/Jenkins 阶段超时（'+Math.max(0,Number(s.timeout)||0)+' 秒）';
   const ensureActive=()=>{
     if(rc.over||rc.token!==tk) return false;
@@ -5402,7 +5412,7 @@ async function runUrlStep(rc, i){
     ctrl.signal.addEventListener('abort',stop,{once:true});
     waitTimer=setTimeout(stop,2000);
   });
-  if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); if(!triggerCtrl.signal.aborted) triggerCtrl.abort(); },Math.max(0,deadline-Date.now()));
+  if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(rc.timer) clearInterval(rc.timer);
   rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },500);
   const isUrl=jkIsUrl(raw);
@@ -5436,53 +5446,74 @@ async function runUrlStep(rc, i){
       if(rc.tag&&vars.ARCHIVE_TAG===undefined) vars.ARCHIVE_TAG=rc.tag;
     }
     /* {VAR} 占位符用上面注入完成的环境变量替换（URL 编码）后，对完整 URL 直接 GET 触发（等价 curl）；
-       jobPath 仅取 URL 路径（已剥掉触发动作段）供拉取 nextBuildNumber 与轮询结果使用 */
+       jobPath 仅取 URL 路径（已剥掉触发动作段），构建身份一律由本次响应的 queue Location 解析。 */
     const jobPath=jkJobRef(raw, vars);
     const pollable=/\/job\//.test(jobPath);   // 非标准任务路径（如 webhook 触发地址）无法定位任务，跳过轮询
     cancelJobPath=jobPath;
     appendLiveLog(log,'# vars: '+Object.keys(vars).map(function(k){return k+'='+vars[k];}).join(' '));
     if(isUrl) appendLiveLog(log,'# trigger url: '+jkSubstUrl(raw, vars));
     s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
-    let preNum=null;
-    if(pollable){ try{ const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+'api/json?tree=nextBuildNumber',ctrl.signal); if(!ensureActive()) return; preNum=info.nextBuildNumber; appendLiveLog(log,'# nextBuildNumber='+preNum); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc); }catch(e){ if(!ensureActive()) return; appendLiveLog(log,'# (无法获取 nextBuildNumber: '+e.message+')'); } }
-    let triggerBody='';
-    if(isUrl){ triggerBody=await jkTriggerGet(jkSubstUrl(raw, vars),pollable?triggerCtrl.signal:ctrl.signal); }
-    else{ const location=await jkTriggerBuild(jobPath, vars,triggerCtrl.signal); if(typeof location==='string') cancelQueueLocation=location; }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
-    externalJenkinsActive=pollable; cancelFallbackBuildNum=preNum;
+    let triggerBody='', triggered=null;
+    if(isUrl){ triggered=await jkTriggerGet(jkSubstUrl(raw, vars),pollable?triggerCtrl.signal:ctrl.signal); }
+    else{ triggered=await jkTriggerBuild(jobPath, vars,triggerCtrl.signal); }   // 旧格式 fullName：buildWithParameters POST（取值池作构建参数，未定义的参数名 Jenkins 自动忽略）
+    triggerBody=triggered&&typeof triggered.body==='string'?triggered.body:'';
+    cancelQueueLocation=triggered&&typeof triggered.location==='string'?triggered.location:'';
+    externalJenkinsActive=pollable;
     if(!ensureActive()) return;
-    appendLiveLog(log,'# 已触发请求'+(preNum?(' #'+preNum):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
+    let queuePath='';
+    if(pollable){
+      try{ const u=new URL(cancelQueueLocation,(jenkins.url||'').replace(/\/+$/,'')||undefined); const at=u.pathname.indexOf('/queue/item/'); if(at>=0) queuePath=u.pathname.slice(at).replace(/\/+$/,''); }catch(e){}
+      if(!queuePath) throw new Error('Jenkins 触发响应缺少 queue Location，无法安全关联或终止本次构建（请确保 CORS 暴露 Location 响应头）');
+    }
+    appendLiveLog(log,'# 已触发请求'+(queuePath?(' '+queuePath):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     let result=null, buildNum=null, building=true;
     let consoleRead=0, consoleStarted=false, consoleProgressive=true, consoleDisabled=false, consoleError='', lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
-    /* 构建状态轮询的持续性故障（「Jenkins 服务配置」地址不对 / 桥接未启动 / CORS 拦截 / 401·403）不得静默
+    /* queue/build 状态轮询的持续性故障（「Jenkins 服务配置」地址不对 / 桥接未启动 / CORS 拦截 / 401·403）不得静默
        无限重试：此前 catch 吞掉一切错误、buildNum 永远拿不到，阶段超时默认留空（无超时）时没有任何兜底，
        阶段永远卡在「等待执行…」且日志看不到原因。现按连续失败计数：首次与每 15 次回显原因，
-       连续 30 次（约 1 分钟）按阶段失败收尾；成功一次即清零。
-       例外：已确认任务存在（拿到 nextBuildNumber）时 lastBuild 404 = 首次构建尚未开始，属合法排队等待，不计失败。 */
+       连续 30 次（约 1 分钟）按阶段失败收尾；成功一次即清零。 */
     let pollFails=0;
     const pollFailCap=30;
-    while(pollable && (building||buildNum==null)){
+    while(pollable && buildNum==null){
       await waitForPoll();
       if(!ensureActive()) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
       try{
-        const target=(buildNum!=null)?(jobPath+buildNum):(jobPath+'lastBuild');
-        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+target+'/api/json?tree=number,building,result,duration',ctrl.signal);
+        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+queuePath+'/api/json',ctrl.signal);
         if(!ensureActive()) return;
         pollFails=0;
-        if(buildNum==null && info.number && (preNum==null || info.number>=preNum)){ buildNum=info.number; cancelBuildNum=buildNum; }
-        if(buildNum!=null && info.number===buildNum){ building=info.building; if(info.result) result=info.result; }
+        if(info&&info.cancelled){ const cancelled=new Error('Jenkins 队列任务已取消'); cancelled.queueTerminal=true; throw cancelled; }
+        const exact=Number(info&&info.executable&&info.executable.number);
+        if(Number.isInteger(exact)&&exact>0){ buildNum=exact; cancelBuildNum=exact; }
       }catch(e){
         if(!ensureActive()) return;
+        if(e&&e.queueTerminal) throw e;
         const pollErr=String(e&&e.message?e.message:e).slice(0,512);
-        const queueWait=/^HTTP 404\b/.test(pollErr)&&buildNum==null&&preNum!=null;   // 任务已确认存在、首次构建尚未开始：合法等待（见上方注释）
-        if(!queueWait){
-          pollFails+=1;
-          if(pollFails===1||pollFails%15===0){
-            appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
-          }
-          if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
+        pollFails+=1;
+        if(pollFails===1||pollFails%15===0){
+          appendLiveLog(log,'[warn] Jenkins queue 状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
+          s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
         }
+        if(pollFails>=pollFailCap) throw new Error('Jenkins queue 状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
+      }
+    }
+    pollFails=0;
+    while(pollable && building){
+      await waitForPoll();
+      if(!ensureActive()) return;
+      try{
+        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+buildNum+'/api/json?tree=number,building,result,duration',ctrl.signal);
+        if(!ensureActive()) return;
+        pollFails=0;
+        if(Number(info&&info.number)===buildNum){ building=!!info.building; if(info.result) result=info.result; }
+      }catch(e){
+        if(!ensureActive()) return;
+        const pollErr=String(e&&e.message?e.message:e).slice(0,512); pollFails+=1;
+        if(pollFails===1||pollFails%15===0){
+          appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
+          s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        }
+        if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
       }
       /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
          404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
@@ -5560,10 +5591,16 @@ async function runUrlStep(rc, i){
     rcRender(rc); finish(rc,'failed');
   }finally{
     if(deadlineTimer!==null) clearTimeout(deadlineTimer);
+    ctrl.signal.removeEventListener('abort',scheduleTriggerAbort);
+    if(startAbortTimer!==null) clearTimeout(startAbortTimer);
     if(!triggerCtrl.signal.aborted) triggerCtrl.abort();
     if(ctrl.signal.aborted&&externalJenkinsActive){
-      try{ await jkCancelExecution(cancelJobPath,cancelBuildNum,cancelQueueLocation,cancelFallbackBuildNum); }
-      catch(stopError){ console.warn('[pipeline] Jenkins 外部任务终止失败：',stopError); }
+      try{ await jkCancelExecution(cancelJobPath,cancelBuildNum,cancelQueueLocation); }
+      catch(stopError){
+        const stopMsg='Jenkins 外部任务终止失败：'+String(stopError&&stopError.message?stopError.message:stopError);
+        appendLiveLog(log,'[warn] '+stopMsg); s._out=liveOutputSnapshot(log.live,{stderr:stopMsg,code:1,url:true,done:true}); if(logSink) await logSink.flush();
+        console.warn('[pipeline] '+stopMsg,stopError); try{ flashRunTip(stopMsg); }catch(e){}
+      }
     }
     if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   }
@@ -5622,7 +5659,9 @@ async function evaltokStartRun(e, taskId, signal, input){
 }
 async function evaltokStopRun(e, runId){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
-  return evaltokRequestJson(e,base+'/api/v1/tasks/runs/'+encodeURIComponent(runId)+'/stop','POST',{});
+  const stopCtrl=new AbortController(); const timeout=setTimeout(function(){ stopCtrl.abort(); },10000);
+  try{ return await evaltokRequestJson(e,base+'/api/v1/tasks/runs/'+encodeURIComponent(runId)+'/stop','POST',{},stopCtrl.signal); }
+  finally{ clearTimeout(timeout); }
 }
 /* 拉取指定任务的运行列表；服务当前返回 {runs:[...]}，同时兼容裸数组 / data|items|results 包装。 */
 async function evaltokFetchRuns(e, taskId, signal){
@@ -5771,16 +5810,20 @@ async function runEvaltokensStep(rc, i){
   const label='EvalTokens · '+(taskName||taskId||'未命名');
   rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
   runSetSel(rc,s.id); rcRender(rc,true);
-  const t0=Date.now(); const deadline=s.timeout?t0+s.timeout*1000:0; let lastLive=0, deadlineTimer=null, timedOut=false, waitingRunId='', waitingStatus='', service=null, externalRunActive=false;
+  const t0=Date.now(); const deadline=s.timeout?t0+s.timeout*1000:0; let lastLive=0, deadlineTimer=null, startAbortTimer=null, timedOut=false, waitingRunId='', waitingStatus='', service=null, externalRunActive=false;
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;   // 复用运行级中止句柄：停止/重置按钮可取消 EvalTokens 网络请求
-  const startCtrl=new AbortController();   // 启动请求已发出后保留到取得 run_id；用户中止由随后 stop 收口，阶段超时仍会打断
+  const startCtrl=new AbortController();   // 启动请求已发出后保留到取得 run_id；终止/超时先给响应 10s 清理宽限，再硬中断
+  const scheduleStartAbort=function(){
+    if(startAbortTimer===null&&!startCtrl.signal.aborted) startAbortTimer=setTimeout(function(){ startCtrl.abort(); },10000);
+  };
+  ctrl.signal.addEventListener('abort',scheduleStartAbort,{once:true});
   const timeoutMessage=()=> 'EvalTokens 任务等待超时（阶段超时 '+secToMinInput(s.timeout)+' 分钟'+(waitingRunId?('，run '+waitingRunId+' 仍为 '+(waitingStatus||'未知状态')):'')+'）';
   const ensureActive=()=>{
     if(rc.over||rc.token!==tk) return false;
     if(timedOut||(deadline&&Date.now()>=deadline)){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); throw new Error(timeoutMessage()); }
     return true;
   };
-  if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); if(!startCtrl.signal.aborted) startCtrl.abort(); },Math.max(0,deadline-Date.now()));
+  if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(rc.timer) clearInterval(rc.timer);
   rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },1000);
   const logSink=createClientStageLogSink(s,rc,stageSeq(rc.stages,i),s.name);
@@ -5902,10 +5945,16 @@ async function runEvaltokensStep(rc, i){
     rcRender(rc); finish(rc,'failed');
   }finally{
     if(deadlineTimer!==null) clearTimeout(deadlineTimer);
+    ctrl.signal.removeEventListener('abort',scheduleStartAbort);
+    if(startAbortTimer!==null) clearTimeout(startAbortTimer);
     if(!startCtrl.signal.aborted) startCtrl.abort();
     if(ctrl.signal.aborted&&externalRunActive&&service&&waitingRunId){
       try{ await evaltokStopRun(service,waitingRunId); appendLiveLog(log,'# stopped external run '+waitingRunId); if(logSink) await logSink.flush(); }
-      catch(stopError){ console.warn('[pipeline] EvalTokens 外部任务终止失败：',stopError); }
+      catch(stopError){
+        const stopMsg='EvalTokens 外部任务终止失败：'+String(stopError&&stopError.message?stopError.message:stopError);
+        appendLiveLog(log,'[warn] '+stopMsg); s._out=liveOutputSnapshot(log.live,{stderr:stopMsg,code:1,evaltokens:true,done:true}); if(logSink) await logSink.flush();
+        console.warn('[pipeline] '+stopMsg,stopError); try{ flashRunTip(stopMsg); }catch(e){}
+      }
     }
     if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   }
@@ -7717,7 +7766,7 @@ let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
 $('runBtn').addEventListener('click', ()=>{ const r=runPipeline(); if(r===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); else if(r==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）'); else if(r==='submitted') flashRunTip('已提交服务端运行队列'); });
 /* 中止指定运行：以「已中止」计入历史并消耗队列。
-   流式执行的脚本经 AbortController 断开会话，服务端随之终止对应子进程（见 runScriptStep/execStreaming）；EvalTokens 阶段取消待响应请求；
+   流式脚本经 AbortController 断开会话并终止子进程；Jenkins/EvalTokens 阶段在各自 finally 中停止外部 build/run；
    旧插件构建的一次性执行无法中断，结果回来后按令牌丢弃。 */
 function abortRun(rc){
   if(!rc || rc.over) return;

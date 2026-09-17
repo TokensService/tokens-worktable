@@ -1018,6 +1018,26 @@ async function serverStopEvaltokensRun(fetchFn: typeof fetch, base: string, runI
   )
 }
 
+function serverStartCleanupSignal(signal?: AbortSignal, graceMs = 10_000): { signal?: AbortSignal; dispose: () => void } {
+  if (!signal) return { signal: undefined, dispose: () => {} }
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = () => {
+    if (timer === null && !controller.signal.aborted) {
+      timer = setTimeout(() => controller.abort(serverAbortReason(signal)), graceMs)
+    }
+  }
+  signal.addEventListener('abort', schedule, { once: true })
+  if (signal.aborted) schedule()
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      signal.removeEventListener('abort', schedule)
+      if (timer !== null) clearTimeout(timer)
+    },
+  }
+}
+
 function serverJenkinsJobPath(name: string): string {
   return '/job/' + String(name).split('/').filter(Boolean).map(encodeURIComponent).join('/job/') + '/'
 }
@@ -1085,10 +1105,22 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       triggerOptions = { method: 'POST', headers, body: form.toString(), redirect: 'manual' }
     }
 
-    /* Jenkins 触发一旦发出便可能已经创建外部任务。此请求不跟随流水线 AbortSignal 中断，
-       以便拿到 queue Location 后补发取消；阶段 deadline 仍会限制请求本身。普通 webhook 仍立即中止。 */
+    /* Jenkins 触发一旦发出便可能已经创建外部任务。终止/deadline 后给响应 10s 清理宽限，
+       以便拿到 queue Location 后补发取消；普通 webhook 仍立即中止。 */
     if (signal && signal.aborted) throw serverAbortReason(signal)
-    const triggered = await serverFetchResponse(deps.fetchFn, triggerUrl, triggerOptions, deadline, isUrl ? 'HTTP 请求' : 'Jenkins 触发', PIPELINE_REMOTE_TEXT_LIMIT, jobPath ? undefined : signal)
+    const startGuard = jobPath ? serverStartCleanupSignal(signal) : null
+    let triggered
+    try {
+      triggered = await serverFetchResponse(
+        deps.fetchFn,
+        triggerUrl,
+        triggerOptions,
+        jobPath && deadline ? deadline + 10_000 : deadline,
+        isUrl ? 'HTTP 请求' : 'Jenkins 触发',
+        PIPELINE_REMOTE_TEXT_LIMIT,
+        jobPath ? startGuard!.signal : signal,
+      )
+    } finally { if (startGuard) startGuard.dispose() }
     if (triggered.response.status < 200 || triggered.response.status >= 400) {
       throw new Error((isUrl ? 'HTTP 请求' : 'Jenkins 触发') + ' HTTP ' + triggered.response.status)
     }
@@ -1218,9 +1250,13 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
     const startHeaders = { ...headers, 'Content-Type': 'application/json' }
     /* 启动 POST 已发出后不可丢掉 run_id；用户恰在响应返回前终止时，拿到 ID 后立即补发 stop。 */
     if (signal && signal.aborted) throw serverAbortReason(signal)
-    const started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
-      method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
-    }, deadline, 'EvalTokens 启动任务')
+    const startGuard = serverStartCleanupSignal(signal)
+    let started
+    try {
+      started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
+        method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
+      }, deadline ? deadline + 10_000 : deadline, 'EvalTokens 启动任务', startGuard.signal)
+    } finally { startGuard.dispose() }
     const runId = String((started && started.run_id) || '')
     if (!runId) throw new Error('EvalTokens 启动任务未返回 run_id')
     stopRun = () => serverStopEvaltokensRun(fetchFn, base, runId, headers)

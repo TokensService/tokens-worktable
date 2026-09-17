@@ -108,7 +108,7 @@ const context = {
   advance: (rc_, i) => { advancedTo = i; },
   finish: (rc_, s) => { finishedWith = s; },
   jkFetchJson: async (_j, url) => {
-    if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
+    if (url.includes("/queue/item/7/api/json")) return { executable: { number: 7 } };
     return { number: 7, building: false, result: "SUCCESS", duration: 1 };
   },
   fetch: async (_url, init) => {
@@ -129,13 +129,13 @@ const realJkGetProgressiveText = context.jkGetProgressiveText;
 const realJkReadConsoleDelta = context.jkReadConsoleDelta;
 const realJkTriggerGet = context.jkTriggerGet;
 // HTTP/Jenkins 请求在切片内有真实实现，eval 后替换为桩，只隔离外部 Jenkins 服务
-context.jkTriggerBuild = async (job, params) => { triggerCalls.push({ job, params }); return true; };
+context.jkTriggerBuild = async (job, params) => { triggerCalls.push({ job, params }); return { body: "", location: "/queue/item/7/" }; };
 context.jkGetText = async () => 'build log line\n{"NEW_KEY":"new-value","COUNT":2}\ntrailer';
 context.jkGetProgressiveText = async (_path, start) => {
   const full = 'build log line\n{"NEW_KEY":"new-value","COUNT":2}\ntrailer';
   return { text: full.slice(start), next: full.length };
 };
-context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"value":"hook-value"}'; };
+context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return { body: '{"value":"hook-value"}', location: "" }; };
 
 (async () => {
   // progressiveText offset 必须采用 Jenkins 的 X-Text-Size；响应换行可能被规范化，不能按响应体字节数猜测
@@ -256,7 +256,7 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   let liveArchiveText = "";
   context.setTimeout = (fn) => { fn(); return 1; };
   context.jkFetchJson = async (_j, url) => {
-    if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
+    if (url.includes("/queue/item/7/api/json")) return { executable: { number: 7 } };
     buildPolls += 1;
     return { number: 7, building: buildPolls < 3, result: buildPolls < 3 ? null : "SUCCESS", duration: 1 };
   };
@@ -292,7 +292,7 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   let oversizedReads = 0;
   buildPolls = 0;
   context.jkFetchJson = async (_j, url) => {
-    if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
+    if (url.includes("/queue/item/7/api/json")) return { executable: { number: 7 } };
     buildPolls += 1;
     return { number: 7, building: false, result: "SUCCESS", duration: 1 };
   };
@@ -322,4 +322,23 @@ context.jkTriggerGet = async (url) => { triggerCalls.push({ url }); return '{"va
   }
   if (rc.scriptAbort !== null) throw new Error("HTTP 阶段结束后必须释放 AbortController");
   console.log("PASS: HTTP/Jenkins 阶段 deadline 覆盖触发前请求并可取消底层 fetch");
+
+  // Jenkins 触发 POST 已发出后，deadline 先到也要保留短暂清理宽限：拿到精确 queue Location 再取消。
+  const startRaceStage = { id: "st-start-race", name: "Jenkins 启动竞态", kind: "jenkins", timeout: 0.01, jenkins: { job: "folder/race", outVars: "" } };
+  stages.push(startRaceStage);
+  context.setTimeout = setTimeout; context.clearTimeout = clearTimeout;
+  let triggerWasAborted = null, cancelArgs = null;
+  context.jkTriggerBuild = async (_job, _params, signal) => {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    triggerWasAborted = signal.aborted;
+    return { body: "", location: "/queue/item/88/" };
+  };
+  context.jkCancelExecution = async (...args) => { cancelArgs = args; };
+  await context.runUrlStep(rc, 5);
+  if (triggerWasAborted) throw new Error("deadline 不应立即打断已发出的 Jenkins 触发响应，必须先争取取得 queue Location");
+  if (!cancelArgs || cancelArgs[0] !== "/job/folder/job/race/" || cancelArgs[1] !== null || cancelArgs[2] !== "/queue/item/88/") {
+    throw new Error("deadline 后未按精确 queue Location 取消 Jenkins 任务：" + JSON.stringify(cancelArgs));
+  }
+  if (!/超时/.test(startRaceStage._out.stderr)) throw new Error("启动竞态收口后仍应按阶段超时失败");
+  console.log("PASS: Jenkins 启动响应迟于 deadline 时仍按精确 queue Location 取消任务");
 })().catch((e) => { console.error(e); process.exit(1); });

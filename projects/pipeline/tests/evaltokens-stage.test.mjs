@@ -1123,9 +1123,9 @@ test('变量或手填任务名会重新解析为真实 task_id，不使用残留
   assert.equal(advancedTo, 1)
 })
 
-test('阶段超时会中断卡住的 EvalTokens 请求', async () => {
-  let requestAborted = false
+test('阶段在启动响应返回前超时仍会取得 run_id 并停止 EvalTokens run', async () => {
   let finishedAs = null
+  const requests = []
   const evaltokConfig = { url: 'http://evaltokens.local', token: '', mode: 'local' }
   const stage = {
     id: 'eval-timeout',
@@ -1138,17 +1138,17 @@ test('阶段超时会中断卡住的 EvalTokens 请求', async () => {
     substRunVars: value => value,
     evaltokConfig: () => evaltokConfig,
     fetch: async (url, options = {}) => {
+      requests.push({ url: String(url), options })
       if (url.endsWith('/api/open/v1/tasks')) {
         return jsonResponse({ tasks: [{ task_id: 'task-timeout', name: 'timeout-task' }] })
       }
-      return await new Promise((resolve, reject) => {
-        options.signal?.addEventListener('abort', () => {
-          requestAborted = true
-          const error = new Error('aborted')
-          error.name = 'AbortError'
-          reject(error)
-        }, { once: true })
-      })
+      if (url.endsWith('/api/open/v1/tasks/task-timeout/run')) {
+        await new Promise(resolve => setTimeout(resolve, 30))
+        assert.equal(options.signal?.aborted, false, '启动请求应获得清理宽限以取回 run_id')
+        return jsonResponse({ run_id: 'run-timeout', status: 'running' })
+      }
+      if (url.endsWith('/api/v1/tasks/runs/run-timeout/stop')) return jsonResponse({ status: 'stopped' })
+      throw new Error('unexpected URL ' + url)
     },
     setInterval: () => 1,
     clearInterval: () => {},
@@ -1166,8 +1166,9 @@ test('阶段超时会中断卡住的 EvalTokens 请求', async () => {
     new Promise(resolve => setTimeout(() => resolve(false), 200)),
   ])
 
-  assert.equal(completed, true, '卡住的请求必须在阶段超时后返回')
-  assert.equal(requestAborted, true)
+  assert.equal(completed, true, '启动响应在清理宽限内返回后阶段必须收尾')
+  assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-timeout/stop')),
+    '阶段超时也必须停止刚启动的 EvalTokens 实际 run')
   assert.equal(rc.nodes['eval-timeout'].status, 'failed')
   assert.equal(finishedAs, 'failed')
   assert.match(stage._out.stderr, /等待超时/)
@@ -1233,7 +1234,50 @@ test('用户中止会取消轮询、停止 EvalTokens 实际 run 且不覆盖中
   const stop = requests.find(request => request.url.endsWith('/api/v1/tasks/runs/run-abort/stop'))
   assert.ok(stop, '页面中止后必须停止 EvalTokens 实际 run')
   assert.equal(stop.options.method, 'POST')
+  assert.ok(stop.options.signal, '停止 run 的请求必须使用独立 AbortSignal 限制等待时间')
   assert.equal(finishCalls, 0)
+})
+
+test('EvalTokens 外部 stop 失败会写入阶段错误并给出页面提示', async () => {
+  let markPolling
+  const polling = new Promise(resolve => { markPolling = resolve })
+  const tips = []
+  const stage = {
+    id: 'eval-stop-failed', name: '停止失败任务', timeout: null,
+    evaltokens: { taskId: 'task-stop-failed', taskName: 'stop-failed', outVars: '' },
+  }
+  const rc = makeRc({ stages: [stage] })
+  const context = loadEvaltokensRuntime({
+    substRunVars: value => value,
+    evaltokConfig: () => ({ url: 'http://evaltokens.local', token: '', mode: 'local' }),
+    flashRunTip: message => { tips.push(message) },
+    fetch: async (url, options = {}) => {
+      if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-stop-failed', name: 'stop-failed' }] })
+      if (url.endsWith('/api/open/v1/tasks/task-stop-failed/run')) return jsonResponse({ run_id: 'run-stop-failed', status: 'running' })
+      if (url.endsWith('/api/v1/tasks/runs/run-stop-failed/stop')) return jsonResponse({ message: 'denied' }, 403)
+      markPolling()
+      return new Promise((resolve, reject) => options.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    archiveStageLog: () => {},
+    mergeStageVars: () => ({}),
+    parseStageJson: value => JSON.parse(value),
+    applyOutVars: () => {},
+    secToMinInput: value => String(value),
+    advance: () => {},
+    finish: () => {},
+  })
+
+  const pending = context.runEvaltokensStep(rc, 0)
+  await polling
+  rc.over = true
+  rc.scriptAbort.abort()
+  await pending
+
+  assert.match(stage._out.stderr, /EvalTokens 外部任务终止失败.*denied.*HTTP 403/)
+  assert.equal(tips.length, 1)
+  assert.match(tips[0], /外部任务终止失败/)
 })
 
 test('用户在启动响应返回前中止仍会在取得 run_id 后停止 EvalTokens run', async () => {

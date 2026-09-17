@@ -1668,6 +1668,36 @@ test('服务端在 Jenkins 触发响应返回前收到取消仍会取消随后�
     '中止不得让刚创建但响应迟回的 Jenkins queue item 遗留')
 })
 
+test('服务端 Jenkins 触发响应迟于阶段 deadline 时仍会取消随后返回的 queue item', async () => {
+  const f = loadRunRoute(stored)
+  const requests = []
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) {
+      await new Promise(resolve => setTimeout(resolve, 1050))
+      assert.equal(options.signal?.aborted, false, 'deadline 后的清理宽限内不应丢失 queue Location')
+      return fetchResponse(201, '', { location: '/queue/item/102/' })
+    }
+    if (value.endsWith('/queue/cancelItem?id=102')) return fetchResponse(200, '')
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const result = await f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', timeout: 1, jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+  )
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /超时/)
+  assert.ok(requests.some(request => request.url.endsWith('/queue/cancelItem?id=102')),
+    'deadline 不得遗留刚创建但响应迟回的 Jenkins queue item')
+})
+
 test('服务端取消运行中的 Jenkins 阶段会停止对应构建', async () => {
   const f = loadRunRoute(stored)
   const controller = new AbortController()
@@ -1942,6 +1972,36 @@ test('服务端在 EvalTokens 启动响应返回前收到取消仍会停止随�
   assert.equal(result.aborted, true)
   assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-start-race/stop')),
     '中止不得让刚创建但响应迟回的 EvalTokens run 遗留')
+})
+
+test('服务端 EvalTokens 启动响应迟于阶段 deadline 时仍会停止随后返回的 run', async () => {
+  const f = loadRunRoute(stored)
+  const requests = []
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { tasks: [{ id: 'task-deadline-race', name: '超时竞态' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-deadline-race/run')) {
+      await new Promise(resolve => setTimeout(resolve, 1050))
+      assert.equal(options.signal?.aborted, false, 'deadline 后的清理宽限内不应丢失 run_id')
+      return fetchResponse(200, { run_id: 'run-deadline-race', status: 'running' })
+    }
+    if (value.endsWith('/api/v1/tasks/runs/run-deadline-race/stop')) return fetchResponse(200, { status: 'stopped' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', timeout: 1, evaltokens: { taskId: 'task-deadline-race' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: '', mode: 'local' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+  )
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /超时/)
+  assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-deadline-race/stop')),
+    'deadline 不得遗留刚创建但响应迟回的 EvalTokens run')
 })
 
 test('远程模式的服务端 EvalTokens 阶段直连内网服务而不使用环境代理 fetch', async t => {
