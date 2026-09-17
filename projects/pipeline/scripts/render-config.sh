@@ -475,26 +475,11 @@ else:
     template_vars.setdefault("NODE_PORT", "31365")
 template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
-# 新版模板包含可选 LMCache Sidecar。默认关闭以保持没有 Sidecar 的部署行为；
-# 所有字段仍在 values 中填入可解析的值，启用时可由 TEMPLATE_VARS_JSON 覆盖。
+# 新版模板（bnt3_glm_lmcache_3P1D.20260917131901 起）仅保留 3 个 LMCache
+# 占位符；L1/L2 尺寸、端口、资源等默认值已固化在 values 模板中。
 template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "true" if use_lmcache else "false")
-template_vars.setdefault("LMCACHE_MP_PORT_BASE", "5555")
-template_vars.setdefault("LMCACHE_HTTP_PORT_BASE", "5565")
-template_vars.setdefault("LMCACHE_L1_INIT_SIZE_GB", "20")
-template_vars.setdefault("LMCACHE_L1_SIZE_GB", "200")
-template_vars.setdefault("LMCACHE_L1_ALIGN_BYTES", "4096")
-template_vars.setdefault("LMCACHE_MAX_WORKERS", "1")
 template_vars.setdefault("LMCACHE_LOG_LEVEL", "INFO")
-template_vars.setdefault("LMCACHE_CPU_REQUEST", "4")
-template_vars.setdefault("LMCACHE_MEMORY_REQUEST", "8Gi")
-template_vars.setdefault("LMCACHE_CPU_LIMIT", "8")
-template_vars.setdefault("LMCACHE_MEMORY_LIMIT", "240Gi")
-# L2(fs_native 磁盘缓存)：默认关闭；配置值对齐 78 节点已验证部署
-# (/mnt/paas/lichangsong/xds_bnt3_standalone/render_values.py)。
 template_vars.setdefault("LMCACHE_L2_ENABLED", "true")
-template_vars.setdefault("LMCACHE_L2_BASE_PATH", "")
-template_vars.setdefault("LMCACHE_L2_MAX_CAPACITY_GB", "10240")
-template_vars.setdefault("LMCACHE_L2_NUM_WORKERS", "64")
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -555,17 +540,10 @@ lmcache_sidecar = values.get("lmcacheSidecar")
 if lmcache_sidecar is not None and not isinstance(lmcache_sidecar, dict):
     raise SystemExit("lmcacheSidecar must be a mapping")
 if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled", False):
-    # L1 lazy 分配：不在启动时预分配全量池（多实例共享 tmpfs /dev/shm 时
-    # 避免 2×L1 > tmpfs 容量的 ENOSPC）；默认值由 values 模板控制。
-    # L2 fs_native 磁盘缓存(可选)：base_path 缺省按架构名自动生成；adapter
-    # JSON 由 chart 模板按 l2BasePath/l2MaxCapacityGb/l2NumWorkers 组装
-    # （LRU/0.2/0.8，use_odirect false，与 78 已验证部署一致）。
+    # L1 lazy 分配与 L1/L2 尺寸、资源默认值由 values 模板固化；L2 落盘路径
+    # 由 chart 按 group/slot 隔离生成，此处仅控制 L2 开关。
     l2_enabled = str(template_vars.get("LMCACHE_L2_ENABLED", "false")).lower() == "true"
     lmcache_sidecar["l2Enabled"] = l2_enabled
-    if l2_enabled:
-        lmcache_sidecar["l2BasePath"] = template_vars.get("LMCACHE_L2_BASE_PATH") or (
-            "/mnt/paas/lmcache/" + arch_name.lower() + "-l2/shared"
-        )
     # lmcache 开启时 KV offload 由 sidecar L1 承担，缩小 TE 内存申请：
     # arch（OffloadingConnector/1M ctx）预估的 memory request 可能超出
     # 大页节点 allocatable（如 2000Gi hugepages 后仅 ~944Gi）导致 TE 永久 Pending。
@@ -779,16 +757,6 @@ if isinstance(cpp_server_config_files, dict):
             cpp_server_config_files[filename] = render_collector_gateway_url(config_text)
 with open(values_file, "w", encoding="utf-8") as output:
     yaml.safe_dump(values, output, allow_unicode=True, sort_keys=False)
-# Helm's JSON/YAML path can convert large numeric values to scientific
-# notation.  Keep the LMCache alignment value a literal string so argparse
-# receives the exact integer supplied by the values template.
-rendered_values_text = Path(values_file).read_text(encoding="utf-8")
-rendered_values_text = re.sub(
-    r"(?m)^(\s*l1AlignBytes:\s*)(?!['\"])(\S+)\s*$",
-    r"\1'\2'",
-    rendered_values_text,
-)
-Path(values_file).write_text(rendered_values_text, encoding="utf-8")
 with open(arch_request_file, "w", encoding="utf-8") as output:
     json.dump(arch, output, ensure_ascii=False, indent=2)
     output.write("\n")
