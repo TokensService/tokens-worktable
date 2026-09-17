@@ -102,6 +102,9 @@ TARGET_RUN_DIR="$work_dir/target-run" \
 TARGET_HOSTS='[{"ip":"127.0.0.1","user":"root","pass":"must-not-be-copied"}]' \
 TARGET_NODE_IP_MAP='{"127.0.0.1":"127.0.0.1"}' \
 EMS_NAMESPACE='custom-ems' \
+EMS_LOG_SYNC_INTERVAL_SECONDS=17 \
+EMS_LOG_SOURCE_DIR=/custom/ems/logs \
+EMS_LOG_CONTAINER=custom-worker \
 bash "$script" >/dev/null
 
 test -f "$work_dir/target-run/rendered/xds-cluster/Chart.yaml"
@@ -112,6 +115,11 @@ grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/execution-run/pipeline.env
 grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/target-run/pipeline.env"
 grep -Fq "export RENDER_DIR=$work_dir/target-run/rendered" "$work_dir/target-run/pipeline.env"
 grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"
+for environment_file in "$work_dir/execution-run/pipeline.env" "$work_dir/target-run/pipeline.env"; do
+  grep -Fq 'export EMS_LOG_SYNC_INTERVAL_SECONDS=17' "$environment_file"
+  grep -Fq 'export EMS_LOG_SOURCE_DIR=/custom/ems/logs' "$environment_file"
+  grep -Fq 'export EMS_LOG_CONTAINER=custom-worker' "$environment_file"
+done
 
 AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
 PATH="$fake_bin:$PATH" \
