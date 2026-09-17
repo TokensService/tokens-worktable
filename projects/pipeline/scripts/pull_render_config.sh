@@ -128,7 +128,8 @@ LMCACHE_L2_NUM_WORKERS="${LMCACHE_L2_NUM_WORKERS:-64}"
 # pipeline environment file.
 AK="${AK:-}"
 LOGKEY="${LOGKEY:-${LOGIN_KEY:-}}"
-LOGIN_KEY="${LOGIN_KEY:-$LOGKEY}"
+# Keep the legacy alias synchronized with the value selected for this run.
+LOGIN_KEY="$LOGKEY"
 # PROJECT is also used by some callers for the registry namespace (for example
 # serverlessai). SWR authentication needs the region instead, so prefer the
 # dedicated SWR_PROJECT and only accept PROJECT when it is a region name.

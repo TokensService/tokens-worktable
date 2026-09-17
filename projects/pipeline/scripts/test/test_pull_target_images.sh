@@ -81,7 +81,8 @@ RUN_DIR="$work_dir/run" \
 TARGET_HOSTS='[{"ip":"115.33.98.101:2223","user":"root"},{"ip":"115.33.98.101:2222","user":"root"},{"ip":"115.33.98.101:2224","user":"root"}]' \
 TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175","115.33.98.101:2222":"192.168.31.17"}' \
 AK='test-ak' \
-LOGIN_KEY='test-login-key' \
+LOGKEY='test-login-key' \
+LOGIN_KEY='stale-login-key' \
 PULL_TARGET_IMAGES_ONLY=1 \
 bash "$script" >/dev/null
 
