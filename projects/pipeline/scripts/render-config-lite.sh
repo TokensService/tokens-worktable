@@ -642,6 +642,27 @@ with open(node_labels_file, "w", encoding="utf-8") as output:
     output.write("\n")
 PY
 
+# 临时需求：LMCache sidecar 加 tracing 上报（chart 已固化 args，无注入口，
+# 渲染后直接 patch chart 副本）。LMCACHE_OTLP_ENDPOINT 置空可关闭。
+LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.0.102:4320}"
+if [[ -n "$LMCACHE_OTLP_ENDPOINT" ]]; then
+python3 - "$CHART_TEMPLATE_DIR/templates/raycluster-cluster.yaml" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
+import pathlib
+import sys
+
+chart = pathlib.Path(sys.argv[1])
+endpoint = sys.argv[2]
+text = chart.read_text(encoding="utf-8")
+if "--enable-tracing" not in text:
+    anchor = '{{- if $isLmcacheL2 }}\n                  --l2-store-policy'
+    if anchor not in text:
+        raise SystemExit("LMCache sidecar args anchor not found in chart template")
+    patch = "--enable-tracing \\\n                  --otlp-endpoint %s \\\n" % endpoint
+    chart.write_text(text.replace(anchor, patch + anchor, 1), encoding="utf-8")
+print("LMCACHE_OTLP_PATCHED=%s" % endpoint)
+PY
+fi
+
 printf 'RUN_DIR=%s\n' "$RUN_DIR"
 printf 'RENDER_DIR=%s\n' "$RENDER_DIR"
 printf 'CHART_DIR=%s\n' "$CHART_DIR"
