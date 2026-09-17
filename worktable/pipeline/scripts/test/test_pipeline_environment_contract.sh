@@ -62,6 +62,13 @@ collector="$script_dir/follow-xds-head-logs.sh"
 grep -Fq 'logs -f "$head" -c ray-head --timestamps' "$collector"
 grep -Fq 'HEAD_LOG_ROOT' "$script_dir/deploy-model.sh"
 grep -Fq '"$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR"' "$script_dir/deploy-model.sh"
+grep -Fq 'EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"' "$script_dir/deploy-model.sh"
+grep -Fq 'EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"' "$script_dir/deploy-model.sh"
+grep -Fq 'EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"' "$script_dir/deploy-model.sh"
+grep -Fq 'EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS"' "$script_dir/deploy-model.sh"
+for variable in EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER; do
+  grep -qw "$variable" "$script_dir/pull_render_config.sh"
+done
 
 helm_line="$(grep -nE '^wait_for_xds_api$' "$script_dir/deploy-model.sh" | cut -d: -f1)"
 collector_line="$(grep -nF 'follow-xds-head-logs.sh' "$script_dir/deploy-model.sh" | tail -1 | cut -d: -f1)"
