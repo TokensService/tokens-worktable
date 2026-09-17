@@ -26,8 +26,9 @@ TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 # registry namespace held in PROJECT.
 IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"
 IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
-# LOGKEY is accepted for callers that use the older environment-variable name.
-IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"
+# LOGKEY is the pipeline input.  Prefer it over the legacy LOGIN_KEY so a stale
+# inherited LOGIN_KEY cannot override credentials supplied for the current run.
+IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGKEY:-${LOGIN_KEY:-}}}"
 # Mapped targets expose a loopback proxy through their SSH/NAT setup.  The
 # remote command runs non-interactively and through sudo, so inject the proxy
 # into ctr explicitly instead of depending on shell profiles or sudo env_keep.
