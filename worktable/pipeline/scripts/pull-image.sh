@@ -32,6 +32,9 @@ IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"
 # remote command runs non-interactively and through sudo, so inject the proxy
 # into ctr explicitly instead of depending on shell profiles or sudo env_keep.
 MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
+# The target-side proxy is an SSH reverse forward to the execution host's
+# existing loopback proxy.  It exists only for the remote ctr command.
+MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"
 
 remote_quote() {
   printf '%q' "$1"
@@ -39,18 +42,22 @@ remote_quote() {
 
 run_target() {
   local target="$1" port="$2" password="$3"
+  local -a ssh_options
   shift 3
+  ssh_options=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=30)
+  if [[ "${USE_MAPPED_IMAGE_PULL_PROXY:-0}" == "1" ]]; then
+    # ExitOnForwardFailure=no also permits a pre-existing target-side proxy;
+    # ctr will then use whichever listener owns 127.0.0.1:18118.
+    ssh_options+=(-o ExitOnForwardFailure=no -R "$MAPPED_IMAGE_PULL_REVERSE_FORWARD")
+  fi
   if [[ -n "$password" ]]; then
     command -v sshpass >/dev/null 2>&1 || {
       echo "sshpass is required for password-authenticated target image pulls" >&2
       return 2
     }
-    SSHPASS="$password" sshpass -e ssh -p "$port" \
-      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+    SSHPASS="$password" sshpass -e ssh "${ssh_options[@]}" "$target" "$@"
   else
-    ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR -o ConnectTimeout=30 "$target" "$@"
+    ssh "${ssh_options[@]}" "$target" "$@"
   fi
 }
 
@@ -131,7 +138,7 @@ PY
       return 2
     fi
     printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo env http_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") https_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") HTTP_PROXY=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") HTTPS_PROXY=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
-    if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+    if USE_MAPPED_IMAGE_PULL_PROXY=1 run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
       continue
     else
       pull_status=$?
