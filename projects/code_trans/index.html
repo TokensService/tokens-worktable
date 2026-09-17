@@ -44,6 +44,11 @@
     .ct-prstatus.ok { color:#3fb950; }
     .ct-prstatus.fail { color:#f85149; }
     .ct-prstatus.skip { color:#d29922; }
+    .ct-srvrow { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); flex-wrap:wrap; }
+    .ct-srvrow:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+    .ct-srvrow .ct-srvname { font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); font-size:12.5px; }
+    .ct-srvrow .ct-srvmeta { font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); word-break:break-all; }
+    .ct-srvrow .ct-srvact { margin-left:auto; display:flex; gap:6px; }
     .ct-log { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11.5px; line-height:1.5;
       background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px;
       padding:10px 12px; height:340px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
@@ -91,8 +96,8 @@
 
     <!-- 统计 -->
     <div class="dshell-grid">
-      <div class="dshell-stat"><div class="dshell-statLabel">仓A 开放 PR</div><div class="dshell-statValue" id="statA">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">仓B 开放 PR</div><div class="dshell-statValue" id="statB">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">仓A PR</div><div class="dshell-statValue" id="statA">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">仓B PR</div><div class="dshell-statValue" id="statB">—</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">已选</div><div class="dshell-statValue" id="statSel">0</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">本次已同步</div><div class="dshell-statValue" id="statOk">0</div></div>
     </div>
@@ -160,6 +165,16 @@
             <label class="ct-togg"><input type="checkbox" id="dryRun" checked /> 试运行（不 push / 不建 PR）</label>
           </div>
         </div>
+        <div class="ct-row between" style="margin-top:8px">
+          <div class="ct-row">
+            <span class="ct-label">执行位置</span>
+            <select class="dshell-input" id="execLoc" style="flex:0 0 230px"><option value="local">本地（当前服务）</option></select>
+            <span class="ct-hint" id="execLocHint">本地 = 在当前服务跑；选服务器 = SSH 到该服务器跑 pr-sync.py</span>
+          </div>
+          <div class="ct-row">
+            <button class="dshell-btn dshell-btnGhost" id="goSrv" title="前往设置页管理远程服务器">⚙ 管理服务器</button>
+          </div>
+        </div>
         <div class="ct-sep"></div>
         <div class="ct-row between">
           <div class="ct-row">
@@ -182,9 +197,9 @@
       <div class="dshell-card">
         <div class="ct-cardhd"><h2 id="srcTitle">源仓 PR（先选择方向并加载 PR）</h2>
           <span class="dshell-muted" id="srcCount"></span></div>
-        <div class="ct-row" id="srcFilterRow" style="margin-bottom:8px;align-items:center">
-          <span class="ct-label">合入分支</span>
-          <div class="ct-chips" id="srcBranchFilter"></div>
+        <div class="ct-row" id="srcFilterRow" style="margin-bottom:8px;align-items:center;flex-wrap:wrap;gap:14px">
+          <div class="ct-row" style="gap:6px"><span class="ct-label">状态</span><div class="ct-chips" id="srcStateFilter"></div></div>
+          <div class="ct-row" style="gap:6px"><span class="ct-label">合入分支</span><div class="ct-chips" id="srcBranchFilter"></div></div>
         </div>
         <div class="ct-pagelist" id="prList"><div class="ct-empty">尚未加载 PR。配置好源仓后点「加载 PR」。</div></div>
       </div>
@@ -223,8 +238,8 @@
         <div class="ct-row" style="gap:16px">
           <div class="ct-field"><span class="ct-label">同步分支前缀</span><input class="dshell-input" id="setPrefix" value="sync" style="max-width:140px" /></div>
           <div class="ct-field"><span class="ct-label">每次抓取 PR 数</span><input class="dshell-input" id="setPer" value="50" style="max-width:90px" /></div>
-          <div class="ct-field"><span class="ct-label">PR 状态</span>
-            <select class="dshell-input" id="setState" style="max-width:120px"><option value="open">open</option><option value="closed">closed</option><option value="all">all</option></select>
+          <div class="ct-field"><span class="ct-label">抓取状态（范围）</span>
+            <select class="dshell-input" id="setState" style="max-width:120px"><option value="all">all</option><option value="open">open</option><option value="closed">closed</option></select>
           </div>
         </div>
         <div class="ct-sep" style="margin:10px 0"></div>
@@ -233,14 +248,36 @@
           <button class="dshell-btn dshell-btnGhost" id="clearStore">清除本地缓存</button>
         </div>
       </div>
+      <div class="dshell-card" style="margin-top:10px" id="srvCard">
+        <div class="ct-cardhd"><h2>远程服务器（SSH 远程执行）</h2><span class="dshell-muted" id="srvCount"></span></div>
+        <div class="ct-pagelist" id="srvList" style="max-height:220px;margin-bottom:8px"><div class="ct-empty">尚未配置服务器。在下方填写并保存。</div></div>
+        <div class="ct-sep" style="margin:6px 0 10px"></div>
+        <div class="ct-grid2">
+          <div class="ct-field"><span class="ct-label">名称</span><input class="dshell-input" id="srvName" placeholder="如 构建机A" autocomplete="off" /></div>
+          <div class="ct-field"><span class="ct-label">主机 Host</span><input class="dshell-input" id="srvHost" placeholder="1.2.3.4 或 host" autocomplete="off" /></div>
+          <div class="ct-field"><span class="ct-label">端口 Port</span><input class="dshell-input" id="srvPort" value="22" style="max-width:120px" autocomplete="off" /></div>
+          <div class="ct-field"><span class="ct-label">账号 User</span><input class="dshell-input" id="srvUser" placeholder="root" autocomplete="off" /></div>
+          <div class="ct-field"><span class="ct-label">密码 Password</span><input class="dshell-input" id="srvPass" type="password" placeholder="SSH 密码" autocomplete="new-password" /></div>
+          <div class="ct-field"><span class="ct-label">远程工作目录</span><input class="dshell-input" id="srvDir" placeholder="/opt/code-sync" autocomplete="off" /></div>
+        </div>
+        <div class="ct-row" style="margin-top:8px;gap:8px">
+          <button class="dshell-btn dshell-btnGhost" id="srvTest">测试连接</button>
+          <button class="dshell-btn" id="srvSave">保存服务器</button>
+          <button class="dshell-btn dshell-btnGhost" id="srvReset">清空表单</button>
+          <span class="ct-hint" id="srvMsg"></span>
+        </div>
+        <p class="ct-hint" style="margin:6px 0 0">远程服务器需具备 python3 与 git；同步时把 pr-sync.py / pr-fetch.py 与 spec 传到该目录并执行，输出实时回流。凭据仅用于本机服务端 SSH，不经浏览器直连。</p>
+      </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">使用说明</h2>
         <ul class="dshell-muted" style="margin:0;padding-left:18px;line-height:1.8">
           <li>令牌仅在本机服务端调用平台 API 时使用，不经过浏览器直连，避免 CORS 与泄露。</li>
           <li>同步机制：克隆目标仓 → 抓取源 PR 提交 → cherry-pick 到 <code>sync/&lt;平台&gt;-&lt;编号&gt;</code> 分支 → push → 调用 API 建 PR/MR。</li>
           <li>冲突会自动中止该 PR 并继续其余；查看日志了解失败原因。</li>
-          <li>「合入分支」筛选按 PR 的目标分支多选过滤源仓 PR 列表（chips 带各分支计数）；「全选」只选中当前筛选结果。</li>
+          <li>「状态」与「合入分支」chips 叠加过滤源仓 PR 列表：状态按 开放 / 已合并 / 全部 单选，合入分支按目标分支多选，各 chip 带分类计数；「全选」仅选中当前筛选结果。</li>
+          <li>设置页「抓取状态」控制向平台请求的 PR 范围（默认 all = 全部状态）；页面 chips 仅在已抓取范围内做显示筛选，切换即时生效。</li>
           <li>「试运行」会执行 cherry-pick 自检但不会 push 也不会建 PR，适合先验证。</li>
+          <li>「执行位置」可选本地或已配置的远程服务器：选远程时，本机 SSH 到该服务器、把脚本与 spec 传过去后执行 <code>pr-sync.py</code>，输出实时回流；服务器需有 python3 与 git。PR 抓取（列表 / 测试连接）始终在本地。</li>
         </ul>
       </div>
     </div>
@@ -274,7 +311,8 @@ function repoPlaceholder(platform){
   if (platform === "codehub") return "实例 host/group/project 或 https://host/...";
   return "owner/repo 或 group/project";
 }
-const LS_KEY = "code_trans_sync_v1";
+const LS_KEY = "code_trans_sync_v2";        // v2: 默认抓取 all，新增「状态」筛选 chips
+const LS_KEY_LEGACY = "code_trans_sync_v1";
 const THEME_KEY = "code_trans_theme";
 function applyTheme(t){
   t = ({auto:1,light:1,dark:1})[t] ? t : "auto";
@@ -303,7 +341,9 @@ function paths() {
   return {
     fetch: SCRIPT_DIR + "/pr-fetch.py",
     sync: SCRIPT_DIR + "/pr-sync.py",
+    remote: SCRIPT_DIR + "/pr-sync-remote.py",   // SSH 远程执行桥（选远程服务器时调用）
     spec: SCRIPT_DIR + "/sync-spec.json",
+    testSpec: SCRIPT_DIR + "/srv-test-spec.json", // 服务器连通性测试用的临时 spec
     work: SCRIPT_DIR + "/work",
   };
 }
@@ -316,7 +356,10 @@ const state = {
   results: {}, // key -> {ok, url, reason, branch}
   syncing: false,
   srcBranchFilter: new Set(), // 源 PR 按合入分支多选过滤；空集=全部
-  set: { prefix:"sync", per:50, prState:"open" },
+  srcStateFilter: "all", // 源 PR 按状态过滤：all|open|merged（merged=mergedAt 有值或 state=merged）
+  set: { prefix:"sync", per:50, prState:"all" },
+  servers: [], // [{id,name,host,port,user,password,dir}] 远程 SSH 执行服务器
+  execLoc: "local", // "local" | 服务器 id —— 同步在何处执行 pr-sync.py
 };
 
 function sourceSide(){ return state.direction === "AB" ? "A" : "B"; }
@@ -331,15 +374,28 @@ function save(){
                B:{platform:state.repos.B.platform, repo:state.repos.B.repo, token:state.repos.B.token} },
       direction: state.direction,
       set: state.set,
+      servers: state.servers,
+      execLoc: state.execLoc,
     }));
   } catch {}
 }
 function load(){
   try {
-    const d = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+    let raw = localStorage.getItem(LS_KEY);
+    let migrated = false;
+    if (!raw) { raw = localStorage.getItem(LS_KEY_LEGACY); migrated = !!raw; }
+    const d = raw ? JSON.parse(raw) : {};
     if (d.repos) for (const s of ["A","B"]) Object.assign(state.repos[s], d.repos[s] || {});
     if (d.direction) state.direction = d.direction;
     if (d.set) Object.assign(state.set, d.set);
+    if (Array.isArray(d.servers)) {
+      state.servers = d.servers.filter(s => s && s.host).map(s => Object.assign({id:"", name:"", host:"", port:22, user:"", password:"", dir:""}, s, {id: s.id || ("srv_" + Math.random().toString(36).slice(2,9))}));
+    }
+    if (d.execLoc) state.execLoc = d.execLoc;
+    // 选中了已不存在的服务器则回退本地
+    if (state.execLoc !== "local" && !state.servers.some(s => s.id === state.execLoc)) state.execLoc = "local";
+    // 旧版默认抓 open，新版默认 all；旧值视为非用户显式选择，迁移为 all
+    if (migrated) state.set.prState = "all";
   } catch {}
 }
 
@@ -364,12 +420,11 @@ function appendLog(html, cls){
 }
 function clearLog(){ $("#log").innerHTML = '<span class="plain">暂无日志。</span>'; }
 
-async function runSyncStream(specPath){
-  const P = paths();
+async function runSyncStream(scriptPath, args){
   return new Promise((resolve) => {
     fetch("/api/worktable/exec-stream", {
       method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ path: P.sync, args:[specPath], cwd: SCRIPT_DIR || undefined })
+      body: JSON.stringify({ path: scriptPath, args: args, cwd: SCRIPT_DIR || undefined })
     }).then(res => {
       if (!res.ok || !res.body) { appendLog("exec-stream 启动失败：HTTP " + res.status, "ev ev-err"); resolve(); return; }
       const reader = res.body.getReader();
@@ -475,21 +530,43 @@ function updateStats(){
 }
 function fmtTime(s){ try { const d=new Date(s); if(isNaN(d)) return s||""; return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); } catch { return s||""; } }
 
+// 状态判定（跨平台统一）：mergedAt 有值，或 GitLab/Gitee 的 state=merged
+function isMerged(p){ return !!(p && p.mergedAt) || p.state === "merged"; }
+function passState(p){ const f = state.srcStateFilter; if (f === "all") return true; if (f === "open") return p.state === "open"; if (f === "merged") return isMerged(p); return true; }
+function passBranch(p){ const f = state.srcBranchFilter; return !f || !f.size || f.has(p.targetBranch); }
 function visiblePrs(side){
-  const f = state.srcBranchFilter; // Set<string>；空集=全部
+  return state.repos[side].prs.filter(p => passBranch(p) && passState(p));
+}
+function renderStateFilter(side){
+  const box = $("#srcStateFilter");
+  if (!box) return;
   const prs = state.repos[side].prs;
-  if (!f || !f.size) return prs;
-  return prs.filter(p => f.has(p.targetBranch));
+  const base = prs.filter(passBranch); // 在当前「合入分支」筛选下统计各状态
+  const nOpen = base.filter(p => p.state === "open").length;
+  const nMerged = base.filter(isMerged).length;
+  const f = state.srcStateFilter;
+  const mkChip = (label, val, on, cls, title) => {
+    const c = document.createElement("button");
+    c.type = "button"; c.className = "ct-chip" + (cls ? " " + cls : "") + (on ? " on" : "");
+    c.textContent = label; c.title = title;
+    c.addEventListener("click", () => { state.srcStateFilter = val; renderPrList(); updateStats(); setSyncBtn(); });
+    return c;
+  };
+  box.innerHTML = "";
+  box.appendChild(mkChip("全部 (" + base.length + ")", "all", f === "all", "ct-chipAll", "显示全部状态"));
+  box.appendChild(mkChip("开放 (" + nOpen + ")", "open", f === "open", "", "仅显示开放 PR"));
+  box.appendChild(mkChip("已合并 (" + nMerged + ")", "merged", f === "merged", "", "仅显示已合并 PR"));
 }
 function renderBranchFilter(side){
   const box = $("#srcBranchFilter");
   if (!box) return;
   const prs = state.repos[side].prs;
-  // 未加载 PR 时隐藏整个筛选行，避免只剩一个「合入分支」标签
+  // 未加载 PR 时隐藏整个筛选行，避免只剩一个标签
   const row = $("#srcFilterRow");
   if (row) row.style.display = prs.length ? "" : "none";
+  const base = prs.filter(passState); // 在当前「状态」筛选下统计各分支
   const counts = new Map(); // 目标分支 -> PR 数
-  for (const p of prs) {
+  for (const p of base) {
     const b = p.targetBranch;
     if (b) counts.set(b, (counts.get(b) || 0) + 1);
   }
@@ -506,7 +583,7 @@ function renderBranchFilter(side){
     c.textContent = label; c.title = title; c.addEventListener("click", onClick);
     return c;
   };
-  box.appendChild(mkChip("全部 (" + prs.length + ")", allOn, "ct-chipAll", "不按分支过滤", () => { f.clear(); renderPrList(); updateStats(); setSyncBtn(); }));
+  box.appendChild(mkChip("全部 (" + base.length + ")", allOn, "ct-chipAll", "不按分支过滤", () => { f.clear(); renderPrList(); updateStats(); setSyncBtn(); }));
   for (const b of set) {
     box.appendChild(mkChip(b + " (" + counts.get(b) + ")", f.has(b), "", "仅显示合入 " + b + " 的 PR", () => {
       if (f.has(b)) f.delete(b); else f.add(b);
@@ -518,12 +595,13 @@ function renderPrList(){
   const side = sourceSide();
   const repo = state.repos[side];
   const box = $("#prList");
+  renderStateFilter(side);
   renderBranchFilter(side);
   const list = visiblePrs(side);
   $("#srcTitle").textContent = "源仓 PR · " + (repo.repo || ("仓"+side));
   $("#srcCount").textContent = list.length + " / " + repo.prs.length + (repo.info ? " · 默认 " + (repo.info.default_branch||"-") : "");
   if (!repo.prs.length) { box.innerHTML = '<div class="ct-empty">该仓暂无 PR（或尚未加载）。点上方「加载 PR」。</div>'; setSyncBtn(); return; }
-  if (!list.length) { box.innerHTML = '<div class="ct-empty">当前「合入分支」过滤下无 PR，换个分支或选「全部」。</div>'; setSyncBtn(); return; }
+  if (!list.length) { box.innerHTML = '<div class="ct-empty">当前「状态 / 合入分支」筛选下无 PR，换个筛选或选「全部」。</div>'; setSyncBtn(); return; }
   box.innerHTML = "";
   for (const pr of list) {
     const key = prKey(side, pr.number);
@@ -670,7 +748,7 @@ async function loadPrs(side){
     if (arr && arr.error) throw new Error(arr.error);
     r.prs = Array.isArray(arr) ? arr : [];
     setBadge(side, r.info ? "已连接" : "已加载", r.info ? "dshell-badgeDone" : "");
-    if (side === sourceSide()) { state.results = {}; state.srcBranchFilter.clear(); renderPrList(); }
+    if (side === sourceSide()) { state.results = {}; state.srcBranchFilter.clear(); state.srcStateFilter = "all"; renderPrList(); }
     updateStats();
     appendLog("[" + side + "] 加载到 " + r.prs.length + " 个 PR", "ev");
   } catch (e) {
@@ -699,11 +777,118 @@ function setDirection(dir){
   // 选中集与方向无关（按 side+number），但源仓变化后需重新渲染
   state.results = {};
   state.srcBranchFilter.clear();
+  state.srcStateFilter = "all";
   const binp = $("#baseBranch"); if (binp) binp.value = "";
   renderPrList();
   void connectTarget();
   updateStats();
   save();
+}
+
+// ── 远程服务器 ──
+let editingSrvId = null;
+function uid(prefix){ return (prefix || "srv_") + Math.random().toString(36).slice(2, 9); }
+function srvFields(){
+  return {
+    name: $("#srvName").value.trim(),
+    host: $("#srvHost").value.trim(),
+    port: parseInt($("#srvPort").value) || 22,
+    user: $("#srvUser").value.trim(),
+    password: $("#srvPass").value,
+    dir: $("#srvDir").value.trim(),
+  };
+}
+function fillSrvForm(s){
+  editingSrvId = s ? s.id : null;
+  $("#srvName").value = s ? s.name : "";
+  $("#srvHost").value = s ? s.host : "";
+  $("#srvPort").value = s ? s.port : 22;
+  $("#srvUser").value = s ? s.user : "";
+  $("#srvPass").value = s ? s.password : "";
+  $("#srvDir").value = s ? s.dir : "";
+  $("#srvSave").textContent = s ? "更新服务器" : "保存服务器";
+}
+function clearSrvForm(){ fillSrvForm(null); $("#srvMsg").textContent = ""; }
+function renderSrvList(){
+  const box = $("#srvList"), cnt = $("#srvCount");
+  if (cnt) cnt.textContent = state.servers.length ? (state.servers.length + " 台") : "";
+  if (!state.servers.length) { box.innerHTML = '<div class="ct-empty">尚未配置服务器。在下方填写并保存。</div>'; return; }
+  box.innerHTML = "";
+  for (const s of state.servers) {
+    const isSel = state.execLoc === s.id;
+    const row = document.createElement("div"); row.className = "ct-srvrow";
+    row.innerHTML =
+      '<div class="ct-srvname">' + esc(s.name || s.host) + (isSel ? ' <span class="dshell-badge dshell-badgeDone">当前</span>' : '') + '</div>' +
+      '<div class="ct-srvmeta">' + esc(s.user || "-") + '@' + esc(s.host) + ':' + esc(s.port) + ' → ' + esc(s.dir || "-") + '</div>' +
+      '<div class="ct-srvact">' +
+        '<button class="dshell-btn dshell-btnGhost" data-act="edit">编辑</button>' +
+        '<button class="dshell-btn dshell-btnGhost" data-act="use"' + (isSel ? ' disabled' : '') + '>' + (isSel ? '已选用' : '选用') + '</button>' +
+        '<button class="dshell-btn dshell-btnGhost" data-act="del">删除</button>' +
+      '</div>';
+    row.querySelector('[data-act="edit"]').addEventListener("click", () => fillSrvForm(s));
+    row.querySelector('[data-act="use"]').addEventListener("click", () => { state.execLoc = s.id; save(); renderSrvList(); renderExecLoc(); });
+    row.querySelector('[data-act="del"]').addEventListener("click", () => {
+      if (!confirm("删除服务器「" + (s.name || s.host) + "」？")) return;
+      state.servers = state.servers.filter(x => x.id !== s.id);
+      if (state.execLoc === s.id) state.execLoc = "local";
+      save(); renderSrvList(); renderExecLoc();
+    });
+    box.appendChild(row);
+  }
+}
+function renderExecLoc(){
+  const sel = $("#execLoc"); if (!sel) return;
+  const cur = state.execLoc;
+  sel.innerHTML = '<option value="local">本地（当前服务）</option>';
+  for (const s of state.servers) {
+    const o = document.createElement("option");
+    o.value = s.id; o.textContent = s.name || (s.user + "@" + s.host);
+    sel.appendChild(o);
+  }
+  sel.value = (cur !== "local" && state.servers.some(s => s.id === cur)) ? cur : "local";
+  state.execLoc = sel.value;
+  const hint = $("#execLocHint");
+  if (hint) hint.textContent = state.execLoc === "local"
+    ? "本地 = 在当前服务跑；选服务器 = SSH 到该服务器跑 pr-sync.py"
+    : "将在所选服务器执行 pr-sync.py（SSH 传输脚本 + spec）";
+}
+function srvSave(){
+  const f = srvFields();
+  if (!f.host || !f.user || !f.dir) { $("#srvMsg").textContent = "请填写主机 / 账号 / 远程目录。"; return; }
+  if (!f.name) f.name = f.user + "@" + f.host;
+  if (editingSrvId) {
+    const i = state.servers.findIndex(s => s.id === editingSrvId);
+    if (i >= 0) state.servers[i] = Object.assign(state.servers[i], f);
+  } else {
+    f.id = uid();
+    state.servers.push(f);
+  }
+  editingSrvId = null;
+  save(); renderSrvList(); renderExecLoc();
+  $("#srvSave").textContent = "保存服务器";
+  $("#srvMsg").textContent = "已保存。";
+  $("#srvName").value = $("#srvHost").value = $("#srvUser").value = $("#srvPass").value = $("#srvDir").value = "";
+  $("#srvPort").value = 22;
+}
+async function srvTest(){
+  const f = srvFields();
+  if (!f.host || !f.user || !f.dir) { $("#srvMsg").textContent = "请先填写主机 / 账号 / 远程目录。"; return; }
+  if (!f.name) f.name = f.user + "@" + f.host;
+  const msg = $("#srvMsg"); msg.textContent = "测试中…";
+  const btn = $("#srvTest"); const old = btn.textContent; btn.disabled = true; btn.textContent = "测试中";
+  try {
+    const P = paths();
+    const spec = { remote: { name: f.name, host: f.host, port: f.port, user: f.user, password: f.password, dir: f.dir } };
+    const wres = await fetch("/api/worktable/write", { method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ path: P.testSpec, content: JSON.stringify(spec, null, 2) }) });
+    if (!wres.ok) throw new Error("HTTP " + wres.status);
+    const out = await execOnce(P.remote, ["--test", P.testSpec]);
+    let d; try { d = JSON.parse(out.stdout); } catch { d = { ok:false, error: (out.stderr || out.stdout || "返回解析失败").slice(0,200) }; }
+    if (d.ok) { msg.textContent = "✓ 连接成功：python3 / git 就绪" + (d.stdout ? "（" + d.stdout.replace(/\n/g, " ") + "）" : ""); }
+    else { msg.textContent = "✗ " + (d.error || "失败"); appendLog("[srv] 测试失败：" + esc(d.error || ""), "ev ev-err"); }
+  } catch (e) {
+    msg.textContent = "✗ " + e.message;
+  } finally { btn.disabled = false; btn.textContent = old; }
 }
 
 // ── 同步执行 ──
@@ -718,12 +903,16 @@ async function doSync(){
   if (!base) { switchTab("log"); appendLog("请先在「同步到分支」选择或输入目标分支。", "ev ev-err"); return; }
   const dry = $("#dryRun").checked;
   const P = paths();
+  const srv = state.execLoc !== "local" ? state.servers.find(s => s.id === state.execLoc) : null;
+  if (state.execLoc !== "local" && !srv) { switchTab("log"); appendLog("所选执行位置的服务器已不存在，请重新选择。", "ev ev-err"); return; }
   const spec = {
     source: { platform: src.platform, repo: src.repo, token: src.token||"" },
     target: { platform: tgt.platform, repo: tgt.repo, token: tgt.token||"", baseBranch: base },
-    workDir: P.work, branchPrefix: state.set.prefix || "sync",
+    workDir: srv ? (srv.dir.replace(/\/+$/,"") + "/work") : P.work,
+    branchPrefix: state.set.prefix || "sync",
     dryRun: dry, keepClone: true, prs: sel,
   };
+  if (srv) spec.remote = { name: srv.name, host: srv.host, port: srv.port, user: srv.user, password: srv.password, dir: srv.dir };
   // 写 spec 文件
   try {
     const wres = await fetch("/api/worktable/write", { method:"POST", headers:{"content-type":"application/json"},
@@ -732,8 +921,9 @@ async function doSync(){
   } catch (e) { switchTab("log"); appendLog("写入 spec 失败：" + esc(e.message), "ev ev-err"); return; }
   state.syncing = true; state.results = {}; setSyncBtn();
   clearLog(); renderPrList(); switchTab("log");
-  appendLog("▶ 同步 " + sel.length + " 个 PR：" + esc(src.repo||("仓"+sourceSide())) + " → " + esc(tgt.repo||("仓"+targetSide())) + "（目标分支 " + esc(base) + "，" + (dry?"试运行":"将 push + 建 PR") + "）", "ev");
-  await runSyncStream(P.spec);
+  const scriptPath = srv ? P.remote : P.sync;
+  appendLog("▶ 同步 " + sel.length + " 个 PR：" + esc(src.repo||("仓"+sourceSide())) + " → " + esc(tgt.repo||("仓"+targetSide())) + "（目标分支 " + esc(base) + "，" + (dry?"试运行":"将 push + 建 PR") + "）" + (srv ? " · 远程执行：" + esc(srv.name||srv.host) + "（" + esc(srv.user) + "@" + esc(srv.host) + ":" + esc(srv.port) + "）" : " · 本地执行"), "ev");
+  await runSyncStream(scriptPath, [P.spec]);
   renderResultsTable();
 }
 
@@ -786,6 +976,12 @@ function init(){
   $("#clearStore").addEventListener("click", () => { localStorage.removeItem(LS_KEY); appendLog("已清除本地缓存（刷新后恢复默认）。", "ev"); });
   applyTheme((function(){ try { return localStorage.getItem(THEME_KEY) || "auto"; } catch { return "auto"; } })());
   $$("[data-theme-btn]").forEach(b => b.addEventListener("click", () => applyTheme(b.dataset.themeBtn)));
+  $("#execLoc").addEventListener("change", () => { state.execLoc = $("#execLoc").value; save(); renderSrvList(); renderExecLoc(); });
+  $("#goSrv").addEventListener("click", () => { switchTab("set"); const c = $("#srvCard"); if (c) c.scrollIntoView({ behavior:"smooth", block:"start" }); });
+  $("#srvSave").addEventListener("click", srvSave);
+  $("#srvTest").addEventListener("click", srvTest);
+  $("#srvReset").addEventListener("click", clearSrvForm);
+  renderSrvList(); renderExecLoc();
   updateStats(); setSyncBtn();
 }
 init();
