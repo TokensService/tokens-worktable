@@ -207,7 +207,7 @@ def info(platform, repo, token):
 def list_prs(platform, repo, token, state="open", per_page=30):
     out = []
     if platform == "github":
-        state_q = "open" if state in ("open", "all") else state  # github: open/closed/all
+        state_q = state if state in ("open", "closed", "all") else "open"  # github: open/closed/all（all 含已合并）
         pulls = gh_api("/repos/" + repo + "/pulls", token,
                        qs={"state": state_q, "per_page": min(int(per_page), 100), "direction": "desc"})
         for p in pulls:
