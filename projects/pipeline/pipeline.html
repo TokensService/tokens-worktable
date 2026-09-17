@@ -990,7 +990,9 @@ const LOGS = {
 /* ---------- 服务端持久化（配置 + 运行历史，存服务端 ~/.dsh/storages/worktable-pipeline.json；日志不内嵌，走归档文件引用） ---------- */
 /* localStorage 仍保留作离线缓存；服务端不可达时行为与原来一致。 */
 let stateLoaded=false;   // loadServerState 成功后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
+let serverConfigBase=null;   // 最近一次成功 GET/PUT 的服务端配置；PUT 携带它做多浏览器三方合并
 let persistTimer=null;
+let persistInFlight=null;   // 同一页面内串行 PUT：后一次必须基于前一次服务端确认后的新基线
 function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
@@ -1002,18 +1004,63 @@ function historyForPersist(){
     const clean={}; Object.keys(h).forEach(k=>{ if(transient.indexOf(k)<0) clean[k]=h[k]; }); return clean;
   });
 }
+/* 服务端可能把其他浏览器对“不同流水线”的修改一起合入本次 PUT 响应。把这些结果同步回当前页，
+   但保留请求在途期间本页产生的更新，避免下一次保存又把刚合入的远端流水线误删。 */
+function reconcilePipelinesAfterSave(submitted, accepted, current){
+  const before=Array.isArray(submitted)?submitted:[], remote=Array.isArray(accepted)?accepted:[], now=Array.isArray(current)?current:[];
+  const beforeById=new Map(before.filter(p=>p&&p.id).map(p=>[String(p.id),p]));
+  const remoteById=new Map(remote.filter(p=>p&&p.id).map(p=>[String(p.id),p]));
+  const nowById=new Map(now.filter(p=>p&&p.id).map(p=>[String(p.id),p]));
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const order=[];
+  remote.concat(now).forEach(p=>{ const id=String(p&&p.id||''); if(id&&order.indexOf(id)<0) order.push(id); });
+  const result=[];
+  order.forEach(id=>{
+    const hadBefore=beforeById.has(id), hasNow=nowById.has(id);
+    const changedWhileSaving=hadBefore!==hasNow||(hadBefore&&hasNow&&!same(beforeById.get(id),nowById.get(id)));
+    if(changedWhileSaving){ if(hasNow) result.push(nowById.get(id)); }
+    else if(remoteById.has(id)) result.push(remoteById.get(id));
+  });
+  return result;
+}
 async function pushState(){
-  if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return; }   // 上次加载失败（服务端暂不可达）：写前重试，仍失败则放弃本次保存——绝不拿本地默认值覆盖服务端历史
+  while(persistInFlight) await persistInFlight;
+  let releasePersist;
+  persistInFlight=new Promise(resolve=>{ releasePersist=resolve; });
+  try{
+  if(persistTimer){ clearTimeout(persistTimer); persistTimer=null; }
+  /* 先快照本页要保存的状态：首次加载尚在途时，loadServerState 会刷新全局变量，不能把用户刚点保存的
+     内容替换成远端旧值后再提交。共同基线则必须等 GET 成功后再取。 */
+  const config=collectConfig(), savedHistory=historyForPersist();
+  if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return {ok:false,error:'服务端配置加载失败'}; }
   try{
     /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
        服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖 */
-    await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:collectConfig(), history:historyForPersist()})});
-  }catch(e){}
+    const r=await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config, baseConfig:serverConfigBase||{}, history:savedHistory})});
+    let body={}; try{ body=await r.json(); }catch(e){}
+    if(!r.ok){
+      return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
+    }
+    if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
+      serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
+        pipelines=reconcilePipelinesAfterSave(config.pipelines,body.config.pipelines,pipelines)
+          .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+        try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
+      }
+    }
+    return {ok:true,config:body.config||config};
+  }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
+  }finally{
+    persistInFlight=null;
+    releasePersist();
+  }
 }
 async function loadServerState(){
   let st=null;
   try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
   try{
+    if(st) serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{}));
     if(st && st.config && Object.keys(st.config).length){
       const cfg=st.config;
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
@@ -1388,7 +1435,11 @@ let runStages = null; // 运行期间快照；null 时用当前流水线
 function curPipeline(){ return pipelines.find(p=>p.id===curPipelineId) || pipelines[0]; }
 function activeStages(){ return runStages || curPipeline().stages; }
 function findPipeline(id){ return pipelines.find(p=>p.id===id); }
-function savePipelines(){ try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){} persistState(); }
+function savePipelines(options){
+  try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){}
+  if(options&&options.immediate) return pushState();
+  persistState();
+}
 
 /* ---------- 环境配置（名称 + IP + 用户名 + 密码） ---------- */
 function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, nodeIp:e.nodeIp||'', user:e.user||'', pass:e.pass||''}; }
@@ -3827,21 +3878,26 @@ async function submitServerRun(item){
     by:item&&item.by||'',
     source:'manual',
   };
+  /* POST/服务端排队可能需要数秒；先用本次参数快照切到“提交中”，避免按钮点击后界面毫无变化。 */
+  if(typeof focusRun==='function') focusRun(serverSubmissionPreviewRc(item));
   try{
     const response=await fetch('/api/worktable/pipeline/run/'+encodeURIComponent(item&&item.pipelineId||''),{
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),keepalive:true,
     });
     let result={}; try{ result=await response.json(); }catch(e){}
     if(!response.ok) throw new Error((result&&result.error)||('HTTP '+response.status));
-    await pullRemoteQueue();
     /* 提交成功即自动跟随本次运行：runId 在服务端权威快照（排队/在跑）中可见后，
        把编排区/阶段详情切过去；快照未刷新前跨轮询等待（见 followPendingServerRun） */
     if(result&&result.runId&&typeof followPendingServerRun==='function'&&typeof SERVER_RUN_FOCUS_MS==='number'){
-      pendingServerRunFocus={runId:String(result.runId),until:Date.now()+SERVER_RUN_FOCUS_MS};
+      pendingServerRunFocus={runId:String(result.runId),until:Date.now()+SERVER_RUN_FOCUS_MS,previewId:String(item&&item.id||'')};
+    }
+    await pullRemoteQueue();
+    if(typeof pendingServerRunFocus!=='undefined'&&pendingServerRunFocus){
       followPendingServerRun();
     }
     return result;
   }catch(error){
+    if(typeof clearServerSubmissionPreview==='function') clearServerSubmissionPreview(item&&item.id);
     alert('提交服务端运行失败：'+String(error&&error.message||error));
     return null;
   }
@@ -3981,6 +4037,23 @@ function queuePreviewRc(item){
   stages.forEach(s=>{ rc.nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}}; });
   return rc;
 }
+function serverSubmissionPreviewRc(item){
+  const rc=queuePreviewRc(item);
+  rc.serverSubmitting=true;
+  rc.overall={txt:'提交中…',cls:'dshell-badgeWait',color:''};
+  return rc;
+}
+function clearServerSubmissionPreview(itemId){
+  if(!viewRc||viewRc.serverSubmitting!==true||(itemId&&String(viewRc.id)!==String(itemId))) return;
+  viewRc=null;
+  if(typeof syncViewRun==='function') syncViewRun();
+  if(typeof applyRunOverall==='function') applyRunOverall(null);
+  if(typeof $==='function'){
+    const stop=$('stopBtn'); if(stop) stop.disabled=true;
+  }
+  if(typeof refreshArchiveTip==='function') refreshArchiveTip();
+  if(typeof resetNodes==='function') resetNodes();
+}
 function focusQueueItem(id){
   if(viewRc && viewRc.queuedPreview===true && viewRc.id===id) return;   // 已在预览该排队项，避免重复重建
   const item=localQueueItems().find(q=>q.id===id); if(!item) return;
@@ -4041,7 +4114,7 @@ function focusServerRunById(runId){
 }
 function followPendingServerRun(){
   const pend=pendingServerRunFocus; if(!pend) return;
-  if(Date.now()>pend.until){ pendingServerRunFocus=null; return; }
+  if(Date.now()>pend.until){ pendingServerRunFocus=null; clearServerSubmissionPreview(pend.previewId); return; }
   if(focusServerRunById(pend.runId)) pendingServerRunFocus=null;
 }
 function refreshRemoteQueuePreviewRc(previous){
@@ -4453,7 +4526,7 @@ function renderQueue(){
   const list=$('queueList'); if(!list) return;
   /* 排队预览自愈：预览中的排队项已出队（被取消/清空，或启动校验失败被移出队列）时，编排区回到当前流水线
      空闲编排。正常启动不走这里——startSimRun 已先把焦点切到真实运行 rc，viewRc 不再是预览 */
-  if(viewRc && viewRc.queuedPreview===true && !localQueueItems().some(q=>q.id===viewRc.id)){
+  if(viewRc && viewRc.queuedPreview===true && viewRc.serverSubmitting!==true && !localQueueItems().some(q=>q.id===viewRc.id)){
     viewRc=null; syncViewRun(); applyRunOverall(null);
     $('stopBtn').disabled=true; refreshArchiveTip();
     resetNodes();   // 空闲编排重建（内部重置 _detailKey 并重绘流程/详情）
@@ -7398,6 +7471,7 @@ function applyPlFormReadOnly(){
   }
 }
 function openPlForm(id, focusIdx){
+  if(typeof stateLoaded!=='undefined'&&!stateLoaded){ alert('服务端流水线配置仍在加载，暂不能编辑。请稍后重试或刷新页面。'); return; }
   const f=$('plForm'); f.style.display='flex';
   editFocusIdx=(typeof focusIdx==='number')?focusIdx:-1;
   editSelStage=null;   // 打开编辑器即重建 editStages 草稿，选中引用随之失效
@@ -7439,7 +7513,7 @@ function openPlForm(id, focusIdx){
   });
   if(!plFormReadOnly) $('plName').focus();   // 只读查看不抢焦点（名称输入框已禁用）
 }
-function savePlForm(){
+async function savePlForm(){
   /* 内置（默认）流水线只读：保存入口已隐藏，此处兜底拦截一切写回内置定义的路径（如需改动请用列表「复制」生成可编辑副本） */
   const guardP=findPipeline($('plForm').dataset.editId||'');
   if(guardP && guardP.builtIn){ alert('内置流水线「'+guardP.name+'」为只读，不可保存修改；可在「流水线任务」列表「复制」为副本后编辑。'); return; }
@@ -7481,6 +7555,10 @@ function savePlForm(){
       }
     }
   }
+  const previousPipelines=JSON.parse(JSON.stringify(pipelines));
+  const previousScriptsDir=scriptsDir;
+  const serverPipelinesAtSave=(typeof serverConfigBase!=='undefined'&&serverConfigBase&&Array.isArray(serverConfigBase.pipelines))
+    ?JSON.parse(JSON.stringify(serverConfigBase.pipelines)):[];
   scriptsDir=$('scriptsDir').value.trim()||scriptsDir; scriptsDirIsFallback=false; saveScriptsDir();
   const stages=editStages.map((s,i)=>{
     if(s.preset) return {id:s.id, name:s.name, preset:true, pkey:s.pkey};   // 预设任务标记：位置随流水线保存
@@ -7497,15 +7575,46 @@ function savePlForm(){
   const editId=$('plForm').dataset.editId;
   const defaults=collectPipelineDefaultForm();
   const me=currentUsername||'';   // 新建/复制流水线署名：取已缓存的当前登录用户（页面加载时由 fillExecutorFromAuth 探测写入），未取到则不署名
+  let savedPipelineId=editId;
   if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动；每次保存都刷新最后修改人 */
-  else { pipelines.push({id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}); }
-  savePipelines(); clearPlDraft(); $('plForm').style.display='none';
+  else { const created={id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}; pipelines.push(created); savedPipelineId=created.id; }
+  const saveForm=$('plForm');
+  const saveFormWasInert=!!(saveForm&&saveForm.inert);
+  const saveButton=$('plSave');
+  const saveButtonText=saveButton?saveButton.textContent:'';
+  if(saveForm) saveForm.inert=true;   // 整个编辑器冻结到服务端确认，防止请求快照之后的新输入被成功收尾清掉
+  if(saveButton){ saveButton.disabled=true; saveButton.textContent='保存中…'; }
+  let saved;
+  try{ saved=await savePipelines({immediate:true}); }
+  catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
+  finally{ if(saveForm) saveForm.inert=saveFormWasInert; if(saveButton){ saveButton.disabled=false; saveButton.textContent=saveButtonText||'保存'; } }
+  if(saved && saved.ok===false){
+    /* 只撤销本次编辑的流水线；等待同页串行锁期间，前序 PUT 可能已把其他浏览器的不同流水线合入当前列表，
+       整表回滚会再次丢掉它们，并在下次保存时把缺项误解释为删除。 */
+    const previousPipeline=previousPipelines.find(p=>String(p&&p.id||'')===String(savedPipelineId));
+    const previousIndex=previousPipelines.findIndex(p=>String(p&&p.id||'')===String(savedPipelineId));
+    const baseAtSave=serverPipelinesAtSave.find(p=>String(p&&p.id||'')===String(savedPipelineId));
+    const latestServerPipelines=(typeof serverConfigBase!=='undefined'&&serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+    const latestBase=latestServerPipelines.find(p=>String(p&&p.id||'')===String(savedPipelineId));
+    const baseAdvanced=!!baseAtSave!==!!latestBase||(baseAtSave&&latestBase&&JSON.stringify(baseAtSave)!==JSON.stringify(latestBase));
+    const rollbackPipeline=baseAdvanced?(latestBase?JSON.parse(JSON.stringify(latestBase)):null):previousPipeline;
+    pipelines=pipelines.filter(p=>String(p&&p.id||'')!==String(savedPipelineId));
+    if(rollbackPipeline) pipelines.splice(Math.min(Math.max(previousIndex,0),pipelines.length),0,rollbackPipeline);
+    scriptsDir=previousScriptsDir;
+    try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); localStorage.setItem('pip-scriptsDir',scriptsDir); }catch(e){}
+    renderPipelines();
+    if(saved.conflict) alert('该流水线已被其他浏览器修改，本次保存未覆盖远端版本。请先刷新流水线任务，再重新应用当前草稿。');
+    else alert('流水线保存失败：'+String(saved.error||'未知错误')+'。编辑内容已保留，请重试。');
+    return saved;
+  }
+  clearPlDraft(); $('plForm').style.display='none';
   /* 运行期保存：不触发 selectPipeline（避免脱离正在查看的运行视图），仅刷新列表 */
   if(running){ renderPipelines(); }
   else if(editId && editId===curPipelineId){ selectPipeline(editId); }
   else if(!editId){ selectPipeline(pipelines[pipelines.length-1].id); }
   else { renderPipelines(); }
   renderPipelines();
+  return saved||{ok:true};
 }
 function deletePipeline(id){
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }

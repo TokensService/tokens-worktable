@@ -268,6 +268,58 @@ function cleanPipelineHistory(history: any[]) {
   })
 }
 
+/**
+ * 三方合并流水线定义：客户端未改动的 id 以磁盘为准，不同 id 的并发改动可同时保留；
+ * 同一 id 在客户端与磁盘都偏离共同基线时报告冲突，调用方不得写盘。
+ */
+function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
+  const objectConfig = (value: any) => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const client = objectConfig(clientConfig)
+  const base = objectConfig(baseConfig)
+  const disk = objectConfig(diskConfig)
+  const config = { ...client }
+  const clientPipelines = Array.isArray(client.pipelines) ? client.pipelines : []
+  const basePipelines = Array.isArray(base.pipelines) ? base.pipelines : []
+  const diskPipelines = Array.isArray(disk.pipelines) ? disk.pipelines : []
+  const valid = (item: any) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id
+  const mapOf = (items: any[]) => new Map(items.filter(valid).map((item: any) => [item.id, item]))
+  const clientMap = mapOf(clientPipelines), baseMap = mapOf(basePipelines), diskMap = mapOf(diskPipelines)
+  const sameEntry = (left: Map<string, any>, right: Map<string, any>, id: string) => {
+    const leftHas = left.has(id), rightHas = right.has(id)
+    return leftHas === rightHas && (!leftHas || JSON.stringify(left.get(id)) === JSON.stringify(right.get(id)))
+  }
+  const ids = new Set<string>([...baseMap.keys(), ...clientMap.keys(), ...diskMap.keys()])
+  const merged = new Map<string, any>()
+  const conflicts: string[] = []
+  for (const id of ids) {
+    const clientChanged = !sameEntry(clientMap, baseMap, id)
+    const diskChanged = !sameEntry(diskMap, baseMap, id)
+    if (clientChanged && diskChanged && !sameEntry(clientMap, diskMap, id)) {
+      conflicts.push(id)
+      if (diskMap.has(id)) merged.set(id, diskMap.get(id))
+      continue
+    }
+    const source = clientChanged ? clientMap : diskMap
+    if (source.has(id)) merged.set(id, source.get(id))
+  }
+  /* 先沿用磁盘顺序（保留他端新增的位置），再追加仅客户端新增的定义。 */
+  const ordered: any[] = []
+  for (const item of diskPipelines) if (valid(item) && merged.has(item.id)) { ordered.push(merged.get(item.id)); merged.delete(item.id) }
+  for (const item of clientPipelines) if (valid(item) && merged.has(item.id)) { ordered.push(merged.get(item.id)); merged.delete(item.id) }
+  for (const item of merged.values()) ordered.push(item)
+  config.pipelines = ordered
+  return { config, conflicts }
+}
+
+/** 旧页面未携带共同基线时只能判断定义是否不同；不同即拒绝，不能让旧协议绕过并发保护。 */
+function pipelineConfigDifferenceIds(clientConfig: any, diskConfig: any) {
+  const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
+  const mapOf = (items: any[]) => new Map(items.filter(item => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map(item => [item.id, item]))
+  const client = mapOf(pipelinesOf(clientConfig)), disk = mapOf(pipelinesOf(diskConfig))
+  const ids = new Set<string>([...client.keys(), ...disk.keys()])
+  return [...ids].filter(id => client.has(id) !== disk.has(id) || (client.has(id) && JSON.stringify(client.get(id)) !== JSON.stringify(disk.get(id))))
+}
+
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
   const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
@@ -1849,21 +1901,35 @@ export function apply(ctx: Context) {
         if (req.method === 'PUT') {
           const body = await readJsonBody(req)
           const config = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
+          const baseConfig = body.baseConfig && typeof body.baseConfig === 'object' && !Array.isArray(body.baseConfig) ? body.baseConfig : null
           const history = Array.isArray(body.history) ? cleanPipelineHistory(body.history.slice(0, 500)) : []
-          await withStoreLock(async () => {
+          const outcome = await withStoreLock(async () => {
             /* 与磁盘现状合并再写（此前全量覆盖：页面打开期间服务端定时运行 append 的记录会被抹掉、
                buildNo 回退重号）。页面不知道的磁盘记录保留；「清空」语义经 histClearedAt 表达——
                清空时间点之前的磁盘记录视为已删、不因合并复活。buildNo / histClearedAt 取双方较大值防回退。 */
             const disk = await readPipelineStore()
             const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
             const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
-            const merged = mergePipelineHistoryForWrite(config, diskCfg, history, diskHistory)
+            /* 新页面带共同基线，按流水线 id 做三方合并；旧页面没有基线时仅允许流水线定义未变化的写入，
+               防止升级部署前仍打开的标签页用整份旧快照覆盖新页面。空存储首次迁移保持兼容。 */
+            const diskHasPipelines = Array.isArray(diskCfg.pipelines) && diskCfg.pipelines.length > 0
+            const configMerge = baseConfig ? mergePipelineConfigForWrite(config, baseConfig, diskCfg) : {
+              config,
+              conflicts: diskHasPipelines ? pipelineConfigDifferenceIds(config, diskCfg) : [],
+            }
+            if (configMerge.conflicts.length) return { conflicts: configMerge.conflicts, config: diskCfg }
+            const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
             const text = serializePipelineStore(merged.config, merged.history)
             await writeJsonAtomic(PIPELINE_STORE, text)
+            return { conflicts: [] as string[], config: merged.config }
           })
-          json(res, 200, { ok: true })
+          if (outcome.conflicts.length) {
+            json(res, 409, { error: 'pipeline config conflict', conflicts: outcome.conflicts, config: outcome.config })
+            return
+          }
+          json(res, 200, { ok: true, config: outcome.config })
           return
         }
         res.writeHead(405); res.end()
