@@ -643,10 +643,11 @@ with open(node_labels_file, "w", encoding="utf-8") as output:
 PY
 
 # 临时需求：LMCache sidecar 加 tracing 上报（chart 已固化 args，无注入口，
-# 渲染后直接 patch chart 副本）。LMCACHE_OTLP_ENDPOINT 置空可关闭。
+# 渲染后直接 patch 部署包 chart 副本 CHART_DIR，helm 实际使用的就是它）。
+# LMCACHE_OTLP_ENDPOINT 置空可关闭。
 LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.0.102:4320}"
 if [[ -n "$LMCACHE_OTLP_ENDPOINT" ]]; then
-python3 - "$CHART_TEMPLATE_DIR/templates/raycluster-cluster.yaml" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
+python3 - "$CHART_DIR/templates/raycluster-cluster.yaml" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
 import pathlib
 import sys
 
