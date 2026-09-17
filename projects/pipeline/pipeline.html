@@ -306,6 +306,20 @@
         <tbody></tbody>
       </table>
     </div>
+    <div style="display:flex; align-items:center; gap:8px; margin-top:8px; flex-wrap:wrap;">
+      <label class="dshell-muted" style="font-size:11px; display:flex; align-items:center; gap:5px;">每页
+        <select id="plPageSize" class="dshell-input" style="min-width:64px;">
+          <option value="10">10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select> 条
+      </label>
+      <span style="flex:1"></span>
+      <span id="plPageInfo" class="dshell-muted" style="font-size:11px;"></span>
+      <button id="plPrev" class="dshell-btn dshell-btnGhost mini" type="button">‹ 上一页</button>
+      <button id="plNext" class="dshell-btn dshell-btnGhost mini" type="button">下一页 ›</button>
+    </div>
   </div>
 
   <!-- 流水线编排 -->
@@ -6895,6 +6909,8 @@ function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stri
 let plFilter={kw:'',owner:'mine',favorite:'all'};
 try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine'),favorite:_pf.favorite==='favorite'?'favorite':'all'}; }catch(e){}
 function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringify(plFilter)); }catch(e){} }
+let plPage=0;
+let plPageSize=Math.max(1, parseInt(lsGet('pip-plPageSize','10'),10)||10);
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
    供同步路径（新建/复制流水线署名、默认筛选「我的」）取用。声明在此处以保证声明顺序早于筛选事件绑定。 */
 let currentUsername='';
@@ -7206,6 +7222,12 @@ $('histRefresh').addEventListener('click', async ()=>{
   try{ await refreshHistoryFromServer(true); }
   finally{ b.disabled=false; }
 });
+/* 流水线任务分页 */
+/* 页大小规格与运行历史相同，但使用独立状态和本地存储键。 */
+$('plPageSize').value=String(plPageSize);
+$('plPageSize').addEventListener('change', e=>{ plPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-plPageSize', String(plPageSize)); }catch(e){} plPage=0; renderPipelines(); });
+$('plPrev').addEventListener('click', ()=>{ if(plPage>0){ plPage--; renderPipelines(); } });
+$('plNext').addEventListener('click', ()=>{ if((plPage+1)*plPageSize<pipelines.filter(plFilterMatch).length){ plPage++; renderPipelines(); } });
 /* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
 $('histFilterKw').value=histFilter.kw;
 $('histFilterStatus').value=histFilter.status;
@@ -7217,10 +7239,10 @@ $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:''
 $('plFilterKw').value=plFilter.kw;
 $('plFilterOwner').value=plFilter.owner;
 $('plFilterFavorite').value=plFilter.favorite;
-$('plFilterKw').addEventListener('input', e=>{ plFilter.kw=e.target.value; savePlFilter(); renderPipelines(); });
-$('plFilterOwner').addEventListener('change', e=>{ plFilter.owner=e.target.value; savePlFilter(); renderPipelines(); });
-$('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; savePlFilter(); renderPipelines(); });
-$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
+$('plFilterKw').addEventListener('input', e=>{ plFilter.kw=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
+$('plFilterOwner').addEventListener('change', e=>{ plFilter.owner=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
+$('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
+$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; plPage=0; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
 function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
 /* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
 function fmtHistTime(h){
@@ -7375,12 +7397,18 @@ function renderPipelines(){
   renderPlFilterOptions();
   /* 已置顶（pinnedAt）排最前，多条按置顶时间新→旧；未置顶保持数组原序（内置经加载迁移居首）——Array.sort 稳定，键相同不动相对位置 */
   const view=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
+  const pageSize=(typeof plPageSize==='number'&&plPageSize>0)?plPageSize:10;
+  const pages=Math.max(1,Math.ceil(view.length/pageSize));
+  let page=(typeof plPage==='number')?plPage:0;
+  if(page>pages-1) page=pages-1;
+  if(page<0) page=0;
+  if(typeof plPage==='number') plPage=page;
   const queueCounts=pipelineQueueCounts();
   $('plCount').textContent = pipelines.length ? ('('+view.length+'/'+pipelines.length+')') : '';
   const fTip=$('plFilterTip'); if(fTip) fTip.textContent = (view.length<pipelines.length || plFilter.kw || plFilter.favorite==='favorite') ? ('已筛选 '+view.length+' / '+pipelines.length+' 条') : '';
   const tb=$('plTable').querySelector('tbody'); tb.innerHTML='';
   if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="4" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(pipelines.length?'无匹配的流水线':'暂无流水线')+'</td>'; tb.appendChild(tr0); }
-  view.forEach(p=>{
+  view.slice(page*pageSize,(page+1)*pageSize).forEach(p=>{
     const tr=document.createElement('tr');
     const isCur = p.id===curPipelineId;
     const isPinned = !!p.pinnedAt;
@@ -7409,6 +7437,10 @@ function renderPipelines(){
   tb.querySelectorAll('[data-plcopy]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); copyPipeline(b.getAttribute('data-plcopy')); }));
   tb.querySelectorAll('[data-pldel]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); deletePipeline(b.getAttribute('data-pldel')); }));
   tb.querySelectorAll('[data-plmenu]').forEach(b=>b.addEventListener('click',e=>{ e.stopPropagation(); const id=b.getAttribute('data-plmenu'); if(plMenuOpenId===id) closePlRowMenu(); else openPlRowMenu(id, b); }));
+  const info=$('plPageInfo'); if(info) info.textContent='第 '+(page+1)+'/'+pages+' 页 · 共 '+view.length+' 条';
+  const prev=$('plPrev'), next=$('plNext');
+  if(prev) prev.disabled=page<=0;
+  if(next) next.disabled=page>=pages-1;
   renderPipelineSel();
 }
 /* 运行框流水线下拉：与「流水线任务」行选用双向同步；运行中也可切换（selectPipeline 脱离运行视图，在跑任务转后台继续） */
@@ -7421,6 +7453,11 @@ function renderPipelineSel(){
 function selectPipeline(id){
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
   curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
+  /* 下拉选用、新建或复制可能选中当前页之外的流水线：目标仍命中当前筛选时同步翻到它所在页；
+     若筛选本身排除了目标则保持当前页，不擅自清除用户筛选。排序须与 renderPipelines 一致。 */
+  const listView=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
+  const listIndex=listView.findIndex(p=>p.id===id);
+  if(listIndex>=0){ const pageSize=(typeof plPageSize==='number'&&plPageSize>0)?plPageSize:10; plPage=Math.floor(listIndex/pageSize); }
   /* 运行中也可切换：脱离运行/结果视图，回到所选流水线的空闲编排；在跑运行不受影响、转后台继续
      （运行状态统一在「运行队列」展示，点击队列条目可回看该次运行的阶段详情） */
   viewRc=null; syncViewRun(); applyRunOverall(null);
