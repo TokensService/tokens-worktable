@@ -22,8 +22,12 @@ contains_unexpanded_placeholder "$IMAGE_NAME" && IMAGE_NAME=""
 contains_unexpanded_placeholder "$DEPLOY_IMAGE" && DEPLOY_IMAGE=""
 [[ -n "$IMAGE_NAME" ]] || IMAGE_NAME="${DEPLOY_IMAGE:-myapp}"
 [[ -n "$DEPLOY_IMAGE" ]] || DEPLOY_IMAGE="$IMAGE_NAME"
-# 架构名优先使用流水线 arch_name，其次 DEPLOY_STRATEGY；兼容旧 ARCH_NAME。
-ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"
+# 架构名优先使用流水线 arch_name、DEPLOY_STRATEGY 和显式 ARCH_NAME；arch 作为运行时兼容别名。
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
 EMS_NAMESPACE="${EMS_NAMESPACE:-op-ems}"
 PIPELINE_NAME="${PIPELINE_NAME:-}"
 contains_unexpanded_placeholder "$PIPELINE_NAME" && PIPELINE_NAME=""
@@ -71,8 +75,20 @@ contains_unexpanded_placeholder "$NODE_LABELS_FILE" && NODE_LABELS_FILE=""
 TARGET_HOSTS="${TARGET_HOSTS:-}"
 TARGET_IP="${TARGET_IP:-}"
 TARGET_IPS="${TARGET_IPS:-}"
+DEFAULT_TARGET_NODE_IP_MAP='{"115.33.98.101:2224":"192.168.31.140","115.33.98.101:2225":"192.168.31.120","115.33.98.101:2226":"192.168.31.113","115.33.98.101:2227":"192.168.31.164","115.33.98.101:2228":"192.168.31.7","115.33.98.101:2229":"192.168.31.181"}'
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
+TARGET_NODE_IP_MAP="$(python3 - "$DEFAULT_TARGET_NODE_IP_MAP" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import sys
+
+default_map, override_map = map(json.loads, sys.argv[1:])
+if not isinstance(override_map, dict):
+    raise SystemExit("TARGET_NODE_IP_MAP must be a JSON object")
+default_map.update(override_map)
+print(json.dumps(default_map, separators=(",", ":"), sort_keys=True))
+PY
+)"
 TARGET_USER="${TARGET_USER:-root}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-}"
 contains_unexpanded_placeholder "$TARGET_RUN_DIR" && TARGET_RUN_DIR=""
@@ -93,20 +109,36 @@ XDS_READY_TIMEOUT_SECONDS="${XDS_READY_TIMEOUT_SECONDS:-1800}"
 XDS_READY_POLL_SECONDS="${XDS_READY_POLL_SECONDS:-5}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-./logs}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
+EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
+EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-}"
 MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
-# Preserve rendering inputs in the execution and target pipeline contracts.
+# Render inputs are retained in both pipeline environment contracts so the
+# deployment stage can reproduce the configuration selected by the caller.
 MOCK_DB="${MOCK_DB:-true}"
 XDS_DATABASE_NAME="${XDS_DATABASE_NAME:-xds_db}"
 XDS_DATABASE_PORT="${XDS_DATABASE_PORT:-31106}"
 XDS_DATABASE_USERNAME="${XDS_DATABASE_USERNAME:-xds}"
 XDS_DATABASE_PASSWORD="${XDS_DATABASE_PASSWORD:-XDS@2026}"
+LMCACHE_L2_ENABLED="${LMCACHE_L2_ENABLED:-true}"
+LMCACHE_L2_BASE_PATH="${LMCACHE_L2_BASE_PATH:-}"
+[[ -n "$LMCACHE_L2_BASE_PATH" ]] || LMCACHE_L2_BASE_PATH="${LMCACHE_L2_HOST_PATH:-/mnt/paas/lmcache/lmcache-l2/shared}"
+LMCACHE_L2_MAX_CAPACITY_GB="${LMCACHE_L2_MAX_CAPACITY_GB:-10240}"
+LMCACHE_L2_NUM_WORKERS="${LMCACHE_L2_NUM_WORKERS:-64}"
+# Platform inputs consumed by render-config.sh: the LMCache sidecar
+# switch (default off), the sidecar OTLP tracing switch (default on), and
+# its endpoint. An empty endpoint disables the tracing patch as well.
+ENABLE_LMCACHE="${ENABLE_LMCACHE:-false}"
+ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING:-true}"
+LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.0.102:4320}"
 # Registry credentials are supplied at invocation time. Keep them in the
 # process environment for pull-image.sh only; do not serialize them into either
 # pipeline environment file.
 AK="${AK:-}"
 LOGKEY="${LOGKEY:-${LOGIN_KEY:-}}"
-LOGIN_KEY="${LOGIN_KEY:-$LOGKEY}"
+# Keep the legacy alias synchronized with the value selected for this run.
+LOGIN_KEY="$LOGKEY"
 # PROJECT is also used by some callers for the registry namespace (for example
 # serverlessai). SWR authentication needs the region instead, so prefer the
 # dedicated SWR_PROJECT and only accept PROJECT when it is a region name.
@@ -180,9 +212,13 @@ export IMAGE_NAME ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME 
   NAMESPACE RELEASE_NAME CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST \
   NODE_LABELS_FILE TARGET_HOSTS TARGET_NODE_IP_MAP XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
   XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
-  POLL_INTERVAL_SECONDS PIPELINE_ENV_FILE TARGET_RUN_DIR TARGET_RENDER_DIR \
+  POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+  PIPELINE_ENV_FILE TARGET_RUN_DIR TARGET_RENDER_DIR \
   TARGET_PIPELINE_ENV_FILE SSH_PASSWORD MODEL_CACHE_HOST_PATH MOCK_DB \
   XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
+  LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
+  LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
+  ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT \
   AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY
 
 write_pipeline_env() {
@@ -197,8 +233,12 @@ write_pipeline_env() {
         CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST NODE_LABELS_FILE \
         NAMESPACE RELEASE_NAME TARGET_HOSTS TARGET_NODE_IP_MAP TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
-        POLL_INTERVAL_SECONDS PIPELINE_ENV_FILE MODEL_CACHE_HOST_PATH MOCK_DB \
-        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD; do
+        POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+        PIPELINE_ENV_FILE MODEL_CACHE_HOST_PATH MOCK_DB \
+        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
+        LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
+        LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
+        ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT; do
         printf 'export %s=%q\n' "$variable" "${!variable}"
       done
     } >"$PIPELINE_ENV_FILE"
@@ -207,29 +247,12 @@ write_pipeline_env() {
 
 write_target_pipeline_env() {
   local variable target_chart_dir target_values_file target_arch_request_file
-  local target_resource_manifest target_node_labels_file safe_target_hosts
+  local target_resource_manifest target_node_labels_file
   target_chart_dir="${TARGET_RENDER_DIR}/xds-cluster"
   target_values_file="${TARGET_RENDER_DIR}/values.rendered.yaml"
   target_arch_request_file="${TARGET_RENDER_DIR}/architecture.request.json"
   target_resource_manifest="${TARGET_RENDER_DIR}/resources.rendered.json"
   target_node_labels_file="${TARGET_RENDER_DIR}/node-labels.json"
-  safe_target_hosts="$(python3 - "$TARGET_HOSTS" <<'PY'
-import json
-import re
-import sys
-
-hosts = json.loads(sys.argv[1])
-if not isinstance(hosts, list):
-    raise SystemExit("TARGET_HOSTS must be a JSON array")
-safe_hosts = []
-for host in hosts:
-    if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
-        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-    safe_hosts.append({"ip": host["ip"], "user": host.get("user") or "root"})
-print(json.dumps(safe_hosts, separators=(",", ":")))
-PY
-)"
-
   (
     umask 077
     {
@@ -242,14 +265,18 @@ PY
       printf 'export RESOURCE_MANIFEST=%q\n' "$target_resource_manifest"
       printf 'export NODE_LABELS_FILE=%q\n' "$target_node_labels_file"
       printf 'export PIPELINE_ENV_FILE=%q\n' "$TARGET_PIPELINE_ENV_FILE"
-      printf 'export TARGET_HOSTS=%q\n' "$safe_target_hosts"
+      printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
       for variable in \
         IMAGE_NAME DEPLOY_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME NAMESPACE RELEASE_NAME \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
         XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
-        POLL_INTERVAL_SECONDS TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
+        POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+        TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
         MODEL_CACHE_HOST_PATH MOCK_DB \
-        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD; do
+        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
+        LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
+        LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
+        ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT; do
         printf 'export %s=%q\n' "$variable" "${!variable}"
       done
     } >"${RUN_DIR}/.target.pipeline.env"

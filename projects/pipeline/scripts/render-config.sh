@@ -12,8 +12,12 @@ normalize_kubernetes_name() {
   printf '%s' "$value"
 }
 
-# 架构名优先使用流水线 arch_name，其次 DEPLOY_STRATEGY；兼容旧 ARCH_NAME。
-ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"
+# 架构名优先使用流水线 arch_name、DEPLOY_STRATEGY 和显式 ARCH_NAME；arch 作为运行时兼容别名。
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-$RUN_DIR/template/xds-cluster}"
@@ -48,10 +52,14 @@ EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
-NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018,\"192.168.31.140\":31000,\"192.168.31.120\":31001,\"192.168.31.113\":31002,\"192.168.31.164\":31003,\"192.168.31.7\":31004,\"192.168.31.181\":31006}}"
 COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
+ENABLE_LMCACHE="${ENABLE_LMCACHE:-false}"
+# 临时需求入参：LMCache sidecar tracing 开关与 OTLP endpoint，默认打开。
+ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING:-true}"
+LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.0.102:4320}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -61,6 +69,18 @@ MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
 if [[ -n "$MODEL_CACHE_HOST_PATH" ]]; then
   [[ "$MODEL_CACHE_HOST_PATH" == /* ]] || { echo "MODEL_CACHE_HOST_PATH must be an absolute host path: $MODEL_CACHE_HOST_PATH" >&2; exit 2; }
 fi
+
+ENABLE_LMCACHE="${ENABLE_LMCACHE,,}"
+[[ "$ENABLE_LMCACHE" == "true" || "$ENABLE_LMCACHE" == "false" ]] || {
+  echo "ENABLE_LMCACHE must be true or false: $ENABLE_LMCACHE" >&2
+  exit 2
+}
+
+ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING,,}"
+[[ "$ENABLE_LMCACHE_TRACING" == "true" || "$ENABLE_LMCACHE_TRACING" == "false" ]] || {
+  echo "ENABLE_LMCACHE_TRACING must be true or false: $ENABLE_LMCACHE_TRACING" >&2
+  exit 2
+}
 
 [[ -n "$PREFILL_OVERRIDES_JSON" ]] || PREFILL_OVERRIDES_JSON='{}'
 [[ -n "$DECODE_OVERRIDES_JSON" ]] || DECODE_OVERRIDES_JSON='{}'
@@ -148,7 +168,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$ENABLE_LMCACHE" <<'PY'
 import copy
 import json
 import os
@@ -163,12 +183,16 @@ import yaml
  prefill_gpu, decode_gpu, namespace, prefill_overrides, decode_overrides,
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
- chart_dir, image_pull_secrets_text, collector_gateway_url, mapped_collector_gateway_url, model_cache_host_path) = sys.argv[1:]
+  chart_dir, image_pull_secrets_text, collector_gateway_url, mapped_collector_gateway_url, model_cache_host_path,
+  enable_lmcache_text) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
 prefill_gpu = int(prefill_gpu) if prefill_gpu else None
 decode_gpu = int(decode_gpu) if decode_gpu else None
+if enable_lmcache_text not in ("true", "false"):
+    raise SystemExit("ENABLE_LMCACHE must be true or false")
+enable_lmcache = enable_lmcache_text == "true"
 def load_json(name, value):
     try:
         parsed = json.loads(value)
@@ -337,17 +361,6 @@ if params_use_ems:
 else:
     use_ems = root_use_ems if root_use_ems is not None else False
 
-# A Prefill spec explicitly opting into LMCache enables its colocated sidecar.
-# An explicit TEMPLATE_VARS_JSON value remains authoritative because the
-# template default is only filled when that key is absent.
-use_lmcache = any(
-    isinstance(spec.get("params"), dict) and spec["params"].get("use_lmcache") is True
-    for package in arch.get("deploy_spec_packages", [])
-    if isinstance(package, dict)
-    for spec in package.get("deploy_specs", [])
-    if isinstance(spec, dict) and spec.get("role") == "prefill"
-)
-
 groups = []
 resources = []
 bundle_index = 1
@@ -428,31 +441,9 @@ for group_index, group in enumerate(groups):
     group["rayStartParamsPorts"]["min-worker-port"] = range_start
     group["rayStartParamsPorts"]["max-worker-port"] = range_end
 
-# TE 组按顺序在节点内连续占卡（默认每节点 8 卡），节点填满换下一个节点
-# （bin-packing，arch 顺序即 prefill 优先）：如 2 节点 3P1D → 节点A prefill1(0-3)
-# + prefill2(4-7)，节点B prefill3(0-3)+decode1(4-7)。kubelet 不会覆盖显式声明
-# 的 NVIDIA_VISIBLE_DEVICES，可避开 device plugin 的随机分配序；同时用
-# kubernetes.io/hostname 把组钉到具体节点。启用 lmcache 时 sidecar 的卡必须
-# 与其 PTE 完全一致（CUDA IPC 按 ordinal 匹配，集合与顺序都不能差），见下方
-# taskExecutorGroups 写入后的对齐逻辑。
-node_gpu_count = 8
-node_index = 0
-assigned_cards = 0
-for group in groups:
-    group_gpus = group["rayStartParamsPorts"]["num-gpus"]
-    if assigned_cards + group_gpus > node_gpu_count:
-        node_index += 1
-        assigned_cards = 0
-        if node_index >= len(target_ips):
-            raise SystemExit(
-                f"GPU pinning exceeds {node_gpu_count} cards x {len(target_ips)} node(s): "
-                f"group {group['name']} needs {group_gpus}, no node left"
-            )
-    group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] = ",".join(
-        str(card) for card in range(assigned_cards, assigned_cards + group_gpus)
-    )
-    group["nodeSelector"]["kubernetes.io/hostname"] = target_ips[node_index]
-    assigned_cards += group_gpus
+# lite 版不做占卡/钉节点：分卡交给 device plugin，sidecar 卡对齐由 chart
+# 兜底（ray-worker 写 /etc/lmcache-gpu/devices，kubelet 注入的
+# NVIDIA_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES）完成。
 
 with open(values_template, encoding="utf-8") as source:
     values_text = source.read().replace("{IMAGE_TAG}", deploy_image.rsplit(":", 1)[-1])
@@ -462,7 +453,7 @@ template_vars.setdefault("DEPLOY_NAMESPACE", namespace)
 template_vars.setdefault("XDS_TE_POD_LABEL_KEY", node_selector_key)
 template_vars.setdefault("XDS_TE_POD_LABEL_VAL", node_selector_value)
 # 环境相关占位符默认值；数据库连接项优先使用调用方环境变量。
-# MOCK_DB=true 时数据库项仅供 mock 配置参考；ELB_ID 仅用于注解。
+# MOCK_DB=true 时数据库项仅供 mock 配置参考；ELB_ID 仅用于注解；
 # NODE_PORT/SERVICE_PORT/COLLECTOR_GATEWAY_URL 为本环境固定配置。
 template_vars.setdefault("XDS_DATABASE_HOST", "127.0.0.1")
 database_config = {
@@ -482,9 +473,12 @@ template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 # 新版模板（bnt3_glm_lmcache_3P1D.20260917131901 起）仅保留 3 个 LMCache
 # 占位符；L1/L2 尺寸、端口、资源等默认值已固化在 values 模板中。
-template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "true" if use_lmcache else "false")
+# sidecar 是否启用由平台入参 ENABLE_LMCACHE 决定（默认关）；
+# L2 开关消费上游 LMCACHE_L2_ENABLED（默认开）；
+# TEMPLATE_VARS_JSON 里的显式值优先。
+template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "true" if enable_lmcache else "false")
 template_vars.setdefault("LMCACHE_LOG_LEVEL", "INFO")
-template_vars.setdefault("LMCACHE_L2_ENABLED", "true")
+template_vars.setdefault("LMCACHE_L2_ENABLED", os.environ.get("LMCACHE_L2_ENABLED", "true"))
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -504,13 +498,13 @@ for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
 
-# A template can contain direct database environment values instead of
-# placeholders. Keep those values consistent with this render invocation.
+# 兼容模板直接写入数据库环境变量的场景：占位符替换后覆盖为当前渲染配置。
+database_env = database_config
 common_env = values.get("common", {}).get("containerEnv", [])
 if isinstance(common_env, list):
     for entry in common_env:
-        if isinstance(entry, dict) and entry.get("name") in database_config:
-            entry["value"] = database_config[entry["name"]]
+        if isinstance(entry, dict) and entry.get("name") in database_env:
+            entry["value"] = database_env[entry["name"]]
             entry.pop("valueFrom", None)
 
 if str(mock_db).lower() == "true":
@@ -525,6 +519,8 @@ if str(mock_db).lower() == "true":
         framework_files["xds_framework.conf"] = framework_config.rstrip() + "\nmock_db = true\n"
 
 def normalize_container_env_values(value):
+    # {PLACEHOLDER} 填入纯数字（如 XDS_DATABASE_PORT=5432）后 YAML 解析为 int，
+    # 而 Kubernetes env value 必须是字符串。
     if isinstance(value, dict):
         for key, child in value.items():
             if key in ("containerEnv", "env") and isinstance(child, list):
@@ -550,45 +546,28 @@ values["global"] = deep_merge(values.get("global", {}), {
 })
 values = deep_merge(values, yaml_replace_map)
 
-lmcache_sidecar = values.get("lmcacheSidecar")
-if lmcache_sidecar is not None and not isinstance(lmcache_sidecar, dict):
-    raise SystemExit("lmcacheSidecar must be a mapping")
-if isinstance(lmcache_sidecar, dict) and lmcache_sidecar.get("enabled", False):
-    # L1 lazy 分配与 L1/L2 尺寸、资源默认值由 values 模板固化；L2 落盘路径
-    # 由 chart 按 group/slot 隔离生成，此处仅控制 L2 开关。
-    l2_enabled = str(template_vars.get("LMCACHE_L2_ENABLED", "false")).lower() == "true"
-    lmcache_sidecar["l2Enabled"] = l2_enabled
-    # lmcache 开启时 KV offload 由 sidecar L1 承担，缩小 TE 内存申请：
-    # arch（OffloadingConnector/1M ctx）预估的 memory request 可能超出
-    # 大页节点 allocatable（如 2000Gi hugepages 后仅 ~944Gi）导致 TE 永久 Pending。
-    te_memory = "200G"
-    for group in groups:
-        for quota in ("limits", "requests"):
-            group["containerResources"][quota]["memory"] = te_memory
-    # lmcache-sidecar 仅挂在 prefill 组；cudaVisibleDevices 必须与其 PTE 的
-    # NVIDIA_VISIBLE_DEVICES 完全一致（含顺序），否则 CUDA IPC 映射失败。
-    prefill_pins = [
-        group["containerEnvOverrides"].get("NVIDIA_VISIBLE_DEVICES")
-        for group in groups
-        if "prefill" in group["name"].lower()
-    ]
-    if not prefill_pins:
-        raise SystemExit("lmcache sidecar enabled but no prefill TE group found")
-    if any(pin is None for pin in prefill_pins):
-        raise SystemExit("lmcache sidecar enabled but prefill GPU pinning is missing")
-    distinct_pins = list(dict.fromkeys(pin for pin in prefill_pins if pin))
-    if len(distinct_pins) > 1:
-        # 同节点多个 prefill 组（如 2 节点 3P1D 的节点A：0-3 与 4-7）时各 PTE
-        # 卡块不同。cudaVisibleDevices 为全局单值，仅表达首个组；需要 chart 支持
-        # sidecar 按组继承 ray-worker 的 NVIDIA_VISIBLE_DEVICES 才能全部对齐，
-        # 旧 chart 上其余组的 sidecar 会 CUDA IPC 失配。
-        print(
-            "WARNING: prefill TE groups have different GPU pins "
-            f"({', '.join(distinct_pins)}); requires chart with per-group "
-            "sidecar cudaVisibleDevices inheritance",
-            file=sys.stderr,
-        )
-    lmcache_sidecar["cudaVisibleDevices"] = prefill_pins[0]
+# Some released images carry a literal default NodePort instead of the
+# {NODE_PORT} placeholder.  Apply the target mapping to the parsed values as
+# well so both template forms produce the same service port.
+if target_node_port is not None:
+    for path in (("global", "network", "ports"), ("rayService", "service", "ports")):
+        current = values
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        if not isinstance(current, list):
+            continue
+        frontend_ports = [
+            item for item in current
+            if isinstance(item, dict) and item.get("name") == "frontend-port"
+        ]
+        candidates = frontend_ports or [
+            item for item in current if isinstance(item, dict) and "nodePort" in item
+        ]
+        if candidates:
+            candidates[0]["nodePort"] = target_node_port
 
 # Pair the ray-svc selector with an explicit frontGroup Pod label. This
 # remains stable when the KubeRay operator does not add it itself.
@@ -785,6 +764,27 @@ with open(node_labels_file, "w", encoding="utf-8") as output:
     }, output, ensure_ascii=False, indent=2)
     output.write("\n")
 PY
+
+# 临时需求：LMCache sidecar 加 tracing 上报（chart 已固化 args，无注入口，
+# 渲染后直接 patch 部署包 chart 副本 CHART_DIR，helm 实际使用的就是它）。
+# ENABLE_LMCACHE_TRACING=false 关闭；endpoint 置空同样关闭。
+if [[ "$ENABLE_LMCACHE_TRACING" == "true" && -n "$LMCACHE_OTLP_ENDPOINT" ]]; then
+python3 - "$CHART_DIR/templates/raycluster-cluster.yaml" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
+import pathlib
+import sys
+
+chart = pathlib.Path(sys.argv[1])
+endpoint = sys.argv[2]
+text = chart.read_text(encoding="utf-8")
+if "--enable-tracing" not in text:
+    anchor = '{{- if $isLmcacheL2 }}\n                  --l2-store-policy'
+    if anchor not in text:
+        raise SystemExit("LMCache sidecar args anchor not found in chart template")
+    patch = "--enable-tracing \\\n                  --otlp-endpoint %s \\\n" % endpoint
+    chart.write_text(text.replace(anchor, patch + anchor, 1), encoding="utf-8")
+print("LMCACHE_OTLP_PATCHED=%s" % endpoint)
+PY
+fi
 
 printf 'RUN_DIR=%s\n' "$RUN_DIR"
 printf 'RENDER_DIR=%s\n' "$RENDER_DIR"
