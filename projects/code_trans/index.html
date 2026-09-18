@@ -80,6 +80,17 @@
     .ct-tsbtn { border:0; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); cursor:pointer; font:inherit; font-size:12.5px; padding:5px 10px; line-height:1; }
     .ct-tsbtn:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
     .ct-tsbtn.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+    /* 失败归因：分类标签 + 状态色（网络/克隆/cherry-pick/push/成功/其它） */
+    .ct-prstatus.net { color:#db6d28; }
+    .ct-prstatus.timeout { color:#d29922; }
+    .ct-cat { display:inline-block; font-size:10.5px; padding:1px 7px; margin-right:6px; border-radius:5px;
+      border:1px solid var(--dsw-alias-border-l2,#3a4150); color:var(--dsw-alias-label-secondary,#9aa4b2); white-space:nowrap; }
+    .ct-cat.net { color:#db6d28; border-color:rgba(219,109,40,.45); }
+    .ct-cat.clone { color:#a371f0; border-color:rgba(163,113,240,.4); }
+    .ct-cat.conflict { color:#f85149; border-color:rgba(248,81,73,.4); }
+    .ct-cat.push { color:#f0883e; border-color:rgba(240,136,62,.4); }
+    .ct-cat.ok { color:#3fb950; border-color:rgba(63,185,80,.4); }
+    .ct-cat.other { color:var(--dsw-alias-label-tertiary,#6b7280); }
   </style>
 </head>
 <body>
@@ -250,6 +261,18 @@
           <button class="dshell-btn dshell-btnGhost" id="clearStore">清除本地缓存</button>
         </div>
       </div>
+      <div class="dshell-card" style="margin-top:10px">
+        <h2 class="dshell-sub" style="margin:0 0 10px">同步网络与超时</h2>
+        <div class="ct-grid2">
+          <div class="ct-field"><span class="ct-label">Git http.proxy</span>
+            <input class="dshell-input" id="setProxyHttp" placeholder="http://127.0.0.1:7890（留空=不代理）" autocomplete="off" /></div>
+          <div class="ct-field"><span class="ct-label">Git https.proxy</span>
+            <input class="dshell-input" id="setProxyHttps" placeholder="http://127.0.0.1:7890（留空=不代理）" autocomplete="off" /></div>
+        </div>
+        <div class="ct-field" style="margin-top:8px"><span class="ct-label">同步停滞超时（秒）</span>
+          <input class="dshell-input" id="setStall" value="90" style="max-width:90px" /></div>
+        <p class="ct-hint" style="margin:6px 0 0">代理经 sync-spec.proxy 传给 pr-sync.py（需服务端读取 spec.proxy 生效，详见使用说明）。停滞超时：exec-stream 连续 N 秒无输出即判定源仓抓取网络不通并停止等待，避免长时间挂起。源仓为 GitHub 且 HTTPS 被拦截时，可配置代理或改用 SSH 克隆。</p>
+      </div>
       <div class="dshell-card" style="margin-top:10px" id="srvCard">
         <div class="ct-cardhd"><h2>远程服务器（SSH 远程执行）</h2><span class="dshell-muted" id="srvCount"></span></div>
         <div class="ct-pagelist" id="srvList" style="max-height:220px;margin-bottom:8px"><div class="ct-empty">尚未配置服务器。在下方填写并保存。</div></div>
@@ -289,6 +312,9 @@
           <li>设置页「抓取状态」控制向平台请求的 PR 范围（默认 all = 全部状态）；页面 chips 仅在已抓取范围内做显示筛选，切换即时生效。</li>
           <li>「试运行」会执行 cherry-pick 自检但不会 push 也不会建 PR，适合先验证。</li>
           <li>「执行位置」可选本地或已配置的远程服务器：选远程时，本机 SSH 到该服务器、把脚本与 spec 传过去后执行 <code>pr-sync.py</code>，输出实时回流；服务器需有 python3 与 git。认证支持密码 / 密钥；主机指纹 TOFU（首次接受并记住，变更可「重置主机指纹」）。PR 抓取（列表 / 测试连接）始终在本地。</li>
+          <li>「同步网络与超时」：Git 代理填入后随 sync-spec 的 <code>proxy</code> 字段传给 <code>pr-sync.py</code>（需服务端读取 <code>spec.proxy</code> 并以 <code>git -c http.proxy=… -c https.proxy=…</code> 应用才生效，作为后续服务端增强点）；停滞超时控制 exec-stream 连续 N 秒无输出即判定源仓抓取网络不通并停止等待，把"一直挂着"变成明确的超时提示。</li>
+          <li>失败归因：日志与结果表按原因分类着色——网络/抓取（橙）、克隆失败（紫）、cherry-pick 冲突（红）、push/建 PR 失败（橙红）、跳过（绿）等，便于快速定位"网络不通"与"代码冲突"。</li>
+          <li>常见排查：若全部 PR 在「抓取源提交」阶段失败/超时，多为源仓所在平台网络不通（如本机到 <code>github.com:443</code> 被拦截）。此时 GitHub 的 SSH(22) 与 API 通常仍可达——可改用 SSH 克隆源仓，或在设置页配置代理后重试。</li>
         </ul>
       </div>
     </div>
@@ -368,7 +394,7 @@ const state = {
   syncing: false,
   srcBranchFilter: new Set(), // 源 PR 按合入分支多选过滤；空集=全部
   srcStateFilter: "all", // 源 PR 按状态过滤：all|open|merged（merged=mergedAt 有值或 state=merged）
-  set: { prefix:"sync", per:50, prState:"all" },
+  set: { prefix:"sync", per:50, prState:"all", proxy:{http:"",https:""}, stallSec:90 },
   servers: [], // [{id,name,host,port,user,password,dir}] 远程 SSH 执行服务器
   execLoc: "local", // "local" | 服务器 id —— 同步在何处执行 pr-sync.py
 };
@@ -433,18 +459,42 @@ function appendLog(html, cls){
 }
 function clearLog(){ $("#log").innerHTML = '<span class="plain">暂无日志。</span>'; }
 
-async function runSyncStream(scriptPath, args){
+async function runSyncStream(scriptPath, args, stallSec){
+  const stallMs = (stallSec && stallSec > 0) ? stallSec * 1000 : 90000;
   return new Promise((resolve) => {
+    const ctrl = new AbortController();
+    let stallTimer = null;
+    const clearStall = () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } };
+    const armStall = () => {
+      clearStall();
+      stallTimer = setTimeout(() => {
+        ctrl.abort();
+        appendLog("⏱ 同步停滞超时：" + (stallMs/1000) + " 秒无输出，疑似源仓抓取网络不通（如 GitHub HTTPS 被拦截）。已停止等待。建议：① 设置页配置代理；② 换可达网络执行；③ 源仓为 GitHub 可改用 SSH 克隆。", "ev ev-warn");
+        // 标记未完成的选中 PR 为超时失败（网络类）
+        const side = sourceSide();
+        state.repos[side].prs.forEach(p => {
+          const k = prKey(side, p.number);
+          if (state.selected.has(k) && !state.results[k]) {
+            state.results[k] = { ok:false, reason:"同步停滞超时（疑似源仓网络不通）", cat:"net", catLabel:"网络/抓取" };
+            renderPrRowStatus(side, p.number);
+          }
+        });
+        state.syncing = false; setSyncBtn(); renderResultsTable(); updateStats();
+      }, stallMs);
+    };
     fetch("/api/worktable/exec-stream", {
       method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ path: scriptPath, args: args, cwd: SCRIPT_DIR || undefined })
+      body: JSON.stringify({ path: scriptPath, args: args, cwd: SCRIPT_DIR || undefined }),
+      signal: ctrl.signal
     }).then(res => {
-      if (!res.ok || !res.body) { appendLog("exec-stream 启动失败：HTTP " + res.status, "ev ev-err"); resolve(); return; }
+      if (!res.ok || !res.body) { clearStall(); appendLog("exec-stream 启动失败：HTTP " + res.status, "ev ev-err"); resolve(); return; }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
+      armStall();
       const pump = () => reader.read().then(({value, done}) => {
-        if (done) { if (buf) handlePlain(buf); resolve(); return; }
+        armStall();
+        if (done) { clearStall(); if (buf) handlePlain(buf); resolve(); return; }
         buf += dec.decode(value, {stream:true});
         let nl;
         while ((nl = buf.indexOf("\n")) >= 0) {
@@ -452,9 +502,17 @@ async function runSyncStream(scriptPath, args){
           processStreamLine(line);
         }
         pump();
+      }).catch(e => {
+        clearStall();
+        if (e && e.name === "AbortError") { resolve(); return; }
+        appendLog("请求失败：" + e, "ev ev-err"); resolve();
       });
       pump();
-    }).catch(e => { appendLog("请求失败：" + e, "ev ev-err"); resolve(); });
+    }).catch(e => {
+      clearStall();
+      if (e && e.name === "AbortError") { resolve(); return; }
+      appendLog("请求失败：" + e, "ev ev-err"); resolve();
+    });
   });
 }
 
@@ -496,6 +554,18 @@ function renderPlainLine(line){
 }
 function esc(s){ return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
+// 失败归因：按 reason 文本归类，供日志/结果表着色展示
+function classifyReason(reason){
+  const r = String(reason || "");
+  if (/停滞|超时|timeout|timed[\s\-]?out|抓取源.*失败|网络错误|Could not resolve|Connection.*(refused|reset|timed)|unreachable|名称解析|dial tcp|i\/o timeout|Name or service not known/i.test(r)) return {cat:"net", label:"网络/抓取"};
+  if (/克隆.*失败|clone.*(fail|error)|克隆目标仓失败/i.test(r)) return {cat:"clone", label:"克隆失败"};
+  if (/cherry-pick|冲突|conflict/i.test(r)) return {cat:"conflict", label:"cherry-pick冲突"};
+  if (/push.*失败|push.*(fail|error|reject)|建.*PR.*失败|create.*pr.*(fail|error)/i.test(r)) return {cat:"push", label:"push/建PR失败"};
+  if (/空范围|跳过|dry-run|skipped/i.test(r)) return {cat:"ok", label:"跳过"};
+  if (/成功|完成|^ok$/i.test(r)) return {cat:"ok", label:"成功"};
+  return {cat:"other", label:"其它"};
+}
+
 function handleEvent(ev){
   switch (ev.event) {
     case "start": appendLog("▶ 开始同步：目标 " + esc(ev.target) + " 基分支 " + esc(ev.base||"") + "，共 " + ev.count + " 个 PR" + (ev.dryRun?"（试运行）":""), "ev"); break;
@@ -508,10 +578,12 @@ function handleEvent(ev){
     case "pr_done": {
       const side = sourceSide();
       const key = prKey(side, ev.number);
-      state.results[key] = { ok: ev.ok, url: ev.url || null, reason: ev.reason || (ev.ok?"成功":"失败"), branch: ev.branch, targetNumber: ev.targetNumber };
+      const cinfo = classifyReason(ev.reason || (ev.ok ? "成功" : "失败"));
+      state.results[key] = { ok: ev.ok, url: ev.url || null, reason: ev.reason || (ev.ok?"成功":"失败"), branch: ev.branch, targetNumber: ev.targetNumber, cat: cinfo.cat, catLabel: cinfo.label };
       renderPrRowStatus(side, ev.number);
       const cls = ev.ok ? "ev ev-ok" : "ev ev-err";
-      appendLog(ev.ok ? "✓ PR #" + ev.number + " " + (ev.reason||"完成") + (ev.url?" → "+link(ev.url):"") : "✗ PR #" + ev.number + " 失败：" + esc(ev.reason||""), cls);
+      const badge = ev.ok ? "" : '<span class="ct-cat ' + cinfo.cat + '">' + esc(cinfo.label) + "</span> ";
+      appendLog((ev.ok ? "✓ PR #" : "✗ PR #") + ev.number + " " + badge + esc(ev.reason || (ev.ok ? "完成" : "失败")) + (ev.url ? " → " + link(ev.url) : ""), cls);
       updateStats(); renderResultsTable();
       break;
     }
@@ -625,7 +697,7 @@ function renderPrList(){
     row.dataset.num = pr.number;
     const res = state.results[key];
     let statusHtml = "";
-    if (res) statusHtml = '<span class="ct-prstatus ' + (res.ok?"ok":"fail") + '">' + (res.ok?"已同步":"失败") + "</span>";
+    if (res) statusHtml = '<span class="ct-prstatus ' + (res.ok?"ok":(res.cat==="net"?"net":"fail")) + '">' + (res.ok?"已同步":(res.catLabel||"失败")) + "</span>";
     else if (pr.draft) statusHtml = '<span class="dshell-badge dshell-badgeWait">草稿</span>';
     row.innerHTML =
       '<input type="checkbox" ' + (sel?"checked":"") + ' />' +
@@ -659,7 +731,7 @@ function renderPrRowStatus(side, num){
   const res = state.results[key];
   const meta = row.querySelector(".ct-prmeta");
   let s = meta.querySelector(".ct-prstatus"); if (s) s.remove();
-  if (res) { const b=document.createElement("span"); b.className="ct-prstatus "+(res.ok?"ok":"fail"); b.textContent = res.ok?"已同步":"失败"; meta.appendChild(b); }
+  if (res) { const b=document.createElement("span"); b.className="ct-prstatus "+(res.ok?"ok":(res.cat==="net"?"net":"fail")); b.textContent = res.ok?"已同步":(res.catLabel||"失败"); meta.appendChild(b); }
 }
 
 function renderResultsTable(){
@@ -673,7 +745,9 @@ function renderResultsTable(){
     const num = key.split(":")[1];
     const pr = (state.repos[side].prs.find(p=>String(p.number)===String(num)) || {});
     const tr = document.createElement("tr");
-    const st = r.ok ? '<span class="dshell-badge dshell-badgeDone">成功</span>' : '<span class="dshell-badge" style="color:#f85149;border-color:#f85149">失败</span>';
+    const st = r.ok
+      ? '<span class="dshell-badge dshell-badgeDone">成功</span>'
+      : '<span class="ct-cat ' + (r.cat||"other") + '">' + esc(r.catLabel||"失败") + '</span>';
     tr.innerHTML = '<td>#' + esc(num) + '</td><td>' + esc(pr.title||"") + '</td><td>' + (r.url?link(r.url):'<span class="dshell-muted">—</span>') + '</td><td>' + st + (r.reason && !r.ok?'<div class="dshell-muted">'+esc(r.reason)+'</div>':'') + '</td>';
     tb.appendChild(tr);
   }
@@ -956,6 +1030,8 @@ async function doSync(){
   if (!sel.length) { switchTab("log"); appendLog("未选中任何 PR。", "ev ev-err"); return; }
   const base = $("#baseBranch").value || (tgt.info && tgt.info.default_branch) || "";
   if (!base) { switchTab("log"); appendLog("请先在「同步到分支」选择或输入目标分支。", "ev ev-err"); return; }
+  // 同步前自检：源仓未连接则先静默测试（校验平台 API 连通性与令牌有效性）
+  if (!src.info) { appendLog("… 同步前自检：连接源仓 " + esc(src.repo || "") + " …", "ev"); await testConn(sourceSide(), true); }
   const dry = $("#dryRun").checked;
   const P = paths();
   const srv = state.execLoc !== "local" ? state.servers.find(s => s.id === state.execLoc) : null;
@@ -967,6 +1043,9 @@ async function doSync(){
     branchPrefix: state.set.prefix || "sync",
     dryRun: dry, keepClone: true, prs: sel,
   };
+  // 代理（经 spec 传给 pr-sync.py；需服务端读取 spec.proxy 生效）
+  const px = state.set.proxy || {};
+  if (px.http || px.https) spec.proxy = { http: px.http || "", https: px.https || "" };
   if (srv) spec.remote = { name: srv.name, host: srv.host, port: srv.port, user: srv.user, dir: srv.dir, auth: srv.auth || "password", password: srv.password || "", keyPath: srv.keyPath || "", keyPass: srv.keyPass || "", keyContent: srv.keyContent || "" };
   // 写 spec 文件
   try {
@@ -978,7 +1057,7 @@ async function doSync(){
   clearLog(); renderPrList(); switchTab("log");
   const scriptPath = srv ? P.remote : P.sync;
   appendLog("▶ 同步 " + sel.length + " 个 PR：" + esc(src.repo||("仓"+sourceSide())) + " → " + esc(tgt.repo||("仓"+targetSide())) + "（目标分支 " + esc(base) + "，" + (dry?"试运行":"将 push + 建 PR") + "）" + (srv ? " · 远程执行：" + esc(srv.name||srv.host) + "（" + esc(srv.user) + "@" + esc(srv.host) + ":" + esc(srv.port) + "）" : " · 本地执行"), "ev");
-  await runSyncStream(scriptPath, [P.spec]);
+  await runSyncStream(scriptPath, [P.spec], state.set.stallSec);
   renderResultsTable();
 }
 
@@ -995,6 +1074,9 @@ function init(){
   $("#setDir").value = SCRIPT_DIR;
   $("#dirDetect").textContent = SCRIPT_DIR ? ("已检测：" + SCRIPT_DIR) : "未能自动检测，请手动粘贴项目文件夹绝对路径";
   $("#setPrefix").value = state.set.prefix; $("#setPer").value = state.set.per; $("#setState").value = state.set.prState;
+  $("#setProxyHttp").value = (state.set.proxy && state.set.proxy.http) || "";
+  $("#setProxyHttps").value = (state.set.proxy && state.set.proxy.https) || "";
+  $("#setStall").value = state.set.stallSec || 90;
   for (const s of ["A","B"]) { bindRepo(s); fillRepoForm(s); $("#repo"+s).querySelector('[data-prop="repo"]').placeholder = repoPlaceholder(state.repos[s].platform); }
   setDirection(state.direction || "AB");
   $$(".dshell-tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.tab)));
@@ -1022,6 +1104,8 @@ function init(){
     state.set.prefix = $("#setPrefix").value.trim() || "sync";
     state.set.per = Math.max(1, parseInt($("#setPer").value)||50);
     state.set.prState = $("#setState").value;
+    state.set.proxy = { http: $("#setProxyHttp").value.trim(), https: $("#setProxyHttps").value.trim() };
+    state.set.stallSec = Math.max(0, parseInt($("#setStall").value)||90);
     const nd = $("#setDir").value.trim();
     if (nd && nd !== SCRIPT_DIR) { SCRIPT_DIR = nd; state.set.dir = nd; }
     save();
