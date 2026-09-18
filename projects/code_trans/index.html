@@ -91,8 +91,8 @@
 
     <!-- 统计 -->
     <div class="dshell-grid">
-      <div class="dshell-stat"><div class="dshell-statLabel">仓A 开放 PR</div><div class="dshell-statValue" id="statA">—</div></div>
-      <div class="dshell-stat"><div class="dshell-statLabel">仓B 开放 PR</div><div class="dshell-statValue" id="statB">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">仓A PR</div><div class="dshell-statValue" id="statA">—</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">仓B PR</div><div class="dshell-statValue" id="statB">—</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">已选</div><div class="dshell-statValue" id="statSel">0</div></div>
       <div class="dshell-stat"><div class="dshell-statLabel">本次已同步</div><div class="dshell-statValue" id="statOk">0</div></div>
     </div>
@@ -182,9 +182,9 @@
       <div class="dshell-card">
         <div class="ct-cardhd"><h2 id="srcTitle">源仓 PR（先选择方向并加载 PR）</h2>
           <span class="dshell-muted" id="srcCount"></span></div>
-        <div class="ct-row" id="srcFilterRow" style="margin-bottom:8px;align-items:center">
-          <span class="ct-label">合入分支</span>
-          <div class="ct-chips" id="srcBranchFilter"></div>
+        <div class="ct-row" id="srcFilterRow" style="margin-bottom:8px;align-items:center;flex-wrap:wrap;gap:14px">
+          <div class="ct-row" style="gap:6px"><span class="ct-label">状态</span><div class="ct-chips" id="srcStateFilter"></div></div>
+          <div class="ct-row" style="gap:6px"><span class="ct-label">合入分支</span><div class="ct-chips" id="srcBranchFilter"></div></div>
         </div>
         <div class="ct-pagelist" id="prList"><div class="ct-empty">尚未加载 PR。配置好源仓后点「加载 PR」。</div></div>
       </div>
@@ -223,8 +223,8 @@
         <div class="ct-row" style="gap:16px">
           <div class="ct-field"><span class="ct-label">同步分支前缀</span><input class="dshell-input" id="setPrefix" value="sync" style="max-width:140px" /></div>
           <div class="ct-field"><span class="ct-label">每次抓取 PR 数</span><input class="dshell-input" id="setPer" value="50" style="max-width:90px" /></div>
-          <div class="ct-field"><span class="ct-label">PR 状态</span>
-            <select class="dshell-input" id="setState" style="max-width:120px"><option value="open">open</option><option value="closed">closed</option><option value="all">all</option></select>
+          <div class="ct-field"><span class="ct-label">抓取状态（范围）</span>
+            <select class="dshell-input" id="setState" style="max-width:120px"><option value="all">all</option><option value="open">open</option><option value="closed">closed</option></select>
           </div>
         </div>
         <div class="ct-sep" style="margin:10px 0"></div>
@@ -239,7 +239,8 @@
           <li>令牌仅在本机服务端调用平台 API 时使用，不经过浏览器直连，避免 CORS 与泄露。</li>
           <li>同步机制：克隆目标仓 → 抓取源 PR 提交 → cherry-pick 到 <code>sync/&lt;平台&gt;-&lt;编号&gt;</code> 分支 → push → 调用 API 建 PR/MR。</li>
           <li>冲突会自动中止该 PR 并继续其余；查看日志了解失败原因。</li>
-          <li>「合入分支」筛选按 PR 的目标分支多选过滤源仓 PR 列表（chips 带各分支计数）；「全选」只选中当前筛选结果。</li>
+          <li>「状态」与「合入分支」chips 叠加过滤源仓 PR 列表：状态按 开放 / 已合并 / 全部 单选，合入分支按目标分支多选，各 chip 带分类计数；「全选」仅选中当前筛选结果。</li>
+          <li>设置页「抓取状态」控制向平台请求的 PR 范围（默认 all = 全部状态）；页面 chips 仅在已抓取范围内做显示筛选，切换即时生效。</li>
           <li>「试运行」会执行 cherry-pick 自检但不会 push 也不会建 PR，适合先验证。</li>
         </ul>
       </div>
@@ -274,7 +275,8 @@ function repoPlaceholder(platform){
   if (platform === "codehub") return "实例 host/group/project 或 https://host/...";
   return "owner/repo 或 group/project";
 }
-const LS_KEY = "code_trans_sync_v1";
+const LS_KEY = "code_trans_sync_v2";        // v2: 默认抓取 all，新增「状态」筛选 chips
+const LS_KEY_LEGACY = "code_trans_sync_v1";
 const THEME_KEY = "code_trans_theme";
 function applyTheme(t){
   t = ({auto:1,light:1,dark:1})[t] ? t : "auto";
@@ -316,7 +318,8 @@ const state = {
   results: {}, // key -> {ok, url, reason, branch}
   syncing: false,
   srcBranchFilter: new Set(), // 源 PR 按合入分支多选过滤；空集=全部
-  set: { prefix:"sync", per:50, prState:"open" },
+  srcStateFilter: "all", // 源 PR 按状态过滤：all|open|merged（merged=mergedAt 有值或 state=merged）
+  set: { prefix:"sync", per:50, prState:"all" },
 };
 
 function sourceSide(){ return state.direction === "AB" ? "A" : "B"; }
@@ -336,10 +339,15 @@ function save(){
 }
 function load(){
   try {
-    const d = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+    let raw = localStorage.getItem(LS_KEY);
+    let migrated = false;
+    if (!raw) { raw = localStorage.getItem(LS_KEY_LEGACY); migrated = !!raw; }
+    const d = raw ? JSON.parse(raw) : {};
     if (d.repos) for (const s of ["A","B"]) Object.assign(state.repos[s], d.repos[s] || {});
     if (d.direction) state.direction = d.direction;
     if (d.set) Object.assign(state.set, d.set);
+    // 旧版默认抓 open，新版默认 all；旧值视为非用户显式选择，迁移为 all
+    if (migrated) state.set.prState = "all";
   } catch {}
 }
 
@@ -475,21 +483,43 @@ function updateStats(){
 }
 function fmtTime(s){ try { const d=new Date(s); if(isNaN(d)) return s||""; return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); } catch { return s||""; } }
 
+// 状态判定（跨平台统一）：mergedAt 有值，或 GitLab/Gitee 的 state=merged
+function isMerged(p){ return !!(p && p.mergedAt) || p.state === "merged"; }
+function passState(p){ const f = state.srcStateFilter; if (f === "all") return true; if (f === "open") return p.state === "open"; if (f === "merged") return isMerged(p); return true; }
+function passBranch(p){ const f = state.srcBranchFilter; return !f || !f.size || f.has(p.targetBranch); }
 function visiblePrs(side){
-  const f = state.srcBranchFilter; // Set<string>；空集=全部
+  return state.repos[side].prs.filter(p => passBranch(p) && passState(p));
+}
+function renderStateFilter(side){
+  const box = $("#srcStateFilter");
+  if (!box) return;
   const prs = state.repos[side].prs;
-  if (!f || !f.size) return prs;
-  return prs.filter(p => f.has(p.targetBranch));
+  const base = prs.filter(passBranch); // 在当前「合入分支」筛选下统计各状态
+  const nOpen = base.filter(p => p.state === "open").length;
+  const nMerged = base.filter(isMerged).length;
+  const f = state.srcStateFilter;
+  const mkChip = (label, val, on, cls, title) => {
+    const c = document.createElement("button");
+    c.type = "button"; c.className = "ct-chip" + (cls ? " " + cls : "") + (on ? " on" : "");
+    c.textContent = label; c.title = title;
+    c.addEventListener("click", () => { state.srcStateFilter = val; renderPrList(); updateStats(); setSyncBtn(); });
+    return c;
+  };
+  box.innerHTML = "";
+  box.appendChild(mkChip("全部 (" + base.length + ")", "all", f === "all", "ct-chipAll", "显示全部状态"));
+  box.appendChild(mkChip("开放 (" + nOpen + ")", "open", f === "open", "", "仅显示开放 PR"));
+  box.appendChild(mkChip("已合并 (" + nMerged + ")", "merged", f === "merged", "", "仅显示已合并 PR"));
 }
 function renderBranchFilter(side){
   const box = $("#srcBranchFilter");
   if (!box) return;
   const prs = state.repos[side].prs;
-  // 未加载 PR 时隐藏整个筛选行，避免只剩一个「合入分支」标签
+  // 未加载 PR 时隐藏整个筛选行，避免只剩一个标签
   const row = $("#srcFilterRow");
   if (row) row.style.display = prs.length ? "" : "none";
+  const base = prs.filter(passState); // 在当前「状态」筛选下统计各分支
   const counts = new Map(); // 目标分支 -> PR 数
-  for (const p of prs) {
+  for (const p of base) {
     const b = p.targetBranch;
     if (b) counts.set(b, (counts.get(b) || 0) + 1);
   }
@@ -506,7 +536,7 @@ function renderBranchFilter(side){
     c.textContent = label; c.title = title; c.addEventListener("click", onClick);
     return c;
   };
-  box.appendChild(mkChip("全部 (" + prs.length + ")", allOn, "ct-chipAll", "不按分支过滤", () => { f.clear(); renderPrList(); updateStats(); setSyncBtn(); }));
+  box.appendChild(mkChip("全部 (" + base.length + ")", allOn, "ct-chipAll", "不按分支过滤", () => { f.clear(); renderPrList(); updateStats(); setSyncBtn(); }));
   for (const b of set) {
     box.appendChild(mkChip(b + " (" + counts.get(b) + ")", f.has(b), "", "仅显示合入 " + b + " 的 PR", () => {
       if (f.has(b)) f.delete(b); else f.add(b);
@@ -518,12 +548,13 @@ function renderPrList(){
   const side = sourceSide();
   const repo = state.repos[side];
   const box = $("#prList");
+  renderStateFilter(side);
   renderBranchFilter(side);
   const list = visiblePrs(side);
   $("#srcTitle").textContent = "源仓 PR · " + (repo.repo || ("仓"+side));
   $("#srcCount").textContent = list.length + " / " + repo.prs.length + (repo.info ? " · 默认 " + (repo.info.default_branch||"-") : "");
   if (!repo.prs.length) { box.innerHTML = '<div class="ct-empty">该仓暂无 PR（或尚未加载）。点上方「加载 PR」。</div>'; setSyncBtn(); return; }
-  if (!list.length) { box.innerHTML = '<div class="ct-empty">当前「合入分支」过滤下无 PR，换个分支或选「全部」。</div>'; setSyncBtn(); return; }
+  if (!list.length) { box.innerHTML = '<div class="ct-empty">当前「状态 / 合入分支」筛选下无 PR，换个筛选或选「全部」。</div>'; setSyncBtn(); return; }
   box.innerHTML = "";
   for (const pr of list) {
     const key = prKey(side, pr.number);
@@ -670,7 +701,7 @@ async function loadPrs(side){
     if (arr && arr.error) throw new Error(arr.error);
     r.prs = Array.isArray(arr) ? arr : [];
     setBadge(side, r.info ? "已连接" : "已加载", r.info ? "dshell-badgeDone" : "");
-    if (side === sourceSide()) { state.results = {}; state.srcBranchFilter.clear(); renderPrList(); }
+    if (side === sourceSide()) { state.results = {}; state.srcBranchFilter.clear(); state.srcStateFilter = "all"; renderPrList(); }
     updateStats();
     appendLog("[" + side + "] 加载到 " + r.prs.length + " 个 PR", "ev");
   } catch (e) {
@@ -699,6 +730,7 @@ function setDirection(dir){
   // 选中集与方向无关（按 side+number），但源仓变化后需重新渲染
   state.results = {};
   state.srcBranchFilter.clear();
+  state.srcStateFilter = "all";
   const binp = $("#baseBranch"); if (binp) binp.value = "";
   renderPrList();
   void connectTarget();
