@@ -179,7 +179,7 @@ pull_image() {
 }
 
 export_templates() {
-  local work_dir container_name source_dir
+  local work_dir container_name source_dir probe_output
   work_dir="$(mktemp -d)"
   container_name="op-test-template-$$"
   cleanup() {
@@ -190,24 +190,74 @@ export_templates() {
 
   echo "[pull] execution host: export render templates from $TEMPLATE_IMAGE"
   mkdir -p "$TEMPLATE_DIR"
-  nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
+  nerdctl --namespace k8s.io create --net=none --entrypoint /bin/sh --name "$container_name" \
+    --env OP_TEST_DEPLOY_TEMPLATE_DIR="$DEPLOY_TEMPLATE_DIR" \
+    --env OP_TEST_FALLBACK_DEPLOY_TEMPLATE_DIR="$FALLBACK_DEPLOY_TEMPLATE_DIR" \
+    "$TEMPLATE_IMAGE" -c '
+      set -eu
+      chart=""
+      values=""
+      architecture=""
+      for root in "$OP_TEST_DEPLOY_TEMPLATE_DIR" "$OP_TEST_FALLBACK_DEPLOY_TEMPLATE_DIR"; do
+        if [ -z "$chart" ] && [ -f "$root/xds_template/k8s/xds-cluster/Chart.yaml" ]; then
+          chart="$root/xds_template/k8s/xds-cluster"
+        fi
+        if [ -z "$values" ] && [ -f "$root/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" ]; then
+          values="$root/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml"
+        fi
+        if [ -z "$architecture" ] && [ -f "$root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" ]; then
+          architecture="$root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
+        fi
+      done
+      [ -n "$chart" ] || chart_file="$(find / -xdev -type f -path "*/xds_template/k8s/xds-cluster/Chart.yaml" -print -quit 2>/dev/null)"
+      [ -n "$chart" ] || chart="${chart_file%/Chart.yaml}"
+      [ -n "$values" ] || values="$(find / -xdev -type f -name values-16Node-je-cpp-bnt3.yaml -print -quit 2>/dev/null)"
+      [ -n "$architecture" ] || architecture="$(find / -xdev -type f -name model_arch-lt-je-cpp-bnt3.json -print -quit 2>/dev/null)"
+      if [ -z "$chart" ] || [ -z "$values" ] || [ -z "$architecture" ]; then
+        echo "unable to locate the xds chart, values template, and architecture file in the image" >&2
+        exit 3
+      fi
+      printf "%s\n%s\n%s\n" "$chart" "$values" "$architecture"
+    ' >/dev/null
   copy_template_set() {
     local template_root=$1 output_dir=$2
+    rm -rf "$output_dir"
     mkdir -p "$output_dir"
     nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template/k8s/xds-cluster" "$output_dir/xds-cluster" \
       && nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$output_dir/values-16Node-je-cpp-bnt3.yaml" \
       && nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$output_dir/model_arch-lt-je-cpp-bnt3.json"
   }
+  copy_discovered_template_set() {
+    local output_dir=$1 chart_path=$2 values_path=$3 architecture_path=$4
+    rm -rf "$output_dir"
+    mkdir -p "$output_dir"
+    nerdctl --namespace k8s.io cp "$container_name:$chart_path" "$output_dir/xds-cluster" \
+      && nerdctl --namespace k8s.io cp "$container_name:$values_path" "$output_dir/values-16Node-je-cpp-bnt3.yaml" \
+      && nerdctl --namespace k8s.io cp "$container_name:$architecture_path" "$output_dir/model_arch-lt-je-cpp-bnt3.json"
+  }
   source_dir="$work_dir/deploy-template"
-  if ! copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir"; then
-    [[ "$DEPLOY_TEMPLATE_DIR" != "$FALLBACK_DEPLOY_TEMPLATE_DIR" ]] || {
-      echo "template export failed from $DEPLOY_TEMPLATE_DIR" >&2
+  if copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir" 2>/dev/null; then
+    :
+  elif [[ "$DEPLOY_TEMPLATE_DIR" != "$FALLBACK_DEPLOY_TEMPLATE_DIR" ]] \
+    && copy_template_set "$FALLBACK_DEPLOY_TEMPLATE_DIR" "$source_dir" 2>/dev/null; then
+    echo "[pull] template root $DEPLOY_TEMPLATE_DIR is unavailable; using $FALLBACK_DEPLOY_TEMPLATE_DIR"
+  else
+    echo "[pull] configured template roots are unavailable; discovering template files in the image"
+    if ! probe_output="$(nerdctl --namespace k8s.io start -a "$container_name")"; then
+      echo "template discovery failed in $TEMPLATE_IMAGE" >&2
       return 1
-    }
-    echo "[pull] template root $DEPLOY_TEMPLATE_DIR is unavailable; fallback to $FALLBACK_DEPLOY_TEMPLATE_DIR"
-    source_dir="$work_dir/op-test-template"
-    copy_template_set "$FALLBACK_DEPLOY_TEMPLATE_DIR" "$source_dir" || {
-      echo "template export failed from fallback $FALLBACK_DEPLOY_TEMPLATE_DIR" >&2
+    fi
+    mapfile -t discovered_paths <<<"$probe_output"
+    if [[ "${#discovered_paths[@]}" -ne 3 ]] \
+      || [[ -z "${discovered_paths[0]}" || -z "${discovered_paths[1]}" || -z "${discovered_paths[2]}" ]]; then
+      echo "template discovery returned an invalid result from $TEMPLATE_IMAGE" >&2
+      return 1
+    fi
+    printf '[pull] discovered chart=%s values=%s architecture=%s\n' \
+      "${discovered_paths[0]}" "${discovered_paths[1]}" "${discovered_paths[2]}"
+    copy_discovered_template_set "$source_dir" \
+      "${discovered_paths[0]}" "${discovered_paths[1]}" "${discovered_paths[2]}" || {
+      echo "template export failed from discovered image paths" >&2
       return 1
     }
   fi
