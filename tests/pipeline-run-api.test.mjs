@@ -376,12 +376,29 @@ test('旧流水线没有默认值时回退首个环境、首个代码仓和安�
   assert.equal(run.by, 'api')
 })
 
+test('支持不选择任何节点运行：显式空 environmentIds 或默认环境保存为空列表即无目标节点', async () => {
+  // 显式空 environmentIds = 本次运行不选择任何节点（不再 400）
+  let f = loadRunRoute(stored)
+  let res = await call(f.handler, 'pipe-release', { environmentIds: [] })
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].envs), [])
+  assert.equal(f.executions[0].env, '')
+
+  // 省略 environmentIds 且默认环境显式保存为空列表 = 不选择任何节点，不再改投首项
+  const emptyDefaults = structuredClone(stored)
+  emptyDefaults.config.pipelines[0].defaults.environmentIds = []
+  f = loadRunRoute(emptyDefaults)
+  res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].envs), [])
+  assert.equal(f.executions[0].env, '')
+})
+
 test('API 拒绝未知流水线、环境、代码仓、非法预设和非 POST 方法', async () => {
   const cases = [
     ['missing', {}, 404, 'pipeline not found'],
     ['pipe-release', { environmentIds: ['missing-env'] }, 400, 'environment not found'],
     ['pipe-release', { repositoryId: 'missing-repo' }, 400, 'repository not found'],
-    ['pipe-release', { environmentIds: [] }, 400, 'environmentIds must not be empty'],
     ['pipe-release', { environmentIds: ['env-prod', 7] }, 400, 'invalid environmentIds'],
     ['pipe-release', { repository: [] }, 400, 'invalid repository'],
     ['pipe-release', { repository: { pass: 7 } }, 400, 'invalid repository.pass'],
@@ -1927,6 +1944,46 @@ test('勾选收集普罗数据的任务在终态按其起止注入 collect 动�
   assert.match(collect.extraEnv.METRICS_OUTPUT_DIR, /^\/var\/pipeline-runs\/.+\/测试模型-01-普罗数据$/)
   assert.ok(Date.parse(collect.extraEnv.PROM_START) <= Date.parse(collect.extraEnv.PROM_END))
   assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
+})
+
+test('任务级普罗采集在部署策略解析不出时不注入命名空间残段', async () => {
+  const load = () => loadExecPlan({
+    ...apiExecutionConfig,
+    archiveDir: '/var/pipeline-runs',
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  })
+  const promPlan = () => {
+    const plan = apiExecutionPlan([])
+    plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
+    return plan
+  }
+
+  const noStrategy = load()
+  const noStrategyPlan = promPlan()
+  noStrategyPlan.strategy = ''   // 未选择部署策略（「（不使用）」）
+  await noStrategy.execPlan(noStrategyPlan)
+  const noStrategyCollect = noStrategy.calls.find(call => call.script === 'collect.py')
+  assert.ok(noStrategyCollect)
+  assert.equal(noStrategyCollect.extraEnv.XDS_NAMESPACE, undefined)
+  assert.equal(noStrategyCollect.extraEnv.NAMESPACE, undefined)
+  assert.equal(noStrategyCollect.extraEnv.MODEL_NAME, undefined)   // MODEL_PATH 未产出同样不注入
+
+  const noBy = load()
+  const noByPlan = promPlan()
+  noByPlan.by = ''   // 执行人缺省时服务端按来源兜底（api/schedule），BY 恒可解析，命名空间照常注入
+  await noBy.execPlan(noByPlan)
+  const noByCollect = noBy.calls.find(call => call.script === 'collect.py')
+  assert.ok(noByCollect)
+  assert.equal(noByCollect.extraEnv.XDS_NAMESPACE, 'blue-green-api')
+
+  const ok = load()
+  const okPlan = promPlan()
+  okPlan.vars = { MODEL_PATH: '/models/demo' }
+  await ok.execPlan(okPlan)
+  const okCollect = ok.calls.find(call => call.script === 'collect.py')
+  assert.ok(okCollect)
+  assert.equal(okCollect.extraEnv.XDS_NAMESPACE, 'blue-green-jenkins')
+  assert.equal(okCollect.extraEnv.MODEL_NAME, '/models/demo')
 })
 
 test('普罗采集结果追加到服务端已直写的任务日志并由汇总复用', async () => {

@@ -51,10 +51,10 @@ test('分支与执行人留空时回退 main 与 api，空策略/空预设显式
   });
 });
 
-test('当前未选中环境/代码仓时省略对应字段并给出警告（显式空值会被服务端 400 拒绝）',()=>{
+test('当前未选中环境即显式空数组（不选择任何节点），未选中代码仓时省略该字段并给出警告',()=>{
   const ctx=context({$:form({branchName:'dev'})});
   const spec=ctx.pipelineApiSpec({id:'pl-2'},'https://dsh.example');
-  assert.ok(!('environmentIds' in spec.body),'无有效环境时应省略 environmentIds，由服务端回退默认配置');
+  assert.deepEqual(J(spec.body.environmentIds),[],'未选中环境时 environmentIds 为显式空数组（无目标节点运行）');
   assert.ok(!('repositoryId' in spec.body),'无有效代码仓时应省略 repositoryId，由服务端回退默认配置');
   assert.match(spec.warning,/目标环境/);
   assert.match(spec.warning,/代码仓/);

@@ -76,6 +76,7 @@ HEALTH_FAIL=0
 DEFAULT_WHITELIST_NS=(
     default kube-flannel kube-system 'ems*' lws-system
     volcano-monitoring volcano-system gpu-operator nvidia-gpu-operator monitoring
+    xds-kuberay-op
 )
 
 log() {
@@ -562,6 +563,89 @@ do_kill() {
     log "  SIGTERM 无效, SIGKILL"; kill -9 "$pid" 2>/dev/null
 }
 
+process_parent_pid() {
+    ps -o ppid= -p "$1" 2>/dev/null | awk '{print $1}'
+}
+
+process_group_id() {
+    ps -o pgid= -p "$1" 2>/dev/null | awk '{print $1}'
+}
+
+process_group_alive() {
+    local pgid=$1
+    ps -eo pgid=,stat= 2>/dev/null | awk -v target="$pgid" '
+        $1 == target && $2 !~ /^Z/ { found=1; exit }
+        END { exit !found }
+    '
+}
+
+process_chain_label() {
+    local pid=$1 comm='unknown' arg0='' arg1=''
+    [[ -r "/proc/$pid/comm" ]] && read -r comm < "/proc/$pid/comm"
+    if [[ -r "/proc/$pid/cmdline" ]]; then
+        {
+            IFS= read -r -d '' arg0 || true
+            IFS= read -r -d '' arg1 || true
+        } < "/proc/$pid/cmdline"
+    fi
+    if [[ "$arg1" == /* && "$arg1" == *.sh ]]; then
+        printf '%s[%s %s]' "$pid" "$comm" "$arg1"
+    elif [[ -n "$arg0" && "${arg0##*/}" != "$comm" ]]; then
+        printf '%s[%s %s]' "$pid" "$comm" "$arg0"
+    else
+        printf '%s[%s]' "$pid" "$comm"
+    fi
+}
+
+build_host_process_chain() {
+    local pid=$1 current=$1 parent parent_pgid label hops=0
+    HOST_CHAIN_PGID=$(process_group_id "$pid" || true)
+    HOST_CHAIN_ROOT=$pid
+    HOST_CHAIN_TEXT=''
+    [[ "$HOST_CHAIN_PGID" =~ ^[1-9][0-9]*$ ]] || return 1
+    while [[ "$current" =~ ^[1-9][0-9]*$ ]] && (( current > 1 && hops < 64 )); do
+        label=$(process_chain_label "$current")
+        [[ -n "$HOST_CHAIN_TEXT" ]] && HOST_CHAIN_TEXT+=" <- "
+        HOST_CHAIN_TEXT+="$label"
+        HOST_CHAIN_ROOT=$current
+        parent=$(process_parent_pid "$current" || true)
+        [[ "$parent" =~ ^[1-9][0-9]*$ ]] || break
+        (( parent > 1 )) || break
+        parent_pgid=$(process_group_id "$parent" || true)
+        [[ "$parent_pgid" == "$HOST_CHAIN_PGID" ]] || break
+        current=$parent
+        ((hops += 1))
+    done
+}
+
+do_kill_host_chain() {
+    local pid=$1 own_pgid i
+    if ! build_host_process_chain "$pid"; then
+        log "  无法解析宿主进程链，回退终止 PID $pid"
+        do_kill "$pid"
+        return
+    fi
+    log "  宿主进程链: $HOST_CHAIN_TEXT"
+    own_pgid=$(process_group_id "$$" || true)
+    if [[ "$HOST_CHAIN_PGID" == "$own_pgid" || "$HOST_CHAIN_PGID" -le 1 ]]; then
+        log "  进程组 PGID=$HOST_CHAIN_PGID 与清理脚本相同或不安全，回退终止 PID $pid"
+        do_kill "$pid"
+        return
+    fi
+    log "  -> 终止宿主启动链根 PID=$HOST_CHAIN_ROOT，进程组 PGID=$HOST_CHAIN_PGID"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "  [DRY_RUN] kill -TERM -- -$HOST_CHAIN_PGID"
+        return
+    fi
+    kill -TERM -- "-$HOST_CHAIN_PGID" 2>/dev/null || true
+    for i in 1 2 3; do
+        process_group_alive "$HOST_CHAIN_PGID" || return 0
+        sleep 1
+    done
+    log "  进程组 SIGTERM 无效, SIGKILL PGID=$HOST_CHAIN_PGID"
+    kill -KILL -- "-$HOST_CHAIN_PGID" 2>/dev/null || true
+}
+
 handle_k8s_pod_gpu() {
     local ns=$1 pod=$2 owner_ref owner_kind owner_name
     owner_ref=$(get_top_owner "$ns" pod "$pod"); owner_kind=${owner_ref%%/*}; owner_name=${owner_ref#*/}
@@ -601,7 +685,7 @@ kill_pid() {
     [[ -r /proc/$pid/comm ]] && comm=$(cat /proc/$pid/comm)
     cid=$(get_container_id "$pid" || true)
     if [[ -n "${cid:-}" ]]; then log "PID $pid ($comm) -> 容器 ${cid:0:12}"; handle_container_gpu "$cid" "$pid"
-    else log "PID $pid ($comm) -> 宿主进程"; do_kill "$pid"; fi
+    else log "PID $pid ($comm) -> 宿主进程"; do_kill_host_chain "$pid"; fi
 }
 
 step_kill_gpu() {
@@ -687,18 +771,20 @@ do_standardize() {
 remote_scp() {
     if [[ -n "$SSH_PASSWORD" ]]; then
         have sshpass || die "SSH_PASSWORD 已设置但未找到 sshpass"
-        SSHPASS="$SSH_PASSWORD" sshpass -e scp "$@"
+        SSHPASS="$SSH_PASSWORD" sshpass -e scp \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     else
-        scp "$@"
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     fi
 }
 
 remote_ssh() {
     if [[ -n "$SSH_PASSWORD" ]]; then
         have sshpass || die "SSH_PASSWORD 已设置但未找到 sshpass"
-        SSHPASS="$SSH_PASSWORD" sshpass -e ssh "$@"
+        SSHPASS="$SSH_PASSWORD" sshpass -e ssh \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     else
-        ssh "$@"
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"
     fi
 }
 

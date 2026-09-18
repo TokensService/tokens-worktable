@@ -69,6 +69,16 @@ test('历史重跑不沿用记录作者：执行人由 runPipeline 取当前输�
   assert.ok(!('by' in calls.opts[0]),'重跑不得把历史记录作者作为执行人传给 runPipeline（应取当前输入框值）');
   assert.match(calls.tips[0],/已提交服务端重跑 #46/);
 
+  calls.tips.length=0;
+  ctx.runPipeline=()=>'queued'; ctx.queue.push({id:'q1'});
+  ctx.rerunFromHistory({no:47, pipeline:'K8s 应用安装', branch:'main', strategy:'', env:''});
+  assert.deepEqual(calls.tips,['已加入本地队列（第 1 位）']);
+
+  calls.tips.length=0;
+  ctx.runPipeline=()=>false;
+  ctx.rerunFromHistory({no:48, pipeline:'K8s 应用安装', branch:'main', strategy:'', env:''});
+  assert.match(calls.alerts.at(-1),/本地队列已满/);
+
   /* 执行人必填被 runPipeline 拦截（返回 no-by）时，不再叠加「已开始重跑」误导提示 */
   calls.opts.length=0; calls.tips.length=0;
   ctx.runPipeline=()=>'no-by';

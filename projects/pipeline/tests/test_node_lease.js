@@ -90,6 +90,40 @@ test('startRun：节点被他端占用时不开跑，回队等待并标注占用
   assert.ok(calls.render >= 1, '回队后重绘队列区');
 });
 
+test('runPipeline：租约被拒回队时与在途容量预留合计不超过 16 项', async () => {
+  let resolveLease;
+  const leaseResult = new Promise(resolve => { resolveLease = resolve; });
+  const { context } = makeStartRunContext(leaseResult);
+  const pipeline = { id: 'p-local', name: '本地流水线', stages: [{ id: 's1', name: '构建', sched: null }] };
+  Object.assign(context, {
+    MAX_ACTIVE_RUNS: 4, QUEUE_CAP: 16, activeRuns: [],
+    findPipeline: id => id === pipeline.id ? pipeline : null,
+    curPipeline: () => pipeline, curPipelineId: pipeline.id,
+    resolvePipelineRunOptions: (pl, opts) => opts,
+    pipelineDefaultRunIssue: () => '',
+    conflictsActive: undefined, machineConflict: undefined,
+    submitServerRun: () => { throw new Error('本地阶段不得提交服务端'); },
+  });
+  vm.runInContext(extractFn('function machineConflict(a,b){'), context);
+  vm.runInContext(extractFn('function conflictsActive(item){'), context);
+  vm.runInContext(extractFn('function runPipeline(opts){'), context);
+
+  assert.equal(context.runPipeline({ pipelineId: pipeline.id, envs: [{ ip: '10.0.0.1' }], by: 'first' }), true);
+  assert.equal(context.pendingLeaseStarts.length, 1);
+  context.activeRuns.push({ id: 'r1' }, { id: 'r2' }, { id: 'r3' });
+  const results = Array.from({ length: 16 }, (_, i) => context.runPipeline({
+    pipelineId: pipeline.id, envs: [{ ip: '10.0.1.' + i }], by: 'queued-' + i,
+  }));
+  assert.equal(results.filter(result => result === 'queued').length, 15);
+  assert.equal(results.at(-1), false, '第 16 个新排队请求为租约在途项预留回队名额');
+
+  resolveLease({ ok: false, conflicts: [{ ip: '10.0.0.1', by: 'other' }] });
+  await flush();
+  assert.equal(context.pendingLeaseStarts.length, 0);
+  assert.equal(context.queue.length, 16, '租约拒绝项回队后仍不超过本地队列上限');
+  assert.equal(context.queue[0].by, 'first', '先前已接受的租约申请失败后保留任务并回到队首');
+});
+
 test('startRun：租约服务不可达（旧插件无此路由）时降级直接开跑', async () => {
   const { context, calls } = makeStartRunContext(new Error('node lease http 404'));
   context.startRun({ id: 'q1', envs: [{ ip: '10.0.0.1' }], by: 'alice', stages: [] });
@@ -132,7 +166,7 @@ function makeDrainContext() {
   const calls = { start: [] };
   const context = {
     DEFAULT_IMAGE: 'img', GITURL: 'g', MAX_ACTIVE_RUNS: 4, QUEUE_CAP: 16,
-    activeRuns: [], queue: [],
+    activeRuns: [], queue: [], pendingLeaseStarts: [],
     findPipeline: id => ({ id, name: 'PL-' + id, stages: [] }),
     curPipelineId: 'p1',
     curPipeline: () => ({ id: 'p1', name: 'PL-p1', stages: [] }),
@@ -151,7 +185,10 @@ function makeDrainContext() {
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extract('function runPipeline(opts){', 'function cancelQueue'), context);
+  vm.runInContext(extractFn('function runIps(x){'), context);
+  vm.runInContext(extractFn('function machineConflict(a,b){'), context);
+  vm.runInContext(extractFn('function conflictsActive(item){'), context);
+  vm.runInContext(extractFn('function drainQueue(){'), context);
   return { context, calls };
 }
 
@@ -180,6 +217,20 @@ test('drainQueue：同机后来任务不越过等待节点中的前者（同机 
   context.drainQueue();
   assert.deepEqual(calls.start.map(i => i.id), [], '同机后来者保持排队');
   assert.equal(context.queue.length, 2);
+});
+
+test('drainQueue：租约申请在途占满 4 个槽位后不再启动后续异机任务', () => {
+  const { context, calls } = makeDrainContext();
+  context.startRun = item => {
+    calls.start.push(item);
+    context.pendingLeaseStarts.push({ envs: item.envs, queueItem: item });
+    return true;
+  };
+  ['A', 'B', 'C', 'D', 'E'].forEach(ip => context.queue.push({ id: 'q' + ip, envs: [{ ip }], stages: [] }));
+  context.drainQueue();
+  assert.deepEqual(calls.start.map(item => item.id), ['qA', 'qB', 'qC', 'qD']);
+  assert.equal(context.pendingLeaseStarts.length, 4, '四个异步租约申请各占一个浏览器执行槽位');
+  assert.deepEqual(context.queue.map(item => item.id), ['qE'], '第五个任务留在队列等待槽位');
 });
 
 /* ---------- finish：释放租约 ---------- */

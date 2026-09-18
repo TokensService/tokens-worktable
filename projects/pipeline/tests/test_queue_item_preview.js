@@ -921,14 +921,17 @@ test('startRun：队列项启动时把原队列 id 传给运行上下文', () =>
 });
 
 /* ---------- 异机并行调度（runPipeline / machineConflict / drainQueue 真实实现） ---------- */
-function makeScheduleContext() {
+function makeScheduleContext(stages = [
+  { id: '__cleanup__', name: '环境清理', preset: true, pkey: 'cleanup' },
+  { id: 's1', name: '构建', sched: {} },
+]) {
   const calls = { start: [], submit: [], alerts: [] };
   const context = {
     DEFAULT_IMAGE: 'myapp', GITURL: 'g', MAX_ACTIVE_RUNS: 4, QUEUE_CAP: 16,
     activeRuns: [], queue: [],
-    findPipeline: id => ({ id, name: 'PL-' + id, stages: [{ id: 's1', name: '构建' }] }),
+    findPipeline: id => ({ id, name: 'PL-' + id, stages }),
     curPipelineId: 'p1',
-    curPipeline: () => ({ id: 'p1', name: 'PL-p1', stages: [{ id: 's1', name: '构建' }] }),
+    curPipeline: () => ({ id: 'p1', name: 'PL-p1', stages }),
     resolvePipelineRunOptions: (pl, opts) => opts,
     pipelineDefaultRunIssue: () => null,
     $: id => ({ value: '' }),
@@ -960,7 +963,7 @@ test('machineConflict：目标 IP 相交即冲突；任一方无目标 IP 按冲
   assert.equal(context.machineConflict({}, {}), true);
 });
 
-test('runPipeline：浏览器不再本地调度，所有手动运行都提交服务端权威队列', () => {
+test('runPipeline：全部阶段支持服务端执行时提交服务端权威队列', () => {
   const { context, calls } = makeScheduleContext();
   assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'a' }), 'submitted');
   assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'B' }], by: 'b' }), 'submitted');
@@ -969,6 +972,27 @@ test('runPipeline：浏览器不再本地调度，所有手动运行都提交服
   assert.deepEqual(calls.submit.map(item => item.by), ['a', 'b', 'c']);
   assert.equal(calls.start.length, 0, '浏览器执行器不得启动');
   assert.equal(context.queue.length, 0);
+});
+
+test('runPipeline：勾选“需本地运行”的阶段由浏览器执行，冲突任务进入本地队列', () => {
+  const stages = [{ id: 's1', name: '构建镜像', kind: 'http', sched: null }];
+  const { context, calls } = makeScheduleContext(stages);
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'a' }), true);
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'B' }], by: 'b' }), true);
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'c' }), 'queued');
+  assert.deepEqual(calls.start.map(item => item.by), ['a', 'b']);
+  assert.equal(calls.submit.length, 0, '本地阶段不得交给服务端 fetch');
+  assert.deepEqual(context.queue.map(item => item.by), ['c']);
+});
+
+test('runPipeline：本地阶段队列已满时拒绝新任务，不误提交服务端', () => {
+  const { context, calls } = makeScheduleContext([{ id: 's1', name: '环境清理', kind: 'shell', sched: null }]);
+  context.activeRuns.push({ envs: [{ ip: 'A' }] });
+  for (let i = 0; i < 16; i++) context.queue.push({ id: 'q' + i, envs: [{ ip: 'A' }] });
+  assert.equal(context.runPipeline({ pipelineId: 'p1', envs: [{ ip: 'A' }], by: 'f' }), false);
+  assert.equal(calls.start.length, 0);
+  assert.equal(calls.submit.length, 0);
+  assert.equal(context.queue.length, 16);
 });
 
 test('drainQueue：不同机器的排队任务可越过同机等待者启动，同机保持先进先出', () => {

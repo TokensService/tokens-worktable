@@ -1147,8 +1147,11 @@ function buildServerTaskPromEnv(runCtx: any, config: any, varsPool: Record<strin
     VLLM_METRICS_END: String(Math.floor(endMs / 1000)),
     PROMETHEUS_URL: String(config && config.prom && config.prom.url ? config.prom.url : '').trim(),
   }
-  const model = substituteServerRunVars('${MODEL_PATH}', vars).trim()
-  const namespace = substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim()
+  /* 解析不出则不注入：替换后仍残留未解析 ${...} 占位（未选部署策略、无执行人等）按空值处理，
+     否则未选策略时会把字面 ${DEPLOY_STRATEGY}-<执行人> 残段注入采集脚本（与页面 substPromTemplate 一致） */
+  const resolved = (text: string) => (text.indexOf('${') >= 0 ? '' : text)
+  const model = resolved(substituteServerRunVars('${MODEL_PATH}', vars).trim())
+  const namespace = resolved(substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim())
   if (model) { env.ARCH_NAME = model; env.MODEL_NAME = model }
   if (namespace) { env.NAMESPACE = namespace; env.XDS_NAMESPACE = namespace }
   if (runCtx.archive) env.ARCHIVE_FOLDER = String(runCtx.archive)
@@ -1176,15 +1179,17 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
     return { status: 409, error: 'invalid configured environmentIds' }
   }
   const requestedEnvironmentIds = explicitEnvironments ? stringList(input.environmentIds) : defaults.environmentIds
-  if (explicitEnvironments && !requestedEnvironmentIds.length) return { status: 400, error: 'environmentIds must not be empty' }
   let selectedEnvironments: any[] = []
   if (requestedEnvironmentIds.length) {
     selectedEnvironments = requestedEnvironmentIds.map((id) => environments.find((item: any) => item.id === id))
     if (selectedEnvironments.some((item) => !item)) {
       return { status: explicitEnvironments ? 400 : 409, error: explicitEnvironments ? 'environment not found' : 'configured environment not found' }
     }
-  } else if (environments.length) selectedEnvironments = [environments[0]]   // 仅旧流水线未配置默认环境时兼容首项
-  if (!selectedEnvironments.length) return { status: 400, error: 'environment not found' }
+  } else if (!explicitEnvironments && !own(rawDefaults, 'environmentIds') && environments.length) {
+    selectedEnvironments = [environments[0]]   // 仅旧流水线从未保存过默认环境字段时兼容首项
+  }
+  /* 允许不选择任何节点：显式空 environmentIds 或默认环境保存为空列表即无目标节点运行
+     （无节点互斥约束，执行池按纯 FIFO，注入的 TARGET_ 系列变量为空值）。 */
 
   const repositories = Array.isArray(config.repositories) ? config.repositories.filter((item: any) => item && typeof item.id === 'string') : []
   const explicitRepository = own(input, 'repositoryId')

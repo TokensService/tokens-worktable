@@ -39,7 +39,7 @@ test('默认运行参数归一化并过滤重复、空值和未知预设',()=>{
   });
 });
 
-test('列表直接运行采用有效默认值；仅旧流水线缺省时回退首项',()=>{
+test('任务列表运行弹窗采用有效默认值；仅旧流水线缺省时回退首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',name:'仓库 B',url:'b.git'}],
@@ -57,7 +57,7 @@ test('列表直接运行采用有效默认值；仅旧流水线缺省时回退�
   });
 });
 
-test('列表运行检测失效的默认环境和代码仓，不静默改投首项',()=>{
+test('任务列表运行弹窗检测失效的默认环境和代码仓，不静默改投首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',url:'b.git'}],
@@ -84,7 +84,7 @@ test('显式运行参数可以逐项覆盖流水线默认值，包括空策略�
 
 test('runPipeline 把列表运行的默认参数提交到服务端，不启动浏览器执行器',()=>{
   let submitted=null;
-  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署'}],defaults:{
+  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署',sched:{}}],defaults:{
     environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],
   }};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
@@ -133,6 +133,22 @@ test('submitServerRun 用 keepalive 提交脱敏运行参数并立即刷新权�
   });
   assert.equal(requests[0].options.body.includes('secret'),false,'节点/代码仓凭据与阶段配置不得由页面重复上传');
   assert.equal(pulls,1);
+});
+
+test('submitServerRun 未选择任何节点时上送显式空环境数组，不回退流水线默认环境',async()=>{
+  const requests=[];
+  const ctx={
+    fetch:async(url,options)=>{ requests.push({url,options}); return {ok:true,status:202,json:async()=>({ok:true,runId:'manual-2'})}; },
+    pullRemoteQueue:async()=>{},alert:()=>{},console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('submitServerRun'),ctx);
+  await ctx.submitServerRun({
+    pipelineId:'pipe-b',envs:[],repoId:'repo-b',branch:'release',strategy:'',presets:[],image:'app',by:'operator',stages:[],
+  });
+  const body=JSON.parse(requests[0].options.body);
+  assert.ok('environmentIds' in body,'空选择也必须显式携带 environmentIds（省略=回退流水线默认环境）');
+  assert.deepEqual(body.environmentIds,[],'显式空数组 = 不选择任何节点（无目标节点运行）');
 });
 
 test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',()=>{
@@ -195,6 +211,27 @@ test('页面已有本地旧运行时，新运行仍交给服务端统一调度',
   assert.equal(ctx.runPipeline({pipelineId:'pipe-b',presets:[]}),'submitted');
   assert.equal(submitted.pipelineId,'pipe-b');
   assert.equal(ctx.queue.length,0);
+});
+
+test('本地运行的租约申请在途时预留队列容量，避免租约拒绝回队后超过上限',()=>{
+  const pipeline={id:'pipe-local',name:'本地发布',stages:[{id:'build',name:'构建镜像',kind:'http',sched:null}]};
+  const env={id:'env-new',ip:'10.0.0.99'};
+  const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
+  const ctx=loadDefaults({Date,Math,environments:[env],repositories:[{id:'repo-a',name:'仓库 A',url:'a.git'}]});
+  Object.assign(ctx,{
+    DEFAULT_IMAGE:'app',QUEUE_CAP:16,MAX_ACTIVE_RUNS:4,
+    queue:Array.from({length:15},(_,i)=>({id:'q'+i,envs:[{ip:'10.0.1.'+i}]})),
+    activeRuns:Array.from({length:3},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.2.'+i}]})),
+    pendingLeaseStarts:[{envs:[{ip:'10.0.3.1'}],queueItem:{id:'pending'}}],
+    $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},
+    startRun:()=>{throw new Error('浏览器执行槽位已满，不应直接启动');},
+    submitServerRun:()=>{throw new Error('本地阶段不得提交服务端');},
+  });
+  vm.runInContext(extractFunction('runPipeline'),ctx);
+  assert.equal(ctx.runPipeline({pipelineId:pipeline.id,presets:[]}),false);
+  assert.equal(ctx.queue.length,15,'在途任务已占用第 16 个本地队列名额');
 });
 
 test('队列排空在达到 4 个全局槽位后停止，释放槽位后继续启动',()=>{
