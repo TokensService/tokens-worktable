@@ -4,7 +4,7 @@ const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
 
 function extractFunction(name){
-  const match=new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
+  const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
   assert.ok(match,`pipeline.html 缺少函数 ${name}`);
   const bodyStart=source.indexOf('{',match.index);let depth=0;
   for(let i=bodyStart;i<source.length;i+=1){
@@ -15,8 +15,8 @@ function extractFunction(name){
 }
 
 /* openPlForm 的依赖较多，这里按职责打桩：只关心只读标志、标题、草稿恢复与只读应用 */
-function loadOpenPlForm({pipeline,draft}){
-  const calls={applyRO:0,renderEditor:0,renderDefaults:0,focus:0};
+function loadOpenPlForm({pipeline,draft,stateLoaded=true}){
+  const calls={applyRO:0,renderEditor:0,renderDefaults:0,focus:0,alerts:[]};
   const els={
     plForm:{style:{},dataset:{}},
     plFormTitle:{textContent:''},
@@ -25,6 +25,8 @@ function loadOpenPlForm({pipeline,draft}){
   };
   const ctx={
     Object,Array,Promise,String,
+    stateLoaded,
+    alert:message=>calls.alerts.push(String(message)),
     editFocusIdx:-1,editSelStage:null,editStages:[],editDefaults:null,plFormReadOnly:false,
     scriptsDir:'/srv/scripts',
     $:id=>els[id]||null,
@@ -52,6 +54,13 @@ function loadOpenPlForm({pipeline,draft}){
 
 const BUILTIN={id:'pl-xds',name:'安装部署XDS',builtIn:true,defaults:{branch:'main'},stages:[{id:'s1',name:'检出'},{id:'s2',name:'构建镜像'}]};
 const CUSTOM={id:'pl-a',name:'我的流水线',defaults:{branch:'main'},stages:[{id:'s1',name:'部署'}]};
+
+test('服务端初始配置尚未加载时不打开编辑器，避免按本地旧缓存保存覆盖远端',()=>{
+  const {ctx,els,calls}=loadOpenPlForm({pipeline:CUSTOM,stateLoaded:false});
+  ctx.openPlForm('pl-a');
+  assert.notEqual(els.plForm.style.display,'flex');
+  assert.match(calls.alerts[0],/服务端流水线配置仍在加载/);
+});
 
 test('内置流水线打开为只读查看：标志置位、标题标注只读、不恢复草稿、不抢焦点',()=>{
   const draft={editId:'pl-xds',stages:[{id:'d1',name:'草稿改动'}],name:'草稿名',scriptsDir:'/draft',defaults:{branch:'dev'}};

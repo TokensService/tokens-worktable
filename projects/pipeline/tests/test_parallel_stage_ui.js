@@ -6,7 +6,7 @@ const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
 
 function extractFunction(name){
-  const match=new RegExp('function\\s+'+name+'\\s*\\(').exec(source);
+  const match=new RegExp('(?:async\\s+)?function\\s+'+name+'\\s*\\(').exec(source);
   assert.ok(match,'missing function '+name);
   const bodyStart=source.indexOf('{',match.index);
   let depth=0;
@@ -113,7 +113,7 @@ test('标记的单任务保持普通节点并带闪电，预设任务始终是�
   assert.deepEqual(barrier.flow.children.filter(node=>node.className==='pipeline-node').map(node=>node.dataset.id),['build','__check__','test']);
 });
 
-test('编辑器复选框、保存和重新打开保留 parallel 状态',()=>{
+test('编辑器复选框、保存和重新打开保留 parallel 状态',async()=>{
   const row=new FakeNode('div');
   const stageList=new FakeNode('div');
   const stage={id:'build',name:'构建',dur:0,timeout:null,skip:false,parallel:false,sub:[],kind:'simulate',script:null,url:null,evaltokens:null,sched:{}};
@@ -121,7 +121,7 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',()=>{
   const nameInput={value:'并行',focus(){}};
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
-    editStages:[stage], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null,
+    editStages:[stage], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null, scriptsDir:'/scripts',
     currentUsername:'tester', plOwnerOf:()=>'',
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
@@ -141,20 +141,20 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',()=>{
   assert.equal(stage.parallel,true);
   ctx.renderStageEditor();
   assert.equal(ctx.$('plStageList').children[0].querySelector('[data-f="parallel"]').checked,true);
-  ctx.savePlForm();
+  await ctx.savePlForm();
   assert.equal(pipeline.stages[0].parallel,true);
   ctx.openPlForm('pl-1');
   assert.equal(ctx.editStages[0].parallel,true);
 });
 
-test('无效 parallel 值在编辑、保存和重新打开中保持串行',()=>{
+test('无效 parallel 值在编辑、保存和重新打开中保持串行',async()=>{
   const stageList=new FakeNode('div');
   const invalid={id:'build',name:'构建',dur:0,timeout:null,skip:false,parallel:'false',sub:[],kind:'simulate',script:null,url:null,evaltokens:null,sched:{}};
   const form={dataset:{editId:'pl-1'},style:{}};
   const nameInput={value:'并行',focus(){}};
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
-    editStages:[invalid], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null,
+    editStages:[invalid], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null, scriptsDir:'/scripts',
     currentUsername:'tester', plOwnerOf:()=>'',
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
@@ -170,7 +170,7 @@ test('无效 parallel 值在编辑、保存和重新打开中保持串行',()=>{
   install(ctx,'renderStageEditor','savePlForm','openPlForm');
   ctx.renderStageEditor();
   assert.equal(stageList.children[0].querySelector('[data-f="parallel"]').checked,false);
-  ctx.savePlForm();
+  await ctx.savePlForm();
   assert.equal(Object.hasOwn(pipeline.stages[0],'parallel'),false);
   pipeline.stages=[Object.assign({},invalid,{parallel:1})];
   ctx.openPlForm('pl-1');
