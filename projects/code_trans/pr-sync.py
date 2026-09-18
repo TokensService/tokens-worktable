@@ -9,7 +9,7 @@ pr-sync.py — tokens-worktable「代码同步」窗口的服务端 PR 同步器
 
 spec 结构:
 {
-  "source": {"platform":"github|gitlab|gitee","repo":"owner/repo","token":"..."},
+  "source": {"platform":"github|gitlab|gitee|gitcode|codehub","repo":"owner/repo","token":"..."},
   "target": {"platform":"...","repo":"...","token":"...","baseBranch":"main"},
   "workDir": "/abs/path",            // 克隆存放目录（可复用）
   "branchPrefix": "sync",            // 目标分支前缀
@@ -35,12 +35,33 @@ UA = "tokens-worktable-pr-sync/1.0"
 GIT_BIN = os.environ.get("GIT_BIN") or "git"
 
 
-def normalize_repo(s):
+def normalize_repo(s, platform=None):
     """把用户输入归一化为 owner/repo（GitLab 可为 group/subgroup/project）。
-    接受 owner/repo、https://host/owner/repo(.git)、git@host:owner/repo(.git) 等。"""
+    接受 owner/repo、https://host/owner/repo(.git)、git@host:owner/repo(.git) 等。
+    codehub 为自建 GitLab 兼容实例，host 不固定，故保留实例地址：host/group/project。"""
     s = (s or "").strip()
     if not s:
         return ""
+    # codehub 自建实例：保留 host，归一为 host/group/project
+    if platform == "codehub":
+        host, path = "", ""
+        m = re.match(r"^git@([^:]+):(.+)$", s)
+        if m:
+            host, path = m.group(1), m.group(2)
+        elif "://" in s:
+            try:
+                u = urllib.parse.urlparse(s)
+                host, path = u.netloc, u.path
+            except Exception:
+                return s.strip("/")
+        else:
+            m = re.match(r"^([^/]+)/(.+)$", s)
+            if m:
+                host, path = m.group(1), m.group(2)
+        path = re.sub(r"\.git$", "", path, flags=re.I).strip("/")
+        if not host or not path:
+            return s.strip("/")
+        return host + "/" + path
     m = re.match(r"^git@[^:]+:(.+)$", s)
     if m:
         s = m.group(1)
@@ -52,6 +73,40 @@ def normalize_repo(s):
     s = re.sub(r"\.git$", "", s, flags=re.I)
     s = s.strip("/")
     return s
+
+
+# GitLab v4 兼容平台族：gitlab(gitlab.com) / gitcode(gitcode.com) / codehub(自建实例)
+GL_FAMILY = ("gitlab", "gitcode", "codehub")
+
+
+def gl_resolve(platform, repo):
+    """返回 (api_base, web_host, project_path)。
+    gitlab->gitlab.com、gitcode->gitcode.com 固定；codehub 为自建实例，repo 形如 host/group/project。"""
+    if platform == "gitlab":
+        host = "gitlab.com"
+    elif platform == "gitcode":
+        host = "gitcode.com"
+    elif platform == "codehub":
+        m = re.match(r"^([^/]+)/(.+)$", repo or "")
+        if not m:
+            raise RuntimeError("codehub 需填写实例地址，形如 host/group/project 或 https://host/group/project")
+        host, project = m.group(1), m.group(2).strip("/")
+        return "https://%s/api/v4" % host, host, project
+    else:
+        raise RuntimeError("非 GitLab 兼容平台: " + str(platform))
+    return "https://%s/api/v4" % host, host, repo
+
+
+def build_clone_url(platform, repo):
+    """构造 https 克隆地址。"""
+    if platform == "github":
+        return "https://github.com/%s.git" % repo
+    if platform == "gitee":
+        return "https://gitee.com/%s.git" % repo
+    if platform in GL_FAMILY:
+        _, host, project = gl_resolve(platform, repo)
+        return "https://%s/%s.git" % (host, project)
+    raise RuntimeError("不支持的平台: " + str(platform))
 
 
 def emit(obj):
@@ -95,7 +150,7 @@ def inject_token(url, token, platform):
         return url
     proto, _auth, rest = m.group(1), m.group(2), m.group(3)
     # 用户名按平台约定
-    user = {"github": "x-access-token", "gitlab": "oauth2", "gitee": "oauth2"}.get(platform, "oauth2")
+    user = {"github": "x-access-token", "gitlab": "oauth2", "gitee": "oauth2", "gitcode": "oauth2", "codehub": "oauth2"}.get(platform, "oauth2")
     token_q = urllib.parse.quote(token, safe="")
     return "%s%s:%s@%s" % (proto, user, token_q, rest)
 
@@ -105,7 +160,7 @@ def api_call(url, token, platform, method="POST", data=None, accept="application
     r.add_header("User-Agent", UA)
     r.add_header("Accept", accept)
     if token:
-        if platform == "gitlab":
+        if platform in ("gitlab", "gitcode", "codehub"):
             r.add_header("PRIVATE-TOKEN", token)
         elif platform == "gitee":
             r.add_header("Authorization", "Bearer " + token)
@@ -142,10 +197,11 @@ def open_pr(platform, target_repo, token, branch, base_branch, title, body):
         d = api_call(url, token, "github", method="POST",
                      data={"title": title, "head": branch, "base": base_branch, "body": body_txt})
         return d.get("html_url"), d.get("number")
-    if platform == "gitlab":
-        pid = urllib.parse.quote(target_repo, safe="")
-        url = "https://gitlab.com/api/v4/projects/" + pid + "/merge_requests"
-        d = api_call(url, token, "gitlab", method="POST",
+    if platform in GL_FAMILY:
+        api_base, _host, project = gl_resolve(platform, target_repo)
+        pid = urllib.parse.quote(project, safe="")
+        url = api_base + "/projects/" + pid + "/merge_requests"
+        d = api_call(url, token, platform, method="POST",
                      data={"source_branch": branch, "target_branch": base_branch,
                            "title": title, "description": body_txt})
         return d.get("web_url"), d.get("iid")
@@ -165,8 +221,7 @@ def ensure_clone(target, work_dir):
     repo = target["repo"]
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", "%s-%s" % (platform, repo)).strip("-") or "target"
     clone_dir = os.path.join(work_dir, safe)
-    clone_url = "https://%s.com/%s.git" % (
-        "github" if platform == "github" else ("gitlab" if platform == "gitlab" else "gitee"), repo)
+    clone_url = build_clone_url(platform, repo)
     auth_url = inject_token(clone_url, target.get("token"), platform)
     if os.path.isdir(os.path.join(clone_dir, ".git")):
         emit({"event": "clone", "status": "refresh", "dir": clone_dir})
@@ -251,9 +306,7 @@ def sync_one(pr, ctx):
     # push 分支到目标仓
     target_platform = target["platform"]
     push_url = inject_token(
-        "https://%s.com/%s.git" % (
-            "github" if target_platform == "github" else ("gitlab" if target_platform == "gitlab" else "gitee"),
-            target["repo"]),
+        build_clone_url(target_platform, target["repo"]),
         target.get("token"), target_platform)
     r = git(["push", "--quiet", push_url, "HEAD:refs/heads/" + branch], clone_dir, capture=True)
     if r.returncode != 0:
@@ -283,10 +336,10 @@ def main():
 
     target = spec.get("target") or {}
     if target.get("repo"):
-        target["repo"] = normalize_repo(target["repo"])
+        target["repo"] = normalize_repo(target["repo"], target.get("platform"))
     src = spec.get("source") or {}
     if src.get("repo"):
-        src["repo"] = normalize_repo(src["repo"])
+        src["repo"] = normalize_repo(src["repo"], src.get("platform"))
     prs = spec.get("prs") or []
     work_dir = spec.get("workDir") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "work")
     work_dir = os.path.abspath(work_dir)
