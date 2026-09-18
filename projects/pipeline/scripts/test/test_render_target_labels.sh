@@ -7,6 +7,31 @@ trap 'rm -rf "$work_dir"' EXIT
 
 mkdir -p "$work_dir/chart"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart/Chart.yaml"
+mkdir -p "$work_dir/chart/templates"
+cat >"$work_dir/chart/templates/raycluster-cluster.yaml" <<'EOF'
+groupName: {{ $teGroupValues.name }}
+groupName: {{ $groupName }}
+{{- $lmcache := $.Values.lmcacheSidecar | default dict }}
+{{- if $lmcache.enabled }}
+- name: lmcache-sidecar
+  resources: {{- toYaml $lmcache.resources | nindent 4 }}
+  args:
+    {{- if $isLmcacheL2 }}
+                  --l2-store-policy
+    {{- end }}
+{{- end }}
+EOF
+cat >"$work_dir/chart/templates/ray-svc.yaml" <<'EOF'
+apiVersion: v1
+kind: Service
+spec:
+  # Ray Serve 模式：Service 指向 Ray frontGroup
+  selector:
+    app.kubernetes.io/created-by: kuberay-operator
+    ray.io/group: frontGroup
+    in_draining_status: "false"
+    app.kubernetes.io/instance: {{ .Release.Name }}
+EOF
 cat >"$work_dir/values.yaml" <<'EOF'
 common:
   containerEnv:
@@ -20,8 +45,14 @@ common:
       value: 192.168.0.243
     - name: XDS_NAMESPACE
       value: old-namespace
+    - name: XDS_DATABASE_NAME
+      value: {XDS_DATABASE_NAME}
     - name: XDS_DATABASE_PORT
       value: {XDS_DATABASE_PORT}
+    - name: XDS_DATABASE_USERNAME
+      value: {XDS_DATABASE_USERNAME}
+    - name: XDS_DATABASE_PASSWORD
+      value: {DATABASE_PASSWORD}
     - name: EMS_ENABLE
       value: 'true'
 nodeSelector:
@@ -29,7 +60,9 @@ nodeSelector:
 rayService:
   service:
     ports:
-      - nodePort: {NODE_PORT}
+      # Image templates may carry a literal default instead of {NODE_PORT};
+      # the renderer must still apply the mapped target's fixed NodePort.
+      - nodePort: 31365
 head:
   nodeSelector: {}
 workerGroups:
@@ -53,6 +86,10 @@ feTemplate:
     kubernetes.io/hostname: 192.168.0.243
 global:
   useFemFrontend: true
+  network:
+    ports:
+      - name: frontend-port
+        nodePort: 31365
   storage:
     hostPath: /mnt/paas
   imageRegistry: registry.example/old
@@ -85,21 +122,25 @@ lmcache:
       repository: registry.example/old/xds
       tag: old
 lmcacheSidecar:
+  # lite 模板契约：仅 enabled/logLevel/l2Enabled 由渲染器替换，
+  # 端口/尺寸/资源等默认值固化在 values 模板中。
   enabled: {LMCACHE_SIDECAR_ENABLED}
-  mpPortBase: {LMCACHE_MP_PORT_BASE}
-  httpPortBase: {LMCACHE_HTTP_PORT_BASE}
-  l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
-  l1SizeGb: {LMCACHE_L1_SIZE_GB}
-  l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
-  maxWorkers: {LMCACHE_MAX_WORKERS}
   logLevel: {LMCACHE_LOG_LEVEL}
+  l2Enabled: {LMCACHE_L2_ENABLED}
+  mpPortBase: 5555
+  httpPortBase: 5565
+  l1InitSizeGb: 20
+  l1SizeGb: 200
+  l1AlignBytes: "4096"
+  maxWorkers: 1
+  cudaVisibleDevices: ''
   resources:
     requests:
-      cpu: {LMCACHE_CPU_REQUEST}
-      memory: {LMCACHE_MEMORY_REQUEST}
+      cpu: 4
+      memory: 8Gi
     limits:
-      cpu: {LMCACHE_CPU_LIMIT}
-      memory: {LMCACHE_MEMORY_LIMIT}
+      cpu: 8
+      memory: 240Gi
 # disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
@@ -138,8 +179,13 @@ VALUES_TEMPLATE="$work_dir/values.yaml" \
 ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-one-node-78-verify' \
+XDS_DATABASE_NAME='custom_db' \
+XDS_DATABASE_PORT='32106' \
+XDS_DATABASE_USERNAME='custom_user' \
+XDS_DATABASE_PASSWORD='custom_password' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"},{"ip":"192.168.0.78:2222"}]' \
 TARGET_NODE_IP_MAP='{"192.168.0.243":"192.168.31.175","192.168.0.78:2222":"192.168.31.17"}' \
+MODEL_CACHE_HOST_PATH='/mnt/paas' \
 YAML_REPLACE_JSON='{"nodeSelector":{"user":"override"}}' \
 TEMPLATE_VARS_JSON='{"XDS_DATABASE_PORT":"3306"}' \
 EMS_NAMESPACE='op-ems' \
@@ -156,19 +202,27 @@ with open(sys.argv[1], encoding="utf-8") as source:
 expected = {"xds.optest": "node-175-17"}
 assert values["nodeSelector"] == expected, values["nodeSelector"]
 assert values["rayService"]["service"]["ports"][0]["nodePort"] == 31008, values["rayService"]
+assert values["global"]["network"]["ports"][0]["nodePort"] == 31008, values["global"]["network"]
 assert values["head"]["nodeSelector"] == expected, values["head"]
 assert all(group["nodeSelector"] == expected for group in values["workerGroups"].values())
 assert values["feTemplate"]["nodeSelector"] == expected, values["feTemplate"]
+assert values["global"]["storage"]["hostPath"] == "/mnt/paas", values["global"]
 assert values["feTemplate"]["default_replica"] == 10, values["feTemplate"]
 assert values["workerGroups"]["ctrlGroup"]["minReplicas"] == 4, values["workerGroups"]
 assert values["workerGroups"]["ctrlGroup"]["maxReplicas"] == 4, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["minReplicas"] == 8, values["workerGroups"]
 assert values["workerGroups"]["jobExecutorGroup"]["maxReplicas"] == 8, values["workerGroups"]
+assert values["workerGroups"]["frontGroup"]["labels"] == {
+    "ray.io/group": "frontGroup"
+}, values["workerGroups"]
 env = {entry["name"]: entry.get("value") for entry in values["common"]["containerEnv"]}
 assert env["XDS_TE_POD_LABEL_KEY"] == "xds.optest", env
 assert env["XDS_TE_POD_LABEL_VAL"] == "node-175-17", env
 assert env["XDS_NAMESPACE"] == "xds-one-node-78-verify", env
-assert env["XDS_DATABASE_PORT"] == "3306", env
+assert env["XDS_DATABASE_NAME"] == "custom_db", env
+assert env["XDS_DATABASE_PORT"] == "32106", env
+assert env["XDS_DATABASE_USERNAME"] == "custom_user", env
+assert env["XDS_DATABASE_PASSWORD"] == "custom_password", env
 assert env["EMS_ENABLE"] == "false", env
 assert isinstance(env["XDS_DATABASE_PORT"], str), env
 assert "RAY_gcs_rpc_server_reconnect_timeout_s" not in env, env
@@ -180,7 +234,7 @@ for group in values["taskExecutorGroups"]:
     assert json.loads(resources[1:-1])["XDS-TE"] == 4
 assert values["global"]["imageRegistry"] == "registry.example/dataartsfabric"
 assert values["global"]["useFemFrontend"] is False, values["global"]
-assert values["global"]["storage"]["hostPath"] == "/mnt/xds/sfs", values["global"]
+assert values["global"]["storage"]["hostPath"] == "/mnt/paas", values["global"]
 assert values["global"]["imagePullSecrets"] == [
     {"name": "default-secret"},
     {"name": "swr-cn-southwest-2"},
@@ -195,20 +249,25 @@ assert values["lmcache"]["namespace"]["name"] == "xds-one-node-78-verify"
 assert values["lmcache"]["direct"]["image"] == {
     "repository": "registry.example/dataartsfabric/xds", "tag": "test-tag"
 }
-assert values["lmcacheSidecar"] == {
-    "enabled": False,
-    "mpPortBase": 5555,
-    "httpPortBase": 5565,
-    "l1InitSizeGb": 20,
-    "l1SizeGb": 200,
-    "l1AlignBytes": "4096",
-    "maxWorkers": 1,
-    "logLevel": "INFO",
-    "resources": {
-        "requests": {"cpu": 4, "memory": "8Gi"},
-        "limits": {"cpu": 8, "memory": "240Gi"},
-    },
+sidecar = values["lmcacheSidecar"]
+assert sidecar["enabled"] is False
+assert sidecar["logLevel"] == "INFO"
+assert sidecar["l2Enabled"] is True, sidecar
+# 固化在模板中的 sidecar 默认值不被渲染器篡改（lite 不做参数透传）。
+assert sidecar["mpPortBase"] == 5555
+assert sidecar["httpPortBase"] == 5565
+assert sidecar["l1InitSizeGb"] == 20
+assert sidecar["l1SizeGb"] == 200
+assert sidecar["l1AlignBytes"] == "4096"
+assert sidecar["maxWorkers"] == 1
+assert sidecar["cudaVisibleDevices"] == ""
+assert sidecar["resources"] == {
+    "requests": {"cpu": 4, "memory": "8Gi"},
+    "limits": {"cpu": 8, "memory": "240Gi"},
 }
+assert not any(probe_name in sidecar for probe_name in (
+    "startupProbe", "readinessProbe", "livenessProbe"
+))
 assert "k8s_deploy_namespace = xds-one-node-78-verify" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "collector_gateway_url = 192.168.16.146:25888" in values["frameworkConfigFiles"]["xds_framework.conf"]
 assert "use_fem_frontend = false" in values["frameworkConfigFiles"]["xds_framework.conf"]
@@ -219,6 +278,24 @@ assert "ems_enable = false" in values["frameworkConfigFiles"]["xds_framework.con
 assert "ems_namespace = op-ems" in values["frameworkConfigFiles"]["xds_framework.conf"]
 PY
 
+rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
+# OTLP tracing patch 注入在 lmcache args 锚点之前（默认 ENABLE_LMCACHE_TRACING=true）。
+grep -Fq -- '--enable-tracing \' "$rendered_chart"
+grep -Fq -- '--otlp-endpoint http://192.168.0.102:4320 \' "$rendered_chart"
+grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
+grep -Fq 'else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je' "$rendered_chart"
+if grep -Fq 'eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe' "$rendered_chart"; then
+  echo "frontGroup must remain the KubeRay group name" >&2
+  exit 1
+fi
+rendered_service="$work_dir/run/rendered/xds-cluster/templates/ray-svc.yaml"
+grep -Fq 'ray.io/group: frontGroup' "$rendered_service"
+if grep -Fq 'app.kubernetes.io/created-by: kuberay-operator' "$rendered_service"; then
+  echo "ray-svc must select only the explicit FE-group label" >&2
+  exit 1
+fi
+
 ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-lmcache-override" \
 CHART_TEMPLATE_DIR="$work_dir/chart" \
@@ -227,8 +304,8 @@ ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-lmcache-override' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
-TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_MP_PORT_BASE":"20000","LMCACHE_L1_SIZE_GB":"512","LMCACHE_MEMORY_LIMIT":"600Gi"}' \
-bash "$script_dir/render-config.sh" >/dev/null
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_LOG_LEVEL":"DEBUG","LMCACHE_L2_ENABLED":"false"}' \
+  bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run-lmcache-override/rendered/values.rendered.yaml" <<'PY'
 import sys
@@ -239,9 +316,8 @@ with open(sys.argv[1], encoding="utf-8") as source:
 
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is True, sidecar
-assert sidecar["mpPortBase"] == 20000, sidecar
-assert sidecar["l1SizeGb"] == 512, sidecar
-assert sidecar["resources"]["limits"]["memory"] == "600Gi", sidecar
+assert sidecar["logLevel"] == "DEBUG", sidecar
+assert sidecar["l2Enabled"] is False, sidecar
 PY
 
 if ARCH_NAME=test-arch \
@@ -383,7 +459,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 IMAGE_TAG='test-tag' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 bash "$script_dir/render-config.sh" >"$work_dir/namespace-arch-executor.out"
-grep -qx 'NAMESPACE=xds-runtime-arch-gpu-bnt3-test-tag' "$work_dir/namespace-arch-executor.out"
+grep -qx 'NAMESPACE=xds-runtime-arch-gpu-bnt3' "$work_dir/namespace-arch-executor.out"
 
 arch='runtime-arch' \
 ARCH_NAME=test-arch \
@@ -395,7 +471,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 IMAGE_TAG='test-tag' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
 bash "$script_dir/render-config.sh" >"$work_dir/namespace-legacy.out"
-grep -qx 'NAMESPACE=xds-test-arch-test-tag' "$work_dir/namespace-legacy.out"
+grep -qx 'NAMESPACE=xds-test-arch' "$work_dir/namespace-legacy.out"
 
 
 # Role names in the copied Chart remain the upstream KubeRay names.

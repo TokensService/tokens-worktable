@@ -775,6 +775,11 @@ import sys
 
 chart = pathlib.Path(sys.argv[1])
 endpoint = sys.argv[2]
+# 骨架 chart（无 raycluster-cluster.yaml）不代表模板漂移：跳过 patch 仅告警。
+# 文件存在但锚点缺失仍视为模板漂移，硬报错。
+if not chart.exists():
+    print("LMCACHE_OTLP_PATCH_SKIPPED=chart template missing: %s" % chart, file=sys.stderr)
+    sys.exit(0)
 text = chart.read_text(encoding="utf-8")
 if "--enable-tracing" not in text:
     anchor = '{{- if $isLmcacheL2 }}\n                  --l2-store-policy'
