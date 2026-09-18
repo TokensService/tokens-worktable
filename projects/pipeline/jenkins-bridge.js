@@ -23,7 +23,8 @@ function corsHeaders() {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type, Jenkins-Crumb, X-Requested-With, Accept',
-    'Access-Control-Expose-Headers': '*',
+    // 带 Authorization/Cookie 的 CORS 请求不会把 `*` 当作响应头通配符；显式暴露 Jenkins 关联/日志头。
+    'Access-Control-Expose-Headers': 'Location, X-Text-Size, X-More-Data',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };

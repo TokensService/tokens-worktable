@@ -54,6 +54,7 @@ function loadFilterBindings(initialFilter){
   const saves=[],renders=[];
   const ctx={
     plFilter:Object.assign({},initialFilter),
+    plPage:3,
     $:id=>nodes[id],
     savePlFilter:()=>saves.push(Object.assign({},ctx.plFilter)),
     renderPipelines:()=>renders.push(1),
@@ -186,11 +187,14 @@ test('收藏筛选控件恢复、保存选择，清除时回到全部',()=>{
 
   nodes.plFilterFavorite.handlers.change({target:{value:'all'}});
   assert.equal(ctx.plFilter.favorite,'all');
+  assert.equal(ctx.plPage,0,'筛选条件变化后回到第一页');
   assert.deepEqual(saves.at(-1),{kw:'部署',owner:'all',favorite:'all'});
   assert.equal(renders.length,1);
 
+  ctx.plPage=2;
   nodes.plFilterClear.handlers.click();
   assert.deepEqual(Object.assign({},ctx.plFilter),{kw:'',owner:'mine',favorite:'all'});
+  assert.equal(ctx.plPage,0,'清除筛选后回到第一页');
   assert.equal(nodes.plFilterFavorite.value,'all');
   assert.equal(saves.length,2);
   assert.equal(renders.length,2);

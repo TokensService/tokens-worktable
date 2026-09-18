@@ -1,5 +1,49 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复终止流水线时只中止页面/服务端编排、未停止外部任务的问题（`projects/pipeline/pipeline.html`、
+  `src/index.ts`）：Jenkins 触发后保存 queue `Location` 与最终构建号，终止时对排队项调用
+  `POST /queue/cancelItem`、对已运行构建调用 `POST <build>/stop`，并为终止 POST 独立获取 crumb；
+  EvalTokens 启动后保存 `run_id`，终止时调用 `POST /api/v1/tasks/runs/<run_id>/stop`。浏览器本地执行与
+  服务端权威队列执行均覆盖；浏览器 Jenkins 也改为只按本次响应的 queue item 取得构建号，不再用
+  `nextBuildNumber`/`lastBuild` 猜测，避免并发触发时误停他人构建。启动请求与流水线中止/阶段 deadline
+  解耦出 10 秒清理宽限（crumb 等触发前准备仍立即中止，防止终止后才新建任务），避免标识响应迟回而
+  遗留任务；Jenkins 整条终止链与 EvalTokens stop 各设 10 秒上限，失败会进入阶段日志并在
+  页面提示。两种 Jenkins CORS 桥接配置显式暴露 `Location`/渐进日志响应头。新增 Jenkins 排队/运行取消、
+  EvalTokens run 停止、启动响应竞态及页面协议回归测试。
+
+- 流水线任务列表新增分页（`projects/pipeline/pipeline.html`）：分页栏提供与运行历史相同的
+  `10 / 20 / 50 / 100` 条规格，但使用独立的页码、页大小和 `pip-plPageSize` 本地存储键，互不联动；
+  关键字、创建者或收藏筛选变化及清除筛选时自动回到第一页，流水线刷新、新增或删除导致总页数减少时
+  自动修正越界页码；从顶部下拉框选用、新建或复制页外流水线时，若目标仍命中当前筛选则自动翻到目标页，
+  保持列表“当前”行与下拉选择同步。新增 `projects/pipeline/tests/test_pipeline_pagination.js` 覆盖规格、初始化恢复、
+  切片、前后翻页、页大小独立保存、越界修正及页外选中，并扩充 `test_pipeline_favorites.js` 覆盖筛选后回首页。
+
+- 「定时」页计划列表新增当前执行的终止能力（`projects/pipeline/pipeline.html`）：计划触发后在服务端执行池
+  运行/排队的任务，此前只能去「运行队列」里找条目中止，定时页只有「取消」（仅删除计划、不动当前执行），
+  且计划执行人署名带「 ⏰」后缀使按署名精确匹配的控制权判定永远失败，非管理员连自己的定时运行也无法中止。
+  现计划行在当前执行存在时显示「运行中/排队中」徽标与「终止」按钮：确认后经既有
+  `POST /api/worktable/pipeline/queue`（action=cancel）走服务端执行池取消——排队项直接移除、运行中
+  AbortController 中止并杀掉脚本进程树，本次运行按「终止」计入历史；周期计划本身保留、下个周期仍触发
+  （不再触发用「取消」删除计划）。新增 `planOwnerBy`：权限比对前剥掉 by 的「 ⏰」来源标记，非管理员可
+  终止自己署名的定时运行、管理员全权（与运行队列同一 `canControlRun` 语义）。「取消」在计划有活动执行时
+  增加确认提示（仅删计划、保留当前执行）；进入「定时」页改为重新拉取计划列表（`loadPlans`），其他浏览器的
+  增删一并刷新；活动执行集合随 1s 队列快照轮询按签名变化才重绘，无变化不重建 DOM。新增
+  `projects/pipeline/tests/test_plan_terminate.js` 覆盖徽标/按钮渲染、终止调用、权限边界（本人/他人/管理员）、
+  取消确认与快照变化重绘；`test_queue_item_preview.js` 的 pullRemoteQueue 用例同步补新依赖桩。
+
+- 修复流水线运行提交与多浏览器保存的一致性问题（`projects/pipeline/pipeline.html`、`src/index.ts`）：全部阶段可由
+  服务端执行的流水线此前点击运行后，要等 POST 返回并拉到权威队列快照才切换编排区，网络请求、服务端两槽
+  执行池/同节点串行和轮询等待期间看起来像“没有开始”；现点击后立即按本次参数展示「提交中…」只读预览，
+  服务端 `runId` 出现后无缝切到排队/运行详情，失败或 15 秒未出现时清理预览。流水线编辑器此前点击保存只写
+  本地并安排 400ms 异步 PUT，弹窗和草稿立即关闭，写入失败无提示；紧接着运行会让服务端按旧配置执行，旧标签页
+  还可用整份配置覆盖新标签页。现显式保存立即等待服务端确认，确认前保留弹窗/草稿并禁用按钮，失败回滚本页
+  状态且提示；确认在途冻结整个编辑器，初始服务端配置未加载时禁止进入编辑；同页 PUT 串行，失败只回滚本次
+  流水线、保留等待期间合入的其他定义。客户端随 PUT 携带最近服务端基线，服务端
+  在存储锁内按流水线 id 三方合并：不同流水线的并发修改同时保留，同一流水线被双方修改则返回 409 冲突、拒绝
+  静默覆盖；升级前仍打开且未携带基线的旧页面只允许流水线定义未变化的写入，不能绕过冲突保护；合并结果同步
+  回当前页，避免下一次保存误删他端新增项。新增
+  `projects/pipeline/tests/test_pipeline_save_consistency.js`、`tests/pipeline-config-concurrency.test.mjs`，并扩充
+  `test_run_autofocus.js`、`test_pipeline_readonly.js`。
 - 「代码同步」项目页（`projects/code_trans/`，窗口1：两个代码仓 PR 双向同步）入库，PR 选择支持按目标分支筛选：
   源仓 PR 列表上方的「合入分支」chips 按各 PR 的 `targetBranch` 多选过滤（chips 带各分支 PR 计数与「全部 (N)」，
   默认不过滤；加载 PR / 切换同步方向后自动重置，已加载列表为空时整行隐藏），「全选」仅选中当前筛选结果，
