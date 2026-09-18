@@ -15,6 +15,7 @@ function slice(startMark, endMark) {
 
 const SLICES = [
   slice('function localQueueItems(){', 'function queuePreviewRc'),   // localQueueItems + isPendingQueueItem
+  slice('function queuePreviewRc(item){', 'function focusQueueItem(id){'),
   slice('function remoteQueueDetailAvailable(item){', 'function applyRemoteQueuePreviewRefresh(){'),   // 远端预览 + 自动跟随助手
   slice('function remoteRunsOf', '/* ---------- 运行引擎'),
   slice('async function submitServerRun(item){', 'function runPipeline(opts){'),
@@ -41,6 +42,7 @@ function makeContext(overrides) {
     $: id => ({ value: id === 'branchName' ? 'main' : 'repo-1' }),
     curStrategy: () => 'serial',
     selectedPresetKeys: () => [],
+    expandRunStages: stages => stages,
     conflictsActive: () => false,
     machineConflict: () => false,
     startRun: item => { calls.startRun.push(item); return true; },
@@ -116,10 +118,30 @@ test('服务端提交成功即跟随：快照刷新后立即可见', async () =>
   assert.equal(r, 'submitted');
   await flush();
   assert.match(calls.fetch[0].url, /\/api\/worktable\/pipeline\/run\/pipe-2$/);
-  assert.equal(calls.focusRun.length, 1);
-  assert.equal(calls.focusRun[0].remoteItemId, 'api-xyz');
-  assert.equal(calls.focusRun[0].remoteKind, 'queued');
+  assert.equal(calls.focusRun.length, 2);
+  assert.equal(calls.focusRun[0].serverSubmitting, true);
+  assert.equal(calls.focusRun[1].remoteItemId, 'api-xyz');
+  assert.equal(calls.focusRun[1].remoteKind, 'queued');
   assert.equal(vm.runInContext('pendingServerRunFocus', context), null);
+});
+
+test('服务端提交响应返回前立即显示本次任务的提交中预览', async () => {
+  let resolveFetch;
+  const responsePending = new Promise(resolve => { resolveFetch = resolve; });
+  const { context, calls } = makeContext({ fetch: async (url, opts) => {
+    calls.fetch.push({ url, opts });
+    return responsePending;
+  } });
+
+  const result = context.runPipeline({ pipelineId: 'pipe-2' });
+
+  assert.equal(result, 'submitted');
+  assert.equal(calls.focusRun.length, 1, '网络响应前就应切换视图，避免点击后长时间看起来没有开始');
+  assert.equal(calls.focusRun[0].serverSubmitting, true);
+  assert.match(calls.focusRun[0].overall.txt, /提交中/);
+
+  resolveFetch({ ok: true, json: async () => ({ ok: true, accepted: true, runId: 'api-xyz', pipelineId: 'pipe-2', pipelineName: '流水线二' }) });
+  await flush();
 });
 
 test('服务端提交：runId 延迟出现时跨轮询等待，出现后跟随', async () => {
@@ -127,13 +149,14 @@ test('服务端提交：runId 延迟出现时跨轮询等待，出现后跟随',
   const r = context.runPipeline({ pipelineId: 'pipe-2' });
   assert.equal(r, 'submitted');
   await flush();
-  assert.deepEqual(calls.focusRun, []);
+  assert.equal(calls.focusRun.length, 1);
+  assert.equal(calls.focusRun[0].serverSubmitting, true);
   assert.ok(vm.runInContext('pendingServerRunFocus', context), 'runId 未出现时应保留待跟随状态');
 
   context.remoteQueueClients = serverSnapshotQueued('api-xyz');   // 模拟下一次轮询快照
   vm.runInContext('followPendingServerRun()', context);
-  assert.equal(calls.focusRun.length, 1);
-  assert.equal(calls.focusRun[0].remoteItemId, 'api-xyz');
+  assert.equal(calls.focusRun.length, 2);
+  assert.equal(calls.focusRun[1].remoteItemId, 'api-xyz');
   assert.equal(vm.runInContext('pendingServerRunFocus', context), null);
 });
 
@@ -144,7 +167,8 @@ test('服务端提交：runId 始终不出现时超时自动放弃', async () =>
   vm.runInContext('pendingServerRunFocus && (pendingServerRunFocus.until = Date.now() - 1000)', context);
   vm.runInContext('followPendingServerRun()', context);
   assert.equal(vm.runInContext('pendingServerRunFocus', context), null);
-  assert.deepEqual(calls.focusRun, []);
+  assert.equal(calls.focusRun.length, 1);
+  assert.equal(context.viewRc, null);
 });
 
 test('服务端提交失败：弹窗提示且不进入自动跟随', async () => {
@@ -157,7 +181,8 @@ test('服务端提交失败：弹窗提示且不进入自动跟随', async () =>
   assert.equal(calls.alerts.length, 1);
   assert.match(calls.alerts[0], /提交服务端运行失败/);
   assert.equal(vm.runInContext('pendingServerRunFocus', context), null);
-  assert.deepEqual(calls.focusRun, []);
+  assert.equal(calls.focusRun.length, 1);
+  assert.equal(context.viewRc, null);
 });
 
 test('排队→在跑跟随：服务端权威条目同 runId 直接续看', () => {
