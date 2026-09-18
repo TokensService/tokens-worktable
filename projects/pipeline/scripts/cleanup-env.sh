@@ -194,6 +194,9 @@ node_port_for_ip() {
         192.168.31.214) echo 31013 ;; 192.168.31.111) echo 31014 ;;
         192.168.31.65) echo 31015 ;; 192.168.31.96) echo 31016 ;;
         192.168.31.105) echo 31017 ;; 192.168.31.89) echo 31018 ;;
+        192.168.31.140) echo 31000 ;; 192.168.31.120) echo 31001 ;;
+        192.168.31.113) echo 31002 ;; 192.168.31.164) echo 31003 ;;
+        192.168.31.7) echo 31004 ;; 192.168.31.181) echo 31006 ;;
         *) echo 31365 ;;
     esac
 }
@@ -343,7 +346,10 @@ handle_top_owner() {
 clean_namespace() {
     local ns=$1 pod owner res pod_names
     if [[ "$HAS_HELM" == "1" ]]; then
-        local rels; rels=$(helm list -n "$ns" --all -q) || return 1
+        # Some target Helm builds do not support --all.  These namespaces were
+        # discovered from live Pods, so the default deployed/failed release
+        # set is sufficient for deciding whether Helm should clean them.
+        local rels; rels=$(helm list -n "$ns" -q) || return 1
         if [[ -n "$rels" ]]; then
             log "[CLEAN] ns=$ns (Helm)"
             while read -r rel; do

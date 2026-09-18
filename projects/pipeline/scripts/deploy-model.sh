@@ -47,7 +47,10 @@ SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${RUN_DIR}/logs}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
-NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
+EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
+EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
+EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018,\"192.168.31.140\":31000,\"192.168.31.120\":31001,\"192.168.31.113\":31002,\"192.168.31.164\":31003,\"192.168.31.7\":31004,\"192.168.31.181\":31006}}"
 
 resolve_container_model_path() {
   local input="${MODEL_PATH_INPUT%/}" weight_name
@@ -96,7 +99,7 @@ sync_remote_file() {
 }
 
 deploy_from_target_host() {
-  local parsed target_ip target_port target_user safe_target_hosts target remote_script_dir remote_script
+  local parsed target_ip target_port target_user target remote_script_dir remote_script
   local remote_env remote_xds_url remote_head_log_root remote_command
 
   command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
@@ -130,14 +133,10 @@ if password is None:
     password = ""
 if not isinstance(password, str):
     raise SystemExit("TARGET_HOSTS[0].pass must be a string when specified")
-safe_hosts = []
-for item in hosts:
-    if isinstance(item, dict) and isinstance(item.get("ip"), str) and item["ip"]:
-        safe_hosts.append({"ip": item["ip"], "user": item.get("user") or "root"})
-print(target_ip, target_port, user, password, json.dumps(safe_hosts, separators=(",", ":")), sep="\t")
+print(target_ip, target_port, user, password, sep="\t")
 PY
 )"
-  IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD safe_target_hosts <<<"$parsed"
+  IFS=$'\t' read -r target_ip target_port target_user REMOTE_SSH_PASSWORD <<<"$parsed"
   target="${target_user}@${target_ip}"
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
@@ -156,7 +155,7 @@ PY
     printf 'export ARCH_REQUEST_FILE=%q\n' "${TARGET_RENDER_DIR}/architecture.request.json"
     printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
     printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
-    printf 'export TARGET_HOSTS=%q\n' "$safe_target_hosts"
+    printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
     if [[ -n "$remote_xds_url" ]]; then
       printf 'export XDS_URL=%q\n' "$remote_xds_url"
     fi
@@ -167,6 +166,8 @@ PY
     printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
     printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS"
     printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
+    printf 'export EMS_LOG_SYNC_INTERVAL_SECONDS=%q\nexport EMS_LOG_SOURCE_DIR=%q\nexport EMS_LOG_CONTAINER=%q\n' \
+      "$EMS_LOG_SYNC_INTERVAL_SECONDS" "$EMS_LOG_SOURCE_DIR" "$EMS_LOG_CONTAINER"
   } >"$remote_env"
 
   echo "[deploy] execution host delegates deployment to target host: ${target_ip}:${target_port}"
@@ -217,6 +218,9 @@ fi
 [[ "$RELEASE_CLEANUP_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid RELEASE_CLEANUP_POLL_SECONDS: $RELEASE_CLEANUP_POLL_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_TIMEOUT_SECONDS: $TASK_EXECUTOR_READY_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_POLL_SECONDS: $TASK_EXECUTOR_READY_POLL_SECONDS" >&2; exit 2; }
+[[ "$EMS_LOG_SYNC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid EMS_LOG_SYNC_INTERVAL_SECONDS: $EMS_LOG_SYNC_INTERVAL_SECONDS" >&2; exit 2; }
+[[ "$EMS_LOG_SOURCE_DIR" == /* ]] || { echo "EMS_LOG_SOURCE_DIR must be an absolute path: $EMS_LOG_SOURCE_DIR" >&2; exit 2; }
+[[ -n "$EMS_LOG_CONTAINER" ]] || { echo "EMS_LOG_CONTAINER must not be empty" >&2; exit 2; }
 
 if [[ -z "$XDS_URL" ]]; then
   target_ip="$(python3 - "$NODE_LABELS_FILE" <<'PY'
@@ -278,7 +282,8 @@ persist_runtime_environment() {
     printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
     for variable in \
       XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
-      MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID; do
+      MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
+      EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER; do
       printf 'export %s=%q\n' "$variable" "${!variable}"
     done
   } >>"$PIPELINE_ENV_FILE"
@@ -662,6 +667,8 @@ resolve_xds_url_from_service
 
 mkdir -p "$HEAD_LOG_DIR"
 nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
+  EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
+  EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
   "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
   >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
 HEAD_LOG_COLLECTOR_PID=$!

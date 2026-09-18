@@ -12,8 +12,12 @@ normalize_kubernetes_name() {
   printf '%s' "$value"
 }
 
-# 架构名优先使用流水线 arch_name，其次 DEPLOY_STRATEGY；兼容旧 ARCH_NAME。
-ARCH_NAME="${arch_name:-${DEPLOY_STRATEGY:-${ARCH_NAME:-default}}}"
+# 架构名优先使用流水线 arch_name、DEPLOY_STRATEGY 和显式 ARCH_NAME；arch 作为运行时兼容别名。
+resolved_arch_name="${arch_name:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${DEPLOY_STRATEGY:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${ARCH_NAME:-}"
+[[ -n "$resolved_arch_name" ]] || resolved_arch_name="${arch:-}"
+ARCH_NAME="${resolved_arch_name:-default}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-$RUN_DIR/template/xds-cluster}"
@@ -48,7 +52,7 @@ EQUAL_REPLACE_JSON="${EQUAL_REPLACE_JSON:-}"
 YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
-NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018}}"
+NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018,\"192.168.31.140\":31000,\"192.168.31.120\":31001,\"192.168.31.113\":31002,\"192.168.31.164\":31003,\"192.168.31.7\":31004,\"192.168.31.181\":31006}}"
 COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
@@ -454,10 +458,11 @@ template_vars.setdefault("DEPLOY_NAMESPACE", namespace)
 # TE 标签由渲染器按 TARGET_HOSTS 计算，模板内联引用时直接替换为同一份值。
 template_vars.setdefault("XDS_TE_POD_LABEL_KEY", node_selector_key)
 template_vars.setdefault("XDS_TE_POD_LABEL_VAL", node_selector_value)
-# 环境相关占位符默认值；数据库连接项优先使用调用方环境变量。
-# MOCK_DB=true 时数据库项仅供 mock 配置参考；ELB_ID 仅用于注解。
+# 环境相关占位符默认值，均可被 TEMPLATE_VARS_JSON 覆盖：
+# 数据库连接配置为 mock 参考值（MOCK_DB=true 时不真正连库）；ELB_ID 仅用于注解；
 # NODE_PORT/SERVICE_PORT/COLLECTOR_GATEWAY_URL 为本环境固定配置。
 template_vars.setdefault("XDS_DATABASE_HOST", "127.0.0.1")
+# 数据库连接配置可由环境变量覆盖；未设置时使用蓝区默认值。
 database_config = {
     "XDS_DATABASE_NAME": os.environ.get("XDS_DATABASE_NAME", "xds_db"),
     "XDS_DATABASE_PORT": os.environ.get("XDS_DATABASE_PORT", "31106"),
@@ -483,6 +488,10 @@ template_vars.setdefault("LMCACHE_L1_SIZE_GB", "200")
 template_vars.setdefault("LMCACHE_L1_ALIGN_BYTES", "4096")
 template_vars.setdefault("LMCACHE_MAX_WORKERS", "1")
 template_vars.setdefault("LMCACHE_LOG_LEVEL", "INFO")
+template_vars.setdefault("LMCACHE_L2_ENABLED", os.environ.get("LMCACHE_L2_ENABLED", "false"))
+template_vars.setdefault("LMCACHE_L2_BASE_PATH", os.environ.get("LMCACHE_L2_BASE_PATH") or os.environ.get("LMCACHE_L2_HOST_PATH") or "/mnt/paas/lmcache/lmcache-l2/shared")
+template_vars.setdefault("LMCACHE_L2_MAX_CAPACITY_GB", os.environ.get("LMCACHE_L2_MAX_CAPACITY_GB", "10240"))
+template_vars.setdefault("LMCACHE_L2_NUM_WORKERS", os.environ.get("LMCACHE_L2_NUM_WORKERS", "64"))
 template_vars.setdefault("LMCACHE_CPU_REQUEST", "4")
 template_vars.setdefault("LMCACHE_MEMORY_REQUEST", "8Gi")
 template_vars.setdefault("LMCACHE_CPU_LIMIT", "8")
@@ -506,13 +515,13 @@ for key, value in equal_replace_map.items():
     values_text = re.sub(re.escape(str(key)) + r" =.*", f"{key} = {value}", values_text)
 values = yaml.safe_load(values_text) or {}
 
-# A template can contain direct database environment values instead of
-# placeholders. Keep those values consistent with this render invocation.
+# 兼容模板直接写入数据库环境变量的场景：占位符替换后覆盖为当前渲染配置。
+database_env = database_config
 common_env = values.get("common", {}).get("containerEnv", [])
 if isinstance(common_env, list):
     for entry in common_env:
-        if isinstance(entry, dict) and entry.get("name") in database_config:
-            entry["value"] = database_config[entry["name"]]
+        if isinstance(entry, dict) and entry.get("name") in database_env:
+            entry["value"] = database_env[entry["name"]]
             entry.pop("valueFrom", None)
 
 if str(mock_db).lower() == "true":
@@ -551,6 +560,29 @@ values["global"] = deep_merge(values.get("global", {}), {
     "storage": {"hostPath": "/mnt/xds/sfs"},
 })
 values = deep_merge(values, yaml_replace_map)
+
+# Some released images carry a literal default NodePort instead of the
+# {NODE_PORT} placeholder.  Apply the target mapping to the parsed values as
+# well so both template forms produce the same service port.
+if target_node_port is not None:
+    for path in (("global", "network", "ports"), ("rayService", "service", "ports")):
+        current = values
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        if not isinstance(current, list):
+            continue
+        frontend_ports = [
+            item for item in current
+            if isinstance(item, dict) and item.get("name") == "frontend-port"
+        ]
+        candidates = frontend_ports or [
+            item for item in current if isinstance(item, dict) and "nodePort" in item
+        ]
+        if candidates:
+            candidates[0]["nodePort"] = target_node_port
 
 lmcache_sidecar = values.get("lmcacheSidecar")
 if lmcache_sidecar is not None and not isinstance(lmcache_sidecar, dict):
