@@ -4,7 +4,7 @@ const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
 
 function extractFunction(name){
-  const match=new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
+  const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
   assert.ok(match,`pipeline.html 缺少函数 ${name}`);
   const bodyStart=source.indexOf('{',match.index);let depth=0;
   for(let i=bodyStart;i<source.length;i+=1){

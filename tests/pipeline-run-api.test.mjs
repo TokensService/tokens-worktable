@@ -44,6 +44,7 @@ function loadRunRoute(store, overrides = {}) {
   let runSeq = 0
   const ctx = {
     URL,
+    URLSearchParams,
     Promise,
     Buffer,
     AbortController,
@@ -376,12 +377,29 @@ test('旧流水线没有默认值时回退首个环境、首个代码仓和安�
   assert.equal(run.by, 'api')
 })
 
+test('支持不选择任何节点运行：显式空 environmentIds 或默认环境保存为空列表即无目标节点', async () => {
+  // 显式空 environmentIds = 本次运行不选择任何节点（不再 400）
+  let f = loadRunRoute(stored)
+  let res = await call(f.handler, 'pipe-release', { environmentIds: [] })
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].envs), [])
+  assert.equal(f.executions[0].env, '')
+
+  // 省略 environmentIds 且默认环境显式保存为空列表 = 不选择任何节点，不再改投首项
+  const emptyDefaults = structuredClone(stored)
+  emptyDefaults.config.pipelines[0].defaults.environmentIds = []
+  f = loadRunRoute(emptyDefaults)
+  res = await call(f.handler, 'pipe-release')
+  assert.equal(res.status, 202)
+  assert.deepEqual(plain(f.executions[0].envs), [])
+  assert.equal(f.executions[0].env, '')
+})
+
 test('API 拒绝未知流水线、环境、代码仓、非法预设和非 POST 方法', async () => {
   const cases = [
     ['missing', {}, 404, 'pipeline not found'],
     ['pipe-release', { environmentIds: ['missing-env'] }, 400, 'environment not found'],
     ['pipe-release', { repositoryId: 'missing-repo' }, 400, 'repository not found'],
-    ['pipe-release', { environmentIds: [] }, 400, 'environmentIds must not be empty'],
     ['pipe-release', { environmentIds: ['env-prod', 7] }, 400, 'invalid environmentIds'],
     ['pipe-release', { repository: [] }, 400, 'invalid repository'],
     ['pipe-release', { repository: { pass: 7 } }, 400, 'invalid repository.pass'],
@@ -1571,6 +1589,185 @@ test('API 服务端执行旧 Jenkins fullName 阶段并等待对应构建完成'
   assert.equal(f.history[0].status, 'success')
 })
 
+test('服务端取消排队中的 Jenkins 阶段会取消对应 queue item', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  const requests = []
+  let queuePollStarted
+  const polling = new Promise(resolve => { queuePollStarted = resolve })
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) return fetchResponse(201, '', { location: '/queue/item/99/' })
+    if (value.endsWith('/queue/item/99/api/json')) {
+      queuePollStarted()
+      return await new Promise((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (options.signal?.aborted) abort()
+        else options.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
+    if (value.endsWith('/queue/cancelItem?id=99')) return fetchResponse(200, '')
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+    controller.signal,
+  )
+  await Promise.race([polling, new Promise((_, reject) => setTimeout(() => reject(new Error('Jenkins queue poll did not start: ' + requests.map(item => item.url).join(', '))), 500))])
+  controller.abort()
+  const result = await pending
+
+  assert.equal(result.aborted, true)
+  const cancel = requests.find(request => request.url.endsWith('/queue/cancelItem?id=99'))
+  assert.ok(cancel, '流水线中止后必须取消已触发但仍排队的 Jenkins queue item')
+  assert.equal(cancel.options.method, 'POST')
+})
+
+test('服务端在 Jenkins 触发响应返回前收到取消仍会取消随后返回的 queue item', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  const requests = []
+  let markTriggerStarted
+  let releaseTrigger
+  const triggerStarted = new Promise(resolve => { markTriggerStarted = resolve })
+  const triggerResponse = new Promise(resolve => { releaseTrigger = resolve })
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) {
+      markTriggerStarted()
+      return triggerResponse
+    }
+    if (value.endsWith('/queue/cancelItem?id=101')) return fetchResponse(200, '')
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+    controller.signal,
+  )
+  await triggerStarted
+  controller.abort()
+  releaseTrigger(fetchResponse(201, '', { location: '/queue/item/101/' }))
+  const result = await pending
+
+  assert.equal(result.aborted, true)
+  assert.ok(requests.some(request => request.url.endsWith('/queue/cancelItem?id=101')),
+    '中止不得让刚创建但响应迟回的 Jenkins queue item 遗留')
+})
+
+test('服务端 Jenkins crumb 到达阶段 deadline 时不得继续发送 build POST', async () => {
+  const f = loadRunRoute(stored)
+  const requests = []
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) {
+      return new Promise((resolve, reject) => options.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))
+    }
+    if (value.endsWith('/buildWithParameters')) return fetchResponse(201, '', { location: '/queue/item/never/' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', timeout: 1, jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+  )
+  const result = await pending
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /超时/)
+  assert.equal(requests.some(request => request.url.endsWith('/buildWithParameters')), false,
+    'crumb/preflight 未完成便到 deadline 时不得创建 Jenkins 外部任务')
+})
+
+test('服务端 Jenkins 触发响应迟于阶段 deadline 时仍会取消随后返回的 queue item', async () => {
+  const f = loadRunRoute(stored)
+  const requests = []
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) {
+      await new Promise(resolve => setTimeout(resolve, 1050))
+      assert.equal(options.signal?.aborted, false, 'deadline 后的清理宽限内不应丢失 queue Location')
+      return fetchResponse(201, '', { location: '/queue/item/102/' })
+    }
+    if (value.endsWith('/queue/cancelItem?id=102')) return fetchResponse(200, '')
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const result = await f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', timeout: 1, jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+  )
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /超时/)
+  assert.ok(requests.some(request => request.url.endsWith('/queue/cancelItem?id=102')),
+    'deadline 不得遗留刚创建但响应迟回的 Jenkins queue item')
+})
+
+test('服务端取消运行中的 Jenkins 阶段会停止对应构建', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  const requests = []
+  let buildPollStarted
+  const polling = new Promise(resolve => { buildPollStarted = resolve })
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/crumbIssuer/api/json')) return fetchResponse(404, '')
+    if (value.endsWith('/buildWithParameters')) return fetchResponse(201, '', { location: '/queue/item/100/' })
+    if (value.endsWith('/queue/item/100/api/json')) return fetchResponse(200, { executable: { number: 42 } })
+    if (value.endsWith('/job/folder/job/app/42/api/json?tree=number,building,result,duration')) {
+      buildPollStarted()
+      return await new Promise((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (options.signal?.aborted) abort()
+        else options.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
+    if (value.endsWith('/job/folder/job/app/42/stop')) return fetchResponse(200, '')
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerHttpStage(
+    { kind: 'jenkins', jenkins: { job: 'folder/app' } },
+    {},
+    { jenkins: { url: 'http://jenkins.internal', user: 'ci', token: 'secret' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+    controller.signal,
+  )
+  await Promise.race([polling, new Promise((_, reject) => setTimeout(() => reject(new Error('Jenkins build poll did not start: ' + requests.map(item => item.url).join(', '))), 500))])
+  controller.abort()
+  const result = await pending
+
+  assert.equal(result.aborted, true)
+  const stop = requests.find(request => request.url.endsWith('/job/folder/job/app/42/stop'))
+  assert.ok(stop, '流水线中止后必须停止已经开始的 Jenkins build')
+  assert.equal(stop.options.method, 'POST')
+})
+
 test('Jenkins 构建成功后的最终控制台读取仍受阶段 deadline 限制', async () => {
   const f = loadExecPlan({
     ...apiExecutionConfig,
@@ -1723,6 +1920,116 @@ test('API 服务端执行 EvalTokens 阶段，传入参数覆盖并等待本次 
   assert.ok(requests.some(request => request.url.includes('task_id=task-42')))
   assert.equal(f.history[0].status, 'success')
   assert.doesNotMatch(f.history[0].logs[0].log, /暂不支持|已跳过/)
+})
+
+test('服务端取消 EvalTokens 阶段会停止已经启动的 run', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  const requests = []
+  let runPollStarted
+  const polling = new Promise(resolve => { runPollStarted = resolve })
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { tasks: [{ id: 'task-cancel', name: '取消测试' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-cancel/run')) return fetchResponse(200, { run_id: 'run-cancel', status: 'running' })
+    if (value.includes('/api/open/v1/tasks/runs?task_id=task-cancel')) {
+      runPollStarted()
+      return await new Promise((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (options.signal?.aborted) abort()
+        else options.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
+    if (value.endsWith('/api/v1/tasks/runs/run-cancel/stop')) return fetchResponse(200, { status: 'stopped' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-cancel' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: 'eval-secret', mode: 'local' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+    controller.signal,
+  )
+  await Promise.race([polling, new Promise((_, reject) => setTimeout(() => reject(new Error('EvalTokens run poll did not start: ' + requests.map(item => item.url).join(', '))), 500))])
+  controller.abort()
+  const result = await pending
+
+  assert.equal(result.aborted, true)
+  const stop = requests.find(request => request.url.endsWith('/api/v1/tasks/runs/run-cancel/stop'))
+  assert.ok(stop, '流水线中止后必须停止 EvalTokens 实际 run')
+  assert.equal(stop.options.method, 'POST')
+  assert.equal(stop.options.headers.Authorization, 'Bearer eval-secret')
+})
+
+test('服务端在 EvalTokens 启动响应返回前收到取消仍会停止随后返回的 run', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  const requests = []
+  let markStartRequested
+  let releaseStart
+  const startRequested = new Promise(resolve => { markStartRequested = resolve })
+  const startResponse = new Promise(resolve => { releaseStart = resolve })
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { tasks: [{ id: 'task-start-race', name: '启动竞态' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-start-race/run')) {
+      markStartRequested()
+      return startResponse
+    }
+    if (value.endsWith('/api/v1/tasks/runs/run-start-race/stop')) return fetchResponse(200, { status: 'stopped' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-start-race' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: '', mode: 'local' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+    controller.signal,
+  )
+  await startRequested
+  controller.abort()
+  releaseStart(fetchResponse(200, { run_id: 'run-start-race', status: 'running' }))
+  const result = await pending
+
+  assert.equal(result.aborted, true)
+  assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-start-race/stop')),
+    '中止不得让刚创建但响应迟回的 EvalTokens run 遗留')
+})
+
+test('服务端 EvalTokens 启动响应迟于阶段 deadline 时仍会停止随后返回的 run', async () => {
+  const f = loadRunRoute(stored)
+  const requests = []
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { tasks: [{ id: 'task-deadline-race', name: '超时竞态' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-deadline-race/run')) {
+      await new Promise(resolve => setTimeout(resolve, 1050))
+      assert.equal(options.signal?.aborted, false, 'deadline 后的清理宽限内不应丢失 run_id')
+      return fetchResponse(200, { run_id: 'run-deadline-race', status: 'running' })
+    }
+    if (value.endsWith('/api/v1/tasks/runs/run-deadline-race/stop')) return fetchResponse(200, { status: 'stopped' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const result = await f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', timeout: 1, evaltokens: { taskId: 'task-deadline-race' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: '', mode: 'local' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+  )
+
+  assert.equal(result.code, 1)
+  assert.match(result.stderr, /超时/)
+  assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-deadline-race/stop')),
+    'deadline 不得遗留刚创建但响应迟回的 EvalTokens run')
 })
 
 test('远程模式的服务端 EvalTokens 阶段直连内网服务而不使用环境代理 fetch', async t => {
@@ -1927,6 +2234,46 @@ test('勾选收集普罗数据的任务在终态按其起止注入 collect 动�
   assert.match(collect.extraEnv.METRICS_OUTPUT_DIR, /^\/var\/pipeline-runs\/.+\/测试模型-01-普罗数据$/)
   assert.ok(Date.parse(collect.extraEnv.PROM_START) <= Date.parse(collect.extraEnv.PROM_END))
   assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
+})
+
+test('任务级普罗采集在部署策略解析不出时不注入命名空间残段', async () => {
+  const load = () => loadExecPlan({
+    ...apiExecutionConfig,
+    archiveDir: '/var/pipeline-runs',
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  })
+  const promPlan = () => {
+    const plan = apiExecutionPlan([])
+    plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
+    return plan
+  }
+
+  const noStrategy = load()
+  const noStrategyPlan = promPlan()
+  noStrategyPlan.strategy = ''   // 未选择部署策略（「（不使用）」）
+  await noStrategy.execPlan(noStrategyPlan)
+  const noStrategyCollect = noStrategy.calls.find(call => call.script === 'collect.py')
+  assert.ok(noStrategyCollect)
+  assert.equal(noStrategyCollect.extraEnv.XDS_NAMESPACE, undefined)
+  assert.equal(noStrategyCollect.extraEnv.NAMESPACE, undefined)
+  assert.equal(noStrategyCollect.extraEnv.MODEL_NAME, undefined)   // MODEL_PATH 未产出同样不注入
+
+  const noBy = load()
+  const noByPlan = promPlan()
+  noByPlan.by = ''   // 执行人缺省时服务端按来源兜底（api/schedule），BY 恒可解析，命名空间照常注入
+  await noBy.execPlan(noByPlan)
+  const noByCollect = noBy.calls.find(call => call.script === 'collect.py')
+  assert.ok(noByCollect)
+  assert.equal(noByCollect.extraEnv.XDS_NAMESPACE, 'blue-green-api')
+
+  const ok = load()
+  const okPlan = promPlan()
+  okPlan.vars = { MODEL_PATH: '/models/demo' }
+  await ok.execPlan(okPlan)
+  const okCollect = ok.calls.find(call => call.script === 'collect.py')
+  assert.ok(okCollect)
+  assert.equal(okCollect.extraEnv.XDS_NAMESPACE, 'blue-green-jenkins')
+  assert.equal(okCollect.extraEnv.MODEL_NAME, '/models/demo')
 })
 
 test('普罗采集结果追加到服务端已直写的任务日志并由汇总复用', async () => {

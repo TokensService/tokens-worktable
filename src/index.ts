@@ -268,6 +268,58 @@ function cleanPipelineHistory(history: any[]) {
   })
 }
 
+/**
+ * 三方合并流水线定义：客户端未改动的 id 以磁盘为准，不同 id 的并发改动可同时保留；
+ * 同一 id 在客户端与磁盘都偏离共同基线时报告冲突，调用方不得写盘。
+ */
+function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
+  const objectConfig = (value: any) => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const client = objectConfig(clientConfig)
+  const base = objectConfig(baseConfig)
+  const disk = objectConfig(diskConfig)
+  const config = { ...client }
+  const clientPipelines = Array.isArray(client.pipelines) ? client.pipelines : []
+  const basePipelines = Array.isArray(base.pipelines) ? base.pipelines : []
+  const diskPipelines = Array.isArray(disk.pipelines) ? disk.pipelines : []
+  const valid = (item: any) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id
+  const mapOf = (items: any[]) => new Map(items.filter(valid).map((item: any) => [item.id, item]))
+  const clientMap = mapOf(clientPipelines), baseMap = mapOf(basePipelines), diskMap = mapOf(diskPipelines)
+  const sameEntry = (left: Map<string, any>, right: Map<string, any>, id: string) => {
+    const leftHas = left.has(id), rightHas = right.has(id)
+    return leftHas === rightHas && (!leftHas || JSON.stringify(left.get(id)) === JSON.stringify(right.get(id)))
+  }
+  const ids = new Set<string>([...baseMap.keys(), ...clientMap.keys(), ...diskMap.keys()])
+  const merged = new Map<string, any>()
+  const conflicts: string[] = []
+  for (const id of ids) {
+    const clientChanged = !sameEntry(clientMap, baseMap, id)
+    const diskChanged = !sameEntry(diskMap, baseMap, id)
+    if (clientChanged && diskChanged && !sameEntry(clientMap, diskMap, id)) {
+      conflicts.push(id)
+      if (diskMap.has(id)) merged.set(id, diskMap.get(id))
+      continue
+    }
+    const source = clientChanged ? clientMap : diskMap
+    if (source.has(id)) merged.set(id, source.get(id))
+  }
+  /* 先沿用磁盘顺序（保留他端新增的位置），再追加仅客户端新增的定义。 */
+  const ordered: any[] = []
+  for (const item of diskPipelines) if (valid(item) && merged.has(item.id)) { ordered.push(merged.get(item.id)); merged.delete(item.id) }
+  for (const item of clientPipelines) if (valid(item) && merged.has(item.id)) { ordered.push(merged.get(item.id)); merged.delete(item.id) }
+  for (const item of merged.values()) ordered.push(item)
+  config.pipelines = ordered
+  return { config, conflicts }
+}
+
+/** 旧页面未携带共同基线时只能判断定义是否不同；不同即拒绝，不能让旧协议绕过并发保护。 */
+function pipelineConfigDifferenceIds(clientConfig: any, diskConfig: any) {
+  const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
+  const mapOf = (items: any[]) => new Map(items.filter(item => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map(item => [item.id, item]))
+  const client = mapOf(pipelinesOf(clientConfig)), disk = mapOf(pipelinesOf(diskConfig))
+  const ids = new Set<string>([...client.keys(), ...disk.keys()])
+  return [...ids].filter(id => client.has(id) !== disk.has(id) || (client.has(id) && JSON.stringify(client.get(id)) !== JSON.stringify(disk.get(id))))
+}
+
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
   const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
@@ -927,6 +979,65 @@ function serverBasicAuth(config: any): Record<string, string> {
   return { Authorization: 'Basic ' + Buffer.from(String(config.user || '') + ':' + String(config.token || '')).toString('base64') }
 }
 
+async function serverPostAction(fetchFn: typeof fetch, url: string, headers: Record<string, string>, label: string, body = ''): Promise<void> {
+  const result = await serverFetchResponse(fetchFn, url, { method: 'POST', headers, body }, Date.now() + 10_000, label, 64 * 1024)
+  if (result.response.status < 200 || result.response.status >= 400) throw new Error(label + ' HTTP ' + result.response.status)
+}
+
+async function serverCancelJenkinsExecution(fetchFn: typeof fetch, base: string, jobPath: string, buildNumber: number | null, queuePath: string, headers: Record<string, string>): Promise<void> {
+  const actionHeaders = { ...headers }
+  try {
+    const crumb = await serverFetchJson(fetchFn, base + '/crumbIssuer/api/json', { method: 'GET', headers }, Date.now() + 10_000, 'Jenkins crumb')
+    if (crumb && crumb.crumbRequestField && crumb.crumb) actionHeaders[String(crumb.crumbRequestField)] = String(crumb.crumb)
+  } catch { /* API token 常见配置不要求 crumb；获取失败时仍尝试终止。 */ }
+  if (buildNumber !== null) {
+    await serverPostAction(fetchFn, base + jobPath + buildNumber + '/stop', actionHeaders, 'Jenkins 构建终止')
+    return
+  }
+  const match = /\/queue\/item\/([^/]+)/.exec(queuePath)
+  if (!match) throw new Error('Jenkins 取消缺少 queue item 或构建号')
+  const queueId = decodeURIComponent(match[1])
+  try {
+    await serverPostAction(fetchFn, base + '/queue/cancelItem?id=' + encodeURIComponent(queueId), actionHeaders, 'Jenkins 排队取消')
+  } catch (cancelError) {
+    // queue item 可能恰在终止瞬间转为 build；Location 对应的条目会短暂保留 executable.number。
+    const queued = await serverFetchJson(fetchFn, base + queuePath.replace(/\/+$/, '') + '/api/json', { method: 'GET', headers }, Date.now() + 10_000, 'Jenkins 队列状态')
+    const number = Number(queued && queued.executable && queued.executable.number)
+    if (!Number.isInteger(number) || number <= 0) throw cancelError
+    await serverPostAction(fetchFn, base + jobPath + number + '/stop', actionHeaders, 'Jenkins 构建终止')
+  }
+}
+
+async function serverStopEvaltokensRun(fetchFn: typeof fetch, base: string, runId: string, headers: Record<string, string>): Promise<void> {
+  await serverPostAction(
+    fetchFn,
+    base + '/api/v1/tasks/runs/' + encodeURIComponent(runId) + '/stop',
+    { ...headers, 'Content-Type': 'application/json' },
+    'EvalTokens 任务终止',
+    '{}',
+  )
+}
+
+function serverStartCleanupSignal(signal?: AbortSignal, graceMs = 10_000): { signal?: AbortSignal; dispose: () => void } {
+  if (!signal) return { signal: undefined, dispose: () => {} }
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = () => {
+    if (timer === null && !controller.signal.aborted) {
+      timer = setTimeout(() => controller.abort(serverAbortReason(signal)), graceMs)
+    }
+  }
+  signal.addEventListener('abort', schedule, { once: true })
+  if (signal.aborted) schedule()
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      signal.removeEventListener('abort', schedule)
+      if (timer !== null) clearTimeout(timer)
+    },
+  }
+}
+
 function serverJenkinsJobPath(name: string): string {
   return '/job/' + String(name).split('/').filter(Boolean).map(encodeURIComponent).join('/job/') + '/'
 }
@@ -951,6 +1062,8 @@ function normalizeServerHttpBody(text: string): string {
 async function executeServerHttpStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const raw = serverStageUrl(stage)
   const deadline = serverStageDeadline(stage)
+  let cancelJenkins: (() => Promise<void>) | null = null
+  let jenkinsActive = false
   try {
     if (!raw) throw new Error('HTTP 阶段未配置请求地址')
     const vars = serverRunVariables(runCtx, varsPool)
@@ -992,7 +1105,23 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       triggerOptions = { method: 'POST', headers, body: form.toString(), redirect: 'manual' }
     }
 
-    const triggered = await serverFetchResponse(deps.fetchFn, triggerUrl, triggerOptions, deadline, isUrl ? 'HTTP 请求' : 'Jenkins 触发', PIPELINE_REMOTE_TEXT_LIMIT, signal)
+    /* Jenkins 触发一旦发出便可能已经创建外部任务。终止/deadline 后给响应 10s 清理宽限，
+       以便拿到 queue Location 后补发取消；普通 webhook 仍立即中止。 */
+    if (signal && signal.aborted) throw serverAbortReason(signal)
+    if (jobPath) ensureServerStageTime(deadline, 'Jenkins 触发')
+    const startGuard = jobPath ? serverStartCleanupSignal(signal) : null
+    let triggered
+    try {
+      triggered = await serverFetchResponse(
+        deps.fetchFn,
+        triggerUrl,
+        triggerOptions,
+        jobPath && deadline ? deadline + 10_000 : deadline,
+        isUrl ? 'HTTP 请求' : 'Jenkins 触发',
+        PIPELINE_REMOTE_TEXT_LIMIT,
+        jobPath ? startGuard!.signal : signal,
+      )
+    } finally { if (startGuard) startGuard.dispose() }
     if (triggered.response.status < 200 || triggered.response.status >= 400) {
       throw new Error((isUrl ? 'HTTP 请求' : 'Jenkins 触发') + ' HTTP ' + triggered.response.status)
     }
@@ -1011,6 +1140,9 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
     if (!queuePath) throw new Error('Jenkins queue Location 无效，无法可靠关联本次构建')
     const queueUrl = base + queuePath + '/api/json'
     let buildNumber: number | null = null
+    cancelJenkins = () => serverCancelJenkinsExecution(deps.fetchFn, base, jobPath, buildNumber, queuePath, pollHeaders)
+    jenkinsActive = true
+    if (signal && signal.aborted) throw serverAbortReason(signal)
     while (buildNumber === null) {
       ensureServerStageTime(deadline, 'Jenkins 排队')
       try {
@@ -1030,7 +1162,7 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       ensureServerStageTime(deadline, 'Jenkins 构建')
       try {
         const info = await serverFetchJson(deps.fetchFn, base + jobPath + buildNumber + '/api/json?tree=number,building,result,duration', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 构建', signal)
-        if (Number(info && info.number) === buildNumber && !info.building && info.result) { result = String(info.result); break }
+        if (Number(info && info.number) === buildNumber && !info.building && info.result) { result = String(info.result); jenkinsActive = false; break }
       } catch (error) {
         ensureServerStageTime(deadline, 'Jenkins 构建')
         if (Number(error && (error as any).httpStatus) !== 404) throw error
@@ -1056,7 +1188,12 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
     const stdout = stdoutBase + (consoleWarning ? '\n' + consoleWarning : '')
     return { code: result === 'SUCCESS' ? 0 : 1, stdout, stderr: result === 'SUCCESS' ? '' : 'Jenkins 构建结果 ' + result }
   } catch (error) {
-    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal && signal.aborted ? { aborted: true } : {}) }
+    let message = String(error && (error as Error).message ? (error as Error).message : error)
+    if (jenkinsActive && cancelJenkins) {
+      try { await cancelJenkins() }
+      catch (cancelError) { message += '\nJenkins 外部任务终止失败：' + String(cancelError && (cancelError as Error).message ? (cancelError as Error).message : cancelError) }
+    }
+    return { code: 1, stdout: '', stderr: message, ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
 
@@ -1077,6 +1214,8 @@ function serverEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
 
 async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; directFetchFn?: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const deadline = serverStageDeadline(stage)
+  let stopRun: (() => Promise<void>) | null = null
+  let runActive = false
   try {
     const service = config && config.evaltok && typeof config.evaltok === 'object' ? config.evaltok : {}
     const base = String(service.url || '').replace(/\/+$/, '')
@@ -1110,11 +1249,20 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
       }
     }
     const startHeaders = { ...headers, 'Content-Type': 'application/json' }
-    const started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
-      method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
-    }, deadline, 'EvalTokens 启动任务', signal)
+    /* 启动 POST 已发出后不可丢掉 run_id；用户恰在响应返回前终止时，拿到 ID 后立即补发 stop。 */
+    if (signal && signal.aborted) throw serverAbortReason(signal)
+    const startGuard = serverStartCleanupSignal(signal)
+    let started
+    try {
+      started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
+        method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
+      }, deadline ? deadline + 10_000 : deadline, 'EvalTokens 启动任务', startGuard.signal)
+    } finally { startGuard.dispose() }
     const runId = String((started && started.run_id) || '')
     if (!runId) throw new Error('EvalTokens 启动任务未返回 run_id')
+    stopRun = () => serverStopEvaltokensRun(fetchFn, base, runId, headers)
+    runActive = true
+    if (signal && signal.aborted) throw serverAbortReason(signal)
     let current: any = started
     for (;;) {
       ensureServerStageTime(deadline, 'EvalTokens 任务')
@@ -1124,13 +1272,19 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
       if (matched) current = matched
       const state = matched ? serverEvaltokensStatus(current.status || current.state || current.phase) : 'running'
       if (state !== 'running') {
+        runActive = false
         const stdout = JSON.stringify(current)
         return { code: state === 'success' ? 0 : 1, stdout, stderr: state === 'success' ? '' : 'EvalTokens ' + state }
       }
       await deps.sleep(3000, signal)
     }
   } catch (error) {
-    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal && signal.aborted ? { aborted: true } : {}) }
+    let message = String(error && (error as Error).message ? (error as Error).message : error)
+    if (runActive && stopRun) {
+      try { await stopRun() }
+      catch (stopError) { message += '\nEvalTokens 外部任务终止失败：' + String(stopError && (stopError as Error).message ? (stopError as Error).message : stopError) }
+    }
+    return { code: 1, stdout: '', stderr: message, ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
 
@@ -1147,8 +1301,11 @@ function buildServerTaskPromEnv(runCtx: any, config: any, varsPool: Record<strin
     VLLM_METRICS_END: String(Math.floor(endMs / 1000)),
     PROMETHEUS_URL: String(config && config.prom && config.prom.url ? config.prom.url : '').trim(),
   }
-  const model = substituteServerRunVars('${MODEL_PATH}', vars).trim()
-  const namespace = substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim()
+  /* 解析不出则不注入：替换后仍残留未解析 ${...} 占位（未选部署策略、无执行人等）按空值处理，
+     否则未选策略时会把字面 ${DEPLOY_STRATEGY}-<执行人> 残段注入采集脚本（与页面 substPromTemplate 一致） */
+  const resolved = (text: string) => (text.indexOf('${') >= 0 ? '' : text)
+  const model = resolved(substituteServerRunVars('${MODEL_PATH}', vars).trim())
+  const namespace = resolved(substituteServerRunVars('${DEPLOY_STRATEGY}-${BY}', vars).trim())
   if (model) { env.ARCH_NAME = model; env.MODEL_NAME = model }
   if (namespace) { env.NAMESPACE = namespace; env.XDS_NAMESPACE = namespace }
   if (runCtx.archive) env.ARCHIVE_FOLDER = String(runCtx.archive)
@@ -1176,15 +1333,17 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
     return { status: 409, error: 'invalid configured environmentIds' }
   }
   const requestedEnvironmentIds = explicitEnvironments ? stringList(input.environmentIds) : defaults.environmentIds
-  if (explicitEnvironments && !requestedEnvironmentIds.length) return { status: 400, error: 'environmentIds must not be empty' }
   let selectedEnvironments: any[] = []
   if (requestedEnvironmentIds.length) {
     selectedEnvironments = requestedEnvironmentIds.map((id) => environments.find((item: any) => item.id === id))
     if (selectedEnvironments.some((item) => !item)) {
       return { status: explicitEnvironments ? 400 : 409, error: explicitEnvironments ? 'environment not found' : 'configured environment not found' }
     }
-  } else if (environments.length) selectedEnvironments = [environments[0]]   // 仅旧流水线未配置默认环境时兼容首项
-  if (!selectedEnvironments.length) return { status: 400, error: 'environment not found' }
+  } else if (!explicitEnvironments && !own(rawDefaults, 'environmentIds') && environments.length) {
+    selectedEnvironments = [environments[0]]   // 仅旧流水线从未保存过默认环境字段时兼容首项
+  }
+  /* 允许不选择任何节点：显式空 environmentIds 或默认环境保存为空列表即无目标节点运行
+     （无节点互斥约束，执行池按纯 FIFO，注入的 TARGET_ 系列变量为空值）。 */
 
   const repositories = Array.isArray(config.repositories) ? config.repositories.filter((item: any) => item && typeof item.id === 'string') : []
   const explicitRepository = own(input, 'repositoryId')
@@ -1844,21 +2003,35 @@ export function apply(ctx: Context) {
         if (req.method === 'PUT') {
           const body = await readJsonBody(req)
           const config = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
+          const baseConfig = body.baseConfig && typeof body.baseConfig === 'object' && !Array.isArray(body.baseConfig) ? body.baseConfig : null
           const history = Array.isArray(body.history) ? cleanPipelineHistory(body.history.slice(0, 500)) : []
-          await withStoreLock(async () => {
+          const outcome = await withStoreLock(async () => {
             /* 与磁盘现状合并再写（此前全量覆盖：页面打开期间服务端定时运行 append 的记录会被抹掉、
                buildNo 回退重号）。页面不知道的磁盘记录保留；「清空」语义经 histClearedAt 表达——
                清空时间点之前的磁盘记录视为已删、不因合并复活。buildNo / histClearedAt 取双方较大值防回退。 */
             const disk = await readPipelineStore()
             const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
             const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
-            const merged = mergePipelineHistoryForWrite(config, diskCfg, history, diskHistory)
+            /* 新页面带共同基线，按流水线 id 做三方合并；旧页面没有基线时仅允许流水线定义未变化的写入，
+               防止升级部署前仍打开的标签页用整份旧快照覆盖新页面。空存储首次迁移保持兼容。 */
+            const diskHasPipelines = Array.isArray(diskCfg.pipelines) && diskCfg.pipelines.length > 0
+            const configMerge = baseConfig ? mergePipelineConfigForWrite(config, baseConfig, diskCfg) : {
+              config,
+              conflicts: diskHasPipelines ? pipelineConfigDifferenceIds(config, diskCfg) : [],
+            }
+            if (configMerge.conflicts.length) return { conflicts: configMerge.conflicts, config: diskCfg }
+            const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
             const text = serializePipelineStore(merged.config, merged.history)
             await writeJsonAtomic(PIPELINE_STORE, text)
+            return { conflicts: [] as string[], config: merged.config }
           })
-          json(res, 200, { ok: true })
+          if (outcome.conflicts.length) {
+            json(res, 409, { error: 'pipeline config conflict', conflicts: outcome.conflicts, config: outcome.config })
+            return
+          }
+          json(res, 200, { ok: true, config: outcome.config })
           return
         }
         res.writeHead(405); res.end()

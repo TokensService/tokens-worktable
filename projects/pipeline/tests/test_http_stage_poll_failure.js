@@ -1,8 +1,8 @@
 /* HTTP 阶段（URL 含 /job/ 的 Jenkins 任务路径）浏览器本地执行：构建状态轮询失败的兜底回归测试。
    旧行为：轮询 catch 吞掉一切错误且无限重试——「Jenkins 服务配置」地址不对 / 桥接未启动 / CORS 拦截 /
    401·403 等持续性故障会让阶段永远卡在「运行中」，日志看不到任何原因（阶段超时默认留空无兜底）。
-   新行为：连续失败计数、首次与每 15 次回显原因、连续 30 次按阶段失败收尾；
-   已确认任务存在（拿到 nextBuildNumber）时 lastBuild 404 = 首次构建尚未开始，属合法排队等待，不计失败。
+   新行为：按触发响应的 queue Location 精确轮询本次任务；连续失败计数、首次与每 15 次回显原因、
+   连续 30 次按阶段失败收尾，不再用 nextBuildNumber/lastBuild 猜测并发构建。
    沙盒切片与打桩方式同 test_jenkins_stage_vars.js。 */
 const fs = require("fs");
 const vm = require("vm");
@@ -53,7 +53,7 @@ const context = {
   stageSeq: (stg, i) => i + 1,
   advance: (rc_, i) => { advancedTo = i; },
   finish: (rc_, s) => { finishedWith = s; },
-  fetch: async () => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => "triggered" }),
+  fetch: async () => ({ ok: true, status: 200, headers: { get: name => name.toLowerCase() === "location" ? "/queue/item/7/" : null }, text: async () => "triggered" }),
 };
 vm.createContext(context);
 vm.runInContext(
@@ -85,27 +85,28 @@ function freshRun() {
     context.jkFetchJson = async () => { calls += 1; throw new TypeError("Failed to fetch"); };
     await context.runUrlStep(rc, 0);
     if (finishedWith !== "failed") throw new Error("持续轮询故障应按失败收尾，得到 " + JSON.stringify({ advancedTo, finishedWith }));
-    if (calls !== 31) throw new Error("1 次 nextBuildNumber + 30 次有界轮询后应止损，得到 " + calls + " 次请求（旧代码此处永不返回）");
+    if (calls !== 30) throw new Error("30 次精确 queue 轮询后应止损，得到 " + calls + " 次请求（旧代码此处永不返回）");
     const node = rc.nodes["st-http"] || {};
     if (node.status !== "failed") throw new Error("阶段节点应置为 failed，得到 " + JSON.stringify(node.status));
     if (rc.timer !== null) throw new Error("失败收尾后 rc.timer 应已清理");
     const stderr = (stage._out && stage._out.stderr) || "";
-    if (!/构建状态轮询持续失败（连续 30 次）：Failed to fetch/.test(stderr)) throw new Error("失败原因应写入阶段 stderr，得到 " + JSON.stringify(stderr));
+    if (!/Jenkins queue 状态轮询持续失败（连续 30 次）：Failed to fetch/.test(stderr)) throw new Error("失败原因应写入阶段 stderr，得到 " + JSON.stringify(stderr));
     const stdout = (stage._out && stage._out.stdout) || "";
-    if (!/轮询连续失败 1 次/.test(stdout)) throw new Error("首次轮询失败即应回显原因");
-    if (!/轮询连续失败 15 次/.test(stdout) || !/轮询连续失败 30 次/.test(stdout)) throw new Error("每 15 次失败应再回显一次");
+    if (!/queue 状态轮询连续失败 1 次/.test(stdout)) throw new Error("首次轮询失败即应回显原因");
+    if (!/queue 状态轮询连续失败 15 次/.test(stdout) || !/queue 状态轮询连续失败 30 次/.test(stdout)) throw new Error("每 15 次失败应再回显一次");
     if (!/Jenkins 服务配置/.test(stdout) || !/CORS/.test(stdout)) throw new Error("告警应给出排查指引（服务配置 / CORS）");
     console.log("PASS: 构建状态轮询持续失败有界收尾并回显原因（不再无限卡住）");
   }
 
-  // ② 已确认任务存在（拿到 nextBuildNumber）时 lastBuild 404 = 首次构建尚未开始：合法排队等待，不计失败
+  // ② queue item 尚未分配 executable 时继续等待，不能改查共享 lastBuild
   {
     const { stage, rc } = freshRun();
     let polls = 0;
     context.jkFetchJson = async (_j, url) => {
-      if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
-      polls += 1;
-      if (polls <= 3) throw new Error("HTTP 404");   // 构建 #7 尚未开始：lastBuild 尚不存在
+      if (url.includes("/queue/item/7/api/json")) {
+        polls += 1;
+        return polls <= 3 ? {} : { executable: { number: 7 } };
+      }
       return { number: 7, building: false, result: "SUCCESS", duration: 1 };
     };
     await context.runUrlStep(rc, 0);
@@ -114,7 +115,7 @@ function freshRun() {
     if ((rc.nodes["st-http"] || {}).status !== "success") throw new Error("阶段节点应置为 success");
     const stdout = (stage._out && stage._out.stdout) || "";
     if (/轮询连续失败/.test(stdout)) throw new Error("首次构建排队中的 404 属合法等待，不应计为轮询失败");
-    console.log("PASS: 首次构建排队中的 lastBuild 404 按合法等待处理（不计失败）");
+    console.log("PASS: 精确 queue item 未分配 executable 时继续等待（不查询共享 lastBuild）");
   }
 
   // ③ 瞬时故障（网络抖动）恢复后照常成功；失败计数在成功后清零
@@ -122,9 +123,11 @@ function freshRun() {
     const { stage, rc } = freshRun();
     let polls = 0;
     context.jkFetchJson = async (_j, url) => {
-      if (url.includes("nextBuildNumber")) return { nextBuildNumber: 7 };
-      polls += 1;
-      if (polls <= 2) throw new TypeError("Failed to fetch");
+      if (url.includes("/queue/item/7/api/json")) {
+        polls += 1;
+        if (polls <= 2) throw new TypeError("Failed to fetch");
+        return { executable: { number: 7 } };
+      }
       return { number: 7, building: false, result: "SUCCESS", duration: 1 };
     };
     await context.runUrlStep(rc, 0);

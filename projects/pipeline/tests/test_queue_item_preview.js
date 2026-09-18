@@ -272,6 +272,8 @@ test('pullRemoteQueue：每次轮询把服务端权威队列与旧浏览器在�
     applyRemoteQueuePreviewRefresh: () => { previews += 1; },
     pullRemoteQueueLog: async () => { logPulls += 1; },
     renderQueue: () => { renders += 1; },
+    /* 定时计划联动重绘（活动执行集合签名）在本用例无计划场景下恒为空，重绘不发生 */
+    planActiveSig: () => '', _planActiveSig: '', renderPlanList: () => {},
   };
   vm.createContext(context);
   vm.runInContext(extract('/* 拉取服务端权威队列及旧标签页', "$('queueRefresh')"), context);

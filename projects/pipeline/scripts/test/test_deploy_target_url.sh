@@ -88,7 +88,6 @@ assert payload["spec_package"] == "test-package", payload
 assert payload["local_info"]["path"] == "/home/service/works/models_ssd/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1", payload
 PY
 
-
 # The NodePort is discovered only during deployment. Persist that resolved
 # runtime contract for later pipeline scripts and diagnostics.
 runtime_env="$work_dir/run/pipeline.env"

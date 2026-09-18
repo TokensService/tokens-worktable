@@ -39,7 +39,7 @@ test('默认运行参数归一化并过滤重复、空值和未知预设',()=>{
   });
 });
 
-test('列表直接运行采用有效默认值；仅旧流水线缺省时回退首项',()=>{
+test('任务列表运行弹窗采用有效默认值；仅旧流水线缺省时回退首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',name:'仓库 B',url:'b.git'}],
@@ -57,7 +57,7 @@ test('列表直接运行采用有效默认值；仅旧流水线缺省时回退�
   });
 });
 
-test('列表运行检测失效的默认环境和代码仓，不静默改投首项',()=>{
+test('任务列表运行弹窗检测失效的默认环境和代码仓，不静默改投首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',url:'b.git'}],
@@ -133,6 +133,22 @@ test('submitServerRun 用 keepalive 提交脱敏运行参数并立即刷新权�
   });
   assert.equal(requests[0].options.body.includes('secret'),false,'节点/代码仓凭据与阶段配置不得由页面重复上传');
   assert.equal(pulls,1);
+});
+
+test('submitServerRun 未选择任何节点时上送显式空环境数组，不回退流水线默认环境',async()=>{
+  const requests=[];
+  const ctx={
+    fetch:async(url,options)=>{ requests.push({url,options}); return {ok:true,status:202,json:async()=>({ok:true,runId:'manual-2'})}; },
+    pullRemoteQueue:async()=>{},alert:()=>{},console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('submitServerRun'),ctx);
+  await ctx.submitServerRun({
+    pipelineId:'pipe-b',envs:[],repoId:'repo-b',branch:'release',strategy:'',presets:[],image:'app',by:'operator',stages:[],
+  });
+  const body=JSON.parse(requests[0].options.body);
+  assert.ok('environmentIds' in body,'空选择也必须显式携带 environmentIds（省略=回退流水线默认环境）');
+  assert.deepEqual(body.environmentIds,[],'显式空数组 = 不选择任何节点（无目标节点运行）');
 });
 
 test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',()=>{
