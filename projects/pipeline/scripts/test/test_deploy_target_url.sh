@@ -100,4 +100,36 @@ grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "
 grep -Fxq 'export SERVICE_API=http://192.168.31.175:31465/xds/v1' "$runtime_env"
 grep -Fxq 'export MODEL_API=http://192.168.31.175:31465/xds/v1/models/test-arch' "$runtime_env"
 
+# An explicitly supplied URL may still contain the SSH/NAT endpoint. When a
+# node-IP mapping exists, persist and use the mapped Kubernetes address while
+# preserving the resolved port and API path.
+explicit_runtime_env="$work_dir/run-explicit/pipeline.env"
+mkdir -p "$(dirname "$explicit_runtime_env")" "$work_dir/run-explicit/rendered"
+: >"$work_dir/curl.log"
+CURL_LOG="$work_dir/curl.log" \
+CURL_PAYLOAD_FILE="$work_dir/model-explicit.payload.json" \
+DEPLOY_ON_TARGET_HOST=1 \
+RUN_DIR="$work_dir/run-explicit" \
+CHART_DIR="$work_dir/chart" \
+VALUES_FILE="$work_dir/values.yaml" \
+ARCH_REQUEST_FILE="$work_dir/architecture.request.json" \
+RESOURCE_MANIFEST="$work_dir/rendered/resources.rendered.json" \
+NODE_LABELS_FILE="$work_dir/node-labels.json" \
+ARCH_NAME='test-arch' \
+MODEL_PATH='/mnt/paas/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1' \
+TARGET_HOSTS='[{"ip":"192.168.0.78:2222"}]' \
+TARGET_NODE_IP_MAP='{"192.168.0.78:2222":"192.168.31.175"}' \
+XDS_URL='http://192.168.0.78:31465/xds/v1/chat/completions' \
+HELM_BIN="$work_dir/bin/helm" \
+KUBECTL_BIN="$work_dir/bin/kubectl" \
+PATH="$work_dir/bin:$PATH" \
+HEAD_LOG_ROOT="$work_dir/logs-explicit" \
+PIPELINE_ENV_FILE="$explicit_runtime_env" \
+XDS_READY_TIMEOUT_SECONDS=5 \
+bash "$script_dir/deploy-model.sh" >/dev/null
+
+grep -Fq 'http://192.168.31.175:31465/xds/v1/models/' "$work_dir/curl.log"
+grep -Fxq 'export XDS_URL=http://192.168.31.175:31465/xds/v1/chat/completions' "$explicit_runtime_env"
+grep -Fxq 'export XDS_API_HOST=192.168.31.175' "$explicit_runtime_env"
+
 echo "deploy target-url tests passed"

@@ -45,6 +45,7 @@ TARGET_RENDER_DIR="$work_dir/remote-render" \
 TARGET_PIPELINE_ENV_FILE="$work_dir/remote-run/pipeline.env" \
 PIPELINE_ENV_FILE="$work_dir/local.pipeline.env" \
 TARGET_HOSTS='[{"ip":"192.0.2.10:2222","user":"root","pass":"test-password"}]' \
+TARGET_NODE_IP_MAP='{"192.0.2.10:2222":"198.51.100.10"}' \
 bash "$script" >"$work_dir/output"
 
 grep -Fq 'root@192.0.2.10' "$work_dir/ssh.log"
@@ -58,6 +59,7 @@ if grep -Fq "$work_dir/remote-run/scripts/cleanup-env.sh" "$work_dir/ssh.log"; t
 fi
 grep -Fq 'Deploy the rendered chart' "$work_dir/ssh.stdin"
 grep -Fq 'test-password' "$work_dir/ssh.stdin"
+grep -Fq 'TARGET_NODE_IP_MAP' "$work_dir/ssh.stdin"
 grep -Fq 'DEPLOY_EXECUTION_HOST=192.0.2.10' "$work_dir/output"
 grep -Fxq 'export XDS_URL=http://192.0.2.10:31465/xds/v1/chat/completions' "$work_dir/local.pipeline.env"
 
