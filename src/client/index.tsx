@@ -30,6 +30,8 @@ type DockMode = 'footer' | 'float'
 declare const __WT_VERSION__: string
 const LOCAL_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
 const UPDATE_REPO = 'TokensService/tokens-worktable'
+// 设置弹窗首行说明里的「提 issue」链接（GitHub Issues）
+const ISSUES_URL = 'https://github.com/' + UPDATE_REPO + '/issues'
 // 升级命令用带版本号的固定 release URL 且文件名带版本号：URL/文件名恒定不变时，包管理器按文件名缓存 tarball 会装回旧版
 const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable-' + tag.replace(/^v/, '') + '.tgz"'
 const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后提醒我重启 dsh web 并刷新页面'
@@ -592,6 +594,52 @@ function defaultWorkspaceId(): string | null {
     if (typeof id !== 'string' || !id) return null
     return listWorkspaces().some((w) => w.id === id) ? id : null
   } catch { return null }
+}
+
+/** 流水线分析按钮暂存的项目会话请求：项目未设工作区时先弹选择框，选定后继续同一请求。 */
+type ProjectAnalysisRequest = { projectId: string; text: string; cwd: string | null }
+type ProjectAnalysisChatEffects = {
+  isSideChatClosed: () => boolean
+  openSideChat: () => void
+  createChat: (text: string, workspaceId: string, cwd: string | null) => Promise<void>
+}
+type ProjectAnalysisChatDeps = ProjectAnalysisChatEffects & {
+  currentProjectId: () => string | null
+  projectWorkspaceId: (projectId: string) => string | null
+  workspaceExists: (workspaceId: string) => boolean
+  defer: (request: ProjectAnalysisRequest) => void
+  isProjectSettingsVisible: () => boolean
+  revealProjectSettings: () => void
+  openWorkspaceSettings: (projectId: string) => void
+}
+
+/** 在已确定的项目工作区中创建分析会话；仅当聊天列关闭时才先将其打开。 */
+async function createProjectAnalysisChat(request: ProjectAnalysisRequest, workspaceId: string, deps: ProjectAnalysisChatEffects): Promise<void> {
+  if (deps.isSideChatClosed()) deps.openSideChat()
+  await deps.createChat(request.text, workspaceId, request.cwd)
+}
+
+/** 从当前项目发起分析：项目工作区缺失/失效时只暂存请求并弹出该项目的工作区选择。 */
+async function requestProjectAnalysisChat(text: string, cwd: string | null, deps: ProjectAnalysisChatDeps): Promise<'created' | 'workspace-required'> {
+  const projectId = deps.currentProjectId()
+  if (!projectId) throw new Error('current project unavailable')
+  const request = { projectId, text, cwd }
+  const workspaceId = deps.projectWorkspaceId(projectId)
+  if (!workspaceId || !deps.workspaceExists(workspaceId)) {
+    deps.defer(request)
+    if (!deps.isProjectSettingsVisible()) deps.revealProjectSettings()
+    deps.openWorkspaceSettings(projectId)
+    return 'workspace-required'
+  }
+  await createProjectAnalysisChat(request, workspaceId, deps)
+  return 'created'
+}
+
+/** 用户从项目设置里选定工作区后，继续且仅继续该项目暂存的分析请求。 */
+async function resumeDeferredProjectAnalysisChat(pending: ProjectAnalysisRequest | null, projectId: string, workspaceId: string | null, deps: ProjectAnalysisChatEffects): Promise<boolean> {
+  if (!pending || pending.projectId !== projectId || !workspaceId) return false
+  await createProjectAnalysisChat(pending, workspaceId, deps)
+  return true
 }
 
 /** 预览文本清洗：去掉围栏代码块（```…```，含 dsh-ui 等）与行内代码，压缩空白；
@@ -1603,6 +1651,8 @@ function WorktableSection(props: any) {
     view.dock === 'float' && view.floatTop != null ? { top: view.floatTop } : null,
   )
   const rootRef = useRef<HTMLDivElement | null>(null)
+  /** 项目分析按钮在工作区设置完成前暂存的请求；关闭设置弹窗即取消。 */
+  const pendingProjectAnalysisRef = useRef<ProjectAnalysisRequest | null>(null)
   const dragRef = useRef<{ startY: number; startX: number; startRect: DOMRect; dragging: boolean; prevFloat: FloatRect | null } | null>(null)
   const dragIdRef = useRef<string | null>(null)
   const [railRect, setRailRect] = useState<{ left: number; width: number } | null>(null)
@@ -2203,17 +2253,44 @@ function buildCustomLayoutPrompt(req: string): string {
 
   actionsRef.current = { openSplit, openConsole }
 
-  /** 打开对话绑定弹窗：抓取会话分组 + 锚点定位 */
-  const openBindPick = useCallback((id: string, anchor: HTMLElement) => {
-    const r = anchor.getBoundingClientRect()
-    const x = clamp(Math.round(r.right + 8), 8, window.innerWidth - 300)
-    const y = clamp(Math.round(r.top), 8, window.innerHeight - 420)
+  /** 打开项目设置弹窗：抓取会话分组 + 锚点定位；workspaceOpen 用于分析入口直接展开工作区列表。 */
+  const openBindPick = useCallback((id: string, anchor: HTMLElement | null, workspaceOpen = false) => {
+    const r = anchor?.getBoundingClientRect()
+    const x = clamp(Math.round((r?.right ?? 280) + 8), 8, window.innerWidth - 300)
+    const y = clamp(Math.round(r?.top ?? MIN_TOP), 8, window.innerHeight - 420)
+    if (!workspaceOpen) pendingProjectAnalysisRef.current = null
     setBindPick({ id, x, y })
     setBindListOpen(false)
-    setBindWsOpen(false)
+    setBindWsOpen(workspaceOpen)
     setBindGroups([])
     fetchSessionGroups().then((res) => setBindGroups(res.groups)).catch(() => setBindGroups([]))
   }, [])
+
+  const projectAnalysisEffects = useCallback((): ProjectAnalysisChatEffects => ({
+    isSideChatClosed: () => splitStore.active && splitStore.chatClosed === true,
+    openSideChat: () => { if (splitStore.active) splitStore.setChatClosed(false) },
+    createChat: (text, workspaceId, cwd) => newChatInProject(text, workspaceId, cwd),
+  }), [])
+
+  /** pipeline iframe → 当前项目工作区会话桥：缺工作区时由本组件弹出项目设置并暂存请求。 */
+  useEffect(() => {
+    const bridge = (text: string, cwd?: string | null) => requestProjectAnalysisChat(text, cwd || null, {
+      ...projectAnalysisEffects(),
+      currentProjectId: () => (splitStore.active && splitStore.spec ? splitStore.spec.id : null),
+      projectWorkspaceId: (projectId) => projectsRef.current.projects.workspaces[projectId] ?? null,
+      workspaceExists: (workspaceId) => listWorkspaces().some((w) => w.id === workspaceId),
+      defer: (request) => { pendingProjectAnalysisRef.current = request },
+      isProjectSettingsVisible: () => wide,
+      revealProjectSettings: () => { try { applyCtx?.layout?.toggleSidebar?.() } catch {} },
+      openWorkspaceSettings: (projectId) => openBindPick(projectId, rootRef.current, true),
+    })
+    try { (window as any).__dshNewChatSessionForCurrentProject = bridge } catch {}
+    return () => {
+      try {
+        if ((window as any).__dshNewChatSessionForCurrentProject === bridge) delete (window as any).__dshNewChatSessionForCurrentProject
+      } catch {}
+    }
+  }, [openBindPick, projectAnalysisEffects, wide])
 
   /** 应用内目录浏览：优先经宿主 uiWorkspace.listDirectory（browse 能力）加载一层（path 缺省 = 宿主主目录锚点）；
    *  宿主目录能力不可用时回退到插件自身 POST /api/worktable/fs（与资源管理器窗同源的 raw readdir，
@@ -2324,6 +2401,14 @@ function buildCustomLayoutPrompt(req: string): string {
       return { ...prev, workspaces: next }
     })
     setBindWsOpen(false)
+    const pending = pendingProjectAnalysisRef.current
+    if (workspaceId && pending?.projectId === id) {
+      pendingProjectAnalysisRef.current = null
+      setBindPick(null)
+      void resumeDeferredProjectAnalysisChat(pending, id, workspaceId, projectAnalysisEffects()).catch((err) => {
+        try { window.alert('创建 AI 会话失败：' + String((err as any)?.message ?? err)) } catch {}
+      })
+    }
   }
 
   /** 设置 / 清除项目的自定义「页面修改」提示词（空串 = 清除覆盖，回到全局模板；弹窗保持打开） */
@@ -3451,8 +3536,8 @@ function buildCustomLayoutPrompt(req: string): string {
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('name.label')}</span>
           </div>
-          <div className="dsh-wt_pageEditHint">{t('name.desc')}</div>
           <RenameInput initial={worktableTitleOf(customTitle, authUsername, t('title'))} placeholder={t('title')} onCommit={(v) => persistView({ title: v.trim() || null })} />
+          <a className="dsh-wt_issueLink" href={ISSUES_URL} target="_blank" rel="noopener noreferrer">{t('name.desc', { user: worktableTitleOf(customTitle, authUsername, t('title')) })}</a>
           <div className="dsh-wt_menuSep" />
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('sort.label')}</span>
@@ -3464,7 +3549,7 @@ function buildCustomLayoutPrompt(req: string): string {
               onClick={() => persistView({ orderBy: 'recent' })}>{t('sort.recent')}</button>
           </div>
           <div className="dsh-wt_menuSep" />
-          {/* 工作区（默认会话分组）：项目未单独设分组时，页面修改/AI 日志分析等新建会话统一落进选中的工作区；选「未分组」即清除 */}
+          {/* 工作区（默认会话分组）：项目未单独设分组时，「页面修改」等新建会话落进此处；流水线 AI 分析必须用项目工作区；选「未分组」即清除 */}
           <div className="dsh-wt_manageHead">
             <span className="dsh-wt_manageTitle">{t('workspace.title')}</span>
           </div>
@@ -3653,7 +3738,7 @@ function buildCustomLayoutPrompt(req: string): string {
         </div>
       )}
 
-      {bindPick && <div className="dsh-wt_popBackdrop" style={{ zIndex: 83 }} onClick={() => { setBindPick(null); setBindListOpen(false); setBindWsOpen(false) }} />}
+      {bindPick && <div className="dsh-wt_popBackdrop" style={{ zIndex: 83 }} onClick={() => { pendingProjectAnalysisRef.current = null; setBindPick(null); setBindListOpen(false); setBindWsOpen(false) }} />}
       {bindPick && (
         <div className="dsh-wt_menu dsh-wt_pop dsh-wt_bindPop" style={{ position: 'fixed', left: bindPick.x, top: bindPick.y, width: 280, zIndex: 84 }}>
           {/* 项目文件夹框（格式基准）：第一行 emoji+标题，第二行路径；可随时更改 */}
@@ -4078,7 +4163,7 @@ function buildCustomLayoutPrompt(req: string): string {
   )
 }
 
-export const inject = ['slots', 'locale', 'sessions', 'conversation', 'workspaces']
+export const inject = ['slots', 'locale', 'sessions', 'conversation', 'workspaces', 'layout']
 
 export function apply(ctx: any) {
   // 自定义窗口 → 宿主会话桥：保存 sessions/conversation/list 服务引用（模块级）

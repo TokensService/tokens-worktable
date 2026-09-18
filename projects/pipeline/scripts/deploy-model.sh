@@ -20,7 +20,10 @@ TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
+PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
 XDS_URL="${XDS_URL:-}"
+XDS_URL="${XDS_URL%/}"
+XDS_URL="${XDS_URL%/chat/completions}"
 XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
 XDS_API_HOST=""
@@ -178,10 +181,23 @@ PY
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   if ! run_remote "$target" "$target_port" "$remote_command"; then
-    rm -f "$remote_env"
+    [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
-  rm -f "$remote_env"
+
+  # The target resolves the actual NodePort and writes it to its contract.
+  # Copy that sanitized runtime contract back so later execution-host stages
+  # and print-env.sh observe the same XDS endpoint.
+  local runtime_env
+  mkdir -p "$(dirname "$PIPELINE_ENV_FILE")"
+  runtime_env="$(mktemp "${PIPELINE_ENV_FILE}.tmp.XXXXXX")"
+  if ! run_remote "$target" "$target_port" "cat $(remote_quote "$TARGET_PIPELINE_ENV_FILE")" >"$runtime_env"; then
+    [[ ! -e "$runtime_env" ]] || unlink "$runtime_env"
+    [[ ! -e "$remote_env" ]] || unlink "$remote_env"
+    return 1
+  fi
+  mv "$runtime_env" "$PIPELINE_ENV_FILE"
+  [[ ! -e "$remote_env" ]] || unlink "$remote_env"
   printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
 }
 
@@ -251,6 +267,23 @@ else:
   echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
 }
 
+persist_runtime_environment() {
+  local variable
+  SERVICE_API="${XDS_URL%/}"
+  XDS_CHAT_COMPLETIONS_URL="${SERVICE_API}/chat/completions"
+  MODEL_API="${SERVICE_API}/models/${MODEL_ENDPOINT}"
+  mkdir -p "$(dirname "$PIPELINE_ENV_FILE")"
+  {
+    printf '# Runtime values resolved by deploy-model.sh.\n'
+    printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
+    for variable in \
+      XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
+      MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID; do
+      printf 'export %s=%q\n' "$variable" "${!variable}"
+    done
+  } >>"$PIPELINE_ENV_FILE"
+}
+
 wait_for_xds_api() {
   local deadline response
   deadline=$((SECONDS + XDS_READY_TIMEOUT_SECONDS))
@@ -298,21 +331,34 @@ PY
       -l "ray.io/cluster=${RELEASE_NAME}-kuberay" -o json >"$pods_file" 2>/dev/null || printf '{"items":[]}' >"$pods_file"
     mapfile -t task_pods < <(python3 - "$pods_file" "${expected_groups[@]}" <<'PY'
 import json
+import re
 import sys
 
 try:
     pods = json.load(open(sys.argv[1], encoding="utf-8")).get("items", [])
 except (OSError, json.JSONDecodeError):
     pods = []
-expected = set(sys.argv[2:])
+
+def rendered_group_name(group):
+    # render-config shortens taskExecutorGroup<gpu><role><index> to the
+    # KubeRay group names used as Pod labels, e.g. prefill-1 and decode-1.
+    match = re.search(r"(prefill|decode)([0-9]+)$", group, re.IGNORECASE)
+    if match:
+        return f"{match.group(1).lower()}-{match.group(2)}"
+    return group
+
+expected = sys.argv[2:]
 seen = {}
 for pod in pods:
     labels = pod.get("metadata", {}).get("labels", {})
     group = labels.get("ray.io/group")
     name = pod.get("metadata", {}).get("name")
-    if group in expected and isinstance(name, str) and name:
-        seen[group] = name
-for group in sys.argv[2:]:
+    if not isinstance(name, str) or not name:
+        continue
+    for expected_group in expected:
+        if group in (expected_group, rendered_group_name(expected_group)):
+            seen[expected_group] = name
+for group in expected:
     if group in seen:
         print(f"pod/{seen[group]}")
 PY
@@ -621,6 +667,7 @@ nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECON
 HEAD_LOG_COLLECTOR_PID=$!
 printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
   "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
+persist_runtime_environment
 
 wait_for_xds_api
 wait_for_task_executors
@@ -651,13 +698,13 @@ printf 'ARCH_NAME=%s\n' "$ARCH_NAME"
 printf 'NAMESPACE=%s\n' "$NAMESPACE"
 printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
 printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
-printf 'XDS_URL=%s\n' "$XDS_URL"
+printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
 printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
-printf 'SERVICE_API=%s\n' "${XDS_URL%/}"
+printf 'SERVICE_API=%s\n' "$SERVICE_API"
 printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
 printf 'MODEL=%s\n' "$MODEL_NAME"
 printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
 printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
-printf 'MODEL_API=%s/models/%s\n' "${XDS_URL%/}" "$MODEL_ENDPOINT"
+printf 'MODEL_API=%s\n' "$MODEL_API"
 printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
 printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"

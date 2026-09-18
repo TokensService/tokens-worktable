@@ -14,14 +14,20 @@ else
 fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
+DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"
+FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
-IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${PROJECT:-}}"
+# Use the SWR region in the registry username. IMAGE_PULL_PROJECT retains the
+# explicit override, while SWR_PROJECT avoids collision with a deployment's
+# registry namespace held in PROJECT.
+IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"
 IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
-IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-}}"
+# LOGKEY is accepted for callers that use the older environment-variable name.
+IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGIN_KEY:-${LOGKEY:-}}}"
 
 remote_quote() {
   printf '%q' "$1"
@@ -96,9 +102,15 @@ print(item["endpoint"], item["user"], item["host"], item["port"], item["password
 PY
 )
     target="${user}@${host}"
-    # Target image preparation is an optimization. Mapped deployment targets
-    # must not receive registry credentials or fail the pipeline when absent.
-    printf -v remote_command '%s' "if command -v ctr >/dev/null 2>&1; then ctr_cmd=(ctr); elif command -v sudo >/dev/null 2>&1; then ctr_cmd=(sudo ctr); else echo '[pull] target has no ctr; skip image pre-pull'; exit 0; fi; if \"\${ctr_cmd[@]}\" -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else echo '[pull] target image is absent; skip unauthenticated pre-pull'; fi"
+    # A cached image needs no registry credentials. When absent, pre-pull it
+    # into Kubernetes' containerd namespace using the supplied SWR account.
+    if [[ -n "$IMAGE_PULL_AK" && -n "$IMAGE_PULL_LOGIN_KEY" ]]; then
+      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if sudo ctr -n k8s.io images ls -q | grep -Fx -- $(remote_quote "$image") >/dev/null; then echo '[pull] target image already exists: $(remote_quote "$image")'; else sudo ctr -n k8s.io image pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image"); fi"
+    else
+      # Never attempt an unauthenticated pull or probe the target runtime when
+      # credentials were not supplied for this pipeline invocation.
+      printf -v remote_command '%s' "echo '[pull] target image pre-pull skipped: AK and LOGIN_KEY are not set'"
+    fi
     echo "[pull] target $endpoint: ensure image $image"
     run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
   done
@@ -121,7 +133,7 @@ pull_image() {
 }
 
 export_templates() {
-  local work_dir container_name
+  local work_dir container_name source_dir
   work_dir="$(mktemp -d)"
   container_name="op-test-template-$$"
   cleanup() {
@@ -133,18 +145,35 @@ export_templates() {
   echo "[pull] execution host: export render templates from $TEMPLATE_IMAGE"
   mkdir -p "$TEMPLATE_DIR"
   nerdctl --namespace k8s.io create --net=none --name "$container_name" "$TEMPLATE_IMAGE" >/dev/null
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/k8s/xds-cluster" "$work_dir/xds-cluster"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
-  nerdctl --namespace k8s.io cp "$container_name:/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$work_dir/model_arch-lt-je-cpp-bnt3.json"
+  copy_template_set() {
+    local template_root=$1 output_dir=$2
+    mkdir -p "$output_dir"
+    nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template/k8s/xds-cluster" "$output_dir/xds-cluster" \
+      && nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml" "$output_dir/values-16Node-je-cpp-bnt3.yaml" \
+      && nerdctl --namespace k8s.io cp "$container_name:$template_root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" "$output_dir/model_arch-lt-je-cpp-bnt3.json"
+  }
+  source_dir="$work_dir/deploy-template"
+  if ! copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir"; then
+    [[ "$DEPLOY_TEMPLATE_DIR" != "$FALLBACK_DEPLOY_TEMPLATE_DIR" ]] || {
+      echo "template export failed from $DEPLOY_TEMPLATE_DIR" >&2
+      return 1
+    }
+    echo "[pull] template root $DEPLOY_TEMPLATE_DIR is unavailable; fallback to $FALLBACK_DEPLOY_TEMPLATE_DIR"
+    source_dir="$work_dir/op-test-template"
+    copy_template_set "$FALLBACK_DEPLOY_TEMPLATE_DIR" "$source_dir" || {
+      echo "template export failed from fallback $FALLBACK_DEPLOY_TEMPLATE_DIR" >&2
+      return 1
+    }
+  fi
 
   if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
     [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; exit 2; }
-    cp -a "$VALUES_TEMPLATE_SOURCE" "$work_dir/values-16Node-je-cpp-bnt3.yaml"
+    cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"
   fi
 
-  cp -a "$work_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
-  cp -a "$work_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
-  cp -a "$work_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
+  cp -a "$source_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
+  cp -a "$source_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
+  cp -a "$source_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
 }
 
 if [[ "${PULL_TARGET_IMAGES_ONLY:-0}" == "1" ]]; then

@@ -1,4 +1,4 @@
-// 流水线任务行运行按钮：直接运行对应流水线，不切换当前选中项。
+// 流水线任务行运行按钮：先弹出本次运行参数，不直接启动或切换当前选中项。
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -56,7 +56,7 @@ function makeContext(runResult) {
   const tbody = new FakeNode('tbody');
   const table = { querySelector: selector => selector === 'tbody' ? tbody : null };
   const count = { textContent: '' };
-  const calls = { run: [], api: [], select: [], tips: [], alerts: [], focus: [] };
+  const calls = { run: [], dialog: [], api: [], select: [], tips: [], alerts: [] };
   const queue = [];
   const context = {
     pipelines: [
@@ -65,23 +65,24 @@ function makeContext(runResult) {
     ],
     curPipelineId: 'pipe-1',
     activeRuns: [],
+    pendingLeaseStarts: [],
+    remoteQueueClients: [],
     viewRc: null,
     plFilter: { kw: '', owner: 'all' },   // 筛选状态桩：本测试只验证行内运行按钮，不关心筛选；用 all 让全部行进视图
     plFilterMatch: () => true,   // 筛选桩：所有流水线均命中（行运行测试不涉及筛选语义）
     renderPlFilterOptions: () => {},   // 下拉渲染桩：筛选控件不在本测试范围
     plOwnerOf: () => '',   // 创建者取值桩：行运行测试不涉及署名展示
     plUpdaterOf: () => '',   // 最后修改人取值桩：行运行测试不涉及署名展示
+    isPipelineFavorite: () => false,   // 收藏状态桩：行运行测试不涉及收藏展示
     currentUsername: '',
     document: { createElement: tag => new FakeNode(tag) },
     $: id => id === 'plTable' ? table : count,
     esc: String,
     runPipeline: options => { calls.run.push(options); if (runResult === 'queued') queue.push(options); return runResult; },
+    openPipelineRunDialog: id => calls.dialog.push(id),
     showPipelineApi: pipeline => calls.api.push(pipeline),
     findPipeline: id => context.pipelines.find(pipeline => pipeline.id === id),
     selectPipeline: id => calls.select.push(id),
-    runsOfPipeline: pid => context.activeRuns.filter(rc => rc.pipelineId === pid),
-    latestRunOfPipeline: pid => { const rs = context.activeRuns.filter(rc => rc.pipelineId === pid); return rs.length ? rs[rs.length - 1] : null; },
-    focusRun: rc => calls.focus.push(rc),
     openPlForm() {}, copyPipeline() {}, deletePipeline() {}, renderPipelineSel() {},
     flashRunTip: text => calls.tips.push(text),
     alert: text => calls.alerts.push(text),
@@ -89,13 +90,25 @@ function makeContext(runResult) {
     queue,
   };
   vm.createContext(context);
+  const localQueueStart = source.indexOf('function localQueueItems');
+  const localQueueEnd = source.indexOf('function queuePreviewRc', localQueueStart);
+  const remoteRunsStart = source.indexOf('function remoteRunsOf');
+  const remoteRunsEnd = source.indexOf('/* ---------- 运行引擎', remoteRunsStart);
+  const queueCountsStart = source.indexOf('function pipelineQueueCounts(){');
+  const queueCountsEnd = source.indexOf('function renderQueue(){', queueCountsStart);
+  assert.ok(localQueueStart >= 0 && localQueueEnd > localQueueStart, 'localQueueItems not found');
+  assert.ok(remoteRunsStart >= 0 && remoteRunsEnd > remoteRunsStart, 'remoteRunsOf not found');
+  assert.ok(queueCountsStart >= 0 && queueCountsEnd > queueCountsStart, 'pipelineQueueCounts not found');
+  vm.runInContext(source.slice(localQueueStart, localQueueEnd), context);
+  vm.runInContext(source.slice(remoteRunsStart, remoteRunsEnd), context);
+  vm.runInContext(source.slice(queueCountsStart, queueCountsEnd), context);
   vm.runInContext(source.slice(start, end), context);
   context.renderPipelines();
   return { context, tbody, calls };
 }
 
-test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', () => {
-  const { tbody, calls } = makeContext('queued');
+test('每条流水线的 ▶ 按钮打开对应流水线的运行参数弹窗且不立即运行', () => {
+  const { tbody, calls } = makeContext('submitted');
   const buttons = tbody.querySelectorAll('[data-plrun]');
   assert.equal(buttons.length, 2);
   assert.equal(buttons[1].textContent.trim(), '▶');
@@ -107,27 +120,11 @@ test('每条流水线的 ▶ 按钮运行对应流水线且不切换当前行', 
   buttons[1].handlers.click(event);
 
   assert.equal(event.stopped, true);
-  assert.equal(calls.run.length, 1);
-  assert.equal(calls.run[0].pipelineId, 'pipe-2');
-  assert.equal(calls.run[0].useDefaults, true, '列表直接运行必须使用该流水线保存的默认运行参数');
+  assert.deepEqual(calls.dialog, ['pipe-2']);
+  assert.deepEqual(calls.run, [], '打开参数弹窗前不得启动流水线');
   assert.deepEqual(calls.select, []);
-  assert.deepEqual(calls.tips, ['已加入队列（第 1 位）']);
-});
-
-test('▶ 直接启动时不显示入队或队列已满提示', () => {
-  const { tbody, calls } = makeContext(true);
-  const button = tbody.querySelectorAll('[data-plrun]')[0];
-  button.handlers.click({ stopPropagation() {} });
   assert.deepEqual(calls.tips, []);
   assert.deepEqual(calls.alerts, []);
-});
-
-test('▶ 在队列已满时沿用现有容量提示', () => {
-  const { tbody, calls } = makeContext(false);
-  const button = tbody.querySelectorAll('[data-plrun]')[0];
-  button.handlers.click({ stopPropagation() {} });
-  assert.equal(calls.alerts.length, 1);
-  assert.match(calls.alerts[0], /队列已满（上限 16）/);
 });
 
 test('每条流水线提供 API 按钮并打开对应流水线的调用说明', () => {
@@ -143,34 +140,31 @@ test('每条流水线提供 API 按钮并打开对应流水线的调用说明', 
   assert.deepEqual(calls.select, []);
 });
 
-test('行点击：有在跑运行的流水线聚焦其运行查看阶段详情，不切换选用', () => {
+test('行点击：在跑运行不在任务列表展示，点击行仍选用该流水线', () => {
   const { context, tbody, calls } = makeContext(true);
-  const rc = { id: 'r1', pipelineId: 'pipe-2' };
-  context.activeRuns.push(rc);
+  context.activeRuns.push({ id: 'r1', pipelineId: 'pipe-2' });
   context.renderPipelines();
 
   const row = tbody.children[1];
-  assert.match(row.innerHTML, /运行中/);
-  assert.equal(row.title, '点击查看本次运行的阶段详情');
+  assert.doesNotMatch(row.innerHTML, /运行中/);   // 是否在运行不在任务列表展示，统一在运行队列查看
+  assert.doesNotMatch(row.innerHTML, /（查看中）/);
+  assert.equal(row.title, '点击选用该流水线');
   row.handlers.click();
 
-  assert.deepEqual(calls.focus, [rc]);
-  assert.deepEqual(calls.select, []);
+  assert.deepEqual(calls.select, ['pipe-2']);   // 运行中也可切换选用，不再转为聚焦运行
 });
 
-test('行点击：无在跑运行的流水线仍走选用，在跑行按最近启动聚焦并标记查看中', () => {
+test('行点击：正在查看其运行的流水线同样走选用，无「查看中」标记', () => {
   const { context, tbody, calls } = makeContext(true);
-  const rc1 = { id: 'r1', pipelineId: 'pipe-2' };
-  const rc2 = { id: 'r2', pipelineId: 'pipe-2' };
-  context.activeRuns.push(rc1, rc2);
-  context.viewRc = rc1;
+  context.activeRuns.push({ id: 'r1', pipelineId: 'pipe-2' }, { id: 'r2', pipelineId: 'pipe-2' });
+  context.viewRc = context.activeRuns[0];
   context.renderPipelines();
 
-  tbody.children[0].handlers.click();   // 流水线一无在跑运行：仍 selectPipeline
+  tbody.children[0].handlers.click();   // 流水线一无在跑运行：selectPipeline
   assert.deepEqual(calls.select, ['pipe-1']);
 
   const row = tbody.children[1];
-  assert.match(row.innerHTML, /（查看中）/);   // viewRc 是该流水线的在跑运行
+  assert.doesNotMatch(row.innerHTML, /（查看中）/);   // 「查看中」只在运行队列条目标记
   row.handlers.click();
-  assert.deepEqual(calls.focus, [rc2]);   // 多个在跑运行取最近启动的一个
+  assert.deepEqual(calls.select, ['pipe-1', 'pipe-2']);
 });

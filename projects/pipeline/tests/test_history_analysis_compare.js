@@ -209,6 +209,22 @@ test('清空发生在刷新请求期间时，迟到响应不得复活历史', ()
   assert.equal(ctx.histClearedAt, 200);
 });
 
+test('本地清空尚未持久化时，服务端旧清空版本不得复活历史', () => {
+  const ctx = { history: [], buildNo: 9, histClearedAt: 200 };
+  vm.createContext(ctx);
+  vm.runInContext(functionSource('applyHistoryRefreshPayload'), ctx);
+
+  const applied = ctx.applyHistoryRefreshPayload({
+    config: { buildNo: 10, histClearedAt: 100 },
+    history: [runA],
+  }, 200);
+
+  assert.equal(applied, false);
+  assert.deepEqual(Array.from(ctx.history), []);
+  assert.equal(ctx.buildNo, 9);
+  assert.equal(ctx.histClearedAt, 200);
+});
+
 test('未发生本地清空时正常应用刷新历史并同步版本字段', () => {
   const ctx = { history: [], buildNo: 9, histClearedAt: 100 };
   vm.createContext(ctx);
@@ -225,10 +241,13 @@ test('未发生本地清空时正常应用刷新历史并同步版本字段', ()
   assert.equal(ctx.buildNo, 10);
 });
 
-test('创建双运行分析会话时把对比提示和共同目录交给工作台桥', async () => {
+test('创建双运行分析会话时把对比提示和共同目录交给当前项目工作区桥', async () => {
   const calls = [];
   const ctx = analysisContext({
-    window: { parent: { __dshNewChatSessionAt: async (text, cwd) => calls.push({ text, cwd }) } },
+    window: { parent: {
+      __dshNewChatSessionForCurrentProject: async (text, cwd) => calls.push({ text, cwd }),
+      __dshNewChatSessionAt: async () => assert.fail('新桥存在时不应调用旧桥'),
+    } },
   });
 
   await ctx.createAnalysisChat('perf', [runA, runB]);
@@ -237,4 +256,17 @@ test('创建双运行分析会话时把对比提示和共同目录交给工作�
   assert.equal(calls[0].cwd, '/archive');
   assert.match(calls[0].text, /运行 A（基准）/);
   assert.match(calls[0].text, /运行 B（对比）/);
+});
+
+test('旧版工作台没有当前项目工作区桥时继续使用归档目录会话桥', async () => {
+  const calls = [];
+  const ctx = analysisContext({
+    window: { parent: { __dshNewChatSessionAt: async (text, cwd) => calls.push({ text, cwd }) } },
+  });
+
+  await ctx.createAnalysisChat('log', [runA]);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cwd, '/archive/run-a');
+  assert.match(calls[0].text, /#101 流水线「部署」/);
 });

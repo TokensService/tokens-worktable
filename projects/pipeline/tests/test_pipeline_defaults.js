@@ -4,7 +4,7 @@ const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
 
 function extractFunction(name){
-  const match=new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
+  const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
   assert.ok(match,`pipeline.html 缺少函数 ${name}`);
   const bodyStart=source.indexOf('{',match.index);let depth=0;
   for(let i=bodyStart;i<source.length;i+=1){
@@ -39,7 +39,7 @@ test('默认运行参数归一化并过滤重复、空值和未知预设',()=>{
   });
 });
 
-test('列表直接运行采用有效默认值；仅旧流水线缺省时回退首项',()=>{
+test('任务列表运行弹窗采用有效默认值；仅旧流水线缺省时回退首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',name:'仓库 B',url:'b.git'}],
@@ -57,7 +57,7 @@ test('列表直接运行采用有效默认值；仅旧流水线缺省时回退�
   });
 });
 
-test('列表运行检测失效的默认环境和代码仓，不静默改投首项',()=>{
+test('任务列表运行弹窗检测失效的默认环境和代码仓，不静默改投首项',()=>{
   const ctx=loadDefaults({
     environments:[{id:'env-a',ip:'10.0.0.1'},{id:'env-b',ip:'10.0.0.2'}],
     repositories:[{id:'repo-a',url:'a.git'},{id:'repo-b',url:'b.git'}],
@@ -82,9 +82,9 @@ test('显式运行参数可以逐项覆盖流水线默认值，包括空策略�
   });
 });
 
-test('runPipeline 把列表运行的流水线默认参数完整快照到本次运行',()=>{
-  let started=null;
-  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署'}],defaults:{
+test('runPipeline 把列表运行的默认参数提交到服务端，不启动浏览器执行器',()=>{
+  let submitted=null;
+  const pipeline={id:'pipe-b',name:'发布',stages:[{id:'deploy',name:'部署',sched:{}}],defaults:{
     environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],
   }};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
@@ -98,16 +98,57 @@ test('runPipeline 把列表运行的流水线默认参数完整快照到本次�
     $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
     resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
     curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'current-strategy',runtimePipelineProm:()=>({enabled:false}),
-    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:item=>{started=item;return true;},
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},
+    startRun:()=>{throw new Error('浏览器执行器不应启动');},submitServerRun:item=>{submitted=item;},
   });
   vm.runInContext(extractFunction('runPipeline'),ctx);
-  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',useDefaults:true}),true);
-  assert.deepEqual(J(started.envs),[{id:'env-b',ip:'10.0.0.2'}]);
-  assert.equal(started.repoId,'repo-b');
-  assert.equal(started.repoName,'仓库 B');
-  assert.equal(started.branch,'release');
-  assert.equal(started.strategy,'blue-green');
-  assert.deepEqual(J(started.presets),['check']);
+  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',useDefaults:true}),'submitted');
+  assert.deepEqual(J(submitted.envs),[{id:'env-b',ip:'10.0.0.2'}]);
+  assert.equal(submitted.repoId,'repo-b');
+  assert.equal(submitted.repoName,'仓库 B');
+  assert.equal(submitted.branch,'release');
+  assert.equal(submitted.strategy,'blue-green');
+  assert.deepEqual(J(submitted.presets),['check']);
+});
+
+test('submitServerRun 用 keepalive 提交脱敏运行参数并立即刷新权威队列',async()=>{
+  const requests=[]; let pulls=0;
+  const ctx={
+    fetch:async(url,options)=>{ requests.push({url,options}); return {ok:true,status:202,json:async()=>({ok:true,runId:'manual-1'})}; },
+    pullRemoteQueue:async()=>{pulls+=1;},alert:()=>{},console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('submitServerRun'),ctx);
+  const result=await ctx.submitServerRun({
+    pipelineId:'pipe-b',envs:[{id:'env-b',ip:'10.0.0.2',pass:'node-secret'}],repoId:'repo-b',repoPass:'git-secret',
+    branch:'release',strategy:'blue-green',presets:['check'],image:'app',by:'operator',stages:[{id:'deploy',script:{values:{TOKEN:'secret'}}}],
+  });
+  assert.equal(result.runId,'manual-1');
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].url,'/api/worktable/pipeline/run/pipe-b');
+  assert.equal(requests[0].options.method,'POST');
+  assert.equal(requests[0].options.keepalive,true,'页面提交后立即离开时请求仍应送达服务端');
+  assert.deepEqual(JSON.parse(requests[0].options.body),{
+    environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],image:'app',by:'operator',source:'manual',
+  });
+  assert.equal(requests[0].options.body.includes('secret'),false,'节点/代码仓凭据与阶段配置不得由页面重复上传');
+  assert.equal(pulls,1);
+});
+
+test('submitServerRun 未选择任何节点时上送显式空环境数组，不回退流水线默认环境',async()=>{
+  const requests=[];
+  const ctx={
+    fetch:async(url,options)=>{ requests.push({url,options}); return {ok:true,status:202,json:async()=>({ok:true,runId:'manual-2'})}; },
+    pullRemoteQueue:async()=>{},alert:()=>{},console,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('submitServerRun'),ctx);
+  await ctx.submitServerRun({
+    pipelineId:'pipe-b',envs:[],repoId:'repo-b',branch:'release',strategy:'',presets:[],image:'app',by:'operator',stages:[],
+  });
+  const body=JSON.parse(requests[0].options.body);
+  assert.ok('environmentIds' in body,'空选择也必须显式携带 environmentIds（省略=回退流水线默认环境）');
+  assert.deepEqual(body.environmentIds,[],'显式空数组 = 不选择任何节点（无目标节点运行）');
 });
 
 test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',()=>{
@@ -133,7 +174,7 @@ test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',
 });
 
 test('显式环境与代码仓参数可覆盖失效默认引用并继续运行',()=>{
-  let started=null,alerted='';
+  let submitted=null,alerted='';
   const pipeline={id:'pipe-b',name:'发布',stages:[],defaults:{environmentIds:['removed-env'],repositoryId:'removed-repo',branch:'release'}};
   const explicitEnv={id:'env-a',ip:'10.0.0.1'};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
@@ -143,19 +184,19 @@ test('显式环境与代码仓参数可覆盖失效默认引用并继续运行',
     $:id=>els[id],alert:msg=>{alerted=msg;},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
     resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
     curEnvs:()=>[explicitEnv],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
-    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:item=>{started=item;return true;},
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},submitServerRun:item=>{submitted=item;},
   });
   vm.runInContext(extractFunction('runPipeline'),ctx);
-  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',useDefaults:true,envs:[explicitEnv],repoId:'repo-a'}),true);
+  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',useDefaults:true,envs:[explicitEnv],repoId:'repo-a'}),'submitted');
   assert.equal(alerted,'');
-  assert.deepEqual(J(started.envs),[explicitEnv]);
-  assert.equal(started.repoId,'repo-a');
-  assert.equal(started.repoName,'仓库 A');
-  assert.equal(started.branch,'release');
+  assert.deepEqual(J(submitted.envs),[explicitEnv]);
+  assert.equal(submitted.repoId,'repo-a');
+  assert.equal(submitted.repoName,'仓库 A');
+  assert.equal(submitted.branch,'release');
 });
 
-test('页面已有 4 条活跃流水线时，无机器冲突的新运行也进入队列',()=>{
-  let starts=0;
+test('页面已有本地旧运行时，新运行仍交给服务端统一调度',()=>{
+  let submitted=null;
   const pipeline={id:'pipe-b',name:'发布',stages:[]};
   const env={id:'env-new',ip:'10.0.0.99'};
   const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
@@ -164,12 +205,33 @@ test('页面已有 4 条活跃流水线时，无机器冲突的新运行也进�
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,MAX_ACTIVE_RUNS:4,queue:[],activeRuns:Array.from({length:4},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.0.'+(i+1)}]})),
     $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
     resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
-    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:()=>{starts++;return true;},
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},submitServerRun:item=>{submitted=item;},
   });
   vm.runInContext(extractFunction('runPipeline'),ctx);
-  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',presets:[]}),'queued');
-  assert.equal(starts,0);
-  assert.equal(ctx.queue.length,1);
+  assert.equal(ctx.runPipeline({pipelineId:'pipe-b',presets:[]}),'submitted');
+  assert.equal(submitted.pipelineId,'pipe-b');
+  assert.equal(ctx.queue.length,0);
+});
+
+test('本地运行的租约申请在途时预留队列容量，避免租约拒绝回队后超过上限',()=>{
+  const pipeline={id:'pipe-local',name:'本地发布',stages:[{id:'build',name:'构建镜像',kind:'http',sched:null}]};
+  const env={id:'env-new',ip:'10.0.0.99'};
+  const els={triggeredBy:{value:'operator',focus(){}},repoSel:{value:'repo-a'},branchName:{value:'main'}};
+  const ctx=loadDefaults({Date,Math,environments:[env],repositories:[{id:'repo-a',name:'仓库 A',url:'a.git'}]});
+  Object.assign(ctx,{
+    DEFAULT_IMAGE:'app',QUEUE_CAP:16,MAX_ACTIVE_RUNS:4,
+    queue:Array.from({length:15},(_,i)=>({id:'q'+i,envs:[{ip:'10.0.1.'+i}]})),
+    activeRuns:Array.from({length:3},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.2.'+i}]})),
+    pendingLeaseStarts:[{envs:[{ip:'10.0.3.1'}],queueItem:{id:'pending'}}],
+    $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},
+    startRun:()=>{throw new Error('浏览器执行槽位已满，不应直接启动');},
+    submitServerRun:()=>{throw new Error('本地阶段不得提交服务端');},
+  });
+  vm.runInContext(extractFunction('runPipeline'),ctx);
+  assert.equal(ctx.runPipeline({pipelineId:pipeline.id,presets:[]}),false);
+  assert.equal(ctx.queue.length,15,'在途任务已占用第 16 个本地队列名额');
 });
 
 test('队列排空在达到 4 个全局槽位后停止，释放槽位后继续启动',()=>{

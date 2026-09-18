@@ -12,6 +12,7 @@ function context(){
     document:{createElement:()=>({dataset:{},addEventListener(type,fn){this[type]=fn;}})},esc:String,
     applyStatusClasses(){},renderDetail(){},openPlForm(_pid,i){ctx.edited=i;},curPipelineId:'pl',
     viewActive:()=>!!(ctx.viewRc&&!ctx.viewRc.over),
+    runPreviewReadOnly:rc=>!!(rc&&(rc.queuedPreview===true||rc.remotePreview===true)),
     setSel:id=>{ctx.selectedId=id;if(ctx.viewRc)ctx.viewRc.selId=id;}};
   vm.createContext(ctx);load('/* ---------- 渲染流水线编排 ---------- */','function applyStatusClasses(',ctx);
   return {ctx,flow,checkbox,checkBox,profilingBox};
@@ -187,6 +188,7 @@ function taskPromCtx(rc,collectScript){
     scriptByName:n=>({name:n,path:'/scripts/'+n}),
     DEFAULT_PIPELINE_PROM:{modelName:'${MODEL_PATH}',xdsNamespace:'${DEPLOY_STRATEGY}-${BY}'},
     substRunVars:(v,rc_)=>String(v).replace('${MODEL_PATH}',(rc_.vars&&rc_.vars.MODEL_PATH)||'').replace('${DEPLOY_STRATEGY}','arch-a').replace('${BY}','lhf'),
+    substPromTemplate:(v,rc_)=>String(v).replace('${MODEL_PATH}',(rc_.vars&&rc_.vars.MODEL_PATH)||'').replace('${DEPLOY_STRATEGY}','arch-a').replace('${BY}','lhf').trim(),   // 与 substRunVars 桩同口径（占位总能解析，不触发「解析不出」兜底）
     buildPromCollectEnv:(c,s,e)=>({PROM_START:String(s),PROM_END:String(e),MODEL_NAME:c.prom.modelName,XDS_NAMESPACE:c.prom.xdsNamespace}),
     execScript:async(sc,t,env,_r,_os,_sig,logFile)=>{calls.push({sc:sc.name,t,env,logFile});return {code:0,stdout:'',stderr:''};},
     stageSeq:(stg,i)=>i+1,

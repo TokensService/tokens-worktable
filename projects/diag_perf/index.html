@@ -99,6 +99,12 @@
     .diag-formrow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .diag-formrow .grow { flex:1 1 240px; }
     .diag-promql { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; word-break:break-all; opacity:.65; }
+    /* 流水线运行导入弹层 */
+    .diag-runlist { max-height:52vh; overflow:auto; }
+    .diag-run-item { align-items:flex-start; }
+    .diag-run-main { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0; }
+    .diag-run-sub { font-size:11.5px; color:var(--dsw-alias-label-tertiary,#6b7280); margin-top:3px; word-break:break-all; }
+    .diag-run-prom { flex:none; }
   /* 面板 ⋯ 菜单与查看 / 编辑弹层（仿 Grafana 面板操作） */
   .diag-kebab { position:absolute; top:6px; right:8px; border:none; background:transparent; color:var(--dshell-fg,#9aa4b2); font-size:15px; cursor:pointer; padding:2px 7px; border-radius:6px; line-height:1; }
   .diag-kebab:hover { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.15)); }
@@ -202,7 +208,7 @@
     </div>
     <div class="diag-datasets">
       <div class="dshell-card diag-dataset-card" data-dataset="a" id="datasetACard">
-        <div class="diag-dataset-title"><h2 class="dshell-sub" style="margin:0" id="datasetATitle">数据集 A · 分析对象</h2><span class="dshell-badge" id="datasetABadge">当前数据</span></div>
+        <div class="diag-dataset-title"><h2 class="dshell-sub" style="margin:0" id="datasetATitle">数据集 A · 分析对象</h2><span style="display:inline-flex;align-items:center;gap:6px"><button class="dshell-btn dshell-btnGhost" id="datasetAImport" type="button" style="font-size:12px;padding:3px 10px" title="从流水线运行历史选择一次运行，自动填充本数据集的标签过滤、时间窗口与日志目录">从流水线运行导入</button><span class="dshell-badge" id="datasetABadge">当前数据</span></span></div>
         <div class="diag-dataset-fields">
           <div class="diag-field"><label>Prometheus 标签过滤</label><div class="diag-formrow" id="datasetAFilter"></div></div>
           <div class="diag-field"><label>时间窗口</label><div class="diag-time-row">
@@ -214,7 +220,7 @@
         </div>
       </div>
       <div class="dshell-card diag-dataset-card" data-dataset="b" id="datasetBCard" style="display:none">
-        <div class="diag-dataset-title"><h2 class="dshell-sub" style="margin:0">数据集 B · 劣化对象</h2><span class="dshell-badge dshell-badgeWait">实线</span></div>
+        <div class="diag-dataset-title"><h2 class="dshell-sub" style="margin:0">数据集 B · 劣化对象</h2><span style="display:inline-flex;align-items:center;gap:6px"><button class="dshell-btn dshell-btnGhost" id="datasetBImport" type="button" style="font-size:12px;padding:3px 10px" title="从流水线运行历史选择一次运行，自动填充本数据集的标签过滤、时间窗口与日志目录">从流水线运行导入</button><span class="dshell-badge dshell-badgeWait">实线</span></span></div>
         <div class="diag-dataset-fields">
           <div class="diag-field"><label>Prometheus 标签过滤</label><div class="diag-formrow" id="datasetBFilter"></div></div>
           <div class="diag-field"><label>时间窗口</label><div class="diag-time-row">
@@ -2210,6 +2216,164 @@ function readDatasetForm(key){
   }else{ds.abs=null;ds.rangeM=parseInt(sel.value,10)||240;}
   return true;
 }
+/* ================= 流水线运行历史导入（/api/worktable/pipeline/history） =================
+   从运行记录取普罗标签（prom.modelName/xdsNamespace）、运行起止（startTs/ts，旧记录无
+   startTs 时用 dur 回推）与归档目录（archive，内含 run-<tag>.log 汇总日志）填充数据集；
+   对比模式下 A 导入基线运行、B 导入劣化运行即构成 A/B 对比。 */
+function parseRunDur(s){   /* 解析流水线 fmtDur 输出（"45s"/"2m14s"）为秒；无法解析返回 0 */
+  if(!s)return 0;var m=/^(?:(\d+)m)?(?:(\d+)s)?$/.exec(String(s).trim());
+  if(!m||(!m[1]&&m[2]===undefined))return 0;
+  return (parseInt(m[1]||"0",10)*60)+parseInt(m[2]||"0",10);
+}
+function runImportWindow(rec,rangeM){   /* 运行起止 → 绝对时间窗口（epoch 秒）；无效返回 null */
+  var to=Math.floor((+rec.ts||0)/1000);if(!to)return null;
+  var from=Math.floor((+rec.startTs||0)/1000);
+  if(!from){var dur=parseRunDur(rec.dur);from=dur?to-dur:to-Math.max(5,+rangeM||240)*60;}
+  return to>from?{from:from,to:to}:null;
+}
+function runImportPatch(rec,ds){   /* 由运行记录计算数据集填充项：标签仅覆盖非空值，窗口与日志目录取运行自身的 */
+  var prom=rec.prom||{};
+  return {
+    model_name:prom.modelName?String(prom.modelName):(ds.model_name||""),
+    xds_namespace:prom.xdsNamespace?String(prom.xdsNamespace):(ds.xds_namespace||""),
+    abs:runImportWindow(rec,ds.rangeM),
+    logDir:rec.archive?String(rec.archive).replace(/\/+$/,""):(ds.logDir||"")
+  };
+}
+function runMatchesFilter(rec,q){   /* 按编号/tag/流水线/环境/提交/操作人/状态过滤运行列表 */
+  q=(q||"").trim().toLowerCase();if(!q)return true;
+  var hay=[rec.no,rec.tag,rec.pipeline,rec.env,rec.commit,rec.by,rec.status].map(function(x){return String(x==null?"":x).toLowerCase();}).join(" ");
+  return hay.indexOf(q)>=0;
+}
+function fetchPipelineRuns(){   /* 轻量历史接口；旧版插件无此路由时回退全量 /pipeline */
+  return fetch("/api/worktable/pipeline/history").then(function(r){
+    if(r.status===404)return fetch("/api/worktable/pipeline").then(function(r2){if(!r2.ok)throw new Error("http "+r2.status);return r2.json();});
+    if(!r.ok)throw new Error("http "+r.status);
+    return r.json();
+  }).then(function(j){return j&&Array.isArray(j.history)?j.history:[];});
+}
+function seriesLabelValues(data,label){   /* /api/v1/series 返回的 labelset 数组 → 去重排序的某标签值列表 */
+  var seen={},list=[];
+  (data||[]).forEach(function(m){var v=m&&m[label];if(v&&!seen[v]){seen[v]=1;list.push(v);}});
+  return list.sort();
+}
+function importLabelChoices(promVal,candidates){   /* 运行记录值 + 窗口候选 → 选项与默认选中：记录值优先，仅一个候选时自动选中，否则默认「不过滤」 */
+  var opts=[];
+  if(promVal)opts.push(promVal);
+  (candidates||[]).forEach(function(v){if(opts.indexOf(v)<0)opts.push(v);});
+  return {options:opts,selected:promVal||((candidates||[]).length===1?candidates[0]:"")};
+}
+function fetchRunWindowLabels(win){   /* 按运行时间窗口查普罗实际存在的序列标签（口径同画板候选：vllm:num_requests_running 的 series + start/end） */
+  if(!win)return Promise.reject(new Error("no window"));
+  var q="match[]="+encodeURIComponent('vllm:num_requests_running{exported_job=~".*vllmp.*"}')+"&start="+win.from+"&end="+win.to;
+  return proxyGet(PROM_URL+"/api/v1/series?"+q).then(function(text){
+    var j=JSON.parse(text);
+    if(!j||j.status!=="success"||!Array.isArray(j.data))throw new Error("bad");
+    return j.data;
+  });
+}
+function applyRunImport(key,rec,labels){
+  var ds=DATASETS[key],patch=runImportPatch(rec,ds);
+  ds.model_name=labels?String(labels.model_name||""):patch.model_name;
+  ds.xds_namespace=labels?String(labels.xds_namespace||""):patch.xds_namespace;
+  if(patch.abs)ds.abs=patch.abs;
+  ds.logDir=patch.logDir;
+  syncDatasetCard(key);   /* 先落表单，再走 applySettings 统一校验/保存/重启轮询 */
+  applySettings(true);
+  var bits=["标签 "+(ds.model_name||"∅")+" / "+(ds.xds_namespace||"∅")];
+  if(patch.abs)bits.push("窗口 "+fmtDTL(patch.abs.from).replace("T"," ")+" ~ "+fmtDTL(patch.abs.to).replace("T"," "));
+  if(rec.archive)bits.push("日志目录 "+ds.logDir);
+  if(!rec.prom||!rec.prom.enabled)bits.push("该运行未启用普罗采集，标签沿用原值");
+  document.getElementById("setHint").textContent="已从运行 #"+(rec.no==null?"?":rec.no)+"（"+(rec.tag||"无 tag")+"）填充数据集 "+key.toUpperCase()+"："+bits.join(" · ")+"。";
+}
+function openRunImportModal(key){
+  var up=key.toUpperCase(),runs=[];
+  var body=document.createElement("div");
+  var note=document.createElement("div");note.className="diag-note";note.style.marginBottom="8px";
+  note.textContent="第一步选择流水线运行；第二步按其起止时间窗口查询普罗实际存在的 model_name / xds_namespace 供挑选（默认取运行记录值，仅一个候选时自动选中），连同绝对时间窗口与归档日志目录一并导入数据集 "+up+"。对比模式下 A 选基线运行、B 选劣化运行即可对比。";
+  var bar=document.createElement("div");bar.className="diag-formrow";bar.style.marginBottom="8px";
+  var filter=document.createElement("input");filter.className="dshell-input grow";filter.placeholder="过滤：编号 / tag / 流水线 / 环境 / 提交 / 操作人…";
+  var refresh=document.createElement("button");refresh.className="dshell-btn dshell-btnGhost";refresh.type="button";refresh.textContent="重新拉取";
+  var state=document.createElement("span");state.className="dshell-muted";state.style.fontSize="12px";
+  bar.appendChild(filter);bar.appendChild(refresh);bar.appendChild(state);
+  var list=document.createElement("div");list.className="dshell-list diag-runlist";
+  /* 第二步：按运行窗口挑选普罗标签 */
+  var step2=document.createElement("div");step2.style.display="none";
+  var curRec=null,labelGen=0;
+  var sum=document.createElement("div");sum.className="diag-note";sum.style.marginBottom="8px";
+  var fields=document.createElement("div");fields.className="diag-dataset-fields";fields.style.marginBottom="8px";
+  var selM=document.createElement("select");selM.className="dshell-input";
+  var selN=document.createElement("select");selN.className="dshell-input";
+  [["model_name",selM],["xds_namespace",selN]].forEach(function(p){
+    var f=document.createElement("div");f.className="diag-field";
+    var lb=document.createElement("label");lb.textContent="普罗标签 "+p[0];
+    f.appendChild(lb);f.appendChild(p[1]);fields.appendChild(f);
+  });
+  var lstate=document.createElement("div");lstate.className="diag-note";lstate.style.marginBottom="8px";
+  var btns=document.createElement("div");btns.className="diag-formrow";
+  var applyBtn=document.createElement("button");applyBtn.className="dshell-btn";applyBtn.type="button";applyBtn.textContent="应用导入";
+  var backBtn=document.createElement("button");backBtn.className="dshell-btn dshell-btnGhost";backBtn.type="button";backBtn.textContent="返回重选运行";
+  btns.appendChild(applyBtn);btns.appendChild(backBtn);
+  step2.appendChild(sum);step2.appendChild(fields);step2.appendChild(lstate);step2.appendChild(btns);
+  body.appendChild(note);body.appendChild(bar);body.appendChild(list);body.appendChild(step2);
+  function fillSelect(sel,label,choices){
+    sel.innerHTML='<option value="">'+esc(label)+'：不过滤</option>'+choices.options.map(function(v){return '<option value="'+escAttr(v)+'">'+esc(v)+'</option>';}).join("");
+    sel.value=choices.selected;
+  }
+  function showLabelStep(rec){
+    curRec=rec;
+    note.style.display="none";bar.style.display="none";list.style.display="none";step2.style.display="";
+    var win=runImportWindow(rec,DATASETS[key].rangeM),pm=rec.prom||{};
+    sum.textContent="运行 #"+(rec.no==null?"?":rec.no)+"（"+(rec.tag||"无 tag")+"）· "+(rec.pipeline||"")+" · "+(rec.env||"")+(win?" · 窗口 "+fmtDTL(win.from).replace("T"," ")+" ~ "+fmtDTL(win.to).replace("T"," "):"");
+    fillSelect(selM,"model_name",importLabelChoices(pm.modelName||"",[]));
+    fillSelect(selN,"xds_namespace",importLabelChoices(pm.xdsNamespace||"",[]));
+    lstate.textContent="正在按运行窗口查询普罗标签…";
+    var gen=++labelGen;
+    fetchRunWindowLabels(win).then(function(data){
+      if(gen!==labelGen||curRec!==rec)return;
+      fillSelect(selM,"model_name",importLabelChoices(pm.modelName||"",seriesLabelValues(data,"model_name")));
+      fillSelect(selN,"xds_namespace",importLabelChoices(pm.xdsNamespace||"",seriesLabelValues(data,"xds_namespace")));
+      lstate.textContent="已按运行窗口查到 "+data.length+" 个序列的标签值；确认或改选后点「应用导入」。";
+    }).catch(function(e){
+      if(gen!==labelGen||curRec!==rec)return;
+      lstate.textContent="普罗标签查询失败（"+(e&&e.message?e.message:e)+"）；下拉中保留运行记录值，也可导入后在数据集卡片上调整。";
+    });
+  }
+  function showListStep(){curRec=null;labelGen++;step2.style.display="none";note.style.display="";bar.style.display="";list.style.display="";}
+  applyBtn.addEventListener("click",function(){var rec=curRec;if(!rec)return;closeModal();applyRunImport(key,rec,{model_name:selM.value,xds_namespace:selN.value});});
+  backBtn.addEventListener("click",showListStep);
+  function statusBadge(st){
+    var cls=st==="success"?"dshell-badgeDone":(st==="failed"||st==="aborted"?"":"dshell-badgeWait");
+    return '<span class="dshell-badge '+cls+'"'+(cls?"":' style="color:#f85149;border-color:rgba(248,81,73,.4)"')+">"+esc(st||"unknown")+"</span>";
+  }
+  function render(){
+    var hits=runs.filter(function(r){return runMatchesFilter(r,filter.value);});
+    list.innerHTML=hits.slice(0,200).map(function(r,i){
+      var prom=r.prom&&r.prom.enabled;
+      var line1='<span class="dshell-listItemTitle">#'+esc(String(r.no==null?"?":r.no))+" "+esc(r.tag||"")+" · "+esc(r.pipeline||"")+" · "+esc(r.env||"")+"</span>"
+        +'<span class="dshell-listItemMeta">'+esc(r.time||"")+(r.dur?" · 耗时 "+esc(r.dur):"")+(r.by?" · "+esc(r.by):"")+"</span>";
+      var promTxt=prom?"普罗 ✓ "+esc(r.prom.modelName||"∅")+" / "+esc(r.prom.xdsNamespace||"∅"):"未启用普罗采集，仅填充时间窗口与日志目录";
+      var line2='<div class="diag-run-sub">'+promTxt+(r.archive?" · "+esc(r.archive):"")+"</div>";
+      return '<div class="dshell-listItem diag-run-item" data-i="'+i+'"><div class="diag-run-main">'+statusBadge(r.status)+"<div>"+line1+line2+"</div></div></div>";
+    }).join("");
+    state.textContent=runs.length?"共 "+runs.length+" 条运行记录"+(hits.length>200?"，仅显示前 200 条，请继续过滤":""):"";
+    Array.prototype.forEach.call(list.querySelectorAll(".diag-run-item"),function(el){
+      el.addEventListener("click",function(){var rec=hits[+el.getAttribute("data-i")];if(!rec)return;showLabelStep(rec);});
+    });
+  }
+  function load(){
+    state.textContent="正在拉取流水线运行历史…";list.innerHTML="";
+    fetchPipelineRuns().then(function(h){runs=h;state.textContent=h.length?"":"暂无流水线运行记录。";render();})
+      .catch(function(e){state.textContent="拉取失败："+(e&&e.message?e.message:e)+"，可点「重新拉取」重试。";});
+  }
+  filter.addEventListener("input",render);
+  refresh.addEventListener("click",load);
+  openModal("从流水线运行导入 · 数据集 "+up,body);
+  load();
+}
+["a","b"].forEach(function(key){
+  document.getElementById("dataset"+key.toUpperCase()+"Import").addEventListener("click",function(){openRunImportModal(key);});
+});
 function clearCompare(){
   COMPARE={};BASE_STATE={state:ANALYSIS_MODE==="compare"?"loading":"off",matched:0,total:0};
   CUSTOM.panels.forEach(function(p){p.series.forEach(function(s){s._data=null;s._cmp=null;});});

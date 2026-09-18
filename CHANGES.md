@@ -1,5 +1,316 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复终止流水线时只中止页面/服务端编排、未停止外部任务的问题（`projects/pipeline/pipeline.html`、
+  `src/index.ts`）：Jenkins 触发后保存 queue `Location` 与最终构建号，终止时对排队项调用
+  `POST /queue/cancelItem`、对已运行构建调用 `POST <build>/stop`，并为终止 POST 独立获取 crumb；
+  EvalTokens 启动后保存 `run_id`，终止时调用 `POST /api/v1/tasks/runs/<run_id>/stop`。浏览器本地执行与
+  服务端权威队列执行均覆盖；浏览器 Jenkins 也改为只按本次响应的 queue item 取得构建号，不再用
+  `nextBuildNumber`/`lastBuild` 猜测，避免并发触发时误停他人构建。启动请求与流水线中止/阶段 deadline
+  解耦出 10 秒清理宽限（crumb 等触发前准备仍立即中止，防止终止后才新建任务），避免标识响应迟回而
+  遗留任务；Jenkins 整条终止链与 EvalTokens stop 各设 10 秒上限，失败会进入阶段日志并在
+  页面提示。两种 Jenkins CORS 桥接配置显式暴露 `Location`/渐进日志响应头。新增 Jenkins 排队/运行取消、
+  EvalTokens run 停止、启动响应竞态及页面协议回归测试。
+
+- 流水线任务列表新增分页（`projects/pipeline/pipeline.html`）：分页栏提供与运行历史相同的
+  `10 / 20 / 50 / 100` 条规格，但使用独立的页码、页大小和 `pip-plPageSize` 本地存储键，互不联动；
+  关键字、创建者或收藏筛选变化及清除筛选时自动回到第一页，流水线刷新、新增或删除导致总页数减少时
+  自动修正越界页码；从顶部下拉框选用、新建或复制页外流水线时，若目标仍命中当前筛选则自动翻到目标页，
+  保持列表“当前”行与下拉选择同步。新增 `projects/pipeline/tests/test_pipeline_pagination.js` 覆盖规格、初始化恢复、
+  切片、前后翻页、页大小独立保存、越界修正及页外选中，并扩充 `test_pipeline_favorites.js` 覆盖筛选后回首页。
+
+- 「定时」页计划列表新增当前执行的终止能力（`projects/pipeline/pipeline.html`）：计划触发后在服务端执行池
+  运行/排队的任务，此前只能去「运行队列」里找条目中止，定时页只有「取消」（仅删除计划、不动当前执行），
+  且计划执行人署名带「 ⏰」后缀使按署名精确匹配的控制权判定永远失败，非管理员连自己的定时运行也无法中止。
+  现计划行在当前执行存在时显示「运行中/排队中」徽标与「终止」按钮：确认后经既有
+  `POST /api/worktable/pipeline/queue`（action=cancel）走服务端执行池取消——排队项直接移除、运行中
+  AbortController 中止并杀掉脚本进程树，本次运行按「终止」计入历史；周期计划本身保留、下个周期仍触发
+  （不再触发用「取消」删除计划）。新增 `planOwnerBy`：权限比对前剥掉 by 的「 ⏰」来源标记，非管理员可
+  终止自己署名的定时运行、管理员全权（与运行队列同一 `canControlRun` 语义）。「取消」在计划有活动执行时
+  增加确认提示（仅删计划、保留当前执行）；进入「定时」页改为重新拉取计划列表（`loadPlans`），其他浏览器的
+  增删一并刷新；活动执行集合随 1s 队列快照轮询按签名变化才重绘，无变化不重建 DOM。新增
+  `projects/pipeline/tests/test_plan_terminate.js` 覆盖徽标/按钮渲染、终止调用、权限边界（本人/他人/管理员）、
+  取消确认与快照变化重绘；`test_queue_item_preview.js` 的 pullRemoteQueue 用例同步补新依赖桩。
+
+- 修复流水线运行提交与多浏览器保存的一致性问题（`projects/pipeline/pipeline.html`、`src/index.ts`）：全部阶段可由
+  服务端执行的流水线此前点击运行后，要等 POST 返回并拉到权威队列快照才切换编排区，网络请求、服务端两槽
+  执行池/同节点串行和轮询等待期间看起来像“没有开始”；现点击后立即按本次参数展示「提交中…」只读预览，
+  服务端 `runId` 出现后无缝切到排队/运行详情，失败或 15 秒未出现时清理预览。流水线编辑器此前点击保存只写
+  本地并安排 400ms 异步 PUT，弹窗和草稿立即关闭，写入失败无提示；紧接着运行会让服务端按旧配置执行，旧标签页
+  还可用整份配置覆盖新标签页。现显式保存立即等待服务端确认，确认前保留弹窗/草稿并禁用按钮，失败回滚本页
+  状态且提示；确认在途冻结整个编辑器，初始服务端配置未加载时禁止进入编辑；同页 PUT 串行，失败只回滚本次
+  流水线、保留等待期间合入的其他定义。客户端随 PUT 携带最近服务端基线，服务端
+  在存储锁内按流水线 id 三方合并：不同流水线的并发修改同时保留，同一流水线被双方修改则返回 409 冲突、拒绝
+  静默覆盖；升级前仍打开且未携带基线的旧页面只允许流水线定义未变化的写入，不能绕过冲突保护；合并结果同步
+  回当前页，避免下一次保存误删他端新增项。新增
+  `projects/pipeline/tests/test_pipeline_save_consistency.js`、`tests/pipeline-config-concurrency.test.mjs`，并扩充
+  `test_run_autofocus.js`、`test_pipeline_readonly.js`。
+- 「代码同步」项目页（`projects/code_trans/`，窗口1：两个代码仓 PR 双向同步）入库，PR 选择支持按目标分支筛选：
+  源仓 PR 列表上方的「合入分支」chips 按各 PR 的 `targetBranch` 多选过滤（chips 带各分支 PR 计数与「全部 (N)」，
+  默认不过滤；加载 PR / 切换同步方向后自动重置，已加载列表为空时整行隐藏），「全选」仅选中当前筛选结果，
+  「使用说明」同步补充筛选说明。配套服务端脚本一并入库：`pr-fetch.py`（GitHub / GitLab / Gitee 仓信息与
+  PR 列表抓取，归一化 `sourceBranch` / `targetBranch` 等字段，经 `/api/worktable/exec` 调用规避 CORS 与令牌暴露）、
+  `pr-sync.py`（克隆目标仓 → 抓取源 PR 提交 → cherry-pick → push → 调 API 建 PR/MR，`@@PRSYNC@@` 事件流回显页面日志）。
+
+- 修复未选择部署策略时 `DEPLOY_STRATEGY` 被当作「已解析的空值」参与替换的问题（`projects/pipeline/pipeline.html`）：
+  `substRunVars` 取值池此前用 `rc.strategy!==undefined` 注入 `DEPLOY_STRATEGY`，而运行上下文一律把未选择的策略
+  兜底为空串，条件恒真——未选策略（「（不使用）」）时 `${DEPLOY_STRATEGY}` 静默解析为空，普罗命名空间模板
+  `${DEPLOY_STRATEGY}-${BY}` 随之解析成 `-<执行人>` 残段并当作有效值注入采集脚本（`NAMESPACE`/`XDS_NAMESPACE`，
+  任务级采集与手动补采同源），与文档约定的「解析不出则不注入」及阶段 env、HTTP 阶段取值池、服务端
+  `runStageScript` 等其余注入点的 truthy 语义不一致。现改为 truthy 检查：未选策略时 `${DEPLOY_STRATEGY}`
+  保持未解析（复合引用占位符原样保留；整值单个引用按空值=继承上游/运行级同名变量），上游阶段 stdout
+  产出的同名变量仍优先。同时新增 `substPromTemplate` 兜底：普罗 model/namespace 模板替换后仍残留未解析
+  `${...}` 占位（未选策略、无执行人等）即按解析不出处理、不注入；`promSnapshotForRun`/`taskPromCollect`
+  与服务端 `buildServerTaskPromEnv`（`src/index.ts`，定时计划/API 运行的任务级采集此前会注入字面
+  `${DEPLOY_STRATEGY}-<执行人>` 残段）统一接入。新增 `projects/pipeline/tests/test_deploy_strategy_vars.js`，
+  `tests/pipeline-run-api.test.mjs` 增补服务端采集环境用例，`test_cleanup_flow.js` 采集桩同步补
+  `substPromTemplate`；`lib/index.js`（+ `.map`）已随本修复重建。
+
+- 流水线任务列表的「▶」运行改为先确认本次运行参数（`projects/pipeline/pipeline.html`）：点击后不再立即
+  启动，而是弹出「运行流水线」窗口，默认继承页面顶部「运行流水线」控件当前的环境、代码仓、分支/Tag、
+  部署策略和预设任务；分支/Tag 与部署策略复用主控的可搜索选择面板并提升到页面浮层，避免被弹窗边界裁剪，用户可只为本次运行临时调整，确认后以显式参数进入既有本地/服务端调度流程，
+  不改写流水线默认配置或主运行框。执行人仍统一取当前 dsh 登录用户，弹窗不提供执行人设置；无目标节点
+  运行继续支持显式空环境，代码仓未选择时阻止提交。新增
+  `projects/pipeline/tests/test_pipeline_run_dialog.js`，并更新 `test_pipeline_row_run.js` 覆盖点击只打开弹窗、
+  默认值回显、临时参数提交、登录用户署名边界和空环境/代码仓校验。
+
+- 服务端运行接口贯通「不选择任何节点」语义（`src/index.ts`）：`POST /api/worktable/pipeline/run/<id>` 此前
+  对显式空 `environmentIds` 判 400（`environmentIds must not be empty`）、默认环境为空时回退首个环境，
+  与页面「默认不选择任何节点」的新语义矛盾——运行框全不选时走服务端权威队列会静默改投默认/首个节点。
+  现显式空 `environmentIds` 或默认环境保存为空列表即按无目标节点运行（执行池本就按纯 FIFO 处理无目标
+  IP 的计划，`TARGET_*` 注入为空值）；首项兼容回退仅限从未保存过默认环境字段的旧流水线。页面
+  `submitServerRun` 相应改为始终显式携带 `environmentIds`（空选择即空数组，不再省略回退默认环境），
+  API 调用说明弹窗的空环境请求体同步展示显式空数组并更新警告文案，README 接口契约同步更新。
+  `tests/pipeline-run-api.test.mjs` 移除旧 400 用例、新增显式空/默认空两例；`test_pipeline_api_ui.js`、
+  `test_pipeline_defaults.js` 同步扩充。
+
+- 流水线运行与编辑器「默认环境」支持不选择任何节点，且默认即不选择（`projects/pipeline/pipeline.html`）：
+  主控「选择 IP」多选此前空选择时自动回写首个节点、勾选变更强制「至少保留一个」，无法表达「无目标节点
+  运行」；现默认不选择任何节点（本地存储的空数组选择按显式空保留），允许全部取消勾选，按钮无选择时
+  显示占位「选择 IP」。不选节点按既有无目标 IP 语义运行：跳过节点租约申请、页内调度与队列按同机串行
+  处理（排队原因文案本就有「未选择目标节点的运行按串行处理」），脚本注入的 `TARGET_IP`/`TARGET_IPS`/
+  `TARGET_HOSTS` 为空值/空数组。流水线编辑器「默认环境」同样默认不选择任何节点；`pipelineDefaultRunOptions`
+  区分「编辑器显式保存的空环境列表」（= 不选择任何节点，不再改投首项）与「旧流水线从未保存过该字段」
+  （维持回退首项兼容），失效引用仍由 `pipelineDefaultRunIssue` 阻断。定时页环境多选跟随主控，均未选择
+  时同样按无目标节点处理。服务端权威队列路径的无目标节点语义由后续变更贯通（见上一条）。新增
+  `projects/pipeline/tests/test_env_selection_default_none.js`。
+
+- 流水线运行导入弹层增加第二步「按运行窗口挑选普罗标签」（`projects/diag_perf/index.html`）：运行记录的
+  `prom.modelName`/`xdsNamespace` 是占位模板（`${MODEL_PATH}`/`${DEPLOY_STRATEGY}-${BY}`）在采集时点的解析
+  快照，解析不出时只剩空串或 `-<操作人>` 残段，直接拿来当标签过滤查不到数据。现点选运行后进入第二步：
+  按该运行起止的绝对时间窗口查询 Prometheus 当时实际存在的序列标签（`/api/v1/series?match[]=
+  vllm:num_requests_running{exported_job=~".*vllmp.*"}&start=&end=`，与画板标签候选同口径），model_name 与
+  xds_namespace 各给下拉挑选——运行记录值优先保留并默认选中，窗口内仅一个候选时自动选中，也可选「不过滤」；
+  查询失败保留下拉中的运行记录值，导入后仍可在数据集卡片上调整。「应用导入」按所选标签 + 运行窗口 +
+  归档日志目录落数据集，「返回重选运行」可回第一步。新增纯函数 `seriesLabelValues`/`importLabelChoices`
+  及配套测试（`projects/diag_perf/index.test.cjs`）。
+
+- 性能诊断页支持从流水线运行历史一键导入数据集（`projects/diag_perf/index.html`）：数据集 A/B 卡片各新增
+  「从流水线运行导入」按钮，弹层经 `/api/worktable/pipeline/history` 拉取运行列表（旧版插件无此路由时回退
+  全量 `/api/worktable/pipeline`），支持按编号/tag/流水线/环境/提交/操作人过滤、显示状态徽章与普罗采集标记，
+  点选即把该运行的普罗标签（`prom.modelName`/`xdsNamespace`，仅非空覆盖）、运行起止转绝对时间窗口
+  （`startTs`/`ts`，旧记录无 `startTs` 时按 `dur` 回推，再无耗时回退当前相对窗口）与归档目录（`archive`，
+  内含 `run-<tag>.log` 汇总日志，作为日志证据目录）填充进数据集并立即生效；对比模式下 A 导入基线运行、
+  B 导入劣化运行即构成 A/B 对比，无需手工抄标签与起止时间。新增纯函数 `parseRunDur`/`runImportWindow`/
+  `runImportPatch`/`runMatchesFilter` 及配套测试（`projects/diag_perf/index.test.cjs`）。
+
+- 点击「运行」后流水线编排与阶段详情自动跳到刚提交的那次任务（`projects/pipeline/pipeline.html`）：此前只有
+  本地立即开跑会切编排区焦点，本地排队、节点租约在途（「申请节点中」）和提交服务端权威队列的任务都要用户
+  自己到运行队列里点选才能看到。现三个运行入口（主控「运行流水线」、任务行 ▶、历史重跑）统一在提交后立即
+  聚焦：本地入队/租约在途经 `focusQueueItem` 展示该次排队的只读编排与参数快照（启动后 `startSimRun` 照旧
+  接过焦点，无租约环节同步启动时不覆盖回预览）；服务端提交按响应 `runId` 在每秒轮询的权威快照中等待出现
+  （`pendingServerRunFocus`，15s 超时自动放弃，不抢占用户后续手动切换的视图），出现即经
+  `focusRemoteQueueItem` 切到只读预览。配套修复服务端权威条目「排队→在跑」沿用同一 runId 时正在查看的
+  排队预览被清空回空闲编排的问题：`refreshRemoteQueuePreviewRc` 先按同 id 续看，再按 `originQueueId`
+  兼容旧浏览器在场条目的 q…→r… 换 id。新增 `projects/pipeline/tests/test_run_autofocus.js`（本地排队/
+  满额拒绝/租约在途/同步启动、服务端立即可见/延迟可见/超时放弃/提交失败、两类排队→在跑跟随）。
+
+- 恢复混合编排流水线手动运行的「定时分界移交」原设计（`projects/pipeline/pipeline.html`）：编排中同时存在
+  「需本地运行」与「定时」阶段时，需本地运行的前缀在浏览器立即跑完，运行到达首个定时阶段（分界）即把
+  后缀定时阶段整体登记为一条「立即执行一次」的服务端计划（归档文件夹/tag/baseSeq/上游变量快照随计划移交，
+  服务端 15s 轮询到期执行，回显写入同一归档文件夹、任务日志编号连贯，计划出现在「定时」页可查看/取消），
+  并弹窗告知；后缀各阶段在编排区标记为移交态（skipped 渲染），其执行结果由服务端「定时后缀」运行记录承载。
+  登记接口不可达时弹窗告知后缀未执行、分界阶段标 failed（可从失败阶段重试）、运行按失败收尾——后缀不
+  静默丢失，也不改在本地落地执行。此前 `registerStageTimers` 自始没有调用方（移交机制断线，服务端对
+  `pl.archive/pl.tag/baseSeq/vars` 的支持一直在），本地执行分流恢复后混合编排被整次留在浏览器执行；本次
+  把移交接入 `advance` 的定时分界（定时阶段在并行组起始同样移交）。新增
+  `projects/pipeline/tests/test_sched_suffix_handoff.js`（移交计划内容/弹窗/失败收尾/纯本地不触碰计划接口），
+  `test_execution_progress.js` 的混合 sched 用例同步改为断言分界移交。
+- 修复流水线勾选「需本地运行，不支持定时」后，手动运行与历史重跑仍被提交到服务端执行的问题
+  （`projects/pipeline/pipeline.html`）：只要编排中存在 `sched: null` 的普通阶段，整次运行就复用浏览器执行器，
+  使浏览器可达、dsh 服务进程不可达的 Jenkins/HTTP 地址正常触发，并恢复本地脚本、环境清理等运行上下文；
+  同机互斥、4 个浏览器并发槽位、16 条本地队列上限及排队/满额提示继续生效；节点租约申请在途会同时
+  占用并发槽位并预留回队容量，避免异步申请期间超发或拒绝后溢出队列。全部普通阶段均支持定时时，
+  手动运行仍提交服务端权威队列；预设标记不参与分流，服务端 API 与定时计划路径保持不变。扩充
+  `test_queue_item_preview.js`、`test_pipeline_row_run.js`、`test_replay_executor_attribution.js`、
+  `test_pipeline_defaults.js` 与 `test_node_lease.js`，覆盖本地/服务端分流、冲突排队、容量拒绝、租约竞态和
+  三个运行入口的反馈。
+- 修复流水线 HTTP 阶段在浏览器本地执行时构建状态轮询静默死循环（`projects/pipeline/pipeline.html`）：
+  阶段 URL 含 `/job/` 的标准 Jenkins 任务路径在 GET 触发后会轮询构建结果，轮询目标固定为「Jenkins 服务
+  配置」的地址 + 阶段 URL 路径，而轮询循环的 catch 吞掉一切错误且无限重试——服务配置地址不对、本地桥接
+  未启动、跨域被浏览器拦截（CORS）、401/403 等持续性故障会让 `buildNum` 永远拿不到，阶段在默认「无超时」
+  配置下没有任何兜底，永远卡在「已触发请求，等待执行…」，且运行日志里看不到任何错误原因，只能手动「中止」。
+  现按连续失败计数：首次与每 15 次失败在运行日志回显原因与排查指引（检查服务配置地址/凭据/连接模式、
+  目标需允许 CORS），连续 30 次（约 1 分钟）按阶段失败收尾，成功一次即清零；已确认任务存在（拿到
+  nextBuildNumber）时 lastBuild 404 = 首次构建尚未开始，属合法排队等待，不计失败。
+  新增 `projects/pipeline/tests/test_http_stage_poll_failure.js`，覆盖持续失败有界收尾与原因回显、
+  排队中 404 豁免、瞬时故障恢复三个用例。
+- 修复流水线服务端执行 EvalTokens 远程连接时误走系统代理（`src/index.ts`）：手动运行迁移到服务端权威队列后，
+  EvalTokens 阶段此前无视设置页的「远程服务器端连接」语义，直接调用启用了 `NODE_USE_ENV_PROXY` 的全局
+  `fetch`，内网请求会被送往 HTTP 代理并在约 135 秒后仅报 `fetch failed`。远程模式现与
+  `/api/worktable/proxy` 共用显式独立 Agent 的内网直连传输，保持回环/RFC1918/链路本地目标限制，单次请求
+  20 秒超时且完整传递运行取消；域名目标会校验全部 DNS 结果并把请求固定到已验证的内网地址，阻断解析污染与
+  DNS 重绑定，响应前异常关闭也会立即失败而不会永久挂起。任务列表和本次 run 的状态轮询对网络错误、
+  408/429/5xx 最多重试两次，有副作用的启动 POST 始终只调用一次。网络错误会带上请求阶段和底层错误码，
+  并清洗 URL 凭据与常见敏感查询参数。`tests/pipeline-run-api.test.mjs` 新增真实本地 HTTP 服务、超时、取消竞态、
+  DNS 校验与固定、提前断连、目标限制、GET 重试及 POST 单次调用测试；同时收紧 `/api/worktable/proxy`：直连域名
+  复用 DNS 校验与固定，`useProxy:true` 因代理端会自行解析而仅接受内网 IP 字面量。
+- 修复流水线脚本测试在 `dev` 上的既有回归：`render-config.sh` 恢复既定模型存储路径 `/mnt/xds/sfs`；
+  `test_render_target_labels.sh` 同步此前已经调整的 LMCache 生产默认值和字符串化对齐值；
+  `test_pipeline_contract.sh` 将需要 12/14 张 GPU 的夹具改为双节点，避免与单节点 8 卡容量保护互相矛盾。
+- 流水线任务列表展示各流水线的运行队列数量（`projects/pipeline/pipeline.html`）：新增「运行队列」列，
+  按稳定流水线 ID 汇总当前页面、节点租约申请中、服务端 API/定时任务以及其他浏览器的全部在跑与排队条目，
+  分别显示「运行 N」「排队 M」，无活动时显示「—」；自定义运行没有流水线 ID，不按重名误归类。
+  每秒队列同步只定向更新现有计数单元格，不重建任务表，保留筛选与行交互状态；兼容旧浏览器仅上报单条
+  `running` 的快照。新增 `projects/pipeline/tests/test_pipeline_queue_counts.js`，并扩充
+  `test_queue_item_preview.js`、`test_pipeline_row_run.js` 覆盖全来源聚合、列表展示、实时刷新与既有行操作。
+- 修复运行历史刷新在旧版插件下报 HTTP 404（`projects/pipeline/pipeline.html`）：轻量历史接口
+  `/api/worktable/pipeline/history` 是后加的服务端路由，而工作台经 `/api/worktable/site` 直接从源码目录
+  托管页面时，前端可能新于正在运行的旧版插件（如 v1.1.2 发行包无此路由），手动与自动刷新均失败弹窗。
+  首次收到 404 即永久降级为 `GET /api/worktable/pipeline` 全量存储接口（与旧版手动刷新同一载荷），
+  清掉只对轻量接口有意义的 ETag，本次会话内不再请求缺失路由；新插件下行为不变。
+  `projects/pipeline/tests/test_history_auto_refresh.js` 新增 404 降级与降级记忆回归用例。
+- 流水线运行队列支持查看服务端最新日志，运行历史支持自动刷新（`src/index.ts` +
+  `projects/pipeline/pipeline.html`）：服务端执行池为每条运行的各阶段维护独立、按 UTF-8 字节限制为最大 256 KiB 的日志尾窗，
+  脚本 stdout/stderr 在进程结束前即增量写入；普通队列快照继续只含安全状态字段，页面仅在查看服务端
+  运行时按 `runId + stageId` 单独拉取当前阶段日志，并随每秒队列轮询更新，切换运行/阶段后的迟到响应会
+  被丢弃，日志版本未变化时以 304 避免重复传输。运行历史在初始状态加载完成后每 3 秒通过带 ETag 的
+  轻量接口同步（后台标签页暂停，版本未变时不读取存储正文），手动刷新复用同一请求；列表更新保持筛选、
+  页码、分析勾选及按稳定主键绑定的回放行，并沿用已加载的日志与 profile 校正缓存。清空版本同时约束
+  客户端、服务端和刷新响应，避免防抖保存或旧标签页竞态复活已清记录。新增服务端日志尾窗/查询/实时输出测试及
+  `projects/pipeline/tests/test_history_auto_refresh.js`，扩充队列详情与日志拉取回归测试。
+- 运行历史「↻ 刷新」按钮移到筛选栏最前、关键字输入框之前（`projects/pipeline/pipeline.html`）：刷新从
+  栏尾（清空之后）提前为筛选栏第一个控件，关键字 / 状态 / 流水线筛选与「清除筛选 / 重跑 / 清空」的相对
+  顺序不变。`projects/pipeline/tests/test_history_toolbar_layout.js` 同步改为断言新排列。
+- 流水线任务支持按用户收藏与收藏筛选（`projects/pipeline/pipeline.html`）：任务行「⋯」悬浮菜单新增
+  「收藏 / 取消收藏」，列表名称区以「★ 收藏」标识当前用户的收藏；筛选栏新增「全部 / 仅看收藏」，
+  可与关键字、创建者条件组合并在浏览器本地保留筛选选择。收藏关系以流水线 `favoriteUsers` 用户名数组
+  保存，经既有 `savePipelines` / `persistState` 链路同步到服务端与导出文件，同一登录用户跨浏览器可见、
+  不同用户互不影响；未获取登录用户名时拒绝写入，复制副本不继承任何用户的收藏。新增
+  `projects/pipeline/tests/test_pipeline_favorites.js` 覆盖用户隔离、未登录保护、筛选状态、列表与菜单交互、
+  保存链路及副本语义，并为既有置顶、行运行与署名测试补齐收藏状态依赖桩。
+- 流水线编辑器任务参数支持折叠（`projects/pipeline/pipeline.html`）：Shell/Python 自动识别参数与 EvalTokens
+  任务输入参数统一放入原生 `details` 面板，标题显示参数数量，首次渲染默认折叠；无参数的模拟、HTTP 或未识别到
+  参数的任务隐藏整栏。展开后修改参数只重绘字段，不重建折叠容器；折叠标题加入任务卡拖拽手势保护，点击时正常
+  展开/收起而不触发整卡拖拽。新增 `projects/pipeline/tests/test_stage_params_collapse.js`，并扩充
+  `test_stage_drag_reorder.js` 覆盖默认折叠、按类型显示/隐藏、数量标题与折叠点击手势。
+- 流水线脚本目录可在设置中配置，默认路径改为插件安装后的 scripts 路径（`projects/pipeline/pipeline.html` +
+  `src/index.ts`）：「设置」页新增「脚本目录」卡片（Profiling 脚本与归档配置之间），可保存自定义目录、
+  留空或点「重置为安装默认」恢复默认；自定义值随设置持久化到服务端（worktable-pipeline.json）并跨浏览器
+  同步，「导出设置」文件同样携带。默认路径不再只靠页面 URL 嗅探：页面启动时经 `/api/worktable/health` 的
+  `dir` 解析出安装默认 `<插件安装目录>/projects/pipeline/scripts`，凡未经任何设置配置（localStorage 与服务端
+  设置文件都没有 scriptsDir，新增 `scriptsDirIsFallback` 标记）的生效值自动升级为该安装默认并落盘；已配置
+  值（含「编辑流水线」弹窗与「导入设置」）一律不被覆盖。服务端执行器（定时任务 / API 触发 / 普罗收集脚本）
+  经新增 `resolvePipelineScriptsDir` 同一规则解析——设置文件未配置 scriptsDir 时从原来的进程 cwd 相对路径
+  改为兜底到安装默认 `DEFAULT_PIPELINE_SCRIPTS_DIR`（PLUGIN_DIR/projects/pipeline/scripts，tgz 包的 files 含
+  projects 目录）。新增 `tests/pipeline-scripts-dir.test.mjs`（解析规则 + 普罗收集脚本路径 + 源码契约）与
+  `projects/pipeline/tests/test_scripts_dir_default.js`（默认解析、fallback 升级、设置页保存/重置与回显）；
+  `tests/pipeline-run-api.test.mjs` 的执行器 vm 上下文补注 `resolvePipelineScriptsDir` 与空串安装默认（保持
+  既有用例语义）。`projects/pipeline/scripts/test/test_render_target_labels.sh` 在 dev 上即失败（既有问题，
+  与本次改动无关）。
+- PR 检视台「编译发行」新增「AI 生成发行说明」一键选项（`projects/codereview/code-review-prs.html`）：「🚀 构建并发行」
+  按钮旁新增勾选框；勾选后点按钮一气呵成——先把「上一发行版 Tag … 当前分支」的提交送入右侧聊天窗由 AI 起草
+  发行说明并自动回填（无新提交则跳过并沿用发行说明框现有内容；AI 生成失败即中止，此时尚未构建/打 Tag，可修正后
+  重试），随后继续 编译构建 → 创建 Tag → 创建发行版 → 上传产物（发行说明取回填后的文本框内容）。发行步骤列表随
+  勾选态动态在最前插入「AI 发行说明」步（`relStepNames` 按次重算，实时回显、「⏹ 停止」语义与构建历史归档与其余
+  步骤一致）；勾选态作为 `autoNotes` 并入「仓库@分支」云端构建设置，选中分支自动填充。顺带把 GitHub upload_url
+  去模板改写为 `fromCharCode(123)` 定位花括号，避免源码不配对字面花括号（测试按配对花括号切取函数体）。新增
+  `tests/codereview-release-run.test.mjs`：覆盖 AI 先行顺序、五步编排与历史归档、无提交跳过、AI 失败中止发行、
+  停止语义及 `genRelNotesForRun` 单元行为。
+- 流水线运行队列改为整体倒序展示（`projects/pipeline/pipeline.html`）：本页不再把“运行中”和“排队中”
+  各自倒序后按运行优先分段，而是按原编号从大到小排列，后开始/入队的流水线在上，最早的 `#1` 固定在
+  列表底部；服务端与其他浏览器的队列同样先展示较新的排队项、再展示较早的在跑项。仅调整 DOM 呈现顺序，
+  底层数组、编号与 FIFO 调度语义不变。同步更新 `projects/pipeline/tests/test_queue_item_preview.js` 的整体顺序、
+  徽标、权限按钮、排队原因及整行点击回归。
+- 流水线手动运行改由服务端权威队列持有（`src/index.ts` + `projects/pipeline/pipeline.html`）：浏览器只向
+  `POST /api/worktable/pipeline/run/<pipelineId>` 提交环境、代码仓、分支、策略、预设任务、镜像和执行人等
+  脱敏参数，脚本、HTTP/Jenkins、EvalTokens 与模拟任务统一在服务端执行；关闭、刷新或退出发起页面不再
+  终止运行。`GET /api/worktable/pipeline/queue` 返回服务端在跑/排队任务及逐阶段状态，所有浏览器每秒同步并
+  可查看同一份只读详情；有控制权的用户可跨浏览器“中止/取消”服务端条目，旧页面上报的在场快照继续兼容
+  只读展示（非 admin 仍只能控制本人署名任务）。
+  执行池保持原有有界并发、节点租约互斥和队列满拒绝语义，任务与队列在 dsh 进程生命周期内保存（服务重启
+  后清空）；快照按白名单清洗，不下发环境/代码仓凭据、脚本参数、变量或日志。新增服务端执行池快照、取消、
+  手动来源及阶段实时状态测试，并扩充页面提交、轮询、离场与跨浏览器取消回归测试。
+- 流水线任务列表支持置顶（`projects/pipeline/pipeline.html`）：每行操作列末尾新增「⋯」按钮，
+  点击调出全局悬浮菜单 `#plRowMenuPanel`——fixed 定位悬浮于最上层（z-index 1000，右缘对齐 ⋯ 按钮、
+  下缘贴按钮底部），不被表格 overflow 容器裁剪、不占文档流因而不撑大流水线行高；菜单项为列表行形态
+  （`.pl-row-menu-item` 纯文字行、悬停底色高亮，非圆边按钮）。开合只动悬浮层、不重渲染任务表；
+  点 ⋯/置顶项收起，点菜单外任意处、页面或表格容器滚动、缩放窗口亦收起。置顶态记在流水线 `pinnedAt`
+  时间戳上，随 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；任务列表与
+  运行框选用下拉同一排序——已置顶排最前（多条按置顶时间新→旧），未置顶保持数组原序（内置经加载迁移
+  居首），置顶行名称区显示「置顶」徽标；取消置顶清空 pinnedAt 恢复原序；复制副本 pinnedAt 清零不继承。
+  新增 `projects/pipeline/tests/test_pipeline_pin.js`（排序/徽标/悬浮层定位与开合/置顶落盘/副本不继承）。
+- 流水线运行历史「AI 日志分析 / Profiling 分析 / 性能诊断」统一按当前项目工作区新建会话
+  （`projects/pipeline/pipeline.html` + `src/client/index.tsx`）：页面优先调用新增宿主桥
+  `window.__dshNewChatSessionForCurrentProject(text, cwd)`，工作台从当前分栏项目读取
+  `projects.workspaces[projectId]`；工作区有效时，若聊天列已关闭则先打开，再以该 `workspaceId`
+  新建会话并把分析提示词填入草稿（不自动发送）。项目工作区未设置或已被删除时不再回退默认分组/
+  归档 cwd 创建无分组会话，而是暂存本次请求并直接弹出该项目的工作区选择列表（工作台左栏折叠时
+  先自动展开）；用户选定后自动继续原请求，关闭设置弹窗则取消暂存。提示词中的归档绝对路径保持
+  不变；旧版工作台无新桥时继续沿用
+  `__dshNewChatSessionAt` 兼容路径。新增 `tests/project-analysis-chat.test.mjs`，并扩充
+  `projects/pipeline/tests/test_history_analysis_compare.js` 覆盖工作区门禁、会话框开合、续建与新旧桥优先级。
+- 流水线任务列表不再展示运行状态、运行中可切换选用流水线（`projects/pipeline/pipeline.html`）：任务行去掉
+  「运行中」徽标、「（查看中）」标记与「点击查看本次运行的阶段详情」行提示，在跑/排队信息统一在「运行队列」
+  查看（点击队列条目看阶段详情）；整行点击与运行框下拉一律走 selectPipeline 选用——取消「目标有在跑运行则
+  转为聚焦其运行」与「编排区展示在跑运行时禁止切换」两道拦截，切换时脱离运行/结果视图回到所选流水线的
+  空闲编排（总状态徽标复位「未运行」、中止按钮禁用、归档目录提示同步刷新），在跑运行转后台继续。
+  renderQueue 末尾按签名重建任务表的徽标联动（_plRunSig）与 runsOfPipeline/latestRunOfPipeline 一并移除。
+  `test_pipeline_row_run.js` 行点击用例改为断言无运行徽标且一律选用；`test_queue_item_preview.js`、
+  `test_node_lease.js`、`test_pipeline_audit_trail.js` 同步去掉 _plRunSig 与徽标辅助桩。
+- 运行队列「查看中」高亮与运行历史选中行对齐（`projects/pipeline/pipeline.html`）：队列条目（在跑/
+  排队预览/他端只读预览）的选中背景统一为与 `#historyTable tbody tr.sel td` 相同的
+  rgba(79,142,247,.12)，去掉此前自定的 color-mix 背景与强调色边框，两处选中态观感一致。
+- 运行队列条目整行可点选中（`projects/pipeline/pipeline.html`）：点击条目空白处等同于点击标题——
+  在编排区查看该流水线的阶段详情（本页在跑/排队项与他端有阶段快照的条目一致生效，旧他端无快照
+  条目仍不可点）；标题、「排队中/申请节点中」徽标、中止/取消按钮等自带行为的区域不重复触发。
+  `test_queue_item_preview.js` 新增空白处点击选中与交互区域不重复触发用例。
+- 运行队列「排队中/申请节点中」徽标支持点击查看排队原因（`projects/pipeline/pipeline.html`）：徽标改为
+  可点击，按条目展开/收起一行「排队原因」——按当前调度状态即时推算并说明后续动作：节点被他端运行占用
+  （含占用者与节点 IP，租约释放后自动启动）、同机有本页运行在跑（同节点串行）、同机排队任务排在前面
+  （FIFO，含对方编号）、并发槽位已满（N/4）、未选择目标节点按串行处理、租约申请进行中，以及调度中
+  即将启动的兜底说明；展开态按条目 id 记忆、重绘保留，取消排队时清理。`test_queue_item_preview.js`
+  新增展开/收起与各原因分支用例，并固定「后加入的条目显示在上、先加入者仍是队列首部（#1）」的展示顺序。
+- 运行队列条目状态徽标与展示顺序调整（`projects/pipeline/pipeline.html`）：未启动的排队条目补「排队中」
+  徽标（本页与他端一致，与运行中的「运行中」徽标对应；节点租约申请中的暂态仍显示「申请节点中」）；
+  正在编排区查看的条目（本页在跑/排队预览/他端只读预览）整框背景与边框按主题强调色高亮，呼应原有
+  「（查看中）」文字标记；条目展示改为倒序——后开始/后加入的显示在上面，编号仍按开始/入队先后递增，
+  先加入者仍是队列首部（#1），仅展示顺序变化，FIFO 调度语义不变。`test_queue_item_preview.js` 新增
+  徽标、倒序编号与整框高亮用例。
+- 流水线运行队列与任务定义列表分区，并支持跨浏览器查看阶段详情（`projects/pipeline/pipeline.html`、
+  `src/index.ts`）：原先嵌在「流水线任务」卡片首行的运行队列拆为独立卡片，「流水线任务列表」只保留
+  定义筛选、统计与管理操作；本页在跑/排队任务和其他浏览器同步来的条目均可点击，在既有编排与详情区
+  查看各阶段状态、进度和耗时，他端在场快照每次轮询后继续更新当前预览。跨浏览器接口按白名单、数量和
+  长度限制清洗阶段数据，只同步阶段名称、并行/跳过标记及运行状态，不传输日志、阶段变量、脚本参数或
+  凭据；他端预览和本页排队预览均保持只读，不提供编辑、重试、中止或取消他端任务的入口。阶段快照协议
+  增加版本标识与队列来源 id，正在查看的他端排队项启动后会无缝跟随到真实运行；节点租约申请期间的待启动项
+  在本页列表和他端快照中都保持可见、可点击，进入真实运行后延续同一预览。旧来源页没有阶段快照时禁止无效
+  点击并提示刷新来源页面，镜像与 Commit 等未同步字段明确显示“未同步”，不伪造本页默认值；远端阶段 id 与
+  子阶段名按 DOM `dataset` 精确匹配，不拼接进 CSS selector，异常字符不会打断渲染轮询。新增
+  `projects/pipeline/tests/test_queue_layout.js`、`tests/pipeline-queue-presence.test.mjs`，并扩充
+  `projects/pipeline/tests/test_queue_item_preview.js` 覆盖分卡布局、安全快照、他端点击与轮询刷新。
+- 流水线同一节点互斥运行（跨标签页/跨浏览器/API/定时统一生效）：同一节点（环境 IP）同一时间只跑
+  一条流水线，多条流水线选中同一节点时后到者排队等待。服务端新增节点占用租约
+  （`/api/worktable/pipeline/leases`，`createPipelineNodeLeases`：易失内存态、TTL 90 秒、持有方
+  25 秒心跳续租、页面崩溃/断网到期自动释放，申请按全部目标 IP 原子占用）；API/定时共用的执行池
+  `createPipelineExecutionQueue` 接入节点调度 hooks——与在跑计划同节点、或节点被池外（页面手动运行）
+  租约占用的计划留在队列等待并按 5 秒周期重试，不同节点可越过同机等待者并行，无目标 IP 的计划保持
+  旧版纯 FIFO 不变。页面 `startRun` 改为先申请租约再开跑：申请在途占一个并发槽位并参与机器冲突判定
+  （防快速连续运行越过互斥），被他人占用则回队等待、队列条目标注「等待节点 <IP>（占用者 · 流水线）」
+  并按 5 秒节流重试，拿到租约后周期续租，`finish`/中止/重置释放租约，pagehide 时 beacon 批量兜底
+  释放，旧插件无此路由时降级为仅页内互斥的旧行为不阻断运行。新增
+  `tests/pipeline-node-leases.test.mjs`（租约语义/池节点调度/路由全链路）与
+  `projects/pipeline/tests/test_node_lease.js`（startRun 门控/降级/在途占槽、drainQueue 节流与
+  同机 FIFO、finish 释放、队列等待标注）。
 - mem_leak 页面补入 vLLM P/D 分离集群生产诊断手册（`projects/mem_leak/index.html`）：
   新增「P/D 实战手册」标签页，固化 8×H800 kubeRay/TENT 拓扑、cgroup v1 的
   anon/file/cache/shmem 分层方法、RssAnon/VmPin/线程/fd 判据、生产插桩红线、Xid 事故时间线、

@@ -1,4 +1,4 @@
-// 回归：后台探测不得占满连接；手动执行不中途转交计划；打开目录须等日志落盘。
+// 回归：后台探测不得占满连接；混合 sched 手动运行在定时分界移交服务端；打开目录须等日志落盘。
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -25,17 +25,18 @@ test('六个慢节点及重复刷新不阻塞流水线请求', async()=>{
   assert.equal(count,6,'重复刷新应复用已排队查询');
 });
 
-test('混合 sched 标记的手动流水线立即进入第二个脚本',()=>{
-  const called=[];
+test('混合 sched 标记的手动流水线到达定时分界即移交服务端（定时阶段不在本地执行）',()=>{
+  const handed=[];
   const rc={id:'r1',stages:[{script:{path:'/gen.sh'}},{sched:{},script:{path:'/print.sh'}}],nodes:[],selId:null,
     timer:null,over:false,overall:null,token:'t1',vars:{},by:'tester',source:'manual'};
   const ctx={runPresetStep(){},skipStage(){},stageUrlOf:()=>'',runUrlStep(){},runEvaltokensStep(){},
-    runScriptStep:(rc,i)=>called.push(i),runStage(){},finish(){},taskPromFinalize(){}};
+    runScriptStep:(rc,i)=>{ throw new Error('定时阶段不得在本地执行'); },runStage(){},finish(){},taskPromFinalize(){},
+    handoffSchedSuffix:(rc,i)=>handed.push(i)};   // 移交行为本身见 test_sched_suffix_handoff.js
   load('function pipelineStageGroups(stages)', '/* ===== 主视图节点拖拽改序',ctx);
   load('function startStageAt(rc,i)', 'function advance(rc,i)',ctx);
   load('function advance(rc,i)', '/* ---------- 阶段间变量传递',ctx);
   ctx.advance(rc,1);
-  assert.deepEqual(called,[1]);
+  assert.deepEqual(handed,[1]);
 });
 
 test('运行中打开日志目录保留执行页面',async()=>{

@@ -23,6 +23,9 @@ fi
 
 grep -Fq 'nerdctl --namespace k8s.io pull "$image"' "$pull_script"
 grep -Fq 'nerdctl --namespace k8s.io create --net=none' "$pull_script"
+grep -Fq 'DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"' "$pull_script"
+grep -Fq 'FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"' "$pull_script"
+grep -Fq 'copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir"' "$pull_script"
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -52,9 +55,10 @@ case "${3:-}" in
   create|rm) exit 0 ;;
   cp)
     case "$4" in
-      *'/xds_template/k8s/xds-cluster') cp -a "$FAKE_TEMPLATE_DIR/xds-cluster" "$5" ;;
-      *'/values-16Node-je-cpp-bnt3.yaml') cp -a "$FAKE_TEMPLATE_DIR/values.yaml" "$5" ;;
-      *'/model_arch-lt-je-cpp-bnt3.json') cp -a "$FAKE_TEMPLATE_DIR/architectures.json" "$5" ;;
+      *'/opt/deploy_template/'*) exit 1 ;;
+      *'/opt/op_test/xds_template/k8s/xds-cluster') cp -a "$FAKE_TEMPLATE_DIR/xds-cluster" "$5" ;;
+      *'/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml') cp -a "$FAKE_TEMPLATE_DIR/values.yaml" "$5" ;;
+      *'/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json') cp -a "$FAKE_TEMPLATE_DIR/architectures.json" "$5" ;;
       *) exit 2 ;;
     esac
     ;;

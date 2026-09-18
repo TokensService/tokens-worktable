@@ -71,10 +71,12 @@ XDS 流水线按以下顺序绑定脚本：
 镜像必须包含以下模板路径，否则 `pull-image.sh` 会失败：
 
 ```text
-/opt/op_test/xds_template/k8s/xds-cluster
-/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml
-/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json
+/opt/deploy_template/xds_template/k8s/xds-cluster
+/opt/deploy_template/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml
+/opt/deploy_template/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json
 ```
+
+缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
 
 ## 归档与 AI 分析
 
@@ -92,7 +94,7 @@ XDS 流水线按以下顺序绑定脚本：
 
 运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、URL 请求阶段和系统预设任务；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
 
-运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：新会话工作目录取该次运行的归档目录，提示词只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。
+运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：若侧边会话框已关闭会先打开，新会话归入流水线项目设置的工作区；项目未设置工作区时先弹出该项目的工作区选择，选定后自动继续。提示词保留本次运行归档目录/文件的绝对路径，只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。
 
 ## 收集普罗数据
 
@@ -128,6 +130,9 @@ XDS 流水线按以下顺序绑定脚本：
 DRY_RUN=1 bash cleanup-env.sh
 bash cleanup-env.sh
 
+# 仅驱逐目标节点的 EMS Pod，确认退出后释放 2 MiB 大页；默认只预演
+NODE=node-128 DRY_RUN=0 bash evict-ems-hugepages.sh
+
 # 仅检查，不清理工作负载、不启停服务
 bash check-env.sh
 ```
@@ -136,10 +141,18 @@ bash check-env.sh
 清理完成即退出，不再自动进行健康检查。检查入口检查运行时、CNI、API 网络、
 内存、大页和 GPU；有 FAIL 时返回非零。两种入口的远程失败均向上透传。
 
+GPU 清理会先区分 Kubernetes/容器进程与宿主进程。宿主占卡进程会打印从
+GPU Worker 到启动根的同进程组链，并终止整个进程组，防止残留的 EngineCore
+或启动脚本再次拉起 Worker；若进程组与清理脚本自身相同，则回退为仅终止占卡 PID。
+
 `bnt-standalone.sh` 保留为本地兼容转发入口：默认转到清理，
 `ACTION=check-health` 转到检查；不再提供默认「清理后自动检查」行为。
 若只复制一个脚本到目标机，应使用上述独立入口。页面已有保存的脚本选择不会自动改写，
 可分别在两个脚本设置中选择新文件。页面是否因清理失败而中断，仍由流水线执行策略决定。
+
+`evict-ems-hugepages.sh` 不需要命名空间参数：它查询目标节点的全部 Pod，以 EMS 容器或
+`/dev/shm/ems` 挂载识别 EMS Pod；同一命名空间位于其他节点的 Pod 不会被删除。可用
+`HUGEPAGE_PATH` 指定其他 `nr_hugepages` 路径，未设置时使用 2 MiB 默认路径。
 
 
 ### check-env.sh 深入检查（128 基准，2026-09-08）
