@@ -979,6 +979,65 @@ function serverBasicAuth(config: any): Record<string, string> {
   return { Authorization: 'Basic ' + Buffer.from(String(config.user || '') + ':' + String(config.token || '')).toString('base64') }
 }
 
+async function serverPostAction(fetchFn: typeof fetch, url: string, headers: Record<string, string>, label: string, body = ''): Promise<void> {
+  const result = await serverFetchResponse(fetchFn, url, { method: 'POST', headers, body }, Date.now() + 10_000, label, 64 * 1024)
+  if (result.response.status < 200 || result.response.status >= 400) throw new Error(label + ' HTTP ' + result.response.status)
+}
+
+async function serverCancelJenkinsExecution(fetchFn: typeof fetch, base: string, jobPath: string, buildNumber: number | null, queuePath: string, headers: Record<string, string>): Promise<void> {
+  const actionHeaders = { ...headers }
+  try {
+    const crumb = await serverFetchJson(fetchFn, base + '/crumbIssuer/api/json', { method: 'GET', headers }, Date.now() + 10_000, 'Jenkins crumb')
+    if (crumb && crumb.crumbRequestField && crumb.crumb) actionHeaders[String(crumb.crumbRequestField)] = String(crumb.crumb)
+  } catch { /* API token 常见配置不要求 crumb；获取失败时仍尝试终止。 */ }
+  if (buildNumber !== null) {
+    await serverPostAction(fetchFn, base + jobPath + buildNumber + '/stop', actionHeaders, 'Jenkins 构建终止')
+    return
+  }
+  const match = /\/queue\/item\/([^/]+)/.exec(queuePath)
+  if (!match) throw new Error('Jenkins 取消缺少 queue item 或构建号')
+  const queueId = decodeURIComponent(match[1])
+  try {
+    await serverPostAction(fetchFn, base + '/queue/cancelItem?id=' + encodeURIComponent(queueId), actionHeaders, 'Jenkins 排队取消')
+  } catch (cancelError) {
+    // queue item 可能恰在终止瞬间转为 build；Location 对应的条目会短暂保留 executable.number。
+    const queued = await serverFetchJson(fetchFn, base + queuePath.replace(/\/+$/, '') + '/api/json', { method: 'GET', headers }, Date.now() + 10_000, 'Jenkins 队列状态')
+    const number = Number(queued && queued.executable && queued.executable.number)
+    if (!Number.isInteger(number) || number <= 0) throw cancelError
+    await serverPostAction(fetchFn, base + jobPath + number + '/stop', actionHeaders, 'Jenkins 构建终止')
+  }
+}
+
+async function serverStopEvaltokensRun(fetchFn: typeof fetch, base: string, runId: string, headers: Record<string, string>): Promise<void> {
+  await serverPostAction(
+    fetchFn,
+    base + '/api/v1/tasks/runs/' + encodeURIComponent(runId) + '/stop',
+    { ...headers, 'Content-Type': 'application/json' },
+    'EvalTokens 任务终止',
+    '{}',
+  )
+}
+
+function serverStartCleanupSignal(signal?: AbortSignal, graceMs = 10_000): { signal?: AbortSignal; dispose: () => void } {
+  if (!signal) return { signal: undefined, dispose: () => {} }
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const schedule = () => {
+    if (timer === null && !controller.signal.aborted) {
+      timer = setTimeout(() => controller.abort(serverAbortReason(signal)), graceMs)
+    }
+  }
+  signal.addEventListener('abort', schedule, { once: true })
+  if (signal.aborted) schedule()
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      signal.removeEventListener('abort', schedule)
+      if (timer !== null) clearTimeout(timer)
+    },
+  }
+}
+
 function serverJenkinsJobPath(name: string): string {
   return '/job/' + String(name).split('/').filter(Boolean).map(encodeURIComponent).join('/job/') + '/'
 }
@@ -1003,6 +1062,8 @@ function normalizeServerHttpBody(text: string): string {
 async function executeServerHttpStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const raw = serverStageUrl(stage)
   const deadline = serverStageDeadline(stage)
+  let cancelJenkins: (() => Promise<void>) | null = null
+  let jenkinsActive = false
   try {
     if (!raw) throw new Error('HTTP 阶段未配置请求地址')
     const vars = serverRunVariables(runCtx, varsPool)
@@ -1044,7 +1105,23 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       triggerOptions = { method: 'POST', headers, body: form.toString(), redirect: 'manual' }
     }
 
-    const triggered = await serverFetchResponse(deps.fetchFn, triggerUrl, triggerOptions, deadline, isUrl ? 'HTTP 请求' : 'Jenkins 触发', PIPELINE_REMOTE_TEXT_LIMIT, signal)
+    /* Jenkins 触发一旦发出便可能已经创建外部任务。终止/deadline 后给响应 10s 清理宽限，
+       以便拿到 queue Location 后补发取消；普通 webhook 仍立即中止。 */
+    if (signal && signal.aborted) throw serverAbortReason(signal)
+    if (jobPath) ensureServerStageTime(deadline, 'Jenkins 触发')
+    const startGuard = jobPath ? serverStartCleanupSignal(signal) : null
+    let triggered
+    try {
+      triggered = await serverFetchResponse(
+        deps.fetchFn,
+        triggerUrl,
+        triggerOptions,
+        jobPath && deadline ? deadline + 10_000 : deadline,
+        isUrl ? 'HTTP 请求' : 'Jenkins 触发',
+        PIPELINE_REMOTE_TEXT_LIMIT,
+        jobPath ? startGuard!.signal : signal,
+      )
+    } finally { if (startGuard) startGuard.dispose() }
     if (triggered.response.status < 200 || triggered.response.status >= 400) {
       throw new Error((isUrl ? 'HTTP 请求' : 'Jenkins 触发') + ' HTTP ' + triggered.response.status)
     }
@@ -1063,6 +1140,9 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
     if (!queuePath) throw new Error('Jenkins queue Location 无效，无法可靠关联本次构建')
     const queueUrl = base + queuePath + '/api/json'
     let buildNumber: number | null = null
+    cancelJenkins = () => serverCancelJenkinsExecution(deps.fetchFn, base, jobPath, buildNumber, queuePath, pollHeaders)
+    jenkinsActive = true
+    if (signal && signal.aborted) throw serverAbortReason(signal)
     while (buildNumber === null) {
       ensureServerStageTime(deadline, 'Jenkins 排队')
       try {
@@ -1082,7 +1162,7 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
       ensureServerStageTime(deadline, 'Jenkins 构建')
       try {
         const info = await serverFetchJson(deps.fetchFn, base + jobPath + buildNumber + '/api/json?tree=number,building,result,duration', { method: 'GET', headers: pollHeaders }, deadline, 'Jenkins 构建', signal)
-        if (Number(info && info.number) === buildNumber && !info.building && info.result) { result = String(info.result); break }
+        if (Number(info && info.number) === buildNumber && !info.building && info.result) { result = String(info.result); jenkinsActive = false; break }
       } catch (error) {
         ensureServerStageTime(deadline, 'Jenkins 构建')
         if (Number(error && (error as any).httpStatus) !== 404) throw error
@@ -1108,7 +1188,12 @@ async function executeServerHttpStage(stage: any, runCtx: any, config: any, vars
     const stdout = stdoutBase + (consoleWarning ? '\n' + consoleWarning : '')
     return { code: result === 'SUCCESS' ? 0 : 1, stdout, stderr: result === 'SUCCESS' ? '' : 'Jenkins 构建结果 ' + result }
   } catch (error) {
-    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal && signal.aborted ? { aborted: true } : {}) }
+    let message = String(error && (error as Error).message ? (error as Error).message : error)
+    if (jenkinsActive && cancelJenkins) {
+      try { await cancelJenkins() }
+      catch (cancelError) { message += '\nJenkins 外部任务终止失败：' + String(cancelError && (cancelError as Error).message ? (cancelError as Error).message : cancelError) }
+    }
+    return { code: 1, stdout: '', stderr: message, ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
 
@@ -1129,6 +1214,8 @@ function serverEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
 
 async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any, varsPool: Record<string, string>, deps: { fetchFn: typeof fetch; directFetchFn?: typeof fetch; sleep: (ms: number, signal?: AbortSignal) => Promise<void> }, signal?: AbortSignal): Promise<{ code: number; stdout: string; stderr: string; aborted?: boolean }> {
   const deadline = serverStageDeadline(stage)
+  let stopRun: (() => Promise<void>) | null = null
+  let runActive = false
   try {
     const service = config && config.evaltok && typeof config.evaltok === 'object' ? config.evaltok : {}
     const base = String(service.url || '').replace(/\/+$/, '')
@@ -1162,11 +1249,20 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
       }
     }
     const startHeaders = { ...headers, 'Content-Type': 'application/json' }
-    const started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
-      method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
-    }, deadline, 'EvalTokens 启动任务', signal)
+    /* 启动 POST 已发出后不可丢掉 run_id；用户恰在响应返回前终止时，拿到 ID 后立即补发 stop。 */
+    if (signal && signal.aborted) throw serverAbortReason(signal)
+    const startGuard = serverStartCleanupSignal(signal)
+    let started
+    try {
+      started = await serverFetchJson(fetchFn, base + '/api/open/v1/tasks/' + encodeURIComponent(taskId) + '/run', {
+        method: 'POST', headers: startHeaders, body: JSON.stringify(Object.keys(input).length ? { input } : {}),
+      }, deadline ? deadline + 10_000 : deadline, 'EvalTokens 启动任务', startGuard.signal)
+    } finally { startGuard.dispose() }
     const runId = String((started && started.run_id) || '')
     if (!runId) throw new Error('EvalTokens 启动任务未返回 run_id')
+    stopRun = () => serverStopEvaltokensRun(fetchFn, base, runId, headers)
+    runActive = true
+    if (signal && signal.aborted) throw serverAbortReason(signal)
     let current: any = started
     for (;;) {
       ensureServerStageTime(deadline, 'EvalTokens 任务')
@@ -1176,13 +1272,19 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
       if (matched) current = matched
       const state = matched ? serverEvaltokensStatus(current.status || current.state || current.phase) : 'running'
       if (state !== 'running') {
+        runActive = false
         const stdout = JSON.stringify(current)
         return { code: state === 'success' ? 0 : 1, stdout, stderr: state === 'success' ? '' : 'EvalTokens ' + state }
       }
       await deps.sleep(3000, signal)
     }
   } catch (error) {
-    return { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal && signal.aborted ? { aborted: true } : {}) }
+    let message = String(error && (error as Error).message ? (error as Error).message : error)
+    if (runActive && stopRun) {
+      try { await stopRun() }
+      catch (stopError) { message += '\nEvalTokens 外部任务终止失败：' + String(stopError && (stopError as Error).message ? (stopError as Error).message : stopError) }
+    }
+    return { code: 1, stdout: '', stderr: message, ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
 

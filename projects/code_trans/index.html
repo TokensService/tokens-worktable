@@ -80,7 +80,7 @@
     <div class="ct-row between">
       <div>
         <h1 class="dshell-title">🔁 代码同步 · PR 双向同步</h1>
-        <p class="dshell-sub">选择两个代码仓的 PR，按方向把源 PR 的提交 cherry-pick 到目标仓并自动建 PR（支持 GitHub / GitLab / Gitee / GitCode）。</p>
+        <p class="dshell-sub">选择两个代码仓的 PR，按方向把源 PR 的提交 cherry-pick 到目标仓并自动建 PR（支持 GitHub / GitLab / Gitee / GitCode / CodeHub）。</p>
       </div>
       <div class="ct-themeswitch" role="group" aria-label="主题">
         <button class="ct-tsbtn" data-theme-btn="auto" title="跟随系统">🖥️</button>
@@ -113,7 +113,7 @@
           <div class="ct-cardhd"><h2>仓库 A（源 / 目标）</h2><span class="dshell-badge" id="badgeA">未连接</span></div>
           <div class="ct-row" style="gap:8px">
             <select class="dshell-input ct-grow" data-prop="platform" style="flex:0 0 110px">
-              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option><option value="gitcode">GitCode</option>
+              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option><option value="gitcode">GitCode</option><option value="codehub">CodeHub</option>
             </select>
             <input class="dshell-input ct-grow" data-prop="repo" placeholder="owner/repo 或 group/project" />
           </div>
@@ -132,7 +132,7 @@
           <div class="ct-cardhd"><h2>仓库 B（源 / 目标）</h2><span class="dshell-badge" id="badgeB">未连接</span></div>
           <div class="ct-row" style="gap:8px">
             <select class="dshell-input ct-grow" data-prop="platform" style="flex:0 0 110px">
-              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option><option value="gitcode">GitCode</option>
+              <option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="gitee">Gitee</option><option value="gitcode">GitCode</option><option value="codehub">CodeHub</option>
             </select>
             <input class="dshell-input ct-grow" data-prop="repo" placeholder="owner/repo 或 group/project" />
           </div>
@@ -250,14 +250,29 @@
 "use strict";
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
-function normalizeRepo(s){
+function normalizeRepo(s, platform){
   s = (s || "").trim();
   if (!s) return "";
+  // codehub 为自建 GitLab 兼容实例，host 不固定，保留实例地址：host/group/project
+  if (platform === "codehub") {
+    let host = "", path = "";
+    let m = /^git@([^:]+):(.+)$/.exec(s);
+    if (m) { host = m[1]; path = m[2]; }
+    else if (/^https?:\/\//i.test(s)) { try { const u = new URL(s); host = u.host; path = u.pathname; } catch { return s.replace(/\.git$/i,"").replace(/^\/+|\/+$/g,""); } }
+    else { m = /^([^/]+)\/(.+)$/.exec(s); if (m) { host = m[1]; path = m[2]; } }
+    path = String(path).replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
+    if (!host || !path) return s.replace(/\.git$/i,"").replace(/^\/+|\/+$/g,"");
+    return host + "/" + path;
+  }
   let m = /^git@[^:]+:(.+)$/.exec(s);
   if (m) s = m[1];
   else if (/^https?:\/\//i.test(s)) { try { s = new URL(s).pathname.replace(/^\/+/, ""); } catch {} }
   s = s.replace(/\.git$/i, "").replace(/^\/+|\/+$/g, "");
   return s;
+}
+function repoPlaceholder(platform){
+  if (platform === "codehub") return "实例 host/group/project 或 https://host/...";
+  return "owner/repo 或 group/project";
 }
 const LS_KEY = "code_trans_sync_v1";
 const THEME_KEY = "code_trans_theme";
@@ -578,8 +593,11 @@ function bindRepo(side){
   const card = $("#repo" + side);
   card.querySelectorAll("[data-prop]").forEach(el => {
     el.addEventListener("change", () => {
-      if (el.dataset.prop === "repo") { const n = normalizeRepo(el.value); el.value = n; state.repos[side].repo = n; }
+      if (el.dataset.prop === "repo") { const n = normalizeRepo(el.value, state.repos[side].platform); el.value = n; state.repos[side].repo = n; }
       else state.repos[side][el.dataset.prop] = el.value;
+      if (el.dataset.prop === "platform") {
+        card.querySelector('[data-prop="repo"]').placeholder = repoPlaceholder(el.value);
+      }
       if (el.dataset.prop === "platform" || el.dataset.prop === "repo") {
         state.repos[side].info = null; state.repos[side].prs = [];
         setBadge(side, "未连接", "");
@@ -732,7 +750,7 @@ function init(){
   $("#setDir").value = SCRIPT_DIR;
   $("#dirDetect").textContent = SCRIPT_DIR ? ("已检测：" + SCRIPT_DIR) : "未能自动检测，请手动粘贴项目文件夹绝对路径";
   $("#setPrefix").value = state.set.prefix; $("#setPer").value = state.set.per; $("#setState").value = state.set.prState;
-  for (const s of ["A","B"]) { bindRepo(s); fillRepoForm(s); }
+  for (const s of ["A","B"]) { bindRepo(s); fillRepoForm(s); $("#repo"+s).querySelector('[data-prop="repo"]').placeholder = repoPlaceholder(state.repos[s].platform); }
   setDirection(state.direction || "AB");
   $$(".dshell-tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.tab)));
   $("#dirAB").addEventListener("click", () => setDirection("AB"));
@@ -750,7 +768,7 @@ function init(){
     const src = state.repos[s], tgt = state.repos[t];
     if (!src.repo) { appendLog("源仓未配置，无法复制到目标仓。", "ev ev-err"); switchTab("log"); return; }
     tgt.platform = src.platform; tgt.repo = src.repo; tgt.token = src.token; tgt.info = null; tgt.prs = [];
-    fillRepoForm(t); setBadge(t, "未连接", ""); save();
+    fillRepoForm(t); $("#repo"+t).querySelector('[data-prop="repo"]').placeholder = repoPlaceholder(tgt.platform); setBadge(t, "未连接", ""); save();
     appendLog("已把目标仓（仓" + t + "）设为与源仓相同：" + esc(src.repo) + "；可选择不同分支做同仓同步。", "ev");
     connectTarget(true);
   });
