@@ -51,6 +51,7 @@ const ICON_SPARK = (
   </svg>
 )
 type UpdateInfo = { latest: string; tag: string; notes: string; url: string }
+/* ---------- 版本更新历史 ---------- */
 function cmpVer(a: string, b: string): number {
   const pa = a.split('.').map(Number)
   const pb = b.split('.').map(Number)
@@ -61,6 +62,32 @@ function cmpVer(a: string, b: string): number {
   }
   return 0
 }
+/** 更新历史条目：tag 保留原始形式（含 v 前缀），version 为纯数字串；
+ *  current = 与当前安装版本相同，newer = 比当前安装版本新（可升级）。 */
+type HistEntry = { version: string; tag: string; date: string; notes: string; url: string; current: boolean; newer: boolean }
+/** GitHub releases API 响应 → 更新历史条目：过滤草稿与非 semver 标签，日期取 published_at（回退 created_at）
+ *  的日历日，说明正文裁剪到 4000 字符（弹窗纯文本展示），按版本号倒序、最多保留 30 条；
+ *  入参非数组（内网代理拦截页等异常响应）返回空表。 */
+function parseReleaseHistory(data: unknown, currentVersion: string): HistEntry[] {
+  if (!Array.isArray(data)) return []
+  const out: HistEntry[] = []
+  for (const r of data) {
+    if (!r || typeof r !== 'object') continue
+    const rel = r as { draft?: unknown; tag_name?: unknown; published_at?: unknown; created_at?: unknown; body?: unknown; html_url?: unknown }
+    if (rel.draft) continue
+    const tag = typeof rel.tag_name === 'string' ? rel.tag_name.trim() : ''
+    const version = tag.replace(/^v/, '')
+    if (!/^\d+\.\d+\.\d+$/.test(version)) continue
+    const published = typeof rel.published_at === 'string' && rel.published_at ? rel.published_at : (typeof rel.created_at === 'string' ? rel.created_at : '')
+    const notes = (typeof rel.body === 'string' ? rel.body : '').trim().slice(0, 4000)
+    const url = typeof rel.html_url === 'string' ? rel.html_url : ''
+    const c = cmpVer(version, currentVersion)
+    out.push({ version, tag: tag || 'v' + version, date: published.slice(0, 10), notes, url, current: c === 0, newer: c > 0 })
+  }
+  out.sort((a, b) => cmpVer(b.version, a.version))
+  return out.slice(0, 30)
+}
+/* ---------- 版本更新历史结束 ---------- */
 async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true }
@@ -1501,6 +1528,12 @@ function WorktableSection(props: any) {
   const updateCheckingRef = useRef(false)
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
+  const [histOpen, setHistOpen] = useState(false)
+  const [histList, setHistList] = useState<HistEntry[] | null>(null)
+  const [histStatus, setHistStatus] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const [histExpanded, setHistExpanded] = useState<Record<string, boolean>>({})
+  const histLoadingRef = useRef(false)
+  const histLoadedRef = useRef(false)
   // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
   // 手动排序 order 一并合并：远端非空时远端优先、本地独有 id 追加尾部，远端缺 order 时本地序不动；
   // 合并结果与远端不一致时回推一次完整同步切片自愈。仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
@@ -1581,6 +1614,35 @@ function WorktableSection(props: any) {
     }
   }, [])
   useEffect(() => { if (updateCheckOn) void checkUpdates() }, [updateCheckOn, checkUpdates])
+  /** 版本更新历史：拉取 GitHub releases 列表（与检查更新同仓库、同 3 次重试 / 8s 超时策略）。
+   *  会话内已成功加载则复用（弹窗重开不再请求），「刷新」强制重拉；失败时保留旧列表展示。 */
+  const loadHistory = useCallback(async (force = false) => {
+    if (histLoadingRef.current) return // 防重入：并发点击只保留一个 in-flight
+    if (!force && histLoadedRef.current) return
+    histLoadingRef.current = true
+    setHistStatus('loading')
+    try {
+      let d: unknown = null
+      for (let attempt = 0; attempt < 3 && !d && updateAliveRef.current; attempt++) {
+        const ctrl = new AbortController()
+        const timer = setTimeout(() => ctrl.abort(), 8000) // 单次 8s 超时，计入下一轮重试
+        try {
+          const r = await fetch('https://api.github.com/repos/' + UPDATE_REPO + '/releases?per_page=30', { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: ctrl.signal })
+          if (r.ok) d = await r.json()
+          else if (r.status === 403 || r.status === 404) break // 限流/不存在：不再重试
+        } catch { /* 网络抖动/超时：下一轮重试 */ }
+        finally { clearTimeout(timer) }
+      }
+      if (!updateAliveRef.current) return // 组件已卸载：不再更新状态
+      if (!d) { setHistStatus('failed'); return }
+      histLoadedRef.current = true
+      setHistList(parseReleaseHistory(d, LOCAL_VERSION))
+      setHistStatus('idle')
+    } finally {
+      histLoadingRef.current = false
+    }
+  }, [])
+  const openHistory = () => { setHistOpen(true); void loadHistory() }
   const copyUpgradeAi = async () => {
     if (!updateInfo) return
     const ok = await copyText(upgradeAiPrompt(updateInfo.tag))
@@ -3698,6 +3760,7 @@ function buildCustomLayoutPrompt(req: string): string {
               {updateStatus === 'failed' && !updateInfo ? ' · ' + t('update.checkFail') : ''}
             </span>
             <span className="dsh-wt_versionActions">
+              <button type="button" className="dsh-wt_updateBtn" title={t('history.title')} onClick={openHistory}>{t('history.btn')}</button>
               <button type="button" className="dsh-wt_updateBtn" disabled={updateStatus === 'checking'} onClick={() => void checkUpdates(true)}>
                 {updateStatus === 'checking' ? t('update.checking') : t('update.checkNow')}
               </button>
@@ -4046,6 +4109,53 @@ function buildCustomLayoutPrompt(req: string): string {
           <div className="dsh-wt_confirmActions">
             <button type="button" className="dsh-wt_confirmCancel" onClick={() => setRequestDelete(null)}>{t('confirm.cancel')}</button>
             <button type="button" className="dsh-wt_confirmDelete" onClick={doDelete}>{t('confirm.delete')}</button>
+          </div>
+        </div>
+      )}
+
+      {histOpen && <div className="dsh-wt_confirmBackdrop" onClick={() => setHistOpen(false)} />}
+      {histOpen && (
+        <div className="dsh-wt_hist" role="dialog" aria-label={t('history.title')}>
+          <div className="dsh-wt_histHead">
+            <span className="dsh-wt_histTitle">{t('history.title')}</span>
+            <span className="dsh-wt_histOps">
+              <button type="button" className="dsh-wt_updateBtn" disabled={histStatus === 'loading'} onClick={() => void loadHistory(true)}>
+                {histStatus === 'loading' ? t('history.loading') : t('history.refresh')}
+              </button>
+              <button type="button" className="dsh-wt_updateBtn" onClick={() => setHistOpen(false)}>{t('history.close')}</button>
+            </span>
+          </div>
+          <div className="dsh-wt_histBody">
+            {histStatus === 'loading' && !histList && <div className="dsh-wt_histEmpty">{t('history.loading')}</div>}
+            {histStatus === 'failed' && !histList && (
+              <div className="dsh-wt_histEmpty">
+                {t('history.failed')}
+                <button type="button" className="dsh-wt_updateBtn" onClick={() => void loadHistory(true)}>{t('history.retry')}</button>
+              </div>
+            )}
+            {histList && histList.length === 0 && <div className="dsh-wt_histEmpty">{t('history.empty')}</div>}
+            {histList?.map((e) => {
+              const expanded = histExpanded[e.tag] ?? e.current // 默认展开当前版本，其余折叠
+              return (
+                <div key={e.tag} className="dsh-wt_histItem" data-current={e.current ? 'true' : undefined}>
+                  <div className="dsh-wt_histItemHead" onClick={() => setHistExpanded((m) => ({ ...m, [e.tag]: !expanded }))}>
+                    <span className="dsh-wt_histCaret">{expanded ? '▾' : '▸'}</span>
+                    <span className="dsh-wt_histVer">{e.tag}</span>
+                    {e.current && <span className="dsh-wt_histCur">{t('history.current')}</span>}
+                    {e.newer && <span className="dsh-wt_histNew">{t('history.newer')}</span>}
+                    <span className="dsh-wt_histDate">{e.date}</span>
+                  </div>
+                  {expanded && (
+                    <div className="dsh-wt_histNotes">
+                      {e.notes || t('history.noNotes')}
+                      {e.url && (
+                        <a className="dsh-wt_histLink" href={e.url} target="_blank" rel="noreferrer">{t('history.viewOnGithub')} ↗</a>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

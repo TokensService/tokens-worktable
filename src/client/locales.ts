@@ -222,6 +222,18 @@ export const zh = {
   'update.copyFail': '复制失败，请手动选择文本',
   'update.skipDone': '已忽略此版本（下一版发布时再提醒）',
   'update.upgradeHint': '执行命令后需重启 dsh web 并刷新页面',
+  'history.btn': '更新历史',
+  'history.title': '版本更新历史',
+  'history.loading': '加载中…',
+  'history.failed': '获取更新历史失败，请检查网络后重试',
+  'history.retry': '重试',
+  'history.refresh': '刷新',
+  'history.close': '关闭',
+  'history.empty': '暂无发行记录',
+  'history.current': '当前版本',
+  'history.newer': '可升级',
+  'history.noNotes': '（无发行说明）',
+  'history.viewOnGithub': '在 GitHub 查看',
 } satisfies Record<string, string>
 
 /** The worktable namespace key union. */
@@ -445,6 +457,18 @@ export const en = {
   'update.copyFail': 'Copy failed — select the text manually',
   'update.skipDone': 'Skipped (will remind on the next release)',
   'update.upgradeHint': 'Run the command, then restart dsh web and refresh',
+  'history.btn': 'History',
+  'history.title': 'Version history',
+  'history.loading': 'Loading…',
+  'history.failed': 'Failed to load version history — check your network and retry',
+  'history.retry': 'Retry',
+  'history.refresh': 'Refresh',
+  'history.close': 'Close',
+  'history.empty': 'No releases yet',
+  'history.current': 'Current',
+  'history.newer': 'Update available',
+  'history.noNotes': '(no release notes)',
+  'history.viewOnGithub': 'View on GitHub',
 } satisfies Record<WorktableKey, string>
 
 /** Locale namespace id registered under ctx.locale. */
