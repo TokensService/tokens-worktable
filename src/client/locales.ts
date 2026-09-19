@@ -225,15 +225,13 @@ export const zh = {
   'history.btn': '更新历史',
   'history.title': '版本更新历史',
   'history.loading': '加载中…',
-  'history.failed': '获取更新历史失败，请检查网络后重试',
+  'history.failed': '获取失败，请稍后重试',
   'history.retry': '重试',
   'history.refresh': '刷新',
   'history.close': '关闭',
-  'history.empty': '暂无发行记录',
+  'history.empty': '暂无安装记录',
   'history.current': '当前版本',
-  'history.newer': '可升级',
-  'history.noNotes': '（无发行说明）',
-  'history.viewOnGithub': '在 GitHub 查看',
+  'history.hint': '自该功能上线起，记录本服务器每次安装 / 升级 / 回退的版本与时间',
 } satisfies Record<string, string>
 
 /** The worktable namespace key union. */
@@ -460,15 +458,13 @@ export const en = {
   'history.btn': 'History',
   'history.title': 'Version history',
   'history.loading': 'Loading…',
-  'history.failed': 'Failed to load version history — check your network and retry',
+  'history.failed': 'Load failed — please retry later',
   'history.retry': 'Retry',
   'history.refresh': 'Refresh',
   'history.close': 'Close',
-  'history.empty': 'No releases yet',
+  'history.empty': 'No install records yet',
   'history.current': 'Current',
-  'history.newer': 'Update available',
-  'history.noNotes': '(no release notes)',
-  'history.viewOnGithub': 'View on GitHub',
+  'history.hint': 'Records each version installed / upgraded / rolled back on this server, since this feature shipped',
 } satisfies Record<WorktableKey, string>
 
 /** Locale namespace id registered under ctx.locale. */

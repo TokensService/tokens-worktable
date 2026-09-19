@@ -20,6 +20,35 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 declare const __WT_VERSION__: string
 const PLUGIN_VERSION = typeof __WT_VERSION__ === 'undefined' ? 'dev' : __WT_VERSION__
 
+/* ---------- 版本安装历史（本服务器装过哪些版本） ---------- */
+/** 单条安装记录：version 为安装版本号，at 为该版本在本服务器首次启动的时间戳（ms）。 */
+type VersionInstall = { version: string; at: number }
+const VERSION_HISTORY_CAP = 200
+/** 清洗存储内容为安装历史数组：接受裸数组或 {history:[...]}，仅保留 {version: 非空字符串, at: 有限数值} 项，
+ *  按 at 升序（旧→新），超长截尾保留最近记录。 */
+function sanitizeVersionHistory(data: unknown): VersionInstall[] {
+  const list = Array.isArray(data) ? data : (data && typeof data === 'object' && Array.isArray((data as { history?: unknown }).history) ? (data as { history: unknown[] }).history : [])
+  const out: VersionInstall[] = []
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue
+    const v = (e as { version?: unknown }).version
+    const at = (e as { at?: unknown }).at
+    if (typeof v !== 'string' || !v.trim() || typeof at !== 'number' || !Number.isFinite(at)) continue
+    out.push({ version: v.trim(), at })
+  }
+  out.sort((a, b) => a.at - b.at)
+  return out.slice(-VERSION_HISTORY_CAP)
+}
+/** 版本启动记录：当前版本与末条不同（= 新安装 / 升级 / 回退）时追加 {version, at: now} 并返回需落盘的新数组；
+ *  与末条一致返回 null（无需写盘）。非语义化版本（dev 构建）不记录。 */
+function recordVersionInstall(history: VersionInstall[], version: string, now: number): VersionInstall[] | null {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return null
+  const last = history[history.length - 1]
+  if (last && last.version === version) return null
+  return [...history, { version, at: now }].slice(-VERSION_HISTORY_CAP)
+}
+/* ---------- 版本安装历史结束 ---------- */
+
 export const name = 'tokens-worktable'
 export const inject = ['webServer', 'sessions']
 
@@ -1800,6 +1829,38 @@ export function apply(ctx: Context) {
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
       json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true })
+    },
+  })
+
+  // 版本安装历史（本服务器装过哪些版本）：插件每次启动时，当前版本与末条记录不同
+  // （新安装 / 升级 / 回退）即追加一条 {version, at} 原子落盘，供设置面板「更新历史」弹窗展示
+  const VERSION_HISTORY_FILE = pathResolve(DSH_HOME, 'storages', 'worktable-version-history.json')
+  const readVersionHistory = async (): Promise<VersionInstall[]> => {
+    let raw = ''
+    try { raw = await readFile(VERSION_HISTORY_FILE, 'utf8') } catch { return [] } // 无文件 = 首次记录
+    try { return sanitizeVersionHistory(JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)) } catch { return [] }
+  }
+  void (async () => {
+    try {
+      const base = await readVersionHistory()
+      const next = recordVersionInstall(base, PLUGIN_VERSION, Date.now())
+      if (next) await writeJsonAtomic(VERSION_HISTORY_FILE, JSON.stringify({ history: next }))
+    } catch (err) { ctx.logger?.warn('[tokens-worktable] 版本安装历史写入失败: ' + String(err)) }
+  })()
+
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/version-history',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+        const base = await readVersionHistory()
+        // 启动记录在途或写入失败时也保证当前版本出现在末位
+        const history = recordVersionInstall(base, PLUGIN_VERSION, Date.now()) ?? base
+        json(res, 200, { version: PLUGIN_VERSION, history })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
     },
   })
 
