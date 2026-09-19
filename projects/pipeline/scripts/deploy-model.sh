@@ -21,6 +21,8 @@ TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
+TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+[[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 XDS_URL="${XDS_URL:-}"
 XDS_URL="${XDS_URL%/}"
 XDS_URL="${XDS_URL%/chat/completions}"
@@ -156,6 +158,7 @@ PY
     printf 'export RESOURCE_MANIFEST=%q\n' "${TARGET_RENDER_DIR}/resources.rendered.json"
     printf 'export NODE_LABELS_FILE=%q\n' "${TARGET_RENDER_DIR}/node-labels.json"
     printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
+    printf 'export TARGET_NODE_IP_MAP=%q\n' "$TARGET_NODE_IP_MAP"
     if [[ -n "$remote_xds_url" ]]; then
       printf 'export XDS_URL=%q\n' "$remote_xds_url"
     fi
@@ -269,6 +272,65 @@ else:
   }
   XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
   echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
+}
+
+rewrite_xds_url_to_mapped_host() {
+  local original_url="$XDS_URL" rewrite_result mapped_host
+
+  rewrite_result="$(python3 - "$XDS_URL" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import re
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+url, target_hosts_json, node_ip_map_json = sys.argv[1:]
+try:
+    target_hosts = json.loads(target_hosts_json)
+    node_ip_map = json.loads(node_ip_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid target node IP mapping input: {error}")
+
+if not isinstance(target_hosts, list) or not isinstance(node_ip_map, dict):
+    raise SystemExit("TARGET_HOSTS must be an array and TARGET_NODE_IP_MAP must be an object")
+
+mapped_host = ""
+rewritten_url = url
+if target_hosts:
+    first_target = target_hosts[0]
+    endpoint = first_target.get("ip") if isinstance(first_target, dict) else None
+    if not isinstance(endpoint, str) or not endpoint:
+        raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string")
+    endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+    original_host = endpoint_match.group(1) if endpoint_match else endpoint
+    mapped = node_ip_map.get(endpoint)
+    if mapped is not None and (not isinstance(mapped, str) or not mapped):
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty string: {endpoint}")
+
+    parsed = urlsplit(url)
+    if mapped and mapped != original_host and parsed.hostname == original_host:
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise SystemExit(f"invalid XDS_URL port: {error}")
+        userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+        formatted_host = f"[{mapped}]" if ":" in mapped else mapped
+        netloc = f"{userinfo}{formatted_host}"
+        if port is not None:
+            netloc += f":{port}"
+        rewritten_url = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+        mapped_host = mapped
+
+print(rewritten_url, mapped_host, sep="\t")
+PY
+)" || return $?
+
+  IFS=$'\t' read -r XDS_URL mapped_host <<<"$rewrite_result"
+  if [[ -n "$mapped_host" ]]; then
+    XDS_API_HOST="$mapped_host"
+  fi
+  if [[ "$XDS_URL" != "$original_url" ]]; then
+    echo "[deploy] rewrote XDS API host using TARGET_NODE_IP_MAP: $XDS_URL"
+  fi
 }
 
 persist_runtime_environment() {
@@ -506,19 +568,46 @@ import sys
 labels_file, inventory_file = sys.argv[1:]
 labels = json.load(open(labels_file, encoding="utf-8"))
 inventory = json.load(open(inventory_file, encoding="utf-8"))
-key = labels["key"]
-value = labels["value"]
 by_ip = {}
 for node in inventory.get("items", []):
     name = node.get("metadata", {}).get("name")
     for address in node.get("status", {}).get("addresses", []):
         if address.get("type") == "InternalIP" and name:
             by_ip[address.get("address")] = name
-missing = [host["ip"] for host in labels.get("hosts", []) if host["ip"] not in by_ip]
+
+assignments = [{
+    "key": labels["key"],
+    "value": labels["value"],
+    "hosts": labels.get("hosts", []),
+}]
+extra_assignments = labels.get("assignments", [])
+if not isinstance(extra_assignments, list):
+    raise SystemExit("node label assignments must be a list")
+assignments.extend(extra_assignments)
+
+all_hosts = []
+for assignment in assignments:
+    if not isinstance(assignment, dict):
+        raise SystemExit("node label assignment must be an object")
+    key = assignment.get("key")
+    value = assignment.get("value")
+    hosts = assignment.get("hosts", [])
+    if not isinstance(key, str) or not key or not isinstance(value, str) or not value:
+        raise SystemExit("node label assignment requires non-empty key and value")
+    if not isinstance(hosts, list):
+        raise SystemExit("node label assignment hosts must be a list")
+    all_hosts.extend(hosts)
+
+missing = [host["ip"] for host in all_hosts if host["ip"] not in by_ip]
 if missing:
     raise SystemExit("target node IPs do not match Kubernetes InternalIP: " + ", ".join(missing))
-for host in labels["hosts"]:
-    print(by_ip[host["ip"]], f"{key}={value}", sep="\t")
+for assignment in assignments:
+    for host in assignment["hosts"]:
+        print(
+            by_ip[host["ip"]],
+            f"{assignment['key']}={assignment['value']}",
+            sep="\t",
+        )
 PY
 
   while IFS=$'\t' read -r node label; do
@@ -664,6 +753,7 @@ prepare_ctrl_slot_capacity
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"
 resolve_xds_url_from_service
+rewrite_xds_url_to_mapped_host
 
 mkdir -p "$HEAD_LOG_DIR"
 nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \

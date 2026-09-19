@@ -21,7 +21,7 @@ printf 'scp %s\n' "$*" >>"$SSH_OPTION_LOG"
 SH
 chmod +x "$work_dir/bin/sshpass" "$work_dir/bin/ssh" "$work_dir/bin/scp"
 
-for script_name in cleanup-env.sh check-env.sh; do
+for script_name in cleanup-env.sh check-env.sh evict-ems-hugepages.sh; do
   log_file="$work_dir/${script_name}.log"
   (
     PATH="$work_dir/bin:$PATH"

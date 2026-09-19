@@ -427,6 +427,29 @@ for package in arch.get("deploy_spec_packages", []):
 if not groups:
     raise SystemExit(f"no prefill/decode specs found in {arch_name}")
 
+# 8 卡 Decode 会独占整台 8 卡节点。若仍与 Prefill 共用候选节点，
+# 调度器可能先把 Prefill 分散到所有节点，导致 Decode 永久 Pending。
+# 保留公共选择器供 Head/FE/CTRL 使用，并用附加角色标签隔离 TE 节点。
+te_role_assignments = []
+if any(resource["role"] == "decode" and resource["gpu"] == 8 for resource in resources):
+    if len(target_ips) < 2:
+        raise SystemExit("8-GPU Decode node isolation requires at least two TARGET_HOSTS")
+    te_role_selector_key = f"{node_selector_key}/te-role"
+    for group, resource in zip(groups, resources):
+        group["nodeSelector"][te_role_selector_key] = resource["role"]
+    te_role_assignments = [
+        {
+            "key": te_role_selector_key,
+            "value": "decode",
+            "hosts": [{"ip": target_ips[0]}],
+        },
+        {
+            "key": te_role_selector_key,
+            "value": "prefill",
+            "hosts": [{"ip": ip} for ip in target_ips[1:]],
+        },
+    ]
+
 # TE pods use host networking.  Their Ray core workers therefore share one
 # host port namespace and must not use the same default worker-port range.
 worker_port_first = 10002
@@ -757,11 +780,14 @@ with open(resource_manifest_file, "w", encoding="utf-8") as output:
     json.dump({"arch_name": arch_name, "resources": resources}, output, ensure_ascii=False, indent=2)
     output.write("\n")
 with open(node_labels_file, "w", encoding="utf-8") as output:
-    json.dump({
+    node_labels = {
         "key": node_selector_key,
         "value": node_selector_value,
         "hosts": [{"ip": ip} for ip in target_ips],
-    }, output, ensure_ascii=False, indent=2)
+    }
+    if te_role_assignments:
+        node_labels["assignments"] = te_role_assignments
+    json.dump(node_labels, output, ensure_ascii=False, indent=2)
     output.write("\n")
 PY
 

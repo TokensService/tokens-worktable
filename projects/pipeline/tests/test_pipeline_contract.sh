@@ -88,6 +88,64 @@ PY
 
 echo "PASS: render-config produces one coherent P/D deployment contract"
 
+python3 - "$WORK" "$SCRIPTS/render-config.sh" <<'PY_TE_ROLE_LABELS'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+import yaml
+
+work = pathlib.Path(sys.argv[1])
+env = dict(
+    os.environ,
+    RUN_DIR=str(work / "te-role-labels"),
+    CHART_TEMPLATE_DIR=str(work / "xds-cluster"),
+    VALUES_TEMPLATE=str(work / "values.template.yaml"),
+    ARCH_FILE=str(work / "model_arch.json"),
+    ARCH_NAME="glm-5.2-nvfp4",
+    TARGET_HOSTS='[{"ip":"192.0.2.10"},{"ip":"192.0.2.11"},{"ip":"192.0.2.12"}]',
+    NUM_PREFILL="4",
+    NUM_DECODE="1",
+    PREFILL_GPU="4",
+    DECODE_GPU="8",
+    DEPLOY_IMAGE="registry.example.com/xds:test",
+)
+subprocess.run(["bash", sys.argv[2]], env=env, check=True, stdout=subprocess.DEVNULL)
+
+rendered = work / "te-role-labels" / "rendered"
+values = yaml.safe_load((rendered / "values.rendered.yaml").read_text())
+groups = values["taskExecutorGroups"]
+base_selector = {"xds.optest": "node-10-11-12"}
+prefill_selector = {**base_selector, "xds.optest/te-role": "prefill"}
+decode_selector = {**base_selector, "xds.optest/te-role": "decode"}
+assert [group["nodeSelector"] for group in groups[:4]] == [prefill_selector] * 4, groups
+assert groups[4]["nodeSelector"] == decode_selector, groups[4]
+
+labels = json.loads((rendered / "node-labels.json").read_text())
+assert labels["key"] == "xds.optest", labels
+assert labels["value"] == "node-10-11-12", labels
+assert labels["hosts"] == [
+    {"ip": "192.0.2.10"},
+    {"ip": "192.0.2.11"},
+    {"ip": "192.0.2.12"},
+], labels
+assert labels["assignments"] == [
+    {
+        "key": "xds.optest/te-role",
+        "value": "decode",
+        "hosts": [{"ip": "192.0.2.10"}],
+    },
+    {
+        "key": "xds.optest/te-role",
+        "value": "prefill",
+        "hosts": [{"ip": "192.0.2.11"}, {"ip": "192.0.2.12"}],
+    },
+], labels
+print("PASS: 8-GPU Decode reserves the first target node and Prefill uses the rest")
+PY_TE_ROLE_LABELS
+
 FAKE_BIN="$WORK/fake-bin"
 FAKE_IMAGE_ROOT="$WORK/fake-image"
 mkdir -p "$FAKE_BIN" \
