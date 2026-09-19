@@ -2183,7 +2183,61 @@
      改为云端后，归档 / 删除 / 清空均经 /api/worktable/write 写回服务端文件，启动 / 切到发行页 / 切平台时
      经 /api/worktable/file 从云端拉取到本地缓存 relHistCache；首次发现云端为空而本机仍有旧 localStorage
      数据时，一次性迁移上云并清掉本机旧键，避免历史丢失。 */
-  var REL_HIST_STORE_DIR = "/mnt/paas/storages";   // = $DSH_HOME/storages（默认 /mnt/paas），dsh web 进程可写、跨重启持久
+  /* 云端存储目录 = $DSH_HOME/storages，经 /api/worktable/health 的 home 动态解析，不再硬编码——
+     此前固定 /mnt/paas/storages（只是旧部署的 DSH_HOME 值）：DSH_HOME 不在 /mnt/paas 的部署会把
+     构建历史写到宿主数据目录之外，升级/迁移部署后如同丢失。health 未到达前沿用旧路径兜底；
+     解析出的新目录与旧目录不同时，对 4 个存储文件（两平台的构建历史 + 分支级构建设置）做
+     一次性复制迁移（新目录已有则不动、旧文件保留不删）。所有读写入口都先等目录解析完成，
+     避免按旧目录读出空历史后误把本机 localStorage 迁移覆盖到新目录。 */
+  var REL_HIST_LEGACY_DIR = "/mnt/paas/storages";   // 旧版硬编码目录：遗留数据可能仍在此，兼作 health 未到时的兜底
+  var REL_HIST_STORE_DIR = REL_HIST_LEGACY_DIR;
+  var relStoreReady = null;         // 目录解析（含旧目录迁移）的共享 Promise
+  var relStoreResolved = false;     // 解析完成后为 true，读写入口据此决定是否先等待
+  function resolveRelStoreDir() {
+    if (!relStoreReady) {
+      relStoreReady = fetch("/api/worktable/health", { cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (h) {
+          var home = h && typeof h.home === "string" ? h.home.trim().replace(/\/+$/, "") : "";
+          if (home) REL_HIST_STORE_DIR = home + "/storages";
+        })
+        .catch(function () { /* health 不可达：沿用旧目录兜底 */ })
+        .then(migrateRelStoreLegacy)
+        .then(function () { relStoreResolved = true; });
+    }
+    return relStoreReady;
+  }
+  /* 旧硬编码目录 → 真实 $DSH_HOME/storages 的一次性复制迁移：仅当新目录缺失该文件而旧目录存在时复制；
+     单个文件读/写失败只跳过该文件，不影响其余；旧文件不删（无删除路由，也留作回退）。 */
+  function migrateRelStoreLegacy() {
+    if (REL_HIST_STORE_DIR === REL_HIST_LEGACY_DIR) return;
+    var names = ["dsh-codereview-relhist-gh.json", "dsh-codereview-relhist-gc.json",
+      "dsh-codereview-relcfg-gh.json", "dsh-codereview-relcfg-gc.json"];
+    return Promise.all(names.map(function (name) {
+      var target = REL_HIST_STORE_DIR + "/" + name, legacy = REL_HIST_LEGACY_DIR + "/" + name;
+      return fetch("/api/worktable/file?path=" + encodeURIComponent(target), { cache: "no-store" })
+        .then(function (r) {
+          if (r.ok) return;                                   // 新目录已有：不覆盖
+          return fetch("/api/worktable/file?path=" + encodeURIComponent(legacy), { cache: "no-store" })
+            .then(function (lr) {
+              if (!lr.ok) return;
+              var ct = lr.headers.get("content-type") || "";
+              if (ct.indexOf("json") < 0) return;             // file 路由错误体也回 JSON 头，按非数据跳过
+              return lr.text().then(function (t) {
+                if (!t) return;
+                return fetch("/api/worktable/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ path: REL_HIST_STORE_DIR }) })
+                  .then(function () {
+                    return fetch("/api/worktable/write", { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ path: target, content: t }) });
+                  });
+              });
+            });
+        })
+        .catch(function () { /* 单文件失败跳过 */ });
+    })).then(function () {});
+  }
+  resolveRelStoreDir();   // 页面加载即开始解析，进发行页前基本完成
   function relHistFile() { return REL_HIST_STORE_DIR + "/dsh-codereview-relhist-" + (state.platform === "github" ? "gh" : "gc") + ".json"; }
   var relHistCache = null;        // 云端构建历史的本地镜像（null=尚未拉取）；增删改均改此缓存并写回云端，渲染只读缓存
   var relHistLoading = false;     // 防并发重复拉取
@@ -2195,6 +2249,7 @@
   }
   // 写云端（目录缺失时建目录重试一次）；返回是否成功（不抛异常，便于迁移处按成功与否决定是否清本机旧键）
   function relHistWriteRobust(content) {
+    if (!relStoreResolved) return resolveRelStoreDir().then(function () { return relHistWriteRobust(content); });
     return relHistWrite(content).then(function (r) {
       if (r.ok) return true;
       return fetch("/api/worktable/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -2205,6 +2260,7 @@
     }).catch(function () { return false; });
   }
   function loadRelHistCloud() {
+    if (!relStoreResolved) return resolveRelStoreDir().then(loadRelHistCloud);
     if (relHistLoading) return Promise.resolve(relHistCache || []);
     relHistLoading = true;
     var gen = ++relHistLoadGen;
@@ -2363,6 +2419,7 @@
   }
   // 写云端（目录缺失时建目录重试一次）；返回是否成功（不抛异常）
   function relCfgCloudWriteRobust(content) {
+    if (!relStoreResolved) return resolveRelStoreDir().then(function () { return relCfgCloudWriteRobust(content); });
     return relCfgCloudWrite(content).then(function (r) {
       if (r.ok) return true;
       return fetch("/api/worktable/mkdir", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -2373,6 +2430,7 @@
     }).catch(function () { return false; });
   }
   function loadRelCfgCloud() {
+    if (!relStoreResolved) return resolveRelStoreDir().then(loadRelCfgCloud);
     if (relCfgCloudLoading) return Promise.resolve(relCfgCloudCache || {});
     relCfgCloudLoading = true;
     var gen = ++relCfgCloudLoadGen;
