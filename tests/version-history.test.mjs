@@ -72,6 +72,17 @@ test('最多展示 100 条（最新的优先）', () => {
   assert.equal(list[99].version, '1.1.30')
 })
 
+test('回退提示词：版本号补 v 前缀，命令走升级卡的固定 release URL', () => {
+  // rollbackAiPrompt 复用切片外的 upgradeCmd，经 vm 上下文注入桩核实传参
+  const { rollbackAiPrompt } = slice(clientSource, '/* ---------- 版本更新历史 ---------- */', '/* ---------- 版本更新历史结束 ---------- */', {
+    upgradeCmd: (tag) => 'INSTALL<' + tag + '>',
+  })
+  const prompt = rollbackAiPrompt('1.1.6')
+  assert.ok(prompt.includes('回退到 v1.1.6'), '提示词指明目标版本')
+  assert.ok(prompt.includes('INSTALL<v1.1.6>'), '命令按 v 前缀 tag 生成')
+  assert.ok(prompt.includes('重启 dsh web 并刷新页面'), '提示词带收尾提醒')
+})
+
 // ---- 服务端 sanitizeVersionHistory / recordVersionInstall ----
 
 test('服务端清洗：接受裸数组与 {history}，剔除缺字段项，按 at 升序', () => {

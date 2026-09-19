@@ -536,5 +536,7 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_histVer{font-family:Consolas,monospace;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e8eb)}',
   '.dsh-wt_histCur{flex:none;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-state-accent-primary,#4f8ef7);color:#fff;font-size:10px}',
   '.dsh-wt_histTime{margin-left:auto;flex:none;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
+  /* 行内「回退提示词」按钮：比设置面板按钮更紧凑，文字不折行 */
+  '.dsh-wt_histCopy{flex:none;padding:2px 6px;font-size:10.5px;white-space:nowrap}',
   '.dsh-wt_histFoot{margin-top:8px;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
 ].join('\n')

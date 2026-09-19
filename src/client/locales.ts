@@ -231,6 +231,8 @@ export const zh = {
   'history.close': '关闭',
   'history.empty': '暂无安装记录',
   'history.current': '当前版本',
+  'history.copyRollback': '回退提示词',
+  'history.copyRollbackTitle': '复制回退提示词：粘贴到 AI 会话，把 tokens-worktable 回退到 {version}',
   'history.hint': '自该功能上线起，记录本服务器每次安装 / 升级 / 回退的版本与时间',
 } satisfies Record<string, string>
 
@@ -464,6 +466,8 @@ export const en = {
   'history.close': 'Close',
   'history.empty': 'No install records yet',
   'history.current': 'Current',
+  'history.copyRollback': 'Rollback prompt',
+  'history.copyRollbackTitle': 'Copy a rollback prompt — paste into an AI session to roll tokens-worktable back to {version}',
   'history.hint': 'Records each version installed / upgraded / rolled back on this server, since this feature shipped',
 } satisfies Record<WorktableKey, string>
 

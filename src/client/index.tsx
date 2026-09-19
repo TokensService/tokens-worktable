@@ -86,6 +86,9 @@ function parseInstallHistory(data: unknown): HistEntry[] {
     return { version: e.version, at: e.at, when, current: i === 0 }
   })
 }
+/** 单条安装历史的回退提示词：版本号不带 v 前缀（历史条目格式），命令复用升级卡的固定 release URL
+ *  （回退即「安装指定旧版」，URL/文件名按版本号恒定）。粘贴到 AI 会话执行。 */
+function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后提醒我重启 dsh web 并刷新页面' }
 /* ---------- 版本更新历史结束 ---------- */
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -1530,6 +1533,8 @@ function WorktableSection(props: any) {
   const [histOpen, setHistOpen] = useState(false)
   const [histList, setHistList] = useState<HistEntry[] | null>(null)
   const [histStatus, setHistStatus] = useState<'idle' | 'loading' | 'failed'>('idle')
+  /** 已复制回退提示词的条目键（version@at），2200ms 后复位；互斥显示，避免多行同时亮 ✓ */
+  const [histCopied, setHistCopied] = useState<string | null>(null)
   const histLoadingRef = useRef(false)
   const histLoadedRef = useRef(false)
   // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
@@ -1643,6 +1648,14 @@ function WorktableSection(props: any) {
     if (!updateInfo) return
     const ok = await copyText(upgradeAiPrompt(updateInfo.tag))
     if (ok) { setUpdateCopied(true); setTimeout(() => setUpdateCopied(false), 2200) }
+  }
+  /** 历史条目「回退提示词」：复制成功亮 ✓ 已复制 2.2s；复位定时器比对条目键，连点不同行不误灭新行的 ✓ */
+  const copyHistRollback = async (e: HistEntry) => {
+    const ok = await copyText(rollbackAiPrompt(e.version))
+    if (!ok) return
+    const key = e.version + '@' + e.at
+    setHistCopied(key)
+    setTimeout(() => setHistCopied((cur) => (cur === key ? null : cur)), 2200)
   }
   const skipUpdate = () => {
     if (updateInfo) {
@@ -4135,6 +4148,17 @@ function buildCustomLayoutPrompt(req: string): string {
                 <span className="dsh-wt_histVer">v{e.version}</span>
                 {e.current && <span className="dsh-wt_histCur">{t('history.current')}</span>}
                 <span className="dsh-wt_histTime">{e.when}</span>
+                {/* 当前版本即运行中版本，回退到自身无意义，不提供按钮 */}
+                {!e.current && (
+                  <button
+                    type="button"
+                    className="dsh-wt_updateBtn dsh-wt_histCopy"
+                    title={t('history.copyRollbackTitle', { version: 'v' + e.version })}
+                    onClick={() => void copyHistRollback(e)}
+                  >
+                    {histCopied === e.version + '@' + e.at ? '✓ ' + t('update.copied') : <>{ICON_SPARK} {t('history.copyRollback')}</>}
+                  </button>
+                )}
               </div>
             ))}
           </div>
