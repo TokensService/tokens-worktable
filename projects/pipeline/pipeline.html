@@ -3170,7 +3170,10 @@ function setStageUrl(i, val){
 let nodes = {};
 let selectedId = curPipeline().stages[0].id;
 let running = false;   // 派生态：activeRuns.length>0，由 syncRunState 维护（勿直接赋值）
-let buildNo = 47;
+/* 运行编号计数器：从 0 起，首个真实运行即 #1（演示数据仅占界面示例、不入服务端编号空间；
+   此前初始化为 47 会让真实历史从 #48 开始，看起来像丢了 #1–47）。服务端已有更高编号时
+   loadServerState/历史刷新会按双方较大值回填，不会重号。 */
+let buildNo = 0;
 /* 历史清空时间戳：「清空」时记录，随 config 持久化；服务端 PUT 合并历史时以此区分「页面不知道的磁盘记录」
    与「已被清空的磁盘记录」（清空时间点之前的不再复活），加载时空历史 + 有清空标记则不复活演示数据 */
 let histClearedAt = 0;
