@@ -524,4 +524,19 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_updateSwitch::after{content:"";position:absolute;top:2px;right:2px;width:10px;height:10px;border-radius:50%;background:#fff;transition:right .15s}',
   '.dsh-wt_updateSwitch[data-off=true]{background:var(--dsw-alias-border-l1,#333a48)}',
   '.dsh-wt_updateSwitch[data-off=true]::after{right:14px}',
+  /* 版本更新历史弹窗：层级同确认弹窗（backdrop 81 / 对话框 82），盖在设置面板（z 80）之上 */
+  '.dsh-wt_hist{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:82;width:min(440px,92vw);max-height:min(560px,86vh);display:flex;flex-direction:column;padding:14px;border:1px solid var(--dsw-alias-border-l2,#3a4150);border-radius:10px;background:var(--dsw-alias-bg-base,#0b0e14);box-shadow:var(--dsw-shadow-lv2,0 8px 24px rgba(0,0,0,.4))}',
+  '.dsh-wt_histHead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}',
+  '.dsh-wt_histTitle{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e8eb)}',
+  '.dsh-wt_histOps{display:flex;align-items:center;gap:6px;flex:none}',
+  '.dsh-wt_histBody{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;min-height:60px}',
+  '.dsh-wt_histEmpty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:24px 8px;font-size:11.5px;color:var(--dsw-alias-label-tertiary,#7d8aa5);text-align:center}',
+  '.dsh-wt_histItem{display:flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:8px;padding:6px 8px}',
+  '.dsh-wt_histItem[data-current=true]{border-color:var(--dsw-alias-state-accent-primary,#4f8ef7)}',
+  '.dsh-wt_histVer{font-family:Consolas,monospace;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e8eb)}',
+  '.dsh-wt_histCur{flex:none;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-state-accent-primary,#4f8ef7);color:#fff;font-size:10px}',
+  '.dsh-wt_histTime{margin-left:auto;flex:none;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
+  /* 行内「回退提示词」按钮：比设置面板按钮更紧凑，文字不折行 */
+  '.dsh-wt_histCopy{flex:none;padding:2px 6px;font-size:10.5px;white-space:nowrap}',
+  '.dsh-wt_histFoot{margin-top:8px;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
 ].join('\n')

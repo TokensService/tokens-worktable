@@ -51,6 +51,7 @@ const ICON_SPARK = (
   </svg>
 )
 type UpdateInfo = { latest: string; tag: string; notes: string; url: string }
+/* ---------- 版本更新历史 ---------- */
 function cmpVer(a: string, b: string): number {
   const pa = a.split('.').map(Number)
   const pb = b.split('.').map(Number)
@@ -61,6 +62,34 @@ function cmpVer(a: string, b: string): number {
   }
   return 0
 }
+/** 安装历史条目：version 为安装版本号，at 为该版本在本服务器首次启动的时间戳（ms），
+ *  when 为本地格式化时间；current = 最新一条（服务器当前运行版本）。 */
+type HistEntry = { version: string; at: number; when: string; current: boolean }
+/** 服务端 /api/worktable/version-history 响应 → 弹窗条目：接受 {history:[...]} 或裸数组，
+ *  仅保留 {version: 非空字符串, at: 有限数值} 项，按时间倒序（新→旧），最新一条标记当前版本，
+ *  最多展示 100 条；入参异常（旧版服务端 404 兜底页等）返回空表。 */
+function parseInstallHistory(data: unknown): HistEntry[] {
+  const list = Array.isArray(data) ? data : (data && typeof data === 'object' && Array.isArray((data as { history?: unknown }).history) ? (data as { history: unknown[] }).history : [])
+  const out: { version: string; at: number }[] = []
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue
+    const v = (e as { version?: unknown }).version
+    const at = (e as { at?: unknown }).at
+    if (typeof v !== 'string' || !v.trim() || typeof at !== 'number' || !Number.isFinite(at)) continue
+    out.push({ version: v.trim(), at })
+  }
+  out.sort((a, b) => b.at - a.at)
+  return out.slice(0, 100).map((e, i) => {
+    const d = new Date(e.at)
+    const p = (n: number) => String(n).padStart(2, '0')
+    const when = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    return { version: e.version, at: e.at, when, current: i === 0 }
+  })
+}
+/** 单条安装历史的回退提示词：版本号不带 v 前缀（历史条目格式），命令复用升级卡的固定 release URL
+ *  （回退即「安装指定旧版」，URL/文件名按版本号恒定）。粘贴到 AI 会话执行。 */
+function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后提醒我重启 dsh web 并刷新页面' }
+/* ---------- 版本更新历史结束 ---------- */
 async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true }
@@ -1501,6 +1530,13 @@ function WorktableSection(props: any) {
   const updateCheckingRef = useRef(false)
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
+  const [histOpen, setHistOpen] = useState(false)
+  const [histList, setHistList] = useState<HistEntry[] | null>(null)
+  const [histStatus, setHistStatus] = useState<'idle' | 'loading' | 'failed'>('idle')
+  /** 已复制回退提示词的条目键（version@at），2200ms 后复位；互斥显示，避免多行同时亮 ✓ */
+  const [histCopied, setHistCopied] = useState<string | null>(null)
+  const histLoadingRef = useRef(false)
+  const histLoadedRef = useRef(false)
   // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
   // 手动排序 order 一并合并：远端非空时远端优先、本地独有 id 追加尾部，远端缺 order 时本地序不动；
   // 合并结果与远端不一致时回推一次完整同步切片自愈。仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
@@ -1581,10 +1617,45 @@ function WorktableSection(props: any) {
     }
   }, [])
   useEffect(() => { if (updateCheckOn) void checkUpdates() }, [updateCheckOn, checkUpdates])
+  /** 版本更新历史：拉取本服务器的安装历史（同源 /api/worktable/version-history，服务端按
+   *  版本变化逐条落盘）。会话内已成功加载则复用（弹窗重开不再请求），「刷新」强制重拉；
+   *  失败（旧版服务端无此路由等）时保留旧列表展示。 */
+  const loadHistory = useCallback(async (force = false) => {
+    if (histLoadingRef.current) return // 防重入：并发点击只保留一个 in-flight
+    if (!force && histLoadedRef.current) return
+    histLoadingRef.current = true
+    setHistStatus('loading')
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 8000)
+      let d: unknown = null
+      try {
+        const r = await fetch('/api/worktable/version-history', { cache: 'no-store', signal: ctrl.signal })
+        if (r.ok) d = await r.json()
+      } catch { /* 网络/服务端异常：落入失败态 */ }
+      finally { clearTimeout(timer) }
+      if (!updateAliveRef.current) return // 组件已卸载：不再更新状态
+      if (!d) { setHistStatus('failed'); return }
+      histLoadedRef.current = true
+      setHistList(parseInstallHistory(d))
+      setHistStatus('idle')
+    } finally {
+      histLoadingRef.current = false
+    }
+  }, [])
+  const openHistory = () => { setHistOpen(true); void loadHistory() }
   const copyUpgradeAi = async () => {
     if (!updateInfo) return
     const ok = await copyText(upgradeAiPrompt(updateInfo.tag))
     if (ok) { setUpdateCopied(true); setTimeout(() => setUpdateCopied(false), 2200) }
+  }
+  /** 历史条目「回退提示词」：复制成功亮 ✓ 已复制 2.2s；复位定时器比对条目键，连点不同行不误灭新行的 ✓ */
+  const copyHistRollback = async (e: HistEntry) => {
+    const ok = await copyText(rollbackAiPrompt(e.version))
+    if (!ok) return
+    const key = e.version + '@' + e.at
+    setHistCopied(key)
+    setTimeout(() => setHistCopied((cur) => (cur === key ? null : cur)), 2200)
   }
   const skipUpdate = () => {
     if (updateInfo) {
@@ -3698,6 +3769,7 @@ function buildCustomLayoutPrompt(req: string): string {
               {updateStatus === 'failed' && !updateInfo ? ' · ' + t('update.checkFail') : ''}
             </span>
             <span className="dsh-wt_versionActions">
+              <button type="button" className="dsh-wt_updateBtn" title={t('history.title')} onClick={openHistory}>{t('history.btn')}</button>
               <button type="button" className="dsh-wt_updateBtn" disabled={updateStatus === 'checking'} onClick={() => void checkUpdates(true)}>
                 {updateStatus === 'checking' ? t('update.checking') : t('update.checkNow')}
               </button>
@@ -4047,6 +4119,50 @@ function buildCustomLayoutPrompt(req: string): string {
             <button type="button" className="dsh-wt_confirmCancel" onClick={() => setRequestDelete(null)}>{t('confirm.cancel')}</button>
             <button type="button" className="dsh-wt_confirmDelete" onClick={doDelete}>{t('confirm.delete')}</button>
           </div>
+        </div>
+      )}
+
+      {histOpen && <div className="dsh-wt_confirmBackdrop" onClick={() => setHistOpen(false)} />}
+      {histOpen && (
+        <div className="dsh-wt_hist" role="dialog" aria-label={t('history.title')}>
+          <div className="dsh-wt_histHead">
+            <span className="dsh-wt_histTitle">{t('history.title')}</span>
+            <span className="dsh-wt_histOps">
+              <button type="button" className="dsh-wt_updateBtn" disabled={histStatus === 'loading'} onClick={() => void loadHistory(true)}>
+                {histStatus === 'loading' ? t('history.loading') : t('history.refresh')}
+              </button>
+              <button type="button" className="dsh-wt_updateBtn" onClick={() => setHistOpen(false)}>{t('history.close')}</button>
+            </span>
+          </div>
+          <div className="dsh-wt_histBody">
+            {histStatus === 'loading' && !histList && <div className="dsh-wt_histEmpty">{t('history.loading')}</div>}
+            {histStatus === 'failed' && !histList && (
+              <div className="dsh-wt_histEmpty">
+                {t('history.failed')}
+                <button type="button" className="dsh-wt_updateBtn" onClick={() => void loadHistory(true)}>{t('history.retry')}</button>
+              </div>
+            )}
+            {histList && histList.length === 0 && <div className="dsh-wt_histEmpty">{t('history.empty')}</div>}
+            {histList?.map((e) => (
+              <div key={e.version + '@' + e.at} className="dsh-wt_histItem" data-current={e.current ? 'true' : undefined}>
+                <span className="dsh-wt_histVer">v{e.version}</span>
+                {e.current && <span className="dsh-wt_histCur">{t('history.current')}</span>}
+                <span className="dsh-wt_histTime">{e.when}</span>
+                {/* 当前版本即运行中版本，回退到自身无意义，不提供按钮 */}
+                {!e.current && (
+                  <button
+                    type="button"
+                    className="dsh-wt_updateBtn dsh-wt_histCopy"
+                    title={t('history.copyRollbackTitle', { version: 'v' + e.version })}
+                    onClick={() => void copyHistRollback(e)}
+                  >
+                    {histCopied === e.version + '@' + e.at ? '✓ ' + t('update.copied') : <>{ICON_SPARK} {t('history.copyRollback')}</>}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="dsh-wt_histFoot">{t('history.hint')}</div>
         </div>
       )}
 

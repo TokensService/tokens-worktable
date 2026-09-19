@@ -222,6 +222,18 @@ export const zh = {
   'update.copyFail': '复制失败，请手动选择文本',
   'update.skipDone': '已忽略此版本（下一版发布时再提醒）',
   'update.upgradeHint': '执行命令后需重启 dsh web 并刷新页面',
+  'history.btn': '更新历史',
+  'history.title': '版本更新历史',
+  'history.loading': '加载中…',
+  'history.failed': '获取失败，请稍后重试',
+  'history.retry': '重试',
+  'history.refresh': '刷新',
+  'history.close': '关闭',
+  'history.empty': '暂无安装记录',
+  'history.current': '当前版本',
+  'history.copyRollback': '回退提示词',
+  'history.copyRollbackTitle': '复制回退提示词：粘贴到 AI 会话，把 tokens-worktable 回退到 {version}',
+  'history.hint': '自该功能上线起，记录本服务器每次安装 / 升级 / 回退的版本与时间',
 } satisfies Record<string, string>
 
 /** The worktable namespace key union. */
@@ -445,6 +457,18 @@ export const en = {
   'update.copyFail': 'Copy failed — select the text manually',
   'update.skipDone': 'Skipped (will remind on the next release)',
   'update.upgradeHint': 'Run the command, then restart dsh web and refresh',
+  'history.btn': 'History',
+  'history.title': 'Version history',
+  'history.loading': 'Loading…',
+  'history.failed': 'Load failed — please retry later',
+  'history.retry': 'Retry',
+  'history.refresh': 'Refresh',
+  'history.close': 'Close',
+  'history.empty': 'No install records yet',
+  'history.current': 'Current',
+  'history.copyRollback': 'Rollback prompt',
+  'history.copyRollbackTitle': 'Copy a rollback prompt — paste into an AI session to roll tokens-worktable back to {version}',
+  'history.hint': 'Records each version installed / upgraded / rolled back on this server, since this feature shipped',
 } satisfies Record<WorktableKey, string>
 
 /** Locale namespace id registered under ctx.locale. */
