@@ -78,6 +78,17 @@ XDS 流水线按以下顺序绑定脚本：
 
 缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
 
+## LMCache 缓存热清理
+
+`clear-lmcache-cache.sh` 在不重启服务的前提下清空 XDS+LMCache 部署的三层缓存，供打流前后复用同一基线：L1（DRAM，sidecar 内 `POST /cache/clear`）、HBM prefix cache（XDS OM diagnose `reset_prefix_cache`）、L2（`fs_native` 磁盘文件，sidecar 容器内 `find -delete`，按 node:path 去重）。全部操作经 `kubectl exec` 完成，无需 SSH；sidecar 端口从 `/etc/lmcache-ports/ports.env` 动态读取，L2 路径从 `--l2-adapter` 参数解析，FE 地址从 `ray-svc` NodePort 自动发现。执行机仅需 `kubectl`、`curl`（清 HBM 时）与 `python3`（发现 L2 路径时）。
+
+```bash
+DRY_RUN=0 bash clear-lmcache-cache.sh          # 默认全清三层
+CLEAR_L2=0 DRY_RUN=0 bash clear-lmcache-cache.sh  # 只清 L1+HBM
+```
+
+`NAMESPACE` 留空时自动发现（全集群唯一含 `lmcache-sidecar` 容器的命名空间，多候选报错需显式指定）。清理 L2 前默认校验入口流量已停止（`IDLE_CHECK=1`，frontgroup 最近 `get request` 距今超过 `IDLE_SECONDS`，默认 60 秒，否则中止）。注意 `l2_usage_bytes` 指标是运行时记账不感知外部删除，脚本以 L2 目录文件数归零为完成依据。HBM reset 后默认轮询引擎日志确认每个引擎 success 才算清理成功（`HBM_VERIFY=1`，超时 `HBM_VERIFY_TIMEOUT_SECONDS` 默认 120 秒；设 0 则退回仅确认已调度）。`DRY_RUN=1`（默认）仅打印将执行的操作。单测：`test/test_clear_lmcache_cache.sh`。
+
 ## 归档与 AI 分析
 
 主控填了「归档路径」后，每次运行结束会把产物写到 `<归档路径>/<流水线名称>_<YYYYMMDDhhmmss>/`：
