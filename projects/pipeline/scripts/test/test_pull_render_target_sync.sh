@@ -105,7 +105,7 @@ EMS_NAMESPACE='custom-ems' \
 EMS_LOG_SYNC_INTERVAL_SECONDS=17 \
 EMS_LOG_SOURCE_DIR=/custom/ems/logs \
 EMS_LOG_CONTAINER=custom-worker \
-MOCK_HELM_DEPLOY=true \
+TEMPLATE_VARS_JSON='{"MOCK_HELM_DEPLOY":"true"}' \
 bash "$script" >/dev/null
 
 test -f "$work_dir/target-run/rendered/xds-cluster/Chart.yaml"
