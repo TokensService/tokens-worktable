@@ -48,12 +48,20 @@ grep -Fq 'NODE_LABELS_FILE' "$script_dir/render-config.sh"
 grep -Fq 'NODE_LABELS_FILE' "$script_dir/deploy-model.sh"
 grep -Fq '"$KUBECTL_BIN" label node' "$script_dir/deploy-model.sh"
 grep -Fq '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh"
+grep -Fq 'cleanup_stale_raycluster' "$script_dir/deploy-model.sh"
+grep -Fq 'delete raycluster "$raycluster"' "$script_dir/deploy-model.sh"
+grep -Fq -- '--ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"' "$script_dir/deploy-model.sh"
 grep -Fq '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh"
 
 uninstall_line="$(grep -nF '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
+raycluster_cleanup_line="$(grep -nE '^cleanup_stale_raycluster$' "$script_dir/deploy-model.sh" | cut -d: -f1)"
 install_line="$(grep -nF '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
 [[ "$uninstall_line" -lt "$install_line" ]] || {
   echo "helm uninstall must run before helm install" >&2
+  exit 1
+}
+[[ "$uninstall_line" -lt "$raycluster_cleanup_line" && "$raycluster_cleanup_line" -lt "$install_line" ]] || {
+  echo "stale RayCluster cleanup must run between helm uninstall and helm install" >&2
   exit 1
 }
 

@@ -735,6 +735,14 @@ PY
   done <"$labels"
 }
 
+cleanup_stale_raycluster() {
+  local raycluster="$RELEASE_NAME-kuberay"
+
+  echo "[deploy] ensure stale RayCluster is removed: $raycluster"
+  "$KUBECTL_BIN" --namespace "$NAMESPACE" delete raycluster "$raycluster" \
+    --ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"
+}
+
 wait_for_release_cleanup() {
   local deadline selector pending
   local -a selectors
@@ -864,6 +872,7 @@ label_target_nodes
 echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
+cleanup_stale_raycluster
 wait_for_release_cleanup
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
