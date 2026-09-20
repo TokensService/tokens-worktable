@@ -1,5 +1,18 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复并行组内 EvalTokens 阶段被兄弟阶段失败连带中止时误停外部 run 的问题
+  （`projects/pipeline/pipeline.html`、`src/index.ts`）：并行组 fail-fast 级联（某阶段失败 →
+  `cancelParallelGroup` 中止兄弟阶段）此前与用户主动中止走同一出口，兄弟阶段的收尾逻辑看到
+  「已中止 + run 在跑」即调用 `POST /api/v1/tasks/runs/<run_id>/stop`，导致一个阶段的启动请求
+  抖动失败（如服务高负载下启动响应超过浏览器侧等待）把组内其余已启动的 EvalTokens 任务全部停掉。
+  现区分中止来源：浏览器侧级联中止由 `cancelParallelStage` 给子上下文打 `_cascadeAbort` 标记，
+  阶段 finally 见到标记即保留外部 run（阶段日志注明「未停止，仍在服务侧运行」并附报告链接）；
+  服务端侧按中止原因码区分——执行池取消（用户中止/计划终止）带 `PIPELINE_RUN_CANCELLED` 码照常
+  stop，兄弟失败的裸 abort 不再 stop。用户主动中止、重置与阶段超时停止外部 run 的行为不变。
+  `projects/pipeline/tests/evaltokens-stage.test.mjs` 新增级联/用户中止两组页面回归，
+  `tests/pipeline-run-api.test.mjs` 新增服务端级联回归并把两处取消用例的 abort 原因对齐执行池实现。
+  注：Jenkins（HTTP）阶段的级联中止仍有同形问题，本次未改动。
+
 - 修复 PR 检视台「构建历史 / 分支级构建设置」云端存储目录硬编码为 `/mnt/paas/storages` 的问题
   （`projects/codereview/code-review-prs.html`）：该路径只是旧部署的 DSH_HOME 值，DSH_HOME 不在
   /mnt/paas 的部署会把构建历史写到宿主数据目录之外，升级/迁移部署后如同丢失。现改为经
