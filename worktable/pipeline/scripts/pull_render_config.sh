@@ -112,7 +112,29 @@ POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
 EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
 EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
-MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-false}"
+TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
+[[ -n "$TEMPLATE_VARS_JSON" ]] || TEMPLATE_VARS_JSON='{}'
+MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
+if [[ -z "$MOCK_HELM_DEPLOY" ]]; then
+  MOCK_HELM_DEPLOY="$(python3 - "$TEMPLATE_VARS_JSON" <<'PY'
+import json
+import sys
+
+try:
+    variables = json.loads(sys.argv[1])
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TEMPLATE_VARS_JSON: {error}")
+if not isinstance(variables, dict):
+    raise SystemExit("TEMPLATE_VARS_JSON must be an object")
+value = variables.get("MOCK_HELM_DEPLOY", "false")
+if isinstance(value, bool):
+    value = str(value).lower()
+if not isinstance(value, str) or value.lower() not in {"true", "false"}:
+    raise SystemExit("TEMPLATE_VARS_JSON.MOCK_HELM_DEPLOY must be true or false")
+print(value.lower())
+PY
+)"
+fi
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-}"
 MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
 # Render inputs are retained in both pipeline environment contracts so the
@@ -219,7 +241,7 @@ export IMAGE_NAME ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME 
   XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
   LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
   LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-  ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT \
+  ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT TEMPLATE_VARS_JSON \
   AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY
 
 write_pipeline_env() {
