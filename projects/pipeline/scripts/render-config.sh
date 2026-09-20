@@ -794,7 +794,21 @@ PY
 # 临时需求：LMCache sidecar 加 tracing 上报（chart 已固化 args，无注入口，
 # 渲染后直接 patch 部署包 chart 副本 CHART_DIR，helm 实际使用的就是它）。
 # ENABLE_LMCACHE_TRACING=false 关闭；endpoint 置空同样关闭。
-if [[ "$ENABLE_LMCACHE_TRACING" == "true" && -n "$LMCACHE_OTLP_ENDPOINT" ]]; then
+# 守卫以渲染结果为准：lmcacheSidecar.enabled != true（非 LMCache 部署，
+# 含 ENABLE_LMCACHE=false 或模板未启用 sidecar 的 arch）时整体跳过——
+# 旧 chart 本就没有 sidecar args 锚点，不属于模板漂移，
+# 不应让非 LMCache arch 的渲染失败。
+lmcache_sidecar_enabled="$(python3 - "$VALUES_FILE" <<'PY'
+import sys
+
+import yaml
+
+values = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+sidecar = values.get("lmcacheSidecar")
+print("true" if isinstance(sidecar, dict) and sidecar.get("enabled") is True else "false")
+PY
+)"
+if [[ "$ENABLE_LMCACHE_TRACING" == "true" && -n "$LMCACHE_OTLP_ENDPOINT" && "$lmcache_sidecar_enabled" == "true" ]]; then
 python3 - "$CHART_DIR/templates/raycluster-cluster.yaml" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
 import pathlib
 import sys
@@ -815,6 +829,9 @@ if "--enable-tracing" not in text:
     chart.write_text(text.replace(anchor, patch + anchor, 1), encoding="utf-8")
 print("LMCACHE_OTLP_PATCHED=%s" % endpoint)
 PY
+else
+  # 输出到 stderr：stdout 的 KEY=VALUE 行会进入阶段输出变量契约。
+  echo "[render] LMCache tracing patch skipped: lmcacheSidecar.enabled=${lmcache_sidecar_enabled}, ENABLE_LMCACHE_TRACING=${ENABLE_LMCACHE_TRACING}, endpoint=${LMCACHE_OTLP_ENDPOINT:-}" >&2
 fi
 
 printf 'RUN_DIR=%s\n' "$RUN_DIR"

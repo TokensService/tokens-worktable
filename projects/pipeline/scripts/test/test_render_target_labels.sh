@@ -280,9 +280,12 @@ PY
 
 rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
-# OTLP tracing patch 注入在 lmcache args 锚点之前（默认 ENABLE_LMCACHE_TRACING=true）。
-grep -Fq -- '--enable-tracing \' "$rendered_chart"
-grep -Fq -- '--otlp-endpoint http://192.168.0.102:4320 \' "$rendered_chart"
+# sidecar 未启用（ENABLE_LMCACHE 默认 false）时跳过 tracing patch：
+# 非 LMCache 部署不应因旧 chart 缺锄点而失败。
+if grep -Fq -- '--enable-tracing' "$rendered_chart"; then
+  echo "tracing patch must be skipped when lmcacheSidecar is disabled" >&2
+  exit 1
+fi
 grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
 grep -Fq 'else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je' "$rendered_chart"
 if grep -Fq 'eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe' "$rendered_chart"; then
@@ -319,6 +322,49 @@ assert sidecar["enabled"] is True, sidecar
 assert sidecar["logLevel"] == "DEBUG", sidecar
 assert sidecar["l2Enabled"] is False, sidecar
 PY
+
+# sidecar 启用时 tracing patch 注入在 lmcache args 锚点之前。
+rendered_chart_override="$work_dir/run-lmcache-override/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq -- '--enable-tracing \' "$rendered_chart_override"
+grep -Fq -- '--otlp-endpoint http://192.168.0.102:4320 \' "$rendered_chart_override"
+
+# 回归：旧 chart 无 LMCache 锚点 + sidecar 未启用（非 LMCache arch）→ 渲染成功且不 patch。
+mkdir -p "$work_dir/chart-legacy/templates"
+printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart-legacy/Chart.yaml"
+cat >"$work_dir/chart-legacy/templates/raycluster-cluster.yaml" <<'EOF'
+groupName: {{ $teGroupValues.name }}
+groupName: {{ $groupName }}
+EOF
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-legacy-chart" \
+CHART_TEMPLATE_DIR="$work_dir/chart-legacy" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-legacy-chart' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"}]' \
+  bash "$script_dir/render-config.sh" >"$work_dir/legacy-chart.out" 2>&1
+grep -Fq 'LMCache tracing patch skipped: lmcacheSidecar.enabled=false' "$work_dir/legacy-chart.out"
+if grep -Fq -- '--enable-tracing' "$work_dir/run-legacy-chart/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
+  echo "legacy chart must not receive the tracing patch without lmcache" >&2
+  exit 1
+fi
+
+# sidecar 显式启用但旧 chart 缺锄点：仍视为模板漂移，硬报错。
+if ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-legacy-chart-drift" \
+CHART_TEMPLATE_DIR="$work_dir/chart-legacy" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-legacy-chart-drift' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"}]' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/legacy-drift.out" 2>&1; then
+  echo "missing anchor with lmcache enabled must fail" >&2
+  exit 1
+fi
+grep -Fq 'LMCache sidecar args anchor not found in chart template' "$work_dir/legacy-drift.out"
 
 if ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-missing-map" \
