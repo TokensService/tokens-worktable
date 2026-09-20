@@ -115,6 +115,12 @@ grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/execution-run/pipeline.env
 grep -Fq 'export EMS_NAMESPACE=custom-ems' "$work_dir/target-run/pipeline.env"
 grep -Fq "export RENDER_DIR=$work_dir/target-run/rendered" "$work_dir/target-run/pipeline.env"
 grep -Fq 'must-not-be-copied' "$work_dir/target-run/pipeline.env"
+target_node_ip_map="$(bash -c 'source "$1"; printf %s "$TARGET_NODE_IP_MAP"' _ "$work_dir/target-run/pipeline.env")"
+python3 - "$target_node_ip_map" <<'PY'
+import json
+import sys
+assert json.loads(sys.argv[1])["127.0.0.1"] == "127.0.0.1"
+PY
 for environment_file in "$work_dir/execution-run/pipeline.env" "$work_dir/target-run/pipeline.env"; do
   grep -Fq 'export EMS_LOG_SYNC_INTERVAL_SECONDS=17' "$environment_file"
   grep -Fq 'export EMS_LOG_SOURCE_DIR=/custom/ems/logs' "$environment_file"

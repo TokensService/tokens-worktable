@@ -266,6 +266,7 @@ write_target_pipeline_env() {
       printf 'export NODE_LABELS_FILE=%q\n' "$target_node_labels_file"
       printf 'export PIPELINE_ENV_FILE=%q\n' "$TARGET_PIPELINE_ENV_FILE"
       printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
+      printf 'export TARGET_NODE_IP_MAP=%q\n' "$TARGET_NODE_IP_MAP"
       for variable in \
         IMAGE_NAME DEPLOY_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME NAMESPACE RELEASE_NAME \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
