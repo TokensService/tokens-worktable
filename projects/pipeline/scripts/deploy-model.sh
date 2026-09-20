@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
+MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-false}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 ARCH_NAME="${ARCH_NAME:-default}"
@@ -21,7 +22,30 @@ TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
+
+load_persisted_target_node_ip_map() {
+  local environment_file="$1"
+  [[ -f "$environment_file" ]] || return 0
+  python3 - "$environment_file" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.startswith("export TARGET_NODE_IP_MAP="):
+        continue
+    values = shlex.split(line.split("=", 1)[1])
+    if len(values) != 1:
+        raise SystemExit("persisted TARGET_NODE_IP_MAP has an invalid shell value")
+    print(values[0])
+    break
+PY
+}
+
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+if [[ -z "$TARGET_NODE_IP_MAP" ]]; then
+  TARGET_NODE_IP_MAP="$(load_persisted_target_node_ip_map "$PIPELINE_ENV_FILE")"
+fi
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 XDS_URL="${XDS_URL:-}"
 XDS_URL="${XDS_URL%/}"
@@ -323,7 +347,7 @@ PY
   ((${#returned_environment[@]} == 0)) || printf '%s\n' "${returned_environment[@]}"
 }
 
-if [[ "$DEPLOY_ON_TARGET_HOST" != "1" ]]; then
+if [[ "$DEPLOY_ON_TARGET_HOST" != "1" && "$MOCK_HELM_DEPLOY" != "true" ]]; then
   deploy_from_target_host
   exit $?
 fi
@@ -342,6 +366,10 @@ fi
 [[ "$EMS_LOG_SYNC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid EMS_LOG_SYNC_INTERVAL_SECONDS: $EMS_LOG_SYNC_INTERVAL_SECONDS" >&2; exit 2; }
 [[ "$EMS_LOG_SOURCE_DIR" == /* ]] || { echo "EMS_LOG_SOURCE_DIR must be an absolute path: $EMS_LOG_SOURCE_DIR" >&2; exit 2; }
 [[ -n "$EMS_LOG_CONTAINER" ]] || { echo "EMS_LOG_CONTAINER must not be empty" >&2; exit 2; }
+[[ "$MOCK_HELM_DEPLOY" == "true" || "$MOCK_HELM_DEPLOY" == "false" ]] || {
+  echo "MOCK_HELM_DEPLOY must be true or false: $MOCK_HELM_DEPLOY" >&2
+  exit 2
+}
 
 if [[ -z "$XDS_URL" ]]; then
   target_ip="$(python3 - "$NODE_LABELS_FILE" <<'PY'
@@ -451,6 +479,41 @@ PY
   fi
 }
 
+rewrite_xds_url_to_execution_host() {
+  local rewrite_result execution_host
+  rewrite_result="$(python3 - "$XDS_URL" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import re
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+url, target_hosts_json, node_ip_map_json = sys.argv[1:]
+target_hosts = json.loads(target_hosts_json)
+node_ip_map = json.loads(node_ip_map_json)
+if not isinstance(target_hosts, list) or not isinstance(node_ip_map, dict) or not target_hosts:
+    print(url, "", sep="\t")
+    raise SystemExit(0)
+endpoint = target_hosts[0].get("ip") if isinstance(target_hosts[0], dict) else None
+if not isinstance(endpoint, str) or not endpoint:
+    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string")
+mapped_host = node_ip_map.get(endpoint)
+match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+execution_host = match.group(1) if match else endpoint
+parsed = urlsplit(url)
+if not isinstance(mapped_host, str) or not mapped_host or mapped_host == execution_host or parsed.hostname != mapped_host:
+    print(url, "", sep="\t")
+    raise SystemExit(0)
+port = parsed.port
+formatted_host = f"[{execution_host}]" if ":" in execution_host else execution_host
+netloc = formatted_host if port is None else f"{formatted_host}:{port}"
+print(urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)), execution_host, sep="\t")
+PY
+)" || return $?
+  local rewritten_host
+  IFS=$'\t' read -r XDS_URL rewritten_host <<<"$rewrite_result"
+  [[ -n "$rewritten_host" ]] && XDS_API_HOST="$rewritten_host"
+}
+
 persist_runtime_environment() {
   local variable
   SERVICE_API="${XDS_URL%/}"
@@ -467,6 +530,48 @@ persist_runtime_environment() {
       printf 'export %s=%q\n' "$variable" "${!variable}"
     done
   } >>"$PIPELINE_ENV_FILE"
+}
+
+resolve_mock_xds_url() {
+  local node_port
+  [[ "$XDS_URL_EXPLICIT" == false ]] || return 0
+  node_port="$(python3 - "$NODE_PORT_MAP" "$XDS_API_HOST" <<'PY'
+import json
+import sys
+
+node_port_map, host = sys.argv[1:]
+try:
+    ports = json.loads(node_port_map)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid NODE_PORT_MAP: {error}")
+port = ports.get(host)
+if not isinstance(port, int) or not 1 <= port <= 65535:
+    raise SystemExit(f"NODE_PORT_MAP has no valid port for mock XDS host: {host}")
+print(port)
+PY
+)" || return $?
+  XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
+  echo "[mock] resolved XDS API URL: $XDS_URL"
+}
+
+print_runtime_environment() {
+  printf 'CHART_DIR=%s\n' "$CHART_DIR"
+  printf 'VALUES_FILE=%s\n' "$VALUES_FILE"
+  printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
+  printf 'ARCH_NAME=%s\n' "$ARCH_NAME"
+  printf 'NAMESPACE=%s\n' "$NAMESPACE"
+  printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
+  printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
+  printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
+  printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
+  printf 'SERVICE_API=%s\n' "$SERVICE_API"
+  printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
+  printf 'MODEL=%s\n' "$MODEL_NAME"
+  printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
+  printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
+  printf 'MODEL_API=%s\n' "$MODEL_API"
+  printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
+  printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
 }
 
 wait_for_xds_api() {
@@ -735,6 +840,14 @@ PY
   done <"$labels"
 }
 
+cleanup_stale_raycluster() {
+  local raycluster="$RELEASE_NAME-kuberay"
+
+  echo "[deploy] ensure stale RayCluster is removed: $raycluster"
+  "$KUBECTL_BIN" --namespace "$NAMESPACE" delete raycluster "$raycluster" \
+    --ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"
+}
+
 wait_for_release_cleanup() {
   local deadline selector pending
   local -a selectors
@@ -860,10 +973,22 @@ PY
   VALUES_FILE="$DEPLOY_VALUES_FILE"
 }
 
+if [[ "$MOCK_HELM_DEPLOY" == "true" ]]; then
+  resolve_mock_xds_url
+  rewrite_xds_url_to_execution_host
+  HEAD_LOG_COLLECTOR_PID=""
+  persist_runtime_environment
+  echo "[mock] Helm deployment, readiness checks, log collection, and model registration skipped"
+  echo "[register] model is ACTIVE: $MODEL_NAME (mock)"
+  print_runtime_environment
+  exit 0
+fi
+
 label_target_nodes
 echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
+cleanup_stale_raycluster
 wait_for_release_cleanup
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
@@ -906,20 +1031,4 @@ RUN_DIR="$RUN_DIR" \
   XDS_URL="$XDS_URL" \
   bash "$SCRIPT_DIR/register-model.sh"
 
-printf 'CHART_DIR=%s\n' "$CHART_DIR"
-printf 'VALUES_FILE=%s\n' "$VALUES_FILE"
-printf 'ARCH_REQUEST_FILE=%s\n' "$ARCH_REQUEST_FILE"
-printf 'ARCH_NAME=%s\n' "$ARCH_NAME"
-printf 'NAMESPACE=%s\n' "$NAMESPACE"
-printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
-printf 'NODE_LABELS_FILE=%s\n' "$NODE_LABELS_FILE"
-printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
-printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
-printf 'SERVICE_API=%s\n' "$SERVICE_API"
-printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
-printf 'MODEL=%s\n' "$MODEL_NAME"
-printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
-printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
-printf 'MODEL_API=%s\n' "$MODEL_API"
-printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
-printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
+print_runtime_environment
