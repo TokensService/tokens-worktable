@@ -105,6 +105,7 @@ EMS_NAMESPACE='custom-ems' \
 EMS_LOG_SYNC_INTERVAL_SECONDS=17 \
 EMS_LOG_SOURCE_DIR=/custom/ems/logs \
 EMS_LOG_CONTAINER=custom-worker \
+MOCK_HELM_DEPLOY=true \
 bash "$script" >/dev/null
 
 test -f "$work_dir/target-run/rendered/xds-cluster/Chart.yaml"
@@ -125,6 +126,7 @@ for environment_file in "$work_dir/execution-run/pipeline.env" "$work_dir/target
   grep -Fq 'export EMS_LOG_SYNC_INTERVAL_SECONDS=17' "$environment_file"
   grep -Fq 'export EMS_LOG_SOURCE_DIR=/custom/ems/logs' "$environment_file"
   grep -Fq 'export EMS_LOG_CONTAINER=custom-worker' "$environment_file"
+  grep -Fq 'export MOCK_HELM_DEPLOY=true' "$environment_file"
 done
 
 AK=test-ak LOGIN_KEY=test-login-key LOGKEY= IMAGE_PULL_AK= IMAGE_PULL_LOGIN_KEY= IMAGE_PULL_PROJECT= \
