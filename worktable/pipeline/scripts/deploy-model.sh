@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
-MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-false}"
+MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 ARCH_NAME="${ARCH_NAME:-default}"
@@ -23,23 +23,29 @@ TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
 
-load_persisted_target_node_ip_map() {
-  local environment_file="$1"
+load_persisted_environment_value() {
+  local environment_file="$1" variable_name="$2"
   [[ -f "$environment_file" ]] || return 0
-  python3 - "$environment_file" <<'PY'
+  python3 - "$environment_file" "$variable_name" <<'PY'
 from pathlib import Path
 import shlex
 import sys
 
-for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    if not line.startswith("export TARGET_NODE_IP_MAP="):
+path, name = sys.argv[1:]
+prefix = f"export {name}="
+for line in Path(path).read_text(encoding="utf-8").splitlines():
+    if not line.startswith(prefix):
         continue
     values = shlex.split(line.split("=", 1)[1])
     if len(values) != 1:
-        raise SystemExit("persisted TARGET_NODE_IP_MAP has an invalid shell value")
+        raise SystemExit(f"persisted {name} has an invalid shell value")
     print(values[0])
     break
 PY
+}
+
+load_persisted_target_node_ip_map() {
+  load_persisted_environment_value "$1" TARGET_NODE_IP_MAP
 }
 
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
@@ -47,6 +53,10 @@ if [[ -z "$TARGET_NODE_IP_MAP" ]]; then
   TARGET_NODE_IP_MAP="$(load_persisted_target_node_ip_map "$PIPELINE_ENV_FILE")"
 fi
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
+if [[ -z "$MOCK_HELM_DEPLOY" ]]; then
+  MOCK_HELM_DEPLOY="$(load_persisted_environment_value "$PIPELINE_ENV_FILE" MOCK_HELM_DEPLOY)"
+fi
+[[ -n "$MOCK_HELM_DEPLOY" ]] || MOCK_HELM_DEPLOY=false
 XDS_URL="${XDS_URL:-}"
 XDS_URL="${XDS_URL%/}"
 XDS_URL="${XDS_URL%/chat/completions}"

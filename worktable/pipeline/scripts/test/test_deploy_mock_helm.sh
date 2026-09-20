@@ -11,6 +11,7 @@ printf '{}' >"$work_dir/rendered/resources.rendered.json"
 printf '{}' >"$work_dir/rendered/architecture.request.json"
 : >"$work_dir/rendered/values.rendered.yaml"
 : >"$work_dir/rendered/xds-cluster/Chart.yaml"
+printf 'export MOCK_HELM_DEPLOY=true\n' >"$work_dir/pipeline.env"
 
 for command in helm kubectl curl ssh sshpass; do
   cat >"$work_dir/bin/$command" <<'EOF'
@@ -25,7 +26,6 @@ PATH="$work_dir/bin:$PATH" \
 DEPLOY_ON_TARGET_HOST=0 \
 TARGET_HOSTS='[{"ip":"115.33.98.101:2224"}]' \
 TARGET_NODE_IP_MAP='{"115.33.98.101:2224":"192.168.31.7"}' \
-MOCK_HELM_DEPLOY=true \
 RUN_DIR="$work_dir" \
 RENDER_DIR="$work_dir/rendered" \
 PIPELINE_ENV_FILE="$work_dir/pipeline.env" \
