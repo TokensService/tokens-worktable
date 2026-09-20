@@ -430,3 +430,6 @@ PULL_TARGET_IMAGES_ONLY=1 bash "$SCRIPT_DIR/pull-image.sh"
 
 printf 'PIPELINE_ENV_FILE=%s\n' "$PIPELINE_ENV_FILE"
 printf 'TARGET_PIPELINE_ENV_FILE=%s\n' "$TARGET_PIPELINE_ENV_FILE"
+# LMCache 意图随契约下传：deploy-model 阶段据此动态启用 sidecar 就绪检查
+printf 'ENABLE_LMCACHE=%s\n' "$ENABLE_LMCACHE"
+printf 'LMCACHE_L2_ENABLED=%s\n' "$LMCACHE_L2_ENABLED"

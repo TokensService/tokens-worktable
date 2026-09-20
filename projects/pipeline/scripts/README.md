@@ -55,7 +55,7 @@
 XDS 流水线按以下顺序绑定脚本：
 
 1. `pull_render_config.sh`：在流水线执行机拉取镜像、导出模板并渲染配置；随后将渲染产物同步到每个 `TARGET_HOSTS`。
-2. `deploy-model.sh`：执行机选取 `TARGET_HOSTS[0]` 作为控制节点，通过 SSH 同步部署脚本和本轮渲染产物；随后在该目标机读取 Chart、values、架构注册请求和 P/D resource manifest，执行 Helm 安装并注册架构。成功后额外输出可供后续阶段引用的 `SERVICE_NAME`、`SERVICE_API`、`MODEL`、`MODEL_ENDPOINT`、`MODEL_VERSION`、`MODEL_API`；默认服务名为 `ray-svc`，可通过 `SERVICE_NAME` 覆盖。
+2. `deploy-model.sh`：执行机选取 `TARGET_HOSTS[0]` 作为控制节点，通过 SSH 同步部署脚本和本轮渲染产物；随后在该目标机读取 Chart、values、架构注册请求和 P/D resource manifest，执行 Helm 安装并注册架构。成功后额外输出可供后续阶段引用的 `SERVICE_NAME`、`SERVICE_API`、`MODEL`、`MODEL_ENDPOINT`、`MODEL_VERSION`、`MODEL_API`；默认服务名为 `ray-svc`，可通过 `SERVICE_NAME` 覆盖。模型注册完成后按 `ENABLE_LMCACHE`/渲染产物动态执行 LMCache sidecar 就绪检查（见「LMCache 就绪检查」），额外输出 `LMCACHE_HEALTH`、`LMCACHE_SIDECAR_PODS`、`LMCACHE_GPU_WORKERS`。
 3. `register-model.sh [MODEL_NAME]`：使用本轮 resource manifest 注册模型。
 4. `model-health.sh`：检查 XDS models 接口并发起一次真实 chat 请求。
 
@@ -63,6 +63,7 @@ XDS 流水线按以下顺序绑定脚本：
 
 - `ARCH_NAME`、`NUM_PREFILL`、`NUM_DECODE`、`PREFILL_GPU`、`DECODE_GPU`
 - `XDS_URL`、`MODEL_PATH`、`NAMESPACE`、`RELEASE_NAME`
+- `ENABLE_LMCACHE`（上游渲染开关透传，决定 deploy 尾部是否跑 LMCache 就绪检查）、`LMCACHE_STRICT`（默认 0：FAIL/DEGRADED 仅告警；1 时升级为阶段失败）、`LMCACHE_READY_TIMEOUT_SECONDS`（默认 1200）、`LMCACHE_READY_POLL_SECONDS`（默认 15）、`LMCACHE_GPU_WORKERS`（每 Pod 期望 GPU rank 数，默认读渲染产物 lmcacheSidecar.gpuWorkers，再默认 4）
 - `PREFILL_OVERRIDES_JSON`、`DECODE_OVERRIDES_JSON`
 - `IMAGE_PULL_SECRETS`：逗号分隔的 Kubernetes 镜像凭证 Secret；默认
   `default-secret,swr-cn-southwest-2`。旧变量 `IMAGE_PULL_SECRET` 仍兼容且同样支持逗号分隔；
@@ -77,6 +78,16 @@ XDS 流水线按以下顺序绑定脚本：
 ```
 
 缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
+
+## LMCache 就绪检查
+
+`check-lmcache-readiness.sh` 轮询每个带 `lmcache-sidecar` 容器 Pod 的 HTTP `/status`，直到 `registered_gpu_ids` 数量达到每 Pod 期望 GPU rank 数且整体 `is_healthy=true`（覆盖 L1/L2/store/prefetch 子系统）。`deploy-model.sh` 在模型注册后按 `ENABLE_LMCACHE`（留空跟随渲染产物 values 的 `lmcacheSidecar.enabled`）动态调用；也可在打流前单独执行：
+
+```bash
+NAMESPACE=xds-xxx bash check-lmcache-readiness.sh
+```
+
+输出契约（KEY=VALUE）：`LMCACHE_HEALTH=PASS|FAIL|DEGRADED`、`LMCACHE_SIDECAR_PODS`、`LMCACHE_GPU_WORKERS`。退出码：0=PASS，1=参数/依赖错误，2=FAIL（超时后零注册/未发现 sidecar），3=DEGRADED（部分注册或不健康——缓存旁路不影响推理，deploy 默认仅告警，`LMCACHE_STRICT=1` 升级为阶段失败）。`worker_liveness.registration_grace_seconds>0` 时会输出静默回收风险提示（GPU context 静默超时被回收后引擎不会重连）。注意 `/metrics` 的 `lmcache_mp_*` 计数器在首次使用前不存在，就绪判断必须用 `/status`。单测：`test/test_check_lmcache_readiness.sh`。
 
 ## LMCache 缓存热清理
 

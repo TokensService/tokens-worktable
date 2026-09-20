@@ -52,6 +52,13 @@ POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
 EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
 EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
+# LMCache sidecar 就绪检查：意图开关 ENABLE_LMCACHE（true/false，留空跟随渲染产物
+# values 的 lmcacheSidecar.enabled）；LMCACHE_STRICT=1 时 FAIL/DEGRADED 升级为阶段失败。
+ENABLE_LMCACHE="${ENABLE_LMCACHE:-}"
+LMCACHE_STRICT="${LMCACHE_STRICT:-0}"
+LMCACHE_READY_TIMEOUT_SECONDS="${LMCACHE_READY_TIMEOUT_SECONDS:-1200}"
+LMCACHE_READY_POLL_SECONDS="${LMCACHE_READY_POLL_SECONDS:-15}"
+LMCACHE_GPU_WORKERS="${LMCACHE_GPU_WORKERS:-}"
 NODE_PORT_MAP="${NODE_PORT_MAP:-{\"192.168.31.59\":31000,\"192.168.31.125\":31001,\"192.168.31.18\":31002,\"192.168.31.127\":31003,\"192.168.31.190\":31004,\"192.168.31.104\":31005,\"192.168.31.197\":31007,\"192.168.31.175\":31008,\"192.168.31.17\":31009,\"192.168.31.238\":31010,\"192.168.31.163\":31011,\"192.168.31.70\":31012,\"192.168.31.214\":31013,\"192.168.31.111\":31014,\"192.168.31.65\":31015,\"192.168.31.96\":31016,\"192.168.31.105\":31017,\"192.168.31.89\":31018,\"192.168.31.140\":31000,\"192.168.31.120\":31001,\"192.168.31.113\":31002,\"192.168.31.164\":31003,\"192.168.31.7\":31004,\"192.168.31.181\":31006}}"
 
 resolve_container_model_path() {
@@ -171,6 +178,9 @@ PY
     printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
     printf 'export EMS_LOG_SYNC_INTERVAL_SECONDS=%q\nexport EMS_LOG_SOURCE_DIR=%q\nexport EMS_LOG_CONTAINER=%q\n' \
       "$EMS_LOG_SYNC_INTERVAL_SECONDS" "$EMS_LOG_SOURCE_DIR" "$EMS_LOG_CONTAINER"
+    printf 'export ENABLE_LMCACHE=%q\nexport LMCACHE_STRICT=%q\n' "$ENABLE_LMCACHE" "$LMCACHE_STRICT"
+    printf 'export LMCACHE_READY_TIMEOUT_SECONDS=%q\nexport LMCACHE_READY_POLL_SECONDS=%q\n' "$LMCACHE_READY_TIMEOUT_SECONDS" "$LMCACHE_READY_POLL_SECONDS"
+    printf 'export LMCACHE_GPU_WORKERS=%q\n' "$LMCACHE_GPU_WORKERS"
   } >"$remote_env"
 
   echo "[deploy] execution host delegates deployment to target host: ${target_ip}:${target_port}"
@@ -180,8 +190,9 @@ PY
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
+  sync_remote_file "$SCRIPT_DIR/check-lmcache-readiness.sh" "${remote_script_dir}/check-lmcache-readiness.sh" "$target" "$target_port"
   sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
-  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
+  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh") $(remote_quote "${remote_script_dir}/check-lmcache-readiness.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   if ! run_remote "$target" "$target_port" "$remote_command"; then
@@ -224,6 +235,10 @@ fi
 [[ "$EMS_LOG_SYNC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid EMS_LOG_SYNC_INTERVAL_SECONDS: $EMS_LOG_SYNC_INTERVAL_SECONDS" >&2; exit 2; }
 [[ "$EMS_LOG_SOURCE_DIR" == /* ]] || { echo "EMS_LOG_SOURCE_DIR must be an absolute path: $EMS_LOG_SOURCE_DIR" >&2; exit 2; }
 [[ -n "$EMS_LOG_CONTAINER" ]] || { echo "EMS_LOG_CONTAINER must not be empty" >&2; exit 2; }
+[[ -z "$ENABLE_LMCACHE" || "$ENABLE_LMCACHE" == true || "$ENABLE_LMCACHE" == false ]] || { echo "invalid ENABLE_LMCACHE: $ENABLE_LMCACHE" >&2; exit 2; }
+[[ "$LMCACHE_STRICT" == 0 || "$LMCACHE_STRICT" == 1 ]] || { echo "invalid LMCACHE_STRICT: $LMCACHE_STRICT" >&2; exit 2; }
+[[ "$LMCACHE_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid LMCACHE_READY_TIMEOUT_SECONDS: $LMCACHE_READY_TIMEOUT_SECONDS" >&2; exit 2; }
+[[ "$LMCACHE_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid LMCACHE_READY_POLL_SECONDS: $LMCACHE_READY_POLL_SECONDS" >&2; exit 2; }
 
 if [[ -z "$XDS_URL" ]]; then
   target_ip="$(python3 - "$NODE_LABELS_FILE" <<'PY'
@@ -787,6 +802,82 @@ RUN_DIR="$RUN_DIR" \
   MODEL_PATH="$MODEL_PATH" \
   XDS_URL="$XDS_URL" \
   bash "$SCRIPT_DIR/register-model.sh"
+
+resolve_lmcache_intent() {
+  # 意图（ENABLE_LMCACHE）优先，留空时跟随渲染产物 values 的 lmcacheSidecar.enabled
+  local values_output
+  values_output="$(python3 - "$VALUES_FILE" <<'PY'
+import sys
+
+import yaml
+
+values = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+sidecar = values.get("lmcacheSidecar") or {}
+enabled = sidecar.get("enabled")
+if enabled is not True:
+    enabled = False
+gpu_workers = sidecar.get("gpuWorkers", 4)
+try:
+    gpu_workers = int(gpu_workers)
+except (TypeError, ValueError):
+    gpu_workers = 4
+print("true" if enabled else "false", gpu_workers, sep="\t")
+PY
+)" || values_output=$'false\t4'
+  IFS=$'\t' read -r LMCACHE_VALUES_ENABLED LMCACHE_VALUES_GPU_WORKERS <<<"$values_output"
+  if [[ "$ENABLE_LMCACHE" == true || "$ENABLE_LMCACHE" == false ]]; then
+    LMCACHE_EXPECTED="$ENABLE_LMCACHE"
+  else
+    LMCACHE_EXPECTED="$LMCACHE_VALUES_ENABLED"
+  fi
+}
+
+run_lmcache_readiness_check() {
+  local rc lmcache_log
+  resolve_lmcache_intent
+  LMCACHE_HEALTH=SKIPPED
+  if [[ "$ENABLE_LMCACHE" == true && "$LMCACHE_VALUES_ENABLED" == false ]]; then
+    echo "[deploy] warning: ENABLE_LMCACHE=true 但渲染产物未启用 lmcacheSidecar，请检查上游渲染参数" >&2
+  fi
+  if [[ "$LMCACHE_EXPECTED" != true ]]; then
+    echo "[deploy] LMCache sidecar 未启用，跳过就绪检查"
+    printf 'LMCACHE_HEALTH=%s\n' "$LMCACHE_HEALTH"
+    return 0
+  fi
+  [[ -n "$LMCACHE_GPU_WORKERS" ]] || LMCACHE_GPU_WORKERS="$LMCACHE_VALUES_GPU_WORKERS"
+
+  echo "[deploy] wait for LMCache sidecar readiness (gpu_workers=$LMCACHE_GPU_WORKERS)"
+  lmcache_log="$(mktemp)"
+  set +e
+  NAMESPACE="$NAMESPACE" \
+  LMCACHE_GPU_WORKERS="$LMCACHE_GPU_WORKERS" \
+  LMCACHE_READY_TIMEOUT_SECONDS="$LMCACHE_READY_TIMEOUT_SECONDS" \
+  LMCACHE_READY_POLL_SECONDS="$LMCACHE_READY_POLL_SECONDS" \
+  CONTRACT_OUTPUT=1 \
+    bash "$SCRIPT_DIR/check-lmcache-readiness.sh" | tee "$lmcache_log"
+  rc=${PIPESTATUS[0]}
+  set -e
+  LMCACHE_HEALTH="$(sed -n 's/^LMCACHE_HEALTH=//p' "$lmcache_log" | tail -n 1)"
+  rm -f "$lmcache_log"
+  [[ -n "$LMCACHE_HEALTH" ]] || LMCACHE_HEALTH=DEGRADED
+  if [[ "$rc" -eq 0 ]]; then
+    :
+  elif [[ "$rc" -eq 1 ]]; then
+    echo "[deploy] LMCache readiness check errored" >&2
+    exit 1
+  else
+    if [[ "$LMCACHE_STRICT" == 1 ]]; then
+      echo "[deploy] LMCache readiness $LMCACHE_HEALTH (LMCACHE_STRICT=1)" >&2
+      exit "$rc"
+    fi
+    echo "[deploy] warning: LMCache readiness $LMCACHE_HEALTH（缓存旁路不影响推理；LMCACHE_STRICT=1 可升级为阶段失败）" >&2
+  fi
+  printf 'export LMCACHE_HEALTH=%q\n' "$LMCACHE_HEALTH" >>"$PIPELINE_ENV_FILE"
+  printf 'export LMCACHE_GPU_WORKERS=%q\n' "$LMCACHE_GPU_WORKERS" >>"$PIPELINE_ENV_FILE"
+  return 0
+}
+
+run_lmcache_readiness_check
 
 printf 'CHART_DIR=%s\n' "$CHART_DIR"
 printf 'VALUES_FILE=%s\n' "$VALUES_FILE"
