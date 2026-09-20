@@ -850,12 +850,91 @@ PY
   done <"$labels"
 }
 
+clear_target_node_taints() {
+  local inventory nodes node key effect
+  inventory="$(mktemp)"
+  nodes="$(mktemp)"
+  trap 'rm -f "$inventory" "$nodes"' RETURN
+  "$KUBECTL_BIN" get nodes -o json >"$inventory"
+
+  python3 - "$NODE_LABELS_FILE" "$inventory" >"$nodes" <<'PY'
+import json
+import sys
+
+labels_file, inventory_file = sys.argv[1:]
+labels = json.load(open(labels_file, encoding="utf-8"))
+inventory = json.load(open(inventory_file, encoding="utf-8"))
+by_ip = {}
+for node in inventory.get("items", []):
+    name = node.get("metadata", {}).get("name")
+    for address in node.get("status", {}).get("addresses", []):
+        if address.get("type") == "InternalIP" and name:
+            by_ip[address.get("address")] = name
+
+assignments = [{"hosts": labels.get("hosts", [])}]
+assignments.extend(labels.get("assignments", []))
+seen = set()
+for assignment in assignments:
+    if not isinstance(assignment, dict):
+        continue
+    for host in assignment.get("hosts", []):
+        ip = host.get("ip") if isinstance(host, dict) else None
+        node = by_ip.get(ip)
+        if node and node not in seen:
+            seen.add(node)
+            print(node)
+PY
+
+  while IFS= read -r node; do
+    [[ -n "$node" ]] || continue
+    while IFS=$'\t' read -r key effect; do
+      [[ -n "$key" && -n "$effect" ]] || continue
+      echo "[deploy] remove taint from node=$node ${key}:${effect}"
+      "$KUBECTL_BIN" taint node "$node" "${key}:${effect}-"
+    done < <("$KUBECTL_BIN" get node "$node" -o json | python3 -c '
+import json
+import sys
+for taint in json.load(sys.stdin).get("spec", {}).get("taints", []):
+    key, effect = taint.get("key"), taint.get("effect")
+    if isinstance(key, str) and isinstance(effect, str):
+        print(f"{key}\t{effect}")
+')
+  done <"$nodes"
+}
+
 cleanup_stale_raycluster() {
   local raycluster="$RELEASE_NAME-kuberay"
 
   echo "[deploy] ensure stale RayCluster is removed: $raycluster"
   "$KUBECTL_BIN" --namespace "$NAMESPACE" delete raycluster "$raycluster" \
     --ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"
+}
+
+ensure_raycluster_cleanup_service_account() {
+  local raycluster="$RELEASE_NAME-kuberay" service_account
+
+  if ! service_account="$("$KUBECTL_BIN" --namespace "$NAMESPACE" get raycluster "$raycluster" \
+    -o jsonpath='{.spec.headGroupSpec.template.spec.serviceAccountName}' 2>/dev/null)"; then
+    return 0
+  fi
+  [[ -n "$service_account" ]] || return 0
+  if "$KUBECTL_BIN" --namespace "$NAMESPACE" get serviceaccount "$service_account" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[deploy] restore missing ServiceAccount for RayCluster cleanup: $service_account"
+  cat <<EOF | "$KUBECTL_BIN" apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $service_account
+  namespace: $NAMESPACE
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: $RELEASE_NAME
+    meta.helm.sh/release-namespace: $NAMESPACE
+EOF
 }
 
 wait_for_release_cleanup() {
@@ -996,12 +1075,18 @@ fi
 
 label_target_nodes
 echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
-"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
-  --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
+# Keep the prior release's ServiceAccount alive while KubeRay reconciles the
+# deleted RayCluster.  Its redis-cleanup Job inherits that ServiceAccount.
+ensure_raycluster_cleanup_service_account
 cleanup_stale_raycluster
 wait_for_release_cleanup
+"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
+  --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
+# Remove taints immediately before the new RayCluster is installed.  This
+# minimizes the window in which an external node controller can reapply one.
+clear_target_node_taints
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"

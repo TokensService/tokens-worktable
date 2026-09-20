@@ -47,21 +47,35 @@ grep -Fq 'values["nodeSelector"] = {node_selector_key: node_selector_value}' "$s
 grep -Fq 'NODE_LABELS_FILE' "$script_dir/render-config.sh"
 grep -Fq 'NODE_LABELS_FILE' "$script_dir/deploy-model.sh"
 grep -Fq '"$KUBECTL_BIN" label node' "$script_dir/deploy-model.sh"
+grep -Fq 'clear_target_node_taints' "$script_dir/deploy-model.sh"
+grep -Fq 'taint node "$node" "${key}:${effect}-"' "$script_dir/deploy-model.sh"
 grep -Fq '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh"
 grep -Fq 'cleanup_stale_raycluster' "$script_dir/deploy-model.sh"
+grep -Fq 'ensure_raycluster_cleanup_service_account' "$script_dir/deploy-model.sh"
 grep -Fq 'delete raycluster "$raycluster"' "$script_dir/deploy-model.sh"
 grep -Fq -- '--ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"' "$script_dir/deploy-model.sh"
 grep -Fq '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh"
 
 uninstall_line="$(grep -nF '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
 raycluster_cleanup_line="$(grep -nE '^cleanup_stale_raycluster$' "$script_dir/deploy-model.sh" | cut -d: -f1)"
+cleanup_service_account_line="$(grep -nE '^ensure_raycluster_cleanup_service_account$' "$script_dir/deploy-model.sh" | cut -d: -f1)"
+clear_taints_line="$(grep -nE '^clear_target_node_taints$' "$script_dir/deploy-model.sh" | cut -d: -f1)"
+prepare_ctrl_line="$(grep -nE '^prepare_ctrl_slot_capacity$' "$script_dir/deploy-model.sh" | cut -d: -f1)"
 install_line="$(grep -nF '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
 [[ "$uninstall_line" -lt "$install_line" ]] || {
   echo "helm uninstall must run before helm install" >&2
   exit 1
 }
-[[ "$uninstall_line" -lt "$raycluster_cleanup_line" && "$raycluster_cleanup_line" -lt "$install_line" ]] || {
-  echo "stale RayCluster cleanup must run between helm uninstall and helm install" >&2
+[[ "$raycluster_cleanup_line" -lt "$uninstall_line" && "$uninstall_line" -lt "$install_line" ]] || {
+  echo "stale RayCluster cleanup must complete before helm uninstall and install" >&2
+  exit 1
+}
+[[ "$cleanup_service_account_line" -lt "$raycluster_cleanup_line" ]] || {
+  echo "cleanup ServiceAccount must be ensured before stale RayCluster deletion" >&2
+  exit 1
+}
+[[ "$prepare_ctrl_line" -lt "$clear_taints_line" && "$clear_taints_line" -lt "$install_line" ]] || {
+  echo "target node taints must be cleared immediately before helm install" >&2
   exit 1
 }
 
