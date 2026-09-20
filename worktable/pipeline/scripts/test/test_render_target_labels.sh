@@ -15,6 +15,10 @@ groupName: {{ $groupName }}
 {{- if $lmcache.enabled }}
 - name: lmcache-sidecar
   resources: {{- toYaml $lmcache.resources | nindent 4 }}
+  args:
+    {{- if $isLmcacheL2 }}
+                  --l2-store-policy
+    {{- end }}
 {{- end }}
 EOF
 cat >"$work_dir/chart/templates/ray-svc.yaml" <<'EOF'
@@ -118,21 +122,25 @@ lmcache:
       repository: registry.example/old/xds
       tag: old
 lmcacheSidecar:
+  # lite 模板契约：仅 enabled/logLevel/l2Enabled 由渲染器替换，
+  # 端口/尺寸/资源等默认值固化在 values 模板中。
   enabled: {LMCACHE_SIDECAR_ENABLED}
-  mpPortBase: {LMCACHE_MP_PORT_BASE}
-  httpPortBase: {LMCACHE_HTTP_PORT_BASE}
-  l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
-  l1SizeGb: {LMCACHE_L1_SIZE_GB}
-  l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
-  maxWorkers: {LMCACHE_MAX_WORKERS}
   logLevel: {LMCACHE_LOG_LEVEL}
+  l2Enabled: {LMCACHE_L2_ENABLED}
+  mpPortBase: 5555
+  httpPortBase: 5565
+  l1InitSizeGb: 20
+  l1SizeGb: 200
+  l1AlignBytes: "4096"
+  maxWorkers: 1
+  cudaVisibleDevices: ''
   resources:
     requests:
-      cpu: {LMCACHE_CPU_REQUEST}
-      memory: {LMCACHE_MEMORY_REQUEST}
+      cpu: 4
+      memory: 8Gi
     limits:
-      cpu: {LMCACHE_CPU_LIMIT}
-      memory: {LMCACHE_MEMORY_LIMIT}
+      cpu: 8
+      memory: 240Gi
 # disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
@@ -243,13 +251,16 @@ assert values["lmcache"]["direct"]["image"] == {
 }
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is False
+assert sidecar["logLevel"] == "INFO"
+assert sidecar["l2Enabled"] is True, sidecar
+# 固化在模板中的 sidecar 默认值不被渲染器篡改（lite 不做参数透传）。
 assert sidecar["mpPortBase"] == 5555
 assert sidecar["httpPortBase"] == 5565
 assert sidecar["l1InitSizeGb"] == 20
 assert sidecar["l1SizeGb"] == 200
 assert sidecar["l1AlignBytes"] == "4096"
 assert sidecar["maxWorkers"] == 1
-assert sidecar["logLevel"] == "INFO"
+assert sidecar["cudaVisibleDevices"] == ""
 assert sidecar["resources"] == {
     "requests": {"cpu": 4, "memory": "8Gi"},
     "limits": {"cpu": 8, "memory": "240Gi"},
@@ -269,6 +280,9 @@ PY
 
 rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
+# OTLP tracing patch 注入在 lmcache args 锚点之前（默认 ENABLE_LMCACHE_TRACING=true）。
+grep -Fq -- '--enable-tracing \' "$rendered_chart"
+grep -Fq -- '--otlp-endpoint http://192.168.0.102:4320 \' "$rendered_chart"
 grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
 grep -Fq 'else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je' "$rendered_chart"
 if grep -Fq 'eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe' "$rendered_chart"; then
@@ -290,8 +304,8 @@ ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-lmcache-override' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
-TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_MP_PORT_BASE":"20000","LMCACHE_L1_SIZE_GB":"512","LMCACHE_MEMORY_LIMIT":"600Gi"}' \
-bash "$script_dir/render-config.sh" >/dev/null
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_LOG_LEVEL":"DEBUG","LMCACHE_L2_ENABLED":"false"}' \
+  bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run-lmcache-override/rendered/values.rendered.yaml" <<'PY'
 import sys
@@ -302,9 +316,8 @@ with open(sys.argv[1], encoding="utf-8") as source:
 
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is True, sidecar
-assert sidecar["mpPortBase"] == 20000, sidecar
-assert sidecar["l1SizeGb"] == 512, sidecar
-assert sidecar["resources"]["limits"]["memory"] == "600Gi", sidecar
+assert sidecar["logLevel"] == "DEBUG", sidecar
+assert sidecar["l2Enabled"] is False, sidecar
 PY
 
 if ARCH_NAME=test-arch \
