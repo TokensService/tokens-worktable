@@ -100,6 +100,114 @@ sync_remote_file() {
     "mkdir -p $(remote_quote "$destination_dir") && cat > $(remote_quote "$destination")"
 }
 
+mapped_execution_target_host() {
+  python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
+import json
+import re
+import sys
+
+target_hosts_json, node_ip_map_json = sys.argv[1:]
+try:
+    target_hosts = json.loads(target_hosts_json)
+    node_ip_map = json.loads(node_ip_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid target node IP mapping input: {error}")
+
+if not isinstance(target_hosts, list) or not isinstance(node_ip_map, dict):
+    raise SystemExit("TARGET_HOSTS must be an array and TARGET_NODE_IP_MAP must be an object")
+if not target_hosts:
+    raise SystemExit(0)
+
+first_target = target_hosts[0]
+endpoint = first_target.get("ip") if isinstance(first_target, dict) else None
+if not isinstance(endpoint, str) or not endpoint:
+    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string")
+mapped_host = node_ip_map.get(endpoint)
+if mapped_host is None:
+    raise SystemExit(0)
+if not isinstance(mapped_host, str) or not mapped_host:
+    raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty string: {endpoint}")
+
+endpoint_match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+execution_host = endpoint_match.group(1) if endpoint_match else endpoint
+if mapped_host != execution_host:
+    print(mapped_host)
+PY
+}
+
+rewrite_returned_xds_url_to_execution_host() {
+  local runtime_env="$1" execution_host="$2"
+
+  python3 - "$runtime_env" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$execution_host" <<'PY'
+import json
+from pathlib import Path
+import shlex
+import sys
+from urllib.parse import urlsplit, urlunsplit
+
+env_path, target_hosts_json, node_ip_map_json, execution_host = sys.argv[1:]
+try:
+    target_hosts = json.loads(target_hosts_json)
+    node_ip_map = json.loads(node_ip_map_json)
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid target node IP mapping input: {error}")
+
+if not isinstance(target_hosts, list) or not isinstance(node_ip_map, dict):
+    raise SystemExit("TARGET_HOSTS must be an array and TARGET_NODE_IP_MAP must be an object")
+if not target_hosts:
+    raise SystemExit(0)
+
+first_target = target_hosts[0]
+endpoint = first_target.get("ip") if isinstance(first_target, dict) else None
+if not isinstance(endpoint, str) or not endpoint:
+    raise SystemExit("TARGET_HOSTS[0].ip must be a non-empty string")
+mapped_host = node_ip_map.get(endpoint)
+if mapped_host is None:
+    raise SystemExit(0)
+if not isinstance(mapped_host, str) or not mapped_host:
+    raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty string: {endpoint}")
+
+path = Path(env_path)
+lines = path.read_text(encoding="utf-8").splitlines()
+values_by_name = {}
+rewritten = False
+for index, line in enumerate(lines):
+    if not line.startswith("export ") or "=" not in line:
+        continue
+    name, raw_value = line[7:].split("=", 1)
+    values = shlex.split(raw_value)
+    if len(values) != 1:
+        raise SystemExit(f"returned {name} has an invalid shell value")
+    value = values[0]
+    if name in {"XDS_URL", "SERVICE_API", "MODEL_API"}:
+        parsed = urlsplit(value)
+        if parsed.hostname != mapped_host or mapped_host == execution_host:
+            values_by_name[name] = value
+            continue
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise SystemExit(f"invalid returned {name} port: {error}")
+        formatted_host = f"[{execution_host}]" if ":" in execution_host else execution_host
+        netloc = formatted_host if port is None else f"{formatted_host}:{port}"
+        value = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+        lines[index] = f"export {name}=" + shlex.quote(value)
+        rewritten = True
+    elif name == "XDS_API_HOST" and value == mapped_host and mapped_host != execution_host:
+        value = execution_host
+        lines[index] = f"export {name}=" + shlex.quote(value)
+        rewritten = True
+    values_by_name[name] = value
+
+if not rewritten:
+    raise SystemExit(0)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+for name in ("XDS_URL", "XDS_API_HOST", "SERVICE_API", "MODEL_API"):
+    if name in values_by_name:
+        print(f"{name}={values_by_name[name]}")
+PY
+}
+
 deploy_from_target_host() {
   local parsed target_ip target_port target_user target remote_script_dir remote_script
   local remote_env remote_xds_url remote_head_log_root remote_command
@@ -184,7 +292,14 @@ PY
   run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
-  if ! run_remote "$target" "$target_port" "$remote_command"; then
+  local mapped_target_host
+  mapped_target_host="$(mapped_execution_target_host)"
+  if [[ -n "$mapped_target_host" ]]; then
+    if ! run_remote "$target" "$target_port" "$remote_command" | sed -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
+      [[ ! -e "$remote_env" ]] || unlink "$remote_env"
+      return 1
+    fi
+  elif ! run_remote "$target" "$target_port" "$remote_command"; then
     [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
@@ -200,9 +315,12 @@ PY
     [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
+  local -a returned_environment
+  mapfile -t returned_environment < <(rewrite_returned_xds_url_to_execution_host "$runtime_env" "$target_ip")
   mv "$runtime_env" "$PIPELINE_ENV_FILE"
   [[ ! -e "$remote_env" ]] || unlink "$remote_env"
   printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
+  ((${#returned_environment[@]} == 0)) || printf '%s\n' "${returned_environment[@]}"
 }
 
 if [[ "$DEPLOY_ON_TARGET_HOST" != "1" ]]; then
