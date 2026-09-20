@@ -21,7 +21,30 @@ TARGET_RUN_DIR="${TARGET_RUN_DIR:-/tmp/op-test-pipeline/${PIPELINE_NAME}}"
 TARGET_RENDER_DIR="${TARGET_RENDER_DIR:-${TARGET_RUN_DIR}/rendered}"
 TARGET_PIPELINE_ENV_FILE="${TARGET_PIPELINE_ENV_FILE:-${TARGET_RUN_DIR}/pipeline.env}"
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-${RUN_DIR}/pipeline.env}"
+
+load_persisted_target_node_ip_map() {
+  local environment_file="$1"
+  [[ -f "$environment_file" ]] || return 0
+  python3 - "$environment_file" <<'PY'
+from pathlib import Path
+import shlex
+import sys
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if not line.startswith("export TARGET_NODE_IP_MAP="):
+        continue
+    values = shlex.split(line.split("=", 1)[1])
+    if len(values) != 1:
+        raise SystemExit("persisted TARGET_NODE_IP_MAP has an invalid shell value")
+    print(values[0])
+    break
+PY
+}
+
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
+if [[ -z "$TARGET_NODE_IP_MAP" ]]; then
+  TARGET_NODE_IP_MAP="$(load_persisted_target_node_ip_map "$PIPELINE_ENV_FILE")"
+fi
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 XDS_URL="${XDS_URL:-}"
 XDS_URL="${XDS_URL%/}"

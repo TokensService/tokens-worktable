@@ -44,6 +44,11 @@ cat >>"$TEST_SSH_STDIN"
 SH
 chmod +x "$work_dir/bin/sshpass" "$work_dir/bin/ssh"
 
+# Pipeline stages are separately invoked.  The deploy stage must recover the
+# target-node mapping persisted by rendering when the orchestrator does not
+# inject TARGET_NODE_IP_MAP again.
+printf 'export TARGET_NODE_IP_MAP=%q\n' '{"115.33.98.101:2226":"192.168.31.113"}' >"$work_dir/local.pipeline.env"
+
 PATH="$work_dir/bin:$PATH" \
 TEST_SSH_LOG="$work_dir/ssh.log" \
 TEST_SSH_STDIN="$work_dir/ssh.stdin" \
@@ -56,7 +61,6 @@ TARGET_RENDER_DIR="$work_dir/remote-render" \
 TARGET_PIPELINE_ENV_FILE="$work_dir/remote-run/pipeline.env" \
 PIPELINE_ENV_FILE="$work_dir/local.pipeline.env" \
 TARGET_HOSTS='[{"ip":"115.33.98.101:2226","user":"root","pass":"test-password"}]' \
-TARGET_NODE_IP_MAP='{"115.33.98.101:2226":"192.168.31.113"}' \
 bash "$script" >"$work_dir/output"
 
 grep -Fq 'root@115.33.98.101' "$work_dir/ssh.log"
