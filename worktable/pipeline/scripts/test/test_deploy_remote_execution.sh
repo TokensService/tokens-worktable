@@ -32,6 +32,14 @@ if [[ "$*" == *"cat "*"pipeline.env"* && "$*" != *"cat >"* ]]; then
   printf 'export MODEL_API=%q\n' 'http://192.168.31.113:31002/xds/v1/models/glm-5.3-nvfp4'
   exit 0
 fi
+if [[ "$*" == *"DEPLOY_ON_TARGET_HOST=1"* ]]; then
+  printf '%s\n' \
+    'XDS_URL=http://192.168.31.113:31002/xds/v1/chat/completions' \
+    'XDS_API_HOST=192.168.31.113' \
+    'SERVICE_API=http://192.168.31.113:31002/xds/v1' \
+    'MODEL_API=http://192.168.31.113:31002/xds/v1/models/glm-5.3-nvfp4'
+  exit 0
+fi
 cat >>"$TEST_SSH_STDIN"
 SH
 chmod +x "$work_dir/bin/sshpass" "$work_dir/bin/ssh"
@@ -65,6 +73,16 @@ grep -Fq 'test-password' "$work_dir/ssh.stdin"
 grep -Fq 'TARGET_NODE_IP_MAP' "$work_dir/ssh.stdin"
 grep -Fq 'DEPLOY_EXECUTION_HOST=115.33.98.101' "$work_dir/output"
 grep -Fxq 'XDS_URL=http://115.33.98.101:31002/xds/v1/chat/completions' "$work_dir/output"
+grep -Fxq 'XDS_API_HOST=115.33.98.101' "$work_dir/output"
+grep -Fxq 'SERVICE_API=http://115.33.98.101:31002/xds/v1' "$work_dir/output"
+grep -Fxq 'MODEL_API=http://115.33.98.101:31002/xds/v1/models/glm-5.3-nvfp4' "$work_dir/output"
+if grep -Fq '192.168.31.113:31002/xds/v1' "$work_dir/output"; then
+  echo 'mapped deployment must not return the Kubernetes InternalIP URLs' >&2
+  exit 1
+fi
 grep -Fxq 'export XDS_URL=http://115.33.98.101:31002/xds/v1/chat/completions' "$work_dir/local.pipeline.env"
+grep -Fxq 'export XDS_API_HOST=115.33.98.101' "$work_dir/local.pipeline.env"
+grep -Fxq 'export SERVICE_API=http://115.33.98.101:31002/xds/v1' "$work_dir/local.pipeline.env"
+grep -Fxq 'export MODEL_API=http://115.33.98.101:31002/xds/v1/models/glm-5.3-nvfp4' "$work_dir/local.pipeline.env"
 
 echo "deploy remote-execution tests passed"
