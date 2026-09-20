@@ -62,9 +62,10 @@ assert port_ranges[0][1] < port_ranges[1][0]
 ray_start_params = values["workerGroups"]["taskExecutorGroup-card"]["rayStartParams"]
 assert "min-worker-port" in ray_start_params
 assert "max-worker-port" in ray_start_params
-assert [group["containerEnvOverrides"]["NVIDIA_VISIBLE_DEVICES"] for group in groups] == [
-    "0,1,2,3", "4,5,6,7"
-]
+assert all(
+    "NVIDIA_VISIBLE_DEVICES" not in (group.get("containerEnvOverrides") or {})
+    for group in groups
+), groups
 PY
 
 echo "PASS: task executor probes use each group's dashboard agent port"

@@ -54,6 +54,7 @@ ARCH_NAME=ems-from-params \
 DEPLOY_IMAGE=registry.example.com/xds:test \
 TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root"}]' \
 MOCK_DB=false \
+ENABLE_LMCACHE_TRACING=false \
 bash "$ROOT/render-config.sh" >/dev/null
 
 python3 - "$WORK/run/rendered/values.rendered.yaml" <<'PY'
