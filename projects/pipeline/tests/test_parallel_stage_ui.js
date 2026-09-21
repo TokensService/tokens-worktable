@@ -45,6 +45,7 @@ function flowContext(stages){
     esc:String,
     flowStages:()=>stages,
     flowDraggable:()=>false,
+    plEditable:()=>true,   // 归属桩：编排渲染测试不涉及归属限制，按可编辑处理
     curPipeline:()=>({}),
     withPresetMarkers:x=>x,
     activeStages:()=>stages,
@@ -122,7 +123,7 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',async()=
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
     editStages:[stage], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null, scriptsDir:'/scripts',
-    currentUsername:'tester', plOwnerOf:()=>'',
+    currentUsername:'tester', plOwnerOf:()=>'', plEditable:()=>true,   // 归属桩：编辑器行为测试不涉及归属限制，按可编辑处理
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
     STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},
@@ -156,7 +157,7 @@ test('无效 parallel 值在编辑、保存和重新打开中保持串行',async
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
     editStages:[invalid], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null, scriptsDir:'/scripts',
-    currentUsername:'tester', plOwnerOf:()=>'',
+    currentUsername:'tester', plOwnerOf:()=>'', plEditable:()=>true,   // 归属桩：编辑器行为测试不涉及归属限制，按可编辑处理
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
     STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},

@@ -1,5 +1,21 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线仅限创建者编辑/删除，他人只读可复制副本（`projects/pipeline/pipeline.html`）：为防止多人
+  编辑同一条流水线的竞争，新增 `plEditable(p)` 归属判断，编辑器打开（`openPlForm` 只读置位与标题
+  标注「创建者 @xx·只读」）、保存兜底（`savePlForm`）、删除（`deletePipeline`）、任务列表行按钮
+  （`renderPipelines`：他人流水线显示「查看」并带创建者提示、不渲染「删除」；「复制」对所有行可用）、
+  主视图拖拽改序（`flowDraggable`/`persistFlowOrder`）与节点 title 均按此分流。行为矩阵：本人创建
+  →可编辑/可删除；他人创建→只读查看、可「复制」为自己的副本；未署名存量→全员可编辑、保存时按既有
+  逻辑补署创建者；auth 探测在途（新增 `authReady` 标志）对署名流水线保守只读，探测结束仍无登录用户
+  （token 共享模式/未装认证插件/探测失败）退化为全权；admin 无例外。`fillExecutorFromAuth` 无论成功/
+  失败/提前返回都在 finally 置位 `authReady` 并无条件重绘任务列表（原先仅「我的/仅看收藏」筛选时重绘，
+  行按钮文案依赖身份，探测到达后必须刷新）。新增 `projects/pipeline/tests/test_pipeline_owner_edit.js`
+  覆盖 `plEditable` 全分支、`openPlForm` 只读/可编辑行为、`savePlForm`/`deletePipeline` 拦截与
+  `authReady` 置位重绘；受影响既有测试补 `plEditable` 等价旧行为桩（`test_pipeline_readonly.js`、
+  `test_pipeline_audit_trail.js`、`test_pipeline_save_consistency.js`、`test_parallel_stage_ui.js`、
+  `test_pipeline_queue_counts.js`、`test_pipeline_row_run.js`、`test_pipeline_favorites.js`、
+  `test_pipeline_pin.js`、`test_pipeline_pagination.js`、`test_stage_insert_select.js`、`test_cleanup_flow.js`）。
+
 - 流水线编辑器保存改为只上传当前流水线（`projects/pipeline/pipeline.html`、`src/index.ts`）：
   在上一轮负载瘦身（baseConfig 仅 pipelines + 历史按签名按需携带，常规保存 70KB→17KB、慢链路
   ~19s→~4s）的基础上更进一步——新增服务端单条保存路由 `PUT /api/worktable/pipeline/save-one`，

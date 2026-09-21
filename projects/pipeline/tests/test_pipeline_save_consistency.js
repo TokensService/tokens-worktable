@@ -38,6 +38,7 @@ function saveFixture(saveResult) {
     $: id => els[id] || null,
     findPipeline: id => ctx.pipelines.find(item => item.id === id),
     pipelines: [oldPipeline], currentUsername: 'alice',
+    plEditable: pipeline => !pipeline || !pipeline.builtIn,   // 归属桩：等价「仅内置只读」旧行为
     stageIdFor: () => 'new', collectPipelineDefaultForm: () => ({ branch: 'main' }),
     saveScriptsDir: () => {},
     pushPipelineOne: id => { calls.one = id; return pending; },
