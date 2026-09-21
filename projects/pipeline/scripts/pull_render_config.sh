@@ -127,11 +127,11 @@ LMCACHE_L2_BASE_PATH="${LMCACHE_L2_BASE_PATH:-}"
 LMCACHE_L2_MAX_CAPACITY_GB="${LMCACHE_L2_MAX_CAPACITY_GB:-10240}"
 LMCACHE_L2_NUM_WORKERS="${LMCACHE_L2_NUM_WORKERS:-64}"
 # Platform inputs consumed by render-config.sh: the LMCache sidecar
-# switch (default off), the sidecar OTLP tracing switch (default on), and
-# its endpoint. An empty endpoint disables the tracing patch as well.
+# switch (default off) and the OTLP endpoint (non-empty enables sidecar
+# tracing; empty disables it).
 ENABLE_LMCACHE="${ENABLE_LMCACHE:-false}"
-ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING:-true}"
-LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.10.6:4320}"
+# 注意用 -（非 :-）：显式置空表示关闭 tracing，不能被默认值覆盖。
+LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT-http://192.168.10.6:4320}"
 # Registry credentials are supplied at invocation time. Keep them in the
 # process environment for pull-image.sh only; do not serialize them into either
 # pipeline environment file.
@@ -218,7 +218,7 @@ export IMAGE_NAME ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME 
   XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
   LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
   LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-  ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT \
+  ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT \
   AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY
 
 write_pipeline_env() {
@@ -238,7 +238,7 @@ write_pipeline_env() {
         XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
         LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
         LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-        ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT; do
+        ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT; do
         printf 'export %s=%q\n' "$variable" "${!variable}"
       done
     } >"$PIPELINE_ENV_FILE"
@@ -276,7 +276,7 @@ write_target_pipeline_env() {
         XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
         LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
         LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-        ENABLE_LMCACHE ENABLE_LMCACHE_TRACING LMCACHE_OTLP_ENDPOINT; do
+        ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT; do
         printf 'export %s=%q\n' "$variable" "${!variable}"
       done
     } >"${RUN_DIR}/.target.pipeline.env"

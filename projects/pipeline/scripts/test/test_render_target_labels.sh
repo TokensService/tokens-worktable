@@ -127,6 +127,8 @@ lmcacheSidecar:
   enabled: {LMCACHE_SIDECAR_ENABLED}
   logLevel: {LMCACHE_LOG_LEVEL}
   l2Enabled: {LMCACHE_L2_ENABLED}
+  tracing:
+    otlpEndpoint: {LMCACHE_OTLP_ENDPOINT}
   mpPortBase: 5555
   httpPortBase: 5565
   l1InitSizeGb: 20
@@ -321,12 +323,77 @@ sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is True, sidecar
 assert sidecar["logLevel"] == "DEBUG", sidecar
 assert sidecar["l2Enabled"] is False, sidecar
+assert "enabled" not in sidecar["tracing"], sidecar
+assert sidecar["tracing"]["otlpEndpoint"] == "http://192.168.10.6:4320", sidecar
 PY
 
-# sidecar 启用时 tracing patch 注入在 lmcache args 锚点之前。
+# sidecar 启用时 tracing patch 注入在 lmcache args 锚点之前（旧式 chart，无原生 tracing）。
 rendered_chart_override="$work_dir/run-lmcache-override/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq -- '--enable-tracing \' "$rendered_chart_override"
 grep -Fq -- '--otlp-endpoint http://192.168.10.6:4320 \' "$rendered_chart_override"
+
+# 新式 chart：模板已原生携带 tracing 条件块（lmcacheSidecar.tracing.*），
+# 渲染后 patch 必须跳过且不重复注入。
+mkdir -p "$work_dir/chart-native/templates"
+printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart-native/Chart.yaml"
+cat >"$work_dir/chart-native/templates/raycluster-cluster.yaml" <<'EOF'
+groupName: {{ $teGroupValues.name }}
+groupName: {{ $groupName }}
+{{- $lmcache := $.Values.lmcacheSidecar | default dict }}
+{{- $lmcacheTracing := $lmcache.tracing | default dict }}
+{{- $lmcacheTracingEnabled := ne ($lmcacheTracing.otlpEndpoint | default "") "" }}
+{{- if $lmcache.enabled }}
+- name: lmcache-sidecar
+  args:
+    {{- if $isLmcacheL2 }}
+                  --l2-store-policy default --l2-adapter "$l2_adapter_json" \
+    {{- end }}
+    {{- if $lmcacheTracingEnabled }}
+                  --enable-tracing \
+                  --otlp-endpoint {{ $lmcacheTracing.otlpEndpoint }}
+    {{- end }}
+{{- end }}
+EOF
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-native-chart" \
+CHART_TEMPLATE_DIR="$work_dir/chart-native" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-native-chart' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/native-chart.out" 2>&1
+native_rendered="$work_dir/run-native-chart/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+[[ $(grep -Fc -- '--enable-tracing' "$native_rendered") -eq 1 ]] || { echo 'native chart 不应重复注入 tracing' >&2; exit 1; }
+grep -Fq 'LMCACHE_OTLP_PATCH_SKIPPED=chart template already carries tracing args' "$work_dir/native-chart.out"
+grep -Fq -- '--otlp-endpoint {{ $lmcacheTracing.otlpEndpoint }}' "$native_rendered"
+
+# endpoint 置空 = 关闭 tracing：旧式 chart 不注入 patch，原生模板条件块也不生效。
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-no-otlp" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-no-otlp' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+LMCACHE_OTLP_ENDPOINT='' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/no-otlp.out" 2>&1
+if grep -Fq -- '--enable-tracing' "$work_dir/run-lmcache-no-otlp/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
+  echo "endpoint 置空时不应注入 tracing patch" >&2
+  exit 1
+fi
+python3 - "$work_dir/run-lmcache-no-otlp/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+assert values["lmcacheSidecar"]["tracing"]["otlpEndpoint"] in ("", None), values["lmcacheSidecar"]["tracing"]
+PY
 
 # 回归：旧 chart 无 LMCache 锚点 + sidecar 未启用（非 LMCache arch）→ 渲染成功且不 patch。
 mkdir -p "$work_dir/chart-legacy/templates"
