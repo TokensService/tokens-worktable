@@ -131,7 +131,7 @@ LMCACHE_L2_NUM_WORKERS="${LMCACHE_L2_NUM_WORKERS:-64}"
 # its endpoint. An empty endpoint disables the tracing patch as well.
 ENABLE_LMCACHE="${ENABLE_LMCACHE:-false}"
 ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING:-true}"
-LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.0.102:4320}"
+LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.10.6:4320}"
 # Registry credentials are supplied at invocation time. Keep them in the
 # process environment for pull-image.sh only; do not serialize them into either
 # pipeline environment file.

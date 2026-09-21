@@ -326,7 +326,7 @@ PY
 # sidecar 启用时 tracing patch 注入在 lmcache args 锚点之前。
 rendered_chart_override="$work_dir/run-lmcache-override/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq -- '--enable-tracing \' "$rendered_chart_override"
-grep -Fq -- '--otlp-endpoint http://192.168.0.102:4320 \' "$rendered_chart_override"
+grep -Fq -- '--otlp-endpoint http://192.168.10.6:4320 \' "$rendered_chart_override"
 
 # 回归：旧 chart 无 LMCache 锚点 + sidecar 未启用（非 LMCache arch）→ 渲染成功且不 patch。
 mkdir -p "$work_dir/chart-legacy/templates"
