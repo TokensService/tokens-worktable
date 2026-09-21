@@ -1,5 +1,20 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线编辑器保存改为只上传当前流水线（`projects/pipeline/pipeline.html`、`src/index.ts`）：
+  在上一轮负载瘦身（baseConfig 仅 pipelines + 历史按签名按需携带，常规保存 70KB→17KB、慢链路
+  ~19s→~4s）的基础上更进一步——新增服务端单条保存路由 `PUT /api/worktable/pipeline/save-one`，
+  负载只有当前编辑的流水线 + 该条基线 + scriptsDir（约 1-2KB），慢上行链路保存进入秒级以内；
+  同时编辑器保存不再把 Jenkins/EvalTokens/普罗/环境等其他配置字段卷入 last-wins 覆盖（此前整表
+  PUT 会用本页旧快照覆盖他端对这些字段的并发修改）。服务端 `mergePipelineOneForWrite` 按 id 做
+  三方合并：磁盘上的该条仍等于客户端基线才原位替换（新建追加末尾），他端已修改/删除同一条即
+  409 冲突，页面走既有回滚与提示路径；路由不触碰历史与其他配置字段（磁盘历史原样保留）。
+  客户端 `pushPipelineOne` 与 pushState 共用 persistInFlight 串行锁（基线快照等锁到手后再取），
+  响应沿用 reconcilePipelinesAfterSave 把他端新增合回本页；旧服务端无此路由（404）时自动回退
+  瘦身全量保存，新旧页面/服务端任意组合兼容。测试：`tests/pipeline-config-concurrency.test.mjs`
+  新增单条合并四组回归（原位替换/追加/修改与删除冲突/路由不碰历史），
+  `projects/pipeline/tests/test_pipeline_save_consistency.js` 新增 pushPipelineOne 负载形状、
+  404 回退、409 形状、他端新增合入与缺条不发请求五组页面回归。
+
 - 修复流水线编辑器「保存」长时间停留在「保存中…」（公网映射等慢上行链路下 10 秒级）的问题
   （`projects/pipeline/pipeline.html`）：显式保存须等服务端确认（并发三方合并，见既有
   test_pipeline_save_consistency.js），但确认请求此前携带全量负载——完整 config + 完整 baseConfig

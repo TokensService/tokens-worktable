@@ -340,6 +340,26 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
   return { config, conflicts }
 }
 
+/**
+ * 编辑器单条保存的三方合并：只按 id 比对该条定义——磁盘上的该条仍等于客户端基线时
+ * 才允许替换（原位）或新增（追加末尾），其余流水线定义、顺序、历史与其他配置字段一律不动；
+ * 磁盘版本已偏离基线（含被他端删除）即报告冲突，调用方不得写盘。
+ */
+function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskConfig: any) {
+  const disk = diskConfig && typeof diskConfig === 'object' && !Array.isArray(diskConfig) ? diskConfig : {}
+  const diskPipelines = Array.isArray(disk.pipelines) ? disk.pipelines : []
+  const id = clientPipeline && typeof clientPipeline.id === 'string' ? clientPipeline.id : ''
+  const diskOne = diskPipelines.find((p: any) => p && typeof p === 'object' && !Array.isArray(p) && p.id === id) ?? null
+  const baseOne = basePipeline && typeof basePipeline === 'object' && !Array.isArray(basePipeline) && basePipeline.id === id ? basePipeline : null
+  if (JSON.stringify(diskOne) !== JSON.stringify(baseOne)) {
+    return { conflicts: id ? [id] : [], config: disk }
+  }
+  const config = { ...disk }
+  if (diskOne) config.pipelines = diskPipelines.map((p: any) => (p && p.id === id ? clientPipeline : p))
+  else config.pipelines = diskPipelines.concat([clientPipeline])
+  return { conflicts: [] as string[], config }
+}
+
 /** 旧页面未携带共同基线时只能判断定义是否不同；不同即拒绝，不能让旧协议绕过并发保护。 */
 function pipelineConfigDifferenceIds(clientConfig: any, diskConfig: any) {
   const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
@@ -2102,6 +2122,46 @@ export function apply(ctx: Context) {
           return
         }
         res.writeHead(405); res.end()
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 流水线编辑器单条保存：只上传当前编辑的流水线（约 KB 级；全量 PUT 在慢上行链路需 10 秒级），
+  // 按 id 三方合并（mergePipelineOneForWrite）——磁盘上的该条仍是客户端基线才写回，否则 409；
+  // 不触碰历史与其他配置字段，也不存在整表快照的删除语义。旧服务端无此路由（404），页面回退全量保存。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/save-one',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'PUT' && req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const pipeline = body.pipeline && typeof body.pipeline === 'object' && !Array.isArray(body.pipeline) ? body.pipeline : null
+        const id = pipeline && typeof pipeline.id === 'string' && pipeline.id && pipeline.id.length <= 128 ? pipeline.id : ''
+        if (!pipeline || !id) { json(res, 400, { error: 'invalid pipeline' }); return }
+        if (JSON.stringify(pipeline).length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
+        const basePipeline = body.basePipeline && typeof body.basePipeline === 'object' && !Array.isArray(body.basePipeline) ? body.basePipeline : null
+        const scriptsDir = typeof body.scriptsDir === 'string' && body.scriptsDir.trim() ? body.scriptsDir.trim().slice(0, 512) : ''
+        const outcome = await withStoreLock(async () => {
+          const disk = await readPipelineStore()
+          const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
+          const merged = mergePipelineOneForWrite(pipeline, basePipeline, diskCfg)
+          if (merged.conflicts.length) return { conflicts: merged.conflicts, config: diskCfg }
+          const config = merged.config
+          if (scriptsDir) config.scriptsDir = scriptsDir
+          /* 历史原样保留（客户端未上报即不动；serializePipelineStore 仅做 20MB 上限裁剪） */
+          const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
+          const text = serializePipelineStore(config, diskHistory)
+          await writeJsonAtomic(PIPELINE_STORE, text)
+          return { conflicts: [] as string[], config }
+        })
+        if (outcome.conflicts.length) {
+          json(res, 409, { error: 'pipeline config conflict', conflicts: outcome.conflicts, config: outcome.config })
+          return
+        }
+        json(res, 200, { ok: true, config: outcome.config })
       } catch (err) {
         json(res, 500, { error: String(err) })
       }

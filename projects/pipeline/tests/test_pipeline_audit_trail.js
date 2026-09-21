@@ -36,6 +36,7 @@ function loadSavePlForm({editId,pipeline,username}){
     stageIdFor:()=>'',
     collectPipelineDefaultForm:()=>({}),
     saveScriptsDir:()=>{},
+    pushPipelineOne:()=>{ saved.push(1); },
     savePipelines:()=>{ saved.push(1); },
     clearPlDraft:()=>{},
     running:false,

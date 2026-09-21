@@ -1096,6 +1096,49 @@ async function pushState(){
     releasePersist();
   }
 }
+/* 编辑器单条保存：只上传当前编辑的流水线（约 KB 级，慢上行链路秒级以内；全量 PUT 曾需 10 秒级），
+   服务端按 id 三方合并（mergePipelineOneForWrite），不触碰历史与其他配置字段。
+   与 pushState 共用 persistInFlight 串行锁——基线快照必须等锁到手后再取（等待期间前序保存确认的
+   新基线才是本条合并的共同基线）。旧服务端无此路由（404）时返回 unsupported，由调用方回退全量保存。 */
+async function pushPipelineOne(pipelineId){
+  while(persistInFlight) await persistInFlight;
+  let releaseOne;
+  persistInFlight=new Promise(resolve=>{ releaseOne=resolve; });
+  try{
+  const edited=findPipeline(pipelineId);
+  if(!edited) return {ok:false,error:'流水线已不在本页列表中（可能被其他浏览器删除），请刷新后重试'};
+  const pipelineSnap=JSON.parse(JSON.stringify(edited));
+  const localSnap=JSON.parse(JSON.stringify(pipelines));   // 响应合入时的本页快照（reconcilePipelinesAfterSave 语义同 pushState）
+  const baseList=(typeof serverConfigBase!=='undefined'&&serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+  const baseOne=baseList.find(p=>p&&p.id===pipelineId)||null;
+  try{
+    const payload={pipeline:pipelineSnap, basePipeline:baseOne, scriptsDir};
+    /* 看门狗与 pushState 同理：黑洞链路 60 秒中止，防串行锁被卡死 */
+    const abortCtrl=new AbortController(); const abortTimer=setTimeout(()=>abortCtrl.abort(),60000);
+    let r;
+    try{ r=await fetch('/api/worktable/pipeline/save-one',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:abortCtrl.signal}); }
+    catch(e){ if(e&&e.name==='AbortError') return {ok:false,error:'保存请求超过 60 秒无响应，已中止；请检查网络后重试（编辑内容仍保留）'}; throw e; }
+    finally{ clearTimeout(abortTimer); }
+    if(r.status===404) return {ok:false, unsupported:true};
+    let body={}; try{ body=await r.json(); }catch(e){}
+    if(!r.ok){
+      return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
+    }
+    if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
+      serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
+        pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
+          .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+        try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
+      }
+    }
+    return {ok:true,config:body.config||{}};
+  }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
+  }finally{
+    persistInFlight=null;
+    releaseOne();
+  }
+}
 async function loadServerState(){
   let st=null;
   try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
@@ -7769,7 +7812,11 @@ async function savePlForm(){
   const saveSlowTip=$('plDraftTip');
   const saveSlowTimer=setTimeout(()=>{ if(saveSlowTip){ saveSlowTip.textContent='网络较慢，仍在保存，请勿刷新或关闭页面…'; saveSlowTip.style.color='var(--log-warn)'; } },4000);
   let saved;
-  try{ saved=await savePipelines({immediate:true}); }
+  /* 单条保存：只上传当前流水线（KB 级）；旧服务端无单条路由（unsupported/404）回退瘦身全量保存 */
+  try{
+    saved=await pushPipelineOne(savedPipelineId);
+    if(saved && saved.unsupported) saved=await savePipelines({immediate:true});
+  }
   catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
   finally{
     clearTimeout(saveSlowTimer);

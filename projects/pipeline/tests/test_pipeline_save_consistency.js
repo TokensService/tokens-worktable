@@ -19,9 +19,10 @@ function extractFunction(name) {
 
 function saveFixture(saveResult) {
   const oldPipeline = { id: 'p1', name: '旧名称', builtIn: false, stages: [{ id: 'old', name: '旧阶段' }] };
-  let resolveSave;
+  let resolveSave, resolveFull;
   const pending = saveResult || new Promise(resolve => { resolveSave = resolve; });
-  const alerts = [], calls = { clear: 0, render: 0, select: 0, immediate: null }, timers = [];
+  const fullPending = new Promise(resolve => { resolveFull = resolve; });
+  const alerts = [], calls = { clear: 0, render: 0, select: 0, one: null, full: null }, timers = [];
   const els = {
     plForm: { style: { display: 'flex' }, dataset: { editId: 'p1' }, inert: false },
     plName: { value: '新名称' },
@@ -39,7 +40,8 @@ function saveFixture(saveResult) {
     pipelines: [oldPipeline], currentUsername: 'alice',
     stageIdFor: () => 'new', collectPipelineDefaultForm: () => ({ branch: 'main' }),
     saveScriptsDir: () => {},
-    savePipelines: options => { calls.immediate = options; return pending; },
+    pushPipelineOne: id => { calls.one = id; return pending; },
+    savePipelines: options => { calls.full = options; return fullPending; },
     clearPlDraft: () => { calls.clear += 1; },
     running: false, curPipelineId: 'p1',
     selectPipeline: () => { calls.select += 1; }, renderPipelines: () => { calls.render += 1; },
@@ -49,14 +51,15 @@ function saveFixture(saveResult) {
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('savePlForm'), ctx);
-  return { ctx, els, alerts, calls, oldPipeline, resolveSave, timers };
+  return { ctx, els, alerts, calls, oldPipeline, resolveSave, resolveFull, timers };
 }
 
 test('点击保存立即走服务端确认，确认前不关闭编辑框也不清草稿', async () => {
   const f = saveFixture();
   const saving = f.ctx.savePlForm();
 
-  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.immediate)), { immediate: true });
+  assert.equal(f.calls.one, 'p1', '优先走单条保存：只上传当前流水线');
+  assert.equal(f.calls.full, null, '单条保存可用时不触发全量保存');
   assert.equal(f.els.plForm.style.display, 'flex');
   assert.equal(f.calls.clear, 0);
   assert.equal(f.els.plSave.disabled, true);
@@ -71,6 +74,21 @@ test('点击保存立即走服务端确认，确认前不关闭编辑框也不�
   assert.equal(f.els.plSave.disabled, false);
   assert.equal(f.els.plSave.textContent, '保存');
   assert.equal(f.els.plForm.inert, false);
+})
+
+test('旧服务端无单条路由（unsupported）时回退全量保存并正常收尾', async () => {
+  const f = saveFixture();
+  const saving = f.ctx.savePlForm();
+
+  f.resolveSave({ ok: false, unsupported: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.full)), { immediate: true }, '单条不支持时回退瘦身全量保存');
+
+  f.resolveFull({ ok: true });
+  await saving;
+
+  assert.equal(f.els.plForm.style.display, 'none');
+  assert.equal(f.calls.clear, 1);
 })
 
 test('保存超过 4 秒在底栏提示仍在保存请勿刷新，结束后清除提示', async () => {
@@ -275,4 +293,89 @@ test('同一页面的重叠保存串行提交，后一次使用前一次确认�
   const secondBody = JSON.parse(f.requests[1].options.body);
   assert.equal(secondBody.baseConfig.pipelines[0].name, '本页修改');
   assert.equal(secondBody.config.pipelines[0].name, '第二次');
+})
+
+function oneFixture(response) {
+  const requests = [];
+  const timers = [];
+  const edited = { id: 'p1', name: '编辑后', stages: [{ id: 's1' }] };
+  const other = { id: 'p2', name: '其他', stages: [] };
+  const ctx = {
+    persistInFlight: null,
+    serverConfigBase: { pipelines: [{ id: 'p1', name: '编辑前', stages: [{ id: 's1' }] }, other], buildNo: 3 },
+    scriptsDir: '/srv/scripts',
+    pipelines: [JSON.parse(JSON.stringify(edited)), other],
+    findPipeline: id => ctx.pipelines.find(item => item.id === id),
+    localStorage: { setItem() {} },
+    migrateGate: value => value,
+    migrateStageUrl: value => value,
+    migratePrefillDefaults: value => value,
+    migratePipelineDefaults: value => value,
+    migratePromPreset: value => value,
+    fetch: async (url, options) => { requests.push({ url, options }); return response; },
+    AbortController,
+    setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
+    clearTimeout: timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('reconcilePipelinesAfterSave') + '\n' + extractFunction('pushPipelineOne'), ctx);
+  return { ctx, requests, edited, other, timers };
+}
+
+test('单条保存只上传当前流水线与该条基线，响应把其他浏览器新增的流水线合回本页', async () => {
+  const merged = {
+    pipelines: [
+      { id: 'p1', name: '编辑后', stages: [{ id: 's1' }] },
+      { id: 'p2', name: '其他', stages: [] },
+      { id: 'p3', name: '他端新增', stages: [] },
+    ],
+    buildNo: 3,
+  };
+  const f = oneFixture({ ok: true, status: 200, json: async () => ({ ok: true, config: merged }) });
+
+  const result = await f.ctx.pushPipelineOne('p1');
+
+  assert.equal(result.ok, true);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].url, '/api/worktable/pipeline/save-one');
+  assert.equal(f.requests[0].options.method, 'PUT');
+  const body = JSON.parse(f.requests[0].options.body);
+  assert.deepEqual(body.pipeline, f.edited, '负载只含当前流水线，不带整表与历史');
+  assert.deepEqual(body.basePipeline, { id: 'p1', name: '编辑前', stages: [{ id: 's1' }] });
+  assert.equal(body.scriptsDir, '/srv/scripts');
+  assert.deepEqual(Array.from(f.ctx.pipelines, item => item.id), ['p1', 'p2', 'p3']);
+  assert.equal(f.ctx.serverConfigBase.pipelines.length, 3, '基线前移到服务端确认版');
+  assert.equal(f.ctx.persistInFlight, null, '串行锁已释放');
+})
+
+test('单条保存 404（旧服务端无此路由）返回 unsupported 供调用方回退全量保存', async () => {
+  const f = oneFixture({ ok: false, status: 404, json: async () => ({}) });
+
+  const result = await f.ctx.pushPipelineOne('p1');
+
+  assert.equal(result.ok, false);
+  assert.equal(result.unsupported, true);
+  assert.equal(f.ctx.persistInFlight, null);
+})
+
+test('单条保存 409 冲突按既有形状返回，交给编辑器既有回滚路径', async () => {
+  const f = oneFixture({
+    ok: false, status: 409,
+    json: async () => ({ error: 'pipeline config conflict', conflicts: ['p1'] }),
+  });
+
+  const result = await f.ctx.pushPipelineOne('p1');
+
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: false, conflict: true, conflicts: ['p1'], error: 'pipeline config conflict' });
+})
+
+test('本页列表已没有该流水线时不发请求并返回明确错误', async () => {
+  const f = oneFixture({ ok: true, status: 200, json: async () => ({}) });
+
+  const result = await f.ctx.pushPipelineOne('p-x');
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /已不在本页列表/);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.ctx.persistInFlight, null);
 })
