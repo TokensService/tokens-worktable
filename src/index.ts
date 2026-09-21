@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { createReadStream, readdirSync, realpathSync } from 'node:fs'
-import { readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
+import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -48,6 +48,90 @@ function recordVersionInstall(history: VersionInstall[], version: string, now: n
   return [...history, { version, at: now }].slice(-VERSION_HISTORY_CAP)
 }
 /* ---------- 版本安装历史结束 ---------- */
+
+/* ---------- 用户使用统计 ---------- */
+/** 单条使用事件：user 为登录用户名（空串 = 匿名 / 未装认证插件），kind 为事件类型
+ *  （visit / open，小写标识符，留扩展），detail 为附加信息（open 时为项目 id），
+ *  at 为服务端接收时间戳（ms，不信客户端时钟）。 */
+type UsageEvent = { user: string; kind: string; detail: string; at: number }
+/** kind 形态白名单：小写字母开头的小写标识符（visit / open / ...，最长 32）。 */
+const USAGE_KIND_RE = /^[a-z][a-z0-9_-]{0,31}$/
+/** 清洗上报体为使用事件：body 必须是对象，kind 必须符合 USAGE_KIND_RE；user 裁剪空白截到 64 字符
+ *  （缺省/非字符串 = 匿名空串），detail 裁剪空白截到 200 字符；at 恒取服务端 now。不合格返回 null。 */
+function sanitizeUsageEvent(body: any, now: number): UsageEvent | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  const kind = typeof body.kind === 'string' ? body.kind.trim() : ''
+  if (!USAGE_KIND_RE.test(kind)) return null
+  const user = typeof body.user === 'string' ? body.user.trim().slice(0, 64) : ''
+  const detail = typeof body.detail === 'string' ? body.detail.trim().slice(0, 200) : ''
+  return { user, kind, detail, at: now }
+}
+/** JSONL 存储解析：逐行 JSON.parse，坏行跳过；字段按 sanitize 同规则校验
+ *  （user 字符串可空、kind 合法、detail 可缺省、at 有限数值），user/detail 同样截断。 */
+function parseUsageEvents(text: string): UsageEvent[] {
+  const out: UsageEvent[] = []
+  for (const line of String(text || '').split('\n')) {
+    const s = line.trim()
+    if (!s) continue
+    let e: any = null
+    try { e = JSON.parse(s) } catch { continue }
+    if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+    const kind = typeof e.kind === 'string' ? e.kind : ''
+    const at = typeof e.at === 'number' ? e.at : NaN
+    if (!USAGE_KIND_RE.test(kind) || !Number.isFinite(at)) continue
+    out.push({
+      user: typeof e.user === 'string' ? e.user.trim().slice(0, 64) : '',
+      kind,
+      detail: typeof e.detail === 'string' ? e.detail.trim().slice(0, 200) : '',
+      at,
+    })
+  }
+  return out
+}
+/** 聚合使用事件（输入任意顺序也正确，内部先按 at 排序分桶）：
+ *  total = 事件总数；users = 每用户统计（visits / opens 按 kind 计数，days = 有事件的本地日历日数，
+ *  按 events 降序、并列按 lastAt 降序）；daily = 最近 30 个本地日历日
+ *  [{day: 'YYYY-MM-DD', events, users: 当日去重用户数}]，按日期升序、无事件的日补零；
+ *  recent = 最新 30 条事件（新→旧）。 */
+function aggregateUsageEvents(events: UsageEvent[], now: number) {
+  const list = [...events].sort((a, b) => a.at - b.at)
+  const p = (n: number) => String(n).padStart(2, '0')
+  const dayOf = (at: number) => { const d = new Date(at); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) }
+  const byUser = new Map<string, { user: string; events: number; visits: number; opens: number; days: Set<string>; firstAt: number; lastAt: number }>()
+  const byDay = new Map<string, { events: number; users: Set<string> }>()
+  for (const e of list) {
+    const u = byUser.get(e.user) ?? { user: e.user, events: 0, visits: 0, opens: 0, days: new Set<string>(), firstAt: e.at, lastAt: e.at }
+    u.events += 1
+    if (e.kind === 'visit') u.visits += 1
+    if (e.kind === 'open') u.opens += 1
+    u.days.add(dayOf(e.at))
+    if (e.at < u.firstAt) u.firstAt = e.at
+    if (e.at > u.lastAt) u.lastAt = e.at
+    byUser.set(e.user, u)
+    const day = dayOf(e.at)
+    const d = byDay.get(day) ?? { events: 0, users: new Set<string>() }
+    d.events += 1
+    d.users.add(e.user)
+    byDay.set(day, d)
+  }
+  // 最近 30 个本地日历日（含今天，逐日回推，自动跨月/跨年；setDate 递减对夏令时切换也安全）
+  const days: string[] = []
+  const cursor = new Date(now)
+  for (let i = 0; i < 30; i += 1) {
+    days.unshift(dayOf(cursor.getTime()))
+    cursor.setDate(cursor.getDate() - 1)
+  }
+  const daily = days.map((day) => {
+    const d = byDay.get(day)
+    return { day, events: d ? d.events : 0, users: d ? d.users.size : 0 }
+  })
+  const users = [...byUser.values()]
+    .map((u) => ({ user: u.user, events: u.events, visits: u.visits, opens: u.opens, days: u.days.size, firstAt: u.firstAt, lastAt: u.lastAt }))
+    .sort((a, b) => (b.events - a.events) || (b.lastAt - a.lastAt))
+  const recent = list.slice(-30).reverse()
+  return { total: list.length, users, daily, recent }
+}
+/* ---------- 用户使用统计结束 ---------- */
 
 export const name = 'tokens-worktable'
 export const inject = ['webServer', 'sessions']
@@ -1884,6 +1968,58 @@ export function apply(ctx: Context) {
         // 启动记录在途或写入失败时也保证当前版本出现在末位
         const history = recordVersionInstall(base, PLUGIN_VERSION, Date.now()) ?? base
         json(res, 200, { version: PLUGIN_VERSION, history })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 用户使用统计：客户端上报 visit/open 事件，JSONL 追加落盘（串行写链防并发互踩）；
+  // 文件超 4MB 时保留尾部约 2MB 的完整行原子重写。统计查询全量读文件即时聚合。
+  const USAGE_FILE = pathResolve(DSH_HOME, 'storages', 'worktable-usage.jsonl')
+  const USAGE_BODY_LIMIT = 16 * 1024
+  let usageWriteChain: Promise<void> = Promise.resolve()
+  const appendUsageEvent = (ev: UsageEvent): Promise<void> => {
+    const p = usageWriteChain.then(async () => {
+      await fsMkdir(dirname(USAGE_FILE), { recursive: true })
+      await fsAppendFile(USAGE_FILE, JSON.stringify(ev) + '\n', 'utf8')
+      const st = await fsStat(USAGE_FILE)
+      if (st.size > 4 * 1024 * 1024) {
+        // 截尾：从尾部约 2MB 处的换行边界起保留完整行，临时文件 + rename 原子重写
+        const raw = await readFile(USAGE_FILE, 'utf8')
+        let tail = raw.slice(Math.max(0, raw.length - 2 * 1024 * 1024))
+        const firstNewline = tail.indexOf('\n')
+        if (firstNewline >= 0) tail = tail.slice(firstNewline + 1)
+        await writeJsonAtomic(USAGE_FILE, tail)
+      }
+    })
+    usageWriteChain = p.then(() => undefined, () => undefined)
+    return p
+  }
+
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/usage',
+    handler: async (req: any, res: any) => {
+      if (req.method === 'POST') {
+        try {
+          const contentLength = Number(req.headers?.['content-length'])
+          if (Number.isFinite(contentLength) && contentLength > USAGE_BODY_LIMIT) { json(res, 413, { error: 'request body too large' }); return }
+          const ev = sanitizeUsageEvent(await readJsonBody(req), Date.now())
+          if (!ev) { json(res, 400, { error: 'invalid usage event' }); return }
+          // 不等落盘即回执；写失败仅记日志，绝不影响请求
+          void appendUsageEvent(ev).catch((err) => ctx.logger?.warn('[tokens-worktable] 使用统计写入失败: ' + String(err)))
+          json(res, 200, { ok: true })
+        } catch (err) {
+          json(res, 500, { error: String(err) })
+        }
+        return
+      }
+      if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+      try {
+        let raw = ''
+        try { raw = await readFile(USAGE_FILE, 'utf8') } catch (err: any) { if (err?.code !== 'ENOENT') throw err } // 无文件 = 尚无记录
+        json(res, 200, { ok: true, ...aggregateUsageEvents(parseUsageEvents(raw), Date.now()) })
       } catch (err) {
         json(res, 500, { error: String(err) })
       }
