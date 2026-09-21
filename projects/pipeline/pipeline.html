@@ -159,7 +159,7 @@
       <span class="dshell-muted" style="display:flex;align-items:center;gap:5px;" title="执行人取当前登录用户（dsh-auth-gate /auth/status）">执行人
         <span id="triggeredBy" style="font-weight:600;">未登录</span>
       </span>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">主题
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;white-space:nowrap;">主题
         <select id="theme" class="dshell-input" style="min-width:104px;">
           <option value="light">浅色</option>
           <option value="dark">深色</option>
@@ -4708,9 +4708,10 @@ function createParallelStageContext(parent,index,varsSnapshot){
   child.parallelPromise=new Promise(resolve=>{ child.parallelResolve=resolve; });
   return child;
 }
-function cancelParallelStage(child,reason){
+function cancelParallelStage(child,reason,cascade){
   if(!child || !child.parallelParent || child.parallelSettled) return;
   child.over=true;
+  if(cascade) child._cascadeAbort=true;   // 兄弟阶段失败导致的级联中止：非用户终止，各阶段 finally 据此保留已启动的外部任务（EvalTokens run 不 stop）
   if(child.scriptAbort){ try{ child.scriptAbort.abort(); }catch(e){} }
   if(child.timer){ clearInterval(child.timer); child.timer=null; }
   const stage=child.stages[child.parallelIndex], node=stage&&child.nodes[stage.id];
@@ -4720,10 +4721,10 @@ function cancelParallelStage(child,reason){
   }
   settleParallelStage(child,reason||'aborted');
 }
-function cancelParallelGroup(parent,exceptChild){
+function cancelParallelGroup(parent,exceptChild,cascade){
   const active=parent&&parent.parallelGroup;
   if(!active) return;
-  active.children.forEach(child=>{ if(child!==exceptChild) cancelParallelStage(child,'aborted'); });
+  active.children.forEach(child=>{ if(child!==exceptChild) cancelParallelStage(child,'aborted',cascade); });
 }
 function disposeRunForReset(rc){
   if(!rc) return;
@@ -4742,7 +4743,7 @@ function settleParallelStage(child,status){
     if(stage) stage._promT1=Date.now();
   }
   const parent=child.parallelParent, active=parent.parallelGroup;
-  if(status==='failed' && active && active.children.indexOf(child)>=0 && !active.failed){ active.failed=true; cancelParallelGroup(parent,child); }
+  if(status==='failed' && active && active.children.indexOf(child)>=0 && !active.failed){ active.failed=true; cancelParallelGroup(parent,child,true); }   // 级联中止（兄弟失败）：仅收编编排，兄弟阶段已启动的外部任务保留（与用户主动中止区分）
   if(child.parallelResolve) child.parallelResolve(status);
 }
 function runParallelStageGroup(parent,group){
@@ -5974,11 +5975,17 @@ async function runEvaltokensStep(rc, i){
     if(startAbortTimer!==null) clearTimeout(startAbortTimer);
     if(!startCtrl.signal.aborted) startCtrl.abort();
     if(ctrl.signal.aborted&&externalRunActive&&service&&waitingRunId){
-      try{ await evaltokStopRun(service,waitingRunId); appendLiveLog(log,'# stopped external run '+waitingRunId); if(logSink) await logSink.flush(); }
-      catch(stopError){
-        const stopMsg='EvalTokens 外部任务终止失败：'+String(stopError&&stopError.message?stopError.message:stopError);
-        appendLiveLog(log,'[warn] '+stopMsg); s._out=liveOutputSnapshot(log.live,{stderr:stopMsg,code:1,evaltokens:true,done:true}); if(logSink) await logSink.flush();
-        console.warn('[pipeline] '+stopMsg,stopError); try{ flashRunTip(stopMsg); }catch(e){}
+      if(rc._cascadeAbort){
+        /* 并行组内兄弟阶段失败被连带中止：并非用户终止/超时，已启动的 EvalTokens run 保留在服务侧继续运行（结果可在服务报告页查看） */
+        appendLiveLog(log,'# 并行组内其他阶段失败，本阶段被连带中止；EvalTokens run '+waitingRunId+' 未停止，仍在服务侧运行 → '+evaltokReportUrl(service,waitingRunId));
+        s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:true}); if(logSink) await logSink.flush();
+      }else{
+        try{ await evaltokStopRun(service,waitingRunId); appendLiveLog(log,'# stopped external run '+waitingRunId); if(logSink) await logSink.flush(); }
+        catch(stopError){
+          const stopMsg='EvalTokens 外部任务终止失败：'+String(stopError&&stopError.message?stopError.message:stopError);
+          appendLiveLog(log,'[warn] '+stopMsg); s._out=liveOutputSnapshot(log.live,{stderr:stopMsg,code:1,evaltokens:true,done:true}); if(logSink) await logSink.flush();
+          console.warn('[pipeline] '+stopMsg,stopError); try{ flashRunTip(stopMsg); }catch(e){}
+        }
       }
     }
     if(rc.scriptAbort===ctrl) rc.scriptAbort=null;

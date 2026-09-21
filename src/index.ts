@@ -1309,10 +1309,16 @@ async function executeServerEvaltokensStage(stage: any, runCtx: any, config: any
     }
   } catch (error) {
     let message = String(error && (error as Error).message ? (error as Error).message : error)
-    if (runActive && stopRun) {
+    /* 并行组内兄弟阶段失败的级联中止（executeStage 裸 controller.abort()，reason 无 PIPELINE_RUN_CANCELLED 码）
+       不等于用户终止：已启动的 EvalTokens run 保留在服务侧继续运行，不向服务发 stop；
+       用户经执行池取消（中止/计划终止，reason.code=PIPELINE_RUN_CANCELLED）与阶段超时（非中止异常）照旧停止。 */
+    const abortReason: any = signal && signal.aborted ? (signal as any).reason : null
+    const cascadeAbort = !!(signal && signal.aborted) && !(abortReason && abortReason.code === 'PIPELINE_RUN_CANCELLED')
+    if (runActive && stopRun && !cascadeAbort) {
       try { await stopRun() }
       catch (stopError) { message += '\nEvalTokens 外部任务终止失败：' + String(stopError && (stopError as Error).message ? (stopError as Error).message : stopError) }
     }
+    if (cascadeAbort && runActive) message += '\n并行组内其他阶段失败，本阶段被连带中止；EvalTokens run 未停止，仍在服务侧运行'
     return { code: 1, stdout: '', stderr: message, ...(signal && signal.aborted ? { aborted: true } : {}) }
   }
 }
