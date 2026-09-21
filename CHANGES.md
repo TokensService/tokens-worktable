@@ -30,6 +30,25 @@
   保存，请勿刷新或关闭页面…」（结束自动清除）；PUT 新增 60 秒看门狗，链路黑洞（连接在但无响应）
   时中止请求并返回明确错误，防止一次卡死的 PUT 长期占用 persistInFlight 串行锁、后续保存全部
   排队假死（合并写幂等，中止后重发安全）。服务端 src/index.ts 零改动，新旧页面/服务端任意组合兼容。
+- 新增「用户使用统计」（`src/index.ts`、`src/client/index.tsx`、`src/client/locales.ts`、`src/client/styles.ts`）：
+  服务端新增 `/api/worktable/usage` 路由（exact）——POST 采集事件（`sanitizeUsageEvent`：body 必须对象、
+  kind 限 `/^[a-z][a-z0-9_-]{0,31}$/`、user 截 64 字符（空串=匿名）/detail 截 200 字符、at 恒取服务端时间；
+  content-length 超 16KB 判 413），事件以 JSONL 追加落盘 `$DSH_HOME/storages/worktable-usage.jsonl`
+  （`usageWriteChain` 串行写链防并发互踩；文件超 4MB 时保留尾部约 2MB 的完整行经 writeJsonAtomic 同款
+  临时文件+rename 原子重写；写失败仅 logger.warn，绝不影响请求，POST 不等落盘即回 `{ok:true}`）；
+  GET 全量读取（ENOENT=空）经 `parseUsageEvents`（坏行跳过）+ `aggregateUsageEvents`（乱序输入也可正确
+  聚合）返回 `{total, users, daily, recent}`——users 含 visits/opens/活跃天数/首末时间（events 降序、
+  并列 lastAt 降序），daily 为最近 30 个本地日历日（升序补零、users 当日去重），recent 为最新 30 条。
+  客户端新增模块级 `reportUsage`（kind:detail 键 10 秒去重、超 200 项清空、全程静默）：用户名探测
+  effect 成功后写入 `usageUsername` 并上报 visit（空用户名也报，服务端记匿名），`reportUsed`
+  （卡片点击/打开项目统一入口）开头上报 open。设置弹窗版本行「更新历史」旁新增「使用统计」按钮，
+  弹窗（复用 dsh-wt_hist 骨架，新增 `dsh-wt_usage*` 样式）展示摘要 chips（用户/总事件/今日事件）、
+  用户表格（用户/访问/打开项目/总事件/活跃天数/最近活跃）与最近事件列表（kind 经 `usage.kind.<kind>`
+  翻译、未知 kind 显示原文，空 user 显示「匿名」）；加载中/失败/空三态文案与更新历史弹窗同款，
+  每次打开都重新拉取（仅防重入）。新增 `tests/usage-stats.test.mjs`：抽取测服务端
+  sanitizeUsageEvent/parseUsageEvents/aggregateUsageEvents（含截断、坏行、30 日桶、recent 上限与排序、
+  空输入）与客户端 parseUsageStats（正常解析 + 异常回退空结构）。
+  `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
 
 - 修复并行组内 EvalTokens 阶段被兄弟阶段失败连带中止时误停外部 run 的问题
   （`projects/pipeline/pipeline.html`、`src/index.ts`）：并行组 fail-fast 级联（某阶段失败 →
