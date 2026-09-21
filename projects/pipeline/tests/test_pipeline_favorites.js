@@ -107,6 +107,7 @@ function loadFavoriteUi(username){
     ],
     curPipelineId:'pipe-a',currentUsername:username,plFilter:{kw:'',owner:'all',favorite:'all'},
     plFilterMatch:()=>true,renderPlFilterOptions:()=>{},plOwnerOf:()=>'',plUpdaterOf:()=>'',
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：收藏测试不涉及归属限制，等价「仅内置只读」旧行为
     pipelineQueueCounts:()=>({}),pipelineQueueCountHtml:()=>'—',   // 收藏用例隔离运行队列计数
     document:{createElement:tag=>new FakeNode(tag)},
     $:id=>({plTable:table,pipelineSel:select,plCount:count,plFilterTip:tip,plRowMenuPanel:panel,plRowMenuPin:pinItem,plRowMenuFavorite:favoriteItem})[id],

@@ -69,6 +69,7 @@ function load(pinStates){
     plFilterMatch:()=>true,   // 筛选桩：置顶测试不涉及筛选语义，全部行进视图
     renderPlFilterOptions:()=>{},
     plOwnerOf:()=>'', plUpdaterOf:()=>'',   // 署名桩：置顶测试不涉及署名展示
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：置顶测试不涉及归属限制，等价「仅内置只读」旧行为
     isPipelineFavorite:()=>false,
     pipelineQueueCounts:()=>({}), pipelineQueueCountHtml:()=>'—',   // 置顶测试不涉及队列计数
     currentUsername:'',

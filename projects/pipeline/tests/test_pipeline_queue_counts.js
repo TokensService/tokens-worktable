@@ -111,6 +111,7 @@ function loadPipelineTableContext() {
     plFilterMatch: () => true,
     renderPlFilterOptions: () => {},
     plOwnerOf: () => '', plUpdaterOf: () => '', isPipelineFavorite: () => false,
+    plEditable: pipeline => !pipeline || !pipeline.builtIn,   // 归属桩：队列计数测试不涉及归属限制，等价「仅内置只读」旧行为
     currentUsername: '',
     document: { createElement: tag => new FakeNode(tag), querySelectorAll: () => [] },
     $: id => id === 'plTable' ? table : fallback,
