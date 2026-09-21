@@ -26,14 +26,15 @@ ok=0; fail=0
 for short in $GY1_NODES; do
   ip="192.168.0.$short"
   ssh_opts=(-o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+  # 外层 timeout 防止节点 TCP 半死时 scp 长时间挂死
   if [[ " $local_ips " == *" $ip "* ]]; then
     mkdir -p "$DEST_DIR" && install -m 0755 "$SOURCE" "$DEST_FILE" || { echo "[distribute] FAIL(local) $ip"; fail=$((fail+1)); continue; }
     echo "[distribute] OK(local) $ip md5=$(md5sum "$DEST_FILE" | awk '{print $1}')"
     ok=$((ok+1)); continue
   fi
-  if ! ssh "${ssh_opts[@]}" "root@$ip" "mkdir -p '$DEST_DIR'" \
-     || ! scp -q "${ssh_opts[@]}" "$SOURCE" "root@$ip:$DEST_FILE" \
-     || ! ssh "${ssh_opts[@]}" "root@$ip" "chmod 0755 '$DEST_FILE' && md5sum '$DEST_FILE'"; then
+  if ! timeout 30 ssh "${ssh_opts[@]}" "root@$ip" "mkdir -p '$DEST_DIR'" \
+     || ! timeout 60 scp -q "${ssh_opts[@]}" "$SOURCE" "root@$ip:$DEST_FILE" \
+     || ! timeout 30 ssh "${ssh_opts[@]}" "root@$ip" "chmod 0755 '$DEST_FILE' && md5sum '$DEST_FILE'"; then
     echo "[distribute] FAIL $ip"
     fail=$((fail+1))
     continue
