@@ -617,6 +617,68 @@ PY
   done <"$labels"
 }
 
+clear_target_node_taints() {
+  local inventory nodes node key effect
+  inventory="$(mktemp)"
+  nodes="$(mktemp)"
+  trap 'rm -f "$inventory" "$nodes"' RETURN
+  "$KUBECTL_BIN" get nodes -o json >"$inventory"
+
+  python3 - "$NODE_LABELS_FILE" "$inventory" >"$nodes" <<'PY'
+import json
+import sys
+
+labels_file, inventory_file = sys.argv[1:]
+labels = json.load(open(labels_file, encoding="utf-8"))
+inventory = json.load(open(inventory_file, encoding="utf-8"))
+by_ip = {}
+for item in inventory.get("items", []):
+    name = item.get("metadata", {}).get("name")
+    for address in item.get("status", {}).get("addresses", []):
+        if address.get("type") == "InternalIP" and isinstance(name, str) and name:
+            by_ip[address.get("address")] = name
+
+assignments = [{"hosts": labels.get("hosts", [])}]
+extra_assignments = labels.get("assignments", [])
+if not isinstance(extra_assignments, list):
+    raise SystemExit("node label assignments must be a list")
+assignments.extend(extra_assignments)
+
+seen = set()
+for assignment in assignments:
+    if not isinstance(assignment, dict):
+        raise SystemExit("node label assignment must be an object")
+    hosts = assignment.get("hosts", [])
+    if not isinstance(hosts, list):
+        raise SystemExit("node label assignment hosts must be a list")
+    for host in hosts:
+        if not isinstance(host, dict) or not isinstance(host.get("ip"), str):
+            raise SystemExit("node label host requires an IP")
+        node = by_ip.get(host["ip"])
+        if not node:
+            raise SystemExit("target node IP does not match Kubernetes InternalIP: " + host["ip"])
+        if node not in seen:
+            seen.add(node)
+            print(node)
+PY
+
+  while IFS= read -r node; do
+    [[ -n "$node" ]] || continue
+    while IFS=$'\t' read -r key effect; do
+      [[ -n "$key" && -n "$effect" ]] || continue
+      echo "[deploy] remove taint from node=$node ${key}:${effect}"
+      "$KUBECTL_BIN" taint node "$node" "${key}:${effect}-"
+    done < <("$KUBECTL_BIN" get node "$node" -o json | python3 -c '
+import json
+import sys
+for taint in json.load(sys.stdin).get("spec", {}).get("taints", []):
+    key, effect = taint.get("key"), taint.get("effect")
+    if isinstance(key, str) and isinstance(effect, str):
+        print(f"{key}\t{effect}")
+')
+  done <"$nodes"
+}
+
 wait_for_release_cleanup() {
   local deadline selector pending
   local -a selectors
@@ -749,6 +811,9 @@ echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
 wait_for_release_cleanup
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
+# Remove taints immediately before the new RayCluster is installed.  This
+# minimizes the window in which an external node controller can reapply one.
+clear_target_node_taints
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"
