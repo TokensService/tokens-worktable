@@ -96,3 +96,20 @@ test('旧页面流水线定义与磁盘一致时仍可写历史和其他配置',
   const client = { pipelines: [pipeline('p1', '一致')], theme: 'light' }
   assert.deepEqual(legacyConflicts(client, disk), [])
 })
+
+test('客户端保存不带历史正文时按磁盘历史保留，buildNo/histClearedAt 取双方较大值', () => {
+  const ctx = {}
+  vm.createContext(ctx)
+  vm.runInContext(stripTypeScriptTypes(extractFunction('mergePipelineHistoryForWrite'), { mode: 'transform' }), ctx)
+  /* 编辑器显式保存的瘦身负载（omitHistory）到达服务端时 clientHistory=[]，
+     磁盘上的定时/他端/本页运行历史必须全部保留（清空点之前的仍视为已删）。 */
+  const result = JSON.parse(JSON.stringify(ctx.mergePipelineHistoryForWrite(
+    { buildNo: 3 },
+    { buildNo: 7, histClearedAt: 100 },
+    [],
+    [{ tag: 'a', ts: 200 }, { tag: 'b', ts: 50 }],
+  )))
+  assert.deepEqual(result.history.map(record => record.tag), ['a'])
+  assert.equal(result.config.buildNo, 7)
+  assert.equal(result.config.histClearedAt, 100)
+})

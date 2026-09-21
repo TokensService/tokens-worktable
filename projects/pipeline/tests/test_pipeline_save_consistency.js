@@ -21,12 +21,13 @@ function saveFixture(saveResult) {
   const oldPipeline = { id: 'p1', name: '旧名称', builtIn: false, stages: [{ id: 'old', name: '旧阶段' }] };
   let resolveSave;
   const pending = saveResult || new Promise(resolve => { resolveSave = resolve; });
-  const alerts = [], calls = { clear: 0, render: 0, select: 0, immediate: null };
+  const alerts = [], calls = { clear: 0, render: 0, select: 0, immediate: null }, timers = [];
   const els = {
     plForm: { style: { display: 'flex' }, dataset: { editId: 'p1' }, inert: false },
     plName: { value: '新名称' },
     scriptsDir: { value: '/srv/scripts' },
     plSave: { disabled: false, textContent: '保存' },
+    plDraftTip: { textContent: '', style: {} },
   };
   const ctx = {
     alert: message => alerts.push(String(message)), confirm: () => true,
@@ -43,10 +44,12 @@ function saveFixture(saveResult) {
     running: false, curPipelineId: 'p1',
     selectPipeline: () => { calls.select += 1; }, renderPipelines: () => { calls.render += 1; },
     plOwnerOf: pipeline => pipeline.createdBy || '',
+    setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
+    clearTimeout: timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); },
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('savePlForm'), ctx);
-  return { ctx, els, alerts, calls, oldPipeline, resolveSave };
+  return { ctx, els, alerts, calls, oldPipeline, resolveSave, timers };
 }
 
 test('点击保存立即走服务端确认，确认前不关闭编辑框也不清草稿', async () => {
@@ -68,6 +71,21 @@ test('点击保存立即走服务端确认，确认前不关闭编辑框也不�
   assert.equal(f.els.plSave.disabled, false);
   assert.equal(f.els.plSave.textContent, '保存');
   assert.equal(f.els.plForm.inert, false);
+})
+
+test('保存超过 4 秒在底栏提示仍在保存请勿刷新，结束后清除提示', async () => {
+  const f = saveFixture();
+  const saving = f.ctx.savePlForm();
+
+  assert.equal(f.timers.length, 1);
+  assert.equal(f.timers[0].ms, 4000);
+  f.timers[0].fn();
+  assert.match(f.els.plDraftTip.textContent, /仍在保存.*请勿刷新/);
+
+  f.resolveSave({ ok: true });
+  await saving;
+
+  assert.equal(f.els.plDraftTip.textContent, '');
 })
 
 test('并发冲突时恢复保存前定义、保留编辑框与草稿并提示刷新', async () => {
@@ -121,6 +139,7 @@ test('等待前序保存期间同一流水线基线前移，失败时恢复最�
 
 function pushFixture(response) {
   const requests = [];
+  const timers = [];
   const baseConfig = { pipelines: [{ id: 'p1', name: '基线', stages: [] }], theme: 'dark' };
   const clientConfig = { pipelines: [{ id: 'p1', name: '本页修改', stages: [] }], theme: 'dark' };
   const ctx = {
@@ -129,7 +148,8 @@ function pushFixture(response) {
     persistTimer: null,
     persistInFlight: null,
     collectConfig: () => ({ ...clientConfig, pipelines: JSON.parse(JSON.stringify(ctx.pipelines)) }),
-    historyForPersist: () => [],
+    historyForPersist: () => [{ tag: 'run-1', ts: 1 }],
+    historySyncSig: '',
     loadServerState: async () => {},
     pipelines: JSON.parse(JSON.stringify(clientConfig.pipelines)),
     localStorage: { setItem() {} },
@@ -139,13 +159,16 @@ function pushFixture(response) {
     migratePipelineDefaults: value => value,
     migratePromPreset: value => value,
     fetch: async (url, options) => { requests.push({ url, options }); return response; },
+    AbortController,
+    setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
+    clearTimeout: timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); },
   };
   vm.createContext(ctx);
-  vm.runInContext(extractFunction('reconcilePipelinesAfterSave') + '\n' + extractFunction('pushState'), ctx);
-  return { ctx, requests, baseConfig, clientConfig };
+  vm.runInContext(extractFunction('historyPersistSig') + '\n' + extractFunction('reconcilePipelinesAfterSave') + '\n' + extractFunction('pushState'), ctx);
+  return { ctx, requests, baseConfig, clientConfig, timers };
 }
 
-test('配置 PUT 携带最近一次服务端基线，供服务端做三方合并', async () => {
+test('配置 PUT 携带最近一次服务端基线（仅 pipelines，三方合并按 id 比对），供服务端做三方合并', async () => {
   const merged = { pipelines: [{ id: 'p1', name: '本页修改', stages: [] }], theme: 'dark' };
   const f = pushFixture({ ok: true, status: 200, json: async () => ({ ok: true, config: merged }) });
 
@@ -154,8 +177,48 @@ test('配置 PUT 携带最近一次服务端基线，供服务端做三方合并
   assert.equal(result.ok, true);
   assert.equal(f.requests.length, 1);
   const body = JSON.parse(f.requests[0].options.body);
-  assert.deepEqual(body.baseConfig, f.baseConfig);
+  assert.deepEqual(body.baseConfig, { pipelines: f.baseConfig.pipelines }, '基线只带 pipelines：合并从不读取其余基线字段，压缩上行负载');
   assert.deepEqual(body.config, f.clientConfig);
+  assert.deepEqual(body.history, [{ tag: 'run-1', ts: 1 }], '常规保存仍携带历史正文');
+})
+
+test('历史内容未变时保存不再重复携带历史正文，变化后自动恢复携带', async () => {
+  const merged = { pipelines: [{ id: 'p1', name: '本页修改', stages: [] }], theme: 'dark' };
+  const f = pushFixture({ ok: true, status: 200, json: async () => ({ ok: true, config: merged }) });
+
+  const first = await f.ctx.pushState();
+  assert.equal(first.ok, true);
+  assert.deepEqual(JSON.parse(f.requests[0].options.body).history, [{ tag: 'run-1', ts: 1 }], '首次保存（签名未知）必带历史');
+
+  await f.ctx.pushState();
+  assert.equal('history' in JSON.parse(f.requests[1].options.body), false, '历史未变：不再重复上送，慢链路上行负载减半以上');
+
+  f.ctx.historyForPersist = () => [{ tag: 'run-2', ts: 2 }];
+  const third = await f.ctx.pushState();
+  assert.equal(third.ok, true);
+  assert.deepEqual(JSON.parse(f.requests[2].options.body).history, [{ tag: 'run-2', ts: 2 }], '历史变化后自动恢复携带');
+})
+
+test('保存请求 60 秒无响应时中止并返回可识别错误，不再无限占用串行锁', async () => {
+  const f = pushFixture(null);
+  f.ctx.fetch = (url, options) => {
+    f.requests.push({ url, options });
+    return new Promise((_, reject) => {
+      options.signal.addEventListener('abort', () => reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })));
+    });
+  };
+
+  const result = f.ctx.pushState();
+  await new Promise(resolve => setImmediate(resolve));
+  const watchdog = f.timers.find(timer => timer.ms === 60000);
+  assert.ok(watchdog, 'PUT 发出后即挂 60 秒看门狗');
+  watchdog.fn();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(await result)), {
+    ok: false,
+    error: '保存请求超过 60 秒无响应，已中止；请检查网络后重试（编辑内容仍保留）',
+  });
+  assert.equal(f.ctx.persistInFlight, null, '中止后串行锁释放，后续保存不再排队假死');
 })
 
 test('配置 PUT 的 409 冲突返回可识别结果，不再静默当作保存成功', async () => {

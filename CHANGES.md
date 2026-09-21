@@ -1,5 +1,21 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复流水线编辑器「保存」长时间停留在「保存中…」（公网映射等慢上行链路下 10 秒级）的问题
+  （`projects/pipeline/pipeline.html`）：显式保存须等服务端确认（并发三方合并，见既有
+  test_pipeline_save_consistency.js），但确认请求此前携带全量负载——完整 config + 完整 baseConfig
+  副本 + 全部运行历史（实测约 70KB），「保存中…」时长与上行字节数成正比（实测 70KB/7KB/s ≈ 10s），
+  且同页 persistInFlight 串行锁会让保存排在前台任何一次全量后台同步之后，慢链路上用户易误判
+  卡死而刷新页面。现对全部保存负载统一瘦身：baseConfig 只带 pipelines（服务端
+  mergePipelineConfigForWrite 本就只按流水线 id 比对基线条目，其余基线字段从不读取）；历史正文
+  改为按内容签名（双哈希）按需携带——首次加载/定时刷新以服务端内容整体替换本地历史时标记已同步，
+  签名未变的保存一律不带历史（服务端 mergePipelineHistoryForWrite 对客户端未上报的记录按磁盘
+  保留，不丢定时/他端/本页运行历史，该行为新增 tests/pipeline-config-concurrency.test.mjs 回归锁定），
+  本地新增运行/清空/迁移改动签名后自动恢复携带。常规保存负载约减至 1/4（70KB→17KB），同一慢链路
+  实测保存由 ~10s 降至 ~2.8s。另有两项韧性加固：保存超过 4 秒在编辑器底栏提示「网络较慢，仍在
+  保存，请勿刷新或关闭页面…」（结束自动清除）；PUT 新增 60 秒看门狗，链路黑洞（连接在但无响应）
+  时中止请求并返回明确错误，防止一次卡死的 PUT 长期占用 persistInFlight 串行锁、后续保存全部
+  排队假死（合并写幂等，中止后重发安全）。服务端 src/index.ts 零改动，新旧页面/服务端任意组合兼容。
+
 - 修复并行组内 EvalTokens 阶段被兄弟阶段失败连带中止时误停外部 run 的问题
   （`projects/pipeline/pipeline.html`、`src/index.ts`）：并行组 fail-fast 级联（某阶段失败 →
   `cancelParallelGroup` 中止兄弟阶段）此前与用户主动中止走同一出口，兄弟阶段的收尾逻辑看到

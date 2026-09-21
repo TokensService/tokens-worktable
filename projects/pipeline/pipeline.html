@@ -1018,6 +1018,18 @@ function historyForPersist(){
     const clean={}; Object.keys(h).forEach(k=>{ if(transient.indexOf(k)<0) clean[k]=h[k]; }); return clean;
   });
 }
+/* 历史上行签名：内容自上次确认同步后未变时，保存不再携带历史正文（服务端合并按磁盘保留），
+   慢上行链路下「保存中…」不再为重复历史买单。双哈希降碰撞概率；空串初值保证首次保存必带历史
+   （服务端为空时的本地迁移依赖它，见 loadServerState 末尾 persistState）。 */
+let historySyncSig='';
+function historyPersistSig(text){
+  let h1=5381, h2=0;
+  for(let i=0;i<text.length;i++){ const c=text.charCodeAt(i); h1=((h1<<5)+h1+c)|0; h2=((h2<<7)+h2+c)|0; }
+  return text.length+':'+h1+':'+h2;
+}
+/* 历史被服务端内容整体替换（首次加载 / 定时刷新）即与服务端一致：标记已同步；随后的本地改动
+   （新运行记录、清空、内嵌日志迁移）会改变签名，下次保存自动恢复携带。 */
+function historyMarkSynced(){ historySyncSig=historyPersistSig(JSON.stringify(historyForPersist())); }
 /* 服务端可能把其他浏览器对“不同流水线”的修改一起合入本次 PUT 响应。把这些结果同步回当前页，
    但保留请求在途期间本页产生的更新，避免下一次保存又把刚合入的远端流水线误删。 */
 function reconcilePipelinesAfterSave(submitted, accepted, current){
@@ -1046,11 +1058,24 @@ async function pushState(){
   /* 先快照本页要保存的状态：首次加载尚在途时，loadServerState 会刷新全局变量，不能把用户刚点保存的
      内容替换成远端旧值后再提交。共同基线则必须等 GET 成功后再取。 */
   const config=collectConfig(), savedHistory=historyForPersist();
+  const historySig=historyPersistSig(JSON.stringify(savedHistory));
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return {ok:false,error:'服务端配置加载失败'}; }
   try{
     /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
-       服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖 */
-    const r=await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config, baseConfig:serverConfigBase||{}, history:savedHistory})});
+       服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖。
+       负载瘦身（「保存中…」等待与上行字节数成正比，公网映射等慢上行链路下全量负载曾需 10 秒级）：
+       baseConfig 只带 pipelines——服务端三方合并仅按流水线 id 比对基线条目（mergePipelineConfigForWrite），
+       其余基线字段从不读取；历史正文仅在内容自上次确认同步后有变化时携带（签名比对），
+       未变不带——服务端合并对客户端未上报的记录一律按磁盘保留，不丢定时/他端/本页运行历史。 */
+    const payload={config, baseConfig:{pipelines:(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[]}};
+    if(historySig!==historySyncSig) payload.history=savedHistory;
+    /* 看门狗：链路黑洞（连接在但无响应）时 60 秒中止，防一次卡死的 PUT 长期占用 persistInFlight、
+       后续保存全部排队假死；合并写幂等，中止后重发安全 */
+    const abortCtrl=new AbortController(); const abortTimer=setTimeout(()=>abortCtrl.abort(),60000);
+    let r;
+    try{ r=await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:abortCtrl.signal}); }
+    catch(e){ if(e&&e.name==='AbortError') return {ok:false,error:'保存请求超过 60 秒无响应，已中止；请检查网络后重试（编辑内容仍保留）'}; throw e; }
+    finally{ clearTimeout(abortTimer); }
     let body={}; try{ body=await r.json(); }catch(e){}
     if(!r.ok){
       return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
@@ -1063,6 +1088,7 @@ async function pushState(){
         try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
       }
     }
+    historySyncSig=historySig;   // 本批历史已确认落盘：下次内容未变不再携带
     return {ok:true,config:body.config||config};
   }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
   }finally{
@@ -1110,8 +1136,8 @@ async function loadServerState(){
       if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
       if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
       /* 服务端历史为空但被显式清空过（histClearedAt）：保持空，不复活内置演示数据 */
-      if(Array.isArray(st.history) && st.history.length) history=st.history;
-      else if(histClearedAt) history=[];
+      if(Array.isArray(st.history) && st.history.length){ history=st.history; historyMarkSynced(); }
+      else if(histClearedAt){ history=[]; historyMarkSynced(); }
       runStages=null; selectedId=curPipeline().stages[0].id;
       /* 同步 localStorage 离线缓存 */
       try{
@@ -7251,8 +7277,8 @@ function applyHistoryRefreshPayload(st, clearAtStart){
   if(remoteClearedAt<clearAtStart) return false;
   if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
-  if(Array.isArray(st&&st.history) && st.history.length) history=st.history;
-  else if(histClearedAt) history=[];
+  if(Array.isArray(st&&st.history) && st.history.length){ history=st.history; historyMarkSynced(); }
+  else if(histClearedAt){ history=[]; historyMarkSynced(); }
   return true;
 }
 /* 服务端刷新会用新对象替换历史列表；把回放懒加载缓存移交给稳定主键对应的新对象，避免每 3 秒
@@ -7738,10 +7764,18 @@ async function savePlForm(){
   const saveButtonText=saveButton?saveButton.textContent:'';
   if(saveForm) saveForm.inert=true;   // 整个编辑器冻结到服务端确认，防止请求快照之后的新输入被成功收尾清掉
   if(saveButton){ saveButton.disabled=true; saveButton.textContent='保存中…'; }
+  /* 慢链路明示：显式保存必须等服务端确认（并发安全），公网映射等慢上行链路下可能需要数秒；
+     超过 4 秒在底栏提示「仍在保存」，避免误以为卡死而刷新页面（刷新时本次保存结果尚未确认） */
+  const saveSlowTip=$('plDraftTip');
+  const saveSlowTimer=setTimeout(()=>{ if(saveSlowTip){ saveSlowTip.textContent='网络较慢，仍在保存，请勿刷新或关闭页面…'; saveSlowTip.style.color='var(--log-warn)'; } },4000);
   let saved;
   try{ saved=await savePipelines({immediate:true}); }
   catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
-  finally{ if(saveForm) saveForm.inert=saveFormWasInert; if(saveButton){ saveButton.disabled=false; saveButton.textContent=saveButtonText||'保存'; } }
+  finally{
+    clearTimeout(saveSlowTimer);
+    if(saveSlowTip&&saveSlowTip.textContent.indexOf('仍在保存')>=0){ saveSlowTip.textContent=''; saveSlowTip.style.color=''; }
+    if(saveForm) saveForm.inert=saveFormWasInert; if(saveButton){ saveButton.disabled=false; saveButton.textContent=saveButtonText||'保存'; }
+  }
   if(saved && saved.ok===false){
     /* 只撤销本次编辑的流水线；等待同页串行锁期间，前序 PUT 可能已把其他浏览器的不同流水线合入当前列表，
        整表回滚会再次丢掉它们，并在下次保存时把缺项误解释为删除。 */

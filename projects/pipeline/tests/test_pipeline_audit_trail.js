@@ -42,6 +42,8 @@ function loadSavePlForm({editId,pipeline,username}){
     curPipelineId:'',
     selectPipeline:()=>{},
     renderPipelines:()=>{},
+    setTimeout:()=>0,
+    clearTimeout:()=>{},
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('plOwnerOf')+'\n'+extractFunction('plUpdaterOf')+'\n'+extractFunction('savePlForm'),ctx);

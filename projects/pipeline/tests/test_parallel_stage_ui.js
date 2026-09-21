@@ -133,6 +133,7 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',async()=
     savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
     normalizePipelineDefaults:x=>x||{}, normalizeStageKind:x=>x, withPresetMarkers:x=>x, currentPipelineDefaultSeed:()=>({}),loadPlDraft:()=>null,
     renderPipelineDefaultForm(){},loadScripts:()=>Promise.resolve(),
+    setTimeout:()=>0, clearTimeout(){},
   };
   install(ctx,'renderStageEditor','updateStageFromEditor','savePlForm','openPlForm');
   ctx.renderStageEditor();
@@ -166,6 +167,7 @@ test('无效 parallel 值在编辑、保存和重新打开中保持串行',async
     savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
     normalizePipelineDefaults:x=>x||{}, normalizeStageKind:x=>x, withPresetMarkers:x=>x, currentPipelineDefaultSeed:()=>({}),loadPlDraft:()=>null,
     renderPipelineDefaultForm(){},loadScripts:()=>Promise.resolve(),
+    setTimeout:()=>0, clearTimeout(){},
   };
   install(ctx,'renderStageEditor','savePlForm','openPlForm');
   ctx.renderStageEditor();
