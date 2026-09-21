@@ -57,9 +57,10 @@ COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
 ENABLE_LMCACHE="${ENABLE_LMCACHE:-false}"
-# 临时需求入参：LMCache sidecar tracing 开关与 OTLP endpoint，默认打开。
-ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING:-true}"
-LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.0.102:4320}"
+# LMCache sidecar tracing 上报开关已简化为单一变量：LMCACHE_OTLP_ENDPOINT
+# 有值即开、留空即关（开发环境默认 http://192.168.10.6:4320）。
+# 注意用 -（非 :-）：显式置空表示关闭 tracing，不能被默认值覆盖。
+LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT-http://192.168.10.6:4320}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -73,12 +74,6 @@ fi
 ENABLE_LMCACHE="${ENABLE_LMCACHE,,}"
 [[ "$ENABLE_LMCACHE" == "true" || "$ENABLE_LMCACHE" == "false" ]] || {
   echo "ENABLE_LMCACHE must be true or false: $ENABLE_LMCACHE" >&2
-  exit 2
-}
-
-ENABLE_LMCACHE_TRACING="${ENABLE_LMCACHE_TRACING,,}"
-[[ "$ENABLE_LMCACHE_TRACING" == "true" || "$ENABLE_LMCACHE_TRACING" == "false" ]] || {
-  echo "ENABLE_LMCACHE_TRACING must be true or false: $ENABLE_LMCACHE_TRACING" >&2
   exit 2
 }
 
@@ -168,7 +163,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$ENABLE_LMCACHE" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$ENABLE_LMCACHE" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
 import copy
 import json
 import os
@@ -184,7 +179,7 @@ import yaml
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
   chart_dir, image_pull_secrets_text, collector_gateway_url, mapped_collector_gateway_url, model_cache_host_path,
-  enable_lmcache_text) = sys.argv[1:]
+  enable_lmcache_text, lmcache_otlp_endpoint) = sys.argv[1:]
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
@@ -502,6 +497,10 @@ template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
 template_vars.setdefault("LMCACHE_SIDECAR_ENABLED", "true" if enable_lmcache else "false")
 template_vars.setdefault("LMCACHE_LOG_LEVEL", "INFO")
 template_vars.setdefault("LMCACHE_L2_ENABLED", os.environ.get("LMCACHE_L2_ENABLED", "true"))
+# tracing 参数已进入模板（lmcacheSidecar.tracing.otlpEndpoint）：是否开启
+# 完全由 endpoint 有无值决定，每环境不同；开发环境默认 http://192.168.10.6:4320。
+# 留空时模板不注入 tracing 参数（渲染结果与关闭一致）。
+template_vars.setdefault("LMCACHE_OTLP_ENDPOINT", lmcache_otlp_endpoint)
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -793,8 +792,19 @@ PY
 
 # 临时需求：LMCache sidecar 加 tracing 上报（chart 已固化 args，无注入口，
 # 渲染后直接 patch 部署包 chart 副本 CHART_DIR，helm 实际使用的就是它）。
-# ENABLE_LMCACHE_TRACING=false 关闭；endpoint 置空同样关闭。
-if [[ "$ENABLE_LMCACHE_TRACING" == "true" && -n "$LMCACHE_OTLP_ENDPOINT" ]]; then
+# LMCACHE_OTLP_ENDPOINT 留空即关；sidecar 未启用时整体跳过——旧 chart 本就
+# 没有 sidecar args 锚点，不属于模板漂移，不应让非 LMCache arch 的渲染失败。
+lmcache_sidecar_enabled="$(python3 - "$VALUES_FILE" <<'PY'
+import sys
+
+import yaml
+
+values = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+sidecar = values.get("lmcacheSidecar")
+print("true" if isinstance(sidecar, dict) and sidecar.get("enabled") is True else "false")
+PY
+)"
+if [[ -n "$LMCACHE_OTLP_ENDPOINT" && "$lmcache_sidecar_enabled" == "true" ]]; then
 python3 - "$CHART_DIR/templates/raycluster-cluster.yaml" "$LMCACHE_OTLP_ENDPOINT" <<'PY'
 import pathlib
 import sys
@@ -807,14 +817,20 @@ if not chart.exists():
     print("LMCACHE_OTLP_PATCH_SKIPPED=chart template missing: %s" % chart, file=sys.stderr)
     sys.exit(0)
 text = chart.read_text(encoding="utf-8")
-if "--enable-tracing" not in text:
-    anchor = '{{- if $isLmcacheL2 }}\n                  --l2-store-policy'
-    if anchor not in text:
-        raise SystemExit("LMCache sidecar args anchor not found in chart template")
-    patch = "--enable-tracing \\\n                  --otlp-endpoint %s \\\n" % endpoint
-    chart.write_text(text.replace(anchor, patch + anchor, 1), encoding="utf-8")
+if "--enable-tracing" in text:
+    # 新版模板已原生携带 tracing args（lmcacheSidecar.tracing.*），无需 patch。
+    print("LMCACHE_OTLP_PATCH_SKIPPED=chart template already carries tracing args", file=sys.stderr)
+    sys.exit(0)
+anchor = '{{- if $isLmcacheL2 }}\n                  --l2-store-policy'
+if anchor not in text:
+    raise SystemExit("LMCache sidecar args anchor not found in chart template")
+patch = "--enable-tracing \\\n                  --otlp-endpoint %s \\\n" % endpoint
+chart.write_text(text.replace(anchor, patch + anchor, 1), encoding="utf-8")
 print("LMCACHE_OTLP_PATCHED=%s" % endpoint)
 PY
+else
+  # 输出到 stderr：stdout 的 KEY=VALUE 行会进入阶段输出变量契约。
+  echo "[render] LMCache tracing patch skipped: lmcacheSidecar.enabled=${lmcache_sidecar_enabled}, endpoint=${LMCACHE_OTLP_ENDPOINT:-}" >&2
 fi
 
 printf 'RUN_DIR=%s\n' "$RUN_DIR"
