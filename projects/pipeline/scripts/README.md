@@ -266,3 +266,40 @@ TP、PP、DP保留 arch 配置，不再将 Decode DP 强制改为 GPU 数。
 角色 JSON overrides 先合并，显式数量/GPU变量最后覆盖。
 每个角色当前支持一个 resources 条目，并检查 min <= default <= max。
 旧流水线若保存过这些参数的显式值，需要清空才能继承 arch。
+
+## EMS 实例巡检（ems-check.sh）
+
+`ems-check.sh` 是 EMS（mfv-kv 内存池存储）的统一只读巡检 **step 主脚本**（无参调用，
+类似 `lmcache-config.sh`）：在流水线中任意位置插入本 step，理论上无需配置任何
+参数——目标节点由平台注入的 `TARGET_IP`/`TARGET_IPS` 提供。**执行位置**：平台
+注入 `TARGET_HOSTS` 时自动推送自身到首个具备 kubectl 的目标节点上远程执行
+（同 `evict-ems-hugepages.sh` 的自推送模式；工作台服务端所在主机不需要
+kubectl，kubectl 视图是集群级的，任一节点结果一致；密码认证需执行机有
+sshpass）；未注入时在执行机本地运行（手工独立运行场景，需本机有 kubectl）。
+输出三个部分：
+
+1. **集群巡检**：按资源 ns 发现全部 EMS 实例，标注 label、helm release
+   （chart/app 版本）、镜像、pod 健康（组件分布与异常原因）、每节点大页
+   capacity/allocatable/已分配（按全部 pod 的 `hugepages-2Mi` requests 汇总）；
+   另列出空壳/遗留 ns、无 pod 的 helm release、被占用未部署的 label（只报告，
+   勿动）；
+2. **目标节点定位**：逐个检查 `TARGET_IP`/`TARGET_IPS` 的归属，命中实例则展开
+   该实例与本节点视角（角色/pod/大页；目标即本机时附 `/proc/meminfo` 与
+   `/dev/shm/ems`）；未注入 TARGET_* 时回退识别本机（手工独立运行场景）；
+3. **KEY=VALUE 契约**（注入下游 step）：`EMS_INSTANCE_COUNT`、`EMS_INSTANCES`、
+   `EMS_HEALTHY_COUNT`、`EMS_UNHEALTHY`；注入目标时附 `EMS_TARGET_TOTAL`/
+   `EMS_TARGET_MATCHED`，命中时附 `EMS_TARGET_INSTANCE/LABEL_KEY/NODES/`
+   `CHART_VERSION/POD_HEALTH`（首个命中目标）。
+
+```bash
+bash ems-check.sh                     # 手工运行（回退本机识别）
+TARGET_IP=192.168.0.215 bash ems-check.sh   # 指定目标节点（模拟平台注入）
+TARGET_HOSTS='[{"ip":"192.168.0.128","user":"root"}]' TARGET_IP=192.168.0.128 bash ems-check.sh
+                                      # 模拟平台完整注入：自推送到目标节点执行
+```
+
+无任何 step 参数，纯信息输出：异常实例只在报告与 `EMS_UNHEALTHY` 契约键中体现，
+不影响退出码。实际巡检节点需要 kubectl（可访问集群）与 python3，helm 可选
+（缺失时版本信息降级为未知）；分发时执行机需要 ssh/scp（解析 TARGET_HOSTS
+需 python3，密码认证还需 sshpass）。退出码：0 正常；1 环境错误。
+单测：`test/test_ems_check.sh`。
