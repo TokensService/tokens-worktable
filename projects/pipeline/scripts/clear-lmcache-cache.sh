@@ -155,10 +155,11 @@ ensure_idle() {
 }
 
 clear_l1() {
-    local pod node port resp started value
+    local pod node port resp started value found=0
     log "== 清理 L1 (DRAM) =="
     while IFS=$'\t' read -r pod node; do
         [[ -n "$pod" ]] || continue
+        found=1
         port=$(pod_http_port "$pod") || die "无法获取 $pod 的 LMCACHE_HTTP_PORT（sidecar 未就绪？）"
         log "L1 清理: $pod (node=$node, http_port=$port)"
         if [[ "$DRY_RUN" == 1 ]]; then
@@ -185,6 +186,8 @@ clear_l1() {
             sleep 2
         done
     done < <(sidecar_pods)
+    # 空命名空间/未部署 LMCache 必须硬失败，禁止静默空跑后以 0 退出（假成功）
+    (( found == 1 )) || die "L1 清理: $NAMESPACE 中未发现带 $SIDECAR_CONTAINER 容器的 pod（命名空间填错或未部署 LMCache？设 CLEAR_L1=0 可显式跳过）"
 }
 
 # FE 地址自动发现：Service NodePort + 任一 sidecar pod 所在节点 IP
@@ -279,7 +282,9 @@ clear_hbm() {
     local url resp scheduled
     log "== 清理 HBM prefix cache =="
     if [[ -z "$FE_URL" ]]; then
-        FE_URL=$(discover_fe_url) || return 1
+        # die 在 $() 子 shell 内不会终止主脚本，必须在此处（主 shell）转成硬失败
+        FE_URL=$(discover_fe_url) \
+            || die "无法发现 FE URL（Service $NAMESPACE/$SERVICE_NAME 不存在？）；请检查 NAMESPACE 或设置 FE_URL"
     fi
     log "HBM 清理: POST $FE_URL/xds/v1/OM/diagnose/post (reset_prefix_cache)"
     if [[ "$DRY_RUN" == 1 ]]; then
@@ -305,11 +310,12 @@ clear_hbm() {
 }
 
 clear_l2() {
-    local pod node path before after
+    local pod node path before after found=0
     declare -A seen=()
     log "== 清理 L2 (磁盘 fs_native) =="
     while IFS=$'\t' read -r pod node; do
         [[ -n "$pod" ]] || continue
+        found=1
         path=$(pod_l2_path "$pod") || { log "警告: $pod 未配置 L2 (无 --l2-adapter base_path)，跳过"; continue; }
         [[ -n "$path" ]] || { log "警告: $pod L2 base_path 解析为空，跳过"; continue; }
         # 同节点多个 sidecar 共享同一 L2 目录（hostPath），按 node:path 去重只删一次
@@ -328,6 +334,7 @@ clear_l2() {
         [[ "$after" == 0 ]] || die "L2 删除后仍有 ${after} 个文件: $pod $path"
         log "L2 已清空: $pod $path"
     done < <(sidecar_pods)
+    (( found == 1 )) || die "L2 清理: $NAMESPACE 中未发现带 $SIDECAR_CONTAINER 容器的 pod（命名空间填错或未部署 LMCache？设 CLEAR_L2=0 可显式跳过）"
 }
 
 main() {
@@ -351,9 +358,10 @@ main() {
     if (( CLEAR_L2 && IDLE_CHECK )); then
         ensure_idle
     fi
-    (( CLEAR_L1 )) && clear_l1
-    (( CLEAR_HBM )) && clear_hbm
-    (( CLEAR_L2 )) && clear_l2
+    # 阶段失败必须终止并返回非零：否则空命名空间会静默空跑后以 0 退出（假成功）
+    if (( CLEAR_L1 )); then clear_l1 || exit 1; fi
+    if (( CLEAR_HBM )); then clear_hbm || exit 1; fi
+    if (( CLEAR_L2 )); then clear_l2 || exit 1; fi
     log "三层缓存清理流程完成 (DRY_RUN=$DRY_RUN)"
 }
 
