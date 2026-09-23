@@ -69,6 +69,25 @@ XDS 流水线按以下顺序绑定脚本：
 
 缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
 
+## LMCache 脚本族（渲染期分离）
+
+| 脚本 | 阶段 | 职责 |
+|------|------|------|
+| `lmcache-config.sh` | **step 主脚本**（pull_render_config 前） | 入参校验（fail-fast）+ 契约输出；step 存在即开启（`ENABLE_LMCACHE` 缺省 true） |
+| `lib/render-lmcache.sh` | 渲染期（render-config 内部依赖） | 占位符默认值（`defaults`）与渲染后 chart patch（`patch`：tracing 兜底 + `LMCACHE_EXTRA_ARGS` 实验注入，含 sidecar 启用守卫与幂等） |
+
+（`check-lmcache-readiness.sh` / `clear-lmcache-cache.sh` 等部署期、运行期脚本在 tokens-worktable 仓，未同步本仓。）
+
+**流水线接法**：要开 LMCache，在 pull_render_config 前加一个 `lmcache-config` step，参数即该 step 的环境变量（`LMCACHE_OTLP_ENDPOINT` / `LMCACHE_L2_ENABLED` / `LMCACHE_LOG_LEVEL` / `LMCACHE_EXTRA_ARGS`，详见脚本头部）；契约输出经平台注入下游，渲染自动点亮 sidecar。不加该 step 则默认全关，pull_render_config 自身不再暴露任何 LMCache 参数（老流水线直配 `ENABLE_LMCACHE=true` 仍兼容）。
+
+实验参数示例（免改模板/免出镜像）：
+
+```bash
+LMCACHE_EXTRA_ARGS=--worker-reap-timeout-seconds 60 --worker-registration-grace-seconds 60
+```
+
+单测：`test/test_lmcache_config.sh`（step 契约与下游点亮）、`test/test_render_lmcache.sh`（defaults/patch）；集成：`test/test_render_target_labels.sh`。
+
 ## 归档与 AI 分析
 
 主控填了「归档路径」后，每次运行结束会把产物写到 `<归档路径>/<流水线名称>_<YYYYMMDDhhmmss>/`：
