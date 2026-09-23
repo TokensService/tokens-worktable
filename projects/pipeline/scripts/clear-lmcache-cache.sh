@@ -9,6 +9,9 @@
 #   SERVICE_NAME(默认ray-svc)、SIDECAR_CONTAINER(默认lmcache-sidecar)、
 #   FRONTGROUP_PATTERN(默认frontgroup)、IDLE_CHECK(默认1)、IDLE_SECONDS(默认60)、
 #   HBM_VERIFY(默认1：reset 后轮询引擎日志确认 success，而非仅确认已调度)、
+#   HBM_RESET_PARAMS(默认"true true"：reset_running_requests reset_connector；
+#     第二个 true 会连 connector 一起重置，可解开卡死的 KV transfer 会话——
+#     "true false" 遇到 sidecar active_sessions 卡住不降时永远失败)，
 #   TE_POD_PATTERN(默认'prefill|decode'：承载 vllm 引擎的 pod 名匹配)、
 #   HBM_VERIFY_TIMEOUT_SECONDS(默认120)、HBM_POLL_SECONDS(默认3)、
 #   VERIFY_TIMEOUT_SECONDS(默认30)、L2_DELETE_TIMEOUT(默认600)、
@@ -29,6 +32,10 @@ FRONTGROUP_PATTERN="${FRONTGROUP_PATTERN:-frontgroup}"
 IDLE_CHECK="${IDLE_CHECK:-1}"
 IDLE_SECONDS="${IDLE_SECONDS:-60}"
 HBM_VERIFY="${HBM_VERIFY:-1}"
+# reset_prefix_cache 的 OM 入参 "reset_running_requests reset_connector"。
+# 默认 "true true"：连 connector 一起重置，能解开卡死会话（active_sessions 不归零、
+# block 数不变的场景）；回退旧行为设 HBM_RESET_PARAMS="true false"。
+HBM_RESET_PARAMS="${HBM_RESET_PARAMS:-true true}"
 TE_POD_PATTERN="${TE_POD_PATTERN:-prefill|decode}"
 HBM_VERIFY_TIMEOUT_SECONDS="${HBM_VERIFY_TIMEOUT_SECONDS:-120}"
 HBM_POLL_SECONDS="${HBM_POLL_SECONDS:-3}"
@@ -289,7 +296,7 @@ clear_hbm() {
     log "HBM 清理: POST $FE_URL/xds/v1/OM/diagnose/post (reset_prefix_cache)"
     if [[ "$DRY_RUN" == 1 ]]; then
         run curl -s --noproxy '*' -X POST "$FE_URL/xds/v1/OM/diagnose/post" -H 'Content-Type: application/json' \
-            -d '{"cmd":"reset_prefix_cache","params":"true false","filter":""}'
+            -d '{"cmd":"reset_prefix_cache","params":"'"$HBM_RESET_PARAMS"'","filter":""}'
         return 0
     fi
     # 快照必须先于 POST：调度是毫秒级异步的，晚记基线会漏掉 success 行
@@ -297,7 +304,7 @@ clear_hbm() {
         hbm_snapshot
     fi
     resp=$(curl -s --noproxy '*' -X POST "$FE_URL/xds/v1/OM/diagnose/post" -H 'Content-Type: application/json' \
-        -d '{"cmd":"reset_prefix_cache","params":"true false","filter":""}') || die "HBM 清理请求失败: $FE_URL"
+        -d '{"cmd":"reset_prefix_cache","params":"'"$HBM_RESET_PARAMS"'","filter":""}') || die "HBM 清理请求失败: $FE_URL"
     # OM diagnose 返回非严格 JSON（多对象拼接），只能 grep 计数
     scheduled=$(grep -o 'reset_prefix_cache scheduled' <<< "$resp" | wc -l)
     log "HBM reset_prefix_cache 已调度到 $scheduled 个 actor"
@@ -348,6 +355,8 @@ main() {
     for v in "${int_vars[@]}"; do
         [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || die "$v 必须为正整数"
     done
+    [[ "$HBM_RESET_PARAMS" =~ ^(true|false)[[:space:]]+(true|false)$ ]] \
+        || die 'HBM_RESET_PARAMS 必须是 "reset_running_requests reset_connector" 两个 true/false（如 "true true"）'
     have kubectl || die '需要 kubectl'
     KCTL version >/dev/null 2>&1 || die 'kubectl 无法访问 Kubernetes API'
     (( CLEAR_HBM )) && ! have curl && die '清 HBM 需要本机安装 curl（或设置 CLEAR_HBM=0 跳过）'
