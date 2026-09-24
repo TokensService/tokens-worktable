@@ -9,6 +9,9 @@
 #   SERVICE_NAME(默认ray-svc)、SIDECAR_CONTAINER(默认lmcache-sidecar)、
 #   FRONTGROUP_PATTERN(默认frontgroup)、IDLE_CHECK(默认1)、IDLE_SECONDS(默认60)、
 #   HBM_VERIFY(默认1：reset 后轮询引擎日志确认 success，而非仅确认已调度)、
+#   HBM_RESET_PARAMS(默认"true true"：reset_running_requests reset_connector；
+#     第二个 true 会连 connector 一起重置，可解开卡死的 KV transfer 会话——
+#     "true false" 遇到 sidecar active_sessions 卡住不降时永远失败)，
 #   TE_POD_PATTERN(默认'prefill|decode'：承载 vllm 引擎的 pod 名匹配)、
 #   HBM_VERIFY_TIMEOUT_SECONDS(默认120)、HBM_POLL_SECONDS(默认3)、
 #   VERIFY_TIMEOUT_SECONDS(默认30)、L2_DELETE_TIMEOUT(默认600)、
@@ -29,6 +32,10 @@ FRONTGROUP_PATTERN="${FRONTGROUP_PATTERN:-frontgroup}"
 IDLE_CHECK="${IDLE_CHECK:-1}"
 IDLE_SECONDS="${IDLE_SECONDS:-60}"
 HBM_VERIFY="${HBM_VERIFY:-1}"
+# reset_prefix_cache 的 OM 入参 "reset_running_requests reset_connector"。
+# 默认 "true true"：连 connector 一起重置，能解开卡死会话（active_sessions 不归零、
+# block 数不变的场景）；回退旧行为设 HBM_RESET_PARAMS="true false"。
+HBM_RESET_PARAMS="${HBM_RESET_PARAMS:-true true}"
 TE_POD_PATTERN="${TE_POD_PATTERN:-prefill|decode}"
 HBM_VERIFY_TIMEOUT_SECONDS="${HBM_VERIFY_TIMEOUT_SECONDS:-120}"
 HBM_POLL_SECONDS="${HBM_POLL_SECONDS:-3}"
@@ -155,10 +162,11 @@ ensure_idle() {
 }
 
 clear_l1() {
-    local pod node port resp started value
+    local pod node port resp started value found=0
     log "== 清理 L1 (DRAM) =="
     while IFS=$'\t' read -r pod node; do
         [[ -n "$pod" ]] || continue
+        found=1
         port=$(pod_http_port "$pod") || die "无法获取 $pod 的 LMCACHE_HTTP_PORT（sidecar 未就绪？）"
         log "L1 清理: $pod (node=$node, http_port=$port)"
         if [[ "$DRY_RUN" == 1 ]]; then
@@ -185,6 +193,8 @@ clear_l1() {
             sleep 2
         done
     done < <(sidecar_pods)
+    # 空命名空间/未部署 LMCache 必须硬失败，禁止静默空跑后以 0 退出（假成功）
+    (( found == 1 )) || die "L1 清理: $NAMESPACE 中未发现带 $SIDECAR_CONTAINER 容器的 pod（命名空间填错或未部署 LMCache？设 CLEAR_L1=0 可显式跳过）"
 }
 
 # FE 地址自动发现：Service NodePort + 任一 sidecar pod 所在节点 IP
@@ -279,12 +289,14 @@ clear_hbm() {
     local url resp scheduled
     log "== 清理 HBM prefix cache =="
     if [[ -z "$FE_URL" ]]; then
-        FE_URL=$(discover_fe_url) || return 1
+        # die 在 $() 子 shell 内不会终止主脚本，必须在此处（主 shell）转成硬失败
+        FE_URL=$(discover_fe_url) \
+            || die "无法发现 FE URL（Service $NAMESPACE/$SERVICE_NAME 不存在？）；请检查 NAMESPACE 或设置 FE_URL"
     fi
     log "HBM 清理: POST $FE_URL/xds/v1/OM/diagnose/post (reset_prefix_cache)"
     if [[ "$DRY_RUN" == 1 ]]; then
         run curl -s --noproxy '*' -X POST "$FE_URL/xds/v1/OM/diagnose/post" -H 'Content-Type: application/json' \
-            -d '{"cmd":"reset_prefix_cache","params":"true false","filter":""}'
+            -d '{"cmd":"reset_prefix_cache","params":"'"$HBM_RESET_PARAMS"'","filter":""}'
         return 0
     fi
     # 快照必须先于 POST：调度是毫秒级异步的，晚记基线会漏掉 success 行
@@ -292,7 +304,7 @@ clear_hbm() {
         hbm_snapshot
     fi
     resp=$(curl -s --noproxy '*' -X POST "$FE_URL/xds/v1/OM/diagnose/post" -H 'Content-Type: application/json' \
-        -d '{"cmd":"reset_prefix_cache","params":"true false","filter":""}') || die "HBM 清理请求失败: $FE_URL"
+        -d '{"cmd":"reset_prefix_cache","params":"'"$HBM_RESET_PARAMS"'","filter":""}') || die "HBM 清理请求失败: $FE_URL"
     # OM diagnose 返回非严格 JSON（多对象拼接），只能 grep 计数
     scheduled=$(grep -o 'reset_prefix_cache scheduled' <<< "$resp" | wc -l)
     log "HBM reset_prefix_cache 已调度到 $scheduled 个 actor"
@@ -305,11 +317,12 @@ clear_hbm() {
 }
 
 clear_l2() {
-    local pod node path before after
+    local pod node path before after found=0
     declare -A seen=()
     log "== 清理 L2 (磁盘 fs_native) =="
     while IFS=$'\t' read -r pod node; do
         [[ -n "$pod" ]] || continue
+        found=1
         path=$(pod_l2_path "$pod") || { log "警告: $pod 未配置 L2 (无 --l2-adapter base_path)，跳过"; continue; }
         [[ -n "$path" ]] || { log "警告: $pod L2 base_path 解析为空，跳过"; continue; }
         # 同节点多个 sidecar 共享同一 L2 目录（hostPath），按 node:path 去重只删一次
@@ -328,6 +341,7 @@ clear_l2() {
         [[ "$after" == 0 ]] || die "L2 删除后仍有 ${after} 个文件: $pod $path"
         log "L2 已清空: $pod $path"
     done < <(sidecar_pods)
+    (( found == 1 )) || die "L2 清理: $NAMESPACE 中未发现带 $SIDECAR_CONTAINER 容器的 pod（命名空间填错或未部署 LMCache？设 CLEAR_L2=0 可显式跳过）"
 }
 
 main() {
@@ -341,6 +355,8 @@ main() {
     for v in "${int_vars[@]}"; do
         [[ "${!v}" =~ ^[1-9][0-9]*$ ]] || die "$v 必须为正整数"
     done
+    [[ "$HBM_RESET_PARAMS" =~ ^(true|false)[[:space:]]+(true|false)$ ]] \
+        || die 'HBM_RESET_PARAMS 必须是 "reset_running_requests reset_connector" 两个 true/false（如 "true true"）'
     have kubectl || die '需要 kubectl'
     KCTL version >/dev/null 2>&1 || die 'kubectl 无法访问 Kubernetes API'
     (( CLEAR_HBM )) && ! have curl && die '清 HBM 需要本机安装 curl（或设置 CLEAR_HBM=0 跳过）'
@@ -351,9 +367,10 @@ main() {
     if (( CLEAR_L2 && IDLE_CHECK )); then
         ensure_idle
     fi
-    (( CLEAR_L1 )) && clear_l1
-    (( CLEAR_HBM )) && clear_hbm
-    (( CLEAR_L2 )) && clear_l2
+    # 阶段失败必须终止并返回非零：否则空命名空间会静默空跑后以 0 退出（假成功）
+    if (( CLEAR_L1 )); then clear_l1 || exit 1; fi
+    if (( CLEAR_HBM )); then clear_hbm || exit 1; fi
+    if (( CLEAR_L2 )); then clear_l2 || exit 1; fi
     log "三层缓存清理流程完成 (DRY_RUN=$DRY_RUN)"
 }
 
