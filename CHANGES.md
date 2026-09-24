@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 新增 EMS（mfv-kv 内存池存储）安装部署三段流水线 step（`projects/pipeline/scripts/`）：
+  `ems-deploy.sh`（安装执行：盲装防线/释放授权 ns/打 label/helm install/pod+大页终验）与
+  `ems-hugepages.sh`（大页准备：只读内存预检/多轮 direct compaction 写入/allocatable 刷新/
+  双达标终验，2000Gi 固定）为新增；`ems-check.sh` 增加安装前门禁模式（可选参数 `EMS_NAME`
+  激活）：名字格式/label 占用/同名 ns·release 残留（含版本比对与 `EMS_IDEMPOTENT` 幂等
+  判定）/**CPU·内存资源余量**（调度器 requests 口径，每节点 ≥41C/41Gi 且单节点再余
+  12C/20Gi 供 controller+zk；不判业务占用——业务共存由余量说话，大页归 ems-hugepages
+  step，门禁不重复判），任一不过即 exit 1 拦下游。契约链：check 输出
+  `EMS_NAME/EMS_LABEL_KEY/EMS_NODES/EMS_IDEMPOTENT/EMS_GATE`（及
+  `EMS_RELEASE_NAMESPACES` 预授权透传），deploy 留空继承。三段编排已在平台机
+  （192.168.1.46 执行宿主）实测跑通（ems8-8 @ 126/237）。厂商 chart `scripts/ems-chart/`
+  **不入 git**（含证书私钥与密码，已加 .gitignore），随部署环境分发；README 补三脚本
+  章节与 chart 分发说明。单测：`test/test_ems_{check,deploy,hugepages}.sh`。
+
 - 修复并行组内 EvalTokens 阶段被兄弟阶段失败连带中止时误停外部 run 的问题
   （`projects/pipeline/pipeline.html`、`src/index.ts`）：并行组 fail-fast 级联（某阶段失败 →
   `cancelParallelGroup` 中止兄弟阶段）此前与用户主动中止走同一出口，兄弟阶段的收尾逻辑看到

@@ -2,3 +2,6 @@ node_modules/
 *.tgz
 __pycache__/
 *.py[cod]
+
+# EMS 厂商 chart：含证书私钥/密码，不入库，随部署环境分发（scripts/ems-chart/）
+projects/pipeline/scripts/ems-chart/
