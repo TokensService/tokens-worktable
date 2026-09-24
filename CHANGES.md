@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线任务列表行内「⋯」更多菜单新增「运行历史」项（`projects/pipeline/pipeline.html`）：菜单项
+  `#plRowMenuHistory` 为列表行形态，与置顶/收藏同款，title 随展开行动态标注目标流水线名；点击后
+  按该流水线名精确过滤运行历史——`histFilter.pipeline` 取流水线名，同时清空关键字/状态筛选并回显
+  `#histFilterKw`/`#histFilterStatus`，页码归首页，滚动到运行历史卡片（卡片新增 `id="histCard"`，
+  smooth 滚动），并触发一次 `refreshHistoryFromServer(false)` 服务端拉取（在途去重），让他端/定时
+  运行产生的记录即刻可见。实现为新增顶层函数 `showPipelineHistory(id)`；`openPlRowMenu` 元素查找
+  /guard 同步纳入新菜单项；尾部绑定与置顶/收藏同款（先收起菜单再执行，复用 `plMenuOpenId`）。新增
+  `projects/pipeline/tests/test_pipeline_row_history.js` 覆盖菜单项与卡片 id 静态断言、点击后筛选
+  状态/输入框回显/渲染与拉取调用/滚动/菜单收起、既有筛选被清空、无效 id 无操作、菜单项 title
+  动态设置。
+
 - 运行历史「流水线」筛选改为可搜索过滤（`projects/pipeline/pipeline.html`）：原普通下拉
   `<select>` 换成「输入框 + 候选面板」组合（`#histFilterPipeline` 输入框 + `#histPipelinePanel`，
   容器 `#histPipelinePick`，交互与样式沿用分支/部署策略搜索面板）：聚焦或按方向键弹出全量候选，
