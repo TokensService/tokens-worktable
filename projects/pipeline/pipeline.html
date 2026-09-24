@@ -359,7 +359,7 @@
       <div class="pipeline-bar" id="detailBarWrap" style="height:7px;margin:6px 0 8px;"><i id="detailBar" style="display:block;height:100%;width:0;border-radius:3px;background:var(--st-ok);"></i></div>
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
-    <div class="dshell-card">
+    <div class="dshell-card" id="histCard">
       <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="勾选一条做 AI 日志分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="勾选一条做 Profiling 分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="勾选一条做性能诊断，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
@@ -902,6 +902,7 @@
 <div id="plRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:88px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
   <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
   <div id="plRowMenuFavorite" class="pl-row-menu-item">收藏</div>
+  <div id="plRowMenuHistory" class="pl-row-menu-item">运行历史</div>
 </div>
 
 <script>
@@ -7643,7 +7644,7 @@ function renderPlFilterOptions(){
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
 /* 行内「⋯」菜单当前展开项的流水线 id：菜单是全局悬浮层 #plRowMenuPanel（fixed 定位，悬浮最上层、不撑大行高），
-   开合只动该层、不重渲染任务表；点 ⋯/置顶项/菜单外任意处/滚动/缩放收起（绑定见文件尾） */
+   开合只动该层、不重渲染任务表；点 ⋯/置顶/收藏/运行历史项/菜单外任意处/滚动/缩放收起（绑定见文件尾） */
 let plMenuOpenId=null;
 function closePlRowMenu(){
   if(!plMenuOpenId) return;
@@ -7654,18 +7655,31 @@ function closePlRowMenu(){
    不占用文档流，故不被 overflow 容器裁剪、也不撑大流水线行高 */
 function openPlRowMenu(id, anchorBtn){
   const pl=findPipeline(id); if(!pl) return;
-  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'), favoriteItem=$('plRowMenuFavorite'); if(!panel||!item||!favoriteItem) return;
+  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'), favoriteItem=$('plRowMenuFavorite'), historyItem=$('plRowMenuHistory'); if(!panel||!item||!favoriteItem||!historyItem) return;
   plMenuOpenId=id;
   item.textContent = pl.pinnedAt ? '取消置顶' : '置顶';
   item.title = pl.pinnedAt ? '取消置顶，恢复数组原顺序' : '置顶到列表最前，随服务端同步';
   favoriteItem.textContent = isPipelineFavorite(pl) ? '取消收藏' : '收藏';
   favoriteItem.title = currentUsername ? '收藏状态按当前登录用户独立保存并随服务端同步' : '登录后可收藏流水线';
+  historyItem.title='查看流水线「'+pl.name+'」的运行历史（按流水线名筛选，清空其他筛选条件）';
   panel.style.display='block';
   if(anchorBtn && anchorBtn.getBoundingClientRect){
     const r=anchorBtn.getBoundingClientRect();
     panel.style.left=Math.max(4, r.right-(panel.offsetWidth||0))+'px';   // 先 display:block 再量宽，右缘对齐锚按钮
     panel.style.top=(r.bottom+4)+'px';
   }
+}
+/* 行内「⋯」菜单「运行历史」：按流水线名精确过滤运行历史（同时清空关键字/状态筛选），回到第一页、
+   回显筛选控件并滚动到运行历史卡片；再触发一次服务端拉取（在途去重），让他端/定时运行的记录即刻可见 */
+function showPipelineHistory(id){
+  const pl=findPipeline(id); if(!pl) return;
+  histFilter={kw:'',status:'',pipeline:String(pl.name||'')};
+  saveHistFilter(); histPage=0;
+  const kwInp=$('histFilterKw'); if(kwInp) kwInp.value='';
+  const stSel=$('histFilterStatus'); if(stSel) stSel.value='';
+  renderHistFilterOptions(); renderHistory();
+  refreshHistoryFromServer(false);
+  const card=$('histCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
 }
 /* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
    pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
@@ -8486,10 +8500,11 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
-/* 流水线行内「⋯」菜单：「置顶 / 收藏」列表项对当前展开行切换对应状态（先收起菜单再切换）；
+/* 流水线行内「⋯」菜单：「置顶 / 收藏 / 运行历史」列表项对当前展开行切换对应状态或跳转（先收起菜单再执行）；
    点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
 $('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
 $('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineFavorite(id); });
+$('plRowMenuHistory').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) showPipelineHistory(id); });
 document.addEventListener('click', closePlRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
