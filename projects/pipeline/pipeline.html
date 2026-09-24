@@ -375,7 +375,10 @@
           </select>
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-          <select id="histFilterPipeline" class="dshell-input" style="min-width:130px;"></select>
+          <span id="histPipelinePick" style="position:relative;display:inline-block;">
+            <input id="histFilterPipeline" class="dshell-input" placeholder="全部（可搜索）" autocomplete="off" style="min-width:130px;" title="输入按名称过滤候选（子串、大小写不敏感），点选或回车选中后按精确流水线名过滤历史；清空=全部流水线" />
+            <div id="histPipelinePanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
         </label>
         <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支重新运行（执行人取当前填写值；运行中则入队）">↻ 重跑</button>
@@ -7119,13 +7122,41 @@ function filteredHistory(){
   });
 }
 let _histFilterPipelineSig='';
+let _histPipelineNames=[];   /* 流水线过滤候选名单缓存（签名命中时复用，避免每次重渲染重算） */
+let _histPipelineActive=-1;  /* 候选面板键盘高亮下标（-1 = 无） */
+/* 输入框回显值：筛选名在候选名单内才显示，否则置空（沿用旧下拉「名单不含该项时置空」语义；筛选状态本身不改写） */
+function histPipelineDisplay(){ return (histFilter.pipeline && _histPipelineNames.indexOf(histFilter.pipeline)>=0)?histFilter.pipeline:''; }
 function renderHistFilterOptions(){
-  const sel=$('histFilterPipeline'); if(!sel) return;
+  const inp=$('histFilterPipeline'); if(!inp) return;
   const names=Array.from(new Set([].concat(history.map(h=>h.pipeline).filter(Boolean), pipelines.map(p=>p&&p.name).filter(Boolean))));
   const sig=names.join('\u0001');
-  if(sig!==_histFilterPipelineSig){ _histFilterPipelineSig=sig; sel.innerHTML='<option value="">全部流水线</option>'+names.map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join(''); }
-  /* 始终以筛选状态为权威源同步下拉选中项（名单不含该项时置空） */
-  sel.value = (histFilter.pipeline && Array.from(sel.options).some(o=>o.value===histFilter.pipeline)) ? histFilter.pipeline : '';
+  if(sig!==_histFilterPipelineSig){ _histFilterPipelineSig=sig; _histPipelineNames=names; }
+  /* 始终以筛选状态为权威源同步输入框；输入框聚焦（搜索输入中）时不回写，避免定时自动刷新打断输入 */
+  if(document.activeElement!==inp) inp.value=histPipelineDisplay();
+  /* 面板展开时随名单变化重绘候选 */
+  const panel=$('histPipelinePanel');
+  if(panel && panel.style.display==='block') renderHistPipelinePanel();
+}
+/* 流水线过滤候选面板：showAll 显示全量候选，否则按输入框文本子串过滤（大小写不敏感）；点选候选提交精确名 */
+function renderHistPipelinePanel(showAll){
+  const panel=$('histPipelinePanel'); const inp=$('histFilterPipeline'); if(!panel||!inp) return;
+  const q=showAll?'':inp.value.trim().toLowerCase();
+  const list=_histPipelineNames.filter(n=>!q || n.toLowerCase().indexOf(q)>=0);
+  const item=(v,label)=>'<div data-histpl="'+esc(v)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;white-space:nowrap;'+(v===histFilter.pipeline?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(label)+'</div>';
+  let h=item('','全部流水线')+list.map(n=>item(n,n)).join('');
+  if(!list.length) h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配候选</div>';
+  panel.innerHTML=h; panel.style.display='block';
+  _histPipelineActive=-1;
+  panel.querySelectorAll('[data-histpl]').forEach(el=>el.addEventListener('click',()=>pickHistPipeline(el.getAttribute('data-histpl'))));
+}
+function histPipelinePanelItems(){ const panel=$('histPipelinePanel'); return panel?Array.from(panel.querySelectorAll('[data-histpl]')):[]; }
+/* 选中候选（'' = 全部流水线）：提交精确名到筛选状态并持久化，归首页后重绘 */
+function pickHistPipeline(name){
+  const inp=$('histFilterPipeline'); const panel=$('histPipelinePanel');
+  histFilter.pipeline=name||'';
+  if(inp) inp.value=histFilter.pipeline;
+  if(panel) panel.style.display='none';
+  histPage=0; saveHistFilter(); renderHistory();
 }
 function renderHistory(){
   const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
@@ -7418,12 +7449,52 @@ $('plPageSize').value=String(plPageSize);
 $('plPageSize').addEventListener('change', e=>{ plPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-plPageSize', String(plPageSize)); }catch(e){} plPage=0; renderPipelines(); });
 $('plPrev').addEventListener('click', ()=>{ if(plPage>0){ plPage--; renderPipelines(); } });
 $('plNext').addEventListener('click', ()=>{ if((plPage+1)*plPageSize<pipelines.filter(plFilterMatch).length){ plPage++; renderPipelines(); } });
-/* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
+/* 历史筛选：关键字实时过滤、状态下拉、流水线可搜索面板、清除筛选（条件变化时归首页） */
 $('histFilterKw').value=histFilter.kw;
 $('histFilterStatus').value=histFilter.status;
 $('histFilterKw').addEventListener('input', e=>{ histFilter.kw=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterStatus').addEventListener('change', e=>{ histFilter.status=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
-$('histFilterPipeline').addEventListener('change', e=>{ histFilter.pipeline=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
+/* 流水线过滤（可搜索）：聚焦/方向键弹出全量候选，输入即时子串过滤（大小写不敏感；清空=全部流水线，即时提交），
+   点选/Enter 提交候选精确名，方向键移动高亮，Esc/点外关闭面板并回显已提交值 */
+$('histFilterPipeline').addEventListener('focus', ()=>renderHistPipelinePanel(true));
+$('histFilterPipeline').addEventListener('input', e=>{
+  if(!e.target.value.trim()){
+    if(histFilter.pipeline){ histFilter.pipeline=''; histPage=0; saveHistFilter(); renderHistory(); }
+    else renderHistPipelinePanel();
+  } else renderHistPipelinePanel();
+});
+$('histFilterPipeline').addEventListener('keydown', e=>{
+  const panel=$('histPipelinePanel'); if(!panel) return;
+  const open=panel.style.display==='block';
+  if(e.key==='Escape'){
+    if(open){ panel.style.display='none'; e.target.value=histPipelineDisplay(); e.preventDefault(); }
+    return;
+  }
+  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+    e.preventDefault();
+    if(!open){ renderHistPipelinePanel(true); return; }
+    const items=histPipelinePanelItems(); if(!items.length) return;
+    _histPipelineActive=(e.key==='ArrowDown')
+      ? (_histPipelineActive<items.length-1 ? _histPipelineActive+1 : 0)
+      : (_histPipelineActive>0 ? _histPipelineActive-1 : items.length-1);
+    items.forEach((el,i)=>{ el.style.background=(i===_histPipelineActive)?'var(--dsw-alias-fill-l1)':''; });
+    return;
+  }
+  if(e.key==='Enter' && open){
+    const items=histPipelinePanelItems();
+    let el=(_histPipelineActive>=0)?items[_histPipelineActive]:null;
+    /* 未高亮时 Enter 提交与输入完全一致的候选 */
+    if(!el){ const v=e.target.value.trim(); if(v) el=items.find(x=>x.getAttribute('data-histpl')===v)||null; }
+    if(el){ pickHistPipeline(el.getAttribute('data-histpl')); e.preventDefault(); }
+  }
+});
+document.addEventListener('click', e=>{
+  const p=$('histPipelinePanel'); const m=$('histPipelinePick');
+  if(p && m && p.style.display==='block' && !m.contains(e.target)){
+    p.style.display='none';
+    const inp=$('histFilterPipeline'); if(inp) inp.value=histPipelineDisplay();
+  }
+});
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
 /* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含内置）」+ 全部收藏状态 */
 $('plFilterKw').value=plFilter.kw;
