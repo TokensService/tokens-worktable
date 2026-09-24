@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
-import { createReadStream, readdirSync, realpathSync } from 'node:fs'
+import { createReadStream, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
@@ -452,6 +452,168 @@ function pipelineConfigDifferenceIds(clientConfig: any, diskConfig: any) {
   const ids = new Set<string>([...client.keys(), ...disk.keys()])
   return [...ids].filter(id => client.has(id) !== disk.has(id) || (client.has(id) && JSON.stringify(client.get(id)) !== JSON.stringify(disk.get(id))))
 }
+
+/* ---------- 可信流水线（trusted）：服务端强制校验 ---------- */
+/** 解析请求携带的 dsh-auth-gate 会话 token：Cookie dsh_auth 优先，其次 Authorization: Bearer。
+ *  手写键值切分，不引 cookie 依赖；token 截到 128 字符防畸形头。 */
+function requestAuthToken(req: any): string {
+  const headers = req && req.headers ? req.headers : {}
+  const rawCookie = headers.cookie
+  const cookie = Array.isArray(rawCookie) ? rawCookie.join(';') : (typeof rawCookie === 'string' ? rawCookie : '')
+  for (const part of cookie.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq < 0) continue
+    if (part.slice(0, eq).trim() === 'dsh_auth') return part.slice(eq + 1).trim().slice(0, 128)
+  }
+  const rawAuth = headers.authorization
+  const authorization = Array.isArray(rawAuth) ? rawAuth[0] : rawAuth
+  if (typeof authorization === 'string' && /^Bearer\s+/i.test(authorization)) {
+    return authorization.replace(/^Bearer\s+/i, '').trim().slice(0, 128)
+  }
+  return ''
+}
+
+/** dsh-auth-gate users.yaml 的限定 schema 迷你解析（不引 YAML 依赖；schema 见 auth-gate users-file）：
+ *    version: 1
+ *    users:
+ *      alice:              # 缩进 2 的用户名 key（可单/双引号包裹）
+ *        role: admin       # 缩进 4 的字段（值可单/双引号包裹；只取 role 与 disabled）
+ *  顶层其它 key 即离开 users 段；注释与空行跳过；任何坏输入都返回已解析部分而不抛错。 */
+function parseAuthUsersYaml(text: string): Map<string, { role?: string; disabled?: boolean }> {
+  const users = new Map<string, { role?: string; disabled?: boolean }>()
+  const unquote = (raw: string): string => {
+    const s = raw.trim()
+    if (s.length >= 2 && s[0] === '"') {   // 双引号：找未转义的收尾引号（兼容引号后的行尾注释）
+      let i = 1
+      while (i < s.length && (s[i] !== '"' || s[i - 1] === '\\')) i += 1
+      return s.slice(1, i).replace(/\\(["\\])/g, '$1')
+    }
+    if (s.length >= 2 && s[0] === "'") {   // 单引号：YAML 以 '' 转义单引号
+      let i = 1
+      while (i < s.length && (s[i] !== "'" || s[i + 1] === "'")) i += s[i] === "'" ? 2 : 1
+      return s.slice(1, i).replace(/''/g, "'")
+    }
+    return s.replace(/\s+#.*$/, '').trim()   // 非引号值去掉行尾注释
+  }
+  let inUsers = false
+  let current: { role?: string; disabled?: boolean } | null = null
+  for (const rawLine of String(text ?? '').split('\n')) {
+    const line = rawLine.replace(/\r$/, '')
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const indent = line.length - line.trimStart().length
+    if (indent === 0) {   // 顶层 key：进入/离开 users 段
+      inUsers = /^users\s*:(?:\s*#.*)?$/.test(trimmed)
+      current = null
+      continue
+    }
+    if (!inUsers) continue
+    const kv = /^(.+?)\s*:\s*(.*)$/.exec(trimmed)
+    if (!kv) continue
+    if (indent === 2) {   // 用户名 key（值应为空；内联值不属于本 schema，按空记录处理）
+      current = {}
+      users.set(unquote(kv[1]), current)
+      continue
+    }
+    if (indent === 4 && current) {
+      const field = unquote(kv[1])
+      if (field === 'role') current.role = unquote(kv[2])
+      else if (field === 'disabled') current.disabled = unquote(kv[2]) === 'true'
+    }
+  }
+  return users
+}
+
+/** 每次请求新鲜读取 admin 用户名集合（与 auth-gate 同纪律，不缓存；流水线写操作低频）。
+ *  文件缺失 / 读取失败 → 空集合（无人是 admin）。判定只看 role === 'admin'（与 auth-gate 的
+ *  isAdmin 同规则），忽略 disabled。路径懒解析（DSH_HOME/auth/users.yaml），不在模块加载期求值。 */
+function readAuthAdminUsers(file: string): Set<string> {
+  let text = ''
+  try { text = readFileSync(file, 'utf8') } catch { return new Set() }
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1)
+  const admins = new Set<string>()
+  for (const [name, record] of parseAuthUsersYaml(text)) if (record.role === 'admin') admins.add(name)
+  return admins
+}
+
+/** 解析请求调用者身份：
+ *  - 返回 undefined：无 auth 服务（dsh-auth-gate 未安装，token 共享模式）——不做任何限制，与页面「退化为全权」约定一致；
+ *  - 返回 { username, isAdmin }：auth 服务存在；会话缺失/无效按非 admin（username 空串）。
+ *  auth 服务懒取（不列入 inject，避免对 auth-gate 形成硬依赖）：ctx.auth 优先，其次 ctx.get('auth')。 */
+function resolveRequestAuth(ctx: any, req: any): { username: string; isAdmin: boolean } | undefined {
+  let auth: any
+  try { auth = ctx ? (ctx as any).auth : undefined } catch { auth = undefined }
+  if (!auth) { try { auth = ctx && typeof ctx.get === 'function' ? ctx.get('auth') : undefined } catch { auth = undefined } }
+  const sessions = auth && auth.sessions
+  if (!sessions || typeof sessions.getByToken !== 'function') return undefined
+  const token = requestAuthToken(req)
+  let session: any
+  try { session = token ? sessions.getByToken(token) : undefined } catch { session = undefined }
+  const username = session && typeof session.subject === 'string' ? session.subject : ''
+  const isAdmin = !!username && readAuthAdminUsers(pathResolve(DSH_HOME, 'auth', 'users.yaml')).has(username)
+  return { username, isAdmin }
+}
+
+/** 键序无关的递归深比较（JSON 数据）；ignoreKeys 只在最顶层比较时豁免，不递归豁免嵌套键。 */
+function deepEqualIgnoring(a: any, b: any, ignoreKeys?: string[]): boolean {
+  if (a === b) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    for (let i = 0; i < a.length; i += 1) if (!deepEqualIgnoring(a[i], b[i])) return false
+    return true
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const ignore = new Set(ignoreKeys || [])
+    const keysA = Object.keys(a).filter((k) => !ignore.has(k))
+    const keysB = Object.keys(b).filter((k) => !ignore.has(k))
+    if (keysA.length !== keysB.length) return false
+    for (const key of keysA) {
+      if (!Object.prototype.hasOwnProperty.call(b, key)) return false
+      if (!deepEqualIgnoring(a[key], b[key])) return false
+    }
+    return true
+  }
+  return false
+}
+
+/** 可信流水线写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得删除/改内容/摘除
+ *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；favoriteUsers 是按用户收藏的个人数据，
+ *  豁免条目顶层内容比对（任何登录用户可改）。运行/排队/定时不回写流水线条目，无需其它豁免。
+ *  返回分组违规 id：edit = 可信条目被删/被改/被摘标，mark = 新建 trusted 或非 admin 打标。 */
+function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit: string[]; mark: string[] } {
+  const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
+  const mapOf = (items: any[]) => new Map<string, any>(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item) => [item.id, item]))
+  const stored = mapOf(pipelinesOf(storedConfig))
+  const merged = mapOf(pipelinesOf(mergedConfig))
+  const edit: string[] = []
+  const mark: string[] = []
+  for (const [id, storedEntry] of stored) {
+    const mergedEntry = merged.get(id)
+    if (storedEntry.trusted === true) {
+      if (!mergedEntry || mergedEntry.trusted !== true || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) edit.push(id)
+    } else if (mergedEntry && mergedEntry.trusted === true) {
+      mark.push(id)
+    }
+  }
+  for (const [id, mergedEntry] of merged) {
+    if (!stored.has(id) && mergedEntry.trusted === true) mark.push(id)
+  }
+  return { edit, mark }
+}
+
+/** 写前校验入口（withStoreLock 内、合并计算之后、写盘之前调用；拒绝则整体不写盘）。
+ *  返回 null = 放行；否则返回 403 响应所需的 message（中文，客户端 toast）与 pipelineIds。 */
+function trustedPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedConfig: any): { message: string; pipelineIds: string[] } | null {
+  const caller = resolveRequestAuth(ctx, req)
+  if (!caller || caller.isAdmin) return null
+  const violations = trustedPipelineViolations(storedConfig, mergedConfig)
+  if (!violations.edit.length && !violations.mark.length) return null
+  const parts: string[] = []
+  if (violations.edit.length) parts.push('流水线已被管理员标记为可信，仅 admin 可编辑')
+  if (violations.mark.length) parts.push('仅 admin 可将流水线标记为可信')
+  return { message: parts.join('；'), pipelineIds: [...new Set([...violations.edit, ...violations.mark])] }
+}
+/* ---------- 可信流水线结束 ---------- */
 
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
@@ -2243,6 +2405,10 @@ export function apply(ctx: Context) {
               conflicts: diskHasPipelines ? pipelineConfigDifferenceIds(config, diskCfg) : [],
             }
             if (configMerge.conflicts.length) return { conflicts: configMerge.conflicts, config: diskCfg }
+            /* 可信流水线：非 admin 不得删除/改内容/摘标 trusted 条目，也不得新建/打标（favoriteUsers 豁免）；
+               违规整体不写盘，403 由调用方在锁外响应。 */
+            const trustedDeny = trustedPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
+            if (trustedDeny) return { conflicts: [] as string[], config: diskCfg, trusted: trustedDeny }
             const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
@@ -2250,6 +2416,10 @@ export function apply(ctx: Context) {
             await writeJsonAtomic(PIPELINE_STORE, text)
             return { conflicts: [] as string[], config: merged.config }
           })
+          if ('trusted' in outcome && outcome.trusted) {
+            json(res, 403, { error: 'trusted', message: outcome.trusted.message, pipelineIds: outcome.trusted.pipelineIds })
+            return
+          }
           if (outcome.conflicts.length) {
             json(res, 409, { error: 'pipeline config conflict', conflicts: outcome.conflicts, config: outcome.config })
             return
@@ -2287,12 +2457,19 @@ export function apply(ctx: Context) {
           if (merged.conflicts.length) return { conflicts: merged.conflicts, config: diskCfg }
           const config = merged.config
           if (scriptsDir) config.scriptsDir = scriptsDir
+          /* 可信流水线：与全量 PUT 同一校验——非 admin 不得改 trusted 条目（favoriteUsers 豁免），违规整体不写盘 */
+          const trustedDeny = trustedPipelineWriteDeny(ctx, req, diskCfg, config)
+          if (trustedDeny) return { conflicts: [] as string[], config: diskCfg, trusted: trustedDeny }
           /* 历史原样保留（客户端未上报即不动；serializePipelineStore 仅做 20MB 上限裁剪） */
           const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
           const text = serializePipelineStore(config, diskHistory)
           await writeJsonAtomic(PIPELINE_STORE, text)
           return { conflicts: [] as string[], config }
         })
+        if ('trusted' in outcome && outcome.trusted) {
+          json(res, 403, { error: 'trusted', message: outcome.trusted.message, pipelineIds: outcome.trusted.pipelineIds })
+          return
+        }
         if (outcome.conflicts.length) {
           json(res, 409, { error: 'pipeline config conflict', conflicts: outcome.conflicts, config: outcome.config })
           return
