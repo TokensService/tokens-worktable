@@ -1,5 +1,17 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 运行历史「流水线」筛选改为可搜索过滤（`projects/pipeline/pipeline.html`）：原普通下拉
+  `<select>` 换成「输入框 + 候选面板」组合（`#histFilterPipeline` 输入框 + `#histPipelinePanel`，
+  容器 `#histPipelinePick`，交互与样式沿用分支/部署策略搜索面板）：聚焦或按方向键弹出全量候选，
+  输入即时按名称子串过滤（大小写不敏感），点选 / Enter（含无高亮时提交与输入完全一致的候选）
+  选中后仍按精确流水线名过滤历史（`filteredHistory` 匹配逻辑不变），方向键移动高亮、Esc / 点外
+  关闭并回显已提交值，清空输入即时恢复「全部流水线」。候选名单继续从 history + pipelines 动态
+  汇总去重并保留签名缓存（`_histFilterPipelineSig`，名单缓存进 `_histPipelineNames`）；输入框
+  聚焦时 `renderHistFilterOptions` 不回写值，避免 3 秒自动刷新打断搜索输入；筛选名不在候选名单
+  时输入框置空但不改写状态（沿用旧下拉语义）。持久化结构 `pip-histFilter` 不变，初始化、
+  「清除筛选」与服务端/本地存储恢复路径均直接回显新控件。新增
+  `projects/pipeline/tests/test_history_pipeline_search.js` 覆盖候选汇总与签名缓存、输入过滤、
+  精确选中 / 清空 / Esc 回显 / 键盘导航、清除筛选与存储恢复回显。
 - 运行历史表格去掉「环境」「Commit」两列展示（`projects/pipeline/pipeline.html`）：表头删去两列
   （10 列 → 8 列），`renderHistory` 行渲染同步删去对应 `<td>`、空态行 `colspan` 10 → 8；关键字
   筛选输入框占位文案改为「搜索 #/流水线/执行人」，`filteredHistory` 关键字 haystack 移除
