@@ -364,7 +364,7 @@
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
-          <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
+          <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/执行人" autocomplete="off" style="min-width:220px;" />
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">状态
           <select id="histFilterStatus" class="dshell-input" style="min-width:96px;">
@@ -384,7 +384,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th>执行人</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -7087,7 +7087,7 @@ let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局
 let analysisHistoryKeys=[];   // AI 分析勾选（最多两条，顺序即对比的 A / B；与单行回放选择分离）
 let histPage=0;
 let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
-/* 运行历史筛选：关键字（# / 流水线 / 环境 / 执行人 / Commit，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
+/* 运行历史筛选：关键字（# / 流水线 / 执行人，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
 function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
@@ -7114,7 +7114,7 @@ function filteredHistory(){
   return history.filter(h=>{
     if(histFilter.status && h.status!==histFilter.status) return false;
     if(histFilter.pipeline && (h.pipeline||'')!==histFilter.pipeline) return false;
-    if(kw){ const hay=[('#'+(h.no||'')),(h.pipeline||''),(h.env||''),(h.by||''),(h.commit||'')].join(' ').toLowerCase(); if(hay.indexOf(kw)<0) return false; }
+    if(kw){ const hay=[('#'+(h.no||'')),(h.pipeline||''),(h.by||'')].join(' ').toLowerCase(); if(hay.indexOf(kw)<0) return false; }
     return true;
   });
 }
@@ -7134,7 +7134,7 @@ function renderHistory(){
   const view=filteredHistory();
   renderHistFilterOptions();
   const fTip=$('histFilterTip'); if(fTip) fTip.textContent=(histFilter.kw||histFilter.status||histFilter.pipeline)?('已筛选 '+view.length+' / '+history.length+' 条'):'';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="10" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="8" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
   const pages=Math.max(1, Math.ceil(view.length/histPageSize));
   if(histPage>pages-1) histPage=pages-1;
   if(histPage<0) histPage=0;
@@ -7144,7 +7144,7 @@ function renderHistory(){
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());
