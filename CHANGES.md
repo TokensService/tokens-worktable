@@ -1,5 +1,21 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线新增「可信」标记：admin 可标记/取消可信，非 admin 对可信流水线只读（`projects/pipeline/pipeline.html`
+  + `src/index.ts`）。流水线条目新增 `trusted` 字段（存 `worktable-pipeline.json`，三方合并原样透传）；
+  页面侧：行内「⋯」菜单新增「标记可信 / 取消可信」项（`#plRowMenuTrusted`，仅 password 模式取得登录用户、
+  `currentUserIsAdmin` 且非内置流水线时显示，token 模式不显示），切换经 `savePipelines({immediate:true})`
+  即时落盘并 toast 反馈；可信流水线行名旁与编辑器标题加「可信」徽章，`plEditable` 对非 admin 判只读
+  （级联查看按钮/编辑器只读/删除与流程拖拽禁用），admin 可编辑任意可信流水线（优先于「仅创建者可编辑」），
+  运行不受限，复制出的副本自动清除 `trusted`；token 共享模式维持全权退化（trusted 不限制编辑）。
+  服务端侧：`PUT /api/worktable/pipeline` 与 `/pipeline/save-one` 在三方合并之后、写盘之前强制校验
+  （`resolveRequestAuth` / `trustedPipelineWriteDeny` 等，经 cordis `auth` 服务（dsh-auth-gate 提供）
+  以 `dsh_auth` Cookie 或 Bearer 解析会话，每请求新鲜读 `$DSH_HOME/auth/users.yaml` 判 `role==='admin'`）：
+  非 admin 改动/删除 trusted 条目或打标/摘标/新建 trusted 一律 403 `{error,message,pipelineIds}`
+  （`favoriteUsers` 按用户收藏豁免；auth 服务缺失的 token 模式不校验，与页面退化语义一致）；页面保存链路
+  （`pushState`/`pushPipelineOne`）捕获 403  toast 服务端 message 并重新拉取服务端状态同步（不再回退
+  重试）。新增 `tests/pipeline-trust.test.mjs`（10 例）与
+  `projects/pipeline/tests/test_pipeline_trusted.js`（20 例）。
+
 - 流水线任务列表行内「⋯」更多菜单新增「运行历史」项（`projects/pipeline/pipeline.html`）：菜单项
   `#plRowMenuHistory` 为列表行形态，与置顶/收藏同款，title 随展开行动态标注目标流水线名；点击后
   按该流水线名精确过滤运行历史——`histFilter.pipeline` 取流水线名，同时清空关键字/状态筛选并回显
