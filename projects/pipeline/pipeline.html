@@ -34,6 +34,8 @@
     /* 流水线行内「⋯」菜单项：列表行形态（纯文字行，无按钮边框/圆角），悬停底色高亮 */
     .pl-row-menu-item { padding:6px 14px; font-size:12px; white-space:nowrap; cursor:pointer; }
     .pl-row-menu-item:hover { background:var(--dsw-alias-fill-l1); }
+    /* 页面级轻提示（toast）：底部居中浮层、自动消隐，用于保存被拒（可信流水线 403）等瞬时反馈 */
+    .page-toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); z-index:1200; display:none; max-width:70vw; padding:8px 16px; font-size:12px; border-radius:8px; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary); border:1px solid var(--dsw-alias-border-l2); box-shadow:0 8px 24px rgba(0,0,0,.35); }
     /* 主控区各选择框限宽：超长省略号显示，保证右侧「运行流水线」按钮位置稳定 */
     #pipelineControls select.dshell-input,
     #pipelineControls button.dshell-input { max-width:220px; }
@@ -903,6 +905,7 @@
   <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
   <div id="plRowMenuFavorite" class="pl-row-menu-item">收藏</div>
   <div id="plRowMenuHistory" class="pl-row-menu-item">运行历史</div>
+  <div id="plRowMenuTrusted" class="pl-row-menu-item" style="display:none">标记可信</div>
 </div>
 
 <script>
@@ -1081,6 +1084,15 @@ async function pushState(){
     catch(e){ if(e&&e.name==='AbortError') return {ok:false,error:'保存请求超过 60 秒无响应，已中止；请检查网络后重试（编辑内容仍保留）'}; throw e; }
     finally{ clearTimeout(abortTimer); }
     let body={}; try{ body=await r.json(); }catch(e){}
+    if(r.status===403){
+      /* 可信流水线服务端强制拦截（非 admin 直调 API 同样被拒，body 形如
+         {error:'trusted', message:'…', pipelineIds:[…]}）：toast 服务端 message 并重拉状态同步。
+         403 是权限拒绝而非冲突/网络错误：不走 conflict 语义、不重试，定义以服务端为准。 */
+      const msg403=(body && typeof body.message==='string' && body.message.trim()) ? body.message.trim() : '流水线已被管理员标记为可信，仅 admin 可编辑';
+      if(typeof toast==='function') toast(msg403); else if(typeof alert==='function') alert(msg403);
+      try{ if(typeof loadServerState==='function') await loadServerState(); if(typeof renderPipelines==='function') renderPipelines(); }catch(e){}
+      return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
+    }
     if(!r.ok){
       return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
     }
@@ -1125,6 +1137,14 @@ async function pushPipelineOne(pipelineId){
     finally{ clearTimeout(abortTimer); }
     if(r.status===404) return {ok:false, unsupported:true};
     let body={}; try{ body=await r.json(); }catch(e){}
+    if(r.status===403){
+      /* 可信流水线服务端强制拦截（语义同 pushState 的 403 分支）：toast 服务端 message 并重拉状态同步；
+         不回退全量保存（那是给网络错误/冲突用的），由调用方按 saved.trusted 收尾。 */
+      const msg403=(body && typeof body.message==='string' && body.message.trim()) ? body.message.trim() : '流水线已被管理员标记为可信，仅 admin 可编辑';
+      if(typeof toast==='function') toast(msg403); else if(typeof alert==='function') alert(msg403);
+      try{ if(typeof loadServerState==='function') await loadServerState(); if(typeof renderPipelines==='function') renderPipelines(); }catch(e){}
+      return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
+    }
     if(!r.ok){
       return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
     }
@@ -7576,14 +7596,24 @@ function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updated
 /* 流水线归属编辑限制（仅页面侧判断；服务端无用户身份概念，与 canControlRun 同一约定）：
    仅创建者可编辑/删除，消除多人编辑同一条流水线的竞争；他人可只读查看并「复制」为自己的副本。
    - 内置流水线只读（既有行为）；
+   - 可信流水线（trusted，admin 标记）：仅 admin 可编辑/删除——admin 权限优先于「仅创建者可编辑」；
+     非 admin（含创建者本人）只读，但仍可运行；行菜单的标记入口只对 admin 显示（见 openPlRowMenu）；
    - 未署名（无创建者）的存量流水线全员可编辑，保存时按既有逻辑补署创建者（见 savePlForm）；
-   - auth 探测未完成（authReady 未置位）时对署名流水线保守只读；探测完成仍无登录用户
-     （token 共享模式/未装认证插件/探测失败）退化为全权；
-   - admin 无例外：同样只能编辑自己创建的流水线。
+   - auth 探测未完成（authReady 未置位）时对署名/可信流水线保守只读；探测完成仍无登录用户
+     （token 共享模式/未装认证插件/探测失败）退化为全权：页面无法判定 admin，trusted 不限制编辑、
+     标记入口也不显示；
+   - admin 对非可信流水线无例外：同样只能编辑自己创建的流水线。
    typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局；守卫缺失时退化为既有的
    「仅内置只读」行为。 */
 function plEditable(p){
   if(!p || p.builtIn) return false;   // 内置流水线只读
+  if(p.trusted){
+    /* 可信流水线：仅「auth 探测成功（password 模式）且为 admin」可编辑；探测在途保守只读，
+       token 模式（探测完成仍无用户）退化为全权。 */
+    const meTrusted=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
+    if(!meTrusted) return (typeof authReady==='undefined') ? true : !!authReady;
+    return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;
+  }
   const owner=(typeof plOwnerOf==='function') ? plOwnerOf(p) : ((typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : '');
   if(!owner) return true;   // 未署名存量流水线：全员可编辑（保存时补署创建者）
   const me=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
@@ -7662,6 +7692,19 @@ function openPlRowMenu(id, anchorBtn){
   favoriteItem.textContent = isPipelineFavorite(pl) ? '取消收藏' : '收藏';
   favoriteItem.title = currentUsername ? '收藏状态按当前登录用户独立保存并随服务端同步' : '登录后可收藏流水线';
   historyItem.title='查看流水线「'+pl.name+'」的运行历史（按流水线名筛选，清空其他筛选条件）';
+  /* 「标记可信/取消可信」入口：仅 password 模式（已取得登录用户）且当前会话为 admin、且非内置流水线时
+     显示；token 模式/探测失败无法判定 admin，不显示（此时 trusted 也不限制编辑，见 plEditable）。 */
+  const trustedItem=$('plRowMenuTrusted');
+  if(trustedItem && trustedItem.style){
+    const meTrusted=(typeof currentUsername!=='undefined')?(currentUsername||''):'';
+    const isAdminTrusted=(typeof currentUserIsAdmin!=='undefined')&&!!currentUserIsAdmin;
+    const canMarkTrusted=!!(!pl.builtIn && meTrusted && isAdminTrusted);
+    trustedItem.style.display=canMarkTrusted?'':'none';
+    if(canMarkTrusted){
+      trustedItem.textContent=pl.trusted?'取消可信':'标记可信';
+      trustedItem.title=pl.trusted?'取消可信标记：恢复「仅创建者可编辑」':'标记为可信流水线：仅 admin 可编辑/删除，其他用户只读（仍可运行）';
+    }
+  }
   panel.style.display='block';
   if(anchorBtn && anchorBtn.getBoundingClientRect){
     const r=anchorBtn.getBoundingClientRect();
@@ -7688,6 +7731,30 @@ function togglePipelinePin(id){
   p.pinnedAt=p.pinnedAt?0:Date.now();
   savePipelines();
   renderPipelines();
+}
+/* 可信标记切换（admin 专属，菜单入口见 openPlRowMenu；服务端同时强制校验，非 admin 直调 API 返回 403）：
+   置位 trusted=true、取消时删除字段保持数据干净；保存成功 toast 反馈。保存走 immediate 以拿到结果：
+   403 时 pushState 已 toast 服务端 message 并 loadServerState 重拉状态同步，此处直接返回不再重复处理；
+   其他失败回滚本地标记并提示。 */
+async function togglePipelineTrusted(id){
+  const p=findPipeline(id); if(!p || p.builtIn) return;
+  const me=(typeof currentUsername!=='undefined')?(currentUsername||''):'';
+  const isAdmin=(typeof currentUserIsAdmin!=='undefined')&&!!currentUserIsAdmin;
+  if(!me || !isAdmin){ if(typeof alert==='function') alert('仅 admin 可标记/取消可信流水线。'); return; }   // 兜底：菜单入口已对非 admin 隐藏
+  const marking=!p.trusted;
+  if(marking) p.trusted=true; else delete p.trusted;
+  renderPipelines();
+  let saved=null;
+  try{ saved=await savePipelines({immediate:true}); }
+  catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
+  if(saved && saved.ok===false){
+    if(saved.trusted) return;   /* 403 可信拦截：pushState 已 toast 服务端 message 并重新拉取服务端状态同步 */
+    if(marking) delete p.trusted; else p.trusted=true;   // 网络/冲突等其他失败：回滚本地标记
+    renderPipelines();
+    if(typeof alert==='function') alert((marking?'标记可信失败：':'取消可信失败：')+String(saved.error||'未知错误'));
+    return;
+  }
+  if(typeof toast==='function') toast(marking?'已标记为可信流水线：仅 admin 可编辑':'已取消可信标记');
 }
 function renderPipelines(){
   renderPlFilterOptions();
@@ -7722,9 +7789,9 @@ function renderPipelines(){
     /* 归属编辑限制（plEditable：仅创建者可编辑/删除，内置只读）：他人流水线行内「编辑」变「查看」
        （带创建者提示）、不渲染「删除」；「复制」对所有行可用（复制为自己的副本后编辑）。 */
     const canEditPl=plEditable(p);
-    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+((!canEditPl&&!p.builtIn)?' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"':'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
+    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+((!canEditPl&&!p.builtIn)?(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"'):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
     const plDelBtn=canEditPl?'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>':'';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> '+plEditBtn+' <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+plDelBtn+
@@ -7818,8 +7885,8 @@ function openPlForm(id, focusIdx){
   /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
   const p = id ? (findPipeline(id) || curPipeline()) : null;
   f.dataset.editId = p ? p.id : '';
-  plFormReadOnly=!!(p&&!plEditable(p));   // 内置与他人创建的流水线只读查看（plEditable：仅创建者可编辑），编辑器整体切为只读模式
-  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（内置·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：')) : '编辑流水线：')+p.name : '新建流水线';
+  plFormReadOnly=!!(p&&!plEditable(p));   // 内置、可信（非 admin）与他人创建的流水线只读查看（plEditable），编辑器整体切为只读模式
+  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（内置·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：'))+p.name : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
@@ -7857,7 +7924,10 @@ async function savePlForm(){
      此处兜底拦截一切写回路径（如需改动请用列表「复制」生成可编辑副本） */
   const guardP=findPipeline($('plForm').dataset.editId||'');
   if(guardP && guardP.builtIn){ alert('内置流水线「'+guardP.name+'」为只读，不可保存修改；可在「流水线任务」列表「复制」为副本后编辑。'); return; }
-  if(guardP && !plEditable(guardP)){ alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 创建，仅创建者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return; }
+  if(guardP && !plEditable(guardP)){
+    if(guardP.trusted){ alert('流水线「'+guardP.name+'」已被管理员标记为可信，仅 admin 可编辑保存；如需改动可在「流水线任务」列表「复制」为副本后编辑。'); return; }
+    alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 创建，仅创建者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return;
+  }
   const name=$('plName').value.trim()||'未命名流水线';
   if(!editStages.some(s=>!s.preset)){ alert('请至少添加一个阶段（预设任务不计入）'); return; }
   // 校验：阶段名非空/不重复、脚本存在（可警告）、必填参数已填；预设任务行仅参与排序，跳过内容校验
@@ -7942,6 +8012,13 @@ async function savePlForm(){
     if(saveForm) saveForm.inert=saveFormWasInert; if(saveButton){ saveButton.disabled=false; saveButton.textContent=saveButtonText||'保存'; }
   }
   if(saved && saved.ok===false){
+    if(saved.trusted){
+      /* 可信拦截（服务端 403）：pushPipelineOne/pushState 已 toast 服务端 message 并 loadServerState
+         重拉状态同步，此处不再走本地回滚/alert（回滚会把刚同步的服务端定义再次覆盖）；编辑器退出。 */
+      clearPlDraft(); $('plForm').style.display='none';
+      renderPipelines();
+      return saved;
+    }
     /* 只撤销本次编辑的流水线；等待同页串行锁期间，前序 PUT 可能已把其他浏览器的不同流水线合入当前列表，
        整表回滚会再次丢掉它们，并在下次保存时把缺项误解释为删除。 */
     const previousPipeline=previousPipelines.find(p=>String(p&&p.id||'')===String(savedPipelineId));
@@ -7970,9 +8047,9 @@ async function savePlForm(){
   return saved||{ok:true};
 }
 function deletePipeline(id){
-  /* 归属拦截：仅创建者可删除（内置也不可删除）；行内「删除」按钮对只读行已不渲染，此处兜底 */
+  /* 归属拦截：仅创建者可删除（内置也不可删除；可信流水线仅 admin 可删除）；行内「删除」按钮对只读行已不渲染，此处兜底 */
   const delP=findPipeline(id);
-  if(delP && !plEditable(delP)){ alert(delP.builtIn ? '内置流水线「'+delP.name+'」不可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。'); return; }
+  if(delP && !plEditable(delP)){ alert(delP.builtIn ? '内置流水线「'+delP.name+'」不可删除。' : (delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。')); return; }
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);
@@ -7998,6 +8075,7 @@ function copyPipeline(id){
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
   clone.pinnedAt=0;   /* 副本不继承置顶：置顶随源条目，不随复制扩散 */
   clone.favoriteUsers=[];   /* 副本不继承任何用户的收藏：收藏关系属于源流水线 */
+  delete clone.trusted;   /* 副本不继承可信标记：复制品默认非可信（可信须由 admin 重新标记） */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
@@ -8018,6 +8096,21 @@ $('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */
+/* 页面级轻提示（toast）：底部居中浮层、约 4 秒自动消隐，用于保存被拒（可信流水线 403）
+   与「标记可信」反馈等瞬时提示。元素懒创建（.page-toast 样式见样式表）；测试桩无 DOM 时静默跳过。 */
+let pageToastTimer=null;
+function toast(msg){
+  let el=(typeof $==='function')?$('pageToast'):null;
+  if(!el && typeof document!=='undefined' && document.createElement && document.body){
+    el=document.createElement('div'); el.id='pageToast'; el.className='page-toast';
+    document.body.appendChild(el);
+  }
+  if(!el) return;
+  el.textContent=String(msg||'');
+  el.style.display='block';
+  if(pageToastTimer && typeof clearTimeout==='function') clearTimeout(pageToastTimer);
+  if(typeof setTimeout==='function') pageToastTimer=setTimeout(()=>{ el.style.display='none'; },4000);
+}
 /* 运行按钮旁短暂提示（入队 / 重跑反馈） */
 let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
@@ -8500,11 +8593,12 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
-/* 流水线行内「⋯」菜单：「置顶 / 收藏 / 运行历史」列表项对当前展开行切换对应状态或跳转（先收起菜单再执行）；
+/* 流水线行内「⋯」菜单：「置顶 / 收藏 / 运行历史 / 标记可信」列表项对当前展开行切换对应状态或跳转（先收起菜单再执行）；
    点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
 $('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
 $('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineFavorite(id); });
 $('plRowMenuHistory').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) showPipelineHistory(id); });
+$('plRowMenuTrusted').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineTrusted(id); });
 document.addEventListener('click', closePlRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
