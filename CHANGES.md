@@ -1,5 +1,118 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线新增「可信」标记：admin 可标记/取消可信，非 admin 对可信流水线只读（`projects/pipeline/pipeline.html`
+  + `src/index.ts`）。流水线条目新增 `trusted` 字段（存 `worktable-pipeline.json`，三方合并原样透传）；
+  页面侧：行内「⋯」菜单新增「标记可信 / 取消可信」项（`#plRowMenuTrusted`，仅 password 模式取得登录用户、
+  `currentUserIsAdmin` 且非内置流水线时显示，token 模式不显示），切换经 `savePipelines({immediate:true})`
+  即时落盘并 toast 反馈；可信流水线行名旁与编辑器标题加「可信」徽章，`plEditable` 对非 admin 判只读
+  （级联查看按钮/编辑器只读/删除与流程拖拽禁用），admin 可编辑任意可信流水线（优先于「仅创建者可编辑」），
+  运行不受限，复制出的副本自动清除 `trusted`；token 共享模式维持全权退化（trusted 不限制编辑）。
+  服务端侧：`PUT /api/worktable/pipeline` 与 `/pipeline/save-one` 在三方合并之后、写盘之前强制校验
+  （`resolveRequestAuth` / `trustedPipelineWriteDeny` 等，经 cordis `auth` 服务（dsh-auth-gate 提供）
+  以 `dsh_auth` Cookie 或 Bearer 解析会话，每请求新鲜读 `$DSH_HOME/auth/users.yaml` 判 `role==='admin'`）：
+  非 admin 改动/删除 trusted 条目或打标/摘标/新建 trusted 一律 403 `{error,message,pipelineIds}`
+  （`favoriteUsers` 按用户收藏豁免；auth 服务缺失的 token 模式不校验，与页面退化语义一致）；页面保存链路
+  （`pushState`/`pushPipelineOne`）捕获 403  toast 服务端 message 并重新拉取服务端状态同步（不再回退
+  重试）。新增 `tests/pipeline-trust.test.mjs`（10 例）与
+  `projects/pipeline/tests/test_pipeline_trusted.js`（20 例）。
+
+- 流水线任务列表行内「⋯」更多菜单新增「运行历史」项（`projects/pipeline/pipeline.html`）：菜单项
+  `#plRowMenuHistory` 为列表行形态，与置顶/收藏同款，title 随展开行动态标注目标流水线名；点击后
+  按该流水线名精确过滤运行历史——`histFilter.pipeline` 取流水线名，同时清空关键字/状态筛选并回显
+  `#histFilterKw`/`#histFilterStatus`，页码归首页，滚动到运行历史卡片（卡片新增 `id="histCard"`，
+  smooth 滚动），并触发一次 `refreshHistoryFromServer(false)` 服务端拉取（在途去重），让他端/定时
+  运行产生的记录即刻可见。实现为新增顶层函数 `showPipelineHistory(id)`；`openPlRowMenu` 元素查找
+  /guard 同步纳入新菜单项；尾部绑定与置顶/收藏同款（先收起菜单再执行，复用 `plMenuOpenId`）。新增
+  `projects/pipeline/tests/test_pipeline_row_history.js` 覆盖菜单项与卡片 id 静态断言、点击后筛选
+  状态/输入框回显/渲染与拉取调用/滚动/菜单收起、既有筛选被清空、无效 id 无操作、菜单项 title
+  动态设置。
+
+- 运行历史「流水线」筛选改为可搜索过滤（`projects/pipeline/pipeline.html`）：原普通下拉
+  `<select>` 换成「输入框 + 候选面板」组合（`#histFilterPipeline` 输入框 + `#histPipelinePanel`，
+  容器 `#histPipelinePick`，交互与样式沿用分支/部署策略搜索面板）：聚焦或按方向键弹出全量候选，
+  输入即时按名称子串过滤（大小写不敏感），点选 / Enter（含无高亮时提交与输入完全一致的候选）
+  选中后仍按精确流水线名过滤历史（`filteredHistory` 匹配逻辑不变），方向键移动高亮、Esc / 点外
+  关闭并回显已提交值，清空输入即时恢复「全部流水线」。候选名单继续从 history + pipelines 动态
+  汇总去重并保留签名缓存（`_histFilterPipelineSig`，名单缓存进 `_histPipelineNames`）；输入框
+  聚焦时 `renderHistFilterOptions` 不回写值，避免 3 秒自动刷新打断搜索输入；筛选名不在候选名单
+  时输入框置空但不改写状态（沿用旧下拉语义）。持久化结构 `pip-histFilter` 不变，初始化、
+  「清除筛选」与服务端/本地存储恢复路径均直接回显新控件。新增
+  `projects/pipeline/tests/test_history_pipeline_search.js` 覆盖候选汇总与签名缓存、输入过滤、
+  精确选中 / 清空 / Esc 回显 / 键盘导航、清除筛选与存储恢复回显。
+- 运行历史表格去掉「环境」「Commit」两列展示（`projects/pipeline/pipeline.html`）：表头删去两列
+  （10 列 → 8 列），`renderHistory` 行渲染同步删去对应 `<td>`、空态行 `colspan` 10 → 8；关键字
+  筛选输入框占位文案改为「搜索 #/流水线/执行人」，`filteredHistory` 关键字 haystack 移除
+  `h.env`/`h.commit` 两项。仅收窄展示与关键字匹配，数据模型不变：运行记录仍照常保存 `env`/`commit`，
+  回放（`enterHistoryReplay`）、「↻ 重跑」按环境重跑、分析提示词 `{env}`/`{commit}` 占位符与运行
+  详情/回放区展示均不受影响。新增 `projects/pipeline/tests/test_history_table_columns.js` 覆盖表头
+  列数与文案、行渲染单元格数、空态 colspan 与关键字匹配行为。
+
+- 流水线仅限创建者编辑/删除，他人只读可复制副本（`projects/pipeline/pipeline.html`）：为防止多人
+  编辑同一条流水线的竞争，新增 `plEditable(p)` 归属判断，编辑器打开（`openPlForm` 只读置位与标题
+  标注「创建者 @xx·只读」）、保存兜底（`savePlForm`）、删除（`deletePipeline`）、任务列表行按钮
+  （`renderPipelines`：他人流水线显示「查看」并带创建者提示、不渲染「删除」；「复制」对所有行可用）、
+  主视图拖拽改序（`flowDraggable`/`persistFlowOrder`）与节点 title 均按此分流。行为矩阵：本人创建
+  →可编辑/可删除；他人创建→只读查看、可「复制」为自己的副本；未署名存量→全员可编辑、保存时按既有
+  逻辑补署创建者；auth 探测在途（新增 `authReady` 标志）对署名流水线保守只读，探测结束仍无登录用户
+  （token 共享模式/未装认证插件/探测失败）退化为全权；admin 无例外。`fillExecutorFromAuth` 无论成功/
+  失败/提前返回都在 finally 置位 `authReady` 并无条件重绘任务列表（原先仅「我的/仅看收藏」筛选时重绘，
+  行按钮文案依赖身份，探测到达后必须刷新）。新增 `projects/pipeline/tests/test_pipeline_owner_edit.js`
+  覆盖 `plEditable` 全分支、`openPlForm` 只读/可编辑行为、`savePlForm`/`deletePipeline` 拦截与
+  `authReady` 置位重绘；受影响既有测试补 `plEditable` 等价旧行为桩（`test_pipeline_readonly.js`、
+  `test_pipeline_audit_trail.js`、`test_pipeline_save_consistency.js`、`test_parallel_stage_ui.js`、
+  `test_pipeline_queue_counts.js`、`test_pipeline_row_run.js`、`test_pipeline_favorites.js`、
+  `test_pipeline_pin.js`、`test_pipeline_pagination.js`、`test_stage_insert_select.js`、`test_cleanup_flow.js`）。
+
+- 流水线编辑器保存改为只上传当前流水线（`projects/pipeline/pipeline.html`、`src/index.ts`）：
+  在上一轮负载瘦身（baseConfig 仅 pipelines + 历史按签名按需携带，常规保存 70KB→17KB、慢链路
+  ~19s→~4s）的基础上更进一步——新增服务端单条保存路由 `PUT /api/worktable/pipeline/save-one`，
+  负载只有当前编辑的流水线 + 该条基线 + scriptsDir（约 1-2KB），慢上行链路保存进入秒级以内；
+  同时编辑器保存不再把 Jenkins/EvalTokens/普罗/环境等其他配置字段卷入 last-wins 覆盖（此前整表
+  PUT 会用本页旧快照覆盖他端对这些字段的并发修改）。服务端 `mergePipelineOneForWrite` 按 id 做
+  三方合并：磁盘上的该条仍等于客户端基线才原位替换（新建追加末尾），他端已修改/删除同一条即
+  409 冲突，页面走既有回滚与提示路径；路由不触碰历史与其他配置字段（磁盘历史原样保留）。
+  客户端 `pushPipelineOne` 与 pushState 共用 persistInFlight 串行锁（基线快照等锁到手后再取），
+  响应沿用 reconcilePipelinesAfterSave 把他端新增合回本页；旧服务端无此路由（404）时自动回退
+  瘦身全量保存，新旧页面/服务端任意组合兼容。测试：`tests/pipeline-config-concurrency.test.mjs`
+  新增单条合并四组回归（原位替换/追加/修改与删除冲突/路由不碰历史），
+  `projects/pipeline/tests/test_pipeline_save_consistency.js` 新增 pushPipelineOne 负载形状、
+  404 回退、409 形状、他端新增合入与缺条不发请求五组页面回归。
+
+- 修复流水线编辑器「保存」长时间停留在「保存中…」（公网映射等慢上行链路下 10 秒级）的问题
+  （`projects/pipeline/pipeline.html`）：显式保存须等服务端确认（并发三方合并，见既有
+  test_pipeline_save_consistency.js），但确认请求此前携带全量负载——完整 config + 完整 baseConfig
+  副本 + 全部运行历史（实测约 70KB），「保存中…」时长与上行字节数成正比（实测 70KB/7KB/s ≈ 10s），
+  且同页 persistInFlight 串行锁会让保存排在前台任何一次全量后台同步之后，慢链路上用户易误判
+  卡死而刷新页面。现对全部保存负载统一瘦身：baseConfig 只带 pipelines（服务端
+  mergePipelineConfigForWrite 本就只按流水线 id 比对基线条目，其余基线字段从不读取）；历史正文
+  改为按内容签名（双哈希）按需携带——首次加载/定时刷新以服务端内容整体替换本地历史时标记已同步，
+  签名未变的保存一律不带历史（服务端 mergePipelineHistoryForWrite 对客户端未上报的记录按磁盘
+  保留，不丢定时/他端/本页运行历史，该行为新增 tests/pipeline-config-concurrency.test.mjs 回归锁定），
+  本地新增运行/清空/迁移改动签名后自动恢复携带。常规保存负载约减至 1/4（70KB→17KB），同一慢链路
+  实测保存由 ~10s 降至 ~2.8s。另有两项韧性加固：保存超过 4 秒在编辑器底栏提示「网络较慢，仍在
+  保存，请勿刷新或关闭页面…」（结束自动清除）；PUT 新增 60 秒看门狗，链路黑洞（连接在但无响应）
+  时中止请求并返回明确错误，防止一次卡死的 PUT 长期占用 persistInFlight 串行锁、后续保存全部
+  排队假死（合并写幂等，中止后重发安全）。服务端 src/index.ts 零改动，新旧页面/服务端任意组合兼容。
+- 新增「用户使用统计」（`src/index.ts`、`src/client/index.tsx`、`src/client/locales.ts`、`src/client/styles.ts`）：
+  服务端新增 `/api/worktable/usage` 路由（exact）——POST 采集事件（`sanitizeUsageEvent`：body 必须对象、
+  kind 限 `/^[a-z][a-z0-9_-]{0,31}$/`、user 截 64 字符（空串=匿名）/detail 截 200 字符、at 恒取服务端时间；
+  content-length 超 16KB 判 413），事件以 JSONL 追加落盘 `$DSH_HOME/storages/worktable-usage.jsonl`
+  （`usageWriteChain` 串行写链防并发互踩；文件超 4MB 时保留尾部约 2MB 的完整行经 writeJsonAtomic 同款
+  临时文件+rename 原子重写；写失败仅 logger.warn，绝不影响请求，POST 不等落盘即回 `{ok:true}`）；
+  GET 全量读取（ENOENT=空）经 `parseUsageEvents`（坏行跳过）+ `aggregateUsageEvents`（乱序输入也可正确
+  聚合）返回 `{total, users, daily, recent}`——users 含 visits/opens/活跃天数/首末时间（events 降序、
+  并列 lastAt 降序），daily 为最近 30 个本地日历日（升序补零、users 当日去重），recent 为最新 30 条。
+  客户端新增模块级 `reportUsage`（kind:detail 键 10 秒去重、超 200 项清空、全程静默）：用户名探测
+  effect 成功后写入 `usageUsername` 并上报 visit（空用户名也报，服务端记匿名），`reportUsed`
+  （卡片点击/打开项目统一入口）开头上报 open。设置弹窗版本行「更新历史」旁新增「使用统计」按钮，
+  弹窗（复用 dsh-wt_hist 骨架，新增 `dsh-wt_usage*` 样式）展示摘要 chips（用户/总事件/今日事件）、
+  用户表格（用户/访问/打开项目/总事件/活跃天数/最近活跃）与最近事件列表（kind 经 `usage.kind.<kind>`
+  翻译、未知 kind 显示原文，空 user 显示「匿名」）；加载中/失败/空三态文案与更新历史弹窗同款，
+  每次打开都重新拉取（仅防重入）。新增 `tests/usage-stats.test.mjs`：抽取测服务端
+  sanitizeUsageEvent/parseUsageEvents/aggregateUsageEvents（含截断、坏行、30 日桶、recent 上限与排序、
+  空输入）与客户端 parseUsageStats（正常解析 + 异常回退空结构）。
+  `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
+
 - 修复并行组内 EvalTokens 阶段被兄弟阶段失败连带中止时误停外部 run 的问题
   （`projects/pipeline/pipeline.html`、`src/index.ts`）：并行组 fail-fast 级联（某阶段失败 →
   `cancelParallelGroup` 中止兄弟阶段）此前与用户主动中止走同一出口，兄弟阶段的收尾逻辑看到

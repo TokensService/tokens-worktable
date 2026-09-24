@@ -34,6 +34,8 @@
     /* 流水线行内「⋯」菜单项：列表行形态（纯文字行，无按钮边框/圆角），悬停底色高亮 */
     .pl-row-menu-item { padding:6px 14px; font-size:12px; white-space:nowrap; cursor:pointer; }
     .pl-row-menu-item:hover { background:var(--dsw-alias-fill-l1); }
+    /* 页面级轻提示（toast）：底部居中浮层、自动消隐，用于保存被拒（可信流水线 403）等瞬时反馈 */
+    .page-toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); z-index:1200; display:none; max-width:70vw; padding:8px 16px; font-size:12px; border-radius:8px; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary); border:1px solid var(--dsw-alias-border-l2); box-shadow:0 8px 24px rgba(0,0,0,.35); }
     /* 主控区各选择框限宽：超长省略号显示，保证右侧「运行流水线」按钮位置稳定 */
     #pipelineControls select.dshell-input,
     #pipelineControls button.dshell-input { max-width:220px; }
@@ -337,7 +339,7 @@
     </div>
     <div id="flow" class="pipeline-seg"></div>
     <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
-      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（内置流水线也可编辑）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者可编辑：内置与他人创建的流水线只读，可在「流水线任务」列表「复制」为副本后编辑）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
       <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
     </div>
   </div>
@@ -359,12 +361,12 @@
       <div class="pipeline-bar" id="detailBarWrap" style="height:7px;margin:6px 0 8px;"><i id="detailBar" style="display:block;height:100%;width:0;border-radius:3px;background:var(--st-ok);"></i></div>
       <div class="logbox" id="detailLog">选择上方任意阶段查看日志与详情。</div>
     </div>
-    <div class="dshell-card">
+    <div class="dshell-card" id="histCard">
       <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="勾选一条做 AI 日志分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="勾选一条做 Profiling 分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="勾选一条做性能诊断，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
-          <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/环境/执行人/Commit" autocomplete="off" style="min-width:220px;" />
+          <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/执行人" autocomplete="off" style="min-width:220px;" />
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">状态
           <select id="histFilterStatus" class="dshell-input" style="min-width:96px;">
@@ -375,7 +377,10 @@
           </select>
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">流水线
-          <select id="histFilterPipeline" class="dshell-input" style="min-width:130px;"></select>
+          <span id="histPipelinePick" style="position:relative;display:inline-block;">
+            <input id="histFilterPipeline" class="dshell-input" placeholder="全部（可搜索）" autocomplete="off" style="min-width:130px;" title="输入按名称过滤候选（子串、大小写不敏感），点选或回车选中后按精确流水线名过滤历史；清空=全部流水线" />
+            <div id="histPipelinePanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+          </span>
         </label>
         <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支重新运行（执行人取当前填写值；运行中则入队）">↻ 重跑</button>
@@ -384,7 +389,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th>环境</th><th>执行人</th><th>Commit</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th>执行人</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -899,6 +904,8 @@
 <div id="plRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:88px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
   <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
   <div id="plRowMenuFavorite" class="pl-row-menu-item">收藏</div>
+  <div id="plRowMenuHistory" class="pl-row-menu-item">运行历史</div>
+  <div id="plRowMenuTrusted" class="pl-row-menu-item" style="display:none">标记可信</div>
 </div>
 
 <script>
@@ -1018,6 +1025,18 @@ function historyForPersist(){
     const clean={}; Object.keys(h).forEach(k=>{ if(transient.indexOf(k)<0) clean[k]=h[k]; }); return clean;
   });
 }
+/* 历史上行签名：内容自上次确认同步后未变时，保存不再携带历史正文（服务端合并按磁盘保留），
+   慢上行链路下「保存中…」不再为重复历史买单。双哈希降碰撞概率；空串初值保证首次保存必带历史
+   （服务端为空时的本地迁移依赖它，见 loadServerState 末尾 persistState）。 */
+let historySyncSig='';
+function historyPersistSig(text){
+  let h1=5381, h2=0;
+  for(let i=0;i<text.length;i++){ const c=text.charCodeAt(i); h1=((h1<<5)+h1+c)|0; h2=((h2<<7)+h2+c)|0; }
+  return text.length+':'+h1+':'+h2;
+}
+/* 历史被服务端内容整体替换（首次加载 / 定时刷新）即与服务端一致：标记已同步；随后的本地改动
+   （新运行记录、清空、内嵌日志迁移）会改变签名，下次保存自动恢复携带。 */
+function historyMarkSynced(){ historySyncSig=historyPersistSig(JSON.stringify(historyForPersist())); }
 /* 服务端可能把其他浏览器对“不同流水线”的修改一起合入本次 PUT 响应。把这些结果同步回当前页，
    但保留请求在途期间本页产生的更新，避免下一次保存又把刚合入的远端流水线误删。 */
 function reconcilePipelinesAfterSave(submitted, accepted, current){
@@ -1046,12 +1065,34 @@ async function pushState(){
   /* 先快照本页要保存的状态：首次加载尚在途时，loadServerState 会刷新全局变量，不能把用户刚点保存的
      内容替换成远端旧值后再提交。共同基线则必须等 GET 成功后再取。 */
   const config=collectConfig(), savedHistory=historyForPersist();
+  const historySig=historyPersistSig(JSON.stringify(savedHistory));
   if(!stateLoaded){ await loadServerState(); if(!stateLoaded) return {ok:false,error:'服务端配置加载失败'}; }
   try{
     /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
-       服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖 */
-    const r=await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({config, baseConfig:serverConfigBase||{}, history:savedHistory})});
+       服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖。
+       负载瘦身（「保存中…」等待与上行字节数成正比，公网映射等慢上行链路下全量负载曾需 10 秒级）：
+       baseConfig 只带 pipelines——服务端三方合并仅按流水线 id 比对基线条目（mergePipelineConfigForWrite），
+       其余基线字段从不读取；历史正文仅在内容自上次确认同步后有变化时携带（签名比对），
+       未变不带——服务端合并对客户端未上报的记录一律按磁盘保留，不丢定时/他端/本页运行历史。 */
+    const payload={config, baseConfig:{pipelines:(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[]}};
+    if(historySig!==historySyncSig) payload.history=savedHistory;
+    /* 看门狗：链路黑洞（连接在但无响应）时 60 秒中止，防一次卡死的 PUT 长期占用 persistInFlight、
+       后续保存全部排队假死；合并写幂等，中止后重发安全 */
+    const abortCtrl=new AbortController(); const abortTimer=setTimeout(()=>abortCtrl.abort(),60000);
+    let r;
+    try{ r=await fetch('/api/worktable/pipeline',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:abortCtrl.signal}); }
+    catch(e){ if(e&&e.name==='AbortError') return {ok:false,error:'保存请求超过 60 秒无响应，已中止；请检查网络后重试（编辑内容仍保留）'}; throw e; }
+    finally{ clearTimeout(abortTimer); }
     let body={}; try{ body=await r.json(); }catch(e){}
+    if(r.status===403){
+      /* 可信流水线服务端强制拦截（非 admin 直调 API 同样被拒，body 形如
+         {error:'trusted', message:'…', pipelineIds:[…]}）：toast 服务端 message 并重拉状态同步。
+         403 是权限拒绝而非冲突/网络错误：不走 conflict 语义、不重试，定义以服务端为准。 */
+      const msg403=(body && typeof body.message==='string' && body.message.trim()) ? body.message.trim() : '流水线已被管理员标记为可信，仅 admin 可编辑';
+      if(typeof toast==='function') toast(msg403); else if(typeof alert==='function') alert(msg403);
+      try{ if(typeof loadServerState==='function') await loadServerState(); if(typeof renderPipelines==='function') renderPipelines(); }catch(e){}
+      return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
+    }
     if(!r.ok){
       return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
     }
@@ -1063,11 +1104,63 @@ async function pushState(){
         try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
       }
     }
+    historySyncSig=historySig;   // 本批历史已确认落盘：下次内容未变不再携带
     return {ok:true,config:body.config||config};
   }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
   }finally{
     persistInFlight=null;
     releasePersist();
+  }
+}
+/* 编辑器单条保存：只上传当前编辑的流水线（约 KB 级，慢上行链路秒级以内；全量 PUT 曾需 10 秒级），
+   服务端按 id 三方合并（mergePipelineOneForWrite），不触碰历史与其他配置字段。
+   与 pushState 共用 persistInFlight 串行锁——基线快照必须等锁到手后再取（等待期间前序保存确认的
+   新基线才是本条合并的共同基线）。旧服务端无此路由（404）时返回 unsupported，由调用方回退全量保存。 */
+async function pushPipelineOne(pipelineId){
+  while(persistInFlight) await persistInFlight;
+  let releaseOne;
+  persistInFlight=new Promise(resolve=>{ releaseOne=resolve; });
+  try{
+  const edited=findPipeline(pipelineId);
+  if(!edited) return {ok:false,error:'流水线已不在本页列表中（可能被其他浏览器删除），请刷新后重试'};
+  const pipelineSnap=JSON.parse(JSON.stringify(edited));
+  const localSnap=JSON.parse(JSON.stringify(pipelines));   // 响应合入时的本页快照（reconcilePipelinesAfterSave 语义同 pushState）
+  const baseList=(typeof serverConfigBase!=='undefined'&&serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+  const baseOne=baseList.find(p=>p&&p.id===pipelineId)||null;
+  try{
+    const payload={pipeline:pipelineSnap, basePipeline:baseOne, scriptsDir};
+    /* 看门狗与 pushState 同理：黑洞链路 60 秒中止，防串行锁被卡死 */
+    const abortCtrl=new AbortController(); const abortTimer=setTimeout(()=>abortCtrl.abort(),60000);
+    let r;
+    try{ r=await fetch('/api/worktable/pipeline/save-one',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:abortCtrl.signal}); }
+    catch(e){ if(e&&e.name==='AbortError') return {ok:false,error:'保存请求超过 60 秒无响应，已中止；请检查网络后重试（编辑内容仍保留）'}; throw e; }
+    finally{ clearTimeout(abortTimer); }
+    if(r.status===404) return {ok:false, unsupported:true};
+    let body={}; try{ body=await r.json(); }catch(e){}
+    if(r.status===403){
+      /* 可信流水线服务端强制拦截（语义同 pushState 的 403 分支）：toast 服务端 message 并重拉状态同步；
+         不回退全量保存（那是给网络错误/冲突用的），由调用方按 saved.trusted 收尾。 */
+      const msg403=(body && typeof body.message==='string' && body.message.trim()) ? body.message.trim() : '流水线已被管理员标记为可信，仅 admin 可编辑';
+      if(typeof toast==='function') toast(msg403); else if(typeof alert==='function') alert(msg403);
+      try{ if(typeof loadServerState==='function') await loadServerState(); if(typeof renderPipelines==='function') renderPipelines(); }catch(e){}
+      return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
+    }
+    if(!r.ok){
+      return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
+    }
+    if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
+      serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
+        pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
+          .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+        try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
+      }
+    }
+    return {ok:true,config:body.config||{}};
+  }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
+  }finally{
+    persistInFlight=null;
+    releaseOne();
   }
 }
 async function loadServerState(){
@@ -1110,8 +1203,8 @@ async function loadServerState(){
       if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
       if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
       /* 服务端历史为空但被显式清空过（histClearedAt）：保持空，不复活内置演示数据 */
-      if(Array.isArray(st.history) && st.history.length) history=st.history;
-      else if(histClearedAt) history=[];
+      if(Array.isArray(st.history) && st.history.length){ history=st.history; historyMarkSynced(); }
+      else if(histClearedAt){ history=[]; historyMarkSynced(); }
       runStages=null; selectedId=curPipeline().stages[0].id;
       /* 同步 localStorage 离线缓存 */
       try{
@@ -3318,7 +3411,7 @@ function pipelineStageGroupAt(stages,index){
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
-function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && !(p && p.builtIn); }   // 内置（默认）流水线只读，主视图同样禁止拖拽改序
+function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置与他人创建的流水线只读（plEditable：仅创建者可编辑），主视图同样禁止拖拽改序
 /* 工作列表：当前流水线阶段补齐缺失的预设标记（与 flowStages 同源）。
    真实阶段保留对象引用（含 script/url 等全部字段，原样回写）；预设标记按 id/name/pkey 轻量保存。 */
 function flowWorkList(){ return withPresetMarkers((curPipeline().stages||[]).slice()); }
@@ -3360,7 +3453,7 @@ function flowNodeDrop(e){
 function flowNodeDragEnd(){ flowDragFromId=null; clearFlowDragMarks(); }
 /* 落盘：工作列表回写为 stages（预设标记随位置保存，并清掉旧顶层 prom），与编辑器 savePlForm 的归一化一致 */
 function persistFlowOrder(orderedWork){
-  const p=curPipeline(); if(!p||p.builtIn) return;   // 内置（默认）流水线只读，不写回（入口已由 flowDraggable 拦截，此处兜底）
+  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置与他人创建的流水线只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
   p.stages=orderedWork.map(s=> s.preset
     ? {id:s.id,name:s.name,preset:true,pkey:s.pkey}
     : s);
@@ -3398,7 +3491,8 @@ function createFlowNode(s, i){
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
-    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((curPipeline()||{}).builtIn?'单击查看详情，双击查看该阶段（内置流水线只读）':'单击查看详情，双击编辑该阶段');
+    const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置只读 / 他人创建只读（标注创建者）/ 本人可编辑
+    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur||{}).builtIn?'单击查看详情，双击查看该阶段（内置流水线只读）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
     /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
     if(flowDraggable()){
       n.draggable=true; n.title+='；可拖拽调整执行顺序';
@@ -7017,7 +7111,7 @@ let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局
 let analysisHistoryKeys=[];   // AI 分析勾选（最多两条，顺序即对比的 A / B；与单行回放选择分离）
 let histPage=0;
 let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
-/* 运行历史筛选：关键字（# / 流水线 / 环境 / 执行人 / Commit，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
+/* 运行历史筛选：关键字（# / 流水线 / 执行人，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
 function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
@@ -7031,6 +7125,9 @@ let plPageSize=Math.max(1, parseInt(lsGet('pip-plPageSize','10'),10)||10);
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
    供同步路径（新建/复制流水线署名、默认筛选「我的」）取用。声明在此处以保证声明顺序早于筛选事件绑定。 */
 let currentUsername='';
+/* auth 身份探测是否已结束：fillExecutorFromAuth 无论成功/失败/提前返回，结束时都置位。
+   未置位时 plEditable 对署名流水线保守只读；置位后仍无登录用户（token 共享模式等）退化为全权。 */
+let authReady=false;
 /* 当前会话是否为 admin（仅 password 模式 + 已装 dsh-auth-gate-wt-admin-role 时为 true）。
    由 fillExecutorFromAuth 在拿到登录用户后异步探测 /auth/users 写入；token 模式 / 未装
    admin 插件 / 探测失败时为 false（此时 currentUsername 亦为空，canControlRun 退化为全权）。 */
@@ -7041,18 +7138,46 @@ function filteredHistory(){
   return history.filter(h=>{
     if(histFilter.status && h.status!==histFilter.status) return false;
     if(histFilter.pipeline && (h.pipeline||'')!==histFilter.pipeline) return false;
-    if(kw){ const hay=[('#'+(h.no||'')),(h.pipeline||''),(h.env||''),(h.by||''),(h.commit||'')].join(' ').toLowerCase(); if(hay.indexOf(kw)<0) return false; }
+    if(kw){ const hay=[('#'+(h.no||'')),(h.pipeline||''),(h.by||'')].join(' ').toLowerCase(); if(hay.indexOf(kw)<0) return false; }
     return true;
   });
 }
 let _histFilterPipelineSig='';
+let _histPipelineNames=[];   /* 流水线过滤候选名单缓存（签名命中时复用，避免每次重渲染重算） */
+let _histPipelineActive=-1;  /* 候选面板键盘高亮下标（-1 = 无） */
+/* 输入框回显值：筛选名在候选名单内才显示，否则置空（沿用旧下拉「名单不含该项时置空」语义；筛选状态本身不改写） */
+function histPipelineDisplay(){ return (histFilter.pipeline && _histPipelineNames.indexOf(histFilter.pipeline)>=0)?histFilter.pipeline:''; }
 function renderHistFilterOptions(){
-  const sel=$('histFilterPipeline'); if(!sel) return;
+  const inp=$('histFilterPipeline'); if(!inp) return;
   const names=Array.from(new Set([].concat(history.map(h=>h.pipeline).filter(Boolean), pipelines.map(p=>p&&p.name).filter(Boolean))));
   const sig=names.join('\u0001');
-  if(sig!==_histFilterPipelineSig){ _histFilterPipelineSig=sig; sel.innerHTML='<option value="">全部流水线</option>'+names.map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join(''); }
-  /* 始终以筛选状态为权威源同步下拉选中项（名单不含该项时置空） */
-  sel.value = (histFilter.pipeline && Array.from(sel.options).some(o=>o.value===histFilter.pipeline)) ? histFilter.pipeline : '';
+  if(sig!==_histFilterPipelineSig){ _histFilterPipelineSig=sig; _histPipelineNames=names; }
+  /* 始终以筛选状态为权威源同步输入框；输入框聚焦（搜索输入中）时不回写，避免定时自动刷新打断输入 */
+  if(document.activeElement!==inp) inp.value=histPipelineDisplay();
+  /* 面板展开时随名单变化重绘候选 */
+  const panel=$('histPipelinePanel');
+  if(panel && panel.style.display==='block') renderHistPipelinePanel();
+}
+/* 流水线过滤候选面板：showAll 显示全量候选，否则按输入框文本子串过滤（大小写不敏感）；点选候选提交精确名 */
+function renderHistPipelinePanel(showAll){
+  const panel=$('histPipelinePanel'); const inp=$('histFilterPipeline'); if(!panel||!inp) return;
+  const q=showAll?'':inp.value.trim().toLowerCase();
+  const list=_histPipelineNames.filter(n=>!q || n.toLowerCase().indexOf(q)>=0);
+  const item=(v,label)=>'<div data-histpl="'+esc(v)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;white-space:nowrap;'+(v===histFilter.pipeline?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(label)+'</div>';
+  let h=item('','全部流水线')+list.map(n=>item(n,n)).join('');
+  if(!list.length) h+='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配候选</div>';
+  panel.innerHTML=h; panel.style.display='block';
+  _histPipelineActive=-1;
+  panel.querySelectorAll('[data-histpl]').forEach(el=>el.addEventListener('click',()=>pickHistPipeline(el.getAttribute('data-histpl'))));
+}
+function histPipelinePanelItems(){ const panel=$('histPipelinePanel'); return panel?Array.from(panel.querySelectorAll('[data-histpl]')):[]; }
+/* 选中候选（'' = 全部流水线）：提交精确名到筛选状态并持久化，归首页后重绘 */
+function pickHistPipeline(name){
+  const inp=$('histFilterPipeline'); const panel=$('histPipelinePanel');
+  histFilter.pipeline=name||'';
+  if(inp) inp.value=histFilter.pipeline;
+  if(panel) panel.style.display='none';
+  histPage=0; saveHistFilter(); renderHistory();
 }
 function renderHistory(){
   const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
@@ -7061,7 +7186,7 @@ function renderHistory(){
   const view=filteredHistory();
   renderHistFilterOptions();
   const fTip=$('histFilterTip'); if(fTip) fTip.textContent=(histFilter.kw||histFilter.status||histFilter.pipeline)?('已筛选 '+view.length+' / '+history.length+' 条'):'';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="10" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="8" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
   const pages=Math.max(1, Math.ceil(view.length/histPageSize));
   if(histPage>pages-1) histPage=pages-1;
   if(histPage<0) histPage=0;
@@ -7071,7 +7196,7 @@ function renderHistory(){
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td>'+esc(h.env)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.commit)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());
@@ -7251,8 +7376,8 @@ function applyHistoryRefreshPayload(st, clearAtStart){
   if(remoteClearedAt<clearAtStart) return false;
   if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
-  if(Array.isArray(st&&st.history) && st.history.length) history=st.history;
-  else if(histClearedAt) history=[];
+  if(Array.isArray(st&&st.history) && st.history.length){ history=st.history; historyMarkSynced(); }
+  else if(histClearedAt){ history=[]; historyMarkSynced(); }
   return true;
 }
 /* 服务端刷新会用新对象替换历史列表；把回放懒加载缓存移交给稳定主键对应的新对象，避免每 3 秒
@@ -7345,12 +7470,52 @@ $('plPageSize').value=String(plPageSize);
 $('plPageSize').addEventListener('change', e=>{ plPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-plPageSize', String(plPageSize)); }catch(e){} plPage=0; renderPipelines(); });
 $('plPrev').addEventListener('click', ()=>{ if(plPage>0){ plPage--; renderPipelines(); } });
 $('plNext').addEventListener('click', ()=>{ if((plPage+1)*plPageSize<pipelines.filter(plFilterMatch).length){ plPage++; renderPipelines(); } });
-/* 历史筛选：关键字实时过滤、状态/流水线下拉、清除筛选（条件变化时归首页） */
+/* 历史筛选：关键字实时过滤、状态下拉、流水线可搜索面板、清除筛选（条件变化时归首页） */
 $('histFilterKw').value=histFilter.kw;
 $('histFilterStatus').value=histFilter.status;
 $('histFilterKw').addEventListener('input', e=>{ histFilter.kw=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
 $('histFilterStatus').addEventListener('change', e=>{ histFilter.status=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
-$('histFilterPipeline').addEventListener('change', e=>{ histFilter.pipeline=e.target.value; histPage=0; saveHistFilter(); renderHistory(); });
+/* 流水线过滤（可搜索）：聚焦/方向键弹出全量候选，输入即时子串过滤（大小写不敏感；清空=全部流水线，即时提交），
+   点选/Enter 提交候选精确名，方向键移动高亮，Esc/点外关闭面板并回显已提交值 */
+$('histFilterPipeline').addEventListener('focus', ()=>renderHistPipelinePanel(true));
+$('histFilterPipeline').addEventListener('input', e=>{
+  if(!e.target.value.trim()){
+    if(histFilter.pipeline){ histFilter.pipeline=''; histPage=0; saveHistFilter(); renderHistory(); }
+    else renderHistPipelinePanel();
+  } else renderHistPipelinePanel();
+});
+$('histFilterPipeline').addEventListener('keydown', e=>{
+  const panel=$('histPipelinePanel'); if(!panel) return;
+  const open=panel.style.display==='block';
+  if(e.key==='Escape'){
+    if(open){ panel.style.display='none'; e.target.value=histPipelineDisplay(); e.preventDefault(); }
+    return;
+  }
+  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+    e.preventDefault();
+    if(!open){ renderHistPipelinePanel(true); return; }
+    const items=histPipelinePanelItems(); if(!items.length) return;
+    _histPipelineActive=(e.key==='ArrowDown')
+      ? (_histPipelineActive<items.length-1 ? _histPipelineActive+1 : 0)
+      : (_histPipelineActive>0 ? _histPipelineActive-1 : items.length-1);
+    items.forEach((el,i)=>{ el.style.background=(i===_histPipelineActive)?'var(--dsw-alias-fill-l1)':''; });
+    return;
+  }
+  if(e.key==='Enter' && open){
+    const items=histPipelinePanelItems();
+    let el=(_histPipelineActive>=0)?items[_histPipelineActive]:null;
+    /* 未高亮时 Enter 提交与输入完全一致的候选 */
+    if(!el){ const v=e.target.value.trim(); if(v) el=items.find(x=>x.getAttribute('data-histpl')===v)||null; }
+    if(el){ pickHistPipeline(el.getAttribute('data-histpl')); e.preventDefault(); }
+  }
+});
+document.addEventListener('click', e=>{
+  const p=$('histPipelinePanel'); const m=$('histPipelinePick');
+  if(p && m && p.style.display==='block' && !m.contains(e.target)){
+    p.style.display='none';
+    const inp=$('histFilterPipeline'); if(inp) inp.value=histPipelineDisplay();
+  }
+});
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
 /* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含内置）」+ 全部收藏状态 */
 $('plFilterKw').value=plFilter.kw;
@@ -7428,6 +7593,37 @@ $('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
    此处仅定义筛选匹配与下拉渲染函数。 */
 function plOwnerOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''; }
 function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updatedBy.trim()) ? p.updatedBy.trim() : ''; }   /* 最后修改人：与创建者同源（/auth/status 登录用户），保存/拖拽改序时刷新 */
+/* 流水线归属编辑限制（仅页面侧判断；服务端无用户身份概念，与 canControlRun 同一约定）：
+   仅创建者可编辑/删除，消除多人编辑同一条流水线的竞争；他人可只读查看并「复制」为自己的副本。
+   - 内置流水线只读（既有行为）；
+   - 可信流水线（trusted，admin 标记）：仅 admin 可编辑/删除——admin 权限优先于「仅创建者可编辑」；
+     非 admin（含创建者本人）只读，但仍可运行；行菜单的标记入口只对 admin 显示（见 openPlRowMenu）；
+   - 未署名（无创建者）的存量流水线全员可编辑，保存时按既有逻辑补署创建者（见 savePlForm）；
+   - auth 探测未完成（authReady 未置位）时对署名/可信流水线保守只读；探测完成仍无登录用户
+     （token 共享模式/未装认证插件/探测失败）退化为全权：页面无法判定 admin，trusted 不限制编辑、
+     标记入口也不显示；
+   - admin 对非可信流水线无例外：同样只能编辑自己创建的流水线。
+   typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局；守卫缺失时退化为既有的
+   「仅内置只读」行为。 */
+function plEditable(p){
+  if(!p || p.builtIn) return false;   // 内置流水线只读
+  if(p.trusted){
+    /* 可信流水线：仅「auth 探测成功（password 模式）且为 admin」可编辑；探测在途保守只读，
+       token 模式（探测完成仍无用户）退化为全权。 */
+    const meTrusted=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
+    if(!meTrusted) return (typeof authReady==='undefined') ? true : !!authReady;
+    return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;
+  }
+  const owner=(typeof plOwnerOf==='function') ? plOwnerOf(p) : ((typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : '');
+  if(!owner) return true;   // 未署名存量流水线：全员可编辑（保存时补署创建者）
+  const me=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
+  if(!me){
+    /* 无登录用户：探测在途（authReady 未置位）对署名流水线保守只读；探测完成仍无用户
+       （token 模式等）退化为全权。authReady 全局缺失（旧测试桩）按探测已完成处理。 */
+    return (typeof authReady==='undefined') ? true : !!authReady;
+  }
+  return owner===me;   // 仅创建者可编辑；admin 无例外
+}
 function pipelineFavoriteUsers(p){
   const users=p&&Array.isArray(p.favoriteUsers)?p.favoriteUsers:[];
   return Array.from(new Set(users.filter(u=>typeof u==='string').map(u=>u.trim()).filter(Boolean)));
@@ -7478,7 +7674,7 @@ function renderPlFilterOptions(){
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
 /* 行内「⋯」菜单当前展开项的流水线 id：菜单是全局悬浮层 #plRowMenuPanel（fixed 定位，悬浮最上层、不撑大行高），
-   开合只动该层、不重渲染任务表；点 ⋯/置顶项/菜单外任意处/滚动/缩放收起（绑定见文件尾） */
+   开合只动该层、不重渲染任务表；点 ⋯/置顶/收藏/运行历史项/菜单外任意处/滚动/缩放收起（绑定见文件尾） */
 let plMenuOpenId=null;
 function closePlRowMenu(){
   if(!plMenuOpenId) return;
@@ -7489,18 +7685,44 @@ function closePlRowMenu(){
    不占用文档流，故不被 overflow 容器裁剪、也不撑大流水线行高 */
 function openPlRowMenu(id, anchorBtn){
   const pl=findPipeline(id); if(!pl) return;
-  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'), favoriteItem=$('plRowMenuFavorite'); if(!panel||!item||!favoriteItem) return;
+  const panel=$('plRowMenuPanel'), item=$('plRowMenuPin'), favoriteItem=$('plRowMenuFavorite'), historyItem=$('plRowMenuHistory'); if(!panel||!item||!favoriteItem||!historyItem) return;
   plMenuOpenId=id;
   item.textContent = pl.pinnedAt ? '取消置顶' : '置顶';
   item.title = pl.pinnedAt ? '取消置顶，恢复数组原顺序' : '置顶到列表最前，随服务端同步';
   favoriteItem.textContent = isPipelineFavorite(pl) ? '取消收藏' : '收藏';
   favoriteItem.title = currentUsername ? '收藏状态按当前登录用户独立保存并随服务端同步' : '登录后可收藏流水线';
+  historyItem.title='查看流水线「'+pl.name+'」的运行历史（按流水线名筛选，清空其他筛选条件）';
+  /* 「标记可信/取消可信」入口：仅 password 模式（已取得登录用户）且当前会话为 admin、且非内置流水线时
+     显示；token 模式/探测失败无法判定 admin，不显示（此时 trusted 也不限制编辑，见 plEditable）。 */
+  const trustedItem=$('plRowMenuTrusted');
+  if(trustedItem && trustedItem.style){
+    const meTrusted=(typeof currentUsername!=='undefined')?(currentUsername||''):'';
+    const isAdminTrusted=(typeof currentUserIsAdmin!=='undefined')&&!!currentUserIsAdmin;
+    const canMarkTrusted=!!(!pl.builtIn && meTrusted && isAdminTrusted);
+    trustedItem.style.display=canMarkTrusted?'':'none';
+    if(canMarkTrusted){
+      trustedItem.textContent=pl.trusted?'取消可信':'标记可信';
+      trustedItem.title=pl.trusted?'取消可信标记：恢复「仅创建者可编辑」':'标记为可信流水线：仅 admin 可编辑/删除，其他用户只读（仍可运行）';
+    }
+  }
   panel.style.display='block';
   if(anchorBtn && anchorBtn.getBoundingClientRect){
     const r=anchorBtn.getBoundingClientRect();
     panel.style.left=Math.max(4, r.right-(panel.offsetWidth||0))+'px';   // 先 display:block 再量宽，右缘对齐锚按钮
     panel.style.top=(r.bottom+4)+'px';
   }
+}
+/* 行内「⋯」菜单「运行历史」：按流水线名精确过滤运行历史（同时清空关键字/状态筛选），回到第一页、
+   回显筛选控件并滚动到运行历史卡片；再触发一次服务端拉取（在途去重），让他端/定时运行的记录即刻可见 */
+function showPipelineHistory(id){
+  const pl=findPipeline(id); if(!pl) return;
+  histFilter={kw:'',status:'',pipeline:String(pl.name||'')};
+  saveHistFilter(); histPage=0;
+  const kwInp=$('histFilterKw'); if(kwInp) kwInp.value='';
+  const stSel=$('histFilterStatus'); if(stSel) stSel.value='';
+  renderHistFilterOptions(); renderHistory();
+  refreshHistoryFromServer(false);
+  const card=$('histCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
 }
 /* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
    pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
@@ -7509,6 +7731,30 @@ function togglePipelinePin(id){
   p.pinnedAt=p.pinnedAt?0:Date.now();
   savePipelines();
   renderPipelines();
+}
+/* 可信标记切换（admin 专属，菜单入口见 openPlRowMenu；服务端同时强制校验，非 admin 直调 API 返回 403）：
+   置位 trusted=true、取消时删除字段保持数据干净；保存成功 toast 反馈。保存走 immediate 以拿到结果：
+   403 时 pushState 已 toast 服务端 message 并 loadServerState 重拉状态同步，此处直接返回不再重复处理；
+   其他失败回滚本地标记并提示。 */
+async function togglePipelineTrusted(id){
+  const p=findPipeline(id); if(!p || p.builtIn) return;
+  const me=(typeof currentUsername!=='undefined')?(currentUsername||''):'';
+  const isAdmin=(typeof currentUserIsAdmin!=='undefined')&&!!currentUserIsAdmin;
+  if(!me || !isAdmin){ if(typeof alert==='function') alert('仅 admin 可标记/取消可信流水线。'); return; }   // 兜底：菜单入口已对非 admin 隐藏
+  const marking=!p.trusted;
+  if(marking) p.trusted=true; else delete p.trusted;
+  renderPipelines();
+  let saved=null;
+  try{ saved=await savePipelines({immediate:true}); }
+  catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
+  if(saved && saved.ok===false){
+    if(saved.trusted) return;   /* 403 可信拦截：pushState 已 toast 服务端 message 并重新拉取服务端状态同步 */
+    if(marking) delete p.trusted; else p.trusted=true;   // 网络/冲突等其他失败：回滚本地标记
+    renderPipelines();
+    if(typeof alert==='function') alert((marking?'标记可信失败：':'取消可信失败：')+String(saved.error||'未知错误'));
+    return;
+  }
+  if(typeof toast==='function') toast(marking?'已标记为可信流水线：仅 admin 可编辑':'已取消可信标记');
 }
 function renderPipelines(){
   renderPlFilterOptions();
@@ -7540,10 +7786,15 @@ function renderPipelines(){
     tr.title='点击选用该流水线';
     const queueCount=queueCounts[p.id]||{running:0,queued:0};
     const queueTitle=(queueCount.running||queueCount.queued)?('运行 '+queueCount.running+' · 排队 '+queueCount.queued):'当前无运行或排队任务';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    /* 归属编辑限制（plEditable：仅创建者可编辑/删除，内置只读）：他人流水线行内「编辑」变「查看」
+       （带创建者提示）、不渲染「删除」；「复制」对所有行可用（复制为自己的副本后编辑）。 */
+    const canEditPl=plEditable(p);
+    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+((!canEditPl&&!p.builtIn)?(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"'):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
+    const plDelBtn=canEditPl?'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>':'';
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> <button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'">'+(p.builtIn?'查看':'编辑')+'</button> <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+(p.builtIn?'':'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>')+
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> '+plEditBtn+' <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+plDelBtn+
       ' <button class="dshell-btn dshell-btnGhost mini" data-plmenu="'+p.id+'" title="更多操作" aria-label="流水线「'+esc(p.name)+'」更多操作">⋯</button></td>';
     tr.addEventListener('click',()=>selectPipeline(p.id));   // 整行点击：选用该流水线（运行中也可切换；运行/编辑/复制/删除按钮已阻止冒泡）
     tb.appendChild(tr);
@@ -7605,9 +7856,10 @@ function savePlDraft(){
 function schedulePlDraftSave(){ if(plDraftTimer) clearTimeout(plDraftTimer); plDraftTimer=setTimeout(savePlDraft, 400); }
 function clearPlDraft(){ if(plDraftTimer){ clearTimeout(plDraftTimer); plDraftTimer=null; } try{ localStorage.removeItem('pip-plDraft'); }catch(e){} const tip=$('plDraftTip'); if(tip) tip.textContent=''; }
 function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft')||'null'); }catch(e){ return null; } }
-/* 内置（默认）流水线只读查看：openPlForm 按 p.builtIn 置位，编辑器以只读模式打开——名称/脚本目录/默认环境
-   与阶段卡内全部编辑控件禁用，保存/添加阶段入口隐藏，任务卡禁止拖拽，「+」插入按钮不出现（见 applyEditSel），
-   仅保留「关闭/取消」退出；保存端另有 savePlForm 兜底拦截。因阶段参数识别等为异步重渲染，
+/* 流水线只读查看（内置流水线 / 他人创建的流水线）：openPlForm 按 plEditable(p) 置位（仅创建者可编辑），
+   编辑器以只读模式打开——名称/脚本目录/默认环境与阶段卡内全部编辑控件禁用，保存/添加阶段入口隐藏，
+   任务卡禁止拖拽，「+」插入按钮不出现（见 applyEditSel），仅保留「关闭/取消」退出；
+   保存端另有 savePlForm 兜底拦截。因阶段参数识别等为异步重渲染，
    本函数在 openPlForm、renderStageEditor、detectStageParams、detectEvaltokStageParams 末尾重复应用（幂等）。 */
 let plFormReadOnly=false;
 function applyPlFormReadOnly(){
@@ -7633,15 +7885,15 @@ function openPlForm(id, focusIdx){
   /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
   const p = id ? (findPipeline(id) || curPipeline()) : null;
   f.dataset.editId = p ? p.id : '';
-  plFormReadOnly=!!(p&&p.builtIn);   // 内置（默认）流水线只读查看，编辑器整体切为只读模式
-  $('plFormTitle').textContent = p ? ((plFormReadOnly?'查看流水线（内置·只读）：':'编辑流水线：')+p.name) : '新建流水线';
+  plFormReadOnly=!!(p&&!plEditable(p));   // 内置、可信（非 admin）与他人创建的流水线只读查看（plEditable），编辑器整体切为只读模式
+  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（内置·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：'))+p.name : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling 最后
   /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
-     只读查看（内置流水线）不恢复草稿——展示内容须为内置定义真值，且只读模式也不会产生新草稿 */
+     只读查看（内置/他人创建的流水线）不恢复草稿——展示内容须为流水线定义真值，且只读模式也不会产生新草稿 */
   const draft=plFormReadOnly?null:loadPlDraft();
   if(draft && Array.isArray(draft.stages) && (draft.editId||'')===$('plForm').dataset.editId){
     editStages=draft.stages;
@@ -7668,9 +7920,14 @@ function openPlForm(id, focusIdx){
   if(!plFormReadOnly) $('plName').focus();   // 只读查看不抢焦点（名称输入框已禁用）
 }
 async function savePlForm(){
-  /* 内置（默认）流水线只读：保存入口已隐藏，此处兜底拦截一切写回内置定义的路径（如需改动请用列表「复制」生成可编辑副本） */
+  /* 内置流水线与他人创建的流水线只读（plEditable：仅创建者可编辑）：保存入口已隐藏，
+     此处兜底拦截一切写回路径（如需改动请用列表「复制」生成可编辑副本） */
   const guardP=findPipeline($('plForm').dataset.editId||'');
   if(guardP && guardP.builtIn){ alert('内置流水线「'+guardP.name+'」为只读，不可保存修改；可在「流水线任务」列表「复制」为副本后编辑。'); return; }
+  if(guardP && !plEditable(guardP)){
+    if(guardP.trusted){ alert('流水线「'+guardP.name+'」已被管理员标记为可信，仅 admin 可编辑保存；如需改动可在「流水线任务」列表「复制」为副本后编辑。'); return; }
+    alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 创建，仅创建者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return;
+  }
   const name=$('plName').value.trim()||'未命名流水线';
   if(!editStages.some(s=>!s.preset)){ alert('请至少添加一个阶段（预设任务不计入）'); return; }
   // 校验：阶段名非空/不重复、脚本存在（可警告）、必填参数已填；预设任务行仅参与排序，跳过内容校验
@@ -7738,11 +7995,30 @@ async function savePlForm(){
   const saveButtonText=saveButton?saveButton.textContent:'';
   if(saveForm) saveForm.inert=true;   // 整个编辑器冻结到服务端确认，防止请求快照之后的新输入被成功收尾清掉
   if(saveButton){ saveButton.disabled=true; saveButton.textContent='保存中…'; }
+  /* 慢链路明示：显式保存必须等服务端确认（并发安全），公网映射等慢上行链路下可能需要数秒；
+     超过 4 秒在底栏提示「仍在保存」，避免误以为卡死而刷新页面（刷新时本次保存结果尚未确认） */
+  const saveSlowTip=$('plDraftTip');
+  const saveSlowTimer=setTimeout(()=>{ if(saveSlowTip){ saveSlowTip.textContent='网络较慢，仍在保存，请勿刷新或关闭页面…'; saveSlowTip.style.color='var(--log-warn)'; } },4000);
   let saved;
-  try{ saved=await savePipelines({immediate:true}); }
+  /* 单条保存：只上传当前流水线（KB 级）；旧服务端无单条路由（unsupported/404）回退瘦身全量保存 */
+  try{
+    saved=await pushPipelineOne(savedPipelineId);
+    if(saved && saved.unsupported) saved=await savePipelines({immediate:true});
+  }
   catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
-  finally{ if(saveForm) saveForm.inert=saveFormWasInert; if(saveButton){ saveButton.disabled=false; saveButton.textContent=saveButtonText||'保存'; } }
+  finally{
+    clearTimeout(saveSlowTimer);
+    if(saveSlowTip&&saveSlowTip.textContent.indexOf('仍在保存')>=0){ saveSlowTip.textContent=''; saveSlowTip.style.color=''; }
+    if(saveForm) saveForm.inert=saveFormWasInert; if(saveButton){ saveButton.disabled=false; saveButton.textContent=saveButtonText||'保存'; }
+  }
   if(saved && saved.ok===false){
+    if(saved.trusted){
+      /* 可信拦截（服务端 403）：pushPipelineOne/pushState 已 toast 服务端 message 并 loadServerState
+         重拉状态同步，此处不再走本地回滚/alert（回滚会把刚同步的服务端定义再次覆盖）；编辑器退出。 */
+      clearPlDraft(); $('plForm').style.display='none';
+      renderPipelines();
+      return saved;
+    }
     /* 只撤销本次编辑的流水线；等待同页串行锁期间，前序 PUT 可能已把其他浏览器的不同流水线合入当前列表，
        整表回滚会再次丢掉它们，并在下次保存时把缺项误解释为删除。 */
     const previousPipeline=previousPipelines.find(p=>String(p&&p.id||'')===String(savedPipelineId));
@@ -7771,6 +8047,9 @@ async function savePlForm(){
   return saved||{ok:true};
 }
 function deletePipeline(id){
+  /* 归属拦截：仅创建者可删除（内置也不可删除；可信流水线仅 admin 可删除）；行内「删除」按钮对只读行已不渲染，此处兜底 */
+  const delP=findPipeline(id);
+  if(delP && !plEditable(delP)){ alert(delP.builtIn ? '内置流水线「'+delP.name+'」不可删除。' : (delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。')); return; }
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);
@@ -7796,6 +8075,7 @@ function copyPipeline(id){
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
   clone.pinnedAt=0;   /* 副本不继承置顶：置顶随源条目，不随复制扩散 */
   clone.favoriteUsers=[];   /* 副本不继承任何用户的收藏：收藏关系属于源流水线 */
+  delete clone.trusted;   /* 副本不继承可信标记：复制品默认非可信（可信须由 admin 重新标记） */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
@@ -7816,6 +8096,21 @@ $('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */
+/* 页面级轻提示（toast）：底部居中浮层、约 4 秒自动消隐，用于保存被拒（可信流水线 403）
+   与「标记可信」反馈等瞬时提示。元素懒创建（.page-toast 样式见样式表）；测试桩无 DOM 时静默跳过。 */
+let pageToastTimer=null;
+function toast(msg){
+  let el=(typeof $==='function')?$('pageToast'):null;
+  if(!el && typeof document!=='undefined' && document.createElement && document.body){
+    el=document.createElement('div'); el.id='pageToast'; el.className='page-toast';
+    document.body.appendChild(el);
+  }
+  if(!el) return;
+  el.textContent=String(msg||'');
+  el.style.display='block';
+  if(pageToastTimer && typeof clearTimeout==='function') clearTimeout(pageToastTimer);
+  if(typeof setTimeout==='function') pageToastTimer=setTimeout(()=>{ el.style.display='none'; },4000);
+}
 /* 运行按钮旁短暂提示（入队 / 重跑反馈） */
 let runTipTimer=null;
 function flashRunTip(txt){ const t=$('runTip'); if(!t) return; t.textContent=txt; if(runTipTimer) clearTimeout(runTipTimer); runTipTimer=setTimeout(()=>{ t.textContent=''; },2500); }
@@ -8298,10 +8593,12 @@ function toggleIoSrvPanel(show){
    点外关闭同时收起服务端备份列表面板（ioSrvPanel 与菜单同属 #ioMenu 容器，面板内点击不会误关） */
 $('ioMenuBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioMenuPanel'); p.style.display=p.style.display==='none'?'block':'none'; if(p.style.display==='block') ioTipShow(''); });
 document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contains(e.target)){ const p=$('ioMenuPanel'); const s=$('ioSrvPanel'); if(p) p.style.display='none'; if(s) s.style.display='none'; } });
-/* 流水线行内「⋯」菜单：「置顶 / 收藏」列表项对当前展开行切换对应状态（先收起菜单再切换）；
+/* 流水线行内「⋯」菜单：「置顶 / 收藏 / 运行历史 / 标记可信」列表项对当前展开行切换对应状态或跳转（先收起菜单再执行）；
    点菜单外任意处 / 页面或表格容器滚动 / 缩放窗口时收起（fixed 层不跟随锚点滚动，开着会错位） */
 $('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
 $('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineFavorite(id); });
+$('plRowMenuHistory').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) showPipelineHistory(id); });
+$('plRowMenuTrusted').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineTrusted(id); });
 document.addEventListener('click', closePlRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
@@ -8340,6 +8637,7 @@ window.addEventListener('pagehide', saveRunSelLS);
 async function fillExecutorFromAuth(){
   let username='';
   try{
+  try{
     const res=await fetch('/auth/status');
     if(!res || !res.ok) return;
     const data=await res.json();
@@ -8366,10 +8664,15 @@ async function fillExecutorFromAuth(){
   /* admin 角色可能晚于队列渲染到达——拿到后重绘队列按钮（中止/取消按权限显隐） */
   if(typeof renderQueue==='function') renderQueue();
   if(typeof updateStopBtn==='function') updateStopBtn();
-  /* 拿到当前用户后重绘依赖身份的「我的 / 仅看收藏」筛选视图（初次加载时尚未拿到，
-     「我的」先按「内置+未署名」退化渲染，「仅看收藏」先为空）。
-     typeof 守卫：筛选状态在独立测试片段里可能未定义。 */
-  if(typeof plFilter!=='undefined' && plFilter && (plFilter.owner==='mine'||plFilter.favorite==='favorite') && typeof renderPipelines==='function') renderPipelines();
+  }finally{
+    /* 无论探测成功/失败/提前返回，结束时都置位 authReady 并无条件重绘流水线任务列表：
+       行按钮「编辑/查看/删除」与编辑器只读归属判断（plEditable）都依赖身份——探测在途时
+       署名流水线保守只读，探测结束后必须重绘刷新（原先仅在「我的/仅看收藏」筛选时重绘，
+       已并入此无条件重绘；「我的」筛选初次加载按「内置+未署名」退化渲染，身份到达后由
+       本次重绘纠正）。typeof 守卫：独立测试片段里可能没有这些全局。 */
+    authReady=true;
+    if(typeof renderPipelines==='function') renderPipelines();
+  }
 }
 /* ---------- 执行人固定取 dsh 登录用户（只读）结束 ---------- */
 fillExecutorFromAuth();

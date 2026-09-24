@@ -33,15 +33,19 @@ function loadSavePlForm({editId,pipeline,username}){
     findPipeline:id=>(pipeline&&pipeline.id===id)?pipeline:null,
     pipelines:pipeline?[pipeline]:[],
     currentUsername:username||'',
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：本测试只验证署名写入，等价「仅内置只读」旧行为
     stageIdFor:()=>'',
     collectPipelineDefaultForm:()=>({}),
     saveScriptsDir:()=>{},
+    pushPipelineOne:()=>{ saved.push(1); },
     savePipelines:()=>{ saved.push(1); },
     clearPlDraft:()=>{},
     running:false,
     curPipelineId:'',
     selectPipeline:()=>{},
     renderPipelines:()=>{},
+    setTimeout:()=>0,
+    clearTimeout:()=>{},
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('plOwnerOf')+'\n'+extractFunction('plUpdaterOf')+'\n'+extractFunction('savePlForm'),ctx);
@@ -125,6 +129,7 @@ test('拖拽改序：最后修改人刷新为当前用户；取不到用户时�
   function load(username){
     const ctx={
       curPipeline:()=>custom,
+      plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
       savePipelines:()=>{}, renderPipelines:()=>{}, renderFlow:()=>{}, renderDetail:()=>{},
     };
     if(username){ ctx.currentUsername=username; ctx.$=id=>({triggeredBy:{value:''}}[id]||null); }
@@ -177,6 +182,7 @@ function loadRender(pipelines){
     plFilter:{kw:'',owner:'all'},
     plFilterMatch:()=>true,
     renderPlFilterOptions:()=>{},
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：本测试只验证署名展示，等价「仅内置只读」旧行为
     isPipelineFavorite:()=>false,
     pipelineQueueCounts:()=>({}), pipelineQueueCountHtml:()=>'—',   // 队列计数由专门用例覆盖
     currentUsername:'alice',

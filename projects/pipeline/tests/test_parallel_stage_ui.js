@@ -45,6 +45,7 @@ function flowContext(stages){
     esc:String,
     flowStages:()=>stages,
     flowDraggable:()=>false,
+    plEditable:()=>true,   // 归属桩：编排渲染测试不涉及归属限制，按可编辑处理
     curPipeline:()=>({}),
     withPresetMarkers:x=>x,
     activeStages:()=>stages,
@@ -122,7 +123,7 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',async()=
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
     editStages:[stage], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null, scriptsDir:'/scripts',
-    currentUsername:'tester', plOwnerOf:()=>'',
+    currentUsername:'tester', plOwnerOf:()=>'', plEditable:()=>true,   // 归属桩：编辑器行为测试不涉及归属限制，按可编辑处理
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
     STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},
@@ -130,9 +131,10 @@ test('编辑器复选框、保存和重新打开保留 parallel 状态',async()=
     renderStageActionRow(){},renderStageParams(){},renderStageSched(){},applyEditSel(){},applyPlFormReadOnly(){},
     findPipeline:id=>id==='pl-1'?pipeline:null, PRESET_BY_NAME:{}, scriptByName:()=>null, confirm:()=>true, alert:msg=>{throw new Error(msg);},
     scriptLangOf:()=> 'sh', stageIdFor:()=> 'build', evaltokensStageConfig:x=>x, saveScriptsDir(){}, collectPipelineDefaultForm:()=>({}),
-    savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
+    pushPipelineOne(){}, savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
     normalizePipelineDefaults:x=>x||{}, normalizeStageKind:x=>x, withPresetMarkers:x=>x, currentPipelineDefaultSeed:()=>({}),loadPlDraft:()=>null,
     renderPipelineDefaultForm(){},loadScripts:()=>Promise.resolve(),
+    setTimeout:()=>0, clearTimeout(){},
   };
   install(ctx,'renderStageEditor','updateStageFromEditor','savePlForm','openPlForm');
   ctx.renderStageEditor();
@@ -155,7 +157,7 @@ test('无效 parallel 值在编辑、保存和重新打开中保持串行',async
   const pipeline={id:'pl-1',name:'并行',stages:[]};
   const ctx={
     editStages:[invalid], editFocusIdx:-1, plFormReadOnly:false, editSelStage:null, scriptsDir:'/scripts',
-    currentUsername:'tester', plOwnerOf:()=>'',
+    currentUsername:'tester', plOwnerOf:()=>'', plEditable:()=>true,   // 归属桩：编辑器行为测试不涉及归属限制，按可编辑处理
     $:id=>({plStageList:stageList,plForm:form,plFormTitle:{textContent:''},plName:nameInput,scriptsDir:{value:'/scripts'}}[id]||null),
     document:{createElement:tag=>new FakeNode(tag)}, esc:String, secToMinInput:s=>String((s||0)/60),
     STAGE_KIND_LABEL:{simulate:'模拟',shell:'Shell',python:'Python',http:'HTTP',evaltokens:'EvalTokens'},
@@ -163,9 +165,10 @@ test('无效 parallel 值在编辑、保存和重新打开中保持串行',async
     renderStageActionRow(){},renderStageParams(){},renderStageSched(){},applyEditSel(){},applyPlFormReadOnly(){},
     findPipeline:id=>id==='pl-1'?pipeline:null, PRESET_BY_NAME:{}, scriptByName:()=>null, confirm:()=>true, alert:msg=>{throw new Error(msg);},
     scriptLangOf:()=> 'sh', stageIdFor:()=> 'build', evaltokensStageConfig:x=>x, saveScriptsDir(){}, collectPipelineDefaultForm:()=>({}),
-    savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
+    pushPipelineOne(){}, savePipelines(){},clearPlDraft(){},schedulePlDraftSave(){},running:false,curPipelineId:'other',pipelines:[pipeline],renderPipelines(){},renderFlow(){},renderDetail(){},selectPipeline(){},
     normalizePipelineDefaults:x=>x||{}, normalizeStageKind:x=>x, withPresetMarkers:x=>x, currentPipelineDefaultSeed:()=>({}),loadPlDraft:()=>null,
     renderPipelineDefaultForm(){},loadScripts:()=>Promise.resolve(),
+    setTimeout:()=>0, clearTimeout(){},
   };
   install(ctx,'renderStageEditor','savePlForm','openPlForm');
   ctx.renderStageEditor();

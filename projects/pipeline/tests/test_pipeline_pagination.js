@@ -91,6 +91,7 @@ function loadPagination(total = 23) {
     plFilterMatch: () => true,
     plOwnerOf: () => '',
     plUpdaterOf: () => '',
+    plEditable: pipeline => !pipeline || !pipeline.builtIn,   // 归属桩：分页测试不涉及归属限制，等价「仅内置只读」旧行为
     isPipelineFavorite: () => false,
     pipelineQueueCounts: () => ({}),
     pipelineQueueCountHtml: () => '—',

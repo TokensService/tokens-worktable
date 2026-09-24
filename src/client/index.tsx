@@ -1254,6 +1254,82 @@ function worktableTitleOf(customTitle: string, authUsername: string, fallback: s
   return customTitle || (authUsername || fallback) + devSuffix
 }
 /* ---------- 侧栏标题取 dsh 登录用户结束 ---------- */
+/* ---------- 用户使用统计（上报 + 弹窗数据解析） ---------- */
+/** 当前登录用户名缓存：probeAuthUsername 探测成功后写入，reportUsage 随事件上报；
+ *  空串 = 未装认证插件 / token 共享模式 / 未登录（服务端按匿名统计）。 */
+let usageUsername = ''
+/** 使用事件 10 秒去重窗口（kind:detail → 上次上报时间）；超 200 项整体清空，防长会话内存膨胀。 */
+const usageReportedAt = new Map<string, number>()
+/** 上报一条使用事件（静默，失败不影响任何交互）：同 kind:detail 10 秒内只发一次。 */
+function reportUsage(kind: string, detail = '') {
+  try {
+    const key = kind + ':' + detail
+    const now = Date.now()
+    if (now - (usageReportedAt.get(key) ?? 0) < 10_000) return
+    if (usageReportedAt.size > 200) usageReportedAt.clear()
+    usageReportedAt.set(key, now)
+    void fetch('/api/worktable/usage', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user: usageUsername, kind, detail }),
+    }).catch(() => {})
+  } catch { /* 统计上报绝不打扰用户 */ }
+}
+/** 使用统计弹窗数据：users 附 last（MM-DD HH:mm 本地格式串），daily 的 day 截为 MM-DD，
+ *  recent 附 when（MM-DD HH:mm）；today = 今日事件数（自 daily 末日取）。 */
+type UsageStats = {
+  total: number
+  today: number
+  users: { user: string; events: number; visits: number; opens: number; days: number; lastAt: number; last: string }[]
+  daily: { day: string; events: number; users: number }[]
+  recent: { user: string; kind: string; detail: string; at: number; when: string }[]
+}
+/** 服务端 /api/worktable/usage GET 响应 → 弹窗数据：宽松校验，入参异常
+ *  （旧版服务端 404 兜底页等）返回空结构。 */
+function parseUsageStats(data: unknown): UsageStats {
+  const empty: UsageStats = { total: 0, today: 0, users: [], daily: [], recent: [] }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return empty
+  const p = (n: number) => String(n).padStart(2, '0')
+  const fmt = (at: number) => { const d = new Date(at); return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) }
+  const todayMmdd = (() => { const d = new Date(); return p(d.getMonth() + 1) + '-' + p(d.getDate()) })()
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+  const total = num((data as { total?: unknown }).total)
+  const users: UsageStats['users'] = []
+  const rawUsers = (data as { users?: unknown }).users
+  for (const u of Array.isArray(rawUsers) ? rawUsers : []) {
+    if (!u || typeof u !== 'object') continue
+    const lastAt = typeof (u as any).lastAt === 'number' && Number.isFinite((u as any).lastAt) ? (u as any).lastAt : 0
+    users.push({
+      user: typeof (u as any).user === 'string' ? (u as any).user : '',
+      events: num((u as any).events), visits: num((u as any).visits), opens: num((u as any).opens),
+      days: num((u as any).days), lastAt, last: lastAt ? fmt(lastAt) : '',
+    })
+  }
+  let today = 0
+  const daily: UsageStats['daily'] = []
+  const rawDaily = (data as { daily?: unknown }).daily
+  for (const d of Array.isArray(rawDaily) ? rawDaily : []) {
+    if (!d || typeof d !== 'object') continue
+    const day = typeof (d as any).day === 'string' ? (d as any).day.slice(5) : '' // YYYY-MM-DD → MM-DD
+    const events = num((d as any).events)
+    if (day === todayMmdd) today = events
+    daily.push({ day, events, users: num((d as any).users) })
+  }
+  const recent: UsageStats['recent'] = []
+  const rawRecent = (data as { recent?: unknown }).recent
+  for (const e of Array.isArray(rawRecent) ? rawRecent : []) {
+    if (!e || typeof e !== 'object') continue
+    const at = typeof (e as any).at === 'number' && Number.isFinite((e as any).at) ? (e as any).at : 0
+    recent.push({
+      user: typeof (e as any).user === 'string' ? (e as any).user : '',
+      kind: typeof (e as any).kind === 'string' ? (e as any).kind : '',
+      detail: typeof (e as any).detail === 'string' ? (e as any).detail : '',
+      at, when: at ? fmt(at) : '',
+    })
+  }
+  return { total, today, users, daily, recent }
+}
+/* ---------- 用户使用统计结束 ---------- */
 /** 设置弹窗「新建开发会话」：按提示词模板 + 插件项目目录新建 AI 会话（cwd = 插件目录，提示词只填输入框、不自动发送） */
 async function startPluginDev(): Promise<void> {
   const dir = await fetchPluginDir()
@@ -1515,11 +1591,16 @@ function WorktableSection(props: any) {
     return () => { alive = false }
   }, [])
   // 当前登录用户名：挂载时向 dsh-auth-gate 的 /auth/status 探一次（同源、只认会话 cookie）；
-  // 空串 = 未装认证插件 / token 共享模式 / 未登录 / 探测失败，侧栏标题回退默认「工作台」
+  // 空串 = 未装认证插件 / token 共享模式 / 未登录 / 探测失败，侧栏标题回退默认「工作台」。
+  // 探测结束即写入使用统计的用户名缓存并上报一次 visit（空用户名也报，服务端按匿名统计）。
   const [authUsername, setAuthUsername] = useState('')
   useEffect(() => {
     let alive = true
-    void probeAuthUsername().then((name) => { if (alive && name) setAuthUsername(name) })
+    void probeAuthUsername().then((name) => {
+      usageUsername = name
+      reportUsage('visit')
+      if (alive && name) setAuthUsername(name)
+    })
     return () => { alive = false }
   }, [])
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
@@ -1537,6 +1618,11 @@ function WorktableSection(props: any) {
   const [histCopied, setHistCopied] = useState<string | null>(null)
   const histLoadingRef = useRef(false)
   const histLoadedRef = useRef(false)
+  // 使用统计弹窗：无「会话内复用」——统计要新鲜，每次打开都重新拉取，仅防并发重入
+  const [usageOpen, setUsageOpen] = useState(false)
+  const [usageStats, setUsageStats] = useState<UsageStats | null>(null)
+  const [usageStatus, setUsageStatus] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const usageLoadingRef = useRef(false)
   // 启动合并服务端同步项目：任何浏览器创建/修改的 sync 布局在此拉齐（本地同 id 条目让位）；
   // 手动排序 order 一并合并：远端非空时远端优先、本地独有 id 追加尾部，远端缺 order 时本地序不动；
   // 合并结果与远端不一致时回推一次完整同步切片自愈。仅在挂载时拉取一次——其他浏览器的后续改动刷新页面后可见。
@@ -1644,6 +1730,32 @@ function WorktableSection(props: any) {
     }
   }, [])
   const openHistory = () => { setHistOpen(true); void loadHistory() }
+  /** 使用统计：拉取本服务器的聚合数据（同源 /api/worktable/usage，服务端全量读 JSONL 即时聚合）。
+   *  每次打开都重新拉取（统计要新鲜），仅防并发重入；失败时保留旧数据展示。 */
+  const loadUsage = useCallback(async () => {
+    if (usageLoadingRef.current) return // 防重入：并发点击只保留一个 in-flight
+    usageLoadingRef.current = true
+    setUsageStatus('loading')
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 8000)
+      let d: unknown = null
+      try {
+        const r = await fetch('/api/worktable/usage', { cache: 'no-store', signal: ctrl.signal })
+        if (r.ok) d = await r.json()
+      } catch { /* 网络/服务端异常：落入失败态 */ }
+      finally { clearTimeout(timer) }
+      if (!updateAliveRef.current) return // 组件已卸载：不再更新状态
+      if (!d) { setUsageStatus('failed'); return }
+      setUsageStats(parseUsageStats(d))
+      setUsageStatus('idle')
+    } finally {
+      usageLoadingRef.current = false
+    }
+  }, [])
+  const openUsage = () => { setUsageOpen(true); void loadUsage() }
+  /** 事件类型显示：已知 kind 走 usage.kind.<kind> 词条，未知 kind 显示原文（服务端 kind 白名单留扩展） */
+  const usageKindLabel = (kind: string) => { const key = 'usage.kind.' + kind; return key in zh ? t(key as WorktableKey) : kind }
   const copyUpgradeAi = async () => {
     if (!updateInfo) return
     const ok = await copyText(upgradeAiPrompt(updateInfo.tag))
@@ -2125,9 +2237,11 @@ function WorktableSection(props: any) {
   const engineIdsRef = useRef<Set<string>>(new Set())
   const lastLegacyBumpRef = useRef<Record<string, number>>({})
 
-  /** 使用埋点：仅「工作区真正打开」计一次使用；点击关闭/重复点击不计（避免每次点击置顶） */
+  /** 使用埋点：仅「工作区真正打开」计一次使用；点击关闭/重复点击不计（避免每次点击置顶）。
+   *  每次有效调用同时向服务端上报 open 事件（reportUsage 自带 10 秒去重）。 */
   const reportUsed = useCallback((id: string) => {
     if (typeof id !== 'string' || !id) return
+    reportUsage('open', id)
     const now = Date.now()
     const bump = () => {
       persistProjects((prev) => {
@@ -3770,6 +3884,7 @@ function buildCustomLayoutPrompt(req: string): string {
             </span>
             <span className="dsh-wt_versionActions">
               <button type="button" className="dsh-wt_updateBtn" title={t('history.title')} onClick={openHistory}>{t('history.btn')}</button>
+              <button type="button" className="dsh-wt_updateBtn" title={t('usage.title')} onClick={openUsage}>{t('usage.btn')}</button>
               <button type="button" className="dsh-wt_updateBtn" disabled={updateStatus === 'checking'} onClick={() => void checkUpdates(true)}>
                 {updateStatus === 'checking' ? t('update.checking') : t('update.checkNow')}
               </button>
@@ -4163,6 +4278,78 @@ function buildCustomLayoutPrompt(req: string): string {
             ))}
           </div>
           <div className="dsh-wt_histFoot">{t('history.hint')}</div>
+        </div>
+      )}
+
+      {/* 使用统计弹窗：结构与更新历史弹窗同款（backdrop 81 / 对话框 82）；内容更宽见 dsh-wt_usage */}
+      {usageOpen && <div className="dsh-wt_confirmBackdrop" onClick={() => setUsageOpen(false)} />}
+      {usageOpen && (
+        <div className="dsh-wt_hist dsh-wt_usage" role="dialog" aria-label={t('usage.title')}>
+          <div className="dsh-wt_histHead">
+            <span className="dsh-wt_histTitle">{t('usage.title')}</span>
+            <span className="dsh-wt_histOps">
+              <button type="button" className="dsh-wt_updateBtn" disabled={usageStatus === 'loading'} onClick={() => void loadUsage()}>
+                {usageStatus === 'loading' ? t('usage.loading') : t('history.refresh')}
+              </button>
+              <button type="button" className="dsh-wt_updateBtn" onClick={() => setUsageOpen(false)}>{t('history.close')}</button>
+            </span>
+          </div>
+          <div className="dsh-wt_histBody">
+            {usageStatus === 'loading' && !usageStats && <div className="dsh-wt_histEmpty">{t('usage.loading')}</div>}
+            {usageStatus === 'failed' && !usageStats && (
+              <div className="dsh-wt_histEmpty">
+                {t('usage.failed')}
+                <button type="button" className="dsh-wt_updateBtn" onClick={() => void loadUsage()}>{t('history.retry')}</button>
+              </div>
+            )}
+            {usageStats && usageStats.total === 0 && <div className="dsh-wt_histEmpty">{t('usage.empty')}</div>}
+            {usageStats && usageStats.total > 0 && (
+              <>
+                <div className="dsh-wt_usageChips">
+                  <span className="dsh-wt_usageChip">{t('usage.users')} {usageStats.users.length}</span>
+                  <span className="dsh-wt_usageChip">{t('usage.events')} {usageStats.total}</span>
+                  <span className="dsh-wt_usageChip">{t('usage.today')} {usageStats.today}</span>
+                </div>
+                <table className="dsh-wt_usageTable">
+                  <thead>
+                    <tr>
+                      <th>{t('usage.col.user')}</th>
+                      <th>{t('usage.col.visits')}</th>
+                      <th>{t('usage.col.opens')}</th>
+                      <th>{t('usage.col.events')}</th>
+                      <th>{t('usage.col.days')}</th>
+                      <th>{t('usage.col.last')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usageStats.users.map((u, i) => (
+                      <tr key={u.user || '#anonymous-' + i}>
+                        <td>{u.user || t('usage.anonymous')}</td>
+                        <td>{u.visits}</td>
+                        <td>{u.opens}</td>
+                        <td>{u.events}</td>
+                        <td>{u.days}</td>
+                        <td>{u.last}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {usageStats.recent.length > 0 && (
+                  <>
+                    <div className="dsh-wt_usageRecentTitle">{t('usage.recent')}</div>
+                    {usageStats.recent.map((e, i) => (
+                      <div key={e.at + '-' + i} className="dsh-wt_usageRecentItem">
+                        <span className="dsh-wt_usageRecentTime">{e.when}</span>
+                        <span className="dsh-wt_usageRecentUser">{e.user || t('usage.anonymous')}</span>
+                        <span>{usageKindLabel(e.kind)}</span>
+                        {e.detail && <span className="dsh-wt_usageRecentDetail">{e.detail}</span>}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
 

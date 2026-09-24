@@ -29,6 +29,7 @@ function loadOpenPlForm({pipeline,draft,stateLoaded=true}){
     alert:message=>calls.alerts.push(String(message)),
     editFocusIdx:-1,editSelStage:null,editStages:[],editDefaults:null,plFormReadOnly:false,
     scriptsDir:'/srv/scripts',
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：本测试只覆盖内置只读，等价「仅内置只读」旧行为
     $:id=>els[id]||null,
     findPipeline:id=>(pipeline&&pipeline.id===id)?pipeline:null,
     curPipeline:()=>pipeline||null,
@@ -132,6 +133,7 @@ test('savePlForm 兜底：任何路径都不得写回内置流水线，普通流
   const ctx={
     $:id=>({plForm:{dataset:{editId:'pl-xds'}},plName:{value:'x'}}[id]||null),
     findPipeline:id=>(id==='pl-xds'?BUILTIN:null),
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
     alert:msg=>{alerted=msg;},
     editStages:[],
   };
@@ -152,6 +154,7 @@ test('flowDraggable：当前流水线为内置时主视图禁止拖拽改序',()
     running:false,runStages:null,replayRec:null,
     viewActive:()=>false,
     curPipeline:()=>BUILTIN,
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('flowDraggable'),ctx);
@@ -166,6 +169,7 @@ test('persistFlowOrder 兜底：内置流水线不落盘，普通流水线照常
   let saved=0,renders=0;
   const ctx={
     curPipeline:()=>BUILTIN,
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
     normalizePipelineProm:p=>p||{},
     savePipelines:()=>{saved+=1;},
     renderPipelines:()=>{renders+=1;},renderFlow:()=>{},renderDetail:()=>{},

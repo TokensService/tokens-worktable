@@ -96,7 +96,7 @@ class FakeNode{
 
 function loadFavoriteUi(username){
   const tbody=new FakeNode('tbody'),table={querySelector:selector=>selector==='tbody'?tbody:null};
-  const panel=new FakeNode('div'),pinItem=new FakeNode('div'),favoriteItem=new FakeNode('div');
+  const panel=new FakeNode('div'),pinItem=new FakeNode('div'),favoriteItem=new FakeNode('div'),historyItem=new FakeNode('div');   // historyItem：openPlRowMenu 守卫纳入「运行历史」菜单项后的配套桩
   const select=new FakeNode('select'),count=new FakeNode('span'),tip=new FakeNode('span');
   panel.style.display='none';
   const saves=[];
@@ -107,9 +107,10 @@ function loadFavoriteUi(username){
     ],
     curPipelineId:'pipe-a',currentUsername:username,plFilter:{kw:'',owner:'all',favorite:'all'},
     plFilterMatch:()=>true,renderPlFilterOptions:()=>{},plOwnerOf:()=>'',plUpdaterOf:()=>'',
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：收藏测试不涉及归属限制，等价「仅内置只读」旧行为
     pipelineQueueCounts:()=>({}),pipelineQueueCountHtml:()=>'—',   // 收藏用例隔离运行队列计数
     document:{createElement:tag=>new FakeNode(tag)},
-    $:id=>({plTable:table,pipelineSel:select,plCount:count,plFilterTip:tip,plRowMenuPanel:panel,plRowMenuPin:pinItem,plRowMenuFavorite:favoriteItem})[id],
+    $:id=>({plTable:table,pipelineSel:select,plCount:count,plFilterTip:tip,plRowMenuPanel:panel,plRowMenuPin:pinItem,plRowMenuFavorite:favoriteItem,plRowMenuHistory:historyItem})[id],
     esc:String,curPipeline:()=>ctx.pipelines[0],findPipeline:id=>ctx.pipelines.find(p=>p.id===id),
     runPipeline:()=>true,showPipelineApi:()=>{},selectPipeline:()=>{},openPlForm:()=>{},copyPipeline:()=>{},deletePipeline:()=>{},
     savePipelines:()=>saves.push(1),flashRunTip:()=>{},alert:()=>{},
