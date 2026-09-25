@@ -24,10 +24,10 @@ function loadPlEditable(globals){
   return ctx;
 }
 
-test('plEditable：内置恒只读；未署名存量全员可编辑',()=>{
+test('plEditable：内置视同可信（非 admin 只读）；未署名存量全员可编辑',()=>{
   const ctx=loadPlEditable({currentUsername:'alice',authReady:true});
   assert.equal(ctx.plEditable(null),false,'无流水线对象安全返回只读');
-  assert.equal(ctx.plEditable({id:'p0',builtIn:true,createdBy:'alice'}),false,'内置流水线只读（既有行为）');
+  assert.equal(ctx.plEditable({id:'p0',builtIn:true,createdBy:'alice'}),false,'内置流水线视同可信：无 admin 标记时按非 admin 只读');
   assert.equal(ctx.plEditable({id:'p1'}),true,'未署名存量全员可编辑（保存时补署创建者）');
   assert.equal(ctx.plEditable({id:'p2',createdBy:'  '}),true,'空白署名按未署名处理');
 });
@@ -48,9 +48,9 @@ test('plEditable：无登录用户时按 authReady 区分——探测在途保�
   assert.equal(token.plEditable({id:'p3',createdBy:'bob'}),true,'探测完成仍无用户（token 模式/探测失败）：退化为全权');
 });
 
-test('plEditable：测试桩全局缺失（无 currentUsername/authReady）时退化为既有「仅内置只读」行为',()=>{
+test('plEditable：测试桩全局缺失（无 currentUsername/authReady）时退化为全权',()=>{
   const ctx=loadPlEditable();
-  assert.equal(ctx.plEditable({id:'p1',builtIn:true}),false);
+  assert.equal(ctx.plEditable({id:'p1',builtIn:true}),true,'内置流水线视同可信：守卫缺失时按 token 模式退化全权');
   assert.equal(ctx.plEditable({id:'p2',createdBy:'bob'}),true,'守卫缺失时保持全权，不误伤旧测试桩');
 });
 
