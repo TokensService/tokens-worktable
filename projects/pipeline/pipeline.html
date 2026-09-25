@@ -339,7 +339,7 @@
     </div>
     <div id="flow" class="pipeline-seg"></div>
     <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
-      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者可编辑：内置与他人创建的流水线只读，可在「流水线任务」列表「复制」为副本后编辑）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者可编辑：他人创建的流水线只读，可在「流水线任务」列表「复制」为副本后编辑；内置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
       <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
     </div>
   </div>
@@ -2923,7 +2923,7 @@ function applyEditSel(){
   const wrap=$('plStageList'); if(!wrap||!wrap.children) return;
   for(let i=0;i<wrap.children.length;i+=1){
     const row=wrap.children[i]; const sel=!!(editStages[i] && editStages[i]===editSelStage);
-    const on=!!(sel && !plFormReadOnly);   // 只读查看（内置流水线）保留选中高亮，但不出「+」插入按钮
+    const on=!!(sel && !plFormReadOnly);   // 只读查看（内置流水线对非 admin 只读）保留选中高亮，但不出「+」插入按钮
     row.classList.toggle('plstage-sel', sel);
     const has=!!row.querySelector('.plstage-ins');
     if(on && !has){
@@ -3056,7 +3056,7 @@ function renderStageEditor(){
   applyEditSel();   // 重渲染后 DOM 已重建，恢复选中卡高亮与上/下缘「+」插入按钮
   if(editFocusIdx>=0 && wrap.children && wrap.children[editFocusIdx]){ const fr=wrap.children[editFocusIdx]; if(fr.scrollIntoView) fr.scrollIntoView({block:'nearest'}); }
   editFocusIdx=-1;
-  applyPlFormReadOnly();   // 只读模式（内置流水线）：禁用卡内全部编辑控件并禁止拖拽，每次重渲染后重复应用
+  applyPlFormReadOnly();   // 只读模式（内置流水线对非 admin 只读）：禁用卡内全部编辑控件并禁止拖拽，每次重渲染后重复应用
 }
 function renderStageParams(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
@@ -3411,7 +3411,7 @@ function pipelineStageGroupAt(stages,index){
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
-function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置与他人创建的流水线只读（plEditable：仅创建者可编辑），主视图同样禁止拖拽改序
+function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置（视同可信，仅 admin 可编辑）与他人创建的流水线对非 admin 只读（plEditable），主视图同样禁止拖拽改序
 /* 工作列表：当前流水线阶段补齐缺失的预设标记（与 flowStages 同源）。
    真实阶段保留对象引用（含 script/url 等全部字段，原样回写）；预设标记按 id/name/pkey 轻量保存。 */
 function flowWorkList(){ return withPresetMarkers((curPipeline().stages||[]).slice()); }
@@ -3453,7 +3453,7 @@ function flowNodeDrop(e){
 function flowNodeDragEnd(){ flowDragFromId=null; clearFlowDragMarks(); }
 /* 落盘：工作列表回写为 stages（预设标记随位置保存，并清掉旧顶层 prom），与编辑器 savePlForm 的归一化一致 */
 function persistFlowOrder(orderedWork){
-  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置与他人创建的流水线只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
+  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置（视同可信）与他人创建的流水线对非 admin 只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
   p.stages=orderedWork.map(s=> s.preset
     ? {id:s.id,name:s.name,preset:true,pkey:s.pkey}
     : s);
@@ -3491,8 +3491,8 @@ function createFlowNode(s, i){
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
-    const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置只读 / 他人创建只读（标注创建者）/ 本人可编辑
-    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur||{}).builtIn?'单击查看详情，双击查看该阶段（内置流水线只读）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
+    const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置/可信（非 admin）只读 / 他人创建只读（标注创建者）/ 可编辑
+    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（内置流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
     /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
     if(flowDraggable()){
       n.draggable=true; n.title+='；可拖拽调整执行顺序';
@@ -7595,21 +7595,22 @@ function plOwnerOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy
 function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updatedBy.trim()) ? p.updatedBy.trim() : ''; }   /* 最后修改人：与创建者同源（/auth/status 登录用户），保存/拖拽改序时刷新 */
 /* 流水线归属编辑限制（仅页面侧判断；服务端无用户身份概念，与 canControlRun 同一约定）：
    仅创建者可编辑/删除，消除多人编辑同一条流水线的竞争；他人可只读查看并「复制」为自己的副本。
-   - 内置流水线只读（既有行为）；
+   - 内置流水线视同可信：仅 admin 可编辑，其他用户只读（仍可运行）；任何人（含 admin）不可删除
+     （见 deletePipeline），行菜单的标记可信入口对内置隐藏（内置无需切换，见 openPlRowMenu）；
    - 可信流水线（trusted，admin 标记）：仅 admin 可编辑/删除——admin 权限优先于「仅创建者可编辑」；
      非 admin（含创建者本人）只读，但仍可运行；行菜单的标记入口只对 admin 显示（见 openPlRowMenu）；
    - 未署名（无创建者）的存量流水线全员可编辑，保存时按既有逻辑补署创建者（见 savePlForm）；
-   - auth 探测未完成（authReady 未置位）时对署名/可信流水线保守只读；探测完成仍无登录用户
-     （token 共享模式/未装认证插件/探测失败）退化为全权：页面无法判定 admin，trusted 不限制编辑、
+   - auth 探测未完成（authReady 未置位）时对署名/可信/内置流水线保守只读；探测完成仍无登录用户
+     （token 共享模式/未装认证插件/探测失败）退化为全权：页面无法判定 admin，trusted/内置不限制编辑、
      标记入口也不显示；
    - admin 对非可信流水线无例外：同样只能编辑自己创建的流水线。
-   typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局；守卫缺失时退化为既有的
-   「仅内置只读」行为。 */
+   typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局；守卫缺失时按「探测完成仍无用户」
+   退化全权处理。 */
 function plEditable(p){
-  if(!p || p.builtIn) return false;   // 内置流水线只读
-  if(p.trusted){
-    /* 可信流水线：仅「auth 探测成功（password 模式）且为 admin」可编辑；探测在途保守只读，
-       token 模式（探测完成仍无用户）退化为全权。 */
+  if(!p) return false;
+  if(p.builtIn || p.trusted){
+    /* 内置流水线视同可信，与可信流水线同一规则：仅「auth 探测成功（password 模式）且为 admin」
+       可编辑；探测在途保守只读，token 模式（探测完成仍无用户）退化为全权。 */
     const meTrusted=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
     if(!meTrusted) return (typeof authReady==='undefined') ? true : !!authReady;
     return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;
@@ -7786,12 +7787,14 @@ function renderPipelines(){
     tr.title='点击选用该流水线';
     const queueCount=queueCounts[p.id]||{running:0,queued:0};
     const queueTitle=(queueCount.running||queueCount.queued)?('运行 '+queueCount.running+' · 排队 '+queueCount.queued):'当前无运行或排队任务';
-    /* 归属编辑限制（plEditable：仅创建者可编辑/删除，内置只读）：他人流水线行内「编辑」变「查看」
-       （带创建者提示）、不渲染「删除」；「复制」对所有行可用（复制为自己的副本后编辑）。 */
+    /* 归属编辑限制（plEditable：仅创建者可编辑/删除；内置视同可信——仅 admin 可编辑，其他用户只读）：
+       他人流水线行内「编辑」变「查看」（带创建者提示）、不渲染「删除」；内置行对任何人（含 admin）
+       都不渲染「删除」（deletePipeline 另有不依赖 plEditable 的内置拦截）；「复制」对所有行可用
+       （复制为自己的副本后编辑）。 */
     const canEditPl=plEditable(p);
-    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+((!canEditPl&&!p.builtIn)?(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"'):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
-    const plDelBtn=canEditPl?'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>':'';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+(!canEditPl?(p.builtIn?' title="内置可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"':(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"')):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
+    const plDelBtn=(canEditPl&&!p.builtIn)?'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>':'';
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>'+' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="内置可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> '+plEditBtn+' <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+plDelBtn+
@@ -7856,7 +7859,7 @@ function savePlDraft(){
 function schedulePlDraftSave(){ if(plDraftTimer) clearTimeout(plDraftTimer); plDraftTimer=setTimeout(savePlDraft, 400); }
 function clearPlDraft(){ if(plDraftTimer){ clearTimeout(plDraftTimer); plDraftTimer=null; } try{ localStorage.removeItem('pip-plDraft'); }catch(e){} const tip=$('plDraftTip'); if(tip) tip.textContent=''; }
 function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft')||'null'); }catch(e){ return null; } }
-/* 流水线只读查看（内置流水线 / 他人创建的流水线）：openPlForm 按 plEditable(p) 置位（仅创建者可编辑），
+/* 流水线只读查看（内置流水线视同可信——非 admin 只读 / 他人创建的流水线）：openPlForm 按 plEditable(p) 置位，
    编辑器以只读模式打开——名称/脚本目录/默认环境与阶段卡内全部编辑控件禁用，保存/添加阶段入口隐藏，
    任务卡禁止拖拽，「+」插入按钮不出现（见 applyEditSel），仅保留「关闭/取消」退出；
    保存端另有 savePlForm 兜底拦截。因阶段参数识别等为异步重渲染，
@@ -7885,8 +7888,8 @@ function openPlForm(id, focusIdx){
   /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
   const p = id ? (findPipeline(id) || curPipeline()) : null;
   f.dataset.editId = p ? p.id : '';
-  plFormReadOnly=!!(p&&!plEditable(p));   // 内置、可信（非 admin）与他人创建的流水线只读查看（plEditable），编辑器整体切为只读模式
-  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（内置·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：'))+p.name : '新建流水线';
+  plFormReadOnly=!!(p&&!plEditable(p));   // 内置（视同可信，仅 admin 可编辑）、可信（非 admin）与他人创建的流水线只读查看（plEditable），编辑器整体切为只读模式
+  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（内置·可信·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.builtIn ? '编辑流水线（内置·可信）：' : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：')))+p.name : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
@@ -7920,10 +7923,10 @@ function openPlForm(id, focusIdx){
   if(!plFormReadOnly) $('plName').focus();   // 只读查看不抢焦点（名称输入框已禁用）
 }
 async function savePlForm(){
-  /* 内置流水线与他人创建的流水线只读（plEditable：仅创建者可编辑）：保存入口已隐藏，
+  /* 内置流水线视同可信（仅 admin 可编辑保存）与他人创建的流水线只读（plEditable）：只读时保存入口已隐藏，
      此处兜底拦截一切写回路径（如需改动请用列表「复制」生成可编辑副本） */
   const guardP=findPipeline($('plForm').dataset.editId||'');
-  if(guardP && guardP.builtIn){ alert('内置流水线「'+guardP.name+'」为只读，不可保存修改；可在「流水线任务」列表「复制」为副本后编辑。'); return; }
+  if(guardP && guardP.builtIn && !plEditable(guardP)){ alert('内置流水线「'+guardP.name+'」视同可信：仅 admin 可编辑保存，其他用户只读（仍可运行）；如需定制可在「流水线任务」列表「复制」为副本后编辑。'); return; }
   if(guardP && !plEditable(guardP)){
     if(guardP.trusted){ alert('流水线「'+guardP.name+'」已被管理员标记为可信，仅 admin 可编辑保存；如需改动可在「流水线任务」列表「复制」为副本后编辑。'); return; }
     alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 创建，仅创建者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return;
@@ -8047,9 +8050,11 @@ async function savePlForm(){
   return saved||{ok:true};
 }
 function deletePipeline(id){
-  /* 归属拦截：仅创建者可删除（内置也不可删除；可信流水线仅 admin 可删除）；行内「删除」按钮对只读行已不渲染，此处兜底 */
+  /* 归属拦截：内置流水线任何人（含 admin）都不可删除——独立于 plEditable 先行拦截（admin 对内置可编辑但不可删除）；
+     其余仅创建者可删除（可信流水线仅 admin 可删除）；行内「删除」按钮对只读行与内置行已不渲染，此处兜底 */
   const delP=findPipeline(id);
-  if(delP && !plEditable(delP)){ alert(delP.builtIn ? '内置流水线「'+delP.name+'」不可删除。' : (delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。')); return; }
+  if(delP && delP.builtIn){ alert('内置流水线「'+delP.name+'」不可删除。'); return; }
+  if(delP && !plEditable(delP)){ alert(delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。'); return; }
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);

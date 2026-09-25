@@ -2,7 +2,9 @@
    仍可运行）；admin 编辑可信流水线时权限优先于「仅创建者可编辑」。token 共享模式（无用户体系/探测失败，
    页面无法判定 admin）退化为全权：trusted 不限制编辑、行菜单标记入口也不显示。
    保存被服务端 403（{error:'trusted', message, pipelineIds}）拦截时：toast 展示服务端 message 并
-   loadServerState 重拉状态同步，403 不回退全量保存（那是给网络错误/冲突用的）。 */
+   loadServerState 重拉状态同步，403 不回退全量保存（那是给网络错误/冲突用的）。
+   内置流水线视同可信：仅 admin 可编辑（编辑经 save-one/全量保存上送服务端，各端重载即得编辑版），
+   其他用户只读（仍可运行）；删除对任何人（含 admin）保持禁止；行菜单「标记可信」对内置隐藏（无需切换）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -26,25 +28,30 @@ function loadPlEditable(globals){
   return ctx;
 }
 
-test('plEditable：可信流水线仅 admin 可编辑（admin 优先于「仅创建者可编辑」），内置仍恒只读',()=>{
+test('plEditable：可信流水线仅 admin 可编辑（admin 优先于「仅创建者可编辑」），内置视同可信',()=>{
   const admin=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:true});
   assert.equal(admin.plEditable({id:'p1',createdBy:'bob',trusted:true}),true,'admin 可编辑他人创建的可信流水线');
   assert.equal(admin.plEditable({id:'p2',createdBy:'alice',trusted:true}),true,'admin 可编辑自己创建的可信流水线');
-  assert.equal(admin.plEditable({id:'p0',builtIn:true,trusted:true}),false,'内置流水线即便带 trusted 也恒只读');
+  assert.equal(admin.plEditable({id:'p0',builtIn:true,trusted:true}),true,'内置流水线视同可信：admin 可编辑（trusted 标记有无不影响）');
   const user=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:false});
   assert.equal(user.plEditable({id:'p3',createdBy:'alice',trusted:true}),false,'非 admin：创建者本人对可信流水线同样只读');
   assert.equal(user.plEditable({id:'p4',createdBy:'bob',trusted:true}),false,'非 admin：他人创建的可信流水线只读');
+  assert.equal(user.plEditable({id:'p5',builtIn:true}),false,'非 admin：内置流水线只读');
 });
 
-test('plEditable：可信流水线在 token 模式退化为全权，auth 探测在途保守只读',()=>{
+test('plEditable：可信/内置流水线在 token 模式退化为全权，auth 探测在途保守只读',()=>{
   const token=loadPlEditable({currentUsername:'',authReady:true,currentUserIsAdmin:false});
   assert.equal(token.plEditable({id:'p1',createdBy:'bob',trusted:true}),true,'探测完成仍无用户（token 模式/探测失败）：退化为全权');
+  assert.equal(token.plEditable({id:'p1b',builtIn:true}),true,'内置流水线 token 模式同样退化全权');
   const pending=loadPlEditable({currentUsername:'',authReady:false,currentUserIsAdmin:false});
   assert.equal(pending.plEditable({id:'p2',createdBy:'bob',trusted:true}),false,'auth 探测在途：可信流水线保守只读');
+  assert.equal(pending.plEditable({id:'p2b',builtIn:true}),false,'auth 探测在途：内置流水线保守只读');
   const stubs=loadPlEditable();   // 旧测试桩：身份全局全缺，退化为全权（与署名路径同一约定）
   assert.equal(stubs.plEditable({id:'p3',createdBy:'bob',trusted:true}),true,'测试桩全局缺失时退化全权，不误伤旧测试桩');
+  assert.equal(stubs.plEditable({id:'p3b',builtIn:true}),true,'内置流水线在测试桩全局缺失时同样退化全权');
   const noAdminGlobal=loadPlEditable({currentUsername:'alice',authReady:true});   // currentUserIsAdmin 全局缺失：按非 admin 保守处理
   assert.equal(noAdminGlobal.plEditable({id:'p4',createdBy:'alice',trusted:true}),false,'admin 标记缺失时按非 admin 保守只读');
+  assert.equal(noAdminGlobal.plEditable({id:'p4b',builtIn:true}),false,'内置流水线 admin 标记缺失时同样保守只读');
 });
 
 test('plEditable：未标记 trusted 的既有行为不变',()=>{
@@ -54,7 +61,7 @@ test('plEditable：未标记 trusted 的既有行为不变',()=>{
   assert.equal(mine.plEditable({id:'p3'}),true,'未署名存量全员可编辑');
   const admin=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:true});
   assert.equal(admin.plEditable({id:'p4',createdBy:'bob'}),false,'非可信流水线 admin 无例外：同样只能编辑自己创建的');
-  assert.equal(admin.plEditable({id:'p5',builtIn:true}),false,'内置只读');
+  assert.equal(admin.plEditable({id:'p5',builtIn:true}),true,'内置流水线视同可信：admin 可编辑');
 });
 
 /* ---------- 行菜单「标记可信」可见性 ---------- */
@@ -230,6 +237,79 @@ test('renderPipelines：可信流水线行内名称旁渲染「可信」徽章�
   assert.doesNotMatch(tbody.children[1].innerHTML,/可信流水线：仅 admin 可编辑/);
 });
 
+/* ---------- 内置流水线视同可信：行渲染 / 编辑器标题 / 保存 / 删除 / 复制 ---------- */
+test('renderPipelines：内置行同时渲染「内置」「可信」徽章，非 admin 的「查看」按钮带内置可信提示，删除按钮不渲染',()=>{
+  const tbody=new FakeNode('tbody');
+  const table={querySelector:sel=>sel==='tbody'?tbody:null};
+  const count={textContent:''};
+  const ctx={
+    pipelines:[
+      {id:'pl-xds',name:'安装部署XDS',stages:[{name:'拉取镜像'}],builtIn:true},
+    ],
+    curPipelineId:'',
+    plFilter:{kw:'',owner:'all'},
+    plFilterMatch:()=>true,
+    renderPlFilterOptions:()=>{},
+    plOwnerOf:p=>p.createdBy||'', plUpdaterOf:()=>'',
+    plEditable:p=>!p||!p.builtIn,   // 非 admin 视角：内置只读（plEditable 矩阵已单测）
+    isPipelineFavorite:()=>false,
+    pipelineQueueCounts:()=>({}), pipelineQueueCountHtml:()=>'—',
+    currentUsername:'alice',
+    document:{createElement:tag=>new FakeNode(tag)},
+    $:id=>({plTable:table,pipelineSel:new FakeNode('select')})[id]||count,
+    esc:String,
+    curPipeline:()=>null,
+    findPipeline:id=>ctx.pipelines.find(p=>p.id===id),
+    selectPipeline:()=>{},
+  };
+  vm.createContext(ctx);
+  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
+  const end=source.indexOf('function selectPipeline',start);
+  assert.ok(start>=0&&end>start,'流水线菜单与列表区域未找到');
+  vm.runInContext(source.slice(start,end),ctx);
+  ctx.renderPipelines();
+  const html=tbody.children[0].innerHTML;
+  assert.match(html,/>内置<\/span>/,'内置行渲染「内置」徽章');
+  assert.match(html,/>可信<\/span>/,'内置行同时渲染「可信」徽章');
+  assert.match(html,/title="内置可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"/,'「可信」徽章与「查看」按钮带内置可信提示');
+  assert.match(html,/>查看</,'非 admin 行内按钮为「查看」');
+  assert.doesNotMatch(html,/data-pldel/,'内置行不渲染「删除」按钮');
+});
+
+test('renderPipelines：admin 视角内置行渲染「编辑」按钮但仍不渲染「删除」',()=>{
+  const tbody=new FakeNode('tbody');
+  const table={querySelector:sel=>sel==='tbody'?tbody:null};
+  const count={textContent:''};
+  const ctx={
+    pipelines:[
+      {id:'pl-xds',name:'安装部署XDS',stages:[{name:'拉取镜像'}],builtIn:true},
+    ],
+    curPipelineId:'',
+    plFilter:{kw:'',owner:'all'},
+    plFilterMatch:()=>true,
+    renderPlFilterOptions:()=>{},
+    plOwnerOf:p=>p.createdBy||'', plUpdaterOf:()=>'',
+    plEditable:()=>true,   // admin 视角：内置视同可信可编辑（plEditable 矩阵已单测）
+    isPipelineFavorite:()=>false,
+    pipelineQueueCounts:()=>({}), pipelineQueueCountHtml:()=>'—',
+    currentUsername:'alice',
+    document:{createElement:tag=>new FakeNode(tag)},
+    $:id=>({plTable:table,pipelineSel:new FakeNode('select')})[id]||count,
+    esc:String,
+    curPipeline:()=>null,
+    findPipeline:id=>ctx.pipelines.find(p=>p.id===id),
+    selectPipeline:()=>{},
+  };
+  vm.createContext(ctx);
+  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
+  const end=source.indexOf('function selectPipeline',start);
+  vm.runInContext(source.slice(start,end),ctx);
+  ctx.renderPipelines();
+  const html=tbody.children[0].innerHTML;
+  assert.match(html,/>编辑</,'admin 行内按钮为「编辑」');
+  assert.doesNotMatch(html,/data-pldel/,'内置行对 admin 也不渲染「删除」按钮');
+});
+
 /* ---------- 编辑器标题（openPlForm 切片，同 test_pipeline_owner_edit.js 桩） ---------- */
 function loadOpenPlForm({pipeline,username,isAdmin}){
   const els={
@@ -302,6 +382,120 @@ test('copyPipeline：副本清除 trusted（复制品默认非可信）',()=>{
   assert.equal(ctx.pipelines.length,2);
   assert.equal('trusted' in ctx.pipelines[1],false,'副本不继承可信标记（字段删除而非置 false）');
   assert.equal(srcPipe.trusted,true,'源流水线可信标记不受影响');
+});
+
+test('copyPipeline：复制内置流水线产出普通副本（不带 builtIn/trusted）',()=>{
+  const srcPipe={id:'pl-xds',name:'安装部署XDS',builtIn:true,trusted:true,stages:[{id:'s1',name:'拉取镜像'}]};
+  const ctx={
+    findPipeline:id=>(id==='pl-xds'?srcPipe:null),
+    pipelines:[srcPipe],
+    currentUsername:'alice',
+    savePipelines:()=>{},
+    running:false,
+    selectPipeline:()=>{},
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('uniqueCopyName')+'\n'+extractFunction('copyPipeline'),ctx);
+  ctx.copyPipeline('pl-xds');
+  assert.equal(ctx.pipelines.length,2);
+  assert.equal(ctx.pipelines[1].builtIn,false,'副本一律非内置');
+  assert.equal('trusted' in ctx.pipelines[1],false,'副本不带可信标记');
+  assert.equal(ctx.pipelines[1].name,'安装部署XDS（副本）','副本名称带「（副本）」后缀');
+  assert.equal(srcPipe.builtIn,true,'源内置流水线不受影响');
+});
+
+/* ---------- 内置流水线视同可信：编辑器标题 / savePlForm / deletePipeline ---------- */
+const BUILTIN_PL={id:'pl-xds',name:'安装部署XDS',builtIn:true,defaults:{},stages:[{id:'s1',name:'拉取镜像'}]};
+
+test('openPlForm：admin 打开内置流水线保持可编辑，标题标注「内置·可信」',()=>{
+  const {ctx,els}=loadOpenPlForm({pipeline:BUILTIN_PL,username:'alice',isAdmin:true});
+  ctx.openPlForm('pl-xds');
+  assert.equal(ctx.plFormReadOnly,false,'内置流水线视同可信：admin 可编辑');
+  assert.match(els.plFormTitle.textContent,/编辑流水线（内置·可信）：安装部署XDS/);
+});
+
+test('openPlForm：非 admin 打开内置流水线为只读查看，标题标注「内置·可信·只读」',()=>{
+  const {ctx,els}=loadOpenPlForm({pipeline:BUILTIN_PL,username:'alice',isAdmin:false});
+  ctx.openPlForm('pl-xds');
+  assert.equal(ctx.plFormReadOnly,true,'内置流水线视同可信：非 admin 只读');
+  assert.match(els.plFormTitle.textContent,/查看流水线（内置·可信·只读）：安装部署XDS/);
+});
+
+test('savePlForm 兜底：非 admin 保存内置流水线被拦截（视同可信文案），定义不被改写',async()=>{
+  const pipeline={id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s1',name:'拉取镜像'}]};
+  const before=JSON.parse(JSON.stringify(pipeline));
+  const alerts=[];
+  const ctx={
+    Object,Array,Promise,String,JSON,
+    currentUsername:'alice',authReady:true,currentUserIsAdmin:false,
+    $:id=>({plForm:{dataset:{editId:'pl-xds'}},plName:{value:'改写名'}}[id]||null),
+    findPipeline:id=>(id==='pl-xds'?pipeline:null),
+    alert:msg=>alerts.push(String(msg)),
+    editStages:[{id:'s2',name:'篡改阶段'}],
+    savePipelines:()=>{ throw new Error('被拦截时不得走到落盘'); },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('plOwnerOf')+'\n'+extractFunction('plEditable')+'\n'+extractFunction('savePlForm'),ctx);
+  await ctx.savePlForm();
+  assert.equal(alerts.length,1);
+  assert.match(alerts[0],/内置流水线「安装部署XDS」视同可信：仅 admin 可编辑保存/);
+  assert.match(alerts[0],/复制.*副本/,'提示应引导复制副本后编辑');
+  assert.deepEqual(JSON.parse(JSON.stringify(pipeline)),before,'被拦截后流水线定义不得改写');
+});
+
+test('savePlForm：admin 保存内置流水线放行（通过内置/归属兜底，进入后续校验）',async()=>{
+  const pipeline={id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s1',name:'拉取镜像'}]};
+  const alerts=[];
+  const ctx={
+    Object,Array,Promise,String,JSON,
+    currentUsername:'alice',authReady:true,currentUserIsAdmin:true,
+    $:id=>({plForm:{dataset:{editId:'pl-xds'}},plName:{value:'安装部署XDS'}}[id]||null),
+    findPipeline:id=>(id==='pl-xds'?pipeline:null),
+    alert:msg=>alerts.push(String(msg)),
+    editStages:[],   // 空阶段：若放行则落在「请至少添加一个阶段」校验上
+    savePipelines:()=>{ throw new Error('校验拦截前不得走到落盘'); },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('plOwnerOf')+'\n'+extractFunction('plEditable')+'\n'+extractFunction('savePlForm'),ctx);
+  await ctx.savePlForm();
+  assert.equal(alerts.length,1);
+  assert.match(alerts[0],/请至少添加一个阶段/,'admin 保存内置流水线须通过内置兜底、进入阶段校验');
+});
+
+test('deletePipeline：内置流水线任何人（含 admin）都不可删除',()=>{
+  const builtin={id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s1',name:'拉取镜像'}]};
+  const mine={id:'pl-mine',name:'我的流水线',builtIn:false,createdBy:'alice',stages:[{id:'s1',name:'部署'}]};
+  const mk=isAdmin=>{
+    const alerts=[],saves=[];
+    const ctx={
+      Object,Array,Promise,String,JSON,
+      currentUsername:'alice',authReady:true,currentUserIsAdmin:isAdmin,
+      pipelines:[builtin,mine],
+      findPipeline:id=>ctx.pipelines.find(p=>p.id===id)||null,
+      running:false,
+      confirm:()=>true,
+      alert:msg=>alerts.push(String(msg)),
+      savePipelines:()=>saves.push(1),
+      curPipelineId:'pl-mine',
+      viewRc:null, syncViewRun:()=>{}, resetNodes:()=>{},
+      renderPipelines:()=>{},renderFlow:()=>{},renderDetail:()=>{},
+    };
+    vm.createContext(ctx);
+    vm.runInContext(extractFunction('plOwnerOf')+'\n'+extractFunction('plEditable')+'\n'+extractFunction('deletePipeline'),ctx);
+    return {ctx,alerts,saves};
+  };
+  const adminCase=mk(true);
+  adminCase.ctx.deletePipeline('pl-xds');
+  assert.equal(adminCase.alerts.length,1);
+  assert.match(adminCase.alerts[0],/内置流水线「安装部署XDS」不可删除/,'admin 删除内置同样被拦截');
+  assert.equal(adminCase.ctx.pipelines.length,2,'内置流水线不得被删除');
+  assert.equal(adminCase.saves.length,0,'拦截发生在落盘之前');
+  const userCase=mk(false);
+  userCase.ctx.deletePipeline('pl-xds');
+  assert.match(userCase.alerts[0],/不可删除/,'非 admin 删除内置被拦截');
+  assert.equal(userCase.ctx.pipelines.length,2);
+  adminCase.ctx.deletePipeline('pl-mine');
+  assert.deepEqual(adminCase.ctx.pipelines.map(p=>p.id),['pl-xds'],'admin 删除本人创建的普通流水线不受影响');
 });
 
 /* ---------- savePlForm：trusted 兜底拦截与 403 收尾 ---------- */

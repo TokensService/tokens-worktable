@@ -1,4 +1,5 @@
-/* 内置（默认）流水线只读查看：编辑器只读模式、保存/拖拽写回兜底拦截。 */
+/* 内置（默认）流水线对非 admin 只读查看（内置视同可信，仅 admin 可编辑）：编辑器只读模式、
+   保存/拖拽写回兜底拦截。本文件的 plEditable 桩模拟非 admin 视角（内置只读）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -29,7 +30,7 @@ function loadOpenPlForm({pipeline,draft,stateLoaded=true}){
     alert:message=>calls.alerts.push(String(message)),
     editFocusIdx:-1,editSelStage:null,editStages:[],editDefaults:null,plFormReadOnly:false,
     scriptsDir:'/srv/scripts',
-    plEditable:p=>!p||!p.builtIn,   // 归属桩：本测试只覆盖内置只读，等价「仅内置只读」旧行为
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：非 admin 视角（内置视同可信，非 admin 只读）
     $:id=>els[id]||null,
     findPipeline:id=>(pipeline&&pipeline.id===id)?pipeline:null,
     curPipeline:()=>pipeline||null,
@@ -63,12 +64,12 @@ test('服务端初始配置尚未加载时不打开编辑器，避免按本地�
   assert.match(calls.alerts[0],/服务端流水线配置仍在加载/);
 });
 
-test('内置流水线打开为只读查看：标志置位、标题标注只读、不恢复草稿、不抢焦点',()=>{
+test('内置流水线打开为只读查看（非 admin 视角）：标志置位、标题标注只读、不恢复草稿、不抢焦点',()=>{
   const draft={editId:'pl-xds',stages:[{id:'d1',name:'草稿改动'}],name:'草稿名',scriptsDir:'/draft',defaults:{branch:'dev'}};
   const {ctx,els,calls}=loadOpenPlForm({pipeline:BUILTIN,draft});
   ctx.openPlForm('pl-xds');
-  assert.equal(ctx.plFormReadOnly,true,'内置流水线必须进入只读模式');
-  assert.match(els.plFormTitle.textContent,/查看流水线（内置·只读）：安装部署XDS/);
+  assert.equal(ctx.plFormReadOnly,true,'非 admin 打开内置流水线必须进入只读模式');
+  assert.match(els.plFormTitle.textContent,/查看流水线（内置·可信·只读）：安装部署XDS/);
   assert.equal(els.plName.value,'安装部署XDS','只读查看展示内置定义真值，不恢复草稿名');
   assert.equal(els.scriptsDir.value,'/srv/scripts','只读查看不恢复草稿脚本目录');
   assert.deepEqual(ctx.editStages.map(s=>s.name),['检出','构建镜像'],'阶段列表来自内置定义而非草稿');
@@ -128,19 +129,19 @@ test('applyPlFormReadOnly：只读禁用全部编辑控件并隐藏保存/添加
   assert.equal(els.plSave.style.display,'');
 });
 
-test('savePlForm 兜底：任何路径都不得写回内置流水线，普通流水线不受影响',()=>{
+test('savePlForm 兜底：非 admin 任何路径都不得写回内置流水线，普通流水线不受影响',()=>{
   let alerted='';
   const ctx={
     $:id=>({plForm:{dataset:{editId:'pl-xds'}},plName:{value:'x'}}[id]||null),
     findPipeline:id=>(id==='pl-xds'?BUILTIN:null),
-    plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：非 admin 视角（内置视同可信，非 admin 只读）
     alert:msg=>{alerted=msg;},
     editStages:[],
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('savePlForm'),ctx);
   ctx.savePlForm();
-  assert.match(alerted,/只读/,'保存内置流水线必须被拦截并提示只读');
+  assert.match(alerted,/视同可信：仅 admin 可编辑保存/,'非 admin 保存内置流水线必须被拦截并提示视同可信');
 
   alerted='';
   ctx.findPipeline=id=>(id==='pl-a'?CUSTOM:null);
@@ -149,27 +150,27 @@ test('savePlForm 兜底：任何路径都不得写回内置流水线，普通流
   assert.match(alerted,/请至少添加一个阶段/,'普通流水线须通过只读兜底、进入后续校验');
 });
 
-test('flowDraggable：当前流水线为内置时主视图禁止拖拽改序',()=>{
+test('flowDraggable：当前流水线为内置时主视图对非 admin 禁止拖拽改序',()=>{
   const ctx={
     running:false,runStages:null,replayRec:null,
     viewActive:()=>false,
     curPipeline:()=>BUILTIN,
-    plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：非 admin 视角（内置视同可信，非 admin 只读）
   };
   vm.createContext(ctx);
   vm.runInContext(extractFunction('flowDraggable'),ctx);
-  assert.equal(ctx.flowDraggable(),false,'内置流水线主视图不可拖拽');
+  assert.equal(ctx.flowDraggable(),false,'内置流水线主视图对非 admin 不可拖拽');
   ctx.curPipeline=()=>CUSTOM;
   assert.equal(ctx.flowDraggable(),true,'普通流水线空闲态仍可拖拽改序');
   ctx.curPipeline=()=>null;
   assert.equal(ctx.flowDraggable(),true,'无当前流水线时不因内置判断报错');
 });
 
-test('persistFlowOrder 兜底：内置流水线不落盘，普通流水线照常回写',()=>{
+test('persistFlowOrder 兜底：内置流水线对非 admin 不落盘，普通流水线照常回写',()=>{
   let saved=0,renders=0;
   const ctx={
     curPipeline:()=>BUILTIN,
-    plEditable:p=>!p||!p.builtIn,   // 归属桩：等价「仅内置只读」旧行为
+    plEditable:p=>!p||!p.builtIn,   // 归属桩：非 admin 视角（内置视同可信，非 admin 只读）
     normalizePipelineProm:p=>p||{},
     savePipelines:()=>{saved+=1;},
     renderPipelines:()=>{renders+=1;},renderFlow:()=>{},renderDetail:()=>{},
@@ -178,7 +179,7 @@ test('persistFlowOrder 兜底：内置流水线不落盘，普通流水线照常
   vm.runInContext(extractFunction('persistFlowOrder'),ctx);
   const before=BUILTIN.stages.slice();
   ctx.persistFlowOrder([{id:'s2',name:'构建镜像'},{id:'s1',name:'检出'}]);
-  assert.deepEqual(BUILTIN.stages,before,'内置流水线 stages 不得被改写');
+  assert.deepEqual(BUILTIN.stages,before,'内置流水线 stages 不得被非 admin 改写');
   assert.equal(saved,0,'内置流水线不得触发持久化');
 
   const custom={id:'pl-b',name:'x',stages:[{id:'a',name:'甲'},{id:'b',name:'乙'}]};
