@@ -26,10 +26,20 @@ function extractFunction(name) {
   throw new Error(`无法提取函数 ${name}`)
 }
 
+/* BUILTIN_PIPELINE_ID 常量声明（trustedPipelineViolations 引用它；从源码抽取，避免字面量与实现分叉） */
+const BUILTIN_CONST_DECL = (() => {
+  const match = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)
+  assert.ok(match, 'src/index.ts 缺少 BUILTIN_PIPELINE_ID 常量')
+  return match[0]
+})()
+
 const TRUST_HELPERS = [
-  'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
-  'deepEqualIgnoring', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
-].map((name) => extractFunction(name)).join('\n')
+  BUILTIN_CONST_DECL,
+  ...[
+    'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
+    'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
+  ].map((name) => extractFunction(name)),
+].join('\n')
 
 /* 从 src/index.ts 抽取「流水线工作台服务端持久化」路由块（PUT 全量 + save-one），前置真实的合并/校验助手，
    DSH_HOME 指向临时目录，writeJsonAtomic / withStoreLock / readPipelineStore 用测试内的等价实现 */
@@ -149,6 +159,8 @@ const reqWith = (method, body, token) => ({
 
 const pl = (id, name, extra = {}) => ({ id, name, stages: [{ id: 'st0', name: '构建', dur: 5 }], ...extra })
 const trustedPl = (id, name, extra = {}) => pl(id, name, { trusted: true, favoriteUsers: ['alice'], ...extra })
+/* 内置条目（与 pipeline.html 的 DEFAULT_PIPELINE_ID / defaultPipeline() 种子对齐：id 固定 pl-xds、builtIn:true） */
+const builtinPl = (name, extra = {}) => pl('pl-xds', name, { builtIn: true, favoriteUsers: ['alice'], ...extra })
 
 test('users.yaml 迷你解析：普通用户 / admin / 引号 key 与值 / 缺 role / disabled 不影响 admin / 文件缺失', async t => {
   const home = await mkdtemp(tmpdir() + '/pipeline-trust-yaml-')
@@ -350,4 +362,128 @@ test('非 admin 的运行期全量保存（条目未变、仅历史推进）不�
   const disk = await readStore(home)
   assert.deepEqual(disk.config.pipelines, config.pipelines, '条目共识未变')
   assert.equal(disk.history[0].tag, 'new')
+})
+
+test('非 admin：内置条目改内容 / 删除 / 翻转 builtIn 或 trusted 标志 → 403 且不写盘（PUT 与 save-one）', async t => {
+  const config = { pipelines: [builtinPl('安装部署XDS', { trusted: true }), pl('p2', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+  const put = (pipelines) => call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines }, baseConfig: config, history: [] }, TOKEN_USER))
+
+  const tampered = await put([builtinPl('篡改', { trusted: true }), pl('p2', '普通')])
+  assert.equal(tampered.status, 403, '改内置条目内容')
+  assert.equal(tampered.json().error, 'trusted')
+  assert.match(tampered.json().message, /内置流水线仅 admin 可编辑/)
+  assert.deepEqual(tampered.json().pipelineIds, ['pl-xds'])
+
+  const removed = await put([pl('p2', '普通')])
+  assert.equal(removed.status, 403, '删除内置条目')
+  assert.deepEqual(removed.json().pipelineIds, ['pl-xds'])
+
+  const noBuiltinFlag = await put([pl('pl-xds', '安装部署XDS', { trusted: true, favoriteUsers: ['alice'] }), pl('p2', '普通')])
+  assert.equal(noBuiltinFlag.status, 403, '剥掉 builtIn 标志')
+  assert.deepEqual(noBuiltinFlag.json().pipelineIds, ['pl-xds'])
+
+  const noTrustedFlag = await put([builtinPl('安装部署XDS'), pl('p2', '普通')])
+  assert.equal(noTrustedFlag.status, 403, '剥掉 trusted 标志')
+  assert.match(noTrustedFlag.json().message, /内置流水线仅 admin 可编辑/)
+
+  assert.deepEqual((await readStore(home)).config, config, '全部拒绝，磁盘保持原样')
+
+  const saveOne = await call(h['/api/worktable/pipeline/save-one'], reqWith('PUT', { pipeline: builtinPl('篡改', { trusted: true }), basePipeline: builtinPl('安装部署XDS', { trusted: true }) }, TOKEN_USER))
+  assert.equal(saveOne.status, 403, 'save-one 改内置条目同样拦截')
+  assert.equal(saveOne.json().error, 'trusted')
+  assert.match(saveOne.json().message, /内置流水线仅 admin 可编辑/)
+  assert.deepEqual(saveOne.json().pipelineIds, ['pl-xds'])
+  assert.deepEqual((await readStore(home)).config, config, 'save-one 拒绝时不写盘')
+})
+
+test('非 admin：新建内置条目（builtIn:true 或 id 命中）/ 给既有条目塞 builtIn → 403 且不写盘', async t => {
+  const config = { pipelines: [pl('p1', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+  const put = (pipelines) => call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines }, baseConfig: config, history: [] }, TOKEN_USER))
+
+  const forgeFlag = await put([pl('p1', '普通'), pl('p9', '伪造内置', { builtIn: true })])
+  assert.equal(forgeFlag.status, 403, '新建 builtIn:true 条目')
+  assert.match(forgeFlag.json().message, /仅 admin 可新建内置流水线/)
+  assert.deepEqual(forgeFlag.json().pipelineIds, ['p9'])
+
+  const squatId = await put([pl('p1', '普通'), pl('pl-xds', '抢先占位')])
+  assert.equal(squatId.status, 403, '新建 id=pl-xds 条目（无 builtIn 标志也拦截）')
+  assert.deepEqual(squatId.json().pipelineIds, ['pl-xds'])
+
+  const flipExisting = await put([pl('p1', '普通', { builtIn: true })])
+  assert.equal(flipExisting.status, 403, '给既有普通条目塞 builtIn 标 = 伪造内置')
+  assert.deepEqual(flipExisting.json().pipelineIds, ['p1'])
+
+  assert.deepEqual((await readStore(home)).config, config, '全部拒绝，磁盘保持原样')
+})
+
+test('非 admin：仅改内置条目 favoriteUsers → 放行；同表普通流水线仍可按原规则编辑', async t => {
+  const config = { pipelines: [builtinPl('安装部署XDS'), pl('p2', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+
+  const favOnly = { pipelines: [builtinPl('安装部署XDS', { favoriteUsers: [] }), pl('p2', '普通')] }
+  const fav = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: favOnly, baseConfig: config, history: [] }, TOKEN_USER))
+  assert.equal(fav.status, 200, 'favoriteUsers 豁免在内置条目上同样成立')
+  assert.deepEqual((await readStore(home)).config.pipelines[0].favoriteUsers, [])
+
+  const next = { pipelines: [builtinPl('安装部署XDS', { favoriteUsers: [] }), pl('p2', '改名'), pl('p3', '新建普通')], theme: 'light' }
+  const res = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: next, baseConfig: fav.json().config, history: [] }, TOKEN_USER))
+  assert.equal(res.status, 200, '普通自定义流水线（非内置非 trusted）非 admin 仍可编辑/新建')
+  const disk = await readStore(home)
+  assert.deepEqual(disk.config.pipelines.map(p => [p.id, p.name]), [['pl-xds', '安装部署XDS'], ['p2', '改名'], ['p3', '新建普通']])
+  assert.equal(disk.config.pipelines[0].builtIn, true, '内置条目原样保留')
+})
+
+test('admin：内置条目改内容 / 新建内置 / 删除内置 全部放行且写盘', async t => {
+  const config = { pipelines: [builtinPl('安装部署XDS'), pl('p2', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+
+  const edit = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [builtinPl('管理员改名'), pl('p2', '普通')] }, baseConfig: config, history: [] }, TOKEN_ADMIN))
+  assert.equal(edit.status, 200, 'admin 改内置条目内容')
+  assert.equal((await readStore(home)).config.pipelines[0].name, '管理员改名', '改动已写盘')
+
+  const created = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [builtinPl('管理员改名'), pl('p2', '普通'), pl('p9', '新内置', { builtIn: true })] }, baseConfig: edit.json().config, history: [] }, TOKEN_ADMIN))
+  assert.equal(created.status, 200, 'admin 新建 builtIn 条目')
+  assert.deepEqual((await readStore(home)).config.pipelines.map(p => p.id), ['pl-xds', 'p2', 'p9'])
+
+  const removed = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('p2', '普通')] }, baseConfig: created.json().config, history: [] }, TOKEN_ADMIN))
+  assert.equal(removed.status, 200, 'admin 删除内置条目')
+  assert.deepEqual((await readStore(home)).config.pipelines.map(p => p.id), ['p2'])
+})
+
+test('token 共享模式（无 auth 服务）：内置条目改内容 / 剥标志 / 打标 一律放行', async t => {
+  const config = { pipelines: [builtinPl('安装部署XDS'), pl('p2', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: {} })   // ctx 无 auth 服务 → 全部不校验，维持 token 模式降级
+
+  const res = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('pl-xds', '改名'), pl('p2', '普通', { builtIn: true })] }, baseConfig: config, history: [] }))
+  assert.equal(res.status, 200, '无 auth 服务时内置校验不生效')
+  const disk = await readStore(home)
+  assert.equal(disk.config.pipelines[0].name, '改名')
+  assert.equal(disk.config.pipelines[0].builtIn, undefined, '剥标志也生效')
+  assert.equal(disk.config.pipelines[1].builtIn, true)
+})
+
+test('存储中 id 命中 pl-xds 但无 builtIn 标志的条目同样视同内置保护', async t => {
+  const config = { pipelines: [pl('pl-xds', '安装部署XDS'), pl('p2', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+
+  const tampered = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('pl-xds', '篡改'), pl('p2', '普通')] }, baseConfig: config, history: [] }, TOKEN_USER))
+  assert.equal(tampered.status, 403, '无 builtIn 标志但 id 命中，非 admin 改内容仍拦截')
+  assert.match(tampered.json().message, /内置流水线仅 admin 可编辑/)
+  assert.deepEqual(tampered.json().pipelineIds, ['pl-xds'])
+
+  const claimFlag = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('pl-xds', '安装部署XDS', { builtIn: true }), pl('p2', '普通')] }, baseConfig: config, history: [] }, TOKEN_USER))
+  assert.equal(claimFlag.status, 403, '非 admin 也不得给该 id 补 builtIn 标志（内容比对不豁免）')
+  assert.deepEqual((await readStore(home)).config, config, '拒绝时不写盘')
+
+  const favOnly = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('pl-xds', '安装部署XDS', { favoriteUsers: ['alice'] }), pl('p2', '普通')] }, baseConfig: config, history: [] }, TOKEN_USER))
+  assert.equal(favOnly.status, 200, 'favoriteUsers 豁免对 id 命中的条目同样成立')
+  assert.deepEqual((await readStore(home)).config.pipelines[0].favoriteUsers, ['alice'])
 })
