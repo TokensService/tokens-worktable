@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 内置流水线（`pl-xds`「安装部署XDS」）视同可信：仅 admin 可编辑，其他人只读（仍可运行），删除全员禁止
+  （`projects/pipeline/pipeline.html` + `src/index.ts`）。页面侧 `plEditable` 把 `builtIn` 并入 trusted
+  分支（token 模式维持全权退化、探测在途保守只读）；admin 打开内置为「编辑流水线（内置·可信）」，非 admin
+  为「查看流水线（内置·可信·只读）」，行内「内置」徽章旁补「可信」徽章，流程节点 title 同步；
+  `deletePipeline` 内置分支前置为全员拦截（含 admin——内置是种子模板不允许删除），行内删除按钮对内置
+  不渲染；`savePlForm` 内置硬拦截改为仅拦非 admin；「标记可信」菜单项对内置保持隐藏（内置天然可信无需
+  切换）；复制内置仍产出 `builtIn=false` 普通副本。服务端 `trustedPipelineWriteDeny` 新增
+  `BUILTIN_PIPELINE_ID='pl-xds'` 与 `isBuiltinPipelineEntry`（`builtIn===true` 或 id 命中即内置）：
+  非 admin 改动/删除内置条目、翻转其 builtIn/trusted 标志、新建 `builtIn:true` 或 `id:'pl-xds'` 条目
+  一律 403（`favoriteUsers` 豁免不变），防止伪造内置条目混入或抢先占位；种子合并「服务端内置条目优先于
+  硬编码种子」路径验证无绕过，admin 编辑保存后各端重载即拿到编辑版。测试：页面侧
+  `test_pipeline_trusted.js` / `test_pipeline_readonly.js` / `test_pipeline_owner_edit.js` 断言更新为
+  新语义并新增内置矩阵 8 例，服务端 `tests/pipeline-trust.test.mjs` 扩至 16 例。
+
 - 流水线新增「可信」标记：admin 可标记/取消可信，非 admin 对可信流水线只读（`projects/pipeline/pipeline.html`
   + `src/index.ts`）。流水线条目新增 `trusted` 字段（存 `worktable-pipeline.json`，三方合并原样透传）；
   页面侧：行内「⋯」菜单新增「标记可信 / 取消可信」项（`#plRowMenuTrusted`，仅 password 模式取得登录用户、
