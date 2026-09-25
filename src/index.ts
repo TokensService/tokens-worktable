@@ -453,7 +453,7 @@ function pipelineConfigDifferenceIds(clientConfig: any, diskConfig: any) {
   return [...ids].filter(id => client.has(id) !== disk.has(id) || (client.has(id) && JSON.stringify(client.get(id)) !== JSON.stringify(disk.get(id))))
 }
 
-/* ---------- 可信流水线（trusted）：服务端强制校验 ---------- */
+/* ---------- 可信流水线（trusted）与内置流水线（builtIn）：服务端强制校验 ---------- */
 /** 解析请求携带的 dsh-auth-gate 会话 token：Cookie dsh_auth 优先，其次 Authorization: Bearer。
  *  手写键值切分，不引 cookie 依赖；token 截到 128 字符防畸形头。 */
 function requestAuthToken(req: any): string {
@@ -576,29 +576,54 @@ function deepEqualIgnoring(a: any, b: any, ignoreKeys?: string[]): boolean {
   return false
 }
 
-/** 可信流水线写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得删除/改内容/摘除
- *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；favoriteUsers 是按用户收藏的个人数据，
- *  豁免条目顶层内容比对（任何登录用户可改）。运行/排队/定时不回写流水线条目，无需其它豁免。
- *  返回分组违规 id：edit = 可信条目被删/被改/被摘标，mark = 新建 trusted 或非 admin 打标。 */
-function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit: string[]; mark: string[] } {
+/** 内置流水线的固定 id：与 projects/pipeline/pipeline.html 的 DEFAULT_PIPELINE_ID 对齐（客户端硬编码
+ *  种子「安装部署XDS」，admin 保存内置编辑后条目落入本 store，之后各端以服务端版本为准）。
+ *  服务端据此把内置条目视同 trusted 保护，字面量不散落到校验逻辑里。 */
+const BUILTIN_PIPELINE_ID = 'pl-xds'
+
+/** 内置条目判定：builtIn===true 或 id 命中 BUILTIN_PIPELINE_ID 任一即算
+ *  （防伪造 builtIn 标志混入，也防抢先占位固定 id 或剥掉标志绕过保护）。 */
+function isBuiltinPipelineEntry(entry: any): boolean {
+  return !!entry && typeof entry === 'object' && !Array.isArray(entry)
+    && (entry.builtIn === true || entry.id === BUILTIN_PIPELINE_ID)
+}
+
+/** 可信/内置流水线写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得删除/改内容/摘除
+ *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；内置条目（builtIn===true 或 id 命中
+ *  BUILTIN_PIPELINE_ID）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
+ *  标志，也不得新建内置条目（防伪造内置混入 customs 或抢先占位固定 id）。favoriteUsers 是按用户
+ *  收藏的个人数据，豁免条目顶层内容比对（任何登录用户可改）。运行/排队/定时不回写流水线条目，
+ *  无需其它豁免。返回分组违规 id：edit = 可信条目被删/被改/被摘标，mark = 新建 trusted 或非 admin
+ *  打标，builtinEdit = 内置条目被删/被改/被翻转标志，builtinCreate = 新建内置条目或给既有条目塞
+ *  builtIn 标。 */
+function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit: string[]; mark: string[]; builtinEdit: string[]; builtinCreate: string[] } {
   const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
   const mapOf = (items: any[]) => new Map<string, any>(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item) => [item.id, item]))
   const stored = mapOf(pipelinesOf(storedConfig))
   const merged = mapOf(pipelinesOf(mergedConfig))
   const edit: string[] = []
   const mark: string[] = []
+  const builtinEdit: string[] = []
+  const builtinCreate: string[] = []
   for (const [id, storedEntry] of stored) {
     const mergedEntry = merged.get(id)
-    if (storedEntry.trusted === true) {
+    if (isBuiltinPipelineEntry(storedEntry)) {
+      /* 内置条目：内容比对（忽略 favoriteUsers）同时覆盖 builtIn/trusted 标志翻转与条目删除 */
+      if (!mergedEntry || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) builtinEdit.push(id)
+    } else if (storedEntry.trusted === true) {
       if (!mergedEntry || mergedEntry.trusted !== true || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) edit.push(id)
+    } else if (mergedEntry && mergedEntry.builtIn === true) {
+      builtinCreate.push(id)   // 给既有普通条目塞 builtIn 标 = 伪造内置（同 id 下 id 不会变，只有标志可翻转）
     } else if (mergedEntry && mergedEntry.trusted === true) {
       mark.push(id)
     }
   }
   for (const [id, mergedEntry] of merged) {
-    if (!stored.has(id) && mergedEntry.trusted === true) mark.push(id)
+    if (stored.has(id)) continue
+    if (isBuiltinPipelineEntry(mergedEntry)) builtinCreate.push(id)
+    else if (mergedEntry.trusted === true) mark.push(id)
   }
-  return { edit, mark }
+  return { edit, mark, builtinEdit, builtinCreate }
 }
 
 /** 写前校验入口（withStoreLock 内、合并计算之后、写盘之前调用；拒绝则整体不写盘）。
@@ -607,13 +632,15 @@ function trustedPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedC
   const caller = resolveRequestAuth(ctx, req)
   if (!caller || caller.isAdmin) return null
   const violations = trustedPipelineViolations(storedConfig, mergedConfig)
-  if (!violations.edit.length && !violations.mark.length) return null
+  if (!violations.edit.length && !violations.mark.length && !violations.builtinEdit.length && !violations.builtinCreate.length) return null
   const parts: string[] = []
+  if (violations.builtinEdit.length) parts.push('内置流水线仅 admin 可编辑')
   if (violations.edit.length) parts.push('流水线已被管理员标记为可信，仅 admin 可编辑')
+  if (violations.builtinCreate.length) parts.push('仅 admin 可新建内置流水线')
   if (violations.mark.length) parts.push('仅 admin 可将流水线标记为可信')
-  return { message: parts.join('；'), pipelineIds: [...new Set([...violations.edit, ...violations.mark])] }
+  return { message: parts.join('；'), pipelineIds: [...new Set([...violations.builtinEdit, ...violations.edit, ...violations.builtinCreate, ...violations.mark])] }
 }
-/* ---------- 可信流水线结束 ---------- */
+/* ---------- 可信/内置流水线结束 ---------- */
 
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
@@ -2405,8 +2432,8 @@ export function apply(ctx: Context) {
               conflicts: diskHasPipelines ? pipelineConfigDifferenceIds(config, diskCfg) : [],
             }
             if (configMerge.conflicts.length) return { conflicts: configMerge.conflicts, config: diskCfg }
-            /* 可信流水线：非 admin 不得删除/改内容/摘标 trusted 条目，也不得新建/打标（favoriteUsers 豁免）；
-               违规整体不写盘，403 由调用方在锁外响应。 */
+            /* 可信/内置流水线：非 admin 不得删除/改内容/摘标 trusted 条目，不得改/删内置条目或翻转其标志，
+               也不得新建/打标 trusted、新建/伪造内置（favoriteUsers 豁免）；违规整体不写盘，403 由调用方在锁外响应。 */
             const trustedDeny = trustedPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
             if (trustedDeny) return { conflicts: [] as string[], config: diskCfg, trusted: trustedDeny }
             const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
@@ -2457,7 +2484,7 @@ export function apply(ctx: Context) {
           if (merged.conflicts.length) return { conflicts: merged.conflicts, config: diskCfg }
           const config = merged.config
           if (scriptsDir) config.scriptsDir = scriptsDir
-          /* 可信流水线：与全量 PUT 同一校验——非 admin 不得改 trusted 条目（favoriteUsers 豁免），违规整体不写盘 */
+          /* 可信/内置流水线：与全量 PUT 同一校验——非 admin 不得改 trusted/内置条目（favoriteUsers 豁免），违规整体不写盘 */
           const trustedDeny = trustedPipelineWriteDeny(ctx, req, diskCfg, config)
           if (trustedDeny) return { conflicts: [] as string[], config: diskCfg, trusted: trustedDeny }
           /* 历史原样保留（客户端未上报即不动；serializePipelineStore 仅做 20MB 上限裁剪） */
