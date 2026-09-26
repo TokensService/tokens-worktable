@@ -1,5 +1,13 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线页用户可见的「内置」字样去掉（`projects/pipeline/pipeline.html`，行为完全不变）：行内名称旁的
+  「内置」小灰徽章删除（保留「可信」徽章，title 与可信流水线文案对齐）；编辑器标题「（内置·可信）/
+  （内置·可信·只读）」→「（可信）/（可信·只读）」；创建者筛选「我的（含内置）/仅内置」→「我的（含预置）/
+  仅预置」（`value` 与过滤逻辑不变）；编排区说明、流程节点 title、`savePlForm`/`deletePipeline` 拦截
+  告警、导出/导入按钮 title 及「内置演示数据」相关用户可见文案统一改述为「预置」/「可信」；`p.builtIn`
+  字段与代码标识符不动，「标记可信」对内置隐藏、admin 可编辑、删除全员禁止等行为均不变。同步更新
+  `test_pipeline_trusted.js` / `test_pipeline_readonly.js` 断言（含「无内置徽章」反向断言）。
+
 - 内置流水线（`pl-xds`「安装部署XDS」）视同可信：仅 admin 可编辑，其他人只读（仍可运行），删除全员禁止
   （`projects/pipeline/pipeline.html` + `src/index.ts`）。页面侧 `plEditable` 把 `builtIn` 并入 trusted
   分支（token 模式维持全权退化、探测在途保守只读）；admin 打开内置为「编辑流水线（内置·可信）」，非 admin
