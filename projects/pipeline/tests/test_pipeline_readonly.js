@@ -69,7 +69,7 @@ test('内置流水线打开为只读查看（非 admin 视角）：标志置位�
   const {ctx,els,calls}=loadOpenPlForm({pipeline:BUILTIN,draft});
   ctx.openPlForm('pl-xds');
   assert.equal(ctx.plFormReadOnly,true,'非 admin 打开内置流水线必须进入只读模式');
-  assert.match(els.plFormTitle.textContent,/查看流水线（内置·可信·只读）：安装部署XDS/);
+  assert.match(els.plFormTitle.textContent,/查看流水线（可信·只读）：安装部署XDS/);
   assert.equal(els.plName.value,'安装部署XDS','只读查看展示内置定义真值，不恢复草稿名');
   assert.equal(els.scriptsDir.value,'/srv/scripts','只读查看不恢复草稿脚本目录');
   assert.deepEqual(ctx.editStages.map(s=>s.name),['检出','构建镜像'],'阶段列表来自内置定义而非草稿');

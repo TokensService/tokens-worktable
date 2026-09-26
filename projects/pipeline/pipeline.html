@@ -176,7 +176,7 @@
           <button id="ioExpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置页全部配置（含仅存本浏览器的代码仓访问令牌与运行选择），不含流水线与运行历史">⤓ 导出设置…</button>
           <button id="ioImpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出设置」的 JSON 文件整体恢复设置，流水线与运行历史不受影响">⤒ 导入设置…</button>
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">流水线（全部流水线定义）</div>
-          <button id="ioExpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线定义（含内置流水线上的编辑）">⤓ 导出流水线…</button>
+          <button id="ioExpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线定义（含预置流水线上的编辑）">⤓ 导出流水线…</button>
           <button id="ioImpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出流水线」的 JSON 文件，覆盖当前全部流水线">⤒ 导入流水线…</button>
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">服务端备份（文件存于 dsh 服务器）</div>
           <button id="ioExpSettingsSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出设置到服务端…</button>
@@ -276,7 +276,7 @@
   <div class="dshell-card" id="pipelineTaskCard">
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
       <h2 class="dshell-sub" style="margin:0">流水线任务列表 <span id="plCount" class="dshell-muted"></span></h2>
-      <span class="dshell-muted" style="font-size:11px;" title="统计只计真实运行，不含内置演示数据">总构建 <b id="sTotal">—</b> · 成功率 <b id="sRate">—</b> <span id="sRateDelta"></span> · 平均耗时 <b id="sAvg">—</b> · 最近构建 <b id="sLast">—</b></span>
+      <span class="dshell-muted" style="font-size:11px;" title="统计只计真实运行，不含预置演示数据">总构建 <b id="sTotal">—</b> · 成功率 <b id="sRate">—</b> <span id="sRateDelta"></span> · 平均耗时 <b id="sAvg">—</b> · 最近构建 <b id="sLast">—</b></span>
       <span style="display:flex;align-items:center;gap:8px;">
         <button id="pipelineRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取流水线任务（不会自动刷新）">↻ 刷新</button>
         <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
@@ -288,9 +288,9 @@
       </label>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">创建者
         <select id="plFilterOwner" class="dshell-input" style="min-width:120px;">
-          <option value="mine">我的（含内置）</option>
+          <option value="mine">我的（含预置）</option>
           <option value="all">全部</option>
-          <option value="builtin">仅内置</option>
+          <option value="builtin">仅预置</option>
         </select>
       </label>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收藏
@@ -339,7 +339,7 @@
     </div>
     <div id="flow" class="pipeline-seg"></div>
     <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
-      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者可编辑：他人创建的流水线只读，可在「流水线任务」列表「复制」为副本后编辑；内置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者可编辑：他人创建的流水线只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
       <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
     </div>
   </div>
@@ -384,7 +384,7 @@
         </label>
         <button id="histFilterClear" class="dshell-btn dshell-btnGhost mini" type="button">清除筛选</button>
         <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRerun" title="按选中行的流水线/环境/分支重新运行（执行人取当前填写值；运行中则入队）">↻ 重跑</button>
-        <button class="dshell-btn dshell-btnDanger mini" type="button" id="histClear" title="清空全部运行历史（含内置演示数据）">🗑 清空</button>
+        <button class="dshell-btn dshell-btnDanger mini" type="button" id="histClear" title="清空全部运行历史（含预置演示数据）">🗑 清空</button>
         <span id="histFilterTip" class="dshell-muted" style="font-size:11px;"></span>
       </div>
       <div style="overflow:auto;">
@@ -3492,7 +3492,7 @@ function createFlowNode(s, i){
       openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
     const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置/可信（非 admin）只读 / 他人创建只读（标注创建者）/ 可编辑
-    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（内置流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
+    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（可信流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
     /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
     if(flowDraggable()){
       n.draggable=true; n.title+='；可拖拽调整执行顺序';
@@ -7094,7 +7094,7 @@ function renderReplayDetail(rec){
   const all=text!==undefined ? String(text).split('\n') : [];
   const lines=all.length>TAIL ? all.slice(all.length-TAIL) : all;
   const meta=entry && rec._lm ? rec._lm[entry.stage] : null;
-  if(!all.length && !log.textContent){ log.textContent = rec.demo ? '内置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
+  if(!all.length && !log.textContent){ log.textContent = rec.demo ? '预置演示数据未记录回显日志。' : '该阶段未记录回显日志（未运行或为旧版数据）。'; }
   else{
     if(meta && meta.truncated){ const tip=document.createElement('div'); tip.className='dim'; tip.textContent='… 已按需加载日志末尾 64 KiB'+(meta.size?('（文件共 '+(meta.size/1024/1024).toFixed(1)+' MiB）'):'')+'，仅显示最后 '+TAIL+' 行；全量见归档日志文件'; log.appendChild(tip); }
     else if(all.length>TAIL){ const tip=document.createElement('div'); tip.className='dim'; tip.textContent='… 仅显示最后 '+TAIL+' 行（共 '+all.length+' 行，全量见归档日志文件）'; log.appendChild(tip); }
@@ -7365,7 +7365,7 @@ $('histPageSize').value=String(histPageSize);
 $('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
-$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（内置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; analysisHistoryKeys=[]; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
+$('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（预置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; analysisHistoryKeys=[]; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
 /* 只应用同一清空版本下发起的刷新：请求在途时若本页清空过历史，迟到响应必须丢弃，不能复活旧记录。 */
 function applyHistoryRefreshPayload(st, clearAtStart){
   if(histClearedAt!==clearAtStart) return false;
@@ -7517,7 +7517,7 @@ document.addEventListener('click', e=>{
   }
 });
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
-/* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含内置）」+ 全部收藏状态 */
+/* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含预置）」+ 全部收藏状态 */
 $('plFilterKw').value=plFilter.kw;
 $('plFilterOwner').value=plFilter.owner;
 $('plFilterFavorite').value=plFilter.favorite;
@@ -7668,7 +7668,7 @@ function renderPlFilterOptions(){
   if(sig!==_plOwnerSig){
     _plOwnerSig=sig;
     const unknownOpt = pipelines.some(p=>!p.builtIn && !plOwnerOf(p)) ? '<option value="unknown">未署名</option>' : '';
-    sel.innerHTML='<option value="mine">我的（含内置）</option><option value="all">全部</option><option value="builtin">仅内置</option>'+owners.map(u=>'<option value="'+esc(u)+'">'+esc(u)+'</option>').join('')+unknownOpt;
+    sel.innerHTML='<option value="mine">我的（含预置）</option><option value="all">全部</option><option value="builtin">仅预置</option>'+owners.map(u=>'<option value="'+esc(u)+'">'+esc(u)+'</option>').join('')+unknownOpt;
   }
   sel.value = Array.from(sel.options).some(o=>o.value===plFilter.owner) ? plFilter.owner : 'mine';
 }
@@ -7792,9 +7792,9 @@ function renderPipelines(){
        都不渲染「删除」（deletePipeline 另有不依赖 plEditable 的内置拦截）；「复制」对所有行可用
        （复制为自己的副本后编辑）。 */
     const canEditPl=plEditable(p);
-    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+(!canEditPl?(p.builtIn?' title="内置可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"':(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"')):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
+    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+(!canEditPl?(p.builtIn?' title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"':(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"')):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
     const plDelBtn=(canEditPl&&!p.builtIn)?'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>':'';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span class="dshell-muted" style="font-size:10px">内置</span>'+' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="内置可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> '+plEditBtn+' <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+plDelBtn+
@@ -7889,7 +7889,7 @@ function openPlForm(id, focusIdx){
   const p = id ? (findPipeline(id) || curPipeline()) : null;
   f.dataset.editId = p ? p.id : '';
   plFormReadOnly=!!(p&&!plEditable(p));   // 内置（视同可信，仅 admin 可编辑）、可信（非 admin）与他人创建的流水线只读查看（plEditable），编辑器整体切为只读模式
-  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（内置·可信·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.builtIn ? '编辑流水线（内置·可信）：' : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：')))+p.name : '新建流水线';
+  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（可信·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.builtIn ? '编辑流水线（可信）：' : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：')))+p.name : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
@@ -7926,7 +7926,7 @@ async function savePlForm(){
   /* 内置流水线视同可信（仅 admin 可编辑保存）与他人创建的流水线只读（plEditable）：只读时保存入口已隐藏，
      此处兜底拦截一切写回路径（如需改动请用列表「复制」生成可编辑副本） */
   const guardP=findPipeline($('plForm').dataset.editId||'');
-  if(guardP && guardP.builtIn && !plEditable(guardP)){ alert('内置流水线「'+guardP.name+'」视同可信：仅 admin 可编辑保存，其他用户只读（仍可运行）；如需定制可在「流水线任务」列表「复制」为副本后编辑。'); return; }
+  if(guardP && guardP.builtIn && !plEditable(guardP)){ alert('预置流水线「'+guardP.name+'」视同可信：仅 admin 可编辑保存，其他用户只读（仍可运行）；如需定制可在「流水线任务」列表「复制」为副本后编辑。'); return; }
   if(guardP && !plEditable(guardP)){
     if(guardP.trusted){ alert('流水线「'+guardP.name+'」已被管理员标记为可信，仅 admin 可编辑保存；如需改动可在「流水线任务」列表「复制」为副本后编辑。'); return; }
     alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 创建，仅创建者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return;
@@ -8053,7 +8053,7 @@ function deletePipeline(id){
   /* 归属拦截：内置流水线任何人（含 admin）都不可删除——独立于 plEditable 先行拦截（admin 对内置可编辑但不可删除）；
      其余仅创建者可删除（可信流水线仅 admin 可删除）；行内「删除」按钮对只读行与内置行已不渲染，此处兜底 */
   const delP=findPipeline(id);
-  if(delP && delP.builtIn){ alert('内置流水线「'+delP.name+'」不可删除。'); return; }
+  if(delP && delP.builtIn){ alert('预置流水线「'+delP.name+'」不可删除。'); return; }
   if(delP && !plEditable(delP)){ alert(delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。'); return; }
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
@@ -8359,7 +8359,7 @@ $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},D
 /* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
    导出设置 = 设置页全部配置：服务端部分（collectConfig，剔除流水线——流水线走独立导出——并补回仅存本浏览器的代码仓访问令牌）
              + 仅存浏览器本地的运行选择（当前流水线/环境/代码仓、分支/部署策略/执行人、历史筛选与分页）；
-   导出流水线 = 全部流水线定义（含内置流水线上的编辑）。
+   导出流水线 = 全部流水线定义（含预置流水线上的编辑）。
    每个导出 / 导入都有「浏览器本地文件」与「服务端备份」两个去向：本地下载 / 文件选择框，或落盘 / 读取
    dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），两种去向共用同一份 payload 与恢复逻辑。
    导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
@@ -8474,7 +8474,7 @@ async function importSettingsFile(file){
 async function importPipelinesData(data){
   const list=(data && data.app==='worktable-pipeline' && data.kind==='pipeline-pipelines') ? normalizeImportedPipelines(data.pipelines) : null;
   if(!list) return 'invalid';
-  if(!confirm('导入将按文件内容覆盖当前全部流水线（含内置流水线上的改动），其余设置与运行历史不受影响。确定导入？')) return 'cancel';
+  if(!confirm('导入将按文件内容覆盖当前全部流水线（含预置流水线上的改动），其余设置与运行历史不受影响。确定导入？')) return 'cancel';
   if(!stateLoaded){ await loadServerState(); }
   pipelines=list;
   if(!pipelines.some(p=>p.id===curPipelineId)) curPipelineId=pipelines[0].id;

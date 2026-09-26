@@ -238,7 +238,7 @@ test('renderPipelines：可信流水线行内名称旁渲染「可信」徽章�
 });
 
 /* ---------- 内置流水线视同可信：行渲染 / 编辑器标题 / 保存 / 删除 / 复制 ---------- */
-test('renderPipelines：内置行同时渲染「内置」「可信」徽章，非 admin 的「查看」按钮带内置可信提示，删除按钮不渲染',()=>{
+test('renderPipelines：内置行只渲染「可信」徽章（不再渲染「内置」），非 admin 的「查看」按钮带可信提示，删除按钮不渲染',()=>{
   const tbody=new FakeNode('tbody');
   const table={querySelector:sel=>sel==='tbody'?tbody:null};
   const count={textContent:''};
@@ -269,9 +269,9 @@ test('renderPipelines：内置行同时渲染「内置」「可信」徽章，�
   vm.runInContext(source.slice(start,end),ctx);
   ctx.renderPipelines();
   const html=tbody.children[0].innerHTML;
-  assert.match(html,/>内置<\/span>/,'内置行渲染「内置」徽章');
-  assert.match(html,/>可信<\/span>/,'内置行同时渲染「可信」徽章');
-  assert.match(html,/title="内置可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"/,'「可信」徽章与「查看」按钮带内置可信提示');
+  assert.doesNotMatch(html,/>内置<\/span>/,'内置行不再渲染「内置」徽章');
+  assert.match(html,/>可信<\/span>/,'内置行渲染「可信」徽章');
+  assert.match(html,/title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"/,'「可信」徽章与「查看」按钮带可信提示');
   assert.match(html,/>查看</,'非 admin 行内按钮为「查看」');
   assert.doesNotMatch(html,/data-pldel/,'内置行不渲染「删除」按钮');
 });
@@ -407,18 +407,18 @@ test('copyPipeline：复制内置流水线产出普通副本（不带 builtIn/tr
 /* ---------- 内置流水线视同可信：编辑器标题 / savePlForm / deletePipeline ---------- */
 const BUILTIN_PL={id:'pl-xds',name:'安装部署XDS',builtIn:true,defaults:{},stages:[{id:'s1',name:'拉取镜像'}]};
 
-test('openPlForm：admin 打开内置流水线保持可编辑，标题标注「内置·可信」',()=>{
+test('openPlForm：admin 打开内置流水线保持可编辑，标题标注「可信」',()=>{
   const {ctx,els}=loadOpenPlForm({pipeline:BUILTIN_PL,username:'alice',isAdmin:true});
   ctx.openPlForm('pl-xds');
   assert.equal(ctx.plFormReadOnly,false,'内置流水线视同可信：admin 可编辑');
-  assert.match(els.plFormTitle.textContent,/编辑流水线（内置·可信）：安装部署XDS/);
+  assert.match(els.plFormTitle.textContent,/编辑流水线（可信）：安装部署XDS/);
 });
 
-test('openPlForm：非 admin 打开内置流水线为只读查看，标题标注「内置·可信·只读」',()=>{
+test('openPlForm：非 admin 打开内置流水线为只读查看，标题标注「可信·只读」',()=>{
   const {ctx,els}=loadOpenPlForm({pipeline:BUILTIN_PL,username:'alice',isAdmin:false});
   ctx.openPlForm('pl-xds');
   assert.equal(ctx.plFormReadOnly,true,'内置流水线视同可信：非 admin 只读');
-  assert.match(els.plFormTitle.textContent,/查看流水线（内置·可信·只读）：安装部署XDS/);
+  assert.match(els.plFormTitle.textContent,/查看流水线（可信·只读）：安装部署XDS/);
 });
 
 test('savePlForm 兜底：非 admin 保存内置流水线被拦截（视同可信文案），定义不被改写',async()=>{
@@ -438,7 +438,7 @@ test('savePlForm 兜底：非 admin 保存内置流水线被拦截（视同可�
   vm.runInContext(extractFunction('plOwnerOf')+'\n'+extractFunction('plEditable')+'\n'+extractFunction('savePlForm'),ctx);
   await ctx.savePlForm();
   assert.equal(alerts.length,1);
-  assert.match(alerts[0],/内置流水线「安装部署XDS」视同可信：仅 admin 可编辑保存/);
+  assert.match(alerts[0],/预置流水线「安装部署XDS」视同可信：仅 admin 可编辑保存/);
   assert.match(alerts[0],/复制.*副本/,'提示应引导复制副本后编辑');
   assert.deepEqual(JSON.parse(JSON.stringify(pipeline)),before,'被拦截后流水线定义不得改写');
 });
@@ -487,7 +487,7 @@ test('deletePipeline：内置流水线任何人（含 admin）都不可删除',(
   const adminCase=mk(true);
   adminCase.ctx.deletePipeline('pl-xds');
   assert.equal(adminCase.alerts.length,1);
-  assert.match(adminCase.alerts[0],/内置流水线「安装部署XDS」不可删除/,'admin 删除内置同样被拦截');
+  assert.match(adminCase.alerts[0],/预置流水线「安装部署XDS」不可删除/,'admin 删除内置同样被拦截');
   assert.equal(adminCase.ctx.pipelines.length,2,'内置流水线不得被删除');
   assert.equal(adminCase.saves.length,0,'拦截发生在落盘之前');
   const userCase=mk(false);
