@@ -1,5 +1,14 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
+  （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`
+  不入 git（含证书私钥），而 `ems-check.sh` dispatch 模式与 `ems-deploy.sh` 都要读仓内
+  `ems-chart/Chart.yaml`（前者取门禁期望版本转发远程，后者打包分发并读版本/名称），新鲜克隆上
+  ems-check 的 `ems_chart_expected` 转发断言必挂、ems-deploy 直接「未找到仓内 chart」退出——此前
+  仅在本地留有真实 chart 的机器上能跑过。现两个测试在 Chart.yaml 缺失时自建最小等价 fixture
+  （`name: ems` / `version: 26.8.0-b6`，与 mock helm 及契约断言口径一致），已存在真实 chart 的
+  部署/开发机原样保留不动，退出时仅清理测试自建的目录。
+
 - 流水线页用户可见的「内置」字样去掉（`projects/pipeline/pipeline.html`，行为完全不变）：行内名称旁的
   「内置」小灰徽章删除（保留「可信」徽章，title 与可信流水线文案对齐）；编辑器标题「（内置·可信）/
   （内置·可信·只读）」→「（可信）/（可信·只读）」；创建者筛选「我的（含内置）/仅内置」→「我的（含预置）/

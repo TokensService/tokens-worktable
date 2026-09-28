@@ -11,8 +11,23 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 script="$script_dir/ems-check.sh"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; [[ -z "$chart_created" ]] || rm -rf "$chart_dir"' EXIT
 export FIXTURES="$tmp"
+
+# 厂商 chart 不入 git（含证书私钥），但 dispatch 模式从 <脚本目录>/ems-chart/Chart.yaml
+# 读取门禁期望版本；测试自建等价 fixture 使门禁版本比对链路可被覆盖——已存在真实
+# chart（部署/开发机）则原样保留，退出时仅清理本测试创建的目录。
+chart_dir="$script_dir/ems-chart"
+chart_created=''
+if [[ ! -f "$chart_dir/Chart.yaml" ]]; then
+  mkdir -p "$chart_dir"
+  cat >"$chart_dir/Chart.yaml" <<'YAML'
+apiVersion: v2
+name: ems
+version: 26.8.0-b6
+YAML
+  chart_created=1
+fi
 
 # ---- fixtures ------------------------------------------------------------------
 cat >"$tmp/nodes.json" <<'JSON'

@@ -12,10 +12,25 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 script="$script_dir/ems-deploy.sh"
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; [[ -z "$chart_created" ]] || rm -rf "$chart_dir"' EXIT
 export FIXTURES="$tmp"
 export REAL_SCRIPT="$script"
 export REAL_BUNDLE="$script_dir"
+
+# 厂商 chart 不入 git（含证书私钥），但 ems-deploy 要求仓内 ems-chart/ 与其同目录分发
+# （打包 tar + 从 Chart.yaml 读版本/名称）；测试自建最小等价 fixture——已存在真实
+# chart（部署/开发机）则原样保留，退出时仅清理本测试创建的目录。
+chart_dir="$script_dir/ems-chart"
+chart_created=''
+if [[ ! -f "$chart_dir/Chart.yaml" ]]; then
+  mkdir -p "$chart_dir"
+  cat >"$chart_dir/Chart.yaml" <<'YAML'
+apiVersion: v2
+name: ems
+version: 26.8.0-b6
+YAML
+  chart_created=1
+fi
 
 # ---- 基础 fixtures（各场景按需覆写） ----------------------------------------------
 cat >"$tmp/nodes.json" <<'JSON'
