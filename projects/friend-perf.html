@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="worktable-icon" content="⚡" />
+  <title>友商 Tokens API 性能对比</title>
+  <link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+  <script>
+    /* 首帧前设定主题（跟随系统/深色/浅色），避免闪烁 */
+    (function(){
+      try{
+        var t=localStorage.getItem("friendPerf.theme")||"system";
+        if(t!=="light"&&t!=="dark"&&t!=="system")t="system";
+        document.documentElement.setAttribute("data-theme",t);
+      }catch(e){document.documentElement.setAttribute("data-theme","system");}
+    })();
+  </script>
+  <style>
+    /* 主题：深色 / 浅色 / 跟随系统（覆盖 dshell 默认深色；--dshell-fg/--dshell-border 供 canvas 取色） */
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+      --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+      --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+      --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+      --dshell-fg:#9aa4b2; --dshell-border:#262b36;
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+      --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+      --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+      --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+      --dshell-fg:#59636e; --dshell-border:#d8dee6;
+    }
+    html[data-theme="system"] { color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) {
+      html[data-theme="system"] {
+        color-scheme: dark;
+        --dsw-alias-bg-base:#0b0e14; --dsw-alias-label-primary:#e6e8eb;
+        --dsw-alias-label-secondary:#9aa4b2; --dsw-alias-label-tertiary:#6b7280;
+        --dsw-alias-border-l1:#262b36; --dsw-alias-border-l2:#3a4150;
+        --dsw-alias-fill-l1:rgba(255,255,255,.02); --dsw-alias-state-accent-primary:#4f8ef7;
+        --dshell-fg:#9aa4b2; --dshell-border:#262b36;
+      }
+    }
+    @media (prefers-color-scheme: light) {
+      html[data-theme="system"] {
+        color-scheme: light;
+        --dsw-alias-bg-base:#ffffff; --dsw-alias-label-primary:#1f2328;
+        --dsw-alias-label-secondary:#59636e; --dsw-alias-label-tertiary:#818b96;
+        --dsw-alias-border-l1:#d8dee6; --dsw-alias-border-l2:#b9c2cd;
+        --dsw-alias-fill-l1:rgba(0,0,0,.025); --dsw-alias-state-accent-primary:#0969da;
+        --dshell-fg:#59636e; --dshell-border:#d8dee6;
+      }
+    }
+    html[data-theme="light"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); }
+    @media (prefers-color-scheme: light) { html[data-theme="system"] ::-webkit-scrollbar-thumb { background:rgba(0,0,0,.20); } }
+    /* 主题切换分段控件 */
+    .fp-seg { display:inline-flex; align-items:center; gap:2px; padding:2px; border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:999px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.03)); }
+    .fp-seg button { border:none; background:transparent; color:var(--dsw-alias-label-secondary,#9aa4b2); font:inherit; font-size:11px; padding:3px 9px; border-radius:999px; cursor:pointer; line-height:1.4; }
+    .fp-seg button:hover { color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .fp-seg button.on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+    /* 页面最小自造样式 */
+    .fp-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .fp-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .fp-canvas { width:100%; height:240px; display:block; }
+    .fp-chartgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
+    .fp-legend { display:flex; flex-wrap:wrap; gap:10px; font-size:12px; opacity:.85; margin-top:6px; }
+    .fp-legend span { display:inline-flex; align-items:center; gap:5px; cursor:pointer; user-select:none; }
+    .fp-dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+    .fp-field { display:grid; gap:4px; }
+    .fp-field > label { font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .fp-paramgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
+    .fp-prov { border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:10px; padding:10px 12px; display:grid; gap:8px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.02)); }
+    .fp-prov-head { display:flex; align-items:center; gap:8px; }
+    .fp-prov-head .nm { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary,#e6e8eb); }
+    .fp-prov-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
+    .fp-presets { display:flex; flex-wrap:wrap; gap:6px; }
+    .fp-note { font-size:12px; opacity:.65; margin-top:6px; line-height:1.6; }
+    .fp-rankrow { display:flex; align-items:center; gap:10px; padding:7px 10px; border-bottom:1px solid var(--dsw-alias-border-l1,#262b36); font-size:12.5px; }
+    .fp-rankrow:last-child { border-bottom:none; }
+    .fp-rankno { width:20px; text-align:center; font-weight:600; color:var(--dsw-alias-label-tertiary,#6b7280); }
+    .fp-rankname { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .fp-bar { height:8px; border-radius:4px; background:var(--dsw-alias-fill-l1,rgba(255,255,255,.06)); overflow:hidden; width:140px; flex:none; }
+    .fp-bar > i { display:block; height:100%; border-radius:4px; }
+    .fp-val { width:110px; text-align:right; flex:none; font-variant-numeric:tabular-nums; }
+    .fp-badge-err { color:#f85149; border-color:rgba(248,81,73,.4); }
+    .fp-badge-err::before { background:#f85149; box-shadow:0 0 5px #f85149; }
+    .fp-statusbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:12px; color:var(--dsw-alias-label-secondary,#9aa4b2); }
+    .fp-mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+    select.dshell-input { appearance:auto; }
+    input[type="checkbox"].fp-ck { width:14px; height:14px; accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+    input[type="range"].fp-range { width:100%; accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+  </style>
+</head>
+<body>
+  <div class="dshell">
+    <div class="fp-head">
+      <div>
+        <h1 class="dshell-title">⚡ 友商 Tokens API 性能对比</h1>
+        <p class="dshell-sub">对智谱 / 百炼 / 混元 / 硅基流动 / 七牛云等 OpenAI 兼容接口做定时压测，对比 TTFT 与 TPOT。</p>
+      </div>
+      <div class="fp-seg" id="themeSeg">
+        <button data-t="system">跟随系统</button>
+        <button data-t="dark">深色</button>
+        <button data-t="light">浅色</button>
+      </div>
+    </div>
+
+    <div class="dshell-tabs" id="tabs">
+      <button class="dshell-tab dshell-tabOn" data-tab="overview">概览</button>
+      <button class="dshell-tab" data-tab="trend">趋势</button>
+      <button class="dshell-tab" data-tab="records">记录</button>
+      <button class="dshell-tab" data-tab="config">配置</button>
+    </div>
+
+    <!-- ============ 概览 ============ -->
+    <div data-pane="overview">
+      <div class="fp-statusbar" style="margin-bottom:10px">
+        <span class="dshell-badge" id="schedBadge">未启动</span>
+        <span id="schedText">在「配置」页添加提供商并启用后，点击「立即测试」。</span>
+        <span style="flex:1"></span>
+        <button class="dshell-btn" id="btnRunNow">立即测试一轮</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnAuto">启动定时测试</button>
+      </div>
+      <div class="fp-toolbar" id="runSelBar" style="margin:-4px 0 10px"></div>
+      <div class="dshell-grid" id="statGrid" style="margin-bottom:12px">
+        <div class="dshell-stat"><div class="dshell-statLabel">启用提供商</div><div class="dshell-statValue" id="stProviders">0</div></div>
+        <div class="dshell-stat"><div class="dshell-statLabel">成功样本</div><div class="dshell-statValue" id="stSamples">0</div></div>
+        <div class="dshell-stat" title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms）"><div class="dshell-statLabel">最佳 TTFT</div><div class="dshell-statValue" id="stBestTtft">—</div><div class="dshell-statDelta" id="stBestTtftBy"></div></div>
+        <div class="dshell-stat" title="TPOT = (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)，即平均每 token 吐字耗时（ms）"><div class="dshell-statLabel">最佳 TPOT</div><div class="dshell-statValue" id="stBestTpot">—</div><div class="dshell-statDelta" id="stBestTpotBy"></div></div>
+      </div>
+      <div class="fp-chartgrid">
+        <div class="dshell-card" style="margin:0">
+          <h2 class="dshell-sub" style="margin:0 0 8px" title="TTFT（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时（ms）。取每个提供商最近 3 个成功样本的均值。">TTFT 首 token 延迟对比（最近一轮均值，ms，越低越好）ⓘ</h2>
+          <canvas class="fp-canvas" id="barTtft"></canvas>
+        </div>
+        <div class="dshell-card" style="margin:0">
+          <h2 class="dshell-sub" style="margin:0 0 8px" title="TPOT（每 token 耗时）= (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)。输出 tokens 优先取接口 usage.completion_tokens，未回传时按返回文本估算。取每个提供商最近 3 个成功样本的均值。">TPOT 每 token 耗时对比（最近一轮均值，ms，越低越好）ⓘ</h2>
+          <canvas class="fp-canvas" id="barTpot"></canvas>
+        </div>
+      </div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px" title="按「提供商 × 输入长度 × 设定缓存命中率」分组统计成功样本；avg=算术平均，p50/p75/p90/p99 采用最近秩（nearest-rank）分位数。分桶依据为测试时配置的目标输入长度与设定缓存命中率，老记录未带该字段的归入「未记录」。">分桶统计：按「输入长度 × 设定缓存命中率」分组的 TTFT / TPOT 分布（ms）ⓘ</h2>
+        <div style="overflow:auto">
+          <table class="dshell-table" id="grpTable">
+            <thead>
+              <tr>
+                <th rowspan="2">提供商</th><th rowspan="2" title="测试时配置的目标输入长度（约 tokens）">输入长度</th>
+                <th rowspan="2" title="测试时设定的缓存命中率（前缀复用比例）">缓存命中率</th><th rowspan="2">样本</th>
+                <th colspan="5" title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms）">TTFT(ms) ⓘ</th>
+                <th colspan="5" title="TPOT = (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)（ms）">TPOT(ms) ⓘ</th>
+              </tr>
+              <tr>
+                <th>avg</th><th>p50</th><th>p75</th><th>p90</th><th>p99</th>
+                <th>avg</th><th>p50</th><th>p75</th><th>p90</th><th>p99</th>
+              </tr>
+            </thead>
+            <tbody id="grpBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 8px">综合排名（最近一轮有效样本，按 TTFT 排序）</h2>
+        <div id="rankList"><div class="dshell-muted" style="padding:8px 2px">暂无数据。请在「配置」页添加真实 API 后开始测试。</div></div>
+        <div class="dshell-divider"></div>
+        <div class="fp-note">
+          <b>测试方法</b>（每轮）：对勾选的提供商<b>逐个串行</b>测试，每家发送一条流式 chat/completions 请求（stream=true，max_tokens=输出长度）——
+          提示词 ≈ 配置的「输入长度」，其中「缓存命中率」% 为跨轮不变的固定前缀（触发厂商 prompt 缓存）、其余部分每轮随机；
+          所有请求<b>统一经工作台服务端中转</b>（/api/worktable/llm），各家同一出口、无浏览器 CORS 与本机网络差异，横向可比；超过「单次超时」判失败。
+          对比图取每家最近 3 个成功样本均值，分桶统计按「输入长度 × 设定缓存命中率」分组；定时模式按「测试间隔」分钟自动循环（依赖页面保持打开）。<br><br>
+          <b>指标口径</b>（各图表标题与表头悬停 ⓘ 也可查看）：<br>
+          · <b>TTFT</b>（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时；<br>
+          · <b>TPOT</b>（每 token 耗时）=（流结束时间 − 首 chunk 时间）÷（输出tokens − 1），输出 tokens 优先取 usage.completion_tokens，未回传按返回文本估算；<br>
+          · <b>缓存命中（真实）</b>= 厂商 usage 回传的 cached_tokens（DeepSeek 风格为 prompt_cache_hit_tokens），命中率 = cached ÷ prompt_tokens，不回传的厂商显示 —；<br>
+          · <b>输入/输出 tokens</b> 以 usage 回传为准，未回传时输入显示 ~配置目标值（估算）；<br>
+          · 概览对比取每家最近 3 个成功样本的均值；所有请求统一经服务端中转（早期直连记录标「·直连」）。
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 趋势 ============ -->
+    <div data-pane="trend" hidden>
+      <div class="fp-toolbar" style="margin-bottom:10px">
+        <span class="dshell-sub">时间范围：</span>
+        <span class="fp-seg" id="rangeSeg">
+          <button data-r="3600000">1小时</button>
+          <button data-r="21600000">6小时</button>
+          <button data-r="86400000">24小时</button>
+          <button data-r="0" class="on">全部</button>
+        </span>
+      </div>
+      <div class="fp-chartgrid">
+        <div class="dshell-card" style="margin:0">
+          <h2 class="dshell-sub" style="margin:0 0 8px" title="TTFT（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时（ms）。每个点为一次成功测试。">TTFT 趋势（ms）ⓘ</h2>
+          <canvas class="fp-canvas" id="lineTtft"></canvas>
+          <div class="fp-legend" id="legTtft"></div>
+        </div>
+        <div class="dshell-card" style="margin:0">
+          <h2 class="dshell-sub" style="margin:0 0 8px" title="TPOT（每 token 耗时）= (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)。每个点为一次成功测试。">TPOT 趋势（ms/token）ⓘ</h2>
+          <canvas class="fp-canvas" id="lineTpot"></canvas>
+          <div class="fp-legend" id="legTpot"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 记录 ============ -->
+    <div data-pane="records" hidden>
+      <div class="fp-toolbar" style="margin-bottom:10px">
+        <span class="dshell-sub" id="recCount">共 0 条</span>
+        <span class="dshell-badge" id="syncState" title="测试数据保存到服务端项目文件夹 friend-perf-results.json，本机浏览器仅作缓存兜底">本地缓存</span>
+        <span style="flex:1"></span>
+        <button class="dshell-btn dshell-btnGhost" id="btnExport">导出 JSON</button>
+        <button class="dshell-btn dshell-btnDanger" id="btnClear">清空记录</button>
+      </div>
+      <div class="dshell-card" style="padding:0;overflow:auto">
+        <table class="dshell-table" id="recTable">
+          <thead><tr>
+            <th>时间</th><th>提供商</th><th>模型</th>
+            <th title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms）">TTFT(ms) ⓘ</th>
+            <th title="TPOT = (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)（ms）">TPOT(ms) ⓘ</th>
+            <th title="优先取接口 usage.prompt_tokens；未回传时显示 ~配置的目标输入长度（估算）">输入tokens ⓘ</th>
+            <th title="优先取接口 usage.completion_tokens；未回传时按返回文本估算">输出tokens ⓘ</th>
+            <th title="真实缓存命中 = 厂商 usage 回传的 cached_tokens（或 prompt_cache_hit_tokens）；命中率 = cached ÷ prompt。不回传该字段的厂商显示 —">缓存命中(真实) ⓘ</th>
+            <th title="总耗时 = 发出请求 → 流结束">总耗时(s)</th><th>状态</th>
+          </tr></thead>
+          <tbody id="recBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 配置 ============ -->
+    <div data-pane="config" hidden>
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 10px">测试参数</h2>
+        <div class="fp-paramgrid">
+          <div class="fp-field"><label>输入长度（约 tokens）</label><input class="dshell-input" id="cfgInputLen" type="number" min="16" max="128000" step="16" /></div>
+          <div class="fp-field"><label>输出长度（max_tokens）</label><input class="dshell-input" id="cfgOutputLen" type="number" min="8" max="8192" step="8" /></div>
+          <div class="fp-field">
+            <label>缓存命中率：<span id="cfgCacheHitVal" class="fp-mono"></span>%（前缀复用比例）</label>
+            <input class="fp-range" id="cfgCacheHit" type="range" min="0" max="100" step="5" />
+          </div>
+          <div class="fp-field"><label>测试间隔（分钟）</label><input class="dshell-input" id="cfgInterval" type="number" min="1" max="1440" step="1" /></div>
+          <div class="fp-field"><label>单次超时（秒）</label><input class="dshell-input" id="cfgTimeout" type="number" min="5" max="600" step="5" /></div>
+        </div>
+        <div class="fp-note">缓存命中率 = 输入前缀中「跨轮保持不变」的比例：命中部分复用固定前缀以触发厂商 prompt 缓存，其余部分每轮随机。输入长度为估算值，实际以接口返回的 usage 为准。<br>记录页的「缓存命中(真实)」来自厂商 usage 回传的 cached_tokens / prompt_cache_hit_tokens（DeepSeek 风格），不回传该字段的厂商显示 —。</div>
+      </div>
+
+      <div class="dshell-card">
+        <h2 class="dshell-sub" style="margin:0 0 10px">提供商（OpenAI 兼容 chat/completions 接口）</h2>
+        <div class="fp-presets" id="presetBar" style="margin-bottom:10px"></div>
+        <div id="provList" style="display:grid;gap:10px"></div>
+        <div class="fp-note">
+          密钥仅保存在本机浏览器 localStorage，不会上传到任何服务器（仅在你发起测试/拉模型时随请求发给对应厂商）。<br>
+          所有请求统一经本工作台服务端中转（/api/worktable/llm，仅放行 https 公网主机的 /models 与 /chat/completions），不受浏览器 CORS 限制。
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="dshell-btn" id="btnSaveCfg">保存配置</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnExportCfg">导出配置</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnImportCfg">导入配置</button>
+        <span class="dshell-badge dshell-badgeDone" id="cfgSaved" hidden>已保存</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 立即测试：选择提供商弹层 -->
+  <div id="runModal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.55);align-items:center;justify-content:center;padding:24px">
+    <div class="dshell-card" style="margin:0;max-width:560px;width:100%;background:var(--dsw-alias-bg-base,#0b0e14);border-color:var(--dsw-alias-border-l2,#3a4150)">
+      <h2 class="dshell-title" style="font-size:14px;margin:0 0 10px">选择本轮测试的提供商</h2>
+      <div id="runModalList" style="display:grid;gap:8px;max-height:52vh;overflow:auto"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+        <button class="dshell-btn dshell-btnGhost" id="runModalAll" style="padding:4px 12px;font-size:11.5px">全选</button>
+        <button class="dshell-btn dshell-btnGhost" id="runModalNone" style="padding:4px 12px;font-size:11.5px">清空</button>
+        <span style="flex:1"></span>
+        <button class="dshell-btn" id="runModalGo">开始测试</button>
+        <button class="dshell-btn dshell-btnGhost" id="runModalCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+'use strict';
+/* ================= 工具 ================= */
+var $=function(id){return document.getElementById(id);};
+var PALETTE=['#4f8ef7','#3fb950','#d29922','#f778ba','#a371f7','#f85149','#39c5cf','#e3b341','#8b949e','#56d4dd'];
+function colorOf(name){var h=0;for(var i=0;i<name.length;i++)h=(h*31+name.charCodeAt(i))>>>0;return PALETTE[h%PALETTE.length];}
+function fmtMs(v){if(v==null||!isFinite(v))return '—';return v>=1000?(v/1000).toFixed(2)+'s':Math.round(v)+'';}
+function fmtTime(ts){var d=new Date(ts);function p(n){return (n<10?'0':'')+n;}return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}
+function cssVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+
+/* ================= 主题 ================= */
+var themeSeg=$('themeSeg');
+function applyTheme(t){
+  if(t!=='light'&&t!=='dark'&&t!=='system')t='system';
+  document.documentElement.setAttribute('data-theme',t);
+  try{localStorage.setItem('friendPerf.theme',t);}catch(e){}
+  Array.prototype.forEach.call(themeSeg.querySelectorAll('button'),function(b){b.classList.toggle('on',b.getAttribute('data-t')===t);});
+  redrawAll();
+}
+themeSeg.addEventListener('click',function(e){var b=e.target.closest('button');if(b)applyTheme(b.getAttribute('data-t'));});
+(function(){var t='system';try{t=localStorage.getItem('friendPerf.theme')||'system';}catch(e){}
+  Array.prototype.forEach.call(themeSeg.querySelectorAll('button'),function(b){b.classList.toggle('on',b.getAttribute('data-t')===t);});})();
+if(window.matchMedia){window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){
+  if((localStorage.getItem('friendPerf.theme')||'system')==='system')redrawAll();});}
+
+/* ================= 标签页 ================= */
+$('tabs').addEventListener('click',function(e){
+  var b=e.target.closest('button');if(!b)return;
+  Array.prototype.forEach.call($('tabs').querySelectorAll('button'),function(x){x.classList.toggle('dshell-tabOn',x===b);});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-pane]'),function(p){p.hidden=p.getAttribute('data-pane')!==b.getAttribute('data-tab');});
+  redrawAll();
+});
+
+/* ================= 配置与数据 ================= */
+var PRESETS=[
+  {name:'智谱 GLM',baseURL:'https://open.bigmodel.cn/api/paas/v4',model:'glm-4-flash'},
+  {name:'阿里云百炼',baseURL:'https://dashscope.aliyuncs.com/compatible-mode/v1',model:'qwen-turbo'},
+  {name:'腾讯云混元',baseURL:'https://api.hunyuan.cloud.tencent.com/v1',model:'hunyuan-lite'},
+  {name:'硅基流动',baseURL:'https://api.siliconflow.cn/v1',model:'Qwen/Qwen2.5-7B-Instruct'},
+  {name:'七牛云',baseURL:'https://openai.qiniu.com/v1',model:'deepseek-v3'},
+  {name:'自定义',baseURL:'https://',model:''}
+];
+var DEFAULT_CFG={
+  inputLen:2000,outputLen:200,cacheHit:50,intervalMin:10,timeoutSec:60,
+  providers:[]
+};
+function loadCfg(){
+  try{var c=JSON.parse(localStorage.getItem('friendPerf.config'));if(c&&typeof c==='object')return Object.assign({},DEFAULT_CFG,c);}catch(e){}
+  return JSON.parse(JSON.stringify(DEFAULT_CFG));
+}
+function saveCfg(){try{localStorage.setItem('friendPerf.config',JSON.stringify(cfg));}catch(e){}}
+function loadResults(){try{var r=JSON.parse(localStorage.getItem('friendPerf.results'));if(Array.isArray(r))return r;}catch(e){}return [];}
+/* 测试数据以服务端为准：经 /api/worktable/write 落盘到项目文件夹 friend-perf-results.json；localStorage 仅作离线缓存与迁移来源 */
+function projectFolder(){
+  try{var m=location.pathname.match(/^\/api\/worktable\/site\/([^/]+)\//);if(m)return decodeURIComponent(m[1]);}catch(e){}
+  return '';
+}
+var RESULTS_FILE=(function(){var f=projectFolder();return f?f+'/friend-perf-results.json':'';})();
+function setSyncState(s){var el=$('syncState');if(el)el.textContent=s;}
+var syncTimer=null;
+function saveResults(){try{
+  if(results.length>5000)results=results.slice(-5000);
+  localStorage.setItem('friendPerf.results',JSON.stringify(results));
+}catch(e){}
+  scheduleServerSync();
+}
+function scheduleServerSync(){
+  if(!RESULTS_FILE){setSyncState('本地缓存（未识别项目文件夹）');return;}
+  setSyncState('待同步…');
+  if(syncTimer)clearTimeout(syncTimer);
+  syncTimer=setTimeout(syncToServer,800);
+}
+function syncToServer(){
+  if(!RESULTS_FILE)return;
+  setSyncState('同步中…');
+  fetch('/api/worktable/write',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:RESULTS_FILE,content:JSON.stringify(results)})})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);setSyncState('已存服务端 ✓');})
+    .catch(function(e){setSyncState('同步失败：'+String(e&&e.message||e).slice(0,80));});
+}
+function loadServerResults(){
+  if(!RESULTS_FILE){setSyncState('本地缓存（未识别项目文件夹）');return;}
+  setSyncState('加载中…');
+  fetch('/api/worktable/file?path='+encodeURIComponent(RESULTS_FILE),{cache:'no-store'})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();})
+    .then(function(t){
+      var arr=JSON.parse(t);
+      if(Array.isArray(arr)&&arr.length){
+        results=arr;
+        try{localStorage.setItem('friendPerf.results',t);}catch(e){}
+        setSyncState('已从服务端加载 '+arr.length+' 条');
+      }else{
+        setSyncState('服务端暂无数据');
+      }
+      renderRecords();redrawAll();
+    })
+    .catch(function(){
+      /* 服务端还没有文件：本地有数据则迁移上传 */
+      if(results.length){setSyncState('迁移本地数据到服务端…');scheduleServerSync();}
+      else setSyncState('服务端暂无数据');
+    });
+}
+var cfg=loadCfg();
+var results=loadResults(); // {ts,prov,model,ttft,tpot,outTokens,totalMs,ok,err}
+
+/* ================= 配置页渲染 ================= */
+function renderPresets(){
+  var bar=$('presetBar');bar.innerHTML='';
+  PRESETS.forEach(function(p){
+    var b=document.createElement('button');b.className='dshell-btn dshell-btnGhost';b.textContent='+ '+p.name;
+    b.onclick=function(){
+      cfg.providers.push({enabled:true,name:p.name,baseURL:p.baseURL,apiKey:'',model:p.model});
+      renderProviders();
+    };
+    bar.appendChild(b);
+  });
+}
+function renderProviders(){
+  var box=$('provList');box.innerHTML='';
+  if(!cfg.providers.length){box.innerHTML='<div class="dshell-muted">尚未添加提供商，点上方预设快速添加。</div>';return;}
+  cfg.providers.forEach(function(p,i){
+    var card=document.createElement('div');card.className='fp-prov';
+    var head=document.createElement('div');head.className='fp-prov-head';
+    var ck=document.createElement('input');ck.type='checkbox';ck.className='fp-ck';ck.checked=!!p.enabled;
+    ck.onchange=function(){p.enabled=ck.checked;};
+    var dot=document.createElement('span');dot.className='fp-dot';dot.style.background=colorOf(p.name||('提供商'+(i+1)));
+    var nm=document.createElement('span');nm.className='nm';nm.textContent=p.name||('提供商 '+(i+1));
+    var badge=document.createElement('span');badge.className='dshell-badge '+(p.enabled?'dshell-badgeDone':'');badge.textContent=p.enabled?'已启用':'已停用';
+    ck.addEventListener('change',function(){badge.className='dshell-badge '+(ck.checked?'dshell-badgeDone':'');badge.textContent=ck.checked?'已启用':'已停用';});
+    var del=document.createElement('button');del.className='dshell-btn dshell-btnDanger';del.style.marginLeft='auto';del.textContent='删除';
+    del.onclick=function(){if(confirm('删除「'+p.name+'」的配置？')){cfg.providers.splice(i,1);renderProviders();}};
+    head.appendChild(ck);head.appendChild(dot);head.appendChild(nm);head.appendChild(badge);head.appendChild(del);
+    var grid=document.createElement('div');grid.className='fp-prov-grid';
+    function field(label,key,type,ph){
+      var f=document.createElement('div');f.className='fp-field';
+      var l=document.createElement('label');l.textContent=label;
+      var inp=document.createElement('input');inp.className='dshell-input';inp.type=type||'text';inp.value=p[key]||'';inp.placeholder=ph||'';
+      inp.oninput=function(){p[key]=inp.value;if(key==='name'){nm.textContent=inp.value||('提供商 '+(i+1));dot.style.background=colorOf(inp.value);}};
+      f.appendChild(l);f.appendChild(inp);return f;
+    }
+    grid.appendChild(field('名称','name','text','如：智谱 GLM'));
+    grid.appendChild(field('Base URL','baseURL','text','https://.../v1'));
+    grid.appendChild(field('API Key','apiKey','password','sk-...'));
+    /* 模型：支持手输，也可按 Base URL + API Key 自动拉取模型列表后选择 */
+    (function(){
+      var f=document.createElement('div');f.className='fp-field';
+      var l=document.createElement('label');l.textContent='模型';
+      var row=document.createElement('div');row.style.cssText='display:flex;gap:6px';
+      var listId='fp-models-'+i;
+      var inp=document.createElement('input');inp.className='dshell-input';inp.value=p.model||'';inp.setAttribute('list',listId);
+      inp.placeholder='手输模型名，或点右侧「获取模型」后从下拉选择';inp.style.flex='1';
+      inp.oninput=function(){p.model=inp.value;};
+      var dl=document.createElement('datalist');dl.id=listId;
+      var btn=document.createElement('button');btn.className='dshell-btn dshell-btnGhost';btn.textContent='获取模型';btn.style.flex='none';
+      var hint=document.createElement('div');hint.className='dshell-muted';hint.style.display='none';
+      btn.onclick=function(){
+        if(!p.baseURL){hint.style.display='';hint.textContent='请先填写 Base URL';return;}
+        btn.disabled=true;btn.textContent='获取中…';hint.style.display='none';
+        llmFetch(p,'models')
+          .then(function(r){if(!r.ok)return r.text().then(function(t){throw new Error('HTTP '+r.status+' '+t.slice(0,120));});return r.json();})
+          .then(function(j){
+            var list=(j&&j.data||[]).map(function(m){return m&&(m.id||m.name);}).filter(Boolean);
+            if(!list.length)throw new Error('接口未返回模型列表');
+            dl.innerHTML='';
+            list.forEach(function(id){var o=document.createElement('option');o.value=id;dl.appendChild(o);});
+            hint.style.display='';hint.textContent='已拉取 '+list.length+' 个模型，点击输入框即可从下拉中选择（输入可过滤）。';
+            inp.focus();
+          })
+          .catch(function(e){hint.style.display='';hint.textContent='获取失败：'+String(e&&e.message||e).slice(0,160);})
+          .then(function(){btn.disabled=false;btn.textContent='获取模型';});
+      };
+      row.appendChild(inp);row.appendChild(btn);
+      f.appendChild(l);f.appendChild(row);f.appendChild(dl);f.appendChild(hint);
+      grid.appendChild(f);
+    })();
+    card.appendChild(head);card.appendChild(grid);
+    box.appendChild(card);
+  });
+}
+function fillCfgForm(){
+  $('cfgInputLen').value=cfg.inputLen;$('cfgOutputLen').value=cfg.outputLen;
+  $('cfgCacheHit').value=cfg.cacheHit;$('cfgCacheHitVal').textContent=cfg.cacheHit;
+  $('cfgInterval').value=cfg.intervalMin;$('cfgTimeout').value=cfg.timeoutSec;
+  renderPresets();renderProviders();
+}
+$('cfgCacheHit').addEventListener('input',function(){$('cfgCacheHitVal').textContent=this.value;});
+$('btnSaveCfg').onclick=function(){
+  cfg.inputLen=Math.max(16,+$('cfgInputLen').value||DEFAULT_CFG.inputLen);
+  cfg.outputLen=Math.max(8,+$('cfgOutputLen').value||DEFAULT_CFG.outputLen);
+  cfg.cacheHit=Math.min(100,Math.max(0,+$('cfgCacheHit').value||0));
+  cfg.intervalMin=Math.max(1,+$('cfgInterval').value||DEFAULT_CFG.intervalMin);
+  cfg.timeoutSec=Math.max(5,+$('cfgTimeout').value||DEFAULT_CFG.timeoutSec);
+  saveCfg();stopAuto();startCountdown();
+  $('cfgSaved').hidden=false;setTimeout(function(){$('cfgSaved').hidden=true;},1600);
+  updateStats();renderRunSel();renderSched();
+};
+$('btnExportCfg').onclick=function(){
+  download('friend-perf-config.json',JSON.stringify(cfg,null,2));
+};
+$('btnImportCfg').onclick=function(){
+  var inp=document.createElement('input');inp.type='file';inp.accept='.json';
+  inp.onchange=function(){
+    var f=inp.files[0];if(!f)return;
+    var rd=new FileReader();
+    rd.onload=function(){
+      try{var c=JSON.parse(rd.result);cfg=Object.assign({},DEFAULT_CFG,c);saveCfg();fillCfgForm();renderSched();alert('配置已导入');}
+      catch(e){alert('导入失败：'+e.message);}
+    };
+    rd.readAsText(f);
+  };
+  inp.click();
+};
+function download(name,text){
+  var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'application/json'}));a.download=name;a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);},3000);
+}
+
+/* ================= 提示词构造（含缓存命中模拟） ================= */
+var WORDS=('the quick brown fox jumps over lazy dog time token latency stream model infer cache hit rate benchmark tokens api performance test '
+  +'我们 正在 对 各家 大模型 服务 进行 首令牌 延迟 与 吐字 速度 的 基准 测试 数据 仅 用于 横向 对比 分析 请 忽略 内容 本身 ').split(' ');
+function estTokens(text){return Math.ceil(text.length/3.2);} /* 中英混合粗略估算 */
+function genText(targetTokens,rand){
+  /* 增量计长（O(n)）：每加一个词只累加其字符数 + 1 个空格，按 estTokens 同一口径（chars/3.2）换算；
+     旧实现每轮 out.join(' ') 重算全长是 O(n²)，大输入长度下会卡秒级并污染 TTFT */
+  var out=[],chars=0;
+  while(Math.ceil(chars/3.2)<targetTokens){
+    var w=rand?WORDS[Math.floor(Math.random()*WORDS.length)]:WORDS[out.length%WORDS.length];
+    out.push(w);chars+=(out.length>1?1:0)+w.length; /* 词间空格，chars 始终等于 join 后的真实长度 */
+  }
+  return out.join(' ');
+}
+/* 固定前缀跨轮复用（触发厂商 prompt 缓存），按配置指纹缓存 */
+function prefixKey(){return 'friendPerf.prefix.'+cfg.inputLen+'.'+cfg.cacheHit;}
+function getPrefix(){
+  var want=Math.round(cfg.inputLen*cfg.cacheHit/100);
+  if(want<8)return '';
+  try{var s=localStorage.getItem(prefixKey());if(s)return s;}catch(e){}
+  var s=genText(want,false);
+  try{localStorage.setItem(prefixKey(),s);}catch(e){}
+  return s;
+}
+function buildPrompt(){
+  var prefix=getPrefix();
+  var fresh=Math.max(8,cfg.inputLen-Math.round(cfg.inputLen*cfg.cacheHit/100));
+  var suffix=genText(fresh,true)+'\n\n（本轮随机标记：'+Math.random().toString(36).slice(2,10)+'）请用约 '+cfg.outputLen+' 个 token 续写一段说明文字。';
+  return prefix?prefix+'\n\n'+suffix:suffix;
+}
+
+/* ================= 请求通道：统一走工作台服务端中转（/api/worktable/llm） =================
+   各家厂商都从同一服务端出口发起请求，避免浏览器 CORS 差异与本机网络差异，横向可比。 */
+function llmFetch(p,endpoint,payload,signal){
+  return fetch('/api/worktable/llm',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({baseURL:p.baseURL,endpoint:endpoint,apiKey:p.apiKey||'',payload:payload}),signal:signal})
+    .then(function(r){try{r.__relay=true;}catch(_){}return r;});
+}
+
+/* ================= SSE 解析（纯函数，便于测试） ================= */
+/* 解析一批 SSE 行，返回 {usage, pieces}：usage 取本批最后一个非空 usage，pieces 为内容增量
+   （content / reasoning_content，兼容推理模型）；[DONE] 与非 data 行忽略，坏 JSON 行容错跳过 */
+function parseSseLines(lines){
+  var usage=null,pieces=[];
+  for(var i=0;i<lines.length;i++){
+    var ln=String(lines[i]==null?'':lines[i]).trim();
+    if(!ln||ln.indexOf('data:')!==0)continue;
+    var data=ln.slice(5).trim();
+    if(data==='[DONE]')continue;
+    try{
+      var j=JSON.parse(data);
+      if(j.usage)usage=j.usage;
+      var delta=j.choices&&j.choices[0]&&j.choices[0].delta;
+      var piece=delta&&(delta.content||delta.reasoning_content)||'';
+      if(piece)pieces.push(piece);
+    }catch(e){}
+  }
+  return {usage:usage,pieces:pieces};
+}
+
+/* ================= 单次测试 ================= */
+function testProvider(p){
+  return new Promise(function(resolve){
+    var rec={ts:Date.now(),prov:p.name,model:p.model,ttft:null,tpot:null,outTokens:0,totalMs:null,ok:false,err:'',inputTarget:cfg.inputLen,outputTarget:cfg.outputLen,cacheHitTarget:cfg.cacheHit};
+    var ctrl=new AbortController();
+    var timer=setTimeout(function(){ctrl.abort();},cfg.timeoutSec*1000);
+    /* 提示词在计时前构造：buildPrompt（含随机文本生成）属于本地准备开销，不应计入 TTFT/总耗时 */
+    var prompt=buildPrompt();
+    var t0=performance.now(),tFirst=null,content='',usage=null,relayed=false;
+    llmFetch(p,'chat/completions',{
+      model:p.model,stream:true,
+      max_tokens:cfg.outputLen,
+      messages:[{role:'user',content:prompt}],
+      stream_options:{include_usage:true}
+    },ctrl.signal).then(function(resp){
+      relayed=!!resp.__relay;
+      if(!resp.ok){return resp.text().then(function(t){throw new Error('HTTP '+resp.status+' '+t.slice(0,160));});}
+      var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
+      function feed(lines){
+        var r=parseSseLines(lines);
+        if(r.usage)usage=r.usage;
+        for(var k=0;k<r.pieces.length;k++){
+          if(tFirst===null)tFirst=performance.now();
+          content+=r.pieces[k];
+        }
+      }
+      function pump(){
+        return reader.read().then(function(r){
+          if(r.done){
+            /* 收尾：冲刷解码器残余字节，并解析 buf 里最后一段未被 \n 终止的行——
+               否则厂商把 usage 块放在流末尾且无尾换行时会整块丢失，
+               outTokens 退回粗估、cached_tokens 丢失，TPOT/缓存命中失真 */
+            buf+=dec.decode();
+            if(buf)feed(buf.split('\n'));
+            return;
+          }
+          buf+=dec.decode(r.value,{stream:true});
+          var lines=buf.split('\n');buf=lines.pop();
+          feed(lines);
+          return pump();
+        });
+      }
+      return pump();
+    }).then(function(){
+      clearTimeout(timer);
+      var tEnd=performance.now();
+      rec.totalMs=Math.round(tEnd-t0);
+      rec.relay=relayed;
+      /* 真实缓存命中：OpenAI 风格 usage.prompt_tokens_details.cached_tokens，兼容 DeepSeek 风格 prompt_cache_hit_tokens */
+      if(usage){
+        rec.promptTokens=usage.prompt_tokens!=null?usage.prompt_tokens:null;
+        var det=usage.prompt_tokens_details||{};
+        rec.cachedTokens=det.cached_tokens!=null?det.cached_tokens
+          :(usage.prompt_cache_hit_tokens!=null?usage.prompt_cache_hit_tokens:null);
+      }
+      if(tFirst!==null){
+        rec.ttft=Math.round(tFirst-t0);
+        var outTok=(usage&&usage.completion_tokens)||Math.max(1,estTokens(content));
+        rec.outTokens=outTok;
+        rec.tpot=outTok>1?Math.round((tEnd-tFirst)/(outTok-1)*10)/10:null;
+        rec.ok=true;
+      }else{
+        rec.err='未收到流式内容';
+      }
+      resolve(rec);
+    }).catch(function(e){
+      clearTimeout(timer);
+      rec.totalMs=Math.round(performance.now()-t0);
+      rec.err=(e&&e.name==='AbortError')?'超时（'+cfg.timeoutSec+'s）':String(e&&e.message||e).slice(0,200);
+      resolve(rec);
+    });
+  });
+}
+
+/* ================= 测试调度 ================= */
+var running=false,autoTimer=null,nextRunAt=0,countTimer=null;
+function enabledProviders(){return cfg.providers.filter(function(p){return p.enabled&&p.baseURL&&p.apiKey&&p.model;});}
+/* 测试时的提供商勾选：默认全选，勾选状态存 localStorage（按提供商名记忆） */
+function loadRunSel(){try{var s=JSON.parse(localStorage.getItem('friendPerf.runSel'));if(s&&typeof s==='object')return s;}catch(e){}return {};}
+var runSel=loadRunSel();
+function isSelRun(name){return runSel[name]!==false;}
+function selectedProviders(){return enabledProviders().filter(function(p){return isSelRun(p.name);});}
+function renderRunSel(){
+  var bar=$('runSelBar');if(!bar)return;bar.innerHTML='';
+  var list=enabledProviders();
+  if(!list.length)return;
+  var lab=document.createElement('span');lab.className='dshell-sub';lab.textContent='本轮测试：';bar.appendChild(lab);
+  list.forEach(function(p){
+    var on=isSelRun(p.name);
+    var b=document.createElement('button');
+    b.className='dshell-badge'+(on?' dshell-badgeDone':'');
+    b.style.cursor='pointer';b.style.border='1px solid '+(on?colorOf(p.name):'var(--dsw-alias-border-l1,#262b36)');
+    b.style.color=on?colorOf(p.name):'';
+    b.textContent=p.name;
+    b.title=on?'点击排除本轮测试':'点击纳入本轮测试';
+    b.onclick=function(){runSel[p.name]=!on;try{localStorage.setItem('friendPerf.runSel',JSON.stringify(runSel));}catch(e){}renderRunSel();renderSched();};
+    bar.appendChild(b);
+  });
+  var all=document.createElement('button');all.className='dshell-btn dshell-btnGhost';all.style.padding='2px 10px';all.style.fontSize='11px';
+  all.textContent='全选';
+  all.onclick=function(){list.forEach(function(p){runSel[p.name]=true;});try{localStorage.setItem('friendPerf.runSel',JSON.stringify(runSel));}catch(e){}renderRunSel();renderSched();};
+  var none=document.createElement('button');none.className='dshell-btn dshell-btnGhost';none.style.padding='2px 10px';none.style.fontSize='11px';
+  none.textContent='清空';
+  none.onclick=function(){list.forEach(function(p){runSel[p.name]=false;});try{localStorage.setItem('friendPerf.runSel',JSON.stringify(runSel));}catch(e){}renderRunSel();renderSched();};
+  bar.appendChild(all);bar.appendChild(none);
+}
+function runRound(){
+  if(running)return Promise.resolve();
+  var list=selectedProviders();
+  if(!list.length){renderSched(enabledProviders().length?'本轮未勾选任何提供商':'没有已启用且填写完整的提供商');return Promise.resolve();}
+  running=true;renderSched('本轮测试中（0/'+list.length+'）…');
+  var i=0;
+  function step(){
+    if(i>=list.length){
+      running=false;saveResults();updateStats();renderRecords();redrawAll();
+      renderSched();return;
+    }
+    var p=list[i];
+    renderSched('本轮测试中：'+p.name+'（'+(i+1)+'/'+list.length+'）…');
+    return testProvider(p).then(function(rec){
+      results.push(rec);i++;
+      updateStats();renderRecords();
+      return step();
+    });
+  }
+  return step();
+}
+function startAuto(){
+  stopAuto();
+  nextRunAt=Date.now()+cfg.intervalMin*60000;
+  autoTimer=setInterval(function(){
+    if(Date.now()>=nextRunAt){nextRunAt=Date.now()+cfg.intervalMin*60000;runRound();}
+  },1000);
+  startCountdown();
+}
+function stopAuto(){if(autoTimer){clearInterval(autoTimer);autoTimer=null;}if(countTimer){clearInterval(countTimer);countTimer=null;}}
+function startCountdown(){
+  if(countTimer)clearInterval(countTimer);
+  if(!autoTimer){renderSched();return;}
+  countTimer=setInterval(renderSched,1000);renderSched();
+}
+function renderSched(msg){
+  var badge=$('schedBadge'),txt=$('schedText');
+  if(msg){badge.className='dshell-badge dshell-badgeWait';badge.textContent='运行中';txt.textContent=msg;$('btnAuto').textContent=autoTimer?'停止定时测试':'启动定时测试';return;}
+  if(autoTimer){
+    var left=Math.max(0,nextRunAt-Date.now());
+    var mm=Math.floor(left/60000),ss=Math.floor(left%60000/1000);
+    badge.className='dshell-badge dshell-badgeDone';badge.textContent='定时已启动';
+    txt.textContent='每 '+cfg.intervalMin+' 分钟一轮，下次测试：'+mm+':'+(ss<10?'0':'')+ss;
+    $('btnAuto').textContent='停止定时测试';
+  }else{
+    badge.className='dshell-badge';badge.textContent='定时未启动';
+    txt.textContent=enabledProviders().length?('已就绪：本轮勾选 '+selectedProviders().length+'/'+enabledProviders().length+' 个提供商，可手动或定时测试。'):'在「配置」页添加提供商并填写密钥后启用。';
+    $('btnAuto').textContent='启动定时测试';
+  }
+}
+/* 立即测试：弹层勾选本轮要测的提供商（勾选即写回 runSel，与概览勾选条联动） */
+function saveRunSel(){try{localStorage.setItem('friendPerf.runSel',JSON.stringify(runSel));}catch(e){}}
+function renderRunModalList(){
+  var box=$('runModalList');box.innerHTML='';
+  var list=enabledProviders();
+  if(!list.length){box.innerHTML='<div class="dshell-muted">没有已启用且填写完整的提供商，请先到「配置」页添加。</div>';return;}
+  list.forEach(function(p){
+    var lab=document.createElement('label');
+    lab.style.cssText='display:flex;align-items:center;gap:9px;padding:8px 12px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:8px;cursor:pointer';
+    var ck=document.createElement('input');ck.type='checkbox';ck.className='fp-ck';ck.checked=isSelRun(p.name);
+    ck.onchange=function(){runSel[p.name]=ck.checked;saveRunSel();};
+    var dot=document.createElement('span');dot.className='fp-dot';dot.style.background=colorOf(p.name);
+    var nm=document.createElement('span');nm.style.cssText='font-size:12.5px;min-width:0';
+    nm.innerHTML='<b>'+escapeHtml(p.name)+'</b> <span class="dshell-muted">'+escapeHtml(p.model||'')+'</span>';
+    lab.appendChild(ck);lab.appendChild(dot);lab.appendChild(nm);
+    box.appendChild(lab);
+  });
+}
+function closeRunModal(){$('runModal').style.display='none';renderRunSel();renderSched();}
+var runModalMode='once'; /* once=立即测试一轮；auto=启动定时测试 */
+$('btnRunNow').onclick=function(){
+  if(!enabledProviders().length){alert('请先在「配置」页添加并启用至少一个填写完整的提供商。');return;}
+  runModalMode='once';$('runModalGo').textContent='开始测试';
+  renderRunModalList();
+  $('runModal').style.display='flex';
+};
+$('runModalAll').onclick=function(){enabledProviders().forEach(function(p){runSel[p.name]=true;});saveRunSel();renderRunModalList();};
+$('runModalNone').onclick=function(){enabledProviders().forEach(function(p){runSel[p.name]=false;});saveRunSel();renderRunModalList();};
+$('runModalCancel').onclick=closeRunModal;
+$('runModal').addEventListener('click',function(e){if(e.target===this)closeRunModal();});
+$('runModalGo').onclick=function(){
+  if(!selectedProviders().length){alert('请至少勾选一家提供商。');return;}
+  var mode=runModalMode;
+  closeRunModal();
+  if(mode==='auto'){startAuto();runRound();}else{runRound();}
+};
+$('btnAuto').onclick=function(){
+  if(autoTimer){stopAuto();renderSched();}
+  else{
+    if(!enabledProviders().length){alert('请先在「配置」页添加并启用至少一个填写完整的提供商。');return;}
+    runModalMode='auto';$('runModalGo').textContent='启动定时测试';
+    renderRunModalList();
+    $('runModal').style.display='flex';
+  }
+};
+
+/* ================= 统计与概览 ================= */
+function latestRoundByProv(){
+  /* 每个提供商取最近一次成功样本所在“轮次”的均值；简化：取每个提供商最近 3 条成功样本均值 */
+  var map={};
+  results.forEach(function(r){if(r.ok){(map[r.prov]=map[r.prov]||[]).push(r);}});
+  var out=[];
+  Object.keys(map).forEach(function(k){
+    var arr=map[k].slice(-3);
+    var tt=arr.reduce(function(s,r){return s+r.ttft;},0)/arr.length;
+    var tpArr=arr.filter(function(r){return r.tpot!=null;});
+    var tp=tpArr.length?tpArr.reduce(function(s,r){return s+r.tpot;},0)/tpArr.length:null;
+    /* 真实缓存命中率均值（仅统计厂商回传了 cached_tokens 的样本） */
+    var hitArr=arr.filter(function(r){return r.cachedTokens!=null&&r.promptTokens>0;});
+    var hit=hitArr.length?Math.round(hitArr.reduce(function(s,r){return s+r.cachedTokens/r.promptTokens;},0)/hitArr.length*100):null;
+    out.push({prov:k,ttft:Math.round(tt),tpot:tp!=null?Math.round(tp*10)/10:null,hit:hit,n:arr.length});
+  });
+  return out;
+}
+function updateStats(){
+  var ok=results.filter(function(r){return r.ok;});
+  $('stProviders').textContent=enabledProviders().length;
+  $('stSamples').textContent=ok.length;
+  var bestT=null,bestTP=null;
+  ok.forEach(function(r){
+    if(r.ttft!=null&&(!bestT||r.ttft<bestT.ttft))bestT=r;
+    if(r.tpot!=null&&(!bestTP||r.tpot<bestTP.tpot))bestTP=r;
+  });
+  $('stBestTtft').textContent=bestT?fmtMs(bestT.ttft)+(bestT.ttft<1000?' ms':''):'—';
+  $('stBestTtftBy').textContent=bestT?bestT.prov:'';
+  $('stBestTpot').textContent=bestTP?bestTP.tpot+' ms':'—';
+  $('stBestTpotBy').textContent=bestTP?bestTP.prov:'';
+}
+function renderRank(){
+  var rows=latestRoundByProv().sort(function(a,b){return a.ttft-b.ttft;});
+  var box=$('rankList');
+  if(!rows.length){box.innerHTML='<div class="dshell-muted" style="padding:8px 2px">暂无数据。请在「配置」页添加真实 API 后开始测试。</div>';return;}
+  var max=Math.max.apply(null,rows.map(function(r){return r.ttft;}).concat([1]));
+  box.innerHTML='';
+  rows.forEach(function(r,i){
+    var div=document.createElement('div');div.className='fp-rankrow';
+    div.innerHTML='<span class="fp-rankno">'+(i+1)+'</span>'
+      +'<span class="fp-dot" style="background:'+colorOf(r.prov)+'"></span>'
+      +'<span class="fp-rankname">'+escapeHtml(r.prov)+'</span>'
+      +'<span class="fp-bar"><i style="width:'+Math.max(3,Math.round(r.ttft/max*100))+'%;background:'+colorOf(r.prov)+'"></i></span>'
+      +'<span class="fp-val fp-mono">TTFT '+fmtMs(r.ttft)+(r.ttft<1000?' ms':'')+'</span>'
+      +'<span class="fp-val fp-mono">TPOT '+(r.tpot!=null?r.tpot+' ms':'—')+'</span>'
+      +'<span class="fp-val fp-mono" title="厂商 usage 回传的真实缓存命中率">缓存 '+(r.hit!=null?r.hit+'%':'—')+'</span>';
+    box.appendChild(div);
+  });
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+/* 最近秩分位数（nearest-rank）：sorted 为升序数组 */
+function pctRank(sorted,k){
+  if(!sorted.length)return null;
+  var i=Math.ceil(k/100*sorted.length)-1;
+  return sorted[Math.max(0,Math.min(sorted.length-1,i))];
+}
+function statsOf(vals,int_){
+  if(!vals.length)return{avg:null,p50:null,p75:null,p90:null,p99:null};
+  var s=vals.slice().sort(function(a,b){return a-b;});
+  var avg=s.reduce(function(x,y){return x+y;},0)/s.length;
+  function f(v){return v==null?null:(int_?Math.round(v):Math.round(v*10)/10);}
+  return{avg:f(avg),p50:f(pctRank(s,50)),p75:f(pctRank(s,75)),p90:f(pctRank(s,90)),p99:f(pctRank(s,99))};
+}
+/* 分桶统计：提供商 × 输入长度(配置目标) × 设定缓存命中率 */
+function renderGroupStats(){
+  var map={},order=[];
+  results.forEach(function(r){
+    if(!r.ok)return;
+    var il=r.inputTarget!=null?String(r.inputTarget):'未记录';
+    var ch=r.cacheHitTarget!=null?r.cacheHitTarget+'%':'未记录';
+    var key=r.prov+'|'+il+'|'+ch;
+    if(!map[key]){map[key]={prov:r.prov,inputLen:il,cacheHit:ch,ttft:[],tpot:[]};order.push(key);}
+    var g=map[key];
+    if(r.ttft!=null)g.ttft.push(r.ttft);
+    if(r.tpot!=null)g.tpot.push(r.tpot);
+  });
+  var tb=$('grpBody');tb.innerHTML='';
+  if(!order.length){tb.innerHTML='<tr><td colspan="14" class="dshell-muted" style="text-align:center;padding:14px">暂无成功样本</td></tr>';return;}
+  /* 排序：提供商 → 输入长度（数值升序，未记录排后）→ 缓存命中率 */
+  order.sort(function(a,b){
+    var A=map[a],B=map[b];
+    if(A.prov!==B.prov)return A.prov<B.prov?-1:1;
+    var ai=A.inputLen==='未记录'?Infinity:+A.inputLen,bi=B.inputLen==='未记录'?Infinity:+B.inputLen;
+    if(ai!==bi)return ai-bi;
+    var ac=A.cacheHit==='未记录'?Infinity:parseInt(A.cacheHit),bc=B.cacheHit==='未记录'?Infinity:parseInt(B.cacheHit);
+    return ac-bc;
+  });
+  order.forEach(function(k){
+    var g=map[k],ts=statsOf(g.ttft,true),ps=statsOf(g.tpot,false);
+    function c(v){return '<td class="fp-mono">'+(v!=null?v:'—')+'</td>';}
+    var tr=document.createElement('tr');
+    tr.innerHTML='<td><span class="fp-dot" style="background:'+colorOf(g.prov)+';margin-right:5px"></span>'+escapeHtml(g.prov)+'</td>'
+      +'<td class="fp-mono">'+escapeHtml(g.inputLen)+'</td>'
+      +'<td class="fp-mono">'+escapeHtml(g.cacheHit)+'</td>'
+      +'<td class="fp-mono">'+g.ttft.length+'</td>'
+      +c(ts.avg)+c(ts.p50)+c(ts.p75)+c(ts.p90)+c(ts.p99)
+      +c(ps.avg)+c(ps.p50)+c(ps.p75)+c(ps.p90)+c(ps.p99);
+    tb.appendChild(tr);
+  });
+}
+/* 真实缓存命中展示：cached/prompt（命中率%）；厂商未回传则 — */
+function fmtCacheHit(r){
+  if(r.cachedTokens==null)return '—';
+  var pct=(r.promptTokens&&r.promptTokens>0)?Math.round(r.cachedTokens/r.promptTokens*100):null;
+  return r.cachedTokens+'/'+(r.promptTokens!=null?r.promptTokens:'?')+(pct!=null?'（'+pct+'%）':'');
+}
+
+/* ================= Canvas 图表 ================= */
+function setupCanvas(cv){
+  var dpr=window.devicePixelRatio||1;
+  var w=cv.clientWidth,h=cv.clientHeight;
+  if(!w||!h)return null;
+  cv.width=w*dpr;cv.height=h*dpr;
+  var ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {ctx:ctx,w:w,h:h};
+}
+function drawBar(cv,data,unit){ /* data:[{label,value,color}] */
+  var s=setupCanvas(cv);if(!s)return;var ctx=s.ctx,w=s.w,h=s.h;
+  var fg=cssVar('--dshell-fg')||'#9aa4b2',bd=cssVar('--dshell-border')||'#262b36';
+  ctx.clearRect(0,0,w,h);
+  var valid=data.filter(function(d){return d.value!=null&&isFinite(d.value);});
+  if(!valid.length){ctx.fillStyle=fg;ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText('暂无数据',w/2,h/2);return;}
+  var padL=44,padB=26,padT=10,padR=8;
+  var cw=w-padL-padR,ch=h-padT-padB;
+  var max=Math.max.apply(null,valid.map(function(d){return d.value;}))*1.15||1;
+  /* 网格与刻度 */
+  ctx.strokeStyle=bd;ctx.fillStyle=fg;ctx.font='10.5px sans-serif';ctx.textAlign='right';ctx.lineWidth=1;
+  for(var g=0;g<=4;g++){
+    var y=padT+ch-ch*g/4;
+    ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
+    ctx.fillText(Math.round(max*g/4),padL-6,y+3);
+  }
+  var bw=Math.min(46,(cw/valid.length)*0.55);
+  valid.forEach(function(d,i){
+    var cx=padL+cw*(i+0.5)/valid.length;
+    var bh=ch*d.value/max;
+    ctx.fillStyle=d.color;
+    ctx.beginPath();
+    if(ctx.roundRect)ctx.roundRect(cx-bw/2,padT+ch-bh,bw,bh,[4,4,0,0]);else ctx.rect(cx-bw/2,padT+ch-bh,bw,bh);
+    ctx.fill();
+    ctx.fillStyle=fg;ctx.textAlign='center';
+    var lb=d.label.length>8?d.label.slice(0,8)+'…':d.label;
+    ctx.fillText(lb,cx,h-8);
+    ctx.fillText(fmtMs(d.value)+(unit?' '+unit:''),cx,padT+ch-bh-5);
+  });
+}
+var rangeMs=0; /* 趋势时间范围 */
+$('rangeSeg').addEventListener('click',function(e){
+  var b=e.target.closest('button');if(!b)return;
+  Array.prototype.forEach.call($('rangeSeg').querySelectorAll('button'),function(x){x.classList.toggle('on',x===b);});
+  rangeMs=+b.getAttribute('data-r');drawTrend();
+});
+function seriesFor(field){
+  var since=rangeMs?Date.now()-rangeMs:0;
+  var map={};
+  results.forEach(function(r){
+    if(!r.ok||r.ts<since||r[field]==null)return;
+    (map[r.prov]=map[r.prov]||[]).push({x:r.ts,y:r[field]});
+  });
+  return Object.keys(map).map(function(k){return{name:k,color:colorOf(k),pts:map[k]};});
+}
+function drawLine(cv,series){
+  var s=setupCanvas(cv);if(!s)return;var ctx=s.ctx,w=s.w,h=s.h;
+  var fg=cssVar('--dshell-fg')||'#9aa4b2',bd=cssVar('--dshell-border')||'#262b36';
+  ctx.clearRect(0,0,w,h);
+  var all=[];series.forEach(function(sr){all=all.concat(sr.pts);});
+  if(!all.length){ctx.fillStyle=fg;ctx.font='12px sans-serif';ctx.textAlign='center';ctx.fillText('暂无数据',w/2,h/2);return;}
+  var padL=48,padB=24,padT=10,padR=10;
+  var cw=w-padL-padR,ch=h-padT-padB;
+  var x0=Math.min.apply(null,all.map(function(p){return p.x;}));
+  var x1=Math.max.apply(null,all.map(function(p){return p.x;}));
+  var y1=Math.max.apply(null,all.map(function(p){return p.y;}))*1.12||1;
+  if(x1===x0)x1=x0+1;
+  ctx.strokeStyle=bd;ctx.fillStyle=fg;ctx.font='10.5px sans-serif';ctx.lineWidth=1;
+  ctx.textAlign='right';
+  for(var g=0;g<=4;g++){
+    var y=padT+ch-ch*g/4;
+    ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
+    ctx.fillText(Math.round(y1*g/4),padL-6,y+3);
+  }
+  ctx.textAlign='center';
+  for(var t=0;t<=4;t++){
+    var ts=x0+(x1-x0)*t/4;
+    ctx.fillText(fmtTime(ts).slice(6),padL+cw*t/4,h-7);
+  }
+  series.forEach(function(sr){
+    if(!sr.pts.length)return;
+    ctx.strokeStyle=sr.color;ctx.lineWidth=1.6;ctx.beginPath();
+    sr.pts.forEach(function(p,i){
+      var X=padL+cw*(p.x-x0)/(x1-x0),Y=padT+ch-ch*p.y/y1;
+      if(i===0)ctx.moveTo(X,Y);else ctx.lineTo(X,Y);
+    });
+    ctx.stroke();
+    ctx.fillStyle=sr.color;
+    sr.pts.forEach(function(p){
+      var X=padL+cw*(p.x-x0)/(x1-x0),Y=padT+ch-ch*p.y/y1;
+      ctx.beginPath();ctx.arc(X,Y,2.4,0,Math.PI*2);ctx.fill();
+    });
+  });
+}
+function renderLegend(el,series){
+  el.innerHTML='';
+  series.forEach(function(sr){
+    var sp=document.createElement('span');
+    sp.innerHTML='<i class="fp-dot" style="background:'+sr.color+'"></i>'+escapeHtml(sr.name)+'（'+sr.pts.length+'）';
+    el.appendChild(sp);
+  });
+}
+function drawTrend(){
+  var s1=seriesFor('ttft'),s2=seriesFor('tpot');
+  drawLine($('lineTtft'),s1);drawLine($('lineTpot'),s2);
+  renderLegend($('legTtft'),s1);renderLegend($('legTpot'),s2);
+}
+function drawBars(){
+  var rows=latestRoundByProv();
+  drawBar($('barTtft'),rows.map(function(r){return{label:r.prov,value:r.ttft,color:colorOf(r.prov)};}),'');
+  drawBar($('barTpot'),rows.map(function(r){return{label:r.prov,value:r.tpot,color:colorOf(r.prov)};}),'');
+}
+function redrawAll(){updateStats();renderRank();renderGroupStats();drawBars();drawTrend();}
+
+/* ================= 记录表 ================= */
+function renderRecords(){
+  var tb=$('recBody');tb.innerHTML='';
+  $('recCount').textContent='共 '+results.length+' 条（保留最近 5000 条）';
+  var arr=results.slice(-300).reverse();
+  arr.forEach(function(r){
+    var tr=document.createElement('tr');
+    tr.innerHTML='<td class="fp-mono">'+fmtTime(r.ts)+'</td>'
+      +'<td><span class="fp-dot" style="background:'+colorOf(r.prov)+';margin-right:5px"></span>'+escapeHtml(r.prov)+'</td>'
+      +'<td>'+escapeHtml(r.model||'')+(r.relay?'':' <span class="dshell-muted" title="该次测试为浏览器直连（早期版本）">·直连</span>')+'</td>'
+      +'<td class="fp-mono">'+(r.ttft!=null?r.ttft:'—')+'</td>'
+      +'<td class="fp-mono">'+(r.tpot!=null?r.tpot:'—')+'</td>'
+      +'<td class="fp-mono">'+(r.promptTokens!=null?r.promptTokens:(r.inputTarget!=null?'<span title="厂商未回传 usage，此为配置的目标输入长度（估算）">~'+r.inputTarget+'</span>':'—'))+'</td>'
+      +'<td class="fp-mono">'+(r.outTokens||'—')+'</td>'
+      +'<td class="fp-mono">'+fmtCacheHit(r)+'</td>'
+      +'<td class="fp-mono">'+(r.totalMs!=null?(r.totalMs/1000).toFixed(2):'—')+'</td>'
+      +'<td>'+(r.ok?'<span class="dshell-badge dshell-badgeDone">成功</span>':'<span class="dshell-badge fp-badge-err" style="cursor:pointer" title="点击查看失败原因">失败 ▾</span>')+'</td>';
+    if(!r.ok){
+      /* 失败行：点击展开 / 收起失败原因 */
+      tr.style.cursor='pointer';
+      var open=false,dtr=null;
+      tr.onclick=function(){
+        if(open){if(dtr)dtr.remove();dtr=null;open=false;return;}
+        dtr=document.createElement('tr');
+        var td=document.createElement('td');td.colSpan=10;
+        td.innerHTML='<div style="padding:6px 4px;font-size:12px;line-height:1.7">'
+          +'<span class="dshell-badge fp-badge-err">失败原因</span> '
+          +'<span class="fp-mono" style="user-select:text;word-break:break-all">'+escapeHtml(r.err||'（无详细信息）')+'</span></div>';
+        dtr.appendChild(td);
+        tr.parentNode.insertBefore(dtr,tr.nextSibling);
+        open=true;
+      };
+    }
+    tb.appendChild(tr);
+  });
+}
+$('btnClear').onclick=function(){if(confirm('清空全部 '+results.length+' 条测试记录？')){results=[];saveResults();renderRecords();redrawAll();}};
+$('btnExport').onclick=function(){download('friend-perf-results-'+Date.now()+'.json',JSON.stringify(results,null,2));};
+
+/* ================= 初始化 ================= */
+fillCfgForm();renderRunSel();renderSched();renderRecords();redrawAll();
+loadServerResults(); /* 服务端数据为准，加载后覆盖本地缓存渲染 */
+window.addEventListener('resize',function(){drawBars();drawTrend();});
+})();
+</script>
+</body>
+</html>
