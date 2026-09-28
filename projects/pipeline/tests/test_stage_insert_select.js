@@ -262,6 +262,7 @@ function loadOpenPlFormContext(overrides) {
     editSelStage: null,
     editDefaults: null,
     plFormReadOnly: false,
+    plEditable: () => true,   // 归属桩：编辑器焦点测试不涉及归属限制，按可编辑处理
     applyPlFormReadOnly() {},
     scriptsDir: '',
     $: id => els[id] || null,

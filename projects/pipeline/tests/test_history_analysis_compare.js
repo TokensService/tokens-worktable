@@ -226,9 +226,9 @@ test('本地清空尚未持久化时，服务端旧清空版本不得复活历�
 });
 
 test('未发生本地清空时正常应用刷新历史并同步版本字段', () => {
-  const ctx = { history: [], buildNo: 9, histClearedAt: 100 };
+  const ctx = { history: [], buildNo: 9, histClearedAt: 100, historySyncSig: '' };
   vm.createContext(ctx);
-  vm.runInContext(functionSource('applyHistoryRefreshPayload'), ctx);
+  vm.runInContext(functionSource('historyPersistSig') + '\n' + functionSource('historyMarkSynced') + '\n' + functionSource('historyForPersist') + '\n' + functionSource('applyHistoryRefreshPayload'), ctx);
 
   const applied = ctx.applyHistoryRefreshPayload({
     config: { buildNo: 10, histClearedAt: 100 },

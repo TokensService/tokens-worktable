@@ -539,4 +539,16 @@ export const css = xtermCss + '\n' + [
   /* 行内「回退提示词」按钮：比设置面板按钮更紧凑，文字不折行 */
   '.dsh-wt_histCopy{flex:none;padding:2px 6px;font-size:10.5px;white-space:nowrap}',
   '.dsh-wt_histFoot{margin-top:8px;font-size:10.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
+  /* 使用统计弹窗：内容更宽（摘要 chips + 用户表格 + 最近事件），骨架复用 dsh-wt_hist */
+  '.dsh-wt_usage{width:min(560px,94vw)}',
+  '.dsh-wt_usageChips{display:flex;flex-wrap:wrap;gap:6px}',
+  '.dsh-wt_usageChip{flex:none;padding:2px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:999px;font-size:10.5px;color:var(--dsw-alias-label-secondary,#aab3c5)}',
+  '.dsh-wt_usageTable{width:100%;border-collapse:collapse;font-size:11px;color:var(--dsw-alias-label-primary,#e6e8eb)}',
+  '.dsh-wt_usageTable th,.dsh-wt_usageTable td{padding:4px 6px;text-align:left;border-bottom:1px solid var(--dsw-alias-border-l1,#262b36);white-space:nowrap}',
+  '.dsh-wt_usageTable th{font-size:10.5px;font-weight:500;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
+  '.dsh-wt_usageRecentTitle{font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary,#aab3c5)}',
+  '.dsh-wt_usageRecentItem{display:flex;align-items:baseline;gap:6px;font-size:11px;color:var(--dsw-alias-label-primary,#e6e8eb)}',
+  '.dsh-wt_usageRecentTime{flex:none;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
+  '.dsh-wt_usageRecentUser{flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.dsh-wt_usageRecentDetail{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
 ].join('\n')

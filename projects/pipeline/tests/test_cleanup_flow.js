@@ -8,6 +8,7 @@ function context(){
   const ctx={curRun:null,runStages:null,replayRec:null,cleanupScript:{name:'clean.sh',path:'/tmp/clean.sh'},checkScript:null,profilingScript:null,running:false,
     viewRc:null,selectedId:null,   // 多运行上下文：编排区焦点运行（null=无运行视图）与视图层选中
     curPipeline:()=>({}),
+    plEditable:()=>true,   // 归属桩：预设任务编排测试不涉及归属限制，按可编辑处理
     activeStages:()=>[{id:'first',name:'First'},{id:'second',name:'Second'}],$:id=>id==='flow'?flow:(id==='checkEnv'?checkBox:(id==='profilingEnv'?profilingBox:checkbox)),
     document:{createElement:()=>({dataset:{},addEventListener(type,fn){this[type]=fn;}})},esc:String,
     applyStatusClasses(){},renderDetail(){},openPlForm(_pid,i){ctx.edited=i;},curPipelineId:'pl',
