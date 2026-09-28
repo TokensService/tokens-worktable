@@ -15,6 +15,10 @@ groupName: {{ $groupName }}
 {{- if $lmcache.enabled }}
 - name: lmcache-sidecar
   resources: {{- toYaml $lmcache.resources | nindent 4 }}
+  args:
+    {{- if $isLmcacheL2 }}
+                  --l2-store-policy
+    {{- end }}
 {{- end }}
 EOF
 cat >"$work_dir/chart/templates/ray-svc.yaml" <<'EOF'
@@ -118,21 +122,27 @@ lmcache:
       repository: registry.example/old/xds
       tag: old
 lmcacheSidecar:
+  # lite 模板契约：仅 enabled/logLevel/l2Enabled 由渲染器替换，
+  # 端口/尺寸/资源等默认值固化在 values 模板中。
   enabled: {LMCACHE_SIDECAR_ENABLED}
-  mpPortBase: {LMCACHE_MP_PORT_BASE}
-  httpPortBase: {LMCACHE_HTTP_PORT_BASE}
-  l1InitSizeGb: {LMCACHE_L1_INIT_SIZE_GB}
-  l1SizeGb: {LMCACHE_L1_SIZE_GB}
-  l1AlignBytes: {LMCACHE_L1_ALIGN_BYTES}
-  maxWorkers: {LMCACHE_MAX_WORKERS}
   logLevel: {LMCACHE_LOG_LEVEL}
+  l2Enabled: {LMCACHE_L2_ENABLED}
+  tracing:
+    otlpEndpoint: {LMCACHE_OTLP_ENDPOINT}
+  mpPortBase: 5555
+  httpPortBase: 5565
+  l1InitSizeGb: 20
+  l1SizeGb: 200
+  l1AlignBytes: "4096"
+  maxWorkers: 1
+  cudaVisibleDevices: ''
   resources:
     requests:
-      cpu: {LMCACHE_CPU_REQUEST}
-      memory: {LMCACHE_MEMORY_REQUEST}
+      cpu: 4
+      memory: 8Gi
     limits:
-      cpu: {LMCACHE_CPU_LIMIT}
-      memory: {LMCACHE_MEMORY_LIMIT}
+      cpu: 8
+      memory: 240Gi
 # disabled infrastructure setting: {ELB_ID}
 EOF
 cat >"$work_dir/architectures.json" <<'EOF'
@@ -243,13 +253,16 @@ assert values["lmcache"]["direct"]["image"] == {
 }
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is False
+assert sidecar["logLevel"] == "INFO"
+assert sidecar["l2Enabled"] is True, sidecar
+# 固化在模板中的 sidecar 默认值不被渲染器篡改（lite 不做参数透传）。
 assert sidecar["mpPortBase"] == 5555
 assert sidecar["httpPortBase"] == 5565
 assert sidecar["l1InitSizeGb"] == 20
 assert sidecar["l1SizeGb"] == 200
 assert sidecar["l1AlignBytes"] == "4096"
 assert sidecar["maxWorkers"] == 1
-assert sidecar["logLevel"] == "INFO"
+assert sidecar["cudaVisibleDevices"] == ""
 assert sidecar["resources"] == {
     "requests": {"cpu": 4, "memory": "8Gi"},
     "limits": {"cpu": 8, "memory": "240Gi"},
@@ -269,6 +282,12 @@ PY
 
 rendered_chart="$work_dir/run/rendered/xds-cluster/templates/raycluster-cluster.yaml"
 grep -Fq 'groupName: {{ if contains "prefill" (lower $teGroupValues.name) }}prefill-' "$rendered_chart"
+# sidecar 未启用（ENABLE_LMCACHE 默认 false）时跳过 tracing patch：
+# 非 LMCache 部署不应因旧 chart 缺锄点而失败。
+if grep -Fq -- '--enable-tracing' "$rendered_chart"; then
+  echo "tracing patch must be skipped when lmcacheSidecar is disabled" >&2
+  exit 1
+fi
 grep -Fq 'else if contains "decode" (lower $teGroupValues.name) }}decode-' "$rendered_chart"
 grep -Fq 'else if or (eq $groupName "jobExecutorGroup") (contains "jobexecutor" (lower $groupName)) }}je' "$rendered_chart"
 if grep -Fq 'eq $groupName "frontGroup") (contains "frontend" (lower $groupName)) }}fe' "$rendered_chart"; then
@@ -290,8 +309,8 @@ ARCH_FILE="$work_dir/architectures.json" \
 DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-lmcache-override' \
 TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
-TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_MP_PORT_BASE":"20000","LMCACHE_L1_SIZE_GB":"512","LMCACHE_MEMORY_LIMIT":"600Gi"}' \
-bash "$script_dir/render-config.sh" >/dev/null
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true","LMCACHE_LOG_LEVEL":"DEBUG","LMCACHE_L2_ENABLED":"false"}' \
+  bash "$script_dir/render-config.sh" >/dev/null
 
 python3 - "$work_dir/run-lmcache-override/rendered/values.rendered.yaml" <<'PY'
 import sys
@@ -302,10 +321,172 @@ with open(sys.argv[1], encoding="utf-8") as source:
 
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is True, sidecar
-assert sidecar["mpPortBase"] == 20000, sidecar
-assert sidecar["l1SizeGb"] == 512, sidecar
-assert sidecar["resources"]["limits"]["memory"] == "600Gi", sidecar
+assert sidecar["logLevel"] == "DEBUG", sidecar
+assert sidecar["l2Enabled"] is False, sidecar
+assert "enabled" not in sidecar["tracing"], sidecar
+assert sidecar["tracing"]["otlpEndpoint"] == "http://192.168.10.6:4320", sidecar
 PY
+
+# sidecar 启用时 tracing patch 注入在 lmcache args 锚点之前（旧式 chart，无原生 tracing）。
+rendered_chart_override="$work_dir/run-lmcache-override/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq -- '--enable-tracing \' "$rendered_chart_override"
+grep -Fq -- '--otlp-endpoint http://192.168.10.6:4320 \' "$rendered_chart_override"
+
+# 新式 chart：模板已原生携带 tracing 条件块（lmcacheSidecar.tracing.*），
+# 渲染后 patch 必须跳过且不重复注入。
+mkdir -p "$work_dir/chart-native/templates"
+printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart-native/Chart.yaml"
+cat >"$work_dir/chart-native/templates/raycluster-cluster.yaml" <<'EOF'
+groupName: {{ $teGroupValues.name }}
+groupName: {{ $groupName }}
+{{- $lmcache := $.Values.lmcacheSidecar | default dict }}
+{{- $lmcacheTracing := $lmcache.tracing | default dict }}
+{{- $lmcacheTracingEnabled := ne ($lmcacheTracing.otlpEndpoint | default "") "" }}
+{{- if $lmcache.enabled }}
+- name: lmcache-sidecar
+  args:
+    {{- if $isLmcacheL2 }}
+                  --l2-store-policy default --l2-adapter "$l2_adapter_json" \
+    {{- end }}
+    {{- if $lmcacheTracingEnabled }}
+                  --enable-tracing \
+                  --otlp-endpoint {{ $lmcacheTracing.otlpEndpoint }}
+    {{- end }}
+{{- end }}
+EOF
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-native-chart" \
+CHART_TEMPLATE_DIR="$work_dir/chart-native" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-native-chart' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/native-chart.out" 2>&1
+native_rendered="$work_dir/run-native-chart/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+[[ $(grep -Fc -- '--enable-tracing' "$native_rendered") -eq 1 ]] || { echo 'native chart 不应重复注入 tracing' >&2; exit 1; }
+grep -Fq 'LMCACHE_OTLP_PATCH_SKIPPED=chart template already carries tracing args' "$work_dir/native-chart.out"
+grep -Fq -- '--otlp-endpoint {{ $lmcacheTracing.otlpEndpoint }}' "$native_rendered"
+
+# endpoint 置空 = 关闭 tracing：旧式 chart 不注入 patch，原生模板条件块也不生效。
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-no-otlp" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-no-otlp' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+LMCACHE_OTLP_ENDPOINT='' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/no-otlp.out" 2>&1
+if grep -Fq -- '--enable-tracing' "$work_dir/run-lmcache-no-otlp/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
+  echo "endpoint 置空时不应注入 tracing patch" >&2
+  exit 1
+fi
+python3 - "$work_dir/run-lmcache-no-otlp/rendered/values.rendered.yaml" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    values = yaml.safe_load(source)
+
+assert values["lmcacheSidecar"]["tracing"]["otlpEndpoint"] in ("", None), values["lmcacheSidecar"]["tracing"]
+PY
+
+# LMCACHE_EXTRA_ARGS：注入成功（与 tracing patch 共存，同一 exec 命令内）。
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-extra-args" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-extra-args' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  LMCACHE_EXTRA_ARGS='--worker-reap-timeout-seconds 60 --worker-registration-grace-seconds 60' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/extra-args.out" 2>&1
+extra_rendered="$work_dir/run-lmcache-extra-args/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq -- '--worker-reap-timeout-seconds 60 --worker-registration-grace-seconds 60 \' "$extra_rendered"
+grep -Fq 'LMCACHE_EXTRA_ARGS_PATCHED=--worker-reap-timeout-seconds 60' "$work_dir/extra-args.out"
+# tracing patch 同的注入且都在 exec 内：extra 行后紧跟 L2 锚点
+line_no=$(grep -Fn -- '--worker-registration-grace-seconds 60 \' "$extra_rendered" | head -1 | cut -d: -f1)
+anchor_no=$(grep -Fn -- '--l2-store-policy' "$extra_rendered" | head -1 | cut -d: -f1)
+[[ -n "$line_no" && -n "$anchor_no" && $((anchor_no - line_no)) -le 3 ]] || { echo 'extra args 未紧邻 L2 锚点' >&2; exit 1; }
+
+# 危险字符 → 渲染失败
+danger='--x "$(boom)"'
+if ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-extra-danger" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-extra-danger' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  LMCACHE_EXTRA_ARGS="$danger" \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/extra-danger.out" 2>&1; then
+  echo '危险字符未被拒绝' >&2
+  exit 1
+fi
+grep -Fq 'unsafe characters' "$work_dir/extra-danger.out" || { echo '危险字符报错文案不对' >&2; exit 1; }
+
+# sidecar 未启用 → 跳过注入且渲染成功
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-extra-disabled" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-extra-disabled' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  LMCACHE_EXTRA_ARGS='--worker-reap-timeout-seconds 60' \
+  bash "$script_dir/render-config.sh" >"$work_dir/extra-disabled.out" 2>&1
+grep -Fq 'render-lmcache] extra-args skipped: lmcacheSidecar.enabled=false' "$work_dir/extra-disabled.out"
+if grep -Fq -- '--worker-reap-timeout-seconds' "$work_dir/run-lmcache-extra-disabled/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
+  echo 'sidecar 未启用时不应注入 extra args' >&2
+  exit 1
+fi
+
+# 回归：旧 chart 无 LMCache 锚点 + sidecar 未启用（非 LMCache arch）→ 渲染成功且不 patch。
+mkdir -p "$work_dir/chart-legacy/templates"
+printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart-legacy/Chart.yaml"
+cat >"$work_dir/chart-legacy/templates/raycluster-cluster.yaml" <<'EOF'
+groupName: {{ $teGroupValues.name }}
+groupName: {{ $groupName }}
+EOF
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-legacy-chart" \
+CHART_TEMPLATE_DIR="$work_dir/chart-legacy" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-legacy-chart' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"}]' \
+  bash "$script_dir/render-config.sh" >"$work_dir/legacy-chart.out" 2>&1
+grep -Fq 'render-lmcache] tracing patch skipped: lmcacheSidecar.enabled=false' "$work_dir/legacy-chart.out"
+if grep -Fq -- '--enable-tracing' "$work_dir/run-legacy-chart/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
+  echo "legacy chart must not receive the tracing patch without lmcache" >&2
+  exit 1
+fi
+
+# sidecar 显式启用但旧 chart 缺锄点：仍视为模板漂移，硬报错。
+if ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-legacy-chart-drift" \
+CHART_TEMPLATE_DIR="$work_dir/chart-legacy" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-legacy-chart-drift' \
+TARGET_HOSTS='[{"ip":"192.168.0.243"}]' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/legacy-drift.out" 2>&1; then
+  echo "missing anchor with lmcache enabled must fail" >&2
+  exit 1
+fi
+grep -Fq 'LMCache sidecar args anchor not found in chart template' "$work_dir/legacy-drift.out"
 
 if ARCH_NAME=test-arch \
 RUN_DIR="$work_dir/run-missing-map" \

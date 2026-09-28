@@ -1954,7 +1954,7 @@ test('服务端取消 EvalTokens 阶段会停止已经启动的 run', async () =
     controller.signal,
   )
   await Promise.race([polling, new Promise((_, reject) => setTimeout(() => reject(new Error('EvalTokens run poll did not start: ' + requests.map(item => item.url).join(', '))), 500))])
-  controller.abort()
+  controller.abort(Object.assign(new Error('pipeline run cancelled'), { name: 'AbortError', code: 'PIPELINE_RUN_CANCELLED' }))   // 与执行池 cancel() 的取消原因一致
   const result = await pending
 
   assert.equal(result.aborted, true)
@@ -1993,13 +1993,54 @@ test('服务端在 EvalTokens 启动响应返回前收到取消仍会停止随�
     controller.signal,
   )
   await startRequested
-  controller.abort()
+  controller.abort(Object.assign(new Error('pipeline run cancelled'), { name: 'AbortError', code: 'PIPELINE_RUN_CANCELLED' }))   // 与执行池 cancel() 的取消原因一致
   releaseStart(fetchResponse(200, { run_id: 'run-start-race', status: 'running' }))
   const result = await pending
 
   assert.equal(result.aborted, true)
   assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-start-race/stop')),
     '中止不得让刚创建但响应迟回的 EvalTokens run 遗留')
+})
+
+test('服务端并行组内兄弟阶段失败的级联中止不停止 EvalTokens run', async () => {
+  const f = loadRunRoute(stored)
+  const controller = new AbortController()
+  const requests = []
+  let runPollStarted
+  const polling = new Promise(resolve => { runPollStarted = resolve })
+  const fetchFn = async (url, options = {}) => {
+    const value = String(url)
+    requests.push({ url: value, options })
+    if (value.endsWith('/api/open/v1/tasks')) return fetchResponse(200, { tasks: [{ id: 'task-cascade', name: '级联测试' }] })
+    if (value.endsWith('/api/open/v1/tasks/task-cascade/run')) return fetchResponse(200, { run_id: 'run-cascade', status: 'running' })
+    if (value.includes('/api/open/v1/tasks/runs?task_id=task-cascade')) {
+      runPollStarted()
+      return await new Promise((resolve, reject) => {
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        if (options.signal?.aborted) abort()
+        else options.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
+    if (value.endsWith('/api/v1/tasks/runs/run-cascade/stop')) return fetchResponse(200, { status: 'stopped' })
+    throw new Error('unexpected URL ' + value)
+  }
+
+  const pending = f.ctx.executeServerEvaltokensStage(
+    { kind: 'evaltokens', evaltokens: { taskId: 'task-cascade' } },
+    {},
+    { evaltok: { url: 'http://evaltokens.internal', token: 'eval-secret', mode: 'local' } },
+    {},
+    { fetchFn, sleep: f.ctx.abortableServerSleep },
+    controller.signal,
+  )
+  await Promise.race([polling, new Promise((_, reject) => setTimeout(() => reject(new Error('EvalTokens run poll did not start')), 500))])
+  controller.abort()   // 兄弟阶段失败的级联中止：executeStage 裸 abort，reason 无 PIPELINE_RUN_CANCELLED 码
+  const result = await pending
+
+  assert.equal(result.aborted, true)
+  assert.ok(!requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-cascade/stop')),
+    '级联中止不得停止兄弟阶段已启动的 EvalTokens run')
+  assert.match(result.stderr, /未停止，仍在服务侧运行/)
 })
 
 test('服务端 EvalTokens 启动响应迟于阶段 deadline 时仍会停止随后返回的 run', async () => {

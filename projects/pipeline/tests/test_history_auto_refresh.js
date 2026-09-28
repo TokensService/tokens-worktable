@@ -79,7 +79,7 @@ test('refreshHistoryFromServer：自动刷新合并在途请求并保持页码�
     alert: () => assert.fail('成功刷新不应告警'),
   }, [
     'analysisHistoryKey', 'applyReplayProfileStages', 'preserveHistoryRuntimeCache', 'rebindHistoryRefreshSelection',
-    'applyHistoryRefreshPayload', 'refreshHistoryFromServer',
+    'historyPersistSig', 'historyMarkSynced', 'historyForPersist', 'applyHistoryRefreshPayload', 'refreshHistoryFromServer',
   ]);
 
   const first = ctx.refreshHistoryFromServer(false);

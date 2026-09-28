@@ -197,6 +197,7 @@ case "$all" in
   *"get pods "*"-o json")
     echo '{"items":[{"metadata":{"name":"prefill-1","labels":{"ray.io/group":"taskExecutorGroup4prefill1"}}},{"metadata":{"name":"prefill-2","labels":{"ray.io/group":"taskExecutorGroup4prefill2"}}},{"metadata":{"name":"decode-1","labels":{"ray.io/group":"taskExecutorGroup4decode1"}}}]}' ;;
   "label node "*) exit 0 ;;
+  *"delete raycluster "*) exit 0 ;;
   *" wait "*) exit 0 ;;
   *) exit 1 ;;
 esac

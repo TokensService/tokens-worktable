@@ -75,17 +75,16 @@ def normalize_repo(s, platform=None):
     return s
 
 
-# GitLab v4 兼容平台族：gitlab(gitlab.com) / gitcode(gitcode.com) / codehub(自建实例)
-GL_FAMILY = ("gitlab", "gitcode", "codehub")
+# GitLab v4 兼容平台族：gitlab(gitlab.com) / codehub(自建实例)
+# 注意：gitcode 不在此族 —— 其 GitLab v4 接口无法连接，走 Gitee 兼容 v5
+GL_FAMILY = ("gitlab", "codehub")
 
 
 def gl_resolve(platform, repo):
     """返回 (api_base, web_host, project_path)。
-    gitlab->gitlab.com、gitcode->gitcode.com 固定；codehub 为自建实例，repo 形如 host/group/project。"""
+    gitlab->gitlab.com 固定；codehub 为自建实例，repo 形如 host/group/project。"""
     if platform == "gitlab":
         host = "gitlab.com"
-    elif platform == "gitcode":
-        host = "gitcode.com"
     elif platform == "codehub":
         m = re.match(r"^([^/]+)/(.+)$", repo or "")
         if not m:
@@ -103,6 +102,8 @@ def build_clone_url(platform, repo):
         return "https://github.com/%s.git" % repo
     if platform == "gitee":
         return "https://gitee.com/%s.git" % repo
+    if platform == "gitcode":
+        return "https://gitcode.com/%s.git" % repo
     if platform in GL_FAMILY:
         _, host, project = gl_resolve(platform, repo)
         return "https://%s/%s.git" % (host, project)
@@ -161,6 +162,7 @@ def api_call(url, token, platform, method="POST", data=None, accept="application
     r.add_header("Accept", accept)
     if token:
         if platform in ("gitlab", "gitcode", "codehub"):
+            # GitLab v4（含 codehub）与 GitCode v5 均用 PRIVATE-TOKEN 鉴权
             r.add_header("PRIVATE-TOKEN", token)
         elif platform == "gitee":
             r.add_header("Authorization", "Bearer " + token)
@@ -212,6 +214,13 @@ def open_pr(platform, target_repo, token, branch, base_branch, title, body):
         d = api_call(url, token, "gitee", method="POST",
                      data={"title": title, "head": branch, "base": base_branch, "body": body_txt})
         return d.get("html_url"), d.get("number")
+    if platform == "gitcode":
+        # GitCode v5（Gitee 兼容）：创建 PR，官方要求 access_token 入 query
+        url = "https://api.gitcode.com/api/v5/repos/" + target_repo + "/pulls"
+        url = url + "?" + urllib.parse.urlencode({"access_token": token})
+        d = api_call(url, token, platform, method="POST",
+                     data={"title": title, "head": branch, "base": base_branch, "body": body_txt})
+        return d.get("html_url") or d.get("web_url"), d.get("number") or d.get("iid")
     raise RuntimeError("不支持的目标平台: " + str(platform))
 
 

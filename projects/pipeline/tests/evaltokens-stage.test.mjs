@@ -122,6 +122,9 @@ function loadEvaltokensRuntime(overrides = {}) {
     'waitArchiveWrites',
     'archiveEvaltokensReport',
     'archiveRun',
+    'cancelParallelStage',
+    'cancelParallelGroup',
+    'settleParallelStage',
     'runEvaltokensStep',
   ]
   vm.runInContext(names.map(extractFunction).join('\n'), context)
@@ -1326,4 +1329,128 @@ test('用户在启动响应返回前中止仍会在取得 run_id 后停止 EvalT
 
   assert.ok(requests.some(request => request.url.endsWith('/api/v1/tasks/runs/run-start-race/stop')),
     '启动响应迟回时也必须用返回的 run_id 停止实际任务')
+})
+
+test('并行组内兄弟阶段失败的级联中止不停止 EvalTokens run', async () => {
+  const requests = []
+  let runPollStarted
+  const polling = new Promise(resolve => { runPollStarted = resolve })
+  const stage = {
+    id: 'eval-cascade', name: '被级联任务', timeout: null,
+    evaltokens: { taskId: 'task-cascade', taskName: 'cascade-task', outVars: '', collectReport: false },
+  }
+  const siblingStage = {
+    id: 'eval-sibling', name: '失败兄弟', timeout: null,
+    evaltokens: { taskId: 'task-sibling', taskName: 'sibling-task', outVars: '' },
+  }
+  const stages = [stage, siblingStage]
+  const parent = makeRc({ stages, parallelGroup: null })
+  const child = makeRc({ stages, parallelParent: parent, parallelIndex: 0, token: parent.token })
+  const sibling = makeRc({ stages, parallelParent: parent, parallelIndex: 1, token: parent.token })
+  sibling.parallelSettled = false
+  sibling.parallelResolve = () => {}
+  child.parallelSettled = false
+  child.parallelResolve = () => {}
+  parent.parallelGroup = { children: [child, sibling], failed: false }
+  const context = loadEvaltokensRuntime({
+    substRunVars: value => value,
+    evaltokConfig: () => ({ url: 'http://evaltokens.local', token: '', mode: 'local' }),
+    fetch: async (url, options = {}) => {
+      requests.push({ url: String(url), options })
+      if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-cascade', name: 'cascade-task' }] })
+      if (url.endsWith('/api/open/v1/tasks/task-cascade/run')) return jsonResponse({ run_id: 'run-cascade', status: 'running' })
+      if (url.includes('/api/open/v1/tasks/runs?task_id=task-cascade')) {
+        runPollStarted()
+        return await new Promise((resolve, reject) => {
+          const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          if (options.signal?.aborted) abort()
+          else options.signal?.addEventListener('abort', abort, { once: true })
+        })
+      }
+      if (url.endsWith('/api/v1/tasks/runs/run-cascade/stop')) return jsonResponse({ status: 'stopped' })
+      throw new Error('unexpected URL ' + url)
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    archiveStageLog: () => {},
+    mergeStageVars: () => ({}),
+    parseStageJson: value => JSON.parse(value),
+    applyOutVars: () => {},
+    secToMinInput: value => String(value),
+    advance: () => {},
+    finish: () => {},
+  })
+
+  const pending = context.runEvaltokensStep(child, 0)
+  await polling
+  context.settleParallelStage(sibling, 'failed')   // 兄弟阶段失败 → cancelParallelGroup(parent, sibling, true) 级联中止本阶段
+  await pending
+
+  assert.equal(child.over, true)
+  assert.equal(child._cascadeAbort, true)
+  assert.equal(child.nodes['eval-cascade'].status, 'aborted')
+  assert.ok(!requests.some(request => request.url.includes('/stop')),
+    '级联中止不得向 EvalTokens 服务发送 stop（实际请求：' + requests.map(request => request.url).join(', ') + '）')
+  assert.match(stage._out.stdout, /未停止，仍在服务侧运行/)
+})
+
+test('并行组内用户主动中止（无级联标记）仍停止 EvalTokens run', async () => {
+  const requests = []
+  let runPollStarted
+  const polling = new Promise(resolve => { runPollStarted = resolve })
+  const stage = {
+    id: 'eval-user-abort', name: '用户中止任务', timeout: null,
+    evaltokens: { taskId: 'task-user-abort', taskName: 'user-abort-task', outVars: '', collectReport: false },
+  }
+  const siblingStage = {
+    id: 'eval-sibling-2', name: '兄弟', timeout: null,
+    evaltokens: { taskId: 'task-sibling-2', taskName: 'sibling-2', outVars: '' },
+  }
+  const stages = [stage, siblingStage]
+  const parent = makeRc({ stages, parallelGroup: null })
+  const child = makeRc({ stages, parallelParent: parent, parallelIndex: 0, token: parent.token })
+  const sibling = makeRc({ stages, parallelParent: parent, parallelIndex: 1, token: parent.token })
+  child.parallelSettled = false
+  child.parallelResolve = () => {}
+  sibling.parallelSettled = false
+  sibling.parallelResolve = () => {}
+  parent.parallelGroup = { children: [child, sibling], failed: false }
+  const context = loadEvaltokensRuntime({
+    substRunVars: value => value,
+    evaltokConfig: () => ({ url: 'http://evaltokens.local', token: '', mode: 'local' }),
+    fetch: async (url, options = {}) => {
+      requests.push({ url: String(url), options })
+      if (url.endsWith('/api/open/v1/tasks')) return jsonResponse({ tasks: [{ task_id: 'task-user-abort', name: 'user-abort-task' }] })
+      if (url.endsWith('/api/open/v1/tasks/task-user-abort/run')) return jsonResponse({ run_id: 'run-user-abort', status: 'running' })
+      if (url.includes('/api/open/v1/tasks/runs?task_id=task-user-abort')) {
+        runPollStarted()
+        return await new Promise((resolve, reject) => {
+          const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+          if (options.signal?.aborted) abort()
+          else options.signal?.addEventListener('abort', abort, { once: true })
+        })
+      }
+      if (url.endsWith('/api/v1/tasks/runs/run-user-abort/stop')) return jsonResponse({ status: 'stopped' })
+      throw new Error('unexpected URL ' + url)
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    archiveStageLog: () => {},
+    mergeStageVars: () => ({}),
+    parseStageJson: value => JSON.parse(value),
+    applyOutVars: () => {},
+    secToMinInput: value => String(value),
+    advance: () => {},
+    finish: () => {},
+  })
+
+  const pending = context.runEvaltokensStep(child, 0)
+  await polling
+  context.cancelParallelGroup(parent, null)   // 用户中止/重置路径：无 cascade 标记
+  await pending
+
+  assert.equal(child.over, true)
+  assert.equal(child._cascadeAbort, undefined)
+  const stop = requests.find(request => request.url.endsWith('/api/v1/tasks/runs/run-user-abort/stop'))
+  assert.ok(stop, '用户主动中止并行组仍须停止 EvalTokens 实际 run')
 })

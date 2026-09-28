@@ -78,6 +78,36 @@ XDS 流水线按以下顺序绑定脚本：
 
 缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
 
+## LMCache 脚本族（按生命周期）
+
+| 脚本 | 阶段 | 职责 |
+|------|------|------|
+| `lmcache-config.sh` | **step 主脚本**（pull_render_config 前） | 入参校验（fail-fast）+ 契约输出；step 存在即开启（`ENABLE_LMCACHE` 缺省 true） |
+| `lib/render-lmcache.sh` | 渲染期（render-config 内部依赖） | 占位符默认值（`defaults`）与渲染后 chart patch（`patch`：tracing 兜底 + `LMCACHE_EXTRA_ARGS` 实验注入，含 sidecar 启用守卫与幂等） |
+| `check-lmcache-readiness.sh` | 部署期 | GPU context 就绪轮询（部署尾动态启用，输出 `LMCACHE_HEALTH` 契约） |
+| `clear-lmcache-cache.sh` | 运行期 | 三层缓存热清理（见下节） |
+
+**流水线接法**：要开 LMCache，在 pull_render_config 前加一个 `lmcache-config` step，参数即该 step 的环境变量（`LMCACHE_OTLP_ENDPOINT` / `LMCACHE_L2_ENABLED` / `LMCACHE_LOG_LEVEL` / `LMCACHE_EXTRA_ARGS`，详见脚本头部）；契约输出经平台注入下游，渲染自动点亮 sidecar。不加该 step 则默认全关，pull_render_config 自身不再暴露任何 LMCache 参数（老流水线直配 `ENABLE_LMCACHE=true` 仍兼容）。
+
+实验参数示例（免改模板/免出镜像）：
+
+```bash
+LMCACHE_EXTRA_ARGS=--worker-reap-timeout-seconds 60 --worker-registration-grace-seconds 60
+```
+
+单测：`test/test_lmcache_config.sh`（step 契约与下游点亮）、`test/test_render_lmcache.sh`（defaults/patch）；集成：`test/test_render_target_labels.sh`。
+
+## LMCache 缓存热清理
+
+`clear-lmcache-cache.sh` 在不重启服务的前提下清空 XDS+LMCache 部署的三层缓存，供打流前后复用同一基线：L1（DRAM，sidecar 内 `POST /cache/clear`）、HBM prefix cache（XDS OM diagnose `reset_prefix_cache`）、L2（`fs_native` 磁盘文件，sidecar 容器内 `find -delete`，按 node:path 去重）。全部操作经 `kubectl exec` 完成，无需 SSH；sidecar 端口从 `/etc/lmcache-ports/ports.env` 动态读取，L2 路径从 `--l2-adapter` 参数解析，FE 地址从 `ray-svc` NodePort 自动发现。执行机仅需 `kubectl`、`curl`（清 HBM 时）与 `python3`（发现 L2 路径时）。
+
+```bash
+DRY_RUN=0 bash clear-lmcache-cache.sh          # 默认全清三层
+CLEAR_L2=0 DRY_RUN=0 bash clear-lmcache-cache.sh  # 只清 L1+HBM
+```
+
+`NAMESPACE` 留空时自动发现（全集群唯一含 `lmcache-sidecar` 容器的命名空间，多候选报错需显式指定）。清理 L2 前默认校验入口流量已停止（`IDLE_CHECK=1`，frontgroup 最近 `get request` 距今超过 `IDLE_SECONDS`，默认 60 秒，否则中止）。注意 `l2_usage_bytes` 指标是运行时记账不感知外部删除，脚本以 L2 目录文件数归零为完成依据。HBM reset 后默认轮询引擎日志确认每个引擎 success 才算清理成功（`HBM_VERIFY=1`，超时 `HBM_VERIFY_TIMEOUT_SECONDS` 默认 120 秒；设 0 则退回仅确认已调度）。`DRY_RUN=1`（默认）仅打印将执行的操作。单测：`test/test_clear_lmcache_cache.sh`。
+
 ## 归档与 AI 分析
 
 主控填了「归档路径」后，每次运行结束会把产物写到 `<归档路径>/<流水线名称>_<YYYYMMDDhhmmss>/`：
@@ -236,3 +266,84 @@ TP、PP、DP保留 arch 配置，不再将 Decode DP 强制改为 GPU 数。
 角色 JSON overrides 先合并，显式数量/GPU变量最后覆盖。
 每个角色当前支持一个 resources 条目，并检查 min <= default <= max。
 旧流水线若保存过这些参数的显式值，需要清空才能继承 arch。
+
+## EMS 实例巡检（ems-check.sh）
+
+`ems-check.sh` 是 EMS（mfv-kv 内存池存储）的统一只读巡检 **step 主脚本**（无参调用，
+类似 `lmcache-config.sh`）：在流水线中任意位置插入本 step，理论上无需配置任何
+参数——目标节点由平台注入的 `TARGET_IP`/`TARGET_IPS` 提供。**执行位置**：平台
+注入 `TARGET_HOSTS` 时自动推送自身到首个具备 kubectl 的目标节点上远程执行
+（同 `evict-ems-hugepages.sh` 的自推送模式；工作台服务端所在主机不需要
+kubectl，kubectl 视图是集群级的，任一节点结果一致；密码认证需执行机有
+sshpass）；未注入时在执行机本地运行（手工独立运行场景，需本机有 kubectl）。
+输出三个部分：
+
+1. **集群巡检**：按资源 ns 发现全部 EMS 实例，标注 label、helm release
+   （chart/app 版本）、镜像、pod 健康（组件分布与异常原因）、每节点大页
+   capacity/allocatable/已分配（按全部 pod 的 `hugepages-2Mi` requests 汇总）；
+   另列出空壳/遗留 ns、无 pod 的 helm release、被占用未部署的 label（只报告，
+   勿动）；
+2. **目标节点定位**：逐个检查 `TARGET_IP`/`TARGET_IPS` 的归属，命中实例则展开
+   该实例与本节点视角（角色/pod/大页；目标即本机时附 `/proc/meminfo` 与
+   `/dev/shm/ems`）；未注入 TARGET_* 时回退识别本机（手工独立运行场景）；
+3. **KEY=VALUE 契约**（注入下游 step）：`EMS_INSTANCE_COUNT`、`EMS_INSTANCES`、
+   `EMS_HEALTHY_COUNT`、`EMS_UNHEALTHY`；注入目标时附 `EMS_TARGET_TOTAL`/
+   `EMS_TARGET_MATCHED`，命中时附 `EMS_TARGET_INSTANCE/LABEL_KEY/NODES/`
+   `CHART_VERSION/POD_HEALTH`（首个命中目标）。
+
+```bash
+bash ems-check.sh                     # 手工运行（回退本机识别）
+TARGET_IP=192.168.0.215 bash ems-check.sh   # 指定目标节点（模拟平台注入）
+TARGET_HOSTS='[{"ip":"192.168.0.128","user":"root"}]' TARGET_IP=192.168.0.128 bash ems-check.sh
+                                      # 模拟平台完整注入：自推送到目标节点执行
+```
+
+**安装前门禁模式**（可选参数 `EMS_NAME` 激活，如 `ems8-8`）：在巡检输出后追加
+五连检——名字格式 / label 占用 / 同名 ns·release 残留（含版本比对，健康同名安装
+输出 `EMS_IDEMPOTENT=1` 幂等判定）/ **CPU·内存资源余量**（调度器 requests 口径：
+每节点 ≥41C/41Gi，且至少一节点再余 12C/20Gi 供 controller+zk；不关心节点上跑着
+什么业务，大页由 ems-hugepages step 另行保障）。任一不过即 exit 1 拦住下游
+ems-deploy；通过时输出 `EMS_GATE=passed` 及 `EMS_NAME/EMS_LABEL_KEY/EMS_NODES/
+EMS_IDEMPOTENT` 契约，供 ems-deploy 留空继承。可选参数 `EMS_RELEASE_NAMESPACES`
+（逗号分隔 ns）仅在门禁通过时原样透传下游（ems-deploy S1 据此删除授权 ns）。
+
+纯巡检模式（未填 `EMS_NAME`）无任何行为分支：异常实例只在报告与
+`EMS_UNHEALTHY` 契约键中体现，不影响退出码。实际巡检节点需要 kubectl（可访问
+集群）与 python3，helm 可选（缺失时版本信息降级为未知）；分发时执行机需要
+ssh/scp（解析 TARGET_HOSTS 需 python3，密码认证还需 sshpass）。退出码：0 正常；
+1 环境错误（门禁模式下含门禁不过）。单测：`test/test_ems_check.sh`。
+
+## EMS 大页配置（ems-hugepages.sh）
+
+`ems-hugepages.sh` 是 EMS 安装前置的大页准备 **step 主脚本**（零参数）：目标
+2000Gi/节点（内部常量，1000Gi 规格已废弃）。三段式：①解析目标节点（平台注入
+`TARGET_IP`/`TARGET_IPS`）；②逐节点配置大页——已达标跳过，未达标先做只读内存
+预检（`MemAvailable` < 剩余需求+200Gi 余量即秒级失败并输出 Top 进程/shm 诊断到
+stderr），再写入 `/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发
+direct compaction，840s 兜底）；③刷新 allocatable（按需重启 kubelet）+ 终验
+（大页总量与 allocatable 双达标）。执行位置同 ems-check（TARGET_HOSTS 自推送
+到首个有 kubectl 的目标节点）。契约输出 `EMS_HUGEPAGES_OK/RENEWED/
+KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检失败/终验不达标。
+单测：`test/test_ems_hugepages.sh`。
+
+## EMS 安装（ems-deploy.sh）
+
+`ems-deploy.sh` 是 EMS 部署执行 **step 主脚本**（参数 `EMS_NAME` 必填——显式
+填写或经前置 ems-check 门禁契约继承；`EMS_RELEASE_NAMESPACES` 可选，授权后
+S1 会删除这些 ns）。流程：S0 名字格式与节点数（≥2）校验 + 盲装防线（同名
+ns/release 存在且无 `EMS_IDEMPOTENT=1` 判定时拒绝）；S1 释放（删除授权 ns，
+默认跳过）；S2 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
+（release 名 = `EMS_NAME`，存放在首段 ns；**工作负载 ns 由 chart 自动创建为
+release 名**）；S3 验证 pod 全 Running&Ready + 每节点大页分配达标（最长 900s）。
+契约输出 `EMS_NAME/EMS_NAMESPACE/EMS_LABEL_KEY/EMS_NODES/EMS_CHART_VERSION/
+EMS_POD_HEALTH/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证失败。
+
+**chart 分发**：安装版本由与本脚本同目录的 `ems-chart/`（Chart.yaml 26.8.0-b6）
+整体决定；**该目录不入 git**（含厂商证书私钥与密码，见 .gitignore），随部署
+环境分发——平台机 scripts 目录、执行机需与本脚本同目录放置（自检缺失即报
+`未找到仓内 chart` 拒跑）。升级 chart = 替换该目录后重跑（同名 release 版本
+不一致由前置门禁拦截）。单测：`test/test_ems_deploy.sh`。
+
+**推荐编排**（三段，平台已验证）：`ems-check`（EMS_NAME=新实例名，门禁）→
+`ems-hugepages`（大页准备，幂等可单独重跑）→ `ems-deploy`（EMS_NAME/
+EMS_RELEASE_NAMESPACES 留空，自动继承 check 契约；TARGET_IPS 留空用平台注入）。
