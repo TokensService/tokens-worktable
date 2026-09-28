@@ -126,3 +126,14 @@ test("TPOT 口径：usage.completion_tokens 优先，缺失时按文本估算，
     "TPOT = (tEnd - tFirst) / (outTok - 1)"
   );
 });
+
+test("记录服务端口径 TTFT：读取中继 x-worktable-llm-ttfb 响应头写入 rec.serverTtft", () => {
+  const src = functionSource("testProvider");
+  assert.ok(src.includes("x-worktable-llm-ttfb"), "testProvider 应读取中继 ttfb 响应头");
+  assert.ok(src.includes("rec.serverTtft"), "testProvider 应把服务端 TTFT 记入记录");
+});
+
+test("记录表含服务端TTFT列，失败展开行 colSpan 同步", () => {
+  assert.ok(html.includes("服务端TTFT"), "表头应包含服务端TTFT列");
+  assert.ok(html.includes("td.colSpan=11"), "失败展开行 colSpan 应随列数更新为 11");
+});

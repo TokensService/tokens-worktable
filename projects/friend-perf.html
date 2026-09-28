@@ -172,7 +172,8 @@
           所有请求<b>统一经工作台服务端中转</b>（/api/worktable/llm），各家同一出口、无浏览器 CORS 与本机网络差异，横向可比；超过「单次超时」判失败。
           对比图取每家最近 3 个成功样本均值，分桶统计按「输入长度 × 设定缓存命中率」分组；定时模式按「测试间隔」分钟自动循环（依赖页面保持打开）。<br><br>
           <b>指标口径</b>（各图表标题与表头悬停 ⓘ 也可查看）：<br>
-          · <b>TTFT</b>（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时；<br>
+          · <b>TTFT</b>（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时，含浏览器→服务端的上行链路（大提示词经慢上行链路时会被上传耗时抬高）；<br>
+          · <b>服务端TTFT</b> = 中转服务端→厂商收到首 chunk 的耗时（中继响应头回传），不含浏览器→服务端上行，更接近厂商真实水平；<br>
           · <b>TPOT</b>（每 token 耗时）=（流结束时间 − 首 chunk 时间）÷（输出tokens − 1），输出 tokens 优先取 usage.completion_tokens，未回传按返回文本估算；<br>
           · <b>缓存命中（真实）</b>= 厂商 usage 回传的 cached_tokens（DeepSeek 风格为 prompt_cache_hit_tokens），命中率 = cached ÷ prompt_tokens，不回传的厂商显示 —；<br>
           · <b>输入/输出 tokens</b> 以 usage 回传为准，未回传时输入显示 ~配置目标值（估算）；<br>
@@ -219,7 +220,8 @@
         <table class="dshell-table" id="recTable">
           <thead><tr>
             <th>时间</th><th>提供商</th><th>模型</th>
-            <th title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms）">TTFT(ms) ⓘ</th>
+            <th title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms），含浏览器→服务端上行链路">TTFT(ms) ⓘ</th>
+            <th title="服务端TTFT = 中转服务端→厂商收到首 chunk 的耗时（ms），不含浏览器→服务端上行链路；由中继响应头 x-worktable-llm-ttfb 回传，早期记录无此字段显示 —">服务端TTFT ⓘ</th>
             <th title="TPOT = (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)（ms）">TPOT(ms) ⓘ</th>
             <th title="优先取接口 usage.prompt_tokens；未回传时显示 ~配置的目标输入长度（估算）">输入tokens ⓘ</th>
             <th title="优先取接口 usage.completion_tokens；未回传时按返回文本估算">输出tokens ⓘ</th>
@@ -576,6 +578,9 @@ function testProvider(p){
       stream_options:{include_usage:true}
     },ctrl.signal).then(function(resp){
       relayed=!!resp.__relay;
+      /* 服务端口径 TTFT：中继回传的「服务端→厂商首 chunk 耗时」，不含浏览器→服务端上行链路 */
+      var st=parseFloat(resp.headers.get('x-worktable-llm-ttfb'));
+      if(isFinite(st))rec.serverTtft=Math.round(st);
       if(!resp.ok){return resp.text().then(function(t){throw new Error('HTTP '+resp.status+' '+t.slice(0,160));});}
       var reader=resp.body.getReader(),dec=new TextDecoder(),buf='';
       function feed(lines){
@@ -994,6 +999,7 @@ function renderRecords(){
       +'<td><span class="fp-dot" style="background:'+colorOf(r.prov)+';margin-right:5px"></span>'+escapeHtml(r.prov)+'</td>'
       +'<td>'+escapeHtml(r.model||'')+(r.relay?'':' <span class="dshell-muted" title="该次测试为浏览器直连（早期版本）">·直连</span>')+'</td>'
       +'<td class="fp-mono">'+(r.ttft!=null?r.ttft:'—')+'</td>'
+      +'<td class="fp-mono">'+(r.serverTtft!=null?r.serverTtft:'—')+'</td>'
       +'<td class="fp-mono">'+(r.tpot!=null?r.tpot:'—')+'</td>'
       +'<td class="fp-mono">'+(r.promptTokens!=null?r.promptTokens:(r.inputTarget!=null?'<span title="厂商未回传 usage，此为配置的目标输入长度（估算）">~'+r.inputTarget+'</span>':'—'))+'</td>'
       +'<td class="fp-mono">'+(r.outTokens||'—')+'</td>'
@@ -1007,7 +1013,7 @@ function renderRecords(){
       tr.onclick=function(){
         if(open){if(dtr)dtr.remove();dtr=null;open=false;return;}
         dtr=document.createElement('tr');
-        var td=document.createElement('td');td.colSpan=10;
+        var td=document.createElement('td');td.colSpan=11;
         td.innerHTML='<div style="padding:6px 4px;font-size:12px;line-height:1.7">'
           +'<span class="dshell-badge fp-badge-err">失败原因</span> '
           +'<span class="fp-mono" style="user-select:text;word-break:break-all">'+escapeHtml(r.err||'（无详细信息）')+'</span></div>';

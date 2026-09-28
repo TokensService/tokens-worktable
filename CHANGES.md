@@ -1,18 +1,25 @@
 # 本目录 tokens-worktable 的本地改动
 
-- 新增「友商 Tokens API 性能对比」项目页（`projects/friend-perf.html`，配套服务端中转路由
-  `POST /api/worktable/llm` 此前已入库）：对智谱 / 百炼 / 混元 / 硅基流动 / 七牛云等 OpenAI 兼容
+- 新增「友商 Tokens API 性能对比」项目页（`projects/friend-perf.html`）及其服务端中转路由
+  `POST /api/worktable/llm`（`src/index.ts`）：对智谱 / 百炼 / 混元 / 硅基流动 / 七牛云等 OpenAI 兼容
   chat/completions 接口做手动 / 定时流式压测，横向对比 TTFT（首 token 延迟）与 TPOT（每 token 耗时），
   含概览柱状图、趋势折线、分桶统计（提供商 × 输入长度 × 设定缓存命中率，nearest-rank 分位数）、
   综合排名与记录页（失败原因可展开），结果经 `/api/worktable/write` 落盘项目文件夹
   `friend-perf-results.json`、localStorage 仅作缓存兜底；提示词按「缓存命中率」拼装跨轮固定前缀 +
   每轮随机后缀以触发厂商 prompt 缓存，真实缓存命中取 usage 回传的 cached_tokens /
-  prompt_cache_hit_tokens。计时口径修正两处：**提示词构造移出计时窗口**（`buildPrompt` 早于 `t0`，
-  本地构词开销不再计入 TTFT/总耗时；`genText` 由每轮 `join` 重算全长的 O(n²) 改为增量计长 O(n)，
-  大输入长度下不再秒级卡顿并污染 TTFT）；**流收尾解析残余 buffer**（`done` 时冲刷 TextDecoder 并解析
-  未被换行终止的最后一段，厂商把 usage 块放在流末尾且无尾换行时不再整块丢失导致 outTokens 退回粗估、
-  cached_tokens 丢失、TPOT 失真）。SSE 行解析抽为纯函数 `parseSseLines`（content /
-  reasoning_content 兼容、[DONE] 与坏行容错），配套测试 `projects/friend-perf.test.cjs` 8 例。
+  prompt_cache_hit_tokens。中转路由安全边界：仅 https 目标、复用 `isLocalTarget` 反向拒绝回环/内网
+  （不成为 SSRF 出口）、仅放行 `/models` 与 `/chat/completions`，密钥由调用方自带、服务端不落地，
+  响应带背压逐 chunk 透传。计时口径修正两处：**提示词构造移出计时窗口**（`buildPrompt` 早于 `t0`，
+  本地构词开销不再计入 TTFT/总耗时；`genText` 由每轮 `join` 重算全长的 O(n²) 改为增量计长 O(n)——
+  实测旧代码在 110k tokens 输入下浏览器侧开销首轮 ~27s、之后每轮 ~2s，修复后降至 ~15ms）；
+  **流收尾解析残余 buffer**（`done` 时冲刷 TextDecoder 并解析未被换行终止的最后一段，厂商把 usage
+  块放在流末尾且无尾换行时不再整块丢失导致 outTokens 退回粗估、cached_tokens 丢失、TPOT 失真）。
+  新增**双口径 TTFT**：中继等到上游首个 body chunk 再回写响应头，经 `x-worktable-llm-ttfb` 回传
+  「服务端→厂商首 chunk 耗时」，页面记录表新增「服务端TTFT」列（`rec.serverTtft`）——浏览器感知
+  TTFT 含浏览器→服务端上行链路（大提示词经慢上行链路时会被上传耗时 1:1 抬高，实测 514KB 请求体在
+  64KB/s 上行下 TTFT 被抬高 ~8s），服务端口径不含该段、更接近厂商真实水平。SSE 行解析抽为纯函数
+  `parseSseLines`（content / reasoning_content 兼容、[DONE] 与坏行容错）；测试：
+  `projects/friend-perf.test.cjs` 10 例 + `tests/llm-relay.test.mjs` 3 例。
 
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`
