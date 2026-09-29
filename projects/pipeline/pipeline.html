@@ -3583,7 +3583,8 @@ function metaFor(id){
 }
 
 /* ---------- 详情面板 ---------- */
-/* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（运行 tick 会以 120~300ms 高频调用本函数） */
+/* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（流式回显节流与阶段状态变迁会高频调用本函数；
+   运行进度 tick 不再走这里，改由共享 tick 直改进度条，见 stageTickPaint） */
 let _detailKey='';
 const DETAIL_LOG_LIMIT={maxLines:1000,maxChars:256*1024};
 /* 日志区增量渲染缓存：上一次同步进 #detailLog 的行数组。日志增长时只做尾部追加 /
@@ -4866,6 +4867,79 @@ function renderQueue(){
 function remoteRunsOf(c){ if(!c) return []; if(Array.isArray(c.runs)&&c.runs.length) return c.runs; return c.running?[c.running]:[]; }
 
 /* ---------- 运行引擎 ---------- */
+/* ---------- 阶段进度共享 tick ----------
+   合并前：每个执行中阶段各自 setInterval（脚本/预设 300ms、HTTP 500ms、EvalTokens 1000ms、本地模拟 120ms），
+   每个 tick 都走 rcRender → applyStatusClasses+renderDetail 全量重绘；并行阶段定时器成倍，页面切后台仍空转。
+   合并后：全页面仅一个 500ms interval 统一推进所有运行的 running 阶段。执行器把进度任务注册进
+   globalThis.__pipelineStageTick（走全局对象载体的原因：执行器函数体会被测试沙盒按名单独抽取进 vm 运行，
+   体内不能引用本块新增的顶层函数，注册/起表逻辑只能在执行器内联直写；驱动与落 DOM 只被 tick 回调
+   延迟引用，抽取沙盒里 interval 回调不触发即不求值）。rc.timer 改存进度任务键作在途标记，
+   既有 clearInterval(rc.timer)/rc.timer=null 收尾路径保持原样，过期任务由驱动器自查摘除、全部摘除即停表。
+   tick 内只直改进度条宽度/节点进度文本/详情进度条（stageTickPaint），不再每 tick 全量重绘详情/日志——
+   仅本地模拟阶段在跨 25% 日志档位或子阶段翻牌时补一次 rcRender（健康回显与子阶段徽标随进度变化）。
+   页面隐藏（visibilitychange）时停表，恢复可见时立即补一次 tick 再继续走表。 */
+function stageTickStore(){ const g=globalThis; return g.__pipelineStageTick||(g.__pipelineStageTick={tasks:{},seq:0,timer:null}); }
+function stageTickEnsure(){
+  const T=stageTickStore();
+  /* 页面隐藏时不起表（待恢复可见时补 tick 再走表）；回调 typeof 守卫：测试沙盒未抽取 stageTickRun 时自毁防空转 */
+  if(!T.timer&&Object.keys(T.tasks).length&&!(typeof document!=='undefined'&&document.hidden))
+    T.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(T.timer); T.timer=null; T.tasks={}; } },500);
+}
+function stageTickRun(){
+  const T=stageTickStore(), now=Date.now();
+  Object.keys(T.tasks).forEach(k=>{
+    const t=T.tasks[k], rc=t.rc, n=rc&&rc.nodes?rc.nodes[t.stageId]:null;
+    /* 终态/中止/重置的任务自查摘除（执行器收尾已清 rc.timer 在途标记，这里摘掉注册项防泄漏） */
+    if(!rc||rc.over||!n||n.status!=='running'){ delete T.tasks[k]; return; }
+    if(t.sim){
+      /* 本地模拟阶段：按真实经过时间推进（语义同原 120ms 定时器：有子阶段按 1.2× 耗时拉长时间轴） */
+      let p=(now-t.sim.start)/(t.sim.subs&&t.sim.subs.length?t.sim.total*1.2:t.sim.total)*100;
+      if(p>=100) p=100;
+      n.progress=p; n.dur=(now-t.sim.start)/1000;
+      let flipped=false;
+      if(t.sim.subs&&t.sim.subs.length) t.sim.subs.forEach((x,idx)=>{ if(p> 50*(idx+1)&&n.sub[x]!=='success'){ n.sub[x]='success'; flipped=true; } });
+      if(p>=100){
+        delete T.tasks[k];
+        if(rc.timer===k) rc.timer=null;   // 收尾清在途标记（对齐原定时器路径：阶段结束 timer 置空）
+        n.status='success'; n.progress=100;
+        archiveStageLog(t.sim.stage, stageSeq(rc.stages,t.sim.index), rc);   // 本地模拟阶段的回显同样归档
+        rcRender(rc);
+        advance(rc,t.sim.index+1);
+        return;
+      }
+      /* 跨 25% 日志档位或子阶段翻牌时补一次全量渲染（详情区健康回显/子阶段徽标随进度变化）；其余 tick 只轻量直改 */
+      const bucket=Math.floor(p/25);
+      if(flipped||bucket!==t.sim.bucket){ t.sim.bucket=bucket; rcRender(rc); return; }
+      stageTickPaint(t,n);
+      return;
+    }
+    /* 按真实经过时间等比推进，节奏与各执行器原定时器一致（脚本/预设 ≈+2/300ms、HTTP +1/500ms、EvalTokens +1/1000ms） */
+    n.progress=Math.min(95,(n.progress||0)+(now-t.last)*t.rate); n.dur=(now-t.t0)/1000; t.last=now;
+    stageTickPaint(t,n);
+  });
+  if(!Object.keys(T.tasks).length&&T.timer){ clearInterval(T.timer); T.timer=null; }   // 全部摘除即停表
+}
+/* tick 内轻量直改 DOM（不触发详情/日志全量渲染）：仅任务所属运行正被编排区展示时落 DOM；
+   更新编排节点进度条宽度与进度文本（等价 applyStatusClasses 的运行态子集），选中该阶段时同步详情进度条宽度 */
+function stageTickPaint(t, n){
+  const root=rootRunContext(t.rc);
+  if(viewRc!==root) return;
+  const el=flowNodeElementById(t.stageId);
+  if(el){
+    const bar=el.querySelector('.pipeline-bar > i'); if(bar) bar.style.width=(n.progress||0)+'%';
+    const meta=el.querySelector('.pipeline-nodeMeta'); if(meta) meta.textContent=Math.round(n.progress||0)+'%';
+  }
+  if(root.selId===t.stageId){ const b=$('detailBar'); if(b) b.style.width=(n.progress||0)+'%'; }
+}
+/* 页面隐藏时停表（tick 全停不空转），恢复可见时立即补一次 tick 再走表；hidden 期间脚本/HTTP/EvalTokens
+   阶段的真实执行不受影响（推进靠各自 await，不靠 tick），仅进度展示暂停，模拟阶段收尾顺延到恢复可见 */
+if(typeof document!=='undefined'&&typeof document.addEventListener==='function'){
+  document.addEventListener('visibilitychange',function(){
+    const T=stageTickStore();
+    if(document.hidden){ if(T.timer){ clearInterval(T.timer); T.timer=null; } }   // 页面隐藏：停表
+    else { stageTickRun(); stageTickEnsure(); }   // 恢复可见：立即补一次刷新再继续走表
+  });
+}
 /* 每个运行独立编排（rc 内串行推进各阶段；不同机器的运行并行）：有脚本的步骤执行脚本，其余本地模拟 */
 function createParallelStageContext(parent,index,varsSnapshot){
   const child=Object.assign({},parent,{timer:null,scriptAbort:null,vars:Object.assign({},varsSnapshot||parent.vars||{}),parallelParent:parent,parallelIndex:index,parallelGroup:null,parallelSettled:false,parallelStatus:null,parallelResolve:null,parallelPromise:null});
@@ -5604,7 +5678,13 @@ async function runUrlStep(rc, i){
   });
   if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(rc.timer) clearInterval(rc.timer);
-  rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },500);
+  /* 进度推进并入全局共享 tick（stageTickRun，全页面唯一 500ms interval，不再每阶段各起定时器）；
+     rc.timer 改存进度任务键作在途标记（既有 clearInterval/rc.timer=null 收尾路径语义不变） */
+  const _tick=globalThis.__pipelineStageTick||(globalThis.__pipelineStageTick={tasks:{},seq:0,timer:null});
+  Object.keys(_tick.tasks).forEach(function(_k){ const _t=_tick.tasks[_k]; if(_t.rc===rc&&_t.stageId===s.id) delete _tick.tasks[_k]; });   // 同运行同阶段重注册去重（中止/重置后立即重试等）
+  rc.timer='st'+(++_tick.seq)+'-'+s.id;
+  _tick.tasks[rc.timer]={rc:rc,stageId:s.id,t0:t0,last:t0,rate:1/500};   // 节奏同原 500ms 定时器（每 tick +1）
+  if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
   const isUrl=jkIsUrl(raw);
   const logSink=createClientStageLogSink(s,rc,stageSeq(rc.stages,i),s.name);
   const log=createLiveLog('$ '+(isUrl?'GET':'POST')+' '+raw+(isUrl?'':'（旧格式 fullName，建议改为完整 URL，参数经 {GIT_BRANCH} 等占位符传递）'),logSink);
@@ -6015,7 +6095,13 @@ async function runEvaltokensStep(rc, i){
   };
   if(deadline) deadlineTimer=setTimeout(function(){ timedOut=true; if(!ctrl.signal.aborted) ctrl.abort(); },Math.max(0,deadline-Date.now()));
   if(rc.timer) clearInterval(rc.timer);
-  rc.timer=setInterval(function(){ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+1); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },1000);
+  /* 进度推进并入全局共享 tick（stageTickRun，全页面唯一 500ms interval，不再每阶段各起定时器）；
+     rc.timer 改存进度任务键作在途标记（既有 clearInterval/rc.timer=null 收尾路径语义不变） */
+  const _tick=globalThis.__pipelineStageTick||(globalThis.__pipelineStageTick={tasks:{},seq:0,timer:null});
+  Object.keys(_tick.tasks).forEach(function(_k){ const _t=_tick.tasks[_k]; if(_t.rc===rc&&_t.stageId===s.id) delete _tick.tasks[_k]; });   // 同运行同阶段重注册去重（中止/重置后立即重试等）
+  rc.timer='st'+(++_tick.seq)+'-'+s.id;
+  _tick.tasks[rc.timer]={rc:rc,stageId:s.id,t0:t0,last:t0,rate:1/1000};   // 节奏同原 1000ms 定时器（每 tick +1）
+  if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
   const logSink=createClientStageLogSink(s,rc,stageSeq(rc.stages,i),s.name);
   const log=createLiveLog('$ EvalTokens run '+(taskId||taskName||''),logSink), outputProbe=createOutputProbe(outSpec);
   /* abortRun 可能在任一轮 await 期间收尾；服务端 sink 保存全文，阶段仅挂有界尾窗供失败兜底。 */
@@ -6163,9 +6249,15 @@ async function runScriptStep(rc, i){
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
   if(rc.timer) clearInterval(rc.timer);
-  rc.timer=setInterval(()=>{ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },300);
+  /* 进度推进并入全局共享 tick（stageTickRun，全页面唯一 500ms interval，不再每阶段各起定时器）；
+     rc.timer 改存进度任务键作在途标记（既有 clearInterval/rc.timer=null 收尾路径语义不变） */
+  const _tick=globalThis.__pipelineStageTick||(globalThis.__pipelineStageTick={tasks:{},seq:0,timer:null});
+  Object.keys(_tick.tasks).forEach(function(_k){ const _t=_tick.tasks[_k]; if(_t.rc===rc&&_t.stageId===s.id) delete _tick.tasks[_k]; });   // 同运行同阶段重注册去重（中止/重置后立即重试等）
+  rc.timer='st'+(++_tick.seq)+'-'+s.id;
+  _tick.tasks[rc.timer]={rc:rc,stageId:s.id,t0:t0,last:t0,rate:2/300};   // 节奏同原 300ms 定时器（每 tick +2）
+  if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
   /* 流式回显：执行中把 stdout/stderr 写入本阶段实时快照（s._out，code:null）并刷新「阶段详情」。
-     快速输出按 ~250ms 节流重建；选中的正是本阶段时立即刷新，否则由运行 tick 的 renderDetail 收尾。
+     快速输出按 ~250ms 节流重建；选中的正是本阶段时立即刷新（进度条/耗时文本另由共享 tick 轻量直改，不经全量渲染）。
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
@@ -6220,19 +6312,13 @@ function runStage(rc, i){
     advance(rc,i+1);
     return;
   }
-  rc.timer=setInterval(()=>{
-    let p=(Date.now()-start)/(s.sub&&s.sub.length?total*1.2:total)*100;
-    if(p>=100) p=100;
-    rc.nodes[s.id].progress=p; rc.nodes[s.id].dur=(Date.now()-start)/1000;
-    if(s.sub && s.sub.length){ s.sub.forEach((x,idx)=>{ if(p> 50*(idx+1)) rc.nodes[s.id].sub[x]='success'; }); }
-    rcRender(rc);
-    if(p>=100){ clearInterval(rc.timer); rc.timer=null;
-      rc.nodes[s.id].status='success'; rc.nodes[s.id].progress=100;
-      archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本地模拟阶段的回显同样归档
-      rcRender(rc);
-      advance(rc,i+1);
-    }
-  },120);
+  /* 本地模拟阶段的按耗时推进并入全局共享 tick：stageTickRun 按真实经过时间推进进度/子阶段翻牌/到点收尾推进，
+     语义同原 120ms 定时器，不再单独起 interval；rc.timer 存进度任务键作在途标记 */
+  const _tick=globalThis.__pipelineStageTick||(globalThis.__pipelineStageTick={tasks:{},seq:0,timer:null});
+  Object.keys(_tick.tasks).forEach(function(_k){ const _t=_tick.tasks[_k]; if(_t.rc===rc&&_t.stageId===s.id) delete _tick.tasks[_k]; });   // 同运行同阶段重注册去重（中止/重置后立即重试等）
+  rc.timer='st'+(++_tick.seq)+'-'+s.id;
+  _tick.tasks[rc.timer]={rc:rc,stageId:s.id,sim:{start:start,total:total,subs:s.sub,index:i,stage:s,bucket:-1}};
+  if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
 }
 /* 「不执行」阶段：直接标记跳过（记入历史与归档，日志为跳过说明），推进到下一阶段 */
 function skipStage(rc, i){
@@ -6333,7 +6419,13 @@ async function runPresetStep(rc, i){
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
   if(rc.timer) clearInterval(rc.timer);
-  rc.timer=setInterval(()=>{ const n=rc.nodes[s.id]; if(n&&n.status==='running'){ n.progress=Math.min(95,(n.progress||0)+2); n.dur=(Date.now()-t0)/1000; rcRender(rc); } },300);
+  /* 进度推进并入全局共享 tick（stageTickRun，全页面唯一 500ms interval，不再每阶段各起定时器）；
+     rc.timer 改存进度任务键作在途标记（既有 clearInterval/rc.timer=null 收尾路径语义不变） */
+  const _tick=globalThis.__pipelineStageTick||(globalThis.__pipelineStageTick={tasks:{},seq:0,timer:null});
+  Object.keys(_tick.tasks).forEach(function(_k){ const _t=_tick.tasks[_k]; if(_t.rc===rc&&_t.stageId===s.id) delete _tick.tasks[_k]; });   // 同运行同阶段重注册去重（中止/重置后立即重试等）
+  rc.timer='st'+(++_tick.seq)+'-'+s.id;
+  _tick.tasks[rc.timer]={rc:rc,stageId:s.id,t0:t0,last:t0,rate:2/300};   // 节奏同原 300ms 定时器（每 tick +2）
+  if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
   /* 流式回显与 runScriptStep 同一套（实时快照 s._out + AbortController 断开 + 服务端日志接管确认） */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
   const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,0,s.name) : null;   // 预设任务固定 00 号任务日志（文件名含任务名，互不冲突）
