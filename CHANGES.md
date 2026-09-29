@@ -17,9 +17,16 @@
   新增**双口径 TTFT**：中继等到上游首个 body chunk 再回写响应头，经 `x-worktable-llm-ttfb` 回传
   「服务端→厂商首 chunk 耗时」，页面记录表新增「服务端TTFT」列（`rec.serverTtft`）——浏览器感知
   TTFT 含浏览器→服务端上行链路（大提示词经慢上行链路时会被上传耗时 1:1 抬高，实测 514KB 请求体在
-  64KB/s 上行下 TTFT 被抬高 ~8s），服务端口径不含该段、更接近厂商真实水平。SSE 行解析抽为纯函数
-  `parseSseLines`（content / reasoning_content 兼容、[DONE] 与坏行容错）；测试：
-  `projects/friend-perf.test.cjs` 10 例 + `tests/llm-relay.test.mjs` 3 例。
+  64KB/s 上行下 TTFT 被抬高 ~8s），服务端口径不含该段、更接近厂商真实水平。**提示词构造整体移至
+  服务端**：页面只上传 `promptSpec={inputLen, cacheHit, outputLen}` 参数（几百字节），中继经
+  `buildBenchPrompt`（与页面旧版同算法，固定前缀为纯确定性函数，跨轮/跨重启逐字节一致，已验证与
+  页面旧实现产出完全相同，厂商侧缓存连续性不受影响；随机后缀每轮换新保持命中率语义）构造 messages
+  并覆盖 payload，浏览器→服务端不再有大 body 上传，两个 TTFT 口径在正常链路下应趋于一致；
+  页面侧 `buildPrompt`/`genText`/`getPrefix` 全数移除，`estTokens` 仅留作 TPOT 兜底估算。
+  SSE 行解析抽为纯函数 `parseSseLines`（content / reasoning_content 兼容、[DONE] 与坏行容错）；
+  测试：`projects/friend-perf.test.cjs` 9 例 + `tests/llm-relay.test.mjs` 7 例（ttfb 头与字节序、
+  无 body、安全边界、构造器前缀确定性/后缀随机/非法 spec、promptSpec 覆盖 messages 且前缀跨轮一致、
+  无 promptSpec 时 messages 原样透传）。
 
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`

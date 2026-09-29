@@ -168,12 +168,12 @@
         <div class="dshell-divider"></div>
         <div class="fp-note">
           <b>测试方法</b>（每轮）：对勾选的提供商<b>逐个串行</b>测试，每家发送一条流式 chat/completions 请求（stream=true，max_tokens=输出长度）——
-          提示词 ≈ 配置的「输入长度」，其中「缓存命中率」% 为跨轮不变的固定前缀（触发厂商 prompt 缓存）、其余部分每轮随机；
+          提示词 ≈ 配置的「输入长度」，由<b>服务端按参数构造</b>（浏览器只上传几百字节的参数，不再上传大段提示词）：其中「缓存命中率」% 为跨轮不变的固定前缀（触发厂商 prompt 缓存）、其余部分每轮随机；
           所有请求<b>统一经工作台服务端中转</b>（/api/worktable/llm），各家同一出口、无浏览器 CORS 与本机网络差异，横向可比；超过「单次超时」判失败。
           对比图取每家最近 3 个成功样本均值，分桶统计按「输入长度 × 设定缓存命中率」分组；定时模式按「测试间隔」分钟自动循环（依赖页面保持打开）。<br><br>
           <b>指标口径</b>（各图表标题与表头悬停 ⓘ 也可查看）：<br>
-          · <b>TTFT</b>（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时，含浏览器→服务端的上行链路（大提示词经慢上行链路时会被上传耗时抬高）；<br>
-          · <b>服务端TTFT</b> = 中转服务端→厂商收到首 chunk 的耗时（中继响应头回传），不含浏览器→服务端上行，更接近厂商真实水平；<br>
+          · <b>TTFT</b>（首 token 延迟）= 发出请求 → 收到首个流式内容 chunk 的耗时；提示词由服务端构造后，该值只剩小请求的链路开销；<br>
+          · <b>服务端TTFT</b> = 中转服务端→厂商收到首 chunk 的耗时（中继响应头回传），不含浏览器→服务端链路，最接近厂商真实水平；正常情况下两列应很接近，TTFT 明显偏大说明浏览器→服务端链路慢；<br>
           · <b>TPOT</b>（每 token 耗时）=（流结束时间 − 首 chunk 时间）÷（输出tokens − 1），输出 tokens 优先取 usage.completion_tokens，未回传按返回文本估算；<br>
           · <b>缓存命中（真实）</b>= 厂商 usage 回传的 cached_tokens（DeepSeek 风格为 prompt_cache_hit_tokens），命中率 = cached ÷ prompt_tokens，不回传的厂商显示 —；<br>
           · <b>输入/输出 tokens</b> 以 usage 回传为准，未回传时输入显示 ~配置目标值（估算）；<br>
@@ -220,8 +220,8 @@
         <table class="dshell-table" id="recTable">
           <thead><tr>
             <th>时间</th><th>提供商</th><th>模型</th>
-            <th title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms），含浏览器→服务端上行链路">TTFT(ms) ⓘ</th>
-            <th title="服务端TTFT = 中转服务端→厂商收到首 chunk 的耗时（ms），不含浏览器→服务端上行链路；由中继响应头 x-worktable-llm-ttfb 回传，早期记录无此字段显示 —">服务端TTFT ⓘ</th>
+            <th title="TTFT = 发出请求 → 收到首个流式内容 chunk 的耗时（ms）；提示词由服务端构造，不再含大段上传">TTFT(ms) ⓘ</th>
+            <th title="服务端TTFT = 中转服务端→厂商收到首 chunk 的耗时（ms），不含浏览器→服务端链路；由中继响应头 x-worktable-llm-ttfb 回传，早期记录无此字段显示 —">服务端TTFT ⓘ</th>
             <th title="TPOT = (流结束时间 − 首 chunk 时间) ÷ (输出tokens − 1)（ms）">TPOT(ms) ⓘ</th>
             <th title="优先取接口 usage.prompt_tokens；未回传时显示 ~配置的目标输入长度（估算）">输入tokens ⓘ</th>
             <th title="优先取接口 usage.completion_tokens；未回传时按返回文本估算">输出tokens ⓘ</th>
@@ -502,42 +502,16 @@ function download(name,text){
   setTimeout(function(){URL.revokeObjectURL(a.href);},3000);
 }
 
-/* ================= 提示词构造（含缓存命中模拟） ================= */
-var WORDS=('the quick brown fox jumps over lazy dog time token latency stream model infer cache hit rate benchmark tokens api performance test '
-  +'我们 正在 对 各家 大模型 服务 进行 首令牌 延迟 与 吐字 速度 的 基准 测试 数据 仅 用于 横向 对比 分析 请 忽略 内容 本身 ').split(' ');
-function estTokens(text){return Math.ceil(text.length/3.2);} /* 中英混合粗略估算 */
-function genText(targetTokens,rand){
-  /* 增量计长（O(n)）：每加一个词只累加其字符数 + 1 个空格，按 estTokens 同一口径（chars/3.2）换算；
-     旧实现每轮 out.join(' ') 重算全长是 O(n²)，大输入长度下会卡秒级并污染 TTFT */
-  var out=[],chars=0;
-  while(Math.ceil(chars/3.2)<targetTokens){
-    var w=rand?WORDS[Math.floor(Math.random()*WORDS.length)]:WORDS[out.length%WORDS.length];
-    out.push(w);chars+=(out.length>1?1:0)+w.length; /* 词间空格，chars 始终等于 join 后的真实长度 */
-  }
-  return out.join(' ');
-}
-/* 固定前缀跨轮复用（触发厂商 prompt 缓存），按配置指纹缓存 */
-function prefixKey(){return 'friendPerf.prefix.'+cfg.inputLen+'.'+cfg.cacheHit;}
-function getPrefix(){
-  var want=Math.round(cfg.inputLen*cfg.cacheHit/100);
-  if(want<8)return '';
-  try{var s=localStorage.getItem(prefixKey());if(s)return s;}catch(e){}
-  var s=genText(want,false);
-  try{localStorage.setItem(prefixKey(),s);}catch(e){}
-  return s;
-}
-function buildPrompt(){
-  var prefix=getPrefix();
-  var fresh=Math.max(8,cfg.inputLen-Math.round(cfg.inputLen*cfg.cacheHit/100));
-  var suffix=genText(fresh,true)+'\n\n（本轮随机标记：'+Math.random().toString(36).slice(2,10)+'）请用约 '+cfg.outputLen+' 个 token 续写一段说明文字。';
-  return prefix?prefix+'\n\n'+suffix:suffix;
-}
+function estTokens(text){return Math.ceil(text.length/3.2);} /* 中英混合粗略估算（TPOT 在厂商未回传 usage 时的兜底） */
 
 /* ================= 请求通道：统一走工作台服务端中转（/api/worktable/llm） =================
-   各家厂商都从同一服务端出口发起请求，避免浏览器 CORS 差异与本机网络差异，横向可比。 */
-function llmFetch(p,endpoint,payload,signal){
+   各家厂商都从同一服务端出口发起请求，避免浏览器 CORS 差异与本机网络差异，横向可比。
+   提示词由服务端按 promptSpec（{inputLen, cacheHit, outputLen}，仅几百字节）构造：
+   固定前缀为纯确定性函数（跨轮逐字节一致，触发厂商 prompt 缓存），随机后缀每轮换新；
+   浏览器不再上传大段提示词，TTFT 不再含上行传输耗时。 */
+function llmFetch(p,endpoint,payload,signal,promptSpec){
   return fetch('/api/worktable/llm',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({baseURL:p.baseURL,endpoint:endpoint,apiKey:p.apiKey||'',payload:payload}),signal:signal})
+    body:JSON.stringify({baseURL:p.baseURL,endpoint:endpoint,apiKey:p.apiKey||'',payload:payload,promptSpec:promptSpec}),signal:signal})
     .then(function(r){try{r.__relay=true;}catch(_){}return r;});
 }
 
@@ -568,15 +542,13 @@ function testProvider(p){
     var rec={ts:Date.now(),prov:p.name,model:p.model,ttft:null,tpot:null,outTokens:0,totalMs:null,ok:false,err:'',inputTarget:cfg.inputLen,outputTarget:cfg.outputLen,cacheHitTarget:cfg.cacheHit};
     var ctrl=new AbortController();
     var timer=setTimeout(function(){ctrl.abort();},cfg.timeoutSec*1000);
-    /* 提示词在计时前构造：buildPrompt（含随机文本生成）属于本地准备开销，不应计入 TTFT/总耗时 */
-    var prompt=buildPrompt();
+    /* 提示词由服务端按 promptSpec 构造，请求体仅几百字节；t0 紧贴发请求，不含任何本地准备开销 */
     var t0=performance.now(),tFirst=null,content='',usage=null,relayed=false;
     llmFetch(p,'chat/completions',{
       model:p.model,stream:true,
       max_tokens:cfg.outputLen,
-      messages:[{role:'user',content:prompt}],
       stream_options:{include_usage:true}
-    },ctrl.signal).then(function(resp){
+    },ctrl.signal,{inputLen:cfg.inputLen,cacheHit:cfg.cacheHit,outputLen:cfg.outputLen}).then(function(resp){
       relayed=!!resp.__relay;
       /* 服务端口径 TTFT：中继回传的「服务端→厂商首 chunk 耗时」，不含浏览器→服务端上行链路 */
       var st=parseFloat(resp.headers.get('x-worktable-llm-ttfb'));

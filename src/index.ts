@@ -2221,6 +2221,35 @@ export function apply(ctx: Context) {
   // 仅放行 /models 与 /chat/completions 两个 OpenAI 兼容路径；密钥由调用方自带，服务端不落地。
   // 响应头 x-worktable-llm-ttfb 回传「服务端→厂商首 chunk 耗时」（等到上游首个 body chunk 才
   // 回写响应头），页面据此区分浏览器感知 TTFT（含浏览器→服务端上行链路）与厂商侧 TTFT。
+  // promptSpec：页面只上传 {inputLen, cacheHit, outputLen} 参数（几百字节），大段提示词在服务端
+  // 构造，浏览器→服务端不再有大 body 上传（实测 514KB 请求体在 64KB/s 上行下曾把 TTFT 抬高 ~8s）。
+  const BENCH_WORDS = ('the quick brown fox jumps over lazy dog time token latency stream model infer cache hit rate benchmark tokens api performance test '
+    + '我们 正在 对 各家 大模型 服务 进行 首令牌 延迟 与 吐字 速度 的 基准 测试 数据 仅 用于 横向 对比 分析 请 忽略 内容 本身 ').split(' ')
+  // 增量计长（O(n)）：chars 始终等于 join 后的真实长度；与页面旧实现同算法，产出逐字节一致
+  function benchGenText(targetTokens: number, rand: boolean): string {
+    const out: string[] = []
+    let chars = 0
+    while (Math.ceil(chars / 3.2) < targetTokens) {
+      const w = rand ? BENCH_WORDS[Math.floor(Math.random() * BENCH_WORDS.length)] : BENCH_WORDS[out.length % BENCH_WORDS.length]
+      out.push(w)
+      chars += (out.length > 1 ? 1 : 0) + w.length
+    }
+    return out.join(' ')
+  }
+  // cacheHit% 为跨轮固定前缀（纯确定性函数，跨轮/跨重启逐字节一致，天然复用厂商 prompt 缓存，
+  // 无需落盘），其余部分每轮随机；与页面旧版 buildPrompt 同算法，厂商侧缓存连续性不受影响
+  function buildBenchPrompt(spec: any): string | null {
+    const inputLen = Math.floor(Number(spec && spec.inputLen))
+    const cacheHit = Math.floor(Number(spec && spec.cacheHit))
+    const outputLen = Math.floor(Number(spec && spec.outputLen)) || 200
+    if (!Number.isFinite(inputLen) || inputLen < 1 || inputLen > 200000) return null
+    if (!Number.isFinite(cacheHit) || cacheHit < 0 || cacheHit > 100) return null
+    const want = Math.round(inputLen * cacheHit / 100)
+    const prefix = want >= 8 ? benchGenText(want, false) : ''
+    const suffix = benchGenText(Math.max(8, inputLen - want), true)
+      + '\n\n（本轮随机标记：' + Math.random().toString(36).slice(2, 10) + '）请用约 ' + outputLen + ' 个 token 续写一段说明文字。'
+    return prefix ? prefix + '\n\n' + suffix : suffix
+  }
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/llm',
@@ -2238,8 +2267,14 @@ export function apply(ctx: Context) {
         if (isLocalTarget(target.hostname)) { json(res, 403, { error: 'local targets not allowed' }); return }
         const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' }
         if (apiKey) headers['authorization'] = 'Bearer ' + apiKey
+        let payload: any = body.payload ?? {}
+        if (endpoint === 'chat/completions' && body.promptSpec != null) {
+          const prompt = buildBenchPrompt(body.promptSpec)
+          if (!prompt) { json(res, 400, { error: 'invalid promptSpec' }); return }
+          payload = { ...payload, messages: [{ role: 'user', content: prompt }] }
+        }
         const init: any = { method: endpoint === 'models' ? 'GET' : 'POST', headers }
-        if (endpoint === 'chat/completions') init.body = JSON.stringify(body.payload ?? {})
+        if (endpoint === 'chat/completions') init.body = JSON.stringify(payload)
         const tFetch = Date.now()
         const resp = await fetch(target, init)
         // 等上游首个 body chunk 再回写响应头：ttfb 即服务端→厂商的首 chunk 耗时

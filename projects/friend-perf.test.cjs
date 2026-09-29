@@ -36,10 +36,7 @@ function functionSource(name) {
 
 function loadContext() {
   const context = vm.createContext({ Math, JSON, String });
-  const wordsDecl = html.match(/var WORDS=\([\s\S]*?\)\.split\(' '\);/);
-  assert.ok(wordsDecl, "friend-perf.html 应定义 WORDS 词表");
-  vm.runInContext(wordsDecl[0], context);
-  ["estTokens", "genText", "parseSseLines"].forEach((name) =>
+  ["estTokens", "parseSseLines"].forEach((name) =>
     vm.runInContext(functionSource(name), context)
   );
   return context;
@@ -50,26 +47,6 @@ test("estTokens 按字符数估算 token（向上取整）", () => {
   assert.equal(ctx.estTokens(""), 0);
   assert.equal(ctx.estTokens("abc"), 1);
   assert.equal(ctx.estTokens("a".repeat(32)), 10);
-});
-
-test("genText 达到目标估算长度且 deterministic 模式可复现", () => {
-  const ctx = loadContext();
-  const a = ctx.genText(500, false);
-  const b = ctx.genText(500, false);
-  assert.equal(a, b, "rand=false 应产出完全相同的文本（固定前缀依赖跨轮复现）");
-  assert.ok(ctx.estTokens(a) >= 500, "应达到目标估算长度");
-  assert.ok(ctx.estTokens(a) < 560, "不应明显超出目标长度");
-});
-
-test("genText 为线性复杂度：大目标长度不再随规模平方劣化", () => {
-  const ctx = loadContext();
-  // 旧实现每轮 out.join(' ') 重算全长（O(n²)），50000 tokens 需要秒级；
-  // 线性实现应在毫秒级完成。此处只做宽松上限，防回归即可。
-  const t0 = process.hrtime.bigint();
-  const s = ctx.genText(50000, false);
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  assert.ok(ctx.estTokens(s) >= 50000);
-  assert.ok(ms < 500, `genText(50000) 耗时 ${ms.toFixed(1)}ms，疑似退化为平方复杂度`);
 });
 
 test("parseSseLines 提取内容增量与 usage，忽略 [DONE] 与坏行", () => {
@@ -95,15 +72,23 @@ test("parseSseLines 兼容 CRLF 与 data: 后无空格的行", () => {
   assert.equal(JSON.stringify(r.pieces), JSON.stringify(["x"]));
 });
 
-test("单次测试在计时起点之前构造提示词（buildPrompt 不计入 TTFT/总耗时）", () => {
+test("提示词不在浏览器构造：页面无 buildPrompt/genText，testProvider 只发 promptSpec 参数", () => {
+  assert.equal(html.includes("function buildPrompt("), false, "页面不应再构造提示词（服务端负责）");
+  assert.equal(html.includes("function genText("), false, "页面不应再生成随机文本（服务端负责）");
   const src = functionSource("testProvider");
-  const iPrompt = src.indexOf("var prompt=buildPrompt();");
+  assert.ok(
+    src.includes("{inputLen:cfg.inputLen,cacheHit:cfg.cacheHit,outputLen:cfg.outputLen}"),
+    "testProvider 应把 inputLen/cacheHit/outputLen 作为 promptSpec 发给服务端"
+  );
+  assert.equal(src.includes("messages:"), false, "testProvider 不应再自带 messages 大段提示词");
   const iT0 = src.indexOf("t0=performance.now()");
-  assert.notEqual(iPrompt, -1, "testProvider 应先构造提示词");
-  assert.notEqual(iT0, -1, "testProvider 应记录计时起点 t0");
-  assert.ok(iPrompt < iT0, "buildPrompt() 必须早于 t0，否则本地构词开销计入 TTFT");
   const iFetch = src.indexOf("llmFetch(");
-  assert.ok(iT0 < iFetch, "t0 应在发起请求之前");
+  assert.ok(iT0 >= 0 && iT0 < iFetch, "t0 应紧贴发请求之前");
+});
+
+test("llmFetch 把 promptSpec 一并 POST 给中转路由", () => {
+  const src = functionSource("llmFetch");
+  assert.ok(src.includes("promptSpec:promptSpec"), "llmFetch 应透传 promptSpec");
 });
 
 test("流读取收尾冲刷解码器并解析残余 buffer（防丢末尾 usage 块）", () => {
