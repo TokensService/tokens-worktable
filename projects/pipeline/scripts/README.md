@@ -257,16 +257,22 @@ TP、PP、DP保留 arch 配置，不再将 Decode DP 强制改为 GPU 数。
 （同 `evict-ems-hugepages.sh` 的自推送模式；工作台服务端所在主机不需要
 kubectl，kubectl 视图是集群级的，任一节点结果一致；密码认证需执行机有
 sshpass）；未注入时在执行机本地运行（手工独立运行场景，需本机有 kubectl）。
+**跨 region（hd2 等）**：平台注入的 TARGET_IP/TARGET_IPS 可能是外网入口
+endpoint（`ip:port` 形态，如 `115.33.98.101:2224`），与集群 InternalIP 对不上；
+分发阶段会逐节点 SSH 采集内网身份（`hostname`/`hostname -I`）构建映射表随
+小写 env 下传，目标定位按「直接命中（内网 IP/节点名）→ endpoint 身份映射 →
+剥端口兜底」三级解析（gy1 内网标识行为不变；门禁 G-2 同样走该解析）。
 输出三个部分：
 
-1. **集群巡检**：按资源 ns 发现全部 EMS 实例，标注 label、helm release
-   （chart/app 版本）、镜像、pod 健康（组件分布与异常原因）、每节点大页
-   capacity/allocatable/已分配（按全部 pod 的 `hugepages-2Mi` requests 汇总）；
-   另列出空壳/遗留 ns、无 pod 的 helm release、被占用未部署的 label（只报告，
-   勿动）；
-2. **目标节点定位**：逐个检查 `TARGET_IP`/`TARGET_IPS` 的归属，命中实例则展开
-   该实例与本节点视角（角色/pod/大页；目标即本机时附 `/proc/meminfo` 与
-   `/dev/shm/ems`）；未注入 TARGET_* 时回退识别本机（手工独立运行场景）；
+1. **集群巡检**（精简版，团队设备口径）：团队设备上的健康实例为主体——每实例
+   两行（实例名·chart 版本·运行时长；团队节点与大页已分配，按全部 pod 的
+   `hugepages-2Mi` requests 汇总，非团队节点仅计数）；异常实例仅一行标注，
+   非团队设备实例、空壳/遗留 ns 与孤儿 release 一行汇总（不展开）。团队设备
+   清单内置（gy1：243/128/215/55/126/237；hd2：140/120/113/164/7，以
+   tokens-devices 清单为准增减）；
+2. **目标节点定位**：逐个检查 `TARGET_IP`/`TARGET_IPS` 的归属，命中实例则输出
+   实例简报（chart 版本/运行时长/节点数，跨 region endpoint 经身份映射解析，
+   非团队设备节点带标注）；未注入 TARGET_* 时回退识别本机（手工独立运行场景）；
 3. **KEY=VALUE 契约**（注入下游 step）：`EMS_INSTANCE_COUNT`、`EMS_INSTANCES`、
    `EMS_HEALTHY_COUNT`、`EMS_UNHEALTHY`；注入目标时附 `EMS_TARGET_TOTAL`/
    `EMS_TARGET_MATCHED`，命中时附 `EMS_TARGET_INSTANCE/LABEL_KEY/NODES/`
@@ -303,9 +309,12 @@ ssh/scp（解析 TARGET_HOSTS 需 python3，密码认证还需 sshpass）。退�
 stderr），再写入 `/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发
 direct compaction，840s 兜底）；③刷新 allocatable（按需重启 kubelet）+ 终验
 （大页总量与 allocatable 双达标）。执行位置同 ems-check（TARGET_HOSTS 自推送
-到首个有 kubectl 的目标节点）。契约输出 `EMS_HUGEPAGES_OK/RENEWED/
-KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检失败/终验不达标。
-单测：`test/test_ems_hugepages.sh`。
+到首个有 kubectl 的目标节点）；**跨 region（hd2 等）**：TARGET_IPS 为外网入口
+endpoint（ip:port）时，分发阶段采集内网身份映射后三级解析（直接命中 → endpoint
+映射 → 剥端口），节点操作经 endpoint 凭据 SSH（同外网 IP 多端口按 address:port
+组合匹配），执行宿主即目标节点时本地直执，gy1 内网行为不变。契约输出
+`EMS_HUGEPAGES_OK/RENEWED/KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检
+失败/终验不达标。单测：`test/test_ems_hugepages.sh`。
 
 ## EMS 安装（ems-deploy.sh）
 
@@ -316,6 +325,9 @@ ns/release 存在且无 `EMS_IDEMPOTENT=1` 判定时拒绝）；S1 释放（删�
 默认跳过）；S2 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
 （release 名 = `EMS_NAME`，存放在首段 ns；**工作负载 ns 由 chart 自动创建为
 release 名**）；S3 验证 pod 全 Running&Ready + 每节点大页分配达标（最长 900s）。
+**跨 region（hd2 等）**：TARGET_IPS 为外网入口 endpoint（ip:port）时，分发阶段
+采集内网身份映射后三级解析（直接命中 → endpoint 映射 → 剥端口），label 打在
+解析出的集群节点名上，gy1 内网行为不变。
 契约输出 `EMS_NAME/EMS_NAMESPACE/EMS_LABEL_KEY/EMS_NODES/EMS_CHART_VERSION/
 EMS_POD_HEALTH/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证失败。
 
@@ -328,3 +340,37 @@ EMS_POD_HEALTH/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证�
 **推荐编排**（三段，平台已验证）：`ems-check`（EMS_NAME=新实例名，门禁）→
 `ems-hugepages`（大页准备，幂等可单独重跑）→ `ems-deploy`（EMS_NAME/
 EMS_RELEASE_NAMESPACES 留空，自动继承 check 契约；TARGET_IPS 留空用平台注入）。
+
+## EMS 卸载（ems-uninstall.sh）
+
+`ems-uninstall.sh` 是 EMS 完整卸载 **step 主脚本**（唯一可选参数 `EMS_DRY_RUN`，
+默认 1 预演；推荐两段式：先默认预演看清单 → 设 0 正式清理）。目标节点 = 平台
+注入的 `TARGET_IP`/`TARGET_IPS`（勾选环境即表达意图，支持跨 region endpoint 三级
+解析），脚本自动推导实例：目标节点 label 前缀（唯一性校验）+ 其上 EMS pod 的
+ns 交叉；卸载范围 = 该 label 的**全部**节点（不止勾选的）。四段流程：
+
+1. **[1/4]** `helm uninstall`（按 release 实际所在 ns——历史遗留 release 装在
+   default 等非标准 ns 也能卸；不存在跳过）+ 删资源 ns（等待 + 超时强删 pod 兜底
+   + 复活检测，kuberay/CI 自动重装 → 失败并提示人工协调）；
+2. **[2/4]** 等待节点大页全 free（目标节点无 hugepages 请求 pod + 每节点
+   `HugePages_Free==Total`）——这是大页还原的硬前提，被占用时缩减只会挂 surplus；
+3. **[3/4]** 大页还原：per-NUMA `nr_hugepages` 写 0（nohup 后台写入 + 轮询归零，
+   规避 sysfs 写入阻塞拖死主流程；surplus 释放卡住是内核已知行为，超时 die 并
+   提示唯一回收途径 = 重启节点）+ 重启 kubelet 刷 allocatable（不刷则节点大页
+   allocatable 虚高 2000Gi 误导后续调度）；
+4. **[4/4]** 清 label（放最后：label 是幂等重入的节点定位依据）+ 终验 + 契约输出
+   （`EMS_STATUS/EMS_NODES/EMS_RELEASE_REMOVED/EMS_NAMESPACE_REMOVED/
+   EMS_HUGEPAGES_RELEASED/EMS_KUBELET_RESTARTED/EMS_LABEL_REMOVED`）。
+
+边界语义：目标节点不属于任何实例 = 已卸干净，**幂等成功退出**（无操作）；
+目标节点交叉多个实例（脏 label）→ die 拒卸请人工；无 pod/release 的纯 label
+残留同样可清（仅清 label 与大页）。
+
+退出码：0 卸载完成（或幂等退出）；1 失败。单测：`test/test_ems_uninstall.sh`。
+
+```bash
+# 预演（默认）：目标节点选好即可，实例名自动推导
+TARGET_IPS='["192.168.0.243","192.168.0.128"]' bash ems-uninstall.sh
+# 正式清理
+TARGET_IPS='["192.168.0.243","192.168.0.128"]' EMS_DRY_RUN=0 bash ems-uninstall.sh
+```

@@ -237,4 +237,118 @@ TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" EMS_NAME= bash "$script" >/dev/null 2>"$
 grep -Fq 'EMS_NAME 为空' "$tmp/err5"
 grep -Fq 'ems-check 门禁契约注入' "$tmp/err5"
 
-echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint)'
+# ==== 场景⑤：跨 region（hd2 形态）——TARGET_IPS 为外网 endpoint，身份映射解析 ====
+tmp9=$(mktemp -d)
+mkdir -p "$tmp9/bin"
+cat >"$tmp9/nodes.json" <<'JSON'
+{"items": [
+  {"metadata": {"name": "tokens-engine-bnt3-13lrp", "labels": {}},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.140"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "allocatable": {"hugepages-2Mi": "2000Gi", "cpu": "256"}}},
+  {"metadata": {"name": "tokens-engine-bnt3-9d0ee", "labels": {}},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.120"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "allocatable": {"hugepages-2Mi": "2000Gi", "cpu": "256"}}}
+]}
+JSON
+python3 - "$tmp9" <<'PY'
+import json, sys
+base = sys.argv[1]
+def pod(name, node, hp=None):
+    req = {"requests": ({**({"hugepages-2Mi": hp} if hp else {})})}
+    return {"metadata": {"name": name, "namespace": "ems13-13"},
+            "spec": {"nodeName": node, "containers": [{"name": "ems-server", "image": "ems:26.8.0-b6", "resources": req}]},
+            "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
+                       "containerStatuses": [{"name": "ems-server", "ready": True, "restartCount": 0, "image": "ems:26.8.0-b6"}]}}
+n1, n2 = "tokens-engine-bnt3-13lrp", "tokens-engine-bnt3-9d0ee"
+ems = [pod("ems-zookeeper-%d" % i, n1) for i in range(3)] + [pod("ems-controller-0", n1),
+       pod("ems-init-1", n1), pod("ems-init-2", n2), pod("ems-server-1", n1, "2000Gi"), pod("ems-server-2", n2, "2000Gi")]
+json.dump({"items": ems}, open(base + "/ems_pods.json", "w"))
+json.dump({"items": []}, open(base + "/pods_clean.json", "w"))
+json.dump({"items": ems}, open(base + "/pods_installed.json", "w"))
+PY
+echo '[]' >"$tmp9/helm.json"
+cat >"$tmp9/bin/kubectl" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == 'version --request-timeout=5s' ]]; then exit 0; fi
+case "\$*" in
+  *'get nodes'*)
+    if [[ "\$*" == *' -l '* ]]; then
+      python3 -c 'import json,re,sys; doc=json.load(open(sys.argv[1])); m=re.search(r"-l ([^ ]+)=(\S+)", sys.argv[2]); k,v=(m.groups() if m else ("","")); print(json.dumps({"items":[n for n in doc["items"] if n["metadata"].get("labels",{}).get(k)==v]}))' "\$FIXTURES/nodes.json" "\$*"
+    else cat "\$FIXTURES/nodes.json"; fi ;;
+  *'get namespaces'*|'get ns '*)
+    if [[ "\$3" == ems13-13 && -e "\$FIXTURES/marker_installed" ]]; then
+      echo '{"metadata": {"name": "ems13-13"}}'
+    else
+      exit 1
+    fi ;;
+  *'get pods -A'*)
+    if [[ -e "\$FIXTURES/marker_installed" ]]; then cat "\$FIXTURES/pods_installed.json"
+    else cat "\$FIXTURES/pods_clean.json"; fi ;;
+  *'get pods -n ems13-13'*)
+    if [[ -e "\$FIXTURES/marker_installed" ]]; then cat "\$FIXTURES/ems_pods.json"
+    else echo '{"items": []}'; fi ;;
+  *'label node '*'ems13=true'*) touch "\$FIXTURES/marker_labeled" ;;
+  *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
+esac
+EOF
+cat >"$tmp9/bin/helm" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  'list -A'|'list -a') cat "\$FIXTURES/helm.json" ;;
+  'install '*)
+    touch "\$FIXTURES/marker_installed"
+    ver=\$(sed -n 's/^version:[[:space:]]*//p' "\$3/Chart.yaml" | head -1 | tr -d '"')
+    python3 -c 'import json,sys; rels=json.load(open(sys.argv[1])); rels.append({"name":sys.argv[2],"namespace":sys.argv[3],"chart":"ems-"+sys.argv[4],"status":"deployed"}); json.dump(rels,open(sys.argv[1],"w"))' "\$FIXTURES/helm.json" "\$2" "\$5" "\$ver"
+    echo 'installed' ;;
+  *) echo "unexpected helm call: \$*" >&2; exit 1 ;;
+esac
+EOF
+cat >"$tmp9/bin/ssh" <<EOF
+#!/usr/bin/env bash
+cmd="\${@: -1}"
+port=''; prev=''
+for a in "\$@"; do [[ "\$prev" == -p ]] && port="\$a"; prev="\$a"; done
+case "\$cmd" in
+  *'command -v kubectl'*) exit 0 ;;
+  *'hostname -I'*)
+    case "\$port" in
+      2224) printf 'tokens-engine-bnt3-13lrp\n192.168.31.140 43.105.134.183\n' ;;
+      2225) printf 'tokens-engine-bnt3-9d0ee\n192.168.31.120 43.105.240.70\n' ;;
+    esac ;;
+  *'cat > /tmp/ems-deploy-bundle.tgz'*) exit 0 ;;
+  *'bash /tmp/ems-deploy-bundle/'*)
+    cmd="\${cmd#tar -C /tmp/ems-deploy-bundle -xzf /tmp/ems-deploy-bundle.tgz && }"
+    cmd=\$(sed "s|/tmp/ems-deploy-bundle|\$REAL_BUNDLE|g" <<<"\$cmd")
+    eval "\$cmd" ;;
+  *) echo "unexpected ssh cmd: \$cmd" >&2; exit 1 ;;
+esac
+EOF
+cat >"$tmp9/bin/scp" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$tmp9/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmp9/bin/"*
+out=$(FIXTURES="$tmp9" REAL_SCRIPT="$script" REAL_BUNDLE="$script_dir" PATH="$tmp9/bin:$PATH" \
+    TARGET_HOSTS='[{"ip":"115.33.98.101:2224","user":"root"},{"ip":"115.33.98.101:2225","user":"root"}]' \
+    TARGET_IPS='["115.33.98.101:2224","115.33.98.101:2225"]' \
+    EMS_NAME=ems13-13 bash "$script") || {
+  echo "scenario5 failed:" >&2; echo "$out" >&2; rm -rf "$tmp9"; exit 1
+}
+grep -Fq 'remote execution via root@115.33.98.101:2224' <<<"$out"
+grep -Fq '目标节点：115.33.98.101:2224 → tokens-engine-bnt3-13lrp（endpoint 解析）' <<<"$out"
+grep -Fq '目标节点：115.33.98.101:2225 → tokens-engine-bnt3-9d0ee（endpoint 解析）' <<<"$out"
+grep -Fq 'label：tokens-engine-bnt3-13lrp ems13=true' <<<"$out"
+grep -Fq 'label：tokens-engine-bnt3-9d0ee ems13=true' <<<"$out"
+grep -Fq 'helm install ems13-13' <<<"$out"
+grep -Fq 'EMS_STATUS=installed' <<<"$out"
+grep -Fq 'EMS_NODES=115.33.98.101:2224,115.33.98.101:2225' <<<"$out"
+grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
+rm -rf "$tmp9"
+
+echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint, cross-region endpoint)'

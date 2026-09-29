@@ -13,6 +13,13 @@
 # 执行**，其余节点优先密钥认证（集群节点间通常 root 免密互通），密钥失败且
 # TARGET_HOSTS 带密码时才 sshpass 重试（需执行宿主装有 sshpass）。
 #
+# 跨 region（hd2 等）：平台注入的 TARGET_IPS 可能是外网入口 endpoint（ip:port
+# 形态，如 115.33.98.101:2224），与集群 InternalIP 对不上；分发阶段逐节点 SSH
+# 采集内网身份（hostname/-I）构建映射随小写 env 下传，目标解析按「直接命中 →
+# endpoint 映射 → 剥端口」三级；解析后节点操作经 endpoint 凭据 SSH（同外网 IP
+# 多端口节点按 address:port 组合匹配凭据），执行宿主自身即目标节点时本地直执。
+# gy1 内网标识行为不变。
+#
 # 流程（fail-fast，任一步失败即中止，人工看运行日志后处理/重跑）：
 #   [0/3] 解析目标节点（kubectl 节点名 + InternalIP；单节点亦合法——本 step 逐节点操作）
 #   [1/3] 配大页：只读预检（MemAvailable < 目标+余量 → 秒级失败并输出大内存
@@ -36,6 +43,7 @@ SCRIPT_NAME='ems-hugepages'
 # 零参数设计：TARGET_HOSTS 为平台注入的运行级变量，经 nameref 间接引用——
 # 引用名小写且字面量不带 $，平台「识别参数」扫不到，页面保持无入参。
 declare -n platform_target_hosts='TARGET_HOSTS'
+declare -n platform_target_ips='TARGET_IPS'
 
 # 内部常量（普通赋值，不进参数面）；HUGEPAGE_GIB 固定 2000Gi（与仓内 chart values 同值）
 HUGEPAGE_GIB=2000
@@ -118,15 +126,54 @@ PY
     [[ -n "$probe_host" ]] || die '所有 TARGET_HOSTS 节点都缺少 kubectl；无法执行大页配置'
 
     log "remote execution via $probe_user@$probe_host:$probe_port（kubectl 视图为集群级）"
+
+    # 跨 region 目标身份映射（hd2 等环境平台注入的 TARGET_IPS 是外网入口 endpoint，
+    # 与集群 InternalIP 对不上）：逐节点 SSH 采集内网身份（hostname/-I），映射表
+    # （含凭据，供远程侧节点解析与 node_ssh 回退）经小写 env 下传；采集失败则
+    # 对应 entry 缺失，gy1 内网行为不变。specs 为 JSON 数组，先展开为 tab 四元组。
+    local id_lines='' id_user id_host id_port id_pass id_out id_hostname id_ips
+    local -a id_specs=()
+    mapfile -t id_specs < <(printf '%s\n' "${specs[@]}" | python3 -c '
+import json, sys
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    entry = json.loads(line)
+    print((entry.get("user") or "root") + "\t" + entry["ip"] + "\t" + (entry.get("port") or "22") + "\t" + (entry.get("pass") or ""))
+')
+    for spec in "${id_specs[@]}"; do
+        IFS=$'\t' read -r id_user id_host id_port id_pass <<<"$spec"
+        id_out="$(remote_exec "$id_user" "$id_host" "$id_port" "$id_pass" \
+            'hostname 2>/dev/null; hostname -I 2>/dev/null' 2>/dev/null)" || true
+        id_hostname="$(sed -n '1p' <<<"$id_out" | tr -d '\r')"
+        id_ips="$(sed -n '2p' <<<"$id_out" | tr -d '\r')"
+        [[ -n "$id_hostname" || -n "$id_ips" ]] || continue
+        id_lines+="${id_user}"$'\t'"${id_host}"$'\t'"${id_port}"$'\t'"${id_pass}"$'\t'"${id_hostname}"$'\t'"${id_ips}"$'\n'
+    done
+    local id_map='[]'
+    if [[ -n "$id_lines" ]]; then
+        id_map="$(printf '%s' "$id_lines" | python3 -c '
+import json, sys
+entries = []
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    user, address, port, password, hostname, ips = (line.split("\t") + [""] * 6)[:6]
+    entries.append({"endpoint": address + ":" + port, "address": address, "port": port,
+                    "user": user, "pass": password, "hostname": hostname, "ips": ips.split()})
+print(json.dumps(entries))')" || id_map='[]'
+    fi
     remote_exec "$probe_user" "$probe_host" "$probe_port" "$probe_pass" \
         "cat > /tmp/ems-hugepages.sh" <"$self" \
         || die "推送脚本到 $probe_host 失败"
 
     remote_env=(TARGET_HOSTS=)
-    printf -v quoted '%q' "${TARGET_IPS:-}"
+    printf -v quoted '%q' "${platform_target_ips:-}"
     remote_env+=("TARGET_IPS=$quoted")
     printf -v quoted '%q' "$creds_json"
     remote_env+=("ems_node_creds=$quoted")
+    printf -v quoted '%q' "$id_map"
+    remote_env+=("ems_target_id_map=$quoted")
     remote_exec "$probe_user" "$probe_host" "$probe_port" "$probe_pass" \
         "env ${remote_env[*]} bash /tmp/ems-hugepages.sh"
     return $?
@@ -134,26 +181,58 @@ PY
 
 # ==================== 远程阶段（首个有 kubectl 的目标节点） ====================
 
-node_ssh() { # <ip> <command...>
+node_ssh() { # <access> <command...>   access：内网 IP/节点名（gy1）或 endpoint 地址（跨 region）
     local ip=$1
     shift
-    # 执行宿主即目标节点：本地直接执行（分发宿主本身常是目标之一，免去自 SSH 与 sshpass 依赖）
-    if [[ " $(hostname -I 2>/dev/null) " == *" $ip "* ]]; then
+    local local_ips=" $(hostname -I 2>/dev/null) "
+    # 本机判定①：access 即本机 IP（gy1 现行为）→ 本地直接执行
+    if [[ "$local_ips" == *" $ip "* ]]; then
         bash -c "$*"
         return $?
     fi
-    local entry
+    local entry=''
     entry="$(python3 - "${ems_node_creds:-}" "$ip" <<'PY'
 import json
 import sys
 
+key = sys.argv[2]
 for entry in json.loads(sys.argv[1] or "[]"):
-    if entry.get("ip") == sys.argv[2]:
+    hit = entry.get("ip") == key
+    if not hit and ":" in key:
+        address, _, port = key.rpartition(":")
+        hit = entry.get("ip") == address and str(entry.get("port") or "22") == port
+    if hit:
         print(f'{entry.get("user") or "root"}\t{entry.get("port") or "22"}\t{entry.get("pass") or ""}')
         break
 PY
 )"
-    [[ -n "$entry" ]] || die "节点 $ip 不在 TARGET_HOSTS 凭据列表中"
+    # 身份映射查询（两用：①本机判定——access 对应 endpoint 的内网身份含本机任一
+    # IP（执行宿主即目标节点）则本地执行，免绕公网回连自己；②凭据回退——creds
+    # 表无此地址时用 endpoint 凭据。id_map 缺失（gy1）时此块整体跳过。）
+    local id_entry=''
+    id_entry="$(python3 - "${ems_target_id_map:-}" "$ip" <<'PY'
+import json
+import sys
+
+for entry in json.loads(sys.argv[1] or "[]"):
+    if sys.argv[2] in (entry.get("endpoint"), entry.get("address")) \
+            or sys.argv[2] in list(entry.get("ips") or []) + [entry.get("hostname") or ""]:
+        print(f'{entry.get("user") or "root"}\t{entry.get("port") or "22"}\t{entry.get("pass") or ""}\t{" ".join(entry.get("ips") or [])}')
+        break
+PY
+)"
+    if [[ -n "$id_entry" ]]; then
+        local e_ips one
+        e_ips="${id_entry##*$'\t'}"
+        for one in $e_ips; do
+            if [[ "$local_ips" == *" $one "* ]]; then
+                bash -c "$*"
+                return $?
+            fi
+        done
+        [[ -n "$entry" ]] || entry="$id_entry"
+    fi
+    [[ -n "$entry" ]] || die "节点 $ip 不在 TARGET_HOSTS 凭据列表中（且无身份映射回退）"
     local user port pass ssh_base rc=0
     IFS=$'\t' read -r user port pass <<<"$entry"
     ssh_base='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15'
@@ -171,18 +250,6 @@ PY
     die "节点 $ip SSH 密钥认证失败且未提供密码（检查节点间 root 免密互通）"
 }
 
-internal_ip_of() { # <node_json> <node_name>
-    printf '%s' "$1" | python3 -c '
-import json, sys
-for node in json.load(sys.stdin).get("items", []):
-    if node["metadata"]["name"] == sys.argv[1]:
-        for addr in node.get("status", {}).get("addresses", []):
-            if addr.get("type") == "InternalIP":
-                print(addr["address"]); break
-        break
-' "$2"
-}
-
 allocatable_gib_of() { # <single-node-json>
     python3 -c '
 import json, sys
@@ -198,8 +265,8 @@ print(value)
 }
 
 hugepages_main() {
-    local node_json ip node_name
-    local -a target_nodes=()
+    local node_json ip node_name access resolved
+    local -a target_nodes=() target_access=()
 
     have kubectl || die '本机缺少 kubectl（正常应经 TARGET_HOSTS 分发到目标节点执行）'
     have python3 || die '需要 python3'
@@ -207,7 +274,7 @@ hugepages_main() {
 
     # 目标节点列表：注入的 TARGET_IPS（JSON 数组），缺省退化为凭据列表全部节点
     local -a target_ips=()
-    mapfile -t target_ips < <(python3 - "${TARGET_IPS:-}" "${ems_node_creds:-}" <<'PY'
+    mapfile -t target_ips < <(python3 - "${platform_target_ips:-}" "${ems_node_creds:-}" <<'PY'
 import json
 import sys
 
@@ -235,32 +302,77 @@ PY
     log "=== [0/3] 解析目标节点（目标 ${HUGEPAGE_GIB}Gi/节点） ==="
     node_json="$(kubectl get nodes -o json)" || die '获取节点列表失败'
     for ip in "${target_ips[@]}"; do
-        node_name="$(printf '%s' "$node_json" | python3 -c '
-import json, sys
+        # 三级解析：①直接命中（内网 IP/节点名，gy1 现行为）②endpoint 身份映射
+        # （跨 region：外网入口 ip:port → 该主机内网 ips/hostname）③ip:port 剥端口。
+        # 输出「节点名\t访问地址」：跨 region 时访问地址 = endpoint 地址（凭据回退用）。
+        resolved="$(printf '%s' "$node_json" | EMS_TARGET_ID_MAP="${ems_target_id_map:-}" python3 -c '
+import json, os, sys
+
+id_map = []
+raw = (os.environ.get("EMS_TARGET_ID_MAP") or "").strip()
+if raw:
+    try:
+        id_map = [entry for entry in json.loads(raw) if isinstance(entry, dict)]
+    except ValueError:
+        pass
+nodes = json.load(sys.stdin).get("items", [])
+
+
+def find(ident):
+    for node in nodes:
+        if node["metadata"]["name"] == ident:
+            return node
+        for addr in (node.get("status") or {}).get("addresses", []):
+            if addr.get("type") == "InternalIP" and addr.get("address") == ident:
+                return node
+    return None
+
+
 wanted = sys.argv[1]
-for node in json.load(sys.stdin).get("items", []):
-    if node["metadata"]["name"] == wanted:
-        print(wanted); break
-    for addr in node.get("status", {}).get("addresses", []):
-        if addr.get("type") == "InternalIP" and addr.get("address") == wanted:
-            print(node["metadata"]["name"]); break
-    else:
-        continue
-    break
+node = find(wanted)
+access = wanted
+via = "direct"
+if node is None:
+    for entry in id_map:
+        if wanted in (entry.get("endpoint"), entry.get("address")):
+            for ident in list(entry.get("ips") or []) + [entry.get("hostname") or ""]:
+                node = find(ident)
+                if node is not None:
+                    break
+            if node is not None:
+                access = entry.get("endpoint") or entry.get("address") or wanted
+                via = "endpoint"
+                break
+if node is None and ":" in wanted:
+    address = wanted.rsplit(":", 1)[0]
+    node = find(address)
+    if node is not None:
+        access = address
+if node is None:
+    raise SystemExit(0)
+print(node["metadata"]["name"] + "\t" + access + "\t" + via)
 ' "$ip")"
-        [[ -n "$node_name" ]] || die "目标 $ip 不是本集群节点"
+        [[ -n "$resolved" ]] || die "目标 $ip 不是本集群节点"
+        local via_map
+        IFS=$'\t' read -r node_name access via_map <<<"$resolved"
         target_nodes+=("$node_name")
-        log "目标节点：$ip → $node_name"
+        target_access+=("$access")
+        if [[ "$via_map" == endpoint ]]; then
+            log "目标节点：$ip → $node_name（endpoint $access 访问）"
+        else
+            log "目标节点：$ip → $node_name"
+        fi
     done
 
     # ---- [1/3] 配大页（只增不减，已达标跳过）----
     log "=== [1/3] 配置大页（${HUGEPAGE_GIB}Gi/节点，只增不减） ==="
-    local total_pages per_numa hp_node renewed_nodes=''
+    local total_pages per_numa renewed_nodes=''
     total_pages=$((HUGEPAGE_GIB * 512))
-    for hp_node in "${target_nodes[@]}"; do
-        local node_ip current
-        node_ip="$(internal_ip_of "$node_json" "$hp_node")"
-        [[ -n "$node_ip" ]] || die "无法解析节点 $hp_node 的 InternalIP"
+    local hp_idx hp_node node_ip
+    for hp_idx in "${!target_nodes[@]}"; do
+        hp_node="${target_nodes[$hp_idx]}"
+        node_ip="${target_access[$hp_idx]}"
+        local current
         current="$(node_ssh "$node_ip" 'grep HugePages_Total /proc/meminfo' | awk '{print $2}')" \
             || die "读取 $hp_node 大页现状失败"
         if (( current >= total_pages )); then
@@ -309,14 +421,15 @@ for node in json.load(sys.stdin).get("items", []):
     # ---- [2/3] 刷 allocatable（allocatable 未达标的节点重启 kubelet）----
     log "=== [2/3] 刷新大页 allocatable（按需重启 kubelet） ==="
     local kube_node alloc_gib restarted_nodes='' node_json2
-    for kube_node in "${target_nodes[@]}"; do
+    local kube_idx node_ip2
+    for kube_idx in "${!target_nodes[@]}"; do
+        kube_node="${target_nodes[$kube_idx]}"
+        node_ip2="${target_access[$kube_idx]}"
         alloc_gib="$(allocatable_gib_of "$(kubectl get node "$kube_node" -o json)")"
         if (( alloc_gib >= HUGEPAGE_GIB )); then
             log "$kube_node: allocatable 已达标（${alloc_gib}Gi），跳过 kubelet 重启"
             continue
         fi
-        local node_ip2
-        node_ip2="$(internal_ip_of "$node_json" "$kube_node")"
         log "$kube_node: 重启 kubelet 刷新大页 allocatable（pod 不重启，节点短暂 NotReady）"
         node_ssh "$node_ip2" 'systemctl restart kubelet' || die "$kube_node 重启 kubelet 失败"
         restarted_nodes+="$kube_node "
@@ -352,9 +465,10 @@ print(("True" if ready else "False"), int(value // 2**30))
     # ---- [3/3] 终验 + 契约 ----
     log "=== [3/3] 终验（每节点大页总量 + allocatable 双达标） ==="
     node_json2="$(kubectl get nodes -o json)" || die '获取节点列表失败'
-    for kube_node in "${target_nodes[@]}"; do
-        local node_ip3 alloc3
-        node_ip3="$(internal_ip_of "$node_json2" "$kube_node")"
+    local kube_idx2 node_ip3 alloc3
+    for kube_idx2 in "${!target_nodes[@]}"; do
+        kube_node="${target_nodes[$kube_idx2]}"
+        node_ip3="${target_access[$kube_idx2]}"
         current="$(node_ssh "$node_ip3" 'grep HugePages_Total /proc/meminfo' | awk '{print $2}')" \
             || die "终验读取 $kube_node 大页失败"
         (( current >= total_pages )) || die "$kube_node 终验大页不足（$current/$total_pages 页）"
