@@ -3586,6 +3586,81 @@ function metaFor(id){
 /* 增量渲染：按内容指纹缓存，未变化时仅更新进度条宽度（运行 tick 会以 120~300ms 高频调用本函数） */
 let _detailKey='';
 const DETAIL_LOG_LIMIT={maxLines:1000,maxChars:256*1024};
+/* 日志区增量渲染缓存：上一次同步进 #detailLog 的行数组。日志增长时只做尾部追加 /
+   头部淘汰等增量 DOM 操作，不再每次刷新 innerHTML 全量重建上千个行节点
+   （全量重建引发整个日志区重排，是持续输出时页面 CPU 的主要来源）。 */
+let _detailLogCache=null;
+/* 把行数组增量同步到日志容器，同步完成后 DOM 内容与 lines 完全一致：
+   1) 纯追加（持续输出最常见）：只挂载新增行；
+   2) 触顶窗口平移：淘汰头部 k 行再追加新行——候选 k 由端点比对筛出后逐行全量校验重叠区，
+      校验不过绝不接受，杜绝错误对齐导致的错行；
+   3) 中部替换（如 stderr 块前的 stdout 增长、状态行就地变化）；
+   4) 其余情形（首帧、内容整体更换、DOM 被外部改写）回退全量重建。
+   行着色 class 与文本与全量重建路径完全一致。 */
+function syncDetailLogLines(log,lines){
+  const makeNode=ln=>{ const div=document.createElement('div'); div.className=logClass(ln); div.textContent=ln; return div; };
+  const prev=_detailLogCache;
+  const rebuild=()=>{
+    log.innerHTML='';
+    const fragment=document.createDocumentFragment();
+    for(let i=0;i<lines.length;i++) fragment.appendChild(makeNode(lines[i]));
+    log.appendChild(fragment);
+  };
+  /* 行数守卫：缓存行数必须与 DOM 实际节点数一致，否则说明日志区被外部（回放渲染等）改写过 */
+  if(!prev || !prev.length || !lines.length || log.childNodes.length!==prev.length){ rebuild(); _detailLogCache=lines; return; }
+  /* 公共前缀；前缀覆盖全部旧行即纯追加 */
+  let head=0; const maxHead=Math.min(prev.length,lines.length);
+  while(head<maxHead && prev[head]===lines[head]) head++;
+  if(head===prev.length){
+    const fragment=document.createDocumentFragment();
+    for(let i=head;i<lines.length;i++) fragment.appendChild(makeNode(lines[i]));
+    log.appendChild(fragment);
+    _detailLogCache=lines; return;
+  }
+  /* 公共后缀（不与前缀重叠） */
+  let tail=0; const maxTail=maxHead-head;
+  while(tail<maxTail && prev[prev.length-1-tail]===lines[lines.length-1-tail]) tail++;
+  if(prev.length-head-tail>0){
+    /* 窗口平移检测：日志触顶后每次刷新淘汰头部 k 行、尾部新增若干行 */
+    const regionPrev=prev.length-head, regionLines=lines.length-head;
+    let shifted=0;
+    if(regionLines>0){
+      const maxK=Math.min(regionPrev,2048);
+      for(let k=1;k<=maxK;k++){
+        const overlap=regionPrev-k;
+        if(overlap<0||overlap>regionLines) continue;
+        if(overlap>0 && prev[head+k]!==lines[head]) continue;
+        if(overlap>1 && prev[prev.length-1]!==lines[head+overlap-1]) continue;
+        let ok=true;
+        for(let j=0;j<overlap;j++){ if(prev[head+k+j]!==lines[head+j]){ ok=false; break; } }
+        if(ok){ shifted=k; break; }
+      }
+    }
+    if(shifted>0){
+      for(let i=0;i<shifted;i++) log.removeChild(log.childNodes[head]);
+      const from=head+regionPrev-shifted;
+      const fragment=document.createDocumentFragment();
+      for(let i=from;i<lines.length;i++) fragment.appendChild(makeNode(lines[i]));
+      log.appendChild(fragment);
+      _detailLogCache=lines; return;
+    }
+  }
+  if(head+tail>0){
+    /* 中部替换：移除 prev[head, prev.length-tail)，原位插入 lines[head, lines.length-tail) */
+    const remove=prev.length-head-tail;
+    for(let i=0;i<remove;i++) log.removeChild(log.childNodes[head]);
+    const insert=lines.length-head-tail;
+    if(insert>0){
+      const fragment=document.createDocumentFragment();
+      for(let i=head;i<head+insert;i++) fragment.appendChild(makeNode(lines[i]));
+      const ref=log.childNodes[head]||null;
+      if(ref) log.insertBefore(fragment,ref); else log.appendChild(fragment);
+    }
+    _detailLogCache=lines; return;
+  }
+  rebuild();
+  _detailLogCache=lines;
+}
 function detailLogLinesFor(stage,ctx,node){
   if(ctx&&ctx.remotePreview===true){
     if(ctx.remoteClientId!=='server') return ['其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
@@ -3678,13 +3753,8 @@ function renderDetail(){
 
   const log=$('detailLog');
   const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;   // 用户停留在底部附近时才跟随最新日志
-  log.innerHTML='';
-  const fragment=document.createDocumentFragment();
-  lines.forEach(ln=>{
-    const div=document.createElement('div'); div.className=logClass(ln); div.textContent=ln; fragment.appendChild(div);
-  });
-  log.appendChild(fragment);
-  if(n.status==='idle' && !lines.length){ log.textContent='该阶段尚未运行。'; }
+  syncDetailLogLines(log, lines);   // 增量渲染：只追加/淘汰变化的行，不再整区重建
+  if(n.status==='idle' && !lines.length){ log.textContent='该阶段尚未运行。'; _detailLogCache=null; }   // textContent 覆盖了子节点，增量缓存一并失效
   if(stick) log.scrollTop = log.scrollHeight;
 }
 /* 日志行着色分类（详情面板与流式回显共用，两处规则保持一致勿单改） */
@@ -7081,7 +7151,7 @@ function renderReplayDetail(rec){
   bar.style.width=pct+'%';
   bar.style.background = n.status==='failed'?'var(--st-err)':(n.status==='success'?'var(--st-ok)':(n.status==='skipped'||n.status==='aborted'?'var(--st-idle)':'var(--st-run)'));
   wrap.style.display = (n.status==='running'||n.status==='success'||n.status==='failed'||n.status==='skipped'||n.status==='aborted')?'block':'none';
-  const log=$('detailLog'); log.innerHTML='';
+  const log=$('detailLog'); _detailLogCache=null; log.innerHTML='';   // 回放改写了日志区，详情增量渲染缓存一并失效
   /* 日志来源：旧版记录内嵌 entry.log 直接用；新版条目只存 logFile 路径，由 loadReplayLog 按当前阶段拉取并缓存到 rec._lc */
   let text=(entry && typeof entry.log==='string') ? entry.log : undefined;
   if(entry && text===undefined && entry.logFile){
