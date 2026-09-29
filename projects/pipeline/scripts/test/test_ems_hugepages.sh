@@ -228,4 +228,106 @@ grep -Fq 'node-1: 预检通过（还需 382Gi，MemAvailable 1194Gi ≥ 582Gi）
 grep -Fq 'node-1: 828395 页 → 1024000 页' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
 
-echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout, allocatable fail, single node, mem precheck, resume precheck)'
+# ==== 场景⑧：跨 region（hd2 形态）——TARGET_IPS 为外网 endpoint，身份映射解析 ====
+tmp8=$(mktemp -d)
+mkdir -p "$tmp8/bin"
+cat >"$tmp8/nodes.json" <<'JSON'
+{"items": [
+  {"metadata": {"name": "tokens-engine-bnt3-13lrp"},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.140"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "capacity": {"hugepages-2Mi": "2000Gi"}, "allocatable": {"hugepages-2Mi": "0", "cpu": "256"}}},
+  {"metadata": {"name": "tokens-engine-bnt3-9d0ee"},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.120"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "capacity": {"hugepages-2Mi": "2000Gi"}, "allocatable": {"hugepages-2Mi": "0", "cpu": "256"}}}
+]}
+JSON
+cat >"$tmp8/bin/kubectl" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == 'version --request-timeout=5s' ]]; then exit 0; fi
+case "\$*" in
+  'get nodes -o json')
+    python3 -c '
+import json, os
+fx = os.environ["FIXTURES"]
+items = []
+for node in json.load(open(fx + "/nodes.json"))["items"]:
+    ip = next(a["address"] for a in node["status"]["addresses"] if a["type"] == "InternalIP")
+    if os.path.exists(f"{fx}/marker_kubelet_{ip}"):
+        node = dict(node)
+        node["status"] = dict(node["status"])
+        node["status"]["allocatable"] = dict(node["status"]["allocatable"], **{"hugepages-2Mi": "2000Gi"})
+    items.append(node)
+print(json.dumps({"items": items}))' ;;
+  'get node '*)
+    name=\$3
+    python3 -c '
+import json, os, sys
+fx, name = os.environ["FIXTURES"], sys.argv[1]
+node = next(n for n in json.load(open(fx + "/nodes.json"))["items"] if n["metadata"]["name"] == name)
+ip = next(a["address"] for a in node["status"]["addresses"] if a["type"] == "InternalIP")
+if os.path.exists(f"{fx}/marker_kubelet_{ip}"):
+    node = dict(node)
+    node["status"] = dict(node["status"])
+    node["status"]["allocatable"] = dict(node["status"]["allocatable"], **{"hugepages-2Mi": "2000Gi"})
+print(json.dumps(node))' "\$name" ;;
+  *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
+esac
+EOF
+cat >"$tmp8/bin/ssh" <<EOF
+#!/usr/bin/env bash
+echo "ssh \$*" >>"\$FIXTURES/ssh.log"
+cmd="\${@: -1}"
+port=''; prev=''
+for a in "\$@"; do [[ "\$prev" == -p ]] && port="\$a"; prev="\$a"; done
+case "\$cmd" in
+  *'command -v kubectl'*) exit 0 ;;
+  *'hostname -I'*)
+    # 身份采集（dispatch 阶段）：外网 endpoint → 内网身份
+    case "\$port" in
+      2224) printf 'tokens-engine-bnt3-13lrp\n192.168.31.140 43.105.134.183\n' ;;
+      2225) printf 'tokens-engine-bnt3-9d0ee\n192.168.31.120 43.105.240.70\n' ;;
+    esac ;;
+  *'cat > /tmp/ems-hugepages.sh'*) exit 0 ;;
+  *'bash /tmp/ems-hugepages.sh'*)
+    cmd=\$(sed "s|/tmp/ems-hugepages.sh|\$REAL_SCRIPT|" <<<"\$cmd")
+    eval "\$cmd" ;;
+  *'MemAvailable'*)
+    printf 'MemTotal:       32959684 kB\nMemAvailable:    3221225472 kB\ntmpfs  1.6T  100G   1.5T   7%% /dev/shm\n' ;;
+  *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$port" 2>/dev/null || echo 0)" ;;
+  *'nr_hugepages'*) echo 1024000 >"\$FIXTURES/hp_\$port" ;;
+  *'systemctl restart kubelet'*)
+    case "\$port" in 2224) touch "\$FIXTURES/marker_kubelet_192.168.31.140" ;; 2225) touch "\$FIXTURES/marker_kubelet_192.168.31.120" ;; esac
+    echo "kubelet-restarted @port\$port" >>"\$FIXTURES/ssh.log" ;;
+  *) echo "unexpected ssh cmd: \$cmd" >&2; exit 1 ;;
+esac
+EOF
+cat >"$tmp8/bin/scp" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$tmp8/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$tmp8/bin/"*
+out=$(FIXTURES="$tmp8" REAL_SCRIPT="$script" PATH="$tmp8/bin:$PATH" \
+    TARGET_HOSTS='[{"ip":"115.33.98.101:2224","user":"root"},{"ip":"115.33.98.101:2225","user":"root"}]' \
+    TARGET_IPS='["115.33.98.101:2224","115.33.98.101:2225"]' bash "$script") || {
+  echo "scenario8 failed:" >&2; echo "$out" >&2; rm -rf "$tmp8"; exit 1
+}
+grep -Fq 'remote execution via root@115.33.98.101:2224' <<<"$out"
+grep -Fq '目标节点：115.33.98.101:2224 → tokens-engine-bnt3-13lrp（endpoint 115.33.98.101:2224 访问）' <<<"$out"
+grep -Fq '目标节点：115.33.98.101:2225 → tokens-engine-bnt3-9d0ee（endpoint 115.33.98.101:2225 访问）' <<<"$out"
+grep -Fq 'tokens-engine-bnt3-13lrp: 大页到位（1024000 页）' <<<"$out"
+grep -Fq 'tokens-engine-bnt3-9d0ee: Ready 且 allocatable 2000Gi 达标' <<<"$out"
+grep -Fq 'tokens-engine-bnt3-9d0ee: 大页 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_RENEWED=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out"
+grep -Fq 'EMS_KUBELET_RESTARTED=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out"
+grep -Fq 'kubelet-restarted @port2224' "$tmp8/ssh.log"
+grep -Fq 'kubelet-restarted @port2225' "$tmp8/ssh.log"
+rm -rf "$tmp8"
+
+echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint)'

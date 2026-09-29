@@ -65,13 +65,15 @@ make_pod() {
   [[ -n "$cpu" ]] && req_parts+=("\"cpu\": \"$cpu\"")
   [[ -n "$mem" ]] && req_parts+=("\"memory\": \"$mem\"")
   ((${#req_parts[@]})) && requests="{"$(IFS=,; echo "${req_parts[*]}")"}"
+  local start_json=''
   if [[ "$phase" == Running ]]; then
     cs_state='"ready": true, "restartCount": 0'
+    start_json=', "startTime": "2026-09-20T10:00:00Z"'
   else
     cs_state='"ready": false, "restartCount": 0, "state": {"waiting": {"reason": "InsufficientHugepages", "message": "1 Insufficient hugepages-2Mi"}}'
   fi
-  printf '{"metadata": {"name": "%s", "namespace": "%s"}, "spec": {"nodeName": "%s", "containers": [{"name": "%s", "image": "%s", "volumeMounts": %s, "resources": {"requests": %s}}]}, "status": {"phase": "%s", "conditions": [{"type": "Ready", "status": "%s"}], "containerStatuses": [{"name": "%s", "image": "%s", %s}]}}' \
-    "$name" "$ns" "$node" "$container" "$image" "$mount_json" "$requests" "$phase" \
+  printf '{"metadata": {"name": "%s", "namespace": "%s"}, "spec": {"nodeName": "%s", "containers": [{"name": "%s", "image": "%s", "volumeMounts": %s, "resources": {"requests": %s}}]}, "status": {"phase": "%s"%s, "conditions": [{"type": "Ready", "status": "%s"}], "containerStatuses": [{"name": "%s", "image": "%s", %s}]}}' \
+    "$name" "$ns" "$node" "$container" "$image" "$mount_json" "$requests" "$phase" "$start_json" \
     "$([[ $phase == Running ]] && echo True || echo False)" "$container" "$image" "$cs_state"
 }
 
@@ -128,25 +130,24 @@ chmod +x "$tmp/bin/kubectl" "$tmp/bin/helm"
 PATH="$tmp/bin:$PATH"
 export PATH
 # ---- ① step 场景：平台注入 TARGET_IP + TARGET_IPS（多目标，含命中/未命中/非集群节点） ----
-out=$(TARGET_IP=10.0.0.1 TARGET_IPS='["10.0.0.1","10.0.0.2","10.9.9.9"]' bash "$script") || {
+out=$(ems_team_nodes=10.0.0.1,10.0.0.2 TARGET_IP=10.0.0.1 TARGET_IPS='["10.0.0.1","10.0.0.2","10.9.9.9"]' bash "$script") || {
   echo "default run failed:" >&2; echo "$out" >&2; exit 1
 }
 
-grep -Fq '[1] ems8-8' <<<"$out"
-grep -Fq 'chart ems-chart-26.8.0-b6 · app 26.8.0-b6' <<<"$out"
-grep -Fq '8/8 Running&Ready（controller 1 · init 2 · server 2 · zookeeper 3）' <<<"$out"
-grep -Fq 'swr.example/xms/ems-server:26.8.0-b6' <<<"$out"
-grep -Fq 'allocatable 2000Gi · 已分配 2000Gi (100%)' <<<"$out"
-grep -Fq 'ns:           ems' <<<"$out"
-grep -Fq 'helm release: ems243 (存放 ns default)' <<<"$out"
-! grep -Fq 'EMS 客户端' <<<"$out"
-grep -Fq 'InsufficientHugepages (1 Insufficient hugepages-2Mi)' <<<"$out"
-grep -Fq '目标节点定位（TARGET_IP/TARGET_IPS，共 3 个）' <<<"$out"
-grep -Fq '10.0.0.1 → node-1: ems8-8（label ems8）' <<<"$out"
-grep -Fq '10.0.0.2 → node-2: ems8-8（label ems8）' <<<"$out"
+grep -Fq '=== EMS 健康实例（团队设备，1 个） ===' <<<"$out"
+grep -Eq '\[1\] ems8-8 · chart 26\.8\.0-b6 · 运行 [0-9]+d' <<<"$out"
+grep -Fq '节点: 10.0.0.1（大页已分配 2000Gi） · 10.0.0.2（大页已分配 2000Gi）' <<<"$out"
+grep -Fq '[!] ems9-9 异常（0/1 Running&Ready）' <<<"$out"
+grep -Fq '（另有遗留：空壳 ns 1 个 · 孤儿 release 1 个，略）' <<<"$out"
+! grep -Fq '镜像:' <<<"$out"
+! grep -Fq 'helm release:' <<<"$out"
+! grep -Fq 'InsufficientHugepages' <<<"$out"
+grep -Fq '目标节点（TARGET_IP/TARGET_IPS，共 3 个）' <<<"$out"
+grep -Fq '10.0.0.1 → 10.0.0.1: 属于 ems8-8' <<<"$out"
+grep -Eq '属于 ems8-8（chart 26\.8\.0-b6 · 运行 [0-9]+d[0-9]+h · 节点 2 台）' <<<"$out"
+grep -Fq '10.0.0.2 → 10.0.0.2: 属于 ems8-8' <<<"$out"
+! grep -Fq '实例在非团队设备上' <<<"$out"
 grep -Fq '10.9.9.9: 不是本集群节点' <<<"$out"
-grep -Fq -- '--- 节点 node-1 视角（实例 ems8-8） ---' <<<"$out"
-grep -Fq '角色:  controller+init+server+zookeeper' <<<"$out"
 grep -Fq 'EMS_INSTANCE_COUNT=2' <<<"$out"
 grep -Fq 'EMS_INSTANCES=ems8-8,ems9-9' <<<"$out"
 grep -Fq 'EMS_HEALTHY_COUNT=1' <<<"$out"
@@ -159,8 +160,8 @@ grep -Fq 'EMS_TARGET_CHART_VERSION=26.8.0-b6' <<<"$out"
 grep -Fq 'EMS_TARGET_POD_HEALTH=8/8' <<<"$out"
 
 # ---- ② 仅 TARGET_IP（无 TARGET_IPS）：目标不在任何实例 -----------------------------
-out2=$(env -u TARGET_IPS TARGET_IP=10.0.0.3 bash "$script")
-grep -Fq '10.0.0.3 → node-3: 不在任何 EMS 实例中' <<<"$out2"
+out2=$(env -u TARGET_IPS ems_team_nodes=10.0.0.1,10.0.0.2 TARGET_IP=10.0.0.3 bash "$script")
+grep -Fq '10.0.0.3 → 10.0.0.3（非团队设备）: 不属于任何 EMS 实例' <<<"$out2"
 grep -Fq 'EMS_TARGET_TOTAL=1' <<<"$out2"
 grep -Fq 'EMS_TARGET_MATCHED=0' <<<"$out2"
 ! grep -Fq 'EMS_TARGET_INSTANCE=' <<<"$out2"
@@ -177,6 +178,14 @@ cat >"$tmp/bin/ssh" <<EOF
 #!/usr/bin/env bash
 echo "ssh \$*" >>"\$FIXTURES/ssh.log"
 cmd="\${@: -1}"
+case "\$cmd" in
+  *'hostname -I'*)
+    # 身份采集：有 fixture 定义则返回，否则空（entry 不进映射，不影响内网直接命中）
+    target=''; port=''; prev=''
+    for a in "\$@"; do [[ "\$prev" == -p ]] && port="\$a"; [[ "\$a" == *@* ]] && target="\$a"; prev="\$a"; done
+    cat "\$FIXTURES/hostid\${target#*@}:\${port:-22}" 2>/dev/null
+    exit 0 ;;
+esac
 cmd="\$(sed "s|/tmp/ems-check.sh|\$REAL_SCRIPT|" <<<"\$cmd")"
 eval "\$cmd"
 EOF
@@ -190,13 +199,13 @@ out5=$(TARGET_HOSTS='[{"ip":"10.0.0.1","user":"ops"}]' TARGET_IP=10.0.0.1 bash "
   echo "dispatch run failed:" >&2; echo "$out5" >&2; exit 1
 }
 grep -Fq 'remote execution via ops@10.0.0.1:22' <<<"$out5"
-grep -Fq '10.0.0.1 → node-1: ems8-8（label ems8）' <<<"$out5"
+grep -Fq '10.0.0.1 → 10.0.0.1（非团队设备）: 属于 ems8-8' <<<"$out5"
 grep -Fq 'EMS_TARGET_INSTANCE=ems8-8' <<<"$out5"
 grep -Fq 'EMS_TARGET_POD_HEALTH=8/8' <<<"$out5"
 grep -q 'TARGET_HOSTS=' "$tmp/ssh.log"
 grep -q 'TARGET_IP=10.0.0.1' "$tmp/ssh.log"
-# 分发后远程侧不再二次分发（TARGET_HOSTS 已清空，不出现递归 ssh）
-[[ "$(grep -c '^ssh ' "$tmp/ssh.log")" -le 2 ]] || { echo 'unexpected recursive dispatch' >&2; exit 1; }
+# 分发后远程侧不再二次分发（TARGET_HOSTS 已清空；ssh = 探测 kubectl + 身份采集 + 远程执行）
+[[ "$(grep -c '^ssh ' "$tmp/ssh.log")" -le 3 ]] || { echo 'unexpected recursive dispatch' >&2; exit 1; }
 
 # ---- ⑥ 退出码：正常 0（异常实例仅报告，不影响退出码） ------------------------------
 env -u TARGET_IPS TARGET_IP=10.0.0.1 bash "$script" >/dev/null 2>&1 || { echo 'expected exit code 0' >&2; exit 1; }
@@ -316,6 +325,128 @@ grep -Fq '共 1 台' <<<"$outg5"
 grep -Fq '门禁通过' <<<"$outg5"
 grep -Fq 'EMS_GATE=passed' <<<"$outg5"
 grep -Fq 'EMS_NODES=10.0.0.4' <<<"$outg5"
+
+# ---- ⑨ 跨 region（hd2 形态）：TARGET_IPS 为外网入口 endpoint，经身份映射定位 ----
+# 独立 fixtures：集群节点是内网 31.x/长主机名，平台注入的目标是 115.33.98.101:222x
+mk_cross_fixtures() { # <dir> <pods-and-labels: full|gate>
+    local d=$1 mode=$2
+    mkdir -p "$d/bin"
+    if [[ "$mode" == full ]]; then
+        cat >"$d/nodes.json" <<'JSON'
+{"items": [
+  {"metadata": {"name": "tokens-engine-bnt3-13lrp", "labels": {"ems10": "true"}},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.140"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "allocatable": {"cpu": "256", "memory": "3Ti"}}},
+  {"metadata": {"name": "tokens-engine-bnt3-9d0ee", "labels": {"ems10": "true"}},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.120"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "allocatable": {"cpu": "256", "memory": "3Ti"}}}
+]}
+JSON
+        cat >"$d/pods.json" <<'JSON'
+{"items": [
+  {"metadata": {"namespace": "ems10-10", "name": "ems-server-140"},
+   "spec": {"nodeName": "tokens-engine-bnt3-13lrp",
+            "containers": [{"name": "ems-server", "image": "swr.example/xms/ems-server:26.8.0-b6",
+                             "resources": {"requests": {"hugepages-2Mi": "2000Gi", "cpu": "40"}}}]},
+   "status": {"phase": "Running", "startTime": "2026-09-27T00:00:00Z", "conditions": [{"type": "Ready", "status": "True"}]}},
+  {"metadata": {"namespace": "ems10-10", "name": "ems-server-120"},
+   "spec": {"nodeName": "tokens-engine-bnt3-9d0ee",
+            "containers": [{"name": "ems-server", "image": "swr.example/xms/ems-server:26.8.0-b6",
+                             "resources": {"requests": {"hugepages-2Mi": "2000Gi", "cpu": "40"}}}]},
+   "status": {"phase": "Running", "startTime": "2026-09-27T00:00:00Z", "conditions": [{"type": "Ready", "status": "True"}]}}
+]}
+JSON
+        echo '{"items": [{"metadata": {"name": "ems10-10"}}, {"metadata": {"name": "ems10"}}]}' >"$d/namespaces.json"
+        echo '[{"name": "ems10-10", "namespace": "ems10", "chart": "ems-26.8.0-b6", "app_version": "26.8.0-b6", "status": "deployed"}]' >"$d/helm.json"
+    else
+        cat >"$d/nodes.json" <<'JSON'
+{"items": [
+  {"metadata": {"name": "tokens-engine-bnt3-13lrp", "labels": {}},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.140"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "allocatable": {"cpu": "256", "memory": "3Ti"}}},
+  {"metadata": {"name": "tokens-engine-bnt3-9d0ee", "labels": {}},
+   "status": {"addresses": [{"type": "InternalIP", "address": "192.168.31.120"}],
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "allocatable": {"cpu": "256", "memory": "3Ti"}}}
+]}
+JSON
+        echo '{"items": []}' >"$d/pods.json"
+        echo '{"items": [{"metadata": {"name": "kube-system"}}]}' >"$d/namespaces.json"
+        echo '[]' >"$d/helm.json"
+    fi
+    # 身份采集 fixture：外网 endpoint → 内网身份
+    printf 'tokens-engine-bnt3-13lrp\n192.168.31.140 43.105.134.183\n' >"$d/hostid115.33.98.101:2224"
+    printf 'tokens-engine-bnt3-9d0ee\n192.168.31.120 43.105.240.70\n' >"$d/hostid115.33.98.101:2225"
+    cat >"$d/bin/kubectl" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == 'version --request-timeout=5s' ]]; then exit 0; fi
+case "\$*" in
+  *'get nodes'*)      cat "\$FIXTURES/nodes.json" ;;
+  *'get pods -A'*)    cat "\$FIXTURES/pods.json" ;;
+  *'get namespaces'*) cat "\$FIXTURES/namespaces.json" ;;
+  *) echo "unexpected kubectl call: \$*" >&2; exit 1 ;;
+esac
+EOF
+    cat >"$d/bin/helm" <<EOF
+#!/usr/bin/env bash
+cat "\$FIXTURES/helm.json"
+EOF
+    cat >"$d/bin/ssh" <<EOF
+#!/usr/bin/env bash
+cmd="\${@: -1}"
+case "\$cmd" in
+  *'hostname -I'*)
+    target=''; port=''; prev=''
+    for a in "\$@"; do [[ "\$prev" == -p ]] && port="\$a"; [[ "\$a" == *@* ]] && target="\$a"; prev="\$a"; done
+    cat "\$FIXTURES/hostid\${target#*@}:\${port:-22}" 2>/dev/null
+    exit 0 ;;
+esac
+case "\$cmd" in
+  *'command -v kubectl'*) exit 0 ;;
+esac
+cmd="\$(sed "s|/tmp/ems-check.sh|\$REAL_SCRIPT|" <<<"\$cmd")"
+eval "\$cmd"
+EOF
+    cat >"$d/bin/scp" <<EOF
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$d/bin/"*
+}
+
+# ⑨ 巡检定位：endpoint 经身份映射命中集群节点
+tmp9=$(mktemp -d)
+mk_cross_fixtures "$tmp9" full
+out9=$(PATH="$tmp9/bin:$PATH" FIXTURES="$tmp9" REAL_SCRIPT="$script" \
+    TARGET_HOSTS='[{"ip":"115.33.98.101:2224","user":"root"},{"ip":"115.33.98.101:2225","user":"root"}]' \
+    TARGET_IPS='["115.33.98.101:2224","115.33.98.101:2225"]' bash "$script") || {
+  echo 'cross-region run failed:' >&2; echo "$out9" >&2; exit 1
+}
+grep -Fq 'remote execution via root@115.33.98.101:2224' <<<"$out9"
+grep -Fq '115.33.98.101:2224 → 192.168.31.140: 属于 ems10-10' <<<"$out9"
+grep -Fq '115.33.98.101:2225 → 192.168.31.120: 属于 ems10-10' <<<"$out9"
+grep -Fq 'EMS_TARGET_MATCHED=2' <<<"$out9"
+grep -Fq 'EMS_TARGET_INSTANCE=ems10-10' <<<"$out9"
+grep -Fq 'EMS_TARGET_NODES=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out9"
+rm -rf "$tmp9"
+
+# ⑨b 跨 region 门禁：G-2 目标解析经身份映射，门禁通过
+tmp9=$(mktemp -d)
+mk_cross_fixtures "$tmp9" gate
+outg9=$(PATH="$tmp9/bin:$PATH" FIXTURES="$tmp9" REAL_SCRIPT="$script" \
+    TARGET_HOSTS='[{"ip":"115.33.98.101:2224","user":"root"},{"ip":"115.33.98.101:2225","user":"root"}]' \
+    TARGET_IPS='["115.33.98.101:2224","115.33.98.101:2225"]' \
+    EMS_NAME=ems20-20 bash "$script") || {
+  echo 'cross-region gate failed:' >&2; echo "$outg9" >&2; exit 1
+}
+grep -Fq '目标节点：tokens-engine-bnt3-13lrp、tokens-engine-bnt3-9d0ee' <<<"$outg9"
+grep -Fq '门禁通过' <<<"$outg9"
+grep -Fq 'EMS_GATE=passed' <<<"$outg9"
+grep -Fq 'EMS_NODES=115.33.98.101:2224,115.33.98.101:2225' <<<"$outg9"
+rm -rf "$tmp9"
 
 # ---- ⑦ 参数面断言：恰好 2 个门禁可选参数（EMS_NAME/EMS_RELEASE_NAMESPACES），无其他杂项 ----
 python3 - "$script" <<'EOF'
