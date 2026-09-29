@@ -105,9 +105,13 @@
     .dshell-table th[data-sort] { cursor:pointer; user-select:none; white-space:nowrap; }
     .dshell-table th[data-sort]:hover { color:var(--dsw-alias-state-accent-primary); }
     .dshell-table th[data-sort] .env-sort-arrow { display:inline-block; min-width:12px; margin-left:2px; font-size:10px; color:var(--dsw-alias-state-accent-primary); }
-    @keyframes pipPulse { 0%,100%{ box-shadow:0 0 0 0 color-mix(in srgb, var(--st-run) 45%, transparent);} 50%{ box-shadow:0 0 0 4px transparent;} }
-    .pipeline-node.run { animation:pipPulse 1.4s infinite; }
-    /* 分支 / 部署策略面板加载态：三点弹跳动画（颜色随 dshell-muted 文本，浅/深主题自适应） */
+    /* 进行中脉冲：box-shadow 扩散动画每帧触发整个节点 repaint；改为 ::after 预绘一圈静态光环，
+       动画只动 opacity/transform（合成器属性，不占主线程重绘），视觉保持可辨识的「呼吸光环」 */
+    @keyframes pipPulse { 0%,100%{ opacity:.85; transform:scale(1);} 50%{ opacity:.15; transform:scale(1.05);} }
+    .pipeline-node.run { position:relative; }
+    .pipeline-node.run::after { content:''; position:absolute; inset:-2px; border-radius:11px; pointer-events:none; box-shadow:0 0 0 2px color-mix(in srgb, var(--st-run) 55%, transparent); animation:pipPulse 1.4s infinite; }
+    /* 分支 / 部署策略面板加载态：三点弹跳动画（颜色随 dshell-muted 文本，浅/深主题自适应）。
+       transform/opacity 本来就是合成器属性，主线程开销已很低，保持原实现 */
     @keyframes pipDot { 0%,60%,100%{ transform:translateY(0); opacity:.35; } 30%{ transform:translateY(-3px); opacity:1; } }
     .pip-dots { display:inline-flex; align-items:center; gap:3px; margin-left:2px; vertical-align:middle; }
     .pip-dots i { width:4px; height:4px; border-radius:50%; background:currentColor; animation:pipDot 1.2s infinite; }
@@ -4455,7 +4459,36 @@ async function pullRemoteQueueLog(){
   try{ return await request; }
   finally{ if(_remoteLogPullPromise===request){ _remoteLogPullPromise=null; _remoteLogPullKey=''; } }
 }
-/* 拉取服务端权威队列及旧标签页在场快照（过滤掉自己）并重绘队列区 */
+/* 拉取服务端权威队列及旧标签页在场快照（过滤掉自己）并重绘队列区。
+   降耗：快照签名与上轮一致（内容未变，效果等同 304）时跳过重绘——renderQueue 的 DOM 重建是
+   每秒轮询的主要开销；当前详情的日志尾部走 pullRemoteQueueLog 自带的 revision/304 通道，不受此影响。 */
+let _queuePullSig='';   // 上轮已应用渲染的队列快照签名（queuePollSig 产出）
+/* 队列快照签名：远端快照剔除 seenAgo（服务端每秒必变、页面不展示）后整体序列化；另覆盖编排区
+   查看焦点（「查看中」高亮依赖 viewRc 身份）与本页排队项的相对时间显示文字（fmtRelative 分桶，
+   标签翻转才算变化）；本页有排队项在等节点租约时附加 5 秒桶，保持 nodeWait 到点重试节奏
+   （重试由 renderQueue 自愈入口的 drainQueue 驱动）。一次序列化成本远低于 DOM 重建；
+   全局依赖一律 typeof 兜底，供抽取测试缺省。 */
+function queuePollSig(clients){
+  const list=Array.isArray(clients)?clients:[];
+  const rel=typeof fmtRelative==='function'?fmtRelative:function(){return '';};
+  const parts=[JSON.stringify(list.map(c=>!c||typeof c!=='object'?c:{id:c.id,label:c.label,schemaVersion:c.schemaVersion,running:c.running,runs:c.runs,queue:c.queue}))];
+  const times=[];   // 远端条目的相对时间显示文字：标签翻转同样算内容变化
+  list.forEach(c=>{
+    (Array.isArray(c&&c.queue)?c.queue:[]).forEach(q=>times.push(rel(q&&q.queuedAt)));
+    (Array.isArray(c&&c.runs)?c.runs:[]).forEach(r=>times.push(rel(r&&r.startedAt)));
+    if(c&&c.running) times.push(rel(c.running.startedAt));
+  });
+  parts.push('t:'+times.join(','));
+  if(typeof viewRc!=='undefined'&&viewRc){
+    parts.push('v:'+(viewRc.remotePreview===true?('r:'+viewRc.remoteClientId+':'+viewRc.remoteKind+':'+viewRc.remoteItemId):String(viewRc.id||'')));
+  } else parts.push('v:');
+  if(typeof localQueueItems==='function'){
+    let wait=false;
+    parts.push('l:'+localQueueItems().map(q=>{ if(q&&q.nodeWait) wait=true; return String(q&&q.id||'')+':'+rel(q&&q.queuedAt); }).join(','));
+    if(wait) parts.push('w:'+Math.floor(Date.now()/5000));
+  }
+  return parts.join('|');
+}
 async function pullRemoteQueue(){
   try{
     const r=await fetch('/api/worktable/pipeline/queue');
@@ -4464,15 +4497,21 @@ async function pullRemoteQueue(){
       const clients=(Array.isArray(j.clients)?j.clients:[]).filter(c=>c && c.id!==QCLIENT_ID);
       const server=j&&j.server;
       const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
-      remoteQueueClients=(serverActive?[server]:[]).concat(clients);
-      const planSig=planActiveSig();
-      if(planSig!==_planActiveSig){ _planActiveSig=planSig; renderPlanList(); }   // 计划的活动执行（运行中/排队中）集合变化时同步重绘「定时」页，「终止」按钮随执行出现/消失
-      applyRemoteQueuePreviewRefresh();
-      if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点
+      const next=(serverActive?[server]:[]).concat(clients);
+      const sig=queuePollSig(next);
+      if(sig!==_queuePullSig){
+        _queuePullSig=sig;
+        remoteQueueClients=next;
+        const planSig=planActiveSig();
+        if(planSig!==_planActiveSig){ _planActiveSig=planSig; renderPlanList(); }   // 计划的活动执行（运行中/排队中）集合变化时同步重绘「定时」页，「终止」按钮随执行出现/消失
+        applyRemoteQueuePreviewRefresh();
+        renderQueue();
+      }
+      if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点（含超时清理，每轮都执行）
       await pullRemoteQueueLog();
     }
   }catch(e){}
-  renderQueue();
+  /* 拉取失败/内容未变本轮不重绘：远端数据无更新，本地队列变化各有渲染入口（启动/取消/排空等） */
 }
 $('queueRefresh').addEventListener('click', async ()=>{
   const b=$('queueRefresh'); b.disabled=true;
@@ -7615,6 +7654,9 @@ async function refreshHistoryFromServer(showError){
     if(_historyRefreshPromise===request){ _historyRefreshPromise=null; _historyRefreshNotifyError=false; }
   }
 }
+/* 运行历史自动刷新：页面隐藏（document.hidden）时当次跳过——与运行队列轮询同一可见性策略
+   （后台不轮询；队列轮询在文件尾部 startQueuePolling/syncQueuePolling，采用停表 + 恢复可见立即补拉，
+   这里保留定时器、隐藏时早退，恢复可见后由下一拍自然补拉，ETag/304 保证无变化时不传正文）。 */
 let _historyRefreshTimer=null;
 function startHistoryAutoRefresh(){
   if(_historyRefreshTimer!==null) return;
@@ -8915,9 +8957,28 @@ function scheduleGpuRefresh(){
 loadServerState().finally(()=>{ scheduleGpuRefresh(); startHistoryAutoRefresh(); });
 /* 从服务端拉取定时计划（服务端调度，关闭页面也会执行） */
 loadPlans();
-/* 服务端权威运行队列：启动即拉一次，之后每秒同步；旧浏览器在场快照仍兼容展示。 */
+/* 服务端权威运行队列：启动即拉一次，之后每秒同步；旧浏览器在场快照仍兼容展示。
+   降耗（与运行历史自动刷新同一可见性策略，后台不轮询）：页面隐藏（document.hidden）即停掉
+   轮询定时器，visibilitychange 恢复可见时立即补拉一次并重启周期拉取——后台标签页零请求零重绘；
+   定时器回调内仍保留 hidden 早退兜底（可见性事件未触达的环境不发请求）。 */
+const QUEUE_POLL_MS=1000;
+let _queuePollTimer=null;
+function startQueuePolling(){
+  if(_queuePollTimer!==null) return;
+  _queuePollTimer=setInterval(()=>{ if(document.hidden===true) return; pullRemoteQueue(); },QUEUE_POLL_MS);
+}
+function stopQueuePolling(){
+  if(_queuePollTimer===null) return;
+  clearInterval(_queuePollTimer); _queuePollTimer=null;
+}
+function syncQueuePolling(){
+  if(document.hidden===true){ stopQueuePolling(); return; }
+  pullRemoteQueue();   // 恢复可见：立即补拉一次，随后恢复周期拉取
+  startQueuePolling();
+}
+document.addEventListener('visibilitychange',syncQueuePolling);
 pullRemoteQueue();
-setInterval(pullRemoteQueue, 1000);
+startQueuePolling();
 </script>
 </body>
 </html>
