@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线页浏览器 CPU 降耗（`projects/pipeline/pipeline.html`，用户可见行为不变；实测开关页面 CPU 差约
+  20% 的场景针对优化）：① 阶段详情日志改**增量渲染**（`syncDetailLogLines`）——日志增长只追加新增行
+  （DocumentFragment 一次挂载），触顶窗口平移带逐行校验、中部替换原位插入、外部改写回退全量重建，
+  消灭每次刷新对日志区的全量 DOM 重建；滚动语义不变（贴底跟随、上翻保持）；② 各阶段进度定时器
+  合并为全页面唯一 500ms tick（五个执行器改为登记进度任务、摘除即停表；页面 hidden 停表、恢复可见
+  立即补刷新；tick 内只直改进度条/耗时文本，不再每 tick 全量扫节点与重绘详情；`rc.over`/`rc.token`
+  迟回守卫语义不变）；③ 运行队列轮询按页面可见性暂停（恢复时立即补拉），响应内容签名未变跳过
+  重绘；进行中脉冲动画由 box-shadow 扩散改为 opacity/transform 合成器属性。新增
+  `tests/test_stage_tick.js`、`tests/test_queue_poll_throttle.js`，扩充 `test_log_render_scaling.js`，
+  调整 `test_plan_terminate.js`（快照未变时不再强制重绘即目标行为）。
+
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`
   不入 git（含证书私钥），而 `ems-check.sh` dispatch 模式与 `ems-deploy.sh` 都要读仓内
