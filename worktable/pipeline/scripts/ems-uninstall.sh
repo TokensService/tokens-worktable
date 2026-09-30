@@ -9,7 +9,8 @@
 # 卸载范围 = 该 label 的**全部**节点（不止勾选的），节点级操作只作用于这些
 # 节点；TARGET_HOSTS 仅用于远程分发宿主探测。目标不属于任何实例 = 已卸干净，
 # 幂等成功退出；多实例交叉 = die 请人工。推荐两段式：默认预演看清单 →
-# EMS_DRY_RUN=0 正式清理。跨 region（hd2 等）：TARGET_IPS 为外网入口 endpoint
+# EMS_DRY_RUN=EMS_DRY_RUN 
+# 0 正式清理。跨 region（hd2 等）：TARGET_IPS 为外网入口 endpoint
 # （ip:port）时经分发阶段采集的身份映射三级解析，gy1 内网行为不变。
 #
 # 执行位置：工作台服务端（无 kubectl/helm）经 TARGET_HOSTS 自推送到首个具备
