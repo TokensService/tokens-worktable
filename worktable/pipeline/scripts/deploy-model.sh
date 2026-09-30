@@ -82,7 +82,9 @@ TASK_EXECUTOR_READY_POLL_SECONDS="${TASK_EXECUTOR_READY_POLL_SECONDS:-5}"
 SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${RUN_DIR}/logs}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
+HEAD_LOG_COLLECTOR_PID="${HEAD_LOG_COLLECTOR_PID:-}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+REMOTE_LOG_COLLECTOR_ENABLED="${REMOTE_LOG_COLLECTOR_ENABLED:-true}"
 EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
 EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
 EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
@@ -132,6 +134,27 @@ sync_remote_file() {
   destination_dir="$(dirname "$destination")"
   cat "$source" | run_remote "$target" "$port" \
     "mkdir -p $(remote_quote "$destination_dir") && cat > $(remote_quote "$destination")"
+}
+
+start_execution_host_log_collector() {
+  local target="$1" port="$2"
+
+  [[ "$REMOTE_LOG_COLLECTOR_ENABLED" == "true" ]] || return 0
+  mkdir -p "$HEAD_LOG_DIR"
+  nohup env \
+    KUBECTL_BIN="$KUBECTL_BIN" \
+    POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
+    EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
+    EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" \
+    EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
+    REMOTE_KUBECTL_TARGET="$target" \
+    REMOTE_KUBECTL_PORT="$port" \
+    REMOTE_KUBECTL_PASSWORD="${REMOTE_SSH_PASSWORD:-}" \
+    "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
+    >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
+  HEAD_LOG_COLLECTOR_PID=$!
+  printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
+    "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
 }
 
 mapped_execution_target_host() {
@@ -244,7 +267,7 @@ PY
 
 deploy_from_target_host() {
   local parsed target_ip target_port target_user target remote_script_dir remote_script
-  local remote_env remote_xds_url remote_head_log_root remote_command
+  local remote_env remote_xds_url remote_command
 
   command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
   parsed="$(python3 - "$TARGET_HOSTS" "${TARGET_PASSWORD:-}" <<'PY'
@@ -285,7 +308,7 @@ PY
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
   remote_xds_url="${XDS_URL:-}"
-  remote_head_log_root="${TARGET_RUN_DIR}/logs"
+  start_execution_host_log_collector "$target" "$target_port"
   remote_env="$(mktemp)"
 
   {
@@ -310,7 +333,8 @@ PY
     printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
     printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
     printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS"
-    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
+    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport HEAD_LOG_DIR=%q\nexport HEAD_LOG_COLLECTOR_PID=%q\nexport POLL_INTERVAL_SECONDS=%q\n' \
+      "$SLOT_CONFIG_NAMESPACE" "$HEAD_LOG_ROOT" "$HEAD_LOG_DIR" "$HEAD_LOG_COLLECTOR_PID" "$POLL_INTERVAL_SECONDS"
     printf 'export EMS_LOG_SYNC_INTERVAL_SECONDS=%q\nexport EMS_LOG_SOURCE_DIR=%q\nexport EMS_LOG_CONTAINER=%q\n' \
       "$EMS_LOG_SYNC_INTERVAL_SECONDS" "$EMS_LOG_SOURCE_DIR" "$EMS_LOG_CONTAINER"
   } >"$remote_env"
@@ -320,10 +344,9 @@ PY
   tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
     "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
-  sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
   sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
-  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
+  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   local mapped_target_host
@@ -374,6 +397,7 @@ fi
 [[ "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_TIMEOUT_SECONDS: $TASK_EXECUTOR_READY_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_POLL_SECONDS: $TASK_EXECUTOR_READY_POLL_SECONDS" >&2; exit 2; }
 [[ "$EMS_LOG_SYNC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid EMS_LOG_SYNC_INTERVAL_SECONDS: $EMS_LOG_SYNC_INTERVAL_SECONDS" >&2; exit 2; }
+[[ "$REMOTE_LOG_COLLECTOR_ENABLED" == "true" || "$REMOTE_LOG_COLLECTOR_ENABLED" == "false" ]] || { echo "REMOTE_LOG_COLLECTOR_ENABLED must be true or false: $REMOTE_LOG_COLLECTOR_ENABLED" >&2; exit 2; }
 [[ "$EMS_LOG_SOURCE_DIR" == /* ]] || { echo "EMS_LOG_SOURCE_DIR must be an absolute path: $EMS_LOG_SOURCE_DIR" >&2; exit 2; }
 [[ -n "$EMS_LOG_CONTAINER" ]] || { echo "EMS_LOG_CONTAINER must not be empty" >&2; exit 2; }
 [[ "$MOCK_HELM_DEPLOY" == "true" || "$MOCK_HELM_DEPLOY" == "false" ]] || {
@@ -1093,15 +1117,17 @@ clear_target_node_taints
 resolve_xds_url_from_service
 rewrite_xds_url_to_mapped_host
 
-mkdir -p "$HEAD_LOG_DIR"
-nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
-  EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
-  EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
-  "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
-  >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
-HEAD_LOG_COLLECTOR_PID=$!
-printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
-  "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
+if [[ "$DEPLOY_ON_TARGET_HOST" != "1" ]]; then
+  mkdir -p "$HEAD_LOG_DIR"
+  nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
+    EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
+    EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
+    "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
+    >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
+  HEAD_LOG_COLLECTOR_PID=$!
+  printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
+    "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
+fi
 persist_runtime_environment
 
 wait_for_xds_api
