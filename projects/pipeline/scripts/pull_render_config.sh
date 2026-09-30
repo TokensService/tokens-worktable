@@ -291,6 +291,28 @@ write_target_pipeline_env() {
   )
 }
 
+# The execution-host image is required only while pull-image.sh exports the
+# chart, values, and architecture templates. Target images are checked after
+# rendering, so the temporary local copy can be released before rendering.
+cleanup_render_images() {
+  local image
+  local -A seen_images=()
+
+  command -v nerdctl >/dev/null 2>&1 || {
+    echo "[pull] nerdctl is unavailable; skip execution-host image cleanup" >&2
+    return 0
+  }
+
+  for image in "$DEPLOY_IMAGE" "${TEMPLATE_IMAGE:-$DEPLOY_IMAGE}"; do
+    [[ -n "$image" && -z "${seen_images[$image]:-}" ]] || continue
+    seen_images["$image"]=1
+    echo "[pull] execution host: remove temporary render image $image"
+    if ! nerdctl --namespace k8s.io image rm "$image" >/dev/null; then
+      echo "[pull] warning: could not remove temporary render image $image" >&2
+    fi
+  done
+}
+
 remote_ssh() {
   local target="$1" port="$2" password="$3"
   shift 3
@@ -420,6 +442,7 @@ PY
 resolve_target_node_ip_map
 echo "[pipeline] image=$IMAGE_NAME arch=$ARCH_NAME run_dir=$RUN_DIR render_dir=$RENDER_DIR"
 bash "$SCRIPT_DIR/pull-image.sh"
+cleanup_render_images
 # pull-image.sh runs as a child process. Retain the resolved template outputs
 # in this orchestration shell so both rendering and pipeline.env use them.
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-${RUN_DIR}/template/xds-cluster}"
