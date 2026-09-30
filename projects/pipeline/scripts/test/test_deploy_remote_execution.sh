@@ -13,6 +13,12 @@ printf '{}' >"$work_dir/rendered/architecture.request.json"
 printf '{"resources":[{"task_executor_group":"taskexecutor"}]}' >"$work_dir/rendered/resources.rendered.json"
 printf '{"key":"xds.optest","value":"test","hosts":[]}' >"$work_dir/rendered/node-labels.json"
 
+cat >"$work_dir/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work_dir/bin/sleep"
+
 cat >"$work_dir/bin/sshpass" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -40,6 +46,26 @@ if [[ "$*" == *"DEPLOY_ON_TARGET_HOST=1"* ]]; then
     'MODEL_API=http://192.168.31.113:31002/xds/v1/models/glm-5.3-nvfp4'
   exit 0
 fi
+if [[ "$*" == *"kubectl get namespace xds-test-arch-local"* ]]; then
+  count=0
+  [[ ! -f "$TEST_REMOTE_NAMESPACE_COUNT" ]] || count="$(cat "$TEST_REMOTE_NAMESPACE_COUNT")"
+  count=$((count + 1))
+  printf '%s' "$count" >"$TEST_REMOTE_NAMESPACE_COUNT"
+  (( count <= 2 ))
+  exit
+fi
+if [[ "$*" == *"kubectl -n xds-test-arch-local get pods -o json"* ]]; then
+  printf '{"items":[]}'
+  exit 0
+fi
+if [[ "$*" == *"kubectl -n xds-test-arch-local get pod -l ray.io/node-type=head"* ]]; then
+  printf 'head-pod'
+  exit 0
+fi
+if [[ "$*" == *"kubectl -n xds-test-arch-local logs -f head-pod -c ray-head --timestamps"* ]]; then
+  printf 'remote head log\n'
+  exit 0
+fi
 cat >>"$TEST_SSH_STDIN"
 SH
 chmod +x "$work_dir/bin/sshpass" "$work_dir/bin/ssh"
@@ -52,6 +78,7 @@ printf 'export TARGET_NODE_IP_MAP=%q\n' '{"115.33.98.101:2226":"192.168.31.113"}
 PATH="$work_dir/bin:$PATH" \
 TEST_SSH_LOG="$work_dir/ssh.log" \
 TEST_SSH_STDIN="$work_dir/ssh.stdin" \
+TEST_REMOTE_NAMESPACE_COUNT="$work_dir/remote-namespace-count" \
 RUN_DIR="$work_dir" \
 RENDER_DIR="$work_dir/rendered" \
 ARCH_NAME=test-arch \
@@ -75,6 +102,14 @@ fi
 grep -Fq 'Deploy the rendered chart' "$work_dir/ssh.stdin"
 grep -Fq 'test-password' "$work_dir/ssh.stdin"
 grep -Fq 'TARGET_NODE_IP_MAP' "$work_dir/ssh.stdin"
+for _ in {1..50}; do
+  collector_log="$(find "$work_dir/logs" -name head-pod.follow.log -print -quit)"
+  [[ -n "$collector_log" ]] && break
+  command sleep 0.02
+done
+[[ -n "${collector_log:-}" ]] || { echo 'execution-host collector did not write the head log' >&2; exit 1; }
+grep -Fxq 'remote head log' "$collector_log"
+grep -Fq 'remote_kubectl_target=root@115.33.98.101' "$(dirname "$collector_log")/metadata"
 grep -Fq 'DEPLOY_EXECUTION_HOST=115.33.98.101' "$work_dir/output"
 grep -Fxq 'XDS_URL=http://115.33.98.101:31002/xds/v1/chat/completions' "$work_dir/output"
 grep -Fxq 'XDS_API_HOST=115.33.98.101' "$work_dir/output"
