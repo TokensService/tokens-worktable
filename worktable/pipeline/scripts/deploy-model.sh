@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
+# Pipeline artifacts are retained under ARCHIVE_DIR.  RUN_DIR is a temporary
+# render/deployment workspace and must not be used for execution-host logs.
+ARCHIVE_DIR="${ARCHIVE_DIR:-${PWD}/archive}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 ARCH_NAME="${ARCH_NAME:-default}"
 PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
@@ -33,14 +36,17 @@ import sys
 
 path, name = sys.argv[1:]
 prefix = f"export {name}="
+value = None
 for line in Path(path).read_text(encoding="utf-8").splitlines():
     if not line.startswith(prefix):
         continue
     values = shlex.split(line.split("=", 1)[1])
     if len(values) != 1:
         raise SystemExit(f"persisted {name} has an invalid shell value")
-    print(values[0])
-    break
+    # Match shell `source` semantics: a later export overrides an earlier one.
+    value = values[0]
+if value is not None:
+    print(value)
 PY
 }
 
@@ -80,7 +86,7 @@ XDS_READY_POLL_SECONDS="${XDS_READY_POLL_SECONDS:-5}"
 TASK_EXECUTOR_READY_TIMEOUT_SECONDS="${TASK_EXECUTOR_READY_TIMEOUT_SECONDS:-900}"
 TASK_EXECUTOR_READY_POLL_SECONDS="${TASK_EXECUTOR_READY_POLL_SECONDS:-5}"
 SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
-HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${RUN_DIR}/logs}"
+HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${ARCHIVE_DIR}}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
 HEAD_LOG_COLLECTOR_PID="${HEAD_LOG_COLLECTOR_PID:-}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
@@ -267,7 +273,7 @@ PY
 
 deploy_from_target_host() {
   local parsed target_ip target_port target_user target remote_script_dir remote_script
-  local remote_env remote_xds_url remote_command
+  local remote_env remote_xds_url remote_command remote_head_log_root
 
   command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
   parsed="$(python3 - "$TARGET_HOSTS" "${TARGET_PASSWORD:-}" <<'PY'
@@ -308,6 +314,7 @@ PY
   remote_script_dir="${TARGET_RUN_DIR}/scripts"
   remote_script="${remote_script_dir}/deploy-model.sh"
   remote_xds_url="${XDS_URL:-}"
+  remote_head_log_root="${TARGET_RUN_DIR}/logs"
   start_execution_host_log_collector "$target" "$target_port"
   remote_env="$(mktemp)"
 
@@ -333,8 +340,8 @@ PY
     printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
     printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
     printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS"
-    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport HEAD_LOG_DIR=%q\nexport HEAD_LOG_COLLECTOR_PID=%q\nexport POLL_INTERVAL_SECONDS=%q\n' \
-      "$SLOT_CONFIG_NAMESPACE" "$HEAD_LOG_ROOT" "$HEAD_LOG_DIR" "$HEAD_LOG_COLLECTOR_PID" "$POLL_INTERVAL_SECONDS"
+    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' \
+      "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
     printf 'export EMS_LOG_SYNC_INTERVAL_SECONDS=%q\nexport EMS_LOG_SOURCE_DIR=%q\nexport EMS_LOG_CONTAINER=%q\n' \
       "$EMS_LOG_SYNC_INTERVAL_SECONDS" "$EMS_LOG_SOURCE_DIR" "$EMS_LOG_CONTAINER"
   } >"$remote_env"
@@ -344,9 +351,10 @@ PY
   tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
     "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
+  sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
   sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
-  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/register-model.sh")"
+  run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   local mapped_target_host
@@ -364,7 +372,9 @@ PY
   # The target resolves the actual NodePort and writes it to its contract.
   # Copy that sanitized runtime contract back so later execution-host stages
   # and print-env.sh observe the same XDS endpoint.
-  local runtime_env
+  local runtime_env target_head_log_dir target_head_log_collector_pid local_head_log_dir local_head_log_collector_pid
+  local_head_log_dir="$HEAD_LOG_DIR"
+  local_head_log_collector_pid="$HEAD_LOG_COLLECTOR_PID"
   mkdir -p "$(dirname "$PIPELINE_ENV_FILE")"
   runtime_env="$(mktemp "${PIPELINE_ENV_FILE}.tmp.XXXXXX")"
   if ! run_remote "$target" "$target_port" "cat $(remote_quote "$TARGET_PIPELINE_ENV_FILE")" >"$runtime_env"; then
@@ -372,9 +382,17 @@ PY
     [[ ! -e "$remote_env" ]] || unlink "$remote_env"
     return 1
   fi
+  target_head_log_dir="$(load_persisted_environment_value "$runtime_env" HEAD_LOG_DIR)"
+  target_head_log_collector_pid="$(load_persisted_environment_value "$runtime_env" HEAD_LOG_COLLECTOR_PID)"
   local -a returned_environment
   mapfile -t returned_environment < <(rewrite_returned_xds_url_to_execution_host "$runtime_env" "$target_ip")
   mv "$runtime_env" "$PIPELINE_ENV_FILE"
+  {
+    printf 'export TARGET_HEAD_LOG_DIR=%q\n' "$target_head_log_dir"
+    printf 'export TARGET_HEAD_LOG_COLLECTOR_PID=%q\n' "$target_head_log_collector_pid"
+    printf 'export HEAD_LOG_DIR=%q\n' "$local_head_log_dir"
+    printf 'export HEAD_LOG_COLLECTOR_PID=%q\n' "$local_head_log_collector_pid"
+  } >>"$PIPELINE_ENV_FILE"
   [[ ! -e "$remote_env" ]] || unlink "$remote_env"
   printf 'DEPLOY_EXECUTION_HOST=%s\n' "$target_ip"
   ((${#returned_environment[@]} == 0)) || printf '%s\n' "${returned_environment[@]}"
@@ -1117,17 +1135,15 @@ clear_target_node_taints
 resolve_xds_url_from_service
 rewrite_xds_url_to_mapped_host
 
-if [[ "$DEPLOY_ON_TARGET_HOST" != "1" ]]; then
-  mkdir -p "$HEAD_LOG_DIR"
-  nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
+mkdir -p "$HEAD_LOG_DIR"
+nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
     EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
     EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
     "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
     >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
-  HEAD_LOG_COLLECTOR_PID=$!
-  printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
-    "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
-fi
+HEAD_LOG_COLLECTOR_PID=$!
+printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
+  "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"
 persist_runtime_environment
 
 wait_for_xds_api
