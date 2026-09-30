@@ -281,7 +281,7 @@
           <button class="dshell-btn" id="relRunBtn">🚀 构建并发行</button>
           <span class="dshell-muted" id="relRunTip" style="font-size:11px"></span>
         </div>
-        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
+        <p class="dshell-muted" id="relFlowHelp" style="margin:8px 0 0;font-size:11px">流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。</p>
       </div>
       <div class="dshell-card" style="margin-top:10px">
         <h2 class="dshell-sub" style="margin:0 0 8px">发行步骤 <span class="dshell-muted" style="font-size:11px;font-weight:normal">每步输出流式实时回显（就地展开「回显」与下方总日志仅保留最近 20 行，避免卡死；完整日志见构建历史）；发行中可点「⏹ 停止」中止，服务端进程组即被终止并自动清理克隆目录 / 构建容器 / 暂存产物</span></h2>
@@ -1668,6 +1668,36 @@
     '  [ "$found_sh" = "1" ] || echo "    （未找到任何 *.sh：请确认脚本是否已合入 ${GIT_BRANCH} 分支，或改用「自定义…」填写正确路径）" >&2',
     "  exit 1",
     "fi",
+    "# 产物收集脚本（容器与本机共用）：按 BUILD_ARTIFACTS（空格分隔的仓内相对路径/通配）在仓库根 glob 后 cp 到暂存目录，末尾放开读权限。",
+    "# 容器构建时产物以 root 写入挂载的 /mnt/repo，宿主（dsh web 进程用户）可能无法遍历/读取这些 root 属主文件，",
+    "# 故容器场景在容器内以 root 跑本脚本收集；本机场景在宿主直接跑（产物即宿主用户属主，可直接读）。",
+    'cat > "$TMPD/collect.sh" <<\'COLLECT_EOF\'',
+    "#!/usr/bin/env bash",
+    "set -u",
+    'fail(){ echo "✗ $*" >&2; exit 1; }',
+    '[ -n "${BUILD_ARTIFACTS:-}" ] || exit 0',
+    'dest="${1:-}"; root="${2:-}"',
+    '[ -n "$dest" ] || fail "缺少产物暂存目录"',
+    'case "$dest" in /tmp/*|/mnt/*) ;; *) fail "产物暂存目录须位于 /tmp 或 /mnt 下：$dest" ;; esac',
+    'mkdir -p "$dest"',
+    'echo "→ 收集构建产物（$BUILD_ARTIFACTS）…"',
+    'cd "$root" || fail "无法进入仓库目录：$root"',
+    "shopt -s nullglob",
+    "found=0",
+    'for pat in $BUILD_ARTIFACTS; do',
+    '  case "$pat" in /*|*..*) fail "产物路径须为仓内相对路径且不含 ..：$pat" ;; esac',
+    "  matches=( $pat )",
+    '  if [ ${#matches[@]} -eq 0 ]; then echo "… 未匹配到产物：$pat" >&2; continue; fi',
+    '  for m in "${matches[@]}"; do',
+    '    cp -a "$m" "$dest/" || fail "拷贝产物失败：$m"',
+    '    echo "  + $m"',
+    "    found=1",
+    "  done",
+    "done",
+    '[ "$found" = "1" ] || fail "未收集到任何构建产物（检查产物路径配置）"',
+    'chmod -R a+rX "$dest" 2>/dev/null || true',
+    'echo "✓ 产物收集完成：$(find "$dest" -type f | wc -l) 个文件"',
+    "COLLECT_EOF",
     'if [ -n "${BUILD_CONTAINER:-}" ]; then',
     '  command -v docker >/dev/null 2>&1 || fail "已配置构建容器（${BUILD_CONTAINER}），但服务端未找到 docker 命令"',
     "# 设置页「附加环境变量」：逐一经 -e KEY 透传进容器（值取包装脚本进程环境）",
@@ -1681,6 +1711,14 @@
     '  echo "+ docker run --rm -t --network host -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER ${dk_env[*]} ${BUILD_CONTAINER} ${BUILD_SCRIPT}"',
     '  docker run --rm -t --network host -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -w /mnt/repo -e GIT_URL -e GIT_AUTH_URL -e GIT_BRANCH -e RELEASE_TAG -e RELEASE_NAME -e BUILD_CMD -e BUILD_CONTAINER "${dk_env[@]}" "${BUILD_CONTAINER}" "$BUILD_SCRIPT" || fail "构建容器执行失败（退出码 $?）"',
     '  echo "✓ 构建容器执行完成"',
+    '  if [ -n "${BUILD_ARTIFACTS:-}" ]; then',
+    '    [ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR（产物暂存目录）"',
+    '    case "$ARTIFACT_DIR" in /tmp/*) ;; *) fail "ARTIFACT_DIR 须位于 /tmp 下：$ARTIFACT_DIR" ;; esac',
+    '    mkdir -p "$ARTIFACT_DIR"   # 宿主先建目录（避免 docker 以 root 自动创建致后续清理失败）',
+    '    echo "→ 在容器内以 root 收集构建产物到暂存目录（挂载仓库与暂存目录，规避容器内 root 属主产物致宿主无法读取）…"',
+    '    echo "+ docker run --rm --network host -u root --entrypoint bash -v $TMPD/repo:/mnt/repo -v $ARTIFACT_DIR:/mnt/artifacts -v $TMPD/collect.sh:/mnt/collect.sh:ro -e BUILD_ARTIFACTS ${BUILD_CONTAINER} /mnt/collect.sh /mnt/artifacts /mnt/repo"',
+    '    docker run --rm --network host -u root --entrypoint bash -v "$TMPD/repo":/mnt/repo -v "$ARTIFACT_DIR":/mnt/artifacts -v "$TMPD/collect.sh":/mnt/collect.sh:ro -e BUILD_ARTIFACTS "${BUILD_CONTAINER}" /mnt/collect.sh /mnt/artifacts /mnt/repo || fail "产物收集失败（退出码 $?，详见上方日志）"',
+    '  fi',
     "else",
     '  echo "→ 执行仓内构建脚本 ${BUILD_SCRIPT} …（本机执行；如需容器请在「设置」页填写构建容器并保存）"',
     "# 实时回显：程序（python/node/gcc/make…）检测到非 TTY 时块缓冲 stdout，会堆积成簇或末尾才出；",
@@ -1692,26 +1730,7 @@
     '    echo "+ bash ${BUILD_SCRIPT}（未装 script，输出可能成簇）"',
     '    bash "$BUILD_SCRIPT" || fail "构建脚本执行失败（退出码 $?）"',
     "  fi",
-    "fi",
-    'if [ -n "${BUILD_ARTIFACTS:-}" ]; then',
-    '  [ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR（产物暂存目录）"',
-    '  case "$ARTIFACT_DIR" in /tmp/*) ;; *) fail "ARTIFACT_DIR 须位于 /tmp 下：$ARTIFACT_DIR" ;; esac',
-    '  mkdir -p "$ARTIFACT_DIR"',
-    '  echo "→ 收集构建产物（$BUILD_ARTIFACTS）…"',
-    "  shopt -s nullglob",
-    "  found=0",
-    '  for pat in $BUILD_ARTIFACTS; do',
-    '    case "$pat" in /*|*..*) fail "产物路径须为仓内相对路径且不含 ..：$pat" ;; esac',
-    "    matches=( $pat )",
-    '    if [ ${#matches[@]} -eq 0 ]; then echo "… 未匹配到产物：$pat" >&2; continue; fi',
-    '    for m in "${matches[@]}"; do',
-    '      cp -a "$m" "$ARTIFACT_DIR/" || fail "拷贝产物失败：$m"',
-    '      echo "  + $m"',
-    "      found=1",
-    "    done",
-    "  done",
-    '  [ "$found" = "1" ] || fail "未收集到任何构建产物（检查产物路径配置）"',
-    '  echo "✓ 产物收集完成：$(find "$ARTIFACT_DIR" -type f | wc -l) 个文件"',
+    '  if [ -n "${BUILD_ARTIFACTS:-}" ]; then bash "$TMPD/collect.sh" "$ARTIFACT_DIR" "$TMPD/repo"; fi',
     "fi",
     'echo "✓ 构建阶段完成${RELEASE_TAG:+：$RELEASE_TAG}"'
   ].join("\n");
@@ -2646,9 +2665,9 @@
   }
   function releaseFlowHelpHtml() {
     if (state.platform === "github") {
-      return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌（Bearer 头）。';
+      return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitHub API 经 Git Data API 建 annotated Tag（取分支 HEAD → 建 tag 对象 → 建 ref，API 不可用时改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitHub API 基于该 Tag 创建发行版（JSON 请求体，响应含 <code>upload_url</code>）→ ④ 把暂存产物 POST 到 <code>uploads.github.com</code> 的 <code>upload_url?name=</code> 上传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌（Bearer 头）。';
     }
-    return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录 → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。';
+    return '流程：① 服务端经 <code>/api/worktable/exec-stream</code> 流式执行自动生成的包装脚本：浅克隆所选分支后在仓库根目录运行所选仓内脚本（注入 <code>GIT_URL</code>/<code>GIT_BRANCH</code>/<code>GIT_AUTH_URL</code>/<code>RELEASE_TAG</code>/<code>RELEASE_NAME</code>/<code>BUILD_CMD</code> 及设置页「附加环境变量」；设置页配置「构建容器」时把克隆目录挂载进容器经 <code>docker run</code> 执行，脚本留空则跳过）；配置「产物路径」时构建后按通配收集产物文件到服务端暂存目录（容器构建时在容器内以 root 收集，规避 root 属主产物致宿主无法读取） → ② 调 GitCode API 基于分支创建 Tag（API 不可用时自动改用临时脚本浅克隆 <code>git tag</code> 推送，远端已有同名 Tag 拒绝覆盖）→ ③ 调 GitCode API 基于该 Tag 创建发行版 → ④ 把暂存产物经 GitCode <code>upload_url</code> 接口换取 OBS 上传地址后 PUT 直传为发行版附件（未配置产物路径则跳过，上传后清理暂存目录）；服务端 git/curl 网络操作遵循设置页「构建网络代理」策略（继承服务端环境/直连/自定义）。认证沿用本页令牌与认证方式。';
   }
   function updatePlatformUI() {
     document.title = "PR 检视台 · " + platformLabel();
