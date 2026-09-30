@@ -93,6 +93,7 @@ PATH="$work_dir/bin:$PATH" \
 TEST_ACTION_LOG="$work_dir/actions.log" \
 LOG_FILE="$work_dir/bnt-remote.log" \
 ACTION=check-health \
+RDMA_RPING_ENABLED=false \
 SSH_PASSWORD=test-password \
 TARGET_HOSTS='[{"ip":"192.0.2.10:2223"},{"ip":"192.0.2.11"}]' \
 bash "$script" >"$work_dir/remote-output"
