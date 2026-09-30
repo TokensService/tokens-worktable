@@ -351,4 +351,17 @@ grep -Fq 'EMS_NODES=115.33.98.101:2224,115.33.98.101:2225' <<<"$out"
 grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
 rm -rf "$tmp9"
 
-echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint, cross-region endpoint)'
+# ==== 场景⑥：单机安装（≥1 节点即放行，不再要求 2 台） ==============
+reset_state
+out=$(TARGET_HOSTS='[{"ip":"10.0.0.1","user":"root"}]' TARGET_IPS='["10.0.0.1"]' EMS_NAME=ems13-13 bash "$script") || {
+  echo "scenario6 failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'helm install ems13-13' <<<"$out"
+grep -Fq 'label：node-1 ems13=true' <<<"$out"
+! grep -Fq 'label：node-2 ems13=true' <<<"$out"     # 单机只打目标节点
+grep -Fq 'EMS_NODES=10.0.0.1' <<<"$out"
+! grep -Fq 'EMS_NODES=10.0.0.1,' <<<"$out"          # 契约只含 1 个节点
+grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
+grep -Fq 'EMS_STATUS=installed' <<<"$out"
+
+echo 'PASS: ems-deploy contract (fresh install, refuse blind re-entry, authorized release, gate-approved idempotent re-entry, empty-name hint, cross-region endpoint, single-node install)'

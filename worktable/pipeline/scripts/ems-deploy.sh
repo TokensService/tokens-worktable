@@ -4,7 +4,7 @@
 #
 # 用法：在流水线中插入本 step，2 个参数均可选（留空即继承上游变量，
 # 通常来自前置 ems-check 门禁的契约输出；独立运行时需显式提供 EMS_NAME）。
-# 目标节点 = 平台注入的 TARGET_IPS/TARGET_HOSTS（EMS 集群节点，通常 2 台）。
+# 目标节点 = 平台注入的 TARGET_IPS/TARGET_HOSTS（EMS 集群节点，≥1 台，单机可装）。
 #
 # 编排：ems-check（EMS_NAME 门禁模式：校验名字/label 占用/ns·release 残留/
 # 资源余量（CPU/内存/大页）/版本一致，输出 EMS_IDEMPOTENT 判定）→ ems-hugepages（大页配置
@@ -117,7 +117,7 @@ for host in hosts:
 PY
 )" || die '解析 TARGET_HOSTS 失败'
     mapfile -t specs <<<"$raw"
-    ((${#specs[@]} >= 2)) || die 'EMS 安装至少需要 2 个目标节点（TARGET_HOSTS）'
+    ((${#specs[@]} >= 1)) || die 'EMS 安装至少需要 1 个目标节点（TARGET_HOSTS，单机可装）'
 
 
     self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -234,7 +234,7 @@ if raw:
             print(item.strip())
 PY
 )
-    ((${#target_ips[@]} >= 2)) || die 'EMS 安装至少需要 2 个目标节点（TARGET_IPS/TARGET_HOSTS）'
+    ((${#target_ips[@]} >= 1)) || die 'EMS 安装至少需要 1 个目标节点（TARGET_IPS/TARGET_HOSTS，单机可装）'
 
     # ---- 解析目标节点名 ----
     log "=== [0/3] 解析目标节点（chart $chart_version） ==="
