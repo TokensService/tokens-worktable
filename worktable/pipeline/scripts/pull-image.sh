@@ -14,7 +14,7 @@ else
 fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
-DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"
+DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/data/zcx/open-xds-runtime-release-wheels/deploy/xds/A3}"
 FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
@@ -179,7 +179,7 @@ pull_image() {
 }
 
 export_templates() {
-  local work_dir container_name source_dir probe_output
+  local work_dir container_name source_dir probe_output probe_status
   work_dir="$(mktemp -d)"
   container_name="op-test-template-$$"
   cleanup() {
@@ -208,11 +208,14 @@ export_templates() {
         if [ -z "$architecture" ] && [ -f "$root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" ]; then
           architecture="$root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
         fi
+        if [ -z "$architecture" ] && [ -f "$root/xds_template/k8s/xds-cluster/model_arch/model_arch-lt-je-cpp-bnt3.json" ]; then
+          architecture="$root/xds_template/k8s/xds-cluster/model_arch/model_arch-lt-je-cpp-bnt3.json"
+        fi
       done
-      [ -n "$chart" ] || chart_file="$(find / -xdev -type f -path "*/xds_template/k8s/xds-cluster/Chart.yaml" -print -quit 2>/dev/null)"
+      [ -n "$chart" ] || chart_file="$(find / -xdev -type f -path "*/xds_template/k8s/xds-cluster/Chart.yaml" -print -quit 2>/dev/null || true)"
       [ -n "$chart" ] || chart="${chart_file%/Chart.yaml}"
-      [ -n "$values" ] || values="$(find / -xdev -type f -name values-16Node-je-cpp-bnt3.yaml -print -quit 2>/dev/null)"
-      [ -n "$architecture" ] || architecture="$(find / -xdev -type f -name model_arch-lt-je-cpp-bnt3.json -print -quit 2>/dev/null)"
+      [ -n "$values" ] || values="$(find / -xdev -type f -name values-16Node-je-cpp-bnt3.yaml -print -quit 2>/dev/null || true)"
+      [ -n "$architecture" ] || architecture="$(find / -xdev -type f -name model_arch-lt-je-cpp-bnt3.json -print -quit 2>/dev/null || true)"
       if [ -z "$chart" ] || [ -z "$values" ] || [ -z "$architecture" ]; then
         echo "unable to locate the xds chart, values template, and architecture file in the image" >&2
         exit 3
@@ -243,7 +246,9 @@ export_templates() {
     echo "[pull] template root $DEPLOY_TEMPLATE_DIR is unavailable; using $FALLBACK_DEPLOY_TEMPLATE_DIR"
   else
     echo "[pull] configured template roots are unavailable; discovering template files in the image"
-    if ! probe_output="$(nerdctl --namespace k8s.io start -a "$container_name")"; then
+    probe_status=0
+    probe_output="$(nerdctl --namespace k8s.io start -a "$container_name")" || probe_status=$?
+    if [[ "$probe_status" -ne 0 && -z "$probe_output" ]]; then
       echo "template discovery failed in $TEMPLATE_IMAGE" >&2
       return 1
     fi

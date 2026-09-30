@@ -8,7 +8,6 @@ trap 'rm -rf "$work_dir"' EXIT
 
 fake_bin="$work_dir/bin"
 template_dir="$work_dir/template-source"
-run_dir="$work_dir/run"
 mkdir -p "$fake_bin" "$template_dir/xds-cluster"
 
 cat >"$template_dir/xds-cluster/Chart.yaml" <<'EOF'
@@ -30,6 +29,9 @@ case "${3:-}" in
       /srv/xds-assets/xds_template/k8s/xds-cluster \
       /srv/xds-assets/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml \
       /srv/xds-assets/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json
+    if [[ "${FAKE_DISCOVERY_RETURNS_NONZERO:-0}" == "1" ]]; then
+      exit 1
+    fi
     ;;
   cp)
     case "$4" in
@@ -45,14 +47,25 @@ esac
 EOF
 chmod 0755 "$fake_bin/nerdctl"
 
-PATH="$fake_bin:$PATH" \
-FAKE_TEMPLATE_DIR="$template_dir" \
-IMAGE_NAME='registry.example/xds:test' \
-RUN_DIR="$run_dir" \
-bash "$script" >/dev/null
+run_pull() {
+  local run_dir="$1"
+  shift
+  PATH="$fake_bin:$PATH" \
+  FAKE_TEMPLATE_DIR="$template_dir" \
+  IMAGE_NAME='registry.example/xds:test' \
+  RUN_DIR="$run_dir" \
+  "$@" \
+  bash "$script" >/dev/null
 
-test -f "$run_dir/template/xds-cluster/Chart.yaml"
-test -f "$run_dir/template/values-16Node-je-cpp-bnt3.yaml"
-test -f "$run_dir/template/model_arch-lt-je-cpp-bnt3.json"
+  test -f "$run_dir/template/xds-cluster/Chart.yaml"
+  test -f "$run_dir/template/values-16Node-je-cpp-bnt3.yaml"
+  test -f "$run_dir/template/model_arch-lt-je-cpp-bnt3.json"
+}
+
+run_pull "$work_dir/run-success" env
+
+PATH="$fake_bin:$PATH" \
+FAKE_DISCOVERY_RETURNS_NONZERO=1 \
+run_pull "$work_dir/run-nonzero" env
 
 echo 'pull template auto-discovery test passed'
