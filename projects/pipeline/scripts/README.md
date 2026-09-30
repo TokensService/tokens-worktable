@@ -204,6 +204,12 @@ GPU Worker 到启动根的同进程组链，并终止整个进程组，防止残
   Service/DNS、RDMA。进程被强杀可能遗留探测对象，180秒 activeDeadlineSeconds 限制运行时间。
   `NETWORK_TEST_PEER` 可指定不同的对端节点，`NETWORK_TEST_IMAGE` 可指定含 python3 的镜像，
   `NETWORK_TEST_NAMESPACE` 可选择已有命名空间；参数会传入远端。
+- RDMA：当 `TARGET_HOSTS` 至少包含两台主机时，执行机协调每个有序主机对的
+  `rping` 双向探测，默认发现 `^roce_bond[0-9]+$` 的 UP IPv4 地址。任一路径失败判
+  FAIL；少于两台主机判 WARN。`RDMA_RPING_ENABLED=false` 可关闭；
+  `RDMA_RPING_COUNT`、`RDMA_RPING_CLIENT_TIMEOUT_SECONDS`、
+  `RDMA_RPING_SERVER_TIMEOUT_SECONDS` 和 `RDMA_RPING_IFACE_PATTERN` 可覆盖默认值。
+  每个 server 都以本次检查记录的 PID 回收，不会使用模式匹配杀进程。
 - 代理：检查当前进程、containerd/kubelet 实际进程环境和 /etc/environment。
   非空 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY（大小写均识别）判 FAIL；128 的运行基准为
   无代理。日志仅打印变量名，不打印代理地址或认证信息。NO_PROXY 本身不代表开启代理。
