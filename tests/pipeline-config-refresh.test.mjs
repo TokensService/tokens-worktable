@@ -5,6 +5,18 @@ import vm from 'node:vm'
 
 const page = await readFile(new URL('../projects/pipeline/pipeline.html', import.meta.url), 'utf8')
 
+function extractFunction(name) {
+  const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(page)
+  assert.ok(match, `pipeline.html 缺少函数 ${name}`)
+  const bodyStart = page.indexOf('{', match.index)
+  let depth = 0
+  for (let index = bodyStart; index < page.length; index += 1) {
+    if (page[index] === '{') depth += 1
+    else if (page[index] === '}' && --depth === 0) return page.slice(match.index, index + 1)
+  }
+  throw new Error(`无法提取函数 ${name}`)
+}
+
 function loadRefreshFixture(remoteState, fetchError) {
   const start = page.indexOf('/* ---------- 流水线任务手动刷新 ---------- */')
   const end = page.indexOf('/* ---------- 流水线任务管理（多条流水线） ---------- */', start)
@@ -14,9 +26,14 @@ function loadRefreshFixture(remoteState, fetchError) {
   const alerts = []
   const calls = { pipelines: 0, flow: 0, detail: 0, reset: 0 }
   const button = { disabled: false, addEventListener(type, handler) { if (type === 'click') this.click = handler } }
+  const initialPipelines = [{ id: 'pl-xds', name: '旧流水线', stages: [{ id: 'st-old' }], builtIn: true }]
   const ctx = {
     DEFAULT_PIPELINE_ID: 'pl-xds',
-    pipelines: [{ id: 'pl-xds', name: '旧流水线', stages: [{ id: 'st-old' }], builtIn: true }],
+    pipelines: initialPipelines,
+    /* 手动刷新改按 id 三方合并（applyPipelineRefreshPayload 与 loadServerState 同口径）：
+       共同基线 serverConfigBase 须与本页初始状态一致，远端改动才会按「本地未改取远端」应用 */
+    serverConfigBase: JSON.parse(JSON.stringify({ pipelines: initialPipelines })),
+    stateFetchEpoch: 0,
     curPipelineId: 'pl-xds',
     selectedId: 'st-old',
     runStages: null,
@@ -27,6 +44,7 @@ function loadRefreshFixture(remoteState, fetchError) {
     migrateStageUrl: p => p,
     migratePrefillDefaults: p => p,
     migratePipelineDefaults: p => p,
+    migratePromPreset: p => p,
     findPipeline: id => ctx.pipelines.find(p => p.id === id),
     curPipeline: () => ctx.pipelines.find(p => p.id === ctx.curPipelineId) || ctx.pipelines[0],
     localStorage: { setItem: (key, value) => stored.set(key, value) },
@@ -43,6 +61,9 @@ function loadRefreshFixture(remoteState, fetchError) {
     renderDetail: () => { calls.detail++ },
   }
   vm.createContext(ctx)
+  /* 刷新段落在切片外的依赖：按 id 三方合并（mergePipelinesFromServer/stripPipelineSharedMeta）
+     与过期快照重拉（fetchPipelineStateFresh，内部走 ctx.fetch 与 ctx.stateFetchEpoch） */
+  vm.runInContext(['stripPipelineSharedMeta', 'mergePipelinesFromServer', 'fetchPipelineStateFresh'].map(extractFunction).join('\n'), ctx)
   vm.runInContext(page.slice(start, end), ctx)
   assert.equal(button.click, ctx.refreshPipelinesFromServer, '刷新按钮应绑定手动刷新处理器')
   return { ctx, stored, alerts, calls, button }
@@ -78,7 +99,8 @@ test('手动刷新失败时保留现有流水线并恢复按钮', async () => {
   assert.deepEqual(f.ctx.pipelines.map(p => p.name), ['旧流水线'])
   assert.equal(f.button.disabled, false)
   assert.equal(f.alerts.length, 1)
-  assert.match(f.alerts[0], /刷新流水线任务失败.*network down/)
+  /* fetchPipelineStateFresh 不向外抛网络错误（st=null 按拉取失败处理），告警不再带底层错误详情 */
+  assert.match(f.alerts[0], /刷新流水线任务失败：服务端配置拉取失败/)
 })
 
 test('刷新请求返回前开始运行时丢弃迟到的远端状态', async () => {

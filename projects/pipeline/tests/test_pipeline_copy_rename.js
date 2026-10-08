@@ -48,11 +48,11 @@ function loadServerFns() {
     "const BUILTIN_PIPELINE_ID = 'pl-xds';",
     'stripPipelineSharedMeta', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta',
     'mergePipelineConfigForWrite', 'mergePipelineOneForWrite', 'pipelineConfigDifferenceIds',
-    'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations',
+    'deepEqualIgnoring', 'samePipelineContent', 'isBuiltinPipelineEntry', 'trustedPipelineViolations',
   ].map(item => (item.startsWith('const') ? item : extractServer(item))).join('\n');
   const ctx = { JSON, Object, Array, Set, Map, Number, String };
   vm.createContext(ctx);
-  vm.runInContext(js + '\nthis.__fns={stripPipelineSharedMeta,mergePipelineFavoriteUsers,mergePipelinePinnedAt,withPipelineSharedMeta,mergePipelineConfigForWrite,mergePipelineOneForWrite,pipelineConfigDifferenceIds,deepEqualIgnoring,isBuiltinPipelineEntry,trustedPipelineViolations};', ctx);
+  vm.runInContext(js + '\nthis.__fns={stripPipelineSharedMeta,mergePipelineFavoriteUsers,mergePipelinePinnedAt,withPipelineSharedMeta,mergePipelineConfigForWrite,mergePipelineOneForWrite,pipelineConfigDifferenceIds,deepEqualIgnoring,samePipelineContent,isBuiltinPipelineEntry,trustedPipelineViolations};', ctx);
   return ctx.__fns;
 }
 

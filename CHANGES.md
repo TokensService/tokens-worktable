@@ -1,5 +1,33 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复**流水线「复制」副本改名被永久锁死**（编辑器改名保存报「该流水线已被其他浏览器修改」并回滚为
+  「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
+  17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
+  ① 首屏/手动刷新的 GET 快照在「请求发出后、应用前」被复制副本的 save-one 反超（大存储 + 公网慢链路下
+  窗口长达数秒），三方合并把刚落盘的副本误判为「远端已删除」从页面冲掉且基线被污染回退；
+  ② 手动刷新整表替换 pipelines 且从不推进基线，在途改名也被快照冲掉（改名后一刷新即还原）；
+  ③ 基线缺条目而磁盘有条目时每次单条保存都 phantom 409（baseOne=null ≠ 磁盘条目），409 响应携带的
+  磁盘真值又被客户端丢弃，锁死永不自愈；④ 服务端合并层对条目内容同一性用 JSON.stringify 比对（键序
+  敏感），同一条目经编辑器重建阶段对象/旧版客户端/导入等不同键序字节落盘后，内容未变也被判「偏离基线」。
+  客户端修复（`projects/pipeline/pipeline.html`）：新增基线纪元 `stateFetchEpoch` 与
+  `fetchPipelineStateFresh`（GET 在途期间被保存反超即判快照过期并重拉，上限 2 次防活锁；loadServerState
+  与手动刷新统一走该通道）；手动刷新 `applyPipelineRefreshPayload` 改与 loadServerState 同口径（按 id
+  三方合并保留本页在途改动 + 新鲜快照推进共同基线，含 keptBaseEntries 补回，迁移链补 migratePromPreset）；
+  `pushPipelineOne` 409 分支采纳响应携带的磁盘真值为新基线并合回本页（phantom 冲突一次自愈，编辑器回滚
+  按既有 baseAdvanced 逻辑取最新确认版，重试保存即成功；真实并发冲突语义不变）。服务端修复
+  （`src/index.ts`）：`mergePipelineConfigForWrite` / `mergePipelineOneForWrite` 的条目比对改剥离
+  favoriteUsers/pinnedAt 后的**键序无关深比较**（新增 `samePipelineContent`，复用 deepEqualIgnoring，
+  数组顺序仍算内容）；save-one 对「客户端基线缺失但上送内容与磁盘一致」的保存（如确认丢失后的重试）按
+  幂等成功处理并随响应自愈基线，内容真实偏离仍 409 防静默覆盖。测试：客户端新增
+  `projects/pipeline/tests/test_pipeline_copy_rename.js`（8 例端到端级：真实客户端函数 × 服务端真实
+  合并层 × 内存磁盘假服务器，含首屏竞态/陈旧标签页/在途改名抗刷新 3 例修复前验证失败的复现用例）；
+  服务端新增 `tests/pipeline-copy-rename.test.mjs`（5 例，含键序重排 phantom 409 复现、幂等重试与
+  内容偏离仍 409）；既有测试桩同步新全局/提取（test_init_no_autoput、
+  test_loadserverstate_merge_local_add、test_pipeline_multiuser_save、test_pipeline_save_consistency、
+  pipeline-config-concurrency、pipeline-trust、pipeline-config-refresh）。已知遗留：陈旧标签页首次
+  保存仍会按冲突告警一次（无法与真实并发冲突区分），但基线已自愈、重试即成功；pushState 的
+  silentConflict 409 路径（仅旧服务端回退路径）未做磁盘真值采纳。
+
 - 修复**流水线编辑器保存的浏览器端竞态**（多人共用环境下新建/编辑流水线保存偶发失败，报「流水线已不在
   本页列表中（可能被其他浏览器删除）」）：保存链路 savePlForm 先把新流水线 push 进页面全局列表、
   pushPipelineOne 再排等前序全量 PUT；前序 PUT 若 409，pushState 自愈分支的 loadServerState 会**整表
