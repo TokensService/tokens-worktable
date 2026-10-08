@@ -1,5 +1,22 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复宿主 0.2.0-rc.1 升级后工作台「页面修改」✏️ 等会话桥全面失效（`src/client/index.tsx`，修复
+  「编辑项目按钮用不了」）：① 0.2.0 起 `sessions.binding/scope` 仅对已 retain 的会话代际可解析，
+  新建会话后 `fillSessionDraft` 永远轮询不到 binding（报 `no fill path`）——新增
+  `retainSessionRef`/`releaseSessionRef`，`fillSessionDraft`/`promptIntoSession`/`waitForSessionAssistant`
+  操作期间保留会话作用域（旧宿主无 retain 时原路径不变）；② `sessions.open` 被删（导航归视图属主）——
+  新增 `openSessionInUi`（优先 `ctx.uiWorkspace.openSession`，旧宿主回退 `sessions.open`），14 处
+  新建/联动/回切与 `__dshOpenSession` 导出统一切换；③ 列表快照 `current` 字段删除——新增
+  `currentSessionIdOf`（旧读 `snap.current`，新推导 `byId` 行 `retainedBy.mainView>0`），
+  ensureSessionModel/fetchSessionGroups/syncSessionScope/openSplit/openConsole 五处切换（项目↔会话
+  联动的「切会话关项目/回切」随之恢复）。sessionBridge 初始化补 `uiWorkspace`（`ctx.get` 软探测，
+  规避 cordis 未 inject 服务属性访问抛错）。测试：新增 `tests/session-bridge-retain.test.mjs`
+  （15 例），`tests/ai-chat-result.test.mjs` 的 vm 提取器改健壮配对并注入新助手。
+  已知遗留（0.2.0 适配后续项，本次未动）：byId 行 `pendingInteraction`/`completed` 迁至
+  `ctx.uiSession.sessionStatus`、`subagentsByParent`→`projectionsBySession[].values.subagentCatalog`、
+  `jobsBySession`→`ctx.jobs.watchRows`、`hostApi`（connection.api 已删）→`ctx.remote`——
+  项目卡提醒点/运行时长/新会话模型兜底修复暂退化，待后续适配。
+
 - 修复**多用户登录下「复制/编辑后的流水线无法保存」**（phantom conflict，已用真实函数复现定位）：
   `favoriteUsers`（各用户收藏）与 `pinnedAt`（置顶）这类非内容字段存在共享流水线条目上，却参与服务端三方合并的
   JSON 全字段同一性比对——他端一次收藏/置顶即让该条「偏离基线」：编辑走 save-one 被 409 拒绝；全量 PUT
@@ -15,7 +32,7 @@
   （编辑器与可信标记路径自带回滚 + alert，经 `silentConflict` 保持单处提示）。测试：服务端
   `tests/pipeline-config-concurrency.test.mjs` 新增 9 例（收藏/置顶并发合并、真冲突仍 409、守卫豁免、形状归一），
   客户端新增 `projects/pipeline/tests/test_pipeline_multiuser_save.js` 6 例；既有 `pipeline-trust` 两处断言随形状归一
-  改为校验键省略。
+  改为校验键省略。fix/session-bridge-0.2.0
 
 - 流水线归属编辑限制新增 **admin 例外**（`projects/pipeline/pipeline.html` 的 `plEditable`，修复「编辑按钮用不了」
   类问题）：原规则「非可信流水线仅创建者可编辑/删除，admin 无例外」会使创建者账号注销/改名后的流水线对所有人

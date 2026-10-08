@@ -12,12 +12,27 @@ function functionSource(name) {
     ? functionStart - 6
     : functionStart
   assert.ok(start >= 0, '缺少函数 ' + name)
-  const brace = source.indexOf('{', start)
-  let depth = 0
-  for (let i = brace; i < source.length; i += 1) {
-    if (source[i] === '{') depth += 1
-    if (source[i] === '}') depth -= 1
-    if (depth === 0) return source.slice(start, i + 1)
+  // 函数体起点的 '{' 可能与签名里的对象类型标注混淆（如返回类型 : { release(): void } | null、
+  // 形参类型 ref: { release(): void } | null）：逐个候选 '{' 配对到闭合，
+  // 首个能编译成完整函数声明的片段才含真函数体（类型标注片段会因缺少函数体而编译失败）。
+  for (let brace = source.indexOf('{', functionStart); brace >= 0; brace = source.indexOf('{', brace + 1)) {
+    let depth = 0
+    let end = -1
+    for (let i = brace; i < source.length; i += 1) {
+      if (source[i] === '{') depth += 1
+      if (source[i] === '}') depth -= 1
+      if (depth === 0) { end = i + 1; break }
+    }
+    if (end < 0) break
+    const candidate = source.slice(start, end)
+    // 无函数体的片段会被 strip 当作可擦除的重载签名清成空串，需确认函数声明与函数体大括号仍在
+    try {
+      const stripped = stripTypeScriptTypes(candidate, { mode: 'transform' })
+      if (stripped.includes('function ' + name + '(') && stripped.includes('{')) {
+        new vm.Script(stripped)
+        return candidate
+      }
+    } catch { /* 该 '{' 属于类型标注，继续找下一个 */ }
   }
   assert.fail('函数 ' + name + ' 缺少闭合括号')
 }
@@ -30,9 +45,14 @@ function loadFunction(name) {
   return context.__fn
 }
 
+// 0.2.0 会话桥修复引入的模块级助手：waitForSessionAssistant/sendChatForResult 真实依赖它们，
+// 随目标函数一并做真实源码提取注入（不是手写假实现），钉住真实行为。
+const SESSION_BRIDGE_HELPERS = ['retainSessionRef', 'releaseSessionRef', 'openSessionInUi']
+
 function loadBridgeFunction(name, context) {
   const code = stripTypeScriptTypes(
-    functionSource('assistantResultOutcome') + '\n' + functionSource(name) + '\n;globalThis.__fn = ' + name,
+    ['assistantResultOutcome', ...SESSION_BRIDGE_HELPERS, name].map(functionSource).join('\n') +
+      '\n;globalThis.__fn = ' + name,
     { mode: 'transform' },
   )
   vm.createContext(context)
