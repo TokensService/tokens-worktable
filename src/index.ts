@@ -381,9 +381,64 @@ function cleanPipelineHistory(history: any[]) {
   })
 }
 
+/** 内容比对用的条目副本：剥离 favoriteUsers / pinnedAt 两个「非内容」共享可变字段（其余键保持原顺序）。
+ *  favoriteUsers 是各用户收藏（按用户个人数据但存在共享条目上），pinnedAt 是置顶时间戳（全局视图排序，
+ *  任何登录用户可改）——二者不参与内容同一性比对，否则他人收藏/置顶会造成 phantom 冲突。 */
+function stripPipelineSharedMeta(entry: any): any {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
+  const copy: any = {}
+  for (const [key, value] of Object.entries(entry)) if (key !== 'favoriteUsers' && key !== 'pinnedAt') copy[key] = value
+  return copy
+}
+
+/** favoriteUsers 三方集合合并：(client ∩ disk) ∪ (client − base) ∪ (disk − base)——双方共同保留的，
+ *  加上各端相对基线新增的；并发取消收藏（相对基线删除）因此同样生效。元素为修剪后的非空字符串；
+ *  顺序确定：先按 client 数组顺序，再追加仅 disk 有的元素（按 disk 数组顺序）。任一侧缺失/非数组按空集。 */
+function mergePipelineFavoriteUsers(baseEntry: any, clientEntry: any, diskEntry: any): string[] {
+  const listOf = (entry: any): string[] => {
+    const value = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.favoriteUsers : null
+    return Array.isArray(value) ? value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : []
+  }
+  const baseSet = new Set(listOf(baseEntry))
+  const clientList = listOf(clientEntry), diskList = listOf(diskEntry)
+  const clientSet = new Set(clientList), diskSet = new Set(diskList)
+  const merged: string[] = []
+  const seen = new Set<string>()
+  const push = (user: string) => { if (!seen.has(user)) { seen.add(user); merged.push(user) } }
+  for (const user of clientList) if (diskSet.has(user) || !baseSet.has(user)) push(user)
+  for (const user of diskList) if (!clientSet.has(user) && !baseSet.has(user)) push(user)
+  return merged
+}
+
+/** pinnedAt 三方标量合并：client 相对基线有变化取 client，否则取 disk；非有限数字一律归一为 0。 */
+function mergePipelinePinnedAt(baseEntry: any, clientEntry: any, diskEntry: any): number {
+  const valueOf = (entry: any): number => {
+    const value = entry && typeof entry === 'object' && !Array.isArray(entry) ? Number(entry.pinnedAt) : NaN
+    return Number.isFinite(value) ? value : 0
+  }
+  const basePinned = valueOf(baseEntry), clientPinned = valueOf(clientEntry), diskPinned = valueOf(diskEntry)
+  return clientPinned !== basePinned ? clientPinned : diskPinned
+}
+
+/** 在选定内容来源的条目副本上套用共享元数据的三方合并结果。形状归一：favoriteUsers 仅非空才写键、
+ *  pinnedAt 仅 >0 才写键（空则省略；客户端迁移 migratePipelineDefaults 会补回 favoriteUsers:[]，无副作用）。 */
+function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: any, diskEntry: any): any {
+  const entry = { ...(sourceEntry && typeof sourceEntry === 'object' && !Array.isArray(sourceEntry) ? sourceEntry : {}) }
+  delete entry.favoriteUsers
+  delete entry.pinnedAt
+  const favoriteUsers = mergePipelineFavoriteUsers(baseEntry, clientEntry, diskEntry)
+  if (favoriteUsers.length) entry.favoriteUsers = favoriteUsers
+  const pinnedAt = mergePipelinePinnedAt(baseEntry, clientEntry, diskEntry)
+  if (pinnedAt > 0) entry.pinnedAt = pinnedAt
+  return entry
+}
+
 /**
- * 三方合并流水线定义：客户端未改动的 id 以磁盘为准，不同 id 的并发改动可同时保留；
- * 同一 id 在客户端与磁盘都偏离共同基线时报告冲突，调用方不得写盘。
+ * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」比对——客户端未改动
+ * 的 id 以磁盘为准，不同 id 的并发改动可同时保留；同一 id 在客户端与磁盘内容都偏离共同基线时报告冲突，
+ * 调用方不得写盘。favoriteUsers / pinnedAt 是共享条目上的非内容元数据，不参与变更判定（他端收藏/置顶
+ * 不再造成 phantom 冲突），无论内容取自哪侧都对结果条目按三方规则重算（见上方助手）；
+ * 仅单边独有的条目（本端新建 / 他端新增）保持原样，不套用归一。
  */
 function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
   const objectConfig = (value: any) => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -399,7 +454,7 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
   const clientMap = mapOf(clientPipelines), baseMap = mapOf(basePipelines), diskMap = mapOf(diskPipelines)
   const sameEntry = (left: Map<string, any>, right: Map<string, any>, id: string) => {
     const leftHas = left.has(id), rightHas = right.has(id)
-    return leftHas === rightHas && (!leftHas || JSON.stringify(left.get(id)) === JSON.stringify(right.get(id)))
+    return leftHas === rightHas && (!leftHas || JSON.stringify(stripPipelineSharedMeta(left.get(id))) === JSON.stringify(stripPipelineSharedMeta(right.get(id))))
   }
   const ids = new Set<string>([...baseMap.keys(), ...clientMap.keys(), ...diskMap.keys()])
   const merged = new Map<string, any>()
@@ -413,7 +468,13 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
       continue
     }
     const source = clientChanged ? clientMap : diskMap
-    if (source.has(id)) merged.set(id, source.get(id))
+    if (!source.has(id)) continue
+    /* 仅单边独有的条目保持原样；基线或双边都存在的条目套用 favoriteUsers / pinnedAt 三方合并。 */
+    const clientOnly = clientMap.has(id) && !baseMap.has(id) && !diskMap.has(id)
+    const diskOnly = diskMap.has(id) && !baseMap.has(id) && !clientMap.has(id)
+    merged.set(id, clientOnly || diskOnly
+      ? source.get(id)
+      : withPipelineSharedMeta(source.get(id), baseMap.get(id), clientMap.get(id), diskMap.get(id)))
   }
   /* 先沿用磁盘顺序（保留他端新增的位置），再追加仅客户端新增的定义。 */
   const ordered: any[] = []
@@ -425,9 +486,11 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
 }
 
 /**
- * 编辑器单条保存的三方合并：只按 id 比对该条定义——磁盘上的该条仍等于客户端基线时
- * 才允许替换（原位）或新增（追加末尾），其余流水线定义、顺序、历史与其他配置字段一律不动；
- * 磁盘版本已偏离基线（含被他端删除）即报告冲突，调用方不得写盘。
+ * 编辑器单条保存的三方合并：只按 id 比对该条定义（同样剥离 favoriteUsers / pinnedAt）——磁盘上的
+ * 该条内容仍等于客户端基线时才允许替换（原位）或新增（追加末尾），其余流水线定义、顺序、历史与其他
+ * 配置字段一律不动；磁盘版本内容已偏离基线（含被他端删除）即报告冲突，调用方不得写盘。写回条目以
+ * 客户端版本为准，favoriteUsers / pinnedAt 按三方合并结果覆盖（保留他端并发收藏/置顶）；
+ * 新建条目（基线与磁盘都无）保持客户端原样。
  */
 function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskConfig: any) {
   const disk = diskConfig && typeof diskConfig === 'object' && !Array.isArray(diskConfig) ? diskConfig : {}
@@ -435,12 +498,15 @@ function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskCo
   const id = clientPipeline && typeof clientPipeline.id === 'string' ? clientPipeline.id : ''
   const diskOne = diskPipelines.find((p: any) => p && typeof p === 'object' && !Array.isArray(p) && p.id === id) ?? null
   const baseOne = basePipeline && typeof basePipeline === 'object' && !Array.isArray(basePipeline) && basePipeline.id === id ? basePipeline : null
-  if (JSON.stringify(diskOne) !== JSON.stringify(baseOne)) {
+  if (JSON.stringify(stripPipelineSharedMeta(diskOne)) !== JSON.stringify(stripPipelineSharedMeta(baseOne))) {
     return { conflicts: id ? [id] : [], config: disk }
   }
   const config = { ...disk }
-  if (diskOne) config.pipelines = diskPipelines.map((p: any) => (p && p.id === id ? clientPipeline : p))
-  else config.pipelines = diskPipelines.concat([clientPipeline])
+  const mergedOne = diskOne || baseOne
+    ? withPipelineSharedMeta(clientPipeline, baseOne, clientPipeline, diskOne)
+    : clientPipeline
+  if (diskOne) config.pipelines = diskPipelines.map((p: any) => (p && p.id === id ? mergedOne : p))
+  else config.pipelines = diskPipelines.concat([mergedOne])
   return { conflicts: [] as string[], config }
 }
 
@@ -592,10 +658,11 @@ function isBuiltinPipelineEntry(entry: any): boolean {
  *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；内置条目（builtIn===true 或 id 命中
  *  BUILTIN_PIPELINE_ID）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
  *  标志，也不得新建内置条目（防伪造内置混入 customs 或抢先占位固定 id）。favoriteUsers 是按用户
- *  收藏的个人数据，豁免条目顶层内容比对（任何登录用户可改）。运行/排队/定时不回写流水线条目，
- *  无需其它豁免。返回分组违规 id：edit = 可信条目被删/被改/被摘标，mark = 新建 trusted 或非 admin
- *  打标，builtinEdit = 内置条目被删/被改/被翻转标志，builtinCreate = 新建内置条目或给既有条目塞
- *  builtIn 标。 */
+ *  收藏的个人数据、pinnedAt 是全局视图排序的置顶时间戳（任何登录用户可置顶/取消），二者均属
+ *  非内容元数据，豁免条目顶层内容比对（与合并层 stripPipelineSharedMeta 的剥离口径一致）。
+ *  运行/排队/定时不回写流水线条目，无需其它豁免。返回分组违规 id：edit = 可信条目被删/被改/被摘标，
+ *  mark = 新建 trusted 或非 admin 打标，builtinEdit = 内置条目被删/被改/被翻转标志，
+ *  builtinCreate = 新建内置条目或给既有条目塞 builtIn 标。 */
 function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit: string[]; mark: string[]; builtinEdit: string[]; builtinCreate: string[] } {
   const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
   const mapOf = (items: any[]) => new Map<string, any>(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item) => [item.id, item]))
@@ -608,10 +675,10 @@ function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit
   for (const [id, storedEntry] of stored) {
     const mergedEntry = merged.get(id)
     if (isBuiltinPipelineEntry(storedEntry)) {
-      /* 内置条目：内容比对（忽略 favoriteUsers）同时覆盖 builtIn/trusted 标志翻转与条目删除 */
-      if (!mergedEntry || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) builtinEdit.push(id)
+      /* 内置条目：内容比对（忽略 favoriteUsers / pinnedAt）同时覆盖 builtIn/trusted 标志翻转与条目删除 */
+      if (!mergedEntry || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers', 'pinnedAt'])) builtinEdit.push(id)
     } else if (storedEntry.trusted === true) {
-      if (!mergedEntry || mergedEntry.trusted !== true || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) edit.push(id)
+      if (!mergedEntry || mergedEntry.trusted !== true || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers', 'pinnedAt'])) edit.push(id)
     } else if (mergedEntry && mergedEntry.builtIn === true) {
       builtinCreate.push(id)   // 给既有普通条目塞 builtIn 标 = 伪造内置（同 id 下 id 不会变，只有标志可翻转）
     } else if (mergedEntry && mergedEntry.trusted === true) {
