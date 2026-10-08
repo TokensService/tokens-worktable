@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复**「编译发行」遇一次性网络抖动即整流程失败**（2026-10-08 v1.1.10 发行构建因
+  `Failed to connect to github.com port 443` 一次性连接超时直接失败）：页面内嵌三段脚本与仓内参考脚本
+  统一加自动重试与连接失败诊断。① `code-review-prs.html` 的 `BUILD_WRAP_SCRIPT`（构建包装）与
+  `PUSH_TAG_SCRIPT`（Tag 兜底推送）的浅克隆改 `GIT_CLONE_RETRIES`（默认 3）次重试——每次失败脱敏回显 +
+  诊断、清半截克隆目录、递增退避（`sleep $((i*5))`），末次才 fail；推送步骤同加重试（不清目录）。
+  ② `UPLOAD_ASSETS_SCRIPT`（GitCode 产物上传）的 GET upload_url / PUT 直传 OBS 两个 curl 加逐文件
+  `UPLOAD_RETRIES`（默认 3）次重试。③ 三段脚本各自的 `net_hint` 在 CONNECT tunnel 分支外新增识别
+  `Failed to connect`/`Couldn't connect`/`Connection timed out`/`Connection refused`/`Operation timed out`，
+  提示对端不可达/网络抖动（与凭据无关）、已自动重试、可在设置页换「构建网络代理」直连/自定义。
+  ④ `projects/codereview/scripts/build.sh`（参考构建脚本）同步加克隆重试与同款 net_hint 分支。
+  测试：新增 `tests/codereview-build-clone-retry.test.mjs`（5 例，含 net_hint 的 bash 实跑行为断言与整脚本
+  `bash -n`）与 `tests/codereview-tagpush-upload-retry.test.mjs`（5 例）；参考脚本经本地 bare 仓正常路径 +
+  不可达地址重试路径两次冒烟验证。
+
 - 修复宿主 0.2.0-rc.1 升级后工作台「页面修改」✏️ 等会话桥全面失效（`src/client/index.tsx`，修复
   「编辑项目按钮用不了」）：① 0.2.0 起 `sessions.binding/scope` 仅对已 retain 的会话代际可解析，
   新建会话后 `fillSessionDraft` 永远轮询不到 binding（报 `no fill path`）——新增
