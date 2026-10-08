@@ -176,6 +176,13 @@
           </div>
           <div class="ct-row">
             <label class="ct-togg"><input type="checkbox" id="dryRun" checked /> 试运行（不 push / 不建 PR）</label>
+            <span class="ct-label" style="margin-left:6px">冲突处理</span>
+            <select class="dshell-input" id="resolver" style="flex:0 0 150px" title="cherry-pick 冲突时调用所选 AI 解冲突；失败或选「无」则中止该 PR">
+              <option value="">无（中止该 PR）</option>
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+              <option value="kimi">Kimi</option>
+            </select>
           </div>
         </div>
         <div class="ct-row between" style="margin-top:8px">
@@ -307,7 +314,7 @@
         <ul class="dshell-muted" style="margin:0;padding-left:18px;line-height:1.8">
           <li>令牌仅在本机服务端调用平台 API 时使用，不经过浏览器直连，避免 CORS 与泄露。</li>
           <li>同步机制：克隆目标仓 → 抓取源 PR 提交 → cherry-pick 到 <code>sync/&lt;平台&gt;-&lt;编号&gt;</code> 分支 → push → 调用 API 建 PR/MR。</li>
-          <li>冲突会自动中止该 PR 并继续其余；查看日志了解失败原因。</li>
+          <li>冲突处理：cherry-pick 冲突默认中止该 PR 并继续其余。在同步页「冲突处理」选择 Claude Code / Codex / Kimi 后，冲突时服务端会在克隆目录调用所选工具的 CLI 读取冲突文件、删除冲突标记，再 <code>git add</code> 继续；解失败或选「无」仍只中止该 PR。需执行环境已安装对应 CLI（<code>claude</code> / <code>codex</code> / <code>kimi</code>），远程执行时装在远程服务器。</li>
           <li>「状态」与「合入分支」chips 叠加过滤源仓 PR 列表：状态按 开放 / 已合并 / 全部 单选，合入分支按目标分支多选，各 chip 带分类计数；「全选」仅选中当前筛选结果。</li>
           <li>设置页「抓取状态」控制向平台请求的 PR 范围（默认 all = 全部状态）；页面 chips 仅在已抓取范围内做显示筛选，切换即时生效。</li>
           <li>「试运行」会执行 cherry-pick 自检但不会 push 也不会建 PR，适合先验证。</li>
@@ -397,6 +404,7 @@ const state = {
   set: { prefix:"sync", per:50, prState:"all", proxy:{http:"",https:""}, stallSec:90 },
   servers: [], // [{id,name,host,port,user,password,dir}] 远程 SSH 执行服务器
   execLoc: "local", // "local" | 服务器 id —— 同步在何处执行 pr-sync.py
+  resolver: "", // cherry-pick 冲突时调用的 AI 解冲突工具："" | "claude" | "codex" | "kimi"
 };
 
 function sourceSide(){ return state.direction === "AB" ? "A" : "B"; }
@@ -413,6 +421,7 @@ function save(){
       set: state.set,
       servers: state.servers,
       execLoc: state.execLoc,
+      resolver: state.resolver,
     }));
   } catch {}
 }
@@ -433,6 +442,8 @@ function load(){
     if (d.execLoc) state.execLoc = d.execLoc;
     // 选中了已不存在的服务器则回退本地
     if (state.execLoc !== "local" && !state.servers.some(s => s.id === state.execLoc)) state.execLoc = "local";
+    // 冲突处理工具：仅接受已知值，否则视为未选
+    if (typeof d.resolver === "string") state.resolver = ["","claude","codex","kimi"].includes(d.resolver) ? d.resolver : "";
     // 旧版默认抓 open，新版默认 all；旧值视为非用户显式选择，迁移为 all
     if (migrated) state.set.prState = "all";
   } catch {}
@@ -568,7 +579,7 @@ function classifyReason(reason){
 
 function handleEvent(ev){
   switch (ev.event) {
-    case "start": appendLog("▶ 开始同步：目标 " + esc(ev.target) + " 基分支 " + esc(ev.base||"") + "，共 " + ev.count + " 个 PR" + (ev.dryRun?"（试运行）":""), "ev"); break;
+    case "start": appendLog("▶ 开始同步：目标 " + esc(ev.target) + " 基分支 " + esc(ev.base||"") + "，共 " + ev.count + " 个 PR" + (ev.dryRun?"（试运行）":"") + (ev.resolver?" · 冲突处理：" + esc(ev.resolver):""), "ev"); break;
     case "clone": appendLog((ev.status==="cloning"?"克隆目标仓":"刷新已有克隆") + " → " + esc(ev.url||ev.dir||""), "ev"); break;
     case "pr_begin": appendLog("• PR #" + ev.number + " " + esc(ev.title||"") + " → 分支 " + esc(ev.branch||"") + "（来自 " + esc(ev.source||"") + "）", "ev"); break;
     case "pr_fetch": if (ev.ok) appendLog("  抓取源提交：head " + esc(ev.head||"") + " base " + esc(ev.base||"") + " 共 " + ev.commits + " 个提交", "plain"); break;
@@ -592,6 +603,13 @@ function handleEvent(ev){
       appendLog("══ 完成：成功 " + ev.ok + " / 失败 " + ev.failed + " ══", ev.failed === 0 ? "ev ev-ok" : "ev ev-warn");
       $("#logStat").textContent = "成功 " + ev.ok + " · 失败 " + ev.failed;
       state.syncing = false; setSyncBtn();
+      break;
+    }
+    case "pr_resolve": {
+      const rn = ({"claude":"Claude Code","codex":"Codex","kimi":"Kimi"})[ev.resolver] || ev.resolver || "";
+      if (ev.status === "running") appendLog("  冲突 → 调用 " + esc(rn) + " 解冲突中…", "ev");
+      else if (ev.status === "ok") appendLog("  ✓ " + esc(rn) + " 解冲突完成，继续 cherry-pick", "ev ev-ok");
+      else appendLog("  ✗ " + esc(rn) + " 解冲突失败" + (ev.reason ? "：" + esc(ev.reason) : ""), "ev ev-err");
       break;
     }
     case "error": appendLog("✗ " + esc(ev.reason||"错误"), "ev ev-err"); state.syncing = false; setSyncBtn(); break;
@@ -1042,6 +1060,7 @@ async function doSync(){
     workDir: srv ? (srv.dir.replace(/\/+$/,"") + "/work") : P.work,
     branchPrefix: state.set.prefix || "sync",
     dryRun: dry, keepClone: true, prs: sel,
+    resolver: state.resolver || "",
   };
   // 代理（经 spec 传给 pr-sync.py；需服务端读取 spec.proxy 生效）
   const px = state.set.proxy || {};
@@ -1056,7 +1075,7 @@ async function doSync(){
   state.syncing = true; state.results = {}; setSyncBtn();
   clearLog(); renderPrList(); switchTab("log");
   const scriptPath = srv ? P.remote : P.sync;
-  appendLog("▶ 同步 " + sel.length + " 个 PR：" + esc(src.repo||("仓"+sourceSide())) + " → " + esc(tgt.repo||("仓"+targetSide())) + "（目标分支 " + esc(base) + "，" + (dry?"试运行":"将 push + 建 PR") + "）" + (srv ? " · 远程执行：" + esc(srv.name||srv.host) + "（" + esc(srv.user) + "@" + esc(srv.host) + ":" + esc(srv.port) + "）" : " · 本地执行"), "ev");
+  appendLog("▶ 同步 " + sel.length + " 个 PR：" + esc(src.repo||("仓"+sourceSide())) + " → " + esc(tgt.repo||("仓"+targetSide())) + "（目标分支 " + esc(base) + "，" + (dry?"试运行":"将 push + 建 PR") + "）" + (srv ? " · 远程执行：" + esc(srv.name||srv.host) + "（" + esc(srv.user) + "@" + esc(srv.host) + ":" + esc(srv.port) + "）" : " · 本地执行") + (state.resolver ? " · 冲突处理：" + ({"claude":"Claude Code","codex":"Codex","kimi":"Kimi"}[state.resolver]||state.resolver) : ""), "ev");
   await runSyncStream(scriptPath, [P.spec], state.set.stallSec);
   renderResultsTable();
 }
@@ -1077,6 +1096,8 @@ function init(){
   $("#setProxyHttp").value = (state.set.proxy && state.set.proxy.http) || "";
   $("#setProxyHttps").value = (state.set.proxy && state.set.proxy.https) || "";
   $("#setStall").value = state.set.stallSec || 90;
+  $("#resolver").value = state.resolver || "";
+  $("#resolver").addEventListener("change", () => { state.resolver = $("#resolver").value; save(); });
   for (const s of ["A","B"]) { bindRepo(s); fillRepoForm(s); $("#repo"+s).querySelector('[data-prop="repo"]').placeholder = repoPlaceholder(state.repos[s].platform); }
   setDirection(state.direction || "AB");
   $$(".dshell-tab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.tab)));

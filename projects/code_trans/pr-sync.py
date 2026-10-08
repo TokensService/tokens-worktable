@@ -124,15 +124,15 @@ def log(text):
         sys.stdout.flush()
 
 
-def git(args, cwd, capture=False, check=False, allow_fail=False):
-    """运行 git。capture=True 时不透传输出并返回文本；否则透传到页面。"""
+def git(args, cwd, capture=False, check=False, allow_fail=False, env=None):
+    """运行 git。capture=True 时不透传输出并返回文本；否则透传到页面。env 可传入环境变量覆盖。"""
     full = [GIT_BIN] + args
     if capture:
-        r = subprocess.run(full, cwd=cwd, capture_output=True, text=True)
+        r = subprocess.run(full, cwd=cwd, capture_output=True, text=True, env=env)
         if check and r.returncode != 0:
             raise RuntimeError("git %s 失败: %s" % (" ".join(args), (r.stderr or r.stdout).strip()[:400]))
         return r
-    r = subprocess.run(full, cwd=cwd)
+    r = subprocess.run(full, cwd=cwd, env=env)
     if check and r.returncode != 0 and not allow_fail:
         raise RuntimeError("git %s 失败 (exit %d)" % (" ".join(args), r.returncode))
     return r
@@ -245,6 +245,85 @@ def ensure_clone(target, work_dir):
     return clone_dir
 
 
+# ── 冲突 AI 解冲突：cherry-pick 冲突时调用所选 AI CLI 尝试解决 ──
+# 页面 spec.resolver 取值：""（无/中止） | "claude" | "codex" | "kimi"
+# 对应服务端 CLI：claude(Claude Code) / codex(Codex) / kimi(Kimi)。
+# 冲突时在克隆目录调用所选工具，令其读取冲突文件、删除冲突标记，
+# 随后 git add + cherry-pick --continue；解失败或未选工具则中止该 PR、继续其余。
+RESOLVER_NAMES = {"claude": "Claude Code", "codex": "Codex", "kimi": "Kimi"}
+
+RESOLVE_PROMPT = "当前 git 仓库正处于 cherry-pick 冲突中。请按以下步骤操作：\n1) 运行 git status 查看冲突文件（Unmerged paths / both modified）；\n2) 逐个打开冲突文件，保留正确代码、删除全部冲突标记（<<<<<<< ======= >>>>>>>）；\n3) 仅保存修改后的文件，不要执行任何 git 命令，完成后退出。\n若无法解决，直接退出即可。"
+
+
+def resolver_cmd(resolver):
+    """返回所选 AI 工具的命令行（末位为 prompt）。返回 None 表示无可用工具。"""
+    if resolver == "claude":
+        return ["claude", "-p", RESOLVE_PROMPT, "--dangerously-skip-permissions"]
+    if resolver == "codex":
+        return ["codex", "exec", RESOLVE_PROMPT]
+    if resolver == "kimi":
+        return ["kimi", RESOLVE_PROMPT]
+    return None
+
+
+def conflict_files(clone_dir):
+    """返回当前未合并（冲突）的文件列表。"""
+    out = git(["diff", "--name-only", "--diff-filter=U"], clone_dir, capture=True).stdout
+    return [f for f in out.splitlines() if f.strip()]
+
+
+def has_conflict_markers(clone_dir):
+    """检查冲突文件中是否仍残留冲突标记（<<<<<<< / >>>>>>>）。"""
+    for f in conflict_files(clone_dir):
+        try:
+            with open(os.path.join(clone_dir, f), "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except Exception:
+            continue
+        if "<<<<<<<" in content and ">>>>>>>" in content:
+            return True
+    return False
+
+
+def try_resolve_conflicts(clone_dir, resolver, number):
+    """cherry-pick 冲突时调用所选 AI CLI 尝试解冲突。返回 True=已解决可继续，False=未解决。"""
+    cmd = resolver_cmd(resolver)
+    name = RESOLVER_NAMES.get(resolver, resolver or "")
+    if not cmd:
+        return False
+    emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "running", "name": name})
+    try:
+        # 不捕获输出：AI 的 stdout/stderr 直接透传到页面（同时刷新停滞超时）
+        r = subprocess.run(cmd, cwd=clone_dir)
+    except FileNotFoundError:
+        emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "fail",
+              "reason": "%s 未安装或不在 PATH" % name})
+        return False
+    except Exception as e:
+        emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "fail", "reason": str(e)})
+        return False
+    if r.returncode != 0:
+        emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "fail",
+              "reason": "exit %d" % r.returncode})
+        return False
+    if has_conflict_markers(clone_dir):
+        emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "fail",
+              "reason": "仍有未解决冲突标记"})
+        return False
+    # 暂存解决方案并继续 cherry-pick（免编辑器，自动沿用原提交信息）
+    try:
+        git(["add", "-A"], clone_dir, capture=True, check=True)
+        env = dict(os.environ)
+        env["GIT_EDITOR"] = "true"
+        git(["cherry-pick", "--continue"], clone_dir, capture=True, check=True, env=env)
+    except Exception as e:
+        emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "fail",
+              "reason": "暂存/继续失败: %s" % e})
+        return False
+    emit({"event": "pr_resolve", "number": number, "resolver": resolver, "status": "ok"})
+    return True
+
+
 def sync_one(pr, ctx):
     """同步单个源 PR 到目标仓。返回 dict 结果。"""
     clone_dir = ctx["clone_dir"]
@@ -298,14 +377,27 @@ def sync_one(pr, ctx):
     # cherry-pick 范围（空提交也允许，便于重跑）
     r = git(["cherry-pick", "--allow-empty", "--no-edit", "%s..%s" % (mb, head_sha)], clone_dir)
     if r.returncode != 0:
-        detail = ""
-        try:
-            st = git(["status", "--short"], clone_dir, capture=True).stdout.strip()
-            detail = st[:400]
-        except Exception:
-            pass
-        git(["cherry-pick", "--abort"], clone_dir, allow_fail=True)
-        raise RuntimeError("cherry-pick 冲突，已中止: %s" % detail)
+        # 冲突：若选了 AI 解冲突工具则尝试调用，成功则继续；失败或未选则中止该 PR
+        resolver = ctx.get("resolver")
+        resolved = False
+        if resolver:
+            try:
+                resolved = try_resolve_conflicts(clone_dir, resolver, number)
+            except Exception as e:
+                emit({"event": "pr_resolve", "number": number, "resolver": resolver,
+                      "status": "fail", "reason": str(e)})
+        if not resolved:
+            detail = ""
+            try:
+                st = git(["status", "--short"], clone_dir, capture=True).stdout.strip()
+                detail = st[:400]
+            except Exception:
+                pass
+            git(["cherry-pick", "--abort"], clone_dir, allow_fail=True)
+            if resolver:
+                raise RuntimeError("cherry-pick 冲突，%s 解冲突失败，已中止: %s"
+                                   % (RESOLVER_NAMES.get(resolver, resolver), detail))
+            raise RuntimeError("cherry-pick 冲突，已中止（未选解冲突工具）: %s" % detail)
     emit({"event": "pr_cherry", "ok": True})
 
     if ctx.get("dryRun"):
@@ -352,15 +444,20 @@ def main():
     prs = spec.get("prs") or []
     work_dir = spec.get("workDir") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "work")
     work_dir = os.path.abspath(work_dir)
+    resolver = spec.get("resolver") or ""
+    if resolver not in ("", "claude", "codex", "kimi"):
+        resolver = ""
     ctx_base = {
         "target": target,
         "sourceToken": (spec.get("source") or {}).get("token"),
         "branchPrefix": spec.get("branchPrefix", "sync"),
         "dryRun": bool(spec.get("dryRun", False)),
         "keepClone": bool(spec.get("keepClone", True)),
+        "resolver": resolver,
     }
     emit({"event": "start", "target": "%s/%s" % (target.get("platform"), target.get("repo")),
-           "base": target.get("baseBranch"), "count": len(prs), "dryRun": ctx_base["dryRun"]})
+           "base": target.get("baseBranch"), "count": len(prs), "dryRun": ctx_base["dryRun"],
+           "resolver": RESOLVER_NAMES.get(resolver, "")})
 
     try:
         clone_dir = ensure_clone(target, work_dir)
