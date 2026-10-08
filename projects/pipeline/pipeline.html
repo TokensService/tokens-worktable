@@ -343,7 +343,7 @@
     </div>
     <div id="flow" class="pipeline-seg"></div>
     <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
-      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者可编辑：他人创建的流水线只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者与 admin 可编辑：他人创建的流水线对非 admin 只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
       <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
     </div>
   </div>
@@ -7807,7 +7807,8 @@ function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updated
    - auth 探测未完成（authReady 未置位）时对署名/可信/内置流水线保守只读；探测完成仍无登录用户
      （token 共享模式/未装认证插件/探测失败）退化为全权：页面无法判定 admin，trusted/内置不限制编辑、
      标记入口也不显示；
-   - admin 对非可信流水线无例外：同样只能编辑自己创建的流水线。
+   - admin 例外：admin 可编辑/删除任意非可信流水线——创建者账号注销/改名后流水线不致锁死；
+     非 admin 仍仅创建者可编辑。
    typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局；守卫缺失时按「探测完成仍无用户」
    退化全权处理。 */
 function plEditable(p){
@@ -7827,7 +7828,8 @@ function plEditable(p){
        （token 模式等）退化为全权。authReady 全局缺失（旧测试桩）按探测已完成处理。 */
     return (typeof authReady==='undefined') ? true : !!authReady;
   }
-  return owner===me;   // 仅创建者可编辑；admin 无例外
+  if(owner===me) return true;   // 创建者本人可编辑
+  return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;   /* admin 例外：可编辑/删除他人创建的非可信流水线——创建者账号注销/改名后流水线不致锁死；非 admin 仍只读 */
 }
 function pipelineFavoriteUsers(p){
   const users=p&&Array.isArray(p.favoriteUsers)?p.favoriteUsers:[];
@@ -7991,7 +7993,7 @@ function renderPipelines(){
     tr.title='点击选用该流水线';
     const queueCount=queueCounts[p.id]||{running:0,queued:0};
     const queueTitle=(queueCount.running||queueCount.queued)?('运行 '+queueCount.running+' · 排队 '+queueCount.queued):'当前无运行或排队任务';
-    /* 归属编辑限制（plEditable：仅创建者可编辑/删除；内置视同可信——仅 admin 可编辑，其他用户只读）：
+    /* 归属编辑限制（plEditable：仅创建者可编辑/删除，admin 例外可编辑/删除任意非可信流水线；内置视同可信——仅 admin 可编辑，其他用户只读）：
        他人流水线行内「编辑」变「查看」（带创建者提示）、不渲染「删除」；内置行对任何人（含 admin）
        都不渲染「删除」（deletePipeline 另有不依赖 plEditable 的内置拦截）；「复制」对所有行可用
        （复制为自己的副本后编辑）。 */
@@ -8255,7 +8257,7 @@ async function savePlForm(){
 }
 function deletePipeline(id){
   /* 归属拦截：内置流水线任何人（含 admin）都不可删除——独立于 plEditable 先行拦截（admin 对内置可编辑但不可删除）；
-     其余仅创建者可删除（可信流水线仅 admin 可删除）；行内「删除」按钮对只读行与内置行已不渲染，此处兜底 */
+     其余仅创建者可删除（admin 例外可删任意非可信流水线；可信流水线仅 admin 可删除）；行内「删除」按钮对只读行与内置行已不渲染，此处兜底 */
   const delP=findPipeline(id);
   if(delP && delP.builtIn){ alert('预置流水线「'+delP.name+'」不可删除。'); return; }
   if(delP && !plEditable(delP)){ alert(delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。'); return; }
