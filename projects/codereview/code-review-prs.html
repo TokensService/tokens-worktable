@@ -1641,6 +1641,7 @@
   }
   /* 仓内脚本构建：经 /api/worktable/write 落地临时包装脚本后 exec 执行——
      浅克隆 GIT_AUTH_URL 的 GIT_BRANCH 到临时目录（克隆始终在服务端本机执行，OS 用户=dsh web 进程用户），
+     浅克隆失败自动重试（GIT_CLONE_RETRIES，默认 3 次；重试前清理克隆目标目录，间隔递增退避），
      在仓库根目录运行仓内脚本 BUILD_SCRIPT（相对路径）；
      设置页配置 BUILD_CONTAINER 时把克隆目录挂载到容器 /mnt/repo 内经 docker run 执行
      （--network host 与宿主共享网络栈，-u root 以 root 权限启动，--entrypoint bash 覆盖镜像入口，脚本作为 bash 参数执行），
@@ -1648,13 +1649,15 @@
      来自设置页「附加环境变量」）中的变量同样注入并逐一经 -e 透传进容器；凭据输出脱敏。
      GIT_PROXY_MODE（来自设置页「构建网络代理」）：inherit=沿用服务端进程代理环境；direct=清空代理变量直连；
      custom=改用 GIT_PROXY_URL；代理变量按当前取值经 -e 透传进容器。克隆遇 CONNECT tunnel failed
-     （代理拒绝隧道，非证书/凭据问题）时输出针对性提示。
+     （代理拒绝隧道，非证书/凭据问题）或 Failed to connect 类一次性连接失败（对端不可达/网络抖动，
+     与凭据无关）时输出针对性提示。
      BUILD_ARTIFACTS（空格分隔的仓内相对路径/通配）非空时，构建成功后把匹配产物拷贝到
      ARTIFACT_DIR（/tmp 下按次生成的暂存目录），供后续「上传产物」步骤使用。 */
   var BUILD_WRAP_SCRIPT_PATH = "/tmp/dsh-codereview-build-wrap.sh";
   var BUILD_WRAP_SCRIPT = [
     "#!/usr/bin/env bash",
     "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆代码仓并运行仓内构建脚本。",
+    "# 浅克隆失败自动重试：次数经环境变量 GIT_CLONE_RETRIES 注入（默认 3，非法值/0 回退默认）；重试前清理克隆目标目录，间隔递增退避（第 i 次失败后等待 i*5s），每次失败均回显脱敏日志并经 net_hint 诊断。",
     "# 构建容器（BUILD_CONTAINER）在「设置」页统一配置，留空=本机执行；关键命令执行前以「+」前缀回显（凭据固定脱敏为 <repo>），克隆失败输出先脱敏。",
     "# 代理策略（GIT_PROXY_MODE/GIT_PROXY_URL）由「设置 → 构建网络代理」注入：inherit=沿用服务端环境，direct=清空代理变量直连，custom=改用 GIT_PROXY_URL。",
     "set -u",
@@ -1672,13 +1675,33 @@
     '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
     '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
     "esac",
-    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
-    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）；",
+    "# Failed to connect / Couldn't connect / Connection timed out / Connection refused / Operation timed out 是对端不可达或一次性网络抖动（与凭据无关），脚本已自动重试",
+    'net_hint(){',
+    '  if printf \'%s\' "$1" | grep -q "CONNECT tunnel failed"; then',
+    '    echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2',
+    "    return 0",
+    "  fi",
+    '  if printf \'%s\' "$1" | grep -Eq "Failed to connect|Couldn.t connect|Connection timed out|Connection refused|Operation timed out"; then',
+    '    echo "… 提示：无法连接到对端（连接失败/超时/被拒绝）——对端不可达或一次性网络抖动，与凭据无关。脚本已自动重试；若持续失败请稍后再试，或在「设置」页把「构建网络代理」改为「直连」/「自定义代理」" >&2',
+    "  fi",
+    "}",
     "# 命令回显：关键命令执行前以「+ 命令行」打到 stdout（凭据固定脱敏为 <repo>）",
     'TMPD=$(mktemp -d); trap \'rm -rf "$TMPD"\' EXIT',
-    'echo "→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）"',
+    'echo "→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)；失败自动重试，最多 ${GIT_CLONE_RETRIES:-3} 次）"',
     'echo "+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo"',
-    'out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${GIT_AUTH_URL}" "$TMPD/repo" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "克隆失败（检查分支名/凭据/网络）"; }',
+    "# 浅克隆自动重试：次数经 GIT_CLONE_RETRIES 注入（默认 3，非法值/0 回退默认）；git clone 要求目标目录不存在/为空，每次重试前清理上次残留；第 i 次失败后退避 i*5s",
+    'CLONE_RETRIES="${GIT_CLONE_RETRIES:-3}"; case "$CLONE_RETRIES" in \'\'|*[!0-9]*|0) CLONE_RETRIES=3 ;; esac',
+    "clone_i=0",
+    "while :; do",
+    "  clone_i=$((clone_i+1))",
+    '  rm -rf "$TMPD/repo"',
+    '  out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${GIT_AUTH_URL}" "$TMPD/repo" 2>&1) && break',
+    '  printf "%s\\n" "$out" | mask >&2; net_hint "$out"',
+    '  if [ "$clone_i" -ge "$CLONE_RETRIES" ]; then fail "克隆失败（已重试 $CLONE_RETRIES 次，检查分支名/凭据/网络）"; fi',
+    '  echo "… 克隆失败（第 $clone_i/$CLONE_RETRIES 次），等待 $((clone_i*5))s 后重试" >&2',
+    "  sleep $((clone_i*5))",
+    "done",
     'cd "$TMPD/repo" || exit 1',
     'echo "✓ 克隆完成：$(git log -1 --format=\'%h %s\' 2>/dev/null || echo unknown)"',
     "# 脚本不存在时列出该分支根目录及 scripts/、ci/ 下的可用 *.sh，便于直接定位正确路径/分支",
