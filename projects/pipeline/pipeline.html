@@ -1060,7 +1060,9 @@ function reconcilePipelinesAfterSave(submitted, accepted, current){
   });
   return result;
 }
-async function pushState(){
+/* options.silentConflict：409 冲突时不提示、不重拉（编辑器 savePlForm 的回退全量保存使用——
+   冲突由编辑器自己的回滚 + alert 单独处理）；默认（含 persistState 防抖调用）非静默。 */
+async function pushState(options){
   while(persistInFlight) await persistInFlight;
   let releasePersist;
   persistInFlight=new Promise(resolve=>{ releasePersist=resolve; });
@@ -1098,7 +1100,17 @@ async function pushState(){
       return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
     }
     if(!r.ok){
-      return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
+      const failure={ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
+      if(r.status===409 && !(options&&options.silentConflict)){
+        /* 非编辑器路径（复制兜底重试/删除/收藏/置顶/设置等）的 409：此前只 return，冲突静默失败且
+           基线 serverConfigBase 不前进，后续保存持续 409 锁死。这里 toast 告知并重拉服务端状态自愈——
+           本地未落盘改动让位给服务端、基线随之前进，用户重试操作即可。conflictHandled 标记供
+           自带失败处理的调用方识别「已提示并重拉」，避免双重提示。 */
+        if(typeof toast==='function') toast('保存冲突：数据已被他人修改，已刷新为最新状态，请重试操作');
+        try{ if(typeof loadServerState==='function') await loadServerState(); if(typeof renderPipelines==='function') renderPipelines(); }catch(e){}
+        failure.conflictHandled=true;
+      }
+      return failure;
     }
     if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
@@ -1548,7 +1560,7 @@ function activeStages(){ return runStages || curPipeline().stages; }
 function findPipeline(id){ return pipelines.find(p=>p.id===id); }
 function savePipelines(options){
   try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){}
-  if(options&&options.immediate) return pushState();
+  if(options&&options.immediate) return pushState(options);   /* silentConflict 等选项透传给 pushState */
   persistState();
 }
 
@@ -7952,7 +7964,7 @@ async function togglePipelineTrusted(id){
   if(marking) p.trusted=true; else delete p.trusted;
   renderPipelines();
   let saved=null;
-  try{ saved=await savePipelines({immediate:true}); }
+  try{ saved=await savePipelines({immediate:true, silentConflict:true}); }   /* 409 冲突由下方回滚 + alert 单独处理，不走 pushState 的提示 + 重拉，避免双重提示 */
   catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
   if(saved && saved.ok===false){
     if(saved.trusted) return;   /* 403 可信拦截：pushState 已 toast 服务端 message 并重新拉取服务端状态同步 */
@@ -8212,7 +8224,7 @@ async function savePlForm(){
   /* 单条保存：只上传当前流水线（KB 级）；旧服务端无单条路由（unsupported/404）回退瘦身全量保存 */
   try{
     saved=await pushPipelineOne(savedPipelineId);
-    if(saved && saved.unsupported) saved=await savePipelines({immediate:true});
+    if(saved && saved.unsupported) saved=await savePipelines({immediate:true, silentConflict:true});   /* 编辑器冲突由下方回滚 + alert 单独处理，409 不再 toast/重拉，避免双重提示 */
   }
   catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
   finally{
@@ -8278,7 +8290,13 @@ function uniqueCopyName(raw){
   let n=2; while(taken.has(base+'（副本 '+n+'）')) n++;
   return base+'（副本 '+n+'）';
 }
-function copyPipeline(id){
+/* 副本落盘走单条保存（pushPipelineOne）：复制只新增一个条目，天然免疫其他条目的并发冲突——
+   多用户下全量 PUT 的三方合并对「同一 id 双边偏离基线」报 409，复制若走全量，任一无关条目的
+   并发变动都会让整批失败且副本只留在 localStorage（刷新即丢）。旧服务端无单条路由（404）
+   时回退全量保存。UI 不等保存结果（复制保持轻量，不走编辑器那套 inert 等待）：保存确认后
+   pushPipelineOne 内部已 reconcile 并刷新基线；硬失败（含 409）toast 提示并安排防抖重试兜底，
+   本地副本保留，用户也可重试复制。可信 403 已由 pushPipelineOne toast + 重拉状态，不重复处理。 */
+async function copyPipeline(id){
   const src=findPipeline(id); if(!src) return;
   const me=currentUsername||'';   // 副本署名：复制者即创建者（当前登录用户），未取到则不署名
   const clone=JSON.parse(JSON.stringify(src));   /* 深拷贝：阶段及 script/url/sched/sub 等绑定均为纯数据 */
@@ -8291,10 +8309,18 @@ function copyPipeline(id){
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
   pipelines.push(clone);
-  savePipelines();
+  try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){}   /* 离线缓存即时更新（原 savePipelines 的同步语义），不等服务端确认 */
   /* 运行期复制：不切换当前流水线（避免脱离正在查看的运行视图），仅刷新列表 */
   if(running){ renderPipelines(); }
   else { selectPipeline(clone.id); }
+  let saved=null;
+  try{ saved=await pushPipelineOne(clone.id); }
+  catch(e){ saved={ok:false,error:String(e&&e.message||e)}; }
+  if(saved && saved.unsupported) await savePipelines({immediate:true});
+  else if(saved && saved.ok===false && !saved.trusted){
+    if(typeof toast==='function') toast('副本保存失败：'+String(saved.error||'未知错误')+'。副本仍保留在本页，稍后将自动重试保存；也可刷新前重新复制。');
+    savePipelines();   /* 防抖重试兜底：走全量 PUT，冲突时由 pushState 的非静默 409 分支提示并自愈 */
+  }
 }
 
 

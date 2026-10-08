@@ -130,7 +130,7 @@ test('togglePipelineTrusted：admin 标记置位 trusted=true 并立即保存、
   const {ctx,calls}=loadToggleTrusted({pipeline});
   await ctx.togglePipelineTrusted('p1');
   assert.equal(pipeline.trusted,true,'标记置位 trusted=true');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true}],'经 savePipelines({immediate:true}) 立即落盘（需拿结果识别 403）');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true,silentConflict:true}],'经 savePipelines({immediate:true,silentConflict:true}) 立即落盘（需拿结果识别 403；409 冲突由本函数回滚 + alert 单独处理，不走 pushState 提示/重拉）');
   assert.equal(calls.renders,1,'乐观重绘一次');
   assert.equal(calls.alerts.length,0);
   assert.match(calls.toasts[0]||'',/已标记为可信/,'成功 toast 反馈');
@@ -141,7 +141,7 @@ test('togglePipelineTrusted：admin 取消标记删除 trusted 字段（保持�
   const {ctx,calls}=loadToggleTrusted({pipeline});
   await ctx.togglePipelineTrusted('p1');
   assert.equal('trusted' in pipeline,false,'取消标记删除字段而非置 false');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true}]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true,silentConflict:true}]);
   assert.match(calls.toasts[0]||'',/已取消可信/);
 });
 
