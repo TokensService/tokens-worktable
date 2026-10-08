@@ -1,5 +1,59 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复宿主 0.2.0-rc.1 升级后工作台「页面修改」✏️ 等会话桥全面失效（`src/client/index.tsx`，修复
+  「编辑项目按钮用不了」）：① 0.2.0 起 `sessions.binding/scope` 仅对已 retain 的会话代际可解析，
+  新建会话后 `fillSessionDraft` 永远轮询不到 binding（报 `no fill path`）——新增
+  `retainSessionRef`/`releaseSessionRef`，`fillSessionDraft`/`promptIntoSession`/`waitForSessionAssistant`
+  操作期间保留会话作用域（旧宿主无 retain 时原路径不变）；② `sessions.open` 被删（导航归视图属主）——
+  新增 `openSessionInUi`（优先 `ctx.uiWorkspace.openSession`，旧宿主回退 `sessions.open`），14 处
+  新建/联动/回切与 `__dshOpenSession` 导出统一切换；③ 列表快照 `current` 字段删除——新增
+  `currentSessionIdOf`（旧读 `snap.current`，新推导 `byId` 行 `retainedBy.mainView>0`），
+  ensureSessionModel/fetchSessionGroups/syncSessionScope/openSplit/openConsole 五处切换（项目↔会话
+  联动的「切会话关项目/回切」随之恢复）。sessionBridge 初始化补 `uiWorkspace`（`ctx.get` 软探测，
+  规避 cordis 未 inject 服务属性访问抛错）。测试：新增 `tests/session-bridge-retain.test.mjs`
+  （15 例），`tests/ai-chat-result.test.mjs` 的 vm 提取器改健壮配对并注入新助手。
+  已知遗留（0.2.0 适配后续项，本次未动）：byId 行 `pendingInteraction`/`completed` 迁至
+  `ctx.uiSession.sessionStatus`、`subagentsByParent`→`projectionsBySession[].values.subagentCatalog`、
+  `jobsBySession`→`ctx.jobs.watchRows`、`hostApi`（connection.api 已删）→`ctx.remote`——
+  项目卡提醒点/运行时长/新会话模型兜底修复暂退化，待后续适配。
+
+- 修复**多用户登录下「复制/编辑后的流水线无法保存」**（phantom conflict，已用真实函数复现定位）：
+  `favoriteUsers`（各用户收藏）与 `pinnedAt`（置顶）这类非内容字段存在共享流水线条目上，却参与服务端三方合并的
+  JSON 全字段同一性比对——他端一次收藏/置顶即让该条「偏离基线」：编辑走 save-one 被 409 拒绝；全量 PUT
+  （复制/删除/设置等）任一无关条目双边分歧即整批 409 且客户端静默、基线不前进，后续保存持续锁死。
+  服务端（`src/index.ts`）：`mergePipelineConfigForWrite` / `mergePipelineOneForWrite` 的变更与冲突判定改为
+  剥离 `favoriteUsers`/`pinnedAt` 后的内容比对，两个字段一律按三方规则合入结果（favoriteUsers 集合合并
+  `(client ∩ disk) ∪ (client − base) ∪ (disk − base)`，并发收藏不丢、取消收藏生效；pinnedAt 标量三方取
+  客户端相对基线的变化方；形状归一：空收藏/零置顶省略键）；`trustedPipelineViolations` 豁免键扩为
+  `['favoriteUsers','pinnedAt']`（与守卫本就豁免 favoriteUsers 的语义对齐，置顶属视图排序元数据）。
+  客户端（`projects/pipeline/pipeline.html`）：`copyPipeline` 改走 save-one 单条保存（副本只新增一个条目，
+  天然免疫无关条目并发冲突；旧服务端回退全量），硬失败 toast 提示且本地副本保留并防抖重试；`pushState`
+  全量 PUT 409 在非编辑器路径下 toast「已被他人修改，已刷新为最新状态」并 `loadServerState()` 重拉自愈
+  （编辑器与可信标记路径自带回滚 + alert，经 `silentConflict` 保持单处提示）。测试：服务端
+  `tests/pipeline-config-concurrency.test.mjs` 新增 9 例（收藏/置顶并发合并、真冲突仍 409、守卫豁免、形状归一），
+  客户端新增 `projects/pipeline/tests/test_pipeline_multiuser_save.js` 6 例；既有 `pipeline-trust` 两处断言随形状归一
+  改为校验键省略。fix/session-bridge-0.2.0
+
+- 流水线归属编辑限制新增 **admin 例外**（`projects/pipeline/pipeline.html` 的 `plEditable`，修复「编辑按钮用不了」
+  类问题）：原规则「非可信流水线仅创建者可编辑/删除，admin 无例外」会使创建者账号注销/改名后的流水线对所有人
+  （含 admin）永久只读——行内「编辑」变「查看」、编辑器整体只读。现 admin 可编辑/删除任意非可信流水线；
+  内置/可信「仅 admin」、非 admin「仅创建者」、未署名全员可编辑、token 模式退化全权等其余规则不变；
+  行按钮/编辑器只读/保存与删除兜底/主视图拖拽均经 `plEditable` 级联一致（服务端本就只对可信/内置做写校验，
+  无创建者归属校验，无需改动）。编排区说明文案与相关注释同步更新；测试翻转
+  `test_pipeline_owner_edit.js` / `test_pipeline_trusted.js` 中「admin 无例外」断言，新增
+  `tests/test_pipeline_admin_edit.js`（9 例覆盖完整权限矩阵）。
+
+- 流水线页浏览器 CPU 降耗（`projects/pipeline/pipeline.html`，用户可见行为不变；实测开关页面 CPU 差约
+  20% 的场景针对优化）：① 阶段详情日志改**增量渲染**（`syncDetailLogLines`）——日志增长只追加新增行
+  （DocumentFragment 一次挂载），触顶窗口平移带逐行校验、中部替换原位插入、外部改写回退全量重建，
+  消灭每次刷新对日志区的全量 DOM 重建；滚动语义不变（贴底跟随、上翻保持）；② 各阶段进度定时器
+  合并为全页面唯一 500ms tick（五个执行器改为登记进度任务、摘除即停表；页面 hidden 停表、恢复可见
+  立即补刷新；tick 内只直改进度条/耗时文本，不再每 tick 全量扫节点与重绘详情；`rc.over`/`rc.token`
+  迟回守卫语义不变）；③ 运行队列轮询按页面可见性暂停（恢复时立即补拉），响应内容签名未变跳过
+  重绘；进行中脉冲动画由 box-shadow 扩散改为 opacity/transform 合成器属性。新增
+  `tests/test_stage_tick.js`、`tests/test_queue_poll_throttle.js`，扩充 `test_log_render_scaling.js`，
+  调整 `test_plan_terminate.js`（快照未变时不再强制重绘即目标行为）。
+
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`
   不入 git（含证书私钥），而 `ems-check.sh` dispatch 模式与 `ems-deploy.sh` 都要读仓内
@@ -8,6 +62,15 @@
   仅在本地留有真实 chart 的机器上能跑过。现两个测试在 Chart.yaml 缺失时自建最小等价 fixture
   （`name: ems` / `version: 26.8.0-b6`，与 mock helm 及契约断言口径一致），已存在真实 chart 的
   部署/开发机原样保留不动，退出时仅清理测试自建的目录。
+
+- 新增服务端路由 `POST /api/worktable/llm`（`src/index.ts`）：LLM 接口中转，供「友商 Tokens API 性能对比」
+  项目页（`projects/friend-perf.html`）使用。请求体 `{baseURL, endpoint, apiKey, payload}`，服务端代发并
+  流式透传响应（带背压），保住页面侧 TTFT 语义；安全边界：仅 https 目标、复用 `isLocalTarget` 反向拒绝
+  回环/内网主机（不成为 SSRF 出口，与 `/api/worktable/proxy` 的内网白名单互不放开）、仅放行 `/models`
+  与 `/chat/completions` 两个 OpenAI 兼容路径，密钥由调用方自带、服务端不落地。页面侧 `llmFetch` 初版为
+  「直连失败自动回退中转」，后改为**统一走服务端中转**：各家厂商同一出口发起请求，规避浏览器 CORS 差异与
+  本机网络差异，横向可比；早期直连记录带 `relay` 标记，记录页模型列对老直连记录显示「·直连」；
+  「获取模型」同样统一走中转。
 
 - 流水线页用户可见的「内置」字样去掉（`projects/pipeline/pipeline.html`，行为完全不变）：行内名称旁的
   「内置」小灰徽章删除（保留「可信」徽章，title 与可信流水线文案对齐）；编辑器标题「（内置·可信）/
@@ -230,6 +293,27 @@
   回当前页，避免下一次保存误删他端新增项。新增
   `projects/pipeline/tests/test_pipeline_save_consistency.js`、`tests/pipeline-config-concurrency.test.mjs`，并扩充
   `test_run_autofocus.js`、`test_pipeline_readonly.js`。
+
+- 新增部署准入门禁脚本 `check-deploy-gate.sh`（`projects/pipeline/scripts/`）：在拉取/渲染/部署阶段之前
+  把关，任一 FAIL 即非零退出、流水线阻断在绑定位置。执行机侧校验 `IMAGE_NAME`/`DEPLOY_IMAGE` 至少其一
+  非空与 ssh 可用性（密码认证还需 sshpass）；有目标节点时经 SSH 把脚本逐节点下发执行（取 `TARGET_HOSTS`
+  各自凭据，首节点按 `deploy-model.sh` 契约为控制节点）：kubectl/helm/curl（控制节点缺失判 FAIL、
+  工作节点仅 WARN）、GPU 数量（`MIN_GPU` 显式门槛，留空按 `PREFILL_GPU`/`DECODE_GPU` 较大值推导、
+  0=跳过）、`TARGET_RUN_DIR` 所在盘剩余空间（`MIN_DISK_FREE_GIB` 默认 20 GiB）、命名空间内镜像凭证
+  （同配 `NAMESPACE` 与 `IMAGE_PULL_SECRETS` 时逐个核实 Secret，缺失判 FAIL，命名空间不存在仅 WARN）。
+  无目标节点运行仅做执行机输入检查；脚本只读、不创建/删除资源、不打印凭据，输出
+  `GATE_RESULT=PASS|FAIL` 供下游阶段引用。用法：流水线编辑器绑成普通阶段（放在部署阶段之前）或在
+  「设置」页选为环境检查脚本；参数识别走既有 `${VAR:-默认值}` + 对齐注释约定（已验证识别 18 个参数、
+  无位置参数）。新增契约测试 `projects/pipeline/scripts/test/test_check_deploy_gate.sh`（输入检查、
+  GPU/磁盘/工具控制与工作节点分级、Secret、逐节点凭据与角色下发共 9 组用例），
+  `projects/pipeline/scripts/README.md` 增补「部署准入门禁」章节。
+- 「代码同步」项目页（`projects/code_trans/`）cherry-pick 冲突支持 AI 解冲突：同步页新增「冲突处理」
+  下拉（`index.html`，持久化 `state.resolver`，仅接受已知值），可选 Claude Code / Codex / Kimi；
+  `pr-sync.py` 在 cherry-pick 冲突时于克隆目录调用所选 CLI（`claude -p` / `codex exec` / `kimi`，
+  prompt 令其读取冲突文件、删除冲突标记后不执行任何 git 命令），随后校验无残留冲突标记再
+  `git add` + `cherry-pick --continue`；解失败、工具未安装或未选则维持原行为——中止该 PR、
+  继续其余。AI 输出透传到页面日志（同时刷新停滞超时），进度经 `pr_resolve` 事件上报；
+  远程执行时对应 CLI 需装在远程服务器。
 - 「代码同步」项目页（`projects/code_trans/`，窗口1：两个代码仓 PR 双向同步）入库，PR 选择支持按目标分支筛选：
   源仓 PR 列表上方的「合入分支」chips 按各 PR 的 `targetBranch` 多选过滤（chips 带各分支 PR 计数与「全部 (N)」，
   默认不过滤；加载 PR / 切换同步方向后自动重置，已加载列表为空时整行隐藏），「全选」仅选中当前筛选结果，

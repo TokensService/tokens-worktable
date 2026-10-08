@@ -48,7 +48,8 @@ function loadPipelineRoutes(home, { ctx = {} } = {}) {
   const end = source.indexOf('  // ---- 流水线导入导出：服务端备份', start)
   assert.ok(start >= 0 && end > start, '流水线持久化路由块未找到')
   const helpers = [
-    'cleanPipelineHistory', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
+    'cleanPipelineHistory', 'stripPipelineSharedMeta', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt',
+    'withPipelineSharedMeta', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
     'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
   ].map((name) => extractFunction(name)).join('\n')
   const code = helpers + '\n' + TRUST_HELPERS + '\n' + source.slice(start, end)
@@ -219,7 +220,8 @@ test('非 admin：改 trusted 条目内容 → 403 且不写盘；仅改 favorit
   const favOnly = { pipelines: [trustedPl('p1', '可信', { favoriteUsers: [] }), pl('p2', '普通')] }
   const allow = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: favOnly, baseConfig: config, history: [] }, TOKEN_USER))
   assert.equal(allow.status, 200, 'favoriteUsers 是按用户收藏的个人数据，任何登录用户可改')
-  assert.deepEqual((await readStore(home)).config.pipelines[0].favoriteUsers, [])
+  assert.ok(!('favoriteUsers' in (await readStore(home)).config.pipelines[0]),
+    '收藏清空后按合并层形状归一省略 favoriteUsers 键（客户端迁移 migratePipelineDefaults 会补回 []）')
 })
 
 test('非 admin：摘标 / 删除 / 打标 / 新建 trusted → 全部 403 且不写盘', async t => {
@@ -428,7 +430,8 @@ test('非 admin：仅改内置条目 favoriteUsers → 放行；同表普通流�
   const favOnly = { pipelines: [builtinPl('安装部署XDS', { favoriteUsers: [] }), pl('p2', '普通')] }
   const fav = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: favOnly, baseConfig: config, history: [] }, TOKEN_USER))
   assert.equal(fav.status, 200, 'favoriteUsers 豁免在内置条目上同样成立')
-  assert.deepEqual((await readStore(home)).config.pipelines[0].favoriteUsers, [])
+  assert.ok(!('favoriteUsers' in (await readStore(home)).config.pipelines[0]),
+    '内置条目收藏清空后同样省略 favoriteUsers 键（形状归一）')
 
   const next = { pipelines: [builtinPl('安装部署XDS', { favoriteUsers: [] }), pl('p2', '改名'), pl('p3', '新建普通')], theme: 'light' }
   const res = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: next, baseConfig: fav.json().config, history: [] }, TOKEN_USER))

@@ -33,11 +33,29 @@ function renderFixture(output) {
     _out: { stdout: output, stderr: '', code: null },
   };
   const makeContainer = () => ({
-    style: {}, children: [], innerHTML: '', textContent: '',
+    style: {}, children: [], _innerHTML: '', _textContent: '',
     appendChild(node) {
       if (node && Array.isArray(node.children) && node.isFragment) this.children.push(...node.children);
       else this.children.push(node);
+      return node;
     },
+    removeChild(node) {
+      const i = this.children.indexOf(node);
+      if (i >= 0) this.children.splice(i, 1);
+      return node;
+    },
+    insertBefore(node, ref) {
+      const items = node && Array.isArray(node.children) && node.isFragment ? node.children : [node];
+      const i = this.children.indexOf(ref);
+      if (i < 0 || ref == null) this.children.push(...items);
+      else this.children.splice(i, 0, ...items);
+      return node;
+    },
+    get childNodes() { return this.children; },
+    set innerHTML(value) { if (value === '') this.children = []; this._innerHTML = value; },
+    get innerHTML() { return this._innerHTML; },
+    set textContent(value) { this.children = []; this._textContent = String(value); },
+    get textContent() { return this.children.length ? this.children.map(node => node.textContent).join('\n') : this._textContent; },
   });
   const elements = {
     detailTitle: makeContainer(), detailBadge: makeContainer(), detailKv: makeContainer(),
@@ -431,4 +449,70 @@ test('轮询日志后续追加仍在途时不得提前清除 pending 标记', as
   assert.deepEqual(calls, ['first', 'second']);
   releases.shift()(); assert.equal(await sink.flush(), '/logs/run/stage.log');
   assert.equal(stage._serverLogPending, false);
+});
+
+test('日志增长只增量追加新行节点，既有行节点原位保留不重建', () => {
+  const { context, elements, stage } = renderFixture('first\nsecond');
+  context.renderDetail();
+  const before = elements.detailLog.children.slice();
+  assert.deepEqual(before.map(node => node.textContent), ['$ bash heavy.sh', 'first', 'second']);
+
+  stage._out.stdout += '\nthird\nfourth';
+  context.renderDetail();
+  const after = elements.detailLog.children;
+  assert.equal(after.length, before.length + 2);
+  before.forEach((node, i) => assert.equal(after[i], node, '既有行节点必须原位保留，不得随日志增长全量重建'));
+  assert.deepEqual(after.slice(-2).map(node => node.textContent), ['third', 'fourth']);
+});
+
+test('日志触顶后按窗口平移：仅淘汰头部节点，DOM 行数保持有界', () => {
+  const output = Array.from({ length: 1500 }, (_, i) => 'line-' + i).join('\n');
+  const { context, elements, stage } = renderFixture(output);
+  context.renderDetail();
+  const first = elements.detailLog.children.slice();
+  assert.equal(first.length, 1002, '首帧为命令行 + 截断提示 + 有界尾窗');
+
+  stage._out.stdout += '\n' + Array.from({ length: 20 }, (_, i) => 'more-' + i).join('\n');
+  context.renderDetail();
+  const next = elements.detailLog.children;
+  assert.equal(next.length, 1002, '平移后行数不变，DOM 不随日志总量膨胀');
+  assert.equal(next[0].textContent, '$ bash heavy.sh');
+  assert.equal(next.at(-1).textContent, 'more-19');
+  assert.ok(next.some(node => node.textContent === 'line-520'));
+  const retained = next.filter(node => first.includes(node));
+  assert.equal(retained.length, 982, '平移 20 行后重叠区节点引用必须原位保留');
+});
+
+test('增量渲染的行着色与文本与全量重建完全一致', () => {
+  const { context, elements, stage } = renderFixture('✓ 构建成功\n✗ failed 失败\n[Pipeline] stage {\nplain');
+  context.renderDetail();
+  stage._out.stdout += '\n✓ 又成功了\ndocker build .';
+  context.renderDetail();
+  const grown = elements.detailLog.children.map(node => node.className + '|' + node.textContent);
+
+  const fresh = renderFixture('✓ 构建成功\n✗ failed 失败\n[Pipeline] stage {\nplain\n✓ 又成功了\ndocker build .');
+  fresh.context.renderDetail();
+  const expected = fresh.elements.detailLog.children.map(node => node.className + '|' + node.textContent);
+  assert.deepEqual(grown, expected, '增量路径渲染结果必须与一次性全量渲染逐行一致');
+});
+
+test('贴底时跟随最新日志，用户上翻后保持阅读位置', () => {
+  const { context, elements, stage } = renderFixture('a\nb');
+  Object.assign(elements.detailLog, { scrollTop: 0, clientHeight: 480, scrollHeight: 1000 });
+  context.renderDetail();
+  assert.equal(elements.detailLog.scrollTop, 0, '未贴底时不得强制滚动打断阅读');
+
+  stage._out.stdout += '\nc';
+  elements.detailLog.scrollTop = elements.detailLog.scrollHeight - elements.detailLog.clientHeight;
+  context.renderDetail();
+  assert.equal(elements.detailLog.scrollTop, elements.detailLog.scrollHeight, '贴底时必须跟随到最新行');
+});
+
+test('日志区被外部改写后按行数守卫回退全量重建，不留脏节点', () => {
+  const { context, elements, stage } = renderFixture('a\nb');
+  context.renderDetail();
+  elements.detailLog.children = [{ textContent: '外来节点' }];   // 模拟回放渲染等其他路径直接改写日志区
+  stage._out._outputRevision = 1;   // 仅改变详请指纹，日志行内容不变
+  context.renderDetail();
+  assert.deepEqual(elements.detailLog.children.map(node => node.textContent), ['$ bash heavy.sh', 'a', 'b']);
 });

@@ -226,6 +226,29 @@ GPU Worker 到启动根的同进程组链，并终止整个进程组，防止残
 `HUGEPAGE_TRIGGER_GIB=2048`、`MIN_AVAILABLE_WITH_HUGEPAGES_GIB=700` 可覆盖大页规则，
 这些参数会传入远端。CNI、代理或内存检查执行失败判 FAIL。
 
+## 部署准入门禁（check-deploy-gate.sh）
+
+`check-deploy-gate.sh` 是只读的部署前置检查：任一 FAIL 即非零退出，把流水线阻断在
+绑定位置。绑成普通阶段（放在拉取/渲染/部署之前）或在「设置」页选为环境检查脚本均可生效。
+
+- 执行机输入：`IMAGE_NAME` / `DEPLOY_IMAGE` 至少其一非空；有目标节点时检查执行机
+  `ssh` 可用（节点配密码认证时还需 `sshpass`）。
+- 目标机：经 SSH 把脚本逐节点下发执行（取 `TARGET_HOSTS` 各自凭据，首节点按
+  `deploy-model.sh` 契约为控制节点）：
+  - `kubectl` / `helm` / `curl`：控制节点缺失判 FAIL，工作节点仅 WARN；
+  - GPU 数量：`MIN_GPU` 显式门槛；留空按 `PREFILL_GPU` / `DECODE_GPU` 较大值推导
+    （仍为空则 1），`MIN_GPU=0` 跳过；
+  - 磁盘：`TARGET_RUN_DIR`（默认 `/tmp/op-test-pipeline`）所在盘剩余空间不少于
+    `MIN_DISK_FREE_GIB`（默认 20 GiB）；
+  - 镜像凭证：同时配置 `NAMESPACE` 与 `IMAGE_PULL_SECRETS`（逗号分隔）时，在控制节点
+    逐个核实 Secret 是否存在于该命名空间，缺失判 FAIL；命名空间本身不存在只 WARN
+    （部署时由 helm 创建，提示需同步创建 Secret）。
+- 无目标节点运行时只做执行机输入检查（WARN 提示，不判 FAIL）。
+- 输出 `GATE_RESULT=PASS|FAIL` 供下游阶段引用；脚本只读，不创建/删除任何资源，
+  凭据只用于 SSH 登录、不打印。
+
+契约测试：`scripts/test/test_check_deploy_gate.sh`。
+
 ### 指定普罗数据采集时间
 
 支持 ISO 8601 UTC 时间（含毫秒形式），例如：

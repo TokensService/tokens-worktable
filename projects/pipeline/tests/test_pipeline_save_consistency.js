@@ -83,7 +83,7 @@ test('旧服务端无单条路由（unsupported）时回退全量保存并正常
 
   f.resolveSave({ ok: false, unsupported: true });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.full)), { immediate: true }, '单条不支持时回退瘦身全量保存');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.full)), { immediate: true, silentConflict: true }, '单条不支持时回退瘦身全量保存（silentConflict：编辑器冲突由自身回滚 + alert 单独处理，pushState 不再重复提示/重拉）');
 
   f.resolveFull({ ok: true });
   await saving;
@@ -248,7 +248,8 @@ test('配置 PUT 的 409 冲突返回可识别结果，不再静默当作保存�
 
   const result = await f.ctx.pushState();
 
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: false, conflict: true, conflicts: ['p1'], error: 'pipeline config conflict' });
+  /* 默认非静默路径：返回 conflictHandled 标记（toast + 重拉自愈的详细行为见 test_pipeline_multiuser_save.js） */
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: false, conflict: true, conflicts: ['p1'], error: 'pipeline config conflict', conflictHandled: true });
 })
 
 test('不同流水线由其他浏览器新增后，保存响应会合并回本页而不是在下次保存时误删', async () => {
