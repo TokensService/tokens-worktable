@@ -1,5 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 跟进修复**「编译发行」版本 bump 回推遇网络抖动即失败**（同一 v1.1.10 发行重跑时，克隆/构建/测试均过，
+  死在仓内 `scripts/build.sh` 的 `git push origin HEAD:main`，报错还误导为「凭据无推送权限」）：回推改
+  `GIT_PUSH_RETRIES`（默认 3）次自动重试、递增退避（`sleep $((i*5))`）；远端地址含克隆凭据，失败输出先经
+  `push_mask` 脱敏再回显；末次失败区分诊断——连接类错误（`Failed to connect`/`Connection timed out` 等）
+  报「对端不可达/一次性网络抖动，与凭据无关」，其余保留原「凭据无推送权限或分支有新提交」指引。
+  冒烟验证：stub git 三场景（抖动后成功 / 持续断网 / 权限拒绝）行为与脱敏均正确。
+
 - 修复**「编译发行」遇一次性网络抖动即整流程失败**（2026-10-08 v1.1.10 发行构建因
   `Failed to connect to github.com port 443` 一次性连接超时直接失败）：页面内嵌三段脚本与仓内参考脚本
   统一加自动重试与连接失败诊断。① `code-review-prs.html` 的 `BUILD_WRAP_SCRIPT`（构建包装）与
