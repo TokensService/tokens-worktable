@@ -58,6 +58,7 @@ function makeCtx(serverState){
     persistTimer:null,
     stateLoaded:false,
     serverConfigBase:null,
+    stateFetchEpoch:0,   /* 基线纪元（fetchPipelineStateFresh 过期重拉依据；本组用例无在途保存，恒不触发重拉） */
     /* loadServerState 的流水线/字段依赖（恒等桩：本组用例不验证迁移行为本身） */
     DEFAULT_PIPELINE_ID:'pl-xds',
     defaultPipeline:()=>({id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0',name:'检出'}]}),
@@ -93,7 +94,7 @@ function makeCtx(serverState){
     },
   };
   vm.createContext(ctx);
-  ['applyTheme','renderAll','loadServerState','migrateInlineLogs','sanitizeFsName','stripPipelineSharedMeta','mergePipelinesFromServer']
+  ['applyTheme','renderAll','loadServerState','fetchPipelineStateFresh','migrateInlineLogs','sanitizeFsName','stripPipelineSharedMeta','mergePipelinesFromServer']
     .forEach(n=>vm.runInContext(extractFunction(n),ctx));
   ctx.__calls=calls;
   return ctx;

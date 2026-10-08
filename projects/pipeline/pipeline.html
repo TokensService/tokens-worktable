@@ -1016,6 +1016,12 @@ const LOGS = {
 /* localStorage 仍保留作离线缓存；服务端不可达时行为与原来一致。 */
 let stateLoaded=false;   // loadServerState 成功后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
 let serverConfigBase=null;   // 最近一次成功 GET/PUT 的服务端配置；PUT 携带它做多浏览器三方合并
+/* 基线纪元：每次基线随「保存确认 / 新鲜快照应用」前进 +1。GET 快照若在「请求发出后、应用前」被一次
+   基线前进反超（典型：复制副本的 save-one 先落盘并推进基线，首屏 GET 才带着落盘前的快照返回），
+   按过期快照合并会把刚落盘的条目误判为「远端已删除」（基线有、远端无、本地==基线 → 随远端删除），
+   副本从页面消失且基线被污染成「无此条目」——之后该条目每次 save-one 都 phantom 409
+   （baseOne=null ≠ 磁盘条目）。loadServerState/手动刷新据此识别过期快照并重拉（fetchPipelineStateFresh）。 */
+let stateFetchEpoch=0;
 let persistTimer=null;
 /* 同一页面内串行 PUT 的互斥锁链尾（Promise 链，见 pushState/pushPipelineOne 头部）：后一次必须基于前一次
    服务端确认后的新基线。旧写法 while(persistInFlight) await persistInFlight 是 check-then-set——两个并发
@@ -1166,6 +1172,7 @@ async function pushState(options){
     }
     if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      stateFetchEpoch+=1;   // 基线前进（保存确认）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
       if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
         pipelines=reconcilePipelinesAfterSave(config.pipelines,body.config.pipelines,pipelines)
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
@@ -1217,10 +1224,25 @@ async function pushPipelineOne(pipelineId){
       return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
     }
     if(!r.ok){
+      if(r.status===409 && body.config && typeof body.config==='object' && !Array.isArray(body.config)){
+        /* 409 响应携带磁盘真值（save-one 路由冲突时回传 diskCfg）：采纳为新基线并合回本页（语义同成功分支）。
+           陈旧基线的 phantom 冲突（典型：复制副本落盘后基线被过期 GET 快照污染成「无此条目」，或另一标签页
+           复制的副本晚于本页基线）此前把该条目永久锁死在 409——每次 save-one 都 baseOne=null ≠ 磁盘条目，
+           编辑器反复回滚改名并误报「被其他浏览器修改」。基线本来就是「服务端已确认状态」的缓存，
+           采纳后编辑器回滚按 baseAdvanced 取前进后的最新确认版，用户重试保存即成功；真实并发冲突同义正确。 */
+        serverConfigBase=JSON.parse(JSON.stringify(body.config));
+        stateFetchEpoch+=1;
+        if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
+          pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
+            .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+          try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
+        }
+      }
       return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
     }
     if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      stateFetchEpoch+=1;   // 基线前进（保存确认）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
       if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
         pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
@@ -1234,13 +1256,25 @@ async function pushPipelineOne(pipelineId){
     if(persistInFlight===persistMine) persistInFlight=null;   /* 自己是链尾（无后续排队者）才清回 null */
   }
 }
+/* GET /api/worktable/pipeline，并保证快照不落后于任何一次基线前进：请求在途期间若有保存被确认
+   （stateFetchEpoch 前进），响应快照可能取于该次保存落盘之前——按它三方合并会把刚落盘的条目误判为
+   「远端已删除」（基线有、远端无、本地==基线 → 随远端删除），刚复制的副本即从页面消失、基线被污染。
+   过期则重拉（上限 2 次防活锁；仍过期则按现有合并口径应用，不劣于修复前）。 */
+async function fetchPipelineStateFresh(){
+  let st=null, epochAtFetch=stateFetchEpoch, retries=0;
+  for(;;){
+    st=null;
+    try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
+    if(!st || stateFetchEpoch===epochAtFetch || retries>=2) return st;
+    retries+=1; epochAtFetch=stateFetchEpoch;
+  }
+}
 async function loadServerState(){
-  let st=null;
-  try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
+  const st=await fetchPipelineStateFresh();
   try{
     /* 流水线三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
     const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
-    if(st) serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{}));
+    if(st){ serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{})); stateFetchEpoch+=1; }   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期
     if(st && st.config && Object.keys(st.config).length){
       const cfg=st.config;
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
@@ -7835,9 +7869,20 @@ function renderStats(){
 function applyPipelineRefreshPayload(st){
   const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
   if(!Array.isArray(cfg.pipelines) || !cfg.pipelines.length) return false;
-  const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-  const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
-  pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults);
+  /* 与 loadServerState 同口径（此前整表替换且不动基线，两个坑：① 在途的本地新增/修改被快照冲掉——
+     改名 save-one 在途时点刷新，响应合入时发现本地已无改名，按「在途期间被改」回退成旧名；
+     ② 共同基线停留旧快照——基线之后落盘的条目（复制副本、他端新增）在磁盘有而基线无，后续
+     save-one 永久 phantom 409（baseOne=null ≠ 磁盘条目），改名被反复回滚且误报「被其他浏览器修改」）：
+     按 id 三方合并保留本页在途改动，并以本次新鲜快照推进共同基线（含 keptBaseEntries 补回，口径见
+     loadServerState），基线本来就是「最近一次成功 GET/PUT 的服务端配置」的缓存。 */
+  const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+  const merged=mergePipelinesFromServer(prevBasePipelines, pipelines, cfg.pipelines);
+  serverConfigBase=JSON.parse(JSON.stringify(cfg));
+  stateFetchEpoch+=1;   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
+  const def=merged.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+  const customs=merged.pipelines.filter(p=>p && !p.builtIn);
+  pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+  if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
   if(!findPipeline(curPipelineId)) curPipelineId=pipelines[0].id;
   try{
     localStorage.setItem('pip-pipelines', JSON.stringify(pipelines));
@@ -7849,9 +7894,8 @@ async function refreshPipelinesFromServer(){
   if(running){ alert('流水线运行中，暂不能刷新流水线任务。'); return; }
   const b=$('pipelineRefresh'); b.disabled=true;
   try{
-    const r=await fetch('/api/worktable/pipeline');
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const st=await r.json();
+    const st=await fetchPipelineStateFresh();   // 过期快照重拉（在途保存先于快照落盘时），见 fetchPipelineStateFresh
+    if(!st) throw new Error('服务端配置拉取失败');
     /* 请求在途时仍可能从运行按钮启动任务：迟到响应不得改写运行快照与节点状态。 */
     if(running){ alert('流水线已开始运行，本次刷新已取消。'); return; }
     const keepSelectedId=selectedId;   // 响应提交前再取，保留请求在途期间用户新切换的阶段
