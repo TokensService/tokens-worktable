@@ -93,7 +93,7 @@ function makeCtx(serverState){
     },
   };
   vm.createContext(ctx);
-  ['applyTheme','renderAll','loadServerState','migrateInlineLogs','sanitizeFsName']
+  ['applyTheme','renderAll','loadServerState','migrateInlineLogs','sanitizeFsName','stripPipelineSharedMeta','mergePipelinesFromServer']
     .forEach(n=>vm.runInContext(extractFunction(n),ctx));
   ctx.__calls=calls;
   return ctx;
