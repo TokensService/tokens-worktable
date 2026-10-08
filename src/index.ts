@@ -391,6 +391,18 @@ function stripPipelineSharedMeta(entry: any): any {
   return copy
 }
 
+/** 条目内容同一性比对：剥离 favoriteUsers / pinnedAt 后做「键序无关」递归深比较（deepEqualIgnoring
+ *  比较键集合与值，数组顺序仍算内容）。此前用 JSON.stringify 比对剥离副本，对键序敏感——同一条目经
+ *  编辑器重建阶段对象、旧版客户端/导入等不同键序字节落盘后，内容未变也会被判「偏离基线」产生
+ *  phantom 409（改名保存被拦截/还原成副本名）。deepEqualIgnoring 定义在下方可信区段，函数声明提升，
+ *  运行时不分声明先后。 */
+function samePipelineContent(left: any, right: any): boolean {
+  const a = stripPipelineSharedMeta(left ?? null)
+  const b = stripPipelineSharedMeta(right ?? null)
+  if (a === null || b === null) return a === b
+  return deepEqualIgnoring(a, b)
+}
+
 /** favoriteUsers 三方集合合并：(client ∩ disk) ∪ (client − base) ∪ (disk − base)——双方共同保留的，
  *  加上各端相对基线新增的；并发取消收藏（相对基线删除）因此同样生效。元素为修剪后的非空字符串；
  *  顺序确定：先按 client 数组顺序，再追加仅 disk 有的元素（按 disk 数组顺序）。任一侧缺失/非数组按空集。 */
@@ -434,7 +446,8 @@ function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: a
 }
 
 /**
- * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」比对——客户端未改动
+ * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」做键序无关深比较
+ * （samePipelineContent，避免仅字节键序不同造成 phantom 冲突）——客户端未改动
  * 的 id 以磁盘为准，不同 id 的并发改动可同时保留；同一 id 在客户端与磁盘内容都偏离共同基线时报告冲突，
  * 调用方不得写盘。favoriteUsers / pinnedAt 是共享条目上的非内容元数据，不参与变更判定（他端收藏/置顶
  * 不再造成 phantom 冲突），无论内容取自哪侧都对结果条目按三方规则重算（见上方助手）；
@@ -454,7 +467,7 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
   const clientMap = mapOf(clientPipelines), baseMap = mapOf(basePipelines), diskMap = mapOf(diskPipelines)
   const sameEntry = (left: Map<string, any>, right: Map<string, any>, id: string) => {
     const leftHas = left.has(id), rightHas = right.has(id)
-    return leftHas === rightHas && (!leftHas || JSON.stringify(stripPipelineSharedMeta(left.get(id))) === JSON.stringify(stripPipelineSharedMeta(right.get(id))))
+    return leftHas === rightHas && (!leftHas || samePipelineContent(left.get(id), right.get(id)))
   }
   const ids = new Set<string>([...baseMap.keys(), ...clientMap.keys(), ...diskMap.keys()])
   const merged = new Map<string, any>()
@@ -486,11 +499,11 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
 }
 
 /**
- * 编辑器单条保存的三方合并：只按 id 比对该条定义（同样剥离 favoriteUsers / pinnedAt）——磁盘上的
- * 该条内容仍等于客户端基线时才允许替换（原位）或新增（追加末尾），其余流水线定义、顺序、历史与其他
- * 配置字段一律不动；磁盘版本内容已偏离基线（含被他端删除）即报告冲突，调用方不得写盘。写回条目以
- * 客户端版本为准，favoriteUsers / pinnedAt 按三方合并结果覆盖（保留他端并发收藏/置顶）；
- * 新建条目（基线与磁盘都无）保持客户端原样。
+ * 编辑器单条保存的三方合并：只按 id 比对该条定义（剥离 favoriteUsers / pinnedAt 后键序无关深比较，
+ * 见 samePipelineContent）——磁盘上的该条内容仍等于客户端基线时才允许替换（原位）或新增（追加末尾），
+ * 其余流水线定义、顺序、历史与其他配置字段一律不动；磁盘版本内容已偏离基线（含被他端删除）即报告冲突，
+ * 调用方不得写盘。写回条目以客户端版本为准，favoriteUsers / pinnedAt 按三方合并结果覆盖（保留他端
+ * 并发收藏/置顶）；新建条目（基线与磁盘都无）保持客户端原样。
  */
 function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskConfig: any) {
   const disk = diskConfig && typeof diskConfig === 'object' && !Array.isArray(diskConfig) ? diskConfig : {}
@@ -498,7 +511,10 @@ function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskCo
   const id = clientPipeline && typeof clientPipeline.id === 'string' ? clientPipeline.id : ''
   const diskOne = diskPipelines.find((p: any) => p && typeof p === 'object' && !Array.isArray(p) && p.id === id) ?? null
   const baseOne = basePipeline && typeof basePipeline === 'object' && !Array.isArray(basePipeline) && basePipeline.id === id ? basePipeline : null
-  if (JSON.stringify(stripPipelineSharedMeta(diskOne)) !== JSON.stringify(stripPipelineSharedMeta(baseOne))) {
+  if (!samePipelineContent(diskOne, baseOne)) {
+    /* 客户端基线缺失（保存确认丢失后的重试等）但上送内容与磁盘一致：写入等于现状，按幂等成功
+       返回磁盘配置（客户端随响应自愈基线），不按 409 锁死；内容真实偏离磁盘仍冲突，防静默覆盖。 */
+    if (!baseOne && diskOne && samePipelineContent(diskOne, clientPipeline)) return { conflicts: [] as string[], config: disk }
     return { conflicts: id ? [id] : [], config: disk }
   }
   const config = { ...disk }
