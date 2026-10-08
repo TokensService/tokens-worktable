@@ -112,6 +112,29 @@ POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
 EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
 EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
+TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
+[[ -n "$TEMPLATE_VARS_JSON" ]] || TEMPLATE_VARS_JSON='{}'
+MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
+if [[ -z "$MOCK_HELM_DEPLOY" ]]; then
+  MOCK_HELM_DEPLOY="$(python3 - "$TEMPLATE_VARS_JSON" <<'PY'
+import json
+import sys
+
+try:
+    variables = json.loads(sys.argv[1])
+except json.JSONDecodeError as error:
+    raise SystemExit(f"invalid TEMPLATE_VARS_JSON: {error}")
+if not isinstance(variables, dict):
+    raise SystemExit("TEMPLATE_VARS_JSON must be an object")
+value = variables.get("MOCK_HELM_DEPLOY", "false")
+if isinstance(value, bool):
+    value = str(value).lower()
+if not isinstance(value, str) or value.lower() not in {"true", "false"}:
+    raise SystemExit("TEMPLATE_VARS_JSON.MOCK_HELM_DEPLOY must be true or false")
+print(value.lower())
+PY
+)"
+fi
 PIPELINE_ENV_FILE="${PIPELINE_ENV_FILE:-}"
 MODEL_CACHE_HOST_PATH="${MODEL_CACHE_HOST_PATH:-}"
 # Render inputs are retained in both pipeline environment contracts so the
@@ -121,17 +144,9 @@ XDS_DATABASE_NAME="${XDS_DATABASE_NAME:-xds_db}"
 XDS_DATABASE_PORT="${XDS_DATABASE_PORT:-31106}"
 XDS_DATABASE_USERNAME="${XDS_DATABASE_USERNAME:-xds}"
 XDS_DATABASE_PASSWORD="${XDS_DATABASE_PASSWORD:-XDS@2026}"
-LMCACHE_L2_ENABLED="${LMCACHE_L2_ENABLED:-true}"
-LMCACHE_L2_BASE_PATH="${LMCACHE_L2_BASE_PATH:-}"
-[[ -n "$LMCACHE_L2_BASE_PATH" ]] || LMCACHE_L2_BASE_PATH="${LMCACHE_L2_HOST_PATH:-/mnt/paas/lmcache/lmcache-l2/shared}"
-LMCACHE_L2_MAX_CAPACITY_GB="${LMCACHE_L2_MAX_CAPACITY_GB:-10240}"
-LMCACHE_L2_NUM_WORKERS="${LMCACHE_L2_NUM_WORKERS:-64}"
-# Platform inputs consumed by render-config.sh: the LMCache sidecar
-# switch (default off) and the OTLP endpoint (non-empty enables sidecar
-# tracing; empty disables it).
-ENABLE_LMCACHE="${ENABLE_LMCACHE:-false}"
-# 注意用 -（非 :-）：显式置空表示关闭 tracing，不能被默认值覆盖。
-LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT-http://192.168.10.6:4320}"
+# LMCache 配置不再由本 step 暴露：上游 lmcache step（lmcache-config.sh）
+# 存在即开启，变量经平台 env 直达 render-config.sh / render-lmcache.sh；
+# 无该 step 时 lib/render-lmcache.sh defaults 兑底（缺失即关）。
 # Registry credentials are supplied at invocation time. Keep them in the
 # process environment for pull-image.sh only; do not serialize them into either
 # pipeline environment file.
@@ -212,13 +227,11 @@ export IMAGE_NAME ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME 
   NAMESPACE RELEASE_NAME CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST \
   NODE_LABELS_FILE TARGET_HOSTS TARGET_NODE_IP_MAP XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
   XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
-  POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+  POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER MOCK_HELM_DEPLOY \
   PIPELINE_ENV_FILE TARGET_RUN_DIR TARGET_RENDER_DIR \
   TARGET_PIPELINE_ENV_FILE SSH_PASSWORD MODEL_CACHE_HOST_PATH MOCK_DB \
   XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
-  LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
-  LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-  ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT \
+  TEMPLATE_VARS_JSON \
   AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY
 
 write_pipeline_env() {
@@ -233,12 +246,9 @@ write_pipeline_env() {
         CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST NODE_LABELS_FILE \
         NAMESPACE RELEASE_NAME TARGET_HOSTS TARGET_NODE_IP_MAP TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
-        POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+        POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER MOCK_HELM_DEPLOY \
         PIPELINE_ENV_FILE MODEL_CACHE_HOST_PATH MOCK_DB \
-        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
-        LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
-        LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-        ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT; do
+        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD; do
         printf 'export %s=%q\n' "$variable" "${!variable}"
       done
     } >"$PIPELINE_ENV_FILE"
@@ -266,21 +276,41 @@ write_target_pipeline_env() {
       printf 'export NODE_LABELS_FILE=%q\n' "$target_node_labels_file"
       printf 'export PIPELINE_ENV_FILE=%q\n' "$TARGET_PIPELINE_ENV_FILE"
       printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
+      printf 'export TARGET_NODE_IP_MAP=%q\n' "$TARGET_NODE_IP_MAP"
       for variable in \
         IMAGE_NAME DEPLOY_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME NAMESPACE RELEASE_NAME \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
         XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
-        POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+        POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER MOCK_HELM_DEPLOY \
         TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
         MODEL_CACHE_HOST_PATH MOCK_DB \
-        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD \
-        LMCACHE_L2_ENABLED LMCACHE_L2_BASE_PATH \
-        LMCACHE_L2_MAX_CAPACITY_GB LMCACHE_L2_NUM_WORKERS \
-        ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT; do
+        XDS_DATABASE_NAME XDS_DATABASE_PORT XDS_DATABASE_USERNAME XDS_DATABASE_PASSWORD; do
         printf 'export %s=%q\n' "$variable" "${!variable}"
       done
     } >"${RUN_DIR}/.target.pipeline.env"
   )
+}
+
+# The execution-host image is required only while pull-image.sh exports the
+# chart, values, and architecture templates. Target images are checked after
+# rendering, so the temporary local copy can be released before rendering.
+cleanup_render_images() {
+  local image
+  local -A seen_images=()
+
+  command -v nerdctl >/dev/null 2>&1 || {
+    echo "[pull] nerdctl is unavailable; skip execution-host image cleanup" >&2
+    return 0
+  }
+
+  for image in "$DEPLOY_IMAGE" "${TEMPLATE_IMAGE:-$DEPLOY_IMAGE}"; do
+    [[ -n "$image" && -z "${seen_images[$image]:-}" ]] || continue
+    seen_images["$image"]=1
+    echo "[pull] execution host: remove temporary render image $image"
+    if ! nerdctl --namespace k8s.io image rm "$image" >/dev/null; then
+      echo "[pull] warning: could not remove temporary render image $image" >&2
+    fi
+  done
 }
 
 remote_ssh() {
@@ -412,6 +442,7 @@ PY
 resolve_target_node_ip_map
 echo "[pipeline] image=$IMAGE_NAME arch=$ARCH_NAME run_dir=$RUN_DIR render_dir=$RENDER_DIR"
 bash "$SCRIPT_DIR/pull-image.sh"
+cleanup_render_images
 # pull-image.sh runs as a child process. Retain the resolved template outputs
 # in this orchestration shell so both rendering and pipeline.env use them.
 CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-${RUN_DIR}/template/xds-cluster}"

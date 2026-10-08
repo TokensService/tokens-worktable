@@ -395,6 +395,61 @@ with open(sys.argv[1], encoding="utf-8") as source:
 assert values["lmcacheSidecar"]["tracing"]["otlpEndpoint"] in ("", None), values["lmcacheSidecar"]["tracing"]
 PY
 
+# LMCACHE_EXTRA_ARGS：注入成功（与 tracing patch 共存，同一 exec 命令内）。
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-extra-args" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-extra-args' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  LMCACHE_EXTRA_ARGS='--worker-reap-timeout-seconds 60 --worker-registration-grace-seconds 60' \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/extra-args.out" 2>&1
+extra_rendered="$work_dir/run-lmcache-extra-args/rendered/xds-cluster/templates/raycluster-cluster.yaml"
+grep -Fq -- '--worker-reap-timeout-seconds 60 --worker-registration-grace-seconds 60 \' "$extra_rendered"
+grep -Fq 'LMCACHE_EXTRA_ARGS_PATCHED=--worker-reap-timeout-seconds 60' "$work_dir/extra-args.out"
+# tracing patch 同的注入且都在 exec 内：extra 行后紧跟 L2 锚点
+line_no=$(grep -Fn -- '--worker-registration-grace-seconds 60 \' "$extra_rendered" | head -1 | cut -d: -f1)
+anchor_no=$(grep -Fn -- '--l2-store-policy' "$extra_rendered" | head -1 | cut -d: -f1)
+[[ -n "$line_no" && -n "$anchor_no" && $((anchor_no - line_no)) -le 3 ]] || { echo 'extra args 未紧邻 L2 锚点' >&2; exit 1; }
+
+# 危险字符 → 渲染失败
+danger='--x "$(boom)"'
+if ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-extra-danger" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-extra-danger' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  LMCACHE_EXTRA_ARGS="$danger" \
+  TEMPLATE_VARS_JSON='{"LMCACHE_SIDECAR_ENABLED":"true"}' \
+  bash "$script_dir/render-config.sh" >"$work_dir/extra-danger.out" 2>&1; then
+  echo '危险字符未被拒绝' >&2
+  exit 1
+fi
+grep -Fq 'unsafe characters' "$work_dir/extra-danger.out" || { echo '危险字符报错文案不对' >&2; exit 1; }
+
+# sidecar 未启用 → 跳过注入且渲染成功
+ARCH_NAME=test-arch \
+RUN_DIR="$work_dir/run-lmcache-extra-disabled" \
+CHART_TEMPLATE_DIR="$work_dir/chart" \
+VALUES_TEMPLATE="$work_dir/values.yaml" \
+ARCH_FILE="$work_dir/architectures.json" \
+DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
+NAMESPACE='xds-lmcache-extra-disabled' \
+TARGET_HOSTS='[{"ip":"192.168.0.78"}]' \
+  LMCACHE_EXTRA_ARGS='--worker-reap-timeout-seconds 60' \
+  bash "$script_dir/render-config.sh" >"$work_dir/extra-disabled.out" 2>&1
+grep -Fq 'render-lmcache] extra-args skipped: lmcacheSidecar.enabled=false' "$work_dir/extra-disabled.out"
+if grep -Fq -- '--worker-reap-timeout-seconds' "$work_dir/run-lmcache-extra-disabled/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
+  echo 'sidecar 未启用时不应注入 extra args' >&2
+  exit 1
+fi
+
 # 回归：旧 chart 无 LMCache 锚点 + sidecar 未启用（非 LMCache arch）→ 渲染成功且不 patch。
 mkdir -p "$work_dir/chart-legacy/templates"
 printf 'apiVersion: v2\nname: xds-test\nversion: 0.1.0\n' >"$work_dir/chart-legacy/Chart.yaml"
@@ -411,7 +466,7 @@ DEPLOY_IMAGE='registry.example/dataartsfabric/xds:test-tag' \
 NAMESPACE='xds-legacy-chart' \
 TARGET_HOSTS='[{"ip":"192.168.0.243"}]' \
   bash "$script_dir/render-config.sh" >"$work_dir/legacy-chart.out" 2>&1
-grep -Fq 'LMCache tracing patch skipped: lmcacheSidecar.enabled=false' "$work_dir/legacy-chart.out"
+grep -Fq 'render-lmcache] tracing patch skipped: lmcacheSidecar.enabled=false' "$work_dir/legacy-chart.out"
 if grep -Fq -- '--enable-tracing' "$work_dir/run-legacy-chart/rendered/xds-cluster/templates/raycluster-cluster.yaml"; then
   echo "legacy chart must not receive the tracing patch without lmcache" >&2
   exit 1

@@ -23,6 +23,11 @@ export MIN_AVAILABLE_WITH_HUGEPAGES_GIB="${MIN_AVAILABLE_WITH_HUGEPAGES_GIB:-700
 export NETWORK_TEST_NAMESPACE="${NETWORK_TEST_NAMESPACE:-default}"
 export NETWORK_TEST_PEER="${NETWORK_TEST_PEER:-}"
 export NETWORK_TEST_IMAGE="${NETWORK_TEST_IMAGE:-}"
+export RDMA_RPING_ENABLED="${RDMA_RPING_ENABLED:-true}"
+export RDMA_RPING_COUNT="${RDMA_RPING_COUNT:-1}"
+export RDMA_RPING_CLIENT_TIMEOUT_SECONDS="${RDMA_RPING_CLIENT_TIMEOUT_SECONDS:-5}"
+export RDMA_RPING_SERVER_TIMEOUT_SECONDS="${RDMA_RPING_SERVER_TIMEOUT_SECONDS:-8}"
+export RDMA_RPING_IFACE_PATTERN="${RDMA_RPING_IFACE_PATTERN:-^roce_bond[0-9]+$}"
 HEALTH_PASS=0
 HEALTH_WARN=0
 HEALTH_FAIL=0
@@ -438,12 +443,96 @@ do_targets() {
     fi
 }
 
+# This runs only on the pipeline execution host.  A copied check-env.sh on a
+# target cannot safely coordinate SSH access to every other target node.
+rdma_ssh() {
+    local host="$1" port="$2" user="$3" password="$4" command="$5"
+    if [[ -n "$password" ]]; then
+        have sshpass || { echo 'sshpass is required for RDMA rping with password authentication' >&2; return 127; }
+        SSHPASS="$password" sshpass -e ssh -n -p "$port" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            -o ConnectTimeout=8 "${user}@${host}" "$command"
+    else
+        ssh -n -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -o ConnectTimeout=8 "${user}@${host}" "$command"
+    fi
+}
+
+check_rdma_rping() {
+    if [[ "$RDMA_RPING_ENABLED" == false ]]; then health_result WARN 'RDMA rping: disabled'; return 0; fi
+    if [[ "$RDMA_RPING_ENABLED" != true ]]; then health_result FAIL 'RDMA rping: RDMA_RPING_ENABLED must be true or false'; return 1; fi
+    [[ "$RDMA_RPING_COUNT" =~ ^[1-9][0-9]*$ && "$RDMA_RPING_CLIENT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ && "$RDMA_RPING_SERVER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || {
+        health_result FAIL 'RDMA rping: count/client/server timeout must be positive integers'; return 1;
+    }
+    local records record host port user password ips src_i dst_i dst_iface dst_ip src_ip server_pid client_rc total=0 ok=0 fail=0 token
+    records="$(python3 - "$TARGET_HOSTS" "$SSH_USER" "$SSH_PORT" "$SSH_PASSWORD" <<'PY'
+import base64, json, sys
+raw, default_user, default_port, default_password = sys.argv[1:]
+if raw.startswith('['):
+    values = json.loads(raw)
+else:
+    values = [{"ip": x.strip()} for x in raw.split(',') if x.strip()]
+seen = set()
+for item in values:
+    endpoint = item.get('ip', '') if isinstance(item, dict) else ''
+    if not isinstance(endpoint, str) or not endpoint: raise SystemExit('invalid TARGET_HOSTS entry')
+    host, sep, port = endpoint.rpartition(':')
+    if not sep: host, port = endpoint, default_port
+    if not host or not port.isdigit() or not 1 <= int(port) <= 65535: raise SystemExit('invalid target endpoint: '+endpoint)
+    value = {"host":host,"port":port,"user":item.get('user') or default_user,"password":item.get('pass', item.get('password', default_password)) or ''}
+    key = (value['host'], value['port'])
+    if key not in seen:
+        seen.add(key); print(base64.b64encode(json.dumps(value).encode()).decode())
+PY
+)" || { health_result FAIL 'RDMA rping: TARGET_HOSTS parsing failed'; return 1; }
+    mapfile -t RDMA_RECORDS <<<"$records"
+    if ((${#RDMA_RECORDS[@]} < 2)); then health_result WARN 'RDMA rping: fewer than two targets, skipped'; return 0; fi
+    token="$(date +%s)-$$"
+    declare -a RDMA_HOST RDMA_PORT RDMA_USER RDMA_PASSWORD RDMA_IPS
+    for record in "${RDMA_RECORDS[@]}"; do
+        read -r host port user password < <(python3 - "$record" <<'PY'
+import base64,json,sys
+d=json.loads(base64.b64decode(sys.argv[1])); print(d['host'],d['port'],d['user'],d['password'])
+PY
+)
+        if ! rdma_ssh "$host" "$port" "$user" "$password" 'command -v rping >/dev/null && command -v ip >/dev/null && command -v timeout >/dev/null'; then
+            health_result FAIL "RDMA rping: $host missing rping, ip, or timeout"; return 1
+        fi
+        ips="$(rdma_ssh "$host" "$port" "$user" "$password" "ip -br addr show | awk -v pat=$(printf '%q' "$RDMA_RPING_IFACE_PATTERN") '\$1 ~ pat && \$2 == \"UP\" { for (i=3;i<=NF;i++) if (\$i ~ /^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+\\/[0-9]+$/) { sub(/\\/.*/,\"\",\$i); print \$1 \" \" \$i } }'")" || ips=""
+        if [[ -z "$ips" ]]; then health_result FAIL "RDMA rping: $host has no matching UP IPv4 interface"; return 1; fi
+        RDMA_HOST+=("$host"); RDMA_PORT+=("$port"); RDMA_USER+=("$user"); RDMA_PASSWORD+=("$password"); RDMA_IPS+=("$ips")
+    done
+    for src_i in "${!RDMA_HOST[@]}"; do for dst_i in "${!RDMA_HOST[@]}"; do
+        (( src_i == dst_i )) && continue
+        while read -r dst_iface dst_ip; do
+            [[ -n "$dst_iface" && -n "$dst_ip" ]] || continue
+            src_ip="$(awk -v iface="$dst_iface" '$1==iface {print $2; exit}' <<<"${RDMA_IPS[$src_i]}")"
+            ((total++))
+            if [[ -z "$src_ip" ]]; then
+                ((fail++)); health_result FAIL "RDMA rping: ${RDMA_HOST[$src_i]} lacks source IP on $dst_iface for ${RDMA_HOST[$dst_i]}:$dst_ip"; continue
+            fi
+            server_pid="$(rdma_ssh "${RDMA_HOST[$dst_i]}" "${RDMA_PORT[$dst_i]}" "${RDMA_USER[$dst_i]}" "${RDMA_PASSWORD[$dst_i]}" "log=/tmp/check-env-rping-$token-$dst_ip.log; rm -f \"\$log\"; timeout $RDMA_RPING_SERVER_TIMEOUT_SECONDS rping -s -a $dst_ip -v >\"\$log\" 2>&1 & echo \$!")" || server_pid=""
+            if [[ ! "$server_pid" =~ ^[1-9][0-9]*$ ]] || ! rdma_ssh "${RDMA_HOST[$dst_i]}" "${RDMA_PORT[$dst_i]}" "${RDMA_USER[$dst_i]}" "${RDMA_PASSWORD[$dst_i]}" "kill -0 $server_pid"; then
+                ((fail++)); health_result FAIL "RDMA rping: server did not start on ${RDMA_HOST[$dst_i]}:$dst_ip"; continue
+            fi
+            rdma_ssh "${RDMA_HOST[$src_i]}" "${RDMA_PORT[$src_i]}" "${RDMA_USER[$src_i]}" "${RDMA_PASSWORD[$src_i]}" "timeout $RDMA_RPING_CLIENT_TIMEOUT_SECONDS rping -c -I $src_ip -a $dst_ip -C $RDMA_RPING_COUNT -v" >/dev/null 2>&1
+            client_rc=$?
+            rdma_ssh "${RDMA_HOST[$dst_i]}" "${RDMA_PORT[$dst_i]}" "${RDMA_USER[$dst_i]}" "${RDMA_PASSWORD[$dst_i]}" "kill -TERM $server_pid 2>/dev/null || true; wait $server_pid 2>/dev/null || true" >/dev/null 2>&1 || true
+            if (( client_rc == 0 )); then ((ok++)); health_result PASS "RDMA rping: ${RDMA_HOST[$src_i]}:$src_ip → ${RDMA_HOST[$dst_i]}:$dst_ip ($dst_iface)"; else ((fail++)); health_result FAIL "RDMA rping: ${RDMA_HOST[$src_i]}:$src_ip → ${RDMA_HOST[$dst_i]}:$dst_ip ($dst_iface), rc=$client_rc"; fi
+        done <<<"${RDMA_IPS[$dst_i]}"
+    done; done
+    health_result "$( ((fail == 0)) && echo PASS || echo FAIL )" "RDMA rping: total=$total ok=$ok fail=$fail"
+    ((fail == 0))
+}
+
 main() {
     [[ $# -eq 0 ]] || die "不支持命令行参数；请使用环境变量配置"
     [[ "$ACTION" == check-health ]] || die "检查脚本仅支持 ACTION=check-health"
     if [[ -n "$TARGET_HOSTS" && "$REMOTE_EXECUTION" != 1 ]]; then
-        do_targets
-        return $?
+        check_rdma_rping || true
+        do_targets || return 1
+        (( HEALTH_FAIL == 0 ))
+        return
     fi
     check_health
 }

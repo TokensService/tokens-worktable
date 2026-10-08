@@ -14,6 +14,12 @@
 # 推送到首个具备 kubectl+helm 的目标节点远程执行；安装全程只经 kubectl/helm
 # 操作集群，**不直接 SSH 目标节点**（大页/kubelet 操作在 ems-hugepages step）。
 #
+# 跨 region（hd2 等）：平台注入的 TARGET_IPS 可能是外网入口 endpoint（ip:port
+# 形态，如 115.33.98.101:2224），与集群 InternalIP 对不上；分发阶段逐节点 SSH
+# 采集内网身份（hostname/-I）构建映射随小写 env 下传，目标解析按「直接命中 →
+# endpoint 映射 → 剥端口」三级（label 打在解析出的集群节点名上）。gy1 内网
+# 标识行为不变。
+#
 # 流程（fail-fast；门禁与大页已上移前置 step，本 step 只留最小防线）：
 #   P0 前置防线：同名 ns/release 已存在且无门禁幂等判定（EMS_IDEMPOTENT≠1）
 #      → 拒绝盲装；门禁判定幂等 → 跳过安装仅验证
@@ -46,6 +52,7 @@ EMS_RELEASE_NAMESPACES="${EMS_RELEASE_NAMESPACES:-}"
 
 # 平台注入变量经 nameref 间接引用，避免被「识别参数」扫出入参（零冗余参数设计）。
 declare -n platform_target_hosts='TARGET_HOSTS'
+declare -n platform_target_ips='TARGET_IPS'
 # EMS_IDEMPOTENT：前置 ems-check 门禁的单向契约（健康同名安装=1，deploy 据此幂等重入）；
 # nameref 间接引用不进「识别参数」
 declare -n platform_ems_idempotent='EMS_IDEMPOTENT'
@@ -131,6 +138,43 @@ PY
     done
     [[ -n "$probe_host" ]] || die '所有 TARGET_HOSTS 节点都缺少 kubectl/helm；无法执行安装'
 
+    # 跨 region 目标身份映射（hd2 等环境平台注入的 TARGET_IPS 是外网入口 endpoint，
+    # 与集群 InternalIP 对不上）：逐节点 SSH 采集内网身份（hostname/-I），映射表
+    # 经小写 env 下传供远程侧目标解析（三级：直接命中 → endpoint 映射 → 剥端口）；
+    # 采集失败则空表，gy1 内网行为不变。specs 为 JSON 数组，先展开为 tab 四元组。
+    local id_lines='' id_user id_host id_port id_pass id_out id_hostname id_ips
+    local -a id_specs=()
+    mapfile -t id_specs < <(printf '%s\n' "${specs[@]}" | python3 -c '
+import json, sys
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    entry = json.loads(line)
+    print((entry.get("user") or "root") + "\t" + entry["ip"] + "\t" + (entry.get("port") or "22") + "\t" + (entry.get("pass") or ""))
+')
+    for spec in "${id_specs[@]}"; do
+        IFS=$'\t' read -r id_user id_host id_port id_pass <<<"$spec"
+        id_out="$(remote_exec "$id_user" "$id_host" "$id_port" "$id_pass" \
+            'hostname 2>/dev/null; hostname -I 2>/dev/null' 2>/dev/null)" || true
+        id_hostname="$(sed -n '1p' <<<"$id_out" | tr -d '\r')"
+        id_ips="$(sed -n '2p' <<<"$id_out" | tr -d '\r')"
+        [[ -n "$id_hostname" || -n "$id_ips" ]] || continue
+        id_lines+="${id_host}:${id_port}"$'\t'"${id_host}"$'\t'"${id_hostname}"$'\t'"${id_ips}"$'\n'
+    done
+    local id_map='[]'
+    if [[ -n "$id_lines" ]]; then
+        id_map="$(printf '%s' "$id_lines" | python3 -c '
+import json, sys
+entries = []
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    endpoint, address, hostname, ips = (line.split("\t") + ["", "", "", ""])[:4]
+    entries.append({"endpoint": endpoint, "address": address,
+                    "hostname": hostname, "ips": ips.split()})
+print(json.dumps(entries))')" || id_map='[]'
+    fi
+
     tarball="/tmp/ems-deploy-bundle-$$.tgz"
     tar -C "$bundle_dir" -czf "$tarball" "$(basename "$self")" ems-chart \
         || die '打包脚本与 chart 失败'
@@ -145,6 +189,8 @@ PY
         printf -v quoted '%q' "${!var:-}"
         remote_env+=("$var=$quoted")
     done
+    printf -v quoted '%q' "$id_map"
+    remote_env+=("ems_target_id_map=$quoted")
     remote_exec "$probe_user" "$probe_host" "$probe_port" "$probe_pass" \
         "tar -C /tmp/ems-deploy-bundle -xzf /tmp/ems-deploy-bundle.tgz && env ${remote_env[*]} bash /tmp/ems-deploy-bundle/$(basename "$self")"
     return $?
@@ -169,7 +215,7 @@ install_main() {
     [[ -n "$chart_name" ]] || die "无法读取 chart 名：$chart_dir/Chart.yaml"
 
     # 目标 IP 列表：注入的 TARGET_IPS（JSON 数组）；平台按所选环境注入，缺失即报错
-    mapfile -t target_ips < <(python3 - "${TARGET_IPS:-}" <<'PY'
+    mapfile -t target_ips < <(python3 - "${platform_target_ips:-}" <<'PY'
 import json
 import sys
 
@@ -195,23 +241,60 @@ PY
     local node_json ip
     node_json="$(kubectl get nodes -o json)" || die '获取节点列表失败'
     for ip in "${target_ips[@]}"; do
-        local name
-        name="$(printf '%s' "$node_json" | python3 -c '
-import json, sys
+        # 三级解析：①直接命中（内网 IP/节点名，gy1 现行为）②endpoint 身份映射
+        #（跨 region：外网入口 ip:port → 该主机内网 ips/hostname）③ip:port 剥端口。
+        # 本 step 不 SSH 目标节点（大页/kubelet 在 ems-hugepages step），只需节点名。
+        local name via_map
+        name="$(printf '%s' "$node_json" | EMS_TARGET_ID_MAP="${ems_target_id_map:-}" python3 -c '
+import json, os, sys
+
+id_map = []
+raw = (os.environ.get("EMS_TARGET_ID_MAP") or "").strip()
+if raw:
+    try:
+        id_map = [entry for entry in json.loads(raw) if isinstance(entry, dict)]
+    except ValueError:
+        pass
+nodes = json.load(sys.stdin).get("items", [])
+
+
+def find(ident):
+    for node in nodes:
+        if node["metadata"]["name"] == ident:
+            return node
+        for addr in (node.get("status") or {}).get("addresses", []):
+            if addr.get("type") == "InternalIP" and addr.get("address") == ident:
+                return node
+    return None
+
+
 wanted = sys.argv[1]
-for node in json.load(sys.stdin).get("items", []):
-    if node["metadata"]["name"] == wanted:
-        print(wanted); break
-    for addr in node.get("status", {}).get("addresses", []):
-        if addr.get("type") == "InternalIP" and addr.get("address") == wanted:
-            print(node["metadata"]["name"]); break
-    else:
-        continue
-    break
+node = find(wanted)
+via = "direct"
+if node is None:
+    for entry in id_map:
+        if wanted in (entry.get("endpoint"), entry.get("address")):
+            for ident in list(entry.get("ips") or []) + [entry.get("hostname") or ""]:
+                node = find(ident)
+                if node is not None:
+                    break
+            if node is not None:
+                via = "endpoint"
+                break
+if node is None and ":" in wanted:
+    node = find(wanted.rsplit(":", 1)[0])
+if node is None:
+    raise SystemExit(0)
+print(node["metadata"]["name"] + "\t" + via)
 ' "$ip")"
-        [[ -n "$name" ]] || die "目标 $ip 不是本集群节点"
+        [[ -n "$name" ]] || die "目标 $ip 不是本集群节点（跨 region endpoint 需经 TARGET_HOSTS 分发采集身份映射）"
+        IFS=$'\t' read -r name via_map <<<"$name"
         target_nodes+=("$name")
-        log "目标节点：$ip → $name"
+        if [[ "$via_map" == endpoint ]]; then
+            log "目标节点：$ip → $name（endpoint 解析）"
+        else
+            log "目标节点：$ip → $name"
+        fi
     done
 
     # ---- 前置检查（最小防线；完整门禁在前置 ems-check 的 EMS_NAME 模式）----
