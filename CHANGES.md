@@ -1,5 +1,22 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复宿主 0.2.0-rc.1 升级后工作台「页面修改」✏️ 等会话桥全面失效（`src/client/index.tsx`，修复
+  「编辑项目按钮用不了」）：① 0.2.0 起 `sessions.binding/scope` 仅对已 retain 的会话代际可解析，
+  新建会话后 `fillSessionDraft` 永远轮询不到 binding（报 `no fill path`）——新增
+  `retainSessionRef`/`releaseSessionRef`，`fillSessionDraft`/`promptIntoSession`/`waitForSessionAssistant`
+  操作期间保留会话作用域（旧宿主无 retain 时原路径不变）；② `sessions.open` 被删（导航归视图属主）——
+  新增 `openSessionInUi`（优先 `ctx.uiWorkspace.openSession`，旧宿主回退 `sessions.open`），14 处
+  新建/联动/回切与 `__dshOpenSession` 导出统一切换；③ 列表快照 `current` 字段删除——新增
+  `currentSessionIdOf`（旧读 `snap.current`，新推导 `byId` 行 `retainedBy.mainView>0`），
+  ensureSessionModel/fetchSessionGroups/syncSessionScope/openSplit/openConsole 五处切换（项目↔会话
+  联动的「切会话关项目/回切」随之恢复）。sessionBridge 初始化补 `uiWorkspace`（`ctx.get` 软探测，
+  规避 cordis 未 inject 服务属性访问抛错）。测试：新增 `tests/session-bridge-retain.test.mjs`
+  （15 例），`tests/ai-chat-result.test.mjs` 的 vm 提取器改健壮配对并注入新助手。
+  已知遗留（0.2.0 适配后续项，本次未动）：byId 行 `pendingInteraction`/`completed` 迁至
+  `ctx.uiSession.sessionStatus`、`subagentsByParent`→`projectionsBySession[].values.subagentCatalog`、
+  `jobsBySession`→`ctx.jobs.watchRows`、`hostApi`（connection.api 已删）→`ctx.remote`——
+  项目卡提醒点/运行时长/新会话模型兜底修复暂退化，待后续适配。
+
 - 流水线归属编辑限制新增 **admin 例外**（`projects/pipeline/pipeline.html` 的 `plEditable`，修复「编辑按钮用不了」
   类问题）：原规则「非可信流水线仅创建者可编辑/删除，admin 无例外」会使创建者账号注销/改名后的流水线对所有人
   （含 admin）永久只读——行内「编辑」变「查看」、编辑器整体只读。现 admin 可编辑/删除任意非可信流水线；
