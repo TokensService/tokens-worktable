@@ -7,7 +7,8 @@
 #   RELEASE_TAG / RELEASE_NAME  本次发行的 Tag 与发行版名称
 #   BUILD_CMD     可选构建命令（在克隆出的仓库根目录执行，如 "npm ci && npm run build"）
 #   GIT_PROXY_MODE / GIT_PROXY_URL  可选代理策略（inherit=沿用进程环境，默认；direct=清空代理变量直连；custom=改用 GIT_PROXY_URL）
-# 行为：浅克隆指定分支到临时目录（克隆在本机执行，OS 用户=调用进程用户）；若提供 BUILD_CMD 则执行之，否则仅做克隆校验。
+#   GIT_CLONE_RETRIES  浅克隆失败时的最大尝试次数（默认 3，递增退避重试）
+# 行为：浅克隆指定分支到临时目录（克隆在本机执行，OS 用户=调用进程用户；失败自动重试，见 GIT_CLONE_RETRIES）；若提供 BUILD_CMD 则执行之，否则仅做克隆校验。
 set -u
 fail(){ echo "✗ $*" >&2; exit 1; }
 [ -n "${GIT_URL:-}" ] || fail "缺少 GIT_URL"
@@ -21,11 +22,28 @@ case "${GIT_PROXY_MODE:-inherit}" in
   custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf '%s' "$GIT_PROXY_URL" | maskurl)" ;;
   *) echo "… 网络代理：继承进程环境（http_proxy=$(printf '%s' "${http_proxy:-未设置}" | maskurl)）" ;;
 esac
-# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）
-net_hint(){ printf '%s' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf '%s' "${http_proxy:-未设置}" | maskurl)；可改用 GIT_PROXY_MODE=direct 直连或修正代理服务后重试" >&2; }
+# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）；
+# Failed to connect / Couldn't connect / Connection timed out / Connection refused / Operation timed out
+# 是对端不可达或网络抖动（与证书/凭据无关），脚本已自动重试
+net_hint(){
+  if printf '%s' "$1" | grep -q "CONNECT tunnel failed"; then
+    echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf '%s' "${http_proxy:-未设置}" | maskurl)；可改用 GIT_PROXY_MODE=direct 直连或修正代理服务后重试" >&2
+  elif printf '%s' "$1" | grep -qE "Failed to connect|Couldn't connect|Connection timed out|Connection refused|Operation timed out"; then
+    echo "… 提示：对端不可达或网络抖动（与证书/凭据无关），脚本已自动重试；仍失败请检查网络，或用 GIT_PROXY_MODE=direct/custom 换路后重试" >&2
+  fi
+}
 TMPD=$(mktemp -d); trap 'rm -rf "$TMPD"' EXIT
-echo "→ 浅克隆分支 ${GIT_BRANCH} …（本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）"
-out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${CLONE_URL}" "$TMPD/repo" 2>&1) || { printf '%s\n' "$out" | mask >&2; net_hint "$out"; fail "克隆失败（检查分支名/凭据/网络）"; }
+RETRIES="${GIT_CLONE_RETRIES:-3}"; case "$RETRIES" in ''|*[!0-9]*|0) RETRIES=3 ;; esac
+echo "→ 浅克隆分支 ${GIT_BRANCH} …（本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)，失败自动重试，共 ${RETRIES} 次尝试）"
+i=1
+while :; do
+  out=$(git clone --quiet --depth 1 --branch "${GIT_BRANCH}" "${CLONE_URL}" "$TMPD/repo" 2>&1) && break
+  printf '%s\n' "$out" | mask >&2; net_hint "$out"
+  [ "$i" -lt "$RETRIES" ] || fail "克隆失败（已重试 $((RETRIES-1)) 次，检查分支名/凭据/网络）"
+  rm -rf "$TMPD/repo"
+  echo "… 第 ${i}/${RETRIES} 次克隆失败，$((i*5)) 秒后重试 …" >&2
+  sleep $((i*5)); i=$((i+1))
+done
 cd "$TMPD/repo" || exit 1
 echo "✓ 克隆完成：$(git log -1 --format='%h %s' 2>/dev/null || echo unknown)"
 if [ -n "${BUILD_CMD:-}" ]; then
