@@ -8327,9 +8327,14 @@ async function copyPipeline(id){
 /* ---------- 主题切换 ---------- */
 let themePref = lsGet('pip-theme', 'auto');
 function systemDark(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches); }
-function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} persistState(); }
+/* 只把当前主题应用到 DOM 与本地缓存，不持久化到服务端：本函数随 renderAll 被首屏初始化、
+   loadServerState 成功重渲染、409/403 自愈重拉反复调用，若在此 persistState，页面一开（及每次
+   自愈重拉后）都会无条件排一次全量 PUT——本地相对服务端并无任何实际变化，多人在场时每个访客的
+   这次自动写都是潜在 409 冲突源。主题偏好只有用户在下拉框改选时才真正变化，由 change 监听器
+   显式 persistState；系统深浅色翻转不改 themePref（collectConfig 无差异），同样无需写。 */
+function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} }
 $('theme').value = themePref;
-$('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); });
+$('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); persistState(); });
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */
