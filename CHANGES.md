@@ -20,6 +20,15 @@
   （`name: ems` / `version: 26.8.0-b6`，与 mock helm 及契约断言口径一致），已存在真实 chart 的
   部署/开发机原样保留不动，退出时仅清理测试自建的目录。
 
+- 新增服务端路由 `POST /api/worktable/llm`（`src/index.ts`）：LLM 接口中转，供「友商 Tokens API 性能对比」
+  项目页（`projects/friend-perf.html`）使用。请求体 `{baseURL, endpoint, apiKey, payload}`，服务端代发并
+  流式透传响应（带背压），保住页面侧 TTFT 语义；安全边界：仅 https 目标、复用 `isLocalTarget` 反向拒绝
+  回环/内网主机（不成为 SSRF 出口，与 `/api/worktable/proxy` 的内网白名单互不放开）、仅放行 `/models`
+  与 `/chat/completions` 两个 OpenAI 兼容路径，密钥由调用方自带、服务端不落地。页面侧 `llmFetch` 初版为
+  「直连失败自动回退中转」，后改为**统一走服务端中转**：各家厂商同一出口发起请求，规避浏览器 CORS 差异与
+  本机网络差异，横向可比；早期直连记录带 `relay` 标记，记录页模型列对老直连记录显示「·直连」；
+  「获取模型」同样统一走中转。
+
 - 流水线页用户可见的「内置」字样去掉（`projects/pipeline/pipeline.html`，行为完全不变）：行内名称旁的
   「内置」小灰徽章删除（保留「可信」徽章，title 与可信流水线文案对齐）；编辑器标题「（内置·可信）/
   （内置·可信·只读）」→「（可信）/（可信·只读）」；创建者筛选「我的（含内置）/仅内置」→「我的（含预置）/
@@ -241,6 +250,27 @@
   回当前页，避免下一次保存误删他端新增项。新增
   `projects/pipeline/tests/test_pipeline_save_consistency.js`、`tests/pipeline-config-concurrency.test.mjs`，并扩充
   `test_run_autofocus.js`、`test_pipeline_readonly.js`。
+
+- 新增部署准入门禁脚本 `check-deploy-gate.sh`（`projects/pipeline/scripts/`）：在拉取/渲染/部署阶段之前
+  把关，任一 FAIL 即非零退出、流水线阻断在绑定位置。执行机侧校验 `IMAGE_NAME`/`DEPLOY_IMAGE` 至少其一
+  非空与 ssh 可用性（密码认证还需 sshpass）；有目标节点时经 SSH 把脚本逐节点下发执行（取 `TARGET_HOSTS`
+  各自凭据，首节点按 `deploy-model.sh` 契约为控制节点）：kubectl/helm/curl（控制节点缺失判 FAIL、
+  工作节点仅 WARN）、GPU 数量（`MIN_GPU` 显式门槛，留空按 `PREFILL_GPU`/`DECODE_GPU` 较大值推导、
+  0=跳过）、`TARGET_RUN_DIR` 所在盘剩余空间（`MIN_DISK_FREE_GIB` 默认 20 GiB）、命名空间内镜像凭证
+  （同配 `NAMESPACE` 与 `IMAGE_PULL_SECRETS` 时逐个核实 Secret，缺失判 FAIL，命名空间不存在仅 WARN）。
+  无目标节点运行仅做执行机输入检查；脚本只读、不创建/删除资源、不打印凭据，输出
+  `GATE_RESULT=PASS|FAIL` 供下游阶段引用。用法：流水线编辑器绑成普通阶段（放在部署阶段之前）或在
+  「设置」页选为环境检查脚本；参数识别走既有 `${VAR:-默认值}` + 对齐注释约定（已验证识别 18 个参数、
+  无位置参数）。新增契约测试 `projects/pipeline/scripts/test/test_check_deploy_gate.sh`（输入检查、
+  GPU/磁盘/工具控制与工作节点分级、Secret、逐节点凭据与角色下发共 9 组用例），
+  `projects/pipeline/scripts/README.md` 增补「部署准入门禁」章节。
+- 「代码同步」项目页（`projects/code_trans/`）cherry-pick 冲突支持 AI 解冲突：同步页新增「冲突处理」
+  下拉（`index.html`，持久化 `state.resolver`，仅接受已知值），可选 Claude Code / Codex / Kimi；
+  `pr-sync.py` 在 cherry-pick 冲突时于克隆目录调用所选 CLI（`claude -p` / `codex exec` / `kimi`，
+  prompt 令其读取冲突文件、删除冲突标记后不执行任何 git 命令），随后校验无残留冲突标记再
+  `git add` + `cherry-pick --continue`；解失败、工具未安装或未选则维持原行为——中止该 PR、
+  继续其余。AI 输出透传到页面日志（同时刷新停滞超时），进度经 `pr_resolve` 事件上报；
+  远程执行时对应 CLI 需装在远程服务器。
 - 「代码同步」项目页（`projects/code_trans/`，窗口1：两个代码仓 PR 双向同步）入库，PR 选择支持按目标分支筛选：
   源仓 PR 列表上方的「合入分支」chips 按各 PR 的 `targetBranch` 多选过滤（chips 带各分支 PR 计数与「全部 (N)」，
   默认不过滤；加载 PR / 切换同步方向后自动重置，已加载列表为空时整行隐藏），「全选」仅选中当前筛选结果，
