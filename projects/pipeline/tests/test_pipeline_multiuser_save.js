@@ -113,6 +113,7 @@ function pushConflictFixture() {
     serverConfigBase: baseConfig,
     persistTimer: null,
     persistInFlight: null,
+    stateFetchEpoch: 0,   /* 保存确认/快照应用推进基线纪元（loadServerState 过期快照重拉的依据） */
     collectConfig: () => ({ ...clientConfig, pipelines: JSON.parse(JSON.stringify(ctx.pipelines)) }),
     historyForPersist: () => [],
     historySyncSig: '',

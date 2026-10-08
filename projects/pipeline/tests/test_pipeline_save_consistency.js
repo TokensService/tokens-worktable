@@ -166,6 +166,7 @@ function pushFixture(response) {
     serverConfigBase: baseConfig,
     persistTimer: null,
     persistInFlight: null,
+    stateFetchEpoch: 0,   /* 保存确认/快照应用推进基线纪元（loadServerState 过期快照重拉的依据） */
     collectConfig: () => ({ ...clientConfig, pipelines: JSON.parse(JSON.stringify(ctx.pipelines)) }),
     historyForPersist: () => [{ tag: 'run-1', ts: 1 }],
     historySyncSig: '',
@@ -304,6 +305,7 @@ function oneFixture(response) {
   const other = { id: 'p2', name: '其他', stages: [] };
   const ctx = {
     persistInFlight: null,
+    stateFetchEpoch: 0,   /* 保存确认/快照应用推进基线纪元（loadServerState 过期快照重拉的依据） */
     serverConfigBase: { pipelines: [{ id: 'p1', name: '编辑前', stages: [{ id: 's1' }] }, other], buildNo: 3 },
     scriptsDir: '/srv/scripts',
     pipelines: [JSON.parse(JSON.stringify(edited)), other],
