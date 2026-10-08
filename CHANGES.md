@@ -20,6 +20,18 @@
   测试：新增 `projects/pipeline/tests/test_loadserverstate_merge_local_add.js`（8 例：三方合并口径 ×4、
   loadServerState 远端同步/基线补回 ×2、竞态主场景「本地新增 + 409 自愈重拉后条目仍在、save-one 照常
   发出并成功」、串行锁两个并发保存严格按序且后序取前序确认后的新基线）。
+- 修复流水线页**每次打开都自动发起一次全量 PUT 保存**（`projects/pipeline/pipeline.html`）：触发源是
+  `applyTheme()` 末尾一次无条件 `persistState()`——它随 `renderAll()` 在首屏初始化、`loadServerState`
+  成功重渲染、409/403 自愈重拉时被反复调用，400ms 防抖后合成一次整表 PUT；本地相对刚应用的服务端
+  快照并无任何实际变化，多人在场时每个访客的这次自动写都是潜在 409 冲突源（409 自愈重拉放大保存
+  竞态）。修复：渲染与持久化分离——`applyTheme()` 只应用主题到 DOM 与 localStorage，主题下拉
+  change 监听器（用户真实改选）显式 `persistState()`，系统深浅色翻转不改 `themePref`（collectConfig
+  无差异）不写。三个正当写路径保持原样：服务端 config 为空时迁移本地默认状态上去、内嵌日志迁移
+  确有变更后回写、脚本目录兜底确实改写值（`maybeAdoptInstalledScriptsDir`）。未采用「与服务端快照
+  深比较闸门」方案：旧客户端写出的 config 缺新字段会深比较假脏、重新引入每访客一次自动 PUT，且首屏
+  renderAll 先于 GET 完成时基线为空判断失效。测试：新增 `tests/test_init_no_autoput.js`（7 例——
+  一致时首屏+加载全程零写、自愈重拉零写、两个正当写路径不破、applyTheme/自愈块源码契约；已对
+  修复前源码验证前 3 例如期失败）。
 
 - 跟进修复**「编译发行」版本 bump 回推遇网络抖动即失败**（同一 v1.1.10 发行重跑时，克隆/构建/测试均过，
   死在仓内 `scripts/build.sh` 的 `git push origin HEAD:main`，报错还误导为「凭据无推送权限」）：回推改
