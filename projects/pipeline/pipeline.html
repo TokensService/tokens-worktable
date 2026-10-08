@@ -1017,7 +1017,10 @@ const LOGS = {
 let stateLoaded=false;   // loadServerState 成功后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
 let serverConfigBase=null;   // 最近一次成功 GET/PUT 的服务端配置；PUT 携带它做多浏览器三方合并
 let persistTimer=null;
-let persistInFlight=null;   // 同一页面内串行 PUT：后一次必须基于前一次服务端确认后的新基线
+/* 同一页面内串行 PUT 的互斥锁链尾（Promise 链，见 pushState/pushPipelineOne 头部）：后一次必须基于前一次
+   服务端确认后的新基线。旧写法 while(persistInFlight) await persistInFlight 是 check-then-set——两个并发
+   等待者会在前序释放后同时通过检查、同进临界区（后进入者覆盖先进入者的锁 Promise），串行化失效 */
+let persistInFlight=null;
 function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
@@ -1060,12 +1063,60 @@ function reconcilePipelinesAfterSave(submitted, accepted, current){
   });
   return result;
 }
+/* 内容比对用的条目副本：剥离顶层 favoriteUsers / pinnedAt（与服务端 src/index.ts 的 stripPipelineSharedMeta
+   同口径——二者是共享条目上的非内容元数据：收藏按用户、置顶任何人可改，不参与内容同一性比对，
+   否则他人收藏/置顶会被误判为内容变化）。 */
+function stripPipelineSharedMeta(entry){
+  if(!entry||typeof entry!=='object'||Array.isArray(entry)) return entry;
+  const copy={};
+  Object.keys(entry).forEach(k=>{ if(k!=='favoriteUsers'&&k!=='pinnedAt') copy[k]=entry[k]; });
+  return copy;
+}
+/* loadServerState 的流水线按 id 三方合并（替代整表替换：自愈重拉不再把本地未落盘内容冲掉）：
+   共同基线 = serverConfigBase.pipelines，本地 = 当前全局 pipelines，远端 = GET 响应 cfg.pipelines。
+   - 仅本地存在（基线/远端都无）：本地新增未落盘 → 保留（维持本地相对顺序，追加在合并结果末尾）；
+   - 基线有、远端无（远端已删除）：本地与基线一致 → 随远端删除；本地相对基线有改动（删除可能正撞
+     保存在途）→ 保留本地，并把原基线条目收进 keptBaseEntries（调用方补回新基线，口径见其注释）；
+   - 本地==基线 → 取远端；远端==基线 → 保留本地；双边都改且内容不一致 → 取远端（同步语义下服务端为准）；
+   - 仅远端存在：他端新增 → 取远端（远端新增/修改/删除照常同步到页面）。
+   内容比对一律用 stripPipelineSharedMeta 剥离顶层 favoriteUsers/pinnedAt 后的副本（比对豁免口径与服务端合并层一致）。
+   结果顺序：先按远端顺序（保留他端新增的位置），再追加仅本地的条目（维持本地相对顺序）。 */
+function mergePipelinesFromServer(baseList, localList, remoteList){
+  const valid=p=>p&&typeof p==='object'&&!Array.isArray(p)&&p.id!==undefined&&p.id!==null;
+  const mapOf=list=>{ const m=new Map(); (Array.isArray(list)?list:[]).forEach(p=>{ if(valid(p)) m.set(String(p.id),p); }); return m; };
+  const base=mapOf(baseList), local=mapOf(localList), remote=mapOf(remoteList);
+  /* 与服务端 sameEntry 同口径：存在性一致且剥离共享元数据后内容相等 */
+  const same=(a,b)=>{ const ah=a!==undefined, bh=b!==undefined; return ah===bh&&(!ah||JSON.stringify(stripPipelineSharedMeta(a))===JSON.stringify(stripPipelineSharedMeta(b))); };
+  const result=[], keptBaseEntries=[], seen=new Set();
+  (Array.isArray(remoteList)?remoteList:[]).forEach(p=>{
+    if(!valid(p)) return; const id=String(p.id); if(seen.has(id)) return; seen.add(id);
+    const b=base.get(id), l=local.get(id), r=remote.get(id);
+    if(!local.has(id)){ if(!same(r,b)) result.push(r); return; }   /* 本地已删除：远端未改（==基线）维持本地删除（在途删除不复活）；远端也改则服务端为准恢复远端版 */
+    if(same(l,b)){ result.push(r); return; }                        /* 本地未改：取远端（远端新增/修改照常同步） */
+    if(same(r,b)){ result.push(l); return; }                        /* 远端未改：保留本地（在途修改不被重拉冲掉） */
+    result.push(r);                                                 /* 双边都改且不一致：服务端为准 */
+  });
+  (Array.isArray(localList)?localList:[]).forEach(p=>{
+    if(!valid(p)) return; const id=String(p.id); if(seen.has(id)) return; seen.add(id);
+    const b=base.get(id), l=local.get(id);
+    if(!base.has(id)){ result.push(l); return; }                    /* 仅本地存在：本地新增未落盘，保留 */
+    /* 基线有、远端无（远端已删除）：本地==基线随远端删除；本地有改动（保存在途）保留本地，
+       并记下原基线条目——新基线必须保留它，否则基线回退成「无」后下次 save-one 的 baseOne=null 与
+       diskOne=null 相等，会把他人刚删的条目静默重建（本应 409 由用户抉择） */
+    if(!same(l,b)){ result.push(l); keptBaseEntries.push(b); }
+  });
+  return {pipelines:result, keptBaseEntries};
+}
 /* options.silentConflict：409 冲突时不提示、不重拉（编辑器 savePlForm 的回退全量保存使用——
    冲突由编辑器自己的回滚 + alert 单独处理）；默认（含 persistState 防抖调用）非静默。 */
 async function pushState(options){
-  while(persistInFlight) await persistInFlight;
+  /* Promise 链互斥（替代 while+await 的 check-then-set）：读链尾与挂链尾之间无 await，同步原子，
+     等待者严格按到达顺序逐个放行；链尾无人排队时由 finally 清回 null。基线快照保持拿到锁再取的语义。 */
+  const persistPrev=persistInFlight||Promise.resolve();
   let releasePersist;
-  persistInFlight=new Promise(resolve=>{ releasePersist=resolve; });
+  const persistMine=new Promise(resolve=>{ releasePersist=resolve; });
+  persistInFlight=persistMine;
+  await persistPrev;
   try{
   if(persistTimer){ clearTimeout(persistTimer); persistTimer=null; }
   /* 先快照本页要保存的状态：首次加载尚在途时，loadServerState 会刷新全局变量，不能把用户刚点保存的
@@ -1104,7 +1155,8 @@ async function pushState(options){
       if(r.status===409 && !(options&&options.silentConflict)){
         /* 非编辑器路径（复制兜底重试/删除/收藏/置顶/设置等）的 409：此前只 return，冲突静默失败且
            基线 serverConfigBase 不前进，后续保存持续 409 锁死。这里 toast 告知并重拉服务端状态自愈——
-           本地未落盘改动让位给服务端、基线随之前进，用户重试操作即可。conflictHandled 标记供
+           重拉按 id 三方合并（远端版本同步进来、本地未落盘内容保留，见 mergePipelinesFromServer）、
+           基线随之前进，用户重试操作即可。conflictHandled 标记供
            自带失败处理的调用方识别「已提示并重拉」，避免双重提示。 */
         if(typeof toast==='function') toast('保存冲突：数据已被他人修改，已刷新为最新状态，请重试操作');
         try{ if(typeof loadServerState==='function') await loadServerState(); if(typeof renderPipelines==='function') renderPipelines(); }catch(e){}
@@ -1124,8 +1176,8 @@ async function pushState(options){
     return {ok:true,config:body.config||config};
   }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
   }finally{
-    persistInFlight=null;
     releasePersist();
+    if(persistInFlight===persistMine) persistInFlight=null;   /* 自己是链尾（无后续排队者）才清回 null；否则链已交给下一个等待者 */
   }
 }
 /* 编辑器单条保存：只上传当前编辑的流水线（约 KB 级，慢上行链路秒级以内；全量 PUT 曾需 10 秒级），
@@ -1133,9 +1185,12 @@ async function pushState(options){
    与 pushState 共用 persistInFlight 串行锁——基线快照必须等锁到手后再取（等待期间前序保存确认的
    新基线才是本条合并的共同基线）。旧服务端无此路由（404）时返回 unsupported，由调用方回退全量保存。 */
 async function pushPipelineOne(pipelineId){
-  while(persistInFlight) await persistInFlight;
+  /* Promise 链互斥（与 pushState 同一条链，写法与口径见其头部注释）：严格按到达顺序逐个放行。 */
+  const persistPrev=persistInFlight||Promise.resolve();
   let releaseOne;
-  persistInFlight=new Promise(resolve=>{ releaseOne=resolve; });
+  const persistMine=new Promise(resolve=>{ releaseOne=resolve; });
+  persistInFlight=persistMine;
+  await persistPrev;
   try{
   const edited=findPipeline(pipelineId);
   if(!edited) return {ok:false,error:'流水线已不在本页列表中（可能被其他浏览器删除），请刷新后重试'};
@@ -1175,21 +1230,31 @@ async function pushPipelineOne(pipelineId){
     return {ok:true,config:body.config||{}};
   }catch(e){ return {ok:false,error:String(e&&e.message||e)}; }
   }finally{
-    persistInFlight=null;
     releaseOne();
+    if(persistInFlight===persistMine) persistInFlight=null;   /* 自己是链尾（无后续排队者）才清回 null */
   }
 }
 async function loadServerState(){
   let st=null;
   try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
   try{
+    /* 流水线三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
+    const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
     if(st) serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{}));
     if(st && st.config && Object.keys(st.config).length){
       const cfg=st.config;
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
-        const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-        const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
-        pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults);
+        /* 按 id 三方合并（替代整表替换）：自愈重拉不再把本地未落盘的新增/修改冲掉，合并口径见 mergePipelinesFromServer */
+        const merged=mergePipelinesFromServer(prevBasePipelines, pipelines, cfg.pipelines);
+        const def=merged.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+        const customs=merged.pipelines.filter(p=>p && !p.builtIn);
+        pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+        /* 新基线以响应快照为准，但「保留的本地条目」不得让基线回退到错误状态：
+           - 本地新增（基线本就无）：快照里本来就没有，保持无基线——下次 save-one 的 baseOne=null 与磁盘比对，
+             磁盘也无即正常新增落盘；
+           - 基线有但远端缺、本地有改动而保留的条目：把原基线条目补回新基线——否则 baseOne 变成 null 后与
+             diskOne(null) 相等，下次 save-one 会把他人刚删的条目静默重建（本应 409 由用户抉择）。 */
+        if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
       }
       // 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds）仅存浏览器本地，不从服务端覆盖；见 collectConfig
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
@@ -8327,9 +8392,14 @@ async function copyPipeline(id){
 /* ---------- 主题切换 ---------- */
 let themePref = lsGet('pip-theme', 'auto');
 function systemDark(){ return !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches); }
-function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} persistState(); }
+/* 只把当前主题应用到 DOM 与本地缓存，不持久化到服务端：本函数随 renderAll 被首屏初始化、
+   loadServerState 成功重渲染、409/403 自愈重拉反复调用，若在此 persistState，页面一开（及每次
+   自愈重拉后）都会无条件排一次全量 PUT——本地相对服务端并无任何实际变化，多人在场时每个访客的
+   这次自动写都是潜在 409 冲突源。主题偏好只有用户在下拉框改选时才真正变化，由 change 监听器
+   显式 persistState；系统深浅色翻转不改 themePref（collectConfig 无差异），同样无需写。 */
+function applyTheme(){ const resolved = themePref==='auto' ? (systemDark()?'dark':'light') : themePref; document.documentElement.setAttribute('data-theme', resolved); try{ localStorage.setItem('pip-theme', themePref); }catch(e){} }
 $('theme').value = themePref;
-$('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); });
+$('theme').addEventListener('change', e=>{ themePref=e.target.value; applyTheme(); persistState(); });
 if(window.matchMedia){ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ()=>{ if(themePref==='auto') applyTheme(); }); }
 
 /* ---------- 绑定 ---------- */

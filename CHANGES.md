@@ -1,5 +1,38 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复**流水线编辑器保存的浏览器端竞态**（多人共用环境下新建/编辑流水线保存偶发失败，报「流水线已不在
+  本页列表中（可能被其他浏览器删除）」）：保存链路 savePlForm 先把新流水线 push 进页面全局列表、
+  pushPipelineOne 再排等前序全量 PUT；前序 PUT 若 409，pushState 自愈分支的 loadServerState 会**整表
+  替换** pipelines，把还没落盘的新流水线冲掉（localStorage 一并重写），锁释放后 findPipeline 找不到
+  目标 → alert 报错并回滚删除，保存彻底失败。修复口径（仅 `projects/pipeline/pipeline.html`，服务端
+  src/index.ts 不动）：① persistInFlight 串行锁从 `while(await)` 的 check-then-set（两个并发等待者
+  会在前序释放后同时通过检查、同进临界区）改为 **Promise 链互斥**——读链尾与挂链尾之间无 await、同步
+  原子，pushState/pushPipelineOne 严格按到达顺序逐个放行，「拿到锁再取基线快照」语义不变（参考服务端
+  withStoreLock 的链式写法）；② loadServerState 的流水线应用改**按 id 三方合并**（新函数
+  mergePipelinesFromServer：共同基线 serverConfigBase.pipelines / 本地 pipelines / 远端响应
+  cfg.pipelines）——仅本地存在（基线/远端都无）的未落盘新增保留（维持本地相对顺序、追加合并结果末尾）；
+  基线有远端无（远端已删除）本地与基线一致随删、本地有改动（删除可能正撞保存在途）保留本地；本地==基线
+  取远端、远端==基线留本地、双边都改且不一致取远端（同步语义下服务端为准）；比对豁免顶层
+  favoriteUsers/pinnedAt（新增页面侧 stripPipelineSharedMeta，与服务端合并层同口径）；新基线以响应
+  快照为准，「基线有远端缺而保留」的条目把原基线条目补回（防 baseOne 回退成 null 后与 diskOne(null)
+  相等，下次 save-one 把他人已删条目静默重建——本应 409 由用户抉择）；远端新增/修改/删除照常同步页面
+  与 localStorage；③ loadServerState 迁移链补齐 migratePromPreset（与 loadPipelines 对齐）。
+  测试：新增 `projects/pipeline/tests/test_loadserverstate_merge_local_add.js`（8 例：三方合并口径 ×4、
+  loadServerState 远端同步/基线补回 ×2、竞态主场景「本地新增 + 409 自愈重拉后条目仍在、save-one 照常
+  发出并成功」、串行锁两个并发保存严格按序且后序取前序确认后的新基线）。
+- 修复流水线页**每次打开都自动发起一次全量 PUT 保存**（`projects/pipeline/pipeline.html`）：触发源是
+  `applyTheme()` 末尾一次无条件 `persistState()`——它随 `renderAll()` 在首屏初始化、`loadServerState`
+  成功重渲染、409/403 自愈重拉时被反复调用，400ms 防抖后合成一次整表 PUT；本地相对刚应用的服务端
+  快照并无任何实际变化，多人在场时每个访客的这次自动写都是潜在 409 冲突源（409 自愈重拉放大保存
+  竞态）。修复：渲染与持久化分离——`applyTheme()` 只应用主题到 DOM 与 localStorage，主题下拉
+  change 监听器（用户真实改选）显式 `persistState()`，系统深浅色翻转不改 `themePref`（collectConfig
+  无差异）不写。三个正当写路径保持原样：服务端 config 为空时迁移本地默认状态上去、内嵌日志迁移
+  确有变更后回写、脚本目录兜底确实改写值（`maybeAdoptInstalledScriptsDir`）。未采用「与服务端快照
+  深比较闸门」方案：旧客户端写出的 config 缺新字段会深比较假脏、重新引入每访客一次自动 PUT，且首屏
+  renderAll 先于 GET 完成时基线为空判断失效。测试：新增 `tests/test_init_no_autoput.js`（7 例——
+  一致时首屏+加载全程零写、自愈重拉零写、两个正当写路径不破、applyTheme/自愈块源码契约；已对
+  修复前源码验证前 3 例如期失败）。
+
 - 跟进修复**「编译发行」版本 bump 回推遇网络抖动即失败**（同一 v1.1.10 发行重跑时，克隆/构建/测试均过，
   死在仓内 `scripts/build.sh` 的 `git push origin HEAD:main`，报错还误导为「凭据无推送权限」）：回推改
   `GIT_PUSH_RETRIES`（默认 3）次自动重试、递增退避（`sleep $((i*5))`）；远端地址含克隆凭据，失败输出先经
