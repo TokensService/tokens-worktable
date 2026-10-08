@@ -1,5 +1,14 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线归属编辑限制新增 **admin 例外**（`projects/pipeline/pipeline.html` 的 `plEditable`，修复「编辑按钮用不了」
+  类问题）：原规则「非可信流水线仅创建者可编辑/删除，admin 无例外」会使创建者账号注销/改名后的流水线对所有人
+  （含 admin）永久只读——行内「编辑」变「查看」、编辑器整体只读。现 admin 可编辑/删除任意非可信流水线；
+  内置/可信「仅 admin」、非 admin「仅创建者」、未署名全员可编辑、token 模式退化全权等其余规则不变；
+  行按钮/编辑器只读/保存与删除兜底/主视图拖拽均经 `plEditable` 级联一致（服务端本就只对可信/内置做写校验，
+  无创建者归属校验，无需改动）。编排区说明文案与相关注释同步更新；测试翻转
+  `test_pipeline_owner_edit.js` / `test_pipeline_trusted.js` 中「admin 无例外」断言，新增
+  `tests/test_pipeline_admin_edit.js`（9 例覆盖完整权限矩阵）。
+
 - 流水线页浏览器 CPU 降耗（`projects/pipeline/pipeline.html`，用户可见行为不变；实测开关页面 CPU 差约
   20% 的场景针对优化）：① 阶段详情日志改**增量渲染**（`syncDetailLogLines`）——日志增长只追加新增行
   （DocumentFragment 一次挂载），触顶窗口平移带逐行校验、中部替换原位插入、外部改写回退全量重建，

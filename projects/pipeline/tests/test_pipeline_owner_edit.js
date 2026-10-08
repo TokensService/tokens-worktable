@@ -1,4 +1,5 @@
-/* 流水线归属编辑限制：仅创建者可编辑/删除（admin 无例外），他人只读可「复制」为副本；
+/* 流水线归属编辑限制：仅创建者可编辑/删除（admin 例外：可编辑/删除任意非可信流水线——
+   创建者账号注销/改名后流水线不致锁死），非 admin 对他人只读可「复制」为副本；
    未署名存量全员可编辑（保存时补署创建者）；auth 探测在途对署名流水线保守只读，
    探测完成仍无登录用户（token 共享模式/未装认证插件/探测失败）退化为全权。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
@@ -32,12 +33,12 @@ test('plEditable：内置视同可信（非 admin 只读）；未署名存量全
   assert.equal(ctx.plEditable({id:'p2',createdBy:'  '}),true,'空白署名按未署名处理');
 });
 
-test('plEditable：仅创建者本人可编辑；admin 编辑他人流水线同样受限',()=>{
+test('plEditable：仅创建者本人可编辑（非 admin 对他人只读）；admin 例外可编辑他人流水线',()=>{
   const mine=loadPlEditable({currentUsername:'alice',authReady:true});
   assert.equal(mine.plEditable({id:'p1',createdBy:'alice'}),true,'本人创建可编辑');
   assert.equal(mine.plEditable({id:'p2',createdBy:'bob'}),false,'他人创建只读');
   const admin=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:true});
-  assert.equal(admin.plEditable({id:'p3',createdBy:'bob'}),false,'admin 无例外：同样只能编辑自己创建的流水线');
+  assert.equal(admin.plEditable({id:'p3',createdBy:'bob'}),true,'admin 例外：可编辑他人创建的非可信流水线（创建者账号注销后不致锁死）');
 });
 
 test('plEditable：无登录用户时按 authReady 区分——探测在途保守只读，探测完成（token 模式）退化全权',()=>{

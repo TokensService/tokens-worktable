@@ -54,13 +54,13 @@ test('plEditable：可信/内置流水线在 token 模式退化为全权，auth 
   assert.equal(noAdminGlobal.plEditable({id:'p4b',builtIn:true}),false,'内置流水线 admin 标记缺失时同样保守只读');
 });
 
-test('plEditable：未标记 trusted 的既有行为不变',()=>{
+test('plEditable：未标记 trusted 的规则——本人/他人/未署名不变，admin 例外可编辑他人创建的',()=>{
   const mine=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:false});
   assert.equal(mine.plEditable({id:'p1',createdBy:'alice'}),true,'本人创建可编辑');
-  assert.equal(mine.plEditable({id:'p2',createdBy:'bob'}),false,'他人创建只读');
+  assert.equal(mine.plEditable({id:'p2',createdBy:'bob'}),false,'非 admin：他人创建只读');
   assert.equal(mine.plEditable({id:'p3'}),true,'未署名存量全员可编辑');
   const admin=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:true});
-  assert.equal(admin.plEditable({id:'p4',createdBy:'bob'}),false,'非可信流水线 admin 无例外：同样只能编辑自己创建的');
+  assert.equal(admin.plEditable({id:'p4',createdBy:'bob'}),true,'非可信流水线 admin 例外：可编辑他人创建的（创建者账号注销后不致锁死）');
   assert.equal(admin.plEditable({id:'p5',builtIn:true}),true,'内置流水线视同可信：admin 可编辑');
 });
 
