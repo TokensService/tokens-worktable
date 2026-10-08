@@ -1,5 +1,22 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复**多用户登录下「复制/编辑后的流水线无法保存」**（phantom conflict，已用真实函数复现定位）：
+  `favoriteUsers`（各用户收藏）与 `pinnedAt`（置顶）这类非内容字段存在共享流水线条目上，却参与服务端三方合并的
+  JSON 全字段同一性比对——他端一次收藏/置顶即让该条「偏离基线」：编辑走 save-one 被 409 拒绝；全量 PUT
+  （复制/删除/设置等）任一无关条目双边分歧即整批 409 且客户端静默、基线不前进，后续保存持续锁死。
+  服务端（`src/index.ts`）：`mergePipelineConfigForWrite` / `mergePipelineOneForWrite` 的变更与冲突判定改为
+  剥离 `favoriteUsers`/`pinnedAt` 后的内容比对，两个字段一律按三方规则合入结果（favoriteUsers 集合合并
+  `(client ∩ disk) ∪ (client − base) ∪ (disk − base)`，并发收藏不丢、取消收藏生效；pinnedAt 标量三方取
+  客户端相对基线的变化方；形状归一：空收藏/零置顶省略键）；`trustedPipelineViolations` 豁免键扩为
+  `['favoriteUsers','pinnedAt']`（与守卫本就豁免 favoriteUsers 的语义对齐，置顶属视图排序元数据）。
+  客户端（`projects/pipeline/pipeline.html`）：`copyPipeline` 改走 save-one 单条保存（副本只新增一个条目，
+  天然免疫无关条目并发冲突；旧服务端回退全量），硬失败 toast 提示且本地副本保留并防抖重试；`pushState`
+  全量 PUT 409 在非编辑器路径下 toast「已被他人修改，已刷新为最新状态」并 `loadServerState()` 重拉自愈
+  （编辑器与可信标记路径自带回滚 + alert，经 `silentConflict` 保持单处提示）。测试：服务端
+  `tests/pipeline-config-concurrency.test.mjs` 新增 9 例（收藏/置顶并发合并、真冲突仍 409、守卫豁免、形状归一），
+  客户端新增 `projects/pipeline/tests/test_pipeline_multiuser_save.js` 6 例；既有 `pipeline-trust` 两处断言随形状归一
+  改为校验键省略。
+
 - 流水线归属编辑限制新增 **admin 例外**（`projects/pipeline/pipeline.html` 的 `plEditable`，修复「编辑按钮用不了」
   类问题）：原规则「非可信流水线仅创建者可编辑/删除，admin 无例外」会使创建者账号注销/改名后的流水线对所有人
   （含 admin）永久只读——行内「编辑」变「查看」、编辑器整体只读。现 admin 可编辑/删除任意非可信流水线；
