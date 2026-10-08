@@ -1993,12 +1993,15 @@
       if (sum) sum.textContent = relStepSumText(relStepLogs[relCurStep].length);
     }
   }
-  /* 打 Tag 并推送的临时脚本：经 /api/worktable/write 落到服务端临时文件后 exec 执行 */
+  /* 打 Tag 并推送的临时脚本：经 /api/worktable/write 落到服务端临时文件后 exec 执行；
+     浅克隆与推送对网络抖动自动重试（次数 GIT_CLONE_RETRIES，默认 3，递增退避），
+     每次失败先脱敏回显 + 网络诊断提示，最后一次才失败退出 */
   var PUSH_TAG_SCRIPT_PATH = "/tmp/dsh-codereview-push-tag.sh";
   var PUSH_TAG_SCRIPT = [
     "#!/usr/bin/env bash",
     "# 由 PR 检视台「编译发行」页自动写入并执行：浅克隆指定分支 → 创建 Tag → 推送远端。",
     "# 凭据经 GIT_AUTH_URL 注入（页面侧已 URL 编码）；本脚本不 echo 任何凭据，失败输出先脱敏。",
+    "# 浅克隆与推送自动重试（网络抖动容错）：次数 GIT_CLONE_RETRIES（默认 3），递增退避；克隆每次失败清理半截克隆目录，最后一次才失败退出。",
     "set -u",
     "fail(){ echo \"✗ $*\" >&2; exit 1; }",
     "[ -n \"${GIT_AUTH_URL:-}\" ] || fail \"缺少 GIT_AUTH_URL\"",
@@ -2012,21 +2015,39 @@
     "  custom) [ -n \"${GIT_PROXY_URL:-}\" ] || fail \"GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL\"; export http_proxy=\"$GIT_PROXY_URL\" https_proxy=\"$GIT_PROXY_URL\" HTTP_PROXY=\"$GIT_PROXY_URL\" HTTPS_PROXY=\"$GIT_PROXY_URL\"; echo \"… 网络代理：自定义代理 $(printf '%s' \"$GIT_PROXY_URL\" | maskurl)\" ;;",
     "  *) echo \"… 网络代理：继承服务端环境（http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)）\" ;;",
     "esac",
-    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
-    "net_hint(){ printf '%s' \"$1\" | grep -q \"CONNECT tunnel failed\" || return 0; echo \"… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试\" >&2; }",
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）；Failed to connect / Connection timed out 等是对端不可达/网络抖动（与凭据无关，已自动重试）",
+    "net_hint(){ if printf '%s' \"$1\" | grep -q \"CONNECT tunnel failed\"; then echo \"… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf '%s' \"${http_proxy:-未设置}\" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试\" >&2; elif printf '%s' \"$1\" | grep -qE \"Failed to connect|Couldn't connect|Connection timed out|Connection refused|Operation timed out\"; then echo \"… 提示：对端不可达或网络抖动（与凭据无关），已自动重试；若仍失败，可在「设置」页把「构建网络代理」改为「直连」或「自定义代理」\" >&2; fi; return 0; }",
     "echo \"+ git ls-remote --tags <repo> refs/tags/${RELEASE_TAG}\"",
     "out=$(git -c protocol.ext.allow=never -c protocol.file.allow=never ls-remote --tags \"${GIT_AUTH_URL}\" \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"查询远端 Tag 失败（检查仓库地址/凭据/网络）\"; }",
     "printf \"%s\\n\" \"$out\" | grep -q . && fail \"远端已存在 Tag ${RELEASE_TAG}（如需重发请先删除远端 Tag）\"",
     "TMPD=$(mktemp -d); trap 'rm -rf \"$TMPD\"' EXIT",
     "echo \"→ 浅克隆分支 ${GIT_BRANCH} …（服务端本机执行，OS 用户 $(id -un 2>/dev/null || echo unknown)）\"",
     "echo \"+ git clone --quiet --depth 1 --branch ${GIT_BRANCH} <repo> $TMPD/repo\"",
-    "out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"克隆失败（分支名/凭据/网络）\"; }",
+    "RETRIES=\"${GIT_CLONE_RETRIES:-3}\"",
+    "i=1",
+    "while :; do",
+    "  rm -rf \"$TMPD/repo\"   # 上次失败可能留下半截克隆目录，重试前先清理",
+    "  out=$(git clone --quiet --depth 1 --branch \"${GIT_BRANCH}\" \"${GIT_AUTH_URL}\" \"$TMPD/repo\" 2>&1) && break",
+    "  printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"",
+    "  [ \"$i\" -lt \"$RETRIES\" ] || fail \"克隆失败（已尝试 $i 次；分支名/凭据/网络）\"",
+    "  echo \"… 第 $i/$RETRIES 次克隆失败，$((i*5)) 秒后重试 …\" >&2",
+    "  sleep $((i*5))",
+    "  i=$((i+1))",
+    "done",
     "cd \"$TMPD/repo\" || exit 1",
     "echo \"+ git tag -a ${RELEASE_TAG} -m \\\"${RELEASE_NAME:-$RELEASE_TAG}\\\"\"",
     "git -c user.name=\"${GIT_AUTHOR_NAME:-codereview-bot}\" -c user.email=\"codereview-bot@local\" tag -a \"$RELEASE_TAG\" -m \"${RELEASE_NAME:-$RELEASE_TAG}\" || fail \"创建 Tag 失败\"",
     "echo \"→ 推送 Tag ${RELEASE_TAG} …\"",
     "echo \"+ git push origin refs/tags/${RELEASE_TAG}\"",
-    "out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) || { printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"; fail \"推送 Tag 失败（检查令牌写权限）\"; }",
+    "i=1",
+    "while :; do",
+    "  out=$(git push --quiet origin \"refs/tags/${RELEASE_TAG}\" 2>&1) && break",
+    "  printf \"%s\\n\" \"$out\" | mask >&2; net_hint \"$out\"",
+    "  [ \"$i\" -lt \"$RETRIES\" ] || fail \"推送 Tag 失败（已尝试 $i 次；检查令牌写权限）\"",
+    "  echo \"… 第 $i/$RETRIES 次推送失败，$((i*5)) 秒后重试 …\" >&2",
+    "  sleep $((i*5))",
+    "  i=$((i+1))",
+    "done",
     "echo \"✓ Tag ${RELEASE_TAG} 已推送\""
   ].join("\n");
   function pushReleaseTag(repo, branch, tag, name, signal) {
@@ -2080,13 +2101,15 @@
      GitCode 发行版没有数字 id，也不提供 Gitee 式 attach_files；官方流程是按 tag + file_name 调
      upload_url 接口换取华为云 OBS 预签名上传地址，再按返回的 url + headers 用 PUT 直传
      （x-obs-callback 回调头负责把附件挂到发行版）。令牌经 ACCESS_TOKEN 注入、输出脱敏，
-     预签名 url 不落日志，完成后清理暂存目录。 */
+     预签名 url 不落日志，完成后清理暂存目录。每个文件的「获取上传地址 / PUT 直传」对网络抖动
+     自动重试（次数 UPLOAD_RETRIES，默认 3，递增退避），最后一次才失败退出。 */
   var UPLOAD_ASSETS_SCRIPT_PATH = "/tmp/dsh-codereview-upload-assets.sh";
   var UPLOAD_ASSETS_SCRIPT = [
     "#!/usr/bin/env bash",
     "# 由 PR 检视台「编译发行」页自动写入并执行：把构建产物上传到 GitCode 发行版附件。",
     "# 流程：GET releases/{tag}/upload_url（access_token + file_name）→ 按返回 url/headers PUT 直传 OBS。",
     "# 令牌经 ACCESS_TOKEN 注入；本脚本不 echo 令牌与预签名 url，失败输出先脱敏；结束后清理产物暂存目录。",
+    "# 网络抖动容错：每个文件的「获取上传地址 / PUT 直传」自动重试，次数 UPLOAD_RETRIES（默认 3），递增退避；每次失败先脱敏回显 + 网络诊断，最后一次才失败退出。",
     "set -u",
     'fail(){ echo "✗ $*" >&2; exit 1; }',
     '[ -n "${ARTIFACT_DIR:-}" ] || fail "缺少 ARTIFACT_DIR"',
@@ -2103,18 +2126,27 @@
     '  custom) [ -n "${GIT_PROXY_URL:-}" ] || fail "GIT_PROXY_MODE=custom 但缺少 GIT_PROXY_URL"; export http_proxy="$GIT_PROXY_URL" https_proxy="$GIT_PROXY_URL" HTTP_PROXY="$GIT_PROXY_URL" HTTPS_PROXY="$GIT_PROXY_URL"; echo "… 网络代理：自定义代理 $(printf \'%s\' "$GIT_PROXY_URL" | maskurl)" ;;',
     '  *) echo "… 网络代理：继承服务端环境（http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)）" ;;',
     "esac",
-    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）",
-    'net_hint(){ printf \'%s\' "$1" | grep -q "CONNECT tunnel failed" || return 0; echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; }',
+    "# 网络失败诊断：CONNECT tunnel failed 是 HTTP 代理拒绝建立隧道（代理侧故障，与证书/凭据无关）；Failed to connect / Connection timed out 等是对端不可达/网络抖动（与凭据无关，已自动重试）",
+    'net_hint(){ if printf \'%s\' "$1" | grep -q "CONNECT tunnel failed"; then echo "… 提示：CONNECT 隧道被代理拒绝（代理侧故障，与证书/令牌无关）。当前 http_proxy=$(printf \'%s\' "${http_proxy:-未设置}" | maskurl)；可在「设置」页把「构建网络代理」改为「直连」或修正代理服务后重试" >&2; elif printf \'%s\' "$1" | grep -qE "Failed to connect|Couldn\'t connect|Connection timed out|Connection refused|Operation timed out"; then echo "… 提示：对端不可达或网络抖动（与凭据无关），已自动重试；若仍失败，可在「设置」页把「构建网络代理」改为「直连」或「自定义代理」" >&2; fi; return 0; }',
     'API_BASE="${API_BASE:-https://api.gitcode.com/api/v5}"',
     '# 从扁平 JSON 提取 "key":"value" 字符串值（还原 \\/ 转义）；upload_url 响应的 url/headers 均为扁平字符串字段',
     'jget(){ sed -n "s/.*\\"$1\\" *: *\\"\\([^\\"]*\\)\\".*/\\1/p" | sed \'s#\\\\/#/#g\'; }',
     "n=0",
+    'RETRIES="${UPLOAD_RETRIES:-3}"',
     'while IFS= read -r f; do',
     "  n=$((n+1))",
     '  base=$(basename "$f")',
     '  echo "→ 上传 $base …"',
     '  echo "+ GET ${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url?access_token=<token>&file_name=$base"',
-    '  resp=$(curl -sS -f -G "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url" --data-urlencode "access_token=${ACCESS_TOKEN}" --data-urlencode "file_name=${base}" 2>&1) || { printf "%s\\n" "$resp" | mask >&2; net_hint "$resp"; fail "获取上传地址失败：$base（检查令牌权限）"; }',
+    "  i=1",
+    "  while :; do",
+    '    resp=$(curl -sS -f -G "${API_BASE}/repos/${OWNER}/${REPO}/releases/${RELEASE_TAG}/upload_url" --data-urlencode "access_token=${ACCESS_TOKEN}" --data-urlencode "file_name=${base}" 2>&1) && break',
+    '    printf "%s\\n" "$resp" | mask >&2; net_hint "$resp"',
+    '    [ "$i" -lt "$RETRIES" ] || fail "获取上传地址失败：$base（已尝试 $i 次；检查令牌权限）"',
+    '    echo "… 第 $i/$RETRIES 次获取上传地址失败，$((i*5)) 秒后重试 …" >&2',
+    "    sleep $((i*5))",
+    "    i=$((i+1))",
+    "  done",
     '  url=$(printf "%s" "$resp" | jget url)',
     '  [ -n "$url" ] || { printf "%s\\n" "$resp" | mask >&2; fail "上传地址响应缺少 url：$base"; }',
     '  h_proj=$(printf "%s" "$resp" | jget x-obs-meta-project-id)',
@@ -2123,7 +2155,15 @@
     '  h_ct=$(printf "%s" "$resp" | jget Content-Type)',
     '  [ -n "$h_ct" ] || h_ct="application/octet-stream"',
     '  echo "+ curl -sS -f -X PUT -T $f <OBS 预签名地址>（携带 x-obs-* 回调头）"',
-    '  out=$(curl -sS -f -X PUT -T "$f" -H "x-obs-meta-project-id: $h_proj" -H "x-obs-acl: $h_acl" -H "x-obs-callback: $h_cb" -H "Content-Type: $h_ct" "$url" 2>&1) || { printf "%s\\n" "$out" | mask >&2; net_hint "$out"; fail "上传失败：$base（检查令牌权限/附件大小限制）"; }',
+    "  i=1",
+    "  while :; do",
+    '    out=$(curl -sS -f -X PUT -T "$f" -H "x-obs-meta-project-id: $h_proj" -H "x-obs-acl: $h_acl" -H "x-obs-callback: $h_cb" -H "Content-Type: $h_ct" "$url" 2>&1) && break',
+    '    printf "%s\\n" "$out" | mask >&2; net_hint "$out"',
+    '    [ "$i" -lt "$RETRIES" ] || fail "上传失败：$base（已尝试 $i 次；检查令牌权限/附件大小限制）"',
+    '    echo "… 第 $i/$RETRIES 次上传失败，$((i*5)) 秒后重试 …" >&2',
+    "    sleep $((i*5))",
+    "    i=$((i+1))",
+    "  done",
     '  echo "✓ 已上传 $base"',
     'done < <(find "$ARTIFACT_DIR" -type f | sort)',
     '[ "$n" -gt 0 ] || fail "产物目录为空：$ARTIFACT_DIR"',
