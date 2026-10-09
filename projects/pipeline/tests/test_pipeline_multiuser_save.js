@@ -57,6 +57,7 @@ test('复制流水线：副本走单条保存（save-one），不触发全量保
   assert.notEqual(clone.id, f.src.id);
   assert.equal(clone.name, '构建流水线（副本）');
   assert.equal(clone.createdBy, 'alice', '副本署名复制者');
+  assert.equal(clone.owner, 'alice', '副本拥有者同为复制者（编辑权限按拥有者判定），不继承源流水线');
   assert.equal(clone.builtIn, false, '内置流水线的副本为普通可编辑条目');
   assert.equal('trusted' in clone, false);
   assert.equal(clone.pinnedAt, 0);

@@ -1,5 +1,5 @@
 /* 可信流水线（trusted）：admin 可把流水线标记为「可信」，非 admin 对可信流水线只读（编辑/删除/拖拽/保存全禁，
-   仍可运行）；admin 编辑可信流水线时权限优先于「仅创建者可编辑」。token 共享模式（无用户体系/探测失败，
+   仍可运行）；admin 编辑可信流水线时权限优先于「仅拥有者可编辑」。token 共享模式（无用户体系/探测失败，
    页面无法判定 admin）退化为全权：trusted 不限制编辑、行菜单标记入口也不显示。
    保存被服务端 403（{error:'trusted', message, pipelineIds}）拦截时：toast 展示服务端 message 并
    loadServerState 重拉状态同步，403 不回退全量保存（那是给网络错误/冲突用的）。
@@ -28,7 +28,7 @@ function loadPlEditable(globals){
   return ctx;
 }
 
-test('plEditable：可信流水线仅 admin 可编辑（admin 优先于「仅创建者可编辑」），内置视同可信',()=>{
+test('plEditable：可信流水线仅 admin 可编辑（admin 优先于「仅拥有者可编辑」），内置视同可信',()=>{
   const admin=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:true});
   assert.equal(admin.plEditable({id:'p1',createdBy:'bob',trusted:true}),true,'admin 可编辑他人创建的可信流水线');
   assert.equal(admin.plEditable({id:'p2',createdBy:'alice',trusted:true}),true,'admin 可编辑自己创建的可信流水线');
@@ -351,17 +351,17 @@ function loadOpenPlForm({pipeline,username,isAdmin}){
 
 const TRUSTED={id:'pl-trusted',name:'可信流水线',createdBy:'bob',updatedBy:'bob',trusted:true,defaults:{},stages:[{id:'s1',name:'构建'}]};
 
-test('openPlForm：非 admin 打开可信流水线为只读查看，标题标注可信与创建者',()=>{
+test('openPlForm：非 admin 打开可信流水线为只读查看，标题标注可信与拥有者',()=>{
   const {ctx,els}=loadOpenPlForm({pipeline:TRUSTED,username:'alice',isAdmin:false});
   ctx.openPlForm('pl-trusted');
   assert.equal(ctx.plFormReadOnly,true,'非 admin（即便另有署名）对可信流水线只读');
-  assert.match(els.plFormTitle.textContent,/查看流水线（可信·创建者 @bob·只读）：可信流水线/);
+  assert.match(els.plFormTitle.textContent,/查看流水线（可信·拥有者 @bob·只读）：可信流水线/);
 });
 
 test('openPlForm：admin 打开可信流水线保持可编辑，标题标注可信',()=>{
   const {ctx,els}=loadOpenPlForm({pipeline:TRUSTED,username:'alice',isAdmin:true});
   ctx.openPlForm('pl-trusted');
-  assert.equal(ctx.plFormReadOnly,false,'admin 对可信流水线可编辑（优先于创建者规则）');
+  assert.equal(ctx.plFormReadOnly,false,'admin 对可信流水线可编辑（优先于拥有者规则）');
   assert.match(els.plFormTitle.textContent,/编辑流水线（可信）：可信流水线/);
 });
 
