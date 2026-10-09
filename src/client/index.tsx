@@ -1481,6 +1481,20 @@ function openFolderInSidebar(p: string): boolean {
     return true
   } catch { return false }
 }
+
+/** better-sidebar 侧边栏打开普通文件本身（pipeline.html 阶段详情「📄 打开日志」用它开日志文件；
+ *  editor 标签不带 meta.dir，同 better-sidebar 自身 sidebar-file 的 openTab 形态
+ *  { type:'editor', title, path, id:'editor:'+p }，path 相同复用同一标签，幂等可重开）。
+ *  未装 better-sidebar（服务缺失/无 openTab）或打开抛错时返回 false。 */
+function openFileInSidebar(p: string): boolean {
+  try {
+    const bs = applyCtx?.get?.('betterSidebar') as any
+    if (!bs || typeof bs.openTab !== 'function' || typeof p !== 'string' || !p) return false
+    const title = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
+    bs.openTab({ type: 'editor', title, path: p, id: 'editor:' + p })
+    return true
+  } catch { return false }
+}
 let lastSessionScopeId = ''
 
 /** 会话作用域快照（模块级；apply 里订阅 ctx.sessions.list 写入，组件与引擎只读） */
@@ -4631,13 +4645,16 @@ export function apply(ctx: any) {
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
   try { (window as any).__dshOpenSession = (id: string) => openSessionInUi(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshSendChatForResult = (text: string) => sendChatForResult(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
-  // 项目页（pipeline.html「打开归档目录」等）→ 侧边栏文件夹窗口桥：开一个以传入目录为根的文件夹
-  // 窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；幂等可重开）。
-  // 优先直调宿主 sidebarRight.openResource（params.meta.dir 透传目录语义）——better-sidebar ≥0.19 的
-  // 原生面会丢弃 openTab 的 meta（上游 bug，0.24.1 未修，经其服务开文件夹报 "is a directory"）；
-  // 宿主侧不可用再回退 betterSidebar openTab target:'bottom' 的底部工作台（meta 不丢）；
-  // 两级均不可用时返回 false，由页面回退到系统文件管理器路径。
+  // 项目页 → 侧边栏桥（两条）：__dshOpenFolderInSidebar 供 pipeline.html「打开归档目录」开一个以传入
+  // 目录为根的文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；
+  // 幂等可重开）——优先直调宿主 sidebarRight.openResource（params.meta.dir 透传目录语义），因
+  // better-sidebar ≥0.19 的原生面会丢弃 openTab 的 meta（上游 bug，0.24.1 未修，经其服务开文件夹报
+  // "is a directory"），宿主侧不可用再回退 betterSidebar openTab target:'bottom' 的底部工作台
+  // （meta 不丢）；__dshOpenFileInSidebar 供阶段详情「📄 打开日志」打开普通文件本身（editor 标签
+  // 不带 meta.dir，同 better-sidebar sidebar-file 的 openTab 形态，无需 meta 故原生面可用）。
+  // 两条桥均不可用时返回 false，由页面回退到系统文件管理器/新标签页路径。
   try { (window as any).__dshOpenFolderInSidebar = (p: string): boolean => openFolderInSidebar(p) } catch {}
+  try { (window as any).__dshOpenFileInSidebar = (p: string): boolean => openFileInSidebar(p) } catch {}
   // 项目页（pipeline.html「打开归档目录」）→ 工作台分栏桥：关闭侧边会话窗（聊天列），配合
   // better-sidebar 侧边窗打开目录时让出屏幕空间；无活动布局时为 no-op。
   try { (window as any).__dshCloseSideChat = (): void => { try { splitStore.setChatClosed(true) } catch {} } } catch {}

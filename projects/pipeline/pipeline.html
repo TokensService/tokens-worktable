@@ -4044,7 +4044,9 @@ function currentStageAnalysisRec(){
 /* 阶段详情「日志文件」行：展示本阶段归档日志文件路径，右侧提供「AI 分析」「打开日志」
    两个按钮；过程/结果提示写入紧随其后的提示行（#stageLogTipRow，默认隐藏）。
    path 与 rec 都为空时不渲染本行（实时态未配置归档且运行未入历史、回放态旧记录无独立日志文件等）。
-   行为与「📂 打开归档目录」「运行历史标题行 AI 分析按钮」保持一致，详见两按钮的 title。 */
+   「📄 打开日志」打开本阶段归档日志文件本身（文件尚未生成/已清理时才回退打开所在目录，
+   此时效果同「📂 打开归档目录」）；「🔍 AI 分析」与运行历史标题行 AI 分析按钮同一入口，
+   详见两按钮的 title。 */
 function appendStageLogRow(kv, path, rec){
   if(!path && !rec) return;
   const replayMode=typeof replayRec!=='undefined' && !!replayRec;
@@ -4066,10 +4068,10 @@ function appendStageLogRow(kv, path, rec){
   aiBtn.addEventListener('click', stageDetailAnalysis);
   const openBtn=document.createElement('button');
   openBtn.className='dshell-btn dshell-btnGhost mini'; openBtn.type='button'; openBtn.id='stageLogOpenBtn';
-  openBtn.textContent='📂 打开日志';
-  openBtn.title='打开本阶段日志文件所在目录：效果同「📂 打开归档目录」——优先经 dsh-better-sidebar 侧边栏文件夹窗口打开（未装该插件或桥不可用时回退服务端系统文件管理器）；打开前等待日志落盘，目标目录不存在时回退其父目录；本阶段暂无归档日志文件时禁用。';
+  openBtn.textContent='📄 打开日志';
+  openBtn.title='打开本阶段产生的归档日志文件本身（而非所在目录）：优先经 dsh-better-sidebar 侧边栏把日志开为编辑器标签（未装该插件或桥不可用时回退新浏览器标签页打开，弹窗被拦截会在下方提示行给出链接）；打开前等待日志落盘，文件尚未生成或已清理时回退打开所在目录（效果同「📂 打开归档目录」）；本阶段暂无归档日志文件时禁用。';
   openBtn.disabled=!path;
-  openBtn.addEventListener('click', ()=>openStageLogFolder(path));
+  openBtn.addEventListener('click', ()=>openStageLogFile(path));
   btns.appendChild(aiBtn); btns.appendChild(openBtn);
   row.appendChild(key); row.appendChild(value); row.appendChild(btns);
   kv.appendChild(row);
@@ -8317,7 +8319,8 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
    系统文件管理器路径下助手脚本同样回退到父目录，并把实际打开的目录回显在 stdout 供页面提示；
    连归档根都不存在才报「目录不存在」。
    上述「等待落盘 → 预检回退 → 侧边窗 / 系统文件管理器」流程抽为 openFolderWithFeedback，
-   供本按钮与阶段详情「📂 打开日志」共用（文案与行为保持一致）。 */
+   供本按钮直接使用；阶段详情「📄 打开日志」打开的是日志文件本身，仅当文件尚未生成/已清理时
+   才回退复用该流程打开所在目录（此时文案与行为同本按钮）。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
 const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的助手脚本：用系统文件管理器打开 $1\n'
   +'d="$1"\n'
@@ -8371,7 +8374,8 @@ async function openArchiveFolder(){
   if(!folder){ say('⚠ 请先点击选择一条运行历史（或运行一条流水线后再打开）','var(--log-warn)'); return; }
   await openFolderWithFeedback(folder, say);
 }
-/* 打开目录的完整反馈流程（「📂 打开归档目录」与阶段详情「📂 打开日志」共用）：
+/* 打开目录的完整反馈流程（「📂 打开归档目录」使用；阶段详情「📄 打开日志」在日志文件
+   尚未生成/已清理时回退打开所在目录，也委托本流程）：
    等待日志落盘 → 预检目录存在性（不存在回退父目录）→ 优先经 dsh-better-sidebar 侧边窗打开
    （成功后关闭侧边会话窗让出空间），未装该插件或桥不可用时回退服务端系统文件管理器。 */
 async function openFolderWithFeedback(folder, say){
@@ -8396,9 +8400,15 @@ async function openFolderWithFeedback(folder, say){
   say('正在打开服务端文件管理器…');
   await openFolderViaFileManager(target, say, res.fellBack);
 }
-/* 阶段详情「📂 打开日志」：打开本阶段日志文件所在目录（流程与「📂 打开归档目录」一致，
-   反馈写入阶段详情的提示行 #stageLogTipRow/#stageLogTip，而非归档按钮旁的 archiveTip）。 */
-async function openStageLogFolder(file){
+/* 阶段详情「📄 打开日志」：打开本阶段归档日志文件本身（而非所在目录）。
+   等待落盘后先经 /api/worktable/file（tailBytes=1024 轻量探测）预检文件是否已生成：
+   404 视为尚未生成/已清理，回退 openFolderWithFeedback 打开所在目录（效果同「📂 打开归档目录」）；
+   探测本身失败（网络/服务端异常）按存在处理、不阻断打开。
+   文件存在时优先经 __dshOpenFileInSidebar 桥（工作台插件暴露，dsh-better-sidebar 侧边栏把日志
+   开为编辑器标签；成功后经 __dshCloseSideChat 关闭侧边会话窗让出空间）；桥不可用/拒绝时回退
+   window.open 新浏览器标签页，弹窗被拦截则在提示行放可点击链接。
+   反馈写入阶段详情的提示行 #stageLogTipRow/#stageLogTip，而非归档按钮旁的 archiveTip。 */
+async function openStageLogFile(file){
   const tip=$('stageLogTip');
   const tipRow=$('stageLogTipRow');
   const say=(t,c)=>{ if(!tip) return; tip.textContent=t; tip.style.color=c||''; if(tipRow) tipRow.style.display=t?'':'none'; };
@@ -8406,7 +8416,42 @@ async function openStageLogFolder(file){
   const i=file.lastIndexOf('/');
   if(i<=0){ say('⚠ 无法确定日志所在目录：'+file,'var(--log-warn)'); return; }
   const folder=file.slice(0,i);
-  await openFolderWithFeedback(folder, say);
+  say('正在等待日志落盘…');
+  try{ await waitArchiveWrites(folder); }
+  catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
+  let missing=false;   // 轻量探测日志文件是否已生成；探测失败按存在处理、不阻断
+  try{
+    const r=await fetch('/api/worktable/file?path='+encodeURIComponent(file)+'&tailBytes=1024');
+    missing=!r || r.status===404;
+  }catch(e){}
+  if(missing){
+    say('⚠ 日志文件尚未生成或已清理，改为打开所在目录…','var(--log-warn)');
+    await openFolderWithFeedback(folder, say);
+    return;
+  }
+  const P=window.parent;
+  // 经 dsh-better-sidebar 侧边栏把日志开为编辑器标签；成功后关闭工作台侧边会话窗（聊天列）让出空间。
+  if(P && typeof P.__dshOpenFileInSidebar==='function'){
+    try{
+      if(P.__dshOpenFileInSidebar(file)){
+        try{ if(typeof P.__dshCloseSideChat==='function') P.__dshCloseSideChat(); }catch(e){}
+        say('✓ 已在侧边栏打开 '+file,'var(--log-ok)'); return;
+      }
+    }catch(e){}
+  }
+  const url='/api/worktable/file?path='+encodeURIComponent(file);
+  const w=window.open(url,'_blank');
+  if(w){ say('✓ 已在新标签页打开 '+file,'var(--log-ok)'); return; }
+  // 弹窗被拦截：提示行改放可点击链接（DOM 构建，避免路径含引号时拼 innerHTML 注入）
+  if(tip){
+    tip.textContent='';
+    tip.appendChild(document.createTextNode('⚠ 浏览器拦截了新标签页：'));
+    const a=document.createElement('a');
+    a.href=url; a.target='_blank'; a.rel='noopener'; a.textContent='点击打开日志';
+    tip.appendChild(a);
+    tip.style.color='var(--log-warn)';
+    if(tipRow) tipRow.style.display='';
+  }
 }
 /* 打开前预检目标目录是否存在（历史归档可能已清理、归档路径已改）：
    不存在时回退父目录（归档根），返回 {folder, fellBack}；连归档根都不存在返回 {folder:null}。
