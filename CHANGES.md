@@ -1,5 +1,22 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 新增**流水线运行状态查看工具** `projects/pipeline/tools/pipeline_status.py`（单文件、仅标准库、Python 3.6+，
+  本机执行、无需登录——`/api/worktable/pipeline/queue` 在 dsh-auth-gate 之后且会话 token 落盘只存 sha256
+  无法复用）。三个数据源取并集：① dsh web 进程树（pid 文件自动从脚本位置向上查找，失效则按
+  `bin.js web` 扫描）中 `pipeline/scripts/*.sh` 脚本进程为正在跑的直接证据；② 归档目录
+  `<archiveDir>/<流水线名>_<14位时间戳>/` 下 `run-*.log` 的活跃写入（默认 300s 阈值，`ACTIVE_SECONDS`
+  可调），覆盖 HTTP / Jenkins / EvalTokens 等不产本地进程的阶段；③ 历史存储按 run tag 判终态（
+  `worktable-pipeline.json` 的 history 命中即已结束），避免把远端静默长阶段误报为在跑——静默且无终态的
+  归入「疑似在跑」单独列出（`SILENT_SECONDS` 窗口默认 6h）。scriptsDir / archiveDir 从
+  `$DSH_HOME/storages/worktable-pipeline.json` 读取（`WT_ARCHIVE_ROOT` 等环境变量可覆盖）；
+  `follow-xds-head-logs.sh` 会 daemonize 脱离 web 进程树，工具按归档目录归属把在跑运行的这类进程挂回
+  运行条目（附属进程），其余游离进程列为「残留进程」并标注对应运行终态。设置 `DSH_AUTH_TOKEN`
+  （auth-gate 会话 token）可附带查询服务端执行池 / 排队 / 各客户端上报 / 失联孤儿条目；`--json`
+  输出机器可读结果。用法：`python3 projects/pipeline/tools/pipeline_status.py [--json]`。测试：
+  新增 `projects/pipeline/tools/test/test_pipeline_status.py`（12 例：日志/目录正则、时长格式化、
+  目标机与归档目录提取含空格转义前缀对齐、history 终态索引、归档扫描三态分类、进程证据覆盖静默、
+  daemonize 附属进程归属、pid 文件优先与失效回退），接入 `projects/package.json` 的 `test:python`。
+
 - 修复**流水线「运行队列」刷新即丢与跨用户不可见**（页面驱动的本地执行——含「需本地运行」阶段的流水线——刷新/
   关闭页面后正在执行的任务从运行队列彻底消失、找不到最后执行状态；且自 ac756d3「运行队列改由服务端持有」起
   renderQueue 的 `scheduleQueuePublish()` 调用被摘、publishQueue 成死代码，页面运行从不向服务端上报，其他登录者
