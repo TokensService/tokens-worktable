@@ -3527,7 +3527,7 @@ function pipelineStageGroupAt(stages,index){
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
-function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置（视同可信，仅 admin 可编辑）与他人创建的流水线对非 admin 只读（plEditable），主视图同样禁止拖拽改序
+function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置（视同可信，仅 admin 可编辑）与他人拥有的流水线对非 admin 只读（plEditable），主视图同样禁止拖拽改序
 /* 工作列表：当前流水线阶段补齐缺失的预设标记（与 flowStages 同源）。
    真实阶段保留对象引用（含 script/url 等全部字段，原样回写）；预设标记按 id/name/pkey 轻量保存。 */
 function flowWorkList(){ return withPresetMarkers((curPipeline().stages||[]).slice()); }
@@ -3569,7 +3569,7 @@ function flowNodeDrop(e){
 function flowNodeDragEnd(){ flowDragFromId=null; clearFlowDragMarks(); }
 /* 落盘：工作列表回写为 stages（预设标记随位置保存，并清掉旧顶层 prom），与编辑器 savePlForm 的归一化一致 */
 function persistFlowOrder(orderedWork){
-  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置（视同可信）与他人创建的流水线对非 admin 只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
+  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置（视同可信）与他人拥有的流水线对非 admin 只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
   p.stages=orderedWork.map(s=> s.preset
     ? {id:s.id,name:s.name,preset:true,pkey:s.pkey}
     : s);
@@ -3608,7 +3608,7 @@ function createFlowNode(s, i){
       openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
     const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置/可信（非 admin）只读 / 他人拥有的只读（标注拥有者，经 plOwnerOf 取值）/ 可编辑
-    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（可信流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
+    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（可信流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（拥有者 @'+plOwnerOf(plNodeCur)+'，只读）':'单击查看详情，双击编辑该阶段'));
     /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
     if(flowDraggable()){
       n.draggable=true; n.title+='；可拖拽调整执行顺序';
