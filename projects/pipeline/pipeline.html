@@ -4378,7 +4378,10 @@ function remoteQueuePreviewRc(client,item,kind){
   const stages=(Array.isArray(item&&item.stages)?item.stages:[]).map(queueStagePresence).filter(Boolean);
   const incomingNodes=item&&item.nodes&&typeof item.nodes==='object'?item.nodes:{};
   const previewNodes={};
-  stages.forEach(s=>{ previewNodes[s.id]=queueNodePresence(incomingNodes[s.id]); });
+  /* 运行中阶段带 startedAt（纪元毫秒）时按本地时钟把 dur 折算为实时已耗时（服务端快照运行期 dur 恒为 0；
+     时钟偏差折出负值时钳到 0），无 startedAt 的旧数据保持原 dur 不动 */
+  stages.forEach(s=>{ const n=previewNodes[s.id]=queueNodePresence(incomingNodes[s.id]);
+    if(n.status==='running'&&Number.isFinite(n.startedAt)&&n.startedAt>0) n.dur=Math.max(0,(Date.now()-n.startedAt)/1000); });
   const runningKind=kind==='running';
   const serverOwned=String(client&&client.id||'')==='server';
   return {id:'remote:'+String(client&&client.id||'')+':'+kind+':'+String(item&&item.id||''), remotePreview:true, over:true,
@@ -4529,8 +4532,10 @@ function queueNodePresence(node){
   const valid=['idle','running','success','failed','skipped','aborted'];
   const raw=node&&typeof node==='object'?node:{};
   const status=valid.indexOf(raw.status)>=0?raw.status:'idle';
-  const progress=Number(raw.progress), dur=Number(raw.dur);
+  const progress=Number(raw.progress), dur=Number(raw.dur), startedAt=Number(raw.startedAt);
   const out={status:status,progress:Number.isFinite(progress)?Math.max(0,Math.min(100,progress)):0,dur:Number.isFinite(dur)?Math.max(0,dur):0};
+  /* 阶段开始时间（纪元毫秒，通常为服务端时钟）随快照透传：远端预览据此折算运行中阶段的实时已耗时 */
+  if(Number.isFinite(startedAt)&&startedAt>0) out.startedAt=startedAt;
   if(raw.sub&&typeof raw.sub==='object'){
     const sub={}; Object.keys(raw.sub).forEach(name=>{ const value=raw.sub[name]; if(valid.indexOf(value)>=0) sub[String(name)]=value; });
     if(Object.keys(sub).length) out.sub=sub;
@@ -4730,6 +4735,13 @@ async function pullRemoteQueue(){
       const server=j&&j.server;
       const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
       const next=(serverActive?[server]:[]).concat(clients);
+      /* 运行中阶段的已耗时由阶段 startedAt（纪元毫秒，服务端时钟）按本地时钟在每轮轮询实时折算：
+         dur 每秒前进 → 快照签名随之变化 → 队列区与远端预览每秒刷出实时已耗时（签名降耗仍覆盖
+         无运行中阶段的静态快照）；无 startedAt 的旧数据保持原 dur 不动，时钟偏差折出负值钳到 0 */
+      const stampStageElapsed=item=>{ const ns=item&&item.nodes; if(!ns||typeof ns!=='object') return;
+        for(const k of Object.keys(ns)){ const n=ns[k], startedAt=n&&Number(n.startedAt);
+          if(n&&n.status==='running'&&Number.isFinite(startedAt)&&startedAt>0) n.dur=Math.max(0,(Date.now()-startedAt)/1000); } };
+      next.forEach(c=>{ (Array.isArray(c&&c.runs)?c.runs:[]).forEach(stampStageElapsed); if(c&&c.running) stampStageElapsed(c.running); (Array.isArray(c&&c.queue)?c.queue:[]).forEach(stampStageElapsed); });
       /* 孤儿登记簿：GET 响应顶层 orphans（恒存在、可空）；旧服务端无此键——Array.isArray 特性探测，
          缺失即跳过（remoteOrphans 保持原值，优雅降级不报错） */
       const orphans=Array.isArray(j.orphans)?j.orphans:null;
