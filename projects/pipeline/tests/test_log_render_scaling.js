@@ -65,6 +65,7 @@ function renderFixture(output) {
   const context = {
     replayRec: null, selectedId: stage.id, nodes: { [stage.id]: { status: 'running', progress: 10, varsIn: {}, varsOut: {} } },
     curRun: { commit: 'abc', env: 'dev', branch: 'dev', image: 'image', release: 'image', tag: 'tag', by: 'tester', pipelineName: 'P' },
+    history: [], archiveFolderFor: () => null,   // 阶段详情「日志文件」行接线所需的运行历史与归档桩（无归档 → 行不渲染）
     flowStages: () => [stage], curPipeline: () => ({ name: 'P' }), viewActive: () => true,
     $: id => elements[id], PRESET_DEF: {}, LOGS: {}, REGISTRY: '', GITURL: '', DEFAULT_IMAGE: '',
     stageUrlOf: () => '', fmtDur: String, esc: value => String(value == null ? '' : value),

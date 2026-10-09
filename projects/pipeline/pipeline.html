@@ -3808,6 +3808,72 @@ function detailContextRows(stage,statusText,ctx){
   else rows.push(['镜像',(ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],['Commit',ctx.commit]);
   return rows;
 }
+/* 阶段详情「日志文件」行的路径解析：优先阶段上已落盘的服务端日志（_serverLogFile），
+   其次执行前算出的预期路径（_serverLogExpectedFile，运行中未落盘时先给出预期位置），
+   都没有则按运行上下文现算（归档目录 + run-<tag>-NN-任务名.log）；运行无归档返回 null。
+   页面函数声明提升不受定义顺序限制（archiveFolderFor/stageSeq/taskLogFile 在本文件后部）。 */
+function stageLogFileFor(stage, rc){
+  if(stage && stage._serverLogFile) return stage._serverLogFile;
+  if(stage && stage._serverLogExpectedFile) return stage._serverLogExpectedFile;
+  const folder=archiveFolderFor(rc);
+  if(!folder) return null;
+  const idx=rc && rc.stages ? rc.stages.indexOf(stage) : -1;
+  if(idx<0) return null;
+  return folder+'/'+taskLogFile(rc, stageSeq(rc.stages, idx), stage.name);
+}
+/* 阶段详情「AI 分析」按钮的作用记录：回放态取当前回放行；实时态按 tag 找回本次运行的
+   历史记录（运行结束写入历史后方可分析）；都没有返回 null（按钮随之禁用）。 */
+function currentStageAnalysisRec(){
+  if(replayRec) return replayRec;
+  if(curRun && curRun.tag) return history.find(h=>h.tag && h.tag===curRun.tag) || null;
+  return null;
+}
+/* 阶段详情「日志文件」行：展示本阶段归档日志文件路径，右侧提供「AI 分析」「打开日志」
+   两个按钮；过程/结果提示写入紧随其后的提示行（#stageLogTipRow，默认隐藏）。
+   path 与 rec 都为空时不渲染本行（实时态未配置归档且运行未入历史、回放态旧记录无独立日志文件等）。
+   行为与「📂 打开归档目录」「运行历史标题行 AI 分析按钮」保持一致，详见两按钮的 title。 */
+function appendStageLogRow(kv, path, rec){
+  if(!path && !rec) return;
+  const replayMode=typeof replayRec!=='undefined' && !!replayRec;
+  const row=document.createElement('div');
+  row.className='dshell-kvRow'; row.id='stageLogRow'; row.style.alignItems='center';
+  const key=document.createElement('span'); key.className='dshell-kvKey'; key.textContent='日志文件';
+  const value=document.createElement('span'); value.className='dshell-kvValue'; value.id='stageLogPath';
+  value.style.flex='1'; value.style.textAlign='left'; value.style.overflow='hidden';
+  value.style.textOverflow='ellipsis'; value.style.whiteSpace='nowrap';
+  value.textContent=path || '—';
+  value.title=path || (replayMode ? '旧版内嵌日志记录，无独立日志文件' : '本阶段日志尚未归档（未配置归档目录或尚未执行）');
+  const btns=document.createElement('span');
+  btns.style.display='flex'; btns.style.gap='6px'; btns.style.alignItems='center'; btns.style.flex='none';
+  const aiBtn=document.createElement('button');
+  aiBtn.className='dshell-btn dshell-btnGhost mini'; aiBtn.type='button'; aiBtn.id='stageLogAiBtn';
+  aiBtn.textContent='🔍 AI 分析';
+  aiBtn.title='对本阶段所属运行发起 AI 日志分析：效果同运行历史标题行的「🔍 AI 日志分析」——新建 AI 会话并填入提示词草稿（需手动确认发送，不自动提交；提示词见「设置」页分析配置）；本次运行尚未写入运行历史时禁用。';
+  aiBtn.disabled=!rec;
+  aiBtn.addEventListener('click', stageDetailAnalysis);
+  const openBtn=document.createElement('button');
+  openBtn.className='dshell-btn dshell-btnGhost mini'; openBtn.type='button'; openBtn.id='stageLogOpenBtn';
+  openBtn.textContent='📂 打开日志';
+  openBtn.title='打开本阶段日志文件所在目录：效果同「📂 打开归档目录」——优先经 dsh-better-sidebar 侧边栏文件夹窗口打开（未装该插件或桥不可用时回退服务端系统文件管理器）；打开前等待日志落盘，目标目录不存在时回退其父目录；本阶段暂无归档日志文件时禁用。';
+  openBtn.disabled=!path;
+  openBtn.addEventListener('click', ()=>openStageLogFolder(path));
+  btns.appendChild(aiBtn); btns.appendChild(openBtn);
+  row.appendChild(key); row.appendChild(value); row.appendChild(btns);
+  kv.appendChild(row);
+  const tipRow=document.createElement('div');
+  tipRow.className='dshell-kvRow'; tipRow.id='stageLogTipRow'; tipRow.style.display='none';
+  const tipKey=document.createElement('span'); tipKey.className='dshell-kvKey';
+  const tip=document.createElement('span'); tip.className='dshell-kvValue dshell-muted'; tip.id='stageLogTip'; tip.style.fontSize='10px';
+  tipRow.appendChild(tipKey); tipRow.appendChild(tip);
+  kv.appendChild(tipRow);
+}
+/* 「🔍 AI 分析」点击：对本阶段所属运行发起 AI 日志分析（新建 AI 会话并填入提示词草稿，
+   与运行历史标题行分析按钮同一入口 createAnalysisChat，不自动发送）。 */
+function stageDetailAnalysis(){
+  const rec=currentStageAnalysisRec();
+  if(!rec){ alert('本次运行尚未写入运行历史（运行结束后自动生成），暂不能发起 AI 分析。'); return; }
+  createAnalysisChat('log',[rec]);
+}
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
   const s = flowStages().find(x=>x.id===selectedId) || flowStages()[0];
@@ -3822,7 +3888,7 @@ function renderDetail(){
      会随进度跨 25% 档位变化，因此仅为无 _out 的普通阶段保留分档键。先比键再 buildLog，避免长任务
      在日志静止后仍每 300ms 拆分完整 stdout。 */
   const progressLogKey=out || (s.script&&s.script.path) || s.kind==='http' || s.kind==='url' || s.kind==='jenkins' || s.kind==='evaltokens' ? '' : Math.floor((n.progress||0)/25);
-  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0);
+  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0)+'|'+(curRun?String(stageLogFileFor(s,curRun)||'-'):'-')+'|'+(currentStageAnalysisRec()?1:0);
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
   const lines = detailLogLinesFor(s, ctx, n);
@@ -3850,6 +3916,8 @@ function renderDetail(){
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  /* 日志文件行：实时运行态展示本阶段归档日志文件路径，附 AI 分析与打开日志目录按钮 */
+  if(curRun) appendStageLogRow(kv, stageLogFileFor(s,curRun), currentStageAnalysisRec());
   /* 阶段间变量传递：上游 stdout 的 KEY=VALUE 行注入下游；此处展示本阶段接收/产出的变量 */
   (function(){
     const vIn=n.varsIn, vOut=n.varsOut;
@@ -7557,6 +7625,8 @@ function renderReplayDetail(rec){
   /* 不再单独展示「归档目录」行：归档路径已由「📂 打开归档目录」按钮旁的状态提示展示（refreshArchiveTip），避免长路径挤压回显日志区 */
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  /* 日志文件行：回放态取日志条目里的 logFile（旧版内嵌日志记录无独立文件时路径为空），附 AI 分析与打开日志目录按钮 */
+  appendStageLogRow(kv, (entry && entry.logFile) || null, rec);
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
   const pct=(n.status==='success'||n.status==='skipped')?100:(n.progress||0);
   bar.style.width=pct+'%';
@@ -7727,7 +7797,9 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
    目标目录不存在时（历史归档已清理、归档路径改过等）回退打开其父目录（归档根）：
    侧边栏路径由 resolveExistingFolder 预检后回退（此前不预检，会以不存在目录为根开出空文件树）；
    系统文件管理器路径下助手脚本同样回退到父目录，并把实际打开的目录回显在 stdout 供页面提示；
-   连归档根都不存在才报「目录不存在」。 */
+   连归档根都不存在才报「目录不存在」。
+   上述「等待落盘 → 预检回退 → 侧边窗 / 系统文件管理器」流程抽为 openFolderWithFeedback，
+   供本按钮与阶段详情「📂 打开日志」共用（文案与行为保持一致）。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
 const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的助手脚本：用系统文件管理器打开 $1\n'
   +'d="$1"\n'
@@ -7779,6 +7851,12 @@ async function openArchiveFolder(){
   const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
   const folder=archiveTargetFolder();
   if(!folder){ say('⚠ 请先点击选择一条运行历史（或运行一条流水线后再打开）','var(--log-warn)'); return; }
+  await openFolderWithFeedback(folder, say);
+}
+/* 打开目录的完整反馈流程（「📂 打开归档目录」与阶段详情「📂 打开日志」共用）：
+   等待日志落盘 → 预检目录存在性（不存在回退父目录）→ 优先经 dsh-better-sidebar 侧边窗打开
+   （成功后关闭侧边会话窗让出空间），未装该插件或桥不可用时回退服务端系统文件管理器。 */
+async function openFolderWithFeedback(folder, say){
   say('正在等待日志落盘并打开目录…');
   try{ await waitArchiveWrites(folder); }
   catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
@@ -7799,6 +7877,18 @@ async function openArchiveFolder(){
   }
   say('正在打开服务端文件管理器…');
   await openFolderViaFileManager(target, say, res.fellBack);
+}
+/* 阶段详情「📂 打开日志」：打开本阶段日志文件所在目录（流程与「📂 打开归档目录」一致，
+   反馈写入阶段详情的提示行 #stageLogTipRow/#stageLogTip，而非归档按钮旁的 archiveTip）。 */
+async function openStageLogFolder(file){
+  const tip=$('stageLogTip');
+  const tipRow=$('stageLogTipRow');
+  const say=(t,c)=>{ if(!tip) return; tip.textContent=t; tip.style.color=c||''; if(tipRow) tipRow.style.display=t?'':'none'; };
+  if(!file){ say('⚠ 本阶段暂无归档日志文件','var(--log-warn)'); return; }
+  const i=file.lastIndexOf('/');
+  if(i<=0){ say('⚠ 无法确定日志所在目录：'+file,'var(--log-warn)'); return; }
+  const folder=file.slice(0,i);
+  await openFolderWithFeedback(folder, say);
 }
 /* 打开前预检目标目录是否存在（历史归档可能已清理、归档路径已改）：
    不存在时回退父目录（归档根），返回 {folder, fellBack}；连归档根都不存在返回 {folder:null}。
