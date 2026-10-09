@@ -107,6 +107,96 @@ test('执行池：同一节点的计划串行排队，不同节点并行，池�
   assert.equal(leases.list().length, 0, '全部结束后租约释放干净')
 })
 
+test('执行池：停止接收后拒绝新计划，旧代排队与运行计划可 drain 完成', async () => {
+  const ctx = loadApiRegion()
+  const started = []
+  const releases = []
+  const pool = ctx.createPipelineExecutionQueue(async plan => {
+    started.push(plan.id)
+    await new Promise(resolve => releases.push(resolve))
+  }, 1, 10, { generation: 'g-old' })
+  const active = pool.run({ id: 'old-running' })
+  const queued = pool.run({ id: 'old-queued' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(started, ['old-running'])
+  assert.equal(pool.stopAccepting(), true)
+  assert.equal(pool.stopAccepting(), false, '重复停止接收应幂等')
+  assert.throws(() => pool.run({ id: 'new-rejected' }), error => error?.code === 'PIPELINE_GENERATION_DRAINING')
+  const draining = pool.drain()
+  releases.shift()()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(started, ['old-running', 'old-queued'])
+  releases.shift()()
+  await Promise.all([active, queued, draining])
+  assert.deepEqual(plain(pool.snapshot()), { generation: 'g-old', accepting: false, runs: [], queue: [] })
+})
+
+test('执行池：dispose 等待旧代完成且不终止运行中的执行', async () => {
+  const ctx = loadApiRegion()
+  let release
+  let runtime
+  const pool = ctx.createPipelineExecutionQueue(async (_plan, current) => {
+    runtime = current
+    await new Promise(resolve => { release = resolve })
+  }, 1, 10, { generation: 'g-dispose' })
+  const running = pool.run({ id: 'keep-child' })
+  await new Promise(resolve => setImmediate(resolve))
+  const disposing = pool.dispose()
+  assert.equal(runtime.signal.aborted, false)
+  assert.equal(pool.snapshot().accepting, false)
+  release()
+  await Promise.all([running, disposing])
+  assert.equal(runtime.signal.aborted, false, 'dispose 不应 abort 运行中的子进程上下文')
+  await pool.dispose()
+})
+
+test('执行池：运行与快照绑定 generation', async () => {
+  const ctx = loadApiRegion()
+  let release
+  const pool = ctx.createPipelineExecutionQueue(async () => {
+    await new Promise(resolve => { release = resolve })
+  }, 1, 10, { generation: 'g-bound' })
+  const running = pool.run({ id: 'bound-run' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(pool.snapshot().generation, 'g-bound')
+  assert.equal(pool.snapshot().runs[0].generation, 'g-bound')
+  assert.equal(pool.stats().generation, 'g-bound')
+  release()
+  await running
+})
+
+test('代际管理器：切换 active 后旧代停止接收但跨代快照与取消仍可用', async () => {
+  const ctx = loadApiRegion()
+  const manager = ctx.createPipelineGenerationManager()
+  const oldReleases = []
+  const old = ctx.createPipelineExecutionQueue(async plan => {
+    await new Promise(resolve => oldReleases.push(resolve))
+  }, 1, 10, { generation: 'g-old' })
+  const newStarted = []
+  const newReleases = []
+  const newer = ctx.createPipelineExecutionQueue(async plan => { newStarted.push(plan.id); await new Promise(resolve => newReleases.push(resolve)) }, 1, 10, { generation: 'g-new' })
+  manager.activate('g-old', old)
+  const oldRun = manager.run({ id: 'old-running' })
+  const oldQueued = manager.run({ id: 'old-queued' })
+  await new Promise(resolve => setImmediate(resolve))
+  manager.activate('g-new', newer)
+  assert.throws(() => old.run({ id: 'old-rejected' }), error => error?.code === 'PIPELINE_GENERATION_DRAINING')
+  const newRun = manager.run({ id: 'new-running' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(newStarted, ['new-running'])
+  const snapshot = manager.snapshot()
+  assert.equal(snapshot.active, 'g-new')
+  assert.equal(snapshot.generations.find(item => item.id === 'g-old').queue.length, 1)
+  assert.equal(snapshot.generations.find(item => item.id === 'g-new').runs[0].generation, 'g-new')
+  assert.deepEqual(plain(manager.cancel('old-queued')), { ok: true, state: 'queued', generation: 'g-old' })
+  await assert.rejects(oldQueued, error => error?.code === 'PIPELINE_RUN_CANCELLED')
+  oldReleases.shift()()
+  newReleases.shift()()
+  await Promise.all([oldRun, newRun])
+  await manager.dispose()
+  assert.equal(manager.snapshot().generations.length, 0)
+})
+
 test('执行池：无目标 IP 的计划不按节点约束（保持旧版纯 FIFO 行为）', async () => {
   const ctx = loadApiRegion()
   const hooks = {

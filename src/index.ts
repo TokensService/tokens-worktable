@@ -1894,6 +1894,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   acquire?: (plan: any, ips: string[]) => boolean;
   release?: (plan: any) => void;
   retryMs?: number;
+  generation?: string;
+  generationId?: string;
 }) {
   interface ExecutionItem {
     plan: any;
@@ -1910,8 +1912,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const pendingLimit = Math.max(1, Math.floor(Number(queueLimit) || 1))
   const pending: ExecutionItem[] = []
   const running: Array<{ item: ExecutionItem; ips: string[] }> = []
+  const generation = hooks && (hooks.generation ?? hooks.generationId) != null
+    ? String(hooks && (hooks.generation ?? hooks.generationId))
+    : ''
   let active = 0
   let retryTimer: any = null
+  let accepting = true
+  let disposed = false
+  let disposal: Promise<void> | null = null
+  const idleWaiters: Array<() => void> = []
   const retryWait = Math.max(50, Math.floor(Number(hooks && hooks.retryMs) || 5000))
   const ipsOf = (plan: any): string[] => {
     if (!hooks || !hooks.ipsOf) return []
@@ -1971,6 +1980,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   }
   const snapshotEntry = (item: ExecutionItem, timeKey: 'startedAt' | 'queuedAt') => ({
     id: runIdOf(item.plan),
+    ...(generation ? { generation } : {}),
     pipelineId: String(item.plan && item.plan.pipelineId || ''),
     pipelineName: String(item.plan && item.plan.pipelineName || ''),
     by: String(item.plan && item.plan.by || ''),
@@ -1983,7 +1993,12 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     stages: item.stages,
     nodes: item.nodes,
   })
-  const drain = () => {
+  const resolveIdle = () => {
+    if (active || pending.length || !idleWaiters.length) return
+    const waiters = idleWaiters.splice(0)
+    for (const resolve of waiters) resolve()
+  }
+  const pump = () => {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     while (active < concurrency && pending.length) {
       let picked = -1
@@ -2015,7 +2030,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         const index = running.indexOf(entry)
         if (index >= 0) running.splice(index, 1)
         if (entry.ips.length) release(item.plan)
-        drain()
+        pump()
       }
       Promise.resolve().then(() => execute(item.plan, runtime)).then(
         () => { settle(); item.resolve() },
@@ -2024,12 +2039,18 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     }
     /* 仍有排队项但被节点占用挡住：周期重试（池外租约释放/到期、在跑结束都会再次 drain） */
     if (pending.length && active < concurrency && !retryTimer) {
-      retryTimer = setTimeout(drain, retryWait)
+      retryTimer = setTimeout(pump, retryWait)
       if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref()
     }
+    resolveIdle()
   }
   return {
     run(plan: any): Promise<void> {
+      if (!accepting || disposed) {
+        const error: any = new Error('pipeline execution queue is draining')
+        error.status = 503; error.code = 'PIPELINE_GENERATION_DRAINING'
+        throw error
+      }
       if (pending.length >= pendingLimit) {
         const error: any = new Error('pipeline execution queue full')
         error.status = 503; error.code = 'PIPELINE_QUEUE_FULL'
@@ -2049,13 +2070,16 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         }
         resetStages(item, plan && plan.stages)
         pending.push(item)
-        drain()
+        pump()
       })
     },
-    snapshot: () => ({
-      runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
-      queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
-    }),
+    snapshot: () => {
+      const value = {
+        runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
+        queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
+      }
+      return generation ? { generation, accepting, ...value } : value
+    },
     log(runId: string, stageId: string): { text: string; truncated: boolean; revision: number } | null {
       const id = String(runId || ''), sid = String(stageId || '')
       const entry = running.find(({ item }) => runIdOf(item.plan) === id)
@@ -2072,7 +2096,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         error.name = 'AbortError'
         error.code = 'PIPELINE_RUN_CANCELLED'
         item.reject(error)
-        drain()
+        pump()
         return { ok: true, state: 'queued' }
       }
       const activeEntry = running.find((entry) => runIdOf(entry.item.plan) === id)
