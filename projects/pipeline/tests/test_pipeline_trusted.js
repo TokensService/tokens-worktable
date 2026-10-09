@@ -54,13 +54,13 @@ test('plEditable：可信/内置流水线在 token 模式退化为全权，auth 
   assert.equal(noAdminGlobal.plEditable({id:'p4b',builtIn:true}),false,'内置流水线 admin 标记缺失时同样保守只读');
 });
 
-test('plEditable：未标记 trusted 的既有行为不变',()=>{
+test('plEditable：未标记 trusted 的规则——本人/他人/未署名不变，admin 例外可编辑他人创建的',()=>{
   const mine=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:false});
   assert.equal(mine.plEditable({id:'p1',createdBy:'alice'}),true,'本人创建可编辑');
-  assert.equal(mine.plEditable({id:'p2',createdBy:'bob'}),false,'他人创建只读');
+  assert.equal(mine.plEditable({id:'p2',createdBy:'bob'}),false,'非 admin：他人创建只读');
   assert.equal(mine.plEditable({id:'p3'}),true,'未署名存量全员可编辑');
   const admin=loadPlEditable({currentUsername:'alice',authReady:true,currentUserIsAdmin:true});
-  assert.equal(admin.plEditable({id:'p4',createdBy:'bob'}),false,'非可信流水线 admin 无例外：同样只能编辑自己创建的');
+  assert.equal(admin.plEditable({id:'p4',createdBy:'bob'}),true,'非可信流水线 admin 例外：可编辑他人创建的（创建者账号注销后不致锁死）');
   assert.equal(admin.plEditable({id:'p5',builtIn:true}),true,'内置流水线视同可信：admin 可编辑');
 });
 
@@ -130,7 +130,7 @@ test('togglePipelineTrusted：admin 标记置位 trusted=true 并立即保存、
   const {ctx,calls}=loadToggleTrusted({pipeline});
   await ctx.togglePipelineTrusted('p1');
   assert.equal(pipeline.trusted,true,'标记置位 trusted=true');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true}],'经 savePipelines({immediate:true}) 立即落盘（需拿结果识别 403）');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true,silentConflict:true}],'经 savePipelines({immediate:true,silentConflict:true}) 立即落盘（需拿结果识别 403；409 冲突由本函数回滚 + alert 单独处理，不走 pushState 提示/重拉）');
   assert.equal(calls.renders,1,'乐观重绘一次');
   assert.equal(calls.alerts.length,0);
   assert.match(calls.toasts[0]||'',/已标记为可信/,'成功 toast 反馈');
@@ -141,7 +141,7 @@ test('togglePipelineTrusted：admin 取消标记删除 trusted 字段（保持�
   const {ctx,calls}=loadToggleTrusted({pipeline});
   await ctx.togglePipelineTrusted('p1');
   assert.equal('trusted' in pipeline,false,'取消标记删除字段而非置 false');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true}]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.saves)),[{immediate:true,silentConflict:true}]);
   assert.match(calls.toasts[0]||'',/已取消可信/);
 });
 

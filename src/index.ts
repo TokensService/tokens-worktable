@@ -381,9 +381,77 @@ function cleanPipelineHistory(history: any[]) {
   })
 }
 
+/** 内容比对用的条目副本：剥离 favoriteUsers / pinnedAt 两个「非内容」共享可变字段（其余键保持原顺序）。
+ *  favoriteUsers 是各用户收藏（按用户个人数据但存在共享条目上），pinnedAt 是置顶时间戳（全局视图排序，
+ *  任何登录用户可改）——二者不参与内容同一性比对，否则他人收藏/置顶会造成 phantom 冲突。 */
+function stripPipelineSharedMeta(entry: any): any {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry
+  const copy: any = {}
+  for (const [key, value] of Object.entries(entry)) if (key !== 'favoriteUsers' && key !== 'pinnedAt') copy[key] = value
+  return copy
+}
+
+/** 条目内容同一性比对：剥离 favoriteUsers / pinnedAt 后做「键序无关」递归深比较（deepEqualIgnoring
+ *  比较键集合与值，数组顺序仍算内容）。此前用 JSON.stringify 比对剥离副本，对键序敏感——同一条目经
+ *  编辑器重建阶段对象、旧版客户端/导入等不同键序字节落盘后，内容未变也会被判「偏离基线」产生
+ *  phantom 409（改名保存被拦截/还原成副本名）。deepEqualIgnoring 定义在下方可信区段，函数声明提升，
+ *  运行时不分声明先后。 */
+function samePipelineContent(left: any, right: any): boolean {
+  const a = stripPipelineSharedMeta(left ?? null)
+  const b = stripPipelineSharedMeta(right ?? null)
+  if (a === null || b === null) return a === b
+  return deepEqualIgnoring(a, b)
+}
+
+/** favoriteUsers 三方集合合并：(client ∩ disk) ∪ (client − base) ∪ (disk − base)——双方共同保留的，
+ *  加上各端相对基线新增的；并发取消收藏（相对基线删除）因此同样生效。元素为修剪后的非空字符串；
+ *  顺序确定：先按 client 数组顺序，再追加仅 disk 有的元素（按 disk 数组顺序）。任一侧缺失/非数组按空集。 */
+function mergePipelineFavoriteUsers(baseEntry: any, clientEntry: any, diskEntry: any): string[] {
+  const listOf = (entry: any): string[] => {
+    const value = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry.favoriteUsers : null
+    return Array.isArray(value) ? value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean) : []
+  }
+  const baseSet = new Set(listOf(baseEntry))
+  const clientList = listOf(clientEntry), diskList = listOf(diskEntry)
+  const clientSet = new Set(clientList), diskSet = new Set(diskList)
+  const merged: string[] = []
+  const seen = new Set<string>()
+  const push = (user: string) => { if (!seen.has(user)) { seen.add(user); merged.push(user) } }
+  for (const user of clientList) if (diskSet.has(user) || !baseSet.has(user)) push(user)
+  for (const user of diskList) if (!clientSet.has(user) && !baseSet.has(user)) push(user)
+  return merged
+}
+
+/** pinnedAt 三方标量合并：client 相对基线有变化取 client，否则取 disk；非有限数字一律归一为 0。 */
+function mergePipelinePinnedAt(baseEntry: any, clientEntry: any, diskEntry: any): number {
+  const valueOf = (entry: any): number => {
+    const value = entry && typeof entry === 'object' && !Array.isArray(entry) ? Number(entry.pinnedAt) : NaN
+    return Number.isFinite(value) ? value : 0
+  }
+  const basePinned = valueOf(baseEntry), clientPinned = valueOf(clientEntry), diskPinned = valueOf(diskEntry)
+  return clientPinned !== basePinned ? clientPinned : diskPinned
+}
+
+/** 在选定内容来源的条目副本上套用共享元数据的三方合并结果。形状归一：favoriteUsers 仅非空才写键、
+ *  pinnedAt 仅 >0 才写键（空则省略；客户端迁移 migratePipelineDefaults 会补回 favoriteUsers:[]，无副作用）。 */
+function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: any, diskEntry: any): any {
+  const entry = { ...(sourceEntry && typeof sourceEntry === 'object' && !Array.isArray(sourceEntry) ? sourceEntry : {}) }
+  delete entry.favoriteUsers
+  delete entry.pinnedAt
+  const favoriteUsers = mergePipelineFavoriteUsers(baseEntry, clientEntry, diskEntry)
+  if (favoriteUsers.length) entry.favoriteUsers = favoriteUsers
+  const pinnedAt = mergePipelinePinnedAt(baseEntry, clientEntry, diskEntry)
+  if (pinnedAt > 0) entry.pinnedAt = pinnedAt
+  return entry
+}
+
 /**
- * 三方合并流水线定义：客户端未改动的 id 以磁盘为准，不同 id 的并发改动可同时保留；
- * 同一 id 在客户端与磁盘都偏离共同基线时报告冲突，调用方不得写盘。
+ * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」做键序无关深比较
+ * （samePipelineContent，避免仅字节键序不同造成 phantom 冲突）——客户端未改动
+ * 的 id 以磁盘为准，不同 id 的并发改动可同时保留；同一 id 在客户端与磁盘内容都偏离共同基线时报告冲突，
+ * 调用方不得写盘。favoriteUsers / pinnedAt 是共享条目上的非内容元数据，不参与变更判定（他端收藏/置顶
+ * 不再造成 phantom 冲突），无论内容取自哪侧都对结果条目按三方规则重算（见上方助手）；
+ * 仅单边独有的条目（本端新建 / 他端新增）保持原样，不套用归一。
  */
 function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
   const objectConfig = (value: any) => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -399,7 +467,7 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
   const clientMap = mapOf(clientPipelines), baseMap = mapOf(basePipelines), diskMap = mapOf(diskPipelines)
   const sameEntry = (left: Map<string, any>, right: Map<string, any>, id: string) => {
     const leftHas = left.has(id), rightHas = right.has(id)
-    return leftHas === rightHas && (!leftHas || JSON.stringify(left.get(id)) === JSON.stringify(right.get(id)))
+    return leftHas === rightHas && (!leftHas || samePipelineContent(left.get(id), right.get(id)))
   }
   const ids = new Set<string>([...baseMap.keys(), ...clientMap.keys(), ...diskMap.keys()])
   const merged = new Map<string, any>()
@@ -413,7 +481,13 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
       continue
     }
     const source = clientChanged ? clientMap : diskMap
-    if (source.has(id)) merged.set(id, source.get(id))
+    if (!source.has(id)) continue
+    /* 仅单边独有的条目保持原样；基线或双边都存在的条目套用 favoriteUsers / pinnedAt 三方合并。 */
+    const clientOnly = clientMap.has(id) && !baseMap.has(id) && !diskMap.has(id)
+    const diskOnly = diskMap.has(id) && !baseMap.has(id) && !clientMap.has(id)
+    merged.set(id, clientOnly || diskOnly
+      ? source.get(id)
+      : withPipelineSharedMeta(source.get(id), baseMap.get(id), clientMap.get(id), diskMap.get(id)))
   }
   /* 先沿用磁盘顺序（保留他端新增的位置），再追加仅客户端新增的定义。 */
   const ordered: any[] = []
@@ -425,9 +499,11 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
 }
 
 /**
- * 编辑器单条保存的三方合并：只按 id 比对该条定义——磁盘上的该条仍等于客户端基线时
- * 才允许替换（原位）或新增（追加末尾），其余流水线定义、顺序、历史与其他配置字段一律不动；
- * 磁盘版本已偏离基线（含被他端删除）即报告冲突，调用方不得写盘。
+ * 编辑器单条保存的三方合并：只按 id 比对该条定义（剥离 favoriteUsers / pinnedAt 后键序无关深比较，
+ * 见 samePipelineContent）——磁盘上的该条内容仍等于客户端基线时才允许替换（原位）或新增（追加末尾），
+ * 其余流水线定义、顺序、历史与其他配置字段一律不动；磁盘版本内容已偏离基线（含被他端删除）即报告冲突，
+ * 调用方不得写盘。写回条目以客户端版本为准，favoriteUsers / pinnedAt 按三方合并结果覆盖（保留他端
+ * 并发收藏/置顶）；新建条目（基线与磁盘都无）保持客户端原样。
  */
 function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskConfig: any) {
   const disk = diskConfig && typeof diskConfig === 'object' && !Array.isArray(diskConfig) ? diskConfig : {}
@@ -435,12 +511,18 @@ function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskCo
   const id = clientPipeline && typeof clientPipeline.id === 'string' ? clientPipeline.id : ''
   const diskOne = diskPipelines.find((p: any) => p && typeof p === 'object' && !Array.isArray(p) && p.id === id) ?? null
   const baseOne = basePipeline && typeof basePipeline === 'object' && !Array.isArray(basePipeline) && basePipeline.id === id ? basePipeline : null
-  if (JSON.stringify(diskOne) !== JSON.stringify(baseOne)) {
+  if (!samePipelineContent(diskOne, baseOne)) {
+    /* 客户端基线缺失（保存确认丢失后的重试等）但上送内容与磁盘一致：写入等于现状，按幂等成功
+       返回磁盘配置（客户端随响应自愈基线），不按 409 锁死；内容真实偏离磁盘仍冲突，防静默覆盖。 */
+    if (!baseOne && diskOne && samePipelineContent(diskOne, clientPipeline)) return { conflicts: [] as string[], config: disk }
     return { conflicts: id ? [id] : [], config: disk }
   }
   const config = { ...disk }
-  if (diskOne) config.pipelines = diskPipelines.map((p: any) => (p && p.id === id ? clientPipeline : p))
-  else config.pipelines = diskPipelines.concat([clientPipeline])
+  const mergedOne = diskOne || baseOne
+    ? withPipelineSharedMeta(clientPipeline, baseOne, clientPipeline, diskOne)
+    : clientPipeline
+  if (diskOne) config.pipelines = diskPipelines.map((p: any) => (p && p.id === id ? mergedOne : p))
+  else config.pipelines = diskPipelines.concat([mergedOne])
   return { conflicts: [] as string[], config }
 }
 
@@ -592,10 +674,11 @@ function isBuiltinPipelineEntry(entry: any): boolean {
  *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；内置条目（builtIn===true 或 id 命中
  *  BUILTIN_PIPELINE_ID）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
  *  标志，也不得新建内置条目（防伪造内置混入 customs 或抢先占位固定 id）。favoriteUsers 是按用户
- *  收藏的个人数据，豁免条目顶层内容比对（任何登录用户可改）。运行/排队/定时不回写流水线条目，
- *  无需其它豁免。返回分组违规 id：edit = 可信条目被删/被改/被摘标，mark = 新建 trusted 或非 admin
- *  打标，builtinEdit = 内置条目被删/被改/被翻转标志，builtinCreate = 新建内置条目或给既有条目塞
- *  builtIn 标。 */
+ *  收藏的个人数据、pinnedAt 是全局视图排序的置顶时间戳（任何登录用户可置顶/取消），二者均属
+ *  非内容元数据，豁免条目顶层内容比对（与合并层 stripPipelineSharedMeta 的剥离口径一致）。
+ *  运行/排队/定时不回写流水线条目，无需其它豁免。返回分组违规 id：edit = 可信条目被删/被改/被摘标，
+ *  mark = 新建 trusted 或非 admin 打标，builtinEdit = 内置条目被删/被改/被翻转标志，
+ *  builtinCreate = 新建内置条目或给既有条目塞 builtIn 标。 */
 function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit: string[]; mark: string[]; builtinEdit: string[]; builtinCreate: string[] } {
   const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
   const mapOf = (items: any[]) => new Map<string, any>(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item) => [item.id, item]))
@@ -608,10 +691,10 @@ function trustedPipelineViolations(storedConfig: any, mergedConfig: any): { edit
   for (const [id, storedEntry] of stored) {
     const mergedEntry = merged.get(id)
     if (isBuiltinPipelineEntry(storedEntry)) {
-      /* 内置条目：内容比对（忽略 favoriteUsers）同时覆盖 builtIn/trusted 标志翻转与条目删除 */
-      if (!mergedEntry || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) builtinEdit.push(id)
+      /* 内置条目：内容比对（忽略 favoriteUsers / pinnedAt）同时覆盖 builtIn/trusted 标志翻转与条目删除 */
+      if (!mergedEntry || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers', 'pinnedAt'])) builtinEdit.push(id)
     } else if (storedEntry.trusted === true) {
-      if (!mergedEntry || mergedEntry.trusted !== true || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers'])) edit.push(id)
+      if (!mergedEntry || mergedEntry.trusted !== true || !deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers', 'pinnedAt'])) edit.push(id)
     } else if (mergedEntry && mergedEntry.builtIn === true) {
       builtinCreate.push(id)   // 给既有普通条目塞 builtIn 标 = 伪造内置（同 id 下 id 不会变，只有标志可翻转）
     } else if (mergedEntry && mergedEntry.trusted === true) {
@@ -1811,6 +1894,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   acquire?: (plan: any, ips: string[]) => boolean;
   release?: (plan: any) => void;
   retryMs?: number;
+  generation?: string;
+  generationId?: string;
 }) {
   interface ExecutionItem {
     plan: any;
@@ -1827,8 +1912,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const pendingLimit = Math.max(1, Math.floor(Number(queueLimit) || 1))
   const pending: ExecutionItem[] = []
   const running: Array<{ item: ExecutionItem; ips: string[] }> = []
+  const generation = hooks && (hooks.generation ?? hooks.generationId) != null
+    ? String(hooks && (hooks.generation ?? hooks.generationId))
+    : ''
   let active = 0
   let retryTimer: any = null
+  let accepting = true
+  let disposed = false
+  let disposal: Promise<void> | null = null
+  const idleWaiters: Array<() => void> = []
   const retryWait = Math.max(50, Math.floor(Number(hooks && hooks.retryMs) || 5000))
   const ipsOf = (plan: any): string[] => {
     if (!hooks || !hooks.ipsOf) return []
@@ -1888,6 +1980,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   }
   const snapshotEntry = (item: ExecutionItem, timeKey: 'startedAt' | 'queuedAt') => ({
     id: runIdOf(item.plan),
+    ...(generation ? { generation } : {}),
     pipelineId: String(item.plan && item.plan.pipelineId || ''),
     pipelineName: String(item.plan && item.plan.pipelineName || ''),
     by: String(item.plan && item.plan.by || ''),
@@ -1900,7 +1993,12 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     stages: item.stages,
     nodes: item.nodes,
   })
-  const drain = () => {
+  const resolveIdle = () => {
+    if (active || pending.length || !idleWaiters.length) return
+    const waiters = idleWaiters.splice(0)
+    for (const resolve of waiters) resolve()
+  }
+  const pump = () => {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     while (active < concurrency && pending.length) {
       let picked = -1
@@ -1932,7 +2030,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         const index = running.indexOf(entry)
         if (index >= 0) running.splice(index, 1)
         if (entry.ips.length) release(item.plan)
-        drain()
+        pump()
       }
       Promise.resolve().then(() => execute(item.plan, runtime)).then(
         () => { settle(); item.resolve() },
@@ -1941,20 +2039,27 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     }
     /* 仍有排队项但被节点占用挡住：周期重试（池外租约释放/到期、在跑结束都会再次 drain） */
     if (pending.length && active < concurrency && !retryTimer) {
-      retryTimer = setTimeout(drain, retryWait)
+      retryTimer = setTimeout(pump, retryWait)
       if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref()
     }
+    resolveIdle()
   }
   return {
     run(plan: any): Promise<void> {
+      if (!accepting || disposed) {
+        const error: any = new Error('pipeline execution queue is draining')
+        error.status = 503; error.code = 'PIPELINE_GENERATION_DRAINING'
+        throw error
+      }
       if (pending.length >= pendingLimit) {
         const error: any = new Error('pipeline execution queue full')
         error.status = 503; error.code = 'PIPELINE_QUEUE_FULL'
         throw error
       }
       return new Promise<void>((resolvePromise, reject) => {
+        const boundPlan = generation ? { ...(plan && typeof plan === 'object' ? plan : {}), generation } : plan
         const item: ExecutionItem = {
-          plan,
+          plan: boundPlan,
           queuedAt: Date.now(),
           startedAt: 0,
           stages: [],
@@ -1964,15 +2069,18 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
           resolve: resolvePromise,
           reject,
         }
-        resetStages(item, plan && plan.stages)
+        resetStages(item, boundPlan && boundPlan.stages)
         pending.push(item)
-        drain()
+        pump()
       })
     },
-    snapshot: () => ({
-      runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
-      queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
-    }),
+    snapshot: () => {
+      const value = {
+        runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
+        queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
+      }
+      return generation ? { generation, accepting, ...value } : value
+    },
     log(runId: string, stageId: string): { text: string; truncated: boolean; revision: number } | null {
       const id = String(runId || ''), sid = String(stageId || '')
       const entry = running.find(({ item }) => runIdOf(item.plan) === id)
@@ -1989,7 +2097,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         error.name = 'AbortError'
         error.code = 'PIPELINE_RUN_CANCELLED'
         item.reject(error)
-        drain()
+        pump()
         return { ok: true, state: 'queued' }
       }
       const activeEntry = running.find((entry) => runIdOf(entry.item.plan) === id)
@@ -2004,8 +2112,207 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       }
       return { ok: false, state: 'missing' }
     },
-    stats: () => ({ active, queued: pending.length, limit: concurrency }),
+    stats: () => generation
+      ? ({ active, queued: pending.length, limit: concurrency, generation, accepting })
+      : ({ active, queued: pending.length, limit: concurrency }),
+    stopAccepting(): boolean {
+      if (!accepting) return false
+      accepting = false
+      return true
+    },
+    drain(): Promise<void> {
+      pump()
+      if (!active && !pending.length) return Promise.resolve()
+      return new Promise<void>(resolve => idleWaiters.push(resolve))
+    },
+    dispose(): Promise<void> {
+      if (disposal) return disposal
+      accepting = false
+      disposal = this.drain().then(() => {
+        disposed = true
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+      })
+      return disposal
+    },
   }
+}
+
+/**
+ * 稳定的流水线代际指针：切换 active 只停止旧池接收新计划，旧池中的排队/运行计划继续完成。
+ * manager 不拥有执行器或子进程；dispose 仅等待各池自然 drain，避免热替换时误杀子进程与租约。
+ */
+function createPipelineGenerationManager() {
+  interface GenerationRecord {
+    id: string;
+    queue: ReturnType<typeof createPipelineExecutionQueue>;
+    draining: boolean;
+    disposed: boolean;
+  }
+  const generations = new Map<string, GenerationRecord>()
+  let activeId = ''
+  let disposal: Promise<void> | null = null
+
+  const beginDrain = (id = activeId) => {
+    const record = generations.get(String(id))
+    if (!record) return null
+    if (!record.draining) {
+      record.draining = true
+      record.queue.stopAccepting()
+    }
+    record.queue.drain().then(() => {
+      if (record.disposed || (activeId === record.id && generations.get(record.id) === record)) return
+      record.disposed = true
+      if (generations.get(record.id) === record) generations.delete(record.id)
+      record.queue.dispose().catch(() => {})
+    }).catch(() => {})
+    return record
+  }
+
+  return {
+    activate(id: string, queue: ReturnType<typeof createPipelineExecutionQueue>) {
+      const nextId = String(id || '')
+      if (!nextId || !queue || typeof queue.run !== 'function') throw new Error('invalid pipeline generation')
+      if (activeId && activeId !== nextId) beginDrain(activeId)
+      const previous = generations.get(nextId)
+      if (previous && previous.queue !== queue) beginDrain(nextId)
+      const record: GenerationRecord = { id: nextId, queue, draining: false, disposed: false }
+      generations.set(nextId, record)
+      activeId = nextId
+      return queue
+    },
+    beginDrain,
+    run(plan: any): Promise<void> {
+      const active = generations.get(activeId)
+      if (!active || active.draining) {
+        const error: any = new Error('no active pipeline generation')
+        error.status = 503; error.code = 'PIPELINE_GENERATION_DRAINING'
+        throw error
+      }
+      return active.queue.run(plan)
+    },
+    cancel(runId: string) {
+      for (const record of generations.values()) {
+        const result = record.queue.cancel(runId)
+        if (result.ok) return { ...result, generation: record.id }
+      }
+      return { ok: false, state: 'missing' as const }
+    },
+    log(runId: string, stageId: string) {
+      for (const record of generations.values()) {
+        const result = record.queue.log(runId, stageId)
+        if (result) return { ...result, generation: record.id }
+      }
+      return null
+    },
+    snapshot() {
+      const all = [...generations.values()].map(record => {
+        const snapshot = record.queue.snapshot()
+        return { id: record.id, accepting: !record.draining && snapshot.accepting !== false, draining: record.draining, runs: snapshot.runs || [], queue: snapshot.queue || [] }
+      })
+      return {
+        active: activeId || null,
+        generations: all,
+        runs: all.flatMap(record => record.runs),
+        queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+      }
+    },
+    health() {
+      const snapshot = this.snapshot()
+      return {
+        generation: snapshot.active,
+        draining: snapshot.generations.filter(record => record.draining),
+        generations: snapshot.generations,
+      }
+    },
+    stats() {
+      const active = generations.get(activeId)
+      return active ? { ...active.queue.stats(), generation: active.id, draining: active.draining } : { active: 0, queued: 0, generation: null, draining: false }
+    },
+    dispose(): Promise<void> {
+      if (disposal) return disposal
+      activeId = ''
+      const records = [...generations.values()]
+      for (const record of records) beginDrain(record.id)
+      disposal = Promise.all(records.map(record => record.queue.dispose())).then(() => {
+        generations.clear()
+      })
+      return disposal
+    },
+  }
+}
+
+/*
+ * HMR-safe supervisor bridge. The module entry may be evaluated more than once,
+ * so mutable queue/lease state lives behind a process-global symbol instead of
+ * in an apply closure. A new apply retains the bridge before the old disposer
+ * releases it; the last disposer drains all generations and removes the bridge.
+ */
+const PIPELINE_SUPERVISOR_KEY = Symbol.for('tokens-worktable.pipeline-supervisor')
+type PipelineSupervisor = {
+  leases: ReturnType<typeof createPipelineNodeLeases>;
+  manager: ReturnType<typeof createPipelineGenerationManager>;
+  refs: number;
+  disposing?: boolean;
+  disposed?: boolean;
+  disposeTimer?: ReturnType<typeof setTimeout>;
+  disposePromise?: Promise<void>;
+  disposeResolve?: () => void;
+  generation: number;
+}
+function getPipelineSupervisor(): PipelineSupervisor {
+  const root = globalThis as any
+  const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
+  // Once the grace timer fired and manager.dispose started, the old manager
+  // cannot accept a fresh generation safely; allocate a new bridge instead.
+  if (current && !current.disposed && (!current.disposing || current.disposeTimer)) return current
+  const state: PipelineSupervisor = {
+    leases: createPipelineNodeLeases(),
+    manager: createPipelineGenerationManager(),
+    refs: 0,
+    generation: 0,
+  }
+  root[PIPELINE_SUPERVISOR_KEY] = state
+  return state
+}
+function retainPipelineSupervisor(): PipelineSupervisor {
+  const state = getPipelineSupervisor()
+  if (state.disposeTimer) {
+    clearTimeout(state.disposeTimer)
+    state.disposeTimer = undefined
+    state.disposeResolve?.()
+    state.disposeResolve = undefined
+    state.disposePromise = undefined
+  }
+  state.disposing = false
+  state.refs += 1
+  return state
+}
+function releasePipelineSupervisor(state: PipelineSupervisor): Promise<void> {
+  state.refs = Math.max(0, state.refs - 1)
+  if (state.refs > 0) return Promise.resolve()
+  if (state.disposePromise) return state.disposePromise
+  state.disposing = true
+  const root = globalThis as any
+  state.disposePromise = new Promise<void>(resolve => {
+    state.disposeResolve = resolve
+    state.disposeTimer = setTimeout(() => {
+      state.disposeTimer = undefined
+      if (state.refs > 0) {
+        state.disposing = false
+        state.disposeResolve = undefined
+        state.disposePromise = undefined
+        resolve()
+        return
+      }
+      state.manager.dispose().then(() => {
+        state.disposed = true
+        state.disposeResolve = undefined
+        if (root[PIPELINE_SUPERVISOR_KEY] === state) delete root[PIPELINE_SUPERVISOR_KEY]
+        resolve()
+      }).catch(() => resolve())
+    }, 0)
+  })
+  return state.disposePromise
 }
 
 function registerPipelineRunApi(webServer: any, deps: {
@@ -2122,12 +2429,16 @@ export function apply(ctx: Context) {
     ctx.logger?.warn('[tokens-worktable] ctx.webServer 不可用（headless profile？），跳过服务端路由')
     return
   }
+  const pipelineSupervisor = retainPipelineSupervisor()
 
   webServer.register({
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true })
+      json(res, 200, {
+        plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true,
+        ...pipelineSupervisor.manager.health(),
+      })
     },
   })
 
@@ -2712,7 +3023,7 @@ export function apply(ctx: Context) {
     }),
   })
   /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */
-  let pipelineExecutions: ReturnType<typeof createPipelineExecutionQueue>
+  let pipelineExecutions: ReturnType<typeof createPipelineGenerationManager>
 
   webServer.register({
     kind: 'exact',
@@ -2787,6 +3098,7 @@ export function apply(ctx: Context) {
       o[k] = String(e[k] ?? '').slice(0, 200)
     }
     if (typeof e.originQueueId === 'string' && e.originQueueId) o.originQueueId = e.originQueueId.slice(0, 200)
+    if (typeof e.generation === 'string' && e.generation) o.generation = e.generation.slice(0, 128)
     const t = Number(e[timeKey])
     o[timeKey] = Number.isFinite(t) ? t : 0
     o.stages = (Array.isArray(e.stages) ? e.stages : []).slice(0, QUEUE_STAGE_CAP)
@@ -2797,6 +3109,99 @@ export function apply(ctx: Context) {
     o.nodes = nodes
     return o
   }
+  /* ---- 失联孤儿登记簿（orphan ledger）：schemaVersion>=3 客户端上报的 runs/queue 条目在下一次
+     上报中消失且未列入 completed、或在场记录 TTL 过期时，从「静默消失」改为转入本簿，让任何浏览器
+     都能查到该次执行的最后状态（页面刷新/关页后不再丢执行踪迹）。条目 = 入场时已按 cleanQueueEntry
+     白名单清洗的快照 + {ownerId, ownerLabel, kind, orphanedAt}（入簿不再二次清洗，避免 timeKey 口径串扰）；
+     schemaVersion 1/2 的旧页面不参与孤儿语义（条目消失仍静默清除，保持原兼容行为）。
+     保留策略：orphanedAt 距今超 24 小时丢弃，总量超 100 条丢最旧；每次变更防抖 300ms 原子落盘到
+     DSH_HOME/storages/worktable-pipeline-orphans.json，启动时异步加载（缺失/损坏按空簿，失败只 warn）。 */
+  interface QueueOrphan { id: string; ownerId: string; ownerLabel: string; kind: 'running' | 'queued'; orphanedAt: number; [key: string]: any }
+  const queueOrphans = new Map<string, QueueOrphan>()
+  const QUEUE_ORPHANS_FILE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline-orphans.json')
+  const QUEUE_ORPHAN_TTL = 24 * 60 * 60 * 1000   // 孤儿条目保留 24 小时
+  const QUEUE_ORPHAN_CAP = 100                   // 孤儿簿总量上限，超出丢最旧
+  const QUEUE_ORPHAN_FLUSH_DELAY = 300           // 变更防抖落盘间隔（ms）
+  /* 簿内键：ownerId + '\n' + 条目 id（同一浏览器同一条目唯一；不同浏览器各记各的） */
+  function queueOrphanKey(ownerId: string, entryId: string): string { return ownerId + '\n' + entryId }
+  /* 保留策略执行：超龄丢弃 + 超上限丢最旧（orphanedAt 最小者）；返回是否有变更（有变更才落盘）。 */
+  function pruneQueueOrphans(now: number): boolean {
+    let changed = false
+    for (const [key, orphan] of queueOrphans) {
+      if (now - Number(orphan.orphanedAt) > QUEUE_ORPHAN_TTL) { queueOrphans.delete(key); changed = true }
+    }
+    if (queueOrphans.size > QUEUE_ORPHAN_CAP) {
+      const byAge = [...queueOrphans.entries()].sort((a, b) => Number(a[1].orphanedAt) - Number(b[1].orphanedAt))
+      for (const [key] of byAge.slice(0, queueOrphans.size - QUEUE_ORPHAN_CAP)) { queueOrphans.delete(key); changed = true }
+    }
+    return changed
+  }
+  /* 防抖 300ms + 写链串行化（同 usageWriteChain 风格）：写盘失败只记日志，绝不影响请求。 */
+  let queueOrphanFlushTimer: ReturnType<typeof setTimeout> | null = null
+  let queueOrphanWriteChain: Promise<void> = Promise.resolve()
+  function scheduleQueueOrphanFlush() {
+    if (queueOrphanFlushTimer !== null) clearTimeout(queueOrphanFlushTimer)
+    queueOrphanFlushTimer = setTimeout(() => {
+      queueOrphanFlushTimer = null
+      const text = JSON.stringify({ orphans: [...queueOrphans.values()] })
+      queueOrphanWriteChain = queueOrphanWriteChain.then(async () => {
+        try { await writeJsonAtomic(QUEUE_ORPHANS_FILE, text) }
+        catch (err) { console.warn('[tokens-worktable] 流水线孤儿登记簿落盘失败: ' + String(err)) }
+      })
+    }, QUEUE_ORPHAN_FLUSH_DELAY)
+  }
+  /* 入簿：条目须为已清洗快照；同键覆盖（刷新为最新 orphanedAt 与最后状态）。 */
+  function addQueueOrphan(ownerId: string, ownerLabel: string, kind: 'running' | 'queued', entry: any, now: number) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id) return
+    queueOrphans.set(queueOrphanKey(ownerId, entry.id), { ...entry, ownerId, ownerLabel, kind, orphanedAt: now })
+    pruneQueueOrphans(now)
+    scheduleQueueOrphanFlush()
+  }
+  /* 出簿：复活（同 ownerId 重新上报同 id）、completed 补报、dismiss 共用；实际删到才落盘。 */
+  function removeQueueOrphan(ownerId: string, entryId: string) {
+    if (queueOrphans.delete(queueOrphanKey(ownerId, entryId))) scheduleQueueOrphanFlush()
+  }
+  /* 在场记录 TTL 过期清扫：v3 记录的 runs/queue 先转孤儿簿再删记录；v1/v2 旧记录维持静默删除。
+     now 参数化便于测试注入假时间；running 旧字段与 runs[0] 同物，runs 为空时才把 running 当唯一一条补登记。 */
+  function sweepQueuePresence(now: number) {
+    for (const [key, presence] of queuePresence) {
+      if (now - presence.seenAt <= QUEUE_PRESENCE_TTL) continue
+      if (presence.schemaVersion >= 3) {
+        const lastRuns = presence.runs.length ? presence.runs : (presence.running ? [presence.running] : [])
+        for (const entry of lastRuns) addQueueOrphan(presence.id, presence.label, 'running', entry, now)
+        for (const entry of presence.queue) addQueueOrphan(presence.id, presence.label, 'queued', entry, now)
+      }
+      queuePresence.delete(key)
+    }
+  }
+  /* 启动加载：文件缺失/损坏按空簿处理，加载失败只 warn 不影响路由；只补键不删键（与加载窗口内并发
+     的 dismiss/复活删除存在理论竞态，窗口仅启动后毫秒内，可接受）。用 var 而非 const 声明完成标记，
+     使 vm 沙盒测试可经 context 全局 await 加载完成。 */
+  async function loadQueueOrphans(): Promise<void> {
+    let raw = ''
+    try { raw = await readFile(QUEUE_ORPHANS_FILE, 'utf8') } catch { return }   // 无文件 = 空簿
+    let list: any[] = []
+    try {
+      const data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+      list = data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.orphans) ? data.orphans : []
+    } catch {
+      console.warn('[tokens-worktable] 流水线孤儿登记簿文件损坏，按空簿处理: ' + QUEUE_ORPHANS_FILE)
+      return
+    }
+    const now = Date.now()
+    for (const item of list) {
+      /* 最小字段校验：id/ownerId 非空字符串、kind 合法、orphanedAt 有限数值；其余字段维持落盘时的清洗形态 */
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      if (typeof item.id !== 'string' || !item.id || typeof item.ownerId !== 'string' || !item.ownerId) continue
+      if (item.kind !== 'running' && item.kind !== 'queued') continue
+      if (!Number.isFinite(Number(item.orphanedAt))) continue
+      if (typeof item.ownerLabel !== 'string') item.ownerLabel = ''
+      queueOrphans.set(queueOrphanKey(item.ownerId, item.id), item)
+    }
+    if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()
+  }
+  var queueOrphansReady: Promise<void> = loadQueueOrphans()
+    .catch((err) => console.warn('[tokens-worktable] 流水线孤儿登记簿加载失败: ' + String(err)))
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline/queue',
@@ -2814,6 +3219,19 @@ export function apply(ctx: Context) {
             json(res, result.ok ? 200 : 404, result)
             return
           }
+          if (req.method === 'POST' && body.action === 'dismiss') {
+            /* 孤儿条目人工下架（已确认/不再关注）：从登记簿移除并防抖落盘 */
+            const ownerId = typeof body.ownerId === 'string' ? body.ownerId.slice(0, 64) : ''
+            const orphanId = typeof body.id === 'string' ? body.id.slice(0, 200) : ''
+            if (!ownerId || !orphanId) { json(res, 400, { error: 'missing ownerId or id' }); return }
+            if (queueOrphans.delete(queueOrphanKey(ownerId, orphanId))) {
+              scheduleQueueOrphanFlush()
+              json(res, 200, { ok: true, state: 'dismissed' })
+            } else {
+              json(res, 404, { ok: false, state: 'missing' })
+            }
+            return
+          }
           const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
           if (!id) { json(res, 400, { error: 'missing id' }); return }
           const running = body.running === null || body.running === undefined ? null : cleanQueueEntry(body.running, 'startedAt')
@@ -2822,18 +3240,45 @@ export function apply(ctx: Context) {
             .map((r: any) => cleanQueueEntry(r, 'startedAt')).filter((r: any) => !!r)
           const queue = (Array.isArray(body.queue) ? body.queue : []).slice(0, 20)
             .map((q: any) => cleanQueueEntry(q, 'queuedAt')).filter((q: any) => !!q)
+          /* schemaVersion 3 起客户端携带 completed（最近约 60 秒内正常终态化的条目 id）并启用孤儿语义；
+             1/2 旧页面不参与，其条目消失仍静默清除。 */
+          const schemaVersion = Number(body.schemaVersion) === 3 ? 3 : Number(body.schemaVersion) === 2 ? 2 : 1
+          const label = (typeof body.label === 'string' ? body.label : '').slice(0, 64)
+          // seenAt 用服务端收到时间，防客户端时钟偏差
+          const now = Date.now()
+          const previous = queuePresence.get(id)
+          if (schemaVersion >= 3) {
+            const completed = new Set<string>()
+            if (Array.isArray(body.completed)) {
+              for (const raw of body.completed.slice(0, 200)) if (typeof raw === 'string' && raw) completed.add(raw.slice(0, 200))
+            }
+            /* 补报完成出簿：条目先失联入簿、随后客户端又在 completed 里补报其正常终态 */
+            for (const entryId of completed) removeQueueOrphan(id, entryId)
+            /* 复活：同一 owner 重新上报了簿中同 id 条目（如网络抖动 TTL 过期后恢复上报） */
+            const reportedRuns = runs.length ? runs : (running ? [running] : [])
+            for (const entry of reportedRuns) removeQueueOrphan(id, entry.id)
+            for (const entry of queue) removeQueueOrphan(id, entry.id)
+            if (previous && previous.schemaVersion >= 3) {
+              /* 消失检测：上一条在场记录的 runs/queue 条目本次消失且不在 completed → 转孤儿簿。
+                 running 旧字段与 runs[0] 同物，只按 runs 比对；runs 为空时把 running 当作唯一一条。 */
+              const nextIds = new Set<string>()
+              for (const entry of reportedRuns) nextIds.add(entry.id)
+              for (const entry of queue) nextIds.add(entry.id)
+              const previousRuns = previous.runs.length ? previous.runs : (previous.running ? [previous.running] : [])
+              for (const entry of previousRuns) {
+                if (entry && !nextIds.has(entry.id) && !completed.has(entry.id)) addQueueOrphan(id, previous.label || label, 'running', entry, now)
+              }
+              for (const entry of previous.queue) {
+                if (entry && !nextIds.has(entry.id) && !completed.has(entry.id)) addQueueOrphan(id, previous.label || label, 'queued', entry, now)
+              }
+            }
+          }
           if (queuePresence.size >= QUEUE_PRESENCE_CAP && !queuePresence.has(id)) {
             let oldestKey = '', oldestAt = Infinity
             for (const [k, v] of queuePresence) if (v.seenAt < oldestAt) { oldestAt = v.seenAt; oldestKey = k }
             if (oldestKey) queuePresence.delete(oldestKey)
           }
-          // seenAt 用服务端收到时间，防客户端时钟偏差
-          queuePresence.set(id, {
-            id,
-            label: (typeof body.label === 'string' ? body.label : '').slice(0, 64),
-            schemaVersion: Number(body.schemaVersion) === 2 ? 2 : 1,
-            running, runs, queue, seenAt: Date.now(),
-          })
+          queuePresence.set(id, { id, label, schemaVersion, running, runs, queue, seenAt: now })
           json(res, 200, { ok: true })
           return
         }
@@ -2860,7 +3305,8 @@ export function apply(ctx: Context) {
             return
           }
           const now = Date.now()
-          for (const [k, v] of queuePresence) if (now - v.seenAt > QUEUE_PRESENCE_TTL) queuePresence.delete(k)
+          sweepQueuePresence(now)                                      // TTL 过期：v3 记录先转孤儿簿再删
+          if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()       // 顺带执行孤儿保留策略（超龄/超上限）
           const clients: any[] = []
           for (const v of queuePresence.values()) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
@@ -2876,6 +3322,8 @@ export function apply(ctx: Context) {
           json(res, 200, {
             clients,
             server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue },
+            /* 失联孤儿登记簿恒为数组（可空）：元素为清洗后条目全字段 + ownerId/ownerLabel/kind/orphanedAt */
+            orphans: [...queueOrphans.values()],
           })
           return
         }
@@ -2890,7 +3338,7 @@ export function apply(ctx: Context) {
      页面手动运行在 startRun 前 acquire、finish/中止/重置 release、运行期周期续租（pagehide 时
      beacon 批量 release）；API/定时计划由执行池 drain 时统一 acquire/release（见 pipelineExecutions
      hooks）。GET 返回当前占用表，供页面展示「等待节点」占用者。 */
-  const pipelineNodeLeases = createPipelineNodeLeases()
+  const pipelineNodeLeases = typeof pipelineSupervisor !== 'undefined' ? pipelineSupervisor.leases : createPipelineNodeLeases()
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline/leases',
@@ -3812,12 +4260,17 @@ export function apply(ctx: Context) {
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
-  pipelineExecutions = createPipelineExecutionQueue(execPlan, 2, 100, {
+  const pipelineGenerationId = PLUGIN_VERSION + '-' + (++pipelineSupervisor.generation).toString(36)
+  const pipelineQueue = createPipelineExecutionQueue(execPlan, 2, 100, {
+    generation: pipelineGenerationId,
     /* 节点互斥：与在跑计划同节点、或节点被旧页面本地运行租约占用的计划留在队列等待重试。 */
     ipsOf: (plan: any) => pipelineEnvIps(plan && plan.envs),
     acquire: (plan: any, ips: string[]) => pipelineNodeLeases.acquire(pipelineLeaseOwner(plan), ips, String(plan && plan.pipelineName || ''), String(plan && plan.by || '')).ok,
     release: (plan: any) => { pipelineNodeLeases.release(pipelineLeaseOwner(plan)) },
   })
+  const pipelineGenerationManager = pipelineSupervisor.manager
+  pipelineGenerationManager.activate(pipelineGenerationId, pipelineQueue)
+  pipelineExecutions = pipelineGenerationManager
   registerPipelineRunApi(webServer, {
     readStore: readPipelineStore,
     execute: plan => pipelineExecutions.run(plan),
@@ -3877,7 +4330,12 @@ export function apply(ctx: Context) {
       }
     }
   }
-  setInterval(() => { planTick().catch(() => {}) }, 15000)
+  const planTimer = setInterval(() => { planTick().catch(() => {}) }, 15000)
+  if (planTimer && typeof planTimer.unref === 'function') planTimer.unref()
+  ctx.effect(() => () => {
+    clearInterval(planTimer)
+    return releasePipelineSupervisor(pipelineSupervisor)
+  }, 'tokens-worktable: pipeline generation')
 
   // 流水线阶段脚本执行（pipeline.html 的 execScript 调用）：按扩展名选解释器（.sh→bash、.py→python3），
   // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。

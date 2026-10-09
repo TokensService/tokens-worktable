@@ -63,6 +63,7 @@ function makeContext() {
     serverPlans: [],
     remoteQueueClients: [],
     _planActiveSig: '',
+    _queuePullSig: '',
     currentUsername: 'tester',
     currentUserIsAdmin: false,
     esc: s => String(s),
@@ -83,7 +84,7 @@ function makeContext() {
     'remoteRunsOf', 'canControlRun',
     'planOwnerBy', 'planActiveExec', 'planActiveSig',
     'renderPlanList', 'cancelPlan', 'terminatePlan',
-    'pullRemoteQueue',
+    'queuePollSig', 'pullRemoteQueue',
   ]);
   return { context, els, calls };
 }
@@ -251,16 +252,17 @@ test('pullRemoteQueue：计划活动执行集合变化时重绘计划列表，�
   assert.equal(renders, 1);
   assert.match(rowHtml(els.planList, 'p-run'), /data-planstop="p-run"/);
 
-  /* 快照不变：轮询不重建列表 */
+  /* 快照不变：轮询不重建列表（快照签名一致时队列区重绘也整体跳过，见 queuePollSig） */
   await context.pullRemoteQueue();
   assert.equal(renders, 1);
+  assert.equal(calls.renderQueue, 1, '快照内容未变时不再每秒重建队列 DOM');
 
   /* 执行结束（快照移除 p-run）：再次重绘，「终止」消失 */
   active = false;
   await context.pullRemoteQueue();
   assert.equal(renders, 2);
   assert.doesNotMatch(rowHtml(els.planList, 'p-run'), /data-planstop/);
-  assert.equal(calls.renderQueue, 3);
+  assert.equal(calls.renderQueue, 2);
 });
 
 test('planOwnerBy / planActiveSig：剥 ⏰ 后缀与活动签名', () => {

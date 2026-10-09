@@ -8,15 +8,20 @@
 # 不需要 kubectl；kubectl 视图是集群级的，任一节点结果一致），目标节点恰为
 # 执行节点时额外附本机视角（/proc/meminfo、/dev/shm/ems）。未注入
 # TARGET_HOSTS 时在执行机本地运行（手工独立运行场景，需本机有 kubectl）。
+# 跨 region（hd2 等）：平台注入的 TARGET_IP/TARGET_IPS 可能是外网入口
+# endpoint（ip:port 形态，如 115.33.98.101:2224），与集群 InternalIP 对不上；
+# 分发阶段会逐节点 SSH 采集内网身份（hostname/hostname -I）构建映射表随
+# 小写 env 下传，目标定位按「直接命中（内网 IP/节点名）→ endpoint 映射 →
+# 剥端口兜底」三级解析（gy1 内网标识行为不变）。
 # 本 step 全程只读；填写 EMS_NAME 即启用「安装前门禁」（编排上应置于 ems-deploy
 # 之前）：校验名字/label/ns·release/节点占用，任一不过即 exit 1 拦住下游；
 # 通过则输出 EMS_NAME/EMS_LABEL_KEY/EMS_NODES/EMS_IDEMPOTENT 供 deploy 继承。
-# 本 step 全程只读，做三件事：
-#   ① 集群巡检：全部 EMS 实例清单（label、helm release chart·app 版本、镜像、
-#      pod 健康与异常原因、每节点大页 capacity/allocatable/已分配）+ 空壳遗留
-#      ns / release + 被占用未部署的 label（只报告，勿动）；
-#   ② 目标节点定位：逐个检查 TARGET_IP/TARGET_IPS 的归属，命中实例则展开该
-#      实例与本节点详情；
+# 本 step 全程只读，输出精简版（团队设备口径）：
+#   ① 集群巡检：团队设备上的健康实例为主体（实例名·chart 版本·运行时长，
+#      团队节点与大页已分配，各两行；非团队节点仅计数）；异常实例一行标注；
+#      非团队设备上的实例与空壳/遗留仅一行汇总；
+#   ② 目标节点定位：逐个检查 TARGET_IP/TARGET_IPS 归属，命中实例则输出实例简报
+#      （版本/运行时长/节点数；非团队设备节点带标注）；
 #   ③ 安装前门禁（EMS_NAME 填写时）：名字格式/label 占用/ns·release 残留/
 #      资源余量（CPU/内存，调度器 requests 口径；大页由 ems-hugepages step 负责，
 #      不关心节点上跑着什么业务），不过即拦；
@@ -45,6 +50,12 @@ EMS_RELEASE_NAMESPACES="${EMS_RELEASE_NAMESPACES:-}"
 # 平台注入变量经 nameref 间接引用，避免被「识别参数」扫出入参：
 # TARGET_HOSTS（目标节点凭据）；EMS_IDEMPOTENT 仅为门禁→deploy 的单向契约入口，不进参数面
 declare -n platform_target_hosts='TARGET_HOSTS'
+
+# 团队设备清单（tokens-devices skill 为准，设备增减时同步更新）：仅这些设备的
+# 实例/节点进入巡检主体输出；其余设备团队只有只读权限，输出一行汇总不展开。
+# 小写 ems_team_nodes 可覆盖（测试/临时调整用，不进参数面）。
+TEAM_NODES_DEFAULT='192.168.0.243,192.168.0.128,192.168.0.215,192.168.0.55,192.168.0.126,192.168.0.237,192.168.31.140,192.168.31.120,192.168.31.113,192.168.31.164,192.168.31.7'
+team_nodes="${ems_team_nodes:-$TEAM_NODES_DEFAULT}"
 
 die() { echo "[$SCRIPT_NAME] ERROR: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -115,6 +126,34 @@ PY
     done
     [[ -n "$probe_host" ]] || die '所有 TARGET_HOSTS 节点都缺少 kubectl；本 step 需要在有 kubectl 的节点上执行'
 
+    # 跨 region 目标身份映射：hd2 等环境平台注入的 TARGET_IPS 是外网入口
+    # endpoint（ip:port，如 115.33.98.101:2224），与集群 InternalIP 对不上。
+    # 逐节点 SSH 采集内网身份（hostname / hostname -I），映射表经小写 env
+    # 下传远程侧供目标解析回退（采集失败或不适用时表为空，行为不变）。
+    local id_lines='' id_user id_host id_port id_pass id_out id_hostname id_ips
+    for spec in "${specs[@]}"; do
+        IFS=$'\t' read -r id_user id_host id_port id_pass <<<"$spec"
+        id_out="$(remote_run "$id_user" "$id_host" "$id_port" "$id_pass" \
+            'hostname 2>/dev/null; hostname -I 2>/dev/null' 2>/dev/null)" || true
+        id_hostname="$(sed -n '1p' <<<"$id_out" | tr -d '\r')"
+        id_ips="$(sed -n '2p' <<<"$id_out" | tr -d '\r')"
+        [[ -n "$id_hostname" || -n "$id_ips" ]] || continue
+        id_lines+="${id_host}:${id_port}"$'\t'"${id_host}"$'\t'"${id_hostname}"$'\t'"${id_ips}"$'\n'
+    done
+    local id_map='[]'
+    if [[ -n "$id_lines" ]]; then
+        id_map="$(printf '%s' "$id_lines" | python3 -c '
+import json, sys
+entries = []
+for line in sys.stdin.read().splitlines():
+    if not line.strip():
+        continue
+    endpoint, address, hostname, ips = (line.split("\t") + ["", "", "", ""])[:4]
+    entries.append({"endpoint": endpoint, "address": address,
+                    "hostname": hostname, "ips": ips.split()})
+print(json.dumps(entries))')" || id_map='[]'
+    fi
+
     # 门禁期望版本：执行机读仓内 ems-chart/Chart.yaml（远程侧无仓，经小写 env 转发；
     # 缺失 = 门禁跳过 chart 版本比对，仅报告）
     local expected_chart='' chart_yaml
@@ -137,6 +176,8 @@ PY
     done
     printf -v quoted '%q' "$expected_chart"
     remote_env+=("ems_chart_expected=$quoted")
+    printf -v quoted '%q' "$id_map"
+    remote_env+=("ems_target_id_map=$quoted")
     remote_run "$probe_user" "$probe_host" "$probe_port" "$probe_pass" \
         "env ${remote_env[*]} bash /tmp/ems-check.sh"
 }
@@ -174,15 +215,18 @@ main() {
 
     local rc=0
     EMS_CHECK_LOCAL_IDENTIFIERS="$identifiers" \
+    EMS_CHECK_TEAM_NODES="$team_nodes" \
     python3 - "$workdir/nodes.json" "$workdir/pods.json" "$workdir/namespaces.json" "$workdir/helm.json" <<'PY' || rc=$?
 import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 
 LOCAL_IDS = [token for token in os.environ.get('EMS_CHECK_LOCAL_IDENTIFIERS', '').split() if token]
 TARGET_IPS_RAW = os.environ.get('TARGET_IPS', '').strip()
 TARGET_IP_RAW = os.environ.get('TARGET_IP', '').strip()
+TEAM_NODES = {token.strip() for token in os.environ.get('EMS_CHECK_TEAM_NODES', '').split(',') if token.strip()}
 
 
 def load_json(path, default=None):
@@ -221,6 +265,18 @@ elif TARGET_IP_RAW:
     targets = [TARGET_IP_RAW]
 else:
     targets = None
+
+# 跨 region 目标身份映射（分发阶段逐节点 SSH 采集，见 dispatch_to_target）：
+# 外网入口 endpoint（ip:port）→ 该主机内网身份（ips/hostname）。缺省/解析失败为空表。
+TARGET_ID_MAP = []
+_raw_map = os.environ.get('ems_target_id_map', '').strip()
+if _raw_map:
+    try:
+        _parsed = json.loads(_raw_map)
+        if isinstance(_parsed, list):
+            TARGET_ID_MAP = [entry for entry in _parsed if isinstance(entry, dict)]
+    except ValueError:
+        pass
 
 UNITS = {'Ki': 2 ** 10, 'Mi': 2 ** 20, 'Gi': 2 ** 30, 'Ti': 2 ** 40, 'Pi': 2 ** 50,
          'k': 10 ** 3, 'K': 10 ** 3, 'M': 10 ** 6, 'G': 10 ** 9, 'T': 10 ** 12, 'm': 10 ** -3}
@@ -326,6 +382,55 @@ def chart_split(chart):
     return chart or '?', ''
 
 
+def pod_start_ts(pod):
+    text = (pod.get('status') or {}).get('startTime')
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(str(text).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def fmt_duration(delta):
+    total = int(delta.total_seconds())
+    if total < 0:
+        return '?'
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f'{days}d{hours}h'
+    if hours:
+        return f'{hours}h{minutes:02d}m'
+    return f'{minutes}m'
+
+
+NOW = datetime.now(timezone.utc)
+
+
+def node_display(node_name):
+    """节点展示标识：优先 InternalIP，缺失退节点名（gy1 节点名即 IP）。"""
+    node = node_by_key.get(node_name)
+    ips = node_ips(node) if node else []
+    return ips[0] if ips else node_name
+
+
+def is_team_node(node_name):
+    """团队设备判定：节点 InternalIP 或节点名在清单内（gy1 节点名即 IP）。"""
+    if node_name in TEAM_NODES:
+        return True
+    node = node_by_key.get(node_name)
+    return any(ip in TEAM_NODES for ip in node_ips(node)) if node else False
+
+
+def instance_is_team(instance):
+    """实例旧属团队：任一 pod 实际落点（或 label 节点，全 Pending 时）为团队设备；
+    无任何落点的实例保守视为团队（Pending 不应导致不可见）。"""
+    scope = instance['pod_nodes'] or instance['all_nodes']
+    return not scope or any(is_team_node(name) for name in scope)
+
+
 # ---- 节点索引 -----------------------------------------------------------------
 node_by_key = {}
 for node in nodes:
@@ -337,6 +442,25 @@ label_to_nodes = {}
 for node in nodes:
     for key in node_label_keys(node):
         label_to_nodes.setdefault(key, []).append(node['metadata']['name'])
+
+
+def resolve_target(target):
+    """目标标识 → 集群节点（三级）：①直接命中（内网 IP/节点名，gy1 现行为）；
+    ②endpoint 身份映射（外网入口 ip:port → 该主机内网 ips/hostname）；
+    ③ip:port 剥端口兜底（内网 IP 带端口的注入形态）。都不中返回 None。"""
+    if target in node_by_key:
+        return node_by_key[target]
+    for entry in TARGET_ID_MAP:
+        if target not in (entry.get('endpoint'), entry.get('address')):
+            continue
+        for ident in list(entry.get('ips') or []) + [entry.get('hostname') or '']:
+            if ident and ident in node_by_key:
+                return node_by_key[ident]
+    if ':' in target:
+        address = target.rsplit(':', 1)[0]
+        if address in node_by_key:
+            return node_by_key[address]
+    return None
 
 # ---- 实例构建（资源 ns 维度） --------------------------------------------------
 instance_pods = {}
@@ -361,6 +485,7 @@ for namespace, members in sorted(instance_pods.items()):
         all_nodes.update(label_to_nodes.get(key, []))
     release = release_by_name.get(namespace)
     chart_name, chart_version = chart_split(release.get('chart')) if release else ('', '')
+    start_stamps = [ts for ts in (pod_start_ts(pod) for pod in members) if ts]
     instances[namespace] = {
         'name': namespace,
         'label_keys': sorted(label_keys),
@@ -372,6 +497,7 @@ for namespace, members in sorted(instance_pods.items()):
         'healthy': bool(members) and all(pod_phase(pod) == 'Running' and pod_ready(pod) for pod in members),
         'running_ready': sum(1 for pod in members if pod_phase(pod) == 'Running' and pod_ready(pod)),
         'images': sorted({image for pod in members for image in pod_images(pod)}),
+        'uptime': fmt_duration(NOW - min(start_stamps)) if start_stamps else '?',
     }
 
 # 每节点大页已分配（全部 pod 的 hugepages-2Mi requests 汇总）
@@ -405,75 +531,59 @@ def describe_node_hp(node_name):
 
 
 def format_instance(instance):
-    lines = []
-    release = instance['release']
-    label_nodes = ', '.join(
-        f'{key}=' + ','.join(label_to_nodes.get(key, [])) for key in instance['label_keys']) or '（无）'
-    lines.append(f'    label:         {label_nodes}')
-    if release:
-        lines.append(f'    helm release:  {release.get("name")} @ ns {release.get("namespace")} · '
-                     f'chart {release.get("chart")} · app {release.get("app_version") or "?"} · '
-                     f'{release.get("status")} · {release.get("updated")}')
+    """精简两行：首行实例名·chart 版本·运行时长；次行团队节点与大页已分配
+    （非团队节点仅计数不展开）。"""
+    head = instance['name']
+    if instance['chart_version']:
+        head += f" · chart {instance['chart_version']}"
+    head += f" · 运行 {instance['uptime']}"
+    team_nodes_line = [n for n in instance['all_nodes'] if is_team_node(n)]
+    other_count = len(instance['all_nodes']) - len(team_nodes_line)
+    if team_nodes_line:
+        nodes_part = ' · '.join(
+            f"{node_display(n)}（大页已分配 {fmt_gib(node_hp_allocated.get(n))}）"
+            for n in team_nodes_line)
     else:
-        lines.append('    helm release:  未找到（无 helm 或 release 缺失）')
-    counts = {}
-    for pod in instance['pods']:
-        for component in components_of(pod):
-            counts[component] = counts.get(component, 0) + 1
-    summary = ' · '.join(f'{key} {counts[key]}' for key in sorted(counts)) or '无 pod'
-    lines.append(f'    Pod:           {instance["running_ready"]}/{len(instance["pods"])} Running&Ready（{summary}）')
-    if instance['images']:
-        lines.append(f'    镜像:          ' + ', '.join(instance['images']))
-    for node_name in instance['all_nodes']:
-        lines.append(f'    大页:          {describe_node_hp(node_name)}')
-    problems = [f'{pod["metadata"]["namespace"]}/{pod["metadata"]["name"]}: {reason}'
-                for pod in instance['pods'] for reason in [pod_problem(pod)] if reason]
-    if problems:
-        lines.append('    异常:          ' + '; '.join(problems))
-    lines.append(f'    状态:          {"健康" if instance["healthy"] else "异常（见上）"}')
-    return lines
+        nodes_part = '（无团队节点）'
+    if other_count:
+        nodes_part += f'（另含非团队节点 {other_count} 台）'
+    return [head, f'    节点: {nodes_part}']
 
 
-# ---- ① 集群巡检 ----------------------------------------------------------------
-print(f'=== EMS 实例清单（{len(instances)} 个，集群节点 {len(nodes)} 个） ===')
-if instances:
-    for index, instance in enumerate(instances.values(), 1):
-        print(f'[{index}] {instance["name"]}')
-        for line in format_instance(instance):
-            print(line)
-else:
-    print('（未发现 EMS 实例）')
-
+# ---- ① 集群巡检（健康实例为主体，异常/遗留仅一行汇总） --------------------
 active_release_ns = {(instance['release'] or {}).get('namespace') for instance in instances.values()}
-active_label_keys = {key for instance in instances.values() for key in instance['label_keys']}
 pods_by_ns = {}
 for pod in pods:
     pods_by_ns.setdefault(pod.get('metadata', {}).get('namespace', ''), []).append(pod)
-
 shell_namespaces = sorted(ns for ns in namespaces
                           if re.match(r'^ems', ns) and ns not in pods_by_ns and ns not in active_release_ns)
-matched_release_names = set(instances)
 shell_releases = sorted((release for release in releases
                          if str(release.get('name', '')).startswith('ems')
-                         and release.get('name') not in matched_release_names),
+                         and release.get('name') not in set(instances)),
                         key=lambda release: release.get('name', ''))
-uncovered_labels = {key: value for key, value in label_to_nodes.items() if key not in active_label_keys}
 
-print('=== 空壳/遗留（无 pod，勿动） ===')
+healthy = [instance for instance in instances.values() if instance['healthy'] and instance_is_team(instance)]
+unhealthy = [instance for instance in instances.values() if not instance['healthy'] and instance_is_team(instance)]
+non_team = [instance for instance in instances.values() if not instance_is_team(instance)]
+print(f'=== EMS 健康实例（团队设备，{len(healthy)} 个） ===')
+if healthy:
+    for index, instance in enumerate(healthy, 1):
+        head, nodes_line = format_instance(instance)
+        print(f'[{index}] {head}')
+        print(nodes_line)
+else:
+    print('（无）')
+for instance in unhealthy:
+    print(f"[!] {instance['name']} 异常（{instance['running_ready']}/{len(instance['pods'])} Running&Ready）")
+if non_team:
+    print(f"（另有 {len(non_team)} 个实例在非团队设备上：{','.join(i['name'] for i in non_team)}，略）")
 if shell_namespaces or shell_releases:
+    extra = []
     if shell_namespaces:
-        print(f'    ns:           {", ".join(shell_namespaces)}')
+        extra.append(f'空壳 ns {len(shell_namespaces)} 个')
     if shell_releases:
-        print('    helm release: ' + ', '.join(f'{release.get("name")} (存放 ns {release.get("namespace")})'
-                                              for release in shell_releases))
-else:
-    print('    （无）')
-print('=== label 被占用但未部署（勿动他人 label） ===')
-if uncovered_labels:
-    for key in sorted(uncovered_labels):
-        print(f'    {key}=true → {", ".join(uncovered_labels[key])}')
-else:
-    print('    （无）')
+        extra.append(f'孤儿 release {len(shell_releases)} 个')
+    print(f"（另有遗留：{' · '.join(extra)}，略）")
 
 
 # ---- ② 节点定位（TARGET_IP/TARGET_IPS；未注入回退本机） --------------------------
@@ -481,70 +591,43 @@ def instances_on(node_name):
     return [instance for instance in instances.values() if node_name in instance['all_nodes']]
 
 
-def print_node_view(node_name, instance):
-    roles = sorted({component for pod in instance['pods']
-                    if node_of(pod) == node_name
-                    for component in components_of(pod)})
-    print(f'    --- 节点 {node_name} 视角（实例 {instance["name"]}） ---')
-    print(f'    角色:  {"+".join(roles) if roles else "仅 label 命中，无本节点 pod"}')
-    for pod in sorted(instance['pods'], key=lambda pod: pod['metadata']['name']):
-        if node_of(pod) == node_name:
-            hp_values = [(container.get('resources') or {}).get('requests', {}).get('hugepages-2Mi')
-                         for container in pod_containers(pod)]
-            hp_values = [value for value in hp_values if value]
-            hp_request = parse_qty(hp_values[0]) if hp_values else None
-            print(f'    Pod:   {pod["metadata"]["name"]} · {pod_phase(pod)} · '
-                  f'ready={"Y" if pod_ready(pod) else "N"}'
-                  + (f' · 大页请求={fmt_gib(hp_request)}' if hp_request else ''))
+def instance_brief(instance):
+    parts = []
+    if instance['chart_version']:
+        parts.append(f"chart {instance['chart_version']}")
+    parts.append(f"运行 {instance['uptime']}")
+    parts.append(f"节点 {len(instance['all_nodes'])} 台")
+    return f"{instance['name']}（{' · '.join(parts)}）"
 
 
-def print_self_view(node):
-    node_name = node['metadata']['name']
-    ips = node_ips(node)
-    if not (node_name in LOCAL_IDS or any(ip in LOCAL_IDS for ip in ips)):
-        return
-    try:
-        meminfo = {}
-        with open('/proc/meminfo', encoding='utf-8') as handle:
-            for line in handle:
-                key, _, rest = line.partition(':')
-                if key.startswith('HugePages'):
-                    meminfo[key] = rest.split()[0]
-        if meminfo:
-            print(f'    本机 /proc/meminfo: ' + ' · '.join(f'{key}={value}' for key, value in meminfo.items()))
-    except OSError:
-        pass
-    print(f'    本机 /dev/shm/ems: ' + ('存在' if os.path.exists('/dev/shm/ems') else '不存在'))
+def target_label(node_name):
+    """目标节点展示：非团队设备追加标注（只读权限提醒）。"""
+    display = node_display(node_name)
+    return display if is_team_node(node_name) else f'{display}（非团队设备）'
 
 
 first_hit = None
 matched_targets = 0
-printed_details = set()
 
 if targets is not None:
-    print(f'=== 目标节点定位（TARGET_IP/TARGET_IPS，共 {len(targets)} 个） ===')
+    print(f'=== 目标节点（TARGET_IP/TARGET_IPS，共 {len(targets)} 个） ===')
     for target in targets:
-        node = node_by_key.get(target)
+        node = resolve_target(target)
         if not node:
             print(f'    {target}: 不是本集群节点')
             continue
         node_name = node['metadata']['name']
         hits = instances_on(node_name)
         if not hits:
-            print(f'    {target} → {node_name}: 不在任何 EMS 实例中')
+            print(f'    {target} → {target_label(node_name)}: 不属于任何 EMS 实例')
             continue
         matched_targets += 1
-        print(f'    {target} → {node_name}: ' + ', '.join(
-            f'{instance["name"]}（label {",".join(instance["label_keys"])}）' for instance in hits))
         if first_hit is None:
             first_hit = hits[0]
-        for instance in hits:
-            if instance['name'] not in printed_details:
-                printed_details.add(instance['name'])
-                for line in format_instance(instance):
-                    print(line)
-        print_node_view(node_name, hits[0])
-        print_self_view(node)
+        line = f'    {target} → {target_label(node_name)}: 属于 {instance_brief(hits[0])}'
+        if len(hits) > 1:
+            line += f"（另命中 {','.join(h['name'] for h in hits[1:])}）"
+        print(line)
 else:
     print('=== 本机识别（未注入 TARGET_IP/TARGET_IPS，回退执行机定位） ===')
     local_node = None
@@ -555,22 +638,16 @@ else:
             break
     if local_node:
         node_name = local_node['metadata']['name']
-        ips = node_ips(local_node)
-        print(f'执行机 → 集群节点 {node_name}' + (f'（{ips[0]}）' if ips else ''))
+        print(f'执行机 → 集群节点 {target_label(node_name)}')
         hits = instances_on(node_name)
         if hits:
-            for instance in hits:
-                print(f'所属实例: {instance["name"]}（label {",".join(instance["label_keys"]) or "?"}，'
-                      f'节点 {",".join(instance["all_nodes"])}）')
-                if instance['name'] not in printed_details:
-                    printed_details.add(instance['name'])
-                    for line in format_instance(instance):
-                        print(line)
             first_hit = hits[0]
-            print_node_view(node_name, first_hit)
-            print_self_view(local_node)
+            line = f'    属于 {instance_brief(hits[0])}'
+            if len(hits) > 1:
+                line += f"（另命中 {','.join(h['name'] for h in hits[1:])}）"
+            print(line)
         else:
-            print('不在任何 EMS 实例中')
+            print('    不属于任何 EMS 实例')
     else:
         print(f'执行机（{", ".join(LOCAL_IDS) or "?"}）不是本集群节点；实例清单仍有效')
 
@@ -589,9 +666,9 @@ if GATE_NAME:
         fail('门禁需要目标节点：请配置环境/节点选择（TARGET_IPS/TARGET_HOSTS）')
     gate_nodes = []
     for target in targets:
-        node = node_by_key.get(target)
+        node = resolve_target(target)
         if not node:
-            fail(f'目标 {target} 不是本集群节点')
+            fail(f'目标 {target} 不是本集群节点（跨 region endpoint 需经 TARGET_HOSTS 分发采集身份映射）')
         gate_nodes.append(node['metadata']['name'])
     # 节点数量不设限（check 是通用巡检 step，单节点巡检/门禁均合法）；
     # 「EMS 安装至少 2 台」是 ems-deploy 的执行前提，由 deploy 自行校验

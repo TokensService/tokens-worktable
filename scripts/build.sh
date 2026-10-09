@@ -7,6 +7,7 @@
 #   BUILD_CMD     可选自定义构建命令（非空时替代默认的 node build.mjs）
 #   SKIP_VERSION_CHECK=1  跳过 RELEASE_TAG 与仓内版本的一致性处理（不自动 bump，按仓内版本构建）
 #   BUMP_GIT_NAME / BUMP_GIT_EMAIL  自动 bump 回推提交的作者署名（有就地默认）
+#   GIT_PUSH_RETRIES  版本 bump 回推失败时的最大尝试次数（默认 3，递增退避）
 #   SKIP_TESTS=1  跳过测试；FULL_TESTS=1 改跑完整 npm test（含 projects/ 的 shell / python 用例）
 # 行为：版本一致性处理（package.json version = dsh.plugin.json version 必须相等；RELEASE_TAG
 #   主版本段与仓内不一致时经 scripts/bump-version.mjs 自动 bump 三处版本号，测试通过后连同
@@ -88,7 +89,26 @@ if [ -n "$bumpedFrom" ]; then
     git -c user.name="${BUMP_GIT_NAME:-worktable-release}" \
         -c user.email="${BUMP_GIT_EMAIL:-worktable-release@users.noreply.github.com}" \
         commit -q -m "发布 ${RELEASE_TAG}：版本号对齐发行 Tag（${bumpedFrom}→${pkgVer}，发行构建自动 bump）" || fail "版本 bump 提交失败"
-    git push origin "HEAD:${GIT_BRANCH}" || fail "版本 bump 回推 origin/${GIT_BRANCH} 失败（克隆凭据无推送权限，或分支已有新提交）——人工执行 npm run bump -- $pkgVer 并推送后重跑发行"
+    # 回推自动重试（GIT_PUSH_RETRIES，默认 3，递增退避）：一次性网络抖动不应杀死整个发行；
+    # 远端地址含克隆凭据，失败输出先脱敏再回显；连接类失败与权限/分叉类失败分别给出对应诊断
+    PUSH_RETRIES="${GIT_PUSH_RETRIES:-3}"
+    case "$PUSH_RETRIES" in ''|*[!0-9]*) PUSH_RETRIES=3 ;; esac
+    push_url=$(git remote get-url origin 2>/dev/null || echo "")
+    push_mask(){ if [ -n "$push_url" ]; then sed -e "s#${push_url}#<repo>#g"; else cat; fi; }
+    push_i=0
+    while :; do
+      push_i=$((push_i+1))
+      push_out=$(git push origin "HEAD:${GIT_BRANCH}" 2>&1) && break
+      printf '%s\n' "$push_out" | push_mask >&2
+      if [ "$push_i" -ge "$PUSH_RETRIES" ]; then
+        if printf '%s' "$push_out" | grep -Eq "Failed to connect|Couldn.t connect|Connection timed out|Connection refused|Operation timed out"; then
+          fail "版本 bump 回推 origin/${GIT_BRANCH} 失败（已重试 $((push_i-1)) 次）：对端不可达/一次性网络抖动，与凭据无关——检查网络或经「附加环境变量」注入代理后重跑发行"
+        fi
+        fail "版本 bump 回推 origin/${GIT_BRANCH} 失败（克隆凭据无推送权限，或分支已有新提交）——人工执行 npm run bump -- $pkgVer 并推送后重跑发行"
+      fi
+      echo "… 回推失败（第 $push_i/$PUSH_RETRIES 次），等待 $((push_i*5))s 后重试" >&2
+      sleep $((push_i*5))
+    done
     echo "✓ 版本号 bump 已提交并回推 origin/${GIT_BRANCH}（${bumpedFrom}→${pkgVer}）"
   fi
 fi

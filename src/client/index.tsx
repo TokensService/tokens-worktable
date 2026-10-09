@@ -34,7 +34,7 @@ const UPDATE_REPO = 'TokensService/tokens-worktable'
 const ISSUES_URL = 'https://github.com/' + UPDATE_REPO + '/issues'
 // 升级命令用带版本号的固定 release URL 且文件名带版本号：URL/文件名恒定不变时，包管理器按文件名缓存 tarball 会装回旧版
 const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable-' + tag.replace(/^v/, '') + '.tgz"'
-const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后提醒我重启 dsh web 并刷新页面'
+const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后刷新页面即可'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
   <svg viewBox="0 0 16 16" aria-hidden>
@@ -51,6 +51,18 @@ const ICON_SPARK = (
   </svg>
 )
 type UpdateInfo = { latest: string; tag: string; notes: string; url: string }
+/** 兼容旧服务端：没有版本/revision 字段时返回 null，不触发刷新提示。 */
+function runtimeStamp(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const value = data as { version?: unknown; revision?: unknown; generation?: unknown }
+  const version = typeof value.version === 'string' ? value.version.trim() : ''
+  const revision = typeof value.revision === 'string' || typeof value.revision === 'number'
+    ? String(value.revision) : (typeof value.generation === 'string' ? value.generation : '')
+  return version || revision ? version + '@' + revision : null
+}
+function runtimeChanged(previous: string | null, current: string | null): boolean {
+  return previous !== null && current !== null && previous !== current
+}
 /* ---------- 版本更新历史 ---------- */
 function cmpVer(a: string, b: string): number {
   const pa = a.split('.').map(Number)
@@ -88,7 +100,7 @@ function parseInstallHistory(data: unknown): HistEntry[] {
 }
 /** 单条安装历史的回退提示词：版本号不带 v 前缀（历史条目格式），命令复用升级卡的固定 release URL
  *  （回退即「安装指定旧版」，URL/文件名按版本号恒定）。粘贴到 AI 会话执行。 */
-function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后提醒我重启 dsh web 并刷新页面' }
+function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后刷新页面即可' }
 /* ---------- 版本更新历史结束 ---------- */
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -424,7 +436,43 @@ function findSidebar(start: HTMLElement | null): HTMLElement | null {
 const registryStore: { ids: string[]; listeners: Set<() => void> } = { ids: [], listeners: new Set() }
 
 /** 自定义窗口 → 宿主会话桥（apply 时注入；不可用时 CustomPane 降级提示） */
-let sessionBridge: { sessions: any; conversation: any; list: any; workspaces: any } | null = null
+let sessionBridge: { sessions: any; conversation: any; list: any; workspaces: any; uiWorkspace: any } | null = null
+
+/** 宿主 0.2.0 起 sessions.binding/scope 仅对「已保留（retain）」的会话代际可解析（未保留返回 undefined）；
+ *  新建/操作会话前先保留，用完 release。旧宿主无 retain：返回 null，调用方走原 binding 轮询路径。 */
+function retainSessionRef(sessionId: string): { release(): void } | null {
+  try {
+    const sessions: any = sessionBridge?.sessions
+    if (sessions && typeof sessions.retain === 'function') return sessions.retain(sessionId, { source: 'worktable' })
+  } catch { /* 保留失败按旧路径继续 */ }
+  return null
+}
+/** 释放 retainSessionRef 拿到的引用（空引用安全）。 */
+function releaseSessionRef(ref: { release(): void } | null): void {
+  if (!ref) return
+  try { ref.release() } catch { /* 重复释放/已失效忽略 */ }
+}
+/** 切换主聊天区到指定会话：0.2.0 起导航归视图属主 uiWorkspace.openSession；旧宿主回退 sessions.open。 */
+function openSessionInUi(sessionId: string): void {
+  try {
+    const uw: any = (sessionBridge as any)?.uiWorkspace
+    if (uw && typeof uw.openSession === 'function') { uw.openSession(sessionId); return }
+  } catch { /* 落入旧路径 */ }
+  try { (sessionBridge?.sessions as any)?.open?.(sessionId) } catch { /* 旧宿主也无 open 时静默 */ }
+}
+/** 当前选中会话 id（入参为 list 快照）：旧宿主读快照 current 字段；0.2.0 起选中态是 byId 行 retainedBy.mainView > 0 的派生态。 */
+function currentSessionIdOf(snap: any): string {
+  try {
+    if (!snap) return ''
+    if (typeof snap.current === 'string') return snap.current
+    const byId = snap.byId ?? {}
+    for (const id of Object.keys(byId)) {
+      const rb = byId[id]?.retainedBy
+      if (rb && (rb.mainView ?? 0) > 0) return id
+    }
+  } catch { /* 快照异常按无当前会话 */ }
+  return ''
+}
 
 /** 宿主 API 客户端（apply 时从 connection 服务取；agentPresets/sessions 用于修复新会话继承失效模型的 bug） */
 let hostApi: { agentPresets?: any; sessions?: any } | null = null
@@ -500,7 +548,7 @@ async function ensureSessionModel(sessionId: string): Promise<void> {
     let effort: string | undefined
     // ① 无条件继承用户当前会话的选择（用户正在用哪个模型，新会话就用哪个）
     try {
-      const cur = sessionBridge?.list?.getSnapshot?.()?.current
+      const cur = currentSessionIdOf(sessionBridge?.list?.getSnapshot?.())
       if (cur && cur !== sessionId) {
         const cRes = await api.models({ sessionId: cur })
         if (cRes?.result?.ok) {
@@ -726,15 +774,24 @@ function assistantResultOutcome(events: any[]): AssistantResultOutcome {
   return { state: 'failed', error: 'AI 已完成但未返回可回填的文本' }
 }
 
-/** 等待指定新会话完成，并从公开的会话事件窗读取最终 AI 文本。 */
-function waitForSessionAssistant(sessionId: string, timeoutMs = 15 * 60_000): Promise<string> {
+/** 等待指定新会话完成，并从公开的会话事件窗读取最终 AI 文本。
+ *  0.2.0 起 binding 仅对已保留（retain）会话可解析（新建会话入口同步读必为 undefined）：
+ *  先 retain，binding 最多轮询 2s（200ms×10，与 fillSessionDraft 同节奏；retained 后首轮即得），结算时 release。 */
+async function waitForSessionAssistant(sessionId: string, timeoutMs = 15 * 60_000): Promise<string> {
   const bridge = sessionBridge
   const list = bridge?.list
-  const binding = bridge?.sessions?.binding?.(sessionId)
+  const ref = retainSessionRef(sessionId)
+  let binding: any = null
+  for (let i = 0; i < 10; i++) {
+    try { binding = bridge?.sessions?.binding?.(sessionId) ?? null } catch { binding = null }
+    if (binding) break
+    await new Promise((r) => setTimeout(r, 200))
+  }
   const eventSource = binding?.eventSource
   if (!bridge || !list || typeof list.getSnapshot !== 'function' || typeof list.subscribe !== 'function' ||
       !eventSource || typeof eventSource.getSnapshot !== 'function' || typeof eventSource.subscribe !== 'function') {
-    return Promise.reject(new Error('session result bridge unavailable'))
+    releaseSessionRef(ref)
+    throw new Error('session result bridge unavailable')
   }
   return new Promise((resolve, reject) => {
     let settled = false
@@ -745,6 +802,7 @@ function waitForSessionAssistant(sessionId: string, timeoutMs = 15 * 60_000): Pr
       settled = true
       clearTimeout(timer)
       for (const dispose of disposers.splice(0)) dispose()
+      releaseSessionRef(ref) // 保留引用随结算一并释放
       if (error) reject(error)
       else resolve(text)
     }
@@ -854,7 +912,7 @@ async function fetchSessionGroups(): Promise<{ groups: { title: string; sessions
   try {
     const snap = sessionBridge?.list?.getSnapshot?.()
     const byId = snap?.byId ?? {}
-    const current = snap?.current ?? ''
+    const current = currentSessionIdOf(snap)
     // 子代理会话（后台产生的，用户面板看不到）排除
     const subKids = new Set<string>()
     try {
@@ -929,57 +987,70 @@ function hideBindTip() {
 }
 
 /** 把文本送入指定会话：宿主同款寻址（binding(id).session.prompt / sendSession(会话面)），
- *  插件是根级上下文，无作用域的 conversation.send 会报 requires a session scope，不可用。 */
+ *  插件是根级上下文，无作用域的 conversation.send 会报 requires a session scope，不可用。
+ *  0.2.0 起 binding/scope 仅对已保留会话可解析：进入时 retain、结束 release。 */
 async function promptIntoSession(sessionId: string, text: string): Promise<void> {
   const b = sessionBridge
   if (!b) throw new Error('bridge unavailable')
   const sessions = b.sessions as any
-  // 新会话入列可能异步：最多等 2s 直到 binding 可解析
-  let session: any = null
-  for (let i = 0; i < 10; i++) {
-    try { session = sessions?.binding?.(sessionId)?.session ?? null } catch { session = null }
-    if (session) break
-    await new Promise((r) => setTimeout(r, 200))
-  }
-  if (session) {
-    // 1) 宿主包装（正确签名：会话面 + 空图片 + queue 投递）
-    if (typeof b.conversation?.sendSession === 'function') {
-      try { await b.conversation.sendSession(session, text, [], 'queue'); return } catch { /* 包装失败则直连 */ }
-    }
-    // 2) 直连会话面 prompt（宿主 sendSession 内部同款路径）
-    if (typeof session.prompt === 'function') {
-      const result = await session.prompt([{ type: 'text', text }], 'queue')
-      if (result && result.ok) return
-      if (result && !result.ok) throw new Error('session.prompt: ' + (result.error?.code ?? 'rejected') + (result.error?.message ? ': ' + result.error.message : ''))
-    }
-  }
-  // 3) 备用：作用域上下文里取 conversation 服务再发
+  const ref = retainSessionRef(sessionId)
   try {
-    const scoped = sessions?.scope?.(sessionId)
-    const conv = scoped?.get?.('conversation')
-    if (conv && typeof conv.send === 'function') { await conv.send(text); return }
-  } catch { /* 落入最终报错 */ }
-  throw new Error('no send path: session face unavailable')
+    // 新会话入列可能异步：最多等 2s 直到 binding 可解析（retained 后首轮即得；旧宿主照旧轮询挂载）
+    let session: any = null
+    for (let i = 0; i < 10; i++) {
+      try { session = sessions?.binding?.(sessionId)?.session ?? null } catch { session = null }
+      if (session) break
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    if (session) {
+      // 1) 宿主包装（正确签名：会话面 + 空图片 + queue 投递）
+      if (typeof b.conversation?.sendSession === 'function') {
+        try { await b.conversation.sendSession(session, text, [], 'queue'); return } catch { /* 包装失败则直连 */ }
+      }
+      // 2) 直连会话面 prompt（宿主 sendSession 内部同款路径）
+      if (typeof session.prompt === 'function') {
+        const result = await session.prompt([{ type: 'text', text }], 'queue')
+        if (result && result.ok) return
+        if (result && !result.ok) throw new Error('session.prompt: ' + (result.error?.code ?? 'rejected') + (result.error?.message ? ': ' + result.error.message : ''))
+      }
+    }
+    // 3) 备用：作用域上下文里取 conversation 服务再发
+    try {
+      const scoped = sessions?.scope?.(sessionId)
+      const conv = scoped?.get?.('conversation')
+      if (conv && typeof conv.send === 'function') { await conv.send(text); return }
+    } catch { /* 落入最终报错 */ }
+    throw new Error('no send path: session face unavailable')
+  } finally {
+    releaseSessionRef(ref)
+  }
 }
 
 /** 只把文本填进指定会话的输入框草稿（不提交）：经宿主 conversation.input（SessionInputResolver.for）
  *  写入该会话的输入机，用户确认后自己按发送。新会话的 binding/scope 可能异步就绪，
- *  重试节奏同 promptIntoSession；facade 不可用时直接报错（绝不退化为自动发送）。 */
+ *  重试节奏同 promptIntoSession；0.2.0 起 binding 仅对已保留会话可解析：进入时 retain、结束
+ *  release（retained 后首轮即得；旧宿主无 retain 则照旧轮询挂载）。
+ *  facade 不可用时直接报错（绝不退化为自动发送）。 */
 async function fillSessionDraft(sessionId: string, text: string): Promise<void> {
   const b = sessionBridge
   if (!b) throw new Error('bridge unavailable')
   const sessions = b.sessions as any
   const resolver = (b.conversation as any)?.input
   if (!resolver || typeof resolver.for !== 'function') throw new Error('conversation.input unavailable')
-  for (let i = 0; i < 10; i++) {
-    let binding: any = null
-    try { binding = sessions?.binding?.(sessionId) ?? null } catch { binding = null }
-    if (binding?.ctx) {
-      try { resolver.for(binding.ctx).setDraft(text); return } catch { /* scope 未就绪，重试 */ }
+  const ref = retainSessionRef(sessionId)
+  try {
+    for (let i = 0; i < 10; i++) {
+      let binding: any = null
+      try { binding = sessions?.binding?.(sessionId) ?? null } catch { binding = null }
+      if (binding?.ctx) {
+        try { resolver.for(binding.ctx).setDraft(text); return } catch { /* scope 未就绪，重试 */ }
+      }
+      await new Promise((r) => setTimeout(r, 200))
     }
-    await new Promise((r) => setTimeout(r, 200))
+    throw new Error('no fill path: input facade unavailable')
+  } finally {
+    releaseSessionRef(ref)
   }
-  throw new Error('no fill path: input facade unavailable')
 }
 
 /** 新建会话的分组选择：未分组 / 加入现有分组 / 新建一个分组（父目录 + 名称） */
@@ -1062,7 +1133,7 @@ export async function createCustomSession(projectId: string, projectName: string
   await ensureSessionPreset(sessionId) // 新会话应用部署默认预设
   await ensureSessionModel(sessionId) // 修复继承失效 provider（selectModel 同步存默认，顺带修复后续新会话）
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId) // 0.2.0 起导航归 uiWorkspace.openSession（助手内部回退旧 sessions.open）
   await promptIntoSession(sessionId, text)
   return sessionId
 }
@@ -1073,7 +1144,7 @@ export async function sendCustomToSession(sessionId: string, projectId: string, 
   if (!b) throw new Error('bridge unavailable')
   const text = buildWindowTaskText(projectId, projectName, windowLabel, requirement, folder, 'send')
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId)
   await promptIntoSession(sessionId, text)
 }
 
@@ -1093,7 +1164,7 @@ async function analyzeLogInSession(logPath: string): Promise<void> {
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId)
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId)
   await promptIntoSession(sessionId, text)
 }
 
@@ -1111,7 +1182,7 @@ async function newChatInProject(text: string, workspaceId: string | null = null,
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId)
   await fillSessionDraft(sessionId, text)
 }
 
@@ -1128,7 +1199,7 @@ async function sendChatInProject(text: string, workspaceId: string | null = null
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId) // 插件发起的切换：不触发「切会话关项目」联动
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId)
   await promptIntoSession(sessionId, text)
 }
 
@@ -1141,7 +1212,7 @@ async function sendChatForResult(text: string, workspaceId: string | null = null
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
   markPluginSessionOpen(sessionId)
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId)
   await promptIntoSession(sessionId, text)
   return waitForSessionAssistant(sessionId)
 }
@@ -1158,7 +1229,7 @@ async function newChatSessionWithFolder(text: string, cwd: string | null, folder
   const sessionId = await b.sessions.create(cwd ? { cwd } : {})
   await ensureSessionPreset(sessionId)
   await ensureSessionModel(sessionId)
-  try { await b.sessions.open?.(sessionId) } catch {}
+  openSessionInUi(sessionId)
   if (text) { try { await fillSessionDraft(sessionId, text) } catch { /* 草稿填充失败不影响会话创建 */ } }
   if (folder) {
     openFolderInSidebar(folder)
@@ -1472,7 +1543,7 @@ function sessionNotifyState(entry: any): 'done' | 'need' | null {
 function syncSessionScope(list: any) {
   try {
     const snap = list.getSnapshot()
-    const current: string = snap?.current ?? ''
+    const current: string = currentSessionIdOf(snap)
     const entry = snap?.byId?.[current] ?? snap?.items?.find((it: any) => it.sessionId === current) ?? null ?? null
     const cat = snap?.subagentsByParent?.[current]
     let subagents: any[] = []
@@ -1608,6 +1679,8 @@ function WorktableSection(props: any) {
   const [updateCheckOn, setUpdateCheckOn] = useState<boolean>(() => localStorage.getItem('dsh.worktable.updateCheck.v1') !== '0')
   const [updateCopied, setUpdateCopied] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'uptodate' | 'failed'>('idle')
+  const [runtimeUpdatePending, setRuntimeUpdatePending] = useState(false)
+  const runtimeStampRef = useRef<string | null>(null)
   const updateCheckingRef = useRef(false)
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
@@ -1672,6 +1745,24 @@ function WorktableSection(props: any) {
     })()
     return () => { alive = false }
   }, [])
+  // 运行中的 dsh 发现插件代际变化时，只提示用户刷新当前页面；旧服务端没有 revision 时静默兼容。
+  useEffect(() => {
+    let alive = true
+    const poll = async () => {
+      try {
+        const r = await fetch('/api/worktable/health', { cache: 'no-store' })
+        if (!r.ok) return
+        const next = runtimeStamp(await r.json())
+        if (!alive || !next) return
+        if (runtimeChanged(runtimeStampRef.current, next)) setRuntimeUpdatePending(true)
+        runtimeStampRef.current = next
+      } catch { /* 旧服务端/网络不可达：保留当前页面继续工作 */ }
+    }
+    void poll()
+    const timer = setInterval(() => { void poll() }, 15000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
+
   const checkUpdates = useCallback(async (force = false) => {
     if (updateCheckingRef.current) return // 防重入：并发点击只保留一个 in-flight
     const last = Number(localStorage.getItem('dsh.worktable.lastUpdateCheck.v1') ?? '0')
@@ -2051,14 +2142,14 @@ function WorktableSection(props: any) {
           else {
             // 入驻项目无视图覆盖：仅切换其绑定对话（对齐卡片自带打开行为）
             const bound = pr.bindings[id]
-            if (bound) { try { sessionBridge?.sessions?.open?.(bound) } catch {} }
+            if (bound) openSessionInUi(bound)
           }
         },
         onJump: (id) => {
           const sid = projectsRef.current.projects.bindings[id]
           if (!sid) return
           markPluginSessionOpen(sid) // 插件发起的切换：不触发「切会话关项目」联动
-          try { sessionBridge?.sessions?.open?.(sid) } catch {}
+          openSessionInUi(sid)
         },
       },
     }
@@ -2134,7 +2225,7 @@ function WorktableSection(props: any) {
     if (!splitStore.active) {
       if (!suppressRestoreRef.current) {
         const prev = projectAttachRef.sessionId
-        if (prev) { try { sessionBridge?.sessions?.open?.(prev) } catch {} }
+        if (prev) openSessionInUi(prev)
       }
       projectAttachRef.sessionId = null
       projectAttachRef.attached = null
@@ -2321,11 +2412,11 @@ function buildCustomLayoutPrompt(req: string): string {
     if (splitStore.active && splitStore.spec?.id === spec.id) {
       // 记录打开前会话（关项目时回切）与该项目「归属会话」（切到别的会话 = 自动关项目）
       let prev: string | null = null
-      try { prev = sessionBridge?.list?.getSnapshot?.()?.current ?? null } catch {}
+      try { prev = currentSessionIdOf(sessionBridge?.list?.getSnapshot?.()) || null } catch {}
       projectAttachRef.sessionId = prev
       projectAttachRef.attached = projectsRef.current.projects.bindings[spec.id] ?? prev
       const bound = projectsRef.current.projects.bindings[spec.id]
-      if (bound) { try { sessionBridge?.sessions?.open?.(bound) } catch {} }
+      if (bound) openSessionInUi(bound)
       ackProjectNotify(spec.id)
       // 补挂：此前项目未打开时暂存的产物（entries = 多窗口挂载列表），现在自动挂进各目标窗格；
       // 全部落位成功记录指纹（供自愈扫挂去重）
@@ -2359,11 +2450,11 @@ function buildCustomLayoutPrompt(req: string): string {
     splitStore.open(spec)
     if (splitStore.active && splitStore.spec?.id === CONSOLE_ID) {
       let prev: string | null = null
-      try { prev = sessionBridge?.list?.getSnapshot?.()?.current ?? null } catch {}
+      try { prev = currentSessionIdOf(sessionBridge?.list?.getSnapshot?.()) || null } catch {}
       projectAttachRef.sessionId = prev
       const bound = explicitBound !== undefined ? explicitBound : projectsRef.current.projects.bindings[CONSOLE_ID]
       projectAttachRef.attached = bound ?? prev
-      if (bound) { try { sessionBridge?.sessions?.open?.(bound) } catch {} }
+      if (bound) openSessionInUi(bound)
       ackProjectNotify(CONSOLE_ID)
       try { notifyConsole() } catch {}
       // 打开即预热所有绑定会话的最近消息（冷会话走 history 只读通道）
@@ -3369,7 +3460,7 @@ function buildCustomLayoutPrompt(req: string): string {
       }
       // 无视图覆盖：项目自带打开行为照旧，仅当绑定了会话时切换右侧对话窗
       const bound = projectsRef.current.projects.bindings[pid]
-      if (bound) { try { sessionBridge?.sessions?.open?.(bound) } catch {} }
+      if (bound) openSessionInUi(bound)
       ackProjectNotify(pid)
     }
     document.addEventListener('click', onDocClick, true)
@@ -3481,7 +3572,7 @@ function buildCustomLayoutPrompt(req: string): string {
     if (view || layout) openSplit((view ?? layout) as LayoutSpec)
     else {
       const bound = pr.bindings[id]
-      if (bound) { try { sessionBridge?.sessions?.open?.(bound) } catch {} }
+      if (bound) openSessionInUi(bound)
     }
   }
 
@@ -3556,12 +3647,12 @@ function buildCustomLayoutPrompt(req: string): string {
           onPointerCancel={onHandlePointerUp}
           onDoubleClick={resetDock}
         >{worktableTitle}</span>
-        {updateInfo && (
+        {(updateInfo || runtimeUpdatePending) && (
           <button
             type="button"
             className="dsh-wt_updateBadge"
-            title={t('update.badgeTitle') + ' · v' + updateInfo.latest}
-            aria-label={t('update.badgeTitle')}
+            title={runtimeUpdatePending ? '工作台已更新，请刷新页面' : t('update.badgeTitle') + ' · v' + updateInfo?.latest}
+            aria-label={runtimeUpdatePending ? '工作台已更新，请刷新页面' : t('update.badgeTitle')}
             onClick={() => setViewOptionsOpen(true)}
           >{ICON_SYNC}</button>
         )}
@@ -3702,6 +3793,16 @@ function buildCustomLayoutPrompt(req: string): string {
             title={t('manage.done')}
             onClick={() => setViewOptionsOpen(false)}
           >✕</button>
+          {runtimeUpdatePending && (
+            <div className="dsh-wt_updateCard">
+              <div className="dsh-wt_updateHead"><span className="dsh-wt_updateDot" />工作台已更新</div>
+              <div className="dsh-wt_updateHint">服务端版本或 revision 已变化，刷新页面即可加载最新工作台。</div>
+              <div className="dsh-wt_updateBtns">
+                <button type="button" className="dsh-wt_updateBtn dsh-wt_updateBtnCopy" onClick={() => window.location.reload()}>刷新页面</button>
+                <button type="button" className="dsh-wt_updateBtn" onClick={() => setRuntimeUpdatePending(false)}>稍后</button>
+              </div>
+            </div>
+          )}
           {updateInfo && (
             <div className="dsh-wt_updateCard">
               <div className="dsh-wt_updateHead"><span className="dsh-wt_updateDot" />{t('update.available')} · v{updateInfo.latest}</div>
@@ -3714,7 +3815,7 @@ function buildCustomLayoutPrompt(req: string): string {
                 </button>
                 <button type="button" className="dsh-wt_updateBtn" onClick={skipUpdate}>{t('update.skip')}</button>
               </div>
-              <div className="dsh-wt_updateHint">{t('update.upgradeHint')}</div>
+              <div className="dsh-wt_updateHint">安装完成后刷新页面即可。</div>
             </div>
           )}
           {/* 工作台名称：自定义侧栏区块标题；清空提交 = 恢复默认（登录用户名，取不到则「工作台」）（复用项目管理改名的 RenameInput 交互） */}
@@ -4470,11 +4571,11 @@ export const inject = ['slots', 'locale', 'sessions', 'conversation', 'workspace
 
 export function apply(ctx: any) {
   // 自定义窗口 → 宿主会话桥：保存 sessions/conversation/list 服务引用（模块级）
-  sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null }
+  sessionBridge = { sessions: ctx.sessions ?? null, conversation: ctx.conversation ?? null, list: ctx.sessions?.list ?? null, workspaces: ctx.workspaces ?? null, uiWorkspace: (() => { try { return ctx.get?.('uiWorkspace') ?? null } catch { return null } })() }
   applyCtx = ctx   // 模块级暂存：openFolderInSidebar 等助手经它取 better-sidebar 服务
   try { hostApi = ctx.get?.('connection')?.api ?? null } catch { hostApi = null }
   try { (window as any).__dshHostApi = hostApi } catch {}
-  try { (window as any).__dshOpenSession = (id: string) => ctx.sessions?.open?.(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshSendChatForResult = (text: string) => sendChatForResult(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
+  try { (window as any).__dshOpenSession = (id: string) => openSessionInUi(id); (window as any).__dshSessions = ctx.sessions; (window as any).__dshPromptIntoSession = (id: string, text: string) => promptIntoSession(id, text); (window as any).__dshNewChatSession = (text: string) => newChatInProject(text); (window as any).__dshSendChatInProject = (text: string) => sendChatInProject(text); (window as any).__dshSendChatForResult = (text: string) => sendChatForResult(text); (window as any).__dshNewChatSessionAt = (text: string, cwd?: string) => newChatInProject(text, null, cwd || null); (window as any).__dshNewChatSessionAtFolder = (text: string, cwd?: string, folder?: string) => newChatSessionWithFolder(text, cwd || null, folder || null); (window as any).__dshWorkspaces = ctx.workspaces; (window as any).__dshBuildWindowTaskText = buildWindowTaskText; (window as any).__dshSyncSessionScope = () => syncSessionScope(sessionBridge?.list) } catch {}
   // 项目页（pipeline.html「打开归档目录」等）→ dsh-better-sidebar 侧边栏桥：开一个以传入目录为根的
   // 文件夹窗口（editor 标签 + meta.dir，同 better-sidebar agent-opens 推送的 folder 分支；path 相同按
   // dedupeKey 复用同一标签，内容型打开会自动展开所在面板）。未装 better-sidebar（服务缺失/无 openTab）

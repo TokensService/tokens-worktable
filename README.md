@@ -27,7 +27,7 @@
 
     dsh plugin --profile web add "link:<本目录的绝对路径>"
 
-两种方式 `add` 都会把 `tokens-worktable` 注册进 profile 的 bundle 列表（写入 `~/.dsh`），装完重启 dsh web、刷新界面生效。
+两种方式 `add` 都会把 `tokens-worktable` 注册进 profile 的 bundle 列表（写入 `~/.dsh`），安装完成后刷新页面即可生效；运行中的 dsh web 会通过 health 的版本/revision 变化提示刷新。
 
 ## 从源码构建
 
