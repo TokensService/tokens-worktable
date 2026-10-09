@@ -391,6 +391,18 @@ function stripPipelineSharedMeta(entry: any): any {
   return copy
 }
 
+/** 条目内容同一性比对：剥离 favoriteUsers / pinnedAt 后做「键序无关」递归深比较（deepEqualIgnoring
+ *  比较键集合与值，数组顺序仍算内容）。此前用 JSON.stringify 比对剥离副本，对键序敏感——同一条目经
+ *  编辑器重建阶段对象、旧版客户端/导入等不同键序字节落盘后，内容未变也会被判「偏离基线」产生
+ *  phantom 409（改名保存被拦截/还原成副本名）。deepEqualIgnoring 定义在下方可信区段，函数声明提升，
+ *  运行时不分声明先后。 */
+function samePipelineContent(left: any, right: any): boolean {
+  const a = stripPipelineSharedMeta(left ?? null)
+  const b = stripPipelineSharedMeta(right ?? null)
+  if (a === null || b === null) return a === b
+  return deepEqualIgnoring(a, b)
+}
+
 /** favoriteUsers 三方集合合并：(client ∩ disk) ∪ (client − base) ∪ (disk − base)——双方共同保留的，
  *  加上各端相对基线新增的；并发取消收藏（相对基线删除）因此同样生效。元素为修剪后的非空字符串；
  *  顺序确定：先按 client 数组顺序，再追加仅 disk 有的元素（按 disk 数组顺序）。任一侧缺失/非数组按空集。 */
@@ -434,7 +446,8 @@ function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: a
 }
 
 /**
- * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」比对——客户端未改动
+ * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」做键序无关深比较
+ * （samePipelineContent，避免仅字节键序不同造成 phantom 冲突）——客户端未改动
  * 的 id 以磁盘为准，不同 id 的并发改动可同时保留；同一 id 在客户端与磁盘内容都偏离共同基线时报告冲突，
  * 调用方不得写盘。favoriteUsers / pinnedAt 是共享条目上的非内容元数据，不参与变更判定（他端收藏/置顶
  * 不再造成 phantom 冲突），无论内容取自哪侧都对结果条目按三方规则重算（见上方助手）；
@@ -454,7 +467,7 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
   const clientMap = mapOf(clientPipelines), baseMap = mapOf(basePipelines), diskMap = mapOf(diskPipelines)
   const sameEntry = (left: Map<string, any>, right: Map<string, any>, id: string) => {
     const leftHas = left.has(id), rightHas = right.has(id)
-    return leftHas === rightHas && (!leftHas || JSON.stringify(stripPipelineSharedMeta(left.get(id))) === JSON.stringify(stripPipelineSharedMeta(right.get(id))))
+    return leftHas === rightHas && (!leftHas || samePipelineContent(left.get(id), right.get(id)))
   }
   const ids = new Set<string>([...baseMap.keys(), ...clientMap.keys(), ...diskMap.keys()])
   const merged = new Map<string, any>()
@@ -486,11 +499,11 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
 }
 
 /**
- * 编辑器单条保存的三方合并：只按 id 比对该条定义（同样剥离 favoriteUsers / pinnedAt）——磁盘上的
- * 该条内容仍等于客户端基线时才允许替换（原位）或新增（追加末尾），其余流水线定义、顺序、历史与其他
- * 配置字段一律不动；磁盘版本内容已偏离基线（含被他端删除）即报告冲突，调用方不得写盘。写回条目以
- * 客户端版本为准，favoriteUsers / pinnedAt 按三方合并结果覆盖（保留他端并发收藏/置顶）；
- * 新建条目（基线与磁盘都无）保持客户端原样。
+ * 编辑器单条保存的三方合并：只按 id 比对该条定义（剥离 favoriteUsers / pinnedAt 后键序无关深比较，
+ * 见 samePipelineContent）——磁盘上的该条内容仍等于客户端基线时才允许替换（原位）或新增（追加末尾），
+ * 其余流水线定义、顺序、历史与其他配置字段一律不动；磁盘版本内容已偏离基线（含被他端删除）即报告冲突，
+ * 调用方不得写盘。写回条目以客户端版本为准，favoriteUsers / pinnedAt 按三方合并结果覆盖（保留他端
+ * 并发收藏/置顶）；新建条目（基线与磁盘都无）保持客户端原样。
  */
 function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskConfig: any) {
   const disk = diskConfig && typeof diskConfig === 'object' && !Array.isArray(diskConfig) ? diskConfig : {}
@@ -498,7 +511,10 @@ function mergePipelineOneForWrite(clientPipeline: any, basePipeline: any, diskCo
   const id = clientPipeline && typeof clientPipeline.id === 'string' ? clientPipeline.id : ''
   const diskOne = diskPipelines.find((p: any) => p && typeof p === 'object' && !Array.isArray(p) && p.id === id) ?? null
   const baseOne = basePipeline && typeof basePipeline === 'object' && !Array.isArray(basePipeline) && basePipeline.id === id ? basePipeline : null
-  if (JSON.stringify(stripPipelineSharedMeta(diskOne)) !== JSON.stringify(stripPipelineSharedMeta(baseOne))) {
+  if (!samePipelineContent(diskOne, baseOne)) {
+    /* 客户端基线缺失（保存确认丢失后的重试等）但上送内容与磁盘一致：写入等于现状，按幂等成功
+       返回磁盘配置（客户端随响应自愈基线），不按 409 锁死；内容真实偏离磁盘仍冲突，防静默覆盖。 */
+    if (!baseOne && diskOne && samePipelineContent(diskOne, clientPipeline)) return { conflicts: [] as string[], config: disk }
     return { conflicts: id ? [id] : [], config: disk }
   }
   const config = { ...disk }
@@ -2864,6 +2880,99 @@ export function apply(ctx: Context) {
     o.nodes = nodes
     return o
   }
+  /* ---- 失联孤儿登记簿（orphan ledger）：schemaVersion>=3 客户端上报的 runs/queue 条目在下一次
+     上报中消失且未列入 completed、或在场记录 TTL 过期时，从「静默消失」改为转入本簿，让任何浏览器
+     都能查到该次执行的最后状态（页面刷新/关页后不再丢执行踪迹）。条目 = 入场时已按 cleanQueueEntry
+     白名单清洗的快照 + {ownerId, ownerLabel, kind, orphanedAt}（入簿不再二次清洗，避免 timeKey 口径串扰）；
+     schemaVersion 1/2 的旧页面不参与孤儿语义（条目消失仍静默清除，保持原兼容行为）。
+     保留策略：orphanedAt 距今超 24 小时丢弃，总量超 100 条丢最旧；每次变更防抖 300ms 原子落盘到
+     DSH_HOME/storages/worktable-pipeline-orphans.json，启动时异步加载（缺失/损坏按空簿，失败只 warn）。 */
+  interface QueueOrphan { id: string; ownerId: string; ownerLabel: string; kind: 'running' | 'queued'; orphanedAt: number; [key: string]: any }
+  const queueOrphans = new Map<string, QueueOrphan>()
+  const QUEUE_ORPHANS_FILE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline-orphans.json')
+  const QUEUE_ORPHAN_TTL = 24 * 60 * 60 * 1000   // 孤儿条目保留 24 小时
+  const QUEUE_ORPHAN_CAP = 100                   // 孤儿簿总量上限，超出丢最旧
+  const QUEUE_ORPHAN_FLUSH_DELAY = 300           // 变更防抖落盘间隔（ms）
+  /* 簿内键：ownerId + '\n' + 条目 id（同一浏览器同一条目唯一；不同浏览器各记各的） */
+  function queueOrphanKey(ownerId: string, entryId: string): string { return ownerId + '\n' + entryId }
+  /* 保留策略执行：超龄丢弃 + 超上限丢最旧（orphanedAt 最小者）；返回是否有变更（有变更才落盘）。 */
+  function pruneQueueOrphans(now: number): boolean {
+    let changed = false
+    for (const [key, orphan] of queueOrphans) {
+      if (now - Number(orphan.orphanedAt) > QUEUE_ORPHAN_TTL) { queueOrphans.delete(key); changed = true }
+    }
+    if (queueOrphans.size > QUEUE_ORPHAN_CAP) {
+      const byAge = [...queueOrphans.entries()].sort((a, b) => Number(a[1].orphanedAt) - Number(b[1].orphanedAt))
+      for (const [key] of byAge.slice(0, queueOrphans.size - QUEUE_ORPHAN_CAP)) { queueOrphans.delete(key); changed = true }
+    }
+    return changed
+  }
+  /* 防抖 300ms + 写链串行化（同 usageWriteChain 风格）：写盘失败只记日志，绝不影响请求。 */
+  let queueOrphanFlushTimer: ReturnType<typeof setTimeout> | null = null
+  let queueOrphanWriteChain: Promise<void> = Promise.resolve()
+  function scheduleQueueOrphanFlush() {
+    if (queueOrphanFlushTimer !== null) clearTimeout(queueOrphanFlushTimer)
+    queueOrphanFlushTimer = setTimeout(() => {
+      queueOrphanFlushTimer = null
+      const text = JSON.stringify({ orphans: [...queueOrphans.values()] })
+      queueOrphanWriteChain = queueOrphanWriteChain.then(async () => {
+        try { await writeJsonAtomic(QUEUE_ORPHANS_FILE, text) }
+        catch (err) { console.warn('[tokens-worktable] 流水线孤儿登记簿落盘失败: ' + String(err)) }
+      })
+    }, QUEUE_ORPHAN_FLUSH_DELAY)
+  }
+  /* 入簿：条目须为已清洗快照；同键覆盖（刷新为最新 orphanedAt 与最后状态）。 */
+  function addQueueOrphan(ownerId: string, ownerLabel: string, kind: 'running' | 'queued', entry: any, now: number) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id) return
+    queueOrphans.set(queueOrphanKey(ownerId, entry.id), { ...entry, ownerId, ownerLabel, kind, orphanedAt: now })
+    pruneQueueOrphans(now)
+    scheduleQueueOrphanFlush()
+  }
+  /* 出簿：复活（同 ownerId 重新上报同 id）、completed 补报、dismiss 共用；实际删到才落盘。 */
+  function removeQueueOrphan(ownerId: string, entryId: string) {
+    if (queueOrphans.delete(queueOrphanKey(ownerId, entryId))) scheduleQueueOrphanFlush()
+  }
+  /* 在场记录 TTL 过期清扫：v3 记录的 runs/queue 先转孤儿簿再删记录；v1/v2 旧记录维持静默删除。
+     now 参数化便于测试注入假时间；running 旧字段与 runs[0] 同物，runs 为空时才把 running 当唯一一条补登记。 */
+  function sweepQueuePresence(now: number) {
+    for (const [key, presence] of queuePresence) {
+      if (now - presence.seenAt <= QUEUE_PRESENCE_TTL) continue
+      if (presence.schemaVersion >= 3) {
+        const lastRuns = presence.runs.length ? presence.runs : (presence.running ? [presence.running] : [])
+        for (const entry of lastRuns) addQueueOrphan(presence.id, presence.label, 'running', entry, now)
+        for (const entry of presence.queue) addQueueOrphan(presence.id, presence.label, 'queued', entry, now)
+      }
+      queuePresence.delete(key)
+    }
+  }
+  /* 启动加载：文件缺失/损坏按空簿处理，加载失败只 warn 不影响路由；只补键不删键（与加载窗口内并发
+     的 dismiss/复活删除存在理论竞态，窗口仅启动后毫秒内，可接受）。用 var 而非 const 声明完成标记，
+     使 vm 沙盒测试可经 context 全局 await 加载完成。 */
+  async function loadQueueOrphans(): Promise<void> {
+    let raw = ''
+    try { raw = await readFile(QUEUE_ORPHANS_FILE, 'utf8') } catch { return }   // 无文件 = 空簿
+    let list: any[] = []
+    try {
+      const data = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+      list = data && typeof data === 'object' && !Array.isArray(data) && Array.isArray(data.orphans) ? data.orphans : []
+    } catch {
+      console.warn('[tokens-worktable] 流水线孤儿登记簿文件损坏，按空簿处理: ' + QUEUE_ORPHANS_FILE)
+      return
+    }
+    const now = Date.now()
+    for (const item of list) {
+      /* 最小字段校验：id/ownerId 非空字符串、kind 合法、orphanedAt 有限数值；其余字段维持落盘时的清洗形态 */
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+      if (typeof item.id !== 'string' || !item.id || typeof item.ownerId !== 'string' || !item.ownerId) continue
+      if (item.kind !== 'running' && item.kind !== 'queued') continue
+      if (!Number.isFinite(Number(item.orphanedAt))) continue
+      if (typeof item.ownerLabel !== 'string') item.ownerLabel = ''
+      queueOrphans.set(queueOrphanKey(item.ownerId, item.id), item)
+    }
+    if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()
+  }
+  var queueOrphansReady: Promise<void> = loadQueueOrphans()
+    .catch((err) => console.warn('[tokens-worktable] 流水线孤儿登记簿加载失败: ' + String(err)))
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline/queue',
@@ -2881,6 +2990,19 @@ export function apply(ctx: Context) {
             json(res, result.ok ? 200 : 404, result)
             return
           }
+          if (req.method === 'POST' && body.action === 'dismiss') {
+            /* 孤儿条目人工下架（已确认/不再关注）：从登记簿移除并防抖落盘 */
+            const ownerId = typeof body.ownerId === 'string' ? body.ownerId.slice(0, 64) : ''
+            const orphanId = typeof body.id === 'string' ? body.id.slice(0, 200) : ''
+            if (!ownerId || !orphanId) { json(res, 400, { error: 'missing ownerId or id' }); return }
+            if (queueOrphans.delete(queueOrphanKey(ownerId, orphanId))) {
+              scheduleQueueOrphanFlush()
+              json(res, 200, { ok: true, state: 'dismissed' })
+            } else {
+              json(res, 404, { ok: false, state: 'missing' })
+            }
+            return
+          }
           const id = typeof body.id === 'string' ? body.id.slice(0, 64) : ''
           if (!id) { json(res, 400, { error: 'missing id' }); return }
           const running = body.running === null || body.running === undefined ? null : cleanQueueEntry(body.running, 'startedAt')
@@ -2889,18 +3011,45 @@ export function apply(ctx: Context) {
             .map((r: any) => cleanQueueEntry(r, 'startedAt')).filter((r: any) => !!r)
           const queue = (Array.isArray(body.queue) ? body.queue : []).slice(0, 20)
             .map((q: any) => cleanQueueEntry(q, 'queuedAt')).filter((q: any) => !!q)
+          /* schemaVersion 3 起客户端携带 completed（最近约 60 秒内正常终态化的条目 id）并启用孤儿语义；
+             1/2 旧页面不参与，其条目消失仍静默清除。 */
+          const schemaVersion = Number(body.schemaVersion) === 3 ? 3 : Number(body.schemaVersion) === 2 ? 2 : 1
+          const label = (typeof body.label === 'string' ? body.label : '').slice(0, 64)
+          // seenAt 用服务端收到时间，防客户端时钟偏差
+          const now = Date.now()
+          const previous = queuePresence.get(id)
+          if (schemaVersion >= 3) {
+            const completed = new Set<string>()
+            if (Array.isArray(body.completed)) {
+              for (const raw of body.completed.slice(0, 200)) if (typeof raw === 'string' && raw) completed.add(raw.slice(0, 200))
+            }
+            /* 补报完成出簿：条目先失联入簿、随后客户端又在 completed 里补报其正常终态 */
+            for (const entryId of completed) removeQueueOrphan(id, entryId)
+            /* 复活：同一 owner 重新上报了簿中同 id 条目（如网络抖动 TTL 过期后恢复上报） */
+            const reportedRuns = runs.length ? runs : (running ? [running] : [])
+            for (const entry of reportedRuns) removeQueueOrphan(id, entry.id)
+            for (const entry of queue) removeQueueOrphan(id, entry.id)
+            if (previous && previous.schemaVersion >= 3) {
+              /* 消失检测：上一条在场记录的 runs/queue 条目本次消失且不在 completed → 转孤儿簿。
+                 running 旧字段与 runs[0] 同物，只按 runs 比对；runs 为空时把 running 当作唯一一条。 */
+              const nextIds = new Set<string>()
+              for (const entry of reportedRuns) nextIds.add(entry.id)
+              for (const entry of queue) nextIds.add(entry.id)
+              const previousRuns = previous.runs.length ? previous.runs : (previous.running ? [previous.running] : [])
+              for (const entry of previousRuns) {
+                if (entry && !nextIds.has(entry.id) && !completed.has(entry.id)) addQueueOrphan(id, previous.label || label, 'running', entry, now)
+              }
+              for (const entry of previous.queue) {
+                if (entry && !nextIds.has(entry.id) && !completed.has(entry.id)) addQueueOrphan(id, previous.label || label, 'queued', entry, now)
+              }
+            }
+          }
           if (queuePresence.size >= QUEUE_PRESENCE_CAP && !queuePresence.has(id)) {
             let oldestKey = '', oldestAt = Infinity
             for (const [k, v] of queuePresence) if (v.seenAt < oldestAt) { oldestAt = v.seenAt; oldestKey = k }
             if (oldestKey) queuePresence.delete(oldestKey)
           }
-          // seenAt 用服务端收到时间，防客户端时钟偏差
-          queuePresence.set(id, {
-            id,
-            label: (typeof body.label === 'string' ? body.label : '').slice(0, 64),
-            schemaVersion: Number(body.schemaVersion) === 2 ? 2 : 1,
-            running, runs, queue, seenAt: Date.now(),
-          })
+          queuePresence.set(id, { id, label, schemaVersion, running, runs, queue, seenAt: now })
           json(res, 200, { ok: true })
           return
         }
@@ -2927,7 +3076,8 @@ export function apply(ctx: Context) {
             return
           }
           const now = Date.now()
-          for (const [k, v] of queuePresence) if (now - v.seenAt > QUEUE_PRESENCE_TTL) queuePresence.delete(k)
+          sweepQueuePresence(now)                                      // TTL 过期：v3 记录先转孤儿簿再删
+          if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()       // 顺带执行孤儿保留策略（超龄/超上限）
           const clients: any[] = []
           for (const v of queuePresence.values()) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
@@ -2943,6 +3093,8 @@ export function apply(ctx: Context) {
           json(res, 200, {
             clients,
             server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue },
+            /* 失联孤儿登记簿恒为数组（可空）：元素为清洗后条目全字段 + ownerId/ownerLabel/kind/orphanedAt */
+            orphans: [...queueOrphans.values()],
           })
           return
         }

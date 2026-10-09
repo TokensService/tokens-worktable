@@ -23,8 +23,8 @@ function extractFunction(name) {
   throw new Error(`无法提取函数 ${name}`)
 }
 
-/* 合并函数引用的共享元数据助手（剥离比对 + 三方合并），抽函数时一并加载 */
-const SHARED_META_HELPERS = ['stripPipelineSharedMeta', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
+/* 合并函数引用的共享元数据助手（剥离比对 + 键序无关深比较 + 三方合并），抽函数时一并加载 */
+const SHARED_META_HELPERS = ['stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
 
 function loadFunctions(names, extraDecls = []) {
   const ctx = {}

@@ -1,5 +1,59 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复**流水线「运行队列」刷新即丢与跨用户不可见**（页面驱动的本地执行——含「需本地运行」阶段的流水线——刷新/
+  关闭页面后正在执行的任务从运行队列彻底消失、找不到最后执行状态；且自 ac756d3「运行队列改由服务端持有」起
+  renderQueue 的 `scheduleQueuePublish()` 调用被摘、publishQueue 成死代码，页面运行从不向服务端上报，其他登录者
+  完全看不到别人页面驱动的流水线）。服务端修复（`src/index.ts`）：`/api/worktable/pipeline/queue` 新增「失联孤儿
+  登记簿」——schemaVersion 3 客户端的 runs/queue 条目在新快照中消失且不在 `completed` 列表、或在场记录 45 秒
+  TTL 过期时，不再静默清除而是转入孤儿簿（条目=白名单清洗快照 + ownerId/ownerLabel/kind/orphanedAt；同 owner
+  重新上报同 id 复活出簿，completed 补报出簿；orphanedAt 超 24h 丢弃、总量上限 100）；孤儿簿持久化到
+  `storages/worktable-pipeline-orphans.json`（防抖 300ms 原子写，dsh web 重启不丢，启动异步加载、损坏按空簿）；
+  POST 新增 `action:'dismiss'`（ownerId+id，200 dismissed / 404 missing）；GET 响应新增顶层 `orphans` 数组
+  （恒存在，旧客户端无感知）；schemaVersion 1/2 旧页面保持静默清除语义不进簿（滚动升级兼容）。客户端修复
+  （`projects/pipeline/pipeline.html`）：恢复 renderQueue 末尾的 `scheduleQueuePublish()` 上报（防抖 500ms）；
+  PUT 体升级 schemaVersion 3 并携带 `completed`——「最近终态」登记（finish/abortRun/cancelQueue/重置全部登记点）
+  随 sessionStorage（pip-qfinished，>60s prune、上限 64）跨刷新存活，刷新后首帧上报即豁免刷新前已正常完成的
+  条目；当前 activeRuns 的 originQueueId 一并并入 completed（排队项启动转运行是正常移交而非消失）；
+  新增不随 document.hidden 暂停的 10 秒心跳（页面隐藏时执行仍在继续，停心跳会被误判失联）与 pagehide
+  sendBeacon 最终快照；队列区新增「已中断（页面刷新/关闭）」分组展示孤儿条目（[来源浏览器] 执行人 · 流水线 ·
+  时间 + 「已中断/排队中断」徽标，计入头部计数），点击只读预览最后已知阶段/节点快照（明确提示执行已中断、
+  日志不可拉取），支持「重跑」（pipelineId + env 字符串按「，」/、拆 IP 映射回环境列表 + branch/strategy 经
+  runPipeline 本地队列分流，成功后顺手 dismiss；流水线已删除则置灰）与「移除」（POST dismiss，canControlRun
+  权限口径同服务端队列按钮）；旧服务端无 orphans 键时特性探测降级不渲染。测试：服务端新增
+  `tests/pipeline-queue-orphans.test.mjs`（9 例：消失入簿/completed 豁免/TTL 过期入簿/复活/dismiss 三态/v1v2
+  兼容/持久化重载/保留策略），`pipeline-queue-presence.test.mjs` 沙盒注入同步新外层符号；客户端新增
+  `projects/pipeline/tests/test_queue_orphans.js`（16 例：PUT 体契约、登记持久化与 prune、分组渲染与旧服务端
+  降级、dismiss 参数与权限拦截、预览 rc 形状与自愈、重跑 env 映射兜底、心跳/pagehide 接线），
+  `test_queue_item_preview.js` 断言同步 schemaVersion 3。
+
+- 修复**流水线「复制」副本改名被永久锁死**（编辑器改名保存报「该流水线已被其他浏览器修改」并回滚为
+  「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
+  17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
+  ① 首屏/手动刷新的 GET 快照在「请求发出后、应用前」被复制副本的 save-one 反超（大存储 + 公网慢链路下
+  窗口长达数秒），三方合并把刚落盘的副本误判为「远端已删除」从页面冲掉且基线被污染回退；
+  ② 手动刷新整表替换 pipelines 且从不推进基线，在途改名也被快照冲掉（改名后一刷新即还原）；
+  ③ 基线缺条目而磁盘有条目时每次单条保存都 phantom 409（baseOne=null ≠ 磁盘条目），409 响应携带的
+  磁盘真值又被客户端丢弃，锁死永不自愈；④ 服务端合并层对条目内容同一性用 JSON.stringify 比对（键序
+  敏感），同一条目经编辑器重建阶段对象/旧版客户端/导入等不同键序字节落盘后，内容未变也被判「偏离基线」。
+  客户端修复（`projects/pipeline/pipeline.html`）：新增基线纪元 `stateFetchEpoch` 与
+  `fetchPipelineStateFresh`（GET 在途期间被保存反超即判快照过期并重拉，上限 2 次防活锁；loadServerState
+  与手动刷新统一走该通道）；手动刷新 `applyPipelineRefreshPayload` 改与 loadServerState 同口径（按 id
+  三方合并保留本页在途改动 + 新鲜快照推进共同基线，含 keptBaseEntries 补回，迁移链补 migratePromPreset）；
+  `pushPipelineOne` 409 分支采纳响应携带的磁盘真值为新基线并合回本页（phantom 冲突一次自愈，编辑器回滚
+  按既有 baseAdvanced 逻辑取最新确认版，重试保存即成功；真实并发冲突语义不变）。服务端修复
+  （`src/index.ts`）：`mergePipelineConfigForWrite` / `mergePipelineOneForWrite` 的条目比对改剥离
+  favoriteUsers/pinnedAt 后的**键序无关深比较**（新增 `samePipelineContent`，复用 deepEqualIgnoring，
+  数组顺序仍算内容）；save-one 对「客户端基线缺失但上送内容与磁盘一致」的保存（如确认丢失后的重试）按
+  幂等成功处理并随响应自愈基线，内容真实偏离仍 409 防静默覆盖。测试：客户端新增
+  `projects/pipeline/tests/test_pipeline_copy_rename.js`（8 例端到端级：真实客户端函数 × 服务端真实
+  合并层 × 内存磁盘假服务器，含首屏竞态/陈旧标签页/在途改名抗刷新 3 例修复前验证失败的复现用例）；
+  服务端新增 `tests/pipeline-copy-rename.test.mjs`（5 例，含键序重排 phantom 409 复现、幂等重试与
+  内容偏离仍 409）；既有测试桩同步新全局/提取（test_init_no_autoput、
+  test_loadserverstate_merge_local_add、test_pipeline_multiuser_save、test_pipeline_save_consistency、
+  pipeline-config-concurrency、pipeline-trust、pipeline-config-refresh）。已知遗留：陈旧标签页首次
+  保存仍会按冲突告警一次（无法与真实并发冲突区分），但基线已自愈、重试即成功；pushState 的
+  silentConflict 409 路径（仅旧服务端回退路径）未做磁盘真值采纳。
+
 - 修复**流水线编辑器保存的浏览器端竞态**（多人共用环境下新建/编辑流水线保存偶发失败，报「流水线已不在
   本页列表中（可能被其他浏览器删除）」）：保存链路 savePlForm 先把新流水线 push 进页面全局列表、
   pushPipelineOne 再排等前序全量 PUT；前序 PUT 若 409，pushState 自愈分支的 loadServerState 会**整表

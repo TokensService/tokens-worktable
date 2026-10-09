@@ -911,6 +911,10 @@
   <div id="plRowMenuHistory" class="pl-row-menu-item">运行历史</div>
   <div id="plRowMenuTrusted" class="pl-row-menu-item" style="display:none">标记可信</div>
 </div>
+<!-- 运行历史行「⋯」菜单：复用流水线行菜单的列表项样式，菜单本身固定定位避免撑高历史表格行。 -->
+<div id="historyRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:120px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+  <div id="historyRowMenuViewPipeline" class="pl-row-menu-item">查看流水线</div>
+</div>
 
 <script>
 /* ---------- 流水线定义（内置） ---------- */
@@ -1016,6 +1020,12 @@ const LOGS = {
 /* localStorage 仍保留作离线缓存；服务端不可达时行为与原来一致。 */
 let stateLoaded=false;   // loadServerState 成功后才允许 PUT，避免启动时用本地默认值覆盖服务端数据
 let serverConfigBase=null;   // 最近一次成功 GET/PUT 的服务端配置；PUT 携带它做多浏览器三方合并
+/* 基线纪元：每次基线随「保存确认 / 新鲜快照应用」前进 +1。GET 快照若在「请求发出后、应用前」被一次
+   基线前进反超（典型：复制副本的 save-one 先落盘并推进基线，首屏 GET 才带着落盘前的快照返回），
+   按过期快照合并会把刚落盘的条目误判为「远端已删除」（基线有、远端无、本地==基线 → 随远端删除），
+   副本从页面消失且基线被污染成「无此条目」——之后该条目每次 save-one 都 phantom 409
+   （baseOne=null ≠ 磁盘条目）。loadServerState/手动刷新据此识别过期快照并重拉（fetchPipelineStateFresh）。 */
+let stateFetchEpoch=0;
 let persistTimer=null;
 /* 同一页面内串行 PUT 的互斥锁链尾（Promise 链，见 pushState/pushPipelineOne 头部）：后一次必须基于前一次
    服务端确认后的新基线。旧写法 while(persistInFlight) await persistInFlight 是 check-then-set——两个并发
@@ -1166,6 +1176,7 @@ async function pushState(options){
     }
     if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      stateFetchEpoch+=1;   // 基线前进（保存确认）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
       if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
         pipelines=reconcilePipelinesAfterSave(config.pipelines,body.config.pipelines,pipelines)
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
@@ -1217,10 +1228,25 @@ async function pushPipelineOne(pipelineId){
       return {ok:false, status:403, trusted:true, error:String((body && body.error)||'HTTP 403')};
     }
     if(!r.ok){
+      if(r.status===409 && body.config && typeof body.config==='object' && !Array.isArray(body.config)){
+        /* 409 响应携带磁盘真值（save-one 路由冲突时回传 diskCfg）：采纳为新基线并合回本页（语义同成功分支）。
+           陈旧基线的 phantom 冲突（典型：复制副本落盘后基线被过期 GET 快照污染成「无此条目」，或另一标签页
+           复制的副本晚于本页基线）此前把该条目永久锁死在 409——每次 save-one 都 baseOne=null ≠ 磁盘条目，
+           编辑器反复回滚改名并误报「被其他浏览器修改」。基线本来就是「服务端已确认状态」的缓存，
+           采纳后编辑器回滚按 baseAdvanced 取前进后的最新确认版，用户重试保存即成功；真实并发冲突同义正确。 */
+        serverConfigBase=JSON.parse(JSON.stringify(body.config));
+        stateFetchEpoch+=1;
+        if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
+          pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
+            .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+          try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
+        }
+      }
       return {ok:false, conflict:r.status===409, conflicts:Array.isArray(body.conflicts)?body.conflicts:[], error:String(body.error||('HTTP '+r.status))};
     }
     if(body.config && typeof body.config==='object' && !Array.isArray(body.config)){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
+      stateFetchEpoch+=1;   // 基线前进（保存确认）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
       if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
         pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
@@ -1234,13 +1260,25 @@ async function pushPipelineOne(pipelineId){
     if(persistInFlight===persistMine) persistInFlight=null;   /* 自己是链尾（无后续排队者）才清回 null */
   }
 }
+/* GET /api/worktable/pipeline，并保证快照不落后于任何一次基线前进：请求在途期间若有保存被确认
+   （stateFetchEpoch 前进），响应快照可能取于该次保存落盘之前——按它三方合并会把刚落盘的条目误判为
+   「远端已删除」（基线有、远端无、本地==基线 → 随远端删除），刚复制的副本即从页面消失、基线被污染。
+   过期则重拉（上限 2 次防活锁；仍过期则按现有合并口径应用，不劣于修复前）。 */
+async function fetchPipelineStateFresh(){
+  let st=null, epochAtFetch=stateFetchEpoch, retries=0;
+  for(;;){
+    st=null;
+    try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
+    if(!st || stateFetchEpoch===epochAtFetch || retries>=2) return st;
+    retries+=1; epochAtFetch=stateFetchEpoch;
+  }
+}
 async function loadServerState(){
-  let st=null;
-  try{ const r=await fetch('/api/worktable/pipeline'); if(r.ok) st=await r.json(); }catch(e){}
+  const st=await fetchPipelineStateFresh();
   try{
     /* 流水线三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
     const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
-    if(st) serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{}));
+    if(st){ serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{})); stateFetchEpoch+=1; }   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期
     if(st && st.config && Object.keys(st.config).length){
       const cfg=st.config;
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
@@ -3745,6 +3783,8 @@ function syncDetailLogLines(log,lines){
 }
 function detailLogLinesFor(stage,ctx,node){
   if(ctx&&ctx.remotePreview===true){
+    /* 孤儿中断预览：来源页面已刷新/关闭，日志通道不存在（pullRemoteQueueLog 只服务 server 客户端） */
+    if(ctx.orphanPreview===true) return ['来源页面已刷新/关闭，执行中断，以上为最后已知的阶段状态；运行日志不可拉取，已产出的日志与产物请查看归档目录。'];
     if(ctx.remoteClientId!=='server') return ['其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
     const live=ctx.remoteLogs&&ctx.remoteLogs[stage.id];
     if(!live) return ['正在获取该阶段的最新运行日志…'];
@@ -4265,7 +4305,8 @@ function drainQueue(){
     }
   }
 }
-function cancelQueue(id){ queue=queue.filter(q=>q.id!==id); if(typeof queueReasonOpen!=='undefined') queueReasonOpen.delete(id); renderQueue(); }
+function cancelQueue(id){ if(typeof queueFinishedNote==='function') queueFinishedNote(id);   // 排队取消属正常终态化：登记进 completed，豁免孤儿判定
+  queue=queue.filter(q=>q.id!==id); if(typeof queueReasonOpen!=='undefined') queueReasonOpen.delete(id); renderQueue(); }
 function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
 /* 本地运行队列视图还包含「已出队、正在申请节点租约、尚未进入 activeRuns」的短暂状态。
@@ -4400,7 +4441,7 @@ function refreshRemoteQueuePreviewRc(previous){
   return next;
 }
 function applyRemoteQueuePreviewRefresh(){
-  if(!viewRc||viewRc.remotePreview!==true) return;
+  if(!viewRc||viewRc.remotePreview!==true||viewRc.orphanPreview===true) return;   // 孤儿预览由 applyOrphanPreviewRefresh 照看（条目在 remoteOrphans，不在 remoteQueueClients）
   const next=refreshRemoteQueuePreviewRc(viewRc);
   if(!next){
     viewRc=null; syncViewRun(); applyRunOverall(null);
@@ -4409,6 +4450,47 @@ function applyRemoteQueuePreviewRefresh(){
   }
   viewRc=next; syncViewRun(); applyRunOverall(next); _detailKey='';
   $('stopBtn').disabled=true; refreshArchiveTip(); renderFlow(); renderDetail();
+}
+
+/* 孤儿中断条目（服务端孤儿登记簿）：来源页面刷新/关闭后，其上报快照里的运行/排队条目失去宿主
+   （执行引擎随页面销毁，属于中断），服务端把它们登记为孤儿供各浏览器找回。这里提供只读预览：
+   复用 remoteQueuePreviewRc 的快照→rc 机制（rc 标记 orphanPreview，兼带 remotePreview 只读语义；
+   详情日志走 detailLogLinesFor 的中断文案，不经 pullRemoteQueueLog——日志通道只服务 server 客户端）。 */
+function orphanQueueItem(ownerId,id){
+  const list=(typeof remoteOrphans!=='undefined'&&Array.isArray(remoteOrphans))?remoteOrphans:[];
+  return list.find(o=>String(o&&o.ownerId||'')===String(ownerId)&&String(o&&o.id||'')===String(id))||null;
+}
+function orphanPreviewRc(orphan){
+  const stages=(Array.isArray(orphan&&orphan.stages)?orphan.stages:[]).map(queueStagePresence).filter(Boolean);
+  const incomingNodes=orphan&&orphan.nodes&&typeof orphan.nodes==='object'?orphan.nodes:{};
+  const previewNodes={};
+  stages.forEach(s=>{ previewNodes[s.id]=queueNodePresence(incomingNodes[s.id]); });
+  const queued=orphan&&orphan.kind==='queued';
+  return {id:'orphan:'+String(orphan&&orphan.ownerId||'')+':'+String(orphan&&orphan.id||''), remotePreview:true, orphanPreview:true, over:true,
+    remoteClientId:String(orphan&&orphan.ownerId||''), remoteClientLabel:String(orphan&&(orphan.ownerLabel||orphan.ownerId)||'来源页面'),
+    remoteItemId:String(orphan&&orphan.id||''), remoteKind:queued?'queued':'running',
+    stages:stages, nodes:previewNodes, remoteLogs:{}, selId:stages.length?stages[0].id:null, timer:null,
+    env:orphan&&orphan.env||'', envs:[], image:'', release:'',
+    commit:'—', tag:'—', startTs:(queued?orphan&&orphan.queuedAt:orphan&&orphan.startedAt)||orphan&&orphan.orphanedAt||Date.now(), by:orphan&&orphan.by||'—', source:orphan&&orphan.source||'manual',
+    pipelineId:orphan&&orphan.pipelineId||null, pipelineName:orphan&&orphan.pipelineName||'(自定义)',
+    repoId:null, repoName:orphan&&orphan.repoName||'', repoUrl:'', giturl:GITURL,
+    branch:orphan&&orphan.branch||'main', strategy:orphan&&orphan.strategy||'', vars:{}, token:0,
+    overall:{txt:queued?'排队中断（只读·最后已知状态）':'已中断（只读·最后已知状态）', cls:'dshell-badgeWait', color:''}};
+}
+function focusOrphanQueueItem(ownerId,id){
+  if(viewRc&&viewRc.orphanPreview===true&&viewRc.remoteClientId===String(ownerId)&&viewRc.remoteItemId===String(id)) return;
+  const orphan=orphanQueueItem(ownerId,id); if(!orphan) return;
+  focusRun(orphanPreviewRc(orphan));
+  /* 中断条目的日志不可拉取（pullRemoteQueueLog 只服务 server 客户端），这里刻意不触发日志拉取 */
+}
+/* 正在预览的孤儿被移除（dismiss）或复活（来源页面重新上报同 id）而从登记簿消失时，编排区自愈回
+   空闲编排（处理口径同 applyRemoteQueuePreviewRefresh 的条目消失分支）。孤儿快照在服务端登记时已
+   冻结，不随轮询变化，故只需处理「消失」，内容无需重建。 */
+function applyOrphanPreviewRefresh(){
+  if(!viewRc||viewRc.orphanPreview!==true) return;
+  if(orphanQueueItem(viewRc.remoteClientId,viewRc.remoteItemId)) return;
+  viewRc=null; syncViewRun(); applyRunOverall(null);
+  $('stopBtn').disabled=true; refreshArchiveTip(); resetNodes();
 }
 
 /* ---------- 服务端权威运行队列实时同步 ---------- */
@@ -4422,6 +4504,9 @@ const QCLIENT_ID=(function(){
   catch(e){ return mk(); }
 })();
 let remoteQueueClients=[];   // 其他标签页上报的在场快照（GET 拉取时已过滤掉自己）
+/* 服务端孤儿登记簿快照（GET 响应顶层 orphans，旧服务端无此键→特性探测缺失即保持空数组、跳过渲染）：
+   来源页面刷新/关闭后失联的运行/排队条目（原白名单快照字段 + ownerId/ownerLabel/kind/orphanedAt） */
+let remoteOrphans=[];
 /* 浏览器标签：从 userAgent 粗判浏览器 + id 后 4 位，回答「哪个浏览器的哪个标签页」 */
 function browserTag(){
   const ua=navigator.userAgent||''; let b='浏览器';
@@ -4467,21 +4552,85 @@ function queuedPresenceEntry(item){
   const stages=expandRunStages(item&&item.stages||[],item&&item.presets);
   return queuePresenceEntry(item,'queuedAt',stages,null);
 }
+/* 最近正常终态登记（completed）：本页运行完成（finish，含中止）/重置与排队取消时记录条目 id，随上报的
+   completed 告知服务端「这些条目是正常终态化、不是失联」，不参与孤儿判定。同步写 sessionStorage
+   （pip-qfinished）跨同标签页刷新存活：配合 QCLIENT_ID 同标签页不变，刷新后第一帧上报就能把「刷新前
+   刚正常完成的」排除出孤儿判定。读取即 prune：超过约 60 秒的旧记录丢弃，上限 64 条。 */
+const QUEUE_FINISHED_TTL_MS=60000, QUEUE_FINISHED_CAP=64;
+let queueFinished=[];
+try{ const raw=sessionStorage.getItem('pip-qfinished'); const arr=raw?JSON.parse(raw):null; if(Array.isArray(arr)) queueFinished=arr.filter(e=>e&&typeof e.id==='string'&&Number.isFinite(e.ts)); }catch(e){}
+function queueFinishedPrune(){ const cut=Date.now()-QUEUE_FINISHED_TTL_MS; queueFinished=queueFinished.filter(e=>e.ts>=cut).slice(-QUEUE_FINISHED_CAP); }
+function queueFinishedSave(){ try{ sessionStorage.setItem('pip-qfinished',JSON.stringify(queueFinished)); }catch(e){} }
+function queueFinishedNote(id){
+  if(id===undefined||id===null||id==='') return;
+  queueFinishedPrune();
+  queueFinished.push({id:String(id),ts:Date.now()});
+  if(queueFinished.length>QUEUE_FINISHED_CAP) queueFinished=queueFinished.slice(-QUEUE_FINISHED_CAP);
+  queueFinishedSave();
+}
+function queueFinishedIds(){ queueFinishedPrune(); return queueFinished.map(e=>e.id); }
+/* 上报快照体（PUT 与 pagehide beacon 共用同一组装）：schemaVersion 3 起携带 completed——最近正常终态化
+   的条目 id；另把当前在跑运行的 originQueueId 一并并入：排队项启动后条目 id 由 q… 换成 r…，
+   q 条目从快照「消失」其实是正常移交（runningPresenceEntry 的 originQueueId 仍携带它），不并入会被
+   服务端误判为孤儿中断。 */
+function queuePublishBody(){
+  const runsSnap=activeRuns.map(runningPresenceEntry);
+  const completed=queueFinishedIds();
+  activeRuns.forEach(rc=>{ const qid=String(rc&&rc.originQueueId||''); if(qid&&completed.indexOf(qid)<0) completed.push(qid); });
+  return {schemaVersion:3,id:QCLIENT_ID,label:browserTag(),
+    running:runsSnap.length?runsSnap[0]:null,   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
+    runs:runsSnap,queue:localQueueItems().map(queuedPresenceEntry),completed:completed};
+}
 /* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
 function publishQueue(force){
-  const runsSnap=activeRuns.map(runningPresenceEntry);
-  const runningSnap=runsSnap.length?runsSnap[0]:null;   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
-  const queueSnap=localQueueItems().map(queuedPresenceEntry);
-  const sig=JSON.stringify([runsSnap,queueSnap]);
+  const body=queuePublishBody();
+  const sig=JSON.stringify([body.runs,body.queue]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
   _qPubSig=sig; _qPubAt=now;
   fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({schemaVersion:2,id:QCLIENT_ID,label:browserTag(),running:runningSnap,runs:runsSnap,queue:queueSnap})})
+    body:JSON.stringify(body)})
     .catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
 }
 /* renderQueue 渲染很频繁（运行期逐帧），上报走 500ms 防抖合并，避免状态抖动时连续发请求 */
 function scheduleQueuePublish(){ if(_qPubTimer) clearTimeout(_qPubTimer); _qPubTimer=setTimeout(()=>{ _qPubTimer=null; publishQueue(false); },500); }
+/* 移除孤儿登记：POST dismiss；成功（dismissed）与已被他人移除（missing）都算了结，重拉快照刷新展示。
+   权限在点击处按 canControlRun(entry.by) 拦截（与队列区服务端任务取消同一口径）。 */
+async function dismissOrphanQueueItem(ownerId,id){
+  try{
+    const response=await fetch('/api/worktable/pipeline/queue',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'dismiss',ownerId:String(ownerId||''),id:String(id||'')}),
+    });
+    let result={}; try{ result=await response.json(); }catch(e){}
+    if(!response.ok&&response.status!==404) throw new Error((result&&result.error)||('HTTP '+response.status));
+    await pullRemoteQueue();
+    return result;
+  }catch(error){
+    alert('移除中断登记失败：'+String(error&&error.message||error));
+    await pullRemoteQueue();
+    return null;
+  }
+}
+/* 按孤儿条目的最后已知参数重新发起运行：pipelineId 找流水线，找不到说明流水线已删除、不可重跑
+   （队列区「重跑」按钮同步置灰并提示）；envs 从条目 env 字符串按「，」/、/半角逗号拆出 IP，按 e.ip
+   精确匹配回当前节点列表，匹配不到的环境对象用 {id:'',ip,name:ip} 兜底（保留原目标，不静默换成当前
+   选择）；stages 快照已是预设任务展开后的编排，经 runPipeline 走既有本地队列分流（快照来自页内引擎
+   的白名单字段，脚本绑定等不在其中，重跑按既有模拟/调度语义执行）。重跑成功（已启动/已入队）后顺手
+   dismiss 该孤儿登记。 */
+function rerunOrphanQueueItem(ownerId,id){
+  const orphan=orphanQueueItem(ownerId,id); if(!orphan) return;
+  const pl=typeof findPipeline==='function'?findPipeline(orphan.pipelineId):null;
+  if(!pl){ alert('找不到该次运行的流水线「'+(orphan.pipelineName||'')+'」（可能已删除），无法重跑。'); return; }
+  const ips=String(orphan.env||'').split(/[，、,]/).map(s=>s.trim()).filter(Boolean);
+  const envs=ips.map(ip=>environments.find(e=>e.ip===ip)||{id:'',ip:ip,name:ip});
+  const r=runPipeline({stages:Array.isArray(orphan.stages)?orphan.stages:[], pipelineId:orphan.pipelineId||pl.id, pipelineName:orphan.pipelineName||pl.name,
+    envs:envs, branch:orphan.branch||'main', strategy:orphan.strategy||'', source:'manual'});
+  if(r===false){ alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); return; }
+  if(r==='no-by') return;   // 执行人必填拦截：runPipeline 已弹提示，不再给「已开始」误导提示
+  flashRunTip(r==='queued'?('已加入本地队列（第 '+queue.length+' 位）'):('已开始重跑「'+(orphan.pipelineName||'')+'」'));
+  dismissOrphanQueueItem(ownerId,id);   // 重跑成功：顺手移除孤儿登记
+}
 /* 取消服务端权威任务：运行中会中止，排队中会从队列移除；任一已登录浏览器均可操作。 */
 async function cancelServerRun(runId){
   try{
@@ -4545,7 +4694,7 @@ let _queuePullSig='';   // 上轮已应用渲染的队列快照签名（queuePol
    标签翻转才算变化）；本页有排队项在等节点租约时附加 5 秒桶，保持 nodeWait 到点重试节奏
    （重试由 renderQueue 自愈入口的 drainQueue 驱动）。一次序列化成本远低于 DOM 重建；
    全局依赖一律 typeof 兜底，供抽取测试缺省。 */
-function queuePollSig(clients){
+function queuePollSig(clients,orphans){
   const list=Array.isArray(clients)?clients:[];
   const rel=typeof fmtRelative==='function'?fmtRelative:function(){return '';};
   const parts=[JSON.stringify(list.map(c=>!c||typeof c!=='object'?c:{id:c.id,label:c.label,schemaVersion:c.schemaVersion,running:c.running,runs:c.runs,queue:c.queue}))];
@@ -4555,6 +4704,11 @@ function queuePollSig(clients){
     (Array.isArray(c&&c.runs)?c.runs:[]).forEach(r=>times.push(rel(r&&r.startedAt)));
     if(c&&c.running) times.push(rel(c.running.startedAt));
   });
+  /* 孤儿登记簿（旧服务端无此数据时调用方传空/缺省）：内容变化（新增/移除/复活）必须触发重绘；
+     orphanedAt 的相对时间文字翻转同样算变化 */
+  const orph=Array.isArray(orphans)?orphans:[];
+  parts.push('o:'+JSON.stringify(orph));
+  orph.forEach(o=>times.push(rel(o&&o.orphanedAt)));
   parts.push('t:'+times.join(','));
   if(typeof viewRc!=='undefined'&&viewRc){
     parts.push('v:'+(viewRc.remotePreview===true?('r:'+viewRc.remoteClientId+':'+viewRc.remoteKind+':'+viewRc.remoteItemId):String(viewRc.id||'')));
@@ -4575,10 +4729,15 @@ async function pullRemoteQueue(){
       const server=j&&j.server;
       const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
       const next=(serverActive?[server]:[]).concat(clients);
-      const sig=queuePollSig(next);
+      /* 孤儿登记簿：GET 响应顶层 orphans（恒存在、可空）；旧服务端无此键——Array.isArray 特性探测，
+         缺失即跳过（remoteOrphans 保持原值，优雅降级不报错） */
+      const orphans=Array.isArray(j.orphans)?j.orphans:null;
+      const sig=queuePollSig(next,orphans||[]);
       if(sig!==_queuePullSig){
         _queuePullSig=sig;
         remoteQueueClients=next;
+        if(orphans) remoteOrphans=orphans;
+        if(typeof applyOrphanPreviewRefresh==='function') applyOrphanPreviewRefresh();   // 正在预览的孤儿被移除/复活消失时，编排区自愈回空闲编排
         const planSig=planActiveSig();
         if(planSig!==_planActiveSig){ _planActiveSig=planSig; renderPlanList(); }   // 计划的活动执行（运行中/排队中）集合变化时同步重绘「定时」页，「终止」按钮随执行出现/消失
         applyRemoteQueuePreviewRefresh();
@@ -4843,10 +5002,13 @@ function renderQueue(){
   const legacyQueuedCount=legacyClients.reduce((sum,client)=>sum+(Array.isArray(client&&client.queue)?client.queue.length:0),0);
   const remoteRunningCount=serverRunningCount+legacyRunningCount;
   const remoteQueuedCount=serverQueuedCount+legacyQueuedCount;
-  const totalQueueItems=activeRuns.length+localItems.length+remoteRunningCount+remoteQueuedCount;
+  /* 孤儿中断条目（服务端登记簿；typeof 兜底供抽取测试缺省）：计入队列卡片头部计数与状态 */
+  const orphans=(typeof remoteOrphans!=='undefined'&&Array.isArray(remoteOrphans))?remoteOrphans:[];
+  const orphanCount=orphans.length;
+  const totalQueueItems=activeRuns.length+localItems.length+remoteRunningCount+remoteQueuedCount+orphanCount;
   $('queueCount').textContent = totalQueueItems?'('+totalQueueItems+' 项)':'';
-  /* 明细列表在本页有运行/排队、或其他浏览器有活动时展开，空态由独立卡片首行的「空闲」徽标表达 */
-  list.style.display = (running||localItems.length||remoteQueueClients.length)?'':'none';
+  /* 明细列表在本页有运行/排队、其他浏览器有活动、或有中断登记时展开，空态由独立卡片首行的「空闲」徽标表达 */
+  list.style.display = (running||localItems.length||remoteQueueClients.length||orphanCount)?'':'none';
   /* 正在编排区查看的条目（本页在跑/排队预览/他端只读预览）：整框背景高亮，与运行历史选中行
      背景色保持一致（#historyTable tbody tr.sel td 同一 rgba(79,142,247,.12)），呼应「（查看中）」标记 */
   const markViewing=it=>{ it.style.background='rgba(79,142,247,.12)'; };
@@ -4879,7 +5041,12 @@ function renderQueue(){
     status=statusParts.join(' · ');
     cls='dshell-badgeWait';
   }
+  if(orphanCount){
+    status=(status==='空闲'?'':status+' · ')+'已中断 '+orphanCount;
+    cls='dshell-badgeWait';
+  }
   const qs=$('queueStatus'); qs.className='dshell-badge '+cls; qs.textContent=status;
+  qs.style.color=orphanCount?'var(--st-err)':''; qs.style.borderColor=orphanCount?'color-mix(in srgb, var(--st-err) 40%, transparent)':'';   // 有中断登记时头部徽标转错误色提请注意
   /* 排队项「等待节点」标注：节点被他端（其他标签页/浏览器/API/定时）运行占用时展示占用节点与占用者，
      租约释放后 drainQueue 自动重启该项 */
   const nodeWaitText=q=>{
@@ -4958,6 +5125,32 @@ function renderQueue(){
       });
     });
   }
+  /* 「已中断」分组（排在「服务端队列 / 其他浏览器」之后，仅 orphans 非空时渲染）：来源页面刷新/关闭后
+     执行引擎随页面销毁而中断的运行/排队条目（服务端孤儿登记簿）。条目为最后已知的白名单快照，
+     点击只读预览阶段编排；可「重跑」（按快照参数经 runPipeline 重新发起）或「移除」（dismiss 登记）。
+     自己页面刷新/关闭导致中断的运行也会列在这里（同标签页刷新后 QCLIENT_ID 不变，ownerId 匹配本页）。 */
+  if(orphanCount){
+    const sep=document.createElement('div'); sep.className='dshell-listItem';
+    sep.innerHTML='<span class="dshell-muted" style="font-size:10px" title="来源页面已刷新或关闭、执行随之中断的运行/排队任务；自己页面刷新或关闭导致中断的运行也会列在这里">— 已中断（页面刷新/关闭）—</span>';
+    list.appendChild(sep);
+    orphans.forEach(o=>{
+      const oid=String(o&&o.id||''), oowner=String(o&&o.ownerId||'');
+      if(!oid) return;
+      const it=document.createElement('div'); it.className='dshell-listItem';
+      const queued=o&&o.kind==='queued';
+      const viewing=viewRc&&viewRc.orphanPreview===true&&viewRc.remoteClientId===oowner&&viewRc.remoteItemId===oid;
+      if(viewing) markViewing(it);
+      const otag='<span class="dshell-muted" style="font-size:10px">['+esc((o&&(o.ownerLabel||o.ownerId))||'来源页面')+']</span> ';
+      const timeTs=queued?o&&o.queuedAt:o&&o.startedAt;
+      const gone=typeof findPipeline==='function'?!findPipeline(o&&o.pipelineId):false;   // 流水线已删除：重跑置灰
+      it.innerHTML='<span class="dshell-listItemTitle" data-qorphan-view="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'" title="点击查看最后已知的阶段编排与运行参数快照（来源页面已刷新/关闭，执行中断；日志不可拉取，产物见归档目录）" style="cursor:pointer;">'+otag+esc(o&&o.by||'—')+' · '+esc(o&&o.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(o&&o.source))+'</span> <span class="dshell-muted" style="font-size:10px" title="中断时间（来源页面失联）：'+(o&&o.orphanedAt?new Date(o.orphanedAt).toLocaleString():'')+'">'+fmtRelative(timeTs||o&&o.orphanedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(o||{})+'</span>'
+        +'<span class="dshell-badge" style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent);">'+(queued?'排队中断':'已中断')+'</span>'
+        +' <button class="dshell-btn dshell-btnGhost mini" data-qorphan-rerun="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'"'+(gone?' disabled title="找不到该次运行的流水线（可能已删除），无法重跑"':' title="按最后已知的参数快照重新发起运行（执行人取当前登录用户）"')+'>重跑</button>'
+        +' <button class="dshell-btn dshell-btnGhost mini" data-qorphan-dismiss="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'" title="从运行队列移除该中断登记">移除</button>';
+      it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusOrphanQueueItem(oowner,oid); });   // 空白处点击同标题：只读预览
+      list.appendChild(it);
+    });
+  }
   list.querySelectorAll('[data-qcancel]').forEach(b=>b.addEventListener('click',()=>{ const q=queue.find(x=>x.id===b.getAttribute('data-qcancel')); if(q && !canControlRun(q.by)){ alert('无权限：仅管理员可取消其他用户（'+esc(q.by||'')+'）的排队任务。'); return; } cancelQueue(b.getAttribute('data-qcancel')); }));
   list.querySelectorAll('[data-qserver-cancel]').forEach(b=>b.addEventListener('click',()=>{
     const id=b.getAttribute('data-qserver-cancel');
@@ -4977,6 +5170,16 @@ function renderQueue(){
     renderQueue();
   }));
   list.querySelectorAll('[data-qremote-id]').forEach(el=>el.addEventListener('click',()=>focusRemoteQueueItem(el.getAttribute('data-qremote-client'),el.getAttribute('data-qremote-id'),el.getAttribute('data-qremote-kind'))));
+  list.querySelectorAll('[data-qorphan-view]').forEach(el=>el.addEventListener('click',()=>focusOrphanQueueItem(el.getAttribute('data-qorphan-owner'),el.getAttribute('data-qorphan-view'))));
+  list.querySelectorAll('[data-qorphan-rerun]').forEach(b=>b.addEventListener('click',()=>{ if(b.disabled) return; rerunOrphanQueueItem(b.getAttribute('data-qorphan-owner'),b.getAttribute('data-qorphan-rerun')); }));
+  /* 「移除」中断登记：权限口径与队列区现有按钮一致（canControlRun(entry.by)，无权限 alert 提示，
+     参照 data-qserver-cancel 的写法） */
+  list.querySelectorAll('[data-qorphan-dismiss]').forEach(b=>b.addEventListener('click',()=>{
+    const o=orphanQueueItem(b.getAttribute('data-qorphan-owner'),b.getAttribute('data-qorphan-dismiss'));
+    if(o && !canControlRun(o.by)){ alert('无权限：仅管理员可移除其他用户（'+esc(o.by||'')+'）的中断登记。'); return; }
+    dismissOrphanQueueItem(b.getAttribute('data-qorphan-owner'),b.getAttribute('data-qorphan-dismiss'));
+  }));
+  scheduleQueuePublish();   // 队列/运行态每次重绘都可能变化：防抖上报本页在场快照（见「服务端权威运行队列实时同步」区块）
   refreshPipelineQueueCounts();   // 每秒队列同步只更新现有计数单元格，不重建任务表（保留筛选与行交互）
 }
 /* 远端客户端的在跑运行列表：新版上报 runs 数组；旧版只有单条 running，按一条计 */
@@ -6486,6 +6689,9 @@ function finish(rc, result){
   if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
   if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 释放节点租约：等待同节点的排队任务（含他端）随即可启动
   activeRuns=activeRuns.filter(r=>r!==rc);
+  /* 正常终态化登记（完成/中止都经 finish）：条目从在场快照消失属正常，上报 completed 豁免孤儿判定。
+     typeof 守卫：extractFn 抽取 finish 的测试沙盒无此函数时按旧行为运行 */
+  if(typeof queueFinishedNote==='function'){ queueFinishedNote(rc&&rc.id); if(rc&&rc.originQueueId) queueFinishedNote(rc.originQueueId); }
   syncRunState();
   $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止（控制权由 click/focusRun 守卫）
   /* 收尾（徽标 / 历史 / 统计 / 持久化 / 归档 / 详情）尽力而为：任一步异常都不得跳过下方的
@@ -7474,11 +7680,15 @@ function renderHistory(){
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-menu title="更多操作" aria-label="运行 #'+esc(h.no)+' 更多操作">⋯</button></td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());
     analysisPick.addEventListener('change', e=>{ if(!toggleAnalysisHistory(h,e.target.checked)) e.target.checked=false; });
+    const historyMenu=tr.querySelector('[data-history-menu]');
+    if(historyMenu){
+      historyMenu.addEventListener('click', e=>{ e.stopPropagation(); openHistoryRowMenu(h, historyMenu); });
+    }
     tr.addEventListener('click', ()=>{
       selHistoryIdx = selHistoryIdx===idx?-1:idx;
       if(selHistoryIdx>=0) enterHistoryReplay(history[selHistoryIdx]);   // 选中行：编排区/回显框/主控控件同步回放该次运行
@@ -7835,9 +8045,20 @@ function renderStats(){
 function applyPipelineRefreshPayload(st){
   const cfg=(st && st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
   if(!Array.isArray(cfg.pipelines) || !cfg.pipelines.length) return false;
-  const def=cfg.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-  const customs=cfg.pipelines.filter(p=>p && !p.builtIn);
-  pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults);
+  /* 与 loadServerState 同口径（此前整表替换且不动基线，两个坑：① 在途的本地新增/修改被快照冲掉——
+     改名 save-one 在途时点刷新，响应合入时发现本地已无改名，按「在途期间被改」回退成旧名；
+     ② 共同基线停留旧快照——基线之后落盘的条目（复制副本、他端新增）在磁盘有而基线无，后续
+     save-one 永久 phantom 409（baseOne=null ≠ 磁盘条目），改名被反复回滚且误报「被其他浏览器修改」）：
+     按 id 三方合并保留本页在途改动，并以本次新鲜快照推进共同基线（含 keptBaseEntries 补回，口径见
+     loadServerState），基线本来就是「最近一次成功 GET/PUT 的服务端配置」的缓存。 */
+  const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+  const merged=mergePipelinesFromServer(prevBasePipelines, pipelines, cfg.pipelines);
+  serverConfigBase=JSON.parse(JSON.stringify(cfg));
+  stateFetchEpoch+=1;   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
+  const def=merged.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
+  const customs=merged.pipelines.filter(p=>p && !p.builtIn);
+  pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+  if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
   if(!findPipeline(curPipelineId)) curPipelineId=pipelines[0].id;
   try{
     localStorage.setItem('pip-pipelines', JSON.stringify(pipelines));
@@ -7849,9 +8070,8 @@ async function refreshPipelinesFromServer(){
   if(running){ alert('流水线运行中，暂不能刷新流水线任务。'); return; }
   const b=$('pipelineRefresh'); b.disabled=true;
   try{
-    const r=await fetch('/api/worktable/pipeline');
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    const st=await r.json();
+    const st=await fetchPipelineStateFresh();   // 过期快照重拉（在途保存先于快照落盘时），见 fetchPipelineStateFresh
+    if(!st) throw new Error('服务端配置拉取失败');
     /* 请求在途时仍可能从运行按钮启动任务：迟到响应不得改写运行快照与节点状态。 */
     if(running){ alert('流水线已开始运行，本次刷新已取消。'); return; }
     const keepSelectedId=selectedId;   // 响应提交前再取，保留请求在途期间用户新切换的阶段
@@ -8008,6 +8228,43 @@ function showPipelineHistory(id){
   refreshHistoryFromServer(false);
   const card=$('histCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
 }
+/* 运行历史行「查看流水线」：独立于整行点击回放，定位对应流水线并把任务列表筛到该名称。 */
+function showPipelineFromHistory(rec){
+  const name=String(rec&&rec.pipeline||'').trim(); if(!name) return;
+  const pl=(rec.pipelineId&&findPipeline(rec.pipelineId))||pipelines.find(p=>p&&p.name===name)||null;
+  plFilter={kw:name,owner:'all',favorite:'all'};
+  plPage=0;
+  const kwInp=$('plFilterKw'); if(kwInp) kwInp.value=name;
+  const ownerSel=$('plFilterOwner'); if(ownerSel) ownerSel.value='all';
+  const favoriteSel=$('plFilterFavorite'); if(favoriteSel) favoriteSel.value='all';
+  if(pl) selectPipeline(pl.id);
+  savePlFilter(); renderPipelines();
+  const card=$('pipelineTaskCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
+}
+let historyMenuOpenRec=null;
+function closeHistoryRowMenu(){
+  historyMenuOpenRec=null;
+  const panel=$('historyRowMenuPanel'); if(panel) panel.style.display='none';
+}
+function openHistoryRowMenu(rec, anchorBtn){
+  const panel=$('historyRowMenuPanel'), item=$('historyRowMenuViewPipeline');
+  if(!panel||!item) return;
+  historyMenuOpenRec=rec;
+  item.title='查看并筛选流水线「'+String(rec&&rec.pipeline||'')+'」';
+  panel.style.display='block';
+  if(anchorBtn&&anchorBtn.getBoundingClientRect){
+    const r=anchorBtn.getBoundingClientRect();
+    panel.style.left=Math.max(4,r.right-(panel.offsetWidth||0))+'px';
+    panel.style.top=(r.bottom+4)+'px';
+  }
+}
+const historyRowMenuViewPipeline=$('historyRowMenuViewPipeline');
+if(historyRowMenuViewPipeline && typeof historyRowMenuViewPipeline.addEventListener==='function') historyRowMenuViewPipeline.addEventListener('click', e=>{
+  e.stopPropagation();
+  const rec=historyMenuOpenRec;
+  closeHistoryRowMenu();
+  if(rec) showPipelineFromHistory(rec);
+});
 /* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
    pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
 function togglePipelinePin(id){
@@ -8462,6 +8719,11 @@ $('resetBtn').addEventListener('click', ()=>{
     alert('无可重置的本人流水线；其余 '+(otherRunsN+otherQueueN)+' 个为他人条目，仅管理员可重置。'); return;
   }
   exitHistoryReplay();   // 重置一并退出历史回放态
+  /* 重置属正常终态化（不计入历史）：被清空的运行/排队条目登记进 completed，豁免孤儿判定 */
+  if(typeof queueFinishedNote==='function'){
+    ownRuns.forEach(rc=>{ queueFinishedNote(rc&&rc.id); if(rc&&rc.originQueueId) queueFinishedNote(rc.originQueueId); });
+    ownQueue.forEach(q=>queueFinishedNote(q&&q.id));
+  }
   ownRuns.forEach(disposeRunForReset);   // 先取消并行子任务，再标死父运行；在途迟回不得 finish 入账（重置不计入历史）
   if(adminAll){ activeRuns=[]; queue=[]; }
   else { activeRuns=activeRuns.filter(r=>!mine(r)); queue=queue.filter(q=>!mine(q)); }
@@ -8907,8 +9169,10 @@ $('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); con
 $('plRowMenuHistory').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) showPipelineHistory(id); });
 $('plRowMenuTrusted').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineTrusted(id); });
 document.addEventListener('click', closePlRowMenu);
+document.addEventListener('click', closeHistoryRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
+window.addEventListener('resize', closeHistoryRowMenu);
 $('ioExpSettings').addEventListener('click', exportSettings);
 $('ioExpPipelines').addEventListener('click', exportPipelines);
 $('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
@@ -9077,6 +9341,17 @@ function syncQueuePolling(){
 document.addEventListener('visibilitychange',syncQueuePolling);
 pullRemoteQueue();
 startQueuePolling();
+/* 在场保活心跳：独立 10 秒 interval 调 publishQueue(false)（签名未变且距上次上报 <10s 时自动跳过，
+   恰好兜底服务端 45 秒在场 TTL）。刻意不随 document.hidden 暂停——页面隐藏时本地执行仍在继续，
+   停心跳会被服务端误判失联、在跑条目被登记为孤儿中断；与上方 1 秒拉取轮询的可见性暂停策略刻意
+   不同：拉取只是展示降耗，上报是存活证据。pagehide 时用 sendBeacon 补发最终快照（含 completed：
+   关闭瞬间刚正常终态化的条目据此豁免孤儿判定；beacon 只能 POST，body 用 text/plain Blob——
+   服务端 readJsonBody 只按 JSON 解析正文、不校验 content-type）。 */
+const QUEUE_PRESENCE_HEARTBEAT_MS=10000;
+setInterval(()=>{ try{ publishQueue(false); }catch(e){} },QUEUE_PRESENCE_HEARTBEAT_MS);
+window.addEventListener('pagehide',()=>{
+  try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify(queuePublishBody())],{type:'text/plain'})); }catch(e){}
+});
 </script>
 </body>
 </html>

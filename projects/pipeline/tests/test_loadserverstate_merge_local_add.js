@@ -103,6 +103,7 @@ function loadFixture(response, seeds) {
   const els = {};
   const ctx = {
     persistInFlight: null,
+    stateFetchEpoch: 0,   /* 基线纪元（fetchPipelineStateFresh 过期重拉依据；无在途保存时行为与旧一致） */
     stateLoaded: false,
     serverConfigBase: seeds.base,
     pipelines: seeds.local,
@@ -131,7 +132,7 @@ function loadFixture(response, seeds) {
   };
   vm.createContext(ctx);
   vm.runInContext([
-    'historyPersistSig', 'stripPipelineSharedMeta', 'mergePipelinesFromServer', 'loadServerState',
+    'historyPersistSig', 'stripPipelineSharedMeta', 'mergePipelinesFromServer', 'fetchPipelineStateFresh', 'loadServerState',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, storage, requests, migrateCalls };
 }
@@ -188,6 +189,7 @@ function raceFixture() {
   const test2 = { id: 'pl-test2', name: 'test2', stages: [{ id: 's1' }] };
   const ctx = {
     persistInFlight: null, persistTimer: null, stateLoaded: true,
+    stateFetchEpoch: 0,   /* 基线纪元（fetchPipelineStateFresh 过期重拉依据） */
     serverConfigBase: { pipelines: [JSON.parse(JSON.stringify(remoteBase))] },
     pipelines: [JSON.parse(JSON.stringify(remoteBase)), JSON.parse(JSON.stringify(test2))],   // savePlForm 已把 test2 push 进全局列表
     curPipelineId: 'pl-muzjbpsr',
@@ -230,7 +232,7 @@ function raceFixture() {
   vm.createContext(ctx);
   vm.runInContext([
     'historyPersistSig', 'reconcilePipelinesAfterSave', 'stripPipelineSharedMeta', 'mergePipelinesFromServer',
-    'pushState', 'pushPipelineOne', 'loadServerState',
+    'fetchPipelineStateFresh', 'pushState', 'pushPipelineOne', 'loadServerState',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, storage, requests, toasts };
 }
