@@ -1,5 +1,7 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复**「打开归档目录」经 better-sidebar 原生侧边栏打开文件夹报 "is a directory"**（`src/client/index.tsx`）：根因是 better-sidebar ≥0.19 的原生面转发 editor 打开时丢弃 openTab 的 meta（0.24.1 仍如此，其自身 agent-opens 的 folder 推送同病），EditorHost 拿不到 meta.dir 把目录当文件 fsRead；`openFolderInSidebar` 改为三级回退——先绕过 betterSidebar 服务直调宿主 `sidebarRight.openResource`（会话作用域文件地址 + mounted 会话快照，以 `params.meta.dir` 经 navigation.params 透传目录语义），失败回退 better-sidebar 底部工作台（`openTab target:'bottom'`，meta 不丢），再失败返回 false 由页面回退系统文件管理器。测试：新增 `tests/open-folder-in-sidebar.test.mjs`（10 例）。
+
 - 修复**流水线主控预置任务无法勾选**：旧版浏览器状态中预置脚本参数 `params` 偶尔以非数组形态持久化时，首屏参数渲染会因 `.forEach` 抛错，导致后续预置任务 checkbox 与按钮事件无法注册；清理、检查、Profiling 三处参数渲染现仅接受数组，损坏数据按无参数处理并继续完成主控初始化。新增对应回归测试。
 
 - 新增**流水线「任务是否完成」的服务端权威判定与下发**（`src/index.ts`）：① 执行池终态发布——已开始运行的 run 到达终态（成功/失败/取消）即记录 FinishedEntry（白名单清洗，含 generation 透传），池内环形缓冲上限 20 条 / TTL 120s 惰性 prune，多代际 manager 聚合存活代与退役簿后由 GET `/api/worktable/pipeline/queue` 以 `server.finished` 下发，客户端不再靠「条目从快照消失」推断完成；排队即取消的条目不记录。② 新增 `POST /api/worktable/pipeline/stage-poll/jenkins` 与 `POST /api/worktable/pipeline/stage-poll/evaltokens` 两个阶段完成轮询端点：长轮询窗口（默认 20s、上限 25s）内由服务端轮询上游（Jenkins queue/build 含 progressiveText 增量控制台续传、EvalTokens runs），语义镜像原浏览器轮询（30 连败按 key 跨请求累计、判负后短路 10 分钟）；目标复用 `/api/worktable/proxy` 同款内网白名单（403），headers 透传剔除逐跳头，客户端断开即中止上游轮询。测试：新增 `tests/pipeline-finished-runs.test.mjs`（4 例）与 `tests/pipeline-stage-poll.test.mjs`（15 例），更新 presence/run-api/node-leases 三处快照断言（server 对象新增 finished 键）。
