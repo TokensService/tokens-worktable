@@ -27,6 +27,22 @@
   TTL 过期懒清理、路由接线文本断言、客户端 online 解析契约）；`tests/usage-stats.test.mjs`
   空结构期望同步补 `online: 0`。
 
+- 流水线**新增「拥有者」属性，任务列表筛选与署名展示改用拥有者、支持搜索用户**（`projects/pipeline/pipeline.html`）：
+  流水线现在有三个署名属性——`createdBy` 创建者（创建时定死的历史署名，不再参与权限判定）、`owner`
+  拥有者（拥有编辑/删除权限；新建与复制时署为当前用户；存量流水线无 `owner` 字段时经 `plOwnerOf` 回退按
+  `createdBy` 计）、`updatedBy` 最近修改者（每次保存/拖拽改序刷新）。`migratePipelineDefaults` 增加
+  `owner` 归一化；`plEditable` 权限判定、编辑/删除守卫、编辑器只读标题与 alert 口径全部由「创建者」改为
+  「拥有者」（新增 `plCreatorOf` 取历史创建者）；编辑存量未署名流水线时创建者与拥有者各自空白才补署当前用户。
+  任务列表筛选栏「创建者」下拉换成可搜索输入框（`input#plFilterOwner` + `datalist#plOwnerList`）：特殊项
+  （我的（含预置）/全部/仅预置/未署名）以中文标签选择，用户名原样输入；匹配口径为——输入等于某已知拥有者
+  用户名时精确匹配（防「ali」波及「alicia」），否则按子串大小写不敏感搜索拥有者；localStorage `pip-plFilter`
+  旧值（mine/all/builtin/unknown/旧用户名）加载后照常生效并正确回显。行内署名 `· 创建 @x` 改为 `· 拥有 @x`
+  （修改人不同仍附 `· 修改 @y`；创建者与拥有者不同时署名行悬停提示「创建者 @z」）；编排区节点只读提示与
+  帮助文本同步为拥有者口径。测试：新增 `projects/pipeline/tests/test_pipeline_owner_filter.js`（标签↔模式键
+  映射与回显、用户名精确匹配、子串大小写不敏感搜索、datalist 填充与聚焦不打扰、localStorage 旧值兼容，11 例）；
+  `test_pipeline_owner_edit.js` 扩充 owner≠createdBy 权限矩阵、存量无 owner 回退、`migratePipelineDefaults`
+  owner 归一化与 savePlForm 三态补署用例；`test_pipeline_audit_trail.js` 等既有测试同步更新。
+
 - 调整**流水线编辑器「+ 添加阶段」按钮移至冻结底栏最左边**（`projects/pipeline/pipeline.html`
   的 `#plForm` 弹窗）：该按钮原先与「保存 / 取消」一起靠右排列在弹窗底部冻结行右端，阶段较多
   需滚动时添加入口远离编辑起点。现将其移到该冻结行的最左边；草稿提示 `#plDraftTip`
