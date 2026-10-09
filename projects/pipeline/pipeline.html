@@ -3342,13 +3342,13 @@ function renderStageActionRow(i){
   outInp.title='本阶段脚本 stdout 产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 顶层字段全部按原名下传；IMAGE_URL=image 表示把产出的 image 改名为 IMAGE_URL；来源也可写 JSON 路径取单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把 stdout 全文整体赋给指定变量（如 RESP=*）；下游阶段参数值可填 ${IMAGE_URL} 引用';
   box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(outLab); box.appendChild(outInp);
 }
-/* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「需本地运行」则不支持定时） ---------- */
+/* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「本地运行」则不支持定时） ---------- */
 function renderStageSched(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-sched]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
   const on=!!s.sched;
-  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(!on?'checked':'')+'/> 需本地运行，不支持定时</label>';
+  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(!on?'checked':'')+'/> 本地运行</label><span class="dshell-muted" style="font-size:11px;cursor:help;margin-left:2px;" title="本地运行任务不支持定时任务">ⓘ</span>';
   if(on){
     h+='<span class="dshell-muted" style="font-size:11px;">跟随流水线定时计划执行（周期/一次性在「定时」页配置）；本地运行阶段须排在本阶段之前，否则保存报错；运行时前缀走运行队列，本阶段及之后由服务端触发</span>';
   }
