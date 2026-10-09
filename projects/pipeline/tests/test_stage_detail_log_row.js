@@ -167,9 +167,9 @@ test('currentStageAnalysisRec：curRun 缺失或无 tag 返回 null', () => {
 
 test('currentStageAnalysisRec：tag 无匹配或无 tag 字段的记录不命中', () => {
   const miss = analysisRecCtx({ curRun: { tag: 'run-x' }, history: [{ tag: 'run-a' }, { tag: 'run-b' }] });
-  assert.equal(miss.currentStageAnalysisRec(), undefined, 'history 无匹配 tag 时不得返回记录');
+  assert.equal(miss.currentStageAnalysisRec(), null, 'history 无匹配 tag 时应为 null');
   const noTagField = analysisRecCtx({ curRun: { tag: 'run-x' }, history: [{ no: 9, status: 'success' }] });
-  assert.equal(noTagField.currentStageAnalysisRec(), undefined, '无 tag 字段的历史记录不得误匹配');
+  assert.equal(noTagField.currentStageAnalysisRec(), null, '无 tag 字段的历史记录不得误匹配（应为 null）');
 });
 
 /* ---------- stageDetailAnalysis ---------- */
