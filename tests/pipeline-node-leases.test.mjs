@@ -153,7 +153,9 @@ test('执行池：dispose 等待旧代完成且不终止运行中的执行', asy
 test('执行池：运行与快照绑定 generation', async () => {
   const ctx = loadApiRegion()
   let release
-  const pool = ctx.createPipelineExecutionQueue(async () => {
+  let seenGeneration
+  const pool = ctx.createPipelineExecutionQueue(async plan => {
+    seenGeneration = plan.generation
     await new Promise(resolve => { release = resolve })
   }, 1, 10, { generation: 'g-bound' })
   const running = pool.run({ id: 'bound-run' })
@@ -161,6 +163,7 @@ test('执行池：运行与快照绑定 generation', async () => {
   assert.equal(pool.snapshot().generation, 'g-bound')
   assert.equal(pool.snapshot().runs[0].generation, 'g-bound')
   assert.equal(pool.stats().generation, 'g-bound')
+  assert.equal(seenGeneration, 'g-bound')
   release()
   await running
 })
