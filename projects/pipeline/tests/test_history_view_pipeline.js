@@ -72,3 +72,10 @@ test('缺少流水线名称时查看入口不改变当前状态', () => {
   assert.deepEqual(calls, []);
   assert.equal(nodes.pipelineTaskCard.scrolled, undefined);
 });
+
+test('运行历史使用三点菜单承载查看流水线操作', () => {
+  assert.match(source, /data-history-menu/);
+  assert.match(source, /id="historyRowMenuPanel"/);
+  assert.match(source, /id="historyRowMenuViewPipeline"[^>]*>查看流水线/);
+  assert.doesNotMatch(source, /data-history-pipeline/);
+});

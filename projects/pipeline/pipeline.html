@@ -911,6 +911,10 @@
   <div id="plRowMenuHistory" class="pl-row-menu-item">运行历史</div>
   <div id="plRowMenuTrusted" class="pl-row-menu-item" style="display:none">标记可信</div>
 </div>
+<!-- 运行历史行「⋯」菜单：复用流水线行菜单的列表项样式，菜单本身固定定位避免撑高历史表格行。 -->
+<div id="historyRowMenuPanel" style="display:none;position:fixed;z-index:1000;min-width:120px;overflow:hidden;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
+  <div id="historyRowMenuViewPipeline" class="pl-row-menu-item">查看流水线</div>
+</div>
 
 <script>
 /* ---------- 流水线定义（内置） ---------- */
@@ -7508,14 +7512,14 @@ function renderHistory(){
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-pipeline title="查看并筛选流水线「'+esc(h.pipeline||'')+'」">查看流水线</button></td>';
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-menu title="更多操作" aria-label="运行 #'+esc(h.no)+' 更多操作">⋯</button></td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());
     analysisPick.addEventListener('change', e=>{ if(!toggleAnalysisHistory(h,e.target.checked)) e.target.checked=false; });
-    const viewPipeline=tr.querySelector('[data-history-pipeline]');
-    if(viewPipeline){
-      viewPipeline.addEventListener('click', e=>{ e.stopPropagation(); showPipelineFromHistory(h); });
+    const historyMenu=tr.querySelector('[data-history-menu]');
+    if(historyMenu){
+      historyMenu.addEventListener('click', e=>{ e.stopPropagation(); openHistoryRowMenu(h, historyMenu); });
     }
     tr.addEventListener('click', ()=>{
       selHistoryIdx = selHistoryIdx===idx?-1:idx;
@@ -8069,6 +8073,30 @@ function showPipelineFromHistory(rec){
   savePlFilter(); renderPipelines();
   const card=$('pipelineTaskCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
 }
+let historyMenuOpenRec=null;
+function closeHistoryRowMenu(){
+  historyMenuOpenRec=null;
+  const panel=$('historyRowMenuPanel'); if(panel) panel.style.display='none';
+}
+function openHistoryRowMenu(rec, anchorBtn){
+  const panel=$('historyRowMenuPanel'), item=$('historyRowMenuViewPipeline');
+  if(!panel||!item) return;
+  historyMenuOpenRec=rec;
+  item.title='查看并筛选流水线「'+String(rec&&rec.pipeline||'')+'」';
+  panel.style.display='block';
+  if(anchorBtn&&anchorBtn.getBoundingClientRect){
+    const r=anchorBtn.getBoundingClientRect();
+    panel.style.left=Math.max(4,r.right-(panel.offsetWidth||0))+'px';
+    panel.style.top=(r.bottom+4)+'px';
+  }
+}
+const historyRowMenuViewPipeline=$('historyRowMenuViewPipeline');
+if(historyRowMenuViewPipeline && typeof historyRowMenuViewPipeline.addEventListener==='function') historyRowMenuViewPipeline.addEventListener('click', e=>{
+  e.stopPropagation();
+  const rec=historyMenuOpenRec;
+  closeHistoryRowMenu();
+  if(rec) showPipelineFromHistory(rec);
+});
 /* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
    pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
 function togglePipelinePin(id){
@@ -8968,8 +8996,10 @@ $('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); con
 $('plRowMenuHistory').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) showPipelineHistory(id); });
 $('plRowMenuTrusted').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineTrusted(id); });
 document.addEventListener('click', closePlRowMenu);
+document.addEventListener('click', closeHistoryRowMenu);
 window.addEventListener('scroll', closePlRowMenu, true);   // 捕获阶段监听：页面与各 overflow 容器滚动都能收到
 window.addEventListener('resize', closePlRowMenu);
+window.addEventListener('resize', closeHistoryRowMenu);
 $('ioExpSettings').addEventListener('click', exportSettings);
 $('ioExpPipelines').addEventListener('click', exportPipelines);
 $('ioImpSettings').addEventListener('click', ()=>{ $('ioImpSettingsFile').click(); });
