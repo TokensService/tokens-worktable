@@ -112,6 +112,51 @@ test('pullRemoteQueue：快照内容未变时跳过队列区重绘，日志通�
   assert.equal(renders, 2, '拉取失败不重绘（远端数据无更新，本地变化各有渲染入口）');
 });
 
+test('pullRemoteQueue：运行中阶段按 startedAt 实时折算 dur（每秒前进触发重绘），无 startedAt 不动', async () => {
+  let now = 1759999900000;
+  let renders = 0;
+  const stageStartedAt = now - 10000;
+  const mkPayload = () => ({
+    clients: [],
+    server: {
+      id: 'server', label: '服务端', schemaVersion: 3,
+      runs: [{
+        id: 'r1', pipelineName: '部署', by: 'bob', startedAt: stageStartedAt,
+        stages: [{ id: 's1', name: '构建' }, { id: 's2', name: '测试' }],
+        nodes: {
+          s1: { status: 'running', progress: 5, dur: 0, startedAt: stageStartedAt },
+          s2: { status: 'running', progress: 40, dur: 33 },   // 旧数据无 startedAt：dur 保持原样
+        },
+      }],
+      queue: [{ id: 'q1', pipelineName: '排队', by: 'alice', queuedAt: 1, stages: [{ id: 's3', name: '发布' }], nodes: { s3: { status: 'idle', progress: 0, dur: 0 } } }],
+    },
+  });
+  const ctx = loadPullContext({
+    Date: { now: () => now },
+    fetch: async () => ({ ok: true, json: async () => mkPayload() }),
+    renderQueue: () => { renders += 1; },
+  });
+
+  await ctx.pullRemoteQueue();
+  assert.equal(renders, 1);
+  const nodes = ctx.remoteQueueClients[0].runs[0].nodes;
+  assert.equal(nodes.s1.dur, 10, '运行中阶段 dur 由 startedAt 折算为实时已耗时');
+  assert.equal(nodes.s1.startedAt, stageStartedAt, 'startedAt 原样保留在快照节点上');
+  assert.equal(nodes.s2.dur, 33, '无 startedAt 的运行中节点 dur 不被折算');
+  assert.equal(ctx.remoteQueueClients[0].queue[0].nodes.s3.dur, 0, '排队条目的 idle 节点不受影响');
+
+  /* 快照其余内容不变但 dur 每秒前进 → 签名变化 → 队列区/远端预览每秒刷出实时已耗时 */
+  now += 1000;
+  await ctx.pullRemoteQueue();
+  assert.equal(renders, 2, '运行中阶段 dur 前进本身即内容变化，驱动逐秒重绘');
+  assert.equal(ctx.remoteQueueClients[0].runs[0].nodes.s1.dur, 11);
+
+  now += 60000;
+  await ctx.pullRemoteQueue();
+  assert.equal(ctx.remoteQueueClients[0].runs[0].nodes.s1.dur, 71);
+  assert.equal(renders, 3);
+});
+
 /* 轮询定时器生命周期：文件尾部 const QUEUE_POLL_MS → visibilitychange 接线之前的三个函数 */
 function loadPollLifecycle(overrides) {
   const calls = { pull: 0 };

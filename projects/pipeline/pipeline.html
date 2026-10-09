@@ -241,7 +241,7 @@
     </label>
     <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">预设任务
       <span id="presetMulti" style="position:relative;display:inline-block;">
-        <button id="presetMultiBtn" type="button" class="dshell-input" style="min-width:110px;text-align:left;cursor:pointer;" title="系统预设任务（环境清理/环境检查/Profiling），可多选；执行顺序在流水线编辑中调整，脚本在设置页配置">（不执行）</button>
+        <button id="presetMultiBtn" type="button" class="dshell-input" style="min-width:110px;text-align:left;cursor:pointer;" title="预设任务（系统预设：环境清理/环境检查/Profiling；另可在设置页「预设任务设置」添加自定义预设），可多选；执行顺序在流水线编辑中调整，脚本在设置页配置">（不执行）</button>
         <div id="presetMultiPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:170px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;">
             <input type="checkbox" id="cleanupEnv" /> 环境清理
@@ -252,6 +252,8 @@
           <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;" title="Profiling 数据采集，默认放在流水线的最后执行（失败不阻断）">
             <input type="checkbox" id="profilingEnv" /> Profiling
           </label>
+          <!-- 自定义预设任务勾选项由 renderPresetMultiPanel 渲染进此容器（与系统三项同一交互） -->
+          <div id="presetCustomList"></div>
         </div>
       </span>
     </label>
@@ -340,7 +342,7 @@
     </div>
     <div id="flow" class="pipeline-seg"></div>
     <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
-      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅拥有者与 admin 可编辑：他人拥有的流水线对非 admin 只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅拥有者与 admin 可编辑：他人拥有的流水线对非 admin 只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务（设置页「预设任务设置」可另加自定义预设任务），由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
       <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
     </div>
   </div>
@@ -565,6 +567,16 @@
       </div>
       <div id="profilingParams" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px;"></div>
     </div>
+    <!-- 预设任务设置：系统预设任务（环境清理/环境检查/Profiling）固定内置；此处添加自定义预设任务，与系统预设同一机制 -->
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;">预设任务设置</h2>
+      <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">系统预设任务（环境清理/环境检查/Profiling）固定内置；此处可添加自定义预设任务：与系统预设一样由主控「预设任务」勾选启用、在流水线编辑中调整执行顺序、运行到编排位置时执行脚本，同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与归档相关 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 环境变量；仅页面运行支持，不进服务端定时计划。</p>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+        <input id="customPresetName" class="dshell-input" placeholder="新预设任务名称" style="width:180px;" />
+        <button id="customPresetAdd" class="dshell-btn mini" type="button">添加预设任务</button>
+      </div>
+      <div id="customPresetList" style="display:flex; flex-direction:column; gap:8px;"></div>
+    </div>
     <!-- 脚本目录：全部脚本（阶段/清理/检查/Profiling/归档/部署策略/普罗收集）按名选用的根目录；默认=插件安装后的 scripts 路径 -->
     <div class="dshell-card" style="margin-top:10px;">
       <h2 class="dshell-sub" style="margin:0 0 8px;">脚本目录</h2>
@@ -583,7 +595,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档路径
           <input id="archiveDir" class="dshell-input" placeholder="留空=保底归档到 runs/" style="width:300px;" title="运行日志与 profiling 产物的归档根目录；按「流水线名称_年月日时分秒」文件夹归档（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）" />
         </label>
-        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为系统预设任务），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
+        <span class="dshell-muted" style="font-size:11px;">每个任务的回显即时归档为独立日志文件 run-&lt;tag&gt;-NN-任务名.log（NN 为 01 起的阶段序号，00 为预设任务：系统预设 + 自定义预设），运行结束再写汇总 run-&lt;tag&gt;.log 与 profiling JSON；均按「流水线名称_年月日时分秒」文件夹归档到此目录（每次运行独立目录）；留空则保底写到 scripts 同级 runs/（不执行归档脚本）。</span>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">归档脚本
@@ -1032,7 +1044,7 @@ function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态仅跨浏览器同步（定时计划的服务端执行暂不支持这两项预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) }; }
+function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态与 customPresets 仅跨浏览器同步（定时计划的服务端执行暂不支持这些预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, customPresets, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) }; }
 function historyForPersist(){
   const transient=['_lc','_lm','_ll','_profChecked','_profState'];
   return history.filter(h=>!h.demo).map(h=>{
@@ -1310,6 +1322,8 @@ async function loadServerState(){
       if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
       if(cfg.profilingScript && typeof cfg.profilingScript.name==='string') profilingScript=cfg.profilingScript;
       if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
+      /* 自定义预设任务：旧服务端数据无此字段时保持本地（localStorage）配置；有则以服务端为准并重建名称表/面板/设置页专区 */
+      if(Array.isArray(cfg.customPresets)){ customPresets=normalizeCustomPresets(cfg.customPresets); rebuildPresetNameMap(); renderPresetMultiPanel(); renderPresetMultiBtn(); renderCustomPresetZone(); }
       if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
       if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
       else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
@@ -1344,6 +1358,7 @@ async function loadServerState(){
         localStorage.setItem('pip-archiveDir', archiveDir);
         localStorage.setItem('pip-archiveScript', archiveScriptName);
         localStorage.setItem('pip-analysisPrompts', JSON.stringify(analysisPrompts));
+        if(typeof customPresets!=='undefined') localStorage.setItem('pip-customPresets', JSON.stringify(customPresets));   // 沙盒单独抽取本函数时 customPresets 可能不存在
       }catch(e){}
       $('cleanupScriptName').value=cleanupScript?cleanupScript.name:'';
       renderCleanupParams();
@@ -1377,10 +1392,10 @@ async function migrateInlineLogs(){
       const j=await r.json(); names=new Set((j && j.entries || []).map(e=>e.name));
     }catch(e){}
     if(!names) continue;
-    const isPreStage=n=>n==='环境检查'||n==='环境清理'||n==='Profiling'||n==='收集普罗数据';   // 系统预设任务：与归档命名约定一致占 00 号，阶段从 01 起
+    const isPreStage=n=>((typeof PRESET_BY_NAME!=='undefined')?!!PRESET_BY_NAME[n]:(n==='环境检查'||n==='环境清理'||n==='Profiling'))||n==='收集普罗数据';   // 预设任务（系统 + 自定义，按名称表判定；沙盒单独抽取本函数时退回系统三项硬编码；「收集普罗数据」为已下线预设的旧名）：与归档命名约定一致占 00 号，阶段从 01 起
     for(const l of inline){
       const idx=rec.logs.indexOf(l);
-      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=系统预设任务，普通阶段按剔除预设任务后的位置从 01 起
+      const seq=isPreStage(l.stage)?0:(idx-rec.logs.slice(0,idx).filter(x=>x&&isPreStage(x.stage)).length+1);   // 00=预设任务，普通阶段按剔除预设任务后的位置从 01 起
       const fname='run-'+rec.tag+'-'+String(seq).padStart(2,'0')+'-'+sanitizeFsName(l.stage)+'.log';
       const fp=rec.archive+'/'+fname;
       if(!names.has(fname)){
@@ -1429,7 +1444,7 @@ function normalizePipelineDefaults(value){
     repositoryId:typeof d.repositoryId==='string'?d.repositoryId.trim():'',
     branch:typeof d.branch==='string'&&d.branch.trim()?d.branch.trim():'main',
     strategy:typeof d.strategy==='string'?d.strategy.trim():'',
-    presets:pipelineDefaultStringList(d.presets).filter(k=>PIPELINE_DEFAULT_PRESET_KEYS.indexOf(k)>=0),
+    presets:pipelineDefaultStringList(d.presets).filter((typeof presetDefOf==='function')?presetDefOf:(k=>PIPELINE_DEFAULT_PRESET_KEYS.indexOf(k)>=0)),   /* 页面内经 presetDefOf 判定（系统 + 自定义预设）；vm 沙盒单独抽取本段时没有 presetDefOf，退回系统三项白名单 */
   };
 }
 function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.owner!=='string') p.owner=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
@@ -2692,10 +2707,37 @@ function cleanScriptValues(params, values){
   return out;
 }
 let cleanupScript=(function(){ try{ const cs=JSON.parse(localStorage.getItem('pip-cleanupScript')); if(cs && cs.values) cs.values=cleanScriptValues(cs.params, cs.values); return cs; }catch(e){ return null; } })() || null;
-/* 预设任务多选（环境清理/环境检查/Profiling）：按钮文案跟随勾选，与「环境」多选同一交互 */
+/* ---------- 自定义预设任务（设置页「预设任务设置」添加/配置；与系统预设同一机制：主控勾选启用、编排位置执行、仅页面运行支持） ---------- */
+/* 数据形状：{key:'c'+时间戳36进制（保证唯一）, name, script:{name,path,params,values}|null, block, pos:'first'|'last', enabled}；
+   持久化：localStorage 键 pip-customPresets + 服务端 config 字段 customPresets（collectConfig/loadServerState/导入设置三通道）；
+   customPresets 任何变更都经 saveCustomPresets 落盘并重建名称表/面板/按钮/设置页专区 */
+function normalizeCustomPresets(list){
+  const out=[], seen={};
+  (Array.isArray(list)?list:[]).forEach(item=>{
+    if(!item || typeof item!=='object' || Array.isArray(item)) return;   // 非对象项剔除
+    const name=(typeof item.name==='string'?item.name:'').trim();
+    if(!name) return;   // 无名项剔除
+    let key=(typeof item.key==='string')?item.key.trim():'';
+    if(key && seen[key]) return;   // key 去重：同 key 只保留首项
+    if(!key){ let n=out.length+1; do{ key='c'+(n++).toString(36); }while(seen[key]); }   // key 补缺：按位置生成并保证表内唯一
+    seen[key]=1;
+    let script=null;
+    const sc=item.script;
+    if(sc && typeof sc==='object' && typeof sc.name==='string' && sc.name.trim()){
+      script={name:sc.name, path:(typeof sc.path==='string'?sc.path:''), params:(sc.params!==undefined?sc.params:[]), values:(sc.values!==undefined?sc.values:{})};   // 仅保留 {name,path,params,values}
+    }
+    out.push({key:key, name:name, script:script, block:!!item.block, pos:(item.pos==='last'?'last':'first'), enabled:!!item.enabled});
+  });
+  return out;
+}
+let customPresets=(function(){ try{ const list=normalizeCustomPresets(JSON.parse(localStorage.getItem('pip-customPresets'))); list.forEach(c=>{ if(c.script && c.script.values) c.script.values=cleanScriptValues(c.script.params, c.script.values); }); return list; }catch(e){ return []; } })();
+/* 预设任务多选（系统预设：环境清理/环境检查/Profiling + 自定义预设）：按钮文案跟随勾选，与「环境」多选同一交互 */
 function renderPresetMultiBtn(){
   const b=$('presetMultiBtn'); if(!b) return;
-  const on=[]; if($('cleanupEnv').checked) on.push('环境清理'); if($('checkEnv').checked) on.push('环境检查'); if($('profilingEnv').checked) on.push('Profiling');
+  /* 勾选名列表经 presetOrderAll/presetOn/presetDefOf 生成（含自定义预设）；沙盒单独抽取本函数（无这几个函数）时退回系统三项直读 */
+  const on=(typeof presetOrderAll==='function' && typeof presetOn==='function' && typeof presetDefOf==='function')
+    ? presetOrderAll().filter(presetOn).map(k=>presetDefOf(k).name)
+    : [['cleanupEnv','环境清理'],['checkEnv','环境检查'],['profilingEnv','Profiling']].filter(x=>{ const el=$(x[0]); return !!(el && el.checked); }).map(x=>x[1]);
   b.textContent=on.length?on.join('、'):'（不执行）';
   b.title=b.textContent;   // 限宽省略时悬浮可见完整列表
 }
@@ -2858,6 +2900,132 @@ async function detectProfilingParams(){
     });
   }catch(e){ profilingScript.params=[]; }
   renderProfilingParams();
+}
+/* ---------- 自定义预设任务：状态管理与参数表单（与 cleanup 的 saveCleanup/renderCleanupParams/setCleanupScript/detectCleanupParams 同构） ---------- */
+/* 统一落口：customPresets 任何变更都经这里——localStorage + 名称表重建 + 主控面板/按钮 + 设置页专区 + persistState +
+   空闲态重渲染（同 saveCleanup；服务端 config 同步由 persistState → collectConfig 的 customPresets 字段携带） */
+function saveCustomPresets(){
+  try{ localStorage.setItem('pip-customPresets', JSON.stringify(customPresets)); }catch(e){}
+  rebuildPresetNameMap();
+  renderPresetMultiPanel();
+  renderPresetMultiBtn();
+  renderCustomPresetZone();
+  persistState();
+  if(!viewActive() && !replayRec){ _detailKey=''; renderFlow(); renderDetail(); }
+}
+/* 主控「预设任务」面板的自定义勾选项（系统三项为静态 HTML 不动）：checkbox 与设置页「默认勾选」同一状态（cp.enabled） */
+function renderPresetMultiPanel(){
+  const box=$('presetCustomList'); if(!box) return; box.innerHTML='';
+  customPresets.forEach(cp=>{
+    const lab=document.createElement('label'); lab.className='dshell-muted';
+    lab.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;';
+    if(cp.block) lab.title='不通过（脚本非零退出）则阻断后续阶段';
+    lab.innerHTML='<input type="checkbox" id="presetCustom_'+esc(cp.key)+'" '+(cp.enabled?'checked':'')+'/> '+esc(cp.name);
+    const inp=lab.querySelector('input');
+    inp.addEventListener('change',()=>{ cp.enabled=!!inp.checked; saveCustomPresets(); });
+    box.appendChild(lab);
+  });
+}
+/* 添加自定义预设任务：名称非空且不与系统预设/其他自定义预设同名；key 取 'c'+时间戳36进制保证唯一 */
+function addCustomPreset(){
+  const inp=$('customPresetName'); if(!inp) return;
+  const name=(inp.value||'').trim();
+  if(!name){ alert('请填写新预设任务名称'); return; }
+  if(PRESET_BY_NAME[name]){ alert('预设任务名称「'+name+'」与'+(PRESET_DEF[PRESET_BY_NAME[name]]?'系统预设任务':'自定义预设任务')+'同名，请修改'); return; }
+  customPresets.push({key:'c'+Date.now().toString(36), name:name, script:null, block:false, pos:'first', enabled:false});
+  inp.value='';
+  saveCustomPresets();
+}
+/* 设置页「预设任务设置」专区列表：每项两行——第一行名称/脚本/识别参数/失败阻断/默认位置/默认勾选/删除，第二行参数容器 */
+function renderCustomPresetZone(){
+  const box=$('customPresetList'); if(!box) return; box.innerHTML='';
+  customPresets.forEach(cp=>{
+    const item=document.createElement('div');
+    item.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;';
+    item.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+      +'<input class="dshell-input" data-cpname value="'+esc(cp.name)+'" placeholder="预设任务名称" title="预设任务名称（主控「预设任务」面板与流水线编辑器中显示；不可与系统预设/其他自定义预设同名）" style="width:150px;" />'
+      +'<span class="dshell-muted" style="font-size:11px;">脚本</span>'
+      +'<input class="dshell-input" data-cpscript list="scriptsList" placeholder="选择脚本（可搜索，留空=不执行）" value="'+esc(cp.script?cp.script.name:'')+'" style="width:216px;" />'
+      +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-cpdetect>识别参数</button>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="不通过（脚本非零退出）则阻断后续阶段"><input type="checkbox" data-cpblock '+(cp.block?'checked':'')+'/> 失败阻断</label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;" title="未在流水线中编排过位置时的默认插入位置"><select class="dshell-input" data-cppos>'
+      +'<option value="first"'+(cp.pos!=='last'?' selected':'')+'>最前（环境检查之后）</option>'
+      +'<option value="last"'+(cp.pos==='last'?' selected':'')+'>最后（Profiling 之前）</option>'
+      +'</select> 默认位置</label>'
+      +'<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;" title="与主控「预设任务」面板中的勾选同一状态"><input type="checkbox" data-cpenabled '+(cp.enabled?'checked':'')+'/> 默认勾选</label>'
+      +'<span style="flex:1"></span>'
+      +'<button class="dshell-btn dshell-btnDanger mini" type="button" data-cpdel>删除</button>'
+      +'</div>'
+      +'<div id="customPresetParams_'+esc(cp.key)+'" style="display:flex; gap:10px; flex-wrap:wrap;"></div>';
+    box.appendChild(item);
+    const nameInp=item.querySelector('[data-cpname]');
+    nameInp.addEventListener('change',()=>{   // 重命名：非空、不与系统预设名及其他自定义名重复；违反则回退输入框值
+      const name=(nameInp.value||'').trim();
+      if(!name){ alert('预设任务名称不能为空'); nameInp.value=cp.name; return; }
+      if(PRESET_BY_NAME[name] && PRESET_BY_NAME[name]!==cp.key){ alert('预设任务名称「'+name+'」与'+(PRESET_DEF[PRESET_BY_NAME[name]]?'系统预设任务':'自定义预设任务')+'同名，请修改'); nameInp.value=cp.name; return; }
+      if(name!==cp.name){ cp.name=name; saveCustomPresets(); } else nameInp.value=cp.name;
+    });
+    const scriptInp=item.querySelector('[data-cpscript]');
+    scriptInp.addEventListener('change',()=>{ setCustomPresetScript(cp.key, scriptInp.value.trim()); });
+    item.querySelector('[data-cpdetect]').addEventListener('click',()=>{ detectCustomPresetParams(cp.key).then(saveCustomPresets); });
+    const blockInp=item.querySelector('[data-cpblock]');
+    blockInp.addEventListener('change',()=>{ cp.block=!!blockInp.checked; saveCustomPresets(); });
+    const posSel=item.querySelector('[data-cppos]');
+    posSel.addEventListener('change',()=>{ cp.pos=(posSel.value==='last'?'last':'first'); saveCustomPresets(); });
+    const enabledInp=item.querySelector('[data-cpenabled]');
+    enabledInp.addEventListener('change',()=>{ cp.enabled=!!enabledInp.checked; saveCustomPresets(); });
+    item.querySelector('[data-cpdel]').addEventListener('click',()=>{
+      if(!confirm('删除自定义预设任务「'+cp.name+'」？流水线编排中它的标记行将一并失效。')) return;
+      const idx=customPresets.findIndex(c=>c.key===cp.key); if(idx>=0) customPresets.splice(idx,1);
+      saveCustomPresets();
+    });
+    renderCustomPresetParams(cp.key);
+  });
+}
+/* 参数表单：识别默认值仅展示、显式值才下发（与 renderCleanupParams 同一规则） */
+function renderCustomPresetParams(key){
+  const box=$('customPresetParams_'+key); if(!box) return; box.innerHTML='';
+  const cp=customPresets.find(c=>c.key===key);
+  if(!cp || !cp.script || !Array.isArray(cp.script.params) || !cp.script.params.length) return;
+  cp.script.params.forEach(p=>{
+    const hasV=!!(cp.script.values && cp.script.values[p.key]!==undefined);
+    const v=hasV?cp.script.values[p.key]:(p.def||'');
+    const lab=document.createElement('label'); lab.className='dshell-muted';
+    lab.style.cssText='display:flex;align-items:center;gap:4px;font-size:11px;';
+    lab.innerHTML=esc(p.label)+(p.required?'<span style="color:var(--st-err)" title="必填">*</span>':'')
+      +' <input class="dshell-input" data-cpkey="'+esc(p.key)+'" value="'+esc(v)+'" placeholder="'+esc(p.def||'')+'" title="识别默认值已填入框中、可直接修改：修改后作为显式值下发（优先级最高）；清空或改回与默认一致=自动注入的同名变量兜底，未注入则由脚本自身 :- 默认值兜底" style="width:150px;font-size:11px;'+(p.required&&!String(v).trim()?'border-color:var(--st-err);':'')+'" />';
+    const inp=lab.querySelector('input');
+    if(!hasV && p.def) inp.style.color='var(--dsw-alias-label-tertiary)';   // 未改动的默认值弱化显示（主题变量适配浅色/深色）
+    inp.addEventListener('input',()=>{ inp.style.color=''; });
+    inp.addEventListener('change',()=>{ cp.script.values=cp.script.values||{}; if(!inp.value||inp.value===p.def) delete cp.script.values[p.key]; else cp.script.values[p.key]=inp.value; renderCustomPresetParams(key); saveCustomPresets(); });
+    box.appendChild(lab);
+  });
+}
+async function setCustomPresetScript(key, name){
+  const cp=customPresets.find(c=>c.key===key); if(!cp) return;
+  const sc=scriptByName(name);
+  if(!name || !sc){ cp.script=null; renderCustomPresetParams(key); saveCustomPresets(); return; }
+  const keep=(cp.script && cp.script.name===sc.name)?cp.script:null;
+  cp.script={name:sc.name, path:sc.path, params:(keep?keep.params:[]), values:(keep?keep.values:{})};
+  await detectCustomPresetParams(key);
+  saveCustomPresets();
+}
+async function detectCustomPresetParams(key){
+  const cp=customPresets.find(c=>c.key===key); if(!cp) return;
+  if(!cp.script || !cp.script.path){ renderCustomPresetParams(key); return; }
+  try{
+    const src=await readScriptSrc(cp.script.path);
+    const det=detectParams(src);
+    const oldParams=cp.script.params||[]; const oldVals=cp.script.values||{};
+    cp.script.params=det; cp.script.values=cp.script.values||{};
+    det.forEach(p=>{
+      const oldP=oldParams.find(o=>o.key===p.key);
+      const oldV=oldVals[p.key];
+      // 仅保留用户真实改动：旧值等于旧默认（旧版识别器预填产物）则丢弃，回到「留空=注入值/脚本默认兜底」语义
+      if(oldV!==undefined && oldP && String(oldV)!==String(oldP.def||'')) cp.script.values[p.key]=oldV;
+    });
+  }catch(e){ cp.script.params=[]; }
+  renderCustomPresetParams(key);
 }
 let availableScripts=[];   // [{name, path}]
 async function loadScripts(){
@@ -3128,13 +3296,14 @@ function renderStageEditor(){
     row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:7px;';
     /* 预设任务行：仅可调整执行顺序（序号/上移/下移），内容与脚本在设置页配置，不可改名/删除 */
     if(s.preset){
+      const def=(typeof presetDefOf==='function'&&presetDefOf(s.pkey))||{name:s.name,block:false};   // 沙盒单独抽取本函数时没有 presetDefOf，退回最小定义
       row.innerHTML='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
         +'<input class="dshell-input" data-f="ord" type="number" min="1" max="'+editStages.length+'" value="'+(i+1)+'" title="顺序：直接输入目标序号后回车" style="width:52px;" />'
         +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="up" '+(i===0?'disabled':'')+'>↑</button>'
         +'<button class="dshell-btn dshell-btnGhost mini" type="button" data-act="down" '+(i===editStages.length-1?'disabled':'')+'>↓</button>'
-        +'<span style="font-weight:600;">'+esc(s.name)+'</span>'
-        +'<span class="pipeline-preset">🔒 系统预设</span>'
-        +'<span class="dshell-muted" style="font-size:11px;">由主控「预设任务」勾选启用，脚本在设置页配置；此处仅调整执行顺序'+(s.pkey==='check'?'；检查不通过（脚本非零退出）会阻断后续阶段':'')+'</span>'
+        +'<span style="font-weight:600;">'+esc(def.name)+'</span>'
+        +'<span class="pipeline-preset">'+(def.custom?'🔒 预设任务（自定义）':'🔒 系统预设')+'</span>'
+        +'<span class="dshell-muted" style="font-size:11px;">'+(def.custom?'由主控「预设任务」勾选启用，脚本在设置页「预设任务设置」配置；此处仅调整执行顺序':'由主控「预设任务」勾选启用，脚本在设置页配置；此处仅调整执行顺序')+(def.block?'；不通过（脚本非零退出）会阻断后续阶段':'')+'</span>'
         +'</div>';
       wrap.appendChild(row);
       return;
@@ -3462,50 +3631,94 @@ function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ---------- 渲染流水线编排 ---------- */
-/* 系统预设任务定义：环境清理/环境检查/Profiling。顺序位置存进流水线阶段列表（preset 标记行，
-   在流水线编辑器中可排序，见 openPlForm/savePlForm）；运行时按主控「预设任务」勾选展开为执行项
-   （脚本取设置页当前配置快照，见 expandRunStages）。block=true 的预设任务失败会阻断后续阶段 */
+/* 预设任务定义：系统预设（环境清理/环境检查/Profiling）固定内置 + 设置页「预设任务设置」添加的自定义预设
+   （customPresets），统一经 presetDefOf 取定义。顺序位置存进流水线阶段列表（preset 标记行，在流水线编辑器中
+   可排序，见 openPlForm/savePlForm）；运行时按主控「预设任务」勾选展开为执行项（脚本取设置页当前配置快照，
+   见 expandRunStages）。block=true 的预设任务失败会阻断后续阶段 */
 const PRESET_DEF={
   cleanup:{id:'__cleanup__', el:'cleanupEnv', name:'环境清理', script:()=>cleanupScript, block:false, noScript:'未配置环境清理脚本'},
   check:{id:'__check__', el:'checkEnv', name:'环境检查', script:()=>checkScript, block:true, noScript:'未配置环境检查脚本'},
   profiling:{id:'__profiling__', el:'profilingEnv', name:'Profiling', script:()=>profilingScript, block:false, noScript:'未配置 Profiling 脚本'},
 };
-const PRESET_ORDER=['cleanup','check','profiling'];   // 默认位置顺序：清理/检查在最前，Profiling 在最后
-const PRESET_BY_NAME={}; PRESET_ORDER.forEach(k=>{ PRESET_BY_NAME[PRESET_DEF[k].name]=k; });
-function presetOn(pkey){ const el=$(PRESET_DEF[pkey].el); return !!(el && el.checked); }
-function selectedPresetKeys(){ return PRESET_ORDER.filter(presetOn); }
-/* 预设任务运行态节点：脚本取设置页当前配置的快照 */
-function presetRuntime(pkey){ const def=PRESET_DEF[pkey]; const sc=def.script(); return {id:def.id, name:def.name, preset:true, pkey:pkey, script:sc?JSON.parse(JSON.stringify(sc)):null}; }
-function presetMarker(pkey){ const def=PRESET_DEF[pkey]; return {id:def.id, name:def.name, preset:true, pkey:pkey}; }
+const PRESET_ORDER=['cleanup','check','profiling'];   // 系统预设默认位置顺序：清理/检查在最前，Profiling 在最后（自定义预设默认位置见其 pos 配置）
+/* 名称 → pkey（系统 + 自定义）：savePlForm 拦同名阶段、日志回放/归档序号识别预设任务用；
+   customPresets 任何变更后经 rebuildPresetNameMap 原地重建（保持对象引用） */
+const PRESET_BY_NAME={};
+/* 预设定义统一查询：系统 pkey 返回 PRESET_DEF 项本身；自定义 key 由 customPresets 派生（script 取该项配置的 getter）；
+   未知 pkey 返回 null（调用方兜底）。customPresets 在沙盒单独抽取本段时可能不存在，typeof 兜底视同空数组 */
+function presetDefOf(pkey){
+  if(PRESET_DEF[pkey]) return PRESET_DEF[pkey];
+  const cp=((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).find(c=>c && c.key===pkey);
+  if(!cp) return null;
+  return {id:'__custom_'+cp.key+'__', el:'presetCustom_'+cp.key, name:cp.name, script:()=>cp.script, block:!!cp.block, noScript:'未配置「'+cp.name+'」脚本', custom:true};
+}
+/* 面板勾选项与按钮文案的枚举顺序：系统三项在前，自定义按 customPresets 数组顺序在后 */
+function presetOrderAll(){ return PRESET_ORDER.concat(((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).map(c=>c.key)); }
+function rebuildPresetNameMap(){
+  Object.keys(PRESET_BY_NAME).forEach(n=>{ delete PRESET_BY_NAME[n]; });   // 原地重建：delete 旧键再填入，保持对象引用
+  PRESET_ORDER.forEach(k=>{ PRESET_BY_NAME[PRESET_DEF[k].name]=k; });
+  ((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).forEach(c=>{ if(c && c.name) PRESET_BY_NAME[c.name]=c.key; });
+}
+rebuildPresetNameMap();
+/* 勾选判定：有 DOM checkbox（主控面板勾选项）读其 checked；自定义预设无 DOM（面板尚未渲染/沙盒）时回退配置的
+   enabled；系统预设无 DOM 不回退（false） */
+function presetOn(pkey){
+  const def=presetDefOf(pkey); if(!def) return false;
+  const el=$(def.el); if(el) return !!el.checked;
+  if(def.custom){ const cp=((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).find(c=>c && c.key===pkey); return !!(cp && cp.enabled); }
+  return false;
+}
+function selectedPresetKeys(){ return presetOrderAll().filter(presetOn); }
+/* 预设任务运行态节点：脚本取设置页当前配置的快照；未知 pkey 返回 null（调用方兜底） */
+function presetRuntime(pkey){ const def=presetDefOf(pkey); if(!def) return null; const sc=def.script(); return {id:def.id, name:def.name, preset:true, pkey:pkey, script:sc?JSON.parse(JSON.stringify(sc)):null}; }
+function presetMarker(pkey){ const def=presetDefOf(pkey); if(!def) return null; return {id:def.id, name:def.name, preset:true, pkey:pkey}; }
 /* 阶段列表补齐缺失的预设标记（不改动原数组）：已有的保持原位置；缺失的按默认位置补——
-   环境清理补到最前、环境检查紧跟环境清理、Profiling 补到最后；
-   旧流水线的 promCollect 预设标记行已随「收集普罗数据」预设下线，一律过滤（见 migratePromPreset） */
+   环境清理补到最前、环境检查紧跟环境清理、pos='first' 的自定义按数组顺序依次插到环境检查之后、
+   Profiling 补到最后、pos='last' 的自定义按数组顺序插到已编排位置的 Profiling 标记之前（Profiling 未编排过位置则补到末尾）；
+   pkey 已失效的预设标记行一律过滤（自定义预设被删除，或旧流水线的 promCollect 标记——已随「收集普罗数据」预设下线，见 migratePromPreset） */
 function withPresetMarkers(stages){
-  const out=(stages||[]).filter(s=>!(s && s.preset && s.pkey==='promCollect'));
+  const out=(stages||[]).filter(s=>!(s && s.preset && !presetDefOf(s.pkey)));
   const has={}; out.forEach(s=>{ if(s && s.preset && s.pkey) has[s.pkey]=1; });
   if(!has.cleanup) out.unshift(presetMarker('cleanup'));
   if(!has.check){ const ci=out.findIndex(s=>s && s.preset && s.pkey==='cleanup'); out.splice(ci>=0?ci+1:0, 0, presetMarker('check')); }
+  const customs=(typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[];
+  let ai=out.findIndex(s=>s && s.preset && s.pkey==='check');
+  customs.forEach(c=>{ if(c && c.pos!=='last' && !has[c.key]){ ai+=1; out.splice(ai,0,presetMarker(c.key)); } });
   if(!has.profiling) out.push(presetMarker('profiling'));
+  const lasts=customs.filter(c=>c && c.pos==='last' && !has[c.key]);
+  if(lasts.length){
+    const pi=has.profiling ? out.findIndex(s=>s && s.preset && s.pkey==='profiling') : -1;
+    lasts.forEach((c,idx)=>{ out.splice(pi>=0?pi+idx:out.length, 0, presetMarker(c.key)); });
+  }
   return out;
 }
 /* 预设任务展开（运行启动时）：阶段列表中的预设标记（旧流水线先按默认位置补齐）按主控「预设任务」
-   勾选展开为本次运行的执行项（脚本取设置页当前配置快照）；未勾选的预设不进本次运行 */
+   勾选展开为本次运行的执行项（脚本取设置页当前配置快照）；未勾选/pkey 已失效的预设不进本次运行 */
 function expandRunStages(rawStages, presetKeys){
   const hasPresetSnapshot=Array.isArray(presetKeys);
   return withPresetMarkers(rawStages).flatMap(s=>{
     if(!s || !s.preset) return [{...s}];
     const enabled=hasPresetSnapshot ? presetKeys.indexOf(s.pkey)>=0 : presetOn(s.pkey);   // 队列传入开关快照时不受出队前 UI 改动影响
-    return enabled ? [presetRuntime(s.pkey)] : [];
+    const rt=enabled ? presetRuntime(s.pkey) : null;
+    return rt ? [rt] : [];
   });
 }
 // 预设任务随阶段列表进入编排序列（位置即执行顺序）：展示时按勾选（空闲）/运行快照（运行态）/历史日志（回放）展开。
 function flowStages(){
   if(replayRec){   // 回放：按该次运行历史里出现过的预设任务展开
     const logs=replayRec.logs||[];
-    return (runStages||[]).flatMap(s=> s && s.preset ? (logs.some(l=>l && l.stage===s.name)?[presetRuntime(s.pkey)]:[]) : [s]);
+    return (runStages||[]).flatMap(s=>{
+      if(!s || !s.preset) return [s];
+      if(!logs.some(l=>l && l.stage===s.name)) return [];
+      const rt=presetRuntime(s.pkey); return rt?[rt]:[];
+    });
   }
   if(runStages) return runStages;   // 运行态/运行后快照：启动时已按勾选展开（见 expandRunStages）
-  return withPresetMarkers(activeStages()).flatMap(s=> s.preset ? (presetOn(s.pkey)?[presetRuntime(s.pkey)]:[]) : [s]);
+  return withPresetMarkers(activeStages()).flatMap(s=>{
+    if(!s.preset) return [s];
+    if(!presetOn(s.pkey)) return [];
+    const rt=presetRuntime(s.pkey); return rt?[rt]:[];
+  });
 }
 function pipelineStageGroups(stages){
   const list=Array.isArray(stages)?stages:[], groups=[];
@@ -3693,7 +3906,7 @@ function metaFor(id){
   if(st==='failed')  return '✗ 错误';
   if(st==='skipped') return '⏭ 跳过';
   if(st==='aborted') return '⏏ 终止';
-  if(st==='running') return Math.round(n.progress||0)+'%';
+  if(st==='running') return Math.round(n.progress||0)+'% · '+fmtDur(n.dur||0);
   if(st==='idle'){ const s=activeStages().find(x=>x.id===id); if(s&&s.skip) return '⊘ 不执行'; }   // 未运行且配置「不执行」：编排区节点元信息显示
   return '';
 }
@@ -3913,6 +4126,7 @@ function renderDetail(){
 
   const kv = $('detailKv'); kv.innerHTML='';
   const rows = detailContextRows(s,txt,ctx);
+  if(n.status==='running') rows.push(['耗时', fmtDur(n.dur||0)]);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
@@ -4442,7 +4656,10 @@ function remoteQueuePreviewRc(client,item,kind){
   const stages=(Array.isArray(item&&item.stages)?item.stages:[]).map(queueStagePresence).filter(Boolean);
   const incomingNodes=item&&item.nodes&&typeof item.nodes==='object'?item.nodes:{};
   const previewNodes={};
-  stages.forEach(s=>{ previewNodes[s.id]=queueNodePresence(incomingNodes[s.id]); });
+  /* 运行中阶段带 startedAt（纪元毫秒）时按本地时钟把 dur 折算为实时已耗时（服务端快照运行期 dur 恒为 0；
+     时钟偏差折出负值时钳到 0），无 startedAt 的旧数据保持原 dur 不动 */
+  stages.forEach(s=>{ const n=previewNodes[s.id]=queueNodePresence(incomingNodes[s.id]);
+    if(n.status==='running'&&Number.isFinite(n.startedAt)&&n.startedAt>0) n.dur=Math.max(0,(Date.now()-n.startedAt)/1000); });
   const runningKind=kind==='running';
   const serverOwned=String(client&&client.id||'')==='server';
   return {id:'remote:'+String(client&&client.id||'')+':'+kind+':'+String(item&&item.id||''), remotePreview:true, over:true,
@@ -4593,8 +4810,10 @@ function queueNodePresence(node){
   const valid=['idle','running','success','failed','skipped','aborted'];
   const raw=node&&typeof node==='object'?node:{};
   const status=valid.indexOf(raw.status)>=0?raw.status:'idle';
-  const progress=Number(raw.progress), dur=Number(raw.dur);
+  const progress=Number(raw.progress), dur=Number(raw.dur), startedAt=Number(raw.startedAt);
   const out={status:status,progress:Number.isFinite(progress)?Math.max(0,Math.min(100,progress)):0,dur:Number.isFinite(dur)?Math.max(0,dur):0};
+  /* 阶段开始时间（纪元毫秒，通常为服务端时钟）随快照透传：远端预览据此折算运行中阶段的实时已耗时 */
+  if(Number.isFinite(startedAt)&&startedAt>0) out.startedAt=startedAt;
   if(raw.sub&&typeof raw.sub==='object'){
     const sub={}; Object.keys(raw.sub).forEach(name=>{ const value=raw.sub[name]; if(valid.indexOf(value)>=0) sub[String(name)]=value; });
     if(Object.keys(sub).length) out.sub=sub;
@@ -4794,6 +5013,13 @@ async function pullRemoteQueue(){
       const server=j&&j.server;
       const serverActive=server&&((Array.isArray(server.runs)&&server.runs.length)||(Array.isArray(server.queue)&&server.queue.length));
       const next=(serverActive?[server]:[]).concat(clients);
+      /* 运行中阶段的已耗时由阶段 startedAt（纪元毫秒，服务端时钟）按本地时钟在每轮轮询实时折算：
+         dur 每秒前进 → 快照签名随之变化 → 队列区与远端预览每秒刷出实时已耗时（签名降耗仍覆盖
+         无运行中阶段的静态快照）；无 startedAt 的旧数据保持原 dur 不动，时钟偏差折出负值钳到 0 */
+      const stampStageElapsed=item=>{ const ns=item&&item.nodes; if(!ns||typeof ns!=='object') return;
+        for(const k of Object.keys(ns)){ const n=ns[k], startedAt=n&&Number(n.startedAt);
+          if(n&&n.status==='running'&&Number.isFinite(startedAt)&&startedAt>0) n.dur=Math.max(0,(Date.now()-startedAt)/1000); } };
+      next.forEach(c=>{ (Array.isArray(c&&c.runs)?c.runs:[]).forEach(stampStageElapsed); if(c&&c.running) stampStageElapsed(c.running); (Array.isArray(c&&c.queue)?c.queue:[]).forEach(stampStageElapsed); });
       /* 孤儿登记簿：GET 响应顶层 orphans（恒存在、可空）；旧服务端无此键——Array.isArray 特性探测，
          缺失即跳过（remoteOrphans 保持原值，优雅降级不报错） */
       const orphans=Array.isArray(j.orphans)?j.orphans:null;
@@ -5311,7 +5537,7 @@ function stageTickPaint(t, n){
   const el=flowNodeElementById(t.stageId);
   if(el){
     const bar=el.querySelector('.pipeline-bar > i'); if(bar) bar.style.width=(n.progress||0)+'%';
-    const meta=el.querySelector('.pipeline-nodeMeta'); if(meta) meta.textContent=Math.round(n.progress||0)+'%';
+    const meta=el.querySelector('.pipeline-nodeMeta'); if(meta) meta.textContent=Math.round(n.progress||0)+'% · '+fmtDur(n.dur||0);
   }
   if(root.selId===t.stageId){ const b=$('detailBar'); if(b) b.style.width=(n.progress||0)+'%'; }
 }
@@ -5392,7 +5618,7 @@ function runParallelStageGroup(parent,group){
 function startStageAt(rc,i){
   const stg=rc.stages;
   const s=stg[i];
-  if(s.preset){ runPresetStep(rc,i); return; }   // 系统预设任务：脚本取设置页配置，见 runPresetStep
+  if(s.preset){ runPresetStep(rc,i); return; }   // 预设任务（系统 + 自定义）：脚本取设置页配置，见 runPresetStep
   if(s.skip){ skipStage(rc,i); return; }   // 配置「不执行」：标记跳过并推进（脚本/URL请求/模拟阶段一视同仁）
   if(s.promCollect) s._promT0=Date.now();   // 任务级普罗采集：记录任务开始时间，进入终态后按「开始→结束」时段采集（见 taskPromFinalize）
   if((s.kind==='http'||s.kind==='url'||s.kind==='jenkins') && stageUrlOf(s)){ runUrlStep(rc,i); return; }   // 兼容旧数据 kind:'url'/'jenkins'
@@ -6803,12 +7029,12 @@ function finish(rc, result){
   try{ drainQueue(); }catch(e){ console.warn('[pipeline] 排空队列失败（交由 renderQueue 自愈兜底）:', e); }   // startRun 抛错时吞掉：被移除的该项丢弃，剩余由下方 renderQueue 自愈逐个补排
   renderQueue();
 }
-/* 系统预设任务：随阶段列表按编排位置执行（见 advance 分发），
+/* 预设任务（系统预设 + 自定义预设）：随阶段列表按编排位置执行（见 advance 分发），
    脚本为设置页配置在启动时的快照（expandRunStages → presetRuntime）；未配置脚本=跳过（不阻断）；
-   block=true 的预设任务（环境检查）不通过（脚本非零退出）时阻断后续阶段、按失败计入历史，
+   block=true 的预设任务（环境检查，及勾选「失败阻断」的自定义预设）不通过（脚本非零退出）时阻断后续阶段、按失败计入历史，
    其余预设任务失败不阻断。日志随任务即时归档为 00 号任务日志（见 stageSeq） */
 async function runPresetStep(rc, i){
-  const stg=rc.stages; const s=stg[i]; const def=PRESET_DEF[s.pkey]||{name:s.name, block:false, noScript:'未配置「'+s.name+'」脚本'};
+  const stg=rc.stages; const s=stg[i]; const def=(typeof presetDefOf==='function'?presetDefOf(s.pkey):PRESET_DEF[s.pkey])||{name:s.name, block:false, noScript:'未配置「'+s.name+'」脚本'};   // 沙盒单独抽取本函数时没有 presetDefOf，退回 PRESET_DEF 直查
   const tk = rc.token;   // 运行令牌：await 期间若本次运行被中止/重置，下方比对丢弃迟回结果
   const sc=s.script;
   if(!sc || !sc.path){   // 未配置脚本：标记跳过并推进（不阻断）
@@ -6853,9 +7079,9 @@ async function runPresetStep(rc, i){
   } else {
     rc.nodes[s.id]={status:'failed',progress:100,dur,sub:{}};
     rcRender(rc);
-    if(def.block){   // 环境检查不通过：阻断后续阶段，按失败计入历史
+    if(def.block){   // 阻断型预设任务不通过：阻断后续阶段，按失败计入历史
       finish(rc,'failed');
-      rcOverall(rc,'✗ 环境检查未通过','','var(--st-err)');
+      rcOverall(rc,'✗ '+def.name+'未通过','','var(--st-err)');
     } else {
       rcOverall(rc,'运行中…','dshell-badgeWait'); advance(rc,i+1);   // 清理/Profiling 失败不阻断
     }
@@ -6975,7 +7201,7 @@ async function ensureArchiveFolder(folder){
   return apiMkdir(folder);
 }
 /* 任务级日志归档：每个任务（阶段 / 预设任务）的回显即时写入归档文件夹的独立日志文件，
-   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为预设任务：环境清理/环境检查/Profiling）；失败仅告警，不影响运行结果。 */
+   命名 run-<tag>-NN-任务名.log（NN 为 01 起的阶段序号，00 为预设任务：系统预设 + 自定义预设）；失败仅告警，不影响运行结果。 */
 /* 归档序号：预设任务固定 00（文件名含任务名，互不冲突）；正式阶段按剔除预设任务后的位置从 01 起，
    预设任务在阶段列表中的位置（编排顺序）不影响阶段编号 */
 function stageSeq(stg, i){ let n=0; for(let j=0;j<=i&&j<stg.length;j++){ if(stg[j] && !stg[j].preset) n++; } return (stg[i] && stg[i].preset) ? 0 : n; }
@@ -8604,7 +8830,7 @@ function openPlForm(id, focusIdx){
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
-  editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling 最后
+  editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查/前置自定义最前，Profiling/末尾自定义最后
   /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
      只读查看（内置/他人拥有的流水线）不恢复草稿——展示内容须为流水线定义真值，且只读模式也不会产生新草稿 */
   const draft=plFormReadOnly?null:loadPlDraft();
@@ -8648,7 +8874,7 @@ async function savePlForm(){
   for(let i=0;i<editStages.length;i++){
     const s=editStages[i];
     if(s.preset) continue;
-    if(PRESET_BY_NAME[s.name]){ alert('第 '+(i+1)+' 阶段的名称「'+s.name+'」与系统预设任务同名，请修改'); return; }
+    if(PRESET_BY_NAME[s.name]){ alert('第 '+(i+1)+' 阶段的名称「'+s.name+'」与预设任务（系统预设或自定义预设）同名，请修改'); return; }
     if(!String(s.name).trim()){ alert('第 '+(i+1)+' 阶段的名称未填写'); return; }
     if(seen[s.name]){ alert('阶段名重复：'+s.name); return; }
     seen[s.name]=1;
@@ -9040,6 +9266,10 @@ $('profilingScriptName').value = profilingScript?profilingScript.name:'';
 $('profilingScriptName').addEventListener('change', (e)=>setProfilingScript(e.target.value.trim()));
 $('profilingDetect').addEventListener('click', ()=>{ detectProfilingParams().then(saveProfiling); });
 renderProfilingParams();
+/* 自定义预设任务：设置页「预设任务设置」专区与主控「预设任务」面板自定义勾选项（初始值取 localStorage，服务端状态就绪后会被覆盖） */
+renderCustomPresetZone();
+renderPresetMultiPanel();
+$('customPresetAdd').addEventListener('click', addCustomPreset);
 /* Jenkins 服务配置（设置页内卡片）：连接模式切换 / 测试连接 / 保存 */
 applyJenkinsForm();
 $('jkModeLocal').addEventListener('click', ()=>setJenkinsMode('local'));
@@ -9156,6 +9386,7 @@ function applyImportedSettings(cfg, loc){
   if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
   if(cfg.profilingScript===null || (cfg.profilingScript && typeof cfg.profilingScript.name==='string')) profilingScript=cfg.profilingScript;
   if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
+  if(Array.isArray(cfg.customPresets)) customPresets=normalizeCustomPresets(cfg.customPresets);   /* 自定义预设任务按文件恢复；落盘与名称表/面板/专区重建由下方 saveCustomPresets 统一完成 */
   if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
   if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
   else if(cfg.evalscope && typeof cfg.evalscope==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evalscope);   /* 兼容旧 EvalScope 配置快照 */
@@ -9181,6 +9412,7 @@ function applyImportedSettings(cfg, loc){
   saveEnvs(); saveEnvSel(); saveRepos(); saveRepoSel(); saveScriptsDir();
   try{ localStorage.setItem('pip-theme', themePref); localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
   saveCleanup(); saveCheck(); saveProfiling();
+  if(typeof saveCustomPresets==='function') saveCustomPresets();   /* 自定义预设任务同一落口（沙盒单独抽取本函数时跳过） */
   saveJenkins(); saveEvaltok(); saveProm(); saveArchiveDir(); saveArchiveScript(); savePrompts();
   saveSchedEnvSel(); saveRunSelLS(); saveHistFilter();
   try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){}

@@ -160,6 +160,33 @@ test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进
   assert.equal(rc.release, '', '他端未同步 Release 时不能伪造本页默认值');
 });
 
+test('remoteQueuePreviewRc：运行中阶段按 startedAt 折算实时已耗时，无 startedAt 保持快照 dur', () => {
+  const { context } = makePreviewContext();
+  const now = Date.now();
+  const client = { id: 'server', label: '服务端' };
+  const item = {
+    id: 'r1', pipelineId: 'p1', pipelineName: '服务端部署', by: 'alice', source: 'manual', startedAt: now - 60000,
+    stages: [{ id: 's1', name: '构建' }, { id: 's2', name: '部署' }, { id: 's3', name: '测试' }, { id: 's4', name: '发布' }],
+    nodes: {
+      s1: { status: 'success', progress: 100, dur: 12, startedAt: now - 90000 },
+      s2: { status: 'running', progress: 5, dur: 0, startedAt: now - 5000 },   // 服务端快照运行期 dur 恒为 0
+      s3: { status: 'running', progress: 40, dur: 33 },                        // 旧数据无 startedAt
+      s4: { status: 'running', progress: 5, dur: 0, startedAt: now + 60000 },  // 时钟偏差（对端时钟快于本机）
+    },
+  };
+
+  const rc = context.remoteQueuePreviewRc(client, item, 'running');
+  assert.equal(rc.remoteClientId, 'server');
+  assert.equal(rc.overall.txt, '服务端运行中（只读）');
+  assert.equal(rc.nodes.s1.dur, 12, '终态阶段保持服务端结算的 dur，不按 startedAt 重算');
+  assert.equal(rc.nodes.s1.startedAt, now - 90000, 'startedAt 随节点白名单透传');
+  assert.ok(rc.nodes.s2.dur >= 4.5 && rc.nodes.s2.dur < 8, '运行中阶段 dur 由 startedAt 实时折算: ' + rc.nodes.s2.dur);
+  assert.equal(rc.nodes.s2.startedAt, now - 5000);
+  assert.equal(rc.nodes.s3.dur, 33, '无 startedAt 的运行中节点 dur 保持快照原值');
+  assert.equal(rc.nodes.s3.startedAt, undefined, '无 startedAt 的旧节点不补字段');
+  assert.equal(rc.nodes.s4.dur, 0, '时钟偏差折出的负耗时钳到 0');
+});
+
 test('applyStatusClasses：远端异常阶段 id 与子阶段名不进入 CSS selector', () => {
   const stageId = 'build\"] [data-id="other';
   const subName = '子项\"] .other[';
@@ -453,6 +480,24 @@ test('runningPresenceEntry：上报阶段状态但不携带日志、变量或脚
     stages: [{ id: 's1', name: '构建', parallel: true, sub: ['a'] }],
     nodes: { s1: { status: 'running', progress: 35, dur: 4, sub: { a: 'success' } } },
   });
+});
+
+test('queueNodePresence：阶段开始时间戳随白名单透传，非法值丢弃', () => {
+  const context = loadPresenceSnapshotContext();
+  const clean = node => JSON.parse(JSON.stringify(context.queueNodePresence(node)));   // vm 沙盒对象跨 realm，JSON 归一化后再深比
+  assert.deepEqual(clean({ status: 'running', progress: 5, dur: 0, startedAt: 1759999999000, varsIn: { TOKEN: 'secret' } }), {
+    status: 'running', progress: 5, dur: 0, startedAt: 1759999999000,
+  });
+  assert.deepEqual(clean({ status: 'running', progress: 5, dur: 0 }), {
+    status: 'running', progress: 5, dur: 0,
+  }, '无 startedAt 的旧节点不补字段');
+  assert.deepEqual(clean({ status: 'running', startedAt: -3 }), {
+    status: 'running', progress: 0, dur: 0,
+  }, '非正 startedAt 不透传');
+  assert.deepEqual(clean({ status: 'running', startedAt: 'abc' }), {
+    status: 'running', progress: 0, dur: 0,
+  }, '非数值 startedAt 不透传');
+  assert.deepEqual(clean(null), { status: 'idle', progress: 0, dur: 0 });
 });
 
 test('queuedPresenceEntry：排队快照展开预设阶段并全部标为未开始', () => {

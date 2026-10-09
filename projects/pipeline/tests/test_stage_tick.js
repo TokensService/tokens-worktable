@@ -61,7 +61,7 @@ function makeCtx() {
     finish(rc, r) { calls.finish.push([rc, r]); },
   };
   vm.createContext(context);
-  vm.runInContext(tickBlock() + '\n' + extractFunction('runStage'), context);
+  vm.runInContext(extractFunction('fmtDur') + '\n' + tickBlock() + '\n' + extractFunction('runStage'), context);
   return { context, calls, intervals, cleared, listeners, detailBar, flowNodes,
     getNow: () => now, addNow: d => { now += d; } };
 }
@@ -106,11 +106,25 @@ test('tick 内只直改进度条宽度/进度文本/详情进度条，不触发�
   assert.ok(Math.abs(n.progress - 500 * (2 / 300)) < 1e-9, '按真实经过时间等比推进，得到 ' + n.progress);
   assert.equal(n.dur, 1);
   assert.equal(h.flowNodes.a.bar.style.width, n.progress + '%', '编排节点进度条直改宽度');
-  assert.equal(h.flowNodes.a.meta.textContent, Math.round(n.progress) + '%', '节点进度文本直改');
+  assert.equal(h.flowNodes.a.meta.textContent, '3% · 1s', '节点进度文本直改（百分比 · 已耗时）');
   assert.equal(h.detailBar.style.width, n.progress + '%', '选中阶段的详情进度条直改宽度');
   assert.equal(h.calls.renderDetail, 0, 'tick 不得触发详情区全量渲染');
   assert.equal(h.calls.rcRender.length, 0, 'tick 不得走 rcRender');
   assert.ok(T.tasks.k1, '任务未结束应保留在表');
+});
+
+test('运行中节点进度文本的耗时按 fmtDur 显示（1m30s 格式）', () => {
+  const h = makeCtx();
+  const rc = makeRc('r1', [{ id: 'a', name: 'A', dur: 30 }]);
+  rc.selId = 'a';
+  h.context.viewRc = rc;
+  h.flowNodes.a = fakeFlowNode('a');
+  rc.nodes.a = { status: 'running', progress: 47, dur: 0, sub: {} };
+  h.context.stageTickStore().tasks.k1 = { rc, stageId: 'a', t0: h.getNow() - 90000, last: h.getNow() - 500, rate: 2 / 300 };
+  h.context.stageTickRun();
+  const n = rc.nodes.a;
+  assert.equal(n.dur, 90, '已运行 90 秒');
+  assert.equal(h.flowNodes.a.meta.textContent, Math.round(n.progress) + '% · 1m30s', '耗时 ≥60s 显示为 NmNs 样式');
 });
 
 test('非当前展示运行的任务 tick 只推进数据，不落 DOM', () => {
