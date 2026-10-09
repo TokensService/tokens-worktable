@@ -7508,11 +7508,15 @@ function renderHistory(){
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+'</td>';
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-pipeline title="查看并筛选流水线「'+esc(h.pipeline||'')+'」">查看流水线</button></td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());
     analysisPick.addEventListener('change', e=>{ if(!toggleAnalysisHistory(h,e.target.checked)) e.target.checked=false; });
+    const viewPipeline=tr.querySelector('[data-history-pipeline]');
+    if(viewPipeline){
+      viewPipeline.addEventListener('click', e=>{ e.stopPropagation(); showPipelineFromHistory(h); });
+    }
     tr.addEventListener('click', ()=>{
       selHistoryIdx = selHistoryIdx===idx?-1:idx;
       if(selHistoryIdx>=0) enterHistoryReplay(history[selHistoryIdx]);   // 选中行：编排区/回显框/主控控件同步回放该次运行
@@ -8051,6 +8055,19 @@ function showPipelineHistory(id){
   renderHistFilterOptions(); renderHistory();
   refreshHistoryFromServer(false);
   const card=$('histCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
+}
+/* 运行历史行「查看流水线」：独立于整行点击回放，定位对应流水线并把任务列表筛到该名称。 */
+function showPipelineFromHistory(rec){
+  const name=String(rec&&rec.pipeline||'').trim(); if(!name) return;
+  const pl=(rec.pipelineId&&findPipeline(rec.pipelineId))||pipelines.find(p=>p&&p.name===name)||null;
+  plFilter={kw:name,owner:'all',favorite:'all'};
+  plPage=0;
+  const kwInp=$('plFilterKw'); if(kwInp) kwInp.value=name;
+  const ownerSel=$('plFilterOwner'); if(ownerSel) ownerSel.value='all';
+  const favoriteSel=$('plFilterFavorite'); if(favoriteSel) favoriteSel.value='all';
+  if(pl) selectPipeline(pl.id);
+  savePlFilter(); renderPipelines();
+  const card=$('pipelineTaskCard'); if(card&&card.scrollIntoView) card.scrollIntoView({behavior:'smooth',block:'start'});
 }
 /* 置顶切换：pinnedAt>0 视为已置顶。任务列表与运行框下拉把已置顶排最前（多条按置顶时间新→旧），取消置顶回到原数组顺序；
    pinnedAt 随流水线 config 经 persistState 上送服务端、随导出文件保存，各浏览器刷新后一致；复制副本不继承（见 copyPipeline）。 */
