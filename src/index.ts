@@ -2262,7 +2262,9 @@ type PipelineSupervisor = {
 function getPipelineSupervisor(): PipelineSupervisor {
   const root = globalThis as any
   const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
-  if (current && !current.disposed) return current
+  // Once the grace timer fired and manager.dispose started, the old manager
+  // cannot accept a fresh generation safely; allocate a new bridge instead.
+  if (current && !current.disposed && (!current.disposing || current.disposeTimer)) return current
   const state: PipelineSupervisor = {
     leases: createPipelineNodeLeases(),
     manager: createPipelineGenerationManager(),
