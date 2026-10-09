@@ -80,7 +80,7 @@ test('拿到登录用户后按「我的」筛选视图重绘流水线列表',asy
   assert.equal(renders,1);
 });
 
-test('拿到登录用户后按「仅看收藏」筛选重绘，即使创建者选择全部',async()=>{
+test('拿到登录用户后按「仅看收藏」筛选重绘，即使拥有者筛选选了「全部」',async()=>{
   const el={textContent:'未登录'};
   let renders=0;
   const ctx=loadSection({
