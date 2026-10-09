@@ -468,9 +468,10 @@ test('queuedPresenceEntry：排队快照展开预设阶段并全部标为未开�
   assert.equal(JSON.stringify(snap).includes('secret'), false);
 });
 
-test('publishQueue：上报声明可点击阶段快照协议版本', () => {
-  const publishSource = extract('function publishQueue', '/* renderQueue 渲染很频繁');
-  assert.match(publishSource, /schemaVersion\s*:\s*2/);
+test('publishQueue：上报声明可点击阶段快照协议版本并携带 completed 终态登记', () => {
+  const publishSource = extract('function queuePublishBody', '/* renderQueue 渲染很频繁');
+  assert.match(publishSource, /schemaVersion\s*:\s*3/);
+  assert.match(publishSource, /completed\s*:/);
 });
 
 test('publishQueue：节点租约申请期间继续把待启动项作为可查看的排队快照上报', () => {
