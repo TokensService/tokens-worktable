@@ -204,7 +204,7 @@ test('parseUsageStats：正常响应解析，时间格式 MM-DD HH:mm，daily �
 test('parseUsageStats：异常输入（null / 字符串 / 数组 / 旧版 404 兜底页）回退空结构', () => {
   const { parseUsageStats } = loadClientHelpers()
   for (const bad of [null, undefined, 42, 'not json', [], '<html>404</html>']) {
-    assert.deepEqual(plain(parseUsageStats(bad)), { total: 0, today: 0, users: [], daily: [], recent: [] }, `输入 ${String(bad)} 应回退空结构`)
+    assert.deepEqual(plain(parseUsageStats(bad)), { online: 0, total: 0, today: 0, users: [], daily: [], recent: [] }, `输入 ${String(bad)} 应回退空结构`)
   }
   // 部分字段畸形：坏项剔除、好项保留，计数非有限值归零
   const stats = parseUsageStats({
