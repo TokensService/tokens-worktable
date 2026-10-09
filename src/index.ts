@@ -413,9 +413,60 @@ function cleanPipelineHistory(history: any[]) {
   return history.map((record: any) => {
     if (!record || typeof record !== 'object' || Array.isArray(record)) return record
     const clean: any = {}
-    for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value
+    for (const [key, value] of Object.entries(record)) {
+      if (transient.has(key)) continue
+      if (key === 'envNodes') {
+        const envNodes = cleanPipelineHistoryEnvNodes(value)
+        if (envNodes) clean[key] = envNodes   // 非数组的脏值整体剔除，不得进入共享存储
+        continue
+      }
+      clean[key] = value
+    }
     return clean
   })
+}
+
+/** cleanPipelineHistory 对 envNodes 的防御性清洗：只留对象条目且只保留 name/ip/nodeIp 三字段
+ *  （绝不放行 user/pass 等凭据键），单字段限长 128 字符，name 与 ip 均为空的条目丢弃，截到 50 条；
+ *  envNodes 不是数组时返回 null（调用方剔除该字段）。 */
+function cleanPipelineHistoryEnvNodes(value: any): any[] | null {
+  if (!Array.isArray(value)) return null
+  const nodes: any[] = []
+  for (const item of value) {
+    if (nodes.length >= 50) break
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const node = {
+      name: String(item.name || '').slice(0, 128),
+      ip: String(item.ip || '').slice(0, 128),
+      nodeIp: String(item.nodeIp || '').slice(0, 128),
+    }
+    if (!node.name && !node.ip) continue
+    nodes.push(node)
+  }
+  return nodes
+}
+
+/** 历史记录的环境节点快照 envNodes：由运行选用的环境节点映射出 {name,ip,nodeIp} 三字段（与客户端
+ *  契约一致），绝不携带 user/pass 等凭据；ip 为空时依次以 nodeIp、id 兜底进 ip，name 与 ip 均为空
+ *  的条目丢弃，最多 50 条。envs 不是数组（旧定时计划无节点快照）时回退把 env 字符串按中文/英文逗号
+ *  拆成 [{name:'',ip}]；结果总是数组（无选中节点时为 []）。 */
+function pipelineHistoryEnvNodes(envs: any, envText: any) {
+  const nodes: { name: string; ip: string; nodeIp: string }[] = []
+  const push = (name: any, ip: any, nodeIp: any) => {
+    if (nodes.length >= 50) return
+    const rec = { name: String(name || ''), ip: String(ip || ''), nodeIp: String(nodeIp || '') }
+    if (!rec.name && !rec.ip) return
+    nodes.push(rec)
+  }
+  if (Array.isArray(envs)) {
+    for (const e of envs) {
+      if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+      push(e.name, String(e.ip || '') || String(e.nodeIp || '') || String(e.id || ''), e.nodeIp)
+    }
+    return nodes
+  }
+  for (const part of String(envText || '').split(/[，,]/)) push('', part.trim(), '')
+  return nodes
 }
 
 /** 内容比对用的条目副本：剥离 favoriteUsers / pinnedAt 两个「非内容」共享可变字段（其余键保持原顺序）。
@@ -4319,6 +4370,7 @@ export function apply(ctx: Context) {
       branch: pl.branch || '',
       strategy: pl.strategy || '',
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
+      envNodes: pipelineHistoryEnvNodes(pl.envs, runCtx.env),
     })
   }
   const pipelineGenerationId = PLUGIN_VERSION + '-' + (++pipelineSupervisor.generation).toString(36)

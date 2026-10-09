@@ -965,6 +965,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
   const code = stripTypeScriptTypes([
     extractFunction('isLocalTarget'),
     source.slice(apiStart, apiEnd),
+    extractFunction('pipelineHistoryEnvNodes'),
     extractFunction('resolvePipelineScriptsDir'),
     extractFunction('parseStageVars'),
     extractFunction('parseStageJson'),

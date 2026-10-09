@@ -1,5 +1,19 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线**运行历史记录新增结构化环境节点 `envNodes`**（`src/index.ts`）：服务端 `execPlan` 写入历史
+  （`appendPipelineHistory`）时给记录附加 `envNodes` 字段——本次运行选中环境节点的快照数组
+  `{name,ip,nodeIp}`（name 为节点名可为空串；ip 为 SSH 地址，为空时依次以 nodeIp、id 兜底；nodeIp 为
+  K8s InternalIP，无则空串；name 与 ip 均空的条目丢弃，最多 50 条），优先由 `runCtx.envs` 数组映射，
+  旧计划无 `envs` 快照时回退把 `env` 字符串按中文/英文逗号拆成 `[{name:'',ip}]`，结果总是数组
+  （无选中节点时写 `[]`）；只映射上述三字段，**user/pass 等凭据绝不落历史**。`cleanPipelineHistory`
+  （写盘前清洗）对 `envNodes` 做防御性清洗：非数组整体剔除，条目只留对象且只保留三字段（单字段限长
+  128）、空条目丢弃、截到 50；`mergePipelineHistoryForWrite`（页面 PUT 上送历史合并）对记录原样保留，
+  无 `envNodes` 的遗留记录不报错、不补字段。HTTP 响应结构不变（记录自然多字段）。
+  测试：新增 `tests/pipeline-history-env-nodes.test.mjs`（7 例：API 运行路径落盘记录的 envNodes 字段
+  值与三字段契约、历史 JSON 不含节点口令/user、plan 凭据不落存储文件任何位置、未选节点写 `[]`、
+  env 字符串回退与 50 条封顶、merge 往返兼容遗留记录、clean 防御清洗）；
+  `tests/pipeline-run-api.test.mjs` 的 execPlan 抽取同步补上 `pipelineHistoryEnvNodes`。
+
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
