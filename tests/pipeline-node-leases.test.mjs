@@ -196,8 +196,79 @@ test('代际管理器：切换 active 后旧代停止接收但跨代快照与取
   oldReleases.shift()()
   newReleases.shift()()
   await Promise.all([oldRun, newRun])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(manager.snapshot().generations.some(item => item.id === 'g-old'), false)
   await manager.dispose()
   assert.equal(manager.snapshot().generations.length, 0)
+})
+
+test('代际管理器：同一 generation id 替换会释放旧池且只保留新池', async () => {
+  const ctx = loadApiRegion()
+  const manager = ctx.createPipelineGenerationManager()
+  let oldRelease
+  const old = ctx.createPipelineExecutionQueue(async () => { await new Promise(resolve => { oldRelease = resolve }) }, 1, 10, { generation: 'same' })
+  const newer = ctx.createPipelineExecutionQueue(async () => {}, 1, 10, { generation: 'same' })
+  manager.activate('same', old)
+  const oldRun = manager.run({ id: 'same-old' })
+  await new Promise(resolve => setImmediate(resolve))
+  manager.activate('same', newer)
+  oldRelease()
+  await oldRun
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(manager.snapshot().generations.length, 1)
+  assert.equal(manager.snapshot().generations[0].id, 'same')
+  await manager.dispose()
+})
+
+test('工作台 supervisor：跨模块实例共享节点租约与 generation manager', () => {
+  const ctx = loadApiRegion()
+  const first = ctx.getPipelineSupervisor()
+  const second = ctx.getPipelineSupervisor()
+  assert.equal(first, second)
+  assert.equal(first.leases, second.leases)
+  assert.equal(first.manager, second.manager)
+})
+
+test('supervisor disposer：引用计数归零时返回并等待 manager dispose', async () => {
+  const ctx = loadApiRegion()
+  const state = ctx.getPipelineSupervisor()
+  const first = ctx.retainPipelineSupervisor()
+  const second = ctx.retainPipelineSupervisor()
+  assert.equal(first, state)
+  assert.equal(second, state)
+  await ctx.releasePipelineSupervisor(first)
+  assert.equal(state.refs, 1)
+  const disposing = ctx.releasePipelineSupervisor(state)
+  assert.equal(typeof disposing.then, 'function')
+  await disposing
+  assert.equal(state.refs, 0)
+  assert.notEqual(ctx.getPipelineSupervisor(), state)
+})
+
+test('supervisor：旧实例释放与新实例立即 retain 时复用原 manager', async () => {
+  const ctx = loadApiRegion()
+  const state = ctx.retainPipelineSupervisor()
+  const release = ctx.releasePipelineSupervisor(state)
+  const replacement = ctx.retainPipelineSupervisor()
+  assert.equal(replacement, state)
+  assert.equal(state.refs, 1)
+  await release
+  assert.equal(ctx.getPipelineSupervisor(), state)
+  await ctx.releasePipelineSupervisor(state)
+})
+
+test('代际管理器 health：报告 active generation 与 draining 代', async () => {
+  const ctx = loadApiRegion()
+  const manager = ctx.createPipelineGenerationManager()
+  const old = ctx.createPipelineExecutionQueue(async () => {}, 1, 10, { generation: 'health-old' })
+  const newer = ctx.createPipelineExecutionQueue(async () => {}, 1, 10, { generation: 'health-new' })
+  manager.activate('health-old', old)
+  manager.activate('health-new', newer)
+  const health = manager.health()
+  assert.equal(health.generation, 'health-new')
+  assert.equal(health.draining.length, 1)
+  assert.equal(health.draining[0].id, 'health-old')
+  await manager.dispose()
 })
 
 test('执行池：无目标 IP 的计划不按节点约束（保持旧版纯 FIFO 行为）', async () => {

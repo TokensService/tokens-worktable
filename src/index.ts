@@ -2160,7 +2160,7 @@ function createPipelineGenerationManager() {
       record.queue.stopAccepting()
     }
     record.queue.drain().then(() => {
-      if (record.disposed || record.id === activeId) return
+      if (record.disposed || (activeId === record.id && generations.get(record.id) === record)) return
       record.disposed = true
       if (generations.get(record.id) === record) generations.delete(record.id)
       record.queue.dispose().catch(() => {})
@@ -2213,7 +2213,15 @@ function createPipelineGenerationManager() {
         active: activeId || null,
         generations: all,
         runs: all.flatMap(record => record.runs),
-        queue: all.flatMap(record => record.queue),
+        queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+      }
+    },
+    health() {
+      const snapshot = this.snapshot()
+      return {
+        generation: snapshot.active,
+        draining: snapshot.generations.filter(record => record.draining),
+        generations: snapshot.generations,
       }
     },
     stats() {
@@ -2231,6 +2239,78 @@ function createPipelineGenerationManager() {
       return disposal
     },
   }
+}
+
+/*
+ * HMR-safe supervisor bridge. The module entry may be evaluated more than once,
+ * so mutable queue/lease state lives behind a process-global symbol instead of
+ * in an apply closure. A new apply retains the bridge before the old disposer
+ * releases it; the last disposer drains all generations and removes the bridge.
+ */
+const PIPELINE_SUPERVISOR_KEY = Symbol.for('tokens-worktable.pipeline-supervisor')
+type PipelineSupervisor = {
+  leases: ReturnType<typeof createPipelineNodeLeases>;
+  manager: ReturnType<typeof createPipelineGenerationManager>;
+  refs: number;
+  disposing?: boolean;
+  disposed?: boolean;
+  disposeTimer?: ReturnType<typeof setTimeout>;
+  disposePromise?: Promise<void>;
+  disposeResolve?: () => void;
+  generation: number;
+}
+function getPipelineSupervisor(): PipelineSupervisor {
+  const root = globalThis as any
+  const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
+  if (current && !current.disposed) return current
+  const state: PipelineSupervisor = {
+    leases: createPipelineNodeLeases(),
+    manager: createPipelineGenerationManager(),
+    refs: 0,
+    generation: 0,
+  }
+  root[PIPELINE_SUPERVISOR_KEY] = state
+  return state
+}
+function retainPipelineSupervisor(): PipelineSupervisor {
+  const state = getPipelineSupervisor()
+  if (state.disposeTimer) {
+    clearTimeout(state.disposeTimer)
+    state.disposeTimer = undefined
+    state.disposeResolve?.()
+    state.disposeResolve = undefined
+    state.disposePromise = undefined
+  }
+  state.disposing = false
+  state.refs += 1
+  return state
+}
+function releasePipelineSupervisor(state: PipelineSupervisor): Promise<void> {
+  state.refs = Math.max(0, state.refs - 1)
+  if (state.refs > 0) return Promise.resolve()
+  if (state.disposePromise) return state.disposePromise
+  state.disposing = true
+  const root = globalThis as any
+  state.disposePromise = new Promise<void>(resolve => {
+    state.disposeResolve = resolve
+    state.disposeTimer = setTimeout(() => {
+      state.disposeTimer = undefined
+      if (state.refs > 0) {
+        state.disposing = false
+        state.disposeResolve = undefined
+        state.disposePromise = undefined
+        resolve()
+        return
+      }
+      state.manager.dispose().then(() => {
+        state.disposed = true
+        state.disposeResolve = undefined
+        if (root[PIPELINE_SUPERVISOR_KEY] === state) delete root[PIPELINE_SUPERVISOR_KEY]
+        resolve()
+      }).catch(() => resolve())
+    }, 0)
+  })
+  return state.disposePromise
 }
 
 function registerPipelineRunApi(webServer: any, deps: {
@@ -2347,12 +2427,16 @@ export function apply(ctx: Context) {
     ctx.logger?.warn('[tokens-worktable] ctx.webServer 不可用（headless profile？），跳过服务端路由')
     return
   }
+  const pipelineSupervisor = retainPipelineSupervisor()
 
   webServer.register({
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true })
+      json(res, 200, {
+        plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true,
+        ...pipelineSupervisor.manager.health(),
+      })
     },
   })
 
@@ -3116,7 +3200,7 @@ export function apply(ctx: Context) {
      页面手动运行在 startRun 前 acquire、finish/中止/重置 release、运行期周期续租（pagehide 时
      beacon 批量 release）；API/定时计划由执行池 drain 时统一 acquire/release（见 pipelineExecutions
      hooks）。GET 返回当前占用表，供页面展示「等待节点」占用者。 */
-  const pipelineNodeLeases = createPipelineNodeLeases()
+  const pipelineNodeLeases = typeof pipelineSupervisor !== 'undefined' ? pipelineSupervisor.leases : createPipelineNodeLeases()
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline/leases',
@@ -4038,7 +4122,7 @@ export function apply(ctx: Context) {
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
-  const pipelineGenerationId = PLUGIN_VERSION + '-' + Date.now().toString(36)
+  const pipelineGenerationId = PLUGIN_VERSION + '-' + (++pipelineSupervisor.generation).toString(36)
   const pipelineQueue = createPipelineExecutionQueue(execPlan, 2, 100, {
     generation: pipelineGenerationId,
     /* 节点互斥：与在跑计划同节点、或节点被旧页面本地运行租约占用的计划留在队列等待重试。 */
@@ -4046,7 +4130,7 @@ export function apply(ctx: Context) {
     acquire: (plan: any, ips: string[]) => pipelineNodeLeases.acquire(pipelineLeaseOwner(plan), ips, String(plan && plan.pipelineName || ''), String(plan && plan.by || '')).ok,
     release: (plan: any) => { pipelineNodeLeases.release(pipelineLeaseOwner(plan)) },
   })
-  const pipelineGenerationManager = createPipelineGenerationManager()
+  const pipelineGenerationManager = pipelineSupervisor.manager
   pipelineGenerationManager.activate(pipelineGenerationId, pipelineQueue)
   pipelineExecutions = pipelineGenerationManager
   registerPipelineRunApi(webServer, {
@@ -4112,7 +4196,7 @@ export function apply(ctx: Context) {
   if (planTimer && typeof planTimer.unref === 'function') planTimer.unref()
   ctx.effect(() => () => {
     clearInterval(planTimer)
-    pipelineGenerationManager.dispose().catch(() => {})
+    return releasePipelineSupervisor(pipelineSupervisor)
   }, 'tokens-worktable: pipeline generation')
 
   // 流水线阶段脚本执行（pipeline.html 的 execScript 调用）：按扩展名选解释器（.sh→bash、.py→python3），
