@@ -1894,6 +1894,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   acquire?: (plan: any, ips: string[]) => boolean;
   release?: (plan: any) => void;
   retryMs?: number;
+  generation?: string;
+  generationId?: string;
 }) {
   interface ExecutionItem {
     plan: any;
@@ -1910,8 +1912,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const pendingLimit = Math.max(1, Math.floor(Number(queueLimit) || 1))
   const pending: ExecutionItem[] = []
   const running: Array<{ item: ExecutionItem; ips: string[] }> = []
+  const generation = hooks && (hooks.generation ?? hooks.generationId) != null
+    ? String(hooks && (hooks.generation ?? hooks.generationId))
+    : ''
   let active = 0
   let retryTimer: any = null
+  let accepting = true
+  let disposed = false
+  let disposal: Promise<void> | null = null
+  const idleWaiters: Array<() => void> = []
   const retryWait = Math.max(50, Math.floor(Number(hooks && hooks.retryMs) || 5000))
   const ipsOf = (plan: any): string[] => {
     if (!hooks || !hooks.ipsOf) return []
@@ -1971,6 +1980,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   }
   const snapshotEntry = (item: ExecutionItem, timeKey: 'startedAt' | 'queuedAt') => ({
     id: runIdOf(item.plan),
+    ...(generation ? { generation } : {}),
     pipelineId: String(item.plan && item.plan.pipelineId || ''),
     pipelineName: String(item.plan && item.plan.pipelineName || ''),
     by: String(item.plan && item.plan.by || ''),
@@ -1983,7 +1993,12 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     stages: item.stages,
     nodes: item.nodes,
   })
-  const drain = () => {
+  const resolveIdle = () => {
+    if (active || pending.length || !idleWaiters.length) return
+    const waiters = idleWaiters.splice(0)
+    for (const resolve of waiters) resolve()
+  }
+  const pump = () => {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     while (active < concurrency && pending.length) {
       let picked = -1
@@ -2015,7 +2030,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         const index = running.indexOf(entry)
         if (index >= 0) running.splice(index, 1)
         if (entry.ips.length) release(item.plan)
-        drain()
+        pump()
       }
       Promise.resolve().then(() => execute(item.plan, runtime)).then(
         () => { settle(); item.resolve() },
@@ -2024,20 +2039,27 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     }
     /* 仍有排队项但被节点占用挡住：周期重试（池外租约释放/到期、在跑结束都会再次 drain） */
     if (pending.length && active < concurrency && !retryTimer) {
-      retryTimer = setTimeout(drain, retryWait)
+      retryTimer = setTimeout(pump, retryWait)
       if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref()
     }
+    resolveIdle()
   }
   return {
     run(plan: any): Promise<void> {
+      if (!accepting || disposed) {
+        const error: any = new Error('pipeline execution queue is draining')
+        error.status = 503; error.code = 'PIPELINE_GENERATION_DRAINING'
+        throw error
+      }
       if (pending.length >= pendingLimit) {
         const error: any = new Error('pipeline execution queue full')
         error.status = 503; error.code = 'PIPELINE_QUEUE_FULL'
         throw error
       }
       return new Promise<void>((resolvePromise, reject) => {
+        const boundPlan = generation ? { ...(plan && typeof plan === 'object' ? plan : {}), generation } : plan
         const item: ExecutionItem = {
-          plan,
+          plan: boundPlan,
           queuedAt: Date.now(),
           startedAt: 0,
           stages: [],
@@ -2047,15 +2069,18 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
           resolve: resolvePromise,
           reject,
         }
-        resetStages(item, plan && plan.stages)
+        resetStages(item, boundPlan && boundPlan.stages)
         pending.push(item)
-        drain()
+        pump()
       })
     },
-    snapshot: () => ({
-      runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
-      queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
-    }),
+    snapshot: () => {
+      const value = {
+        runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
+        queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
+      }
+      return generation ? { generation, accepting, ...value } : value
+    },
     log(runId: string, stageId: string): { text: string; truncated: boolean; revision: number } | null {
       const id = String(runId || ''), sid = String(stageId || '')
       const entry = running.find(({ item }) => runIdOf(item.plan) === id)
@@ -2072,7 +2097,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         error.name = 'AbortError'
         error.code = 'PIPELINE_RUN_CANCELLED'
         item.reject(error)
-        drain()
+        pump()
         return { ok: true, state: 'queued' }
       }
       const activeEntry = running.find((entry) => runIdOf(entry.item.plan) === id)
@@ -2087,8 +2112,207 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       }
       return { ok: false, state: 'missing' }
     },
-    stats: () => ({ active, queued: pending.length, limit: concurrency }),
+    stats: () => generation
+      ? ({ active, queued: pending.length, limit: concurrency, generation, accepting })
+      : ({ active, queued: pending.length, limit: concurrency }),
+    stopAccepting(): boolean {
+      if (!accepting) return false
+      accepting = false
+      return true
+    },
+    drain(): Promise<void> {
+      pump()
+      if (!active && !pending.length) return Promise.resolve()
+      return new Promise<void>(resolve => idleWaiters.push(resolve))
+    },
+    dispose(): Promise<void> {
+      if (disposal) return disposal
+      accepting = false
+      disposal = this.drain().then(() => {
+        disposed = true
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+      })
+      return disposal
+    },
   }
+}
+
+/**
+ * 稳定的流水线代际指针：切换 active 只停止旧池接收新计划，旧池中的排队/运行计划继续完成。
+ * manager 不拥有执行器或子进程；dispose 仅等待各池自然 drain，避免热替换时误杀子进程与租约。
+ */
+function createPipelineGenerationManager() {
+  interface GenerationRecord {
+    id: string;
+    queue: ReturnType<typeof createPipelineExecutionQueue>;
+    draining: boolean;
+    disposed: boolean;
+  }
+  const generations = new Map<string, GenerationRecord>()
+  let activeId = ''
+  let disposal: Promise<void> | null = null
+
+  const beginDrain = (id = activeId) => {
+    const record = generations.get(String(id))
+    if (!record) return null
+    if (!record.draining) {
+      record.draining = true
+      record.queue.stopAccepting()
+    }
+    record.queue.drain().then(() => {
+      if (record.disposed || (activeId === record.id && generations.get(record.id) === record)) return
+      record.disposed = true
+      if (generations.get(record.id) === record) generations.delete(record.id)
+      record.queue.dispose().catch(() => {})
+    }).catch(() => {})
+    return record
+  }
+
+  return {
+    activate(id: string, queue: ReturnType<typeof createPipelineExecutionQueue>) {
+      const nextId = String(id || '')
+      if (!nextId || !queue || typeof queue.run !== 'function') throw new Error('invalid pipeline generation')
+      if (activeId && activeId !== nextId) beginDrain(activeId)
+      const previous = generations.get(nextId)
+      if (previous && previous.queue !== queue) beginDrain(nextId)
+      const record: GenerationRecord = { id: nextId, queue, draining: false, disposed: false }
+      generations.set(nextId, record)
+      activeId = nextId
+      return queue
+    },
+    beginDrain,
+    run(plan: any): Promise<void> {
+      const active = generations.get(activeId)
+      if (!active || active.draining) {
+        const error: any = new Error('no active pipeline generation')
+        error.status = 503; error.code = 'PIPELINE_GENERATION_DRAINING'
+        throw error
+      }
+      return active.queue.run(plan)
+    },
+    cancel(runId: string) {
+      for (const record of generations.values()) {
+        const result = record.queue.cancel(runId)
+        if (result.ok) return { ...result, generation: record.id }
+      }
+      return { ok: false, state: 'missing' as const }
+    },
+    log(runId: string, stageId: string) {
+      for (const record of generations.values()) {
+        const result = record.queue.log(runId, stageId)
+        if (result) return { ...result, generation: record.id }
+      }
+      return null
+    },
+    snapshot() {
+      const all = [...generations.values()].map(record => {
+        const snapshot = record.queue.snapshot()
+        return { id: record.id, accepting: !record.draining && snapshot.accepting !== false, draining: record.draining, runs: snapshot.runs || [], queue: snapshot.queue || [] }
+      })
+      return {
+        active: activeId || null,
+        generations: all,
+        runs: all.flatMap(record => record.runs),
+        queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+      }
+    },
+    health() {
+      const snapshot = this.snapshot()
+      return {
+        generation: snapshot.active,
+        draining: snapshot.generations.filter(record => record.draining),
+        generations: snapshot.generations,
+      }
+    },
+    stats() {
+      const active = generations.get(activeId)
+      return active ? { ...active.queue.stats(), generation: active.id, draining: active.draining } : { active: 0, queued: 0, generation: null, draining: false }
+    },
+    dispose(): Promise<void> {
+      if (disposal) return disposal
+      activeId = ''
+      const records = [...generations.values()]
+      for (const record of records) beginDrain(record.id)
+      disposal = Promise.all(records.map(record => record.queue.dispose())).then(() => {
+        generations.clear()
+      })
+      return disposal
+    },
+  }
+}
+
+/*
+ * HMR-safe supervisor bridge. The module entry may be evaluated more than once,
+ * so mutable queue/lease state lives behind a process-global symbol instead of
+ * in an apply closure. A new apply retains the bridge before the old disposer
+ * releases it; the last disposer drains all generations and removes the bridge.
+ */
+const PIPELINE_SUPERVISOR_KEY = Symbol.for('tokens-worktable.pipeline-supervisor')
+type PipelineSupervisor = {
+  leases: ReturnType<typeof createPipelineNodeLeases>;
+  manager: ReturnType<typeof createPipelineGenerationManager>;
+  refs: number;
+  disposing?: boolean;
+  disposed?: boolean;
+  disposeTimer?: ReturnType<typeof setTimeout>;
+  disposePromise?: Promise<void>;
+  disposeResolve?: () => void;
+  generation: number;
+}
+function getPipelineSupervisor(): PipelineSupervisor {
+  const root = globalThis as any
+  const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
+  // Once the grace timer fired and manager.dispose started, the old manager
+  // cannot accept a fresh generation safely; allocate a new bridge instead.
+  if (current && !current.disposed && (!current.disposing || current.disposeTimer)) return current
+  const state: PipelineSupervisor = {
+    leases: createPipelineNodeLeases(),
+    manager: createPipelineGenerationManager(),
+    refs: 0,
+    generation: 0,
+  }
+  root[PIPELINE_SUPERVISOR_KEY] = state
+  return state
+}
+function retainPipelineSupervisor(): PipelineSupervisor {
+  const state = getPipelineSupervisor()
+  if (state.disposeTimer) {
+    clearTimeout(state.disposeTimer)
+    state.disposeTimer = undefined
+    state.disposeResolve?.()
+    state.disposeResolve = undefined
+    state.disposePromise = undefined
+  }
+  state.disposing = false
+  state.refs += 1
+  return state
+}
+function releasePipelineSupervisor(state: PipelineSupervisor): Promise<void> {
+  state.refs = Math.max(0, state.refs - 1)
+  if (state.refs > 0) return Promise.resolve()
+  if (state.disposePromise) return state.disposePromise
+  state.disposing = true
+  const root = globalThis as any
+  state.disposePromise = new Promise<void>(resolve => {
+    state.disposeResolve = resolve
+    state.disposeTimer = setTimeout(() => {
+      state.disposeTimer = undefined
+      if (state.refs > 0) {
+        state.disposing = false
+        state.disposeResolve = undefined
+        state.disposePromise = undefined
+        resolve()
+        return
+      }
+      state.manager.dispose().then(() => {
+        state.disposed = true
+        state.disposeResolve = undefined
+        if (root[PIPELINE_SUPERVISOR_KEY] === state) delete root[PIPELINE_SUPERVISOR_KEY]
+        resolve()
+      }).catch(() => resolve())
+    }, 0)
+  })
+  return state.disposePromise
 }
 
 function registerPipelineRunApi(webServer: any, deps: {
@@ -2205,12 +2429,16 @@ export function apply(ctx: Context) {
     ctx.logger?.warn('[tokens-worktable] ctx.webServer 不可用（headless profile？），跳过服务端路由')
     return
   }
+  const pipelineSupervisor = retainPipelineSupervisor()
 
   webServer.register({
     kind: 'exact',
     path: HEALTH_PATH,
     handler: (_req: any, res: any) => {
-      json(res, 200, { plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true })
+      json(res, 200, {
+        plugin: 'tokens-worktable', version: PLUGIN_VERSION, dir: PLUGIN_DIR, dev: DEV_INSTALL, home: DSH_HOME, ok: true,
+        ...pipelineSupervisor.manager.health(),
+      })
     },
   })
 
@@ -2795,7 +3023,7 @@ export function apply(ctx: Context) {
     }),
   })
   /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */
-  let pipelineExecutions: ReturnType<typeof createPipelineExecutionQueue>
+  let pipelineExecutions: ReturnType<typeof createPipelineGenerationManager>
 
   webServer.register({
     kind: 'exact',
@@ -2870,6 +3098,7 @@ export function apply(ctx: Context) {
       o[k] = String(e[k] ?? '').slice(0, 200)
     }
     if (typeof e.originQueueId === 'string' && e.originQueueId) o.originQueueId = e.originQueueId.slice(0, 200)
+    if (typeof e.generation === 'string' && e.generation) o.generation = e.generation.slice(0, 128)
     const t = Number(e[timeKey])
     o[timeKey] = Number.isFinite(t) ? t : 0
     o.stages = (Array.isArray(e.stages) ? e.stages : []).slice(0, QUEUE_STAGE_CAP)
@@ -3109,7 +3338,7 @@ export function apply(ctx: Context) {
      页面手动运行在 startRun 前 acquire、finish/中止/重置 release、运行期周期续租（pagehide 时
      beacon 批量 release）；API/定时计划由执行池 drain 时统一 acquire/release（见 pipelineExecutions
      hooks）。GET 返回当前占用表，供页面展示「等待节点」占用者。 */
-  const pipelineNodeLeases = createPipelineNodeLeases()
+  const pipelineNodeLeases = typeof pipelineSupervisor !== 'undefined' ? pipelineSupervisor.leases : createPipelineNodeLeases()
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/pipeline/leases',
@@ -4031,12 +4260,17 @@ export function apply(ctx: Context) {
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
     })
   }
-  pipelineExecutions = createPipelineExecutionQueue(execPlan, 2, 100, {
+  const pipelineGenerationId = PLUGIN_VERSION + '-' + (++pipelineSupervisor.generation).toString(36)
+  const pipelineQueue = createPipelineExecutionQueue(execPlan, 2, 100, {
+    generation: pipelineGenerationId,
     /* 节点互斥：与在跑计划同节点、或节点被旧页面本地运行租约占用的计划留在队列等待重试。 */
     ipsOf: (plan: any) => pipelineEnvIps(plan && plan.envs),
     acquire: (plan: any, ips: string[]) => pipelineNodeLeases.acquire(pipelineLeaseOwner(plan), ips, String(plan && plan.pipelineName || ''), String(plan && plan.by || '')).ok,
     release: (plan: any) => { pipelineNodeLeases.release(pipelineLeaseOwner(plan)) },
   })
+  const pipelineGenerationManager = pipelineSupervisor.manager
+  pipelineGenerationManager.activate(pipelineGenerationId, pipelineQueue)
+  pipelineExecutions = pipelineGenerationManager
   registerPipelineRunApi(webServer, {
     readStore: readPipelineStore,
     execute: plan => pipelineExecutions.run(plan),
@@ -4096,7 +4330,12 @@ export function apply(ctx: Context) {
       }
     }
   }
-  setInterval(() => { planTick().catch(() => {}) }, 15000)
+  const planTimer = setInterval(() => { planTick().catch(() => {}) }, 15000)
+  if (planTimer && typeof planTimer.unref === 'function') planTimer.unref()
+  ctx.effect(() => () => {
+    clearInterval(planTimer)
+    return releasePipelineSupervisor(pipelineSupervisor)
+  }, 'tokens-worktable: pipeline generation')
 
   // 流水线阶段脚本执行（pipeline.html 的 execScript 调用）：按扩展名选解释器（.sh→bash、.py→python3），
   // 环境变量/参数由前端 execScript 组装后透传（注入规则与 runStageScript 一致，在前端完成）。
