@@ -130,6 +130,7 @@ test('队列接口返回服务端权威状态，页面离场清理只影响旧�
       branch: 'main', strategy: '', source: 'manual', queuedAt: 200,
       stages: [{ id: 'test', name: '测试' }], nodes: { test: { status: 'idle', progress: 0, dur: 0 } },
     }],
+    finished: [],   // 快照无终态记录时恒为空数组
   })
   assert.equal(JSON.stringify(beforeLeave.json().server).includes('secret'), false)
 

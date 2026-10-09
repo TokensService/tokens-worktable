@@ -230,6 +230,7 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
       branch: 'main', strategy: '', source: 'manual', queuedAt: pool.snapshot().queue[0].queuedAt,
       stages: [{ id: 'deploy', name: '部署' }], nodes: { deploy: { status: 'idle', progress: 0, dur: 0 } },
     }],
+    finished: [],   // 尚无已开始的运行到达终态
   })
   assert.equal(JSON.stringify(pool.snapshot()).includes('node-secret'), false, '执行池快照不得暴露节点凭据')
   assert.equal(JSON.stringify(pool.snapshot()).includes('git-secret'), false, '执行池快照不得暴露代码仓凭据')
@@ -241,7 +242,17 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
   assert.deepEqual(plain(pool.cancel('manual-1')), { ok: true, state: 'running' })
   await running
   assert.deepEqual(aborted, ['manual-1'])
-  assert.deepEqual(plain(pool.snapshot()), { runs: [], queue: [] })
+  const settled = plain(pool.snapshot())
+  assert.deepEqual({ runs: settled.runs, queue: settled.queue }, { runs: [], queue: [] })
+  /* 运行中被取消 → 进 finished（cancelled）；时间字段取实际值 */
+  assert.equal(settled.finished.length, 1)
+  const finishedEntry = { ...settled.finished[0], dur: 0, startedAt: 0, endedAt: 0 }
+  assert.deepEqual(finishedEntry, {
+    id: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'alice', source: 'manual',
+    status: 'cancelled', dur: 0, startedAt: 0, endedAt: 0,
+    stages: [{ stage: '构建', status: 'running', dur: 0 }, { stage: '部署', status: 'idle', dur: 0 }],
+  })
+  assert.ok(settled.finished[0].endedAt >= settled.finished[0].startedAt)
   assert.deepEqual(plain(pool.cancel('missing')), { ok: false, state: 'missing' })
 })
 
