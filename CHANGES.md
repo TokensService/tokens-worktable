@@ -1,5 +1,21 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线设置页新增**「预设任务设置」专区**（`projects/pipeline/pipeline.html`，Profiling 脚本卡片之后、
+  脚本目录卡片之前）：可添加/编辑/删除**自定义预设任务**——每项配置名称（非空、不与系统预设及其他
+  自定义同名）、脚本（按名从 scripts 目录选用，支持「识别参数」与参数值覆盖，语义同环境清理脚本）、
+  「失败阻断」（脚本非零退出阻断后续阶段）、「默认位置」（最前=环境检查之后 / 最后=Profiling 之前，
+  仅未编排过位置的流水线生效，已编排的标记保持原位）、「默认勾选」。自定义预设与系统预设（环境清理/
+  环境检查/Profiling）同一机制：主控「预设任务」多选勾选启用（面板系统三项后动态列出自定义项）、
+  流水线编辑器中 🔒 预设任务（自定义）行仅可排序、运行到编排位置时执行脚本（注入 TARGET_*/IMAGE_*/
+  PIPELINE_NAME 与 ARCHIVE_* 环境变量）、日志归档固定 00 号任务日志；仅页面运行支持，不进服务端定时
+  计划。实现上预设定义统一经 `presetDefOf` 查询（系统 `PRESET_DEF` + 自定义 `customPresets` 派生）；
+  `customPresets` 随服务端配置（worktable-pipeline.json）跨浏览器同步并镜像 localStorage
+  `pip-customPresets`，导出/导入设置文件同样携带；`withPresetMarkers` 过滤已失效 pkey 的预设标记
+  （自定义被删除或旧 promCollect 行）并按 pos 补默认位置；流水线默认运行参数、阶段同名拦截、历史回放
+  序号识别（`isPreStage`）同步支持自定义预设。
+  测试：新增 `projects/pipeline/tests/test_custom_preset_tasks.js`（12 例：归一化清洗、定义查询、
+  枚举顺序、名称表重建、勾选判定、默认位置/失效标记过滤、运行展开与快照隔离、默认参数双模式）。
+
 - 流水线运行中阶段节点与阶段详情显示实时耗时（`projects/pipeline/pipeline.html`）：编排区运行中节点的进度文本由纯百分比（如 47%）改为「百分比 · 已耗时」（如 47% · 1m30s），metaFor 与共享 tick 轻量直改（stageTickPaint）同口径，500ms tick 内仍只直改文本不触发全量渲染；阶段详情运行中同样新增「耗时」行（终态显示不变）。同步更新 `projects/pipeline/tests/test_stage_tick.js` 断言并新增 1m30s 用例。
 
 - 新增**服务端流水线运行的阶段级实时已耗时数据通路**（供远端预览编排区展示运行中阶段的实时耗时；此前服务端
