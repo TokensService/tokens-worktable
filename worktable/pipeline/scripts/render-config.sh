@@ -378,7 +378,7 @@ for package in arch.get("deploy_spec_packages", []):
                 "ignore_frontend": True,
                 "wait_iterations": 0,
                 "warmup_iterations": 0,
-                "torch_profiler_record_shapes": False,
+                "torch_profiler_record_shapes": True,
                 "torch_profiler_with_memory": False,
                 "torch_profiler_with_stack": False,
                 "torch_profiler_dump_cuda_time_total": False,
