@@ -34,7 +34,7 @@ const UPDATE_REPO = 'TokensService/tokens-worktable'
 const ISSUES_URL = 'https://github.com/' + UPDATE_REPO + '/issues'
 // 升级命令用带版本号的固定 release URL 且文件名带版本号：URL/文件名恒定不变时，包管理器按文件名缓存 tarball 会装回旧版
 const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable-' + tag.replace(/^v/, '') + '.tgz"'
-const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后提醒我重启 dsh web 并刷新页面'
+const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后刷新页面即可'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
   <svg viewBox="0 0 16 16" aria-hidden>
@@ -51,6 +51,18 @@ const ICON_SPARK = (
   </svg>
 )
 type UpdateInfo = { latest: string; tag: string; notes: string; url: string }
+/** 兼容旧服务端：没有版本/revision 字段时返回 null，不触发刷新提示。 */
+function runtimeStamp(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const value = data as { version?: unknown; revision?: unknown; generation?: unknown }
+  const version = typeof value.version === 'string' ? value.version.trim() : ''
+  const revision = typeof value.revision === 'string' || typeof value.revision === 'number'
+    ? String(value.revision) : (typeof value.generation === 'string' ? value.generation : '')
+  return version || revision ? version + '@' + revision : null
+}
+function runtimeChanged(previous: string | null, current: string | null): boolean {
+  return previous !== null && current !== null && previous !== current
+}
 /* ---------- 版本更新历史 ---------- */
 function cmpVer(a: string, b: string): number {
   const pa = a.split('.').map(Number)
@@ -88,7 +100,7 @@ function parseInstallHistory(data: unknown): HistEntry[] {
 }
 /** 单条安装历史的回退提示词：版本号不带 v 前缀（历史条目格式），命令复用升级卡的固定 release URL
  *  （回退即「安装指定旧版」，URL/文件名按版本号恒定）。粘贴到 AI 会话执行。 */
-function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后提醒我重启 dsh web 并刷新页面' }
+function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后刷新页面即可' }
 /* ---------- 版本更新历史结束 ---------- */
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -1667,6 +1679,8 @@ function WorktableSection(props: any) {
   const [updateCheckOn, setUpdateCheckOn] = useState<boolean>(() => localStorage.getItem('dsh.worktable.updateCheck.v1') !== '0')
   const [updateCopied, setUpdateCopied] = useState(false)
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'uptodate' | 'failed'>('idle')
+  const [runtimeUpdatePending, setRuntimeUpdatePending] = useState(false)
+  const runtimeStampRef = useRef<string | null>(null)
   const updateCheckingRef = useRef(false)
   const updateAliveRef = useRef(true)
   useEffect(() => () => { updateAliveRef.current = false }, [])
@@ -1731,6 +1745,24 @@ function WorktableSection(props: any) {
     })()
     return () => { alive = false }
   }, [])
+  // 运行中的 dsh 发现插件代际变化时，只提示用户刷新当前页面；旧服务端没有 revision 时静默兼容。
+  useEffect(() => {
+    let alive = true
+    const poll = async () => {
+      try {
+        const r = await fetch('/api/worktable/health', { cache: 'no-store' })
+        if (!r.ok) return
+        const next = runtimeStamp(await r.json())
+        if (!alive || !next) return
+        if (runtimeChanged(runtimeStampRef.current, next)) setRuntimeUpdatePending(true)
+        runtimeStampRef.current = next
+      } catch { /* 旧服务端/网络不可达：保留当前页面继续工作 */ }
+    }
+    void poll()
+    const timer = setInterval(() => { void poll() }, 15000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
+
   const checkUpdates = useCallback(async (force = false) => {
     if (updateCheckingRef.current) return // 防重入：并发点击只保留一个 in-flight
     const last = Number(localStorage.getItem('dsh.worktable.lastUpdateCheck.v1') ?? '0')
@@ -3615,12 +3647,12 @@ function buildCustomLayoutPrompt(req: string): string {
           onPointerCancel={onHandlePointerUp}
           onDoubleClick={resetDock}
         >{worktableTitle}</span>
-        {updateInfo && (
+        {(updateInfo || runtimeUpdatePending) && (
           <button
             type="button"
             className="dsh-wt_updateBadge"
-            title={t('update.badgeTitle') + ' · v' + updateInfo.latest}
-            aria-label={t('update.badgeTitle')}
+            title={runtimeUpdatePending ? '工作台已更新，请刷新页面' : t('update.badgeTitle') + ' · v' + updateInfo?.latest}
+            aria-label={runtimeUpdatePending ? '工作台已更新，请刷新页面' : t('update.badgeTitle')}
             onClick={() => setViewOptionsOpen(true)}
           >{ICON_SYNC}</button>
         )}
@@ -3761,6 +3793,16 @@ function buildCustomLayoutPrompt(req: string): string {
             title={t('manage.done')}
             onClick={() => setViewOptionsOpen(false)}
           >✕</button>
+          {runtimeUpdatePending && (
+            <div className="dsh-wt_updateCard">
+              <div className="dsh-wt_updateHead"><span className="dsh-wt_updateDot" />工作台已更新</div>
+              <div className="dsh-wt_updateHint">服务端版本或 revision 已变化，刷新页面即可加载最新工作台。</div>
+              <div className="dsh-wt_updateBtns">
+                <button type="button" className="dsh-wt_updateBtn dsh-wt_updateBtnCopy" onClick={() => window.location.reload()}>刷新页面</button>
+                <button type="button" className="dsh-wt_updateBtn" onClick={() => setRuntimeUpdatePending(false)}>稍后</button>
+              </div>
+            </div>
+          )}
           {updateInfo && (
             <div className="dsh-wt_updateCard">
               <div className="dsh-wt_updateHead"><span className="dsh-wt_updateDot" />{t('update.available')} · v{updateInfo.latest}</div>
@@ -3773,7 +3815,7 @@ function buildCustomLayoutPrompt(req: string): string {
                 </button>
                 <button type="button" className="dsh-wt_updateBtn" onClick={skipUpdate}>{t('update.skip')}</button>
               </div>
-              <div className="dsh-wt_updateHint">{t('update.upgradeHint')}</div>
+              <div className="dsh-wt_updateHint">安装完成后刷新页面即可。</div>
             </div>
           )}
           {/* 工作台名称：自定义侧栏区块标题；清空提交 = 恢复默认（登录用户名，取不到则「工作台」）（复用项目管理改名的 RenameInput 交互） */}

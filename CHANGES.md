@@ -1,5 +1,21 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
+
+- 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
+- 补强热替换桥接：通过全局 supervisor 共享代际 manager 与节点租约，引用归零时等待可 await 的 disposer，并为 HMR 立即重挂载保留可取消的短暂清理窗口；same-id generation 替换会正确回收旧池，health 返回当前 generation 与 draining 代。
+
+- 改进**设置弹层底部「版本信息 / 历史 / 用量 / 检查更新 / 自动检查更新」行冻结为 sticky 页脚**
+  （`src/client/styles.ts`，DOM 结构不变）：该版本行原先只是设置弹层（`.dsh-wt_manage.dsh-wt_pop.dsh-wt_settings`，
+  `max-height:min(540px,…)`、`overflow:auto` 的滚动弹层）末尾的普通一行，随内容滚动——设置项较多、
+  内容超过一屏时会被滚出视野，版本号与「检查更新 / 自动检查更新」入口需手动滚到底才能看到。现
+  `.dsh-wt_versionRow` 改为 `position:sticky;bottom:0` 吸附在面板可见区底部最后一行：
+  `z-index:1` + 不透明背景 `var(--dsw-alias-bg-base,#0b0e14)`（与 `.dsh-wt_manage` 面板底色一致）
+  遮住滚过的内容；`margin:8px -6px -6px` 负边距抵消面板 6px padding 做全宽出血，使顶部
+  `border-top` 分隔线横贯面板；`padding:8px 6px 6px` 补偿使行内内容视觉位置与改动前一致。
+  版本行仍是设置面板最后一个子元素；内容不足一屏时 sticky 不产生位移，无行为变化。
+  测试：新增 `tests/settings-version-sticky.test.mjs`（3 例契约断言）。
+
 - 新增**流水线运行状态查看工具** `projects/pipeline/tools/pipeline_status.py`（单文件、仅标准库、Python 3.6+，
   本机执行、无需登录——`/api/worktable/pipeline/queue` 在 dsh-auth-gate 之后且会话 token 落盘只存 sha256
   无法复用）。三个数据源取并集：① dsh web 进程树（pid 文件自动从脚本位置向上查找，失效则按
