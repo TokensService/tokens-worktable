@@ -1,5 +1,16 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 改进**设置弹层底部「版本信息 / 历史 / 用量 / 检查更新 / 自动检查更新」行冻结为 sticky 页脚**
+  （`src/client/styles.ts`，DOM 结构不变）：该版本行原先只是设置弹层（`.dsh-wt_manage.dsh-wt_pop.dsh-wt_settings`，
+  `max-height:min(540px,…)`、`overflow:auto` 的滚动弹层）末尾的普通一行，随内容滚动——设置项较多、
+  内容超过一屏时会被滚出视野，版本号与「检查更新 / 自动检查更新」入口需手动滚到底才能看到。现
+  `.dsh-wt_versionRow` 改为 `position:sticky;bottom:0` 吸附在面板可见区底部最后一行：
+  `z-index:1` + 不透明背景 `var(--dsw-alias-bg-base,#0b0e14)`（与 `.dsh-wt_manage` 面板底色一致）
+  遮住滚过的内容；`margin:8px -6px -6px` 负边距抵消面板 6px padding 做全宽出血，使顶部
+  `border-top` 分隔线横贯面板；`padding:8px 6px 6px` 补偿使行内内容视觉位置与改动前一致。
+  版本行仍是设置面板最后一个子元素；内容不足一屏时 sticky 不产生位移，无行为变化。
+  测试：新增 `tests/settings-version-sticky.test.mjs`（3 例契约断言）。
+
 - 修复**流水线「运行队列」刷新即丢与跨用户不可见**（页面驱动的本地执行——含「需本地运行」阶段的流水线——刷新/
   关闭页面后正在执行的任务从运行队列彻底消失、找不到最后执行状态；且自 ac756d3「运行队列改由服务端持有」起
   renderQueue 的 `scheduleQueuePublish()` 调用被摘、publishQueue 成死代码，页面运行从不向服务端上报，其他登录者
