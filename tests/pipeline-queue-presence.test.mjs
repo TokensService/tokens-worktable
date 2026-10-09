@@ -55,7 +55,7 @@ test('队列在场接口仅转发可展示的阶段状态，过滤日志、变�
     _out: { stdout: 'secret log' },
   }
   const node = {
-    status: 'running', progress: 37, dur: 6.5, sub: { 编译: 'success' },
+    status: 'running', progress: 37, dur: 6.5, startedAt: 1759999999000, sub: { 编译: 'success' },
     varsIn: { TOKEN: 'secret' }, varsOut: { RESULT: 'secret' },
   }
   const put = await call(handler, 'PUT', {
@@ -69,7 +69,7 @@ test('队列在场接口仅转发可展示的阶段状态，过滤日志、变�
     queue: [{
       id: 'queue-1', pipelineId: 'pipe-1', pipelineName: '发布', by: 'bob', env: '10.0.0.2',
       repoName: 'app', branch: 'main', strategy: '', source: 'manual', queuedAt: 200,
-      stages: [{ id: 'deploy', name: '部署', skip: true }], nodes: { deploy: { status: 'idle', progress: 0, dur: 0 } },
+      stages: [{ id: 'deploy', name: '部署', skip: true }], nodes: { deploy: { status: 'idle', progress: 0, dur: 0, startedAt: -5 } },
     }],
   })
   assert.equal(put.status, 200)
@@ -82,7 +82,7 @@ test('队列在场接口仅转发可展示的阶段状态，过滤日志、变�
     id: 'run-1', originQueueId: 'queue-origin', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1',
     repoName: 'app', branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
     stages: [{ id: 'build', name: '构建', parallel: true, sub: ['编译'] }],
-    nodes: { build: { status: 'running', progress: 37, dur: 6.5, sub: { 编译: 'success' } } },
+    nodes: { build: { status: 'running', progress: 37, dur: 6.5, startedAt: 1759999999000, sub: { 编译: 'success' } } },
   })
   assert.deepEqual(plain(client.queue[0]), {
     id: 'queue-1', pipelineId: 'pipe-1', pipelineName: '发布', by: 'bob', env: '10.0.0.2',
@@ -101,12 +101,12 @@ test('队列接口返回服务端权威状态，页面离场清理只影响旧�
       id: 'run-server', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app',
       branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
       stages: [{ id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } }],
-      nodes: { build: { status: 'running', progress: 25, dur: 3, varsIn: { TOKEN: 'secret' } } },
+      nodes: { build: { status: 'running', progress: 25, dur: 3, startedAt: 1759999999100, varsIn: { TOKEN: 'secret' } } },
     }],
     queue: [{
       id: 'queue-server', pipelineId: 'pipe-2', pipelineName: '测试', by: 'bob', env: '10.0.0.2', repoName: 'test',
       branch: 'main', strategy: '', source: 'manual', queuedAt: 200,
-      stages: [{ id: 'test', name: '测试' }], nodes: { test: { status: 'idle', progress: 0, dur: 0 } },
+      stages: [{ id: 'test', name: '测试' }], nodes: { test: { status: 'idle', progress: 0, dur: 0, startedAt: 'soon' } },
     }],
   }
   const handler = loadQueueRoute({
@@ -123,7 +123,7 @@ test('队列接口返回服务端权威状态，页面离场清理只影响旧�
     runs: [{
       id: 'run-server', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', repoName: 'app',
       branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: 100,
-      stages: [{ id: 'build', name: '构建' }], nodes: { build: { status: 'running', progress: 25, dur: 3 } },
+      stages: [{ id: 'build', name: '构建' }], nodes: { build: { status: 'running', progress: 25, dur: 3, startedAt: 1759999999100 } },
     }],
     queue: [{
       id: 'queue-server', pipelineId: 'pipe-2', pipelineName: '测试', by: 'bob', env: '10.0.0.2', repoName: 'test',

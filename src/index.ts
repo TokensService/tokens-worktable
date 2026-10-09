@@ -413,9 +413,60 @@ function cleanPipelineHistory(history: any[]) {
   return history.map((record: any) => {
     if (!record || typeof record !== 'object' || Array.isArray(record)) return record
     const clean: any = {}
-    for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value
+    for (const [key, value] of Object.entries(record)) {
+      if (transient.has(key)) continue
+      if (key === 'envNodes') {
+        const envNodes = cleanPipelineHistoryEnvNodes(value)
+        if (envNodes) clean[key] = envNodes   // 非数组的脏值整体剔除，不得进入共享存储
+        continue
+      }
+      clean[key] = value
+    }
     return clean
   })
+}
+
+/** cleanPipelineHistory 对 envNodes 的防御性清洗：只留对象条目且只保留 name/ip/nodeIp 三字段
+ *  （绝不放行 user/pass 等凭据键），单字段限长 128 字符，name 与 ip 均为空的条目丢弃，截到 50 条；
+ *  envNodes 不是数组时返回 null（调用方剔除该字段）。 */
+function cleanPipelineHistoryEnvNodes(value: any): any[] | null {
+  if (!Array.isArray(value)) return null
+  const nodes: any[] = []
+  for (const item of value) {
+    if (nodes.length >= 50) break
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const node = {
+      name: String(item.name || '').slice(0, 128),
+      ip: String(item.ip || '').slice(0, 128),
+      nodeIp: String(item.nodeIp || '').slice(0, 128),
+    }
+    if (!node.name && !node.ip) continue
+    nodes.push(node)
+  }
+  return nodes
+}
+
+/** 历史记录的环境节点快照 envNodes：由运行选用的环境节点映射出 {name,ip,nodeIp} 三字段（与客户端
+ *  契约一致），绝不携带 user/pass 等凭据；ip 为空时依次以 nodeIp、id 兜底进 ip，name 与 ip 均为空
+ *  的条目丢弃，最多 50 条。envs 不是数组（旧定时计划无节点快照）时回退把 env 字符串按中文/英文逗号
+ *  拆成 [{name:'',ip}]；结果总是数组（无选中节点时为 []）。 */
+function pipelineHistoryEnvNodes(envs: any, envText: any) {
+  const nodes: { name: string; ip: string; nodeIp: string }[] = []
+  const push = (name: any, ip: any, nodeIp: any) => {
+    if (nodes.length >= 50) return
+    const rec = { name: String(name || ''), ip: String(ip || ''), nodeIp: String(nodeIp || '') }
+    if (!rec.name && !rec.ip) return
+    nodes.push(rec)
+  }
+  if (Array.isArray(envs)) {
+    for (const e of envs) {
+      if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+      push(e.name, String(e.ip || '') || String(e.nodeIp || '') || String(e.id || ''), e.nodeIp)
+    }
+    return nodes
+  }
+  for (const part of String(envText || '').split(/[，,]/)) push('', part.trim(), '')
+  return nodes
 }
 
 /** 内容比对用的条目副本：剥离 favoriteUsers / pinnedAt 两个「非内容」共享可变字段（其余键保持原顺序）。
@@ -2010,10 +2061,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     if (!id) return
     const previous = item.nodes[id] || idleNode()
     const next = state && typeof state === 'object' ? state : {}
+    /* 阶段开始时间（服务端纪元毫秒）：仅随「进入 running」的那次更新落节点，后续更新沿用既有值，
+       供队列快照白名单（cleanQueueNode）透传给其他浏览器的远端预览折算实时已耗时 */
+    const nextStartedAt = Number(next.startedAt), previousStartedAt = Number(previous.startedAt)
     item.nodes[id] = {
       status: typeof next.status === 'string' ? next.status : previous.status,
       progress: Number.isFinite(Number(next.progress)) ? Number(next.progress) : previous.progress,
       dur: Number.isFinite(Number(next.dur)) ? Number(next.dur) : previous.dur,
+      ...(Number.isFinite(nextStartedAt) && nextStartedAt > 0 ? { startedAt: nextStartedAt }
+        : (Number.isFinite(previousStartedAt) && previousStartedAt > 0 ? { startedAt: previousStartedAt } : {})),
       ...(next.sub && typeof next.sub === 'object' && !Array.isArray(next.sub) ? { sub: next.sub } : (previous.sub ? { sub: previous.sub } : {})),
     }
   }
@@ -3555,12 +3611,14 @@ export function apply(ctx: Context) {
   function cleanQueueNode(node: any): any {
     const raw = node && typeof node === 'object' ? node : {}
     const status = QUEUE_NODE_STATUSES.has(raw.status) ? raw.status : 'idle'
-    const progress = Number(raw.progress), dur = Number(raw.dur)
+    const progress = Number(raw.progress), dur = Number(raw.dur), startedAt = Number(raw.startedAt)
     const out: any = {
       status,
       progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
       dur: Number.isFinite(dur) ? Math.max(0, dur) : 0,
     }
+    /* 阶段开始时间（纪元毫秒）透传：远端预览据此按本地时钟折算运行中阶段的实时已耗时 */
+    if (Number.isFinite(startedAt) && startedAt > 0) out.startedAt = startedAt
     if (raw.sub && typeof raw.sub === 'object' && !Array.isArray(raw.sub)) {
       const sub: any = Object.create(null)
       for (const name of Object.keys(raw.sub).slice(0, QUEUE_SUB_CAP)) {
@@ -4572,7 +4630,8 @@ export function apply(ctx: Context) {
       const startedAt = Date.now()
       const stageId = String(s && s.id || '')
       runtime?.replaceLog?.(stageId, '')
-      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0 })
+      /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
+      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
@@ -4771,6 +4830,7 @@ export function apply(ctx: Context) {
       branch: pl.branch || '',
       strategy: pl.strategy || '',
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
+      envNodes: pipelineHistoryEnvNodes(pl.envs, runCtx.env),
     })
     /* 向执行池回报终态（success/failed/aborted），供 finished 终态发布判定 success/failure/cancelled */
     return status

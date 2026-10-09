@@ -3,6 +3,66 @@
 - 新增**流水线「任务是否完成」的服务端权威判定与下发**（`src/index.ts`）：① 执行池终态发布——已开始运行的 run 到达终态（成功/失败/取消）即记录 FinishedEntry（白名单清洗，含 generation 透传），池内环形缓冲上限 20 条 / TTL 120s 惰性 prune，多代际 manager 聚合存活代与退役簿后由 GET `/api/worktable/pipeline/queue` 以 `server.finished` 下发，客户端不再靠「条目从快照消失」推断完成；排队即取消的条目不记录。② 新增 `POST /api/worktable/pipeline/stage-poll/jenkins` 与 `POST /api/worktable/pipeline/stage-poll/evaltokens` 两个阶段完成轮询端点：长轮询窗口（默认 20s、上限 25s）内由服务端轮询上游（Jenkins queue/build 含 progressiveText 增量控制台续传、EvalTokens runs），语义镜像原浏览器轮询（30 连败按 key 跨请求累计、判负后短路 10 分钟）；目标复用 `/api/worktable/proxy` 同款内网白名单（403），headers 透传剔除逐跳头，客户端断开即中止上游轮询。测试：新增 `tests/pipeline-finished-runs.test.mjs`（4 例）与 `tests/pipeline-stage-poll.test.mjs`（15 例），更新 presence/run-api/node-leases 三处快照断言（server 对象新增 finished 键）。
 - 改进**流水线页面全面接入服务端权威状态**（`projects/pipeline/pipeline.html`）：Jenkins/EvalTokens 阶段的完成轮询从浏览器 while 循环改为串行调用服务端 stage-poll 端点（控制台增量经 offset 续传，保持原回显节奏；触发/中止动作与令牌守卫不变，finally 仍走 `jkCancelExecution`），端点 404（旧服务端）/403（非公网白名单目标）时单次回退浏览器直连轮询并告警；队列轮询消费 `server.finished`——新终态记入 completed 上报（完成≠失联，不再误入孤儿登记）、立即刷新历史、队列区新增「服务端最近完成」分组（三态徽标+耗时+结束时间，随 TTL 消失）、在看的运行预览按终态优雅收尾并停止日志轮询，finished 纳入队列快照签名（变化必重绘）。合规修复：孤儿重跑改传 `pipelineId` 用流水线完整定义分流（原先传 stages 白名单快照恒退化为本地纯模拟运行，全 sched 时现确实提交服务端执行池）；`submitServerRun` 透传 `item.source||'manual'` 保留触发来源语义；本地运行任务（含「需本地运行」阶段）行为一律不变。测试：新增 `test_stage_poll_client.js`（10 例）、`test_queue_finished.js`（9 例），更新 stage-poll 失败兜底/queue 孤儿/轮询降耗/jenkins 变量/evaltokens 五处既有测试。
 
+- 流水线**运行历史记录新增结构化环境节点 `envNodes`**（`src/index.ts`）：服务端 `execPlan` 写入历史
+  （`appendPipelineHistory`）时给记录附加 `envNodes` 字段——本次运行选中环境节点的快照数组
+  `{name,ip,nodeIp}`（name 为节点名可为空串；ip 为 SSH 地址，为空时依次以 nodeIp、id 兜底；nodeIp 为
+  K8s InternalIP，无则空串；name 与 ip 均空的条目丢弃，最多 50 条），优先由 `runCtx.envs` 数组映射，
+  旧计划无 `envs` 快照时回退把 `env` 字符串按中文/英文逗号拆成 `[{name:'',ip}]`，结果总是数组
+  （无选中节点时写 `[]`）；只映射上述三字段，**user/pass 等凭据绝不落历史**。`cleanPipelineHistory`
+  （写盘前清洗）对 `envNodes` 做防御性清洗：非数组整体剔除，条目只留对象且只保留三字段（单字段限长
+  128）、空条目丢弃、截到 50；`mergePipelineHistoryForWrite`（页面 PUT 上送历史合并）对记录原样保留，
+  无 `envNodes` 的遗留记录不报错、不补字段。HTTP 响应结构不变（记录自然多字段）。
+  测试：新增 `tests/pipeline-history-env-nodes.test.mjs`（7 例：API 运行路径落盘记录的 envNodes 字段
+  值与三字段契约、历史 JSON 不含节点口令/user、plan 凭据不落存储文件任何位置、未选节点写 `[]`、
+  env 字符串回退与 50 条封顶、merge 往返兼容遗留记录、clean 防御清洗）；
+  `tests/pipeline-run-api.test.mjs` 的 execPlan 抽取同步补上 `pipelineHistoryEnvNodes`。
+- 流水线**运行历史表新增「环境节点」列**（`projects/pipeline/pipeline.html`，表头位于「流水线」列之后，
+  行渲染/空态 colspan 同步为 9 列）：展示历史记录 `envNodes`（`{name,ip,nodeIp}`）——节点名以「、」连接、
+  超过 2 个折叠为「A、B 等N个」，悬停 title 逐行「节点名（ip）」（name/ip 为空时省略对应部分，如
+  「（192.168.1.1）」或「生产」）；无 `envNodes` 的遗留记录回退解析 `rec.env`（中文/英文逗号拆分，IP 串或
+  环境名字符串都直接展示），两者皆空显示「—」。本地运行的 `finish()` 组装历史记录时同步写入 `envNodes`：
+  由运行上下文 `rc.envs` 映射（name 与 ip 均为空的条目丢弃、最多 50 条、绝不含 user/pass），无选中节点时
+  空数组；`rec.env`（中文逗号 IP 串）保持原语义不变，回放/重跑的环境回填不受影响。历史自动刷新
+  （`applyHistoryRefreshPayload`）按整条记录替换、无字段白名单，新字段随记录自然往返。
+  测试：新增 `projects/pipeline/tests/test_history_env_nodes.js`（单元格文本/title 折叠与逐行提示、
+  遗留记录回退、finish 写入映射与截断/脱敏断言）；更新 `test_history_table_columns.js`（9 列表头/行/
+  colspan 断言），`test_history_analysis_compare.js`、`test_parallel_stage_execution.js`、
+  `test_sched_suffix_handoff.js`、`test_node_lease.js` 的沙盒函数清单同步补充新辅助函数。
+
+- 流水线设置页新增**「预设任务设置」专区**（`projects/pipeline/pipeline.html`，Profiling 脚本卡片之后、
+  脚本目录卡片之前）：可添加/编辑/删除**自定义预设任务**——每项配置名称（非空、不与系统预设及其他
+  自定义同名）、脚本（按名从 scripts 目录选用，支持「识别参数」与参数值覆盖，语义同环境清理脚本）、
+  「失败阻断」（脚本非零退出阻断后续阶段）、「默认位置」（最前=环境检查之后 / 最后=Profiling 之前，
+  仅未编排过位置的流水线生效，已编排的标记保持原位）、「默认勾选」。自定义预设与系统预设（环境清理/
+  环境检查/Profiling）同一机制：主控「预设任务」多选勾选启用（面板系统三项后动态列出自定义项）、
+  流水线编辑器中 🔒 预设任务（自定义）行仅可排序、运行到编排位置时执行脚本（注入 TARGET_*/IMAGE_*/
+  PIPELINE_NAME 与 ARCHIVE_* 环境变量）、日志归档固定 00 号任务日志；仅页面运行支持，不进服务端定时
+  计划。实现上预设定义统一经 `presetDefOf` 查询（系统 `PRESET_DEF` + 自定义 `customPresets` 派生）；
+  `customPresets` 随服务端配置（worktable-pipeline.json）跨浏览器同步并镜像 localStorage
+  `pip-customPresets`，导出/导入设置文件同样携带；`withPresetMarkers` 过滤已失效 pkey 的预设标记
+  （自定义被删除或旧 promCollect 行）并按 pos 补默认位置；流水线默认运行参数、阶段同名拦截、历史回放
+  序号识别（`isPreStage`）同步支持自定义预设。
+  测试：新增 `projects/pipeline/tests/test_custom_preset_tasks.js`（12 例：归一化清洗、定义查询、
+  枚举顺序、名称表重建、勾选判定、默认位置/失效标记过滤、运行展开与快照隔离、默认参数双模式）。
+
+- 流水线运行中阶段节点与阶段详情显示实时耗时（`projects/pipeline/pipeline.html`）：编排区运行中节点的进度文本由纯百分比（如 47%）改为「百分比 · 已耗时」（如 47% · 1m30s），metaFor 与共享 tick 轻量直改（stageTickPaint）同口径，500ms tick 内仍只直改文本不触发全量渲染；阶段详情运行中同样新增「耗时」行（终态显示不变）。同步更新 `projects/pipeline/tests/test_stage_tick.js` 断言并新增 1m30s 用例。
+
+- 新增**服务端流水线运行的阶段级实时已耗时数据通路**（供远端预览编排区展示运行中阶段的实时耗时；此前服务端
+  只在阶段开始时写 `{status:'running',progress:5,dur:0}`、结束时才回填最终 dur，运行期 dur 恒为 0，其他
+  浏览器看不到已耗时）。服务端（`src/index.ts`）：执行器在阶段进入 running 时把该阶段开始时间戳
+  `startedAt`（服务端纪元毫秒）随 `updateStage` 落入执行池节点（后续进度/终态更新沿用该值，终态 dur 仍是
+  服务端结算值）；队列快照白名单 `cleanQueueNode` 透传节点的 `startedAt`（仅正数，非法值丢弃；run 级快照
+  结构不变）。客户端（`projects/pipeline/pipeline.html`）：`queueNodePresence` 镜像透传 `startedAt`；
+  远端预览构建（`remoteQueuePreviewRc`）与每秒队列轮询（`pullRemoteQueue`）对 `status==='running'` 且带
+  `startedAt` 的节点把 `dur` 按本地时钟实时折算为 `max(0,(Date.now()-startedAt)/1000)`（时钟偏差折出负值
+  钳到 0，与 run 级 startedAt 经 fmtRelative 用本地时钟展示的既有口径一致）；轮询处折算使 dur 每秒前进、
+  快照签名随之变化，队列区与远端预览因而逐秒刷出实时已耗时（无运行中阶段的静态快照仍享签名降耗）。
+  无 `startedAt` 的旧服务端/旧浏览器数据保持原 dur 不动（滚动升级兼容）；孤儿中断条目是冻结的最后已知
+  状态，不做实时折算。测试：`tests/pipeline-queue-presence.test.mjs` 补 startedAt 透传与非法值丢弃断言；
+  `tests/pipeline-run-api.test.mjs` 补执行池节点 startedAt 落快照、后续更新保留与执行器启动更新携带
+  startedAt 断言；客户端 `projects/pipeline/tests/test_queue_item_preview.js` 新增 queueNodePresence
+  透传/丢弃与 remoteQueuePreviewRc 实时折算（含时钟偏差钳 0）用例，`test_queue_poll_throttle.js` 新增
+  轮询折算驱动逐秒重绘用例。
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
