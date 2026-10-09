@@ -131,6 +131,43 @@ function aggregateUsageEvents(events: UsageEvent[], now: number) {
   const recent = list.slice(-30).reverse()
   return { total: list.length, users, daily, recent }
 }
+
+/** 在线心跳条目：user 为登录用户名（空串 = 匿名 / 未装认证插件），client 为客户端实例标识
+ *  （每个浏览器标签页一个），at 为最近一次心跳的服务端时间戳（ms，不信客户端时钟）。
+ *  纯内存，不落盘，重启清零。 */
+type OnlineEntry = { user: string; client: string; at: number }
+/** 在线条目过期时长：90 秒无心跳视为离线（心跳周期远小于它，允许丢失数拍）。 */
+const ONLINE_TTL_MS = 90_000
+/** 清洗心跳上报体：body 必须是对象；user 裁剪空白截到 64 字符（缺省/非字符串 = 匿名空串）；
+ *  client 裁剪空白截到 64 字符，为空（缺省/非字符串/纯空白）时无法计数，返回 null（400）。 */
+function sanitizeHeartbeat(body: any): { user: string; client: string } | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  const user = typeof body.user === 'string' ? body.user.trim().slice(0, 64) : ''
+  const client = typeof body.client === 'string' ? body.client.trim().slice(0, 64) : ''
+  if (!client) return null
+  return { user, client }
+}
+/** 在线表 key：user 非空按 'u:' + user 归一（同一登录用户多标签页算 1 人）；
+ *  匿名按 'c:' + client 计（每个客户端实例 1 人）。前缀保证两条路径永不相撞。 */
+function onlineKeyOf(user: string, client: string): string {
+  return user ? 'u:' + user : 'c:' + client
+}
+/** 懒清理过期条目（at 距今满 ONLINE_TTL_MS 即删）；touch / count 前各调一次，无需定时器。 */
+function pruneOnlineTable(table: Map<string, OnlineEntry>, now: number): void {
+  for (const [key, e] of table) {
+    if (now - e.at >= ONLINE_TTL_MS) table.delete(key)
+  }
+}
+/** 心跳 upsert：先懒清理过期条目，再按 key 写入（at 恒取服务端 now，覆盖同 key 旧条目）。 */
+function touchOnlineTable(table: Map<string, OnlineEntry>, entry: { user: string; client: string }, now: number): void {
+  pruneOnlineTable(table, now)
+  table.set(onlineKeyOf(entry.user, entry.client), { user: entry.user, client: entry.client, at: now })
+}
+/** 当前在线数：先懒清理过期条目，再取条目数（key 已按用户/客户端归一，size 即人数）。 */
+function countOnlineTable(table: Map<string, OnlineEntry>, now: number): number {
+  pruneOnlineTable(table, now)
+  return table.size
+}
 /* ---------- 用户使用统计结束 ---------- */
 
 export const name = 'tokens-worktable'
@@ -2502,6 +2539,11 @@ export function apply(ctx: Context) {
     return p
   }
 
+  // 当前在线人数：客户端周期性 POST 心跳到 /api/worktable/usage/heartbeat，按 key
+  // （登录用户归一 / 匿名按客户端实例）upsert 进纯内存表；90 秒无心跳的条目在
+  // touch / count 时懒清理（见 ONLINE_TTL_MS）。不落盘、重启清零。
+  const onlineTable = new Map<string, OnlineEntry>()
+
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/usage',
@@ -2524,7 +2566,26 @@ export function apply(ctx: Context) {
       try {
         let raw = ''
         try { raw = await readFile(USAGE_FILE, 'utf8') } catch (err: any) { if (err?.code !== 'ENOENT') throw err } // 无文件 = 尚无记录
-        json(res, 200, { ok: true, ...aggregateUsageEvents(parseUsageEvents(raw), Date.now()) })
+        json(res, 200, { ok: true, online: countOnlineTable(onlineTable, Date.now()), ...aggregateUsageEvents(parseUsageEvents(raw), Date.now()) })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 在线心跳：只活内存表，不写盘、不记使用事件；失败回执与 usage 路由同风格。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/usage/heartbeat',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+      try {
+        const contentLength = Number(req.headers?.['content-length'])
+        if (Number.isFinite(contentLength) && contentLength > USAGE_BODY_LIMIT) { json(res, 413, { error: 'request body too large' }); return }
+        const hb = sanitizeHeartbeat(await readJsonBody(req))
+        if (!hb) { json(res, 400, { error: 'invalid heartbeat' }); return }
+        touchOnlineTable(onlineTable, hb, Date.now())
+        json(res, 200, { ok: true })
       } catch (err) {
         json(res, 500, { error: String(err) })
       }

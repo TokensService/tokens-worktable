@@ -290,12 +290,9 @@
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
         <input id="plFilterKw" class="dshell-input" placeholder="搜索 流水线名 / 阶段" autocomplete="off" style="min-width:200px;" />
       </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">创建者
-        <select id="plFilterOwner" class="dshell-input" style="min-width:120px;">
-          <option value="mine">我的（含预置）</option>
-          <option value="all">全部</option>
-          <option value="builtin">仅预置</option>
-        </select>
+      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">拥有者
+        <input id="plFilterOwner" class="dshell-input" list="plOwnerList" autocomplete="off" placeholder="搜索或选择拥有者" style="min-width:120px;" />
+        <datalist id="plOwnerList"></datalist>
       </label>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收藏
         <select id="plFilterFavorite" class="dshell-input" style="min-width:100px;">
@@ -343,7 +340,7 @@
     </div>
     <div id="flow" class="pipeline-seg"></div>
     <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:7px 0 0;">
-      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅创建者与 admin 可编辑：他人创建的流水线对非 admin 只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
+      <p class="dshell-muted" style="margin:0; font-size:11px;">单击节点查看详情；<b>双击节点</b>或点「✎ 编辑流水线」可编辑（仅拥有者与 admin 可编辑：他人拥有的流水线对非 admin 只读，可在「流水线任务」列表「复制」为副本后编辑；预置流水线视同可信：仅 admin 可编辑，其他用户只读，仍可运行）。🔒 环境清理/环境检查/Profiling 为系统预设任务，由主控「预设任务」勾选启用；执行顺序在流水线编辑中调整（🔒 预设行仅可排序），脚本在设置页配置。任务卡在编辑器勾选「收集普罗数据」后，按该任务起止时间采集普罗指标到归档目录。</p>
       <button class="dshell-btn dshell-btnGhost mini" type="button" id="histPromCollect" title="对选中行（或运行中的流水线）按其起止时间调用「设置」页配置的收集普罗数据脚本采集该时间段指标；弹出对话框可改起止时间" style="flex-shrink:0; white-space:nowrap;">📊 收集普罗数据</button>
     </div>
   </div>
@@ -802,10 +799,10 @@
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
       </div>
-      <!-- 冻结底栏：添加阶段 / 保存 / 取消 固定在右下角，不随内容滚动 -->
+      <!-- 冻结底栏：添加阶段固定在最左（左下角），保存 / 取消固定在右下角，整栏不随内容滚动 -->
       <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1);">
-        <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
         <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
+        <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
         <button id="plSave" class="dshell-btn mini">保存</button>
         <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
       </div>
@@ -1435,7 +1432,7 @@ function normalizePipelineDefaults(value){
     presets:pipelineDefaultStringList(d.presets).filter(k=>PIPELINE_DEFAULT_PRESET_KEYS.indexOf(k)>=0),
   };
 }
-function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
+function migratePipelineDefaults(p){ if(p&&typeof p==='object'){ p.defaults=normalizePipelineDefaults(p.defaults); if(typeof p.createdBy!=='string') p.createdBy=''; if(typeof p.owner!=='string') p.owner=''; if(typeof p.updatedBy!=='string') p.updatedBy=''; p.favoriteUsers=pipelineFavoriteUsers(p); } return p; }
 /* 仅旧流水线从未保存过默认环境引用（无 environmentIds 字段）时回退当前首项；编辑器保存过的空环境
    列表 = 显式不选择任何节点（无目标节点运行）；已保存但失效的引用由 pipelineDefaultRunIssue 阻断。 */
 function pipelineDefaultRunOptions(pl){
@@ -3342,13 +3339,13 @@ function renderStageActionRow(i){
   outInp.title='本阶段脚本 stdout 产出变量的下传命名（逗号分隔）：留空=捕获的 KEY=VALUE / 单行 JSON 顶层字段全部按原名下传；IMAGE_URL=image 表示把产出的 image 改名为 IMAGE_URL；来源也可写 JSON 路径取单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把 stdout 全文整体赋给指定变量（如 RESP=*）；下游阶段参数值可填 ${IMAGE_URL} 引用';
   box.appendChild(lab); box.appendChild(inp); box.appendChild(btn); box.appendChild(outLab); box.appendChild(outInp);
 }
-/* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「需本地运行」则不支持定时） ---------- */
+/* ---------- 阶段定时配置行（默认支持定时：跟随流水线定时计划，由服务端触发，关闭页面仍执行；勾选「本地运行」则不支持定时） ---------- */
 function renderStageSched(i){
   const wrap=$('plStageList'); const row=(wrap && wrap.children) ? wrap.children[i] : null; if(!row) return;
   const box=row.querySelector('[data-sched]'); if(!box) return; box.innerHTML='';
   const s=editStages[i]; if(!s) return;
   const on=!!s.sched;
-  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(!on?'checked':'')+'/> 需本地运行，不支持定时</label>';
+  let h='<label class="dshell-muted" style="display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;"><input type="checkbox" data-f="sched" '+(!on?'checked':'')+'/> 本地运行</label><span class="dshell-muted" style="font-size:11px;cursor:help;margin-left:2px;" title="本地运行任务不支持定时任务">ⓘ</span>';
   if(on){
     h+='<span class="dshell-muted" style="font-size:11px;">跟随流水线定时计划执行（周期/一次性在「定时」页配置）；本地运行阶段须排在本阶段之前，否则保存报错；运行时前缀走运行队列，本阶段及之后由服务端触发</span>';
   }
@@ -3530,7 +3527,7 @@ function pipelineStageGroupAt(stages,index){
 /* ===== 主视图节点拖拽改序（空闲态）：无需进编辑器即可调整执行顺序 =====
    复用编辑器的预设标记补齐（withPresetMarkers）与持久化（savePipelines）通道；
    运行中/运行后快照/历史回放/结果视图均为只读，由 flowDraggable() 统一守卫。 */
-function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置（视同可信，仅 admin 可编辑）与他人创建的流水线对非 admin 只读（plEditable），主视图同样禁止拖拽改序
+function flowDraggable(){ const p=curPipeline(); return !running && !runStages && !replayRec && !viewActive() && (!p || plEditable(p)); }   // 内置（视同可信，仅 admin 可编辑）与他人拥有的流水线对非 admin 只读（plEditable），主视图同样禁止拖拽改序
 /* 工作列表：当前流水线阶段补齐缺失的预设标记（与 flowStages 同源）。
    真实阶段保留对象引用（含 script/url 等全部字段，原样回写）；预设标记按 id/name/pkey 轻量保存。 */
 function flowWorkList(){ return withPresetMarkers((curPipeline().stages||[]).slice()); }
@@ -3572,7 +3569,7 @@ function flowNodeDrop(e){
 function flowNodeDragEnd(){ flowDragFromId=null; clearFlowDragMarks(); }
 /* 落盘：工作列表回写为 stages（预设标记随位置保存，并清掉旧顶层 prom），与编辑器 savePlForm 的归一化一致 */
 function persistFlowOrder(orderedWork){
-  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置（视同可信）与他人创建的流水线对非 admin 只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
+  const p=curPipeline(); if(!p||!plEditable(p)) return;   // 内置（视同可信）与他人拥有的流水线对非 admin 只读（plEditable），不写回（入口已由 flowDraggable 拦截，此处兜底）
   p.stages=orderedWork.map(s=> s.preset
     ? {id:s.id,name:s.name,preset:true,pkey:s.pkey}
     : s);
@@ -3610,8 +3607,8 @@ function createFlowNode(s, i){
       const pid=(runStages && curRun && curRun.pipelineId && findPipeline(curRun.pipelineId)) ? curRun.pipelineId : curPipelineId;
       openPlForm(pid, withPresetMarkers(activeStages()).findIndex(x=>x.id===s.id));   // 焦点序号按补齐预设标记后的列表计算，与编辑器行序一致
     });
-    const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置/可信（非 admin）只读 / 他人创建只读（标注创建者）/ 可编辑
-    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（可信流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（由 @'+plOwnerOf(plNodeCur)+' 创建，只读）':'单击查看详情，双击编辑该阶段'));
+    const plNodeCur=curPipeline();   // 节点 title 按归属区分：内置/可信（非 admin）只读 / 他人拥有的只读（标注拥有者，经 plOwnerOf 取值）/ 可编辑
+    n.title=s.preset?('系统预设任务，单击查看详情；执行顺序在流水线编辑中调整，脚本在设置页配置'):((plNodeCur&&plNodeCur.builtIn&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（可信流水线只读：仅 admin 可编辑）':((plNodeCur&&!plEditable(plNodeCur))?'单击查看详情，双击查看该阶段（拥有者 @'+plOwnerOf(plNodeCur)+'，只读）':'单击查看详情，双击编辑该阶段'));
     /* 空闲态主视图直接拖拽改序：置 draggable 并挂载处理器；运行/回放态只读，不挂载 */
     if(flowDraggable()){
       n.draggable=true; n.title+='；可拖拽调整执行顺序';
@@ -3811,6 +3808,72 @@ function detailContextRows(stage,statusText,ctx){
   else rows.push(['镜像',(ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],['Commit',ctx.commit]);
   return rows;
 }
+/* 阶段详情「日志文件」行的路径解析：优先阶段上已落盘的服务端日志（_serverLogFile），
+   其次执行前算出的预期路径（_serverLogExpectedFile，运行中未落盘时先给出预期位置），
+   都没有则按运行上下文现算（归档目录 + run-<tag>-NN-任务名.log）；运行无归档返回 null。
+   页面函数声明提升不受定义顺序限制（archiveFolderFor/stageSeq/taskLogFile 在本文件后部）。 */
+function stageLogFileFor(stage, rc){
+  if(stage && stage._serverLogFile) return stage._serverLogFile;
+  if(stage && stage._serverLogExpectedFile) return stage._serverLogExpectedFile;
+  const folder=archiveFolderFor(rc);
+  if(!folder) return null;
+  const idx=rc && rc.stages ? rc.stages.indexOf(stage) : -1;
+  if(idx<0) return null;
+  return folder+'/'+taskLogFile(rc, stageSeq(rc.stages, idx), stage.name);
+}
+/* 阶段详情「AI 分析」按钮的作用记录：回放态取当前回放行；实时态按 tag 找回本次运行的
+   历史记录（运行结束写入历史后方可分析）；都没有返回 null（按钮随之禁用）。 */
+function currentStageAnalysisRec(){
+  if(replayRec) return replayRec;
+  if(curRun && curRun.tag) return history.find(h=>h.tag && h.tag===curRun.tag) || null;
+  return null;
+}
+/* 阶段详情「日志文件」行：展示本阶段归档日志文件路径，右侧提供「AI 分析」「打开日志」
+   两个按钮；过程/结果提示写入紧随其后的提示行（#stageLogTipRow，默认隐藏）。
+   path 与 rec 都为空时不渲染本行（实时态未配置归档且运行未入历史、回放态旧记录无独立日志文件等）。
+   行为与「📂 打开归档目录」「运行历史标题行 AI 分析按钮」保持一致，详见两按钮的 title。 */
+function appendStageLogRow(kv, path, rec){
+  if(!path && !rec) return;
+  const replayMode=typeof replayRec!=='undefined' && !!replayRec;
+  const row=document.createElement('div');
+  row.className='dshell-kvRow'; row.id='stageLogRow'; row.style.alignItems='center';
+  const key=document.createElement('span'); key.className='dshell-kvKey'; key.textContent='日志文件';
+  const value=document.createElement('span'); value.className='dshell-kvValue'; value.id='stageLogPath';
+  value.style.flex='1'; value.style.textAlign='left'; value.style.overflow='hidden';
+  value.style.textOverflow='ellipsis'; value.style.whiteSpace='nowrap';
+  value.textContent=path || '—';
+  value.title=path || (replayMode ? '旧版内嵌日志记录，无独立日志文件' : '本阶段日志尚未归档（未配置归档目录或尚未执行）');
+  const btns=document.createElement('span');
+  btns.style.display='flex'; btns.style.gap='6px'; btns.style.alignItems='center'; btns.style.flex='none';
+  const aiBtn=document.createElement('button');
+  aiBtn.className='dshell-btn dshell-btnGhost mini'; aiBtn.type='button'; aiBtn.id='stageLogAiBtn';
+  aiBtn.textContent='🔍 AI 分析';
+  aiBtn.title='对本阶段所属运行发起 AI 日志分析：效果同运行历史标题行的「🔍 AI 日志分析」——新建 AI 会话并填入提示词草稿（需手动确认发送，不自动提交；提示词见「设置」页分析配置）；本次运行尚未写入运行历史时禁用。';
+  aiBtn.disabled=!rec;
+  aiBtn.addEventListener('click', stageDetailAnalysis);
+  const openBtn=document.createElement('button');
+  openBtn.className='dshell-btn dshell-btnGhost mini'; openBtn.type='button'; openBtn.id='stageLogOpenBtn';
+  openBtn.textContent='📂 打开日志';
+  openBtn.title='打开本阶段日志文件所在目录：效果同「📂 打开归档目录」——优先经 dsh-better-sidebar 侧边栏文件夹窗口打开（未装该插件或桥不可用时回退服务端系统文件管理器）；打开前等待日志落盘，目标目录不存在时回退其父目录；本阶段暂无归档日志文件时禁用。';
+  openBtn.disabled=!path;
+  openBtn.addEventListener('click', ()=>openStageLogFolder(path));
+  btns.appendChild(aiBtn); btns.appendChild(openBtn);
+  row.appendChild(key); row.appendChild(value); row.appendChild(btns);
+  kv.appendChild(row);
+  const tipRow=document.createElement('div');
+  tipRow.className='dshell-kvRow'; tipRow.id='stageLogTipRow'; tipRow.style.display='none';
+  const tipKey=document.createElement('span'); tipKey.className='dshell-kvKey';
+  const tip=document.createElement('span'); tip.className='dshell-kvValue dshell-muted'; tip.id='stageLogTip'; tip.style.fontSize='10px';
+  tipRow.appendChild(tipKey); tipRow.appendChild(tip);
+  kv.appendChild(tipRow);
+}
+/* 「🔍 AI 分析」点击：对本阶段所属运行发起 AI 日志分析（新建 AI 会话并填入提示词草稿，
+   与运行历史标题行分析按钮同一入口 createAnalysisChat，不自动发送）。 */
+function stageDetailAnalysis(){
+  const rec=currentStageAnalysisRec();
+  if(!rec){ alert('本次运行尚未写入运行历史（运行结束后自动生成），暂不能发起 AI 分析。'); return; }
+  createAnalysisChat('log',[rec]);
+}
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
   const s = flowStages().find(x=>x.id===selectedId) || flowStages()[0];
@@ -3825,7 +3888,7 @@ function renderDetail(){
      会随进度跨 25% 档位变化，因此仅为无 _out 的普通阶段保留分档键。先比键再 buildLog，避免长任务
      在日志静止后仍每 300ms 拆分完整 stdout。 */
   const progressLogKey=out || (s.script&&s.script.path) || s.kind==='http' || s.kind==='url' || s.kind==='jenkins' || s.kind==='evaltokens' ? '' : Math.floor((n.progress||0)/25);
-  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0);
+  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0)+'|'+(curRun?String(stageLogFileFor(s,curRun)||'-'):'-')+'|'+(currentStageAnalysisRec()?1:0);
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
   const lines = detailLogLinesFor(s, ctx, n);
@@ -3854,6 +3917,8 @@ function renderDetail(){
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  /* 日志文件行：实时运行态展示本阶段归档日志文件路径，附 AI 分析与打开日志目录按钮 */
+  if(curRun) appendStageLogRow(kv, stageLogFileFor(s,curRun), currentStageAnalysisRec());
   /* 阶段间变量传递：上游 stdout 的 KEY=VALUE 行注入下游；此处展示本阶段接收/产出的变量 */
   (function(){
     const vIn=n.varsIn, vOut=n.varsOut;
@@ -7573,6 +7638,8 @@ function renderReplayDetail(rec){
   /* 不再单独展示「归档目录」行：归档路径已由「📂 打开归档目录」按钮旁的状态提示展示（refreshArchiveTip），避免长路径挤压回显日志区 */
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
+  /* 日志文件行：回放态取日志条目里的 logFile（旧版内嵌日志记录无独立文件时路径为空），附 AI 分析与打开日志目录按钮 */
+  appendStageLogRow(kv, (entry && entry.logFile) || null, rec);
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
   const pct=(n.status==='success'||n.status==='skipped')?100:(n.progress||0);
   bar.style.width=pct+'%';
@@ -7612,8 +7679,9 @@ let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
 function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
-/* 流水线任务筛选状态（关键字 + 创建者 + 当前用户收藏），与 histFilter 同样仅存浏览器本地；
-   在此提前声明，供下方筛选控件初始化与 renderPipelines 取用（声明顺序早于事件绑定） */
+/* 流水线任务筛选状态（关键字 + 拥有者 + 当前用户收藏），与 histFilter 同样仅存浏览器本地；
+   在此提前声明，供下方筛选控件初始化与 renderPipelines 取用（声明顺序早于事件绑定）；
+   owner 兼容旧值：mine/all/builtin/unknown 特殊模式键与历史版本存下的具体用户名均照常生效 */
 let plFilter={kw:'',owner:'mine',favorite:'all'};
 try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine'),favorite:_pf.favorite==='favorite'?'favorite':'all'}; }catch(e){}
 function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringify(plFilter)); }catch(e){} }
@@ -7742,7 +7810,9 @@ document.querySelectorAll('[data-ract]').forEach(b=>b.addEventListener('click', 
    目标目录不存在时（历史归档已清理、归档路径改过等）回退打开其父目录（归档根）：
    侧边栏路径由 resolveExistingFolder 预检后回退（此前不预检，会以不存在目录为根开出空文件树）；
    系统文件管理器路径下助手脚本同样回退到父目录，并把实际打开的目录回显在 stdout 供页面提示；
-   连归档根都不存在才报「目录不存在」。 */
+   连归档根都不存在才报「目录不存在」。
+   上述「等待落盘 → 预检回退 → 侧边窗 / 系统文件管理器」流程抽为 openFolderWithFeedback，
+   供本按钮与阶段详情「📂 打开日志」共用（文案与行为保持一致）。 */
 const FM_HELPER='/tmp/op_test_open_fm.sh';
 const FM_SCRIPT='#!/bin/bash\n# pipeline.html「打开归档目录」生成的助手脚本：用系统文件管理器打开 $1\n'
   +'d="$1"\n'
@@ -7794,6 +7864,12 @@ async function openArchiveFolder(){
   const say=(t,c)=>{ if(tip){ tip.textContent=t; tip.style.color=c||''; } };
   const folder=archiveTargetFolder();
   if(!folder){ say('⚠ 请先点击选择一条运行历史（或运行一条流水线后再打开）','var(--log-warn)'); return; }
+  await openFolderWithFeedback(folder, say);
+}
+/* 打开目录的完整反馈流程（「📂 打开归档目录」与阶段详情「📂 打开日志」共用）：
+   等待日志落盘 → 预检目录存在性（不存在回退父目录）→ 优先经 dsh-better-sidebar 侧边窗打开
+   （成功后关闭侧边会话窗让出空间），未装该插件或桥不可用时回退服务端系统文件管理器。 */
+async function openFolderWithFeedback(folder, say){
   say('正在等待日志落盘并打开目录…');
   try{ await waitArchiveWrites(folder); }
   catch(e){ say('✗ 日志归档失败：'+String(e.message||e),'var(--log-err)'); return; }
@@ -7814,6 +7890,18 @@ async function openArchiveFolder(){
   }
   say('正在打开服务端文件管理器…');
   await openFolderViaFileManager(target, say, res.fellBack);
+}
+/* 阶段详情「📂 打开日志」：打开本阶段日志文件所在目录（流程与「📂 打开归档目录」一致，
+   反馈写入阶段详情的提示行 #stageLogTipRow/#stageLogTip，而非归档按钮旁的 archiveTip）。 */
+async function openStageLogFolder(file){
+  const tip=$('stageLogTip');
+  const tipRow=$('stageLogTipRow');
+  const say=(t,c)=>{ if(!tip) return; tip.textContent=t; tip.style.color=c||''; if(tipRow) tipRow.style.display=t?'':'none'; };
+  if(!file){ say('⚠ 本阶段暂无归档日志文件','var(--log-warn)'); return; }
+  const i=file.lastIndexOf('/');
+  if(i<=0){ say('⚠ 无法确定日志所在目录：'+file,'var(--log-warn)'); return; }
+  const folder=file.slice(0,i);
+  await openFolderWithFeedback(folder, say);
 }
 /* 打开前预检目标目录是否存在（历史归档可能已清理、归档路径已改）：
    不存在时回退父目录（归档根），返回 {folder, fellBack}；连归档根都不存在返回 {folder:null}。
@@ -8021,14 +8109,36 @@ document.addEventListener('click', e=>{
   }
 });
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
-/* 流水线任务筛选：关键字 + 创建者 + 当前用户收藏；默认「我的（含预置）」+ 全部收藏状态 */
+/* 流水线任务筛选：关键字 + 拥有者 + 当前用户收藏；默认「我的（含预置）」+ 全部收藏状态 */
+/* 拥有者筛选组合框（input + datalist）的「显示文本 ↔ 模式键」映射：特殊模式用固定中文标签
+   展示与输入（选中标签即选中对应模式），用户名原样显示；空输入回退默认「我的（含预置）」；
+   非标签文本的匹配口径见 plFilterMatch（等于已知拥有者用户名时精确匹配，否则按子串大小写不敏感搜索）。 */
+function plOwnerFilterLabel(v){
+  if(v==='mine') return '我的（含预置）';
+  if(v==='all') return '全部';
+  if(v==='builtin') return '仅预置';
+  if(v==='unknown') return '未署名';
+  return String(v||'');
+}
+function plOwnerFilterValue(text){
+  const t=String(text||'').trim();
+  if(!t) return 'mine';
+  if(t==='我的（含预置）') return 'mine';
+  if(t==='全部') return 'all';
+  if(t==='仅预置') return 'builtin';
+  if(t==='未署名') return 'unknown';
+  return t;
+}
 $('plFilterKw').value=plFilter.kw;
-$('plFilterOwner').value=plFilter.owner;
+$('plFilterOwner').value=plOwnerFilterLabel(plFilter.owner);
 $('plFilterFavorite').value=plFilter.favorite;
 $('plFilterKw').addEventListener('input', e=>{ plFilter.kw=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
-$('plFilterOwner').addEventListener('change', e=>{ plFilter.owner=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
+/* input 即时过滤（datalist 点选同样触发 input），change 兜底；同一处理器幂等 */
+const plOwnerFilterInput=e=>{ plFilter.owner=plOwnerFilterValue(e.target.value); plPage=0; savePlFilter(); renderPipelines(); };
+$('plFilterOwner').addEventListener('input', plOwnerFilterInput);
+$('plFilterOwner').addEventListener('change', plOwnerFilterInput);
 $('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
-$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; plPage=0; $('plFilterKw').value=''; $('plFilterOwner').value='mine'; $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
+$('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; plPage=0; $('plFilterKw').value=''; $('plFilterOwner').value=plOwnerFilterLabel('mine'); $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
 function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
 /* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
 function fmtHistTime(h){
@@ -8102,23 +8212,26 @@ async function refreshPipelinesFromServer(){
 }
 $('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
 
-/* ---------- 流水线任务筛选（关键字 + 创建者 + 当前用户收藏） ---------- */
+/* ---------- 流水线任务筛选（关键字 + 拥有者 + 当前用户收藏） ---------- */
 /* plFilter / savePlFilter / currentUsername 声明在前（紧随 histFilter），
    此处仅定义筛选匹配与下拉渲染函数。 */
-function plOwnerOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''; }
+/* 拥有者（编辑权限归属）：优先 owner 字段（新建/复制/补署时写入），存量流水线无 owner 字段时
+   回退创建者（createdBy）；自包含实现——独立测试片段（vm 提取单函数）不依赖 plCreatorOf */
+function plOwnerOf(p){ if(!p) return ''; const owner=(typeof p.owner==='string' && p.owner.trim()) ? p.owner.trim() : ''; return owner || ((typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''); }
+function plCreatorOf(p){ return (p && typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : ''; }   /* 创建者：创建时定死的历史署名（数据属性），不再参与权限判定 */
 function plUpdaterOf(p){ return (p && typeof p.updatedBy==='string' && p.updatedBy.trim()) ? p.updatedBy.trim() : ''; }   /* 最后修改人：与创建者同源（/auth/status 登录用户），保存/拖拽改序时刷新 */
 /* 流水线归属编辑限制（仅页面侧判断；服务端无用户身份概念，与 canControlRun 同一约定）：
-   仅创建者可编辑/删除，消除多人编辑同一条流水线的竞争；他人可只读查看并「复制」为自己的副本。
+   仅拥有者可编辑/删除，消除多人编辑同一条流水线的竞争；他人可只读查看并「复制」为自己的副本。
    - 内置流水线视同可信：仅 admin 可编辑，其他用户只读（仍可运行）；任何人（含 admin）不可删除
      （见 deletePipeline），行菜单的标记可信入口对内置隐藏（内置无需切换，见 openPlRowMenu）；
-   - 可信流水线（trusted，admin 标记）：仅 admin 可编辑/删除——admin 权限优先于「仅创建者可编辑」；
-     非 admin（含创建者本人）只读，但仍可运行；行菜单的标记入口只对 admin 显示（见 openPlRowMenu）；
-   - 未署名（无创建者）的存量流水线全员可编辑，保存时按既有逻辑补署创建者（见 savePlForm）；
+   - 可信流水线（trusted，admin 标记）：仅 admin 可编辑/删除——admin 权限优先于「仅拥有者可编辑」；
+     非 admin（含拥有者本人）只读，但仍可运行；行菜单的标记入口只对 admin 显示（见 openPlRowMenu）；
+   - 未署名（owner 与 createdBy 均空白）的存量流水线全员可编辑，保存时按既有逻辑补署创建者与拥有者（见 savePlForm）；
    - auth 探测未完成（authReady 未置位）时对署名/可信/内置流水线保守只读；探测完成仍无登录用户
      （token 共享模式/未装认证插件/探测失败）退化为全权：页面无法判定 admin，trusted/内置不限制编辑、
      标记入口也不显示；
-   - admin 例外：admin 可编辑/删除任意非可信流水线——创建者账号注销/改名后流水线不致锁死；
-     非 admin 仍仅创建者可编辑。
+   - admin 例外：admin 可编辑/删除任意非可信流水线——拥有者账号注销/改名后流水线不致锁死；
+     非 admin 仍仅拥有者可编辑。
    typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局；守卫缺失时按「探测完成仍无用户」
    退化全权处理。 */
 function plEditable(p){
@@ -8131,15 +8244,15 @@ function plEditable(p){
     return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;
   }
   const owner=(typeof plOwnerOf==='function') ? plOwnerOf(p) : ((typeof p.createdBy==='string' && p.createdBy.trim()) ? p.createdBy.trim() : '');
-  if(!owner) return true;   // 未署名存量流水线：全员可编辑（保存时补署创建者）
+  if(!owner) return true;   // 未署名存量流水线：全员可编辑（保存时补署创建者与拥有者）
   const me=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
   if(!me){
     /* 无登录用户：探测在途（authReady 未置位）对署名流水线保守只读；探测完成仍无用户
        （token 模式等）退化为全权。authReady 全局缺失（旧测试桩）按探测已完成处理。 */
     return (typeof authReady==='undefined') ? true : !!authReady;
   }
-  if(owner===me) return true;   // 创建者本人可编辑
-  return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;   /* admin 例外：可编辑/删除他人创建的非可信流水线——创建者账号注销/改名后流水线不致锁死；非 admin 仍只读 */
+  if(owner===me) return true;   // 拥有者本人可编辑
+  return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;   /* admin 例外：可编辑/删除他人拥有的非可信流水线——拥有者账号注销/改名后流水线不致锁死；非 admin 仍只读 */
 }
 function pipelineFavoriteUsers(p){
   const users=p&&Array.isArray(p.favoriteUsers)?p.favoriteUsers:[];
@@ -8168,25 +8281,43 @@ function plFilterMatch(p){
   const owner=plFilter.owner;
   if(owner==='all') return true;
   if(owner==='builtin') return !!p.builtIn;
-  if(owner==='unknown') return !p.builtIn && !plOwnerOf(p);   /* 未署名：非内置且无创建者 */
-  if(owner && owner!=='mine') return plOwnerOf(p)===owner;   /* 按具体创建者筛选 */
-  /* mine（默认）：内置流水线 + 本用户创建的流水线 */
+  if(owner==='unknown') return !p.builtIn && !plOwnerOf(p);   /* 未署名：非内置且无拥有者 */
+  if(owner && owner!=='mine'){
+    const o=plOwnerOf(p);
+    if(o===owner) return true;   /* 精确命中具体拥有者用户名 */
+    /* 搜索口径：输入文本既非特殊标签（接线时已解析为模式键）、也不等于任何已知拥有者用户名时，
+       按子串大小写不敏感匹配拥有者——输入片段即可过滤；等于某个已知用户名时只认精确相等（上面已判）。
+       typeof 守卫：独立测试片段（vm 提取单函数）里可能没有 pipelines 全局，缺失时退化为纯子串匹配 */
+    if((typeof pipelines!=='undefined'?pipelines:[]).some(q=>plOwnerOf(q)===owner)) return false;
+    return !!o && o.toLowerCase().indexOf(owner.toLowerCase())>=0;
+  }
+  /* mine（默认）：内置流水线 + 本用户拥有的流水线 */
   if(!!p.builtIn) return true;
   const me=currentUsername||'';
   const o=plOwnerOf(p);
   return me ? (o===me) : !o;   /* 未取到当前用户时退化为「内置 + 未署名」，避免把列表整列隐藏 */
 }
 let _plOwnerSig='';
+/* 拥有者筛选 datalist 重建：特殊项（我的（含预置）/全部/仅预置，存在未署名流水线时加「未署名」）
+   + 全部已知拥有者用户名（pipelines.map(plOwnerOf) 去重排序）；签名去重避免无谓重建（签名含未署名位，
+   未署名流水线消失/出现时同样触发重建）。重建只动 datalist 选项，不改输入框当前文本 */
 function renderPlFilterOptions(){
-  const sel=$('plFilterOwner'); if(!sel) return;
+  const inp=$('plFilterOwner');
+  const list=$('plOwnerList');
   const owners=Array.from(new Set(pipelines.map(plOwnerOf).filter(Boolean))).sort();
-  const sig=owners.join('');
-  if(sig!==_plOwnerSig){
+  const hasUnknown=pipelines.some(p=>!p.builtIn && !plOwnerOf(p));
+  const sig=owners.join('\u0001')+(hasUnknown?'\u0001u':'');
+  if(list && sig!==_plOwnerSig){
     _plOwnerSig=sig;
-    const unknownOpt = pipelines.some(p=>!p.builtIn && !plOwnerOf(p)) ? '<option value="unknown">未署名</option>' : '';
-    sel.innerHTML='<option value="mine">我的（含预置）</option><option value="all">全部</option><option value="builtin">仅预置</option>'+owners.map(u=>'<option value="'+esc(u)+'">'+esc(u)+'</option>').join('')+unknownOpt;
+    list.innerHTML='<option value="我的（含预置）"></option><option value="全部"></option><option value="仅预置"></option>'
+      +owners.map(u=>'<option value="'+esc(u)+'"></option>').join('')
+      +(hasUnknown?'<option value="未署名"></option>':'');
   }
-  sel.value = Array.from(sel.options).some(o=>o.value===plFilter.owner) ? plFilter.owner : 'mine';
+  /* 幂等回显：模式键→中文标签、用户名原样；输入框聚焦（搜索输入中）时不回写，避免打断正在输入的文本 */
+  if(inp && document.activeElement!==inp){
+    const want=plOwnerFilterLabel(plFilter.owner);
+    if(inp.value!==want) inp.value=want;
+  }
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
@@ -8219,7 +8350,7 @@ function openPlRowMenu(id, anchorBtn){
     trustedItem.style.display=canMarkTrusted?'':'none';
     if(canMarkTrusted){
       trustedItem.textContent=pl.trusted?'取消可信':'标记可信';
-      trustedItem.title=pl.trusted?'取消可信标记：恢复「仅创建者可编辑」':'标记为可信流水线：仅 admin 可编辑/删除，其他用户只读（仍可运行）';
+      trustedItem.title=pl.trusted?'取消可信标记：恢复「仅拥有者可编辑」':'标记为可信流水线：仅 admin 可编辑/删除，其他用户只读（仍可运行）';
     }
   }
   panel.style.display='block';
@@ -8248,7 +8379,7 @@ function showPipelineFromHistory(rec){
   plFilter={kw:name,owner:'all',favorite:'all'};
   plPage=0;
   const kwInp=$('plFilterKw'); if(kwInp) kwInp.value=name;
-  const ownerSel=$('plFilterOwner'); if(ownerSel) ownerSel.value='all';
+  const ownerInp=$('plFilterOwner'); if(ownerInp) ownerInp.value=plOwnerFilterLabel('all');   /* 组合框回显「全部」标签（模式键→显示文本走 helper） */
   const favoriteSel=$('plFilterFavorite'); if(favoriteSel) favoriteSel.value='all';
   if(pl) selectPipeline(pl.id);
   savePlFilter(); renderPipelines();
@@ -8332,22 +8463,27 @@ function renderPipelines(){
     const isFavorite = isPipelineFavorite(p);
     const realStages=p.stages.filter(s=>!s.preset);   // 预设任务标记不计入阶段数/预览（编排区按位置展示）
     const preview = realStages.map(s=>s.name).join(' → ');
-    /* 署名展示：创建者 + 最后修改人（修改人与创建者相同则不重复；内置流水线不显示） */
-    const auditTag = p.builtIn ? '' : ((plOwnerOf(p) ? ' · 创建 @'+esc(plOwnerOf(p)) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwnerOf(p)) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
+    /* 署名展示：拥有者 + 最后修改人（修改人与拥有者相同则不重复；内置流水线不显示）；
+       创建者与拥有者不同（所有权转移/旧数据）时署名行 title 追加「创建者 @z」提示。
+       plCreatorOf 为可选依赖：typeof 守卫防旧测试桩缺函数。 */
+    const plOwner=plOwnerOf(p);
+    const plCreator=(typeof plCreatorOf==='function')?plCreatorOf(p):'';
+    const auditTag = p.builtIn ? '' : ((plOwner ? ' · 拥有 @'+esc(plOwner) : '') + ((plUpdaterOf(p) && plUpdaterOf(p)!==plOwner) ? ' · 修改 @'+esc(plUpdaterOf(p)) : ''));
+    const auditTitle = (!p.builtIn && plCreator && plCreator!==plOwner) ? '创建者 @'+plCreator : '';
     if(isCur) tr.className='sel';
     /* 本表只展示该流水线在全部来源中的运行/排队汇总，不把某一次运行或「查看中」状态绑进行点击；
        逐次详情仍统一在「运行队列」查看，本表整行点击始终选用流水线。 */
     tr.title='点击选用该流水线';
     const queueCount=queueCounts[p.id]||{running:0,queued:0};
     const queueTitle=(queueCount.running||queueCount.queued)?('运行 '+queueCount.running+' · 排队 '+queueCount.queued):'当前无运行或排队任务';
-    /* 归属编辑限制（plEditable：仅创建者可编辑/删除，admin 例外可编辑/删除任意非可信流水线；内置视同可信——仅 admin 可编辑，其他用户只读）：
-       他人流水线行内「编辑」变「查看」（带创建者提示）、不渲染「删除」；内置行对任何人（含 admin）
+    /* 归属编辑限制（plEditable：仅拥有者可编辑/删除，admin 例外可编辑/删除任意非可信流水线；内置视同可信——仅 admin 可编辑，其他用户只读）：
+       他人流水线行内「编辑」变「查看」（带拥有者提示）、不渲染「删除」；内置行对任何人（含 admin）
        都不渲染「删除」（deletePipeline 另有不依赖 plEditable 的内置拦截）；「复制」对所有行可用
        （复制为自己的副本后编辑）。 */
     const canEditPl=plEditable(p);
-    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+(!canEditPl?(p.builtIn?' title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"':(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="由 @'+esc(plOwnerOf(p))+' 创建，仅查看；可复制为副本"')):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
+    const plEditBtn='<button class="dshell-btn dshell-btnGhost mini" data-pledit="'+p.id+'"'+(!canEditPl?(p.builtIn?' title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）"':(p.trusted?' title="可信流水线：仅 admin 可编辑，您可查看/运行，或复制为副本"':' title="拥有者 @'+esc(plOwner)+'，仅查看；可复制为副本"')):'')+'>'+(canEditPl?'编辑':'查看')+'</button>';
     const plDelBtn=(canEditPl&&!p.builtIn)?'<button class="dshell-btn dshell-btnDanger mini" data-pldel="'+p.id+'">删除</button>':'';
-    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px">'+esc(preview)+auditTag+'</div></td>'+
+    tr.innerHTML='<td><div style="font-weight:600'+(isCur?';color:var(--dsw-alias-state-accent-primary)':'')+'">'+esc(p.name)+(p.builtIn?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(p.trusted?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary);border:1px solid var(--dsw-alias-state-accent-primary);border-radius:4px;padding:0 3px;" title="管理员标记的可信流水线：仅 admin 可编辑，其他用户只读（仍可运行）">可信</span>':'')+(isCur?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">当前</span>':'')+(isPinned?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)">置顶</span>':'')+(isFavorite?' <span style="font-size:10px;color:var(--dsw-alias-state-accent-primary)" title="已收藏">★ 收藏</span>':'')+'</div><div class="dshell-muted" style="font-size:10px"'+(auditTitle?' title="'+esc(auditTitle)+'"':'')+'>'+esc(preview)+auditTag+'</div></td>'+
       '<td>'+realStages.length+'</td>'+
       '<td data-plqueue="'+esc(p.id)+'" title="'+queueTitle+'" style="white-space:nowrap">'+pipelineQueueCountHtml(queueCount)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-plrun="'+p.id+'" title="运行流水线「'+esc(p.name)+'」" aria-label="运行流水线「'+esc(p.name)+'」">▶</button> <button class="dshell-btn dshell-btnGhost mini" data-plapi="'+p.id+'" title="查看流水线「'+esc(p.name)+'」的 API 调用方式">API</button> '+plEditBtn+' <button class="dshell-btn dshell-btnGhost mini" data-plcopy="'+p.id+'" title="复制该流水线为可编辑副本">复制</button> '+plDelBtn+
@@ -8412,7 +8548,7 @@ function savePlDraft(){
 function schedulePlDraftSave(){ if(plDraftTimer) clearTimeout(plDraftTimer); plDraftTimer=setTimeout(savePlDraft, 400); }
 function clearPlDraft(){ if(plDraftTimer){ clearTimeout(plDraftTimer); plDraftTimer=null; } try{ localStorage.removeItem('pip-plDraft'); }catch(e){} const tip=$('plDraftTip'); if(tip) tip.textContent=''; }
 function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft')||'null'); }catch(e){ return null; } }
-/* 流水线只读查看（内置流水线视同可信——非 admin 只读 / 他人创建的流水线）：openPlForm 按 plEditable(p) 置位，
+/* 流水线只读查看（内置流水线视同可信——非 admin 只读 / 他人拥有的流水线）：openPlForm 按 plEditable(p) 置位，
    编辑器以只读模式打开——名称/脚本目录/默认环境与阶段卡内全部编辑控件禁用，保存/添加阶段入口隐藏，
    任务卡禁止拖拽，「+」插入按钮不出现（见 applyEditSel），仅保留「关闭/取消」退出；
    保存端另有 savePlForm 兜底拦截。因阶段参数识别等为异步重渲染，
@@ -8441,15 +8577,15 @@ function openPlForm(id, focusIdx){
   /* id 失效（如已删除的流水线残留）时兜底到当前流水线，保证弹窗内容与编排区一致 */
   const p = id ? (findPipeline(id) || curPipeline()) : null;
   f.dataset.editId = p ? p.id : '';
-  plFormReadOnly=!!(p&&!plEditable(p));   // 内置（视同可信，仅 admin 可编辑）、可信（非 admin）与他人创建的流水线只读查看（plEditable），编辑器整体切为只读模式
-  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（可信·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·创建者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（创建者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.builtIn ? '编辑流水线（可信）：' : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：')))+p.name : '新建流水线';
+  plFormReadOnly=!!(p&&!plEditable(p));   // 内置（视同可信，仅 admin 可编辑）、可信（非 admin）与他人拥有的流水线只读查看（plEditable），编辑器整体切为只读模式
+  $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（可信·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·拥有者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（拥有者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.builtIn ? '编辑流水线（可信）：' : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：')))+p.name : '新建流水线';
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling 最后
   /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
-     只读查看（内置/他人创建的流水线）不恢复草稿——展示内容须为流水线定义真值，且只读模式也不会产生新草稿 */
+     只读查看（内置/他人拥有的流水线）不恢复草稿——展示内容须为流水线定义真值，且只读模式也不会产生新草稿 */
   const draft=plFormReadOnly?null:loadPlDraft();
   if(draft && Array.isArray(draft.stages) && (draft.editId||'')===$('plForm').dataset.editId){
     editStages=draft.stages;
@@ -8476,13 +8612,13 @@ function openPlForm(id, focusIdx){
   if(!plFormReadOnly) $('plName').focus();   // 只读查看不抢焦点（名称输入框已禁用）
 }
 async function savePlForm(){
-  /* 内置流水线视同可信（仅 admin 可编辑保存）与他人创建的流水线只读（plEditable）：只读时保存入口已隐藏，
+  /* 内置流水线视同可信（仅 admin 可编辑保存）与他人拥有的流水线只读（plEditable）：只读时保存入口已隐藏，
      此处兜底拦截一切写回路径（如需改动请用列表「复制」生成可编辑副本） */
   const guardP=findPipeline($('plForm').dataset.editId||'');
   if(guardP && guardP.builtIn && !plEditable(guardP)){ alert('预置流水线「'+guardP.name+'」视同可信：仅 admin 可编辑保存，其他用户只读（仍可运行）；如需定制可在「流水线任务」列表「复制」为副本后编辑。'); return; }
   if(guardP && !plEditable(guardP)){
     if(guardP.trusted){ alert('流水线「'+guardP.name+'」已被管理员标记为可信，仅 admin 可编辑保存；如需改动可在「流水线任务」列表「复制」为副本后编辑。'); return; }
-    alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 创建，仅创建者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return;
+    alert('流水线「'+guardP.name+'」由 @'+plOwnerOf(guardP)+' 拥有，仅拥有者可编辑保存；可在「流水线任务」列表「复制」为副本后编辑。'); return;
   }
   const name=$('plName').value.trim()||'未命名流水线';
   if(!editStages.some(s=>!s.preset)){ alert('请至少添加一个阶段（预设任务不计入）'); return; }
@@ -8543,8 +8679,8 @@ async function savePlForm(){
   const defaults=collectPipelineDefaultForm();
   const me=currentUsername||'';   // 新建/复制流水线署名：取已缓存的当前登录用户（页面加载时由 fillExecutorFromAuth 探测写入），未取到则不署名
   let savedPipelineId=editId;
-  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && !plOwnerOf(p) && me) p.createdBy=me; if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量未署名流水线时补署本用户，已署名不动；每次保存都刷新最后修改人 */
-  else { const created={id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, updatedBy:me}; pipelines.push(created); savedPipelineId=created.id; }
+  if(editId){ const p=findPipeline(editId); if(p){ p.name=name; p.stages=stages; p.defaults=defaults; delete p.prom; if(!p.builtIn && me){ if(typeof p.createdBy!=='string' || !p.createdBy.trim()) p.createdBy=me; if(typeof p.owner!=='string' || !p.owner.trim()) p.owner=me; } if(!p.builtIn && me) p.updatedBy=me; } }   /* 编辑存量流水线按原始字段补署：createdBy 与 owner 各自空白才补为本用户（均空白即未署名；owner 缺失的存量数据首次保存即归属保存人），已署名不动；每次保存都刷新最后修改人 */
+  else { const created={id:'pl-'+Date.now().toString(36), name, stages, defaults, builtIn:false, createdBy:me, owner:me, updatedBy:me}; pipelines.push(created); savedPipelineId=created.id; }
   const saveForm=$('plForm');
   const saveFormWasInert=!!(saveForm&&saveForm.inert);
   const saveButton=$('plSave');
@@ -8604,10 +8740,10 @@ async function savePlForm(){
 }
 function deletePipeline(id){
   /* 归属拦截：内置流水线任何人（含 admin）都不可删除——独立于 plEditable 先行拦截（admin 对内置可编辑但不可删除）；
-     其余仅创建者可删除（admin 例外可删任意非可信流水线；可信流水线仅 admin 可删除）；行内「删除」按钮对只读行与内置行已不渲染，此处兜底 */
+     其余仅拥有者可删除（admin 例外可删任意非可信流水线；可信流水线仅 admin 可删除）；行内「删除」按钮对只读行与内置行已不渲染，此处兜底 */
   const delP=findPipeline(id);
   if(delP && delP.builtIn){ alert('预置流水线「'+delP.name+'」不可删除。'); return; }
-  if(delP && !plEditable(delP)){ alert(delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 创建，仅创建者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。'); return; }
+  if(delP && !plEditable(delP)){ alert(delP.trusted ? '流水线「'+delP.name+'」已被管理员标记为可信，仅 admin 可删除。' : '流水线「'+delP.name+'」由 @'+plOwnerOf(delP)+' 拥有，仅拥有者可删除；可在「流水线任务」列表「复制」为副本后编辑自己的副本。'); return; }
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);
@@ -8633,7 +8769,7 @@ function uniqueCopyName(raw){
    本地副本保留，用户也可重试复制。可信 403 已由 pushPipelineOne toast + 重拉状态，不重复处理。 */
 async function copyPipeline(id){
   const src=findPipeline(id); if(!src) return;
-  const me=currentUsername||'';   // 副本署名：复制者即创建者（当前登录用户），未取到则不署名
+  const me=currentUsername||'';   // 副本署名：复制者即创建者与拥有者（当前登录用户），未取到则不署名
   const clone=JSON.parse(JSON.stringify(src));   /* 深拷贝：阶段及 script/url/sched/sub 等绑定均为纯数据 */
   clone.id='pl-'+Date.now().toString(36);
   clone.builtIn=false;   /* 副本一律非内置：内置流水线的副本亦可编辑/删除 */
@@ -8642,6 +8778,7 @@ async function copyPipeline(id){
   delete clone.trusted;   /* 副本不继承可信标记：复制品默认非可信（可信须由 admin 重新标记） */
   clone.name=uniqueCopyName(src.name);
   clone.createdBy=me;   /* 副本归属复制者，不继承源流水线创建者 */
+  clone.owner=me;   /* 副本拥有者同为复制者：编辑权限按拥有者判定，不继承源流水线拥有者 */
   clone.updatedBy=me;   /* 复制即副本的最后一次修改 */
   pipelines.push(clone);
   try{ localStorage.setItem('pip-pipelines', JSON.stringify(pipelines)); }catch(e){}   /* 离线缓存即时更新（原 savePipelines 的同步语义），不等服务端确认 */

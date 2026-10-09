@@ -225,14 +225,16 @@ function makeClient(server, options) {
 
 /* ---------- 测试数据 ---------- */
 /* 种子数据：defaults 用编辑器保存后的归一化形态（normalizePipelineDefaults 的输出形状，与生产一致——
-   迁移对它不再产生内容差异，本地与基线才能做到内容相等，陈旧快照的「误判远端删除」分支才会真实触发） */
+   迁移对它不再产生内容差异，本地与基线才能做到内容相等，陈旧快照的「误判远端删除」分支才会真实触发）；
+   createdBy/owner/updatedBy 同理按当前客户端落盘后的归一化形态携带（存量署名条目的 owner 尚未补署、
+   置空串，权限经 plOwnerOf 回退创建者）。 */
 function seedDisk() {
   const defaults = { environmentIds: [], repositoryId: '', branch: 'main', strategy: '', presets: [] };
   return {
     config: {
       pipelines: [
-        { id: 'pl-xds', name: '安装部署XDS', builtIn: true, stages: [{ id: 's0', name: '检出', dur: 5, skip: false, sub: [], kind: 'simulate' }], defaults: JSON.parse(JSON.stringify(defaults)), createdBy: '', updatedBy: '' },
-        { id: 'pl-src', name: '构建流水线', builtIn: false, stages: [{ id: 's1', name: '构建', dur: 5, skip: false, sub: [], kind: 'simulate' }], defaults: JSON.parse(JSON.stringify(defaults)), createdBy: 'bob', updatedBy: 'bob' },
+        { id: 'pl-xds', name: '安装部署XDS', builtIn: true, stages: [{ id: 's0', name: '检出', dur: 5, skip: false, sub: [], kind: 'simulate' }], defaults: JSON.parse(JSON.stringify(defaults)), createdBy: '', owner: '', updatedBy: '' },
+        { id: 'pl-src', name: '构建流水线', builtIn: false, stages: [{ id: 's1', name: '构建', dur: 5, skip: false, sub: [], kind: 'simulate' }], defaults: JSON.parse(JSON.stringify(defaults)), createdBy: 'bob', owner: '', updatedBy: 'bob' },
       ],
       scriptsDir: '/srv/scripts',
       buildNo: 3,
@@ -251,6 +253,7 @@ test('复制副本改名保存：新名落盘、列表不回滚、不弹冲突�
   const clone = cloneOf(f.ctx);
   assert.ok(clone, '复制后本地存在副本');
   assert.equal(clone.name, '构建流水线（副本）');
+  assert.equal(clone.owner, 'alice', '副本拥有者为复制者（不继承源署名）');
   assert.equal(diskClone(server).name, '构建流水线（副本）', '复制的 save-one 已把副本落盘');
 
   /* 真实路径：列表「编辑」→ openPlForm（副本归属复制者本人，可编辑）→ 改名 → 保存 */
@@ -323,17 +326,18 @@ test('复制的 save-one 在途期间就改名保存（慢链路）：串行排�
 });
 
 /* 生产形态种子：内置 + 多条他人/未署名流水线，阶段带脚本绑定与参数 values（驱动迁移链 cleanScriptValues）、
-   defaults 带完整字段，另含 pinned/favorite 元数据——等价真实存储的数据形状（不写死生产数据）。 */
+   defaults 带完整字段，另含 pinned/favorite 元数据与 owner 署名键（存量条目未补署置空串）——等价真实存储
+   的数据形状（不写死生产数据）。 */
 function realShapeDisk() {
   const mkStage = (id, name, extra) => Object.assign({ id, name, dur: 5, skip: false, sub: [], kind: 'shell', script: { name: name + '.sh', path: '/srv/scripts/' + name + '.sh', lang: 'sh', params: [{ key: 'IMAGE_NAME', label: '镜像', required: true, def: '' }], values: { IMAGE_NAME: 'registry/example:' + id } } }, extra || {});
   const mk = (id, name, owner, extra) => Object.assign({
     id, name, builtIn: false,
     stages: [mkStage(id + '-a', '检出'), mkStage(id + '-b', '构建镜像', { parallel: true }), mkStage(id + '-c', '部署', { parallel: true })],
     defaults: { environmentIds: ['env-a'], repositoryId: 'repo-a', branch: 'main', strategy: '', presets: ['cleanup'] },
-    createdBy: owner, updatedBy: owner,
+    createdBy: owner, owner: '', updatedBy: owner,
   }, extra || {});
   const pipelines = [
-    { id: 'pl-xds', name: '安装部署XDS', builtIn: true, stages: [{ id: 'x0', name: '环境清理', preset: true, pkey: 'cleanup' }, mkStage('x1', '拉取镜像', { kind: 'simulate', script: undefined })], defaults: { environmentIds: [], repositoryId: '', branch: 'main', strategy: '', presets: [] }, createdBy: '', updatedBy: '' },
+    { id: 'pl-xds', name: '安装部署XDS', builtIn: true, stages: [{ id: 'x0', name: '环境清理', preset: true, pkey: 'cleanup' }, mkStage('x1', '拉取镜像', { kind: 'simulate', script: undefined })], defaults: { environmentIds: [], repositoryId: '', branch: 'main', strategy: '', presets: [] }, createdBy: '', owner: '', updatedBy: '' },
   ];
   for (let i = 0; i < 72; i += 1) pipelines.push(mk('pl-u' + i, '用户流水线' + i, i % 3 === 0 ? '' : 'user' + (i % 7)));
   pipelines.push(mk('pl-muzm30ij', 'test（副本 2）', 'lihaifeng'));

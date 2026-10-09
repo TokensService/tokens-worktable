@@ -23,6 +23,7 @@ function load() {
   for (const id of ['plFilterKw', 'plFilterOwner', 'plFilterFavorite', 'pipelineTaskCard']) {
     nodes[id] = { value: '', scrollIntoView: () => { nodes[id].scrolled = true; } };
   }
+  nodes.plFilterOwner.list = 'plOwnerList';   /* 拥有者筛选为 input+datalist 组合框形态 */
   const calls = [];
   const context = {
     pipelines: [
@@ -39,7 +40,7 @@ function load() {
     $: id => nodes[id] || null,
   };
   vm.createContext(context);
-  vm.runInContext(extractFunction('showPipelineFromHistory'), context);
+  vm.runInContext(extractFunction('plOwnerFilterLabel') + '\n' + extractFunction('showPipelineFromHistory'), context);
   return { context, nodes, calls };
 }
 
@@ -49,7 +50,7 @@ test('历史行查看流水线会定位流水线并筛选任务列表', () => {
   assert.deepEqual({ ...context.plFilter }, { kw: '构建流水线', owner: 'all', favorite: 'all' });
   assert.equal(context.plPage, 0);
   assert.equal(nodes.plFilterKw.value, '构建流水线');
-  assert.equal(nodes.plFilterOwner.value, 'all');
+  assert.equal(nodes.plFilterOwner.value, '全部', '拥有者组合框回显「全部」模式标签');
   assert.equal(nodes.plFilterFavorite.value, 'all');
   assert.deepEqual(calls, [['selectPipeline', 'p2'], ['savePlFilter'], ['renderPipelines']]);
   assert.equal(nodes.pipelineTaskCard.scrolled, true);
