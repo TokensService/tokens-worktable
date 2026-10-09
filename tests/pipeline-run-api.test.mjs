@@ -197,7 +197,8 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
       { id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } },
       { id: 'deploy', name: '部署' },
     ])
-    runtime.updateStage('build', { status: 'running', progress: 25 })
+    runtime.updateStage('build', { status: 'running', progress: 25, startedAt: 1759999999000 })
+    runtime.updateStage('build', { progress: 40 })   // 后续进度更新不带 startedAt：保留已落的阶段开始时间戳
     await new Promise(resolve => {
       releases.set(plan.id, resolve)
       runtime.signal.addEventListener('abort', () => { aborted.push(plan.id); resolve() }, { once: true })
@@ -223,7 +224,7 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
       id: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'alice', env: '10.0.0.2', repoName: '应用库',
       branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: pool.snapshot().runs[0].startedAt,
       stages: [{ id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } }, { id: 'deploy', name: '部署' }],
-      nodes: { build: { status: 'running', progress: 25, dur: 0 }, deploy: { status: 'idle', progress: 0, dur: 0 } },
+      nodes: { build: { status: 'running', progress: 40, dur: 0, startedAt: 1759999999000 }, deploy: { status: 'idle', progress: 0, dur: 0 } },
     }],
     queue: [{
       id: 'manual-2', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'bob', env: '10.0.0.3', repoName: '应用库',
@@ -1516,7 +1517,10 @@ test('服务端执行器实时上报阶段状态，并在队列取消后中止�
   const running = f.execPlan(plan, runtime)
   await tick()
   assert.deepEqual(stageLists.map(stages => stages.map(stage => stage.id)), [['slow', 'after']])
-  assert.deepEqual(updates[0], { stageId: 'slow', state: { status: 'running', progress: 5, dur: 0 } })
+  /* 阶段进入 running 的那次更新携带 startedAt（服务端纪元毫秒），供远端预览折算实时已耗时 */
+  assert.equal(updates[0].stageId, 'slow')
+  assert.deepEqual({ ...updates[0].state, startedAt: 0 }, { status: 'running', progress: 5, dur: 0, startedAt: 0 })
+  assert.ok(Number.isFinite(updates[0].state.startedAt) && updates[0].state.startedAt > 0, '阶段启动更新必须携带服务端纪元毫秒 startedAt')
 
   controller.abort(Object.assign(new Error('cancelled from queue'), { code: 'PIPELINE_RUN_CANCELLED' }))
   await running
