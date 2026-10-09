@@ -2753,7 +2753,7 @@ function saveCleanup(){
 }
 function renderCleanupParams(){
   const box=$('cleanupParams'); if(!box) return; box.innerHTML='';
-  if(!cleanupScript || !cleanupScript.params || !cleanupScript.params.length) return;
+  if(!cleanupScript || !Array.isArray(cleanupScript.params) || !cleanupScript.params.length) return;
   cleanupScript.params.forEach(p=>{
     /* 识别到的默认值以可编辑文本填入框中（未改动时弱化色显示，仅为展示：不写进 values、不随执行下发，
        留空语义=自动注入的同名变量/脚本自身 :- 默认兜底，dyn 表达式未改动时同样不下发——注入后 shell 不会二次展开）；
@@ -2809,7 +2809,7 @@ function saveCheck(){
 }
 function renderCheckParams(){
   const box=$('checkParams'); if(!box) return; box.innerHTML='';
-  if(!checkScript || !checkScript.params || !checkScript.params.length) return;
+  if(!checkScript || !Array.isArray(checkScript.params) || !checkScript.params.length) return;
   checkScript.params.forEach(p=>{
     const hasV=!!(checkScript.values && checkScript.values[p.key]!==undefined);
     const v=hasV?checkScript.values[p.key]:(p.def||'');
@@ -2862,7 +2862,7 @@ function saveProfiling(){
 }
 function renderProfilingParams(){
   const box=$('profilingParams'); if(!box) return; box.innerHTML='';
-  if(!profilingScript || !profilingScript.params || !profilingScript.params.length) return;
+  if(!profilingScript || !Array.isArray(profilingScript.params) || !profilingScript.params.length) return;
   profilingScript.params.forEach(p=>{
     const hasV=!!(profilingScript.values && profilingScript.values[p.key]!==undefined);
     const v=hasV?profilingScript.values[p.key]:(p.def||'');
