@@ -8445,7 +8445,7 @@ function savePlDraft(){
 function schedulePlDraftSave(){ if(plDraftTimer) clearTimeout(plDraftTimer); plDraftTimer=setTimeout(savePlDraft, 400); }
 function clearPlDraft(){ if(plDraftTimer){ clearTimeout(plDraftTimer); plDraftTimer=null; } try{ localStorage.removeItem('pip-plDraft'); }catch(e){} const tip=$('plDraftTip'); if(tip) tip.textContent=''; }
 function loadPlDraft(){ try{ return JSON.parse(localStorage.getItem('pip-plDraft')||'null'); }catch(e){ return null; } }
-/* 流水线只读查看（内置流水线视同可信——非 admin 只读 / 他人创建的流水线）：openPlForm 按 plEditable(p) 置位，
+/* 流水线只读查看（内置流水线视同可信——非 admin 只读 / 他人拥有的流水线）：openPlForm 按 plEditable(p) 置位，
    编辑器以只读模式打开——名称/脚本目录/默认环境与阶段卡内全部编辑控件禁用，保存/添加阶段入口隐藏，
    任务卡禁止拖拽，「+」插入按钮不出现（见 applyEditSel），仅保留「关闭/取消」退出；
    保存端另有 savePlForm 兜底拦截。因阶段参数识别等为异步重渲染，
@@ -8482,7 +8482,7 @@ function openPlForm(id, focusIdx){
   else { $('plName').value=''; editDefaults=currentPipelineDefaultSeed(); editStages=[newStage('检出'),newStage('校验'),newStage('构建镜像')]; }
   editStages=withPresetMarkers(editStages);   // 补齐缺失的预设任务标记行：清理/检查最前，Profiling 最后
   /* 草稿恢复：若上次未保存就退出（关闭/刷新/点遮罩），且编辑的是同一条流水线（新建对应空 id），则恢复草稿，避免误操作丢失；
-     只读查看（内置/他人创建的流水线）不恢复草稿——展示内容须为流水线定义真值，且只读模式也不会产生新草稿 */
+     只读查看（内置/他人拥有的流水线）不恢复草稿——展示内容须为流水线定义真值，且只读模式也不会产生新草稿 */
   const draft=plFormReadOnly?null:loadPlDraft();
   if(draft && Array.isArray(draft.stages) && (draft.editId||'')===$('plForm').dataset.editId){
     editStages=draft.stages;
