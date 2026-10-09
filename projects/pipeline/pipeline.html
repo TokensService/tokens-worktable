@@ -4244,7 +4244,10 @@ async function submitServerRun(item){
     presets:Array.isArray(item&&item.presets)?item.presets:[],
     image:item&&item.image||DEFAULT_IMAGE,
     by:item&&item.by||'',
-    source:'manual',
+    /* 触发来源透传（runPipeline 已按 opts.source||'manual' 归一）：历史/孤儿重跑语义上是「新的手动运行」
+       （执行人取当前登录用户，调用方显式传 'manual'）；今后若有 schedule 系来源经 runPipeline 分流到
+       服务端，也能保留来源语义而不是被硬编码吞掉。 */
+    source:item&&item.source||'manual',
   };
   /* POST/服务端排队可能需要数秒；先用本次参数快照切到“提交中”，避免按钮点击后界面毫无变化。 */
   if(typeof focusRun==='function') focusRun(serverSubmissionPreviewRc(item));
@@ -4438,6 +4441,40 @@ function remoteQueueDetailAvailable(item){
 function remoteQueueDetailHint(item){
   return remoteQueueDetailAvailable(item)?'':'<div class="dshell-muted" style="font-size:10px;font-weight:normal;">来源页面需刷新，暂无阶段快照</div>';
 }
+/* 在 server.finished 终态登记中按 id 查条目（完成≠失联的服务端权威依据；抽取测试缺省全局时按未登记处理） */
+function remoteFinishedOf(runId){
+  const id=String(runId||''); if(!id) return null;
+  const list=(typeof remoteServerFinished!=='undefined'&&Array.isArray(remoteServerFinished))?remoteServerFinished:[];
+  return list.find(e=>String(e&&e.id||'')===id)||null;
+}
+/* 正在查看的服务端运行进入终态后的收尾预览：保留最后已知阶段快照（终态条目 stages:[{stage,status,dur}]
+   摘要按阶段名/id 对应上的节点收尾到终态），overall 换成终态徽标；rc.remoteFinished 标记终态——
+   pullRemoteQueueLog 据此停止日志轮询，预览与快照脱钩保持只读展示（直到用户切换视图），
+   不再因条目 TTL 消失而被重置回空闲编排。 */
+function remoteFinishedPreviewRc(previous, fin){
+  const next=Object.assign({}, previous);
+  const status=String(fin&&fin.status||'');
+  next.remoteFinished={id:String(fin&&fin.id||''), status:status, endedAt:Number(fin&&fin.endedAt)||0};
+  next.over=true;
+  const label={success:'成功',failure:'失败',cancelled:'已取消'}[status]||'已结束';
+  next.overall={txt:'服务端运行已结束：'+label+'（只读）', cls:'dshell-badgeDone', color:status==='failure'?'var(--st-err)':(status==='cancelled'?'var(--st-idle)':'')};
+  /* 终态条目 stages 的 stage 字段是阶段名（服务端契约，状态已按白名单归一：success/failed/skipped/aborted/idle）；
+     按 id 优先、名称兜底对应预览阶段节点；只把运行中/未开始的节点收尾到终态，已完成节点保持原样 */
+  const stageStatus={success:'success',failure:'failed',failed:'failed',cancelled:'aborted',aborted:'aborted',skipped:'skipped'};
+  (Array.isArray(fin&&fin.stages)?fin.stages:[]).forEach(fs=>{
+    const key=String(fs&&fs.stage||'');
+    const mapped=stageStatus[String(fs&&fs.status||'').toLowerCase()]||'';
+    if(!key||!mapped||!next.nodes) return;
+    const stg=(Array.isArray(next.stages)?next.stages:[]).find(x=>String(x&&x.id||'')===key)||(Array.isArray(next.stages)?next.stages:[]).find(x=>String(x&&x.name||'')===key);
+    const sid=stg?String(stg.id||''):'';
+    if(!sid||!next.nodes[sid]) return;
+    const node=Object.assign({}, next.nodes[sid]);
+    if(node.status==='running'||node.status==='idle'){ node.status=mapped; if(mapped==='success') node.progress=100; }
+    const d=Number(fs&&fs.dur); if(Number.isFinite(d)&&d>0) node.dur=d;
+    next.nodes[sid]=node;
+  });
+  return next;
+}
 function remoteQueuePreviewRc(client,item,kind){
   const stages=(Array.isArray(item&&item.stages)?item.stages:[]).map(queueStagePresence).filter(Boolean);
   const incomingNodes=item&&item.nodes&&typeof item.nodes==='object'?item.nodes:{};
@@ -4488,6 +4525,9 @@ function followPendingServerRun(){
 }
 function refreshRemoteQueuePreviewRc(previous){
   if(!previous||previous.remotePreview!==true) return previous||null;
+  /* 已进入终态的服务端运行预览：与快照脱钩保持展示（终态收尾在首次进入 finished 的那次刷新完成，
+     remoteFinished 标记后日志轮询已停）；条目 TTL 消失也不再重置视图，直到用户切换。 */
+  if(previous.remoteFinished) return previous;
   let kind=previous.remoteKind;
   let found=remoteQueueItem(previous.remoteClientId,previous.remoteItemId,kind);
   /* 服务端权威条目排队→在跑沿用同一 runId，按同 id 直接续看；旧浏览器在场条目启动后另分配 r... id，
@@ -4499,7 +4539,13 @@ function refreshRemoteQueuePreviewRc(previous){
       ||runs.find(entry=>String(entry&&entry.originQueueId||'')===String(previous.remoteItemId)&&remoteQueueDetailAvailable(entry));
     if(item){ found={client,item}; kind='running'; }
   }
-  if(!found) return null;
+  if(!found){
+    /* 服务端条目从快照消失：优先查 server.finished 权威终态（完成≠失联），优雅收尾展示终态，
+       而不是把正在查看的编排区清空回空闲；旧服务端无 finished 数据时维持原消失即重置行为。 */
+    const fin=previous.remoteClientId==='server'?remoteFinishedOf(previous.remoteItemId):null;
+    if(fin) return remoteFinishedPreviewRc(previous,fin);
+    return null;
+  }
   const next=remoteQueuePreviewRc(found.client,found.item,kind);
   if(next.stages.some(s=>s.id===previous.selId)) next.selId=previous.selId;
   next.remoteLogs=previous.remoteLogs||{};
@@ -4572,6 +4618,11 @@ let remoteQueueClients=[];   // 其他标签页上报的在场快照（GET 拉�
 /* 服务端孤儿登记簿快照（GET 响应顶层 orphans，旧服务端无此键→特性探测缺失即保持空数组、跳过渲染）：
    来源页面刷新/关闭后失联的运行/排队条目（原白名单快照字段 + ownerId/ownerLabel/kind/orphanedAt） */
 let remoteOrphans=[];
+/* 服务端执行池终态登记快照（GET 响应 server.finished，最新在前，服务端 TTL 约 120s 自动消失）：
+   完成≠失联——服务端任务的完成状态由服务端权威下发，不再靠「从队列快照消失」推断。
+   旧服务端无此键：特性探测缺失即保持空数组、不渲染终态行（优雅降级，与 orphans 同口径）。 */
+let remoteServerFinished=[];
+let _serverFinishedSeen={};   // 已消费（终态登记+历史即刷）的 finished id：随服务端 TTL 窗口滚动重建，窗口内不重复消费
 /* 浏览器标签：从 userAgent 粗判浏览器 + id 后 4 位，回答「哪个浏览器的哪个标签页」 */
 function browserTag(){
   const ua=navigator.userAgent||''; let b='浏览器';
@@ -4680,20 +4731,20 @@ async function dismissOrphanQueueItem(ownerId,id){
 /* 按孤儿条目的最后已知参数重新发起运行：pipelineId 找流水线，找不到说明流水线已删除、不可重跑
    （队列区「重跑」按钮同步置灰并提示）；envs 从条目 env 字符串按「，」/、/半角逗号拆出 IP，按 e.ip
    精确匹配回当前节点列表，匹配不到的环境对象用 {id:'',ip,name:ip} 兜底（保留原目标，不静默换成当前
-   选择）；stages 快照已是预设任务展开后的编排，经 runPipeline 走既有本地队列分流（快照来自页内引擎
-   的白名单字段，脚本绑定等不在其中，重跑按既有模拟/调度语义执行）。重跑成功（已启动/已入队）后顺手
-   dismiss 该孤儿登记。 */
+   选择）。阶段编排取流水线当前完整定义（不传 stages 快照——快照只是白名单在场字段，sched/脚本绑定
+   已剥掉，直接跑会退化成纯模拟）；全为服务端可执行阶段时经 runPipeline 分流到 submitServerRun
+   （「非本地运行任务的动作在服务端完成」），含「需本地运行」阶段时维持本地队列。重跑是一次新的手动
+   运行（source:'manual'，执行人取当前登录用户）；重跑成功（已启动/已入队/已提交）后顺手 dismiss 该孤儿登记。 */
 function rerunOrphanQueueItem(ownerId,id){
   const orphan=orphanQueueItem(ownerId,id); if(!orphan) return;
   const pl=typeof findPipeline==='function'?findPipeline(orphan.pipelineId):null;
   if(!pl){ alert('找不到该次运行的流水线「'+(orphan.pipelineName||'')+'」（可能已删除），无法重跑。'); return; }
   const ips=String(orphan.env||'').split(/[，、,]/).map(s=>s.trim()).filter(Boolean);
   const envs=ips.map(ip=>environments.find(e=>e.ip===ip)||{id:'',ip:ip,name:ip});
-  const r=runPipeline({stages:Array.isArray(orphan.stages)?orphan.stages:[], pipelineId:orphan.pipelineId||pl.id, pipelineName:orphan.pipelineName||pl.name,
-    envs:envs, branch:orphan.branch||'main', strategy:orphan.strategy||'', source:'manual'});
+  const r=runPipeline({pipelineId:pl.id, envs:envs, branch:orphan.branch||'main', strategy:orphan.strategy||'', source:'manual'});
   if(r===false){ alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。'); return; }
   if(r==='no-by') return;   // 执行人必填拦截：runPipeline 已弹提示，不再给「已开始」误导提示
-  flashRunTip(r==='queued'?('已加入本地队列（第 '+queue.length+' 位）'):('已开始重跑「'+(orphan.pipelineName||'')+'」'));
+  flashRunTip(r==='queued'?('已加入本地队列（第 '+queue.length+' 位）'):(r==='submitted'?('已提交服务端运行队列（重跑「'+(orphan.pipelineName||'')+'」）'):('已开始重跑「'+(orphan.pipelineName||'')+'」')));
   dismissOrphanQueueItem(ownerId,id);   // 重跑成功：顺手移除孤儿登记
 }
 /* 取消服务端权威任务：运行中会中止，排队中会从队列移除；任一已登录浏览器均可操作。 */
@@ -4717,7 +4768,7 @@ async function cancelServerRun(runId){
 let _remoteLogPullSeq=0, _remoteLogPullKey='', _remoteLogPullPromise=null;
 async function pullRemoteQueueLog(){
   const rc=viewRc, stageId=String(selectedId||'');
-  if(!rc||rc.remotePreview!==true||rc.remoteClientId!=='server'||rc.remoteKind!=='running'||!stageId) return null;
+  if(!rc||rc.remotePreview!==true||rc.remoteFinished||rc.remoteClientId!=='server'||rc.remoteKind!=='running'||!stageId) return null;   // remoteFinished：已进入终态的服务端运行，日志轮询停止（运行结束后服务端不再提供该 run 的日志通道）
   const runId=String(rc.remoteItemId||'');
   if(!runId) return null;
   const key=runId+'\n'+stageId;
@@ -4759,7 +4810,7 @@ let _queuePullSig='';   // 上轮已应用渲染的队列快照签名（queuePol
    标签翻转才算变化）；本页有排队项在等节点租约时附加 5 秒桶，保持 nodeWait 到点重试节奏
    （重试由 renderQueue 自愈入口的 drainQueue 驱动）。一次序列化成本远低于 DOM 重建；
    全局依赖一律 typeof 兜底，供抽取测试缺省。 */
-function queuePollSig(clients,orphans){
+function queuePollSig(clients,orphans,finished){
   const list=Array.isArray(clients)?clients:[];
   const rel=typeof fmtRelative==='function'?fmtRelative:function(){return '';};
   const parts=[JSON.stringify(list.map(c=>!c||typeof c!=='object'?c:{id:c.id,label:c.label,schemaVersion:c.schemaVersion,running:c.running,runs:c.runs,queue:c.queue}))];
@@ -4774,6 +4825,11 @@ function queuePollSig(clients,orphans){
   const orph=Array.isArray(orphans)?orphans:[];
   parts.push('o:'+JSON.stringify(orph));
   orph.forEach(o=>times.push(rel(o&&o.orphanedAt)));
+  /* 服务端执行池终态登记（server.finished，旧服务端无此数据时调用方传空/缺省）：新终态出现与
+     TTL 消失都必须触发重绘（终态行随 TTL 自动消失）；endedAt 的相对时间文字翻转同样算变化 */
+  const fin=Array.isArray(finished)?finished:[];
+  parts.push('f:'+JSON.stringify(fin));
+  fin.forEach(e=>times.push(rel(e&&e.endedAt)));
   parts.push('t:'+times.join(','));
   if(typeof viewRc!=='undefined'&&viewRc){
     parts.push('v:'+(viewRc.remotePreview===true?('r:'+viewRc.remoteClientId+':'+viewRc.remoteKind+':'+viewRc.remoteItemId):String(viewRc.id||'')));
@@ -4784,6 +4840,22 @@ function queuePollSig(clients,orphans){
     if(wait) parts.push('w:'+Math.floor(Date.now()/5000));
   }
   return parts.join('|');
+}
+/* 消费服务端执行池终态登记（server.finished）：新出现（未见过 id）的条目——
+   ① 记入本页终态登记 queueFinishedNote（completed 随在场快照上报，完成≠失联：这些 id 绝不计入孤儿）；
+   ② 立即触发一次历史刷新（不等 3s 轮询），让服务端运行的历史记录尽快可见。
+   已消费 id 集随服务端 TTL 窗口滚动重建：窗口内同一 id 不重复消费，消失即释放（服务端不会复活同一 id）。
+   queueFinishedNote/refreshHistoryFromServer 经 typeof 兜底供抽取测试缺省。 */
+function noteServerFinished(list){
+  const arr=Array.isArray(list)?list:[];
+  const prev=(typeof _serverFinishedSeen!=='undefined'&&_serverFinishedSeen)||{};
+  const fresh=[];
+  arr.forEach(e=>{ const id=String(e&&e.id||''); if(id&&!prev[id]) fresh.push(id); });
+  const seen={}; arr.forEach(e=>{ const id=String(e&&e.id||''); if(id) seen[id]=1; });
+  if(typeof _serverFinishedSeen!=='undefined') _serverFinishedSeen=seen;
+  if(!fresh.length) return;
+  if(typeof queueFinishedNote==='function') fresh.forEach(id=>queueFinishedNote(id));
+  if(typeof refreshHistoryFromServer==='function'){ try{ refreshHistoryFromServer(false); }catch(e){} }
 }
 async function pullRemoteQueue(){
   try{
@@ -4797,17 +4869,21 @@ async function pullRemoteQueue(){
       /* 孤儿登记簿：GET 响应顶层 orphans（恒存在、可空）；旧服务端无此键——Array.isArray 特性探测，
          缺失即跳过（remoteOrphans 保持原值，优雅降级不报错） */
       const orphans=Array.isArray(j.orphans)?j.orphans:null;
-      const sig=queuePollSig(next,orphans||[]);
+      /* 服务端执行池终态登记：GET 响应 server.finished（旧服务端无此键→null 保持原值优雅降级） */
+      const finished=server&&Array.isArray(server.finished)?server.finished:null;
+      const sig=queuePollSig(next,orphans||[],finished||[]);
       if(sig!==_queuePullSig){
         _queuePullSig=sig;
         remoteQueueClients=next;
         if(orphans) remoteOrphans=orphans;
+        if(finished) remoteServerFinished=finished;
         if(typeof applyOrphanPreviewRefresh==='function') applyOrphanPreviewRefresh();   // 正在预览的孤儿被移除/复活消失时，编排区自愈回空闲编排
         const planSig=planActiveSig();
         if(planSig!==_planActiveSig){ _planActiveSig=planSig; renderPlanList(); }   // 计划的活动执行（运行中/排队中）集合变化时同步重绘「定时」页，「终止」按钮随执行出现/消失
         applyRemoteQueuePreviewRefresh();
         renderQueue();
       }
+      if(finished) noteServerFinished(finished);   // 新终态条目：登记 completed（完成≠失联）+ 历史即刷；按 id 去重，签名未变时幂等
       if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点（含超时清理，每轮都执行）
       await pullRemoteQueueLog();
     }
@@ -5070,10 +5146,14 @@ function renderQueue(){
   /* 孤儿中断条目（服务端登记簿；typeof 兜底供抽取测试缺省）：计入队列卡片头部计数与状态 */
   const orphans=(typeof remoteOrphans!=='undefined'&&Array.isArray(remoteOrphans))?remoteOrphans:[];
   const orphanCount=orphans.length;
+  /* 服务端执行池终态登记（server.finished；typeof 兜底供抽取测试缺省）：短暂展示用，不计入头部计数
+     （终态行随服务端 TTL 约 120s 自动消失，非待办项） */
+  const serverFinishedRows=(typeof remoteServerFinished!=='undefined'&&Array.isArray(remoteServerFinished))?remoteServerFinished:[];
+  const serverFinishedCount=serverFinishedRows.length;
   const totalQueueItems=activeRuns.length+localItems.length+remoteRunningCount+remoteQueuedCount+orphanCount;
   $('queueCount').textContent = totalQueueItems?'('+totalQueueItems+' 项)':'';
-  /* 明细列表在本页有运行/排队、其他浏览器有活动、或有中断登记时展开，空态由独立卡片首行的「空闲」徽标表达 */
-  list.style.display = (running||localItems.length||remoteQueueClients.length||orphanCount)?'':'none';
+  /* 明细列表在本页有运行/排队、其他浏览器有活动、有中断登记或有服务端终态行时展开，空态由独立卡片首行的「空闲」徽标表达 */
+  list.style.display = (running||localItems.length||remoteQueueClients.length||orphanCount||serverFinishedCount)?'':'none';
   /* 正在编排区查看的条目（本页在跑/排队预览/他端只读预览）：整框背景高亮，与运行历史选中行
      背景色保持一致（#historyTable tbody tr.sel td 同一 rgba(79,142,247,.12)），呼应「（查看中）」标记 */
   const markViewing=it=>{ it.style.background='rgba(79,142,247,.12)'; };
@@ -5190,9 +5270,28 @@ function renderQueue(){
       });
     });
   }
+  /* 「服务端最近完成」分组（排在「服务端队列 / 其他浏览器」之后、「已中断」之前，仅 server.finished
+     非空时渲染）：服务端执行池终态的权威下发（完成≠失联），随服务端 TTL（约 120s）自动消失；
+     只读展示，成功/失败/取消徽标样式区分，新条目已由 noteServerFinished 登记并触发历史即刷。 */
+  if(serverFinishedCount){
+    const sep=document.createElement('div'); sep.className='dshell-listItem';
+    sep.innerHTML='<span class="dshell-muted" style="font-size:10px" title="服务端执行池最近结束的运行（服务端权威终态下发，约 2 分钟后自动消失；完整记录见运行历史）">— 服务端最近完成 —</span>';
+    list.appendChild(sep);
+    serverFinishedRows.forEach(fe=>{
+      const fid=String(fe&&fe.id||''); if(!fid) return;
+      const it=document.createElement('div'); it.className='dshell-listItem';
+      const fst=String(fe&&fe.status||'');
+      const badgeLabel=fst==='success'?'成功':(fst==='failure'?'失败':(fst==='cancelled'?'已取消':'已结束'));
+      const badgeColor=fst==='success'?'var(--st-ok)':(fst==='failure'?'var(--st-err)':'var(--st-idle)');
+      const fdur=Number(fe&&fe.dur);
+      it.innerHTML='<span class="dshell-listItemTitle">'+esc(fe&&fe.by||'—')+' · '+esc(fe&&fe.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(fe&&fe.source))+'</span> <span class="dshell-muted" style="font-size:10px" title="结束时间：'+(fe&&fe.endedAt?new Date(fe.endedAt).toLocaleString():'')+'">'+fmtRelative(fe&&fe.endedAt)+'</span>'+(Number.isFinite(fdur)&&fdur>0?' <span class="dshell-muted" style="font-size:10px">耗时 '+esc(typeof fmtDur==='function'?fmtDur(fdur):Math.round(fdur)+'s')+'</span>':'')+'</span>'
+        +'<span class="dshell-badge" style="color:'+badgeColor+';border-color:color-mix(in srgb, '+badgeColor+' 40%, transparent);">'+badgeLabel+'</span>';
+      list.appendChild(it);
+    });
+  }
   /* 「已中断」分组（排在「服务端队列 / 其他浏览器」之后，仅 orphans 非空时渲染）：来源页面刷新/关闭后
      执行引擎随页面销毁而中断的运行/排队条目（服务端孤儿登记簿）。条目为最后已知的白名单快照，
-     点击只读预览阶段编排；可「重跑」（按快照参数经 runPipeline 重新发起）或「移除」（dismiss 登记）。
+     点击只读预览阶段编排；可「重跑」（按流水线当前定义 + 最后已知的环境/分支/策略经 runPipeline 重新发起）或「移除」（dismiss 登记）。
      自己页面刷新/关闭导致中断的运行也会列在这里（同标签页刷新后 QCLIENT_ID 不变，ownerId 匹配本页）。 */
   if(orphanCount){
     const sep=document.createElement('div'); sep.className='dshell-listItem';
@@ -5210,7 +5309,7 @@ function renderQueue(){
       const gone=typeof findPipeline==='function'?!findPipeline(o&&o.pipelineId):false;   // 流水线已删除：重跑置灰
       it.innerHTML='<span class="dshell-listItemTitle" data-qorphan-view="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'" title="点击查看最后已知的阶段编排与运行参数快照（来源页面已刷新/关闭，执行中断；日志不可拉取，产物见归档目录）" style="cursor:pointer;">'+otag+esc(o&&o.by||'—')+' · '+esc(o&&o.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(o&&o.source))+'</span> <span class="dshell-muted" style="font-size:10px" title="中断时间（来源页面失联）：'+(o&&o.orphanedAt?new Date(o.orphanedAt).toLocaleString():'')+'">'+fmtRelative(timeTs||o&&o.orphanedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(o||{})+'</span>'
         +'<span class="dshell-badge" style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent);">'+(queued?'排队中断':'已中断')+'</span>'
-        +' <button class="dshell-btn dshell-btnGhost mini" data-qorphan-rerun="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'"'+(gone?' disabled title="找不到该次运行的流水线（可能已删除），无法重跑"':' title="按最后已知的参数快照重新发起运行（执行人取当前登录用户）"')+'>重跑</button>'
+        +' <button class="dshell-btn dshell-btnGhost mini" data-qorphan-rerun="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'"'+(gone?' disabled title="找不到该次运行的流水线（可能已删除），无法重跑"':' title="按流水线当前定义与最后已知的环境/分支/策略参数重新发起运行（执行人取当前登录用户）"')+'>重跑</button>'
         +' <button class="dshell-btn dshell-btnGhost mini" data-qorphan-dismiss="'+esc(oid)+'" data-qorphan-owner="'+esc(oowner)+'" title="从运行队列移除该中断登记">移除</button>';
       it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusOrphanQueueItem(oowner,oid); });   // 空白处点击同标题：只读预览
       list.appendChild(it);
@@ -6030,6 +6129,23 @@ function abortablePipelineDelay(ms,signal){
     if(signal) signal.addEventListener('abort',abort,{once:true});
   });
 }
+/* ---------- 阶段完成状态的服务端轮询（stage-poll） ----------
+   「任务是否完成的轮询在服务端完成」：Jenkins/EvalTokens 阶段触发动作仍由本页发起（本地运行任务豁免），
+   触发后的完成判定改为循环调用服务端长轮询端点——浏览器不再直连目标服务轮询；服务端持有等待窗口
+   （最长 25s，可用 timeoutMs 调小）、增量控制台续传与上游连败兜底（30 次判败，{done:true,failed:'poll'}）。
+   端点不可用时回退浏览器直连轮询（原实现保留在阶段内直连分支）：404=旧服务端无此路由；
+   403=目标非内网（浏览器本可直连的公网服务，服务端策略不放行）。回退一次阶段内只发生一次并 console.warn。 */
+const STAGE_POLL_JENKINS_PATH='/api/worktable/pipeline/stage-poll/jenkins';
+const STAGE_POLL_EVALTOKENS_PATH='/api/worktable/pipeline/stage-poll/evaltokens';
+const STAGE_POLL_BUILD_WINDOW_MS=2500;   // build 阶段长轮询窗口调小：控制台增量回显保持原直连约 2s 的节奏（queue 阶段用服务端默认窗口）
+async function stagePollRequest(path, body, signal){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:signal});
+  if(r.status===404||r.status===403){ const err=new Error('stage-poll 不可用（HTTP '+r.status+'）'); err.stagePollFallback=r.status; throw err; }
+  let j=null; try{ j=await r.json(); }catch(e){}
+  if(!r.ok) throw new Error('stage-poll HTTP '+r.status+(j&&j.error?('：'+String(j.error)):''));
+  if(!j||typeof j!=='object'||Array.isArray(j)) throw new Error('stage-poll 响应格式非法');
+  return j;
+}
 async function runUrlStep(rc, i){
   const stg=rc.stages; const s=stg[i];
   const raw=stageUrlOf(s);   // 兼容旧数据 kind:'url'/'jenkins' / jenkins.job（见 stageUrlOf）
@@ -6123,83 +6239,188 @@ async function runUrlStep(rc, i){
     let result=null, buildNum=null, building=true;
     let consoleRead=0, consoleStarted=false, consoleProgressive=true, consoleDisabled=false, consoleError='', lastLive=0;   // 控制台增量回显：优先按 Jenkins 服务端 offset 拉取新增部分
     if(!pollable){ building=false; result='SUCCESS'; }
-    /* queue/build 状态轮询的持续性故障（「Jenkins 服务配置」地址不对 / 桥接未启动 / CORS 拦截 / 401·403）不得静默
-       无限重试：此前 catch 吞掉一切错误、buildNum 永远拿不到，阶段超时默认留空（无超时）时没有任何兜底，
-       阶段永远卡在「等待执行…」且日志看不到原因。现按连续失败计数：首次与每 15 次回显原因，
-       连续 30 次（约 1 分钟）按阶段失败收尾；成功一次即清零。 */
+    /* 完成判定优先经服务端 stage-poll 长轮询（浏览器只循环调服务端端点）；404/403 时回退下方浏览器直连
+       轮询（原实现），一次阶段内只回退一次。直连路径的持续性故障（「Jenkins 服务配置」地址不对 / 桥接未启动 /
+       CORS 拦截 / 401·403）不得静默无限重试：连续失败计数、首次与每 15 次回显原因、连续 30 次（约 1 分钟）
+       按阶段失败收尾，成功一次即清零。服务端路径的连败兜底由服务端承载（{done:true,failed:'poll'}），
+       本页只对「浏览器↔dsh 服务端」的传输故障沿用同一计数/告警/30 次兜底口径。 */
     let pollFails=0;
     const pollFailCap=30;
+    let pollVia='server';
+    let pollFailWarned=0;   // 服务端连败告警水位（failures 单调递增，服务端清零/终态后不再重复告警）
+    const jkPollAuth=(jenkins.user||jenkins.token)?{Authorization:'Basic '+btoa(jenkins.user+':'+jenkins.token)}:{};
+    /* 轮询目标 URL：优先按触发响应的 queue Location 还原绝对地址（保留实际 Jenkins 主机），
+       缺省时退回「Jenkins 服务配置」地址（与直连轮询同一基准） */
+    let queueItemUrl='';
+    if(pollable){ try{ queueItemUrl=new URL(cancelQueueLocation,(jenkins.url||'').replace(/\/+$/,'')||undefined).href.replace(/\/+$/,''); }catch(e){} }
+    const jkPollBase=(queueItemUrl&&/\/queue\/item\//.test(queueItemUrl))?queueItemUrl.replace(/\/queue\/item\/.*$/,''):(jenkins.url||'').replace(/\/+$/,'');
+    const queuePollUrl=queueItemUrl?(queueItemUrl+'/api/json'):(jkPollBase+queuePath+'/api/json');
+    const buildPollUrl=()=>jkPollBase+jobPath+buildNum+'/api/json?tree=number,building,result,duration';
+    const stagePollFallbackToDirect=why=>{
+      if(pollVia!=='server') return false;
+      pollVia='direct'; pollFails=0;
+      console.warn('[pipeline] Jenkins 阶段轮询回退浏览器直连：stage-poll '+why);
+      appendLiveLog(log,'# stage-poll 服务端轮询不可用（'+why+'），回退浏览器直连轮询');
+      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      return true;
+    };
+    /* 调服务端 stage-poll；返回 null 表示端点不可用且已回退直连（调用方下轮起走直连分支）。
+       其余异常（传输故障/AbortError）原样上抛，由调用方按 ensureActive/计数口径处理。 */
+    const stagePollJenkins=async body=>{
+      try{ return await stagePollRequest(STAGE_POLL_JENKINS_PATH, body, ctrl.signal); }
+      catch(e){
+        if(e&&e.stagePollFallback&&pollVia==='server'){ stagePollFallbackToDirect('HTTP '+e.stagePollFallback); return null; }
+        throw e;
+      }
+    };
+    /* 服务端路径的传输故障与上游连败告警（直连分支的告警文本保持原样）：复用同一计数与收尾口径 */
+    const stagePollTransportError=(phase,e)=>{
+      const pollErr=String(e&&e.message?e.message:e).slice(0,512);
+      pollFails+=1;
+      if(pollFails===1||pollFails%15===0){
+        appendLiveLog(log,'[warn] '+(phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'连续失败 '+pollFails+' 次（stage-poll 传输）：'+pollErr);
+        s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      }
+      if(pollFails>=pollFailCap) throw new Error((phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'持续失败（stage-poll 传输，连续 '+pollFails+' 次）：'+pollErr);
+    };
+    const stagePollUpstreamWarn=(phase,fails)=>{
+      if(fails<=0||fails===pollFailWarned||(fails!==1&&fails%15!==0)) return;
+      pollFailWarned=fails;
+      appendLiveLog(log,'[warn] '+(phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'连续失败 '+fails+' 次（服务端轮询兜底中，连续 '+pollFailCap+' 次将判失败）');
+      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+    };
     while(pollable && buildNum==null){
-      await waitForPoll();
-      if(!ensureActive()) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
-      try{
-        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+queuePath+'/api/json',ctrl.signal);
+      if(pollVia==='server'){
+        let pr=null;
+        try{ pr=await stagePollJenkins({phase:'queue', url:queuePollUrl, headers:jkPollAuth}); }
+        catch(e){ if(!ensureActive()) return; stagePollTransportError('queue',e); await waitForPoll(); continue; }   // 传输故障快速失败：与直连同节奏退避，避免对 dsh 服务端紧打
+        if(!pr) continue;   // 已回退浏览器直连：下轮起走直连分支
         if(!ensureActive()) return;
         pollFails=0;
-        if(info&&info.cancelled){ const cancelled=new Error('Jenkins 队列任务已取消'); cancelled.queueTerminal=true; throw cancelled; }
-        const exact=Number(info&&info.executable&&info.executable.number);
-        if(Number.isInteger(exact)&&exact>0){ buildNum=exact; cancelBuildNum=exact; }
-      }catch(e){
-        if(!ensureActive()) return;
-        if(e&&e.queueTerminal) throw e;
-        const pollErr=String(e&&e.message?e.message:e).slice(0,512);
-        pollFails+=1;
-        if(pollFails===1||pollFails%15===0){
-          appendLiveLog(log,'[warn] Jenkins queue 状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-          s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        stagePollUpstreamWarn('queue',Number(pr.failures)||0);
+        if(pr.done===true){
+          if(pr.cancelled){ const cancelled=new Error('Jenkins 队列任务已取消'); cancelled.queueTerminal=true; throw cancelled; }
+          if(pr.failed) throw new Error('Jenkins queue 状态轮询持续失败（服务端连续 '+(Number(pr.failures)||pollFailCap)+' 次，已兜底判败）');
+          const exact=Number(pr.buildNumber);
+          if(!Number.isInteger(exact)||exact<=0) throw new Error('stage-poll queue 阶段完成但未返回有效构建号');
+          buildNum=exact; cancelBuildNum=exact;
         }
-        if(pollFails>=pollFailCap) throw new Error('Jenkins queue 状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
+        /* done:false：服务端长轮询窗口耗尽未等到构建号，立即续发下一次（等待窗口由服务端持有，本地不再 sleep） */
+      }else{
+        await waitForPoll();
+        if(!ensureActive()) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
+        try{
+          const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+queuePath+'/api/json',ctrl.signal);
+          if(!ensureActive()) return;
+          pollFails=0;
+          if(info&&info.cancelled){ const cancelled=new Error('Jenkins 队列任务已取消'); cancelled.queueTerminal=true; throw cancelled; }
+          const exact=Number(info&&info.executable&&info.executable.number);
+          if(Number.isInteger(exact)&&exact>0){ buildNum=exact; cancelBuildNum=exact; }
+        }catch(e){
+          if(!ensureActive()) return;
+          if(e&&e.queueTerminal) throw e;
+          const pollErr=String(e&&e.message?e.message:e).slice(0,512);
+          pollFails+=1;
+          if(pollFails===1||pollFails%15===0){
+            appendLiveLog(log,'[warn] Jenkins queue 状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+          }
+          if(pollFails>=pollFailCap) throw new Error('Jenkins queue 状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
+        }
       }
     }
-    pollFails=0;
+    pollFails=0; pollFailWarned=0;
     while(pollable && building){
-      await waitForPoll();
-      if(!ensureActive()) return;
-      try{
-        const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+buildNum+'/api/json?tree=number,building,result,duration',ctrl.signal);
+      if(pollVia==='server'){
+        let pr=null;
+        try{ pr=await stagePollJenkins({phase:'build', url:buildPollUrl(), headers:jkPollAuth, console:!consoleDisabled, offset:consoleRead, timeoutMs:STAGE_POLL_BUILD_WINDOW_MS}); }
+        catch(e){ if(!ensureActive()) return; stagePollTransportError('build',e); await waitForPoll(); continue; }
+        if(!pr) continue;   // 已回退浏览器直连：下轮起走直连分支（控制台续传由直连 delta 通道接管，offset 语义一致）
         if(!ensureActive()) return;
         pollFails=0;
-        if(Number(info&&info.number)===buildNum){ building=!!info.building; if(info.result) result=info.result; }
-      }catch(e){
-        if(!ensureActive()) return;
-        const pollErr=String(e&&e.message?e.message:e).slice(0,512); pollFails+=1;
-        if(pollFails===1||pollFails%15===0){
-          appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-          s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
-        }
-        if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
-      }
-      /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
-         404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
-      if(buildNum!=null && !consoleDisabled){
-        try{
-          const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal);
-          if(!ensureActive()) return;
-          consoleError='';
-          consoleRead=delta.next; consoleProgressive=delta.progressive;
-          if(delta.text){
+        stagePollUpstreamWarn('build',Number(pr.failures)||0);
+        /* 服务端增量控制台续传（console:{text, offset}）：与直连 progressiveText 同一渲染体验 */
+        if(pr.console&&typeof pr.console==='object'){
+          const chunk=String(pr.console.text||'');
+          const nextOffset=Number(pr.console.offset);
+          if(Number.isFinite(nextOffset)&&nextOffset>=0) consoleRead=nextOffset;
+          if(chunk){
             if(!consoleStarted){ consoleStarted=true; appendLiveLog(log,''); }
-            appendOutputProbe(outputProbe,delta.text);
-            appendLiveChunk(log,delta.text);   // 原始连续分片，不额外插入换行
+            appendOutputProbe(outputProbe,chunk);
+            appendLiveChunk(log,chunk);   // 原始连续分片，不额外插入换行
             s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
             lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
             if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
             if(rc.over||rc.token!==tk) return;
           }
+        }
+        if(pr.done===true){
+          if(pr.failed) throw new Error('构建状态轮询持续失败（服务端连续 '+(Number(pr.failures)||pollFailCap)+' 次，已兜底判败）');
+          building=false; if(pr.result) result=String(pr.result);
+        }
+        if(rc.over||rc.token!==tk) return;
+        const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
+      }else{
+        await waitForPoll();
+        if(!ensureActive()) return;
+        try{
+          const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+buildNum+'/api/json?tree=number,building,result,duration',ctrl.signal);
+          if(!ensureActive()) return;
+          pollFails=0;
+          if(Number(info&&info.number)===buildNum){ building=!!info.building; if(info.result) result=info.result; }
         }catch(e){
           if(!ensureActive()) return;
-          consoleError=String(e&&e.message?e.message:e).slice(0,512);
-          if(/响应正文过大/.test(consoleError)) consoleDisabled=true;   // 同一 offset 重试仍会下载同一超大块，立即止损
+          const pollErr=String(e&&e.message?e.message:e).slice(0,512); pollFails+=1;
+          if(pollFails===1||pollFails%15===0){
+            appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+          }
+          if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
         }
+        /* 实时回显：优先走 progressiveText 服务端 offset，只传输新增控制台内容；旧 Jenkins 返回
+           404/405 时本次阶段永久降级为 consoleText 全量取回 + 本地差分。 */
+        if(buildNum!=null && !consoleDisabled){
+          try{
+            const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal);
+            if(!ensureActive()) return;
+            consoleError='';
+            consoleRead=delta.next; consoleProgressive=delta.progressive;
+            if(delta.text){
+              if(!consoleStarted){ consoleStarted=true; appendLiveLog(log,''); }
+              appendOutputProbe(outputProbe,delta.text);
+              appendLiveChunk(log,delta.text);   // 原始连续分片，不额外插入换行
+              s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
+              lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+              if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
+              if(rc.over||rc.token!==tk) return;
+            }
+          }catch(e){
+            if(!ensureActive()) return;
+            consoleError=String(e&&e.message?e.message:e).slice(0,512);
+            if(/响应正文过大/.test(consoleError)) consoleDisabled=true;   // 同一 offset 重试仍会下载同一超大块，立即止损
+          }
+        }
+        if(rc.over||rc.token!==tk) return;
+        const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
       }
-      if(rc.over||rc.token!==tk) return;
-      const n=rc.nodes[s.id]; if(n){ n.dur=(Date.now()-t0)/1000; n.progress=Math.min(95,(n.progress||0)+2); rcRender(rc); }
     }
     externalJenkinsActive=false;
     if(rc.over||rc.token!==tk) return;   // 先验令牌再动本运行 timer（中止已由 finish 清过）
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
     let consoleText='', bodyFull='';
-    if(buildNum!=null && !consoleDisabled){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal); if(!ensureActive()) return; consoleError=''; consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){ if(!ensureActive()) return; consoleError=String(e&&e.message?e.message:e).slice(0,512); } }
+    if(buildNum!=null && !consoleDisabled && pollVia==='server'){
+      /* 服务端轮询收尾：终态响应已带增量控制台；再补一轮立即返回的 drain（构建已终态，服务端不持有窗口），
+         取回终态落定的尾段。失败不阻断结果判定（同直连路径的 consoleError 兜底语义）。 */
+      try{
+        const pr=await stagePollRequest(STAGE_POLL_JENKINS_PATH,{phase:'build', url:buildPollUrl(), headers:jkPollAuth, console:true, offset:consoleRead},ctrl.signal);
+        if(!ensureActive()) return;
+        if(pr&&pr.console&&typeof pr.console==='object'){
+          consoleText=String(pr.console.text||'');
+          const nextOffset=Number(pr.console.offset); if(Number.isFinite(nextOffset)&&nextOffset>=0) consoleRead=nextOffset;
+        }
+      }catch(e){ if(!ensureActive()) return; consoleError=String(e&&e.message?e.message:e).slice(0,512); }
+    }
+    else if(buildNum!=null && !consoleDisabled){ try{ const delta=await jkReadConsoleDelta(jobPath+buildNum+'/',consoleRead,consoleProgressive,ctrl.signal); if(!ensureActive()) return; consoleError=''; consoleText=delta.text; consoleRead=delta.next; consoleProgressive=delta.progressive; }catch(e){ if(!ensureActive()) return; consoleError=String(e&&e.message?e.message:e).slice(0,512); } }
     else if(triggerBody){
       /* URL 触发的 API 返回体当 consoleText 喂给 parseStageVars：多行 JSON 规整成单行
          （与脚本阶段「单行 JSON 对象」规则一致，数组响应同样规整，供输出变量 JSON 路径取值）。
@@ -6510,7 +6731,44 @@ async function runEvaltokensStep(rc, i){
     if(!ensureActive()) return;
     appendLiveLog(log,'# started run '+runId+' task='+resolvedTaskId+(resolvedTaskName?(' '+resolvedTaskName):''));
     let run=started, result=null;
-    while(true){
+    /* 完成状态轮询优先经服务端 stage-poll 长轮询（终态判定与上游连败兜底在服务端，浏览器只循环调端点）；
+       404（旧服务端无此路由）/403（目标非内网，浏览器本可直连的公网服务）时回退 evaltokFetchRuns
+       直连轮询（原实现），一次阶段内只回退一次并 console.warn。 */
+    let pollVia='server';
+    const runsPollUrl=(e.url||'').replace(/\/+$/,'')+'/api/open/v1/tasks/runs?task_id='+encodeURIComponent(resolvedTaskId);
+    const stagePollEvaltokens=async()=>{   // 返回响应对象；返回 null 表示已回退直连
+      try{ return await stagePollRequest(STAGE_POLL_EVALTOKENS_PATH,{url:runsPollUrl, headers:evaltokHeaders(e), runId:runId},ctrl.signal); }
+      catch(err){
+        if(err&&err.stagePollFallback&&pollVia==='server'){
+          pollVia='direct';
+          console.warn('[pipeline] EvalTokens 阶段轮询回退浏览器直连：stage-poll HTTP '+err.stagePollFallback);
+          appendLiveLog(log,'# stage-poll 服务端轮询不可用（HTTP '+err.stagePollFallback+'），回退浏览器直连轮询');
+          s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+          return null;
+        }
+        throw err;
+      }
+    };
+    while(pollVia==='server'){
+      const pr=await stagePollEvaltokens();
+      if(!pr) break;   // 已回退浏览器直连：转下方直连轮询
+      if(!ensureActive()) return;
+      const st=String(pr.status||'running');   // 窗口耗尽的 {done:false} 不带 status：按运行中处理
+      waitingStatus=st;
+      appendLiveLog(log,'# run '+runId+' status='+st);
+      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
+      if(!ensureActive()) return;
+      if(pr.done===true){
+        if(pr.failed) throw new Error('EvalTokens 状态轮询持续失败（服务端连续 '+(Number(pr.failures)||30)+' 次，已兜底判败）');
+        if(pr.run&&typeof pr.run==='object') run=pr.run;
+        const sk=evaltokStatusKind(st);   // 服务端终态 kind 与 evaltokStatusKind 同口径，这里再归一化兜底
+        if(sk==='running') throw new Error('stage-poll 终态响应状态非法：'+(st||'（空）'));
+        result=sk; externalRunActive=false; break;
+      }
+      /* done:false：服务端长轮询窗口耗尽未到终态，立即续发下一次（等待窗口由服务端持有，本地不再 sleep） */
+    }
+    while(pollVia==='direct'){
       const runs=await evaltokFetchRuns(e, resolvedTaskId, ctrl.signal); if(!ensureActive()) return;
       const current=runs.find(r=>String(r.run_id||r.id||'')===runId) || null;
       if(current) run=current;
