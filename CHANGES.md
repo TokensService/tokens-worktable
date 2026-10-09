@@ -1,5 +1,8 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 新增**流水线「任务是否完成」的服务端权威判定与下发**（`src/index.ts`）：① 执行池终态发布——已开始运行的 run 到达终态（成功/失败/取消）即记录 FinishedEntry（白名单清洗，含 generation 透传），池内环形缓冲上限 20 条 / TTL 120s 惰性 prune，多代际 manager 聚合存活代与退役簿后由 GET `/api/worktable/pipeline/queue` 以 `server.finished` 下发，客户端不再靠「条目从快照消失」推断完成；排队即取消的条目不记录。② 新增 `POST /api/worktable/pipeline/stage-poll/jenkins` 与 `POST /api/worktable/pipeline/stage-poll/evaltokens` 两个阶段完成轮询端点：长轮询窗口（默认 20s、上限 25s）内由服务端轮询上游（Jenkins queue/build 含 progressiveText 增量控制台续传、EvalTokens runs），语义镜像原浏览器轮询（30 连败按 key 跨请求累计、判负后短路 10 分钟）；目标复用 `/api/worktable/proxy` 同款内网白名单（403），headers 透传剔除逐跳头，客户端断开即中止上游轮询。测试：新增 `tests/pipeline-finished-runs.test.mjs`（4 例）与 `tests/pipeline-stage-poll.test.mjs`（15 例），更新 presence/run-api/node-leases 三处快照断言（server 对象新增 finished 键）。
+- 改进**流水线页面全面接入服务端权威状态**（`projects/pipeline/pipeline.html`）：Jenkins/EvalTokens 阶段的完成轮询从浏览器 while 循环改为串行调用服务端 stage-poll 端点（控制台增量经 offset 续传，保持原回显节奏；触发/中止动作与令牌守卫不变，finally 仍走 `jkCancelExecution`），端点 404（旧服务端）/403（非公网白名单目标）时单次回退浏览器直连轮询并告警；队列轮询消费 `server.finished`——新终态记入 completed 上报（完成≠失联，不再误入孤儿登记）、立即刷新历史、队列区新增「服务端最近完成」分组（三态徽标+耗时+结束时间，随 TTL 消失）、在看的运行预览按终态优雅收尾并停止日志轮询，finished 纳入队列快照签名（变化必重绘）。合规修复：孤儿重跑改传 `pipelineId` 用流水线完整定义分流（原先传 stages 白名单快照恒退化为本地纯模拟运行，全 sched 时现确实提交服务端执行池）；`submitServerRun` 透传 `item.source||'manual'` 保留触发来源语义；本地运行任务（含「需本地运行」阶段）行为一律不变。测试：新增 `test_stage_poll_client.js`（10 例）、`test_queue_finished.js`（9 例），更新 stage-poll 失败兜底/queue 孤儿/轮询降耗/jenkins 变量/evaltokens 五处既有测试。
+
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
