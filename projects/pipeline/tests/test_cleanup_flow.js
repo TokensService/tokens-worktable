@@ -165,6 +165,22 @@ test('预设任务多选按钮文案跟随勾选（全不选显示「（不执�
   cleanupBox.checked=false;checkBox.checked=false;profilingBox.checked=false;ctx.renderPresetMultiBtn();assert.equal(btn.textContent,'（不执行）');
 });
 
+test('预置脚本参数损坏时渲染仍不阻断主控 checkbox 监听注册',()=>{
+  const boxes={cleanupParams:{innerHTML:''},checkParams:{innerHTML:''},profilingParams:{innerHTML:''}};
+  const ctx={
+    cleanupScript:{params:'bad'},checkScript:{params:{length:1}},profilingScript:{params:42},
+    $:id=>boxes[id],document:{createElement(){ throw new Error('损坏参数不应进入字段渲染'); }},
+    esc:String,
+  };
+  vm.createContext(ctx);
+  load('function renderCleanupParams(', 'async function setCleanupScript(',ctx);
+  load('function renderCheckParams(', 'async function setCheckScript(',ctx);
+  load('function renderProfilingParams(', 'async function setProfilingScript(',ctx);
+  assert.doesNotThrow(()=>ctx.renderCleanupParams());
+  assert.doesNotThrow(()=>ctx.renderCheckParams());
+  assert.doesNotThrow(()=>ctx.renderProfilingParams());
+});
+
 test('流水线编辑器普通任务卡展示「收集普罗数据」开关（勾选态随阶段保存）',()=>{
   const wrap={innerHTML:'',children:[],appendChild(n){this.children.push(n);}};
   const ctx={editStages:[{id:'a',name:'构建',kind:'simulate',promCollect:true},{id:'b',name:'测试',kind:'simulate'}],editFocusIdx:-1,
