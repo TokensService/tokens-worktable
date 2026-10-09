@@ -1,5 +1,12 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 调整**流水线编辑器「+ 添加阶段」按钮移至冻结底栏最左边**（`projects/pipeline/pipeline.html`
+  的 `#plForm` 弹窗）：该按钮原先与「保存 / 取消」一起靠右排列在弹窗底部冻结行右端，阶段较多
+  需滚动时添加入口远离编辑起点。现将其移到该冻结行的最左边；草稿提示 `#plDraftTip`
+  （保留 `margin-right:auto`）紧随其后，「保存 / 取消」仍固定在右下角。底栏保持冻结、
+  不随阶段列表滚动；只读模式下隐藏添加阶段按钮的逻辑不变。
+  测试：新增 `projects/pipeline/tests/test_pipeline_footer_layout.js`（底栏按钮顺序与冻结位置契约断言）。
+
 - 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
 
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
