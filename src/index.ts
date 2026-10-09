@@ -131,6 +131,43 @@ function aggregateUsageEvents(events: UsageEvent[], now: number) {
   const recent = list.slice(-30).reverse()
   return { total: list.length, users, daily, recent }
 }
+
+/** 在线心跳条目：user 为登录用户名（空串 = 匿名 / 未装认证插件），client 为客户端实例标识
+ *  （每个浏览器标签页一个），at 为最近一次心跳的服务端时间戳（ms，不信客户端时钟）。
+ *  纯内存，不落盘，重启清零。 */
+type OnlineEntry = { user: string; client: string; at: number }
+/** 在线条目过期时长：90 秒无心跳视为离线（心跳周期远小于它，允许丢失数拍）。 */
+const ONLINE_TTL_MS = 90_000
+/** 清洗心跳上报体：body 必须是对象；user 裁剪空白截到 64 字符（缺省/非字符串 = 匿名空串）；
+ *  client 裁剪空白截到 64 字符，为空（缺省/非字符串/纯空白）时无法计数，返回 null（400）。 */
+function sanitizeHeartbeat(body: any): { user: string; client: string } | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+  const user = typeof body.user === 'string' ? body.user.trim().slice(0, 64) : ''
+  const client = typeof body.client === 'string' ? body.client.trim().slice(0, 64) : ''
+  if (!client) return null
+  return { user, client }
+}
+/** 在线表 key：user 非空按 'u:' + user 归一（同一登录用户多标签页算 1 人）；
+ *  匿名按 'c:' + client 计（每个客户端实例 1 人）。前缀保证两条路径永不相撞。 */
+function onlineKeyOf(user: string, client: string): string {
+  return user ? 'u:' + user : 'c:' + client
+}
+/** 懒清理过期条目（at 距今满 ONLINE_TTL_MS 即删）；touch / count 前各调一次，无需定时器。 */
+function pruneOnlineTable(table: Map<string, OnlineEntry>, now: number): void {
+  for (const [key, e] of table) {
+    if (now - e.at >= ONLINE_TTL_MS) table.delete(key)
+  }
+}
+/** 心跳 upsert：先懒清理过期条目，再按 key 写入（at 恒取服务端 now，覆盖同 key 旧条目）。 */
+function touchOnlineTable(table: Map<string, OnlineEntry>, entry: { user: string; client: string }, now: number): void {
+  pruneOnlineTable(table, now)
+  table.set(onlineKeyOf(entry.user, entry.client), { user: entry.user, client: entry.client, at: now })
+}
+/** 当前在线数：先懒清理过期条目，再取条目数（key 已按用户/客户端归一，size 即人数）。 */
+function countOnlineTable(table: Map<string, OnlineEntry>, now: number): number {
+  pruneOnlineTable(table, now)
+  return table.size
+}
 /* ---------- 用户使用统计结束 ---------- */
 
 export const name = 'tokens-worktable'
@@ -376,9 +413,60 @@ function cleanPipelineHistory(history: any[]) {
   return history.map((record: any) => {
     if (!record || typeof record !== 'object' || Array.isArray(record)) return record
     const clean: any = {}
-    for (const [key, value] of Object.entries(record)) if (!transient.has(key)) clean[key] = value
+    for (const [key, value] of Object.entries(record)) {
+      if (transient.has(key)) continue
+      if (key === 'envNodes') {
+        const envNodes = cleanPipelineHistoryEnvNodes(value)
+        if (envNodes) clean[key] = envNodes   // 非数组的脏值整体剔除，不得进入共享存储
+        continue
+      }
+      clean[key] = value
+    }
     return clean
   })
+}
+
+/** cleanPipelineHistory 对 envNodes 的防御性清洗：只留对象条目且只保留 name/ip/nodeIp 三字段
+ *  （绝不放行 user/pass 等凭据键），单字段限长 128 字符，name 与 ip 均为空的条目丢弃，截到 50 条；
+ *  envNodes 不是数组时返回 null（调用方剔除该字段）。 */
+function cleanPipelineHistoryEnvNodes(value: any): any[] | null {
+  if (!Array.isArray(value)) return null
+  const nodes: any[] = []
+  for (const item of value) {
+    if (nodes.length >= 50) break
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const node = {
+      name: String(item.name || '').slice(0, 128),
+      ip: String(item.ip || '').slice(0, 128),
+      nodeIp: String(item.nodeIp || '').slice(0, 128),
+    }
+    if (!node.name && !node.ip) continue
+    nodes.push(node)
+  }
+  return nodes
+}
+
+/** 历史记录的环境节点快照 envNodes：由运行选用的环境节点映射出 {name,ip,nodeIp} 三字段（与客户端
+ *  契约一致），绝不携带 user/pass 等凭据；ip 为空时依次以 nodeIp、id 兜底进 ip，name 与 ip 均为空
+ *  的条目丢弃，最多 50 条。envs 不是数组（旧定时计划无节点快照）时回退把 env 字符串按中文/英文逗号
+ *  拆成 [{name:'',ip}]；结果总是数组（无选中节点时为 []）。 */
+function pipelineHistoryEnvNodes(envs: any, envText: any) {
+  const nodes: { name: string; ip: string; nodeIp: string }[] = []
+  const push = (name: any, ip: any, nodeIp: any) => {
+    if (nodes.length >= 50) return
+    const rec = { name: String(name || ''), ip: String(ip || ''), nodeIp: String(nodeIp || '') }
+    if (!rec.name && !rec.ip) return
+    nodes.push(rec)
+  }
+  if (Array.isArray(envs)) {
+    for (const e of envs) {
+      if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+      push(e.name, String(e.ip || '') || String(e.nodeIp || '') || String(e.id || ''), e.nodeIp)
+    }
+    return nodes
+  }
+  for (const part of String(envText || '').split(/[，,]/)) push('', part.trim(), '')
+  return nodes
 }
 
 /** 内容比对用的条目副本：剥离 favoriteUsers / pinnedAt 两个「非内容」共享可变字段（其余键保持原顺序）。
@@ -1889,13 +1977,14 @@ type PipelineExecutionRuntime = {
   appendLog: (stageId: string, text: unknown) => void;
 }
 
-function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExecutionRuntime) => Promise<void>, limit = 2, queueLimit = 100, hooks?: {
+function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExecutionRuntime) => Promise<unknown>, limit = 2, queueLimit = 100, hooks?: {
   ipsOf?: (plan: any) => string[];
   acquire?: (plan: any, ips: string[]) => boolean;
   release?: (plan: any) => void;
   retryMs?: number;
   generation?: string;
   generationId?: string;
+  nowFn?: () => number;
 }) {
   interface ExecutionItem {
     plan: any;
@@ -1915,6 +2004,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   const generation = hooks && (hooks.generation ?? hooks.generationId) != null
     ? String(hooks && (hooks.generation ?? hooks.generationId))
     : ''
+  const nowFn = hooks && typeof hooks.nowFn === 'function' ? hooks.nowFn : () => Date.now()
   let active = 0
   let retryTimer: any = null
   let accepting = true
@@ -1971,10 +2061,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     if (!id) return
     const previous = item.nodes[id] || idleNode()
     const next = state && typeof state === 'object' ? state : {}
+    /* 阶段开始时间（服务端纪元毫秒）：仅随「进入 running」的那次更新落节点，后续更新沿用既有值，
+       供队列快照白名单（cleanQueueNode）透传给其他浏览器的远端预览折算实时已耗时 */
+    const nextStartedAt = Number(next.startedAt), previousStartedAt = Number(previous.startedAt)
     item.nodes[id] = {
       status: typeof next.status === 'string' ? next.status : previous.status,
       progress: Number.isFinite(Number(next.progress)) ? Number(next.progress) : previous.progress,
       dur: Number.isFinite(Number(next.dur)) ? Number(next.dur) : previous.dur,
+      ...(Number.isFinite(nextStartedAt) && nextStartedAt > 0 ? { startedAt: nextStartedAt }
+        : (Number.isFinite(previousStartedAt) && previousStartedAt > 0 ? { startedAt: previousStartedAt } : {})),
       ...(next.sub && typeof next.sub === 'object' && !Array.isArray(next.sub) ? { sub: next.sub } : (previous.sub ? { sub: previous.sub } : {})),
     }
   }
@@ -1993,6 +2088,58 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     stages: item.stages,
     nodes: item.nodes,
   })
+  /* 终态发布环形缓冲：已开始运行的条目到达终态（成功/失败/取消）后从 runs 消失，客户端无法再推断
+     结果，这里按 FinishedEntry 契约保留最近终态供快照下发。保留策略：每池上限 20 条（超上限丢最旧）、
+     endedAt 距今超 120s 丢弃，读取（snapshot）与写入（settle）时惰性 prune，不起定时器。
+     字段白名单与 snapshotEntry 同口径：只带 id/流水线标识/执行人/来源/状态/耗时/起止时间/阶段状态，
+     不透传日志、变量或凭据；dur 单位秒（与节点 dur 一致），startedAt/endedAt 为 ms epoch。 */
+  const FINISHED_CAP = 20
+  const FINISHED_TTL = 120 * 1000
+  const finished: any[] = []   // 最新在前（unshift）
+  const pruneFinished = (now: number) => {
+    for (let i = finished.length - 1; i >= 0; i--) {
+      if (now - Number(finished[i] && finished[i].endedAt) > FINISHED_TTL) finished.splice(i, 1)
+    }
+    while (finished.length > FINISHED_CAP) finished.pop()
+  }
+  const finishedStatusOf = (item: ExecutionItem, outcome: unknown, error: unknown): 'success' | 'failure' | 'cancelled' => {
+    if (error !== undefined) {
+      const code = String(error && (error as any).code || '')
+      return code === 'PIPELINE_RUN_CANCELLED' || (error as any) && (error as any).name === 'AbortError' ? 'cancelled' : 'failure'
+    }
+    /* 执行器显式回报终态（execPlan 返回 success/failed/aborted）优先；无回报时依次按池侧取消信号、
+       阶段节点状态推断（自定义执行器可能吞掉中止或从不更新节点）。 */
+    const text = typeof outcome === 'string' ? outcome : ''
+    if (text === 'success') return 'success'
+    if (text === 'failed' || text === 'failure') return 'failure'
+    if (text === 'aborted' || text === 'cancelled') return 'cancelled'
+    if (item.controller && item.controller.signal.aborted) return 'cancelled'
+    const nodes = Object.values(item.nodes) as any[]
+    if (nodes.some(node => node && node.status === 'failed')) return 'failure'
+    if (nodes.some(node => node && node.status === 'aborted')) return 'cancelled'
+    return 'success'
+  }
+  const recordFinished = (item: ExecutionItem, outcome: unknown, error: unknown) => {
+    if (!item.startedAt) return   // 从未开始就被取消的排队项不进 finished（双保险：settle 只服务已开始的条目）
+    const endedAt = nowFn()
+    finished.unshift({
+      id: runIdOf(item.plan),
+      ...(generation ? { generation } : {}),
+      pipelineId: String(item.plan && item.plan.pipelineId || ''),
+      pipelineName: String(item.plan && item.plan.pipelineName || ''),
+      by: String(item.plan && item.plan.by || ''),
+      source: String(item.plan && item.plan.source || ''),
+      status: finishedStatusOf(item, outcome, error),
+      dur: Math.max(0, Math.round((endedAt - item.startedAt) / 100) / 10),
+      startedAt: item.startedAt,
+      endedAt,
+      stages: item.stages.map((stage) => {
+        const node = item.nodes[String(stage.id ?? '')] || idleNode()
+        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur }
+      }),
+    })
+    pruneFinished(endedAt)
+  }
   const resolveIdle = () => {
     if (active || pending.length || !idleWaiters.length) return
     const waiters = idleWaiters.splice(0)
@@ -2014,7 +2161,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       if (picked < 0) break
       const item = pending.splice(picked, 1)[0]
       active += 1
-      item.startedAt = Date.now()
+      item.startedAt = nowFn()
       item.controller = new AbortController()
       const entry = { item, ips: pickedIps }
       running.push(entry)
@@ -2025,16 +2172,17 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         replaceLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, false),
         appendLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, true),
       }
-      const settle = () => {
+      const settle = (outcome?: unknown, error?: unknown) => {
         active -= 1
         const index = running.indexOf(entry)
         if (index >= 0) running.splice(index, 1)
+        recordFinished(item, outcome, error)
         if (entry.ips.length) release(item.plan)
         pump()
       }
       Promise.resolve().then(() => execute(item.plan, runtime)).then(
-        () => { settle(); item.resolve() },
-        (error) => { settle(); item.reject(error) },
+        (outcome) => { settle(outcome); item.resolve() },
+        (error) => { settle(undefined, error); item.reject(error) },
       )
     }
     /* 仍有排队项但被节点占用挡住：周期重试（池外租约释放/到期、在跑结束都会再次 drain） */
@@ -2060,7 +2208,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         const boundPlan = generation ? { ...(plan && typeof plan === 'object' ? plan : {}), generation } : plan
         const item: ExecutionItem = {
           plan: boundPlan,
-          queuedAt: Date.now(),
+          queuedAt: nowFn(),
           startedAt: 0,
           stages: [],
           nodes: {},
@@ -2075,9 +2223,11 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       })
     },
     snapshot: () => {
+      pruneFinished(nowFn())
       const value = {
         runs: running.map((entry) => snapshotEntry(entry.item, 'startedAt')),
         queue: pending.map((item) => snapshotEntry(item, 'queuedAt')),
+        finished: finished.slice(),
       }
       return generation ? { generation, accepting, ...value } : value
     },
@@ -2151,6 +2301,22 @@ function createPipelineGenerationManager() {
   const generations = new Map<string, GenerationRecord>()
   let activeId = ''
   let disposal: Promise<void> | null = null
+  /* 退役代际的终态保留：旧代 drain 完毕即从 generations 移除，但其终态条目对客户端仍有 120s 的
+     发布价值（TTL 与池内一致），移除前把该代 finished 迁入本簿继续随快照下发，读取时惰性 prune。 */
+  const FINISHED_RETIRED_CAP = 20
+  const FINISHED_RETIRED_TTL = 120 * 1000
+  const retiredFinished: any[] = []
+  const pruneRetiredFinished = (now: number) => {
+    for (let i = retiredFinished.length - 1; i >= 0; i--) {
+      if (now - Number(retiredFinished[i] && retiredFinished[i].endedAt) > FINISHED_RETIRED_TTL) retiredFinished.splice(i, 1)
+    }
+    while (retiredFinished.length > FINISHED_RETIRED_CAP) retiredFinished.pop()
+  }
+  const retireFinished = (entries: any[]) => {
+    if (!Array.isArray(entries) || !entries.length) return
+    retiredFinished.unshift(...entries)   // 批内已是最新在前；快照聚合时统一按 endedAt 倒序
+    pruneRetiredFinished(Date.now())
+  }
 
   const beginDrain = (id = activeId) => {
     const record = generations.get(String(id))
@@ -2162,7 +2328,10 @@ function createPipelineGenerationManager() {
     record.queue.drain().then(() => {
       if (record.disposed || (activeId === record.id && generations.get(record.id) === record)) return
       record.disposed = true
-      if (generations.get(record.id) === record) generations.delete(record.id)
+      if (generations.get(record.id) === record) {
+        generations.delete(record.id)
+        retireFinished(record.queue.snapshot().finished)   // drain 期间的终态也要继续发布
+      }
       record.queue.dispose().catch(() => {})
     }).catch(() => {})
     return record
@@ -2205,15 +2374,22 @@ function createPipelineGenerationManager() {
       return null
     },
     snapshot() {
+      const liveFinished: any[] = []
       const all = [...generations.values()].map(record => {
         const snapshot = record.queue.snapshot()
+        if (Array.isArray(snapshot.finished)) liveFinished.push(...snapshot.finished)
         return { id: record.id, accepting: !record.draining && snapshot.accepting !== false, draining: record.draining, runs: snapshot.runs || [], queue: snapshot.queue || [] }
       })
+      pruneRetiredFinished(Date.now())
+      const finished = liveFinished.concat(retiredFinished)
+        .sort((a, b) => Number(b && b.endedAt) - Number(a && a.endedAt))   // 跨代合并后统一最新在前
+        .slice(0, 100)
       return {
         active: activeId || null,
         generations: all,
         runs: all.flatMap(record => record.runs),
         queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+        finished,
       }
     },
     health() {
@@ -2351,6 +2527,343 @@ function registerPipelineRunApi(webServer: any, deps: {
   })
 }
 /* ---------- 流水线 API 触发结束 ---------- */
+
+/* ---------- 流水线阶段完成轮询（服务端长轮询） ----------
+ * 「任务是否完成」的轮询从浏览器移到服务端：客户端对每个 Jenkins/EvalTokens 阶段改发本区端点，
+ * 服务端持有请求最长 min(timeoutMs ?? 20000, 25000)ms 的窗口，窗口内按固定节拍轮询上游
+ * （Jenkins 每 2s / EvalTokens 每 3s，与页面 waitForPoll / runEvaltokensStep 同节奏，首轮立即发起）；
+ * 窗口耗尽仍未终态返回 {done:false, ...}（带最新进度），客户端再发下一次。
+ * 上游连续失败按目标 key 跨请求累计、成功一次清零，累计 30 次返回 {done:true, failed:'poll', failures:30}
+ * （与页面 pollFailCap=30 的兜底语义一致；判负后同 key 在 10 分钟 TTL 内直接短路返回终态、不再打上游；
+ * 新一次运行换 queue item/构建号/runId 即换 key 重新计数，EvalTokens 的 key 含 runId）。
+ * 安全约束与 /api/worktable/proxy 同款：目标必须过 isLocalTarget 内网白名单（否则 403 {error:'forbidden'}），
+ * headers 原样透传上游（鉴权透传，剔除 host/content-length/connection 逐跳头）；
+ * 客户端断开连接（res close）立即中止窗口并取消在途上游请求。上游请求一律走全局 fetch（Node 22+，无新增依赖）。
+ * 本区自包含（不引用执行池/executeStage 内部），状态判定语义与 executeServerHttpStage /
+ * executeServerEvaltokensStage / 页面 runUrlStep / runEvaltokensStep 保持一致，改动时需同步核对。 */
+const STAGE_POLL_WINDOW_DEFAULT = 20_000
+const STAGE_POLL_WINDOW_CAP = 25_000          // 长轮询窗口上限（客户端 timeoutMs 超出部分截断）
+const STAGE_POLL_FETCH_TIMEOUT = 10_000       // 单次上游请求硬超时，防挂起的上游吃掉整个窗口
+const STAGE_POLL_FAIL_CAP = 30                // 与页面 pollFailCap 一致：连续失败 30 次判轮询失败
+const STAGE_POLL_JENKINS_INTERVAL = 2_000     // 页面 waitForPoll 节拍
+const STAGE_POLL_EVALTOKENS_INTERVAL = 3_000  // 页面 runEvaltokensStep 轮询间隔
+const STAGE_POLL_JSON_LIMIT = 2 * 1024 * 1024    // 与 PIPELINE_REMOTE_JSON_LIMIT 同口径
+const STAGE_POLL_TEXT_LIMIT = 16 * 1024 * 1024   // 与 PIPELINE_REMOTE_TEXT_LIMIT 同口径
+const STAGE_POLL_CONSOLE_CAP = 8 * 1024 * 1024   // 单个窗口内控制台增量累计上限，超出后本窗口停读（offset 语义不破）
+const STAGE_POLL_FAIL_TTL = 10 * 60 * 1000    // 失败计数空闲 10 分钟丢弃
+const STAGE_POLL_FAIL_TRACK_CAP = 500         // 失败计数表上限，超出丢最久未更新
+type StagePollRound = { terminal: boolean; payload?: Record<string, any> }
+const stagePollFailures = new Map<string, { failures: number; updatedAt: number }>()
+
+function stagePollFailurePrune(now: number) {
+  for (const [key, entry] of stagePollFailures) {
+    if (now - entry.updatedAt > STAGE_POLL_FAIL_TTL) stagePollFailures.delete(key)
+  }
+  if (stagePollFailures.size > STAGE_POLL_FAIL_TRACK_CAP) {
+    const byAge = [...stagePollFailures.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt)
+    for (const [key] of byAge.slice(0, stagePollFailures.size - STAGE_POLL_FAIL_TRACK_CAP)) stagePollFailures.delete(key)
+  }
+}
+function stagePollFailureBump(key: string): number {
+  const now = Date.now()
+  stagePollFailurePrune(now)
+  const entry = stagePollFailures.get(key) || { failures: 0, updatedAt: now }
+  entry.failures += 1
+  entry.updatedAt = now
+  stagePollFailures.set(key, entry)
+  return entry.failures
+}
+function stagePollFailureCount(key: string): number {
+  const entry = stagePollFailures.get(key)
+  if (!entry) return 0
+  if (Date.now() - entry.updatedAt > STAGE_POLL_FAIL_TTL) { stagePollFailures.delete(key); return 0 }
+  return entry.failures
+}
+function stagePollFailureClear(key: string) {
+  stagePollFailures.delete(key)
+}
+
+function stagePollAbortReason(signal?: AbortSignal): any {
+  const reason = signal && (signal as any).reason
+  if (reason !== undefined) return reason
+  const error: any = new Error('操作已取消')
+  error.name = 'AbortError'
+  return error
+}
+
+function stagePollSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onAbort = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      reject(stagePollAbortReason(signal))
+    }
+    if (signal && signal.aborted) { onAbort(); return }
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+    timer = setTimeout(() => {
+      timer = null
+      if (signal) signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, Math.max(0, Number(ms) || 0))
+  })
+}
+
+function stagePollHeaderValue(headers: any, name: string): string {
+  if (!headers) return ''
+  if (typeof headers.get === 'function') return String(headers.get(name) || '')
+  const wanted = name.toLowerCase()
+  for (const key of Object.keys(headers)) if (key.toLowerCase() === wanted) return String(headers[key] || '')
+  return ''
+}
+
+/* 单次上游请求：全局 fetch + 客户端断开信号联动 + 硬超时；超时/网络错误都抛出，由轮询方计入连续失败。 */
+async function stagePollFetch(url: string, headers: Record<string, string>, signal: AbortSignal, timeoutMs: number, maxBytes: number, label: string): Promise<{ status: number; headers: any; text: string }> {
+  if (signal.aborted) throw stagePollAbortReason(signal)
+  const controller = new AbortController()
+  const onAbort = () => { if (!controller.signal.aborted) controller.abort(stagePollAbortReason(signal)) }
+  signal.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => { if (!controller.signal.aborted) controller.abort() }, Math.max(1, timeoutMs))
+  try {
+    const response = await fetch(url, { method: 'GET', headers, cache: 'no-store', signal: controller.signal })
+    const text = await response.text()
+    if (Buffer.byteLength(text) > maxBytes) throw new Error(label + '响应超过 ' + maxBytes + ' 字节上限')
+    return { status: Number(response.status) || 0, headers: response.headers, text }
+  } catch (error) {
+    if (signal.aborted) throw stagePollAbortReason(signal)
+    throw error
+  } finally {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
+/* EvalTokens 响应包装兼容：{runs|data|items|results:[...]} 或裸数组（与页面 evaltokFetchRuns 一致） */
+function stagePollWrappedList(value: any): any[] {
+  if (Array.isArray(value)) return value
+  if (!value || typeof value !== 'object') return []
+  for (const key of ['runs', 'data', 'items', 'results']) if (Array.isArray(value[key])) return value[key]
+  return []
+}
+
+/* EvalTokens 状态归类：失败优先（completed_with_errors / not_completed 不得误判成功），
+   与 serverEvaltokensStatus 同口径（服务端执行池同款判定；页面 evaltokStatusKind 的子串顺序以本函数为准）。 */
+function stagePollEvaltokensStatus(value: any): 'success' | 'failed' | 'running' {
+  const status = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (/fail|error|cancel|abort|kill|stop|timeout/.test(status) || /^not_/.test(status)) return 'failed'
+  if (new Set(['success', 'succeeded', 'done', 'completed', 'completed_successfully', 'passed', 'finished']).has(status)) return 'success'
+  return 'running'
+}
+
+/* 长轮询窗口：首轮立即轮询，之后按 intervalMs 节拍；任一轮终态即返回 done:true，窗口耗尽返回 done:false。
+   poll 返回的 payload 是该轮结束时的完整响应负载（非增量），窗口耗尽时下发最后一轮的负载。 */
+async function stagePollWindow(windowMs: number, intervalMs: number, signal: AbortSignal, poll: () => Promise<StagePollRound>): Promise<{ done: boolean; payload: Record<string, any> }> {
+  const deadline = Date.now() + windowMs
+  let latest: Record<string, any> = {}
+  for (;;) {
+    const round = await poll()
+    if (round.payload) latest = round.payload
+    if (round.terminal) return { done: true, payload: latest }
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return { done: false, payload: latest }
+    await stagePollSleep(Math.min(intervalMs, remaining), signal)
+  }
+}
+
+/* 窗口请求生命周期：res close（客户端断开）→ abort 窗口与在途上游请求；断开后静默收尾不再写响应。 */
+async function serveStagePollWindow(req: any, res: any, windowMs: number, intervalMs: number, poll: (signal: AbortSignal) => Promise<StagePollRound>): Promise<void> {
+  let responded = false
+  const controller = new AbortController()
+  const onClose = () => { if (!responded && !controller.signal.aborted) controller.abort() }
+  if (res && typeof res.on === 'function') res.on('close', onClose)
+  try {
+    const result = await stagePollWindow(windowMs, intervalMs, controller.signal, () => poll(controller.signal))
+    responded = true
+    json(res, 200, result.done ? { done: true, ...result.payload } : { done: false, ...result.payload })
+  } catch (error) {
+    responded = true
+    if (controller.signal.aborted || (error && (error as any).name === 'AbortError')) {
+      try { res.end() } catch { /* 连接已断开，静默收尾 */ }
+      return
+    }
+    json(res, 500, { error: String(error && (error as Error).message ? (error as Error).message : error) })
+  } finally {
+    if (res && typeof res.removeListener === 'function') res.removeListener('close', onClose)
+  }
+}
+
+/* headers 透传（鉴权透传）：仅字符串值，剔除逐跳头（与 /api/worktable/proxy 同口径）。 */
+function stagePollForwardHeaders(value: any): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return headers
+  for (const [key, headerValue] of Object.entries(value)) {
+    if (typeof headerValue !== 'string') continue
+    const lowerKey = key.toLowerCase()
+    if (lowerKey === 'host' || lowerKey === 'content-length' || lowerKey === 'connection') continue
+    headers[key] = headerValue
+  }
+  return headers
+}
+
+/* timeoutMs：缺省 20s，上限 25s；显式给出但非正有限数视为参数非法（400）。 */
+function parseStagePollWindowMs(value: unknown): number | null {
+  if (value === undefined || value === null) return STAGE_POLL_WINDOW_DEFAULT
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return Math.min(parsed, STAGE_POLL_WINDOW_CAP)
+}
+
+/* 目标校验：http(s) 且过内网白名单；返回 null=非法（400），'forbidden'=外网（403）。 */
+function parseStagePollTarget(value: unknown): { url: string } | null | 'forbidden' {
+  const url = typeof value === 'string' ? value.trim() : ''
+  if (!url) return null
+  let target: URL
+  try { target = new URL(url) } catch { return null }
+  if (!/^https?:$/.test(target.protocol)) return null
+  if (!isLocalTarget(target.hostname)) return 'forbidden'
+  return { url }
+}
+
+function registerPipelineStagePollRoutes(webServer: any): void {
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/stage-poll/jenkins',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const phase = body && typeof body.phase === 'string' ? body.phase : ''
+        if (phase !== 'queue' && phase !== 'build') { json(res, 400, { error: 'invalid phase' }); return }
+        const target = parseStagePollTarget(body && body.url)
+        if (!target) { json(res, 400, { error: 'bad url' }); return }
+        if (target === 'forbidden') { json(res, 403, { error: 'forbidden' }); return }
+        const windowMs = parseStagePollWindowMs(body && body.timeoutMs)
+        if (windowMs === null) { json(res, 400, { error: 'invalid timeoutMs' }); return }
+        const url = target.url
+        const headers = stagePollForwardHeaders(body && body.headers)
+        /* 增量控制台（progressiveText）：仅 build 阶段；offset 由客户端持有逐请求续传，
+           窗口内多轮累计 text、按 X-Text-Size 推进 offset（与页面 jkReadConsoleDelta 同语义，
+           404/405/读不到 X-Text-Size 时本窗口不下发 console，不做 consoleText 降级）。 */
+        const consoleWanted = phase === 'build' && body && body.console === true
+        let consoleOffset = 0
+        if (consoleWanted && body.offset !== undefined && body.offset !== null) {
+          const parsed = Number(body.offset)
+          if (!Number.isInteger(parsed) || parsed < 0) { json(res, 400, { error: 'invalid offset' }); return }
+          consoleOffset = parsed
+        }
+        const parsedUrl = new URL(url)
+        const consoleBase = consoleWanted
+          ? parsedUrl.origin + parsedUrl.pathname.replace(/\/api\/json\/?$/, '').replace(/\/?$/, '/') + 'logText/progressiveText?start='
+          : ''
+        const failKey = 'jenkins:' + phase + '\n' + url
+        const label = phase === 'queue' ? 'Jenkins 队列' : 'Jenkins 构建'
+        let failures = 0
+        let consoleText = ''
+        let consoleNext = consoleOffset
+        const roundPayload = () => ({
+          ...(failures > 0 ? { failures } : {}),
+          ...(consoleWanted && (consoleText || consoleNext !== consoleOffset) ? { console: { text: consoleText, offset: consoleNext } } : {}),
+        })
+        const poll = async (signal: AbortSignal): Promise<StagePollRound> => {
+          const readConsole = async () => {
+            if (!consoleWanted || Buffer.byteLength(consoleText) >= STAGE_POLL_CONSOLE_CAP) return
+            try {
+              const result = await stagePollFetch(consoleBase + encodeURIComponent(String(consoleNext)), headers, signal, STAGE_POLL_FETCH_TIMEOUT, STAGE_POLL_TEXT_LIMIT, 'Jenkins 控制台')
+              /* 控制台故障不影响构建状态轮询（与页面 consoleError 分支一致：不累计 pollFails） */
+              if (result.status === 404 || result.status === 405 || result.status < 200 || result.status >= 300) return
+              const next = Number(stagePollHeaderValue(result.headers, 'x-text-size'))
+              if (!Number.isFinite(next) || next < consoleNext || (result.text && next === consoleNext)) return
+              consoleText += result.text
+              consoleNext = next
+            } catch (error) {
+              if (signal.aborted) throw stagePollAbortReason(signal)
+            }
+          }
+          try {
+            /* 同 key 已判负：TTL 内立即返回终态，不再打上游（新一次运行换 queue item/构建号/runId 即换 key） */
+            if (stagePollFailureCount(failKey) >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures: STAGE_POLL_FAIL_CAP } }
+            const result = await stagePollFetch(url, headers, signal, STAGE_POLL_FETCH_TIMEOUT, STAGE_POLL_JSON_LIMIT, label)
+            /* queue 阶段：item 消失（404，多在可执行构建已分配或条目被清时）与 cancelled 标记同按「已取消」终态 */
+            if (phase === 'queue' && result.status === 404) { stagePollFailureClear(failKey); return { terminal: true, payload: { cancelled: true } } }
+            if (result.status < 200 || result.status >= 300) throw new Error(label + ' HTTP ' + result.status)
+            const info = JSON.parse(result.text || '{}')   // 无效 JSON 计入轮询失败（与页面 jkFetchJson 一致）
+            stagePollFailureClear(failKey)
+            failures = 0
+            if (phase === 'queue') {
+              if (info && info.cancelled) return { terminal: true, payload: { cancelled: true } }
+              const number = Number(info && info.executable && info.executable.number)
+              if (Number.isInteger(number) && number > 0) return { terminal: true, payload: { buildNumber: number } }
+              return { terminal: false, payload: roundPayload() }
+            }
+            if (info && info.building === false) {
+              await readConsole()
+              return { terminal: true, payload: { result: info.result === undefined || info.result === null ? null : String(info.result), ...roundPayload() } }
+            }
+            await readConsole()
+            return { terminal: false, payload: roundPayload() }
+          } catch (error) {
+            if (signal.aborted) throw stagePollAbortReason(signal)
+            failures = stagePollFailureBump(failKey)
+            if (failures >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures } }
+            return { terminal: false, payload: roundPayload() }
+          }
+        }
+        await serveStagePollWindow(req, res, windowMs, STAGE_POLL_JENKINS_INTERVAL, poll)
+      } catch (err) {
+        json(res, 500, { error: String(err && (err as Error).message ? (err as Error).message : err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/stage-poll/evaltokens',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const target = parseStagePollTarget(body && body.url)
+        if (!target) { json(res, 400, { error: 'bad url' }); return }
+        if (target === 'forbidden') { json(res, 403, { error: 'forbidden' }); return }
+        const runId = body && typeof body.runId === 'string' ? body.runId.trim().slice(0, 200) : ''
+        if (!runId) { json(res, 400, { error: 'missing runId' }); return }
+        const windowMs = parseStagePollWindowMs(body && body.timeoutMs)
+        if (windowMs === null) { json(res, 400, { error: 'invalid timeoutMs' }); return }
+        const url = target.url
+        const headers = stagePollForwardHeaders(body && body.headers)
+        /* 失败计数含 runId：新一次运行重新计数（与页面阶段重试时 pollFails 归零一致） */
+        const failKey = 'evaltokens:' + url + '\n' + runId
+        let failures = 0
+        const roundPayload = () => (failures > 0 ? { failures } : {})
+        const poll = async (signal: AbortSignal): Promise<StagePollRound> => {
+          try {
+            if (stagePollFailureCount(failKey) >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures: STAGE_POLL_FAIL_CAP } }
+            const result = await stagePollFetch(url, headers, signal, STAGE_POLL_FETCH_TIMEOUT, STAGE_POLL_JSON_LIMIT, 'EvalTokens 运行列表')
+            if (result.status < 200 || result.status >= 300) throw new Error('EvalTokens 运行列表 HTTP ' + result.status)
+            const data = JSON.parse(result.text || '{}')
+            stagePollFailureClear(failKey)
+            failures = 0
+            const runs = stagePollWrappedList(data)
+            const matched = runs.find((item) => String((item && (item.run_id || item.id)) || '') === runId)
+            /* 列表暂未出现该 runId 按运行中处理（与页面「等待运行记录」一致） */
+            if (!matched || typeof matched !== 'object') return { terminal: false, payload: roundPayload() }
+            const kind = stagePollEvaltokensStatus(matched.status || matched.state || matched.phase)
+            if (kind === 'running') return { terminal: false, payload: roundPayload() }
+            return { terminal: true, payload: { status: kind, run: matched } }
+          } catch (error) {
+            if (signal.aborted) throw stagePollAbortReason(signal)
+            failures = stagePollFailureBump(failKey)
+            if (failures >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures } }
+            return { terminal: false, payload: roundPayload() }
+          }
+        }
+        await serveStagePollWindow(req, res, windowMs, STAGE_POLL_EVALTOKENS_INTERVAL, poll)
+      } catch (err) {
+        json(res, 500, { error: String(err && (err as Error).message ? (err as Error).message : err) })
+      }
+    },
+  })
+}
+
+/* ---------- 流水线阶段完成轮询结束 ---------- */
 
 /** git 状态快照（porcelain v1 -z；非仓库返回 isRepo:false） */
 async function gitStatus(cwd: string) {
@@ -2497,6 +3010,11 @@ export function apply(ctx: Context) {
     return p
   }
 
+  // 当前在线人数：客户端周期性 POST 心跳到 /api/worktable/usage/heartbeat，按 key
+  // （登录用户归一 / 匿名按客户端实例）upsert 进纯内存表；90 秒无心跳的条目在
+  // touch / count 时懒清理（见 ONLINE_TTL_MS）。不落盘、重启清零。
+  const onlineTable = new Map<string, OnlineEntry>()
+
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/usage',
@@ -2519,7 +3037,26 @@ export function apply(ctx: Context) {
       try {
         let raw = ''
         try { raw = await readFile(USAGE_FILE, 'utf8') } catch (err: any) { if (err?.code !== 'ENOENT') throw err } // 无文件 = 尚无记录
-        json(res, 200, { ok: true, ...aggregateUsageEvents(parseUsageEvents(raw), Date.now()) })
+        json(res, 200, { ok: true, online: countOnlineTable(onlineTable, Date.now()), ...aggregateUsageEvents(parseUsageEvents(raw), Date.now()) })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+
+  // 在线心跳：只活内存表，不写盘、不记使用事件；失败回执与 usage 路由同风格。
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/usage/heartbeat',
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+      try {
+        const contentLength = Number(req.headers?.['content-length'])
+        if (Number.isFinite(contentLength) && contentLength > USAGE_BODY_LIMIT) { json(res, 413, { error: 'request body too large' }); return }
+        const hb = sanitizeHeartbeat(await readJsonBody(req))
+        if (!hb) { json(res, 400, { error: 'invalid heartbeat' }); return }
+        touchOnlineTable(onlineTable, hb, Date.now())
+        json(res, 200, { ok: true })
       } catch (err) {
         json(res, 500, { error: String(err) })
       }
@@ -3074,12 +3611,14 @@ export function apply(ctx: Context) {
   function cleanQueueNode(node: any): any {
     const raw = node && typeof node === 'object' ? node : {}
     const status = QUEUE_NODE_STATUSES.has(raw.status) ? raw.status : 'idle'
-    const progress = Number(raw.progress), dur = Number(raw.dur)
+    const progress = Number(raw.progress), dur = Number(raw.dur), startedAt = Number(raw.startedAt)
     const out: any = {
       status,
       progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
       dur: Number.isFinite(dur) ? Math.max(0, dur) : 0,
     }
+    /* 阶段开始时间（纪元毫秒）透传：远端预览据此按本地时钟折算运行中阶段的实时已耗时 */
+    if (Number.isFinite(startedAt) && startedAt > 0) out.startedAt = startedAt
     if (raw.sub && typeof raw.sub === 'object' && !Array.isArray(raw.sub)) {
       const sub: any = Object.create(null)
       for (const name of Object.keys(raw.sub).slice(0, QUEUE_SUB_CAP)) {
@@ -3107,6 +3646,35 @@ export function apply(ctx: Context) {
     const nodes: any = Object.create(null)
     for (const stage of o.stages) nodes[stage.id] = cleanQueueNode(rawNodes[stage.id])
     o.nodes = nodes
+    return o
+  }
+  /* 执行池终态条目（server.finished）逐字段白名单清洗：仅透传契约字段
+     {id, pipelineId, pipelineName, by, source, status, dur, startedAt, endedAt, stages:[{stage, status, dur}]}，
+     不透传日志、变量或凭据；status 只认 success/failure/cancelled，其余整条剔除。 */
+  function cleanFinishedEntry(e: any): any {
+    if (!e || typeof e !== 'object') return null
+    const status = String(e.status || '')
+    if (status !== 'success' && status !== 'failure' && status !== 'cancelled') return null
+    const o: any = {}
+    for (const k of ['id', 'pipelineId', 'pipelineName', 'by', 'source']) {
+      o[k] = String(e[k] ?? '').slice(0, 200)
+    }
+    if (!o.id) return null
+    if (typeof e.generation === 'string' && e.generation) o.generation = e.generation.slice(0, 128)
+    o.status = status
+    const dur = Number(e.dur), startedAt = Number(e.startedAt), endedAt = Number(e.endedAt)
+    o.dur = Number.isFinite(dur) ? Math.max(0, dur) : 0
+    o.startedAt = Number.isFinite(startedAt) ? startedAt : 0
+    o.endedAt = Number.isFinite(endedAt) ? endedAt : 0
+    o.stages = (Array.isArray(e.stages) ? e.stages : []).slice(0, QUEUE_STAGE_CAP).map((stage: any) => {
+      if (!stage || typeof stage !== 'object') return null
+      const stageDur = Number(stage.dur)
+      return {
+        stage: String(stage.stage ?? '').slice(0, 200),
+        status: QUEUE_NODE_STATUSES.has(stage.status) ? stage.status : 'idle',
+        dur: Number.isFinite(stageDur) ? Math.max(0, stageDur) : 0,
+      }
+    }).filter((stage: any) => !!stage)
     return o
   }
   /* ---- 失联孤儿登记簿（orphan ledger）：schemaVersion>=3 客户端上报的 runs/queue 条目在下一次
@@ -3319,9 +3887,12 @@ export function apply(ctx: Context) {
             .map((run: any) => cleanQueueEntry(run, 'startedAt')).filter((run: any) => !!run)
           const serverQueue = (Array.isArray(snapshot.queue) ? snapshot.queue : []).slice(0, 100)
             .map((run: any) => cleanQueueEntry(run, 'queuedAt')).filter((run: any) => !!run)
+          /* 执行池终态发布：已开始运行到达终态的条目（最新在前），白名单清洗后随快照下发 */
+          const serverFinished = (Array.isArray(snapshot.finished) ? snapshot.finished : []).slice(0, 100)
+            .map(cleanFinishedEntry).filter((run: any) => !!run)
           json(res, 200, {
             clients,
-            server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue },
+            server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue, finished: serverFinished },
             /* 失联孤儿登记簿恒为数组（可空）：元素为清洗后条目全字段 + ownerId/ownerLabel/kind/orphanedAt */
             orphans: [...queueOrphans.values()],
           })
@@ -4059,7 +4630,8 @@ export function apply(ctx: Context) {
       const startedAt = Date.now()
       const stageId = String(s && s.id || '')
       runtime?.replaceLog?.(stageId, '')
-      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0 })
+      /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
+      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
@@ -4258,7 +4830,10 @@ export function apply(ctx: Context) {
       branch: pl.branch || '',
       strategy: pl.strategy || '',
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
+      envNodes: pipelineHistoryEnvNodes(pl.envs, runCtx.env),
     })
+    /* 向执行池回报终态（success/failed/aborted），供 finished 终态发布判定 success/failure/cancelled */
+    return status
   }
   const pipelineGenerationId = PLUGIN_VERSION + '-' + (++pipelineSupervisor.generation).toString(36)
   const pipelineQueue = createPipelineExecutionQueue(execPlan, 2, 100, {
@@ -4859,4 +5434,8 @@ export function apply(ctx: Context) {
   // 安全约束：仅允许回环 / 内网（RFC1918 / 链路本地）目标，拒绝公网地址。
   // 直连模式校验并固定 DNS；系统代理会自行解析目标，因此只允许无法重绑定的内网 IP 字面量。
   registerWorktableProxyRoute(webServer)
+
+  // 流水线阶段完成轮询（Jenkins/EvalTokens）：服务端长轮询端点，浏览器不再直连上游轮询；
+  // 与 proxy 同一内网白名单，客户端断开即中止。
+  registerPipelineStagePollRoutes(webServer)
 }

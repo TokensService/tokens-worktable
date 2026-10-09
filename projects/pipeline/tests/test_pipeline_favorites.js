@@ -51,6 +51,7 @@ function loadFilterBindings(initialFilter){
   ['plFilterKw','plFilterOwner','plFilterFavorite','plFilterClear'].forEach(id=>{
     nodes[id]={value:'',handlers:{},addEventListener(type,handler){ this.handlers[type]=handler; }};
   });
+  nodes.plFilterOwner.list='plOwnerList';   /* 拥有者筛选为 input+datalist 组合框形态 */
   const saves=[],renders=[];
   const ctx={
     plFilter:Object.assign({},initialFilter),
@@ -60,7 +61,7 @@ function loadFilterBindings(initialFilter){
     renderPipelines:()=>renders.push(1),
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 流水线任务筛选：关键字 + 创建者');
+  const start=source.indexOf('/* 流水线任务筛选：关键字 + 拥有者');
   const end=source.indexOf('function labelOf',start);
   assert.ok(start>=0&&end>start,'流水线筛选控件绑定区域未找到');
   vm.runInContext(source.slice(start,end),ctx);
@@ -196,6 +197,7 @@ test('收藏筛选控件恢复、保存选择，清除时回到全部',()=>{
   nodes.plFilterClear.handlers.click();
   assert.deepEqual(Object.assign({},ctx.plFilter),{kw:'',owner:'mine',favorite:'all'});
   assert.equal(ctx.plPage,0,'清除筛选后回到第一页');
+  assert.equal(nodes.plFilterOwner.value,'我的（含预置）','清除后拥有者组合框回显默认模式标签');
   assert.equal(nodes.plFilterFavorite.value,'all');
   assert.equal(saves.length,2);
   assert.equal(renders.length,2);

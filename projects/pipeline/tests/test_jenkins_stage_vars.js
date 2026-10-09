@@ -112,6 +112,7 @@ const context = {
     return { number: 7, building: false, result: "SUCCESS", duration: 1 };
   },
   fetch: async (_url, init) => {
+    if (String(_url).includes("/api/worktable/pipeline/stage-poll/")) return { ok: false, status: 404, json: async () => ({ error: "not found" }) };   // 旧服务端无 stage-poll：本测试固定走回退后的浏览器直连轮询（服务端轮询路径见 test_stage_poll_client.js）
     execRequests.push(JSON.parse(init.body));
     return { json: async () => ({ code: 0, stdout: "", stderr: "" }) };
   },

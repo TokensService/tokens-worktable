@@ -1,8 +1,7 @@
 /* HTTP 阶段（URL 含 /job/ 的 Jenkins 任务路径）浏览器本地执行：构建状态轮询失败的兜底回归测试。
-   旧行为：轮询 catch 吞掉一切错误且无限重试——「Jenkins 服务配置」地址不对 / 桥接未启动 / CORS 拦截 /
-   401·403 等持续性故障会让阶段永远卡在「运行中」，日志看不到任何原因（阶段超时默认留空无兜底）。
-   新行为：按触发响应的 queue Location 精确轮询本次任务；连续失败计数、首次与每 15 次回显原因、
-   连续 30 次按阶段失败收尾，不再用 nextBuildNumber/lastBuild 猜测并发构建。
+   轮询默认经服务端 stage-poll 长轮询（见 test_stage_poll_client.js）；本测试把 stage-poll 打桩为 404
+   （旧服务端），验证回退后的浏览器直连轮询语义：按触发响应的 queue Location 精确轮询本次任务；
+   连续失败计数、首次与每 15 次回显原因、连续 30 次按阶段失败收尾，不再用 nextBuildNumber/lastBuild 猜测并发构建。
    沙盒切片与打桩方式同 test_jenkins_stage_vars.js。 */
 const fs = require("fs");
 const vm = require("vm");
@@ -53,7 +52,10 @@ const context = {
   stageSeq: (stg, i) => i + 1,
   advance: (rc_, i) => { advancedTo = i; },
   finish: (rc_, s) => { finishedWith = s; },
-  fetch: async () => ({ ok: true, status: 200, headers: { get: name => name.toLowerCase() === "location" ? "/queue/item/7/" : null }, text: async () => "triggered" }),
+  fetch: async url => {
+    if (String(url).includes("/api/worktable/pipeline/stage-poll/")) return { ok: false, status: 404, json: async () => ({ error: "not found" }) };   // 旧服务端无 stage-poll：回退浏览器直连轮询（本测试验证直连路径兜底语义）
+    return { ok: true, status: 200, headers: { get: name => name.toLowerCase() === "location" ? "/queue/item/7/" : null }, text: async () => "triggered" };
+  },
 };
 vm.createContext(context);
 vm.runInContext(

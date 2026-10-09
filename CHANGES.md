@@ -2,18 +2,128 @@
 
 - 修复**流水线主控预置任务无法勾选**：旧版浏览器状态中预置脚本参数 `params` 偶尔以非数组形态持久化时，首屏参数渲染会因 `.forEach` 抛错，导致后续预置任务 checkbox 与按钮事件无法注册；清理、检查、Profiling 三处参数渲染现仅接受数组，损坏数据按无参数处理并继续完成主控初始化。新增对应回归测试。
 
+- 新增**流水线「任务是否完成」的服务端权威判定与下发**（`src/index.ts`）：① 执行池终态发布——已开始运行的 run 到达终态（成功/失败/取消）即记录 FinishedEntry（白名单清洗，含 generation 透传），池内环形缓冲上限 20 条 / TTL 120s 惰性 prune，多代际 manager 聚合存活代与退役簿后由 GET `/api/worktable/pipeline/queue` 以 `server.finished` 下发，客户端不再靠「条目从快照消失」推断完成；排队即取消的条目不记录。② 新增 `POST /api/worktable/pipeline/stage-poll/jenkins` 与 `POST /api/worktable/pipeline/stage-poll/evaltokens` 两个阶段完成轮询端点：长轮询窗口（默认 20s、上限 25s）内由服务端轮询上游（Jenkins queue/build 含 progressiveText 增量控制台续传、EvalTokens runs），语义镜像原浏览器轮询（30 连败按 key 跨请求累计、判负后短路 10 分钟）；目标复用 `/api/worktable/proxy` 同款内网白名单（403），headers 透传剔除逐跳头，客户端断开即中止上游轮询。测试：新增 `tests/pipeline-finished-runs.test.mjs`（4 例）与 `tests/pipeline-stage-poll.test.mjs`（15 例），更新 presence/run-api/node-leases 三处快照断言（server 对象新增 finished 键）。
+- 改进**流水线页面全面接入服务端权威状态**（`projects/pipeline/pipeline.html`）：Jenkins/EvalTokens 阶段的完成轮询从浏览器 while 循环改为串行调用服务端 stage-poll 端点（控制台增量经 offset 续传，保持原回显节奏；触发/中止动作与令牌守卫不变，finally 仍走 `jkCancelExecution`），端点 404（旧服务端）/403（非公网白名单目标）时单次回退浏览器直连轮询并告警；队列轮询消费 `server.finished`——新终态记入 completed 上报（完成≠失联，不再误入孤儿登记）、立即刷新历史、队列区新增「服务端最近完成」分组（三态徽标+耗时+结束时间，随 TTL 消失）、在看的运行预览按终态优雅收尾并停止日志轮询，finished 纳入队列快照签名（变化必重绘）。合规修复：孤儿重跑改传 `pipelineId` 用流水线完整定义分流（原先传 stages 白名单快照恒退化为本地纯模拟运行，全 sched 时现确实提交服务端执行池）；`submitServerRun` 透传 `item.source||'manual'` 保留触发来源语义；本地运行任务（含「需本地运行」阶段）行为一律不变。测试：新增 `test_stage_poll_client.js`（10 例）、`test_queue_finished.js`（9 例），更新 stage-poll 失败兜底/queue 孤儿/轮询降耗/jenkins 变量/evaltokens 五处既有测试。
+
+- 流水线**运行历史记录新增结构化环境节点 `envNodes`**（`src/index.ts`）：服务端 `execPlan` 写入历史
+  （`appendPipelineHistory`）时给记录附加 `envNodes` 字段——本次运行选中环境节点的快照数组
+  `{name,ip,nodeIp}`（name 为节点名可为空串；ip 为 SSH 地址，为空时依次以 nodeIp、id 兜底；nodeIp 为
+  K8s InternalIP，无则空串；name 与 ip 均空的条目丢弃，最多 50 条），优先由 `runCtx.envs` 数组映射，
+  旧计划无 `envs` 快照时回退把 `env` 字符串按中文/英文逗号拆成 `[{name:'',ip}]`，结果总是数组
+  （无选中节点时写 `[]`）；只映射上述三字段，**user/pass 等凭据绝不落历史**。`cleanPipelineHistory`
+  （写盘前清洗）对 `envNodes` 做防御性清洗：非数组整体剔除，条目只留对象且只保留三字段（单字段限长
+  128）、空条目丢弃、截到 50；`mergePipelineHistoryForWrite`（页面 PUT 上送历史合并）对记录原样保留，
+  无 `envNodes` 的遗留记录不报错、不补字段。HTTP 响应结构不变（记录自然多字段）。
+  测试：新增 `tests/pipeline-history-env-nodes.test.mjs`（7 例：API 运行路径落盘记录的 envNodes 字段
+  值与三字段契约、历史 JSON 不含节点口令/user、plan 凭据不落存储文件任何位置、未选节点写 `[]`、
+  env 字符串回退与 50 条封顶、merge 往返兼容遗留记录、clean 防御清洗）；
+  `tests/pipeline-run-api.test.mjs` 的 execPlan 抽取同步补上 `pipelineHistoryEnvNodes`。
+- 流水线**运行历史表新增「环境节点」列**（`projects/pipeline/pipeline.html`，表头位于「流水线」列之后，
+  行渲染/空态 colspan 同步为 9 列）：展示历史记录 `envNodes`（`{name,ip,nodeIp}`）——节点名以「、」连接、
+  超过 2 个折叠为「A、B 等N个」，悬停 title 逐行「节点名（ip）」（name/ip 为空时省略对应部分，如
+  「（192.168.1.1）」或「生产」）；无 `envNodes` 的遗留记录回退解析 `rec.env`（中文/英文逗号拆分，IP 串或
+  环境名字符串都直接展示），两者皆空显示「—」。本地运行的 `finish()` 组装历史记录时同步写入 `envNodes`：
+  由运行上下文 `rc.envs` 映射（name 与 ip 均为空的条目丢弃、最多 50 条、绝不含 user/pass），无选中节点时
+  空数组；`rec.env`（中文逗号 IP 串）保持原语义不变，回放/重跑的环境回填不受影响。历史自动刷新
+  （`applyHistoryRefreshPayload`）按整条记录替换、无字段白名单，新字段随记录自然往返。
+  测试：新增 `projects/pipeline/tests/test_history_env_nodes.js`（单元格文本/title 折叠与逐行提示、
+  遗留记录回退、finish 写入映射与截断/脱敏断言）；更新 `test_history_table_columns.js`（9 列表头/行/
+  colspan 断言），`test_history_analysis_compare.js`、`test_parallel_stage_execution.js`、
+  `test_sched_suffix_handoff.js`、`test_node_lease.js` 的沙盒函数清单同步补充新辅助函数。
+
+- 流水线设置页新增**「预设任务设置」专区**（`projects/pipeline/pipeline.html`，Profiling 脚本卡片之后、
+  脚本目录卡片之前）：可添加/编辑/删除**自定义预设任务**——每项配置名称（非空、不与系统预设及其他
+  自定义同名）、脚本（按名从 scripts 目录选用，支持「识别参数」与参数值覆盖，语义同环境清理脚本）、
+  「失败阻断」（脚本非零退出阻断后续阶段）、「默认位置」（最前=环境检查之后 / 最后=Profiling 之前，
+  仅未编排过位置的流水线生效，已编排的标记保持原位）、「默认勾选」。自定义预设与系统预设（环境清理/
+  环境检查/Profiling）同一机制：主控「预设任务」多选勾选启用（面板系统三项后动态列出自定义项）、
+  流水线编辑器中 🔒 预设任务（自定义）行仅可排序、运行到编排位置时执行脚本（注入 TARGET_*/IMAGE_*/
+  PIPELINE_NAME 与 ARCHIVE_* 环境变量）、日志归档固定 00 号任务日志；仅页面运行支持，不进服务端定时
+  计划。实现上预设定义统一经 `presetDefOf` 查询（系统 `PRESET_DEF` + 自定义 `customPresets` 派生）；
+  `customPresets` 随服务端配置（worktable-pipeline.json）跨浏览器同步并镜像 localStorage
+  `pip-customPresets`，导出/导入设置文件同样携带；`withPresetMarkers` 过滤已失效 pkey 的预设标记
+  （自定义被删除或旧 promCollect 行）并按 pos 补默认位置；流水线默认运行参数、阶段同名拦截、历史回放
+  序号识别（`isPreStage`）同步支持自定义预设。
+  测试：新增 `projects/pipeline/tests/test_custom_preset_tasks.js`（12 例：归一化清洗、定义查询、
+  枚举顺序、名称表重建、勾选判定、默认位置/失效标记过滤、运行展开与快照隔离、默认参数双模式）。
+
+- 流水线运行中阶段节点与阶段详情显示实时耗时（`projects/pipeline/pipeline.html`）：编排区运行中节点的进度文本由纯百分比（如 47%）改为「百分比 · 已耗时」（如 47% · 1m30s），metaFor 与共享 tick 轻量直改（stageTickPaint）同口径，500ms tick 内仍只直改文本不触发全量渲染；阶段详情运行中同样新增「耗时」行（终态显示不变）。同步更新 `projects/pipeline/tests/test_stage_tick.js` 断言并新增 1m30s 用例。
+
+- 新增**服务端流水线运行的阶段级实时已耗时数据通路**（供远端预览编排区展示运行中阶段的实时耗时；此前服务端
+  只在阶段开始时写 `{status:'running',progress:5,dur:0}`、结束时才回填最终 dur，运行期 dur 恒为 0，其他
+  浏览器看不到已耗时）。服务端（`src/index.ts`）：执行器在阶段进入 running 时把该阶段开始时间戳
+  `startedAt`（服务端纪元毫秒）随 `updateStage` 落入执行池节点（后续进度/终态更新沿用该值，终态 dur 仍是
+  服务端结算值）；队列快照白名单 `cleanQueueNode` 透传节点的 `startedAt`（仅正数，非法值丢弃；run 级快照
+  结构不变）。客户端（`projects/pipeline/pipeline.html`）：`queueNodePresence` 镜像透传 `startedAt`；
+  远端预览构建（`remoteQueuePreviewRc`）与每秒队列轮询（`pullRemoteQueue`）对 `status==='running'` 且带
+  `startedAt` 的节点把 `dur` 按本地时钟实时折算为 `max(0,(Date.now()-startedAt)/1000)`（时钟偏差折出负值
+  钳到 0，与 run 级 startedAt 经 fmtRelative 用本地时钟展示的既有口径一致）；轮询处折算使 dur 每秒前进、
+  快照签名随之变化，队列区与远端预览因而逐秒刷出实时已耗时（无运行中阶段的静态快照仍享签名降耗）。
+  无 `startedAt` 的旧服务端/旧浏览器数据保持原 dur 不动（滚动升级兼容）；孤儿中断条目是冻结的最后已知
+  状态，不做实时折算。测试：`tests/pipeline-queue-presence.test.mjs` 补 startedAt 透传与非法值丢弃断言；
+  `tests/pipeline-run-api.test.mjs` 补执行池节点 startedAt 落快照、后续更新保留与执行器启动更新携带
+  startedAt 断言；客户端 `projects/pipeline/tests/test_queue_item_preview.js` 新增 queueNodePresence
+  透传/丢弃与 remoteQueuePreviewRc 实时折算（含时钟偏差钳 0）用例，`test_queue_poll_throttle.js` 新增
+  轮询折算驱动逐秒重绘用例。
+- 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
+  均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
+  服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
+  规则推算；路径过长以省略号截断，无路径显示「—」。行右侧两个 mini 按钮：「🔍 AI 分析」效果同
+  运行历史标题行的「AI 日志分析」——对该阶段所属运行新建 AI 会话并填入日志分析提示词草稿（不自动
+  发送），实时运行从历史记录按 tag 匹配，运行中尚未写入历史时禁用并提示；「📂 打开日志」效果同
+  「📂 打开归档目录」——打开日志文件所在目录（优先 dsh-better-sidebar 侧边栏文件夹窗口并收起会话窗，
+  未装或桥不可用时回退服务端系统文件管理器 `xdg-open`/`gio`/`open`；先等待该目录归档写落盘，目录
+  不存在时回退父目录），状态反馈显示在行内提示。「打开归档目录」的原有实现抽出公共函数
+  `openFolderWithFeedback` 复用，行为与文案不变。行仅在「当前运行存在（实时）/ 回放历史」时渲染，
+  避免空页面噪音；按钮按路径存在性与可分析态自动禁用。动机：在阶段详情里就能直接看到本阶段日志
+  文件位置，一键 AI 分析所属运行、一键打开日志目录，不必回运行历史标题行操作。
+  测试：新增 `projects/pipeline/tests/test_stage_detail_log_row.js`（契约与行为断言）。
+
+- 使用统计弹窗新增**「当前在线」人数显示**：客户端每标签页生成随机 client id，根组件挂载即向新端点
+  `POST /api/worktable/usage/heartbeat` 上报一次心跳、之后每 30 秒一次（body `{ user, client }`，
+  静默失败不打扰交互；首跳时用户名可能尚未探测到，后续心跳自动带上）；服务端把心跳按 key upsert
+  进纯内存在线表——登录用户按 `u:<用户名>` 归一（同一用户多标签页算 1 人），匿名按 `c:<client>`
+  计（每个客户端实例 1 人），90 秒（`ONLINE_TTL_MS`）无心跳的条目在 touch / count 时懒清理，
+  不落盘、重启清零。`GET /api/worktable/usage` 响应新增顶层 `online` 字段；弹窗摘要 chips 行
+  最前面新增带绿点的「当前在线 N」chip（zh「当前在线」/ en「Online」），chips 行改为数据加载
+  即显示（即使暂无使用记录，在线人数仍有意义），空态提示保留在 chips 行下方原位置。心跳端点
+  仅活内存表，不写盘、不记使用事件；body 超 16KB → 413、client 缺失 → 400、非 POST → 405。
+  测试：新增 `tests/online-count.test.mjs`（13 例：sanitizeHeartbeat 清洗、key 归一规则、
+  TTL 过期懒清理、路由接线文本断言、客户端 online 解析契约）；`tests/usage-stats.test.mjs`
+  空结构期望同步补 `online: 0`。
+
+- 流水线**新增「拥有者」属性，任务列表筛选与署名展示改用拥有者、支持搜索用户**（`projects/pipeline/pipeline.html`）：
+  流水线现在有三个署名属性——`createdBy` 创建者（创建时定死的历史署名，不再参与权限判定）、`owner`
+  拥有者（拥有编辑/删除权限；新建与复制时署为当前用户；存量流水线无 `owner` 字段时经 `plOwnerOf` 回退按
+  `createdBy` 计）、`updatedBy` 最近修改者（每次保存/拖拽改序刷新）。`migratePipelineDefaults` 增加
+  `owner` 归一化；`plEditable` 权限判定、编辑/删除守卫、编辑器只读标题与 alert 口径全部由「创建者」改为
+  「拥有者」（新增 `plCreatorOf` 取历史创建者）；编辑存量未署名流水线时创建者与拥有者各自空白才补署当前用户。
+  任务列表筛选栏「创建者」下拉换成可搜索输入框（`input#plFilterOwner` + `datalist#plOwnerList`）：特殊项
+  （我的（含预置）/全部/仅预置/未署名）以中文标签选择，用户名原样输入；匹配口径为——输入等于某已知拥有者
+  用户名时精确匹配（防「ali」波及「alicia」），否则按子串大小写不敏感搜索拥有者；localStorage `pip-plFilter`
+  旧值（mine/all/builtin/unknown/旧用户名）加载后照常生效并正确回显。行内署名 `· 创建 @x` 改为 `· 拥有 @x`
+  （修改人不同仍附 `· 修改 @y`；创建者与拥有者不同时署名行悬停提示「创建者 @z」）；编排区节点只读提示与
+  帮助文本同步为拥有者口径。测试：新增 `projects/pipeline/tests/test_pipeline_owner_filter.js`（标签↔模式键
+  映射与回显、用户名精确匹配、子串大小写不敏感搜索、datalist 填充与聚焦不打扰、localStorage 旧值兼容，11 例）；
+  `test_pipeline_owner_edit.js` 扩充 owner≠createdBy 权限矩阵、存量无 owner 回退、`migratePipelineDefaults`
+  owner 归一化与 savePlForm 三态补署用例；`test_pipeline_audit_trail.js` 等既有测试同步更新。
+
+- 调整**流水线编辑器「+ 添加阶段」按钮移至冻结底栏最左边**（`projects/pipeline/pipeline.html`
+  的 `#plForm` 弹窗）：该按钮原先与「保存 / 取消」一起靠右排列在弹窗底部冻结行右端，阶段较多
+  需滚动时添加入口远离编辑起点。现将其移到该冻结行的最左边；草稿提示 `#plDraftTip`
+  （保留 `margin-right:auto`）紧随其后，「保存 / 取消」仍固定在右下角。底栏保持冻结、
+  不随阶段列表滚动；只读模式下隐藏添加阶段按钮的逻辑不变。
+  测试：新增 `projects/pipeline/tests/test_pipeline_footer_layout.js`（底栏按钮顺序与冻结位置契约断言）。
+
+- 流水线编辑页**阶段定时配置行的勾选标签精简为「本地运行」**（`projects/pipeline/pipeline.html`）：
+  原勾选标签「需本地运行，不支持定时」精简为「本地运行」，标签后新增 ⓘ 信息注释
+  （悬停提示「本地运行任务不支持定时任务」），把「不支持定时」的说明从标签正文移入悬停提示。
+  纯文案/提示改动，勾选行为不变。
+
 - 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
 
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
 - 补强热替换桥接：通过全局 supervisor 共享代际 manager 与节点租约，引用归零时等待可 await 的 disposer，并为 HMR 立即重挂载保留可取消的短暂清理窗口；same-id generation 替换会正确回收旧池，health 返回当前 generation 与 draining 代。
-
-
-- 修复**流水线「复制」副本改名被永久锁死**（编辑器改名保存报「该流水线已被其他浏览器修改」并回滚为
-  「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
-  17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
-  ① 首屏/手动刷新的 GET 快照在「请求发出后、应用前」被复制副本的 save-one 反超（大存储 + 公网慢链路下
-
-# 本目录 tokens-worktable 的本地改动
 
 - 改进**设置弹层底部「版本信息 / 历史 / 用量 / 检查更新 / 自动检查更新」行冻结为 sticky 页脚**
   （`src/client/styles.ts`，DOM 结构不变）：该版本行原先只是设置弹层（`.dsh-wt_manage.dsh-wt_pop.dsh-wt_settings`，
@@ -25,6 +135,23 @@
   `border-top` 分隔线横贯面板；`padding:8px 6px 6px` 补偿使行内内容视觉位置与改动前一致。
   版本行仍是设置面板最后一个子元素；内容不足一屏时 sticky 不产生位移，无行为变化。
   测试：新增 `tests/settings-version-sticky.test.mjs`（3 例契约断言）。
+
+- 新增**流水线运行状态查看工具** `projects/pipeline/tools/pipeline_status.py`（单文件、仅标准库、Python 3.6+，
+  本机执行、无需登录——`/api/worktable/pipeline/queue` 在 dsh-auth-gate 之后且会话 token 落盘只存 sha256
+  无法复用）。三个数据源取并集：① dsh web 进程树（pid 文件自动从脚本位置向上查找，失效则按
+  `bin.js web` 扫描）中 `pipeline/scripts/*.sh` 脚本进程为正在跑的直接证据；② 归档目录
+  `<archiveDir>/<流水线名>_<14位时间戳>/` 下 `run-*.log` 的活跃写入（默认 300s 阈值，`ACTIVE_SECONDS`
+  可调），覆盖 HTTP / Jenkins / EvalTokens 等不产本地进程的阶段；③ 历史存储按 run tag 判终态（
+  `worktable-pipeline.json` 的 history 命中即已结束），避免把远端静默长阶段误报为在跑——静默且无终态的
+  归入「疑似在跑」单独列出（`SILENT_SECONDS` 窗口默认 6h）。scriptsDir / archiveDir 从
+  `$DSH_HOME/storages/worktable-pipeline.json` 读取（`WT_ARCHIVE_ROOT` 等环境变量可覆盖）；
+  `follow-xds-head-logs.sh` 会 daemonize 脱离 web 进程树，工具按归档目录归属把在跑运行的这类进程挂回
+  运行条目（附属进程），其余游离进程列为「残留进程」并标注对应运行终态。设置 `DSH_AUTH_TOKEN`
+  （auth-gate 会话 token）可附带查询服务端执行池 / 排队 / 各客户端上报 / 失联孤儿条目；`--json`
+  输出机器可读结果。用法：`python3 projects/pipeline/tools/pipeline_status.py [--json]`。测试：
+  新增 `projects/pipeline/tools/test/test_pipeline_status.py`（12 例：日志/目录正则、时长格式化、
+  目标机与归档目录提取含空格转义前缀对齐、history 终态索引、归档扫描三态分类、进程证据覆盖静默、
+  daemonize 附属进程归属、pid 文件优先与失效回退），接入 `projects/package.json` 的 `test:python`。
 
 - 修复**流水线「运行队列」刷新即丢与跨用户不可见**（页面驱动的本地执行——含「需本地运行」阶段的流水线——刷新/
   关闭页面后正在执行的任务从运行队列彻底消失、找不到最后执行状态；且自 ac756d3「运行队列改由服务端持有」起
@@ -187,6 +314,34 @@
   重绘；进行中脉冲动画由 box-shadow 扩散改为 opacity/transform 合成器属性。新增
   `tests/test_stage_tick.js`、`tests/test_queue_poll_throttle.js`，扩充 `test_log_render_scaling.js`，
   调整 `test_plan_terminate.js`（快照未变时不再强制重绘即目标行为）。
+
+- 新增「友商 Tokens API 性能对比」项目页（`projects/friend-perf.html`）及其服务端中转路由
+  `POST /api/worktable/llm`（`src/index.ts`）：对智谱 / 百炼 / 混元 / 硅基流动 / 七牛云等 OpenAI 兼容
+  chat/completions 接口做手动 / 定时流式压测，横向对比 TTFT（首 token 延迟）与 TPOT（每 token 耗时），
+  含概览柱状图、趋势折线、分桶统计（提供商 × 输入长度 × 设定缓存命中率，nearest-rank 分位数）、
+  综合排名与记录页（失败原因可展开），结果经 `/api/worktable/write` 落盘项目文件夹
+  `friend-perf-results.json`、localStorage 仅作缓存兜底；提示词按「缓存命中率」拼装跨轮固定前缀 +
+  每轮随机后缀以触发厂商 prompt 缓存，真实缓存命中取 usage 回传的 cached_tokens /
+  prompt_cache_hit_tokens。中转路由安全边界：仅 https 目标、复用 `isLocalTarget` 反向拒绝回环/内网
+  （不成为 SSRF 出口）、仅放行 `/models` 与 `/chat/completions`，密钥由调用方自带、服务端不落地，
+  响应带背压逐 chunk 透传。计时口径修正两处：**提示词构造移出计时窗口**（`buildPrompt` 早于 `t0`，
+  本地构词开销不再计入 TTFT/总耗时；`genText` 由每轮 `join` 重算全长的 O(n²) 改为增量计长 O(n)——
+  实测旧代码在 110k tokens 输入下浏览器侧开销首轮 ~27s、之后每轮 ~2s，修复后降至 ~15ms）；
+  **流收尾解析残余 buffer**（`done` 时冲刷 TextDecoder 并解析未被换行终止的最后一段，厂商把 usage
+  块放在流末尾且无尾换行时不再整块丢失导致 outTokens 退回粗估、cached_tokens 丢失、TPOT 失真）。
+  新增**双口径 TTFT**：中继等到上游首个 body chunk 再回写响应头，经 `x-worktable-llm-ttfb` 回传
+  「服务端→厂商首 chunk 耗时」，页面记录表新增「服务端TTFT」列（`rec.serverTtft`）——浏览器感知
+  TTFT 含浏览器→服务端上行链路（大提示词经慢上行链路时会被上传耗时 1:1 抬高，实测 514KB 请求体在
+  64KB/s 上行下 TTFT 被抬高 ~8s），服务端口径不含该段、更接近厂商真实水平。**提示词构造整体移至
+  服务端**：页面只上传 `promptSpec={inputLen, cacheHit, outputLen}` 参数（几百字节），中继经
+  `buildBenchPrompt`（与页面旧版同算法，固定前缀为纯确定性函数，跨轮/跨重启逐字节一致，已验证与
+  页面旧实现产出完全相同，厂商侧缓存连续性不受影响；随机后缀每轮换新保持命中率语义）构造 messages
+  并覆盖 payload，浏览器→服务端不再有大 body 上传，两个 TTFT 口径在正常链路下应趋于一致；
+  页面侧 `buildPrompt`/`genText`/`getPrefix` 全数移除，`estTokens` 仅留作 TPOT 兜底估算。
+  SSE 行解析抽为纯函数 `parseSseLines`（content / reasoning_content 兼容、[DONE] 与坏行容错）；
+  测试：`projects/friend-perf.test.cjs` 9 例 + `tests/llm-relay.test.mjs` 7 例（ttfb 头与字节序、
+  无 body、安全边界、构造器前缀确定性/后缀随机/非法 spec、promptSpec 覆盖 messages 且前缀跨轮一致、
+  无 promptSpec 时 messages 原样透传）。
 
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`

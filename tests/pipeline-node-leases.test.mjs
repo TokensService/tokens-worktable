@@ -128,7 +128,10 @@ test('执行池：停止接收后拒绝新计划，旧代排队与运行计划�
   assert.deepEqual(started, ['old-running', 'old-queued'])
   releases.shift()()
   await Promise.all([active, queued, draining])
-  assert.deepEqual(plain(pool.snapshot()), { generation: 'g-old', accepting: false, runs: [], queue: [] })
+  const drained = plain(pool.snapshot())
+  assert.deepEqual({ generation: drained.generation, accepting: drained.accepting, runs: drained.runs, queue: drained.queue }, { generation: 'g-old', accepting: false, runs: [], queue: [] })
+  /* drain 完成的两条运行按最新在前进入 finished */
+  assert.deepEqual(drained.finished.map(entry => [entry.id, entry.status]), [['old-queued', 'success'], ['old-running', 'success']])
 })
 
 test('执行池：dispose 等待旧代完成且不终止运行中的执行', async () => {

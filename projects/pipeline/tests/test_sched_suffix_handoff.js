@@ -96,6 +96,7 @@ function handoffContext(stages, options) {
     'registerStageTimers',
     'handoffSchedSuffix',
     'advance',
+    'historyEnvNodesOf',
     'finish',
   ]);
   const rc = {
