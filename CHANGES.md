@@ -1,5 +1,31 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线**运行历史记录新增结构化环境节点 `envNodes`**（`src/index.ts`）：服务端 `execPlan` 写入历史
+  （`appendPipelineHistory`）时给记录附加 `envNodes` 字段——本次运行选中环境节点的快照数组
+  `{name,ip,nodeIp}`（name 为节点名可为空串；ip 为 SSH 地址，为空时依次以 nodeIp、id 兜底；nodeIp 为
+  K8s InternalIP，无则空串；name 与 ip 均空的条目丢弃，最多 50 条），优先由 `runCtx.envs` 数组映射，
+  旧计划无 `envs` 快照时回退把 `env` 字符串按中文/英文逗号拆成 `[{name:'',ip}]`，结果总是数组
+  （无选中节点时写 `[]`）；只映射上述三字段，**user/pass 等凭据绝不落历史**。`cleanPipelineHistory`
+  （写盘前清洗）对 `envNodes` 做防御性清洗：非数组整体剔除，条目只留对象且只保留三字段（单字段限长
+  128）、空条目丢弃、截到 50；`mergePipelineHistoryForWrite`（页面 PUT 上送历史合并）对记录原样保留，
+  无 `envNodes` 的遗留记录不报错、不补字段。HTTP 响应结构不变（记录自然多字段）。
+  测试：新增 `tests/pipeline-history-env-nodes.test.mjs`（7 例：API 运行路径落盘记录的 envNodes 字段
+  值与三字段契约、历史 JSON 不含节点口令/user、plan 凭据不落存储文件任何位置、未选节点写 `[]`、
+  env 字符串回退与 50 条封顶、merge 往返兼容遗留记录、clean 防御清洗）；
+  `tests/pipeline-run-api.test.mjs` 的 execPlan 抽取同步补上 `pipelineHistoryEnvNodes`。
+- 流水线**运行历史表新增「环境节点」列**（`projects/pipeline/pipeline.html`，表头位于「流水线」列之后，
+  行渲染/空态 colspan 同步为 9 列）：展示历史记录 `envNodes`（`{name,ip,nodeIp}`）——节点名以「、」连接、
+  超过 2 个折叠为「A、B 等N个」，悬停 title 逐行「节点名（ip）」（name/ip 为空时省略对应部分，如
+  「（192.168.1.1）」或「生产」）；无 `envNodes` 的遗留记录回退解析 `rec.env`（中文/英文逗号拆分，IP 串或
+  环境名字符串都直接展示），两者皆空显示「—」。本地运行的 `finish()` 组装历史记录时同步写入 `envNodes`：
+  由运行上下文 `rc.envs` 映射（name 与 ip 均为空的条目丢弃、最多 50 条、绝不含 user/pass），无选中节点时
+  空数组；`rec.env`（中文逗号 IP 串）保持原语义不变，回放/重跑的环境回填不受影响。历史自动刷新
+  （`applyHistoryRefreshPayload`）按整条记录替换、无字段白名单，新字段随记录自然往返。
+  测试：新增 `projects/pipeline/tests/test_history_env_nodes.js`（单元格文本/title 折叠与逐行提示、
+  遗留记录回退、finish 写入映射与截断/脱敏断言）；更新 `test_history_table_columns.js`（9 列表头/行/
+  colspan 断言），`test_history_analysis_compare.js`、`test_parallel_stage_execution.js`、
+  `test_sched_suffix_handoff.js`、`test_node_lease.js` 的沙盒函数清单同步补充新辅助函数。
+
 - 流水线设置页新增**「预设任务设置」专区**（`projects/pipeline/pipeline.html`，Profiling 脚本卡片之后、
   脚本目录卡片之前）：可添加/编辑/删除**自定义预设任务**——每项配置名称（非空、不与系统预设及其他
   自定义同名）、脚本（按名从 scripts 目录选用，支持「识别参数」与参数值覆盖，语义同环境清理脚本）、

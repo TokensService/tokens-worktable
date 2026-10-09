@@ -392,7 +392,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="historyTable">
-          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th>执行人</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
+          <thead><tr><th title="勾选一条做分析，勾选两条做对比">分析</th><th>#</th><th>流水线</th><th title="本次运行选中的环境节点（悬停逐行查看 节点名（ip））">环境节点</th><th>执行人</th><th>策略</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -6972,6 +6972,20 @@ function retryFromStage(stageId){
   runSetSel(rc,rc.stages[idx].id); rcRender(rc);
   advance(rc,idx);
 }
+/* 运行历史 envNodes 字段（与服务端写入契约一致）：由运行上下文选中节点映射为 {name,ip,nodeIp}，
+   name 与 ip 均为空的条目丢弃、最多 50 条，绝不含 user/pass 等凭据；无选中节点时为空数组。
+   与 rec.env（中文逗号 IP 串，enterHistoryReplay/rerunFromHistory 依赖其回填环境）互补，互不改写。 */
+function historyEnvNodesOf(rc){
+  const envs=(rc && rc.envs) || [];
+  const out=[];
+  for(let i=0;i<envs.length && out.length<50;i++){
+    const e=envs[i]||{};
+    const item={name:String(e.name||''), ip:String(e.ip||''), nodeIp:String(e.nodeIp||'')};
+    if(!item.name && !item.ip) continue;
+    out.push(item);
+  }
+  return out;
+}
 function finish(rc, result){
   if(rc&&rc.parallelParent){ settleParallelStage(rc,result); return; }
   rc.over=true;
@@ -6999,6 +7013,7 @@ function finish(rc, result){
       status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
       dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:rc.startTs, by:rc.by||'anonymous',
       pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'',
+      envNodes: historyEnvNodesOf(rc),   // 选中环境节点快照（不含凭据；rec.env 保持中文逗号 IP 串不回填改写）
       prom: promSnapshotForRun(rc),
       logs: collectRunLogs(rc),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集
       tag:rc.tag, archive:archiveFolderFor(rc)};
@@ -7957,6 +7972,24 @@ function pickHistPipeline(name){
   if(panel) panel.style.display='none';
   histPage=0; saveHistFilter(); renderHistory();
 }
+/* 历史表「环境节点」单元格内容：优先 envNodes 数组（服务端/本地 finish 写入的 {name,ip,nodeIp}），
+   无该字段的遗留记录回退解析 rec.env（按中文/英文逗号拆分，IP 串或环境名字符串都直接展示）；
+   两者皆空显示 —。文本：节点名（name 为空回退 ip）以「、」连接，超过 2 个折叠为「A、B 等N个」；
+   title 逐行「节点名（ip）」，name/ip 为空时省略对应部分（如「（192.168.1.1）」或「生产」）。 */
+function historyEnvNodesCell(rec){
+  let nodes=Array.isArray(rec&&rec.envNodes)?rec.envNodes:null;
+  if(!nodes) nodes=String((rec&&rec.env)||'').split(/[，,]/).map(s=>s.trim()).filter(Boolean).map(s=>({name:s,ip:'',nodeIp:''}));
+  nodes=nodes.filter(n=>n&&(n.name||n.ip));
+  if(!nodes.length) return {text:'—',title:''};
+  const names=nodes.map(n=>String(n.name||n.ip));
+  const text=names.length>2?names.slice(0,2).join('、')+' 等'+names.length+'个':names.join('、');
+  const title=nodes.map(n=>{
+    const name=String(n.name||''), ip=String(n.ip||'');
+    if(name&&ip) return name+'（'+ip+'）';
+    return name||('（'+ip+'）');
+  }).join('\n');
+  return {text:text,title:title};
+}
 function renderHistory(){
   const tb=$('historyTable').querySelector('tbody'); tb.innerHTML='';
   if(selHistoryIdx>=history.length) selHistoryIdx=-1;
@@ -7964,7 +7997,7 @@ function renderHistory(){
   const view=filteredHistory();
   renderHistFilterOptions();
   const fTip=$('histFilterTip'); if(fTip) fTip.textContent=(histFilter.kw||histFilter.status||histFilter.pipeline)?('已筛选 '+view.length+' / '+history.length+' 条'):'';
-  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="8" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
+  if(!view.length){ const tr0=document.createElement('tr'); tr0.innerHTML='<td colspan="9" class="dshell-muted" style="text-align:center;padding:14px 0;">'+(history.length?'无匹配的运行历史':'暂无运行历史')+'</td>'; tb.appendChild(tr0); }
   const pages=Math.max(1, Math.ceil(view.length/histPageSize));
   if(histPage>pages-1) histPage=pages-1;
   if(histPage<0) histPage=0;
@@ -7974,7 +8007,8 @@ function renderHistory(){
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
     const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-menu title="更多操作" aria-label="运行 #'+esc(h.no)+' 更多操作">⋯</button></td>';
+    const envCell=historyEnvNodesCell(h);
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted"'+(envCell.title?' title="'+esc(envCell.title)+'"':'')+'>'+esc(envCell.text)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-menu title="更多操作" aria-label="运行 #'+esc(h.no)+' 更多操作">⋯</button></td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());

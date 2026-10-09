@@ -103,7 +103,7 @@ test('运行历史渲染独立的分析复选框，勾选不触发行回放', ()
     enterHistoryReplay() {}, exitHistoryReplay() {}, refreshArchiveTip() {},
   };
   vm.createContext(ctx);
-  vm.runInContext(functionSource('renderHistory'), ctx);
+  vm.runInContext(functionSource('historyEnvNodesCell') + '\n' + functionSource('renderHistory'), ctx);
 
   ctx.renderHistory();
 
