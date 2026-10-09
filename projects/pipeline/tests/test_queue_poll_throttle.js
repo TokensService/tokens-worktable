@@ -77,6 +77,23 @@ test('queuePollSig：本页有排队项等待节点时附加约 5 秒桶，保�
   assert.notEqual(ctx.queuePollSig([]), waiting, '跨桶后签名翻转，驱动 renderQueue 自愈入口的 drainQueue 重试');
 });
 
+test('queuePollSig：server.finished 内容纳入签名（新终态出现/TTL 消失/结束时间标签翻转均触发重绘）', () => {
+  let label = '刚刚';
+  const ctx = loadPullContext({ fmtRelative: () => label, _serverFinishedSeen: {} });
+  const clients = [];
+  const fin = [{ id: 'srv-1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', source: 'manual', status: 'success', dur: 12, startedAt: 90, endedAt: 100, stages: [] }];
+  const base = ctx.queuePollSig(clients, [], []);
+  assert.equal(ctx.queuePollSig(clients, [], []), base, 'finished 空数组时签名稳定');
+  assert.equal(ctx.queuePollSig(clients), base, 'finished 缺省按空数组处理（旧服务端降级）');
+  const withFin = ctx.queuePollSig(clients, [], fin);
+  assert.notEqual(withFin, base, '新终态出现触发重绘');
+  assert.equal(ctx.queuePollSig(clients, [], JSON.parse(JSON.stringify(fin))), withFin, 'finished 内容相同时签名稳定');
+  const changed = JSON.parse(JSON.stringify(fin)); changed[0].status = 'failure';
+  assert.notEqual(ctx.queuePollSig(clients, [], changed), withFin, '终态内容变化触发重绘');
+  label = '1分钟前';
+  assert.notEqual(ctx.queuePollSig(clients, [], fin), withFin, 'endedAt 相对时间标签翻转触发重绘');
+});
+
 test('pullRemoteQueue：快照内容未变时跳过队列区重绘，日志通道与自动跟随每轮仍执行', async () => {
   let renders = 0, logPulls = 0, previews = 0, follows = 0;
   const payload = {

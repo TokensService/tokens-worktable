@@ -42,6 +42,15 @@ function makeRc(overrides = {}) {
 }
 
 function loadEvaltokensRuntime(overrides = {}) {
+  /* stage-poll 端点统一按「旧服务端 404」打桩：本套件既有用例验证的是回退后的浏览器直连轮询语义；
+     服务端轮询路径的覆盖见 test_stage_poll_client.js */
+  const wrapped = { ...overrides }
+  if (typeof wrapped.fetch === 'function') {
+    const inner = wrapped.fetch
+    wrapped.fetch = (url, opts) => String(url).includes('/api/worktable/pipeline/stage-poll/')
+      ? Promise.resolve({ ok: false, status: 404, json: async () => ({ error: 'not found' }) })
+      : inner(url, opts)
+  }
   const context = vm.createContext({
     console,
     encodeURIComponent,
@@ -79,7 +88,7 @@ function loadEvaltokensRuntime(overrides = {}) {
     applyPlFormReadOnly: () => {},
     renderFlow: () => {},
     renderDetail: () => {},
-    ...overrides,
+    ...wrapped,
   })
   const names = [
     'sanitizeFsName',
@@ -127,7 +136,11 @@ function loadEvaltokensRuntime(overrides = {}) {
     'settleParallelStage',
     'runEvaltokensStep',
   ]
-  vm.runInContext(names.map(extractFunction).join('\n'), context)
+  /* stage-poll 路径常量与请求助手是 runEvaltokensStep 新依赖（extractFunction 只抓函数，常量按页面同值注入） */
+  const preamble = 'const STAGE_POLL_JENKINS_PATH=\'/api/worktable/pipeline/stage-poll/jenkins\';'
+    + 'const STAGE_POLL_EVALTOKENS_PATH=\'/api/worktable/pipeline/stage-poll/evaltokens\';'
+    + 'const STAGE_POLL_BUILD_WINDOW_MS=2500;'
+  vm.runInContext(preamble + '\n' + extractFunction('stagePollRequest') + '\n' + names.map(extractFunction).join('\n'), context)
   return context
 }
 

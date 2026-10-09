@@ -220,15 +220,14 @@ test('dismissOrphanQueueItem：POST dismiss 参数正确，成功/404 均重拉�
   assert.equal(missing.calls.alert.length, 0);
 });
 
-test('rerunOrphanQueueItem：按孤儿快照参数重新发起运行（env 字符串映射回节点，匹配不到兜底），成功后顺手 dismiss', async () => {
+test('rerunOrphanQueueItem：按流水线当前完整定义 + 孤儿快照参数重新发起运行（env 字符串映射回节点，匹配不到兜底），成功后顺手 dismiss', async () => {
   const { context, calls } = loadOrphanActionContext();
   context.remoteOrphans[0] = Object.assign({}, orphanRun, { env: '10.0.0.1，10.0.0.9' });
   context.rerunOrphanQueueItem('abc123', 'r1');
   assert.equal(calls.run.length, 1);
   const opts = calls.run[0];
   assert.equal(opts.pipelineId, 'p1');
-  assert.equal(opts.pipelineName, '发布');
-  assert.deepEqual(opts.stages, orphanRun.stages, 'stages 快照（已是预设任务展开后的编排）直接入队');
+  assert.equal(opts.stages, undefined, '不传 stages 快照：快照只是白名单在场字段（sched/脚本绑定已剥掉），runPipeline 改用流水线当前完整定义分流——全为服务端可执行阶段时走 submitServerRun');
   assert.equal(opts.branch, 'dev');
   assert.equal(opts.strategy, 'rolling');
   assert.equal(opts.source, 'manual', '重跑是一次新的手动运行（执行人取当前登录用户）');
