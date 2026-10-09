@@ -1,5 +1,18 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 使用统计弹窗新增**「当前在线」人数显示**：客户端每标签页生成随机 client id，根组件挂载即向新端点
+  `POST /api/worktable/usage/heartbeat` 上报一次心跳、之后每 30 秒一次（body `{ user, client }`，
+  静默失败不打扰交互；首跳时用户名可能尚未探测到，后续心跳自动带上）；服务端把心跳按 key upsert
+  进纯内存在线表——登录用户按 `u:<用户名>` 归一（同一用户多标签页算 1 人），匿名按 `c:<client>`
+  计（每个客户端实例 1 人），90 秒（`ONLINE_TTL_MS`）无心跳的条目在 touch / count 时懒清理，
+  不落盘、重启清零。`GET /api/worktable/usage` 响应新增顶层 `online` 字段；弹窗摘要 chips 行
+  最前面新增带绿点的「当前在线 N」chip（zh「当前在线」/ en「Online」），chips 行改为数据加载
+  即显示（即使暂无使用记录，在线人数仍有意义），空态提示保留在 chips 行下方原位置。心跳端点
+  仅活内存表，不写盘、不记使用事件；body 超 16KB → 413、client 缺失 → 400、非 POST → 405。
+  测试：新增 `tests/online-count.test.mjs`（13 例：sanitizeHeartbeat 清洗、key 归一规则、
+  TTL 过期懒清理、路由接线文本断言、客户端 online 解析契约）；`tests/usage-stats.test.mjs`
+  空结构期望同步补 `online: 0`。
+
 - 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
 
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
