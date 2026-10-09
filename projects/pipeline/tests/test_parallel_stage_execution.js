@@ -135,6 +135,7 @@ function parallelContext(stages, options) {
     'runParallelStageGroup',
     'startStageAt',
     'advance',
+    'historyEnvNodesOf',
     'finish',
     'abortRun',
     'retryFromStage',
