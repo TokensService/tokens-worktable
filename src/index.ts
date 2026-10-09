@@ -2008,10 +2008,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     if (!id) return
     const previous = item.nodes[id] || idleNode()
     const next = state && typeof state === 'object' ? state : {}
+    /* 阶段开始时间（服务端纪元毫秒）：仅随「进入 running」的那次更新落节点，后续更新沿用既有值，
+       供队列快照白名单（cleanQueueNode）透传给其他浏览器的远端预览折算实时已耗时 */
+    const nextStartedAt = Number(next.startedAt), previousStartedAt = Number(previous.startedAt)
     item.nodes[id] = {
       status: typeof next.status === 'string' ? next.status : previous.status,
       progress: Number.isFinite(Number(next.progress)) ? Number(next.progress) : previous.progress,
       dur: Number.isFinite(Number(next.dur)) ? Number(next.dur) : previous.dur,
+      ...(Number.isFinite(nextStartedAt) && nextStartedAt > 0 ? { startedAt: nextStartedAt }
+        : (Number.isFinite(previousStartedAt) && previousStartedAt > 0 ? { startedAt: previousStartedAt } : {})),
       ...(next.sub && typeof next.sub === 'object' && !Array.isArray(next.sub) ? { sub: next.sub } : (previous.sub ? { sub: previous.sub } : {})),
     }
   }
@@ -3135,12 +3140,14 @@ export function apply(ctx: Context) {
   function cleanQueueNode(node: any): any {
     const raw = node && typeof node === 'object' ? node : {}
     const status = QUEUE_NODE_STATUSES.has(raw.status) ? raw.status : 'idle'
-    const progress = Number(raw.progress), dur = Number(raw.dur)
+    const progress = Number(raw.progress), dur = Number(raw.dur), startedAt = Number(raw.startedAt)
     const out: any = {
       status,
       progress: Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0,
       dur: Number.isFinite(dur) ? Math.max(0, dur) : 0,
     }
+    /* 阶段开始时间（纪元毫秒）透传：远端预览据此按本地时钟折算运行中阶段的实时已耗时 */
+    if (Number.isFinite(startedAt) && startedAt > 0) out.startedAt = startedAt
     if (raw.sub && typeof raw.sub === 'object' && !Array.isArray(raw.sub)) {
       const sub: any = Object.create(null)
       for (const name of Object.keys(raw.sub).slice(0, QUEUE_SUB_CAP)) {
@@ -4120,7 +4127,8 @@ export function apply(ctx: Context) {
       const startedAt = Date.now()
       const stageId = String(s && s.id || '')
       runtime?.replaceLog?.(stageId, '')
-      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0 })
+      /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
+      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null

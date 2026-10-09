@@ -1,5 +1,23 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 流水线运行中阶段节点与阶段详情显示实时耗时（`projects/pipeline/pipeline.html`）：编排区运行中节点的进度文本由纯百分比（如 47%）改为「百分比 · 已耗时」（如 47% · 1m30s），metaFor 与共享 tick 轻量直改（stageTickPaint）同口径，500ms tick 内仍只直改文本不触发全量渲染；阶段详情运行中同样新增「耗时」行（终态显示不变）。同步更新 `projects/pipeline/tests/test_stage_tick.js` 断言并新增 1m30s 用例。
+
+- 新增**服务端流水线运行的阶段级实时已耗时数据通路**（供远端预览编排区展示运行中阶段的实时耗时；此前服务端
+  只在阶段开始时写 `{status:'running',progress:5,dur:0}`、结束时才回填最终 dur，运行期 dur 恒为 0，其他
+  浏览器看不到已耗时）。服务端（`src/index.ts`）：执行器在阶段进入 running 时把该阶段开始时间戳
+  `startedAt`（服务端纪元毫秒）随 `updateStage` 落入执行池节点（后续进度/终态更新沿用该值，终态 dur 仍是
+  服务端结算值）；队列快照白名单 `cleanQueueNode` 透传节点的 `startedAt`（仅正数，非法值丢弃；run 级快照
+  结构不变）。客户端（`projects/pipeline/pipeline.html`）：`queueNodePresence` 镜像透传 `startedAt`；
+  远端预览构建（`remoteQueuePreviewRc`）与每秒队列轮询（`pullRemoteQueue`）对 `status==='running'` 且带
+  `startedAt` 的节点把 `dur` 按本地时钟实时折算为 `max(0,(Date.now()-startedAt)/1000)`（时钟偏差折出负值
+  钳到 0，与 run 级 startedAt 经 fmtRelative 用本地时钟展示的既有口径一致）；轮询处折算使 dur 每秒前进、
+  快照签名随之变化，队列区与远端预览因而逐秒刷出实时已耗时（无运行中阶段的静态快照仍享签名降耗）。
+  无 `startedAt` 的旧服务端/旧浏览器数据保持原 dur 不动（滚动升级兼容）；孤儿中断条目是冻结的最后已知
+  状态，不做实时折算。测试：`tests/pipeline-queue-presence.test.mjs` 补 startedAt 透传与非法值丢弃断言；
+  `tests/pipeline-run-api.test.mjs` 补执行池节点 startedAt 落快照、后续更新保留与执行器启动更新携带
+  startedAt 断言；客户端 `projects/pipeline/tests/test_queue_item_preview.js` 新增 queueNodePresence
+  透传/丢弃与 remoteQueuePreviewRc 实时折算（含时钟偏差钳 0）用例，`test_queue_poll_throttle.js` 新增
+  轮询折算驱动逐秒重绘用例。
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
