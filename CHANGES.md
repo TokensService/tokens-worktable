@@ -1,5 +1,7 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
+
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
 - 补强热替换桥接：通过全局 supervisor 共享代际 manager 与节点租约，引用归零时等待可 await 的 disposer，并为 HMR 立即重挂载保留可取消的短暂清理窗口；same-id generation 替换会正确回收旧池，health 返回当前 generation 与 draining 代。
 

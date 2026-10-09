@@ -80,7 +80,7 @@ test('回退提示词：版本号补 v 前缀，命令走升级卡的固定 rele
   const prompt = rollbackAiPrompt('1.1.6')
   assert.ok(prompt.includes('回退到 v1.1.6'), '提示词指明目标版本')
   assert.ok(prompt.includes('INSTALL<v1.1.6>'), '命令按 v 前缀 tag 生成')
-  assert.ok(prompt.includes('重启 dsh web 并刷新页面'), '提示词带收尾提醒')
+  assert.ok(prompt.includes('刷新页面即可'), '提示词带收尾提醒')
 })
 
 // ---- 服务端 sanitizeVersionHistory / recordVersionInstall ----
