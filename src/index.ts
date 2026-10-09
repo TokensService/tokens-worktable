@@ -1223,6 +1223,14 @@ function serverProxyTargetFetch(url: string, options: any, timeoutMs: number): P
     : serverLocalFetch(url, options, timeoutMs)
 }
 
+/** 代理上游超时：默认 20s；调用方可经 body.timeoutMs 提高（如 EvalTokens 服务端同步执行 /run、
+   任务跑完才返回，需等满整个任务时长），夹取 1s~24h——上限只兜「服务彻底假死」的极端情况，
+   阶段「超时(分钟)」留空即等效不限时，长任务由阶段超时字段治理。 */
+function serverProxyTimeoutMs(value: any): number {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.max(n, 1000), 86_400_000) : 20_000
+}
+
 function registerWorktableProxyRoute(webServer: any): void {
   webServer.register({
     kind: 'exact',
@@ -1252,7 +1260,7 @@ function registerWorktableProxyRoute(webServer: any): void {
           if (lowerKey === 'host' || lowerKey === 'content-length' || lowerKey === 'connection') continue
           fwdHeaders[key] = value
         }
-        const upstream = await serverProxyTargetFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, 20_000)
+        const upstream = await serverProxyTargetFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, serverProxyTimeoutMs(body.timeoutMs))
         const result = {
           status: upstream.status,
           headers: upstream.headers,
