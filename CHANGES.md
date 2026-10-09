@@ -5,14 +5,6 @@
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
 - 补强热替换桥接：通过全局 supervisor 共享代际 manager 与节点租约，引用归零时等待可 await 的 disposer，并为 HMR 立即重挂载保留可取消的短暂清理窗口；same-id generation 替换会正确回收旧池，health 返回当前 generation 与 draining 代。
 
-
-- 修复**流水线「复制」副本改名被永久锁死**（编辑器改名保存报「该流水线已被其他浏览器修改」并回滚为
-  「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
-  17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
-  ① 首屏/手动刷新的 GET 快照在「请求发出后、应用前」被复制副本的 save-one 反超（大存储 + 公网慢链路下
-
-# 本目录 tokens-worktable 的本地改动
-
 - 改进**设置弹层底部「版本信息 / 历史 / 用量 / 检查更新 / 自动检查更新」行冻结为 sticky 页脚**
   （`src/client/styles.ts`，DOM 结构不变）：该版本行原先只是设置弹层（`.dsh-wt_manage.dsh-wt_pop.dsh-wt_settings`，
   `max-height:min(540px,…)`、`overflow:auto` 的滚动弹层）末尾的普通一行，随内容滚动——设置项较多、
@@ -185,6 +177,34 @@
   重绘；进行中脉冲动画由 box-shadow 扩散改为 opacity/transform 合成器属性。新增
   `tests/test_stage_tick.js`、`tests/test_queue_poll_throttle.js`，扩充 `test_log_render_scaling.js`，
   调整 `test_plan_terminate.js`（快照未变时不再强制重绘即目标行为）。
+
+- 新增「友商 Tokens API 性能对比」项目页（`projects/friend-perf.html`）及其服务端中转路由
+  `POST /api/worktable/llm`（`src/index.ts`）：对智谱 / 百炼 / 混元 / 硅基流动 / 七牛云等 OpenAI 兼容
+  chat/completions 接口做手动 / 定时流式压测，横向对比 TTFT（首 token 延迟）与 TPOT（每 token 耗时），
+  含概览柱状图、趋势折线、分桶统计（提供商 × 输入长度 × 设定缓存命中率，nearest-rank 分位数）、
+  综合排名与记录页（失败原因可展开），结果经 `/api/worktable/write` 落盘项目文件夹
+  `friend-perf-results.json`、localStorage 仅作缓存兜底；提示词按「缓存命中率」拼装跨轮固定前缀 +
+  每轮随机后缀以触发厂商 prompt 缓存，真实缓存命中取 usage 回传的 cached_tokens /
+  prompt_cache_hit_tokens。中转路由安全边界：仅 https 目标、复用 `isLocalTarget` 反向拒绝回环/内网
+  （不成为 SSRF 出口）、仅放行 `/models` 与 `/chat/completions`，密钥由调用方自带、服务端不落地，
+  响应带背压逐 chunk 透传。计时口径修正两处：**提示词构造移出计时窗口**（`buildPrompt` 早于 `t0`，
+  本地构词开销不再计入 TTFT/总耗时；`genText` 由每轮 `join` 重算全长的 O(n²) 改为增量计长 O(n)——
+  实测旧代码在 110k tokens 输入下浏览器侧开销首轮 ~27s、之后每轮 ~2s，修复后降至 ~15ms）；
+  **流收尾解析残余 buffer**（`done` 时冲刷 TextDecoder 并解析未被换行终止的最后一段，厂商把 usage
+  块放在流末尾且无尾换行时不再整块丢失导致 outTokens 退回粗估、cached_tokens 丢失、TPOT 失真）。
+  新增**双口径 TTFT**：中继等到上游首个 body chunk 再回写响应头，经 `x-worktable-llm-ttfb` 回传
+  「服务端→厂商首 chunk 耗时」，页面记录表新增「服务端TTFT」列（`rec.serverTtft`）——浏览器感知
+  TTFT 含浏览器→服务端上行链路（大提示词经慢上行链路时会被上传耗时 1:1 抬高，实测 514KB 请求体在
+  64KB/s 上行下 TTFT 被抬高 ~8s），服务端口径不含该段、更接近厂商真实水平。**提示词构造整体移至
+  服务端**：页面只上传 `promptSpec={inputLen, cacheHit, outputLen}` 参数（几百字节），中继经
+  `buildBenchPrompt`（与页面旧版同算法，固定前缀为纯确定性函数，跨轮/跨重启逐字节一致，已验证与
+  页面旧实现产出完全相同，厂商侧缓存连续性不受影响；随机后缀每轮换新保持命中率语义）构造 messages
+  并覆盖 payload，浏览器→服务端不再有大 body 上传，两个 TTFT 口径在正常链路下应趋于一致；
+  页面侧 `buildPrompt`/`genText`/`getPrefix` 全数移除，`estTokens` 仅留作 TPOT 兜底估算。
+  SSE 行解析抽为纯函数 `parseSseLines`（content / reasoning_content 兼容、[DONE] 与坏行容错）；
+  测试：`projects/friend-perf.test.cjs` 9 例 + `tests/llm-relay.test.mjs` 7 例（ttfb 头与字节序、
+  无 body、安全边界、构造器前缀确定性/后缀随机/非法 spec、promptSpec 覆盖 messages 且前缀跨轮一致、
+  无 promptSpec 时 messages 原样透传）。
 
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`
