@@ -10,7 +10,7 @@ import vm from 'node:vm'
 /* 「列表复制按钮生成的副本无法在编辑器改名」的服务端复现/回归测试：
    用真实路由代码（从 src/index.ts 抽取，临时 DSH_HOME 落真盘）+ 字节级忠实的客户端模拟
    （迁移/合并函数从 projects/pipeline/pipeline.html 抽取，复制/改名/保存的数据操作逐行对照
-   copyPipeline:8364 / savePlForm:8208 / pushPipelineOne:1187 / pushState:1112 / loadServerState:1237）。 */
+   copyPipeline:8667 / savePlForm:8511 / pushPipelineOne:1195 / pushState:1119 / loadServerState:1273）。 */
 
 const rawSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
 /* 先整体去类型（strip 模式保留注释标记、类型注解抹成空白、不改变偏移），与 pipeline-trust 测试同一手法 */
@@ -121,7 +121,7 @@ function makeClient(handlers, { token } = {}) {
     await handler({ method, body, headers: token ? { cookie: 'dsh_auth=' + token } : {} }, res)
     return res
   }
-  /* loadServerState（pipeline.html:1237）：GET → 基线快照 → 按 id 三方合并 + 迁移 */
+  /* loadServerState（pipeline.html:1273）：GET → 基线快照 → 按 id 三方合并 + 迁移 */
   c.load = async () => {
     const res = await call(handlers['/api/worktable/pipeline'], 'GET')
     assert.equal(res.status, 200, 'GET 应成功')
@@ -138,7 +138,7 @@ function makeClient(handlers, { token } = {}) {
     }
     c.stateLoaded = true
   }
-  /* pushPipelineOne（pipeline.html:1187）：基线条目在拿到锁后从 serverConfigBase 取 */
+  /* pushPipelineOne（pipeline.html:1195）：基线条目在拿到锁后从 serverConfigBase 取 */
   c.saveOne = async (id) => {
     const edited = c.pipelines.find((p) => p && p.id === id)
     if (!edited) return { ok: false, error: '流水线已不在本页列表中' }
@@ -155,7 +155,7 @@ function makeClient(handlers, { token } = {}) {
     }
     return { ok: true, config: body.config || {} }
   }
-  /* copyPipeline（pipeline.html:8364）：深拷贝源条目 → 新 id/非内置/不继承置顶收藏可信/副本名/署名 → save-one */
+  /* copyPipeline（pipeline.html:8667）：深拷贝源条目 → 新 id/非内置/不继承置顶收藏可信/副本名/署名 → save-one */
   c.copyPipeline = async (id, me = '') => {
     const src = c.pipelines.find((p) => p && p.id === id)
     assert.ok(src, `源流水线 ${id} 不存在`)
@@ -167,13 +167,15 @@ function makeClient(handlers, { token } = {}) {
     delete clone.trusted
     clone.name = (src.name || '').replace(/（副本( \d+)?）$/, '') + '（副本）'
     clone.createdBy = me
+    clone.owner = me
     clone.updatedBy = me
     c.pipelines.push(clone)
     const saved = await c.saveOne(clone.id)
     return { clone, saved }
   }
-  /* savePlForm（pipeline.html:8208）改名场景的数据操作：阶段按编辑器 canonical 键序重建（8260-8271），
-     改名 → save-one；409 时按 8300-8324 回滚本条到保存前版本（名称还原） */
+  /* savePlForm（pipeline.html:8511）改名场景的数据操作：阶段按编辑器 canonical 键序重建（8563-8574），
+     改名 + 署名写入（8579：createdBy/owner 各自空白才补为本用户、updatedBy 每次保存刷新）→ save-one；
+     409 时按 8693-8717 回滚本条到保存前版本（名称还原） */
   c.renameViaEditor = async (id, newName, me = '') => {
     const previousPipelines = roundtrip(c.pipelines)
     const p = c.pipelines.find((item) => item && item.id === id)
@@ -191,10 +193,14 @@ function makeClient(handlers, { token } = {}) {
       if (s.sched) st.sched = {}
       return st
     })
+    if (!p.builtIn && me) {
+      if (typeof p.createdBy !== 'string' || !p.createdBy.trim()) p.createdBy = me
+      if (typeof p.owner !== 'string' || !p.owner.trim()) p.owner = me
+    }
     if (!p.builtIn && me) p.updatedBy = me
     const saved = await c.saveOne(id)
     if (saved && saved.ok === false) {
-      /* savePlForm 冲突回滚（8310-8321 的单条版本）：名称还原成保存前（副本名） */
+      /* savePlForm 冲突回滚（8693-8717 的单条版本）：名称还原成保存前（副本名） */
       const previousPipeline = previousPipelines.find((item) => String(item && item.id || '') === String(id))
       const previousIndex = previousPipelines.findIndex((item) => String(item && item.id || '') === String(id))
       c.pipelines = c.pipelines.filter((item) => String(item && item.id || '') !== String(id))
@@ -202,7 +208,7 @@ function makeClient(handlers, { token } = {}) {
     }
     return saved
   }
-  /* pushState（pipeline.html:1112）全量 PUT：baseConfig 只带 pipelines（1134 的瘦身负载） */
+  /* pushState（pipeline.html:1119）全量 PUT：baseConfig 只带 pipelines（1141 的瘦身负载） */
   c.pushState = async () => {
     const config = { pipelines: c.pipelines, scriptsDir: c.scriptsDir }
     const baseList = (c.serverConfigBase && Array.isArray(c.serverConfigBase.pipelines)) ? c.serverConfigBase.pipelines : []
@@ -238,8 +244,11 @@ const authCtx = () => ({
   },
 })
 
-/* 与生产存储同形的条目：内置（id,name,stages,builtIn,defaults,createdBy,updatedBy 键序）与
-   普通条目；阶段键序 canonical = id,name,dur,skip,sub,kind[,url...]（savePlForm 重建顺序） */
+/* 与生产存储同形的条目：内置（id,name,stages,builtIn,defaults,createdBy,owner,updatedBy 键序）与
+   普通条目；阶段键序 canonical = id,name,dur,skip,sub,kind[,url...]（savePlForm 重建顺序）。
+   owner 键按迁移后落盘形态携带（migratePipelineDefaults 对存量数据补 owner:''，编辑保存时才补署具体用户；
+   缺 owner 键的旧数据会让迁移后的客户端条目与磁盘/基线产生内容差，全量 PUT 把带 owner 的客户端版本
+   送上后触发服务端内置/可信条目守卫 403——本文件的种子一律采用迁移后形态，规避该过渡态） */
 const defaultsShape = () => ({ environmentIds: [], repositoryId: '', branch: 'main', strategy: '', presets: [] })
 const presetStages = () => [
   { id: 'st-preset-cleanup', name: '环境清理', preset: true, pkey: 'cleanup' },
@@ -248,19 +257,19 @@ const presetStages = () => [
 const builtinEntry = () => ({
   id: 'pl-xds', name: '安装部署XDS',
   stages: [...presetStages(), { id: 'st0', name: '模拟部署', dur: 5, skip: false, sub: [], kind: 'simulate' }],
-  builtIn: true, defaults: defaultsShape(), createdBy: 'bob', updatedBy: 'bob',
+  builtIn: true, defaults: defaultsShape(), createdBy: 'bob', owner: '', updatedBy: 'bob',
 })
 const customEntry = (id, name) => ({
   id, name,
   stages: [...presetStages(), { id: 'st0', name: '部署', dur: 5, skip: false, sub: [], kind: 'http', url: { url: 'http://jenkins/job/x', outVars: '' } }],
-  builtIn: false, defaults: defaultsShape(), createdBy: 'alice', updatedBy: 'alice',
+  builtIn: false, defaults: defaultsShape(), createdBy: 'alice', owner: '', updatedBy: 'alice',
 })
 /* 「旧版/导入」键序的条目：内容与普通条目相同，但阶段键序非 canonical（kind 提前）——
    编辑器重存会把阶段重建为 canonical 键序，字节变、内容不变 */
 const legacyOrderEntry = (id, name) => ({
   id, name,
   stages: [...presetStages(), { id: 'st0', name: '部署', kind: 'http', dur: 5, skip: false, sub: [], url: { url: 'http://jenkins/job/x', outVars: '' } }],
-  builtIn: false, defaults: defaultsShape(), createdBy: 'alice', updatedBy: 'alice',
+  builtIn: false, defaults: defaultsShape(), createdBy: 'alice', owner: '', updatedBy: 'alice',
 })
 
 async function seedHome(t, { config, history = [], usersYaml = USERS_YAML } = {}) {
@@ -392,6 +401,7 @@ test('保存确认丢失后重试：客户端与磁盘内容一致按幂等放�
   delete clone.trusted
   clone.name = '构建部署（副本）'
   clone.createdBy = 'alice'
+  clone.owner = 'alice'
   clone.updatedBy = 'alice'
   const first = mockRes()
   await h['/api/worktable/pipeline/save-one']({ method: 'PUT', body: { pipeline: clone, basePipeline: null, scriptsDir: '' }, headers: { cookie: 'dsh_auth=' + TOKEN_USER } }, first)

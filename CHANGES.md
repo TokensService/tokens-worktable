@@ -1,5 +1,60 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
+  均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
+  服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
+  规则推算；路径过长以省略号截断，无路径显示「—」。行右侧两个 mini 按钮：「🔍 AI 分析」效果同
+  运行历史标题行的「AI 日志分析」——对该阶段所属运行新建 AI 会话并填入日志分析提示词草稿（不自动
+  发送），实时运行从历史记录按 tag 匹配，运行中尚未写入历史时禁用并提示；「📂 打开日志」效果同
+  「📂 打开归档目录」——打开日志文件所在目录（优先 dsh-better-sidebar 侧边栏文件夹窗口并收起会话窗，
+  未装或桥不可用时回退服务端系统文件管理器 `xdg-open`/`gio`/`open`；先等待该目录归档写落盘，目录
+  不存在时回退父目录），状态反馈显示在行内提示。「打开归档目录」的原有实现抽出公共函数
+  `openFolderWithFeedback` 复用，行为与文案不变。行仅在「当前运行存在（实时）/ 回放历史」时渲染，
+  避免空页面噪音；按钮按路径存在性与可分析态自动禁用。动机：在阶段详情里就能直接看到本阶段日志
+  文件位置，一键 AI 分析所属运行、一键打开日志目录，不必回运行历史标题行操作。
+  测试：新增 `projects/pipeline/tests/test_stage_detail_log_row.js`（契约与行为断言）。
+
+- 使用统计弹窗新增**「当前在线」人数显示**：客户端每标签页生成随机 client id，根组件挂载即向新端点
+  `POST /api/worktable/usage/heartbeat` 上报一次心跳、之后每 30 秒一次（body `{ user, client }`，
+  静默失败不打扰交互；首跳时用户名可能尚未探测到，后续心跳自动带上）；服务端把心跳按 key upsert
+  进纯内存在线表——登录用户按 `u:<用户名>` 归一（同一用户多标签页算 1 人），匿名按 `c:<client>`
+  计（每个客户端实例 1 人），90 秒（`ONLINE_TTL_MS`）无心跳的条目在 touch / count 时懒清理，
+  不落盘、重启清零。`GET /api/worktable/usage` 响应新增顶层 `online` 字段；弹窗摘要 chips 行
+  最前面新增带绿点的「当前在线 N」chip（zh「当前在线」/ en「Online」），chips 行改为数据加载
+  即显示（即使暂无使用记录，在线人数仍有意义），空态提示保留在 chips 行下方原位置。心跳端点
+  仅活内存表，不写盘、不记使用事件；body 超 16KB → 413、client 缺失 → 400、非 POST → 405。
+  测试：新增 `tests/online-count.test.mjs`（13 例：sanitizeHeartbeat 清洗、key 归一规则、
+  TTL 过期懒清理、路由接线文本断言、客户端 online 解析契约）；`tests/usage-stats.test.mjs`
+  空结构期望同步补 `online: 0`。
+
+- 流水线**新增「拥有者」属性，任务列表筛选与署名展示改用拥有者、支持搜索用户**（`projects/pipeline/pipeline.html`）：
+  流水线现在有三个署名属性——`createdBy` 创建者（创建时定死的历史署名，不再参与权限判定）、`owner`
+  拥有者（拥有编辑/删除权限；新建与复制时署为当前用户；存量流水线无 `owner` 字段时经 `plOwnerOf` 回退按
+  `createdBy` 计）、`updatedBy` 最近修改者（每次保存/拖拽改序刷新）。`migratePipelineDefaults` 增加
+  `owner` 归一化；`plEditable` 权限判定、编辑/删除守卫、编辑器只读标题与 alert 口径全部由「创建者」改为
+  「拥有者」（新增 `plCreatorOf` 取历史创建者）；编辑存量未署名流水线时创建者与拥有者各自空白才补署当前用户。
+  任务列表筛选栏「创建者」下拉换成可搜索输入框（`input#plFilterOwner` + `datalist#plOwnerList`）：特殊项
+  （我的（含预置）/全部/仅预置/未署名）以中文标签选择，用户名原样输入；匹配口径为——输入等于某已知拥有者
+  用户名时精确匹配（防「ali」波及「alicia」），否则按子串大小写不敏感搜索拥有者；localStorage `pip-plFilter`
+  旧值（mine/all/builtin/unknown/旧用户名）加载后照常生效并正确回显。行内署名 `· 创建 @x` 改为 `· 拥有 @x`
+  （修改人不同仍附 `· 修改 @y`；创建者与拥有者不同时署名行悬停提示「创建者 @z」）；编排区节点只读提示与
+  帮助文本同步为拥有者口径。测试：新增 `projects/pipeline/tests/test_pipeline_owner_filter.js`（标签↔模式键
+  映射与回显、用户名精确匹配、子串大小写不敏感搜索、datalist 填充与聚焦不打扰、localStorage 旧值兼容，11 例）；
+  `test_pipeline_owner_edit.js` 扩充 owner≠createdBy 权限矩阵、存量无 owner 回退、`migratePipelineDefaults`
+  owner 归一化与 savePlForm 三态补署用例；`test_pipeline_audit_trail.js` 等既有测试同步更新。
+
+- 调整**流水线编辑器「+ 添加阶段」按钮移至冻结底栏最左边**（`projects/pipeline/pipeline.html`
+  的 `#plForm` 弹窗）：该按钮原先与「保存 / 取消」一起靠右排列在弹窗底部冻结行右端，阶段较多
+  需滚动时添加入口远离编辑起点。现将其移到该冻结行的最左边；草稿提示 `#plDraftTip`
+  （保留 `margin-right:auto`）紧随其后，「保存 / 取消」仍固定在右下角。底栏保持冻结、
+  不随阶段列表滚动；只读模式下隐藏添加阶段按钮的逻辑不变。
+  测试：新增 `projects/pipeline/tests/test_pipeline_footer_layout.js`（底栏按钮顺序与冻结位置契约断言）。
+
+- 流水线编辑页**阶段定时配置行的勾选标签精简为「本地运行」**（`projects/pipeline/pipeline.html`）：
+  原勾选标签「需本地运行，不支持定时」精简为「本地运行」，标签后新增 ⓘ 信息注释
+  （悬停提示「本地运行任务不支持定时任务」），把「不支持定时」的说明从标签正文移入悬停提示。
+  纯文案/提示改动，勾选行为不变。
+
 - 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
 
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。

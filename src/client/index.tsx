@@ -1346,9 +1346,23 @@ function reportUsage(kind: string, detail = '') {
     }).catch(() => {})
   } catch { /* 统计上报绝不打扰用户 */ }
 }
-/** 使用统计弹窗数据：users 附 last（MM-DD HH:mm 本地格式串），daily 的 day 截为 MM-DD，
- *  recent 附 when（MM-DD HH:mm）；today = 今日事件数（自 daily 末日取）。 */
+/** 在线心跳的每标签页随机 client id：页面生命周期内稳定，服务端据此区分同一用户的多个在线标签页。 */
+const usageClientId = Math.random().toString(36).slice(2) + Date.now().toString(36)
+/** 上报一次在线心跳（静默，失败不影响任何交互）：不做去重，由根组件挂载时立即报一次、之后每 30 秒一次；
+ *  首跳时用户名可能尚未探测到（空串），后续心跳自动带上——符合预期。 */
+function beatUsage() {
+  try {
+    void fetch('/api/worktable/usage/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user: usageUsername, client: usageClientId }),
+    }).catch(() => {})
+  } catch { /* 统计上报绝不打扰用户 */ }
+}
+/** 使用统计弹窗数据：online = 当前在线标签页数（服务端按心跳聚合）；users 附 last（MM-DD HH:mm 本地格式串），
+ *  daily 的 day 截为 MM-DD，recent 附 when（MM-DD HH:mm）；today = 今日事件数（自 daily 末日取）。 */
 type UsageStats = {
+  online: number
   total: number
   today: number
   users: { user: string; events: number; visits: number; opens: number; days: number; lastAt: number; last: string }[]
@@ -1358,12 +1372,13 @@ type UsageStats = {
 /** 服务端 /api/worktable/usage GET 响应 → 弹窗数据：宽松校验，入参异常
  *  （旧版服务端 404 兜底页等）返回空结构。 */
 function parseUsageStats(data: unknown): UsageStats {
-  const empty: UsageStats = { total: 0, today: 0, users: [], daily: [], recent: [] }
+  const empty: UsageStats = { online: 0, total: 0, today: 0, users: [], daily: [], recent: [] }
   if (!data || typeof data !== 'object' || Array.isArray(data)) return empty
   const p = (n: number) => String(n).padStart(2, '0')
   const fmt = (at: number) => { const d = new Date(at); return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) }
   const todayMmdd = (() => { const d = new Date(); return p(d.getMonth() + 1) + '-' + p(d.getDate()) })()
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+  const online = num((data as { online?: unknown }).online) // 当前在线：有限非负数取整，其余（含缺失）一律 0
   const total = num((data as { total?: unknown }).total)
   const users: UsageStats['users'] = []
   const rawUsers = (data as { users?: unknown }).users
@@ -1398,7 +1413,7 @@ function parseUsageStats(data: unknown): UsageStats {
       at, when: at ? fmt(at) : '',
     })
   }
-  return { total, today, users, daily, recent }
+  return { online, total, today, users, daily, recent }
 }
 /* ---------- 用户使用统计结束 ---------- */
 /** 设置弹窗「新建开发会话」：按提示词模板 + 插件项目目录新建 AI 会话（cwd = 插件目录，提示词只填输入框、不自动发送） */
@@ -1673,6 +1688,13 @@ function WorktableSection(props: any) {
       if (alive && name) setAuthUsername(name)
     })
     return () => { alive = false }
+  }, [])
+  // 在线心跳：挂载即报一次，之后每 30 秒一次，卸载清定时器；
+  // 首跳时用户名可能尚未探测到（空串），后续心跳自动带上——符合预期。
+  useEffect(() => {
+    beatUsage()
+    const timer = setInterval(beatUsage, 30_000)
+    return () => { clearInterval(timer) }
   }, [])
   // 更新检查：徽标 / 更新卡 / 版本行共用；节流一天一次，忽略按版本号存 localStorage
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
@@ -4403,14 +4425,18 @@ function buildCustomLayoutPrompt(req: string): string {
                 <button type="button" className="dsh-wt_updateBtn" onClick={() => void loadUsage()}>{t('history.retry')}</button>
               </div>
             )}
+            {/* 摘要 chips 行：usageStats 已加载即显示（即使 total === 0，在线人数仍有意义），「当前在线」固定首位 */}
+            {usageStats && (
+              <div className="dsh-wt_usageChips">
+                <span className="dsh-wt_usageChip dsh-wt_usageOnline">{t('usage.online')} {usageStats.online}</span>
+                <span className="dsh-wt_usageChip">{t('usage.users')} {usageStats.users.length}</span>
+                <span className="dsh-wt_usageChip">{t('usage.events')} {usageStats.total}</span>
+                <span className="dsh-wt_usageChip">{t('usage.today')} {usageStats.today}</span>
+              </div>
+            )}
             {usageStats && usageStats.total === 0 && <div className="dsh-wt_histEmpty">{t('usage.empty')}</div>}
             {usageStats && usageStats.total > 0 && (
               <>
-                <div className="dsh-wt_usageChips">
-                  <span className="dsh-wt_usageChip">{t('usage.users')} {usageStats.users.length}</span>
-                  <span className="dsh-wt_usageChip">{t('usage.events')} {usageStats.total}</span>
-                  <span className="dsh-wt_usageChip">{t('usage.today')} {usageStats.today}</span>
-                </div>
                 <table className="dsh-wt_usageTable">
                   <thead>
                     <tr>

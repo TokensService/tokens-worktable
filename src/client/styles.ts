@@ -543,6 +543,9 @@ export const css = xtermCss + '\n' + [
   '.dsh-wt_usage{width:min(560px,94vw)}',
   '.dsh-wt_usageChips{display:flex;flex-wrap:wrap;gap:6px}',
   '.dsh-wt_usageChip{flex:none;padding:2px 8px;border:1px solid var(--dsw-alias-border-l1,#262b36);border-radius:999px;font-size:10.5px;color:var(--dsw-alias-label-secondary,#aab3c5)}',
+  /* 当前在线 chip：前置小绿点（面板成功色，暗色背景可辨），inline-flex 保持原 chip 布局不打折 */
+  '.dsh-wt_usageOnline{display:inline-flex;align-items:center;gap:5px}',
+  '.dsh-wt_usageOnline::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-success,#3fb950)}',
   '.dsh-wt_usageTable{width:100%;border-collapse:collapse;font-size:11px;color:var(--dsw-alias-label-primary,#e6e8eb)}',
   '.dsh-wt_usageTable th,.dsh-wt_usageTable td{padding:4px 6px;text-align:left;border-bottom:1px solid var(--dsw-alias-border-l1,#262b36);white-space:nowrap}',
   '.dsh-wt_usageTable th{font-size:10.5px;font-weight:500;color:var(--dsw-alias-label-tertiary,#7d8aa5)}',
