@@ -3696,7 +3696,7 @@ function metaFor(id){
   if(st==='failed')  return '✗ 错误';
   if(st==='skipped') return '⏭ 跳过';
   if(st==='aborted') return '⏏ 终止';
-  if(st==='running') return Math.round(n.progress||0)+'%';
+  if(st==='running') return Math.round(n.progress||0)+'% · '+fmtDur(n.dur||0);
   if(st==='idle'){ const s=activeStages().find(x=>x.id===id); if(s&&s.skip) return '⊘ 不执行'; }   // 未运行且配置「不执行」：编排区节点元信息显示
   return '';
 }
@@ -3850,6 +3850,7 @@ function renderDetail(){
 
   const kv = $('detailKv'); kv.innerHTML='';
   const rows = detailContextRows(s,txt,ctx);
+  if(n.status==='running') rows.push(['耗时', fmtDur(n.dur||0)]);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
@@ -5246,7 +5247,7 @@ function stageTickPaint(t, n){
   const el=flowNodeElementById(t.stageId);
   if(el){
     const bar=el.querySelector('.pipeline-bar > i'); if(bar) bar.style.width=(n.progress||0)+'%';
-    const meta=el.querySelector('.pipeline-nodeMeta'); if(meta) meta.textContent=Math.round(n.progress||0)+'%';
+    const meta=el.querySelector('.pipeline-nodeMeta'); if(meta) meta.textContent=Math.round(n.progress||0)+'% · '+fmtDur(n.dur||0);
   }
   if(root.selId===t.stageId){ const b=$('detailBar'); if(b) b.style.width=(n.progress||0)+'%'; }
 }
