@@ -1,4 +1,4 @@
-// 流水线任务署名审计：创建者 + 最后修改人（来源 dsh-auth-gate /auth/status 登录用户）的记录、迁移与列表展示。
+// 流水线任务署名审计：创建者 + 最后修改人（来源 dsh-auth-gate /auth/status 登录用户）的记录、迁移与列表展示（列表行按拥有者口径展示）。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -170,11 +170,11 @@ class FakeNode{
   }
 }
 
-function loadRender(pipelines){
+function loadRender(pipelines, extraCtx){
   const tbody=new FakeNode('tbody');
   const table={querySelector:selector=>selector==='tbody'?tbody:null};
   const count={textContent:''};
-  const ctx={
+  const ctx=Object.assign({
     pipelines,
     curPipelineId:'',
     activeRuns:[],
@@ -198,7 +198,7 @@ function loadRender(pipelines){
     alert:()=>{},
     QUEUE_CAP:8,
     queue:[],
-  };
+  },extraCtx||{});
   vm.createContext(ctx);
   const start=source.indexOf('function renderPipelines(){');
   const end=source.indexOf('/* 运行框流水线下拉',start);
@@ -208,7 +208,7 @@ function loadRender(pipelines){
   return {tbody};
 }
 
-test('列表行展示创建者与最后修改人：同人免重复、内置与未署名不显示',()=>{
+test('列表行展示拥有者与最后修改人：同人免重复、内置与未署名不显示',()=>{
   const {tbody}=loadRender([
     {id:'p1',name:'仅创建',stages:[{name:'构建'}],builtIn:false,createdBy:'alice',updatedBy:'alice'},
     {id:'p2',name:'被修改',stages:[{name:'构建'}],builtIn:false,createdBy:'alice',updatedBy:'bob'},
@@ -216,9 +216,21 @@ test('列表行展示创建者与最后修改人：同人免重复、内置与�
     {id:'p4',name:'未署名',stages:[{name:'构建'}],builtIn:false},
   ]);
   assert.equal(tbody.children.length,4);
-  assert.match(tbody.children[0].innerHTML,/创建 @alice/);
-  assert.ok(!/修改 @/.test(tbody.children[0].innerHTML),'修改人与创建者相同不重复显示');
-  assert.match(tbody.children[1].innerHTML,/创建 @alice · 修改 @bob/,'创建者与修改人不同则都显示');
-  assert.ok(!/创建 @|修改 @/.test(tbody.children[2].innerHTML),'内置流水线不显示署名');
-  assert.ok(!/创建 @|修改 @/.test(tbody.children[3].innerHTML),'未署名流水线不显示');
+  assert.match(tbody.children[0].innerHTML,/拥有 @alice/);
+  assert.ok(!/修改 @/.test(tbody.children[0].innerHTML),'修改人与拥有者相同不重复显示');
+  assert.match(tbody.children[1].innerHTML,/拥有 @alice · 修改 @bob/,'拥有者与修改人不同则都显示');
+  assert.ok(!/拥有 @|修改 @|创建 @/.test(tbody.children[2].innerHTML),'内置流水线不显示署名');
+  assert.ok(!/拥有 @|修改 @|创建 @/.test(tbody.children[3].innerHTML),'未署名流水线不显示');
+});
+
+test('列表行：创建者与拥有者不同（plCreatorOf 存在且值不同）时署名行 title 追加创建者提示',()=>{
+  /* plCreatorOf 由数据模型侧提供（优先 owner 字段语义配套）；此处打桩模拟「创建者≠拥有者」，
+     本分支合入前页面内 plCreatorOf 尚不存在，typeof 守卫下不渲染 title（见上例无桩用例） */
+  const {tbody}=loadRender([
+    {id:'p1',name:'同人',stages:[{name:'构建'}],builtIn:false,createdBy:'alice',updatedBy:'alice'},
+    {id:'p2',name:'已转让',stages:[{name:'构建'}],builtIn:false,createdBy:'alice',updatedBy:'bob'},
+  ],{plCreatorOf:p=>(p.id==='p2'?'zack':'alice')});
+  assert.ok(!/title="创建者 @/.test(tbody.children[0].innerHTML),'创建者与拥有者相同不追加 title');
+  assert.match(tbody.children[1].innerHTML,/title="创建者 @zack"/,'创建者与拥有者不同追加创建者提示');
+  assert.match(tbody.children[1].innerHTML,/拥有 @alice/,'署名正文仍按拥有者口径');
 });

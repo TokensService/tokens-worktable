@@ -71,7 +71,7 @@ function makeContext(runResult) {
     plFilter: { kw: '', owner: 'all' },   // 筛选状态桩：本测试只验证行内运行按钮，不关心筛选；用 all 让全部行进视图
     plFilterMatch: () => true,   // 筛选桩：所有流水线均命中（行运行测试不涉及筛选语义）
     renderPlFilterOptions: () => {},   // 下拉渲染桩：筛选控件不在本测试范围
-    plOwnerOf: () => '',   // 创建者取值桩：行运行测试不涉及署名展示
+    plOwnerOf: () => '',   // 拥有者取值桩：行运行测试不涉及署名展示
     plUpdaterOf: () => '',   // 最后修改人取值桩：行运行测试不涉及署名展示
     plEditable: pipeline => !pipeline || !pipeline.builtIn,   // 归属桩：等价「仅内置只读」旧行为
     isPipelineFavorite: () => false,   // 收藏状态桩：行运行测试不涉及收藏展示
