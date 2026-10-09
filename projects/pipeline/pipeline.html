@@ -802,10 +802,10 @@
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
       </div>
-      <!-- 冻结底栏：添加阶段 / 保存 / 取消 固定在右下角，不随内容滚动 -->
+      <!-- 冻结底栏：添加阶段固定在最左（左下角），保存 / 取消固定在右下角，整栏不随内容滚动 -->
       <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1);">
-        <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
         <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
+        <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
         <button id="plSave" class="dshell-btn mini">保存</button>
         <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
       </div>
