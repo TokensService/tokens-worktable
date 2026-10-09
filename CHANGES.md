@@ -10,6 +10,50 @@
   「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
   17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
   ① 首屏/手动刷新的 GET 快照在「请求发出后、应用前」被复制副本的 save-one 反超（大存储 + 公网慢链路下
+
+# 本目录 tokens-worktable 的本地改动
+
+- 改进**设置弹层底部「版本信息 / 历史 / 用量 / 检查更新 / 自动检查更新」行冻结为 sticky 页脚**
+  （`src/client/styles.ts`，DOM 结构不变）：该版本行原先只是设置弹层（`.dsh-wt_manage.dsh-wt_pop.dsh-wt_settings`，
+  `max-height:min(540px,…)`、`overflow:auto` 的滚动弹层）末尾的普通一行，随内容滚动——设置项较多、
+  内容超过一屏时会被滚出视野，版本号与「检查更新 / 自动检查更新」入口需手动滚到底才能看到。现
+  `.dsh-wt_versionRow` 改为 `position:sticky;bottom:0` 吸附在面板可见区底部最后一行：
+  `z-index:1` + 不透明背景 `var(--dsw-alias-bg-base,#0b0e14)`（与 `.dsh-wt_manage` 面板底色一致）
+  遮住滚过的内容；`margin:8px -6px -6px` 负边距抵消面板 6px padding 做全宽出血，使顶部
+  `border-top` 分隔线横贯面板；`padding:8px 6px 6px` 补偿使行内内容视觉位置与改动前一致。
+  版本行仍是设置面板最后一个子元素；内容不足一屏时 sticky 不产生位移，无行为变化。
+  测试：新增 `tests/settings-version-sticky.test.mjs`（3 例契约断言）。
+
+- 修复**流水线「运行队列」刷新即丢与跨用户不可见**（页面驱动的本地执行——含「需本地运行」阶段的流水线——刷新/
+  关闭页面后正在执行的任务从运行队列彻底消失、找不到最后执行状态；且自 ac756d3「运行队列改由服务端持有」起
+  renderQueue 的 `scheduleQueuePublish()` 调用被摘、publishQueue 成死代码，页面运行从不向服务端上报，其他登录者
+  完全看不到别人页面驱动的流水线）。服务端修复（`src/index.ts`）：`/api/worktable/pipeline/queue` 新增「失联孤儿
+  登记簿」——schemaVersion 3 客户端的 runs/queue 条目在新快照中消失且不在 `completed` 列表、或在场记录 45 秒
+  TTL 过期时，不再静默清除而是转入孤儿簿（条目=白名单清洗快照 + ownerId/ownerLabel/kind/orphanedAt；同 owner
+  重新上报同 id 复活出簿，completed 补报出簿；orphanedAt 超 24h 丢弃、总量上限 100）；孤儿簿持久化到
+  `storages/worktable-pipeline-orphans.json`（防抖 300ms 原子写，dsh web 重启不丢，启动异步加载、损坏按空簿）；
+  POST 新增 `action:'dismiss'`（ownerId+id，200 dismissed / 404 missing）；GET 响应新增顶层 `orphans` 数组
+  （恒存在，旧客户端无感知）；schemaVersion 1/2 旧页面保持静默清除语义不进簿（滚动升级兼容）。客户端修复
+  （`projects/pipeline/pipeline.html`）：恢复 renderQueue 末尾的 `scheduleQueuePublish()` 上报（防抖 500ms）；
+  PUT 体升级 schemaVersion 3 并携带 `completed`——「最近终态」登记（finish/abortRun/cancelQueue/重置全部登记点）
+  随 sessionStorage（pip-qfinished，>60s prune、上限 64）跨刷新存活，刷新后首帧上报即豁免刷新前已正常完成的
+  条目；当前 activeRuns 的 originQueueId 一并并入 completed（排队项启动转运行是正常移交而非消失）；
+  新增不随 document.hidden 暂停的 10 秒心跳（页面隐藏时执行仍在继续，停心跳会被误判失联）与 pagehide
+  sendBeacon 最终快照；队列区新增「已中断（页面刷新/关闭）」分组展示孤儿条目（[来源浏览器] 执行人 · 流水线 ·
+  时间 + 「已中断/排队中断」徽标，计入头部计数），点击只读预览最后已知阶段/节点快照（明确提示执行已中断、
+  日志不可拉取），支持「重跑」（pipelineId + env 字符串按「，」/、拆 IP 映射回环境列表 + branch/strategy 经
+  runPipeline 本地队列分流，成功后顺手 dismiss；流水线已删除则置灰）与「移除」（POST dismiss，canControlRun
+  权限口径同服务端队列按钮）；旧服务端无 orphans 键时特性探测降级不渲染。测试：服务端新增
+  `tests/pipeline-queue-orphans.test.mjs`（9 例：消失入簿/completed 豁免/TTL 过期入簿/复活/dismiss 三态/v1v2
+  兼容/持久化重载/保留策略），`pipeline-queue-presence.test.mjs` 沙盒注入同步新外层符号；客户端新增
+  `projects/pipeline/tests/test_queue_orphans.js`（16 例：PUT 体契约、登记持久化与 prune、分组渲染与旧服务端
+  降级、dismiss 参数与权限拦截、预览 rc 形状与自愈、重跑 env 映射兜底、心跳/pagehide 接线），
+  `test_queue_item_preview.js` 断言同步 schemaVersion 3。
+
+- 修复**流水线「复制」副本改名被永久锁死**（编辑器改名保存报「该流水线已被其他浏览器修改」并回滚为
+  「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
+  17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
+  ① 首屏/手动刷新的 GET 快照在「请求发出后、应用前」被复制副本的 save-one 反超（大存储 + 公网慢链路下
   窗口长达数秒），三方合并把刚落盘的副本误判为「远端已删除」从页面冲掉且基线被污染回退；
   ② 手动刷新整表替换 pipelines 且从不推进基线，在途改名也被快照冲掉（改名后一刷新即还原）；
   ③ 基线缺条目而磁盘有条目时每次单条保存都 phantom 409（baseOne=null ≠ 磁盘条目），409 响应携带的
