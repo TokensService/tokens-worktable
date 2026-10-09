@@ -20,6 +20,12 @@ function loadQueueRoute(overrides = {}) {
     json(res, status, body) { res.writeHead(status); res.end(JSON.stringify(body)) },
     pipelineExecutions: overrides.pipelineExecutions || { snapshot: () => ({ runs: [], queue: [] }), cancel: () => ({ ok: false, state: 'missing' }) },
     console,
+    /* 孤儿登记簿引用的外层作用域符号：本测试不触发孤儿逻辑（仅 v1/v2 客户端），全部给惰性 stub */
+    setTimeout, clearTimeout,
+    DSH_HOME: '/nonexistent-dsh-home',
+    pathResolve: (...parts) => parts.join('/'),
+    readFile: async () => { const err = new Error('ENOENT'); err.code = 'ENOENT'; throw err },
+    writeJsonAtomic: async () => {},
   }
   vm.createContext(context)
   vm.runInContext(code, context)
