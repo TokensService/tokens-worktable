@@ -5315,8 +5315,8 @@ async function registerStageTimers(rc, startIdx, opts){
   // 定时后缀各任务回显由服务端写入同一归档文件夹、独立任务日志（run-<tag>-NN-任务名.log），与前缀日志连贯编号
   //（baseSeq=分界前的正式阶段数，预设任务不占阶段序号，见 stageSeq）
   const plan={ id:sid, pipelineId:rc.pipelineId||null, pipelineName:(rc.pipelineName||'')+' · 定时后缀',
-    stages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null,
-    branch:rc.branch||'main', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
+    stages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null, repository:runRepositorySnapshot(rc),
+    branch:rc.branch||'main', strategy:rc.strategy||'', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
     archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
     vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
     kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(rc.tag||'')+' · 立即（周期跟随流水线计划）' };
@@ -5378,6 +5378,21 @@ function currentStageIndex(rc){
   }
   return -1;
 }
+/* 代码仓快照进移交计划：服务端 execPlan/runStageScript 据此注入 GIT_URL/GIT_USER/GIT_PASSWORD。
+   缺 url 时只留 repoId（如队列条目），由服务端按配置仓库补齐——否则 git 类脚本会卡在凭据交互提示上。 */
+function runRepositorySnapshot(src){
+  if(!src) return null;
+  const repo=src.repository&&typeof src.repository==='object'&&!Array.isArray(src.repository)?src.repository:null;
+  const url=src.repoUrl||(repo&&repo.url)||'';
+  if(!url) return null;
+  return {
+    id: src.repoId||(repo&&repo.id)||null,
+    name: src.repoName||(repo&&repo.name)||'',
+    url: url,
+    user: src.repoUser||(repo&&repo.user)||'',
+    pass: src.repoPass||(repo&&repo.pass)||'',
+  };
+}
 function buildUnloadHandoffPlan(rc, startIdx, item){
   const src=item||rc;
   const stages=[];
@@ -5401,7 +5416,9 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
     pipelineId: src.pipelineId||null,
     pipelineName: (src.pipelineName||'(自定义)')+' · 关页移交',
     stages, env: src.env||'', envs: Array.isArray(src.envs)?src.envs:[], image: src.image||'',
-    repoId: src.repoId||null, branch: src.branch||'main', by: (src.by||'anonymous')+' ⏰',
+    repoId: src.repoId||null, repository: runRepositorySnapshot(src),
+    branch: src.branch||'main', strategy: src.strategy||'',
+    by: (src.by||'anonymous')+' ⏰',
     createdAt: Date.now(),
     archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
     vars: Object.assign({}, item?{}:(rc.vars||{})),
@@ -5409,7 +5426,9 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
     desc: '浏览器关闭移交 · '+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
   };
 }
-/* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。 */
+/* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。
+   同时 beacon 批量释放本页持有的节点租约——不释放的话移交计划要等死页面租约 TTL（90s）才拿得到
+   节点，表现成「关页后阶段卡住」。 */
 function handoffRunsOnPageHide(){
   const post=(plan)=>{
     if(!plan) return;
@@ -5421,8 +5440,11 @@ function handoffRunsOnPageHide(){
       }).catch(()=>{});
     }catch(e){ /* unload 路径吞掉：服务端 TTL/孤儿簿兜底 */ }
   };
+  const leaseOwners=[];
+  const noteLease=(id)=>{ if(id && leaseOwners.indexOf(String(id))<0) leaseOwners.push(String(id)); };
   try{
     (typeof activeRuns!=='undefined'&&activeRuns?activeRuns:[]).forEach(rc=>{
+      noteLease(rc&&rc.leaseId);
       if(!rc || rc.over || rc.parallelParent) return;
       const idx=currentStageIndex(rc);
       if(idx<0) return;
@@ -5433,11 +5455,18 @@ function handoffRunsOnPageHide(){
     const handoffItem=(item)=>{
       if(!item || !item.id || seen.has(item.id)) return;
       seen.add(item.id);
+      noteLease(item.id);   // startRun 以排队项 id 作为租约持有方
       post(buildUnloadHandoffPlan(null, 0, item));
     };
     (typeof queue!=='undefined'&&queue?queue:[]).forEach(handoffItem);
     (typeof pendingLeaseStarts!=='undefined'&&pendingLeaseStarts?pendingLeaseStarts:[]).forEach(p=>{ if(p&&p.queueItem) handoffItem(p.queueItem); });
   }catch(e){ console.warn('[pipeline] pagehide 移交失败（服务端孤儿簿兜底）:', e); }
+  if(leaseOwners.length){
+    try{
+      navigator.sendBeacon('/api/worktable/pipeline/leases',
+        JSON.stringify({action:'release', runIds:leaseOwners}));
+    }catch(e){ /* unload 路径吞掉：TTL 到期自动清理 */ }
+  }
 }
 /* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化（随服务端配置 schedEnvIds 键同步，localStorage 为离线缓存）；未单独选择过则跟随主控当前环境 */
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
