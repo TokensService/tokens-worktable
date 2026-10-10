@@ -1,13 +1,11 @@
-/* 「设置」运行选择与视图状态随服务端配置持久化的契约测试（config 顶层新键：
-   curPipelineId/selectedEnvIds/curRepoId/branch/strategy/schedEnvIds/histFilter/plFilter/
-   histPageSize/plPageSize，repositories 保留 pass 明文）：
-   - collectConfig：repositories 不再剔除 pass，并携带上述新键（null 环境多选按空数组上送）；
-   - loadServerState：键存在（含空串/空数组）一律以服务端为准；旧版服务端缺键且启动时
+/* 「设置」视图状态与定时环境随服务端配置持久化、运行行临时配置仅本地的契约测试：
+   - collectConfig：repositories 保留 pass；携带 schedEnvIds/histFilter/plFilter/histPageSize/plPageSize
+     （null 环境多选按空数组上送）；不携带 curPipelineId/selectedEnvIds/curRepoId/branch/strategy/
+     cleanupEnabled/checkEnabled/profilingEnabled（运行行临时配置仅本地）；
+   - loadServerState：视图状态键存在（含空串/空数组）一律以服务端为准；旧版服务端缺键且启动时
      localStorage 有对应旧值（legacyLocalKeys 快照）→ 保留本地值并 persistState 回推一次（迁移）；
-     代码仓服务端 pass 为空而本地有同 id 令牌 → 回填并回推；curPipelineId 先校验存在于合并后
-     流水线列表、且先于末尾 selectedId=curPipeline().stages[0].id 应用；
-   - 导入导出：新键随 config 携带（导出→导入 roundtrip），旧版导出文件（键在 local 块）
-     config 优先、local 兜底仍可导入，缺省键保持当前值。 */
+     代码仓服务端 pass 为空而本地有同 id 令牌 → 回填并回推；运行行临时配置不从服务端覆盖；
+   - 导入导出：视图状态新键随 config 携带，运行行临时配置只在 local 块（导出→导入 roundtrip）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -25,10 +23,9 @@ function extractFunction(name){
 }
 /* vm 上下文产出的对象原型与宿主不同，deepEqual 前做 JSON 往返 */
 const J=x=>JSON.parse(JSON.stringify(x));
-const LEGACY_ALL={'pip-curPipeline':true,'pip-envSel':true,'pip-curRepo':true,'pip-branch':true,'pip-strategy':true,
-  'pip-schedEnvSel':true,'pip-histFilter':true,'pip-plFilter':true,'pip-histPageSize':true,'pip-plPageSize':true};
+const LEGACY_ALL={'pip-schedEnvSel':true,'pip-histFilter':true,'pip-plFilter':true,'pip-histPageSize':true,'pip-plPageSize':true};
 
-test('collectConfig：repositories 保留 pass，携带全部运行选择与视图状态新键',()=>{
+test('collectConfig：repositories 保留 pass，携带视图状态/定时环境键；运行行临时配置不上送',()=>{
   const els={branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},
     cleanupEnv:{checked:true},checkEnv:{checked:false},profilingEnv:{checked:true}};
   const ctx={
@@ -40,7 +37,7 @@ test('collectConfig：repositories 保留 pass，携带全部运行选择与视�
     jenkins:{url:'http://jk'}, evaltok:{url:'http://et',token:'et-token'}, prom:{}, archiveDir:'/a', archiveScriptName:'c.sh',
     analysisPrompts:{}, histClearedAt:0,
     curPipelineId:'pl-xds', curRepoId:'r1',
-    selectedEnvIds:['env-a'], schedEnvIds:null,
+    selectedEnvIds:['env-a'], schedEnvIds:['env-s1'],
     histFilter:{kw:'err',status:'failed',pipeline:'构建'}, plFilter:{kw:'x',owner:'all',favorite:'favorite'},
     histPageSize:20, plPageSize:50,
   };
@@ -48,19 +45,19 @@ test('collectConfig：repositories 保留 pass，携带全部运行选择与视�
   vm.runInContext(extractFunction('collectConfig'),ctx);
   const cfg=J(ctx.collectConfig());
   assert.equal(cfg.repositories[0].pass,'git-token','代码仓访问令牌 pass 随服务端持久化（不再剔除）');
-  assert.equal(cfg.curPipelineId,'pl-xds');
-  assert.equal(cfg.curRepoId,'r1');
-  assert.deepEqual(cfg.selectedEnvIds,['env-a']);
-  assert.deepEqual(cfg.schedEnvIds,[],'定时环境未单独选择（null）按空数组上送');
-  assert.equal(cfg.branch,'0830_dev','分支取自主控输入框');
-  assert.equal(cfg.strategy,'arch-a','部署策略取自主控输入框');
+  assert.ok(!('curPipelineId' in cfg),'运行行临时配置 curPipelineId 不上送服务端');
+  assert.ok(!('curRepoId' in cfg),'运行行临时配置 curRepoId 不上送服务端');
+  assert.ok(!('selectedEnvIds' in cfg),'运行行临时配置 selectedEnvIds 不上送服务端');
+  assert.ok(!('branch' in cfg),'运行行临时配置 branch 不上送服务端');
+  assert.ok(!('strategy' in cfg),'运行行临时配置 strategy 不上送服务端');
+  assert.ok(!('cleanupEnabled' in cfg),'运行行预设勾选 cleanupEnabled 不上送服务端');
+  assert.ok(!('checkEnabled' in cfg),'运行行预设勾选 checkEnabled 不上送服务端');
+  assert.ok(!('profilingEnabled' in cfg),'运行行预设勾选 profilingEnabled 不上送服务端');
+  assert.deepEqual(cfg.schedEnvIds,['env-s1'],'定时页环境选择仍随服务端共享');
   assert.deepEqual(cfg.histFilter,{kw:'err',status:'failed',pipeline:'构建'});
   assert.deepEqual(cfg.plFilter,{kw:'x',owner:'all',favorite:'favorite'});
   assert.equal(cfg.histPageSize,20);
   assert.equal(cfg.plPageSize,50);
-  assert.equal(cfg.cleanupEnabled,true);
-  assert.equal(cfg.checkEnabled,false);
-  assert.equal(cfg.profilingEnabled,true);
 });
 
 /* ---------- loadServerState：服务端为准 / 旧版迁移 ---------- */
@@ -109,31 +106,29 @@ function loadStateFixture(serverConfig,opts){
   return {ctx,calls,storage,els};
 }
 
-test('loadServerState：服务端已有新键一律以服务端为准（含空数组/空串），不触发迁移回推',async()=>{
+test('loadServerState：视图状态/定时环境以服务端为准；运行行临时配置不被服务端覆盖',async()=>{
   const plB={id:'pl-b',name:'发布流水线',stages:[{id:'sb',name:'构建'}]};
   const f=loadStateFixture({
     pipelines:[plXds(),plB],
     repositories:[{id:'r1',name:'myapp',url:'u',user:'u',pass:'srv-token'}],
-    curPipelineId:'pl-b', selectedEnvIds:[], curRepoId:'r2', branch:'main', strategy:'',
+    curPipelineId:'pl-b', selectedEnvIds:['env-srv'], curRepoId:'r2', branch:'main', strategy:'',
     schedEnvIds:['env-s1'], histFilter:{kw:'x',status:'failed',pipeline:'P'}, plFilter:{kw:'y',owner:'all',favorite:'favorite'},
     histPageSize:20, plPageSize:50,
   },{
     localPipelines:[plXds(),plB],
     localRepos:[{id:'r1',name:'myapp',url:'u',user:'u',pass:'local-token'}],
-    curPipelineId:'pl-xds', selectedEnvIds:['env-l'], curRepoId:'r1', schedEnvIds:null,
+    curPipelineId:'pl-xds', selectedEnvIds:['env-l'], curRepoId:'r1',
+    schedEnvIds:null,
     histFilter:{kw:'local',status:'',pipeline:''}, plFilter:{kw:'l',owner:'mine',favorite:'all'},
     histPageSize:10, plPageSize:10,
     legacy:Object.assign({},LEGACY_ALL),
   });
   await f.ctx.loadServerState();
   assert.equal(f.ctx.stateLoaded,true,'成功拉到服务端后写入门打开');
-  assert.equal(f.ctx.curPipelineId,'pl-b','当前流水线以服务端为准');
-  assert.equal(f.ctx.selectedId,'sb','curPipelineId 先于末尾 selectedId=curPipeline().stages[0].id 应用');
-  assert.deepEqual(J(f.ctx.selectedEnvIds),[],'键存在但空数组：以服务端为准（不走本地迁移）');
-  assert.equal(f.ctx.curRepoId,'r2');
-  assert.deepEqual(J(f.ctx.schedEnvIds),['env-s1']);
-  assert.equal(f.els.branchName.value,'main');
-  assert.equal(f.els.deployStrategyName.value,'','键存在但空串：以服务端为准');
+  assert.equal(f.ctx.curPipelineId,'pl-xds','运行行临时配置：当前流水线不被服务端覆盖');
+  assert.deepEqual(J(f.ctx.selectedEnvIds),['env-l'],'运行行临时配置：环境多选不被服务端覆盖');
+  assert.equal(f.ctx.curRepoId,'r1','运行行临时配置：当前代码仓不被服务端覆盖');
+  assert.deepEqual(J(f.ctx.schedEnvIds),['env-s1'],'定时环境选择以服务端为准');
   assert.deepEqual(J(f.ctx.histFilter),{kw:'x',status:'failed',pipeline:'P'});
   assert.equal(f.els.histFilterKw.value,'x');
   assert.equal(f.els.histFilterStatus.value,'failed');
@@ -146,12 +141,11 @@ test('loadServerState：服务端已有新键一律以服务端为准（含空�
   assert.equal(f.ctx.plPageSize,50);
   assert.equal(f.els.plPageSize.value,'50');
   assert.equal(f.ctx.repositories[0].pass,'srv-token','服务端已有令牌以服务端为准（本地令牌不复活）');
-  assert.equal(f.calls.persist,0,'服务端键齐全：无迁移、不回推');
+  assert.equal(f.calls.persist,0,'视图状态键齐全：无迁移、不回推');
   assert.equal(f.calls.renderAll,1);
-  /* localStorage 离线缓存同步为新键的服务端值 */
+  /* localStorage 离线缓存同步为视图状态的服务端值 */
   assert.deepEqual(J(JSON.parse(f.storage['pip-histFilter'])),{kw:'x',status:'failed',pipeline:'P'});
   assert.deepEqual(J(JSON.parse(f.storage['pip-plFilter'])),{kw:'y',owner:'all',favorite:'favorite'});
-  assert.equal(f.storage['pip-branch'],'main');
   assert.equal(f.storage['pip-plPageSize'],'50');
   assert.equal(f.storage['pip-schedEnvSel'],'["env-s1"]');
 });
@@ -276,21 +270,26 @@ function importCtx(overrides){
   return {ctx,saved,els,store};
 }
 
-test('导出设置→导入 roundtrip：新键随 config 携带（含 pass 明文），local 块按旧结构同步输出',()=>{
+test('导出设置→导入 roundtrip：视图状态随 config 携带（含 pass 明文），运行行临时配置只在 local 块',()=>{
   const data=J(exportCtx().buildSettingsExport());
   assert.equal(data.kind,'pipeline-settings');
   assert.ok(!('pipelines' in data.config),'设置导出不含流水线');
   assert.equal(data.config.repositories[0].pass,'git-token','config 携带访问令牌明文');
-  ['curPipelineId','selectedEnvIds','curRepoId','branch','strategy','schedEnvIds','histFilter','plFilter','histPageSize','plPageSize'].forEach(k=>{
-    assert.ok(k in data.config,`config 应携带新键 ${k}`);
+  ['schedEnvIds','histFilter','plFilter','histPageSize','plPageSize'].forEach(k=>{
+    assert.ok(k in data.config,`config 应携带视图状态键 ${k}`);
+  });
+  ['curPipelineId','selectedEnvIds','curRepoId','branch','strategy','cleanupEnabled','checkEnabled','profilingEnabled'].forEach(k=>{
+    assert.ok(!(k in data.config),`config 不携带运行行临时配置 ${k}`);
+    assert.ok(k in data.local,`local 块携带运行行临时配置 ${k}`);
   });
   assert.deepEqual(data.config.histFilter,{kw:'err',status:'failed',pipeline:'构建'});
   assert.deepEqual(data.config.plFilter,{kw:'x',owner:'all',favorite:'favorite'});
   assert.equal(data.config.histPageSize,20);
   assert.equal(data.config.plPageSize,50);
-  assert.deepEqual(data.local,{curPipelineId:'pl-b',selectedEnvIds:['env-a'],curRepoId:'r1',schedEnvIds:['env-a'],
-    branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'err',status:'failed',pipeline:'构建'},histPageSize:20},
-    'local 块保持旧版导出结构（向后兼容旧版页面导入）');
+  assert.deepEqual(J(data.local),{curPipelineId:'pl-b',selectedEnvIds:['env-a'],curRepoId:'r1',schedEnvIds:['env-a'],
+    branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'err',status:'failed',pipeline:'构建'},histPageSize:20,
+    cleanupEnabled:true,checkEnabled:false,profilingEnabled:false},
+    'local 块携带运行行临时配置（向后兼容旧版页面导入）');
 
   const f=importCtx();
   f.ctx.applyImportedSettings(data.config,data.local);
@@ -300,6 +299,9 @@ test('导出设置→导入 roundtrip：新键随 config 携带（含 pass 明�
   assert.deepEqual(J(f.ctx.schedEnvIds),['env-a']);
   assert.equal(f.els.branchName.value,'0830_dev');
   assert.equal(f.els.deployStrategyName.value,'arch-a');
+  assert.equal(f.els.cleanupEnv.checked,true);
+  assert.equal(f.els.checkEnv.checked,false);
+  assert.equal(f.els.profilingEnv.checked,false);
   assert.deepEqual(J(f.ctx.histFilter),{kw:'err',status:'failed',pipeline:'构建'});
   assert.deepEqual(J(f.ctx.plFilter),{kw:'x',owner:'all',favorite:'favorite'});
   assert.equal(f.els.plFilterOwner.value,'全部');
