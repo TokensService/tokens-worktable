@@ -4578,7 +4578,7 @@ function browserTag(){
   if(/Edg\//.test(ua)) b='Edge'; else if(/Chrome\//.test(ua)) b='Chrome'; else if(/Firefox\//.test(ua)) b='Firefox'; else if(/Safari\//.test(ua)) b='Safari';
   return b+'·'+QCLIENT_ID.slice(-4);
 }
-let _qPubSig='', _qPubAt=0, _qPubTimer=null, _qPubWarned=false;
+let _qPubSig='', _qPubAt=0, _qPubTimer=null, _qPubWarned=false, _qPubChain=Promise.resolve();
 function queueStagePresence(stage){
   if(!stage||stage.id===undefined||stage.id===null) return null;
   const out={id:String(stage.id),name:String(stage.name||'')};
@@ -4649,13 +4649,18 @@ function queuePublishBody(){
 /* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
 function publishQueue(force){
   const body=queuePublishBody();
-  const sig=JSON.stringify([body.runs,body.queue]);
+  /* completed 变化本身也必须触发上报：否则同一运行集合不变时，终态豁免可能
+     留在本地而未送达服务端，下一次心跳会把正常完成误记为孤儿。 */
+  const sig=JSON.stringify([body.runs,body.queue,body.completed]);
   const now=Date.now();
   if(!force && sig===_qPubSig && now-_qPubAt<10000) return;
   _qPubSig=sig; _qPubAt=now;
-  fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body)})
-    .catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
+  /* 同一标签页的快照必须按生成顺序送达。否则旧的“运行中”PUT 可能晚于
+     完成后的空快照到达服务端，把已完成任务重新写回，最终再次进入孤儿簿。 */
+  const send=()=>fetch('/api/worktable/pipeline/queue',{method:'PUT',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).catch(e=>{ if(!_qPubWarned){ _qPubWarned=true; console.warn('[queue] 在场快照上报失败（不影响本地队列）:', e); } });
+  _qPubChain=_qPubChain.then(send,send);
+  return _qPubChain;
 }
 /* renderQueue 渲染很频繁（运行期逐帧），上报走 500ms 防抖合并，避免状态抖动时连续发请求 */
 function scheduleQueuePublish(){ if(_qPubTimer) clearTimeout(_qPubTimer); _qPubTimer=setTimeout(()=>{ _qPubTimer=null; publishQueue(false); },500); }

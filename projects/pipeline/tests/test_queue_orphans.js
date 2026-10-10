@@ -74,7 +74,7 @@ function loadPublishContext(overrides) {
   const context = Object.assign({
     activeRuns: [], queue: [], pendingLeaseStarts: [],
     expandRunStages: stages => stages,
-    _qPubSig: '', _qPubAt: 0, _qPubWarned: false,
+    _qPubSig: '', _qPubAt: 0, _qPubWarned: false, _qPubChain: Promise.resolve(),
     QCLIENT_ID: 'c1', browserTag: () => 'Chrome·c1',
     sessionStorage: fakeSessionStorage(),
     fetch: (url, options) => { calls.push({ url, options }); return Promise.resolve({}); },
@@ -86,11 +86,11 @@ function loadPublishContext(overrides) {
   return { context, calls };
 }
 
-test('publishQueue：PUT 体为 schemaVersion:3 且携带 completed（终态登记 + 在跑运行的 originQueueId 移交）', () => {
+test('publishQueue：PUT 体为 schemaVersion:3 且携带 completed（终态登记 + 在跑运行的 originQueueId 移交）', async () => {
   const { context, calls } = loadPublishContext();
   context.activeRuns.push({ id: 'r9', originQueueId: 'q9', pipelineName: '发布', by: 'alice', startTs: 1, stages: [], nodes: {} });
   context.queueFinishedNote('r-done');   // 刚正常完成的运行
-  context.publishQueue(true);
+  await context.publishQueue(true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, 'PUT');
   const body = JSON.parse(calls[0].options.body);
@@ -100,6 +100,32 @@ test('publishQueue：PUT 体为 schemaVersion:3 且携带 completed（终态登�
   assert.ok(body.completed.includes('r-done'), 'completed 含刚正常终态化的条目');
   assert.ok(body.completed.includes('q9'), '排队项启动转运行属正常移交：originQueueId 并入 completed，防服务端误判孤儿');
   assert.equal(body.runs[0].id, 'r9');
+});
+
+test('publishQueue：同一标签页的快照按生成顺序发送，防止旧 PUT 晚到覆盖完成快照', async () => {
+  const requests = [];
+  let releaseFirst;
+  const firstDone = new Promise(resolve => { releaseFirst = resolve; });
+  const { context } = loadPublishContext({
+    fetch: (url, options) => {
+      requests.push(JSON.parse(options.body));
+      if (requests.length === 1) return firstDone;
+      return Promise.resolve({});
+    },
+  });
+  context.activeRuns.push({ id: 'r1', pipelineName: '发布', by: 'alice', startTs: 1, stages: [], nodes: {} });
+  const first = context.publishQueue(true);
+  context.activeRuns.length = 0;
+  context.queueFinishedNote('r1');
+  const second = context.publishQueue(true);
+  await Promise.resolve();
+  assert.equal(requests.length, 1, '第二个快照应等待第一个 PUT 完成');
+  releaseFirst({});
+  await Promise.all([first, second]);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[0].runs.map(r => r.id), ['r1']);
+  assert.deepEqual(requests[1].runs, []);
+  assert.ok(requests[1].completed.includes('r1'));
 });
 
 /* ---------- 孤儿预览 rc（orphanPreviewRc / focusOrphanQueueItem） ---------- */

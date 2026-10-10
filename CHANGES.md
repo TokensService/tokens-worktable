@@ -1,5 +1,7 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复流水线运行队列的状态竞态：孤儿登记簿路由等待启动加载完成后再处理请求，避免「移除」与磁盘恢复并发导致旧中断条目复现；页面按序发送队列快照 PUT，并将 `completed` 纳入去重签名，避免网络乱序或终态豁免未上报把已完成运行重新判为「已中断」。
+
 - 流水线 EvalTokens 阶段**适配服务端同步执行的 /run**（任务跑完才返回启动响应）：此前代连（remote 模式）
   的 /run 走 `/api/worktable/proxy` 硬编码 20s 上游超时，长任务一律在 20s 被判 `request timeout` 失败
   （任务实际仍在 EvalTokens 服务端正常跑完）。改动：`/api/worktable/proxy` 支持按请求 `timeoutMs`

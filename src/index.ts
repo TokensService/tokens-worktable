@@ -3276,6 +3276,9 @@ export function apply(ctx: Context) {
     path: '/api/worktable/pipeline/queue',
     handler: async (req: any, res: any) => {
       try {
+        /* 孤儿簿启动时异步从磁盘加载；所有读写请求必须等加载完成，避免
+           dismiss/复活先改内存、随后被旧磁盘快照重新灌回造成“移除后又出现”。 */
+        await queueOrphansReady
         if (req.method === 'PUT' || req.method === 'POST') {
           /* POST 同时承载服务端任务取消，并兼容旧页面 pagehide 的 sendBeacon 清态。 */
           const body = await readJsonBody(req)

@@ -474,13 +474,13 @@ test('publishQueue：上报声明可点击阶段快照协议版本并携带 comp
   assert.match(publishSource, /completed\s*:/);
 });
 
-test('publishQueue：节点租约申请期间继续把待启动项作为可查看的排队快照上报', () => {
+test('publishQueue：节点租约申请期间继续把待启动项作为可查看的排队快照上报', async () => {
   const calls = [];
   const context = {
     activeRuns: [], queue: [],
     pendingLeaseStarts: [{ queueItem: { id: 'q-pending', queuedAt: 1, stages: [{ id: 's1', name: '构建' }], presets: [] } }],
     expandRunStages: stages => stages,
-    _qPubSig: '', _qPubAt: 0, _qPubWarned: false,
+    _qPubSig: '', _qPubAt: 0, _qPubWarned: false, _qPubChain: Promise.resolve(),
     QCLIENT_ID: 'c1', browserTag: () => 'Chrome·c1',
     fetch: (url, options) => { calls.push({ url, options }); return Promise.resolve({}); },
     console,
@@ -488,7 +488,7 @@ test('publishQueue：节点租约申请期间继续把待启动项作为可查�
   vm.createContext(context);
   vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function queueStagePresence', '/* renderQueue 渲染很频繁'), context);
-  context.publishQueue(true);
+  await context.publishQueue(true);
   const body = JSON.parse(calls[0].options.body);
   assert.equal(body.queue.length, 1);
   assert.equal(body.queue[0].id, 'q-pending');

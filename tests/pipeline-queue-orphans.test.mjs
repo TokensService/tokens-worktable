@@ -100,6 +100,19 @@ test('v3 客户端条目消失且无 completed → 进孤儿簿，GET orphans �
   assert.equal(JSON.stringify(orphans).includes('secret'), false)
 })
 
+test('孤儿簿启动加载完成前的请求会等待，避免 dismiss 后被旧磁盘快照复现', async () => {
+  let releaseLoad
+  const load = new Promise(resolve => { releaseLoad = resolve })
+  const persisted = JSON.stringify({ orphans: [{ ...runEntry('stale'), ownerId: 'c1', ownerLabel: 'Chrome·c1', kind: 'running', orphanedAt: Date.now() }] })
+  const { handler } = loadQueueRoute({ readFile: async () => { await load; return persisted } })
+  const pending = call(handler, 'POST', { action: 'dismiss', ownerId: 'c1', id: 'stale' })
+  await Promise.resolve()
+  releaseLoad()
+  const dismissed = await pending
+  assert.equal(dismissed.status, 200)
+  assert.deepEqual(orphansOf(await call(handler, 'GET')), [])
+})
+
 test('v3 客户端条目消失但在 completed 中 → 不进孤儿簿', async () => {
   const { handler } = loadQueueRoute()
   await call(handler, 'PUT', v3('c1', { runs: [runEntry('run-1')], queue: [queueEntry('q-1')] }))
