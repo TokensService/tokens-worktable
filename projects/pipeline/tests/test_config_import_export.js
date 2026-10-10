@@ -75,7 +75,7 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
   assert.equal(s.data.version,1);
   assert.ok(typeof s.data.exportedAt==='string' && s.data.exportedAt.length>0);
   assert.equal(s.data.config.repositories[0].pass,'tk');
-  assert.deepEqual(J(s.data.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20},'执行人不再随配置导出（只读，固定取当前登录用户）');
+  assert.deepEqual(J(s.data.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20,cleanupEnabled:false,checkEnabled:false,profilingEnabled:false},'运行行临时配置只在 local 块导出（执行人只读不导出）');
   assert.match(p.name,/^pipeline-pipelines-\d{8}-\d{6}\.json$/);
   assert.equal(p.data.kind,'pipeline-pipelines');
   assert.equal(p.data.pipelines.length,2);
@@ -460,7 +460,7 @@ test('导出到剪贴板：与本地下载同一份 payload，copyText 写入剪
   assert.equal(s.app,'worktable-pipeline');
   assert.equal(s.kind,'pipeline-settings');
   assert.equal(s.config.repositories[0].pass,'tk','复制设置含代码仓令牌，与本地下载同源');
-  assert.deepEqual(J(s.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20});
+  assert.deepEqual(J(s.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20,cleanupEnabled:false,checkEnabled:false,profilingEnabled:false},'运行行临时配置只在 local 块导出');
   const p=JSON.parse(copied[1].text);
   assert.equal(p.kind,'pipeline-pipelines');
   assert.equal(p.pipelines.length,2);

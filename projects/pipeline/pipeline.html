@@ -1083,35 +1083,26 @@ let persistInFlight=null;
 /* 旧版本地配置键快照（页面启动时记录，此刻 localStorage 尚未被本页离线缓存回写）：供 loadServerState
    判定迁移条件——服务端缺某新键且启动时本地有对应旧值，才保留本地值并回推。不能用加载过程中的 LS 实时读：
    本页同步块会把应用后的值写回 LS，二次重拉会把「自己刚写的缓存」误判成「本地有旧值」而重复回推。 */
-const legacyLocalKeys=(function(){ const m={}; try{ ['pip-curPipeline','pip-envSel','pip-curRepo','pip-branch','pip-strategy','pip-schedEnvSel','pip-histFilter','pip-plFilter','pip-histPageSize','pip-plPageSize'].forEach(k=>{ m[k]=localStorage.getItem(k)!==null; }); }catch(e){} return m; })();
+const legacyLocalKeys=(function(){ const m={}; try{ ['pip-schedEnvSel','pip-histFilter','pip-plFilter','pip-histPageSize','pip-plPageSize'].forEach(k=>{ m[k]=localStorage.getItem(k)!==null; }); }catch(e){} return m; })();
 function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
 /* 收集上送服务端的配置：代码仓条目保留访问令牌 pass（明文随配置保存到服务端 worktable-pipeline.json，
-   团队各浏览器共享）；运行选择与视图状态（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/
-   schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）同随服务端持久化——例外：编辑器草稿
-   pip-plDraft 仍仅存本浏览器（未过校验的半成品，见 savePlDraft）。
-   cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态与 customPresets 仅跨浏览器同步
-   （定时计划的服务端执行暂不支持这些预设任务）。 */
+   团队各浏览器共享）；视图状态与定时环境选择（schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）
+   同随服务端持久化——例外：编辑器草稿 pip-plDraft 仍仅存本浏览器（未过校验的半成品，见 savePlDraft）。
+   运行流水线行的临时配置（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/预设勾选）只存浏览器
+   localStorage，不上送服务端——各人临时调整自己的运行参数，不覆盖他人浏览器的取值。 */
 function collectConfig(){
-  const branchEl=$('branchName'), strategyEl=$('deployStrategyName');
   return { pipelines, environments,
     repositories: repositories.map(function(r){ return Object.assign({}, r); }),
     scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, customPresets, jenkins, evaltok, prom,
     archiveDir, archiveScriptName, analysisPrompts, histClearedAt,
-    curPipelineId, curRepoId,
-    selectedEnvIds: Array.isArray(selectedEnvIds)?selectedEnvIds.slice():[],
     schedEnvIds: Array.isArray(schedEnvIds)?schedEnvIds.slice():[],
-    branch: branchEl?String(branchEl.value||''):'',
-    strategy: strategyEl?String(strategyEl.value||''):'',
     histFilter: {kw:String(histFilter.kw||''),status:String(histFilter.status||''),pipeline:String(histFilter.pipeline||'')},
     plFilter: {kw:String(plFilter.kw||''),owner:String(plFilter.owner||'mine'),favorite:plFilter.favorite==='favorite'?'favorite':'all'},
     histPageSize: Math.max(1,parseInt(histPageSize,10)||10),
-    plPageSize: Math.max(1,parseInt(plPageSize,10)||10),
-    cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked),
-    checkEnabled: !!($('checkEnv') && $('checkEnv').checked),
-    profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) };
+    plPageSize: Math.max(1,parseInt(plPageSize,10)||10) };
 }
 function historyForPersist(){
   const transient=['_lc','_lm','_ll','_profChecked','_profState'];
@@ -1383,27 +1374,17 @@ async function loadServerState(){
         repositories=cfg.repositories.map(normalizeRepo);
         repositories.forEach(function(r){ if(!r.pass && prevPass[r.id]){ r.pass=prevPass[r.id]; migrated=true; } });
       }
-      /* 运行选择与视图状态（当前流水线/环境多选/当前代码仓/分支/部署策略/定时环境/历史与流水线筛选/页大小）：
-         键存在（含空串/空数组）一律以服务端为准；旧版服务端无该键且启动时 localStorage 有对应旧值
-         （legacyLocalKeys 快照）→ 保留本地值（全局已在启动时从 localStorage 装入）并标记 migrated，
-         finally 统一回推一次。stateLoaded 门控不变：服务端不可达时本块不执行，不会用默认值覆盖服务端。
-         409/403 自愈重拉也走这里：他端改动借此同步进来；筛选/页大小这类视图状态直接按服务端覆盖，
-         文本输入框仅在未聚焦时回写（聚焦中说明正在输入，状态仍已应用、回显留给失焦后的渲染）——
-         在途未确认的本地编辑可能被冲掉，编辑动作本身会再触发 persistState 重新上送，属可接受取舍。 */
+      /* 视图状态与定时环境选择（定时环境/历史与流水线筛选/页大小）：键存在（含空串/空数组）一律以服务端为准；
+         旧版服务端无该键且启动时 localStorage 有对应旧值（legacyLocalKeys 快照）→ 保留本地值（全局已在启动时
+         从 localStorage 装入）并标记 migrated，finally 统一回推一次。stateLoaded 门控不变：服务端不可达时
+         本块不执行，不会用默认值覆盖服务端。409/403 自愈重拉也走这里：他端改动借此同步进来；筛选/页大小这类
+         视图状态直接按服务端覆盖，文本输入框仅在未聚焦时回写（聚焦中说明正在输入，状态仍已应用、回显留给
+         失焦后的渲染）——在途未确认的本地编辑可能被冲掉，编辑动作本身会再触发 persistState 重新上送，属可
+         接受取舍。
+         运行流水线行的临时配置（当前流水线/环境多选/当前代码仓/分支/部署策略/预设勾选）只存浏览器本地，
+         不从服务端覆盖（collectConfig 也不上送）——各人临时调整不影响他人。 */
       const hadLegacy=k=>typeof legacyLocalKeys!=='undefined' && !!legacyLocalKeys[k];   // typeof 守卫：沙盒单独抽取本函数时快照可能不存在
       const setInputVal=(id,v)=>{ const el=$(id); if(!el) return; if(typeof document!=='undefined' && document && document.activeElement===el) return; el.value=v; };
-      /* curPipelineId 须在流水线合并之后、末尾 selectedId=curPipeline().stages[0].id 之前应用，
-         且仅当服务端值仍存在于合并后的流水线列表（可能已被他端删除）才采用 */
-      if(typeof cfg.curPipelineId==='string'){ if(pipelines.some(p=>p&&p.id===cfg.curPipelineId)) curPipelineId=cfg.curPipelineId; }
-      else if(hadLegacy('pip-curPipeline')) migrated=true;
-      if(Array.isArray(cfg.selectedEnvIds)) selectedEnvIds=cfg.selectedEnvIds.filter(id=>typeof id==='string');
-      else if(hadLegacy('pip-envSel')) migrated=true;
-      if(typeof cfg.curRepoId==='string') curRepoId=cfg.curRepoId;
-      else if(hadLegacy('pip-curRepo')) migrated=true;
-      if(typeof cfg.branch==='string') setInputVal('branchName', cfg.branch);
-      else if(hadLegacy('pip-branch')) migrated=true;
-      if(typeof cfg.strategy==='string') setInputVal('deployStrategyName', cfg.strategy);
-      else if(hadLegacy('pip-strategy')) migrated=true;
       if(Array.isArray(cfg.schedEnvIds)) schedEnvIds=cfg.schedEnvIds.filter(id=>typeof id==='string');
       else if(hadLegacy('pip-schedEnvSel')) migrated=true;
       if(cfg.histFilter && typeof cfg.histFilter==='object' && !Array.isArray(cfg.histFilter)){
@@ -1428,11 +1409,8 @@ async function loadServerState(){
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
       if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
       if(cfg.cleanupScript && typeof cfg.cleanupScript.name==='string') cleanupScript=cfg.cleanupScript;
-      if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
       if(cfg.checkScript && typeof cfg.checkScript.name==='string') checkScript=cfg.checkScript;
-      if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
       if(cfg.profilingScript && typeof cfg.profilingScript.name==='string') profilingScript=cfg.profilingScript;
-      if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
       /* 自定义预设任务：旧服务端数据无此字段时保持本地（localStorage）配置；有则以服务端为准并重建名称表/面板/设置页专区 */
       if(Array.isArray(cfg.customPresets)){ customPresets=normalizeCustomPresets(cfg.customPresets); rebuildPresetNameMap(); renderPresetMultiPanel(); renderPresetMultiBtn(); renderCustomPresetZone(); }
       if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
@@ -1456,7 +1434,8 @@ async function loadServerState(){
         localStorage.setItem('pip-curRepo', curRepoId);
         localStorage.setItem('pip-scriptsDir', scriptsDir);
         localStorage.setItem('pip-curPipeline', curPipelineId);
-        /* 新增随服务端同步的键同样刷新离线缓存（typeof 守卫：沙盒单独抽取本函数时这些全局可能不存在） */
+        /* 定时环境/筛选/页大小随服务端同步，同步后刷新离线缓存（typeof 守卫：沙盒单独抽取本函数时这些全局可能不存在）；
+           运行行临时配置（envSel/curRepo/curPipeline/branch/strategy/预设勾选）不从服务端覆盖，这里只把本地值回写缓存 */
         if(typeof schedEnvIds!=='undefined') localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds));
         if(typeof histFilter!=='undefined') localStorage.setItem('pip-histFilter', JSON.stringify(histFilter));
         if(typeof plFilter!=='undefined') localStorage.setItem('pip-plFilter', JSON.stringify(plFilter));
@@ -1886,7 +1865,7 @@ function resolveEnv(v){ if(!v) return curEnv(); return environments.find(e=>e.id
 function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) ? (e.name+'（'+e.ip+'）') : e.ip; }
 /* 环境多选（主控，可选多个目标 IP；默认不选择任何节点——不选即按无目标节点运行，排队按同机串行处理） */
 let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
-function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} persistState(); }
+function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} }
 function curEnvs(){
   return environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
 }
@@ -2122,7 +2101,7 @@ let repositories = loadRepos() || [
 ];
 function saveRepos(){ try{ localStorage.setItem('pip-repos', JSON.stringify(repositories)); }catch(e){} persistState(); }
 let curRepoId = lsGet('pip-curRepo', repositories[0].id);
-function saveRepoSel(){ try{ localStorage.setItem('pip-curRepo', curRepoId); }catch(e){} persistState(); }
+function saveRepoSel(){ try{ localStorage.setItem('pip-curRepo', curRepoId); }catch(e){} }
 function curRepo(){ return repositories.find(r=>r.id===curRepoId) || repositories[0]; }
 function resolveRepo(v){ if(!v) return curRepo(); return repositories.find(r=>r.id===v)||repositories.find(r=>r.url===v)||repositories.find(r=>r.name===v)||{id:'',name:String(v),url:String(v),user:'',pass:''}; }
 let repoEditId=null;
@@ -9384,7 +9363,7 @@ function renderPipelineSel(){
 }
 function selectPipeline(id){
   exitHistoryReplay();   // 手动切换流水线：退出历史回放（回放态下 selectPipeline 不会被 enterHistoryReplay 调用，无递归）
-  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){} persistState();
+  curPipelineId=id; try{ localStorage.setItem('pip-curPipeline',id); }catch(e){}   /* 运行行临时配置仅本地，不上送服务端 */
   /* 下拉选用、新建或复制可能选中当前页之外的流水线：目标仍命中当前筛选时同步翻到它所在页；
      若筛选本身排除了目标则保持当前页，不擅自清除用户筛选。排序须与 renderPipelines 一致。 */
   const listView=pipelines.filter(plFilterMatch).sort((a,b)=>((b.pinnedAt||0)-(a.pinnedAt||0)));
@@ -10024,9 +10003,9 @@ async function applyPipelineShareText(text){
 
 /* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
    导出设置 = 设置页全部配置（collectConfig 去掉 pipelines——流水线走独立导出）：节点密码与代码仓/服务
-             访问令牌明文、运行选择与视图状态（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/
-             schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）都随 config 携带（与服务端持久化同口径）；
-             local 块按旧结构同步输出一份运行选择，供旧版页面导入新版文件时识别（新版导入 config 优先、local 兜底）；
+             访问令牌明文、视图状态与定时环境（schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）随 config
+             携带（与服务端持久化同口径）；运行行临时配置（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/
+             预设勾选）只在 local 块输出（仅本地，不进 config/服务端）；
    导出流水线 = 全部流水线定义（含预置流水线上的编辑）。
    每个导出 / 导入都有「浏览器本地文件」「服务端备份」与「剪贴板」三个去向：本地下载 / 文件选择框、
    落盘 / 读取 dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），或复制 JSON /
@@ -10051,8 +10030,9 @@ function buildSettingsExport(){
   return {
     app:'worktable-pipeline', kind:'pipeline-settings', version:1, exportedAt:new Date().toISOString(),
     config:collectSettingsForExport(),
-    /* local 块按旧版导出结构保留（旧版页面只认 local 里的运行选择）；新版导入 config 优先、local 兜底 */
-    local:{ curPipelineId, selectedEnvIds, curRepoId, schedEnvIds, branch:$('branchName').value, strategy:$('deployStrategyName').value, histFilter, histPageSize },
+    /* 运行行临时配置只在 local 块输出（不进 config/服务端）；兼容旧版导入：旧文件里这些键在 config，pick 仍可取到 */
+    local:{ curPipelineId, selectedEnvIds, curRepoId, schedEnvIds, branch:$('branchName').value, strategy:$('deployStrategyName').value, histFilter, histPageSize,
+      cleanupEnabled:!!($('cleanupEnv')&&$('cleanupEnv').checked), checkEnabled:!!($('checkEnv')&&$('checkEnv').checked), profilingEnabled:!!($('profilingEnv')&&$('profilingEnv').checked) },
   };
 }
 function exportSettings(){
@@ -10085,11 +10065,8 @@ function applyImportedSettings(cfg, loc){
   if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
   if(Number.isFinite(cfg.buildNo)) buildNo=cfg.buildNo;
   if(cfg.cleanupScript===null || (cfg.cleanupScript && typeof cfg.cleanupScript.name==='string')) cleanupScript=cfg.cleanupScript;
-  if(typeof cfg.cleanupEnabled==='boolean') $('cleanupEnv').checked=cfg.cleanupEnabled;
   if(cfg.checkScript===null || (cfg.checkScript && typeof cfg.checkScript.name==='string')) checkScript=cfg.checkScript;
-  if(typeof cfg.checkEnabled==='boolean') $('checkEnv').checked=cfg.checkEnabled;
   if(cfg.profilingScript===null || (cfg.profilingScript && typeof cfg.profilingScript.name==='string')) profilingScript=cfg.profilingScript;
-  if(typeof cfg.profilingEnabled==='boolean') $('profilingEnv').checked=cfg.profilingEnabled;
   if(Array.isArray(cfg.customPresets)) customPresets=normalizeCustomPresets(cfg.customPresets);   /* 自定义预设任务按文件恢复；落盘与名称表/面板/专区重建由下方 saveCustomPresets 统一完成 */
   if(cfg.jenkins && typeof cfg.jenkins==='object') jenkins=Object.assign({}, DEFAULT_JENKINS, cfg.jenkins);
   if(cfg.evaltok && typeof cfg.evaltok==='object') evaltok=Object.assign({}, DEFAULT_EVALTOK, cfg.evaltok);
@@ -10099,8 +10076,8 @@ function applyImportedSettings(cfg, loc){
   if(typeof cfg.archiveScriptName==='string') archiveScriptName=cfg.archiveScriptName;
   if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
-  /* 运行选择与视图状态：新版导出随 config 携带（与服务端同键），旧版导出在 local 块——config 优先、local 兜底；
-     两处都没有（更旧的文件）保持当前值 */
+  /* 运行行临时配置与视图状态：新版导出在 local 块（预设勾选/流水线/环境/代码仓/分支/策略）或 config
+     （schedEnvIds/筛选/页大小），旧版导出在 config——config 优先、local 兜底；两处都没有保持当前值 */
   const pick=k=> cfg[k]!==undefined ? cfg[k] : loc[k];
   const impCur=pick('curPipelineId');
   if(typeof impCur==='string' && pipelines.some(p=>p.id===impCur)){ curPipelineId=impCur; viewRc=null; syncViewRun(); }
@@ -10114,6 +10091,12 @@ function applyImportedSettings(cfg, loc){
   if(typeof impBranch==='string') $('branchName').value=impBranch;
   const impStrategy=pick('strategy');
   if(typeof impStrategy==='string') $('deployStrategyName').value=impStrategy;
+  const impCleanup=pick('cleanupEnabled');
+  if(typeof impCleanup==='boolean') $('cleanupEnv').checked=impCleanup;
+  const impCheck=pick('checkEnabled');
+  if(typeof impCheck==='boolean') $('checkEnv').checked=impCheck;
+  const impProfiling=pick('profilingEnabled');
+  if(typeof impProfiling==='boolean') $('profilingEnv').checked=impProfiling;
   /* 旧配置里的 loc.by（执行人）不再恢复：执行人只读、固定取当前登录用户（fillExecutorFromAuth） */
   const impHistFilter=pick('histFilter');
   if(impHistFilter && typeof impHistFilter==='object'){
@@ -10368,10 +10351,10 @@ document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$(
 /* 预设任务多选面板开合（与「环境」多选同一交互：点外关闭） */
 $('presetMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('presetMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('presetMultiPanel'); const m=$('presetMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
-/* 运行设置（分支 / 部署策略）随服务端配置同步（branch/strategy 键），localStorage 为离线缓存、刷新后先回填；
-   change 即时存，pagehide 兜底（分支面板点选为程序化赋值、不触发 change，靠 pagehide 持久化）。
+/* 运行设置（分支 / 部署策略）为运行行临时配置，只存浏览器 localStorage、不上送服务端（不影响他人）；
+   刷新后从 localStorage 回填。change 即时存，pagehide 兜底（分支面板点选为程序化赋值、不触发 change，靠 pagehide 持久化）。
    执行人不参与持久化——它只读、固定取当前登录用户（见下方 fillExecutorFromAuth）。 */
-function saveRunSelLS(){ try{ localStorage.setItem('pip-branch',$('branchName').value); localStorage.setItem('pip-strategy',$('deployStrategyName').value); }catch(e){} persistState(); }
+function saveRunSelLS(){ try{ localStorage.setItem('pip-branch',$('branchName').value); localStorage.setItem('pip-strategy',$('deployStrategyName').value); }catch(e){} }   /* 运行行临时配置仅本地，不上送服务端 */
 (function(){ try{ const b=localStorage.getItem('pip-branch'); if(b!==null) $('branchName').value=b; const s=localStorage.getItem('pip-strategy'); if(s!==null) $('deployStrategyName').value=s; }catch(e){} })();
 $('branchName').addEventListener('change', saveRunSelLS);
 $('deployStrategyName').addEventListener('change', saveRunSelLS);

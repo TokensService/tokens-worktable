@@ -18,6 +18,13 @@ test('升级提示词要求执行结果携带版本信息', () => {
   assert.match(prompt, /核对实际安装的版本/, '提示词要求核对实际安装的版本')
 })
 
+test('升级命令按 tag 取固定文件名 tokens-worktable.tgz', () => {
+  const cmd = source.match(/const upgradeCmd = \(tag: string\) => ([^\n]+)/)?.[1] ?? ''
+  assert.ok(cmd.includes('/releases/download/'), '命令走 releases/download 按 tag 取资产')
+  assert.ok(cmd.includes('/tokens-worktable.tgz'), '资产文件名为固定的 tokens-worktable.tgz')
+  assert.doesNotMatch(cmd, /tokens-worktable-' \+ tag\.replace/, '不再拼带版本号的文件名')
+})
+
 test('客户端应通过 health 版本与 revision 变化提示刷新', () => {
   assert.match(source, /fetch\('\/api\/worktable\/health'/)
   assert.match(source, /revision/)
