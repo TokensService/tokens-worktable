@@ -1,5 +1,5 @@
+- 改进**手动流水线不再等关页/分界才移交服务端**（`projects/pipeline/pipeline.html`）：问题背景——含「需本地运行」阶段的手动流水线整条由浏览器编排，定时后缀要等本地前缀跑完（分界）或关浏览器（pagehide）才登记服务端计划，移交过程多次出问题（缺代码仓/策略上下文、keepalive 丢包、孤儿条目、节点租约空等 TTL 等，PR #116/#128/#129 连续修复）。解决方案——混合编排（本地前缀 + 定时后缀）改为**启动即预登记**：`startSimRun` 把后缀阶段整体以休眠计划（`kind:'once'` 且 `at:0`，服务端 `planTick` 对 at 非正数不触发）POST 上送服务端，阶段定义/代码仓快照/归档上下文/strategy 等重负载在页面健康时落盘；本地前缀跑完只做「激活」（同 id 覆盖、补当前 `vars` 快照 + `at:now`），关页同理复用预登记 id 替换激活，不再走重型移交登记。**没有本地任务时（后缀前无「需本地运行」阶段）不留休眠计划，启动即以 `at:now` 登记为可执行服务端任务**，避免休眠计划与分界激活竞态、一直挂到关页才触发；预登记请求完成后再查 `suffixPlanHeld`，若分界已激活则补发激活覆盖，防后到休眠体把计划打回 `at:0`。全阶段支持服务端执行（全 sched）的手动运行维持既有行为：点击即 `submitServerRun` 进服务端执行池；纯本地（无 sched 阶段）仍浏览器编排 + 关页移交兜底（「本地运行的除外」）。运行失败/中止/重置且后缀从未激活时 `discardHeldSuffixPlan` 清掉休眠计划，定时页不残留永不触发的占位。`registerStageTimers` 改经新增 `buildSuffixPlan` + `upsertServerPlan`（POST 单条 upsert，与关页移交同通道，不再 GET 合并再全量 PUT）。改动点——`pipeline.html`（`buildSuffixPlan`/`upsertServerPlan`/`preRegisterSchedSuffix`/`discardHeldSuffixPlan` 新增，`registerStageTimers` 改 POST upsert，`handoffSchedSuffix` 改激活语义，`startSimRun` 按有无本地前缀分流预登记/立即激活，`buildUnloadHandoffPlan` 复用 `suffixPlanId`，`finish`/`disposeRunForReset` 清理休眠计划）。测试——`test_sched_suffix_handoff.js` 改 POST 断言并新增 5 例（启动预登记 at:0 + 分界同 id 激活补 vars、无本地任务立刻 at:now、预登记竞态后到休眠体不覆盖激活、休眠计划按 id 清理不影响他人、已激活不触碰接口），`test_run_onclose_handoff.js` 新增 2 例（关页复用 suffixPlanId、纯本地沿用 unload- id）并改 includeLocal 用例为 POST 断言，全量 npm test 1126 例 0 失败。影响范围——混合编排手动运行的后缀执行路径；无本地任务的后缀启动即进服务端执行池（不再有休眠窗口）；「定时」页混合运行启动后短暂「已预登记（待本地阶段完成）」计划可手动取消；纯本地与全 sched 手动运行行为不变；旧版页面无 `suffixPlanId` 时关页仍走 unload- 独立计划，向后兼容。
 - 修复**跨浏览器查看任务日志路径不对**（`projects/pipeline/pipeline.html`）：问题背景——从其他浏览器查看正在运行/排队的任务详情时，「日志文件」行显示的路径完全错误（形如 `/var/log/op_test/流水线名_当前时间戳/run-—-01-阶段名.log`），与实际归档路径无关；含预设任务的流水线在运行历史中记录的 `logFile` 也与实际落盘文件名不一致。根因有二：① 跨浏览器只读预览（`remoteQueuePreviewRc`/`orphanPreviewRc`）构建的 rc 无 `archive` 字段且 `tag` 为占位符 `—`，`stageLogFileFor` 落入 `archiveFolderFor` 的现算分支（用本页 `archiveDir` + `nowCompact()` 生成全新目录名），拼出假日志路径；② `runScriptStep` 的任务日志序号用 `i+1`（阶段下标+1），与 `collectRunLogs`/`archiveStageLog` 的 `stageSeq`（预设任务固定 00、正式阶段从 01 起）不一致——含预设任务时实际日志文件名与历史 `logFile` 对不上。解决方案——① 队列在场快照白名单（`queuePresenceEntry`）增加 `archive` 与 `tag` 透传（归档目录与构建 tag 是服务端路径/标识符，非凭据），`remoteQueuePreviewRc`/`orphanPreviewRc` 显式取用并置 `archive:null` 兜底，`stageLogFileFor` 对 `remotePreview` 且无 `archive` 时返回 null（不再拼假日志路径，UI 显示「—」）；② `runScriptStep` 序号改走 `stageSeq(rc.stages,i)`，与 `collectRunLogs`/`archiveStageLog`/`runEvaltokensStep` 统一。改动点——`projects/pipeline/pipeline.html`（`queuePresenceEntry` 白名单 +`archive`/`tag`、`remoteQueuePreviewRc`/`orphanPreviewRc`/`queuePreviewRc` 显式 `archive`/`tag` 字段、`stageLogFileFor` remotePreview 守卫、`runScriptStep` logFile 序号改 `stageSeq`）。测试——`projects/pipeline/tests/test_stage_detail_log_row.js` 新增 3 例（remotePreview 无 archive 返回 null、带 archive/tag 拼正确路径、静态契约 `runScriptStep` 不得用 `i+1`）、`projects/pipeline/tests/test_queue_item_preview.js` 新增 3 例（runningPresenceEntry 透传 archive/tag、无字段不补、remoteQueuePreviewRc 取用与兜底）。影响范围——跨浏览器查看运行队列任务详情的「日志文件」路径展示与「📄 打开日志」按钮；含预设任务流水线的历史日志路径一致性；本页实时运行态与历史回放路径解析逻辑不变。
-- 改进**手动流水线不再等关页/分界才移交服务端**（`projects/pipeline/pipeline.html`）：问题背景——含「需本地运行」阶段的手动流水线整条由浏览器编排，定时后缀要等本地前缀跑完（分界）或关浏览器（pagehide）才登记服务端计划，移交过程多次出问题（缺代码仓/策略上下文、keepalive 丢包、孤儿条目、节点租约空等 TTL 等，PR #116/#128/#129 连续修复）。解决方案——混合编排（本地前缀 + 定时后缀）改为**启动即预登记**：`startSimRun` 把后缀阶段整体以休眠计划（`kind:'once'` 且 `at:0`，服务端 `planTick` 对 at 非正数不触发）POST 上送服务端，阶段定义/代码仓快照/归档上下文/strategy 等重负载在页面健康时落盘；本地前缀跑完只做「激活」（同 id 覆盖、补当前 `vars` 快照 + `at:now`），关页同理复用预登记 id 替换激活，不再走重型移交登记。全阶段支持服务端执行（全 sched）的手动运行维持既有行为：点击即 `submitServerRun` 进服务端执行池；纯本地（无 sched 阶段）仍浏览器编排 + 关页移交兜底（「本地运行的除外」）。运行失败/中止/重置且后缀从未激活时 `discardHeldSuffixPlan` 清掉休眠计划，定时页不残留永不触发的占位。`registerStageTimers` 改经新增 `buildSuffixPlan` + `upsertServerPlan`（POST 单条 upsert，与关页移交同通道，不再 GET 合并再全量 PUT）。改动点——`pipeline.html`（`buildSuffixPlan`/`upsertServerPlan`/`preRegisterSchedSuffix`/`discardHeldSuffixPlan` 新增，`registerStageTimers` 改 POST upsert，`handoffSchedSuffix` 改激活语义，`startSimRun` 启动预登记，`buildUnloadHandoffPlan` 复用 `suffixPlanId`，`finish`/`disposeRunForReset` 清理休眠计划）。测试——`test_sched_suffix_handoff.js` 改 POST 断言并新增 3 例（启动预登记 at=0 + 分界同 id 激活补 vars、休眠计划按 id 清理不影响他人、已激活不触碰接口），`test_run_onclose_handoff.js` 新增 2 例（关页复用 suffixPlanId、纯本地沿用 unload- id）并改 includeLocal 用例为 POST 断言，全量 npm test 1124 例 0 失败。影响范围——混合编排手动运行的后缀执行路径（启动后约 15s 内可被服务端触发的风险消除：休眠 at=0 不触发）；「定时」页会出现短暂「已预登记（待本地阶段完成）」计划可手动取消；纯本地与全 sched 手动运行行为不变；旧版页面无 `suffixPlanId` 时关页仍走 unload- 独立计划，向后兼容。
 - 修复**EvalTokens 状态轮询被 `NODE_USE_ENV_PROXY` 全局代理劫持导致连续失败**（`src/index.ts`）：dsh 进程环境含 `NODE_USE_ENV_PROXY=1` + `http_proxy=http://127.0.0.1:8118` 且 `no_proxy` 不含内网段时，`stagePollFetch` 用全局 `fetch` 发出的内网请求（如 `http://192.168.1.101:9000`）会被送进本地代理、到不了目标，每次轮询都 `fetch failed` 连续计失败。任务启动/列表请求因走 `/api/worktable/proxy`（`serverDirectFetch` 自建 Agent 绕代理）不受影响，表现为「任务能启动但轮询全挂」。现 `stagePollFetch` 改用 `http.request` + 自建 `reqLib.Agent()`（与 `serverDirectFetch` 同款绕过全局代理劫持），并经可注入的 `stagePollReqLib` 解析 http/https 模块（生产走动态 import，测试经 `globalThis.__stagePollReqLib` 注入）。测试：`tests/pipeline-stage-poll.test.mjs` 的 vm context 注入 `__stagePollReqLib`。
 - 修复**EvalTokens 状态轮询长任务被误判失败**（`src/index.ts`、`projects/pipeline/pipeline.html`）：问题背景——流水线 EvalTokens 阶段轮询经服务端 stage-poll 每 3 秒全量拉 `/api/open/v1/tasks/runs?task_id=` 列表接口，而该接口原样返回每条 run 的 `error` 字段（完整 Python traceback，单条 63KB~634KB），响应随失败 run 累积线性膨胀（实测 deepswe 任务 15 条 run 已达 616KB），逼近 `STAGE_POLL_JSON_LIMIT`（2MB）或拖慢接口超过 `STAGE_POLL_FETCH_TIMEOUT`（10s）时每次查询都计失败；且旧判负逻辑是「连续 30 次失败（约 90 秒）即永久判负」，数小时长任务中途短暂的网络/服务抖动会把仍在正常运行的评测误判为失败（实测两例 15 次 `status=running` 后突然 `已兜底判败`，任务本身仍 3% 正常跑）。解决方案——三管齐下：① 轮询改走新增的轻量状态端点 `GET /api/open/v1/tasks/runs/<runId>/status`（只回 `run_id/status/started_at/finished_at`，实测 141B vs 列表接口 616KB，缩小 4372 倍），旧版 evalscope 无该端点（404）时自动回退列表端点并日志留痕；② 判负兜底从「连续 30 次计数」改为「持续失败 60 分钟」时间窗（`STAGE_POLL_FAIL_GIVE_UP_MS`，var 可测试覆盖），成功一次即清零重新计时；③ 客户端轮询回显失败计数（`# run xxx status=running（连续失败 N 次）`），不再静默掩盖查询通道故障。改动点——`src/index.ts`（stage-poll EvalTokens 段支持单条 `{run_id,status}` 响应与 `statusEndpointMissing` 回退信号、`stagePollShouldGiveUp` 时间窗判负替代 `STAGE_POLL_FAIL_CAP` 计数、Jenkins 段同步）、`projects/pipeline/pipeline.html`（`runEvaltokensStep` 轮询 URL 改 `/runs/<runId>/status` 首选 + 列表端点回退、`statusEndpointMissing` 切换逻辑、失败计数回显、错误文案改时间口径）、`tests/pipeline-stage-poll.test.mjs`（轻量单条响应 3 例、statusEndpointMissing 1 例、时间窗判负 2 例、成功清零 1 例）、`projects/pipeline/tests/test_stage_poll_client.js`（状态端点 URL 断言、判负文案、statusEndpointMissing 切换回退 1 例）。影响范围——EvalTokens / Jenkins 阶段的服务端 stage-poll 轮询路径；需配合 evalscope 侧新增 `GET /api/open/v1/tasks/runs/<runId>/status` 端点（`task_store.get_run` + `TaskRunStatus` 模型），旧版 evalscope 经 404 回退仍可用；执行池 `executeServerEvaltokensStage` 的服务端路径不变。
 - 修复**关页移交后运行队列残留「已中断」本地条目**（`projects/pipeline/pipeline.html`）：pagehide 把在跑运行与本地队列移交服务端执行后，最终在场快照（`queuePublishBody`）仍原样携带这些 runs/queue 条目上报——页面随即销毁、在场 TTL（45s）过期清扫时 `sweepQueuePresence` 把它们登记成失联孤儿，运行队列显示「已中断」，但任务其实已由服务端计划继续执行（双重展示）。现 `handoffRunsOnPageHide` 把已移交 / 无剩余阶段 / 并行子上下文随父移交的条目统一记为「已了结」（返回 id 列表并 `queueFinishedNote` 写入 completed 豁免登记，跨同标签页刷新存活），pagehide 最终 beacon 经 `queuePublishBody({excludeIds})` 从 runs/queue 剔除这些条目并强制并入 completed：消失检测与 TTL 过期清扫均不再误登记孤儿。心跳 / PUT 路径不传 excludeIds 时行为不变。测试：`test_run_onclose_handoff.js` 新增 2 例（已了结 id 覆盖移交中/无剩余/并行子/队列四类、全预设无阶段仍了结）并补 `queueFinishedNote` 桩，`test_queue_orphans.js` 新增 2 例（excludeIds 剔除并入 completed、缺省全量上报不变）并更新 pagehide beacon 接线断言。
@@ -27,16 +27,13 @@
   - 测试：新增 `projects/pipeline/tests/test_pipeline_share_import.js`（6 例：载荷形状、剪贴板复制、
     解析合法/非法、导入填表、只读/编辑态不导入、UI wiring）。
 - 流水线「设置」全部配置改为服务端持久化，升级后老配置不丢（`projects/pipeline/pipeline.html`、`src/index.ts`）：此前代码仓访问令牌、运行选择（当前流水线/环境多选/当前代码仓/分支/部署策略）、定时计划环境选择与视图状态（历史/列表筛选、分页大小）只存浏览器 localStorage，换浏览器/清缓存即丢。现随 `collectConfig()` 全部上送服务端 `worktable-pipeline.json`（新增 `curPipelineId`/`selectedEnvIds`/`curRepoId`/`branch`/`strategy`/`schedEnvIds`/`histFilter`/`plFilter`/`histPageSize`/`plPageSize` 十个键，`repositories` 条目保留 `pass`；令牌明文落服务端存储，页面 title 与「仅存本地」旧文案同步修正，导出文件照常携带且标注勿外传），`loadServerState()` 按键应用（键存在含空值一律以服务端为准）；localStorage 仍作离线缓存，服务端不可达时行为不变。编辑器草稿 `pip-plDraft` 按原设计保持仅本地。升级迁移：服务端缺某键而启动时 localStorage 有旧值（`legacyLocalKeys` 启动快照，避免二次重拉把自己刚写的缓存误判为旧值）即采用本地值并合并为一次 `persistState()` 回推，仓库 `pass` 服务端为空而本地持有时同样回填回推；导入导出携带新键且旧版导出文件（键只在 `local` 块/缺键）照常导入。服务端 PUT 合并新增 `preserveDiskOnlyConfigKeys`：磁盘配置中客户端未携带的键按磁盘值保留（三方合并与无 baseConfig 旧页面两条路径都覆盖；客户端显式发送的空串/false/空数组仍是有效清除），旧版页面/旧客户端在升级窗口期的一次保存不再抹掉新版写入的新键；save-one 与历史追加等其余写盘路径核查确认本就不丢键。测试：新增 `tests/pipeline-config-preserve-keys.test.mjs`（8 例：保留/显式清除/409 不写盘/save-one 确认）与 `projects/pipeline/tests/test_settings_server_keys.js`（7 例：collectConfig 新键与 pass、迁移回推、令牌回填、不可达门控、导入导出 roundtrip），更新 `test_config_import_export.js` 等三处 fixture。
-
 - 修复工作台升级期间服务端流水线代际丢失：旧 supervisor 已开始 drain 时，新插件实例继续复用同一 manager；清理只删除本次捕获的旧 generation，不会清空升级后新建的 generation。同步修正队列快照把对象误判为数组导致旧代排队项消失的问题。
-
 - 改进**流水线编排区失败/中止阶段节点也显示运行耗时**（`projects/pipeline/pipeline.html` `metaFor`）：编排区阶段节点的元信息行此前只有成功（`✓ 耗时`）与运行中（`百分比 · 已耗时`，500ms 共享 tick 实时刷新）显示耗时，失败/中止只显示「✗ 错误」「⏏ 终止」，看不出该阶段实际跑了多久；现补齐为「✗ 错误 · 耗时」「⏏ 终止 · 耗时」（`fmtDur(n.dur||0)` 钳 0 防 NaN，与阶段详情面板同口径；各失败/中止收尾路径本就已回填 `dur`），跳过（未执行）与未开始阶段不显示耗时。历史回放经同一 `metaFor` 渲染，回放里失败/中止节点同样带出耗时。测试：新增 `projects/pipeline/tests/test_stage_meta_dur.js`（成功/失败/失败 dur 缺失钳 0/中止/运行中回归/跳过与未开始共 6 例）。
 - 修复**「打开归档目录」经 better-sidebar 原生侧边栏打开文件夹报 "is a directory"**（`src/client/index.tsx`）：根因是 better-sidebar ≥0.19 的原生面转发 editor 打开时丢弃 openTab 的 meta（0.24.1 仍如此，其自身 agent-opens 的 folder 推送同病），EditorHost 拿不到 meta.dir 把目录当文件 fsRead；`openFolderInSidebar` 改为三级回退——先绕过 betterSidebar 服务直调宿主 `sidebarRight.openResource`（会话作用域文件地址 + mounted 会话快照，以 `params.meta.dir` 经 navigation.params 透传目录语义），失败回退 better-sidebar 底部工作台（`openTab target:'bottom'`，meta 不丢），再失败返回 false 由页面回退系统文件管理器。测试：新增 `tests/open-folder-in-sidebar.test.mjs`（10 例）。
 - 修复**流水线阶段详情「打开日志」改为打开日志文件本身**（`projects/pipeline/pipeline.html`、`src/client/index.tsx`）：原「📂 打开日志」只打开日志文件所在目录，与「📂 打开归档目录」效果雷同；现改为「📄 打开日志」——先等日志落盘，经 `/api/worktable/file`（tailBytes=1024）轻量预检文件是否已生成（404 视为尚未生成/已清理，回退 openFolderWithFeedback 打开所在目录，此时效果同「📂 打开归档目录」；探测失败按存在处理不阻断），文件存在时优先走新增的 `__dshOpenFileInSidebar` 桥（better-sidebar editor 标签不带 meta.dir 即打开文件本身，同 better-sidebar 自身 sidebar-file 的 openTab 形态，path 相同按 dedupeKey 复用标签，成功后经 `__dshCloseSideChat` 关闭侧边会话窗让出空间），桥不可用/拒绝时回退 `window.open` 新浏览器标签页打开同源文件路由（.log 按 text/plain 直出；弹窗被拦截则提示行改放 DOM 构建的可点击链接，避免拼 innerHTML 注入）。「📂 打开归档目录」打开文件夹的行为不变。测试：更新 `projects/pipeline/tests/test_stage_detail_log_row.js`（打开日志改为文件行为：侧边栏桥打开/新标签页回退/弹窗拦截链接/404 回退目录/空路径与坏路径共 6 例，静态契约同步换新文案与 `openStageLogFile` 函数名，`test_execution_progress.js` 切片边界不变）。
 - 修复**流水线主控预置任务无法勾选**：旧版浏览器状态中预置脚本参数 `params` 偶尔以非数组形态持久化时，首屏参数渲染会因 `.forEach` 抛错，导致后续预置任务 checkbox 与按钮事件无法注册；清理、检查、Profiling 三处参数渲染现仅接受数组，损坏数据按无参数处理并继续完成主控初始化。新增对应回归测试。
 - 新增**流水线「任务是否完成」的服务端权威判定与下发**（`src/index.ts`）：① 执行池终态发布——已开始运行的 run 到达终态（成功/失败/取消）即记录 FinishedEntry（白名单清洗，含 generation 透传），池内环形缓冲上限 20 条 / TTL 120s 惰性 prune，多代际 manager 聚合存活代与退役簿后由 GET `/api/worktable/pipeline/queue` 以 `server.finished` 下发，客户端不再靠「条目从快照消失」推断完成；排队即取消的条目不记录。② 新增 `POST /api/worktable/pipeline/stage-poll/jenkins` 与 `POST /api/worktable/pipeline/stage-poll/evaltokens` 两个阶段完成轮询端点：长轮询窗口（默认 20s、上限 25s）内由服务端轮询上游（Jenkins queue/build 含 progressiveText 增量控制台续传、EvalTokens runs），语义镜像原浏览器轮询（30 连败按 key 跨请求累计、判负后短路 10 分钟）；目标复用 `/api/worktable/proxy` 同款内网白名单（403），headers 透传剔除逐跳头，客户端断开即中止上游轮询。测试：新增 `tests/pipeline-finished-runs.test.mjs`（4 例）与 `tests/pipeline-stage-poll.test.mjs`（15 例），更新 presence/run-api/node-leases 三处快照断言（server 对象新增 finished 键）。
 - 改进**流水线页面全面接入服务端权威状态**（`projects/pipeline/pipeline.html`）：Jenkins/EvalTokens 阶段的完成轮询从浏览器 while 循环改为串行调用服务端 stage-poll 端点（控制台增量经 offset 续传，保持原回显节奏；触发/中止动作与令牌守卫不变，finally 仍走 `jkCancelExecution`），端点 404（旧服务端）/403（非公网白名单目标）时单次回退浏览器直连轮询并告警；队列轮询消费 `server.finished`——新终态记入 completed 上报（完成≠失联，不再误入孤儿登记）、立即刷新历史、队列区新增「服务端最近完成」分组（三态徽标+耗时+结束时间，随 TTL 消失）、在看的运行预览按终态优雅收尾并停止日志轮询，finished 纳入队列快照签名（变化必重绘）。合规修复：孤儿重跑改传 `pipelineId` 用流水线完整定义分流（原先传 stages 白名单快照恒退化为本地纯模拟运行，全 sched 时现确实提交服务端执行池）；`submitServerRun` 透传 `item.source||'manual'` 保留触发来源语义；本地运行任务（含「需本地运行」阶段）行为一律不变。测试：新增 `test_stage_poll_client.js`（10 例）、`test_queue_finished.js`（9 例），更新 stage-poll 失败兜底/queue 孤儿/轮询降耗/jenkins 变量/evaltokens 五处既有测试。
-
 - 流水线**运行历史记录新增结构化环境节点 `envNodes`**（`src/index.ts`）：服务端 `execPlan` 写入历史
   （`appendPipelineHistory`）时给记录附加 `envNodes` 字段——本次运行选中环境节点的快照数组
   `{name,ip,nodeIp}`（name 为节点名可为空串；ip 为 SSH 地址，为空时依次以 nodeIp、id 兜底；nodeIp 为
@@ -62,7 +59,6 @@
   遗留记录回退、finish 写入映射与截断/脱敏断言）；更新 `test_history_table_columns.js`（9 列表头/行/
   colspan 断言），`test_history_analysis_compare.js`、`test_parallel_stage_execution.js`、
   `test_sched_suffix_handoff.js`、`test_node_lease.js` 的沙盒函数清单同步补充新辅助函数。
-
 - 流水线设置页新增**「预设任务设置」专区**（`projects/pipeline/pipeline.html`，Profiling 脚本卡片之后、
   脚本目录卡片之前）：可添加/编辑/删除**自定义预设任务**——每项配置名称（非空、不与系统预设及其他
   自定义同名）、脚本（按名从 scripts 目录选用，支持「识别参数」与参数值覆盖，语义同环境清理脚本）、
@@ -78,9 +74,7 @@
   序号识别（`isPreStage`）同步支持自定义预设。
   测试：新增 `projects/pipeline/tests/test_custom_preset_tasks.js`（12 例：归一化清洗、定义查询、
   枚举顺序、名称表重建、勾选判定、默认位置/失效标记过滤、运行展开与快照隔离、默认参数双模式）。
-
 - 流水线运行中阶段节点与阶段详情显示实时耗时（`projects/pipeline/pipeline.html`）：编排区运行中节点的进度文本由纯百分比（如 47%）改为「百分比 · 已耗时」（如 47% · 1m30s），metaFor 与共享 tick 轻量直改（stageTickPaint）同口径，500ms tick 内仍只直改文本不触发全量渲染；阶段详情运行中同样新增「耗时」行（终态显示不变）。同步更新 `projects/pipeline/tests/test_stage_tick.js` 断言并新增 1m30s 用例。
-
 - 新增**服务端流水线运行的阶段级实时已耗时数据通路**（供远端预览编排区展示运行中阶段的实时耗时；此前服务端
   只在阶段开始时写 `{status:'running',progress:5,dur:0}`、结束时才回填最终 dur，运行期 dur 恒为 0，其他
   浏览器看不到已耗时）。服务端（`src/index.ts`）：执行器在阶段进入 running 时把该阶段开始时间戳
@@ -108,7 +102,6 @@
   无 20s 限制，无需改动；服务端执行池路径（`executeServerEvaltokensStage`）无阶段超时时本就不限时，
   无需改动。
   测试：新增 `tests/proxy-timeout.test.mjs`（缺省值与 1s~24h 夹取规则）。
-
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
@@ -122,7 +115,6 @@
   避免空页面噪音；按钮按路径存在性与可分析态自动禁用。动机：在阶段详情里就能直接看到本阶段日志
   文件位置，一键 AI 分析所属运行、一键打开日志目录，不必回运行历史标题行操作。
   测试：新增 `projects/pipeline/tests/test_stage_detail_log_row.js`（契约与行为断言）。
-
 - 使用统计弹窗新增**「当前在线」人数显示**：客户端每标签页生成随机 client id，根组件挂载即向新端点
   `POST /api/worktable/usage/heartbeat` 上报一次心跳、之后每 30 秒一次（body `{ user, client }`，
   静默失败不打扰交互；首跳时用户名可能尚未探测到，后续心跳自动带上）；服务端把心跳按 key upsert
@@ -135,7 +127,6 @@
   测试：新增 `tests/online-count.test.mjs`（13 例：sanitizeHeartbeat 清洗、key 归一规则、
   TTL 过期懒清理、路由接线文本断言、客户端 online 解析契约）；`tests/usage-stats.test.mjs`
   空结构期望同步补 `online: 0`。
-
 - 流水线**新增「拥有者」属性，任务列表筛选与署名展示改用拥有者、支持搜索用户**（`projects/pipeline/pipeline.html`）：
   流水线现在有三个署名属性——`createdBy` 创建者（创建时定死的历史署名，不再参与权限判定）、`owner`
   拥有者（拥有编辑/删除权限；新建与复制时署为当前用户；存量流水线无 `owner` 字段时经 `plOwnerOf` 回退按
@@ -151,24 +142,19 @@
   映射与回显、用户名精确匹配、子串大小写不敏感搜索、datalist 填充与聚焦不打扰、localStorage 旧值兼容，11 例）；
   `test_pipeline_owner_edit.js` 扩充 owner≠createdBy 权限矩阵、存量无 owner 回退、`migratePipelineDefaults`
   owner 归一化与 savePlForm 三态补署用例；`test_pipeline_audit_trail.js` 等既有测试同步更新。
-
 - 调整**流水线编辑器「+ 添加阶段」按钮移至冻结底栏最左边**（`projects/pipeline/pipeline.html`
   的 `#plForm` 弹窗）：该按钮原先与「保存 / 取消」一起靠右排列在弹窗底部冻结行右端，阶段较多
   需滚动时添加入口远离编辑起点。现将其移到该冻结行的最左边；草稿提示 `#plDraftTip`
   （保留 `margin-right:auto`）紧随其后，「保存 / 取消」仍固定在右下角。底栏保持冻结、
   不随阶段列表滚动；只读模式下隐藏添加阶段按钮的逻辑不变。
   测试：新增 `projects/pipeline/tests/test_pipeline_footer_layout.js`（底栏按钮顺序与冻结位置契约断言）。
-
 - 流水线编辑页**阶段定时配置行的勾选标签精简为「本地运行」**（`projects/pipeline/pipeline.html`）：
   原勾选标签「需本地运行，不支持定时」精简为「本地运行」，标签后新增 ⓘ 信息注释
   （悬停提示「本地运行任务不支持定时任务」），把「不支持定时」的说明从标签正文移入悬停提示。
   纯文案/提示改动，勾选行为不变。
-
 - 客户端支持运行中插件代际更新提示：轮询 `/api/worktable/health` 的版本/revision，检测到变化时提示刷新页面即可加载新资源；保留旧服务端无 revision 时的兼容行为。升级与回退 AI 提示词不再要求重启 dsh web。
-
 - 新增流水线执行池代际生命周期：`stopAccepting`、`drain`、`dispose` 与 generation 绑定；升级切换后旧代排队/运行计划、节点租约和子进程继续自然完成，新代接收后续计划；队列快照、取消和日志查询保留代际信息，插件退出时清理计划 tick 与队列资源。
 - 补强热替换桥接：通过全局 supervisor 共享代际 manager 与节点租约，引用归零时等待可 await 的 disposer，并为 HMR 立即重挂载保留可取消的短暂清理窗口；same-id generation 替换会正确回收旧池，health 返回当前 generation 与 draining 代。
-
 - 改进**设置弹层底部「版本信息 / 历史 / 用量 / 检查更新 / 自动检查更新」行冻结为 sticky 页脚**
   （`src/client/styles.ts`，DOM 结构不变）：该版本行原先只是设置弹层（`.dsh-wt_manage.dsh-wt_pop.dsh-wt_settings`，
   `max-height:min(540px,…)`、`overflow:auto` 的滚动弹层）末尾的普通一行，随内容滚动——设置项较多、
@@ -179,7 +165,6 @@
   `border-top` 分隔线横贯面板；`padding:8px 6px 6px` 补偿使行内内容视觉位置与改动前一致。
   版本行仍是设置面板最后一个子元素；内容不足一屏时 sticky 不产生位移，无行为变化。
   测试：新增 `tests/settings-version-sticky.test.mjs`（3 例契约断言）。
-
 - 新增**流水线运行状态查看工具** `projects/pipeline/tools/pipeline_status.py`（单文件、仅标准库、Python 3.6+，
   本机执行、无需登录——`/api/worktable/pipeline/queue` 在 dsh-auth-gate 之后且会话 token 落盘只存 sha256
   无法复用）。三个数据源取并集：① dsh web 进程树（pid 文件自动从脚本位置向上查找，失效则按
@@ -196,7 +181,6 @@
   新增 `projects/pipeline/tools/test/test_pipeline_status.py`（12 例：日志/目录正则、时长格式化、
   目标机与归档目录提取含空格转义前缀对齐、history 终态索引、归档扫描三态分类、进程证据覆盖静默、
   daemonize 附属进程归属、pid 文件优先与失效回退），接入 `projects/package.json` 的 `test:python`。
-
 - 修复**流水线「运行队列」刷新即丢与跨用户不可见**（页面驱动的本地执行——含「需本地运行」阶段的流水线——刷新/
   关闭页面后正在执行的任务从运行队列彻底消失、找不到最后执行状态；且自 ac756d3「运行队列改由服务端持有」起
   renderQueue 的 `scheduleQueuePublish()` 调用被摘、publishQueue 成死代码，页面运行从不向服务端上报，其他登录者
@@ -222,7 +206,6 @@
   `projects/pipeline/tests/test_queue_orphans.js`（16 例：PUT 体契约、登记持久化与 prune、分组渲染与旧服务端
   降级、dismiss 参数与权限拦截、预览 rc 形状与自愈、重跑 env 映射兜底、心跳/pagehide 接线），
   `test_queue_item_preview.js` 断言同步 schemaVersion 3。
-
 - 修复**流水线「复制」副本改名被永久锁死**（编辑器改名保存报「该流水线已被其他浏览器修改」并回滚为
   「（副本）」，刷新/重试均无效，只能整页重载；高发于复制紧贴页面打开、慢链路或多标签页场景；生产存储中
   17 条「（副本）」后缀条目从未改名成功）。根因是共同基线滞后于磁盘与条目比对键序敏感的叠加：
@@ -250,7 +233,6 @@
   pipeline-config-concurrency、pipeline-trust、pipeline-config-refresh）。已知遗留：陈旧标签页首次
   保存仍会按冲突告警一次（无法与真实并发冲突区分），但基线已自愈、重试即成功；pushState 的
   silentConflict 409 路径（仅旧服务端回退路径）未做磁盘真值采纳。
-
 - 修复**流水线编辑器保存的浏览器端竞态**（多人共用环境下新建/编辑流水线保存偶发失败，报「流水线已不在
   本页列表中（可能被其他浏览器删除）」）：保存链路 savePlForm 先把新流水线 push 进页面全局列表、
   pushPipelineOne 再排等前序全量 PUT；前序 PUT 若 409，pushState 自愈分支的 loadServerState 会**整表
@@ -283,14 +265,12 @@
   renderAll 先于 GET 完成时基线为空判断失效。测试：新增 `tests/test_init_no_autoput.js`（7 例——
   一致时首屏+加载全程零写、自愈重拉零写、两个正当写路径不破、applyTheme/自愈块源码契约；已对
   修复前源码验证前 3 例如期失败）。
-
 - 跟进修复**「编译发行」版本 bump 回推遇网络抖动即失败**（同一 v1.1.10 发行重跑时，克隆/构建/测试均过，
   死在仓内 `scripts/build.sh` 的 `git push origin HEAD:main`，报错还误导为「凭据无推送权限」）：回推改
   `GIT_PUSH_RETRIES`（默认 3）次自动重试、递增退避（`sleep $((i*5))`）；远端地址含克隆凭据，失败输出先经
   `push_mask` 脱敏再回显；末次失败区分诊断——连接类错误（`Failed to connect`/`Connection timed out` 等）
   报「对端不可达/一次性网络抖动，与凭据无关」，其余保留原「凭据无推送权限或分支有新提交」指引。
   冒烟验证：stub git 三场景（抖动后成功 / 持续断网 / 权限拒绝）行为与脱敏均正确。
-
 - 修复**「编译发行」遇一次性网络抖动即整流程失败**（2026-10-08 v1.1.10 发行构建因
   `Failed to connect to github.com port 443` 一次性连接超时直接失败）：页面内嵌三段脚本与仓内参考脚本
   统一加自动重试与连接失败诊断。① `code-review-prs.html` 的 `BUILD_WRAP_SCRIPT`（构建包装）与
@@ -304,7 +284,6 @@
   测试：新增 `tests/codereview-build-clone-retry.test.mjs`（5 例，含 net_hint 的 bash 实跑行为断言与整脚本
   `bash -n`）与 `tests/codereview-tagpush-upload-retry.test.mjs`（5 例）；参考脚本经本地 bare 仓正常路径 +
   不可达地址重试路径两次冒烟验证。
-
 - 修复宿主 0.2.0-rc.1 升级后工作台「页面修改」✏️ 等会话桥全面失效（`src/client/index.tsx`，修复
   「编辑项目按钮用不了」）：① 0.2.0 起 `sessions.binding/scope` 仅对已 retain 的会话代际可解析，
   新建会话后 `fillSessionDraft` 永远轮询不到 binding（报 `no fill path`）——新增
@@ -321,7 +300,6 @@
   `ctx.uiSession.sessionStatus`、`subagentsByParent`→`projectionsBySession[].values.subagentCatalog`、
   `jobsBySession`→`ctx.jobs.watchRows`、`hostApi`（connection.api 已删）→`ctx.remote`——
   项目卡提醒点/运行时长/新会话模型兜底修复暂退化，待后续适配。
-
 - 修复**多用户登录下「复制/编辑后的流水线无法保存」**（phantom conflict，已用真实函数复现定位）：
   `favoriteUsers`（各用户收藏）与 `pinnedAt`（置顶）这类非内容字段存在共享流水线条目上，却参与服务端三方合并的
   JSON 全字段同一性比对——他端一次收藏/置顶即让该条「偏离基线」：编辑走 save-one 被 409 拒绝；全量 PUT
@@ -338,7 +316,6 @@
   `tests/pipeline-config-concurrency.test.mjs` 新增 9 例（收藏/置顶并发合并、真冲突仍 409、守卫豁免、形状归一），
   客户端新增 `projects/pipeline/tests/test_pipeline_multiuser_save.js` 6 例；既有 `pipeline-trust` 两处断言随形状归一
   改为校验键省略。fix/session-bridge-0.2.0
-
 - 流水线归属编辑限制新增 **admin 例外**（`projects/pipeline/pipeline.html` 的 `plEditable`，修复「编辑按钮用不了」
   类问题）：原规则「非可信流水线仅创建者可编辑/删除，admin 无例外」会使创建者账号注销/改名后的流水线对所有人
   （含 admin）永久只读——行内「编辑」变「查看」、编辑器整体只读。现 admin 可编辑/删除任意非可信流水线；
@@ -347,7 +324,6 @@
   无创建者归属校验，无需改动）。编排区说明文案与相关注释同步更新；测试翻转
   `test_pipeline_owner_edit.js` / `test_pipeline_trusted.js` 中「admin 无例外」断言，新增
   `tests/test_pipeline_admin_edit.js`（9 例覆盖完整权限矩阵）。
-
 - 流水线页浏览器 CPU 降耗（`projects/pipeline/pipeline.html`，用户可见行为不变；实测开关页面 CPU 差约
   20% 的场景针对优化）：① 阶段详情日志改**增量渲染**（`syncDetailLogLines`）——日志增长只追加新增行
   （DocumentFragment 一次挂载），触顶窗口平移带逐行校验、中部替换原位插入、外部改写回退全量重建，
@@ -358,7 +334,6 @@
   重绘；进行中脉冲动画由 box-shadow 扩散改为 opacity/transform 合成器属性。新增
   `tests/test_stage_tick.js`、`tests/test_queue_poll_throttle.js`，扩充 `test_log_render_scaling.js`，
   调整 `test_plan_terminate.js`（快照未变时不再强制重绘即目标行为）。
-
 - 新增「友商 Tokens API 性能对比」项目页（`projects/friend-perf.html`）及其服务端中转路由
   `POST /api/worktable/llm`（`src/index.ts`）：对智谱 / 百炼 / 混元 / 硅基流动 / 七牛云等 OpenAI 兼容
   chat/completions 接口做手动 / 定时流式压测，横向对比 TTFT（首 token 延迟）与 TPOT（每 token 耗时），
@@ -386,7 +361,6 @@
   测试：`projects/friend-perf.test.cjs` 9 例 + `tests/llm-relay.test.mjs` 7 例（ttfb 头与字节序、
   无 body、安全边界、构造器前缀确定性/后缀随机/非法 spec、promptSpec 覆盖 messages 且前缀跨轮一致、
   无 promptSpec 时 messages 原样透传）。
-
 - 修复 EMS 两个 step 契约测试在新鲜克隆上必挂的问题
   （`projects/pipeline/scripts/test/test_ems_{check,deploy}.sh`）：厂商 chart `scripts/ems-chart/`
   不入 git（含证书私钥），而 `ems-check.sh` dispatch 模式与 `ems-deploy.sh` 都要读仓内
@@ -395,7 +369,6 @@
   仅在本地留有真实 chart 的机器上能跑过。现两个测试在 Chart.yaml 缺失时自建最小等价 fixture
   （`name: ems` / `version: 26.8.0-b6`，与 mock helm 及契约断言口径一致），已存在真实 chart 的
   部署/开发机原样保留不动，退出时仅清理测试自建的目录。
-
 - 新增服务端路由 `POST /api/worktable/llm`（`src/index.ts`）：LLM 接口中转，供「友商 Tokens API 性能对比」
   项目页（`projects/friend-perf.html`）使用。请求体 `{baseURL, endpoint, apiKey, payload}`，服务端代发并
   流式透传响应（带背压），保住页面侧 TTFT 语义；安全边界：仅 https 目标、复用 `isLocalTarget` 反向拒绝
@@ -404,7 +377,6 @@
   「直连失败自动回退中转」，后改为**统一走服务端中转**：各家厂商同一出口发起请求，规避浏览器 CORS 差异与
   本机网络差异，横向可比；早期直连记录带 `relay` 标记，记录页模型列对老直连记录显示「·直连」；
   「获取模型」同样统一走中转。
-
 - 流水线页用户可见的「内置」字样去掉（`projects/pipeline/pipeline.html`，行为完全不变）：行内名称旁的
   「内置」小灰徽章删除（保留「可信」徽章，title 与可信流水线文案对齐）；编辑器标题「（内置·可信）/
   （内置·可信·只读）」→「（可信）/（可信·只读）」；创建者筛选「我的（含内置）/仅内置」→「我的（含预置）/
@@ -412,7 +384,6 @@
   告警、导出/导入按钮 title 及「内置演示数据」相关用户可见文案统一改述为「预置」/「可信」；`p.builtIn`
   字段与代码标识符不动，「标记可信」对内置隐藏、admin 可编辑、删除全员禁止等行为均不变。同步更新
   `test_pipeline_trusted.js` / `test_pipeline_readonly.js` 断言（含「无内置徽章」反向断言）。
-
 - 内置流水线（`pl-xds`「安装部署XDS」）视同可信：仅 admin 可编辑，其他人只读（仍可运行），删除全员禁止
   （`projects/pipeline/pipeline.html` + `src/index.ts`）。页面侧 `plEditable` 把 `builtIn` 并入 trusted
   分支（token 模式维持全权退化、探测在途保守只读）；admin 打开内置为「编辑流水线（内置·可信）」，非 admin
@@ -426,7 +397,6 @@
   硬编码种子」路径验证无绕过，admin 编辑保存后各端重载即拿到编辑版。测试：页面侧
   `test_pipeline_trusted.js` / `test_pipeline_readonly.js` / `test_pipeline_owner_edit.js` 断言更新为
   新语义并新增内置矩阵 8 例，服务端 `tests/pipeline-trust.test.mjs` 扩至 16 例。
-
 - 流水线新增「可信」标记：admin 可标记/取消可信，非 admin 对可信流水线只读（`projects/pipeline/pipeline.html`
   + `src/index.ts`）。流水线条目新增 `trusted` 字段（存 `worktable-pipeline.json`，三方合并原样透传）；
   页面侧：行内「⋯」菜单新增「标记可信 / 取消可信」项（`#plRowMenuTrusted`，仅 password 模式取得登录用户、
@@ -442,7 +412,6 @@
   （`pushState`/`pushPipelineOne`）捕获 403  toast 服务端 message 并重新拉取服务端状态同步（不再回退
   重试）。新增 `tests/pipeline-trust.test.mjs`（10 例）与
   `projects/pipeline/tests/test_pipeline_trusted.js`（20 例）。
-
 - 流水线任务列表行内「⋯」更多菜单新增「运行历史」项（`projects/pipeline/pipeline.html`）：菜单项
   `#plRowMenuHistory` 为列表行形态，与置顶/收藏同款，title 随展开行动态标注目标流水线名；点击后
   按该流水线名精确过滤运行历史——`histFilter.pipeline` 取流水线名，同时清空关键字/状态筛选并回显
@@ -453,7 +422,6 @@
   `projects/pipeline/tests/test_pipeline_row_history.js` 覆盖菜单项与卡片 id 静态断言、点击后筛选
   状态/输入框回显/渲染与拉取调用/滚动/菜单收起、既有筛选被清空、无效 id 无操作、菜单项 title
   动态设置。
-
 - 运行历史「流水线」筛选改为可搜索过滤（`projects/pipeline/pipeline.html`）：原普通下拉
   `<select>` 换成「输入框 + 候选面板」组合（`#histFilterPipeline` 输入框 + `#histPipelinePanel`，
   容器 `#histPipelinePick`，交互与样式沿用分支/部署策略搜索面板）：聚焦或按方向键弹出全量候选，
@@ -473,7 +441,6 @@
   回放（`enterHistoryReplay`）、「↻ 重跑」按环境重跑、分析提示词 `{env}`/`{commit}` 占位符与运行
   详情/回放区展示均不受影响。新增 `projects/pipeline/tests/test_history_table_columns.js` 覆盖表头
   列数与文案、行渲染单元格数、空态 colspan 与关键字匹配行为。
-
 - 流水线仅限创建者编辑/删除，他人只读可复制副本（`projects/pipeline/pipeline.html`）：为防止多人
   编辑同一条流水线的竞争，新增 `plEditable(p)` 归属判断，编辑器打开（`openPlForm` 只读置位与标题
   标注「创建者 @xx·只读」）、保存兜底（`savePlForm`）、删除（`deletePipeline`）、任务列表行按钮
@@ -489,7 +456,6 @@
   `test_pipeline_audit_trail.js`、`test_pipeline_save_consistency.js`、`test_parallel_stage_ui.js`、
   `test_pipeline_queue_counts.js`、`test_pipeline_row_run.js`、`test_pipeline_favorites.js`、
   `test_pipeline_pin.js`、`test_pipeline_pagination.js`、`test_stage_insert_select.js`、`test_cleanup_flow.js`）。
-
 - 流水线编辑器保存改为只上传当前流水线（`projects/pipeline/pipeline.html`、`src/index.ts`）：
   在上一轮负载瘦身（baseConfig 仅 pipelines + 历史按签名按需携带，常规保存 70KB→17KB、慢链路
   ~19s→~4s）的基础上更进一步——新增服务端单条保存路由 `PUT /api/worktable/pipeline/save-one`，
@@ -504,7 +470,6 @@
   新增单条合并四组回归（原位替换/追加/修改与删除冲突/路由不碰历史），
   `projects/pipeline/tests/test_pipeline_save_consistency.js` 新增 pushPipelineOne 负载形状、
   404 回退、409 形状、他端新增合入与缺条不发请求五组页面回归。
-
 - 修复流水线编辑器「保存」长时间停留在「保存中…」（公网映射等慢上行链路下 10 秒级）的问题
   （`projects/pipeline/pipeline.html`）：显式保存须等服务端确认（并发三方合并，见既有
   test_pipeline_save_consistency.js），但确认请求此前携带全量负载——完整 config + 完整 baseConfig
@@ -539,7 +504,6 @@
   sanitizeUsageEvent/parseUsageEvents/aggregateUsageEvents（含截断、坏行、30 日桶、recent 上限与排序、
   空输入）与客户端 parseUsageStats（正常解析 + 异常回退空结构）。
   `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
-
 - 新增 EMS（mfv-kv 内存池存储）安装部署三段流水线 step（`projects/pipeline/scripts/`）：
   `ems-deploy.sh`（安装执行：盲装防线/释放授权 ns/打 label/helm install/pod+大页终验）与
   `ems-hugepages.sh`（大页准备：只读内存预检/多轮 direct compaction 写入/allocatable 刷新/
@@ -553,7 +517,6 @@
   （192.168.1.46 执行宿主）实测跑通（ems8-8 @ 126/237）。厂商 chart `scripts/ems-chart/`
   **不入 git**（含证书私钥与密码，已加 .gitignore），随部署环境分发；README 补三脚本
   章节与 chart 分发说明。单测：`test/test_ems_{check,deploy,hugepages}.sh`。
-
 - 修复并行组内 EvalTokens 阶段被兄弟阶段失败连带中止时误停外部 run 的问题
   （`projects/pipeline/pipeline.html`、`src/index.ts`）：并行组 fail-fast 级联（某阶段失败 →
   `cancelParallelGroup` 中止兄弟阶段）此前与用户主动中止走同一出口，兄弟阶段的收尾逻辑看到
@@ -566,7 +529,6 @@
   `projects/pipeline/tests/evaltokens-stage.test.mjs` 新增级联/用户中止两组页面回归，
   `tests/pipeline-run-api.test.mjs` 新增服务端级联回归并把两处取消用例的 abort 原因对齐执行池实现。
   注：Jenkins（HTTP）阶段的级联中止仍有同形问题，本次未改动。
-
 - 修复 PR 检视台「构建历史 / 分支级构建设置」云端存储目录硬编码为 `/mnt/paas/storages` 的问题
   （`projects/codereview/code-review-prs.html`）：该路径只是旧部署的 DSH_HOME 值，DSH_HOME 不在
   /mnt/paas 的部署会把构建历史写到宿主数据目录之外，升级/迁移部署后如同丢失。现改为经
@@ -575,13 +537,11 @@
   （新目录已有不覆盖、旧文件保留不删）。所有云端读写入口先等目录解析（含迁移）完成，避免按旧目录
   读出空历史后误把本机 localStorage 迁移覆盖到新目录。新增 `tests/codereview-relstore-dir.test.mjs`
   覆盖目录解析、尾斜杠/空 home、选择性迁移、health 不可达兜底与目录未变化不迁移。
-
 - 流水线运行编号计数器改从 0 起（`projects/pipeline/pipeline.html`）：此前 `buildNo` 初始化为 47
   （让开 4 条内置演示数据的 #43–46），首个真实运行即 #48，运行历史看起来像丢了 #1–47；演示数据本就不
   推送服务端、不占服务端编号空间，初始化为 0 后真实历史从 #1 开始。服务端已有更高编号时
   loadServerState/历史刷新仍按双方较大值回填，不会重号。新增
   `projects/pipeline/tests/test_buildno_init.js` 回归（buildNo 初值为 0、演示数据带 demo 标记且持久化剔除）。
-
 - 修复终止流水线时只中止页面/服务端编排、未停止外部任务的问题（`projects/pipeline/pipeline.html`、
   `src/index.ts`）：Jenkins 触发后保存 queue `Location` 与最终构建号，终止时对排队项调用
   `POST /queue/cancelItem`、对已运行构建调用 `POST <build>/stop`，并为终止 POST 独立获取 crumb；
@@ -592,14 +552,12 @@
   遗留任务；Jenkins 整条终止链与 EvalTokens stop 各设 10 秒上限，失败会进入阶段日志并在
   页面提示。两种 Jenkins CORS 桥接配置显式暴露 `Location`/渐进日志响应头。新增 Jenkins 排队/运行取消、
   EvalTokens run 停止、启动响应竞态及页面协议回归测试。
-
 - 流水线任务列表新增分页（`projects/pipeline/pipeline.html`）：分页栏提供与运行历史相同的
   `10 / 20 / 50 / 100` 条规格，但使用独立的页码、页大小和 `pip-plPageSize` 本地存储键，互不联动；
   关键字、创建者或收藏筛选变化及清除筛选时自动回到第一页，流水线刷新、新增或删除导致总页数减少时
   自动修正越界页码；从顶部下拉框选用、新建或复制页外流水线时，若目标仍命中当前筛选则自动翻到目标页，
   保持列表“当前”行与下拉选择同步。新增 `projects/pipeline/tests/test_pipeline_pagination.js` 覆盖规格、初始化恢复、
   切片、前后翻页、页大小独立保存、越界修正及页外选中，并扩充 `test_pipeline_favorites.js` 覆盖筛选后回首页。
-
 - 「定时」页计划列表新增当前执行的终止能力（`projects/pipeline/pipeline.html`）：计划触发后在服务端执行池
   运行/排队的任务，此前只能去「运行队列」里找条目中止，定时页只有「取消」（仅删除计划、不动当前执行），
   且计划执行人署名带「 ⏰」后缀使按署名精确匹配的控制权判定永远失败，非管理员连自己的定时运行也无法中止。
@@ -612,7 +570,6 @@
   增删一并刷新；活动执行集合随 1s 队列快照轮询按签名变化才重绘，无变化不重建 DOM。新增
   `projects/pipeline/tests/test_plan_terminate.js` 覆盖徽标/按钮渲染、终止调用、权限边界（本人/他人/管理员）、
   取消确认与快照变化重绘；`test_queue_item_preview.js` 的 pullRemoteQueue 用例同步补新依赖桩。
-
 - 修复流水线运行提交与多浏览器保存的一致性问题（`projects/pipeline/pipeline.html`、`src/index.ts`）：全部阶段可由
   服务端执行的流水线此前点击运行后，要等 POST 返回并拉到权威队列快照才切换编排区，网络请求、服务端两槽
   执行池/同节点串行和轮询等待期间看起来像“没有开始”；现点击后立即按本次参数展示「提交中…」只读预览，
@@ -626,7 +583,6 @@
   回当前页，避免下一次保存误删他端新增项。新增
   `projects/pipeline/tests/test_pipeline_save_consistency.js`、`tests/pipeline-config-concurrency.test.mjs`，并扩充
   `test_run_autofocus.js`、`test_pipeline_readonly.js`。
-
 - 新增部署准入门禁脚本 `check-deploy-gate.sh`（`projects/pipeline/scripts/`）：在拉取/渲染/部署阶段之前
   把关，任一 FAIL 即非零退出、流水线阻断在绑定位置。执行机侧校验 `IMAGE_NAME`/`DEPLOY_IMAGE` 至少其一
   非空与 ssh 可用性（密码认证还需 sshpass）；有目标节点时经 SSH 把脚本逐节点下发执行（取 `TARGET_HOSTS`
@@ -653,7 +609,6 @@
   「使用说明」同步补充筛选说明。配套服务端脚本一并入库：`pr-fetch.py`（GitHub / GitLab / Gitee 仓信息与
   PR 列表抓取，归一化 `sourceBranch` / `targetBranch` 等字段，经 `/api/worktable/exec` 调用规避 CORS 与令牌暴露）、
   `pr-sync.py`（克隆目标仓 → 抓取源 PR 提交 → cherry-pick → push → 调 API 建 PR/MR，`@@PRSYNC@@` 事件流回显页面日志）。
-
 - 修复未选择部署策略时 `DEPLOY_STRATEGY` 被当作「已解析的空值」参与替换的问题（`projects/pipeline/pipeline.html`）：
   `substRunVars` 取值池此前用 `rc.strategy!==undefined` 注入 `DEPLOY_STRATEGY`，而运行上下文一律把未选择的策略
   兜底为空串，条件恒真——未选策略（「（不使用）」）时 `${DEPLOY_STRATEGY}` 静默解析为空，普罗命名空间模板
@@ -667,7 +622,6 @@
   `${DEPLOY_STRATEGY}-<执行人>` 残段）统一接入。新增 `projects/pipeline/tests/test_deploy_strategy_vars.js`，
   `tests/pipeline-run-api.test.mjs` 增补服务端采集环境用例，`test_cleanup_flow.js` 采集桩同步补
   `substPromTemplate`；`lib/index.js`（+ `.map`）已随本修复重建。
-
 - 流水线任务列表的「▶」运行改为先确认本次运行参数（`projects/pipeline/pipeline.html`）：点击后不再立即
   启动，而是弹出「运行流水线」窗口，默认继承页面顶部「运行流水线」控件当前的环境、代码仓、分支/Tag、
   部署策略和预设任务；分支/Tag 与部署策略复用主控的可搜索选择面板并提升到页面浮层，避免被弹窗边界裁剪，用户可只为本次运行临时调整，确认后以显式参数进入既有本地/服务端调度流程，
@@ -675,7 +629,6 @@
   运行继续支持显式空环境，代码仓未选择时阻止提交。新增
   `projects/pipeline/tests/test_pipeline_run_dialog.js`，并更新 `test_pipeline_row_run.js` 覆盖点击只打开弹窗、
   默认值回显、临时参数提交、登录用户署名边界和空环境/代码仓校验。
-
 - 服务端运行接口贯通「不选择任何节点」语义（`src/index.ts`）：`POST /api/worktable/pipeline/run/<id>` 此前
   对显式空 `environmentIds` 判 400（`environmentIds must not be empty`）、默认环境为空时回退首个环境，
   与页面「默认不选择任何节点」的新语义矛盾——运行框全不选时走服务端权威队列会静默改投默认/首个节点。
@@ -685,7 +638,6 @@
   API 调用说明弹窗的空环境请求体同步展示显式空数组并更新警告文案，README 接口契约同步更新。
   `tests/pipeline-run-api.test.mjs` 移除旧 400 用例、新增显式空/默认空两例；`test_pipeline_api_ui.js`、
   `test_pipeline_defaults.js` 同步扩充。
-
 - 流水线运行与编辑器「默认环境」支持不选择任何节点，且默认即不选择（`projects/pipeline/pipeline.html`）：
   主控「选择 IP」多选此前空选择时自动回写首个节点、勾选变更强制「至少保留一个」，无法表达「无目标节点
   运行」；现默认不选择任何节点（本地存储的空数组选择按显式空保留），允许全部取消勾选，按钮无选择时
@@ -696,7 +648,6 @@
   （维持回退首项兼容），失效引用仍由 `pipelineDefaultRunIssue` 阻断。定时页环境多选跟随主控，均未选择
   时同样按无目标节点处理。服务端权威队列路径的无目标节点语义由后续变更贯通（见上一条）。新增
   `projects/pipeline/tests/test_env_selection_default_none.js`。
-
 - 流水线运行导入弹层增加第二步「按运行窗口挑选普罗标签」（`projects/diag_perf/index.html`）：运行记录的
   `prom.modelName`/`xdsNamespace` 是占位模板（`${MODEL_PATH}`/`${DEPLOY_STRATEGY}-${BY}`）在采集时点的解析
   快照，解析不出时只剩空串或 `-<操作人>` 残段，直接拿来当标签过滤查不到数据。现点选运行后进入第二步：
@@ -706,7 +657,6 @@
   查询失败保留下拉中的运行记录值，导入后仍可在数据集卡片上调整。「应用导入」按所选标签 + 运行窗口 +
   归档日志目录落数据集，「返回重选运行」可回第一步。新增纯函数 `seriesLabelValues`/`importLabelChoices`
   及配套测试（`projects/diag_perf/index.test.cjs`）。
-
 - 性能诊断页支持从流水线运行历史一键导入数据集（`projects/diag_perf/index.html`）：数据集 A/B 卡片各新增
   「从流水线运行导入」按钮，弹层经 `/api/worktable/pipeline/history` 拉取运行列表（旧版插件无此路由时回退
   全量 `/api/worktable/pipeline`），支持按编号/tag/流水线/环境/提交/操作人过滤、显示状态徽章与普罗采集标记，
@@ -715,7 +665,6 @@
   内含 `run-<tag>.log` 汇总日志，作为日志证据目录）填充进数据集并立即生效；对比模式下 A 导入基线运行、
   B 导入劣化运行即构成 A/B 对比，无需手工抄标签与起止时间。新增纯函数 `parseRunDur`/`runImportWindow`/
   `runImportPatch`/`runMatchesFilter` 及配套测试（`projects/diag_perf/index.test.cjs`）。
-
 - 点击「运行」后流水线编排与阶段详情自动跳到刚提交的那次任务（`projects/pipeline/pipeline.html`）：此前只有
   本地立即开跑会切编排区焦点，本地排队、节点租约在途（「申请节点中」）和提交服务端权威队列的任务都要用户
   自己到运行队列里点选才能看到。现三个运行入口（主控「运行流水线」、任务行 ▶、历史重跑）统一在提交后立即
@@ -726,7 +675,6 @@
   排队预览被清空回空闲编排的问题：`refreshRemoteQueuePreviewRc` 先按同 id 续看，再按 `originQueueId`
   兼容旧浏览器在场条目的 q…→r… 换 id。新增 `projects/pipeline/tests/test_run_autofocus.js`（本地排队/
   满额拒绝/租约在途/同步启动、服务端立即可见/延迟可见/超时放弃/提交失败、两类排队→在跑跟随）。
-
 - 恢复混合编排流水线手动运行的「定时分界移交」原设计（`projects/pipeline/pipeline.html`）：编排中同时存在
   「需本地运行」与「定时」阶段时，需本地运行的前缀在浏览器立即跑完，运行到达首个定时阶段（分界）即把
   后缀定时阶段整体登记为一条「立即执行一次」的服务端计划（归档文件夹/tag/baseSeq/上游变量快照随计划移交，
@@ -1126,7 +1074,6 @@
   仅进入本次执行，不写入服务端配置或历史。Jenkins 触发后跟随响应中的 queue `Location` 等待该队列项实际
   分配的构建号，避免并发触发串号；EvalTokens 终态按明确成功值及失败优先级判定；远端 JSON / 正文读取分别
   限制为 2 MiB / 16 MiB。新增服务端 API / 执行器测试及客户端默认值、覆盖、预设快照和 API 弹窗测试。
-
 - 流水线阶段「耗时」默认 0 并在编辑时保留原值（`projects/pipeline/pipeline.html`）：`newStage` 默认
   `dur:5` 改为 `dur:0`，0 表示不设置耗时——本地模拟阶段不再空转等待，运行即结束（`runStage` 对
   `dur<=0` 走即时完成路径，sub 阶段标记、回显归档、渲染推进与计时路径一致，也不再启动计时器）。
@@ -1168,7 +1115,6 @@
   新增 `projects/pipeline/tests/test_stage_insert_select.js`（选中高亮与按钮挂载/移除/幂等、上/下插入
   位置与新卡焦点、越界保护、重渲染后含预设卡恢复选中态）；`test_stage_drag_reorder.js` /
   `test_cleanup_flow.js` 补齐选中态上下文（FakeClassList.toggle、editSelStage、applyEditSel 加载）。
-
 - 修复流水线大量日志 / 长时间任务导致页面与 web 服务卡死（`src/index.ts` +
   `projects/pipeline/pipeline.html`）：
   - `/api/worktable/exec-stream` 原先忽略 `ServerResponse.write()` 背压，浏览器处理稍慢时仍持续读取
@@ -1197,7 +1143,6 @@
   - 新增慢客户端 8 MiB 输出、背压后断连、慢归档磁盘 4 MiB 输出的背压 / 完整性测试，以及详情窗口、修订缓存、
     预设 / Jenkins / EvalTokens 实时快照、刷新节流、分片归档与流式写入失败清理测试；实测 32 MiB
     输出且客户端暂停读取时，服务端 HTTP 积压由约 30.4 MiB 降至约 1.01 MiB，恢复读取后继续执行并完整落盘。
-
 - 流水线 EvalTokens 阶段任务输入参数支持设置与识别刷新（`projects/pipeline/pipeline.html`）：编辑器参数区由只读改为
   可编辑——识别到的任务原值填入框中（未改动时弱化色展示、不下发），修改后作为显式覆盖存入 `evaltokens.values`
   随流水线持久化（`evaltokensStageConfig` 携带 values；`params` 仍为瞬态，不持久化）；动作行新增「识别参数」按钮
@@ -1208,19 +1153,16 @@
   新增 6 个用例：values 持久化与 normalizeStageKind 透传、commitEvaltokParamValue 提交规则、参数区可编辑渲染与
   change 写入/删除、「识别参数」按钮强制重识别、重新识别保留已设值（含 keepOnError/任务未命中路径）、run 请求体
   携带 input 覆盖。
-
 - 流水线编辑器 EvalTokens 阶段选中任务后显示任务标题而非任务 ID（`projects/pipeline/pipeline.html`）：
   任务选择输入框 `etTaskId` 的回显值由 `taskId` 改为优先取 `taskName`（无标题时回退 `taskId`），并移除
   原本紧随输入框重复展示标题的 `· taskName` 辅助 span（标题已并入输入框，避免冗余）。底层 `taskId`/
   `taskName` 数据与运行时匹配逻辑不变：选中任务仍回填 `taskId=真实 ID`、`taskName=标题`，运行时按
   `taskId`（优先）或 `taskName` 匹配任务；手动输入仍走 `change` 事件清空 `taskName` 后异步识别参数。
   `./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
-
 - 流水线编辑器支持整张任务卡拖拽调序（`projects/pipeline/pipeline.html`）：普通阶段与系统预设阶段均可拖动，
   拖到目标卡上半区 / 下半区时以强调色边线提示插入到目标前 / 后；松开后只更新编辑草稿，继续由原「保存」
   动作统一持久化。原序号输入、上移、下移操作保留，并与拖拽复用同一重排函数。
   新增 `projects/pipeline/tests/test_stage_drag_reorder.js` 覆盖前后移动、插入位置计算、整卡拖放与两类任务卡事件注册。
-
 - pipeline 导入导出支持服务端备份（`src/index.ts` + `projects/pipeline/pipeline.html`）：「⤓⤒ 导入导出」
   菜单新增「服务端备份」区——「导出设置 / 流水线到服务端…」（与浏览器本地下载同一份 payload，POST 落盘）
   与「从服务端导入…」（面板列出服务端备份文件：目录 / 文件名 / 修改时间 / 大小，逐个导入，按文件内容
@@ -1243,7 +1185,6 @@
   用户自定义名不受影响，设置面板改名框仍显示/提交无后缀名（避免失焦提交把后缀固化成自定义名）。
   新增 `tests/dsh-home.test.mjs` 判定测试（release 副本 / 源码树 / link: 符号链接三种形态）。
   `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh plugins` 重装并 `./dsh.sh restart` 后刷新页面生效。
-
 - pipeline 项目新增设置 / 流水线导入导出（`projects/pipeline/pipeline.html`）：标题区右上角
   「⤓⤒ 导入导出」菜单，设置与流水线分开备份恢复——导出设置=设置页全部配置（服务端部分
   剔除流水线、补回仅存本浏览器的代码仓访问令牌）+ 本地运行选择（当前流水线/环境/代码仓、
@@ -1252,24 +1193,20 @@
   与旧数据迁移，导入后统一落 localStorage 并推服务端持久化；运行历史不参与导入导出。
   导出文件含密码/令牌明文（菜单内已标注勿提交仓库）。新增
   `projects/pipeline/tests/test_config_import_export.js` 7 个契约测试。
-
 - 工作台名称可编辑（`src/client/index.tsx` + `src/client/locales.ts`）：侧栏区块标题「工作台」
   支持自定义——设置面板（视图选项 ⚙）顶部新增「名称」栏，复用项目管理改名的 RenameInput 交互
   （失焦/回车提交），清空即恢复默认「工作台」；自定义名存 `ViewState.title`（localStorage
   `dsh.worktable.view.v1`，本机偏好，不推服务端），侧栏标题按 自定义名 → locale 默认 回退显示。
   `lib/client.js`（+`.map`）已随本改动重建，刷新页面生效。
-
 - 升级命令的 tarball 文件名带版本号（`src/client/index.tsx`）：v1.0.5 发布验证发现 `dsh plugin add`
   按资产文件名缓存 tarball——各版本 URL 路径虽不同，文件名却恒为 `tokens-worktable.tgz`，缓存命中即装回旧版
   （部署机装 v1.0.5 实际装回 v1.0.4）。现改为 `releases/download/<tag>/tokens-worktable-<版本号>.tgz`，
   每次发布文件名唯一，缓存必然失效；release 同时保留不带版本号的 `tokens-worktable.tgz` 兼容旧版客户端的升级命令。
   `lib/client.js`（+`.map`）已随本改动重建。
-
 - 自带项目入口页改名换标：codereview「PR 检视台 · TokensService」🩺 →「代码版本」🪲（图标改用瓢虫，
   与 bug 定位语义一致）、diag_perf「大模型推理性能诊断」→「性能诊断」、pipeline「流水线工作台」→「流水线」
   （仅改各入口页 `<title>` / `<meta worktable-icon>`，新导入的项目按自报名称与图标显示；
   已导入的布局不受影响，需删除后重新导入生效）。
-
 - 项目入口页自报名称与侧栏图标，导入时自动带上（`src/index.ts` + `src/client/index.tsx`）：
   `/api/worktable/scan-projects` 扫描时读入口页文件头 64KB，提取 `<title>`（折叠空白，最长 60 字符）
   与 `<meta name="worktable-icon" content="🚀">`（属性顺序不限，最长 16 字符），随扫描结果带 `title`/`icon` 字段；
@@ -1278,25 +1215,21 @@
   插件自带三个项目导入后即显示真实名称与图标：pipeline「流水线工作台」🚀、
   diag_perf「大模型推理性能诊断」🔍、codereview「PR 检视台 · TokensService」🩺（各自入口页 `<head>` 已声明图标）。
   `lib/index.js`/`lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后重新导入项目生效。
-
 - 图标选择器 bug 定位组新增瓢虫 🐞（`src/client/index.tsx`）：EMOJI_SET 由 45 个扩至 46 个，
   布局/快捷方式/入驻项目换图标时可直接选用。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后刷新页面生效。
-
 - 更新提示的升级命令改用带版本号的固定 release URL（`src/client/index.tsx`）：原提示词与更新卡片里的
   升级命令固定为 `releases/latest/download/tokens-worktable.tgz`，该 URL 永不变化，包管理器按 URL
   缓存 tarball，重复执行可能装回旧版（部署机曾因此停在 1.0.0，页面版本号不随发布走）。现改为按
   更新检查拿到的原始 tag 拼 `releases/download/<tag>/tokens-worktable.tgz`（`UpdateInfo` 新增 `tag`
   字段存原始 tag_name），更新卡片展示的命令与「✦ AI 生成」复制的提示词同步使用。
   `lib/client.js`（+`.map`）已随本改动重建，随 v1.0.3 发版部署后生效。
-
 - 「管理项目」设置弹窗加宽 280→400px（`src/client/index.tsx`）：长项目名/路径不再拥挤换行。
 - 图标选择器新增 IT 主题 emoji（`src/client/index.tsx`）：EMOJI_SET 由 18 个扩至 45 个，新增
   代码检视（🔍👀🧐✅）、bug 定位（🐛🪲🔎🎯）、流水线（🏭🔗⛓️🔄🔧）、性能诊断（📈📊⏱️🩺🚀）、
   通用研发（🖥️💻⌨️🗄️📡☁️🔒🧰🗂️💾）五组，布局/快捷方式/入驻项目的图标点击可换时直接选用；
   弹层加高后的下缘夹取余量 316→372px，贴底锚点时弹层不再溢出视口。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后刷新页面生效。
-
 - 「从文件夹导入所有项目」认回原有项目并继承其布局名称与 logo（`src/client/index.tsx`）：
   此前导入只按「文件夹映射 + 精确页面路径」去重，路径形式差异（尾斜杠/重复斜杠）、入口文件变化、
   服务端已发布但本地尚未合并、删除后再导入等情形都会失配，被当成新项目重复导入——新布局用
@@ -1312,7 +1245,6 @@
     会同 id（渲染/folders 映射错乱）；导入循环内补序号后缀保证互不相同。
   已发布（sync）布局的认回并入走原有服务端同步切片，localStorage 不落 sync 条目。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后刷新页面生效。
-
 - 服务端存储路径与宿主 DSH home 对齐（`src/index.ts`）：原先全部硬编码 `os.homedir() + '/.dsh'`，
   在 home 被重定向的部署（如 DSH_HOME=/mnt/paas）下会写错位置、读不到宿主的 workspace.json。
   新增 DSH_HOME 解析，优先级 = 模块位置推断（标准安装位于 <home>/profiles/<profile>/node_modules/<pkg>/lib，
@@ -1320,7 +1252,6 @@
   与宿主 @deepseek-ai/dsh-home-paths 同规则）→ 默认 ~/.dsh。worktable-projects/pipeline/plans/logs 四个存储文件、
   workspace.json 只读路由、loadPkg 的 profiles 兜底目录全部改用解析结果；健康路由新增 home 字段便于部署核对。
   需构建插件并重启 web 后生效（原 /root/.dsh/storages 下的存量文件不自动迁移）。
-
 - 「+」添加面板新增「批量导入」：一键导入某个文件夹里的所有项目（`src/index.ts` + `src/client/index.tsx` 配套）：
   - 新增路由 `POST /api/worktable/scan-projects`：扫描所选目录的一层，每个「含 .html 页面」的子目录算一个项目
     （入口择优 index.html → 与目录同名 .html → 字母序首个），目录下散装 .html 算单页项目，隐藏项跳过。
@@ -1328,7 +1259,6 @@
     路径取自健康路由上报的插件目录），扫描后为每个项目建单窗布局（目录级托管 iframe 页面，项目文件夹 = 子目录）；
     项目文件夹或页面路径已在工作台里的自动跳过，面板内显示「已导入 N 个（跳过 M 个）」。新增 zh/en 词典与路由测试。
     需构建插件并重启 web 后刷新页面生效。
-
 - 节点环境支持「IP:端口」指定 SSH 端口（`projects/pipeline/pipeline.html` + `src/index.ts` / `lib/index.js` 配套）：
   - 设置页「节点环境」IP 输入框可填纯 IP（默认 22 端口）或「IP:端口」（如 `115.33.98.101:2222`）：placeholder/tooltip 更新、
     `saveEnvForm` 增加端口格式校验（单个冒号时其后须为数字端口；多冒号 IPv6 或无冒号原样保留）、IP 表头排序先去掉「:端口」再按段数值排。
@@ -1336,7 +1266,6 @@
   - 服务端 `queryGpu` 解析「IP:端口」：本机判定与 ssh target 均用 host（不含端口），端口经 `ssh -p <port>` 传入
     （ssh 不支持 `host:port` 形式的 target），设备状态查询因此能连非 22 端口的节点。无端口时行为与原先完全一致。
     需构建插件并重启 web 后刷新页面生效。
-
 - 本地文件读取路由 `/api/worktable/file` 新增可选 `tailBytes` 参数：流水线历史回放只需日志末尾时，
   服务端以有界随机读取返回最多 4 MiB 的文件尾部，并通过响应头返回原文件大小与截尾状态；
   不带参数的资源管理器等旧调用仍保持完整文件响应，超过 256 MiB 的原有保护不变。
@@ -1345,7 +1274,6 @@
 - 页面上送历史及服务端 GET/PUT/定时追加三处统一剔除 `_lc`/`_lm`/`_ll`/`_profChecked`
   回放临时字段，避免读过的日志全文被误写进 `worktable-pipeline.json`、导致状态文件持续膨胀；
   存量缓存会在下次历史写入时自动清除。
-
 - 流水线运行队列跨浏览器可见 + 队列/运行历史手动刷新（`src/index.ts` + `projects/pipeline/pipeline.html` 配套）：
   - 新增路由 `/api/worktable/pipeline/queue`：各 pipeline.html 标签页把自己「正在运行 + 排队中」的快照 PUT 到服务端内存
     `Map`（`{id, label, running, queue, seenAt}`，seenAt 用服务端收到时间防客户端时钟偏差；上限 100 个客户端，超出淘汰最旧
@@ -1361,13 +1289,11 @@
     一并合并进来）；buildNo/histClearedAt 取双方较大值回填（防另一浏览器跑过后本地 buildNo 回退重号），历史非空整体替换、
     空但 histClearedAt 非零则置空（语义同 loadServerState）；有选中行时先退出历史回放再清选中（回放基于行下标，列表变了必须退出）。
     需构建插件并重启 web 后刷新页面生效。
-
 - 脚本阶段日志改为执行服务端直接落盘（`src/index.ts` + `projects/pipeline/pipeline.html`）：
   - `/api/worktable/exec-stream` 接受可选 `logFile`，执行前递归创建日志目录，stdout/stderr 按到达顺序实时写入，关闭文件后才发送包含 `logFile` 的 `done`；`log` 事件提前确认日志归属。日志保留命令、原始输出及退出码；中止/断网保留已写内容和 `[aborted]`，超时保留原因。
   - `/api/worktable/exec` 同样支持实时执行端归档（含环境清理），关闭文件后再响应；写文件失败返回 `logError`，不改变脚本退出码，也不重跑脚本。未传 `logFile` 的旧调用保持原协议。响应头先声明日志归属，无法确认归属的断流不触发覆盖上传。
   - 页面使用原有 `run-<tag>-NN-任务名.log` 路径；服务端接管后不再逐阶段发送 `mkdir` / `write`，防止中止时用浏览器局部输出覆盖文件。旧插件正常完成但未返回归档路径、或服务端报告写入失败时，页面仍兜底归档。
   - HTTP / EvalTokens / 模拟阶段及汇总日志、profiling 仍由页面归档；服务端定时计划原有直接归档不变。新增真实 HTTP/子进程测试及页面协议回归测试；需构建插件并重启 web 后刷新页面生效。
-
 - 流水线阶段类型「URL请求」改名「HTTP」并新增「EvalTokens」阶段类型（projects/pipeline/pipeline.html + src/index.ts / lib/index.js 配套）：
   - 「URL请求」阶段类型改名为「HTTP」——`STAGE_KIND_LABEL` 的 `url:'URL请求'` 改为 `http:'HTTP'`，内部 `kind` 值
     `url`→`http`，按现有 `jenkins→url` 迁移风格兼容旧数据：`migrateStageUrl`/`normalizeStageKind` 把旧 `kind:'jenkins'`/`'url'`
@@ -1382,7 +1308,6 @@
     「查看报告」链接；阶段超时 / 中止 / 迟回令牌守卫与 `runUrlStep` 同规则；`buildLog` 增加 EvalTokens 分支展示轮询回显。
   - 服务端定时执行（`execPlan`）跳过条件同步扩展 `kind:'http'`/`'evaltokens'`（兼容旧计划 `url`/`jenkins`）：HTTP /
     EvalTokens 阶段仅前端运行期支持，定时触发暂跳过。`lib/index.js` 已随本改动与 `src/index.ts` 同步手改（条件 + 跳过提示文案）。
-
 - 修复项目创建时「选择位置…」报错 `listDirectory unavailable`（`src/client/index.tsx`）：
   目录选择能力（`listDirectory`/`pickDirectory`/`createDirectory`）在宿主 `uiWorkspace`
   服务（`@deepseek-ai/dsh-client-ui-workspace` 的 `UiWorkspaceService`）上，不在 `ctx.workspaces`
@@ -1395,7 +1320,6 @@
   `createWorkspaceDir` 的建目录同样改为「宿主优先 + 插件兜底」。即：宿主组合了 directory-picker
   （browse/native）时走宿主能力并尊重其作用域，远程无桌面 / 未组合时回退插件自身路由，项目创建
   选目录始终可用。`lib/client.js` 已随本改动重建，`./dsh.sh restart` 后刷新页面生效。
-
 - 流水线历史记录与日志分离存储 + 运行状态机竞态修复（`src/index.ts` + projects/pipeline/pipeline.html 配套）：
   全量日志进历史记录导致 worktable-pipeline.json 单条记录可达数 MB（页面加载全量 GET + 每次保存全量回写，
   页面明显变慢）。现改为：归档文件（run-*.log）仍是全量日志唯一实体、永不截断；历史条目只存元数据 +
@@ -1417,7 +1341,6 @@
   - 服务端定时历史记录补 `ts` 字段（参与合并排序与清空判定）；
   - `/api/worktable/file` 读取上限 20MB→256MB（全量归档日志可能超 20MB，回放按需读取不得 413）。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 阶段超时改为「留空=无超时」并修复定时路径超时失效（`src/index.ts` + projects/pipeline/pipeline.html 配套）：
   此前编辑器「超时(分钟)」留空时脚本阶段默认 2 分钟、URL 请求阶段默认 5 分钟，且服务端定时路径
   `runStageScript` 硬编码 `timeout: 120000` 完全无视阶段配置——长任务（如大镜像拉取）到点被杀，
@@ -1430,7 +1353,6 @@
   （ENOBUFS）被杀时，在 stderr 追加原因说明（对齐 exec-stream 的 'exec timed out' 提示），日志里能直接
   看到是被超时终止而非截断。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 流水线日志全量保留、一律不截断（`src/index.ts` + projects/pipeline/pipeline.html 配套）：
   服务端定时路径（`execPlan` 定时计划/定时后缀）此前经 `truncLog` 把每个任务的回显截到 8192 字符后再写归档，
   长输出任务（如镜像拉取进度条）的独立任务日志 run-<tag>-NN-任务名.log 与汇总 run-<tag>.log 都被切断在
@@ -1446,7 +1368,6 @@
     `appendPipelineHistory` 改为丢最旧记录直至放得下（此前分别 413 整批拒绝 / 静默丢弃新记录；
     老记录的全量日志仍在归档文件夹，不丢内容）。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 新增「右侧聊天窗 + 自动发送」桥 `window.__dshSendChatInProject(text)`（`src/client/index.tsx`）：
   供 iframe 内容页「一键 AI 生成」类按钮（如 code-review-prs.html 发行说明「✦ AI 生成」）调用。
   与既有 `__dshNewChatSession`（newChatInProject）相同地新建会话、`markPluginSessionOpen` 标记插件
@@ -1454,7 +1375,6 @@
   自动发送，不经输入框草稿（`fillSessionDraft`），「一键生成」场景无需用户再点发送。
   分组/目录优先级与 newChatInProject 一致（项目分组 > 指定 cwd > 设置面板默认分组 > 未分组）。
   `lib/client.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 流水线页脚本参数默认值不再预填/下发（`src/index.ts` + projects/pipeline/pipeline.html 配套）：
   此前识别到的静态 `:-默认值` 会预填进参数输入框并作为显式值随执行注入，压过运行级自动注入的同名变量
   （如脚本 `IMAGE_NAME="${IMAGE_NAME:-myapp}"` 的 `myapp`、`TARGET_IP` 的 `127.0.0.1` 盖掉主控镜像名与节点环境 IP）。
@@ -1464,7 +1384,6 @@
   存量数据迁移：页面 `loadPipelines` 新增 `migratePrefillDefaults`（复用 `cleanScriptValues`），
   清掉 values 中与识别默认值相同的旧版预填产物；`detectStageParams`/`detectCleanupParams` 重新识别时同样丢弃。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 项目设置弹窗支持按项目自定义「页面修改」提示词（`src/client/index.tsx` + `src/client/locales.ts`
   + `src/client/styles.ts` + `src/index.ts` 配套）：
   「管理项目」行 ⚙ 弹窗在「绑定对话」框后新增「自定义提示词」框（仅该项目有页面文件、✏️ 可用时显示），
@@ -1475,7 +1394,6 @@
   folders/workspaces 同切片走服务端 `/api/worktable/projects` 同步（GET/PUT 均加白名单 `prompts` 字段），
   localStorage 不落 sync 条目。
   `lib/index.js` / `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 定时后缀阶段间变量传递修复（`src/index.ts` + projects/pipeline/pipeline.html 配套）：
   阶段 stdout 的 KEY=VALUE / 单行 JSON / 「输出变量」映射此前只在页面运行期累计进 `curRun.vars`，
   而带「定时」标记的后缀阶段交给服务端 `execPlan` 执行，页面 `registerStageTimers` 登记计划时又不带
@@ -1490,7 +1408,6 @@
   `/api/worktable/exec-stream`、`runStageScript` 三处统一剔除超限变量并在 stderr/阶段日志补 `[warn]` 告警，
   提示改用「输出变量」JSON 路径截取所需字段。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 定时后缀计划丢失修复（`src/index.ts` + projects/pipeline/pipeline.html 配套）：
   页面 `registerStageTimers` 的后缀计划 id 由稳定值 `stimer-<流水线id>-suffix` 改为带本次运行 tag 的
   逐次唯一值——旧稳定 id 下，重跑同一条流水线会以同 id 替换待执行计划（前一次运行后缀永不执行），
@@ -1499,7 +1416,6 @@
   服务端 `planTick` 移除条件同步收紧为 id+createdAt 双条件（仅移除本次执行的那一份登记），
   旧版页面（稳定 id）重登记的新计划也不再被误删。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 流水线页 Jenkins 阶段改为「URL 请求」阶段（`src/index.ts` 配套）：
   projects/pipeline/pipeline.html 阶段类型 `kind:'jenkins'` 改为 `kind:'url'`（标签「URL请求」），
   去掉「拉取参数」（`detectJenkinsParams` 与 params/values 参数表单），参数改由 URL 的
@@ -1509,7 +1425,6 @@
   兼容触发。`execPlan` 定时执行跳过条件同步扩展 `kind:'url'`（URL 触发仅前端运行期支持，
   兼容旧计划中的 `kind:'jenkins'`）。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 设置面板新增「工作区（默认会话分组）」设置项（`src/client/index.tsx` + `src/client/locales.ts`）：
   视图选项弹层在「排序方式」与「管理项目」之间新增工作区下拉（复用 `dsh-wt_consoleSelect`
   主题变量样式，浅色/深色自适应），列出宿主已配置的工作区供选择，选「未分组」即清除；
@@ -1521,33 +1436,28 @@
   打开归档目录）保持 cwd 行为不变。所选工作区被删除后按未设置处理
   （`defaultWorkspaceId` 校验存活；下拉显示「已删除」占位项便于改选/清除）。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 定时执行（服务端 runStageScript）脚本参数下发规则与前端新 execScript 对齐（`src/index.ts`）：
   流水线页参数识别改版后（静态 `:-默认值` 预填为显式值并照常下发，动态默认值——含 `$引用`/`$(命令)` 的
   脚本表达式，标 `dyn`——不下发字面值、留空由脚本自身 `:-` 展开），服务端定时路径同步改为
   `p.dyn ? '' : p.def || ''`，避免动态表达式被当字面值注入（shell 不会二次展开），
   也不再挡住同名的运行级注入（TARGET_IP/TARGET_USER 等）。
   `lib/index.js` 已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 修复会话窗关闭（内容全宽）时标题栏 💬/✕ 与其他插件按钮重叠（`src/client/split.tsx`）：
   会话窗打开时标题栏右端到聊天列左缘即止，不存在冲突；关闭会话窗后标题栏横跨整页，
   💬/✕ 落在页面右上角，与其他插件注入在该区域的按钮重叠。
   修复：`chatClosed` 时标题栏 `paddingRight` 预留 `BAR_RIGHT_RESERVE = 160`px 空区
   （常量，宽不够可调），💬/✕ 随之左移；栏体背景与底边仍横跨整页，视觉不断裂。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 聊天图标颜色再调为主题次级灰（`src/client/styles.ts`）：
   主题强调色（亮蓝）实机仍显突兀；改为 `var(--dsw-alias-label-secondary, #9aa4b2)`——
   与绑定按钮常态、⇄/✕ 按钮同色系，最克制耐看；hover 恢复主色（`--dsw-alias-label-primary`），
   关窗态仍降透明度 + `grayscale` 置灰。分栏标题栏 💬 与项目行 💬 一并替换。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 聊天图标颜色由饱和绿 `#3fb950` 改为主题强调色（`src/client/styles.ts`）：
   `#3fb950` 在整体灰蓝色调中突兀；改用 `var(--dsw-alias-state-accent-primary, #4f8ef7)`——
   项目卡片选中描边 / 激活态同款主题变量，浅色/深色主题自适应，与整套 dshell 视觉同源；
   分栏标题栏 💬 开关与项目行 💬 按钮一并替换，关窗态仍随 `grayscale` 置灰。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 去掉聊天列 ✕ 关闭按钮，聊天图标改绿色 CSS 气泡（`src/client/split.tsx` + `index.tsx` + `styles.ts`）：
   回退上一条的聊天列 ✕ 浮钮（关闭会话窗只保留分栏标题栏 💬 与项目行 💬 两处入口）；
   聊天图标由 emoji 💬 改为 CSS 绘制的对话气泡（`.dsh-wt_chatGlyph`：圆角描边泡体 + 左下
@@ -1555,14 +1465,12 @@
   `grayscale` 置灰），常态绿色 `#3fb950`（同绑定按钮「完成」绿）；分栏标题栏 💬 开关与
   项目行 💬 按钮同款替换，视觉一致。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - ~~聊天列左上角新增 ✕ 关闭按钮（`src/client/split.tsx` + `styles.ts`）~~（已回退，见上一条）：
   会话窗打开时，聊天列左上角浮一个 ✕（fixed 定位，`left = chatX + 6`，与标题栏同排），
   点击即 `setChatClosed(true)` 关闭会话窗——与分栏标题栏 💬 / 项目行 💬 同一 `chatClosed` 状态，
   关闭后可由这两处 💬 恢复；按钮半透明底色（`--dsw-alias-fill-l1`），压在深/浅会话内容上都可读，
   会话窗关闭或列宽为 0 时不渲染。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 每个项目行新增 💬 聊天按钮（`src/client/index.tsx` + `split.tsx` + `locales.ts` + `styles.ts`）：
   「工作台」控制室行与每个布局项目行在绑定按钮左侧新增 💬 按钮，点击打开/关闭该项目的
   会话窗口——项目未打开时先打开再切换；开/关状态即分栏引擎的 `chatClosed`，随布局条目
@@ -1572,7 +1480,6 @@
   降透明度 + 去色（同标题栏 💬 关态）。hover 气泡复用绑定按钮的 body 级气泡
   （事件委托选择器扩为 `.dsh-wt_bindBtn,.dsh-wt_chatBtn`）。
   `lib/client.js`（+`.map`）已随本改动重建，`./dsh.sh restart` 后生效。
-
 - 修复 `/api/worktable/proxy` 代联在 Node 24 + `NODE_USE_ENV_PROXY=1` 环境下超时（`src/index.ts`）：
   Node 24 起 `NODE_USE_ENV_PROXY=1` 时 `node:http`/`node:https` 同样会走系统代理（原注释
   「node:http 直连彻底忽略系统代理」在旧 Node 成立、Node 24 失效），dsh web 进程带
@@ -1582,7 +1489,6 @@
   同时新增调用方可选 `useProxy:true`：不注入 Agent、按进程环境走系统代理
   （需 NODE_USE_ENV_PROXY=1 才生效）——供页面「走系统代理」开关选择，默认仍直连。
   `lib/index.js`（+`.map`）已重建，`./dsh.sh restart` 后生效。
-
 - 分栏标题栏新增「会话窗口」开关按钮 💬（`src/client/split.tsx` + `locales.ts` + `styles.ts`）：
   点击关闭右侧（或左侧）会话窗口——会话视图区整体 `display:none`（含输入框），内容窗
   （含顶部通栏行）占满整宽，聊天分隔线与 ⇄ 换位按钮随关隐藏；再次点击恢复。
@@ -1652,7 +1558,6 @@
   定时计划（服务端 `execPlan`/`runStageScript`）注入集同步对齐前端：补 `TARGET_IPS`/`TARGET_HOSTS`/`IMAGE_NAME`/`IMAGE_TAG`/`PIPELINE_NAME`/`GIT_BRANCH`/`DEPLOY_STRATEGY`
   （`runCtx` 增带 `image`/`branch`/`strategy`），`TARGET_IP` 改为优先取首个节点 IP。
   `lib/index.js`（+ `.map`）已随本修复重建。
-
 - 「流水线」定时执行的任务回显逐任务归档（`src/index.ts` `execPlan`）：
   每个任务（环境清理 00 / 各阶段 01…，含审批门、Jenkins 跳过、模拟阶段）的回显都按页面约定
   写入归档文件夹的独立日志文件 `run-<tag>-NN-任务名.log`，并写/合并汇总 `run-<tag>.log`
@@ -1666,7 +1571,6 @@
   `registerStageTimers` 把本次运行的归档上下文（`archive`/`tag`/`baseSeq`）随计划交给服务端；
   点「中止」时先把被中断任务的当前回显即时归档为独立任务日志，`archiveRun` 兜底也补归档
   「有回显但被中止」的阶段；Jenkins 阶段构建中/被中止时 buildLog 输出已轮询到的部分回显。
-
 - 修复「项目文件夹无法修改」（`src/client/index.tsx`）：
   宿主组合的是 browse 目录选择器时，`host.pickDirectory`（native）会以
   `directory-picker-unavailable` 失败，而旧代码静默吞掉异常，点「更改」无反应。

@@ -4559,11 +4559,22 @@ function startSimRun(pl, c){
   rcOverall(rc,'运行中…','dshell-badgeWait');
   renderFlow(); renderDetail();
   /* 混合编排（本地前缀 + 定时后缀）：启动即把后缀预登记为休眠服务端计划（at=0，见 preRegisterSchedSuffix），
-     分界/关页只做激活，不再等移交——防止移交过程中丢上下文/请求丢失。纯本地（无 sched 阶段）不预登记。 */
+     分界/关页只做激活，不再等移交——防止移交过程中丢上下文/请求丢失。
+     纯本地（无 sched 阶段）不预登记；无本地任务（后缀前没有需本地运行阶段）不留休眠计划，
+     直接以 at=now 登记为可执行服务端任务，避免休眠计划与分界激活竞态、一直挂到关页才触发。 */
   {
-    let firstSched=-1;
-    for(let i=0;i<stages.length;i++){ const st=stages[i]; if(!st||st.preset) continue; if(st.sched){ firstSched=i; break; } }
-    if(firstSched>=0){ try{ preRegisterSchedSuffix(rc, firstSched); }catch(e){ console.warn('[pipeline] 定时后缀预登记失败（分界/关页回退全量登记）:', e); } }
+    let firstSched=-1, hasLocalPrefix=false;
+    for(let i=0;i<stages.length;i++){
+      const st=stages[i]; if(!st||st.preset) continue;
+      if(st.sched){ if(firstSched<0) firstSched=i; }
+      else if(firstSched<0) hasLocalPrefix=true;   // 定时分界之前存在需本地运行阶段，才需要休眠等待
+    }
+    if(firstSched>=0){
+      try{
+        if(hasLocalPrefix) preRegisterSchedSuffix(rc, firstSched);
+        else registerStageTimers(rc, firstSched);   // 无本地任务：立刻激活为服务端任务，不等关页
+      }catch(e){ console.warn('[pipeline] 定时后缀登记失败（分界/关页回退全量登记）:', e); }
+    }
   }
   advance(rc,0);
   renderQueue();
@@ -5363,13 +5374,17 @@ async function registerStageTimers(rc, startIdx, opts){
   return await upsertServerPlan(buildSuffixPlan(rc, startIdx, opts));
 }
 /* 启动即预登记定时后缀为休眠计划（at=0）：阶段定义/代码仓/归档上下文等重负载在页面健康时上送，
-   分界/关页只补 vars 与 at，缩小移交面。同步记录计划 id，供分界激活、关页替换与失败清理定位同一条计划。 */
+   分界/关页只补 vars 与 at，缩小移交面。同步记录计划 id，供分界激活、关页替换与失败清理定位同一条计划。
+   本地前缀可能瞬间跑完（dur=0 模拟等）在预登记请求落地前就激活后缀：请求完成后再看 suffixPlanHeld，
+   若已被激活则补发一次激活写入，避免休眠体（at=0）后到覆盖已激活计划、一直挂到关页才触发。 */
 function preRegisterSchedSuffix(rc, startIdx){
   const plan=buildSuffixPlan(rc, startIdx, {activate:false});
   if(!plan) return null;
   rc.suffixPlanId=plan.id;
   rc.suffixPlanHeld=true;
-  registerStageTimers(rc, startIdx, {activate:false});   // 异步上送：不阻断本地启动；失败时分界/关页回退全量登记
+  registerStageTimers(rc, startIdx, {activate:false}).then(ok=>{   // 异步上送：不阻断本地启动；失败时分界/关页回退全量登记
+    if(ok && rc && rc.suffixPlanHeld===false && !rc.over){ registerStageTimers(rc, startIdx).catch(()=>{}); }   // 竞态：分界已激活，后到休眠体不得生效——补发激活覆盖
+  }).catch(()=>{});
   return plan.id;
 }
 /* 运行失败/中止/重置且后缀从未激活时，清掉休眠计划，避免定时页残留永不触发的占位计划 */
