@@ -258,7 +258,7 @@ function makeFinishContext() {
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extractFn('function finish(rc, result){'), context);
+  vm.runInContext(extractFn('function historyEnvNodesOf(rc){') + '\n' + extractFn('function finish(rc, result){'), context);
   return { context, calls };
 }
 

@@ -197,7 +197,8 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
       { id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } },
       { id: 'deploy', name: '部署' },
     ])
-    runtime.updateStage('build', { status: 'running', progress: 25 })
+    runtime.updateStage('build', { status: 'running', progress: 25, startedAt: 1759999999000 })
+    runtime.updateStage('build', { progress: 40 })   // 后续进度更新不带 startedAt：保留已落的阶段开始时间戳
     await new Promise(resolve => {
       releases.set(plan.id, resolve)
       runtime.signal.addEventListener('abort', () => { aborted.push(plan.id); resolve() }, { once: true })
@@ -223,13 +224,14 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
       id: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'alice', env: '10.0.0.2', repoName: '应用库',
       branch: 'dev', strategy: 'rolling', source: 'manual', startedAt: pool.snapshot().runs[0].startedAt,
       stages: [{ id: 'build', name: '构建', script: { values: { TOKEN: 'secret' } } }, { id: 'deploy', name: '部署' }],
-      nodes: { build: { status: 'running', progress: 25, dur: 0 }, deploy: { status: 'idle', progress: 0, dur: 0 } },
+      nodes: { build: { status: 'running', progress: 40, dur: 0, startedAt: 1759999999000 }, deploy: { status: 'idle', progress: 0, dur: 0 } },
     }],
     queue: [{
       id: 'manual-2', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'bob', env: '10.0.0.3', repoName: '应用库',
       branch: 'main', strategy: '', source: 'manual', queuedAt: pool.snapshot().queue[0].queuedAt,
       stages: [{ id: 'deploy', name: '部署' }], nodes: { deploy: { status: 'idle', progress: 0, dur: 0 } },
     }],
+    finished: [],   // 尚无已开始的运行到达终态
   })
   assert.equal(JSON.stringify(pool.snapshot()).includes('node-secret'), false, '执行池快照不得暴露节点凭据')
   assert.equal(JSON.stringify(pool.snapshot()).includes('git-secret'), false, '执行池快照不得暴露代码仓凭据')
@@ -241,7 +243,17 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
   assert.deepEqual(plain(pool.cancel('manual-1')), { ok: true, state: 'running' })
   await running
   assert.deepEqual(aborted, ['manual-1'])
-  assert.deepEqual(plain(pool.snapshot()), { runs: [], queue: [] })
+  const settled = plain(pool.snapshot())
+  assert.deepEqual({ runs: settled.runs, queue: settled.queue }, { runs: [], queue: [] })
+  /* 运行中被取消 → 进 finished（cancelled）；时间字段取实际值 */
+  assert.equal(settled.finished.length, 1)
+  const finishedEntry = { ...settled.finished[0], dur: 0, startedAt: 0, endedAt: 0 }
+  assert.deepEqual(finishedEntry, {
+    id: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'alice', source: 'manual',
+    status: 'cancelled', dur: 0, startedAt: 0, endedAt: 0,
+    stages: [{ stage: '构建', status: 'running', dur: 0 }, { stage: '部署', status: 'idle', dur: 0 }],
+  })
+  assert.ok(settled.finished[0].endedAt >= settled.finished[0].startedAt)
   assert.deepEqual(plain(pool.cancel('missing')), { ok: false, state: 'missing' })
 })
 
@@ -965,6 +977,7 @@ function loadExecPlan(config, results = {}, fetchImpl = async () => { throw new 
   const code = stripTypeScriptTypes([
     extractFunction('isLocalTarget'),
     source.slice(apiStart, apiEnd),
+    extractFunction('pipelineHistoryEnvNodes'),
     extractFunction('resolvePipelineScriptsDir'),
     extractFunction('parseStageVars'),
     extractFunction('parseStageJson'),
@@ -1516,7 +1529,10 @@ test('服务端执行器实时上报阶段状态，并在队列取消后中止�
   const running = f.execPlan(plan, runtime)
   await tick()
   assert.deepEqual(stageLists.map(stages => stages.map(stage => stage.id)), [['slow', 'after']])
-  assert.deepEqual(updates[0], { stageId: 'slow', state: { status: 'running', progress: 5, dur: 0 } })
+  /* 阶段进入 running 的那次更新携带 startedAt（服务端纪元毫秒），供远端预览折算实时已耗时 */
+  assert.equal(updates[0].stageId, 'slow')
+  assert.deepEqual({ ...updates[0].state, startedAt: 0 }, { status: 'running', progress: 5, dur: 0, startedAt: 0 })
+  assert.ok(Number.isFinite(updates[0].state.startedAt) && updates[0].state.startedAt > 0, '阶段启动更新必须携带服务端纪元毫秒 startedAt')
 
   controller.abort(Object.assign(new Error('cancelled from queue'), { code: 'PIPELINE_RUN_CANCELLED' }))
   await running

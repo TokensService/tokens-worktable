@@ -26,17 +26,28 @@ function extractFunction(name) {
 /* ---------- 静态契约 ---------- */
 
 test('静态契约：阶段详情日志行的新函数、按钮文案与控件 ID 齐备', () => {
-  for (const name of ['stageLogFileFor', 'currentStageAnalysisRec', 'appendStageLogRow', 'stageDetailAnalysis', 'openFolderWithFeedback', 'openStageLogFolder']) {
+  for (const name of ['stageLogFileFor', 'currentStageAnalysisRec', 'appendStageLogRow', 'stageDetailAnalysis', 'openFolderWithFeedback', 'openStageLogFile']) {
     assert.ok(new RegExp(`function\\s+${name}\\s*\\(`).test(source), `pipeline.html 缺少函数 ${name}`);
   }
+  assert.ok(!/function\s+openStageLogFolder\s*\(/.test(source), 'openStageLogFolder 应已更名为 openStageLogFile');
   assert.ok(source.includes('🔍 AI 分析'), '缺少「🔍 AI 分析」按钮文案');
-  assert.ok(source.includes('📂 打开日志'), '缺少「📂 打开日志」按钮文案');
+  assert.ok(source.includes('📄 打开日志'), '缺少「📄 打开日志」按钮文案');
+  assert.ok(!source.includes('📂 打开日志'), '「打开日志」按钮应改用文件图标 📄（📂 为目录语义）');
   for (const id of ['stageLogRow', 'stageLogPath', 'stageLogAiBtn', 'stageLogOpenBtn', 'stageLogTip']) {
     assert.ok(new RegExp(`id\\s*=\\s*["'\`]${id}["'\`]`).test(source), `缺少 #${id}`);
   }
   assert.ok(source.includes('正在等待日志落盘并打开目录…'), '缺少等待落盘文案');
   assert.ok(source.includes('✗ 目录不存在（含归档根目录）：'), '缺少目录不存在文案');
   assert.ok(source.includes('✓ 已在侧边栏打开 '), '缺少侧边栏打开成功文案');
+  assert.ok(source.includes('正在等待日志落盘…'), '缺少打开日志前的等待落盘文案');
+  assert.ok(source.includes('⚠ 本阶段暂无归档日志文件'), '缺少暂无归档日志文件文案');
+  assert.ok(source.includes('⚠ 无法确定日志所在目录：'), '缺少无法确定日志所在目录文案');
+  assert.ok(source.includes('__dshOpenFileInSidebar'), '缺少 __dshOpenFileInSidebar 侧边栏文件桥调用');
+  assert.ok(source.includes('/api/worktable/file?path='), '缺少 /api/worktable/file 文件地址');
+  assert.ok(source.includes('&tailBytes=1024'), '缺少 tailBytes=1024 轻量探测参数');
+  assert.ok(source.includes('⚠ 日志文件尚未生成或已清理，改为打开所在目录…'), '缺少文件缺失回退目录文案');
+  assert.ok(source.includes('✓ 已在新标签页打开 '), '缺少新标签页打开成功文案');
+  assert.ok(source.includes('⚠ 浏览器拦截了新标签页：'), '缺少弹窗拦截提示文案');
 });
 
 test('回归：「📂 打开归档目录」按钮与其 title 原文不变', () => {
@@ -210,40 +221,130 @@ test('stageDetailAnalysis：无分析记录时提示且不发起 AI 分析', () 
   assert.equal(calls.chats.length, 0, '无记录时不得调用 createAnalysisChat');
 });
 
-/* ---------- openStageLogFolder ---------- */
+/* ---------- openStageLogFile ---------- */
 
-test('openStageLogFolder：取日志文件所在目录调用 openFolderWithFeedback', () => {
-  const calls = [];
-  const tip = { textContent: '', style: {} };
-  const ctx = {
-    openFolderWithFeedback(folder, say) { calls.push({ folder, sayType: typeof say }); },
+function openStageLogCtx(overrides) {
+  const calls = { waits: [], fetches: [], sidebar: [], closed: 0, folders: [], tabs: [] };
+  const says = [];
+  const tip = {
+    _t: '', style: {}, children: [],
+    get textContent() { return this._t; },
+    set textContent(v) { this._t = String(v); says.push(this._t); },
+    appendChild(child) { this.children.push(child); return child; },
+  };
+  const ctx = Object.assign({
+    waitArchiveWrites: async folder => { calls.waits.push(folder); },
+    openFolderWithFeedback: async (folder, say) => { calls.folders.push({ folder, sayType: typeof say }); },
+    fetch: async url => { calls.fetches.push(String(url)); return { ok: true, status: 200 }; },
+    window: {
+      parent: {
+        __dshOpenFileInSidebar: file => { calls.sidebar.push(file); return true; },
+        __dshCloseSideChat: () => { calls.closed += 1; },
+      },
+      open: (url, target) => { calls.tabs.push({ url: String(url), target }); return {}; },
+    },
+    document: {
+      createElement: tag => ({ tagName: String(tag).toUpperCase(), textContent: '', style: {} }),
+      createTextNode: text => ({ nodeType: 3, textContent: String(text) }),
+    },
     $: id => (id === 'stageLogTip' ? tip : null),
     alert() {},
-  };
+  }, overrides || {});
   vm.createContext(ctx);
-  vm.runInContext(extractFunction('openStageLogFolder'), ctx);
+  vm.runInContext(extractFunction('openStageLogFile'), ctx);
+  return { ctx, calls, tip, says };
+}
 
-  ctx.openStageLogFolder('/a/b/run-x-01-部署.log');
+const LOG_FILE = '/a/b/run-x-01-部署.log';
+const LOG_FILE_URL = '/api/worktable/file?path=' + encodeURIComponent(LOG_FILE);
 
-  assert.equal(calls.length, 1, '应调用一次 openFolderWithFeedback');
-  assert.equal(calls[0].folder, '/a/b', '应去掉末段文件名只传目录');
-  assert.equal(calls[0].sayType, 'function', '应传入状态提示函数 say');
+test('openStageLogFile：文件存在时经侧边栏桥打开日志文件本身并关闭侧边会话窗', async () => {
+  const { ctx, calls, tip, says } = openStageLogCtx();
+
+  await ctx.openStageLogFile(LOG_FILE);
+
+  assert.equal(says[0], '正在等待日志落盘…', '第一步应提示正在等待落盘');
+  assert.deepEqual(calls.waits, ['/a/b'], '应先等待所在目录日志落盘');
+  assert.deepEqual(calls.fetches, [LOG_FILE_URL + '&tailBytes=1024'], '应以 tailBytes=1024 轻量探测日志文件');
+  assert.deepEqual(calls.sidebar, [LOG_FILE], '侧边栏桥应收到完整日志文件路径（而非所在目录）');
+  assert.equal(calls.closed, 1, '侧边栏打开成功后应调用 __dshCloseSideChat 让出空间');
+  assert.equal(calls.folders.length, 0, '文件存在时不得回退 openFolderWithFeedback');
+  assert.equal(calls.tabs.length, 0, '侧边栏桥成功时不应再开浏览器标签页');
+  assert.equal(tip.textContent, '✓ 已在侧边栏打开 ' + LOG_FILE, '应提示已在侧边栏打开');
+  assert.equal(tip.style.color, 'var(--log-ok)', '成功提示应为 ok 色');
 });
 
-test('openStageLogFolder：file 为空仅提示，不调用 openFolderWithFeedback', () => {
-  const calls = [];
-  const tip = { textContent: '', style: {} };
-  const ctx = {
-    openFolderWithFeedback(folder) { calls.push(folder); },
-    $: id => (id === 'stageLogTip' ? tip : null),
-    alert() {},
-  };
-  vm.createContext(ctx);
-  vm.runInContext(extractFunction('openStageLogFolder'), ctx);
+test('openStageLogFile：侧边栏桥不可用时回退新标签页打开日志文件', async () => {
+  const { ctx, calls, tip } = openStageLogCtx({
+    window: { parent: {}, open: (url, target) => { calls.tabs.push({ url: String(url), target }); return {}; } },
+  });
 
-  ctx.openStageLogFolder(null);
+  await ctx.openStageLogFile(LOG_FILE);
 
-  assert.equal(calls.length, 0, 'file 为空不得调用 openFolderWithFeedback');
+  assert.equal(calls.sidebar.length, 0, '桥不存在不得调用侧边栏');
+  assert.equal(calls.folders.length, 0, '文件存在时不得回退打开所在目录');
+  assert.deepEqual(calls.tabs, [{ url: LOG_FILE_URL, target: '_blank' }], '应以 _blank 新标签页打开日志文件 URL');
+  assert.equal(tip.textContent, '✓ 已在新标签页打开 ' + LOG_FILE, '应提示已在新标签页打开');
+  assert.equal(tip.style.color, 'var(--log-ok)', '成功提示应为 ok 色');
+});
+
+test('openStageLogFile：探测 404 时回退 openFolderWithFeedback 打开所在目录', async () => {
+  const { ctx, calls, tip } = openStageLogCtx({
+    fetch: async url => { calls.fetches.push(String(url)); return { ok: false, status: 404 }; },
+  });
+
+  await ctx.openStageLogFile(LOG_FILE);
+
+  assert.equal(calls.fetches.length, 1, '应先探测日志文件是否存在');
+  assert.deepEqual(calls.folders.map(f => f.folder), ['/a/b'], '文件缺失应回退打开所在目录（去掉末段文件名）');
+  assert.equal(calls.folders[0].sayType, 'function', '应把状态提示函数 say 透传给 openFolderWithFeedback');
+  assert.equal(calls.sidebar.length, 0, '文件缺失不得调侧边栏文件桥');
+  assert.equal(calls.tabs.length, 0, '文件缺失不得开浏览器标签页');
+  assert.equal(tip.textContent, '⚠ 日志文件尚未生成或已清理，改为打开所在目录…', '回退前应提示文件尚未生成或已清理');
+  assert.equal(tip.style.color, 'var(--log-warn)', '回退提示应为 warn 色');
+});
+
+test('openStageLogFile：file 为空仅提示，不等待落盘/不探测/不打开', async () => {
+  const { ctx, calls, tip } = openStageLogCtx();
+
+  await ctx.openStageLogFile(null);
+
+  assert.equal(tip.textContent, '⚠ 本阶段暂无归档日志文件', '应提示本阶段暂无归档日志文件');
+  assert.equal(tip.style.color, 'var(--log-warn)', '提示应为 warn 色');
+  assert.equal(calls.waits.length, 0, 'file 为空不得等待落盘');
+  assert.equal(calls.fetches.length, 0, 'file 为空不得发起探测');
+  assert.equal(calls.sidebar.length, 0, 'file 为空不得调侧边栏桥');
+  assert.equal(calls.folders.length, 0, 'file 为空不得调用 openFolderWithFeedback');
+  assert.equal(calls.tabs.length, 0, 'file 为空不得开浏览器标签页');
+});
+
+test('openStageLogFile：无法解析所在目录时仅提示，不探测不打开', async () => {
+  const { ctx, calls, tip } = openStageLogCtx();
+
+  await ctx.openStageLogFile('run-x-01-部署.log');
+
+  assert.equal(tip.textContent, '⚠ 无法确定日志所在目录：run-x-01-部署.log', '应提示无法确定日志所在目录');
+  assert.equal(calls.waits.length + calls.fetches.length, 0, '不得等待落盘或发起探测');
+  assert.equal(calls.sidebar.length + calls.folders.length + calls.tabs.length, 0, '不得触发任何打开动作');
+});
+
+test('openStageLogFile：新标签页被拦截时在提示行给出可点击链接', async () => {
+  const { ctx, calls, tip } = openStageLogCtx({
+    window: { parent: {}, open: () => null },
+  });
+
+  await ctx.openStageLogFile(LOG_FILE);
+
+  assert.equal(calls.sidebar.length, 0, '桥不存在不得调用侧边栏');
+  assert.equal(calls.folders.length, 0, '文件存在时不得回退打开所在目录');
+  const link = tip.children.find(c => c.tagName === 'A');
+  assert.ok(link, '提示行应包含可点击的 <a> 链接');
+  assert.equal(link.href, LOG_FILE_URL, '链接 href 应指向日志文件 URL（encodeURIComponent 编码）');
+  assert.equal(link.target, '_blank', '链接应新标签页打开');
+  assert.equal(link.rel, 'noopener', '链接应带 rel="noopener"');
+  assert.equal(link.textContent, '点击打开日志', '链接文案应为「点击打开日志」');
+  assert.ok(tip.children.some(c => c.nodeType === 3 && c.textContent.includes('⚠ 浏览器拦截了新标签页：')), '链接前应有拦截提示文字');
+  assert.equal(tip.style.color, 'var(--log-warn)', '拦截提示应为 warn 色');
 });
 
 /* ---------- openFolderWithFeedback ---------- */
@@ -363,7 +464,7 @@ function appendRowCtx(extra) {
     esc: v => String(v === undefined || v === null ? '' : v),
     $: () => null,
     stageDetailAnalysis() {},
-    openStageLogFolder() {},
+    openStageLogFile() {},
   }, extra || {});
   vm.createContext(ctx);
   vm.runInContext(extractFunction('appendStageLogRow'), ctx);
@@ -389,7 +490,7 @@ test('appendStageLogRow：path 与 rec 都给时渲染完整日志行结构', ()
   assert.ok(!isDisabled(aiBtn), '有分析记录时 AI 分析按钮不应禁用');
   const openBtn = findIn(kv, 'stageLogOpenBtn');
   assert.ok(openBtn, '应生成 #stageLogOpenBtn');
-  assert.ok(hasText(openBtn, '📂 打开日志'), '#stageLogOpenBtn 文案应为「📂 打开日志」');
+  assert.ok(hasText(openBtn, '📄 打开日志'), '#stageLogOpenBtn 文案应为「📄 打开日志」');
   assert.ok(!isDisabled(openBtn), '有日志路径时打开按钮不应禁用');
   const tipRow = findIn(kv, 'stageLogTipRow');
   assert.ok(tipRow, '应生成 #stageLogTipRow');

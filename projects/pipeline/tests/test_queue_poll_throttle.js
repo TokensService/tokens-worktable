@@ -77,6 +77,23 @@ test('queuePollSig：本页有排队项等待节点时附加约 5 秒桶，保�
   assert.notEqual(ctx.queuePollSig([]), waiting, '跨桶后签名翻转，驱动 renderQueue 自愈入口的 drainQueue 重试');
 });
 
+test('queuePollSig：server.finished 内容纳入签名（新终态出现/TTL 消失/结束时间标签翻转均触发重绘）', () => {
+  let label = '刚刚';
+  const ctx = loadPullContext({ fmtRelative: () => label, _serverFinishedSeen: {} });
+  const clients = [];
+  const fin = [{ id: 'srv-1', pipelineId: 'p1', pipelineName: '发布', by: 'alice', source: 'manual', status: 'success', dur: 12, startedAt: 90, endedAt: 100, stages: [] }];
+  const base = ctx.queuePollSig(clients, [], []);
+  assert.equal(ctx.queuePollSig(clients, [], []), base, 'finished 空数组时签名稳定');
+  assert.equal(ctx.queuePollSig(clients), base, 'finished 缺省按空数组处理（旧服务端降级）');
+  const withFin = ctx.queuePollSig(clients, [], fin);
+  assert.notEqual(withFin, base, '新终态出现触发重绘');
+  assert.equal(ctx.queuePollSig(clients, [], JSON.parse(JSON.stringify(fin))), withFin, 'finished 内容相同时签名稳定');
+  const changed = JSON.parse(JSON.stringify(fin)); changed[0].status = 'failure';
+  assert.notEqual(ctx.queuePollSig(clients, [], changed), withFin, '终态内容变化触发重绘');
+  label = '1分钟前';
+  assert.notEqual(ctx.queuePollSig(clients, [], fin), withFin, 'endedAt 相对时间标签翻转触发重绘');
+});
+
 test('pullRemoteQueue：快照内容未变时跳过队列区重绘，日志通道与自动跟随每轮仍执行', async () => {
   let renders = 0, logPulls = 0, previews = 0, follows = 0;
   const payload = {
@@ -110,6 +127,51 @@ test('pullRemoteQueue：快照内容未变时跳过队列区重绘，日志通�
   ctx.fetch = async () => { throw new Error('down'); };
   await ctx.pullRemoteQueue();
   assert.equal(renders, 2, '拉取失败不重绘（远端数据无更新，本地变化各有渲染入口）');
+});
+
+test('pullRemoteQueue：运行中阶段按 startedAt 实时折算 dur（每秒前进触发重绘），无 startedAt 不动', async () => {
+  let now = 1759999900000;
+  let renders = 0;
+  const stageStartedAt = now - 10000;
+  const mkPayload = () => ({
+    clients: [],
+    server: {
+      id: 'server', label: '服务端', schemaVersion: 3,
+      runs: [{
+        id: 'r1', pipelineName: '部署', by: 'bob', startedAt: stageStartedAt,
+        stages: [{ id: 's1', name: '构建' }, { id: 's2', name: '测试' }],
+        nodes: {
+          s1: { status: 'running', progress: 5, dur: 0, startedAt: stageStartedAt },
+          s2: { status: 'running', progress: 40, dur: 33 },   // 旧数据无 startedAt：dur 保持原样
+        },
+      }],
+      queue: [{ id: 'q1', pipelineName: '排队', by: 'alice', queuedAt: 1, stages: [{ id: 's3', name: '发布' }], nodes: { s3: { status: 'idle', progress: 0, dur: 0 } } }],
+    },
+  });
+  const ctx = loadPullContext({
+    Date: { now: () => now },
+    fetch: async () => ({ ok: true, json: async () => mkPayload() }),
+    renderQueue: () => { renders += 1; },
+  });
+
+  await ctx.pullRemoteQueue();
+  assert.equal(renders, 1);
+  const nodes = ctx.remoteQueueClients[0].runs[0].nodes;
+  assert.equal(nodes.s1.dur, 10, '运行中阶段 dur 由 startedAt 折算为实时已耗时');
+  assert.equal(nodes.s1.startedAt, stageStartedAt, 'startedAt 原样保留在快照节点上');
+  assert.equal(nodes.s2.dur, 33, '无 startedAt 的运行中节点 dur 不被折算');
+  assert.equal(ctx.remoteQueueClients[0].queue[0].nodes.s3.dur, 0, '排队条目的 idle 节点不受影响');
+
+  /* 快照其余内容不变但 dur 每秒前进 → 签名变化 → 队列区/远端预览每秒刷出实时已耗时 */
+  now += 1000;
+  await ctx.pullRemoteQueue();
+  assert.equal(renders, 2, '运行中阶段 dur 前进本身即内容变化，驱动逐秒重绘');
+  assert.equal(ctx.remoteQueueClients[0].runs[0].nodes.s1.dur, 11);
+
+  now += 60000;
+  await ctx.pullRemoteQueue();
+  assert.equal(ctx.remoteQueueClients[0].runs[0].nodes.s1.dur, 71);
+  assert.equal(renders, 3);
 });
 
 /* 轮询定时器生命周期：文件尾部 const QUEUE_POLL_MS → visibilitychange 接线之前的三个函数 */
