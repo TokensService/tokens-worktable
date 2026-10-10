@@ -751,7 +751,7 @@ step_hugepages() {
 }
 
 # ---------------- 编排 ----------------
-DEFAULT_STEPS="crond,release-resources,containers,gpu"
+DEFAULT_STEPS="crond,release-resources,containers,gpu,uncordon"
 VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages release-resources uncordon"
 
 do_standardize() {
