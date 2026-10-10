@@ -29,6 +29,7 @@ function loadStagePollRoutes() {
   const handlers = {}
   const context = {
     URL, fetch, AbortController, setTimeout, clearTimeout, Buffer, console,
+    __stagePollReqLib: http,   // stagePollFetch 的 http 模块（vm 不支持动态 import()）
     webServer: { register(route) { handlers[route.path] = route.handler } },
     readJsonBody: async req => req.body || {},
     json(res, status, body) { res.writeHead(status); res.end(JSON.stringify(body)) },

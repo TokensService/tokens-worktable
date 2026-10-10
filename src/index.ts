@@ -2745,25 +2745,59 @@ function stagePollHeaderValue(headers: any, name: string): string {
   return ''
 }
 
-/* 单次上游请求：全局 fetch + 客户端断开信号联动 + 硬超时；超时/网络错误都抛出，由轮询方计入连续失败。 */
+/* 解析 http/https 模块：生产走动态 import；测试经 globalThis.__stagePollReqLib 注入（vm 不支持 import()）。 */
+const stagePollReqLib = async (protocol: string): Promise<any> => {
+  const injected = (globalThis as any).__stagePollReqLib
+  if (injected) return injected
+  return await import(protocol === 'https:' ? 'node:https' : 'node:http')
+}
+
+/* 单次上游请求：http.request + 自建 Agent（绕过 NODE_USE_ENV_PROXY 全局代理劫持——
+   全局 fetch 会把内网目标也送进 http_proxy，自建 Agent 不吃全局 agent 配置）+ 硬超时；
+   超时/网络错误都抛出，由轮询方计入连续失败。 */
 async function stagePollFetch(url: string, headers: Record<string, string>, signal: AbortSignal, timeoutMs: number, maxBytes: number, label: string): Promise<{ status: number; headers: any; text: string }> {
   if (signal.aborted) throw stagePollAbortReason(signal)
-  const controller = new AbortController()
-  const onAbort = () => { if (!controller.signal.aborted) controller.abort(stagePollAbortReason(signal)) }
-  signal.addEventListener('abort', onAbort, { once: true })
-  const timer = setTimeout(() => { if (!controller.signal.aborted) controller.abort() }, Math.max(1, timeoutMs))
-  try {
-    const response = await fetch(url, { method: 'GET', headers, cache: 'no-store', signal: controller.signal })
-    const text = await response.text()
-    if (Buffer.byteLength(text) > maxBytes) throw new Error(label + '响应超过 ' + maxBytes + ' 字节上限')
-    return { status: Number(response.status) || 0, headers: response.headers, text }
-  } catch (error) {
-    if (signal.aborted) throw stagePollAbortReason(signal)
-    throw error
-  } finally {
-    clearTimeout(timer)
-    signal.removeEventListener('abort', onAbort)
-  }
+  const target = new URL(url)
+  const reqLib: any = await stagePollReqLib(target.protocol)
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let body = ''
+    let status = 0
+    let respHeaders: any = null
+    const finish = (err?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      if (err) reject(err)
+      else if (Buffer.byteLength(body) > maxBytes) reject(new Error(label + '响应超过 ' + maxBytes + ' 字节上限'))
+      else resolve({ status, headers: respHeaders || {}, text: body })
+    }
+    const onAbort = () => { try { request?.destroy(stagePollAbortReason(signal)) } catch {} }
+    const timer = setTimeout(() => { try { request?.destroy(new Error('timeout')) } catch {} }, Math.max(1, timeoutMs))
+    const request = reqLib.request(url, {
+      method: 'GET',
+      headers: headers || {},
+      agent: new reqLib.Agent(),   // 自建 Agent：绕过 NODE_USE_ENV_PROXY / http_proxy
+    }, (response: any) => {
+      status = Number(response.statusCode) || 0
+      respHeaders = response.headers || {}
+      response.setEncoding('utf8')
+      response.on('data', (chunk: string) => {
+        body += chunk
+        if (Buffer.byteLength(body) > maxBytes) { try { request.destroy(new Error('too large')) } catch {} }
+      })
+      response.on('end', () => finish())
+      response.on('error', (err: Error) => finish(err))
+    })
+    request.once('error', (err: Error) => {
+      if (signal.aborted) finish(stagePollAbortReason(signal))
+      else finish(err)
+    })
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) { onAbort(); return }
+    request.end()
+  })
 }
 
 /* EvalTokens 响应包装兼容：{runs|data|items|results:[...]} 或裸数组（与页面 evaltokFetchRuns 一致） */
