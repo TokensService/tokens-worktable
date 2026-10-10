@@ -35,6 +35,7 @@ function makeContext(options) {
   options = options || {};
   const fetches = [];
   const alerts = [];
+  const beacons = [];
   const context = {
     console, Promise, Object, Array, JSON, URL, Date, Error, setImmediate, Math,
     setTimeout, clearTimeout, setInterval() { return 1; }, clearInterval() {},
@@ -44,6 +45,12 @@ function makeContext(options) {
     activeRuns: options.activeRuns || [],
     queue: options.queue || [],
     pendingLeaseStarts: options.pendingLeaseStarts || [],
+    navigator: {
+      sendBeacon(url, body) {
+        beacons.push({ url: String(url), text: String(body) });
+        return true;
+      },
+    },
     fetch: async (url, init) => {
       const entry = { url: String(url), method: (init && init.method) || 'GET', keepalive: !!(init && init.keepalive), body: null };
       if (init && init.body) {
@@ -57,12 +64,13 @@ function makeContext(options) {
   vm.createContext(context);
   installFunctions(context, [
     'stageSeq',
+    'runRepositorySnapshot',
     'registerStageTimers',
     'buildUnloadHandoffPlan',
     'currentStageIndex',
     'handoffRunsOnPageHide',
   ]);
-  return { context, fetches, alerts };
+  return { context, fetches, alerts, beacons };
 }
 
 function runningRc(overrides) {
@@ -77,7 +85,9 @@ function runningRc(overrides) {
     id: 'r1', stages, nodes, selId: stages[0].id, timer: null, scriptAbort: null, over: false, token: 'tk',
     vars: { A: '1' }, startTs: Date.now(), pipelineName: 'p', pipelineId: 'pl-1',
     env: '10.0.0.1', envs: [{ id: 'e1', ip: '10.0.0.1' }], image: 'img',
-    commit: 'abcdef1', tag: 't1', by: 'tester', repoId: 'repo-1', branch: 'main', strategy: '',
+    commit: 'abcdef1', tag: 't1', by: 'tester', repoId: 'repo-1', repoName: 'demo-repo',
+    repoUrl: 'https://git.example.com/dev/demo.git', repoUser: 'u1', repoPass: 'p1',
+    branch: 'main', strategy: '3P1D',
     archive: '/arc/pl_p', leaseId: 'L1', leaseIps: ['10.0.0.1'], parallelParent: null,
   }, overrides && overrides.rc);
 }
@@ -102,6 +112,11 @@ test('pagehide 移交：在跑运行从当前阶段起全部剩余阶段（含�
   assert.equal(plan.archive, '/arc/pl_p');
   assert.equal(plan.tag, 't1');
   assert.equal(plan.baseSeq, 1, 'baseSeq=移交起点之前的正式阶段数');
+  assert.equal(plan.strategy, '3P1D', '部署策略随计划移交（否则服务端 DEPLOY_STRATEGY 丢失）');
+  assert.deepEqual(plan.repository, {
+    id: 'repo-1', name: 'demo-repo',
+    url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1',
+  }, '代码仓快照随计划移交，否则 GIT_* 不注入、git 类脚本卡在凭据提示');
   assert.match(plan.desc, /浏览器关闭/);
 });
 
@@ -129,7 +144,7 @@ test('pagehide 移交：已结束/并行子上下文跳过；本地队列条目�
       { id: 'x', name: '排队X', kind: 'simulate', sched: null },
       { id: 'y', name: '排队Y', kind: 'simulate', sched: {} },
     ],
-    env: '10.0.0.2', envs: [{ id: 'e2', ip: '10.0.0.2' }], image: 'img', repoId: 'r', branch: 'dev', strategy: '',
+    env: '10.0.0.2', envs: [{ id: 'e2', ip: '10.0.0.2' }], image: 'img', repoId: 'r', branch: 'dev', strategy: 'P-D',
     by: 'tester', presets: [], queuedAt: 1, source: 'manual',
   };
   const h = makeContext({ activeRuns: [doneRc, parallelChild], queue: [queued] });
@@ -141,6 +156,9 @@ test('pagehide 移交：已结束/并行子上下文跳过；本地队列条目�
   assert.equal(plan.id, 'unload-q1');
   assert.equal(plan.pipelineId, 'pl-q');
   assert.deepEqual(plan.stages.map(s => s.id), ['x', 'y']);
+  assert.equal(plan.repoId, 'r');
+  assert.equal(plan.repository, null, '队列条目无 url 快照时只留 repoId，由服务端按配置补齐');
+  assert.equal(plan.strategy, 'P-D', '队列条目的部署策略也要随计划移交');
   assert.match(plan.desc, /浏览器关闭/);
 });
 
@@ -202,4 +220,39 @@ test('registerStageTimers opts.includeLocal：把非 sched 阶段也写进计划
   const plan = put.body.plans.find(p => p && p.id === 'stimer-pl-1-t1-suffix');
   assert.ok(plan);
   assert.deepEqual(plan.stages.map(s => s.id), ['a', 'b', 'c'], 'includeLocal 时本地阶段也进后缀计划');
+  assert.deepEqual(plan.repository, {
+    id: 'repo-1', name: 'demo-repo',
+    url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1',
+  }, '定时后缀计划同样要带代码仓快照');
+  assert.equal(plan.strategy, '3P1D', '定时后缀计划同样要带部署策略');
+});
+
+test('pagehide 移交后 beacon 批量释放本页节点租约：移交计划才不用等 TTL 才能拿到节点', async () => {
+  const rc = runningRc();
+  rc.nodes.a.status = 'running';
+  const queued = {
+    id: 'q9', pipelineId: 'pl-q', pipelineName: '排队', stages: [{ id: 'z', name: 'Z', kind: 'simulate', sched: null }],
+    env: '', envs: [], image: 'img', repoId: null, branch: 'main', strategy: '', by: 'tester', queuedAt: 1,
+  };
+  const h = makeContext({
+    activeRuns: [rc],
+    queue: [queued],
+    pendingLeaseStarts: [{ envs: [], queueItem: { id: 'q8', stages: [{ id: 'p', name: 'P', kind: 'simulate', sched: null }], repoId: null, branch: 'main', by: 'tester' } }],
+  });
+  h.context.handoffRunsOnPageHide();
+  await flush();
+  assert.equal(h.beacons.length, 1, '应发一条租约批量释放 beacon');
+  assert.equal(h.beacons[0].url, '/api/worktable/pipeline/leases');
+  const body = JSON.parse(h.beacons[0].text);
+  assert.equal(body.action, 'release');
+  assert.deepEqual(body.runIds, ['L1', 'q9', 'q8'], '在跑运行 leaseId + 队列/租约在途排队项 id 一并释放');
+});
+
+test('pagehide 无租约可释放时不发 beacon', async () => {
+  const rc = runningRc({ rc: { leaseId: null } });
+  rc.nodes.a.status = 'success'; rc.nodes.b.status = 'success'; rc.nodes.c.status = 'success';
+  const h = makeContext({ activeRuns: [rc] });
+  h.context.handoffRunsOnPageHide();
+  await flush();
+  assert.equal(h.beacons.length, 0);
 });

@@ -165,3 +165,34 @@ test('serverStageDeadline：timeout 留空时有兜底上限（不再无限等�
   const capped = deadline({ timeout: 99999 })
   assert.ok(capped <= now + 3600 * 1000 + 50, '显式 timeout 上限 1 小时')
 })
+
+test('resolvePlanRepository：计划只带 repoId 时按配置补齐 url/user/pass；带 url 的快照优先', () => {
+  const code = stripTypeScriptTypes([
+    extractFunction('resolvePlanRepository'),
+  ].join('\n'), { mode: 'transform' })
+  // 同 realm 执行，避免 vm 跨 realm 对象原型导致 deepStrictEqual 误判
+  const resolve = new Function(code + '\nreturn resolvePlanRepository;')()
+  const store = {
+    config: {
+      repositories: [
+        { id: 'repo-1', name: 'demo', url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1' },
+        { id: 'repo-2', name: 'other', url: 'https://git.example.com/dev/other.git', user: 'u2', pass: 'p2' },
+      ],
+    },
+  }
+
+  const fromId = resolve({ repoId: 'repo-1', repository: null }, store)
+  assert.deepEqual(fromId, { id: 'repo-1', name: 'demo', url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1' },
+    '关页移交/队列条目只带 repoId 时必须按配置补齐，否则 GIT_* 不注入、git 类脚本卡在凭据提示')
+
+  const snapshot = { id: 'repo-1', name: 'demo', url: 'https://snap.example.com/x.git', user: 'su', pass: 'sp' }
+  assert.deepEqual(resolve({ repoId: 'repo-1', repository: snapshot }, store), snapshot,
+    '带 url 的运行期快照优先于配置（配置可能在移交后被改）')
+
+  const emptyUrl = resolve({ repoId: 'repo-2', repository: { id: 'repo-2', url: '' } }, store)
+  assert.equal(emptyUrl && emptyUrl.url, 'https://git.example.com/dev/other.git', '空 url 视为缺失，回落配置')
+
+  assert.equal(resolve({ repoId: 'missing', repository: null }, store), null, '配置也找不到时返回 null')
+  assert.deepEqual(resolve({ repoId: null, repository: { id: 'x', name: 'n', url: '', user: '', pass: '' } }, store),
+    { id: 'x', name: 'n', url: '', user: '', pass: '' }, '无 repoId 且无 url 时原样返回 provided')
+})
