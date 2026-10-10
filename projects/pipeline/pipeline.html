@@ -5288,11 +5288,15 @@ function cancelPlan(id){
    服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/Jenkins/EvalTokens 阶段执行并等待终态；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。
    返回 true=登记成功；接口不可达/写计划失败返回 false——调用方（handoffSchedSuffix）据此弹窗并按失败收尾，
-   后缀不得静默丢失。 */
-async function registerStageTimers(rc, startIdx){
+   后缀不得静默丢失。
+   opts.includeLocal=true 时把「需本地运行」阶段一并写进计划（浏览器关闭移交用：脚本仍在服务端跑，
+   仅浏览器可达的 HTTP 目标可能失败，优于整条流水线永久卡住）。 */
+async function registerStageTimers(rc, startIdx, opts){
+  const includeLocal=!!(opts&&opts.includeLocal);
   const stages=[];
   for(let i=startIdx;i<rc.stages.length;i++){
-    const st=rc.stages[i]; if(!st || st.preset || !st.sched) continue;   // 预设任务是页面运行期概念，不进服务端计划
+    const st=rc.stages[i]; if(!st || st.preset) continue;   // 预设任务是页面运行期概念，不进服务端计划
+    if(!st.sched && !includeLocal) continue;
     const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
     stages.push(ps);
   }
@@ -5344,6 +5348,87 @@ async function handoffSchedSuffix(rc, i){
     alert('定时阶段移交服务端失败：计划接口不可达，后续 '+count+' 个阶段未执行。请检查 dsh 服务后从失败阶段重试。');
     finish(rc,'failed');
   }
+}
+/* ---------- 浏览器关闭移交（本地运行不得因关页永久卡住） ----------
+   手动运行含「需本地运行」阶段时整条由浏览器编排（runPipeline → startSimRun → advance）。关页后
+   exec-stream 随连接断开被服务端杀掉、advance 不再推进，运行永久卡在当前阶段——与「定时分界移交」
+   同一思路，但触发点是 pagehide：把在跑运行的剩余阶段（含非 sched）与本地队列整体登记为
+   「立即执行一次」的服务端计划，由服务端执行池继续跑完。登记用 keepalive POST 单条 upsert
+   （unload 期间请求仍可送达；不做 GET 合并，避免卸载竞态覆盖他人计划）。 */
+function currentStageIndex(rc){
+  if(!rc || !Array.isArray(rc.stages) || !rc.nodes) return -1;
+  for(let i=0;i<rc.stages.length;i++){
+    const st=rc.stages[i]; if(!st) continue;
+    const n=rc.nodes[st.id];
+    if(n && n.status==='running') return i;
+  }
+  for(let i=0;i<rc.stages.length;i++){
+    const st=rc.stages[i]; if(!st) continue;
+    const n=rc.nodes[st.id];
+    if(!n || (n.status!=='success' && n.status!=='failed' && n.status!=='skipped' && n.status!=='aborted')) return i;
+  }
+  return -1;
+}
+function buildUnloadHandoffPlan(rc, startIdx, item){
+  const src=item||rc;
+  const stages=[];
+  const raw=Array.isArray(src.stages)?src.stages:[];
+  for(let i=(item?0:startIdx);i<raw.length;i++){
+    const st=raw[i]; if(!st || st.preset) continue;
+    const ps={...st}; delete ps.sched;
+    stages.push(ps);
+  }
+  if(!stages.length) return null;
+  /* baseSeq=移交起点前的正式阶段数（预设不占序号）：按首个入选阶段回溯，避免 startIdx 落在
+     预设上时 stageSeq 返回 0 导致编号从 -1 起算 */
+  let baseSeq=0;
+  if(!item){
+    let firstIncluded=-1;
+    for(let i=(item?0:startIdx);i<raw.length;i++){ const st=raw[i]; if(st && !st.preset){ firstIncluded=i; break; } }
+    for(let i=0;i<(firstIncluded<0?startIdx:firstIncluded);i++){ const st=raw[i]; if(st && !st.preset) baseSeq++; }
+  }
+  return {
+    id: item ? ('unload-'+String(src.id||('q'+Date.now()))) : ('stimer-'+(src.pipelineId||'pl')+'-'+(src.tag||src.id||Date.now())+'-unload'),
+    pipelineId: src.pipelineId||null,
+    pipelineName: (src.pipelineName||'(自定义)')+' · 关页移交',
+    stages, env: src.env||'', envs: Array.isArray(src.envs)?src.envs:[], image: src.image||'',
+    repoId: src.repoId||null, branch: src.branch||'main', by: (src.by||'anonymous')+' ⏰',
+    createdAt: Date.now(),
+    archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
+    vars: Object.assign({}, item?{}:(rc.vars||{})),
+    kind:'once', at: Date.now(),
+    desc: '浏览器关闭移交 · '+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
+  };
+}
+/* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。 */
+function handoffRunsOnPageHide(){
+  const post=(plan)=>{
+    if(!plan) return;
+    try{
+      fetch('/api/worktable/pipeline/plans',{
+        method:'POST', keepalive:true,
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({plan}),
+      }).catch(()=>{});
+    }catch(e){ /* unload 路径吞掉：服务端 TTL/孤儿簿兜底 */ }
+  };
+  try{
+    (typeof activeRuns!=='undefined'&&activeRuns?activeRuns:[]).forEach(rc=>{
+      if(!rc || rc.over || rc.parallelParent) return;
+      const idx=currentStageIndex(rc);
+      if(idx<0) return;
+      if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 在途 exec-stream 断开即杀进程；该阶段由服务端计划重跑
+      post(buildUnloadHandoffPlan(rc, idx));
+    });
+    const seen=new Set();
+    const handoffItem=(item)=>{
+      if(!item || !item.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      post(buildUnloadHandoffPlan(null, 0, item));
+    };
+    (typeof queue!=='undefined'&&queue?queue:[]).forEach(handoffItem);
+    (typeof pendingLeaseStarts!=='undefined'&&pendingLeaseStarts?pendingLeaseStarts:[]).forEach(p=>{ if(p&&p.queueItem) handoffItem(p.queueItem); });
+  }catch(e){ console.warn('[pipeline] pagehide 移交失败（服务端孤儿簿兜底）:', e); }
 }
 /* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化（随服务端配置 schedEnvIds 键同步，localStorage 为离线缓存）；未单独选择过则跟随主控当前环境 */
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
@@ -10255,6 +10340,7 @@ startQueuePolling();
 const QUEUE_PRESENCE_HEARTBEAT_MS=10000;
 setInterval(()=>{ try{ publishQueue(false); }catch(e){} },QUEUE_PRESENCE_HEARTBEAT_MS);
 window.addEventListener('pagehide',()=>{
+  try{ handoffRunsOnPageHide(); }catch(e){}   // 在跑本地运行/队列整体移交服务端继续执行（keepalive POST，见「浏览器关闭移交」）
   try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify(queuePublishBody())],{type:'text/plain'})); }catch(e){}
 });
 </script>
