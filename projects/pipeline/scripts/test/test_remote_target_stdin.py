@@ -19,6 +19,7 @@ class RemoteTargets(unittest.TestCase):
                         stub.chmod(0o755)
                     env = dict(os.environ, PATH=folder+':'+os.environ['PATH'], TRACE=str(root/'trace'),
                                TARGET_HOSTS=hosts, SSH_PASSWORD='', TARGET_PASSWORD='', REMOTE_EXECUTION='0',
+                               RDMA_RPING_ENABLED='false',
                                ACTION=action, LOG_FILE=str(root/'log'))
                     result = subprocess.run(['bash', str(ROOT/script)], env=env, capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
