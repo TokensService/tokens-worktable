@@ -1,5 +1,6 @@
 /* 设置 / 流水线导入导出（标题区右上角「导入导出」菜单）的契约测试：
-   导出形状（设置剔除流水线并补回代码仓令牌 / 流水线独立导出）、导入归一化与整体恢复语义、坏文件校验 */
+   导出形状（设置剔除流水线（独立导出）、config 携带访问令牌 pass 与运行选择/视图状态——与服务端持久化同口径）、
+   导入归一化与整体恢复语义（新键 config 优先、旧版文件 local 块兜底）、坏文件校验 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -40,14 +41,13 @@ function elMapStub(els){ return id=>{ if(!els[id]) els[id]=elStub(); return els[
 /* vm 上下文产出的对象原型与宿主不同，deepEqual 前做 JSON 往返 */
 const J=x=>JSON.parse(JSON.stringify(x));
 
-test('导出设置：剔除流水线（独立导出）、补回代码仓访问令牌（区别于上送服务端时剔除 pass）',()=>{
+test('导出设置：剔除流水线（独立导出）；repositories 携带访问令牌 pass（collectConfig 已不剔除，与服务端持久化同口径）',()=>{
   const ctx=makeCtx({
-    collectConfig:()=>({pipelines:[{id:'pl-xds'}],repositories:[{id:'r1',name:'a',pass:''}],theme:'dark',cleanupEnabled:true}),
-    repositories:[{id:'r1',name:'a',url:'https://git.example.com/a.git',user:'u',pass:'secret-token'}],
+    collectConfig:()=>({pipelines:[{id:'pl-xds'}],repositories:[{id:'r1',name:'a',pass:'secret-token'}],theme:'dark',cleanupEnabled:true}),
   },['collectSettingsForExport']);
   const cfg=ctx.collectSettingsForExport();
   assert.ok(!('pipelines' in cfg),'设置导出不得包含流水线（流水线走独立导出）');
-  assert.equal(cfg.repositories[0].pass,'secret-token','导出必须补回仅存本浏览器的代码仓访问令牌');
+  assert.equal(cfg.repositories[0].pass,'secret-token','导出携带代码仓访问令牌明文（文件勿外传）');
   assert.equal(cfg.theme,'dark');
   assert.equal(cfg.cleanupEnabled,true);
 });
@@ -59,11 +59,10 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
     downloadJson:(name,data)=>downloads.push({name,data}),
     ioTipShow:()=>{},
     $:elMapStub(els),
-    repositories:[{id:'r1',pass:'tk'}],
     pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]},{id:'pl-custom',name:'自定义',stages:[{id:'s1'}]}],
     curPipelineId:'pl-custom', selectedEnvIds:['env-dev'], curRepoId:'r1', schedEnvIds:['env-prod'],
     histFilter:{kw:'x',status:'',pipeline:''}, histPageSize:20,
-    collectConfig:()=>({pipelines:[{id:'pl-xds'}],repositories:[{id:'r1',pass:''}]}),
+    collectConfig:()=>({pipelines:[{id:'pl-xds'}],repositories:[{id:'r1',pass:'tk'}]}),
   };
   const ctx=makeCtx(shared,['collectSettingsForExport','ioTimestamp','buildSettingsExport','buildPipelinesExport','exportSettings','exportPipelines']);
   ctx.exportSettings();
@@ -129,7 +128,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     viewRc:{stages:[{id:'s0'}],nodes:{},selId:'s0',token:'t0',over:false,vars:{},timer:null}, runStages:null, selectedId:'s0',
     curPipeline:function(){ return this.pipelines.find(p=>p.id===this.curPipelineId)||this.pipelines[0]; },
   },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','applyImportedSettings']);
-  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
+  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter','savePlFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{ ctx[n]=()=>rendered.push(n); });
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
 
@@ -181,7 +180,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   assert.equal(els.histFilterKw.value,'err');
   assert.equal(ctx.histPageSize,50);
   assert.equal(els.histPageSize.value,'50');
-  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter'].forEach(n=>{
+  ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter','savePlFilter'].forEach(n=>{
     assert.ok(saved.includes(n),`导入后必须调用 ${n} 落盘`);
   });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{
