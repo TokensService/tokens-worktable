@@ -815,6 +815,7 @@
       <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1);">
         <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
         <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
+        <button id="plImportShare" class="dshell-btn dshell-btnGhost mini" type="button" title="读取剪贴板中的流水线分享内容（JSON）并填入本表单（名称/阶段/默认运行参数），确认后点「保存」生成新流水线">从分享导入</button>
         <button id="plSave" class="dshell-btn mini">保存</button>
         <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
       </div>
@@ -918,6 +919,7 @@
   <div id="plRowMenuPin" class="pl-row-menu-item">置顶</div>
   <div id="plRowMenuFavorite" class="pl-row-menu-item">收藏</div>
   <div id="plRowMenuHistory" class="pl-row-menu-item">运行历史</div>
+  <div id="plRowMenuShare" class="pl-row-menu-item" title="复制该流水线的分享内容（JSON）到剪贴板；粘贴到「新建流水线 → 从分享导入」即可还原。分享内容含脚本参数值（可能含敏感信息），请勿随意外传">分享</div>
   <div id="plRowMenuTrusted" class="pl-row-menu-item" style="display:none">标记可信</div>
 </div>
 <!-- 运行历史行「⋯」菜单：复用流水线行菜单的列表项样式，菜单本身固定定位避免撑高历史表格行。 -->
@@ -3317,6 +3319,12 @@ function normalizeStageKind(s){
 }
 function scriptLangOf(sc){ return (sc && (sc.lang==='py'||/\.py$/i.test(sc.name||''))) ?'py':'sh'; }
 function newStage(name){ return {id:'', name:name||'新阶段', dur:0, timeout:null, skip:false, parallel:false, sub:[], kind:'simulate', script:null, url:null, evaltokens:null, sched:{}}; } /* dur 默认 0=不设置耗时（本地模拟不等待，运行即结束）；阶段默认支持定时（跟随流水线定时计划），勾选「需本地运行」后 sched 置空 */
+/* 存储/分享的 stages → 编辑器草稿 editStages：预设标记行原样带入，其余按类型归一（兼容旧 jenkins 字段）；
+   evaltokens.params 不持久化（编辑器打开时自动重新识别），values（参数覆盖值）随定义带入。最后补齐预设标记行。 */
+function editStagesFromStored(stages){
+  return withPresetMarkers((stages||[]).map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}
+    : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})));
+}
 let stageDragFrom=-1;
 /* 编辑器任务卡选中：editSelStage 以对象引用记录选中卡（拖拽/序号/上下移调序后仍跟随同一张卡；删除选中卡时清空；
    打开编辑器重建草稿时重置，见 openPlForm）。选中卡高亮并在上/下边框中点显示「+」插入按钮；
@@ -9228,6 +9236,9 @@ function openPlForm(id, focusIdx){
   f.dataset.editId = p ? p.id : '';
   plFormReadOnly=!!(p&&!plEditable(p));   // 内置（视同可信，仅 admin 可编辑）、可信（非 admin）与他人拥有的流水线只读查看（plEditable），编辑器整体切为只读模式
   $('plFormTitle').textContent = p ? (plFormReadOnly ? (p.builtIn ? '查看流水线（可信·只读）：' : (p.trusted ? '查看流水线（可信'+(plOwnerOf(p)?'·拥有者 @'+plOwnerOf(p):'')+'·只读）：' : (plOwnerOf(p) ? '查看流水线（拥有者 @'+plOwnerOf(p)+'·只读）：' : '查看流水线（只读）：'))) : (p.builtIn ? '编辑流水线（可信）：' : (p.trusted ? '编辑流水线（可信）：' : '编辑流水线：')))+p.name : '新建流水线';
+  /* 「从分享导入」仅在「新建流水线」时提供：编辑/查看已有流水线不提供覆盖入口 */
+  const importShareBtn=$('plImportShare'); if(importShareBtn) importShareBtn.style.display=p?'none':'';
+
   if(p){ $('plName').value=p.name; editDefaults=normalizePipelineDefaults(p.defaults);
     editStages=p.stages.map(s=> (s && s.preset) ? {id:s.id, name:s.name, preset:true, pkey:s.pkey}   /* 预设标记行原样带入 */
       : normalizeStageKind({id:s.id, name:s.name, dur:s.dur, timeout:s.timeout||null, skip:!!(s.skip||s.gate), parallel:s.parallel===true, promCollect:!!s.promCollect, sched: s.sched?{}:null, sub:(s.sub||[]), kind:s.kind, script:s.script?{name:s.script.name,path:s.script.path,lang:s.script.lang,params:(s.script.params||[]),values:(s.script.values||{}),outVars:(s.script.outVars||'')}:null, url:s.url?{url:s.url.url,outVars:(s.url.outVars||'')}:null, evaltokens:s.evaltokens?Object.assign(evaltokensStageConfig(s.evaltokens),{params:[]}):null, jenkins:s.jenkins?{job:s.jenkins.job,outVars:(s.jenkins.outVars||'')}:null})); }   /* jenkins 字段仅为兼容旧数据带入，normalizeStageKind 内迁入 http 后清掉；evaltokens.params 不持久化（编辑器打开时自动重新识别），evaltokens.values（用户设置的参数覆盖值）随流水线持久化、经 evaltokensStageConfig 带入 */
@@ -9577,6 +9588,7 @@ $('cfgScriptsDirReset').addEventListener('click', ()=>applyScriptsDirInput(''));
 $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
+$('plImportShare').addEventListener('click', ()=>{ importPipelineShare(); });
 /* 任务卡选中委托：点击卡上任意处（含卡内输入框/按钮）选中该卡，高亮并在上/下边框中点显示「+」插入按钮。
    必须先于下方 data-act 委托注册：选中只原地刷新（applyEditSel，不重渲染、不打断输入），随后按钮动作（含插入/删除）照常执行。 */
 $('plStageList').addEventListener('click', (e)=>{
@@ -9722,6 +9734,73 @@ $('cfgSave').addEventListener('click', ()=>{
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
+
+/* ---------- 流水线分享（行「⋯」菜单 → 分享 / 新建流水线 → 从分享导入） ----------
+   分享载荷只含定义内容（名称 / 阶段 / 默认运行参数），不含 id、内置、置顶、收藏、可信与署名等实例元数据；
+   点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」粘贴还原到编辑器，确认后保存为新流水线。
+   载荷含阶段脚本参数值（可能含节点口令等敏感信息），仅在可信渠道传递。 */
+function buildPipelineShare(pl){
+  return {
+    app:'worktable-pipeline', kind:'pipeline-share', version:1, exportedAt:new Date().toISOString(),
+    pipeline:{
+      name:typeof pl.name==='string'?pl.name:'',
+      stages:JSON.parse(JSON.stringify(pl.stages||[])),
+      defaults:normalizePipelineDefaults(pl.defaults),
+    },
+  };
+}
+function sharePipeline(id){
+  const pl=findPipeline(id); if(!pl) return;
+  copyText(JSON.stringify(buildPipelineShare(pl), null, 2));
+  if(typeof toast==='function') toast('✓ 已复制流水线「'+pl.name+'」的分享内容到剪贴板；在「新建流水线」点「从分享导入」即可还原');
+}
+/* 解析分享内容：接受 buildPipelineShare 的 envelope，或直接粘贴的流水线对象（{name,stages,...}）；
+   非法（非 JSON / 无 stages）返回 null。 */
+function parsePipelineShare(text){
+  let data=null;
+  try{ data=JSON.parse(String(text==null?'':text).trim()); }catch(e){ return null; }
+  if(!data || typeof data!=='object' || Array.isArray(data)) return null;
+  let p=null;
+  if(data.app==='worktable-pipeline' && data.kind==='pipeline-share' && data.pipeline && typeof data.pipeline==='object' && !Array.isArray(data.pipeline)) p=data.pipeline;
+  else if(Array.isArray(data.stages)) p=data;
+  else return null;
+  if(!p.stages.some(s=>s && typeof s==='object')) return null;
+  return {
+    name:typeof p.name==='string'?p.name:'',
+    stages:JSON.parse(JSON.stringify(p.stages)),
+    defaults:normalizePipelineDefaults(p.defaults),
+  };
+}
+/* 「新建流水线 → 从分享导入」：优先读剪贴板，读不到或内容非法时弹框粘贴；解析成功后覆盖当前表单
+   （名称/阶段/默认运行参数）并存草稿，由用户确认后点「保存」落库。 */
+async function importPipelineShare(){
+  if(plFormReadOnly || $('plForm').dataset.editId) return;
+  let text='';
+  try{ if(navigator.clipboard && navigator.clipboard.readText) text=await navigator.clipboard.readText(); }catch(e){}
+  let shared=parsePipelineShare(text);
+  if(!shared){
+    const typed=prompt('请粘贴流水线分享内容（JSON）：', text||'');
+    if(typed===null || typed===undefined) return;
+    shared=parsePipelineShare(typed);
+    if(!shared){ alert('分享内容无效：不是可识别的流水线分享 JSON'); return; }
+  }
+  $('plName').value=shared.name||'';
+  editStages=editStagesFromStored(shared.stages);
+  editDefaults=normalizePipelineDefaults(shared.defaults);
+  editSelStage=null; editFocusIdx=-1;
+  renderPipelineDefaultForm();
+  schedulePlDraftSave();
+  loadScripts().then(async ()=>{
+    renderStageEditor();
+    await Promise.all(editStages.map((s,i)=>{
+      if(s.preset) return null;   // 预设任务行的脚本在设置页配置，不参与阶段参数识别
+      if(s.kind==='evaltokens'&&s.evaltokens&&s.evaltokens.taskId) return detectEvaltokStageParams(i,true);
+      if(s.script&&s.script.path) return detectStageParams(i,true);
+      return null;
+    }));
+  });
+  if(typeof toast==='function') toast('✓ 已从分享内容导入「'+(shared.name||'未命名流水线')+'」，确认后点「保存」');
+}
 
 /* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
    导出设置 = 设置页全部配置（collectConfig 去掉 pipelines——流水线走独立导出）：节点密码与代码仓/服务
@@ -9992,6 +10071,7 @@ document.addEventListener('click', (e)=>{ const m=$('ioMenu'); if(m && !m.contai
 $('plRowMenuPin').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelinePin(id); });
 $('plRowMenuFavorite').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineFavorite(id); });
 $('plRowMenuHistory').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) showPipelineHistory(id); });
+$('plRowMenuShare').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) sharePipeline(id); });
 $('plRowMenuTrusted').addEventListener('click', (e)=>{ e.stopPropagation(); const id=plMenuOpenId; closePlRowMenu(); if(id) togglePipelineTrusted(id); });
 document.addEventListener('click', closePlRowMenu);
 document.addEventListener('click', closeHistoryRowMenu);
