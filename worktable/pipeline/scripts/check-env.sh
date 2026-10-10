@@ -28,6 +28,7 @@ export RDMA_RPING_COUNT="${RDMA_RPING_COUNT:-1}"
 export RDMA_RPING_CLIENT_TIMEOUT_SECONDS="${RDMA_RPING_CLIENT_TIMEOUT_SECONDS:-5}"
 export RDMA_RPING_SERVER_TIMEOUT_SECONDS="${RDMA_RPING_SERVER_TIMEOUT_SECONDS:-8}"
 export RDMA_RPING_IFACE_PATTERN="${RDMA_RPING_IFACE_PATTERN:-^roce_bond[0-9]+$}"
+export ALLOWED_NODE_TAINTS="${ALLOWED_NODE_TAINTS:-}"
 HEALTH_PASS=0
 HEALTH_WARN=0
 HEALTH_FAIL=0
@@ -248,6 +249,27 @@ def check_pod_memory():
 
 
 
+def check_node_taints():
+    nodes = json.loads(command(['kubectl', 'get', 'nodes', '-o', 'json']))['items']
+    allowed = {item.strip() for item in os.environ.get('ALLOWED_NODE_TAINTS', '').split(',') if item.strip()}
+    found = 0
+    for node in nodes:
+        taints = node.get('spec', {}).get('taints') or []
+        active = []
+        for taint in taints:
+            key = taint.get('key', '')
+            value = taint.get('value', '')
+            effect = taint.get('effect', '')
+            token = f"{key}={value}:{effect}" if value else f"{key}:{effect}"
+            if token not in allowed:
+                active.append(token)
+        if active:
+            found += len(active)
+            report('WARN', '节点污点: ' + node['metadata']['name'] + ' -> ' + ','.join(active))
+    if found == 0:
+        report('PASS', '节点污点检查: 未发现未允许污点')
+
+
 def check_cross_node():
     nodes = json.loads(command(['kubectl','get','nodes','-o','json']))['items']
     local = os.environ.get('HEALTH_NODE','')
@@ -330,7 +352,7 @@ def check_cross_node():
 
 
 def main():
-    for fn in (check_cni,check_proxy,check_memory,check_pod_memory,check_cross_node):
+    for fn in (check_cni,check_proxy,check_memory,check_pod_memory,check_node_taints,check_cross_node):
         try:fn()
         except Exception as e:
             # 避免转印可能含认证信息的异常内容。
