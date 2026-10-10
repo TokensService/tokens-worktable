@@ -4138,6 +4138,10 @@ function detailContextRows(stage,statusText,ctx){
 function stageLogFileFor(stage, rc){
   if(stage && stage._serverLogFile) return stage._serverLogFile;
   if(stage && stage._serverLogExpectedFile) return stage._serverLogExpectedFile;
+  /* 跨浏览器快照同步的日志路径属性：其他浏览器直接读，无需本地推算 */
+  if(stage && stage.logFile) return stage.logFile;
+  /* 跨浏览器只读预览无 logFile 属性时不得用本页 archiveDir + 当前时间戳拼假日志路径 */
+  if(rc && rc.remotePreview===true) return null;
   const folder=archiveFolderFor(rc);
   if(!folder) return null;
   const idx=rc && rc.stages ? rc.stages.indexOf(stage) : -1;
@@ -4726,7 +4730,7 @@ function queuePreviewRc(item){
   const rc={id:item.id, queuedPreview:true, over:true,
     stages:stages, nodes:{}, selId:stages.length?stages[0].id:null, timer:null,
     env:item.env, envs:item.envs, image:item.image||DEFAULT_IMAGE, release:item.release||item.image||DEFAULT_IMAGE,
-    commit:'—', tag:'—', startTs:item.queuedAt||Date.now(), by:item.by, source:item.source||'manual',
+    commit:'—', tag:'—', archive:null, startTs:item.queuedAt||Date.now(), by:item.by, source:item.source||'manual',
     pipelineId:item.pipelineId||null, pipelineName:item.pipelineName||'(自定义)',
     repoId:item.repoId||null, repoName:item.repoName||'', repoUrl:'', giturl:GITURL,
     branch:item.branch||'main', strategy:item.strategy||'', vars:{}, token:0,
@@ -4812,7 +4816,8 @@ function remoteQueuePreviewRc(client,item,kind){
     remoteItemId:String(item&&item.id||''), remoteKind:runningKind?'running':'queued',
     stages:stages, nodes:previewNodes, remoteLogs:{}, selId:stages.length?stages[0].id:null, timer:null,
     env:item&&item.env||'', envs:[], image:'', release:'',
-    commit:'—', tag:'—', startTs:(runningKind?item&&item.startedAt:item&&item.queuedAt)||Date.now(), by:item&&item.by||'—', source:item&&item.source||'manual',
+    archive:(item&&item.archive)||null,   // 归档目录随快照透传：跨浏览器可展示/打开正确日志路径（未同步时为 null，stageLogFileFor 返回空）
+    commit:'—', tag:(item&&item.tag)||'—', startTs:(runningKind?item&&item.startedAt:item&&item.queuedAt)||Date.now(), by:item&&item.by||'—', source:item&&item.source||'manual',
     pipelineId:item&&item.pipelineId||null, pipelineName:item&&item.pipelineName||'(自定义)',
     repoId:null, repoName:item&&item.repoName||'', repoUrl:'', giturl:GITURL,
     branch:item&&item.branch||'main', strategy:item&&item.strategy||'', vars:{}, token:0,
@@ -4907,7 +4912,8 @@ function orphanPreviewRc(orphan){
     remoteItemId:String(orphan&&orphan.id||''), remoteKind:queued?'queued':'running',
     stages:stages, nodes:previewNodes, remoteLogs:{}, selId:stages.length?stages[0].id:null, timer:null,
     env:orphan&&orphan.env||'', envs:[], image:'', release:'',
-    commit:'—', tag:'—', startTs:(queued?orphan&&orphan.queuedAt:orphan&&orphan.startedAt)||orphan&&orphan.orphanedAt||Date.now(), by:orphan&&orphan.by||'—', source:orphan&&orphan.source||'manual',
+    archive:(orphan&&orphan.archive)||null,   // 归档目录随孤儿快照透传（来源页面登记时已含）；未同步时为 null
+    commit:'—', tag:(orphan&&orphan.tag)||'—', startTs:(queued?orphan&&orphan.queuedAt:orphan&&orphan.startedAt)||orphan&&orphan.orphanedAt||Date.now(), by:orphan&&orphan.by||'—', source:orphan&&orphan.source||'manual',
     pipelineId:orphan&&orphan.pipelineId||null, pipelineName:orphan&&orphan.pipelineName||'(自定义)',
     repoId:null, repoName:orphan&&orphan.repoName||'', repoUrl:'', giturl:GITURL,
     branch:orphan&&orphan.branch||'main', strategy:orphan&&orphan.strategy||'', vars:{}, token:0,
@@ -4963,6 +4969,9 @@ function queueStagePresence(stage){
   if(stage.parallel===true) out.parallel=true;
   if(stage.skip===true) out.skip=true;
   if(Array.isArray(stage.sub)&&stage.sub.length) out.sub=stage.sub.map(name=>String(name));
+  /* 任务日志路径作为属性随快照同步：其他浏览器直接读 logFile，无需本地推算 */
+  const lf=stage._serverLogFile||stage._serverLogExpectedFile;
+  if(lf) out.logFile=String(lf);
   return out;
 }
 function queueNodePresence(node){
@@ -4981,7 +4990,7 @@ function queueNodePresence(node){
 }
 function queuePresenceEntry(item,timeKey,stages,nodes){
   const out={};
-  ['id','originQueueId','pipelineId','pipelineName','by','env','repoName','branch','strategy','source'].forEach(key=>{
+  ['id','originQueueId','pipelineId','pipelineName','by','env','repoName','branch','strategy','source','archive','tag'].forEach(key=>{
     if(item&&item[key]!==undefined&&item[key]!==null) out[key]=String(item[key]);
   });
   const time=Number(item&&item[timeKey]); out[timeKey]=Number.isFinite(time)?time:0;
@@ -7390,7 +7399,7 @@ async function runScriptStep(rc, i){
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
-  const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,i+1,s.name) : null;
+  const folder=archiveFolderFor(rc), logFile=folder ? folder+'/'+taskLogFile(rc,stageSeq(rc.stages,i),s.name) : null;   // 序号走 stageSeq（预设任务固定 00、正式阶段从 01 起），与 collectRunLogs / archiveStageLog 一致
   s._serverLogPending=!!logFile; s._serverLogExpectedFile=logFile; s._serverLogFile=null; s._logArchived=false;
   const live=createLiveOutputState(), probe=createOutputProbe(sc.outVars); let lastLive=-Infinity;
   const res=await execScript(sc, (s.timeout?s.timeout*1000:0), null, rc, m=>{   // 阶段级超时（编辑器「超时(分钟)」×60 存秒）；留空=0=无超时

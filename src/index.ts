@@ -4740,6 +4740,13 @@ export function apply(ctx: Context) {
     })
   }
   async function execPlan(pl: any, runtime?: PipelineExecutionRuntime) {
+    /** 与页面 stageSeq 同一约定：预设任务固定 00，正式阶段按剔除预设后的位置从 01 起（再叠加 baseSeq 偏移） */
+    const serverStageSeq = (stages: any[], i: number, base: number) => {
+      if (stages[i] && stages[i].preset) return 0
+      let n = 0
+      for (let j = 0; j <= i && j < stages.length; j++) { if (stages[j] && !stages[j].preset) n++ }
+      return base + n
+    }
     const t0 = Date.now()
     const store = await readPipelineStore()
     const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
@@ -4837,7 +4844,7 @@ export function apply(ctx: Context) {
       else if (s.script && s.script.path) {
         let r: any
         try {
-          const directLog = folder ? taskLogPath(folder, tag, baseSeq + index + 1, s.name) : undefined
+          const directLog = folder ? taskLogPath(folder, tag, serverStageSeq(executionStages, index, baseSeq), s.name) : undefined
           r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
         } catch (error) {
           r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
@@ -4883,7 +4890,7 @@ export function apply(ctx: Context) {
     const collectStageProm = async (result: ServerStageResult) => {
       const s = result.stage
       const collectScript = serverPromCollectScript(cfg)
-      const seq = baseSeq + result.index + 1
+      const seq = serverStageSeq(executionStages, result.index, baseSeq)
       const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
       const addNote = (note: string) => { result.promNote = note; result.text += '\n' + note }
       if (!collectScript) {
@@ -4946,7 +4953,7 @@ export function apply(ctx: Context) {
       const promResult = longestServerPromResult(results)
       if (promResult) await collectStageProm(promResult)
       for (const result of results) {
-        await recordStageResult(result, baseSeq + result.index + 1)
+        await recordStageResult(result, serverStageSeq(executionStages, result.index, baseSeq))
       }
       if (runtime?.signal.aborted) { status = 'aborted'; break }
       if (blockingFailure) { status = 'failed'; break }
