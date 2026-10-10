@@ -177,7 +177,7 @@
         <button id="ioMenuBtn" type="button" class="dshell-btn dshell-btnGhost mini" title="设置 / 流水线的导入导出；导出文件含节点密码与访问令牌明文，请妥善保管、勿提交进仓库">⤓⤒ 导入导出</button>
         <div id="ioMenuPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:30;min-width:230px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
           <div class="dshell-muted" style="font-size:11px;padding:2px 6px;">设置（环境 / 代码仓 / 脚本 / 服务配置等）</div>
-          <button id="ioExpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置页全部配置（含仅存本浏览器的代码仓访问令牌与运行选择），不含流水线与运行历史">⤓ 导出设置…</button>
+          <button id="ioExpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置页全部配置（含代码仓/服务访问令牌与运行选择、筛选等），不含流水线与运行历史；文件含明文令牌，勿外传">⤓ 导出设置…</button>
           <button id="ioImpSettings" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="选择之前「导出设置」的 JSON 文件整体恢复设置，流水线与运行历史不受影响">⤒ 导入设置…</button>
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">流水线（全部流水线定义）</div>
           <button id="ioExpPipelines" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线定义（含预置流水线上的编辑）">⤓ 导出流水线…</button>
@@ -519,7 +519,7 @@
         <input id="repoName" class="dshell-input" placeholder="名称（如 myapp）" style="width:120px;" />
         <input id="repoUrl" class="dshell-input" placeholder="URL（如 https://git.example.com/dev/myapp.git）" style="width:300px;" />
         <input id="repoUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
-        <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" title="代码仓访问令牌；仅保存到本浏览器 localStorage，不上送服务端存储，刷新/换浏览器需重新填写" />
+        <input id="repoPass" class="dshell-input" type="password" placeholder="访问令牌" style="width:130px;" title="代码仓访问令牌；明文随配置保存到服务端（storages/worktable-pipeline.json），团队各浏览器共享；请勿提交进仓库，导出的设置文件勿外传" />
         <select id="repoFetchMode" class="dshell-input" title="分支获取方式：服务端=经 /api/worktable/git-remote（git ls-remote）；浏览器=直连仓库 /info/refs（需服务器开 CORS）；Jenkins=多分支任务子任务名即分支（任务框也可直接粘贴 refs 接口地址），浏览器直连=本地浏览器请求 Jenkins，服务端代连=经 /api/worktable/proxy 由 DSH 服务端请求（按仓库各自选择，不跟随全局连接模式）" style="width:128px;"><option value="server">服务端拉取</option><option value="browser">浏览器拉取</option><option value="jenkins-browser">Jenkins·浏览器直连</option><option value="jenkins-server">Jenkins·服务端代连</option></select>
         <input id="repoJenkinsJob" class="dshell-input" list="jenkinsJobsList" placeholder="多分支任务或 refs 接口地址" title="分支获取=Jenkins（浏览器直连/服务端代连）时：指定一个多分支/文件夹类型任务（其子任务名即分支，需先在「设置」页获取任务列表），或直接粘贴返回分支列表的自定义接口完整地址（分页 JSON：{total,offset,next_offset,items:[{type,name}]}；免凭证，不附带 Jenkins 用户名/令牌）" style="width:240px;display:none;" autocomplete="off" />
         <select id="repoStrategyMode" class="dshell-input" title="部署策略来源：URL=按分支从接口地址拉取（{branch} 为分支占位符）；脚本=执行 scripts 目录中的脚本（注入 GIT_BRANCH/GIT_URL/GIT_USER/GIT_PASSWORD，stdout 每行一个策略名）；两者都可留空=主控不提供部署策略选择" style="width:104px;"><option value="url">策略·URL</option><option value="script">策略·脚本</option></select>
@@ -688,7 +688,7 @@
           <input id="etLinkUrl" class="dshell-input" placeholder="真实服务地址，留空则用上方服务地址" style="width:240px;" title="「获取任务列表 / 查看报告」用的真实服务地址；留空则用上方的服务地址" />
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">访问令牌
-          <input id="etToken" class="dshell-input" type="password" placeholder="Bearer 令牌（api-token）" style="width:240px;" autocomplete="off" title="调用服务 API 所需的访问令牌（Authorization: Bearer &lt;令牌&gt;）；仅保存到本浏览器 localStorage，请勿提交进仓库" />
+          <input id="etToken" class="dshell-input" type="password" placeholder="Bearer 令牌（api-token）" style="width:240px;" autocomplete="off" title="调用服务 API 所需的访问令牌（Authorization: Bearer &lt;令牌&gt;）；明文随配置保存到服务端（storages/worktable-pipeline.json），团队各浏览器共享；请勿提交进仓库，导出的设置文件勿外传" />
         </label>
       </div>
       <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px;">
@@ -1040,11 +1040,39 @@ let persistTimer=null;
    服务端确认后的新基线。旧写法 while(persistInFlight) await persistInFlight 是 check-then-set——两个并发
    等待者会在前序释放后同时通过检查、同进临界区（后进入者覆盖先进入者的锁 Promise），串行化失效 */
 let persistInFlight=null;
+/* 旧版本地配置键快照（页面启动时记录，此刻 localStorage 尚未被本页离线缓存回写）：供 loadServerState
+   判定迁移条件——服务端缺某新键且启动时本地有对应旧值，才保留本地值并回推。不能用加载过程中的 LS 实时读：
+   本页同步块会把应用后的值写回 LS，二次重拉会把「自己刚写的缓存」误判成「本地有旧值」而重复回推。 */
+const legacyLocalKeys=(function(){ const m={}; try{ ['pip-curPipeline','pip-envSel','pip-curRepo','pip-branch','pip-strategy','pip-schedEnvSel','pip-histFilter','pip-plFilter','pip-histPageSize','pip-plPageSize'].forEach(k=>{ m[k]=localStorage.getItem(k)!==null; }); }catch(e){} return m; })();
 function persistState(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
-function collectConfig(){ return { pipelines, environments, /* 代码仓访问令牌仅存浏览器本地：上送服务端持久化时剔除 pass（服务端存储不留令牌）；刷新加载时按 id 从 localStorage 回填，见 loadServerState */ repositories: repositories.map(function(r){ var c=Object.assign({}, r); c.pass=''; return c; }), /* 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds / 代码仓 curRepoId / 分支 / 部署策略 / 执行人）仅存浏览器本地，不上送服务端；cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态与 customPresets 仅跨浏览器同步（定时计划的服务端执行暂不支持这些预设任务） */ scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, customPresets, jenkins, evaltok, prom, archiveDir, archiveScriptName, analysisPrompts, histClearedAt, cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked), checkEnabled: !!($('checkEnv') && $('checkEnv').checked), profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) }; }
+/* 收集上送服务端的配置：代码仓条目保留访问令牌 pass（明文随配置保存到服务端 worktable-pipeline.json，
+   团队各浏览器共享）；运行选择与视图状态（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/
+   schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）同随服务端持久化——例外：编辑器草稿
+   pip-plDraft 仍仅存本浏览器（未过校验的半成品，见 savePlDraft）。
+   cleanupEnabled 随服务端 config 供定时任务读取；check/profiling 勾选态与 customPresets 仅跨浏览器同步
+   （定时计划的服务端执行暂不支持这些预设任务）。 */
+function collectConfig(){
+  const branchEl=$('branchName'), strategyEl=$('deployStrategyName');
+  return { pipelines, environments,
+    repositories: repositories.map(function(r){ return Object.assign({}, r); }),
+    scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, customPresets, jenkins, evaltok, prom,
+    archiveDir, archiveScriptName, analysisPrompts, histClearedAt,
+    curPipelineId, curRepoId,
+    selectedEnvIds: Array.isArray(selectedEnvIds)?selectedEnvIds.slice():[],
+    schedEnvIds: Array.isArray(schedEnvIds)?schedEnvIds.slice():[],
+    branch: branchEl?String(branchEl.value||''):'',
+    strategy: strategyEl?String(strategyEl.value||''):'',
+    histFilter: {kw:String(histFilter.kw||''),status:String(histFilter.status||''),pipeline:String(histFilter.pipeline||'')},
+    plFilter: {kw:String(plFilter.kw||''),owner:String(plFilter.owner||'mine'),favorite:plFilter.favorite==='favorite'?'favorite':'all'},
+    histPageSize: Math.max(1,parseInt(histPageSize,10)||10),
+    plPageSize: Math.max(1,parseInt(plPageSize,10)||10),
+    cleanupEnabled: !!($('cleanupEnv') && $('cleanupEnv').checked),
+    checkEnabled: !!($('checkEnv') && $('checkEnv').checked),
+    profilingEnabled: !!($('profilingEnv') && $('profilingEnv').checked) };
+}
 function historyForPersist(){
   const transient=['_lc','_lm','_ll','_profChecked','_profState'];
   return history.filter(h=>!h.demo).map(h=>{
@@ -1284,6 +1312,9 @@ async function fetchPipelineStateFresh(){
 }
 async function loadServerState(){
   const st=await fetchPipelineStateFresh();
+  /* 旧版服务端配置迁移标记：服务端缺新键（且启动时本地有对应旧值，见 legacyLocalKeys）或代码仓条目
+     服务端令牌为空而本地有同 id 令牌时置位；finally 里据此 persistState 一次，把迁移结果推上服务端 */
+  let migrated=false;
   try{
     /* 流水线三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
     const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
@@ -1303,15 +1334,55 @@ async function loadServerState(){
              diskOne(null) 相等，下次 save-one 会把他人刚删的条目静默重建（本应 409 由用户抉择）。 */
         if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
       }
-      // 运行选择（当前流水线 curPipelineId / 环境多选 selectedEnvIds）仅存浏览器本地，不从服务端覆盖；见 collectConfig
       if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
       if(Array.isArray(cfg.repositories) && cfg.repositories.length){
-        // 代码仓访问令牌仅存浏览器本地：服务端回传的仓库不含 pass，按 id 回填本地已存令牌，避免刷新后丢失
+        /* 代码仓访问令牌 pass 随服务端配置持久化（团队各浏览器共享，见 collectConfig）。迁移：旧版客户端
+           上送时剔除 pass，服务端条目 pass 为空而本页（启动时从 localStorage 离线缓存装入）存有同 id
+           令牌 → 回填并标记 migrated（末尾统一回推一次）；服务端已有令牌的条目一律以服务端为准。 */
         const prevPass={}; repositories.forEach(function(r){ if(r.pass) prevPass[r.id]=r.pass; });
         repositories=cfg.repositories.map(normalizeRepo);
-        repositories.forEach(function(r){ if(prevPass[r.id]) r.pass=prevPass[r.id]; });
+        repositories.forEach(function(r){ if(!r.pass && prevPass[r.id]){ r.pass=prevPass[r.id]; migrated=true; } });
       }
-      // 当前代码仓 curRepoId 仅存浏览器本地，不从服务端覆盖（仓库定义仍从服务端加载，见上 repositories 块）；见 collectConfig
+      /* 运行选择与视图状态（当前流水线/环境多选/当前代码仓/分支/部署策略/定时环境/历史与流水线筛选/页大小）：
+         键存在（含空串/空数组）一律以服务端为准；旧版服务端无该键且启动时 localStorage 有对应旧值
+         （legacyLocalKeys 快照）→ 保留本地值（全局已在启动时从 localStorage 装入）并标记 migrated，
+         finally 统一回推一次。stateLoaded 门控不变：服务端不可达时本块不执行，不会用默认值覆盖服务端。
+         409/403 自愈重拉也走这里：他端改动借此同步进来；筛选/页大小这类视图状态直接按服务端覆盖，
+         文本输入框仅在未聚焦时回写（聚焦中说明正在输入，状态仍已应用、回显留给失焦后的渲染）——
+         在途未确认的本地编辑可能被冲掉，编辑动作本身会再触发 persistState 重新上送，属可接受取舍。 */
+      const hadLegacy=k=>typeof legacyLocalKeys!=='undefined' && !!legacyLocalKeys[k];   // typeof 守卫：沙盒单独抽取本函数时快照可能不存在
+      const setInputVal=(id,v)=>{ const el=$(id); if(!el) return; if(typeof document!=='undefined' && document && document.activeElement===el) return; el.value=v; };
+      /* curPipelineId 须在流水线合并之后、末尾 selectedId=curPipeline().stages[0].id 之前应用，
+         且仅当服务端值仍存在于合并后的流水线列表（可能已被他端删除）才采用 */
+      if(typeof cfg.curPipelineId==='string'){ if(pipelines.some(p=>p&&p.id===cfg.curPipelineId)) curPipelineId=cfg.curPipelineId; }
+      else if(hadLegacy('pip-curPipeline')) migrated=true;
+      if(Array.isArray(cfg.selectedEnvIds)) selectedEnvIds=cfg.selectedEnvIds.filter(id=>typeof id==='string');
+      else if(hadLegacy('pip-envSel')) migrated=true;
+      if(typeof cfg.curRepoId==='string') curRepoId=cfg.curRepoId;
+      else if(hadLegacy('pip-curRepo')) migrated=true;
+      if(typeof cfg.branch==='string') setInputVal('branchName', cfg.branch);
+      else if(hadLegacy('pip-branch')) migrated=true;
+      if(typeof cfg.strategy==='string') setInputVal('deployStrategyName', cfg.strategy);
+      else if(hadLegacy('pip-strategy')) migrated=true;
+      if(Array.isArray(cfg.schedEnvIds)) schedEnvIds=cfg.schedEnvIds.filter(id=>typeof id==='string');
+      else if(hadLegacy('pip-schedEnvSel')) migrated=true;
+      if(cfg.histFilter && typeof cfg.histFilter==='object' && !Array.isArray(cfg.histFilter)){
+        histFilter={kw:String(cfg.histFilter.kw||''),status:String(cfg.histFilter.status||''),pipeline:String(cfg.histFilter.pipeline||'')};
+        /* histFilterPipeline 输入框由 renderHistFilterOptions 按状态回显（自带聚焦守卫），此处只回写另两个控件 */
+        setInputVal('histFilterKw', histFilter.kw); setInputVal('histFilterStatus', histFilter.status);
+      }
+      else if(hadLegacy('pip-histFilter')) migrated=true;
+      if(cfg.plFilter && typeof cfg.plFilter==='object' && !Array.isArray(cfg.plFilter)){
+        plFilter={kw:String(cfg.plFilter.kw||''),owner:String(cfg.plFilter.owner||'mine'),favorite:cfg.plFilter.favorite==='favorite'?'favorite':'all'};
+        setInputVal('plFilterKw', plFilter.kw);
+        setInputVal('plFilterOwner', typeof plOwnerFilterLabel==='function'?plOwnerFilterLabel(plFilter.owner):plFilter.owner);
+        setInputVal('plFilterFavorite', plFilter.favorite);
+      }
+      else if(hadLegacy('pip-plFilter')) migrated=true;
+      if(Number.isFinite(cfg.histPageSize)){ histPageSize=Math.max(1,parseInt(cfg.histPageSize,10)||10); setInputVal('histPageSize', String(histPageSize)); }
+      else if(hadLegacy('pip-histPageSize')) migrated=true;
+      if(Number.isFinite(cfg.plPageSize)){ plPageSize=Math.max(1,parseInt(cfg.plPageSize,10)||10); setInputVal('plPageSize', String(plPageSize)); }
+      else if(hadLegacy('pip-plPageSize')) migrated=true;
       if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir){ scriptsDir=cfg.scriptsDir; scriptsDirIsFallback=false; }
       else maybeAdoptInstalledScriptsDir();   // 服务端设置文件未配置 scriptsDir：fallback 态改用安装默认（health 未到时由 health 回调再试）
       if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
@@ -1345,6 +1416,14 @@ async function loadServerState(){
         localStorage.setItem('pip-curRepo', curRepoId);
         localStorage.setItem('pip-scriptsDir', scriptsDir);
         localStorage.setItem('pip-curPipeline', curPipelineId);
+        /* 新增随服务端同步的键同样刷新离线缓存（typeof 守卫：沙盒单独抽取本函数时这些全局可能不存在） */
+        if(typeof schedEnvIds!=='undefined') localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds));
+        if(typeof histFilter!=='undefined') localStorage.setItem('pip-histFilter', JSON.stringify(histFilter));
+        if(typeof plFilter!=='undefined') localStorage.setItem('pip-plFilter', JSON.stringify(plFilter));
+        if(typeof histPageSize!=='undefined') localStorage.setItem('pip-histPageSize', String(histPageSize));
+        if(typeof plPageSize!=='undefined') localStorage.setItem('pip-plPageSize', String(plPageSize));
+        if($('branchName')) localStorage.setItem('pip-branch', $('branchName').value||'');
+        if($('deployStrategyName')) localStorage.setItem('pip-strategy', $('deployStrategyName').value||'');
         localStorage.setItem('pip-theme', themePref);
         localStorage.setItem('pip-cleanupScript', JSON.stringify(cleanupScript));
         localStorage.setItem('pip-cleanupEnabled', $('cleanupEnv').checked?'1':'');
@@ -1375,6 +1454,9 @@ async function loadServerState(){
     if(st) stateLoaded=true;
     /* 服务端为空：把本地（localStorage/默认）状态迁移上去 */
     if(st && (!st.config || !Object.keys(st.config).length)) persistState();
+    /* 旧版服务端缺新键 / 代码仓令牌被旧版剔除：本地旧值已在上方采用（migrated），回推一次完成迁移
+       （沿用上方「服务端为空迁移」同一模式；此时 stateLoaded 已置位，pushState 不会再重试加载） */
+    else if(migrated) persistState();
   }
 }
 /* 存量迁移：旧版记录内嵌的 logs 全文 → 补齐归档文件夹里对应的任务日志文件后改存 logFile 引用。
@@ -5248,9 +5330,9 @@ async function handoffSchedSuffix(rc, i){
     finish(rc,'failed');
   }
 }
-/* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化；未单独选择过则跟随主控当前环境 */
+/* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化（随服务端配置 schedEnvIds 键同步，localStorage 为离线缓存）；未单独选择过则跟随主控当前环境 */
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
-function saveSchedEnvSel(){ try{ localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds)); }catch(e){} }
+function saveSchedEnvSel(){ try{ localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds)); }catch(e){} persistState(); }
 function schedEnvs(){
   const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）；都不选即无目标节点
   return environments.filter(e=>ids.indexOf(e.id)>=0);
@@ -8163,16 +8245,16 @@ let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局
 let analysisHistoryKeys=[];   // AI 分析勾选（最多两条，顺序即对比的 A / B；与单行回放选择分离）
 let histPage=0;
 let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
-/* 运行历史筛选：关键字（# / 流水线 / 执行人，大小写不敏感）+ 状态 + 流水线名；随 localStorage 保留 */
+/* 运行历史筛选：关键字（# / 流水线 / 执行人，大小写不敏感）+ 状态 + 流水线名；随服务端配置 histFilter 键同步（localStorage 为离线缓存） */
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
-function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} }
-/* 流水线任务筛选状态（关键字 + 拥有者 + 当前用户收藏），与 histFilter 同样仅存浏览器本地；
+function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} persistState(); }
+/* 流水线任务筛选状态（关键字 + 拥有者 + 当前用户收藏），与 histFilter 同样随服务端配置 plFilter 键同步（localStorage 为离线缓存）；
    在此提前声明，供下方筛选控件初始化与 renderPipelines 取用（声明顺序早于事件绑定）；
    owner 兼容旧值：mine/all/builtin/unknown 特殊模式键与历史版本存下的具体用户名均照常生效 */
 let plFilter={kw:'',owner:'mine',favorite:'all'};
 try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter')); if(_pf && typeof _pf==='object') plFilter={kw:String(_pf.kw||''),owner:String(_pf.owner||'mine'),favorite:_pf.favorite==='favorite'?'favorite':'all'}; }catch(e){}
-function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringify(plFilter)); }catch(e){} }
+function savePlFilter(){ try{ localStorage.setItem('pip-plFilter', JSON.stringify(plFilter)); }catch(e){} persistState(); }
 let plPage=0;
 let plPageSize=Math.max(1, parseInt(lsGet('pip-plPageSize','10'),10)||10);
 /* 当前登录用户名：与「执行人」同源（/auth/status）。由 fillExecutorFromAuth 在页面加载时预取并缓存，
@@ -8501,7 +8583,7 @@ $('pmcResetTimes').addEventListener('click', pmcResetTimes);
 $('pmcClose').addEventListener('click', ()=>{ if(pmcRunning && pmcAbort){ try{ pmcAbort.abort(); }catch(e){} } $('pmcDialog').style.display='none'; });
 /* 历史分页 */
 $('histPageSize').value=String(histPageSize);
-$('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; renderHistory(); });
+$('histPageSize').addEventListener('change', e=>{ histPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){} histPage=0; persistState(); renderHistory(); });
 $('histPrev').addEventListener('click', ()=>{ if(histPage>0){ histPage--; renderHistory(); } });
 $('histNext').addEventListener('click', ()=>{ if((histPage+1)*histPageSize<filteredHistory().length){ histPage++; renderHistory(); } });
 $('histClear').addEventListener('click', ()=>{ if(!history.length) return; if(!confirm('清空全部 '+history.length+' 条运行历史？（预置演示数据也会一并移除，且不可恢复）')) return; exitHistoryReplay(); history=[]; selHistoryIdx=-1; analysisHistoryKeys=[]; histPage=0; histClearedAt=Date.now(); renderHistory(); renderStats(); persistState(); refreshArchiveTip(); });   // histClearedAt 随 config 推服务端：合并历史时清空点之前的磁盘记录不再复活
@@ -8609,7 +8691,7 @@ $('histRefresh').addEventListener('click', async ()=>{
 /* 流水线任务分页 */
 /* 页大小规格与运行历史相同，但使用独立状态和本地存储键。 */
 $('plPageSize').value=String(plPageSize);
-$('plPageSize').addEventListener('change', e=>{ plPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-plPageSize', String(plPageSize)); }catch(e){} plPage=0; renderPipelines(); });
+$('plPageSize').addEventListener('change', e=>{ plPageSize=Math.max(1,parseInt(e.target.value,10)||10); try{ localStorage.setItem('pip-plPageSize', String(plPageSize)); }catch(e){} plPage=0; persistState(); renderPipelines(); });
 $('plPrev').addEventListener('click', ()=>{ if(plPage>0){ plPage--; renderPipelines(); } });
 $('plNext').addEventListener('click', ()=>{ if((plPage+1)*plPageSize<pipelines.filter(plFilterMatch).length){ plPage++; renderPipelines(); } });
 /* 历史筛选：关键字实时过滤、状态下拉、流水线可搜索面板、清除筛选（条件变化时归首页） */
@@ -9625,13 +9707,15 @@ $('cfgSave').addEventListener('click', ()=>{
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
 
 /* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
-   导出设置 = 设置页全部配置：服务端部分（collectConfig，剔除流水线——流水线走独立导出——并补回仅存本浏览器的代码仓访问令牌）
-             + 仅存浏览器本地的运行选择（当前流水线/环境/代码仓、分支/部署策略/执行人、历史筛选与分页）；
+   导出设置 = 设置页全部配置（collectConfig 去掉 pipelines——流水线走独立导出）：节点密码与代码仓/服务
+             访问令牌明文、运行选择与视图状态（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/
+             schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）都随 config 携带（与服务端持久化同口径）；
+             local 块按旧结构同步输出一份运行选择，供旧版页面导入新版文件时识别（新版导入 config 优先、local 兜底）；
    导出流水线 = 全部流水线定义（含预置流水线上的编辑）。
    每个导出 / 导入都有「浏览器本地文件」与「服务端备份」两个去向：本地下载 / 文件选择框，或落盘 / 读取
    dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），两种去向共用同一份 payload 与恢复逻辑。
    导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
-   运行历史不参与导入导出。导出文件含节点密码与令牌明文。 */
+   运行历史不参与导入导出。导出文件含节点密码与令牌明文，勿提交仓库、勿外传。 */
 function ioTimestamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
 function downloadJson(filename, data){
   const a=document.createElement('a');
@@ -9643,14 +9727,14 @@ function ioTipShow(msg, bad){ const t=$('ioTip'); if(!t) return; t.style.color=b
 function collectSettingsForExport(){
   const cfg=collectConfig();
   delete cfg.pipelines;   /* 流水线独立导出，见 exportPipelines */
-  /* 导出补回代码仓访问令牌（区别于上送服务端持久化时剔除 pass，见 collectConfig）：导出文件即完整备份 */
-  cfg.repositories=repositories.map(function(r){ return Object.assign({}, r); });
+  /* collectConfig 已携带代码仓访问令牌 pass（与服务端持久化同口径）：导出文件即完整备份，含明文令牌、勿外传 */
   return cfg;
 }
 function buildSettingsExport(){
   return {
     app:'worktable-pipeline', kind:'pipeline-settings', version:1, exportedAt:new Date().toISOString(),
     config:collectSettingsForExport(),
+    /* local 块按旧版导出结构保留（旧版页面只认 local 里的运行选择）；新版导入 config 优先、local 兜底 */
     local:{ curPipelineId, selectedEnvIds, curRepoId, schedEnvIds, branch:$('branchName').value, strategy:$('deployStrategyName').value, histFilter, histPageSize },
   };
 }
@@ -9698,19 +9782,36 @@ function applyImportedSettings(cfg, loc){
   if(typeof cfg.archiveScriptName==='string') archiveScriptName=cfg.archiveScriptName;
   if(cfg.analysisPrompts && typeof cfg.analysisPrompts==='object') analysisPrompts=Object.assign({}, DEFAULT_PROMPTS, cfg.analysisPrompts);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=cfg.histClearedAt;
-  /* 仅存浏览器本地的运行选择 */
-  if(typeof loc.curPipelineId==='string' && pipelines.some(p=>p.id===loc.curPipelineId)){ curPipelineId=loc.curPipelineId; viewRc=null; syncViewRun(); }
-  if(Array.isArray(loc.selectedEnvIds)) selectedEnvIds=loc.selectedEnvIds.length?loc.selectedEnvIds:null;
-  if(typeof loc.curRepoId==='string') curRepoId=loc.curRepoId;
-  if(Array.isArray(loc.schedEnvIds)) schedEnvIds=loc.schedEnvIds.length?loc.schedEnvIds:null;
-  if(typeof loc.branch==='string') $('branchName').value=loc.branch;
-  if(typeof loc.strategy==='string') $('deployStrategyName').value=loc.strategy;
+  /* 运行选择与视图状态：新版导出随 config 携带（与服务端同键），旧版导出在 local 块——config 优先、local 兜底；
+     两处都没有（更旧的文件）保持当前值 */
+  const pick=k=> cfg[k]!==undefined ? cfg[k] : loc[k];
+  const impCur=pick('curPipelineId');
+  if(typeof impCur==='string' && pipelines.some(p=>p.id===impCur)){ curPipelineId=impCur; viewRc=null; syncViewRun(); }
+  const impEnvSel=pick('selectedEnvIds');
+  if(Array.isArray(impEnvSel)) selectedEnvIds=impEnvSel.length?impEnvSel.filter(id=>typeof id==='string'):null;
+  const impRepo=pick('curRepoId');
+  if(typeof impRepo==='string') curRepoId=impRepo;
+  const impSchedEnv=pick('schedEnvIds');
+  if(Array.isArray(impSchedEnv)) schedEnvIds=impSchedEnv.length?impSchedEnv.filter(id=>typeof id==='string'):null;
+  const impBranch=pick('branch');
+  if(typeof impBranch==='string') $('branchName').value=impBranch;
+  const impStrategy=pick('strategy');
+  if(typeof impStrategy==='string') $('deployStrategyName').value=impStrategy;
   /* 旧配置里的 loc.by（执行人）不再恢复：执行人只读、固定取当前登录用户（fillExecutorFromAuth） */
-  if(loc.histFilter && typeof loc.histFilter==='object'){
-    histFilter={kw:String(loc.histFilter.kw||''),status:String(loc.histFilter.status||''),pipeline:String(loc.histFilter.pipeline||'')};
+  const impHistFilter=pick('histFilter');
+  if(impHistFilter && typeof impHistFilter==='object'){
+    histFilter={kw:String(impHistFilter.kw||''),status:String(impHistFilter.status||''),pipeline:String(impHistFilter.pipeline||'')};
     $('histFilterKw').value=histFilter.kw; $('histFilterStatus').value=histFilter.status; $('histFilterPipeline').value=histFilter.pipeline;
   }
-  if(Number.isFinite(loc.histPageSize)){ histPageSize=Math.max(1,parseInt(loc.histPageSize,10)||10); $('histPageSize').value=String(histPageSize); }
+  const impHistSize=pick('histPageSize');
+  if(Number.isFinite(impHistSize)){ histPageSize=Math.max(1,parseInt(impHistSize,10)||10); $('histPageSize').value=String(histPageSize); }
+  const impPlFilter=pick('plFilter');
+  if(impPlFilter && typeof impPlFilter==='object'){
+    plFilter={kw:String(impPlFilter.kw||''),owner:String(impPlFilter.owner||'mine'),favorite:impPlFilter.favorite==='favorite'?'favorite':'all'};
+    $('plFilterKw').value=plFilter.kw; $('plFilterOwner').value=typeof plOwnerFilterLabel==='function'?plOwnerFilterLabel(plFilter.owner):plFilter.owner; $('plFilterFavorite').value=plFilter.favorite;
+  }
+  const impPlSize=pick('plPageSize');
+  if(Number.isFinite(impPlSize)){ plPageSize=Math.max(1,parseInt(impPlSize,10)||10); $('plPageSize').value=String(plPageSize); }
   /* 统一落盘：localStorage（含本地令牌/选择）+ debounce 推服务端 */
   saveEnvs(); saveEnvSel(); saveRepos(); saveRepoSel(); saveScriptsDir();
   try{ localStorage.setItem('pip-theme', themePref); localStorage.setItem('pip-curPipeline', curPipelineId); }catch(e){}
@@ -9718,7 +9819,8 @@ function applyImportedSettings(cfg, loc){
   if(typeof saveCustomPresets==='function') saveCustomPresets();   /* 自定义预设任务同一落口（沙盒单独抽取本函数时跳过） */
   saveJenkins(); saveEvaltok(); saveProm(); saveArchiveDir(); saveArchiveScript(); savePrompts();
   saveSchedEnvSel(); saveRunSelLS(); saveHistFilter();
-  try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); }catch(e){}
+  if(typeof savePlFilter==='function') savePlFilter();   /* 流水线筛选同一落口（沙盒单独抽取本函数时跳过） */
+  try{ localStorage.setItem('pip-histPageSize', String(histPageSize)); if(typeof plPageSize!=='undefined') localStorage.setItem('pip-plPageSize', String(plPageSize)); }catch(e){}
   /* 设置页各表单回填 + 全量重渲染（与 loadServerState 同一收尾） */
   $('cleanupScriptName').value=cleanupScript?cleanupScript.name:''; renderCleanupParams();
   $('checkScriptName').value=checkScript?checkScript.name:''; renderCheckParams();
@@ -9898,10 +10000,10 @@ document.addEventListener('click', (e)=>{ const p=$('envMultiPanel'); const m=$(
 /* 预设任务多选面板开合（与「环境」多选同一交互：点外关闭） */
 $('presetMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('presetMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
 document.addEventListener('click', (e)=>{ const p=$('presetMultiPanel'); const m=$('presetMulti'); if(p && m && !m.contains(e.target)) p.style.display='none'; });
-/* 运行设置（分支 / 部署策略）仅存浏览器本地：刷新后从 localStorage 回填；
+/* 运行设置（分支 / 部署策略）随服务端配置同步（branch/strategy 键），localStorage 为离线缓存、刷新后先回填；
    change 即时存，pagehide 兜底（分支面板点选为程序化赋值、不触发 change，靠 pagehide 持久化）。
-   执行人不参与本地持久化——它只读、固定取当前登录用户（见下方 fillExecutorFromAuth）。 */
-function saveRunSelLS(){ try{ localStorage.setItem('pip-branch',$('branchName').value); localStorage.setItem('pip-strategy',$('deployStrategyName').value); }catch(e){} }
+   执行人不参与持久化——它只读、固定取当前登录用户（见下方 fillExecutorFromAuth）。 */
+function saveRunSelLS(){ try{ localStorage.setItem('pip-branch',$('branchName').value); localStorage.setItem('pip-strategy',$('deployStrategyName').value); }catch(e){} persistState(); }
 (function(){ try{ const b=localStorage.getItem('pip-branch'); if(b!==null) $('branchName').value=b; const s=localStorage.getItem('pip-strategy'); if(s!==null) $('deployStrategyName').value=s; }catch(e){} })();
 $('branchName').addEventListener('change', saveRunSelLS);
 $('deployStrategyName').addEventListener('change', saveRunSelLS);
