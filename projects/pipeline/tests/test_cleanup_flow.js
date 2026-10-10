@@ -15,7 +15,7 @@ function context(){
     viewActive:()=>!!(ctx.viewRc&&!ctx.viewRc.over),
     runPreviewReadOnly:rc=>!!(rc&&(rc.queuedPreview===true||rc.remotePreview===true)),
     setSel:id=>{ctx.selectedId=id;if(ctx.viewRc)ctx.viewRc.selId=id;}};
-  vm.createContext(ctx);load('/* ---------- 渲染流水线编排 ---------- */','function applyStatusClasses(',ctx);
+  vm.createContext(ctx);load('/* ---------- 渲染流水线编排 ---------- */','const PIPELINE_DEFAULT_PRESET_KEYS',ctx);load('function presetOn(','function applyStatusClasses(',ctx);
   return {ctx,flow,checkbox,checkBox,profilingBox};
 }
 test('勾选后首位显示清理，取消后移除，普通任务可编辑（编辑器内预设行占位，焦点序号含预设行）',()=>{
