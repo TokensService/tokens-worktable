@@ -3903,9 +3903,9 @@ function applyStatusClasses(){
 function metaFor(id){
   const n=nodes[id], st=n?n.status:'idle';
   if(st==='success') return '✓ '+fmtDur(n.dur);
-  if(st==='failed')  return '✗ 错误';
+  if(st==='failed')  return '✗ 错误 · '+fmtDur(n.dur||0);
   if(st==='skipped') return '⏭ 跳过';
-  if(st==='aborted') return '⏏ 终止';
+  if(st==='aborted') return '⏏ 终止 · '+fmtDur(n.dur||0);
   if(st==='running') return Math.round(n.progress||0)+'% · '+fmtDur(n.dur||0);
   if(st==='idle'){ const s=activeStages().find(x=>x.id===id); if(s&&s.skip) return '⊘ 不执行'; }   // 未运行且配置「不执行」：编排区节点元信息显示
   return '';
