@@ -45,7 +45,7 @@ assert actual["115.33.98.101:2225"] == "192.168.31.120", actual
 PY
 
 for script in render-config.sh deploy-model.sh; do
-  assignment="$(grep -m1 '^NODE_PORT_MAP=' "$script_dir/$script")"
+  assignment="$(grep -m1 -E '^[[:space:]]*NODE_PORT_MAP=' "$script_dir/$script")"
   actual_node_ports="$(env -u NODE_PORT_MAP bash -c "$assignment
 printf '%s' \"\$NODE_PORT_MAP\"")"
   python3 - "$script" "$actual_node_ports" "$expected_node_ports" <<'PY'

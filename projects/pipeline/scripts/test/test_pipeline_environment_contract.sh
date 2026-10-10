@@ -13,7 +13,7 @@ grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$pipeline"
 
 for script in pull-image.sh render-config.sh deploy-model.sh register-model.sh model-health.sh; do
   if rg -n '^\s*(IMAGE|IMAGE_NAME|ARCH_NAME|MODEL_NAME|RUN_DIR|CHART_DIR|VALUES_FILE|ARCH_REQUEST_FILE|RESOURCE_MANIFEST|XDS_URL)=.*\$\{?1' "$script_dir/$script" ||
-     rg -n '^\s*(case|\[\[ \$#)' "$script_dir/$script"; then
+     rg -n '^\s*(case\s+"?\$[0-9@*#]|\[\[ \$#)' "$script_dir/$script"; then
     echo "$script must not use positional arguments for pipeline configuration" >&2
     exit 1
   fi
