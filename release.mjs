@@ -108,7 +108,7 @@ try {
 
   const notes = (summary ? summary + '\n\n' : '') +
     '升级命令：\n```\ndsh plugin --profile web add "https://github.com/' + REPO +
-    '/releases/download/' + tag + '/tokens-worktable-' + version + '.tgz"\n```\n\n完成后重启 dsh web 并刷新页面。'
+    '/releases/download/' + tag + '/tokens-worktable.tgz"\n```\n\n完成后重启 dsh web 并刷新页面。'
   run('gh', ['release', 'create', tag, '--repo', REPO, '--title', 'tokens-worktable ' + tag,
     '--notes', notes, versioned, plain])
 } finally {
