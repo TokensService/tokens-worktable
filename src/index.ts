@@ -2396,7 +2396,7 @@ function createPipelineGenerationManager() {
         active: activeId || null,
         generations: all,
         runs: all.flatMap(record => record.runs),
-        queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+        queue: all.flatMap(record => record.queue),
         finished,
       }
     },
@@ -2418,7 +2418,12 @@ function createPipelineGenerationManager() {
       const records = [...generations.values()]
       for (const record of records) beginDrain(record.id)
       disposal = Promise.all(records.map(record => record.queue.dispose())).then(() => {
-        generations.clear()
+        /* HMR 可能在旧代 drain 期间重新 retain 同一个 supervisor 并 activate 新代。
+           只移除本次 dispose 捕获的旧记录，不能 clear 掉后来加入的新 generation。 */
+        for (const record of records) {
+          if (generations.get(record.id) === record) generations.delete(record.id)
+        }
+        if (activeId) disposal = null
       })
       return disposal
     },
@@ -2448,7 +2453,9 @@ function getPipelineSupervisor(): PipelineSupervisor {
   const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
   // Once the grace timer fired and manager.dispose started, the old manager
   // cannot accept a fresh generation safely; allocate a new bridge instead.
-  if (current && !current.disposed && (!current.disposing || current.disposeTimer)) return current
+  /* 即使旧实例已经开始 drain，manager 仍保留旧 generation 的执行状态；HMR
+     新实例必须复用同一个 bridge，才能继续暴露旧任务并在其完成后清理。 */
+  if (current && !current.disposed) return current
   const state: PipelineSupervisor = {
     leases: createPipelineNodeLeases(),
     manager: createPipelineGenerationManager(),
@@ -2489,6 +2496,15 @@ function releasePipelineSupervisor(state: PipelineSupervisor): Promise<void> {
         return
       }
       state.manager.dispose().then(() => {
+        /* 新 HMR 实例可能已在 drain 期间重新 retain；此时不能把仍在使用的
+           supervisor 标记为 disposed，也不能从全局桥接器中删除它。 */
+        if (state.refs > 0) {
+          state.disposing = false
+          state.disposeResolve = undefined
+          state.disposePromise = undefined
+          resolve()
+          return
+        }
         state.disposed = true
         state.disposeResolve = undefined
         if (root[PIPELINE_SUPERVISOR_KEY] === state) delete root[PIPELINE_SUPERVISOR_KEY]
