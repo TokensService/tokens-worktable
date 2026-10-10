@@ -11,7 +11,10 @@ for variable in PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE NAMESPACE RELEASE_
   grep -Fq "${variable}=\"\${${variable}:-}\"" "$script"
 done
 
-if grep -Eq '=\"\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' "$script"; then
+# Nested defaults are permitted only where they are intentional: the LOGKEY
+# credential alias falls back to LOGIN_KEY, and the template paths derive from
+# RUN_DIR. Every other entrypoint default must stay flat.
+if grep -E '=\"\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' "$script" | grep -Ev '\$\{LOGIN_KEY:-|\$\{RUN_DIR}'; then
   echo 'pipeline entrypoint must not use nested parameter defaults' >&2
   exit 1
 fi
@@ -39,28 +42,30 @@ grep -Fq 'PIPELINE_NAME=xds-test-arch' <<<"$resolved"
 grep -Fq 'TARGET_RUN_DIR=/tmp/op-test-pipeline/xds-test-arch' <<<"$resolved"
 grep -Fq 'TARGET_RENDER_DIR=/tmp/op-test-pipeline/xds-test-arch/rendered' <<<"$resolved"
 
+# The namespace no longer embeds IMAGE_TAG, and an unset RELEASE_NAME
+# normalizes to the fixed per-namespace release "xds".
 namespace_resolved="$(ARCH_NAME='glm-5.2-nvfp4-one-node' \
   IMAGE_TAG='1043.ec96f' \
   bash -c "$config
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
-grep -Fq 'RELEASE_NAME=xds-glm-5-2-nvfp4-one-node-1043-ec96f' <<<"$namespace_resolved"
+grep -Fqx 'NAMESPACE=xds-glm-5-2-nvfp4-one-node' <<<"$namespace_resolved"
+grep -Fqx 'RELEASE_NAME=xds' <<<"$namespace_resolved"
 
 # Both `arch` and EXECUTOR select a descriptive namespace. When either is
 # absent, preserve the legacy ARCH_NAME behavior.
 namespace_from_arch_executor="$(arch='runtime-arch' EXECUTOR='executor-a' ARCH_NAME='test-arch' IMAGE_TAG='1000.tag' bash -c "$config
 printf 'NAMESPACE=%s\nRELEASE_NAME=%s\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-runtime-arch-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
-grep -Fq 'RELEASE_NAME=xds-runtime-arch-executor-a-1000-tag' <<<"$namespace_from_arch_executor"
+grep -Fqx 'NAMESPACE=xds-runtime-arch-executor-a' <<<"$namespace_from_arch_executor"
+grep -Fqx 'RELEASE_NAME=xds' <<<"$namespace_from_arch_executor"
 
 namespace_from_runtime_vars="$(DEPLOY_STRATEGY='glm-5.3-nvfp4-ems-one-node' BY='alice' IMAGE_TAG='1334.77c8b' TARGET_IP='192.168.0.128' \
   bash -c "$config
 printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' <<<"$namespace_from_runtime_vars"
-grep -Fq 'RELEASE_NAME=xds-glm-5-3-nvfp4-ems-one-node-alice-1334-77c8b' <<<"$namespace_from_runtime_vars"
+grep -Fqx 'NAMESPACE=xds-glm-5-3-nvfp4-ems-one-node-alice' <<<"$namespace_from_runtime_vars"
+grep -Fqx 'RELEASE_NAME=xds' <<<"$namespace_from_runtime_vars"
 
 namespace_without_arch="$(EXECUTOR='executor-a' ARCH_NAME='test-arch' IMAGE_TAG='1000.tag' bash -c "$config
 printf 'NAMESPACE=%s\nRELEASE_NAME=%s\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
-grep -Fq 'NAMESPACE=xds-test-arch-1000-tag' <<<"$namespace_without_arch"
+grep -Fqx 'NAMESPACE=xds-test-arch' <<<"$namespace_without_arch"
 
 echo "pipeline variable-default tests passed"

@@ -34,7 +34,8 @@ const UPDATE_REPO = 'TokensService/tokens-worktable'
 const ISSUES_URL = 'https://github.com/' + UPDATE_REPO + '/issues'
 // 升级命令用带版本号的固定 release URL 且文件名带版本号：URL/文件名恒定不变时，包管理器按文件名缓存 tarball 会装回旧版
 const upgradeCmd = (tag: string) => 'dsh plugin --profile web add "https://github.com/' + UPDATE_REPO + '/releases/download/' + tag + '/tokens-worktable-' + tag.replace(/^v/, '') + '.tgz"'
-const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable：执行 ' + upgradeCmd(tag) + '，完成后刷新页面即可'
+// 升级提示词：指明目标版本，并要求执行方核对实际安装的版本、在结果中给出版本号（否则升级产物里没有版本信息，无法确认装上的版本）
+const upgradeAiPrompt = (tag: string) => '帮我升级 tokens-worktable 到 ' + tag + '：执行 ' + upgradeCmd(tag) + '；完成后核对实际安装的版本（可用 dsh plugin --profile web list 或查询 /api/worktable/health 复核），在结果中明确给出升级前后的版本号（升级后应为 ' + tag + '），最后提醒我刷新页面即可'
 // 更新提示图标（手绘 SVG，避免 emoji 跨平台渲染差异）
 const ICON_SYNC = (
   <svg viewBox="0 0 16 16" aria-hidden>
@@ -99,8 +100,9 @@ function parseInstallHistory(data: unknown): HistEntry[] {
   })
 }
 /** 单条安装历史的回退提示词：版本号不带 v 前缀（历史条目格式），命令复用升级卡的固定 release URL
- *  （回退即「安装指定旧版」，URL/文件名按版本号恒定）。粘贴到 AI 会话执行。 */
-function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '，完成后刷新页面即可' }
+ *  （回退即「安装指定旧版」，URL/文件名按版本号恒定）。粘贴到 AI 会话执行；
+ *  与升级提示词同口径：要求执行方核对实际安装的版本并在结果中给出回退后的版本号。 */
+function rollbackAiPrompt(version: string): string { return '帮我把 tokens-worktable 回退到 v' + version + '：执行 ' + upgradeCmd('v' + version) + '；完成后核对实际安装的版本（可用 dsh plugin --profile web list 或查询 /api/worktable/health 复核），在结果中明确给出回退后的版本号（应为 v' + version + '），最后提醒我刷新页面即可' }
 /* ---------- 版本更新历史结束 ---------- */
 async function copyText(text: string): Promise<boolean> {
   try {

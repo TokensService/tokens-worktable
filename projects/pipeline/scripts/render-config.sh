@@ -58,6 +58,11 @@ fi
 COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
+ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
+PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
+PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
+case "${ENABLE_PROFILING,,}" in true|false) ;; *) echo "ENABLE_PROFILING must be true or false" >&2; exit 2 ;; esac
+ENABLE_PROFILING="${ENABLE_PROFILING,,}"
 # LMCache 渲染逻辑（占位符默认值 + chart patch）全部委托 lib/render-lmcache.sh：
 # 入参见该脚本头部注释（ENABLE_LMCACHE / LMCACHE_OTLP_ENDPOINT / LMCACHE_L2_ENABLED /
 # LMCACHE_EXTRA_ARGS ...），本脚本不直接感知。
@@ -160,7 +165,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$lmcache_defaults" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$lmcache_defaults" "$ENABLE_PROFILING" "$PROFILING_PREFILL_DIR" "$PROFILING_DECODE_DIR" <<'PY'
 import copy
 import json
 import os
@@ -176,7 +181,8 @@ import yaml
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
   chart_dir, image_pull_secrets_text, collector_gateway_url, mapped_collector_gateway_url, model_cache_host_path,
-  lmcache_defaults_text) = sys.argv[1:]
+  lmcache_defaults_text, enable_profiling_text, profiling_prefill_dir, profiling_decode_dir) = sys.argv[1:]
+enable_profiling = enable_profiling_text.lower() == "true"
 
 num_prefill = int(num_prefill) if num_prefill else None
 num_decode = int(num_decode) if num_decode else None
@@ -362,6 +368,21 @@ for package in arch.get("deploy_spec_packages", []):
         gpu_override = prefill_gpu if role == "prefill" else decode_gpu
         overrides = prefill_overrides if role == "prefill" else decode_overrides
         spec = deep_merge(spec, overrides)
+        params = spec.setdefault("params", {})
+        if not isinstance(params, dict):
+            raise SystemExit(f"{role}.params must be a mapping")
+        if enable_profiling:
+            params.setdefault("profiler_config", {
+                "profiler": "torch",
+                "torch_profiler_dir": profiling_prefill_dir if role == "prefill" else profiling_decode_dir,
+                "ignore_frontend": True,
+                "wait_iterations": 0,
+                "warmup_iterations": 0,
+                "torch_profiler_record_shapes": True,
+                "torch_profiler_with_memory": False,
+                "torch_profiler_with_stack": False,
+                "torch_profiler_dump_cuda_time_total": False,
+            })
         if replicas_override is not None:
             spec["min"] = spec["max"] = spec["default"] = replicas_override
         for field in ("min", "max", "default"):

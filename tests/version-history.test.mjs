@@ -80,6 +80,7 @@ test('回退提示词：版本号补 v 前缀，命令走升级卡的固定 rele
   const prompt = rollbackAiPrompt('1.1.6')
   assert.ok(prompt.includes('回退到 v1.1.6'), '提示词指明目标版本')
   assert.ok(prompt.includes('INSTALL<v1.1.6>'), '命令按 v 前缀 tag 生成')
+  assert.ok(prompt.includes('版本号'), '提示词要求结果中给出回退后的版本号')
   assert.ok(prompt.includes('刷新页面即可'), '提示词带收尾提醒')
 })
 
