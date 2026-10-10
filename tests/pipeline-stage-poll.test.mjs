@@ -2,7 +2,8 @@
 //   POST /api/worktable/pipeline/stage-poll/jenkins    {phase:'queue'|'build', url, headers?, timeoutMs?, console?, offset?}
 //   POST /api/worktable/pipeline/stage-poll/evaltokens {url, headers?, runId, timeoutMs?}
 // 覆盖：终态判定（queue executable/cancelled、build result、evaltokens kind）、窗口耗尽 {done:false}、
-// 30 连败 {done:true, failed:'poll'}、外网目标 403、参数非法 400、headers 透传、客户端断开停止上游轮询。
+// 持续失败超时 {done:true, failed:'poll'}、轻量状态端点单条响应、statusEndpointMissing 回退、
+// 外网目标 403、参数非法 400、headers 透传、客户端断开停止上游轮询。
 // 上游用本地 http server 模拟 Jenkins/EvalTokens（127.0.0.1 过内网白名单，全局 fetch 真实请求）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -35,10 +36,10 @@ function loadStagePollRoutes() {
   vm.createContext(context)
   vm.runInContext(code, context)
   context.registerPipelineStagePollRoutes(context.webServer)   // 生产由 apply() 调用，这里手动触发注册
-  return handlers
+  return { handlers, context }
 }
 
-const routes = loadStagePollRoutes()
+const { handlers: routes, context: spContext } = loadStagePollRoutes()
 const jenkinsHandler = routes['/api/worktable/pipeline/stage-poll/jenkins']
 const evaltokensHandler = routes['/api/worktable/pipeline/stage-poll/evaltokens']
 assert.ok(jenkinsHandler && evaltokensHandler, '阶段轮询两个端点未注册')
@@ -185,7 +186,8 @@ test('jenkins：headers 原样透传上游（鉴权透传），逐跳头剔除',
   } finally { await up.close() }
 })
 
-test('jenkins：上游连续失败跨请求累计，30 连败 → {done:true, failed:\'poll\', failures:30}，随后重新计数', async () => {
+test('jenkins：上游持续失败达时间窗 → {done:true, failed:\'poll\'}，判负后短路不再打上游', async () => {
+  spContext.STAGE_POLL_FAIL_GIVE_UP_MS = 50   // 测试用 50ms 时间窗（默认 60 分钟）
   const up = await startUpstream((req, res) => { res.writeHead(500); res.end('boom') })
   try {
     const url = `http://127.0.0.1:${up.port}/queue/item/9/api/json`
@@ -198,22 +200,23 @@ test('jenkins：上游连续失败跨请求累计，30 连败 → {done:true, fa
       else {
         assert.equal(body.done, false)
         assert.ok(body.failures > previous, '失败计数跨请求累计递增：' + body.failures + ' <= ' + previous)
-        assert.ok(body.failures < 30)
         previous = body.failures
       }
     }
-    assert.deepEqual(terminal, { done: true, failed: 'poll', failures: 30 })
-    assert.ok(up.hits.length >= 30, '每次上游失败都计入')
+    assert.ok(terminal && terminal.done === true && terminal.failed === 'poll', '持续失败超时应判负：' + JSON.stringify(terminal))
+    assert.ok(terminal.failures >= 1, '累计了失败：' + terminal.failures)
 
     /* 判负后同 key 请求立即返回终态，不再打上游（10 分钟 TTL 后自动解除；新一次运行换 key 重新计数） */
     const hitsBefore = up.hits.length
     const again = await call(jenkinsHandler, { phase: 'queue', url, timeoutMs: 60 })
-    assert.deepEqual(plain(again.json()), { done: true, failed: 'poll', failures: 30 })
+    assert.equal(again.json().done, true)
+    assert.equal(again.json().failed, 'poll')
     assert.equal(up.hits.length, hitsBefore, '判负后不再发起上游请求')
-  } finally { await up.close() }
+  } finally { await up.close(); spContext.STAGE_POLL_FAIL_GIVE_UP_MS = 60 * 60 * 1000 }
 })
 
-test('jenkins：成功一次失败计数清零（30  cap 只在连续失败时触发）', async () => {
+test('jenkins：成功一次失败计数清零（判负只在持续失败时触发）', async () => {
+  spContext.STAGE_POLL_FAIL_GIVE_UP_MS = 60 * 60 * 1000   // 默认 60 分钟，本用例不触发判负
   let fail = true
   const up = await startUpstream((req, res) => {
     if (fail) { res.writeHead(500); res.end('boom'); return }
@@ -223,15 +226,15 @@ test('jenkins：成功一次失败计数清零（30  cap 只在连续失败时�
   try {
     const url = `http://127.0.0.1:${up.port}/queue/item/9/api/json`
     let last = 0
-    for (let i = 0; i < 60; i += 1) {   // 累计到 25+ 次连续失败（未到 30 cap）
+    for (let i = 0; i < 60; i += 1) {   // 累计到 25+ 次连续失败（时间窗未到，不判负）
       const body = (await call(jenkinsHandler, { phase: 'queue', url, timeoutMs: 60 })).json()
       last = body.failures || 0
       if (last >= 25) break
     }
-    assert.ok(last >= 25 && last < 30, '失败已累计到 25~29：' + last)
+    assert.ok(last >= 25, '失败已累计到 25+：' + last)
     fail = false
     const ok = await call(jenkinsHandler, { phase: 'queue', url, timeoutMs: 1000 })
-    assert.deepEqual(plain(ok.json()), { done: true, buildNumber: 11 }, '成功一次即终态，不触发 30 连败')
+    assert.deepEqual(plain(ok.json()), { done: true, buildNumber: 11 }, '成功一次即终态，不触发判负')
     fail = true
     const again = await call(jenkinsHandler, { phase: 'queue', url, timeoutMs: 60 })
     assert.equal(again.json().done, false)
@@ -343,7 +346,8 @@ test('evaltokens：runId 不在列表按运行中，窗口耗尽 {done:false}；
   } finally { await bare.close() }
 })
 
-test('evaltokens：30 连败 → {done:true, failed:\'poll\', failures:30}', async () => {
+test('evaltokens：持续失败超时 → {done:true, failed:\'poll\'}', async () => {
+  spContext.STAGE_POLL_FAIL_GIVE_UP_MS = 50   // 测试用 50ms 时间窗
   const up = await startUpstream((req, res) => { res.writeHead(502); res.end('bad gateway') })
   try {
     const url = `http://127.0.0.1:${up.port}/api/open/v1/tasks/runs?task_id=t-1`
@@ -351,9 +355,43 @@ test('evaltokens：30 连败 → {done:true, failed:\'poll\', failures:30}', asy
     for (let i = 0; i < 200 && !terminal; i += 1) {
       const body = (await call(evaltokensHandler, { url, runId: 'r-1', timeoutMs: 60 })).json()
       if (body.done === true) terminal = body
-      else assert.ok((body.failures || 0) < 30)
     }
-    assert.deepEqual(terminal, { done: true, failed: 'poll', failures: 30 })
+    assert.ok(terminal && terminal.done === true && terminal.failed === 'poll', '持续失败超时应判负：' + JSON.stringify(terminal))
+  } finally { await up.close(); spContext.STAGE_POLL_FAIL_GIVE_UP_MS = 60 * 60 * 1000 }
+})
+
+test('evaltokens：轻量状态端点单条响应 {run_id, status} → 终态判定', async () => {
+  /* /runs/<id>/status 只回 4 个字段：running → done:false；success/failed → done:true */
+  let status = 'running'
+  const up = await startUpstream((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ run_id: 'r-1', status, started_at: '2026-01-01T00:00:00Z', finished_at: status !== 'running' ? '2026-01-01T01:00:00Z' : null }))
+  })
+  try {
+    const url = `http://127.0.0.1:${up.port}/api/open/v1/tasks/runs/r-1/status`
+    const running = await call(evaltokensHandler, { url, runId: 'r-1', timeoutMs: 300 })
+    assert.equal(running.json().done, false, 'running 状态应继续轮询')
+
+    status = 'success'
+    const ok = await call(evaltokensHandler, { url, runId: 'r-1', timeoutMs: 5000 })
+    assert.deepEqual(plain(ok.json()), {
+      done: true, status: 'success',
+      run: { run_id: 'r-1', status: 'success', started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T01:00:00Z' },
+    }, '轻量单条响应应直接判定终态')
+
+    status = 'stopped'
+    const stopped = await call(evaltokensHandler, { url, runId: 'r-1', timeoutMs: 5000 })
+    assert.equal(stopped.json().done, true)
+    assert.equal(stopped.json().status, 'failed', 'stopped 归类为 failed')
+  } finally { await up.close() }
+})
+
+test('evaltokens：状态端点 404 → {statusEndpointMissing:true} 供客户端回退列表端点', async () => {
+  const up = await startUpstream((req, res) => { res.writeHead(404); res.end('not found') })
+  try {
+    const url = `http://127.0.0.1:${up.port}/api/open/v1/tasks/runs/r-1/status`
+    const res = await call(evaltokensHandler, { url, runId: 'r-1', timeoutMs: 3000 })
+    assert.deepEqual(plain(res.json()), { done: true, statusEndpointMissing: true })
   } finally { await up.close() }
 })
 

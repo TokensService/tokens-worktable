@@ -6689,7 +6689,8 @@ async function runUrlStep(rc, i){
     if(!pollable){ building=false; result='SUCCESS'; }
     /* 完成判定优先经服务端 stage-poll 长轮询（浏览器只循环调服务端端点）；404/403 时回退下方浏览器直连
        轮询（原实现），一次阶段内只回退一次。直连路径的持续性故障（「Jenkins 服务配置」地址不对 / 桥接未启动 /
-       CORS 拦截 / 401·403）不得静默无限重试：连续失败计数、首次与每 15 次回显原因、连续 30 次（约 1 分钟）
+       CORS 拦截 / 401·403）不得静默无限重试：连续失败计数、首次与每 15 次回显原因、持续失败较长时间
+       （约 pollFailCap 次）按阶段失败收尾
        按阶段失败收尾，成功一次即清零。服务端路径的连败兜底由服务端承载（{done:true,failed:'poll'}），
        本页只对「浏览器↔dsh 服务端」的传输故障沿用同一计数/告警/30 次兜底口径。 */
     let pollFails=0;
@@ -6748,7 +6749,7 @@ async function runUrlStep(rc, i){
         stagePollUpstreamWarn('queue',Number(pr.failures)||0);
         if(pr.done===true){
           if(pr.cancelled){ const cancelled=new Error('Jenkins 队列任务已取消'); cancelled.queueTerminal=true; throw cancelled; }
-          if(pr.failed) throw new Error('Jenkins queue 状态轮询持续失败（服务端连续 '+(Number(pr.failures)||pollFailCap)+' 次，已兜底判败）');
+          if(pr.failed) throw new Error('Jenkins queue 状态轮询持续失败（服务端持续失败已超时，已兜底判败）');
           const exact=Number(pr.buildNumber);
           if(!Number.isInteger(exact)||exact<=0) throw new Error('stage-poll queue 阶段完成但未返回有效构建号');
           buildNum=exact; cancelBuildNum=exact;
@@ -6803,7 +6804,7 @@ async function runUrlStep(rc, i){
           }
         }
         if(pr.done===true){
-          if(pr.failed) throw new Error('构建状态轮询持续失败（服务端连续 '+(Number(pr.failures)||pollFailCap)+' 次，已兜底判败）');
+          if(pr.failed) throw new Error('构建状态轮询持续失败（服务端持续失败已超时，已兜底判败）');
           building=false; if(pr.result) result=String(pr.result);
         }
         if(rc.over||rc.token!==tk) return;
@@ -7190,12 +7191,15 @@ async function runEvaltokensStep(rc, i){
     appendLiveLog(log,'# started run '+runId+' task='+resolvedTaskId+(resolvedTaskName?(' '+resolvedTaskName):''));
     let run=started, result=null;
     /* 完成状态轮询优先经服务端 stage-poll 长轮询（终态判定与上游连败兜底在服务端，浏览器只循环调端点）；
-       404（旧服务端无此路由）/403（目标非内网，浏览器本可直连的公网服务）时回退 evaltokFetchRuns
-       直连轮询（原实现），一次阶段内只回退一次并 console.warn。 */
+       首选轻量状态端点 /runs/<runId>/status（只回 id/status/时间戳，无 config/error 膨胀）；
+       旧版 evalscope 无该端点（404）时自动回退列表端点 /runs?task_id=（带全量 error 字段）；
+       404（旧 dsh 无 stage-poll 路由）/403（目标非内网）时回退 evaltokFetchRuns 直连轮询。 */
     let pollVia='server';
-    const runsPollUrl=(e.url||'').replace(/\/+$/,'')+'/api/open/v1/tasks/runs?task_id='+encodeURIComponent(resolvedTaskId);
+    const statusPollUrl=(e.url||'').replace(/\/+$/,'')+'/api/open/v1/tasks/runs/'+encodeURIComponent(runId)+'/status';
+    const runsListUrl=(e.url||'').replace(/\/+$/,'')+'/api/open/v1/tasks/runs?task_id='+encodeURIComponent(resolvedTaskId);
+    let pollUrl=statusPollUrl;   // 当前轮询目标（statusEndpointMissing 后切到 runsListUrl）
     const stagePollEvaltokens=async()=>{   // 返回响应对象；返回 null 表示已回退直连
-      try{ return await stagePollRequest(STAGE_POLL_EVALTOKENS_PATH,{url:runsPollUrl, headers:evaltokHeaders(e), runId:runId},ctrl.signal); }
+      try{ return await stagePollRequest(STAGE_POLL_EVALTOKENS_PATH,{url:pollUrl, headers:evaltokHeaders(e), runId:runId},ctrl.signal); }
       catch(err){
         if(err&&err.stagePollFallback&&pollVia==='server'){
           pollVia='direct';
@@ -7211,14 +7215,22 @@ async function runEvaltokensStep(rc, i){
       const pr=await stagePollEvaltokens();
       if(!pr) break;   // 已回退浏览器直连：转下方直连轮询
       if(!ensureActive()) return;
+      /* 旧版 evalscope 无轻量状态端点：切换到列表端点继续轮询 */
+      if(pr.done===true&&pr.statusEndpointMissing&&pollUrl===statusPollUrl){
+        pollUrl=runsListUrl;
+        appendLiveLog(log,'# 轻量状态端点不可用（旧版 evalscope），切换到 runs 列表端点轮询');
+        s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        continue;
+      }
       const st=String(pr.status||'running');   // 窗口耗尽的 {done:false} 不带 status：按运行中处理
       waitingStatus=st;
-      appendLiveLog(log,'# run '+runId+' status='+st);
+      const fails=Number(pr.failures)||0;
+      appendLiveLog(log,'# run '+runId+' status='+st+(fails?('（连续失败 '+fails+' 次）'):''));
       s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
       if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
       if(!ensureActive()) return;
       if(pr.done===true){
-        if(pr.failed) throw new Error('EvalTokens 状态轮询持续失败（服务端连续 '+(Number(pr.failures)||30)+' 次，已兜底判败）');
+        if(pr.failed) throw new Error('EvalTokens 状态轮询持续失败（服务端持续失败约 '+Math.round((Number(pr.failures)||0)*3/60)+' 分钟，已兜底判败）');
         if(pr.run&&typeof pr.run==='object') run=pr.run;
         const sk=evaltokStatusKind(st);   // 服务端终态 kind 与 evaltokStatusKind 同口径，这里再归一化兜底
         if(sk==='running') throw new Error('stage-poll 终态响应状态非法：'+(st||'（空）'));

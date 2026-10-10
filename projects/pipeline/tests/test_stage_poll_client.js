@@ -150,7 +150,7 @@ test("jenkins：服务端 30 连败兜底 {done:true, failed:'poll'} 按阶段�
   const rc = freshRun(context, stage);
   await context.runUrlStep(rc, 0);
   assert.deepEqual(calls.finish, ["failed"]);
-  assert.match(stage._out.stderr || "", /Jenkins queue 状态轮询持续失败（服务端连续 30 次/);
+  assert.match(stage._out.stderr || "", /Jenkins queue 状态轮询持续失败（服务端持续失败已超时，已兜底判败）/);
   assert.equal(calls.stagePoll.length, 1, "服务端已兜底判败，客户端不再续发");
 });
 
@@ -252,7 +252,7 @@ test("evaltokens：窗口耗尽 {done:false} 续发到终态 {done:true, status,
   assert.deepEqual(calls.finish, []);
   assert.equal(rc.nodes["st-ev"].status, "success");
   assert.equal(calls.stagePoll.length, 3);
-  assert.equal(calls.stagePoll[0].body.url, "http://ev.local/api/open/v1/tasks/runs?task_id=t-1");
+  assert.equal(calls.stagePoll[0].body.url, "http://ev.local/api/open/v1/tasks/runs/r-9/status", "首选轻量状态端点");
   assert.equal(calls.stagePoll[0].body.runId, "r-9", "轮询以启动响应的 run_id 为唯一依据");
   const stdout = stage._out.stdout || "";
   assert.ok(stdout.includes("status=success"), "状态行含服务端终态 kind");
@@ -261,14 +261,33 @@ test("evaltokens：窗口耗尽 {done:false} 续发到终态 {done:true, status,
   assert.equal(rc.vars.run_id, "r-9");
 });
 
-test("evaltokens：服务端 30 连败 {done:true, failed:'poll'} 按阶段失败收尾", async () => {
-  const { context, calls } = makeEvalContext({ stagePoll: () => jsonResp({ done: true, failed: "poll", failures: 30 }) });
+test("evaltokens：服务端持续失败判负 {done:true, failed:'poll'} 按阶段失败收尾", async () => {
+  const { context, calls } = makeEvalContext({ stagePoll: () => jsonResp({ done: true, failed: "poll", failures: 40 }) });
   const stage = evalStage();
   const rc = freshRun(context, stage);
   await context.runEvaltokensStep(rc, 0);
   assert.deepEqual(calls.finish, ["failed"]);
   assert.deepEqual(calls.advance, []);
-  assert.match(stage._out.stderr || "", /EvalTokens 状态轮询持续失败（服务端连续 30 次/);
+  assert.match(stage._out.stderr || "", /EvalTokens 状态轮询持续失败（服务端持续失败约 \d+ 分钟，已兜底判败）/);
+});
+
+test("evaltokens：statusEndpointMissing → 切换列表端点继续轮询到终态", async () => {
+  let pollCount = 0;
+  const { context, calls } = makeEvalContext({
+    stagePoll: () => {
+      pollCount += 1;
+      if (pollCount === 1) return jsonResp({ done: true, statusEndpointMissing: true });
+      return jsonResp({ done: true, status: "success", run: { run_id: "r-9", status: "success" } });
+    },
+  });
+  const stage = evalStage();
+  const rc = freshRun(context, stage);
+  await context.runEvaltokensStep(rc, 0);
+  assert.deepEqual(calls.advance, [1]);
+  assert.equal(calls.stagePoll.length, 2, "首次 statusEndpointMissing → 切换 URL → 终态");
+  assert.ok(calls.stagePoll[0].body.url.includes("/status"), "第一次用状态端点");
+  assert.ok(calls.stagePoll[1].body.url.includes("task_id=t-1"), "回退后用列表端点");
+  assert.match(stage._out.stdout || "", /切换到 runs 列表端点/);
 });
 
 test("evaltokens：404 回退 evaltokFetchRuns 直连轮询（一次阶段内只回退一次）", async () => {
