@@ -1432,6 +1432,78 @@ function collectRunLogs(rc){
 /* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
 const DEFAULT_PIPELINE_ID='pl-xds';
 /* ---------- 流水线默认运行参数 ---------- */
+/* ---------- 预设任务定义（必须在 loadPipelines/normalizePipelineDefaults 之前声明） ---------- */
+/* PRESET_DEF / presetDefOf 被 normalizePipelineDefaults 在顶层 loadPipelines() 中调用；
+   若声明在 loadPipelines 之后，const PRESET_DEF 会因暂时性死区（TDZ）抛
+   "Cannot access 'PRESET_DEF' before initialization"，整页脚本中断、流水线列表不渲染。 */
+/* 旧版识别器会把静态 :-默认值 预填进 values 作为显式值（压过运行级注入）；现默认值填入参数框可编辑、未改动不预填不下发。
+   加载存量数据时清掉与识别默认值相同的 values 项（视为预填产物），回到「留空=注入值/脚本默认兜底」语义 */
+function cleanScriptValues(params, values){
+  const out={};
+  for(const k in (values||{})){
+    const p=(params||[]).find(o=>o.key===k);
+    if(p && String(values[k])===String(p.def||'')) continue;
+    out[k]=values[k];
+  }
+  return out;
+}
+
+/* ---------- 自定义预设任务（设置页「预设任务设置」添加/配置；与系统预设同一机制：主控勾选启用、编排位置执行、仅页面运行支持） ---------- */
+/* 数据形状：{key:'c'+时间戳36进制（保证唯一）, name, script:{name,path,params,values}|null, block, pos:'first'|'last', enabled}；
+   持久化：localStorage 键 pip-customPresets + 服务端 config 字段 customPresets（collectConfig/loadServerState/导入设置三通道）；
+   customPresets 任何变更都经 saveCustomPresets 落盘并重建名称表/面板/按钮/设置页专区 */
+function normalizeCustomPresets(list){
+  const out=[], seen={};
+  (Array.isArray(list)?list:[]).forEach(item=>{
+    if(!item || typeof item!=='object' || Array.isArray(item)) return;   // 非对象项剔除
+    const name=(typeof item.name==='string'?item.name:'').trim();
+    if(!name) return;   // 无名项剔除
+    let key=(typeof item.key==='string')?item.key.trim():'';
+    if(key && seen[key]) return;   // key 去重：同 key 只保留首项
+    if(!key){ let n=out.length+1; do{ key='c'+(n++).toString(36); }while(seen[key]); }   // key 补缺：按位置生成并保证表内唯一
+    seen[key]=1;
+    let script=null;
+    const sc=item.script;
+    if(sc && typeof sc==='object' && typeof sc.name==='string' && sc.name.trim()){
+      script={name:sc.name, path:(typeof sc.path==='string'?sc.path:''), params:(sc.params!==undefined?sc.params:[]), values:(sc.values!==undefined?sc.values:{})};   // 仅保留 {name,path,params,values}
+    }
+    out.push({key:key, name:name, script:script, block:!!item.block, pos:(item.pos==='last'?'last':'first'), enabled:!!item.enabled});
+  });
+  return out;
+}
+let customPresets=(function(){ try{ const list=normalizeCustomPresets(JSON.parse(localStorage.getItem('pip-customPresets'))); list.forEach(c=>{ if(c.script && c.script.values) c.script.values=cleanScriptValues(c.script.params, c.script.values); }); return list; }catch(e){ return []; } })();
+
+/* ---------- 渲染流水线编排 ---------- */
+/* 预设任务定义：系统预设（环境清理/环境检查/Profiling）固定内置 + 设置页「预设任务设置」添加的自定义预设
+   （customPresets），统一经 presetDefOf 取定义。顺序位置存进流水线阶段列表（preset 标记行，在流水线编辑器中
+   可排序，见 openPlForm/savePlForm）；运行时按主控「预设任务」勾选展开为执行项（脚本取设置页当前配置快照，
+   见 expandRunStages）。block=true 的预设任务失败会阻断后续阶段 */
+const PRESET_DEF={
+  cleanup:{id:'__cleanup__', el:'cleanupEnv', name:'环境清理', script:()=>cleanupScript, block:false, noScript:'未配置环境清理脚本'},
+  check:{id:'__check__', el:'checkEnv', name:'环境检查', script:()=>checkScript, block:true, noScript:'未配置环境检查脚本'},
+  profiling:{id:'__profiling__', el:'profilingEnv', name:'Profiling', script:()=>profilingScript, block:false, noScript:'未配置 Profiling 脚本'},
+};
+const PRESET_ORDER=['cleanup','check','profiling'];   // 系统预设默认位置顺序：清理/检查在最前，Profiling 在最后（自定义预设默认位置见其 pos 配置）
+/* 名称 → pkey（系统 + 自定义）：savePlForm 拦同名阶段、日志回放/归档序号识别预设任务用；
+   customPresets 任何变更后经 rebuildPresetNameMap 原地重建（保持对象引用） */
+const PRESET_BY_NAME={};
+/* 预设定义统一查询：系统 pkey 返回 PRESET_DEF 项本身；自定义 key 由 customPresets 派生（script 取该项配置的 getter）；
+   未知 pkey 返回 null（调用方兜底）。customPresets 在沙盒单独抽取本段时可能不存在，typeof 兜底视同空数组 */
+function presetDefOf(pkey){
+  if(PRESET_DEF[pkey]) return PRESET_DEF[pkey];
+  const cp=((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).find(c=>c && c.key===pkey);
+  if(!cp) return null;
+  return {id:'__custom_'+cp.key+'__', el:'presetCustom_'+cp.key, name:cp.name, script:()=>cp.script, block:!!cp.block, noScript:'未配置「'+cp.name+'」脚本', custom:true};
+}
+/* 面板勾选项与按钮文案的枚举顺序：系统三项在前，自定义按 customPresets 数组顺序在后 */
+function presetOrderAll(){ return PRESET_ORDER.concat(((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).map(c=>c.key)); }
+function rebuildPresetNameMap(){
+  Object.keys(PRESET_BY_NAME).forEach(n=>{ delete PRESET_BY_NAME[n]; });   // 原地重建：delete 旧键再填入，保持对象引用
+  PRESET_ORDER.forEach(k=>{ PRESET_BY_NAME[PRESET_DEF[k].name]=k; });
+  ((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).forEach(c=>{ if(c && c.name) PRESET_BY_NAME[c.name]=c.key; });
+}
+rebuildPresetNameMap();
+
 const PIPELINE_DEFAULT_PRESET_KEYS=['cleanup','check','profiling'];
 function pipelineDefaultStringList(value){
   if(!Array.isArray(value)) return [];
@@ -2695,42 +2767,7 @@ async function listJenkinsJobs(){
 }
 
 /* ---------- 环境清理脚本（在「设置」页配置；勾选主控「预设任务」中的「环境清理」后按编排位置执行） ---------- */
-/* 旧版识别器会把静态 :-默认值 预填进 values 作为显式值（压过运行级注入）；现默认值填入参数框可编辑、未改动不预填不下发。
-   加载存量数据时清掉与识别默认值相同的 values 项（视为预填产物），回到「留空=注入值/脚本默认兜底」语义 */
-function cleanScriptValues(params, values){
-  const out={};
-  for(const k in (values||{})){
-    const p=(params||[]).find(o=>o.key===k);
-    if(p && String(values[k])===String(p.def||'')) continue;
-    out[k]=values[k];
-  }
-  return out;
-}
 let cleanupScript=(function(){ try{ const cs=JSON.parse(localStorage.getItem('pip-cleanupScript')); if(cs && cs.values) cs.values=cleanScriptValues(cs.params, cs.values); return cs; }catch(e){ return null; } })() || null;
-/* ---------- 自定义预设任务（设置页「预设任务设置」添加/配置；与系统预设同一机制：主控勾选启用、编排位置执行、仅页面运行支持） ---------- */
-/* 数据形状：{key:'c'+时间戳36进制（保证唯一）, name, script:{name,path,params,values}|null, block, pos:'first'|'last', enabled}；
-   持久化：localStorage 键 pip-customPresets + 服务端 config 字段 customPresets（collectConfig/loadServerState/导入设置三通道）；
-   customPresets 任何变更都经 saveCustomPresets 落盘并重建名称表/面板/按钮/设置页专区 */
-function normalizeCustomPresets(list){
-  const out=[], seen={};
-  (Array.isArray(list)?list:[]).forEach(item=>{
-    if(!item || typeof item!=='object' || Array.isArray(item)) return;   // 非对象项剔除
-    const name=(typeof item.name==='string'?item.name:'').trim();
-    if(!name) return;   // 无名项剔除
-    let key=(typeof item.key==='string')?item.key.trim():'';
-    if(key && seen[key]) return;   // key 去重：同 key 只保留首项
-    if(!key){ let n=out.length+1; do{ key='c'+(n++).toString(36); }while(seen[key]); }   // key 补缺：按位置生成并保证表内唯一
-    seen[key]=1;
-    let script=null;
-    const sc=item.script;
-    if(sc && typeof sc==='object' && typeof sc.name==='string' && sc.name.trim()){
-      script={name:sc.name, path:(typeof sc.path==='string'?sc.path:''), params:(sc.params!==undefined?sc.params:[]), values:(sc.values!==undefined?sc.values:{})};   // 仅保留 {name,path,params,values}
-    }
-    out.push({key:key, name:name, script:script, block:!!item.block, pos:(item.pos==='last'?'last':'first'), enabled:!!item.enabled});
-  });
-  return out;
-}
-let customPresets=(function(){ try{ const list=normalizeCustomPresets(JSON.parse(localStorage.getItem('pip-customPresets'))); list.forEach(c=>{ if(c.script && c.script.values) c.script.values=cleanScriptValues(c.script.params, c.script.values); }); return list; }catch(e){ return []; } })();
 /* 预设任务多选（系统预设：环境清理/环境检查/Profiling + 自定义预设）：按钮文案跟随勾选，与「环境」多选同一交互 */
 function renderPresetMultiBtn(){
   const b=$('presetMultiBtn'); if(!b) return;
@@ -3630,36 +3667,6 @@ function fmtDur(s){ if(s<60) return Math.round(s)+'s'; return Math.floor(s/60)+'
 function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String(m) : String(Math.round(m*100)/100); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-/* ---------- 渲染流水线编排 ---------- */
-/* 预设任务定义：系统预设（环境清理/环境检查/Profiling）固定内置 + 设置页「预设任务设置」添加的自定义预设
-   （customPresets），统一经 presetDefOf 取定义。顺序位置存进流水线阶段列表（preset 标记行，在流水线编辑器中
-   可排序，见 openPlForm/savePlForm）；运行时按主控「预设任务」勾选展开为执行项（脚本取设置页当前配置快照，
-   见 expandRunStages）。block=true 的预设任务失败会阻断后续阶段 */
-const PRESET_DEF={
-  cleanup:{id:'__cleanup__', el:'cleanupEnv', name:'环境清理', script:()=>cleanupScript, block:false, noScript:'未配置环境清理脚本'},
-  check:{id:'__check__', el:'checkEnv', name:'环境检查', script:()=>checkScript, block:true, noScript:'未配置环境检查脚本'},
-  profiling:{id:'__profiling__', el:'profilingEnv', name:'Profiling', script:()=>profilingScript, block:false, noScript:'未配置 Profiling 脚本'},
-};
-const PRESET_ORDER=['cleanup','check','profiling'];   // 系统预设默认位置顺序：清理/检查在最前，Profiling 在最后（自定义预设默认位置见其 pos 配置）
-/* 名称 → pkey（系统 + 自定义）：savePlForm 拦同名阶段、日志回放/归档序号识别预设任务用；
-   customPresets 任何变更后经 rebuildPresetNameMap 原地重建（保持对象引用） */
-const PRESET_BY_NAME={};
-/* 预设定义统一查询：系统 pkey 返回 PRESET_DEF 项本身；自定义 key 由 customPresets 派生（script 取该项配置的 getter）；
-   未知 pkey 返回 null（调用方兜底）。customPresets 在沙盒单独抽取本段时可能不存在，typeof 兜底视同空数组 */
-function presetDefOf(pkey){
-  if(PRESET_DEF[pkey]) return PRESET_DEF[pkey];
-  const cp=((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).find(c=>c && c.key===pkey);
-  if(!cp) return null;
-  return {id:'__custom_'+cp.key+'__', el:'presetCustom_'+cp.key, name:cp.name, script:()=>cp.script, block:!!cp.block, noScript:'未配置「'+cp.name+'」脚本', custom:true};
-}
-/* 面板勾选项与按钮文案的枚举顺序：系统三项在前，自定义按 customPresets 数组顺序在后 */
-function presetOrderAll(){ return PRESET_ORDER.concat(((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).map(c=>c.key)); }
-function rebuildPresetNameMap(){
-  Object.keys(PRESET_BY_NAME).forEach(n=>{ delete PRESET_BY_NAME[n]; });   // 原地重建：delete 旧键再填入，保持对象引用
-  PRESET_ORDER.forEach(k=>{ PRESET_BY_NAME[PRESET_DEF[k].name]=k; });
-  ((typeof customPresets!=='undefined'&&Array.isArray(customPresets))?customPresets:[]).forEach(c=>{ if(c && c.name) PRESET_BY_NAME[c.name]=c.key; });
-}
-rebuildPresetNameMap();
 /* 勾选判定：有 DOM checkbox（主控面板勾选项）读其 checked；自定义预设无 DOM（面板尚未渲染/沙盒）时回退配置的
    enabled；系统预设无 DOM 不回退（false） */
 function presetOn(pkey){
