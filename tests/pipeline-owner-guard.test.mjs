@@ -271,7 +271,7 @@ test('save-one 更新他人流水线 → 403；更新自己的 → 200', async t
   assert.equal((await readStore(home)).config.pipelines.find(p => p.id === 'p2').name, 'Bob 改自己的')
 })
 
-test('他人收藏/置顶（favoriteUsers / pinnedAt）不触发归属拦截', async t => {
+test('他人收藏/置顶不触发归属拦截，且绝不改变拥有者', async t => {
   const config = { pipelines: [ownedBy('p1', 'Alice 的', 'alice')] }
   const home = await seedHome(t, { config })
   const h = loadPipelineRoutes(home, { ctx: authCtx() })
@@ -282,6 +282,35 @@ test('他人收藏/置顶（favoriteUsers / pinnedAt）不触发归属拦截', a
   const saved = (await readStore(home)).config.pipelines[0]
   assert.deepEqual(saved.favoriteUsers, ['bob'])
   assert.equal(saved.pinnedAt, 123)
+  assert.equal(saved.owner, 'alice', '收藏/置顶后拥有者仍是 alice')
+  assert.equal(saved.createdBy, 'alice', '创建者署名不变')
+})
+
+test('借收藏/置顶夹带改拥有者（owner/createdBy）→ 403 且不写盘', async t => {
+  const config = { pipelines: [ownedBy('p1', 'Alice 的', 'alice')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+
+  /* Bob 收藏的同时把 owner 改成自己——owner 属于内容，不是共享元数据，必须按越权拦截 */
+  const steal = {
+    pipelines: [ownedBy('p1', 'Alice 的', 'bob', { createdBy: 'alice', favoriteUsers: ['bob'], pinnedAt: 9 })],
+  }
+  const res = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: steal, baseConfig: config, history: [] }, TOKEN_BOB))
+  assert.equal(res.status, 403)
+  assert.equal(res.json().error, 'owner')
+  assert.deepEqual([...res.json().pipelineIds], ['p1'])
+  const disk = (await readStore(home)).config.pipelines[0]
+  assert.equal(disk.owner, 'alice', '拒绝后拥有者不被篡改')
+  assert.deepEqual(disk.favoriteUsers, undefined, '夹带越权时整体不写盘')
+
+  /* save-one 同一口径 */
+  const stealOne = await call(h['/api/worktable/pipeline/save-one'],
+    reqWith('PUT', {
+      pipeline: ownedBy('p1', 'Alice 的', 'bob', { createdBy: 'alice', favoriteUsers: ['bob'] }),
+      basePipeline: ownedBy('p1', 'Alice 的', 'alice'),
+    }, TOKEN_BOB))
+  assert.equal(stealOne.status, 403)
+  assert.equal((await readStore(home)).config.pipelines[0].owner, 'alice')
 })
 
 test('admin 可更新/删除/复活任意流水线；新建不得把 owner 伪造成他人', async t => {
