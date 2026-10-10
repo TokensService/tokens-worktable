@@ -4746,14 +4746,14 @@ export function apply(ctx: Context) {
       histLogs.push(e)
     }
     /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；旧定时计划没有该字段，
-       继续沿用全局 cleanupEnabled 行为，避免历史计划语义变化。 */
+       回退为「配置了清理脚本即执行」（运行行预设勾选已改为仅浏览器本地，不再随配置下发）。 */
     const apiPresetMode = Array.isArray(pl.presets)
     const executionStages = apiPresetMode
       ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
     runtime?.setStages(executionStages)
-    // 与页面行为一致：勾选「先清理环境」时启动前先执行清理脚本（回显归档为 00 号任务日志）
-    if (!apiPresetMode && cfg.cleanupEnabled && cfg.cleanupScript && cfg.cleanupScript.path) {
+    // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
+    if (!apiPresetMode && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
       const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
       const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
