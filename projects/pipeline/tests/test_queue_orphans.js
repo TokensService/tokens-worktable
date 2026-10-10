@@ -297,7 +297,7 @@ class FakeNode {
 
 function makeQueueContext(overrides) {
   const list = new FakeNode('div');
-  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
+  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span') };
   const calls = { cancel: [], dismiss: [], rerun: [], focusOrphan: [], publish: 0, alert: [] };
   const context = Object.assign({
     document: {

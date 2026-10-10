@@ -545,7 +545,7 @@ function makeQueueContext() {
   const list = new FakeNode('div');
   const countCell = new FakeNode('td');
   countCell.getAttribute = name => name === 'data-plqueue' ? 'p1' : null;
-  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
+  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span') };
   const calls = { cancel: [], abort: [], cancelServer: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
     document: {
@@ -653,7 +653,6 @@ test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () 
   assert.equal(context.viewRc, null);
   assert.equal(calls.syncView, 1);
   assert.deepEqual(calls.overall, [null]);
-  assert.equal(els.stopBtn.disabled, true);
   assert.equal(calls.archiveTip, 1);
   assert.equal(calls.resetNodes, 1);
 });
