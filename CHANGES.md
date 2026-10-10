@@ -1,5 +1,8 @@
 # 本目录 tokens-worktable 的本地改动
 
+- 修复工作台升级期间服务端流水线代际丢失：旧 supervisor 已开始 drain 时，新插件实例继续复用同一 manager；清理只删除本次捕获的旧 generation，不会清空升级后新建的 generation。同步修正队列快照把对象误判为数组导致旧代排队项消失的问题。
+
+- 改进**流水线编排区失败/中止阶段节点也显示运行耗时**（`projects/pipeline/pipeline.html` `metaFor`）：编排区阶段节点的元信息行此前只有成功（`✓ 耗时`）与运行中（`百分比 · 已耗时`，500ms 共享 tick 实时刷新）显示耗时，失败/中止只显示「✗ 错误」「⏏ 终止」，看不出该阶段实际跑了多久；现补齐为「✗ 错误 · 耗时」「⏏ 终止 · 耗时」（`fmtDur(n.dur||0)` 钳 0 防 NaN，与阶段详情面板同口径；各失败/中止收尾路径本就已回填 `dur`），跳过（未执行）与未开始阶段不显示耗时。历史回放经同一 `metaFor` 渲染，回放里失败/中止节点同样带出耗时。测试：新增 `projects/pipeline/tests/test_stage_meta_dur.js`（成功/失败/失败 dur 缺失钳 0/中止/运行中回归/跳过与未开始共 6 例）。
 - 修复**「打开归档目录」经 better-sidebar 原生侧边栏打开文件夹报 "is a directory"**（`src/client/index.tsx`）：根因是 better-sidebar ≥0.19 的原生面转发 editor 打开时丢弃 openTab 的 meta（0.24.1 仍如此，其自身 agent-opens 的 folder 推送同病），EditorHost 拿不到 meta.dir 把目录当文件 fsRead；`openFolderInSidebar` 改为三级回退——先绕过 betterSidebar 服务直调宿主 `sidebarRight.openResource`（会话作用域文件地址 + mounted 会话快照，以 `params.meta.dir` 经 navigation.params 透传目录语义），失败回退 better-sidebar 底部工作台（`openTab target:'bottom'`，meta 不丢），再失败返回 false 由页面回退系统文件管理器。测试：新增 `tests/open-folder-in-sidebar.test.mjs`（10 例）。
 - 修复**流水线阶段详情「打开日志」改为打开日志文件本身**（`projects/pipeline/pipeline.html`、`src/client/index.tsx`）：原「📂 打开日志」只打开日志文件所在目录，与「📂 打开归档目录」效果雷同；现改为「📄 打开日志」——先等日志落盘，经 `/api/worktable/file`（tailBytes=1024）轻量预检文件是否已生成（404 视为尚未生成/已清理，回退 openFolderWithFeedback 打开所在目录，此时效果同「📂 打开归档目录」；探测失败按存在处理不阻断），文件存在时优先走新增的 `__dshOpenFileInSidebar` 桥（better-sidebar editor 标签不带 meta.dir 即打开文件本身，同 better-sidebar 自身 sidebar-file 的 openTab 形态，path 相同按 dedupeKey 复用标签，成功后经 `__dshCloseSideChat` 关闭侧边会话窗让出空间），桥不可用/拒绝时回退 `window.open` 新浏览器标签页打开同源文件路由（.log 按 text/plain 直出；弹窗被拦截则提示行改放 DOM 构建的可点击链接，避免拼 innerHTML 注入）。「📂 打开归档目录」打开文件夹的行为不变。测试：更新 `projects/pipeline/tests/test_stage_detail_log_row.js`（打开日志改为文件行为：侧边栏桥打开/新标签页回退/弹窗拦截链接/404 回退目录/空路径与坏路径共 6 例，静态契约同步换新文案与 `openStageLogFile` 函数名，`test_execution_progress.js` 切片边界不变）。
 - 修复**流水线主控预置任务无法勾选**：旧版浏览器状态中预置脚本参数 `params` 偶尔以非数组形态持久化时，首屏参数渲染会因 `.forEach` 抛错，导致后续预置任务 checkbox 与按钮事件无法注册；清理、检查、Profiling 三处参数渲染现仅接受数组，损坏数据按无参数处理并继续完成主控初始化。新增对应回归测试。
@@ -66,6 +69,18 @@
   startedAt 断言；客户端 `projects/pipeline/tests/test_queue_item_preview.js` 新增 queueNodePresence
   透传/丢弃与 remoteQueuePreviewRc 实时折算（含时钟偏差钳 0）用例，`test_queue_poll_throttle.js` 新增
   轮询折算驱动逐秒重绘用例。
+- 流水线 EvalTokens 阶段**适配服务端同步执行的 /run**（任务跑完才返回启动响应）：此前代连（remote 模式）
+  的 /run 走 `/api/worktable/proxy` 硬编码 20s 上游超时，长任务一律在 20s 被判 `request timeout` 失败
+  （任务实际仍在 EvalTokens 服务端正常跑完）。改动：`/api/worktable/proxy` 支持按请求 `timeoutMs`
+  （缺省 20s 不变，夹取 1s~24h——上限只兜「服务彻底假死」的极端情况，阶段「超时(分钟)」留空即等效
+  不限时）；`pipeline.html` 的 `evaltokRequestJson` / `evaltokStartRun` 新增超时透传，运行器按
+  「阶段超时（留空 24h 兜底）+30s 宽限」计算 `startTimeoutMs`
+  传给 /run 调用——宽限保证阶段自身超时先于代理超时生效，超时文案与清理路径不变。拿到 run_id 后
+  首轮轮询即确认终态，输出变量捕获、报告归档、中止/级联中止语义均不变；local（浏览器直连）模式本就
+  无 20s 限制，无需改动；服务端执行池路径（`executeServerEvaltokensStage`）无阶段超时时本就不限时，
+  无需改动。
+  测试：新增 `tests/proxy-timeout.test.mjs`（缺省值与 1s~24h 夹取规则）。
+
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`

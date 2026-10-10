@@ -1289,6 +1289,14 @@ function serverProxyTargetFetch(url: string, options: any, timeoutMs: number): P
     : serverLocalFetch(url, options, timeoutMs)
 }
 
+/** 代理上游超时：默认 20s；调用方可经 body.timeoutMs 提高（如 EvalTokens 服务端同步执行 /run、
+   任务跑完才返回，需等满整个任务时长），夹取 1s~24h——上限只兜「服务彻底假死」的极端情况，
+   阶段「超时(分钟)」留空即等效不限时，长任务由阶段超时字段治理。 */
+function serverProxyTimeoutMs(value: any): number {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.max(n, 1000), 86_400_000) : 20_000
+}
+
 function registerWorktableProxyRoute(webServer: any): void {
   webServer.register({
     kind: 'exact',
@@ -1318,7 +1326,7 @@ function registerWorktableProxyRoute(webServer: any): void {
           if (lowerKey === 'host' || lowerKey === 'content-length' || lowerKey === 'connection') continue
           fwdHeaders[key] = value
         }
-        const upstream = await serverProxyTargetFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, 20_000)
+        const upstream = await serverProxyTargetFetch(urlStr, { method, headers: fwdHeaders, body: reqBody, useProxy }, serverProxyTimeoutMs(body.timeoutMs))
         const result = {
           status: upstream.status,
           headers: upstream.headers,
@@ -2403,7 +2411,7 @@ function createPipelineGenerationManager() {
         active: activeId || null,
         generations: all,
         runs: all.flatMap(record => record.runs),
-        queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+        queue: all.flatMap(record => record.queue),
         finished,
       }
     },
@@ -2425,7 +2433,12 @@ function createPipelineGenerationManager() {
       const records = [...generations.values()]
       for (const record of records) beginDrain(record.id)
       disposal = Promise.all(records.map(record => record.queue.dispose())).then(() => {
-        generations.clear()
+        /* HMR 可能在旧代 drain 期间重新 retain 同一个 supervisor 并 activate 新代。
+           只移除本次 dispose 捕获的旧记录，不能 clear 掉后来加入的新 generation。 */
+        for (const record of records) {
+          if (generations.get(record.id) === record) generations.delete(record.id)
+        }
+        if (activeId) disposal = null
       })
       return disposal
     },
@@ -2455,7 +2468,9 @@ function getPipelineSupervisor(): PipelineSupervisor {
   const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
   // Once the grace timer fired and manager.dispose started, the old manager
   // cannot accept a fresh generation safely; allocate a new bridge instead.
-  if (current && !current.disposed && (!current.disposing || current.disposeTimer)) return current
+  /* 即使旧实例已经开始 drain，manager 仍保留旧 generation 的执行状态；HMR
+     新实例必须复用同一个 bridge，才能继续暴露旧任务并在其完成后清理。 */
+  if (current && !current.disposed) return current
   const state: PipelineSupervisor = {
     leases: createPipelineNodeLeases(),
     manager: createPipelineGenerationManager(),
@@ -2496,6 +2511,15 @@ function releasePipelineSupervisor(state: PipelineSupervisor): Promise<void> {
         return
       }
       state.manager.dispose().then(() => {
+        /* 新 HMR 实例可能已在 drain 期间重新 retain；此时不能把仍在使用的
+           supervisor 标记为 disposed，也不能从全局桥接器中删除它。 */
+        if (state.refs > 0) {
+          state.disposing = false
+          state.disposeResolve = undefined
+          state.disposePromise = undefined
+          resolve()
+          return
+        }
         state.disposed = true
         state.disposeResolve = undefined
         if (root[PIPELINE_SUPERVISOR_KEY] === state) delete root[PIPELINE_SUPERVISOR_KEY]
