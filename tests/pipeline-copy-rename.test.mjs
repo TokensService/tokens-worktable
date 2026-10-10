@@ -48,7 +48,7 @@ function loadPipelineRoutes(home, { ctx = {} } = {}) {
   assert.ok(start >= 0 && end > start, '流水线持久化路由块未找到')
   const helpers = [
     'cleanPipelineHistory', 'stripPipelineSharedMeta', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt',
-    'withPipelineSharedMeta', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
+    'withPipelineSharedMeta', 'preserveDiskOnlyConfigKeys', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
     'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
   ].map((name) => extractFunction(name)).join('\n')
   const code = helpers + '\n' + TRUST_HELPERS + '\n' + source.slice(start, end)
