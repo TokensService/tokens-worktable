@@ -826,6 +826,61 @@ function trustedPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedC
   if (violations.mark.length) parts.push('仅 admin 可将流水线标记为可信')
   return { message: parts.join('；'), pipelineIds: [...new Set([...violations.builtinEdit, ...violations.edit, ...violations.builtinCreate, ...violations.mark])] }
 }
+
+/** 流水线归属（与页面 plOwnerOf 同口径）：owner 优先，存量条目无 owner 时回退 createdBy。 */
+function pipelineEntryOwner(entry: any): string {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return ''
+  const owner = typeof entry.owner === 'string' ? entry.owner.trim() : ''
+  if (owner) return owner
+  const createdBy = typeof entry.createdBy === 'string' ? entry.createdBy.trim() : ''
+  return createdBy
+}
+
+/** 拥有者写保护（stored = 磁盘现状，merged = 合并后待写，username = 调用者登录名）：
+ *  非 admin 仅可更新/删除自己拥有的流水线；未署名（owner 与 createdBy 均空白）的存量条目
+ *  维持全员可写。覆盖三类越权——① 删除他人条目；② 改他人条目内容；③ 把他人条目重新提交回来
+ *  （含删除后被其他用户全量 PUT / save-one 复活，owner 仍在原拥有者名下）。favoriteUsers / pinnedAt
+ *  为非内容共享元数据，不触发本校验（他人收藏/置顶合法）。返回违规 id 列表。 */
+function ownerPipelineViolations(storedConfig: any, mergedConfig: any, username: string): string[] {
+  const pipelinesOf = (value: any) => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.pipelines) ? value.pipelines : []
+  const mapOf = (items: any[]) => new Map<string, any>(items.filter((item: any) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item: any) => [item.id, item]))
+  const stored = mapOf(pipelinesOf(storedConfig))
+  const merged = mapOf(pipelinesOf(mergedConfig))
+  const me = typeof username === 'string' ? username.trim() : ''
+  const canTouch = (entry: any) => {
+    const owner = pipelineEntryOwner(entry)
+    return !owner || owner === me
+  }
+  const deny = new Set<string>()
+  for (const [id, storedEntry] of stored) {
+    const mergedEntry = merged.get(id)
+    if (!mergedEntry) {
+      if (!canTouch(storedEntry)) deny.add(id)   // 删除他人条目
+      continue
+    }
+    if (!deepEqualIgnoring(storedEntry, mergedEntry, ['favoriteUsers', 'pinnedAt'])) {
+      if (!canTouch(storedEntry) || !canTouch(mergedEntry)) deny.add(id)   // 改他人条目内容（含改署名到他人）
+    }
+  }
+  for (const [id, mergedEntry] of merged) {
+    if (stored.has(id)) continue
+    if (!canTouch(mergedEntry)) deny.add(id)   // 新建/复活：owner 不得指向他人
+  }
+  return [...deny]
+}
+
+/** 写前归属校验入口（与 trustedPipelineWriteDeny 并列，先 trusted 后 owner；拒绝则整体不写盘）。
+ *  无认证服务（token 共享模式）时返回 null 维持旧行为；admin 全权。返回 null = 放行。 */
+function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedConfig: any): { message: string; pipelineIds: string[] } | null {
+  const caller = resolveRequestAuth(ctx, req)
+  if (!caller || caller.isAdmin) return null
+  const pipelineIds = ownerPipelineViolations(storedConfig, mergedConfig, caller.username)
+  if (!pipelineIds.length) return null
+  return {
+    message: '流水线仅拥有者可更新/删除；已删除的流水线不可由其他用户提交恢复',
+    pipelineIds,
+  }
+}
 /* ---------- 可信/内置流水线结束 ---------- */
 
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
@@ -3421,6 +3476,9 @@ export function apply(ctx: Context) {
                也不得新建/打标 trusted、新建/伪造内置（favoriteUsers 豁免）；违规整体不写盘，403 由调用方在锁外响应。 */
             const trustedDeny = trustedPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
             if (trustedDeny) return { conflicts: [] as string[], config: diskCfg, trusted: trustedDeny }
+            /* 拥有者写保护：非 admin 仅可更新/删除自己拥有的流水线，且不得把他人已删条目提交回来 */
+            const ownerDeny = ownerPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
+            if (ownerDeny) return { conflicts: [] as string[], config: diskCfg, owner: ownerDeny }
             const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
@@ -3430,6 +3488,10 @@ export function apply(ctx: Context) {
           })
           if ('trusted' in outcome && outcome.trusted) {
             json(res, 403, { error: 'trusted', message: outcome.trusted.message, pipelineIds: outcome.trusted.pipelineIds })
+            return
+          }
+          if ('owner' in outcome && outcome.owner) {
+            json(res, 403, { error: 'owner', message: outcome.owner.message, pipelineIds: outcome.owner.pipelineIds })
             return
           }
           if (outcome.conflicts.length) {
@@ -3472,6 +3534,9 @@ export function apply(ctx: Context) {
           /* 可信/内置流水线：与全量 PUT 同一校验——非 admin 不得改 trusted/内置条目（favoriteUsers 豁免），违规整体不写盘 */
           const trustedDeny = trustedPipelineWriteDeny(ctx, req, diskCfg, config)
           if (trustedDeny) return { conflicts: [] as string[], config: diskCfg, trusted: trustedDeny }
+          /* 拥有者写保护：与全量 PUT 同一口径（含 save-one 复活他人已删条目） */
+          const ownerDeny = ownerPipelineWriteDeny(ctx, req, diskCfg, config)
+          if (ownerDeny) return { conflicts: [] as string[], config: diskCfg, owner: ownerDeny }
           /* 历史原样保留（客户端未上报即不动；serializePipelineStore 仅做 20MB 上限裁剪） */
           const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
           const text = serializePipelineStore(config, diskHistory)
@@ -3480,6 +3545,10 @@ export function apply(ctx: Context) {
         })
         if ('trusted' in outcome && outcome.trusted) {
           json(res, 403, { error: 'trusted', message: outcome.trusted.message, pipelineIds: outcome.trusted.pipelineIds })
+          return
+        }
+        if ('owner' in outcome && outcome.owner) {
+          json(res, 403, { error: 'owner', message: outcome.owner.message, pipelineIds: outcome.owner.pipelineIds })
           return
         }
         if (outcome.conflicts.length) {
