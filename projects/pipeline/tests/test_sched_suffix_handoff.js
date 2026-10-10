@@ -206,6 +206,52 @@ test('启动预登记：后缀休眠计划 at=0 上送服务端，分界激活�
   assert.equal(h.rc.suffixPlanHeld, false, '激活后不再由 finish 清理');
 });
 
+test('无本地任务：后缀计划立刻激活（at=now），不留休眠计划等关页', async () => {
+  const stages = [
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+    { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages);
+  // 模拟 startSimRun 的分流：无本地前缀时直接 registerStageTimers（缺省 activate）
+  const ok = await h.context.registerStageTimers(h.rc, 0);
+  assert.equal(ok, true);
+  assert.equal(h.postPlans.length, 1);
+  assert.equal(h.postPlans[0].at > 0, true, '没有本地任务时立刻 at=now 激活');
+  assert.deepEqual(h.postPlans[0].stages.map(s => s.id), ['b', 'c']);
+  assert.equal(h.rc.suffixPlanHeld, undefined, '未走休眠路径，不持有待清理标记');
+});
+
+test('预登记竞态：本地前缀瞬间跑完已激活，后到休眠体不得把计划打回 at=0', async () => {
+  const stages = [
+    { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+  ];
+  let resolveFirst;
+  const h = handoffContext(stages);
+  const origFetch = h.context.fetch;
+  let call = 0;
+  h.context.fetch = async (url, init) => {
+    call += 1;
+    if (init && init.method === 'POST' && call === 1) {
+      // 挂起第一次预登记请求，模拟「本地前缀先跑完并激活」的竞态
+      await new Promise(r => { resolveFirst = r; });
+    }
+    return origFetch(url, init);
+  };
+  const sid = h.context.preRegisterSchedSuffix(h.rc, 1);
+  assert.equal(h.rc.suffixPlanHeld, true);
+  // 分界激活（本地阶段已跑完）
+  h.rc.suffixPlanHeld = false;
+  await h.context.registerStageTimers(h.rc, 1);
+  // 放行休眠请求落地
+  resolveFirst();
+  await flush();
+  await flush();
+  const last = h.postPlans[h.postPlans.length - 1];
+  assert.equal(last.id, sid);
+  assert.equal(last.at > 0, true, '最终计划必须是已激活（at>0），不得被后到休眠体覆盖回 at=0');
+});
+
 test('休眠计划清理：discardHeldSuffixPlan 按 id 从计划列表移除，不影响他人计划', async () => {
   const stages = [
     { id: 'a', name: '本地A', kind: 'simulate', sched: null },
