@@ -172,7 +172,7 @@
           <option value="auto">跟随系统</option>
         </select>
       </label>
-      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；每个去向可选浏览器本地文件或 dsh 服务器（storages/pipeline-exports/）；导出文件含密码与令牌明文 -->
+      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；去向可选浏览器本地文件、dsh 服务器（storages/pipeline-exports/）或剪贴板；导出文件含密码与令牌明文 -->
       <span id="ioMenu" style="position:relative;display:inline-block;">
         <button id="ioMenuBtn" type="button" class="dshell-btn dshell-btnGhost mini" title="设置 / 流水线的导入导出；导出文件含节点密码与访问令牌明文，请妥善保管、勿提交进仓库">⤓⤒ 导入导出</button>
         <div id="ioMenuPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:30;min-width:230px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
@@ -186,6 +186,10 @@
           <button id="ioExpSettingsSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出设置到服务端…</button>
           <button id="ioExpPipelinesSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出流水线到服务端…</button>
           <button id="ioImpSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="列出 dsh 服务器上的备份文件，按文件内容自动识别设置 / 流水线并导入">⤒ 从服务端导入…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">剪贴板（复制 JSON / 粘贴导入）</div>
+          <button id="ioExpSettingsClip" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="把设置导出 JSON 复制到剪贴板，可在别处粘贴保存后经「从剪贴板导入…」恢复">⤓ 复制设置到剪贴板</button>
+          <button id="ioExpPipelinesClip" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="把全部流水线导出 JSON 复制到剪贴板，可在别处粘贴保存后经「从剪贴板导入…」恢复">⤓ 复制流水线到剪贴板</button>
+          <button id="ioImpClip" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="粘贴之前复制的导出 JSON，按内容自动识别设置 / 流水线并导入">⤋ 从剪贴板导入…</button>
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">导出文件含密码 / 令牌明文，勿提交仓库</div>
           <div id="ioTip" class="dshell-muted" style="font-size:11px;padding:2px 6px;"></div>
         </div>
@@ -909,6 +913,22 @@
         <button id="pmcRun" class="dshell-btn mini">▶ 收集</button>
       </div>
       <div class="logbox" id="pmcLog" style="flex:1; min-height:160px; max-height:46vh; margin:0;">配置收集脚本后点「收集」执行（输出实时回显）。</div>
+    </div>
+  </div>
+  <!-- 从剪贴板导入对话框：粘贴导出 JSON，按 kind 自动识别设置 / 流水线 -->
+  <div id="ioClipDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:225; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%;max-width:640px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <h2 class="dshell-sub" style="margin:0">从剪贴板导入</h2>
+        <button id="ioClipClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <p class="dshell-muted" style="font-size:11px;margin:0;">粘贴「复制设置到剪贴板 / 复制流水线到剪贴板」生成的 JSON，按内容自动识别设置 / 流水线并导入（导入设置不动流水线，导入流水线不动其余设置）。粘贴内容含密码与令牌时请勿外传。</p>
+      <textarea id="ioClipText" class="dshell-input" style="width:100%;min-height:220px;font-family:monospace;font-size:12px;resize:vertical;" placeholder="在此粘贴导出 JSON…"></textarea>
+      <div id="ioClipTip" class="dshell-muted" style="font-size:11px;min-height:16px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
+        <button id="ioClipCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
+        <button id="ioClipImport" type="button" class="dshell-btn mini">⤒ 导入</button>
+      </div>
     </div>
   </div>
 </div>
@@ -9893,8 +9913,9 @@ async function importPipelineShare(){
              schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）都随 config 携带（与服务端持久化同口径）；
              local 块按旧结构同步输出一份运行选择，供旧版页面导入新版文件时识别（新版导入 config 优先、local 兜底）；
    导出流水线 = 全部流水线定义（含预置流水线上的编辑）。
-   每个导出 / 导入都有「浏览器本地文件」与「服务端备份」两个去向：本地下载 / 文件选择框，或落盘 / 读取
-   dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），两种去向共用同一份 payload 与恢复逻辑。
+   每个导出 / 导入都有「浏览器本地文件」「服务端备份」与「剪贴板」三个去向：本地下载 / 文件选择框、
+   落盘 / 读取 dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），或复制 JSON /
+   粘贴导入（见下方「剪贴板」区块）；三种去向共用同一份 payload 与恢复逻辑。
    导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
    运行历史不参与导入导出。导出文件含节点密码与令牌明文，勿提交仓库、勿外传。 */
 function ioTimestamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
@@ -10043,6 +10064,48 @@ async function importPipelinesFile(file){
   if(r==='ok') ioTipShow('✓ 已导入 '+pipelines.length+' 条流水线');
   else if(r==='invalid') ioTipShow('✗ 不是「导出流水线」生成的有效文件', true);
 }
+/* ---------- 剪贴板（与本地文件 / 服务端备份并列的第三条去向） ----------
+   导出：与本地下载同一份 payload（buildSettingsExport / buildPipelinesExport）序列化后写入剪贴板；
+   导入：textarea 粘贴 JSON，按 kind 自动识别设置 / 流水线，复用 importSettingsData / importPipelinesData
+   的校验、确认与恢复逻辑。不走 clipboard.readText，避免权限弹窗，粘贴内容以用户手动粘贴为准。 */
+function ioClipTipShow(msg, bad){ const t=$('ioClipTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+function exportSettingsToClipboard(){
+  copyText(JSON.stringify(buildSettingsExport(),null,2), $('ioExpSettingsClip'));
+  ioTipShow('✓ 设置已复制到剪贴板');
+}
+function exportPipelinesToClipboard(){
+  copyText(JSON.stringify(buildPipelinesExport(),null,2), $('ioExpPipelinesClip'));
+  ioTipShow('✓ '+pipelines.length+' 条流水线已复制到剪贴板');
+}
+function openIoClipImport(){
+  const d=$('ioClipDialog'); if(!d) return;
+  const ta=$('ioClipText'); if(ta) ta.value='';
+  ioClipTipShow('');
+  d.style.display='flex';
+}
+function closeIoClipImport(){ const d=$('ioClipDialog'); if(d) d.style.display='none'; }
+/* 从剪贴板文本导入：坏 JSON / 非本页备份给 ✗ 提示并留在对话框内供修正；
+   识别后走与文件 / 服务端导入相同的数据入口，成功关闭对话框并给 ✓ 提示 */
+async function importFromClipboardText(text){
+  let data=null;
+  try{ data=JSON.parse(String(text==null?'':text).trim()); }catch(e){}
+  if(!data || typeof data!=='object' || Array.isArray(data)){ ioClipTipShow('✗ 粘贴内容不是有效 JSON', true); return 'invalid'; }
+  const kind=(data.app==='worktable-pipeline') ? data.kind : '';
+  if(kind==='pipeline-settings'){
+    const r=await importSettingsData(data);
+    if(r==='ok'){ closeIoClipImport(); ioTipShow('✓ 设置已从剪贴板导入并保存'); return 'ok'; }
+    if(r==='invalid'){ ioClipTipShow('✗ 不是「导出设置」生成的有效内容', true); return 'invalid'; }
+    return 'cancel';
+  }
+  if(kind==='pipeline-pipelines'){
+    const r=await importPipelinesData(data);
+    if(r==='ok'){ closeIoClipImport(); ioTipShow('✓ 已从剪贴板导入 '+pipelines.length+' 条流水线'); return 'ok'; }
+    if(r==='invalid'){ ioClipTipShow('✗ 不是「导出流水线」生成的有效内容', true); return 'invalid'; }
+    return 'cancel';
+  }
+  ioClipTipShow('✗ 不是本页「导出设置 / 导出流水线」生成的内容', true);
+  return 'invalid';
+}
 /* ---------- 服务端备份（导入导出文件存于 dsh 服务器 storages/pipeline-exports/） ----------
    导出到服务端与浏览器本地下载共用同一份 payload（buildSettingsExport / buildPipelinesExport），经
    /api/worktable/pipeline/io/save 落盘；「从服务端导入…」列出服务端备份，读取后按 kind 自动识别
@@ -10175,6 +10238,14 @@ $('ioExpPipelinesSrv').addEventListener('click', exportPipelinesToServer);
 $('ioImpSrv').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioSrvPanel'); toggleIoSrvPanel(!p || p.style.display==='none'); });
 $('ioSrvRefresh').addEventListener('click', refreshIoSrvList);
 $('ioSrvClose').addEventListener('click', ()=>toggleIoSrvPanel(false));
+/* 剪贴板入口：复制导出 JSON 到剪贴板 / 打开粘贴导入对话框（点遮罩或关闭/取消收起） */
+$('ioExpSettingsClip').addEventListener('click', exportSettingsToClipboard);
+$('ioExpPipelinesClip').addEventListener('click', exportPipelinesToClipboard);
+$('ioImpClip').addEventListener('click', (e)=>{ e.stopPropagation(); openIoClipImport(); });
+$('ioClipClose').addEventListener('click', closeIoClipImport);
+$('ioClipCancel').addEventListener('click', closeIoClipImport);
+$('ioClipDialog').addEventListener('click', (e)=>{ if(e.target===$('ioClipDialog')) closeIoClipImport(); });
+$('ioClipImport').addEventListener('click', ()=>{ const ta=$('ioClipText'); importFromClipboardText(ta?ta.value:''); });
 
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
