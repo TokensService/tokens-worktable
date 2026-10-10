@@ -148,6 +148,41 @@ test('stageLogFileFor：无归档目录返回 null', () => {
   assert.equal(none.stageLogFileFor(stage, { tag: 'run-x', stages: [stage] }), null, 'archiveFolderFor 返回 null 应为 null');
 });
 
+test('stageLogFileFor：跨浏览器快照带 logFile 属性时直接读取（无需本地推算）', () => {
+  const ctx = stageLogCtx({
+    archiveFolderFor: () => { throw new Error('不应调用 archiveFolderFor（应直接读 logFile 属性）'); },
+  });
+  const stage = { name: '构建', logFile: '/var/log/op_test/流水线_20260101/run-run-abc-01-构建.log' };
+  assert.equal(ctx.stageLogFileFor(stage, { remotePreview: true, stages: [stage] }),
+    '/var/log/op_test/流水线_20260101/run-run-abc-01-构建.log');
+});
+
+test('stageLogFileFor：跨浏览器预览无 logFile 属性时返回 null（不得拼假日志路径）', () => {
+  const ctx = stageLogCtx({
+    archiveFolderFor: () => { throw new Error('不应调用 archiveFolderFor（remotePreview 应短路返回 null）'); },
+  });
+  const stage = { name: '构建' };
+  assert.equal(ctx.stageLogFileFor(stage, { remotePreview: true, stages: [stage] }), null,
+    'remotePreview 无 logFile 属性应返回 null');
+});
+
+test('stageLogFileFor：本地实时态 _serverLogFile 优先于 logFile 属性', () => {
+  const ctx = stageLogCtx();
+  const stage = { name: '构建', _serverLogFile: '/actual/run-01-构建.log', logFile: '/snapshot/other.log' };
+  assert.equal(ctx.stageLogFileFor(stage, { tag: 'r', stages: [stage] }), '/actual/run-01-构建.log');
+});
+
+test('静态契约：runScriptStep 任务日志序号走 stageSeq（与 collectRunLogs/archiveStageLog 一致，预设任务不占号）', () => {
+  // 回归：曾经用 i+1 导致含预设任务的流水线实际日志文件名与历史 logFile 不一致
+  const fnMatch = /function\s+runScriptStep\s*\([\s\S]*?(?=function\s+runStage\s*\()/.exec(source);
+  assert.ok(fnMatch, '缺少 runScriptStep 函数');
+  const body = fnMatch[0];
+  assert.ok(body.includes('taskLogFile(rc,stageSeq(rc.stages,i),s.name)') || body.includes('taskLogFile(rc, stageSeq(rc.stages, i), s.name)'),
+    'runScriptStep 的 logFile 应使用 stageSeq(rc.stages,i) 而非 i+1');
+  assert.ok(!/taskLogFile\(\s*rc\s*,\s*i\s*\+\s*1\s*,/.test(body),
+    'runScriptStep 不得再用 i+1 作为任务日志序号');
+});
+
 /* ---------- currentStageAnalysisRec ---------- */
 
 function analysisRecCtx(extra) {

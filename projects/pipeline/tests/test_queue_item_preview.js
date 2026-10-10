@@ -160,6 +160,33 @@ test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进
   assert.equal(rc.release, '', '他端未同步 Release 时不能伪造本页默认值');
 });
 
+test('remoteQueuePreviewRc：归档目录与 tag 从快照透传，供跨浏览器拼出正确日志路径', () => {
+  const { context } = makePreviewContext();
+  const client = { id: 'c2', label: 'Chrome·xy12' };
+  const item = {
+    id: 'r2', pipelineName: '远端部署', by: 'eve', startedAt: 123,
+    archive: '/var/log/op_test/远端部署_20260101120000', tag: 'run-xyz',
+    stages: [{ id: 's1', name: '构建' }],
+    nodes: { s1: { status: 'running', progress: 50, dur: 3 } },
+  };
+  const rc = context.remoteQueuePreviewRc(client, item, 'running');
+  assert.equal(rc.archive, '/var/log/op_test/远端部署_20260101120000', 'archive 应从快照透传');
+  assert.equal(rc.tag, 'run-xyz', 'tag 应从快照透传');
+});
+
+test('remoteQueuePreviewRc：快照无 archive/tag 时显式置 null/占位（防 stageLogFileFor 拼假日志路径）', () => {
+  const { context } = makePreviewContext();
+  const client = { id: 'c2', label: 'Chrome·xy12' };
+  const item = {
+    id: 'r2', pipelineName: 'P', by: 'eve', startedAt: 123,
+    stages: [{ id: 's1', name: '构建' }],
+    nodes: { s1: { status: 'running', progress: 50, dur: 3 } },
+  };
+  const rc = context.remoteQueuePreviewRc(client, item, 'running');
+  assert.equal(rc.archive, null, '无 archive 应显式置 null');
+  assert.equal(rc.tag, '—', '无 tag 应为占位符');
+});
+
 test('remoteQueuePreviewRc：运行中阶段按 startedAt 折算实时已耗时，无 startedAt 保持快照 dur', () => {
   const { context } = makePreviewContext();
   const now = Date.now();
@@ -480,6 +507,22 @@ test('runningPresenceEntry：上报阶段状态但不携带日志、变量或脚
     stages: [{ id: 's1', name: '构建', parallel: true, sub: ['a'] }],
     nodes: { s1: { status: 'running', progress: 35, dur: 4, sub: { a: 'success' } } },
   });
+});
+
+test('runningPresenceEntry：任务日志路径作为 logFile 属性随快照同步', () => {
+  const context = loadPresenceSnapshotContext();
+  const snap = context.runningPresenceEntry({
+    id: 'r1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', startTs: 100,
+    stages: [
+      { id: 's1', name: '构建', _serverLogFile: '/var/log/op_test/发布_20260101/run-abc-01-构建.log' },
+      { id: 's2', name: '部署', _serverLogExpectedFile: '/var/log/op_test/发布_20260101/run-abc-02-部署.log' },
+      { id: 's3', name: '测试' },
+    ],
+    nodes: { s1: { status: 'success', progress: 100, dur: 3 }, s2: { status: 'running', progress: 50, dur: 2 }, s3: { status: 'idle', progress: 0, dur: 0 } },
+  });
+  assert.equal(snap.stages[0].logFile, '/var/log/op_test/发布_20260101/run-abc-01-构建.log', '_serverLogFile 应同步为 logFile');
+  assert.equal(snap.stages[1].logFile, '/var/log/op_test/发布_20260101/run-abc-02-部署.log', '_serverLogExpectedFile 应同步为 logFile');
+  assert.equal(snap.stages[2].logFile, undefined, '无日志路径的阶段不补 logFile');
 });
 
 test('queueNodePresence：阶段开始时间戳随白名单透传，非法值丢弃', () => {
