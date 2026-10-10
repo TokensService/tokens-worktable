@@ -67,6 +67,8 @@ function makeContext(options) {
   installFunctions(context, [
     'stageSeq',
     'runRepositorySnapshot',
+    'buildSuffixPlan',
+    'upsertServerPlan',
     'registerStageTimers',
     'buildUnloadHandoffPlan',
     'currentStageIndex',
@@ -217,16 +219,38 @@ test('registerStageTimers opts.includeLocal：把非 sched 阶段也写进计划
   const h = makeContext({ activeRuns: [rc] });
   const ok = await h.context.registerStageTimers(rc, 0, { includeLocal: true });
   assert.equal(ok, true);
-  const put = h.fetches.find(f => f.method === 'PUT' && f.url.endsWith('/api/worktable/pipeline/plans'));
-  assert.ok(put);
-  const plan = put.body.plans.find(p => p && p.id === 'stimer-pl-1-t1-suffix');
+  const post = h.fetches.find(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
+  assert.ok(post, 'registerStageTimers 走 POST 单条 upsert');
+  const plan = post.body.plan;
   assert.ok(plan);
+  assert.equal(plan.id, 'stimer-pl-1-t1-suffix');
   assert.deepEqual(plan.stages.map(s => s.id), ['a', 'b', 'c'], 'includeLocal 时本地阶段也进后缀计划');
   assert.deepEqual(plan.repository, {
     id: 'repo-1', name: 'demo-repo',
     url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1',
   }, '定时后缀计划同样要带代码仓快照');
   assert.equal(plan.strategy, '3P1D', '定时后缀计划同样要带部署策略');
+});
+
+test('buildUnloadHandoffPlan：运行带 suffixPlanId 时关页复用同一条计划 id（替换休眠计划并激活）', () => {
+  const h = makeContext({});
+  const rc = runningRc();
+  rc.suffixPlanId = 'stimer-pl-1-t1-suffix';
+  rc.suffixPlanHeld = true;
+  rc.nodes.a.status = 'success';
+  const plan = h.context.buildUnloadHandoffPlan(rc, 1);
+  assert.equal(plan.id, 'stimer-pl-1-t1-suffix', '复用预登记 id，避免定时页残留 at=0 占位计划');
+  assert.match(plan.desc, /定时后缀/);
+  assert.equal(plan.at > 0, true, '关页替换即激活');
+});
+
+test('buildUnloadHandoffPlan：无 suffixPlanId 的纯本地运行沿用 unload- 独立 id', () => {
+  const h = makeContext({});
+  const rc = runningRc();
+  rc.nodes.a.status = 'running';
+  const plan = h.context.buildUnloadHandoffPlan(rc, 0);
+  assert.equal(plan.id, 'stimer-pl-1-t1-unload');
+  assert.match(plan.desc, /浏览器关闭移交/);
 });
 
 test('pagehide 移交后 beacon 批量释放本页节点租约：移交计划才不用等 TTL 才能拿到节点', async () => {
