@@ -9927,16 +9927,19 @@ $('cfgSave').addEventListener('click', ()=>{
 $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},DEFAULT_PROMPTS); savePrompts(); fillCfgForm(); });
 
 /* ---------- 流水线分享（行「⋯」菜单 → 分享 / 新建流水线 → 从分享导入） ----------
-   分享载荷只含定义内容（名称 / 阶段 / 默认运行参数），不含 id、内置、置顶、收藏、可信与署名等实例元数据；
-   点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」，在弹出的输入框粘贴还原到编辑器，
-   确认后保存为新流水线。载荷含阶段脚本参数值（可能含节点口令等敏感信息），仅在可信渠道传递。 */
+   分享载荷只含定义内容（名称 / 业务阶段 / 默认运行参数），不含 id、内置、置顶、收藏、可信与署名等实例元数据；
+   预设任务不随分享传递（系统清理/检查/Profiling 与自定义预设的标记行、默认勾选）：预设脚本在各端设置页配置、
+   自定义预设 key 也因端而异，带过去对不上本端配置——导入后由本端 withPresetMarkers 按本地设置补齐标记行，
+   默认勾选为空由用户在编辑器自选。点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」，
+   在弹出的输入框粘贴还原到编辑器，确认后保存为新流水线。载荷含阶段脚本参数值（可能含节点口令等敏感信息），
+   仅在可信渠道传递。 */
 function buildPipelineShare(pl){
   return {
     app:'worktable-pipeline', kind:'pipeline-share', version:1, exportedAt:new Date().toISOString(),
     pipeline:{
       name:typeof pl.name==='string'?pl.name:'',
-      stages:JSON.parse(JSON.stringify(pl.stages||[])),
-      defaults:normalizePipelineDefaults(pl.defaults),
+      stages:JSON.parse(JSON.stringify(pl.stages||[])).filter(s=>!(s && s.preset)),
+      defaults:Object.assign(normalizePipelineDefaults(pl.defaults),{presets:[]}),
     },
   };
 }
@@ -9946,7 +9949,8 @@ function sharePipeline(id){
   if(typeof toast==='function') toast('✓ 已复制流水线「'+pl.name+'」的分享内容到剪贴板；在「新建流水线」点「从分享导入」即可还原');
 }
 /* 解析分享内容：接受 buildPipelineShare 的 envelope，或直接粘贴的流水线对象（{name,stages,...}）；
-   非法（非 JSON / 无 stages）返回 null。 */
+   非法（非 JSON / 无业务阶段）返回 null。预设任务不随分享传递：载荷里若有预设标记行或默认勾选
+   （旧版分享 / 手写 JSON）在此剥掉，导入后由本端 withPresetMarkers 按本地设置补齐。 */
 function parsePipelineShare(text){
   let data=null;
   try{ data=JSON.parse(String(text==null?'':text).trim()); }catch(e){ return null; }
@@ -9955,11 +9959,12 @@ function parsePipelineShare(text){
   if(data.app==='worktable-pipeline' && data.kind==='pipeline-share' && data.pipeline && typeof data.pipeline==='object' && !Array.isArray(data.pipeline)) p=data.pipeline;
   else if(Array.isArray(data.stages)) p=data;
   else return null;
-  if(!p.stages.some(s=>s && typeof s==='object')) return null;
+  const stages=JSON.parse(JSON.stringify(p.stages)).filter(s=>!(s && s.preset));
+  if(!stages.some(s=>s && typeof s==='object')) return null;
   return {
     name:typeof p.name==='string'?p.name:'',
-    stages:JSON.parse(JSON.stringify(p.stages)),
-    defaults:normalizePipelineDefaults(p.defaults),
+    stages,
+    defaults:Object.assign(normalizePipelineDefaults(p.defaults),{presets:[]}),
   };
 }
 /* 「新建流水线 → 从分享导入」：点按钮弹出 textarea 输入框，粘贴分享 JSON 后确认导入；
