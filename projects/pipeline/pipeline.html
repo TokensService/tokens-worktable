@@ -625,6 +625,7 @@
       <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">Jenkins 地址
           <input id="jkUrl" class="dshell-input" placeholder="http://127.0.0.1:28080" style="width:220px;" />
+          <textarea id="jkPipelineUrls" class="dshell-input" placeholder="伏羲流水线列表（每行一个地址，留空使用 Jenkins 地址）" title="按顺序尝试；正在构建或排队的流水线自动跳过" style="width:300px;height:38px;resize:vertical;"></textarea>
         </label>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">用户名
           <input id="jkUser" class="dshell-input" placeholder="jenkins-user" style="width:140px;" autocomplete="off" />
@@ -2228,7 +2229,7 @@ function saveArchiveScript(){ try{ localStorage.setItem('pip-archiveScript', arc
 /* ---------- Jenkins 服务配置（连接模式 + 测试连接） ----------
    本地浏览器连接：浏览器直接用 JS 连接 Jenkins（不走桥接；需 Jenkins 允许跨域或同源）；
    远程服务器端连接：DSH 服务端经 /api/worktable/proxy 代连 Jenkins（仅回环/内网）。 */
-const DEFAULT_JENKINS = { url:'http://127.0.0.1:28080', linkUrl:'', user:'', token:'', mode:'local' };
+const DEFAULT_JENKINS = { url:'http://127.0.0.1:28080', pipelineUrls:[], linkUrl:'', user:'', token:'', mode:'local' };
 function loadJenkins(){
   try{ const a=JSON.parse(localStorage.getItem('pip-jenkins')); if(a && typeof a==='object') return Object.assign({}, DEFAULT_JENKINS, a); }catch(e){}
   return Object.assign({}, DEFAULT_JENKINS);
@@ -2237,6 +2238,7 @@ let jenkins = loadJenkins();
 function saveJenkins(){ try{ localStorage.setItem('pip-jenkins', JSON.stringify(jenkins)); }catch(e){} persistState(); }
 function applyJenkinsForm(){
   $('jkUrl').value = jenkins.url || DEFAULT_JENKINS.url;
+  $('jkPipelineUrls').value = (Array.isArray(jenkins.pipelineUrls)?jenkins.pipelineUrls:[]).join('\n');
   $('jkLinkUrl').value = jenkins.linkUrl || '';
   $('jkUser').value = jenkins.user || '';
   $('jkToken').value = jenkins.token || '';
@@ -2250,6 +2252,7 @@ function setJenkinsMode(m){
 function collectJenkinsForm(){
   return {
     url: ($('jkUrl').value||'').trim() || DEFAULT_JENKINS.url,
+    pipelineUrls: ($('jkPipelineUrls').value||'').split(/[,\n]/).map(function(v){return v.trim().replace(/\/+$/,'');}).filter(Boolean),
     linkUrl: ($('jkLinkUrl').value||'').trim(),
     user: ($('jkUser').value||'').trim(),
     token: ($('jkToken').value||'').trim(),
@@ -5363,6 +5366,22 @@ async function jkFetchCrumb(j, auth, signal){
   return null;
 }
 /* jobPath 为已解析的任务路径（fullName 经 jkJobPath / URL 经 jkJobRef 得到，占位符已替换） */
+async function jkSelectPipeline(jobPath, signal){
+  const configured = Array.isArray(jenkins.pipelineUrls) ? jenkins.pipelineUrls : [];
+  const urls = configured.length ? configured : [jenkins.url];
+  for (const base of urls) {
+    const candidate = Object.assign({}, jenkins, {url: String(base).replace(/\/+$/,'')});
+    try {
+      const info = await jkFetchJson(candidate, candidate.url + jobPath + 'api/json?tree=color,buildable,inQueue', signal);
+      const busy = String(info && info.color || '').endsWith('_anime') || info && info.inQueue === true || info && info.buildable === false;
+      if (!busy) { jenkins.url = candidate.url; return candidate.url; }
+      console.info('[jenkins] skip busy pipeline', candidate.url);
+    } catch (e) {
+      console.info('[jenkins] skip unavailable pipeline', candidate.url, e);
+    }
+  }
+  throw new Error('伏羲流水线列表均在使用中或不可用');
+}
 async function jkTriggerBuild(jobPath, params, preflightSignal, dispatchSignal){
   const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
@@ -5575,7 +5594,7 @@ async function runUrlStep(rc, i){
     s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     let triggerBody='', triggered=null;
     if(isUrl){ triggered=await jkTriggerGet(jkSubstUrl(raw, vars),pollable?triggerCtrl.signal:ctrl.signal); }
-    else{ triggered=await jkTriggerBuild(jobPath, vars,ctrl.signal,triggerCtrl.signal); }   // crumb 属触发前准备，随流水线立即中止；只有已发出的 build POST 获得清理宽限
+    else{ await jkSelectPipeline(jobPath, ctrl.signal); appendLiveLog(log, '# 使用伏羲流水线: '+jenkins.url); triggered=await jkTriggerBuild(jobPath, vars,ctrl.signal,triggerCtrl.signal); }   // crumb 属触发前准备，随流水线立即中止；只有已发出的 build POST 获得清理宽限
     triggerBody=triggered&&typeof triggered.body==='string'?triggered.body:'';
     cancelQueueLocation=triggered&&typeof triggered.location==='string'?triggered.location:'';
     externalJenkinsActive=pollable;
