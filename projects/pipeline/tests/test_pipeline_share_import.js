@@ -1,6 +1,6 @@
 /* 流水线分享 / 从分享导入：行「⋯」菜单「分享」复制定义 JSON 到剪贴板，
-   「新建流水线 → 从分享导入」粘贴还原到编辑器（名称/阶段/默认运行参数）。
-   覆盖：分享载荷形状（不含实例元数据）、解析合法/非法、导入填表、菜单与按钮 wiring。 */
+   「新建流水线 → 从分享导入」弹出 textarea 输入框，粘贴还原到编辑器（名称/阶段/默认运行参数）。
+   覆盖：分享载荷形状（不含实例元数据）、解析合法/非法、弹窗开关、textarea 导入填表、菜单与按钮 wiring。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -113,20 +113,22 @@ test('parsePipelineShare：envelope / 裸流水线对象 / 非法输入',()=>{
   });
 });
 
-test('importPipelineShare：读剪贴板覆盖表单（名称/阶段/默认）并存草稿；非法时 prompt 粘贴兜底',async ()=>{
+test('applyPipelineShareText：从 textarea 内容覆盖表单（名称/阶段/默认）并存草稿、关弹窗',async ()=>{
   const pl=samplePipeline();
   const shareText=JSON.stringify({app:'worktable-pipeline',kind:'pipeline-share',version:1,pipeline:{name:pl.name,stages:pl.stages,defaults:pl.defaults}},null,2);
-  const els={plName:{value:''},plForm:{dataset:{editId:''}}};
-  const drafts=[],renders=[],toasts=[],prompts=[],alerts=[];
-  let clipboardText=shareText;
+  const els={
+    plName:{value:''},
+    plForm:{dataset:{editId:''}},
+    plShareImportDialog:{style:{display:'flex'}},
+    plShareImportTip:{textContent:'',style:{}},
+  };
+  const drafts=[],renders=[],toasts=[],tips=[];
   const shared={
     plFormReadOnly:false,
     editStages:[], editDefaults:null, editSelStage:{x:1}, editFocusIdx:3,
     $:id=>els[id]||{value:'',dataset:{},style:{}},
-    navigator:{clipboard:{readText:async()=>clipboardText}},
-    prompt:(msg,init)=>{ prompts.push(init); return init; },
-    alert:m=>alerts.push(m),
     toast:m=>toasts.push(m),
+    plShareImportTipShow:(msg,bad)=>tips.push({msg,bad}),
     renderPipelineDefaultForm:()=>renders.push('defaults'),
     renderStageEditor:()=>renders.push('stages'),
     schedulePlDraftSave:()=>drafts.push(1),
@@ -136,7 +138,7 @@ test('importPipelineShare：读剪贴板覆盖表单（名称/阶段/默认）�
     normalizePipelineDefaults:null,
   };
   shared.normalizePipelineDefaults=makeCtx().normalizePipelineDefaults;
-  const ctx=makeCtx(shared,['editStagesFromStored','parsePipelineShare','importPipelineShare']);
+  const ctx=makeCtx(shared,['editStagesFromStored','parsePipelineShare','applyPipelineShareText','closePipelineShareImport']);
   /* editStagesFromStored 依赖的 normalizeStageKind / withPresetMarkers / evaltokensStageConfig 一并注入 */
   vm.runInContext([
     extractFunction('evaltokensStageConfig'),
@@ -144,7 +146,8 @@ test('importPipelineShare：读剪贴板覆盖表单（名称/阶段/默认）�
     extractFunction('withPresetMarkers'),
     "function presetMarker(k){ return {id:'', name:'', preset:true, pkey:k}; }",
   ].join('\n'),ctx);
-  await ctx.importPipelineShare();
+  const r=await ctx.applyPipelineShareText(shareText);
+  assert.equal(r,'ok');
   assert.equal(els.plName.value,'安装部署YDS');
   assert.equal(ctx.editStages.length,5,'两业务阶段 + cleanup/check/profiling 预设标记（withPresetMarkers 补齐）');
   assert.equal(ctx.editStages.filter(s=>!s.preset).length,2);
@@ -155,43 +158,70 @@ test('importPipelineShare：读剪贴板覆盖表单（名称/阶段/默认）�
   assert.ok(drafts.length>0,'导入后应写入编辑器草稿');
   assert.ok(renders.indexOf('defaults')>=0&&renders.indexOf('stages')>=0);
   assert.equal(toasts.length,1);
-  assert.equal(prompts.length,0,'剪贴板有效时不弹粘贴框');
-  /* 剪贴板内容非法 → prompt 兜底，仍非法则 alert */
-  clipboardText='not-json';
+  assert.equal(els.plShareImportDialog.style.display,'none','导入成功应关闭弹窗');
+  /* 内容非法 → 弹窗内 ✗ 提示，不改表单、不关弹窗 */
+  els.plShareImportDialog.style.display='flex';
   els.plName.value='';
-  await ctx.importPipelineShare();
-  assert.equal(prompts.length,1);
-  assert.equal(alerts.length,1);
+  const r2=await ctx.applyPipelineShareText('not-json');
+  assert.equal(r2,'invalid');
   assert.equal(els.plName.value,'','非法内容不得改表单');
+  assert.equal(tips.length,1);
+  assert.equal(tips[0].bad,true);
+  assert.match(tips[0].msg,/无效/);
+  assert.equal(els.plShareImportDialog.style.display,'flex','非法内容应留在弹窗内供修正');
 });
 
-test('importPipelineShare：编辑已有流水线或只读模式下不导入',async ()=>{
-  const calls=[];
-  const els={plName:{value:'原名'},plForm:{dataset:{editId:'pl-old'}}};
+test('importPipelineShare：点按钮打开 textarea 弹窗；编辑已有流水线或只读模式下不打开',()=>{
+  const opens=[];
+  const els={plForm:{dataset:{editId:'pl-old'}},plName:{value:'原名'}};
   const ctx=makeCtx({
     plFormReadOnly:false,
     $:id=>els[id]||{value:'',dataset:{},style:{}},
-    navigator:{clipboard:{readText:async()=>JSON.stringify({stages:[{id:'a',name:'A'}],name:'x'})}},
-    alert:m=>calls.push(['alert',m]),
-    toast:m=>calls.push(['toast',m]),
-    prompt:()=>{ calls.push(['prompt']); return null; },
-  },['parsePipelineShare','importPipelineShare']);
-  await ctx.importPipelineShare();
-  assert.equal(els.plName.value,'原名','编辑已有流水线时不得覆盖表单');
-  assert.equal(calls.length,0);
+    openPipelineShareImport:()=>opens.push(1),
+  },['importPipelineShare']);
+  ctx.importPipelineShare();
+  assert.equal(opens.length,0,'编辑已有流水线时不得打开导入弹窗');
   els.plForm.dataset.editId='';
+  ctx.importPipelineShare();
+  assert.equal(opens.length,1,'新建流水线应打开导入弹窗');
   ctx.plFormReadOnly=true;
-  await ctx.importPipelineShare();
-  assert.equal(els.plName.value,'原名','只读模式不得覆盖表单');
-  assert.equal(calls.length,0);
+  ctx.importPipelineShare();
+  assert.equal(opens.length,1,'只读模式不得打开导入弹窗');
 });
 
-test('UI wiring：行菜单含「分享」入口、新建表单含「从分享导入」按钮，事件绑定到 sharePipeline / importPipelineShare',()=>{
+test('openPipelineShareImport：清空 textarea、清提示并显示弹窗；close 反向收起',()=>{
+  const els={
+    plShareImportDialog:{style:{display:'none'}},
+    plShareImportText:{value:'旧内容'},
+    plShareImportTip:{textContent:'旧提示',style:{}},
+  };
+  const tips=[];
+  const ctx=makeCtx({
+    $:id=>els[id]||{value:'',dataset:{},style:{}},
+    plShareImportTipShow:(msg,bad)=>tips.push({msg,bad}),
+  },['openPipelineShareImport','closePipelineShareImport']);
+  ctx.openPipelineShareImport();
+  assert.equal(els.plShareImportDialog.style.display,'flex');
+  assert.equal(els.plShareImportText.value,'','打开时应清空 textarea');
+  assert.deepEqual(tips,[{msg:'',bad:undefined}]);
+  ctx.closePipelineShareImport();
+  assert.equal(els.plShareImportDialog.style.display,'none');
+});
+
+test('UI wiring：行菜单含「分享」入口、新建表单含「从分享导入」按钮（左侧）与 textarea 弹窗，事件绑定正确',()=>{
   assert.match(source,/<div id="plRowMenuShare" class="pl-row-menu-item"[^>]*>分享<\/div>/,'行菜单须有「分享」项');
   assert.match(source,/<button id="plImportShare"[^>]*>从分享导入<\/button>/,'新建表单须有「从分享导入」按钮');
+  assert.match(source,/id="plShareImportDialog"/,'须有从分享导入弹窗 #plShareImportDialog');
+  assert.match(source,/<textarea id="plShareImportText"/,'弹窗内须有 textarea #plShareImportText');
   assert.match(source,/\$\('plRowMenuShare'\)\.addEventListener\('click'/,'分享菜单须绑定 click');
   assert.match(source,/if\(id\) sharePipeline\(id\)/,'分享菜单点击调用 sharePipeline');
   assert.match(source,/\$\('plImportShare'\)\.addEventListener\('click'/,'导入按钮须绑定 click');
   assert.match(source,/importPipelineShare\(\)/,'导入按钮调用 importPipelineShare');
   assert.match(source,/importShareBtn\.style\.display=p\?'none':''/,'仅新建流水线显示「从分享导入」');
+  assert.match(source,/\$\('plShareImportOk'\)\.addEventListener\('click'/,'弹窗「导入」须绑定 click');
+  assert.match(source,/applyPipelineShareText\(/,'弹窗确认调用 applyPipelineShareText');
+  /* 按钮须在底栏左侧：plImportShare 出现在 plDraftTip 之前 */
+  const iBtn=source.indexOf('id="plImportShare"');
+  const iTip=source.indexOf('id="plDraftTip"');
+  assert.ok(iBtn>0&&iTip>iBtn,'「从分享导入」按钮应排在草稿提示之前（底栏左侧）');
 });

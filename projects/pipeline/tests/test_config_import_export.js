@@ -254,7 +254,8 @@ test('导入流水线成功路径：覆盖流水线列表、修正当前选择�
 
 test('页面存在右上角导入导出菜单与全部入口元素',()=>{
   ['ioMenu','ioMenuBtn','ioMenuPanel','ioTip','ioExpSettings','ioImpSettings','ioExpPipelines','ioImpPipelines','ioImpSettingsFile','ioImpPipelinesFile',
-   'ioExpSettingsSrv','ioExpPipelinesSrv','ioImpSrv','ioSrvPanel','ioSrvDir','ioSrvList','ioSrvTip','ioSrvRefresh','ioSrvClose'].forEach(id=>{
+   'ioExpSettingsSrv','ioExpPipelinesSrv','ioImpSrv','ioSrvPanel','ioSrvDir','ioSrvList','ioSrvTip','ioSrvRefresh','ioSrvClose',
+   'ioExpSettingsClip','ioExpPipelinesClip','ioImpClip','ioClipDialog','ioClipText','ioClipTip','ioClipImport','ioClipCancel','ioClipClose'].forEach(id=>{
     assert.ok(source.includes(`id="${id}"`),`pipeline.html 缺少元素 #${id}`);
   });
   const navIdx=source.indexOf('id="navMain"');
@@ -431,4 +432,97 @@ test('服务端备份列表面板：渲染目录 / 文件行（导入按钮按�
   assert.equal(tips.length,1);
   assert.equal(tips[0].bad,true);
   assert.match(tips[0].msg,/读取服务端备份列表失败/);
+});
+
+/* ---------- 剪贴板（与本地文件 / 服务端备份并列的第三条去向） ---------- */
+
+test('导出到剪贴板：与本地下载同一份 payload，copyText 写入剪贴板并给提示',()=>{
+  const copied=[],tips=[];
+  const els={
+    branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},triggeredBy:{value:'lhf'},
+    ioExpSettingsClip:{textContent:'⤓ 复制设置到剪贴板'},ioExpPipelinesClip:{textContent:'⤓ 复制流水线到剪贴板'},
+  };
+  const shared={
+    copyText:(text,btn)=>copied.push({text,btn:btn&&btn.textContent}),
+    ioTipShow:(msg,bad)=>tips.push({msg,bad}),
+    $:elMapStub(els),
+    repositories:[{id:'r1',pass:'tk'}],
+    pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]},{id:'pl-custom',name:'自定义',stages:[{id:'s1'}]}],
+    curPipelineId:'pl-custom', selectedEnvIds:['env-dev'], curRepoId:'r1', schedEnvIds:['env-prod'],
+    histFilter:{kw:'x',status:'',pipeline:''}, histPageSize:20,
+    collectConfig:()=>({pipelines:[{id:'pl-xds'}],repositories:[{id:'r1',pass:'tk'}]}),
+  };
+  const ctx=makeCtx(shared,['collectSettingsForExport','buildSettingsExport','buildPipelinesExport','exportSettingsToClipboard','exportPipelinesToClipboard']);
+  ctx.exportSettingsToClipboard();
+  ctx.exportPipelinesToClipboard();
+  assert.equal(copied.length,2,'两次复制分别写剪贴板');
+  const s=JSON.parse(copied[0].text);
+  assert.equal(s.app,'worktable-pipeline');
+  assert.equal(s.kind,'pipeline-settings');
+  assert.equal(s.config.repositories[0].pass,'tk','复制设置含代码仓令牌，与本地下载同源');
+  assert.deepEqual(J(s.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20});
+  const p=JSON.parse(copied[1].text);
+  assert.equal(p.kind,'pipeline-pipelines');
+  assert.equal(p.pipelines.length,2);
+  assert.equal(copied[0].btn,'⤓ 复制设置到剪贴板','copyText 收到触发按钮以便就地反馈');
+  assert.match(tips[0].msg,/✓ 设置已复制到剪贴板/);
+  assert.match(tips[1].msg,/✓ 2 条流水线已复制到剪贴板/);
+  tips.forEach(t=>assert.ok(!t.bad));
+});
+
+test('从剪贴板导入：按 kind 自动识别设置 / 流水线，复用与文件导入相同的数据入口',async()=>{
+  const tips=[],applied=[],closes=[];
+  const settingsData={app:'worktable-pipeline',kind:'pipeline-settings',version:1,config:{theme:'dark'}};
+  const pipelinesData={app:'worktable-pipeline',kind:'pipeline-pipelines',version:1,pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]}]};
+  const els={ioClipDialog:{style:{display:'flex'}}};
+  const ctx=makeCtx({
+    $:elMapStub(els),
+    ioClipTipShow:(msg,bad)=>tips.push({msg,bad}),
+    ioTipShow:(msg,bad)=>tips.push({msg,bad}),
+    closeIoClipImport:()=>closes.push(1),
+    pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]},{id:'pl-new',stages:[{id:'s1'}]}],
+    importSettingsData:async d=>{ applied.push(['settings',d]); return 'ok'; },
+    importPipelinesData:async d=>{ applied.push(['pipelines',d]); return 'ok'; },
+  },['importFromClipboardText']);
+  assert.equal(await ctx.importFromClipboardText(JSON.stringify(settingsData)),'ok');
+  assert.equal(await ctx.importFromClipboardText('  '+JSON.stringify(pipelinesData)+'  '),'ok','两端空白被 trim 后解析');
+  assert.equal(applied.length,2);
+  assert.equal(applied[0][0],'settings');
+  assert.equal(applied[1][0],'pipelines');
+  assert.equal(applied[0][1].config.theme,'dark');
+  assert.equal(closes.length,2,'成功后关闭粘贴对话框');
+  assert.match(tips[0].msg,/✓ 设置已从剪贴板导入并保存/);
+  assert.match(tips[1].msg,/✓ 已从剪贴板导入 2 条流水线/);
+  tips.forEach(t=>assert.ok(!t.bad));
+});
+
+test('从剪贴板导入：坏 JSON / 非本页备份 / kind 校验失败给 ✗ 且不关对话框；用户取消不追加提示',async()=>{
+  const tips=[],applied=[],closes=[];
+  const els={ioClipDialog:{style:{display:'flex'}}};
+  let behavior='ok';
+  const ctx=makeCtx({
+    $:elMapStub(els),
+    ioClipTipShow:(msg,bad)=>tips.push({msg,bad}),
+    ioTipShow:(msg,bad)=>tips.push({msg,bad}),
+    closeIoClipImport:()=>closes.push(1),
+    pipelines:[],
+    importSettingsData:async()=>{ applied.push('settings'); return behavior==='cancel'?'cancel':'invalid'; },
+    importPipelinesData:async()=>{ applied.push('pipelines'); return behavior==='cancel'?'cancel':'invalid'; },
+  },['importFromClipboardText']);
+  assert.equal(await ctx.importFromClipboardText('not json'),'invalid');
+  assert.equal(await ctx.importFromClipboardText(''), 'invalid');
+  assert.equal(await ctx.importFromClipboardText('[1,2]'),'invalid','数组不是导出形状');
+  assert.equal(await ctx.importFromClipboardText(JSON.stringify({foo:1})),'invalid');
+  assert.equal(await ctx.importFromClipboardText(JSON.stringify({app:'other',kind:'pipeline-settings',config:{}})),'invalid','外站同形文件也拒绝');
+  assert.equal(closes.length,0,'坏内容不关对话框，便于就地修正');
+  assert.equal(applied.length,0,'坏内容不得触达导入入口');
+  assert.ok(tips.every(t=>t.bad===true),'以上分支都是 ✗ 提示');
+  behavior='invalid';
+  assert.equal(await ctx.importFromClipboardText(JSON.stringify({app:'worktable-pipeline',kind:'pipeline-settings',config:{}})),'invalid');
+  assert.equal(await ctx.importFromClipboardText(JSON.stringify({app:'worktable-pipeline',kind:'pipeline-pipelines',pipelines:[]})),'invalid');
+  assert.equal(closes.length,0,'kind 对但内容非法同样留在对话框');
+  behavior='cancel';
+  assert.equal(await ctx.importFromClipboardText(JSON.stringify({app:'worktable-pipeline',kind:'pipeline-settings',config:{}})),'cancel');
+  assert.equal(closes.length,0,'用户取消确认框不关对话框、不追加提示');
+  assert.equal(tips.length,7,'取消不再追加 ioTip / ioClipTip（前 5 坏内容 + 2 次 kind 校验失败）');
 });

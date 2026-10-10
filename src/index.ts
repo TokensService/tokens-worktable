@@ -1099,9 +1099,16 @@ function substituteServerUrl(value: any, vars: Record<string, string>): string {
   })
 }
 
+/** 阶段「超时(分钟)」留空时的兜底等待上限。HTTP/Jenkins/EvalTokens 的排队/构建/任务轮询原先只受
+ *  ensureServerStageTime(deadline) 约束——timeout 留空即 deadline=0、轮询无上界，Jenkins 队列项一直
+ *  拿不到构建号或构建永不完结时阶段永久卡住并占住执行池槽位（浏览器关页后由服务端执行，更是只能干等）。
+ *  默认 6 小时：覆盖长构建，又保证「等一个阶段卡住」不会变成永久。显式 timeout 仍优先（上限 1 小时）。 */
+const SERVER_STAGE_DEFAULT_DEADLINE_MS = 6 * 60 * 60 * 1000
+
 function serverStageDeadline(stage: any): number {
   const seconds = Number(stage && stage.timeout)
-  return Number.isFinite(seconds) && seconds > 0 ? Date.now() + Math.min(Math.max(seconds, 1), 3600) * 1000 : 0
+  if (Number.isFinite(seconds) && seconds > 0) return Date.now() + Math.min(Math.max(seconds, 1), 3600) * 1000
+  return Date.now() + SERVER_STAGE_DEFAULT_DEADLINE_MS
 }
 
 function ensureServerStageTime(deadline: number, label: string) {
@@ -3610,6 +3617,25 @@ export function apply(ctx: Context) {
     handler: async (req: any, res: any) => {
       try {
         if (req.method === 'GET') { json(res, 200, { plans: await readPlansFile() }); return }
+        if (req.method === 'POST') {
+          /* 单条 upsert（按 id 替换）：浏览器 pagehide 移交 / 定时后缀登记用 keepalive POST，
+             不做「GET 合并再全量 PUT」——卸载竞态下会把他人并发改动冲掉。 */
+          const body = await readJsonBody(req)
+          const raw = body && typeof body.plan === 'object' && body.plan ? body.plan : body
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.id !== 'string' || !raw.id
+            || (raw.kind !== 'once' && raw.kind !== 'interval')) {
+            json(res, 400, { error: 'invalid plan' }); return
+          }
+          const plan = { ...raw, id: raw.id.slice(0, 200) }
+          const fresh = await readPlansFile()
+          const rest = fresh.filter((p: any) => !p || p.id !== plan.id)
+          const merged = [...rest, plan].slice(-100)
+          const text = JSON.stringify({ plans: merged })
+          if (text.length > 1024 * 1024) { json(res, 413, { error: 'too large' }); return }
+          await writeJsonAtomic(PLANS_STORE, text)
+          json(res, 200, { ok: true, id: plan.id })
+          return
+        }
         if (req.method === 'PUT') {
           const body = await readJsonBody(req)
           const plans = Array.isArray(body.plans)

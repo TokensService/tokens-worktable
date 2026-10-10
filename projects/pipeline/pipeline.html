@@ -172,7 +172,7 @@
           <option value="auto">跟随系统</option>
         </select>
       </label>
-      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；每个去向可选浏览器本地文件或 dsh 服务器（storages/pipeline-exports/）；导出文件含密码与令牌明文 -->
+      <!-- 导入导出菜单：设置（环境/代码仓/脚本/服务配置）与流水线分开导出 / 导入；去向可选浏览器本地文件、dsh 服务器（storages/pipeline-exports/）或剪贴板；导出文件含密码与令牌明文 -->
       <span id="ioMenu" style="position:relative;display:inline-block;">
         <button id="ioMenuBtn" type="button" class="dshell-btn dshell-btnGhost mini" title="设置 / 流水线的导入导出；导出文件含节点密码与访问令牌明文，请妥善保管、勿提交进仓库">⤓⤒ 导入导出</button>
         <div id="ioMenuPanel" style="display:none;position:absolute;top:calc(100% + 4px);right:0;z-index:30;min-width:230px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:6px;box-shadow:0 8px 24px rgba(0,0,0,.35);">
@@ -186,6 +186,10 @@
           <button id="ioExpSettingsSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出设置并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出设置到服务端…</button>
           <button id="ioExpPipelinesSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="导出全部流水线并保存到 dsh 服务器 storages/pipeline-exports/ 目录，供任意浏览器导入">⤓ 导出流水线到服务端…</button>
           <button id="ioImpSrv" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="列出 dsh 服务器上的备份文件，按文件内容自动识别设置 / 流水线并导入">⤒ 从服务端导入…</button>
+          <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">剪贴板（复制 JSON / 粘贴导入）</div>
+          <button id="ioExpSettingsClip" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="把设置导出 JSON 复制到剪贴板，可在别处粘贴保存后经「从剪贴板导入…」恢复">⤓ 复制设置到剪贴板</button>
+          <button id="ioExpPipelinesClip" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="把全部流水线导出 JSON 复制到剪贴板，可在别处粘贴保存后经「从剪贴板导入…」恢复">⤓ 复制流水线到剪贴板</button>
+          <button id="ioImpClip" type="button" class="dshell-btn dshell-btnGhost mini" style="display:block;width:100%;text-align:left;" title="粘贴之前复制的导出 JSON，按内容自动识别设置 / 流水线并导入">⤋ 从剪贴板导入…</button>
           <div class="dshell-muted" style="font-size:11px;padding:6px 6px 2px;border-top:1px solid var(--dsw-alias-border-l2);margin-top:4px;">导出文件含密码 / 令牌明文，勿提交仓库</div>
           <div id="ioTip" class="dshell-muted" style="font-size:11px;padding:2px 6px;"></div>
         </div>
@@ -814,11 +818,11 @@
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
       </div>
-      <!-- 冻结底栏：添加阶段固定在最左（左下角），保存 / 取消固定在右下角，整栏不随内容滚动 -->
+      <!-- 冻结底栏：添加阶段 / 从分享导入固定在左侧，保存 / 取消固定在右下角，整栏不随内容滚动 -->
       <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1);">
         <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
+        <button id="plImportShare" class="dshell-btn dshell-btnGhost mini" type="button" title="弹出输入框粘贴流水线分享内容（JSON）并填入本表单（名称/阶段/默认运行参数），确认后点「保存」生成新流水线">从分享导入</button>
         <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
-        <button id="plImportShare" class="dshell-btn dshell-btnGhost mini" type="button" title="读取剪贴板中的流水线分享内容（JSON）并填入本表单（名称/阶段/默认运行参数），确认后点「保存」生成新流水线">从分享导入</button>
         <button id="plSave" class="dshell-btn mini">保存</button>
         <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
       </div>
@@ -912,6 +916,38 @@
         <button id="pmcRun" class="dshell-btn mini">▶ 收集</button>
       </div>
       <div class="logbox" id="pmcLog" style="flex:1; min-height:160px; max-height:46vh; margin:0;">配置收集脚本后点「收集」执行（输出实时回显）。</div>
+    </div>
+  </div>
+  <!-- 从剪贴板导入对话框：粘贴导出 JSON，按 kind 自动识别设置 / 流水线 -->
+  <div id="ioClipDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:225; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%;max-width:640px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <h2 class="dshell-sub" style="margin:0">从剪贴板导入</h2>
+        <button id="ioClipClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <p class="dshell-muted" style="font-size:11px;margin:0;">粘贴「复制设置到剪贴板 / 复制流水线到剪贴板」生成的 JSON，按内容自动识别设置 / 流水线并导入（导入设置不动流水线，导入流水线不动其余设置）。粘贴内容含密码与令牌时请勿外传。</p>
+      <textarea id="ioClipText" class="dshell-input" style="width:100%;min-height:220px;font-family:monospace;font-size:12px;resize:vertical;" placeholder="在此粘贴导出 JSON…"></textarea>
+      <div id="ioClipTip" class="dshell-muted" style="font-size:11px;min-height:16px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
+        <button id="ioClipCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
+        <button id="ioClipImport" type="button" class="dshell-btn mini">⤒ 导入</button>
+      </div>
+    </div>
+  </div>
+  <!-- 从分享导入对话框：textarea 粘贴流水线分享 JSON，填入「新建流水线」表单 -->
+  <div id="plShareImportDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:226; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%;max-width:640px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <h2 class="dshell-sub" style="margin:0">从分享导入</h2>
+        <button id="plShareImportClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <p class="dshell-muted" style="font-size:11px;margin:0;">粘贴流水线「⋯ → 分享」复制的内容（JSON），填入本表单（名称 / 阶段 / 默认运行参数），确认后点「保存」生成新流水线。分享内容含脚本参数值（可能含敏感信息），请勿随意外传。</p>
+      <textarea id="plShareImportText" class="dshell-input" style="width:100%;min-height:220px;font-family:monospace;font-size:12px;resize:vertical;" placeholder="在此粘贴流水线分享内容（JSON）…"></textarea>
+      <div id="plShareImportTip" class="dshell-muted" style="font-size:11px;min-height:16px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
+        <button id="plShareImportCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
+        <button id="plShareImportOk" type="button" class="dshell-btn mini">⤒ 导入</button>
+      </div>
     </div>
   </div>
 </div>
@@ -5291,11 +5327,15 @@ function cancelPlan(id){
    服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/Jenkins/EvalTokens 阶段执行并等待终态；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。
    返回 true=登记成功；接口不可达/写计划失败返回 false——调用方（handoffSchedSuffix）据此弹窗并按失败收尾，
-   后缀不得静默丢失。 */
-async function registerStageTimers(rc, startIdx){
+   后缀不得静默丢失。
+   opts.includeLocal=true 时把「需本地运行」阶段一并写进计划（浏览器关闭移交用：脚本仍在服务端跑，
+   仅浏览器可达的 HTTP 目标可能失败，优于整条流水线永久卡住）。 */
+async function registerStageTimers(rc, startIdx, opts){
+  const includeLocal=!!(opts&&opts.includeLocal);
   const stages=[];
   for(let i=startIdx;i<rc.stages.length;i++){
-    const st=rc.stages[i]; if(!st || st.preset || !st.sched) continue;   // 预设任务是页面运行期概念，不进服务端计划
+    const st=rc.stages[i]; if(!st || st.preset) continue;   // 预设任务是页面运行期概念，不进服务端计划
+    if(!st.sched && !includeLocal) continue;
     const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
     stages.push(ps);
   }
@@ -5347,6 +5387,87 @@ async function handoffSchedSuffix(rc, i){
     alert('定时阶段移交服务端失败：计划接口不可达，后续 '+count+' 个阶段未执行。请检查 dsh 服务后从失败阶段重试。');
     finish(rc,'failed');
   }
+}
+/* ---------- 浏览器关闭移交（本地运行不得因关页永久卡住） ----------
+   手动运行含「需本地运行」阶段时整条由浏览器编排（runPipeline → startSimRun → advance）。关页后
+   exec-stream 随连接断开被服务端杀掉、advance 不再推进，运行永久卡在当前阶段——与「定时分界移交」
+   同一思路，但触发点是 pagehide：把在跑运行的剩余阶段（含非 sched）与本地队列整体登记为
+   「立即执行一次」的服务端计划，由服务端执行池继续跑完。登记用 keepalive POST 单条 upsert
+   （unload 期间请求仍可送达；不做 GET 合并，避免卸载竞态覆盖他人计划）。 */
+function currentStageIndex(rc){
+  if(!rc || !Array.isArray(rc.stages) || !rc.nodes) return -1;
+  for(let i=0;i<rc.stages.length;i++){
+    const st=rc.stages[i]; if(!st) continue;
+    const n=rc.nodes[st.id];
+    if(n && n.status==='running') return i;
+  }
+  for(let i=0;i<rc.stages.length;i++){
+    const st=rc.stages[i]; if(!st) continue;
+    const n=rc.nodes[st.id];
+    if(!n || (n.status!=='success' && n.status!=='failed' && n.status!=='skipped' && n.status!=='aborted')) return i;
+  }
+  return -1;
+}
+function buildUnloadHandoffPlan(rc, startIdx, item){
+  const src=item||rc;
+  const stages=[];
+  const raw=Array.isArray(src.stages)?src.stages:[];
+  for(let i=(item?0:startIdx);i<raw.length;i++){
+    const st=raw[i]; if(!st || st.preset) continue;
+    const ps={...st}; delete ps.sched;
+    stages.push(ps);
+  }
+  if(!stages.length) return null;
+  /* baseSeq=移交起点前的正式阶段数（预设不占序号）：按首个入选阶段回溯，避免 startIdx 落在
+     预设上时 stageSeq 返回 0 导致编号从 -1 起算 */
+  let baseSeq=0;
+  if(!item){
+    let firstIncluded=-1;
+    for(let i=(item?0:startIdx);i<raw.length;i++){ const st=raw[i]; if(st && !st.preset){ firstIncluded=i; break; } }
+    for(let i=0;i<(firstIncluded<0?startIdx:firstIncluded);i++){ const st=raw[i]; if(st && !st.preset) baseSeq++; }
+  }
+  return {
+    id: item ? ('unload-'+String(src.id||('q'+Date.now()))) : ('stimer-'+(src.pipelineId||'pl')+'-'+(src.tag||src.id||Date.now())+'-unload'),
+    pipelineId: src.pipelineId||null,
+    pipelineName: (src.pipelineName||'(自定义)')+' · 关页移交',
+    stages, env: src.env||'', envs: Array.isArray(src.envs)?src.envs:[], image: src.image||'',
+    repoId: src.repoId||null, branch: src.branch||'main', by: (src.by||'anonymous')+' ⏰',
+    createdAt: Date.now(),
+    archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
+    vars: Object.assign({}, item?{}:(rc.vars||{})),
+    kind:'once', at: Date.now(),
+    desc: '浏览器关闭移交 · '+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
+  };
+}
+/* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。 */
+function handoffRunsOnPageHide(){
+  const post=(plan)=>{
+    if(!plan) return;
+    try{
+      fetch('/api/worktable/pipeline/plans',{
+        method:'POST', keepalive:true,
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({plan}),
+      }).catch(()=>{});
+    }catch(e){ /* unload 路径吞掉：服务端 TTL/孤儿簿兜底 */ }
+  };
+  try{
+    (typeof activeRuns!=='undefined'&&activeRuns?activeRuns:[]).forEach(rc=>{
+      if(!rc || rc.over || rc.parallelParent) return;
+      const idx=currentStageIndex(rc);
+      if(idx<0) return;
+      if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 在途 exec-stream 断开即杀进程；该阶段由服务端计划重跑
+      post(buildUnloadHandoffPlan(rc, idx));
+    });
+    const seen=new Set();
+    const handoffItem=(item)=>{
+      if(!item || !item.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      post(buildUnloadHandoffPlan(null, 0, item));
+    };
+    (typeof queue!=='undefined'&&queue?queue:[]).forEach(handoffItem);
+    (typeof pendingLeaseStarts!=='undefined'&&pendingLeaseStarts?pendingLeaseStarts:[]).forEach(p=>{ if(p&&p.queueItem) handoffItem(p.queueItem); });
+  }catch(e){ console.warn('[pipeline] pagehide 移交失败（服务端孤儿簿兜底）:', e); }
 }
 /* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化（随服务端配置 schedEnvIds 键同步，localStorage 为离线缓存）；未单独选择过则跟随主控当前环境 */
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
@@ -9667,6 +9788,10 @@ $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
 $('plImportShare').addEventListener('click', ()=>{ importPipelineShare(); });
+$('plShareImportClose').addEventListener('click', closePipelineShareImport);
+$('plShareImportCancel').addEventListener('click', closePipelineShareImport);
+$('plShareImportDialog').addEventListener('click', (e)=>{ if(e.target===$('plShareImportDialog')) closePipelineShareImport(); });
+$('plShareImportOk').addEventListener('click', ()=>{ const ta=$('plShareImportText'); applyPipelineShareText(ta?ta.value:''); });
 /* 任务卡选中委托：点击卡上任意处（含卡内输入框/按钮）选中该卡，高亮并在上/下边框中点显示「+」插入按钮。
    必须先于下方 data-act 委托注册：选中只原地刷新（applyEditSel，不重渲染、不打断输入），随后按钮动作（含插入/删除）照常执行。 */
 $('plStageList').addEventListener('click', (e)=>{
@@ -9815,8 +9940,8 @@ $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},D
 
 /* ---------- 流水线分享（行「⋯」菜单 → 分享 / 新建流水线 → 从分享导入） ----------
    分享载荷只含定义内容（名称 / 阶段 / 默认运行参数），不含 id、内置、置顶、收藏、可信与署名等实例元数据；
-   点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」粘贴还原到编辑器，确认后保存为新流水线。
-   载荷含阶段脚本参数值（可能含节点口令等敏感信息），仅在可信渠道传递。 */
+   点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」，在弹出的输入框粘贴还原到编辑器，
+   确认后保存为新流水线。载荷含阶段脚本参数值（可能含节点口令等敏感信息），仅在可信渠道传递。 */
 function buildPipelineShare(pl){
   return {
     app:'worktable-pipeline', kind:'pipeline-share', version:1, exportedAt:new Date().toISOString(),
@@ -9849,19 +9974,25 @@ function parsePipelineShare(text){
     defaults:normalizePipelineDefaults(p.defaults),
   };
 }
-/* 「新建流水线 → 从分享导入」：优先读剪贴板，读不到或内容非法时弹框粘贴；解析成功后覆盖当前表单
-   （名称/阶段/默认运行参数）并存草稿，由用户确认后点「保存」落库。 */
-async function importPipelineShare(){
+/* 「新建流水线 → 从分享导入」：点按钮弹出 textarea 输入框，粘贴分享 JSON 后确认导入；
+   解析成功后覆盖当前表单（名称/阶段/默认运行参数）并存草稿，由用户确认后点「保存」落库。 */
+function plShareImportTipShow(msg, bad){ const t=$('plShareImportTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+function openPipelineShareImport(){
+  const d=$('plShareImportDialog'); if(!d) return;
+  const ta=$('plShareImportText'); if(ta) ta.value='';
+  plShareImportTipShow('');
+  d.style.display='flex';
+}
+function closePipelineShareImport(){ const d=$('plShareImportDialog'); if(d) d.style.display='none'; }
+function importPipelineShare(){
   if(plFormReadOnly || $('plForm').dataset.editId) return;
-  let text='';
-  try{ if(navigator.clipboard && navigator.clipboard.readText) text=await navigator.clipboard.readText(); }catch(e){}
-  let shared=parsePipelineShare(text);
-  if(!shared){
-    const typed=prompt('请粘贴流水线分享内容（JSON）：', text||'');
-    if(typed===null || typed===undefined) return;
-    shared=parsePipelineShare(typed);
-    if(!shared){ alert('分享内容无效：不是可识别的流水线分享 JSON'); return; }
-  }
+  openPipelineShareImport();
+}
+/* 从弹窗 textarea 内容导入：非法（非 JSON / 无 stages）在弹窗内给 ✗ 提示并保留粘贴内容供修正；
+   解析成功后填表并关闭弹窗。返回 'ok' / 'invalid'。 */
+async function applyPipelineShareText(text){
+  const shared=parsePipelineShare(text);
+  if(!shared){ plShareImportTipShow('✗ 分享内容无效：不是可识别的流水线分享 JSON', true); return 'invalid'; }
   $('plName').value=shared.name||'';
   editStages=editStagesFromStored(shared.stages);
   editDefaults=normalizePipelineDefaults(shared.defaults);
@@ -9877,7 +10008,9 @@ async function importPipelineShare(){
       return null;
     }));
   });
+  closePipelineShareImport();
   if(typeof toast==='function') toast('✓ 已从分享内容导入「'+(shared.name||'未命名流水线')+'」，确认后点「保存」');
+  return 'ok';
 }
 
 /* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
@@ -9886,8 +10019,9 @@ async function importPipelineShare(){
              schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）都随 config 携带（与服务端持久化同口径）；
              local 块按旧结构同步输出一份运行选择，供旧版页面导入新版文件时识别（新版导入 config 优先、local 兜底）；
    导出流水线 = 全部流水线定义（含预置流水线上的编辑）。
-   每个导出 / 导入都有「浏览器本地文件」与「服务端备份」两个去向：本地下载 / 文件选择框，或落盘 / 读取
-   dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），两种去向共用同一份 payload 与恢复逻辑。
+   每个导出 / 导入都有「浏览器本地文件」「服务端备份」与「剪贴板」三个去向：本地下载 / 文件选择框、
+   落盘 / 读取 dsh 服务器 storages/pipeline-exports/ 目录（见下方「服务端备份」区块），或复制 JSON /
+   粘贴导入（见下方「剪贴板」区块）；三种去向共用同一份 payload 与恢复逻辑。
    导入按文件内容整体恢复（文件为权威，未出现在文件中的配置项保持当前值）：导入设置不动流水线，导入流水线不动其余设置；
    运行历史不参与导入导出。导出文件含节点密码与令牌明文，勿提交仓库、勿外传。 */
 function ioTimestamp(){ const d=new Date(), p=n=>String(n).padStart(2,'0'); return ''+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'-'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
@@ -10036,6 +10170,48 @@ async function importPipelinesFile(file){
   if(r==='ok') ioTipShow('✓ 已导入 '+pipelines.length+' 条流水线');
   else if(r==='invalid') ioTipShow('✗ 不是「导出流水线」生成的有效文件', true);
 }
+/* ---------- 剪贴板（与本地文件 / 服务端备份并列的第三条去向） ----------
+   导出：与本地下载同一份 payload（buildSettingsExport / buildPipelinesExport）序列化后写入剪贴板；
+   导入：textarea 粘贴 JSON，按 kind 自动识别设置 / 流水线，复用 importSettingsData / importPipelinesData
+   的校验、确认与恢复逻辑。不走 clipboard.readText，避免权限弹窗，粘贴内容以用户手动粘贴为准。 */
+function ioClipTipShow(msg, bad){ const t=$('ioClipTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+function exportSettingsToClipboard(){
+  copyText(JSON.stringify(buildSettingsExport(),null,2), $('ioExpSettingsClip'));
+  ioTipShow('✓ 设置已复制到剪贴板');
+}
+function exportPipelinesToClipboard(){
+  copyText(JSON.stringify(buildPipelinesExport(),null,2), $('ioExpPipelinesClip'));
+  ioTipShow('✓ '+pipelines.length+' 条流水线已复制到剪贴板');
+}
+function openIoClipImport(){
+  const d=$('ioClipDialog'); if(!d) return;
+  const ta=$('ioClipText'); if(ta) ta.value='';
+  ioClipTipShow('');
+  d.style.display='flex';
+}
+function closeIoClipImport(){ const d=$('ioClipDialog'); if(d) d.style.display='none'; }
+/* 从剪贴板文本导入：坏 JSON / 非本页备份给 ✗ 提示并留在对话框内供修正；
+   识别后走与文件 / 服务端导入相同的数据入口，成功关闭对话框并给 ✓ 提示 */
+async function importFromClipboardText(text){
+  let data=null;
+  try{ data=JSON.parse(String(text==null?'':text).trim()); }catch(e){}
+  if(!data || typeof data!=='object' || Array.isArray(data)){ ioClipTipShow('✗ 粘贴内容不是有效 JSON', true); return 'invalid'; }
+  const kind=(data.app==='worktable-pipeline') ? data.kind : '';
+  if(kind==='pipeline-settings'){
+    const r=await importSettingsData(data);
+    if(r==='ok'){ closeIoClipImport(); ioTipShow('✓ 设置已从剪贴板导入并保存'); return 'ok'; }
+    if(r==='invalid'){ ioClipTipShow('✗ 不是「导出设置」生成的有效内容', true); return 'invalid'; }
+    return 'cancel';
+  }
+  if(kind==='pipeline-pipelines'){
+    const r=await importPipelinesData(data);
+    if(r==='ok'){ closeIoClipImport(); ioTipShow('✓ 已从剪贴板导入 '+pipelines.length+' 条流水线'); return 'ok'; }
+    if(r==='invalid'){ ioClipTipShow('✗ 不是「导出流水线」生成的有效内容', true); return 'invalid'; }
+    return 'cancel';
+  }
+  ioClipTipShow('✗ 不是本页「导出设置 / 导出流水线」生成的内容', true);
+  return 'invalid';
+}
 /* ---------- 服务端备份（导入导出文件存于 dsh 服务器 storages/pipeline-exports/） ----------
    导出到服务端与浏览器本地下载共用同一份 payload（buildSettingsExport / buildPipelinesExport），经
    /api/worktable/pipeline/io/save 落盘；「从服务端导入…」列出服务端备份，读取后按 kind 自动识别
@@ -10168,6 +10344,14 @@ $('ioExpPipelinesSrv').addEventListener('click', exportPipelinesToServer);
 $('ioImpSrv').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('ioSrvPanel'); toggleIoSrvPanel(!p || p.style.display==='none'); });
 $('ioSrvRefresh').addEventListener('click', refreshIoSrvList);
 $('ioSrvClose').addEventListener('click', ()=>toggleIoSrvPanel(false));
+/* 剪贴板入口：复制导出 JSON 到剪贴板 / 打开粘贴导入对话框（点遮罩或关闭/取消收起） */
+$('ioExpSettingsClip').addEventListener('click', exportSettingsToClipboard);
+$('ioExpPipelinesClip').addEventListener('click', exportPipelinesToClipboard);
+$('ioImpClip').addEventListener('click', (e)=>{ e.stopPropagation(); openIoClipImport(); });
+$('ioClipClose').addEventListener('click', closeIoClipImport);
+$('ioClipCancel').addEventListener('click', closeIoClipImport);
+$('ioClipDialog').addEventListener('click', (e)=>{ if(e.target===$('ioClipDialog')) closeIoClipImport(); });
+$('ioClipImport').addEventListener('click', ()=>{ const ta=$('ioClipText'); importFromClipboardText(ta?ta.value:''); });
 
 /* 环境多选面板开合 */
 $('envMultiBtn').addEventListener('click', (e)=>{ e.stopPropagation(); const p=$('envMultiPanel'); p.style.display = p.style.display==='none'?'block':'none'; });
@@ -10333,6 +10517,7 @@ startQueuePolling();
 const QUEUE_PRESENCE_HEARTBEAT_MS=10000;
 setInterval(()=>{ try{ publishQueue(false); }catch(e){} },QUEUE_PRESENCE_HEARTBEAT_MS);
 window.addEventListener('pagehide',()=>{
+  try{ handoffRunsOnPageHide(); }catch(e){}   // 在跑本地运行/队列整体移交服务端继续执行（keepalive POST，见「浏览器关闭移交」）
   try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify(queuePublishBody())],{type:'text/plain'})); }catch(e){}
 });
 </script>
