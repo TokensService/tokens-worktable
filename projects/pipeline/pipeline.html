@@ -818,11 +818,11 @@
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
       </div>
-      <!-- 冻结底栏：添加阶段固定在最左（左下角），保存 / 取消固定在右下角，整栏不随内容滚动 -->
+      <!-- 冻结底栏：添加阶段 / 从分享导入固定在左侧，保存 / 取消固定在右下角，整栏不随内容滚动 -->
       <div style="flex:0 0 auto; display:flex; gap:8px; align-items:center; justify-content:flex-end; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1);">
         <button id="plStageAdd" class="dshell-btn dshell-btnGhost mini" type="button">+ 添加阶段</button>
+        <button id="plImportShare" class="dshell-btn dshell-btnGhost mini" type="button" title="弹出输入框粘贴流水线分享内容（JSON）并填入本表单（名称/阶段/默认运行参数），确认后点「保存」生成新流水线">从分享导入</button>
         <span id="plDraftTip" class="dshell-muted" style="font-size:11px; margin-right:auto;"></span>
-        <button id="plImportShare" class="dshell-btn dshell-btnGhost mini" type="button" title="读取剪贴板中的流水线分享内容（JSON）并填入本表单（名称/阶段/默认运行参数），确认后点「保存」生成新流水线">从分享导入</button>
         <button id="plSave" class="dshell-btn mini">保存</button>
         <button id="plCancel" class="dshell-btn dshell-btnGhost mini">取消</button>
       </div>
@@ -931,6 +931,22 @@
       <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
         <button id="ioClipCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
         <button id="ioClipImport" type="button" class="dshell-btn mini">⤒ 导入</button>
+      </div>
+    </div>
+  </div>
+  <!-- 从分享导入对话框：textarea 粘贴流水线分享 JSON，填入「新建流水线」表单 -->
+  <div id="plShareImportDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:226; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%;max-width:640px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <h2 class="dshell-sub" style="margin:0">从分享导入</h2>
+        <button id="plShareImportClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <p class="dshell-muted" style="font-size:11px;margin:0;">粘贴流水线「⋯ → 分享」复制的内容（JSON），填入本表单（名称 / 阶段 / 默认运行参数），确认后点「保存」生成新流水线。分享内容含脚本参数值（可能含敏感信息），请勿随意外传。</p>
+      <textarea id="plShareImportText" class="dshell-input" style="width:100%;min-height:220px;font-family:monospace;font-size:12px;resize:vertical;" placeholder="在此粘贴流水线分享内容（JSON）…"></textarea>
+      <div id="plShareImportTip" class="dshell-muted" style="font-size:11px;min-height:16px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
+        <button id="plShareImportCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
+        <button id="plShareImportOk" type="button" class="dshell-btn mini">⤒ 导入</button>
       </div>
     </div>
   </div>
@@ -9772,6 +9788,10 @@ $('archiveScriptName').value = archiveScriptName;
 $('archiveScriptName').addEventListener('change', e=>{ archiveScriptName=e.target.value.trim(); saveArchiveScript(); });
 $('plStageAdd').addEventListener('click', ()=>{ editStages.push(newStage()); renderStageEditor(); schedulePlDraftSave(); });
 $('plImportShare').addEventListener('click', ()=>{ importPipelineShare(); });
+$('plShareImportClose').addEventListener('click', closePipelineShareImport);
+$('plShareImportCancel').addEventListener('click', closePipelineShareImport);
+$('plShareImportDialog').addEventListener('click', (e)=>{ if(e.target===$('plShareImportDialog')) closePipelineShareImport(); });
+$('plShareImportOk').addEventListener('click', ()=>{ const ta=$('plShareImportText'); applyPipelineShareText(ta?ta.value:''); });
 /* 任务卡选中委托：点击卡上任意处（含卡内输入框/按钮）选中该卡，高亮并在上/下边框中点显示「+」插入按钮。
    必须先于下方 data-act 委托注册：选中只原地刷新（applyEditSel，不重渲染、不打断输入），随后按钮动作（含插入/删除）照常执行。 */
 $('plStageList').addEventListener('click', (e)=>{
@@ -9920,8 +9940,8 @@ $('cfgReset').addEventListener('click', ()=>{ analysisPrompts=Object.assign({},D
 
 /* ---------- 流水线分享（行「⋯」菜单 → 分享 / 新建流水线 → 从分享导入） ----------
    分享载荷只含定义内容（名称 / 阶段 / 默认运行参数），不含 id、内置、置顶、收藏、可信与署名等实例元数据；
-   点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」粘贴还原到编辑器，确认后保存为新流水线。
-   载荷含阶段脚本参数值（可能含节点口令等敏感信息），仅在可信渠道传递。 */
+   点「分享」把 JSON 复制到剪贴板，对方在「新建流水线」点「从分享导入」，在弹出的输入框粘贴还原到编辑器，
+   确认后保存为新流水线。载荷含阶段脚本参数值（可能含节点口令等敏感信息），仅在可信渠道传递。 */
 function buildPipelineShare(pl){
   return {
     app:'worktable-pipeline', kind:'pipeline-share', version:1, exportedAt:new Date().toISOString(),
@@ -9954,19 +9974,25 @@ function parsePipelineShare(text){
     defaults:normalizePipelineDefaults(p.defaults),
   };
 }
-/* 「新建流水线 → 从分享导入」：优先读剪贴板，读不到或内容非法时弹框粘贴；解析成功后覆盖当前表单
-   （名称/阶段/默认运行参数）并存草稿，由用户确认后点「保存」落库。 */
-async function importPipelineShare(){
+/* 「新建流水线 → 从分享导入」：点按钮弹出 textarea 输入框，粘贴分享 JSON 后确认导入；
+   解析成功后覆盖当前表单（名称/阶段/默认运行参数）并存草稿，由用户确认后点「保存」落库。 */
+function plShareImportTipShow(msg, bad){ const t=$('plShareImportTip'); if(!t) return; t.style.color=bad?'var(--log-err)':'var(--log-ok)'; t.textContent=msg; }
+function openPipelineShareImport(){
+  const d=$('plShareImportDialog'); if(!d) return;
+  const ta=$('plShareImportText'); if(ta) ta.value='';
+  plShareImportTipShow('');
+  d.style.display='flex';
+}
+function closePipelineShareImport(){ const d=$('plShareImportDialog'); if(d) d.style.display='none'; }
+function importPipelineShare(){
   if(plFormReadOnly || $('plForm').dataset.editId) return;
-  let text='';
-  try{ if(navigator.clipboard && navigator.clipboard.readText) text=await navigator.clipboard.readText(); }catch(e){}
-  let shared=parsePipelineShare(text);
-  if(!shared){
-    const typed=prompt('请粘贴流水线分享内容（JSON）：', text||'');
-    if(typed===null || typed===undefined) return;
-    shared=parsePipelineShare(typed);
-    if(!shared){ alert('分享内容无效：不是可识别的流水线分享 JSON'); return; }
-  }
+  openPipelineShareImport();
+}
+/* 从弹窗 textarea 内容导入：非法（非 JSON / 无 stages）在弹窗内给 ✗ 提示并保留粘贴内容供修正；
+   解析成功后填表并关闭弹窗。返回 'ok' / 'invalid'。 */
+async function applyPipelineShareText(text){
+  const shared=parsePipelineShare(text);
+  if(!shared){ plShareImportTipShow('✗ 分享内容无效：不是可识别的流水线分享 JSON', true); return 'invalid'; }
   $('plName').value=shared.name||'';
   editStages=editStagesFromStored(shared.stages);
   editDefaults=normalizePipelineDefaults(shared.defaults);
@@ -9982,7 +10008,9 @@ async function importPipelineShare(){
       return null;
     }));
   });
+  closePipelineShareImport();
   if(typeof toast==='function') toast('✓ 已从分享内容导入「'+(shared.name||'未命名流水线')+'」，确认后点「保存」');
+  return 'ok';
 }
 
 /* ---------- 设置 / 流水线导入导出（标题区右上角「导入导出」菜单） ----------
