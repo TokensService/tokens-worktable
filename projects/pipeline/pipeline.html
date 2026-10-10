@@ -4554,6 +4554,13 @@ function startSimRun(pl, c){
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   rcOverall(rc,'运行中…','dshell-badgeWait');
   renderFlow(); renderDetail();
+  /* 混合编排（本地前缀 + 定时后缀）：启动即把后缀预登记为休眠服务端计划（at=0，见 preRegisterSchedSuffix），
+     分界/关页只做激活，不再等移交——防止移交过程中丢上下文/请求丢失。纯本地（无 sched 阶段）不预登记。 */
+  {
+    let firstSched=-1;
+    for(let i=0;i<stages.length;i++){ const st=stages[i]; if(!st||st.preset) continue; if(st.sched){ firstSched=i; break; } }
+    if(firstSched>=0){ try{ preRegisterSchedSuffix(rc, firstSched); }catch(e){ console.warn('[pipeline] 定时后缀预登记失败（分界/关页回退全量登记）:', e); } }
+  }
   advance(rc,0);
   renderQueue();
 }
@@ -5294,19 +5301,23 @@ function cancelPlan(id){
   if(active&&!confirm('该计划当前有'+(active.kind==='queued'?'排队中':'运行中')+'的执行，取消计划不会终止它。\n\n确定仅删除计划、保留当前执行？（要终止当前执行请先用「终止」）')) return;
   serverPlans=serverPlans.filter(x=>x.id!==id); pushPlans(); renderPlanList();
 }
-/* 阶段级定时：本地（浏览器）运行到达「定时阶段」分界时，把后缀定时阶段整体登记为一条「立即执行一次」的服务端计划
-   （id 带本次运行 tag 逐次运行独立登记：每次运行各自执行、各自归档，重跑不再互替——
+/* 阶段级定时后缀：混合编排（需本地运行前缀 + 定时后缀）不再等分界/关页才登记——
+   启动（startSimRun）即把后缀阶段整体预登记为一条休眠服务端计划（kind:'once' 且 at=0，
+   服务端 planTick 对 at 非正数的 once 计划不触发），本地前缀跑完只做「激活」（补 vars 快照 + at=now），
+   关页/分界不再走重型移交，避免移交过程丢上下文、keepalive 丢包等问题。
+   id 带本次运行 tag 逐次运行独立登记：每次运行各自执行、各自归档，重跑不再互替——
    旧版稳定 id 会被「执行完按 id 移除计划」的服务端清理误删执行中登记的新计划，导致该次运行后缀不执行、
    归档文件夹缺失每任务独立日志）。阶段不再单独配置周期：周期性由流水线级定时计划
    （「定时」页）决定，计划触发时服务端执行包含定时阶段在内的完整流水线。
    服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/Jenkins/EvalTokens 阶段执行并等待终态；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。
-   返回 true=登记成功；接口不可达/写计划失败返回 false——调用方（handoffSchedSuffix）据此弹窗并按失败收尾，
-   后缀不得静默丢失。
-   opts.includeLocal=true 时把「需本地运行」阶段一并写进计划（浏览器关闭移交用：脚本仍在服务端跑，
-   仅浏览器可达的 HTTP 目标可能失败，优于整条流水线永久卡住）。 */
-async function registerStageTimers(rc, startIdx, opts){
+   opts.activate=false 生成休眠计划（at=0，仅登记不执行）；缺省/true 为立即执行（at=now）。
+   opts.includeLocal=true 时把「需本地运行」阶段一并写进计划（关页兜底用：脚本仍在服务端跑，
+   仅浏览器可达的 HTTP 目标可能失败，优于整条流水线永久卡住）。
+   返回 true=登记成功；接口不可达/写计划失败返回 false——调用方据此弹窗并按失败收尾，后缀不得静默丢失。 */
+function buildSuffixPlan(rc, startIdx, opts){
   const includeLocal=!!(opts&&opts.includeLocal);
+  const activate=!(opts&&opts.activate===false);
   const stages=[];
   for(let i=startIdx;i<rc.stages.length;i++){
     const st=rc.stages[i]; if(!st || st.preset) continue;   // 预设任务是页面运行期概念，不进服务端计划
@@ -5314,31 +5325,63 @@ async function registerStageTimers(rc, startIdx, opts){
     const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
     stages.push(ps);
   }
-  if(!stages.length) return false;
+  if(!stages.length) return null;
   const sid='stimer-'+(rc.pipelineId||'pl')+'-'+(rc.tag||Date.now())+'-suffix';   // 逐次运行唯一：同一次运行内重复登记（如从失败阶段重试再到分界）仍按同 id 替换去重
   // 把本次运行的归档上下文（文件夹/tag/起始序号）随计划交给服务端：
   // 定时后缀各任务回显由服务端写入同一归档文件夹、独立任务日志（run-<tag>-NN-任务名.log），与前缀日志连贯编号
   //（baseSeq=分界前的正式阶段数，预设任务不占阶段序号，见 stageSeq）
-  const plan={ id:sid, pipelineId:rc.pipelineId||null, pipelineName:(rc.pipelineName||'')+' · 定时后缀',
+  return { id:sid, pipelineId:rc.pipelineId||null, pipelineName:(rc.pipelineName||'')+' · 定时后缀',
     stages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null, repository:runRepositorySnapshot(rc),
     branch:rc.branch||'main', strategy:rc.strategy||'', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
     archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
     vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
-    kind:'once', at:Date.now(), desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(rc.tag||'')+' · 立即（周期跟随流水线计划）' };
+    kind:'once', at:activate?Date.now():0,   // at=0 休眠：服务端 planTick 不触发，待本地前缀完成后再激活
+    desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(rc.tag||'')+(activate?' · 立即（周期跟随流水线计划）':' · 已预登记（待本地阶段完成）') };
+}
+/* 计划单条 upsert（POST /api/worktable/pipeline/plans）：按 id 替换、保留他人计划，
+   与关页移交同一条通道（不做 GET 合并再全量 PUT，避免竞态冲掉并发改动）。 */
+async function upsertServerPlan(plan){
+  if(!plan) return false;
   try{
-    const r=await fetch('/api/worktable/pipeline/plans');
-    let fresh=[]; if(r.ok){ const j=await r.json(); fresh=Array.isArray(j.plans)?j.plans:[]; }
-    const kept=fresh.filter(p=>!p || p.id!==sid);   // 去重：仅替换同一次运行的旧登记（sid 含 tag），不影响其他运行的待执行计划
-    const merged=kept.concat([plan]);
-    const w=await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:merged})});
+    const w=await fetch('/api/worktable/pipeline/plans',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan})});
     if(!w||!w.ok) throw new Error('plans http '+(w&&w.status));
-    serverPlans=merged; renderPlanList();
+    const rest=(typeof serverPlans!=='undefined'&&serverPlans?serverPlans:[]).filter(p=>!p || p.id!==plan.id);
+    serverPlans=rest.concat([plan]); renderPlanList();
     return true;
   }catch(e){ console.warn('[stage-timer] 登记失败：', e); return false; }
 }
-/* 定时分界移交（原设计：混合编排手动运行时，「需本地运行」前缀在浏览器立即跑完，定时后缀移交服务端执行）。
+async function registerStageTimers(rc, startIdx, opts){
+  return await upsertServerPlan(buildSuffixPlan(rc, startIdx, opts));
+}
+/* 启动即预登记定时后缀为休眠计划（at=0）：阶段定义/代码仓/归档上下文等重负载在页面健康时上送，
+   分界/关页只补 vars 与 at，缩小移交面。同步记录计划 id，供分界激活、关页替换与失败清理定位同一条计划。 */
+function preRegisterSchedSuffix(rc, startIdx){
+  const plan=buildSuffixPlan(rc, startIdx, {activate:false});
+  if(!plan) return null;
+  rc.suffixPlanId=plan.id;
+  rc.suffixPlanHeld=true;
+  registerStageTimers(rc, startIdx, {activate:false});   // 异步上送：不阻断本地启动；失败时分界/关页回退全量登记
+  return plan.id;
+}
+/* 运行失败/中止/重置且后缀从未激活时，清掉休眠计划，避免定时页残留永不触发的占位计划 */
+async function discardHeldSuffixPlan(rc){
+  if(!rc || !rc.suffixPlanHeld || !rc.suffixPlanId) return false;
+  rc.suffixPlanHeld=false;
+  const sid=String(rc.suffixPlanId||''); if(!sid) return false;
+  try{
+    const r=await fetch('/api/worktable/pipeline/plans');
+    let fresh=[]; if(r.ok){ const j=await r.json(); fresh=Array.isArray(j.plans)?j.plans:[]; }
+    const kept=fresh.filter(p=>!p || p.id!==sid);
+    const w=await fetch('/api/worktable/pipeline/plans',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({plans:kept})});
+    if(!w||!w.ok) throw new Error('plans http '+(w&&w.status));
+    serverPlans=kept; renderPlanList();
+    return true;
+  }catch(e){ console.warn('[stage-timer] 清理休眠后缀计划失败：', e); return false; }
+}
+/* 定时分界：本地前缀跑完后激活预登记的休眠后缀计划（补当前 vars 快照 + at=now，同 id 覆盖），
+   不再做重型移交登记。预登记失败/缺失时回退全量登记（registerStageTimers）。
    后缀各阶段在编排区标记为「移交服务端」（skipped 渲染，结果由服务端「定时后缀」运行记录承载）；
-   登记成功：弹窗告知并按成功收尾本次运行；登记失败：弹窗告知后缀未执行、分界阶段标 failed（可从失败阶段重试），
+   激活成功：弹窗告知并按成功收尾本次运行；失败：弹窗告知后缀未执行、分界阶段标 failed（可从失败阶段重试），
    本次运行按失败收尾——后缀不得静默丢失，也不得改在本地落地执行（定时阶段语义=服务端执行，见 runPipeline 分流）。 */
 async function handoffSchedSuffix(rc, i){
   const stg=rc.stages;
@@ -5350,10 +5393,11 @@ async function handoffSchedSuffix(rc, i){
   }
   rcRender(rc,true);
   if(!count){ finish(rc,'success'); return; }   // 分界后只剩预设任务：无后缀可移交，直接收尾（防御，正常不会走到）
-  const ok=await registerStageTimers(rc,i);
+  const ok=await registerStageTimers(rc,i);   // 激活/回退全量登记：同 id 覆盖休眠计划，vars 取当前快照
   if(rc.over) return;   // 等待登记期间被中止/重置：中止路径已收尾，不再弹窗不再写状态
   if(ok){
-    alert('本地阶段已完成，后续 '+count+' 个定时阶段已移交服务端立即执行（约 15 秒内开始，可在「定时」页查看或取消）。');
+    if(rc.suffixPlanHeld) rc.suffixPlanHeld=false;   // 已激活：finish 不再清理
+    alert('本地阶段已完成，后续 '+count+' 个定时阶段已在服务端开始执行（约 15 秒内开始，可在「定时」页查看或取消）。');
     finish(rc,'success');
     rcOverall(rc,'✓ 已完成（后缀 '+count+' 个定时阶段已移交服务端）','dshell-badgeDone');
   }else{
@@ -5417,9 +5461,11 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
     for(let i=0;i<(firstIncluded<0?startIdx:firstIncluded);i++){ const st=raw[i]; if(st && !st.preset) baseSeq++; }
   }
   return {
-    id: item ? ('unload-'+String(src.id||('q'+Date.now()))) : ('stimer-'+(src.pipelineId||'pl')+'-'+(src.tag||src.id||Date.now())+'-unload'),
+    /* 混合编排启动时已预登记休眠后缀计划（suffixPlanId）：关页替换同一条计划并激活，避免定时页残留 at=0 占位；
+       纯本地运行 / 排队条目无预登记，沿用 unload- 前缀独立 id。 */
+    id: item ? ('unload-'+String(src.id||('q'+Date.now()))) : ((rc&&rc.suffixPlanId)||('stimer-'+(src.pipelineId||'pl')+'-'+(src.tag||src.id||Date.now())+'-unload')),
     pipelineId: src.pipelineId||null,
-    pipelineName: (src.pipelineName||'(自定义)')+' · 关页移交',
+    pipelineName: (src.pipelineName||'(自定义)')+(item||!(rc&&rc.suffixPlanId)?' · 关页移交':' · 定时后缀'),
     stages, env: src.env||'', envs: Array.isArray(src.envs)?src.envs:[], image: src.image||'',
     repoId: src.repoId||null, repository: runRepositorySnapshot(src),
     branch: src.branch||'main', strategy: src.strategy||'',
@@ -5428,7 +5474,7 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
     archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
     vars: Object.assign({}, item?{}:(rc.vars||{})),
     kind:'once', at: Date.now(),
-    desc: '浏览器关闭移交 · '+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
+    desc: (item||!(rc&&rc.suffixPlanId)?'浏览器关闭移交 · ':'定时后缀 · 激活 · ')+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
   };
 }
 /* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。
@@ -5463,7 +5509,9 @@ function handoffRunsOnPageHide(){
       const idx=currentStageIndex(rc);
       if(idx<0){ noteConcluded(rc.id); return; }   // 无剩余阶段：本地已跑完，不是失联中断
       if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 在途 exec-stream 断开即杀进程；该阶段由服务端计划重跑
-      post(buildUnloadHandoffPlan(rc, idx));
+      const plan=buildUnloadHandoffPlan(rc, idx);
+      if(plan && rc.suffixPlanId && plan.id===rc.suffixPlanId) rc.suffixPlanHeld=false;   // 关页替换同一条休眠计划并激活：不再由 finish 清理
+      post(plan);
       noteConcluded(rc.id);   // 已登记移交计划：本地条目了结，豁免孤儿
     });
     const seen=new Set();
@@ -5919,6 +5967,7 @@ function disposeRunForReset(rc){
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
   if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 重置（不计入历史）同样释放节点租约
+  if(rc.suffixPlanHeld && typeof discardHeldSuffixPlan==='function'){ try{ discardHeldSuffixPlan(rc); }catch(e){} }   // 重置：未激活的休眠后缀计划一并清理
   rc.over=true;
 }
 function settleParallelStage(child,status){
@@ -7511,6 +7560,8 @@ function finish(rc, result){
   if(rc.timer){ clearInterval(rc.timer); rc.timer=null; }
   if(rc.leaseTimer){ clearInterval(rc.leaseTimer); rc.leaseTimer=null; }
   if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 释放节点租约：等待同节点的排队任务（含他端）随即可启动
+  /* 后缀休眠计划从未激活（本地阶段失败/中止/重置）：清掉定时页占位，避免永不触发的残留计划 */
+  if(rc.suffixPlanHeld && typeof discardHeldSuffixPlan==='function'){ try{ discardHeldSuffixPlan(rc); }catch(e){} }
   activeRuns=activeRuns.filter(r=>r!==rc);
   /* 正常终态化登记（完成/中止都经 finish）：条目从在场快照消失属正常，上报 completed 豁免孤儿判定。
      typeof 守卫：extractFn 抽取 finish 的测试沙盒无此函数时按旧行为运行 */

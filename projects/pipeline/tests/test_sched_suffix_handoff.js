@@ -37,6 +37,7 @@ function handoffContext(stages, options) {
   const archived = [];
   const overalls = [];
   const fetches = [];
+  const postPlans = [];
   let putBody = null;
   const stopButton = { disabled: false };
   const context = {
@@ -86,7 +87,13 @@ function handoffContext(stages, options) {
         if (options.putFails) return { ok: false, status: 500 };
         return { ok: true, status: 200, json: async () => ({}) };
       }
-      return { ok: true, status: 200, json: async () => ({ plans: [] }) };
+      if (String(url).endsWith('/api/worktable/pipeline/plans') && init && init.method === 'POST') {
+        const body = JSON.parse(init.body);
+        postPlans.push(body && body.plan);
+        if (options.postFails) return { ok: false, status: 500 };
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ plans: options.existingPlans || [] }) };
     },
   };
   vm.createContext(context);
@@ -94,7 +101,11 @@ function handoffContext(stages, options) {
     'pipelineStageGroups',
     'stageSeq',
     'runRepositorySnapshot',
+    'buildSuffixPlan',
+    'upsertServerPlan',
     'registerStageTimers',
+    'preRegisterSchedSuffix',
+    'discardHeldSuffixPlan',
     'handoffSchedSuffix',
     'advance',
     'historyEnvNodesOf',
@@ -111,10 +122,10 @@ function handoffContext(stages, options) {
   };
   context.activeRuns = [rc];
   context.viewRc = rc;
-  return { context, rc, started, alerts, archived, overalls, fetches, putBody: () => putBody };
+  return { context, rc, started, alerts, archived, overalls, fetches, putBody: () => putBody, postPlans };
 }
 
-test('混合编排：本地前缀跑完即在定时分界移交服务端（计划带归档上下文与变量快照）并弹窗告知', async () => {
+test('混合编排：本地前缀跑完即在定时分界激活后缀计划（计划带归档上下文与变量快照）并弹窗告知', async () => {
   const stages = [
     { id: 'a', name: '本地A', kind: 'simulate', sched: null },
     { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
@@ -125,13 +136,13 @@ test('混合编排：本地前缀跑完即在定时分界移交服务端（计�
   await flush();
   assert.deepEqual(h.started, ['a'], '只有本地前缀在浏览器执行，定时阶段不得在本地落地');
   assert.equal(h.alerts.length, 1);
-  assert.match(h.alerts[0], /2 个定时阶段已移交服务端立即执行/);
-  const plans = h.putBody() && h.putBody().plans;
-  assert.ok(plans && plans.length === 1, '后缀应登记为一条服务端计划');
-  const plan = plans[0];
+  assert.match(h.alerts[0], /2 个定时阶段已在服务端开始执行/);
+  assert.equal(h.postPlans.length, 1, '分界经 POST 单条 upsert 激活/登记后缀计划');
+  const plan = h.postPlans[0];
   assert.deepEqual(plan.stages.map(s => s.id), ['b', 'c']);
   assert.equal(plan.stages[0].sched, undefined, '计划阶段不带 sched 标记');
   assert.equal(plan.kind, 'once');
+  assert.equal(plan.at > 0, true, '激活后 at=now，服务端 15s 内触发');
   assert.equal(plan.archive, '/arc/pl_x', '归档文件夹随计划移交（服务端写入同一文件夹）');
   assert.equal(plan.tag, 't1');
   assert.equal(plan.baseSeq, 1, 'baseSeq=分界前正式阶段数（预设不占序号）');
@@ -156,7 +167,7 @@ test('登记失败：弹窗告知后缀未执行、分界阶段标 failed（可�
     { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
     { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
   ];
-  const h = handoffContext(stages, { putFails: true });
+  const h = handoffContext(stages, { postFails: true });
   h.context.advance(h.rc, 0);
   await flush();
   assert.deepEqual(h.started, ['a']);
@@ -167,6 +178,67 @@ test('登记失败：弹窗告知后缀未执行、分界阶段标 failed（可�
   assert.equal(h.rc.over, true);
   assert.deepEqual(h.archived, ['failed']);
   assert.equal(h.context.history[0].status, 'failed');
+});
+
+test('启动预登记：后缀休眠计划 at=0 上送服务端，分界激活时同 id 覆盖并补 vars', async () => {
+  const stages = [
+    { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+    { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages);
+  const sid = h.context.preRegisterSchedSuffix(h.rc, 1);
+  await flush();
+  assert.equal(sid, 'stimer-pl-test-t1-suffix', '预登记 id 带本次运行 tag');
+  assert.equal(h.rc.suffixPlanHeld, true, '标记休眠待激活');
+  assert.equal(h.postPlans.length, 1, '启动即 POST 预登记');
+  assert.equal(h.postPlans[0].at, 0, '休眠计划 at=0，服务端 planTick 不触发');
+  assert.deepEqual(h.postPlans[0].stages.map(s => s.id), ['b', 'c'], '只预登记定时后缀');
+  assert.match(h.postPlans[0].desc, /已预登记/);
+  h.rc.vars.A = '2';
+  h.context.advance(h.rc, 0);
+  await flush();
+  assert.equal(h.postPlans.length, 2, '分界再次 POST 同 id 覆盖激活');
+  const active = h.postPlans[1];
+  assert.equal(active.id, sid, '同 id 覆盖，不产生第二条计划');
+  assert.equal(active.at > 0, true, '激活后 at=now');
+  assert.equal(active.vars.A, '2', '激活时补当前 vars 快照');
+  assert.equal(h.rc.suffixPlanHeld, false, '激活后不再由 finish 清理');
+});
+
+test('休眠计划清理：discardHeldSuffixPlan 按 id 从计划列表移除，不影响他人计划', async () => {
+  const stages = [
+    { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages, {
+    existingPlans: [
+      { id: 'stimer-pl-test-t1-suffix', kind: 'once', at: 0 },
+      { id: 'other-plan', kind: 'interval', every: 5, everyUnit: 'min' },
+    ],
+  });
+  h.context.preRegisterSchedSuffix(h.rc, 1);
+  await flush();
+  const ok = await h.context.discardHeldSuffixPlan(h.rc);
+  await flush();
+  assert.equal(ok, true);
+  assert.equal(h.rc.suffixPlanHeld, false);
+  const put = h.putBody();
+  assert.ok(put, '清理走 GET+PUT 列表通道');
+  assert.deepEqual(put.plans.map(p => p.id), ['other-plan'], '仅移除本运行休眠计划');
+});
+
+test('休眠计划清理：已激活（suffixPlanHeld=false）不再触碰计划接口', async () => {
+  const stages = [
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages);
+  h.rc.suffixPlanId = 'stimer-pl-test-t1-suffix';
+  h.rc.suffixPlanHeld = false;
+  const ok = await h.context.discardHeldSuffixPlan(h.rc);
+  await flush();
+  assert.equal(ok, false);
+  assert.equal(h.fetches.filter(f => f.url.endsWith('/api/worktable/pipeline/plans')).length, 0);
 });
 
 test('纯本地编排（无定时阶段）：不登记计划、不弹窗，整次本地跑完', async () => {
