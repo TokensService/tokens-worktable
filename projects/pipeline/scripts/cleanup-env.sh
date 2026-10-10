@@ -732,6 +732,15 @@ step_svc() {
 ssh_local() { bash -c "$1"; }
 
 # ---------------- STEP: hugepages ----------------
+step_uncordon() {
+    [[ "${HAS_KUBECTL:-0}" == "1" ]] || probe_k8s
+    [[ "${HAS_KUBECTL:-0}" == "1" ]] || { log "kubectl 不可用，跳过 uncordon"; return 0; }
+    local node_name="${NODE:-}"
+    [[ -n "$node_name" ]] || node_name="$(get_node_name)" || { log "无法解析 nodeName，跳过 uncordon"; return 1; }
+    log "=== 清理节点 cordon: $node_name ==="
+    if [[ "$DRY_RUN" == "1" ]]; then log "  [DRY_RUN] kubectl uncordon $node_name"; else kubectl uncordon "$node_name" || return 1; fi
+}
+
 step_hugepages() {
     local nr="${1:-/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages}"
     [[ "$nr" == /* ]] || die "nr_path 必须以 / 开头"
@@ -743,7 +752,7 @@ step_hugepages() {
 
 # ---------------- 编排 ----------------
 DEFAULT_STEPS="crond,release-resources,containers,gpu"
-VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages release-resources"
+VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages release-resources uncordon"
 
 do_standardize() {
     local steps="$STEPS"
@@ -760,6 +769,7 @@ do_standardize() {
             kubelet) step_svc kubelet ;;
             kube-proxy) step_svc kube-proxy ;;
             hugepages) step_hugepages ;;
+            uncordon) step_uncordon ;;
             release-resources)
                 if [[ -z "$CLEANUP_NAMESPACE" && ( -z "$DEPLOY_ARCH" || -z "$DEPLOY_EXECUTOR" || -z "$DEPLOY_IMAGE_TAG" ) ]]; then
                     log "跳过本次发布资源清理：未提供 CLEANUP_NAMESPACE，也未完整提供 DEPLOY_STRATEGY/arch、BY/EXECUTOR、IMAGE_TAG"
@@ -846,7 +856,7 @@ main() {
     [[ "$DRY_RUN" =~ ^[01]$ ]] || die "DRY_RUN 必须为 0 或 1"
     [[ "$CLEANUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CLEANUP_TIMEOUT_SECONDS 必须为正整数"
     [[ "$CLEANUP_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "CLEANUP_POLL_SECONDS 必须为正整数"
-    case "$ACTION" in standardize|clean-containers|kill-gpu|svc|hugepages|release-resources) ;; *) die "清理脚本不支持 ACTION=$ACTION";; esac
+    case "$ACTION" in standardize|clean-containers|kill-gpu|svc|hugepages|release-resources|uncordon) ;; *) die "清理脚本不支持 ACTION=$ACTION";; esac
     if [[ -n "$TARGET_HOSTS" && "$REMOTE_EXECUTION" != "1" ]]; then
         do_targets
         return
@@ -858,6 +868,7 @@ main() {
         svc) [[ "$SERVICE" == "kubelet" || "$SERVICE" == "kube-proxy" ]] || die "SERVICE 必须为 kubelet 或 kube-proxy"; step_svc "$SERVICE";;
         hugepages) step_hugepages "$HUGEPAGE_PATH";;
         release-resources) cleanup_current_release_resources;;
+        uncordon) probe_k8s; step_uncordon;;
         *) die "未知 ACTION: $ACTION";;
     esac
 }
