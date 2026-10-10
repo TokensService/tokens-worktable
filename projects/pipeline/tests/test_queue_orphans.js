@@ -102,6 +102,35 @@ test('publishQueue：PUT 体为 schemaVersion:3 且携带 completed（终态登�
   assert.equal(body.runs[0].id, 'r9');
 });
 
+test('queuePublishBody excludeIds：已移交条目从 runs/queue 剔除并强制并入 completed（关页移交豁免孤儿）', () => {
+  const { context } = loadPublishContext();
+  context.activeRuns.push(
+    { id: 'r-h1', pipelineName: '移交A', by: 'alice', startTs: 1, stages: [], nodes: {} },
+    { id: 'r-keep', pipelineName: '保留B', by: 'alice', startTs: 2, stages: [], nodes: {} },
+  );
+  context.queue.push(
+    { id: 'q-h1', pipelineName: '移交Q', by: 'alice', queuedAt: 1, stages: [], presets: [] },
+    { id: 'q-keep', pipelineName: '保留Q', by: 'alice', queuedAt: 2, stages: [], presets: [] },
+  );
+  const body = JSON.parse(JSON.stringify(context.queuePublishBody({ excludeIds: ['r-h1', 'q-h1'] })));
+  assert.deepEqual(body.runs.map(r => r.id), ['r-keep'], '已移交运行从快照剔除');
+  assert.deepEqual(body.queue.map(q => q.id), ['q-keep'], '已移交排队从快照剔除');
+  assert.equal(body.running && body.running.id, 'r-keep', 'running 兼容字段跟随剔除后首条');
+  assert.ok(body.completed.includes('r-h1'), '已移交运行并入 completed 豁免孤儿判定');
+  assert.ok(body.completed.includes('q-h1'), '已移交排队并入 completed 豁免孤儿判定');
+  assert.ok(!body.completed.includes('r-keep') && !body.completed.includes('q-keep'), '未移交条目不进 completed');
+});
+
+test('queuePublishBody 无 excludeIds：行为不变（默认全量上报，兼容心跳/PUT 路径）', () => {
+  const { context } = loadPublishContext();
+  context.activeRuns.push({ id: 'r9', pipelineName: 'P', by: 'a', startTs: 1, stages: [], nodes: {} });
+  context.queue.push({ id: 'q9', pipelineName: 'Q', by: 'a', queuedAt: 1, stages: [], presets: [] });
+  const body = JSON.parse(JSON.stringify(context.queuePublishBody()));
+  assert.deepEqual(body.runs.map(r => r.id), ['r9']);
+  assert.deepEqual(body.queue.map(q => q.id), ['q9']);
+  assert.ok(!body.completed.includes('r9') && !body.completed.includes('q9'));
+});
+
 /* ---------- 孤儿预览 rc（orphanPreviewRc / focusOrphanQueueItem） ---------- */
 function loadOrphanPreviewContext() {
   const calls = { focus: [] };
@@ -451,6 +480,6 @@ test('在场保活心跳与 pagehide 最终快照接线：10s 心跳不随页面
   const intervalBlock = tail.slice(0, tail.indexOf("window.addEventListener('pagehide'"));
   assert.ok(!/document\.hidden/.test(intervalBlock), '心跳不随 document.hidden 暂停（页面隐藏时执行仍在继续，停心跳会被误判失联）');
   assert.match(tail, /window\.addEventListener\('pagehide'/);
-  assert.match(tail, /navigator\.sendBeacon\('\/api\/worktable\/pipeline\/queue', new Blob\(\[JSON\.stringify\(queuePublishBody\(\)\)\]/,
-    'pagehide 用 sendBeacon 发最终快照（queuePublishBody 含 completed）');
+  assert.match(tail, /navigator\.sendBeacon\('\/api\/worktable\/pipeline\/queue', new Blob\(\[JSON\.stringify\(queuePublishBody\(\{excludeIds:handoffIds\}\)\)\]/,
+    'pagehide 用 sendBeacon 发最终快照（queuePublishBody 剔除已移交条目并列入 completed）');
 });
