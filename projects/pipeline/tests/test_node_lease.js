@@ -301,7 +301,7 @@ class FakeNode {
 
 test('renderQueue：等待节点的排队项展示占用节点与占用者', () => {
   const list = new FakeNode('div');
-  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
+  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span') };
   const context = {
     document: { createElement: tag => new FakeNode(tag) },
     $: id => els[id] || new FakeNode('div'),

@@ -262,7 +262,6 @@
       </span>
     </label>
     <button id="runBtn" class="dshell-btn" style="margin-left:auto;flex-shrink:0;">▶ 运行流水线</button>
-    <button id="stopBtn" class="dshell-btn dshell-btnGhost" disabled style="flex-shrink:0;">⏹ 中止</button>
     <button id="resetBtn" class="dshell-btn dshell-btnGhost" style="flex-shrink:0;">重置</button>
     <span id="runTip" class="dshell-muted" style="font-size:11px;"></span>
   </div>
@@ -813,7 +812,7 @@
             <label><input type="checkbox" data-pldefaultpreset="profiling" /> Profiling</label>
           </div>
         </div>
-        <label class="dshell-muted">阶段（名称/耗时/超时/不执行/收集普罗数据，可拖拽整张任务卡，或填序号、点上移下移调序、增删；点击选中任务卡后，其上/下边框中点出现「+」，点击在其上/下方插入新阶段）；每步选「类型」：模拟（按耗时等待，0=不等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；「收集普罗数据」勾选后，该任务进入终态（成功/失败）即按本任务开始→结束时段采集普罗指标到归档目录的 {任务名}-{阶段序号}-普罗数据 文件夹（收集脚本在「设置 → 普罗数据服务配置」配置，后台采集、失败不阻断流水线）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
+        <label class="dshell-muted">阶段（名称/耗时/超时/不执行/收集普罗数据，可拖拽整张任务卡，或填序号、点上移下移调序、增删；点击选中任务卡后，其上/下边框中点出现「+」，点击在其上/下方插入新阶段）；每步选「类型」：模拟（按耗时等待，0=不等待）/ Shell（绑 .sh）/ Python（绑 .py）/ HTTP（填完整 URL，GET 触发）/ EvalTokens（聚焦任务框自动加载任务列表，选中后自动识别其输入参数；输入参数可直接设置覆盖值，动作行「识别参数」重新识别刷新时保留已设置的值；运行时启动一次新 run 并等待终态；任务 ID/名称可填 ${变量名} 引用上游产出；默认收集终态任务报告到本次运行归档目录）；「收集普罗数据」勾选后，该任务进入终态（成功/失败）即按本任务开始→结束时段采集普罗指标到归档目录的 {任务名}-{阶段序号}-普罗数据 文件夹（收集脚本在「设置 → 普罗数据服务配置」配置，后台采集、失败不阻断流水线）；留空脚本=本地模拟该步；超时对脚本与 HTTP/EvalTokens 阶段生效，留空=无超时（不填不限制执行时长，可经运行队列的「中止」手动停止）。阶段间变量传递：阶段 stdout / URL 响应体（Jenkins 控制台）输出的 KEY=VALUE 行或单行 JSON 对象（{"KEY":"VALUE"}）自动累计，作为环境变量（脚本阶段）/ {变量名} 占位符取值（HTTP 阶段）注入后续阶段，同名时阶段显式参数优先；脚本参数值也可填 ${变量名}（如 ${IMAGE_URL}）显式引用上游产出；脚本 / HTTP / EvalTokens 阶段的「输出变量」可把 stdout / 响应体捕获的 key 改名后下传（如 IMAGE_URL=image），来源也可写 JSON 路径取响应/输出里单行 JSON 的嵌套字段（如 XDS_BRANCH=items.0.name，数组支持 [-1] 倒数，终点为对象/数组则整体序列化），或填 * / 留空把本阶段返回值全文整体赋给指定变量（如 RESP=*）；HTTP 阶段通过 URL 中的 {GIT_BRANCH}、{IMAGE_NAME} 等 {变量名} 占位符传参，运行时用注入的环境变量替换（URL 编码）后对完整 URL 直接 GET 触发（等价 curl，URL 自含鉴权如 ?token=xxx，不附加全局用户名/令牌）；URL 指向标准 Jenkins 任务路径时仍轮询构建结果，非标准路径（如 webhook）按触发成功处理；连接模式（本地直连/服务端代连）走「Jenkins 服务配置」</label>
         <div id="plStageList" style="display:flex;flex-direction:column;gap:7px;padding:9px 2px;"></div>
         <datalist id="scriptsList"></datalist>
         <datalist id="jenkinsJobsList"></datalist>
@@ -3746,9 +3745,6 @@ function canControlRun(by){
   if(currentUserIsAdmin) return true;                // admin 可控制任意运行
   return !!(by && by===currentUsername);             // 非 admin 仅可控制自己署名的运行
 }
-/* 编排区「中止」按钮可用：运行在跑且当前用户对该运行有控制权 */
-function canStopViewRun(){ return viewActive() && canControlRun(viewRc && viewRc.by); }
-function updateStopBtn(){ $('stopBtn').disabled=!canStopViewRun(); }   // admin 探测到达后亦调此重算
 function runPreviewReadOnly(rc){
   return !!(rc && (rc.queuedPreview===true || rc.remotePreview===true));
 }
@@ -3779,7 +3775,6 @@ function focusRun(rc){
   if(replayRec){ replayRec=null; const rt=$('replayTip'); if(rt) rt.textContent=''; }
   viewRc=rc||null; syncViewRun(); applyRunOverall(viewRc);
   _detailKey='';
-  updateStopBtn();
   refreshArchiveTip();
   renderFlow(); renderDetail(); renderQueue();
 }
@@ -4577,7 +4572,6 @@ function startSimRun(pl, c){
   }
   viewRc=rc; syncViewRun(); syncRunState();   // 新运行获得编排区焦点
   _detailKey='';   // 视图切到新运行，详情渲染缓存一并失效
-  $('stopBtn').disabled=false;   // 本人刚启动的运行可中止（by 取当前登录用户）；控制权在 click 与 focusRun 处再守卫
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   rcOverall(rc,'运行中…','dshell-badgeWait');
   renderFlow(); renderDetail();
@@ -4772,9 +4766,6 @@ function clearServerSubmissionPreview(itemId){
   viewRc=null;
   if(typeof syncViewRun==='function') syncViewRun();
   if(typeof applyRunOverall==='function') applyRunOverall(null);
-  if(typeof $==='function'){
-    const stop=$('stopBtn'); if(stop) stop.disabled=true;
-  }
   if(typeof refreshArchiveTip==='function') refreshArchiveTip();
   if(typeof resetNodes==='function') resetNodes();
 }
@@ -4911,11 +4902,11 @@ function applyRemoteQueuePreviewRefresh(){
   const next=refreshRemoteQueuePreviewRc(viewRc);
   if(!next){
     viewRc=null; syncViewRun(); applyRunOverall(null);
-    $('stopBtn').disabled=true; refreshArchiveTip(); resetNodes();
+    refreshArchiveTip(); resetNodes();
     return;
   }
   viewRc=next; syncViewRun(); applyRunOverall(next); _detailKey='';
-  $('stopBtn').disabled=true; refreshArchiveTip(); renderFlow(); renderDetail();
+  refreshArchiveTip(); renderFlow(); renderDetail();
 }
 
 /* 孤儿中断条目（服务端孤儿登记簿）：来源页面刷新/关闭后，其上报快照里的运行/排队条目失去宿主
@@ -4956,7 +4947,7 @@ function applyOrphanPreviewRefresh(){
   if(!viewRc||viewRc.orphanPreview!==true) return;
   if(orphanQueueItem(viewRc.remoteClientId,viewRc.remoteItemId)) return;
   viewRc=null; syncViewRun(); applyRunOverall(null);
-  $('stopBtn').disabled=true; refreshArchiveTip(); resetNodes();
+  refreshArchiveTip(); resetNodes();
 }
 
 /* ---------- 服务端权威运行队列实时同步 ---------- */
@@ -5575,7 +5566,7 @@ function renderQueue(){
      空闲编排。正常启动不走这里——startSimRun 已先把焦点切到真实运行 rc，viewRc 不再是预览 */
   if(viewRc && viewRc.queuedPreview===true && viewRc.serverSubmitting!==true && !localQueueItems().some(q=>q.id===viewRc.id)){
     viewRc=null; syncViewRun(); applyRunOverall(null);
-    $('stopBtn').disabled=true; refreshArchiveTip();
+    refreshArchiveTip();
     resetNodes();   // 空闲编排重建（内部重置 _detailKey 并重绘流程/详情）
   }
   /* 自愈排空：仍有排队任务时尝试排空（在跑运行结束却未触发 drainQueue 的异常竞态，或并行槽位已释放）。
@@ -7458,7 +7449,6 @@ function retryFromStage(stageId){
   }   // 并行组重试清空整组及下游运行态；串行阶段保持原有重试清理范围
   rc.over=false;
   activeRuns.push(rc); syncRunState();
-  $('stopBtn').disabled=false;   // 重试本人运行的阶段可中止；他人 by 时由 focusRun/click 守卫
   rcOverall(rc,'运行中…（重试）','dshell-badgeWait');
   runSetSel(rc,rc.stages[idx].id); rcRender(rc);
   advance(rc,idx);
@@ -7489,7 +7479,6 @@ function finish(rc, result){
      typeof 守卫：extractFn 抽取 finish 的测试沙盒无此函数时按旧行为运行 */
   if(typeof queueFinishedNote==='function'){ queueFinishedNote(rc&&rc.id); if(rc&&rc.originQueueId) queueFinishedNote(rc.originQueueId); }
   syncRunState();
-  $('stopBtn').disabled=!viewActive();   // 编排区仍展示本运行（结果视图）或其他在跑运行时，按焦点运行态决定可否中止（控制权由 click/focusRun 守卫）
   /* 收尾（徽标 / 历史 / 统计 / 持久化 / 归档 / 详情）尽力而为：任一步异常都不得跳过下方的
      drainQueue()——否则排队任务会卡在「待启动」永远不跑（renderQueue 自愈仅在此处确实调到时才兜底）。
      buildLog 等同步步骤在此前未被 try 包裹（archiveStageLog 内部已包），故这里统一兜底。 */
@@ -8316,7 +8305,6 @@ function enterHistoryReplay(rec){
   else if(rec.status==='aborted'){ const o=$('overall').firstChild; if(o){ o.style.color='var(--st-idle)'; o.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; } }   // 与运行历史行/阶段徽标同色（灰）
   $('overallBy').textContent='执行人：'+(rec.by||'—')+' · '+rec.time+'（历史回放）';
   const rt=$('replayTip'); if(rt) rt.textContent='正在回放历史 #'+rec.no+'「'+rec.pipeline+'」 · 再次点击该行退出';
-  $('stopBtn').disabled=true;   // 回放态不挂在任何在跑运行上（在跑运行到队列区各自中止）
   _detailKey='';   // 详情渲染缓存失效，强制按回放数据重绘
   renderFlow(); renderDetail();
   loadReplayLogs(rec).then(()=>{ if(replayRec===rec){ rebuildReplayNodes(rec); _detailKey=''; renderFlow(); renderDetail(); } });   // 按需拉取归档日志 + 校正阶段状态，完成后重算节点并重绘编排/详情
@@ -8327,7 +8315,6 @@ function exitHistoryReplay(){
   /* 退出回放：有在跑运行则回看最近一个（其节点表保持引擎实写状态，不可重置），否则回到当前流水线的空闲编排 */
   viewRc=activeRuns.length?activeRuns[activeRuns.length-1]:null;
   syncViewRun(); applyRunOverall(viewRc);
-  updateStopBtn();
   refreshArchiveTip();
   if(viewRc){ _detailKey=''; renderFlow(); renderDetail(); }
   else resetNodes();   // 空闲态：恢复主控当前流水线的空闲编排（内部重置 _detailKey 并重绘流程/详情）
@@ -9377,7 +9364,6 @@ function selectPipeline(id){
   /* 运行中也可切换：脱离运行/结果视图，回到所选流水线的空闲编排；在跑运行不受影响、转后台继续
      （运行状态统一在「运行队列」展示，点击队列条目可回看该次运行的阶段详情） */
   viewRc=null; syncViewRun(); applyRunOverall(null);
-  $('stopBtn').disabled=true;
   refreshArchiveTip();
   resetNodes(); renderPipelines(); renderFlow(); renderDetail();
 }
@@ -9703,12 +9689,6 @@ function abortRun(rc){
   finish(rc,'aborted');
   rcRender(rc);
 }
-$('stopBtn').addEventListener('click', ()=>{
-  const rc=viewRc;   // 主控「中止」作用于编排区当前展示的运行；其他在跑运行用队列条目各自的「中止」
-  if(!rc || rc.over) return;
-  if(!canControlRun(rc.by)){ alert('无权限：仅管理员可中止其他用户（'+esc(rc.by||'')+'）的流水线。'); return; }
-  abortRun(rc);
-});
 $('schedCreateBtn').addEventListener('click', addPlan);
 $('runSched').addEventListener('change', e=>{ const v=e.target.value; $('runSchedEveryWrap').style.display = v==='interval'?'flex':'none'; $('runSchedStartWrap').style.display = v==='interval'?'flex':'none'; $('runSchedAtWrap').style.display = v==='once'?'flex':'none'; });
 $('resetBtn').addEventListener('click', ()=>{
@@ -9740,7 +9720,7 @@ $('resetBtn').addEventListener('click', ()=>{
   const clearView = !viewRc || (adminAll || mine(viewRc.by));
   if(clearView){ viewRc=null; syncViewRun(); syncRunState(); resetNodes(); applyRunOverall(null); }
   else { syncRunState(); renderFlow(); renderDetail(); }
-  updateStopBtn(); renderQueue();
+  renderQueue();
   refreshArchiveTip();   // 运行已全部清空，「打开归档目录」目标回退到历史选中行（未选中则提示选择，不再回退归档根）
 });
 $('pipelineSel').addEventListener('change', e=>{ if(e.target.value) selectPipeline(e.target.value); });
@@ -10401,7 +10381,6 @@ async function fillExecutorFromAuth(){
   }catch(e){ /* admin 探测失败：按非 admin 退化，不影响其他功能 */ }
   /* admin 角色可能晚于队列渲染到达——拿到后重绘队列按钮（中止/取消按权限显隐） */
   if(typeof renderQueue==='function') renderQueue();
-  if(typeof updateStopBtn==='function') updateStopBtn();
   }finally{
     /* 无论探测成功/失败/提前返回，结束时都置位 authReady 并无条件重绘流水线任务列表：
        行按钮「编辑/查看/删除」与编辑器只读归属判断（plEditable）都依赖身份——探测在途时
