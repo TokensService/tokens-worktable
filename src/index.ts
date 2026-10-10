@@ -1950,6 +1950,25 @@ function pipelineLeaseOwner(plan: any): string {
 }
 
 /**
+ * 计划的代码仓解析：页面移交计划（关页移交 / 定时后缀）只带 repoId 时，按配置仓库补齐
+ * url/user/pass，供 runStageScript 注入 GIT_URL/GIT_USER/GIT_PASSWORD。缺少这些变量时
+ * git 类脚本会卡在凭据交互提示上（无超时 = 阶段永久卡住）。计划自带带 url 的 repository
+ * 快照（运行期即时取值）优先；否则回落配置。
+ */
+function resolvePlanRepository(pl: any, store: any): any {
+  const provided = pl && pl.repository && typeof pl.repository === 'object' && !Array.isArray(pl.repository) ? pl.repository : null
+  if (provided && provided.url) return provided
+  const config = store && store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const id = (pl && pl.repoId) || (provided && provided.id)
+  if (id) {
+    const found = repositories.find((item: any) => item && item.id === id)
+    if (found) return { ...found }
+  }
+  return provided
+}
+
+/**
  * 节点占用租约：同一节点（环境 IP）同一时间只允许一条流水线运行——页面手动运行、API 触发与
  * 定时计划在开跑前都必须先拿到全部目标节点的租约，拿不到就排队等待重试。租约为易失内存态
  * （重启即清）并带 TTL：持有方运行期间周期续租（acquire 同人刷新 seenAt），页面崩溃/断网
@@ -4650,7 +4669,7 @@ export function apply(ctx: Context) {
     const runCtx = {
       env: pl.env || '',
       envs: Array.isArray(pl.envs) ? pl.envs : [],
-      repository: pl.repository && typeof pl.repository === 'object' ? pl.repository : null,
+      repository: resolvePlanRepository(pl, store),
       archive: folder,
       tag,
       pipelineName: pipeName,

@@ -93,6 +93,7 @@ function handoffContext(stages, options) {
   installFunctions(context, [
     'pipelineStageGroups',
     'stageSeq',
+    'runRepositorySnapshot',
     'registerStageTimers',
     'handoffSchedSuffix',
     'advance',
@@ -103,7 +104,9 @@ function handoffContext(stages, options) {
     id: 'rc-handoff', stages, nodes: {}, selId: null, timer: null, scriptAbort: null,
     over: false, token: 'tk', vars: { A: '1' }, parallelGroup: null,
     startTs: Date.now(), pipelineName: 'handoff-test', env: 'test', commit: '1234567890',
-    by: 'tester', pipelineId: 'pl-test', repoId: null, branch: 'main', strategy: '',
+    by: 'tester', pipelineId: 'pl-test', repoId: 'repo-9', repoName: 'demo',
+    repoUrl: 'https://git.example.com/dev/demo.git', repoUser: 'u', repoPass: 'p',
+    branch: 'main', strategy: 'P-D',
     tag: 't1', archive: '/arc/pl_x', leaseId: null, leaseIps: [],
   };
   context.activeRuns = [rc];
@@ -133,6 +136,11 @@ test('混合编排：本地前缀跑完即在定时分界移交服务端（计�
   assert.equal(plan.tag, 't1');
   assert.equal(plan.baseSeq, 1, 'baseSeq=分界前正式阶段数（预设不占序号）');
   assert.equal(plan.vars.A, '1', '上游变量快照随计划注入后缀');
+  assert.deepEqual(plan.repository, {
+    id: 'repo-9', name: 'demo',
+    url: 'https://git.example.com/dev/demo.git', user: 'u', pass: 'p',
+  }, '代码仓快照随计划移交，否则 GIT_* 不注入、git 类脚本卡在凭据提示');
+  assert.equal(plan.strategy, 'P-D', '部署策略随计划移交');
   assert.match(plan.by, /⏰/);
   assert.equal(h.rc.nodes.b.status, 'skipped', '后缀阶段标记为移交服务端（skipped 渲染）');
   assert.equal(h.rc.nodes.c.status, 'skipped');
