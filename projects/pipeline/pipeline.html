@@ -5015,14 +5015,19 @@ function queueFinishedIds(){ queueFinishedPrune(); return queueFinished.map(e=>e
 /* 上报快照体（PUT 与 pagehide beacon 共用同一组装）：schemaVersion 3 起携带 completed——最近正常终态化
    的条目 id；另把当前在跑运行的 originQueueId 一并并入：排队项启动后条目 id 由 q… 换成 r…，
    q 条目从快照「消失」其实是正常移交（runningPresenceEntry 的 originQueueId 仍携带它），不并入会被
-   服务端误判为孤儿中断。 */
-function queuePublishBody(){
-  const runsSnap=activeRuns.map(runningPresenceEntry);
+   服务端误判为孤儿中断。
+   opts.excludeIds：从 runs/queue 剔除并强制并入 completed 的条目 id（关页移交用）——移交后本地条目
+   已转交服务端/已终态，不得留在最终快照里：否则在场 TTL 过期清扫会把它们登记成「已中断」孤儿。 */
+function queuePublishBody(opts){
+  const exclude=opts&&Array.isArray(opts.excludeIds)?new Set(opts.excludeIds.map(String)):null;
+  const keep=(e)=>!exclude||!exclude.has(String(e&&e.id||''));
+  const runsSnap=activeRuns.map(runningPresenceEntry).filter(keep);
   const completed=queueFinishedIds();
   activeRuns.forEach(rc=>{ const qid=String(rc&&rc.originQueueId||''); if(qid&&completed.indexOf(qid)<0) completed.push(qid); });
+  if(exclude) exclude.forEach(id=>{ if(id&&completed.indexOf(id)<0) completed.push(String(id)); });
   return {schemaVersion:3,id:QCLIENT_ID,label:browserTag(),
     running:runsSnap.length?runsSnap[0]:null,   // 兼容旧客户端：首条仍在跑的运行仍按单条 running 上报
-    runs:runsSnap,queue:localQueueItems().map(queuedPresenceEntry),completed:completed};
+    runs:runsSnap,queue:localQueueItems().map(queuedPresenceEntry).filter(keep),completed:completed};
 }
 /* 上报本页在场快照：仅「签名变化」或距上次上报超 10 秒（心跳保活，防服务端 45 秒过期）时真正发请求 */
 function publishQueue(force){
@@ -5428,7 +5433,9 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
 }
 /* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。
    同时 beacon 批量释放本页持有的节点租约——不释放的话移交计划要等死页面租约 TTL（90s）才拿得到
-   节点，表现成「关页后阶段卡住」。 */
+   节点，表现成「关页后阶段卡住」。
+   返回本次「已了结」的条目 id 列表（已移交 / 无剩余阶段 / 并行子上下文随父移交）：调用方据此把它们
+   从最终在场快照剔除并列入 completed，否则在场 TTL 过期清扫会把已转交的条目误登记成「已中断」孤儿。 */
 function handoffRunsOnPageHide(){
   const post=(plan)=>{
     if(!plan) return;
@@ -5442,14 +5449,22 @@ function handoffRunsOnPageHide(){
   };
   const leaseOwners=[];
   const noteLease=(id)=>{ if(id && leaseOwners.indexOf(String(id))<0) leaseOwners.push(String(id)); };
+  const concluded=[];
+  const noteConcluded=(id)=>{
+    if(id===undefined||id===null||id==='') return;
+    const sid=String(id);
+    if(concluded.indexOf(sid)<0) concluded.push(sid);
+    try{ if(typeof queueFinishedNote==='function') queueFinishedNote(sid); }catch(e){}
+  };
   try{
     (typeof activeRuns!=='undefined'&&activeRuns?activeRuns:[]).forEach(rc=>{
       noteLease(rc&&rc.leaseId);
-      if(!rc || rc.over || rc.parallelParent) return;
+      if(!rc || rc.over || rc.parallelParent){ noteConcluded(rc&&rc.id); return; }   // 已结束 / 并行子随父移交：同样不得进孤儿簿
       const idx=currentStageIndex(rc);
-      if(idx<0) return;
+      if(idx<0){ noteConcluded(rc.id); return; }   // 无剩余阶段：本地已跑完，不是失联中断
       if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 在途 exec-stream 断开即杀进程；该阶段由服务端计划重跑
       post(buildUnloadHandoffPlan(rc, idx));
+      noteConcluded(rc.id);   // 已登记移交计划：本地条目了结，豁免孤儿
     });
     const seen=new Set();
     const handoffItem=(item)=>{
@@ -5457,6 +5472,7 @@ function handoffRunsOnPageHide(){
       seen.add(item.id);
       noteLease(item.id);   // startRun 以排队项 id 作为租约持有方
       post(buildUnloadHandoffPlan(null, 0, item));
+      noteConcluded(item.id);   // 队列条目同样移交服务端执行：本地排队快照了结，豁免孤儿
     };
     (typeof queue!=='undefined'&&queue?queue:[]).forEach(handoffItem);
     (typeof pendingLeaseStarts!=='undefined'&&pendingLeaseStarts?pendingLeaseStarts:[]).forEach(p=>{ if(p&&p.queueItem) handoffItem(p.queueItem); });
@@ -5467,6 +5483,7 @@ function handoffRunsOnPageHide(){
         JSON.stringify({action:'release', runIds:leaseOwners}));
     }catch(e){ /* unload 路径吞掉：TTL 到期自动清理 */ }
   }
+  return concluded;
 }
 /* 定时页环境多选：与主控同一面板组件（renderEnvMulti），独立勾选状态持久化（随服务端配置 schedEnvIds 键同步，localStorage 为离线缓存）；未单独选择过则跟随主控当前环境 */
 let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-schedEnvSel')); return Array.isArray(a)&&a.length?a:null; }catch(e){ return null; } })();
@@ -10519,14 +10536,16 @@ startQueuePolling();
 /* 在场保活心跳：独立 10 秒 interval 调 publishQueue(false)（签名未变且距上次上报 <10s 时自动跳过，
    恰好兜底服务端 45 秒在场 TTL）。刻意不随 document.hidden 暂停——页面隐藏时本地执行仍在继续，
    停心跳会被服务端误判失联、在跑条目被登记为孤儿中断；与上方 1 秒拉取轮询的可见性暂停策略刻意
-   不同：拉取只是展示降耗，上报是存活证据。pagehide 时用 sendBeacon 补发最终快照（含 completed：
-   关闭瞬间刚正常终态化的条目据此豁免孤儿判定；beacon 只能 POST，body 用 text/plain Blob——
+   不同：拉取只是展示降耗，上报是存活证据。pagehide 时用 sendBeacon 补发最终快照（含 completed 且
+   剔除已移交条目：关页移交的运行/排队已转交服务端执行，本地快照不再携带它们，据此豁免孤儿判定；
+   关闭瞬间刚正常终态化的条目同样经 completed 豁免；beacon 只能 POST，body 用 text/plain Blob——
    服务端 readJsonBody 只按 JSON 解析正文、不校验 content-type）。 */
 const QUEUE_PRESENCE_HEARTBEAT_MS=10000;
 setInterval(()=>{ try{ publishQueue(false); }catch(e){} },QUEUE_PRESENCE_HEARTBEAT_MS);
 window.addEventListener('pagehide',()=>{
-  try{ handoffRunsOnPageHide(); }catch(e){}   // 在跑本地运行/队列整体移交服务端继续执行（keepalive POST，见「浏览器关闭移交」）
-  try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify(queuePublishBody())],{type:'text/plain'})); }catch(e){}
+  let handoffIds=[];
+  try{ handoffIds=handoffRunsOnPageHide()||[]; }catch(e){}   // 在跑本地运行/队列整体移交服务端继续执行（keepalive POST，见「浏览器关闭移交」）
+  try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify(queuePublishBody({excludeIds:handoffIds}))],{type:'text/plain'})); }catch(e){}
 });
 </script>
 </body>

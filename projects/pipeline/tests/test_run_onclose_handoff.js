@@ -36,6 +36,7 @@ function makeContext(options) {
   const fetches = [];
   const alerts = [];
   const beacons = [];
+  const finishedNotes = [];
   const context = {
     console, Promise, Object, Array, JSON, URL, Date, Error, setImmediate, Math,
     setTimeout, clearTimeout, setInterval() { return 1; }, clearInterval() {},
@@ -45,6 +46,7 @@ function makeContext(options) {
     activeRuns: options.activeRuns || [],
     queue: options.queue || [],
     pendingLeaseStarts: options.pendingLeaseStarts || [],
+    queueFinishedNote(id) { finishedNotes.push(String(id)); },
     navigator: {
       sendBeacon(url, body) {
         beacons.push({ url: String(url), text: String(body) });
@@ -70,7 +72,7 @@ function makeContext(options) {
     'currentStageIndex',
     'handoffRunsOnPageHide',
   ]);
-  return { context, fetches, alerts, beacons };
+  return { context, fetches, alerts, beacons, finishedNotes };
 }
 
 function runningRc(overrides) {
@@ -255,4 +257,42 @@ test('pagehide 无租约可释放时不发 beacon', async () => {
   h.context.handoffRunsOnPageHide();
   await flush();
   assert.equal(h.beacons.length, 0);
+});
+
+test('pagehide 移交返回已了结条目 id：移交中的运行/队列、无剩余阶段、并行子上下文均列入（供最终快照豁免孤儿）', async () => {
+  const running = runningRc(); running.nodes.a.status = 'running';
+  const done = runningRc({ rc: { id: 'r-done' } });
+  done.nodes.a.status = 'success'; done.nodes.b.status = 'success'; done.nodes.c.status = 'success';
+  const child = runningRc({ rc: { id: 'r-child', parallelParent: runningRc() } });
+  child.nodes.a.status = 'running';
+  const queued = {
+    id: 'q1', pipelineId: 'pl-q', pipelineName: '排队流水线', stages: [
+      { id: 'x', name: '排队X', kind: 'simulate', sched: null },
+    ],
+    env: '10.0.0.2', envs: [{ id: 'e2', ip: '10.0.0.2' }], image: 'img', repoId: null, branch: 'main', strategy: '',
+    by: 'tester', presets: [], queuedAt: 1, source: 'manual',
+  };
+  const h = makeContext({ activeRuns: [running, done, child], queue: [queued] });
+  const concluded = [...h.context.handoffRunsOnPageHide()].sort();
+  await flush();
+  assert.deepEqual(concluded, ['q1', 'r-child', 'r-done', 'r1'],
+    '移交中的运行 r1、无剩余阶段 r-done、并行子 r-child、队列 q1 均为「已了结」');
+  assert.deepEqual([...h.finishedNotes].sort(), ['q1', 'r-child', 'r-done', 'r1'],
+    '已了结条目同步登记 queueFinishedNote（completed 豁免孤儿，跨同标签页刷新存活）');
+  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
+  assert.equal(posts.length, 2, '只有移交中的 r1 与 q1 真正登记服务端计划；r-done/r-child 无剩余阶段或随父移交');
+});
+
+test('pagehide 移交：buildUnloadHandoffPlan 返回 null（全预设/无阶段）时条目仍计入已了结', async () => {
+  const onlyPreset = runningRc({
+    stages: [{ id: 'p', name: '清理', preset: true, pkey: 'cleanup', sched: {} }],
+  });
+  onlyPreset.nodes.p = { status: 'idle', progress: 0, dur: 0, sub: {} };
+  const h = makeContext({ activeRuns: [onlyPreset] });
+  const concluded = [...h.context.handoffRunsOnPageHide()];
+  await flush();
+  assert.deepEqual(concluded, ['r1'], '无业务阶段可移交也已了结：不是失联中断');
+  assert.deepEqual([...h.finishedNotes], ['r1']);
+  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
+  assert.equal(posts.length, 0, '无阶段不登记计划');
 });
