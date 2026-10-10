@@ -533,6 +533,20 @@ function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: a
   return entry
 }
 
+/** 磁盘独有配置键保留：磁盘 config 中存在、而客户端 config 未携带（key absent，hasOwnProperty 语义，
+ *  与「发送了空串/false/空数组等显式清除值」区分开）的键按磁盘值并入结果；客户端发送了的键一律以客户端为准。
+ *  动机：新版页面上线后，仍打开的旧页面/旧客户端一次全量保存不得把新版写入的新配置键抹掉；未来新增键同理。
+ *  非对象输入归一为 {}；pipelines 键的合并由调用方另行覆盖，此处按同一规则处理无害。 */
+function preserveDiskOnlyConfigKeys(clientConfig: any, diskConfig: any) {
+  const client = clientConfig && typeof clientConfig === 'object' && !Array.isArray(clientConfig) ? clientConfig : {}
+  const disk = diskConfig && typeof diskConfig === 'object' && !Array.isArray(diskConfig) ? diskConfig : {}
+  const config = { ...client }
+  for (const key of Object.keys(disk)) {
+    if (!Object.prototype.hasOwnProperty.call(client, key)) config[key] = disk[key]
+  }
+  return config
+}
+
 /**
  * 三方合并流水线定义：变更判定按「剥离 favoriteUsers / pinnedAt 后的内容副本」做键序无关深比较
  * （samePipelineContent，避免仅字节键序不同造成 phantom 冲突）——客户端未改动
@@ -540,13 +554,14 @@ function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: a
  * 调用方不得写盘。favoriteUsers / pinnedAt 是共享条目上的非内容元数据，不参与变更判定（他端收藏/置顶
  * 不再造成 phantom 冲突），无论内容取自哪侧都对结果条目按三方规则重算（见上方助手）；
  * 仅单边独有的条目（本端新建 / 他端新增）保持原样，不套用归一。
+ * pipelines 之外的配置键：客户端未携带的磁盘独有键按磁盘值保留（preserveDiskOnlyConfigKeys）。
  */
 function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
   const objectConfig = (value: any) => value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   const client = objectConfig(clientConfig)
   const base = objectConfig(baseConfig)
   const disk = objectConfig(diskConfig)
-  const config = { ...client }
+  const config = preserveDiskOnlyConfigKeys(client, disk)
   const clientPipelines = Array.isArray(client.pipelines) ? client.pipelines : []
   const basePipelines = Array.isArray(base.pipelines) ? base.pipelines : []
   const diskPipelines = Array.isArray(disk.pipelines) ? disk.pipelines : []
@@ -2396,7 +2411,7 @@ function createPipelineGenerationManager() {
         active: activeId || null,
         generations: all,
         runs: all.flatMap(record => record.runs),
-        queue: all.flatMap(record => Array.isArray(record.queue) ? record.queue : []),
+        queue: all.flatMap(record => record.queue),
         finished,
       }
     },
@@ -2418,7 +2433,12 @@ function createPipelineGenerationManager() {
       const records = [...generations.values()]
       for (const record of records) beginDrain(record.id)
       disposal = Promise.all(records.map(record => record.queue.dispose())).then(() => {
-        generations.clear()
+        /* HMR 可能在旧代 drain 期间重新 retain 同一个 supervisor 并 activate 新代。
+           只移除本次 dispose 捕获的旧记录，不能 clear 掉后来加入的新 generation。 */
+        for (const record of records) {
+          if (generations.get(record.id) === record) generations.delete(record.id)
+        }
+        if (activeId) disposal = null
       })
       return disposal
     },
@@ -2448,7 +2468,9 @@ function getPipelineSupervisor(): PipelineSupervisor {
   const current = root[PIPELINE_SUPERVISOR_KEY] as PipelineSupervisor | undefined
   // Once the grace timer fired and manager.dispose started, the old manager
   // cannot accept a fresh generation safely; allocate a new bridge instead.
-  if (current && !current.disposed && (!current.disposing || current.disposeTimer)) return current
+  /* 即使旧实例已经开始 drain，manager 仍保留旧 generation 的执行状态；HMR
+     新实例必须复用同一个 bridge，才能继续暴露旧任务并在其完成后清理。 */
+  if (current && !current.disposed) return current
   const state: PipelineSupervisor = {
     leases: createPipelineNodeLeases(),
     manager: createPipelineGenerationManager(),
@@ -2489,6 +2511,15 @@ function releasePipelineSupervisor(state: PipelineSupervisor): Promise<void> {
         return
       }
       state.manager.dispose().then(() => {
+        /* 新 HMR 实例可能已在 drain 期间重新 retain；此时不能把仍在使用的
+           supervisor 标记为 disposed，也不能从全局桥接器中删除它。 */
+        if (state.refs > 0) {
+          state.disposing = false
+          state.disposeResolve = undefined
+          state.disposePromise = undefined
+          resolve()
+          return
+        }
         state.disposed = true
         state.disposeResolve = undefined
         if (root[PIPELINE_SUPERVISOR_KEY] === state) delete root[PIPELINE_SUPERVISOR_KEY]
@@ -3369,10 +3400,13 @@ export function apply(ctx: Context) {
             const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
             const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
             /* 新页面带共同基线，按流水线 id 做三方合并；旧页面没有基线时仅允许流水线定义未变化的写入，
-               防止升级部署前仍打开的标签页用整份旧快照覆盖新页面。空存储首次迁移保持兼容。 */
+               防止升级部署前仍打开的标签页用整份旧快照覆盖新页面。空存储首次迁移保持兼容。
+               两条路径都经 preserveDiskOnlyConfigKeys 并入客户端未携带的磁盘独有配置键（key absent 才保留，
+               显式空值仍以客户端为准）——旧客户端一次保存不得抹掉新版页面写入的新键；冲突判定仍用原始
+               客户端快照（pipelines 缺失/不同照旧 409），语义不变。 */
             const diskHasPipelines = Array.isArray(diskCfg.pipelines) && diskCfg.pipelines.length > 0
             const configMerge = baseConfig ? mergePipelineConfigForWrite(config, baseConfig, diskCfg) : {
-              config,
+              config: preserveDiskOnlyConfigKeys(config, diskCfg),
               conflicts: diskHasPipelines ? pipelineConfigDifferenceIds(config, diskCfg) : [],
             }
             if (configMerge.conflicts.length) return { conflicts: configMerge.conflicts, config: diskCfg }

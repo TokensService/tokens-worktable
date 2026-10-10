@@ -77,6 +77,7 @@ function loadSearchable(opts) {
       addEventListener(type, handler) { (docHandlers[type] = docHandlers[type] || []).push(handler); },
     },
     localStorage: { setItem(key, value) { saved.push([key, value]); }, getItem() { return null; } },
+    persistState() {},   /* saveHistFilter 现随筛选落盘防抖推服务端（pip-histFilter → 服务端 histFilter 键） */
     $: id => nodes[id],
     esc: s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])),
     renderHistory() { renderCalls.push('renderHistory'); },

@@ -37,7 +37,8 @@ function loadFunctions(names, extraDecls = []) {
 const BUILTIN_CONST_DECL = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)[0]
 
 function merge(clientConfig, baseConfig, diskConfig) {
-  const ctx = loadFunctions([...SHARED_META_HELPERS, 'mergePipelineConfigForWrite'])
+  /* mergePipelineConfigForWrite 现依赖 preserveDiskOnlyConfigKeys（磁盘独有键保留），抽取时一并加载 */
+  const ctx = loadFunctions([...SHARED_META_HELPERS, 'preserveDiskOnlyConfigKeys', 'mergePipelineConfigForWrite'])
   return JSON.parse(JSON.stringify(ctx.mergePipelineConfigForWrite(clientConfig, baseConfig, diskConfig)))
 }
 

@@ -66,6 +66,7 @@ function load(opts){
     histFilter:{kw:'',status:'',pipeline:''},
     histPage:7,   // 预置非 0：验证触发后归 0；无效 id 时保持 7
     localStorage,
+    persistState(){},   // saveHistFilter 现随筛选落盘防抖推服务端
     renderHistFilterOptions:()=>{ calls.renderOpts+=1; },
     renderHistory:()=>{ calls.renderHist+=1; },
     refreshHistoryFromServer:arg=>{ calls.refresh.push(arg); },
