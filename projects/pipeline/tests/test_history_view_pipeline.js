@@ -23,7 +23,6 @@ function load() {
   for (const id of ['plFilterKw', 'plFilterOwner', 'plFilterFavorite', 'pipelineTaskCard']) {
     nodes[id] = { value: '', scrollIntoView: () => { nodes[id].scrolled = true; } };
   }
-  nodes.plFilterOwner.list = 'plOwnerList';   /* 拥有者筛选为 input+datalist 组合框形态 */
   const calls = [];
   const context = {
     pipelines: [
