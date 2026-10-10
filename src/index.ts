@@ -2653,8 +2653,9 @@ function registerPipelineRunApi(webServer: any, deps: {
  * 服务端持有请求最长 min(timeoutMs ?? 20000, 25000)ms 的窗口，窗口内按固定节拍轮询上游
  * （Jenkins 每 2s / EvalTokens 每 3s，与页面 waitForPoll / runEvaltokensStep 同节奏，首轮立即发起）；
  * 窗口耗尽仍未终态返回 {done:false, ...}（带最新进度），客户端再发下一次。
- * 上游连续失败按目标 key 跨请求累计、成功一次清零，累计 30 次返回 {done:true, failed:'poll', failures:30}
- * （与页面 pollFailCap=30 的兜底语义一致；判负后同 key 在 10 分钟 TTL 内直接短路返回终态、不再打上游；
+ * 上游连续失败按目标 key 跨请求累计、成功一次清零；持续失败达 STAGE_POLL_FAIL_GIVE_UP_MS（默认 60 分钟）
+ * 返回 {done:true, failed:'poll'}（长任务容忍瞬时故障——任务本身可能跑数小时，中途短暂的网络/服务抖动
+ * 不应判负；判负后同 key 在 10 分钟 TTL 内直接短路返回终态、不再打上游；
  * 新一次运行换 queue item/构建号/runId 即换 key 重新计数，EvalTokens 的 key 含 runId）。
  * 安全约束与 /api/worktable/proxy 同款：目标必须过 isLocalTarget 内网白名单（否则 403 {error:'forbidden'}），
  * headers 原样透传上游（鉴权透传，剔除 host/content-length/connection 逐跳头）；
@@ -2664,7 +2665,8 @@ function registerPipelineRunApi(webServer: any, deps: {
 const STAGE_POLL_WINDOW_DEFAULT = 20_000
 const STAGE_POLL_WINDOW_CAP = 25_000          // 长轮询窗口上限（客户端 timeoutMs 超出部分截断）
 const STAGE_POLL_FETCH_TIMEOUT = 10_000       // 单次上游请求硬超时，防挂起的上游吃掉整个窗口
-const STAGE_POLL_FAIL_CAP = 30                // 与页面 pollFailCap 一致：连续失败 30 次判轮询失败
+/* 连续失败持续多久才兜底判败（长任务容忍瞬时故障）。var 供测试覆盖（vm context 上可改）。 */
+var STAGE_POLL_FAIL_GIVE_UP_MS = 60 * 60 * 1000
 const STAGE_POLL_JENKINS_INTERVAL = 2_000     // 页面 waitForPoll 节拍
 const STAGE_POLL_EVALTOKENS_INTERVAL = 3_000  // 页面 runEvaltokensStep 轮询间隔
 const STAGE_POLL_JSON_LIMIT = 2 * 1024 * 1024    // 与 PIPELINE_REMOTE_JSON_LIMIT 同口径
@@ -2673,7 +2675,7 @@ const STAGE_POLL_CONSOLE_CAP = 8 * 1024 * 1024   // 单个窗口内控制台增�
 const STAGE_POLL_FAIL_TTL = 10 * 60 * 1000    // 失败计数空闲 10 分钟丢弃
 const STAGE_POLL_FAIL_TRACK_CAP = 500         // 失败计数表上限，超出丢最久未更新
 type StagePollRound = { terminal: boolean; payload?: Record<string, any> }
-const stagePollFailures = new Map<string, { failures: number; updatedAt: number }>()
+const stagePollFailures = new Map<string, { failures: number; updatedAt: number; firstFailureAt: number }>()
 
 function stagePollFailurePrune(now: number) {
   for (const [key, entry] of stagePollFailures) {
@@ -2687,7 +2689,7 @@ function stagePollFailurePrune(now: number) {
 function stagePollFailureBump(key: string): number {
   const now = Date.now()
   stagePollFailurePrune(now)
-  const entry = stagePollFailures.get(key) || { failures: 0, updatedAt: now }
+  const entry = stagePollFailures.get(key) || { failures: 0, updatedAt: now, firstFailureAt: now }
   entry.failures += 1
   entry.updatedAt = now
   stagePollFailures.set(key, entry)
@@ -2701,6 +2703,13 @@ function stagePollFailureCount(key: string): number {
 }
 function stagePollFailureClear(key: string) {
   stagePollFailures.delete(key)
+}
+/* 持续失败达 STAGE_POLL_FAIL_GIVE_UP_MS 才判负（替代旧「连续 30 次」计数兜底：
+   长任务可能跑数小时，中途短暂抖动不应判负）；判负后同 key 在 TTL 内短路返回终态。 */
+function stagePollShouldGiveUp(key: string): boolean {
+  const entry = stagePollFailures.get(key)
+  if (!entry) return false
+  return Date.now() - entry.firstFailureAt >= STAGE_POLL_FAIL_GIVE_UP_MS
 }
 
 function stagePollAbortReason(signal?: AbortSignal): any {
@@ -2900,7 +2909,7 @@ function registerPipelineStagePollRoutes(webServer: any): void {
           }
           try {
             /* 同 key 已判负：TTL 内立即返回终态，不再打上游（新一次运行换 queue item/构建号/runId 即换 key） */
-            if (stagePollFailureCount(failKey) >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures: STAGE_POLL_FAIL_CAP } }
+            if (stagePollShouldGiveUp(failKey)) return { terminal: true, payload: { failed: 'poll', failures: stagePollFailureCount(failKey) } }
             const result = await stagePollFetch(url, headers, signal, STAGE_POLL_FETCH_TIMEOUT, STAGE_POLL_JSON_LIMIT, label)
             /* queue 阶段：item 消失（404，多在可执行构建已分配或条目被清时）与 cancelled 标记同按「已取消」终态 */
             if (phase === 'queue' && result.status === 404) { stagePollFailureClear(failKey); return { terminal: true, payload: { cancelled: true } } }
@@ -2923,7 +2932,7 @@ function registerPipelineStagePollRoutes(webServer: any): void {
           } catch (error) {
             if (signal.aborted) throw stagePollAbortReason(signal)
             failures = stagePollFailureBump(failKey)
-            if (failures >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures } }
+            if (stagePollShouldGiveUp(failKey)) return { terminal: true, payload: { failed: 'poll', failures } }
             return { terminal: false, payload: roundPayload() }
           }
         }
@@ -2955,12 +2964,25 @@ function registerPipelineStagePollRoutes(webServer: any): void {
         const roundPayload = () => (failures > 0 ? { failures } : {})
         const poll = async (signal: AbortSignal): Promise<StagePollRound> => {
           try {
-            if (stagePollFailureCount(failKey) >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures: STAGE_POLL_FAIL_CAP } }
-            const result = await stagePollFetch(url, headers, signal, STAGE_POLL_FETCH_TIMEOUT, STAGE_POLL_JSON_LIMIT, 'EvalTokens 运行列表')
-            if (result.status < 200 || result.status >= 300) throw new Error('EvalTokens 运行列表 HTTP ' + result.status)
+            if (stagePollShouldGiveUp(failKey)) return { terminal: true, payload: { failed: 'poll', failures: stagePollFailureCount(failKey) } }
+            const result = await stagePollFetch(url, headers, signal, STAGE_POLL_FETCH_TIMEOUT, STAGE_POLL_JSON_LIMIT, 'EvalTokens 状态')
+            /* 状态端点 404（旧版 evalscope 无 /runs/<id>/status）：告知客户端回退列表端点 */
+            if (result.status === 404 && /\/status$/.test(url)) {
+              stagePollFailureClear(failKey)
+              failures = 0
+              return { terminal: true, payload: { statusEndpointMissing: true } }
+            }
+            if (result.status < 200 || result.status >= 300) throw new Error('EvalTokens 状态 HTTP ' + result.status)
             const data = JSON.parse(result.text || '{}')
             stagePollFailureClear(failKey)
             failures = 0
+            /* 轻量状态端点：单条 {run_id, status, started_at, finished_at}（只留状态字段，无 config/error 膨胀） */
+            if (data && typeof data === 'object' && !Array.isArray(data) && (data.run_id || data.id) && (data.status || data.state || data.phase) && !data.runs && !data.data && !data.items && !data.results) {
+              const kind = stagePollEvaltokensStatus(data.status || data.state || data.phase)
+              if (kind === 'running') return { terminal: false, payload: roundPayload() }
+              return { terminal: true, payload: { status: kind, run: data } }
+            }
+            /* 列表端点兼容（旧版 evalscope / 回退路径）：{runs|data|items|results:[...]} 或裸数组 */
             const runs = stagePollWrappedList(data)
             const matched = runs.find((item) => String((item && (item.run_id || item.id)) || '') === runId)
             /* 列表暂未出现该 runId 按运行中处理（与页面「等待运行记录」一致） */
@@ -2971,7 +2993,7 @@ function registerPipelineStagePollRoutes(webServer: any): void {
           } catch (error) {
             if (signal.aborted) throw stagePollAbortReason(signal)
             failures = stagePollFailureBump(failKey)
-            if (failures >= STAGE_POLL_FAIL_CAP) return { terminal: true, payload: { failed: 'poll', failures } }
+            if (stagePollShouldGiveUp(failKey)) return { terminal: true, payload: { failed: 'poll', failures } }
             return { terminal: false, payload: roundPayload() }
           }
         }
