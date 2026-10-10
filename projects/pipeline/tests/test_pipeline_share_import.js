@@ -1,6 +1,7 @@
 /* 流水线分享 / 从分享导入：行「⋯」菜单「分享」复制定义 JSON 到剪贴板，
-   「新建流水线 → 从分享导入」弹出 textarea 输入框，粘贴还原到编辑器（名称/阶段/默认运行参数）。
-   覆盖：分享载荷形状（不含实例元数据）、解析合法/非法、弹窗开关、textarea 导入填表、菜单与按钮 wiring。 */
+   「新建流水线 → 从分享导入」弹出 textarea 输入框，粘贴还原到编辑器（名称/业务阶段/默认运行参数）。
+   覆盖：分享载荷形状（不含实例元数据、不带预设任务）、解析合法/非法（预设剥除）、弹窗开关、
+   textarea 导入填表、菜单与按钮 wiring。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -45,13 +46,15 @@ function samplePipeline(){
     createdBy:'alice', updatedBy:'bob', prom:{x:1},
     defaults:{environmentIds:['env-1'],repositoryId:'r1',branch:'0830_dev',strategy:'arch-a',presets:['cleanup']},
     stages:[
+      {id:'',name:'环境清理',preset:true,pkey:'cleanup'},
       {id:'st0',name:'检出',dur:1,kind:'simulate',sub:[]},
       {id:'st1',name:'构建',dur:2,kind:'shell',script:{name:'build.sh',path:'/s/build.sh',lang:'sh',params:[{key:'IMG',required:true}],values:{IMG:'app:1'},outVars:'IMAGE=image'},sched:{}},
+      {id:'',name:'Profiling',preset:true,pkey:'profiling'},
     ],
   };
 }
 
-test('分享载荷：kind=pipeline-share，只含名称/阶段/默认运行参数，不含 id/内置/置顶/收藏/可信/署名',()=>{
+test('分享载荷：kind=pipeline-share，只含名称/业务阶段/默认运行参数，不含 id/内置/置顶/收藏/可信/署名，也不带预设任务',()=>{
   const pl=samplePipeline();
   const ctx=makeCtx({},['buildPipelineShare']);
   const share=ctx.buildPipelineShare(pl);
@@ -60,16 +63,19 @@ test('分享载荷：kind=pipeline-share，只含名称/阶段/默认运行参�
   assert.equal(share.version,1);
   assert.ok(typeof share.exportedAt==='string'&&share.exportedAt.length>0);
   assert.equal(share.pipeline.name,'安装部署YDS');
-  assert.equal(share.pipeline.stages.length,2);
+  assert.equal(share.pipeline.stages.length,2,'预设标记行不进分享载荷');
+  assert.ok(share.pipeline.stages.every(s=>!s.preset),'分享阶段不得含预设标记行');
   assert.equal(share.pipeline.stages[1].script.values.IMG,'app:1');
-  assert.deepEqual(J(share.pipeline.defaults),{environmentIds:['env-1'],repositoryId:'r1',branch:'0830_dev',strategy:'arch-a',presets:['cleanup']});
+  assert.deepEqual(J(share.pipeline.defaults),{environmentIds:['env-1'],repositoryId:'r1',branch:'0830_dev',strategy:'arch-a',presets:[]},'默认运行参数不带预设勾选');
   const flat=JSON.stringify(share);
   ['pl-abc','builtIn','pinnedAt','favoriteUsers','trusted','createdBy','updatedBy'].forEach(k=>{
     assert.ok(flat.indexOf(k)<0,`分享载荷不得包含实例字段 ${k}`);
   });
-  /* 深拷贝：改分享载荷不影响源流水线 */
+  assert.ok(flat.indexOf('pkey')<0&&flat.indexOf('环境清理')<0,'分享载荷不得出现预设任务痕迹');
+  /* 深拷贝：改分享载荷不影响源流水线（预设行仍在源 stages 里） */
   share.pipeline.stages[0].name='改过';
-  assert.equal(pl.stages[0].name,'检出');
+  assert.equal(pl.stages[1].name,'检出');
+  assert.equal(pl.stages.length,4,'源流水线 stages 不被分享载荷改动');
 });
 
 test('sharePipeline：把 pretty JSON 写入剪贴板并 toast 提示',()=>{
@@ -86,6 +92,8 @@ test('sharePipeline：把 pretty JSON 写入剪贴板并 toast 提示',()=>{
   assert.equal(data.kind,'pipeline-share');
   assert.equal(data.pipeline.name,'安装部署YDS');
   assert.ok(copied[0].indexOf('\n')>0,'分享内容应为缩进 pretty JSON，便于聊天工具粘贴');
+  assert.equal(data.pipeline.stages.length,2,'剪贴板载荷不带预设标记行');
+  assert.deepEqual(J(data.pipeline.defaults.presets),[],'剪贴板载荷不带默认预设勾选');
   assert.equal(toasts.length,1);
   assert.match(toasts[0],/分享内容/);
   /* 未知 id 不动作 */
@@ -93,22 +101,26 @@ test('sharePipeline：把 pretty JSON 写入剪贴板并 toast 提示',()=>{
   assert.equal(copied.length,1);
 });
 
-test('parsePipelineShare：envelope / 裸流水线对象 / 非法输入',()=>{
+test('parsePipelineShare：envelope / 裸流水线对象 / 非法输入；预设标记行与默认勾选一律剥除',()=>{
   const ctx=makeCtx({},['parsePipelineShare']);
   const pl=samplePipeline();
   const envelope=JSON.stringify({app:'worktable-pipeline',kind:'pipeline-share',version:1,pipeline:{name:pl.name,stages:pl.stages,defaults:pl.defaults}});
   const ok=ctx.parsePipelineShare(envelope);
   assert.ok(ok,'envelope 应可解析');
   assert.equal(ok.name,'安装部署YDS');
-  assert.equal(ok.stages.length,2);
+  assert.equal(ok.stages.length,2,'含预设标记的旧载荷解析后只留业务阶段');
+  assert.ok(ok.stages.every(s=>!s.preset));
   assert.equal(ok.defaults.branch,'0830_dev');
+  assert.deepEqual(J(ok.defaults.presets),[],'默认预设勾选不随分享导入');
   /* 裸流水线对象（直接粘贴 stages） */
-  const bare=ctx.parsePipelineShare(JSON.stringify({name:'裸的',stages:[{id:'a',name:'A'}],defaults:{branch:'dev'}}));
-  assert.ok(bare&&bare.name==='裸的'&&bare.stages.length===1);
+  const bare=ctx.parsePipelineShare(JSON.stringify({name:'裸的',stages:[{id:'a',name:'A'},{id:'',name:'环境清理',preset:true,pkey:'cleanup'}],defaults:{branch:'dev',presets:['check']}}));
+  assert.ok(bare&&bare.name==='裸的'&&bare.stages.length===1,'裸对象同样剥掉预设标记行');
+  assert.deepEqual(J(bare.defaults.presets),[]);
   /* 前后空白可解析 */
   assert.ok(ctx.parsePipelineShare('  '+envelope+'  '));
-  /* 非法：非 JSON / 空 / 数组 / 无 stages / envelope 无 pipeline / stages 非对象元素 */
-  ['', 'not-json', 'null', '[]', '{}', JSON.stringify({kind:'pipeline-share'}), JSON.stringify({stages:[]}), JSON.stringify({stages:['x']})].forEach(bad=>{
+  /* 非法：非 JSON / 空 / 数组 / 无 stages / 仅预设行 / envelope 无 pipeline / stages 非对象元素 */
+  ['', 'not-json', 'null', '[]', '{}', JSON.stringify({kind:'pipeline-share'}), JSON.stringify({stages:[]}), JSON.stringify({stages:['x']}),
+   JSON.stringify({stages:[{id:'',name:'环境清理',preset:true,pkey:'cleanup'}]})].forEach(bad=>{
     assert.equal(ctx.parsePipelineShare(bad),null,`应判非法: ${String(bad).slice(0,40)}`);
   });
 });
@@ -149,10 +161,11 @@ test('applyPipelineShareText：从 textarea 内容覆盖表单（名称/阶段/�
   const r=await ctx.applyPipelineShareText(shareText);
   assert.equal(r,'ok');
   assert.equal(els.plName.value,'安装部署YDS');
-  assert.equal(ctx.editStages.length,5,'两业务阶段 + cleanup/check/profiling 预设标记（withPresetMarkers 补齐）');
+  assert.equal(ctx.editStages.length,5,'两业务阶段 + cleanup/check/profiling 预设标记（withPresetMarkers 按本端设置补齐）');
   assert.equal(ctx.editStages.filter(s=>!s.preset).length,2);
   assert.equal(ctx.editStages.filter(s=>!s.preset)[1].script.values.IMG,'app:1');
   assert.equal(ctx.editDefaults.branch,'0830_dev');
+  assert.deepEqual(J(ctx.editDefaults.presets),[],'导入后默认预设勾选为空（分享不带预设任务）');
   assert.equal(ctx.editSelStage,null);
   assert.equal(ctx.editFocusIdx,-1);
   assert.ok(drafts.length>0,'导入后应写入编辑器草稿');
