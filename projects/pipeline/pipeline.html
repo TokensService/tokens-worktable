@@ -6714,12 +6714,14 @@ async function runUrlStep(rc, i){
    单行 JSON 规则累计为输出变量（与 HTTP / 脚本阶段一致，见 mergeStageVars/applyOutVars），并附「查看报告」链接。 */
 /* 取已保存的 EvalTokens 服务配置（地址/令牌/连接模式，见 loadEvaltok）；服务未配置时返回空 url 供调用方提示 */
 function evaltokConfig(){ return evaltok && typeof evaltok==='object' ? evaltok : {url:'',token:'',mode:'local'}; }
-/* EvalTokens JSON 请求：本地浏览器直连或经 /api/worktable/proxy 代连；POST 请求体显式发 {}，兼容服务端 JSON 解析。 */
-async function evaltokRequestJson(e, api, method, body, signal){
+/* EvalTokens JSON 请求：本地浏览器直连或经 /api/worktable/proxy 代连；POST 请求体显式发 {}，兼容服务端 JSON 解析。
+   timeoutMs（可选）仅对代连生效：传给代理的上游超时（默认 20s，上限 24h）；同步 /run 等长耗时调用必须显式传入。 */
+async function evaltokRequestJson(e, api, method, body, signal, timeoutMs){
   const verb=method||'GET'; const headers=evaltokHeaders(e);
   if(body!==undefined) headers['Content-Type']='application/json';
   if(e.mode==='remote'){
     const req={url:api,method:verb,headers}; if(body!==undefined) req.body=JSON.stringify(body);
+    if(Number(timeoutMs)>0) req.timeoutMs=Number(timeoutMs);
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(req),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error+(/-?only loopback|private targets/i.test(String(p.error))?'（公网地址请切「本地浏览器连接」）':''));
     const status=p.status||0; if(status<200||status>=300){ let msg='HTTP '+status; try{ const j=JSON.parse(p.body||'{}'); if(j&&(j.error||j.message)) msg=String(j.error||j.message)+'（HTTP '+status+'）'; }catch(_){} throw new Error(msg); }
@@ -6752,11 +6754,13 @@ async function evaltokFetchTasks(e, signal){
   return Array.isArray(data)?data:(Array.isArray(data.data)?data.data:(Array.isArray(data.tasks)?data.tasks:(Array.isArray(data.list)?data.list:(Array.isArray(data.items)?data.items:(Array.isArray(data.results)?data.results:[])))));
 }
 /* 启动一次新的任务运行；返回的 run_id 是后续轮询唯一依据，不能用该任务的旧运行结果代替。
-   input：编辑器显式设置的任务输入参数覆盖（键值对），非空时随请求体 {input:{...}} 下发；未设置时保持空体 {} 兼容旧行为 */
-async function evaltokStartRun(e, taskId, signal, input){
+   input：编辑器显式设置的任务输入参数覆盖（键值对），非空时随请求体 {input:{...}} 下发；未设置时保持空体 {} 兼容旧行为。
+   timeoutMs：/run 调用的整体超时——服务端为同步执行（任务跑完才返回启动响应）时必须覆盖整个任务时长；
+   缺省走代理默认 20s，仅兼容旧的异步秒回服务。 */
+async function evaltokStartRun(e, taskId, signal, input, timeoutMs){
   const base=(e.url||'').replace(/\/+$/,''); if(!base) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
   const body=(input && Object.keys(input).length) ? {input:input} : {};
-  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', body, signal);
+  const run=await evaltokRequestJson(e, base+'/api/open/v1/tasks/'+encodeURIComponent(taskId)+'/run', 'POST', body, signal, timeoutMs);
   if(!run||!run.run_id) throw new Error('EvalTokens 启动任务未返回 run_id');
   return run;
 }
@@ -6895,7 +6899,9 @@ function renderEvaltokPickerPanel(i, q){
   const rb=panel.querySelector('[data-etpickrefresh]'); if(rb) rb.addEventListener('click', ()=>{ evaltokTasksCache={tasks:null,ts:0}; openEvaltokPicker(i); });
 }
 /* EvalTokens 阶段运行：匹配 taskId（优先；未命中则把所填值当名称匹配）或 taskName，启动一次新 run，
-   再按启动响应的 run_id 等待终态；捕获运行字段为输出变量并附「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
+   再按启动响应的 run_id 等待终态；/run 调用本身覆盖整个任务时长（服务端同步执行时跑完才返回，代连超时按
+   阶段超时/24h 兜底传入，见 startTimeoutMs），拿到 run_id 后首轮轮询即确认终态；捕获运行字段为输出变量并附
+   「查看报告」链接；阶段超时/中止/迟回守卫与 runUrlStep 同规则 */
 async function runEvaltokensStep(rc, i){
   const stg=rc.stages; const s=stg[i]; const et=s.evaltokens||{};
   const attempt=(s._evaltokAttempt||0)+1; s._evaltokAttempt=attempt;   // 识别同一阶段的失败重试，防止旧报告回调污染新一次执行
@@ -6953,7 +6959,11 @@ async function runEvaltokensStep(rc, i){
     appendLiveLog(log,'# service: '+e.url.replace(/\/+$/,'')+'/api/open/v1/tasks/'+encodeURIComponent(resolvedTaskId)+'/run  mode='+(e.mode==='remote'?'remote':'local'));
     if(Object.keys(inputOverrides).length) appendLiveLog(log,'# input: '+JSON.stringify(inputOverrides));
     s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); rcRender(rc);
-    const started=await evaltokStartRun(e, resolvedTaskId, startCtrl.signal, inputOverrides);
+    /* /run 同步等待整个任务时长：超时取阶段超时（留空按 24h 兜底），另加 30s 宽限让阶段自身超时
+       （deadlineTimer）先于代理超时生效，保证超时文案与清理路径不变；代理侧硬上限 24h，只兜
+       「服务彻底假死」的极端情况，阶段超时留空即等效不限时。 */
+    const startTimeoutMs=Math.min((s.timeout?s.timeout*1000:24*60*60*1000)+30000, 24*60*60*1000);
+    const started=await evaltokStartRun(e, resolvedTaskId, startCtrl.signal, inputOverrides, startTimeoutMs);
     const runId=String(started.run_id||'');
     waitingRunId=runId; waitingStatus=String(started.status||started.state||started.phase||''); externalRunActive=true;
     if(!ensureActive()) return;

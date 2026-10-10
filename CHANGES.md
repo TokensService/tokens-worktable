@@ -67,6 +67,18 @@
   startedAt 断言；客户端 `projects/pipeline/tests/test_queue_item_preview.js` 新增 queueNodePresence
   透传/丢弃与 remoteQueuePreviewRc 实时折算（含时钟偏差钳 0）用例，`test_queue_poll_throttle.js` 新增
   轮询折算驱动逐秒重绘用例。
+- 流水线 EvalTokens 阶段**适配服务端同步执行的 /run**（任务跑完才返回启动响应）：此前代连（remote 模式）
+  的 /run 走 `/api/worktable/proxy` 硬编码 20s 上游超时，长任务一律在 20s 被判 `request timeout` 失败
+  （任务实际仍在 EvalTokens 服务端正常跑完）。改动：`/api/worktable/proxy` 支持按请求 `timeoutMs`
+  （缺省 20s 不变，夹取 1s~24h——上限只兜「服务彻底假死」的极端情况，阶段「超时(分钟)」留空即等效
+  不限时）；`pipeline.html` 的 `evaltokRequestJson` / `evaltokStartRun` 新增超时透传，运行器按
+  「阶段超时（留空 24h 兜底）+30s 宽限」计算 `startTimeoutMs`
+  传给 /run 调用——宽限保证阶段自身超时先于代理超时生效，超时文案与清理路径不变。拿到 run_id 后
+  首轮轮询即确认终态，输出变量捕获、报告归档、中止/级联中止语义均不变；local（浏览器直连）模式本就
+  无 20s 限制，无需改动；服务端执行池路径（`executeServerEvaltokensStage`）无阶段超时时本就不限时，
+  无需改动。
+  测试：新增 `tests/proxy-timeout.test.mjs`（缺省值与 1s~24h 夹取规则）。
+
 - 阶段详情新增**「日志文件」行**（`projects/pipeline/pipeline.html`，实时运行与历史回放两个渲染路径
   均有，DOM 行 `#stageLogRow`）：值为该阶段归档日志文件路径（`run-<tag>-NN-任务名.log`），优先取
   服务端实际写完的 `_serverLogFile` / 预期路径 `_serverLogExpectedFile`，否则按归档目录 + `taskLogFile`
