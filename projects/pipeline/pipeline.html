@@ -292,10 +292,13 @@
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
         <input id="plFilterKw" class="dshell-input" placeholder="搜索 流水线名 / 阶段" autocomplete="off" style="min-width:200px;" />
       </label>
-      <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">拥有者
-        <input id="plFilterOwner" class="dshell-input" list="plOwnerList" autocomplete="off" placeholder="搜索或选择拥有者" style="min-width:120px;" />
-        <datalist id="plOwnerList"></datalist>
-      </label>
+      <span style="display:flex;align-items:center;gap:6px;">
+        <label class="dshell-muted" for="plFilterOwner" style="white-space:nowrap;">拥有者</label>
+        <span id="plOwnerPick" style="position:relative;display:inline-block;">
+          <input id="plFilterOwner" class="dshell-input" autocomplete="off" placeholder="搜索或选择拥有者" style="min-width:120px;" title="输入按用户名过滤候选（子串、大小写不敏感），点选或回车选中；选中「我的/全部/仅预置/未署名」即切换筛选模式" />
+          <div id="plOwnerPanel" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:200px;max-height:230px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);"></div>
+        </span>
+      </span>
       <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">收藏
         <select id="plFilterFavorite" class="dshell-input" style="min-width:100px;">
           <option value="all">全部</option>
@@ -8677,9 +8680,12 @@ document.addEventListener('click', e=>{
 });
 $('histFilterClear').addEventListener('click', ()=>{ histFilter={kw:'',status:'',pipeline:''}; $('histFilterKw').value=''; $('histFilterStatus').value=''; $('histFilterPipeline').value=''; saveHistFilter(); histPage=0; renderHistory(); });
 /* 流水线任务筛选：关键字 + 拥有者 + 当前用户收藏；默认「我的（含预置）」+ 全部收藏状态 */
-/* 拥有者筛选组合框（input + datalist）的「显示文本 ↔ 模式键」映射：特殊模式用固定中文标签
-   展示与输入（选中标签即选中对应模式），用户名原样显示；空输入回退默认「我的（含预置）」；
-   非标签文本的匹配口径见 plFilterMatch（等于已知拥有者用户名时精确匹配，否则按子串大小写不敏感搜索）。 */
+/* 拥有者筛选组合框（input + 自定义候选面板，与运行历史「流水线」筛选同一套交互）的
+   「显示文本 ↔ 模式键」映射：特殊模式用固定中文标签展示与点选，用户名原样显示；
+   空输入/点外回显回退默认「我的（含预置）」。非标签文本的匹配口径见 plFilterMatch
+   （等于已知拥有者用户名时精确匹配，否则按子串大小写不敏感搜索）。
+   不用 input+datalist：预填模式标签后浏览器原生下拉会按当前文本过滤候选，用户点不到其他拥有者；
+   自定义面板聚焦即展开全量候选，点选/回车可靠提交。 */
 function plOwnerFilterLabel(v){
   if(v==='mine') return '我的（含预置）';
   if(v==='all') return '全部';
@@ -8700,10 +8706,59 @@ $('plFilterKw').value=plFilter.kw;
 $('plFilterOwner').value=plOwnerFilterLabel(plFilter.owner);
 $('plFilterFavorite').value=plFilter.favorite;
 $('plFilterKw').addEventListener('input', e=>{ plFilter.kw=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
-/* input 即时过滤（datalist 点选同样触发 input），change 兜底；同一处理器幂等 */
-const plOwnerFilterInput=e=>{ plFilter.owner=plOwnerFilterValue(e.target.value); plPage=0; savePlFilter(); renderPipelines(); };
-$('plFilterOwner').addEventListener('input', plOwnerFilterInput);
-$('plFilterOwner').addEventListener('change', plOwnerFilterInput);
+/* 点选候选提交精确模式键/用户名并归首页重绘；输入框显示文本走 plOwnerFilterLabel */
+function pickPlOwner(value){
+  const inp=$('plFilterOwner'); const panel=$('plOwnerPanel');
+  plFilter.owner=plOwnerFilterValue(value);
+  if(inp) inp.value=plOwnerFilterLabel(plFilter.owner);
+  if(panel) panel.style.display='none';
+  plPage=0; savePlFilter(); renderPipelines();
+}
+$('plFilterOwner').addEventListener('focus', ()=>renderPlOwnerPanel(true));
+/* 输入即时过滤候选面板并按当前文本提交筛选（子串/标签映射见 plFilterMatch / plOwnerFilterValue）；
+   清空回退默认「我的（含预置）」。change 不再接线：提交统一走 pickPlOwner / input，避免重复重绘 */
+$('plFilterOwner').addEventListener('input', e=>{
+  const text=e.target.value;
+  plFilter.owner=plOwnerFilterValue(text);
+  plPage=0; savePlFilter();
+  renderPipelines();
+  renderPlOwnerPanel();
+});
+$('plFilterOwner').addEventListener('keydown', e=>{
+  const panel=$('plOwnerPanel'); if(!panel) return;
+  const open=panel.style.display==='block';
+  if(e.key==='Escape'){
+    if(open){ panel.style.display='none'; e.target.value=plOwnerFilterLabel(plFilter.owner); e.preventDefault(); }
+    return;
+  }
+  if(e.key==='ArrowDown' || e.key==='ArrowUp'){
+    e.preventDefault();
+    if(!open){ renderPlOwnerPanel(true); return; }
+    const items=plOwnerPanelItems(); if(!items.length) return;
+    _plOwnerActive=(e.key==='ArrowDown')
+      ? (_plOwnerActive<items.length-1 ? _plOwnerActive+1 : 0)
+      : (_plOwnerActive>0 ? _plOwnerActive-1 : items.length-1);
+    items.forEach((el,i)=>{ el.style.background=(i===_plOwnerActive)?'var(--dsw-alias-fill-l1)':''; });
+    return;
+  }
+  if(e.key==='Enter' && open){
+    const items=plOwnerPanelItems();
+    let el=(_plOwnerActive>=0)?items[_plOwnerActive]:null;
+    /* 未高亮时 Enter 提交与输入完全一致的候选（输入是显示文本，经 plOwnerFilterValue 归一到 key） */
+    if(!el){
+      const raw=e.target.value.trim();
+      if(raw){ const v=plOwnerFilterValue(raw); el=items.find(x=>x.getAttribute('data-plowner')===v)||null; }
+    }
+    if(el){ pickPlOwner(el.getAttribute('data-plowner')); e.preventDefault(); }
+  }
+});
+document.addEventListener('click', e=>{
+  const p=$('plOwnerPanel'); const m=$('plOwnerPick');
+  if(p && m && p.style.display==='block' && !m.contains(e.target)){
+    p.style.display='none';
+    const inp=$('plFilterOwner'); if(inp) inp.value=plOwnerFilterLabel(plFilter.owner);
+  }
+});
 $('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
 $('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; plPage=0; $('plFilterKw').value=''; $('plFilterOwner').value=plOwnerFilterLabel('mine'); $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
 function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
@@ -8865,26 +8920,49 @@ function plFilterMatch(p){
   return me ? (o===me) : !o;   /* 未取到当前用户时退化为「内置 + 未署名」，避免把列表整列隐藏 */
 }
 let _plOwnerSig='';
-/* 拥有者筛选 datalist 重建：特殊项（我的（含预置）/全部/仅预置，存在未署名流水线时加「未署名」）
-   + 全部已知拥有者用户名（pipelines.map(plOwnerOf) 去重排序）；签名去重避免无谓重建（签名含未署名位，
-   未署名流水线消失/出现时同样触发重建）。重建只动 datalist 选项，不改输入框当前文本 */
-function renderPlFilterOptions(){
-  const inp=$('plFilterOwner');
-  const list=$('plOwnerList');
+let _plOwnerActive=-1;   /* 拥有者候选面板键盘高亮下标（-1 = 无） */
+/* 拥有者候选名单缓存：特殊项（我的/全部/仅预置，存在未署名流水线时加「未署名」）
+   + 全部已知拥有者用户名（pipelines.map(plOwnerOf) 去重排序）；签名去重避免无谓重算。
+   每项 {key,label}：key 为筛选值（特殊项=模式键，用户名原样），label 为面板展示文本 */
+function plOwnerOptions(){
   const owners=Array.from(new Set(pipelines.map(plOwnerOf).filter(Boolean))).sort();
   const hasUnknown=pipelines.some(p=>!p.builtIn && !plOwnerOf(p));
   const sig=owners.join('\u0001')+(hasUnknown?'\u0001u':'');
-  if(list && sig!==_plOwnerSig){
+  if(sig!==_plOwnerSig){
     _plOwnerSig=sig;
-    list.innerHTML='<option value="我的（含预置）"></option><option value="全部"></option><option value="仅预置"></option>'
-      +owners.map(u=>'<option value="'+esc(u)+'"></option>').join('')
-      +(hasUnknown?'<option value="未署名"></option>':'');
+    _plOwnerListCache=[{key:'mine',label:'我的（含预置）'},{key:'all',label:'全部'},{key:'builtin',label:'仅预置'}]
+      .concat(owners.map(u=>({key:u,label:u})))
+      .concat(hasUnknown?[{key:'unknown',label:'未署名'}]:[]);
   }
-  /* 幂等回显：模式键→中文标签、用户名原样；输入框聚焦（搜索输入中）时不回写，避免打断正在输入的文本 */
-  if(inp && document.activeElement!==inp){
+  return _plOwnerListCache;
+}
+let _plOwnerListCache=[{key:'mine',label:'我的（含预置）'},{key:'all',label:'全部'},{key:'builtin',label:'仅预置'}];
+/* 拥有者筛选候选面板：showAll 显示全量候选（聚焦弹出），否则按输入框文本子串过滤（大小写不敏感）；
+   点选/回车提交精确项（key 直接作为 plFilter.owner，特殊项已是模式键） */
+function renderPlOwnerPanel(showAll){
+  const panel=$('plOwnerPanel'); const inp=$('plFilterOwner'); if(!panel||!inp) return;
+  const q=showAll?'':inp.value.trim().toLowerCase();
+  const list=plOwnerOptions().filter(it=>!q || it.label.toLowerCase().indexOf(q)>=0 || String(it.key).toLowerCase().indexOf(q)>=0);
+  const item=it=>'<div data-plowner="'+esc(it.key)+'" style="padding:3px 8px;cursor:pointer;border-radius:5px;font-size:12px;white-space:nowrap;'+(it.key===plFilter.owner?'color:var(--dsw-alias-state-accent-primary);font-weight:600;':'')+'">'+esc(it.label)+'</div>';
+  let h=list.map(item).join('');
+  if(!list.length) h='<div class="dshell-muted" style="font-size:11px;padding:4px 6px;">无匹配候选</div>';
+  panel.innerHTML=h; panel.style.display='block';
+  _plOwnerActive=-1;
+  /* preventDefault：避免 label 激活把焦点拉回输入框导致面板被 focus 处理器重新打开 */
+  panel.querySelectorAll('[data-plowner]').forEach(el=>el.addEventListener('click',e=>{ e.preventDefault(); pickPlOwner(el.getAttribute('data-plowner')); }));
+}
+function plOwnerPanelItems(){ const panel=$('plOwnerPanel'); return panel?Array.from(panel.querySelectorAll('[data-plowner]')):[]; }
+/* 拥有者筛选回显与面板同步：幂等回显（模式键→中文标签、用户名原样）；输入框聚焦（搜索输入中）时不回写，
+   避免定时自动刷新打断输入。面板展开时随候选名单变化重绘 */
+function renderPlFilterOptions(){
+  const inp=$('plFilterOwner'); if(!inp) return;
+  plOwnerOptions();   /* 候选名单随流水线集合刷新（签名去重） */
+  if(document.activeElement!==inp){
     const want=plOwnerFilterLabel(plFilter.owner);
     if(inp.value!==want) inp.value=want;
   }
+  const panel=$('plOwnerPanel');
+  if(panel && panel.style.display==='block') renderPlOwnerPanel();
 }
 
 /* ---------- 流水线任务管理（多条流水线） ---------- */
