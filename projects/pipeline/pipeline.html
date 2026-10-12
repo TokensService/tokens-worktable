@@ -5145,6 +5145,41 @@ async function cancelServerRun(runId){
     return null;
   }
 }
+/* 跨浏览器终止他端在场条目（「其他浏览器」分组）：条目仍在来源页执行引擎里，服务端无法直接杀，
+   经取消信箱转达；来源页下一轮 pullRemoteQueue 认领后本地 cancelQueue/abortRun。 */
+async function cancelRemotePresence(clientId,itemId){
+  try{
+    const response=await fetch('/api/worktable/pipeline/queue',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'cancel-presence',clientId:String(clientId||''),itemId:String(itemId||''),by:currentUsername||''}),
+    });
+    let result={}; try{ result=await response.json(); }catch(e){}
+    if(!response.ok) throw new Error((result&&result.error)||('HTTP '+response.status));
+    flashRunTip('已请求终止：转达来源页执行，稍候条目将从队列消失');
+    await pullRemoteQueue();
+    return result;
+  }catch(error){
+    alert('跨浏览器终止失败：'+String(error&&error.message||error));
+    await pullRemoteQueue();
+    return null;
+  }
+}
+/* 认领取消信箱：目标为本页 QCLIENT_ID 的请求，在本地真正中止/取消。条目已不在则忽略；
+   处理后下一次在场上报不再携带该条目，服务端出箱。 */
+function applyPresenceCancelRequests(reqs){
+  if(!Array.isArray(reqs)||!reqs.length) return;
+  let acted=false;
+  for(const req of reqs){
+    if(!req||String(req.clientId||'')!==QCLIENT_ID) continue;
+    const itemId=String(req&&req.itemId||'');
+    if(!itemId) continue;
+    const q=(typeof queue!=='undefined'&&queue||[]).find(x=>String(x&&x.id||'')===itemId);
+    if(q){ cancelQueue(itemId); acted=true; continue; }
+    const rc=(typeof activeRuns!=='undefined'&&activeRuns||[]).find(r=>String(r&&r.id||'')===itemId);
+    if(rc){ abortRun(rc); acted=true; continue; }
+  }
+  if(acted && typeof renderQueue==='function') renderQueue();
+}
 /* 服务端在跑阶段的日志尾窗按「行」收紧到与历史回放一致的最后 20 行：
    传输（tailLines）与回显同限，完整内容走归档文件 / 历史回放，不在实时详情刷千行。 */
 const LIVE_LOG_TAIL_LINES=20;
@@ -5309,6 +5344,8 @@ async function pullRemoteQueue(){
         renderQueue();
       }
       if(finished) noteServerFinished(finished);   // 新终态条目：登记 completed（完成≠失联）+ 历史即刷；按 id 去重，签名未变时幂等
+      /* 取消信箱：每轮都认领（与签名无关——请求可能在快照未变化时到达）；旧服务端无此键跳过 */
+      if(Array.isArray(j.cancelRequests)) applyPresenceCancelRequests(j.cancelRequests);
       if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点（含超时清理，每轮都执行）
       await pullRemoteQueueLog();
     }
@@ -5838,21 +5875,28 @@ function renderQueue(){
       list.appendChild(it);
     }
   }
-  /* 服务端权威任务可从任一浏览器中止/取消；旧浏览器在场快照仍由来源页持有，只读展示。
-     标题前带来源标签（服务端或 Chrome·a1b2）以区分归属。 */
+  /* 有控制权（本人署名 / admin）的任务可从任一浏览器中止/取消：服务端权威任务直接取消执行池条目；
+     他端在场条目经服务端取消信箱转达来源页本地中止/取消。标题前带来源标签（服务端或 Chrome·a1b2）以区分归属。 */
   if(remoteQueueClients.length){
     const sep=document.createElement('div'); sep.className='dshell-listItem';
     sep.innerHTML='<span class="dshell-muted" style="font-size:10px">— 服务端队列 / 其他浏览器 —</span>';
     list.appendChild(sep);
+    /* 远端条目取消/中止按钮：本人或 admin 可见；服务端条目走 cancelServerRun，他端条目走取消信箱 */
+    const remoteCancelBtn=(c,item,kind)=>{
+      if(!item||!canControlRun(item.by)) return '';
+      const label=kind==='running'?'中止':'取消';
+      const tip=(kind==='running'?'中止该运行：进行中的脚本进程会被杀掉，本次运行按「终止」计入历史':'取消该排队任务：出队后不再启动');
+      if(String(c&&c.id||'')==='server') return ' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(item.id)+'" title="'+tip+'">'+label+'</button>';
+      return ' <button class="dshell-btn dshell-btnGhost mini" data-qremote-cancel="'+esc(c.id)+'" data-qremote-cancel-id="'+esc(item.id)+'" title="'+tip+'（跨浏览器：经服务端转达来源页执行）">'+label+'</button>';
+    };
     remoteQueueClients.forEach(c=>{
-      const serverOwned=String(c&&c.id||'')==='server';
       const tag='<span class="dshell-muted" style="font-size:10px">['+esc(c.label||c.id)+']</span> ';
       /* 他端与服务端同样先画较新的排队项、再画较早的在跑项，让整组从新到旧展示。 */
       (Array.isArray(c.queue)?c.queue:[]).slice().reverse().forEach(q=>{
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(q.id)&&viewRc.remoteKind==='queued';
         if(viewing) markViewing(it);
-        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-badge dshell-badgeWait">排队中</span>'+(serverOwned&&canControlRun(q.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(q.id)+'">取消</button>':'');
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,q,'queued','点击查看该排队流水线的阶段详情')+'>'+tag+esc(q.by)+' · '+esc(q.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(q.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(q.queuedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(q)+remoteQueueDetailHint(q)+'</span><span class="dshell-badge dshell-badgeWait">排队中</span>'+remoteCancelBtn(c,q,'queued');
         if(remoteQueueDetailAvailable(q)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(q.id),'queued'); });   // 空白处点击同标题
         list.appendChild(it);
       });
@@ -5860,7 +5904,7 @@ function renderQueue(){
         const it=document.createElement('div'); it.className='dshell-listItem';
         const viewing=viewRc&&viewRc.remotePreview===true&&viewRc.remoteClientId===String(c.id)&&viewRc.remoteItemId===String(rn.id)&&viewRc.remoteKind==='running';
         if(viewing) markViewing(it);
-        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+(serverOwned&&canControlRun(rn.by)?' <button class="dshell-btn dshell-btnGhost mini" data-qserver-cancel="'+esc(rn.id)+'">中止</button>':'');
+        it.innerHTML='<span class="dshell-listItemTitle"'+remoteQueueViewAttrs(c,rn,'running','点击查看该运行的阶段详情')+'>'+tag+esc(rn.by)+' · '+esc(rn.pipelineName||'')+' <span class="dshell-muted">'+esc(sourceLabel(rn.source))+'</span> <span class="dshell-muted" style="font-size:10px">'+fmtRelative(rn.startedAt)+'</span>'+(viewing?' <span class="dshell-muted" style="font-size:10px">（查看中）</span>':'')+runInfoLine(rn)+remoteQueueDetailHint(rn)+'</span><span class="dshell-badge dshell-badgeWait">运行中</span>'+remoteCancelBtn(c,rn,'running');
         if(remoteQueueDetailAvailable(rn)) it.addEventListener('click',e=>{ if(rowInnerHit(e)) return; focusRemoteQueueItem(String(c.id),String(rn.id),'running'); });   // 空白处点击同标题
         list.appendChild(it);
       });
@@ -5918,6 +5962,15 @@ function renderQueue(){
     const item=remoteRunsOf(server).concat(server&&Array.isArray(server.queue)?server.queue:[]).find(x=>String(x&&x.id||'')===String(id));
     if(item && !canControlRun(item.by)){ alert('无权限：仅管理员可中止或取消其他用户（'+esc(item.by||'')+'）的流水线。'); return; }
     cancelServerRun(id);
+  }));
+  /* 他端在场条目的跨浏览器取消/中止：权限口径同上，经取消信箱转达来源页 */
+  list.querySelectorAll('[data-qremote-cancel]').forEach(b=>b.addEventListener('click',()=>{
+    const clientId=b.getAttribute('data-qremote-cancel');
+    const itemId=b.getAttribute('data-qremote-cancel-id');
+    const client=remoteQueueClients.find(c=>String(c&&c.id||'')===String(clientId));
+    const item=(client?remoteRunsOf(client).concat(Array.isArray(client.queue)?client.queue:[]):[]).find(x=>String(x&&x.id||'')===String(itemId));
+    if(item && !canControlRun(item.by)){ alert('无权限：仅管理员可中止或取消其他用户（'+esc(item.by||'')+'）的流水线。'); return; }
+    cancelRemotePresence(clientId, itemId);
   }));
   list.querySelectorAll('[data-qabort]').forEach(b=>b.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===b.getAttribute('data-qabort')); if(!rc) return; if(!canControlRun(rc.by)){ alert('无权限：仅管理员可中止其他用户（'+esc(rc.by||'')+'）的流水线。'); return; } abortRun(rc); }));
   list.querySelectorAll('[data-qfocus]').forEach(el=>el.addEventListener('click',()=>{ const rc=activeRuns.find(r=>r.id===el.getAttribute('data-qfocus')); if(rc) focusRun(rc); }));
