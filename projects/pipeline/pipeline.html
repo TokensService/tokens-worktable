@@ -380,6 +380,7 @@
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">状态
           <select id="histFilterStatus" class="dshell-input" style="min-width:96px;">
             <option value="">全部</option>
+            <option value="running">进行中</option>
             <option value="success">已完成</option>
             <option value="failed">错误</option>
             <option value="aborted">终止</option>
@@ -4437,7 +4438,7 @@ function stageLogFileFor(stage, rc){
   return folder+'/'+taskLogFile(rc, stageSeq(rc.stages, idx), stage.name);
 }
 /* 阶段详情「AI 分析」按钮的作用记录：回放态取当前回放行；实时态按 tag 找回本次运行的
-   历史记录（运行结束写入历史后方可分析）；都没有返回 null（按钮随之禁用）。 */
+   历史记录（启动即写入「进行中」条目，见 beginRunHistory）；都没有返回 null（按钮随之禁用）。 */
 function currentStageAnalysisRec(){
   if(replayRec) return replayRec;
   if(curRun && curRun.tag) return history.find(h=>h.tag && h.tag===curRun.tag) || null;
@@ -4488,7 +4489,7 @@ function appendStageLogRow(kv, path, rec){
    与运行历史标题行分析按钮同一入口 createAnalysisChat，不自动发送）。 */
 function stageDetailAnalysis(){
   const rec=currentStageAnalysisRec();
-  if(!rec){ alert('本次运行尚未写入运行历史（运行结束后自动生成），暂不能发起 AI 分析。'); return; }
+  if(!rec){ alert('未找到本次运行的历史记录，暂不能发起 AI 分析。'); return; }
   createAnalysisChat('log',[rec]);
 }
 function renderDetail(){
@@ -4848,6 +4849,7 @@ function startSimRun(pl, c){
   _detailKey='';   // 视图切到新运行，详情渲染缓存一并失效
   refreshArchiveTip();   // 运行期间「打开归档目录」目标切到本次运行归档（见 archiveTargetFolder）
   rcOverall(rc,'运行中…','dshell-badgeWait');
+  beginRunHistory(rc);   // 启动即写入运行历史（状态「进行中」），finish 按 tag 原地更新为终态
   renderFlow(); renderDetail();
   /* 混合编排（本地前缀 + 定时后缀）：启动即把后缀预登记为休眠服务端计划（at=0，见 preRegisterSchedSuffix），
      分界/关页只做激活，不再等移交——防止移交过程中丢上下文/请求丢失。
@@ -6399,6 +6401,18 @@ function disposeRunForReset(rc){
   if(rc.leaseId){ releaseNodeLease(rc.leaseId, rc.leaseIps); rc.leaseId=null; }   // 重置（不计入历史）同样释放节点租约
   if(rc.suffixPlanHeld && typeof discardHeldSuffixPlan==='function'){ try{ discardHeldSuffixPlan(rc); }catch(e){} }   // 重置：未激活的休眠后缀计划一并清理
   rc.over=true;
+  /* 重置不计入历史：撤回启动时写入的「进行中」记录（beginRunHistory），避免残留永远跑不完的条目 */
+  if(rc.tag && typeof history!=='undefined' && Array.isArray(history)){
+    const i=history.findIndex(h=>h&&h.tag===rc.tag && h.status==='running');
+    if(i>=0){
+      history.splice(i,1);
+      if(typeof selHistoryIdx!=='undefined'){
+        if(selHistoryIdx===i) selHistoryIdx=-1;
+        else if(selHistoryIdx>i) selHistoryIdx--;
+      }
+      try{ if(typeof renderHistory==='function') renderHistory(); if(typeof renderStats==='function') renderStats(); if(typeof persistState==='function') persistState(); }catch(e){}
+    }
+  }
 }
 function settleParallelStage(child,status){
   if(!child || !child.parallelParent || child.parallelSettled) return;
@@ -7973,6 +7987,24 @@ function retryFromStage(stageId){
 /* 运行历史 envNodes 字段（与服务端写入契约一致）：由运行上下文选中节点映射为 {name,ip,nodeIp}，
    name 与 ip 均为空的条目丢弃、最多 50 条，绝不含 user/pass 等凭据；无选中节点时为空数组。
    与 rec.env（中文逗号 IP 串，enterHistoryReplay/rerunFromHistory 依赖其回填环境）互补，互不改写。 */
+/* 运行启动即写入运行历史（status:'running'，展示「进行中」）：点「运行流水线」后历史立刻有记录，
+   不必等运行结束。finish 按 tag 原地更新为终态；重置（disposeRunForReset）撤回本条不计入历史。
+   终态前 logs/prom 尚不齐全，回放会显示空日志；点击该行优先切回实时编排视图（见 renderHistory）。 */
+function beginRunHistory(rc){
+  if(!rc || !rc.tag) return null;
+  const exists=history.find(h=>h&&h.tag===rc.tag);
+  if(exists) return exists;
+  buildNo++;
+  const rec={no:buildNo, pipeline:rc.pipelineName||curPipeline().name, env:rc.env, commit:(rc.commit||'').slice(0,7),
+    status:'running', dur:'0s', time:'今天 '+nowHM(), ts:Date.now(), startTs:rc.startTs||Date.now(), by:rc.by||'anonymous',
+    pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'',
+    envNodes: historyEnvNodesOf(rc), prom:null, logs:[], tag:rc.tag, archive:archiveFolderFor(rc)};
+  history.unshift(rec); if(history.length>500) history.length=500;
+  histPage=0; selHistoryIdx=0;
+  renderHistory(); renderStats();
+  persistState();
+  return rec;
+}
 function historyEnvNodesOf(rc){
   const envs=(rc && rc.envs) || [];
   const out=[];
@@ -8007,16 +8039,17 @@ function finish(rc, result){
     if(result==='success'){ rcOverall(rc,'✓ 已完成','dshell-badgeDone'); }
     else if(result==='aborted'){ rcOverall(rc,'⏏ 终止','','var(--st-idle)'); }   // 与运行历史行/阶段徽标同色（灰）
     else { rcOverall(rc,'✗ 错误','','var(--st-err)'); }
+    const status=result==='success'?'success':(result==='aborted'?'aborted':'failed');
     const rec={pipeline:rc.pipelineName||curPipeline().name, env:rc.env, commit:rc.commit.slice(0,7),
-      status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
+      status,
       dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:rc.startTs, by:rc.by||'anonymous',
       pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'', source:'local',
       envNodes: historyEnvNodesOf(rc),   // 选中环境节点快照（不含凭据；rec.env 保持中文逗号 IP 串不回填改写）
       prom: promSnapshotForRun(rc),
       logs: collectRunLogs(rc),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集；本地执行阶段带 local:true
       tag:rc.tag, archive:archiveFolderFor(rc)};
-    /* 混合编排（本地前缀 + 定时后缀）同 tag 原地合并：服务端后缀运行写入同 tag 记录时按阶段名并集补齐，
-       运行历史始终只有一条；无同 tag（纯本地/无移交）走新增兜底。 */
+    /* 启动时已写入「进行中」记录（beginRunHistory）：按 tag 原地更新为终态，不再新增一条；
+       混合编排（本地前缀 + 定时后缀）下同 tag 记录按阶段名并集合并日志，运行历史始终只有一条 */
     const existing=rec.tag?history.find(h=>h&&h.tag===rec.tag):null;
     if(existing){
       rec.no=existing.no;
@@ -8024,7 +8057,7 @@ function finish(rc, result){
       const nextLogs=Array.isArray(rec.logs)?rec.logs:[];
       Object.assign(existing, rec);
       existing.logs=mergeStageLogsForHistory(prevLogs, nextLogs);
-      selHistoryIdx=history.indexOf(existing);
+      selHistoryIdx=history.indexOf(existing);   // 选中本次运行（仅选中不进入回放，保持本次运行的实时编排/详情视图）
     }else{
       buildNo++;
       rec.no=buildNo;
@@ -9034,9 +9067,11 @@ function renderHistory(){
     const tr=document.createElement('tr');
     const analysisChecked=analysisHistoryKeys.indexOf(analysisHistoryKey(h))>=0;
     tr.className=(idx===selHistoryIdx?'sel ':'')+(analysisChecked?'analysis-sel':'');
-    const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':'')+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
+    const badge='<span class="dshell-badge '+(h.status==='success'?'dshell-badgeDone':(h.status==='running'?'dshell-badgeWait':''))+'"'+(h.status==='failed'?' style="color:var(--st-err);border-color:color-mix(in srgb, var(--st-err) 40%, transparent)"':h.status==='aborted'?' style="color:var(--st-idle)"':'')+'>'+labelOf(h.status)+'</span>';
     const envCell=historyEnvNodesCell(h);
-    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted"'+(envCell.title?' title="'+esc(envCell.title)+'"':'')+'>'+esc(envCell.text)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(h.dur)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-menu title="更多操作" aria-label="运行 #'+esc(h.no)+' 更多操作">⋯</button></td>';
+    /* 在跑记录耗时按 startTs 实时算（历史自动刷新约 3s 重绘一次）；终态用 finish 写入的 dur */
+    const durText=(h.status==='running'&&Number(h.startTs)>0)?fmtDur(Math.max(0,(Date.now()-h.startTs)/1000)):(h.dur||'');
+    tr.innerHTML='<td><input type="checkbox" class="history-analysisPick" data-hist-analysis aria-label="选择运行 #'+esc(h.no)+' 用于 AI 分析或对比" title="选择用于 AI 分析（最多两条，勾选顺序为 A / B）" /></td><td>#'+h.no+'</td><td class="dshell-muted">'+esc(h.pipeline||'—')+'</td><td class="dshell-muted"'+(envCell.title?' title="'+esc(envCell.title)+'"':'')+'>'+esc(envCell.text)+'</td><td class="dshell-muted">'+esc(h.by)+'</td><td class="dshell-muted">'+esc(h.strategy||'—')+'</td><td>'+badge+'</td><td>'+esc(durText)+'</td><td class="dshell-muted">'+esc(fmtHistTime(h))+' <button class="dshell-btn dshell-btnGhost mini" type="button" data-history-menu title="更多操作" aria-label="运行 #'+esc(h.no)+' 更多操作">⋯</button></td>';
     const analysisPick=tr.querySelector('[data-hist-analysis]');
     analysisPick.checked=analysisChecked;
     analysisPick.addEventListener('click', e=>e.stopPropagation());
@@ -9047,7 +9082,19 @@ function renderHistory(){
     }
     tr.addEventListener('click', ()=>{
       selHistoryIdx = selHistoryIdx===idx?-1:idx;
-      if(selHistoryIdx>=0) enterHistoryReplay(history[selHistoryIdx]);   // 选中行：编排区/回显框/主控控件同步回放该次运行
+      if(selHistoryIdx>=0){
+        const rec=history[selHistoryIdx];
+        /* 在跑记录（启动即入史）点选不进回放：回放会掏空实时编排且 logs 尚未齐全，
+           改为切到该次运行的实时视图；已不在本页 activeRuns 的 running 记录仍走回放 */
+        const live=(rec&&rec.tag&&typeof activeRuns!=='undefined'&&Array.isArray(activeRuns))
+          ? activeRuns.find(r=>r&&r.tag===rec.tag) : null;
+        if(live){
+          replayRec=null;
+          viewRc=live; syncViewRun(); applyRunOverall(live);
+          _detailKey=''; renderFlow(); renderDetail();
+          const rt=$('replayTip'); if(rt) rt.textContent='';
+        }else enterHistoryReplay(rec);
+      }
       else exitHistoryReplay();
       renderHistory();
       refreshArchiveTip();   // 「打开归档目录」目标跟随选中行刷新（运行中除外，见 archiveTargetFolder）
@@ -9283,7 +9330,34 @@ function applyHistoryRefreshPayload(st, clearAtStart){
   if(remoteClearedAt<clearAtStart) return false;
   if(Number.isFinite(cfg.buildNo)) buildNo=Math.max(buildNo, cfg.buildNo);
   if(Number.isFinite(cfg.histClearedAt)) histClearedAt=Math.max(histClearedAt, cfg.histClearedAt);
-  if(Array.isArray(st&&st.history) && st.history.length){ history=st.history; historyMarkSynced(); }
+  if(Array.isArray(st&&st.history) && st.history.length){
+    const prev=history;
+    history=st.history;
+    /* 本页在跑/刚终态的运行记录以本地为准：服务端可能滞后（启动持久化在途、finish 刚写完未刷回）。
+       同 tag：本地终态优先于远端 running（远端仍是启动时的「进行中」）；本地 running 且远端缺失时
+       补回（启动持久化尚未落盘），避免 3s 自动刷新把刚写入的「进行中」条目冲掉。 */
+    const localByTag=new Map();
+    (Array.isArray(prev)?prev:[]).forEach(h=>{ if(h&&h.tag&&!h.demo) localByTag.set(h.tag,h); });
+    let merged=history;
+    if(localByTag.size){
+      merged=history.slice();
+      let injected=false;
+      localByTag.forEach((local,tag)=>{
+        const at=merged.findIndex(x=>x&&x.tag===tag);
+        if(at>=0){
+          const remote=merged[at];
+          if(local.status!=='running' && remote.status==='running'){ merged[at]=Object.assign({},remote,local); injected=true; }
+        }else if(local.status==='running'){
+          /* 仅补回仍在本页跑的 running 记录；已不在 activeRuns（关页移交后）交由服务端终态接管 */
+          const live=(typeof activeRuns!=='undefined'&&Array.isArray(activeRuns))?activeRuns.some(r=>r&&r.tag===tag):true;
+          if(live){ merged.unshift(local); injected=true; }
+        }
+      });
+      history=merged;
+      if(injected){ historySyncSig=''; return true; }   // 有本地覆盖：强制下次 persist 携带历史正文
+    }
+    historyMarkSynced();
+  }
   else if(histClearedAt){ history=[]; historyMarkSynced(); }
   return true;
 }
@@ -9509,7 +9583,7 @@ document.addEventListener('click', e=>{
 });
 $('plFilterFavorite').addEventListener('change', e=>{ plFilter.favorite=e.target.value; plPage=0; savePlFilter(); renderPipelines(); });
 $('plFilterClear').addEventListener('click', ()=>{ plFilter={kw:'',owner:'mine',favorite:'all'}; plPage=0; $('plFilterKw').value=''; $('plFilterOwner').value=plOwnerFilterLabel('mine'); $('plFilterFavorite').value='all'; savePlFilter(); renderPipelines(); });
-function labelOf(s){ return {success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
+function labelOf(s){ return {running:'进行中',success:'已完成',failed:'错误',aborted:'终止'}[s]||s; }
 /* 历史时间渲染：新记录存 ts 时间戳（今天→「今天 HH:MM」，更早→「MM-DD HH:MM」）；旧的字符串记录原样显示 */
 function fmtHistTime(h){
   if(!h.ts) return h.time||'';
@@ -9519,7 +9593,7 @@ function fmtHistTime(h){
   return sameDay?('今天 '+hm):(p(d.getMonth()+1)+'-'+p(d.getDate())+' '+hm);
 }
 function renderStats(){
-  const rows = history.filter(h=>!h.demo);   // 统计只计真实运行，不含内置演示数据
+  const rows = history.filter(h=>!h.demo && h.status!=='running');   // 统计只计真实终态运行（进行中不计入成功率/均耗时）
   $('sTotal').textContent = rows.length;
   const succ = rows.filter(h=>h.status==='success').length;
   const rate = rows.length? Math.round(succ/rows.length*100):0;
