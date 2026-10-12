@@ -63,7 +63,7 @@ run_target() {
 }
 
 pull_target_images() {
-  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status pull_status
+  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status pull_status mapped_target
   local -a mapped_targets
 
   mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
@@ -86,11 +86,6 @@ for item in hosts:
     if not isinstance(item, dict) or not isinstance(item.get("ip"), str) or not item["ip"]:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
     endpoint = item["ip"]
-    if endpoint not in mapping:
-        continue
-    mapped_ip = mapping[endpoint]
-    if not isinstance(mapped_ip, str) or not mapped_ip:
-        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     if match:
         host, port = match.groups()
@@ -98,14 +93,14 @@ for item in hosts:
             raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
     else:
         host, port = endpoint, "22"
-    # TARGET_NODE_IP_MAP also contains resolved direct targets.  Registry
-    # credentials and explicit target pre-pulls are only needed for endpoints
-    # translated to a different Kubernetes InternalIP.
-    if mapped_ip == host:
-        continue
+    # Missing entries are direct/non-mapped targets and still need a remote pull.
+    mapped_ip = mapping.get(endpoint, host)
+    if not isinstance(mapped_ip, str) or not mapped_ip:
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     payload = {"endpoint": endpoint, "host": host, "port": port,
                "user": item.get("user") or "root",
-               "password": item.get("pass", item.get("password", "")) or ""}
+               "password": item.get("pass", item.get("password", "")) or "",
+               "mapped": mapped_ip != host}
     print(base64.b64encode(json.dumps(payload).encode()).decode())
 PY
   )"
@@ -114,14 +109,30 @@ PY
 
   for target_line in "${mapped_targets[@]}"; do
     target_json="$(printf '%s' "$target_line" | base64 -d)"
-    read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
+    read -r endpoint user host port password mapped_target < <(python3 - "$target_json" <<'PY'
 import json
 import sys
 item = json.loads(sys.argv[1])
-print(item["endpoint"], item["user"], item["host"], item["port"], item["password"])
+print(item["endpoint"], item["user"], item["host"], item["port"], item["password"], int(item["mapped"]))
 PY
     )
     target="${user}@${host}"
+    if [[ "$mapped_target" != 1 ]]; then
+      if [[ -z "$IMAGE_PULL_AK" || -z "$IMAGE_PULL_LOGIN_KEY" ]]; then
+        echo "AK and LOGIN_KEY are required for non-mapped target image pulls" >&2
+        return 2
+      fi
+      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote \"${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}\") $(remote_quote \"$image\")"
+      echo "[pull] target $endpoint (non-mapped): pull image $image with ctr"
+      if run_target "$target" "$port" "$password" "bash -lc $(remote_quote \"$remote_command\")"; then
+        :
+      else
+        pull_status=$?
+        echo "[pull] target $endpoint: non-mapped registry pull failed (exit $pull_status)" >&2
+        return "$pull_status"
+      fi
+      continue
+    fi
     printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images ls -q | grep -Fqx -- $(remote_quote "$image")"
     echo "[pull] target $endpoint: ensure image $image"
     if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
