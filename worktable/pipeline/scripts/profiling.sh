@@ -28,6 +28,13 @@ PROFILING_MAX_REQUESTS="${PROFILING_MAX_REQUESTS:-0}"
 PROFILING_CONNECT_TIMEOUT_SECONDS="${PROFILING_CONNECT_TIMEOUT_SECONDS:-5}"
 PROFILING_REQUEST_TIMEOUT_SECONDS="${PROFILING_REQUEST_TIMEOUT_SECONDS:-180}"
 PROFILING_RETRIES="${PROFILING_RETRIES:-0}"
+PROFILING_COLLECT="${PROFILING_COLLECT:-true}"
+PROFILING_NAMESPACE="${PROFILING_NAMESPACE:-${NAMESPACE:-}}"
+PROFILING_OUTPUT_DIR="${PROFILING_OUTPUT_DIR:-./profiling-output/$(date +%Y%m%d_%H%M%S)}"
+PROFILING_COLLECT_WAIT_SECONDS="${PROFILING_COLLECT_WAIT_SECONDS:-15}"
+PROFILING_POD_REGEX="${PROFILING_POD_REGEX:-prefill|decode}"
+PROFILING_POD_CONTAINER="${PROFILING_POD_CONTAINER:-ray-worker}"
+PROFILING_KUBECTL_BIN="${PROFILING_KUBECTL_BIN:-kubectl}"
 case "${PROFILING_SELF_TEST,,}" in true|false) ;; *) echo 'PROFILING_SELF_TEST must be true or false' >&2; exit 2 ;; esac
 [[ "$PROFILING_MAX_REQUESTS" =~ ^[0-9]+$ ]] || { echo 'PROFILING_MAX_REQUESTS must be non-negative' >&2; exit 2; }
 for value_name in PROFILING_CONNECT_TIMEOUT_SECONDS PROFILING_REQUEST_TIMEOUT_SECONDS; do
@@ -35,6 +42,8 @@ for value_name in PROFILING_CONNECT_TIMEOUT_SECONDS PROFILING_REQUEST_TIMEOUT_SE
 done
 [[ "$PROFILING_RETRIES" =~ ^[0-9]+$ ]] || { echo "PROFILING_RETRIES must be non-negative" >&2; exit 2; }
 [[ "${PROFILING_SELF_TEST,,}" == false || -n "$PROFILING_MODEL_ENDPOINT" ]] || { echo 'PROFILING_MODEL_ENDPOINT is required for self-test' >&2; exit 2; }
+case "${PROFILING_COLLECT,,}" in true|false) ;; *) echo 'PROFILING_COLLECT must be true or false' >&2; exit 2 ;; esac
+[[ "$PROFILING_COLLECT_WAIT_SECONDS" =~ ^[0-9]+$ ]] || { echo 'PROFILING_COLLECT_WAIT_SECONDS must be non-negative' >&2; exit 2; }
 base="${PROFILING_URL%/}"
 log "resolved endpoint=${base}"
 log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s connect_timeout=${PROFILING_CONNECT_TIMEOUT_SECONDS}s request_timeout=${PROFILING_REQUEST_TIMEOUT_SECONDS}s retries=${PROFILING_RETRIES}"
@@ -86,3 +95,27 @@ PY
   printf '\n==========request finish %s==========\n' "$nonce"
   sleep "$PROFILING_INTERVAL_SECONDS"
 done
+
+collect_profiling_files() {
+  [[ "${PROFILING_COLLECT,,}" == true ]] || { log "profiling file collection disabled"; return 0; }
+  [[ -n "$PROFILING_NAMESPACE" ]] || { log "skip file collection: set PROFILING_NAMESPACE or NAMESPACE"; return 0; }
+  command -v "$PROFILING_KUBECTL_BIN" >/dev/null 2>&1 || { log "skip file collection: kubectl not found ($PROFILING_KUBECTL_BIN)"; return 0; }
+  mkdir -p "$PROFILING_OUTPUT_DIR"
+  log "waiting ${PROFILING_COLLECT_WAIT_SECONDS}s for profiling files"
+  sleep "$PROFILING_COLLECT_WAIT_SECONDS"
+  mapfile -t pods < <("$PROFILING_KUBECTL_BIN" get pods -n "$PROFILING_NAMESPACE" -o name 2>/dev/null | grep -E "$PROFILING_POD_REGEX" || true)
+  [[ ${#pods[@]} -gt 0 ]] || { log "no profiling pods found in namespace=$PROFILING_NAMESPACE"; return 1; }
+  local pod dest
+  for pod in "${pods[@]}"; do
+    pod="${pod#pod/}"; dest="$PROFILING_OUTPUT_DIR/$pod"; mkdir -p "$dest"
+    log "collecting pod=$pod container=$PROFILING_POD_CONTAINER source=/home/service/works/models_ssd/profile"
+    if "$PROFILING_KUBECTL_BIN" cp -n "$PROFILING_NAMESPACE" -c "$PROFILING_POD_CONTAINER" "$pod:/home/service/works/models_ssd/profile" "$dest" >/dev/null 2>&1; then
+      find "$dest" -type f -printf '[profiling] %p (%s bytes)\n' 2>/dev/null || true
+    else
+      log "WARN failed to collect pod=$pod"
+    fi
+  done
+  log "profiling files saved under $PROFILING_OUTPUT_DIR"
+}
+
+collect_profiling_files
