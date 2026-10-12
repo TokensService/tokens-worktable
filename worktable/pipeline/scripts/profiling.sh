@@ -91,8 +91,6 @@ collect_profiling_files() {
   log "profiling files saved under $PROFILING_OUTPUT_DIR"
 }
 
-collect_profiling_files
-
 if [[ "${PROFILING_SELF_TEST,,}" != true ]]; then
   collect_profiling_files
   exit 0
@@ -122,4 +120,5 @@ PY
   printf '\n==========request finish %s==========\n' "$nonce"
   sleep "$PROFILING_INTERVAL_SECONDS"
 done
+collect_profiling_files
 
