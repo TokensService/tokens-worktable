@@ -533,6 +533,101 @@ function withPipelineSharedMeta(sourceEntry: any, baseEntry: any, clientEntry: a
   return entry
 }
 
+/* ---------- 按用户隔离的视图态（流水线任务列表 / 运行历史筛选与页大小） ----------
+ *  histFilter/plFilter/histPageSize/plPageSize 是个人浏览偏好：此前落在共享 config 顶层，
+ *  一人改筛选全团队跟着变（拥有者=某人、仅失败等串台）。现改为 config.userViewStates[username]
+ *  按登录用户隔离——同用户跨浏览器跟随，互不覆盖他人。API 形态不变：GET 按请求用户把其槽位展开为
+ *  顶层键（客户端契约与 test_settings_server_keys 保持一致），PUT 收回并写入该用户槽位；
+ *  无 auth / 未登录走共享桶 ''（token 共享模式维持旧行为）。schedEnvIds 等其余键仍团队共享。 */
+const VIEW_STATE_KEYS = ['histFilter', 'plFilter', 'histPageSize', 'plPageSize']
+const VIEW_STATE_USER_CAP = 100
+
+/** 从配置对象抽出视图态四键（缺失键不产出，供槽位增量合并）。 */
+function extractViewState(source: any): Record<string, any> {
+  const out: Record<string, any> = {}
+  const src = source && typeof source === 'object' && !Array.isArray(source) ? source : {}
+  for (const key of VIEW_STATE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(src, key)) out[key] = src[key]
+  }
+  return out
+}
+
+/** 去掉视图态顶层键与 userViewStates 映射，得到纯共享配置（供合并/落盘）。 */
+function omitViewStateKeys(source: any) {
+  const src = source && typeof source === 'object' && !Array.isArray(source) ? source : {}
+  const out: Record<string, any> = { ...src }
+  for (const key of VIEW_STATE_KEYS) delete out[key]
+  delete out.userViewStates
+  return out
+}
+
+/** 视图态值清洗（与页面 collectConfig 同口径的宽松归一）：只认四键，形状不对的丢弃。 */
+function sanitizeViewState(source: any): Record<string, any> {
+  const out: Record<string, any> = {}
+  const src = source && typeof source === 'object' && !Array.isArray(source) ? source : {}
+  if (src.histFilter && typeof src.histFilter === 'object' && !Array.isArray(src.histFilter)) {
+    out.histFilter = {
+      kw: String(src.histFilter.kw ?? ''),
+      status: String(src.histFilter.status ?? ''),
+      pipeline: String(src.histFilter.pipeline ?? ''),
+    }
+  }
+  if (src.plFilter && typeof src.plFilter === 'object' && !Array.isArray(src.plFilter)) {
+    out.plFilter = {
+      kw: String(src.plFilter.kw ?? ''),
+      owner: String(src.plFilter.owner ?? 'mine'),
+      favorite: src.plFilter.favorite === 'favorite' ? 'favorite' : 'all',
+    }
+  }
+  for (const key of ['histPageSize', 'plPageSize'] as const) {
+    const n = parseInt(String(src[key] ?? ''), 10)
+    if (Number.isFinite(n)) out[key] = Math.max(1, n)
+  }
+  return out
+}
+
+/** 请求用户 → 视图态桶键：登录用户名；无 auth 服务 / 未登录 / 空名 → '' 共享桶。 */
+function viewStateUserKey(ctx: any, req: any): string {
+  let caller: { username?: string } | undefined
+  try { caller = resolveRequestAuth(ctx, req) } catch { caller = undefined }
+  const name = caller && typeof caller.username === 'string' ? caller.username.trim() : ''
+  return name.slice(0, 128)
+}
+
+/** 合并用户视图态映射：客户端本次上送的槽位覆盖该用户旧值（仅上送的键），其余用户原样保留。
+ *  磁盘遗留顶层视图键作为该用户尚无槽位时的初值（升级迁移：首写带出旧共享值）。 */
+function mergeUserViewStates(userKey: string, clientView: any, diskUserViewStates: any, legacyView: any) {
+  const diskMap = diskUserViewStates && typeof diskUserViewStates === 'object' && !Array.isArray(diskUserViewStates) ? diskUserViewStates : {}
+  const next: Record<string, any> = {}
+  for (const [name, state] of Object.entries(diskMap)) {
+    if (!name || name.length > 128) continue
+    const cleaned = sanitizeViewState(state)
+    if (Object.keys(cleaned).length) next[name] = cleaned
+  }
+  const incoming = sanitizeViewState(clientView)
+  const seed = next[userKey] ?? sanitizeViewState(legacyView)
+  const mergedSlot = Object.keys(incoming).length ? { ...seed, ...incoming } : seed
+  if (Object.keys(mergedSlot).length) next[userKey] = mergedSlot
+  /* 防无界增长：超上限时丢掉最旧写入序（对象键序）的槽位，当前用户优先保留 */
+  const names = Object.keys(next)
+  if (names.length > VIEW_STATE_USER_CAP) {
+    for (const name of names) {
+      if (names.length <= VIEW_STATE_USER_CAP) break
+      if (name === userKey) continue
+      delete next[name]
+    }
+  }
+  return next
+}
+
+/** GET 展开：共享配置 + 当前用户视图态（槽位优先，其次遗留顶层键）摊成顶层键，不暴露他人槽位。 */
+function resolveViewStateForUser(rawConfig: any, userKey: string) {
+  const cfg = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig : {}
+  const diskMap = cfg.userViewStates && typeof cfg.userViewStates === 'object' && !Array.isArray(cfg.userViewStates) ? cfg.userViewStates : {}
+  const mine = sanitizeViewState(diskMap[userKey] ?? extractViewState(cfg))
+  return { ...omitViewStateKeys(cfg), ...mine }
+}
+
 /** 磁盘独有配置键保留：磁盘 config 中存在、而客户端 config 未携带（key absent，hasOwnProperty 语义，
  *  与「发送了空串/false/空数组等显式清除值」区分开）的键按磁盘值并入结果；客户端发送了的键一律以客户端为准。
  *  动机：新版页面上线后，仍打开的旧页面/旧客户端一次全量保存不得把新版写入的新配置键抹掉；未来新增键同理。
@@ -3559,15 +3654,21 @@ export function apply(ctx: Context) {
           let raw = ''
           try { raw = await readFile(PIPELINE_STORE, 'utf8') } catch { /* 无文件 = 空集 */ }
           const p = raw ? JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw) : {}
+          const rawCfg = p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {}
+          /* 视图态按请求用户展开为顶层键（histFilter/plFilter/页大小），不暴露他人 userViewStates 槽位 */
           json(res, 200, {
-            config: p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {},
+            config: resolveViewStateForUser(rawCfg, viewStateUserKey(ctx, req)),
             history: Array.isArray(p.history) ? cleanPipelineHistory(p.history) : [],
           })
           return
         }
         if (req.method === 'PUT') {
           const body = await readJsonBody(req)
-          const config = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
+          const rawClientCfg = body.config && typeof body.config === 'object' && !Array.isArray(body.config) ? body.config : {}
+          /* 视图态从共享配置剥离：顶层四键收回当前用户槽位，其余键走既有共享合并 */
+          const viewUser = viewStateUserKey(ctx, req)
+          const clientViewState = extractViewState(rawClientCfg)
+          const config = omitViewStateKeys(rawClientCfg)
           const baseConfig = body.baseConfig && typeof body.baseConfig === 'object' && !Array.isArray(body.baseConfig) ? body.baseConfig : null
           const history = Array.isArray(body.history) ? cleanPipelineHistory(body.history.slice(0, 500)) : []
           const outcome = await withStoreLock(async () => {
@@ -3575,7 +3676,9 @@ export function apply(ctx: Context) {
                buildNo 回退重号）。页面不知道的磁盘记录保留；「清空」语义经 histClearedAt 表达——
                清空时间点之前的磁盘记录视为已删、不因合并复活。buildNo / histClearedAt 取双方较大值防回退。 */
             const disk = await readPipelineStore()
-            const diskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
+            const rawDiskCfg = disk.config && typeof disk.config === 'object' && !Array.isArray(disk.config) ? disk.config : {}
+            const diskCfg = omitViewStateKeys(rawDiskCfg)
+            const userViewStates = mergeUserViewStates(viewUser, clientViewState, rawDiskCfg.userViewStates, extractViewState(rawDiskCfg))
             const diskHistory = Array.isArray(disk.history) ? cleanPipelineHistory(disk.history) : []
             /* 新页面带共同基线，按流水线 id 做三方合并；旧页面没有基线时仅允许流水线定义未变化的写入，
                防止升级部署前仍打开的标签页用整份旧快照覆盖新页面。空存储首次迁移保持兼容。
@@ -3596,11 +3699,15 @@ export function apply(ctx: Context) {
             const ownerDeny = ownerPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
             if (ownerDeny) return { conflicts: [] as string[], config: diskCfg, owner: ownerDeny }
             const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
+            /* 视图态写入用户槽位（其余用户原样保留）；共享配置不得回流顶层视图键 */
+            merged.config.userViewStates = userViewStates
+            for (const k of VIEW_STATE_KEYS) delete merged.config[k]
             /* 20MB 存储上限：超限时丢最旧记录直至放得下（此前 413 整批拒绝，配置与新历史全丢；
                与 appendPipelineHistory 同一策略） */
             const text = serializePipelineStore(merged.config, merged.history)
             await writeJsonAtomic(PIPELINE_STORE, text)
-            return { conflicts: [] as string[], config: merged.config }
+            /* 响应与 GET 同形态：当前用户视图态展开为顶层键，不暴露 userViewStates 内部映射 */
+            return { conflicts: [] as string[], config: resolveViewStateForUser(merged.config, viewUser) }
           })
           if ('trusted' in outcome && outcome.trusted) {
             json(res, 403, { error: 'trusted', message: outcome.trusted.message, pipelineIds: outcome.trusted.pipelineIds })
