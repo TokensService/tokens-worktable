@@ -179,3 +179,26 @@ test('队列接口按运行和阶段返回实时日志，不把日志混入普�
   const snapshot = await call(handler, 'GET')
   assert.equal(JSON.stringify(snapshot.json()).includes('latest'), false)
 })
+
+test('队列日志接口透传 sinceEnd 做后缀增量，非法 sinceEnd 拒绝', async () => {
+  const calls = []
+  const handler = loadQueueRoute({
+    pipelineExecutions: {
+      snapshot: () => ({ runs: [], queue: [] }),
+      cancel: () => ({ ok: false, state: 'missing' }),
+      log: (runId, stageId, sinceRevision, sinceEnd) => {
+        calls.push([runId, stageId, sinceRevision, sinceEnd])
+        return { append: 'new\n', baseLen: 10, endLen: 14, truncated: false, revision: 3 }
+      },
+    },
+  })
+
+  const delta = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2&sinceEnd=10')
+  assert.equal(delta.status, 200)
+  assert.deepEqual(delta.json(), { append: 'new\n', baseLen: 10, endLen: 14, truncated: false, revision: 3 })
+  assert.deepEqual(calls, [['run-1', 'build', 2, 10]])
+
+  const bad = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2&sinceEnd=-1')
+  assert.equal(bad.status, 400)
+  assert.deepEqual(bad.json(), { error: 'invalid sinceEnd' })
+})
