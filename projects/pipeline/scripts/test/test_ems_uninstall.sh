@@ -6,10 +6,12 @@ set -euo pipefail
 #          label 清理、契约输出；非目标节点的 hugepages pod 不阻塞等待）
 #      ② 幂等重入（无 release/ns/label、大页已 0）→ 全跳过成功
 #      ③ 大页释放卡死（写入器不生效）→ 超时失败并提示「重启节点」
-#      ④ EMS_KEEP_HUGEPAGES=1 → 不动大页/kubelet/label，仅卸 release+ns
+#      ④ 残留 label 仲裁：节点叠脏 label（无 pod/release）→ 唯一存活实例为准，
+#          残留 label 顺带清理，正常卸载不 die
 #      ⑤ 默认 DRY_RUN=1 预演 → 无任何破坏性调用，契约 EMS_STATUS=dryrun
 #      ⑥ release 位于非标准 ns（default）→ 按实际 ns 卸载
 #      ⑦ TARGET_HOSTS 远程分发模式冒烟（翻译路径本地 eval，凭据下传）。
+#      ⑧ 真交叉（目标节点双活实例 pod 证据）→ 带证据明细 die 拒卸。
 # 全程不接触真实集群/真实 sysfs。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -98,8 +100,7 @@ for node in json.load(open(fx + "/nodes.json"))["items"]:
     name = node["metadata"]["name"]
     ip = next(a["address"] for a in node["status"]["addresses"] if a["type"] == "InternalIP")
     labels = dict(node["metadata"].get("labels") or {})
-    if os.path.exists(f"{fx}/marker_label_{name}"):
-        labels.pop("ems13", None)
+    labels = {k: v for k, v in labels.items() if not os.path.exists(f"{fx}/marker_label_{name}_{k}")}
     node["metadata"]["labels"] = labels
     if os.path.exists(f"{fx}/marker_kubelet_{ip}"):
         node["status"]["allocatable"].pop("hugepages-2Mi", None)
@@ -113,8 +114,7 @@ fx, name = os.environ["FIXTURES"], sys.argv[1]
 node = next(n for n in json.load(open(fx + "/nodes.json"))["items"] if n["metadata"]["name"] == name)
 ip = next(a["address"] for a in node["status"]["addresses"] if a["type"] == "InternalIP")
 labels = dict(node["metadata"].get("labels") or {})
-if os.path.exists(f"{fx}/marker_label_{name}"):
-    labels.pop("ems13", None)
+labels = {k: v for k, v in labels.items() if not os.path.exists(f"{fx}/marker_label_{name}_{k}")}
 node["metadata"]["labels"] = labels
 if os.path.exists(f"{fx}/marker_kubelet_{ip}"):
     node["status"]["allocatable"].pop("hugepages-2Mi", None)
@@ -128,7 +128,8 @@ print(json.dumps(node))' "$name" ;;
   'delete pod '*)
     exit 0 ;;
   'label node '*)
-    touch "$FIXTURES/marker_label_$3" ;;
+    key="${*: -1}"; key="${key%-}"
+    touch "$FIXTURES/marker_label_$3_$key" ;;
   'get pods -A -o json')
     if [[ -e "$FIXTURES/pod_gone" ]]; then echo '{"items": []}'; else cat "$FIXTURES/pods.json"; fi ;;
   *)
@@ -241,7 +242,7 @@ assert_file_eq "$t/hp_10.0.0.2" '1024000 1024000 0' ③
 rm -rf "$t"
 case_ok '场景③ 大页释放卡死 → 超时失败并提示重启节点'
 
-# ==================== 场景④：目标节点交叉多实例 → die ====================
+# ==================== 场景④：残留 label 仲裁（唯一存活实例 + 脏 label）→ 顺带清理 ====================
 t=$(mktemp -d)
 make_fixtures "$t" 1
 python3 - "$t/nodes.json" <<'PY2'
@@ -254,11 +255,46 @@ for node in doc["items"]:
 json.dump(doc, open(path, "w"))
 PY2
 rc=0; out=$(run_script "$t" TARGET_IPS='["10.0.0.1"]' EMS_DRY_RUN=0) || rc=$?
-assert_rc 1 "$rc" ④
-assert_contains "$out" '交叉多个 EMS 实例（ems13,ems14）' ④
-assert_not_contains "$(cat "$t/helm.log")" 'uninstall' ④
+assert_rc 0 "$rc" ④
+assert_contains "$out" '推导实例：ems13-13（label ems13）' ④
+assert_contains "$out" '残留 label：ems14' ④
+assert_contains "$(cat "$t/helm.log")" 'uninstall ems13-13 -n ems13' ④
+assert_contains "$(cat "$t/kubectl.log")" 'label node node-1 ems13-' ④
+assert_contains "$(cat "$t/kubectl.log")" 'label node node-1 ems14-' ④
+assert_contains "$out" 'EMS_STALE_LABELS=ems14' ④
+assert_contains "$out" '终验通过' ④
+assert_not_contains "$out" 'unexpected' ④
 rm -rf "$t"
-case_ok '场景④ 目标节点交叉多实例（脏 label）→ die 拒卸'
+case_ok '场景④ 残留 label 仲裁（脏 label 无 pod/release）→ 正常卸载 + 顺带清理'
+
+# ==================== 场景⑧：真交叉（双存活实例证据）→ die ====================
+t=$(mktemp -d)
+make_fixtures "$t" 1
+python3 - "$t/nodes.json" <<'PY2'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+for node in doc["items"]:
+    if node["metadata"]["name"] == "node-1":
+        node["metadata"]["labels"]["ems14"] = "true"
+json.dump(doc, open(path, "w"))
+PY2
+python3 - "$t/pods.json" <<'PY2'
+import json, sys
+path = sys.argv[1]
+doc = json.load(open(path))
+doc["items"].append({"metadata": {"namespace": "ems14-14", "name": "ems-server-xyz"},
+                     "spec": {"nodeName": "node-1", "containers": [{"name": "ems-server",
+                               "resources": {"requests": {"hugepages-2Mi": "2000Gi"}}}]}})
+json.dump(doc, open(path, "w"))
+PY2
+rc=0; out=$(run_script "$t" TARGET_IPS='["10.0.0.1"]' EMS_DRY_RUN=0) || rc=$?
+assert_rc 1 "$rc" ⑧
+assert_contains "$out" '交叉多个 EMS 存活实例（ems13:pod+release,ems14:pod）' ⑧
+assert_not_contains "$(cat "$t/helm.log")" 'uninstall' ⑧
+assert_not_contains "$(cat "$t/kubectl.log")" 'label node' ⑧
+rm -rf "$t"
+case_ok '场景⑧ 真交叉（双活实例 pod 证据）→ 带证据明细 die'
 
 # ==================== 场景⑤：默认 DRY_RUN 预演 ====================
 t=$(mktemp -d)

@@ -4004,6 +4004,25 @@ export function apply(ctx: Context) {
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
   const QUEUE_PRESENCE_TTL = 45 * 1000    // 页面心跳 10 秒一次，45 秒未见即过期（容忍几次心跳丢失）
+  /* 跨浏览器取消信箱：他端浏览器对自己署名（或 admin 可控）的在场条目点「取消/中止」时，
+     请求暂存这里，随 GET 下发给来源页；来源页下一轮 pullRemoteQueue 认领后本地 cancelQueue/abortRun。
+     条目仍在来源页执行引擎里（exec-stream / 本地调度），服务端无法直接杀，只能转达。
+     来源页 PUT 不再携带该条目（已取消/已结束）即出箱；超时/超上限惰性清理，防堆积。 */
+  interface QueueCancelRequest { clientId: string; itemId: string; by: string; at: number }
+  const queueCancelRequests = new Map<string, QueueCancelRequest>()
+  const QUEUE_CANCEL_TTL = 60 * 1000
+  const QUEUE_CANCEL_CAP = 50
+  function queueCancelKey(clientId: string, itemId: string): string { return clientId + '\n' + itemId }
+  function pruneQueueCancelRequests(now: number): void {
+    for (const [key, req] of queueCancelRequests) {
+      if (now - req.at > QUEUE_CANCEL_TTL) queueCancelRequests.delete(key)
+    }
+    while (queueCancelRequests.size > QUEUE_CANCEL_CAP) {
+      const oldest = [...queueCancelRequests.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+      if (!oldest) break
+      queueCancelRequests.delete(oldest[0])
+    }
+  }
   const QUEUE_STAGE_CAP = 100
   const QUEUE_SUB_CAP = 50
   const QUEUE_NODE_STATUSES = new Set(['idle', 'running', 'success', 'failed', 'skipped', 'aborted'])
@@ -4201,6 +4220,22 @@ export function apply(ctx: Context) {
             json(res, result.ok ? 200 : 404, result)
             return
           }
+          if (req.method === 'POST' && body.action === 'cancel-presence') {
+            /* 他端在场条目（浏览器本地执行）的取消请求：入信箱等来源页认领。与执行池 cancel 同一口径，
+               权限在调用方按 canControlRun 拦截；这里只登记转达，不判定归属。 */
+            const clientId = typeof body.clientId === 'string' ? body.clientId.slice(0, 64) : ''
+            const itemId = typeof body.itemId === 'string' ? body.itemId.slice(0, 200) : ''
+            if (!clientId || !itemId) { json(res, 400, { error: 'missing clientId or itemId' }); return }
+            const now = Date.now()
+            pruneQueueCancelRequests(now)
+            queueCancelRequests.set(queueCancelKey(clientId, itemId), {
+              clientId, itemId,
+              by: typeof body.by === 'string' ? body.by.slice(0, 200) : '',
+              at: now,
+            })
+            json(res, 200, { ok: true, state: 'requested' })
+            return
+          }
           if (req.method === 'POST' && body.action === 'dismiss') {
             /* 孤儿条目人工下架（已确认/不再关注）：从登记簿移除并防抖落盘 */
             const ownerId = typeof body.ownerId === 'string' ? body.ownerId.slice(0, 64) : ''
@@ -4261,6 +4296,15 @@ export function apply(ctx: Context) {
             if (oldestKey) queuePresence.delete(oldestKey)
           }
           queuePresence.set(id, { id, label, schemaVersion, running, runs, queue, seenAt: now })
+          /* 取消信箱出箱：本客户端在场快照已不含该条目（来源页已本地取消/结束）→ 不再下发 */
+          {
+            const liveIds = new Set<string>()
+            for (const entry of (runs.length ? runs : (running ? [running] : []))) if (entry && entry.id) liveIds.add(entry.id)
+            for (const entry of queue) if (entry && entry.id) liveIds.add(entry.id)
+            for (const [key, req] of queueCancelRequests) {
+              if (req.clientId === id && !liveIds.has(req.itemId)) queueCancelRequests.delete(key)
+            }
+          }
           json(res, 200, { ok: true })
           return
         }
@@ -4303,6 +4347,7 @@ export function apply(ctx: Context) {
           const now = Date.now()
           sweepQueuePresence(now)                                      // TTL 过期：v3 记录先转孤儿簿再删
           if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()       // 顺带执行孤儿保留策略（超龄/超上限）
+          pruneQueueCancelRequests(now)                                // 取消信箱超时/超上限清理
           const clients: any[] = []
           for (const v of queuePresence.values()) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
@@ -4323,6 +4368,8 @@ export function apply(ctx: Context) {
             server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue, finished: serverFinished },
             /* 失联孤儿登记簿恒为数组（可空）：元素为清洗后条目全字段 + ownerId/ownerLabel/kind/orphanedAt */
             orphans: [...queueOrphans.values()],
+            /* 跨浏览器取消信箱：目标 clientId 的来源页认领后本地中止/取消；旧客户端无此键按空处理 */
+            cancelRequests: [...queueCancelRequests.values()].map(req => ({ clientId: req.clientId, itemId: req.itemId, by: req.by, at: req.at })),
           })
           return
         }
