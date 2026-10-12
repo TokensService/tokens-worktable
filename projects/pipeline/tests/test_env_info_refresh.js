@@ -26,7 +26,7 @@ function context({remote,fetchError}={}){
     alert:m=>alerts.push(String(m)),
   };
   vm.createContext(ctx);
-  /* 函数 + 紧随其后的按钮绑定（与「流水线任务手动刷新」同一切片口径） */
+  /* 只抽取函数本体；点击绑定在脚本尾部统一初始化区（const $ 声明之后），由静态契约覆盖 */
   const start=source.indexOf('/* ---------- 节点信息手动刷新 ---------- */');
   const end=source.indexOf('/* ---------- 代码仓配置',start);
   assert.ok(start>=0 && end>start,'节点信息手动刷新逻辑未找到');
@@ -81,8 +81,10 @@ test('刷新节点信息：拉取失败 / 服务端无环境时 alert 且不改�
   assert.match(nullSt.alerts[0],/服务端配置拉取失败/);
 });
 
-test('刷新节点信息：按钮点击接线到 refreshEnvsFromServer',()=>{
-  const {ctx,button}=context({remote:{config:{environments:[{id:'env-x',name:'X',ip:'1.1.1.1'}]}}});
-  assert.equal(typeof button.click,'function','切片应包含按钮绑定');
-  assert.equal(button.click,ctx.refreshEnvsFromServer);
+test('刷新节点信息：按钮绑定位于 const $ 声明之后的统一初始化区（防 TDZ）',()=>{
+  const decl=source.indexOf('const $ =');
+  const bind=source.indexOf("$('envInfoRefresh').addEventListener('click', refreshEnvsFromServer)");
+  assert.ok(decl>=0,'未找到 const $ 声明');
+  assert.ok(bind>=0,'未找到 envInfoRefresh 点击绑定');
+  assert.ok(bind>decl,'绑定必须出现在 const $ 声明之后，否则顶层执行触发 TDZ 中断整页脚本');
 });
