@@ -356,10 +356,10 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
     },
   };
   vm.createContext(context);
-  vm.runInContext(extract('let _remoteLogPullSeq', '/* 拉取服务端权威队列及旧标签页'), context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
 
   const pending = context.pullRemoteQueueLog();
-  assert.equal(requests[0], '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone');
+  assert.equal(requests[0], '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&tailLines=20');
   context.selectedId = 'deploy';
   resolveFirst({ ok: true, json: async () => ({ text: 'stale\n', truncated: false, revision: 1 }) });
   await pending;
@@ -383,8 +383,8 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
     return { ok: false, status: 304 };
   };
   await context.pullRemoteQueueLog();
-  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2&sinceEnd=13',
-    '已有缓存时应带上 sinceEnd 请求后缀增量');
+  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2&sinceEnd=13&tailLines=20',
+    '已有缓存时应带上 sinceEnd 与 tailLines');
   assert.equal(renderDetailCalls, 1, '日志版本未变化时不得重复重绘详情');
   assert.equal(context.viewRc.remoteLogs['build/one'].text, 'first\nlatest\n');
 });
@@ -405,7 +405,7 @@ test('pullRemoteQueueLog：服务端回 append 时拼接后缀，不重传整段
     },
   };
   vm.createContext(context);
-  vm.runInContext(extract('let _remoteLogPullSeq', '/* 拉取服务端权威队列及旧标签页'), context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
 
   await context.pullRemoteQueueLog();
   assert.match(requests[0], /[?&]sinceEnd=6(?:&|$)/, '已持有日志流末尾偏移时应传 sinceEnd');
@@ -423,6 +423,28 @@ test('pullRemoteQueueLog：服务端回 append 时拼接后缀，不重传整段
   assert.equal(context.viewRc.remoteLogs['build/one'].text, 'clipped-tail\n', '全量 text 覆盖缓存，不做后缀拼接');
   assert.equal(context.viewRc.remoteLogs['build/one'].truncated, true);
   assert.equal(context.viewRc.remoteLogs['build/one'].endLen, 53);
+});
+
+test('pullRemoteQueueLog：缓存只保留末尾 20 行，与历史回放尾窗一致', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => 'line-' + (i + 1)).join('\n');
+  const context = {
+    viewRc: {
+      remotePreview: true, remoteClientId: 'server', remoteKind: 'running', remoteItemId: 'run 1',
+      remoteLogs: {},
+    },
+    selectedId: 'build/one',
+    _detailKey: '',
+    renderDetail: () => {},
+    fetch: async () => ({ ok: true, json: async () => ({ text: many + '\n', baseLen: 0, endLen: many.length + 1, truncated: false, revision: 1 }) }),
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+  await context.pullRemoteQueueLog();
+  const lines = context.viewRc.remoteLogs['build/one'].text.split('\n').filter(Boolean);
+  assert.equal(lines.length, 20, '只留最后 20 行');
+  assert.equal(lines[lines.length - 1], 'line-30');
+  assert.equal(lines[0], 'line-11');
+  assert.equal(context.viewRc.remoteLogs['build/one'].endLen, many.length + 1, 'endLen 仍记完整逻辑流末尾');
 });
 
 test('cancelServerRun：任一浏览器都可取消服务端排队或运行中的任务并立即刷新', async () => {
@@ -483,6 +505,8 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
   const calls = [];
   const context = {
     DETAIL_LOG_LIMIT: { maxLines: 1000, maxChars: 256 * 1024 },
+    LIVE_LOG_TAIL_LINES: 20,
+    LIVE_LOG_TAIL_LIMIT: { maxLines: 20, maxChars: 256 * 1024 },
     stageOutputLines: out => ({ lines: String(out.stdout || '').trim().split('\n'), omitted: !!out._stdoutTruncated }),
     buildLog: (...args) => { calls.push(args); return ['本页日志']; },
   };
@@ -496,7 +520,7 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, {
     remotePreview: true, remoteClientId: 'server', remoteLogs: { s1: { text: 'first\nlatest\n', truncated: true, revision: 3 } },
   }, node)), [
-    '… 详情仅显示服务端日志末尾，完整内容请查看运行归档。', 'first', 'latest',
+    '… 详情仅显示服务端日志末尾 20 行，完整内容请查看运行归档。', 'first', 'latest',
   ]);
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, { remotePreview: true, remoteClientId: 'server', remoteLogs: {} }, node)), [
     '正在获取该阶段的最新运行日志…',

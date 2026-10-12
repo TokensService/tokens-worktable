@@ -2142,6 +2142,15 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     while (start < bytes.length && (bytes[start] & 0xC0) === 0x80) start += 1
     return { text: bytes.subarray(start).toString('utf8'), truncated: true }
   }
+  const clipTailLines = (value: string, maxLines: number) => {
+    if (maxLines <= 0) return value
+    const lines = value.split('\n')
+    /* split 对结尾 \n 会多出一个空串，不算内容行；只裁内容行、保留结尾换行 */
+    const trail = lines.length > 0 && lines[lines.length - 1] === '' ? 1 : 0
+    const content = lines.length - trail
+    if (content <= maxLines) return value
+    return lines.slice(content - maxLines, content).join('\n') + (trail ? '\n' : '')
+  }
   const writeLog = (item: ExecutionItem, stageId: string, value: unknown, append: boolean) => {
     const id = String(stageId || '')
     if (!id || !item.nodes[id]) return
@@ -2351,8 +2360,10 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     },
     /* sinceEnd 增量：客户端已持有逻辑流末尾（endLen）之前的全部内容时只回后缀 append。
        条件：自 sinceRevision 起无 replaceLog（lastReplaceRev）、sinceEnd 仍落在当前窗口内。
-       触顶截尾只推 baseLen，sinceEnd 仍在窗口内即可续传；窗口滑过客户端位置才退回全量。 */
-    log(runId: string, stageId: string, sinceRevision?: number, sinceEnd?: number): { text?: string; append?: string; baseLen: number; endLen: number; truncated: boolean; revision: number } | null {
+       触顶截尾只推 baseLen，sinceEnd 仍在窗口内即可续传；窗口滑过客户端位置才退回全量。
+       tailLines>0 时全量 text 只回末尾 N 行（endLen/baseLen 仍是完整逻辑流位置，
+       供 sinceEnd 对齐；append 路径不裁，由客户端收尾自行截 N 行）。 */
+    log(runId: string, stageId: string, sinceRevision?: number, sinceEnd?: number, tailLines?: number): { text?: string; append?: string; baseLen: number; endLen: number; truncated: boolean; revision: number } | null {
       const id = String(runId || ''), sid = String(stageId || '')
       const entry = running.find(({ item }) => runIdOf(item.plan) === id)
       if (!entry || !entry.item.nodes[sid]) return null
@@ -2367,7 +2378,10 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       if (canDelta) {
         return { append: current.text.slice((sinceEnd as number) - current.baseLen), baseLen: current.baseLen, endLen, truncated: current.truncated, revision: current.revision }
       }
-      return { text: current.text, baseLen: current.baseLen, endLen, truncated: current.truncated, revision: current.revision }
+      const lines = Number.isSafeInteger(tailLines) && (tailLines as number) > 0
+        ? clipTailLines(current.text, tailLines as number)
+        : current.text
+      return { text: lines, baseLen: current.baseLen, endLen, truncated: current.truncated, revision: current.revision }
     },
     cancel(runId: string): { ok: boolean; state: 'queued' | 'running' | 'missing' } {
       const id = String(runId || '')
@@ -2497,9 +2511,9 @@ function createPipelineGenerationManager() {
       }
       return { ok: false, state: 'missing' as const }
     },
-    log(runId: string, stageId: string, sinceRevision?: number, sinceEnd?: number) {
+    log(runId: string, stageId: string, sinceRevision?: number, sinceEnd?: number, tailLines?: number) {
       for (const record of generations.values()) {
-        const result = record.queue.log(runId, stageId, sinceRevision, sinceEnd)
+        const result = record.queue.log(runId, stageId, sinceRevision, sinceEnd, tailLines)
         if (result) return { ...result, generation: record.id }
       }
       return null
@@ -4107,10 +4121,16 @@ export function apply(ctx: Context) {
             if (sinceEndRaw !== null && (!/^\d{1,16}$/.test(sinceEndRaw) || !Number.isSafeInteger(Number(sinceEndRaw)))) {
               json(res, 400, { error: 'invalid sinceEnd' }); return
             }
+            /* tailLines：全量/替换回退时只回末尾 N 行（0/缺省=不裁），完整内容走归档文件 */
+            const tailLinesRaw = url.searchParams.get('tailLines')
+            if (tailLinesRaw !== null && (!/^\d{1,6}$/.test(tailLinesRaw) || !Number.isSafeInteger(Number(tailLinesRaw)))) {
+              json(res, 400, { error: 'invalid tailLines' }); return
+            }
             const sinceRevision = revisionRaw !== null ? Number(revisionRaw) : undefined
             const sinceEnd = sinceEndRaw !== null ? Number(sinceEndRaw) : undefined
+            const tailLines = tailLinesRaw !== null ? Number(tailLinesRaw) : undefined
             const log = pipelineExecutions && typeof pipelineExecutions.log === 'function'
-              ? pipelineExecutions.log(logRunId, logStageId, sinceRevision, sinceEnd)
+              ? pipelineExecutions.log(logRunId, logStageId, sinceRevision, sinceEnd, tailLines)
               : null
             if (!log) { json(res, 404, { error: 'run or stage not found' }); return }
             if (revisionRaw !== null && Number(revisionRaw) === log.revision) {
