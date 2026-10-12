@@ -271,9 +271,11 @@ python3 collect_vllm_metrics.py --action collect \
 
 `model_path`（兼容 `MODEL_PATH`）有值时，直接作为 Prometheus 的 `model_name`
 标签使用，保留原路径和末尾斜杠，不添加目录或版本后缀。
-未设置或为空时，依次读取 `model_name`、`MODEL_NAME`、`ARCH_NAME`；模型名仍按
+未设置或为空时，依次读取 `model_name`、`MODEL_NAME`、`MODELNAME`、
+`VLLM_METRICS_MODEL_NAME`、`ARCH_NAME`；模型名仍按
 `/home/service/works/models_ssd/<模型名>/v1` 拼接，绝对路径沿用原样保留的逻辑。
-也支持 `--model-path` 和原有 `--model-name` 参数；路径优先于模型名。
+也支持 `--model-path`、`--model-name` 和兼容写法 `--modelname`；环境变量还兼容
+`MODELNAME` 与 `VLLM_METRICS_MODEL_NAME`，路径优先于模型名。
 
 ```bash
 model_path=/home/service/works/models_ssd/Qwen3.6-35B-A3B \

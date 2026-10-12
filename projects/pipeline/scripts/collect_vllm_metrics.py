@@ -250,8 +250,9 @@ def parse_args() -> argparse.Namespace:
                         help="环境变量 NAMESPACE；未设置时不按命名空间筛选")
     parser.add_argument("--model-path", default=env_value("model_path", "MODEL_PATH"),
                         help="完整模型路径，原样作为 model_name 标签；优先于模型名，环境变量 model_path / MODEL_PATH")
-    parser.add_argument("--model-name", default=env_value("model_name", "MODEL_NAME", "ARCH_NAME"),
-                        help="环境变量 model_name / MODEL_NAME（兼容 ARCH_NAME）；相对模型名按 /home/service/works/models_ssd/<name>/v1 筛选，绝对路径原样使用")
+    parser.add_argument("--model-name", "--modelname", dest="model_name",
+                        default=env_value("model_name", "MODEL_NAME", "MODELNAME", "VLLM_METRICS_MODEL_NAME", "ARCH_NAME"),
+                        help="模型名；兼容 --modelname、model_name/MODEL_NAME/MODELNAME/VLLM_METRICS_MODEL_NAME/ARCH_NAME；相对模型名按 /home/service/works/models_ssd/<name>/v1 筛选，绝对路径原样使用")
     parser.add_argument("--job-regex", default=os.getenv("VLLM_METRICS_JOB_REGEX"))
     parser.add_argument("--metric", action="append", help="仅采集指定指标；可重复传入")
     parser.add_argument("--output-dir", default=default_output_dir(),
