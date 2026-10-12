@@ -249,3 +249,27 @@ test('进行中脉冲动画只动 opacity/transform（不再动画 box-shadow，
   assert.match(block, /\.pipeline-node\.run::after[^}]*animation:pipPulse 1\.4s infinite/, '光环预绘在 ::after 上，脉冲落在合成器属性');
   assert.ok(!/\.pipeline-node\.run\s*\{[^}]*animation/.test(block), '节点本体不再直接挂动画');
 });
+
+test('pullRemoteQueue：在途请求复用，慢服务器上重叠 tick 不堆积并发 fetch', async () => {
+  let fetches = 0;
+  const pending = [];
+  const ctx = loadPullContext({
+    fetch: async () => {
+      fetches += 1;
+      await new Promise(r => pending.push(r));
+      return { ok: true, json: async () => ({ clients: [], server: { id: 'server', runs: [], queue: [] } }) };
+    },
+    renderQueue: () => {},
+  });
+  const a = ctx.pullRemoteQueue();
+  const b = ctx.pullRemoteQueue();
+  const c = ctx.pullRemoteQueue();
+  assert.equal(fetches, 1, '三个并发 tick 只发一个 fetch');
+  pending.shift()();
+  await Promise.all([a, b, c]);
+  assert.equal(fetches, 1, '复用同一在途请求，不追加 fetch');
+  const d = ctx.pullRemoteQueue();
+  assert.equal(fetches, 2, '在途清空后下一次轮询正常发起新请求');
+  pending.shift()();
+  await d;
+});
