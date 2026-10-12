@@ -5741,6 +5741,10 @@ function buildSuffixPlan(rc, startIdx, opts){
   return { id:sid, pipelineId:rc.pipelineId||null, pipelineName:(rc.pipelineName||'')+' · 定时后缀',
     stages, prefixStages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null, repository:runRepositorySnapshot(rc),
     branch:rc.branch||'main', strategy:rc.strategy||'', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
+    /* 显式 presets:[]（不执行预设任务）：后缀是本次运行的延续，预设已在本地前缀按勾选展开执行过
+       （或不执行）；不带 presets 字段会被服务端当作旧计划，落入「配置了清理脚本即执行」的兼容回退，
+       未勾选环境清理的运行历史也会多出一个环境清理阶段（且在后缀起点重复执行） */
+    presets:[],
     archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
     vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
     settings: rc.settings || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本：服务端执行后缀时按提交时设置，不受后续修改影响
@@ -5886,6 +5890,10 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
     by: (src.by||'anonymous')+' ⏰',
     createdAt: Date.now(),
     archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
+    /* 显式 presets:[]（不执行预设任务）：移交的是本次运行的剩余阶段，预设不随计划重跑；
+       不带 presets 字段会被服务端当作旧计划，落入「配置了清理脚本即执行」的兼容回退，
+       未勾选环境清理的运行历史也会多出一个环境清理阶段 */
+    presets: [],
     vars: Object.assign({}, item?{}:(rc.vars||{})),
     settings: (item && item.settings) || (rc && rc.settings) || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本随移交计划带走
     kind:'once', at: Date.now(),
@@ -5980,7 +5988,10 @@ function addPlan(){
   const envs=schedEnvs();   // 环境（多选）：与「运行流水线」设置一致，快照多 IP 节点对象（服务端按 envs 注入 TARGET_IPS 等）
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
-    pipelineId:pl.id, pipelineName:pl.name, stages:(pl.stages||[]).filter(s=>!s.preset),   // 预设任务标记不进定时计划：服务端按计划阶段执行，清理仍由服务端按全局开关处理（环境检查/Profiling 仅页面运行支持）
+    pipelineId:pl.id, pipelineName:pl.name, stages:(pl.stages||[]).filter(s=>!s.preset),   // 预设任务标记不进定时计划：服务端按计划阶段执行（环境检查/Profiling 仅页面运行支持）
+    /* 清理按本页「清理环境」勾选显式下发（勾选=cleanup 预设随计划在服务端最前执行；不勾选=显式空数组不执行）：
+       不带 presets 字段的计划会被服务端当作旧计划，落入「配置了清理脚本即执行」的兼容回退，勾选框形同虚设 */
+    presets:($('schedCleanupEnv')&&$('schedCleanupEnv').checked)?['cleanup']:[],
     env:envs.map(e=>e.ip).join('，'), envs:envs.map(e=>({...e})), image:DEFAULT_IMAGE, repoId:$('schedRepo').value, branch:($('schedBranch').value.trim()||'main'),
     strategy:($('schedStrategy').value.trim()||''),   // 部署策略：随计划快照，服务端定时执行时与运行队列同样注入
     by:schedBy+' ⏰', createdAt:Date.now(),

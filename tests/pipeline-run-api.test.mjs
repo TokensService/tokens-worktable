@@ -1565,6 +1565,61 @@ test('API 服务端执行器展开预设、携带代码仓上下文并写入可�
   assert.equal(f.history[0].status, 'success')
 })
 
+/* 显式 presets:[]（页面生成的定时后缀/关页移交/未勾选清理的定时页计划）不得落入
+   「无 presets 字段旧计划 → 配置了清理脚本即执行」的兼容回退——否则未勾选环境清理的
+   运行历史会多出一个环境清理阶段（且移交后缀会在中段重复执行清理）。 */
+test('移交计划显式 presets:[] 时配置了清理脚本也不再执行环境清理', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  })
+  const plan = apiExecutionPlan([])
+  plan.presets = []
+  plan.source = 'schedule'
+  plan.by = 'tester ⏰'
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/build.sh' } }]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['build.sh'], '显式 presets:[] 不得触发清理脚本')
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['构建'], '运行历史不多出环境清理阶段')
+})
+
+/* 兼容回退保留：无 presets 字段的旧定时计划（修复前页面/手写/旧版 API 登记）维持
+   「配置了清理脚本即执行」旧行为，升级前后行为一致。 */
+test('无 presets 字段的旧定时计划保持「配置了清理脚本即执行」兼容回退', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  })
+  const plan = apiExecutionPlan([])
+  delete plan.presets   // 旧计划没有 presets 字段
+  plan.source = 'schedule'
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/build.sh' } }]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['cleanup.sh', 'build.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['环境清理', '构建'])
+})
+
+/* 定时页新计划勾选「清理环境」时携带 presets:['cleanup']：服务端经 materializeServerPipelineStages
+   在阶段列表最前补齐清理预设（计划 stages 不含预设标记行），与旧回退同位置同脚本。 */
+test('携带 presets:[cleanup] 的定时计划在阶段最前执行环境清理', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  })
+  const plan = apiExecutionPlan(['cleanup'])
+  plan.source = 'schedule'
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/build.sh' } }]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['cleanup.sh', 'build.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['环境清理', '构建'])
+})
+
 test('服务端执行器实时上报阶段状态，并在队列取消后中止当前任务且不启动后续任务', async () => {
   const updates = []
   const stageLists = []
