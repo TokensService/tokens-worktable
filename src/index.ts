@@ -5105,8 +5105,10 @@ export function apply(ctx: Context) {
       const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
       const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
-      /* 混合编排（本地前缀 + 定时后缀）：页面 finish 已按同 tag 写入本地阶段，这里按阶段名并集
-         合并补齐服务端后缀，运行历史始终只有一条完整记录；无同 tag（纯定时/独立运行）走新增。 */
+      /* 同 tag 原地更新为终态（不新增第二条）：页面启动时已写入「进行中」记录（beginRunHistory），
+         关页移交后这里写终态不留「进行中 + 已完成」两条；混合编排（本地前缀 + 定时后缀）下页面
+         finish 已按同 tag 写入本地阶段，按阶段名并集合并补齐服务端后缀。无同 tag（纯定时/独立
+         运行路径）时才走新增。 */
       const existingIdx = rec.tag ? history.findIndex((h: any) => h && h.tag === rec.tag) : -1
       if (existingIdx >= 0) {
         const prev = history[existingIdx] || {}
@@ -5212,7 +5214,8 @@ export function apply(ctx: Context) {
       try { await appendPipelineHistory(historyRecordFor(st)) }
       catch (e) { console.warn('[pipeline] 运行历史进度写入失败（不影响执行）:', e) }
     }
-    /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；旧定时计划没有该字段，
+    /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；页面生成的定时后缀 / 关页移交 /
+       定时页计划同样携带显式 presets（含空数组 = 不执行预设任务）。只有更旧的计划没有该字段，
        回退为「配置了清理脚本即执行」（运行行预设勾选已改为仅浏览器本地，不再随配置下发）。 */
     const apiPresetMode = Array.isArray(pl.presets)
     const executionStages = apiPresetMode
