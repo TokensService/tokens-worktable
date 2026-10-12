@@ -68,6 +68,7 @@ XDS_URL="${XDS_URL%/}"
 XDS_URL="${XDS_URL%/chat/completions}"
 XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
+XDS_OM="${XDS_OM:-}"
 XDS_API_HOST=""
 SERVICE_NAME="${SERVICE_NAME:-ray-svc}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
@@ -574,6 +575,12 @@ PY
   [[ -n "$rewritten_host" ]] && XDS_API_HOST="$rewritten_host"
 }
 
+resolve_xds_om_url() {
+  [[ -n "$XDS_URL" ]] || return 1
+  XDS_OM="${XDS_OM:-${XDS_URL%/}/OM/diagnose/post}"
+  echo "[deploy] resolved XDS OM URL before host mapping: $XDS_OM"
+}
+
 persist_runtime_environment() {
   local variable
   SERVICE_API="${XDS_URL%/}"
@@ -585,6 +592,7 @@ persist_runtime_environment() {
     printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
     for variable in \
       XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
+      XDS_OM \
       MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
       EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER; do
       printf 'export %s=%q\n' "$variable" "${!variable}"
@@ -625,6 +633,7 @@ print_runtime_environment() {
   printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
   printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
   printf 'SERVICE_API=%s\n' "$SERVICE_API"
+  printf 'XDS_OM=%s\n' "$XDS_OM"
   printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
   printf 'MODEL=%s\n' "$MODEL_NAME"
   printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
@@ -1114,6 +1123,7 @@ PY
 
 if [[ "$MOCK_HELM_DEPLOY" == "true" ]]; then
   resolve_mock_xds_url
+  resolve_xds_om_url
   rewrite_xds_url_to_execution_host
   HEAD_LOG_COLLECTOR_PID=""
   persist_runtime_environment
@@ -1141,6 +1151,7 @@ clear_target_node_taints
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"
 resolve_xds_url_from_service
+resolve_xds_om_url
 rewrite_xds_url_to_mapped_host
 
 mkdir -p "$HEAD_LOG_DIR"
