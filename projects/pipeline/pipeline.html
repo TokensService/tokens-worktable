@@ -495,7 +495,7 @@
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;">↻ 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
         <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 用户名 / 设备状态" style="width:230px;" />
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
@@ -2090,6 +2090,27 @@ function applyEnvCredAll(){
   environments.forEach(e=>{ e.user=u; e.pass=p; });
   saveEnvs(); renderEnvs();
 }
+/* ---------- 节点信息手动刷新 ---------- */
+/* 从服务端配置重拉节点环境列表（与「流水线任务」的「↻ 刷新」同一交互——不自动刷新，用户点按钮才拉取；
+   只覆盖共享的节点环境定义，不动本页设备状态缓存与运行行临时选择）。环境列表与 loadServerState 同口径：
+   服务端有非空 environments 即整体替换（无三方合并——环境条目整表 last-write-wins，与 saveEnvs 上送语义
+   一致），并同步 localStorage 离线缓存后重渲染表格与多选面板。 */
+async function refreshEnvsFromServer(){
+  const b=$('envInfoRefresh'); if(b) b.disabled=true;
+  try{
+    const st=await fetchPipelineStateFresh();
+    if(!st) throw new Error('服务端配置拉取失败');
+    const cfg=(st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+    if(!Array.isArray(cfg.environments) || !cfg.environments.length) throw new Error('服务端暂无节点环境');
+    environments=cfg.environments.map(normalizeEnv);
+    try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){}
+    renderEnvs();
+    renderEnvOptions();
+    if(typeof toast==='function') toast('节点信息已刷新（'+environments.length+' 个节点）');
+  }catch(e){ alert('刷新节点信息失败：'+String(e && e.message || e)); }
+  finally{ if(b) b.disabled=false; }
+}
+$('envInfoRefresh').addEventListener('click', refreshEnvsFromServer);
 /* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
 /* 分支获取方式：server=服务端 git ls-remote；browser=浏览器直连 /info/refs；jenkins-browser/jenkins-server=Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连，按仓库各自选择）；旧值 jenkins 归为 jenkins-browser */
 function normalizeFetchMode(m){ return m==='browser'?'browser':(m==='jenkins-server'?'jenkins-server':((m==='jenkins'||m==='jenkins-browser')?'jenkins-browser':'server')); }
