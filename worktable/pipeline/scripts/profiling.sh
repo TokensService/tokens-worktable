@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Start torch profiling through XDS and optionally generate self-test traffic.
-PROFILING_URL="${PROFILING_URL:-}"
+PROFILING_URL="${PROFILING_URL:-${SERVICE_API:-${XDS_URL:-}}}"
 if [[ -z "$PROFILING_URL" ]]; then
   host="${PROFILING_API_HOST:-${XDS_API_HOST:-}}"
   port="${PROFILING_API_PORT:-${XDS_API_PORT:-}}"
-  [[ -n "$host" && -n "$port" ]] || { echo 'set PROFILING_URL or PROFILING_API_HOST/PROFILING_API_PORT' >&2; exit 2; }
+  [[ -n "$host" && -n "$port" ]] || { echo 'set PROFILING_URL, SERVICE_API, XDS_URL, or PROFILING_API_HOST/PROFILING_API_PORT' >&2; exit 2; }
   PROFILING_URL="http://${host}:${port}/xds/v1"
 fi
+# deploy-model.sh may export XDS_URL with /chat/completions; profiling uses the API root.
 PROFILING_URL="${PROFILING_URL%/}"
+PROFILING_URL="${PROFILING_URL%/chat/completions}"
 PROFILING_PARAMS="${PROFILING_PARAMS:-start 10}"
 PROFILING_FILTER="${PROFILING_FILTER:-}"
 PROFILING_SELF_TEST="${PROFILING_SELF_TEST:-false}"
