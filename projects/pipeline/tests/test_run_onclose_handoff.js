@@ -1,8 +1,9 @@
-/* 浏览器关闭时本地运行移交服务端 —— 回归测试。
+/* 浏览器关闭时本地运行「关页即失败」+ 排队条目移交服务端 —— 回归测试。
    场景：手动运行含「需本地运行」阶段的流水线（runPipeline 分流到 startSimRun），中途关闭浏览器。
-   原行为：exec-stream 随连接断开被服务端杀掉，advance 不再推进，运行永久卡在当前阶段。
-   新行为：pagehide 把在跑运行的剩余阶段（含非 sched）与本地队列整体登记为「立即执行一次」的服务端计划
-   （keepalive POST 单条 upsert，unload 期间请求仍可送达），由服务端执行池继续跑完。
+   当前行为：pagehide 把在跑运行按失败落史（keepalive POST /api/worktable/pipeline/history/fail-run，
+   当前在跑任务标记 failed、后续未开始阶段 skipped、中断原因 closeError 随记录落史，运行历史立即
+   体现「错误」）；排队中的本地队列条目（尚未开始执行）仍登记为「立即执行一次」的服务端计划移交。
+   未送达时由在场 TTL 孤儿登记 + 「进行中」历史清扫判死兜底。
    沙盒函数提取方式同 test_sched_suffix_handoff.js。 */
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -47,6 +48,8 @@ function makeContext(options) {
     queue: options.queue || [],
     pendingLeaseStarts: options.pendingLeaseStarts || [],
     queueFinishedNote(id) { finishedNotes.push(String(id)); },
+    /* buildCloseFailRecord 的周边函数桩：无归档目录（archiveFolderFor=null → 内联日志路径） */
+    archiveFolderFor() { return null; },
     navigator: {
       sendBeacon(url, body) {
         beacons.push({ url: String(url), text: String(body) });
@@ -64,6 +67,10 @@ function makeContext(options) {
     },
   };
   vm.createContext(context);
+  /* CLOSE_FAIL_TEXT 常量与函数一并进沙盒 */
+  const constMatch = /const CLOSE_FAIL_TEXT=[^;]+;/.exec(source);
+  assert.ok(constMatch, 'pipeline.html 缺少 CLOSE_FAIL_TEXT 常量');
+  vm.runInContext(constMatch[0], context);
   installFunctions(context, [
     'stageSeq',
     'runRepositorySnapshot',
@@ -72,6 +79,9 @@ function makeContext(options) {
     'registerStageTimers',
     'buildUnloadHandoffPlan',
     'currentStageIndex',
+    'collectRunLogs',
+    'historyEnvNodesOf',
+    'buildCloseFailRecord',
     'handoffRunsOnPageHide',
   ]);
   return { context, fetches, alerts, beacons, finishedNotes };
@@ -96,36 +106,43 @@ function runningRc(overrides) {
   }, overrides && overrides.rc);
 }
 
-test('pagehide 移交：在跑运行从当前阶段起全部剩余阶段（含需本地运行）登记为 keepalive 服务端计划', async () => {
+function failPosts(h) {
+  return h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/history/fail-run'));
+}
+function planPosts(h) {
+  return h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
+}
+
+test('pagehide 关页即失败：在跑运行按 failed 落史（keepalive fail-run），不再登记服务端移交计划', async () => {
   const rc = runningRc();
   rc.nodes.a.status = 'success'; rc.nodes.a.progress = 100;
-  rc.nodes.b.status = 'running'; rc.nodes.b.progress = 40;
+  rc.nodes.b.status = 'running'; rc.nodes.b.progress = 40; rc.nodes.b.dur = 12;
   const h = makeContext({ activeRuns: [rc] });
   h.context.handoffRunsOnPageHide();
   await flush();
-  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
-  assert.equal(posts.length, 1, '应向计划接口 POST 一条 upsert');
+  assert.equal(planPosts(h).length, 0, '在跑运行不再移交服务端续跑');
+  const posts = failPosts(h);
+  assert.equal(posts.length, 1, '应向 fail-run 路由 POST 一次');
   assert.equal(posts[0].keepalive, true, 'unload 期间请求必须 keepalive 才能送达');
-  const plan = posts[0].body && posts[0].body.plan;
-  assert.ok(plan, 'POST 体应携带 {plan}');
-  assert.equal(plan.kind, 'once');
-  assert.equal(plan.id, 'stimer-pl-1-t1-unload', '卸载移交用独立 id，不与定时后缀 stimer-…-suffix 冲突');
-  assert.deepEqual(plan.stages.map(s => s.id), ['b', 'c'], '从当前 running 阶段起（含该阶段重跑）到末尾全部移交');
-  assert.equal(plan.stages[0].sched, undefined, '计划阶段去掉 sched 标记');
-  assert.deepEqual(plan.presets, [], '移交计划显式携带空 presets（不执行预设任务）：缺该字段会被服务端当作旧计划，落入「配置了清理脚本即执行」回退');
-  assert.equal(plan.vars.A, '1', '上游变量随计划移交');
-  assert.equal(plan.archive, '/arc/pl_p');
-  assert.equal(plan.tag, 't1');
-  assert.equal(plan.baseSeq, 1, 'baseSeq=移交起点之前的正式阶段数');
-  assert.equal(plan.strategy, '3P1D', '部署策略随计划移交（否则服务端 DEPLOY_STRATEGY 丢失）');
-  assert.deepEqual(plan.repository, {
-    id: 'repo-1', name: 'demo-repo',
-    url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1',
-  }, '代码仓快照随计划移交，否则 GIT_* 不注入、git 类脚本卡在凭据提示');
-  assert.match(plan.desc, /浏览器关闭/);
+  const records = posts[0].body && posts[0].body.records;
+  assert.ok(Array.isArray(records) && records.length === 1, 'POST 体应携带 {records:[...]}');
+  const rec = records[0];
+  assert.equal(rec.status, 'failed', '终态为失败');
+  assert.equal(rec.tag, 't1');
+  assert.equal(rec.pipeline, 'p');
+  assert.equal(rec.by, 'tester', '执行人保持原样（不加 ⏰、不改写身份）');
+  assert.equal(rec.source, 'local');
+  assert.ok(rec.closeError && /浏览器页面已关闭/.test(rec.closeError), '中断原因随记录落史');
+  const byStage = {};
+  (rec.logs || []).forEach(l => { byStage[l.stage] = l; });
+  assert.equal(byStage['本地A'] && byStage['本地A'].status, 'success', '已完成阶段保留真实状态');
+  assert.equal(byStage['本地B'] && byStage['本地B'].status, 'failed', '当前在跑阶段标记失败');
+  assert.equal(byStage['本地B'] && byStage['本地B'].dur, 12, '失败阶段保留已跑耗时');
+  assert.ok(/浏览器页面已关闭/.test(byStage['本地B'].log || ''), '无归档文件时中断原因内联进失败阶段日志');
+  assert.equal(byStage['定时C'] && byStage['定时C'].status, 'skipped', '未开始阶段标记跳过（未执行）');
 });
 
-test('pagehide 移交：含「需本地运行」阶段也一并移交（脚本在服务端跑；仅浏览器可达的 HTTP 目标可能失败，优于整条停住）', async () => {
+test('pagehide 关页即失败：含「需本地运行」HTTP 阶段同样直接失败落史（不移交服务端报错重跑）', async () => {
   const rc = runningRc({
     stages: [
       { id: 'a', name: '本地A', kind: 'simulate', sched: null },
@@ -137,11 +154,14 @@ test('pagehide 移交：含「需本地运行」阶段也一并移交（脚本�
   const h = makeContext({ activeRuns: [rc] });
   h.context.handoffRunsOnPageHide();
   await flush();
-  const plan = h.fetches.find(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans')).body.plan;
-  assert.deepEqual(plan.stages.map(s => s.id), ['a', 'b', 'c'], '非 sched 阶段必须进计划，不得只交定时后缀');
+  assert.equal(planPosts(h).length, 0);
+  const rec = failPosts(h)[0].body.records[0];
+  const statuses = (rec.logs || []).map(l => l.stage + ':' + l.status);
+  assert.deepEqual(statuses, ['本地A:failed', '本地HTTP:skipped', '定时C:skipped'],
+    '当前阶段 failed，其余未开始阶段 skipped，全部随记录落史');
 });
 
-test('pagehide 移交：已结束/并行子上下文跳过；本地队列条目同样登记为 once 计划', async () => {
+test('pagehide：已结束/并行子上下文不落史不移交；本地队列条目仍登记为 once 计划移交服务端', async () => {
   const doneRc = runningRc(); doneRc.over = true;
   const parallelChild = runningRc(); parallelChild.parallelParent = runningRc();
   const queued = {
@@ -155,8 +175,9 @@ test('pagehide 移交：已结束/并行子上下文跳过；本地队列条目�
   const h = makeContext({ activeRuns: [doneRc, parallelChild], queue: [queued] });
   h.context.handoffRunsOnPageHide();
   await flush();
-  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
-  assert.equal(posts.length, 1, '已结束与并行子上下文不移交；只登记队列条目');
+  assert.equal(failPosts(h).length, 0, '已结束与并行子上下文不产生失败落史');
+  const posts = planPosts(h);
+  assert.equal(posts.length, 1, '只登记队列条目的移交计划');
   const plan = posts[0].body.plan;
   assert.equal(plan.id, 'unload-q1');
   assert.equal(plan.pipelineId, 'pl-q');
@@ -164,11 +185,11 @@ test('pagehide 移交：已结束/并行子上下文跳过；本地队列条目�
   assert.equal(plan.repoId, 'r');
   assert.equal(plan.repository, null, '队列条目无 url 快照时只留 repoId，由服务端按配置补齐');
   assert.equal(plan.strategy, 'P-D', '队列条目的部署策略也要随计划移交');
-  assert.deepEqual(plan.presets, [], '队列条目移交同样显式携带空 presets，不触发服务端清理回退');
+  assert.deepEqual(plan.presets && [...plan.presets], [], '队列条目移交显式携带空 presets，不触发服务端清理回退');
   assert.match(plan.desc, /浏览器关闭/);
 });
 
-test('pagehide 移交：租约申请在途的排队项也移交；无剩余阶段不登记', async () => {
+test('pagehide：租约申请在途的排队项也移交；无剩余阶段的在跑运行只了结不落史', async () => {
   const empty = runningRc();
   empty.nodes.a.status = 'success'; empty.nodes.b.status = 'success'; empty.nodes.c.status = 'success';
   const pendingItem = {
@@ -181,7 +202,8 @@ test('pagehide 移交：租约申请在途的排队项也移交；无剩余阶�
   });
   h.context.handoffRunsOnPageHide();
   await flush();
-  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
+  assert.equal(failPosts(h).length, 0, '无剩余阶段（本地已跑完）不是失败');
+  const posts = planPosts(h);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].body.plan.id, 'unload-q2');
   assert.deepEqual(posts[0].body.plan.stages.map(s => s.id), ['z']);
@@ -201,62 +223,38 @@ test('currentStageIndex：优先 running，否则首个未终态；全部终态�
   assert.equal(h.context.currentStageIndex(null), -1);
 });
 
-test('buildUnloadHandoffPlan：跳过预设任务；baseSeq 按正式阶段序号', () => {
+test('buildUnloadHandoffPlan（队列条目）：跳过预设任务、剥 sched 标记、携带代码仓与策略快照', () => {
   const h = makeContext({});
-  const rc = runningRc({
-    stages: [
-      { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+  const item = {
+    id: 'q7', pipelineId: 'pl-q', pipelineName: '排队流水线', stages: [
       { id: 'p', name: '清理', preset: true, pkey: 'cleanup', sched: {} },
-      { id: 'b', name: '本地B', kind: 'simulate', sched: null },
+      { id: 'x', name: '排队X', kind: 'simulate', sched: null },
     ],
-  });
-  rc.nodes.a.status = 'success';
-  const plan = h.context.buildUnloadHandoffPlan(rc, 1);
-  assert.equal(plan.stages.map(s => s.id).join(','), 'b', '预设任务是页面运行期概念，不进服务端计划');
-  assert.equal(plan.baseSeq, 1);
-  assert.deepEqual(plan.presets && [...plan.presets], [], '显式空 presets：服务端按 API 语义不执行任何预设任务，不再回退「配置了清理脚本即执行」（[...] 摊平为当前域数组再比较）');
-});
-
-test('registerStageTimers opts.includeLocal：把非 sched 阶段也写进计划（与卸载移交同口径）', async () => {
-  const rc = runningRc();
-  const h = makeContext({ activeRuns: [rc] });
-  const ok = await h.context.registerStageTimers(rc, 0, { includeLocal: true });
-  assert.equal(ok, true);
-  const post = h.fetches.find(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
-  assert.ok(post, 'registerStageTimers 走 POST 单条 upsert');
-  const plan = post.body.plan;
-  assert.ok(plan);
-  assert.equal(plan.id, 'stimer-pl-1-t1-suffix');
-  assert.deepEqual(plan.stages.map(s => s.id), ['a', 'b', 'c'], 'includeLocal 时本地阶段也进后缀计划');
+    env: '10.0.0.2', envs: [{ id: 'e2', ip: '10.0.0.2' }], image: 'img', branch: 'dev', strategy: 'P-D',
+    by: 'tester', repoId: 'repo-1', repoName: 'demo-repo',
+    repoUrl: 'https://git.example.com/dev/demo.git', repoUser: 'u1', repoPass: 'p1',
+  };
+  const plan = JSON.parse(JSON.stringify(h.context.buildUnloadHandoffPlan(item)));   // 直接调 vm 域函数：JSON 往返归一到宿主域再比较
+  assert.equal(plan.stages.map(s => s.id).join(','), 'x', '预设任务是页面运行期概念，不进服务端计划');
+  assert.equal(plan.stages[0].sched, undefined, '计划阶段去掉 sched 标记');
+  assert.deepEqual(plan.presets && [...plan.presets], [], '显式空 presets：服务端按 API 语义不执行任何预设任务');
   assert.deepEqual(plan.repository, {
     id: 'repo-1', name: 'demo-repo',
     url: 'https://git.example.com/dev/demo.git', user: 'u1', pass: 'p1',
-  }, '定时后缀计划同样要带代码仓快照');
-  assert.equal(plan.strategy, '3P1D', '定时后缀计划同样要带部署策略');
+  }, '代码仓快照随计划移交，否则 GIT_* 不注入、git 类脚本卡在凭据提示');
+  assert.equal(plan.strategy, 'P-D');
+  assert.equal(plan.tag, null, '排队条目无运行 tag：服务端执行时自建历史记录');
 });
 
-test('buildUnloadHandoffPlan：运行带 suffixPlanId 时关页复用同一条计划 id（替换休眠计划并激活）', () => {
+test('buildSuffixPlan 只收 sched（定时）阶段：「需本地运行」阶段不进服务端后缀计划', () => {
   const h = makeContext({});
   const rc = runningRc();
-  rc.suffixPlanId = 'stimer-pl-1-t1-suffix';
-  rc.suffixPlanHeld = true;
-  rc.nodes.a.status = 'success';
-  const plan = h.context.buildUnloadHandoffPlan(rc, 1);
-  assert.equal(plan.id, 'stimer-pl-1-t1-suffix', '复用预登记 id，避免定时页残留 at=0 占位计划');
-  assert.match(plan.desc, /定时后缀/);
-  assert.equal(plan.at > 0, true, '关页替换即激活');
+  const plan = JSON.parse(JSON.stringify(h.context.buildSuffixPlan(rc, 0, { activate: false })));   // vm 域对象 JSON 往返归一
+  assert.deepEqual([...plan.stages.map(s => s.id)], ['c'], '非 sched 阶段不进后缀计划（includeLocal 已随关页移交移除）');
+  assert.equal(plan.at, 0, 'activate:false 生成休眠计划');
 });
 
-test('buildUnloadHandoffPlan：无 suffixPlanId 的纯本地运行沿用 unload- 独立 id', () => {
-  const h = makeContext({});
-  const rc = runningRc();
-  rc.nodes.a.status = 'running';
-  const plan = h.context.buildUnloadHandoffPlan(rc, 0);
-  assert.equal(plan.id, 'stimer-pl-1-t1-unload');
-  assert.match(plan.desc, /浏览器关闭移交/);
-});
-
-test('pagehide 移交后 beacon 批量释放本页节点租约：移交计划才不用等 TTL 才能拿到节点', async () => {
+test('pagehide 收尾后 beacon 批量释放本页节点租约：移交计划才不用等 TTL 才能拿到节点', async () => {
   const rc = runningRc();
   rc.nodes.a.status = 'running';
   const queued = {
@@ -286,7 +284,7 @@ test('pagehide 无租约可释放时不发 beacon', async () => {
   assert.equal(h.beacons.length, 0);
 });
 
-test('pagehide 移交返回已了结条目 id：移交中的运行/队列、无剩余阶段、并行子上下文均列入（供最终快照豁免孤儿）', async () => {
+test('pagehide 收尾返回已了结条目 id：失败落史的运行/队列移交/无剩余阶段/并行子上下文均列入（供最终快照豁免孤儿）', async () => {
   const running = runningRc(); running.nodes.a.status = 'running';
   const done = runningRc({ rc: { id: 'r-done' } });
   done.nodes.a.status = 'success'; done.nodes.b.status = 'success'; done.nodes.c.status = 'success';
@@ -303,23 +301,51 @@ test('pagehide 移交返回已了结条目 id：移交中的运行/队列、无�
   const concluded = [...h.context.handoffRunsOnPageHide()].sort();
   await flush();
   assert.deepEqual(concluded, ['q1', 'r-child', 'r-done', 'r1'],
-    '移交中的运行 r1、无剩余阶段 r-done、并行子 r-child、队列 q1 均为「已了结」');
+    '失败落史的运行 r1、无剩余阶段 r-done、并行子 r-child、队列 q1 均为「已了结」');
   assert.deepEqual([...h.finishedNotes].sort(), ['q1', 'r-child', 'r-done', 'r1'],
     '已了结条目同步登记 queueFinishedNote（completed 豁免孤儿，跨同标签页刷新存活）');
-  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
-  assert.equal(posts.length, 2, '只有移交中的 r1 与 q1 真正登记服务端计划；r-done/r-child 无剩余阶段或随父移交');
+  assert.equal(planPosts(h).length, 1, '只有排队条目 q1 登记服务端计划');
+  assert.equal(failPosts(h).length, 1, '在跑运行 r1 经 fail-run 落史');
 });
 
-test('pagehide 移交：buildUnloadHandoffPlan 返回 null（全预设/无阶段）时条目仍计入已了结', async () => {
-  const onlyPreset = runningRc({
-    stages: [{ id: 'p', name: '清理', preset: true, pkey: 'cleanup', sched: {} }],
-  });
-  onlyPreset.nodes.p = { status: 'idle', progress: 0, dur: 0, sub: {} };
-  const h = makeContext({ activeRuns: [onlyPreset] });
+test('pagehide：全预设队列条目 buildUnloadHandoffPlan 返回 null 时仍计入已了结（不登记计划）', async () => {
+  const onlyPreset = {
+    id: 'q3', pipelineId: 'pl-p3', pipelineName: '全预设', stages: [
+      { id: 'p', name: '清理', preset: true, pkey: 'cleanup', sched: {} },
+    ],
+    env: '', envs: [], image: 'img', repoId: null, branch: 'main', strategy: '', by: 'tester', queuedAt: 1,
+  };
+  const h = makeContext({ queue: [onlyPreset] });
   const concluded = [...h.context.handoffRunsOnPageHide()];
   await flush();
-  assert.deepEqual(concluded, ['r1'], '无业务阶段可移交也已了结：不是失联中断');
-  assert.deepEqual([...h.finishedNotes], ['r1']);
-  const posts = h.fetches.filter(f => f.method === 'POST' && f.url.endsWith('/api/worktable/pipeline/plans'));
-  assert.equal(posts.length, 0, '无阶段不登记计划');
+  assert.deepEqual(concluded, ['q3'], '无业务阶段可移交也已了结：不是失联中断');
+  assert.deepEqual([...h.finishedNotes], ['q3']);
+  assert.equal(planPosts(h).length, 0, '无阶段不登记计划');
+});
+
+test('buildCloseFailRecord：内联日志超 4096 截尾（keepalive 64KB 上传体限制），归档阶段不内联覆盖', () => {
+  const h = makeContext({});
+  const rc = runningRc();
+  rc.nodes.a.status = 'running';
+  const rec = h.context.buildCloseFailRecord(rc);
+  assert.equal(rec.status, 'failed');
+  assert.ok(rec.closeError);
+  /* 有归档目录时失败阶段保留 logFile、不写内联 log（中断行由服务端追加进归档文件） */
+  const rc2 = runningRc();
+  rc2.nodes.a.status = 'running';
+  const ctx2 = makeContext({});
+  ctx2.context.archiveFolderFor = () => '/arc/run1';
+  ctx2.context.taskLogFile = (rc_, seq, name) => 'run-t1-0' + seq + '-' + name + '.log';
+  const rec2 = vm.runInContext('buildCloseFailRecord', ctx2.context)(rc2);
+  const entryA = (rec2.logs || []).find(l => l.stage === '本地A');
+  assert.ok(entryA && entryA.logFile && entryA.logFile.indexOf('/arc/run1/') === 0, '有归档时失败阶段带 logFile');
+  assert.equal(entryA.log, undefined, '有归档文件时不内联覆盖（由服务端 fail-run 路由追加中断行进归档日志）');
+});
+
+test('静态契约：pagehide 监听调用 handoffRunsOnPageHide；fail-run 路由存在；在跑运行不再向 plans 登记移交', () => {
+  assert.ok(/addEventListener\('pagehide',\(\)=>\{[\s\S]*?handoffRunsOnPageHide\(\)/.test(source), 'pagehide 监听应调用 handoffRunsOnPageHide');
+  assert.ok(source.includes("'/api/worktable/pipeline/history/fail-run'"), '应存在 fail-run 路由路径');
+  assert.ok(!source.includes('includeLocal'), 'includeLocal 选项已随在跑运行关页移交一并移除');
+  assert.ok(source.includes('const CLOSE_FAIL_TEXT='), '应有关页失败文案常量');
+  assert.ok(/closeError/.test(source), '历史记录应携带 closeError 中断原因');
 });
