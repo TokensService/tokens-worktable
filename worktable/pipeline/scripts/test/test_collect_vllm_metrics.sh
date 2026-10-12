@@ -176,7 +176,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert legacy.returncode == 0, f"stdout={legacy.stdout}\nstderr={legacy.stderr}"
     legacy_summary = json.loads(next((legacy_dir / "snapshots").glob("*/summary.json")).read_text())
     assert legacy_summary["namespace"] is None
-    assert legacy_summary["model_name"] is None
+    assert legacy_summary["model_name"] == "legacy-model"
 
     lifecycle_dir = Path(temp_dir) / "lifecycle"
     lifecycle_pid = lifecycle_dir / "collector.pid"
