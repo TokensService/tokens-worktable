@@ -1,0 +1,310 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+const vm = require("node:vm");
+const { execFileSync, spawnSync } = require("node:child_process");
+
+const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+
+/* vm 域对象与宿主域原型不同，deepEqual 前统一 JSON 往返 */
+const J = (x) => JSON.parse(JSON.stringify(x));
+
+/* 整段抽取 KERNEL-ANALYZER 标记块（自包含，不依赖页面其余符号） */
+function analyzerContext() {
+  const m = html.match(/\/\* ==KERNEL-ANALYZER-BEGIN== \*\/([\s\S]*?)\/\* ==KERNEL-ANALYZER-END== \*\//);
+  assert.ok(m, "index.html 应包含 KERNEL-ANALYZER 标记段");
+  const context = vm.createContext({});
+  vm.runInContext(m[1], context);
+  return context;
+}
+
+/* 从页面抽取单个函数（含函数体括号配平） */
+function functionSource(name) {
+  const start = html.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `index.html 应定义 ${name}()`);
+  const open = html.indexOf("{", start);
+  let depth = 0;
+  let quote = "";
+  let regex = false;
+  let escaped = false;
+  for (let i = open; i < html.length; i += 1) {
+    const ch = html[i];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = "";
+      continue;
+    }
+    if (regex) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "/") regex = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
+    if (ch === "/") {
+      const prefix = html.slice(start, i).trimEnd();
+      const prev = prefix.at(-1) || "";
+      const word = prefix.match(/([a-zA-Z_$][\w$]*)$/)?.[1] || "";
+      if (!prefix || "([{:;,=!?&|".includes(prev) || word === "return") { regex = true; continue; }
+    }
+    if (ch === "{") depth += 1;
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return html.slice(start, i + 1);
+    }
+  }
+  throw new Error(`${name}() 函数体不完整`);
+}
+
+/* 合成 trace：主 rank(pid 2) 10 个内核，含跨流重叠、暴露通信、elementwise 隐藏、
+   融合证据（silu_and_mul 已在跑；rmsnorm+quant 拆分共现），decode 注释窗口全覆盖 */
+function makeFixture() {
+  const ev = [];
+  const push = (o) => ev.push(o);
+  /* cpu_op（External id → 算子名） */
+  push({ ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 900, dur: 300, name: "aten::mm", args: { "External id": 10 } });
+  push({ ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 1300, dur: 100, name: "aten::all_reduce", args: { "External id": 13 } });
+  push({ ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 1500, dur: 80, name: "aten::rms_norm", args: { "External id": 12 } });
+  /* decode 阶段注释窗口 1000-3000 */
+  push({ ph: "X", cat: "user_annotation", pid: 1, tid: 11, ts: 1000, dur: 2000, name: "decode step" });
+  /* 主 rank 内核（pid 2） */
+  const k = (name, ts, dur, stream, extra) => push({ ph: "X", cat: extra && extra.cat || "kernel", pid: 2, tid: 100 + stream, ts, dur, name, args: Object.assign({ stream }, extra && extra.args) });
+  k("void cutlass_80_simt_sgemm_256x128_8x4_tn_align8(0x7f12ab00)", 1000, 100, 7, { args: { "External id": 10 } });
+  k("vectorized_elementwise_kernel<mul>", 1005, 30, 8);          // 被 gemm 完全遮住
+  k("flash_attn_fwd_kernel", 1200, 50, 7);
+  k("ncclDevKernel_AllReduce_Sum_bf16", 1300, 80, 9, { args: { "External id": 13 } });
+  k("silu_and_mul_kernel", 1400, 40, 7);
+  k("rmsnorm_kernel", 1500, 20, 7, { args: { "External id": 12 } });
+  k("quant_fp8_kernel", 1525, 15, 7);
+  k("Memset (Device)", 1600, 10, 7, { cat: "gpu_memset" });
+  k("Memcpy DtoD (Device -> Device)", 1620, 12, 7, { cat: "gpu_memcpy" });
+  k("ncclDevKernel_AllReduce_Sum_bf16", 1700, 80, 9, { args: { "External id": 13 } });
+  /* 次 rank（pid 3）应被主 rank 选择忽略 */
+  push({ ph: "X", cat: "kernel", pid: 3, tid: 100, ts: 1000, dur: 20, name: "flash_attn_fwd_kernel", args: { stream: 7 } });
+  return { traceEvents: ev };
+}
+
+const EXPECT_GPU = { window: 780, busy: 407, sum: 437, idle: 373, overlap: 30, maxConcurrent: 2, streams: 3, kernelCount: 10 };
+
+function assertGpuStats(g) {
+  assert.ok(g, "应有 gpu 口径");
+  for (const [key, val] of Object.entries(EXPECT_GPU)) assert.equal(g[key], val, `gpu.${key}`);
+  assert.ok(Math.abs(g.idlePct - (373 / 780) * 100) < 0.01, "gpu.idlePct");
+  assert.equal(g.stageUs.decode, 437, "stageUs.decode");
+  assert.equal(g.stageUs.prefill, 0);
+  assert.equal(g.stageUs.all, 0);
+}
+
+test("classifyKernel 算子族分类覆盖 skill 模式表", () => {
+  const ctx = analyzerContext();
+  const cases = [
+    ["flash_attn_fwd_kernel", "attention"],
+    ["ncclDevKernel_AllReduce_Sum_bf16", "communication"],
+    ["Memcpy DtoD (Device -> Device)", "memory"],
+    ["Memset (Device)", "memory"],
+    ["vectorized_elementwise_kernel<mul>", "elementwise"],
+    ["rmsnorm_kernel", "norm"],
+    ["silu_and_mul_kernel", "activation"],
+    ["void cutlass_80_simt_sgemm_256x128_8x4_tn_align8", "gemm"],
+    ["fused_moe_kernel", "moe"],
+    ["_router_triton_kernel", "router"],
+    ["apply_rotary_pos_emb_kernel", "rope"],
+    ["quant_fp8_kernel", "quantize"],
+    ["triton_poi_fused_copy_1", "memory"],       // copy 弱信号且无 compute 提示
+    ["mamba_selective_scan_kernel", "hybrid_linear"],
+    ["topk_kernel", "reduce_topk"],
+    ["topk_softmax_kernel", "softmax"],           // softmax 组先于 reduce_topk 命中（与 skill 同序）
+  ];
+  for (const [name, fam] of cases) assert.equal(ctx.classifyKernel(name), fam, name);
+});
+
+test("canonicalKernelName 归一地址并剥掉 CUTLASS 模板参数", () => {
+  const ctx = analyzerContext();
+  assert.equal(
+    ctx.canonicalKernelName("void cutlass_80_simt_sgemm_256x128_8x4_tn_align8(0x7f12ab00)"),
+    "void cutlass_80_simt_sgemm_256x128_8x4_tn_align8",
+  );
+  assert.equal(ctx.canonicalKernelName("flash_attn_fwd_kernel"), "flash_attn_fwd_kernel");
+  assert.equal(ctx.canonicalKernelName("sm90_xmma_0xdeadbeef"), "sm90_xmma_0xADDR");
+});
+
+test("analyzeTraceKernels：GPU 口径 / 主 rank 选择 / 内核归因表", () => {
+  const ctx = analyzerContext();
+  const ka = ctx.analyzeTraceKernels(makeFixture().traceEvents, 2000000);
+  assertGpuStats(ka.gpu);
+  const names = ka.kernels.map((x) => x.name);
+  assert.deepEqual(J(names.slice(0, 5)), [
+    "ncclDevKernel_AllReduce_Sum_bf16",
+    "void cutlass_80_simt_sgemm_256x128_8x4_tn_align8",
+    "flash_attn_fwd_kernel",
+    "silu_and_mul_kernel",
+    "vectorized_elementwise_kernel<mul>",
+  ]);
+  const top = ka.kernels[0];
+  assert.equal(top.family, "communication");
+  assert.equal(top.count, 2);
+  assert.equal(top.cpuOp, "aten::all_reduce");
+  assert.ok(Math.abs(top.share - (160 / 437) * 100) < 0.01);
+  const gemm = ka.kernels[1];
+  assert.equal(gemm.family, "gemm");
+  assert.equal(gemm.cpuOp, "aten::mm");
+  /* 次 rank(pid 3) 的 20µs 不计入 */
+  assert.ok(!ka.kernels.some((x) => x.total === 20 && x.name === "flash_attn_fwd_kernel" && x.count === 1));
+});
+
+test("analyzeTraceKernels：重叠机会（headroom 排序 + low-roi-hidden）", () => {
+  const ctx = analyzerContext();
+  const ka = ctx.analyzeTraceKernels(makeFixture().traceEvents, 2000000);
+  assert.equal(ka.overlap.length, 6);
+  const head = ka.overlap[0];
+  assert.equal(head.name, "ncclDevKernel_AllReduce_Sum_bf16");
+  assert.equal(head.verdict, "headroom");
+  assert.equal(head.prio, "P1");
+  assert.equal(head.rec, "try overlap");
+  assert.equal(head.dep, "low");
+  assert.equal(head.exclusiveRatio, 1);
+  assert.ok(Math.abs(head.share - (160 / 407) * 100) < 0.01, "share 分母为 busy 并集");
+  /* compute 类整体排在非 compute 之后，top5 截断 */
+  assert.ok(!ka.overlap.slice(0, 5).some((o) => o.bucket === "compute"), "top5 无 compute fallback");
+  const lowroi = ka.overlap[5];
+  assert.equal(lowroi.verdict, "low-roi-hidden");
+  assert.equal(lowroi.name, "vectorized_elementwise_kernel<mul>");
+  assert.equal(lowroi.prio, "P4");
+  assert.equal(lowroi.rec, "skip");
+  assert.equal(lowroi.hiddenRatio, 1);
+});
+
+test("analyzeTraceKernels：融合候选（active → Confirmed，split 共现达阈）", () => {
+  const ctx = analyzerContext();
+  const ka = ctx.analyzeTraceKernels(makeFixture().traceEvents, 2000000);
+  const byName = new Map(ka.fusion.map((f) => [f.pattern, f]));
+  const act = byName.get("Fused activation-and-mul (SwiGLU/GeGLU)");
+  assert.ok(act, "silu_and_mul 应命中 active");
+  assert.equal(act.confidence, "Confirmed");
+  assert.equal(act.relatedUs, 40);
+  const rq = byName.get("Fused RMSNorm + quant");
+  assert.ok(rq, "rmsnorm + quant 拆分共现应命中");
+  assert.equal(rq.confidence, "Confirmed");       // 8.0% ≥ likelyShare 1.5
+  assert.equal(rq.relatedUs, 35);
+  const ar = byName.get("AllReduce + RMSNorm fusion（需 TP≥2）");
+  assert.ok(ar, "allreduce + rmsnorm 拆分共现应命中");
+  assert.equal(ar.confidence, "Confirmed");
+  assert.ok(!byName.get("Fused residual add + RMSNorm"), "无 active 证据不应出现");
+  assert.ok(!byName.get("Fused QK RMSNorm + RoPE"), "rope 缺失不应出现");
+});
+
+test("analyzeTraceKernels：无内核事件返回空形态", () => {
+  const ctx = analyzerContext();
+  const ka = ctx.analyzeTraceKernels([{ ph: "X", cat: "cpu_op", pid: 1, tid: 1, ts: 0, dur: 5, name: "aten::add" }], 100);
+  assert.equal(ka.gpu, null);
+  assert.deepEqual(J(ka.kernels), []);
+  assert.deepEqual(J(ctx.analyzeTraceKernels(null)), { kernels: [], gpu: null, overlap: [], fusion: [] });
+});
+
+test("normalizeTrace 透传 kernelAnalysis（无内核计数则丢弃）", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource("fmtDur"), context);
+  vm.runInContext(functionSource("normalizeTrace"), context);
+  const withKa = context.normalizeTrace({ kind: "chrome-trace", totalUs: 1, top: [{ cat: "kernel", name: "k", totalUs: 1, count: 1 }], kernelAnalysis: { gpu: { kernelCount: 3 }, kernels: [], overlap: [], fusion: [] } }, "t", "server");
+  assert.ok(withKa.kernelAnalysis, "有内核分析应透传");
+  const withoutKa = context.normalizeTrace({ kind: "chrome-trace", totalUs: 1, top: [], kernelAnalysis: { gpu: null, kernels: [], overlap: [], fusion: [] } }, "t", "server");
+  assert.equal(withoutKa.kernelAnalysis, undefined);
+});
+
+test("kernelFindings：空闲 / 通信暴露 / 融合识别派生瓶颈发现", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource("fmtDur"), context);
+  vm.runInContext(functionSource("fmtUs"), context);
+  vm.runInContext(functionSource("kernelFindings"), context);
+  const ctx = analyzerContext();
+  const ka = ctx.analyzeTraceKernels(makeFixture().traceEvents, 2000000);
+  const fs2 = context.kernelFindings(ka);
+  const titles = fs2.map((f) => f.title).join("\n");
+  assert.ok(titles.includes("GPU 空闲占比 48%"), "应报告 GPU 空闲（47.8%→48%）");
+  assert.ok(fs2.some((f) => f.level === "high" && f.title.includes("通信内核暴露")), "应有通信暴露 high");
+  assert.ok(titles.includes("融合模式识别：已在跑 5 · 可融合 0"), "融合统计");
+  assert.ok(!titles.includes("内核累计显著大于忙碌并集"), "437 < 407×1.3 不触发口径提醒");
+  assert.deepEqual(J(context.kernelFindings(null)), []);
+  assert.deepEqual(J(context.kernelFindings({ gpu: null })), []);
+});
+
+test("页面静态契约：内核三表卡片 / 渲染函数 / AI 提示词", () => {
+  for (const needle of [
+    'id="kernelCard"', 'id="kernelTable"', 'id="overlapWrap"', 'id="fusionWrap"', 'id="gpuStatGrid"',
+    "function renderKernelAnalysis()", "function kernelFindings(ka)",
+    "renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();",
+    "agg.kernelAnalysis = analyzeTraceKernels(data.traceEvents, 2000000);",
+    "### 融合候选", "### 重叠机会", "### 内核归因 TOP 10",
+    "llm-torch-profiler-analysis",
+  ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+});
+
+test("trace_summary.py 服务端汇总器产出同款内核分析（对拍）", (t) => {
+  const tmp = path.join(os.tmpdir(), `pf-trace-fixture-${process.pid}.json`);
+  fs.writeFileSync(tmp, JSON.stringify(makeFixture()));
+  let out;
+  try {
+    out = execFileSync("python3", [path.join(__dirname, "trace_summary.py"), tmp], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    t.skip(`python3 不可执行：${e.message}`);
+    return;
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  const d = JSON.parse(out);
+  assert.equal(d.kind, "chrome-trace");
+  assert.equal(d.events, makeFixture().traceEvents.length);
+  assert.ok(d.kernelAnalysis, "汇总器应输出 kernelAnalysis");
+  assertGpuStats(d.kernelAnalysis.gpu);
+  assert.equal(d.kernelAnalysis.kernels[0].name, "ncclDevKernel_AllReduce_Sum_bf16");
+  assert.equal(d.kernelAnalysis.kernels[0].family, "communication");
+  assert.equal(d.kernelAnalysis.overlap[0].prio, "P1");
+  assert.equal(d.kernelAnalysis.overlap[0].rec, "try overlap");
+  const patterns = d.kernelAnalysis.fusion.map((f) => f.pattern);
+  assert.ok(patterns.includes("Fused activation-and-mul (SwiGLU/GeGLU)"));
+  assert.ok(patterns.includes("Fused RMSNorm + quant"));
+  /* 与浏览器内分析器对拍：GPU 口径与内核表顺序一致 */
+  const ctx = analyzerContext();
+  const kaJs = ctx.analyzeTraceKernels(makeFixture().traceEvents, 2000000);
+  for (const key of Object.keys(EXPECT_GPU)) assert.equal(d.kernelAnalysis.gpu[key], kaJs.gpu[key], `对拍 gpu.${key}`);
+  assert.deepEqual(
+    J(d.kernelAnalysis.kernels.map((k2) => k2.name)),
+    J(kaJs.kernels.map((k2) => k2.name)),
+    "内核表顺序一致",
+  );
+  assert.deepEqual(
+    J(d.kernelAnalysis.overlap.map((o) => [o.name, o.prio, o.rec])),
+    J(kaJs.overlap.map((o) => [o.name, o.prio, o.rec])),
+    "重叠机会一致",
+  );
+  assert.deepEqual(
+    J(d.kernelAnalysis.fusion.map((f) => [f.pattern, f.confidence])),
+    J(kaJs.fusion.map((f) => [f.pattern, f.confidence])),
+    "融合候选一致",
+  );
+});
+
+test("trace_summary.py 兼容旧行为：无内核 trace 只出汇总、非法输入报错", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pf-summary-"));
+  try {
+    const plain = path.join(dir, "plain.json");
+    fs.writeFileSync(plain, JSON.stringify({ traceEvents: [{ ph: "X", cat: "cpu_op", pid: 1, tid: 1, ts: 0, dur: 5, name: "aten::add" }] }));
+    const d = JSON.parse(execFileSync("python3", [path.join(__dirname, "trace_summary.py"), plain], { encoding: "utf8" }));
+    assert.equal(d.kind, "chrome-trace");
+    assert.equal(d.kernelAnalysis, undefined, "无内核不应输出 kernelAnalysis");
+    assert.equal(d.top[0].name, "aten::add");
+    /* 非法输入：退出码 1 且 stdout 报 error（execFileSync 对非零退出会抛，故用 spawnSync） */
+    const bad = path.join(dir, "bad.json");
+    fs.writeFileSync(bad, "{\"x\":1}");
+    const r = spawnSync("python3", [path.join(__dirname, "trace_summary.py"), bad], { encoding: "utf8" });
+    assert.equal(r.status, 1, "非法输入退出码应为 1");
+    assert.ok(JSON.parse(r.stdout).error, "缺 traceEvents 应报错");
+  } catch (e) {
+    t.skip(`python3 不可执行：${e.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
