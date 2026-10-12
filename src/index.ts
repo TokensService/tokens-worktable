@@ -4147,6 +4147,9 @@ export function apply(ctx: Context) {
       o[k] = String(e[k] ?? '').slice(0, 200)
     }
     if (typeof e.originQueueId === 'string' && e.originQueueId) o.originQueueId = e.originQueueId.slice(0, 200)
+    /* tag 是运行历史记录的就绪键（页面 beginRunHistory 按 rc.tag 写入）：透传到在场/孤儿条目，
+       「进行中」历史清扫（sweepStaleRunningHistory）据此把失联运行的历史判死为错误；缺省不带键 */
+    if (typeof e.tag === 'string' && e.tag) o.tag = e.tag.slice(0, 200)
     if (typeof e.generation === 'string' && e.generation) o.generation = e.generation.slice(0, 128)
     const t = Number(e[timeKey])
     o[timeKey] = Number.isFinite(t) ? t : 0

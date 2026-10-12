@@ -276,6 +276,22 @@ test('planStaleHistorySweep：从未有信号且记录很旧的兜底判死；�
   assert.deepEqual(dropPlanIds, [])
 })
 
+test('cleanQueueEntry 透传 tag（「进行中」历史清扫据此把失联运行判死），缺省不带该键', () => {
+  const code = stripTypeScriptTypes([
+    'const QUEUE_STAGE_CAP = 50',
+    extractFunction('cleanQueueStage'),
+    extractFunction('cleanQueueNode'),
+    extractFunction('cleanQueueEntry'),
+  ].join('\n'), { mode: 'transform' })
+  const ctx = {}
+  vm.createContext(ctx)
+  vm.runInContext(code, ctx)
+  const withTag = ctx.cleanQueueEntry({ id: 'r1', tag: '2205-abc', pipelineName: 'P', startedAt: 1, stages: [], nodes: {} }, 'startedAt')
+  assert.equal(withTag.tag, '2205-abc', '在场/孤儿条目必须保留 tag：否则失联运行的历史记录永远等不到判死证据')
+  const noTag = ctx.cleanQueueEntry({ id: 'r2', pipelineName: 'P', startedAt: 1, stages: [], nodes: {} }, 'startedAt')
+  assert.equal('tag' in noTag, false, '缺省不带 tag 键（队列快照既有断言不受影响）')
+})
+
 test('静态契约：清扫器判死后把记录标记 failed 并补系统日志、休眠计划按 id 清理', () => {
   assert.ok(source.includes("rec.status = 'failed'"), '判死记录落 failed 终态')
   assert.ok(source.includes('本地执行中断：页面失联且未移交服务端'), '判死记录补系统日志说明')
