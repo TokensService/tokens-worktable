@@ -532,7 +532,7 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
 test('detailContextRows：他端详情把未同步的镜像和 Commit 明确标为未同步', () => {
   const context = { REGISTRY: 'registry.example.com', curPipeline: () => ({ name: '当前流水线' }) };
   vm.createContext(context);
-  vm.runInContext(extract('function detailContextRows', 'function renderDetail'), context);
+  vm.runInContext(extract('function isLocalExecStage', 'function renderDetail'), context);
   const rows = Array.from(context.detailContextRows(
     { name: '构建' }, '进行中',
     { remotePreview: true, pipelineName: '远端流水线', branch: 'dev', strategy: '', by: 'alice', env: '10.0.0.1', image: '', tag: '—', commit: '—' },

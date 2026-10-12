@@ -978,7 +978,39 @@ function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedCon
 }
 /* ---------- 可信/内置流水线结束 ---------- */
 
-/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
+/** 历史阶段日志合并（按阶段名并集）：混合编排下页面 finish 写本地前缀、服务端 append 写定时后缀，
+ *  同 tag 两侧合并出完整阶段列表。同名阶段后者覆盖状态/耗时/日志路径，保留任一侧 local 标记。 */
+function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
+  const listA = Array.isArray(prevLogs) ? prevLogs : []
+  const listB = Array.isArray(nextLogs) ? nextLogs : []
+  const out: any[] = []
+  const byName = new Map<string, any>()
+  const put = (e: any) => {
+    if (!e || typeof e !== 'object') return
+    const name = String(e.stage || '')
+    if (!name) return
+    const prev = byName.get(name)
+    if (prev) {
+      const merged: any = { ...prev, ...e }
+      if (prev.local && e.local === undefined) merged.local = true
+      if (!merged.logFile && prev.logFile) merged.logFile = prev.logFile
+      if (merged.dur === undefined && prev.dur !== undefined) merged.dur = prev.dur
+      if (merged.log === undefined && prev.log !== undefined) merged.log = prev.log
+      byName.set(name, merged)
+      const idx = out.indexOf(prev)
+      if (idx >= 0) out[idx] = merged
+    } else {
+      byName.set(name, e)
+      out.push(e)
+    }
+  }
+  listA.forEach(put)
+  listB.forEach(put)
+  return out
+}
+
+/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。
+ *  同 tag 记录按阶段日志并集合并（不再整条客户端覆盖），避免混合编排任一侧冲掉另一侧阶段。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
   const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
   const diskCfg = diskConfig && typeof diskConfig === 'object' ? diskConfig : {}
@@ -988,9 +1020,29 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
   const afterClear = (record: any) => !clearedAt || (Number(record && record.ts) || 0) > clearedAt
   const acceptedClient = clientHistory.filter(afterClear)
   const keyOf = (record: any) => (record && record.tag) ? 'tag:' + record.tag : ((record && record.ts) ? 'ts:' + record.ts : 'no:' + (record && record.no) + ':' + (record && record.pipeline))
-  const seen = new Set(acceptedClient.map(keyOf))
-  const serverOnly = diskHistory.filter((record: any) => afterClear(record) && !seen.has(keyOf(record)))
-  const history = acceptedClient.concat(serverOnly)
+  const byKey = new Map<string, any>()
+  for (const record of acceptedClient) {
+    if (record && typeof record === 'object') byKey.set(keyOf(record), record)
+  }
+  for (const record of diskHistory) {
+    if (!afterClear(record) || !record || typeof record !== 'object') continue
+    const key = keyOf(record)
+    const clientRec = byKey.get(key)
+    if (clientRec) {
+      /* 同 tag 双边都有：顶层取 ts 较新一侧（终态/耗时以更晚写入为准），阶段日志按名并集 */
+      const later = (Number(record.ts) || 0) > (Number(clientRec.ts) || 0) ? record : clientRec
+      const earlier = later === record ? clientRec : record
+      byKey.set(key, {
+        ...earlier,
+        ...later,
+        no: Number(earlier.no) || Number(later.no) || 0,
+        logs: mergeStageLogsForHistory(earlier.logs, later.logs),
+      })
+    } else {
+      byKey.set(key, record)
+    }
+  }
+  const history = [...byKey.values()]
   history.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))
   if (history.length > 500) history.length = 500
   return { config, history }
@@ -2357,7 +2409,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       endedAt,
       stages: item.stages.map((stage) => {
         const node = item.nodes[String(stage.id ?? '')] || idleNode()
-        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur }
+        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}) }
       }),
     })
     pruneFinished(endedAt)
@@ -3978,6 +4030,7 @@ export function apply(ctx: Context) {
     if (!stage || typeof stage !== 'object' || typeof stage.id !== 'string' || !stage.id) return null
     const out: any = { id: stage.id.slice(0, 128), name: String(stage.name ?? '').slice(0, 200) }
     if (stage.preset === true) out.preset = true
+    if (stage.local === true) out.local = true
     if (typeof stage.pkey === 'string' && stage.pkey) out.pkey = stage.pkey.slice(0, 64)
     if (stage.parallel === true) out.parallel = true
     if (stage.skip === true) out.skip = true
@@ -4052,6 +4105,7 @@ export function apply(ctx: Context) {
         stage: String(stage.stage ?? '').slice(0, 200),
         status: QUEUE_NODE_STATUSES.has(stage.status) ? stage.status : 'idle',
         dur: Number.isFinite(stageDur) ? Math.max(0, stageDur) : 0,
+        ...(stage.local === true ? { local: true } : {}),
       }
     }).filter((stage: any) => !!stage)
     return o
@@ -4972,11 +5026,25 @@ export function apply(ctx: Context) {
       const j = await readPipelineStore()
       const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
       const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
-      const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
-      cfg.buildNo = no
-      rec.no = no
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
-      history.unshift(rec)
+      /* 混合编排（本地前缀 + 定时后缀）：页面 finish 已按同 tag 写入本地阶段，这里按阶段名并集
+         合并补齐服务端后缀，运行历史始终只有一条完整记录；无同 tag（纯定时/独立运行）走新增。 */
+      const existingIdx = rec.tag ? history.findIndex((h: any) => h && h.tag === rec.tag) : -1
+      if (existingIdx >= 0) {
+        const prev = history[existingIdx] || {}
+        const prevNo = Number(prev.no) || 0
+        history[existingIdx] = {
+          ...prev,
+          ...rec,
+          no: prevNo || rec.no,
+          logs: mergeStageLogsForHistory(prev.logs, rec.logs),
+        }
+      } else {
+        const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
+        cfg.buildNo = no
+        rec.no = no
+        history.unshift(rec)
+      }
       /* 20MB 存储上限：只序列化一次配置和各候选记录，保留最新的可容纳前缀。 */
       const text = serializePipelineStore(cfg, history.slice(0, 500))
       await writeJsonAtomic(PIPELINE_STORE, text)
@@ -5042,7 +5110,48 @@ export function apply(ctx: Context) {
     const executionStages = apiPresetMode
       ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
-    runtime?.setStages(executionStages)
+    /* 混合编排本地前缀快照（页面 buildSuffixPlan 随计划带上）：写入同 tag 历史与运行快照的完整阶段
+       列表（本地前缀 + 服务端后缀），远端/他端详情能看到全部阶段；前缀带 local:true 作本地执行标识，
+       不进入下方执行循环。 */
+    const prefixDisplayStages: any[] = Array.isArray(pl.prefixStages)
+      ? pl.prefixStages.filter((p: any) => p && typeof p === 'object' && (p.id || p.name)).map((p: any) => ({
+          id: String(p.id || p.name || ''),
+          name: String(p.name || p.id || ''),
+          prefix: true,
+          local: true,
+        }))
+      : []
+    const prefixHistLogs: any[] = Array.isArray(pl.prefixStages)
+      ? pl.prefixStages.filter((p: any) => p && typeof p === 'object' && (p.id || p.name)).map((p: any) => ({
+          stage: String(p.name || p.id || ''),
+          status: String(p.status || 'success'),
+          dur: Number(p.dur) || 0,
+          local: true,
+          ...(p.logFile ? { logFile: String(p.logFile) } : {}),
+        }))
+      : []
+    for (const e of prefixHistLogs) histLogs.push(e)
+    for (const p of (Array.isArray(pl.prefixStages) ? pl.prefixStages : [])) {
+      if (!p || typeof p !== 'object' || !(p.id || p.name)) continue
+      profileStages.push({
+        id: String(p.id || p.name || ''),
+        name: String(p.name || p.id || ''),
+        status: String(p.status || 'success'),
+        durSec: Number(p.dur) || 0,
+        local: true,
+        ...(p.logFile ? { logFile: String(p.logFile) } : {}),
+      })
+    }
+    const displayStages = prefixDisplayStages.concat(executionStages)
+    runtime?.setStages(displayStages)
+    for (const p of prefixDisplayStages) {
+      const src = (Array.isArray(pl.prefixStages) ? pl.prefixStages : []).find((x: any) => x && String(x.id || x.name || '') === p.id)
+      runtime?.updateStage(p.id, {
+        status: String(src && src.status || 'success'),
+        progress: 100,
+        dur: Number(src && src.dur) || 0,
+      })
+    }
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
     if (!apiPresetMode && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()
