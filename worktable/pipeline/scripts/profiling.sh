@@ -69,7 +69,34 @@ if [[ "$http_code" != 2* && "$http_code" != 3* ]]; then
   log "profiling request returned non-success HTTP status"
   exit 1
 fi
-[[ "${PROFILING_SELF_TEST,,}" == true ]] || exit 0
+collect_profiling_files() {
+  [[ "${PROFILING_COLLECT,,}" == true ]] || { log "profiling file collection disabled"; return 0; }
+  [[ -n "$PROFILING_NAMESPACE" ]] || { log "skip file collection: set PROFILING_NAMESPACE or NAMESPACE"; return 0; }
+  command -v "$PROFILING_KUBECTL_BIN" >/dev/null 2>&1 || { log "skip file collection: kubectl not found ($PROFILING_KUBECTL_BIN)"; return 0; }
+  mkdir -p "$PROFILING_OUTPUT_DIR"
+  log "waiting ${PROFILING_COLLECT_WAIT_SECONDS}s for profiling files"
+  sleep "$PROFILING_COLLECT_WAIT_SECONDS"
+  mapfile -t pods < <("$PROFILING_KUBECTL_BIN" get pods -n "$PROFILING_NAMESPACE" -o name 2>/dev/null | grep -E "$PROFILING_POD_REGEX" || true)
+  [[ ${#pods[@]} -gt 0 ]] || { log "no profiling pods found in namespace=$PROFILING_NAMESPACE"; return 1; }
+  local pod dest
+  for pod in "${pods[@]}"; do
+    pod="${pod#pod/}"; dest="$PROFILING_OUTPUT_DIR/$pod"; mkdir -p "$dest"
+    log "collecting pod=$pod container=$PROFILING_POD_CONTAINER source=/home/service/works/models_ssd/profile"
+    if "$PROFILING_KUBECTL_BIN" cp -n "$PROFILING_NAMESPACE" -c "$PROFILING_POD_CONTAINER" "$pod:/home/service/works/models_ssd/profile" "$dest" >/dev/null 2>&1; then
+      find "$dest" -type f -printf '[profiling] %p (%s bytes)\n' 2>/dev/null || true
+    else
+      log "WARN failed to collect pod=$pod"
+    fi
+  done
+  log "profiling files saved under $PROFILING_OUTPUT_DIR"
+}
+
+collect_profiling_files
+
+if [[ "${PROFILING_SELF_TEST,,}" != true ]]; then
+  collect_profiling_files
+  exit 0
+fi
 i=0
 while [[ "$PROFILING_MAX_REQUESTS" == 0 || "$i" -lt "$PROFILING_MAX_REQUESTS" ]]; do
   i=$((i + 1)); nonce="$(date +%s%N)-$RANDOM-$i"
@@ -96,26 +123,3 @@ PY
   sleep "$PROFILING_INTERVAL_SECONDS"
 done
 
-collect_profiling_files() {
-  [[ "${PROFILING_COLLECT,,}" == true ]] || { log "profiling file collection disabled"; return 0; }
-  [[ -n "$PROFILING_NAMESPACE" ]] || { log "skip file collection: set PROFILING_NAMESPACE or NAMESPACE"; return 0; }
-  command -v "$PROFILING_KUBECTL_BIN" >/dev/null 2>&1 || { log "skip file collection: kubectl not found ($PROFILING_KUBECTL_BIN)"; return 0; }
-  mkdir -p "$PROFILING_OUTPUT_DIR"
-  log "waiting ${PROFILING_COLLECT_WAIT_SECONDS}s for profiling files"
-  sleep "$PROFILING_COLLECT_WAIT_SECONDS"
-  mapfile -t pods < <("$PROFILING_KUBECTL_BIN" get pods -n "$PROFILING_NAMESPACE" -o name 2>/dev/null | grep -E "$PROFILING_POD_REGEX" || true)
-  [[ ${#pods[@]} -gt 0 ]] || { log "no profiling pods found in namespace=$PROFILING_NAMESPACE"; return 1; }
-  local pod dest
-  for pod in "${pods[@]}"; do
-    pod="${pod#pod/}"; dest="$PROFILING_OUTPUT_DIR/$pod"; mkdir -p "$dest"
-    log "collecting pod=$pod container=$PROFILING_POD_CONTAINER source=/home/service/works/models_ssd/profile"
-    if "$PROFILING_KUBECTL_BIN" cp -n "$PROFILING_NAMESPACE" -c "$PROFILING_POD_CONTAINER" "$pod:/home/service/works/models_ssd/profile" "$dest" >/dev/null 2>&1; then
-      find "$dest" -type f -printf '[profiling] %p (%s bytes)\n' 2>/dev/null || true
-    else
-      log "WARN failed to collect pod=$pod"
-    fi
-  done
-  log "profiling files saved under $PROFILING_OUTPUT_DIR"
-}
-
-collect_profiling_files
