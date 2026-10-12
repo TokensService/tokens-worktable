@@ -8,8 +8,10 @@
 # 实例名；无 pod/release 的纯 label 残留同样可清（仅清 label 与大页）。
 # 卸载范围 = 该 label 的**全部**节点（不止勾选的），节点级操作只作用于这些
 # 节点；TARGET_HOSTS 仅用于远程分发宿主探测。目标不属于任何实例 = 已卸干净，
-# 幂等成功退出；多实例交叉 = die 请人工。推荐两段式：默认预演看清单 →
-# EMS_DRY_RUN=0 正式清理。跨 region（hd2 等）：TARGET_IPS 为外网入口 endpoint
+# 幂等成功退出；多 key 时按运行证据仲裁（目标节点 pod / 集群内 release）：
+# 唯一存活实例为准、纯残留 label（无 pod 无 release）顺带清理，多个**存活**
+# 实例交叉才 die 请人工。推荐两段式：默认预演看清单，再设
+# EMS_DRY_RUN 为 0 正式清理。跨 region（hd2 等）：TARGET_IPS 为外网入口 endpoint
 # （ip:port）时经分发阶段采集的身份映射三级解析，gy1 内网行为不变。
 #
 # 执行位置：工作台服务端（无 kubectl/helm）经 TARGET_HOSTS 自推送到首个具备
@@ -42,8 +44,10 @@ SCRIPT_NAME='ems-uninstall'
 # EMS_DRY_RUN = 预演开关（默认 1=只打印将执行的操作不落地；0=真实卸载）。用法：先默认预演看清单，再设 0 正式清理
 EMS_DRY_RUN="${EMS_DRY_RUN:-1}"
 
-# 实例名与 label 前缀由目标节点自动推导（[0/4] 段赋值，内部变量非入参）
+# 实例名/label 前缀/仲裁出的残留 label 由目标节点自动推导（[0/4] 段赋值，内部变量非入参；
+# 残留列表用小写 ems_stale_labels —— 大写带冒号默认值引用形态会被平台识别器扫成入参）
 EMS_NAME=""
+ems_stale_labels=''
 
 # 平台注入变量经 nameref 间接引用，避免被「识别参数」扫出入参
 declare -n platform_target_hosts='TARGET_HOSTS'
@@ -368,11 +372,31 @@ pod_ns = {p["metadata"].get("namespace", "") for p in pods
           if (p.get("spec") or {}).get("nodeName") in targets
           and re.match(r"^ems\d", p["metadata"].get("namespace") or "")}
 keys = label_keys | {ns.split("-")[0] for ns in pod_ns}
+def key_alive(key):
+    if any(ns == key or ns.startswith(key + "-") for ns in pod_ns):
+        return True
+    return any(re.fullmatch(key + r"(-\d+)?", str(rel.get("name") or "")) for rel in releases)
+stale_keys = set()
 if len(keys) > 1:
-    print("MULTI\t" + ",".join(sorted(keys)))
-    raise SystemExit(0)
+    # 多 key 仲裁：以运行证据（目标节点 pod / 集群内 release）区分活实例与残留 label。
+    # 唯一存活 → 其余 key 判为残留顺带清理；零存活或多存活 → 真交叉，带证据明细 die。
+    alive = {k for k in keys if key_alive(k)}
+    if len(alive) == 1:
+        stale_keys = keys - alive
+        keys = alive
+    else:
+        detail = []
+        for k in sorted(keys):
+            marks = []
+            if any(ns == k or ns.startswith(k + "-") for ns in pod_ns):
+                marks.append("pod")
+            if any(re.fullmatch(k + r"(-\d+)?", str(rel.get("name") or "")) for rel in releases):
+                marks.append("release")
+            detail.append(k + ":" + ("+".join(marks) if marks else "仅label残留"))
+        print("MULTI\t" + ",".join(detail))
+        raise SystemExit(0)
 if not keys:
-    print("\t")
+    print("\t\t")
     raise SystemExit(0)
 label_key = keys.pop()
 instance = ""
@@ -389,13 +413,13 @@ else:
         print("MULTI\t" + ",".join(sorted(matched)))
         raise SystemExit(0)
     instance = matched[0] if matched else ""
-print(label_key + "\t" + instance)
+print(label_key + "\t" + instance + "\t" + ",".join(sorted(stale_keys)))
 PY
 )" || { rm -f "$nodes_tmp" "$pods_tmp" "$helm_tmp"; die '实例推导失败'; }
     rm -f "$nodes_tmp" "$pods_tmp" "$helm_tmp"
-    IFS=$'\t' read -r label_key EMS_NAME <<<"$inferred"
+    IFS=$'\t' read -r label_key EMS_NAME ems_stale_labels <<<"$inferred"
     if [[ "$label_key" == MULTI ]]; then
-        die "目标节点交叉多个 EMS 实例（$EMS_NAME）：请按实例分批选择目标节点，或人工处理"
+        die "目标节点交叉多个 EMS 存活实例（$EMS_NAME）：请按实例分批选择目标节点，或人工处理"
     fi
     if [[ -z "$label_key" ]]; then
         log "目标节点不属于任何 EMS 实例（已卸干净或从未安装）：无操作，幂等退出"
@@ -409,6 +433,9 @@ PY
         log "推导实例：$EMS_NAME（label $label_key）"
     else
         log "label $label_key 残留清理（无 pod/无 release，仅清 label 与大页）"
+    fi
+    if [[ -n "${ems_stale_labels:-}" ]]; then
+        log "残留 label：$ems_stale_labels（无 pod 无 release，实例已卸载）——将在 [4/4] 顺带清理"
     fi
 
     # 卸载范围 = label 全部节点（含未勾选的同实例节点）
@@ -598,6 +625,32 @@ print(("True" if ready else "False"), int(value // 2**30))
         label_removed+="${node_names[$idx4]},"
     done
 
+    # 顺带清理仲裁识别的残留 label（实例已死无 pod 无 release，清理范围=全集群该 label 节点；
+    # 失败不阻塞主实例卸载流程，仅告警）
+    if [[ -n "${ems_stale_labels:-}" ]]; then
+        local stale_key stale_name
+        local -a stale_keys=() stale_nodes=()
+        IFS=',' read -r -a stale_keys <<<"$ems_stale_labels"
+        for stale_key in "${stale_keys[@]}"; do
+            mapfile -t stale_nodes < <(printf '%s' "$node_json" | python3 -c '
+import json, sys
+for node in json.load(sys.stdin).get("items", []):
+    if sys.argv[1] in ((node.get("metadata") or {}).get("labels") or {}):
+        print(node["metadata"]["name"])
+' "$stale_key")
+            ((${#stale_nodes[@]} > 0)) || { log "残留 label $stale_key 无挂载节点（已清或非本集群）：跳过"; continue; }
+            for stale_name in "${stale_nodes[@]}"; do
+                if [[ "$EMS_DRY_RUN" == 1 ]]; then
+                    log "[DRY_RUN] kubectl label node $stale_name $stale_key-（残留）"
+                else
+                    kubectl label node "$stale_name" "$stale_key-" >/dev/null \
+                        || log "警告：$stale_name 清理残留 label $stale_key 失败（不阻塞主流程）"
+                fi
+                label_removed+="$stale_name,"
+            done
+        done
+    fi
+
     if [[ "$EMS_DRY_RUN" != 1 ]]; then
         helm list -A -o json 2>/dev/null | python3 -c '
 import json, sys
@@ -639,6 +692,7 @@ for node in json.load(sys.stdin).get("items", []):
     printf 'EMS_HUGEPAGES_RELEASED=%s\n' "$(echo "$released_ips" | sed 's/,$//')"
     printf 'EMS_KUBELET_RESTARTED=%s\n' "$(echo "$restarted_ips" | sed 's/,$//')"
     printf 'EMS_LABEL_REMOVED=%s\n' "$(echo "$label_removed" | sed 's/,$//')"
+    printf 'EMS_STALE_LABELS=%s\n' "${ems_stale_labels:-}"
 }
 
 main() {

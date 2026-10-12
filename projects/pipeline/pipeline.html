@@ -1514,13 +1514,15 @@ async function migrateInlineLogs(){
 /* 收集本次运行各阶段日志的元数据，随历史记录持久化到服务端：
    全量日志的唯一实体是归档文件（run-<tag>-NN-任务名.log，永不截断），历史条目只存 logFile 路径，
    回放历史时按需经文件读路由拉取（见 loadReplayLogs）；无归档目录（scriptsDir 非绝对路径）时内嵌全文兜底 */
-function collectRunLogs(rc){
+function collectRunLogs(rc, handoffFromIdx){
   const out=[];
   const folder=rc ? archiveFolderFor(rc) : null;
+  const skipFrom=Number.isFinite(handoffFromIdx)?handoffFromIdx:(rc&&Number.isFinite(rc.handoffFromIdx)?rc.handoffFromIdx:-1);
   (rc?rc.stages:[]).forEach((s,idx)=>{
+    if(skipFrom>=0 && idx>=skipFrom) return;   // 已移交服务端的后缀阶段不写本地占位（待服务端按同 tag 合并补齐真实状态）
     const n=rc.nodes[s.id];
     if(!n || n.status==='running') return;
-    const e={stage:s.name, status:n.status, dur:(n.dur||0)};
+    const e={stage:s.name, status:n.status, dur:(n.dur||0), local:true};
     if(folder) e.logFile=folder+'/'+taskLogFile(rc, stageSeq(rc.stages, idx), s.name);
     else{
       /* 无归档目录时只能内嵌全文；仍用分片构建避免先拆成百万行对象。 */
@@ -1529,6 +1531,37 @@ function collectRunLogs(rc){
     }
     out.push(e);
   });
+  return out;
+}
+/* 历史阶段日志合并（按阶段名并集）：混合编排下本地 finish 写入本地前缀、服务端 append 写入定时后缀，
+   同 tag 两侧合并出完整阶段列表，避免任一侧整条替换冲掉另一侧。同名阶段后者覆盖状态/耗时/日志路径，
+   保留任一侧的 local 标记（本地执行标识）；顺序：先前侧（本地前缀），再追加后侧独有的阶段。 */
+function mergeStageLogsForHistory(prevLogs, nextLogs){
+  const listA=Array.isArray(prevLogs)?prevLogs:[];
+  const listB=Array.isArray(nextLogs)?nextLogs:[];
+  const out=[];
+  const byName={};
+  const put=(e)=>{
+    if(!e||typeof e!=='object') return;
+    const name=String(e.stage||'');
+    if(!name) return;
+    const prev=byName[name];
+    if(prev){
+      const merged=Object.assign({}, prev, e);
+      if(prev.local && e.local===undefined) merged.local=true;
+      if(!merged.logFile && prev.logFile) merged.logFile=prev.logFile;
+      if(merged.dur===undefined && prev.dur!==undefined) merged.dur=prev.dur;
+      if(merged.log===undefined && prev.log!==undefined) merged.log=prev.log;
+      byName[name]=merged;
+      const idx=out.indexOf(prev);
+      if(idx>=0) out[idx]=merged;
+    }else{
+      byName[name]=e;
+      out.push(e);
+    }
+  };
+  listA.forEach(put);
+  listB.forEach(put);
   return out;
 }
 
@@ -4308,6 +4341,25 @@ function detailLogLinesFor(stage,ctx,node){
   }
   return buildLog(stage,ctx,node,DETAIL_LOG_LIMIT);
 }
+/* 本地执行标识：阶段详情徽标旁展示「本地执行」。判定口径——历史日志条目 / 阶段快照带 local:true
+   （浏览器编排执行的本地前缀），或本页实时本地运行（非远端只读预览）的全部阶段。 */
+function isLocalExecStage(stage, entry, ctx){
+  if(entry && entry.local) return true;
+  if(stage && stage.local) return true;
+  if(ctx && ctx.remotePreview===true) return false;
+  if(entry && (entry.local===false || entry.local===null)) return false;
+  /* 实时本地运行：非远端预览且有运行上下文即视为本地执行（服务端预览的阶段由快照 local 标记） */
+  return !!(ctx && ctx.remotePreview!==true && (ctx.id||ctx.tag||ctx.stages));
+}
+function appendLocalExecBadge(badge, isLocal){
+  if(!badge || !isLocal) return;
+  const b=document.createElement('span');
+  b.className='dshell-badge';
+  b.style.cssText='margin-left:6px;color:var(--dsw-alias-state-accent-primary);border-color:color-mix(in srgb, var(--dsw-alias-state-accent-primary) 40%, transparent);font-size:10px;';
+  b.textContent='本地执行';
+  b.title='本阶段由浏览器本地执行（非服务端）';
+  badge.appendChild(b);
+}
 function detailContextRows(stage,statusText,ctx){
   const rows = [
     ['阶段', stage.name],
@@ -4317,6 +4369,7 @@ function detailContextRows(stage,statusText,ctx){
     ['策略', ctx.strategy||'—'],
     ['执行人', ctx.by||'—'],
     ['环境', ctx.env],
+    ['执行方式', isLocalExecStage(stage, null, ctx)?'本地执行':'服务端执行'],
   ];
   if(ctx.remotePreview===true) rows.push(['镜像','未同步'],['Commit','未同步']);
   else rows.push(['镜像',(ctx.registry||REGISTRY)+'/'+ctx.image+':'+ctx.tag],['Commit',ctx.commit]);
@@ -4423,6 +4476,7 @@ function renderDetail(){
   else if(n.status==='aborted'){ b.className='dshell-badge'; b.style.color='var(--st-idle)'; b.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; }   // 与运行历史徽标同色（灰）
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
+  appendLocalExecBadge(badge, isLocalExecStage(s, null, ctx));
   /* 失败阶段：可从本阶段重试（保留本次运行上下文，变量回滚到该阶段入口） */
   if(n.status==='failed' && !viewActive() && curRun && runStages && !runPreviewReadOnly(curRun) && !s.preset){
     const rb=document.createElement('button'); rb.className='dshell-btn dshell-btnGhost mini'; rb.style.marginLeft='6px';
@@ -4914,7 +4968,7 @@ function drainQueue(){
 }
 function cancelQueue(id){ if(typeof queueFinishedNote==='function') queueFinishedNote(id);   // 排队取消属正常终态化：登记进 completed，豁免孤儿判定
   queue=queue.filter(q=>q.id!==id); if(typeof queueReasonOpen!=='undefined') queueReasonOpen.delete(id); renderQueue(); }
-function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
+function sourceLabel(s){ if(!s||s==='manual') return '手动'; if(s==='local') return '本地执行'; if(s==='schedule'||s.indexOf('schedule:')===0) return '定时'; return s; }
 
 /* 本地运行队列视图还包含「已出队、正在申请节点租约、尚未进入 activeRuns」的短暂状态。
    统一从这里取数，确保列表、点击预览与跨浏览器快照对该过渡状态口径一致。 */
@@ -5001,9 +5055,19 @@ function remoteFinishedPreviewRc(previous, fin){
     const key=String(fs&&fs.stage||'');
     const mapped=stageStatus[String(fs&&fs.status||'').toLowerCase()]||'';
     if(!key||!mapped||!next.nodes) return;
-    const stg=(Array.isArray(next.stages)?next.stages:[]).find(x=>String(x&&x.id||'')===key)||(Array.isArray(next.stages)?next.stages:[]).find(x=>String(x&&x.name||'')===key);
+    let stg=(Array.isArray(next.stages)?next.stages:[]).find(x=>String(x&&x.id||'')===key)||(Array.isArray(next.stages)?next.stages:[]).find(x=>String(x&&x.name||'')===key);
+    /* 终态条目里有、预览阶段列表缺（如混合编排本地前缀未进快照）：补进列表，远端详情展示完整阶段 */
+    if(!stg){
+      stg={id:key, name:key, ...(fs.local?{local:true}:{})};
+      if(!Array.isArray(next.stages)) next.stages=[];
+      next.stages.push(stg);
+    }else if(fs.local && stg.local===undefined){
+      stg=Object.assign({}, stg, {local:true});
+      next.stages=next.stages.map(x=>x===stg||String(x&&x.id||'')===String(stg.id||'')?stg:x);
+    }
     const sid=stg?String(stg.id||''):'';
-    if(!sid||!next.nodes[sid]) return;
+    if(!sid) return;
+    if(!next.nodes[sid]) next.nodes[sid]={status:'idle',progress:0,dur:0,sub:{}};
     const node=Object.assign({}, next.nodes[sid]);
     if(node.status==='running'||node.status==='idle'){ node.status=mapped; if(mapped==='success') node.progress=100; }
     const d=Number(fs&&fs.dur); if(Number.isFinite(d)&&d>0) node.dur=d;
@@ -5175,6 +5239,8 @@ function queueStagePresence(stage){
   if(!stage||stage.id===undefined||stage.id===null) return null;
   const out={id:String(stage.id),name:String(stage.name||'')};
   if(stage.preset===true) out.preset=true;
+  if(stage.local===true) out.local=true;
+  if(stage.prefix===true) out.prefix=true;
   if(stage.pkey) out.pkey=String(stage.pkey);
   if(stage.parallel===true) out.parallel=true;
   if(stage.skip===true) out.skip=true;
@@ -5615,8 +5681,17 @@ function buildSuffixPlan(rc, startIdx, opts){
   // 把本次运行的归档上下文（文件夹/tag/起始序号）随计划交给服务端：
   // 定时后缀各任务回显由服务端写入同一归档文件夹、独立任务日志（run-<tag>-NN-任务名.log），与前缀日志连贯编号
   //（baseSeq=分界前的正式阶段数，预设任务不占阶段序号，见 stageSeq）
+  /* 本地前缀已完成阶段快照（展示用，含本地执行标识）：随计划交给服务端，写进同 tag 历史与终态 stages，
+     远端/他端查看该次运行详情时能看到完整阶段列表（本地前缀 + 服务端后缀），而非只有后缀。 */
+  const prefixStages=[];
+  for(let i=0;i<startIdx;i++){
+    const st=rc.stages[i]; if(!st || st.preset) continue;
+    const n=rc.nodes&&rc.nodes[st.id];
+    if(!n || n.status==='running') continue;
+    prefixStages.push({id:st.id, name:st.name, status:n.status||'success', dur:(n.dur||0), local:true});
+  }
   return { id:sid, pipelineId:rc.pipelineId||null, pipelineName:(rc.pipelineName||'')+' · 定时后缀',
-    stages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null, repository:runRepositorySnapshot(rc),
+    stages, prefixStages, env:rc.env, envs:rc.envs, image:rc.image, repoId:rc.repoId||null, repository:runRepositorySnapshot(rc),
     branch:rc.branch||'main', strategy:rc.strategy||'', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
     archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
     vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
@@ -5682,6 +5757,7 @@ async function handoffSchedSuffix(rc, i){
   }
   rcRender(rc,true);
   if(!count){ finish(rc,'success'); return; }   // 分界后只剩预设任务：无后缀可移交，直接收尾（防御，正常不会走到）
+  rc.handoffFromIdx=i;   // 后缀起点：collectRunLogs 不再写本地占位，同 tag 合并时由服务端补齐完整阶段
   const ok=await registerStageTimers(rc,i);   // 激活/回退全量登记：同 id 覆盖休眠计划，vars 取当前快照
   if(rc.over) return;   // 等待登记期间被中止/重置：中止路径已收尾，不再弹窗不再写状态
   if(ok){
@@ -7912,21 +7988,24 @@ function finish(rc, result){
     if(result==='success'){ rcOverall(rc,'✓ 已完成','dshell-badgeDone'); }
     else if(result==='aborted'){ rcOverall(rc,'⏏ 终止','','var(--st-idle)'); }   // 与运行历史行/阶段徽标同色（灰）
     else { rcOverall(rc,'✗ 错误','','var(--st-err)'); }
-    const status=result==='success'?'success':(result==='aborted'?'aborted':'failed');
     const rec={pipeline:rc.pipelineName||curPipeline().name, env:rc.env, commit:rc.commit.slice(0,7),
-      status,
+      status: result==='success'?'success':(result==='aborted'?'aborted':'failed'),
       dur: fmtDur(elapsed), time:'今天 '+nowHM(), ts:Date.now(), startTs:rc.startTs, by:rc.by||'anonymous',
-      pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'',
+      pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'', source:'local',
       envNodes: historyEnvNodesOf(rc),   // 选中环境节点快照（不含凭据；rec.env 保持中文逗号 IP 串不回填改写）
       prom: promSnapshotForRun(rc),
-      logs: collectRunLogs(rc),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集
+      logs: collectRunLogs(rc),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集；本地执行阶段带 local:true
       tag:rc.tag, archive:archiveFolderFor(rc)};
-    /* 启动时已写入「进行中」记录（beginRunHistory）：按 tag 原地更新为终态，不再新增一条 */
+    /* 混合编排（本地前缀 + 定时后缀）同 tag 原地合并：服务端后缀运行写入同 tag 记录时按阶段名并集补齐，
+       运行历史始终只有一条；无同 tag（纯本地/无移交）走新增兜底。 */
     const existing=rec.tag?history.find(h=>h&&h.tag===rec.tag):null;
     if(existing){
       rec.no=existing.no;
+      const prevLogs=Array.isArray(existing.logs)?existing.logs:[];
+      const nextLogs=Array.isArray(rec.logs)?rec.logs:[];
       Object.assign(existing, rec);
-      selHistoryIdx=history.indexOf(existing);   // 选中本次运行（仅选中不进入回放，保持本次运行的实时编排/详情视图）
+      existing.logs=mergeStageLogsForHistory(prevLogs, nextLogs);
+      selHistoryIdx=history.indexOf(existing);
     }else{
       buildNo++;
       rec.no=buildNo;
@@ -8661,11 +8740,24 @@ async function loadReplayLog(rec, stageName){
 function applyReplayProfileStages(rec,profileStages){
   if(!rec||!Array.isArray(rec.logs)||!Array.isArray(profileStages)) return;
   const byName={}; profileStages.forEach(stage=>{ if(stage&&stage.name) byName[stage.name]=stage; });
+  const logNames={};
   rec.logs.forEach(log=>{
     const stage=log&&byName[log.stage];
+    if(log&&log.stage) logNames[log.stage]=true;
     if(!stage||!stage.status) return;
     log.status=stage.status;
     if(typeof stage.durSec==='number') log.dur=stage.durSec;
+    if(stage.local && log.local===undefined) log.local=true;
+  });
+  /* profile 里有、logs 缺的阶段补进列表：混合编排同 tag 被整条替换冲掉本地前缀时的兜底，
+     远端运行详情仍能展示完整阶段信息。 */
+  profileStages.forEach(stage=>{
+    if(!stage||!stage.name||logNames[stage.name]) return;
+    const e={stage:stage.name, status:stage.status||'idle', dur:(typeof stage.durSec==='number'?stage.durSec:0)};
+    if(stage.logFile) e.logFile=stage.logFile;
+    if(stage.local) e.local=true;
+    rec.logs.push(e);
+    logNames[stage.name]=true;
   });
 }
 async function loadReplayLogs(rec){
@@ -8771,9 +8863,11 @@ function renderReplayDetail(rec){
   else if(n.status==='aborted'){ b.className='dshell-badge'; b.style.color='var(--st-idle)'; b.style.borderColor='color-mix(in srgb, var(--st-idle) 40%, transparent)'; }   // 与运行历史徽标同色（灰）
   else b.className='dshell-badge '+cls;
   b.textContent=txt; badge.appendChild(b);
+  appendLocalExecBadge(badge, isLocalExecStage(s, entry, rec));
   const kv=$('detailKv'); kv.innerHTML='';
   const rows=[['阶段',s.name],['状态',txt],['流水线',rec.pipeline||'—'],['分支',rec.branch||'main'],['策略',rec.strategy||'—'],
     ['执行人',rec.by||'—'],['环境',rec.env||'—'],['Commit',rec.commit||'—'],['运行时间',rec.time||'—']];
+  rows.push(['执行方式', isLocalExecStage(s, entry, rec)?'本地执行':'服务端执行']);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur||0)]);
   /* 不再单独展示「归档目录」行：归档路径已由「📂 打开归档目录」按钮旁的状态提示展示（refreshArchiveTip），避免长路径挤压回显日志区 */
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
