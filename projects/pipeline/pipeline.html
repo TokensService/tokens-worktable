@@ -1902,27 +1902,194 @@ function envLabelOf(v){ const e=resolveEnv(v); return (e.name && e.name!==e.ip) 
 let selectedEnvIds = (function(){ try{ const a=JSON.parse(localStorage.getItem('pip-envSel')); return Array.isArray(a)?a:null; }catch(e){ return null; } })();
 function saveEnvSel(){ try{ localStorage.setItem('pip-envSel', JSON.stringify(selectedEnvIds)); }catch(e){} }
 function curEnvs(){
-  return environments.filter(e=>selectedEnvIds && selectedEnvIds.indexOf(e.id)>=0);
+  /* 按选中顺序（selectedEnvIds）返回，而非节点列表原序——TARGET_IP/TARGET_IPS 顺序跟随面板里的选中/排序结果 */
+  if(!selectedEnvIds) return [];
+  return selectedEnvIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean);
 }
 function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
-/* 环境多选面板（主控、定时页与流水线编辑器「默认环境」共用渲染）：勾选状态经 getIds/setIds 回调注入，
-   切换后执行 after 附加动作；允许一个不选（默认即不选择任何节点），无选择时按钮显示占位「选择 IP」 */
+/* 环境多选面板搜索词 / 已选节点排序状态（按面板实例隔离：主控 / 定时 / 默认环境 / 运行弹窗各自独立） */
+const envMultiSearch={};
+const envMultiSelSort={};   // panelId -> {key:'name'|'ip'|'gpu'|null, dir:1|-1}
+/* 面板搜索：匹配名称 / SSH 地址 / 用户名 / K8s InternalIP（子串、大小写不敏感） */
+function envMultiFilterMatch(e, kw){
+  if(!kw) return true;
+  return (String(e.name||'')+' '+String(e.ip||'')+' '+String(e.user||'')+' '+String(e.nodeIp||'')).toLowerCase().indexOf(kw)>=0;
+}
+/* 已选节点排序键：name/user 按小写文本、ip 去掉「:端口」后按段数值、gpu 按设备状态（查询失败→未查询→空闲→占用） */
+function envMultiSortVal(e, key){
+  if(key==='name') return String(e.name||'').toLowerCase();
+  if(key==='user') return String(e.user||'').toLowerCase();
+  if(key==='ip') return String(e.ip||'').replace(/:\d+$/,'').split('.').map(p=>String(parseInt(p,10)||0).padStart(3,'0')).join('.');
+  if(key==='gpu'){
+    const st=gpuStatus[e.id];
+    if(!st) return 100000;
+    if(st.error) return 0;
+    const used=st.used==undefined?0:st.used;
+    return (gpuBusy(st)?300000:200000)+used;
+  }
+  return '';
+}
+function envMultiSortList(list, sort){
+  if(!sort || !sort.key) return list;
+  return list.map((e,i)=>({e,i})).sort((a,b)=>{
+    const va=envMultiSortVal(a.e,sort.key), vb=envMultiSortVal(b.e,sort.key);
+    if(va<vb) return -1*sort.dir;
+    if(va>vb) return 1*sort.dir;
+    return a.i-b.i;
+  }).map(x=>x.e);
+}
+/* 环境多选面板（主控、定时页、流水线编辑器「默认环境」与运行弹窗共用渲染）：
+   - 勾选状态经 getIds/setIds 回调注入，切换后执行 after 附加动作；允许一个不选（默认即无目标节点运行）
+   - 顶部搜索框按名称 / IP / 用户名 / InternalIP 过滤下方节点列表（已选区不受过滤影响）
+   - 已选节点区支持排序（名称 / IP / 设备状态，点一次升序、再点降序）与 ↑↓ 手动调序；
+     顺序写回 ids，决定 TARGET_IP（首个）/ TARGET_IPS 的注入顺序 */
 function renderEnvMulti(o){
   const btn=$(o.btnId); const panel=$(o.panelId); if(!btn||!panel) return;
   const ids=o.getIds()||[];
-  const sel=environments.filter(e=>ids.indexOf(e.id)>=0);
+  /* 按选中顺序映射（而非 environments 原序），按钮文案与 TARGET_IPS 顺序一致 */
+  const sel=ids.map(id=>environments.find(e=>e.id===id)).filter(Boolean);
   btn.textContent = sel.map(e=>e.ip).join('，') || '选择 IP';
   btn.title = btn.textContent;   // 限宽省略时悬浮可见完整 IP 列表
+  const pid=o.panelId;
+  const kw=(envMultiSearch[pid]||'').trim().toLowerCase();
+  const selSort=envMultiSelSort[pid]||{key:null,dir:1};
   panel.innerHTML='';
-  environments.forEach(e=>{
+
+  /* 搜索框（sticky 置顶）：只切换下方列表行显隐，不整树重绘，避免输入过程中丢焦点 */
+  const searchWrap=document.createElement('div');
+  searchWrap.style.cssText='position:sticky;top:0;z-index:1;background:var(--dsw-alias-bg-base);padding:0 0 6px;margin:0 -2px;';
+  const searchInp=document.createElement('input');
+  searchInp.type='search';
+  searchInp.className='dshell-input';
+  searchInp.setAttribute('data-envmulti-search','');
+  searchInp.placeholder='搜索 名称 / IP / 用户名';
+  searchInp.autocomplete='off';
+  searchInp.style.cssText='width:100%;font-size:12px;padding:4px 8px;';
+  searchInp.value=envMultiSearch[pid]||'';
+  searchWrap.appendChild(searchInp);
+  panel.appendChild(searchWrap);
+
+  /* 已选节点区：排序按钮 + 序号 + ↑↓ 调序 + × 取消（交互控件走 createElement，避免 innerHTML 注入并便于测试挂钩） */
+  if(sel.length){
+    const selHead=document.createElement('div');
+    selHead.style.cssText='display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 2px 4px;font-size:10px;color:var(--dsw-alias-label-tertiary);';
+    const headLabel=document.createElement('span');
+    headLabel.textContent='已选 '+sel.length;
+    selHead.appendChild(headLabel);
+    [['name','名称'],['ip','IP'],['gpu','设备']].forEach(pair=>{
+      const key=pair[0], label=pair[1];
+      const b=document.createElement('button');
+      b.type='button';
+      b.className='dshell-btn dshell-btnGhost mini';
+      b.style.cssText='padding:1px 6px;font-size:10px;';
+      b.title='按'+label+'排序（点一次升序、再点降序）';
+      b.setAttribute('data-envmulti-sort', key);
+      b.textContent=label+(selSort.key===key?(selSort.dir>0?' ▲':' ▼'):'');
+      selHead.appendChild(b);
+    });
+    panel.appendChild(selHead);
+    sel.forEach((e,idx)=>{
+      const row=document.createElement('div');
+      row.style.cssText='display:flex;align-items:center;gap:4px;padding:2px 4px;border-radius:5px;font-size:11px;';
+      const no=document.createElement('span');
+      no.className='dshell-muted'; no.style.minWidth='14px'; no.textContent=(idx+1)+'.';
+      const nameSpan=document.createElement('span');
+      nameSpan.style.cssText='flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      nameSpan.title=e.name+'（'+e.ip+'）';
+      nameSpan.textContent=e.name+' ';
+      const ipSpan=document.createElement('span');
+      ipSpan.className='dshell-muted'; ipSpan.style.fontSize='10px'; ipSpan.textContent=e.ip;
+      nameSpan.appendChild(ipSpan);
+      const mkBtn=(attr,val,title,txt,disabled)=>{
+        const b=document.createElement('button');
+        b.type='button'; b.className='dshell-btn dshell-btnGhost mini';
+        b.style.cssText='padding:0 5px;'; b.title=title; b.textContent=txt;
+        if(disabled) b.disabled=true;
+        b.setAttribute(attr,val);
+        return b;
+      };
+      row.appendChild(no); row.appendChild(nameSpan);
+      row.appendChild(mkBtn('data-envmulti-up', e.id, '上移', '↑', idx===0));
+      row.appendChild(mkBtn('data-envmulti-down', e.id, '下移', '↓', idx===sel.length-1));
+      row.appendChild(mkBtn('data-envmulti-rm', e.id, '取消选中', '×', false));
+      panel.appendChild(row);
+    });
+    const sep=document.createElement('div');
+    sep.style.cssText='border-top:1px solid var(--dsw-alias-border-l1);margin:6px 0 4px;';
+    panel.appendChild(sep);
+  }
+
+  /* 全部节点复选列表（搜索过滤；已选项仍在列表中可直接取消） */
+  const list=environments.filter(e=>envMultiFilterMatch(e, kw));
+  const empty=document.createElement('div');
+  empty.className='dshell-muted';
+  empty.setAttribute('data-envmulti-empty','');
+  empty.style.cssText='font-size:11px;padding:4px 6px;'+(list.length?'display:none;':'');
+  empty.textContent='无匹配节点';
+  panel.appendChild(empty);
+  list.forEach(e=>{
     const on = ids.indexOf(e.id)>=0;
     const st=gpuStatus[e.id];
     const gpu=(st && st.total!==undefined)?(' · GPU '+(st.used===undefined?'?':st.used)+'/'+st.total):(st && st.error?' · GPU 查询失败':'');
     const lab=document.createElement('label');
+    lab.setAttribute('data-envopt', e.id);
     lab.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 6px;cursor:pointer;border-radius:6px;';
-    lab.innerHTML='<input type="checkbox" data-envcb="'+e.id+'" '+(on?'checked':'')+'/> <span>'+esc(e.name)+' <span class="dshell-muted" style="font-size:10px">'+esc(e.ip)+gpu+'</span></span>';
+    const cb=document.createElement('input');
+    cb.type='checkbox';
+    cb.setAttribute('data-envcb', e.id);
+    cb.checked=!!on;
+    const textSpan=document.createElement('span');
+    textSpan.textContent=e.name+' ';
+    const meta=document.createElement('span');
+    meta.className='dshell-muted'; meta.style.fontSize='10px';
+    meta.textContent=e.ip+gpu;
+    textSpan.appendChild(meta);
+    lab.appendChild(cb); lab.appendChild(textSpan);
     panel.appendChild(lab);
   });
+
+  /* 事件绑定 */
+  searchInp.addEventListener('input',()=>{
+    envMultiSearch[pid]=searchInp.value;
+    const q=searchInp.value.trim().toLowerCase();
+    panel.querySelectorAll('[data-envopt]').forEach(row=>{
+      const e=environments.find(x=>x.id===row.getAttribute('data-envopt'));
+      row.style.display=(e && envMultiFilterMatch(e, q))?'':'none';
+    });
+    const emptyTip=panel.querySelector('[data-envmulti-empty]');
+    if(emptyTip){
+      const shown=environments.some(e=>envMultiFilterMatch(e,q));
+      emptyTip.style.display=shown?'none':'';
+    }
+  });
+  panel.querySelectorAll('[data-envmulti-sort]').forEach(b=>b.addEventListener('click',(ev)=>{
+    ev.preventDefault(); ev.stopPropagation();
+    const key=b.getAttribute('data-envmulti-sort');
+    const prev=envMultiSelSort[pid]||{key:null,dir:1};
+    envMultiSelSort[pid]= prev.key===key ? {key, dir: prev.dir>0?-1:1} : {key, dir:1};
+    const sorted=envMultiSortList(sel, envMultiSelSort[pid]).map(e=>e.id);
+    o.setIds(sorted); renderEnvMulti(o);
+    if(o.after) o.after();
+  }));
+  panel.querySelectorAll('[data-envmulti-up],[data-envmulti-down]').forEach(b=>b.addEventListener('click',(ev)=>{
+    ev.preventDefault(); ev.stopPropagation();
+    const upId=b.getAttribute('data-envmulti-up'), downId=b.getAttribute('data-envmulti-down');
+    const id=upId||downId;
+    const cur=(o.getIds()||[]).slice();
+    const i=cur.indexOf(id);
+    const j=upId?i-1:i+1;
+    if(i<0||j<0||j>=cur.length) return;
+    const tmp=cur[i]; cur[i]=cur[j]; cur[j]=tmp;
+    o.setIds(cur); renderEnvMulti(o);
+    if(o.after) o.after();
+  }));
+  panel.querySelectorAll('[data-envmulti-rm]').forEach(b=>b.addEventListener('click',(ev)=>{
+    ev.preventDefault(); ev.stopPropagation();
+    const id=b.getAttribute('data-envmulti-rm');
+    const cur=(o.getIds()||[]).filter(x=>x!==id);
+    o.setIds(cur); renderEnvMulti(o);
+    if(o.after) o.after();
+  }));
   panel.querySelectorAll('[data-envcb]').forEach(cb=>cb.addEventListener('change',()=>{
     const id=cb.getAttribute('data-envcb');
     let cur=(o.getIds()||[]).slice();
@@ -5784,7 +5951,8 @@ let schedEnvIds=(function(){ try{ const a=JSON.parse(localStorage.getItem('pip-s
 function saveSchedEnvSel(){ try{ localStorage.setItem('pip-schedEnvSel', JSON.stringify(schedEnvIds)); }catch(e){} persistState(); }
 function schedEnvs(){
   const ids=(schedEnvIds && schedEnvIds.length) ? schedEnvIds : curEnvs().map(e=>e.id);   // 未单独选择时跟随主控（多选 IP 不丢失）；都不选即无目标节点
-  return environments.filter(e=>ids.indexOf(e.id)>=0);
+  /* 按 ids 顺序返回（与选中/排序结果一致），决定定时计划 envs 的 TARGET_IPS 顺序 */
+  return ids.map(id=>environments.find(e=>e.id===id)).filter(Boolean);
 }
 function renderSchedEnvOptions(){
   renderEnvMulti({btnId:'schedEnvMultiBtn', panelId:'schedEnvMultiPanel',
