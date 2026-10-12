@@ -122,9 +122,9 @@ PY
         echo "AK and LOGIN_KEY are required for non-mapped target image pulls" >&2
         return 2
       fi
-      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote \"${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}\") $(remote_quote \"$image\")"
+      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
       echo "[pull] target $endpoint (non-mapped): pull image $image with ctr"
-      if run_target "$target" "$port" "$password" "bash -lc $(remote_quote \"$remote_command\")"; then
+      if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
         :
       else
         pull_status=$?
