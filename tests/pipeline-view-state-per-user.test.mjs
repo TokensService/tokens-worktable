@@ -152,7 +152,7 @@ function loadPipelineRoutes(home, { auth } = {}) {
   const helperFns = [
     'cleanPipelineHistory', 'stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt',
     'withPipelineSharedMeta', 'preserveDiskOnlyConfigKeys', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
-    'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
+    'mergeStageLogsForHistory', 'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
     'extractViewState', 'omitViewStateKeys', 'sanitizeViewState', 'viewStateUserKey', 'mergeUserViewStates', 'resolveViewStateForUser',
   ].map(extractFunction).join('\n')
   const code = VIEW_STATE_DECL + '\n' + VIEW_STATE_CAP_DECL + '\n' + helperFns + '\n' + TRUST_HELPERS + '\n' + source.slice(start, end)

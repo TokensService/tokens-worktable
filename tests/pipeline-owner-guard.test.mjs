@@ -49,7 +49,7 @@ function loadPipelineRoutes(home, { ctx = {} } = {}) {
   const helpers = [
     'cleanPipelineHistory', 'stripPipelineSharedMeta', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt',
     'withPipelineSharedMeta', 'preserveDiskOnlyConfigKeys', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
-    'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
+    'mergeStageLogsForHistory', 'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
     'extractViewState', 'omitViewStateKeys', 'sanitizeViewState', 'viewStateUserKey', 'mergeUserViewStates', 'resolveViewStateForUser',
   ].map((name) => extractFunction(name)).join('\n')
   const code = viewDecls + '\n' + helpers + '\n' + OWNERSHIP_HELPERS + '\n' + source.slice(start, end)
