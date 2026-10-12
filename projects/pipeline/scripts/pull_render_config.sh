@@ -311,6 +311,9 @@ cleanup_render_images() {
   local image
   local -A seen_images=()
 
+  [[ "${RENDER_RESOURCES_CLEANED:-0}" == "1" ]] && return 0
+  RENDER_RESOURCES_CLEANED=1
+
   command -v nerdctl >/dev/null 2>&1 || {
     echo "[pull] nerdctl is unavailable; skip execution-host image cleanup" >&2
     return 0
@@ -320,11 +323,26 @@ cleanup_render_images() {
     [[ -n "$image" && -z "${seen_images[$image]:-}" ]] || continue
     seen_images["$image"]=1
     echo "[pull] execution host: remove temporary render image $image"
-    if ! nerdctl --namespace k8s.io image rm "$image" >/dev/null; then
+    if ! nerdctl --namespace k8s.io image rm -f "$image" >/dev/null; then
       echo "[pull] warning: could not remove temporary render image $image" >&2
     fi
   done
+
+  # Removing a tag alone leaves unreferenced manifests, content, and failed
+  # extraction snapshots behind. Reclaim all unused execution-host resources;
+  # running containers and images referenced by them are retained.
+  echo "[pull] execution host: reclaim unused containerd resources"
+  nerdctl --namespace k8s.io system prune -a -f >/dev/null 2>&1 || \
+    echo "[pull] warning: system prune did not complete" >&2
+  nerdctl --namespace k8s.io image prune -a -f >/dev/null 2>&1 || \
+    echo "[pull] warning: image prune did not complete" >&2
+  nerdctl --namespace k8s.io snapshot prune >/dev/null 2>&1 || \
+    echo "[pull] warning: snapshot prune did not complete" >&2
 }
+
+# Also reclaim resources when image extraction or template export fails before
+# the normal post-export cleanup point.
+trap cleanup_render_images EXIT
 
 remote_ssh() {
   local target="$1" port="$2" password="$3"
