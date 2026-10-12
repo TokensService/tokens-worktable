@@ -252,7 +252,7 @@ test('stageDetailAnalysis：无分析记录时提示且不发起 AI 分析', () 
 
   ctx.stageDetailAnalysis();
 
-  assert.deepEqual(calls.alerts, ['本次运行尚未写入运行历史（运行结束后自动生成），暂不能发起 AI 分析。'], '应提示先等待运行历史生成');
+  assert.deepEqual(calls.alerts, ['未找到本次运行的历史记录，暂不能发起 AI 分析。'], '应提示未找到历史记录');
   assert.equal(calls.chats.length, 0, '无记录时不得调用 createAnalysisChat');
 });
 
