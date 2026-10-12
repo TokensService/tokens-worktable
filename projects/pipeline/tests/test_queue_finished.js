@@ -251,7 +251,7 @@ test('pullRemoteQueueLog：已进入终态的预览停止日志轮询（不再�
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extract('/* 当前详情的服务端日志独立于普通队列快照拉取', '/* 拉取服务端权威队列及旧标签页'), context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
   const skipped = await context.pullRemoteQueueLog();
   assert.equal(skipped, null);
   assert.equal(fetches, 0, 'remoteFinished 标记后直接返回，不再轮询该 run 的日志');
