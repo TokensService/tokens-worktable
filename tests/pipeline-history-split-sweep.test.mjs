@@ -3,9 +3,9 @@
  *  - 拆分：含「需本地运行」前缀 + 定时后缀的混合编排，此前服务端后缀经同 tag 合并进本地记录，
  *    本地/非本地任务挤在一条记录且记录身份（名称/执行人/来源/耗时）被后缀覆盖；现后缀计划带
  *    histMode:'split'，execPlan 改写 tag+'-srv' 独立记录，启动即「进行中」、逐阶段刷新、结束落终态。
- *  - 清扫：本地编排运行的历史由页面启动即写 running，页面崩溃/断网且 pagehide 移交未送达时
- *    永久挂「进行中」；planStaleHistorySweep 按活体信号（在场快照 / 活动计划）判死，
- *    让「本地执行没完成、没法提交服务端」的错误在运行历史状态中体现。
+ *  - 清扫：本地编排运行的历史由页面启动即写 running，页面崩溃/断网且 pagehide 失败落史（fail-run）
+ *    未送达时永久挂「进行中」；planStaleHistorySweep 按活体信号（在场快照 / 活动计划）判死，
+ *    让「本地执行没完成」的错误在运行历史状态中体现（正常关页由 fail-run 路由直接落失败终态）。
  * 抽取手法与 pipeline-run-api.test.mjs / pipeline-history-env-nodes.test.mjs 一致。 */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -294,7 +294,7 @@ test('cleanQueueEntry 透传 tag（「进行中」历史清扫据此把失联运
 
 test('静态契约：清扫器判死后把记录标记 failed 并补系统日志、休眠计划按 id 清理', () => {
   assert.ok(source.includes("rec.status = 'failed'"), '判死记录落 failed 终态')
-  assert.ok(source.includes('本地执行中断：页面失联且未移交服务端'), '判死记录补系统日志说明')
+  assert.ok(source.includes('本地执行中断：页面失联'), '判死记录补系统日志说明')
   assert.ok(source.includes('sweepStaleRunningHistory'), '清扫器接入定时循环')
   assert.ok(source.includes("planStaleHistorySweep(now, history, liveTags, activePlanTags, evidence, dormantPlans)"), '清扫器调用纯函数决策')
 })
