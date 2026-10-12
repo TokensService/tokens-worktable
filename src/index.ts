@@ -1186,6 +1186,41 @@ function serverPromCollectScript(config: any): any {
   return { name, path: pathResolve(resolvePipelineScriptsDir(config, DEFAULT_PIPELINE_SCRIPTS_DIR), name), params: [], values: {} }
 }
 
+/**
+ * 运行期设置快照：一次运行在提交/登记计划时深拷贝全部相关设置，execPlan 只读快照——
+ * 下一次运行前对设置的修改（脚本目录 / Jenkins / EvalTokens / 普罗 / 归档 / 预设脚本）
+ * 不影响已经排队或开跑的流水线。旧计划无 settings 字段时回落到执行开始时的配置（兼容）。
+ * scriptsDir 存配置原值（可空），使用时经 resolvePipelineScriptsDir 兜底安装默认路径。
+ */
+function snapshotPipelineRunSettings(config: any): any {
+  const cfg = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const clone = (value: any) => {
+    if (value == null) return value
+    try { return JSON.parse(JSON.stringify(value)) } catch { return null }
+  }
+  const archiveScriptName = (typeof cfg.archiveScriptName === 'string' && cfg.archiveScriptName.trim())
+    || (typeof cfg.archiveScript === 'string' ? cfg.archiveScript.trim() : '')
+  return {
+    scriptsDir: typeof cfg.scriptsDir === 'string' ? cfg.scriptsDir.trim() : '',
+    jenkins: clone(cfg.jenkins) || {},
+    evaltok: clone(cfg.evaltok) || {},
+    prom: clone(cfg.prom) || {},
+    archiveDir: typeof cfg.archiveDir === 'string' ? cfg.archiveDir : '',
+    archiveScriptName,
+    cleanupScript: clone(cfg.cleanupScript) || null,
+    checkScript: clone(cfg.checkScript) || null,
+    profilingScript: clone(cfg.profilingScript) || null,
+  }
+}
+
+/** 计划上的设置快照优先；缺字段时用当前配置补齐（旧计划 / 手写计划）。 */
+function resolvePlanRunSettings(pl: any, liveCfg: any): any {
+  const snap = pl && pl.settings && typeof pl.settings === 'object' && !Array.isArray(pl.settings) ? pl.settings : null
+  if (!snap) return snapshotPipelineRunSettings(liveCfg)
+  const base = snapshotPipelineRunSettings(liveCfg)
+  return { ...base, ...snap }
+}
+
 function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
   const selected = new Set(stringList(presets).filter((key) => PIPELINE_RUN_PRESETS.has(key)))
   const seen = new Set<string>()
@@ -2130,6 +2165,8 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
       by,
       source: input.source === 'manual' ? 'manual' : 'api',
       createdAt: Date.now(),
+      /* 运行期设置副本：排队/执行只读本快照，下一次运行前的设置修改不影响本计划 */
+      settings: snapshotPipelineRunSettings(config),
     },
   }
 }
@@ -5061,7 +5098,10 @@ export function apply(ctx: Context) {
     const t0 = Date.now()
     const store = await readPipelineStore()
     const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
-    const scriptsDir = resolvePipelineScriptsDir(cfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 设置文件未配置 scriptsDir 时兜底到插件安装后的 scripts 路径
+    /* 运行期设置副本：计划自带 settings 时按提交/登记时快照执行，下一次运行前的设置修改不影响本运行；
+       旧计划无该字段时取执行开始时的配置快照（与旧行为一致，但同样定格在启动瞬间）。 */
+    const runCfg = resolvePlanRunSettings(pl, cfg)
+    const scriptsDir = resolvePipelineScriptsDir(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 快照 scriptsDir 已解析，缺省时兜底安装路径
     // 归档上下文（与页面约定一致）：
     //   阶段定时后缀沿用页面传入的 pl.archive/pl.tag/baseSeq——回显写入本地前缀同一归档文件夹、编号连贯；
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
@@ -5069,7 +5109,7 @@ export function apply(ctx: Context) {
     const tag = (typeof pl.tag === 'string' && pl.tag) ? pl.tag : hhmm().replace(':', '') + '-' + randHex(5)
     const baseSeq = Math.max(0, Number(pl.baseSeq) || 0)
     const isSuffixRun = typeof pl.archive === 'string' && !!pl.archive
-    let archiveRoot = typeof cfg.archiveDir === 'string' ? cfg.archiveDir.trim().replace(/\/+$/, '') : ''
+    let archiveRoot = typeof runCfg.archiveDir === 'string' ? runCfg.archiveDir.trim().replace(/\/+$/, '') : ''
     if (!archiveRoot && scriptsDir && scriptsDir.charAt(0) === '/') {
       const dir = scriptsDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '')
       archiveRoot = (dir || '/') + '/runs'
@@ -5108,7 +5148,7 @@ export function apply(ctx: Context) {
        回退为「配置了清理脚本即执行」（运行行预设勾选已改为仅浏览器本地，不再随配置下发）。 */
     const apiPresetMode = Array.isArray(pl.presets)
     const executionStages = apiPresetMode
-      ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
+      ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, runCfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
     /* 混合编排本地前缀快照（页面 buildSuffixPlan 随计划带上）：写入同 tag 历史与运行快照的完整阶段
        列表（本地前缀 + 服务端后缀），远端/他端详情能看到全部阶段；前缀带 local:true 作本地执行标识，
@@ -5153,15 +5193,15 @@ export function apply(ctx: Context) {
       })
     }
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
-    if (!apiPresetMode && cfg.cleanupScript && cfg.cleanupScript.path) {
+    if (!apiPresetMode && runCfg.cleanupScript && runCfg.cleanupScript.path) {
       const st0 = Date.now()
       const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
-      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
-      const text = stageLogText(cfg.cleanupScript.name, r)
+      const r = await runStageScript(runCfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
+      const text = stageLogText(runCfg.cleanupScript.name, r)
       const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text, logFile })
       pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
-      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
+      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: runCfg.cleanupScript.name || null, logFile })
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
       const startedAt = Date.now()
@@ -5175,7 +5215,7 @@ export function apply(ctx: Context) {
       let shouldStop = false
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
-        const r = await executeServerHttpStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)
@@ -5184,7 +5224,7 @@ export function apply(ctx: Context) {
         entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
         if (r.code !== 0 && !r.aborted) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerEvaltokensStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)
@@ -5241,7 +5281,7 @@ export function apply(ctx: Context) {
        每批只采集最长的合格任务，采集只补充其回显，绝不改写已确定的任务状态/阻断权。 */
     const collectStageProm = async (result: ServerStageResult) => {
       const s = result.stage
-      const collectScript = serverPromCollectScript(cfg)
+      const collectScript = serverPromCollectScript(runCfg)
       const seq = serverStageSeq(executionStages, result.index, baseSeq)
       const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
       const addNote = (note: string) => { result.promNote = note; result.text += '\n' + note }
@@ -5250,7 +5290,7 @@ export function apply(ctx: Context) {
         return
       }
       try {
-        const penv = buildServerTaskPromEnv(runCtx, cfg, result.varsPool, result.startedAt, result.endedAt, promDir)
+        const penv = buildServerTaskPromEnv(runCtx, runCfg, result.varsPool, result.startedAt, result.endedAt, promDir)
         const promLog = promDir + '/collect.log'
         const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, 0, penv, promLog)   // 不设超时；完整输出流式落 collect.log，且不复用已结算组的 fail-fast signal
         if (!pr.logFile) try {
@@ -5344,8 +5384,8 @@ export function apply(ctx: Context) {
         await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), 'utf8')
       } catch (e) { console.warn('[archive] 定时运行 profiling 写入失败（不影响执行）:', e) }
       // 归档脚本（可选）：与页面一致，写完日志/profiling 后执行（如 collect_logs.sh），收集额外日志到归档目录；失败不影响执行
-      const archiveScriptName = typeof cfg.archiveScript === 'string' ? cfg.archiveScript.trim() : ''
-      if (archiveScriptName && archiveRoot && typeof cfg.archiveDir === 'string' && cfg.archiveDir.trim()) {
+      const archiveScriptName = typeof runCfg.archiveScriptName === 'string' ? runCfg.archiveScriptName.trim() : ''
+      if (archiveScriptName && archiveRoot && typeof runCfg.archiveDir === 'string' && runCfg.archiveDir.trim()) {
         try {
           await new Promise<void>((resolve) => {
             execFile('bash', [pathResolve(scriptsDir, archiveScriptName)], {
