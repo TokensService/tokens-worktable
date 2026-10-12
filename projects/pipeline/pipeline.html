@@ -496,7 +496,7 @@
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;">↻ 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
         <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 用户名 / 设备状态" style="width:230px;" />
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
@@ -1090,8 +1090,9 @@ function persistState(){
   persistTimer=setTimeout(pushState, 400);   // 不在此拦 stateLoaded：交由 pushState 先重试加载再决定写不写
 }
 /* 收集上送服务端的配置：代码仓条目保留访问令牌 pass（明文随配置保存到服务端 worktable-pipeline.json，
-   团队各浏览器共享）；视图状态与定时环境选择（schedEnvIds/histFilter/plFilter/histPageSize/plPageSize）
-   同随服务端持久化——例外：编辑器草稿 pip-plDraft 仍仅存本浏览器（未过校验的半成品，见 savePlDraft）。
+   团队各浏览器共享）；视图状态与定时环境选择同随服务端持久化——例外：编辑器草稿 pip-plDraft 仍仅存本浏览器（未过校验的半成品，见 savePlDraft）。
+   其中筛选/页大小（histFilter/plFilter/histPageSize/plPageSize）服务端按登录用户隔离存 userViewStates[username]，
+   同用户跨浏览器跟随、互不覆盖他人（API 形态不变，仍是顶层键）；schedEnvIds 定时环境仍团队共享。
    运行流水线行的临时配置（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/预设勾选）只存浏览器
    localStorage，不上送服务端——各人临时调整自己的运行参数，不覆盖他人浏览器的取值。 */
 function collectConfig(){
@@ -1376,6 +1377,7 @@ async function loadServerState(){
         repositories.forEach(function(r){ if(!r.pass && prevPass[r.id]){ r.pass=prevPass[r.id]; migrated=true; } });
       }
       /* 视图状态与定时环境选择（定时环境/历史与流水线筛选/页大小）：键存在（含空串/空数组）一律以服务端为准；
+         筛选/页大小服务端已按当前登录用户取其槽位（userViewStates[username]），他人改动不会串到本页；
          旧版服务端无该键且启动时 localStorage 有对应旧值（legacyLocalKeys 快照）→ 保留本地值（全局已在启动时
          从 localStorage 装入）并标记 migrated，finally 统一回推一次。stateLoaded 门控不变：服务端不可达时
          本块不执行，不会用默认值覆盖服务端。409/403 自愈重拉也走这里：他端改动借此同步进来；筛选/页大小这类
@@ -2089,6 +2091,27 @@ function applyEnvCredAll(){
   environments.forEach(e=>{ e.user=u; e.pass=p; });
   saveEnvs(); renderEnvs();
 }
+/* ---------- 节点信息手动刷新 ---------- */
+/* 从服务端配置重拉节点环境列表（与「流水线任务」的「↻ 刷新」同一交互——不自动刷新，用户点按钮才拉取；
+   只覆盖共享的节点环境定义，不动本页设备状态缓存与运行行临时选择）。环境列表与 loadServerState 同口径：
+   服务端有非空 environments 即整体替换（无三方合并——环境条目整表 last-write-wins，与 saveEnvs 上送语义
+   一致），并同步 localStorage 离线缓存后重渲染表格与多选面板。 */
+async function refreshEnvsFromServer(){
+  const b=$('envInfoRefresh'); if(b) b.disabled=true;
+  try{
+    const st=await fetchPipelineStateFresh();
+    if(!st) throw new Error('服务端配置拉取失败');
+    const cfg=(st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
+    if(!Array.isArray(cfg.environments) || !cfg.environments.length) throw new Error('服务端暂无节点环境');
+    environments=cfg.environments.map(normalizeEnv);
+    try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){}
+    renderEnvs();
+    renderEnvOptions();
+    if(typeof toast==='function') toast('节点信息已刷新（'+environments.length+' 个节点）');
+  }catch(e){ alert('刷新节点信息失败：'+String(e && e.message || e)); }
+  finally{ if(b) b.disabled=false; }
+}
+$('envInfoRefresh').addEventListener('click', refreshEnvsFromServer);
 /* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
 /* 分支获取方式：server=服务端 git ls-remote；browser=浏览器直连 /info/refs；jenkins-browser/jenkins-server=Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连，按仓库各自选择）；旧值 jenkins 归为 jenkins-browser */
 function normalizeFetchMode(m){ return m==='browser'?'browser':(m==='jenkins-server'?'jenkins-server':((m==='jenkins'||m==='jenkins-browser')?'jenkins-browser':'server')); }
@@ -8571,11 +8594,11 @@ let selHistoryIdx=-1;   // 运行历史当前选中行（-1 = 未选中，全局
 let analysisHistoryKeys=[];   // AI 分析勾选（最多两条，顺序即对比的 A / B；与单行回放选择分离）
 let histPage=0;
 let histPageSize=Math.max(1, parseInt(lsGet('pip-histPageSize','10'),10)||10);
-/* 运行历史筛选：关键字（# / 流水线 / 执行人，大小写不敏感）+ 状态 + 流水线名；随服务端配置 histFilter 键同步（localStorage 为离线缓存） */
+/* 运行历史筛选：关键字（# / 流水线 / 执行人，大小写不敏感）+ 状态 + 流水线名；随服务端配置 histFilter 键按登录用户隔离同步（localStorage 为离线缓存） */
 let histFilter={kw:'',status:'',pipeline:''};
 try{ const _f=JSON.parse(localStorage.getItem('pip-histFilter')); if(_f && typeof _f==='object') histFilter={kw:String(_f.kw||''),status:String(_f.status||''),pipeline:String(_f.pipeline||'')}; }catch(e){}
 function saveHistFilter(){ try{ localStorage.setItem('pip-histFilter', JSON.stringify(histFilter)); }catch(e){} persistState(); }
-/* 流水线任务筛选状态（关键字 + 拥有者 + 当前用户收藏），与 histFilter 同样随服务端配置 plFilter 键同步（localStorage 为离线缓存）；
+/* 流水线任务筛选状态（关键字 + 拥有者 + 当前用户收藏），与 histFilter 同样随服务端配置 plFilter 键按登录用户隔离同步（localStorage 为离线缓存）；
    在此提前声明，供下方筛选控件初始化与 renderPipelines 取用（声明顺序早于事件绑定）；
    owner 兼容旧值：mine/all/builtin/unknown 特殊模式键与历史版本存下的具体用户名均照常生效 */
 let plFilter={kw:'',owner:'mine',favorite:'all'};
