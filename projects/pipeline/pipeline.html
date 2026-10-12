@@ -2311,7 +2311,7 @@ async function refreshEnvsFromServer(){
   }catch(e){ alert('刷新节点信息失败：'+String(e && e.message || e)); }
   finally{ if(b) b.disabled=false; }
 }
-$('envInfoRefresh').addEventListener('click', refreshEnvsFromServer);
+/* 点击绑定在脚本尾部统一初始化区进行（const $ 声明之前不得在顶层执行 $()，否则 TDZ 中断整个脚本） */
 /* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
 /* 分支获取方式：server=服务端 git ls-remote；browser=浏览器直连 /info/refs；jenkins-browser/jenkins-server=Jenkins 多分支任务子任务名（浏览器直连 / 服务端代连，按仓库各自选择）；旧值 jenkins 归为 jenkins-browser */
 function normalizeFetchMode(m){ return m==='browser'?'browser':(m==='jenkins-server'?'jenkins-server':((m==='jenkins'||m==='jenkins-browser')?'jenkins-browser':'server')); }
@@ -10463,6 +10463,7 @@ toggleRepoJenkinsJobInput();
 $('repoStrategyMode').addEventListener('change', toggleRepoStrategyInput);
 toggleRepoStrategyInput();
 $('gpuRefreshAll').addEventListener('click', refreshGpuAll);
+$('envInfoRefresh').addEventListener('click', refreshEnvsFromServer);
 $('gpuDetailClose').addEventListener('click', ()=>{ $('gpuDetail').style.display='none'; });
 $('gpuDetail').addEventListener('click', (e)=>{ if(e.target===$('gpuDetail')) $('gpuDetail').style.display='none'; });
 /* 环境清理：开关与脚本配置（初始值取 localStorage，服务端状态就绪后会被覆盖） */
