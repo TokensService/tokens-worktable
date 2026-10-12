@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+log() { printf '[profiling][%s] %s\n' "$(date '+%F %T')" "$*"; }
+PROFILING_VERBOSE="${PROFILING_VERBOSE:-true}"
+request_body_file="$(mktemp /tmp/profiling-response.XXXXXX)"
+request_header_file="$(mktemp /tmp/profiling-headers.XXXXXX)"
+cleanup_files() { rm -f "$request_body_file" "$request_header_file"; }
+trap cleanup_files EXIT
 # Start torch profiling through XDS and optionally generate self-test traffic.
 PROFILING_URL="${PROFILING_URL:-${SERVICE_API:-${XDS_URL:-}}}"
 if [[ -z "$PROFILING_URL" ]]; then
@@ -23,10 +29,29 @@ case "${PROFILING_SELF_TEST,,}" in true|false) ;; *) echo 'PROFILING_SELF_TEST m
 [[ "$PROFILING_MAX_REQUESTS" =~ ^[0-9]+$ ]] || { echo 'PROFILING_MAX_REQUESTS must be non-negative' >&2; exit 2; }
 [[ "${PROFILING_SELF_TEST,,}" == false || -n "$PROFILING_MODEL_ENDPOINT" ]] || { echo 'PROFILING_MODEL_ENDPOINT is required for self-test' >&2; exit 2; }
 base="${PROFILING_URL%/}"
-echo "starting profiling at ${base}"
-curl --fail-with-body --silent --show-error --get "${base}/OM/diagnose/get" \
-  --data-urlencode 'cmd=set_profiling' --data-urlencode "params=${PROFILING_PARAMS}" --data-urlencode "filter=${PROFILING_FILTER}"
-printf '\n'
+log "resolved endpoint=${base}"
+log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s"
+log "starting torch profiling: GET ${base}/OM/diagnose/get params=${PROFILING_PARAMS} filter=${PROFILING_FILTER:-<empty>}"
+set +e
+curl --silent --show-error --get "${base}/OM/diagnose/get" \
+  --dump-header "$request_header_file" --output "$request_body_file" \
+  --write-out '%{http_code} %{time_total}' \
+  --data-urlencode 'cmd=set_profiling' --data-urlencode "params=${PROFILING_PARAMS}" --data-urlencode "filter=${PROFILING_FILTER}" >"${request_body_file}.meta"
+curl_rc=$?
+set -e
+curl_meta="$(cat "${request_body_file}.meta" 2>/dev/null || true)"
+http_code="${curl_meta%% *}"; curl_time="${curl_meta#* }"
+log "profiling response: curl_rc=${curl_rc} http_code=${http_code:-000} time=${curl_time:-unknown}s"
+if [[ -s "$request_header_file" ]]; then log "response headers: $(tr '\r\n' ' ' < "$request_header_file" | head -c 1000)"; fi
+if [[ -s "$request_body_file" ]]; then log "response body: $(head -c 2000 "$request_body_file")"; else log "response body: <empty>"; fi
+if (( curl_rc != 0 )); then
+  log "profiling request failed; endpoint may be unreachable, closed the connection, or rejected the request"
+  exit "$curl_rc"
+fi
+if [[ "$http_code" != 2* && "$http_code" != 3* ]]; then
+  log "profiling request returned non-success HTTP status"
+  exit 1
+fi
 [[ "${PROFILING_SELF_TEST,,}" == true ]] || exit 0
 i=0
 while [[ "$PROFILING_MAX_REQUESTS" == 0 || "$i" -lt "$PROFILING_MAX_REQUESTS" ]]; do
@@ -38,7 +63,17 @@ content=f"请求编号 {nonce}。请详细解释菠萝和凤梨的区别，包�
 print(json.dumps({'model':model,'messages':[{'role':'user','content':content}],'max_tokens':10},ensure_ascii=False))
 PY
 )"
-  curl --fail-with-body --silent --show-error "${base}/chat/completions" -H 'Content-Type: application/json' -H "model_endpoint: ${PROFILING_MODEL_ENDPOINT}" -d "$body"
+  log "self-test request ${i}: POST ${base}/chat/completions nonce=${nonce}"
+  set +e
+  curl --silent --show-error "${base}/chat/completions" -H 'Content-Type: application/json' -H "model_endpoint: ${PROFILING_MODEL_ENDPOINT}" -d "$body" \
+    --dump-header "$request_header_file" --output "$request_body_file" \
+    --write-out '%{http_code} %{time_total}' >"${request_body_file}.meta"
+  curl_rc=$?
+  set -e
+  curl_meta="$(cat "${request_body_file}.meta" 2>/dev/null || true)"
+  http_code="${curl_meta%% *}"; curl_time="${curl_meta#* }"
+  log "self-test response ${i}: curl_rc=${curl_rc} http_code=${http_code:-000} time=${curl_time:-unknown}s body=$(head -c 1000 "$request_body_file")"
+  (( curl_rc == 0 )) || { log "self-test request failed"; exit "$curl_rc"; }
   printf '\n==========request finish %s==========\n' "$nonce"
   sleep "$PROFILING_INTERVAL_SECONDS"
 done
