@@ -60,7 +60,7 @@ test('serverPromCollectScript：收集脚本路径按 scriptsDir 解析，未配
 test('源码契约：安装默认常量与两个执行入口都经 resolvePipelineScriptsDir 解析', () => {
   assert.match(source, /const DEFAULT_PIPELINE_SCRIPTS_DIR = pathResolve\(PLUGIN_DIR, 'projects', 'pipeline', 'scripts'\)/)
   const execPlan = extractFunction('execPlan')
-  assert.match(execPlan, /const scriptsDir = resolvePipelineScriptsDir\(cfg, DEFAULT_PIPELINE_SCRIPTS_DIR\)/)
+  assert.match(execPlan, /const scriptsDir = resolvePipelineScriptsDir\(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR\)/)
   const promCollect = extractFunction('serverPromCollectScript')
   assert.match(promCollect, /resolvePipelineScriptsDir\(config, DEFAULT_PIPELINE_SCRIPTS_DIR\)/)
 })
