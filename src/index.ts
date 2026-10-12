@@ -1048,6 +1048,47 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
   return { config, history }
 }
 
+/** 「进行中」历史记录的判死决策（纯函数，供 sweepStaleRunningHistory 调用与测试抽取）：
+ *  本地编排运行的历史由页面启动即写 running；页面崩溃/断网且 pagehide 移交未送达时记录会
+ *  永久挂「进行中」（后缀休眠计划同样永不触发），需要把错误在运行历史状态中体现出来。
+ *  判死规则：记录 status='running' 且有 tag；无活体信号（liveTags=新鲜在场快照的同 tag 运行；
+ *  activePlanTags=活动计划的 tag 及拆分后缀的 tag+'-srv'）；且满足两者之一——
+ *  ① evidence 里有该 tag 的最近活体证据（在场 seenAt / 孤儿 orphanedAt）且距 now 超 orphanGraceMs；
+ *  ② 从未有任何证据，且记录自身 ts/startTs 距 now 超 neverSeenGraceMs（兜底时钟漂移留足余量）。
+ *  返回 deadTags 与应清理的休眠计划 id（dormantPlans 里 tag 已死的项——页面若其实仍在跑，
+ *  分界激活会重新全量登记，不误事）。 */
+function planStaleHistorySweep(
+  now: number,
+  history: any[],
+  liveTags: Set<string>,
+  activePlanTags: Set<string>,
+  evidence: Map<string, number>,
+  dormantPlans: any[],
+  orphanGraceMs = 3 * 60 * 1000,
+  neverSeenGraceMs = 30 * 60 * 1000,
+) {
+  const deadTags = new Set<string>()
+  for (const rec of history) {
+    if (!rec || typeof rec !== 'object' || Array.isArray(rec)) continue
+    if (rec.status !== 'running') continue
+    const tag = typeof rec.tag === 'string' ? rec.tag : ''
+    if (!tag) continue
+    if (liveTags.has(tag) || activePlanTags.has(tag)) continue
+    const ev = evidence.get(tag)
+    if (ev !== undefined) {
+      if (now - ev <= orphanGraceMs) continue
+    } else {
+      const ts = Number(rec.startTs) || Number(rec.ts) || 0
+      if (!ts || now - ts <= neverSeenGraceMs) continue
+    }
+    deadTags.add(tag)
+  }
+  const dropPlanIds = dormantPlans
+    .filter((p: any) => p && typeof p.tag === 'string' && deadTags.has(p.tag) && p.id !== undefined && p.id !== null)
+    .map((p: any) => String(p.id))
+  return { deadTags, dropPlanIds }
+}
+
 /** 自动刷新专用轻量接口：只在存储版本变化时读取正文，不下发流水线/环境/仓库等完整配置。 */
 async function handlePipelineHistoryRequest(req: any, res: any, deps: {
   statStore: () => Promise<{ ino?: number | bigint; size: number | bigint; mtimeMs: number } | null>;
@@ -5107,6 +5148,11 @@ export function apply(ctx: Context) {
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
     const pipeName = stripSuffixName(pl.pipelineName)
     const tag = (typeof pl.tag === 'string' && pl.tag) ? pl.tag : hhmm().replace(':', '') + '-' + randHex(5)
+    /* 混合编排历史拆分：页面登记的定时后缀计划带 histMode:'split'，后缀写入 tag+'-srv' 独立历史记录
+       （本地前缀记录由页面 finish 落定，不再被本条覆盖——本地执行与非本地执行各是一条记录）；
+       关页移交（buildUnloadHandoffPlan，不带 histMode）与旧版页面计划沿用原 tag 原地合并（接管语义）。 */
+    const splitHistory = pl && (pl as any).histMode === 'split'
+    const histTag = splitHistory ? tag + '-srv' : tag
     const baseSeq = Math.max(0, Number(pl.baseSeq) || 0)
     const isSuffixRun = typeof pl.archive === 'string' && !!pl.archive
     let archiveRoot = typeof runCfg.archiveDir === 'string' ? runCfg.archiveDir.trim().replace(/\/+$/, '') : ''
@@ -5143,6 +5189,28 @@ export function apply(ctx: Context) {
       const e: any = { stage, status: st, dur: durSec }
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
+    }
+    /* 页面起源的运行（计划自带 pl.tag：混合编排定时后缀 / 关页移交）：历史记录启动即写「进行中」、
+       逐阶段刷新、结束落终态——服务端执行期间（可能持续很久）任何浏览器都能看到真实进度，
+       不再出现「本地执行完成、非本地执行未完成，历史却只剩一条状态停滞的记录」。拆分模式下写
+       tag+'-srv' 独立记录；移交模式写原 tag 原地更新。写入失败不影响执行；终态由收尾统一落盘。 */
+    const liveHistory = typeof pl.tag === 'string' && !!pl.tag
+    const historyRecordFor = (st: string): any => ({
+      no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
+      status: st, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule',
+      logs: histLogs.slice(), ts: Date.now(), tag: histTag, archive: folder || null,
+      runId: pl.runId || null,
+      pipelineId: pl.pipelineId || null,
+      repoId: pl.repoId || (pl.repository && pl.repository.id) || null,
+      branch: pl.branch || '',
+      strategy: pl.strategy || '',
+      source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
+      envNodes: pipelineHistoryEnvNodes(pl.envs, runCtx.env),
+    })
+    const writeLiveHistory = async (st: string) => {
+      if (!liveHistory) return
+      try { await appendPipelineHistory(historyRecordFor(st)) }
+      catch (e) { console.warn('[pipeline] 运行历史进度写入失败（不影响执行）:', e) }
     }
     /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；旧定时计划没有该字段，
        回退为「配置了清理脚本即执行」（运行行预设勾选已改为仅浏览器本地，不再随配置下发）。 */
@@ -5192,6 +5260,8 @@ export function apply(ctx: Context) {
         dur: Number(src && src.dur) || 0,
       })
     }
+    /* 页面起源运行启动即写「进行中」历史（含本地前缀阶段快照）：执行期间他端历史列表可见在跑 */
+    await writeLiveHistory('running')
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
     if (!apiPresetMode && runCfg.cleanupScript && runCfg.cleanupScript.path) {
       const st0 = Date.now()
@@ -5315,6 +5385,7 @@ export function apply(ctx: Context) {
       pushHist(s.name, result.status, result.text, logFile, durSec)
       profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, script: result.scriptName, logFile })
       runtime?.updateStage(String(s && s.id || ''), { status: result.status, progress: 100, dur: durSec })
+      await writeLiveHistory('running')   // 逐阶段刷新「进行中」历史：服务端长任务执行期间记录不再停滞
     }
     for (const group of serverPipelineStageGroups(executionStages)) {
       if (runtime?.signal.aborted) { status = 'aborted'; break }
@@ -5397,18 +5468,7 @@ export function apply(ctx: Context) {
         } catch (e) { console.warn('[archive] 归档脚本执行失败（不影响执行）:', e) }
       }
     }
-    await appendPipelineHistory({
-      no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
-      status, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule', logs: histLogs, ts: Date.now(),
-      tag, archive: folder || null,
-      runId: pl.runId || null,
-      pipelineId: pl.pipelineId || null,
-      repoId: pl.repoId || (pl.repository && pl.repository.id) || null,
-      branch: pl.branch || '',
-      strategy: pl.strategy || '',
-      source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
-      envNodes: pipelineHistoryEnvNodes(pl.envs, runCtx.env),
-    })
+    await appendPipelineHistory(historyRecordFor(status))
     /* 向执行池回报终态（success/failed/aborted），供 finished 终态发布判定 success/failure/cancelled */
     return status
   }
@@ -5484,8 +5544,82 @@ export function apply(ctx: Context) {
   }
   const planTimer = setInterval(() => { planTick().catch(() => {}) }, 15000)
   if (planTimer && typeof planTimer.unref === 'function') planTimer.unref()
+
+  /* 卡死「进行中」历史清扫：本地编排（含混合编排本地前缀）的历史记录由页面启动即写 running，
+     页面崩溃/断网且 pagehide 移交未送达时记录永久挂「进行中」、后缀休眠计划（at=0）永不触发——
+     「本地执行没完成、没法提交服务端」的错误必须能在运行历史状态中体现（可见、可按状态筛选）。
+     判死口径（planStaleHistorySweep，纯函数供测试）：无任何活体信号（新鲜在场快照里的同 tag
+     运行 / 活动计划含拆分后缀派生的 tag+'-srv'），且最近活体证据（在场 seenAt / 孤儿 orphanedAt）
+     超宽限，或从未有信号且记录已很旧。判死后：记录标记 failed 并补一条系统日志（ts 刷新到当前，
+     防旧页面迟到的 stale running 上行把它盖回——页面若其实仍在跑，finish 终态 ts 更新会自愈）、
+     同时清掉该 tag 的休眠后缀计划（此后页面分界激活会重新全量登记，见 registerStageTimers 回退）。 */
+  async function sweepStaleRunningHistory() {
+    const now = Date.now()
+    const liveTags = new Set<string>()
+    const evidence = new Map<string, number>()
+    const noteEvidence = (tag: any, at: any) => {
+      if (typeof tag !== 'string' || !tag) return
+      const t = Number(at)
+      if (!Number.isFinite(t)) return
+      evidence.set(tag, Math.max(evidence.get(tag) || 0, t))
+    }
+    for (const presence of queuePresence.values()) {
+      const seenAt = Number(presence.seenAt) || 0
+      const fresh = now - seenAt <= QUEUE_PRESENCE_TTL
+      const entries: any[] = [...(presence.runs || []), ...(presence.queue || [])]
+      if (presence.running) entries.push(presence.running)
+      for (const e of entries) {
+        const tag = e && typeof e.tag === 'string' ? e.tag : ''
+        if (!tag) continue
+        if (fresh) liveTags.add(tag)
+        noteEvidence(tag, seenAt)
+      }
+    }
+    for (const orphan of queueOrphans.values()) {
+      noteEvidence((orphan as any).tag, (orphan as any).orphanedAt)
+    }
+    const plans = await readPlansFile()
+    const activePlanTags = new Set<string>()
+    const dormantPlans: any[] = []
+    for (const p of plans) {
+      const tag = p && typeof p.tag === 'string' ? p.tag : ''
+      if (!tag) continue
+      /* 活动计划（at>0）保护同 tag 记录；拆分后缀的历史记录 tag 为 计划tag+'-srv'，一并覆盖。
+         休眠计划（at=0，等本地前缀完成）不算活体信号：页面是否活着由在场快照证明。 */
+      if (Number(p.at) > 0) { activePlanTags.add(tag); activePlanTags.add(tag + '-srv') }
+      else dormantPlans.push(p)
+    }
+    const store = await readPipelineStore()
+    const history = Array.isArray(store.history) ? store.history : []
+    const { deadTags, dropPlanIds } = planStaleHistorySweep(now, history, liveTags, activePlanTags, evidence, dormantPlans)
+    if (!deadTags.size) return
+    await withStoreLock(async () => {
+      const j = await readPipelineStore()
+      const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
+      const hist = cleanPipelineHistory(Array.isArray(j.history) ? j.history : [])
+      let changed = false
+      for (const rec of hist) {
+        if (!rec || typeof rec !== 'object' || rec.status !== 'running') continue
+        if (!deadTags.has(String(rec.tag || ''))) continue
+        rec.status = 'failed'
+        rec.ts = now
+        const logs = Array.isArray(rec.logs) ? rec.logs : (rec.logs = [])
+        logs.push({ stage: '（系统）', status: 'failed', dur: 0, log: '本地执行中断：页面失联且未移交服务端，后续阶段未提交服务端执行' })
+        changed = true
+      }
+      if (changed) await writeJsonAtomic(PIPELINE_STORE, serializePipelineStore(cfg, hist.slice(0, 500)))
+    })
+    if (dropPlanIds.length) {
+      const drop = new Set(dropPlanIds)
+      const rest = (await readPlansFile()).filter((p: any) => !p || !drop.has(String(p.id)))
+      await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {})
+    }
+  }
+  const historySweepTimer = setInterval(() => { sweepStaleRunningHistory().catch(() => {}) }, 30000)
+  if (historySweepTimer && typeof historySweepTimer.unref === 'function') historySweepTimer.unref()
   ctx.effect(() => () => {
     clearInterval(planTimer)
+    clearInterval(historySweepTimer)
     return releasePipelineSupervisor(pipelineSupervisor)
   }, 'tokens-worktable: pipeline generation')
 
