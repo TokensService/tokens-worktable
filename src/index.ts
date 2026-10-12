@@ -978,7 +978,39 @@ function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedCon
 }
 /* ---------- 可信/内置流水线结束 ---------- */
 
-/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
+/** 历史阶段日志合并（按阶段名并集）：混合编排下页面 finish 写本地前缀、服务端 append 写定时后缀，
+ *  同 tag 两侧合并出完整阶段列表。同名阶段后者覆盖状态/耗时/日志路径，保留任一侧 local 标记。 */
+function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
+  const listA = Array.isArray(prevLogs) ? prevLogs : []
+  const listB = Array.isArray(nextLogs) ? nextLogs : []
+  const out: any[] = []
+  const byName = new Map<string, any>()
+  const put = (e: any) => {
+    if (!e || typeof e !== 'object') return
+    const name = String(e.stage || '')
+    if (!name) return
+    const prev = byName.get(name)
+    if (prev) {
+      const merged: any = { ...prev, ...e }
+      if (prev.local && e.local === undefined) merged.local = true
+      if (!merged.logFile && prev.logFile) merged.logFile = prev.logFile
+      if (merged.dur === undefined && prev.dur !== undefined) merged.dur = prev.dur
+      if (merged.log === undefined && prev.log !== undefined) merged.log = prev.log
+      byName.set(name, merged)
+      const idx = out.indexOf(prev)
+      if (idx >= 0) out[idx] = merged
+    } else {
+      byName.set(name, e)
+      out.push(e)
+    }
+  }
+  listA.forEach(put)
+  listB.forEach(put)
+  return out
+}
+
+/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。
+ *  同 tag 记录按阶段日志并集合并（不再整条客户端覆盖），避免混合编排任一侧冲掉另一侧阶段。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
   const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
   const diskCfg = diskConfig && typeof diskConfig === 'object' ? diskConfig : {}
@@ -988,9 +1020,29 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
   const afterClear = (record: any) => !clearedAt || (Number(record && record.ts) || 0) > clearedAt
   const acceptedClient = clientHistory.filter(afterClear)
   const keyOf = (record: any) => (record && record.tag) ? 'tag:' + record.tag : ((record && record.ts) ? 'ts:' + record.ts : 'no:' + (record && record.no) + ':' + (record && record.pipeline))
-  const seen = new Set(acceptedClient.map(keyOf))
-  const serverOnly = diskHistory.filter((record: any) => afterClear(record) && !seen.has(keyOf(record)))
-  const history = acceptedClient.concat(serverOnly)
+  const byKey = new Map<string, any>()
+  for (const record of acceptedClient) {
+    if (record && typeof record === 'object') byKey.set(keyOf(record), record)
+  }
+  for (const record of diskHistory) {
+    if (!afterClear(record) || !record || typeof record !== 'object') continue
+    const key = keyOf(record)
+    const clientRec = byKey.get(key)
+    if (clientRec) {
+      /* 同 tag 双边都有：顶层取 ts 较新一侧（终态/耗时以更晚写入为准），阶段日志按名并集 */
+      const later = (Number(record.ts) || 0) > (Number(clientRec.ts) || 0) ? record : clientRec
+      const earlier = later === record ? clientRec : record
+      byKey.set(key, {
+        ...earlier,
+        ...later,
+        no: Number(earlier.no) || Number(later.no) || 0,
+        logs: mergeStageLogsForHistory(earlier.logs, later.logs),
+      })
+    } else {
+      byKey.set(key, record)
+    }
+  }
+  const history = [...byKey.values()]
   history.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))
   if (history.length > 500) history.length = 500
   return { config, history }
@@ -2357,7 +2409,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       endedAt,
       stages: item.stages.map((stage) => {
         const node = item.nodes[String(stage.id ?? '')] || idleNode()
-        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur }
+        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}) }
       }),
     })
     pruneFinished(endedAt)
@@ -3952,6 +4004,25 @@ export function apply(ctx: Context) {
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
   const QUEUE_PRESENCE_TTL = 45 * 1000    // 页面心跳 10 秒一次，45 秒未见即过期（容忍几次心跳丢失）
+  /* 跨浏览器取消信箱：他端浏览器对自己署名（或 admin 可控）的在场条目点「取消/中止」时，
+     请求暂存这里，随 GET 下发给来源页；来源页下一轮 pullRemoteQueue 认领后本地 cancelQueue/abortRun。
+     条目仍在来源页执行引擎里（exec-stream / 本地调度），服务端无法直接杀，只能转达。
+     来源页 PUT 不再携带该条目（已取消/已结束）即出箱；超时/超上限惰性清理，防堆积。 */
+  interface QueueCancelRequest { clientId: string; itemId: string; by: string; at: number }
+  const queueCancelRequests = new Map<string, QueueCancelRequest>()
+  const QUEUE_CANCEL_TTL = 60 * 1000
+  const QUEUE_CANCEL_CAP = 50
+  function queueCancelKey(clientId: string, itemId: string): string { return clientId + '\n' + itemId }
+  function pruneQueueCancelRequests(now: number): void {
+    for (const [key, req] of queueCancelRequests) {
+      if (now - req.at > QUEUE_CANCEL_TTL) queueCancelRequests.delete(key)
+    }
+    while (queueCancelRequests.size > QUEUE_CANCEL_CAP) {
+      const oldest = [...queueCancelRequests.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+      if (!oldest) break
+      queueCancelRequests.delete(oldest[0])
+    }
+  }
   const QUEUE_STAGE_CAP = 100
   const QUEUE_SUB_CAP = 50
   const QUEUE_NODE_STATUSES = new Set(['idle', 'running', 'success', 'failed', 'skipped', 'aborted'])
@@ -3959,6 +4030,7 @@ export function apply(ctx: Context) {
     if (!stage || typeof stage !== 'object' || typeof stage.id !== 'string' || !stage.id) return null
     const out: any = { id: stage.id.slice(0, 128), name: String(stage.name ?? '').slice(0, 200) }
     if (stage.preset === true) out.preset = true
+    if (stage.local === true) out.local = true
     if (typeof stage.pkey === 'string' && stage.pkey) out.pkey = stage.pkey.slice(0, 64)
     if (stage.parallel === true) out.parallel = true
     if (stage.skip === true) out.skip = true
@@ -4033,6 +4105,7 @@ export function apply(ctx: Context) {
         stage: String(stage.stage ?? '').slice(0, 200),
         status: QUEUE_NODE_STATUSES.has(stage.status) ? stage.status : 'idle',
         dur: Number.isFinite(stageDur) ? Math.max(0, stageDur) : 0,
+        ...(stage.local === true ? { local: true } : {}),
       }
     }).filter((stage: any) => !!stage)
     return o
@@ -4147,6 +4220,22 @@ export function apply(ctx: Context) {
             json(res, result.ok ? 200 : 404, result)
             return
           }
+          if (req.method === 'POST' && body.action === 'cancel-presence') {
+            /* 他端在场条目（浏览器本地执行）的取消请求：入信箱等来源页认领。与执行池 cancel 同一口径，
+               权限在调用方按 canControlRun 拦截；这里只登记转达，不判定归属。 */
+            const clientId = typeof body.clientId === 'string' ? body.clientId.slice(0, 64) : ''
+            const itemId = typeof body.itemId === 'string' ? body.itemId.slice(0, 200) : ''
+            if (!clientId || !itemId) { json(res, 400, { error: 'missing clientId or itemId' }); return }
+            const now = Date.now()
+            pruneQueueCancelRequests(now)
+            queueCancelRequests.set(queueCancelKey(clientId, itemId), {
+              clientId, itemId,
+              by: typeof body.by === 'string' ? body.by.slice(0, 200) : '',
+              at: now,
+            })
+            json(res, 200, { ok: true, state: 'requested' })
+            return
+          }
           if (req.method === 'POST' && body.action === 'dismiss') {
             /* 孤儿条目人工下架（已确认/不再关注）：从登记簿移除并防抖落盘 */
             const ownerId = typeof body.ownerId === 'string' ? body.ownerId.slice(0, 64) : ''
@@ -4207,6 +4296,15 @@ export function apply(ctx: Context) {
             if (oldestKey) queuePresence.delete(oldestKey)
           }
           queuePresence.set(id, { id, label, schemaVersion, running, runs, queue, seenAt: now })
+          /* 取消信箱出箱：本客户端在场快照已不含该条目（来源页已本地取消/结束）→ 不再下发 */
+          {
+            const liveIds = new Set<string>()
+            for (const entry of (runs.length ? runs : (running ? [running] : []))) if (entry && entry.id) liveIds.add(entry.id)
+            for (const entry of queue) if (entry && entry.id) liveIds.add(entry.id)
+            for (const [key, req] of queueCancelRequests) {
+              if (req.clientId === id && !liveIds.has(req.itemId)) queueCancelRequests.delete(key)
+            }
+          }
           json(res, 200, { ok: true })
           return
         }
@@ -4249,6 +4347,7 @@ export function apply(ctx: Context) {
           const now = Date.now()
           sweepQueuePresence(now)                                      // TTL 过期：v3 记录先转孤儿簿再删
           if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()       // 顺带执行孤儿保留策略（超龄/超上限）
+          pruneQueueCancelRequests(now)                                // 取消信箱超时/超上限清理
           const clients: any[] = []
           for (const v of queuePresence.values()) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
@@ -4269,6 +4368,8 @@ export function apply(ctx: Context) {
             server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue, finished: serverFinished },
             /* 失联孤儿登记簿恒为数组（可空）：元素为清洗后条目全字段 + ownerId/ownerLabel/kind/orphanedAt */
             orphans: [...queueOrphans.values()],
+            /* 跨浏览器取消信箱：目标 clientId 的来源页认领后本地中止/取消；旧客户端无此键按空处理 */
+            cancelRequests: [...queueCancelRequests.values()].map(req => ({ clientId: req.clientId, itemId: req.itemId, by: req.by, at: req.at })),
           })
           return
         }
@@ -4925,11 +5026,25 @@ export function apply(ctx: Context) {
       const j = await readPipelineStore()
       const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
       const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
-      const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
-      cfg.buildNo = no
-      rec.no = no
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
-      history.unshift(rec)
+      /* 混合编排（本地前缀 + 定时后缀）：页面 finish 已按同 tag 写入本地阶段，这里按阶段名并集
+         合并补齐服务端后缀，运行历史始终只有一条完整记录；无同 tag（纯定时/独立运行）走新增。 */
+      const existingIdx = rec.tag ? history.findIndex((h: any) => h && h.tag === rec.tag) : -1
+      if (existingIdx >= 0) {
+        const prev = history[existingIdx] || {}
+        const prevNo = Number(prev.no) || 0
+        history[existingIdx] = {
+          ...prev,
+          ...rec,
+          no: prevNo || rec.no,
+          logs: mergeStageLogsForHistory(prev.logs, rec.logs),
+        }
+      } else {
+        const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
+        cfg.buildNo = no
+        rec.no = no
+        history.unshift(rec)
+      }
       /* 20MB 存储上限：只序列化一次配置和各候选记录，保留最新的可容纳前缀。 */
       const text = serializePipelineStore(cfg, history.slice(0, 500))
       await writeJsonAtomic(PIPELINE_STORE, text)
@@ -4995,7 +5110,48 @@ export function apply(ctx: Context) {
     const executionStages = apiPresetMode
       ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
-    runtime?.setStages(executionStages)
+    /* 混合编排本地前缀快照（页面 buildSuffixPlan 随计划带上）：写入同 tag 历史与运行快照的完整阶段
+       列表（本地前缀 + 服务端后缀），远端/他端详情能看到全部阶段；前缀带 local:true 作本地执行标识，
+       不进入下方执行循环。 */
+    const prefixDisplayStages: any[] = Array.isArray(pl.prefixStages)
+      ? pl.prefixStages.filter((p: any) => p && typeof p === 'object' && (p.id || p.name)).map((p: any) => ({
+          id: String(p.id || p.name || ''),
+          name: String(p.name || p.id || ''),
+          prefix: true,
+          local: true,
+        }))
+      : []
+    const prefixHistLogs: any[] = Array.isArray(pl.prefixStages)
+      ? pl.prefixStages.filter((p: any) => p && typeof p === 'object' && (p.id || p.name)).map((p: any) => ({
+          stage: String(p.name || p.id || ''),
+          status: String(p.status || 'success'),
+          dur: Number(p.dur) || 0,
+          local: true,
+          ...(p.logFile ? { logFile: String(p.logFile) } : {}),
+        }))
+      : []
+    for (const e of prefixHistLogs) histLogs.push(e)
+    for (const p of (Array.isArray(pl.prefixStages) ? pl.prefixStages : [])) {
+      if (!p || typeof p !== 'object' || !(p.id || p.name)) continue
+      profileStages.push({
+        id: String(p.id || p.name || ''),
+        name: String(p.name || p.id || ''),
+        status: String(p.status || 'success'),
+        durSec: Number(p.dur) || 0,
+        local: true,
+        ...(p.logFile ? { logFile: String(p.logFile) } : {}),
+      })
+    }
+    const displayStages = prefixDisplayStages.concat(executionStages)
+    runtime?.setStages(displayStages)
+    for (const p of prefixDisplayStages) {
+      const src = (Array.isArray(pl.prefixStages) ? pl.prefixStages : []).find((x: any) => x && String(x.id || x.name || '') === p.id)
+      runtime?.updateStage(p.id, {
+        status: String(src && src.status || 'success'),
+        progress: 100,
+        dur: Number(src && src.dur) || 0,
+      })
+    }
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
     if (!apiPresetMode && cfg.cleanupScript && cfg.cleanupScript.path) {
       const st0 = Date.now()

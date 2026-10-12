@@ -4,7 +4,7 @@ set -euo pipefail
 # ems-hugepages.sh 契约测试：mock kubectl/ssh/scp/sleep（stateful，per-node 大页文件），
 # 覆盖：① 全新配置（双节点写入 + kubelet 刷新 + 终验契约）
 #      ② 全部原已达标（跳过写入与重启，契约 RENEWED/RESTARTED 为空）
-#      ③ 大页迟迟不到位 → 超时失败
+#      ③ 大页迟迟不到位 → 停滞自愈全链（主动压实 + NUMA 缺口转移）均尝试后超时失败
 #      ④ kubelet 重启后 allocatable 仍不达标 → 失败
 #      ⑤ 单节点目标亦合法（无 ≥2 限制）
 #      ⑥ MemAvailable 不足 → 只读预检秒级失败并输出诊断（不启动写入器）。
@@ -96,10 +96,23 @@ case "\$cmd" in
     printf 'MemTotal:       32959684 kB\nMemAvailable:    %s kB\ntmpfs  1.6T  100G   1.5T   7%% /dev/shm\n' "\$avail" ;;
   *'ps aux --sort=-rss'*) echo 'root  1234 95.0 40.0 ... python train.py' ;;
   *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)" ;;
+  *drop_caches*)
+    # 停滞自愈①：主动压实（后台 nohup）——记录 marker 供断言
+    echo "compact-launched @\$ip" >>"\$FIXTURES/ssh.log" ;;
+  *buddyinfo*)
+    # 停滞自愈②：缺口转移——回读配额+各 NUMA 现状+buddyinfo 高阶空闲
+    echo "shift-probe @\$ip" >>"\$FIXTURES/ssh.log"
+    echo '/sys/devices/system/node/node0/hugepages/hugepages-2048kB 256000 100000'
+    echo '/sys/devices/system/node/node1/hugepages/hugepages-2048kB 256000 90000'
+    echo 'Node 0, zone Normal 1 1 1 1 1 1 1 1 1 9000 800'
+    echo 'Node 1, zone Normal 1 1 1 1 1 1 1 1 1 0 0' ;;
   *'nr_hugepages'*)
     # 后台写入器：置该节点大页为达标（除非 fixture 标记卡死）
     if [[ -e "\$FIXTURES/hp_stuck_\$ip" ]]; then echo 'launch: stuck writer' >>"\$FIXTURES/ssh.log"
     else echo 1024000 >"\$FIXTURES/hp_\$ip"; echo 'launch: nohup writer' >>"\$FIXTURES/ssh.log"; fi ;;
+  *ems_hp_quota*)
+    # 停滞自愈②：转移后重写配额文件（写入器自动应用新配额）
+    echo "quota-rewrite @\$ip" >>"\$FIXTURES/ssh.log" ;;
   *'systemctl restart kubelet'*) echo "kubelet-restarted @\$ip" >>"\$FIXTURES/ssh.log"; touch "\$FIXTURES/marker_kubelet_\$ip" ;;
   *) echo "unexpected ssh cmd: \$cmd" >&2; exit 1 ;;
 esac
@@ -161,14 +174,20 @@ grep -Fq 'EMS_KUBELET_RESTARTED=' <<<"$out"
 ! grep -Fq 'nr_hugepages' "$FIXTURES/ssh.log"      # 未触发写入器
 ! grep -Fq 'kubelet-restarted' "$FIXTURES/ssh.log"
 
-# ==== 场景③：大页卡死不涨 → 超时失败 ===============================
+# ==== 场景③：大页卡死不涨 → 压实+缺口转移均尝试 → 超时失败 =====================
 reset_state
 touch "$FIXTURES/hp_stuck_10.0.0.1"
 rc=0
-TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" >/dev/null 2>"$tmp/err3" || rc=$?
+TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script" >"$tmp/out3" 2>"$tmp/err3" || rc=$?
 [[ "$rc" == 1 ]] || { echo "scenario3 expected exit 1, got $rc" >&2; exit 1; }
 grep -Fq 'node-1 大页 900s 内未到位（0/1024000' "$tmp/err3"
-grep -Fq '请人工释放内存后重跑本 step' "$tmp/err3"
+grep -Fq '已自动尝试主动压实（drop_caches+compact_memory）与 NUMA 缺口转移仍不足' "$tmp/err3"
+grep -Fq '碎片极度顽固场景请人工释放内存或重启节点后重跑本 step' "$tmp/err3"
+grep -Fq '写入停滞（6 轮无增长），后台触发 drop_caches + compact_memory 主动压实' "$tmp/out3"
+grep -Fq '缺口转移到高阶空闲最富余 NUMA（重写配额，写入器自动应用）' "$tmp/out3"
+grep -Fq 'compact-launched @10.0.0.1' "$FIXTURES/ssh.log"
+grep -Fq 'shift-probe @10.0.0.1' "$FIXTURES/ssh.log"
+grep -Fq 'quota-rewrite @10.0.0.1' "$FIXTURES/ssh.log"
 
 # ==== 场景④：allocatable 刷不出来 → 失败（mock 忽略 marker，恒不达标）====
 reset_state
