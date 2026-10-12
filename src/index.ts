@@ -978,7 +978,39 @@ function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedCon
 }
 /* ---------- 可信/内置流水线结束 ---------- */
 
-/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。 */
+/** 历史阶段日志合并（按阶段名并集）：混合编排下页面 finish 写本地前缀、服务端 append 写定时后缀，
+ *  同 tag 两侧合并出完整阶段列表。同名阶段后者覆盖状态/耗时/日志路径，保留任一侧 local 标记。 */
+function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
+  const listA = Array.isArray(prevLogs) ? prevLogs : []
+  const listB = Array.isArray(nextLogs) ? nextLogs : []
+  const out: any[] = []
+  const byName = new Map<string, any>()
+  const put = (e: any) => {
+    if (!e || typeof e !== 'object') return
+    const name = String(e.stage || '')
+    if (!name) return
+    const prev = byName.get(name)
+    if (prev) {
+      const merged: any = { ...prev, ...e }
+      if (prev.local && e.local === undefined) merged.local = true
+      if (!merged.logFile && prev.logFile) merged.logFile = prev.logFile
+      if (merged.dur === undefined && prev.dur !== undefined) merged.dur = prev.dur
+      if (merged.log === undefined && prev.log !== undefined) merged.log = prev.log
+      byName.set(name, merged)
+      const idx = out.indexOf(prev)
+      if (idx >= 0) out[idx] = merged
+    } else {
+      byName.set(name, e)
+      out.push(e)
+    }
+  }
+  listA.forEach(put)
+  listB.forEach(put)
+  return out
+}
+
+/** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。
+ *  同 tag 记录按阶段日志并集合并（不再整条客户端覆盖），避免混合编排任一侧冲掉另一侧阶段。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
   const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
   const diskCfg = diskConfig && typeof diskConfig === 'object' ? diskConfig : {}
@@ -988,9 +1020,29 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
   const afterClear = (record: any) => !clearedAt || (Number(record && record.ts) || 0) > clearedAt
   const acceptedClient = clientHistory.filter(afterClear)
   const keyOf = (record: any) => (record && record.tag) ? 'tag:' + record.tag : ((record && record.ts) ? 'ts:' + record.ts : 'no:' + (record && record.no) + ':' + (record && record.pipeline))
-  const seen = new Set(acceptedClient.map(keyOf))
-  const serverOnly = diskHistory.filter((record: any) => afterClear(record) && !seen.has(keyOf(record)))
-  const history = acceptedClient.concat(serverOnly)
+  const byKey = new Map<string, any>()
+  for (const record of acceptedClient) {
+    if (record && typeof record === 'object') byKey.set(keyOf(record), record)
+  }
+  for (const record of diskHistory) {
+    if (!afterClear(record) || !record || typeof record !== 'object') continue
+    const key = keyOf(record)
+    const clientRec = byKey.get(key)
+    if (clientRec) {
+      /* 同 tag 双边都有：顶层取 ts 较新一侧（终态/耗时以更晚写入为准），阶段日志按名并集 */
+      const later = (Number(record.ts) || 0) > (Number(clientRec.ts) || 0) ? record : clientRec
+      const earlier = later === record ? clientRec : record
+      byKey.set(key, {
+        ...earlier,
+        ...later,
+        no: Number(earlier.no) || Number(later.no) || 0,
+        logs: mergeStageLogsForHistory(earlier.logs, later.logs),
+      })
+    } else {
+      byKey.set(key, record)
+    }
+  }
+  const history = [...byKey.values()]
   history.sort((a: any, b: any) => (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0))
   if (history.length > 500) history.length = 500
   return { config, history }
@@ -1132,6 +1184,41 @@ function serverPromCollectScript(config: any): any {
   const name = config && config.prom && typeof config.prom.collectScript === 'string' ? config.prom.collectScript.trim() : ''
   if (!name) return null
   return { name, path: pathResolve(resolvePipelineScriptsDir(config, DEFAULT_PIPELINE_SCRIPTS_DIR), name), params: [], values: {} }
+}
+
+/**
+ * 运行期设置快照：一次运行在提交/登记计划时深拷贝全部相关设置，execPlan 只读快照——
+ * 下一次运行前对设置的修改（脚本目录 / Jenkins / EvalTokens / 普罗 / 归档 / 预设脚本）
+ * 不影响已经排队或开跑的流水线。旧计划无 settings 字段时回落到执行开始时的配置（兼容）。
+ * scriptsDir 存配置原值（可空），使用时经 resolvePipelineScriptsDir 兜底安装默认路径。
+ */
+function snapshotPipelineRunSettings(config: any): any {
+  const cfg = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
+  const clone = (value: any) => {
+    if (value == null) return value
+    try { return JSON.parse(JSON.stringify(value)) } catch { return null }
+  }
+  const archiveScriptName = (typeof cfg.archiveScriptName === 'string' && cfg.archiveScriptName.trim())
+    || (typeof cfg.archiveScript === 'string' ? cfg.archiveScript.trim() : '')
+  return {
+    scriptsDir: typeof cfg.scriptsDir === 'string' ? cfg.scriptsDir.trim() : '',
+    jenkins: clone(cfg.jenkins) || {},
+    evaltok: clone(cfg.evaltok) || {},
+    prom: clone(cfg.prom) || {},
+    archiveDir: typeof cfg.archiveDir === 'string' ? cfg.archiveDir : '',
+    archiveScriptName,
+    cleanupScript: clone(cfg.cleanupScript) || null,
+    checkScript: clone(cfg.checkScript) || null,
+    profilingScript: clone(cfg.profilingScript) || null,
+  }
+}
+
+/** 计划上的设置快照优先；缺字段时用当前配置补齐（旧计划 / 手写计划）。 */
+function resolvePlanRunSettings(pl: any, liveCfg: any): any {
+  const snap = pl && pl.settings && typeof pl.settings === 'object' && !Array.isArray(pl.settings) ? pl.settings : null
+  if (!snap) return snapshotPipelineRunSettings(liveCfg)
+  const base = snapshotPipelineRunSettings(liveCfg)
+  return { ...base, ...snap }
 }
 
 function materializeServerPipelineStages(stages: any[], presets: string[], config: any): any[] {
@@ -2078,6 +2165,8 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
       by,
       source: input.source === 'manual' ? 'manual' : 'api',
       createdAt: Date.now(),
+      /* 运行期设置副本：排队/执行只读本快照，下一次运行前的设置修改不影响本计划 */
+      settings: snapshotPipelineRunSettings(config),
     },
   }
 }
@@ -2357,7 +2446,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       endedAt,
       stages: item.stages.map((stage) => {
         const node = item.nodes[String(stage.id ?? '')] || idleNode()
-        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur }
+        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}) }
       }),
     })
     pruneFinished(endedAt)
@@ -3952,6 +4041,25 @@ export function apply(ctx: Context) {
   const queuePresence = new Map<string, QueuePresence>()
   const QUEUE_PRESENCE_CAP = 100          // 在场客户端上限：超出时淘汰最久未上报的，防内存无限增长
   const QUEUE_PRESENCE_TTL = 45 * 1000    // 页面心跳 10 秒一次，45 秒未见即过期（容忍几次心跳丢失）
+  /* 跨浏览器取消信箱：他端浏览器对自己署名（或 admin 可控）的在场条目点「取消/中止」时，
+     请求暂存这里，随 GET 下发给来源页；来源页下一轮 pullRemoteQueue 认领后本地 cancelQueue/abortRun。
+     条目仍在来源页执行引擎里（exec-stream / 本地调度），服务端无法直接杀，只能转达。
+     来源页 PUT 不再携带该条目（已取消/已结束）即出箱；超时/超上限惰性清理，防堆积。 */
+  interface QueueCancelRequest { clientId: string; itemId: string; by: string; at: number }
+  const queueCancelRequests = new Map<string, QueueCancelRequest>()
+  const QUEUE_CANCEL_TTL = 60 * 1000
+  const QUEUE_CANCEL_CAP = 50
+  function queueCancelKey(clientId: string, itemId: string): string { return clientId + '\n' + itemId }
+  function pruneQueueCancelRequests(now: number): void {
+    for (const [key, req] of queueCancelRequests) {
+      if (now - req.at > QUEUE_CANCEL_TTL) queueCancelRequests.delete(key)
+    }
+    while (queueCancelRequests.size > QUEUE_CANCEL_CAP) {
+      const oldest = [...queueCancelRequests.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+      if (!oldest) break
+      queueCancelRequests.delete(oldest[0])
+    }
+  }
   const QUEUE_STAGE_CAP = 100
   const QUEUE_SUB_CAP = 50
   const QUEUE_NODE_STATUSES = new Set(['idle', 'running', 'success', 'failed', 'skipped', 'aborted'])
@@ -3959,6 +4067,7 @@ export function apply(ctx: Context) {
     if (!stage || typeof stage !== 'object' || typeof stage.id !== 'string' || !stage.id) return null
     const out: any = { id: stage.id.slice(0, 128), name: String(stage.name ?? '').slice(0, 200) }
     if (stage.preset === true) out.preset = true
+    if (stage.local === true) out.local = true
     if (typeof stage.pkey === 'string' && stage.pkey) out.pkey = stage.pkey.slice(0, 64)
     if (stage.parallel === true) out.parallel = true
     if (stage.skip === true) out.skip = true
@@ -4033,6 +4142,7 @@ export function apply(ctx: Context) {
         stage: String(stage.stage ?? '').slice(0, 200),
         status: QUEUE_NODE_STATUSES.has(stage.status) ? stage.status : 'idle',
         dur: Number.isFinite(stageDur) ? Math.max(0, stageDur) : 0,
+        ...(stage.local === true ? { local: true } : {}),
       }
     }).filter((stage: any) => !!stage)
     return o
@@ -4147,6 +4257,22 @@ export function apply(ctx: Context) {
             json(res, result.ok ? 200 : 404, result)
             return
           }
+          if (req.method === 'POST' && body.action === 'cancel-presence') {
+            /* 他端在场条目（浏览器本地执行）的取消请求：入信箱等来源页认领。与执行池 cancel 同一口径，
+               权限在调用方按 canControlRun 拦截；这里只登记转达，不判定归属。 */
+            const clientId = typeof body.clientId === 'string' ? body.clientId.slice(0, 64) : ''
+            const itemId = typeof body.itemId === 'string' ? body.itemId.slice(0, 200) : ''
+            if (!clientId || !itemId) { json(res, 400, { error: 'missing clientId or itemId' }); return }
+            const now = Date.now()
+            pruneQueueCancelRequests(now)
+            queueCancelRequests.set(queueCancelKey(clientId, itemId), {
+              clientId, itemId,
+              by: typeof body.by === 'string' ? body.by.slice(0, 200) : '',
+              at: now,
+            })
+            json(res, 200, { ok: true, state: 'requested' })
+            return
+          }
           if (req.method === 'POST' && body.action === 'dismiss') {
             /* 孤儿条目人工下架（已确认/不再关注）：从登记簿移除并防抖落盘 */
             const ownerId = typeof body.ownerId === 'string' ? body.ownerId.slice(0, 64) : ''
@@ -4207,6 +4333,15 @@ export function apply(ctx: Context) {
             if (oldestKey) queuePresence.delete(oldestKey)
           }
           queuePresence.set(id, { id, label, schemaVersion, running, runs, queue, seenAt: now })
+          /* 取消信箱出箱：本客户端在场快照已不含该条目（来源页已本地取消/结束）→ 不再下发 */
+          {
+            const liveIds = new Set<string>()
+            for (const entry of (runs.length ? runs : (running ? [running] : []))) if (entry && entry.id) liveIds.add(entry.id)
+            for (const entry of queue) if (entry && entry.id) liveIds.add(entry.id)
+            for (const [key, req] of queueCancelRequests) {
+              if (req.clientId === id && !liveIds.has(req.itemId)) queueCancelRequests.delete(key)
+            }
+          }
           json(res, 200, { ok: true })
           return
         }
@@ -4249,6 +4384,7 @@ export function apply(ctx: Context) {
           const now = Date.now()
           sweepQueuePresence(now)                                      // TTL 过期：v3 记录先转孤儿簿再删
           if (pruneQueueOrphans(now)) scheduleQueueOrphanFlush()       // 顺带执行孤儿保留策略（超龄/超上限）
+          pruneQueueCancelRequests(now)                                // 取消信箱超时/超上限清理
           const clients: any[] = []
           for (const v of queuePresence.values()) {
             if (!v.running && !v.runs.length && !v.queue.length) continue   // 跳过无活动的空闲客户端，避免刷进只读列表
@@ -4269,6 +4405,8 @@ export function apply(ctx: Context) {
             server: { id: 'server', label: '服务端', schemaVersion: 3, runs: serverRuns, queue: serverQueue, finished: serverFinished },
             /* 失联孤儿登记簿恒为数组（可空）：元素为清洗后条目全字段 + ownerId/ownerLabel/kind/orphanedAt */
             orphans: [...queueOrphans.values()],
+            /* 跨浏览器取消信箱：目标 clientId 的来源页认领后本地中止/取消；旧客户端无此键按空处理 */
+            cancelRequests: [...queueCancelRequests.values()].map(req => ({ clientId: req.clientId, itemId: req.itemId, by: req.by, at: req.at })),
           })
           return
         }
@@ -4926,12 +5064,20 @@ export function apply(ctx: Context) {
       const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
       const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
-      /* 页面启动时已写入「进行中」记录（beginRunHistory，同 tag）：原地更新为终态，避免同一次运行
-         在历史里留下「进行中 + 已完成」两条；无同 tag 记录时才新增（定时/服务端独立运行路径）。 */
+      /* 同 tag 原地更新为终态（不新增第二条）：页面启动时已写入「进行中」记录（beginRunHistory），
+         关页移交后这里写终态不留「进行中 + 已完成」两条；混合编排（本地前缀 + 定时后缀）下页面
+         finish 已按同 tag 写入本地阶段，按阶段名并集合并补齐服务端后缀。无同 tag（纯定时/独立
+         运行路径）时才走新增。 */
       const existingIdx = rec.tag ? history.findIndex((h: any) => h && h.tag === rec.tag) : -1
       if (existingIdx >= 0) {
-        const prevNo = Number(history[existingIdx] && history[existingIdx].no) || 0
-        history[existingIdx] = { ...rec, no: prevNo || rec.no }
+        const prev = history[existingIdx] || {}
+        const prevNo = Number(prev.no) || 0
+        history[existingIdx] = {
+          ...prev,
+          ...rec,
+          no: prevNo || rec.no,
+          logs: mergeStageLogsForHistory(prev.logs, rec.logs),
+        }
       } else {
         const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
         cfg.buildNo = no
@@ -4954,7 +5100,10 @@ export function apply(ctx: Context) {
     const t0 = Date.now()
     const store = await readPipelineStore()
     const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
-    const scriptsDir = resolvePipelineScriptsDir(cfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 设置文件未配置 scriptsDir 时兜底到插件安装后的 scripts 路径
+    /* 运行期设置副本：计划自带 settings 时按提交/登记时快照执行，下一次运行前的设置修改不影响本运行；
+       旧计划无该字段时取执行开始时的配置快照（与旧行为一致，但同样定格在启动瞬间）。 */
+    const runCfg = resolvePlanRunSettings(pl, cfg)
+    const scriptsDir = resolvePipelineScriptsDir(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 快照 scriptsDir 已解析，缺省时兜底安装路径
     // 归档上下文（与页面约定一致）：
     //   阶段定时后缀沿用页面传入的 pl.archive/pl.tag/baseSeq——回显写入本地前缀同一归档文件夹、编号连贯；
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
@@ -4962,7 +5111,7 @@ export function apply(ctx: Context) {
     const tag = (typeof pl.tag === 'string' && pl.tag) ? pl.tag : hhmm().replace(':', '') + '-' + randHex(5)
     const baseSeq = Math.max(0, Number(pl.baseSeq) || 0)
     const isSuffixRun = typeof pl.archive === 'string' && !!pl.archive
-    let archiveRoot = typeof cfg.archiveDir === 'string' ? cfg.archiveDir.trim().replace(/\/+$/, '') : ''
+    let archiveRoot = typeof runCfg.archiveDir === 'string' ? runCfg.archiveDir.trim().replace(/\/+$/, '') : ''
     if (!archiveRoot && scriptsDir && scriptsDir.charAt(0) === '/') {
       const dir = scriptsDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '')
       archiveRoot = (dir || '/') + '/runs'
@@ -5001,19 +5150,60 @@ export function apply(ctx: Context) {
        回退为「配置了清理脚本即执行」（运行行预设勾选已改为仅浏览器本地，不再随配置下发）。 */
     const apiPresetMode = Array.isArray(pl.presets)
     const executionStages = apiPresetMode
-      ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, cfg)
+      ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, runCfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
-    runtime?.setStages(executionStages)
+    /* 混合编排本地前缀快照（页面 buildSuffixPlan 随计划带上）：写入同 tag 历史与运行快照的完整阶段
+       列表（本地前缀 + 服务端后缀），远端/他端详情能看到全部阶段；前缀带 local:true 作本地执行标识，
+       不进入下方执行循环。 */
+    const prefixDisplayStages: any[] = Array.isArray(pl.prefixStages)
+      ? pl.prefixStages.filter((p: any) => p && typeof p === 'object' && (p.id || p.name)).map((p: any) => ({
+          id: String(p.id || p.name || ''),
+          name: String(p.name || p.id || ''),
+          prefix: true,
+          local: true,
+        }))
+      : []
+    const prefixHistLogs: any[] = Array.isArray(pl.prefixStages)
+      ? pl.prefixStages.filter((p: any) => p && typeof p === 'object' && (p.id || p.name)).map((p: any) => ({
+          stage: String(p.name || p.id || ''),
+          status: String(p.status || 'success'),
+          dur: Number(p.dur) || 0,
+          local: true,
+          ...(p.logFile ? { logFile: String(p.logFile) } : {}),
+        }))
+      : []
+    for (const e of prefixHistLogs) histLogs.push(e)
+    for (const p of (Array.isArray(pl.prefixStages) ? pl.prefixStages : [])) {
+      if (!p || typeof p !== 'object' || !(p.id || p.name)) continue
+      profileStages.push({
+        id: String(p.id || p.name || ''),
+        name: String(p.name || p.id || ''),
+        status: String(p.status || 'success'),
+        durSec: Number(p.dur) || 0,
+        local: true,
+        ...(p.logFile ? { logFile: String(p.logFile) } : {}),
+      })
+    }
+    const displayStages = prefixDisplayStages.concat(executionStages)
+    runtime?.setStages(displayStages)
+    for (const p of prefixDisplayStages) {
+      const src = (Array.isArray(pl.prefixStages) ? pl.prefixStages : []).find((x: any) => x && String(x.id || x.name || '') === p.id)
+      runtime?.updateStage(p.id, {
+        status: String(src && src.status || 'success'),
+        progress: 100,
+        dur: Number(src && src.dur) || 0,
+      })
+    }
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
-    if (!apiPresetMode && cfg.cleanupScript && cfg.cleanupScript.path) {
+    if (!apiPresetMode && runCfg.cleanupScript && runCfg.cleanupScript.path) {
       const st0 = Date.now()
       const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
-      const r = await runStageScript(cfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
-      const text = stageLogText(cfg.cleanupScript.name, r)
+      const r = await runStageScript(runCfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
+      const text = stageLogText(runCfg.cleanupScript.name, r)
       const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text, logFile })
       pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
-      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: cfg.cleanupScript.name || null, logFile })
+      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: runCfg.cleanupScript.name || null, logFile })
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
       const startedAt = Date.now()
@@ -5027,7 +5217,7 @@ export function apply(ctx: Context) {
       let shouldStop = false
       if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
-        const r = await executeServerHttpStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)
@@ -5036,7 +5226,7 @@ export function apply(ctx: Context) {
         entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
         if (r.code !== 0 && !r.aborted) shouldStop = true
       } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, cfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
+        const r = await executeServerEvaltokensStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
           Object.assign(varsOut, parseStageVars(r.stdout))
           Object.assign(localPool, varsOut)
@@ -5093,7 +5283,7 @@ export function apply(ctx: Context) {
        每批只采集最长的合格任务，采集只补充其回显，绝不改写已确定的任务状态/阻断权。 */
     const collectStageProm = async (result: ServerStageResult) => {
       const s = result.stage
-      const collectScript = serverPromCollectScript(cfg)
+      const collectScript = serverPromCollectScript(runCfg)
       const seq = serverStageSeq(executionStages, result.index, baseSeq)
       const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
       const addNote = (note: string) => { result.promNote = note; result.text += '\n' + note }
@@ -5102,7 +5292,7 @@ export function apply(ctx: Context) {
         return
       }
       try {
-        const penv = buildServerTaskPromEnv(runCtx, cfg, result.varsPool, result.startedAt, result.endedAt, promDir)
+        const penv = buildServerTaskPromEnv(runCtx, runCfg, result.varsPool, result.startedAt, result.endedAt, promDir)
         const promLog = promDir + '/collect.log'
         const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, 0, penv, promLog)   // 不设超时；完整输出流式落 collect.log，且不复用已结算组的 fail-fast signal
         if (!pr.logFile) try {
@@ -5196,8 +5386,8 @@ export function apply(ctx: Context) {
         await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), 'utf8')
       } catch (e) { console.warn('[archive] 定时运行 profiling 写入失败（不影响执行）:', e) }
       // 归档脚本（可选）：与页面一致，写完日志/profiling 后执行（如 collect_logs.sh），收集额外日志到归档目录；失败不影响执行
-      const archiveScriptName = typeof cfg.archiveScript === 'string' ? cfg.archiveScript.trim() : ''
-      if (archiveScriptName && archiveRoot && typeof cfg.archiveDir === 'string' && cfg.archiveDir.trim()) {
+      const archiveScriptName = typeof runCfg.archiveScriptName === 'string' ? runCfg.archiveScriptName.trim() : ''
+      if (archiveScriptName && archiveRoot && typeof runCfg.archiveDir === 'string' && runCfg.archiveDir.trim()) {
         try {
           await new Promise<void>((resolve) => {
             execFile('bash', [pathResolve(scriptsDir, archiveScriptName)], {

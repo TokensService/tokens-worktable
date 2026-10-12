@@ -96,7 +96,7 @@ test('beginRunHistory：同 tag 幂等，不重复占号', () => {
 
 function finishCtx() {
   const { ctx, calls } = baseCtx();
-  load(ctx, ['historyEnvNodesOf', 'beginRunHistory', 'finish']);
+  load(ctx, ['mergeStageLogsForHistory', 'historyEnvNodesOf', 'beginRunHistory', 'finish']);
   return { ctx, calls };
 }
 
