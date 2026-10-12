@@ -5146,7 +5146,8 @@ export function apply(ctx: Context) {
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
     }
-    /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；旧定时计划没有该字段，
+    /* API 运行携带 presets 数组，按流水线里的预设占位位置展开；页面生成的定时后缀 / 关页移交 /
+       定时页计划同样携带显式 presets（含空数组 = 不执行预设任务）。只有更旧的计划没有该字段，
        回退为「配置了清理脚本即执行」（运行行预设勾选已改为仅浏览器本地，不再随配置下发）。 */
     const apiPresetMode = Array.isArray(pl.presets)
     const executionStages = apiPresetMode
