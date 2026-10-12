@@ -650,7 +650,7 @@ function makeQueueContext() {
   const countCell = new FakeNode('td');
   countCell.getAttribute = name => name === 'data-plqueue' ? 'p1' : null;
   const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span') };
-  const calls = { cancel: [], abort: [], cancelServer: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
+  const calls = { cancel: [], abort: [], cancelServer: [], cancelRemote: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
     document: {
       createElement: tag => new FakeNode(tag),
@@ -665,6 +665,7 @@ function makeQueueContext() {
     cancelQueue: id => calls.cancel.push(id),
     abortRun: rc => calls.abort.push(rc),
     cancelServerRun: id => calls.cancelServer.push(id),
+    cancelRemotePresence: (clientId, itemId) => calls.cancelRemote.push({ clientId, itemId }),
     canControlRun: () => true,   // 非 admin 控制权守卫：默认放行，使既有「按钮存在」断言成立；专门用例在下文覆盖
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
@@ -816,12 +817,110 @@ test('renderQueue：服务端运行与排队任务在任一浏览器显示中止
   context.renderQueue();
 
   const buttons = list.querySelectorAll('[data-qserver-cancel]');
-  assert.equal(buttons.length, 2, '只给服务端权威任务提供跨浏览器取消入口');
+  assert.equal(buttons.length, 2, '服务端权威任务用 data-qserver-cancel');
   assert.match(list.children[1].innerHTML, />取消<\/button>/);
   assert.match(list.children[2].innerHTML, />中止<\/button>/);
   buttons.forEach(button => button.handlers.click());
   assert.deepEqual(calls.cancelServer, ['q-server', 'r-server']);
   assert.doesNotMatch(list.children[3].innerHTML, /data-qserver-cancel/);
+});
+
+test('renderQueue：他端在场条目用取消信箱按钮（data-qremote-cancel），与服务端条目区分', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12',
+    runs: [{ id: 'r-remote', by: 'tester', pipelineName: '他端运行', source: 'manual', startedAt: 1, stages: [{ id: 's1', name: '构建' }] }],
+    queue: [{ id: 'q-remote', by: 'tester', pipelineName: '他端排队', source: 'manual', queuedAt: 2, stages: [{ id: 's2', name: '部署' }] }],
+  });
+  context.renderQueue();
+
+  const remoteButtons = list.querySelectorAll('[data-qremote-cancel]');
+  assert.equal(remoteButtons.length, 2, '他端可控条目显示跨浏览器取消入口');
+  assert.deepEqual(remoteButtons.map(b => b.getAttribute('data-qremote-cancel-id')), ['q-remote', 'r-remote']);
+  assert.deepEqual(remoteButtons.map(b => b.getAttribute('data-qremote-cancel')), ['c2', 'c2']);
+  remoteButtons.forEach(button => button.handlers.click());
+  assert.deepEqual(calls.cancelRemote, [
+    { clientId: 'c2', itemId: 'q-remote' },
+    { clientId: 'c2', itemId: 'r-remote' },
+  ]);
+  assert.equal(calls.cancelServer.length, 0, '他端条目不走服务端执行池取消');
+});
+
+test('renderQueue：非 admin 不能终止他人他端条目，但可终止自己提交的（跨浏览器）', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.canControlRun = by => by === 'tester';
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12',
+    runs: [
+      { id: 'r-mine', by: 'tester', pipelineName: '我的运行', stages: [{ id: 's1', name: '构建' }] },
+      { id: 'r-other', by: 'bob', pipelineName: '他人运行', stages: [{ id: 's2', name: '部署' }] },
+    ],
+    queue: [
+      { id: 'q-mine', by: 'tester', pipelineName: '我的排队', stages: [{ id: 's3', name: '测试' }] },
+      { id: 'q-other', by: 'alice', pipelineName: '他人排队', stages: [{ id: 's4', name: '发布' }] },
+    ],
+  });
+  context.renderQueue();
+
+  const remoteButtons = list.querySelectorAll('[data-qremote-cancel]');
+  assert.deepEqual(remoteButtons.map(b => b.getAttribute('data-qremote-cancel-id')), ['q-mine', 'r-mine']);
+  remoteButtons.forEach(button => button.handlers.click());
+  assert.deepEqual(calls.cancelRemote, [
+    { clientId: 'c2', itemId: 'q-mine' },
+    { clientId: 'c2', itemId: 'r-mine' },
+  ]);
+  /* 展示顺序：分隔行 + 队列倒序（q-other, q-mine）+ 运行倒序（r-other, r-mine） */
+  assert.doesNotMatch(list.children[1].innerHTML, /data-qremote-cancel/);   // 他人排队
+  assert.doesNotMatch(list.children[3].innerHTML, /data-qremote-cancel/);   // 他人运行
+});
+
+test('cancelRemotePresence：POST 取消信箱并刷新队列', async () => {
+  const requests = [];
+  let pulls = 0;
+  const context = {
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true, state: 'requested' }) };
+    },
+    pullRemoteQueue: async () => { pulls += 1; },
+    flashRunTip: () => {},
+    currentUsername: 'tester',
+    alert: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('async function cancelRemotePresence', 'function applyPresenceCancelRequests'), context);
+
+  const result = await context.cancelRemotePresence('c2', 'q-remote');
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: true, state: 'requested' });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/worktable/pipeline/queue');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[0].options.body), { action: 'cancel-presence', clientId: 'c2', itemId: 'q-remote', by: 'tester' });
+  assert.equal(pulls, 1);
+});
+
+test('applyPresenceCancelRequests：只认领本页条目，排队取消 / 在跑中止', () => {
+  const calls = { cancel: [], abort: [], render: 0 };
+  const context = {
+    QCLIENT_ID: 'self',
+    queue: [{ id: 'q-mine' }, { id: 'q-other-owner' }],
+    activeRuns: [{ id: 'r-mine' }],
+    cancelQueue: id => calls.cancel.push(id),
+    abortRun: rc => calls.abort.push(rc),
+    renderQueue: () => { calls.render += 1; },
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('function applyPresenceCancelRequests', '/* 服务端在跑阶段的日志尾窗'), context);
+
+  context.applyPresenceCancelRequests([
+    { clientId: 'other', itemId: 'q-mine' },          // 不是本页：忽略
+    { clientId: 'self', itemId: 'q-mine' },           // 本页排队：取消
+    { clientId: 'self', itemId: 'r-mine' },           // 本页在跑：中止
+    { clientId: 'self', itemId: 'gone' },             // 已不在：忽略
+  ]);
+  assert.deepEqual(calls.cancel, ['q-mine']);
+  assert.deepEqual(calls.abort.map(rc => rc.id), ['r-mine']);
+  assert.equal(calls.render, 1);
 });
 
 test('renderQueue：非 admin 只能中止或取消自己署名的服务端任务', () => {
