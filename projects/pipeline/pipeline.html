@@ -1519,7 +1519,7 @@ function collectRunLogs(rc, handoffFromIdx){
   const folder=rc ? archiveFolderFor(rc) : null;
   const skipFrom=Number.isFinite(handoffFromIdx)?handoffFromIdx:(rc&&Number.isFinite(rc.handoffFromIdx)?rc.handoffFromIdx:-1);
   (rc?rc.stages:[]).forEach((s,idx)=>{
-    if(skipFrom>=0 && idx>=skipFrom) return;   // 已移交服务端的后缀阶段不写本地占位（待服务端按同 tag 合并补齐真实状态）
+    if(skipFrom>=0 && idx>=skipFrom) return;   // 已移交服务端的后缀阶段不写本地占位（后缀由服务端写 tag+'-srv' 独立记录，本条只留本地部分）
     const n=rc.nodes[s.id];
     if(!n || n.status==='running') return;
     const e={stage:s.name, status:n.status, dur:(n.dur||0), local:true};
@@ -1533,9 +1533,11 @@ function collectRunLogs(rc, handoffFromIdx){
   });
   return out;
 }
-/* 历史阶段日志合并（按阶段名并集）：混合编排下本地 finish 写入本地前缀、服务端 append 写入定时后缀，
-   同 tag 两侧合并出完整阶段列表，避免任一侧整条替换冲掉另一侧。同名阶段后者覆盖状态/耗时/日志路径，
-   保留任一侧的 local 标记（本地执行标识）；顺序：先前侧（本地前缀），再追加后侧独有的阶段。 */
+/* 历史阶段日志合并（按阶段名并集）：页面 finish 原地更新启动时写入的「进行中」记录、服务端 PUT
+   合并页面与磁盘两侧同 tag 记录（含关页移交后服务端续写同 tag）时，按阶段名并集合并出完整列表，
+   避免任一侧整条替换冲掉另一侧。同名阶段后者覆盖状态/耗时/日志路径，
+   保留任一侧的 local 标记（本地执行标识）；顺序：先前侧（本地前缀），再追加后侧独有的阶段。
+   混合编排的定时后缀不再走同 tag 合并：histMode:'split' 计划由服务端写 tag+'-srv' 独立记录。 */
 function mergeStageLogsForHistory(prevLogs, nextLogs){
   const listA=Array.isArray(prevLogs)?prevLogs:[];
   const listB=Array.isArray(nextLogs)?nextLogs:[];
@@ -5745,7 +5747,12 @@ function buildSuffixPlan(rc, startIdx, opts){
        （或不执行）；不带 presets 字段会被服务端当作旧计划，落入「配置了清理脚本即执行」的兼容回退，
        未勾选环境清理的运行历史也会多出一个环境清理阶段（且在后缀起点重复执行） */
     presets:[],
-    archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
+    archive:rc.archive||null, tag:rc.tag||null,
+    /* 历史拆分标记：服务端 execPlan 据此把后缀写进 tag+'-srv' 的独立历史记录（启动即「进行中」、
+       逐阶段刷新、结束落终态），不再同 tag 合并覆盖页面已落定的本地前缀记录——本地执行与
+       非本地（服务端）执行的任务在运行历史里各是一条。旧服务端不认识该字段时按原同 tag 合并。 */
+    histMode:'split',
+    baseSeq:stageSeq(rc.stages||[], startIdx)-1,
     vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
     settings: rc.settings || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本：服务端执行后缀时按提交时设置，不受后续修改影响
     kind:'once', at:activate?Date.now():0,   // at=0 休眠：服务端 planTick 不触发，待本地前缀完成后再激活
@@ -5797,7 +5804,8 @@ async function discardHeldSuffixPlan(rc){
 }
 /* 定时分界：本地前缀跑完后激活预登记的休眠后缀计划（补当前 vars 快照 + at=now，同 id 覆盖），
    不再做重型移交登记。预登记失败/缺失时回退全量登记（registerStageTimers）。
-   后缀各阶段在编排区标记为「移交服务端」（skipped 渲染，结果由服务端「定时后缀」运行记录承载）；
+   后缀各阶段在编排区标记为「移交服务端」（skipped 渲染，结果由服务端「定时后缀」独立历史记录承载，
+   见 buildSuffixPlan 的 histMode:'split'）；
    激活成功：弹窗告知并按成功收尾本次运行；失败：弹窗告知后缀未执行、分界阶段标 failed（可从失败阶段重试），
    本次运行按失败收尾——后缀不得静默丢失，也不得改在本地落地执行（定时阶段语义=服务端执行，见 runPipeline 分流）。 */
 async function handoffSchedSuffix(rc, i){
@@ -8059,8 +8067,9 @@ function finish(rc, result){
       prom: promSnapshotForRun(rc),
       logs: collectRunLogs(rc),   // 预设任务已随阶段列表展开进执行序列（expandRunStages），日志与阶段一并收集；本地执行阶段带 local:true
       tag:rc.tag, archive:archiveFolderFor(rc)};
-    /* 启动时已写入「进行中」记录（beginRunHistory）：按 tag 原地更新为终态，不再新增一条；
-       混合编排（本地前缀 + 定时后缀）下同 tag 记录按阶段名并集合并日志，运行历史始终只有一条 */
+    /* 混合编排（本地前缀 + 定时后缀）历史拆分两条：本条只承载本地部分（本地执行阶段带 local:true），
+       服务端后缀经计划的 histMode:'split' 写入 tag+'-srv' 独立记录，不再同 tag 合并覆盖本条；
+       关页移交（服务端接管剩余阶段）仍由服务端写同 tag 记录兜底收敛。无同 tag（纯本地/无移交）走新增兜底。 */
     const existing=rec.tag?history.find(h=>h&&h.tag===rec.tag):null;
     if(existing){
       rec.no=existing.no;
