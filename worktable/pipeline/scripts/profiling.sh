@@ -25,15 +25,22 @@ if [[ -z "${PROFILING_MODEL_ENDPOINT:-}" ]]; then
 fi
 PROFILING_INTERVAL_SECONDS="${PROFILING_INTERVAL_SECONDS:-0.5}"
 PROFILING_MAX_REQUESTS="${PROFILING_MAX_REQUESTS:-0}"
+PROFILING_CONNECT_TIMEOUT_SECONDS="${PROFILING_CONNECT_TIMEOUT_SECONDS:-5}"
+PROFILING_REQUEST_TIMEOUT_SECONDS="${PROFILING_REQUEST_TIMEOUT_SECONDS:-30}"
+PROFILING_RETRIES="${PROFILING_RETRIES:-1}"
 case "${PROFILING_SELF_TEST,,}" in true|false) ;; *) echo 'PROFILING_SELF_TEST must be true or false' >&2; exit 2 ;; esac
 [[ "$PROFILING_MAX_REQUESTS" =~ ^[0-9]+$ ]] || { echo 'PROFILING_MAX_REQUESTS must be non-negative' >&2; exit 2; }
+for value_name in PROFILING_CONNECT_TIMEOUT_SECONDS PROFILING_REQUEST_TIMEOUT_SECONDS PROFILING_RETRIES; do
+  value="${!value_name}"; [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "$value_name must be a positive integer" >&2; exit 2; }
+done
 [[ "${PROFILING_SELF_TEST,,}" == false || -n "$PROFILING_MODEL_ENDPOINT" ]] || { echo 'PROFILING_MODEL_ENDPOINT is required for self-test' >&2; exit 2; }
 base="${PROFILING_URL%/}"
 log "resolved endpoint=${base}"
-log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s"
+log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s connect_timeout=${PROFILING_CONNECT_TIMEOUT_SECONDS}s request_timeout=${PROFILING_REQUEST_TIMEOUT_SECONDS}s retries=${PROFILING_RETRIES}"
 log "starting torch profiling: GET ${base}/OM/diagnose/get params=${PROFILING_PARAMS} filter=${PROFILING_FILTER:-<empty>}"
 set +e
-curl --silent --show-error --get "${base}/OM/diagnose/get" \
+curl --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
+  --retry "$PROFILING_RETRIES" --retry-delay 1 --get "${base}/OM/diagnose/get" \
   --dump-header "$request_header_file" --output "$request_body_file" \
   --write-out '%{http_code} %{time_total}' \
   --data-urlencode 'cmd=set_profiling' --data-urlencode "params=${PROFILING_PARAMS}" --data-urlencode "filter=${PROFILING_FILTER}" >"${request_body_file}.meta"
@@ -65,7 +72,8 @@ PY
 )"
   log "self-test request ${i}: POST ${base}/chat/completions nonce=${nonce}"
   set +e
-  curl --silent --show-error "${base}/chat/completions" -H 'Content-Type: application/json' -H "model_endpoint: ${PROFILING_MODEL_ENDPOINT}" -d "$body" \
+  curl --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
+    "${base}/chat/completions" -H 'Content-Type: application/json' -H "model_endpoint: ${PROFILING_MODEL_ENDPOINT}" -d "$body" \
     --dump-header "$request_header_file" --output "$request_body_file" \
     --write-out '%{http_code} %{time_total}' >"${request_body_file}.meta"
   curl_rc=$?
