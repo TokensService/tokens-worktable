@@ -1534,8 +1534,8 @@ function collectRunLogs(rc, handoffFromIdx){
   return out;
 }
 /* 历史阶段日志合并（按阶段名并集）：页面 finish 原地更新启动时写入的「进行中」记录、服务端 PUT
-   合并页面与磁盘两侧同 tag 记录（含关页移交后服务端续写同 tag）时，按阶段名并集合并出完整列表，
-   避免任一侧整条替换冲掉另一侧。同名阶段后者覆盖状态/耗时/日志路径，
+   合并页面与磁盘两侧同 tag 记录（含 fail-run 关页失败落史与同 tag 的旧版页面记录）时，按阶段名
+   并集合并出完整列表，避免任一侧整条替换冲掉另一侧。同名阶段后者覆盖状态/耗时/日志路径，
    保留任一侧的 local 标记（本地执行标识）；顺序：先前侧（本地前缀），再追加后侧独有的阶段。
    混合编排的定时后缀不再走同 tag 合并：histMode:'split' 计划由服务端写 tag+'-srv' 独立记录。 */
 function mergeStageLogsForHistory(prevLogs, nextLogs){
@@ -5351,8 +5351,9 @@ function queueFinishedIds(){ queueFinishedPrune(); return queueFinished.map(e=>e
    的条目 id；另把当前在跑运行的 originQueueId 一并并入：排队项启动后条目 id 由 q… 换成 r…，
    q 条目从快照「消失」其实是正常移交（runningPresenceEntry 的 originQueueId 仍携带它），不并入会被
    服务端误判为孤儿中断。
-   opts.excludeIds：从 runs/queue 剔除并强制并入 completed 的条目 id（关页移交用）——移交后本地条目
-   已转交服务端/已终态，不得留在最终快照里：否则在场 TTL 过期清扫会把它们登记成「已中断」孤儿。 */
+   opts.excludeIds：从 runs/queue 剔除并强制并入 completed 的条目 id（关页收尾用）——关页后在跑运行
+   已按失败落史、排队条目已移交服务端，不得留在最终快照里：否则在场 TTL 过期清扫会把它们登记成
+   「已中断」孤儿。 */
 function queuePublishBody(opts){
   const exclude=opts&&Array.isArray(opts.excludeIds)?new Set(opts.excludeIds.map(String)):null;
   const keep=(e)=>!exclude||!exclude.has(String(e&&e.id||''));
@@ -5713,16 +5714,15 @@ function cancelPlan(id){
    服务端 15s 轮询到期即在服务端执行（脚本真跑/模拟等待；HTTP/Jenkins/EvalTokens 阶段执行并等待终态；「不执行」阶段自动跳过），
    关闭页面也会执行。登记的计划会出现在「定时」页，可像普通计划一样取消。
    opts.activate=false 生成休眠计划（at=0，仅登记不执行）；缺省/true 为立即执行（at=now）。
-   opts.includeLocal=true 时把「需本地运行」阶段一并写进计划（关页兜底用：脚本仍在服务端跑，
-   仅浏览器可达的 HTTP 目标可能失败，优于整条流水线永久卡住）。
+   休眠计划等待期间页面关闭：在跑本地前缀经 fail-run 按失败落史，服务端同路由按 tag 清掉该休眠计划
+   （后缀不再触发）；fail-run 未送达时由「进行中」历史清扫判死并清理（sweepStaleRunningHistory）。
    返回 true=登记成功；接口不可达/写计划失败返回 false——调用方据此弹窗并按失败收尾，后缀不得静默丢失。 */
 function buildSuffixPlan(rc, startIdx, opts){
-  const includeLocal=!!(opts&&opts.includeLocal);
   const activate=!(opts&&opts.activate===false);
   const stages=[];
   for(let i=startIdx;i<rc.stages.length;i++){
     const st=rc.stages[i]; if(!st || st.preset) continue;   // 预设任务是页面运行期概念，不进服务端计划
-    if(!st.sched && !includeLocal) continue;
+    if(!st.sched) continue;
     const ps={...st}; delete ps.sched;   // 计划只承载执行所需字段，去掉 sched 标记
     stages.push(ps);
   }
@@ -5774,7 +5774,8 @@ async function registerStageTimers(rc, startIdx, opts){
   return await upsertServerPlan(buildSuffixPlan(rc, startIdx, opts));
 }
 /* 启动即预登记定时后缀为休眠计划（at=0）：阶段定义/代码仓/归档上下文等重负载在页面健康时上送，
-   分界/关页只补 vars 与 at，缩小移交面。同步记录计划 id，供分界激活、关页替换与失败清理定位同一条计划。
+   分界只补 vars 与 at，缩小移交面。同步记录计划 id，供分界激活与失败清理定位同一条计划
+   （关页时由 fail-run 路由按 tag 清理休眠计划，见「浏览器关闭」小节）。
    本地前缀可能瞬间跑完（dur=0 模拟等）在预登记请求落地前就激活后缀：请求完成后再看 suffixPlanHeld，
    若已被激活则补发一次激活写入，避免休眠体（at=0）后到覆盖已激活计划、一直挂到关页才触发。 */
 function preRegisterSchedSuffix(rc, startIdx){
@@ -5833,12 +5834,15 @@ async function handoffSchedSuffix(rc, i){
     finish(rc,'failed');
   }
 }
-/* ---------- 浏览器关闭移交（本地运行不得因关页永久卡住） ----------
+/* ---------- 浏览器关闭：在跑本地任务关页即失败，排队条目移交服务端 ----------
    手动运行含「需本地运行」阶段时整条由浏览器编排（runPipeline → startSimRun → advance）。关页后
-   exec-stream 随连接断开被服务端杀掉、advance 不再推进，运行永久卡在当前阶段——与「定时分界移交」
-   同一思路，但触发点是 pagehide：把在跑运行的剩余阶段（含非 sched）与本地队列整体登记为
-   「立即执行一次」的服务端计划，由服务端执行池继续跑完。登记用 keepalive POST 单条 upsert
-   （unload 期间请求仍可送达；不做 GET 合并，避免卸载竞态覆盖他人计划）。 */
+   exec-stream 随连接断开被服务端杀掉、advance 不再推进，当前任务已不可能续跑（「需本地运行」语义
+   本来就是目标只保证浏览器可达，移交服务端重跑也只会报错）：pagehide 时把在跑运行直接按失败落史——
+   终态记录（status=failed + 中断原因 closeError + 各阶段真实状态）经 keepalive POST 直送
+   /api/worktable/pipeline/history/fail-run（卸载路径不 await），运行历史立即体现「错误」与中断原因；
+   未送达（进程被杀 / 断网）时由在场 TTL 孤儿登记 + 「进行中」历史清扫判死兜底，错误同样体现在运行状态。
+   排队中的本地队列条目尚未开始执行、不属于「没执行完的任务」：仍登记为「立即执行一次」的服务端计划
+   移交服务端执行池继续跑完（keepalive POST 单条 upsert，不做 GET 合并，避免卸载竞态覆盖他人计划）。 */
 function currentStageIndex(rc){
   if(!rc || !Array.isArray(rc.stages) || !rc.nodes) return -1;
   for(let i=0;i<rc.stages.length;i++){
@@ -5868,51 +5872,80 @@ function runRepositorySnapshot(src){
     pass: src.repoPass||(repo&&repo.pass)||'',
   };
 }
-function buildUnloadHandoffPlan(rc, startIdx, item){
-  const src=item||rc;
+/* 本地队列条目的关页移交计划（条目尚未开始执行、不是「没执行完的任务」，整段移交服务端执行池）：
+   阶段去掉 sched 标记、预设不进计划；无 url 的代码仓只留 repoId，由服务端按配置仓库补齐——
+   否则 git 类脚本会卡在凭据交互提示上。 */
+function buildUnloadHandoffPlan(item){
+  const src=item||{};
   const stages=[];
   const raw=Array.isArray(src.stages)?src.stages:[];
-  for(let i=(item?0:startIdx);i<raw.length;i++){
+  for(let i=0;i<raw.length;i++){
     const st=raw[i]; if(!st || st.preset) continue;
     const ps={...st}; delete ps.sched;
     stages.push(ps);
   }
   if(!stages.length) return null;
-  /* baseSeq=移交起点前的正式阶段数（预设不占序号）：按首个入选阶段回溯，避免 startIdx 落在
-     预设上时 stageSeq 返回 0 导致编号从 -1 起算 */
-  let baseSeq=0;
-  if(!item){
-    let firstIncluded=-1;
-    for(let i=(item?0:startIdx);i<raw.length;i++){ const st=raw[i]; if(st && !st.preset){ firstIncluded=i; break; } }
-    for(let i=0;i<(firstIncluded<0?startIdx:firstIncluded);i++){ const st=raw[i]; if(st && !st.preset) baseSeq++; }
-  }
   return {
-    /* 混合编排启动时已预登记休眠后缀计划（suffixPlanId）：关页替换同一条计划并激活，避免定时页残留 at=0 占位；
-       纯本地运行 / 排队条目无预登记，沿用 unload- 前缀独立 id。 */
-    id: item ? ('unload-'+String(src.id||('q'+Date.now()))) : ((rc&&rc.suffixPlanId)||('stimer-'+(src.pipelineId||'pl')+'-'+(src.tag||src.id||Date.now())+'-unload')),
+    id: 'unload-'+String(src.id||('q'+Date.now())),
     pipelineId: src.pipelineId||null,
-    pipelineName: (src.pipelineName||'(自定义)')+(item||!(rc&&rc.suffixPlanId)?' · 关页移交':' · 定时后缀'),
+    pipelineName: (src.pipelineName||'(自定义)')+' · 关页移交',
     stages, env: src.env||'', envs: Array.isArray(src.envs)?src.envs:[], image: src.image||'',
     repoId: src.repoId||null, repository: runRepositorySnapshot(src),
     branch: src.branch||'main', strategy: src.strategy||'',
     by: (src.by||'anonymous')+' ⏰',
     createdAt: Date.now(),
-    archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
-    /* 显式 presets:[]（不执行预设任务）：移交的是本次运行的剩余阶段，预设不随计划重跑；
+    archive: null, tag: null, baseSeq: 0,
+    /* 显式 presets:[]（不执行预设任务）：移交的是排队条目的全部阶段，预设是页面运行期概念不随计划跑；
        不带 presets 字段会被服务端当作旧计划，落入「配置了清理脚本即执行」的兼容回退，
        未勾选环境清理的运行历史也会多出一个环境清理阶段 */
     presets: [],
-    vars: Object.assign({}, item?{}:(rc.vars||{})),
-    settings: (item && item.settings) || (rc && rc.settings) || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本随移交计划带走
+    vars: {},
+    settings: src.settings || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本随移交计划带走
     kind:'once', at: Date.now(),
-    desc: (item||!(rc&&rc.suffixPlanId)?'浏览器关闭移交 · ':'定时后缀 · 激活 · ')+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
+    desc: '浏览器关闭移交 · '+stages.length+' 阶段 · '+(src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
   };
 }
-/* pagehide 时把在跑运行与本地队列整体移交服务端。keepalive POST fire-and-forget：卸载路径不 await。
-   同时 beacon 批量释放本页持有的节点租约——不释放的话移交计划要等死页面租约 TTL（90s）才拿得到
-   节点，表现成「关页后阶段卡住」。
-   返回本次「已了结」的条目 id 列表（已移交 / 无剩余阶段 / 并行子上下文随父移交）：调用方据此把它们
-   从最终在场快照剔除并列入 completed，否则在场 TTL 过期清扫会把已转交的条目误登记成「已中断」孤儿。 */
+/* 关页即失败的中断原因文案：进历史记录 closeError 字段（回放详情 KV 展示）与失败阶段日志
+   （无归档文件时内联；有归档文件时由 fail-run 路由追加进归档日志）。 */
+const CLOSE_FAIL_TEXT='浏览器页面已关闭，本地任务未执行完，本次运行按失败结束';
+/* 关页即失败的终态历史记录（形态与 finish 写入的历史记录一致）：当前在跑阶段标记 failed，其后未开始
+   阶段标记 skipped（未执行），已完成阶段保留真实状态；closeError 携带中断原因（回放详情 KV 展示）。
+   直接在 rc.nodes 上落终态再收集日志：pagehide 路径页面随即销毁，节点状态不再有人维护。 */
+function buildCloseFailRecord(rc){
+  const stg=Array.isArray(rc&&rc.stages)?rc.stages:[];
+  const idx=currentStageIndex(rc);
+  stg.forEach((st,i)=>{
+    if(!st || !rc.nodes) return;
+    const n=rc.nodes[st.id];
+    if(i===idx) rc.nodes[st.id]={status:'failed',progress:100,dur:(n&&n.dur)||0,sub:(n&&n.sub)||{},varsIn:(n&&n.varsIn)||{},varsOut:(n&&n.varsOut)||{}};
+    else if(i>idx && (!n || n.status==='running' || n.status==='idle')) rc.nodes[st.id]={status:'skipped',progress:0,dur:0,sub:{}};
+  });
+  const logs=(typeof collectRunLogs==='function'?collectRunLogs(rc,-1):[]);
+  /* 中断原因进失败阶段日志条目：无归档日志文件（未配置归档 / 模拟阶段）时内联兜底、回放直接可见；
+     有归档文件时由 fail-run 路由把中断行追加进归档日志（回放尾窗与「打开日志」均可见），此处不内联覆盖 */
+  const failedStage=idx>=0?stg[idx]:null;
+  if(failedStage){
+    const e=logs.find(l=>l && l.stage===failedStage.name);
+    if(e && !e.logFile) e.log=(typeof e.log==='string'&&e.log? e.log+'\n':'')+CLOSE_FAIL_TEXT;
+  }
+  /* keepalive 上传体受浏览器 64KB 限制：内联日志只留尾部片段（全量日志的唯一实体本是归档文件） */
+  logs.forEach(l=>{ if(l && typeof l.log==='string' && l.log.length>4096) l.log=l.log.slice(-4096); });
+  const elapsed=(Date.now()-(rc.startTs||Date.now()))/1000;
+  return {pipeline:rc.pipelineName||'(自定义)', env:rc.env||'', commit:String(rc.commit||'').slice(0,7),
+    status:'failed', dur:(typeof fmtDur==='function'?fmtDur(elapsed):(Math.max(0,Math.round(elapsed))+'s')),
+    time:(typeof nowHM==='function'?('今天 '+nowHM()):''), ts:Date.now(), startTs:rc.startTs||Date.now(), by:rc.by||'anonymous',
+    pipelineId:rc.pipelineId||null, repoId:rc.repoId||null, branch:rc.branch||'main', strategy:rc.strategy||'', source:'local',
+    envNodes:(typeof historyEnvNodesOf==='function'?historyEnvNodesOf(rc):[]),
+    prom:(typeof promSnapshotForRun==='function'?promSnapshotForRun(rc):null),
+    logs:logs, closeError:CLOSE_FAIL_TEXT,
+    tag:rc.tag||null, archive:(typeof archiveFolderFor==='function'?archiveFolderFor(rc):null)};
+}
+/* pagehide 时收尾：在跑运行按失败落史（keepalive POST fail-run，fire-and-forget 不 await），
+   本地队列条目整体移交服务端。同时 beacon 批量释放本页持有的节点租约——不释放的话移交计划要等
+   死页面租约 TTL（90s）才拿得到节点，表现成「关页后阶段卡住」。
+   返回本次「已了结」的条目 id 列表（已落史 / 无剩余阶段 / 并行子上下文随父收尾 / 队列已移交）：
+   调用方据此把它们从最终在场快照剔除并列入 completed，否则在场 TTL 过期清扫会把它们误登记成
+   「已中断」孤儿。 */
 function handoffRunsOnPageHide(){
   const post=(plan)=>{
     if(!plan) return;
@@ -5933,29 +5966,37 @@ function handoffRunsOnPageHide(){
     if(concluded.indexOf(sid)<0) concluded.push(sid);
     try{ if(typeof queueFinishedNote==='function') queueFinishedNote(sid); }catch(e){}
   };
+  const failRecords=[];
   try{
     (typeof activeRuns!=='undefined'&&activeRuns?activeRuns:[]).forEach(rc=>{
       noteLease(rc&&rc.leaseId);
-      if(!rc || rc.over || rc.parallelParent){ noteConcluded(rc&&rc.id); return; }   // 已结束 / 并行子随父移交：同样不得进孤儿簿
+      if(!rc || rc.over || rc.parallelParent){ noteConcluded(rc&&rc.id); return; }   // 已结束 / 并行子随父收尾：同样不得进孤儿簿
       const idx=currentStageIndex(rc);
       if(idx<0){ noteConcluded(rc.id); return; }   // 无剩余阶段：本地已跑完，不是失联中断
-      if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 在途 exec-stream 断开即杀进程；该阶段由服务端计划重跑
-      const plan=buildUnloadHandoffPlan(rc, idx);
-      if(plan && rc.suffixPlanId && plan.id===rc.suffixPlanId) rc.suffixPlanHeld=false;   // 关页替换同一条休眠计划并激活：不再由 finish 清理
-      post(plan);
-      noteConcluded(rc.id);   // 已登记移交计划：本地条目了结，豁免孤儿
+      if(rc.scriptAbort){ try{ rc.scriptAbort.abort(); }catch(e){} }   // 在途 exec-stream 断开即杀进程
+      try{ failRecords.push(buildCloseFailRecord(rc)); }catch(e){ console.warn('[pipeline] 关页失败记录组装失败（孤儿簿兜底）:', e); }
+      noteConcluded(rc.id);   // 已按失败落史：本地条目了结，豁免孤儿
     });
+    if(failRecords.length){
+      try{
+        fetch('/api/worktable/pipeline/history/fail-run',{
+          method:'POST', keepalive:true,
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({records:failRecords}),
+        }).catch(()=>{});
+      }catch(e){ /* unload 路径吞掉：孤儿登记 + 「进行中」历史清扫兜底 */ }
+    }
     const seen=new Set();
     const handoffItem=(item)=>{
       if(!item || !item.id || seen.has(item.id)) return;
       seen.add(item.id);
       noteLease(item.id);   // startRun 以排队项 id 作为租约持有方
-      post(buildUnloadHandoffPlan(null, 0, item));
-      noteConcluded(item.id);   // 队列条目同样移交服务端执行：本地排队快照了结，豁免孤儿
+      post(buildUnloadHandoffPlan(item));
+      noteConcluded(item.id);   // 队列条目移交服务端执行：本地排队快照了结，豁免孤儿
     };
     (typeof queue!=='undefined'&&queue?queue:[]).forEach(handoffItem);
     (typeof pendingLeaseStarts!=='undefined'&&pendingLeaseStarts?pendingLeaseStarts:[]).forEach(p=>{ if(p&&p.queueItem) handoffItem(p.queueItem); });
-  }catch(e){ console.warn('[pipeline] pagehide 移交失败（服务端孤儿簿兜底）:', e); }
+  }catch(e){ console.warn('[pipeline] pagehide 收尾失败（服务端孤儿簿兜底）:', e); }
   if(leaseOwners.length){
     try{
       navigator.sendBeacon('/api/worktable/pipeline/leases',
@@ -8069,7 +8110,7 @@ function finish(rc, result){
       tag:rc.tag, archive:archiveFolderFor(rc)};
     /* 混合编排（本地前缀 + 定时后缀）历史拆分两条：本条只承载本地部分（本地执行阶段带 local:true），
        服务端后缀经计划的 histMode:'split' 写入 tag+'-srv' 独立记录，不再同 tag 合并覆盖本条；
-       关页移交（服务端接管剩余阶段）仍由服务端写同 tag 记录兜底收敛。无同 tag（纯本地/无移交）走新增兜底。 */
+       关页时在跑运行经 fail-run 路由把同 tag 的「进行中」记录原地终态化为失败。无同 tag 走新增兜底。 */
     const existing=rec.tag?history.find(h=>h&&h.tag===rec.tag):null;
     if(existing){
       rec.no=existing.no;
@@ -8943,6 +8984,7 @@ function renderReplayDetail(rec){
   const rows=[['阶段',s.name],['状态',txt],['流水线',rec.pipeline||'—'],['分支',rec.branch||'main'],['策略',rec.strategy||'—'],
     ['执行人',rec.by||'—'],['环境',rec.env||'—'],['Commit',rec.commit||'—'],['运行时间',rec.time||'—']];
   rows.push(['执行方式', isLocalExecStage(s, entry, rec)?'本地执行':'服务端执行']);
+  if(rec.closeError) rows.push(['中断原因', rec.closeError]);   // 关页即失败的运行：中断原因随记录落史，回放详情直接可见
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur||0)]);
   /* 不再单独展示「归档目录」行：归档路径已由「📂 打开归档目录」按钮旁的状态提示展示（refreshArchiveTip），避免长路径挤压回显日志区 */
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
@@ -9368,7 +9410,7 @@ function applyHistoryRefreshPayload(st, clearAtStart){
           const remote=merged[at];
           if(local.status!=='running' && remote.status==='running'){ merged[at]=Object.assign({},remote,local); injected=true; }
         }else if(local.status==='running'){
-          /* 仅补回仍在本页跑的 running 记录；已不在 activeRuns（关页移交后）交由服务端终态接管 */
+          /* 仅补回仍在本页跑的 running 记录；已不在 activeRuns（关页即失败落史后）由服务端记录收敛 */
           const live=(typeof activeRuns!=='undefined'&&Array.isArray(activeRuns))?activeRuns.some(r=>r&&r.tag===tag):true;
           if(live){ merged.unshift(local); injected=true; }
         }
@@ -11145,14 +11187,14 @@ startQueuePolling();
    恰好兜底服务端 45 秒在场 TTL）。刻意不随 document.hidden 暂停——页面隐藏时本地执行仍在继续，
    停心跳会被服务端误判失联、在跑条目被登记为孤儿中断；与上方 1 秒拉取轮询的可见性暂停策略刻意
    不同：拉取只是展示降耗，上报是存活证据。pagehide 时用 sendBeacon 补发最终快照（含 completed 且
-   剔除已移交条目：关页移交的运行/排队已转交服务端执行，本地快照不再携带它们，据此豁免孤儿判定；
-   关闭瞬间刚正常终态化的条目同样经 completed 豁免；beacon 只能 POST，body 用 text/plain Blob——
-   服务端 readJsonBody 只按 JSON 解析正文、不校验 content-type）。 */
+   剔除已了结条目：关页时在跑运行已按失败落史、排队条目已移交服务端执行，本地快照不再携带它们，
+   据此豁免孤儿判定；关闭瞬间刚正常终态化的条目同样经 completed 豁免；beacon 只能 POST，body 用
+   text/plain Blob——服务端 readJsonBody 只按 JSON 解析正文、不校验 content-type）。 */
 const QUEUE_PRESENCE_HEARTBEAT_MS=10000;
 setInterval(()=>{ try{ publishQueue(false); }catch(e){} },QUEUE_PRESENCE_HEARTBEAT_MS);
 window.addEventListener('pagehide',()=>{
   let handoffIds=[];
-  try{ handoffIds=handoffRunsOnPageHide()||[]; }catch(e){}   // 在跑本地运行/队列整体移交服务端继续执行（keepalive POST，见「浏览器关闭移交」）
+  try{ handoffIds=handoffRunsOnPageHide()||[]; }catch(e){}   // 在跑本地运行按失败落史（fail-run keepalive POST），排队条目移交服务端（见「浏览器关闭」小节）
   try{ navigator.sendBeacon('/api/worktable/pipeline/queue', new Blob([JSON.stringify(queuePublishBody({excludeIds:handoffIds}))],{type:'text/plain'})); }catch(e){}
 });
 </script>

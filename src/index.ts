@@ -1009,6 +1009,57 @@ function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
   return out
 }
 
+/** 关页即失败（pagehide fail-run）上送的终态历史记录清洗：必须带合法 tag；status 由服务端强制为
+ *  failed（该通道只落「浏览器关闭导致本地任务中断」这一种终态，不信客户端字段）；字符串字段截断、
+ *  envNodes 走与共享存储同一清洗（绝不带凭据）、logs 只留白名单字段；不合格返回 null。 */
+function cleanCloseFailRecord(raw: any): any | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const tag = typeof raw.tag === 'string' ? raw.tag.trim() : ''
+  if (!tag || tag.length > 128) return null
+  const text = (v: any, cap: number) => String(v ?? '').slice(0, cap)
+  const LOG_STATUSES = new Set(['success', 'failed', 'skipped', 'aborted'])
+  const logs = (Array.isArray(raw.logs) ? raw.logs : []).slice(0, 200).map((entry: any) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+    const stage = text(entry.stage, 200)
+    if (!stage) return null
+    const out: any = { stage, status: LOG_STATUSES.has(entry.status) ? entry.status : 'skipped', dur: Math.max(0, Number(entry.dur) || 0) }
+    if (entry.local === true) out.local = true
+    if (typeof entry.logFile === 'string' && entry.logFile) out.logFile = entry.logFile.slice(0, 512)
+    if (typeof entry.log === 'string' && entry.log) out.log = entry.log.slice(-8192)
+    return out
+  }).filter(Boolean)
+  const rec: any = {
+    tag,
+    pipeline: text(raw.pipeline, 200) || '(自定义)',
+    env: text(raw.env, 500),
+    commit: text(raw.commit, 64),
+    status: 'failed',
+    dur: text(raw.dur, 64),
+    time: text(raw.time, 64),
+    ts: Number(raw.ts) || Date.now(),
+    startTs: Number(raw.startTs) || Number(raw.ts) || Date.now(),
+    by: text(raw.by, 128) || 'anonymous',
+    source: text(raw.source, 64) || 'local',
+    closeError: text(raw.closeError, 500) || '浏览器页面已关闭，本地任务未执行完，本次运行按失败结束',
+    logs,
+  }
+  if (typeof raw.pipelineId === 'string' && raw.pipelineId) rec.pipelineId = raw.pipelineId.slice(0, 128)
+  if (typeof raw.repoId === 'string' && raw.repoId) rec.repoId = raw.repoId.slice(0, 128)
+  if (typeof raw.branch === 'string' && raw.branch) rec.branch = raw.branch.slice(0, 200)
+  if (typeof raw.strategy === 'string' && raw.strategy) rec.strategy = raw.strategy.slice(0, 200)
+  if (typeof raw.archive === 'string' && raw.archive) rec.archive = raw.archive.slice(0, 512)
+  const envNodes = cleanPipelineHistoryEnvNodes(raw.envNodes)
+  if (envNodes) rec.envNodes = envNodes
+  /* prom 快照仅接受可序列化的普通对象且限 16KB（与页面 finish 写入的 promSnapshotForRun 同形态） */
+  try {
+    if (raw.prom && typeof raw.prom === 'object' && !Array.isArray(raw.prom)) {
+      const promText = JSON.stringify(raw.prom)
+      if (promText && promText.length <= 16 * 1024) rec.prom = JSON.parse(promText)
+    }
+  } catch { /* 非法 prom 快照直接丢弃 */ }
+  return rec
+}
+
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。
  *  同 tag 记录按阶段日志并集合并（不再整条客户端覆盖），避免混合编排任一侧冲掉另一侧阶段。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
@@ -1049,7 +1100,7 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
 }
 
 /** 「进行中」历史记录的判死决策（纯函数，供 sweepStaleRunningHistory 调用与测试抽取）：
- *  本地编排运行的历史由页面启动即写 running；页面崩溃/断网且 pagehide 移交未送达时记录会
+ *  本地编排运行的历史由页面启动即写 running；页面崩溃/断网且 pagehide 失败落史未送达时记录会
  *  永久挂「进行中」（后缀休眠计划同样永不触发），需要把错误在运行历史状态中体现出来。
  *  判死规则：记录 status='running' 且有 tag；无活体信号（liveTags=新鲜在场快照的同 tag 运行；
  *  activePlanTags=活动计划的 tag 及拆分后缀的 tag+'-srv'）；且满足两者之一——
@@ -4030,6 +4081,72 @@ export function apply(ctx: Context) {
       readStore: () => readPipelineHistoryStore(PIPELINE_STORE),
     }),
   })
+  /* 关页即失败：页面本地编排的在跑运行随浏览器关闭中断（exec-stream 断开即杀进程、advance 不再推进），
+     页面在 pagehide 卸载路径以 keepalive 把 failed 终态记录直送本路由——运行历史立即体现「错误」与
+     中断原因，不再移交服务端续跑（「需本地运行」语义本来就是目标只保证浏览器可达，移交只会报错重跑）。
+     同 tag 的「进行中」记录原地终态化（保留启动编号，阶段日志按名并集合并）；记录不存在（旧页面无
+     启动即写史）按新记录插入兜底；已是终态的记录（清扫判死 / 他端先落）不覆盖。失败阶段带归档日志
+     文件时把中断行追加进归档日志。同 tag 的休眠后缀计划（at<=0，等本地前缀完成）一并清除：
+     运行已失败，后缀不得再触发。未送达（进程被杀 / 断网）时由孤儿登记 + sweepStaleRunningHistory 兜底。 */
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/history/fail-run',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const items = (Array.isArray(body.records) ? body.records : []).slice(0, 20)
+          .map((raw: any) => cleanCloseFailRecord(raw)).filter(Boolean)
+        if (!items.length) { json(res, 400, { error: 'no valid records' }); return }
+        const finalized: string[] = []
+        await withStoreLock(async () => {
+          const store = await readPipelineStore()
+          const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+          const hist = cleanPipelineHistory(Array.isArray(store.history) ? store.history : [])
+          let changed = false
+          for (const rec of items) {
+            const existing = hist.find((h: any) => h && h.tag === rec.tag)
+            if (existing) {
+              if (existing.status !== 'running') continue   // 已终态（清扫判死 / 他端先落）不覆盖
+              rec.no = existing.no
+              rec.logs = mergeStageLogsForHistory(existing.logs, rec.logs)
+              hist[hist.indexOf(existing)] = rec
+            } else {
+              cfg.buildNo = Math.max(0, Number(cfg.buildNo) || 0) + 1
+              rec.no = cfg.buildNo
+              hist.unshift(rec)
+            }
+            finalized.push(rec.tag)
+            changed = true
+          }
+          if (changed) await writeJsonAtomic(PIPELINE_STORE, serializePipelineStore(cfg, hist.slice(0, 500)))
+        })
+        /* 中断原因追加进失败阶段的归档日志文件（回放尾窗 /「打开日志」可见；尽力而为不阻断）：
+           只接受落在该次运行归档目录内的 logFile 路径，防越目录写入 */
+        for (const rec of items) {
+          const archive = typeof rec.archive === 'string' ? rec.archive : ''
+          if (!archive.startsWith('/')) continue
+          const prefix = archive.endsWith('/') ? archive : archive + '/'
+          for (const entry of rec.logs) {
+            if (!entry || entry.status !== 'failed') continue
+            const logFile = typeof entry.logFile === 'string' ? entry.logFile : ''
+            if (!logFile.startsWith(prefix)) continue
+            await fsAppendFile(logFile, '\n[中断] ' + rec.closeError + '\n', 'utf8').catch(() => {})
+          }
+        }
+        /* 清掉同 tag 的休眠后缀计划（at<=0 未激活）：运行已按失败落史，后缀不得再触发 */
+        const tagSet = new Set(finalized)
+        if (tagSet.size) {
+          const plans = await readPlansFile()
+          const rest = plans.filter((p: any) => !(p && typeof p.tag === 'string' && tagSet.has(p.tag) && !(Number(p.at) > 0)))
+          if (rest.length !== plans.length) await writeJsonAtomic(PLANS_STORE, JSON.stringify({ plans: rest })).catch(() => {})
+        }
+        json(res, 200, { ok: true, finalized })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
   /* API、定时与页面手动运行共用的服务端权威执行池。队列路由注册早于执行器构造，处理请求时该变量已赋值。 */
   let pipelineExecutions: ReturnType<typeof createPipelineGenerationManager>
 
@@ -4040,7 +4157,7 @@ export function apply(ctx: Context) {
       try {
         if (req.method === 'GET') { json(res, 200, { plans: await readPlansFile() }); return }
         if (req.method === 'POST') {
-          /* 单条 upsert（按 id 替换）：浏览器 pagehide 移交 / 定时后缀登记用 keepalive POST，
+          /* 单条 upsert（按 id 替换）：浏览器 pagehide 队列条目移交 / 定时后缀登记用 keepalive POST，
              不做「GET 合并再全量 PUT」——卸载竞态下会把他人并发改动冲掉。 */
           const body = await readJsonBody(req)
           const raw = body && typeof body.plan === 'object' && body.plan ? body.plan : body
@@ -5552,13 +5669,14 @@ export function apply(ctx: Context) {
   if (planTimer && typeof planTimer.unref === 'function') planTimer.unref()
 
   /* 卡死「进行中」历史清扫：本地编排（含混合编排本地前缀）的历史记录由页面启动即写 running，
-     页面崩溃/断网且 pagehide 移交未送达时记录永久挂「进行中」、后缀休眠计划（at=0）永不触发——
-     「本地执行没完成、没法提交服务端」的错误必须能在运行历史状态中体现（可见、可按状态筛选）。
+     页面崩溃/断网且 pagehide 失败落史（fail-run）未送达时记录永久挂「进行中」、后缀休眠计划（at=0）
+     永不触发——「本地执行没完成」的错误必须能在运行历史状态中体现（可见、可按状态筛选）。
      判死口径（planStaleHistorySweep，纯函数供测试）：无任何活体信号（新鲜在场快照里的同 tag
      运行 / 活动计划含拆分后缀派生的 tag+'-srv'），且最近活体证据（在场 seenAt / 孤儿 orphanedAt）
      超宽限，或从未有信号且记录已很旧。判死后：记录标记 failed 并补一条系统日志（ts 刷新到当前，
      防旧页面迟到的 stale running 上行把它盖回——页面若其实仍在跑，finish 终态 ts 更新会自愈）、
-     同时清掉该 tag 的休眠后缀计划（此后页面分界激活会重新全量登记，见 registerStageTimers 回退）。 */
+     同时清掉该 tag 的休眠后缀计划（此后页面分界激活会重新全量登记，见 registerStageTimers 回退）。
+     正常关页（pagehide 送达）不走本兜底：fail-run 路由直接把同 tag 记录终态化为失败。 */
   async function sweepStaleRunningHistory() {
     const now = Date.now()
     const liveTags = new Set<string>()
@@ -5610,7 +5728,7 @@ export function apply(ctx: Context) {
         rec.status = 'failed'
         rec.ts = now
         const logs = Array.isArray(rec.logs) ? rec.logs : (rec.logs = [])
-        logs.push({ stage: '（系统）', status: 'failed', dur: 0, log: '本地执行中断：页面失联且未移交服务端，后续阶段未提交服务端执行' })
+        logs.push({ stage: '（系统）', status: 'failed', dur: 0, log: '本地执行中断：页面失联（浏览器关闭/崩溃或断网），后续阶段未执行' })
         changed = true
       }
       if (changed) await writeJsonAtomic(PIPELINE_STORE, serializePipelineStore(cfg, hist.slice(0, 500)))
