@@ -4108,9 +4108,9 @@ function detailLogLinesFor(stage,ctx,node){
     if(ctx.remoteClientId!=='server') return ['其他浏览器仅同步阶段状态、进度和耗时；运行日志、脚本参数和凭据不会跨浏览器传输。'];
     const live=ctx.remoteLogs&&ctx.remoteLogs[stage.id];
     if(!live) return ['正在获取该阶段的最新运行日志…'];
-    const shown=stageOutputLines({stdout:live.text,_stdoutTruncated:live.truncated},DETAIL_LOG_LIMIT);
+    const shown=stageOutputLines({stdout:live.text,_stdoutTruncated:live.truncated},LIVE_LOG_TAIL_LIMIT);
     const lines=[];
-    if(shown.omitted) lines.push('… 详情仅显示服务端日志末尾，完整内容请查看运行归档。');
+    if(shown.omitted) lines.push('… 详情仅显示服务端日志末尾 '+LIVE_LOG_TAIL_LINES+' 行，完整内容请查看运行归档。');
     shown.lines.forEach(line=>lines.push(line));
     if(!lines.length) lines.push('该阶段暂时没有日志输出。');
     return lines;
@@ -5122,12 +5122,16 @@ async function cancelServerRun(runId){
     return null;
   }
 }
+/* 服务端在跑阶段的日志尾窗按「行」收紧到与历史回放一致的最后 20 行：
+   传输（tailLines）与回显同限，完整内容走归档文件 / 历史回放，不在实时详情刷千行。 */
+const LIVE_LOG_TAIL_LINES=20;
+const LIVE_LOG_TAIL_LIMIT={maxLines:LIVE_LOG_TAIL_LINES,maxChars:256*1024};
 /* 当前详情的服务端日志独立于普通队列快照拉取：同一阶段请求在途时复用 Promise；用户切换运行或
    阶段后，迟到响应按序号和当前选择双重丢弃，避免旧日志覆盖新详情。
    持续输出阶段每秒轮询若每次都全量重传 256KiB 尾窗会放大带宽与 JSON 解析开销，
    故带上 sinceEnd（已持有逻辑日志流末尾偏移）请求后缀增量：服务端只回 append，
    replaceLog 或窗口滑过客户端位置时才退回全量 text（见 src/index.ts log()）。
-   本地缓存同样按 256KiB 截尾，避免长跑阶段缓存无界增长；endLen 单独记账，与展示截断无关。 */
+   本地缓存同样按 20 行截尾，避免长跑阶段缓存无界增长；endLen 单独记账，与展示截断无关。 */
 let _remoteLogPullSeq=0, _remoteLogPullKey='', _remoteLogPullPromise=null;
 async function pullRemoteQueueLog(){
   const rc=viewRc, stageId=String(selectedId||'');
@@ -5147,6 +5151,7 @@ async function pullRemoteQueueLog(){
         url+='&revision='+knownRevision;
         if(Number.isSafeInteger(knownEnd)&&knownEnd>=0) url+='&sinceEnd='+knownEnd;
       }
+      url+='&tailLines='+LIVE_LOG_TAIL_LINES;   // 全量/替换回退时服务端只回末尾 N 行，不传整段尾窗
       const response=await fetch(url,{cache:'no-store'});
       if(response.status===304) return cached||null;
       if(!response.ok) return null;
@@ -5171,8 +5176,15 @@ async function pullRemoteQueueLog(){
           endLen=Number.isFinite(baseLen)?baseLen+text.length:text.length;
         }
       }
-      /* 本地展示缓存与服务端同限：只留末尾 256KiB，防止增量拼接下无界增长 */
-      if(text.length>256*1024) text=text.slice(text.length-256*1024);
+      /* 本地展示缓存与历史回放同限：只留末尾 LIVE_LOG_TAIL_LINES 行，防止增量拼接下无界增长；
+         endLen 单独记账，与展示截断无关（sinceEnd 对齐逻辑日志流，不依赖 text 长度）。
+         split 对结尾 \n 多出的空串不算内容行，只裁内容行并保留结尾换行。 */
+      if(LIVE_LOG_TAIL_LINES>0){
+        const parts=text.split('\n');
+        const trail=parts.length>0&&parts[parts.length-1]===''?1:0;
+        const content=parts.length-trail;
+        if(content>LIVE_LOG_TAIL_LINES) text=parts.slice(content-LIVE_LOG_TAIL_LINES,content).join('\n')+(trail?'\n':'');
+      }
       const log={text:text,truncated:truncated,revision:Number.isFinite(revision)?revision:0,endLen:endLen};
       if(old&&old.text===log.text&&old.truncated===log.truncated&&old.revision===log.revision) return log;
       current.remoteLogs[stageId]=log;

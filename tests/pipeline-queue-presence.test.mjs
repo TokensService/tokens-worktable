@@ -201,4 +201,8 @@ test('队列日志接口透传 sinceEnd 做后缀增量，非法 sinceEnd 拒绝
   const bad = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2&sinceEnd=-1')
   assert.equal(bad.status, 400)
   assert.deepEqual(bad.json(), { error: 'invalid sinceEnd' })
+
+  const badLines = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&tailLines=x')
+  assert.equal(badLines.status, 400)
+  assert.deepEqual(badLines.json(), { error: 'invalid tailLines' })
 })

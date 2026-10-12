@@ -349,6 +349,14 @@ test('服务端阶段日志按 sinceEnd 后缀增量返回，replace 后退回�
   const full = pool.log('inc-1', 'build')
   assert.equal(full.text, 'replaced\n')
   assert.equal(full.append, undefined)
+
+  /* tailLines：全量回退只回末尾 N 行，endLen 仍是完整逻辑流位置 */
+  liveRuntime.replaceLog('build', 'a\nb\nc\nd\ne\n')
+  const tailed = pool.log('inc-1', 'build', undefined, undefined, 2)
+  assert.equal(tailed.text, 'd\ne\n')
+  assert.equal(tailed.endLen, 'a\nb\nc\nd\ne\n'.length)
+  const untailed = pool.log('inc-1', 'build')
+  assert.equal(untailed.text, 'a\nb\nc\nd\ne\n')
   release()
   await running
 })
