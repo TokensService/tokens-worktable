@@ -143,6 +143,7 @@ test('混合编排：本地前缀跑完即在定时分界激活后缀计划（�
   assert.equal(plan.stages[0].sched, undefined, '计划阶段不带 sched 标记');
   assert.equal(plan.kind, 'once');
   assert.equal(plan.at > 0, true, '激活后 at=now，服务端 15s 内触发');
+  assert.deepEqual(plan.presets, [], '后缀计划显式携带空 presets（不执行预设任务）：预设已在本地前缀按勾选展开；缺该字段会被服务端当作旧计划，落入「配置了清理脚本即执行」回退，未勾选环境清理也会多跑环境清理');
   assert.equal(plan.archive, '/arc/pl_x', '归档文件夹随计划移交（服务端写入同一文件夹）');
   assert.equal(plan.tag, 't1');
   assert.equal(plan.baseSeq, 1, 'baseSeq=分界前正式阶段数（预设不占序号）');
@@ -194,6 +195,7 @@ test('启动预登记：后缀休眠计划 at=0 上送服务端，分界激活�
   assert.equal(h.postPlans.length, 1, '启动即 POST 预登记');
   assert.equal(h.postPlans[0].at, 0, '休眠计划 at=0，服务端 planTick 不触发');
   assert.deepEqual(h.postPlans[0].stages.map(s => s.id), ['b', 'c'], '只预登记定时后缀');
+  assert.deepEqual(h.postPlans[0].presets, [], '休眠后缀计划同样显式携带空 presets');
   assert.match(h.postPlans[0].desc, /已预登记/);
   h.rc.vars.A = '2';
   h.context.advance(h.rc, 0);
@@ -218,6 +220,7 @@ test('无本地任务：后缀计划立刻激活（at=now），不留休眠计�
   assert.equal(h.postPlans.length, 1);
   assert.equal(h.postPlans[0].at > 0, true, '没有本地任务时立刻 at=now 激活');
   assert.deepEqual(h.postPlans[0].stages.map(s => s.id), ['b', 'c']);
+  assert.deepEqual(h.postPlans[0].presets, [], '显式空 presets：服务端不得回退执行清理脚本');
   assert.equal(h.rc.suffixPlanHeld, undefined, '未走休眠路径，不持有待清理标记');
 });
 

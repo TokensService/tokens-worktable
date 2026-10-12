@@ -112,6 +112,7 @@ test('pagehide 移交：在跑运行从当前阶段起全部剩余阶段（含�
   assert.equal(plan.id, 'stimer-pl-1-t1-unload', '卸载移交用独立 id，不与定时后缀 stimer-…-suffix 冲突');
   assert.deepEqual(plan.stages.map(s => s.id), ['b', 'c'], '从当前 running 阶段起（含该阶段重跑）到末尾全部移交');
   assert.equal(plan.stages[0].sched, undefined, '计划阶段去掉 sched 标记');
+  assert.deepEqual(plan.presets, [], '移交计划显式携带空 presets（不执行预设任务）：缺该字段会被服务端当作旧计划，落入「配置了清理脚本即执行」回退');
   assert.equal(plan.vars.A, '1', '上游变量随计划移交');
   assert.equal(plan.archive, '/arc/pl_p');
   assert.equal(plan.tag, 't1');
@@ -163,6 +164,7 @@ test('pagehide 移交：已结束/并行子上下文跳过；本地队列条目�
   assert.equal(plan.repoId, 'r');
   assert.equal(plan.repository, null, '队列条目无 url 快照时只留 repoId，由服务端按配置补齐');
   assert.equal(plan.strategy, 'P-D', '队列条目的部署策略也要随计划移交');
+  assert.deepEqual(plan.presets, [], '队列条目移交同样显式携带空 presets，不触发服务端清理回退');
   assert.match(plan.desc, /浏览器关闭/);
 });
 
@@ -212,6 +214,7 @@ test('buildUnloadHandoffPlan：跳过预设任务；baseSeq 按正式阶段序�
   const plan = h.context.buildUnloadHandoffPlan(rc, 1);
   assert.equal(plan.stages.map(s => s.id).join(','), 'b', '预设任务是页面运行期概念，不进服务端计划');
   assert.equal(plan.baseSeq, 1);
+  assert.deepEqual(plan.presets && [...plan.presets], [], '显式空 presets：服务端按 API 语义不执行任何预设任务，不再回退「配置了清理脚本即执行」（[...] 摊平为当前域数组再比较）');
 });
 
 test('registerStageTimers opts.includeLocal：把非 sched 阶段也写进计划（与卸载移交同口径）', async () => {
