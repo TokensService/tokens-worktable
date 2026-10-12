@@ -4925,11 +4925,19 @@ export function apply(ctx: Context) {
       const j = await readPipelineStore()
       const cfg = j.config && typeof j.config === 'object' && !Array.isArray(j.config) ? j.config : {}
       const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
-      const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
-      cfg.buildNo = no
-      rec.no = no
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
-      history.unshift(rec)
+      /* 页面启动时已写入「进行中」记录（beginRunHistory，同 tag）：原地更新为终态，避免同一次运行
+         在历史里留下「进行中 + 已完成」两条；无同 tag 记录时才新增（定时/服务端独立运行路径）。 */
+      const existingIdx = rec.tag ? history.findIndex((h: any) => h && h.tag === rec.tag) : -1
+      if (existingIdx >= 0) {
+        const prevNo = Number(history[existingIdx] && history[existingIdx].no) || 0
+        history[existingIdx] = { ...rec, no: prevNo || rec.no }
+      } else {
+        const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
+        cfg.buildNo = no
+        rec.no = no
+        history.unshift(rec)
+      }
       /* 20MB 存储上限：只序列化一次配置和各候选记录，保留最新的可容纳前缀。 */
       const text = serializePipelineStore(cfg, history.slice(0, 500))
       await writeJsonAtomic(PIPELINE_STORE, text)
