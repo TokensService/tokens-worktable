@@ -3858,12 +3858,57 @@ function withPresetMarkers(stages){
   }
   return out;
 }
+/* ---------- 运行期设置快照（运行级隔离） ----------
+   设置页配置（脚本目录 / Jenkins / EvalTokens / 普罗 / 归档）此前由各阶段执行时读全局变量：
+   运行中途或下一次运行前的修改会渗进已经开跑的流水线（改 scriptsDir、换 Jenkins 令牌、换收集脚本等）。
+   现在一次运行在入队/启动时深拷贝一份设置快照（rc.settings / 队列项 settings / 服务端 plan.settings），
+   本次运行各阶段只读快照——下一次运行才取新设置。设置本身仍是用户隔离（运行行临时配置仅浏览器本地），
+   此处在其上叠加「一运行一份副本」。 */
+function runSettingsSnapshot(){
+  const copy=(x)=>{ if(x==null) return x; try{ return JSON.parse(JSON.stringify(x)); }catch(e){ return null; } };
+  return {
+    scriptsDir: typeof scriptsDir==='string'?scriptsDir:'',
+    jenkins: copy(jenkins)||{},
+    evaltok: copy(evaltok)||{},
+    prom: copy(prom)||{},
+    archiveDir: typeof archiveDir==='string'?archiveDir:'',
+    archiveScriptName: typeof archiveScriptName==='string'?archiveScriptName:'',
+  };
+}
+function runSettingsOf(rc){ return (rc && rc.settings && typeof rc.settings==='object' && !Array.isArray(rc.settings)) ? rc.settings : null; }
+function runScriptsDir(rc){
+  const s=runSettingsOf(rc);
+  return (s && typeof s.scriptsDir==='string' && s.scriptsDir) ? s.scriptsDir : (typeof scriptsDir==='string'?scriptsDir:'');
+}
+function runJenkinsCfg(rc){
+  const s=runSettingsOf(rc);
+  return (s && s.jenkins && typeof s.jenkins==='object' && !Array.isArray(s.jenkins)) ? s.jenkins : jenkins;
+}
+function runEvaltokCfg(rc){
+  const s=runSettingsOf(rc);
+  return (s && s.evaltok && typeof s.evaltok==='object' && !Array.isArray(s.evaltok)) ? s.evaltok : evaltokConfig();
+}
+function runPromCfg(rc){
+  const s=runSettingsOf(rc);
+  return (s && s.prom && typeof s.prom==='object' && !Array.isArray(s.prom)) ? s.prom : prom;
+}
+function runArchiveDir(rc){
+  const s=runSettingsOf(rc);
+  return (s && typeof s.archiveDir==='string') ? s.archiveDir : (typeof archiveDir==='string'?archiveDir:'');
+}
+function runArchiveScriptName(rc){
+  const s=runSettingsOf(rc);
+  return (s && typeof s.archiveScriptName==='string') ? s.archiveScriptName : (typeof archiveScriptName==='string'?archiveScriptName:'');
+}
 /* 预设任务展开（运行启动时）：阶段列表中的预设标记（旧流水线先按默认位置补齐）按主控「预设任务」
-   勾选展开为本次运行的执行项（脚本取设置页当前配置快照）；未勾选/pkey 已失效的预设不进本次运行 */
+   勾选展开为本次运行的执行项（脚本取设置页当前配置快照）；未勾选/pkey 已失效的预设不进本次运行。
+   普通阶段同样深拷贝——运行期不得与流水线定义共享嵌套对象（script/url/evaltokens/sub），
+   否则下一次运行前对阶段的编辑会渗进已经开跑的副本。 */
 function expandRunStages(rawStages, presetKeys){
   const hasPresetSnapshot=Array.isArray(presetKeys);
+  const cloneStage=(s)=>{ try{ return JSON.parse(JSON.stringify(s)); }catch(e){ return {...s}; } };
   return withPresetMarkers(rawStages).flatMap(s=>{
-    if(!s || !s.preset) return [{...s}];
+    if(!s || !s.preset) return [cloneStage(s)];
     const enabled=hasPresetSnapshot ? presetKeys.indexOf(s.pkey)>=0 : presetOn(s.pkey);   // 队列传入开关快照时不受出队前 UI 改动影响
     const rt=enabled ? presetRuntime(s.pkey) : null;
     return rt ? [rt] : [];
@@ -4569,7 +4614,8 @@ function startRun(opts){
   const branch = opts.branch || ($('branchName').value.trim()||'main');
   const by = opts.by || (currentUsername||'anonymous');
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
-  const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual', originQueueId:opts.originQueueId||opts.id||''};
+  const c = {env, envs, image, release, repo, branch, by, strategy, presets:Array.isArray(opts.presets)?opts.presets.slice():selectedPresetKeys(), source:opts.source||'manual', originQueueId:opts.originQueueId||opts.id||'',
+    settings: opts.settings || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null)};   // 运行级设置副本：入队时已带快照则沿用，否则启动即取当前设置
   /* 节点占用租约：目标节点（环境 IP）先向服务端申请租约，拿到才真正开跑——同一节点同一时间
      只跑一条流水线（跨标签页/跨浏览器/API/定时统一互斥，见「节点占用租约」区块）。无目标 IP
      时没有可互斥的节点，保持旧行为直接启动；抽取测试环境无租约实现时同样按旧行为处理。 */
@@ -4618,7 +4664,8 @@ function startSimRun(pl, c){
     leaseTimer:null, leaseId:c.leaseId||null, leaseIps:c.leaseIps||[],   // 节点占用租约：finish/中止/重置时释放
     env:c.env, envs:c.envs, image:c.image, release:c.release, commit, tag, startTs:Date.now(), by:c.by, source:c.source||'manual', originQueueId:c.originQueueId||'',
     pipelineId:pl.id||null, pipelineName:pl.name, repoId:c.repo.id||null, repoName:c.repo.name, repoUrl:c.repo.url, giturl:c.repo.url||GITURL,
-    repoUser:c.repo.user||'', repoPass:c.repo.pass||'', branch:c.branch, strategy:c.strategy||'', vars:{}, token:++runSeq};
+    repoUser:c.repo.user||'', repoPass:c.repo.pass||'', branch:c.branch, strategy:c.strategy||'', vars:{}, token:++runSeq,
+    settings:c.settings||((typeof runSettingsSnapshot==='function')?runSettingsSnapshot():null)};   // 设置页配置运行级副本：本次运行各阶段只读它，后续修改不影响本运行
   stages.forEach(s=>{ rc.nodes[s.id]={status:'idle',progress:0,dur:0,sub:{}}; });
   rc.archive = archiveFolderFor(rc);   // 启动即快照归档文件夹：供各阶段经环境变量写入产物（见 execScript/runUrlStep），末尾 archiveRun 复用同一路径
   if(rc.archive){   // 启动即预建归档文件夹：此前目录要等首个任务日志落盘才创建，运行初期点「打开归档目录」会报「✗ 目录不存在」
@@ -4717,9 +4764,10 @@ function runPipeline(opts){
   const strategy = opts.strategy!==undefined ? opts.strategy : curStrategy();
   const presets = Array.isArray(opts.presets) ? opts.presets.slice() : selectedPresetKeys();
   const item={id:'q'+Date.now().toString(36)+Math.random().toString(16).slice(2,5),
-    env, envs, image, release, repoId, repoName:(resolveRepo(repoId)||{}).name||'', branch, strategy, presets, by, source:opts.source||'manual', queuedAt:Date.now()};
+    env, envs, image, release, repoId, repoName:(resolveRepo(repoId)||{}).name||'', branch, strategy, presets, by, source:opts.source||'manual', queuedAt:Date.now(),
+    settings: opts.settings || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null)};   // 入队即取设置副本：出队启动沿用入队时设置，不受排队期间修改影响
   if(opts.stages){ item.stages=opts.stages; item.pipelineName=opts.pipelineName||'(自定义)'; item.pipelineId=opts.pipelineId||null; }
-  else { item.stages=pl.stages.map(s=>({...s})); item.pipelineName=pl.name; item.pipelineId=pl.id; }
+  else { item.stages=pl.stages.map(s=>{ try{ return JSON.parse(JSON.stringify(s)); }catch(e){ return {...s}; } }); item.pipelineName=pl.name; item.pipelineId=pl.id; }
   /* 「需本地运行」意味着目标服务只保证浏览器可达，不能交给 dsh 服务进程 fetch；复用既有页内并发、
      机器互斥和节点租约调度。全部普通阶段都支持定时时，仍提交服务端权威队列。 */
   if(Array.isArray(item.stages) && item.stages.some(s=>s && !s.preset && !s.sched)){
@@ -5526,6 +5574,7 @@ function buildSuffixPlan(rc, startIdx, opts){
     branch:rc.branch||'main', strategy:rc.strategy||'', by:(rc.by||'anonymous')+' ⏰', createdAt:Date.now(),
     archive:rc.archive||null, tag:rc.tag||null, baseSeq:stageSeq(rc.stages||[], startIdx)-1,
     vars:Object.assign({}, rc.vars||{}),   // 上游阶段变量快照：后缀在服务端执行（execPlan），随计划带过去注入后续阶段
+    settings: rc.settings || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本：服务端执行后缀时按提交时设置，不受后续修改影响
     kind:'once', at:activate?Date.now():0,   // at=0 休眠：服务端 planTick 不触发，待本地前缀完成后再激活
     desc:'阶段定时 · 后缀 '+stages.length+' 阶段 · '+(rc.tag||'')+(activate?' · 立即（周期跟随流水线计划）':' · 已预登记（待本地阶段完成）') };
 }
@@ -5669,6 +5718,7 @@ function buildUnloadHandoffPlan(rc, startIdx, item){
     createdAt: Date.now(),
     archive: item?null:(rc.archive||null), tag: item?null:(rc.tag||null), baseSeq,
     vars: Object.assign({}, item?{}:(rc.vars||{})),
+    settings: (item && item.settings) || (rc && rc.settings) || (typeof runSettingsSnapshot==='function' ? runSettingsSnapshot() : null),   // 设置页配置运行级副本随移交计划带走
     kind:'once', at: Date.now(),
     desc: (item||!(rc&&rc.suffixPlanId)?'浏览器关闭移交 · ':'定时后缀 · 激活 · ')+stages.length+' 阶段 · '+(src.tag||src.pipelineName||'')+' · 立即（含需本地运行阶段，脚本在服务端执行）',
   };
@@ -6647,11 +6697,11 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
   /* 流式回显（默认）：调用方传入 onStream 时走 /api/worktable/exec-stream，执行中逐块实时回调；
      接口不可用（旧插件构建返回非 200）时返回 null，降级走下方一次性 /api/worktable/exec */
   if(typeof onStream==='function'){
-    const st=await execStreaming(sc.path, args, env, scriptsDir, timeoutMs||0, onStream, signal, logFile);   // timeoutMs 0/缺省=无超时（服务端同语义）
+    const st=await execStreaming(sc.path, args, env, (typeof runScriptsDir==='function')?runScriptsDir(rc):scriptsDir, timeoutMs||0, onStream, signal, logFile);   // timeoutMs 0/缺省=无超时（服务端同语义）；cwd 取本运行设置快照
     if(st) return st;
   }
   try{
-    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:scriptsDir, timeoutMs:timeoutMs||0,logFile}),signal});   // 0=无超时
+    const r=await fetch('/api/worktable/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:sc.path, args, env, cwd:(typeof runScriptsDir==='function')?runScriptsDir(rc):scriptsDir, timeoutMs:timeoutMs||0,logFile}),signal});   // 0=无超时
     const j=await r.json();
     if(j && j.error) return {code:1, stdout:'', stderr:String(j.error)};
     return {code:(j&&j.code!==undefined)?j.code:1, stdout:(j&&j.stdout)||'', stderr:(j&&j.stderr)||'',logFile:j&&j.logFile,logError:j&&j.logError};
@@ -6716,8 +6766,8 @@ async function jkFetchCrumb(j, auth, signal){
   return null;
 }
 /* jobPath 为已解析的任务路径（fullName 经 jkJobPath / URL 经 jkJobRef 得到，占位符已替换） */
-async function jkTriggerBuild(jobPath, params, preflightSignal, dispatchSignal){
-  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+async function jkTriggerBuild(jobPath, params, preflightSignal, dispatchSignal, j){
+  j=j||jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const body=Object.keys(params).map(function(k){ return encodeURIComponent(k)+'='+encodeURIComponent(params[k]); }).join('&');
   const url=base+jobPath+'buildWithParameters';
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
@@ -6738,8 +6788,8 @@ async function jkTriggerBuild(jobPath, params, preflightSignal, dispatchSignal){
 /* 任务 URL 触发：{VAR} 占位符替换后直接 GET 完整地址（等价 curl——此类 URL 本身就是 GET 触发的接口地址）。
    URL 视为自包含：不拼 buildWithParameters、不带 crumb、不附加「Jenkins 服务配置」的用户名/令牌（鉴权信息如
    token 由 URL 自带）；连接模式仍生效：本地=浏览器直连（需 CORS/同源），远程=经 /api/worktable/proxy 代连。 */
-async function jkTriggerGet(url, signal){
-  const j=jenkins;
+async function jkTriggerGet(url, signal, j){
+  j=j||jenkins;
   if(j.mode==='remote'){
     const r=await fetch('/api/worktable/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,method:'GET'}),signal:signal});
     const p=await r.json(); if(p&&p.error) throw new Error(p.error);
@@ -6752,8 +6802,8 @@ async function jkTriggerGet(url, signal){
   try{ body=await readBrowserResponseText(r,20*1024*1024); }catch(e){ if(/响应正文过大/.test(String(e&&e.message||e))) throw e; }   // 跨域无 CORS 读不到体时不阻断触发成功
   return {body:body,location:jkHeaderValue(r.headers,'location')};
 }
-async function jkGetText(path, signal){
-  const j=jenkins; const base=(j.url||'').replace(/\/+$/,'');
+async function jkGetText(path, signal, j){
+  j=j||jenkins; const base=(j.url||'').replace(/\/+$/,'');
   const url=base+path;
   const auth=(j.user||j.token)?{Authorization:'Basic '+btoa(j.user+':'+j.token)}:{};
   if(j.mode==='remote'){
@@ -6874,6 +6924,7 @@ async function stagePollRequest(path, body, signal){
 }
 async function runUrlStep(rc, i){
   const stg=rc.stages; const s=stg[i];
+  const jkCfg=(typeof runJenkinsCfg==='function')?runJenkinsCfg(rc):jenkins;   // 本运行设置快照：Jenkins 地址/凭据/连接模式在启动时定格
   const raw=stageUrlOf(s);   // 兼容旧数据 kind:'url'/'jenkins' / jenkins.job（见 stageUrlOf）
   const outSpec=(s.url&&s.url.outVars)||(s.jenkins&&s.jenkins.outVars)||'';
   const tk=rc.token;
@@ -6950,15 +7001,15 @@ async function runUrlStep(rc, i){
     if(isUrl) appendLiveLog(log,'# trigger url: '+jkSubstUrl(raw, vars));
     s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
     let triggerBody='', triggered=null;
-    if(isUrl){ triggered=await jkTriggerGet(jkSubstUrl(raw, vars),pollable?triggerCtrl.signal:ctrl.signal); }
-    else{ triggered=await jkTriggerBuild(jobPath, vars,ctrl.signal,triggerCtrl.signal); }   // crumb 属触发前准备，随流水线立即中止；只有已发出的 build POST 获得清理宽限
+    if(isUrl){ triggered=await jkTriggerGet(jkSubstUrl(raw, vars),pollable?triggerCtrl.signal:ctrl.signal, jkCfg); }
+    else{ triggered=await jkTriggerBuild(jobPath, vars,ctrl.signal,triggerCtrl.signal, jkCfg); }   // crumb 属触发前准备，随流水线立即中止；只有已发出的 build POST 获得清理宽限
     triggerBody=triggered&&typeof triggered.body==='string'?triggered.body:'';
     cancelQueueLocation=triggered&&typeof triggered.location==='string'?triggered.location:'';
     externalJenkinsActive=pollable;
     if(!ensureActive()) return;
     let queuePath='';
     if(pollable){
-      try{ const u=new URL(cancelQueueLocation,(jenkins.url||'').replace(/\/+$/,'')||undefined); const at=u.pathname.indexOf('/queue/item/'); if(at>=0) queuePath=u.pathname.slice(at).replace(/\/+$/,''); }catch(e){}
+      try{ const u=new URL(cancelQueueLocation,(jkCfg.url||'').replace(/\/+$/,'')||undefined); const at=u.pathname.indexOf('/queue/item/'); if(at>=0) queuePath=u.pathname.slice(at).replace(/\/+$/,''); }catch(e){}
       if(!queuePath) throw new Error('Jenkins 触发响应缺少 queue Location，无法安全关联或终止本次构建（请确保 CORS 暴露 Location 响应头）');
     }
     appendLiveLog(log,'# 已触发请求'+(queuePath?(' '+queuePath):'')+(pollable?'，等待执行…':'（非标准任务路径，无法轮询构建状态，按 GET 触发成功处理）')); s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); rcRender(rc);
@@ -6975,12 +7026,12 @@ async function runUrlStep(rc, i){
     const pollFailCap=30;
     let pollVia='server';
     let pollFailWarned=0;   // 服务端连败告警水位（failures 单调递增，服务端清零/终态后不再重复告警）
-    const jkPollAuth=(jenkins.user||jenkins.token)?{Authorization:'Basic '+btoa(jenkins.user+':'+jenkins.token)}:{};
+    const jkPollAuth=(jkCfg.user||jkCfg.token)?{Authorization:'Basic '+btoa(jkCfg.user+':'+jkCfg.token)}:{};
     /* 轮询目标 URL：优先按触发响应的 queue Location 还原绝对地址（保留实际 Jenkins 主机），
        缺省时退回「Jenkins 服务配置」地址（与直连轮询同一基准） */
     let queueItemUrl='';
-    if(pollable){ try{ queueItemUrl=new URL(cancelQueueLocation,(jenkins.url||'').replace(/\/+$/,'')||undefined).href.replace(/\/+$/,''); }catch(e){} }
-    const jkPollBase=(queueItemUrl&&/\/queue\/item\//.test(queueItemUrl))?queueItemUrl.replace(/\/queue\/item\/.*$/,''):(jenkins.url||'').replace(/\/+$/,'');
+    if(pollable){ try{ queueItemUrl=new URL(cancelQueueLocation,(jkCfg.url||'').replace(/\/+$/,'')||undefined).href.replace(/\/+$/,''); }catch(e){} }
+    const jkPollBase=(queueItemUrl&&/\/queue\/item\//.test(queueItemUrl))?queueItemUrl.replace(/\/queue\/item\/.*$/,''):(jkCfg.url||'').replace(/\/+$/,'');
     const queuePollUrl=queueItemUrl?(queueItemUrl+'/api/json'):(jkPollBase+queuePath+'/api/json');
     const buildPollUrl=()=>jkPollBase+jobPath+buildNum+'/api/json?tree=number,building,result,duration';
     const stagePollFallbackToDirect=why=>{
@@ -7037,7 +7088,7 @@ async function runUrlStep(rc, i){
         await waitForPoll();
         if(!ensureActive()) return;   // 迟回直接丢弃：不得动本运行 timer 之外的全局状态（见 runScriptStep 同规则）
         try{
-          const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+queuePath+'/api/json',ctrl.signal);
+          const info=await jkFetchJson(jkCfg,(jkCfg.url||'').replace(/\/+$/,'')+queuePath+'/api/json',ctrl.signal);
           if(!ensureActive()) return;
           pollFails=0;
           if(info&&info.cancelled){ const cancelled=new Error('Jenkins 队列任务已取消'); cancelled.queueTerminal=true; throw cancelled; }
@@ -7091,7 +7142,7 @@ async function runUrlStep(rc, i){
         await waitForPoll();
         if(!ensureActive()) return;
         try{
-          const info=await jkFetchJson(jenkins,(jenkins.url||'').replace(/\/+$/,'')+jobPath+buildNum+'/api/json?tree=number,building,result,duration',ctrl.signal);
+          const info=await jkFetchJson(jkCfg,(jkCfg.url||'').replace(/\/+$/,'')+jobPath+buildNum+'/api/json?tree=number,building,result,duration',ctrl.signal);
           if(!ensureActive()) return;
           pollFails=0;
           if(Number(info&&info.number)===buildNum){ building=!!info.building; if(info.result) result=info.result; }
@@ -7446,7 +7497,7 @@ async function runEvaltokensStep(rc, i){
   s._archiveOutputParts=log.parts; s._archiveStdout=null;
   try{
     if(!taskId && !taskName) throw new Error('未选择 EvalTokens 任务');
-    const e=evaltokConfig(); service=e; if(!e.url) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
+    const e=(typeof runEvaltokCfg==='function')?runEvaltokCfg(rc):evaltokConfig(); service=e; if(!e.url) throw new Error('EvalTokens 服务地址未配置（请在「设置」页配置）');
     const idOf=t=>String(t.id||t.task_id||t.uuid||t._id||'');
     const nameOf=t=>String(t.name||t.title||t.task_name||t.display_name||'');
     /* 每次运行都向服务核验任务：兼容手填名称、${VAR} 解析出的名称，以及编辑器旧数据中残留的 taskName。 */
@@ -8118,7 +8169,7 @@ function archiveRun(rc, result){
     //   ARCHIVE_FOLDER=本次运行归档文件夹/ARCHIVE_LOG_FILE/ARCHIVE_PROFILE_FILE 等，失败不影响运行结果。
     //   经 runCtx=ctx 传入已结束运行的快照，避免运行队列切换后读到新运行的 TARGET_*/IMAGE_*。
     //   脚本不存在（如默认 collect_logs.sh 尚未创建）时 scriptByName 返回 null，自动跳过。
-    const scName=(archiveScriptName||'').trim();
+    const scName=(((typeof runArchiveScriptName==='function')?runArchiveScriptName(ctxSnapshot):archiveScriptName)||'').trim();
     if(scName && archiveConfigured()){   // 归档脚本是「已配置归档」专属；保底归档（archiveDir 留空）不执行，避免关归档时仍跑节点日志收集
       const asc=scriptByName(scName);
       if(asc){
@@ -8192,14 +8243,15 @@ function pmcContext(){   // 取收集目标运行上下文：编排区展示的�
   }
   return { label, startMs, endMs, prom:ps, archive };
 }
-function buildPromCollectEnv(ctx, startMs, endMs){   // 收集普罗数据注入脚本的环境变量：时间段（ISO + Unix 秒）+ 数据源 + 模型/命名空间 + 归档目录
+function buildPromCollectEnv(ctx, startMs, endMs, promCfg){   // 收集普罗数据注入脚本的环境变量：时间段（ISO + Unix 秒）+ 数据源 + 模型/命名空间 + 归档目录
+  const p=promCfg||prom;   // 优先传本运行设置快照；缺省回落当前设置
   const env={
     METRICS_ACTION:'collect',
     PROM_START:new Date(startMs).toISOString(),
     PROM_END:new Date(endMs).toISOString(),
     VLLM_METRICS_START:String(Math.floor(startMs/1000)),
     VLLM_METRICS_END:String(Math.floor(endMs/1000)),
-    PROMETHEUS_URL:(prom.url||'').trim(),
+    PROMETHEUS_URL:(p&&p.url||'').trim(),
   };
   /* collect_vllm_metrics.py 的 --model-name 取 ARCH_NAME、--namespace 取 NAMESPACE；MODEL_NAME / XDS_NAMESPACE 为兼容其他脚本的同值副本 */
   if(ctx.prom && ctx.prom.enabled){
@@ -8211,7 +8263,8 @@ function buildPromCollectEnv(ctx, startMs, endMs){   // 收集普罗数据注入
 }
 function promOutputDir(ctx){   // 收集产物目录：与 buildPromCollectEnv 注入的 METRICS_OUTPUT_DIR 一致——有归档=归档文件夹/metrics；未归档=脚本目录下 vllm-metrics（exec cwd=scriptsDir，脚本默认输出 cwd/vllm-metrics）
   if(ctx && ctx.archive) return ctx.archive.replace(/\/+$/,'')+'/metrics';
-  return (scriptsDir||'').replace(/\/+$/,'')+'/vllm-metrics';
+  const sd=(typeof runScriptsDir==='function')?runScriptsDir(ctx):scriptsDir;
+  return (sd||'').replace(/\/+$/,'')+'/vllm-metrics';
 }
 /* 任务级普罗采集：勾选「收集普罗数据」的阶段进入终态（成功/失败）后，按「任务开始→结束」时段后台调用
    设置页收集脚本，产物目录=归档文件夹/{任务名}-{阶段序号}-普罗数据（未配置归档=脚本目录 vllm-metrics 下同规则）。
@@ -8219,18 +8272,19 @@ function promOutputDir(ctx){   // 收集产物目录：与 buildPromCollectEnv �
    _promCollected 去重（advance/finish 各扫一次）；「从失败阶段重试」复位标记后重跑会重新采集。 */
 function taskPromFolderName(name, seq){ return sanitizeFsName(name)+'-'+String(seq).padStart(2,'0')+'-普罗数据'; }
 function taskPromOutputDir(rc, name, seq){
-  const base=(rc && rc.archive) ? rc.archive.replace(/\/+$/,'') : (scriptsDir||'').replace(/\/+$/,'')+'/vllm-metrics';
+  const base=(rc && rc.archive) ? rc.archive.replace(/\/+$/,'') : (((typeof runScriptsDir==='function')?runScriptsDir(rc):scriptsDir)||'').replace(/\/+$/,'')+'/vllm-metrics';
   return base+'/'+taskPromFolderName(name, seq);
 }
 async function taskPromCollect(rc, s, seq, startMs, endMs){
   const dir=taskPromOutputDir(rc, s.name, seq);
-  const scName=(prom.collectScript||'').trim();
+  const promCfg=(typeof runPromCfg==='function')?runPromCfg(rc):prom;
+  const scName=((promCfg&&promCfg.collectScript)||'').trim();
   if(!scName){ console.warn('[pipeline] 任务「'+s.name+'」已勾选收集普罗数据，但未在「设置 → 普罗数据服务配置」配置收集脚本，已跳过采集'); return; }
   const sc=scriptByName(scName);
   if(!sc || !sc.path){ console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据跳过：收集脚本「'+scName+'」未在 scripts 目录找到'); return; }
   if(!(endMs>startMs)) endMs=startMs+1;
   const ps={enabled:true, modelName:substPromTemplate(DEFAULT_PIPELINE_PROM.modelName, rc), xdsNamespace:substPromTemplate(DEFAULT_PIPELINE_PROM.xdsNamespace, rc)};   // 默认占位按采集时点解析（与手动补采一致）
-  const env=buildPromCollectEnv({prom:ps, archive:(rc&&rc.archive)||''}, startMs, endMs);   // 时间段 + 数据源 + 模型/命名空间 + 归档目录
+  const env=buildPromCollectEnv({prom:ps, archive:(rc&&rc.archive)||''}, startMs, endMs, promCfg);   // 时间段 + 数据源 + 模型/命名空间 + 归档目录（数据源取本运行设置快照）
   env.METRICS_OUTPUT_DIR=dir;   // 任务级产物目录覆盖默认 metrics 子目录：{任务名}-{阶段序号}-普罗数据
   const res=await execScript(sc, 0, env, rc, function(){}, null, dir+'/collect.log');   // 强制走流式接口：完整输出直接落 collect.log，页面不接收一次性大 JSON
   if(!res || res.code!==0) console.warn('[pipeline] 任务「'+s.name+'」收集普罗数据失败（exit '+(res&&res.code)+'，不影响流水线结果），输出见 '+dir+'/collect.log');
