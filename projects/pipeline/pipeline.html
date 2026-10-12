@@ -5123,7 +5123,11 @@ async function cancelServerRun(runId){
   }
 }
 /* 当前详情的服务端日志独立于普通队列快照拉取：同一阶段请求在途时复用 Promise；用户切换运行或
-   阶段后，迟到响应按序号和当前选择双重丢弃，避免旧日志覆盖新详情。 */
+   阶段后，迟到响应按序号和当前选择双重丢弃，避免旧日志覆盖新详情。
+   持续输出阶段每秒轮询若每次都全量重传 256KiB 尾窗会放大带宽与 JSON 解析开销，
+   故带上 sinceEnd（已持有逻辑日志流末尾偏移）请求后缀增量：服务端只回 append，
+   replaceLog 或窗口滑过客户端位置时才退回全量 text（见 src/index.ts log()）。
+   本地缓存同样按 256KiB 截尾，避免长跑阶段缓存无界增长；endLen 单独记账，与展示截断无关。 */
 let _remoteLogPullSeq=0, _remoteLogPullKey='', _remoteLogPullPromise=null;
 async function pullRemoteQueueLog(){
   const rc=viewRc, stageId=String(selectedId||'');
@@ -5137,19 +5141,39 @@ async function pullRemoteQueueLog(){
     try{
       const cached=rc.remoteLogs&&rc.remoteLogs[stageId];
       const knownRevision=Number(cached&&cached.revision);
+      const knownEnd=Number(cached&&cached.endLen);
       let url='/api/worktable/pipeline/queue?runId='+encodeURIComponent(runId)+'&stageId='+encodeURIComponent(stageId);
-      if(Number.isSafeInteger(knownRevision)&&knownRevision>=0) url+='&revision='+knownRevision;
+      if(Number.isSafeInteger(knownRevision)&&knownRevision>=0){
+        url+='&revision='+knownRevision;
+        if(Number.isSafeInteger(knownEnd)&&knownEnd>=0) url+='&sinceEnd='+knownEnd;
+      }
       const response=await fetch(url,{cache:'no-store'});
       if(response.status===304) return cached||null;
       if(!response.ok) return null;
       const data=await response.json();
       const current=viewRc;
       if(seq!==_remoteLogPullSeq||!current||current.remotePreview!==true||current.remoteClientId!=='server'||current.remoteKind!=='running'||String(current.remoteItemId||'')!==runId||String(selectedId||'')!==stageId) return null;
-      const text=String(data&&data.text||'');
-      const revision=Number(data&&data.revision);
-      const log={text:text,truncated:!!(data&&data.truncated),revision:Number.isFinite(revision)?revision:0};
       if(!current.remoteLogs) current.remoteLogs={};
       const old=current.remoteLogs[stageId];
+      const revision=Number(data&&data.revision);
+      let text,truncated,endLen;
+      if(data&&typeof data.append==='string'&&old&&typeof old.text==='string'&&Number.isFinite(old.endLen)){
+        text=old.text+data.append;   // 后缀增量：服务端已确认 sinceEnd 仍在窗口内且无 replace
+        truncated=!!(data&&data.truncated);
+        endLen=Number(data&&data.endLen);
+        if(!Number.isFinite(endLen)) endLen=old.endLen+data.append.length;
+      }else{
+        text=String(data&&data.text||'');
+        truncated=!!(data&&data.truncated);
+        endLen=Number(data&&data.endLen);
+        if(!Number.isFinite(endLen)){
+          const baseLen=Number(data&&data.baseLen);
+          endLen=Number.isFinite(baseLen)?baseLen+text.length:text.length;
+        }
+      }
+      /* 本地展示缓存与服务端同限：只留末尾 256KiB，防止增量拼接下无界增长 */
+      if(text.length>256*1024) text=text.slice(text.length-256*1024);
+      const log={text:text,truncated:truncated,revision:Number.isFinite(revision)?revision:0,endLen:endLen};
       if(old&&old.text===log.text&&old.truncated===log.truncated&&old.revision===log.revision) return log;
       current.remoteLogs[stageId]=log;
       _detailKey=''; renderDetail();

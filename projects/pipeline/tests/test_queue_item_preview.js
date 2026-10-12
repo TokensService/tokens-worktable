@@ -373,7 +373,7 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
   };
   await context.pullRemoteQueueLog();
   assert.deepEqual(JSON.parse(JSON.stringify(context.viewRc.remoteLogs['build/one'])), {
-    text: 'first\nlatest\n', truncated: true, revision: 2,
+    text: 'first\nlatest\n', truncated: true, revision: 2, endLen: 13,
   });
   assert.equal(context._detailKey, '');
   assert.equal(renderDetailCalls, 1);
@@ -383,9 +383,46 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
     return { ok: false, status: 304 };
   };
   await context.pullRemoteQueueLog();
-  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2');
+  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2&sinceEnd=13',
+    '已有缓存时应带上 sinceEnd 请求后缀增量');
   assert.equal(renderDetailCalls, 1, '日志版本未变化时不得重复重绘详情');
   assert.equal(context.viewRc.remoteLogs['build/one'].text, 'first\nlatest\n');
+});
+
+test('pullRemoteQueueLog：服务端回 append 时拼接后缀，不重传整段尾窗', async () => {
+  const requests = [];
+  const context = {
+    viewRc: {
+      remotePreview: true, remoteClientId: 'server', remoteKind: 'running', remoteItemId: 'run 1',
+      remoteLogs: { 'build/one': { text: 'first\n', truncated: false, revision: 2, endLen: 6 } },
+    },
+    selectedId: 'build/one',
+    _detailKey: 'old',
+    renderDetail: () => {},
+    fetch: async url => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ append: 'latest\n', baseLen: 0, endLen: 13, truncated: false, revision: 3 }) };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('let _remoteLogPullSeq', '/* 拉取服务端权威队列及旧标签页'), context);
+
+  await context.pullRemoteQueueLog();
+  assert.match(requests[0], /[?&]sinceEnd=6(?:&|$)/, '已持有日志流末尾偏移时应传 sinceEnd');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.viewRc.remoteLogs['build/one'])), {
+    text: 'first\nlatest\n', truncated: false, revision: 3, endLen: 13,
+  });
+
+  /* 服务端 replace/窗口滑过后退回全量 text：不得按 endLen 拼接 */
+  context.viewRc.remoteLogs['build/one'] = { text: 'old-prefix\n', truncated: true, revision: 4, endLen: 20 };
+  context.fetch = async url => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ text: 'clipped-tail\n', baseLen: 40, endLen: 53, truncated: true, revision: 5 }) };
+  };
+  await context.pullRemoteQueueLog();
+  assert.equal(context.viewRc.remoteLogs['build/one'].text, 'clipped-tail\n', '全量 text 覆盖缓存，不做后缀拼接');
+  assert.equal(context.viewRc.remoteLogs['build/one'].truncated, true);
+  assert.equal(context.viewRc.remoteLogs['build/one'].endLen, 53);
 });
 
 test('cancelServerRun：任一浏览器都可取消服务端排队或运行中的任务并立即刷新', async () => {

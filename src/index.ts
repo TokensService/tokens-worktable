@@ -2096,7 +2096,10 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     startedAt: number;
     stages: any[];
     nodes: Record<string, any>;
-    logs: Record<string, { text: string; truncated: boolean; revision: number }>;
+    /* baseLen：text[0] 之前在逻辑日志流中已丢弃的字符数（触顶截尾时累加）；
+       lastReplaceRev：最近一次 replaceLog 的 revision，其后的追加才可做后缀增量。
+       截尾只推进 baseLen、不挡增量——客户端按 sinceEnd 对齐窗口即可续传。 */
+    logs: Record<string, { text: string; truncated: boolean; revision: number; baseLen: number; lastReplaceRev: number }>;
     controller: AbortController | null;
     resolve: () => void;
     reject: (error: unknown) => void;
@@ -2143,13 +2146,24 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     const id = String(stageId || '')
     if (!id || !item.nodes[id]) return
     const previous = item.logs[id]
-    const clipped = clipLiveLogTail((append && previous ? previous.text : '') + String(value ?? ''))
-    item.logs[id] = { text: clipped.text, truncated: (append && previous ? previous.truncated : false) || clipped.truncated, revision: (previous?.revision || 0) + 1 }
+    const keepPrev = !!(append && previous)
+    const nextRaw = (keepPrev ? previous.text : '') + String(value ?? '')
+    const clipped = clipLiveLogTail(nextRaw)
+    const dropped = nextRaw.length - clipped.text.length
+    const revision = (previous?.revision || 0) + 1
+    item.logs[id] = {
+      text: clipped.text,
+      truncated: (keepPrev ? previous.truncated : false) || clipped.truncated,
+      revision,
+      baseLen: (keepPrev ? previous.baseLen : 0) + dropped,
+      /* replaceLog 整段换文，旧 endLen 对不齐新流；追加（含触顶截尾）保持 epoch 语义不变 */
+      lastReplaceRev: keepPrev ? previous.lastReplaceRev : revision,
+    }
   }
   const resetStages = (item: ExecutionItem, stages: any[]) => {
     item.stages = stageList(stages)
     const nodes: Record<string, any> = {}
-    const logs: Record<string, { text: string; truncated: boolean; revision: number }> = {}
+    const logs: Record<string, { text: string; truncated: boolean; revision: number; baseLen: number; lastReplaceRev: number }> = {}
     for (const stage of item.stages) {
       const id = String(stage.id ?? '')
       if (id) {
@@ -2335,12 +2349,25 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       }
       return generation ? { generation, accepting, ...value } : value
     },
-    log(runId: string, stageId: string): { text: string; truncated: boolean; revision: number } | null {
+    /* sinceEnd 增量：客户端已持有逻辑流末尾（endLen）之前的全部内容时只回后缀 append。
+       条件：自 sinceRevision 起无 replaceLog（lastReplaceRev）、sinceEnd 仍落在当前窗口内。
+       触顶截尾只推 baseLen，sinceEnd 仍在窗口内即可续传；窗口滑过客户端位置才退回全量。 */
+    log(runId: string, stageId: string, sinceRevision?: number, sinceEnd?: number): { text?: string; append?: string; baseLen: number; endLen: number; truncated: boolean; revision: number } | null {
       const id = String(runId || ''), sid = String(stageId || '')
       const entry = running.find(({ item }) => runIdOf(item.plan) === id)
       if (!entry || !entry.item.nodes[sid]) return null
       const current = entry.item.logs[sid]
-      return current ? { ...current } : { text: '', truncated: false, revision: 0 }
+      if (!current) return { text: '', baseLen: 0, endLen: 0, truncated: false, revision: 0 }
+      const endLen = current.baseLen + current.text.length
+      const canDelta = Number.isSafeInteger(sinceEnd) && (sinceEnd as number) >= 0
+        && Number.isSafeInteger(sinceRevision) && (sinceRevision as number) >= 0
+        && (sinceRevision as number) >= current.lastReplaceRev
+        && (sinceEnd as number) >= current.baseLen
+        && (sinceEnd as number) <= endLen
+      if (canDelta) {
+        return { append: current.text.slice((sinceEnd as number) - current.baseLen), baseLen: current.baseLen, endLen, truncated: current.truncated, revision: current.revision }
+      }
+      return { text: current.text, baseLen: current.baseLen, endLen, truncated: current.truncated, revision: current.revision }
     },
     cancel(runId: string): { ok: boolean; state: 'queued' | 'running' | 'missing' } {
       const id = String(runId || '')
@@ -2470,9 +2497,9 @@ function createPipelineGenerationManager() {
       }
       return { ok: false, state: 'missing' as const }
     },
-    log(runId: string, stageId: string) {
+    log(runId: string, stageId: string, sinceRevision?: number, sinceEnd?: number) {
       for (const record of generations.values()) {
-        const result = record.queue.log(runId, stageId)
+        const result = record.queue.log(runId, stageId, sinceRevision, sinceEnd)
         if (result) return { ...result, generation: record.id }
       }
       return null
@@ -4074,8 +4101,16 @@ export function apply(ctx: Context) {
             if (revisionRaw !== null && (!/^\d{1,16}$/.test(revisionRaw) || !Number.isSafeInteger(Number(revisionRaw)))) {
               json(res, 400, { error: 'invalid revision' }); return
             }
+            /* sinceEnd：客户端已持有逻辑日志流末尾偏移；与 revision 同用时走后缀增量，
+               持续输出阶段不再每秒全量重传 256KiB 尾窗。缺省/非法即全量，旧客户端不受影响。 */
+            const sinceEndRaw = url.searchParams.get('sinceEnd')
+            if (sinceEndRaw !== null && (!/^\d{1,16}$/.test(sinceEndRaw) || !Number.isSafeInteger(Number(sinceEndRaw)))) {
+              json(res, 400, { error: 'invalid sinceEnd' }); return
+            }
+            const sinceRevision = revisionRaw !== null ? Number(revisionRaw) : undefined
+            const sinceEnd = sinceEndRaw !== null ? Number(sinceEndRaw) : undefined
             const log = pipelineExecutions && typeof pipelineExecutions.log === 'function'
-              ? pipelineExecutions.log(logRunId, logStageId)
+              ? pipelineExecutions.log(logRunId, logStageId, sinceRevision, sinceEnd)
               : null
             if (!log) { json(res, 404, { error: 'run or stage not found' }); return }
             if (revisionRaw !== null && Number(revisionRaw) === log.revision) {
