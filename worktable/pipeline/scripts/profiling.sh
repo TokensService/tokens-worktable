@@ -37,6 +37,9 @@ PROFILING_COLLECT_WAIT_SECONDS="${PROFILING_COLLECT_WAIT_SECONDS:-15}"
 PROFILING_POD_REGEX="${PROFILING_POD_REGEX:-prefill|decode}"
 PROFILING_POD_CONTAINER="${PROFILING_POD_CONTAINER:-ray-worker}"
 PROFILING_KUBECTL_BIN="${PROFILING_KUBECTL_BIN:-kubectl}"
+# Profiling endpoints are RFC1918 addresses. Do not send them through the
+# workstation's HTTP proxy, which can hang and eventually produce curl 52.
+CURL_NO_PROXY_ARGS=(--noproxy '*')
 case "${PROFILING_SELF_TEST,,}" in true|false) ;; *) echo 'PROFILING_SELF_TEST must be true or false' >&2; exit 2 ;; esac
 [[ "$PROFILING_MAX_REQUESTS" =~ ^[0-9]+$ ]] || { echo 'PROFILING_MAX_REQUESTS must be non-negative' >&2; exit 2; }
 for value_name in PROFILING_CONNECT_TIMEOUT_SECONDS PROFILING_REQUEST_TIMEOUT_SECONDS; do
@@ -51,7 +54,7 @@ log "resolved endpoint=${base}"
 log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s connect_timeout=${PROFILING_CONNECT_TIMEOUT_SECONDS}s request_timeout=${PROFILING_REQUEST_TIMEOUT_SECONDS}s retries=${PROFILING_RETRIES}"
 log "starting torch profiling: GET ${base}/OM/diagnose/get params=${PROFILING_PARAMS} filter=${PROFILING_FILTER:-<empty>}"
 set +e
-curl --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
+curl "${CURL_NO_PROXY_ARGS[@]}" --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
   --retry "$PROFILING_RETRIES" --retry-delay 1 --get "${base}/OM/diagnose/get" \
   --dump-header "$request_header_file" --output "$request_body_file" \
   --write-out '%{http_code} %{time_total}' \
@@ -109,7 +112,7 @@ PY
 )"
   log "self-test request ${i}: POST ${base}/chat/completions nonce=${nonce}"
   set +e
-  curl --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
+  curl "${CURL_NO_PROXY_ARGS[@]}" --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
     "${base}/chat/completions" -H 'Content-Type: application/json' -H "model_endpoint: ${PROFILING_MODEL_ENDPOINT}" -d "$body" \
     --dump-header "$request_header_file" --output "$request_body_file" \
     --write-out '%{http_code} %{time_total}' >"${request_body_file}.meta"
