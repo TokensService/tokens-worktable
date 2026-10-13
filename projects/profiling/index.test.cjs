@@ -60,7 +60,8 @@ function functionSource(name) {
 }
 
 /* 合成 trace：主 rank(pid 2) 10 个内核，含跨流重叠、暴露通信、elementwise 隐藏、
-   融合证据（silu_and_mul 已在跑；rmsnorm+quant 拆分共现），decode 注释窗口全覆盖 */
+   融合证据（silu_and_mul 已在跑；rmsnorm+quant 拆分共现），decode 注释窗口全覆盖，
+   最大空闲段（1100-1200）内有 host 同步事件（cudaStreamSynchronize）供空闲归因 */
 function makeFixture() {
   const ev = [];
   const push = (o) => ev.push(o);
@@ -68,6 +69,8 @@ function makeFixture() {
   push({ ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 900, dur: 300, name: "aten::mm", args: { "External id": 10 } });
   push({ ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 1300, dur: 100, name: "aten::all_reduce", args: { "External id": 13 } });
   push({ ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 1500, dur: 80, name: "aten::rms_norm", args: { "External id": 12 } });
+  /* host 同步事件：落在最大 GPU 空闲段 1100-1200 内 */
+  push({ ph: "X", cat: "cuda_runtime", pid: 1, tid: 11, ts: 1105, dur: 60, name: "cudaStreamSynchronize" });
   /* decode 阶段注释窗口 1000-3000 */
   push({ ph: "X", cat: "user_annotation", pid: 1, tid: 11, ts: 1000, dur: 2000, name: "decode step" });
   /* 主 rank 内核（pid 2） */
@@ -87,7 +90,17 @@ function makeFixture() {
   return { traceEvents: ev };
 }
 
-const EXPECT_GPU = { window: 780, busy: 407, sum: 437, idle: 373, overlap: 30, maxConcurrent: 2, streams: 3, kernelCount: 10 };
+const EXPECT_GPU = { window: 780, busy: 407, sum: 437, idle: 373, overlap: 30, serial: 377, maxConcurrent: 2, streams: 3, kernelCount: 10 };
+
+/* 空闲段 TOP3：1100-1200（100µs，含 cudaStreamSynchronize ×1）、1632-1700（68µs）、1440-1500（60µs） */
+function assertIdleGaps(g) {
+  assert.equal(g.idleGaps.length, 3);
+  assert.equal(g.idleGaps[0].dur, 100);
+  assert.equal(g.idleGaps[0].ts, 1100);
+  assert.deepEqual(J(g.idleGaps[0].hosts), [["cudaStreamSynchronize", 1]]);
+  assert.equal(g.idleGaps[1].dur, 68);
+  assert.equal(g.idleGaps[2].dur, 60);
+}
 
 function assertGpuStats(g) {
   assert.ok(g, "应有 gpu 口径");
@@ -96,6 +109,7 @@ function assertGpuStats(g) {
   assert.equal(g.stageUs.decode, 437, "stageUs.decode");
   assert.equal(g.stageUs.prefill, 0);
   assert.equal(g.stageUs.all, 0);
+  assertIdleGaps(g);
 }
 
 test("classifyKernel 算子族分类覆盖 skill 模式表", () => {
@@ -207,6 +221,7 @@ test("analyzeTraceKernels：无内核事件返回空形态", () => {
 test("normalizeTrace 透传 kernelAnalysis（无内核计数则丢弃）", () => {
   const context = vm.createContext({});
   vm.runInContext(functionSource("fmtDur"), context);
+  vm.runInContext(functionSource("fmtUs"), context);
   vm.runInContext(functionSource("normalizeTrace"), context);
   const withKa = context.normalizeTrace({ kind: "chrome-trace", totalUs: 1, top: [{ cat: "kernel", name: "k", totalUs: 1, count: 1 }], kernelAnalysis: { gpu: { kernelCount: 3 }, kernels: [], overlap: [], fusion: [] } }, "t", "server");
   assert.ok(withKa.kernelAnalysis, "有内核分析应透传");
@@ -214,7 +229,7 @@ test("normalizeTrace 透传 kernelAnalysis（无内核计数则丢弃）", () =>
   assert.equal(withoutKa.kernelAnalysis, undefined);
 });
 
-test("kernelFindings：空闲 / 通信暴露 / 融合识别派生瓶颈发现", () => {
+test("kernelFindings：空闲（含 host 归因）/ 通信暴露 / 融合识别派生瓶颈发现", () => {
   const context = vm.createContext({});
   vm.runInContext(functionSource("fmtDur"), context);
   vm.runInContext(functionSource("fmtUs"), context);
@@ -224,20 +239,107 @@ test("kernelFindings：空闲 / 通信暴露 / 融合识别派生瓶颈发现", 
   const fs2 = context.kernelFindings(ka);
   const titles = fs2.map((f) => f.title).join("\n");
   assert.ok(titles.includes("GPU 空闲占比 48%"), "应报告 GPU 空闲（47.8%→48%）");
+  const idleFinding = fs2.find((f) => f.title.includes("GPU 空闲占比"));
+  assert.ok(idleFinding.detail.includes("cudaStreamSynchronize"), "空闲发现应含 host 同步归因");
+  assert.ok(idleFinding.detail.includes("最大空闲段 100µs"), "空闲发现应含最大空闲段");
   assert.ok(fs2.some((f) => f.level === "high" && f.title.includes("通信内核暴露")), "应有通信暴露 high");
   assert.ok(titles.includes("融合模式识别：已在跑 5 · 可融合 0"), "融合统计");
   assert.ok(!titles.includes("内核累计显著大于忙碌并集"), "437 < 407×1.3 不触发口径提醒");
+  assert.ok(!titles.includes("单流串行"), "本 fixture 有 3 条流，不报单流串行");
   assert.deepEqual(J(context.kernelFindings(null)), []);
   assert.deepEqual(J(context.kernelFindings({ gpu: null })), []);
 });
 
-test("页面静态契约：内核三表卡片 / 渲染函数 / AI 提示词", () => {
+test("单流 trace：全部内核串行（重叠为 0、serial=busy）并给出单流提示", () => {
+  const ctx = analyzerContext();
+  const single = [
+    { ph: "X", cat: "kernel", pid: 1, tid: 1, ts: 0, dur: 100, name: "gemm_a", args: { stream: 7 } },
+    { ph: "X", cat: "kernel", pid: 1, tid: 1, ts: 200, dur: 100, name: "flash_attn_b", args: { stream: 7 } },
+    { ph: "X", cat: "kernel", pid: 1, tid: 1, ts: 500, dur: 50, name: "silu_c", args: { stream: 7 } },
+  ];
+  const ka = ctx.analyzeTraceKernels(single, 1000);
+  assert.equal(ka.gpu.streams, 1);
+  assert.equal(ka.gpu.overlap, 0);
+  assert.equal(ka.gpu.serial, 250);
+  assert.equal(ka.gpu.busy, 250);
+  assert.equal(ka.gpu.maxConcurrent, 1);
+  const context = vm.createContext({});
+  vm.runInContext(functionSource("fmtDur"), context);
+  vm.runInContext(functionSource("fmtUs"), context);
+  vm.runInContext(functionSource("kernelFindings"), context);
+  const fs2 = context.kernelFindings(ka);
+  assert.ok(fs2.some((f) => f.title === "单流串行执行"), "单流应给出串行提示");
+});
+
+test("traceEventSide / aggregateTraceEvents：CPU/GPU 分侧聚合", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource("traceEventSide"), context);
+  vm.runInContext(functionSource("aggregateTraceEvents"), context);
+  assert.equal(context.traceEventSide("kernel"), "gpu");
+  assert.equal(context.traceEventSide("gpu_memcpy"), "gpu");
+  assert.equal(context.traceEventSide("cpu_op"), "cpu");
+  assert.equal(context.traceEventSide("cuda_runtime"), "cpu");
+  assert.equal(context.traceEventSide("user_annotation"), "cpu");
+  const agg = context.aggregateTraceEvents(makeFixture().traceEvents, 2000000);
+  assert.equal(agg.gpuTotalUs, 457, "GPU 侧累计=主 rank 437 + 次 rank 20");
+  assert.equal(agg.cpuTotalUs, 2540, "CPU 侧累计=cpu_op 480 + 同步 60 + 注释 2000");
+  assert.equal(agg.totalUs, 457 + 2540);
+  assert.equal(agg.topGpu[0].name, "ncclDevKernel_AllReduce_Sum_bf16");
+  assert.equal(agg.topCpu[0].name, "decode step");
+  assert.ok(agg.topGpu.every((r) => context.traceEventSide(r.cat) === "gpu"));
+  assert.ok(agg.topCpu.every((r) => context.traceEventSide(r.cat) === "cpu"));
+});
+
+test("normalizeTrace：分侧视图（hasSideSplit / sideTotals / total 取 wall 跨度）", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource("fmtDur"), context);
+  vm.runInContext(functionSource("fmtUs"), context);
+  vm.runInContext(functionSource("traceEventSide"), context);
+  vm.runInContext(functionSource("aggregateTraceEvents"), context);
+  vm.runInContext(functionSource("normalizeTrace"), context);
+  const agg = context.aggregateTraceEvents(makeFixture().traceEvents, 2000000);
+  const p = context.normalizeTrace(agg, "t", "browser");
+  assert.equal(p.hasSideSplit, true);
+  assert.ok(p.sideTotals.gpu > 0 && p.sideTotals.cpu > 0);
+  assert.equal(p.total, 2100 / 1e6, "总耗时取 wall 跨度 2100µs，不是混合累计");
+  assert.ok(p.stages.every((s) => s.side === "gpu" || s.side === "cpu"));
+  assert.ok(p.stages.filter((s) => s.side === "gpu")[0].name.startsWith("ncclDevKernel"));
+  assert.equal(p.meta["GPU 事件累计"], "457µs");
+  assert.equal(p.meta["CPU/Host 事件累计"], "2.54ms");
+  /* 旧汇总器输出（无 topGpu/topCpu）回退单表 */
+  const legacy = context.normalizeTrace({ kind: "chrome-trace", totalUs: 5, top: [{ cat: "cpu_op", name: "aten::add", totalUs: 5, count: 1 }] }, "t", "server");
+  assert.equal(legacy.hasSideSplit, undefined);
+});
+
+test("analyzeStages：分侧后 GPU/CPU 分开定位，不再混合定性", () => {
+  const context = vm.createContext({});
+  vm.runInContext(functionSource("fmtDur"), context);
+  vm.runInContext(functionSource("fmtUs"), context);
+  vm.runInContext(functionSource("traceEventSide"), context);
+  vm.runInContext(functionSource("aggregateTraceEvents"), context);
+  vm.runInContext(functionSource("normalizeTrace"), context);
+  vm.runInContext(functionSource("analyzeSide"), context);
+  vm.runInContext(functionSource("analyzeStages"), context);  const agg = context.aggregateTraceEvents(makeFixture().traceEvents, 2000000);
+  const p = context.normalizeTrace(agg, "t", "browser");
+  const fs2 = context.analyzeStages(p);
+  const titles = fs2.map((f) => f.title).join("\n");
+  assert.ok(titles.includes("GPU 侧"), "瓶颈应带侧标签");
+  assert.ok(!titles.includes("严重瓶颈：decode step"), "CPU 注释事件不得被定名为全程瓶颈");
+  /* 非分侧（流水线 JSON）路径行为不变 */
+  const pl = { stages: [{ name: "构建", status: "done", durSec: 90 }, { name: "测试", status: "done", durSec: 10 }], total: 100 };
+  const fs3 = context.analyzeStages(pl);
+  assert.ok(fs3.some((f) => f.title.includes("严重瓶颈：构建")), "流水线路径保持原判定");
+});
+
+test("页面静态契约：内核三表卡片 / 分侧表格 / 渲染函数 / AI 提示词", () => {
   for (const needle of [
-    'id="kernelCard"', 'id="kernelTable"', 'id="overlapWrap"', 'id="fusionWrap"', 'id="gpuStatGrid"',
-    "function renderKernelAnalysis()", "function kernelFindings(ka)",
+    'id="kernelCard"', 'id="kernelTable"', 'id="overlapWrap"', 'id="fusionWrap"', 'id="gpuStatGrid"', 'id="gpuNoteLine"',
+    'id="stageGpuHead"', 'id="stageTableCpu"', 'id="stageCpuWrap"', "CPU · Host 事件",
+    "function renderKernelAnalysis()", "function kernelFindings(ka)", "function analyzeSide(", "function traceEventSide(",
+    "hasSideSplit", "串行(单流)",
     "renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();",
     "agg.kernelAnalysis = analyzeTraceKernels(data.traceEvents, 2000000);",
-    "### 融合候选", "### 重叠机会", "### 内核归因 TOP 10",
+    "### 融合候选", "### 重叠机会", "### 内核归因 TOP 10", "## GPU 设备事件耗时", "## CPU/Host 事件耗时",
     "llm-torch-profiler-analysis",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
 });
@@ -270,6 +372,7 @@ test("trace_summary.py 服务端汇总器产出同款内核分析（对拍）", 
   const ctx = analyzerContext();
   const kaJs = ctx.analyzeTraceKernels(makeFixture().traceEvents, 2000000);
   for (const key of Object.keys(EXPECT_GPU)) assert.equal(d.kernelAnalysis.gpu[key], kaJs.gpu[key], `对拍 gpu.${key}`);
+  assert.deepEqual(J(d.kernelAnalysis.gpu.idleGaps), J(kaJs.gpu.idleGaps), "空闲段归因一致");
   assert.deepEqual(
     J(d.kernelAnalysis.kernels.map((k2) => k2.name)),
     J(kaJs.kernels.map((k2) => k2.name)),
