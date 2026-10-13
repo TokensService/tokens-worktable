@@ -260,6 +260,38 @@ test('supervisor：旧实例释放与新实例立即 retain 时复用原 manager
   await ctx.releasePipelineSupervisor(state)
 })
 
+test('supervisor：旧实例已开始 dispose 后仍复用 manager，升级不丢旧代运行与新代快照', async () => {
+  const ctx = loadApiRegion()
+  const state = ctx.retainPipelineSupervisor()
+  const manager = state.manager
+  let oldRelease
+  const old = ctx.createPipelineExecutionQueue(async () => {
+    await new Promise(resolve => { oldRelease = resolve })
+  }, 1, 10, { generation: 'upgrade-old' })
+  manager.activate('upgrade-old', old)
+  const oldRun = manager.run({ id: 'old-server-run' })
+  await new Promise(resolve => setImmediate(resolve))
+
+  const disposing = ctx.releasePipelineSupervisor(state)
+  await new Promise(resolve => setImmediate(resolve)) // 让旧实例的 0ms 清理开始
+  const replacement = ctx.retainPipelineSupervisor()
+  assert.equal(replacement, state, '旧 manager 正在 drain 时新实例仍应复用 supervisor')
+
+  const newer = ctx.createPipelineExecutionQueue(async () => {}, 1, 10, { generation: 'upgrade-new' })
+  manager.activate('upgrade-new', newer)
+  const newRun = manager.run({ id: 'new-server-run' })
+  await newRun
+  assert.equal(manager.snapshot().generations.some(g => g.id === 'upgrade-old'), true, '旧代运行仍在快照中')
+  assert.equal(manager.snapshot().generations.some(g => g.id === 'upgrade-new'), true, '新代已接管并可见')
+
+  oldRelease()
+  await oldRun
+  await disposing
+  assert.equal(manager.snapshot().generations.some(g => g.id === 'upgrade-new'), true, '旧代清理不得清空新代')
+  assert.equal(ctx.getPipelineSupervisor(), state, '重新 retain 的 supervisor 仍应保留')
+  await ctx.releasePipelineSupervisor(replacement)
+})
+
 test('代际管理器 health：报告 active generation 与 draining 代', async () => {
   const ctx = loadApiRegion()
   const manager = ctx.createPipelineGenerationManager()

@@ -87,6 +87,7 @@ function loadPagination(total = 23) {
     plPage: 0,
     plPageSize: 10,
     localStorage: { setItem(key, value) { store[key] = value; } },
+    persistState() {},   /* 页大小变更现随落盘防抖推服务端（pip-plPageSize → 服务端 plPageSize 键） */
     renderPlFilterOptions() {},
     plFilterMatch: () => true,
     plOwnerOf: () => '',

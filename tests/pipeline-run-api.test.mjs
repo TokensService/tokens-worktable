@@ -273,6 +273,8 @@ test('服务端执行池按运行和阶段保存有界实时日志尾部', async
 
   assert.deepEqual(plain(pool.log('live-1', 'build')), {
     text: '$ bash build.sh\nfirst line\nlatest line\n',
+    baseLen: 0,
+    endLen: '$ bash build.sh\nfirst line\nlatest line\n'.length,
     truncated: false,
     revision: 3,
   })
@@ -295,6 +297,68 @@ test('服务端执行池按运行和阶段保存有界实时日志尾部', async
   release()
   await running
   assert.equal(pool.log('live-1', 'build'), null, '运行离开执行池后实时日志一并释放')
+})
+
+test('服务端阶段日志按 sinceEnd 后缀增量返回，replace 后退回全量、触顶截尾仍可续传', async () => {
+  const f = loadRunRoute(stored)
+  let release, liveRuntime
+  const pool = f.ctx.createPipelineExecutionQueue(async (_plan, runtime) => {
+    liveRuntime = runtime
+    runtime.setStages([{ id: 'build', name: '构建' }])
+    runtime.appendLog('build', 'first line\n')
+    await new Promise(resolve => { release = resolve })
+  }, 1, 10)
+  const running = pool.run({ id: 'inc-1', runId: 'inc-1', stages: [{ id: 'build', name: '构建' }] })
+  await Promise.resolve()
+
+  const base = pool.log('inc-1', 'build')
+  assert.equal(base.text, 'first line\n')
+  assert.equal(base.revision, 1)
+  assert.equal(base.baseLen, 0)
+  assert.equal(base.endLen, 'first line\n'.length)
+
+  liveRuntime.appendLog('build', 'second line\n')
+  const delta = pool.log('inc-1', 'build', 1, base.endLen)
+  assert.deepEqual(plain(delta), { append: 'second line\n', baseLen: 0, endLen: 'first line\nsecond line\n'.length, truncated: false, revision: 2 })
+
+  /* 触顶截尾只推 baseLen：客户端 endLen 仍在窗口内即可继续增量，不再全量重传 */
+  liveRuntime.appendLog('build', 'x'.repeat(300 * 1024) + 'TAIL')
+  const afterClip = pool.log('inc-1', 'build')
+  assert.equal(afterClip.truncated, true)
+  assert.ok(afterClip.baseLen > 0, '触顶截尾应累加 baseLen')
+  assert.match(afterClip.text, /TAIL$/)
+  /* sinceEnd 指向截尾前的末尾（已被丢出窗口）→ 全量 */
+  const slid = pool.log('inc-1', 'build', 2, 'first line\nsecond line\n'.length)
+  assert.equal(slid.append, undefined, '窗口滑过客户端位置必须全量')
+  assert.equal(slid.text, afterClip.text)
+
+  /* sinceEnd 仍落在当前窗口内 → 增量续传（关键：触顶后每次追加都会截尾，但不挡增量） */
+  liveRuntime.appendLog('build', 'more\n')
+  const postClipDelta = pool.log('inc-1', 'build', afterClip.revision, afterClip.endLen)
+  assert.equal(postClipDelta.text, undefined, '窗口内只回后缀，不重传整段尾窗')
+  assert.equal(postClipDelta.append, 'more\n')
+  assert.equal(postClipDelta.endLen, afterClip.endLen + 'more\n'.length)
+
+  /* replaceLog 整段换文：旧 endLen 对不齐新流，必须全量 */
+  liveRuntime.replaceLog('build', 'replaced\n')
+  const replaced = pool.log('inc-1', 'build', postClipDelta.revision, postClipDelta.endLen)
+  assert.equal(replaced.append, undefined)
+  assert.equal(replaced.text, 'replaced\n')
+
+  /* 不带 since 参数保持全量（旧客户端契约） */
+  const full = pool.log('inc-1', 'build')
+  assert.equal(full.text, 'replaced\n')
+  assert.equal(full.append, undefined)
+
+  /* tailLines：全量回退只回末尾 N 行，endLen 仍是完整逻辑流位置 */
+  liveRuntime.replaceLog('build', 'a\nb\nc\nd\ne\n')
+  const tailed = pool.log('inc-1', 'build', undefined, undefined, 2)
+  assert.equal(tailed.text, 'd\ne\n')
+  assert.equal(tailed.endLen, 'a\nb\nc\nd\ne\n'.length)
+  const untailed = pool.log('inc-1', 'build')
+  assert.equal(untailed.text, 'a\nb\nc\nd\ne\n')
+  release()
+  await running
 })
 
 test('服务端执行队列满时拒绝继续持有任务，API 不返回虚假的 202', async () => {
@@ -1499,6 +1563,61 @@ test('API 服务端执行器展开预设、携带代码仓上下文并写入可�
   assert.equal(f.history[0].repoId, 'repo-app')
   assert.equal(f.history[0].source, 'api')
   assert.equal(f.history[0].status, 'success')
+})
+
+/* 显式 presets:[]（页面生成的定时后缀/关页移交/未勾选清理的定时页计划）不得落入
+   「无 presets 字段旧计划 → 配置了清理脚本即执行」的兼容回退——否则未勾选环境清理的
+   运行历史会多出一个环境清理阶段（且移交后缀会在中段重复执行清理）。 */
+test('移交计划显式 presets:[] 时配置了清理脚本也不再执行环境清理', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  })
+  const plan = apiExecutionPlan([])
+  plan.presets = []
+  plan.source = 'schedule'
+  plan.by = 'tester ⏰'
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/build.sh' } }]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['build.sh'], '显式 presets:[] 不得触发清理脚本')
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['构建'], '运行历史不多出环境清理阶段')
+})
+
+/* 兼容回退保留：无 presets 字段的旧定时计划（修复前页面/手写/旧版 API 登记）维持
+   「配置了清理脚本即执行」旧行为，升级前后行为一致。 */
+test('无 presets 字段的旧定时计划保持「配置了清理脚本即执行」兼容回退', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  })
+  const plan = apiExecutionPlan([])
+  delete plan.presets   // 旧计划没有 presets 字段
+  plan.source = 'schedule'
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/build.sh' } }]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['cleanup.sh', 'build.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['环境清理', '构建'])
+})
+
+/* 定时页新计划勾选「清理环境」时携带 presets:['cleanup']：服务端经 materializeServerPipelineStages
+   在阶段列表最前补齐清理预设（计划 stages 不含预设标记行），与旧回退同位置同脚本。 */
+test('携带 presets:[cleanup] 的定时计划在阶段最前执行环境清理', async () => {
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  })
+  const plan = apiExecutionPlan(['cleanup'])
+  plan.source = 'schedule'
+  plan.stages = [{ id: 'build', name: '构建', script: { name: 'build.sh', path: '/build.sh' } }]
+
+  await f.execPlan(plan)
+
+  assert.deepEqual(f.calls.map(call => call.script), ['cleanup.sh', 'build.sh'])
+  assert.deepEqual(f.history[0].logs.map(log => log.stage), ['环境清理', '构建'])
 })
 
 test('服务端执行器实时上报阶段状态，并在队列取消后中止当前任务且不启动后续任务', async () => {

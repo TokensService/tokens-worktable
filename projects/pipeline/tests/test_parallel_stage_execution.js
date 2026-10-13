@@ -497,7 +497,6 @@ test('失败阶段重试从并行组首项开始并恢复组入口变量与运�
   assert.deepEqual(fixture.advanced, [0]);
   assert.deepEqual(plain(fixture.rc.vars), { UPSTREAM: 'snapshot' });
   assert.equal(fixture.rc.over, false);
-  assert.equal(fixture.stopButton.disabled, false);
   for (const stage of fixture.rc.stages) {
     assert.equal(fixture.rc.nodes[stage.id].status, 'idle', stage.id + ' 节点未复位');
     assert.equal(stage._out, null, stage.id + ' 输出未复位');

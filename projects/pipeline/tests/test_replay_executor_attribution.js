@@ -24,7 +24,6 @@ test('历史回放不回填「执行人」输入框，原执行人仅在回放�
     overall:{firstChild:null},
     overallBy:{textContent:''},
     replayTip:{textContent:''},
-    stopBtn:{disabled:false},
     repoSel:{value:''},
   };
   const ctx={

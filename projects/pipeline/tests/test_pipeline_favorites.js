@@ -51,14 +51,19 @@ function loadFilterBindings(initialFilter){
   ['plFilterKw','plFilterOwner','plFilterFavorite','plFilterClear'].forEach(id=>{
     nodes[id]={value:'',handlers:{},addEventListener(type,handler){ this.handlers[type]=handler; }};
   });
-  nodes.plFilterOwner.list='plOwnerList';   /* 拥有者筛选为 input+datalist 组合框形态 */
+  nodes.plOwnerPick={contains:()=>false};
+  nodes.plOwnerPanel={style:{display:'none'},innerHTML:'',querySelectorAll:()=>[]};
   const saves=[],renders=[];
   const ctx={
     plFilter:Object.assign({},initialFilter),
     plPage:3,
-    $:id=>nodes[id],
+    document:{activeElement:null,addEventListener(){}},
+    $:id=>nodes[id]||null,
     savePlFilter:()=>saves.push(Object.assign({},ctx.plFilter)),
     renderPipelines:()=>renders.push(1),
+    renderPlOwnerPanel:()=>{},
+    plOwnerPanelItems:()=>[],
+    _plOwnerActive:-1,
   };
   vm.createContext(ctx);
   const start=source.indexOf('/* 流水线任务筛选：关键字 + 拥有者');

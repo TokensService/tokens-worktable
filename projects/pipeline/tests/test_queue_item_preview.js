@@ -160,6 +160,33 @@ test('remoteQueuePreviewRc：他端运行快照保留每个阶段的状态、进
   assert.equal(rc.release, '', '他端未同步 Release 时不能伪造本页默认值');
 });
 
+test('remoteQueuePreviewRc：归档目录与 tag 从快照透传，供跨浏览器拼出正确日志路径', () => {
+  const { context } = makePreviewContext();
+  const client = { id: 'c2', label: 'Chrome·xy12' };
+  const item = {
+    id: 'r2', pipelineName: '远端部署', by: 'eve', startedAt: 123,
+    archive: '/var/log/op_test/远端部署_20260101120000', tag: 'run-xyz',
+    stages: [{ id: 's1', name: '构建' }],
+    nodes: { s1: { status: 'running', progress: 50, dur: 3 } },
+  };
+  const rc = context.remoteQueuePreviewRc(client, item, 'running');
+  assert.equal(rc.archive, '/var/log/op_test/远端部署_20260101120000', 'archive 应从快照透传');
+  assert.equal(rc.tag, 'run-xyz', 'tag 应从快照透传');
+});
+
+test('remoteQueuePreviewRc：快照无 archive/tag 时显式置 null/占位（防 stageLogFileFor 拼假日志路径）', () => {
+  const { context } = makePreviewContext();
+  const client = { id: 'c2', label: 'Chrome·xy12' };
+  const item = {
+    id: 'r2', pipelineName: 'P', by: 'eve', startedAt: 123,
+    stages: [{ id: 's1', name: '构建' }],
+    nodes: { s1: { status: 'running', progress: 50, dur: 3 } },
+  };
+  const rc = context.remoteQueuePreviewRc(client, item, 'running');
+  assert.equal(rc.archive, null, '无 archive 应显式置 null');
+  assert.equal(rc.tag, '—', '无 tag 应为占位符');
+});
+
 test('remoteQueuePreviewRc：运行中阶段按 startedAt 折算实时已耗时，无 startedAt 保持快照 dur', () => {
   const { context } = makePreviewContext();
   const now = Date.now();
@@ -329,10 +356,10 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
     },
   };
   vm.createContext(context);
-  vm.runInContext(extract('let _remoteLogPullSeq', '/* 拉取服务端权威队列及旧标签页'), context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
 
   const pending = context.pullRemoteQueueLog();
-  assert.equal(requests[0], '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone');
+  assert.equal(requests[0], '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&tailLines=20');
   context.selectedId = 'deploy';
   resolveFirst({ ok: true, json: async () => ({ text: 'stale\n', truncated: false, revision: 1 }) });
   await pending;
@@ -346,7 +373,7 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
   };
   await context.pullRemoteQueueLog();
   assert.deepEqual(JSON.parse(JSON.stringify(context.viewRc.remoteLogs['build/one'])), {
-    text: 'first\nlatest\n', truncated: true, revision: 2,
+    text: 'first\nlatest\n', truncated: true, revision: 2, endLen: 13,
   });
   assert.equal(context._detailKey, '');
   assert.equal(renderDetailCalls, 1);
@@ -356,9 +383,68 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
     return { ok: false, status: 304 };
   };
   await context.pullRemoteQueueLog();
-  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2');
+  assert.equal(requests.at(-1), '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&revision=2&sinceEnd=13&tailLines=20',
+    '已有缓存时应带上 sinceEnd 与 tailLines');
   assert.equal(renderDetailCalls, 1, '日志版本未变化时不得重复重绘详情');
   assert.equal(context.viewRc.remoteLogs['build/one'].text, 'first\nlatest\n');
+});
+
+test('pullRemoteQueueLog：服务端回 append 时拼接后缀，不重传整段尾窗', async () => {
+  const requests = [];
+  const context = {
+    viewRc: {
+      remotePreview: true, remoteClientId: 'server', remoteKind: 'running', remoteItemId: 'run 1',
+      remoteLogs: { 'build/one': { text: 'first\n', truncated: false, revision: 2, endLen: 6 } },
+    },
+    selectedId: 'build/one',
+    _detailKey: 'old',
+    renderDetail: () => {},
+    fetch: async url => {
+      requests.push(url);
+      return { ok: true, json: async () => ({ append: 'latest\n', baseLen: 0, endLen: 13, truncated: false, revision: 3 }) };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+
+  await context.pullRemoteQueueLog();
+  assert.match(requests[0], /[?&]sinceEnd=6(?:&|$)/, '已持有日志流末尾偏移时应传 sinceEnd');
+  assert.deepEqual(JSON.parse(JSON.stringify(context.viewRc.remoteLogs['build/one'])), {
+    text: 'first\nlatest\n', truncated: false, revision: 3, endLen: 13,
+  });
+
+  /* 服务端 replace/窗口滑过后退回全量 text：不得按 endLen 拼接 */
+  context.viewRc.remoteLogs['build/one'] = { text: 'old-prefix\n', truncated: true, revision: 4, endLen: 20 };
+  context.fetch = async url => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ text: 'clipped-tail\n', baseLen: 40, endLen: 53, truncated: true, revision: 5 }) };
+  };
+  await context.pullRemoteQueueLog();
+  assert.equal(context.viewRc.remoteLogs['build/one'].text, 'clipped-tail\n', '全量 text 覆盖缓存，不做后缀拼接');
+  assert.equal(context.viewRc.remoteLogs['build/one'].truncated, true);
+  assert.equal(context.viewRc.remoteLogs['build/one'].endLen, 53);
+});
+
+test('pullRemoteQueueLog：缓存只保留末尾 20 行，与历史回放尾窗一致', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => 'line-' + (i + 1)).join('\n');
+  const context = {
+    viewRc: {
+      remotePreview: true, remoteClientId: 'server', remoteKind: 'running', remoteItemId: 'run 1',
+      remoteLogs: {},
+    },
+    selectedId: 'build/one',
+    _detailKey: '',
+    renderDetail: () => {},
+    fetch: async () => ({ ok: true, json: async () => ({ text: many + '\n', baseLen: 0, endLen: many.length + 1, truncated: false, revision: 1 }) }),
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+  await context.pullRemoteQueueLog();
+  const lines = context.viewRc.remoteLogs['build/one'].text.split('\n').filter(Boolean);
+  assert.equal(lines.length, 20, '只留最后 20 行');
+  assert.equal(lines[lines.length - 1], 'line-30');
+  assert.equal(lines[0], 'line-11');
+  assert.equal(context.viewRc.remoteLogs['build/one'].endLen, many.length + 1, 'endLen 仍记完整逻辑流末尾');
 });
 
 test('cancelServerRun：任一浏览器都可取消服务端排队或运行中的任务并立即刷新', async () => {
@@ -419,6 +505,8 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
   const calls = [];
   const context = {
     DETAIL_LOG_LIMIT: { maxLines: 1000, maxChars: 256 * 1024 },
+    LIVE_LOG_TAIL_LINES: 20,
+    LIVE_LOG_TAIL_LIMIT: { maxLines: 20, maxChars: 256 * 1024 },
     stageOutputLines: out => ({ lines: String(out.stdout || '').trim().split('\n'), omitted: !!out._stdoutTruncated }),
     buildLog: (...args) => { calls.push(args); return ['本页日志']; },
   };
@@ -432,7 +520,7 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, {
     remotePreview: true, remoteClientId: 'server', remoteLogs: { s1: { text: 'first\nlatest\n', truncated: true, revision: 3 } },
   }, node)), [
-    '… 详情仅显示服务端日志末尾，完整内容请查看运行归档。', 'first', 'latest',
+    '… 详情仅显示服务端日志末尾 20 行，完整内容请查看运行归档。', 'first', 'latest',
   ]);
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, { remotePreview: true, remoteClientId: 'server', remoteLogs: {} }, node)), [
     '正在获取该阶段的最新运行日志…',
@@ -444,7 +532,7 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
 test('detailContextRows：他端详情把未同步的镜像和 Commit 明确标为未同步', () => {
   const context = { REGISTRY: 'registry.example.com', curPipeline: () => ({ name: '当前流水线' }) };
   vm.createContext(context);
-  vm.runInContext(extract('function detailContextRows', 'function renderDetail'), context);
+  vm.runInContext(extract('function isLocalExecStage', 'function renderDetail'), context);
   const rows = Array.from(context.detailContextRows(
     { name: '构建' }, '进行中',
     { remotePreview: true, pipelineName: '远端流水线', branch: 'dev', strategy: '', by: 'alice', env: '10.0.0.1', image: '', tag: '—', commit: '—' },
@@ -480,6 +568,22 @@ test('runningPresenceEntry：上报阶段状态但不携带日志、变量或脚
     stages: [{ id: 's1', name: '构建', parallel: true, sub: ['a'] }],
     nodes: { s1: { status: 'running', progress: 35, dur: 4, sub: { a: 'success' } } },
   });
+});
+
+test('runningPresenceEntry：任务日志路径作为 logFile 属性随快照同步', () => {
+  const context = loadPresenceSnapshotContext();
+  const snap = context.runningPresenceEntry({
+    id: 'r1', pipelineName: '发布', by: 'alice', env: '10.0.0.1', startTs: 100,
+    stages: [
+      { id: 's1', name: '构建', _serverLogFile: '/var/log/op_test/发布_20260101/run-abc-01-构建.log' },
+      { id: 's2', name: '部署', _serverLogExpectedFile: '/var/log/op_test/发布_20260101/run-abc-02-部署.log' },
+      { id: 's3', name: '测试' },
+    ],
+    nodes: { s1: { status: 'success', progress: 100, dur: 3 }, s2: { status: 'running', progress: 50, dur: 2 }, s3: { status: 'idle', progress: 0, dur: 0 } },
+  });
+  assert.equal(snap.stages[0].logFile, '/var/log/op_test/发布_20260101/run-abc-01-构建.log', '_serverLogFile 应同步为 logFile');
+  assert.equal(snap.stages[1].logFile, '/var/log/op_test/发布_20260101/run-abc-02-部署.log', '_serverLogExpectedFile 应同步为 logFile');
+  assert.equal(snap.stages[2].logFile, undefined, '无日志路径的阶段不补 logFile');
 });
 
 test('queueNodePresence：阶段开始时间戳随白名单透传，非法值丢弃', () => {
@@ -545,8 +649,8 @@ function makeQueueContext() {
   const list = new FakeNode('div');
   const countCell = new FakeNode('td');
   countCell.getAttribute = name => name === 'data-plqueue' ? 'p1' : null;
-  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span'), stopBtn: new FakeNode('button') };
-  const calls = { cancel: [], abort: [], cancelServer: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
+  const els = { queueList: list, queueCount: new FakeNode('span'), queueStatus: new FakeNode('span') };
+  const calls = { cancel: [], abort: [], cancelServer: [], cancelRemote: [], focusRun: [], focusQueueItem: [], focusRemoteQueueItem: [], publish: 0, drain: 0, syncView: 0, overall: [], archiveTip: 0, resetNodes: 0 };
   const context = {
     document: {
       createElement: tag => new FakeNode(tag),
@@ -561,6 +665,7 @@ function makeQueueContext() {
     cancelQueue: id => calls.cancel.push(id),
     abortRun: rc => calls.abort.push(rc),
     cancelServerRun: id => calls.cancelServer.push(id),
+    cancelRemotePresence: (clientId, itemId) => calls.cancelRemote.push({ clientId, itemId }),
     canControlRun: () => true,   // 非 admin 控制权守卫：默认放行，使既有「按钮存在」断言成立；专门用例在下文覆盖
     focusRun: rc => calls.focusRun.push(rc),
     focusQueueItem: id => calls.focusQueueItem.push(id),
@@ -653,7 +758,6 @@ test('renderQueue：预览的排队项已出队时自愈清回空闲编排', () 
   assert.equal(context.viewRc, null);
   assert.equal(calls.syncView, 1);
   assert.deepEqual(calls.overall, [null]);
-  assert.equal(els.stopBtn.disabled, true);
   assert.equal(calls.archiveTip, 1);
   assert.equal(calls.resetNodes, 1);
 });
@@ -713,12 +817,110 @@ test('renderQueue：服务端运行与排队任务在任一浏览器显示中止
   context.renderQueue();
 
   const buttons = list.querySelectorAll('[data-qserver-cancel]');
-  assert.equal(buttons.length, 2, '只给服务端权威任务提供跨浏览器取消入口');
+  assert.equal(buttons.length, 2, '服务端权威任务用 data-qserver-cancel');
   assert.match(list.children[1].innerHTML, />取消<\/button>/);
   assert.match(list.children[2].innerHTML, />中止<\/button>/);
   buttons.forEach(button => button.handlers.click());
   assert.deepEqual(calls.cancelServer, ['q-server', 'r-server']);
   assert.doesNotMatch(list.children[3].innerHTML, /data-qserver-cancel/);
+});
+
+test('renderQueue：他端在场条目用取消信箱按钮（data-qremote-cancel），与服务端条目区分', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12',
+    runs: [{ id: 'r-remote', by: 'tester', pipelineName: '他端运行', source: 'manual', startedAt: 1, stages: [{ id: 's1', name: '构建' }] }],
+    queue: [{ id: 'q-remote', by: 'tester', pipelineName: '他端排队', source: 'manual', queuedAt: 2, stages: [{ id: 's2', name: '部署' }] }],
+  });
+  context.renderQueue();
+
+  const remoteButtons = list.querySelectorAll('[data-qremote-cancel]');
+  assert.equal(remoteButtons.length, 2, '他端可控条目显示跨浏览器取消入口');
+  assert.deepEqual(remoteButtons.map(b => b.getAttribute('data-qremote-cancel-id')), ['q-remote', 'r-remote']);
+  assert.deepEqual(remoteButtons.map(b => b.getAttribute('data-qremote-cancel')), ['c2', 'c2']);
+  remoteButtons.forEach(button => button.handlers.click());
+  assert.deepEqual(calls.cancelRemote, [
+    { clientId: 'c2', itemId: 'q-remote' },
+    { clientId: 'c2', itemId: 'r-remote' },
+  ]);
+  assert.equal(calls.cancelServer.length, 0, '他端条目不走服务端执行池取消');
+});
+
+test('renderQueue：非 admin 不能终止他人他端条目，但可终止自己提交的（跨浏览器）', () => {
+  const { context, list, calls } = makeQueueContext();
+  context.canControlRun = by => by === 'tester';
+  context.remoteQueueClients.push({
+    id: 'c2', label: 'Chrome·xy12',
+    runs: [
+      { id: 'r-mine', by: 'tester', pipelineName: '我的运行', stages: [{ id: 's1', name: '构建' }] },
+      { id: 'r-other', by: 'bob', pipelineName: '他人运行', stages: [{ id: 's2', name: '部署' }] },
+    ],
+    queue: [
+      { id: 'q-mine', by: 'tester', pipelineName: '我的排队', stages: [{ id: 's3', name: '测试' }] },
+      { id: 'q-other', by: 'alice', pipelineName: '他人排队', stages: [{ id: 's4', name: '发布' }] },
+    ],
+  });
+  context.renderQueue();
+
+  const remoteButtons = list.querySelectorAll('[data-qremote-cancel]');
+  assert.deepEqual(remoteButtons.map(b => b.getAttribute('data-qremote-cancel-id')), ['q-mine', 'r-mine']);
+  remoteButtons.forEach(button => button.handlers.click());
+  assert.deepEqual(calls.cancelRemote, [
+    { clientId: 'c2', itemId: 'q-mine' },
+    { clientId: 'c2', itemId: 'r-mine' },
+  ]);
+  /* 展示顺序：分隔行 + 队列倒序（q-other, q-mine）+ 运行倒序（r-other, r-mine） */
+  assert.doesNotMatch(list.children[1].innerHTML, /data-qremote-cancel/);   // 他人排队
+  assert.doesNotMatch(list.children[3].innerHTML, /data-qremote-cancel/);   // 他人运行
+});
+
+test('cancelRemotePresence：POST 取消信箱并刷新队列', async () => {
+  const requests = [];
+  let pulls = 0;
+  const context = {
+    fetch: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ ok: true, state: 'requested' }) };
+    },
+    pullRemoteQueue: async () => { pulls += 1; },
+    flashRunTip: () => {},
+    currentUsername: 'tester',
+    alert: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('async function cancelRemotePresence', 'function applyPresenceCancelRequests'), context);
+
+  const result = await context.cancelRemotePresence('c2', 'q-remote');
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { ok: true, state: 'requested' });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/worktable/pipeline/queue');
+  assert.equal(requests[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(requests[0].options.body), { action: 'cancel-presence', clientId: 'c2', itemId: 'q-remote', by: 'tester' });
+  assert.equal(pulls, 1);
+});
+
+test('applyPresenceCancelRequests：只认领本页条目，排队取消 / 在跑中止', () => {
+  const calls = { cancel: [], abort: [], render: 0 };
+  const context = {
+    QCLIENT_ID: 'self',
+    queue: [{ id: 'q-mine' }, { id: 'q-other-owner' }],
+    activeRuns: [{ id: 'r-mine' }],
+    cancelQueue: id => calls.cancel.push(id),
+    abortRun: rc => calls.abort.push(rc),
+    renderQueue: () => { calls.render += 1; },
+  };
+  vm.createContext(context);
+  vm.runInContext(extract('function applyPresenceCancelRequests', '/* 服务端在跑阶段的日志尾窗'), context);
+
+  context.applyPresenceCancelRequests([
+    { clientId: 'other', itemId: 'q-mine' },          // 不是本页：忽略
+    { clientId: 'self', itemId: 'q-mine' },           // 本页排队：取消
+    { clientId: 'self', itemId: 'r-mine' },           // 本页在跑：中止
+    { clientId: 'self', itemId: 'gone' },             // 已不在：忽略
+  ]);
+  assert.deepEqual(calls.cancel, ['q-mine']);
+  assert.deepEqual(calls.abort.map(rc => rc.id), ['r-mine']);
+  assert.equal(calls.render, 1);
 });
 
 test('renderQueue：非 admin 只能中止或取消自己署名的服务端任务', () => {

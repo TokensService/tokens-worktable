@@ -1,4 +1,4 @@
-/* 流水线编辑弹窗（#plForm）冻结底栏布局契约：「+ 添加阶段」按钮固定在底栏最左（左下角），
+/* 流水线编辑弹窗（#plForm）冻结底栏布局契约：「+ 添加阶段」「从分享导入」按钮固定在底栏左侧，
    草稿提示 #plDraftTip 以 margin-right:auto 把「保存 / 取消」顶在右下角；底栏整栏冻结，不随阶段列表滚动。 */
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
@@ -22,21 +22,24 @@ function footerSection() {
   return m[0];
 }
 
-test('#plForm 冻结底栏同时容纳 添加阶段 / 保存 / 取消 三个按钮', () => {
+test('#plForm 冻结底栏同时容纳 添加阶段 / 从分享导入 / 保存 / 取消 四个按钮', () => {
   const footer = footerSection();
   assert.ok(footer.includes('id="plStageAdd"'), '冻结底栏内缺少「+ 添加阶段」按钮 #plStageAdd');
+  assert.ok(footer.includes('id="plImportShare"'), '冻结底栏内缺少「从分享导入」按钮 #plImportShare');
   assert.ok(footer.includes('id="plSave"'), '冻结底栏内缺少「保存」按钮 #plSave');
   assert.ok(footer.includes('id="plCancel"'), '冻结底栏内缺少「取消」按钮 #plCancel');
 });
 
-test('底栏内顺序：plStageAdd 在最左，其后依次为 plDraftTip / plSave / plCancel', () => {
+test('底栏内顺序：plStageAdd / plImportShare 在左侧，其后依次为 plDraftTip / plSave / plCancel', () => {
   const footer = footerSection();
   const iAdd = footer.indexOf('id="plStageAdd"');
+  const iImport = footer.indexOf('id="plImportShare"');
   const iTip = footer.indexOf('id="plDraftTip"');
   const iSave = footer.indexOf('id="plSave"');
   const iCancel = footer.indexOf('id="plCancel"');
-  assert.ok(iAdd >= 0 && iTip >= 0 && iSave >= 0 && iCancel >= 0, '底栏内缺少应有的元素');
-  assert.ok(iAdd < iTip, '「+ 添加阶段」应排在草稿提示 #plDraftTip 之前（底栏最左）');
+  assert.ok(iAdd >= 0 && iImport >= 0 && iTip >= 0 && iSave >= 0 && iCancel >= 0, '底栏内缺少应有的元素');
+  assert.ok(iAdd < iImport, '「+ 添加阶段」应排在「从分享导入」之前（底栏最左）');
+  assert.ok(iImport < iTip, '「从分享导入」应排在草稿提示 #plDraftTip 之前（靠左侧）');
   assert.ok(iTip < iSave, '草稿提示 #plDraftTip 应排在「保存」之前');
   assert.ok(iSave < iCancel, '「保存」应排在「取消」之前');
 });

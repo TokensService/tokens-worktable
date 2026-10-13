@@ -38,6 +38,7 @@ const TRUST_HELPERS = [
   ...[
     'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
+    'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny',
   ].map((name) => extractFunction(name)),
 ].join('\n')
 
@@ -46,12 +47,17 @@ function loadPipelineRoutes(home, { ctx = {} } = {}) {
   const start = source.indexOf('  // 流水线工作台（pipeline.html）的服务端持久化')
   const end = source.indexOf('  // ---- 流水线导入导出：服务端备份', start)
   assert.ok(start >= 0 && end > start, '流水线持久化路由块未找到')
+  const viewDecls = [
+    /^const VIEW_STATE_KEYS = .+$/m.exec(source)[0],
+    /^const VIEW_STATE_USER_CAP = .+$/m.exec(source)[0],
+  ].join('\n')
   const helpers = [
     'cleanPipelineHistory', 'stripPipelineSharedMeta', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt',
-    'withPipelineSharedMeta', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
-    'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
+    'withPipelineSharedMeta', 'preserveDiskOnlyConfigKeys', 'mergePipelineConfigForWrite', 'pipelineConfigDifferenceIds',
+    'mergeStageLogsForHistory', 'mergePipelineHistoryForWrite', 'serializePipelineStore', 'mergePipelineOneForWrite',
+    'extractViewState', 'omitViewStateKeys', 'sanitizeViewState', 'viewStateUserKey', 'mergeUserViewStates', 'resolveViewStateForUser',
   ].map((name) => extractFunction(name)).join('\n')
-  const code = helpers + '\n' + TRUST_HELPERS + '\n' + source.slice(start, end)
+  const code = viewDecls + '\n' + helpers + '\n' + TRUST_HELPERS + '\n' + source.slice(start, end)
   const handlers = {}
   const storeFile = pathResolve(home, 'storages', 'worktable-pipeline.json')
   const sandbox = {

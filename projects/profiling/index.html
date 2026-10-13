@@ -1,0 +1,1516 @@
+<!doctype html>
+<!-- Profiling分析 · 窗口1 自定义页面
+     皮肤：/api/worktable/template/dshell.css（颜色走 --dsw-alias-* 变量）。
+     主题三态（跟随/深色/浅色）由本页重写这些变量实现：dshell.css 默认跟随 DSH 主题。 -->
+<html lang="zh-CN" data-pf-theme="system">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Profiling分析</title>
+<link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+<script src="./vendor/echarts.min.js"></script>
+<style>
+  /* ===== 主题三态：跟随(system) / 深色(dark) / 浅色(light) ===== */
+  html[data-pf-theme="light"],
+  html[data-pf-theme="system"][data-pf-sys="light"] {
+    color-scheme: light;
+    --dsw-alias-bg-base: #f6f8fa;
+    --dsw-alias-label-primary: #1f2328;
+    --dsw-alias-label-secondary: #57606a;
+    --dsw-alias-label-tertiary: #8c959f;
+    --dsw-alias-border-l1: #d0d7de;
+    --dsw-alias-border-l2: #b6bfc9;
+    --dsw-alias-fill-l1: rgba(0, 0, 0, .03);
+    --dsw-alias-state-accent-primary: #0969da;
+  }
+  html[data-pf-theme="light"] ::-webkit-scrollbar-thumb,
+  html[data-pf-theme="system"][data-pf-sys="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); }
+  html[data-pf-theme="dark"], html[data-pf-theme="system"][data-pf-sys="dark"] { color-scheme: dark; }
+
+  .pf-layout { display: grid; grid-template-columns: 320px 1fr; gap: 12px; align-items: start; }
+  @media (max-width: 900px) { .pf-layout { grid-template-columns: 1fr; } }
+  .pf-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pf-head .spacer { flex: 1; }
+  .pf-themeBtn { opacity: .55; }
+  .pf-themeBtn.on { opacity: 1; border-color: var(--dsw-alias-state-accent-primary, #4f8ef7); color: var(--dsw-alias-label-primary); }
+  .pf-row { display: flex; gap: 8px; align-items: center; }
+  .pf-row > .grow { flex: 1; min-width: 0; }
+  .pf-item { cursor: pointer; }
+  .pf-item.on { border-color: var(--dsw-alias-state-accent-primary, #4f8ef7); }
+  .pf-item .tag { color: var(--dsw-alias-state-accent-primary, #4f8ef7); font-size: 11px; }
+  .pf-item .desc { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pf-editbox { display: none; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .pf-item.editing .pf-editbox { display: flex; }
+  /* 瀑布图 */
+  .pf-wf { position: relative; }
+  .pf-wfRow { display: grid; grid-template-columns: 160px 1fr 70px; gap: 8px; align-items: center; padding: 3px 0; font-size: 11.5px; }
+  .pf-wfName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary, #9aa4b2); }
+  .pf-wfTrack { position: relative; height: 14px; background: var(--dsw-alias-fill-l1, rgba(255,255,255,.05)); border-radius: 4px; overflow: hidden; }
+  .pf-wfBar { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: #3fb950; min-width: 2px; }
+  .pf-wfBar.fail { background: #f85149; }
+  .pf-wfBar.wait { background: #d29922; }
+  .pf-wfBar.hot { background: #f778ba; }
+  .pf-wfVal { text-align: right; color: var(--dsw-alias-label-tertiary, #6b7280); font-variant-numeric: tabular-nums; }
+  /* 瓶颈发现 */
+  .pf-finding { display: flex; gap: 8px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l1, #262b36); border-radius: 8px; margin-top: 6px; font-size: 12px; }
+  .pf-finding .ico { flex: none; }
+  .pf-finding.high { border-color: rgba(248,81,73,.5); }
+  .pf-finding.mid { border-color: rgba(210,153,34,.5); }
+  .pf-finding small { color: var(--dsw-alias-label-tertiary, #6b7280); display: block; }
+  /* AI 输出终端 */
+  .pf-term { background: rgba(0,0,0,.25); border: 1px solid var(--dsw-alias-border-l1, #262b36); border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto; min-height: 90px; }
+  html[data-pf-theme="light"] .pf-term, html[data-pf-theme="system"][data-pf-sys="light"] .pf-term { background: rgba(0,0,0,.05); }
+  .pf-term .err { color: #f85149; }
+  .pf-term .sys { color: var(--dsw-alias-label-tertiary, #6b7280); }
+  .pf-empty { padding: 26px 10px; text-align: center; color: var(--dsw-alias-label-tertiary, #6b7280); font-size: 12px; }
+  .pf-agentPick { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+  .pf-agent { border: 1px solid var(--dsw-alias-border-l1, #262b36); border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 12px; }
+  .pf-agent small { display: block; color: var(--dsw-alias-label-tertiary, #6b7280); font-size: 10.5px; }
+  .pf-agent.on { border-color: var(--dsw-alias-state-accent-primary, #4f8ef7); }
+  .dshell-tabs { margin-top: 2px; }
+  select.dshell-input { width: auto; }
+  /* GPU 内核三表 */
+  .pf-sub { margin: 12px 0 6px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary, #9aa4b2); }
+  .pf-kname { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; word-break: break-all; }
+  .pf-fam { font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--dsw-alias-border-l1, #262b36); border-radius: 999px; color: var(--dsw-alias-label-secondary, #9aa4b2); white-space: nowrap; }
+  .pf-prio { font-weight: 600; }
+  .pf-prio.p1 { color: #f85149; }
+  .pf-prio.p2 { color: #d29922; }
+  .pf-prio.p4 { color: var(--dsw-alias-label-tertiary, #6b7280); }
+  .pf-conf { color: #3fb950; }
+  .pf-cand { color: var(--dsw-alias-label-tertiary, #6b7280); }
+</style>
+</head>
+<body>
+<div class="dshell">
+  <div class="pf-head">
+    <h1 class="dshell-title">Profiling分析</h1>
+    <span class="dshell-badge" id="srcBadge">未加载</span>
+    <div class="spacer"></div>
+    <span class="dshell-muted">主题</span>
+    <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="system">跟随</button>
+    <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="dark">深色</button>
+    <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="light">浅色</button>
+  </div>
+  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点，并可一键交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
+
+  <div class="pf-layout">
+    <!-- ============ 左栏：数据来源 + 列表 ============ -->
+    <div>
+      <div class="dshell-card">
+        <div class="dshell-tabs" id="srcTabs">
+          <button class="dshell-tab dshell-tabOn" data-tab="local">本地文件</button>
+          <button class="dshell-tab" data-tab="serverFile">服务端文件</button>
+          <button class="dshell-tab" data-tab="serverDir">服务端文件夹</button>
+        </div>
+        <div style="height:10px"></div>
+        <div id="tab-local">
+          <div class="pf-row">
+            <button class="dshell-btn" id="pickLocalBtn">选择本地 profiling 文件</button>
+            <input type="file" id="localFileInput" multiple accept=".json,.gz,.profile.json,.pt.trace.json,.pt.trace.json.gz,.ncu-rep,.nsys-rep,.qdrep,.log,.txt" style="display:none" />
+          </div>
+          <p class="dshell-muted" style="margin:8px 0 0">支持 run-*.profile.json / PyTorch trace（.pt.trace.json[.gz]）/ nsys / ncu 报告 / 日志文本，可多选。</p>
+        </div>
+        <div id="tab-serverFile" style="display:none">
+          <input class="dshell-input" id="srvFilePath" placeholder="服务端文件绝对路径，如 /data/profiling/run-a.profile.json" />
+          <div class="pf-row" style="margin-top:8px">
+            <button class="dshell-btn" id="loadSrvFileBtn">加载</button>
+            <button class="dshell-btn dshell-btnGhost" id="browseSrvBtn">浏览目录…</button>
+          </div>
+          <div id="srvBrowser" style="display:none; margin-top:8px">
+            <div class="pf-row">
+              <button class="dshell-btn dshell-btnGhost" id="srvUpBtn">⬆ 上级</button>
+              <span class="dshell-muted grow" id="srvBrowserPath" style="overflow:hidden;text-overflow:ellipsis"></span>
+            </div>
+            <div class="dshell-list" id="srvBrowserList" style="margin-top:6px; max-height:260px; overflow:auto"></div>
+          </div>
+        </div>
+        <div id="tab-serverDir" style="display:none">
+          <input class="dshell-input" id="srvDirPath" placeholder="服务端 profiling 文件夹绝对路径" />
+          <div class="pf-row" style="margin-top:8px">
+            <button class="dshell-btn" id="scanDirBtn">保存并扫描</button>
+            <button class="dshell-btn dshell-btnGhost" id="rescanDirBtn">重新扫描</button>
+            <button class="dshell-btn dshell-btnGhost" id="browseDirBtn">选择文件…</button>
+          </div>
+          <p class="dshell-muted" style="margin:8px 0 0">保存后自动列出文件夹内全部 profiling 文件（单层，最多 500 条）；也可点「选择文件…」逐个点选。</p>
+          <div id="dirBrowser" style="display:none; margin-top:8px">
+            <div class="pf-row">
+              <button class="dshell-btn dshell-btnGhost" id="dirUpBtn">⬆ 上级</button>
+              <span class="dshell-muted grow" id="dirBrowserPath" style="overflow:hidden;text-overflow:ellipsis"></span>
+            </div>
+            <div class="dshell-list" id="dirBrowserList" style="margin-top:6px; max-height:260px; overflow:auto"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dshell-card">
+        <div class="pf-row">
+          <h2 class="dshell-sub" style="margin:0" class="grow">Profiling 列表</h2>
+          <span class="dshell-badge" id="countBadge">0</span>
+          <button class="dshell-btn dshell-btnGhost" id="clearLocalBtn" title="移除本地加载的条目">清空本地</button>
+        </div>
+        <div class="dshell-list" id="itemList" style="margin-top:8px; max-height:480px; overflow:auto"></div>
+      </div>
+    </div>
+
+    <!-- ============ 右栏：展示 + 瓶颈 + AI ============ -->
+    <div>
+      <div class="dshell-card" id="overviewCard">
+        <div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>
+      </div>
+
+      <div class="dshell-card" id="stageCard" style="display:none">
+        <div class="pf-row">
+          <h2 class="dshell-sub grow" style="margin:0">阶段耗时</h2>
+          <div class="dshell-tabs" style="border:none">
+            <button class="dshell-tab dshell-tabOn" id="viewTableBtn">表格</button>
+            <button class="dshell-tab" id="viewWaterfallBtn">瀑布</button>
+          </div>
+        </div>
+        <div style="height:8px"></div>
+        <div id="chartRow" style="display:none;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div id="chartDonut" style="height:230px"></div>
+          <div id="chartBar" style="height:230px"></div>
+        </div>
+        <div id="stageTableWrap">
+          <h3 class="pf-sub" id="stageGpuHead" style="display:none">GPU 设备事件（占比为 GPU 累计内份额）</h3>
+          <table class="dshell-table" id="stageTable"></table>
+          <div id="stageCpuWrap" style="display:none">
+            <h3 class="pf-sub">CPU · Host 事件（host 墙钟时间，与 GPU 执行交叠；占比为 CPU 累计内份额，勿与 GPU 相加）</h3>
+            <table class="dshell-table" id="stageTableCpu"></table>
+          </div>
+        </div>
+        <div id="stageWaterfallWrap" style="display:none" class="pf-wf"></div>
+      </div>
+
+      <div class="dshell-card" id="bottleneckCard" style="display:none">
+        <div class="pf-row">
+          <h2 class="dshell-sub grow" style="margin:0">瓶颈点分析</h2>
+          <span class="dshell-badge dshell-badgeWait" id="findingCount">0 项发现</span>
+        </div>
+        <div id="findingList"></div>
+      </div>
+
+      <div class="dshell-card" id="kernelCard" style="display:none">
+        <div class="pf-row">
+          <h2 class="dshell-sub grow" style="margin:0">GPU 内核三表分析</h2>
+          <span class="dshell-badge" id="kernelCount">0 内核</span>
+        </div>
+        <p class="dshell-muted" style="margin:6px 0 10px">参考 llm-torch-profiler-analysis skill：① 内核归因（算子族 + CPU 算子）② 重叠机会（暴露/隐藏 + 依赖风险 + 优先级；同一条 stream 上的内核硬件级串行、不可能重叠，仅异流存在重叠）③ 融合候选（Confirmed=融合实现已在跑，Candidate=可融合未融合）。口径：窗口=端到端 wall，忙碌=各流内核区间并集，累计=内核时长求和——跨流重叠时累计 &gt; 忙碌，占比≠可消除延迟。</p>
+        <div class="dshell-grid" id="gpuStatGrid"></div>
+        <div id="stageSplitLine"></div>
+        <div id="gpuNoteLine"></div>
+        <h3 class="pf-sub">① 内核归因（占比 ≥1%）</h3>
+        <table class="dshell-table" id="kernelTable"></table>
+        <h3 class="pf-sub">② 重叠机会</h3>
+        <div id="overlapWrap"></div>
+        <h3 class="pf-sub">③ 融合候选</h3>
+        <div id="fusionWrap"></div>
+      </div>
+
+      <div class="dshell-card" id="aiCard" style="display:none">
+        <h2 class="dshell-sub" style="margin:0 0 8px">AI 深度分析</h2>
+        <div class="pf-agentPick" id="agentPick"></div>
+        <div class="pf-row" style="margin-top:10px">
+          <button class="dshell-btn" id="runAiBtn">▶ 开始分析</button>
+          <button class="dshell-btn dshell-btnDanger" id="stopAiBtn" disabled>■ 停止</button>
+          <button class="dshell-btn dshell-btnGhost" id="copyAiBtn">复制结果</button>
+          <button class="dshell-btn dshell-btnGhost" id="clearAiBtn">清空</button>
+        </div>
+        <div style="height:8px"></div>
+        <div class="pf-term" id="aiOut"><span class="sys">选择 Agent 后点击「开始分析」。CLI Agent 在服务端以非交互模式运行，输出实时回显。</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ================= 工具 ================= */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function fmtDur(sec){ sec = Number(sec); if(!isFinite(sec)) return '—'; if(sec > 0 && sec < 0.001) return fmtUs(sec*1e6); if(sec < 1) return Math.round(sec*1000)+'ms'; if(sec < 60) return sec.toFixed(2)+'s'; const m = Math.floor(sec/60); return m+'m'+Math.round(sec%60)+'s'; }
+/* 微秒时长格式化（内核三表口径用） */
+function fmtUs(us){ us = Number(us); if(!isFinite(us)) return '—'; if(us < 1000) return Math.round(us)+'µs'; if(us < 1e6) return (us/1000).toFixed(2)+'ms'; return fmtDur(us/1e6); }
+function fmtSize(n){ n = Number(n)||0; if(n < 1024) return n+' B'; if(n < 1048576) return (n/1024).toFixed(1)+' KB'; if(n < 1073741824) return (n/1048576).toFixed(1)+' MB'; return (n/1073741824).toFixed(2)+' GB'; }
+function store(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+function load(k, dft){ try{ const v = localStorage.getItem(k); return v == null ? dft : JSON.parse(v); }catch(e){ return dft; } }
+/* 文本解码：先按 UTF-8 严格解码，失败回退 GB18030（服务端日志常见 GBK 中文），再兜底宽松 UTF-8 */
+function decodeText(buf){
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch(e){
+    try { return new TextDecoder('gb18030').decode(buf); } catch(e2){ return new TextDecoder('utf-8').decode(buf); }
+  }
+}
+/* 清理摘要：去 ANSI 转义（日志颜色码）与控制字符，避免摘要显示乱码 */
+function cleanText(s){
+  return String(s == null ? '' : s)
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07]*\x07/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\uFFFD+/g, '');
+}
+/* gzip 解压（.pt.trace.json.gz 等）：浏览器原生 DecompressionStream */
+const isGzipBuf = (buf) => buf && buf.byteLength >= 2 && new Uint8Array(buf)[0] === 0x1f && new Uint8Array(buf)[1] === 0x8b;
+async function gunzip(buf){
+  const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(stream).arrayBuffer();
+}
+/* 二进制嗅探：采样前 2KB，NUL/替换符超阈值即视为二进制，避免乱码摘要 */
+function looksBinary(text){
+  const n = Math.min(text.length, 2048);
+  if (!n) return false;
+  let bad = 0;
+  for (let i = 0; i < n; i++){ const c = text.charCodeAt(i); if (c === 0 || c === 65533) bad++; }
+  return bad / n > 0.01;
+}
+function toast(msg){
+  let t = $('pfToast'); if(!t){ t = document.createElement('div'); t.id = 'pfToast'; document.body.appendChild(t);
+    t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--dsw-alias-label-primary,#e6e8eb);color:var(--dsw-alias-bg-base,#0b0e14);padding:6px 14px;border-radius:999px;font-size:12px;z-index:99;opacity:0;transition:opacity .2s'; }
+  t.textContent = msg; t.style.opacity = 1; clearTimeout(t._tm); t._tm = setTimeout(() => { t.style.opacity = 0; }, 2200);
+}
+
+/* ================= 主题三态 ================= */
+const THEME_KEY = 'dsh.profiling.theme';
+const sysMq = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme(){
+  const mode = load(THEME_KEY, 'system');
+  const sys = sysMq.matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-pf-theme', mode);
+  document.documentElement.setAttribute('data-pf-sys', sys);
+  document.querySelectorAll('.pf-themeBtn').forEach(b => b.classList.toggle('on', b.dataset.theme === mode));
+  /* 图表文字颜色跟随主题（初始化阶段 cur 尚未声明，静默跳过） */
+  try { if (typeof renderCharts === 'function') renderCharts(); } catch(e){}
+}
+document.querySelectorAll('.pf-themeBtn').forEach(b => b.addEventListener('click', () => { store(THEME_KEY, b.dataset.theme); applyTheme(); }));
+if (sysMq.addEventListener) sysMq.addEventListener('change', applyTheme);
+applyTheme();
+
+/* ================= 服务端 API ================= */
+const api = {
+  async fs(path){
+    const r = await fetch('/api/worktable/fs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+    const d = await r.json().catch(() => ({}));
+    if (d.error) throw new Error(d.error);
+    return d;
+  },
+  async mkdir(path){
+    const r = await fetch('/api/worktable/mkdir', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path }) });
+    return r.json().catch(() => ({}));
+  },
+  async write(path, content){
+    const r = await fetch('/api/worktable/write', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, content }) });
+    const d = await r.json().catch(() => ({}));
+    if (d.error) throw new Error(d.error);
+    return d;
+  },
+  async file(path, tailBytes){
+    const r = await fetch('/api/worktable/file?path=' + encodeURIComponent(path) + (tailBytes ? '&tailBytes=' + tailBytes : ''));
+    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || ('HTTP ' + r.status)); }
+    const size = Number(r.headers.get('x-worktable-file-size')) || 0;
+    const truncated = r.headers.get('x-worktable-file-truncated') === 'tail';
+    const buf = await r.arrayBuffer();
+    const text = decodeText(buf);
+    return { text, size, truncated, buf };
+  },
+  /* 服务端执行（汇总器等一次性脚本）：返回 {code, stdout, stderr} */
+  async exec(path, args, cwd, timeoutMs){
+    const r = await fetch('/api/worktable/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path, args: args || [], cwd, timeoutMs: timeoutMs || 300000 }) });
+    const d = await r.json().catch(() => ({}));
+    if (d.error) throw new Error(d.error);
+    return d;
+  },
+};
+
+/* exec-stream：NDJSON 帧 {type:out|err|done|error} */
+function execStream(path, args, cwd, timeoutMs, onFrame){
+  const ctrl = new AbortController();
+  const done = (async () => {
+    const r = await fetch('/api/worktable/exec-stream', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path, args, cwd, timeoutMs }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', last = null;
+    for(;;){
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0){
+        const line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+        if (!line.trim()) continue;
+        try { last = JSON.parse(line); onFrame(last); } catch(e){ /* 忽略非 JSON 行 */ }
+      }
+    }
+    if (buf.trim()){ try { last = JSON.parse(buf); onFrame(last); } catch(e){} }
+    return last;
+  })();
+  return { done, abort: () => ctrl.abort() };
+}
+
+/* 页面所在目录（站点托管路径反推），AI 分析产物写这里 */
+function pageDir(){
+  try{
+    const m = location.pathname.match(/^\/api\/worktable\/site\/([^/]+)\//);
+    if (m) return decodeURIComponent(m[1]);
+  }catch(e){}
+  return '';
+}
+
+/* ================= 数据模型 ================= */
+const META_KEY = 'dsh.profiling.meta';
+const DIR_KEY = 'dsh.profiling.dir';
+const AGENT_KEY = 'dsh.profiling.agent';
+let meta = load(META_KEY, {});
+let items = [];      // {id, name, path|null, source, size, binary, data, rawText}
+let currentId = null;
+const isProfileName = (n) => /\.(profile\.json|ncu-rep|nsys-rep|qdrep|nsys|sqlite)$/i.test(n) || /profile|nsys|ncu|trace|prof/i.test(n);
+const isBinaryName = (n) => /\.(ncu-rep|nsys-rep|qdrep|sqlite|nsys)$/i.test(n);
+const metaOf = (it) => meta[it.id] || {};
+function saveMeta(){ store(META_KEY, meta); }
+
+/* ==KERNEL-ANALYZER-BEGIN== */
+/* GPU 内核三表分析器：参考 llm-torch-profiler-analysis skill（BBuf/AI-Infra-Auto-Driven-SKILLS）简化移植，
+   与服务端 trace_summary.py 同款逻辑、同形输出。本块自包含（不引用块外符号），测试经标记注释整段抽取。
+   输入 Chrome/PyTorch trace 的 traceEvents（ph=X），产出：
+   ① kernels 内核归因表（算子族分类 + External id → cpu_op 归属）
+   ② gpu 时间口径（window=wall / busy=各流区间并集 / sum=内核累计 / idle / overlap / maxConcurrent / stageUs）
+   ③ overlap 重叠机会（headroom 暴露 + low-roi-hidden 低 ROI 隐藏 + 依赖风险 + P1/P2/P4 优先级建议）
+   ④ fusion 融合候选（active 关键词命中 → Confirmed；split 组共现且 share 达阈 → Candidate/Confirmed） */
+const KERNEL_CATEGORY_PATTERNS = [
+  ['router', ['_router_triton_kernel', 'moe_fused_gate']],
+  ['attention', ['flash_attn', 'flashattention', 'flash_attention', 'fmha', 'attention', 'mla', 'paged_attention', 'decode_attention']],
+  ['hybrid_linear', ['gdn', 'gated_delta', 'mamba', 'selective_scan', 'causal_conv', 'ssd', 'ssm']],
+  ['moe', ['fused_moe', 'grouped_mm', 'groupgemm', 'group_gemm', 'moe', 'expert', 'groupproblemshape']],
+  ['gemm', ['gemm', 'gemv', 'matmul', 'cublas', 'wgmma', 'mma', 'bmm', 'nvjet']],
+  ['norm', ['rmsnorm', 'layernorm', '_norm_', ' norm', 'normkernel']],
+  ['rope', ['rotary', 'rope', 'mrope']],
+  ['softmax', ['softmax']],
+  ['activation', ['silu', 'gelu', 'relu', 'act_and_mul', 'sigmoid']],
+  ['quantize', ['quant', 'fp8', 'mxfp', 'nvfp4', 'dequant', 'cvt']],
+  ['reduce_topk', ['topk', 'reduce', 'argmax', 'argtopk', 'sampling', 'multinomial']],
+  ['elementwise', ['elementwise', 'vectorized_elementwise_kernel', 'unrolled_elementwise_kernel', 'gpu_kernel_impl', 'binary_internal', 'unaryfunctor', 'add_kernel', 'sub_kernel', 'mul_kernel', 'div_', 'floor_kernel', 'log_kernel', 'neg_kernel']],
+];
+const KERNEL_COMPUTE_HINTS = ['gemm', 'gemv', 'matmul', 'cublas', 'cutlass', 'wgmma', 'mma', 'bmm', 'nvjet', 'fmha', 'attention', 'flash_attn', 'flashattention', 'flash_attention', 'grouped_mm', 'groupgemm', 'moe', 'expert'];
+function classifyKernel(name){
+  const n = String(name || '').toLowerCase();
+  if (!n) return 'other';
+  if (/nccl|allreduce|all_reduce|reduce_scatter|allgather|all_gather|alltoall|all_to_all|cross_device_reduce|deepep|mooncake/.test(n)) return 'communication';
+  if (/memcpy|memset|dma|prefetch/.test(n)) return 'memory';
+  const hasCompute = KERNEL_COMPUTE_HINTS.some(k => n.includes(k));
+  if ((n.includes('copy') || n.includes('fill')) && !hasCompute) return 'memory';
+  for (const [fam, pats] of KERNEL_CATEGORY_PATTERNS) if (pats.some(p => n.includes(p))) return fam;
+  if (/broadcast|dispatch|combine/.test(n) && !hasCompute) return 'communication';
+  return 'other';
+}
+/* 细粒度算子族 → 重叠分析 5 桶（compute/communication/memory/elementwise/other） */
+function kernelBucket(family){
+  if (family === 'communication' || family === 'memory' || family === 'other') return family;
+  if (family === 'gemm' || family === 'attention' || family === 'moe' || family === 'hybrid_linear' || family === 'router') return 'compute';
+  return 'elementwise';
+}
+/* 名字规范化：0x 地址归一；void ...(...) CUTLASS 模板签名剥掉最外层参数表 */
+function canonicalKernelName(name){
+  let s = String(name || '').replace(/0x[0-9a-fA-F]+/g, '0xADDR');
+  if (s.startsWith('void ') && s.endsWith(')')){
+    let depth = 0, cut = -1;
+    for (let i = s.length - 1; i >= 0; i--){
+      if (s[i] === ')') depth++;
+      else if (s[i] === '('){ depth--; if (depth === 0){ cut = i; break; } }
+    }
+    if (cut > 5) s = s.slice(0, cut);
+  }
+  return s;
+}
+const FUSION_PATTERNS = [
+  { name: 'Fused residual add + RMSNorm', active: ['fused_add_rmsnorm', 'fused_add_rms_norm', 'gemma_fused_add_rmsnorm', 'npu_add_rms_norm', 'add_rmsnorm_bias'], splits: [], minShare: 0.1, likelyShare: 1.0, note: '残差加与 RMSNorm 融合，省一次显存往返' },
+  { name: 'Fused activation-and-mul (SwiGLU/GeGLU)', active: ['silu_and_mul', 'gelu_and_mul', 'npu_swiglu'], splits: [], minShare: 0.1, likelyShare: 1.0, note: '激活与乘门融合' },
+  { name: 'Fused QK RMSNorm + RoPE', active: ['fused_qknorm_rope', 'fused_qk_norm_rope'], splits: [['apply_qk_norm', 'q_norm', 'k_norm', 'qknorm'], ['apply_rope', 'rotary', 'rope', 'mrope']], minShare: 0.3, likelyShare: 2.0, note: 'QK 归一化与旋转位置编码融合' },
+  { name: 'Fused RoPE + KV cache store', active: ['fused_set_kv_buffer', 'reshape_and_cache', 'fused_qk_rope_reshape_and_cache'], splits: [['rotary', 'rope'], ['reshape', 'set_kv', 'kv_cache', 'cache write', 'paged']], minShare: 0.3, likelyShare: 1.5, note: 'RoPE 与 KV cache 写入融合' },
+  { name: 'Fused MoE router / top-k', active: ['fused_moe_router', 'fusedmoerouter', 'moe_fused_gate', '_router_triton_kernel'], splits: [['router', 'gate'], ['topk', 'softmax', 'softcap']], minShare: 0.3, likelyShare: 1.5, note: '路由与 top-k/softmax 融合' },
+  { name: 'Fused MoE activation + quant', active: ['silu_and_mul_scaled_fp4', 'swiglu_quant', 'npu_dequant_swiglu_quant', 'fused_silu_mul_block_quant', 'act_quant_fusion'], splits: [['silu', 'gelu', 'act_and_mul'], ['quant', 'fp8', 'fp4', 'dequant']], minShare: 0.3, likelyShare: 1.5, note: 'MoE 激活与量化/重量化融合' },
+  { name: 'Fused RMSNorm + quant', active: ['fused_add_rms_norm_static_fp8_quant', 'rms_quant_fusion', 'norm_quant', 'fused_rms_fp8_group_quant'], splits: [['rmsnorm', 'layernorm'], ['quant', 'fp8', 'fp4']], minShare: 0.3, likelyShare: 1.5, note: '归一化与量化融合' },
+  { name: 'AllReduce + RMSNorm fusion（需 TP≥2）', active: ['allreduce_fusion', 'fusedaddrmsnormkernel', 'tensor_model_parallel_fused_allreduce_rmsnorm', 'custom_fused_ar_rms'], splits: [['allreduce', 'all_reduce', 'cross_device_reduce'], ['rmsnorm', 'layernorm', 'fused_add_rmsnorm']], minShare: 0.5, likelyShare: 4.0, note: '通信与归一化融合，TP≥2 才有收益' },
+  { name: 'Fused MoE sum + all-reduce（需 TP≥2）', active: ['fuse_sum_all_reduce'], splits: [['fused_moe', 'moe', 'expert'], ['allreduce', 'all_reduce']], minShare: 0.4, likelyShare: 2.0, note: 'MoE 求和与 all-reduce 融合' },
+  { name: 'Attention + quantization', active: ['merge_attn_states', 'attn_quant_fusion', 'output_scale'], splits: [['attention', 'flash_attn', 'fmha'], ['quant', 'fp8', 'fp4']], minShare: 0.3, likelyShare: 1.5, note: '注意力输出与量化融合' },
+  { name: 'MLA fused projection + norm + RoPE', active: ['qkv_proj_with_rope_fused_weight', 'fused_qkv_a_proj_with_mqa', 'forward_absorb_fused_mla_rope'], splits: [['mla', 'qkv_a_proj', 'q_a_proj'], ['qknorm', 'rmsnorm', 'apply_qk_norm'], ['rope', 'rotary']], minShare: 0.4, likelyShare: 2.0, note: 'DeepSeek MLA 投影+归一化+RoPE 融合' },
+  { name: 'FP8 scaled-MM（nvjet fallback 气泡）', active: ['cutlass_scaled_mm', 'fp8_scaled_mm'], splits: [['nvjet', '_scaled_mm'], ['memset', 'memcpy']], minShare: 0.1, likelyShare: 1.0, note: 'scaled_mm 走 nvjet fallback 时 memset/memcpy 气泡显著' },
+];
+function analyzeTraceKernels(events, cap){
+  const empty = { kernels: [], gpu: null, overlap: [], fusion: [] };
+  if (!Array.isArray(events)) return empty;
+  const limit = cap || 2000000;
+  /* host 同步点特征（GPU 空闲归因用）：cuda_runtime/driver 的同步调用 + cpu_op 的 .item() 类 */
+  const HOST_SYNC_RE = /cudaStreamSynchronize|cudaDeviceSynchronize|cudaEventSynchronize|cudaStreamWaitEvent|cudaMemcpy|aten::item|_local_scalar_dense/;
+  /* 第一遍：主 rank 选择（kernel 时长最大的 pid，名字含 TP0 优先）+ cpu_op（External id → 算子名）+ 阶段注释窗口 + host 同步事件 */
+  const pidUs = new Map(), cpuOps = new Map(), annos = [];
+  const hostSync = [];
+  let scanned = 0;
+  for (const e of events){
+    if (!e || e.ph !== 'X') continue;
+    if (++scanned > limit) break;
+    const cat = String(e.cat || '');
+    const dur = Number(e.dur) || 0;
+    if (dur <= 0) continue;
+    if (/kernel|^gpu_/.test(cat)){
+      const pid = String(e.pid);
+      pidUs.set(pid, (pidUs.get(pid) || 0) + dur);
+    } else if (cat === 'cpu_op' || cat === 'cuda_runtime' || cat === 'cuda_driver'){
+      if (cat === 'cpu_op'){
+        const ext = e.args && e.args['External id'];
+        if (ext != null && !cpuOps.has(ext)) cpuOps.set(ext, String(e.name || ''));
+      }
+      const nm2 = String(e.name || '');
+      if (HOST_SYNC_RE.test(nm2)) hostSync.push({ ts: Number(e.ts) || 0, end: (Number(e.ts) || 0) + dur, name: nm2 });
+    } else if (cat === 'user_annotation' || cat === 'gpu_user_annotation'){
+      const nm = String(e.name || '').toLowerCase();
+      let st = '';
+      if (/decode|generation_1/.test(nm)) st = 'decode';
+      else if (/prefill|generation_0|extend/.test(nm)) st = 'prefill';
+      if (st) annos.push({ ts: Number(e.ts) || 0, end: (Number(e.ts) || 0) + dur, st });
+    }
+  }
+  if (!pidUs.size) return empty;
+  let mainPid = null, mainUs = -1;
+  for (const [pid, us] of pidUs){ if (us > mainUs){ mainUs = us; mainPid = pid; } }
+  for (const pid of pidUs.keys()){ if (/tp0|tp-0|tp00/i.test(pid)){ mainPid = pid; break; } }
+  /* 阶段窗口合并：同阶段相邻（间隔 ≤1e-3 µs）并窗 */
+  annos.sort((a, b) => a.ts - b.ts || a.end - b.end);
+  const windows = [];
+  for (const a of annos){
+    const last = windows[windows.length - 1];
+    if (last && last.st === a.st && a.ts - last.end <= 1e-3) last.end = Math.max(last.end, a.end);
+    else windows.push({ ts: a.ts, end: a.end, st: a.st });
+  }
+  function stageOf(ts){
+    let best = null, bestDist = Infinity;
+    for (const w of windows){
+      if (ts >= w.ts && ts <= w.end) return w.st;
+      const d = ts < w.ts ? w.ts - ts : ts - w.end;
+      if (d < bestDist){ bestDist = d; best = w; }
+    }
+    return best && bestDist <= 20000 ? best.st : 'all';
+  }
+  /* 第二遍：收集主 rank 内核实例 */
+  const kers = [];
+  scanned = 0;
+  for (const e of events){
+    if (!e || e.ph !== 'X') continue;
+    if (++scanned > limit) break;
+    const cat = String(e.cat || '');
+    if (!/kernel|^gpu_/.test(cat)) continue;
+    const dur = Number(e.dur) || 0;
+    if (dur <= 0 || String(e.pid) !== mainPid) continue;
+    const args = e.args && typeof e.args === 'object' ? e.args : {};
+    const ts = Number(e.ts) || 0;
+    const ext = args['External id'];
+    kers.push({
+      name: String(e.name || '?'), ts, end: ts + dur, dur,
+      stream: String(args.stream != null ? args.stream : (args.cuda_stream != null ? args.cuda_stream : 'tid=' + e.tid)),
+      cpuOp: ext != null ? (cpuOps.get(ext) || '') : '',
+    });
+    if (kers.length >= 100000) break;
+  }
+  if (!kers.length) return empty;
+  kers.sort((a, b) => a.ts - b.ts || a.end - b.end);
+  /* 同名聚合（canonical 名） */
+  const agg = new Map();
+  let kernelSum = 0;
+  const stageUs = { decode: 0, prefill: 0, all: 0 };
+  for (const k of kers){
+    const canon = canonicalKernelName(k.name);
+    let a = agg.get(canon);
+    if (!a){ a = { name: canon, family: classifyKernel(k.name), total: 0, count: 0, hidden: 0, exclusive: 0, hiddenByCompute: 0, depRank: -1, cpuOps: new Map(), stages: { decode: 0, prefill: 0, all: 0 } }; agg.set(canon, a); }
+    a.total += k.dur; a.count++;
+    if (k.cpuOp) a.cpuOps.set(k.cpuOp, (a.cpuOps.get(k.cpuOp) || 0) + 1);
+    const st = stageOf(k.ts);
+    a.stages[st] += k.dur; stageUs[st] += k.dur;
+    k.a = a; k.bucket = kernelBucket(a.family);
+    kernelSum += k.dur;
+  }
+  /* 扫描线：busy 并集 / 跨流重叠 / 每内核 hidden（被异流遮住）与 exclusive（暴露） */
+  const pts = [];
+  kers.forEach((k, i) => { pts.push({ t: k.ts, s: 1, i }); pts.push({ t: k.end, s: 0, i }); });
+  pts.sort((x, y) => x.t - y.t || x.s - y.s);
+  const active = new Set(), activeStreams = new Map();
+  let prevT = null, busy = 0, overlapT = 0, maxConc = 0;
+  const gaps = [];
+  const minTs = kers[0].ts, maxEnd = kers.reduce((m, k) => Math.max(m, k.end), 0);
+  for (const p of pts){
+    if (prevT != null && p.t > prevT){
+      if (active.size){
+        const seg = p.t - prevT;
+        busy += seg;
+        if (activeStreams.size >= 2){
+          overlapT += seg;
+          for (const i of active){
+            kers[i].a.hidden += seg;
+            for (const j of active){
+              if (j !== i && kers[j].stream !== kers[i].stream && kers[j].bucket === 'compute'){ kers[i].a.hiddenByCompute += seg; break; }
+            }
+          }
+        } else {
+          for (const i of active) kers[i].a.exclusive += seg;
+        }
+      } else if (p.t - prevT >= 1){
+        /* GPU 空闲段（≥1µs 过滤微噪）：无任何流上有内核活跃 */
+        gaps.push({ ts: prevT, end: p.t, dur: p.t - prevT });
+      }
+    }
+    if (p.s === 1){
+      active.add(p.i);
+      activeStreams.set(kers[p.i].stream, (activeStreams.get(kers[p.i].stream) || 0) + 1);
+      if (activeStreams.size > maxConc) maxConc = activeStreams.size;
+    } else {
+      active.delete(p.i);
+      const c = (activeStreams.get(kers[p.i].stream) || 1) - 1;
+      if (c <= 0) activeStreams.delete(kers[p.i].stream); else activeStreams.set(kers[p.i].stream, c);
+    }
+    prevT = p.t;
+  }
+  const window = maxEnd - minTs;
+  const idle = Math.max(0, window - busy);
+  /* 空闲段归因：TOP 3 空闲段 + 期间 host 同步调用计数（cudaStreamSynchronize / aten::item 等） */
+  gaps.sort((a, b) => b.dur - a.dur || a.ts - b.ts);
+  const idleGaps = gaps.slice(0, 3).map(g => {
+    const hosts = new Map();
+    for (const h of hostSync){ if (h.ts < g.end && h.end > g.ts) hosts.set(h.name, (hosts.get(h.name) || 0) + 1); }
+    return { ts: g.ts, end: g.end, dur: g.dur, hosts: [...hosts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2) };
+  });
+  /* 同流紧邻依赖风险：gap ≤ max(2, min(20, dur×0.15)) µs 记紧贴；紧贴 +（同 CPU 算子 或 依赖样类别对）→ high */
+  const byStream = new Map();
+  kers.forEach((k, i) => { let arr = byStream.get(k.stream); if (!arr) byStream.set(k.stream, arr = []); arr.push(i); });
+  const DEP_RANK = { low: 0, unclear: 1, high: 2 };
+  for (const arr of byStream.values()){
+    for (let x = 0; x < arr.length; x++){
+      const k = kers[arr[x]], a = k.a;
+      const tight = Math.max(2, Math.min(20, k.dur * 0.15));
+      for (const nb of [arr[x - 1], arr[x + 1]]){
+        if (nb == null) continue;
+        const n = kers[nb];
+        const gap = nb === arr[x - 1] ? k.ts - n.end : n.ts - k.end;
+        if (gap < 0 || gap > tight) continue;
+        const sameOp = k.cpuOp && n.cpuOp && k.cpuOp === n.cpuOp;
+        const depLike = (k.bucket === 'communication' && n.bucket !== 'communication')
+          || ((k.bucket === 'elementwise' || k.bucket === 'memory') && (n.bucket === 'compute' || n.bucket === 'communication' || n.bucket === 'elementwise' || n.bucket === 'memory'));
+        const rank = (sameOp || depLike) ? DEP_RANK.high : DEP_RANK.unclear;
+        if (rank > a.depRank) a.depRank = rank;
+      }
+    }
+  }
+  /* 重叠机会：headroom（暴露 ≥45%）+ low-roi-hidden（elementwise/memory 隐藏 ≥65%），share 分母 = busy 并集 */
+  const denom = busy || kernelSum || 1;
+  const WEIGHT = { communication: 1.3, memory: 1.15, elementwise: 1.0, compute: 0.35, other: 0.8 };
+  const headroom = [], lowroi = [];
+  for (const a of agg.values()){
+    if (a.total < 5) continue;
+    const share = a.total / denom * 100;
+    if (share < 1) continue;
+    const exclR = a.exclusive / a.total, hidR = a.hidden / a.total;
+    const bucket = kernelBucket(a.family);
+    const dep = a.depRank === DEP_RANK.high ? 'high' : (a.depRank === DEP_RANK.unclear ? 'unclear' : 'low');
+    if (exclR >= 0.45){
+      headroom.push({
+        verdict: 'headroom', name: a.name, family: a.family, bucket, total: a.total, share,
+        exclusiveRatio: exclR, hiddenRatio: hidR, dep,
+        prio: dep === 'low' ? 'P1' : 'P2',
+        rec: dep === 'low' ? (bucket === 'communication' ? 'try overlap' : 'try fusion') : 'check deps',
+        score: a.exclusive * (WEIGHT[bucket] != null ? WEIGHT[bucket] : 0.8),
+      });
+    } else if ((bucket === 'elementwise' || bucket === 'memory') && hidR >= 0.65){
+      lowroi.push({
+        verdict: 'low-roi-hidden', name: a.name, family: a.family, bucket, total: a.total, share,
+        exclusiveRatio: exclR, hiddenRatio: hidR, dep, prio: 'P4', rec: 'skip',
+        score: a.hidden * (1 + a.hiddenByCompute / Math.max(a.hidden, 1)),
+      });
+    }
+  }
+  headroom.sort((x, y) => (x.bucket === 'compute' ? 1 : 0) - (y.bucket === 'compute' ? 1 : 0) || y.score - x.score);
+  lowroi.sort((x, y) => y.score - x.score);
+  const overlap = headroom.slice(0, 5).concat(lowroi.slice(0, 5)).map(o => { const { score, ...rest } = o; return rest; });
+  /* 融合候选：匹配文本 = canonical 内核名 + CPU 算子名（小写） */
+  const krows = [...agg.values()];
+  const rowText = (a) => (a.name + ' ' + [...a.cpuOps.keys()].join(' ')).toLowerCase();
+  const fusion = [];
+  for (const p of FUSION_PATTERNS){
+    const activeRows = krows.filter(a => p.active.some(k => rowText(a).includes(k)));
+    let conf = '', related = activeRows;
+    if (activeRows.length) conf = 'Confirmed';
+    else if (p.splits.length){
+      const hitSets = p.splits.map(g => krows.filter(a => g.some(k => rowText(a).includes(k))));
+      if (hitSets.every(s => s.length)){
+        const uniq = new Set();
+        hitSets.forEach(s => s.forEach(a => uniq.add(a)));
+        related = [...uniq];
+        const rel = related.reduce((s2, a) => s2 + a.total, 0);
+        const sharePct = rel / (kernelSum || 1) * 100;
+        if (sharePct >= p.minShare) conf = sharePct >= p.likelyShare ? 'Confirmed' : 'Candidate';
+      }
+    }
+    if (!conf) continue;
+    const rel = related.reduce((s2, a) => s2 + a.total, 0);
+    fusion.push({
+      pattern: p.name, confidence: conf, relatedUs: rel, share: rel / (kernelSum || 1) * 100,
+      evidence: [...related].sort((a, b) => b.total - a.total).slice(0, 3).map(a => a.name), note: p.note,
+    });
+  }
+  /* 内核归因表（share 分母 = 内核累计） */
+  const kernels = krows.sort((a, b) => b.total - a.total).slice(0, 30).map(a => ({
+    name: a.name, family: a.family, total: a.total, count: a.count,
+    share: a.total / (kernelSum || 1) * 100,
+    cpuOp: ([...a.cpuOps.entries()].sort((x, y) => y[1] - x[1])[0] || [''])[0],
+    stages: a.stages,
+    exclusiveRatio: a.total ? a.exclusive / a.total : 0,
+    hiddenRatio: a.total ? a.hidden / a.total : 0,
+  }));
+  return {
+    kernels, overlap, fusion,
+    gpu: {
+      window, busy, sum: kernelSum, idle, idlePct: window > 0 ? idle / window * 100 : 0,
+      overlap: overlapT, serial: busy - overlapT, maxConcurrent: maxConc, streams: byStream.size, kernelCount: kers.length, stageUs, idleGaps,
+    },
+  };
+}
+/* ==KERNEL-ANALYZER-END== */
+
+/* ================= 解析归一化 ================= */
+/* trace 事件分侧：cat 含 kernel 或 gpu_ 前缀 → GPU 设备侧；其余（cpu_op/cuda_runtime/user_annotation 等）→ CPU host 侧。
+   两侧时长口径不同域（host 墙钟 vs 设备执行），分别累计、各自作占比分母，不得混算。
+   注意：与 KERNEL-ANALYZER 块共用同一判定规则，但该块须自包含（测试整段抽取），故规则在两处各写一份 */
+function traceEventSide(cat){ return /kernel|^gpu_/.test(String(cat || '')) ? 'gpu' : 'cpu'; }
+/* Chrome/PyTorch trace（traceEvents）按 (cat,name) 聚合为阶段视图（CPU/GPU 分侧） */
+function aggregateTraceEvents(events, cap){
+  const agg = new Map();
+  const cats = new Map();
+  let nX = 0, tsMin = null, tsMax = 0, gpuUs = 0, cpuUs = 0;
+  for (const e of events){
+    if (!e || e.ph !== 'X') continue;
+    const dur = Number(e.dur) || 0;
+    const cat = String(e.cat || 'other'), nm = String(e.name || '?');
+    const side = traceEventSide(cat);
+    const key = cat + '' + nm;
+    let a = agg.get(key); if (!a){ a = { cat, name: nm, side, total: 0, count: 0 }; agg.set(key, a); }
+    a.total += dur; a.count++;
+    let c = cats.get(cat); if (!c){ c = { cat, total: 0, count: 0 }; cats.set(cat, c); }
+    c.total += dur; c.count++;
+    nX++;
+    if (side === 'gpu') gpuUs += dur; else cpuUs += dur;
+    const ts = Number(e.ts);
+    if (isFinite(ts)){ tsMin = tsMin == null ? ts : Math.min(tsMin, ts); tsMax = Math.max(tsMax, ts + dur); }
+    if (cap && nX >= cap) break;
+  }
+  const all = [...agg.values()];
+  const byTotal = (a, b) => b.total - a.total;
+  const top = all.slice().sort(byTotal).slice(0, 40);
+  const mapRow = (t) => ({ cat: t.cat, name: t.name, totalUs: t.total, count: t.count });
+  return {
+    kind: 'chrome-trace', events: nX,
+    spanUs: tsMin == null ? 0 : tsMax - tsMin,
+    totalUs: gpuUs + cpuUs,
+    gpuTotalUs: gpuUs, cpuTotalUs: cpuUs,
+    categories: [...cats.values()].sort((a, b) => b.total - a.total).slice(0, 20).map(c => ({ cat: c.cat, totalUs: c.total, count: c.count })),
+    top: top.map(mapRow),
+    topGpu: all.filter(a => a.side === 'gpu').sort(byTotal).slice(0, 40).map(mapRow),
+    topCpu: all.filter(a => a.side === 'cpu').sort(byTotal).slice(0, 40).map(mapRow),
+  };
+}
+function normalizeTrace(d, name, via){
+  const out = { title: name, meta: {}, stages: [], total: 0, ok: true, note: '' };
+  const totalSec = (d.totalUs || 0) / 1e6, spanSec = (d.spanUs || 0) / 1e6;
+  const gpuSec = (d.gpuTotalUs || 0) / 1e6, cpuSec = (d.cpuTotalUs || 0) / 1e6;
+  /* trace 总耗时取 wall 跨度：CPU host 与 GPU device 是两个时域，混合累计没有物理意义 */
+  out.total = spanSec || totalSec;
+  out.meta = {
+    '类型': 'Chrome/PyTorch trace（同名事件聚合，CPU/GPU 分侧）',
+    '解析方式': via === 'server' ? '服务端汇总器' : '浏览器内聚合',
+    '事件数(X)': d.events, '时间跨度': fmtUs(d.spanUs || 0),
+    'GPU 事件累计': fmtUs(d.gpuTotalUs || 0), 'CPU/Host 事件累计': fmtUs(d.cpuTotalUs || 0),
+  };
+  if (Array.isArray(d.categories) && d.categories.length)
+    out.meta['分类 TOP'] = d.categories.slice(0, 5).map(c => c.cat + ' ' + (totalSec > 0 ? Math.round(c.totalUs / 1e6 / totalSec * 100) : 0) + '%').join('，');
+  if (Array.isArray(d.topGpu) || Array.isArray(d.topCpu)){
+    /* 分侧视图：GPU 行与 CPU 行各自按本侧累计算占比 */
+    out.hasSideSplit = true;
+    out.sideTotals = { gpu: gpuSec, cpu: cpuSec };
+    const mapStage = (t, i, side) => ({ id: side[0] + i, name: t.name + ' ×' + t.count, status: 'done', durSec: (t.totalUs || 0) / 1e6, cat: t.cat, side });
+    out.stages = (d.topGpu || []).map((t, i) => mapStage(t, i, 'gpu')).concat((d.topCpu || []).map((t, i) => mapStage(t, i, 'cpu')));
+  } else {
+    out.stages = (d.top || []).map((t, i) => ({ id: 'e' + i, name: t.name + ' ×' + t.count, status: 'done', durSec: (t.totalUs || 0) / 1e6, progress: undefined, cat: t.cat }));
+  }
+  if (!out.stages.length) out.note = 'trace 中无 ph=X 完整事件';
+  /* GPU 内核三表分析（服务端汇总器或浏览器内分析器产出，同形） */
+  if (d.kernelAnalysis && d.kernelAnalysis.gpu && d.kernelAnalysis.gpu.kernelCount) out.kernelAnalysis = d.kernelAnalysis;
+  return out;
+}
+/* CUDA 二进制报告分析结果（nsys/ncu）归一化：kernels → 阶段视图 */
+function normalizeCuda(d, name){
+  const out = { title: name, meta: {}, stages: [], total: 0, ok: true, note: '' };
+  const toolName = d.tool === 'ncu' ? 'Nsight Compute (ncu)' : 'Nsight Systems (nsys)';
+  out.meta['分析工具'] = toolName + '（服务端专用工具）';
+  const kers = Array.isArray(d.kernels) ? d.kernels : [];
+  out.meta['内核条目'] = kers.length + (kers.length >= 40 ? '（TOP 40）' : '');
+  const totalSec = kers.reduce((a, k) => a + (Number(k.totalNs) || 0), 0) / 1e9;
+  out.meta['GPU 累计时间'] = fmtDur(totalSec);
+  if (d.metrics && typeof d.metrics === 'object')
+    for (const [k, v] of Object.entries(d.metrics)) if (v !== undefined && v !== null && v !== '') out.meta[k] = v;
+  if (Array.isArray(d.mems) && d.mems.length)
+    out.meta['显存操作 TOP'] = d.mems.slice(0, 3).map(m2 => m2.name).join('，');
+  if (Array.isArray(d.apis) && d.apis.length)
+    out.meta['CUDA API 最耗时'] = d.apis[0].name;
+  out.total = totalSec;
+  out.stages = kers.slice(0, 40).map((k, i) => ({ id: 'k' + i, name: k.name + (k.count > 1 ? ' ×' + k.count : ''), status: 'done', durSec: (Number(k.totalNs) || 0) / 1e9 }));
+  if (!out.stages.length) out.note = '工具未产出内核统计';
+  return out;
+}
+function normalize(data, name){
+  const out = { title: name, meta: {}, stages: [], total: 0, ok: true, note: '' };
+  if (!data || typeof data !== 'object'){ out.ok = false; out.note = '非 JSON 内容'; return out; }
+  /* Chrome/PyTorch trace：汇总器结果或原始 traceEvents */
+  if (data.kind === 'chrome-trace') return normalizeTrace(data, name, data._via);
+  if (data.kind === 'cuda-analysis') return normalizeCuda(data, name);
+  if (Array.isArray(data.traceEvents)){
+    const agg = aggregateTraceEvents(data.traceEvents, 2000000);
+    /* GPU 内核三表分析（浏览器内，与服务端汇总器同形输出） */
+    agg.kernelAnalysis = analyzeTraceKernels(data.traceEvents, 2000000);
+    return normalizeTrace(agg, name, 'browser');
+  }
+  out.meta = {
+    '流水线': data.pipeline, '标签': data.tag, '提交': data.commit, '环境': data.env,
+    '镜像': data.image, '执行人': data.by, '来源': data.source, '结果': data.result,
+    '开始时间': data.startTime, '变量数': data.vars && typeof data.vars === 'object' ? Object.keys(data.vars).length : undefined,
+  };
+  out.total = Number(data.totalDurSec) || 0;
+  let arr = [];
+  if (Array.isArray(data.stages)) arr = data.stages;
+  else if (Array.isArray(data.logs)) arr = data.logs.map(l => ({ id: l.stage, name: l.stage, status: l.status, durSec: Number(l.dur) || 0, logFile: l.logFile || l.log }));
+  else if (Array.isArray(data.steps)) arr = data.steps;
+  out.stages = arr.map((s, i) => ({
+    id: s.id || ('s' + i),
+    name: s.name || s.id || ('阶段 ' + (i + 1)),
+    status: String(s.status || 'done').toLowerCase(),
+    durSec: Number(s.durSec != null ? s.durSec : (s.dur != null ? s.dur : s.duration)) || 0,
+    progress: s.progress, script: s.script, logFile: s.logFile,
+    varsOut: s.varsOut && typeof s.varsOut === 'object' ? Object.keys(s.varsOut).length : 0,
+  }));
+  if (!out.total) out.total = out.stages.reduce((a, s) => a + s.durSec, 0);
+  if (!out.stages.length){ out.note = '未识别到阶段数据（stages/logs）'; }
+  return out;
+}
+
+/* ================= 瓶颈分析 ================= */
+/* 单侧（GPU 或 CPU）阶段集合的瓶颈启发式：占比分母为该侧累计，不与另一侧混算 */
+function analyzeSide(rows, sideTotal, label){
+  const findings = [];
+  const st = rows.filter(s => s.durSec > 0);
+  const total = sideTotal || st.reduce((a, s) => a + s.durSec, 0);
+  if (!st.length) return findings;
+  const sorted = [...st].sort((a, b) => b.durSec - a.durSec);
+  const top = sorted[0], share = total > 0 ? top.durSec / total : 0;
+  if (share > 0.5) findings.push({ level: 'high', title: `${label} 侧严重瓶颈：${top.name}`, detail: `占 ${label} 累计 ${(share*100).toFixed(1)}%（${fmtDur(top.durSec)} / ${fmtDur(total)}）。优化收益最大，建议首先拆解：看是否可并行、减量或内核优化。` });
+  else if (share > 0.3) findings.push({ level: 'mid', title: `${label} 侧主要瓶颈：${top.name}`, detail: `占 ${label} 累计 ${(share*100).toFixed(1)}%。是首要优化对象。` });
+  const mean = st.reduce((a, s) => a + s.durSec, 0) / st.length;
+  const sd = Math.sqrt(st.reduce((a, s) => a + (s.durSec - mean) ** 2, 0) / st.length);
+  if (sd > 0) for (const s of st){ const z = (s.durSec - mean) / sd; if (z > 2 && s !== top) findings.push({ level: 'mid', title: `${label} 侧耗时离群：${s.name}`, detail: `${fmtDur(s.durSec)}，高于 ${label} 侧均值 ${z.toFixed(1)} 个标准差（均值 ${fmtDur(mean)}）。` }); }
+  if (sorted.length >= 3){
+    const top3 = sorted.slice(0, 3).reduce((a, s) => a + s.durSec, 0);
+    if (total > 0 && top3 / total > 0.8) findings.push({ level: 'low', title: `${label} 侧耗时高度集中`, detail: `TOP 3 占 ${label} 累计 ${(top3/total*100).toFixed(0)}%（${sorted.slice(0,3).map(s=>s.name).join(' / ')}）。` });
+  }
+  return findings;
+}
+function analyzeStages(p){
+  const findings = [];
+  const failed = p.stages.filter(s => /fail|error/.test(s.status));
+  for (const s of failed) findings.push({ level: 'high', title: `失败阶段：${s.name}`, detail: `状态 ${s.status}，耗时 ${fmtDur(s.durSec)}${s.logFile ? '，日志 ' + s.logFile : ''}。优先排查该阶段日志。` });
+  /* 分侧（trace）：GPU/CPU 分开定位——GPU 侧找设备瓶颈，CPU 侧只看 host 同步/派发类开销，不做混合占比定性 */
+  if (p.hasSideSplit){
+    const gpuRows = p.stages.filter(s => s.side === 'gpu');
+    const cpuRows = p.stages.filter(s => s.side === 'cpu');
+    findings.push(...analyzeSide(gpuRows, p.sideTotals && p.sideTotals.gpu, 'GPU'));
+    const cpuTotal = (p.sideTotals && p.sideTotals.cpu) || cpuRows.reduce((a, s) => a + s.durSec, 0);
+    const sync = cpuRows.filter(s => /cudaStreamSynchronize|cudaDeviceSynchronize|cudaEventSynchronize|cudaStreamWaitEvent|aten::item|_local_scalar_dense|Memcpy.*HtoD|Memcpy.*DtoH/i.test(s.name));
+    const syncSum = sync.reduce((a, s) => a + s.durSec, 0);
+    if (cpuTotal > 0 && syncSum / cpuTotal > 0.2) findings.push({ level: 'mid', title: 'Host 同步/搬运开销显著', detail: `同步与显存搬运类调用（${sync.slice(0, 3).map(s => s.name).join('、')}）累计 ${fmtDur(syncSum)}，占 CPU 侧 ${(syncSum/cpuTotal*100).toFixed(0)}%。同步期间 GPU 可能空转：把 .item()/DtoH 拷贝移出热路径、用 pinned 内存与异步拷贝。` });
+    if (!findings.length) findings.push({ level: 'low', title: '未发现明显瓶颈', detail: 'GPU/CPU 两侧耗时分布较均衡。可做趋势对比或采集更细的 GPU 指标（SM 利用率、显存带宽）。' });
+    return findings;
+  }
+  const st = p.stages.filter(s => s.durSec > 0);
+  const total = p.total || st.reduce((a, s) => a + s.durSec, 0);
+  if (!st.length){ if (!failed.length) findings.push({ level: 'low', title: '无有效耗时数据', detail: '所有阶段耗时为 0 或缺失，无法定位瓶颈。' }); return findings; }
+  const sorted = [...st].sort((a, b) => b.durSec - a.durSec);
+  const top = sorted[0], share = total > 0 ? top.durSec / total : 0;
+  if (share > 0.5) findings.push({ level: 'high', title: `严重瓶颈：${top.name}`, detail: `占全程 ${(share*100).toFixed(1)}%（${fmtDur(top.durSec)} / ${fmtDur(total)}）。优化收益最大，建议首先拆解该阶段：看是否可并行、减量或GPU内核优化。` });
+  else if (share > 0.3) findings.push({ level: 'mid', title: `主要瓶颈：${top.name}`, detail: `占全程 ${(share*100).toFixed(1)}%。是首要优化对象。` });
+  const mean = st.reduce((a, s) => a + s.durSec, 0) / st.length;
+  const sd = Math.sqrt(st.reduce((a, s) => a + (s.durSec - mean) ** 2, 0) / st.length);
+  if (sd > 0) for (const s of st){ const z = (s.durSec - mean) / sd; if (z > 2 && s !== top) findings.push({ level: 'mid', title: `耗时离群：${s.name}`, detail: `${fmtDur(s.durSec)}，高于均值 ${z.toFixed(1)} 个标准差（均值 ${fmtDur(mean)}）。同类阶段中表现异常，值得对比参数与环境。` }); }
+  const zero = p.stages.filter(s => !(s.durSec > 0));
+  if (zero.length) findings.push({ level: 'low', title: `未计量阶段 × ${zero.length}`, detail: zero.slice(0, 5).map(s => s.name).join('、') + (zero.length > 5 ? ' 等' : '') + ' 耗时为 0 或未记录，分析未覆盖它们。' });
+  const sum = st.reduce((a, s) => a + s.durSec, 0);
+  if (total > 0 && sum / total < 0.9) findings.push({ level: 'mid', title: '阶段外开销偏大', detail: `阶段合计 ${fmtDur(sum)} 仅占全程 ${(sum/total*100).toFixed(0)}%，其余时间在启动/收尾/等待。检查排队、镜像拉取、数据装载等隐性成本。` });
+  if (sorted.length >= 3){
+    const top3 = sorted.slice(0, 3).reduce((a, s) => a + s.durSec, 0);
+    if (total > 0 && top3 / total > 0.8) findings.push({ level: 'low', title: '耗时高度集中', detail: `TOP 3 阶段占 ${(top3/total*100).toFixed(0)}%（${sorted.slice(0,3).map(s=>s.name).join(' / ')}），优化聚焦这三处即可覆盖大部分收益。` });
+  }
+  if (!findings.length) findings.push({ level: 'low', title: '未发现明显瓶颈', detail: '各阶段耗时分布较均衡。可做趋势对比或采集更细的 GPU 指标（SM 利用率、显存带宽）。' });
+  return findings;
+}
+
+/* ================= 渲染 ================= */
+let cur = null; // { item, p }
+function statusBadge(s){
+  if (/fail|error/.test(s)) return '<span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.4)">失败</span>';
+  if (/run|doing/.test(s)) return '<span class="dshell-badge dshell-badgeWait">进行中</span>';
+  if (/skip/.test(s)) return '<span class="dshell-badge">跳过</span>';
+  return '<span class="dshell-badge dshell-badgeDone">完成</span>';
+}
+function renderOverview(){
+  const card = $('overviewCard');
+  if (!cur){ card.innerHTML = '<div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>'; $('stageCard').style.display='none'; $('bottleneckCard').style.display='none'; $('kernelCard').style.display='none'; $('aiCard').style.display='none'; return; }
+  const p = cur.p, it = cur.item, m = metaOf(it);
+  $('srcBadge').textContent = it.source === 'local' ? '本地文件' : '服务端';
+  const failedN = p.stages.filter(s => /fail|error/.test(s.status)).length;
+  let kv = '';
+  for (const [k, v] of Object.entries(p.meta)) if (v !== undefined && v !== null && v !== '') kv += '<div class="dshell-kvRow"><span class="dshell-kvKey">' + esc(k) + '</span><span class="dshell-kvValue">' + esc(v) + '</span></div>';
+  card.innerHTML =
+    '<div class="pf-row"><h2 class="dshell-title grow" style="margin:0;font-size:14px">' + esc(m.tag || p.title) + '</h2>' + (it.binary ? '<span class="dshell-badge dshell-badgeWait">二进制报告</span>' : '<span class="dshell-badge dshell-badgeDone">已解析</span>') + '</div>'
+    + (m.desc ? '<p class="dshell-muted" style="margin:4px 0">' + esc(m.desc) + '</p>' : '')
+    + '<p class="dshell-muted" style="margin:4px 0 10px;word-break:break-all">' + esc(it.path || '本地文件') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</p>'
+    + '<div class="dshell-grid">'
+    + '<div class="dshell-stat"><div class="dshell-statLabel">总耗时</div><div class="dshell-statValue">' + fmtDur(p.total) + '</div></div>'
+    + '<div class="dshell-stat"><div class="dshell-statLabel">阶段数</div><div class="dshell-statValue">' + p.stages.length + '</div></div>'
+    + '<div class="dshell-stat"><div class="dshell-statLabel">失败阶段</div><div class="dshell-statValue" style="color:' + (failedN ? '#f85149' : 'inherit') + '">' + failedN + '</div></div>'
+    + '<div class="dshell-stat"><div class="dshell-statLabel">最慢阶段</div><div class="dshell-statValue" style="font-size:13px;line-height:1.4;word-break:break-all">' + esc(p.stages.length ? [...p.stages].sort((a,b)=>b.durSec-a.durSec)[0].name : '—') + '</div></div>'
+    + '</div>'
+    + (kv ? '<div style="height:8px"></div><div class="dshell-kv">' + kv + '</div>' : '')
+    + (p.note ? '<p class="dshell-muted" style="margin:8px 0 0">' + esc(p.note) + '</p>' : '')
+    + (it.binary ? '<p class="dshell-muted" style="margin:8px 0 0">二进制报告由服务端专用工具自动解析：.nsys-rep/.qdrep → nsys stats，.ncu-rep → ncu --import；服务器未安装对应工具时会显示提示。也可用下方 AI Agent 深入分析。</p>' : '');
+  $('stageCard').style.display = p.stages.length ? '' : 'none';
+  $('bottleneckCard').style.display = '';
+  $('aiCard').style.display = '';
+  renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();
+}
+let waterfall = false;
+function stageRowHtml(s, i, total){
+  const share = s.durSec / total;
+  return '<tr><td>' + (i+1) + '</td><td>' + esc(s.name) + '</td><td>' + statusBadge(s.status) + '</td>'
+    + '<td style="font-variant-numeric:tabular-nums">' + fmtDur(s.durSec) + '</td>'
+    + '<td style="width:34%"><div class="dshell-progress"><div class="dshell-progressBar" style="width:' + Math.max(share*100, s.durSec>0?1:0).toFixed(1) + '%;' + (/fail|error/.test(s.status) ? 'background:#f85149' : '') + '"></div></div></td>'
+    + '<td style="font-variant-numeric:tabular-nums">' + (share*100).toFixed(1) + '%</td></tr>';
+}
+const STAGE_TABLE_HEAD = '<thead><tr><th>#</th><th>阶段</th><th>状态</th><th>耗时</th><th>占比</th><th></th></tr></thead>';
+function renderStages(){
+  if (!cur) return;
+  const p = cur.p;
+  /* 分侧（trace）：GPU/CPU 各自按本侧累计作分母；非 trace（流水线 JSON 等）：单表，分母为全程 */
+  const split = !!p.hasSideSplit;
+  const gpuRows = split ? p.stages.filter(s => s.side === 'gpu') : p.stages;
+  const cpuRows = split ? p.stages.filter(s => s.side === 'cpu') : [];
+  const total = p.total || p.stages.reduce((a, s) => a + s.durSec, 0) || 1;
+  const gpuTotal = split ? ((p.sideTotals && p.sideTotals.gpu) || gpuRows.reduce((a, s) => a + s.durSec, 0) || 1) : total;
+  const cpuTotal = split ? ((p.sideTotals && p.sideTotals.cpu) || cpuRows.reduce((a, s) => a + s.durSec, 0) || 1) : 1;
+  $('viewTableBtn').classList.toggle('dshell-tabOn', !waterfall);
+  $('viewWaterfallBtn').classList.toggle('dshell-tabOn', waterfall);
+  $('stageTableWrap').style.display = waterfall ? 'none' : '';
+  $('stageWaterfallWrap').style.display = waterfall ? '' : 'none';
+  if (!waterfall){
+    $('stageGpuHead').style.display = split ? '' : 'none';
+    $('stageTable').innerHTML = STAGE_TABLE_HEAD + '<tbody>' + gpuRows.map((s, i) => stageRowHtml(s, i, gpuTotal)).join('') + '</tbody>';
+    $('stageCpuWrap').style.display = split && cpuRows.length ? '' : 'none';
+    if (split && cpuRows.length) $('stageTableCpu').innerHTML = STAGE_TABLE_HEAD + '<tbody>' + cpuRows.map((s, i) => stageRowHtml(s, i, cpuTotal)).join('') + '</tbody>';
+  } else {
+    /* 瀑布图只画 GPU 侧（host 事件与 GPU 执行交叠，串行累计没有物理意义） */
+    let acc = 0;
+    const topDur = Math.max(...gpuRows.map(s => s.durSec));
+    const rows = gpuRows.map(s => {
+      const left = acc / gpuTotal * 100; acc += s.durSec;
+      const w = Math.max(s.durSec / gpuTotal * 100, s.durSec > 0 ? 0.6 : 0);
+      const cls = /fail|error/.test(s.status) ? 'fail' : (s.durSec === topDur && s.durSec > 0 ? 'hot' : (s.durSec > 0 ? '' : 'wait'));
+      return '<div class="pf-wfRow"><span class="pf-wfName" title="' + esc(s.name) + '">' + esc(s.name) + '</span>'
+        + '<div class="pf-wfTrack"><div class="pf-wfBar ' + cls + '" style="left:' + left.toFixed(2) + '%;width:' + w.toFixed(2) + '%"></div></div>'
+        + '<span class="pf-wfVal">' + fmtDur(s.durSec) + '</span></div>';
+    }).join('');
+    $('stageWaterfallWrap').innerHTML = rows + '<p class="dshell-muted" style="margin:6px 0 0">横轴按阶段顺序累计（串行假设）；粉色=最慢阶段，红色=失败。' + (split ? '仅 GPU 侧事件。' : '') + '</p>';
+  }
+}
+$('viewTableBtn').addEventListener('click', () => { waterfall = false; renderStages(); });
+$('viewWaterfallBtn').addEventListener('click', () => { waterfall = true; renderStages(); });
+
+/* ================= ECharts 可视化（本地 vendor，不走 CDN；加载失败自动隐藏） ================= */
+let chartDonut = null, chartBar = null;
+function renderCharts(){
+  const hasEC = typeof echarts !== 'undefined';
+  const show = hasEC && cur && cur.p.stages.length && !(cur.p.hasSideSplit && !cur.p.stages.some(s => s.side === 'gpu' && s.durSec > 0));
+  $('chartRow').style.display = show ? 'grid' : 'none';
+  if (!show) return;
+  const p = cur.p;
+  /* 分侧时图表只画 GPU 侧（host 时间与 GPU 执行交叠，混排占比没有物理意义） */
+  const split = !!p.hasSideSplit;
+  const src = split ? p.stages.filter(s => s.side === 'gpu') : p.stages;
+  const sorted = [...src].filter(s => s.durSec > 0).sort((a, b) => b.durSec - a.durSec);
+  const total = split ? ((p.sideTotals && p.sideTotals.gpu) || sorted.reduce((a, s) => a + s.durSec, 0) || 1)
+                      : (p.total || sorted.reduce((a, s) => a + s.durSec, 0) || 1);
+  const fg = getComputedStyle(document.body).color || '#e6e8eb';
+  const top10 = sorted.slice(0, 10);
+  const rest = sorted.slice(10).reduce((a, s) => a + s.durSec, 0);
+  const pieData = top10.map(s => ({ name: s.name, value: +s.durSec.toFixed(4) }));
+  if (rest > 0) pieData.push({ name: '其他', value: +rest.toFixed(4) });
+  chartDonut = chartDonut || echarts.init($('chartDonut'));
+  chartDonut.setOption({
+    textStyle: { color: fg },
+    title: { text: split ? 'GPU 耗时占比' : '耗时占比', left: 'center', textStyle: { color: fg, fontSize: 12 } },
+    tooltip: { trigger: 'item', formatter: (x) => x.name + '<br/>' + fmtDur(x.value) + ' · ' + x.percent + '%' },
+    series: [{ type: 'pie', radius: ['42%', '68%'], center: ['50%', '58%'], label: { color: fg, fontSize: 10 }, data: pieData }],
+  }, true);
+  const top15 = sorted.slice(0, 15).reverse();
+  chartBar = chartBar || echarts.init($('chartBar'));
+  chartBar.setOption({
+    textStyle: { color: fg },
+    title: { text: split ? 'TOP GPU 事件耗时' : 'TOP 阶段耗时', left: 'center', textStyle: { color: fg, fontSize: 12 } },
+    grid: { left: 8, right: 52, top: 30, bottom: 8, containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (xs) => xs[0].name + '<br/>' + fmtDur(xs[0].value) },
+    xAxis: { type: 'value', axisLabel: { color: fg, formatter: (v) => fmtDur(v) }, splitLine: { lineStyle: { color: 'rgba(128,128,128,.15)' } } },
+    yAxis: { type: 'category', data: top15.map(s => s.name), axisLabel: { color: fg, width: 110, overflow: 'truncate' } },
+    series: [{ type: 'bar', label: { show: true, position: 'right', color: fg, formatter: (x) => fmtDur(x.value) },
+      data: top15.map(s => ({ value: +s.durSec.toFixed(4), itemStyle: { color: /fail|error/.test(s.status) ? '#f85149' : '#3fb950', borderRadius: [0, 4, 4, 0] } })) }],
+  }, true);
+  setTimeout(() => { if (chartDonut) chartDonut.resize(); if (chartBar) chartBar.resize(); }, 60);
+}
+window.addEventListener('resize', () => { if (chartDonut) chartDonut.resize(); if (chartBar) chartBar.resize(); });
+
+function renderFindings(){
+  if (!cur) return;
+  const fs = analyzeStages(cur.p).concat(kernelFindings(cur.p.kernelAnalysis));
+  $('findingCount').textContent = fs.length + ' 项发现';
+  const ico = { high: '🔴', mid: '🟡', low: '⚪' };
+  $('findingList').innerHTML = fs.map(f =>
+    '<div class="pf-finding ' + f.level + '"><span class="ico">' + ico[f.level] + '</span><div><b>' + esc(f.title) + '</b><small>' + esc(f.detail) + '</small></div></div>'
+  ).join('');
+}
+
+/* ================= GPU 内核三表 ================= */
+/* 由内核分析结果派生瓶颈发现（与 analyzeStages 的通用阶段发现合并展示） */
+function kernelFindings(ka){
+  const out = [];
+  if (!ka || !ka.gpu) return out;
+  const g = ka.gpu;
+  if (g.streams === 1 && g.kernelCount > 0)
+    out.push({ level: 'low', title: '单流串行执行', detail: g.kernelCount + ' 个内核全部在 1 条 stream 上，跨流重叠为 0——同流内核硬件级串行、不可能互相重叠。「尝试重叠」类建议需引入额外 stream / PDL 才成立；串行场景优先看融合与单内核优化。' });
+  if (g.window > 0 && g.idlePct > 30){
+    let detail = '窗口 ' + fmtUs(g.window) + ' 中空闲 ' + fmtUs(g.idle) + '。';
+    const gap = (g.idleGaps || [])[0];
+    if (gap){
+      detail += '最大空闲段 ' + fmtUs(gap.dur) + '（@' + fmtUs(gap.ts) + '）';
+      detail += gap.hosts && gap.hosts.length
+        ? '，期间 host 同步：' + gap.hosts.map(h => h[0] + ' ×' + h[1]).join('、') + '——减少 host↔device 往返（.item() 移出热路径、pinned 内存、异步拷贝）。'
+        : '，期间未发现同步类 host 调用，疑似调度气泡或 CPU 派发瓶颈。';
+    } else detail += '检查 host 同步（cudaStreamSynchronize / aten::item / DtoH 拷贝）、调度气泡与 CPU 派发瓶颈。';
+    out.push({ level: 'mid', title: 'GPU 空闲占比 ' + g.idlePct.toFixed(0) + '%', detail });
+  }
+  if (g.busy > 0 && g.sum > g.busy * 1.3)
+    out.push({ level: 'low', title: '内核累计显著大于忙碌并集', detail: '内核累计 ' + fmtUs(g.sum) + ' vs 忙碌并集 ' + fmtUs(g.busy) + '：跨流重叠明显，时长占比≠可消除延迟，可移除时间应按忙碌并集/关键路径评估。' });
+  const p1c = (ka.overlap || []).find(o => o.prio === 'P1' && o.bucket === 'communication');
+  if (p1c)
+    out.push({ level: 'high', title: '通信内核暴露：' + p1c.name, detail: '暴露 ' + fmtUs(p1c.total * p1c.exclusiveRatio) + '（占 GPU 忙碌 ' + p1c.share.toFixed(1) + '%），依赖风险低，优先尝试与计算重叠（overlap scheduler / PDL 等）。' });
+  const p1f = (ka.overlap || []).find(o => o.prio === 'P1' && o.bucket !== 'communication');
+  if (p1f)
+    out.push({ level: 'mid', title: '暴露内核可优化：' + p1f.name, detail: '暴露 ' + fmtUs(p1f.total * p1f.exclusiveRatio) + '（占 GPU 忙碌 ' + p1f.share.toFixed(1) + '%），依赖风险低，建议尝试融合（' + p1f.family + '）。' });
+  const confN = (ka.fusion || []).filter(f => f.confidence === 'Confirmed').length;
+  const candN = (ka.fusion || []).length - confN;
+  if (confN || candN)
+    out.push({ level: 'low', title: '融合模式识别：已在跑 ' + confN + ' · 可融合 ' + candN, detail: (ka.fusion || []).slice(0, 4).map(f => f.pattern + '（' + f.confidence + '）').join('；') + ((ka.fusion || []).length > 4 ? ' 等' : '') + '。' });
+  return out;
+}
+function stageLabelOf(st){
+  if (!st) return '—';
+  const total = (st.decode || 0) + (st.prefill || 0) + (st.all || 0);
+  if (!total) return '—';
+  const parts = [];
+  if (st.decode > 0) parts.push('D ' + Math.round(st.decode / total * 100) + '%');
+  if (st.prefill > 0) parts.push('P ' + Math.round(st.prefill / total * 100) + '%');
+  return parts.length ? parts.join(' ') : '—';
+}
+function renderKernelAnalysis(){
+  const card = $('kernelCard');
+  if (!cur || !cur.p.kernelAnalysis){ card.style.display = 'none'; return; }
+  const ka = cur.p.kernelAnalysis, g = ka.gpu;
+  card.style.display = '';
+  $('kernelCount').textContent = g.kernelCount + ' 内核 · ' + g.streams + ' 流';
+  const stat = (label, val) => '<div class="dshell-stat"><div class="dshell-statLabel">' + label + '</div><div class="dshell-statValue" style="font-size:15px">' + val + '</div></div>';
+  $('gpuStatGrid').innerHTML =
+    stat('窗口 wall', fmtUs(g.window))
+    + stat('GPU 忙碌(并集)', fmtUs(g.busy))
+    + stat('内核累计', fmtUs(g.sum))
+    + stat('GPU 空闲', fmtUs(g.idle) + ' · ' + g.idlePct.toFixed(0) + '%')
+    + stat('串行(单流)', fmtUs(g.serial != null ? g.serial : g.busy - g.overlap))
+    + stat('跨流重叠', fmtUs(g.overlap))
+    + stat('最大并发流', g.maxConcurrent);
+  const su = g.stageUs || {};
+  $('stageSplitLine').innerHTML = (su.decode > 0 || su.prefill > 0)
+    ? '<p class="dshell-muted" style="margin:2px 0 0">阶段内核时间：decode ' + fmtUs(su.decode) + ' · prefill ' + fmtUs(su.prefill) + (su.all > 0 ? ' · 未标注 ' + fmtUs(su.all) : '') + '</p>'
+    : '';
+  /* 串行/空闲提示：单流串行声明 + TOP 空闲段 host 归因 */
+  const notes = [];
+  if (g.streams === 1 && g.kernelCount > 0) notes.push('⚠ 仅 1 条活跃 stream：内核全部串行（同流内核不可能互相重叠），跨流重叠为 0；下方「尝试重叠」类建议需引入额外 stream / PDL 才成立。');
+  else if (g.streams > 1 && g.overlap === 0) notes.push('⚠ 有 ' + g.streams + ' 条流但跨流重叠为 0：内核按流串行推进，未见流间交叠。');
+  for (const gap of (g.idleGaps || []))
+    notes.push('空闲段 ' + fmtUs(gap.dur) + '（@' + fmtUs(gap.ts) + '）' + (gap.hosts && gap.hosts.length ? '：host 同步 ' + gap.hosts.map(h => esc(h[0]) + ' ×' + h[1]).join('、') : '：期间无同步类 host 调用'));
+  $('gpuNoteLine').innerHTML = notes.length ? '<p class="dshell-muted" style="margin:2px 0 0">' + notes.join('<br>') + '</p>' : '';
+  const rows = (ka.kernels || []).filter(k => k.share >= 1).slice(0, 15);
+  $('kernelTable').innerHTML = '<thead><tr><th>#</th><th>内核</th><th>算子族</th><th>GPU 时间</th><th>占比</th><th>启动</th><th>阶段</th><th>CPU 算子</th></tr></thead><tbody>'
+    + rows.map((k, i) =>
+      '<tr><td>' + (i + 1) + '</td><td class="pf-kname" title="' + esc(k.name) + '">' + esc(k.name.length > 72 ? k.name.slice(0, 72) + '…' : k.name) + '</td>'
+      + '<td><span class="pf-fam">' + esc(k.family) + '</span></td>'
+      + '<td style="font-variant-numeric:tabular-nums">' + fmtUs(k.total) + '</td>'
+      + '<td style="font-variant-numeric:tabular-nums">' + k.share.toFixed(1) + '%</td>'
+      + '<td style="font-variant-numeric:tabular-nums">' + k.count + '</td>'
+      + '<td>' + stageLabelOf(k.stages) + '</td>'
+      + '<td class="pf-kname">' + esc(k.cpuOp || '—') + '</td></tr>').join('')
+    + '</tbody>';
+  const depLabel = { low: '低', high: '高', unclear: '不明' };
+  const recLabel = { 'try overlap': '尝试重叠', 'try fusion': '尝试融合', 'check deps': '检查依赖', skip: '跳过（低 ROI）', defer: '延后', inspect: '排查' };
+  const verdictLabel = { headroom: '暴露余量', 'low-roi-hidden': '低 ROI 隐藏' };
+  $('overlapWrap').innerHTML = (ka.overlap || []).length
+    ? '<table class="dshell-table"><thead><tr><th>优先级</th><th>判定</th><th>内核</th><th>暴露/隐藏</th><th>依赖风险</th><th>建议</th></tr></thead><tbody>'
+      + ka.overlap.map(o =>
+        '<tr><td class="pf-prio ' + o.prio.toLowerCase() + '">' + o.prio + '</td>'
+        + '<td>' + (verdictLabel[o.verdict] || o.verdict) + '</td>'
+        + '<td class="pf-kname" title="' + esc(o.name) + '">' + esc(o.name.length > 60 ? o.name.slice(0, 60) + '…' : o.name) + '</td>'
+        + '<td style="font-variant-numeric:tabular-nums">' + Math.round(o.exclusiveRatio * 100) + '% / ' + Math.round(o.hiddenRatio * 100) + '%</td>'
+        + '<td>' + (depLabel[o.dep] || o.dep) + '</td>'
+        + '<td>' + (recLabel[o.rec] || o.rec) + '</td></tr>').join('')
+      + '</tbody></table>'
+    : '<p class="dshell-muted" style="margin:4px 0">无显著重叠机会（暴露内核均低于阈值：总时长 ≥5µs、暴露占比 ≥45%、份额 ≥1%）。</p>';
+  $('fusionWrap').innerHTML = (ka.fusion || []).length
+    ? '<table class="dshell-table"><thead><tr><th>模式</th><th>置信</th><th>关联 GPU 时间</th><th>占比</th><th>证据内核</th></tr></thead><tbody>'
+      + ka.fusion.map(f =>
+        '<tr><td>' + esc(f.pattern) + '</td>'
+        + '<td class="' + (f.confidence === 'Confirmed' ? 'pf-conf' : 'pf-cand') + '">' + f.confidence + '</td>'
+        + '<td style="font-variant-numeric:tabular-nums">' + fmtUs(f.relatedUs) + '</td>'
+        + '<td style="font-variant-numeric:tabular-nums">' + f.share.toFixed(1) + '%</td>'
+        + '<td class="pf-kname">' + esc(f.evidence.join('、').slice(0, 120)) + '</td></tr>').join('')
+      + '</tbody></table>'
+    : '<p class="dshell-muted" style="margin:4px 0">未识别到融合候选模式。</p>';
+}
+
+/* ================= 列表 ================= */
+function renderList(){
+  const box = $('itemList');
+  $('countBadge').textContent = items.length;
+  if (!items.length){ box.innerHTML = '<div class="pf-empty">暂无条目</div>'; return; }
+  box.innerHTML = items.map(it => {
+    const m = metaOf(it);
+    return '<div class="dshell-listItem pf-item' + (it.id === currentId ? ' on' : '') + '" data-id="' + esc(it.id) + '">'
+      + '<div style="min-width:0;flex:1"><div class="dshell-listItemTitle">' + esc(m.tag || it.name) + '</div>'
+      + '<div class="pf-row" style="gap:6px"><span class="dshell-listItemMeta">' + (it.source === 'local' ? '本地' : '服务端') + (it.binary ? ' · 二进制' : '') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</span>'
+      + (m.tag ? '<span class="tag">#' + esc(m.tag) + '</span>' : '') + '</div>'
+      + (m.desc ? '<div class="desc">' + esc(m.desc) + '</div>' : '')
+      + '<div class="pf-editbox"><input class="dshell-input" data-role="tag" placeholder="标签" value="' + esc(m.tag || '') + '"><input class="dshell-input" data-role="desc" placeholder="描述" value="' + esc(m.desc || '') + '"></div>'
+      + '</div><button class="dshell-btn dshell-btnGhost" data-role="edit" style="flex:none;padding:4px 10px">✎</button></div>';
+  }).join('');
+  box.querySelectorAll('.pf-item').forEach(el => {
+    const id = el.dataset.id;
+    el.addEventListener('click', (ev) => {
+      if (ev.target.closest('[data-role="edit"]')){
+        el.classList.toggle('editing'); ev.stopPropagation(); return;
+      }
+      if (el.classList.contains('editing')) return;
+      selectItem(id);
+    });
+    el.querySelectorAll('.pf-editbox input').forEach(inp => {
+      inp.addEventListener('change', () => {
+        const m = meta[id] || (meta[id] = {});
+        m[inp.dataset.role] = inp.value.trim();
+        if (!m.tag && !m.desc) delete meta[id];
+        saveMeta(); renderList(); if (id === currentId) renderOverview();
+        toast('标签已保存');
+      });
+      inp.addEventListener('click', (ev) => ev.stopPropagation());
+    });
+  });
+}
+async function selectItem(id){
+  const it = items.find(x => x.id === id);
+  if (!it) return;
+  currentId = id; renderList();
+  if (it.binary){
+    /* 二进制报告：调用服务端专用 CUDA 工具（nsys / ncu）分析 */
+    cur = { item: it, p: { title: it.name, meta: { '类型': 'NVIDIA 二进制 profiling 报告', '分析工具': '调用中…' }, stages: [], total: 0, ok: true, note: '正在调用专用 CUDA 分析工具（nsys / ncu）…' } };
+    renderOverview();
+    if (!it.data && it.path){
+      const dir = pageDir();
+      if (dir){
+        try{
+          const r = await api.exec(dir + '/cuda_analyze.py', [it.path], dir, 900000);
+          let d = null;
+          try { d = JSON.parse(r.stdout || ''); } catch(e){}
+          if (d && d.ok){ it.data = d; cur = { item: it, p: normalizeCuda(d, it.name) }; renderOverview(); renderList(); return; }
+          const errMsg = (d && d.error ? d.error + (d.hint ? '；' + d.hint : '') : '') || String((r && r.stderr) || '').slice(0, 300) || '专用工具分析失败';
+          cur = { item: it, p: { title: it.name, meta: { '类型': 'NVIDIA 二进制 profiling 报告', '分析工具': '调用失败' }, stages: [], total: 0, ok: true, note: errMsg } };
+          renderOverview(); return;
+        }catch(e){
+          cur = { item: it, p: { title: it.name, meta: { '类型': 'NVIDIA 二进制 profiling 报告', '分析工具': '调用失败' }, stages: [], total: 0, ok: true, note: String(e && e.message || e) } };
+          renderOverview(); return;
+        }
+      }
+    }
+    if (it.data){ cur = { item: it, p: normalizeCuda(it.data, it.name) }; renderOverview(); renderList(); return; }
+    renderOverview(); return;
+  }
+  if (!it.data && it.path){
+    try{
+      toast('加载中…');
+      /* Chrome trace（.pt.trace.json[.gz]）：优先服务端汇总器解析，大文件不必整份下载到浏览器 */
+      if (/\.trace\.json(\.gz)?$/i.test(it.name) || /trace.*\.json(\.gz)?$/i.test(it.name)){
+        const dir = pageDir();
+        let ok = false;
+        if (dir){
+          try{
+            const r = await api.exec(dir + '/trace_summary.py', [it.path], dir, 300000);
+            if (r && r.code === 0 && r.stdout){
+              const d = JSON.parse(r.stdout);
+              if (d && d.kind === 'chrome-trace' && !d.error){ d._via = 'server'; it.data = d; ok = true; }
+            }
+          }catch(e){ /* 回退直接读取 */ }
+        }
+        if (ok){ cur = { item: it, p: normalize(it.data, it.name) }; renderOverview(); renderList(); return; }
+      }
+      const f = await api.file(it.path);
+      it.size = f.size;
+      let buf = f.buf;
+      if (isGzipBuf(buf)){
+        try { buf = await gunzip(buf); } catch(e){ toast('gzip 解压失败：' + e.message); return; }
+      }
+      const text = decodeText(buf);
+      if (looksBinary(text)){ it.binary = true; cur = { item: it, p: { title: it.name, meta: { '类型': '二进制 profiling 数据' }, stages: [], total: 0, ok: true, note: '' } }; renderOverview(); renderList(); return; }
+      try { it.data = JSON.parse(text); } catch(e){ it.rawText = text; }
+    }catch(e){ toast('加载失败：' + e.message); return; }
+  }
+  const p = it.data ? normalize(it.data, it.name) : { title: it.name, meta: {}, stages: [], total: 0, ok: false, note: '无法解析为 JSON，已按文本处理（可在 AI 分析中查看内容摘要）' };
+  if (it.rawText && !it.data){
+    const lines = cleanText(it.rawText).split('\n').map(l => l.trim()).filter(Boolean);
+    p.meta['行数'] = lines.length;
+    p.meta['内容摘要'] = lines.slice(0, 3).join(' ⏎ ').slice(0, 120) + (lines.length > 3 ? ' …' : '');
+  }
+  cur = { item: it, p };
+  renderOverview(); renderList();
+}
+
+/* ================= 本地文件 ================= */
+$('pickLocalBtn').addEventListener('click', () => $('localFileInput').click());
+$('localFileInput').addEventListener('change', async (ev) => {
+  const files = Array.from(ev.target.files || []);
+  for (const f of files){
+    const id = 'local:' + f.name;
+    const it = { id, name: f.name, path: null, source: 'local', size: f.size, binary: isBinaryName(f.name), data: null, rawText: null };
+    if (!it.binary){
+      try{
+        let buf = await f.arrayBuffer();
+        if (isGzipBuf(buf)){
+          if (buf.byteLength > 200 * 1024 * 1024){ toast(f.name + ' 过大，建议放到服务端后按路径加载'); }
+          buf = await gunzip(buf);
+        }
+        if (buf.byteLength > 150 * 1024 * 1024){ toast(f.name + ' 解压后过大（>150MB），请放到服务端用汇总器解析'); it.rawText = null; }
+        else {
+          const text = decodeText(buf);
+          if (looksBinary(text)){ it.binary = true; }
+          else { try { it.data = JSON.parse(text); } catch(e){ it.rawText = text; } }
+        }
+      }catch(e){ it.rawText = null; }
+    }
+    const idx = items.findIndex(x => x.id === id);
+    if (idx >= 0) items[idx] = it; else items.unshift(it);
+  }
+  ev.target.value = '';
+  renderList();
+  if (items.length && !currentId) selectItem(items[0].id);
+});
+$('clearLocalBtn').addEventListener('click', () => {
+  items = items.filter(it => it.source !== 'local');
+  if (currentId && !items.find(x => x.id === currentId)){ currentId = null; cur = null; renderOverview(); }
+  renderList();
+});
+
+/* ================= 服务端单文件 ================= */
+$('loadSrvFileBtn').addEventListener('click', async () => {
+  const path = $('srvFilePath').value.trim();
+  if (!path) { toast('请输入服务端文件路径'); return; }
+  const id = 'server:' + path;
+  if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path, source: 'server', size: 0, binary: isBinaryName(path), data: null, rawText: null });
+  renderList(); selectItem(id);
+});
+
+/* 目录浏览 */
+let browseDir = '';
+$('browseSrvBtn').addEventListener('click', async () => {
+  $('srvBrowser').style.display = $('srvBrowser').style.display === 'none' ? '' : 'none';
+  if ($('srvBrowser').style.display !== 'none') await renderBrowser($('srvFilePath').value.trim().replace(/\/[^/]*$/, '') || '/');
+});
+async function renderBrowser(dir){
+  browseDir = dir;
+  $('srvBrowserPath').textContent = dir;
+  const box = $('srvBrowserList');
+  box.innerHTML = '<div class="pf-empty">加载中…</div>';
+  try{
+    const d = await api.fs(dir);
+    box.innerHTML = d.entries.filter(e => !e.hidden).map(e =>
+      '<div class="dshell-listItem" data-p="' + esc(e.path) + '" data-dir="' + (e.isDir ? 1 : 0) + '"><span class="dshell-listItemTitle">' + (e.isDir ? '📁 ' : '📄 ') + esc(e.name) + '</span></div>'
+    ).join('') || '<div class="pf-empty">空目录</div>';
+    box.querySelectorAll('.dshell-listItem').forEach(el => el.addEventListener('click', () => {
+      if (el.dataset.dir === '1') renderBrowser(el.dataset.p);
+      else { $('srvFilePath').value = el.dataset.p; $('loadSrvFileBtn').click(); }
+    }));
+  }catch(e){ box.innerHTML = '<div class="pf-empty">' + esc(e.message) + '</div>'; }
+}
+$('srvUpBtn').addEventListener('click', () => { const up = browseDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'; renderBrowser(up); });
+
+/* ================= 服务端文件夹扫描 ================= */
+$('srvDirPath').value = load(DIR_KEY, '');
+async function scanServerDir(){
+  const dir = $('srvDirPath').value.trim();
+  if (!dir) return;
+  store(DIR_KEY, dir);
+  try{
+    const d = await api.fs(dir);
+    const files = d.entries.filter(e => !e.isDir && !e.hidden && isProfileName(e.name));
+    for (const e of files){
+      const id = 'server:' + e.path;
+      if (!items.find(x => x.id === id)) items.push({ id, name: e.name, path: e.path, source: 'server', size: 0, binary: isBinaryName(e.name), data: null, rawText: null });
+    }
+    renderList();
+    toast('扫描到 ' + files.length + ' 个 profiling 文件' + (d.truncated ? '（已截断 500 条）' : ''));
+    if (!currentId && files.length) selectItem('server:' + files[0].path);
+  }catch(e){ toast('扫描失败：' + e.message); }
+}
+$('scanDirBtn').addEventListener('click', scanServerDir);
+$('rescanDirBtn').addEventListener('click', scanServerDir);
+if ($('srvDirPath').value.trim()) scanServerDir();
+
+/* 文件夹内点选某个 profiling 文件 */
+let dirBrowseDir = '';
+$('browseDirBtn').addEventListener('click', async () => {
+  $('dirBrowser').style.display = $('dirBrowser').style.display === 'none' ? '' : 'none';
+  if ($('dirBrowser').style.display !== 'none') await renderDirBrowser($('srvDirPath').value.trim() || '/');
+});
+async function renderDirBrowser(dir){
+  dirBrowseDir = dir;
+  $('dirBrowserPath').textContent = dir;
+  const box = $('dirBrowserList');
+  box.innerHTML = '<div class="pf-empty">加载中…</div>';
+  try{
+    const d = await api.fs(dir);
+    box.innerHTML = d.entries.filter(e => !e.hidden).map(e =>
+      '<div class="dshell-listItem" data-p="' + esc(e.path) + '" data-dir="' + (e.isDir ? 1 : 0) + '"><span class="dshell-listItemTitle">' + (e.isDir ? '📁 ' : '📄 ') + esc(e.name) + '</span>' + (e.isDir ? '' : '<span class="dshell-listItemMeta">点击加载</span>') + '</div>'
+    ).join('') || '<div class="pf-empty">空目录</div>';
+    box.querySelectorAll('.dshell-listItem').forEach(el => el.addEventListener('click', () => {
+      if (el.dataset.dir === '1'){ renderDirBrowser(el.dataset.p); return; }
+      const path = el.dataset.p;
+      const id = 'server:' + path;
+      if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path, source: 'server', size: 0, binary: isBinaryName(path), data: null, rawText: null });
+      renderList(); selectItem(id);
+      toast('已选择 ' + path.split('/').pop());
+    }));
+  }catch(e){ box.innerHTML = '<div class="pf-empty">' + esc(e.message) + '</div>'; }
+}
+$('dirUpBtn').addEventListener('click', () => { const up = dirBrowseDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'; renderDirBrowser(up); });
+
+/* ================= 数据来源页签 ================= */
+$('srcTabs').querySelectorAll('.dshell-tab').forEach(t => t.addEventListener('click', () => {
+  $('srcTabs').querySelectorAll('.dshell-tab').forEach(x => x.classList.toggle('dshell-tabOn', x === t));
+  for (const name of ['local', 'serverFile', 'serverDir']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
+}));
+
+/* ================= AI 分析 ================= */
+const AGENTS = [
+  { id: 'builtin', name: '工作台 AI 助手', desc: '在当前项目里开新会话分析' },
+  { id: 'mimo', name: 'MiMo Code', desc: 'mimo run（服务端非交互）' },
+  { id: 'kimi', name: 'Kimi Code', desc: 'kimi -p（服务端非交互）' },
+  { id: 'codex', name: 'Codex', desc: 'codex exec（服务端非交互）' },
+  { id: 'claude', name: 'Claude Code', desc: 'claude -p（服务端非交互）' },
+];
+let agentId = load(AGENT_KEY, 'builtin');
+function renderAgents(){
+  $('agentPick').innerHTML = AGENTS.map(a =>
+    '<div class="pf-agent' + (a.id === agentId ? ' on' : '') + '" data-id="' + a.id + '"><b>' + esc(a.name) + '</b><small>' + esc(a.desc) + '</small></div>'
+  ).join('');
+  $('agentPick').querySelectorAll('.pf-agent').forEach(el => el.addEventListener('click', () => { agentId = el.dataset.id; store(AGENT_KEY, agentId); renderAgents(); }));
+}
+renderAgents();
+
+function buildPrompt(){
+  if (!cur) return '';
+  const it = cur.item, p = cur.p, m = metaOf(it);
+  const L = [];
+  L.push('# CUDA Profiling 深度分析请求');
+  L.push('');
+  L.push('文件：' + it.name + (it.path ? '（' + it.path + '）' : '（本地文件）') + (it.size ? '，大小 ' + fmtSize(it.size) : ''));
+  if (m.tag || m.desc) L.push('标签/描述：' + [m.tag, m.desc].filter(Boolean).join(' / '));
+  if (it.binary) L.push('注意：这是 NVIDIA 二进制 profiling 报告。请使用 ncu --import / nsys stats 等工具读取该文件后再分析。');
+  L.push('');
+  L.push('## 概览');
+  for (const [k, v] of Object.entries(p.meta)) if (v !== undefined && v !== null && v !== '') L.push('- ' + k + '：' + v);
+  L.push('- 总耗时：' + fmtDur(p.total));
+  L.push('- 阶段数：' + p.stages.length);
+  if (p.hasSideSplit){
+    /* 分侧表格：GPU/CPU 各自分母，明示 host 时间不可与 GPU 相加 */
+    const gpuRows = p.stages.filter(s => s.side === 'gpu');
+    const cpuRows = p.stages.filter(s => s.side === 'cpu');
+    const gt = (p.sideTotals && p.sideTotals.gpu) || gpuRows.reduce((a, s) => a + s.durSec, 0) || 1;
+    const ct = (p.sideTotals && p.sideTotals.cpu) || cpuRows.reduce((a, s) => a + s.durSec, 0) || 1;
+    if (gpuRows.length){
+      L.push('');
+      L.push('## GPU 设备事件耗时（降序 TOP 15，分母=GPU 累计 ' + fmtDur(gt) + '）');
+      L.push('| 事件 | 耗时 | 占比 |');
+      L.push('| --- | --- | --- |');
+      for (const s of [...gpuRows].sort((a, b) => b.durSec - a.durSec).slice(0, 15))
+        L.push('| ' + s.name + ' | ' + fmtDur(s.durSec) + ' | ' + (s.durSec / gt * 100).toFixed(1) + '% |');
+    }
+    if (cpuRows.length){
+      L.push('');
+      L.push('## CPU/Host 事件耗时（降序 TOP 15，分母=CPU 累计 ' + fmtDur(ct) + '；host 墙钟时间，与 GPU 执行交叠，勿相加）');
+      L.push('| 事件 | 耗时 | 占比 |');
+      L.push('| --- | --- | --- |');
+      for (const s of [...cpuRows].sort((a, b) => b.durSec - a.durSec).slice(0, 15))
+        L.push('| ' + s.name + ' | ' + fmtDur(s.durSec) + ' | ' + (s.durSec / ct * 100).toFixed(1) + '% |');
+    }
+  } else if (p.stages.length){
+    L.push('');
+    L.push('## 阶段耗时（降序 TOP 15）');
+    L.push('| 阶段 | 状态 | 耗时 | 占比 |');
+    L.push('| --- | --- | --- | --- |');
+    const total = p.total || p.stages.reduce((a, s) => a + s.durSec, 0) || 1;
+    for (const s of [...p.stages].sort((a, b) => b.durSec - a.durSec).slice(0, 15))
+      L.push('| ' + s.name + ' | ' + s.status + ' | ' + fmtDur(s.durSec) + ' | ' + (s.durSec / total * 100).toFixed(1) + '% |');
+  }
+  if (p.kernelAnalysis && p.kernelAnalysis.gpu){
+    const ka = p.kernelAnalysis, g = ka.gpu;
+    L.push('');
+    L.push('## GPU 时间口径（内核三表分析，参考 llm-torch-profiler-analysis）');
+    L.push('- 窗口 wall：' + fmtUs(g.window) + '；GPU 忙碌并集：' + fmtUs(g.busy) + '；内核累计：' + fmtUs(g.sum) + '；空闲：' + fmtUs(g.idle) + '（' + g.idlePct.toFixed(0) + '%）；串行(单流)：' + fmtUs(g.serial != null ? g.serial : g.busy - g.overlap) + '；跨流重叠：' + fmtUs(g.overlap) + '；最大并发流：' + g.maxConcurrent);
+    if (g.streams === 1 && g.kernelCount > 0) L.push('- 注意：仅 1 条活跃 stream，内核全部串行（同流内核不可能互相重叠）；重叠类建议需引入额外 stream / PDL。');
+    if (g.idleGaps && g.idleGaps.length)
+      L.push('- 空闲归因 TOP：' + g.idleGaps.map(gap => fmtUs(gap.dur) + '（@' + fmtUs(gap.ts) + (gap.hosts && gap.hosts.length ? '，host 同步：' + gap.hosts.map(h => h[0] + '×' + h[1]).join('、') : '') + '）').join('；'));
+    if (g.stageUs && (g.stageUs.decode > 0 || g.stageUs.prefill > 0))
+      L.push('- 阶段内核时间：decode ' + fmtUs(g.stageUs.decode) + ' · prefill ' + fmtUs(g.stageUs.prefill) + ' · 未标注 ' + fmtUs(g.stageUs.all));
+    if (ka.kernels && ka.kernels.length){
+      L.push('');
+      L.push('### 内核归因 TOP 10');
+      L.push('| 内核 | 算子族 | GPU 时间 | 占比 | 启动 | CPU 算子 |');
+      L.push('| --- | --- | --- | --- | --- | --- |');
+      for (const k of ka.kernels.slice(0, 10))
+        L.push('| ' + k.name + ' | ' + k.family + ' | ' + fmtUs(k.total) + ' | ' + k.share.toFixed(1) + '% | ' + k.count + ' | ' + (k.cpuOp || '—') + ' |');
+    }
+    if (ka.overlap && ka.overlap.length){
+      L.push('');
+      L.push('### 重叠机会');
+      for (const o of ka.overlap)
+        L.push('- ' + o.prio + ' [' + o.verdict + '] ' + o.name + '：暴露 ' + Math.round(o.exclusiveRatio * 100) + '% / 隐藏 ' + Math.round(o.hiddenRatio * 100) + '%，依赖风险 ' + o.dep + '，建议 ' + o.rec);
+    }
+    if (ka.fusion && ka.fusion.length){
+      L.push('');
+      L.push('### 融合候选');
+      for (const f of ka.fusion)
+        L.push('- ' + f.pattern + '（' + f.confidence + '，关联 ' + fmtUs(f.relatedUs) + '，' + f.share.toFixed(1) + '%）：' + f.evidence.join('、'));
+    }
+  }
+  if (cur.item.rawText){
+    L.push('');
+    L.push('## 原始内容摘要（文本前 40 行）');
+    L.push('```');
+    L.push(cleanText(cur.item.rawText).split('\n').slice(0, 40).join('\n').slice(0, 4000));
+    L.push('```');
+  }
+  L.push('');
+  L.push('## 本地瓶颈初判');
+  for (const f of analyzeStages(p).concat(kernelFindings(p.kernelAnalysis))) L.push('- ' + f.title + '：' + f.detail);
+  L.push('');
+  L.push('## 请输出');
+  L.push('1. 主要瓶颈点定位与证据');
+  L.push('2. 可能的根因（算子/显存带宽/同步等待/IO/调度等角度）');
+  L.push('3. 优化建议，按预期收益排序，注明代价与风险');
+  L.push('4. 建议补充采集的 profiling 指标');
+  return L.join('\n');
+}
+
+let aiRunning = null;
+function aiPrint(text, cls){
+  const out = $('aiOut');
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text;
+  out.appendChild(span);
+  out.scrollTop = out.scrollHeight;
+}
+$('runAiBtn').addEventListener('click', async () => {
+  if (!cur) { toast('请先加载一个 profiling'); return; }
+  const prompt = buildPrompt();
+  $('aiOut').innerHTML = '';
+  if (agentId === 'builtin'){
+    let sent = false;
+    try{
+      if (window.parent && window.parent !== window){
+        if (cur.item.path) { window.parent.postMessage({ type: 'worktable:analyze-log', path: cur.item.path }, '*'); sent = true; }
+        if (typeof window.parent.__dshNewChatSessionForCurrentProject === 'function'){ window.parent.__dshNewChatSessionForCurrentProject(prompt); sent = true; }
+      }
+    }catch(e){}
+    aiPrint(sent ? '已发送到工作台 AI 助手，请在工作台会话中查看分析进度。\n\n—— 以下为发送的分析简报 ——\n\n' + prompt
+               : '未检测到工作台宿主环境，无法内置分析。请改用 CLI Agent。\n\n' + prompt, 'sys');
+    return;
+  }
+  const dir = pageDir();
+  if (!dir){ aiPrint('无法确定页面目录，CLI Agent 需要服务端可写目录。', 'err'); return; }
+  const ts = Date.now();
+  const workDir = dir + '/.ai-analysis';
+  const promptPath = workDir + '/prompt-' + ts + '.md';
+  const scriptPath = workDir + '/run-' + ts + '.sh';
+  const cmds = {
+    mimo: 'mimo run "$PROMPT"',
+    kimi: 'kimi -p "$PROMPT"',
+    codex: 'codex exec "$PROMPT"',
+    claude: 'claude -p "$PROMPT"',
+  };
+  const agent = AGENTS.find(a => a.id === agentId);
+  const script = [
+    '#!/usr/bin/env bash',
+    'export PATH="/root/.mimocode/bin:/root/.kimi-code/bin:/root/.local/bin:/usr/local/bin:$PATH"',
+    'cd ' + JSON.stringify(dir),
+    'PROMPT="$(cat ' + JSON.stringify(promptPath) + ')"',
+    'echo "[agent] ' + agent.name + ' 分析中…"',
+    cmds[agentId] || cmds.claude,
+    '',
+  ].join('\n');
+  try{
+    await api.mkdir(workDir);
+    await api.write(promptPath, prompt);
+    await api.write(scriptPath, script);
+  }catch(e){ aiPrint('准备工作失败：' + e.message, 'err'); return; }
+  $('runAiBtn').disabled = true; $('stopAiBtn').disabled = false;
+  aiPrint('$ ' + (cmds[agentId] || '') + '\n', 'sys');
+  aiRunning = execStream(scriptPath, [], dir, 600000, (frame) => {
+    if (frame.type === 'out') aiPrint(frame.text);
+    else if (frame.type === 'err') aiPrint(frame.text, 'err');
+    else if (frame.type === 'error') aiPrint('\n[error] ' + frame.message + '\n', 'err');
+    else if (frame.type === 'done') aiPrint('\n[done] exit=' + frame.code + '\n', 'sys');
+  });
+  try{
+    await aiRunning.done;
+  }catch(e){
+    if (e && e.name === 'AbortError') aiPrint('\n[已停止]\n', 'sys');
+    else aiPrint('\n[运行失败] ' + e.message + '\n', 'err');
+  }
+  aiRunning = null;
+  $('runAiBtn').disabled = false; $('stopAiBtn').disabled = true;
+});
+$('stopAiBtn').addEventListener('click', () => { if (aiRunning) aiRunning.abort(); });
+$('copyAiBtn').addEventListener('click', async () => {
+  try{ await navigator.clipboard.writeText($('aiOut').innerText); toast('已复制'); }catch(e){ toast('复制失败'); }
+});
+$('clearAiBtn').addEventListener('click', () => { $('aiOut').innerHTML = ''; });
+
+renderList();
+</script>
+</body>
+</html>

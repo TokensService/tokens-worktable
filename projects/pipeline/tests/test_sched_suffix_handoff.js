@@ -1,6 +1,7 @@
 /* 定时分界移交（混合编排：需本地运行前缀 + 定时后缀）回归测试。
    原设计：手动运行时「需本地运行」阶段在浏览器立即跑完，到达首个定时阶段（分界）时把后缀整体登记为
-   「立即执行一次」的服务端计划（归档上下文/变量快照随计划移交），弹窗告知；登记失败弹窗告知未执行、
+   「立即执行一次」的服务端计划（归档上下文/变量快照随计划移交），toast 轻提示告知（不打断操作）、
+   历史记录保持「进行中」待服务端后缀落终态；登记失败弹窗告知未执行、
    分界阶段标 failed 可从失败阶段重试，后缀不得静默丢失也不得改在本地执行。
    沙盒函数提取方式同 test_parallel_stage_execution.js。 */
 const fs = require('node:fs');
@@ -34,9 +35,11 @@ function handoffContext(stages, options) {
   options = options || {};
   const started = [];
   const alerts = [];
+  const toasts = [];
   const archived = [];
   const overalls = [];
   const fetches = [];
+  const postPlans = [];
   let putBody = null;
   const stopButton = { disabled: false };
   const context = {
@@ -44,6 +47,7 @@ function handoffContext(stages, options) {
     setTimeout, clearTimeout, setInterval() { return 1; }, clearInterval() {},
     taskPromFinalize() {},
     alert(msg) { alerts.push(String(msg)); },
+    toast(msg) { toasts.push(String(msg)); },
     serverPlans: [],
     renderPlanList() {},
     startStageAt(child, index) {   // 本地阶段即刻完成（调度行为不在本测试范围）
@@ -86,14 +90,26 @@ function handoffContext(stages, options) {
         if (options.putFails) return { ok: false, status: 500 };
         return { ok: true, status: 200, json: async () => ({}) };
       }
-      return { ok: true, status: 200, json: async () => ({ plans: [] }) };
+      if (String(url).endsWith('/api/worktable/pipeline/plans') && init && init.method === 'POST') {
+        const body = JSON.parse(init.body);
+        postPlans.push(body && body.plan);
+        if (options.postFails) return { ok: false, status: 500 };
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ plans: options.existingPlans || [] }) };
     },
   };
   vm.createContext(context);
   installFunctions(context, [
     'pipelineStageGroups',
     'stageSeq',
+    'runRepositorySnapshot',
+    'buildSuffixPlan',
+    'upsertServerPlan',
     'registerStageTimers',
+    'preRegisterSchedSuffix',
+    'discardHeldSuffixPlan',
+    'markHistorySuffixRunning',
     'handoffSchedSuffix',
     'advance',
     'historyEnvNodesOf',
@@ -103,15 +119,17 @@ function handoffContext(stages, options) {
     id: 'rc-handoff', stages, nodes: {}, selId: null, timer: null, scriptAbort: null,
     over: false, token: 'tk', vars: { A: '1' }, parallelGroup: null,
     startTs: Date.now(), pipelineName: 'handoff-test', env: 'test', commit: '1234567890',
-    by: 'tester', pipelineId: 'pl-test', repoId: null, branch: 'main', strategy: '',
+    by: 'tester', pipelineId: 'pl-test', repoId: 'repo-9', repoName: 'demo',
+    repoUrl: 'https://git.example.com/dev/demo.git', repoUser: 'u', repoPass: 'p',
+    branch: 'main', strategy: 'P-D',
     tag: 't1', archive: '/arc/pl_x', leaseId: null, leaseIps: [],
   };
   context.activeRuns = [rc];
   context.viewRc = rc;
-  return { context, rc, started, alerts, archived, overalls, fetches, putBody: () => putBody };
+  return { context, rc, started, alerts, toasts, archived, overalls, fetches, putBody: () => putBody, postPlans };
 }
 
-test('混合编排：本地前缀跑完即在定时分界移交服务端（计划带归档上下文与变量快照）并弹窗告知', async () => {
+test('混合编排：本地前缀跑完即在定时分界激活后缀计划（计划带归档上下文与变量快照）并 toast 告知', async () => {
   const stages = [
     { id: 'a', name: '本地A', kind: 'simulate', sched: null },
     { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
@@ -121,24 +139,31 @@ test('混合编排：本地前缀跑完即在定时分界移交服务端（计�
   h.context.advance(h.rc, 0);
   await flush();
   assert.deepEqual(h.started, ['a'], '只有本地前缀在浏览器执行，定时阶段不得在本地落地');
-  assert.equal(h.alerts.length, 1);
-  assert.match(h.alerts[0], /2 个定时阶段已移交服务端立即执行/);
-  const plans = h.putBody() && h.putBody().plans;
-  assert.ok(plans && plans.length === 1, '后缀应登记为一条服务端计划');
-  const plan = plans[0];
+  assert.equal(h.alerts.length, 0, '移交成功不再弹 alert 确认框');
+  assert.equal(h.toasts.length, 1, '改为 toast 轻提示');
+  assert.match(h.toasts[0], /2 个定时阶段已移交服务端执行/);
+  assert.equal(h.postPlans.length, 1, '分界经 POST 单条 upsert 激活/登记后缀计划');
+  const plan = h.postPlans[0];
   assert.deepEqual(plan.stages.map(s => s.id), ['b', 'c']);
   assert.equal(plan.stages[0].sched, undefined, '计划阶段不带 sched 标记');
   assert.equal(plan.kind, 'once');
+  assert.equal(plan.at > 0, true, '激活后 at=now，服务端 15s 内触发');
+  assert.deepEqual(plan.presets, [], '后缀计划显式携带空 presets（不执行预设任务）：预设已在本地前缀按勾选展开；缺该字段会被服务端当作旧计划，落入「配置了清理脚本即执行」回退，未勾选环境清理也会多跑环境清理');
   assert.equal(plan.archive, '/arc/pl_x', '归档文件夹随计划移交（服务端写入同一文件夹）');
   assert.equal(plan.tag, 't1');
   assert.equal(plan.baseSeq, 1, 'baseSeq=分界前正式阶段数（预设不占序号）');
   assert.equal(plan.vars.A, '1', '上游变量快照随计划注入后缀');
+  assert.deepEqual(plan.repository, {
+    id: 'repo-9', name: 'demo',
+    url: 'https://git.example.com/dev/demo.git', user: 'u', pass: 'p',
+  }, '代码仓快照随计划移交，否则 GIT_* 不注入、git 类脚本卡在凭据提示');
+  assert.equal(plan.strategy, 'P-D', '部署策略随计划移交');
   assert.match(plan.by, /⏰/);
   assert.equal(h.rc.nodes.b.status, 'skipped', '后缀阶段标记为移交服务端（skipped 渲染）');
   assert.equal(h.rc.nodes.c.status, 'skipped');
   assert.equal(h.rc.over, true);
   assert.deepEqual(h.archived, ['success']);
-  assert.equal(h.context.history[0].status, 'success');
+  assert.equal(h.context.history[0].status, 'running', '移交后历史记录保持「进行中」，待服务端后缀落终态（单条记录承载全程）');
   assert.match(h.overalls[h.overalls.length - 1].txt, /已移交服务端/);
 });
 
@@ -148,7 +173,7 @@ test('登记失败：弹窗告知后缀未执行、分界阶段标 failed（可�
     { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
     { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
   ];
-  const h = handoffContext(stages, { putFails: true });
+  const h = handoffContext(stages, { postFails: true });
   h.context.advance(h.rc, 0);
   await flush();
   assert.deepEqual(h.started, ['a']);
@@ -159,6 +184,115 @@ test('登记失败：弹窗告知后缀未执行、分界阶段标 failed（可�
   assert.equal(h.rc.over, true);
   assert.deepEqual(h.archived, ['failed']);
   assert.equal(h.context.history[0].status, 'failed');
+});
+
+test('启动预登记：后缀休眠计划 at=0 上送服务端，分界激活时同 id 覆盖并补 vars', async () => {
+  const stages = [
+    { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+    { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages);
+  const sid = h.context.preRegisterSchedSuffix(h.rc, 1);
+  await flush();
+  assert.equal(sid, 'stimer-pl-test-t1-suffix', '预登记 id 带本次运行 tag');
+  assert.equal(h.rc.suffixPlanHeld, true, '标记休眠待激活');
+  assert.equal(h.postPlans.length, 1, '启动即 POST 预登记');
+  assert.equal(h.postPlans[0].at, 0, '休眠计划 at=0，服务端 planTick 不触发');
+  assert.deepEqual(h.postPlans[0].stages.map(s => s.id), ['b', 'c'], '只预登记定时后缀');
+  assert.deepEqual(h.postPlans[0].presets, [], '休眠后缀计划同样显式携带空 presets');
+  assert.match(h.postPlans[0].desc, /已预登记/);
+  h.rc.vars.A = '2';
+  h.context.advance(h.rc, 0);
+  await flush();
+  assert.equal(h.postPlans.length, 2, '分界再次 POST 同 id 覆盖激活');
+  const active = h.postPlans[1];
+  assert.equal(active.id, sid, '同 id 覆盖，不产生第二条计划');
+  assert.equal(active.at > 0, true, '激活后 at=now');
+  assert.equal(active.vars.A, '2', '激活时补当前 vars 快照');
+  assert.equal(h.rc.suffixPlanHeld, false, '激活后不再由 finish 清理');
+});
+
+test('无本地任务：后缀计划立刻激活（at=now），不留休眠计划等关页', async () => {
+  const stages = [
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+    { id: 'c', name: '定时C', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages);
+  // 模拟 startSimRun 的分流：无本地前缀时直接 registerStageTimers（缺省 activate）
+  const ok = await h.context.registerStageTimers(h.rc, 0);
+  assert.equal(ok, true);
+  assert.equal(h.postPlans.length, 1);
+  assert.equal(h.postPlans[0].at > 0, true, '没有本地任务时立刻 at=now 激活');
+  assert.deepEqual(h.postPlans[0].stages.map(s => s.id), ['b', 'c']);
+  assert.deepEqual(h.postPlans[0].presets, [], '显式空 presets：服务端不得回退执行清理脚本');
+  assert.equal(h.rc.suffixPlanHeld, undefined, '未走休眠路径，不持有待清理标记');
+});
+
+test('预登记竞态：本地前缀瞬间跑完已激活，后到休眠体不得把计划打回 at=0', async () => {
+  const stages = [
+    { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+  ];
+  let resolveFirst;
+  const h = handoffContext(stages);
+  const origFetch = h.context.fetch;
+  let call = 0;
+  h.context.fetch = async (url, init) => {
+    call += 1;
+    if (init && init.method === 'POST' && call === 1) {
+      // 挂起第一次预登记请求，模拟「本地前缀先跑完并激活」的竞态
+      await new Promise(r => { resolveFirst = r; });
+    }
+    return origFetch(url, init);
+  };
+  const sid = h.context.preRegisterSchedSuffix(h.rc, 1);
+  assert.equal(h.rc.suffixPlanHeld, true);
+  // 分界激活（本地阶段已跑完）
+  h.rc.suffixPlanHeld = false;
+  await h.context.registerStageTimers(h.rc, 1);
+  // 放行休眠请求落地
+  resolveFirst();
+  await flush();
+  await flush();
+  const last = h.postPlans[h.postPlans.length - 1];
+  assert.equal(last.id, sid);
+  assert.equal(last.at > 0, true, '最终计划必须是已激活（at>0），不得被后到休眠体覆盖回 at=0');
+});
+
+test('休眠计划清理：discardHeldSuffixPlan 按 id 从计划列表移除，不影响他人计划', async () => {
+  const stages = [
+    { id: 'a', name: '本地A', kind: 'simulate', sched: null },
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages, {
+    existingPlans: [
+      { id: 'stimer-pl-test-t1-suffix', kind: 'once', at: 0 },
+      { id: 'other-plan', kind: 'interval', every: 5, everyUnit: 'min' },
+    ],
+  });
+  h.context.preRegisterSchedSuffix(h.rc, 1);
+  await flush();
+  const ok = await h.context.discardHeldSuffixPlan(h.rc);
+  await flush();
+  assert.equal(ok, true);
+  assert.equal(h.rc.suffixPlanHeld, false);
+  const put = h.putBody();
+  assert.ok(put, '清理走 GET+PUT 列表通道');
+  assert.deepEqual(put.plans.map(p => p.id), ['other-plan'], '仅移除本运行休眠计划');
+});
+
+test('休眠计划清理：已激活（suffixPlanHeld=false）不再触碰计划接口', async () => {
+  const stages = [
+    { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
+  ];
+  const h = handoffContext(stages);
+  h.rc.suffixPlanId = 'stimer-pl-test-t1-suffix';
+  h.rc.suffixPlanHeld = false;
+  const ok = await h.context.discardHeldSuffixPlan(h.rc);
+  await flush();
+  assert.equal(ok, false);
+  assert.equal(h.fetches.filter(f => f.url.endsWith('/api/worktable/pipeline/plans')).length, 0);
 });
 
 test('纯本地编排（无定时阶段）：不登记计划、不弹窗，整次本地跑完', async () => {

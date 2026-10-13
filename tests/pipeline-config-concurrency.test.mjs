@@ -23,8 +23,8 @@ function extractFunction(name) {
   throw new Error(`无法提取函数 ${name}`)
 }
 
-/* 合并函数引用的共享元数据助手（剥离比对 + 键序无关深比较 + 三方合并），抽函数时一并加载 */
-const SHARED_META_HELPERS = ['stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
+/* 合并函数引用的共享元数据助手（剥离比对 + 键序无关深比较 + 三方合并 + 节点环境条目比对），抽函数时一并加载 */
+const SHARED_META_HELPERS = ['stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'sameEnvironmentContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
 
 function loadFunctions(names, extraDecls = []) {
   const ctx = {}
@@ -37,7 +37,8 @@ function loadFunctions(names, extraDecls = []) {
 const BUILTIN_CONST_DECL = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)[0]
 
 function merge(clientConfig, baseConfig, diskConfig) {
-  const ctx = loadFunctions([...SHARED_META_HELPERS, 'mergePipelineConfigForWrite'])
+  /* mergePipelineConfigForWrite 现依赖 preserveDiskOnlyConfigKeys（磁盘独有键保留），抽取时一并加载 */
+  const ctx = loadFunctions([...SHARED_META_HELPERS, 'preserveDiskOnlyConfigKeys', 'mergePipelineConfigForWrite'])
   return JSON.parse(JSON.stringify(ctx.mergePipelineConfigForWrite(clientConfig, baseConfig, diskConfig)))
 }
 
@@ -130,7 +131,10 @@ test('旧页面流水线定义与磁盘一致时仍可写历史和其他配置',
 test('客户端保存不带历史正文时按磁盘历史保留，buildNo/histClearedAt 取双方较大值', () => {
   const ctx = {}
   vm.createContext(ctx)
-  vm.runInContext(stripTypeScriptTypes(extractFunction('mergePipelineHistoryForWrite'), { mode: 'transform' }), ctx)
+  vm.runInContext(stripTypeScriptTypes(
+    [extractFunction('mergeStageLogsForHistory'), extractFunction('mergePipelineHistoryForWrite')].join('\n'),
+    { mode: 'transform' },
+  ), ctx)
   /* 编辑器显式保存的瘦身负载（omitHistory）到达服务端时 clientHistory=[]，
      磁盘上的定时/他端/本页运行历史必须全部保留（清空点之前的仍视为已删）。 */
   const result = JSON.parse(JSON.stringify(ctx.mergePipelineHistoryForWrite(
@@ -311,4 +315,94 @@ test('形状归一：收藏合并结果为空时省略 favoriteUsers 键，pinne
   const one = mergeOne(metaPipeline('p1', '编辑后', [], 0), metaPipeline('p1', '甲', ['alice'], 100), disk)
   assert.deepEqual(one.conflicts, [])
   assert.ok(!('favoriteUsers' in one.config.pipelines[0]) && !('pinnedAt' in one.config.pipelines[0]), '单条保存同样归一')
+})
+
+/* ---------- 节点环境（environments）按 id 三方合并：整表 last-write-wins 修复 ---------- */
+/* 场景原型：两个浏览器同时打开设置页，A 添加节点落盘后，B（仍是旧列表快照）添加另一个节点——
+   修复前 B 的整表保存把 A 的节点覆盖丢失；修复后按 id 合并，双方新增都保留。 */
+const env = (id, name, extra) => ({ id, name, ip: '10.0.0.1', nodeIp: '', user: 'root', pass: '', ...(extra || {}) })
+
+test('节点环境：两个浏览器各添加不同节点，双方新增都保留（磁盘序在前，本端新增追加）', () => {
+  const base = { environments: [env('env-1', '节点一')] }
+  const disk = { environments: [env('env-1', '节点一'), env('env-a', 'A 添加')] }
+  const client = { pipelines: [], environments: [env('env-1', '节点一'), env('env-b', 'B 添加')] }
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [], '节点环境合并不产生 409 冲突')
+  assert.deepEqual(result.config.environments.map(item => item.id), ['env-1', 'env-a', 'env-b'], '双方新增都保留，磁盘顺序在前')
+})
+
+test('节点环境：本端未改动的条目以磁盘为准（他端修改/删除同步生效）', () => {
+  const base = { environments: [env('env-1', '节点一'), env('env-2', '节点二'), env('env-3', '节点三')] }
+  const disk = { environments: [env('env-1', '节点一-他端改名'), env('env-3', '节点三')] }   // 他端改 env-1、删 env-2
+  const client = { pipelines: [], environments: [env('env-1', '节点一'), env('env-2', '节点二'), env('env-3', '节点三')] }   // 本端未动
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.deepEqual(result.config.environments.map(item => [item.id, item.name]), [['env-1', '节点一-他端改名'], ['env-3', '节点三']])
+})
+
+test('节点环境：本端删除磁盘未动的条目删除生效；本端修改取本端', () => {
+  const base = { environments: [env('env-1', '节点一'), env('env-2', '节点二')] }
+  const disk = { environments: [env('env-1', '节点一'), env('env-2', '节点二')] }
+  const client = { pipelines: [], environments: [env('env-2', '节点二', { pass: 'new-pass' })] }   // 本端删 env-1、改 env-2
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.deepEqual(result.config.environments.map(item => item.id), ['env-2'], '本端删除生效')
+  assert.equal(result.config.environments[0].pass, 'new-pass', '本端修改生效')
+})
+
+test('节点环境：同 id 双边都改按后写赢取本端，不报冲突；本端改 vs 他端删由本端复活', () => {
+  const base = { environments: [env('env-1', '原始'), env('env-2', '节点二')] }
+  const bothChanged = merge(
+    { pipelines: [], environments: [env('env-1', 'B 改', { user: 'bob' }), env('env-2', '节点二')] },
+    base,
+    { environments: [env('env-1', 'A 改'), env('env-2', '节点二')] },
+  )
+  assert.deepEqual(bothChanged.conflicts, [], '同 id 双边都改不产生 409（区别于流水线的冲突语义）')
+  assert.deepEqual(bothChanged.config.environments.map(item => [item.id, item.name]), [['env-1', 'B 改'], ['env-2', '节点二']])
+  assert.equal(bothChanged.config.environments[0].user, 'bob')
+
+  const editVsDelete = merge(
+    { pipelines: [], environments: [env('env-1', '原始'), env('env-2', '节点二', { pass: 'p2' })] },
+    base,
+    { environments: [env('env-1', '原始')] },   // 他端删了 env-2
+  )
+  assert.deepEqual(editVsDelete.conflicts, [])
+  assert.deepEqual(editVsDelete.config.environments.map(item => item.id), ['env-1', 'env-2'], '本端在途修改不被他端删除吞掉')
+})
+
+test('节点环境：旧页面 baseConfig 不带 environments 基线时维持整表 last-write-wins（向后兼容）', () => {
+  const disk = { environments: [env('env-1', '节点一'), env('env-a', '他端新增')] }
+  const client = { pipelines: [], environments: [env('env-1', '节点一'), env('env-b', '旧页面新增')] }
+
+  const result = merge(client, { pipelines: [] }, disk)
+
+  assert.deepEqual(result.config.environments.map(item => item.id), ['env-1', 'env-b'], '无基线时客户端整表为准（磁盘他端新增被覆盖，同旧行为）')
+})
+
+test('节点环境：条目比对只看规范字段，多余字段/键序不造成 phantom 偏离', () => {
+  const base = { environments: [{ id: 'env-1', name: '节点一', ip: '10.0.0.1', user: 'root', pass: '', nodeIp: '', legacy: 'x' }] }
+  const disk = { environments: [env('env-1', '节点一')] }
+  const client = { pipelines: [], environments: [{ pass: '', user: 'root', ip: '10.0.0.1', name: '节点一', id: 'env-1', nodeIp: '' }] }   // 键序打乱
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.deepEqual(result.config.environments.map(item => item.id), ['env-1'], '规范字段一致即未改动，不复活多余字段也不丢条目')
+})
+
+test('节点环境：合并不影响流水线冲突判定，流水线冲突时 environments 仍按合并结果随响应返回', () => {
+  const base = { pipelines: [pipeline('p1', '原始')], environments: [env('env-1', '节点一')] }
+  const disk = { pipelines: [pipeline('p1', '浏览器 A')], environments: [env('env-1', '节点一'), env('env-a', '他端新增')] }
+  const client = { pipelines: [pipeline('p1', '浏览器 B')], environments: [env('env-1', '节点一'), env('env-b', '本端新增')] }
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, ['p1'], '流水线真冲突仍 409')
+  assert.deepEqual(result.config.environments.map(item => item.id), ['env-1', 'env-a', 'env-b'], '409 不落盘，响应里的合并结果仅供调用方参考')
 })

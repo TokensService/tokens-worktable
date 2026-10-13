@@ -148,6 +148,40 @@ test('队列接口返回服务端权威状态，页面离场清理只影响旧�
   assert.deepEqual(missing.json(), { ok: false, state: 'missing' })
 })
 
+test('他端在场条目经取消信箱转达：入箱、随 GET 下发、来源页不再上报后出箱', async () => {
+  const handler = loadQueueRoute()
+  await call(handler, 'PUT', {
+    id: 'src-client', label: 'Chrome·aaaa', schemaVersion: 3,
+    running: null,
+    runs: [{ id: 'r-mine', pipelineName: '发布', by: 'alice', startedAt: 1, stages: [{ id: 's1', name: '构建' }], nodes: {} }],
+    queue: [{ id: 'q-mine', pipelineName: '测试', by: 'alice', queuedAt: 2, stages: [{ id: 's2', name: '测试' }], nodes: {} }],
+    completed: [],
+  })
+
+  const requested = await call(handler, 'POST', { action: 'cancel-presence', clientId: 'src-client', itemId: 'q-mine', by: 'alice' })
+  assert.equal(requested.status, 200)
+  assert.deepEqual(requested.json(), { ok: true, state: 'requested' })
+
+  const bad = await call(handler, 'POST', { action: 'cancel-presence', clientId: '', itemId: 'x' })
+  assert.equal(bad.status, 400)
+  assert.deepEqual(bad.json(), { error: 'missing clientId or itemId' })
+
+  const withReq = await call(handler, 'GET')
+  assert.equal(withReq.status, 200)
+  assert.deepEqual(plain(withReq.json().cancelRequests), [{ clientId: 'src-client', itemId: 'q-mine', by: 'alice', at: withReq.json().cancelRequests[0].at }])
+
+  /* 来源页本地取消后 PUT 不再携带 q-mine → 信箱出箱 */
+  await call(handler, 'PUT', {
+    id: 'src-client', label: 'Chrome·aaaa', schemaVersion: 3,
+    running: null,
+    runs: [{ id: 'r-mine', pipelineName: '发布', by: 'alice', startedAt: 1, stages: [], nodes: {} }],
+    queue: [],
+    completed: ['q-mine'],
+  })
+  const after = await call(handler, 'GET')
+  assert.deepEqual(plain(after.json().cancelRequests), [])
+})
+
 test('队列接口按运行和阶段返回实时日志，不把日志混入普通队列快照', async () => {
   const calls = []
   const handler = loadQueueRoute({
@@ -178,4 +212,31 @@ test('队列接口按运行和阶段返回实时日志，不把日志混入普�
 
   const snapshot = await call(handler, 'GET')
   assert.equal(JSON.stringify(snapshot.json()).includes('latest'), false)
+})
+
+test('队列日志接口透传 sinceEnd 做后缀增量，非法 sinceEnd 拒绝', async () => {
+  const calls = []
+  const handler = loadQueueRoute({
+    pipelineExecutions: {
+      snapshot: () => ({ runs: [], queue: [] }),
+      cancel: () => ({ ok: false, state: 'missing' }),
+      log: (runId, stageId, sinceRevision, sinceEnd) => {
+        calls.push([runId, stageId, sinceRevision, sinceEnd])
+        return { append: 'new\n', baseLen: 10, endLen: 14, truncated: false, revision: 3 }
+      },
+    },
+  })
+
+  const delta = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2&sinceEnd=10')
+  assert.equal(delta.status, 200)
+  assert.deepEqual(delta.json(), { append: 'new\n', baseLen: 10, endLen: 14, truncated: false, revision: 3 })
+  assert.deepEqual(calls, [['run-1', 'build', 2, 10]])
+
+  const bad = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&revision=2&sinceEnd=-1')
+  assert.equal(bad.status, 400)
+  assert.deepEqual(bad.json(), { error: 'invalid sinceEnd' })
+
+  const badLines = await call(handler, 'GET', undefined, '/api/worktable/pipeline/queue?runId=run-1&stageId=build&tailLines=x')
+  assert.equal(badLines.status, 400)
+  assert.deepEqual(badLines.json(), { error: 'invalid tailLines' })
 })
