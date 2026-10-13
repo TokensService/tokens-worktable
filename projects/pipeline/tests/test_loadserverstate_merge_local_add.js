@@ -132,7 +132,7 @@ function loadFixture(response, seeds) {
   };
   vm.createContext(ctx);
   vm.runInContext([
-    'historyPersistSig', 'stripPipelineSharedMeta', 'mergePipelinesFromServer', 'fetchPipelineStateFresh', 'loadServerState',
+    'historyPersistSig', 'stripPipelineSharedMeta', 'mergePipelinesFromServer', 'sameEnvEntry', 'mergeEnvironmentsFromServer', 'fetchPipelineStateFresh', 'loadServerState',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, storage, requests, migrateCalls };
 }
