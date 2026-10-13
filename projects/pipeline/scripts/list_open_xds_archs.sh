@@ -51,7 +51,7 @@ from pathlib import Path
 import sys
 
 try:
-    catalog = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    catalog = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8-sig"))
 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
     raise SystemExit(f"invalid architecture JSON: {error}")
 

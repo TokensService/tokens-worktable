@@ -4,7 +4,9 @@ set -euo pipefail
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pull_render_config.sh"
 
 grep -Fq 'cleanup_render_images()' "$script"
-grep -Fq 'nerdctl --namespace k8s.io image rm "$image"' "$script"
+grep -Fq 'nerdctl --namespace k8s.io image rm -f "$image"' "$script"
+grep -Fq 'nerdctl --namespace k8s.io system prune -a -f' "$script"
+grep -Fq 'nerdctl --namespace k8s.io snapshot prune' "$script"
 
 pull_line="$(grep -nF 'bash "$SCRIPT_DIR/pull-image.sh"' "$script" | head -1 | cut -d: -f1)"
 cleanup_line="$(grep -nF 'cleanup_render_images' "$script" | tail -1 | cut -d: -f1)"

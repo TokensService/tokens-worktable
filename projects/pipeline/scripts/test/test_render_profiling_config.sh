@@ -30,6 +30,7 @@ cat >"$WORK/architecture.json" <<'ARCH'
 ]
 ARCH
 ENABLE_PROFILING=true \
+PROFILING_TIMESTAMP=20261013_120000 \
 RUN_DIR="$WORK/run" \
 CHART_TEMPLATE_DIR="$WORK/chart" \
 VALUES_TEMPLATE="$WORK/values.yaml" \
@@ -45,10 +46,13 @@ import json,sys
 arch=json.load(open(sys.argv[1], encoding='utf-8'))
 specs=arch['deploy_spec_packages'][0]['deploy_specs']
 by_role={s['role']:s['params'] for s in specs}
-for role, path in [('prefill','/home/service/works/models_ssd/profile/prefill'),('decode','/home/service/works/models_ssd/profile/decode')]:
+for role, path in [('prefill','/home/service/works/models_ssd/profile/prefill/xds-profiling-test/20261013_120000'),('decode','/home/service/works/models_ssd/profile/decode/xds-profiling-test/20261013_120000')]:
     cfg=by_role[role]['profiler_config']
     assert cfg['profiler']=='torch', cfg
     assert cfg['torch_profiler_dir']==path, cfg
     assert cfg['ignore_frontend'] is True, cfg
+    assert cfg['torch_profiler_record_shapes'] is False, cfg
+    assert cfg['torch_profiler_use_gzip'] is True, cfg
+    assert cfg['torch_profiler_dump_cuda_time_total'] is True, cfg
 print('profiling config passed')
 PY

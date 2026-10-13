@@ -57,6 +57,19 @@ RELEASE_NAME="${RELEASE_NAME:-}"
 contains_unexpanded_placeholder "$RELEASE_NAME" && RELEASE_NAME=""
 [[ -n "$RELEASE_NAME" && "$RELEASE_NAME" != "$NAMESPACE" ]] || RELEASE_NAME="xds"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
+ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
+PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
+PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
+PROFILING_TIMESTAMP="${PROFILING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
+append_profiling_run_dir() {
+  local base="$1" suffix="${NAMESPACE}/${PROFILING_TIMESTAMP}"
+  case "$base" in
+    */"$suffix") printf '%s\n' "$base" ;;
+    *) printf '%s/%s\n' "${base%/}" "$suffix" ;;
+  esac
+}
+PROFILING_PREFILL_DIR="$(append_profiling_run_dir "$PROFILING_PREFILL_DIR")"
+PROFILING_DECODE_DIR="$(append_profiling_run_dir "$PROFILING_DECODE_DIR")"
 CHART_DIR="${CHART_DIR:-}"
 contains_unexpanded_placeholder "$CHART_DIR" && CHART_DIR=""
 [[ -n "$CHART_DIR" ]] || CHART_DIR="${RENDER_DIR}/xds-cluster"
@@ -78,9 +91,6 @@ TARGET_IPS="${TARGET_IPS:-}"
 DEFAULT_TARGET_NODE_IP_MAP='{"115.33.98.101:2224":"192.168.31.140","115.33.98.101:2225":"192.168.31.120","115.33.98.101:2226":"192.168.31.113","115.33.98.101:2227":"192.168.31.164","115.33.98.101:2228":"192.168.31.7","115.33.98.101:2229":"192.168.31.181"}'
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
-ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
-PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
-PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
 if [[ -z "${NODE_PORT_MAP:-}" ]]; then
   NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017}'
 fi
@@ -231,7 +241,7 @@ PY
 
 export IMAGE_NAME ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE \
   NAMESPACE RELEASE_NAME CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST \
-  NODE_LABELS_FILE TARGET_HOSTS TARGET_NODE_IP_MAP NODE_PORT_MAP ENABLE_PROFILING PROFILING_PREFILL_DIR PROFILING_DECODE_DIR XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
+  NODE_LABELS_FILE TARGET_HOSTS TARGET_NODE_IP_MAP NODE_PORT_MAP ENABLE_PROFILING PROFILING_TIMESTAMP PROFILING_PREFILL_DIR PROFILING_DECODE_DIR XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT \
   XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
   POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER MOCK_HELM_DEPLOY \
   PIPELINE_ENV_FILE TARGET_RUN_DIR TARGET_RENDER_DIR \
@@ -250,7 +260,7 @@ write_pipeline_env() {
       for variable in \
         IMAGE_NAME DEPLOY_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME RUN_DIR RENDER_DIR \
         CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE CHART_DIR VALUES_FILE ARCH_REQUEST_FILE RESOURCE_MANIFEST NODE_LABELS_FILE \
-        NAMESPACE RELEASE_NAME TARGET_HOSTS TARGET_NODE_IP_MAP NODE_PORT_MAP ENABLE_PROFILING PROFILING_PREFILL_DIR PROFILING_DECODE_DIR TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
+        NAMESPACE RELEASE_NAME TARGET_HOSTS TARGET_NODE_IP_MAP NODE_PORT_MAP ENABLE_PROFILING PROFILING_TIMESTAMP PROFILING_PREFILL_DIR PROFILING_DECODE_DIR TARGET_RUN_DIR TARGET_RENDER_DIR TARGET_PIPELINE_ENV_FILE \
         XDS_URL HELM_BIN KUBECTL_BIN HELM_TIMEOUT XDS_READY_TIMEOUT_SECONDS XDS_READY_POLL_SECONDS HEAD_LOG_ROOT \
         POLL_INTERVAL_SECONDS EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER MOCK_HELM_DEPLOY \
         PIPELINE_ENV_FILE MODEL_CACHE_HOST_PATH MOCK_DB \
@@ -284,10 +294,12 @@ write_target_pipeline_env() {
       printf 'export TARGET_HOSTS=%q\n' "$TARGET_HOSTS"
       printf 'export TARGET_NODE_IP_MAP=%q\n' "$TARGET_NODE_IP_MAP"
     printf 'export ENABLE_PROFILING=%q\n' "$ENABLE_PROFILING"
+    printf 'export PROFILING_TIMESTAMP=%q\n' "$PROFILING_TIMESTAMP"
     printf 'export PROFILING_PREFILL_DIR=%q\n' "$PROFILING_PREFILL_DIR"
     printf 'export PROFILING_DECODE_DIR=%q\n' "$PROFILING_DECODE_DIR"
       printf 'export NODE_PORT_MAP=%q\n' "$NODE_PORT_MAP"
       printf 'export ENABLE_PROFILING=%q\n' "$ENABLE_PROFILING"
+      printf 'export PROFILING_TIMESTAMP=%q\n' "$PROFILING_TIMESTAMP"
       printf 'export PROFILING_PREFILL_DIR=%q\n' "$PROFILING_PREFILL_DIR"
       printf 'export PROFILING_DECODE_DIR=%q\n' "$PROFILING_DECODE_DIR"
       for variable in \
@@ -311,6 +323,9 @@ cleanup_render_images() {
   local image
   local -A seen_images=()
 
+  [[ "${RENDER_RESOURCES_CLEANED:-0}" == "1" ]] && return 0
+  RENDER_RESOURCES_CLEANED=1
+
   command -v nerdctl >/dev/null 2>&1 || {
     echo "[pull] nerdctl is unavailable; skip execution-host image cleanup" >&2
     return 0
@@ -320,11 +335,26 @@ cleanup_render_images() {
     [[ -n "$image" && -z "${seen_images[$image]:-}" ]] || continue
     seen_images["$image"]=1
     echo "[pull] execution host: remove temporary render image $image"
-    if ! nerdctl --namespace k8s.io image rm "$image" >/dev/null; then
+    if ! nerdctl --namespace k8s.io image rm -f "$image" >/dev/null; then
       echo "[pull] warning: could not remove temporary render image $image" >&2
     fi
   done
+
+  # Removing a tag alone leaves unreferenced manifests, content, and failed
+  # extraction snapshots behind. Reclaim all unused execution-host resources;
+  # running containers and images referenced by them are retained.
+  echo "[pull] execution host: reclaim unused containerd resources"
+  nerdctl --namespace k8s.io system prune -a -f >/dev/null 2>&1 || \
+    echo "[pull] warning: system prune did not complete" >&2
+  nerdctl --namespace k8s.io image prune -a -f >/dev/null 2>&1 || \
+    echo "[pull] warning: image prune did not complete" >&2
+  nerdctl --namespace k8s.io snapshot prune >/dev/null 2>&1 || \
+    echo "[pull] warning: snapshot prune did not complete" >&2
 }
+
+# Also reclaim resources when image extraction or template export fails before
+# the normal post-export cleanup point.
+trap cleanup_render_images EXIT
 
 remote_ssh() {
   local target="$1" port="$2" password="$3"
