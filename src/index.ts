@@ -1031,6 +1031,137 @@ function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedCon
 }
 /* ---------- 可信/内置流水线结束 ---------- */
 
+/* ---------- 节点预留：节点环境按「日期 + 时间段」分配给指定用户（纯函数区，供 vm 抽取测试） ----------
+ * 存储形态（worktable-pipeline-reservations.json，与 PLANS_STORE 同目录 storages/）：
+ *   { reservations: [{ id:'rsv-…', nodeId:<environment id>, users:[...], start:<ISO>, end:<ISO>,
+ *                      note, createdBy, createdAt, updatedAt }] }
+ * 一条记录 = 一个节点的一个时间段，多用户共享 users；start/end 落盘统一 ISO 字符串。
+ * 覆盖判定：Date.parse(start) <= T < Date.parse(end)（T==start 覆盖、T==end 不覆盖）。
+ * 可用性唯一口径（reservationConflictsForEnvs）：节点无覆盖 T 的记录 → 全员可用；有覆盖 →
+ * admin 全权旁路（与 owner/trusted 守卫同范式），否则 username ∈ 所有覆盖记录 users 的并集；
+ * username 空串按普通用户处理。无 auth 服务（resolveRequestAuth 返回 undefined，token 共享模式）
+ * 时各强制点一律跳过预留校验（与 ownerPipelineWriteDeny「无 auth 直接放行」一致）。 */
+type ReservationWindow = { start: string; end: string; users: string[]; note: string }
+type ReservationConflict = { nodeId: string; name: string; ip: string; users: string[]; until: string }
+const RESERVATION_WINDOWS_CAP = 50   // 单节点预留时段数上限
+const RESERVATION_USERS_CAP = 50     // 单时段用户名单上限
+const RESERVATION_NOTE_CAP = 200     // 备注字符上限
+
+/** 校验并规范化预留窗口数组：非数组/超上限/坏时间（不可 Date.parse 或 start>=end）/空 users/坏 note
+ *  均返回 {error: 具体原因}；通过则返回 {windows}——start/end 统一转 ISO、users 去空去重排序、
+ *  note 缺省 '' 并截到上限。输入对象的多余键（如客户端 base 快照里的 id）直接忽略。 */
+function normalizeReservationWindows(input: any): { windows?: ReservationWindow[]; error?: string } {
+  if (!Array.isArray(input)) return { error: 'windows 必须是数组' }
+  if (input.length > RESERVATION_WINDOWS_CAP) return { error: '单个节点最多 ' + RESERVATION_WINDOWS_CAP + ' 条预留时段' }
+  const windows: ReservationWindow[] = []
+  for (let i = 0; i < input.length; i += 1) {
+    const w = input[i]
+    if (!w || typeof w !== 'object' || Array.isArray(w)) return { error: '第 ' + (i + 1) + ' 条时段不是对象' }
+    const startMs = Date.parse(w.start)
+    const endMs = Date.parse(w.end)
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return { error: '第 ' + (i + 1) + ' 条时段的 start/end 不是可解析的时间' }
+    if (!(startMs < endMs)) return { error: '第 ' + (i + 1) + ' 条时段的 start 必须早于 end' }
+    if (!Array.isArray(w.users) || !w.users.length) return { error: '第 ' + (i + 1) + ' 条时段的 users 必须是非空数组' }
+    const users: string[] = []
+    for (const u of w.users) {
+      const s = typeof u === 'string' ? u.trim() : ''
+      if (!s) return { error: '第 ' + (i + 1) + ' 条时段的 users 含空用户名' }
+      if (!users.includes(s)) users.push(s)
+    }
+    if (users.length > RESERVATION_USERS_CAP) return { error: '第 ' + (i + 1) + ' 条时段的用户数超过 ' + RESERVATION_USERS_CAP + ' 个上限' }
+    if (w.note !== undefined && w.note !== null && typeof w.note !== 'string') return { error: '第 ' + (i + 1) + ' 条时段的 note 必须是字符串' }
+    windows.push({
+      start: new Date(startMs).toISOString(),
+      end: new Date(endMs).toISOString(),
+      users: users.sort(),
+      note: typeof w.note === 'string' ? w.note.slice(0, RESERVATION_NOTE_CAP) : '',
+    })
+  }
+  return { windows }
+}
+
+/** 预留窗口的规范比对（PUT 并发基线比对与「窗口未变保留原 id」判定共用）：start/end 比字符串
+ *  （两侧均已 ISO 化）、users 排序后逐项比、note 原文比；非对象输入按空对象归一。 */
+function sameReservationWindow(a: any, b: any): boolean {
+  const norm = (w: any) => {
+    const src = w && typeof w === 'object' && !Array.isArray(w) ? w : {}
+    const users = (Array.isArray(src.users) ? src.users : []).map((u: any) => String(u ?? '')).filter(Boolean).sort()
+    return {
+      start: typeof src.start === 'string' ? src.start : '',
+      end: typeof src.end === 'string' ? src.end : '',
+      users,
+      note: typeof src.note === 'string' ? src.note : '',
+    }
+  }
+  const x = norm(a), y = norm(b)
+  if (x.start !== y.start || x.end !== y.end || x.note !== y.note || x.users.length !== y.users.length) return false
+  for (let i = 0; i < x.users.length; i += 1) if (x.users[i] !== y.users[i]) return false
+  return true
+}
+
+/** 核心匹配：envs（元素含 id/name/ip[/nodeIp]）中哪些节点在 nowMs 时刻对 (username, isAdmin) 不可用。
+ *  规则（唯一口径）：isAdmin 直接无冲突（全权旁路）；节点无覆盖 nowMs 的预留 → 不冲突；有覆盖 →
+ *  username ∈ 所有覆盖记录 users 的并集才不冲突（空串 username 按普通用户处理，会被挡住——预期行为）；
+ *  冲突条目 until = 覆盖窗口中最早的 end，users = 覆盖记录用户并集（排序，供文案展示）。 */
+function reservationConflictsForEnvs(envs: any[], reservations: any[], username: string, isAdmin: boolean, nowMs: number): ReservationConflict[] {
+  if (isAdmin) return []
+  const me = typeof username === 'string' ? username : ''
+  const byId = new Map<string, any>()
+  for (const e of Array.isArray(envs) ? envs : []) {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) continue
+    const id = typeof e.id === 'string' ? e.id : ''
+    if (id && !byId.has(id)) byId.set(id, e)
+  }
+  const conflicts: ReservationConflict[] = []
+  for (const [nodeId, env] of byId) {
+    const covering = (Array.isArray(reservations) ? reservations : []).filter((r: any) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r) || r.nodeId !== nodeId) return false
+      const s = Date.parse(r.start)
+      const e2 = Date.parse(r.end)
+      return Number.isFinite(s) && Number.isFinite(e2) && s <= nowMs && nowMs < e2
+    })
+    if (!covering.length) continue
+    const allowed = new Set<string>()
+    let untilMs = Infinity
+    for (const r of covering) {
+      for (const u of Array.isArray(r.users) ? r.users : []) { const s = String(u ?? ''); if (s) allowed.add(s) }
+      const endMs = Date.parse(r.end)
+      if (endMs < untilMs) untilMs = endMs
+    }
+    if (allowed.has(me)) continue
+    conflicts.push({
+      nodeId,
+      name: typeof env.name === 'string' ? env.name : '',
+      ip: typeof env.ip === 'string' && env.ip ? env.ip : (typeof env.nodeIp === 'string' ? env.nodeIp : ''),
+      users: [...allowed].sort(),
+      until: new Date(untilMs).toISOString(),
+    })
+  }
+  return conflicts
+}
+
+/** 403 中文明细文案：'节点已被预留给其他用户：<名称(ip) 预留给 u1,u2，至 <ISO>>；…'。
+ *  名称为空时退化为 ip，再退化为 nodeId；users 为空（脏数据）时写「其他用户」。 */
+function reservationConflictMessage(conflicts: ReservationConflict[]): string {
+  const parts = (Array.isArray(conflicts) ? conflicts : []).map((c) => {
+    const label = c.name ? c.name + (c.ip ? '(' + c.ip + ')' : '') : (c.ip || c.nodeId || '节点')
+    return label + ' 预留给 ' + (Array.isArray(c.users) && c.users.length ? c.users.join(',') : '其他用户') + '，至 ' + c.until
+  })
+  return '节点已被预留给其他用户：' + parts.join('；')
+}
+
+/** auth 服务存在性探测（与 resolveRequestAuth 同一懒取路径，只是不需要请求对象）：
+ *  无 auth 服务（dsh-auth-gate 未安装，token 共享模式）返回 false——execPlan 等无请求上下文
+ *  的强制点据此跳过预留校验（与「无 auth 直接放行」约定一致）。 */
+function hasAuthService(ctx: any): boolean {
+  let auth: any
+  try { auth = ctx ? (ctx as any).auth : undefined } catch { auth = undefined }
+  if (!auth) { try { auth = ctx && typeof ctx.get === 'function' ? ctx.get('auth') : undefined } catch { auth = undefined } }
+  const sessions = auth && auth.sessions
+  return !!(sessions && typeof sessions.getByToken === 'function')
+}
+/* ---------- 节点预留纯函数区结束 ---------- */
+
 /** 历史阶段日志合并（按阶段名并集）：混合编排下页面 finish 写本地前缀、服务端 append 写定时后缀，
  *  同 tag 两侧合并出完整阶段列表。同名阶段后者覆盖状态/耗时/日志路径，保留任一侧 local 标记。 */
 function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
@@ -2986,6 +3117,10 @@ function registerPipelineRunApi(webServer: any, deps: {
   execute: (plan: any) => Promise<void>;
   createRunId?: () => string;
   warn?: (message: string) => void;
+  /* 节点预留强制点（可选注入，缺省 = 不校验，旧调用方/测试不受影响）：
+     ctx 供 resolveRequestAuth 解析调用者身份；readReservations 读取当前预留列表。 */
+  ctx?: any;
+  readReservations?: () => Promise<any[]>;
 }) {
   webServer.register({
     kind: 'prefix',
@@ -3004,6 +3139,19 @@ function registerPipelineRunApi(webServer: any, deps: {
         const built = buildPipelineApiRun(await deps.readStore(), pipelineId, body, runId)
         if (!built.plan) { json(res, built.status || 400, { error: built.error || 'invalid request' }); return }
         const plan = built.plan
+        /* 节点预留强制点（运行 API 入口）：auth 服务存在时按请求身份对 plan.envs 查冲突——节点处于
+           他人预留时段即 403 {error:'reserved'} 拒绝入池；无有效会话（username=''）按非 admin 匿名
+           处理（会被预留挡住，预期行为）；无 auth 服务（token 共享模式）不校验。 */
+        if (typeof deps.readReservations === 'function') {
+          const caller = resolveRequestAuth(deps.ctx, req)
+          if (caller) {
+            const conflicts = reservationConflictsForEnvs(plan.envs, await deps.readReservations(), caller.username, caller.isAdmin, Date.now())
+            if (conflicts.length) {
+              json(res, 403, { error: 'reserved', message: reservationConflictMessage(conflicts), conflicts })
+              return
+            }
+          }
+        }
         const execution = deps.execute(plan)   // 执行池满会同步抛 503；只有真正入池后才可回复 accepted
         Promise.resolve(execution).catch((err) => {
           if (deps.warn) deps.warn('流水线 API 运行 ' + runId + ' 失败：' + String(err && err.message ? err.message : err))
@@ -4097,6 +4245,9 @@ export function apply(ctx: Context) {
   // 脚本阶段用 bash 真跑（参数/环境注入规则与前端 execScript 一致），模拟阶段按耗时等待，
   // 审批门自动通过；运行记录（阶段元数据 + 日志文件路径，日志全文在归档文件）追加进 worktable-pipeline.json 的 history。
   const PLANS_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline-plans.json')
+  /* 节点预留存储：与 PLANS_STORE 同目录；一条记录 = 一个节点的一个时间段（多用户共享 users），
+     记录形态与可用性口径见模块级纯函数区注释（normalizeReservationWindows / reservationConflictsForEnvs）。 */
+  const RESERVATIONS_STORE = pathResolve(DSH_HOME, 'storages', 'worktable-pipeline-reservations.json')
 
   async function writeJsonAtomic(file: string, text: string) {
     const fsx = await import('node:fs/promises')
@@ -4658,6 +4809,26 @@ export function apply(ctx: Context) {
         }
         if (body.action !== 'acquire') { json(res, 400, { error: 'unknown action' }); return }
         if (!ips.length) { json(res, 400, { error: 'missing ips' }); return }
+        /* 节点预留强制点（租约获取）：页面本地运行 startRun 前必经此处取租约。auth 服务存在时把
+           ips 按 ip 字段映射回环境节点、对命中节点查冲突——处于他人预留时段即 403 {error:'reserved'}
+           且租约不放行；无有效会话（username=''）按非 admin 匿名处理（会被挡住，预期行为）；
+           无 auth 服务（token 共享模式）不校验；release 等其它 action 不校验。
+           typeof 守卫：预留存储读取不可用时（vm 抽取测试未注入该名）直接跳过，不抛 ReferenceError。 */
+        if (typeof readReservationsStore === 'function') {
+          const caller = resolveRequestAuth(ctx, req)
+          if (caller) {
+            const store = await readPipelineStore()
+            const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+            const environments = Array.isArray(cfg.environments) ? cfg.environments : []
+            const wanted = new Set<string>(ips)
+            const envs = environments.filter((e: any) => e && typeof e === 'object' && !Array.isArray(e) && wanted.has(String(e.ip ?? '').trim()))
+            const conflicts = reservationConflictsForEnvs(envs, (await readReservationsStore()).reservations, caller.username, caller.isAdmin, Date.now())
+            if (conflicts.length) {
+              json(res, 403, { error: 'reserved', message: reservationConflictMessage(conflicts), conflicts })
+              return
+            }
+          }
+        }
         const r = pipelineNodeLeases.acquire(owners[0], ips, String(body.label ?? '').slice(0, 200), String(body.by ?? '').slice(0, 200))
         json(res, 200, r)
       } catch (err) {
@@ -4686,6 +4857,123 @@ export function apply(ctx: Context) {
       }
     },
   })
+
+  /* ---- 节点预留（pipeline 节点环境按「日期 + 时间段」分配给指定用户）----
+   * 【节点预留路由块起点：测试按本注释切片抽取】
+   * 独立存储 RESERVATIONS_STORE（定义在 PLANS_STORE 旁；worktable-pipeline-reservations.json，
+   * 与 PLANS_STORE 同目录），GET 不设身份门槛（与 /api/worktable/pipeline GET 一致，认证面由
+   * auth-gate 统一拦截）；PUT 仅 admin 可写（无 auth 服务放行），body {windows:[{start,end,users,note?}], base?}：
+   * base 为打开编辑弹窗时该节点的窗口快照，提供则与当前窗口做规范比对，不一致 409 回全量不写盘。
+   * 写入时删除该节点全部旧记录再落新窗口（窗口与旧记录规范相等时保留原 id/createdBy/createdAt），
+   * 并清挂 environments 里已不存在节点的记录；整个读-改-写在 withStoreLock 内原子落盘。 */
+  async function readReservationsStore(): Promise<{ reservations: any[] }> {
+    try {
+      const raw = await readFile(RESERVATIONS_STORE, 'utf8')
+      const j = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+      const list = Array.isArray(j) ? j : (j && Array.isArray(j.reservations) ? j.reservations : [])
+      /* 防御性清洗：非对象/缺 nodeId 的记录不进不出（写盘均为规范记录，这里兜手工改文件的脏数据） */
+      return { reservations: list.filter((r: any) => r && typeof r === 'object' && !Array.isArray(r) && typeof r.nodeId === 'string' && r.nodeId) }
+    } catch { return { reservations: [] } }
+  }
+  async function writeReservationsStore(data: { reservations: any[] }): Promise<void> {
+    await writeJsonAtomic(RESERVATIONS_STORE, JSON.stringify({ reservations: Array.isArray(data && data.reservations) ? data.reservations : [] }))
+  }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/pipeline/reservations',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+        json(res, 200, await readReservationsStore())
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'prefix',
+    path: '/api/worktable/pipeline/reservations',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'PUT') { res.writeHead(405); res.end(); return }
+        const pathname = new URL(req.url ?? '/', 'http://dsh.internal').pathname
+        const suffix = pathname.slice('/api/worktable/pipeline/reservations'.length)
+        if (!suffix.startsWith('/') || suffix.length === 1) { json(res, 400, { error: 'invalid', message: '缺少节点 id' }); return }
+        let nodeId = ''
+        try { nodeId = decodeURIComponent(suffix.slice(1)) } catch { json(res, 400, { error: 'invalid', message: '节点 id 解码失败' }); return }
+        if (!nodeId || nodeId.includes('/')) { json(res, 400, { error: 'invalid', message: '节点 id 非法' }); return }
+        /* 仅 admin 可分配节点；无 auth 服务（resolveRequestAuth 返回 undefined，token 共享模式）放行。
+           auth 存在但无有效会话（username=''）同样 403。 */
+        const caller = resolveRequestAuth(ctx, req)
+        if (caller && (!caller.username || !caller.isAdmin)) { json(res, 403, { error: 'forbidden', message: '仅 admin 用户可分配节点' }); return }
+        const body = await readJsonBody(req)
+        const result: { status: number; reservations: any[] | null; message?: string } = await withStoreLock(async () => {
+          /* 判定顺序与契约一致：节点存在性 404 → windows 校验 400 → base 并发比对 409 → 应用写盘 */
+          const store = await readPipelineStore()
+          const cfg = store.config && typeof store.config === 'object' && !Array.isArray(store.config) ? store.config : {}
+          const environments = Array.isArray(cfg.environments) ? cfg.environments : []
+          const envIds = new Set<string>(environments.filter((e: any) => e && typeof e.id === 'string' && e.id).map((e: any) => e.id))
+          if (!envIds.has(nodeId)) return { status: 404, reservations: null }
+          const normalized = normalizeReservationWindows(body && body.windows)
+          if (normalized.error) return { status: 400, reservations: null, message: normalized.error }
+          const windows = normalized.windows || []
+          /* base：打开编辑弹窗时该节点的窗口快照（乐观并发）。提供则与当前该节点窗口做规范比对，
+             不一致 → 409 回服务端全量且不写盘（客户端据此刷新重开弹窗）。 */
+          let base: ReservationWindow[] | null = null
+          if (body && body.base !== undefined) {
+            const nb = normalizeReservationWindows(body.base)
+            if (nb.error) return { status: 400, reservations: null, message: 'base：' + nb.error }
+            base = nb.windows || []
+          }
+          const current = (await readReservationsStore()).reservations
+          const mine = current.filter((r: any) => r.nodeId === nodeId)
+          if (base) {
+            /* base 与当前窗口做规范多重集比对（乱序不重、同窗口不重复消耗旧记录） */
+            const unmatched = mine.slice()
+            let same = unmatched.length === base.length
+            if (same) {
+              for (const bw of base) {
+                const idx = unmatched.findIndex((r: any) => sameReservationWindow(r, bw))
+                if (idx < 0) { same = false; break }
+                unmatched.splice(idx, 1)
+              }
+            }
+            if (!same) return { status: 409, reservations: current }
+          }
+          const nowIso = new Date().toISOString()
+          const createdBy = caller ? caller.username : ''
+          const pool = mine.slice()
+          const applied = windows.map((w) => {
+            const idx = pool.findIndex((r: any) => sameReservationWindow(r, w))
+            if (idx >= 0) {
+              /* 窗口与旧记录规范相等：保留原 id/createdBy/createdAt（含 updatedAt），不换 id */
+              const old = pool.splice(idx, 1)[0]
+              return {
+                id: String(old.id || ''), nodeId, users: w.users, start: w.start, end: w.end, note: w.note,
+                createdBy: String(old.createdBy || ''), createdAt: String(old.createdAt || nowIso), updatedAt: String(old.updatedAt || nowIso),
+              }
+            }
+            return {
+              id: 'rsv-' + Date.now().toString(36) + '-' + Math.random().toString(16).slice(2, 10),
+              nodeId, users: w.users, start: w.start, end: w.end, note: w.note,
+              createdBy, createdAt: nowIso, updatedAt: nowIso,
+            }
+          })
+          /* 清挂：environments 里已不存在节点的记录一并删除（不限于本次写的节点） */
+          const reservations = current.filter((r: any) => r.nodeId !== nodeId && envIds.has(r.nodeId)).concat(applied)
+          await writeReservationsStore({ reservations })
+          return { status: 200, reservations }
+        })
+        if (result.status === 404) { json(res, 404, { error: 'node-not-found', message: '节点不存在：' + nodeId }); return }
+        if (result.status === 400) { json(res, 400, { error: 'invalid', message: result.message }); return }
+        if (result.status === 409) { json(res, 409, { error: 'conflict', reservations: result.reservations }); return }
+        json(res, 200, { ok: true, reservations: result.reservations })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+  /* 【节点预留路由块终点】 */
 
   // ---- GPU 状态查询（pipeline.html 环境页/多选面板、mem_leak 在线采样；本机直连，远程经 sshpass+ssh）----
   // 响应：{ total, used, gpus:[{index,util,mem}], procs:[{pid,uuid,proc,container,up,gpuMem,rss,cgMem}], containers:[名称...] }
@@ -5447,6 +5735,25 @@ export function apply(ctx: Context) {
         dur: Number(src && src.dur) || 0,
       })
     }
+    /* 节点预留兜底强制点：定时计划 / 关页移交 / API 已进入执行池的计划在此统一拦截——绕过页面与
+       运行 API 的路径也不能在他人预留时段内跑节点。无 auth 服务（token 共享模式）跳过；pl.envs 为空
+       （无目标节点）跳过。isAdmin 按计划署名 pl.by 现查 users.yaml（与 resolveRequestAuth 同文件
+       同规则）；pl.by 为空按非 admin。冲突时本次运行按失败落史（histLogs 带明细，复用
+       historyRecordFor/appendPipelineHistory 终态写法），不执行任何阶段。
+       typeof 守卫：预留存储读取不可用时（vm 抽取测试未注入该名）直接跳过兜底，不抛 ReferenceError。 */
+    if (typeof readReservationsStore === 'function' && hasAuthService(ctx) && Array.isArray(pl.envs) && pl.envs.length) {
+      const runBy = typeof pl.by === 'string' ? pl.by : ''
+      const runIsAdmin = !!runBy && readAuthAdminUsers(pathResolve(DSH_HOME, 'auth', 'users.yaml')).has(runBy)
+      const conflicts = reservationConflictsForEnvs(pl.envs, (await readReservationsStore()).reservations, runBy, runIsAdmin, Date.now())
+      if (conflicts.length) {
+        const denyMessage = reservationConflictMessage(conflicts)
+        ctx.logger?.warn?.('[tokens-worktable] 流水线「' + pipeName + '」命中节点预留，本次运行按失败结束：' + denyMessage)
+        pushHist('节点预留校验', 'failed', denyMessage, null, 0)
+        status = 'failed'
+        await appendPipelineHistory(historyRecordFor(status))
+        return status
+      }
+    }
     /* 页面起源运行启动即写「进行中」历史（含本地前缀阶段快照）：执行期间他端历史列表可见在跑 */
     await writeLiveHistory('running')
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
@@ -5674,6 +5981,9 @@ export function apply(ctx: Context) {
     readStore: readPipelineStore,
     execute: plan => pipelineExecutions.run(plan),
     warn: (message) => ctx.logger?.warn?.('[tokens-worktable] ' + message),
+    /* 节点预留强制点依赖：身份解析上下文 + 预留列表读取（路由块内 readReservationsStore） */
+    ctx,
+    readReservations: async () => (await readReservationsStore()).reservations,
   })
   async function planTick() {
     const plans = await readPlansFile()
