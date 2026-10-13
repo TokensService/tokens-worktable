@@ -73,9 +73,9 @@ MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:258
 MOCK_DB="${MOCK_DB:-true}"
 case "${ENABLE_PROFILING,,}" in true|false) ;; *) echo "ENABLE_PROFILING must be true or false" >&2; exit 2 ;; esac
 ENABLE_PROFILING="${ENABLE_PROFILING,,}"
-# LMCache 渲染逻辑（占位符默认值 + chart patch）全部委托 lib/render-lmcache.sh：
-# 入参见该脚本头部注释（ENABLE_LMCACHE / LMCACHE_OTLP_ENDPOINT / LMCACHE_L2_ENABLED /
-# LMCACHE_EXTRA_ARGS ...），本脚本不直接感知。
+# LMCache 渲染逻辑（入参校验 + values 结构化写入 + chart 实验参数注入）全部委托
+# lib/render-lmcache.sh：入参见该脚本头部注释（ENABLE_LMCACHE /
+# LMCACHE_OTLP_ENDPOINT / LMCACHE_EXTRA_ARGS），本脚本不直接感知。
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -166,8 +166,9 @@ path.write_text(text, encoding="utf-8")
 PY_TEMPLATE
 fi
 
-# LMCache 占位符默认值（含入参校验，失败即渲染失败）由 render-lmcache.sh 统一提供。
-lmcache_defaults="$(bash "$(dirname "${BASH_SOURCE[0]}")/lib/render-lmcache.sh" defaults)" || exit $?
+# LMCache 入参校验（fail-fast，失败即渲染失败）由 render-lmcache.sh 统一提供；
+# 新版模板无 {LMCACHE_*} 占位符，enabled/tracing 由渲染后的 values patch 写入。
+bash "$(dirname "${BASH_SOURCE[0]}")/lib/render-lmcache.sh" defaults >/dev/null || exit $?
 
 python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$ARCH_REQUEST_FILE" "$RESOURCE_MANIFEST" "$DEPLOY_IMAGE" "$NUM_PREFILL" \
@@ -175,7 +176,7 @@ python3 - "$VALUES_TEMPLATE" "$ARCH_FILE" "$ARCH_NAME" "$VALUES_FILE" \
   "$PREFILL_OVERRIDES_JSON" "$DECODE_OVERRIDES_JSON" "$REPLACE_MAP_JSON" \
   "$EQUAL_REPLACE_JSON" "$YAML_REPLACE_JSON" "$MOCK_DB" \
   "$NODE_SELECTOR_KEY" "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" "$NODE_LABELS_FILE" "$TEMPLATE_VARS_JSON" "$EMS_NAMESPACE" "$NODE_PORT_MAP" \
-  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$lmcache_defaults" "$ENABLE_PROFILING" "$PROFILING_PREFILL_DIR" "$PROFILING_DECODE_DIR" <<'PY'
+  "$CHART_DIR" "$IMAGE_PULL_SECRETS" "$COLLECTOR_GATEWAY_URL" "$MAPPED_COLLECTOR_GATEWAY_URL" "$MODEL_CACHE_HOST_PATH" "$ENABLE_PROFILING" "$PROFILING_PREFILL_DIR" "$PROFILING_DECODE_DIR" <<'PY'
 import copy
 import json
 import os
@@ -191,7 +192,7 @@ import yaml
  replace_map, equal_replace_map, yaml_replace_map, mock_db,
  node_selector_key, target_hosts_json, target_node_ip_map_json, node_labels_file, template_vars_json, ems_namespace, node_port_map_json,
   chart_dir, image_pull_secrets_text, collector_gateway_url, mapped_collector_gateway_url, model_cache_host_path,
-  lmcache_defaults_text, enable_profiling_text, profiling_prefill_dir, profiling_decode_dir) = sys.argv[1:]
+  enable_profiling_text, profiling_prefill_dir, profiling_decode_dir) = sys.argv[1:]
 enable_profiling = enable_profiling_text.lower() == "true"
 
 num_prefill = int(num_prefill) if num_prefill else None
@@ -518,12 +519,9 @@ else:
     template_vars.setdefault("NODE_PORT", "31365")
 template_vars.setdefault("SERVICE_PORT", "8080")
 template_vars.setdefault("COLLECTOR_GATEWAY_URL", "192.168.10.6:25888")
-# LMCache 占位符默认值由 render-lmcache.sh defaults 统一提供（KEY=VALUE 行，
-# 入参校验已在彼处完成）；TEMPLATE_VARS_JSON 里的显式值依然优先。
-for lmcache_pair in lmcache_defaults_text.splitlines():
-    lmcache_key, _, lmcache_value = lmcache_pair.partition("=")
-    if lmcache_key:
-        template_vars.setdefault(lmcache_key, lmcache_value)
+# LMCache 无占位符可替换（新版模板接口由渲染后 render-lmcache.sh patch 写入
+# values），这里不做任何并入；旧模板残留 {LMCACHE_*} 会被下方 unresolved
+# 检查硬性拦下，避免静默失效。
 placeholder_pattern = re.compile(r"(?<!\$)\{([A-Z][A-Z0-9_]*)\}")
 active_values_text = "\n".join(
     line for line in values_text.splitlines() if not line.lstrip().startswith("#")
@@ -813,8 +811,8 @@ with open(node_labels_file, "w", encoding="utf-8") as output:
     output.write("\n")
 PY
 
-# LMCache chart patch（tracing 兜底 + 实验参数注入）委托 render-lmcache.sh：
-# 守卫以渲染结果为准（sidecar 未启用整体跳过），新式模板自动跳过重复注入。
+# LMCache 渲染后处理（values 结构化写入 enabled/tracing + chart 实验参数注入）
+# 委托 render-lmcache.sh：sidecar 未启用时 chart 侧自动跳过。
 bash "$(dirname "${BASH_SOURCE[0]}")/lib/render-lmcache.sh" patch "$CHART_DIR" "$VALUES_FILE" || exit $?
 
 printf 'RUN_DIR=%s\n' "$RUN_DIR"

@@ -83,11 +83,11 @@ XDS 流水线按以下顺序绑定脚本：
 | 脚本 | 阶段 | 职责 |
 |------|------|------|
 | `lmcache-config.sh` | **step 主脚本**（pull_render_config 前） | 入参校验（fail-fast）+ 契约输出；step 存在即开启（`ENABLE_LMCACHE` 缺省 true） |
-| `lib/render-lmcache.sh` | 渲染期（render-config 内部依赖） | 占位符默认值（`defaults`）与渲染后 chart patch（`patch`：tracing 兜底 + `LMCACHE_EXTRA_ARGS` 实验注入，含 sidecar 启用守卫与幂等） |
+| `lib/render-lmcache.sh` | 渲染期（render-config 内部依赖） | 入参校验（`defaults`）与渲染后 values patch（`patch`：结构化写入 `lmcacheSidecar.enabled/tracing.otlpEndpoint` + `LMCACHE_EXTRA_ARGS` 实验注入，含启用守卫与幂等） |
 | `check-lmcache-readiness.sh` | 部署期 | GPU context 就绪轮询（部署尾动态启用，输出 `LMCACHE_HEALTH` 契约） |
 | `clear-lmcache-cache.sh` | 运行期 | 三层缓存热清理（见下节） |
 
-**流水线接法**：要开 LMCache，在 pull_render_config 前加一个 `lmcache-config` step，参数即该 step 的环境变量（`LMCACHE_OTLP_ENDPOINT` / `LMCACHE_L2_ENABLED` / `LMCACHE_LOG_LEVEL` / `LMCACHE_EXTRA_ARGS`，详见脚本头部）；契约输出经平台注入下游，渲染自动点亮 sidecar。不加该 step 则默认全关，pull_render_config 自身不再暴露任何 LMCache 参数（老流水线直配 `ENABLE_LMCACHE=true` 仍兼容）。
+**流水线接法**：要开 LMCache，在 pull_render_config 前加一个 `lmcache-config` step，参数即该 step 的环境变量（`LMCACHE_OTLP_ENDPOINT` / `LMCACHE_EXTRA_ARGS`，详见脚本头部）；契约输出经平台注入下游，渲染后由 values patch 点亮 sidecar（新版模板无占位符，旧模板残留占位符会被 unresolved 检查硬拦）。不加该 step 则默认全关，pull_render_config 自身不再暴露任何 LMCache 参数。
 
 实验参数示例（免改模板/免出镜像）：
 

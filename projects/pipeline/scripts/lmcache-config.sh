@@ -18,10 +18,6 @@ SCRIPT_NAME='lmcache-config'
 ENABLE_LMCACHE="${ENABLE_LMCACHE:-true}"
 # LMCACHE_OTLP_ENDPOINT = tracing 上报地址，缺省 http://192.168.10.6:4320
 LMCACHE_OTLP_ENDPOINT="${LMCACHE_OTLP_ENDPOINT:-http://192.168.10.6:4320}"
-# LMCACHE_L2_ENABLED = L2 磁盘缓存开关，缺省 true
-LMCACHE_L2_ENABLED="${LMCACHE_L2_ENABLED:-true}"
-# LMCACHE_LOG_LEVEL = sidecar 日志级别，缺省 INFO
-LMCACHE_LOG_LEVEL="${LMCACHE_LOG_LEVEL:-INFO}"
 # LMCACHE_EXTRA_ARGS = 额外 sidecar 命令行参数，实验钩子渲染后注入 chart，留空不注入
 LMCACHE_EXTRA_ARGS="${LMCACHE_EXTRA_ARGS:-}"
 
@@ -29,8 +25,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 规范化后的值必须显式导出给子进程：平台注入的 env 不含脚本内兜底的
 # 默认值，不导出则 lib/render-lmcache.sh 看到的是空环境。
-defaults="$(export ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT LMCACHE_L2_ENABLED \
-  LMCACHE_LOG_LEVEL LMCACHE_EXTRA_ARGS; \
+defaults="$(export ENABLE_LMCACHE LMCACHE_OTLP_ENDPOINT \
+  LMCACHE_EXTRA_ARGS; \
   bash "$script_dir/lib/render-lmcache.sh" defaults)" || exit $?
 
 printf 'ENABLE_LMCACHE=%s\n' "$ENABLE_LMCACHE"
