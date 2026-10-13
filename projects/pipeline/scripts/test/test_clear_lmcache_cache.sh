@@ -160,6 +160,35 @@ NAMESPACE=x-ns TE_POD_PATTERN='prefill' hbm_snapshot
 err=$( NAMESPACE=x-ns TE_POD_PATTERN='prefill' verify_hbm_reset 2>&1 ) && { echo 'Traceback 未触发失败' >&2; exit 1; }
 [[ "$err" == *'引擎侧异常'* ]] || { echo 'Traceback 失败文案不对' >&2; exit 1; }
 
+# --- 可恢复 Traceback（在途 KV transfer 阻塞）→ 警告 + 重发 + 最终 success ---
+rm -f "$tmp/hbm_state" "$tmp/reposts"
+kubectl() { case "$*" in
+    *"NAME:.metadata.name"*) echo 'x-prefill-1-abc' ;;
+    *"wc -l"*)
+        if [[ ! -f "$tmp/hbm_state" ]]; then printf '%s\n' '10 vllm_a.log' '10 total'; echo 1 >"$tmp/hbm_state"
+        elif [[ ! -f "$tmp/reposts" ]]; then printf '%s\n' '13 vllm_a.log' '13 total'
+        else printf '%s\n' '14 vllm_a.log' '14 total'; fi ;;
+    *"sed -n 11,13p"*) printf '%s\n' \
+        '10-13 07:50:56.812 - scheduler.py - WARNING - reset_prefix_cache blocked by in-flight KV transfer, draining connector then retrying' \
+        '10-13 07:50:56.818 - core.py - ERROR - Invocation of reset_prefix_cache method failed' \
+        'Traceback (most recent call last):' ;;
+    *"sed -n 11,14p"*) printf '%s\n' \
+        '10-13 07:50:56.812 - scheduler.py - WARNING - reset_prefix_cache blocked by in-flight KV transfer, draining connector then retrying' \
+        '10-13 07:50:56.818 - core.py - ERROR - Invocation of reset_prefix_cache method failed' \
+        'Traceback (most recent call last):' \
+        '10-13 07:55:01.000 - block_pool.py - INFO - Successfully reset prefix cache' ;;
+esac; }
+curl() { echo 'actor0: reset_prefix_cache scheduled in running event loop.' | tee -a "$tmp/reposts"; }
+: >"$LOG_FILE"
+NAMESPACE=x-ns TE_POD_PATTERN='prefill' FE_URL=http://192.0.2.9:30079 \
+    HBM_REPOST_SECONDS=1 HBM_POLL_SECONDS=1 HBM_VERIFY_TIMEOUT_SECONDS=10 verify_hbm_reset \
+    || { echo '可恢复阻塞场景应通过' >&2; exit 1; }
+grep -q '被在途 KV transfer 阻塞' "$LOG_FILE" || { echo '阻塞警告缺失' >&2; exit 1; }
+grep -q '已重发 reset_prefix_cache' "$LOG_FILE" || { echo '重发日志缺失' >&2; exit 1; }
+grep -q '全部引擎确认 success' "$LOG_FILE" || { echo '最终 success 缺失' >&2; exit 1; }
+[[ -s "$tmp/reposts" ]] || { echo '重发请求未真正发出' >&2; exit 1; }
+unset -f curl
+
 # --- async task done 非 success → 失败 ---
 rm -f "$tmp/hbm_go"
 kubectl() { case "$*" in

@@ -13,7 +13,9 @@
 #     第二个 true 会连 connector 一起重置，可解开卡死的 KV transfer 会话——
 #     "true false" 遇到 sidecar active_sessions 卡住不降时永远失败)，
 #   TE_POD_PATTERN(默认'prefill|decode'：承载 vllm 引擎的 pod 名匹配)、
-#   HBM_VERIFY_TIMEOUT_SECONDS(默认120)、HBM_POLL_SECONDS(默认3)、
+#   HBM_VERIFY_TIMEOUT_SECONDS(默认660：等待引擎 success 的总时长，需覆盖在途 KV transfer
+#     排空期，实测最长约 7 分钟)、HBM_REPOST_SECONDS(默认90：reset 被在途 KV transfer
+#     阻塞时每隔多久重发一次；引擎阻塞时不会自行完成，排空后必须重发)、HBM_POLL_SECONDS(默认3)、
 #   VERIFY_TIMEOUT_SECONDS(默认30)、L2_DELETE_TIMEOUT(默认600)、
 #   REQUEST_TIMEOUT_SECONDS(默认10)、LOG_FILE。
 # 依赖：本机 kubectl（必须）与 curl（清 HBM 时）；sidecar 容器需自带 curl/find（官方镜像均含）。
@@ -37,7 +39,8 @@ HBM_VERIFY="${HBM_VERIFY:-1}"
 # block 数不变的场景）；回退旧行为设 HBM_RESET_PARAMS="true false"。
 HBM_RESET_PARAMS="${HBM_RESET_PARAMS:-true true}"
 TE_POD_PATTERN="${TE_POD_PATTERN:-prefill|decode}"
-HBM_VERIFY_TIMEOUT_SECONDS="${HBM_VERIFY_TIMEOUT_SECONDS:-120}"
+HBM_VERIFY_TIMEOUT_SECONDS="${HBM_VERIFY_TIMEOUT_SECONDS:-660}"
+HBM_REPOST_SECONDS="${HBM_REPOST_SECONDS:-90}"
 HBM_POLL_SECONDS="${HBM_POLL_SECONDS:-3}"
 VERIFY_TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-30}"
 L2_DELETE_TIMEOUT="${L2_DELETE_TIMEOUT:-600}"
@@ -219,6 +222,19 @@ discover_fe_url() {
 #   decode pod : 仅 block_pool.py「Successfully reset prefix cache」（每个 dp 引擎一条）
 HBM_RESET_SUCCESS_RE='reset_prefix_cache async task done, success|Successfully reset prefix cache'
 
+# 可恢复阻塞特征（打流刚停后常见）：LMCache 在途 KV transfer 会话未排空，引擎 reset 被挡住，
+# 打出「Invocation of reset_prefix_cache method failed」（带 Traceback）与
+# 「reset_prefix_cache blocked by in-flight KV transfer, draining connector then retrying」。
+# 引擎排空后重发 reset 即可 success（实测排空期最长约 7 分钟），故该模式不判死，改为警告+周期重发；
+# 同窗口混入的无关 Traceback 会被一并降级，由最终超时兜底。
+HBM_RECOVERABLE_RE='Invocation of reset_prefix_cache method failed|reset_prefix_cache blocked by in-flight KV transfer'
+
+# 发送 reset_prefix_cache（stdout 返回 OM 响应文本；非 0 = 请求本身失败）
+post_hbm_reset() {
+    curl -s --noproxy '*' -X POST "$FE_URL/xds/v1/OM/diagnose/post" -H 'Content-Type: application/json' \
+        -d '{"cmd":"reset_prefix_cache","params":"'"$HBM_RESET_PARAMS"'","filter":""}'
+}
+
 # 承载 vllm 引擎（TE actor）的 pod：reset 结果日志写在这些 pod 的 ray-worker 容器里
 te_pods() {
     KCTL get pods -n "$NAMESPACE" -o custom-columns='NAME:.metadata.name' --no-headers 2>/dev/null | grep -E "$TE_POD_PATTERN"
@@ -255,21 +271,30 @@ hbm_new_lines() {
 }
 
 # 轮询每个引擎 pod 的新增日志：
-#   任一 pod 出现 Traceback 或非 success 的 async task done → 立即失败（响亮报错优于静默漏清）
+#   未知 Traceback 或非 success 的 async task done → 立即失败（响亮报错优于静默漏清）
+#   可恢复 Traceback（在途 KV transfer 阻塞，HBM_RECOVERABLE_RE）→ 警告并周期性重发 reset，继续等
 #   全部 pod 出现 success 标识 → 通过；超时仍缺 → 报错并列出未确认 pod
 verify_hbm_reset() {
-    local pods pod newlines started total
+    local pods pod newlines started total resp scheduled
     pods=$(te_pods)
     [[ -n "$pods" ]] || die "未发现匹配 '$TE_POD_PATTERN' 的引擎 pod，无法验证 HBM reset（调整 TE_POD_PATTERN 或设 HBM_VERIFY=0）"
     total=$(wc -w <<< "$pods")
-    local -A confirmed=()
+    local -A confirmed=() blocked=()
+    local last_repost=$SECONDS
     started=$SECONDS
     while :; do
         for pod in $pods; do
             [[ -n "${confirmed[$pod]+x}" ]] && continue
             newlines=$(hbm_new_lines "$pod")
             if grep -q 'Traceback (most recent call last)' <<< "$newlines"; then
-                die "HBM reset 引擎侧异常(Traceback): $pod，缓存可能未清干净，请查引擎日志"
+                if grep -qE "$HBM_RECOVERABLE_RE" <<< "$newlines"; then
+                    [[ -n "${blocked[$pod]+x}" ]] || {
+                        blocked[$pod]=1
+                        log "警告: $pod reset 被在途 KV transfer 阻塞（引擎排空中，将周期性重发 reset 直至 success 或超时）"
+                    }
+                else
+                    die "HBM reset 引擎侧异常(Traceback): $pod，缓存可能未清干净，请查引擎日志"
+                fi
             fi
             if grep 'reset_prefix_cache async task done' <<< "$newlines" | grep -qv 'success'; then
                 die "HBM reset 引擎侧失败: $pod（async task done 非 success）"
@@ -281,6 +306,13 @@ verify_hbm_reset() {
         done
         (( ${#confirmed[@]} == total )) && { log "HBM reset 全部引擎确认 success (${total} 个 pod)"; return 0; }
         (( SECONDS - started >= HBM_VERIFY_TIMEOUT_SECONDS )) && die "HBM reset 引擎 success 确认超时(${HBM_VERIFY_TIMEOUT_SECONDS}s)，未确认 pod: $(printf '%s\n' $pods | grep -vx -f <(printf '%s\n' "${!confirmed[@]}") | tr '\n' ' ')"
+        # 阻塞场景引擎不会自行完成 reset，排空后必须重发；每 HBM_REPOST_SECONDS 重发一次
+        if (( ${#blocked[@]} > 0 && SECONDS - last_repost >= HBM_REPOST_SECONDS )); then
+            resp=$(post_hbm_reset) || die "HBM reset 重发请求失败: $FE_URL"
+            scheduled=$(grep -o 'reset_prefix_cache scheduled' <<< "$resp" | wc -l)
+            log "已重发 reset_prefix_cache（调度到 $scheduled 个 actor），继续等待引擎排空"
+            last_repost=$SECONDS
+        fi
         sleep "$HBM_POLL_SECONDS"
     done
 }
@@ -303,8 +335,7 @@ clear_hbm() {
     if (( HBM_VERIFY )); then
         hbm_snapshot
     fi
-    resp=$(curl -s --noproxy '*' -X POST "$FE_URL/xds/v1/OM/diagnose/post" -H 'Content-Type: application/json' \
-        -d '{"cmd":"reset_prefix_cache","params":"'"$HBM_RESET_PARAMS"'","filter":""}') || die "HBM 清理请求失败: $FE_URL"
+    resp=$(post_hbm_reset) || die "HBM 清理请求失败: $FE_URL"
     # OM diagnose 返回非严格 JSON（多对象拼接），只能 grep 计数
     scheduled=$(grep -o 'reset_prefix_cache scheduled' <<< "$resp" | wc -l)
     log "HBM reset_prefix_cache 已调度到 $scheduled 个 actor"
@@ -347,7 +378,7 @@ clear_l2() {
 main() {
     [[ $# -eq 0 ]] || die '不支持命令行参数；请使用环境变量配置'
     local bool_vars=(DRY_RUN CLEAR_L1 CLEAR_HBM CLEAR_L2 IDLE_CHECK HBM_VERIFY)
-    local int_vars=(IDLE_SECONDS VERIFY_TIMEOUT_SECONDS L2_DELETE_TIMEOUT REQUEST_TIMEOUT_SECONDS HBM_VERIFY_TIMEOUT_SECONDS HBM_POLL_SECONDS)
+    local int_vars=(IDLE_SECONDS VERIFY_TIMEOUT_SECONDS L2_DELETE_TIMEOUT REQUEST_TIMEOUT_SECONDS HBM_VERIFY_TIMEOUT_SECONDS HBM_REPOST_SECONDS HBM_POLL_SECONDS)
     local v
     for v in "${bool_vars[@]}"; do
         [[ "${!v}" =~ ^[01]$ ]] || die "$v 必须为 0 或 1"
