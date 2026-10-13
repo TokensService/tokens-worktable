@@ -337,7 +337,7 @@ test('流式运行的实时快照与最终 stdout 都保持有界，同时保留
   assert.equal(rc.vars.EARLY, 'kept', '早期变量应由流式探针保留，即使已离开尾窗');
 });
 
-test('持续输出期间详情刷新最多每 250ms 一次', async () => {
+test('持续输出期间详情刷新最多每 1000ms 一次', async () => {
   const start = source.indexOf('async function runScriptStep(rc, i)');
   const end = source.indexOf('function runStage(rc, i)', start);
   const stage = { id: 'heavy', name: '大量输出', script: { name: 'heavy.sh', path: '/tmp/heavy.sh', params: [] } };
@@ -350,7 +350,7 @@ test('持续输出期间详情刷新最多每 250ms 一次', async () => {
     archiveFolderFor: () => null, taskLogFile: () => 'stage.log', mergeStageVars: () => ({}),
     applyOutVars() {}, parseStageJson: () => null, archiveStageLog() {}, stageSeq: () => 1, advance() {}, finish() {},
     async execScript(_script, _timeout, _env, _run, onStream) {
-      for (const at of [1000, 1100, 1249, 1250]) { now = at; onStream({ type: 'out', text: 'line\n' }); }
+      for (const at of [1000, 1100, 1999, 2000]) { now = at; onStream({ type: 'out', text: 'line\n' }); }
       return { code: 0, stdout: 'line\n'.repeat(4), stderr: '' };
     },
   };
@@ -360,7 +360,7 @@ test('持续输出期间详情刷新最多每 250ms 一次', async () => {
   let snapshotCount = 0;
   context.liveOutputSnapshot = (...args) => { snapshotCount++; return snapshot(...args); };
   await context.runScriptStep(rc, 0);
-  assert.deepEqual(renderedAt, [1000, 1250]);
+  assert.deepEqual(renderedAt, [1000, 2000]);
   assert.equal(snapshotCount, 3, '4 个高频分片只能在 2 个刷新时点及最终结果各物化一次尾窗');
 });
 

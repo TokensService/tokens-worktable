@@ -6889,13 +6889,13 @@ function finishOutputProbe(probe){
   return {vars:probe.vars,json:probe.json,fullText:probe.captureFull&&!probe.fullTextOverflow?probe.fullParts.join(''):undefined,fullTextOverflow:!!probe.fullTextOverflow};
 }
 function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
-  const now=Date.now(), wait=Math.max(0,Number(minInterval)||250);
+  const now=Date.now(), wait=Math.max(0,Number(minInterval)||1000);
   const root=rc&&rc.parallelParent?rc.parallelParent:rc;
   if(viewRc===root && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
   return lastLive;
 }
 function publishLiveOutput(rc,stage,live,lastPublished,minInterval,extra){
-  const now=Date.now(),wait=Math.max(0,Number(minInterval)||250);
+  const now=Date.now(),wait=Math.max(0,Number(minInterval)||1000);
   if(now-lastPublished<wait) return lastPublished;
   stage._out=liveOutputSnapshot(live,extra||{code:null});
   if(viewRc===rc&&selectedId===stage.id) renderDetail();
@@ -7364,7 +7364,7 @@ async function runUrlStep(rc, i){
       pollVia='direct'; pollFails=0;
       console.warn('[pipeline] Jenkins 阶段轮询回退浏览器直连：stage-poll '+why);
       appendLiveLog(log,'# stage-poll 服务端轮询不可用（'+why+'），回退浏览器直连轮询');
-      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       return true;
     };
     /* 调服务端 stage-poll；返回 null 表示端点不可用且已回退直连（调用方下轮起走直连分支）。
@@ -7382,7 +7382,7 @@ async function runUrlStep(rc, i){
       pollFails+=1;
       if(pollFails===1||pollFails%15===0){
         appendLiveLog(log,'[warn] '+(phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'连续失败 '+pollFails+' 次（stage-poll 传输）：'+pollErr);
-        s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       }
       if(pollFails>=pollFailCap) throw new Error((phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'持续失败（stage-poll 传输，连续 '+pollFails+' 次）：'+pollErr);
     };
@@ -7390,7 +7390,7 @@ async function runUrlStep(rc, i){
       if(fails<=0||fails===pollFailWarned||(fails!==1&&fails%15!==0)) return;
       pollFailWarned=fails;
       appendLiveLog(log,'[warn] '+(phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'连续失败 '+fails+' 次（服务端轮询兜底中，连续 '+pollFailCap+' 次将判失败）');
-      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
     };
     while(pollable && buildNum==null){
       if(pollVia==='server'){
@@ -7426,7 +7426,7 @@ async function runUrlStep(rc, i){
           pollFails+=1;
           if(pollFails===1||pollFails%15===0){
             appendLiveLog(log,'[warn] Jenkins queue 状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
           }
           if(pollFails>=pollFailCap) throw new Error('Jenkins queue 状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
         }
@@ -7452,7 +7452,7 @@ async function runUrlStep(rc, i){
             appendOutputProbe(outputProbe,chunk);
             appendLiveChunk(log,chunk);   // 原始连续分片，不额外插入换行
             s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
-            lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
             if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
             if(rc.over||rc.token!==tk) return;
           }
@@ -7476,7 +7476,7 @@ async function runUrlStep(rc, i){
           const pollErr=String(e&&e.message?e.message:e).slice(0,512); pollFails+=1;
           if(pollFails===1||pollFails%15===0){
             appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
           }
           if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
         }
@@ -7493,7 +7493,7 @@ async function runUrlStep(rc, i){
               appendOutputProbe(outputProbe,delta.text);
               appendLiveChunk(log,delta.text);   // 原始连续分片，不额外插入换行
               s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
-              lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+              lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
               if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
               if(rc.over||rc.token!==tk) return;
             }
@@ -7859,7 +7859,7 @@ async function runEvaltokensStep(rc, i){
           pollVia='direct';
           console.warn('[pipeline] EvalTokens 阶段轮询回退浏览器直连：stage-poll HTTP '+err.stagePollFallback);
           appendLiveLog(log,'# stage-poll 服务端轮询不可用（HTTP '+err.stagePollFallback+'），回退浏览器直连轮询');
-          s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+          s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
           return null;
         }
         throw err;
@@ -7873,14 +7873,14 @@ async function runEvaltokensStep(rc, i){
       if(pr.done===true&&pr.statusEndpointMissing&&pollUrl===statusPollUrl){
         pollUrl=runsListUrl;
         appendLiveLog(log,'# 轻量状态端点不可用（旧版 evalscope），切换到 runs 列表端点轮询');
-        s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
         continue;
       }
       const st=String(pr.status||'running');   // 窗口耗尽的 {done:false} 不带 status：按运行中处理
       waitingStatus=st;
       const fails=Number(pr.failures)||0;
       appendLiveLog(log,'# run '+runId+' status='+st+(fails?('（连续失败 '+fails+' 次）'):''));
-      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
       if(!ensureActive()) return;
       if(pr.done===true){
@@ -7900,7 +7900,7 @@ async function runEvaltokensStep(rc, i){
       waitingStatus=st;
       const sk=current?evaltokStatusKind(st):'running';
       appendLiveLog(log,'# run '+runId+' status='+(current?st:'（等待运行记录）'));
-      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
       if(!ensureActive()) return;
       if(sk!=='running'){ result=sk; externalRunActive=false; break; }
@@ -7926,6 +7926,10 @@ async function runEvaltokensStep(rc, i){
     const seq=stageSeq(rc.stages,i);
     const reportPendingLine=reportFolder?('📦 任务报告归档中 → '+reportFolder+'/'+evaltokReportFile(rc,seq,s.name,runId)):'⚠ 任务报告未归档：无法确定本次运行归档目录';
     if(et.collectReport!==false) appendLiveLog(log,reportPendingLine);
+    /* 节流期间可能没有新的运行中刷新；终态快照前补一次，确保最后一条轮询状态也能回显。 */
+    s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false});
+    const liveRoot=rc&&rc.parallelParent?rc.parallelParent:rc;
+    if(viewRc===liveRoot&&selectedId===s.id) renderDetail();
     const finalStdout=finishLiveLog(log);
     const terminalOut=liveOutputSnapshot(log.live,{stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true});
     if(logSink) await logSink.flush();
@@ -8023,7 +8027,7 @@ async function runScriptStep(rc, i){
   _tick.tasks[rc.timer]={rc:rc,stageId:s.id,t0:t0,last:t0,rate:2/300};   // 节奏同原 300ms 定时器（每 tick +2）
   if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
   /* 流式回显：执行中把 stdout/stderr 写入本阶段实时快照（s._out，code:null）并刷新「阶段详情」。
-     快速输出按 ~250ms 节流重建；选中的正是本阶段时立即刷新（进度条/耗时文本另由共享 tick 轻量直改，不经全量渲染）。
+     快速输出按 ~1000ms 节流重建；选中的正是本阶段时立即刷新（进度条/耗时文本另由共享 tick 轻量直改，不经全量渲染）。
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
@@ -8034,7 +8038,7 @@ async function runScriptStep(rc, i){
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }   // 接管确认：中止时也不可用浏览器快照覆盖服务端日志
     appendLiveOutput(live,m.type,m.text); if(m.type==='out') appendOutputProbe(probe,m.text);
-    lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 追加与物化分别节流，避免每个小块都 join 尾窗
+    lastLive=publishLiveOutput(rc,s,live,lastLive,1000,{code:null});   // 追加与物化分别节流，避免每个小块都 join 尾窗
   }, ctrl.signal, logFile);
   if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验运行状态再写共享 stage 字段：并行重试已复位的新归档所有权不能被旧子上下文迟回覆盖
@@ -8253,7 +8257,7 @@ async function runPresetStep(rc, i){
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }
     appendLiveOutput(live,m.type,m.text);
-    lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 高频小块只在刷新时点物化尾窗
+    lastLive=publishLiveOutput(rc,s,live,lastLive,1000,{code:null});   // 高频小块只在刷新时点物化尾窗
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
