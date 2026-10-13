@@ -29,6 +29,10 @@ NUM_PREFILL="${NUM_PREFILL:-}"
 NUM_DECODE="${NUM_DECODE:-}"
 PREFILL_GPU="${PREFILL_GPU:-}"
 DECODE_GPU="${DECODE_GPU:-}"
+ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
+PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
+PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
+PROFILING_TIMESTAMP="${PROFILING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 NAMESPACE_ARCH="${arch:-}"
 [[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
 EXECUTOR="${EXECUTOR:-}"
@@ -45,6 +49,15 @@ RELEASE_NAME="${RELEASE_NAME:-$NAMESPACE}"
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
 [[ "$RELEASE_NAME" != "$NAMESPACE" ]] || RELEASE_NAME="xds"
 RELEASE_NAME="$(normalize_kubernetes_name "$RELEASE_NAME" 53)"
+append_profiling_run_dir() {
+  local base="$1" suffix="${NAMESPACE}/${PROFILING_TIMESTAMP}"
+  case "$base" in
+    */"$suffix") printf '%s\n' "$base" ;;
+    *) printf '%s/%s\n' "${base%/}" "$suffix" ;;
+  esac
+}
+PROFILING_PREFILL_DIR="$(append_profiling_run_dir "$PROFILING_PREFILL_DIR")"
+PROFILING_DECODE_DIR="$(append_profiling_run_dir "$PROFILING_DECODE_DIR")"
 PREFILL_OVERRIDES_JSON="${PREFILL_OVERRIDES_JSON:-}"
 DECODE_OVERRIDES_JSON="${DECODE_OVERRIDES_JSON:-}"
 REPLACE_MAP_JSON="${REPLACE_MAP_JSON:-}"
@@ -58,9 +71,6 @@ fi
 COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
 MOCK_DB="${MOCK_DB:-true}"
-ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
-PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
-PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
 case "${ENABLE_PROFILING,,}" in true|false) ;; *) echo "ENABLE_PROFILING must be true or false" >&2; exit 2 ;; esac
 ENABLE_PROFILING="${ENABLE_PROFILING,,}"
 # LMCache 渲染逻辑（占位符默认值 + chart patch）全部委托 lib/render-lmcache.sh：
@@ -372,16 +382,20 @@ for package in arch.get("deploy_spec_packages", []):
         if not isinstance(params, dict):
             raise SystemExit(f"{role}.params must be a mapping")
         if enable_profiling:
-            params.setdefault("profiler_config", {
+            profiler_config = params.setdefault("profiler_config", {})
+            if not isinstance(profiler_config, dict):
+                raise SystemExit(f"{role}.profiler_config must be a mapping")
+            profiler_config.update({
                 "profiler": "torch",
                 "torch_profiler_dir": profiling_prefill_dir if role == "prefill" else profiling_decode_dir,
                 "ignore_frontend": True,
                 "wait_iterations": 0,
                 "warmup_iterations": 0,
-                "torch_profiler_record_shapes": True,
+                "torch_profiler_record_shapes": False,
                 "torch_profiler_with_memory": False,
                 "torch_profiler_with_stack": False,
-                "torch_profiler_dump_cuda_time_total": False,
+                "torch_profiler_use_gzip": True,
+                "torch_profiler_dump_cuda_time_total": True,
             })
         if replicas_override is not None:
             spec["min"] = spec["max"] = spec["default"] = replicas_override
