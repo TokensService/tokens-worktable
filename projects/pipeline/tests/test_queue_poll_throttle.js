@@ -273,3 +273,26 @@ test('pullRemoteQueue：在途请求复用，慢服务器上重叠 tick 不堆�
   pending.shift()();
   await d;
 });
+
+test('pullRemoteQueue：日志尾部请求在途时不阻塞下一轮队列快照', async () => {
+  let fetches = 0;
+  let releaseLog;
+  const logPending = new Promise(resolve => { releaseLog = resolve; });
+  const payload = { clients: [], server: { id: 'server', runs: [], queue: [] } };
+  const ctx = loadPullContext({
+    fetch: async () => {
+      fetches += 1;
+      return { ok: true, json: async () => payload };
+    },
+    pullRemoteQueueLog: () => logPending,
+    renderQueue: () => {},
+  });
+
+  const first = ctx.pullRemoteQueue();
+  await new Promise(resolve => setImmediate(resolve));
+  const second = ctx.pullRemoteQueue();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fetches, 2, '日志请求 pending 时，下一轮仍应拉取新的队列快照');
+  releaseLog();
+  await Promise.all([first, second]);
+});

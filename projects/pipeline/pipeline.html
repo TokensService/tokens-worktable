@@ -5126,13 +5126,14 @@ async function pullRemoteQueue(){
       }
       if(finished) noteServerFinished(finished);   // 新终态条目：登记 completed（完成≠失联）+ 历史即刷；按 id 去重，签名未变时幂等
       if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点（含超时清理，每轮都执行）
-      await pullRemoteQueueLog();
     }
   }catch(e){}
   /* 拉取失败/内容未变本轮不重绘：远端数据无更新，本地队列变化各有渲染入口（启动/取消/排空等） */
   })();
   _queuePullPromise=request;
-  try{ return await request; } finally{ if(_queuePullPromise===request) _queuePullPromise=null; }
+  try{ await request; } finally{ if(_queuePullPromise===request) _queuePullPromise=null; }
+  /* 日志尾部有自己的在途请求复用；不能让一个卡住的日志接口占住队列快照单飞守卫。 */
+  try{ await pullRemoteQueueLog(); }catch(e){}
 }
 $('queueRefresh').addEventListener('click', async ()=>{
   const b=$('queueRefresh'); b.disabled=true;
