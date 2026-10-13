@@ -64,6 +64,7 @@ function makeContext() {
     remoteQueueClients: [],
     _planActiveSig: '',
     _queuePullSig: '',
+    _queuePullPromise: null,
     currentUsername: 'tester',
     currentUserIsAdmin: false,
     esc: s => String(s),

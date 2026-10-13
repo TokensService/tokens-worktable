@@ -5656,7 +5656,13 @@ function noteServerFinished(list){
   if(typeof queueFinishedNote==='function') fresh.forEach(id=>queueFinishedNote(id));
   if(typeof refreshHistoryFromServer==='function'){ try{ refreshHistoryFromServer(false); }catch(e){} }
 }
+let _queuePullPromise=null;
+/* 手动刷新与每秒轮询共用同一个在途请求（与 refreshHistoryFromServer 同一写法）：服务器响应慢于
+   1 秒时，重叠 tick 复用 pending Promise 而非堆积并发 fetch——签名守卫只省渲染不省请求，慢服务器上
+   并发拉取正是 CPU/连接尖峰与「偶尔卡顿」的来源。 */
 async function pullRemoteQueue(){
+  if(_queuePullPromise) return _queuePullPromise;
+  const request=(async()=>{
   try{
     const r=await fetch('/api/worktable/pipeline/queue');
     if(r.ok){
@@ -5693,10 +5699,14 @@ async function pullRemoteQueue(){
       /* 取消信箱：每轮都认领（与签名无关——请求可能在快照未变化时到达）；旧服务端无此键跳过 */
       if(Array.isArray(j.cancelRequests)) applyPresenceCancelRequests(j.cancelRequests);
       if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点（含超时清理，每轮都执行）
-      await pullRemoteQueueLog();
     }
   }catch(e){}
   /* 拉取失败/内容未变本轮不重绘：远端数据无更新，本地队列变化各有渲染入口（启动/取消/排空等） */
+  })();
+  _queuePullPromise=request;
+  try{ await request; } finally{ if(_queuePullPromise===request) _queuePullPromise=null; }
+  /* 日志尾部有自己的在途请求复用；不能让一个卡住的日志接口占住队列快照单飞守卫。 */
+  try{ await pullRemoteQueueLog(); }catch(e){}
 }
 $('queueRefresh').addEventListener('click', async ()=>{
   const b=$('queueRefresh'); b.disabled=true;
