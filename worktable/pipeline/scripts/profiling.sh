@@ -18,6 +18,7 @@ fi
 PROFILING_URL="${PROFILING_URL%/}"
 PROFILING_URL="${PROFILING_URL%/chat/completions}"
 PROFILING_PARAMS="${PROFILING_PARAMS:-start 10}"
+PROFILING_START_DELAY_SECONDS="${PROFILING_START_DELAY_SECONDS:-0}"
 PROFILING_FILTER="${PROFILING_FILTER:-}"
 PROFILING_SELF_TEST="${PROFILING_SELF_TEST:-false}"
 if [[ -z "${PROFILING_MODEL_ENDPOINT:-}" ]]; then
@@ -46,12 +47,17 @@ for value_name in PROFILING_CONNECT_TIMEOUT_SECONDS PROFILING_REQUEST_TIMEOUT_SE
   value="${!value_name}"; [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "$value_name must be a positive integer" >&2; exit 2; }
 done
 [[ "$PROFILING_RETRIES" =~ ^[0-9]+$ ]] || { echo "PROFILING_RETRIES must be non-negative" >&2; exit 2; }
+[[ "$PROFILING_START_DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo 'PROFILING_START_DELAY_SECONDS must be a non-negative number' >&2; exit 2; }
 [[ "${PROFILING_SELF_TEST,,}" == false || -n "$PROFILING_MODEL_ENDPOINT" ]] || { echo 'PROFILING_MODEL_ENDPOINT is required for self-test' >&2; exit 2; }
 case "${PROFILING_COLLECT,,}" in true|false) ;; *) echo 'PROFILING_COLLECT must be true or false' >&2; exit 2 ;; esac
 [[ "$PROFILING_COLLECT_WAIT_SECONDS" =~ ^[0-9]+$ ]] || { echo 'PROFILING_COLLECT_WAIT_SECONDS must be non-negative' >&2; exit 2; }
 base="${PROFILING_URL%/}"
 log "resolved endpoint=${base}"
-log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s connect_timeout=${PROFILING_CONNECT_TIMEOUT_SECONDS}s request_timeout=${PROFILING_REQUEST_TIMEOUT_SECONDS}s retries=${PROFILING_RETRIES}"
+log "model_endpoint=${PROFILING_MODEL_ENDPOINT:-<unset>} self_test=${PROFILING_SELF_TEST,,} max_requests=${PROFILING_MAX_REQUESTS} interval=${PROFILING_INTERVAL_SECONDS}s start_delay=${PROFILING_START_DELAY_SECONDS}s connect_timeout=${PROFILING_CONNECT_TIMEOUT_SECONDS}s request_timeout=${PROFILING_REQUEST_TIMEOUT_SECONDS}s retries=${PROFILING_RETRIES}"
+if [[ ! "$PROFILING_START_DELAY_SECONDS" =~ ^0+([.]0+)?$ ]]; then
+  log "waiting ${PROFILING_START_DELAY_SECONDS}s before profiling request"
+  sleep "$PROFILING_START_DELAY_SECONDS"
+fi
 log "starting torch profiling: GET ${base}/OM/diagnose/get params=${PROFILING_PARAMS} filter=${PROFILING_FILTER:-<empty>}"
 set +e
 curl "${CURL_NO_PROXY_ARGS[@]}" --silent --show-error --connect-timeout "$PROFILING_CONNECT_TIMEOUT_SECONDS" --max-time "$PROFILING_REQUEST_TIMEOUT_SECONDS" \
