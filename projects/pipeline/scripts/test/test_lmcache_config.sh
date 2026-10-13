@@ -4,24 +4,20 @@ script="$(cd "$(dirname "$0")/.." && pwd)/lmcache-config.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# --- 无参+空环境：step 存在即开启，输出契约五件套 ---
+# --- 无参+空环境：step 存在即开启，输出契约三件套 ---
 out=$(bash "$script"); rc=$?
 [[ $rc -eq 0 ]] || { echo "空环境应成功: rc=$rc" >&2; exit 1; }
 grep -Fxq 'ENABLE_LMCACHE=true' <<<"$out" || { echo '缺省应 ENABLE_LMCACHE=true' >&2; exit 1; }
 grep -Fxq 'LMCACHE_OTLP_ENDPOINT=http://192.168.10.6:4320' <<<"$out"
-grep -Fxq 'LMCACHE_L2_ENABLED=true' <<<"$out"
-grep -Fxq 'LMCACHE_LOG_LEVEL=INFO' <<<"$out"
 grep -Fxq 'LMCACHE_EXTRA_ARGS=' <<<"$out" || { echo 'EXTRA_ARGS 缺省应为空行' >&2; exit 1; }
 ! grep -q '^LMCACHE_SIDECAR_ENABLED=' <<<"$out" \
   || { echo '内部占位符 LMCACHE_SIDECAR_ENABLED 不应进契约' >&2; exit 1; }
-[[ $(wc -l <<<"$out") -eq 5 ]] || { echo "契约行数应为 5: $(wc -l <<<"$out")" >&2; exit 1; }
+[[ $(wc -l <<<"$out") -eq 3 ]] || { echo "契约行数应为 3: $(wc -l <<<"$out")" >&2; exit 1; }
 
 # --- step 参数透传 + 显式 false ---
-out=$(ENABLE_LMCACHE=false LMCACHE_L2_ENABLED=false LMCACHE_LOG_LEVEL=DEBUG \
+out=$(ENABLE_LMCACHE=false \
   LMCACHE_EXTRA_ARGS='--worker-reap-timeout-seconds 60' bash "$script")
 grep -Fxq 'ENABLE_LMCACHE=false' <<<"$out"
-grep -Fxq 'LMCACHE_L2_ENABLED=false' <<<"$out"
-grep -Fxq 'LMCACHE_LOG_LEVEL=DEBUG' <<<"$out"
 grep -Fxq 'LMCACHE_EXTRA_ARGS=--worker-reap-timeout-seconds 60' <<<"$out"
 
 # --- step 层用 :- 语义：显式空也被默认值填上（表单发不出显式空；置空关
@@ -55,11 +51,9 @@ frameworkConfigFiles:
     [deploy]
     k8s_deploy_namespace = old-namespace
 lmcacheSidecar:
-  enabled: {LMCACHE_SIDECAR_ENABLED}
-  logLevel: {LMCACHE_LOG_LEVEL}
-  l2Enabled: {LMCACHE_L2_ENABLED}
-  tracing:
-    otlpEndpoint: {LMCACHE_OTLP_ENDPOINT}
+  enabled: false
+  mpPortBase: 5555
+  httpPortBase: 5565
 EOF
 mkdir -p "$work/chart/templates"
 printf 'apiVersion: v2\nname: t\nversion: 0.1.0\n' >"$work/chart/Chart.yaml"
@@ -111,7 +105,7 @@ out=$(ARCH_NAME=test-arch RUN_DIR="$work/run" CHART_TEMPLATE_DIR="$work/chart" \
   echo "无 lmcache step 渲染失败"; cat "$work/render.err" >&2; exit 1; }
 grep -Fxq '  enabled: false' "$work/run/rendered/values.rendered.yaml" \
   || { echo '无 step 时 sidecar 应为 false'; cat "$work/run/rendered/values.rendered.yaml" >&2; exit 1; }
-# 有 lmcache step：step 契约变量注入后渲染应点亮 sidecar
+# 有 lmcache step：step 契约变量注入后渲染应点亮 sidecar（values patch 写入）
 step_out=$(bash "$script")
 while IFS='=' read -r k v; do export "$k=$v"; done <<<"$step_out"
 out=$(ARCH_NAME=test-arch RUN_DIR="$work/run2" CHART_TEMPLATE_DIR="$work/chart" \
