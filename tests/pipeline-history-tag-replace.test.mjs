@@ -55,6 +55,7 @@ async function loadHarness(t, store) {
   const ctx = {
     Promise, Buffer, Date, Math, JSON, console: { warn() {}, log() {}, error() {} },
     pathResolve, readFile, dirname, mkdir, writeFile,
+    durText: (sec) => (sec < 60 ? Math.round(sec) + 's' : Math.floor(sec / 60) + 'm' + Math.round(sec % 60) + 's'),   // 与 src/index.ts 同形
   }
   vm.createContext(ctx)
   vm.runInContext(code, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER })

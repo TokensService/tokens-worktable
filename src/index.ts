@@ -1103,7 +1103,7 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
  *  本地编排运行的历史由页面启动即写 running；页面崩溃/断网且 pagehide 失败落史未送达时记录会
  *  永久挂「进行中」（后缀休眠计划同样永不触发），需要把错误在运行历史状态中体现出来。
  *  判死规则：记录 status='running' 且有 tag；无活体信号（liveTags=新鲜在场快照的同 tag 运行；
- *  activePlanTags=活动计划的 tag 及拆分后缀的 tag+'-srv'）；且满足两者之一——
+ *  activePlanTags=活动计划的 tag——混合编排后缀激活后与本地前缀同 tag 一条记录，一并覆盖）；且满足两者之一——
  *  ① evidence 里有该 tag 的最近活体证据（在场 seenAt / 孤儿 orphanedAt）且距 now 超 orphanGraceMs；
  *  ② 从未有任何证据，且记录自身 ts/startTs 距 now 超 neverSeenGraceMs（兜底时钟漂移留足余量）。
  *  返回 deadTags 与应清理的休眠计划 id（dormantPlans 里 tag 已死的项——页面若其实仍在跑，
@@ -5226,19 +5226,30 @@ export function apply(ctx: Context) {
       const history = Array.isArray(j.history) ? cleanPipelineHistory(j.history) : []
       if (!rec.ts) rec.ts = Date.now()   // 参与 PUT 合并的排序与 histClearedAt 清空判定（见 PUT 路由）
       /* 同 tag 原地更新为终态（不新增第二条）：页面启动时已写入「进行中」记录（beginRunHistory），
-         关页移交后这里写终态不留「进行中 + 已完成」两条；混合编排（本地前缀 + 定时后缀）下页面
-         finish 已按同 tag 写入本地阶段，按阶段名并集合并补齐服务端后缀。无同 tag（纯定时/独立
-         运行路径）时才走新增。 */
+         混合编排（本地前缀 + 定时后缀）下页面 finish 已按同 tag 写入本地阶段，服务端后缀按阶段名
+         并集合并补齐——本地与非本地执行只留一条记录。无同 tag（纯定时/独立运行路径）时才走新增。 */
       const existingIdx = rec.tag ? history.findIndex((h: any) => h && h.tag === rec.tag) : -1
       if (existingIdx >= 0) {
         const prev = history[existingIdx] || {}
         const prevNo = Number(prev.no) || 0
-        history[existingIdx] = {
+        const merged: any = {
           ...prev,
           ...rec,
           no: prevNo || rec.no,
           logs: mergeStageLogsForHistory(prev.logs, rec.logs),
         }
+        /* 单条记录的身份保护：同 tag 首条记录（页面启动/收尾写入）承载本次运行的真实身份——
+           名称 / 执行人 / commit / 来源保留首条记录值，服务端后缀收尾不得把它覆盖成
+           「xx · 定时后缀 / ⏰ 执行人 / 随机 commit / schedule-suffix」；耗时按整条运行起止
+           （prev.startTs = 页面启动时刻）重算，不再只剩服务端执行段。 */
+        for (const key of ['pipeline', 'by', 'commit', 'source'] as const) {
+          if (prev[key]) merged[key] = prev[key]
+        }
+        if (Number(prev.startTs) > 0) {
+          merged.startTs = Number(prev.startTs)
+          merged.dur = durText((Date.now() - Number(prev.startTs)) / 1000)
+        }
+        history[existingIdx] = merged
       } else {
         const no = Math.max(Number(cfg.buildNo) || 0, ...history.map((h: any) => Number(h && h.no) || 0), 0) + 1
         cfg.buildNo = no
@@ -5270,11 +5281,10 @@ export function apply(ctx: Context) {
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
     const pipeName = stripSuffixName(pl.pipelineName)
     const tag = (typeof pl.tag === 'string' && pl.tag) ? pl.tag : hhmm().replace(':', '') + '-' + randHex(5)
-    /* 混合编排历史拆分：页面登记的定时后缀计划带 histMode:'split'，后缀写入 tag+'-srv' 独立历史记录
-       （本地前缀记录由页面 finish 落定，不再被本条覆盖——本地执行与非本地执行各是一条记录）；
-       关页移交（buildUnloadHandoffPlan，不带 histMode）与旧版页面计划沿用原 tag 原地合并（接管语义）。 */
-    const splitHistory = pl && (pl as any).histMode === 'split'
-    const histTag = splitHistory ? tag + '-srv' : tag
+    /* 混合编排历史合并为一条：页面登记的定时后缀计划写同 tag 历史记录（appendPipelineHistory 同 tag
+       原地合并：保留页面本地前缀记录的运行身份，阶段日志按名并集补齐后缀）——本地执行与非本地
+       （服务端）执行的任务在运行历史里只留一条。旧版页面计划携带的拆分标记字段不再读取，
+       同样落入同 tag 合并；关页移交（buildUnloadHandoffPlan，tag:null）执行完新增独立记录（不变）。 */
     const baseSeq = Math.max(0, Number(pl.baseSeq) || 0)
     const isSuffixRun = typeof pl.archive === 'string' && !!pl.archive
     let archiveRoot = typeof runCfg.archiveDir === 'string' ? runCfg.archiveDir.trim().replace(/\/+$/, '') : ''
@@ -5312,15 +5322,16 @@ export function apply(ctx: Context) {
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
     }
-    /* 页面起源的运行（计划自带 pl.tag：混合编排定时后缀 / 关页移交）：历史记录启动即写「进行中」、
+    /* 页面起源的运行（计划自带 pl.tag：混合编排定时后缀 / 旧版关页移交）：历史记录启动即写「进行中」、
        逐阶段刷新、结束落终态——服务端执行期间（可能持续很久）任何浏览器都能看到真实进度，
-       不再出现「本地执行完成、非本地执行未完成，历史却只剩一条状态停滞的记录」。拆分模式下写
-       tag+'-srv' 独立记录；移交模式写原 tag 原地更新。写入失败不影响执行；终态由收尾统一落盘。 */
+       不再出现「本地执行完成、非本地执行未完成，历史却只剩一条状态停滞的记录」。写原 tag 原地
+       更新（与页面本地前缀合并为一条，身份保护见 appendPipelineHistory）。写入失败不影响执行；
+       终态由收尾统一落盘。 */
     const liveHistory = typeof pl.tag === 'string' && !!pl.tag
     const historyRecordFor = (st: string): any => ({
       no: 0, pipeline: pl.pipelineName || '', env: pl.env || '', commit: randHex(7),
       status: st, dur: durText((Date.now() - t0) / 1000), time: '今天 ' + hhmm(), by: pl.by || 'schedule',
-      logs: histLogs.slice(), ts: Date.now(), tag: histTag, archive: folder || null,
+      logs: histLogs.slice(), ts: Date.now(), tag, archive: folder || null,
       runId: pl.runId || null,
       pipelineId: pl.pipelineId || null,
       repoId: pl.repoId || (pl.repository && pl.repository.id) || null,
@@ -5672,8 +5683,9 @@ export function apply(ctx: Context) {
      页面崩溃/断网且 pagehide 失败落史（fail-run）未送达时记录永久挂「进行中」、后缀休眠计划（at=0）
      永不触发——「本地执行没完成」的错误必须能在运行历史状态中体现（可见、可按状态筛选）。
      判死口径（planStaleHistorySweep，纯函数供测试）：无任何活体信号（新鲜在场快照里的同 tag
-     运行 / 活动计划含拆分后缀派生的 tag+'-srv'），且最近活体证据（在场 seenAt / 孤儿 orphanedAt）
-     超宽限，或从未有信号且记录已很旧。判死后：记录标记 failed 并补一条系统日志（ts 刷新到当前，
+     运行 / 活动计划的同 tag——混合编排后缀激活后与本地前缀同 tag 一条记录），且最近活体证据
+     （在场 seenAt / 孤儿 orphanedAt）超宽限，或从未有信号且记录已很旧。判死后：记录标记 failed
+     并补一条系统日志（ts 刷新到当前，
      防旧页面迟到的 stale running 上行把它盖回——页面若其实仍在跑，finish 终态 ts 更新会自愈）、
      同时清掉该 tag 的休眠后缀计划（此后页面分界激活会重新全量登记，见 registerStageTimers 回退）。
      正常关页（pagehide 送达）不走本兜底：fail-run 路由直接把同 tag 记录终态化为失败。 */
@@ -5708,9 +5720,9 @@ export function apply(ctx: Context) {
     for (const p of plans) {
       const tag = p && typeof p.tag === 'string' ? p.tag : ''
       if (!tag) continue
-      /* 活动计划（at>0）保护同 tag 记录；拆分后缀的历史记录 tag 为 计划tag+'-srv'，一并覆盖。
+      /* 活动计划（at>0）保护同 tag 记录（混合编排后缀激活后与页面本地前缀同 tag 一条记录）。
          休眠计划（at=0，等本地前缀完成）不算活体信号：页面是否活着由在场快照证明。 */
-      if (Number(p.at) > 0) { activePlanTags.add(tag); activePlanTags.add(tag + '-srv') }
+      if (Number(p.at) > 0) activePlanTags.add(tag)
       else dormantPlans.push(p)
     }
     const store = await readPipelineStore()
