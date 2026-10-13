@@ -1,6 +1,7 @@
 /* 定时分界移交（混合编排：需本地运行前缀 + 定时后缀）回归测试。
    原设计：手动运行时「需本地运行」阶段在浏览器立即跑完，到达首个定时阶段（分界）时把后缀整体登记为
-   「立即执行一次」的服务端计划（归档上下文/变量快照随计划移交），弹窗告知；登记失败弹窗告知未执行、
+   「立即执行一次」的服务端计划（归档上下文/变量快照随计划移交），toast 轻提示告知（不打断操作）、
+   历史记录保持「进行中」待服务端后缀落终态；登记失败弹窗告知未执行、
    分界阶段标 failed 可从失败阶段重试，后缀不得静默丢失也不得改在本地执行。
    沙盒函数提取方式同 test_parallel_stage_execution.js。 */
 const fs = require('node:fs');
@@ -34,6 +35,7 @@ function handoffContext(stages, options) {
   options = options || {};
   const started = [];
   const alerts = [];
+  const toasts = [];
   const archived = [];
   const overalls = [];
   const fetches = [];
@@ -45,6 +47,7 @@ function handoffContext(stages, options) {
     setTimeout, clearTimeout, setInterval() { return 1; }, clearInterval() {},
     taskPromFinalize() {},
     alert(msg) { alerts.push(String(msg)); },
+    toast(msg) { toasts.push(String(msg)); },
     serverPlans: [],
     renderPlanList() {},
     startStageAt(child, index) {   // 本地阶段即刻完成（调度行为不在本测试范围）
@@ -106,6 +109,7 @@ function handoffContext(stages, options) {
     'registerStageTimers',
     'preRegisterSchedSuffix',
     'discardHeldSuffixPlan',
+    'markHistorySuffixRunning',
     'handoffSchedSuffix',
     'advance',
     'historyEnvNodesOf',
@@ -122,10 +126,10 @@ function handoffContext(stages, options) {
   };
   context.activeRuns = [rc];
   context.viewRc = rc;
-  return { context, rc, started, alerts, archived, overalls, fetches, putBody: () => putBody, postPlans };
+  return { context, rc, started, alerts, toasts, archived, overalls, fetches, putBody: () => putBody, postPlans };
 }
 
-test('混合编排：本地前缀跑完即在定时分界激活后缀计划（计划带归档上下文与变量快照）并弹窗告知', async () => {
+test('混合编排：本地前缀跑完即在定时分界激活后缀计划（计划带归档上下文与变量快照）并 toast 告知', async () => {
   const stages = [
     { id: 'a', name: '本地A', kind: 'simulate', sched: null },
     { id: 'b', name: '定时B', kind: 'simulate', sched: {} },
@@ -135,8 +139,9 @@ test('混合编排：本地前缀跑完即在定时分界激活后缀计划（�
   h.context.advance(h.rc, 0);
   await flush();
   assert.deepEqual(h.started, ['a'], '只有本地前缀在浏览器执行，定时阶段不得在本地落地');
-  assert.equal(h.alerts.length, 1);
-  assert.match(h.alerts[0], /2 个定时阶段已在服务端开始执行/);
+  assert.equal(h.alerts.length, 0, '移交成功不再弹 alert 确认框');
+  assert.equal(h.toasts.length, 1, '改为 toast 轻提示');
+  assert.match(h.toasts[0], /2 个定时阶段已移交服务端执行/);
   assert.equal(h.postPlans.length, 1, '分界经 POST 单条 upsert 激活/登记后缀计划');
   const plan = h.postPlans[0];
   assert.deepEqual(plan.stages.map(s => s.id), ['b', 'c']);
@@ -158,7 +163,7 @@ test('混合编排：本地前缀跑完即在定时分界激活后缀计划（�
   assert.equal(h.rc.nodes.c.status, 'skipped');
   assert.equal(h.rc.over, true);
   assert.deepEqual(h.archived, ['success']);
-  assert.equal(h.context.history[0].status, 'success');
+  assert.equal(h.context.history[0].status, 'running', '移交后历史记录保持「进行中」，待服务端后缀落终态（单条记录承载全程）');
   assert.match(h.overalls[h.overalls.length - 1].txt, /已移交服务端/);
 });
 
