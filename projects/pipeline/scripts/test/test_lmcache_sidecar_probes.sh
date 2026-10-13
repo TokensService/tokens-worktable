@@ -35,8 +35,7 @@ global: {}
 # lite 模板契约：渲染器只替换 enabled/l2Enabled；端口/尺寸/资源等默认值
 # 固化在 values 模板中，分卡与 sidecar 卡对齐由 device plugin 与 chart 兜底。
 lmcacheSidecar:
-  enabled: {LMCACHE_SIDECAR_ENABLED}
-  l2Enabled: {LMCACHE_L2_ENABLED}
+  enabled: false
   mpPortBase: 5555
   httpPortBase: 5565
   l1InitSizeGb: 20
@@ -74,8 +73,8 @@ import yaml
 values = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 sidecar = values["lmcacheSidecar"]
 assert sidecar["enabled"] is True
-# lite 默认开启 L2（消费上游 LMCACHE_L2_ENABLED，默认 true）。
-assert sidecar["l2Enabled"] is True
+# tracing endpoint 由渲染后 values patch 写入（chart 原生条件块消费）。
+assert sidecar["tracing"]["otlpEndpoint"] == "http://192.168.10.6:4320", sidecar
 # 固化在模板中的 sidecar 默认值不被渲染器篡改。
 assert sidecar["mpPortBase"] == 5555
 assert sidecar["httpPortBase"] == 5565
@@ -114,7 +113,6 @@ DEPLOY_IMAGE=registry.example.com/xds:test \
 TARGET_HOSTS='[{"ip":"192.0.2.10","user":"root"}]' \
 MOCK_DB=false \
 ENABLE_LMCACHE=false \
-LMCACHE_L2_ENABLED=false \
 bash "$ROOT/render-config.sh" >/dev/null
 
 python3 - "$WORK/run-l2/rendered/values.rendered.yaml" <<'PY'
@@ -123,7 +121,6 @@ import yaml
 
 sidecar = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["lmcacheSidecar"]
 assert sidecar["enabled"] is False, sidecar
-assert sidecar["l2Enabled"] is False, sidecar
 PY
 
 echo 'PASS: LMCache health checks remain owned by the Chart and values templates'

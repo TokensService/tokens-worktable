@@ -18,6 +18,8 @@ DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"
 FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
+PULL_RETRIES="${PULL_RETRIES:-2}"
+PULL_RETRY_DELAY_SECONDS="${PULL_RETRY_DELAY_SECONDS:-5}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -36,6 +38,27 @@ MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
 # The target-side proxy is an SSH reverse forward to the execution host's
 # existing loopback proxy.  It exists only for the remote ctr command.
 MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"
+
+cleanup_unused_containerd_resources() {
+  command -v nerdctl >/dev/null 2>&1 || return 0
+  echo "[pull][gc] reclaim unused containers, images, snapshots, and build cache"
+  # Do not remove running containers or named images still referenced by a
+  # container.  -a is intentional: repeated render pulls leave unreferenced
+  # tagged and <none> image records behind, not just dangling layers.
+  nerdctl --namespace k8s.io system prune -a -f >/dev/null 2>&1 || \
+    echo "[pull][gc] warning: system prune did not complete" >&2
+  nerdctl --namespace k8s.io image prune -a -f >/dev/null 2>&1 || \
+    echo "[pull][gc] warning: image prune did not complete" >&2
+  nerdctl --namespace k8s.io snapshot prune >/dev/null 2>&1 || \
+    echo "[pull][gc] warning: snapshot prune did not complete" >&2
+}
+
+print_storage_diagnostics() {
+  echo "[pull] containerd storage after failed pull:" >&2
+  df -h /var/lib/containerd 2>&1 || true
+  df -i /var/lib/containerd 2>&1 || true
+  nerdctl --namespace k8s.io system df 2>&1 || true
+}
 
 remote_quote() {
   printf '%q' "$1"
@@ -163,7 +186,7 @@ PY
 }
 
 pull_image() {
-  local image="$1" registry_host
+  local image="$1" registry_host attempt pull_status
   registry_host="${image%%/*}"
 
   command -v nerdctl >/dev/null 2>&1 || {
@@ -172,10 +195,31 @@ pull_image() {
   }
 
   echo "[pull] execution host: pull $image"
-  if ! nerdctl --namespace k8s.io image inspect "$image" >/dev/null 2>&1 && ! nerdctl --namespace k8s.io pull "$image"; then
-    echo "image pull failed; run nerdctl --namespace k8s.io login $registry_host as the pipeline execution user" >&2
-    exit 1
+  if nerdctl --namespace k8s.io image inspect "$image" >/dev/null 2>&1; then
+    echo "[pull] image already exists: $image"
+    return 0
   fi
+
+  [[ "$PULL_RETRIES" =~ ^[0-9]+$ && "$PULL_RETRIES" -ge 1 ]] || PULL_RETRIES=2
+  for ((attempt = 1; attempt <= PULL_RETRIES; attempt++)); do
+    # Reclaim stale failed-extraction snapshots before every attempt.  This is
+    # also what removes the accumulated <none>:<none> image records.
+    cleanup_unused_containerd_resources
+    echo "[pull] image pull attempt $attempt/$PULL_RETRIES: $image"
+    if nerdctl --namespace k8s.io pull "$image"; then
+      return 0
+    else
+      pull_status=$?
+    fi
+    echo "[pull] image pull attempt $attempt failed (exit $pull_status)" >&2
+    cleanup_unused_containerd_resources
+    if (( attempt < PULL_RETRIES )); then
+      sleep "$PULL_RETRY_DELAY_SECONDS"
+    fi
+  done
+  print_storage_diagnostics
+  echo "image pull failed after $PULL_RETRIES attempts; run nerdctl --namespace k8s.io login $registry_host as the pipeline execution user" >&2
+  return "$pull_status"
 }
 
 export_templates() {

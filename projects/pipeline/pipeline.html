@@ -209,10 +209,11 @@
     </div>
   </div>
 
-  <!-- 页面导航（吸顶：纵向滚动时「流水线 / 定时 / 设置」按钮始终冻结在行首，背景走主题变量适配浅色/深色） -->
+  <!-- 页面导航（吸顶：纵向滚动时「流水线 / 定时 / 节点 / 设置」按钮始终冻结在行首，背景走主题变量适配浅色/深色） -->
   <div style="display:flex; gap:6px; margin:2px 0 4px; position:sticky; top:0; z-index:20; background:var(--dsw-alias-bg-base); padding:6px 0;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
+    <button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
@@ -492,8 +493,8 @@
     </div>
   </div><!-- /pageSched -->
 
-  <!-- 设置（独立页面：节点环境 + 环境清理脚本） -->
-  <div id="pageEnv" style="display:none">
+  <!-- 节点（独立页面：节点环境 + 节点预留分配；节点环境卡片自「设置」页迁入，DOM id 全部不变，JS 引用无需改动） -->
+  <div id="pageNode" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
         <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;">↻ 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
@@ -511,13 +512,17 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
-          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>K8s InternalIP</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th>操作</th></tr></thead>
+          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>K8s InternalIP</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th title="节点预留：按用户 + 日期时间段分配；仅 admin 可分配，非 admin 点「分配」为只读查看">预留</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选，也可一个不选——不选即按无目标节点运行）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选，也可一个不选——不选即按无目标节点运行）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。「预留」列的节点预留分配数据保存在服务端独立存储，不随「导入导出」的配置文件传递。</p>
     </div>
-    <div class="dshell-card" style="margin-top:10px;">
+  </div><!-- /pageNode -->
+
+  <!-- 设置（独立页面：代码仓 / 清理检查等脚本 / 服务配置；节点环境卡片已迁至「节点」页） -->
+  <div id="pageEnv" style="display:none">
+    <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
         <h2 class="dshell-sub" style="margin:0">代码仓 <span id="repoCount" class="dshell-muted"></span></h2>
         <span id="repoTestTip" class="dshell-muted" style="font-size:11px;"></span>
@@ -892,6 +897,33 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>curl 示例</b><button id="pipelineApiCopyCurl" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></div>
         <pre id="pipelineApiCurl" class="logbox" style="max-height:260px;margin:0;"></pre>
         <div class="dshell-muted" style="font-size:11px;margin-top:5px;">先从已登录浏览器导出 Cookie 到 <code>cookies.txt</code>，或由调用方按部署环境完成认证。</div>
+      </div>
+    </div>
+  </div>
+  <!-- 节点预留分配弹窗（「节点」页节点表「预留」列 → 分配）：按用户 + 日期时间段分配节点；
+       admin 可编辑（保存携带打开弹窗时的窗口快照 base，供服务端 409 比对）；
+       非 admin 打开为只读形态：全部输入禁用、底栏只留「关闭」。结构复用 pipelineRunDialog 模式 -->
+  <div id="nodeResDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:216; align-items:center; justify-content:center;">
+    <div class="dshell-card" style="width:92%;max-width:760px;max-height:88vh;overflow:auto;display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <span style="display:flex;align-items:baseline;gap:8px;min-width:0;">
+          <h2 id="nodeResTitle" class="dshell-sub" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">节点预留分配</h2>
+          <span id="nodeResReadonlyTip" class="dshell-muted" style="display:none;font-size:11px;white-space:nowrap;">仅 admin 可分配节点，您为只读查看</span>
+        </span>
+        <button id="nodeResClose" type="button" class="dshell-btn dshell-btnGhost mini">关闭</button>
+      </div>
+      <div id="nodeResList" style="display:flex;flex-direction:column;gap:10px;"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <button id="nodeResAddWindow" type="button" class="dshell-btn dshell-btnGhost mini">＋ 添加时段</button>
+        <span style="flex:1"></span>
+        <input id="nodeResManualUser" class="dshell-input" placeholder="手动添加用户" autocomplete="off" style="width:150px;" title="候选用户来自 /auth/users；拉取失败或需分配给未列出的用户时，在此输入用户名加入候选" />
+        <button id="nodeResManualAdd" type="button" class="dshell-btn dshell-btnGhost mini" title="把输入的用户名加入各时段的候选复选列表">添加用户</button>
+      </div>
+      <div id="nodeResTip" class="dshell-muted" style="font-size:11px;min-height:14px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
+        <button id="nodeResCancel" type="button" class="dshell-btn dshell-btnGhost mini">取消</button>
+        <button id="nodeResSave" type="button" class="dshell-btn mini">保存</button>
+        <button id="nodeResCloseFooter" type="button" class="dshell-btn dshell-btnGhost mini" style="display:none">关闭</button>
       </div>
     </div>
   </div>
@@ -1728,6 +1760,12 @@ function pipelineDefaultRunIssue(pl,overrides){
   const hasRepoOverride=!!(overrides&&typeof overrides.repoId==='string'&&overrides.repoId);
   const missingEnvs=hasEnvOverride?[]:d.environmentIds.filter(id=>!environments.some(e=>e.id===id));
   if(missingEnvs.length) issues.push('默认环境已失效：'+missingEnvs.join('、'));
+  /* 节点预留：默认环境当前被预留给他人时同样拦截（仅未提供环境覆盖时检查默认口径；
+     有覆盖时的实际节点由 runPipeline 自行检查）。typeof 守卫：vm 抽取测试无该函数时跳过 */
+  if(!hasEnvOverride && typeof envReservationIssue==='function'){
+    const resIssue=envReservationIssue(d.environmentIds.map(id=>environments.find(e=>e.id===id)).filter(Boolean));
+    if(resIssue) issues.push(resIssue);
+  }
   if(!hasRepoOverride&&d.repositoryId&&!repositories.some(r=>r.id===d.repositoryId)) issues.push('默认代码仓已失效：'+d.repositoryId);
   return issues.join('；');
 }
@@ -1854,6 +1892,12 @@ function submitPipelineRunDialog(){
   const options=collectPipelineRunDialogOptions(); if(!options.pipelineId) return;
   if(!findPipeline(options.pipelineId)){ closePipelineRunDialog(); alert('流水线已不存在，请刷新任务列表后重试。'); return; }
   if(!options.repoId || !repositories.some(repo=>repo.id===options.repoId)){ alert('请选择代码仓。'); return; }
+  /* 节点预留拦截（客户端体验层，真正门禁在服务端）：弹窗选中的节点被预留给他人时 alert 明细并
+     保持弹窗打开（不提交运行，用户可摘掉被预留节点后重试）。typeof 守卫：vm 抽取测试无该函数时跳过 */
+  if(typeof envReservationIssue==='function'){
+    const resIssue=envReservationIssue(options.envs);
+    if(resIssue){ alert(resIssue); return; }
+  }
   const result=runPipeline(options);
   if(result===false) alert('本地队列已满（上限 '+QUEUE_CAP+'），请等待当前任务完成或取消部分排队任务。');
   else if(result==='queued') flashRunTip('已加入本地队列（第 '+queue.length+' 位）');
@@ -2095,6 +2139,9 @@ function renderEnvMulti(o){
     cb.type='checkbox';
     cb.setAttribute('data-envcb', e.id);
     cb.checked=!!on;
+    /* 节点预留拦截：当前被预留给他人的节点（envReservedForOthers）在未选中态禁用；
+       已选中的保留可取消勾选，便于用户摘掉。vm 抽取测试无预留函数时按无预留处理（typeof 守卫） */
+    if((typeof envReservedForOthers==='function') && envReservedForOthers(e) && !on) cb.disabled=true;
     const textSpan=document.createElement('span');
     textSpan.textContent=e.name+' ';
     const meta=document.createElement('span');
@@ -2102,6 +2149,15 @@ function renderEnvMulti(o){
     meta.textContent=e.ip+gpu;
     textSpan.appendChild(meta);
     lab.appendChild(cb); lab.appendChild(textSpan);
+    /* 预留信息徽标：当前生效的预留对所有人显示（admin 不被拦截但仍提示；被拦者凭徽标得知预留对象与截止时间） */
+    const resInfo=(typeof envReservationInfo==='function')?envReservationInfo(e, Date.now()):null;
+    if(resInfo && resInfo.reserved){
+      const badge=document.createElement('span');
+      badge.className='dshell-muted';
+      badge.style.cssText='font-size:10px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:0 6px;white-space:nowrap;';
+      badge.textContent='预留中：'+resInfo.users.join('、')+'（至 '+((typeof fmtResTime==='function'?fmtResTime(resInfo.until):'')||'—')+'）';
+      lab.appendChild(badge);
+    }
     panel.appendChild(lab);
   });
 
@@ -2212,10 +2268,12 @@ function renderEnvs(){
     const tr=document.createElement('tr');
     tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.nodeIp||'—')+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
+      '<td style="white-space:nowrap">'+envResSummaryHtml(e)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
+  tb.querySelectorAll('[data-envres]').forEach(b=>b.addEventListener('click',()=>openNodeResDialog(b.getAttribute('data-envres'))));   /* 「预留」列分配按钮：admin 可编辑，非 admin 只读查看（openNodeResDialog 内分形态） */
   tb.querySelectorAll('[data-envcopy]').forEach(b=>b.addEventListener('click',()=>copyEnv(b.getAttribute('data-envcopy'))));
   tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
   tb.querySelectorAll('[data-gpurefresh]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpurefresh')); if(e) fetchGpu(e); }));
@@ -2231,6 +2289,275 @@ function bindGpuCell(cell, e){
   const rb=cell.querySelector('[data-gpurefresh]'); if(rb) rb.addEventListener('click',()=>fetchGpu(e));
   const db=cell.querySelector('[data-gpudetail]'); if(db) db.addEventListener('click',()=>openGpuDetail(e));
 }
+/* ---------- 节点预留（按用户 + 日期时间段分配节点；admin 维护、全员可见） ---------- */
+/* 预留数据存服务端独立存储（/api/worktable/pipeline/reservations），不进 environments 条目、
+   不随共享配置上送/下拉、不进「导入导出」配置文件——故 normalizeEnv/sameEnvEntry/三方合并均不涉及。
+   记录形态：{id,nodeId,users,start,end,note,createdBy,createdAt,updatedAt}，start/end 为 ISO UTC 字符串。 */
+let nodeReservations=[];   // 服务端全量预留记录；拉取失败静默保留旧值
+let authUsersCache=null;   // /auth/users 用户名候选缓存（预留弹窗）；拉取失败保持 null，候选回退为「现有预留用户名并集 + 当前用户名」
+let nodeResEdit=null;      // 预留弹窗编辑态：{envId, base, windows, manualUsers, readonly}；base=打开时该节点窗口快照（保存上送供服务端 409 比对）
+async function loadNodeReservations(){
+  try{
+    const resp=await fetch('/api/worktable/pipeline/reservations');
+    if(!resp||!resp.ok) return;   // 失败静默：保留旧值
+    const data=await resp.json();
+    if(data&&Array.isArray(data.reservations)) nodeReservations=data.reservations;
+  }catch(e){ return; }   // 网络/解析失败同样静默保留旧值
+  /* 预留影响节点表「预留」列与四处环境多选面板（主控/定时/编辑器默认环境/运行弹窗）的可勾选态：
+     数据到达后重绘；vm 抽取测试无这些全局时跳过（typeof 守卫，不阻断数据本身） */
+  if(typeof renderEnvs==='function' && typeof renderEnvOptions==='function'){ renderEnvs(); renderEnvOptions(); }
+}
+/* 某节点的全部预留记录，按开始时间升序（供「预留」列摘要与弹窗窗口列表） */
+function reservationsForNode(nodeId){
+  return nodeReservations.filter(r=>r&&String(r.nodeId)===String(nodeId)).slice()
+    .sort((a,b)=>{ const ta=Date.parse(a&&a.start)||0, tb=Date.parse(b&&b.start)||0; return ta-tb; });
+}
+/* 预留时间显示：ISO UTC → 本地 MM-DD HH:mm；非法输入返回空串（调用方以 — 兜底） */
+function fmtResTime(iso){
+  const t=Date.parse(iso); if(isNaN(t)) return '';
+  const d=new Date(t);
+  const p2=n=>String(n).padStart(2,'0');
+  return p2(d.getMonth()+1)+'-'+p2(d.getDate())+' '+p2(d.getHours())+':'+p2(d.getMinutes());
+}
+/* ISO UTC → datetime-local 输入框值（本地 YYYY-MM-DDTHH:mm）；非法输入返回空串 */
+function isoToLocalInput(iso){
+  const t=Date.parse(iso); if(isNaN(t)) return '';
+  const d=new Date(t);
+  const p2=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'T'+p2(d.getHours())+':'+p2(d.getMinutes());
+}
+/* 节点当前预留态：windows=覆盖 nowMs 的记录（覆盖判定 Date.parse(start)<=nowMs<Date.parse(end)，
+   即 T==start 覆盖、T==end 不覆盖）；users=覆盖记录 users 并集（保持出现顺序）；
+   until=覆盖记录里最早的 end（无覆盖为 null）。nowMs 缺省取当前时刻。 */
+function envReservationInfo(env, nowMs){
+  const id=env&&env.id;
+  const now=(typeof nowMs==='number')?nowMs:Date.now();
+  const all=(id!==undefined&&id!==null)?reservationsForNode(id):[];
+  const windows=all.filter(r=>{
+    const s=Date.parse(r&&r.start), e=Date.parse(r&&r.end);
+    return !isNaN(s)&&!isNaN(e)&&s<=now&&now<e;
+  });
+  const users=[];
+  windows.forEach(r=>{ (Array.isArray(r.users)?r.users:[]).forEach(u=>{ if(users.indexOf(u)<0) users.push(u); }); });
+  let until=null;
+  windows.forEach(r=>{ if(until===null||Date.parse(r.end)<Date.parse(until)) until=r.end; });
+  return {reserved:windows.length>0, users, until, windows};
+}
+/* 选择拦截判定：节点当前被预留给他人（不含当前用户）时非 admin 不可选。
+   authReady 未置位（登录态探测在途）一律不拦，防加载前误灰；admin 全权旁路（UI 仍显示预留信息徽标）；
+   无登录身份（currentUsername 空串：无 auth 服务的 token 共享模式）不拦——与服务端「无 auth 一律不强制」
+   口径一致（该模式下服务端 PUT/运行/租约全部放行，客户端拦截只会造成两端口径分裂）；
+   authReady/currentUserIsAdmin/currentUsername 全局缺失（旧测试桩环境）按保守口径退化。 */
+function envReservedForOthers(env){
+  if(typeof authReady!=='undefined' && !authReady) return false;
+  if(typeof currentUserIsAdmin!=='undefined' && currentUserIsAdmin) return false;
+  const info=envReservationInfo(env, Date.now());
+  if(!info.reserved) return false;
+  const me=(typeof currentUsername!=='undefined')?(currentUsername||''):'';
+  if(!me) return false;
+  return info.users.indexOf(me)<0;
+}
+/* 运行校验（客户端体验层，真正门禁在服务端）：envs 中被预留给他人的节点逐个列明细，全部可用返回 null */
+function envReservationIssue(envs){
+  const list=Array.isArray(envs)?envs:[];
+  const blocked=[];
+  list.forEach(e=>{
+    if(!e||!envReservedForOthers(e)) return;
+    const info=envReservationInfo(e, Date.now());
+    blocked.push((e.name||e.ip||e.id)+'('+(e.ip||'')+') 预留给 '+info.users.join('、')+'，至 '+(fmtResTime(info.until)||'—'));
+  });
+  if(!blocked.length) return null;
+  return '节点预留冲突：'+blocked.join('；');
+}
+/* 节点表「预留」列摘要：无预留 —；生效中醒目样式（预留中：u1、u2 · 至 MM-DD HH:mm）；仅未来/过往时段显示时段数；
+   摘要后跟「分配」按钮（admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态）。用户名等注入字段一律 esc 转义。 */
+function envResSummaryHtml(e){
+  const info=envReservationInfo(e, Date.now());
+  const total=reservationsForNode(e.id).length;
+  let summary;
+  if(info.reserved){
+    summary='<span style="color:var(--st-run);font-weight:600;" title="当前生效的预留时段 '+info.windows.length+' 个">预留中：'+esc(info.users.join('、'))+' · 至 '+esc(fmtResTime(info.until)||'—')+'</span>';
+  } else if(total>0){
+    summary='<span class="dshell-muted">'+total+' 个时段</span>';
+  } else {
+    summary='<span class="dshell-muted">—</span>';
+  }
+  return summary+' <button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存）">分配</button>';
+}
+/* 候选用户回退集：现有预留用户名并集 + 当前用户名（/auth/users 拉取失败时使用，弹窗另提供手动添加） */
+function nodeResFallbackUsers(){
+  const out=[];
+  nodeReservations.forEach(r=>{ (Array.isArray(r&&r.users)?r.users:[]).forEach(u=>{ if(out.indexOf(u)<0) out.push(u); }); });
+  const me=(typeof currentUsername!=='undefined')?(currentUsername||''):'';
+  if(me && out.indexOf(me)<0) out.push(me);
+  return out;
+}
+/* 预留弹窗候选用户：/auth/users（任意登录会话可读）缓存优先；失败保留 null 由调用方回退 */
+async function ensureAuthUsers(){
+  if(authUsersCache) return authUsersCache;
+  try{
+    const r=await fetch('/auth/users');
+    if(r&&r.ok){
+      const d=await r.json();
+      if(d&&Array.isArray(d.users)) authUsersCache=d.users.map(u=>String(u&&u.username||'').trim()).filter(Boolean);
+    }
+  }catch(e){ /* 拉取失败：保持 null，候选回退现有预留用户名并集 + 当前用户名 */ }
+  return authUsersCache;
+}
+/* 打开预留弹窗：admin 可编辑，非 admin 只读（全部输入禁用、底栏只留「关闭」，标题旁注明）；
+   打开即快照该节点窗口为 base（保存时上送，供服务端比对 409）。窗口草稿的 start/end 用本地
+   datetime-local 值（保存时统一 new Date(v).toISOString() 转 UTC）。 */
+async function openNodeResDialog(envId){
+  const e=environments.find(x=>String(x.id)===String(envId));
+  if(!e) return;
+  const canEdit=!!((typeof currentUserIsAdmin!=='undefined')&&currentUserIsAdmin);
+  const records=reservationsForNode(e.id);
+  nodeResEdit={
+    envId:e.id,
+    base:JSON.parse(JSON.stringify(records)),   // 打开时窗口快照（原始记录，含 id/start/end/users/note）
+    windows:records.map(r=>({id:r.id, start:isoToLocalInput(r.start), end:isoToLocalInput(r.end), users:Array.isArray(r.users)?r.users.slice():[], note:typeof r.note==='string'?r.note:''})),
+    manualUsers:[],
+    readonly:!canEdit,
+  };
+  $('nodeResTitle').textContent='节点预留分配 — '+(e.name||e.ip)+'（'+e.ip+'）';
+  $('nodeResReadonlyTip').style.display=canEdit?'none':'';
+  /* 底栏与「添加时段 / 手动添加用户」仅 admin 可见可用；只读形态底栏只留「关闭」 */
+  $('nodeResSave').style.display=canEdit?'':'none';
+  $('nodeResCancel').style.display=canEdit?'':'none';
+  $('nodeResCloseFooter').style.display=canEdit?'none':'';
+  $('nodeResAddWindow').style.display=canEdit?'':'none';
+  $('nodeResManualUser').style.display=canEdit?'':'none';
+  $('nodeResManualAdd').style.display=canEdit?'':'none';
+  await ensureAuthUsers();
+  $('nodeResTip').textContent=authUsersCache?'':'用户列表拉取失败：候选回退为「现有预留用户名 + 当前用户」，也可手动添加用户。';
+  renderNodeResWindows();
+  $('nodeResDialog').style.display='flex';
+}
+function closeNodeResDialog(){
+  nodeResEdit=null;
+  $('nodeResDialog').style.display='none';
+}
+/* 重绘弹窗时段列表：每行 = 开始/结束（datetime-local）+ 用户复选框 + 备注 + 删除本时段；
+   候选 =（/auth/users 缓存 || 回退集）∪ 手动添加 ∪ 该行已选用户（保证已选用户名总可显示）。
+   控件一律 createElement + textContent，用户名不走 innerHTML，杜绝注入。只读形态全部禁用。 */
+function renderNodeResWindows(){
+  const st=nodeResEdit; const list=$('nodeResList'); if(!st||!list) return;
+  const ro=!!st.readonly;
+  list.innerHTML='';
+  if(!st.windows.length){
+    const empty=document.createElement('div');
+    empty.className='dshell-muted';
+    empty.style.cssText='font-size:11px;padding:4px 2px;';
+    empty.textContent='暂无预留时段'+(ro?'':'，点下方「＋ 添加时段」新建。');
+    list.appendChild(empty);
+  }
+  const baseCandidates=(authUsersCache||nodeResFallbackUsers()).concat(st.manualUsers||[]);
+  st.windows.forEach((w,i)=>{
+    const row=document.createElement('div');
+    row.setAttribute('data-reswindow', String(i));
+    row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;';
+    /* 第一行：开始 / 结束 / 删除本时段 */
+    const line1=document.createElement('div');
+    line1.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
+    const mkTime=(label,key)=>{
+      const lab=document.createElement('label');
+      lab.className='dshell-muted';
+      lab.style.cssText='display:flex;align-items:center;gap:5px;font-size:11px;';
+      lab.textContent=label;
+      const inp=document.createElement('input');
+      inp.type='datetime-local';
+      inp.className='dshell-input';
+      inp.setAttribute('data-res-'+key, String(i));
+      inp.value=w[key]||'';
+      inp.disabled=ro;
+      inp.addEventListener('change',()=>{ w[key]=inp.value; });
+      lab.appendChild(inp);
+      return lab;
+    };
+    line1.appendChild(mkTime('开始','start'));
+    line1.appendChild(mkTime('结束','end'));
+    const sep1=document.createElement('span'); sep1.style.flex='1'; line1.appendChild(sep1);
+    if(!ro){
+      const del=document.createElement('button');
+      del.type='button'; del.className='dshell-btn dshell-btnDanger mini';
+      del.setAttribute('data-res-del', String(i));
+      del.textContent='删除本时段';
+      del.addEventListener('click',()=>{ st.windows.splice(i,1); renderNodeResWindows(); });
+      line1.appendChild(del);
+    }
+    row.appendChild(line1);
+    /* 第二行：用户复选框列表 */
+    const line2=document.createElement('div');
+    line2.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;';
+    const who=document.createElement('span'); who.className='dshell-muted'; who.textContent='用户'; line2.appendChild(who);
+    const candidates=baseCandidates.concat(w.users).filter((v,idx,a)=>v&&a.indexOf(v)===idx);
+    candidates.forEach(u=>{
+      const lab=document.createElement('label');
+      lab.style.cssText='display:flex;align-items:center;gap:4px;cursor:pointer;';
+      const cb=document.createElement('input');
+      cb.type='checkbox';
+      cb.setAttribute('data-res-user', String(i));
+      cb.value=u;
+      cb.checked=w.users.indexOf(u)>=0;
+      cb.disabled=ro;
+      cb.addEventListener('change',()=>{
+        if(cb.checked){ if(w.users.indexOf(u)<0) w.users.push(u); }
+        else { w.users=w.users.filter(x=>x!==u); }
+      });
+      const nm=document.createElement('span'); nm.textContent=u;
+      lab.appendChild(cb); lab.appendChild(nm);
+      line2.appendChild(lab);
+    });
+    row.appendChild(line2);
+    /* 第三行：备注（可选） */
+    const noteInp=document.createElement('input');
+    noteInp.className='dshell-input';
+    noteInp.placeholder='备注（可选）';
+    noteInp.setAttribute('data-res-note', String(i));
+    noteInp.value=w.note||'';
+    noteInp.disabled=ro;
+    noteInp.addEventListener('input',()=>{ w.note=noteInp.value; });
+    row.appendChild(noteInp);
+    list.appendChild(row);
+  });
+}
+/* 保存预留：客户端校验（每段 start<end、至少 1 个用户，不合法 alert 指明哪段）→
+   datetime-local 值经 new Date(v).toISOString() 转 UTC → PUT /reservations/<nodeId> {windows, base}。
+   成功：响应 reservations 全量替换本地、重绘节点表与多选面板、toast；
+   409：已被他人修改 → 刷新最新数据后重开弹窗；403：alert 服务端 message。 */
+async function saveNodeResDialog(){
+  const st=nodeResEdit;
+  if(!st||st.readonly) return;   // 只读形态无保存入口（按钮已隐藏），此处兜底
+  for(let i=0;i<st.windows.length;i++){
+    const w=st.windows[i];
+    const s=Date.parse(w.start), e=Date.parse(w.end);
+    if(isNaN(s)||isNaN(e)||!(s<e)){ alert('第 '+(i+1)+' 个时段的开始/结束时间不合法：需填写完整且开始早于结束。'); return; }
+    if(!Array.isArray(w.users)||!w.users.length){ alert('第 '+(i+1)+' 个时段至少需要选择 1 个用户。'); return; }
+  }
+  const windows=st.windows.map(w=>({start:new Date(w.start).toISOString(), end:new Date(w.end).toISOString(), users:w.users.slice(), note:String(w.note||'')}));
+  const envId=st.envId;
+  let resp, data=null;
+  try{
+    resp=await fetch('/api/worktable/pipeline/reservations/'+encodeURIComponent(envId),{
+      method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({windows, base:st.base}),
+    });
+    try{ data=await resp.json(); }catch(e){}
+  }catch(err){ alert('保存节点预留失败：'+String(err&&err.message||err)); return; }
+  if(resp.status===409){
+    alert('预留已被他人修改，已为您刷新最新数据');
+    await loadNodeReservations();
+    await openNodeResDialog(envId);   // 用最新数据重开弹窗（base 重新快照）
+    return;
+  }
+  if(resp.status===403){ alert((data&&data.message)||'仅 admin 可分配节点。'); return; }
+  if(!resp.ok){ alert('保存节点预留失败：'+((data&&(data.message||data.error))||('HTTP '+resp.status))); return; }
+  if(data&&Array.isArray(data.reservations)) nodeReservations=data.reservations;
+  closeNodeResDialog();
+  if(typeof renderEnvs==='function') renderEnvs();
+  if(typeof renderEnvOptions==='function') renderEnvOptions();
+  if(typeof toast==='function') toast('✓ 节点预留已保存');
+}
+/* ---------- 节点预留结束 ---------- */
 /* 节点设备状态查询（经插件 /api/worktable/gpu；本机直连，远程走 ssh） */
 const GPU_SESSION_KEY='pip-gpu-session-v1';
 const gpuSession=(function(){
@@ -4861,6 +5188,8 @@ function startRun(opts){
   nodeLeaseRequest({action:'acquire', runId:c.leaseId, ips:leaseIps, label:pl.name||'', by:c.by}).then(r=>{
     settle();
     if(r && r.ok===false){
+      /* 节点被预留（服务端 403 reserved）：alert 服务端说明并按启动失败收尾——不进入运行、不回队等待 */
+      if(r.reserved){ alert(r.message||'节点已被预留，当前时段不可运行。'); renderQueue(); return; }
       /* 节点被他端运行占用：回队等待（nodeWait 供队列区展示与重试节流，drainQueue 到点重新申请） */
       if(opts && opts.id){
         opts.nodeWait={until:Date.now()+(typeof NODE_WAIT_RETRY_MS==='undefined'?5000:NODE_WAIT_RETRY_MS), conflicts:Array.isArray(r.conflicts)?r.conflicts:[]};
@@ -4986,6 +5315,13 @@ function runPipeline(opts){
   if(!opts.by && !currentUsername){ alert('未获取到当前登录用户：「执行人」取 dsh 登录用户。请确认已登录后刷新页面重试。'); return 'no-by'; }
   const envs = Array.isArray(opts.envs) ? opts.envs           // 与 startRun 一致：显式空数组=不选择节点，不回退主运行框
     : opts.env ? [resolveEnv(opts.env)] : curEnvs();
+  /* 节点预留拦截（客户端体验层，真正门禁在服务端）：本次实际目标节点当前被预留给他人时
+     alert 明细并中止启动；返回 'reserved' 供调用方区分（运行弹窗保持打开，可摘掉被预留节点后重试）。
+     typeof 守卫：vm 抽取测试无该函数时按无预留处理 */
+  if(typeof envReservationIssue==='function'){
+    const resIssue=envReservationIssue(envs);
+    if(resIssue){ alert(resIssue); return 'reserved'; }
+  }
   const env = envs.map(e=>e.ip).join('，');
   const image = opts.image || DEFAULT_IMAGE;
   const release = image;
@@ -5047,8 +5383,14 @@ const NODE_WAIT_RETRY_MS=5000;     // 租约被占用时回队重试间隔（dra
 const pendingLeaseStarts=[];       // 租约申请在途的启动：占调度槽位、参与机器冲突判定（见 conflictsActive/runPipeline）
 async function nodeLeaseRequest(body){
   const resp=await fetch(NODE_LEASE_PATH,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!resp.ok) throw new Error('node lease http '+resp.status);
-  return await resp.json();
+  if(resp.ok) return await resp.json();
+  /* 节点预留冲突（403 {error:'reserved', message}）：不能走下方「服务端不可达」抛错降级
+     （acquire 调用方会把异常当作旧插件无租约路由而照跑不误），以 {ok:false, reserved:true, message}
+     返回，由 acquire 调用方 alert 服务端说明并按启动失败收尾（不进入运行、不回队等待——
+     预留期内回队重试必然同样被拒，只会反复打扰） */
+  let payload=null; try{ payload=await resp.json(); }catch(e){}
+  if(resp.status===403 && payload && payload.error==='reserved') return {ok:false, reserved:true, message:String(payload.message||'节点已被预留')};
+  throw new Error('node lease http '+resp.status);
 }
 function releaseNodeLease(leaseId, ips){
   if(!leaseId) return;
@@ -5656,7 +5998,13 @@ function noteServerFinished(list){
   if(typeof queueFinishedNote==='function') fresh.forEach(id=>queueFinishedNote(id));
   if(typeof refreshHistoryFromServer==='function'){ try{ refreshHistoryFromServer(false); }catch(e){} }
 }
+let _queuePullPromise=null;
+/* 手动刷新与每秒轮询共用同一个在途请求（与 refreshHistoryFromServer 同一写法）：服务器响应慢于
+   1 秒时，重叠 tick 复用 pending Promise 而非堆积并发 fetch——签名守卫只省渲染不省请求，慢服务器上
+   并发拉取正是 CPU/连接尖峰与「偶尔卡顿」的来源。 */
 async function pullRemoteQueue(){
+  if(_queuePullPromise) return _queuePullPromise;
+  const request=(async()=>{
   try{
     const r=await fetch('/api/worktable/pipeline/queue');
     if(r.ok){
@@ -5693,10 +6041,14 @@ async function pullRemoteQueue(){
       /* 取消信箱：每轮都认领（与签名无关——请求可能在快照未变化时到达）；旧服务端无此键跳过 */
       if(Array.isArray(j.cancelRequests)) applyPresenceCancelRequests(j.cancelRequests);
       if(typeof followPendingServerRun==='function') followPendingServerRun();   // 提交后自动跟随：runId 在本次快照可见即切编排区焦点（含超时清理，每轮都执行）
-      await pullRemoteQueueLog();
     }
   }catch(e){}
   /* 拉取失败/内容未变本轮不重绘：远端数据无更新，本地队列变化各有渲染入口（启动/取消/排空等） */
+  })();
+  _queuePullPromise=request;
+  try{ await request; } finally{ if(_queuePullPromise===request) _queuePullPromise=null; }
+  /* 日志尾部有自己的在途请求复用；不能让一个卡住的日志接口占住队列快照单飞守卫。 */
+  try{ await pullRemoteQueueLog(); }catch(e){}
 }
 $('queueRefresh').addEventListener('click', async ()=>{
   const b=$('queueRefresh'); b.disabled=true;
@@ -6108,6 +6460,12 @@ function addPlan(){
   if(!schedBy){ alert('请先填写「执行人」再创建定时计划。'); $('schedBy').focus(); return; }
   const pl=findPipeline($('schedPipeline').value) || curPipeline();
   const envs=schedEnvs();   // 环境（多选）：与「运行流水线」设置一致，快照多 IP 节点对象（服务端按 envs 注入 TARGET_IPS 等）
+  /* 节点预留拦截（客户端体验层，真正门禁在服务端）：定时目标节点当前被预留给他人时 alert 明细并不创建计划。
+     typeof 守卫：vm 抽取测试无该函数时按无预留处理 */
+  if(typeof envReservationIssue==='function'){
+    const resIssue=envReservationIssue(envs);
+    if(resIssue){ alert(resIssue); return; }
+  }
   const base={
     id:'plan'+Date.now().toString(36)+Math.random().toString(16).slice(2,4),
     pipelineId:pl.id, pipelineName:pl.name, stages:(pl.stages||[]).filter(s=>!s.preset),   // 预设任务标记不进定时计划：服务端按计划阶段执行（环境检查/Profiling 仅页面运行支持）
@@ -6879,13 +7237,13 @@ function finishOutputProbe(probe){
   return {vars:probe.vars,json:probe.json,fullText:probe.captureFull&&!probe.fullTextOverflow?probe.fullParts.join(''):undefined,fullTextOverflow:!!probe.fullTextOverflow};
 }
 function maybeRenderLiveDetail(rc,stage,lastLive,minInterval){
-  const now=Date.now(), wait=Math.max(0,Number(minInterval)||250);
+  const now=Date.now(), wait=Math.max(0,Number(minInterval)||1000);
   const root=rc&&rc.parallelParent?rc.parallelParent:rc;
   if(viewRc===root && selectedId===stage.id && now-lastLive>=wait){ renderDetail(); return now; }
   return lastLive;
 }
 function publishLiveOutput(rc,stage,live,lastPublished,minInterval,extra){
-  const now=Date.now(),wait=Math.max(0,Number(minInterval)||250);
+  const now=Date.now(),wait=Math.max(0,Number(minInterval)||1000);
   if(now-lastPublished<wait) return lastPublished;
   stage._out=liveOutputSnapshot(live,extra||{code:null});
   if(viewRc===rc&&selectedId===stage.id) renderDetail();
@@ -7354,7 +7712,7 @@ async function runUrlStep(rc, i){
       pollVia='direct'; pollFails=0;
       console.warn('[pipeline] Jenkins 阶段轮询回退浏览器直连：stage-poll '+why);
       appendLiveLog(log,'# stage-poll 服务端轮询不可用（'+why+'），回退浏览器直连轮询');
-      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       return true;
     };
     /* 调服务端 stage-poll；返回 null 表示端点不可用且已回退直连（调用方下轮起走直连分支）。
@@ -7372,7 +7730,7 @@ async function runUrlStep(rc, i){
       pollFails+=1;
       if(pollFails===1||pollFails%15===0){
         appendLiveLog(log,'[warn] '+(phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'连续失败 '+pollFails+' 次（stage-poll 传输）：'+pollErr);
-        s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       }
       if(pollFails>=pollFailCap) throw new Error((phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'持续失败（stage-poll 传输，连续 '+pollFails+' 次）：'+pollErr);
     };
@@ -7380,7 +7738,7 @@ async function runUrlStep(rc, i){
       if(fails<=0||fails===pollFailWarned||(fails!==1&&fails%15!==0)) return;
       pollFailWarned=fails;
       appendLiveLog(log,'[warn] '+(phase==='queue'?'Jenkins queue 状态轮询':'构建状态轮询')+'连续失败 '+fails+' 次（服务端轮询兜底中，连续 '+pollFailCap+' 次将判失败）');
-      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
     };
     while(pollable && buildNum==null){
       if(pollVia==='server'){
@@ -7416,7 +7774,7 @@ async function runUrlStep(rc, i){
           pollFails+=1;
           if(pollFails===1||pollFails%15===0){
             appendLiveLog(log,'[warn] Jenkins queue 状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
           }
           if(pollFails>=pollFailCap) throw new Error('Jenkins queue 状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
         }
@@ -7442,7 +7800,7 @@ async function runUrlStep(rc, i){
             appendOutputProbe(outputProbe,chunk);
             appendLiveChunk(log,chunk);   // 原始连续分片，不额外插入换行
             s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
-            lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
             if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
             if(rc.over||rc.token!==tk) return;
           }
@@ -7466,7 +7824,7 @@ async function runUrlStep(rc, i){
           const pollErr=String(e&&e.message?e.message:e).slice(0,512); pollFails+=1;
           if(pollFails===1||pollFails%15===0){
             appendLiveLog(log,'[warn] 构建状态轮询连续失败 '+pollFails+' 次：'+pollErr+'（检查「Jenkins 服务配置」地址/凭据/连接模式；本地浏览器连接需目标 Jenkins 允许 CORS）');
-            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+            s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
           }
           if(pollFails>=pollFailCap) throw new Error('构建状态轮询持续失败（连续 '+pollFails+' 次）：'+pollErr);
         }
@@ -7483,7 +7841,7 @@ async function runUrlStep(rc, i){
               appendOutputProbe(outputProbe,delta.text);
               appendLiveChunk(log,delta.text);   // 原始连续分片，不额外插入换行
               s._out=liveOutputSnapshot(log.live,{code:null,url:true,done:false});
-              lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+              lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
               if(logSink) await logSink.flush();   // 归档慢于 Jenkins 输出时暂停下一轮拉取，避免待写 Promise/分片无界排队
               if(rc.over||rc.token!==tk) return;
             }
@@ -7849,7 +8207,7 @@ async function runEvaltokensStep(rc, i){
           pollVia='direct';
           console.warn('[pipeline] EvalTokens 阶段轮询回退浏览器直连：stage-poll HTTP '+err.stagePollFallback);
           appendLiveLog(log,'# stage-poll 服务端轮询不可用（HTTP '+err.stagePollFallback+'），回退浏览器直连轮询');
-          s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+          s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
           return null;
         }
         throw err;
@@ -7863,14 +8221,14 @@ async function runEvaltokensStep(rc, i){
       if(pr.done===true&&pr.statusEndpointMissing&&pollUrl===statusPollUrl){
         pollUrl=runsListUrl;
         appendLiveLog(log,'# 轻量状态端点不可用（旧版 evalscope），切换到 runs 列表端点轮询');
-        s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+        s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
         continue;
       }
       const st=String(pr.status||'running');   // 窗口耗尽的 {done:false} 不带 status：按运行中处理
       waitingStatus=st;
       const fails=Number(pr.failures)||0;
       appendLiveLog(log,'# run '+runId+' status='+st+(fails?('（连续失败 '+fails+' 次）'):''));
-      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
       if(!ensureActive()) return;
       if(pr.done===true){
@@ -7890,7 +8248,7 @@ async function runEvaltokensStep(rc, i){
       waitingStatus=st;
       const sk=current?evaltokStatusKind(st):'running';
       appendLiveLog(log,'# run '+runId+' status='+(current?st:'（等待运行记录）'));
-      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,250);
+      s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false}); lastLive=maybeRenderLiveDetail(rc,s,lastLive,1000);
       if(logSink) await logSink.flush();   // 归档网络慢时在轮询点施加背压，不让待写状态行 Promise 无界堆积
       if(!ensureActive()) return;
       if(sk!=='running'){ result=sk; externalRunActive=false; break; }
@@ -7916,6 +8274,10 @@ async function runEvaltokensStep(rc, i){
     const seq=stageSeq(rc.stages,i);
     const reportPendingLine=reportFolder?('📦 任务报告归档中 → '+reportFolder+'/'+evaltokReportFile(rc,seq,s.name,runId)):'⚠ 任务报告未归档：无法确定本次运行归档目录';
     if(et.collectReport!==false) appendLiveLog(log,reportPendingLine);
+    /* 节流期间可能没有新的运行中刷新；终态快照前补一次，确保最后一条轮询状态也能回显。 */
+    s._out=liveOutputSnapshot(log.live,{code:null,evaltokens:true,done:false});
+    const liveRoot=rc&&rc.parallelParent?rc.parallelParent:rc;
+    if(viewRc===liveRoot&&selectedId===s.id) renderDetail();
     const finalStdout=finishLiveLog(log);
     const terminalOut=liveOutputSnapshot(log.live,{stderr:ok?'':('EvalTokens '+result),code:ok?0:1,evaltokens:true,done:true});
     if(logSink) await logSink.flush();
@@ -8013,7 +8375,7 @@ async function runScriptStep(rc, i){
   _tick.tasks[rc.timer]={rc:rc,stageId:s.id,t0:t0,last:t0,rate:2/300};   // 节奏同原 300ms 定时器（每 tick +2）
   if(!_tick.timer&&!(typeof document!=='undefined'&&document.hidden)) _tick.timer=setInterval(function(){ if(typeof stageTickRun==='function') stageTickRun(); else { clearInterval(_tick.timer); _tick.timer=null; _tick.tasks={}; } },500);   // 页面隐藏时不起表（恢复可见时 visibilitychange 立即补 tick 再走表）；沙盒未抽取 stageTickRun 时自毁防空转
   /* 流式回显：执行中把 stdout/stderr 写入本阶段实时快照（s._out，code:null）并刷新「阶段详情」。
-     快速输出按 ~250ms 节流重建；选中的正是本阶段时立即刷新（进度条/耗时文本另由共享 tick 轻量直改，不经全量渲染）。
+     快速输出按 ~1000ms 节流重建；选中的正是本阶段时立即刷新（进度条/耗时文本另由共享 tick 轻量直改，不经全量渲染）。
      「中止」经 AbortController 断开会话，服务端随之终止对应子进程（见 execStreaming / 插件 exec-stream 路由）；
      旧插件构建降级为一次性执行，中止后结果丢弃（流程同旧逻辑）。 */
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;
@@ -8024,7 +8386,7 @@ async function runScriptStep(rc, i){
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }   // 接管确认：中止时也不可用浏览器快照覆盖服务端日志
     appendLiveOutput(live,m.type,m.text); if(m.type==='out') appendOutputProbe(probe,m.text);
-    lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 追加与物化分别节流，避免每个小块都 join 尾窗
+    lastLive=publishLiveOutput(rc,s,live,lastLive,1000,{code:null});   // 追加与物化分别节流，避免每个小块都 join 尾窗
   }, ctrl.signal, logFile);
   if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
   if(rc.over || rc.token!==tk){ console.warn('[pipeline] 脚本「'+sc.name+'」结果已丢弃：执行期间运行被重置/中止（流式执行已随会话断开终止子进程）。'); return; }   // 先验运行状态再写共享 stage 字段：并行重试已复位的新归档所有权不能被旧子上下文迟回覆盖
@@ -8243,7 +8605,7 @@ async function runPresetStep(rc, i){
     if(rc.over || rc.token!==tk) return;   // 迟回片段丢弃（运行已中止/重置）
     if(m.type==='log'){ s._serverLogPending=false; s._serverLogFile=m.logFile||null; return; }
     appendLiveOutput(live,m.type,m.text);
-    lastLive=publishLiveOutput(rc,s,live,lastLive,250,{code:null});   // 高频小块只在刷新时点物化尾窗
+    lastLive=publishLiveOutput(rc,s,live,lastLive,1000,{code:null});   // 高频小块只在刷新时点物化尾窗
   }, ctrl.signal, logFile);
   s._serverLogPending=!!res.logPending; s._serverLogFile=res.logFile||null; s._logArchived=!!res.logFile;
   if(rc.scriptAbort===ctrl) rc.scriptAbort=null;
@@ -10489,6 +10851,25 @@ $('pipelineRunClose').addEventListener('click',closePipelineRunDialog);
 $('pipelineRunCancel').addEventListener('click',closePipelineRunDialog);
 $('pipelineRunSubmit').addEventListener('click',submitPipelineRunDialog);
 $('pipelineRunDialog').addEventListener('click',e=>{ if(e.target===$('pipelineRunDialog')) closePipelineRunDialog(); });
+/* 节点预留分配弹窗：开关/点遮罩关闭沿用 pipelineRunDialog 模式；「添加时段」「手动添加用户」「保存」
+   操作 nodeResEdit 编辑态（只读形态入口已隐藏，saveNodeResDialog 内另有 readonly 兜底） */
+$('nodeResClose').addEventListener('click', closeNodeResDialog);
+$('nodeResCancel').addEventListener('click', closeNodeResDialog);
+$('nodeResCloseFooter').addEventListener('click', closeNodeResDialog);
+$('nodeResDialog').addEventListener('click', e=>{ if(e.target===$('nodeResDialog')) closeNodeResDialog(); });
+$('nodeResAddWindow').addEventListener('click', ()=>{
+  if(!nodeResEdit||nodeResEdit.readonly) return;
+  nodeResEdit.windows.push({id:'', start:'', end:'', users:(currentUsername?[currentUsername]:[]), note:''});   // 新时段默认勾选当前用户，保存校验仍要求至少 1 个用户
+  renderNodeResWindows();
+});
+$('nodeResManualAdd').addEventListener('click', ()=>{
+  if(!nodeResEdit||nodeResEdit.readonly) return;
+  const v=$('nodeResManualUser').value.trim(); if(!v) return;
+  if(nodeResEdit.manualUsers.indexOf(v)<0) nodeResEdit.manualUsers.push(v);
+  $('nodeResManualUser').value='';
+  renderNodeResWindows();
+});
+$('nodeResSave').addEventListener('click', saveNodeResDialog);
 $('pipelineRunEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const panel=$('pipelineRunEnvMultiPanel'); panel.style.display=panel.style.display==='none'?'block':'none'; });
 document.addEventListener('click',e=>{ const panel=$('pipelineRunEnvMultiPanel'),wrap=$('pipelineRunEnvMulti'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
 $('pipelineRunRepo').addEventListener('change',()=>{ const bp=$('pipelineRunBranchPanel'),sp=$('pipelineRunStrategyPanel'); if(bp) bp.style.display='none'; if(sp) sp.style.display='none'; loadDeployStrategies(true,'run'); });
@@ -10657,18 +11038,22 @@ $('pmSave').addEventListener('click', ()=>{
   prom = collectPromForm(); saveProm();
   $('pmSavedTip').textContent='已保存。'; setTimeout(()=>{ $('pmSavedTip').textContent=''; },2000);
 });
-/* 页面切换（流水线 / 定时 / 设置） */
+/* 页面切换（流水线 / 定时 / 节点 / 设置） */
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
   $('pageSched').style.display = p==='sched'?'':'none';
+  $('pageNode').style.display = p==='node'?'':'none';
   $('pageEnv').style.display = p==='env'?'':'none';
   $('navMain').className = 'dshell-btn mini'+(p==='main'?'':' dshell-btnGhost');
   $('navSched').className = 'dshell-btn mini'+(p==='sched'?'':' dshell-btnGhost');
+  $('navNode').className = 'dshell-btn mini'+(p==='node'?'':' dshell-btnGhost');
   $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
   if(p==='sched'){ renderSchedForm(); loadPlans(); }   // 进「定时」页重新拉取计划列表：其他浏览器/服务端的增删与活动执行状态一并刷新
+  if(p==='node'){ loadNodeReservations(); }   // 进「节点」页顺带刷新预留数据：他端的分配改动同步进「预留」列与选择拦截
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
 $('navSched').addEventListener('click', ()=>switchPage('sched'));
+$('navNode').addEventListener('click', ()=>switchPage('node'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
 /* 分析配置（设置页内卡片）：提示词模板编辑 */
 function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
@@ -11156,13 +11541,19 @@ async function fillExecutorFromAuth(){
        行按钮「编辑/查看/删除」与编辑器只读归属判断（plEditable）都依赖身份——探测在途时
        署名流水线保守只读，探测结束后必须重绘刷新（原先仅在「我的/仅看收藏」筛选时重绘，
        已并入此无条件重绘；「我的」筛选初次加载按「内置+未署名」退化渲染，身份到达后由
-       本次重绘纠正）。typeof 守卫：独立测试片段里可能没有这些全局。 */
+       本次重绘纠正）。节点预留的选择拦截（envReservedForOthers：探测在途不拦、admin 旁路）
+       同样依赖身份，节点表「预留」列与环境多选面板一并重绘纠正。typeof 守卫：独立测试片段里可能没有这些全局。 */
     authReady=true;
     if(typeof renderPipelines==='function') renderPipelines();
+    if(typeof renderEnvs==='function') renderEnvs();
+    if(typeof renderEnvOptions==='function') renderEnvOptions();
   }
 }
 /* ---------- 执行人固定取 dsh 登录用户（只读）结束 ---------- */
 fillExecutorFromAuth();
+/* 节点预留：首屏预取（节点表「预留」列摘要与环境多选面板的预留拦截/徽标依赖该数据；
+   失败静默保留空列表——无预留数据时按「无预留」渲染，不产生误拦截） */
+loadNodeReservations();
 /* 分支搜索面板：聚焦/输入时按当前代码仓拉取并筛选远程分支；点外关闭 */
 $('branchName').addEventListener('focus', ()=>{ loadRepoBranches(curRepo()).then(()=>renderBranchPanel(true)); });
 $('branchName').addEventListener('change', ()=>loadDeployStrategies());
