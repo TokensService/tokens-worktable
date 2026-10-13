@@ -9,9 +9,15 @@ mkdir -p "$WORK/source/deploy/xds/A3/xds_template/cap/model_arch"
 git -C "$WORK/source" init -q
 git -C "$WORK/source" config user.email 'test@example.invalid'
 git -C "$WORK/source" config user.name test
-cat >"$WORK/source/deploy/xds/A3/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" <<'JSON'
+cat >"$WORK/arch.json" <<'JSON'
 [{"arch_name":"prefill-one"},{"arch_name":"decode-two"}]
 JSON
+python3 - "$WORK/arch.json" "$WORK/source/deploy/xds/A3/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" <<'PY'
+from pathlib import Path
+import sys
+
+Path(sys.argv[2]).write_bytes(b"\xef\xbb\xbf" + Path(sys.argv[1]).read_bytes())
+PY
 git -C "$WORK/source" add .
 git -C "$WORK/source" commit -qm initial
 git -C "$WORK/source" branch -M arch-test
