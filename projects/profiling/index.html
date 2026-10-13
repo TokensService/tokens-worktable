@@ -172,7 +172,14 @@
           <div id="chartDonut" style="height:230px"></div>
           <div id="chartBar" style="height:230px"></div>
         </div>
-        <div id="stageTableWrap"><table class="dshell-table" id="stageTable"></table></div>
+        <div id="stageTableWrap">
+          <h3 class="pf-sub" id="stageGpuHead" style="display:none">GPU 设备事件（占比为 GPU 累计内份额）</h3>
+          <table class="dshell-table" id="stageTable"></table>
+          <div id="stageCpuWrap" style="display:none">
+            <h3 class="pf-sub">CPU · Host 事件（host 墙钟时间，与 GPU 执行交叠；占比为 CPU 累计内份额，勿与 GPU 相加）</h3>
+            <table class="dshell-table" id="stageTableCpu"></table>
+          </div>
+        </div>
         <div id="stageWaterfallWrap" style="display:none" class="pf-wf"></div>
       </div>
 
@@ -189,9 +196,10 @@
           <h2 class="dshell-sub grow" style="margin:0">GPU 内核三表分析</h2>
           <span class="dshell-badge" id="kernelCount">0 内核</span>
         </div>
-        <p class="dshell-muted" style="margin:6px 0 10px">参考 llm-torch-profiler-analysis skill：① 内核归因（算子族 + CPU 算子）② 重叠机会（暴露/隐藏 + 依赖风险 + 优先级）③ 融合候选（Confirmed=融合实现已在跑，Candidate=可融合未融合）。口径：窗口=端到端 wall，忙碌=各流内核区间并集，累计=内核时长求和——跨流重叠时累计 &gt; 忙碌，占比≠可消除延迟。</p>
+        <p class="dshell-muted" style="margin:6px 0 10px">参考 llm-torch-profiler-analysis skill：① 内核归因（算子族 + CPU 算子）② 重叠机会（暴露/隐藏 + 依赖风险 + 优先级；同一条 stream 上的内核硬件级串行、不可能重叠，仅异流存在重叠）③ 融合候选（Confirmed=融合实现已在跑，Candidate=可融合未融合）。口径：窗口=端到端 wall，忙碌=各流内核区间并集，累计=内核时长求和——跨流重叠时累计 &gt; 忙碌，占比≠可消除延迟。</p>
         <div class="dshell-grid" id="gpuStatGrid"></div>
         <div id="stageSplitLine"></div>
+        <div id="gpuNoteLine"></div>
         <h3 class="pf-sub">① 内核归因（占比 ≥1%）</h3>
         <table class="dshell-table" id="kernelTable"></table>
         <h3 class="pf-sub">② 重叠机会</h3>
@@ -221,7 +229,7 @@
 /* ================= 工具 ================= */
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function fmtDur(sec){ sec = Number(sec); if(!isFinite(sec)) return '—'; if(sec < 1) return Math.round(sec*1000)+'ms'; if(sec < 60) return sec.toFixed(2)+'s'; const m = Math.floor(sec/60); return m+'m'+Math.round(sec%60)+'s'; }
+function fmtDur(sec){ sec = Number(sec); if(!isFinite(sec)) return '—'; if(sec > 0 && sec < 0.001) return fmtUs(sec*1e6); if(sec < 1) return Math.round(sec*1000)+'ms'; if(sec < 60) return sec.toFixed(2)+'s'; const m = Math.floor(sec/60); return m+'m'+Math.round(sec%60)+'s'; }
 /* 微秒时长格式化（内核三表口径用） */
 function fmtUs(us){ us = Number(us); if(!isFinite(us)) return '—'; if(us < 1000) return Math.round(us)+'µs'; if(us < 1e6) return (us/1000).toFixed(2)+'ms'; return fmtDur(us/1e6); }
 function fmtSize(n){ n = Number(n)||0; if(n < 1024) return n+' B'; if(n < 1048576) return (n/1024).toFixed(1)+' KB'; if(n < 1073741824) return (n/1048576).toFixed(1)+' MB'; return (n/1073741824).toFixed(2)+' GB'; }
@@ -436,8 +444,11 @@ function analyzeTraceKernels(events, cap){
   const empty = { kernels: [], gpu: null, overlap: [], fusion: [] };
   if (!Array.isArray(events)) return empty;
   const limit = cap || 2000000;
-  /* 第一遍：主 rank 选择（kernel 时长最大的 pid，名字含 TP0 优先）+ cpu_op（External id → 算子名）+ 阶段注释窗口 */
+  /* host 同步点特征（GPU 空闲归因用）：cuda_runtime/driver 的同步调用 + cpu_op 的 .item() 类 */
+  const HOST_SYNC_RE = /cudaStreamSynchronize|cudaDeviceSynchronize|cudaEventSynchronize|cudaStreamWaitEvent|cudaMemcpy|aten::item|_local_scalar_dense/;
+  /* 第一遍：主 rank 选择（kernel 时长最大的 pid，名字含 TP0 优先）+ cpu_op（External id → 算子名）+ 阶段注释窗口 + host 同步事件 */
   const pidUs = new Map(), cpuOps = new Map(), annos = [];
+  const hostSync = [];
   let scanned = 0;
   for (const e of events){
     if (!e || e.ph !== 'X') continue;
@@ -448,9 +459,13 @@ function analyzeTraceKernels(events, cap){
     if (/kernel|^gpu_/.test(cat)){
       const pid = String(e.pid);
       pidUs.set(pid, (pidUs.get(pid) || 0) + dur);
-    } else if (cat === 'cpu_op'){
-      const ext = e.args && e.args['External id'];
-      if (ext != null && !cpuOps.has(ext)) cpuOps.set(ext, String(e.name || ''));
+    } else if (cat === 'cpu_op' || cat === 'cuda_runtime' || cat === 'cuda_driver'){
+      if (cat === 'cpu_op'){
+        const ext = e.args && e.args['External id'];
+        if (ext != null && !cpuOps.has(ext)) cpuOps.set(ext, String(e.name || ''));
+      }
+      const nm2 = String(e.name || '');
+      if (HOST_SYNC_RE.test(nm2)) hostSync.push({ ts: Number(e.ts) || 0, end: (Number(e.ts) || 0) + dur, name: nm2 });
     } else if (cat === 'user_annotation' || cat === 'gpu_user_annotation'){
       const nm = String(e.name || '').toLowerCase();
       let st = '';
@@ -523,21 +538,27 @@ function analyzeTraceKernels(events, cap){
   pts.sort((x, y) => x.t - y.t || x.s - y.s);
   const active = new Set(), activeStreams = new Map();
   let prevT = null, busy = 0, overlapT = 0, maxConc = 0;
+  const gaps = [];
   const minTs = kers[0].ts, maxEnd = kers.reduce((m, k) => Math.max(m, k.end), 0);
   for (const p of pts){
-    if (prevT != null && p.t > prevT && active.size){
-      const seg = p.t - prevT;
-      busy += seg;
-      if (activeStreams.size >= 2){
-        overlapT += seg;
-        for (const i of active){
-          kers[i].a.hidden += seg;
-          for (const j of active){
-            if (j !== i && kers[j].stream !== kers[i].stream && kers[j].bucket === 'compute'){ kers[i].a.hiddenByCompute += seg; break; }
+    if (prevT != null && p.t > prevT){
+      if (active.size){
+        const seg = p.t - prevT;
+        busy += seg;
+        if (activeStreams.size >= 2){
+          overlapT += seg;
+          for (const i of active){
+            kers[i].a.hidden += seg;
+            for (const j of active){
+              if (j !== i && kers[j].stream !== kers[i].stream && kers[j].bucket === 'compute'){ kers[i].a.hiddenByCompute += seg; break; }
+            }
           }
+        } else {
+          for (const i of active) kers[i].a.exclusive += seg;
         }
-      } else {
-        for (const i of active) kers[i].a.exclusive += seg;
+      } else if (p.t - prevT >= 1){
+        /* GPU 空闲段（≥1µs 过滤微噪）：无任何流上有内核活跃 */
+        gaps.push({ ts: prevT, end: p.t, dur: p.t - prevT });
       }
     }
     if (p.s === 1){
@@ -553,6 +574,13 @@ function analyzeTraceKernels(events, cap){
   }
   const window = maxEnd - minTs;
   const idle = Math.max(0, window - busy);
+  /* 空闲段归因：TOP 3 空闲段 + 期间 host 同步调用计数（cudaStreamSynchronize / aten::item 等） */
+  gaps.sort((a, b) => b.dur - a.dur || a.ts - b.ts);
+  const idleGaps = gaps.slice(0, 3).map(g => {
+    const hosts = new Map();
+    for (const h of hostSync){ if (h.ts < g.end && h.end > g.ts) hosts.set(h.name, (hosts.get(h.name) || 0) + 1); }
+    return { ts: g.ts, end: g.end, dur: g.dur, hosts: [...hosts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2) };
+  });
   /* 同流紧邻依赖风险：gap ≤ max(2, min(20, dur×0.15)) µs 记紧贴；紧贴 +（同 CPU 算子 或 依赖样类别对）→ high */
   const byStream = new Map();
   kers.forEach((k, i) => { let arr = byStream.get(k.stream); if (!arr) byStream.set(k.stream, arr = []); arr.push(i); });
@@ -643,53 +671,76 @@ function analyzeTraceKernels(events, cap){
     kernels, overlap, fusion,
     gpu: {
       window, busy, sum: kernelSum, idle, idlePct: window > 0 ? idle / window * 100 : 0,
-      overlap: overlapT, maxConcurrent: maxConc, streams: byStream.size, kernelCount: kers.length, stageUs,
+      overlap: overlapT, serial: busy - overlapT, maxConcurrent: maxConc, streams: byStream.size, kernelCount: kers.length, stageUs, idleGaps,
     },
   };
 }
 /* ==KERNEL-ANALYZER-END== */
 
 /* ================= 解析归一化 ================= */
-/* Chrome/PyTorch trace（traceEvents）按 (cat,name) 聚合为阶段视图 */
+/* trace 事件分侧：cat 含 kernel 或 gpu_ 前缀 → GPU 设备侧；其余（cpu_op/cuda_runtime/user_annotation 等）→ CPU host 侧。
+   两侧时长口径不同域（host 墙钟 vs 设备执行），分别累计、各自作占比分母，不得混算。
+   注意：与 KERNEL-ANALYZER 块共用同一判定规则，但该块须自包含（测试整段抽取），故规则在两处各写一份 */
+function traceEventSide(cat){ return /kernel|^gpu_/.test(String(cat || '')) ? 'gpu' : 'cpu'; }
+/* Chrome/PyTorch trace（traceEvents）按 (cat,name) 聚合为阶段视图（CPU/GPU 分侧） */
 function aggregateTraceEvents(events, cap){
   const agg = new Map();
   const cats = new Map();
-  let nX = 0, tsMin = null, tsMax = 0;
+  let nX = 0, tsMin = null, tsMax = 0, gpuUs = 0, cpuUs = 0;
   for (const e of events){
     if (!e || e.ph !== 'X') continue;
     const dur = Number(e.dur) || 0;
     const cat = String(e.cat || 'other'), nm = String(e.name || '?');
+    const side = traceEventSide(cat);
     const key = cat + '' + nm;
-    let a = agg.get(key); if (!a){ a = { cat, name: nm, total: 0, count: 0 }; agg.set(key, a); }
+    let a = agg.get(key); if (!a){ a = { cat, name: nm, side, total: 0, count: 0 }; agg.set(key, a); }
     a.total += dur; a.count++;
     let c = cats.get(cat); if (!c){ c = { cat, total: 0, count: 0 }; cats.set(cat, c); }
     c.total += dur; c.count++;
     nX++;
+    if (side === 'gpu') gpuUs += dur; else cpuUs += dur;
     const ts = Number(e.ts);
     if (isFinite(ts)){ tsMin = tsMin == null ? ts : Math.min(tsMin, ts); tsMax = Math.max(tsMax, ts + dur); }
     if (cap && nX >= cap) break;
   }
-  const top = [...agg.values()].sort((a, b) => b.total - a.total).slice(0, 40);
+  const all = [...agg.values()];
+  const byTotal = (a, b) => b.total - a.total;
+  const top = all.slice().sort(byTotal).slice(0, 40);
+  const mapRow = (t) => ({ cat: t.cat, name: t.name, totalUs: t.total, count: t.count });
   return {
     kind: 'chrome-trace', events: nX,
     spanUs: tsMin == null ? 0 : tsMax - tsMin,
-    totalUs: [...agg.values()].reduce((s, a) => s + a.total, 0),
+    totalUs: gpuUs + cpuUs,
+    gpuTotalUs: gpuUs, cpuTotalUs: cpuUs,
     categories: [...cats.values()].sort((a, b) => b.total - a.total).slice(0, 20).map(c => ({ cat: c.cat, totalUs: c.total, count: c.count })),
-    top: top.map(t => ({ cat: t.cat, name: t.name, totalUs: t.total, count: t.count })),
+    top: top.map(mapRow),
+    topGpu: all.filter(a => a.side === 'gpu').sort(byTotal).slice(0, 40).map(mapRow),
+    topCpu: all.filter(a => a.side === 'cpu').sort(byTotal).slice(0, 40).map(mapRow),
   };
 }
 function normalizeTrace(d, name, via){
   const out = { title: name, meta: {}, stages: [], total: 0, ok: true, note: '' };
   const totalSec = (d.totalUs || 0) / 1e6, spanSec = (d.spanUs || 0) / 1e6;
-  out.total = totalSec || spanSec;
+  const gpuSec = (d.gpuTotalUs || 0) / 1e6, cpuSec = (d.cpuTotalUs || 0) / 1e6;
+  /* trace 总耗时取 wall 跨度：CPU host 与 GPU device 是两个时域，混合累计没有物理意义 */
+  out.total = spanSec || totalSec;
   out.meta = {
-    '类型': 'Chrome/PyTorch trace（同名事件聚合）',
+    '类型': 'Chrome/PyTorch trace（同名事件聚合，CPU/GPU 分侧）',
     '解析方式': via === 'server' ? '服务端汇总器' : '浏览器内聚合',
-    '事件数(X)': d.events, '时间跨度': fmtDur(spanSec), '事件累计': fmtDur(totalSec),
+    '事件数(X)': d.events, '时间跨度': fmtUs(d.spanUs || 0),
+    'GPU 事件累计': fmtUs(d.gpuTotalUs || 0), 'CPU/Host 事件累计': fmtUs(d.cpuTotalUs || 0),
   };
   if (Array.isArray(d.categories) && d.categories.length)
     out.meta['分类 TOP'] = d.categories.slice(0, 5).map(c => c.cat + ' ' + (totalSec > 0 ? Math.round(c.totalUs / 1e6 / totalSec * 100) : 0) + '%').join('，');
-  out.stages = (d.top || []).map((t, i) => ({ id: 'e' + i, name: t.name + ' ×' + t.count, status: 'done', durSec: (t.totalUs || 0) / 1e6, progress: undefined, cat: t.cat }));
+  if (Array.isArray(d.topGpu) || Array.isArray(d.topCpu)){
+    /* 分侧视图：GPU 行与 CPU 行各自按本侧累计算占比 */
+    out.hasSideSplit = true;
+    out.sideTotals = { gpu: gpuSec, cpu: cpuSec };
+    const mapStage = (t, i, side) => ({ id: side[0] + i, name: t.name + ' ×' + t.count, status: 'done', durSec: (t.totalUs || 0) / 1e6, cat: t.cat, side });
+    out.stages = (d.topGpu || []).map((t, i) => mapStage(t, i, 'gpu')).concat((d.topCpu || []).map((t, i) => mapStage(t, i, 'cpu')));
+  } else {
+    out.stages = (d.top || []).map((t, i) => ({ id: 'e' + i, name: t.name + ' ×' + t.count, status: 'done', durSec: (t.totalUs || 0) / 1e6, progress: undefined, cat: t.cat }));
+  }
   if (!out.stages.length) out.note = 'trace 中无 ph=X 完整事件';
   /* GPU 内核三表分析（服务端汇总器或浏览器内分析器产出，同形） */
   if (d.kernelAnalysis && d.kernelAnalysis.gpu && d.kernelAnalysis.gpu.kernelCount) out.kernelAnalysis = d.kernelAnalysis;
@@ -751,12 +802,43 @@ function normalize(data, name){
 }
 
 /* ================= 瓶颈分析 ================= */
+/* 单侧（GPU 或 CPU）阶段集合的瓶颈启发式：占比分母为该侧累计，不与另一侧混算 */
+function analyzeSide(rows, sideTotal, label){
+  const findings = [];
+  const st = rows.filter(s => s.durSec > 0);
+  const total = sideTotal || st.reduce((a, s) => a + s.durSec, 0);
+  if (!st.length) return findings;
+  const sorted = [...st].sort((a, b) => b.durSec - a.durSec);
+  const top = sorted[0], share = total > 0 ? top.durSec / total : 0;
+  if (share > 0.5) findings.push({ level: 'high', title: `${label} 侧严重瓶颈：${top.name}`, detail: `占 ${label} 累计 ${(share*100).toFixed(1)}%（${fmtDur(top.durSec)} / ${fmtDur(total)}）。优化收益最大，建议首先拆解：看是否可并行、减量或内核优化。` });
+  else if (share > 0.3) findings.push({ level: 'mid', title: `${label} 侧主要瓶颈：${top.name}`, detail: `占 ${label} 累计 ${(share*100).toFixed(1)}%。是首要优化对象。` });
+  const mean = st.reduce((a, s) => a + s.durSec, 0) / st.length;
+  const sd = Math.sqrt(st.reduce((a, s) => a + (s.durSec - mean) ** 2, 0) / st.length);
+  if (sd > 0) for (const s of st){ const z = (s.durSec - mean) / sd; if (z > 2 && s !== top) findings.push({ level: 'mid', title: `${label} 侧耗时离群：${s.name}`, detail: `${fmtDur(s.durSec)}，高于 ${label} 侧均值 ${z.toFixed(1)} 个标准差（均值 ${fmtDur(mean)}）。` }); }
+  if (sorted.length >= 3){
+    const top3 = sorted.slice(0, 3).reduce((a, s) => a + s.durSec, 0);
+    if (total > 0 && top3 / total > 0.8) findings.push({ level: 'low', title: `${label} 侧耗时高度集中`, detail: `TOP 3 占 ${label} 累计 ${(top3/total*100).toFixed(0)}%（${sorted.slice(0,3).map(s=>s.name).join(' / ')}）。` });
+  }
+  return findings;
+}
 function analyzeStages(p){
   const findings = [];
-  const st = p.stages.filter(s => s.durSec > 0);
-  const total = p.total || st.reduce((a, s) => a + s.durSec, 0);
   const failed = p.stages.filter(s => /fail|error/.test(s.status));
   for (const s of failed) findings.push({ level: 'high', title: `失败阶段：${s.name}`, detail: `状态 ${s.status}，耗时 ${fmtDur(s.durSec)}${s.logFile ? '，日志 ' + s.logFile : ''}。优先排查该阶段日志。` });
+  /* 分侧（trace）：GPU/CPU 分开定位——GPU 侧找设备瓶颈，CPU 侧只看 host 同步/派发类开销，不做混合占比定性 */
+  if (p.hasSideSplit){
+    const gpuRows = p.stages.filter(s => s.side === 'gpu');
+    const cpuRows = p.stages.filter(s => s.side === 'cpu');
+    findings.push(...analyzeSide(gpuRows, p.sideTotals && p.sideTotals.gpu, 'GPU'));
+    const cpuTotal = (p.sideTotals && p.sideTotals.cpu) || cpuRows.reduce((a, s) => a + s.durSec, 0);
+    const sync = cpuRows.filter(s => /cudaStreamSynchronize|cudaDeviceSynchronize|cudaEventSynchronize|cudaStreamWaitEvent|aten::item|_local_scalar_dense|Memcpy.*HtoD|Memcpy.*DtoH/i.test(s.name));
+    const syncSum = sync.reduce((a, s) => a + s.durSec, 0);
+    if (cpuTotal > 0 && syncSum / cpuTotal > 0.2) findings.push({ level: 'mid', title: 'Host 同步/搬运开销显著', detail: `同步与显存搬运类调用（${sync.slice(0, 3).map(s => s.name).join('、')}）累计 ${fmtDur(syncSum)}，占 CPU 侧 ${(syncSum/cpuTotal*100).toFixed(0)}%。同步期间 GPU 可能空转：把 .item()/DtoH 拷贝移出热路径、用 pinned 内存与异步拷贝。` });
+    if (!findings.length) findings.push({ level: 'low', title: '未发现明显瓶颈', detail: 'GPU/CPU 两侧耗时分布较均衡。可做趋势对比或采集更细的 GPU 指标（SM 利用率、显存带宽）。' });
+    return findings;
+  }
+  const st = p.stages.filter(s => s.durSec > 0);
+  const total = p.total || st.reduce((a, s) => a + s.durSec, 0);
   if (!st.length){ if (!failed.length) findings.push({ level: 'low', title: '无有效耗时数据', detail: '所有阶段耗时为 0 或缺失，无法定位瓶颈。' }); return findings; }
   const sorted = [...st].sort((a, b) => b.durSec - a.durSec);
   const top = sorted[0], share = total > 0 ? top.durSec / total : 0;
@@ -812,36 +894,46 @@ function renderOverview(){
   renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();
 }
 let waterfall = false;
+function stageRowHtml(s, i, total){
+  const share = s.durSec / total;
+  return '<tr><td>' + (i+1) + '</td><td>' + esc(s.name) + '</td><td>' + statusBadge(s.status) + '</td>'
+    + '<td style="font-variant-numeric:tabular-nums">' + fmtDur(s.durSec) + '</td>'
+    + '<td style="width:34%"><div class="dshell-progress"><div class="dshell-progressBar" style="width:' + Math.max(share*100, s.durSec>0?1:0).toFixed(1) + '%;' + (/fail|error/.test(s.status) ? 'background:#f85149' : '') + '"></div></div></td>'
+    + '<td style="font-variant-numeric:tabular-nums">' + (share*100).toFixed(1) + '%</td></tr>';
+}
+const STAGE_TABLE_HEAD = '<thead><tr><th>#</th><th>阶段</th><th>状态</th><th>耗时</th><th>占比</th><th></th></tr></thead>';
 function renderStages(){
   if (!cur) return;
   const p = cur.p;
+  /* 分侧（trace）：GPU/CPU 各自按本侧累计作分母；非 trace（流水线 JSON 等）：单表，分母为全程 */
+  const split = !!p.hasSideSplit;
+  const gpuRows = split ? p.stages.filter(s => s.side === 'gpu') : p.stages;
+  const cpuRows = split ? p.stages.filter(s => s.side === 'cpu') : [];
   const total = p.total || p.stages.reduce((a, s) => a + s.durSec, 0) || 1;
-  const maxDur = Math.max(...p.stages.map(s => s.durSec), 0.0001);
+  const gpuTotal = split ? ((p.sideTotals && p.sideTotals.gpu) || gpuRows.reduce((a, s) => a + s.durSec, 0) || 1) : total;
+  const cpuTotal = split ? ((p.sideTotals && p.sideTotals.cpu) || cpuRows.reduce((a, s) => a + s.durSec, 0) || 1) : 1;
   $('viewTableBtn').classList.toggle('dshell-tabOn', !waterfall);
   $('viewWaterfallBtn').classList.toggle('dshell-tabOn', waterfall);
   $('stageTableWrap').style.display = waterfall ? 'none' : '';
   $('stageWaterfallWrap').style.display = waterfall ? '' : 'none';
   if (!waterfall){
-    const rows = p.stages.map((s, i) => {
-      const share = s.durSec / total;
-      return '<tr><td>' + (i+1) + '</td><td>' + esc(s.name) + '</td><td>' + statusBadge(s.status) + '</td>'
-        + '<td style="font-variant-numeric:tabular-nums">' + fmtDur(s.durSec) + '</td>'
-        + '<td style="width:34%"><div class="dshell-progress"><div class="dshell-progressBar" style="width:' + Math.max(share*100, s.durSec>0?1:0).toFixed(1) + '%;' + (/fail|error/.test(s.status) ? 'background:#f85149' : '') + '"></div></div></td>'
-        + '<td style="font-variant-numeric:tabular-nums">' + (share*100).toFixed(1) + '%</td></tr>';
-    }).join('');
-    $('stageTable').innerHTML = '<thead><tr><th>#</th><th>阶段</th><th>状态</th><th>耗时</th><th>占比</th><th></th></tr></thead><tbody>' + rows + '</tbody>';
+    $('stageGpuHead').style.display = split ? '' : 'none';
+    $('stageTable').innerHTML = STAGE_TABLE_HEAD + '<tbody>' + gpuRows.map((s, i) => stageRowHtml(s, i, gpuTotal)).join('') + '</tbody>';
+    $('stageCpuWrap').style.display = split && cpuRows.length ? '' : 'none';
+    if (split && cpuRows.length) $('stageTableCpu').innerHTML = STAGE_TABLE_HEAD + '<tbody>' + cpuRows.map((s, i) => stageRowHtml(s, i, cpuTotal)).join('') + '</tbody>';
   } else {
+    /* 瀑布图只画 GPU 侧（host 事件与 GPU 执行交叠，串行累计没有物理意义） */
     let acc = 0;
-    const topDur = Math.max(...p.stages.map(s => s.durSec));
-    const rows = p.stages.map(s => {
-      const left = acc / total * 100; acc += s.durSec;
-      const w = Math.max(s.durSec / total * 100, s.durSec > 0 ? 0.6 : 0);
+    const topDur = Math.max(...gpuRows.map(s => s.durSec));
+    const rows = gpuRows.map(s => {
+      const left = acc / gpuTotal * 100; acc += s.durSec;
+      const w = Math.max(s.durSec / gpuTotal * 100, s.durSec > 0 ? 0.6 : 0);
       const cls = /fail|error/.test(s.status) ? 'fail' : (s.durSec === topDur && s.durSec > 0 ? 'hot' : (s.durSec > 0 ? '' : 'wait'));
       return '<div class="pf-wfRow"><span class="pf-wfName" title="' + esc(s.name) + '">' + esc(s.name) + '</span>'
         + '<div class="pf-wfTrack"><div class="pf-wfBar ' + cls + '" style="left:' + left.toFixed(2) + '%;width:' + w.toFixed(2) + '%"></div></div>'
         + '<span class="pf-wfVal">' + fmtDur(s.durSec) + '</span></div>';
     }).join('');
-    $('stageWaterfallWrap').innerHTML = rows + '<p class="dshell-muted" style="margin:6px 0 0">横轴按阶段顺序累计（串行假设）；粉色=最慢阶段，红色=失败。</p>';
+    $('stageWaterfallWrap').innerHTML = rows + '<p class="dshell-muted" style="margin:6px 0 0">横轴按阶段顺序累计（串行假设）；粉色=最慢阶段，红色=失败。' + (split ? '仅 GPU 侧事件。' : '') + '</p>';
   }
 }
 $('viewTableBtn').addEventListener('click', () => { waterfall = false; renderStages(); });
@@ -851,12 +943,16 @@ $('viewWaterfallBtn').addEventListener('click', () => { waterfall = true; render
 let chartDonut = null, chartBar = null;
 function renderCharts(){
   const hasEC = typeof echarts !== 'undefined';
-  const show = hasEC && cur && cur.p.stages.length;
+  const show = hasEC && cur && cur.p.stages.length && !(cur.p.hasSideSplit && !cur.p.stages.some(s => s.side === 'gpu' && s.durSec > 0));
   $('chartRow').style.display = show ? 'grid' : 'none';
   if (!show) return;
   const p = cur.p;
-  const sorted = [...p.stages].filter(s => s.durSec > 0).sort((a, b) => b.durSec - a.durSec);
-  const total = p.total || sorted.reduce((a, s) => a + s.durSec, 0) || 1;
+  /* 分侧时图表只画 GPU 侧（host 时间与 GPU 执行交叠，混排占比没有物理意义） */
+  const split = !!p.hasSideSplit;
+  const src = split ? p.stages.filter(s => s.side === 'gpu') : p.stages;
+  const sorted = [...src].filter(s => s.durSec > 0).sort((a, b) => b.durSec - a.durSec);
+  const total = split ? ((p.sideTotals && p.sideTotals.gpu) || sorted.reduce((a, s) => a + s.durSec, 0) || 1)
+                      : (p.total || sorted.reduce((a, s) => a + s.durSec, 0) || 1);
   const fg = getComputedStyle(document.body).color || '#e6e8eb';
   const top10 = sorted.slice(0, 10);
   const rest = sorted.slice(10).reduce((a, s) => a + s.durSec, 0);
@@ -865,7 +961,7 @@ function renderCharts(){
   chartDonut = chartDonut || echarts.init($('chartDonut'));
   chartDonut.setOption({
     textStyle: { color: fg },
-    title: { text: '耗时占比', left: 'center', textStyle: { color: fg, fontSize: 12 } },
+    title: { text: split ? 'GPU 耗时占比' : '耗时占比', left: 'center', textStyle: { color: fg, fontSize: 12 } },
     tooltip: { trigger: 'item', formatter: (x) => x.name + '<br/>' + fmtDur(x.value) + ' · ' + x.percent + '%' },
     series: [{ type: 'pie', radius: ['42%', '68%'], center: ['50%', '58%'], label: { color: fg, fontSize: 10 }, data: pieData }],
   }, true);
@@ -873,7 +969,7 @@ function renderCharts(){
   chartBar = chartBar || echarts.init($('chartBar'));
   chartBar.setOption({
     textStyle: { color: fg },
-    title: { text: 'TOP 阶段耗时', left: 'center', textStyle: { color: fg, fontSize: 12 } },
+    title: { text: split ? 'TOP GPU 事件耗时' : 'TOP 阶段耗时', left: 'center', textStyle: { color: fg, fontSize: 12 } },
     grid: { left: 8, right: 52, top: 30, bottom: 8, containLabel: true },
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: (xs) => xs[0].name + '<br/>' + fmtDur(xs[0].value) },
     xAxis: { type: 'value', axisLabel: { color: fg, formatter: (v) => fmtDur(v) }, splitLine: { lineStyle: { color: 'rgba(128,128,128,.15)' } } },
@@ -901,8 +997,19 @@ function kernelFindings(ka){
   const out = [];
   if (!ka || !ka.gpu) return out;
   const g = ka.gpu;
-  if (g.window > 0 && g.idlePct > 30)
-    out.push({ level: 'mid', title: 'GPU 空闲占比 ' + g.idlePct.toFixed(0) + '%', detail: '窗口 ' + fmtUs(g.window) + ' 中空闲 ' + fmtUs(g.idle) + '。检查 host 同步（cudaStreamSynchronize / aten::item / DtoH 拷贝）、调度气泡与 CPU 派发瓶颈。' });
+  if (g.streams === 1 && g.kernelCount > 0)
+    out.push({ level: 'low', title: '单流串行执行', detail: g.kernelCount + ' 个内核全部在 1 条 stream 上，跨流重叠为 0——同流内核硬件级串行、不可能互相重叠。「尝试重叠」类建议需引入额外 stream / PDL 才成立；串行场景优先看融合与单内核优化。' });
+  if (g.window > 0 && g.idlePct > 30){
+    let detail = '窗口 ' + fmtUs(g.window) + ' 中空闲 ' + fmtUs(g.idle) + '。';
+    const gap = (g.idleGaps || [])[0];
+    if (gap){
+      detail += '最大空闲段 ' + fmtUs(gap.dur) + '（@' + fmtUs(gap.ts) + '）';
+      detail += gap.hosts && gap.hosts.length
+        ? '，期间 host 同步：' + gap.hosts.map(h => h[0] + ' ×' + h[1]).join('、') + '——减少 host↔device 往返（.item() 移出热路径、pinned 内存、异步拷贝）。'
+        : '，期间未发现同步类 host 调用，疑似调度气泡或 CPU 派发瓶颈。';
+    } else detail += '检查 host 同步（cudaStreamSynchronize / aten::item / DtoH 拷贝）、调度气泡与 CPU 派发瓶颈。';
+    out.push({ level: 'mid', title: 'GPU 空闲占比 ' + g.idlePct.toFixed(0) + '%', detail });
+  }
   if (g.busy > 0 && g.sum > g.busy * 1.3)
     out.push({ level: 'low', title: '内核累计显著大于忙碌并集', detail: '内核累计 ' + fmtUs(g.sum) + ' vs 忙碌并集 ' + fmtUs(g.busy) + '：跨流重叠明显，时长占比≠可消除延迟，可移除时间应按忙碌并集/关键路径评估。' });
   const p1c = (ka.overlap || []).find(o => o.prio === 'P1' && o.bucket === 'communication');
@@ -938,12 +1045,20 @@ function renderKernelAnalysis(){
     + stat('GPU 忙碌(并集)', fmtUs(g.busy))
     + stat('内核累计', fmtUs(g.sum))
     + stat('GPU 空闲', fmtUs(g.idle) + ' · ' + g.idlePct.toFixed(0) + '%')
+    + stat('串行(单流)', fmtUs(g.serial != null ? g.serial : g.busy - g.overlap))
     + stat('跨流重叠', fmtUs(g.overlap))
     + stat('最大并发流', g.maxConcurrent);
   const su = g.stageUs || {};
   $('stageSplitLine').innerHTML = (su.decode > 0 || su.prefill > 0)
     ? '<p class="dshell-muted" style="margin:2px 0 0">阶段内核时间：decode ' + fmtUs(su.decode) + ' · prefill ' + fmtUs(su.prefill) + (su.all > 0 ? ' · 未标注 ' + fmtUs(su.all) : '') + '</p>'
     : '';
+  /* 串行/空闲提示：单流串行声明 + TOP 空闲段 host 归因 */
+  const notes = [];
+  if (g.streams === 1 && g.kernelCount > 0) notes.push('⚠ 仅 1 条活跃 stream：内核全部串行（同流内核不可能互相重叠），跨流重叠为 0；下方「尝试重叠」类建议需引入额外 stream / PDL 才成立。');
+  else if (g.streams > 1 && g.overlap === 0) notes.push('⚠ 有 ' + g.streams + ' 条流但跨流重叠为 0：内核按流串行推进，未见流间交叠。');
+  for (const gap of (g.idleGaps || []))
+    notes.push('空闲段 ' + fmtUs(gap.dur) + '（@' + fmtUs(gap.ts) + '）' + (gap.hosts && gap.hosts.length ? '：host 同步 ' + gap.hosts.map(h => esc(h[0]) + ' ×' + h[1]).join('、') : '：期间无同步类 host 调用'));
+  $('gpuNoteLine').innerHTML = notes.length ? '<p class="dshell-muted" style="margin:2px 0 0">' + notes.join('<br>') + '</p>' : '';
   const rows = (ka.kernels || []).filter(k => k.share >= 1).slice(0, 15);
   $('kernelTable').innerHTML = '<thead><tr><th>#</th><th>内核</th><th>算子族</th><th>GPU 时间</th><th>占比</th><th>启动</th><th>阶段</th><th>CPU 算子</th></tr></thead><tbody>'
     + rows.map((k, i) =>
@@ -1239,7 +1354,29 @@ function buildPrompt(){
   for (const [k, v] of Object.entries(p.meta)) if (v !== undefined && v !== null && v !== '') L.push('- ' + k + '：' + v);
   L.push('- 总耗时：' + fmtDur(p.total));
   L.push('- 阶段数：' + p.stages.length);
-  if (p.stages.length){
+  if (p.hasSideSplit){
+    /* 分侧表格：GPU/CPU 各自分母，明示 host 时间不可与 GPU 相加 */
+    const gpuRows = p.stages.filter(s => s.side === 'gpu');
+    const cpuRows = p.stages.filter(s => s.side === 'cpu');
+    const gt = (p.sideTotals && p.sideTotals.gpu) || gpuRows.reduce((a, s) => a + s.durSec, 0) || 1;
+    const ct = (p.sideTotals && p.sideTotals.cpu) || cpuRows.reduce((a, s) => a + s.durSec, 0) || 1;
+    if (gpuRows.length){
+      L.push('');
+      L.push('## GPU 设备事件耗时（降序 TOP 15，分母=GPU 累计 ' + fmtDur(gt) + '）');
+      L.push('| 事件 | 耗时 | 占比 |');
+      L.push('| --- | --- | --- |');
+      for (const s of [...gpuRows].sort((a, b) => b.durSec - a.durSec).slice(0, 15))
+        L.push('| ' + s.name + ' | ' + fmtDur(s.durSec) + ' | ' + (s.durSec / gt * 100).toFixed(1) + '% |');
+    }
+    if (cpuRows.length){
+      L.push('');
+      L.push('## CPU/Host 事件耗时（降序 TOP 15，分母=CPU 累计 ' + fmtDur(ct) + '；host 墙钟时间，与 GPU 执行交叠，勿相加）');
+      L.push('| 事件 | 耗时 | 占比 |');
+      L.push('| --- | --- | --- |');
+      for (const s of [...cpuRows].sort((a, b) => b.durSec - a.durSec).slice(0, 15))
+        L.push('| ' + s.name + ' | ' + fmtDur(s.durSec) + ' | ' + (s.durSec / ct * 100).toFixed(1) + '% |');
+    }
+  } else if (p.stages.length){
     L.push('');
     L.push('## 阶段耗时（降序 TOP 15）');
     L.push('| 阶段 | 状态 | 耗时 | 占比 |');
@@ -1252,7 +1389,10 @@ function buildPrompt(){
     const ka = p.kernelAnalysis, g = ka.gpu;
     L.push('');
     L.push('## GPU 时间口径（内核三表分析，参考 llm-torch-profiler-analysis）');
-    L.push('- 窗口 wall：' + fmtUs(g.window) + '；GPU 忙碌并集：' + fmtUs(g.busy) + '；内核累计：' + fmtUs(g.sum) + '；空闲：' + fmtUs(g.idle) + '（' + g.idlePct.toFixed(0) + '%）；跨流重叠：' + fmtUs(g.overlap) + '；最大并发流：' + g.maxConcurrent);
+    L.push('- 窗口 wall：' + fmtUs(g.window) + '；GPU 忙碌并集：' + fmtUs(g.busy) + '；内核累计：' + fmtUs(g.sum) + '；空闲：' + fmtUs(g.idle) + '（' + g.idlePct.toFixed(0) + '%）；串行(单流)：' + fmtUs(g.serial != null ? g.serial : g.busy - g.overlap) + '；跨流重叠：' + fmtUs(g.overlap) + '；最大并发流：' + g.maxConcurrent);
+    if (g.streams === 1 && g.kernelCount > 0) L.push('- 注意：仅 1 条活跃 stream，内核全部串行（同流内核不可能互相重叠）；重叠类建议需引入额外 stream / PDL。');
+    if (g.idleGaps && g.idleGaps.length)
+      L.push('- 空闲归因 TOP：' + g.idleGaps.map(gap => fmtUs(gap.dur) + '（@' + fmtUs(gap.ts) + (gap.hosts && gap.hosts.length ? '，host 同步：' + gap.hosts.map(h => h[0] + '×' + h[1]).join('、') : '') + '）').join('；'));
     if (g.stageUs && (g.stageUs.decode > 0 || g.stageUs.prefill > 0))
       L.push('- 阶段内核时间：decode ' + fmtUs(g.stageUs.decode) + ' · prefill ' + fmtUs(g.stageUs.prefill) + ' · 未标注 ' + fmtUs(g.stageUs.all));
     if (ka.kernels && ka.kernels.length){
