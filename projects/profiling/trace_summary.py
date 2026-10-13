@@ -102,16 +102,19 @@ FUSION_PATTERNS = [
 ]
 
 KERNEL_CAT_RE = re.compile(r'kernel|^gpu_')
+# host 同步点特征（GPU 空闲归因用）：cuda_runtime/driver 的同步调用 + cpu_op 的 .item() 类
+HOST_SYNC_RE = re.compile(r'cudaStreamSynchronize|cudaDeviceSynchronize|cudaEventSynchronize|cudaStreamWaitEvent|cudaMemcpy|aten::item|_local_scalar_dense')
 
 
 def analyze_trace_kernels(events, cap=2000000):
     empty = {'kernels': [], 'gpu': None, 'overlap': [], 'fusion': []}
     if not isinstance(events, list):
         return empty
-    # 第一遍：主 rank 选择 + cpu_op（External id → 算子名）+ 阶段注释窗口
+    # 第一遍：主 rank 选择 + cpu_op（External id → 算子名）+ 阶段注释窗口 + host 同步事件
     pid_us = defaultdict(float)
     cpu_ops = {}
     annos = []
+    host_sync = []
     scanned = 0
     for e in events:
         if not isinstance(e, dict) or e.get('ph') != 'X':
@@ -128,11 +131,16 @@ def analyze_trace_kernels(events, cap=2000000):
             continue
         if KERNEL_CAT_RE.search(cat):
             pid_us[str(e.get('pid'))] += dur
-        elif cat == 'cpu_op':
-            args = e.get('args') if isinstance(e.get('args'), dict) else {}
-            ext = args.get('External id')
-            if ext is not None and ext not in cpu_ops:
-                cpu_ops[ext] = str(e.get('name') or '')
+        elif cat in ('cpu_op', 'cuda_runtime', 'cuda_driver'):
+            if cat == 'cpu_op':
+                args = e.get('args') if isinstance(e.get('args'), dict) else {}
+                ext = args.get('External id')
+                if ext is not None and ext not in cpu_ops:
+                    cpu_ops[ext] = str(e.get('name') or '')
+            nm2 = str(e.get('name') or '')
+            if HOST_SYNC_RE.search(nm2):
+                ts2 = float(e.get('ts') or 0)
+                host_sync.append({'ts': ts2, 'end': ts2 + dur, 'name': nm2})
         elif cat in ('user_annotation', 'gpu_user_annotation'):
             nm = str(e.get('name') or '').lower()
             st = ''
@@ -242,23 +250,28 @@ def analyze_trace_kernels(events, cap=2000000):
     busy = 0.0
     overlap_t = 0.0
     max_conc = 0
+    gaps = []
     min_ts = kers[0]['ts']
     max_end = max(k['end'] for k in kers)
     for t, s, i in pts:
-        if prev_t is not None and t > prev_t and active:
-            seg = t - prev_t
-            busy += seg
-            if len(active_streams) >= 2:
-                overlap_t += seg
-                for ai in active:
-                    kers[ai]['a']['hidden'] += seg
-                    for aj in active:
-                        if aj != ai and kers[aj]['stream'] != kers[ai]['stream'] and kers[aj]['bucket'] == 'compute':
-                            kers[ai]['a']['hiddenByCompute'] += seg
-                            break
-            else:
-                for ai in active:
-                    kers[ai]['a']['exclusive'] += seg
+        if prev_t is not None and t > prev_t:
+            if active:
+                seg = t - prev_t
+                busy += seg
+                if len(active_streams) >= 2:
+                    overlap_t += seg
+                    for ai in active:
+                        kers[ai]['a']['hidden'] += seg
+                        for aj in active:
+                            if aj != ai and kers[aj]['stream'] != kers[ai]['stream'] and kers[aj]['bucket'] == 'compute':
+                                kers[ai]['a']['hiddenByCompute'] += seg
+                                break
+                else:
+                    for ai in active:
+                        kers[ai]['a']['exclusive'] += seg
+            elif t - prev_t >= 1:
+                # GPU 空闲段（≥1µs 过滤微噪）：无任何流上有内核活跃
+                gaps.append({'ts': prev_t, 'end': t, 'dur': t - prev_t})
         if s == 1:
             active.add(i)
             active_streams[kers[i]['stream']] += 1
@@ -274,6 +287,16 @@ def analyze_trace_kernels(events, cap=2000000):
         prev_t = t
     window = max_end - min_ts
     idle = max(0.0, window - busy)
+    # 空闲段归因：TOP 3 空闲段 + 期间 host 同步调用计数（cudaStreamSynchronize / aten::item 等）
+    gaps.sort(key=lambda g: (-g['dur'], g['ts']))
+    idle_gaps = []
+    for g in gaps[:3]:
+        hosts = defaultdict(int)
+        for h in host_sync:
+            if h['ts'] < g['end'] and h['end'] > g['ts']:
+                hosts[h['name']] += 1
+        idle_gaps.append({'ts': g['ts'], 'end': g['end'], 'dur': g['dur'],
+                          'hosts': sorted(hosts.items(), key=lambda kv: -kv[1])[:2]})
     # 同流紧邻依赖风险
     by_stream = defaultdict(list)
     for i, k in enumerate(kers):
@@ -382,8 +405,8 @@ def analyze_trace_kernels(events, cap=2000000):
         'gpu': {
             'window': window, 'busy': busy, 'sum': kernel_sum, 'idle': idle,
             'idlePct': idle / window * 100 if window > 0 else 0,
-            'overlap': overlap_t, 'maxConcurrent': max_conc, 'streams': len(by_stream),
-            'kernelCount': len(kers), 'stageUs': stage_us,
+            'overlap': overlap_t, 'serial': busy - overlap_t, 'maxConcurrent': max_conc, 'streams': len(by_stream),
+            'kernelCount': len(kers), 'stageUs': stage_us, 'idleGaps': idle_gaps,
         },
     }
 
@@ -413,6 +436,8 @@ def main() -> int:
     ts_min = None
     ts_max = 0.0
     n_x = 0
+    gpu_us = 0.0
+    cpu_us = 0.0
     for e in events:
         if not isinstance(e, dict) or e.get('ph') != 'X':
             continue
@@ -428,6 +453,11 @@ def main() -> int:
         cats[cat][0] += dur
         cats[cat][1] += 1
         n_x += 1
+        # 分侧：kernel/gpu_* → GPU 设备侧，其余 → CPU host 侧（两侧时域不同，分别累计）
+        if KERNEL_CAT_RE.search(cat):
+            gpu_us += dur
+        else:
+            cpu_us += dur
         ts = e.get('ts')
         if ts is not None:
             try:
@@ -438,19 +468,25 @@ def main() -> int:
                 pass
 
     top = sorted(agg.items(), key=lambda kv: -kv[1][0])[:40]
+    top_gpu = sorted((kv for kv in agg.items() if KERNEL_CAT_RE.search(kv[0][0])), key=lambda kv: -kv[1][0])[:40]
+    top_cpu = sorted((kv for kv in agg.items() if not KERNEL_CAT_RE.search(kv[0][0])), key=lambda kv: -kv[1][0])[:40]
+
+    def rows(items):
+        return [{"cat": k[0], "name": k[1], "totalUs": round(v[0], 3), "count": v[1]} for k, v in items]
+
     out = {
         "kind": "chrome-trace",
         "events": n_x,
         "spanUs": round(ts_max - ts_min, 3) if ts_min is not None else 0,
-        "totalUs": round(sum(v[0] for v in agg.values()), 3),
+        "totalUs": round(gpu_us + cpu_us, 3),
+        "gpuTotalUs": round(gpu_us, 3), "cpuTotalUs": round(cpu_us, 3),
         "categories": [
             {"cat": k, "totalUs": round(v[0], 3), "count": v[1]}
             for k, v in sorted(cats.items(), key=lambda kv: -kv[1][0])[:20]
         ],
-        "top": [
-            {"cat": k[0], "name": k[1], "totalUs": round(v[0], 3), "count": v[1]}
-            for k, v in top
-        ],
+        "top": rows(top),
+        "topGpu": rows(top_gpu),
+        "topCpu": rows(top_cpu),
     }
     try:
         ka = analyze_trace_kernels(events)
