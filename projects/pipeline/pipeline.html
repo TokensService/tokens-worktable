@@ -1187,6 +1187,44 @@ function mergePipelinesFromServer(baseList, localList, remoteList){
   });
   return {pipelines:result, keptBaseEntries};
 }
+/* 节点环境条目比对：只看 normalizeEnv 的规范字段（id/name/ip/nodeIp/user/pass），与键序、多余字段无关——
+   基线条目来自服务端快照（原始 JSON），本页条目经 normalizeEnv 归一，直接 JSON.stringify 会 phantom 不同。 */
+function sameEnvEntry(a,b){
+  if(a===b) return true;
+  if(!a||!b) return false;
+  return String(a.id)===String(b.id) && String(a.name||'')===String(b.name||'') && String(a.ip||'')===String(b.ip||'')
+    && String(a.nodeIp||'')===String(b.nodeIp||'') && String(a.user||'')===String(b.user||'') && String(a.pass||'')===String(b.pass||'');
+}
+/* loadServerState 的节点环境按 id 三方合并（与流水线 mergePipelinesFromServer 同口径，替代整表替换）：
+   共同基线 = serverConfigBase.environments，本地 = 当前全局 environments，远端 = GET 响应 cfg.environments。
+   - 仅本地存在（基线/远端都无）：本地新增未落盘 → 保留（追加在合并结果末尾）——409 自愈重拉、
+     他端保存触发的快照同步不再把本页刚添加的节点冲掉；
+   - 基线有、远端无（远端已删除）：本地与基线一致 → 随远端删除；本地相对基线有改动（删除正撞保存在途）→ 保留本地；
+   - 本地==基线 → 取远端；远端==基线 → 保留本地；双边都改且内容不一致 → 取远端（同步语义下服务端为准）；
+   - 本地无、远端有：远端==基线 → 维持本地删除（在途删除不复活）；远端已改或为新增 → 取远端。
+   结果顺序：先按远端顺序（保留他端新增的位置），再追加仅本地的条目。 */
+function mergeEnvironmentsFromServer(baseList, localList, remoteList){
+  const valid=e=>e&&typeof e==='object'&&!Array.isArray(e)&&e.id!==undefined&&e.id!==null&&String(e.id)!=='';
+  const mapOf=list=>{ const m=new Map(); (Array.isArray(list)?list:[]).forEach(e=>{ if(valid(e)) m.set(String(e.id),e); }); return m; };
+  const base=mapOf(baseList), local=mapOf(localList), remote=mapOf(remoteList);
+  const same=(a,b)=>{ const ah=a!==undefined, bh=b!==undefined; return ah===bh&&(!ah||sameEnvEntry(a,b)); };
+  const result=[], seen=new Set();
+  (Array.isArray(remoteList)?remoteList:[]).forEach(e=>{
+    if(!valid(e)) return; const id=String(e.id); if(seen.has(id)) return; seen.add(id);
+    const b=base.get(id), l=local.get(id), r=remote.get(id);
+    if(!local.has(id)){ if(!same(r,b)) result.push(normalizeEnv(r)); return; }   /* 本地已删除：远端未改维持删除；远端已改/他端新增取远端 */
+    if(same(l,b)){ result.push(normalizeEnv(r)); return; }                       /* 本地未改：取远端（远端新增/修改照常同步） */
+    if(same(r,b)){ result.push(l); return; }                                     /* 远端未改：保留本地（在途修改不被重拉冲掉） */
+    result.push(normalizeEnv(r));                                                /* 双边都改且不一致：服务端为准 */
+  });
+  (Array.isArray(localList)?localList:[]).forEach(e=>{
+    if(!valid(e)) return; const id=String(e.id); if(seen.has(id)) return; seen.add(id);
+    const b=base.get(id), l=local.get(id);
+    if(!base.has(id)){ result.push(l); return; }                                 /* 仅本地存在：本地新增未落盘，保留 */
+    if(!same(l,b)) result.push(l);                                               /* 基线有、远端无（远端已删）：本地有改动（保存在途）保留本地 */
+  });
+  return result;
+}
 /* options.silentConflict：409 冲突时不提示、不重拉（编辑器 savePlForm 的回退全量保存使用——
    冲突由编辑器自己的回滚 + alert 单独处理）；默认（含 persistState 防抖调用）非静默。 */
 async function pushState(options){
@@ -1208,10 +1246,14 @@ async function pushState(options){
     /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
        服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖。
        负载瘦身（「保存中…」等待与上行字节数成正比，公网映射等慢上行链路下全量负载曾需 10 秒级）：
-       baseConfig 只带 pipelines——服务端三方合并仅按流水线 id 比对基线条目（mergePipelineConfigForWrite），
-       其余基线字段从不读取；历史正文仅在内容自上次确认同步后有变化时携带（签名比对），
+       baseConfig 只带 pipelines 与 environments——服务端三方合并仅按这两类条目的 id 比对基线
+       （mergePipelineConfigForWrite），其余基线字段从不读取；历史正文仅在内容自上次确认同步后有变化时携带（签名比对），
        未变不带——服务端合并对客户端未上报的记录一律按磁盘保留，不丢定时/他端/本页运行历史。 */
-    const payload={config, baseConfig:{pipelines:(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[]}};
+    const payload={config, baseConfig:{
+      pipelines:(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[],
+      /* 节点环境基线随保存上送：服务端据此按 id 三方合并，他端并发新增的节点不再被本页整表覆盖 */
+      environments:(serverConfigBase&&Array.isArray(serverConfigBase.environments))?serverConfigBase.environments:[],
+    }};
     if(historySig!==historySyncSig) payload.history=savedHistory;
     /* 看门狗：链路黑洞（连接在但无响应）时 60 秒中止，防一次卡死的 PUT 长期占用 persistInFlight、
        后续保存全部排队假死；合并写幂等，中止后重发安全 */
@@ -1251,6 +1293,14 @@ async function pushState(options){
         pipelines=reconcilePipelinesAfterSave(config.pipelines,body.config.pipelines,pipelines)
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
         try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
+      }
+      /* 节点环境同样按响应合回：服务端三方合并可能带进他端并发新增/修改的节点；
+         请求在途期间本页产生的环境改动（继续添加/编辑/删除）由 reconcile 保留，不被响应覆盖。
+         reconcilePipelinesAfterSave 是通用 id 协调（submitted/accepted/current 三份快照比对），与环境条目同构复用。 */
+      if(Array.isArray(body.config.environments) && typeof environments!=='undefined'){
+        environments=reconcilePipelinesAfterSave(config.environments,body.config.environments,environments)
+          .map(e=>JSON.parse(JSON.stringify(e))).map(normalizeEnv);
+        try{ localStorage.setItem('pip-envs',JSON.stringify(environments)); }catch(e){}
       }
     }
     historySyncSig=historySig;   // 本批历史已确认落盘：下次内容未变不再携带
@@ -1349,8 +1399,9 @@ async function loadServerState(){
      服务端令牌为空而本地有同 id 令牌时置位；finally 里据此 persistState 一次，把迁移结果推上服务端 */
   let migrated=false;
   try{
-    /* 流水线三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
+    /* 流水线/节点环境三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
     const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+    const prevBaseEnvironments=(serverConfigBase&&Array.isArray(serverConfigBase.environments))?serverConfigBase.environments:[];
     if(st){ serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{})); stateFetchEpoch+=1; }   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期
     if(st && st.config && Object.keys(st.config).length){
       const cfg=st.config;
@@ -1367,7 +1418,9 @@ async function loadServerState(){
              diskOne(null) 相等，下次 save-one 会把他人刚删的条目静默重建（本应 409 由用户抉择）。 */
         if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
       }
-      if(Array.isArray(cfg.environments) && cfg.environments.length) environments=cfg.environments.map(normalizeEnv);
+      /* 节点环境按 id 三方合并（替代整表替换）：409 自愈重拉/快照同步不再把本地未落盘的新增节点冲掉，
+         他端新增/修改/删除照常同步进来；合并口径见 mergeEnvironmentsFromServer */
+      if(Array.isArray(cfg.environments) && cfg.environments.length) environments=mergeEnvironmentsFromServer(prevBaseEnvironments, environments, cfg.environments);
       if(Array.isArray(cfg.repositories) && cfg.repositories.length){
         /* 代码仓访问令牌 pass 随服务端配置持久化（团队各浏览器共享，见 collectConfig）。迁移：旧版客户端
            上送时剔除 pass，服务端条目 pass 为空而本页（启动时从 localStorage 离线缓存装入）存有同 id
@@ -2297,8 +2350,10 @@ function applyEnvCredAll(){
 /* ---------- 节点信息手动刷新 ---------- */
 /* 从服务端配置重拉节点环境列表（与「流水线任务」的「↻ 刷新」同一交互——不自动刷新，用户点按钮才拉取；
    只覆盖共享的节点环境定义，不动本页设备状态缓存与运行行临时选择）。环境列表与 loadServerState 同口径：
-   服务端有非空 environments 即整体替换（无三方合并——环境条目整表 last-write-wins，与 saveEnvs 上送语义
-   一致），并同步 localStorage 离线缓存后重渲染表格与多选面板。 */
+   服务端有非空 environments 即按 id 三方合并（mergeEnvironmentsFromServer——他端新增/修改/删除同步进来，
+   本地未落盘的新增/修改不被这次手动刷新冲掉），并把基线 serverConfigBase.environments 推进到刚拉到的
+   服务端快照（用户显式以服务端为准；不推进则下次保存按旧基线把刚同步进来的他端条目误报为本端改动），
+   同步 localStorage 离线缓存后重渲染表格与多选面板。 */
 async function refreshEnvsFromServer(){
   const b=$('envInfoRefresh'); if(b) b.disabled=true;
   try{
@@ -2306,7 +2361,11 @@ async function refreshEnvsFromServer(){
     if(!st) throw new Error('服务端配置拉取失败');
     const cfg=(st.config && typeof st.config==='object' && !Array.isArray(st.config)) ? st.config : {};
     if(!Array.isArray(cfg.environments) || !cfg.environments.length) throw new Error('服务端暂无节点环境');
-    environments=cfg.environments.map(normalizeEnv);
+    const prevBase=(typeof serverConfigBase!=='undefined' && serverConfigBase && Array.isArray(serverConfigBase.environments)) ? serverConfigBase.environments : [];
+    environments=mergeEnvironmentsFromServer(prevBase, environments, cfg.environments);
+    if(typeof serverConfigBase!=='undefined' && serverConfigBase && typeof serverConfigBase==='object' && !Array.isArray(serverConfigBase)){
+      serverConfigBase.environments=JSON.parse(JSON.stringify(cfg.environments));
+    }
     try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){}
     renderEnvs();
     renderEnvOptions();

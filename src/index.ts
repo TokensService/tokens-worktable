@@ -491,6 +491,26 @@ function samePipelineContent(left: any, right: any): boolean {
   return deepEqualIgnoring(a, b)
 }
 
+/** 节点环境条目内容同一性比对：只认页面 normalizeEnv 的规范字段（name/ip/nodeIp/user/pass），
+ *  多余字段剥离后键序无关深比较（deepEqualIgnoring 定义在下方可信区段，函数声明提升，运行时不分声明先后）。
+ *  基线条目来自服务端快照（原始 JSON，可能带历史多余字段或缺 nodeIp），客户端条目经 normalizeEnv 归一，
+ *  直接整体深比较会把同一条目误判为「偏离基线」。 */
+function sameEnvironmentContent(left: any, right: any): boolean {
+  const norm = (entry: any) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+    return {
+      name: typeof entry.name === 'string' ? entry.name : '',
+      ip: typeof entry.ip === 'string' ? entry.ip : '',
+      nodeIp: typeof entry.nodeIp === 'string' ? entry.nodeIp : '',
+      user: typeof entry.user === 'string' ? entry.user : '',
+      pass: typeof entry.pass === 'string' ? entry.pass : '',
+    }
+  }
+  const a = norm(left ?? null), b = norm(right ?? null)
+  if (a === null || b === null) return a === b
+  return deepEqualIgnoring(a, b)
+}
+
 /** favoriteUsers 三方集合合并：(client ∩ disk) ∪ (client − base) ∪ (disk − base)——双方共同保留的，
  *  加上各端相对基线新增的；并发取消收藏（相对基线删除）因此同样生效。元素为修剪后的非空字符串；
  *  顺序确定：先按 client 数组顺序，再追加仅 disk 有的元素（按 disk 数组顺序）。任一侧缺失/非数组按空集。 */
@@ -649,6 +669,10 @@ function preserveDiskOnlyConfigKeys(clientConfig: any, diskConfig: any) {
  * 调用方不得写盘。favoriteUsers / pinnedAt 是共享条目上的非内容元数据，不参与变更判定（他端收藏/置顶
  * 不再造成 phantom 冲突），无论内容取自哪侧都对结果条目按三方规则重算（见上方助手）；
  * 仅单边独有的条目（本端新建 / 他端新增）保持原样，不套用归一。
+ * 节点环境（environments）：客户端 baseConfig 携带 environments 基线时按 id 三方合并——本端未改动
+ * 的条目以磁盘为准（他端并发新增/修改/删除不再被本端整表保存覆盖），本端相对基线改动的条目以本端
+ * 为准（同 id 双边都改按后写赢取本端，节点条目是简单凭据记录，不报 409 锁死）；旧页面不带
+ * environments 基线时维持整表 last-write-wins 旧行为。
  * pipelines 之外的配置键：客户端未携带的磁盘独有键按磁盘值保留（preserveDiskOnlyConfigKeys）。
  */
 function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
@@ -693,6 +717,35 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
   for (const item of clientPipelines) if (valid(item) && merged.has(item.id)) { ordered.push(merged.get(item.id)); merged.delete(item.id) }
   for (const item of merged.values()) ordered.push(item)
   config.pipelines = ordered
+  /* 节点环境按 id 三方合并（仅在客户端携带 environments 基线时启用；旧页面 baseConfig 无此键，
+     维持整表 last-write-wins 旧行为，preserveDiskOnlyConfigKeys 已把客户端整表放进 config）：
+     - 本端未改动（与基线一致）的条目以磁盘为准——他端并发新增/修改/删除照常保留，
+       本页一次整表保存不再把其他用户刚添加的节点冲掉；
+     - 本端相对基线有改动（含新增/删除）的条目以本端为准；同 id 双边都改按「后写赢」取本端，
+       不报 409——节点条目是简单凭据记录，冲突锁死的代价高于条目级 last-write-wins；
+     - 仅单边独有的条目（本端新建 / 他端新增）同时保留。
+     顺序与流水线一致：先沿用磁盘顺序（保留他端新增的位置），再追加仅客户端新增的条目。 */
+  if (Array.isArray(base.environments)) {
+    const clientEnvs = Array.isArray(client.environments) ? client.environments : []
+    const baseEnvs = base.environments
+    const diskEnvs = Array.isArray(disk.environments) ? disk.environments : []
+    const envClientMap = mapOf(clientEnvs), envBaseMap = mapOf(baseEnvs), envDiskMap = mapOf(diskEnvs)
+    const sameEnv = (left: Map<string, any>, right: Map<string, any>, id: string) => {
+      const leftHas = left.has(id), rightHas = right.has(id)
+      return leftHas === rightHas && (!leftHas || sameEnvironmentContent(left.get(id), right.get(id)))
+    }
+    const envIds = new Set<string>([...envBaseMap.keys(), ...envClientMap.keys(), ...envDiskMap.keys()])
+    const mergedEnvs = new Map<string, any>()
+    for (const id of envIds) {
+      const source = sameEnv(envClientMap, envBaseMap, id) ? envDiskMap : envClientMap
+      if (source.has(id)) mergedEnvs.set(id, source.get(id))
+    }
+    const orderedEnvs: any[] = []
+    for (const item of diskEnvs) if (valid(item) && mergedEnvs.has(item.id)) { orderedEnvs.push(mergedEnvs.get(item.id)); mergedEnvs.delete(item.id) }
+    for (const item of clientEnvs) if (valid(item) && mergedEnvs.has(item.id)) { orderedEnvs.push(mergedEnvs.get(item.id)); mergedEnvs.delete(item.id) }
+    for (const item of mergedEnvs.values()) orderedEnvs.push(item)
+    config.environments = orderedEnvs
+  }
   return { config, conflicts }
 }
 
