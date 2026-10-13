@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # pipeline: no-positional-args
-# EMS（mfv-kv 内存池存储）卸载流水线 step 主脚本（shell step，无位置参数调用）。
+# EMS（mfv-kv 内存池存储）卸载流水线 step 主脚本（shell step，无参调用，零任务参数）。
 #
-# 用法：在流水线中插入本 step，唯一可选参数 EMS_DRY_RUN（默认 1 预演）。
-# 目标节点 = 平台注入的 TARGET_IP/TARGET_IPS（勾选环境即表达意图），脚本自动
-# 推导实例：目标节点的 label 前缀（唯一性校验）+ 其上 EMS pod 的 ns 交叉得
-# 实例名；无 pod/release 的纯 label 残留同样可清（仅清 label 与大页）。
-# 卸载范围 = 该 label 的**全部**节点（不止勾选的），节点级操作只作用于这些
-# 节点；TARGET_HOSTS 仅用于远程分发宿主探测。目标不属于任何实例 = 已卸干净，
-# 幂等成功退出；多 key 时按运行证据仲裁（目标节点 pod / 集群内 release）：
-# 唯一存活实例为准、纯残留 label（无 pod 无 release）顺带清理，多个**存活**
-# 实例交叉才 die 请人工。推荐两段式：默认预演看清单，再设
-# EMS_DRY_RUN 为 0 正式清理。跨 region（hd2 等）：TARGET_IPS 为外网入口 endpoint
-# （ip:port）时经分发阶段采集的身份映射三级解析，gy1 内网行为不变。
+# 语义：执行即卸载/释放（无预演）。目标节点 = 平台注入的 TARGET_IP/TARGET_IPS，
+# 脚本自动推导实例（目标节点 label 前缀唯一性 + 其上 EMS pod ns 交叉），并按
+# 目标覆盖度自动选择模式：
+#   · 整实例卸载：目标节点 ⊇ 该实例的全部 label 节点（或实例单节点）——
+#     helm uninstall（--no-hooks，钩子 clean-hugepage 行为与脚本 [3/4] 重复且
+#     无 label 节点时钩子 Pending 会卡死卸载）+ 删资源 ns + 全部节点摘 label +
+#     大页归零 + 刷 kubelet；
+#   · 节点缩容：实例是多节点部署且目标只是其中一部分——只把目标节点从实例
+#     中释放（摘 label → DS server 自动消失 → 删钉在目标节点上的 zk/controller
+#     pod 促其重建到剩余节点并等 Ready → 大页归零 + 刷 kubelet），release 与
+#     资源 ns 保留，实例在剩余节点继续服务（zk 迁移瞬间多数派可能有秒级抖动，
+#     server 自动重连）。
+# 纯 label 残留（无 pod 无 release）同样可清（仅摘 label 与大页）。目标不
+# 属于任何实例 = 已卸干净，幂等成功退出；多 key 时按运行证据仲裁（目标节点
+# pod / 集群内 release）：唯一存活实例为准、纯残留 label 顺带清理，多个存活
+# 实例交叉才 die 请人工（防误伤他人在役实例）。跨 region（hd2 等）：
+# TARGET_IPS 为外网入口 endpoint（ip:port）时经分发阶段采集的身份映射三级
+# 解析，gy1 内网行为不变。
 #
 # 执行位置：工作台服务端（无 kubectl/helm）经 TARGET_HOSTS 自推送到首个具备
 # kubectl+helm 的目标节点远程执行；对各目标节点的大页写入 / kubelet 重启：
@@ -21,28 +28,24 @@
 #
 # 流程（fail-fast + 幂等）：
 #   [0/4] 解析：TARGET_IP/TARGET_IPS 三级解析 → 目标节点 → 实例推导（label
-#         前缀 + pod ns 交叉）→ 卸载范围 = label 全部节点
-#   [1/4] helm uninstall（按 release 实际所在 ns，历史遗留 release 装在 default
-#         等非标准 ns 也能卸；不存在跳过）+ 删资源 ns（等待 + 超时强删 pod 兜底
-#         + 复活检测——kuberay/CI 自动重装 → 失败并提示人工协调）
+#         前缀 + pod ns 交叉）→ 按目标覆盖度定模式（整卸 / 缩容）并打印动作计划
+#   [1/4] 整卸：helm uninstall --no-hooks（按 release 实际所在 ns）+ 删资源 ns
+#         （等待 + 超时强删 pod 兜底 + 复活检测）；缩容：摘目标节点 label +
+#         迁移钉住的 zk/controller pod 到剩余节点并等实例恢复 Ready
 #   [2/4] 等待节点大页全 free（目标节点无 hugepages 请求 pod + 每节点
 #         HugePages_Free==Total）：大页还原的硬前提，被占用时缩减只会挂 surplus
-#   [3/4] 大页还原：per-NUMA nr_hugepages 写 0（nohup 后台写入 + 轮询归零，
-#         规避 sysfs 写入阻塞拖死主流程；surplus 释放卡住是内核已知行为，
-#         超时 die 并提示唯一回收途径 = 重启节点）+ 重启 kubelet 刷 allocatable
-#         （cadvisor 只在 kubelet 启动时采集大页，不刷则节点大页 allocatable
-#         虚高 2000Gi，误导后续调度）
-#   [4/4] 清 label（放最后：label 是幂等重入的节点定位依据）+ 终验 + 契约输出
+#   [3/4] 大页还原：per-NUMA nr_hugepages 写 0（nohup 后台写入 + 轮询归零；
+#         surplus 释放卡住是内核已知行为，超时 die 并提示唯一回收途径 = 重启
+#         节点）+ 重启 kubelet 刷 allocatable（cadvisor 只在 kubelet 启动时采集
+#         大页，不刷则节点大页 allocatable 虚高，误导后续调度）
+#   [4/4] 清 label（整卸时 label 是幂等重入的节点定位依据放最后；缩容时
+#         [1/4] 已摘）+ 终验 + 契约输出（EMS_STATUS 为 uninstalled 或 scaled）
 #
-# 退出码：0 卸载完成（或幂等重入全跳过）；1 失败（判本 step 失败）。
+# 退出码：0 卸载/缩容完成（或幂等重入全跳过）；1 失败（判本 step 失败）。
 # 单测：test/test_ems_uninstall.sh（mock kubectl/helm/ssh/sleep）。
 set -uo pipefail
 
 SCRIPT_NAME='ems-uninstall'
-
-# ---- step 参数声明（平台「识别参数」按声明与紧邻注释扫描）----
-# EMS_DRY_RUN = 预演开关（默认 1=只打印将执行的操作不落地；0=真实卸载）。用法：先默认预演看清单，再设 0 正式清理
-EMS_DRY_RUN="${EMS_DRY_RUN:-1}"
 
 # 实例名/label 前缀/仲裁出的残留 label 由目标节点自动推导（[0/4] 段赋值，内部变量非入参；
 # 残留列表用小写 ems_stale_labels —— 大写带冒号默认值引用形态会被平台识别器扫成入参）
@@ -66,13 +69,6 @@ KUBELET_POLL_SECONDS=5
 die() { echo "[$SCRIPT_NAME] ERROR: $*" >&2; exit 1; }
 log() { echo "[$SCRIPT_NAME] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
-run() { # 破坏性命令的 DRY_RUN 包装
-    if [[ "$EMS_DRY_RUN" == 1 ]]; then
-        log "[DRY_RUN] $*"
-        return 0
-    fi
-    "$@"
-}
 
 # ==================== 本地阶段（工作台服务端）：解析目标并分发 ====================
 
@@ -184,7 +180,7 @@ print(json.dumps(entries))')" || id_map='[]'
 
     remote_env=(TARGET_HOSTS=)
     local var
-    for var in EMS_DRY_RUN TARGET_IPS TARGET_IP; do
+    for var in TARGET_IPS TARGET_IP; do
         printf -v quoted '%q' "${!var:-}"
         remote_env+=("$var=$quoted")
     done
@@ -262,7 +258,7 @@ uninstall_main() {
     local label_key rel_ns pair idx node_name node_ip target resolved via_map
     local -a node_names=() node_ips=() target_ips=()
 
-    [[ "$EMS_DRY_RUN" =~ ^[01]$ ]] || die 'EMS_DRY_RUN 必须为 0 或 1'
+    [[ $# -eq 0 ]] || die '不支持命令行参数；目标节点由平台环境注入'
 
     have kubectl || die '本机缺少 kubectl（正常应经 TARGET_HOSTS 分发到目标节点执行）'
     have helm || die '本机缺少 helm'
@@ -438,7 +434,9 @@ PY
         log "残留 label：$ems_stale_labels（无 pod 无 release，实例已卸载）——将在 [4/4] 顺带清理"
     fi
 
-    # 卸载范围 = label 全部节点（含未勾选的同实例节点）
+    # 卸载/缩容范围：label 全部节点 vs 目标覆盖度——目标未覆盖全部 label 节点
+    # → 缩容（只动目标节点，实例在剩余节点继续服务）；全覆盖 → 整卸（全部节点）
+    local scale_mode=0
     local -a label_pairs=()
     mapfile -t label_pairs < <(printf '%s' "$node_json" | python3 -c '
 import json, sys
@@ -452,11 +450,38 @@ for node in json.load(sys.stdin).get("items", []):
                 ip = addr.get("address"); break
         print(node["metadata"]["name"] + "\t" + ip)
 ' "$label_key")
+    local -a label_all_names=()
     for pair in "${label_pairs[@]}"; do
         IFS=$'\t' read -r node_name node_ip <<<"$pair"
-        node_names+=("$node_name")
-        node_ips+=("${node_ip:-}")
-        log "卸载节点：$node_name（${node_ip:-无 InternalIP}）"
+        label_all_names+=("$node_name")
+        if [[ " ${target_nodes[*]} " != *" $node_name "* ]]; then
+            scale_mode=1
+        fi
+    done
+    if (( scale_mode )); then
+        for node_name in "${target_nodes[@]}"; do
+            if [[ " ${label_all_names[*]} " == *" $node_name "* ]]; then
+                IFS=$'\t' read -r node_name node_ip < <(grep -F "$node_name" <(printf '%s\n' "${label_pairs[@]}"))
+                node_names+=("$node_name")
+                node_ips+=("${node_ip:-}")
+            fi
+        done
+        local -a remain_nodes=()
+        for node_name in "${label_all_names[@]}"; do
+            [[ " ${target_nodes[*]} " != *" $node_name "* ]] && remain_nodes+=("$node_name")
+        done
+        log "缩容模式：实例 $EMS_NAME 的 label 节点（${label_all_names[*]}）未被目标全覆盖，剩余节点［${remain_nodes[*]}］继续服务"
+        log "动作计划：摘目标节点 label（${node_names[*]}）→ DS server 自动消失 → 迁移钉住的 zk/controller pod → 等大页 free → 归零 + 刷 kubelet；release 与资源 ns 保留"
+    else
+        for pair in "${label_pairs[@]}"; do
+            IFS=$'\t' read -r node_name node_ip <<<"$pair"
+            node_names+=("$node_name")
+            node_ips+=("${node_ip:-}")
+        done
+        log "整卸模式：目标覆盖实例全部 label 节点，release + 资源 ns + label + 大页全部清理"
+    fi
+    for idx in "${!node_names[@]}"; do
+        log "操作节点：${node_names[$idx]}（${node_ips[$idx]:-无 InternalIP}）"
     done
     ((${#node_names[@]} >= 1)) || log "无 label $label_key 节点（label 已清或从未安装）：仅清理 ns/release，节点级操作全部跳过"
 
@@ -473,44 +498,109 @@ for rel in releases:
         break
 ' "$EMS_NAME")"
 
-    # ---- [1/4] 卸载 helm release + 资源 ns ----
-    log "=== [1/4] 卸载 helm release + 资源 ns ==="
+    # ---- [1/4] 整卸：helm release + 资源 ns；缩容：摘 label + 迁移钉住 pod ----
     local release_removed=0 ns_removed=0
-    if [[ -n "$rel_ns" ]]; then
-        log "helm uninstall $EMS_NAME（release 位于 ns $rel_ns）"
-        run helm uninstall "$EMS_NAME" -n "$rel_ns" \
-            || die "helm uninstall 失败（详见上方 helm 输出）"
-        release_removed=1
+    if (( scale_mode )); then
+        log "=== [1/4] 缩容：摘目标节点 label + 迁移钉住的 zk/controller pod ==="
+        local sc_idx sc_name sc_ip
+        for sc_idx in "${!node_names[@]}"; do
+            sc_name="${node_names[$sc_idx]}"; sc_ip="${node_ips[$sc_idx]}"
+            kubectl label node "$sc_name" "$label_key-" >/dev/null \
+                || die "节点 $sc_name 摘 label $label_key 失败"
+            log "label 已摘：$sc_name $label_key-（DS server 随 nodeSelector 失配自动删除）"
+            # 删钉在目标节点上的实例 pod（zk=StatefulSet/controller=Deployment 不会因
+            # 摘 label 自动走，需删 pod 促其重建到剩余 label 节点；server 已由 DS 处理）
+            local pinned
+            pinned="$(kubectl get pods -n "$EMS_NAME" -o json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    pods = json.load(sys.stdin).get("items", [])
+except ValueError:
+    raise SystemExit
+for pod in pods:
+    if (pod.get("spec") or {}).get("nodeName") == sys.argv[1]:
+        print((pod.get("metadata") or {}).get("name", ""))
+' "$sc_name")"
+            if [[ -n "$pinned" ]]; then
+                log "删除钉在 $sc_name 上的实例 pod（促重建到剩余节点）：$(echo "$pinned" | tr '\n' ' ')"
+                kubectl delete pod -n "$EMS_NAME" --field-selector "spec.nodeName=$sc_name" >/dev/null 2>&1 \
+                    || log "警告：$sc_name 上无实例 pod 或删除失败（可能已由 DS 清理）"
+            else
+                log "$sc_name 上无钉住的实例 pod"
+            fi
+        done
+        # 等实例在剩余节点恢复：ns 内 pod 全部 Running&Ready 且不在目标节点
+        local sc_waited=0 sc_ok=0 sc_bad=''
+        local -a sc_target_pods=()
+        log "等待实例在剩余节点恢复（ns $EMS_NAME 全部 pod Ready，最长 ${HP_FREE_TIMEOUT_SECONDS}s；zk 迁移瞬间多数派可能有秒级抖动，server 自动重连）"
+        while (( sc_waited < HP_FREE_TIMEOUT_SECONDS )); do
+            sleep "$HP_RELEASE_POLL_SECONDS"
+            sc_waited=$((sc_waited + HP_RELEASE_POLL_SECONDS))
+            sc_bad="$(kubectl get pods -n "$EMS_NAME" -o json 2>/dev/null | python3 -c '
+import json, sys
+targets = set(sys.argv[1].split(","))
+try:
+    pods = json.load(sys.stdin).get("items", [])
+except ValueError:
+    print("ns不存在"); raise SystemExit
+if not pods:
+    print("无pod"); raise SystemExit
+bad = []
+for pod in pods:
+    meta = pod.get("metadata") or {}
+    spec = pod.get("spec") or {}
+    status = pod.get("status") or {}
+    ready = any(c.get("type") == "Ready" and c.get("status") == "True"
+                for c in status.get("conditions") or [])
+    if spec.get("nodeName") in targets:
+        bad.append(meta.get("name", "?") + "@" + str(spec.get("nodeName")))
+    elif not ready:
+        bad.append(meta.get("name", "?") + "未Ready")
+print(" ".join(bad))
+' "$(IFS=,; echo "${node_names[*]}")")"
+            if [[ -z "$sc_bad" ]]; then
+                sc_ok=1
+                break
+            fi
+            log "实例恢复中（${sc_waited}s）：$sc_bad"
+        done
+        (( sc_ok )) || die "缩容后实例未恢复（$sc_bad）：pod 未迁离目标节点或未 Ready，人工确认实例状态后重跑"
+        log "实例已在剩余节点恢复 Ready"
     else
-        log "helm release $EMS_NAME 不存在（全 ns 扫描），跳过"
-    fi
-    if kubectl get ns "$EMS_NAME" -o json >/dev/null 2>&1; then
-        log "删除资源 ns $EMS_NAME"
-        if ! run kubectl delete ns "$EMS_NAME" --wait=true --timeout="${NS_DELETE_TIMEOUT_SECONDS}s"; then
-            log "资源 ns 删除超时，强制清理残留 pod"
-            run kubectl delete pod -n "$EMS_NAME" --all --grace-period=0 --force >/dev/null 2>&1 || true
-            run kubectl delete ns "$EMS_NAME" --wait=true --timeout=60s \
-                || die "资源 ns $EMS_NAME 删除失败（Finalizer/kuberay 阻塞），需人工处理"
+        log "=== [1/4] 卸载 helm release + 资源 ns ==="
+        if [[ -n "$rel_ns" ]]; then
+            log "helm uninstall $EMS_NAME（release 位于 ns $rel_ns，--no-hooks 绕开 pre-delete 钩子防卡死）"
+            helm uninstall "$EMS_NAME" -n "$rel_ns" --no-hooks \
+                || die "helm uninstall 失败（详见上方 helm 输出）"
+            release_removed=1
+        else
+            log "helm release $EMS_NAME 不存在（全 ns 扫描），跳过"
         fi
-        ns_removed=1
-    else
-        log "资源 ns $EMS_NAME 不存在，跳过"
-    fi
-    if (( ns_removed )) && [[ "$EMS_DRY_RUN" != 1 ]]; then
-        sleep "$RESURRECT_CHECK_SECONDS"
-        if kubectl get ns "$EMS_NAME" >/dev/null 2>&1; then
-            die "资源 ns $EMS_NAME 删除后死而复生（kuberay/CI 自动重装？）；停手，需人工协调停掉自动部署后重跑"
+        if kubectl get ns "$EMS_NAME" -o json >/dev/null 2>&1; then
+            log "删除资源 ns $EMS_NAME"
+            if ! kubectl delete ns "$EMS_NAME" --wait=true --timeout="${NS_DELETE_TIMEOUT_SECONDS}s"; then
+                log "资源 ns 删除超时，强制清理残留 pod"
+                kubectl delete pod -n "$EMS_NAME" --all --grace-period=0 --force >/dev/null 2>&1 || true
+                kubectl delete ns "$EMS_NAME" --wait=true --timeout=60s \
+                    || die "资源 ns $EMS_NAME 删除失败（Finalizer/kuberay 阻塞），需人工处理"
+            fi
+            ns_removed=1
+        else
+            log "资源 ns $EMS_NAME 不存在，跳过"
         fi
-        log "资源 ns 已释放且未复活"
+        if (( ns_removed )); then
+            sleep "$RESURRECT_CHECK_SECONDS"
+            if kubectl get ns "$EMS_NAME" >/dev/null 2>&1; then
+                die "资源 ns $EMS_NAME 删除后死而复生（kuberay/CI 自动重装？）；停手，需人工协调停掉自动部署后重跑"
+            fi
+            log "资源 ns 已释放且未复活"
+        fi
     fi
 
     # ---- [2/4] + [3/4] 大页处理 ----
     local released_ips='' restarted_ips='' hp_total=0 hp_free=0 hp_surp=0
-    if [[ "$EMS_DRY_RUN" == 1 ]]; then
-        log "=== [2-3/4] DRY_RUN 预演：跳过大页等待与还原 ==="
-    else
-        # ---- [2/4] 等待大页全 free（pod 退出 + Free==Total）----
-        log "=== [2/4] 等待节点大页全 free（无 hugepages 请求 pod + HugePages_Free==Total，最长 ${HP_FREE_TIMEOUT_SECONDS}s） ==="
+    # ---- [2/4] 等待大页全 free（pod 退出 + Free==Total）----
+    log "=== [2/4] 等待节点大页全 free（无 hugepages 请求 pod + HugePages_Free==Total，最长 ${HP_FREE_TIMEOUT_SECONDS}s） ==="
         local waited=0 stuck_pods='' stuck_nodes='' all_free=0 pods_tmp
         pods_tmp="$(mktemp /tmp/ems-uninstall-pods.XXXXXX)"
         while :; do
@@ -609,21 +699,22 @@ print(("True" if ready else "False"), int(value // 2**30))
             (( alloc2 <= 0 )) || die "$node_name allocatable 仍为 ${alloc2}Gi（cadvisor 未刷新，人工确认）"
             log "$node_name: Ready 且 allocatable 已归零"
         done
-    fi
 
-    # ---- [4/4] 清 label + 终验 ----
+    # ---- [4/4] 清 label（缩容时 [1/4] 已摘目标节点）+ 终验 ----
     log "=== [4/4] 清理 label + 终验 ==="
     local label_removed='' idx4
-    for idx4 in "${!node_names[@]}"; do
-        if [[ "$EMS_DRY_RUN" == 1 ]]; then
-            log "[DRY_RUN] kubectl label node ${node_names[$idx4]} $label_key-"
-        else
+    if (( ! scale_mode )); then
+        for idx4 in "${!node_names[@]}"; do
             kubectl label node "${node_names[$idx4]}" "$label_key-" >/dev/null \
                 || die "节点 ${node_names[$idx4]} 清理 label $label_key 失败"
             log "label 清理：${node_names[$idx4]} $label_key-"
-        fi
-        label_removed+="${node_names[$idx4]},"
-    done
+            label_removed+="${node_names[$idx4]},"
+        done
+    else
+        for idx4 in "${!node_names[@]}"; do
+            label_removed+="${node_names[$idx4]},"
+        done
+    fi
 
     # 顺带清理仲裁识别的残留 label（实例已死无 pod 无 release，清理范围=全集群该 label 节点；
     # 失败不阻塞主实例卸载流程，仅告警）
@@ -640,18 +731,38 @@ for node in json.load(sys.stdin).get("items", []):
 ' "$stale_key")
             ((${#stale_nodes[@]} > 0)) || { log "残留 label $stale_key 无挂载节点（已清或非本集群）：跳过"; continue; }
             for stale_name in "${stale_nodes[@]}"; do
-                if [[ "$EMS_DRY_RUN" == 1 ]]; then
-                    log "[DRY_RUN] kubectl label node $stale_name $stale_key-（残留）"
-                else
-                    kubectl label node "$stale_name" "$stale_key-" >/dev/null \
-                        || log "警告：$stale_name 清理残留 label $stale_key 失败（不阻塞主流程）"
-                fi
+                kubectl label node "$stale_name" "$stale_key-" >/dev/null \
+                    || log "警告：$stale_name 清理残留 label $stale_key 失败（不阻塞主流程）"
                 label_removed+="$stale_name,"
             done
         done
     fi
 
-    if [[ "$EMS_DRY_RUN" != 1 ]]; then
+    if (( scale_mode )); then
+        # 缩容终验：目标节点无 label、无实例 pod（[1/4] 已验 Ready）；release/ns 健在
+        kubectl get nodes -o json | python3 -c '
+import json, sys
+for node in json.load(sys.stdin).get("items", []):
+    labels = (node.get("metadata") or {}).get("labels") or {}
+    name = node["metadata"]["name"]
+    if sys.argv[1] in labels and name in sys.argv[2].split(","):
+        print(name); raise SystemExit(1)
+' "$label_key" "$(IFS=,; echo "${node_names[*]}")" >/dev/null || die "终验失败：目标节点仍有 label $label_key"
+        if [[ -n "$EMS_NAME" ]] && kubectl get ns "$EMS_NAME" >/dev/null 2>&1; then
+            helm list -A -o json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    releases = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+for rel in releases:
+    if rel.get("name") == sys.argv[1]:
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$EMS_NAME" || die "终验失败：缩容模式下 release $EMS_NAME 应保留却不存在"
+            log "终验通过（缩容：release $EMS_NAME 保留，实例在剩余节点服务）"
+        fi
+    else
         helm list -A -o json 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -683,9 +794,11 @@ for node in json.load(sys.stdin).get("items", []):
     fi
 
     # ---- 契约输出 ----
+    local ems_status=uninstalled
+    (( scale_mode )) && ems_status=scaled
     printf '\n--- EMS 卸载契约（KEY=VALUE） ---\n'
     printf 'EMS_NAME=%s\n' "$EMS_NAME"
-    printf 'EMS_STATUS=%s\n' "$([[ "$EMS_DRY_RUN" == 1 ]] && echo dryrun || echo uninstalled)"
+    printf 'EMS_STATUS=%s\n' "$ems_status"
     printf 'EMS_NODES=%s\n' "$(IFS=,; echo "${node_ips[*]}")"
     printf 'EMS_RELEASE_REMOVED=%s\n' "$release_removed"
     printf 'EMS_NAMESPACE_REMOVED=%s\n' "$ns_removed"
