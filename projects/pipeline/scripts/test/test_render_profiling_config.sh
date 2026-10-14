@@ -46,7 +46,7 @@ import json,sys
 arch=json.load(open(sys.argv[1], encoding='utf-8'))
 specs=arch['deploy_spec_packages'][0]['deploy_specs']
 by_role={s['role']:s['params'] for s in specs}
-for role, path in [('prefill','/mnt/paas/xds-profile/prefill-64k/xds-profiling-test/20261013_120000'),('decode','/mnt/paas/xds-profile/decode-64k/xds-profiling-test/20261013_120000')]:
+for role, path in [('prefill','/home/service/works/models_ssd/profile/prefill-64k/xds-profiling-test/20261013_120000'),('decode','/home/service/works/models_ssd/profile/decode-64k/xds-profiling-test/20261013_120000')]:
     cfg=by_role[role]['profiler_config']
     assert cfg['profiler']=='torch', cfg
     assert cfg['torch_profiler_dir']==path, cfg
