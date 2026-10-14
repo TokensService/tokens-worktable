@@ -20,6 +20,7 @@ RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
 PULL_RETRIES="${PULL_RETRIES:-2}"
 PULL_RETRY_DELAY_SECONDS="${PULL_RETRY_DELAY_SECONDS:-5}"
+SKIP_CONTAINERD_CLEANUP="${SKIP_CONTAINERD_CLEANUP:-0}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -40,6 +41,7 @@ MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
 MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"
 
 cleanup_unused_containerd_resources() {
+  [[ "$SKIP_CONTAINERD_CLEANUP" == "1" ]] && return 0
   command -v nerdctl >/dev/null 2>&1 || return 0
   echo "[pull][gc] reclaim unused containers, images, snapshots, and build cache"
   # Do not remove running containers or named images still referenced by a

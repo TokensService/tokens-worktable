@@ -7,22 +7,19 @@ pull_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pull-image.sh"
 grep -Fq '|| TARGET_RUN_DIR="/tmp/op-test-pipeline/${PIPELINE_NAME}"' "$script"
 grep -Fq '|| TARGET_RENDER_DIR="${TARGET_RUN_DIR}/rendered"' "$script"
 grep -Fq '|| TARGET_PIPELINE_ENV_FILE="${TARGET_RUN_DIR}/pipeline.env"' "$script"
+grep -Fq 'render_on_first_target()' "$script"
+grep -Fq 'sync_rendered_from_first_target()' "$script"
 grep -Fq 'sync_rendered_to_targets()' "$script"
-grep -Fq 'tar -C "$RENDER_DIR" -cf - .' "$script"
+grep -Fq 'tar -C $target_render_dir_q -cf - .' "$script"
 grep -Fq 'TARGET_HOSTS must be a non-empty JSON array' "$script"
 grep -Fq 'sshpass -e ssh -p "$port" -o StrictHostKeyChecking=no' "$script"
 grep -Fq 'TARGET_RUN_DIR TARGET_RENDER_DIR' "$script"
 grep -Fq 'TARGET_PIPELINE_ENV_FILE SSH_PASSWORD' "$script"
 grep -Fq "printf 'export TARGET_HOSTS=%q\\n' \"\$TARGET_HOSTS\"" "$script"
 
-if grep -Eq 'remote_bash|pull_image_on_target|export_templates_from_control_target' "$pull_script"; then
-  echo 'image pull and template export must run on the pipeline execution host' >&2
-  exit 1
-fi
-
+grep -Fq 'bash $(remote_quote "${target_script_dir}/pull-image.sh")' "$script"
+grep -Fq 'bash $(remote_quote "${target_script_dir}/render-config.sh")' "$script"
 grep -Fq 'nerdctl --namespace k8s.io pull "$image"' "$pull_script"
-grep -Fq 'DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"' "$pull_script"
-grep -Fq 'FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"' "$pull_script"
 grep -Fq 'copy_template_set "$DEPLOY_TEMPLATE_DIR" "$source_dir"' "$pull_script"
 
 work_dir="$(mktemp -d)"
