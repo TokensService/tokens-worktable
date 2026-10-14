@@ -411,3 +411,166 @@ test("trace_summary.py 兼容旧行为：无内核 trace 只出汇总、非法�
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+/* ============ Perfetto UI 集成（PERFETTO-BRIDGE 标记块 + 握手会话 + 静态契约） ============ */
+
+/* 整段抽取 PERFETTO-BRIDGE 标记块（自包含，不依赖页面其余符号） */
+function perfettoContext() {
+  const m = html.match(/\/\* ==PERFETTO-BRIDGE-BEGIN== \*\/([\s\S]*?)\/\* ==PERFETTO-BRIDGE-END== \*\//);
+  assert.ok(m, "index.html 应包含 PERFETTO-BRIDGE 标记段");
+  const context = vm.createContext({});
+  vm.runInContext(m[1], context);
+  return context;
+}
+
+/* 握手会话假对象：host（message 事件总线）、target（postMessage 收集）、计时器（手动推进） */
+function fakeHost() {
+  const listeners = new Set();
+  return {
+    addEventListener: (t, f) => { if (t === "message") listeners.add(f); },
+    removeEventListener: (t, f) => { listeners.delete(f); },
+    emit: (e) => { for (const f of [...listeners]) f(e); },
+    count: () => listeners.size,
+  };
+}
+function fakeTarget() {
+  const sent = [];
+  return { sent, postMessage: (msg, origin) => sent.push({ msg, origin }) };
+}
+function fakeTimers() {
+  const ivs = new Map(), tos = new Map();
+  let seq = 0;
+  return {
+    setInterval: (f) => { const id = ++seq; ivs.set(id, f); return id; },
+    clearInterval: (id) => { ivs.delete(id); },
+    setTimeout: (f) => { const id = ++seq; tos.set(id, f); return id; },
+    clearTimeout: (id) => { tos.delete(id); },
+    tickIntervals: () => { for (const f of [...ivs.values()]) f(); },
+    runTimeouts: () => { for (const f of [...tos.values()]) f(); },
+    pending: () => ({ intervals: ivs.size, timeouts: tos.size }),
+  };
+}
+function makeSession(ctx) {
+  const host = fakeHost(), target = fakeTarget(), timers = fakeTimers();
+  const states = [];
+  const session = ctx.createPerfettoSession({
+    host, target,
+    setInterval: timers.setInterval, clearInterval: timers.clearInterval,
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+    onState: (s, d) => states.push([s, d]),
+  });
+  return { host, target, timers, states, session };
+}
+const pong = (target, origin) => ({ source: target, origin: origin || "https://ui.perfetto.dev", data: "PONG" });
+
+test("isPerfettoTraceName / perfettoEligible：trace 判定口径", () => {
+  const ctx = perfettoContext();
+  for (const yes of ["a.pt.trace.json", "a.pt.trace.json.gz", "TRACE_2024.JSON", "xtrace-y.json.gz"])
+    assert.ok(ctx.isPerfettoTraceName(yes), yes);
+  for (const no of ["run-1.profile.json", "x.ncu-rep", "x.nsys-rep", "server.log", "config.json"])
+    assert.ok(!ctx.isPerfettoTraceName(no), no);
+  assert.ok(ctx.perfettoEligible({ name: "x.pt.trace.json", binary: false, path: "/p", data: null }), "服务端 trace 路径条目");
+  assert.ok(ctx.perfettoEligible({ name: "weird.json", binary: false, data: { traceEvents: [] } }), "已解析出 traceEvents");
+  assert.ok(!ctx.perfettoEligible({ name: "x.pt.trace.json", binary: true }), "二进制报告排除");
+  assert.ok(!ctx.perfettoEligible({ name: "run.profile.json", binary: false, data: { stages: [] } }), "流水线 JSON 排除");
+  assert.ok(!ctx.perfettoEligible(null));
+});
+
+test("pfAscii / perfettoNeedsTrustHint / buildPerfettoTraceMessage", () => {
+  const ctx = perfettoContext();
+  assert.equal(ctx.pfAscii("run-01.pt.trace.json"), "run-01.pt.trace.json");
+  assert.equal(ctx.pfAscii("解码 trace.pt.trace.json"), "_ trace.pt.trace.json");
+  assert.equal(ctx.pfAscii(""), "trace");
+  assert.equal(ctx.pfAscii(null), "trace");
+  assert.equal(ctx.perfettoNeedsTrustHint("127.0.0.1"), false);
+  assert.equal(ctx.perfettoNeedsTrustHint("localhost"), false);
+  assert.equal(ctx.perfettoNeedsTrustHint("[::1]"), false);
+  assert.equal(ctx.perfettoNeedsTrustHint("192.168.1.5"), true);
+  const buf = new Uint8Array([1, 2, 3]).buffer;
+  const m = ctx.buildPerfettoTraceMessage(buf, "压测A run-01", "解码 trace.json");
+  assert.equal(m.perfetto.buffer, buf, "buffer 原样引用");
+  assert.equal(m.perfetto.title, "_A run-01", "title 经 pfAscii 清洗");
+  assert.equal(m.perfetto.fileName, "_ trace.json");
+  assert.equal(m.perfetto.keepApiOpen, true, "保活以支持同会话多次投递");
+});
+
+test("createPerfettoSession：PING 立即+周期发送，PONG 需来源/origin/数据三重匹配", () => {
+  const ctx = perfettoContext();
+  const { host, target, timers, states, session } = makeSession(ctx);
+  assert.deepEqual(target.sent.map((x) => x.msg), ["PING"], "创建即 PING");
+  assert.equal(target.sent[0].origin, "https://ui.perfetto.dev", "PING 目标 origin 恒为 Perfetto");
+  timers.tickIntervals();
+  timers.tickIntervals();
+  assert.deepEqual(target.sent.map((x) => x.msg), ["PING", "PING", "PING"], "周期 PING");
+  assert.deepEqual(timers.pending(), { intervals: 1, timeouts: 1 });
+  /* 三重不匹配的 PONG 一律忽略 */
+  host.emit({ source: {}, origin: "https://ui.perfetto.dev", data: "PONG" });
+  host.emit(pong(target, "https://evil.example.com"));
+  host.emit({ source: target, origin: "https://ui.perfetto.dev", data: "PING" });
+  assert.equal(session.isReady(), false);
+  assert.ok(!states.length);
+  host.emit(pong(target));
+  assert.equal(session.isReady(), true);
+  assert.deepEqual(states, [["ready", undefined]]);
+  assert.deepEqual(timers.pending(), { intervals: 0, timeouts: 0 }, "就绪后 PING 与超时计时器都停");
+  const n = target.sent.length;
+  timers.tickIntervals();
+  assert.equal(target.sent.length, n, "就绪后不再 PING");
+  session.dispose();
+  assert.equal(host.count(), 0, "dispose 摘除 message 监听");
+});
+
+test("createPerfettoSession：send 在握手前排队、就绪后立即投递，同会话可多次投递", () => {
+  const ctx = perfettoContext();
+  const { host, target, states, session } = makeSession(ctx);
+  const buf1 = new Uint8Array([1]).buffer, buf2 = new Uint8Array([2]).buffer;
+  session.send(buf1, "first", "a.pt.trace.json");
+  assert.equal(target.sent.filter((x) => x.msg !== "PING").length, 0, "就绪前不投递");
+  host.emit(pong(target));
+  const sent = target.sent.filter((x) => x.msg !== "PING");
+  assert.equal(sent.length, 1, "就绪后补投排队消息");
+  assert.equal(sent[0].origin, "https://ui.perfetto.dev");
+  assert.equal(sent[0].msg.perfetto.buffer, buf1);
+  assert.equal(sent[0].msg.perfetto.fileName, "a.pt.trace.json");
+  assert.equal(sent[0].msg.perfetto.keepApiOpen, true);
+  session.send(buf2, "second", "b.pt.trace.json.gz");
+  const sent2 = target.sent.filter((x) => x.msg !== "PING");
+  assert.equal(sent2.length, 2, "keepApiOpen：就绪后可继续投递");
+  assert.equal(sent2[1].msg.perfetto.buffer, buf2);
+  assert.deepEqual(states, [["ready", undefined], ["send", "a.pt.trace.json"], ["send", "b.pt.trace.json.gz"]]);
+  session.dispose();
+});
+
+test("createPerfettoSession：握手超时进入 error 并自dispose，dispose 后 send 报错", () => {
+  const ctx = perfettoContext();
+  const { host, target, timers, states, session } = makeSession(ctx);
+  timers.runTimeouts();
+  assert.equal(session.isReady(), false);
+  assert.equal(states.length, 1);
+  assert.equal(states[0][0], "error");
+  assert.ok(String(states[0][1]).includes("超时") && String(states[0][1]).includes("ui.perfetto.dev"));
+  assert.equal(host.count(), 0, "超时后监听已摘除");
+  const pings = target.sent.length;
+  timers.tickIntervals();
+  assert.equal(target.sent.length, pings, "超时后不再 PING");
+  session.send(new Uint8Array([1]).buffer, "t", "f");
+  assert.equal(states.length, 2);
+  assert.deepEqual(states[1], ["error", "Perfetto 会话已关闭"]);
+  assert.equal(target.sent.filter((x) => x.msg !== "PING").length, 0, "dispose 后不投递");
+});
+
+test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取数与接线", () => {
+  for (const needle of [
+    "==PERFETTO-BRIDGE-BEGIN==", "==PERFETTO-BRIDGE-END==",
+    "https://ui.perfetto.dev", "keepApiOpen: true", "'PING'", "'PONG'",
+    "function createPerfettoSession(", "function perfettoEligible(", "function isPerfettoTraceName(",
+    "function buildPerfettoTraceMessage(", "function pfAscii(", "function perfettoNeedsTrustHint(",
+    'id="perfModal"', 'id="perfBody"', 'id="perfStatus"', 'id="perfTitle"',
+    'id="perfRetryBtn"', 'id="perfPopBtn"', 'id="perfCloseBtn"',
+    'id="perfettoOpenBtn"', "perfBtn.addEventListener('click', openPerfettoForCurrent)",
+    "async function perfettoTraceBuffer(", "async fileBuffer(", "rawText: null, file: f }",
+    "function closePerfetto(", "e.key === 'Escape'", "perfettoNeedsTrustHint(location.hostname)",
+    "window.open(PERFETTO_ORIGIN, '_blank')",
+  ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+});
