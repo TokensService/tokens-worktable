@@ -156,8 +156,7 @@
         <div class="pf-row">
           <h2 class="dshell-sub" style="margin:0" class="grow">Profiling 列表</h2>
           <span class="dshell-badge" id="countBadge">0</span>
-          <button class="dshell-btn dshell-btnGhost" id="clearLocalBtn" title="移除本地加载的条目">清空本地</button>
-          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="在内嵌 Perfetto UI（ui.perfetto.dev）中打开当前选中 trace 的交互式时间线；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
+          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把当前选中 trace 保存到本地下载目录（服务端文件），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
         </div>
         <div class="dshell-list" id="itemList" style="margin-top:8px; max-height:480px; overflow:auto"></div>
       </div>
@@ -719,6 +718,10 @@ function analyzeTraceKernels(events, cap){
    trace 只存在于浏览器内存（Perfetto UI 是纯前端应用），不上传任何服务器。
    本块自包含（不引用块外符号），测试经标记注释整段抽取。 */
 const PERFETTO_ORIGIN = 'https://ui.perfetto.dev';
+/* 内嵌 iframe 用内嵌模式 URL：mode=embedded 整体禁用侧边栏与分析上报（SidebarManagerImpl
+   disabled、NullAnalytics），hideSidebar=true 双保险隐藏（路由参数经 ROUTE_SCHEMA 校验，
+   布尔只认字面量 'true'）；弹出窗口/下载兜底仍用全功能 origin */
+const PERFETTO_EMBED_URL = PERFETTO_ORIGIN + '/?mode=embedded&hideSidebar=true';
 /* 可交给 Perfetto 的 trace 文件名判定（与服务端汇总器分流同口径：Chrome/PyTorch JSON trace） */
 function isPerfettoTraceName(name){
   return /\.trace\.json(\.gz)?$/i.test(name || '') || /trace.*\.json(\.gz)?$/i.test(name || '');
@@ -993,7 +996,7 @@ function statusBadge(s){
 }
 function renderOverview(){
   const card = $('overviewCard');
-  /* 「Perfetto打开」按钮固定在列表卡标题行（「清空本地」之后），仅当前选中条目可开时可用 */
+  /* 「Perfetto打开」按钮固定在列表卡标题行，仅当前选中条目可开时可用 */
   $('perfettoOpenBtn').disabled = !(cur && perfettoEligible(cur.item));
   if (!cur){ card.innerHTML = '<div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>'; $('stageCard').style.display='none'; $('bottleneckCard').style.display='none'; $('kernelCard').style.display='none'; $('aiCard').style.display='none'; return; }
   const p = cur.p, it = cur.item, m = metaOf(it);
@@ -1287,7 +1290,7 @@ async function openPerfettoForCurrent(){
   $('perfTitle').textContent = 'Perfetto UI · ' + it.name;
   perfStatus('加载 Perfetto UI（' + PERFETTO_ORIGIN + '）…');
   const frame = document.createElement('iframe');
-  frame.src = PERFETTO_ORIGIN + '/';
+  frame.src = PERFETTO_EMBED_URL;   /* 内嵌模式：无侧边栏、无分析上报 */
   frame.setAttribute('title', 'Perfetto UI');
   $('perfBody').appendChild(frame);
   const session = createPerfettoSession({
@@ -1343,26 +1346,36 @@ function closePerfetto(){
   $('perfPopBtn').disabled = true;
 }
 $('perfCloseBtn').addEventListener('click', closePerfetto);
-/* 「Perfetto打开」（列表卡标题行）：打开当前选中条目；openPerfettoForCurrent 内部对空选/非 trace 有 toast 兜底 */
-$('perfettoOpenBtn').addEventListener('click', openPerfettoForCurrent);
+/* 下载 trace 到本地下载目录：本地 File 给 blob URL，服务端走 /file raw=1 同源下载；返回是否触发 */
+function downloadTraceFile(it){
+  const a = document.createElement('a');
+  let blobUrl = '';
+  if (it.source === 'local' && it.file){ blobUrl = URL.createObjectURL(it.file); a.href = blobUrl; }
+  else if (it.path){ a.href = '/api/worktable/file?path=' + encodeURIComponent(it.path) + '&raw=1'; }
+  else return false;
+  a.download = it.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  return true;
+}
+/* 「Perfetto打开」（列表卡标题行）：先把服务端 trace 保存到本地下载目录（本地文件本就在本地，跳过），
+   再打开内嵌 Perfetto；重试路径不再重复下载 */
+$('perfettoOpenBtn').addEventListener('click', () => {
+  const it = cur && cur.item;
+  if (it && it.source !== 'local' && downloadTraceFile(it)) toast('已保存 trace 到本地下载目录：' + it.name);
+  openPerfettoForCurrent();
+});
 $('perfRetryBtn').addEventListener('click', () => {
   const cache = perfBufCache;      // 重试只重建 iframe + 握手，已读出的 trace 字节保留复用
   closePerfetto();
   perfBufCache = cache;
   openPerfettoForCurrent();
 });
-/* 超限兜底：下载原始 trace（本地 File 直接给 blob URL，服务端走 /file 同源下载），并打开 Perfetto 窗口引导拖入 */
+/* 超限兜底：下载原始 trace，并打开 Perfetto 窗口引导拖入 */
 $('perfDownloadBtn').addEventListener('click', () => {
   const it = cur && cur.item;
   if (!it) return;
-  const a = document.createElement('a');
-  let blobUrl = '';
-  if (it.source === 'local' && it.file){ blobUrl = URL.createObjectURL(it.file); a.href = blobUrl; }
-  else if (it.path){ a.href = '/api/worktable/file?path=' + encodeURIComponent(it.path) + '&raw=1'; }
-  else { toast('该条目无原始文件可下载'); return; }
-  a.download = it.name;
-  document.body.appendChild(a); a.click(); a.remove();
-  if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  if (!downloadTraceFile(it)){ toast('该条目无原始文件可下载'); return; }
   const win = window.open(PERFETTO_ORIGIN, '_blank');
   perfStatus('已下载 ' + it.name + (win ? '，并打开了 Perfetto 窗口——把下载的文件拖进去（或点 Open trace 选择）即可' : '；浏览器拦截了弹窗，请手动打开 ' + PERFETTO_ORIGIN + ' 后拖入下载的文件'), false);
   $('perfDownloadBtn').style.display = '';   /* perfStatus 会收按钮，下载可重复点击，重新点亮 */
@@ -1508,11 +1521,6 @@ $('localFileInput').addEventListener('change', async (ev) => {
   ev.target.value = '';
   renderList();
   if (items.length && !currentId) selectItem(items[0].id);
-});
-$('clearLocalBtn').addEventListener('click', () => {
-  items = items.filter(it => it.source !== 'local');
-  if (currentId && !items.find(x => x.id === currentId)){ currentId = null; cur = null; renderOverview(); }
-  renderList();
 });
 
 /* ================= 服务端单文件 ================= */
