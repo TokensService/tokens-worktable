@@ -232,3 +232,68 @@ test('筛选状态按面板实例隔离：另一面板实例不受影响',()=>{
   ctx.renderEnvMulti({btnId:'schedEnvMultiBtn',panelId:'schedEnvMultiPanel',getIds:()=>[],setIds:()=>{}});
   assert.deepEqual(optIds(panel2),['env-c','env-b','env-d','env-a'],'定时页面板未开筛选，仍列全部（分组排序生效）');
 });
+
+/* ==================== availOnly（运行弹窗）：默认勾选 + 预留给他人禁选 ==================== */
+test('availOnly（运行弹窗）：「预留给我 / 未分配」默认勾选；预留给他人节点不可勾选（含 admin）',()=>{
+  const btn=elStub(),panel=elStub();
+  const ctx=loadCtx(btn,panel,{currentUserIsAdmin:true});   // admin 同样受限
+  ctx.renderEnvMulti({btnId:'envMultiBtn',panelId:'envMultiPanel',getIds:()=>[],setIds:()=>{},availOnly:true});
+  assert.equal(filterCb(panel,'avail').checked,true,'「预留给我 / 未分配」默认勾选');
+  assert.deepEqual(optIds(panel),['env-c','env-b','env-d'],'默认只显示预留给我/未分配');
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.envMultiListFilter.envMultiPanel)),{avail:true,gpuIdle:false},'默认筛选物化进面板状态');
+
+  filterCb(panel,'avail').checked=false; filterCb(panel,'avail').fire('change');
+  assert.deepEqual(optIds(panel),['env-c','env-b','env-d','env-a'],'取消勾选后全部可见（分组排序仍生效）');
+  const cbOf=id=>panel.querySelectorAll('[data-envcb]').find(c=>c.getAttribute('data-envcb')===id);
+  assert.equal(cbOf('env-a').disabled,true,'预留给他人节点不可勾选（admin 同样受限）');
+  assert.equal(cbOf('env-b').disabled,false,'未分配节点可勾选');
+  assert.equal(cbOf('env-c').disabled,false,'预留给我节点可勾选');
+  const labA=panel.querySelectorAll('[data-envopt]').find(l=>l.getAttribute('data-envopt')==='env-a');
+  assert.equal(labA.title,'该节点当前预留给他人，不可选择','禁选行带悬停提示');
+});
+
+test('availOnly：已选中的预留给他人节点保留可取消（筛选遮蔽时走已选区 ×；取消筛选后 checkbox 可取消）',()=>{
+  const btn=elStub(),panel=elStub();
+  const ctx=loadCtx(btn,panel);
+  let current=['env-a'];
+  const opts={btnId:'envMultiBtn',panelId:'envMultiPanel',getIds:()=>current,setIds:ids=>{current=ids.slice();},availOnly:true};
+  ctx.renderEnvMulti(opts);
+  assert.equal(panel.querySelectorAll('[data-envcb]').find(c=>c.getAttribute('data-envcb')==='env-a'),undefined,'默认筛选下被遮蔽节点无候选行');
+  const rm=panel.querySelectorAll('[data-envmulti-rm]').find(b=>b.getAttribute('data-envmulti-rm')==='env-a');
+  assert.ok(rm,'已选区有 × 可取消');
+  rm.fire('click');
+  assert.deepEqual(current,[],'已选区 × 摘掉');
+
+  current=['env-a'];   // 模拟再次继承自默认环境/运行框的选择
+  filterCb(panel,'avail').checked=false; filterCb(panel,'avail').fire('change');
+  const cbA=panel.querySelectorAll('[data-envcb]').find(c=>c.getAttribute('data-envcb')==='env-a');
+  assert.ok(cbA && cbA.disabled===false,'取消筛选后，已选中的被拦节点 checkbox 不禁用（可取消）');
+  cbA.checked=false; cbA.fire('change');
+  assert.deepEqual(current,[],'checkbox 取消勾选摘掉');
+});
+
+test('availOnly：勾选「GPU 空闲」不丢默认勾选的「预留给我 / 未分配」（交集成效）',()=>{
+  const btn=elStub(),panel=elStub();
+  const ctx=loadCtx(btn,panel,{gpuStatus:{
+    'env-a':{used:0,total:8,containers:[]},   // 预留给他人·空闲
+    'env-b':{used:0,total:8,containers:[]},   // 未分配·空闲
+    'env-c':{used:0,total:8,containers:[]},   // 预留给我·空闲
+    'env-d':{used:3,total:8,containers:[]},   // 未分配·占用
+  }});
+  const opts={btnId:'envMultiBtn',panelId:'envMultiPanel',getIds:()=>[],setIds:()=>{},availOnly:true};
+  ctx.renderEnvMulti(opts);
+  filterCb(panel,'gpuIdle').checked=true; filterCb(panel,'gpuIdle').fire('change');
+  assert.equal(ctx.envMultiListFilter.envMultiPanel.avail,true,'勾选 GPU 空闲不丢 avail 默认勾选');
+  assert.deepEqual(optIds(panel),['env-c','env-b'],'交集：滤掉预留给他人（env-a）与占用（env-d）');
+});
+
+test('非 availOnly 面板：无默认勾选；本桩无 envReservedForOthers 时预留给他人节点可勾选（既有拦截口径由 test_node_reservations 覆盖）',()=>{
+  const btn=elStub(),panel=elStub();
+  const ctx=loadCtx(btn,panel,{currentUserIsAdmin:true});
+  ctx.renderEnvMulti({btnId:'envMultiBtn',panelId:'envMultiPanel',getIds:()=>[],setIds:()=>{}});
+  assert.equal(filterCb(panel,'avail').checked,false,'筛选默认不勾选');
+  assert.deepEqual(optIds(panel),['env-c','env-b','env-d','env-a'],'全部可见');
+  const cbA=panel.querySelectorAll('[data-envcb]').find(c=>c.getAttribute('data-envcb')==='env-a');
+  assert.equal(cbA.disabled,false,'无 availOnly 时不下禁选');
+  assert.equal(ctx.envMultiListFilter.envMultiPanel,undefined,'非 availOnly 不物化默认筛选');
+});
