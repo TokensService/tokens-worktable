@@ -602,13 +602,16 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     /* 点击先保存到本地（服务端文件）再打开；内嵌 iframe 走 embedded 模式关侧边栏 */
     "function downloadTraceFile(", "PERFETTO_EMBED_URL", "mode=embedded&hideSidebar=true",
     "已保存 trace 到本地下载目录",
-    /* 保存目录（FS API + IndexedDB 持久化）与重复下载跳过；多选同时打开 */
-    'id="saveDirBtn"', 'id="saveDirClear"', "showDirectoryPicker", "dsh-profiling",
+    /* 保存目录（「设置」标签页配置服务端路径，cp 落盘、存在跳过）与重复下载跳过；多选同时打开 */
+    'id="tab-settings"', 'data-tab="settings"', 'id="saveDirPath"', 'id="saveDirSaveBtn"', 'id="saveDirClearBtn"',
+    "dsh.profiling.saveDir", "function saveTraceToServerDir(", "/api/worktable/copy", "保存目录已存在，跳过",
     "function resolvePerfettoTargets(", "perfPicks", 'class="pf-pick"', "此前已下载过，跳过重复下载",
-    "function maybeWriteToSaveDir(", "已保存到 ", "function ensureSaveDirPermission(",
+    "已保存到 ",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
   /* 「清空本地」按钮已删除（标记、处理器均不再存在） */
   assert.ok(!html.includes('clearLocalBtn'), "「清空本地」按钮及其处理器应已移除");
+  assert.ok(!html.includes('saveDirBtn'), "FS API 版「保存目录」按钮应已移除（改为设置页路径）");
+  assert.ok(!html.includes('showDirectoryPicker'), "FS API 目录选择器应已移除");
   assert.ok(!html.includes('在 Perfetto 中打开</button>'), "概览卡内的旧按钮注入已移除");
 });
 
