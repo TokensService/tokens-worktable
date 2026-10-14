@@ -122,11 +122,11 @@
           <div class="pf-row">
             <span class="dshell-muted" style="flex:none">服务器</span>
             <div class="pf-nodePicker">
-              <input class="dshell-input" id="srvNodeSearch" style="width:100%" placeholder="搜索 / 选择服务器（名称或 IP）…" autocomplete="off" title="点击展开服务器列表，输入按名称 / IP 过滤；列表从流水线页「节点」导入" />
+              <input class="dshell-input" id="srvNodeSearch" style="width:100%" placeholder="搜索 / 选择服务器（名称或 IP）…" autocomplete="off" title="点击展开服务器列表，输入按名称 / IP 过滤；列表从流水线页「节点管理」导入" />
               <select id="srvNode" style="display:none"></select>
               <div class="pf-nodePanel" id="srvNodePanel" style="display:none"><div id="srvNodeList"></div></div>
             </div>
-            <button class="dshell-btn dshell-btnGhost" id="srvNodeRefresh" title="重新从流水线页「节点」导入服务器列表">↻</button>
+            <button class="dshell-btn dshell-btnGhost" id="srvNodeRefresh" title="重新从流水线页「节点管理」导入服务器列表">↻</button>
           </div>
           <input class="dshell-input" id="srvPath" placeholder="文件或文件夹绝对路径（远程服务器上的文件会先拉到本机缓存再解析）" style="margin-top:8px" />
           <div class="pf-row" style="margin-top:8px">
@@ -134,7 +134,7 @@
             <button class="dshell-btn dshell-btnGhost" id="srvRescanBtn" title="重新扫描当前记忆的文件夹">↻ 重新扫描</button>
             <button class="dshell-btn dshell-btnGhost" id="srvBrowseBtn">浏览…</button>
           </div>
-          <p class="dshell-muted" style="margin:8px 0 0">路径是文件则加载、是文件夹则扫描其中全部 profiling 文件（单层，最多 500 条）；服务器列表从流水线页「节点」导入（含 SSH 凭据，支持搜索选择），远程文件经 SSH/SCP 拉到本机（落点为该节点的服务端保存目录，「设置」标签页可配；未配置走 ~/.dsh/storages/remote-cache/）后走本机解析链路。</p>
+          <p class="dshell-muted" style="margin:8px 0 0">路径是文件则加载、是文件夹则扫描其中全部 profiling 文件（单层，最多 500 条）；服务器列表从流水线页「节点管理」导入（含 SSH 凭据，支持搜索选择），远程文件经 SSH/SCP 拉到本机（落点为该节点的服务端保存目录，「设置」标签页可配；未配置走 ~/.dsh/storages/remote-cache/）后走本机解析链路。</p>
           <div id="srvBrowser" style="display:none; margin-top:8px">
             <div class="pf-row">
               <button class="dshell-btn dshell-btnGhost" id="srvUpBtn">⬆ 上级</button>
@@ -1777,7 +1777,7 @@ async function selectItem(id){
 }
 
 /* ================= 服务端（本机 / pipeline 节点远程） ================= */
-/* 服务器列表从流水线页「节点」导入（GET /api/worktable/pipeline 的 config.environments，含 SSH 凭据）；
+/* 服务器列表从流水线页「节点管理」导入（GET /api/worktable/pipeline 的 config.environments，含 SSH 凭据）；
    远程条目先经 /api/worktable/rfetch 拉到本机（落点优先该节点的服务端保存目录，未配置走 ~/.dsh/storages/remote-cache/）再走本机解析链路 */
 const SRV_NODE_KEY = 'dsh.profiling.srvNode';
 let srvNodes = [];   /* pipeline environments（含 ip/user/pass） */
