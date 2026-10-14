@@ -213,11 +213,11 @@
     </div>
   </div>
 
-  <!-- 页面导航（吸顶：纵向滚动时「流水线 / 定时 / 节点 / 设置」按钮始终冻结在行首，背景走主题变量适配浅色/深色） -->
+  <!-- 页面导航（吸顶：纵向滚动时「流水线 / 定时 / 节点管理 / 设置」按钮始终冻结在行首，背景走主题变量适配浅色/深色） -->
   <div style="display:flex; gap:6px; margin:2px 0 4px; position:sticky; top:0; z-index:20; background:var(--dsw-alias-bg-base); padding:6px 0;">
     <button id="navMain" class="dshell-btn mini" data-pagenav="main">流水线</button>
     <button id="navSched" class="dshell-btn dshell-btnGhost mini" data-pagenav="sched">定时</button>
-    <button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点</button>
+    <button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点管理</button>
     <button id="navEnv" class="dshell-btn dshell-btnGhost mini" data-pagenav="env">设置</button>
   </div>
   <div id="pageMain">
@@ -500,7 +500,7 @@
     </div>
   </div><!-- /pageSched -->
 
-  <!-- 节点（独立页面：节点环境 + 节点预留分配；节点环境卡片自「设置」页迁入，DOM id 全部不变，JS 引用无需改动） -->
+  <!-- 节点管理（独立页面：节点环境 + 节点预留分配；节点环境卡片自「设置」页迁入，DOM id 全部不变，JS 引用无需改动） -->
   <div id="pageNode" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; margin-bottom:8px;">
@@ -528,7 +528,7 @@
     </div>
   </div><!-- /pageNode -->
 
-  <!-- 设置（独立页面：代码仓 / 清理检查等脚本 / 服务配置；节点环境卡片已迁至「节点」页） -->
+  <!-- 设置（独立页面：代码仓 / 清理检查等脚本 / 服务配置；节点环境卡片已迁至「节点管理」页） -->
   <div id="pageEnv" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
@@ -914,7 +914,7 @@
       </div>
     </div>
   </div>
-  <!-- 节点预留分配弹窗（「节点」页节点表「操作」列 → 分配）：按用户 + 日期时间段分配节点；
+  <!-- 节点预留分配弹窗（「节点管理」页节点表「操作」列 → 分配）：按用户 + 日期时间段分配节点；
        admin 可编辑（保存携带打开弹窗时的窗口快照 base，供服务端 409 比对）；
        非 admin 打开为只读形态：全部输入禁用、底栏只留「关闭」。结构复用 pipelineRunDialog 模式 -->
   <div id="nodeResDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:216; align-items:center; justify-content:center;">
@@ -2379,7 +2379,7 @@ function envConfigEditable(){
   if(!me) return true;
   return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;
 }
-/* 节点配置门禁应用：按当前会话身份切换「节点」页编辑区显隐（非 admin 隐藏添加/编辑表单，换只读提示）。
+/* 节点配置门禁应用：按当前会话身份切换「节点管理」页编辑区显隐（非 admin 隐藏添加/编辑表单，换只读提示）。
    非 admin 同时把本地节点列表对齐到服务端基线（丢弃本地未落盘的增删改）——服务端写保护会 403 拒绝
    非 admin 的环境变更，本地残留分歧会让随后每次保存（哪怕只改流水线）都撞 403。探测在途不动作；
    token 模式退化为全权（envConfigEditable=true，下方 snap 分支不进）。身份到达后由
@@ -11368,7 +11368,7 @@ $('pmSave').addEventListener('click', ()=>{
   prom = collectPromForm(); saveProm();
   $('pmSavedTip').textContent='已保存。'; setTimeout(()=>{ $('pmSavedTip').textContent=''; },2000);
 });
-/* 页面切换（流水线 / 定时 / 节点 / 设置） */
+/* 页面切换（流水线 / 定时 / 节点管理 / 设置） */
 function switchPage(p){
   $('pageMain').style.display = p==='main'?'':'none';
   $('pageSched').style.display = p==='sched'?'':'none';
@@ -11379,7 +11379,7 @@ function switchPage(p){
   $('navNode').className = 'dshell-btn mini'+(p==='node'?'':' dshell-btnGhost');
   $('navEnv').className = 'dshell-btn mini'+(p==='env'?'':' dshell-btnGhost');
   if(p==='sched'){ renderSchedForm(); loadPlans(); }   // 进「定时」页重新拉取计划列表：其他浏览器/服务端的增删与活动执行状态一并刷新
-  if(p==='node'){ loadNodeReservations(); }   // 进「节点」页顺带刷新预留数据：他端的分配改动同步进「预留」列与选择拦截
+  if(p==='node'){ loadNodeReservations(); }   // 进「节点管理」页顺带刷新预留数据：他端的分配改动同步进「预留」列与选择拦截
 }
 $('navMain').addEventListener('click', ()=>switchPage('main'));
 $('navSched').addEventListener('click', ()=>switchPage('sched'));

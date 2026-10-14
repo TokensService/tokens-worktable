@@ -1,4 +1,4 @@
-/* 节点预留（「节点」独立页签 + 按用户/日期时间段分配）的页面侧测试：
+/* 节点预留（「节点管理」独立页签 + 按用户/日期时间段分配）的页面侧测试：
    - 静态契约：navNode 页签在 navEnv 之前；pageNode 容器持有节点环境卡片（DOM id 不变）、pageEnv 不再含 envTable；
      switchPage 有 node 分支并顺带 loadNodeReservations；绑定在尾部统一初始化区（const $ 声明之后，防 TDZ 回归）；
      预留数据不进配置导出（collectConfig 不引用 nodeReservations）。
@@ -106,7 +106,7 @@ test('静态契约：navNode 页签位于 navSched 与 navEnv 之间，带 data-
   const navNode = source.indexOf('id="navNode"');
   const navEnv = source.indexOf('id="navEnv"');
   assert.ok(navSched > 0 && navNode > navSched && navEnv > navNode, 'navNode 应在 navSched 之后、navEnv 之前');
-  assert.match(source, /<button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点<\/button>/);
+  assert.match(source, /<button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点管理<\/button>/);
 });
 
 test('静态契约：pageNode 容器持有节点环境卡片（DOM id 不变），pageEnv 不再含节点环境卡片', () => {
