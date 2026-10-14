@@ -1839,7 +1839,9 @@ let pipelineRunDialogPipelineId='';
 let pipelineRunDialogEnvIds=[];
 function portalPipelineRunPanels(){
   const body=document.body; if(!body) return;
-  ['pipelineRunBranchPanel','pipelineRunStrategyPanel'].forEach(id=>{
+  /* 运行弹窗内的下拉面板提升到 body 浮层：fixed 定位 + z-index 1000 显示在最上层，
+     不被弹窗卡片（overflow:auto）裁剪，也不随弹窗内容滚动错位 */
+  ['pipelineRunEnvMultiPanel','pipelineRunBranchPanel','pipelineRunStrategyPanel'].forEach(id=>{
     const panel=$(id); if(panel&&panel.parentNode!==body) body.appendChild(panel);
   });
 }
@@ -1853,6 +1855,7 @@ function positionPipelineRunPanel(panelId,anchorId){
   panel.style.zIndex='1000';
 }
 function positionPipelineRunPanels(){
+  positionPipelineRunPanel('pipelineRunEnvMultiPanel','pipelineRunEnvMultiBtn');
   positionPipelineRunPanel('pipelineRunBranchPanel','pipelineRunBranch');
   positionPipelineRunPanel('pipelineRunStrategyPanel','pipelineRunStrategy');
 }
@@ -1868,6 +1871,9 @@ function renderPipelineRunDialogEnvs(){
     btnId:'pipelineRunEnvMultiBtn',panelId:'pipelineRunEnvMultiPanel',
     getIds:()=>pipelineRunDialogEnvIds,
     setIds:ids=>{ pipelineRunDialogEnvIds=ids.slice(); },
+    /* 运行弹窗收紧可选范围：「预留给我 / 未分配」筛选默认勾选，且预留给他人（envAvailGroup===2）的
+       节点一律不可勾选（含 admin；已选中的保留可取消勾选） */
+    availOnly:true,
   });
 }
 function openPipelineRunDialog(id){
@@ -2095,6 +2101,8 @@ function envMultiSortList(list, sort){
    - 候选列表按可用分组排序：当前生效预留含我（预留给自己）→ 无生效预留（未分配）→ 预留给他人，组内保持节点原序
    - 面板宽度 max-content 自适应：候选行 white-space:nowrap，一个节点的全部信息（名称/IP/GPU/预留徽标）一行显示全；
      上限 max-width:min(92vw,880px)，超出横向滚动；高度 max-height:min(60vh,560px)
+   - o.availOnly（运行弹窗）：「预留给我 / 未分配」筛选默认勾选，预留给他人节点一律禁选（含 admin）；
+     运行弹窗面板并 portal 到 body 以 fixed/z-index 1000 显示在最上层（不被弹窗 overflow 裁剪）
    - 已选节点区支持排序（名称 / IP / 设备状态，点一次升序、再点降序）与 ↑↓ 手动调序；
      顺序写回 ids，决定 TARGET_IP（首个）/ TARGET_IPS 的注入顺序 */
 function renderEnvMulti(o){
@@ -2105,6 +2113,9 @@ function renderEnvMulti(o){
   btn.textContent = sel.map(e=>e.ip).join('，') || '选择 IP';
   btn.title = btn.textContent;   // 限宽省略时悬浮可见完整 IP 列表
   const pid=o.panelId;
+  /* availOnly 模式（当前仅运行弹窗）：「预留给我 / 未分配」筛选默认勾选（仅首次渲染物化默认值，
+     用户在会话内的勾选改动保持）；候选行另按 envAvailGroup 禁选预留给他人节点 */
+  if(o.availOnly && !envMultiListFilter[pid]) envMultiListFilter[pid]={avail:true,gpuIdle:false};
   const kw=(envMultiSearch[pid]||'').trim().toLowerCase();
   const selSort=envMultiSelSort[pid]||{key:null,dir:1};
   const filt=envMultiListFilter[pid]||null;
@@ -2218,6 +2229,10 @@ function renderEnvMulti(o){
     /* 节点预留拦截：当前被预留给他人的节点（envReservedForOthers）在未选中态禁用；
        已选中的保留可取消勾选，便于用户摘掉。vm 抽取测试无预留函数时按无预留处理（typeof 守卫） */
     if((typeof envReservedForOthers==='function') && envReservedForOthers(e) && !on) cb.disabled=true;
+    /* availOnly 模式（运行弹窗）：预留给他人（envAvailGroup===2）的节点一律不可勾选（含 admin）；
+       已选中的保留可取消勾选（便于摘掉继承自默认环境/运行框的节点） */
+    if(o.availOnly && envAvailGroup(e)===2 && !on) cb.disabled=true;
+    if(cb.disabled) lab.title='该节点当前预留给他人，不可选择';
     const textSpan=document.createElement('span');
     textSpan.textContent=e.name+' ';
     const meta=document.createElement('span');
@@ -11129,8 +11144,9 @@ $('nodeResAddWindow').addEventListener('click', ()=>{
   renderNodeResWindows();
 });
 $('nodeResSave').addEventListener('click', saveNodeResDialog);
-$('pipelineRunEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const panel=$('pipelineRunEnvMultiPanel'); panel.style.display=panel.style.display==='none'?'block':'none'; });
-document.addEventListener('click',e=>{ const panel=$('pipelineRunEnvMultiPanel'),wrap=$('pipelineRunEnvMulti'); if(panel&&wrap&&!wrap.contains(e.target)) panel.style.display='none'; });
+$('pipelineRunEnvMultiBtn').addEventListener('click',e=>{ e.stopPropagation(); const panel=$('pipelineRunEnvMultiPanel'); panel.style.display=panel.style.display==='none'?'block':'none'; if(panel.style.display==='block') positionPipelineRunPanel('pipelineRunEnvMultiPanel','pipelineRunEnvMultiBtn'); });
+/* 点外关闭：面板已 portal 到 body（最上层 fixed 浮层），面板内部点击不算点外 */
+document.addEventListener('click',e=>{ const panel=$('pipelineRunEnvMultiPanel'),wrap=$('pipelineRunEnvMulti'); if(panel&&wrap&&!wrap.contains(e.target)&&!panel.contains(e.target)) panel.style.display='none'; });
 $('pipelineRunRepo').addEventListener('change',()=>{ const bp=$('pipelineRunBranchPanel'),sp=$('pipelineRunStrategyPanel'); if(bp) bp.style.display='none'; if(sp) sp.style.display='none'; loadDeployStrategies(true,'run'); });
 $('pipelineRunBranch').addEventListener('focus',()=>{ const ctx=pickCtx('run'),repo=ctx.repo(); if(repo) loadRepoBranches(repo,false,'run').then(()=>renderBranchPanel(true,'run')); });
 $('pipelineRunBranch').addEventListener('change',()=>loadDeployStrategies(false,'run'));

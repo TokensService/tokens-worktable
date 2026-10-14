@@ -78,6 +78,9 @@ function makeContext(runResult = 'submitted') {
     pipelineRunStrategy: { value: '', focus() {} },
     pipelineRunStrategyPanel: new FakePanel(),
     pipelineRunRepo: new FakeSelect(),
+    pipelineRunEnvMulti: { style: {} },
+    pipelineRunEnvMultiBtn: { getBoundingClientRect: () => ({ left: 120, bottom: 180, width: 170 }) },
+    pipelineRunEnvMultiPanel: { style: { display: 'none' } },
     pipelineRunWeightsPath: { value: '' },
     pipelineRunPresets: { querySelectorAll: () => presetInputs },
     pipelineRunWarning: { textContent: '', style: { display: 'none' } },
@@ -177,13 +180,36 @@ test('打开弹窗继承运行流水线当前值，不改动或启动当前流�
   assert.deepEqual(calls.run, []);
 });
 
-test('打开运行弹窗将分支与策略列表提升到 body 浮层', () => {
+test('打开运行弹窗将环境多选、分支与策略面板提升到 body 浮层', () => {
   const { context, elements, body } = makeContext();
 
   context.openPipelineRunDialog('pipe-2');
 
+  assert.ok(body.children.includes(elements.pipelineRunEnvMultiPanel), '环境多选面板提升到 body 浮层');
   assert.ok(body.children.includes(elements.pipelineRunBranchPanel));
   assert.ok(body.children.includes(elements.pipelineRunStrategyPanel));
+});
+
+test('运行弹窗环境多选面板按锚点 fixed 定位到最上层（z-index 1000，不被弹窗 overflow 裁剪）', () => {
+  const { context, elements } = makeContext();
+  context.openPipelineRunDialog('pipe-2');
+
+  context.positionPipelineRunPanel('pipelineRunEnvMultiPanel', 'pipelineRunEnvMultiBtn');
+  const style = elements.pipelineRunEnvMultiPanel.style;
+  assert.equal(style.position, 'fixed', 'fixed 定位');
+  assert.equal(style.zIndex, '1000', 'z-index 1000 显示在最上层（高于弹窗 z-index 214）');
+  assert.equal(style.left, '120px', '按锚点 left 定位');
+  assert.equal(style.top, '184px', '按锚点 bottom+4 定位');
+  assert.equal(style.minWidth, '200px', 'min-width 跟随锚点宽度下限');
+});
+
+test('运行弹窗环境多选收紧为 availOnly；开合接线的静态契约', () => {
+  const { context, getEnvControl } = makeContext();
+  context.openPipelineRunDialog('pipe-2');
+  assert.equal(getEnvControl().availOnly, true, 'renderPipelineRunDialogEnvs 以 availOnly 渲染（预留给我/未分配默认勾选、预留给他人禁选）');
+  assert.ok(source.includes("if(panel.style.display==='block') positionPipelineRunPanel('pipelineRunEnvMultiPanel','pipelineRunEnvMultiBtn')"), '展开面板时按锚点定位');
+  const closeLine = source.split('\n').find(l => l.includes("const panel=$('pipelineRunEnvMultiPanel'),wrap=$('pipelineRunEnvMulti')"));
+  assert.ok(closeLine && closeLine.includes('!panel.contains(e.target)'), '点外关闭不得吞掉面板内点击（面板已 portal 到 body）');
 });
 
 test('运行弹窗的分支与策略面板使用弹窗输入和代码仓上下文', () => {
