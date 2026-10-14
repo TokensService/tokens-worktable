@@ -572,5 +572,8 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     "async function perfettoTraceBuffer(", "async fileBuffer(", "rawText: null, file: f }",
     "function closePerfetto(", "e.key === 'Escape'", "perfettoNeedsTrustHint(location.hostname)",
     "window.open(PERFETTO_ORIGIN, '_blank')",
+    /* 握手等待计时：慢网加载期间状态栏逐秒刷新，避免「读取 trace…」假象卡死 */
+    "function perfWaitBegin(", "function perfWaitStop(", "等待 Perfetto UI 就绪… 已等待 ",
+    "perf.session.isReady()) perfWaitBegin()",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
 });
