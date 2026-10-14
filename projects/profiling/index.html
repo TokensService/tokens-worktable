@@ -1515,7 +1515,8 @@ function renderList(){
       + (m.tag ? '<span class="tag">#' + esc(m.tag) + '</span>' : '') + '</div>'
       + (m.desc ? '<div class="desc">' + esc(m.desc) + '</div>' : '')
       + '<div class="pf-editbox"><input class="dshell-input" data-role="tag" placeholder="标签" value="' + esc(m.tag || '') + '"><input class="dshell-input" data-role="desc" placeholder="描述" value="' + esc(m.desc || '') + '"></div>'
-      + '</div><button class="dshell-btn dshell-btnGhost" data-role="edit" style="flex:none;padding:4px 10px">✎</button></div>';
+      + '</div><button class="dshell-btn dshell-btnGhost" data-role="edit" style="flex:none;padding:4px 10px" title="编辑标签/描述">✎</button>'
+      + '<button class="dshell-btn dshell-btnGhost" data-role="del" style="flex:none;padding:4px 10px" title="从列表删除（服务端文件夹条目此后不再被自动扫描带回；显式重新加载可找回）">×</button></div>';
   }).join('');
   box.querySelectorAll('.pf-item').forEach(el => {
     const id = el.dataset.id;
@@ -1526,6 +1527,7 @@ function renderList(){
       $('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length;
     });
     el.addEventListener('click', (ev) => {
+      if (ev.target.closest('[data-role="del"]')){ ev.stopPropagation(); deleteItem(id); return; }
       if (ev.target.closest('[data-role="edit"]')){
         el.classList.toggle('editing'); ev.stopPropagation(); return;
       }
@@ -1543,6 +1545,23 @@ function renderList(){
       inp.addEventListener('click', (ev) => ev.stopPropagation());
     });
   });
+}
+/* ================= 列表项删除（含扫描墓碑） ================= */
+const DEL_KEY = 'dsh.profiling.deleted';   /* 服务端路径墓碑：被删条目不再被文件夹自动扫描带回 */
+function untombstone(path){
+  const del = load(DEL_KEY, {});
+  if (path && del[path]){ delete del[path]; store(DEL_KEY, del); }
+}
+function deleteItem(id){
+  const idx = items.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const it = items[idx];
+  items.splice(idx, 1);
+  perfPicks.delete(id);
+  if (it.path){ const del = load(DEL_KEY, {}); del[it.path] = Date.now(); store(DEL_KEY, del); }
+  if (currentId === id){ currentId = null; cur = null; renderOverview(); }
+  renderList();
+  toast('已删除：' + it.name + (it.path ? '（服务端目录扫描将不再带回；显式重新加载可找回）' : ''));
 }
 async function selectItem(id){
   const it = items.find(x => x.id === id);
@@ -1645,6 +1664,7 @@ $('localFileInput').addEventListener('change', async (ev) => {
 $('loadSrvFileBtn').addEventListener('click', async () => {
   const path = $('srvFilePath').value.trim();
   if (!path) { toast('请输入服务端文件路径'); return; }
+  untombstone(path);   /* 显式重新加载：清除墓碑 */
   const id = 'server:' + path;
   if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path, source: 'server', size: 0, binary: isBinaryName(path), data: null, rawText: null });
   renderList(); selectItem(id);
@@ -1682,7 +1702,8 @@ async function scanServerDir(){
   store(DIR_KEY, dir);
   try{
     const d = await api.fs(dir);
-    const files = d.entries.filter(e => !e.isDir && !e.hidden && isProfileName(e.name));
+    const deleted = load(DEL_KEY, {});
+    const files = d.entries.filter(e => !e.isDir && !e.hidden && isProfileName(e.name) && !deleted[e.path]);   /* 墓碑条目不再带回 */
     for (const e of files){
       const id = 'server:' + e.path;
       if (!items.find(x => x.id === id)) items.push({ id, name: e.name, path: e.path, source: 'server', size: 0, binary: isBinaryName(e.name), data: null, rawText: null });
@@ -1715,6 +1736,7 @@ async function renderDirBrowser(dir){
     box.querySelectorAll('.dshell-listItem').forEach(el => el.addEventListener('click', () => {
       if (el.dataset.dir === '1'){ renderDirBrowser(el.dataset.p); return; }
       const path = el.dataset.p;
+      untombstone(path);   /* 显式点选：清除墓碑 */
       const id = 'server:' + path;
       if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path, source: 'server', size: 0, binary: isBinaryName(path), data: null, rawText: null });
       renderList(); selectItem(id);
