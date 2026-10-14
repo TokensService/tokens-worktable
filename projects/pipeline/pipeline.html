@@ -2372,18 +2372,29 @@ function envReservationIssue(envs){
   if(!blocked.length) return null;
   return '节点预留冲突：'+blocked.join('；');
 }
-/* 节点表「预留」列摘要：无预留 —；生效中醒目样式（预留中：u1、u2 · 至 MM-DD HH:mm）；仅未来/过往时段显示时段数；
-   摘要后跟「分配」按钮（admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态）。用户名等注入字段一律 esc 转义。 */
+/* 节点表「预留」列：逐时段一行展示（开始 ~ 结束 · 用户 · 备注），按开始时间升序；
+   生效中时段整行醒目并前缀「预留中」，已结束时段置灰并后缀「（已结束）」，未来时段普通样式；
+   无预留显示 —。行尾跟「分配」按钮（admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态）。
+   用户名/备注等注入字段一律 esc 转义；逐行 white-space:nowrap 保证一个时段一行（长内容经表格外层 overflow 横向滚动）。 */
 function envResSummaryHtml(e){
-  const info=envReservationInfo(e, Date.now());
-  const total=reservationsForNode(e.id).length;
+  const records=reservationsForNode(e.id);
+  const now=Date.now();
   let summary;
-  if(info.reserved){
-    summary='<span style="color:var(--st-run);font-weight:600;" title="当前生效的预留时段 '+info.windows.length+' 个">预留中：'+esc(info.users.join('、'))+' · 至 '+esc(fmtResTime(info.until)||'—')+'</span>';
-  } else if(total>0){
-    summary='<span class="dshell-muted">'+total+' 个时段</span>';
-  } else {
+  if(!records.length){
     summary='<span class="dshell-muted">—</span>';
+  } else {
+    summary=records.map(r=>{
+      const s=Date.parse(r&&r.start), t=Date.parse(r&&r.end);
+      const range=esc(fmtResTime(r&&r.start)||'—')+' ~ '+esc(fmtResTime(r&&r.end)||'—');
+      const users=(Array.isArray(r&&r.users)&&r.users.length?r.users:['—']).map(u=>esc(u)).join('、');
+      const note=r&&r.note?' · '+esc(r.note):'';
+      const line=range+' · '+users+note;
+      if(!isNaN(s)&&!isNaN(t)&&s<=now&&now<t)
+        return '<div style="white-space:nowrap;color:var(--st-run);font-weight:600;" title="当前生效的预留时段">预留中 · '+line+'</div>';
+      if(!isNaN(t)&&t<=now)
+        return '<div class="dshell-muted" style="white-space:nowrap;" title="已结束的预留时段">'+line+'（已结束）</div>';
+      return '<div style="white-space:nowrap;">'+line+'</div>';
+    }).join('');
   }
   return summary+' <button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存）">分配</button>';
 }
