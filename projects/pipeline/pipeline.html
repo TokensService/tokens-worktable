@@ -918,9 +918,6 @@
       <div id="nodeResList" style="display:flex;flex-direction:column;gap:10px;"></div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <button id="nodeResAddWindow" type="button" class="dshell-btn dshell-btnGhost mini">＋ 添加时段</button>
-        <span style="flex:1"></span>
-        <input id="nodeResManualUser" class="dshell-input" placeholder="手动添加用户" autocomplete="off" style="width:150px;" title="候选用户来自 /auth/users；拉取失败或需分配给未列出的用户时，在此输入用户名加入候选" />
-        <button id="nodeResManualAdd" type="button" class="dshell-btn dshell-btnGhost mini" title="把输入的用户名加入各时段的候选复选列表">添加用户</button>
       </div>
       <div id="nodeResTip" class="dshell-muted" style="font-size:11px;min-height:14px;"></div>
       <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l1);">
@@ -2298,7 +2295,7 @@ function bindGpuCell(cell, e){
    记录形态：{id,nodeId,users,start,end,note,createdBy,createdAt,updatedAt}，start/end 为 ISO UTC 字符串。 */
 let nodeReservations=[];   // 服务端全量预留记录；拉取失败静默保留旧值
 let authUsersCache=null;   // /auth/users 用户名候选缓存（预留弹窗）；拉取失败保持 null，候选回退为「现有预留用户名并集 + 当前用户名」
-let nodeResEdit=null;      // 预留弹窗编辑态：{envId, base, windows, manualUsers, readonly}；base=打开时该节点窗口快照（保存上送供服务端 409 比对）
+let nodeResEdit=null;      // 预留弹窗编辑态：{envId, base, windows, readonly}；base=打开时该节点窗口快照（保存上送供服务端 409 比对）
 async function loadNodeReservations(){
   try{
     const resp=await fetch('/api/worktable/pipeline/reservations');
@@ -2401,7 +2398,7 @@ function envResSummaryHtml(e){
   }
   return summary+' <button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存）">分配</button>';
 }
-/* 候选用户回退集：现有预留用户名并集 + 当前用户名（/auth/users 拉取失败时使用，弹窗另提供手动添加） */
+/* 候选用户回退集：现有预留用户名并集 + 当前用户名（/auth/users 拉取失败时使用；候选外的用户名也可在搜索框直接输入添加） */
 function nodeResFallbackUsers(){
   const out=[];
   nodeReservations.forEach(r=>{ (Array.isArray(r&&r.users)?r.users:[]).forEach(u=>{ if(out.indexOf(u)<0) out.push(u); }); });
@@ -2433,20 +2430,17 @@ async function openNodeResDialog(envId){
     envId:e.id,
     base:JSON.parse(JSON.stringify(records)),   // 打开时窗口快照（原始记录，含 id/start/end/users/note）
     windows:records.map(r=>({id:r.id, start:isoToLocalInput(r.start), end:isoToLocalInput(r.end), users:Array.isArray(r.users)?r.users.slice():[], note:typeof r.note==='string'?r.note:''})),
-    manualUsers:[],
     readonly:!canEdit,
   };
   $('nodeResTitle').textContent='节点预留分配 — '+(e.name||e.ip)+'（'+e.ip+'）';
   $('nodeResReadonlyTip').style.display=canEdit?'none':'';
-  /* 底栏与「添加时段 / 手动添加用户」仅 admin 可见可用；只读形态底栏只留「关闭」 */
+  /* 底栏与「添加时段」仅 admin 可见可用；只读形态底栏只留「关闭」 */
   $('nodeResSave').style.display=canEdit?'':'none';
   $('nodeResCancel').style.display=canEdit?'':'none';
   $('nodeResCloseFooter').style.display=canEdit?'none':'';
   $('nodeResAddWindow').style.display=canEdit?'':'none';
-  $('nodeResManualUser').style.display=canEdit?'':'none';
-  $('nodeResManualAdd').style.display=canEdit?'':'none';
   await ensureAuthUsers();
-  $('nodeResTip').textContent=authUsersCache?'':'用户列表拉取失败：候选回退为「现有预留用户名 + 当前用户」，也可手动添加用户。';
+  $('nodeResTip').textContent=authUsersCache?'':'用户列表拉取失败：候选回退为「现有预留用户名 + 当前用户」，也可直接在搜索框输入用户名添加。';
   renderNodeResWindows();
   $('nodeResDialog').style.display='flex';
 }
@@ -2454,8 +2448,8 @@ function closeNodeResDialog(){
   nodeResEdit=null;
   $('nodeResDialog').style.display='none';
 }
-/* 重绘弹窗时段列表：每行 = 开始/结束（datetime-local）+ 用户复选框 + 备注 + 删除本时段；
-   候选 =（/auth/users 缓存 || 回退集）∪ 手动添加 ∪ 该行已选用户（保证已选用户名总可显示）。
+/* 重绘弹窗时段列表：每行 = 开始/结束（datetime-local）+ 用户标签搜索框 + 备注 + 删除本时段；
+   候选 =（/auth/users 缓存 || 回退集）∪ 该行已选用户（保证已选用户名总在候选中）。
    控件一律 createElement + textContent，用户名不走 innerHTML，杜绝注入。只读形态全部禁用。 */
 function renderNodeResWindows(){
   const st=nodeResEdit; const list=$('nodeResList'); if(!st||!list) return;
@@ -2468,7 +2462,7 @@ function renderNodeResWindows(){
     empty.textContent='暂无预留时段'+(ro?'':'，点下方「＋ 添加时段」新建。');
     list.appendChild(empty);
   }
-  const baseCandidates=(authUsersCache||nodeResFallbackUsers()).concat(st.manualUsers||[]);
+  const baseCandidates=(authUsersCache||nodeResFallbackUsers());
   st.windows.forEach((w,i)=>{
     const row=document.createElement('div');
     row.setAttribute('data-reswindow', String(i));
@@ -2503,28 +2497,89 @@ function renderNodeResWindows(){
       line1.appendChild(del);
     }
     row.appendChild(line1);
-    /* 第二行：用户复选框列表 */
+    /* 第二行：用户标签输入——不再平铺全部用户名。已选用户为标签（× 移除）；搜索框输入即时过滤
+       候选下拉，点击/回车选中；逗号（,/，/;/；）即时提交前段为标签，一次可逗号分隔输入多个；
+       候选外的用户名也可直接输入提交。添加只做局部 DOM 追加（不整行重绘），保持输入框焦点。 */
     const line2=document.createElement('div');
-    line2.style.cssText='display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;';
+    line2.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;';
     const who=document.createElement('span'); who.className='dshell-muted'; who.textContent='用户'; line2.appendChild(who);
+    const chipsWrap=document.createElement('span');
+    chipsWrap.style.cssText='display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;';
+    line2.appendChild(chipsWrap);
     const candidates=baseCandidates.concat(w.users).filter((v,idx,a)=>v&&a.indexOf(v)===idx);
-    candidates.forEach(u=>{
-      const lab=document.createElement('label');
-      lab.style.cssText='display:flex;align-items:center;gap:4px;cursor:pointer;';
-      const cb=document.createElement('input');
-      cb.type='checkbox';
-      cb.setAttribute('data-res-user', String(i));
-      cb.value=u;
-      cb.checked=w.users.indexOf(u)>=0;
-      cb.disabled=ro;
-      cb.addEventListener('change',()=>{
-        if(cb.checked){ if(w.users.indexOf(u)<0) w.users.push(u); }
-        else { w.users=w.users.filter(x=>x!==u); }
+    const makeChip=u=>{
+      const chip=document.createElement('span');
+      chip.setAttribute('data-res-chip', u);
+      chip.style.cssText='display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;';
+      const nm=document.createElement('span'); nm.textContent=u; chip.appendChild(nm);
+      if(!ro){
+        const x=document.createElement('button');
+        x.type='button'; x.className='dshell-btn dshell-btnGhost mini';
+        x.style.cssText='padding:0 2px;border:none;line-height:1;';
+        x.textContent='×'; x.title='移除该用户';
+        x.setAttribute('data-res-chip-rm', u);
+        x.addEventListener('click',()=>{ w.users=w.users.filter(x2=>x2!==u); renderNodeResWindows(); });
+        chip.appendChild(x);
+      }
+      return chip;
+    };
+    w.users.forEach(u=>chipsWrap.appendChild(makeChip(u)));
+    const addUser=u=>{
+      u=String(u||'').trim(); if(!u||w.users.indexOf(u)>=0) return;
+      w.users.push(u); chipsWrap.appendChild(makeChip(u));
+    };
+    if(!ro){
+      const wrap=document.createElement('span');
+      wrap.style.cssText='position:relative;display:inline-block;';
+      const inp=document.createElement('input');
+      inp.className='dshell-input';
+      inp.setAttribute('data-res-user-search', String(i));
+      inp.placeholder='搜索/输入用户名，逗号分隔多个';
+      inp.autocomplete='off';
+      inp.style.cssText='width:200px;font-size:11px;padding:3px 8px;';
+      const panel=document.createElement('div');
+      panel.style.cssText='display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:40;min-width:180px;max-height:200px;overflow:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.35);';
+      const renderPanel=()=>{
+        const q=inp.value.trim().toLowerCase();
+        panel.innerHTML='';
+        candidates.filter(u=>w.users.indexOf(u)<0 && (!q || u.toLowerCase().indexOf(q)>=0)).slice(0,20).forEach(u=>{
+          const it=document.createElement('div');
+          it.setAttribute('data-res-candidate', u);
+          it.style.cssText='padding:4px 8px;cursor:pointer;border-radius:6px;';
+          it.textContent=u;
+          it.addEventListener('mouseenter',()=>{ it.style.background='var(--dsw-alias-fill-l1)'; });
+          it.addEventListener('mouseleave',()=>{ it.style.background=''; });
+          /* mousedown + preventDefault：抢先 blur 提交，选中后保持输入框焦点可连续添加 */
+          it.addEventListener('mousedown',ev=>{ if(ev&&ev.preventDefault) ev.preventDefault(); addUser(u); inp.value=''; renderPanel(); });
+          panel.appendChild(it);
+        });
+        if(!panel.children.length){
+          const empty=document.createElement('div');
+          empty.className='dshell-muted'; empty.style.cssText='padding:4px 8px;';
+          empty.textContent=q?'无匹配候选，回车直接添加为新用户':'无可选候选，可直接输入用户名';
+          panel.appendChild(empty);
+        }
+      };
+      const commitText=txt=>{ String(txt||'').split(/[,，;；]/).forEach(s=>addUser(s)); };
+      inp.addEventListener('focus',()=>{ renderPanel(); panel.style.display='block'; });
+      inp.addEventListener('input',()=>{
+        const v=inp.value;
+        if(/[,，;；]/.test(v)){
+          const segs=v.split(/[,，;；]/);
+          inp.value=segs.pop();   /* 最后一段继续编辑 */
+          segs.forEach(s=>addUser(s));
+        }
+        renderPanel();
       });
-      const nm=document.createElement('span'); nm.textContent=u;
-      lab.appendChild(cb); lab.appendChild(nm);
-      line2.appendChild(lab);
-    });
+      inp.addEventListener('keydown',ev=>{
+        if(ev&&ev.key==='Enter'){ if(ev.preventDefault) ev.preventDefault(); const t=inp.value; inp.value=''; commitText(t); renderPanel(); }
+        if(ev&&ev.key==='Escape'){ panel.style.display='none'; }
+      });
+      inp.addEventListener('blur',()=>{ const t=inp.value; inp.value=''; commitText(t); panel.style.display='none'; });
+      renderPanel();
+      wrap.appendChild(inp); wrap.appendChild(panel);
+      line2.appendChild(wrap);
+    }
     row.appendChild(line2);
     /* 第三行：备注（可选） */
     const noteInp=document.createElement('input');
@@ -10903,13 +10958,6 @@ $('nodeResDialog').addEventListener('click', e=>{ if(e.target===$('nodeResDialog
 $('nodeResAddWindow').addEventListener('click', ()=>{
   if(!nodeResEdit||nodeResEdit.readonly) return;
   nodeResEdit.windows.push({id:'', start:'', end:'', users:(currentUsername?[currentUsername]:[]), note:''});   // 新时段默认勾选当前用户，保存校验仍要求至少 1 个用户
-  renderNodeResWindows();
-});
-$('nodeResManualAdd').addEventListener('click', ()=>{
-  if(!nodeResEdit||nodeResEdit.readonly) return;
-  const v=$('nodeResManualUser').value.trim(); if(!v) return;
-  if(nodeResEdit.manualUsers.indexOf(v)<0) nodeResEdit.manualUsers.push(v);
-  $('nodeResManualUser').value='';
   renderNodeResWindows();
 });
 $('nodeResSave').addEventListener('click', saveNodeResDialog);
