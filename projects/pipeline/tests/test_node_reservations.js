@@ -140,16 +140,21 @@ test('静态契约：switchPage 有 node 分支并顺带刷新预留；navNode �
   assert.ok(decl >= 0 && bind > decl, 'navNode 绑定必须在 const $ 声明之后的尾部初始化区');
 });
 
-test('静态契约：nodeResDialog 弹窗结构（z-index 216-224 空档）与绑定齐全', () => {
+test('静态契约：nodeResDialog 弹窗结构（z-index 216-224 空档）与绑定齐全；用户选择为搜索框（无全量复选/手动添加行）', () => {
   const start = source.indexOf('<div id="nodeResDialog"');
   assert.ok(start > 0, '缺少 nodeResDialog 弹窗');
   const end = source.indexOf('<!-- 收集普罗数据对话框', start);
   const html = source.slice(start, end > start ? end : undefined);
   assert.ok(/z-index:21[6-9]|z-index:22[0-4]/.test(html), '弹窗 z-index 应取 216-224 空档');
-  ['nodeResTitle', 'nodeResReadonlyTip', 'nodeResClose', 'nodeResList', 'nodeResAddWindow', 'nodeResManualUser', 'nodeResManualAdd', 'nodeResTip', 'nodeResCancel', 'nodeResSave', 'nodeResCloseFooter']
+  ['nodeResTitle', 'nodeResReadonlyTip', 'nodeResClose', 'nodeResList', 'nodeResAddWindow', 'nodeResTip', 'nodeResCancel', 'nodeResSave', 'nodeResCloseFooter']
     .forEach(id => assert.ok(html.includes(`id="${id}"`), `弹窗缺少 #${id}`));
-  ['nodeResClose', 'nodeResCancel', 'nodeResCloseFooter', 'nodeResAddWindow', 'nodeResManualAdd', 'nodeResSave', 'nodeResDialog']
+  assert.ok(!/nodeResManual/.test(html), '弹窗不再含手动添加用户行（搜索框可直接输入候选外用户名）');
+  ['nodeResClose', 'nodeResCancel', 'nodeResCloseFooter', 'nodeResAddWindow', 'nodeResSave', 'nodeResDialog']
     .forEach(id => assert.ok(source.includes(`$('${id}').addEventListener`), `尾部初始化区缺少 ${id} 绑定`));
+  assert.ok(!source.includes("$('nodeResManualAdd')"), '尾部初始化区不再手动添加用户绑定');
+  const fn = extractFunction('renderNodeResWindows');
+  assert.ok(fn.includes('data-res-user-search') && fn.includes('data-res-candidate') && fn.includes('data-res-chip'), '时段行应为 用户标签（data-res-chip）+ 搜索框（data-res-user-search）+ 候选下拉（data-res-candidate）');
+  assert.ok(!fn.includes('data-res-user"'), '不再渲染全量用户复选框');
   const decl = source.indexOf('const $ =');
   assert.ok(source.indexOf("$('nodeResSave').addEventListener") > decl, '弹窗绑定须在 const $ 声明之后');
 });
@@ -303,7 +308,7 @@ function dialogEls() {
   return {
     nodeResDialog: elStub(), nodeResTitle: elStub(), nodeResReadonlyTip: elStub(),
     nodeResClose: elStub(), nodeResList: elStub(), nodeResAddWindow: elStub(),
-    nodeResManualUser: elStub(), nodeResManualAdd: elStub(), nodeResTip: elStub(),
+    nodeResTip: elStub(),
     nodeResCancel: elStub(), nodeResSave: elStub(), nodeResCloseFooter: elStub(),
   };
 }
@@ -393,9 +398,12 @@ test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 adm
   assert.equal(plain.els.nodeResSave.style.display, 'none', '只读形态无保存按钮');
   assert.equal(plain.els.nodeResCancel.style.display, 'none', '只读形态无取消按钮');
   assert.equal(plain.els.nodeResCloseFooter.style.display, '', '只读形态底栏只留「关闭」');
-  const inputs = plain.els.nodeResList.querySelectorAll('[data-res-start],[data-res-end],[data-res-user],[data-res-note]');
-  assert.ok(inputs.length >= 4, '只读弹窗仍展示时段明细');
+  const inputs = plain.els.nodeResList.querySelectorAll('[data-res-start],[data-res-end],[data-res-note]');
+  assert.ok(inputs.length >= 3, '只读弹窗仍展示时段明细');
   assert.ok(inputs.every(el => el.disabled === true), '只读形态全部输入禁用');
+  assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-user-search]').length, 0, '只读形态无用户搜索框');
+  assert.ok(plain.els.nodeResList.querySelectorAll('[data-res-chip]').length >= 1, '只读形态以标签展示已选用户');
+  assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-chip-rm]').length, 0, '只读形态标签无移除按钮');
   assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-del]').length, 0, '只读形态无「删除本时段」按钮');
 
   /* admin 可编辑 */
@@ -408,6 +416,8 @@ test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 adm
   assert.equal(admin.els.nodeResSave.style.display, '', 'admin 有保存按钮');
   const adminInputs = admin.els.nodeResList.querySelectorAll('[data-res-start],[data-res-end],[data-res-note]');
   assert.ok(adminInputs.length >= 3 && adminInputs.every(el => el.disabled === false), 'admin 输入可编辑');
+  const adminSearch = admin.els.nodeResList.querySelector('[data-res-user-search="0"]');
+  assert.ok(adminSearch && adminSearch.disabled === false, 'admin 有用户搜索框');
   assert.equal(admin.els.nodeResList.querySelectorAll('[data-res-del]').length, 1, 'admin 有「删除本时段」按钮');
 });
 
@@ -503,9 +513,21 @@ test('预留弹窗保存：datetime-local 值转 ISO UTC、base 快照随 PUT �
 
   startInp.value = '2026-10-14T08:00'; startInp.fire('change');
   endInp.value = '2026-10-14T10:00'; endInp.fire('change');
-  const cbU2 = h.els.nodeResList.querySelectorAll('[data-res-user="0"]').find(c => c.value === 'u2');
-  assert.ok(cbU2, '候选用户含 /auth/users 提供的 u2');
-  cbU2.checked = true; cbU2.fire('change');
+  const search = h.els.nodeResList.querySelector('[data-res-user-search="0"]');
+  assert.ok(search, '用户选择为搜索框（不再平铺复选框）');
+  assert.equal(h.els.nodeResList.querySelectorAll('[data-res-user]').length, 0, '不再有全量用户复选框');
+  const cands = h.els.nodeResList.querySelectorAll('[data-res-candidate]').map(c => c.getAttribute('data-res-candidate'));
+  assert.ok(cands.includes('u2'), '候选下拉含 /auth/users 提供的 u2');
+  search.value = 'u2'; search.fire('keydown', { key: 'Enter', preventDefault() {} });   // 回车选中
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2'], '回车把搜索框内容加为已选用户');
+  search.value = 'u3，u4'; search.fire('input');   // 逗号即时提交前段，最后一段留在框内
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2', 'u3'], '逗号即时提交前段为用户');
+  assert.equal(search.value, 'u4', '最后一段留在搜索框继续编辑');
+  search.fire('blur');   // 失焦提交剩余段
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2', 'u3', 'u4'], '失焦提交剩余输入');
+  /* 标签 × 移除 */
+  h.els.nodeResList.querySelector('[data-res-chip-rm="u4"]').fire('click');
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2', 'u3'], '标签 × 移除用户');
   const note = h.els.nodeResList.querySelector('[data-res-note="0"]');
   note.value = '巡检占用'; note.fire('input');
 
@@ -517,7 +539,7 @@ test('预留弹窗保存：datetime-local 值转 ISO UTC、base 快照随 PUT �
   assert.equal(body.windows.length, 1);
   assert.equal(body.windows[0].start, new Date('2026-10-14T08:00').toISOString(), 'datetime-local 经 new Date(v).toISOString() 转 UTC');
   assert.equal(body.windows[0].end, new Date('2026-10-14T10:00').toISOString());
-  assert.deepEqual(body.windows[0].users.sort(), ['u1', 'u2'], '勾选用户随窗口上送');
+  assert.deepEqual(body.windows[0].users.sort(), ['u1', 'u2', 'u3'], '搜索框选中的用户随窗口上送');
   assert.equal(body.windows[0].note, '巡检占用');
   assert.deepEqual(body.base, J(existing), 'base=打开弹窗时该节点窗口快照（供服务端 409 比对）');
   assert.deepEqual(J(vm.runInContext('nodeReservations', h.ctx)), J(fresh), '成功响应全量替换本地');
@@ -580,17 +602,23 @@ test('预留弹窗保存：409 刷新最新数据后重开弹窗；403 alert 服
   assert.equal(h403.els.nodeResDialog.style.display, 'flex', '403 不关闭弹窗');
 });
 
-test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用户名并集 + 当前用户名，并提示可手输', async () => {
+test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用户名并集 + 当前用户名，并提示可直接输入', async () => {
   const h = dialogCtx(null, async url => {
     if (url === '/auth/users') throw new Error('404');
     throw new Error('unexpected fetch ' + url);
   });
   vm.runInContext(`nodeReservations=${JSON.stringify([resNow('r1', 'env-a', ['olduser'])])}`, h.ctx);
   await h.ctx.openNodeResDialog('env-a');
-  assert.match(h.els.nodeResTip.textContent, /用户列表拉取失败/, '失败提示可手输');
-  const values = h.els.nodeResList.querySelectorAll('[data-res-user="0"]').map(c => c.value);
-  assert.ok(values.includes('olduser'), '候选含现有预留用户名');
-  assert.ok(values.includes('admin'), '候选含当前用户名');
+  assert.match(h.els.nodeResTip.textContent, /用户列表拉取失败/, '失败提示可直接输入');
+  const chips = h.els.nodeResList.querySelectorAll('[data-res-chip]').map(c => c.getAttribute('data-res-chip'));
+  assert.ok(chips.includes('olduser'), '已选用户以标签展示');
+  const cands = h.els.nodeResList.querySelectorAll('[data-res-candidate]').map(c => c.getAttribute('data-res-candidate'));
+  assert.ok(!cands.includes('olduser'), '已选用户不再重复出现在候选下拉');
+  assert.ok(cands.includes('admin'), '候选含当前用户名');
+  /* 候选外用户名可直接输入提交为标签 */
+  const search = h.els.nodeResList.querySelector('[data-res-user-search="0"]');
+  search.value = 'newuser'; search.fire('keydown', { key: 'Enter', preventDefault() {} });
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['olduser', 'newuser'], '候选外用户名直接输入即添加');
 });
 
 /* ==================== 运行校验接入 ==================== */
