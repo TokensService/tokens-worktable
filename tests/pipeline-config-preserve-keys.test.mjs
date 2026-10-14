@@ -61,6 +61,7 @@ const TRUST_HELPERS = [
     'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
     'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny',
+    'sameEnvironmentContent', 'environmentsWriteDeny',
   ].map((name) => extractFunction(name)),
 ].join('\n')
 
