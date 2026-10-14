@@ -446,6 +446,15 @@ write_remote_render_environment() {
     umask 077
     {
       printf '# Generated for remote target rendering.\n'
+      # Forward every exported pipeline variable. The explicit values below
+      # are appended afterwards because target paths and rendered artifacts
+      # intentionally differ from the execution host.
+      while IFS= read -r -d '' variable; do
+        variable_name="${variable%%=*}"
+        variable_value="${variable#*=}"
+        [[ "$variable_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+        printf 'export %s=%q\n' "$variable_name" "$variable_value"
+      done < <(env -0)
       printf 'export RUN_DIR=%q\n' "$target_run_dir"
       printf 'export RENDER_DIR=%q\n' "$target_render_dir"
       printf 'export SKIP_CONTAINERD_CLEANUP=1\n'
