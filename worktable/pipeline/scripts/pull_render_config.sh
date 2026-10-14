@@ -454,11 +454,15 @@ print(value if isinstance(value, str) else "")
 PY
 )"
     if [[ -n "$mapped_host" && "$mapped_host" != "$host" ]]; then
-      host="$mapped_host"
-      port=22
+      if [[ "$mapped_host" =~ ^([^:]+):([0-9]+)$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+      else
+        host="$mapped_host"
+      fi
       target="${user}@${host}"
       if ! remote_ssh "$target" "$port" "$password" true >/dev/null 2>&1; then
-        echo "[ssh] mapped target $endpoint via ${host}:22 is unreachable; use ${original_host}:${original_port}" >&2
+        echo "[ssh] mapped target $endpoint via ${host}:${port} is unreachable; use ${original_host}:${original_port}" >&2
         host="$original_host"
         port="$original_port"
       fi
@@ -544,7 +548,7 @@ for item in hosts:
     endpoint = item.get("ip") if isinstance(item, dict) else None
     if not isinstance(endpoint, str) or not endpoint:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
-    match = re.fullmatch(r"([^:]+):(\\d+)", endpoint)
+    match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     host, port = match.groups() if match else (endpoint, "22")
     password = item.get("pass", item.get("password", "")) or ""
     print(f'{endpoint}\t{item.get("user") or "root"}\t{host}\t{port}\t{password}')
