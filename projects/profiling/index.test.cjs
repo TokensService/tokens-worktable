@@ -611,3 +611,14 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
   assert.ok(!html.includes('clearLocalBtn'), "「清空本地」按钮及其处理器应已移除");
   assert.ok(!html.includes('在 Perfetto 中打开</button>'), "概览卡内的旧按钮注入已移除");
 });
+
+test("页面静态契约：列表项删除（× 按钮 / 墓碑防扫描带回 / 显式重加清墓碑）", () => {
+  for (const needle of [
+    'data-role="del"', "function deleteItem(", "dsh.profiling.deleted", "function untombstone(",
+    "!deleted[e.path]", "ev.target.closest('[data-role=\"del\"]')",
+    "已删除：", "服务端目录扫描将不再带回",
+  ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  /* 两个显式加载入口都清墓碑（服务端文件「加载」与文件夹「选择文件」点选） */
+  const loads = html.match(/untombstone\(/g) || [];
+  assert.ok(loads.length >= 3, "loadSrvFileBtn / dirBrowser 点选 / untombstone 定义 应至少 3 处引用");
+});
