@@ -117,6 +117,10 @@
     .pip-dots i { width:4px; height:4px; border-radius:50%; background:currentColor; animation:pipDot 1.2s infinite; }
     .pip-dots i:nth-child(2) { animation-delay:.15s; }
     .pip-dots i:nth-child(3) { animation-delay:.3s; }
+    /* 刷新按钮在途反馈：只旋转 ↻/⟳ 图标（transform 走合成器属性），按钮文字保持不动 */
+    @keyframes pipSpin { to { transform:rotate(360deg); } }
+    .rf-ico { display:inline-block; transform-origin:50% 50%; }
+    .rf-busy .rf-ico { animation:pipSpin .8s linear infinite; }
     .pipeline-cols { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     @media (max-width:900px){ .pipeline-cols{ grid-template-columns:1fr; } }
     .logbox { background:var(--log-bg); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:10px 12px; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:11px; line-height:1.55; color:var(--log-fg); max-height:480px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
@@ -276,7 +280,7 @@
       </span>
       <span style="display:flex;align-items:center;gap:8px;">
         <span class="dshell-muted" style="font-size:11px;">不同机器并行 · 同一机器串行 · 点击条目查看阶段</span>
-        <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即拉取服务端的在跑/排队任务（平时每秒自动同步）">↻ 刷新</button>
+        <button id="queueRefresh" class="dshell-btn dshell-btnGhost mini" title="刷新运行队列：立即拉取服务端的在跑/排队任务（平时每秒自动同步）"><span class="rf-ico">↻</span> 刷新</button>
       </span>
     </div>
     <div id="queueList" class="dshell-list" style="display:none;"></div>
@@ -288,7 +292,7 @@
       <h2 class="dshell-sub" style="margin:0">流水线任务列表 <span id="plCount" class="dshell-muted"></span></h2>
       <span class="dshell-muted" style="font-size:11px;" title="统计只计真实运行，不含预置演示数据">总构建 <b id="sTotal">—</b> · 成功率 <b id="sRate">—</b> <span id="sRateDelta"></span> · 平均耗时 <b id="sAvg">—</b> · 最近构建 <b id="sLast">—</b></span>
       <span style="display:flex;align-items:center;gap:8px;">
-        <button id="pipelineRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取流水线任务（不会自动刷新）">↻ 刷新</button>
+        <button id="pipelineRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取流水线任务（不会自动刷新）"><span class="rf-ico">↻</span> 刷新</button>
         <button id="addPlBtn" class="dshell-btn dshell-btnGhost mini">+ 新建流水线</button>
       </span>
     </div>
@@ -374,7 +378,7 @@
     <div class="dshell-card" id="histCard">
       <h2 class="dshell-sub" style="margin:0 0 8px">运行历史 <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="log" title="勾选一条做 AI 日志分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）" style="margin-left:6px;">🔍 AI 日志分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="prof" title="勾选一条做 Profiling 分析，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">📈 Profiling 分析</button> <button class="dshell-btn dshell-btnGhost mini" type="button" data-ract="perf" title="勾选一条做性能诊断，或勾选两条做对比（不自动提交；提示词见「设置」页分析配置）">⚡ 性能诊断</button> <span id="rowSelTip" class="dshell-muted" style="font-size:11px;"></span></h2>
       <div class="pipeline-controls" id="histFilterBar" style="margin-bottom:8px;">
-        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）">↻ 刷新</button>
+        <button class="dshell-btn dshell-btnGhost mini" type="button" id="histRefresh" title="从服务端重新拉取运行历史（其他浏览器与服务端定时运行产生的记录一并合并进来）"><span class="rf-ico">↻</span> 刷新</button>
         <label class="dshell-muted" style="display:flex;align-items:center;gap:6px;">关键字
           <input id="histFilterKw" class="dshell-input" placeholder="搜索 #/流水线/执行人" autocomplete="off" style="min-width:220px;" />
         </label>
@@ -496,9 +500,8 @@
   <!-- 节点（独立页面：节点环境 + 节点预留分配；节点环境卡片自「设置」页迁入，DOM id 全部不变，JS 引用无需改动） -->
   <div id="pageNode" style="display:none">
     <div class="dshell-card">
-      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;">↻ 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;">⟳ 设备状态</button></h2>
-        <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 用户名 / 设备状态" style="width:230px;" />
+      <div style="display:flex; align-items:center; margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;"><span class="rf-ico">↻</span> 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;"><span class="rf-ico">⟳</span> 设备状态</button> <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 用户名 / 设备状态" style="width:230px; margin-left:6px; font-weight:normal;" /></h2>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
@@ -2612,7 +2615,29 @@ async function queryGpu(e){
   renderEnvOptions();   // 主控环境多选面板同步显示 GPU 占用/总数
   if((envFilterText && envFilterText.trim()) || envSort.key==='gpu') renderEnvs();   // 筛选命中设备状态文本或按设备状态排序时同步刷新列表
 }
-function refreshGpuAll(){ environments.forEach(e=>fetchGpu(e)); }
+/* ---------- 刷新按钮在途旋转反馈 ---------- */
+/* 页面级「↻/⟳ 刷新」按钮（流水线任务/运行队列/运行历史/节点信息/设备状态）共用：操作在途期间
+   给按钮挂 rf-busy，CSS 只旋转 .rf-ico 图标、不转文字；落定后摘除。最短展示 500ms，防快速请求
+   下一闪而过看不见反馈；计数挂在按钮元素上，重叠在途（含最短展示尾窗内再次触发）只在全部落定后
+   才摘除。无 classList 的调用环境（测试桩）静默跳过。 */
+function beginRefreshSpin(btn){
+  if(!btn || !btn.classList) return {stop(){}};
+  btn._rfSpinN=(btn._rfSpinN||0)+1;
+  if(btn._rfSpinN===1) btn.classList.add('rf-busy');
+  const t0=Date.now(); let stopped=false;
+  return { stop(){ if(stopped) return; stopped=true;
+    setTimeout(()=>{
+      btn._rfSpinN=Math.max(0,(btn._rfSpinN||0)-1);
+      if(!btn._rfSpinN) btn.classList.remove('rf-busy');
+    }, Math.max(0,500-(Date.now()-t0)));
+  } };
+}
+/* 「⟳ 设备状态」：全部节点查询在途期间按钮禁用 + 图标旋转（逐节点 ⟳ 行内按钮不受影响，仍可单点） */
+function refreshGpuAll(){
+  const b=typeof $==='function'?$('gpuRefreshAll'):null; if(b) b.disabled=true;
+  const sp=beginRefreshSpin(b);
+  return Promise.all(environments.map(e=>fetchGpu(e))).finally(()=>{ if(b) b.disabled=false; sp.stop(); });
+}
 /* 设备详情弹层：完整状态 + 失败原因 */
 function openGpuDetail(e){
   const st=gpuStatus[e.id];
@@ -2683,6 +2708,7 @@ function applyEnvCredAll(){
    同步 localStorage 离线缓存后重渲染表格与多选面板。 */
 async function refreshEnvsFromServer(){
   const b=$('envInfoRefresh'); if(b) b.disabled=true;
+  const sp=beginRefreshSpin(b);
   try{
     const st=await fetchPipelineStateFresh();
     if(!st) throw new Error('服务端配置拉取失败');
@@ -2698,7 +2724,7 @@ async function refreshEnvsFromServer(){
     renderEnvOptions();
     if(typeof toast==='function') toast('节点信息已刷新（'+environments.length+' 个节点）');
   }catch(e){ alert('刷新节点信息失败：'+String(e && e.message || e)); }
-  finally{ if(b) b.disabled=false; }
+  finally{ if(b) b.disabled=false; sp.stop(); }
 }
 /* 点击绑定在脚本尾部统一初始化区进行（const $ 声明之前不得在顶层执行 $()，否则 TDZ 中断整个脚本） */
 /* ---------- 代码仓配置（名称 + URL + 用户名 + 访问令牌） ---------- */
@@ -6052,7 +6078,8 @@ async function pullRemoteQueue(){
 }
 $('queueRefresh').addEventListener('click', async ()=>{
   const b=$('queueRefresh'); b.disabled=true;
-  try{ await pullRemoteQueue(); } finally{ b.disabled=false; }
+  const sp=beginRefreshSpin(b);
+  try{ await pullRemoteQueue(); } finally{ b.disabled=false; sp.stop(); }
 });
 
 /* ---------- 运行定时（周期 / 一次性，服务端调度，关闭页面也会执行） ---------- */
@@ -9943,8 +9970,9 @@ function startHistoryAutoRefresh(){
 /* 「↻ 刷新」仍保留即时手动入口；页面可见时还会每 3 秒自动同步其他浏览器与服务端运行新增的记录。 */
 $('histRefresh').addEventListener('click', async ()=>{
   const b=$('histRefresh'); b.disabled=true;
+  const sp=beginRefreshSpin(b);
   try{ await refreshHistoryFromServer(true); }
-  finally{ b.disabled=false; }
+  finally{ b.disabled=false; sp.stop(); }
 });
 /* 流水线任务分页 */
 /* 页大小规格与运行历史相同，但使用独立状态和本地存储键。 */
@@ -10134,6 +10162,7 @@ function applyPipelineRefreshPayload(st){
 async function refreshPipelinesFromServer(){
   if(running){ alert('流水线运行中，暂不能刷新流水线任务。'); return; }
   const b=$('pipelineRefresh'); b.disabled=true;
+  const sp=beginRefreshSpin(b);
   try{
     const st=await fetchPipelineStateFresh();   // 过期快照重拉（在途保存先于快照落盘时），见 fetchPipelineStateFresh
     if(!st) throw new Error('服务端配置拉取失败');
@@ -10150,7 +10179,7 @@ async function refreshPipelinesFromServer(){
     }
     renderPipelines();
   }catch(e){ alert('刷新流水线任务失败：'+String(e && e.message || e)); }
-  finally{ b.disabled=false; }
+  finally{ b.disabled=false; sp.stop(); }
 }
 $('pipelineRefresh').addEventListener('click', refreshPipelinesFromServer);
 

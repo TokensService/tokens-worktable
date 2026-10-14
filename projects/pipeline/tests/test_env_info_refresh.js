@@ -46,12 +46,12 @@ function context({remote,fetchError,local,base}={}){
   const start=source.indexOf('/* ---------- 节点信息手动刷新 ---------- */');
   const end=source.indexOf('/* ---------- 代码仓配置',start);
   assert.ok(start>=0 && end>start,'节点信息手动刷新逻辑未找到');
-  vm.runInContext(extractFunction('sameEnvEntry')+'\n'+extractFunction('mergeEnvironmentsFromServer')+'\n'+source.slice(start,end),ctx);
+  vm.runInContext(extractFunction('sameEnvEntry')+'\n'+extractFunction('mergeEnvironmentsFromServer')+'\n'+extractFunction('beginRefreshSpin')+'\n'+source.slice(start,end),ctx);
   return {ctx,stored,alerts,toasts,calls,button};
 }
 
 test('静态契约：节点环境标题行提供 envInfoRefresh 按钮并绑定手动刷新',()=>{
-  assert.match(source,/id="envInfoRefresh"[^>]*>↻ 刷新节点信息</);
+  assert.match(source,/id="envInfoRefresh"[^>]*><span class="rf-ico">↻<\/span> 刷新节点信息<\/button>/);
   assert.match(source,/\$\('envInfoRefresh'\)\.addEventListener\('click',\s*refreshEnvsFromServer\)/);
   assert.match(source,/async function refreshEnvsFromServer\s*\(/);
 });
