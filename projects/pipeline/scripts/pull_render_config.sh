@@ -438,15 +438,14 @@ print(f'{host.get("user") or "root"}\t{address}\t{port}\t{endpoint}\t{password}'
 PY
 }
 
-# Once the SSH target has been resolved to a Kubernetes InternalIP, use that
-# address for remote rendering and template extraction.  A forwarded/NAT SSH
-# endpoint can reach the host but may not have the same egress route to SWR.
-# Keep the original endpoint when no distinct InternalIP mapping exists.
-render_target_host() {
-  local user host port endpoint password node_ip
-  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+# Prefer the mapped InternalIP, but use the first SSH path that is reachable
+# from this host. This keeps rendering and image pulls on the same connection
+# path a user can actually use from the pipeline host.
+select_target_connection() {
+  local user="$1" host="$2" port="$3" endpoint="$4" password="$5"
+  local original_host="$host" original_port="$port" mapped_host target
   if [[ "${REMOTE_RENDER_USE_NODE_IP:-1}" == "1" ]]; then
-    node_ip="$(python3 - "$TARGET_NODE_IP_MAP" "$endpoint" <<'PY'
+    mapped_host="$(python3 - "$TARGET_NODE_IP_MAP" "$endpoint" <<'PY'
 import json
 import sys
 mapping = json.loads(sys.argv[1])
@@ -454,12 +453,24 @@ value = mapping.get(sys.argv[2], "")
 print(value if isinstance(value, str) else "")
 PY
 )"
-    if [[ -n "$node_ip" && "$node_ip" != "$host" ]]; then
-      host="$node_ip"
+    if [[ -n "$mapped_host" && "$mapped_host" != "$host" ]]; then
+      host="$mapped_host"
       port=22
+      target="${user}@${host}"
+      if ! remote_ssh "$target" "$port" "$password" true >/dev/null 2>&1; then
+        echo "[ssh] mapped target $endpoint via ${host}:22 is unreachable; use ${original_host}:${original_port}" >&2
+        host="$original_host"
+        port="$original_port"
+      fi
     fi
   fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$user" "$host" "$port" "$endpoint" "$password"
+}
+
+render_target_host() {
+  local user host port endpoint password node_ip
+  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+  select_target_connection "$user" "$host" "$port" "$endpoint" "$password"
 }
 
 write_remote_render_environment() {
@@ -545,20 +556,7 @@ PY
   image_pull_user="${pull_project}@${pull_ak}:${pull_login}"
   for target_spec in "${target_specs[@]}"; do
     IFS=$'\t' read -r endpoint user host port password <<<"$target_spec"
-    if [[ "${REMOTE_RENDER_USE_NODE_IP:-1}" == "1" ]]; then
-      mapped_host="$(python3 - "$TARGET_NODE_IP_MAP" "$endpoint" <<'PY'
-import json
-import sys
-mapping = json.loads(sys.argv[1])
-value = mapping.get(sys.argv[2], "")
-print(value if isinstance(value, str) else "")
-PY
-)"
-      if [[ -n "$mapped_host" && "$mapped_host" != "$host" ]]; then
-        host="$mapped_host"
-        port=22
-      fi
-    fi
+    IFS=$'\t' read -r user host port endpoint password <<<"$(select_target_connection "$user" "$host" "$port" "$endpoint" "$password")"
     [[ -n "$pull_ak" && -n "$pull_login" ]] || {
       echo "AK and LOGIN_KEY are required before pulling images on targets" >&2
       return 2
