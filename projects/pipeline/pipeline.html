@@ -2473,6 +2473,7 @@ function quickResRange(baseStart, sh, eh, nowMs){
   return {start:fmt(start), end:fmt(end)};
 }
 /* 重绘弹窗时段列表：每行 = 开始/结束（datetime-local）+ 快捷时段 + 用户标签搜索框 + 备注 + 删除本时段；
+   已结束（end 已过当前时刻）的时段整行置灰并在首行标识「（已结束）」，编辑开始/结束即时重估（applyPastStyle）。
    候选 =（/auth/users 缓存 || 回退集）∪ 该行已选用户（保证已选用户名总在候选中）。
    控件一律 createElement + textContent，用户名不走 innerHTML，杜绝注入。只读形态全部禁用。 */
 function renderNodeResWindows(){
@@ -2491,7 +2492,7 @@ function renderNodeResWindows(){
     const row=document.createElement('div');
     row.setAttribute('data-reswindow', String(i));
     row.style.cssText='border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px;';
-    /* 第一行：开始 / 结束 / 删除本时段 */
+    /* 第一行：开始 / 结束 / 「（已结束）」标识 / 快捷时段 / 删除本时段 */
     const line1=document.createElement('div');
     line1.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;';
     const mkTime=(label,key)=>{
@@ -2505,12 +2506,28 @@ function renderNodeResWindows(){
       inp.setAttribute('data-res-'+key, String(i));
       inp.value=w[key]||'';
       inp.disabled=ro;
-      inp.addEventListener('change',()=>{ w[key]=inp.value; });
+      inp.addEventListener('change',()=>{ w[key]=inp.value; applyPastStyle(); });
       lab.appendChild(inp);
       return lab;
     };
     line1.appendChild(mkTime('开始','start'));
     line1.appendChild(mkTime('结束','end'));
+    /* 已结束（end 已过当前时刻）的时段整行置灰 + 首行「（已结束）」标识（mkTime 的 change 事件即时重估；
+       与「预留」列的已结束置灰同一视觉语言；生效中/未来时段与新建空时段不置灰） */
+    const pastTag=document.createElement('span');
+    pastTag.className='dshell-muted';
+    pastTag.setAttribute('data-res-past', String(i));
+    pastTag.style.cssText='font-size:11px;display:none;';
+    pastTag.textContent='（已结束）';
+    line1.appendChild(pastTag);
+    const applyPastStyle=()=>{
+      const wEnd=Date.parse(w.end||'');
+      const past=!isNaN(wEnd)&&wEnd<=Date.now();
+      row.style.opacity=past?'0.55':'';
+      row.title=past?'该时段已结束':'';
+      pastTag.style.display=past?'':'none';
+    };
+    applyPastStyle();
     /* 快捷时段：9~14 / 14~19 / 19~22 / 22~9（跨零点）一键填充开始/结束（规则见 quickResRange） */
     if(!ro){
       const quick=document.createElement('span');

@@ -157,6 +157,7 @@ test('静态契约：nodeResDialog 弹窗结构（z-index 216-224 空档）与�
   const fn = extractFunction('renderNodeResWindows');
   assert.ok(fn.includes('data-res-user-search') && fn.includes('data-res-candidate') && fn.includes('data-res-chip'), '时段行应为 用户标签（data-res-chip）+ 搜索框（data-res-user-search）+ 候选下拉（data-res-candidate）');
   assert.ok(!fn.includes('data-res-user"'), '不再渲染全量用户复选框');
+  assert.ok(fn.includes('data-res-past') && fn.includes('opacity') && fn.includes('（已结束）'), '已结束时段应整行置灰并带「（已结束）」标识（data-res-past）');
   const decl = source.indexOf('const $ =');
   assert.ok(source.indexOf("$('nodeResSave').addEventListener") > decl, '弹窗绑定须在 const $ 声明之后');
 });
@@ -621,6 +622,42 @@ test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用�
   const search = h.els.nodeResList.querySelector('[data-res-user-search="0"]');
   search.value = 'newuser'; search.fire('keydown', { key: 'Enter', preventDefault() {} });
   assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['olduser', 'newuser'], '候选外用户名直接输入即添加');
+});
+
+test('预留弹窗：已结束时段整行置灰并标识「（已结束）」，生效中/未来/未填时段不置灰；编辑结束时间即时重估', async () => {
+  const h = dialogCtx(null, async url => okUsersFetch(url));
+  await h.ctx.openNodeResDialog('env-a');
+  const toLocal = d => h.ctx.isoToLocalInput(d.toISOString());   // 复用生产函数：Date → datetime-local 本地值
+  const pastStart = toLocal(new Date(Date.now() - 7200e3)), pastEnd = toLocal(new Date(Date.now() - 3600e3));
+  const futureStart = toLocal(new Date(Date.now() + 7200e3)), futureEnd = toLocal(new Date(Date.now() + 10800e3));
+  vm.runInContext('nodeResEdit', h.ctx).windows = [
+    { id: 'w-past', start: pastStart, end: pastEnd, users: ['u1'], note: '' },
+    { id: 'w-active', start: pastStart, end: futureEnd, users: ['u1'], note: '' },
+    { id: 'w-future', start: futureStart, end: futureEnd, users: ['u1'], note: '' },
+    { id: 'w-new', start: '', end: '', users: ['u1'], note: '' },
+  ];
+  h.ctx.renderNodeResWindows();
+  const rowOf = i => h.els.nodeResList.querySelectorAll(`[data-reswindow="${i}"]`)[0];
+  const tagOf = i => h.els.nodeResList.querySelector(`[data-res-past="${i}"]`);
+  assert.equal(rowOf(0).style.opacity, '0.55', '已结束时段整行置灰');
+  assert.equal(rowOf(0).title, '该时段已结束', '已结束时段行带悬停提示');
+  assert.equal(tagOf(0).style.display, '', '已结束时段显示「（已结束）」标识');
+  assert.equal(tagOf(0).textContent, '（已结束）');
+  assert.equal(rowOf(1).style.opacity, '', '生效中时段不置灰');
+  assert.equal(rowOf(1).title, '', '生效中时段无置灰提示');
+  assert.equal(tagOf(1).style.display, 'none', '生效中时段不显示「（已结束）」标识');
+  assert.equal(rowOf(2).style.opacity, '', '未来时段不置灰');
+  assert.equal(tagOf(2).style.display, 'none', '未来时段不显示「（已结束）」标识');
+  assert.equal(rowOf(3).style.opacity, '', '未填开始/结束的新时段不置灰（Date.parse 空串为 NaN）');
+  assert.equal(tagOf(3).style.display, 'none');
+  /* 编辑结束时间即时重估：未来 → 已过 即时置灰；已过 → 未来 即时恢复 */
+  const endInp = h.els.nodeResList.querySelector('[data-res-end="2"]');
+  endInp.value = pastEnd; endInp.fire('change');
+  assert.equal(rowOf(2).style.opacity, '0.55', '结束改为已过时刻即时置灰');
+  assert.equal(tagOf(2).style.display, '', '置灰后标识同步显示');
+  endInp.value = futureEnd; endInp.fire('change');
+  assert.equal(rowOf(2).style.opacity, '', '结束改回未来即时恢复');
+  assert.equal(tagOf(2).style.display, 'none', '恢复后标识同步隐藏');
 });
 
 /* ==================== 快捷时段 ==================== */
