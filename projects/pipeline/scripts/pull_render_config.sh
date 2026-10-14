@@ -530,7 +530,7 @@ render_on_first_target() {
 
   printf -v remote_command '%s' \
     "set -e; source $(remote_quote "$target_env_file"); bash $(remote_quote "${target_script_dir}/pull-image.sh"); CHART_TEMPLATE_DIR=$(remote_quote "${TARGET_RUN_DIR}/template/xds-cluster") VALUES_TEMPLATE=$(remote_quote "${TARGET_RUN_DIR}/template/values-16Node-je-cpp-bnt3.yaml") ARCH_FILE=$(remote_quote "${TARGET_RUN_DIR}/template/model_arch-lt-je-cpp-bnt3.json") bash $(remote_quote "${target_script_dir}/render-config.sh"); rm -f $(remote_quote "$target_env_file")"
-  remote_ssh "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+  remote_ssh "$target" "$port" "$password" "bash -lic $(remote_quote "$remote_command")"
 }
 
 pull_images_on_all_targets() {
@@ -570,7 +570,7 @@ PY
     sync_remote_file "$SCRIPT_DIR/pull-image.sh" "${target_script_dir}/pull-image.sh" "$target" "$port" "$password"
     printf -v remote_command '%s' \
       "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if [ \"\$(id -u)\" -eq 0 ]; then ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); else sudo ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); fi"
-    remote_ssh "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")" || {
+    remote_ssh "$target" "$port" "$password" "bash -lic $(remote_quote "$remote_command")" || {
       echo "[pull] target $endpoint: image pull failed" >&2
       return 1
     }
