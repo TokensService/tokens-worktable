@@ -502,35 +502,68 @@ PY
 fi
 
 resolve_xds_url_from_service() {
-  local node_port="" deadline=$((SECONDS + SERVICE_READY_TIMEOUT_SECONDS))
+  local node_port="" service_name="" service_info="" services_json=""
+  local deadline=$((SECONDS + SERVICE_READY_TIMEOUT_SECONDS))
 
   [[ "$XDS_URL_EXPLICIT" == false ]] || return 0
   while (( SECONDS < deadline )); do
-    node_port="$($KUBECTL_BIN -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json 2>/dev/null | python3 -c '''
+    services_json="$($KUBECTL_BIN -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json 2>/dev/null || true)"
+    if [[ -z "$services_json" ]]; then
+      services_json="$($KUBECTL_BIN -n "$NAMESPACE" get svc -o json 2>/dev/null || true)"
+    fi
+    if [[ -n "$services_json" ]]; then
+      # Prefer SERVICE_NAME, then fall back to the first NodePort Service in
+      # this namespace. Chart versions may render a different service name.
+      service_info="$(SERVICES_JSON="$services_json" python3 - "$SERVICE_NAME" <<'PY'
 import json
+import os
 import sys
 
 try:
-    service = json.load(sys.stdin)
+    payload = json.loads(os.environ.get("SERVICES_JSON", ""))
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    if not items and isinstance(payload, dict):
+        # `kubectl get svc <name> -o json` test doubles and some wrappers may
+        # omit metadata; the requested name is still authoritative here.
+        payload.setdefault("metadata", {})
+        payload["metadata"].setdefault("name", sys.argv[1])
+        items = [payload]
 except json.JSONDecodeError:
-    raise SystemExit(1)
-for port in service.get("spec", {}).get("ports", []):
-    if isinstance(port.get("nodePort"), int):
-        print(port["nodePort"])
-        break
-else:
-    raise SystemExit(1)
-''' || true)"
-    if [[ "$node_port" =~ ^[0-9]+$ ]]; then
-      XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
+    items = []
+
+preferred = sys.argv[1]
+candidates = []
+for service in items:
+    name = service.get("metadata", {}).get("name")
+    if not isinstance(name, str):
+        continue
+    for port in service.get("spec", {}).get("ports", []):
+        node_port = port.get("nodePort")
+        if isinstance(node_port, int):
+            candidates.append((name, node_port))
+            break
+
+for name, node_port in candidates:
+    if name == preferred:
+        print(f"{name}\t{node_port}")
+        raise SystemExit
+if candidates:
+    name, node_port = candidates[0]
+    print(f"{name}\t{node_port}")
+PY
+)"
+      if IFS=$'\t' read -r service_name node_port <<<"$service_info" && [[ "$node_port" =~ ^[0-9]+$ ]]; then
+        SERVICE_NAME="$service_name"
+        XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
       echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
       return 0
+      fi
     fi
-    echo "[deploy] waiting for Service $NAMESPACE/$SERVICE_NAME and its NodePort"
+    echo "[deploy] waiting for a NodePort Service in namespace $NAMESPACE (preferred: $SERVICE_NAME)"
     sleep "$SERVICE_READY_POLL_SECONDS"
   done
-  echo "[deploy] failed to resolve NodePort from service $NAMESPACE/$SERVICE_NAME after ${SERVICE_READY_TIMEOUT_SECONDS}s" >&2
-  "$KUBECTL_BIN" -n "$NAMESPACE" get svc "$SERVICE_NAME" -o yaml >&2 || true
+  echo "[deploy] failed to resolve a NodePort Service in namespace $NAMESPACE after ${SERVICE_READY_TIMEOUT_SECONDS}s" >&2
+  "$KUBECTL_BIN" -n "$NAMESPACE" get svc -o wide >&2 || true
   return 1
 }
 
@@ -1232,6 +1265,12 @@ prepare_ctrl_slot_capacity
 clear_target_node_taints
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
+  --set-string "global.namespace=$NAMESPACE" \
+  --set-string "global.roleName=${NAMESPACE}-role" \
+  --set-string "global.roleBindingName=${NAMESPACE}-role-binding" \
+  --set-string "global.serviceAccountName=${NAMESPACE}-sa" \
+  --set-string "global.serviceAccountSecretName=${NAMESPACE}-sa-secret" \
+  --set-string "global.service.svcName=$SERVICE_NAME" \
   --timeout "$HELM_TIMEOUT"
 resolve_xds_url_from_service
 resolve_xds_om_url
