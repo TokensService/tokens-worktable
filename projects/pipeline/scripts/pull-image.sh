@@ -33,13 +33,10 @@ IMAGE_PULL_AK="${IMAGE_PULL_AK:-${AK:-}}"
 # LOGKEY is the pipeline input.  Prefer it over the legacy LOGIN_KEY so a stale
 # inherited LOGIN_KEY cannot override credentials supplied for the current run.
 IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGKEY:-${LOGIN_KEY:-}}}"
-# Mapped targets expose a loopback proxy through their SSH/NAT setup.  The
-# remote command runs non-interactively and through sudo, so inject the proxy
-# into ctr explicitly instead of depending on shell profiles or sudo env_keep.
-MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
-# The target-side proxy is an SSH reverse forward to the execution host's
-# existing loopback proxy.  It exists only for the remote ctr command.
-MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"
+# Registry access is direct. The pipeline host may have a workstation proxy
+# configured, but SWR is reachable from the execution and target hosts without
+# it. Every image pull below clears both proxy variable cases explicitly,
+# including commands run through sudo over SSH.
 
 resolve_container_runtime() {
   case "$CONTAINER_RUNTIME" in
@@ -80,10 +77,12 @@ print_storage_diagnostics() {
   echo "[pull] containerd storage after failed pull:" >&2
   df -h /var/lib/containerd 2>&1 || true
   df -i /var/lib/containerd 2>&1 || true
-  if command -v nerdctl >/dev/null 2>&1; then
-    nerdctl --namespace k8s.io system df 2>&1 || true
-  elif command -v ctr >/dev/null 2>&1; then
+  if command -v ctr >/dev/null 2>&1; then
     ctr -n k8s.io images ls 2>&1 || true
+  elif command -v nerdctl >/dev/null 2>&1; then
+    # Some installed nerdctl versions do not implement `system df`; listing
+    # images is portable and still shows the containerd records involved.
+    nerdctl --namespace k8s.io images ls 2>&1 || true
   fi
 }
 
@@ -96,11 +95,6 @@ run_target() {
   local -a ssh_options
   shift 3
   ssh_options=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=30)
-  if [[ "${USE_MAPPED_IMAGE_PULL_PROXY:-0}" == "1" ]]; then
-    # ExitOnForwardFailure=no also permits a pre-existing target-side proxy;
-    # ctr will then use whichever listener owns 127.0.0.1:18118.
-    ssh_options+=(-o ExitOnForwardFailure=no -R "$MAPPED_IMAGE_PULL_REVERSE_FORWARD")
-  fi
   if [[ -n "$password" ]]; then
     command -v sshpass >/dev/null 2>&1 || {
       echo "sshpass is required for password-authenticated target image pulls" >&2
@@ -163,16 +157,18 @@ PY
 import json
 import sys
 item = json.loads(sys.argv[1])
-print(item["endpoint"], item["user"], item["host"], item["port"], item["password"], int(item["mapped"]))
+password = item["password"] or "-"
+print(item["endpoint"], item["user"], item["host"], item["port"], password, int(item["mapped"]))
 PY
     )
+    [[ "$password" == "-" ]] && password=""
     target="${user}@${host}"
     if [[ "$mapped_target" != 1 ]]; then
       if [[ -z "$IMAGE_PULL_AK" || -z "$IMAGE_PULL_LOGIN_KEY" ]]; then
         echo "AK and LOGIN_KEY are required for non-mapped target image pulls" >&2
         return 2
       fi
-      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
+      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
       echo "[pull] target $endpoint (non-mapped): pull image $image with ctr"
       if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
         :
@@ -199,8 +195,8 @@ PY
       echo "AK and LOGIN_KEY are required when the mapped target image is absent" >&2
       return 2
     fi
-    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo env http_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") https_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") HTTP_PROXY=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") HTTPS_PROXY=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY") ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
-    if USE_MAPPED_IMAGE_PULL_PROXY=1 run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+    printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
+    if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
       continue
     else
       pull_status=$?
@@ -252,7 +248,8 @@ pull_image() {
     cleanup_unused_containerd_resources
     echo "[pull] image pull attempt $attempt/$PULL_RETRIES: $image"
     if [[ "$CONTAINER_RUNTIME" == nerdctl ]]; then
-      if nerdctl --namespace k8s.io pull "$image"; then
+      if env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+        nerdctl --namespace k8s.io pull "$image"; then
         return 0
       else
         pull_status=$?
@@ -262,7 +259,8 @@ pull_image() {
         echo "AK and LOGIN_KEY are required for ctr image pulls" >&2
         return 2
       }
-      if ctr -n k8s.io images pull --user "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}" "$image"; then
+      if env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+        ctr -n k8s.io images pull --user "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}" "$image"; then
         return 0
       else
         pull_status=$?
