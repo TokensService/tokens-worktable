@@ -568,7 +568,7 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     "function buildPerfettoTraceMessage(", "function pfAscii(", "function perfettoNeedsTrustHint(",
     'id="perfModal"', 'id="perfBody"', 'id="perfStatus"', 'id="perfTitle"',
     'id="perfRetryBtn"', 'id="perfPopBtn"', 'id="perfCloseBtn"',
-    'id="perfettoOpenBtn"', "perfBtn.addEventListener('click', openPerfettoForCurrent)",
+    'id="perfettoOpenBtn"', "$('perfettoOpenBtn').addEventListener('click', openPerfettoForCurrent)",
     "async function perfettoTraceBuffer(", "async fileBuffer(", "rawText: null, file: f }",
     "function closePerfetto(", "e.key === 'Escape'", "perfettoNeedsTrustHint(location.hostname)",
     "window.open(PERFETTO_ORIGIN, '_blank')",
@@ -580,5 +580,10 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     'id="perfDownloadBtn"', "perfDownloadBtn').addEventListener('click'", "大文件解析可能需要数分钟",
     /* 服务端大文件：/file 走 raw=1 流式（绕开 256MB 全量读上限）；读取失败后晚到 PONG 不覆盖错误 */
     "encodeURIComponent(path) + '&raw=1'", "encodeURIComponent(it.path) + '&raw=1'", "perf.failed = true", "perf.failed) return",
+    /* 入口按钮固定在列表卡标题行「清空本地」之后，按当前选中条目资格启停 */
+    ">Perfetto打开<", "$('perfettoOpenBtn').disabled = !(cur && perfettoEligible(cur.item))",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  /* 位置契约：Perfetto打开 紧跟「清空本地」之后（同在 Profiling 列表卡标题行） */
+  assert.ok(html.indexOf('id="clearLocalBtn"') > 0 && html.indexOf('id="perfettoOpenBtn"') > html.indexOf('id="clearLocalBtn"'), "Perfetto打开 应位于「清空本地」之后");
+  assert.ok(!html.includes('在 Perfetto 中打开</button>'), "概览卡内的旧按钮注入已移除");
 });
