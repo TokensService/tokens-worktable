@@ -157,6 +157,7 @@
           <h2 class="dshell-sub" style="margin:0" class="grow">Profiling 列表</h2>
           <span class="dshell-badge" id="countBadge">0</span>
           <button class="dshell-btn dshell-btnGhost" id="clearLocalBtn" title="移除本地加载的条目">清空本地</button>
+          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="在内嵌 Perfetto UI（ui.perfetto.dev）中打开当前选中 trace 的交互式时间线；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
         </div>
         <div class="dshell-list" id="itemList" style="margin-top:8px; max-height:480px; overflow:auto"></div>
       </div>
@@ -992,6 +993,8 @@ function statusBadge(s){
 }
 function renderOverview(){
   const card = $('overviewCard');
+  /* 「Perfetto打开」按钮固定在列表卡标题行（「清空本地」之后），仅当前选中条目可开时可用 */
+  $('perfettoOpenBtn').disabled = !(cur && perfettoEligible(cur.item));
   if (!cur){ card.innerHTML = '<div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>'; $('stageCard').style.display='none'; $('bottleneckCard').style.display='none'; $('kernelCard').style.display='none'; $('aiCard').style.display='none'; return; }
   const p = cur.p, it = cur.item, m = metaOf(it);
   $('srcBadge').textContent = it.source === 'local' ? '本地文件' : '服务端';
@@ -1000,7 +1003,6 @@ function renderOverview(){
   for (const [k, v] of Object.entries(p.meta)) if (v !== undefined && v !== null && v !== '') kv += '<div class="dshell-kvRow"><span class="dshell-kvKey">' + esc(k) + '</span><span class="dshell-kvValue">' + esc(v) + '</span></div>';
   card.innerHTML =
     '<div class="pf-row"><h2 class="dshell-title grow" style="margin:0;font-size:14px">' + esc(m.tag || p.title) + '</h2>'
-    + (perfettoEligible(it) ? '<button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" style="flex:none" title="在内嵌 Perfetto UI（ui.perfetto.dev）中打开交互式时间线；trace 经 postMessage 传入浏览器内存，不上传服务器">在 Perfetto 中打开</button>' : '')
     + (it.binary ? '<span class="dshell-badge dshell-badgeWait">二进制报告</span>' : '<span class="dshell-badge dshell-badgeDone">已解析</span>') + '</div>'
     + (m.desc ? '<p class="dshell-muted" style="margin:4px 0">' + esc(m.desc) + '</p>' : '')
     + '<p class="dshell-muted" style="margin:4px 0 10px;word-break:break-all">' + esc(it.path || '本地文件') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</p>'
@@ -1016,8 +1018,6 @@ function renderOverview(){
   $('stageCard').style.display = p.stages.length ? '' : 'none';
   $('bottleneckCard').style.display = '';
   $('aiCard').style.display = '';
-  const perfBtn = $('perfettoOpenBtn');
-  if (perfBtn) perfBtn.addEventListener('click', openPerfettoForCurrent);
   renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();
 }
 let waterfall = false;
@@ -1343,6 +1343,8 @@ function closePerfetto(){
   $('perfPopBtn').disabled = true;
 }
 $('perfCloseBtn').addEventListener('click', closePerfetto);
+/* 「Perfetto打开」（列表卡标题行）：打开当前选中条目；openPerfettoForCurrent 内部对空选/非 trace 有 toast 兜底 */
+$('perfettoOpenBtn').addEventListener('click', openPerfettoForCurrent);
 $('perfRetryBtn').addEventListener('click', () => {
   const cache = perfBufCache;      // 重试只重建 iframe + 握手，已读出的 trace 字节保留复用
   closePerfetto();
