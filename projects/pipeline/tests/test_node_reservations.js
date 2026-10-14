@@ -5,7 +5,7 @@
    - 纯函数：reservationsForNode（过滤+按 start 排序）、fmtResTime（本地 MM-DD HH:mm）、
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
      envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue。
-   - 渲染：renderEnvs「预留」列摘要与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
+   - 渲染：renderEnvs「预留」列逐时段行（时间段 · 用户 · 备注）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
    - 运行校验接入：pipelineDefaultRunIssue / runPipeline / submitPipelineRunDialog / addPlan 四处的预留拦截；
@@ -324,23 +324,50 @@ function renderEnvsCtx(globals, envs) {
   return { ctx, els, tbody };
 }
 
-test('renderEnvs「预留」列：生效中醒目摘要 / 仅未来时段显示时段数 / 无预留显示 —；行内含「分配」按钮', () => {
-  const until = new Date(Date.now() + 3600e3);
+test('renderEnvs「预留」列：逐时段一行（时间段 · 用户 · 备注），生效中醒目 / 未来普通 / 无预留 —；行内含「分配」按钮', () => {
   const p2 = n => String(n).padStart(2, '0');
-  const untilText = p2(until.getMonth() + 1) + '-' + p2(until.getDate()) + ' ' + p2(until.getHours()) + ':' + p2(until.getMinutes());
+  const fmt = d => p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  const now = Date.now();
+  const activeRange = fmt(new Date(now - 3600e3)) + ' ~ ' + fmt(new Date(now + 3600e3));
   const { ctx, tbody } = renderEnvsCtx(null, [envOf('env-a', '开发', '10.0.0.1'), envOf('env-b', '生产', '10.0.0.2'), envOf('env-c', '测试', '10.0.0.3')]);
   vm.runInContext(`nodeReservations=${JSON.stringify([
-    resNow('r1', 'env-c', ['u1', 'u2']),
+    resNow('r1', 'env-c', ['u1', 'u2'], { note: '专项压测' }),
     resFuture('r2', 'env-b', ['u1']), resFuture('r3', 'env-b', ['u3']),
   ])}`, ctx);
   ctx.renderEnvs();
   assert.equal(tbody.children.length, 3);
   const htmlOf = id => tbody.children[['env-a', 'env-b', 'env-c'].indexOf(id)].innerHTML;
-  assert.ok(htmlOf('env-c').includes(`预留中：u1、u2 · 至 ${untilText}`), '生效中显示 预留中：用户 · 至 时间');
-  assert.ok(/color:var\(--st-run\)/.test(htmlOf('env-c')), '生效中摘要为醒目样式');
-  assert.ok(htmlOf('env-b').includes('2 个时段'), '仅未来时段显示时段数');
+  /* 生效中：预留中前缀 + 醒目样式 + 时间段/用户/备注同一行 */
+  const cHtml = htmlOf('env-c');
+  assert.ok(cHtml.includes(`预留中 · ${activeRange} · u1、u2 · 专项压测`), '生效中行含 预留中 · 时间段 · 用户 · 备注');
+  assert.ok(/color:var\(--st-run\)/.test(cHtml), '生效中行为醒目样式');
+  /* 未来时段：每时段一行，各带对应用户 */
+  const bLines = (htmlOf('env-b').match(/<div style="white-space:nowrap;">/g) || []).length;
+  assert.equal(bLines, 2, '两个未来时段各一行');
+  assert.ok(htmlOf('env-b').includes('· u1</div>') && htmlOf('env-b').includes('· u3</div>'), '各行含对应用户');
+  assert.ok(!htmlOf('env-b').includes('预留中'), '未来时段不带预留中标记');
+  assert.ok(!htmlOf('env-b').includes('个时段'), '不再折叠为时段数');
+  /* 无预留显示 — */
   assert.ok(/<span class="dshell-muted">—<\/span>/.test(htmlOf('env-a')), '无预留显示 —');
   ['env-a', 'env-b', 'env-c'].forEach(id => assert.ok(htmlOf(id).includes(`data-envres="${id}"`), `行内应有「分配」按钮（data-envres=${id}）`));
+});
+
+test('renderEnvs「预留」列：已结束时段置灰并后缀（已结束）；多时段按开始时间升序逐行排列', () => {
+  const { ctx, tbody } = renderEnvsCtx(null, [envOf('env-d', '归档', '10.0.0.4')]);
+  const past = { id: 'r0', nodeId: 'env-d', users: ['old'], start: new Date(Date.now() - 7200e3).toISOString(), end: new Date(Date.now() - 3600e3).toISOString(), note: '上周占用', createdBy: 'admin', createdAt: '', updatedAt: '' };
+  vm.runInContext(`nodeReservations=${JSON.stringify([
+    resFuture('r2', 'env-d', ['u3']),
+    past,
+    resNow('r1', 'env-d', ['u1'], { note: '进行中备注' }),
+  ])}`, ctx);
+  ctx.renderEnvs();
+  const html = tbody.children[0].innerHTML;
+  /* 升序：已结束（最早）→ 生效中 → 未来 */
+  const iPast = html.indexOf('上周占用'), iActive = html.indexOf('预留中 ·'), iFuture = html.indexOf('· u3</div>');
+  assert.ok(iPast >= 0 && iActive > iPast && iFuture > iActive, '时段按开始时间升序逐行排列');
+  assert.ok(/<div class="dshell-muted"[^>]*>[^<]*上周占用[^<]*（已结束）<\/div>/.test(html), '已结束时段置灰并后缀（已结束）');
+  assert.ok(html.includes('预留中 · '), '生效中时段带预留中前缀');
+  assert.ok(html.includes('进行中备注'), '备注随行展示');
 });
 
 test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 admin 打开只读形态（输入禁用、无保存按钮、标题旁注明）', async () => {
