@@ -1627,6 +1627,7 @@ function collectRunLogs(rc, handoffFromIdx){
     const n=rc.nodes[s.id];
     if(!n || n.status==='running') return;
     const e={stage:s.name, status:n.status, dur:(n.dur||0), local:true};
+    const st0=Number(n.startedAt); if(Number.isFinite(st0)&&st0>0) e.startedAt=st0;   // 阶段开始时间随历史持久化，回放详情据此展示
     if(folder) e.logFile=folder+'/'+taskLogFile(rc, stageSeq(rc.stages, idx), s.name);
     else{
       /* 无归档目录时只能内嵌全文；仍用分片构建避免先拆成百万行对象。 */
@@ -1658,6 +1659,7 @@ function mergeStageLogsForHistory(prevLogs, nextLogs){
       if(prev.local && e.local===undefined) merged.local=true;
       if(!merged.logFile && prev.logFile) merged.logFile=prev.logFile;
       if(merged.dur===undefined && prev.dur!==undefined) merged.dur=prev.dur;
+      if(merged.startedAt===undefined && prev.startedAt!==undefined) merged.startedAt=prev.startedAt;   // 任一侧记录了阶段开始时间即保留
       if(merged.log===undefined && prev.log!==undefined) merged.log=prev.log;
       byName[name]=merged;
       const idx=out.indexOf(prev);
@@ -4670,6 +4672,10 @@ const DEFAULT_IMAGE = 'myapp';   // 镜像名已不在主控填写，内部固�
 function randCommit(){ return Math.random().toString(16).slice(2,9); }
 function nowHM(){ const d=new Date(); return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0'); }
 function fmtDur(s){ if(s<60) return Math.round(s)+'s'; return Math.floor(s/60)+'m'+Math.round(s%60)+'s'; }
+/* 阶段开始时间（纪元毫秒）→ 紧凑本地「MM-DD HH:MM:SS」；缺省/非法返回空串（调用方据此决定不展示） */
+function fmtStageStart(ts){ const t=Number(ts); if(!Number.isFinite(t)||t<=0) return ''; const d=new Date(t); const p=n=>String(n).padStart(2,'0'); return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds()); }
+/* 阶段开始时间打点/沿用：进入 running 时写 startedAt；终态/中止/关页重建节点对象时以
+   Object.assign({}, 旧节点, {终态字段}) 合并旧节点的方式沿用同一时刻（旧节点无该字段则不携带） */
 /* 阶段「耗时/超时」内部一律按秒存储；编辑器输入框按分钟显示与填写（×60 换算，四舍五入回秒） */
 function secToMinInput(sec){ const m=sec/60; return (m===Math.floor(m)) ? String(m) : String(Math.round(m*100)/100); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -5187,7 +5193,7 @@ function renderDetail(){
      会随进度跨 25% 档位变化，因此仅为无 _out 的普通阶段保留分档键。先比键再 buildLog，避免长任务
      在日志静止后仍每 300ms 拆分完整 stdout。 */
   const progressLogKey=out || (s.script&&s.script.path) || s.kind==='http' || s.kind==='url' || s.kind==='jenkins' || s.kind==='evaltokens' ? '' : Math.floor((n.progress||0)/25);
-  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0)+'|'+(curRun?String(stageLogFileFor(s,curRun)||'-'):'-')+'|'+(currentStageAnalysisRec()?1:0);
+  const key = s.id+'|'+n.status+'|'+outKey+'|'+progressLogKey+'|'+Object.keys(n.varsIn||{}).length+'|'+Object.keys(n.varsOut||{}).length+'|'+(curRun?curRun.tag:'-')+'|'+(viewActive()?1:0)+'|'+(curRun?String(stageLogFileFor(s,curRun)||'-'):'-')+'|'+(currentStageAnalysisRec()?1:0)+'|'+String(n.startedAt||0);
   if(key===_detailKey){ const b0=$('detailBar'); if(b0) b0.style.width=(n.status==='success'?100:(n.progress||0))+'%'; return; }
   _detailKey=key;
   const lines = detailLogLinesFor(s, ctx, n);
@@ -5213,6 +5219,8 @@ function renderDetail(){
 
   const kv = $('detailKv'); kv.innerHTML='';
   const rows = detailContextRows(s,txt,ctx);
+  const _st0=Number(n.startedAt);
+  if(Number.isFinite(_st0)&&_st0>0&&n.status!=='idle') rows.push(['开始时间', fmtStageStart(_st0)]);   // 未开始/跳过（从未启动）的阶段不展示
   if(n.status==='running') rows.push(['耗时', fmtDur(n.dur||0)]);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur)]);
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
@@ -5820,6 +5828,7 @@ function remoteFinishedPreviewRc(previous, fin){
     const node=Object.assign({}, next.nodes[sid]);
     if(node.status==='running'||node.status==='idle'){ node.status=mapped; if(mapped==='success') node.progress=100; }
     const d=Number(fs&&fs.dur); if(Number.isFinite(d)&&d>0) node.dur=d;
+    const st0=Number(fs&&fs.startedAt); if(Number.isFinite(st0)&&st0>0) node.startedAt=st0;   // 终态摘要携带的阶段开始时间补进预览节点
     next.nodes[sid]=node;
   });
   return next;
@@ -6640,7 +6649,7 @@ function buildCloseFailRecord(rc){
   stg.forEach((st,i)=>{
     if(!st || !rc.nodes) return;
     const n=rc.nodes[st.id];
-    if(i===idx) rc.nodes[st.id]={status:'failed',progress:100,dur:(n&&n.dur)||0,sub:(n&&n.sub)||{},varsIn:(n&&n.varsIn)||{},varsOut:(n&&n.varsOut)||{}};
+    if(i===idx) rc.nodes[st.id]=Object.assign({}, n, {status:'failed',progress:100,dur:(n&&n.dur)||0,sub:(n&&n.sub)||{},varsIn:(n&&n.varsIn)||{},varsOut:(n&&n.varsOut)||{}});
     else if(i>idx && (!n || n.status==='running' || n.status==='idle')) rc.nodes[st.id]={status:'skipped',progress:0,dur:0,sub:{}};
   });
   const logs=(typeof collectRunLogs==='function'?collectRunLogs(rc,-1):[]);
@@ -7172,7 +7181,7 @@ function cancelParallelStage(child,reason,cascade){
   const stage=child.stages[child.parallelIndex], node=stage&&child.nodes[stage.id];
   if(stage && node && node.status==='running'){
     archiveStageLog(stage,stageSeq(child.stages,child.parallelIndex),child);
-    child.nodes[stage.id]={status:'aborted',progress:node.progress||0,dur:node.dur||0,sub:{},script:node.script,varsIn:node.varsIn||{},varsOut:node.varsOut||{}};
+    child.nodes[stage.id]=Object.assign({}, node, {status:'aborted',progress:node.progress||0,dur:node.dur||0,sub:{},script:node.script,varsIn:node.varsIn||{},varsOut:node.varsOut||{}});
   }
   settleParallelStage(child,reason||'aborted');
 }
@@ -7914,7 +7923,7 @@ async function runUrlStep(rc, i){
   const outSpec=(s.url&&s.url.outVars)||(s.jenkins&&s.jenkins.outVars)||'';
   const tk=rc.token;
   const varsIn=Object.assign({},rc.vars||{});
-  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{},startedAt:Date.now()};
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
   const deadline=s.timeout?t0+s.timeout*1000:0;
@@ -8216,8 +8225,8 @@ async function runUrlStep(rc, i){
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
     applyOutVars(rc, outSpec, varsOut, bodyFull?parseStageJson(bodyFull):(probed.json||parseStageJson(finalStdout)), probed.fullText);   // 输出变量映射：控制台增量捕获 key/JSON；正文可用 JSON 路径，全文仅在 128KiB 安全上限内保留
     const dur=(Date.now()-t0)/1000;
-    if(ok){ rc.nodes[s.id]={status:'success',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; rcRender(rc); advance(rc,i+1); }
-    else{ rc.nodes[s.id]={status:'failed',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}; rcRender(rc); finish(rc,'failed'); }
+    if(ok){ rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'success',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}); rcRender(rc); advance(rc,i+1); }
+    else{ rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'failed',progress:100,dur:dur,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:varsOut}); rcRender(rc); finish(rc,'failed'); }
   }catch(e){
     if(rc.over||rc.token!==tk) return;   // 迟回异常（中止后）：不得覆盖节点状态、不得对旧阶段再 finish
     if(rc.timer){clearInterval(rc.timer);rc.timer=null;}
@@ -8227,7 +8236,7 @@ async function runUrlStep(rc, i){
     if(logSink) await logSink.flush();
     s._archiveOutputParts=null;   // 异常终态也由 sink 落盘；失败时 archiveStageLog 以页面尾窗兜底
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
-    rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}};
+    rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:'HTTP · '+raw,varsIn:varsIn,varsOut:{}});
     rcRender(rc); finish(rc,'failed');
   }finally{
     if(deadlineTimer!==null) clearTimeout(deadlineTimer);
@@ -8454,7 +8463,7 @@ async function runEvaltokensStep(rc, i){
   Object.keys(et.values||{}).forEach(k=>{ const v=substRunVars(String(et.values[k]), rc); if(v!=='') inputOverrides[k]=v; });
   const tk=rc.token; const varsIn=Object.assign({},rc.vars||{});
   const label='EvalTokens · '+(taskName||taskId||'未命名');
-  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{}};
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:label,varsIn:varsIn,varsOut:{},startedAt:Date.now()};
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now(); const deadline=s.timeout?t0+s.timeout*1000:0; let lastLive=0, deadlineTimer=null, startAbortTimer=null, timedOut=false, waitingRunId='', waitingStatus='', service=null, externalRunActive=false;
   const ctrl=new AbortController(); rc.scriptAbort=ctrl;   // 复用运行级中止句柄：停止/重置按钮可取消 EvalTokens 网络请求
@@ -8600,7 +8609,7 @@ async function runEvaltokensStep(rc, i){
     const varsOut=Object.assign({},probed.vars); rc.vars=Object.assign(rc.vars||{},varsOut);
     applyOutVars(rc, outSpec, varsOut, probed.json||parseStageJson(bodyFull||finalStdout), probed.fullText);   // 输出变量映射：运行字段改名/JSON 路径；全文只在 128KiB 安全上限内保留
     const dur=(Date.now()-t0)/1000;
-    const finalNode={status:ok?'success':'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut};
+    const finalNode=Object.assign({}, rc.nodes[s.id], {status:ok?'success':'failed',progress:100,dur:dur,sub:{},script:label,varsIn:varsIn,varsOut:varsOut});
     let reportJob=null;
     if(et.collectReport!==false){
       const reportState={attempt:attempt,logFile:null};
@@ -8649,7 +8658,7 @@ async function runEvaltokensStep(rc, i){
     if(logSink) await logSink.flush();
     s._archiveOutputParts=null;   // 正常异常收尾已由 sink 落盘；失败时 archiveStageLog 以页面尾窗兜底
     archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 异常路径同样归档本阶段已产生的回显
-    rc.nodes[s.id]={status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}};
+    rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'failed',progress:100,dur:(Date.now()-t0)/1000,sub:{},script:label,varsIn:varsIn,varsOut:{}});
     rcRender(rc); finish(rc,'failed');
   }finally{
     if(deadlineTimer!==null) clearTimeout(deadlineTimer);
@@ -8677,7 +8686,7 @@ async function runScriptStep(rc, i){
   const stg=rc.stages; const s=stg[i]; const sc=s.script;
   const tk = rc.token;   // 运行令牌：await 期间若本次运行被中止/重置，下方比对丢弃迟回结果
   const varsIn = Object.assign({}, rc.vars||{});
-  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name,varsIn,varsOut:{}};
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},script:sc.name,varsIn,varsOut:{},startedAt:Date.now()};
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
   if(rc.timer) clearInterval(rc.timer);
@@ -8721,15 +8730,15 @@ async function runScriptStep(rc, i){
   const varsOut=Object.assign({},probed.vars); rc.vars=Object.assign(rc.vars||{},varsOut);
   applyOutVars(rc, sc.outVars, varsOut, probed.json, probed.fullText);   // 变量在流到达时提取；超大全文不驻留浏览器，仅保留 KEY=VALUE / JSON 路径结果
   archiveStageLog(s, stageSeq(rc.stages,i), rc);   // 本阶段回显即时重定向到归档文件夹的独立日志文件
-  if(res.code===0){ rc.nodes[s.id]={status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; rcRender(rc); advance(rc,i+1); }
-  else { rc.nodes[s.id]={status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}; rcRender(rc); finish(rc,'failed'); }
+  if(res.code===0){ rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'success',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}); rcRender(rc); advance(rc,i+1); }
+  else { rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'failed',progress:100,dur,sub:{},script:sc.name,varsIn,varsOut}); rcRender(rc); finish(rc,'failed'); }
 }
 function runStage(rc, i){
   const stg = rc.stages;
   if(i>=stg.length){ finish(rc,'success'); return; }
   const s=stg[i];
   const varsIn = Object.assign({}, rc.vars||{});
-  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{}};
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},varsIn,varsOut:{},startedAt:Date.now()};
   const root=rc&&rc.parallelParent?rc.parallelParent:rc;
   runSetSel(rc,s.id); if(viewRc===root){ renderFlow(); renderDetail(); }
   if(s.sub && s.sub.length){ s.sub.forEach(x=> rc.nodes[s.id].sub[x]='running'); }
@@ -8899,7 +8908,7 @@ async function runPresetStep(rc, i){
     advance(rc,i+1); return;
   }
   rcOverall(rc,def.name+'中…','dshell-badgeWait');
-  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{}};
+  rc.nodes[s.id]={status:'running',progress:0,dur:0,sub:{},startedAt:Date.now()};
   runSetSel(rc,s.id); rcRender(rc,true);
   const t0=Date.now();
   if(rc.timer) clearInterval(rc.timer);
@@ -8930,10 +8939,10 @@ async function runPresetStep(rc, i){
   s._out=boundedExecutionResult(res);
   archiveStageLog(s, 0, rc);   // 预设任务回显即时归档（00 号任务日志，见 stageSeq）
   if(res.code===0){
-    rc.nodes[s.id]={status:'success',progress:100,dur,sub:{}};
+    rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'success',progress:100,dur,sub:{}});
     rcOverall(rc,'运行中…','dshell-badgeWait'); rcRender(rc); advance(rc,i+1);
   } else {
-    rc.nodes[s.id]={status:'failed',progress:100,dur,sub:{}};
+    rc.nodes[s.id]=Object.assign({}, rc.nodes[s.id], {status:'failed',progress:100,dur,sub:{}});
     rcRender(rc);
     if(def.block){   // 阻断型预设任务不通过：阻断后续阶段，按失败计入历史
       finish(rc,'failed');
@@ -9618,6 +9627,7 @@ function applyReplayProfileStages(rec,profileStages){
     if(!stage||!stage.status) return;
     log.status=stage.status;
     if(typeof stage.durSec==='number') log.dur=stage.durSec;
+    if(Number.isFinite(Number(stage.startedAt))&&Number(stage.startedAt)>0&&log.startedAt===undefined) log.startedAt=Number(stage.startedAt);   // profile 携带的阶段开始时间回填历史条目
     if(stage.local && log.local===undefined) log.local=true;
   });
   /* profile 里有、logs 缺的阶段补进列表：混合编排同 tag 被整条替换冲掉本地前缀时的兜底，
@@ -9625,6 +9635,7 @@ function applyReplayProfileStages(rec,profileStages){
   profileStages.forEach(stage=>{
     if(!stage||!stage.name||logNames[stage.name]) return;
     const e={stage:stage.name, status:stage.status||'idle', dur:(typeof stage.durSec==='number'?stage.durSec:0)};
+    if(Number.isFinite(Number(stage.startedAt))&&Number(stage.startedAt)>0) e.startedAt=Number(stage.startedAt);
     if(stage.logFile) e.logFile=stage.logFile;
     if(stage.local) e.local=true;
     rec.logs.push(e);
@@ -9670,7 +9681,9 @@ function rebuildReplayNodes(rec){
   flowStages().forEach(s=>{
     const l=byName[s.name];
     const st=l?(l.status||'idle'):'idle';
-    nodes[s.id]={status:st, progress:st==='success'?100:0, dur:(l && l.dur)||0, sub:{}};
+    const node={status:st, progress:st==='success'?100:0, dur:(l && l.dur)||0, sub:{}};
+    const st0=Number(l&&l.startedAt); if(Number.isFinite(st0)&&st0>0) node.startedAt=st0;   // 阶段开始时间随历史条目回填，回放详情展示
+    nodes[s.id]=node;
   });
 }
 function enterHistoryReplay(rec){
@@ -9740,6 +9753,8 @@ function renderReplayDetail(rec){
     ['执行人',rec.by||'—'],['环境',rec.env||'—'],['Commit',rec.commit||'—'],['运行时间',rec.time||'—']];
   rows.push(['执行方式', isLocalExecStage(s, entry, rec)?'本地执行':'服务端执行']);
   if(rec.closeError) rows.push(['中断原因', rec.closeError]);   // 关页即失败的运行：中断原因随记录落史，回放详情直接可见
+  const _st0=Number(entry&&entry.startedAt);   // 阶段开始时间随历史条目持久化（collectRunLogs/服务端 pushHist）；旧记录无该字段不展示
+  if(Number.isFinite(_st0)&&_st0>0) rows.push(['开始时间', fmtStageStart(_st0)]);
   if(n.status==='success'||n.status==='failed'||n.status==='aborted') rows.push(['耗时', fmtDur(n.dur||0)]);
   /* 不再单独展示「归档目录」行：归档路径已由「📂 打开归档目录」按钮旁的状态提示展示（refreshArchiveTip），避免长路径挤压回显日志区 */
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
@@ -11128,7 +11143,7 @@ function abortRun(rc){
   // 中止兜底：先把被中断任务（含预设任务）的当前回显即时归档为独立任务日志（archiveStageLog 内部有 _logArchived 幂等保护）
   rc.stages.forEach((s,idx)=>{ const n=rc.nodes[s.id]; if(n && n.status==='running') archiveStageLog(s, stageSeq(rc.stages,idx), rc); });
   // 被中断的运行中阶段置为 aborted（保留已运行进度/耗时/变量），详情面板如实展示「终止」而非误显「未开始」
-  rc.stages.forEach(s=>{ const n=rc.nodes[s.id]; if(n && (n.status==='running')) rc.nodes[s.id]={status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}; });
+  rc.stages.forEach(s=>{ const n=rc.nodes[s.id]; if(n && (n.status==='running')) rc.nodes[s.id]=Object.assign({}, n, {status:'aborted',progress:n.progress||0,dur:n.dur||0,sub:{},varsIn:n.varsIn||{},varsOut:n.varsOut||{}}); });
   finish(rc,'aborted');
   rcRender(rc);
 }
