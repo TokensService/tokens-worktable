@@ -28,8 +28,10 @@ grep -Fq 'TARGET_NODE_IP_MAP' "$script"
 grep -Fq 'command -v ctr >/dev/null 2>&1' "$script"
 grep -Fq 'IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"' "$script"
 grep -Fq 'IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGKEY:-${LOGIN_KEY:-}}}"' "$script"
-grep -Fq 'env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr' "$script"
-grep -Fq 'env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy' "$script"
+if grep -Eq 'env -u HTTP_PROXY|env -u HTTPS_PROXY|env -u ALL_PROXY|env -u http_proxy|env -u https_proxy|env -u all_proxy' "$script"; then
+  echo 'pull-image.sh must not modify proxy environment variables' >&2
+  exit 1
+fi
 if grep -Eq 'MAPPED_IMAGE_PULL_PROXY|MAPPED_IMAGE_PULL_REVERSE_FORWARD|ssh_options.*-R' "$script"; then
   echo 'pull-image.sh must not route registry pulls through a proxy' >&2
   exit 1

@@ -568,7 +568,7 @@ PY
     echo "[pull] target $endpoint: upload pull script and pull image with ctr"
     sync_remote_file "$SCRIPT_DIR/pull-image.sh" "${target_script_dir}/pull-image.sh" "$target" "$port" "$password"
     printf -v remote_command '%s' \
-      "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if [ \"\$(id -u)\" -eq 0 ]; then env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); else sudo env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); fi"
+      "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if [ \"\$(id -u)\" -eq 0 ]; then ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); else sudo ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); fi"
     remote_ssh "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")" || {
       echo "[pull] target $endpoint: image pull failed" >&2
       return 1
