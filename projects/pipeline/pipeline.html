@@ -1038,6 +1038,31 @@ const XDS_STAGES = [
   {id:'modelhealth',name:'模型健康检查',dur:6,sub:[]},
   {id:'modeltest',name:'测试',dur:8,sub:[]},
 ];
+/* 内置「部署vLLM（原生P/D）」流水线：按 native_vllm_deployment_from_xds.md 第 12 节配方
+   （vLLM 代码基线 TokensService/vllm 分支 v0.30.0.tokens），以原生 vLLM（VLLM_PLUGINS=""
+   关闭 XDS 补丁）把模型部署为 Prefill(TP×PP) + Decode(TP×DP) + Mooncake Proxy 的 P/D 分离
+   拓扑；阶段绑定 scripts/vllm-native-*.sh（种子 path 留空，loadScripts 后由
+   rebindBuiltinScriptPaths 按名回填当前 scripts 目录的真实路径）。阶段参数值约定：
+   部署/验证参数全部走脚本 :- 默认值（页面可覆盖）；仅 VLLM_ROLE 在阶段上显式区分。
+   DEPLOY_MODE=standalone 时只部署 Prefill 基线，Decode/Proxy 阶段自动跳过。
+   预设任务默认全不勾选（defaults.presets=[]）：本流水线的清理由 vllm-native-cleanup.sh
+   承担（可按需绑为阶段或设置页清理脚本），不套用 XDS 的 cleanup-env.sh。 */
+const VLLM_NATIVE_STAGES = [
+  {id:'vlcheck',name:'vLLM环境检查',dur:0,sub:[],kind:'shell',timeout:600,
+   script:{name:'vllm-native-check.sh',path:'',lang:'sh',params:[],values:{},outVars:''}},
+  {id:'vlprepare',name:'vLLM节点准备',dur:0,sub:[],kind:'shell',timeout:600,
+   script:{name:'vllm-native-prepare.sh',path:'',lang:'sh',params:[],values:{},outVars:''}},
+  {id:'vlprefill',name:'部署Prefill(PP)',dur:0,sub:[],kind:'shell',timeout:900,
+   script:{name:'vllm-native-deploy.sh',path:'',lang:'sh',params:[{kind:'env',key:'VLLM_ROLE',label:'部署角色',def:'',required:true}],values:{VLLM_ROLE:'prefill'},outVars:''}},
+  {id:'vldecode',name:'部署Decode(DP)',dur:0,sub:[],kind:'shell',timeout:900,
+   script:{name:'vllm-native-deploy.sh',path:'',lang:'sh',params:[{kind:'env',key:'VLLM_ROLE',label:'部署角色',def:'',required:true}],values:{VLLM_ROLE:'decode'},outVars:''}},
+  {id:'vlwait',name:'等待服务就绪',dur:0,sub:[],kind:'shell',timeout:2700,
+   script:{name:'vllm-native-wait.sh',path:'',lang:'sh',params:[],values:{},outVars:''}},
+  {id:'vlproxy',name:'重建PD-Proxy',dur:0,sub:[],kind:'shell',timeout:600,
+   script:{name:'vllm-native-deploy.sh',path:'',lang:'sh',params:[{kind:'env',key:'VLLM_ROLE',label:'部署角色',def:'',required:true}],values:{VLLM_ROLE:'proxy'},outVars:''}},
+  {id:'vlverify',name:'P/D联调验证',dur:0,sub:[],kind:'shell',timeout:900,
+   script:{name:'vllm-native-verify.sh',path:'',lang:'sh',params:[],values:{},outVars:''}},
+];
 // 每阶段真实日志模板（按阶段 id 匹配；自定义阶段走通用日志）
 const LOGS = {
   checkout: [
@@ -1139,7 +1164,7 @@ function persistState(){
    运行流水线行的临时配置（curPipelineId/selectedEnvIds/curRepoId/branch/strategy/预设勾选）只存浏览器
    localStorage，不上送服务端——各人临时调整自己的运行参数，不覆盖他人浏览器的取值。 */
 function collectConfig(){
-  return { pipelines, environments,
+  return { pipelines:pipelines.filter(p=>!builtinSeedOmittable(p)), environments,
     repositories: repositories.map(function(r){ return Object.assign({}, r); }),
     scriptsDir, theme: themePref, buildNo, cleanupScript, checkScript, profilingScript, customPresets, jenkins, evaltok, prom,
     archiveDir, archiveScriptName, analysisPrompts, histClearedAt,
@@ -1334,7 +1359,9 @@ async function pushState(options){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
       stateFetchEpoch+=1;   // 基线前进（保存确认）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
       if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
-        pipelines=reconcilePipelinesAfterSave(config.pipelines,body.config.pipelines,pipelines)
+        /* reconcile 后重新内置置顶重组：免上送的纯净内置种子不在 accepted 里，reconcile 会把它们
+           追加到尾部，这里按注册表口径恢复「内置在前、自定义保持相对序」 */
+        pipelines=regroupBuiltinPipelines(reconcilePipelinesAfterSave(config.pipelines,body.config.pipelines,pipelines))
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
         try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
       }
@@ -1401,7 +1428,7 @@ async function pushPipelineOne(pipelineId){
         serverConfigBase=JSON.parse(JSON.stringify(body.config));
         stateFetchEpoch+=1;
         if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
-          pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
+          pipelines=regroupBuiltinPipelines(reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines))
             .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
           try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
         }
@@ -1412,7 +1439,7 @@ async function pushPipelineOne(pipelineId){
       serverConfigBase=JSON.parse(JSON.stringify(body.config));
       stateFetchEpoch+=1;   // 基线前进（保存确认）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
       if(Array.isArray(body.config.pipelines) && typeof pipelines!=='undefined'){
-        pipelines=reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines)
+        pipelines=regroupBuiltinPipelines(reconcilePipelinesAfterSave(localSnap,body.config.pipelines,pipelines))
           .map(p=>JSON.parse(JSON.stringify(p))).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
         try{ localStorage.setItem('pip-pipelines',JSON.stringify(pipelines)); }catch(e){}
       }
@@ -1452,9 +1479,8 @@ async function loadServerState(){
       if(Array.isArray(cfg.pipelines) && cfg.pipelines.length){
         /* 按 id 三方合并（替代整表替换）：自愈重拉不再把本地未落盘的新增/修改冲掉，合并口径见 mergePipelinesFromServer */
         const merged=mergePipelinesFromServer(prevBasePipelines, pipelines, cfg.pipelines);
-        const def=merged.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-        const customs=merged.pipelines.filter(p=>p && !p.builtIn);
-        pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+        pipelines=regroupBuiltinPipelines(merged.pipelines).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+        rebindBuiltinScriptPaths();   /* 服务端版本内置替换种子后，按名对齐当前 scriptsDir 的脚本路径 */
         /* 新基线以响应快照为准，但「保留的本地条目」不得让基线回退到错误状态：
            - 本地新增（基线本就无）：快照里本来就没有，保持无基线——下次 save-one 的 baseOne=null 与磁盘比对，
              磁盘也无即正常新增落盘；
@@ -1675,8 +1701,15 @@ function mergeStageLogsForHistory(prevLogs, nextLogs){
 }
 
 /* ---------- 流水线注册表（多条流水线） ---------- */
-/* 默认仅保留一条「安装部署」流水线；保留用户对其的编辑（id 不变），并保留用户自建流水线 */
+/* 内置流水线注册表：固定 id + 种子工厂。登记即获得「内置置顶、服务端/本地存储版优先、
+   不可删除、仅 admin 可编辑」语义；服务端按同一 id 集合保护（src/index.ts BUILTIN_PIPELINE_IDS）。
+   DEFAULT_PIPELINE_ID 保留为首条内置 id（历史引用/兼容）。 */
 const DEFAULT_PIPELINE_ID='pl-xds';
+const BUILTIN_VLLM_PIPELINE_ID='pl-vllm-native';
+const BUILTIN_PIPELINE_DEFS=[
+  {id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:function(){ return XDS_STAGES.map(s=>({...s})); }},
+  {id:BUILTIN_VLLM_PIPELINE_ID, name:'部署vLLM（原生P/D）', stages:function(){ return VLLM_NATIVE_STAGES.map(s=>JSON.parse(JSON.stringify(s))); }, defaults:{branch:'v0.30.0.tokens',presets:[]}},
+];
 /* ---------- 流水线默认运行参数 ---------- */
 /* ---------- 预设任务定义（必须在 loadPipelines/normalizePipelineDefaults 之前声明） ---------- */
 /* PRESET_DEF / presetDefOf 被 normalizePipelineDefaults 在顶层 loadPipelines() 中调用；
@@ -1980,7 +2013,55 @@ function showPipelineApi(pl){
   $('pipelineApiDialog').style.display='flex';
 }
 /* ---------- 流水线 API 调用说明结束 ---------- */
-function defaultPipeline(){ return migratePipelineDefaults({id:DEFAULT_PIPELINE_ID, name:'安装部署XDS', stages:XDS_STAGES.map(s=>({...s})), builtIn:true}); }
+/* 内置种子工厂：按注册表生成内置流水线（migratePipelineDefaults 归一化默认运行参数；
+   注册表 defaults 增量覆盖，如 vLLM 流水线把默认分支固定为 v0.30.0.tokens、预设任务默认全不勾选） */
+function builtinPipelineSeed(id){
+  const def=BUILTIN_PIPELINE_DEFS.find(d=>d.id===id);
+  if(!def) return null;
+  const p=migratePipelineDefaults({id:def.id, name:def.name, stages:def.stages(), builtIn:true});
+  if(def.defaults) p.defaults=normalizePipelineDefaults(Object.assign({}, p.defaults, def.defaults));
+  return p;
+}
+function defaultPipeline(){ return builtinPipelineSeed(DEFAULT_PIPELINE_ID); }
+function builtinPipelineSeeds(){ return BUILTIN_PIPELINE_DEFS.map(d=>builtinPipelineSeed(d.id)); }
+/* 内置重组（loadPipelines/loadServerState/applyPipelineRefreshPayload/normalizeImportedPipelines/deletePipeline
+   五处共用）：按注册表顺序逐条「存储版（保留 admin 编辑）优先、缺省用种子」，自定义条目随后；
+   未登记 id 的 builtIn 条目（未来/旧版）按既有口径丢弃。 */
+function regroupBuiltinPipelines(list){
+  const src=Array.isArray(list)?list:[];
+  const customs=src.filter(p=>p && !p.builtIn);
+  return builtinPipelineSeeds().map(seed=> src.find(p=>p && p.builtIn && p.id===seed.id) || seed ).concat(customs);
+}
+/* 键序无关深比较（内置种子纯净度判定用；数组按序、对象按键集） */
+function deepEqLoose(a,b){
+  if(a===b) return true;
+  if(typeof a!==typeof b) return false;
+  if(!a||!b||typeof a!=='object') return false;
+  if(Array.isArray(a)!==Array.isArray(b)) return false;
+  if(Array.isArray(a)){
+    if(a.length!==b.length) return false;
+    for(let i=0;i<a.length;i++){ if(!deepEqLoose(a[i],b[i])) return false; }
+    return true;
+  }
+  const ka=Object.keys(a), kb=Object.keys(b);
+  if(ka.length!==kb.length) return false;
+  for(const k of ka){ if(!Object.prototype.hasOwnProperty.call(b,k)||!deepEqLoose(a[k],b[k])) return false; }
+  return true;
+}
+/* 全量写服务端时该内置条目是否免上送：① 内置；② 内容与代码种子逐字段一致（剥离 favoriteUsers/pinnedAt
+   共享元数据、并剥离各阶段 script.path——rebindBuiltinScriptPaths 按名回填的本机路径属环境适配、
+   不算内容编辑）——即「纯净种子」；③ 服务端基线尚无该 id。满足即免上送：否则非 admin 的首次保存会把
+   新内置种子的「创建」推给服务端，触发 builtinCreate 403（src/index.ts trustedPipelineViolations）。
+   admin 编辑过（内容偏离种子）或服务端已持久化的内置条目照常随包上送；纯净种子不上送不影响本端
+   展示与运行（种子在代码里），admin 首次编辑保存后即转为服务端版本。 */
+function builtinSeedOmittable(p){
+  if(!p || p.builtIn!==true) return false;
+  const seed=builtinPipelineSeed(p.id); if(!seed) return false;
+  const base=(typeof serverConfigBase!=='undefined'&&serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
+  if(base.some(b=>b && b.id===p.id)) return false;
+  const normalize=p=>{ const c=JSON.parse(JSON.stringify(stripPipelineSharedMeta(p))); (c.stages||[]).forEach(s=>{ if(s && s.script) delete s.script.path; }); return c; };
+  return deepEqLoose(normalize(p), normalize(seed));
+}
 /* 普罗数据采集的默认 model/namespace 取值（任务级采集与「📊 收集普罗数据」手动补采共用）：
    modelName 默认 ${MODEL_PATH}（按上游 deploy 阶段产出的 MODEL_PATH 解析），
    xdsNamespace 默认 ${DEPLOY_STRATEGY}-${BY}（按当前部署策略与执行人解析），采集时点经 substRunVars 解析。 */
@@ -2002,11 +2083,9 @@ function loadPipelines(){
   let stored=null;
   try{ const a=JSON.parse(localStorage.getItem('pip-pipelines')); stored=Array.isArray(a)?a:null; }catch(e){ stored=null; }
   if(stored && stored.length){
-    const def=stored.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-    const customs=stored.filter(p=>p && !p.builtIn);
-    return [ def || defaultPipeline() ].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+    return regroupBuiltinPipelines(stored).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
   }
-  return [ defaultPipeline() ];
+  return builtinPipelineSeeds();
 }
 let pipelines = loadPipelines();
 let curPipelineId = lsGet('pip-curPipeline', pipelines[0].id);
@@ -3370,7 +3449,8 @@ function renderStrategyPanel(showAll, which){
 function slug(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''); }
 function stageIdFor(name){
   const lc=(name||'').toLowerCase();
-  const map={'检出':'checkout','checkout':'checkout','校验':'validate','validate':'validate','审批':'approval','approval':'approval','构建镜像':'build','构建':'build','build':'build','推送镜像':'push','push':'push','部署到 k8s':'deploy','部署到k8s':'deploy','deploy to k8s':'deploy','deploy':'deploy','健康检查':'health','health':'health'};
+  const map={'检出':'checkout','checkout':'checkout','校验':'validate','validate':'validate','审批':'approval','approval':'approval','构建镜像':'build','构建':'build','build':'build','推送镜像':'push','push':'push','部署到 k8s':'deploy','部署到k8s':'deploy','deploy to k8s':'deploy','deploy':'deploy','健康检查':'health','health':'health',
+    'vllm环境检查':'vlcheck','vllm节点准备':'vlprepare','部署prefill(pp)':'vlprefill','部署decode(dp)':'vldecode','等待服务就绪':'vlwait','重建pd-proxy':'vlproxy','p/d联调验证':'vlverify'};
   if(map[name]) return map[name];
   if(map[lc]) return map[lc];
   return slug(name)||null;
@@ -4079,6 +4159,7 @@ async function loadScripts(){
     const ents=(j.entries||[]).filter(e=>!e.isDir && /\.(sh|py)$/i.test(e.name));   // .sh + .py（README 等文档不进脚本列表）
     availableScripts=ents.map(e=>({name:e.name, path:e.path, lang:/\.py$/i.test(e.name)?'py':'sh'}));
   }catch(e){ availableScripts=[]; }
+  rebindBuiltinScriptPaths();
   fillScriptsDatalist();
 }
 function fillScriptsDatalist(){
@@ -4086,6 +4167,22 @@ function fillScriptsDatalist(){
   availableScripts.forEach(s=>{ const o=document.createElement('option'); o.value=s.name; dl.appendChild(o); });
 }
 function scriptByName(name){ return availableScripts.find(s=>s.name===name)||null; }
+/* 内置流水线的脚本绑定按名落种子（path 留空），scripts 目录列表就绪后按名回填真实路径：
+   种子随代码分发、不知安装后的 scripts 绝对路径；服务端存储版内置（admin 保存过）同样按名
+   对齐当前 scriptsDir（脚本目录迁移后旧绝对路径自动修复）。仅处理内置流水线（自定义流水线
+   的缺脚本路径由编辑器告警负责）；scripts 目录暂无该脚本时保持原 path（编辑器照常告警）。 */
+function rebindBuiltinScriptPaths(){
+  if(typeof pipelines==='undefined'||!Array.isArray(pipelines)) return;
+  BUILTIN_PIPELINE_DEFS.forEach(def=>{
+    const pl=pipelines.find(p=>p && p.builtIn && p.id===def.id);
+    if(!pl || !Array.isArray(pl.stages)) return;
+    pl.stages.forEach(s=>{
+      if(!s || !s.script || !s.script.name) return;
+      const sc=scriptByName(s.script.name);
+      if(sc && s.script.path!==sc.path){ s.script.path=sc.path; if(!s.script.lang) s.script.lang=sc.lang; }
+    });
+  });
+}
 /* Jenkins 任务列表（设置页「获取任务列表」后填充；供「代码仓」分支获取=Jenkins 时选择多分支任务） */
 let availableJenkinsJobs=[];   // [{name: fullName}]
 function fillJenkinsJobsDatalist(){
@@ -10455,9 +10552,8 @@ function applyPipelineRefreshPayload(st){
   const merged=mergePipelinesFromServer(prevBasePipelines, pipelines, cfg.pipelines);
   serverConfigBase=JSON.parse(JSON.stringify(cfg));
   stateFetchEpoch+=1;   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期（见 fetchPipelineStateFresh）
-  const def=merged.pipelines.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-  const customs=merged.pipelines.filter(p=>p && !p.builtIn);
-  pipelines=[def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+  pipelines=regroupBuiltinPipelines(merged.pipelines).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+  rebindBuiltinScriptPaths();   /* 刷新替换内置条目后，按名对齐当前 scriptsDir 的脚本路径 */
   if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
   if(!findPipeline(curPipelineId)) curPipelineId=pipelines[0].id;
   try{
@@ -11050,7 +11146,7 @@ function deletePipeline(id){
   if(running){ alert('流水线运行中，暂不能删除（可点「重置」中止当前运行）。'); return; }
   if(!confirm('删除该流水线？')) return;
   pipelines=pipelines.filter(p=>p.id!==id);
-  if(!pipelines.length){ pipelines=[defaultPipeline()]; }
+  if(!pipelines.length){ pipelines=builtinPipelineSeeds(); }
   savePipelines();
   if(curPipelineId===id){ curPipelineId=pipelines[0].id; viewRc=null; syncViewRun(); resetNodes(); }
   renderPipelines(); renderFlow(); renderDetail();
@@ -11522,12 +11618,10 @@ function exportPipelines(){
   downloadJson('pipeline-pipelines-'+ioTimestamp()+'.json', buildPipelinesExport());
   ioTipShow('✓ 已导出 '+pipelines.length+' 条流水线');
 }
-/* 导入的流水线列表归一化：与 loadServerState 同一套迁移（内置默认置顶 + gate/url/预填默认值迁移）；非法列表返回 null */
+/* 导入的流水线列表归一化：与 loadServerState 同一套迁移（内置置顶重组 + gate/url/预填默认值迁移）；非法列表返回 null */
 function normalizeImportedPipelines(list){
   if(!Array.isArray(list) || !list.some(p=>p && Array.isArray(p.stages))) return null;
-  const def=list.find(p=>p && p.builtIn && p.id===DEFAULT_PIPELINE_ID);
-  const customs=list.filter(p=>p && !p.builtIn);
-  return [def||defaultPipeline()].concat(customs).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
+  return regroupBuiltinPipelines(list).map(migrateGate).map(migrateStageUrl).map(migratePrefillDefaults).map(migratePipelineDefaults).map(migratePromPreset);
 }
 /* 应用导入的设置配置（不含流水线）：文件为权威，缺省键保持当前值；随后统一落 localStorage + persistState 推服务端 + 全量重渲染 */
 function applyImportedSettings(cfg, loc){

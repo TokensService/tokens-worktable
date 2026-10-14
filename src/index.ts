@@ -917,16 +917,21 @@ function deepEqualIgnoring(a: any, b: any, ignoreKeys?: string[]): boolean {
  *  服务端据此把内置条目视同 trusted 保护，字面量不散落到校验逻辑里。 */
 const BUILTIN_PIPELINE_ID = 'pl-xds'
 
-/** 内置条目判定：builtIn===true 或 id 命中 BUILTIN_PIPELINE_ID 任一即算
+/** 内置流水线固定 id 集合（与 projects/pipeline/pipeline.html 的 BUILTIN_PIPELINE_DEFS 对齐）：
+ *  pl-xds「安装部署XDS」、pl-vllm-native「部署vLLM（原生P/D）」。新增内置 id 加入本集合即受
+ *  同等保护（防抢先占位固定 id）。 */
+const BUILTIN_PIPELINE_IDS = new Set([BUILTIN_PIPELINE_ID, 'pl-vllm-native'])
+
+/** 内置条目判定：builtIn===true 或 id 命中 BUILTIN_PIPELINE_IDS 任一即算
  *  （防伪造 builtIn 标志混入，也防抢先占位固定 id 或剥掉标志绕过保护）。 */
 function isBuiltinPipelineEntry(entry: any): boolean {
   return !!entry && typeof entry === 'object' && !Array.isArray(entry)
-    && (entry.builtIn === true || entry.id === BUILTIN_PIPELINE_ID)
+    && (entry.builtIn === true || BUILTIN_PIPELINE_IDS.has(entry.id))
 }
 
 /** 可信/内置流水线写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得删除/改内容/摘除
  *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；内置条目（builtIn===true 或 id 命中
- *  BUILTIN_PIPELINE_ID）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
+ *  BUILTIN_PIPELINE_IDS）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
  *  标志，也不得新建内置条目（防伪造内置混入 customs 或抢先占位固定 id）。favoriteUsers 是按用户
  *  收藏的个人数据、pinnedAt 是全局视图排序的置顶时间戳（任何登录用户可置顶/取消），二者均属
  *  非内容元数据，豁免条目顶层内容比对（与合并层 stripPipelineSharedMeta 的剥离口径一致）。

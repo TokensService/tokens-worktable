@@ -178,6 +178,7 @@ function pushFixture(response) {
     migratePrefillDefaults: value => value,
     migratePipelineDefaults: value => value,
     migratePromPreset: value => value,
+    regroupBuiltinPipelines: list => list,   /* 内置重组桩：本组用例不涉内置（专项见 test_pipeline_builtin_vllm.js） */
     fetch: async (url, options) => { requests.push({ url, options }); return response; },
     AbortController,
     setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
@@ -317,6 +318,7 @@ function oneFixture(response) {
     migratePrefillDefaults: value => value,
     migratePipelineDefaults: value => value,
     migratePromPreset: value => value,
+    regroupBuiltinPipelines: list => list,   /* 内置重组桩：本组用例不涉内置（专项见 test_pipeline_builtin_vllm.js） */
     fetch: async (url, options) => { requests.push({ url, options }); return response; },
     AbortController,
     setTimeout: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },

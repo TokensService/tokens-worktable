@@ -40,6 +40,9 @@ function loadRefreshFixture(remoteState, fetchError) {
     replayRec: null,
     running: false,
     defaultPipeline: () => ({ id: 'pl-xds', name: '默认流水线', stages: [{ id: 'st-default' }], builtIn: true }),
+    /* 内置注册表重组/脚本路径回填桩：本组用例不验证多内置重组（专项见 projects/pipeline/tests/test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines: (list) => { const l = Array.isArray(list) ? list : []; return [l.find(p => p && p.builtIn && p.id === 'pl-xds') || { id: 'pl-xds', name: '默认流水线', stages: [{ id: 'st-default' }], builtIn: true }].concat(l.filter(p => p && !p.builtIn)); },
+    rebindBuiltinScriptPaths: () => {},
     migrateGate: p => p,
     migrateStageUrl: p => p,
     migratePrefillDefaults: p => p,
