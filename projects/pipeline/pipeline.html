@@ -2372,10 +2372,11 @@ function envReservationIssue(envs){
   if(!blocked.length) return null;
   return '节点预留冲突：'+blocked.join('；');
 }
-/* 节点表「预留」列：逐时段一行展示（开始 ~ 结束 · 用户 · 备注），按开始时间升序；
-   生效中时段整行醒目并前缀「预留中」，已结束时段置灰并后缀「（已结束）」，未来时段普通样式；
-   无预留显示 —。行尾跟「分配」按钮（admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态）。
-   用户名/备注等注入字段一律 esc 转义；逐行 white-space:nowrap 保证一个时段一行（长内容经表格外层 overflow 横向滚动）。 */
+/* 节点表「预留」列：逐时段一行、三列网格对齐（时间段 | 用户 | 备注），按开始时间升序；
+   生效中时段整行高亮（st-run 色 + 600 字重，不加文字前缀，保持各行左缘对齐），
+   已结束时段整行置灰并在备注格后缀「（已结束）」，未来时段普通样式；无预留显示 —。
+   行尾跟「分配」按钮（admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态）。
+   用户名/备注等注入字段一律 esc 转义；单元格 white-space:nowrap 保证一个时段一行（长内容经表格外层 overflow 横向滚动）。 */
 function envResSummaryHtml(e){
   const records=reservationsForNode(e.id);
   const now=Date.now();
@@ -2383,18 +2384,20 @@ function envResSummaryHtml(e){
   if(!records.length){
     summary='<span class="dshell-muted">—</span>';
   } else {
-    summary=records.map(r=>{
-      const s=Date.parse(r&&r.start), t=Date.parse(r&&r.end);
-      const range=esc(fmtResTime(r&&r.start)||'—')+' ~ '+esc(fmtResTime(r&&r.end)||'—');
-      const users=(Array.isArray(r&&r.users)&&r.users.length?r.users:['—']).map(u=>esc(u)).join('、');
-      const note=r&&r.note?' · '+esc(r.note):'';
-      const line=range+' · '+users+note;
-      if(!isNaN(s)&&!isNaN(t)&&s<=now&&now<t)
-        return '<div style="white-space:nowrap;color:var(--st-run);font-weight:600;" title="当前生效的预留时段">预留中 · '+line+'</div>';
-      if(!isNaN(t)&&t<=now)
-        return '<div class="dshell-muted" style="white-space:nowrap;" title="已结束的预留时段">'+line+'（已结束）</div>';
-      return '<div style="white-space:nowrap;">'+line+'</div>';
-    }).join('');
+    summary='<div style="display:grid;grid-template-columns:auto auto 1fr;column-gap:10px;row-gap:2px;">'
+      +records.map(r=>{
+        const s=Date.parse(r&&r.start), t=Date.parse(r&&r.end);
+        const range=esc(fmtResTime(r&&r.start)||'—')+' ~ '+esc(fmtResTime(r&&r.end)||'—');
+        const users=(Array.isArray(r&&r.users)&&r.users.length?r.users:['—']).map(u=>esc(u)).join('、');
+        const active=!isNaN(s)&&!isNaN(t)&&s<=now&&now<t, expired=!isNaN(t)&&t<=now;
+        const cls=expired?' class="dshell-muted"':'';
+        const st=active?'color:var(--st-run);font-weight:600;':'';
+        const tip=active?' title="当前生效的预留时段"':(expired?' title="已结束的预留时段"':'');
+        const note=(r&&r.note?esc(r.note):'')+(expired?'（已结束）':'');
+        return '<span'+cls+' style="white-space:nowrap;'+st+'"'+tip+'>'+range+'</span>'
+          +'<span'+cls+' style="white-space:nowrap;'+st+'"'+tip+'>'+users+'</span>'
+          +'<span'+cls+' style="white-space:nowrap;'+st+'"'+tip+'>'+note+'</span>';
+      }).join('')+'</div>';
   }
   return summary+' <button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存）">分配</button>';
 }

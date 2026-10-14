@@ -5,7 +5,7 @@
    - 纯函数：reservationsForNode（过滤+按 start 排序）、fmtResTime（本地 MM-DD HH:mm）、
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
      envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue。
-   - 渲染：renderEnvs「预留」列逐时段行（时间段 · 用户 · 备注）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
+   - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
    - 运行校验接入：pipelineDefaultRunIssue / runPipeline / submitPipelineRunDialog / addPlan 四处的预留拦截；
@@ -324,7 +324,7 @@ function renderEnvsCtx(globals, envs) {
   return { ctx, els, tbody };
 }
 
-test('renderEnvs「预留」列：逐时段一行（时间段 · 用户 · 备注），生效中醒目 / 未来普通 / 无预留 —；行内含「分配」按钮', () => {
+test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用户 | 备注），生效中整行高亮无「预留中」文案 / 无预留 —；行内含「分配」按钮', () => {
   const p2 = n => String(n).padStart(2, '0');
   const fmt = d => p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
   const now = Date.now();
@@ -337,22 +337,26 @@ test('renderEnvs「预留」列：逐时段一行（时间段 · 用户 · 备�
   ctx.renderEnvs();
   assert.equal(tbody.children.length, 3);
   const htmlOf = id => tbody.children[['env-a', 'env-b', 'env-c'].indexOf(id)].innerHTML;
-  /* 生效中：预留中前缀 + 醒目样式 + 时间段/用户/备注同一行 */
+  /* 生效中：时间段/用户/备注三格均 st-run 高亮，无「预留中」文字前缀（保持各行左缘对齐） */
   const cHtml = htmlOf('env-c');
-  assert.ok(cHtml.includes(`预留中 · ${activeRange} · u1、u2 · 专项压测`), '生效中行含 预留中 · 时间段 · 用户 · 备注');
-  assert.ok(/color:var\(--st-run\)/.test(cHtml), '生效中行为醒目样式');
-  /* 未来时段：每时段一行，各带对应用户 */
-  const bLines = (htmlOf('env-b').match(/<div style="white-space:nowrap;">/g) || []).length;
-  assert.equal(bLines, 2, '两个未来时段各一行');
-  assert.ok(htmlOf('env-b').includes('· u1</div>') && htmlOf('env-b').includes('· u3</div>'), '各行含对应用户');
-  assert.ok(!htmlOf('env-b').includes('预留中'), '未来时段不带预留中标记');
-  assert.ok(!htmlOf('env-b').includes('个时段'), '不再折叠为时段数');
+  assert.ok(!cHtml.includes('预留中'), '生效中行不再带「预留中」文案');
+  const cHi = (cHtml.match(/<span style="white-space:nowrap;color:var\(--st-run\);font-weight:600;" title="当前生效的预留时段">/g) || []).length;
+  assert.equal(cHi, 3, '生效中时段的三格整行高亮');
+  assert.ok(cHtml.includes(`>${activeRange}</span>`), '时间段格内容');
+  assert.ok(cHtml.includes('>u1、u2</span>'), '用户格内容');
+  assert.ok(cHtml.includes('>专项压测</span>'), '备注格内容');
+  /* 未来时段：每时段一行三格、普通样式，列经网格对齐 */
+  assert.ok(htmlOf('env-b').includes('display:grid'), '多时段经网格容器对齐列');
+  const bCells = (htmlOf('env-b').match(/<span style="white-space:nowrap;">[^<]*<\/span>/g) || []).length;
+  assert.equal(bCells, 6, '两个未来时段 × 三格');
+  assert.ok(htmlOf('env-b').includes('>u1</span>') && htmlOf('env-b').includes('>u3</span>'), '各行含对应用户');
+  assert.ok(!htmlOf('env-b').includes('预留中') && !htmlOf('env-b').includes('个时段'), '未来时段无预留中标记、不再折叠为时段数');
   /* 无预留显示 — */
   assert.ok(/<span class="dshell-muted">—<\/span>/.test(htmlOf('env-a')), '无预留显示 —');
   ['env-a', 'env-b', 'env-c'].forEach(id => assert.ok(htmlOf(id).includes(`data-envres="${id}"`), `行内应有「分配」按钮（data-envres=${id}）`));
 });
 
-test('renderEnvs「预留」列：已结束时段置灰并后缀（已结束）；多时段按开始时间升序逐行排列', () => {
+test('renderEnvs「预留」列：已结束时段整行置灰并在备注格后缀（已结束）；多时段按开始时间升序逐行排列', () => {
   const { ctx, tbody } = renderEnvsCtx(null, [envOf('env-d', '归档', '10.0.0.4')]);
   const past = { id: 'r0', nodeId: 'env-d', users: ['old'], start: new Date(Date.now() - 7200e3).toISOString(), end: new Date(Date.now() - 3600e3).toISOString(), note: '上周占用', createdBy: 'admin', createdAt: '', updatedAt: '' };
   vm.runInContext(`nodeReservations=${JSON.stringify([
@@ -363,11 +367,14 @@ test('renderEnvs「预留」列：已结束时段置灰并后缀（已结束）�
   ctx.renderEnvs();
   const html = tbody.children[0].innerHTML;
   /* 升序：已结束（最早）→ 生效中 → 未来 */
-  const iPast = html.indexOf('上周占用'), iActive = html.indexOf('预留中 ·'), iFuture = html.indexOf('· u3</div>');
+  const iPast = html.indexOf('上周占用'), iActive = html.indexOf('进行中备注'), iFuture = html.indexOf('>u3</span>');
   assert.ok(iPast >= 0 && iActive > iPast && iFuture > iActive, '时段按开始时间升序逐行排列');
-  assert.ok(/<div class="dshell-muted"[^>]*>[^<]*上周占用[^<]*（已结束）<\/div>/.test(html), '已结束时段置灰并后缀（已结束）');
-  assert.ok(html.includes('预留中 · '), '生效中时段带预留中前缀');
-  assert.ok(html.includes('进行中备注'), '备注随行展示');
+  const mutedCells = (html.match(/<span class="dshell-muted" style="white-space:nowrap;" title="已结束的预留时段">/g) || []).length;
+  assert.equal(mutedCells, 3, '已结束时段整行三格置灰');
+  assert.ok(html.includes('>上周占用（已结束）</span>'), '已结束时段在备注格后缀（已结束）');
+  const hiCells = (html.match(/color:var\(--st-run\);font-weight:600;/g) || []).length;
+  assert.equal(hiCells, 3, '生效中时段整行三格高亮');
+  assert.ok(!html.includes('预留中'), '不再出现「预留中」文案');
 });
 
 test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 admin 打开只读形态（输入禁用、无保存按钮、标题旁注明）', async () => {
