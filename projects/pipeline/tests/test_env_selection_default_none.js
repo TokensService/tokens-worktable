@@ -89,9 +89,13 @@ function loadRenderEnvMulti(btn,panel){
     esc:s=>String(s),
     $:id=>({envMultiBtn:btn,envMultiPanel:panel})[id]||null,
     environments:ENVS,
-    envMultiSearch:{}, envMultiSelSort:{},
+    envMultiSearch:{}, envMultiSelSort:{}, envMultiListFilter:{},
   };
   vm.createContext(ctx);
+  vm.runInContext(extractFunction('envAvailGroup'),ctx);
+  vm.runInContext(extractFunction('envMultiAvailSort'),ctx);
+  vm.runInContext(extractFunction('envMultiGpuIdle'),ctx);
+  vm.runInContext(extractFunction('envMultiListFilterMatch'),ctx);
   vm.runInContext(extractFunction('envMultiFilterMatch'),ctx);
   vm.runInContext(extractFunction('envMultiSortVal'),ctx);
   vm.runInContext(extractFunction('envMultiSortList'),ctx);
