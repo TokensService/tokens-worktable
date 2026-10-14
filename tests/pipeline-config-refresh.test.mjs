@@ -63,7 +63,7 @@ function loadRefreshFixture(remoteState, fetchError) {
   vm.createContext(ctx)
   /* 刷新段落在切片外的依赖：按 id 三方合并（mergePipelinesFromServer/stripPipelineSharedMeta）
      与过期快照重拉（fetchPipelineStateFresh，内部走 ctx.fetch 与 ctx.stateFetchEpoch） */
-  vm.runInContext(['stripPipelineSharedMeta', 'mergePipelinesFromServer', 'fetchPipelineStateFresh'].map(extractFunction).join('\n'), ctx)
+  vm.runInContext(['stripPipelineSharedMeta', 'mergePipelinesFromServer', 'fetchPipelineStateFresh', 'beginRefreshSpin'].map(extractFunction).join('\n'), ctx)
   vm.runInContext(page.slice(start, end), ctx)
   assert.equal(button.click, ctx.refreshPipelinesFromServer, '刷新按钮应绑定手动刷新处理器')
   return { ctx, stored, alerts, calls, button }
