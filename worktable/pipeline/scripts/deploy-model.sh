@@ -1006,6 +1006,26 @@ cleanup_stale_raycluster() {
     --ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"
 }
 
+cleanup_legacy_cluster_rbac() {
+  local namespace_base legacy_release legacy_namespace role_name binding_name release_name release_namespace
+  namespace_base="${NAMESPACE_ARCH:-}"
+  [[ -n "$namespace_base" ]] || namespace_base="$ARCH_NAME"
+  [[ -n "$EXECUTOR" ]] || return 0
+  legacy_namespace="$(normalize_kubernetes_name "xds-${namespace_base}" 63)"
+  legacy_release="xds-${legacy_namespace#xds-}"
+  [[ "$legacy_namespace" != "$NAMESPACE" ]] || return 0
+  role_name="${legacy_release}-role"
+  binding_name="${legacy_release}-role-binding"
+  for resource in "clusterrole/$role_name" "clusterrolebinding/$binding_name"; do
+    release_name="$($KUBECTL_BIN get "$resource" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || true)"
+    release_namespace="$($KUBECTL_BIN get "$resource" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}' 2>/dev/null || true)"
+    if [[ "$release_name" == "$legacy_release" && "$release_namespace" == "$legacy_namespace" ]]; then
+      echo "[deploy] remove legacy Helm RBAC resource: $resource (release=$legacy_release namespace=$legacy_namespace)"
+      "$KUBECTL_BIN" delete "$resource" --ignore-not-found
+    fi
+  done
+}
+
 ensure_raycluster_cleanup_service_account() {
   local raycluster="$RELEASE_NAME-kuberay" service_account
 
@@ -1180,6 +1200,7 @@ echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
 # deleted RayCluster.  Its redis-cleanup Job inherits that ServiceAccount.
 ensure_raycluster_cleanup_service_account
 cleanup_stale_raycluster
+cleanup_legacy_cluster_rbac
 wait_for_release_cleanup
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
