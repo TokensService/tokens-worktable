@@ -74,14 +74,27 @@ function loadAppendHarness(storeFile) {
 test('mergeStageLogsForHistory：按阶段名并集，本地前缀 + 服务端后缀完整', () => {
   const ctx = loadHistoryHelpers()
   const merged = ctx.mergeStageLogsForHistory(
-    [{ stage: '本地A', status: 'success', dur: 1, local: true }, { stage: '定时B', status: 'skipped', dur: 0 }],
-    [{ stage: '定时B', status: 'success', dur: 2, logFile: '/x/b.log' }, { stage: '定时C', status: 'failed', dur: 3 }],
+    [{ stage: '本地A', status: 'success', dur: 1, local: true, startedAt: 1760457600000 }, { stage: '定时B', status: 'skipped', dur: 0 }],
+    [{ stage: '定时B', status: 'success', dur: 2, logFile: '/x/b.log', startedAt: 1760457610000 }, { stage: '定时C', status: 'failed', dur: 3 }],
   )
   assert.deepEqual(Array.from(merged.map(e => e.stage)), ['本地A', '定时B', '定时C'])
   assert.equal(merged[0].local, true)
+  assert.equal(merged[0].startedAt, 1760457600000, '阶段开始时间随合并保留')
   assert.equal(merged[1].status, 'success')
+  assert.equal(merged[1].startedAt, 1760457610000, '同名阶段后者携带的 startedAt 生效')
   assert.equal(merged[1].local, undefined, '服务端阶段默认无 local 标记')
   assert.equal(merged[2].status, 'failed')
+})
+
+test('mergeStageLogsForHistory：同名阶段后者缺 startedAt 时保留前侧打点', () => {
+  const ctx = loadHistoryHelpers()
+  const merged = ctx.mergeStageLogsForHistory(
+    [{ stage: '构建', status: 'running', dur: 0, startedAt: 1760457600000 }],
+    [{ stage: '构建', status: 'success', dur: 8 }],
+  )
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].status, 'success')
+  assert.equal(merged[0].startedAt, 1760457600000, '后者缺省时保留前侧 startedAt（旧服务端/旧页面数据兼容）')
 })
 
 test('mergePipelineHistoryForWrite：同 tag 双边合并阶段日志，不再整条客户端覆盖', () => {

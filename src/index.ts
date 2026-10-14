@@ -1181,6 +1181,7 @@ function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
       if (prev.local && e.local === undefined) merged.local = true
       if (!merged.logFile && prev.logFile) merged.logFile = prev.logFile
       if (merged.dur === undefined && prev.dur !== undefined) merged.dur = prev.dur
+      if (merged.startedAt === undefined && prev.startedAt !== undefined) merged.startedAt = prev.startedAt   // 任一侧记录了阶段开始时间即保留
       if (merged.log === undefined && prev.log !== undefined) merged.log = prev.log
       byName.set(name, merged)
       const idx = out.indexOf(prev)
@@ -1209,6 +1210,8 @@ function cleanCloseFailRecord(raw: any): any | null {
     const stage = text(entry.stage, 200)
     if (!stage) return null
     const out: any = { stage, status: LOG_STATUSES.has(entry.status) ? entry.status : 'skipped', dur: Math.max(0, Number(entry.dur) || 0) }
+    const startedAt = Number(entry.startedAt)
+    if (Number.isFinite(startedAt) && startedAt > 0) out.startedAt = startedAt   // 阶段开始时间随关页落史保留，回放详情可展示
     if (entry.local === true) out.local = true
     if (typeof entry.logFile === 'string' && entry.logFile) out.logFile = entry.logFile.slice(0, 512)
     if (typeof entry.log === 'string' && entry.log) out.log = entry.log.slice(-8192)
@@ -2730,7 +2733,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       endedAt,
       stages: item.stages.map((stage) => {
         const node = item.nodes[String(stage.id ?? '')] || idleNode()
-        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}) }
+        const nodeStartedAt = Number(node.startedAt)
+        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}), ...(Number.isFinite(nodeStartedAt) && nodeStartedAt > 0 ? { startedAt: nodeStartedAt } : {}) }
       }),
     })
     pruneFinished(endedAt)
@@ -5722,9 +5726,11 @@ export function apply(ctx: Context) {
     const histLogs: any[] = []    // 历史记录条目：只存元数据 + 日志文件路径（全量日志在归档文件，页面回放时按需读取）
     const profileStages: any[] = []
     let status = 'success'
-    /* 历史条目：有归档文件时只存 logFile 路径；folder=null（无归档目录）时内嵌全文兜底 */
-    const pushHist = (stage: string, st: string, text: string, logFile: string | null, durSec: number) => {
+    /* 历史条目：有归档文件时只存 logFile 路径；folder=null（无归档目录）时内嵌全文兜底；
+       startedAt（服务端纪元毫秒）为阶段开始时间，回放详情据此展示 */
+    const pushHist = (stage: string, st: string, text: string, logFile: string | null, durSec: number, startedAt?: number) => {
       const e: any = { stage, status: st, dur: durSec }
+      if (Number.isFinite(Number(startedAt)) && Number(startedAt) > 0) e.startedAt = Number(startedAt)
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
     }
@@ -5833,20 +5839,23 @@ export function apply(ctx: Context) {
       const text = stageLogText(runCfg.cleanupScript.name, r)
       const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text, logFile })
-      pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
-      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: runCfg.cleanupScript.name || null, logFile })
+      pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10, st0)
+      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, startedAt: st0, script: runCfg.cleanupScript.name || null, logFile })
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
-      const startedAt = Date.now()
+      /* 「不执行」阶段从未启动：不打点开始时间（详情/回放不展示「开始时间」，与页面 skipStage 口径一致），
+         也不写 running 快照（避免跳过阶段在远端预览闪一下进行中）；startedAt=0 由 recordStageResult 折算 dur 0 */
+      const skipped = !!(s && (s.skip || s.gate))   // 兼容旧计划中的 gate（审批门）标记
+      const startedAt = skipped ? 0 : Date.now()
       const stageId = String(s && s.id || '')
       runtime?.replaceLog?.(stageId, '')
       /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
-      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
+      if (!skipped) runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
       let shouldStop = false
-      if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
+      if (skipped) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
         const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
@@ -5943,10 +5952,10 @@ export function apply(ctx: Context) {
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
       const logFile = result.logFile || (folder ? await writeTaskLogFile(folder, tag, seq, s.name, result.text) : null)
       const noteWritten = result.logFile && result.promNote ? await appendTaskLogNote(result.logFile, result.promNote) : true
-      const durSec = Math.round((result.endedAt - result.startedAt) / 100) / 10
+      const durSec = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0   // 跳过阶段未打点：耗时记 0
       logs.push({ stage: s.name, status: result.status, log: result.text, logFile, logSuffix: noteWritten ? '' : (result.promNote ? '\n' + result.promNote : '') })
-      pushHist(s.name, result.status, result.text, logFile, durSec)
-      profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, script: result.scriptName, logFile })
+      pushHist(s.name, result.status, result.text, logFile, durSec, result.startedAt)
+      profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, startedAt: result.startedAt, script: result.scriptName, logFile })
       runtime?.updateStage(String(s && s.id || ''), { status: result.status, progress: 100, dur: durSec })
       await writeLiveHistory('running')   // 逐阶段刷新「进行中」历史：服务端长任务执行期间记录不再停滞
     }
