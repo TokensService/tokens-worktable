@@ -378,7 +378,7 @@ PY
   local mapped_target_host
   mapped_target_host="$(mapped_execution_target_host)"
   if [[ -n "$mapped_target_host" ]]; then
-    if ! run_remote "$target" "$target_port" "$remote_command" | sed -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
+    if ! run_remote "$target" "$target_port" "$remote_command" | sed -u -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
       [[ ! -e "$remote_env" ]] || unlink "$remote_env"
       return 1
     fi
