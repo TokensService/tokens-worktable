@@ -575,5 +575,10 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     /* 握手等待计时：慢网加载期间状态栏逐秒刷新，避免「读取 trace…」假象卡死 */
     "function perfWaitBegin(", "function perfWaitStop(", "等待 Perfetto UI 就绪… 已等待 ",
     "perf.session.isReady()) perfWaitBegin()",
+    /* 大文件：上限放宽到 2GiB；超限给「下载到本地」兜底（拖入 Perfetto 窗口打开） */
+    "const PERFETTO_MAX_BYTES = 2 * 1024 * 1024 * 1024", "err.oversize = true",
+    'id="perfDownloadBtn"', "perfDownloadBtn').addEventListener('click'", "大文件解析可能需要数分钟",
+    /* 服务端大文件：/file 走 raw=1 流式（绕开 256MB 全量读上限）；读取失败后晚到 PONG 不覆盖错误 */
+    "encodeURIComponent(path) + '&raw=1'", "encodeURIComponent(it.path) + '&raw=1'", "perf.failed = true", "perf.failed) return",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
 });
