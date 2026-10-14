@@ -5,7 +5,7 @@
    - 纯函数：reservationsForNode（过滤+按 start 排序）、fmtResTime（本地 MM-DD HH:mm）、
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
      envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue、
-     quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期且当天已过取次日、已填日期保留）。
+     quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留）。
    - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
@@ -623,7 +623,7 @@ test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用�
 });
 
 /* ==================== 快捷时段 ==================== */
-test('quickResRange：四档整点、22~9 跨零点次日、未填日期当天已过取次日、已填日期保留', () => {
+test('quickResRange：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留', () => {
   const ctx = pureCtx();
   const q = (base, sh, eh, now) => J(ctx.quickResRange(base, sh, eh, now));
   const d = (y, m, day, h, min) => new Date(y, m - 1, day, h, min || 0).getTime();
@@ -632,9 +632,11 @@ test('quickResRange：四档整点、22~9 跨零点次日、未填日期当天�
   assert.deepEqual(q('2026-10-20T08:00', 14, 19, afternoon), { start: '2026-10-20T14:00', end: '2026-10-20T19:00' });
   assert.deepEqual(q('2026-10-20T08:00', 19, 22, afternoon), { start: '2026-10-20T19:00', end: '2026-10-20T22:00' });
   assert.deepEqual(q('2026-10-20T08:00', 22, 9, afternoon), { start: '2026-10-20T22:00', end: '2026-10-21T09:00' }, '22~9 跨零点，结束落次日 09:00');
-  assert.deepEqual(q('', 9, 14, afternoon), { start: '2026-10-15T09:00', end: '2026-10-15T14:00' }, '未填日期且当天 09:00 已过 → 次日');
-  assert.deepEqual(q('', 19, 22, afternoon), { start: '2026-10-14T19:00', end: '2026-10-14T22:00' }, '未填日期且当天 19:00 未到 → 当天');
-  assert.deepEqual(q(null, 22, 9, d(2026, 10, 14, 23, 0)), { start: '2026-10-15T22:00', end: '2026-10-16T09:00' }, '23 点点 22~9 → 次日 22:00 起、结束再次日 09:00');
+  assert.deepEqual(q('', 9, 14, afternoon), { start: '2026-10-15T09:00', end: '2026-10-15T14:00' }, '15:30 点 9~14：当天 14:00 已结束 → 次日');
+  assert.deepEqual(q('', 9, 14, d(2026, 10, 14, 10, 0)), { start: '2026-10-14T09:00', end: '2026-10-14T14:00' }, '10:00 点 9~14：开始已过但 14:00 未结束 → 仍给当天（时段覆盖当前）');
+  assert.deepEqual(q('', 9, 14, d(2026, 10, 14, 14, 0)), { start: '2026-10-15T09:00', end: '2026-10-15T14:00' }, '14:00 整点 9~14：结束时刻已过（T==end 不覆盖）→ 次日');
+  assert.deepEqual(q('', 19, 22, afternoon), { start: '2026-10-14T19:00', end: '2026-10-14T22:00' }, '15:30 点 19~22：当天未到 → 当天');
+  assert.deepEqual(q(null, 22, 9, d(2026, 10, 14, 23, 0)), { start: '2026-10-14T22:00', end: '2026-10-15T09:00' }, '23 点点 22~9：结束在次日 09:00 未过 → 当天 22:00 起（当前正在时段内）');
 });
 
 test('预留弹窗：快捷时段按钮四档齐全，点击回填开始/结束；只读形态无快捷按钮', async () => {
