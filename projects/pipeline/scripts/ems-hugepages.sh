@@ -34,7 +34,10 @@
 #         总量调度大页，per-NUMA 不均不影响调度）；已达标节点跳过
 #   [2/3] 刷 allocatable：allocatable 未达标的节点重启 kubelet（pod 不重启、节点
 #         NotReady 数十秒——cadvisor 只在 kubelet 启动时采集大页），轮询 Ready + 达标（240s）
-#   [3/3] 终验：全部目标节点 HugePages_Total 与 allocatable 双达标 + 契约输出
+#   [3/3] 终验：全部目标节点 HugePages_Total 与 allocatable 双达标 + 契约输出；
+#         超额护栏：物理大页 > 目标（只增不减 + 历史/手工写入残留）时响亮告警并
+#         记入 EMS_HUGEPAGES_OVERPROVISIONED（内核无法运行时缩回，需重启节点回收，
+#         不影响 EMS 使用，故告警不失败）；allocatable 低于物理时提示 kubelet 采集滞后
 #
 # ⚠️ 内存顺序：compaction 需要干净内存，目标节点上若有待释放的业务 pod，请先
 # 释放再跑本 step（ems-deploy 的释放阶段在本 step 之后执行——busy 节点编排时
@@ -345,6 +348,28 @@ rebalance_hp_quota() { # <node_ip> <node_name>  容量上限感知配额重算�
     fi
 }
 
+# 大页物理现状快照：Total/Free（页）+ 每 NUMA nr_hugepages——供超额护栏输出明细
+hp_snapshot() { # <node_ip>
+    node_ssh "$1" 'grep "^HugePages_Total:" /proc/meminfo; grep "^HugePages_Free:" /proc/meminfo; for d in /sys/devices/system/node/node*/hugepages/hugepages-2048kB; do n=$(echo "$d" | sed -E "s#.*/(node[0-9]+)/.*#\1#"); printf "numa %s %s\n" "$n" "$(cat "$d/nr_hugepages" 2>/dev/null || echo 0)"; done' 2>/dev/null
+}
+
+# 大页超额护栏：节点已预留大页 > 目标（历史/手工写入或只增不减残留的常见后果）。
+# 内核无法运行时缩回大页（release 卡死，见 skill 坑 3），只能重启节点回收；不影响
+# EMS 使用，故响亮告警并记入契约而非失败。
+hp_overprov_warn() { # <node_name> <current_pages> <target_pages> [snapshot]
+    local g_node=$1 g_cur=$2 g_target=$3 g_snap=${4:-} extra detail=''
+    (( g_cur > g_target )) || return 1
+    extra=$(( g_cur - g_target ))
+    detail="$(awk '/^numa /{printf "%s=%s ", $2, $3}' <<<"$g_snap" 2>/dev/null)"
+    if [[ -n "$detail" ]]; then
+        log "警告: $g_node 大页超额预留 —— 物理 ${g_cur} 页 > 目标 ${g_target} 页（多 ${extra} 页 ≈ $(( extra / 512 ))Gi），每 NUMA ${detail% }"
+    else
+        log "警告: $g_node 大页超额预留 —— 物理 ${g_cur} 页 > 目标 ${g_target} 页（多 ${extra} 页 ≈ $(( extra / 512 ))Gi）"
+    fi
+    log "警告: $g_node 超额部分为已预留但闲置的大页，内核无法运行时缩回（需重启节点回收），不影响 EMS 使用"
+    return 0
+}
+
 hugepages_main() {
     local node_json ip node_name access resolved
     local -a target_nodes=() target_access=()
@@ -447,7 +472,7 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
 
     # ---- [1/3] 配大页（只增不减，已达标跳过）----
     log "=== [1/3] 配置大页（${HUGEPAGE_GIB}Gi/节点，只增不减） ==="
-    local total_pages per_numa renewed_nodes=''
+    local total_pages per_numa renewed_nodes='' overprov_nodes=''
     total_pages=$((HUGEPAGE_GIB * 512))
     local hp_idx hp_node node_ip
     for hp_idx in "${!target_nodes[@]}"; do
@@ -525,6 +550,9 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
             die "$hp_node 大页 ${waited}s 内未到位（$got/$total_pages；已自动尝试 ${compact_count} 次主动压实（drop_caches+compact_memory）、配额重算与写入器重启仍不足，碎片极度顽固场景请人工释放内存或重启节点后重跑本 step，脚本不硬杀内核态进程）"
         fi
         log "$hp_node: 大页到位（$got 页，等待 ${waited}s，压实 ${compact_count} 次）"
+        if (( got > total_pages )); then
+            log "警告: $hp_node 分配结果 ${got} 页 > 目标 ${total_pages} 页（多 $(( got - total_pages )) 页）—— 疑似分配超额（配额文件总量应守恒于目标），请排查"
+        fi
         renewed_nodes+="$hp_node "
     done
     [[ -n "$renewed_nodes" ]] || log "全部节点大页原已达标，本轮未新增"
@@ -576,13 +604,18 @@ print(("True" if ready else "False"), int(value // 2**30))
     # ---- [3/3] 终验 + 契约 ----
     log "=== [3/3] 终验（每节点大页总量 + allocatable 双达标） ==="
     node_json2="$(kubectl get nodes -o json)" || die '获取节点列表失败'
-    local kube_idx2 node_ip3 alloc3
+    local kube_idx2 node_ip3 alloc3 phys_gib
     for kube_idx2 in "${!target_nodes[@]}"; do
         kube_node="${target_nodes[$kube_idx2]}"
         node_ip3="${target_access[$kube_idx2]}"
         current="$(node_ssh "$node_ip3" 'grep HugePages_Total /proc/meminfo' | awk '{print $2}')" \
             || die "终验读取 $kube_node 大页失败"
         (( current >= total_pages )) || die "$kube_node 终验大页不足（$current/$total_pages 页）"
+        # 超额护栏：物理 > 目标（只增不减 + 历史/手工写入残留）→ 告警 + 契约标记（不失败）
+        if (( current > total_pages )); then
+            hp_overprov_warn "$kube_node" "$current" "$total_pages" "$(hp_snapshot "$node_ip3")"
+            overprov_nodes+="$kube_node "
+        fi
         alloc3="$(allocatable_gib_of "$(printf '%s' "$node_json2" | python3 -c '
 import json, sys
 for node in json.load(sys.stdin).get("items", []):
@@ -590,6 +623,12 @@ for node in json.load(sys.stdin).get("items", []):
         print(json.dumps(node)); break
 ' "$kube_node")")"
         (( alloc3 >= HUGEPAGE_GIB )) || die "$kube_node 终验 allocatable 不足（${alloc3}Gi < ${HUGEPAGE_GIB}Gi；请重跑本 step）"
+        # allocatable 低于物理大页：cadvisor 只在 kubelet 启动时采集，物理被抬高而
+        # kubelet 未重启时 allocatable 陈旧偏低，提示重启 kubelet 可对齐（EMS 按 allocatable 调度）
+        phys_gib=$(( current / 512 ))
+        if (( alloc3 < phys_gib )); then
+            log "警告: $kube_node allocatable ${alloc3}Gi < 物理大页 ${phys_gib}Gi —— kubelet 采集滞后，重启 kubelet 可对齐"
+        fi
         log "$kube_node: 大页 $current 页 · allocatable ${alloc3}Gi ✓"
     done
 
@@ -598,6 +637,7 @@ for node in json.load(sys.stdin).get("items", []):
     printf 'EMS_HUGEPAGES_OK=%s\n' 1
     printf 'EMS_HUGEPAGES_RENEWED=%s\n' "$(echo "${renewed_nodes// /,}" | sed 's/,$//')"
     printf 'EMS_KUBELET_RESTARTED=%s\n' "$(echo "${restarted_nodes// /,}" | sed 's/,$//')"
+    printf 'EMS_HUGEPAGES_OVERPROVISIONED=%s\n' "$(echo "${overprov_nodes// /,}" | sed 's/,$//')"
 }
 
 main() {

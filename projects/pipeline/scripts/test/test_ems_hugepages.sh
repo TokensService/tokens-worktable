@@ -12,6 +12,7 @@ set -euo pipefail
 #      ⑧ 跨 region（hd2 形态）endpoint 身份映射解析
 #      ⑨ 写入器存活窗口早于压实完成退出 → 重启自愈后到位（243 现场回放）
 #      ⑩ 配额重算算法：NUMA 容量上限 + buddy 高阶块比例分配、总量守恒。
+#      ⑪ 超额护栏：节点物理大页 > 目标 → 告警 + 契约 EMS_HUGEPAGES_OVERPROVISIONED（不失败）。
 # 全程不接触真实集群/真实 sysfs。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -103,6 +104,10 @@ case "\$cmd" in
     # 写入器存活检查：fixture 标记「写入器已退出」时才为真
     [[ -e "\$FIXTURES/hp_exit_\$ip" ]] ;;
   *'buddyinfo'*) exit 1 ;;                          # 配额重算采集：默认失败（静默跳过）
+  *'HugePages_Free'*)
+    # 超额护栏的物理快照：Total/Free + 每 NUMA（hp 与 hp_numa_* 由用例预置）
+    printf 'HugePages_Total:    %s\nHugePages_Free:     0\n' "\$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)"
+    for n in 0 1 2 3; do printf 'numa node%s %s\n' "\$n" "\$(cat "\$FIXTURES/hp_numa_\${n}_\$ip" 2>/dev/null || echo 0)"; done ;;
   *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)" ;;
   *'nr_hugepages'*)
     # 后台写入器（启动/重启）：置该节点大页为达标；fixture 标记 hp_late 时本次启动
@@ -408,4 +413,34 @@ Node 1, zone Normal 1 1 1 1 1 1 1 1 1 1 1'
 out10c=$(hp_quota_recalc "$info3")
 [[ -z "$out10c" ]] || { echo "scenario10c expected empty, got: $out10c" >&2; exit 1; }
 
-echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout+recompact, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint, writer-revive heal, quota rebalance)'
+# ==== 场景⑪：超额护栏——物理大页 > 目标 → 告警 + 契约，不失败 ==================
+reset_state
+echo 1312855 >"$FIXTURES/hp_10.0.0.1"            # 113 现场：物理 2564Gi > 目标 2000Gi
+echo 330511 >"$FIXTURES/hp_numa_0_10.0.0.1"
+echo 277977 >"$FIXTURES/hp_numa_1_10.0.0.1"
+echo 373577 >"$FIXTURES/hp_numa_2_10.0.0.1"
+echo 330790 >"$FIXTURES/hp_numa_3_10.0.0.1"
+echo 1024000 >"$FIXTURES/hp_10.0.0.2"            # node-2 正常（恰好达标）
+touch "$FIXTURES/marker_kubelet_10.0.0.1" "$FIXTURES/marker_kubelet_10.0.0.2"
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
+  echo "scenario11 failed:" >&2; echo "$out" >&2; exit 1
+}
+grep -Fq 'node-1: 大页已达标（1312855 页 ≥ 1024000），跳过' <<<"$out"
+grep -Fq '警告: node-1 大页超额预留 —— 物理 1312855 页 > 目标 1024000 页（多 288855 页 ≈ 564Gi），每 NUMA node0=330511 node1=277977 node2=373577 node3=330790' <<<"$out"
+grep -Fq '警告: node-1 超额部分为已预留但闲置的大页，内核无法运行时缩回（需重启节点回收）' <<<"$out"
+grep -Fq '警告: node-1 allocatable 2000Gi < 物理大页 2564Gi —— kubelet 采集滞后，重启 kubelet 可对齐' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_OVERPROVISIONED=node-1' <<<"$out"
+grep -Fq 'EMS_HUGEPAGES_RENEWED=' <<<"$out"
+
+# ==== 场景①：物理恰好达标（无超额）→ 无超额告警、契约字段为空 ==================
+reset_state
+echo 1024000 >"$FIXTURES/hp_10.0.0.1"; echo 1024000 >"$FIXTURES/hp_10.0.0.2"
+touch "$FIXTURES/marker_kubelet_10.0.0.1" "$FIXTURES/marker_kubelet_10.0.0.2"
+out=$(TARGET_HOSTS="$HOSTS" TARGET_IPS="$IPS" bash "$script") || {
+  echo "scenario11b failed:" >&2; echo "$out" >&2; exit 1
+}
+! grep -Fq '超额预留' <<<"$out" || { echo "scenario11b unexpected overprov warning" >&2; exit 1; }
+grep -Fq 'EMS_HUGEPAGES_OVERPROVISIONED=' <<<"$out"
+
+ echo 'PASS: ems-hugepages contract (fresh alloc, all-satisfied skip, stuck timeout+recompact, allocatable fail, single node, mem precheck, resume precheck, cross-region endpoint, writer-revive heal, quota rebalance, overprovision guard)'
