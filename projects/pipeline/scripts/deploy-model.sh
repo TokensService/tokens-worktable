@@ -3,6 +3,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+normalize_kubernetes_name() {
+  local value="$1" max_length="$2"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
+  value="${value:0:max_length}"
+  value="${value%-}"
+  [[ -n "$value" ]] || { echo "cannot derive a Kubernetes name from: $1" >&2; return 2; }
+  printf '%s' "$value"
+}
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
