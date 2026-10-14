@@ -2448,7 +2448,22 @@ function closeNodeResDialog(){
   nodeResEdit=null;
   $('nodeResDialog').style.display='none';
 }
-/* 重绘弹窗时段列表：每行 = 开始/结束（datetime-local）+ 用户标签搜索框 + 备注 + 删除本时段；
+/* 快捷时段计算：sh~eh 整点时段（eh<=sh 为跨零点，结束落在次日）。基准日期取该行已填开始
+   （datetime-local 本地值），未填则用 now；未填且当天该时段开始时间已过则推到次日，保证给出将来时段。
+   返回 {start,end}（datetime-local 本地值）。 */
+function quickResRange(baseStart, sh, eh, nowMs){
+  const now=(typeof nowMs==='number')?new Date(nowMs):new Date();
+  const hasBase=(typeof baseStart==='string'&&!!baseStart);
+  const base=hasBase?new Date(baseStart):now;
+  const p2=n=>String(n).padStart(2,'0');
+  const fmt=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'T'+p2(d.getHours())+':'+p2(d.getMinutes());
+  const start=new Date(base.getFullYear(), base.getMonth(), base.getDate(), sh, 0);
+  if(!hasBase && now>=start) start.setDate(start.getDate()+1);
+  const end=new Date(start.getFullYear(), start.getMonth(), start.getDate(), eh, 0);
+  if(eh<=sh) end.setDate(end.getDate()+1);
+  return {start:fmt(start), end:fmt(end)};
+}
+/* 重绘弹窗时段列表：每行 = 开始/结束（datetime-local）+ 快捷时段 + 用户标签搜索框 + 备注 + 删除本时段；
    候选 =（/auth/users 缓存 || 回退集）∪ 该行已选用户（保证已选用户名总在候选中）。
    控件一律 createElement + textContent，用户名不走 innerHTML，杜绝注入。只读形态全部禁用。 */
 function renderNodeResWindows(){
@@ -2487,6 +2502,23 @@ function renderNodeResWindows(){
     };
     line1.appendChild(mkTime('开始','start'));
     line1.appendChild(mkTime('结束','end'));
+    /* 快捷时段：9~14 / 14~19 / 19~22 / 22~9（跨零点）一键填充开始/结束（规则见 quickResRange） */
+    if(!ro){
+      const quick=document.createElement('span');
+      quick.style.cssText='display:inline-flex;align-items:center;gap:4px;font-size:11px;';
+      const qlab=document.createElement('span'); qlab.className='dshell-muted'; qlab.textContent='快捷'; quick.appendChild(qlab);
+      [[9,14],[14,19],[19,22],[22,9]].forEach(([sh,eh])=>{
+        const b=document.createElement('button');
+        b.type='button'; b.className='dshell-btn dshell-btnGhost mini';
+        b.style.cssText='padding:2px 7px;';
+        b.textContent=sh+'~'+eh;
+        b.setAttribute('data-res-quick', sh+'-'+eh);
+        b.title='填为 '+String(sh).padStart(2,'0')+':00 ~ '+String(eh).padStart(2,'0')+':00'+(eh<=sh?'（次日）':'')+'；未填开始日期取今天（当天该时段已过则取次日）';
+        b.addEventListener('click',()=>{ const r=quickResRange(w.start, sh, eh); w.start=r.start; w.end=r.end; renderNodeResWindows(); });
+        quick.appendChild(b);
+      });
+      line1.appendChild(quick);
+    }
     const sep1=document.createElement('span'); sep1.style.flex='1'; line1.appendChild(sep1);
     if(!ro){
       const del=document.createElement('button');
