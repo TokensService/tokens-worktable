@@ -506,7 +506,7 @@
       <div style="display:flex; align-items:center; margin-bottom:8px;">
         <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;"><span class="rf-ico">↻</span> 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;"><span class="rf-ico">⟳</span> 设备状态</button> <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 内网IP / LLM / 用户名 / 设备状态" style="width:260px; margin-left:6px; font-weight:normal;" /></h2>
       </div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+      <div id="envEditBar" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
         <input id="envIp" class="dshell-input" placeholder="IP 或 IP:端口（如 192.168.1.20 / 115.33.98.101:2222）" title="可填纯 IP（默认 22 端口），也可「IP:端口」指定 SSH 端口（如 115.33.98.101:2222）" style="width:200px;" />
         <input id="envNodeIp" class="dshell-input" placeholder="内网IP（可选）" title="部署调度使用的内网 IP（Kubernetes 节点 InternalIP）；SSH 入口与内网 IP 不同时填写，例如 192.168.31.175" style="width:150px;" />
@@ -517,6 +517,7 @@
         <button id="envAllApply" class="dshell-btn dshell-btnGhost mini" title="把上面填写的用户名/密码应用到所有节点">应用凭证到全部</button>
         <button id="envCancelEdit" class="dshell-btn dshell-btnGhost mini" style="display:none">取消编辑</button>
       </div>
+      <p id="envAdminOnlyTip" class="dshell-muted" style="display:none; margin:0 0 8px; font-size:11px;">节点环境仅 admin 用户可配置（新增 / 编辑 / 复制 / 删除 / 统一凭证），您为只读查看。</p>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
           <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>内网IP</th><th>LLM服务地址</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th title="节点预留：按用户 + 日期时间段分配；操作列「分配」按钮查看/分配，仅 admin 可保存，非 admin 为只读查看">预留</th><th>操作</th></tr></thead>
@@ -1462,8 +1463,14 @@ async function loadServerState(){
         if(merged.keptBaseEntries.length) serverConfigBase.pipelines=(Array.isArray(serverConfigBase.pipelines)?serverConfigBase.pipelines:[]).concat(merged.keptBaseEntries.map(p=>JSON.parse(JSON.stringify(p))));
       }
       /* 节点环境按 id 三方合并（替代整表替换）：409 自愈重拉/快照同步不再把本地未落盘的新增节点冲掉，
-         他端新增/修改/删除照常同步进来；合并口径见 mergeEnvironmentsFromServer */
-      if(Array.isArray(cfg.environments) && cfg.environments.length) environments=mergeEnvironmentsFromServer(prevBaseEnvironments, environments, cfg.environments);
+         他端新增/修改/删除照常同步进来；合并口径见 mergeEnvironmentsFromServer。
+         例外：已确认身份的非 admin 以服务端为权威整表替换（含空数组）——服务端 environmentsWriteDeny
+         会 403 拒绝非 admin 的环境变更，本地不得残留分歧（否则随后每次保存都撞 403）；
+         admin / 探测在途 / token 模式维持三方合并。 */
+      if(Array.isArray(cfg.environments)){
+        if(!envConfigEditable()) environments=cfg.environments.map(normalizeEnv);
+        else if(cfg.environments.length) environments=mergeEnvironmentsFromServer(prevBaseEnvironments, environments, cfg.environments);
+      }
       if(Array.isArray(cfg.repositories) && cfg.repositories.length){
         /* 代码仓访问令牌 pass 随服务端配置持久化（团队各浏览器共享，见 collectConfig）。迁移：旧版客户端
            上送时剔除 pass，服务端条目 pass 为空而本页（启动时从 localStorage 离线缓存装入）存有同 id
@@ -2359,8 +2366,38 @@ function envFilterMatch(e){
   }
   return text.indexOf(kw)>=0;
 }
+/* 节点配置（新增/编辑/复制/删除/统一凭证/导入覆盖 environments）是否可写：仅「password 模式且当前会话
+   为 admin」。token 共享模式 / 未装认证插件 / 探测失败（无登录用户）退化为全权——与服务端
+   environmentsWriteDeny「无 auth 服务一律放行」口径一致；auth 探测在途（authReady 未置位）先不拦
+   （与节点预留拦截同一纪律，防加载前误灰），探测结束后由 applyEnvAdminGate + 重绘纠正。
+   typeof 守卫：独立测试片段（vm 提取单函数）里可能没有这些全局，守卫缺失时退化全权。 */
+function envConfigEditable(){
+  if(typeof authReady!=='undefined' && !authReady) return true;
+  const me=(typeof currentUsername!=='undefined') ? (currentUsername||'') : '';
+  if(!me) return true;
+  return (typeof currentUserIsAdmin!=='undefined') ? !!currentUserIsAdmin : false;
+}
+/* 节点配置门禁应用：按当前会话身份切换「节点」页编辑区显隐（非 admin 隐藏添加/编辑表单，换只读提示）。
+   非 admin 同时把本地节点列表对齐到服务端基线（丢弃本地未落盘的增删改）——服务端写保护会 403 拒绝
+   非 admin 的环境变更，本地残留分歧会让随后每次保存（哪怕只改流水线）都撞 403。探测在途不动作；
+   token 模式退化为全权（envConfigEditable=true，下方 snap 分支不进）。身份到达后由
+   fillExecutorFromAuth 的 finally 调用（随后 renderEnvs/renderEnvOptions 重绘）。 */
+function applyEnvAdminGate(){
+  const editable=envConfigEditable();
+  const bar=$('envEditBar'); if(bar) bar.style.display=editable?'flex':'none';
+  const tip=$('envAdminOnlyTip'); if(tip) tip.style.display=editable?'none':'';
+  if(editable || typeof authReady==='undefined' || !authReady) return;
+  if(typeof serverConfigBase==='undefined' || !serverConfigBase || !Array.isArray(serverConfigBase.environments)) return;
+  const base=serverConfigBase.environments;
+  const byId=new Map(environments.map(e=>[String(e&&e.id),e]));
+  const same=base.length===environments.length && base.every(b=>{ const l=byId.get(String(b&&b.id)); return !!l && sameEnvEntry(l,b); });
+  if(same) return;
+  environments=base.map(e=>normalizeEnv(JSON.parse(JSON.stringify(e))));
+  try{ localStorage.setItem('pip-envs', JSON.stringify(environments)); }catch(e){}
+}
 function renderEnvs(){
   const list=envSortList(environments.filter(envFilterMatch));
+  const canEditEnv=envConfigEditable();   /* 配节点仅 admin：非 admin 操作列只留「分配」（只读查看），编辑/复制/删除不渲染 */
   $('envCount').textContent = environments.length? (envFilterText.trim()? '('+list.length+'/'+environments.length+')' : '('+environments.length+')') :'';
   const tb=$('envTable').querySelector('tbody'); tb.innerHTML='';
   list.forEach(e=>{
@@ -2368,7 +2405,7 @@ function renderEnvs(){
     tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.nodeIp||'—')+'</td><td class="dshell-muted">'+esc(e.llmAddr||'—')+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
       '<td style="white-space:nowrap">'+envResSummaryHtml(e)+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存，非 admin 为只读查看）">分配</button> <button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存，非 admin 为只读查看）">分配</button>'+(canEditEnv?' <button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button>':'')+'</td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
@@ -2889,6 +2926,7 @@ function openGpuDetail(e){
 function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envNodeIp').value=e.nodeIp||''; $('envLlmAddr').value=e.llmAddr||''; $('envUser').value=e.user||''; $('envPass').value=e.pass||''; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
 function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envNodeIp').value=''; $('envLlmAddr').value=''; $('envUser').value=''; $('envPass').value=''; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
 function saveEnvForm(){
+  if(!envConfigEditable()){ alert('节点环境仅 admin 用户可配置'); return; }   /* 兜底拦截：UI 已对非 admin 隐藏表单，防程序化直调（服务端 environmentsWriteDeny 同为硬门禁） */
   const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const nodeIp=$('envNodeIp').value.trim(); const llmAddr=$('envLlmAddr').value.trim(); const user=$('envUser').value.trim(); const pass=$('envPass').value;
   if(!ip){ alert('请填写 IP 地址'); return; }
   // 支持「IP:端口」（如 115.33.98.101:2222）：单个冒号时其后须为数字端口；多冒号（IPv6）或无冒号原样保留
@@ -2901,9 +2939,10 @@ function saveEnvForm(){
   else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, nodeIp, llmAddr, user, pass}); }
   saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
 }
-function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
+function delEnv(id){ if(!envConfigEditable()){ alert('节点环境仅 admin 用户可配置'); return; } if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
 /* 复制节点环境：拷贝名称/IP/内网IP/LLM服务地址/凭据生成不重名的「副本」，新 id 避免与源节点的设备状态缓存串号 */
 function copyEnv(id){
+  if(!envConfigEditable()){ alert('节点环境仅 admin 用户可配置'); return; }   /* 兜底拦截（UI 已对非 admin 隐藏入口） */
   const src=environments.find(x=>x.id===id); if(!src) return;
   const base=(src.name||'').replace(/（副本( \d+)?）$/,'');   /* 去掉已有副本后缀，避免链式累加 */
   const taken=new Set(environments.map(e=>e.name));
@@ -2915,6 +2954,7 @@ function copyEnv(id){
 }
 function applyEnvCredAll(){
   // 把当前表单（添加/编辑区）里填写的用户名/密码应用到所有节点
+  if(!envConfigEditable()){ alert('节点环境仅 admin 用户可配置'); return; }   /* 兜底拦截（UI 已对非 admin 隐藏表单区） */
   const u=$('envUser').value.trim(); const p=$('envPass').value;
   if(!u && !p){ alert('请先在上面的用户名/密码框里填写要统一设置的凭据'); return; }
   if(!environments.length){ alert('暂无节点'); return; }
@@ -11477,7 +11517,9 @@ function normalizeImportedPipelines(list){
 /* 应用导入的设置配置（不含流水线）：文件为权威，缺省键保持当前值；随后统一落 localStorage + persistState 推服务端 + 全量重渲染 */
 function applyImportedSettings(cfg, loc){
   cfg=cfg||{}; loc=loc||{};
-  if(Array.isArray(cfg.environments)) environments=cfg.environments.map(normalizeEnv);
+  /* 节点环境仅 admin 可经导入覆盖：非 admin 跳过 environments（服务端 environmentsWriteDeny 会 403 整包
+     拒绝，跳过可保住其余设置的导入）；调用方据 envConfigEditable 给「未导入节点环境」提示 */
+  if(Array.isArray(cfg.environments) && envConfigEditable()) environments=cfg.environments.map(normalizeEnv);
   if(Array.isArray(cfg.repositories)) repositories=cfg.repositories.map(normalizeRepo);   /* 访问令牌按文件内容恢复（含空值） */
   if(typeof cfg.scriptsDir==='string' && cfg.scriptsDir){ scriptsDir=cfg.scriptsDir; scriptsDirIsFallback=false; }   /* 导入文件为权威：含 scriptsDir 即转为显式配置 */
   if(typeof cfg.theme==='string' && ['auto','dark','light'].indexOf(cfg.theme)>=0){ themePref=cfg.theme; $('theme').value=themePref; }
@@ -11548,18 +11590,22 @@ function applyImportedSettings(cfg, loc){
   $('archiveDir').value=archiveDir; $('archiveScriptName').value=archiveScriptName;
   renderAll();
 }
-/* 导入设置数据（已解析的 JSON，本地文件与服务端备份共用）：返回 ok / cancel / invalid 供调用方给提示 */
+/* 导入设置数据（已解析的 JSON，本地文件与服务端备份共用）：返回 ok / ok-noenvs（非 admin 跳过节点环境）/ cancel / invalid 供调用方给提示 */
 async function importSettingsData(data){
   if(!data || data.app!=='worktable-pipeline' || data.kind!=='pipeline-settings' || !data.config || typeof data.config!=='object') return 'invalid';
-  if(!confirm('导入将按文件内容覆盖当前设置（节点环境 / 代码仓 / 脚本与服务配置等，含文件中的令牌），流水线与运行历史不受影响。确定导入？')) return 'cancel';
+  /* 节点环境仅 admin 可经导入覆盖（applyImportedSettings 内跳过 environments）：非 admin 且文件含节点环境时
+     确认文案点名排除，返回值区分提示（服务端 environmentsWriteDeny 为硬门禁，跳过可保住其余设置的导入） */
+  const skipEnvs=!envConfigEditable() && Array.isArray(data.config.environments);
+  if(!confirm('导入将按文件内容覆盖当前设置（'+(skipEnvs?'':'节点环境 / ')+'代码仓 / 脚本与服务配置等，含文件中的令牌），流水线与运行历史不受影响。'+(skipEnvs?'节点环境仅 admin 可配置，本次不导入。':'')+'确定导入？')) return 'cancel';
   if(!stateLoaded){ await loadServerState(); }   /* 等服务端状态落定再覆盖，避免 pushState 写前重载把导入内容冲掉 */
   applyImportedSettings(data.config, data.local);
-  return 'ok';
+  return skipEnvs?'ok-noenvs':'ok';
 }
 async function importSettingsFile(file){
   let data=null; try{ data=JSON.parse(await file.text()); }catch(e){}
   const r=await importSettingsData(data);
   if(r==='ok') ioTipShow('✓ 设置已导入并保存');
+  else if(r==='ok-noenvs') ioTipShow('✓ 设置已导入并保存（节点环境仅 admin 可配置，未导入）');
   else if(r==='invalid') ioTipShow('✗ 不是「导出设置」生成的有效文件', true);
 }
 /* 导入流水线数据（已解析的 JSON，本地文件与服务端备份共用）：返回 ok / cancel / invalid */
@@ -11611,7 +11657,7 @@ async function importFromClipboardText(text){
   const kind=(data.app==='worktable-pipeline') ? data.kind : '';
   if(kind==='pipeline-settings'){
     const r=await importSettingsData(data);
-    if(r==='ok'){ closeIoClipImport(); ioTipShow('✓ 设置已从剪贴板导入并保存'); return 'ok'; }
+    if(r==='ok'||r==='ok-noenvs'){ closeIoClipImport(); ioTipShow(r==='ok-noenvs'?'✓ 设置已从剪贴板导入并保存（节点环境仅 admin 可配置，未导入）':'✓ 设置已从剪贴板导入并保存'); return 'ok'; }
     if(r==='invalid'){ ioClipTipShow('✗ 不是「导出设置」生成的有效内容', true); return 'invalid'; }
     return 'cancel';
   }
@@ -11670,6 +11716,7 @@ async function importFromServer(name){
     if(kind==='pipeline-settings'){
       const r=await importSettingsData(data);
       if(r==='ok') ioSrvTipShow('✓ 已从服务端导入设置：'+name);
+      else if(r==='ok-noenvs') ioSrvTipShow('✓ 已从服务端导入设置：'+name+'（节点环境仅 admin 可配置，未导入）');
       else if(r==='invalid') ioSrvTipShow('✗ 不是「导出设置」生成的有效文件', true);
     }else if(kind==='pipeline-pipelines'){
       const r=await importPipelinesData(data);
@@ -11822,6 +11869,8 @@ async function fillExecutorFromAuth(){
        本次重绘纠正）。节点预留的选择拦截（envReservedForOthers：探测在途不拦、admin 旁路）
        同样依赖身份，节点表「预留」列与环境多选面板一并重绘纠正。typeof 守卫：独立测试片段里可能没有这些全局。 */
     authReady=true;
+    /* 节点配置门禁：身份到达后按 admin/非 admin 切换节点编辑区显隐，非 admin 并把本地节点列表对齐服务端基线 */
+    if(typeof applyEnvAdminGate==='function') applyEnvAdminGate();
     if(typeof renderPipelines==='function') renderPipelines();
     if(typeof renderEnvs==='function') renderEnvs();
     if(typeof renderEnvOptions==='function') renderEnvOptions();

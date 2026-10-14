@@ -143,6 +143,7 @@ const TRUST_HELPERS = [
   ...['requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
     'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny'].map(extractFunction),
+    ...['sameEnvironmentContent', 'environmentsWriteDeny'].map(extractFunction),
 ].join('\n')
 
 function loadPipelineRoutes(home, { auth } = {}) {
