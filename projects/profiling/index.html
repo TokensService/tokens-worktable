@@ -110,8 +110,7 @@
       <div class="dshell-card">
         <div class="dshell-tabs" id="srcTabs">
           <button class="dshell-tab dshell-tabOn" data-tab="local">本地文件</button>
-          <button class="dshell-tab" data-tab="serverFile">服务端文件</button>
-          <button class="dshell-tab" data-tab="serverDir">服务端文件夹</button>
+          <button class="dshell-tab" data-tab="server">服务端</button>
           <button class="dshell-tab" data-tab="settings">设置</button>
         </div>
         <div style="height:10px"></div>
@@ -122,34 +121,26 @@
           </div>
           <p class="dshell-muted" style="margin:8px 0 0">支持 run-*.profile.json / PyTorch trace（.pt.trace.json[.gz]）/ nsys / ncu 报告 / 日志文本，可多选。</p>
         </div>
-        <div id="tab-serverFile" style="display:none">
-          <input class="dshell-input" id="srvFilePath" placeholder="服务端文件绝对路径，如 /data/profiling/run-a.profile.json" />
-          <div class="pf-row" style="margin-top:8px">
-            <button class="dshell-btn" id="loadSrvFileBtn">加载</button>
-            <button class="dshell-btn dshell-btnGhost" id="browseSrvBtn">浏览目录…</button>
+        <div id="tab-server" style="display:none">
+          <div class="pf-row">
+            <span class="dshell-muted" style="flex:none">服务器</span>
+            <select class="dshell-input grow" id="srvNode" style="min-width:0"></select>
+            <button class="dshell-btn dshell-btnGhost" id="srvNodeRefresh" title="重新从流水线页「节点」导入服务器列表">↻</button>
           </div>
+          <input class="dshell-input" id="srvPath" placeholder="文件或文件夹绝对路径（远程服务器上的文件会先拉到本机缓存再解析）" style="margin-top:8px" />
+          <div class="pf-row" style="margin-top:8px">
+            <button class="dshell-btn" id="srvLoadBtn">加载 / 扫描</button>
+            <button class="dshell-btn dshell-btnGhost" id="srvRescanBtn" title="重新扫描当前记忆的文件夹">↻ 重新扫描</button>
+            <button class="dshell-btn dshell-btnGhost" id="srvBrowseBtn">浏览…</button>
+          </div>
+          <p class="dshell-muted" style="margin:8px 0 0">路径是文件则加载、是文件夹则扫描其中全部 profiling 文件（单层，最多 500 条）；服务器列表从流水线页「节点」导入（含 SSH 凭据），远程文件经 SSH/SCP 拉到本机缓存（~/.dsh/storages/remote-cache/）后走本机解析链路。</p>
           <div id="srvBrowser" style="display:none; margin-top:8px">
             <div class="pf-row">
               <button class="dshell-btn dshell-btnGhost" id="srvUpBtn">⬆ 上级</button>
+              <button class="dshell-btn dshell-btnGhost" id="srvPickDirBtn" title="把当前浏览的文件夹作为扫描目录">扫描此文件夹</button>
               <span class="dshell-muted grow" id="srvBrowserPath" style="overflow:hidden;text-overflow:ellipsis"></span>
             </div>
             <div class="dshell-list" id="srvBrowserList" style="margin-top:6px; max-height:260px; overflow:auto"></div>
-          </div>
-        </div>
-        <div id="tab-serverDir" style="display:none">
-          <input class="dshell-input" id="srvDirPath" placeholder="服务端 profiling 文件夹绝对路径" />
-          <div class="pf-row" style="margin-top:8px">
-            <button class="dshell-btn" id="scanDirBtn">保存并扫描</button>
-            <button class="dshell-btn dshell-btnGhost" id="rescanDirBtn">重新扫描</button>
-            <button class="dshell-btn dshell-btnGhost" id="browseDirBtn">选择文件…</button>
-          </div>
-          <p class="dshell-muted" style="margin:8px 0 0">保存后自动列出文件夹内全部 profiling 文件（单层，最多 500 条）；也可点「选择文件…」逐个点选。</p>
-          <div id="dirBrowser" style="display:none; margin-top:8px">
-            <div class="pf-row">
-              <button class="dshell-btn dshell-btnGhost" id="dirUpBtn">⬆ 上级</button>
-              <span class="dshell-muted grow" id="dirBrowserPath" style="overflow:hidden;text-overflow:ellipsis"></span>
-            </div>
-            <div class="dshell-list" id="dirBrowserList" style="margin-top:6px; max-height:260px; overflow:auto"></div>
           </div>
         </div>
         <div id="tab-settings" style="display:none">
@@ -1438,7 +1429,13 @@ $('perfettoOpenBtn').addEventListener('click', async () => {
   const wins = [];
   for (let i = 1; i < targets.length; i++) wins.push(window.open(PERFETTO_ORIGIN, '_blank'));
   const blocked = wins.filter(w => !w).length;
-  for (const it of targets) await saveTraceBeforeOpen(it);
+  for (const it of targets){
+    if (it.remote && !it.path){
+      try{ await ensureLocalPath(it); }
+      catch(e){ toast('远程拉取失败：' + it.name + '：' + (e && e.message || e)); continue; }
+    }
+    await saveTraceBeforeOpen(it);
+  }
   await openPerfettoFor(targets[0]);
   for (let i = 1; i < targets.length; i++){
     const win = wins[i - 1];
@@ -1489,7 +1486,7 @@ function renderList(){
     return '<div class="dshell-listItem pf-item' + (it.id === currentId ? ' on' : '') + '" data-id="' + esc(it.id) + '">'
       + (perfettoEligible(it) ? '<input type="checkbox" class="pf-pick" data-pick="' + esc(it.id) + '" title="勾选后「Perfetto打开」同时打开多条（首个内嵌、其余弹出独立窗口）"' + (perfPicks.has(it.id) ? ' checked' : '') + '>' : '')
       + '<div style="min-width:0;flex:1"><div class="dshell-listItemTitle">' + esc(m.tag || it.name) + '</div>'
-      + '<div class="pf-row" style="gap:6px"><span class="dshell-listItemMeta">' + (it.source === 'local' ? '本地' : '服务端') + (it.binary ? ' · 二进制' : '') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</span>'
+      + '<div class="pf-row" style="gap:6px"><span class="dshell-listItemMeta">' + (it.remote ? '远程·' + it.remote.node : (it.source === 'local' ? '本地' : '服务端')) + (it.binary ? ' · 二进制' : '') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</span>'
       + (m.tag ? '<span class="tag">#' + esc(m.tag) + '</span>' : '') + '</div>'
       + (m.desc ? '<div class="desc">' + esc(m.desc) + '</div>' : '')
       + '<div class="pf-editbox"><input class="dshell-input" data-role="tag" placeholder="标签" value="' + esc(m.tag || '') + '"><input class="dshell-input" data-role="desc" placeholder="描述" value="' + esc(m.desc || '') + '"></div>'
@@ -1536,15 +1533,21 @@ function deleteItem(id){
   const it = items[idx];
   items.splice(idx, 1);
   perfPicks.delete(id);
-  if (it.path){ const del = load(DEL_KEY, {}); del[it.path] = Date.now(); store(DEL_KEY, del); }
+  const tk = tombKeyOf(it);
+  if (tk){ const del = load(DEL_KEY, {}); del[tk] = Date.now(); store(DEL_KEY, del); }
   if (currentId === id){ currentId = null; cur = null; renderOverview(); }
   renderList();
-  toast('已删除：' + it.name + (it.path ? '（服务端目录扫描将不再带回；显式重新加载可找回）' : ''));
+  toast('已删除：' + it.name + (tk ? '（服务端目录扫描将不再带回；显式重新加载可找回）' : ''));
 }
 async function selectItem(id){
   const it = items.find(x => x.id === id);
   if (!it) return;
   currentId = id; renderList();
+  /* 远程条目：先经 rfetch 拉到本机缓存再走本机链路 */
+  if (it.remote && !it.path){
+    try{ await ensureLocalPath(it); }
+    catch(e){ toast('远程拉取失败：' + (e && e.message || e)); return; }
+  }
   if (it.binary){
     /* 二进制报告：调用服务端专用 CUDA 工具（nsys / ncu）分析 */
     cur = { item: it, p: { title: it.name, meta: { '类型': 'NVIDIA 二进制 profiling 报告', '分析工具': '调用中…' }, stages: [], total: 0, ok: true, note: '正在调用专用 CUDA 分析工具（nsys / ncu）…' } };
@@ -1638,21 +1641,116 @@ $('localFileInput').addEventListener('change', async (ev) => {
   if (items.length && !currentId) selectItem(items[0].id);
 });
 
-/* ================= 服务端单文件 ================= */
-$('loadSrvFileBtn').addEventListener('click', async () => {
-  const path = $('srvFilePath').value.trim();
-  if (!path) { toast('请输入服务端文件路径'); return; }
+/* ================= 服务端（本机 / pipeline 节点远程） ================= */
+/* 服务器列表从流水线页「节点」导入（GET /api/worktable/pipeline 的 config.environments，含 SSH 凭据）；
+   远程条目先经 /api/worktable/rfetch 拉到本机缓存（~/.dsh/storages/remote-cache/）再走本机解析链路 */
+const SRV_NODE_KEY = 'dsh.profiling.srvNode';
+let srvNodes = [];   /* pipeline environments（含 ip/user/pass） */
+function curSrvNode(){
+  const v = $('srvNode').value;
+  return v ? (srvNodes.find(n => n.ip === v) || null) : null;
+}
+async function loadSrvNodes(selectIp){
+  try{
+    const r = await fetch('/api/worktable/pipeline');
+    const d = await r.json().catch(() => ({}));
+    srvNodes = (d.config && Array.isArray(d.config.environments) ? d.config.environments : []).map(e => ({ name: String(e.name || ''), ip: String(e.ip || ''), user: String(e.user || ''), pass: String(e.pass || '') })).filter(e => e.ip);
+  }catch(e){ srvNodes = []; }
+  $('srvNode').innerHTML = '<option value="">本机（dsh 宿主）</option>' + srvNodes.map(n => '<option value="' + esc(n.ip) + '">' + esc(n.name || n.ip) + '（' + esc(n.ip) + '）</option>').join('');
+  $('srvNode').value = selectIp || load(SRV_NODE_KEY, '');
+  if ($('srvNode').value !== (selectIp || load(SRV_NODE_KEY, ''))) $('srvNode').value = '';   /* 已保存的节点被删则回退本机 */
+}
+$('srvNodeRefresh').addEventListener('click', () => { loadSrvNodes($('srvNode').value); toast('已刷新服务器列表'); });
+$('srvNode').addEventListener('change', () => store(SRV_NODE_KEY, $('srvNode').value));
+/* 条目身份键（墓碑/勾选去重等用）：远程条目按 节点+远程路径 计，与拉取后的本机缓存路径解耦 */
+function tombKeyOf(it){ return it.remote ? ('remote:' + it.remote.ip + ':' + it.remote.rpath) : it.path; }
+/* 列目录：本机 api.fs / 远程 api.rfs，同形输出 */
+async function srvFs(path){
+  const n = curSrvNode();
+  if (!n) return api.fs(path);
+  const r = await fetch('/api/worktable/rfs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ip: n.ip, user: n.user, pass: n.pass, path }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+/* 远程条目拉到本机缓存（幂等：大小一致命中缓存），返回缓存路径 */
+async function ensureLocalPath(it){
+  if (!it.remote || it.path) return;
+  const n = it.remote;
+  toast('正在把远程文件拉到本机缓存：' + it.name + '…');
+  const r = await fetch('/api/worktable/rfetch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ip: n.ip, user: n.user, pass: n.pass, path: n.rpath }) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+  it.path = d.path; it.size = d.size || it.size;
+  renderList();
+}
+/* 加载单个服务端文件（本机直接进列表；远程建 stub，选中/打开时才拉取） */
+async function loadSrvPath(path){
+  const node = curSrvNode();
+  if (node){
+    untombstone('remote:' + node.ip + ':' + path);   /* 显式重新加载：清除墓碑 */
+    const id = 'remote:' + node.ip + ':' + path;
+    if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path: null, source: 'server', remote: { ip: node.ip, user: node.user, pass: node.pass, node: node.name || node.ip, rpath: path }, size: 0, binary: isBinaryName(path), data: null, rawText: null });
+    renderList(); selectItem(id);
+    return;
+  }
   untombstone(path);   /* 显式重新加载：清除墓碑 */
   const id = 'server:' + path;
   if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path, source: 'server', size: 0, binary: isBinaryName(path), data: null, rawText: null });
   renderList(); selectItem(id);
+}
+/* 扫描文件夹：列出全部 profiling 文件入列表（本机/远程同口径；墓碑过滤） */
+async function scanServerDir(){
+  const dir = $('srvPath').value.trim();
+  if (!dir){ toast('请输入文件夹路径'); return; }
+  const node = curSrvNode();
+  try{
+    const d = await srvFs(dir);
+    const deleted = load(DEL_KEY, {});
+    const files = d.entries.filter(e => {
+      if (e.isDir || e.hidden || !isProfileName(e.name)) return false;
+      const tk = node ? ('remote:' + node.ip + ':' + e.path) : e.path;
+      return !deleted[tk];   /* 墓碑条目不再带回 */
+    });
+    for (const e of files){
+      if (node){
+        const id = 'remote:' + node.ip + ':' + e.path;
+        if (!items.find(x => x.id === id)) items.push({ id, name: e.name, path: null, source: 'server', remote: { ip: node.ip, user: node.user, pass: node.pass, node: node.name || node.ip, rpath: e.path }, size: 0, binary: isBinaryName(e.name), data: null, rawText: null });
+      } else {
+        const id = 'server:' + e.path;
+        if (!items.find(x => x.id === id)) items.push({ id, name: e.name, path: e.path, source: 'server', size: 0, binary: isBinaryName(e.name), data: null, rawText: null });
+      }
+    }
+    store(DIR_KEY, dir);
+    renderList();
+    toast('扫描到 ' + files.length + ' 个 profiling 文件' + (d.truncated ? '（已截断 500 条）' : ''));
+    if (!currentId && files.length) selectItem(node ? ('remote:' + node.ip + ':' + files[0].path) : ('server:' + files[0].path));
+  }catch(e){ toast('扫描失败：' + e.message); }
+}
+/* 「加载 / 扫描」：路径带扩展名按文件直载（省去目录探测的 404 噪音）；否则先试列目录（是文件夹则扫描），列失败按文件加载 */
+$('srvLoadBtn').addEventListener('click', async () => {
+  const path = $('srvPath').value.trim();
+  if (!path){ toast('请输入文件或文件夹路径'); return; }
+  const base = path.split('/').pop() || '';
+  if (!/\.[a-z0-9.]+$/i.test(base)){
+    try{
+      const d = await srvFs(path);
+      if (d && d.entries){ await scanServerDir(); return; }
+    }catch(e){ /* 非目录 → 按文件 */ }
+  }
+  await loadSrvPath(path);
 });
-
-/* 目录浏览 */
+$('srvRescanBtn').addEventListener('click', () => {
+  const dir = load(DIR_KEY, '');
+  if (!dir){ toast('尚未扫描过文件夹'); return; }
+  $('srvPath').value = dir;
+  scanServerDir();
+});
+/* 目录浏览（本机/远程同口径）：点文件加载、点文件夹下钻、「扫描此文件夹」 */
 let browseDir = '';
-$('browseSrvBtn').addEventListener('click', async () => {
+$('srvBrowseBtn').addEventListener('click', async () => {
   $('srvBrowser').style.display = $('srvBrowser').style.display === 'none' ? '' : 'none';
-  if ($('srvBrowser').style.display !== 'none') await renderBrowser($('srvFilePath').value.trim().replace(/\/[^/]*$/, '') || '/');
+  if ($('srvBrowser').style.display !== 'none') await renderBrowser($('srvPath').value.trim().replace(/\/[^/]*$/, '') || '/');
 });
 async function renderBrowser(dir){
   browseDir = dir;
@@ -1660,75 +1758,30 @@ async function renderBrowser(dir){
   const box = $('srvBrowserList');
   box.innerHTML = '<div class="pf-empty">加载中…</div>';
   try{
-    const d = await api.fs(dir);
+    const d = await srvFs(dir);
     box.innerHTML = d.entries.filter(e => !e.hidden).map(e =>
       '<div class="dshell-listItem" data-p="' + esc(e.path) + '" data-dir="' + (e.isDir ? 1 : 0) + '"><span class="dshell-listItemTitle">' + (e.isDir ? '📁 ' : '📄 ') + esc(e.name) + '</span></div>'
     ).join('') || '<div class="pf-empty">空目录</div>';
     box.querySelectorAll('.dshell-listItem').forEach(el => el.addEventListener('click', () => {
       if (el.dataset.dir === '1') renderBrowser(el.dataset.p);
-      else { $('srvFilePath').value = el.dataset.p; $('loadSrvFileBtn').click(); }
+      else { $('srvPath').value = el.dataset.p; loadSrvPath(el.dataset.p); toast('已选择 ' + el.dataset.p.split('/').pop()); }
     }));
   }catch(e){ box.innerHTML = '<div class="pf-empty">' + esc(e.message) + '</div>'; }
 }
 $('srvUpBtn').addEventListener('click', () => { const up = browseDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'; renderBrowser(up); });
-
-/* ================= 服务端文件夹扫描 ================= */
-$('srvDirPath').value = load(DIR_KEY, '');
-async function scanServerDir(){
-  const dir = $('srvDirPath').value.trim();
-  if (!dir) return;
-  store(DIR_KEY, dir);
-  try{
-    const d = await api.fs(dir);
-    const deleted = load(DEL_KEY, {});
-    const files = d.entries.filter(e => !e.isDir && !e.hidden && isProfileName(e.name) && !deleted[e.path]);   /* 墓碑条目不再带回 */
-    for (const e of files){
-      const id = 'server:' + e.path;
-      if (!items.find(x => x.id === id)) items.push({ id, name: e.name, path: e.path, source: 'server', size: 0, binary: isBinaryName(e.name), data: null, rawText: null });
-    }
-    renderList();
-    toast('扫描到 ' + files.length + ' 个 profiling 文件' + (d.truncated ? '（已截断 500 条）' : ''));
-    if (!currentId && files.length) selectItem('server:' + files[0].path);
-  }catch(e){ toast('扫描失败：' + e.message); }
-}
-$('scanDirBtn').addEventListener('click', scanServerDir);
-$('rescanDirBtn').addEventListener('click', scanServerDir);
-if ($('srvDirPath').value.trim()) scanServerDir();
-
-/* 文件夹内点选某个 profiling 文件 */
-let dirBrowseDir = '';
-$('browseDirBtn').addEventListener('click', async () => {
-  $('dirBrowser').style.display = $('dirBrowser').style.display === 'none' ? '' : 'none';
-  if ($('dirBrowser').style.display !== 'none') await renderDirBrowser($('srvDirPath').value.trim() || '/');
-});
-async function renderDirBrowser(dir){
-  dirBrowseDir = dir;
-  $('dirBrowserPath').textContent = dir;
-  const box = $('dirBrowserList');
-  box.innerHTML = '<div class="pf-empty">加载中…</div>';
-  try{
-    const d = await api.fs(dir);
-    box.innerHTML = d.entries.filter(e => !e.hidden).map(e =>
-      '<div class="dshell-listItem" data-p="' + esc(e.path) + '" data-dir="' + (e.isDir ? 1 : 0) + '"><span class="dshell-listItemTitle">' + (e.isDir ? '📁 ' : '📄 ') + esc(e.name) + '</span>' + (e.isDir ? '' : '<span class="dshell-listItemMeta">点击加载</span>') + '</div>'
-    ).join('') || '<div class="pf-empty">空目录</div>';
-    box.querySelectorAll('.dshell-listItem').forEach(el => el.addEventListener('click', () => {
-      if (el.dataset.dir === '1'){ renderDirBrowser(el.dataset.p); return; }
-      const path = el.dataset.p;
-      untombstone(path);   /* 显式点选：清除墓碑 */
-      const id = 'server:' + path;
-      if (!items.find(x => x.id === id)) items.unshift({ id, name: path.split('/').pop(), path, source: 'server', size: 0, binary: isBinaryName(path), data: null, rawText: null });
-      renderList(); selectItem(id);
-      toast('已选择 ' + path.split('/').pop());
-    }));
-  }catch(e){ box.innerHTML = '<div class="pf-empty">' + esc(e.message) + '</div>'; }
-}
-$('dirUpBtn').addEventListener('click', () => { const up = dirBrowseDir.replace(/\/+$/, '').replace(/\/[^/]*$/, '') || '/'; renderDirBrowser(up); });
+$('srvPickDirBtn').addEventListener('click', () => { if (!browseDir) return; $('srvPath').value = browseDir; scanServerDir(); });
 
 /* ================= 数据来源页签 ================= */
 $('srcTabs').querySelectorAll('.dshell-tab').forEach(t => t.addEventListener('click', () => {
   $('srcTabs').querySelectorAll('.dshell-tab').forEach(x => x.classList.toggle('dshell-tabOn', x === t));
-  for (const name of ['local', 'serverFile', 'serverDir', 'settings']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
+  for (const name of ['local', 'server', 'settings']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
 }));
+/* 启动：导入服务器列表 → 恢复选中 → 有记忆文件夹则自动扫描 */
+(async () => {
+  await loadSrvNodes();
+  const dir = load(DIR_KEY, '');
+  if (dir){ $('srvPath').value = dir; scanServerDir(); }
+})();
 
 /* ================= AI 分析 ================= */
 const AGENTS = [
