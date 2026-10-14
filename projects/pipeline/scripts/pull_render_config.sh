@@ -46,10 +46,12 @@ EXECUTOR="${EXECUTOR:-}"
 NAMESPACE="${NAMESPACE:-}"
 contains_unexpanded_placeholder "$NAMESPACE" && NAMESPACE=""
 if [[ -z "$NAMESPACE" ]]; then
-  if [[ -n "$NAMESPACE_ARCH" && -n "$EXECUTOR" ]]; then
-    NAMESPACE="xds-${NAMESPACE_ARCH}-${EXECUTOR}"
+  namespace_base="${NAMESPACE_ARCH:-}"
+  [[ -n "$namespace_base" ]] || namespace_base="$ARCH_NAME"
+  if [[ -n "$EXECUTOR" ]]; then
+    NAMESPACE="xds-${namespace_base}-${EXECUTOR}"
   else
-    NAMESPACE="xds-${ARCH_NAME}"
+    NAMESPACE="xds-${namespace_base}"
   fi
 fi
 NAMESPACE="$(normalize_kubernetes_name "$NAMESPACE" 63)"
@@ -167,7 +169,8 @@ XDS_DATABASE_PASSWORD="${XDS_DATABASE_PASSWORD:-XDS@2026}"
 # process environment for pull-image.sh only; do not serialize them into either
 # pipeline environment file.
 AK="${AK:-}"
-LOGKEY="${LOGKEY:-${LOGIN_KEY:-}}"
+LOGKEY="${LOGKEY:-}"
+[[ -n "$LOGKEY" ]] || LOGKEY="${LOGIN_KEY:-}"
 # Keep the legacy alias synchronized with the value selected for this run.
 LOGIN_KEY="$LOGKEY"
 # PROJECT is also used by some callers for the registry namespace (for example
