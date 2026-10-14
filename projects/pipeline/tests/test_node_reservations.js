@@ -4,7 +4,8 @@
      预留数据不进配置导出（collectConfig 不引用 nodeReservations）。
    - 纯函数：reservationsForNode（过滤+按 start 排序）、fmtResTime（本地 MM-DD HH:mm）、
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
-     envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue。
+     envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue、
+     quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期且当天已过取次日、已填日期保留）。
    - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
@@ -619,6 +620,49 @@ test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用�
   const search = h.els.nodeResList.querySelector('[data-res-user-search="0"]');
   search.value = 'newuser'; search.fire('keydown', { key: 'Enter', preventDefault() {} });
   assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['olduser', 'newuser'], '候选外用户名直接输入即添加');
+});
+
+/* ==================== 快捷时段 ==================== */
+test('quickResRange：四档整点、22~9 跨零点次日、未填日期当天已过取次日、已填日期保留', () => {
+  const ctx = pureCtx();
+  const q = (base, sh, eh, now) => J(ctx.quickResRange(base, sh, eh, now));
+  const d = (y, m, day, h, min) => new Date(y, m - 1, day, h, min || 0).getTime();
+  const afternoon = d(2026, 10, 14, 15, 30);   // 2026-10-14 15:30
+  assert.deepEqual(q('2026-10-20T08:00', 9, 14, afternoon), { start: '2026-10-20T09:00', end: '2026-10-20T14:00' }, '已填日期保留，仅覆盖时间');
+  assert.deepEqual(q('2026-10-20T08:00', 14, 19, afternoon), { start: '2026-10-20T14:00', end: '2026-10-20T19:00' });
+  assert.deepEqual(q('2026-10-20T08:00', 19, 22, afternoon), { start: '2026-10-20T19:00', end: '2026-10-20T22:00' });
+  assert.deepEqual(q('2026-10-20T08:00', 22, 9, afternoon), { start: '2026-10-20T22:00', end: '2026-10-21T09:00' }, '22~9 跨零点，结束落次日 09:00');
+  assert.deepEqual(q('', 9, 14, afternoon), { start: '2026-10-15T09:00', end: '2026-10-15T14:00' }, '未填日期且当天 09:00 已过 → 次日');
+  assert.deepEqual(q('', 19, 22, afternoon), { start: '2026-10-14T19:00', end: '2026-10-14T22:00' }, '未填日期且当天 19:00 未到 → 当天');
+  assert.deepEqual(q(null, 22, 9, d(2026, 10, 14, 23, 0)), { start: '2026-10-15T22:00', end: '2026-10-16T09:00' }, '23 点点 22~9 → 次日 22:00 起、结束再次日 09:00');
+});
+
+test('预留弹窗：快捷时段按钮四档齐全，点击回填开始/结束；只读形态无快捷按钮', async () => {
+  /* 只读形态无快捷按钮 */
+  const plain = renderEnvsCtx(null, [envOf('env-c', '测试', '10.0.0.3')]);
+  vm.runInContext(`nodeReservations=${JSON.stringify([resNow('r1', 'env-c', ['u1'])])}`, plain.ctx);
+  plain.ctx.renderEnvs();
+  plain.tbody.querySelectorAll('[data-envres]')[0].click();
+  await flush(); await flush();
+  assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-quick]').length, 0, '只读形态无快捷时段按钮');
+
+  /* admin：四档齐全且按序，点击回填 */
+  const h = dialogCtx(null, async url => {
+    if (url === '/auth/users') return okUsersFetch(url);
+    throw new Error('unexpected fetch ' + url);
+  });
+  await h.ctx.openNodeResDialog('env-a');
+  vm.runInContext(`nodeResEdit.windows=[{id:'', start:'2026-10-20T08:00', end:'2026-10-20T12:00', users:['u1'], note:''}]`, h.ctx);
+  h.ctx.renderNodeResWindows();
+  const quicks = h.els.nodeResList.querySelectorAll('[data-res-quick]').map(b => b.getAttribute('data-res-quick'));
+  assert.deepEqual(quicks, ['9-14', '14-19', '19-22', '22-9'], '四个快捷时段齐全且按序');
+  const quickOf = v => h.els.nodeResList.querySelectorAll('[data-reswindow="0"]')[0].querySelectorAll(`[data-res-quick="${v}"]`)[0];
+  quickOf('22-9').fire('click');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-start="0"]').value, '2026-10-20T22:00', '22~9 回填开始 22:00（保留已填日期）');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-end="0"]').value, '2026-10-21T09:00', '22~9 跨零点，结束次日 09:00');
+  quickOf('9-14').fire('click');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-start="0"]').value, '2026-10-20T09:00', '9~14 回填开始 09:00');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-end="0"]').value, '2026-10-20T14:00', '9~14 回填结束 14:00（同日）');
 });
 
 /* ==================== 运行校验接入 ==================== */
