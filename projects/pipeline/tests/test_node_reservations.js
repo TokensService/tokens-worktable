@@ -432,10 +432,10 @@ function envMultiCtx(globals) {
     gpuStatus: {}, gpuBusy: () => false, esc: s => String(s),
     document: { createElement: tag => elStub(tag) },
     $: id => ({ envMultiBtn: btn, envMultiPanel: panel })[id] || null,
-    envMultiSearch: {}, envMultiSelSort: {},
+    envMultiSearch: {}, envMultiSelSort: {}, envMultiListFilter: {},
     authReady: true, currentUsername: 'me', currentUserIsAdmin: false,
   }, globals || {}));
-  vm.runInContext(['envMultiFilterMatch', 'envMultiSortVal', 'envMultiSortList', 'renderEnvMulti'].map(extractFunction).join('\n'), ctx);
+  vm.runInContext(['envAvailGroup', 'envMultiAvailSort', 'envMultiGpuIdle', 'envMultiListFilterMatch', 'envMultiFilterMatch', 'envMultiSortVal', 'envMultiSortList', 'renderEnvMulti'].map(extractFunction).join('\n'), ctx);
   vm.runInContext(`nodeReservations=${JSON.stringify([resNow('r1', 'env-b', ['u1', 'u2'])])}`, ctx);
   return { ctx, btn, panel };
 }
