@@ -491,6 +491,10 @@ write_remote_render_environment() {
         variable_name="${variable%%=*}"
         variable_value="${variable#*=}"
         [[ "$variable_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || continue
+        # Keep the target host's login-shell proxy configuration. Forwarding
+        # the execution host's loopback proxy (for example 127.0.0.1:8118)
+        # makes registry pulls fail on the target.
+        [[ "$variable_name" =~ ^[A-Za-z_]*[Pp][Rr][Oo][Xx][Yy]$ ]] && continue
         printf 'export %s=%q\n' "$variable_name" "$variable_value"
       done < <(env -0)
       printf 'export RUN_DIR=%q\n' "$target_run_dir"
