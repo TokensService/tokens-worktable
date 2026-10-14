@@ -1265,12 +1265,6 @@ prepare_ctrl_slot_capacity
 clear_target_node_taints
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
-  --set-string "global.namespace=$NAMESPACE" \
-  --set-string "global.roleName=${NAMESPACE}-role" \
-  --set-string "global.roleBindingName=${NAMESPACE}-role-binding" \
-  --set-string "global.serviceAccountName=${NAMESPACE}-sa" \
-  --set-string "global.serviceAccountSecretName=${NAMESPACE}-sa-secret" \
-  --set-string "global.service.svcName=$SERVICE_NAME" \
   --timeout "$HELM_TIMEOUT"
 resolve_xds_url_from_service
 resolve_xds_om_url
