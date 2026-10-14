@@ -23,6 +23,8 @@
 | `TARGET_IP` | 首个目标节点 IP | `10.0.0.1` |
 | `TARGET_IPS` | 全部目标 IP 的 JSON 数组 | `["10.0.0.1","10.0.0.2"]` |
 | `TARGET_HOSTS` | 全部节点凭据的 JSON 数组 | `[{"ip":"10.0.0.1","user":"root","pass":"p1"}]` |
+| `TARGET_NODE_IP_MAP` | SSH 地址 → 节点内网IP（Kubernetes InternalIP）的 JSON 映射（仅含填了内网IP的节点；无则整体不注入） | `{"115.33.98.101:2224":"192.168.31.175"}` |
+| `TARGET_LLM_ADDR_MAP` | SSH 地址 → LLM服务地址（IP:端口）的 JSON 映射（仅含填了 LLM服务地址的节点；无则整体不注入） | `{"115.33.98.101:2224":"192.168.31.175:8000"}` |
 | `TARGET_USER` / `TARGET_PASSWORD` | 首个节点登录凭据 | `root` |
 | `IMAGE_NAME` / `IMAGE_TAG` | 主控「镜像名」/ 本次运行 tag | `xds` / `1510-a1b2c` |
 | `PIPELINE_NAME` | 流水线名 | `安装部署XDS` |

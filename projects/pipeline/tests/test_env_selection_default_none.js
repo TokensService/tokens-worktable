@@ -1,6 +1,6 @@
 /* 节点选择默认行为：主控「选择 IP」、定时页与流水线编辑器「默认环境」均默认不选择任何节点，
    允许手动全部取消勾选（不选即按无目标节点运行）；旧流水线未保存过默认环境字段时维持回退首项兼容。
-   环境多选面板另支持搜索（名称 / IP / 用户名 / InternalIP）与已选节点排序（名称 / IP / 设备状态 + ↑↓ 调序），
+   环境多选面板另支持搜索（名称 / IP / 用户名 / 内网IP / LLM服务地址）与已选节点排序（名称 / IP / 设备状态 + ↑↓ 调序），
    顺序写回 ids，决定 TARGET_IP / TARGET_IPS 注入顺序。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
@@ -18,8 +18,8 @@ function extractFunction(name){
 }
 const ENVS=[
   {id:'env-a',name:'开发',ip:'10.0.0.1'},
-  {id:'env-b',name:'生产',ip:'10.0.0.2'},
-  {id:'env-c',name:'测试',ip:'10.0.0.10',user:'ops'},
+  {id:'env-b',name:'生产',ip:'10.0.0.2',nodeIp:'172.16.0.2'},
+  {id:'env-c',name:'测试',ip:'10.0.0.10',user:'ops',llmAddr:'10.0.0.10:8000'},
 ];
 
 test('curEnvs 默认（无存储选择）与显式空选择均返回空列表，不再回退首个节点',()=>{
@@ -131,7 +131,7 @@ test('环境多选面板允许取消最后一个勾选（不选择任何节点�
   assert.deepEqual(current,['env-b'],'空选择后仍可正常勾选一个节点');
 });
 
-test('环境多选面板支持搜索：按名称 / IP / 用户名 / InternalIP 过滤节点列表',()=>{
+test('环境多选面板支持搜索：按名称 / IP / 用户名 / 内网IP / LLM服务地址 过滤节点列表',()=>{
   const btn=elStub(),panel=elStub();
   const ctx=loadRenderEnvMulti(btn,panel);
   const opts={btnId:'envMultiBtn',panelId:'envMultiPanel',getIds:()=>[],setIds:()=>{}};
@@ -148,6 +148,12 @@ test('环境多选面板支持搜索：按名称 / IP / 用户名 / InternalIP �
 
   search.value='ops'; search.fire('input');
   assert.deepEqual(optLabels(panel).filter(l=>l.style.display!=='none').map(l=>l.getAttribute('data-envopt')),['env-c'],'用户名命中');
+
+  search.value='172.16'; search.fire('input');
+  assert.deepEqual(optLabels(panel).filter(l=>l.style.display!=='none').map(l=>l.getAttribute('data-envopt')),['env-b'],'内网IP 命中');
+
+  search.value=':8000'; search.fire('input');
+  assert.deepEqual(optLabels(panel).filter(l=>l.style.display!=='none').map(l=>l.getAttribute('data-envopt')),['env-c'],'LLM服务地址命中');
 
   search.value='zzz-no-match'; search.fire('input');
   assert.equal(optLabels(panel).filter(l=>l.style.display!=='none').length,0,'无匹配时全部隐藏');

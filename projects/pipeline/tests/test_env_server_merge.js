@@ -24,8 +24,8 @@ function extractFunction(name) {
 }
 const J = x => JSON.parse(JSON.stringify(x));
 
-const env = (id, name, extra) => Object.assign({ id, name, ip: '10.0.0.1', nodeIp: '', user: '', pass: '' }, extra);
-const normalizeEnv = e => ({ id: e.id, name: e.name, ip: e.ip, nodeIp: e.nodeIp || '', user: e.user || '', pass: e.pass || '' });
+const env = (id, name, extra) => Object.assign({ id, name, ip: '10.0.0.1', nodeIp: '', llmAddr: '', user: '', pass: '' }, extra);
+const normalizeEnv = e => ({ id: e.id, name: e.name, ip: e.ip, nodeIp: e.nodeIp || '', llmAddr: e.llmAddr || '', user: e.user || '', pass: e.pass || '' });
 
 /* ---------- mergeEnvironmentsFromServer 单元口径 ---------- */
 function mergeCtx() {
@@ -87,6 +87,26 @@ test('mergeEnvironmentsFromServer：双边都改且内容不一致取远端（�
   assert.deepEqual(J(out).map(e => [e.id, e.name]), [['env-1', '远端改']]);
   assert.ok(!('extra' in out[0]), '远端条目经 normalizeEnv 归一，多余字段剔除');
   assert.equal(out[0].nodeIp, '');
+  assert.equal(out[0].llmAddr, '', '缺省 llmAddr 归一为空串');
+});
+
+test('mergeEnvironmentsFromServer：仅 llmAddr 改动也算本端改动（条目比对含 llmAddr），自愈重拉不丢', () => {
+  const ctx = mergeCtx();
+  /* 基线 == 远端（他端未动），本地仅给 env-1 填了 LLM服务地址 → 保留本地 */
+  const out = ctx.mergeEnvironmentsFromServer(
+    [env('env-1', '节点一')],
+    [env('env-1', '节点一', { llmAddr: '10.0.0.1:8000' })],
+    [env('env-1', '节点一')],
+  );
+  assert.equal(out[0].llmAddr, '10.0.0.1:8000', '本地在途 llmAddr 修改不被重拉冲掉');
+
+  /* 反向：他端改 llmAddr、本地未改 → 取远端 */
+  const out2 = ctx.mergeEnvironmentsFromServer(
+    [env('env-1', '节点一')],
+    [env('env-1', '节点一')],
+    [env('env-1', '节点一', { llmAddr: '10.0.0.1:9000' })],
+  );
+  assert.equal(out2[0].llmAddr, '10.0.0.1:9000', '他端 llmAddr 修改照常同步');
 });
 
 /* ---------- loadServerState：环境列表按 id 三方合并（替代整表替换） ---------- */

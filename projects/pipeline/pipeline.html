@@ -501,12 +501,13 @@
   <div id="pageNode" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;"><span class="rf-ico">↻</span> 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;"><span class="rf-ico">⟳</span> 设备状态</button> <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 用户名 / 设备状态" style="width:230px; margin-left:6px; font-weight:normal;" /></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;"><span class="rf-ico">↻</span> 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;"><span class="rf-ico">⟳</span> 设备状态</button> <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 内网IP / LLM / 用户名 / 设备状态" style="width:260px; margin-left:6px; font-weight:normal;" /></h2>
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
         <input id="envIp" class="dshell-input" placeholder="IP 或 IP:端口（如 192.168.1.20 / 115.33.98.101:2222）" title="可填纯 IP（默认 22 端口），也可「IP:端口」指定 SSH 端口（如 115.33.98.101:2222）" style="width:200px;" />
-        <input id="envNodeIp" class="dshell-input" placeholder="K8s InternalIP（可选）" title="部署调度使用的 Kubernetes 节点 InternalIP；SSH 入口与 InternalIP 不同时填写，例如 192.168.31.175" style="width:180px;" />
+        <input id="envNodeIp" class="dshell-input" placeholder="内网IP（可选）" title="部署调度使用的内网 IP（Kubernetes 节点 InternalIP）；SSH 入口与内网 IP 不同时填写，例如 192.168.31.175" style="width:150px;" />
+        <input id="envLlmAddr" class="dshell-input" placeholder="LLM服务地址（可选）" title="该节点上 LLM 服务的访问地址（IP:端口号），例如 192.168.31.175:8000；运行时自动生成 TARGET_LLM_ADDR_MAP（SSH 地址 → LLM服务地址 的 JSON 映射）注入执行脚本" style="width:170px;" />
         <input id="envUser" class="dshell-input" placeholder="用户名" style="width:110px;" />
         <input id="envPass" class="dshell-input" type="password" placeholder="密码" style="width:130px;" />
         <button id="envAdd" class="dshell-btn mini">添加</button>
@@ -515,11 +516,11 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
-          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>K8s InternalIP</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th title="节点预留：按用户 + 日期时间段分配；仅 admin 可分配，非 admin 点「分配」为只读查看">预留</th><th>操作</th></tr></thead>
+          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>内网IP</th><th>LLM服务地址</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th title="节点预留：按用户 + 日期时间段分配；仅 admin 可分配，非 admin 点「分配」为只读查看">预留</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选，也可一个不选——不选即按无目标节点运行）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，填写对应的 K8s InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>，渲染、打标签与 NodePort 调用使用 InternalIP，SSH/设备查询仍使用 SSH 地址。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。「预留」列的节点预留分配数据保存在服务端独立存储，不随「导入导出」的配置文件传递。</p>
+      <p class="dshell-muted" style="margin:7px 0 0; font-size:11px;">主控「环境」按此列表选择目标节点（可多选，也可一个不选——不选即按无目标节点运行）；SSH 地址可填「IP:端口」。若 SSH 入口与 Kubernetes 节点不同，「内网IP」填写对应的 Kubernetes 节点 InternalIP；运行时自动生成 <code>TARGET_NODE_IP_MAP</code>（SSH 地址 → 内网 IP），渲染、打标签与 NodePort 调用使用内网 IP，SSH/设备查询仍使用 SSH 地址。「LLM服务地址」可选填该节点上 LLM 服务的 IP:端口号（如 192.168.31.175:8000），运行时自动生成 <code>TARGET_LLM_ADDR_MAP</code>（SSH 地址 → LLM 服务地址）注入执行脚本。执行脚本同时注入 <code>TARGET_IP</code>/<code>TARGET_IPS</code>/<code>TARGET_HOSTS</code>、镜像和流水线信息；脚本显式配置的同名参数优先。「预留」列的节点预留分配数据保存在服务端独立存储，不随「导入导出」的配置文件传递。</p>
     </div>
   </div><!-- /pageNode -->
 
@@ -1222,13 +1223,14 @@ function mergePipelinesFromServer(baseList, localList, remoteList){
   });
   return {pipelines:result, keptBaseEntries};
 }
-/* 节点环境条目比对：只看 normalizeEnv 的规范字段（id/name/ip/nodeIp/user/pass），与键序、多余字段无关——
+/* 节点环境条目比对：只看 normalizeEnv 的规范字段（id/name/ip/nodeIp/llmAddr/user/pass），与键序、多余字段无关——
    基线条目来自服务端快照（原始 JSON），本页条目经 normalizeEnv 归一，直接 JSON.stringify 会 phantom 不同。 */
 function sameEnvEntry(a,b){
   if(a===b) return true;
   if(!a||!b) return false;
   return String(a.id)===String(b.id) && String(a.name||'')===String(b.name||'') && String(a.ip||'')===String(b.ip||'')
-    && String(a.nodeIp||'')===String(b.nodeIp||'') && String(a.user||'')===String(b.user||'') && String(a.pass||'')===String(b.pass||'');
+    && String(a.nodeIp||'')===String(b.nodeIp||'') && String(a.llmAddr||'')===String(b.llmAddr||'')
+    && String(a.user||'')===String(b.user||'') && String(a.pass||'')===String(b.pass||'');
 }
 /* loadServerState 的节点环境按 id 三方合并（与流水线 mergePipelinesFromServer 同口径，替代整表替换）：
    共同基线 = serverConfigBase.environments，本地 = 当前全局 environments，远端 = GET 响应 cfg.environments。
@@ -1991,8 +1993,8 @@ function savePipelines(options){
   persistState();
 }
 
-/* ---------- 环境配置（名称 + IP + 用户名 + 密码） ---------- */
-function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, nodeIp:e.nodeIp||'', user:e.user||'', pass:e.pass||''}; }
+/* ---------- 环境配置（名称 + IP + 内网IP + LLM服务地址 + 用户名 + 密码） ---------- */
+function normalizeEnv(e){ return {id:e.id, name:e.name, ip:e.ip, nodeIp:e.nodeIp||'', llmAddr:e.llmAddr||'', user:e.user||'', pass:e.pass||''}; }
 function loadEnvs(){ try{ const a=JSON.parse(localStorage.getItem('pip-envs')); if(Array.isArray(a)&&a.length) return a.map(normalizeEnv); }catch(e){} return null; }
 let environments = loadEnvs() || [
   {id:'env-dev', name:'开发', ip:'192.168.1.10', user:'root', pass:''},
@@ -2014,10 +2016,10 @@ function envSelText(){ return curEnvs().map(e=>e.ip).join('，'); }
 /* 环境多选面板搜索词 / 已选节点排序状态（按面板实例隔离：主控 / 定时 / 默认环境 / 运行弹窗各自独立） */
 const envMultiSearch={};
 const envMultiSelSort={};   // panelId -> {key:'name'|'ip'|'gpu'|null, dir:1|-1}
-/* 面板搜索：匹配名称 / SSH 地址 / 用户名 / K8s InternalIP（子串、大小写不敏感） */
+/* 面板搜索：匹配名称 / SSH 地址 / 用户名 / 内网IP / LLM服务地址（子串、大小写不敏感） */
 function envMultiFilterMatch(e, kw){
   if(!kw) return true;
-  return (String(e.name||'')+' '+String(e.ip||'')+' '+String(e.user||'')+' '+String(e.nodeIp||'')).toLowerCase().indexOf(kw)>=0;
+  return (String(e.name||'')+' '+String(e.ip||'')+' '+String(e.user||'')+' '+String(e.nodeIp||'')+' '+String(e.llmAddr||'')).toLowerCase().indexOf(kw)>=0;
 }
 /* 已选节点排序键：name/user 按小写文本、ip 去掉「:端口」后按段数值、gpu 按设备状态（查询失败→未查询→空闲→占用） */
 function envMultiSortVal(e, key){
@@ -2044,7 +2046,7 @@ function envMultiSortList(list, sort){
 }
 /* 环境多选面板（主控、定时页、流水线编辑器「默认环境」与运行弹窗共用渲染）：
    - 勾选状态经 getIds/setIds 回调注入，切换后执行 after 附加动作；允许一个不选（默认即无目标节点运行）
-   - 顶部搜索框按名称 / IP / 用户名 / InternalIP 过滤下方节点列表（已选区不受过滤影响）
+   - 顶部搜索框按名称 / IP / 用户名 / 内网IP / LLM服务地址 过滤下方节点列表（已选区不受过滤影响）
    - 已选节点区支持排序（名称 / IP / 设备状态，点一次升序、再点降序）与 ↑↓ 手动调序；
      顺序写回 ids，决定 TARGET_IP（首个）/ TARGET_IPS 的注入顺序 */
 function renderEnvMulti(o){
@@ -2247,11 +2249,11 @@ function envSortList(list){
     return a.i-b.i;                              // 同值保持原顺序
   }).map(x=>x.e);
 }
-/* 节点筛选：匹配名称 / IP / 用户名 / 设备状态文本（容器名、空闲、占用、查询失败、卡数） */
+/* 节点筛选：匹配名称 / IP / 内网IP / LLM服务地址 / 用户名 / 设备状态文本（容器名、空闲、占用、查询失败、卡数） */
 function envFilterMatch(e){
   const kw=envFilterText.trim().toLowerCase();
   if(!kw) return true;
-  let text=(e.name+' '+e.ip+' '+(e.user||'')).toLowerCase();
+  let text=(e.name+' '+e.ip+' '+(e.nodeIp||'')+' '+(e.llmAddr||'')+' '+(e.user||'')).toLowerCase();
   const st=gpuStatus[e.id];
   if(st){
     if(st.error) text+=' 查询失败';
@@ -2269,7 +2271,7 @@ function renderEnvs(){
   const tb=$('envTable').querySelector('tbody'); tb.innerHTML='';
   list.forEach(e=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.nodeIp||'—')+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
+    tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.nodeIp||'—')+'</td><td class="dshell-muted">'+esc(e.llmAddr||'—')+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
       '<td style="white-space:nowrap">'+envResSummaryHtml(e)+'</td>'+
       '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
@@ -2773,21 +2775,23 @@ function openGpuDetail(e){
   body.innerHTML=h;
   $('gpuDetail').style.display='flex';
 }
-function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envNodeIp').value=e.nodeIp||''; $('envUser').value=e.user||''; $('envPass').value=e.pass||''; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
-function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envNodeIp').value=''; $('envUser').value=''; $('envPass').value=''; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
+function startEnvEdit(id){ const e=environments.find(x=>x.id===id); if(!e) return; envEditId=id; $('envName').value=e.name; $('envIp').value=e.ip; $('envNodeIp').value=e.nodeIp||''; $('envLlmAddr').value=e.llmAddr||''; $('envUser').value=e.user||''; $('envPass').value=e.pass||''; $('envAdd').textContent='保存'; $('envCancelEdit').style.display=''; }
+function resetEnvForm(){ envEditId=null; $('envName').value=''; $('envIp').value=''; $('envNodeIp').value=''; $('envLlmAddr').value=''; $('envUser').value=''; $('envPass').value=''; $('envAdd').textContent='添加'; $('envCancelEdit').style.display='none'; }
 function saveEnvForm(){
-  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const nodeIp=$('envNodeIp').value.trim(); const user=$('envUser').value.trim(); const pass=$('envPass').value;
+  const name=$('envName').value.trim(); const ip=$('envIp').value.trim(); const nodeIp=$('envNodeIp').value.trim(); const llmAddr=$('envLlmAddr').value.trim(); const user=$('envUser').value.trim(); const pass=$('envPass').value;
   if(!ip){ alert('请填写 IP 地址'); return; }
   // 支持「IP:端口」（如 115.33.98.101:2222）：单个冒号时其后须为数字端口；多冒号（IPv6）或无冒号原样保留
   const cc=(ip.match(/:/g)||[]).length;
   if(cc===1 && !/^([^:]+):(\d+)$/.test(ip)){ alert('端口格式不正确：冒号后须为数字端口，如 115.33.98.101:2222'); return; }
-  if(nodeIp && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(nodeIp)){ alert('K8s InternalIP 必须是 IPv4 地址'); return; }
-  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.nodeIp=nodeIp; e.user=user; e.pass=pass; } }
-  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, nodeIp, user, pass}); }
+  if(nodeIp && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(nodeIp)){ alert('内网 IP 必须是 IPv4 地址'); return; }
+  // LLM服务地址（可选）：IPv4:端口，如 192.168.31.175:8000
+  if(llmAddr && !/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(llmAddr)){ alert('LLM服务地址必须是 IPv4:端口 格式（如 192.168.31.175:8000）'); return; }
+  if(envEditId){ const e=environments.find(x=>x.id===envEditId); if(e){ e.name=name||ip; e.ip=ip; e.nodeIp=nodeIp; e.llmAddr=llmAddr; e.user=user; e.pass=pass; } }
+  else { environments.push({id:'env-'+Date.now().toString(36), name:name||ip, ip, nodeIp, llmAddr, user, pass}); }
   saveEnvs(); resetEnvForm(); renderEnvs(); renderEnvOptions();
 }
 function delEnv(id){ if(!confirm('删除该环境？')) return; environments=environments.filter(e=>e.id!==id); if(!environments.length){ environments=[{id:'env-1',name:'默认',ip:'127.0.0.1',user:'',pass:''}]; } saveEnvs(); renderEnvs(); renderEnvOptions(); }
-/* 复制节点环境：拷贝名称/IP/凭据生成不重名的「副本」，新 id 避免与源节点的设备状态缓存串号 */
+/* 复制节点环境：拷贝名称/IP/内网IP/LLM服务地址/凭据生成不重名的「副本」，新 id 避免与源节点的设备状态缓存串号 */
 function copyEnv(id){
   const src=environments.find(x=>x.id===id); if(!src) return;
   const base=(src.name||'').replace(/（副本( \d+)?）$/,'');   /* 去掉已有副本后缀，避免链式累加 */
@@ -2795,7 +2799,7 @@ function copyEnv(id){
   let name=base+'（副本）';
   if(taken.has(name)){ let n=2; while(taken.has(base+'（副本 '+n+'）')) n++; name=base+'（副本 '+n+'）'; }
   const idx=environments.indexOf(src);
-  environments.splice(idx+1, 0, {id:'env-'+Date.now().toString(36), name, ip:src.ip, user:src.user||'', pass:src.pass||''});
+  environments.splice(idx+1, 0, {id:'env-'+Date.now().toString(36), name, ip:src.ip, nodeIp:src.nodeIp||'', llmAddr:src.llmAddr||'', user:src.user||'', pass:src.pass||''});
   saveEnvs(); renderEnvs(); renderEnvOptions();
 }
 function applyEnvCredAll(){
@@ -7470,6 +7474,7 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
   // 注入流水线运行信息（脚本显式配置的同名参数优先）：
   //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
   //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
+  //   TARGET_NODE_IP_MAP=SSH 地址 → 内网IP 映射（仅填了内网IP的节点）；TARGET_LLM_ADDR_MAP=SSH 地址 → LLM服务地址 映射（仅填了的节点）
   //   注意（安全）：TARGET_HOSTS/GIT_PASSWORD 等含明文凭据，对所有脚本可见；
   //   且阶段 stdout 的 KEY=VALUE 会粘性注入下游并随历史/归档持久化——脚本切勿 echo 密码类变量。
   //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；PIPELINE_NAME=流水线名
@@ -7482,6 +7487,11 @@ async function execScript(sc, timeoutMs, extraEnv, runCtx, onStream, signal, log
       const nodeIpMap={};
       rc.envs.forEach(e=>{ if(e.ip && e.nodeIp) nodeIpMap[e.ip]=e.nodeIp; });
       if(Object.keys(nodeIpMap).length) env.TARGET_NODE_IP_MAP=JSON.stringify(nodeIpMap);
+    }
+    if(env.TARGET_LLM_ADDR_MAP===undefined && rc.envs){
+      const llmAddrMap={};
+      rc.envs.forEach(e=>{ if(e.ip && e.llmAddr) llmAddrMap[e.ip]=e.llmAddr; });
+      if(Object.keys(llmAddrMap).length) env.TARGET_LLM_ADDR_MAP=JSON.stringify(llmAddrMap);
     }
     if(env.IMAGE_NAME===undefined && rc.image) env.IMAGE_NAME=rc.image;
     if(env.IMAGE_TAG===undefined && rc.tag) env.IMAGE_TAG=rc.tag;

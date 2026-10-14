@@ -491,9 +491,9 @@ function samePipelineContent(left: any, right: any): boolean {
   return deepEqualIgnoring(a, b)
 }
 
-/** 节点环境条目内容同一性比对：只认页面 normalizeEnv 的规范字段（name/ip/nodeIp/user/pass），
+/** 节点环境条目内容同一性比对：只认页面 normalizeEnv 的规范字段（name/ip/nodeIp/llmAddr/user/pass），
  *  多余字段剥离后键序无关深比较（deepEqualIgnoring 定义在下方可信区段，函数声明提升，运行时不分声明先后）。
- *  基线条目来自服务端快照（原始 JSON，可能带历史多余字段或缺 nodeIp），客户端条目经 normalizeEnv 归一，
+ *  基线条目来自服务端快照（原始 JSON，可能带历史多余字段或缺 nodeIp/llmAddr），客户端条目经 normalizeEnv 归一，
  *  直接整体深比较会把同一条目误判为「偏离基线」。 */
 function sameEnvironmentContent(left: any, right: any): boolean {
   const norm = (entry: any) => {
@@ -502,6 +502,7 @@ function sameEnvironmentContent(left: any, right: any): boolean {
       name: typeof entry.name === 'string' ? entry.name : '',
       ip: typeof entry.ip === 'string' ? entry.ip : '',
       nodeIp: typeof entry.nodeIp === 'string' ? entry.nodeIp : '',
+      llmAddr: typeof entry.llmAddr === 'string' ? entry.llmAddr : '',
       user: typeof entry.user === 'string' ? entry.user : '',
       pass: typeof entry.pass === 'string' ? entry.pass : '',
     }
@@ -5422,6 +5423,7 @@ export function apply(ctx: Context) {
     // 与前端 execScript 一致：注入运行上下文（脚本显式配置的同名参数优先）：
     //   TARGET_IP=首个目标节点 IP；TARGET_IPS=全部目标 IP（JSON 数组）
     //   TARGET_HOSTS=全部节点 [{ip,user,pass}]（JSON 数组，多节点各自凭据）
+    //   TARGET_NODE_IP_MAP=SSH 地址 → 内网IP 映射；TARGET_LLM_ADDR_MAP=SSH 地址 → LLM服务地址 映射（均仅含填了的节点）
     //   TARGET_USER/TARGET_PASSWORD=首个节点登录凭据；IMAGE_NAME/IMAGE_TAG=镜像名与本次 tag；
     //   PIPELINE_NAME=流水线名；GIT_URL/GIT_BRANCH/GIT_USER/GIT_PASSWORD=代码仓信息；DEPLOY_STRATEGY=部署策略
     if (env.TARGET_IP === undefined) env.TARGET_IP = String((ctx0 && ctx0.ip) || runCtx.env || '')
@@ -5431,6 +5433,11 @@ export function apply(ctx: Context) {
       const nodeIpMap: Record<string, string> = {}
       for (const e of runCtx.envs || []) if (e.ip && e.nodeIp) nodeIpMap[e.ip] = e.nodeIp
       if (Object.keys(nodeIpMap).length) env.TARGET_NODE_IP_MAP = JSON.stringify(nodeIpMap)
+    }
+    if (env.TARGET_LLM_ADDR_MAP === undefined && runCtx.envs) {
+      const llmAddrMap: Record<string, string> = {}
+      for (const e of runCtx.envs || []) if (e.ip && e.llmAddr) llmAddrMap[e.ip] = e.llmAddr
+      if (Object.keys(llmAddrMap).length) env.TARGET_LLM_ADDR_MAP = JSON.stringify(llmAddrMap)
     }
     if (env.IMAGE_NAME === undefined && runCtx.image) env.IMAGE_NAME = String(runCtx.image)
     if (env.IMAGE_TAG === undefined && runCtx.tag) env.IMAGE_TAG = String(runCtx.tag)
