@@ -586,7 +586,7 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     'id="perfModal"', 'id="perfBody"', 'id="perfStatus"', 'id="perfTitle"',
     'id="perfRetryBtn"', 'id="perfPopBtn"', 'id="perfCloseBtn"',
     'id="perfettoOpenBtn"', "$('perfettoOpenBtn').addEventListener('click', async () => {",
-    "async function perfettoTraceBuffer(", "async fileBuffer(", "rawText: null, file: f }",
+    "async function perfettoTraceBuffer(", "async fileBuffer(",
     "function closePerfetto(", "e.key === 'Escape'", "perfettoNeedsTrustHint(location.hostname)",
     "window.open(PERFETTO_ORIGIN, '_blank')",
     /* 握手等待计时：慢网加载期间状态栏逐秒刷新，避免「读取 trace…」假象卡死 */
@@ -599,20 +599,34 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     "encodeURIComponent(path) + '&raw=1'", "encodeURIComponent(it.path) + '&raw=1'", "perf.failed = true", "perf.failed) return",
     /* 入口按钮固定在列表卡标题行，勾选集优先于当前选中条目，两者皆空才禁用 */
     ">Perfetto打开<", "$('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length",
-    /* 点击先保存到本地（服务端文件）再打开；内嵌 iframe 走 embedded 模式关侧边栏 */
+    /* 点击先保存到本地再打开；内嵌 iframe 走 embedded 模式关侧边栏 */
     "function downloadTraceFile(", "PERFETTO_EMBED_URL", "mode=embedded&hideSidebar=true",
     "已保存 trace 到本地下载目录",
-    /* 保存目录（「设置」标签页配置服务端路径，cp 落盘、存在跳过）与重复下载跳过；多选同时打开 */
+    /* 服务端保存目录：按服务器节点独立保存（saveDirByNode）+ 浏览选择 + copy 落盘 / 远程 rfetch dstDir 落点 + 存在跳过 */
     'id="tab-settings"', 'data-tab="settings"', 'id="saveDirPath"', 'id="saveDirSaveBtn"', 'id="saveDirClearBtn"',
-    "dsh.profiling.saveDir", "function saveTraceToServerDir(", "/api/worktable/copy", "保存目录已存在，跳过",
-    "function resolvePerfettoTargets(", "perfPicks", 'class="pf-pick"', "此前已下载过，跳过重复下载",
+    'id="saveDirNodeLabel"', 'id="saveDirBrowseBtn"', 'id="saveDirBrowser"', 'id="saveDirPickCurBtn"', 'id="saveDirAll"',
+    "dsh.profiling.saveDirByNode", "function saveDirForNode(", "function saveTraceToServerDir(", "/api/worktable/copy",
+    "保存目录已存在，跳过", "dstDir", 'data-save-dir-clear',
+    /* 本地保存目录：FS API 目录选择器 + IndexedDB 句柄 + 流式 pipeTo 落盘 + 同名同大小跳过并回读复用 */
+    'id="saveDirLocalPickBtn"', 'id="saveDirLocalClearBtn"', 'id="saveDirLocalLabel"',
+    "showDirectoryPicker", "perfettoSaveDir", "function saveTraceToLocalDir(", "resp.body.pipeTo(w)",
+    "本地保存目录已有该文件，跳过下载", "已保存到本地目录",
+    /* 多选同时打开 + 默认下载去重 */
+    "function resolvePerfettoTargets(", "perfPicks", 'class="pf-pick"', "function downloadWithDedupe(", "此前已下载过，跳过重复下载",
     "已保存到 ",
+    /* 服务器选择支持搜索（隐藏 select 存值 + 输入过滤候选面板） */
+    'id="srvNodeSearch"', 'id="srvNodePanel"', 'data-node-pick', "pf-nodePicker", "function renderSrvNodePanel(", "function srvNodeText(",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
   /* 「清空本地」按钮已删除（标记、处理器均不再存在） */
   assert.ok(!html.includes('clearLocalBtn'), "「清空本地」按钮及其处理器应已移除");
-  assert.ok(!html.includes('saveDirBtn'), "FS API 版「保存目录」按钮应已移除（改为设置页路径）");
-  assert.ok(!html.includes('showDirectoryPicker'), "FS API 目录选择器应已移除");
   assert.ok(!html.includes('在 Perfetto 中打开</button>'), "概览卡内的旧按钮注入已移除");
+});
+
+test("页面静态契约：「本地文件」来源已移除（条目全部走服务端/远程路径）", () => {
+  for (const gone of [
+    'data-tab="local"', 'id="tab-local"', 'id="pickLocalBtn"', 'id="localFileInput"',
+    "source: 'local'", "source === 'local'", "it.file", "'local:'",
+  ]) assert.ok(!html.includes(gone), `index.html 仍残留 ${gone}`);
 });
 
 test("页面静态契约：列表项删除（× 按钮 / 墓碑防扫描带回 / 显式重加清墓碑）", () => {

@@ -37,6 +37,11 @@
   .pf-row > .grow { flex: 1; min-width: 0; }
   .pf-item { cursor: pointer; }
   .pf-pick { flex: none; align-self: center; accent-color: var(--dsw-alias-state-accent-primary, #4f8ef7); cursor: pointer; }
+  .pf-nodePicker { position: relative; flex: 1; min-width: 0; }
+  .pf-nodePanel { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60; background: var(--dsw-alias-bg-l1, #1c2128); border: 1px solid var(--dsw-alias-border-l1, #262b36); border-radius: 8px; max-height: 260px; overflow: auto; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+  .pf-nodeOpt { padding: 7px 10px; cursor: pointer; font-size: 12px; }
+  .pf-nodeOpt:hover { background: var(--dsw-alias-fill-l1, rgba(255,255,255,.06)); }
+  .pf-nodeOpt.on { color: var(--dsw-alias-state-accent-primary, #4f8ef7); }
   .pf-item.on { border-color: var(--dsw-alias-state-accent-primary, #4f8ef7); }
   .pf-item .tag { color: var(--dsw-alias-state-accent-primary, #4f8ef7); font-size: 11px; }
   .pf-item .desc { font-size: 11px; color: var(--dsw-alias-label-tertiary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -102,29 +107,25 @@
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="dark">深色</button>
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="light">浅色</button>
   </div>
-  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器；支持 ≤2GiB，超限可下载到本地拖入 Perfetto 打开）中打开做交互式时间线分析——服务端 trace 打开前自动保存到本地（「设置」标签页可配固定保存目录——服务端绝对路径直接落盘、已存在跳过；留空则浏览器下载、已下载过自动跳过），列表勾选多条可同时打开（首个内嵌、其余弹出独立窗口），也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
+  <p class="dshell-sub">浏览服务端（dsh 宿主机或远程 GPU 节点）的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器；支持 ≤2GiB，超限可下载到本地拖入 Perfetto 打开）中打开做交互式时间线分析——「设置」标签页可按服务器节点独立配置服务端保存目录（打开前落盘、远程 trace 先拉到该目录、已存在跳过）与浏览器侧本地保存目录（同名同大小跳过、直读本地副本），均未设置则浏览器默认下载、已下载过自动跳过；列表勾选多条可同时打开（首个内嵌、其余弹出独立窗口），也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
 
   <div class="pf-layout">
     <!-- ============ 左栏：数据来源 + 列表 ============ -->
     <div>
       <div class="dshell-card">
         <div class="dshell-tabs" id="srcTabs">
-          <button class="dshell-tab dshell-tabOn" data-tab="local">本地文件</button>
-          <button class="dshell-tab" data-tab="server">服务端</button>
+          <button class="dshell-tab dshell-tabOn" data-tab="server">服务端</button>
           <button class="dshell-tab" data-tab="settings">设置</button>
         </div>
         <div style="height:10px"></div>
-        <div id="tab-local">
-          <div class="pf-row">
-            <button class="dshell-btn" id="pickLocalBtn">选择本地 profiling 文件</button>
-            <input type="file" id="localFileInput" multiple accept=".json,.gz,.profile.json,.pt.trace.json,.pt.trace.json.gz,.ncu-rep,.nsys-rep,.qdrep,.log,.txt" style="display:none" />
-          </div>
-          <p class="dshell-muted" style="margin:8px 0 0">支持 run-*.profile.json / PyTorch trace（.pt.trace.json[.gz]）/ nsys / ncu 报告 / 日志文本，可多选。</p>
-        </div>
-        <div id="tab-server" style="display:none">
+        <div id="tab-server">
           <div class="pf-row">
             <span class="dshell-muted" style="flex:none">服务器</span>
-            <select class="dshell-input grow" id="srvNode" style="min-width:0"></select>
+            <div class="pf-nodePicker">
+              <input class="dshell-input" id="srvNodeSearch" style="width:100%" placeholder="搜索 / 选择服务器（名称或 IP）…" autocomplete="off" title="点击展开服务器列表，输入按名称 / IP 过滤；列表从流水线页「节点」导入" />
+              <select id="srvNode" style="display:none"></select>
+              <div class="pf-nodePanel" id="srvNodePanel" style="display:none"><div id="srvNodeList"></div></div>
+            </div>
             <button class="dshell-btn dshell-btnGhost" id="srvNodeRefresh" title="重新从流水线页「节点」导入服务器列表">↻</button>
           </div>
           <input class="dshell-input" id="srvPath" placeholder="文件或文件夹绝对路径（远程服务器上的文件会先拉到本机缓存再解析）" style="margin-top:8px" />
@@ -133,7 +134,7 @@
             <button class="dshell-btn dshell-btnGhost" id="srvRescanBtn" title="重新扫描当前记忆的文件夹">↻ 重新扫描</button>
             <button class="dshell-btn dshell-btnGhost" id="srvBrowseBtn">浏览…</button>
           </div>
-          <p class="dshell-muted" style="margin:8px 0 0">路径是文件则加载、是文件夹则扫描其中全部 profiling 文件（单层，最多 500 条）；服务器列表从流水线页「节点」导入（含 SSH 凭据），远程文件经 SSH/SCP 拉到本机缓存（~/.dsh/storages/remote-cache/）后走本机解析链路。</p>
+          <p class="dshell-muted" style="margin:8px 0 0">路径是文件则加载、是文件夹则扫描其中全部 profiling 文件（单层，最多 500 条）；服务器列表从流水线页「节点」导入（含 SSH 凭据，支持搜索选择），远程文件经 SSH/SCP 拉到本机（落点为该节点的服务端保存目录，「设置」标签页可配；未配置走 ~/.dsh/storages/remote-cache/）后走本机解析链路。</p>
           <div id="srvBrowser" style="display:none; margin-top:8px">
             <div class="pf-row">
               <button class="dshell-btn dshell-btnGhost" id="srvUpBtn">⬆ 上级</button>
@@ -144,13 +145,35 @@
           </div>
         </div>
         <div id="tab-settings" style="display:none">
-          <h3 class="pf-sub" style="margin-top:0">Perfetto 保存目录</h3>
-          <input class="dshell-input" id="saveDirPath" placeholder="服务端目录绝对路径，如 /data/traces；留空 = 浏览器默认下载目录" />
+          <h3 class="pf-sub" style="margin-top:0">服务端保存目录（按服务器独立保存）</h3>
+          <p class="dshell-muted" style="margin:0 0 6px">当前服务器：<b id="saveDirNodeLabel">本机（dsh 宿主）</b>（在「服务端」标签页切换服务器后，此处设置随节点切换、各自独立保存）</p>
+          <div class="pf-row">
+            <input class="dshell-input grow" id="saveDirPath" placeholder="dsh 宿主机目录绝对路径，如 /data/traces；留空 = 远程拉取走默认缓存、打开前不落盘" />
+            <button class="dshell-btn dshell-btnGhost" id="saveDirBrowseBtn" title="浏览 dsh 宿主机目录选择文件夹">浏览…</button>
+          </div>
           <div class="pf-row" style="margin-top:8px">
             <button class="dshell-btn" id="saveDirSaveBtn">保存</button>
             <button class="dshell-btn dshell-btnGhost" id="saveDirClearBtn">清除</button>
           </div>
-          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto打开」会把服务端 trace 直接保存到该目录（保留原始文件名，目录不存在自动创建），已存在同名文件自动跳过；留空则回退为浏览器下载（已下载过的自动跳过重复下载）。本地文件本就在本地，不上送。</p>
+          <div id="saveDirBrowser" style="display:none; margin-top:8px">
+            <div class="pf-row">
+              <button class="dshell-btn dshell-btnGhost" id="saveDirUpBtn">⬆ 上级</button>
+              <button class="dshell-btn dshell-btnGhost" id="saveDirPickCurBtn" title="把当前浏览的文件夹设为保存目录">选择此文件夹</button>
+              <span class="dshell-muted grow" id="saveDirBrowserPath" style="overflow:hidden;text-overflow:ellipsis"></span>
+            </div>
+            <div class="dshell-list" id="saveDirBrowserList" style="margin-top:6px; max-height:220px; overflow:auto"></div>
+          </div>
+          <div id="saveDirAll" style="margin-top:8px"></div>
+          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto打开」会把 trace 先落盘到该目录（保留原始文件名，目录不存在自动创建，已存在同名文件自动跳过）；远程服务器的 trace 也先经 SSH 拉取到该目录（替代默认的 ~/.dsh/storages/remote-cache/ 缓存，避免系统盘被大 trace 打满导致拉取失败），再解析打开。</p>
+          <h3 class="pf-sub" style="margin-top:16px">本地保存目录（浏览器所在机器）</h3>
+          <div class="pf-row">
+            <span class="dshell-muted grow" id="saveDirLocalLabel">未设置（用浏览器默认下载目录）</span>
+          </div>
+          <div class="pf-row" style="margin-top:8px">
+            <button class="dshell-btn" id="saveDirLocalPickBtn">选择目录…</button>
+            <button class="dshell-btn dshell-btnGhost" id="saveDirLocalClearBtn">清除</button>
+          </div>
+          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto打开」会把 trace 同时保存到该本地目录（保留原始文件名与字节，.gz 不剥壳；已存在同名同大小文件自动跳过、直接读本地副本打开）。需 Chrome / Edge 等 Chromium 内核且 localhost 或 HTTPS 访问（File System Access API）；目录授权记忆在浏览器 IndexedDB 中，换浏览器 / 清站点数据需重新选择。未设置或不支持时回退为浏览器默认下载目录（已下载过的自动跳过重复下载）。</p>
         </div>
       </div>
 
@@ -158,7 +181,7 @@
         <div class="pf-row">
           <h2 class="dshell-sub" style="margin:0" class="grow">Profiling 列表</h2>
           <span class="dshell-badge" id="countBadge">0</span>
-          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把选中（或勾选）的 trace 保存到本地（服务端文件：设了保存目录则直接存入该目录、已存在跳过；否则下载到浏览器默认下载目录、已下载过跳过），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
+          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把选中（或勾选）的 trace 保存到本地（按设置：服务端保存目录落盘 [按节点独立] → 本地保存目录写入 [同名同大小跳过] → 均未设则下载到浏览器默认下载目录 [已下载过跳过]），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
         </div>
         <div class="dshell-list" id="itemList" style="margin-top:8px; max-height:480px; overflow:auto"></div>
       </div>
@@ -167,7 +190,7 @@
     <!-- ============ 右栏：展示 + 瓶颈 + AI ============ -->
     <div>
       <div class="dshell-card" id="overviewCard">
-        <div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>
+        <div class="pf-empty">尚未加载 profiling —— 从左侧「服务端」标签页输入路径加载，或扫描文件夹自动发现。</div>
       </div>
 
       <div class="dshell-card" id="stageCard" style="display:none">
@@ -1006,9 +1029,9 @@ function renderOverview(){
   const card = $('overviewCard');
   /* 「Perfetto打开」按钮固定在列表卡标题行；勾选集优先于当前选中条目，两者皆空才禁用 */
   $('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length;
-  if (!cur){ card.innerHTML = '<div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>'; $('stageCard').style.display='none'; $('bottleneckCard').style.display='none'; $('kernelCard').style.display='none'; $('aiCard').style.display='none'; return; }
+  if (!cur){ card.innerHTML = '<div class="pf-empty">尚未加载 profiling —— 从左侧「服务端」标签页输入路径加载，或扫描文件夹自动发现。</div>'; $('stageCard').style.display='none'; $('bottleneckCard').style.display='none'; $('kernelCard').style.display='none'; $('aiCard').style.display='none'; return; }
   const p = cur.p, it = cur.item, m = metaOf(it);
-  $('srcBadge').textContent = it.source === 'local' ? '本地文件' : '服务端';
+  $('srcBadge').textContent = it.remote ? ('远程·' + it.remote.node) : '服务端';
   const failedN = p.stages.filter(s => /fail|error/.test(s.status)).length;
   let kv = '';
   for (const [k, v] of Object.entries(p.meta)) if (v !== undefined && v !== null && v !== '') kv += '<div class="dshell-kvRow"><span class="dshell-kvKey">' + esc(k) + '</span><span class="dshell-kvValue">' + esc(v) + '</span></div>';
@@ -1016,7 +1039,7 @@ function renderOverview(){
     '<div class="pf-row"><h2 class="dshell-title grow" style="margin:0;font-size:14px">' + esc(m.tag || p.title) + '</h2>'
     + (it.binary ? '<span class="dshell-badge dshell-badgeWait">二进制报告</span>' : '<span class="dshell-badge dshell-badgeDone">已解析</span>') + '</div>'
     + (m.desc ? '<p class="dshell-muted" style="margin:4px 0">' + esc(m.desc) + '</p>' : '')
-    + '<p class="dshell-muted" style="margin:4px 0 10px;word-break:break-all">' + esc(it.path || '本地文件') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</p>'
+    + '<p class="dshell-muted" style="margin:4px 0 10px;word-break:break-all">' + esc(it.path || it.name) + (it.size ? ' · ' + fmtSize(it.size) : '') + '</p>'
     + '<div class="dshell-grid">'
     + '<div class="dshell-stat"><div class="dshell-statLabel">总耗时</div><div class="dshell-statValue">' + fmtDur(p.total) + '</div></div>'
     + '<div class="dshell-stat"><div class="dshell-statLabel">阶段数</div><div class="dshell-statValue">' + p.stages.length + '</div></div>'
@@ -1266,26 +1289,26 @@ function perfWaitBegin(){
   tick();
   perfWaitTimer = setInterval(tick, 1000);
 }
-/* 取条目原始 trace 字节：本地 File 直读（保留原始内容）；服务端经 /file 原始字节；仅有内存数据时重建 JSON */
+/* 取条目原始 trace 字节：preRaw 优先（保存到本地目录时回读的字节，免二次网络拉取）；
+   服务端经 /file 原始字节；仅有内存数据时重建 JSON（条目已无本地 File 来源） */
 function perfOversizeError(nbytes){
   const err = new Error('trace 超过 2GiB（' + fmtSize(nbytes) + '），内嵌传输会让浏览器同时占用多份内存（页面 / iframe / WASM 解析各一份）');
   err.oversize = true;   /* 超限标记：perfettoSendCurrent 据此给出「下载到本地」兜底按钮 */
   return err;
 }
-async function perfettoTraceBuffer(it){
-  let buf = null, name = it.name;
-  /* 本地非压缩文件大小已知，超限直接拦截（免整份读入内存）；.gz 解压后更大，读后再判 */
-  if (it.source === 'local' && it.file && !/\.gz$/i.test(it.name) && it.file.size > PERFETTO_MAX_BYTES) throw perfOversizeError(it.file.size);
-  if (it.source === 'local' && it.file) buf = await it.file.arrayBuffer();
-  else if (it.path) buf = (await api.fileBuffer(it.path)).buf;
-  else if (it.data && Array.isArray(it.data.traceEvents)) buf = new TextEncoder().encode(JSON.stringify(it.data)).buffer;
-  else throw new Error('无法取得 trace 原始内容（仅支持本地文件或服务端路径条目）');
+async function perfettoTraceBuffer(it, preRaw){
+  let buf = preRaw || null, name = it.name;
+  if (!buf){
+    if (it.path) buf = (await api.fileBuffer(it.path)).buf;
+    else if (it.data && Array.isArray(it.data.traceEvents)) buf = new TextEncoder().encode(JSON.stringify(it.data)).buffer;
+    else throw new Error('无法取得 trace 原始内容（仅支持服务端路径条目）');
+  }
   if (isGzipBuf(buf)){ buf = await gunzip(buf); name = name.replace(/\.gz$/i, ''); }
   if (!buf.byteLength) throw new Error('trace 内容为空');
   if (buf.byteLength > PERFETTO_MAX_BYTES) throw perfOversizeError(buf.byteLength);
   return { buf, name };
 }
-async function openPerfettoFor(it){
+async function openPerfettoFor(it, preRaw){
   if (!it){ toast('请先加载一个 profiling'); return; }
   if (!perfettoEligible(it)){ toast('该条目不是 Chrome/PyTorch trace，Perfetto 无法打开'); return; }
   /* 模态框打开期间整页被遮罩、入口按钮不可达，这里恒为冷启动：
@@ -1316,15 +1339,15 @@ async function openPerfettoFor(it){
     },
   });
   perf = { session, frame };
-  await perfettoSendCurrent(it);
+  await perfettoSendCurrent(it, preRaw);
 }
-async function perfettoSendCurrent(it){
+async function perfettoSendCurrent(it, preRaw){
   if (!perf || !perf.session) return;
   try{
     $('perfTitle').textContent = 'Perfetto UI · ' + it.name;
     if (!(perfBufCache && perfBufCache.itemId === it.id)){
       perfStatus('读取 trace：' + it.name + (it.size ? '（' + fmtSize(it.size) + '）' : '') + '…');
-      const r = await perfettoTraceBuffer(it);
+      const r = await perfettoTraceBuffer(it, preRaw);
       perfBufCache = { itemId: it.id, buf: r.buf, name: r.name };
     }
     const c = perfBufCache, tag = metaOf(it).tag;
@@ -1353,29 +1376,42 @@ function closePerfetto(){
   $('perfPopBtn').disabled = true;
 }
 $('perfCloseBtn').addEventListener('click', closePerfetto);
-/* 下载 trace 到本地下载目录：本地 File 给 blob URL，服务端走 /file raw=1 同源下载；返回是否触发 */
+/* 下载 trace 到浏览器默认下载目录：服务端走 /file raw=1 同源下载；返回是否触发 */
 function downloadTraceFile(it){
+  if (!it.path) return false;
   const a = document.createElement('a');
-  let blobUrl = '';
-  if (it.source === 'local' && it.file){ blobUrl = URL.createObjectURL(it.file); a.href = blobUrl; }
-  else if (it.path){ a.href = '/api/worktable/file?path=' + encodeURIComponent(it.path) + '&raw=1'; }
-  else return false;
+  a.href = '/api/worktable/file?path=' + encodeURIComponent(it.path) + '&raw=1';
   a.download = it.name;
   document.body.appendChild(a); a.click(); a.remove();
-  if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   return true;
 }
-/* ================= 保存目录（服务端路径，「设置」标签页配置） ================= */
-/* 「设置」标签页配置保存目录（服务端绝对路径）：「Perfetto打开」把服务端 trace 直接 cp 进该目录，
-   已存在同名文件则跳过；留空则回退浏览器默认下载（localStorage 记录去重）。
-   本地文件本就在本地，两种模式都不上送。 */
-const SAVE_DIR_KEY = 'dsh.profiling.saveDir';
+/* ================= 保存目录（「设置」标签页配置） ================= */
+/* 两级保存目录，均可留空：
+   ① 服务端保存目录（dsh 宿主机路径，按服务器节点独立保存）：「Perfetto打开」前把 trace 落盘进去
+      （本机 trace 走 /api/worktable/copy 流式复制；远程 trace 的 rfetch 拉取落点直接改为该目录），
+      已存在同名文件跳过；未设置时远程拉取走默认缓存 ~/.dsh/storages/remote-cache/。
+   ② 本地保存目录（浏览器所在机器，File System Access API 句柄存 IndexedDB）：打开前把 trace
+      流式写入该目录（保留原始文件名与字节，.gz 不剥壳），同名同大小已存在则跳过并直读本地副本供打开；
+      未设置/不支持时回退浏览器默认下载目录（localStorage 记录去重）。 */
+const SAVE_DIRS_KEY = 'dsh.profiling.saveDirByNode';   /* 服务端保存目录：{ 节点键(''=本机/ip): 目录 } */
 const DL_KEY = 'dsh.profiling.downloaded';   /* 默认下载模式的去重记录：{path: ts} */
-function saveDirPath(){ return String(load(SAVE_DIR_KEY, '') || '').trim(); }
-/* 服务端 trace 落进保存目录：目录不存在先建（api.mkdir 幂等），同名文件已存在则跳过；
+const SAVE_DIR_LOCAL_IDB_KEY = 'perfettoSaveDir';   /* 本地保存目录句柄的 IndexedDB 键 */
+(function migrateSaveDir(){   /* 旧版全局服务端保存目录并入「本机」节点键 */
+  const old = load('dsh.profiling.saveDir', '');
+  if (old){ const m = load(SAVE_DIRS_KEY, {}); if (!m['']){ m[''] = old; store(SAVE_DIRS_KEY, m); } try{ localStorage.removeItem('dsh.profiling.saveDir'); }catch(e){} }
+})();
+function saveDirForNode(nodeKey){ return String(load(SAVE_DIRS_KEY, {})[nodeKey || ''] || '').trim(); }
+function curSaveDirNodeKey(){ return ($('srvNode') && $('srvNode').value) || ''; }   /* 跟随「服务端」标签页的服务器选择 */
+function saveDirNodeName(key){
+  if (!key) return '本机（dsh 宿主）';
+  const n = (typeof srvNodes !== 'undefined' ? srvNodes : []).find(x => x.ip === key);
+  return (n ? (n.name || n.ip) : key) + '（' + key + '）';
+}
+/* trace 落进服务端保存目录：目录不存在先建（api.mkdir 幂等），同名文件已存在则跳过；
    拷贝走 /api/worktable/copy（服务端流式复制，字节不过浏览器、无大小限制），保留原始文件名（.gz 不剥壳） */
 async function saveTraceToServerDir(it, dir){
   const name = it.name;
+  if (it.path && it.path === dir.replace(/\/+$/, '') + '/' + name) return;   /* 已在保存目录内（远程拉取直接落此） */
   let entries = [];
   try{ entries = (await api.fs(dir)).entries || []; }
   catch(e){
@@ -1388,15 +1424,25 @@ async function saveTraceToServerDir(it, dir){
   if (r.ok && d.ok) toast('已保存到 ' + dir + '：' + name + (d.size ? '（' + fmtSize(d.size) + '）' : ''));
   else throw new Error('保存到 ' + dir + ' 失败：' + (d.error || ('HTTP ' + r.status)));
 }
-/* 打开前保存：设了保存目录走服务端拷贝（存在跳过）；否则浏览器默认下载并按记录去重 */
-async function saveTraceBeforeOpen(it){
-  if (it.source === 'local' || !it.path) return;
-  const dir = saveDirPath();
-  if (dir){
-    try{ await saveTraceToServerDir(it, dir); }
-    catch(e){ toast(e && e.message || String(e)); }
-    return;
-  }
+/* ---- 本地保存目录（File System Access API，句柄存 IndexedDB 跨会话复用） ---- */
+let saveDirLocalHandle = null;
+const saveDirLocalSupported = typeof window.showDirectoryPicker === 'function';
+function idbOpen(){ return new Promise((res, rej) => { const r = indexedDB.open('dsh-profiling', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function idbSet(k, v){ try{ const db = await idbOpen(); await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); db.close(); }catch(e){} }
+async function idbGet(k){ try{ const db = await idbOpen(); const v = await new Promise((res, rej) => { const rq = db.transaction('kv').objectStore('kv').get(k); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); db.close(); return v; }catch(e){ return undefined; } }
+async function idbDel(k){ try{ const db = await idbOpen(); await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); db.close(); }catch(e){} }
+/* 目录句柄读写权限：先 query 再 request（request 需在用户手势窗口期调用）；无权限 API 的句柄（如 OPFS）视为放行，写入失败另有回退 */
+async function ensureSaveDirLocalPermission(){
+  const h = saveDirLocalHandle;
+  if (!h) return false;
+  try{
+    if (typeof h.queryPermission === 'function' && await h.queryPermission({ mode: 'readwrite' }) === 'granted') return true;
+    if (typeof h.requestPermission === 'function') return await h.requestPermission({ mode: 'readwrite' }) === 'granted';
+  }catch(e){}
+  return true;
+}
+/* 默认下载回退：浏览器默认下载目录 + localStorage 去重 */
+function downloadWithDedupe(it){
   const rec = load(DL_KEY, {});
   if (rec[it.path]){ toast('此前已下载过，跳过重复下载：' + it.name); return; }
   if (downloadTraceFile(it)){
@@ -1404,44 +1450,160 @@ async function saveTraceBeforeOpen(it){
     toast('已保存 trace 到本地下载目录：' + it.name);
   }
 }
-/* 设置页：保存目录的载入/保存/清除 */
-function refreshSaveDirUi(){ $('saveDirPath').value = saveDirPath(); }
+/* 写本地保存目录：同名同大小已存在 → 跳过下载并直读本地副本；否则 /file raw=1 流式下载 pipeTo 直写磁盘
+   （背压传输，不整份驻留内存，不受 256MB 全量读上限约束）。返回 ≤2GiB 的原始字节供打开链路复用（免二次拉取） */
+async function saveTraceToLocalDir(it){
+  const h = saveDirLocalHandle;
+  let fh = null;
+  try{ fh = await h.getFileHandle(it.name); }catch(e){}
+  if (fh){
+    const f = await fh.getFile();
+    if (!it.size || f.size === it.size){
+      toast('本地保存目录已有该文件，跳过下载：' + it.name);
+      return f.size <= PERFETTO_MAX_BYTES ? { buf: await f.arrayBuffer() } : null;
+    }
+  }
+  const resp = await fetch('/api/worktable/file?path=' + encodeURIComponent(it.path) + '&raw=1');
+  if (!resp.ok || !resp.body) throw new Error('下载失败：HTTP ' + resp.status);
+  fh = await h.getFileHandle(it.name, { create: true });
+  const w = await fh.createWritable();
+  await resp.body.pipeTo(w);
+  const f2 = await fh.getFile();
+  toast('已保存到本地目录「' + (h.name || '') + '」：' + it.name + '（' + fmtSize(f2.size) + '）');
+  return f2.size <= PERFETTO_MAX_BYTES ? { buf: await f2.arrayBuffer() } : null;
+}
+/* 打开前保存：① 服务端保存目录（按条目来源节点，落盘/存在跳过）② 本地保存目录（流式写入/同名同大小跳过）；
+   两级都未设置才回退浏览器默认下载去重。返回 { buf } 时打开链路直接复用字节（免二次拉取） */
+async function saveTraceBeforeOpen(it){
+  if (!it.path) return null;
+  const dir = saveDirForNode(it.remote ? it.remote.ip : '');
+  if (dir){
+    try{ await saveTraceToServerDir(it, dir); }
+    catch(e){ toast(e && e.message || String(e)); }
+  }
+  if (saveDirLocalHandle){
+    try{ return await saveTraceToLocalDir(it); }
+    catch(e){ toast('写入本地保存目录失败（' + (e && e.message || e) + '），回退浏览器下载'); downloadWithDedupe(it); return null; }
+  }
+  if (!dir) downloadWithDedupe(it);
+  return null;
+}
+/* ---- 设置页接线：服务端保存目录（按节点独立保存） ---- */
+function refreshSaveDirUi(){
+  const key = curSaveDirNodeKey();
+  $('saveDirNodeLabel').textContent = saveDirNodeName(key);
+  $('saveDirPath').value = saveDirForNode(key);
+  const m = load(SAVE_DIRS_KEY, {});
+  const keys = Object.keys(m).filter(k => m[k]);
+  $('saveDirAll').innerHTML = keys.length
+    ? '<span class="dshell-muted">已配置：</span>' + keys.map(k => '<span class="dshell-badge" style="margin:0 6px 4px 0">' + esc(saveDirNodeName(k)) + '：' + esc(m[k]) + ' <a href="javascript:void 0" data-save-dir-clear="' + esc(k) + '" title="清除该服务器的保存目录">×</a></span>').join('')
+    : '';
+  $('saveDirAll').querySelectorAll('[data-save-dir-clear]').forEach(a => a.addEventListener('click', () => {
+    const m2 = load(SAVE_DIRS_KEY, {});
+    delete m2[a.getAttribute('data-save-dir-clear')]; store(SAVE_DIRS_KEY, m2);
+    refreshSaveDirUi(); toast('已清除该服务器的保存目录');
+  }));
+}
 $('saveDirSaveBtn').addEventListener('click', async () => {
   const v = $('saveDirPath').value.trim();
-  if (v && !v.startsWith('/')){ toast('保存目录需为服务端绝对路径（以 / 开头）'); return; }
+  if (v && !v.startsWith('/')){ toast('保存目录需为 dsh 宿主机绝对路径（以 / 开头）'); return; }
   if (v){ const md = await api.mkdir(v); if (md && md.error){ toast('目录不存在且创建失败：' + md.error); return; } }
-  store(SAVE_DIR_KEY, v);
-  toast(v ? '保存目录已设置：' + v : '已清除保存目录，回退浏览器默认下载');
+  const m = load(SAVE_DIRS_KEY, {});
+  const key = curSaveDirNodeKey();
+  if (v) m[key] = v; else delete m[key];
+  store(SAVE_DIRS_KEY, m);
+  refreshSaveDirUi();
+  toast(v ? ('保存目录已设置（' + saveDirNodeName(key) + '）：' + v) : '已清除当前服务器的保存目录');
 });
 $('saveDirClearBtn').addEventListener('click', () => {
-  store(SAVE_DIR_KEY, '');
+  const m = load(SAVE_DIRS_KEY, {});
+  delete m[curSaveDirNodeKey()]; store(SAVE_DIRS_KEY, m);
   store(DL_KEY, {});
   refreshSaveDirUi();
-  toast('已清除保存目录设置与「已下载」记录');
+  toast('已清除当前服务器的保存目录设置与「已下载」记录');
 });
-refreshSaveDirUi();
-/* 「Perfetto打开」（列表卡标题行）：先保存到本地（服务端条目，已保存过的跳过），再打开。
+/* 目录浏览（dsh 宿主机目录，仅列文件夹）：⬆ 上级 / 点文件夹下钻 / 选择此文件夹回填输入框 */
+let saveDirBrowsePath = '/';
+async function renderSaveDirBrowser(){
+  $('saveDirBrowserPath').textContent = saveDirBrowsePath;
+  const box = $('saveDirBrowserList');
+  try{
+    const d = await api.fs(saveDirBrowsePath);
+    /* 根目录下列表项路径会拼出双斜杠（'/' + sep + name），归一化后再用 */
+    const dirs = (d.entries || []).filter(e => e.isDir && !e.hidden).map(e => ({ ...e, path: String(e.path || '').replace(/\/{2,}/g, '/') }));
+    box.innerHTML = dirs.length
+      ? dirs.map(e => '<div class="dshell-listItem" data-save-dir-enter="' + esc(e.path) + '" style="cursor:pointer"><div class="dshell-listItemTitle">📁 ' + esc(e.name) + '</div></div>').join('')
+      : '<div class="pf-empty">（无子文件夹）</div>';
+    box.querySelectorAll('[data-save-dir-enter]').forEach(el => el.addEventListener('click', () => { saveDirBrowsePath = el.getAttribute('data-save-dir-enter'); renderSaveDirBrowser(); }));
+  }catch(e){ box.innerHTML = '<div class="pf-empty">无法读取：' + esc(e && e.message || String(e)) + '</div>'; }
+}
+$('saveDirBrowseBtn').addEventListener('click', () => {
+  const el = $('saveDirBrowser');
+  const show = el.style.display === 'none';
+  el.style.display = show ? '' : 'none';
+  if (show){ const v = $('saveDirPath').value.trim(); saveDirBrowsePath = v || '/'; renderSaveDirBrowser(); }
+});
+$('saveDirUpBtn').addEventListener('click', () => {
+  const p = saveDirBrowsePath.replace(/\/+$/, '');
+  saveDirBrowsePath = p.slice(0, p.lastIndexOf('/')) || '/';
+  renderSaveDirBrowser();
+});
+$('saveDirPickCurBtn').addEventListener('click', () => {
+  $('saveDirPath').value = saveDirBrowsePath;
+  $('saveDirBrowser').style.display = 'none';
+  toast('已选择：' + saveDirBrowsePath + '（点「保存」生效）');
+});
+/* ---- 设置页接线：本地保存目录（FS API） ---- */
+function refreshSaveDirLocalUi(){
+  $('saveDirLocalLabel').textContent = saveDirLocalHandle ? '已设置：' + (saveDirLocalHandle.name || '（浏览器私有目录）') : '未设置（用浏览器默认下载目录）';
+  $('saveDirLocalClearBtn').style.display = saveDirLocalHandle ? '' : 'none';
+}
+$('saveDirLocalPickBtn').addEventListener('click', async () => {
+  if (!saveDirLocalSupported) return;
+  try{
+    const h = await window.showDirectoryPicker({ mode: 'readwrite' });
+    saveDirLocalHandle = h;
+    await idbSet(SAVE_DIR_LOCAL_IDB_KEY, h);
+    refreshSaveDirLocalUi();
+    toast('本地保存目录已设置：' + h.name);
+  }catch(e){ /* 用户取消选择不提示 */ }
+});
+$('saveDirLocalClearBtn').addEventListener('click', async () => {
+  saveDirLocalHandle = null;
+  await idbDel(SAVE_DIR_LOCAL_IDB_KEY);
+  store(DL_KEY, {});
+  refreshSaveDirLocalUi();
+  toast('已清除本地保存目录设置与「已下载」记录');
+});
+if (!saveDirLocalSupported){ $('saveDirLocalPickBtn').disabled = true; $('saveDirLocalPickBtn').title = '当前浏览器/访问方式不支持选择本地目录（需 Chrome/Edge 且 localhost 或 HTTPS）'; }
+refreshSaveDirLocalUi();
+(async () => { const h = await idbGet(SAVE_DIR_LOCAL_IDB_KEY); if (h){ saveDirLocalHandle = h; refreshSaveDirLocalUi(); } })();
+/* 「Perfetto打开」（列表卡标题行）：先保存到本地（服务端目录落盘[按节点] → 本地目录写入[跳过已存] → 默认下载），再打开。
    勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口（同一 PING/PONG 握手协议，全功能界面）。
-   弹窗必须发生在用户手势窗口期内：先同步 window.open 占位，再异步读字节投递。 */
+   弹窗必须发生在用户手势窗口期内：先同步 window.open 占位，再异步读字节投递；
+   本地目录授权申请同样必须先做（远程拉取等长 await 会耗尽手势激活）。 */
 $('perfettoOpenBtn').addEventListener('click', async () => {
   const targets = resolvePerfettoTargets(items, perfPicks, cur);
   if (!targets.length){ toast('请先选中（或勾选）一个 trace 条目'); return; }
+  if (saveDirLocalHandle && !await ensureSaveDirLocalPermission()) toast('本地保存目录无写权限，本次该级回退浏览器下载');
   const wins = [];
   for (let i = 1; i < targets.length; i++) wins.push(window.open(PERFETTO_ORIGIN, '_blank'));
   const blocked = wins.filter(w => !w).length;
+  const preRaws = {};   /* 保存到本地目录时回读的原始字节（条目 id → ArrayBuffer），打开链路复用免二次拉取 */
   for (const it of targets){
     if (it.remote && !it.path){
       try{ await ensureLocalPath(it); }
       catch(e){ toast('远程拉取失败：' + it.name + '：' + (e && e.message || e)); continue; }
     }
-    await saveTraceBeforeOpen(it);
+    const s = await saveTraceBeforeOpen(it);
+    if (s && s.buf) preRaws[it.id] = s.buf;
   }
-  await openPerfettoFor(targets[0]);
+  await openPerfettoFor(targets[0], preRaws[targets[0].id]);
   for (let i = 1; i < targets.length; i++){
     const win = wins[i - 1];
     if (!win) continue;
     try{
-      const r = await perfettoTraceBuffer(targets[i]);
+      const r = await perfettoTraceBuffer(targets[i], preRaws[targets[i].id]);
       const tag = metaOf(targets[i]).tag;
       createPerfettoSession({ host: window, target: win }).send(r.buf, (tag ? tag + ' - ' : '') + r.name, r.name);
     }catch(e){ win.close(); toast(targets[i].name + '：' + (e && e.message || e)); }
@@ -1486,7 +1648,7 @@ function renderList(){
     return '<div class="dshell-listItem pf-item' + (it.id === currentId ? ' on' : '') + '" data-id="' + esc(it.id) + '">'
       + (perfettoEligible(it) ? '<input type="checkbox" class="pf-pick" data-pick="' + esc(it.id) + '" title="勾选后「Perfetto打开」同时打开多条（首个内嵌、其余弹出独立窗口）"' + (perfPicks.has(it.id) ? ' checked' : '') + '>' : '')
       + '<div style="min-width:0;flex:1"><div class="dshell-listItemTitle">' + esc(m.tag || it.name) + '</div>'
-      + '<div class="pf-row" style="gap:6px"><span class="dshell-listItemMeta">' + (it.remote ? '远程·' + it.remote.node : (it.source === 'local' ? '本地' : '服务端')) + (it.binary ? ' · 二进制' : '') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</span>'
+      + '<div class="pf-row" style="gap:6px"><span class="dshell-listItemMeta">' + (it.remote ? '远程·' + it.remote.node : '服务端') + (it.binary ? ' · 二进制' : '') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</span>'
       + (m.tag ? '<span class="tag">#' + esc(m.tag) + '</span>' : '') + '</div>'
       + (m.desc ? '<div class="desc">' + esc(m.desc) + '</div>' : '')
       + '<div class="pf-editbox"><input class="dshell-input" data-role="tag" placeholder="标签" value="' + esc(m.tag || '') + '"><input class="dshell-input" data-role="desc" placeholder="描述" value="' + esc(m.desc || '') + '"></div>'
@@ -1611,45 +1773,42 @@ async function selectItem(id){
   renderOverview(); renderList();
 }
 
-/* ================= 本地文件 ================= */
-$('pickLocalBtn').addEventListener('click', () => $('localFileInput').click());
-$('localFileInput').addEventListener('change', async (ev) => {
-  const files = Array.from(ev.target.files || []);
-  for (const f of files){
-    const id = 'local:' + f.name;
-    const it = { id, name: f.name, path: null, source: 'local', size: f.size, binary: isBinaryName(f.name), data: null, rawText: null, file: f };
-    if (!it.binary){
-      try{
-        let buf = await f.arrayBuffer();
-        if (isGzipBuf(buf)){
-          if (buf.byteLength > 200 * 1024 * 1024){ toast(f.name + ' 过大，建议放到服务端后按路径加载'); }
-          buf = await gunzip(buf);
-        }
-        if (buf.byteLength > 150 * 1024 * 1024){ toast(f.name + ' 解压后过大（>150MB），请放到服务端用汇总器解析'); it.rawText = null; }
-        else {
-          const text = decodeText(buf);
-          if (looksBinary(text)){ it.binary = true; }
-          else { try { it.data = JSON.parse(text); } catch(e){ it.rawText = text; } }
-        }
-      }catch(e){ it.rawText = null; }
-    }
-    const idx = items.findIndex(x => x.id === id);
-    if (idx >= 0) items[idx] = it; else items.unshift(it);
-  }
-  ev.target.value = '';
-  renderList();
-  if (items.length && !currentId) selectItem(items[0].id);
-});
-
 /* ================= 服务端（本机 / pipeline 节点远程） ================= */
 /* 服务器列表从流水线页「节点」导入（GET /api/worktable/pipeline 的 config.environments，含 SSH 凭据）；
-   远程条目先经 /api/worktable/rfetch 拉到本机缓存（~/.dsh/storages/remote-cache/）再走本机解析链路 */
+   远程条目先经 /api/worktable/rfetch 拉到本机（落点优先该节点的服务端保存目录，未配置走 ~/.dsh/storages/remote-cache/）再走本机解析链路 */
 const SRV_NODE_KEY = 'dsh.profiling.srvNode';
 let srvNodes = [];   /* pipeline environments（含 ip/user/pass） */
 function curSrvNode(){
   const v = $('srvNode').value;
   return v ? (srvNodes.find(n => n.ip === v) || null) : null;
 }
+/* 服务器选择（可搜索）：#srvNode 隐藏 select 存值（curSrvNode/持久化/设置页取值等既有逻辑不变），
+   #srvNodeSearch 输入框聚焦出候选面板、输入按名称/IP 即时过滤，点选后回填并触发 change */
+function srvNodeText(v){
+  if (!v) return '本机（dsh 宿主）';
+  const n = srvNodes.find(x => x.ip === v);
+  return n ? ((n.name || n.ip) + '（' + n.ip + '）') : v;
+}
+function syncSrvNodeSearch(){ const s = $('srvNodeSearch'); if (document.activeElement !== s) s.value = srvNodeText($('srvNode').value); }
+function renderSrvNodePanel(){
+  const q = $('srvNodeSearch').value.trim().toLowerCase();
+  const opts = [['', '本机（dsh 宿主）']].concat(srvNodes.map(n => [n.ip, (n.name || n.ip) + '（' + n.ip + '）']));
+  const curV = $('srvNode').value;
+  const list = opts.filter(([v, t]) => !q || t.toLowerCase().includes(q) || v.toLowerCase().includes(q));
+  $('srvNodeList').innerHTML = list.length ? list.map(([v, t]) => '<div class="pf-nodeOpt' + (v === curV ? ' on' : '') + '" data-node-pick="' + esc(v) + '">' + esc(t) + '</div>').join('') : '<div class="pf-empty">无匹配服务器</div>';
+  $('srvNodeList').querySelectorAll('[data-node-pick]').forEach(el => el.addEventListener('mousedown', (ev) => {
+    ev.preventDefault();   /* 抢先于 blur：面板关闭前完成选择 */
+    const v = el.getAttribute('data-node-pick');
+    $('srvNode').value = v;
+    $('srvNodeSearch').value = srvNodeText(v);
+    $('srvNodePanel').style.display = 'none';
+    $('srvNode').dispatchEvent(new Event('change'));
+  }));
+}
+$('srvNodeSearch').addEventListener('focus', () => { $('srvNodeSearch').select(); renderSrvNodePanel(); $('srvNodePanel').style.display = ''; });
+$('srvNodeSearch').addEventListener('input', () => { renderSrvNodePanel(); $('srvNodePanel').style.display = ''; });
+$('srvNodeSearch').addEventListener('blur', () => { setTimeout(() => { $('srvNodePanel').style.display = 'none'; syncSrvNodeSearch(); }, 120); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('srvNodePanel').style.display = 'none'; });
 async function loadSrvNodes(selectIp){
   try{
     const r = await fetch('/api/worktable/pipeline');
@@ -1659,9 +1818,10 @@ async function loadSrvNodes(selectIp){
   $('srvNode').innerHTML = '<option value="">本机（dsh 宿主）</option>' + srvNodes.map(n => '<option value="' + esc(n.ip) + '">' + esc(n.name || n.ip) + '（' + esc(n.ip) + '）</option>').join('');
   $('srvNode').value = selectIp || load(SRV_NODE_KEY, '');
   if ($('srvNode').value !== (selectIp || load(SRV_NODE_KEY, ''))) $('srvNode').value = '';   /* 已保存的节点被删则回退本机 */
+  syncSrvNodeSearch();
 }
 $('srvNodeRefresh').addEventListener('click', () => { loadSrvNodes($('srvNode').value); toast('已刷新服务器列表'); });
-$('srvNode').addEventListener('change', () => store(SRV_NODE_KEY, $('srvNode').value));
+$('srvNode').addEventListener('change', () => { store(SRV_NODE_KEY, $('srvNode').value); syncSrvNodeSearch(); refreshSaveDirUi(); });
 /* 条目身份键（墓碑/勾选去重等用）：远程条目按 节点+远程路径 计，与拉取后的本机缓存路径解耦 */
 function tombKeyOf(it){ return it.remote ? ('remote:' + it.remote.ip + ':' + it.remote.rpath) : it.path; }
 /* 列目录：本机 api.fs / 远程 api.rfs，同形输出 */
@@ -1673,12 +1833,14 @@ async function srvFs(path){
   if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
 }
-/* 远程条目拉到本机缓存（幂等：大小一致命中缓存），返回缓存路径 */
+/* 远程条目拉到本机（幂等：大小一致命中已有副本）。落点优先该节点的「服务端保存目录」（设置页配置），
+   未配置走默认缓存 ~/.dsh/storages/remote-cache/；返回后置 it.path 为本地路径 */
 async function ensureLocalPath(it){
   if (!it.remote || it.path) return;
   const n = it.remote;
-  toast('正在把远程文件拉到本机缓存：' + it.name + '…');
-  const r = await fetch('/api/worktable/rfetch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ip: n.ip, user: n.user, pass: n.pass, path: n.rpath }) });
+  const dir = saveDirForNode(n.ip);
+  toast('正在把远程文件拉到本机' + (dir ? '保存目录 ' + dir : '缓存') + '：' + it.name + '…');
+  const r = await fetch('/api/worktable/rfetch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ip: n.ip, user: n.user, pass: n.pass, path: n.rpath, dstDir: dir || undefined }) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
   it.path = d.path; it.size = d.size || it.size;
@@ -1774,11 +1936,13 @@ $('srvPickDirBtn').addEventListener('click', () => { if (!browseDir) return; $('
 /* ================= 数据来源页签 ================= */
 $('srcTabs').querySelectorAll('.dshell-tab').forEach(t => t.addEventListener('click', () => {
   $('srcTabs').querySelectorAll('.dshell-tab').forEach(x => x.classList.toggle('dshell-tabOn', x === t));
-  for (const name of ['local', 'server', 'settings']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
+  for (const name of ['server', 'settings']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
+  if (t.dataset.tab === 'settings') refreshSaveDirUi();   /* 设置页跟随当前服务器选择展示该节点的保存目录 */
 }));
-/* 启动：导入服务器列表 → 恢复选中 → 有记忆文件夹则自动扫描 */
+/* 启动：导入服务器列表 → 恢复选中 → 设置页按当前节点刷新 → 有记忆文件夹则自动扫描 */
 (async () => {
   await loadSrvNodes();
+  refreshSaveDirUi();
   const dir = load(DIR_KEY, '');
   if (dir){ $('srvPath').value = dir; scanServerDir(); }
 })();
@@ -1806,7 +1970,7 @@ function buildPrompt(){
   const L = [];
   L.push('# CUDA Profiling 深度分析请求');
   L.push('');
-  L.push('文件：' + it.name + (it.path ? '（' + it.path + '）' : '（本地文件）') + (it.size ? '，大小 ' + fmtSize(it.size) : ''));
+  L.push('文件：' + it.name + (it.path ? '（' + it.path + '）' : '') + (it.size ? '，大小 ' + fmtSize(it.size) : ''));
   if (m.tag || m.desc) L.push('标签/描述：' + [m.tag, m.desc].filter(Boolean).join(' / '));
   if (it.binary) L.push('注意：这是 NVIDIA 二进制 profiling 报告。请使用 ncu --import / nsys stats 等工具读取该文件后再分析。');
   L.push('');
