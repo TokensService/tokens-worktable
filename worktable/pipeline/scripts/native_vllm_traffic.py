@@ -17,7 +17,7 @@ URL = os.getenv("VLLM_URL", "http://127.0.0.1:8000/v1/chat/completions")
 MODEL = os.getenv("MODEL_NAME", "GLM-5.2-NVFP4-W4A4C8-MG40-BNT3")
 MODEL_ENDPOINT = os.getenv("MODEL_ENDPOINT", "")
 QPS = float(os.getenv("QPS", "1"))
-CONCURRENCY = int(os.getenv("CONCURRENCY", "8"))
+CONCURRENCY = int(os.getenv("CONCURRENCY", "0"))
 DURATION = float(os.getenv("DURATION_SECONDS", "60"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "600"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1"))
@@ -89,25 +89,30 @@ def one_request(index: int) -> dict:
 
 
 def main():
-    if QPS <= 0 or CONCURRENCY <= 0 or DURATION <= 0:
-        raise SystemExit("QPS, CONCURRENCY and DURATION_SECONDS must be positive")
+    if QPS <= 0 or CONCURRENCY < 0 or DURATION <= 0:
+        raise SystemExit("QPS and DURATION_SECONDS must be positive; CONCURRENCY must be non-negative (0 means unlimited)")
     fields = [
         "request_id", "started_at", "status_code", "ttft_ms", "total_ms",
         "prompt_tokens", "completion_tokens", "error",
     ]
-    print(f"[traffic] url={URL} model={MODEL} qps={QPS} concurrency={CONCURRENCY} duration={DURATION}s")
+    concurrency_label = "unlimited" if CONCURRENCY == 0 else str(CONCURRENCY)
+    print(f"[traffic] url={URL} model={MODEL} qps={QPS} concurrency={concurrency_label} duration={DURATION}s")
     print(f"[traffic] prompt_repetitions={PROMPT_REPETITIONS} max_tokens={MAX_TOKENS} output={OUTPUT}")
     active = set()
     next_submit = time.monotonic()
     stop_at = next_submit + DURATION
     index = 0
     lock = threading.Lock()
-    with open(OUTPUT, "w", newline="", encoding="utf-8") as stream, ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+    # In unlimited mode allocate enough workers for every request scheduled in
+    # the submission window. This keeps slow 80K requests from blocking the
+    # configured QPS; a positive CONCURRENCY retains the bounded mode.
+    worker_count = max(1, int(QPS * DURATION) + 1) if CONCURRENCY == 0 else CONCURRENCY
+    with open(OUTPUT, "w", newline="", encoding="utf-8") as stream, ThreadPoolExecutor(max_workers=worker_count) as pool:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         while time.monotonic() < stop_at or active:
             now = time.monotonic()
-            while now < stop_at and len(active) < CONCURRENCY and now >= next_submit:
+            while now < stop_at and (CONCURRENCY == 0 or len(active) < CONCURRENCY) and now >= next_submit:
                 index += 1
                 active.add(pool.submit(one_request, index))
                 next_submit += 1.0 / QPS
