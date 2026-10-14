@@ -6,7 +6,7 @@
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
      envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue、
      quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留）。
-   - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
+   - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）、「分配」按钮在操作列（「编辑」之前）、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
    - 运行校验接入：pipelineDefaultRunIssue / runPipeline / submitPipelineRunDialog / addPlan 四处的预留拦截；
@@ -332,7 +332,7 @@ function renderEnvsCtx(globals, envs) {
   return { ctx, els, tbody };
 }
 
-test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用户 | 备注），生效中整行高亮无「预留中」文案 / 无预留 —；行内含「分配」按钮', () => {
+test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用户 | 备注），生效中整行高亮无「预留中」文案 / 无预留 —；「分配」按钮在操作列、「编辑」之前', () => {
   const p2 = n => String(n).padStart(2, '0');
   const fmt = d => p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
   const now = Date.now();
@@ -361,7 +361,14 @@ test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用�
   assert.ok(!htmlOf('env-b').includes('预留中') && !htmlOf('env-b').includes('个时段'), '未来时段无预留中标记、不再折叠为时段数');
   /* 无预留显示 — */
   assert.ok(/<span class="dshell-muted">—<\/span>/.test(htmlOf('env-a')), '无预留显示 —');
-  ['env-a', 'env-b', 'env-c'].forEach(id => assert.ok(htmlOf(id).includes(`data-envres="${id}"`), `行内应有「分配」按钮（data-envres=${id}）`));
+  /* 「分配」按钮在操作列（最后一个 td）、位于「编辑」之前；「预留」列（倒数第二个 td）只展示时段摘要 */
+  ['env-a', 'env-b', 'env-c'].forEach(id => {
+    const cells = htmlOf(id).split(/<td[\s>]/);
+    const resCell = cells[cells.length - 2], opsCell = cells[cells.length - 1];
+    assert.ok(!resCell.includes('data-envres'), `「预留」列不再含「分配」按钮（${id}）`);
+    assert.ok(opsCell.includes(`data-envres="${id}"`), `操作列应有「分配」按钮（data-envres=${id}）`);
+    assert.ok(opsCell.indexOf(`data-envres="${id}"`) < opsCell.indexOf(`data-envedit="${id}"`), `「分配」应在「编辑」之前（${id}）`);
+  });
 });
 
 test('renderEnvs「预留」列：已结束时段整行置灰并在备注格后缀（已结束）；多时段按开始时间升序逐行排列', () => {
