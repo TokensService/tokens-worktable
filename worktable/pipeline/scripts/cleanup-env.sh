@@ -713,12 +713,66 @@ step_kill_gpu() {
 }
 
 # ---------------- STEP: kubelet / kube-proxy ----------------
+KUBEPROXY_STALE_RULES_CLEANED=0
+
+cleanup_stale_kubeproxy_rules() {
+    [[ "${DRY_RUN:-0}" == "1" ]] && { log "[DRY_RUN] 检查并清理不存在 Service 的 kube-proxy iptables 规则"; return 0; }
+    have iptables || { log "未找到 iptables，跳过 kube-proxy 残留规则清理"; return 0; }
+    command -v kubectl >/dev/null 2>&1 || { log "未找到 kubectl，跳过 kube-proxy 残留规则清理"; return 0; }
+
+    local rules ref ns service stale=0 chain rule delete_rule stale_chains
+    rules=$(iptables -t nat -S 2>/dev/null || true)
+    [[ -n "$rules" ]] || return 0
+    # 只处理 XDS 的 ray-svc 注释。业务 Service 不在清理范围内。
+    while read -r ref; do
+        [[ -n "$ref" ]] || continue
+        ns="${ref%%/*}"; service="${ref#*/}"
+        kubectl -n "$ns" get service "$service" >/dev/null 2>&1 && continue
+        stale=1
+        log "发现已不存在 Service 的 kube-proxy 规则: $ns/$service"
+
+        stale_chains=$(printf '%s\n' "$rules" | grep -F "$ref" | sed -n -E \
+            -e 's/^-A (KUBE-(EXT|SVC|SEP)-[A-Z0-9]+).*/\1/p' \
+            -e 's/.*-j (KUBE-(EXT|SVC|SEP)-[A-Z0-9]+).*/\1/p' | sort -u)
+
+        # 先删除所有带该 Service 注释的规则，以及跳转到其专属链的规则。
+        while read -r rule; do
+            [[ "$rule" == -A\ * ]] || continue
+            delete_rule="${rule/-A /-D }"
+            eval "iptables -t nat $delete_rule" >/dev/null 2>&1 || true
+        done < <(iptables -t nat -S 2>/dev/null | grep -F "$ref" || true)
+
+        # 注释可能不在 PREROUTING/OUTPUT 跳转规则上，按已知 XDS 链名补删引用。
+        for chain in $stale_chains; do
+            while read -r rule; do
+                [[ "$rule" == -A\ * ]] || continue
+                delete_rule="${rule/-A /-D }"
+                eval "iptables -t nat $delete_rule" >/dev/null 2>&1 || true
+            done < <(iptables -t nat -S 2>/dev/null | grep -F -- "-j $chain" || true)
+            iptables -t nat -F "$chain" >/dev/null 2>&1 || true
+            iptables -t nat -X "$chain" >/dev/null 2>&1 || true
+        done
+    done < <(printf '%s\n' "$rules" | grep -oE 'xds-[^/ ]+/[^: ]+' | sort -u)
+
+    if (( stale )); then
+        KUBEPROXY_STALE_RULES_CLEANED=1
+        log "已清理 kube-proxy 残留规则，等待 kube-proxy 重建"
+    fi
+}
+
 step_svc() {
     local svc=$1
     log "=== 标准化 $svc ==="
-    local chk before_en before_ac lines
+    if [[ "$svc" == "kube-proxy" ]]; then
+        cleanup_stale_kubeproxy_rules
+        if (( KUBEPROXY_STALE_RULES_CLEANED )); then
+            log "重启 kube-proxy 以重建 Service/NodePort 规则"
+            run systemctl restart kube-proxy
+            sleep 3
+        fi
+    fi
+    local chk before_en before_ac
     chk=$(ssh_local "systemctl is-enabled $svc 2>/dev/null; systemctl is-active $svc 2>/dev/null")
-    lines=("${(@f)chk}") 2>/dev/null || read -ra lines <<< "$chk"
     # 简单解析: 两行
     local l1 l2; l1=$(echo "$chk" | sed -n '1p'); l2=$(echo "$chk" | sed -n '2p')
     before_en=$([[ "$l1" == "enabled" ]] && echo 1 || echo 0)
@@ -758,7 +812,7 @@ step_hugepages() {
 }
 
 # ---------------- 编排 ----------------
-DEFAULT_STEPS="crond,release-resources,containers,gpu,uncordon"
+DEFAULT_STEPS="crond,release-resources,containers,gpu,kube-proxy,uncordon"
 VALID_STEPS="crond containers gpu kubelet kube-proxy hugepages release-resources uncordon"
 
 do_standardize() {
