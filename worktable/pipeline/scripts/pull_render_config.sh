@@ -446,6 +446,7 @@ write_remote_render_environment() {
       printf 'export RUN_DIR=%q\n' "$target_run_dir"
       printf 'export RENDER_DIR=%q\n' "$target_render_dir"
       printf 'export SKIP_CONTAINERD_CLEANUP=1\n'
+      printf 'export CONTAINER_RUNTIME=ctr\n'
       for variable in \
         IMAGE_NAME DEPLOY_IMAGE TEMPLATE_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME \
         TARGET_HOSTS TARGET_NODE_IP_MAP ENABLE_PROFILING PROFILING_TIMESTAMP PROFILING_PREFILL_DIR PROFILING_DECODE_DIR \
