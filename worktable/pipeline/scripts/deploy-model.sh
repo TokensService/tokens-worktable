@@ -1052,6 +1052,36 @@ for taint in json.load(sys.stdin).get("spec", {}).get("taints", []):
   done <"$nodes"
 }
 
+patch_values_namespace() {
+  # Remote-rendered values may carry the execution host's previous namespace
+  # in the container env list. Keep the runtime namespace consistent with the
+  # Helm release so XDS can find its own Pod through the Kubernetes API.
+  python3 - "$VALUES_FILE" "$NAMESPACE" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+namespace = sys.argv[2]
+values = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+def visit(value):
+    if isinstance(value, dict):
+        if value.get("name") == "XDS_NAMESPACE":
+            value["value"] = namespace
+        for child in value.values():
+            visit(child)
+    elif isinstance(value, list):
+        for child in value:
+            visit(child)
+
+visit(values)
+path.write_text(yaml.safe_dump(values, allow_unicode=True, sort_keys=False), encoding="utf-8")
+PY
+  echo "[deploy] forced XDS_NAMESPACE=$NAMESPACE in $VALUES_FILE"
+}
+
 cleanup_stale_raycluster() {
   local raycluster="$RELEASE_NAME-kuberay"
 
@@ -1263,6 +1293,7 @@ prepare_ctrl_slot_capacity
 # Remove taints immediately before the new RayCluster is installed.  This
 # minimizes the window in which an external node controller can reapply one.
 clear_target_node_taints
+patch_values_namespace
 "$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR" \
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --set-string "global.namespace=$NAMESPACE" \
