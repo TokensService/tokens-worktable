@@ -12,7 +12,18 @@ ARCHIVE_DIR="${ARCHIVE_DIR:-${PWD}/archive}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 ARCH_NAME="${ARCH_NAME:-default}"
 PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
-NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-local}"
+EXECUTOR="${EXECUTOR:-}"
+[[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
+NAMESPACE="${NAMESPACE:-}"
+if [[ -z "$NAMESPACE" ]]; then
+  namespace_base="${NAMESPACE_ARCH:-}"
+  [[ -n "$namespace_base" ]] || namespace_base="$ARCH_NAME"
+  if [[ -n "$EXECUTOR" ]]; then
+    NAMESPACE="xds-${namespace_base}-${EXECUTOR}"
+  else
+    NAMESPACE="xds-${namespace_base}-local"
+  fi
+fi
 RELEASE_NAME="${RELEASE_NAME:-${NAMESPACE}}"
 CHART_DIR="${CHART_DIR:-${RENDER_DIR}/xds-cluster}"
 VALUES_FILE="${VALUES_FILE:-${RENDER_DIR}/values.rendered.yaml}"

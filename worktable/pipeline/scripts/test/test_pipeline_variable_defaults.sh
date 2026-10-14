@@ -65,10 +65,10 @@ printf 'NAMESPACE=%s\\nRELEASE_NAME=%s\\n' \"\$NAMESPACE\" \"\$RELEASE_NAME\"")"
 grep -Fq 'NAMESPACE=xds-glm-5-3-nvfp4-ems-one-node-alice' <<<"$namespace_from_runtime_vars"
 grep -Fq 'RELEASE_NAME=xds' <<<"$namespace_from_runtime_vars"
 
-# EXECUTOR alone must not change the legacy namespace format.
+# EXECUTOR is part of the namespace even when no separate arch variable is supplied.
 namespace_without_arch="$(EXECUTOR='executor-a' ARCH_NAME='glm-5.2-nvfp4' IMAGE_TAG='1000.tag' \
   bash -c "$config
 printf 'NAMESPACE=%s\\n' \"\$NAMESPACE\"")"
-grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4' <<<"$namespace_without_arch"
+grep -Fq 'NAMESPACE=xds-glm-5-2-nvfp4-executor-a' <<<"$namespace_without_arch"
 
 echo "pipeline variable-default tests passed"
