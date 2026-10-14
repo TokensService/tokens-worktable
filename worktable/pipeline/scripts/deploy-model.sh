@@ -14,6 +14,12 @@ ARCH_NAME="${ARCH_NAME:-default}"
 PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
 EXECUTOR="${EXECUTOR:-}"
 [[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
+NAMESPACE_ARCH="${NAMESPACE_ARCH:-}"
+DEPLOY_STRATEGY="${DEPLOY_STRATEGY:-}"
+BY="${BY:-}"
+IMAGE_NAME="${IMAGE_NAME:-}"
+DEPLOY_IMAGE="${DEPLOY_IMAGE:-}"
+EMS_NAMESPACE="${EMS_NAMESPACE:-}"
 NAMESPACE="${NAMESPACE:-}"
 if [[ -z "$NAMESPACE" ]]; then
   namespace_base="${NAMESPACE_ARCH:-}"
@@ -339,6 +345,10 @@ PY
     printf 'export RUN_DIR=%q\n' "$TARGET_RUN_DIR"
     printf 'export RENDER_DIR=%q\n' "$TARGET_RENDER_DIR"
     printf 'export ARCH_NAME=%q\nexport PIPELINE_NAME=%q\n' "$ARCH_NAME" "$PIPELINE_NAME"
+    printf 'export EXECUTOR=%q\nexport NAMESPACE_ARCH=%q\nexport DEPLOY_STRATEGY=%q\nexport BY=%q\n' \
+      "$EXECUTOR" "$NAMESPACE_ARCH" "$DEPLOY_STRATEGY" "$BY"
+    printf 'export IMAGE_NAME=%q\nexport DEPLOY_IMAGE=%q\nexport EMS_NAMESPACE=%q\n' \
+      "${IMAGE_NAME:-}" "${DEPLOY_IMAGE:-}" "${EMS_NAMESPACE:-}"
     printf 'export NAMESPACE=%q\nexport RELEASE_NAME=%q\n' "$NAMESPACE" "$RELEASE_NAME"
     printf 'export CHART_DIR=%q\n' "${TARGET_RENDER_DIR}/xds-cluster"
     printf 'export VALUES_FILE=%q\n' "${TARGET_RENDER_DIR}/values.rendered.yaml"
@@ -379,10 +389,13 @@ PY
     run_remote "$target" "$target_port" \
       "test -d $(remote_quote "$TARGET_RENDER_DIR") && test -f $(remote_quote "$TARGET_RENDER_DIR/xds-cluster/Chart.yaml") || { echo '[deploy] remote rendered directory is missing; rerun pull_render_config.sh' >&2; exit 2; }"
   fi
+  # Upload the complete exported environment before the scripts.  The remote
+  # entrypoint sources this contract before executing deploy-model.sh, so every
+  # subsequent script sees the same namespace and pipeline context.
+  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
-  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
   run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
@@ -614,7 +627,8 @@ persist_runtime_environment() {
       XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
       XDS_OM \
       MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
-      EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER; do
+      EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+      ARCH_NAME EXECUTOR NAMESPACE_ARCH DEPLOY_STRATEGY BY IMAGE_NAME DEPLOY_IMAGE EMS_NAMESPACE; do
       printf 'export %s=%q\n' "$variable" "${!variable}"
     done
   } >>"$PIPELINE_ENV_FILE"
@@ -660,6 +674,9 @@ print_runtime_environment() {
   printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
   printf 'MODEL_API=%s\n' "$MODEL_API"
   printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
+  printf 'EXECUTOR=%s\n' "$EXECUTOR"
+  printf 'NAMESPACE_ARCH=%s\n' "$NAMESPACE_ARCH"
+  printf 'DEPLOY_STRATEGY=%s\n' "$DEPLOY_STRATEGY"
   printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
 }
 
