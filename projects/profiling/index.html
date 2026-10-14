@@ -1229,8 +1229,26 @@ let perfBufCache = null; // { itemId, buf, name } —— trace 字节缓存（�
 function perfStatus(text, isErr){
   const el = $('perfStatus');
   el.textContent = text || '';
+  el.title = text || '';   /* 状态栏单行省略显示，悬停可见完整文案 */
   el.classList.toggle('err', !!isErr);
   $('perfRetryBtn').style.display = isErr ? '' : 'none';
+}
+/* 握手等待计时：Perfetto UI 首次加载要从 ui.perfetto.dev 下载数十 MB 前端资源（含 WASM trace 处理器），
+   慢网/代理下常需数十秒甚至更久；期间状态栏逐秒刷新等待时长，避免误以为卡死 */
+let perfWaitTimer = null, perfWaitStartTs = 0;
+function perfWaitStop(){
+  if (perfWaitTimer != null){ clearInterval(perfWaitTimer); perfWaitTimer = null; }
+}
+function perfWaitBegin(){
+  perfWaitStop();
+  perfWaitStartTs = Date.now();
+  const tick = () => {
+    if (!perf || !perf.session || perf.session.isReady()){ perfWaitStop(); return; }
+    const s = Math.floor((Date.now() - perfWaitStartTs) / 1000);
+    perfStatus('等待 Perfetto UI 就绪… 已等待 ' + s + 's（首次加载需下载数十 MB 前端资源，慢网/代理下可能超过 1 分钟；若失败可点「重试」）');
+  };
+  tick();
+  perfWaitTimer = setInterval(tick, 1000);
 }
 /* 取条目原始 trace 字节：本地 File 直读（保留原始内容）；服务端经 /file 原始字节；仅有内存数据时重建 JSON */
 async function perfettoTraceBuffer(it){
@@ -1264,13 +1282,14 @@ async function openPerfettoForCurrent(){
     host: window, target: frame.contentWindow,
     onState: (st, detail) => {
       if (!perf || perf.session !== session) return;
-      if (st === 'ready') perfStatus('握手完成，读取并传输 trace…');
+      if (st === 'ready'){ perfWaitStop(); perfStatus('握手完成，传输 trace…'); }
       else if (st === 'send'){
+        perfWaitStop();
         perfStatus('已发送 ' + detail + ' —— trace 仅在浏览器内存，不上传服务器'
           + (perfettoNeedsTrustHint(location.hostname) ? '；若 Perfetto 弹 "Open trace?" 请点击 Yes / Always trust' : ''));
         $('perfPopBtn').disabled = false;
       }
-      else if (st === 'error') perfStatus(detail, true);
+      else if (st === 'error'){ perfWaitStop(); perfStatus(detail, true); }
     },
   });
   perf = { session, frame };
@@ -1287,9 +1306,12 @@ async function perfettoSendCurrent(it){
     }
     const c = perfBufCache, tag = metaOf(it).tag;
     perf.session.send(c.buf, (tag ? tag + ' - ' : '') + c.name, c.name);
-  }catch(e){ perfStatus('读取 trace 失败：' + (e && e.message || e), true); }
+    /* 投递完成但握手未就绪：进入等待计时状态（trace 已读完，瓶颈在 Perfetto UI 加载） */
+    if (perf && perf.session && !perf.session.isReady()) perfWaitBegin();
+  }catch(e){ perfWaitStop(); perfStatus('读取 trace 失败：' + (e && e.message || e), true); }
 }
 function closePerfetto(){
+  perfWaitStop();
   if (perf && perf.session) perf.session.dispose();
   perf = null;
   perfBufCache = null;
