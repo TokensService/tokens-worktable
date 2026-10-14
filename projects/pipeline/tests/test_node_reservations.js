@@ -4,7 +4,8 @@
      预留数据不进配置导出（collectConfig 不引用 nodeReservations）。
    - 纯函数：reservationsForNode（过滤+按 start 排序）、fmtResTime（本地 MM-DD HH:mm）、
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
-     envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue。
+     envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue、
+     quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留）。
    - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
@@ -140,16 +141,21 @@ test('静态契约：switchPage 有 node 分支并顺带刷新预留；navNode �
   assert.ok(decl >= 0 && bind > decl, 'navNode 绑定必须在 const $ 声明之后的尾部初始化区');
 });
 
-test('静态契约：nodeResDialog 弹窗结构（z-index 216-224 空档）与绑定齐全', () => {
+test('静态契约：nodeResDialog 弹窗结构（z-index 216-224 空档）与绑定齐全；用户选择为搜索框（无全量复选/手动添加行）', () => {
   const start = source.indexOf('<div id="nodeResDialog"');
   assert.ok(start > 0, '缺少 nodeResDialog 弹窗');
   const end = source.indexOf('<!-- 收集普罗数据对话框', start);
   const html = source.slice(start, end > start ? end : undefined);
   assert.ok(/z-index:21[6-9]|z-index:22[0-4]/.test(html), '弹窗 z-index 应取 216-224 空档');
-  ['nodeResTitle', 'nodeResReadonlyTip', 'nodeResClose', 'nodeResList', 'nodeResAddWindow', 'nodeResManualUser', 'nodeResManualAdd', 'nodeResTip', 'nodeResCancel', 'nodeResSave', 'nodeResCloseFooter']
+  ['nodeResTitle', 'nodeResReadonlyTip', 'nodeResClose', 'nodeResList', 'nodeResAddWindow', 'nodeResTip', 'nodeResCancel', 'nodeResSave', 'nodeResCloseFooter']
     .forEach(id => assert.ok(html.includes(`id="${id}"`), `弹窗缺少 #${id}`));
-  ['nodeResClose', 'nodeResCancel', 'nodeResCloseFooter', 'nodeResAddWindow', 'nodeResManualAdd', 'nodeResSave', 'nodeResDialog']
+  assert.ok(!/nodeResManual/.test(html), '弹窗不再含手动添加用户行（搜索框可直接输入候选外用户名）');
+  ['nodeResClose', 'nodeResCancel', 'nodeResCloseFooter', 'nodeResAddWindow', 'nodeResSave', 'nodeResDialog']
     .forEach(id => assert.ok(source.includes(`$('${id}').addEventListener`), `尾部初始化区缺少 ${id} 绑定`));
+  assert.ok(!source.includes("$('nodeResManualAdd')"), '尾部初始化区不再手动添加用户绑定');
+  const fn = extractFunction('renderNodeResWindows');
+  assert.ok(fn.includes('data-res-user-search') && fn.includes('data-res-candidate') && fn.includes('data-res-chip'), '时段行应为 用户标签（data-res-chip）+ 搜索框（data-res-user-search）+ 候选下拉（data-res-candidate）');
+  assert.ok(!fn.includes('data-res-user"'), '不再渲染全量用户复选框');
   const decl = source.indexOf('const $ =');
   assert.ok(source.indexOf("$('nodeResSave').addEventListener") > decl, '弹窗绑定须在 const $ 声明之后');
 });
@@ -303,7 +309,7 @@ function dialogEls() {
   return {
     nodeResDialog: elStub(), nodeResTitle: elStub(), nodeResReadonlyTip: elStub(),
     nodeResClose: elStub(), nodeResList: elStub(), nodeResAddWindow: elStub(),
-    nodeResManualUser: elStub(), nodeResManualAdd: elStub(), nodeResTip: elStub(),
+    nodeResTip: elStub(),
     nodeResCancel: elStub(), nodeResSave: elStub(), nodeResCloseFooter: elStub(),
   };
 }
@@ -393,9 +399,12 @@ test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 adm
   assert.equal(plain.els.nodeResSave.style.display, 'none', '只读形态无保存按钮');
   assert.equal(plain.els.nodeResCancel.style.display, 'none', '只读形态无取消按钮');
   assert.equal(plain.els.nodeResCloseFooter.style.display, '', '只读形态底栏只留「关闭」');
-  const inputs = plain.els.nodeResList.querySelectorAll('[data-res-start],[data-res-end],[data-res-user],[data-res-note]');
-  assert.ok(inputs.length >= 4, '只读弹窗仍展示时段明细');
+  const inputs = plain.els.nodeResList.querySelectorAll('[data-res-start],[data-res-end],[data-res-note]');
+  assert.ok(inputs.length >= 3, '只读弹窗仍展示时段明细');
   assert.ok(inputs.every(el => el.disabled === true), '只读形态全部输入禁用');
+  assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-user-search]').length, 0, '只读形态无用户搜索框');
+  assert.ok(plain.els.nodeResList.querySelectorAll('[data-res-chip]').length >= 1, '只读形态以标签展示已选用户');
+  assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-chip-rm]').length, 0, '只读形态标签无移除按钮');
   assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-del]').length, 0, '只读形态无「删除本时段」按钮');
 
   /* admin 可编辑 */
@@ -408,6 +417,8 @@ test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 adm
   assert.equal(admin.els.nodeResSave.style.display, '', 'admin 有保存按钮');
   const adminInputs = admin.els.nodeResList.querySelectorAll('[data-res-start],[data-res-end],[data-res-note]');
   assert.ok(adminInputs.length >= 3 && adminInputs.every(el => el.disabled === false), 'admin 输入可编辑');
+  const adminSearch = admin.els.nodeResList.querySelector('[data-res-user-search="0"]');
+  assert.ok(adminSearch && adminSearch.disabled === false, 'admin 有用户搜索框');
   assert.equal(admin.els.nodeResList.querySelectorAll('[data-res-del]').length, 1, 'admin 有「删除本时段」按钮');
 });
 
@@ -503,9 +514,21 @@ test('预留弹窗保存：datetime-local 值转 ISO UTC、base 快照随 PUT �
 
   startInp.value = '2026-10-14T08:00'; startInp.fire('change');
   endInp.value = '2026-10-14T10:00'; endInp.fire('change');
-  const cbU2 = h.els.nodeResList.querySelectorAll('[data-res-user="0"]').find(c => c.value === 'u2');
-  assert.ok(cbU2, '候选用户含 /auth/users 提供的 u2');
-  cbU2.checked = true; cbU2.fire('change');
+  const search = h.els.nodeResList.querySelector('[data-res-user-search="0"]');
+  assert.ok(search, '用户选择为搜索框（不再平铺复选框）');
+  assert.equal(h.els.nodeResList.querySelectorAll('[data-res-user]').length, 0, '不再有全量用户复选框');
+  const cands = h.els.nodeResList.querySelectorAll('[data-res-candidate]').map(c => c.getAttribute('data-res-candidate'));
+  assert.ok(cands.includes('u2'), '候选下拉含 /auth/users 提供的 u2');
+  search.value = 'u2'; search.fire('keydown', { key: 'Enter', preventDefault() {} });   // 回车选中
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2'], '回车把搜索框内容加为已选用户');
+  search.value = 'u3，u4'; search.fire('input');   // 逗号即时提交前段，最后一段留在框内
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2', 'u3'], '逗号即时提交前段为用户');
+  assert.equal(search.value, 'u4', '最后一段留在搜索框继续编辑');
+  search.fire('blur');   // 失焦提交剩余段
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2', 'u3', 'u4'], '失焦提交剩余输入');
+  /* 标签 × 移除 */
+  h.els.nodeResList.querySelector('[data-res-chip-rm="u4"]').fire('click');
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['u1', 'u2', 'u3'], '标签 × 移除用户');
   const note = h.els.nodeResList.querySelector('[data-res-note="0"]');
   note.value = '巡检占用'; note.fire('input');
 
@@ -517,7 +540,7 @@ test('预留弹窗保存：datetime-local 值转 ISO UTC、base 快照随 PUT �
   assert.equal(body.windows.length, 1);
   assert.equal(body.windows[0].start, new Date('2026-10-14T08:00').toISOString(), 'datetime-local 经 new Date(v).toISOString() 转 UTC');
   assert.equal(body.windows[0].end, new Date('2026-10-14T10:00').toISOString());
-  assert.deepEqual(body.windows[0].users.sort(), ['u1', 'u2'], '勾选用户随窗口上送');
+  assert.deepEqual(body.windows[0].users.sort(), ['u1', 'u2', 'u3'], '搜索框选中的用户随窗口上送');
   assert.equal(body.windows[0].note, '巡检占用');
   assert.deepEqual(body.base, J(existing), 'base=打开弹窗时该节点窗口快照（供服务端 409 比对）');
   assert.deepEqual(J(vm.runInContext('nodeReservations', h.ctx)), J(fresh), '成功响应全量替换本地');
@@ -580,17 +603,68 @@ test('预留弹窗保存：409 刷新最新数据后重开弹窗；403 alert 服
   assert.equal(h403.els.nodeResDialog.style.display, 'flex', '403 不关闭弹窗');
 });
 
-test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用户名并集 + 当前用户名，并提示可手输', async () => {
+test('预留弹窗：/auth/users 拉取失败时候选回退为现有预留用户名并集 + 当前用户名，并提示可直接输入', async () => {
   const h = dialogCtx(null, async url => {
     if (url === '/auth/users') throw new Error('404');
     throw new Error('unexpected fetch ' + url);
   });
   vm.runInContext(`nodeReservations=${JSON.stringify([resNow('r1', 'env-a', ['olduser'])])}`, h.ctx);
   await h.ctx.openNodeResDialog('env-a');
-  assert.match(h.els.nodeResTip.textContent, /用户列表拉取失败/, '失败提示可手输');
-  const values = h.els.nodeResList.querySelectorAll('[data-res-user="0"]').map(c => c.value);
-  assert.ok(values.includes('olduser'), '候选含现有预留用户名');
-  assert.ok(values.includes('admin'), '候选含当前用户名');
+  assert.match(h.els.nodeResTip.textContent, /用户列表拉取失败/, '失败提示可直接输入');
+  const chips = h.els.nodeResList.querySelectorAll('[data-res-chip]').map(c => c.getAttribute('data-res-chip'));
+  assert.ok(chips.includes('olduser'), '已选用户以标签展示');
+  const cands = h.els.nodeResList.querySelectorAll('[data-res-candidate]').map(c => c.getAttribute('data-res-candidate'));
+  assert.ok(!cands.includes('olduser'), '已选用户不再重复出现在候选下拉');
+  assert.ok(cands.includes('admin'), '候选含当前用户名');
+  /* 候选外用户名可直接输入提交为标签 */
+  const search = h.els.nodeResList.querySelector('[data-res-user-search="0"]');
+  search.value = 'newuser'; search.fire('keydown', { key: 'Enter', preventDefault() {} });
+  assert.deepEqual(J(vm.runInContext('nodeResEdit.windows[0].users', h.ctx)), ['olduser', 'newuser'], '候选外用户名直接输入即添加');
+});
+
+/* ==================== 快捷时段 ==================== */
+test('quickResRange：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留', () => {
+  const ctx = pureCtx();
+  const q = (base, sh, eh, now) => J(ctx.quickResRange(base, sh, eh, now));
+  const d = (y, m, day, h, min) => new Date(y, m - 1, day, h, min || 0).getTime();
+  const afternoon = d(2026, 10, 14, 15, 30);   // 2026-10-14 15:30
+  assert.deepEqual(q('2026-10-20T08:00', 9, 14, afternoon), { start: '2026-10-20T09:00', end: '2026-10-20T14:00' }, '已填日期保留，仅覆盖时间');
+  assert.deepEqual(q('2026-10-20T08:00', 14, 19, afternoon), { start: '2026-10-20T14:00', end: '2026-10-20T19:00' });
+  assert.deepEqual(q('2026-10-20T08:00', 19, 22, afternoon), { start: '2026-10-20T19:00', end: '2026-10-20T22:00' });
+  assert.deepEqual(q('2026-10-20T08:00', 22, 9, afternoon), { start: '2026-10-20T22:00', end: '2026-10-21T09:00' }, '22~9 跨零点，结束落次日 09:00');
+  assert.deepEqual(q('', 9, 14, afternoon), { start: '2026-10-15T09:00', end: '2026-10-15T14:00' }, '15:30 点 9~14：当天 14:00 已结束 → 次日');
+  assert.deepEqual(q('', 9, 14, d(2026, 10, 14, 10, 0)), { start: '2026-10-14T09:00', end: '2026-10-14T14:00' }, '10:00 点 9~14：开始已过但 14:00 未结束 → 仍给当天（时段覆盖当前）');
+  assert.deepEqual(q('', 9, 14, d(2026, 10, 14, 14, 0)), { start: '2026-10-15T09:00', end: '2026-10-15T14:00' }, '14:00 整点 9~14：结束时刻已过（T==end 不覆盖）→ 次日');
+  assert.deepEqual(q('', 19, 22, afternoon), { start: '2026-10-14T19:00', end: '2026-10-14T22:00' }, '15:30 点 19~22：当天未到 → 当天');
+  assert.deepEqual(q(null, 22, 9, d(2026, 10, 14, 23, 0)), { start: '2026-10-14T22:00', end: '2026-10-15T09:00' }, '23 点点 22~9：结束在次日 09:00 未过 → 当天 22:00 起（当前正在时段内）');
+});
+
+test('预留弹窗：快捷时段按钮四档齐全，点击回填开始/结束；只读形态无快捷按钮', async () => {
+  /* 只读形态无快捷按钮 */
+  const plain = renderEnvsCtx(null, [envOf('env-c', '测试', '10.0.0.3')]);
+  vm.runInContext(`nodeReservations=${JSON.stringify([resNow('r1', 'env-c', ['u1'])])}`, plain.ctx);
+  plain.ctx.renderEnvs();
+  plain.tbody.querySelectorAll('[data-envres]')[0].click();
+  await flush(); await flush();
+  assert.equal(plain.els.nodeResList.querySelectorAll('[data-res-quick]').length, 0, '只读形态无快捷时段按钮');
+
+  /* admin：四档齐全且按序，点击回填 */
+  const h = dialogCtx(null, async url => {
+    if (url === '/auth/users') return okUsersFetch(url);
+    throw new Error('unexpected fetch ' + url);
+  });
+  await h.ctx.openNodeResDialog('env-a');
+  vm.runInContext(`nodeResEdit.windows=[{id:'', start:'2026-10-20T08:00', end:'2026-10-20T12:00', users:['u1'], note:''}]`, h.ctx);
+  h.ctx.renderNodeResWindows();
+  const quicks = h.els.nodeResList.querySelectorAll('[data-res-quick]').map(b => b.getAttribute('data-res-quick'));
+  assert.deepEqual(quicks, ['9-14', '14-19', '19-22', '22-9'], '四个快捷时段齐全且按序');
+  const quickOf = v => h.els.nodeResList.querySelectorAll('[data-reswindow="0"]')[0].querySelectorAll(`[data-res-quick="${v}"]`)[0];
+  quickOf('22-9').fire('click');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-start="0"]').value, '2026-10-20T22:00', '22~9 回填开始 22:00（保留已填日期）');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-end="0"]').value, '2026-10-21T09:00', '22~9 跨零点，结束次日 09:00');
+  quickOf('9-14').fire('click');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-start="0"]').value, '2026-10-20T09:00', '9~14 回填开始 09:00');
+  assert.equal(h.els.nodeResList.querySelector('[data-res-end="0"]').value, '2026-10-20T14:00', '9~14 回填结束 14:00（同日）');
 });
 
 /* ==================== 运行校验接入 ==================== */

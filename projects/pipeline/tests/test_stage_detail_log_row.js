@@ -63,6 +63,17 @@ test('回归：运行历史标题行「🔍 AI 日志分析」按钮（data-ract
   assert.ok(/<button\b[^>]*data-ract="log"[^>]*>[^<]*🔍 AI 日志分析/.test(source), 'data-ract="log" 按钮应为「🔍 AI 日志分析」');
 });
 
+test('静态契约：阶段级分析模板（DEFAULT_PROMPTS.stage）与设置页「阶段日志分析」编辑区齐备', () => {
+  const dp = /const\s+DEFAULT_PROMPTS\s*=\s*\{[\s\S]*?\n\};/.exec(source);
+  assert.ok(dp, '缺少 DEFAULT_PROMPTS 定义');
+  assert.ok(/\bstage\s*:/.test(dp[0]), 'DEFAULT_PROMPTS 应含 stage（阶段日志分析）默认模板');
+  assert.ok(dp[0].includes('{stage}'), 'stage 默认模板应含 {stage} 占位符');
+  assert.ok(dp[0].includes('{stageLogFile}'), 'stage 默认模板应含 {stageLogFile} 占位符');
+  assert.ok(/<textarea\b[^>]*\bid="cfgPromptStage"/.test(source), '设置页缺少 #cfgPromptStage 编辑框');
+  assert.ok(source.includes("$('cfgPromptStage').value=analysisPrompts.stage"), 'fillCfgForm 应回填 analysisPrompts.stage');
+  assert.ok(source.includes("stage:$('cfgPromptStage').value"), 'cfgSave 应收集 cfgPromptStage');
+});
+
 test('openArchiveFolder 保留：仍解析 archiveTargetFolder 并委托 openFolderWithFeedback', () => {
   const body = extractFunction('openArchiveFolder');
   assert.ok(body.includes('archiveTargetFolder'), 'openArchiveFolder 仍应引用 archiveTargetFolder 解析目标目录');
@@ -227,30 +238,44 @@ function stageDetailCtx(extra) {
     curRun: null,
     history: [],
     alert: text => calls.alerts.push(String(text)),
-    createAnalysisChat: (kind, recs) => calls.chats.push({ kind, recs: Array.from(recs) }),
+    createAnalysisChat: (kind, recs, opts) => calls.chats.push({ kind, recs: Array.from(recs), extra: opts }),
   }, extra || {});
   vm.createContext(ctx);
   vm.runInContext(extractFunction('currentStageAnalysisRec') + '\n' + extractFunction('stageDetailAnalysis'), ctx);
   return { ctx, calls };
 }
 
-test('stageDetailAnalysis：有分析记录时以 (log,[rec]) 发起 AI 分析', () => {
+test('stageDetailAnalysis：有分析记录时以 (stage,[rec],{stage,stageLogFile}) 发起阶段级 AI 分析', () => {
+  const rec = { tag: 'run-a', no: 1 };
+  const { ctx, calls } = stageDetailCtx({ replayRec: rec });
+  const stage = { id: 's1', name: '构建' };
+
+  ctx.stageDetailAnalysis(stage, '/a/b/run-a-01-构建.log');
+
+  assert.equal(calls.chats.length, 1, '应调用一次 createAnalysisChat');
+  assert.equal(calls.chats[0].kind, 'stage', '分析类型应为 stage（阶段级模板）');
+  assert.equal(calls.chats[0].recs.length, 1, '应只分析当前这一次运行');
+  assert.equal(calls.chats[0].recs[0], rec, '应把当前分析记录传给 createAnalysisChat');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.chats[0].extra)), { stage: '构建', stageLogFile: '/a/b/run-a-01-构建.log' },
+    '应注入阶段名与本阶段日志文件路径占位符');
+  assert.equal(calls.alerts.length, 0, '有记录时不应弹提示');
+});
+
+test('stageDetailAnalysis：本阶段无日志路径时 stageLogFile 占位符降级为「（未归档）」', () => {
   const rec = { tag: 'run-a', no: 1 };
   const { ctx, calls } = stageDetailCtx({ replayRec: rec });
 
-  ctx.stageDetailAnalysis();
+  ctx.stageDetailAnalysis({ id: 's1', name: '部署' }, null);
 
-  assert.equal(calls.chats.length, 1, '应调用一次 createAnalysisChat');
-  assert.equal(calls.chats[0].kind, 'log', '分析类型应为 log');
-  assert.equal(calls.chats[0].recs.length, 1, '应只分析当前这一次运行');
-  assert.equal(calls.chats[0].recs[0], rec, '应把当前分析记录传给 createAnalysisChat');
-  assert.equal(calls.alerts.length, 0, '有记录时不应弹提示');
+  assert.equal(calls.chats.length, 1);
+  assert.equal(calls.chats[0].extra.stage, '部署');
+  assert.equal(calls.chats[0].extra.stageLogFile, '（未归档）', '无路径时应降级为「（未归档）」而非 null');
 });
 
 test('stageDetailAnalysis：无分析记录时提示且不发起 AI 分析', () => {
   const { ctx, calls } = stageDetailCtx();
 
-  ctx.stageDetailAnalysis();
+  ctx.stageDetailAnalysis({ id: 's1', name: '构建' }, '/a/b/run-a-01-构建.log');
 
   assert.deepEqual(calls.alerts, ['未找到本次运行的历史记录，暂不能发起 AI 分析。'], '应提示未找到历史记录');
   assert.equal(calls.chats.length, 0, '无记录时不得调用 createAnalysisChat');
@@ -511,7 +536,7 @@ test('appendStageLogRow：path 与 rec 都给时渲染完整日志行结构', ()
   const kv = makeKv();
   const rec = { tag: 'run-x', no: 1 };
 
-  ctx.appendStageLogRow(kv, '/a/b/run-x-01-部署.log', rec);
+  ctx.appendStageLogRow(kv, { id: 's1', name: '部署' }, '/a/b/run-x-01-部署.log', rec);
 
   assert.equal(kv.inserted.length, 0, '应通过 appendChild 追加节点而非 innerHTML');
   const row = findIn(kv, 'stageLogRow');
@@ -536,21 +561,37 @@ test('appendStageLogRow：path 与 rec 都给时渲染完整日志行结构', ()
 test('appendStageLogRow：无 path 时打开按钮禁用，无 rec 时 AI 按钮禁用', () => {
   const ctx = appendRowCtx();
   const noPath = makeKv();
-  ctx.appendStageLogRow(noPath, null, { tag: 'run-x' });
+  ctx.appendStageLogRow(noPath, { id: 's1', name: '部署' }, null, { tag: 'run-x' });
   assert.ok(isDisabled(findIn(noPath, 'stageLogOpenBtn')), '无 path 时 #stageLogOpenBtn 应禁用');
   assert.ok(!isDisabled(findIn(noPath, 'stageLogAiBtn')), '无 path 但有 rec 时 #stageLogAiBtn 不应禁用');
 
   const noRec = makeKv();
-  ctx.appendStageLogRow(noRec, '/a/b/run-x-01-部署.log', null);
+  ctx.appendStageLogRow(noRec, { id: 's1', name: '部署' }, '/a/b/run-x-01-部署.log', null);
   assert.ok(isDisabled(findIn(noRec, 'stageLogAiBtn')), '无 rec 时 #stageLogAiBtn 应禁用');
   assert.ok(!isDisabled(findIn(noRec, 'stageLogOpenBtn')), '有 path 但无 rec 时 #stageLogOpenBtn 不应禁用');
+});
+
+test('appendStageLogRow：「🔍 AI 分析」点击把当前阶段与展示路径交给 stageDetailAnalysis', () => {
+  const seen = [];
+  const ctx = appendRowCtx({ stageDetailAnalysis: (stage, logFile) => seen.push({ stage, logFile }) });
+  const kv = makeKv();
+  const stage = { id: 's1', name: '构建' };
+
+  ctx.appendStageLogRow(kv, stage, '/a/b/run-x-01-构建.log', { tag: 'run-x' });
+  const aiBtn = findIn(kv, 'stageLogAiBtn');
+  assert.ok(aiBtn && typeof aiBtn.handlers.click === 'function', 'AI 分析按钮应注册点击处理');
+  aiBtn.handlers.click();
+
+  assert.equal(seen.length, 1, '点击应调用一次 stageDetailAnalysis');
+  assert.equal(seen[0].stage, stage, '应传入当前阶段对象');
+  assert.equal(seen[0].logFile, '/a/b/run-x-01-构建.log', '应传入「日志文件」行展示的本阶段日志路径');
 });
 
 test('appendStageLogRow：path 与 rec 皆空时不渲染任何节点', () => {
   const ctx = appendRowCtx();
   const kv = makeKv();
 
-  ctx.appendStageLogRow(kv, null, null);
+  ctx.appendStageLogRow(kv, null, null, null);
 
   assert.equal(kv.appended, 0, '皆空时 kv 不得新增子节点');
   assert.equal(kv.inserted.length, 0, '皆空时不得向 kv 注入 HTML');
