@@ -519,7 +519,7 @@
       </div>
       <div style="overflow:auto;">
         <table class="dshell-table" id="envTable">
-          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>内网IP</th><th>LLM服务地址</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th title="节点预留：按用户 + 日期时间段分配；仅 admin 可分配，非 admin 点「分配」为只读查看">预留</th><th>操作</th></tr></thead>
+          <thead><tr><th data-sort="name">名称<span class="env-sort-arrow"></span></th><th data-sort="ip">SSH 地址<span class="env-sort-arrow"></span></th><th>内网IP</th><th>LLM服务地址</th><th data-sort="user">用户名<span class="env-sort-arrow"></span></th><th>密码</th><th data-sort="gpu" title="查询失败 → 未查询 → 空闲 → 占用（按已用卡数）">设备状态<span class="env-sort-arrow"></span></th><th title="节点预留：按用户 + 日期时间段分配；操作列「分配」按钮查看/分配，仅 admin 可保存，非 admin 为只读查看">预留</th><th>操作</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -913,7 +913,7 @@
       </div>
     </div>
   </div>
-  <!-- 节点预留分配弹窗（「节点」页节点表「预留」列 → 分配）：按用户 + 日期时间段分配节点；
+  <!-- 节点预留分配弹窗（「节点」页节点表「操作」列 → 分配）：按用户 + 日期时间段分配节点；
        admin 可编辑（保存携带打开弹窗时的窗口快照 base，供服务端 409 比对）；
        非 admin 打开为只读形态：全部输入禁用、底栏只留「关闭」。结构复用 pipelineRunDialog 模式 -->
   <div id="nodeResDialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:216; align-items:center; justify-content:center;">
@@ -2368,11 +2368,11 @@ function renderEnvs(){
     tr.innerHTML='<td style="font-weight:600">'+esc(e.name)+'</td><td class="dshell-muted">'+esc(e.ip)+'</td><td class="dshell-muted">'+esc(e.nodeIp||'—')+'</td><td class="dshell-muted">'+esc(e.llmAddr||'—')+'</td><td class="dshell-muted">'+esc(e.user||'—')+'</td><td class="dshell-muted">'+(e.pass?'••••••':'—')+'</td>'+
       '<td data-gpu="'+e.id+'" style="min-width:170px;">'+gpuCellFull(e)+'</td>'+
       '<td style="white-space:nowrap">'+envResSummaryHtml(e)+'</td>'+
-      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
+      '<td style="white-space:nowrap"><button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存，非 admin 为只读查看）">分配</button> <button class="dshell-btn dshell-btnGhost mini" data-envedit="'+e.id+'">编辑</button> <button class="dshell-btn dshell-btnGhost mini" data-envcopy="'+e.id+'" title="复制该节点为可编辑副本">复制</button> <button class="dshell-btn dshell-btnDanger mini" data-envdel="'+e.id+'">删除</button></td>';
     tb.appendChild(tr);
   });
   tb.querySelectorAll('[data-envedit]').forEach(b=>b.addEventListener('click',()=>startEnvEdit(b.getAttribute('data-envedit'))));
-  tb.querySelectorAll('[data-envres]').forEach(b=>b.addEventListener('click',()=>openNodeResDialog(b.getAttribute('data-envres'))));   /* 「预留」列分配按钮：admin 可编辑，非 admin 只读查看（openNodeResDialog 内分形态） */
+  tb.querySelectorAll('[data-envres]').forEach(b=>b.addEventListener('click',()=>openNodeResDialog(b.getAttribute('data-envres'))));   /* 操作列「分配」按钮：admin 可编辑，非 admin 只读查看（openNodeResDialog 内分形态） */
   tb.querySelectorAll('[data-envcopy]').forEach(b=>b.addEventListener('click',()=>copyEnv(b.getAttribute('data-envcopy'))));
   tb.querySelectorAll('[data-envdel]').forEach(b=>b.addEventListener('click',()=>delEnv(b.getAttribute('data-envdel'))));
   tb.querySelectorAll('[data-gpurefresh]').forEach(b=>b.addEventListener('click',()=>{ const e=environments.find(x=>x.id===b.getAttribute('data-gpurefresh')); if(e) fetchGpu(e); }));
@@ -2471,7 +2471,7 @@ function envReservationIssue(envs){
 /* 节点表「预留」列：逐时段一行、三列网格对齐（时间段 | 用户 | 备注），按开始时间升序；
    生效中时段整行高亮（st-run 色 + 600 字重，不加文字前缀，保持各行左缘对齐），
    已结束时段整行置灰并在备注格后缀「（已结束）」，未来时段普通样式；无预留显示 —。
-   行尾跟「分配」按钮（admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态）。
+   「分配」按钮在操作列（renderEnvs 行尾、「编辑」之前；admin 打开可编辑弹窗，非 admin 打开同弹窗只读形态），不在本列。
    用户名/备注等注入字段一律 esc 转义；单元格 white-space:nowrap 保证一个时段一行（长内容经表格外层 overflow 横向滚动）。 */
 function envResSummaryHtml(e){
   const records=reservationsForNode(e.id);
@@ -2495,7 +2495,7 @@ function envResSummaryHtml(e){
           +'<span'+cls+' style="white-space:nowrap;'+st+'"'+tip+'>'+note+'</span>';
       }).join('')+'</div>';
   }
-  return summary+' <button class="dshell-btn dshell-btnGhost mini" data-envres="'+esc(e.id)+'" title="查看/分配该节点的预留时段（仅 admin 可保存）">分配</button>';
+  return summary;
 }
 /* 候选用户回退集：现有预留用户名并集 + 当前用户名（/auth/users 拉取失败时使用；候选外的用户名也可在搜索框直接输入添加） */
 function nodeResFallbackUsers(){
