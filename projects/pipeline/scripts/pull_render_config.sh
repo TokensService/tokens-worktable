@@ -519,6 +519,63 @@ render_on_first_target() {
   remote_ssh "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
 }
 
+pull_images_on_all_targets() {
+  local endpoint user host port password mapped_host target target_script_dir remote_command image_pull_user pull_project pull_ak pull_login
+  local -a target_specs=()
+  mapfile -t target_specs < <(python3 - "$TARGET_HOSTS" <<'PY'
+import json
+import re
+import sys
+hosts = json.loads(sys.argv[1])
+if not isinstance(hosts, list) or not hosts:
+    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
+for item in hosts:
+    endpoint = item.get("ip") if isinstance(item, dict) else None
+    if not isinstance(endpoint, str) or not endpoint:
+        raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
+    match = re.fullmatch(r"([^:]+):(\\d+)", endpoint)
+    host, port = match.groups() if match else (endpoint, "22")
+    password = item.get("pass", item.get("password", "")) or ""
+    print(f'{endpoint}\t{item.get("user") or "root"}\t{host}\t{port}\t{password}')
+PY
+  )
+  pull_project="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"
+  pull_ak="${IMAGE_PULL_AK:-${AK:-}}"
+  pull_login="${IMAGE_PULL_LOGIN_KEY:-${LOGKEY:-${LOGIN_KEY:-}}}"
+  image_pull_user="${pull_project}@${pull_ak}:${pull_login}"
+  for target_spec in "${target_specs[@]}"; do
+    IFS=$'\t' read -r endpoint user host port password <<<"$target_spec"
+    if [[ "${REMOTE_RENDER_USE_NODE_IP:-1}" == "1" ]]; then
+      mapped_host="$(python3 - "$TARGET_NODE_IP_MAP" "$endpoint" <<'PY'
+import json
+import sys
+mapping = json.loads(sys.argv[1])
+value = mapping.get(sys.argv[2], "")
+print(value if isinstance(value, str) else "")
+PY
+)"
+      if [[ -n "$mapped_host" && "$mapped_host" != "$host" ]]; then
+        host="$mapped_host"
+        port=22
+      fi
+    fi
+    [[ -n "$pull_ak" && -n "$pull_login" ]] || {
+      echo "AK and LOGIN_KEY are required before pulling images on targets" >&2
+      return 2
+    }
+    target="${user}@${host}"
+    target_script_dir="${TARGET_RUN_DIR}/scripts"
+    echo "[pull] target $endpoint: upload pull script and pull image with ctr"
+    sync_remote_file "$SCRIPT_DIR/pull-image.sh" "${target_script_dir}/pull-image.sh" "$target" "$port" "$password"
+    printf -v remote_command '%s' \
+      "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; if [ \"\$(id -u)\" -eq 0 ]; then env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); else sudo env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ctr -n k8s.io images pull --user $(remote_quote "$image_pull_user") $(remote_quote "$IMAGE_NAME"); fi"
+    remote_ssh "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")" || {
+      echo "[pull] target $endpoint: image pull failed" >&2
+      return 1
+    }
+  done
+}
+
 sync_rendered_from_first_target() {
   local user host port endpoint password target target_render_dir_q render_dir_q
   IFS=$'\t' read -r user host port endpoint password <<<"$(render_target_host)"
@@ -571,6 +628,7 @@ PY
 
 resolve_target_node_ip_map
 echo "[pipeline] image=$IMAGE_NAME arch=$ARCH_NAME run_dir=$RUN_DIR render_dir=$RENDER_DIR"
+pull_images_on_all_targets
 render_on_first_target
 sync_rendered_from_first_target
 # Keep the local pipeline contract pointing at the copied artifacts even
