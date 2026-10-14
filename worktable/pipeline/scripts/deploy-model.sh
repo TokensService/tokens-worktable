@@ -357,8 +357,17 @@ PY
 
   echo "[deploy] execution host delegates deployment to target host: ${target_ip}:${target_port}"
   run_remote "$target" "$target_port" "mkdir -p $(remote_quote "$TARGET_RUN_DIR") $(remote_quote "$remote_script_dir")"
-  tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
-    "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
+  if [[ -d "$RENDER_DIR" ]]; then
+    tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
+      "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
+  else
+    # Remote rendering already placed the artifacts on the deployment target.
+    # A separately invoked deploy stage may not receive the local RUN_DIR, so
+    # do not overwrite the valid remote render with an empty/missing bundle.
+    echo "[deploy] local rendered directory is unavailable: $RENDER_DIR; reuse remote rendered directory $TARGET_RENDER_DIR"
+    run_remote "$target" "$target_port" \
+      "test -d $(remote_quote "$TARGET_RENDER_DIR") && test -f $(remote_quote "$TARGET_RENDER_DIR/xds-cluster/Chart.yaml") || { echo '[deploy] remote rendered directory is missing; rerun pull_render_config.sh' >&2; exit 2; }"
+  fi
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
