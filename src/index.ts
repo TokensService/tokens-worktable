@@ -5,6 +5,7 @@ import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open a
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -3995,7 +3996,8 @@ export function apply(ctx: Context) {
           : serverCwd(ctx, body.sessionId, body.cwd)
         json(res, 200, await listDirectory(path))
       } catch (err) {
-        json(res, 500, { path: '', entries: [], truncated: false, error: String(err) })
+        const code = (err as any)?.code === 'ENOTDIR' || (err as any)?.code === 'ENOENT' ? 404 : 500
+        json(res, code, { path: '', entries: [], truncated: false, error: String(err) })
       }
     },
   })
@@ -5187,7 +5189,119 @@ export function apply(ctx: Context) {
     },
   })
 
+
   const planRunning = new Set<string>()
+
+  // ---- 远程服务器文件浏览 / 拉取（profiling 页选择 pipeline 节点；本机直连，远程经 sshpass+ssh/scp）----
+  // 与 queryGpu 同模式：凭据由页面每次请求上送（来自 pipeline 节点配置），服务端不落盘；
+  // 本机地址（回环/本机网卡）直接走本地 fs，不经 ssh；远程命令 base64 包裹经管道交 bash，与登录 shell 解耦。
+  const REMOTE_CACHE = pathResolve(DSH_HOME, 'storages', 'remote-cache')
+  /** execText 的可调超时版：scp 拉取大文件需要远超 60s 的窗口 */
+  function execTextT(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+    return new Promise((resolvePromise, reject) => {
+      execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          const why = (err as any).killed ? '（执行超过 ' + Math.round(timeoutMs / 1000) + 's 被终止）' : ''
+          reject(new Error((String(stderr || '').trim() || String((err as Error).message || err)) + why))
+        }
+        else resolvePromise(String(stdout || ''))
+      })
+    })
+  }
+  /** shell 单引号转义（远端 shell 解析路径用） */
+  const shq = (s: string) => "'" + String(s).replace(/'/g, "'\\''") + "'"
+  /** 在目标服务器上执行一段 shell 脚本并取回 stdout（本机直连 bash -c；远程 base64 + sshpass/ssh） */
+  async function sshExec(ip: string, user: string, pass: string, script: string, timeoutMs = 60000): Promise<string> {
+    const { host, port } = parseHostPort(ip)
+    if (localAddrs().has(host)) return execTextT('bash', ['-c', script], timeoutMs)
+    const target = user ? user + '@' + host : host
+    const remoteCmd = 'echo ' + Buffer.from(script).toString('base64') + ' | base64 -d | bash'
+    const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=8', ...(port ? ['-p', port] : []), target, remoteCmd]
+    return execTextT(pass ? 'sshpass' : 'ssh', pass
+      ? ['-p', pass, 'ssh', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...sshArgs]
+      : ['-o', 'BatchMode=yes', ...sshArgs], timeoutMs)
+  }
+  /** 远程列目录，与本机 listDirectory 同形输出（{path, entries, truncated}） */
+  async function remoteListDir(ip: string, user: string, pass: string, path: string) {
+    const { host } = parseHostPort(ip)
+    if (localAddrs().has(host)) return listDirectory(path)
+    const script = 'd=$(echo ' + Buffer.from(path).toString('base64') + ' | base64 -d); [ -d "$d" ] || { echo __ENOTDIR__; exit 0; }; find "$d" -mindepth 1 -maxdepth 1 -printf \'%f\\t%y\\n\' 2>/dev/null | head -501'
+    const out = await sshExec(ip, user, pass, script)
+    if (out.indexOf('__ENOTDIR__') >= 0) { const err: any = new Error('不是目录：' + path); err.statusCode = 404; throw err }
+    const abs = path.replace(/\/+$/, '') || '/'
+    let entries = out.trim().split('\n').filter(Boolean).map((l) => {
+      const t = l.indexOf('\t')
+      const name = t < 0 ? l : l.slice(0, t)
+      const ty = t < 0 ? 'f' : l.slice(t + 1)
+      return { name, path: (abs === '/' ? '' : abs) + '/' + name, isDir: ty === 'd', hidden: name.startsWith('.') }
+    })
+    entries = entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    })
+    const truncated = entries.length > 500
+    return { path: abs, entries: truncated ? entries.slice(0, 500) : entries, truncated }
+  }
+  /** 把远程文件 scp 拉到本机缓存；已缓存且大小一致直接命中。返回 {path:<本地路径>, size, cached} */
+  async function remoteFetchFile(ip: string, user: string, pass: string, path: string) {
+    const { host, port } = parseHostPort(ip)
+    if (localAddrs().has(host)) {
+      const st = await fsStat(path)
+      if (!st.isFile()) { const err: any = new Error('不是文件：' + path); err.statusCode = 404; throw err }
+      return { path, size: st.size, cached: true }
+    }
+    const sizeOut = await sshExec(ip, user, pass, 'stat -c %s ' + shq(path) + ' 2>/dev/null || echo __NOENT__')
+    if (sizeOut.indexOf('__NOENT__') >= 0) { const err: any = new Error('远程文件不存在：' + path); err.statusCode = 404; throw err }
+    const size = Number(sizeOut.trim()) || 0
+    const dir = pathResolve(REMOTE_CACHE, createHash('sha1').update(host + ':' + path).digest('hex'))
+    const local = pathResolve(dir, basename(path))
+    try {
+      const st = await fsStat(local)
+      if (st.size === size) return { path: local, size, cached: true }
+    } catch { /* 未缓存 */ }
+    await fsMkdir(dir, { recursive: true })
+    const target = (user ? user + '@' : '') + host + ':' + shq(path)
+    const scpArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', ...(port ? ['-P', port] : []), target, local]
+    await execTextT(pass ? 'sshpass' : 'scp', pass
+      ? ['-p', pass, 'scp', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...scpArgs]
+      : ['-o', 'BatchMode=yes', ...scpArgs], 3600000)
+    const st2 = await fsStat(local)
+    return { path: local, size: st2.size, cached: false }
+  }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/rfs',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
+        const path = typeof body.path === 'string' ? body.path : ''
+        if (!ip || !path) { json(res, 400, { error: 'missing ip/path' }); return }
+        const d = await remoteListDir(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', path)
+        json(res, 200, d)
+      } catch (err) {
+        json(res, (err as any)?.statusCode === 404 ? 404 : 500, { error: String((err as any)?.message || err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/rfetch',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
+        const path = typeof body.path === 'string' ? body.path : ''
+        if (!ip || !path) { json(res, 400, { error: 'missing ip/path' }); return }
+        const r = await remoteFetchFile(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', path)
+        json(res, 200, r)
+      } catch (err) {
+        json(res, (err as any)?.statusCode === 404 ? 404 : 500, { error: String((err as any)?.message || err) })
+      }
+    },
+  })
   const planLastRun = new Map<string, number>()
   const randHex = (n: number) => Math.random().toString(16).slice(2, 2 + n)
   const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') }
