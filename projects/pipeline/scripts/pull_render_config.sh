@@ -438,13 +438,12 @@ print(f'{host.get("user") or "root"}\t{address}\t{port}\t{endpoint}\t{password}'
 PY
 }
 
-# Prefer the mapped InternalIP, but use the first SSH path that is reachable
-# from this host. This keeps rendering and image pulls on the same connection
-# path a user can actually use from the pipeline host.
+# Use the SSH endpoint supplied in TARGET_HOSTS by default. A mapped InternalIP
+# is used only when REMOTE_RENDER_USE_NODE_IP=1 is explicitly requested.
 select_target_connection() {
   local user="$1" host="$2" port="$3" endpoint="$4" password="$5"
   local original_host="$host" original_port="$port" mapped_host target
-  if [[ "${REMOTE_RENDER_USE_NODE_IP:-1}" == "1" ]]; then
+  if [[ "${REMOTE_RENDER_USE_NODE_IP:-0}" == "1" ]]; then
     mapped_host="$(python3 - "$TARGET_NODE_IP_MAP" "$endpoint" <<'PY'
 import json
 import sys
