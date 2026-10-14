@@ -120,12 +120,13 @@ test('静态契约：pageNode 容器持有节点环境卡片（DOM id 不变）�
   assert.ok(schedEnd > 0 && pageNodeStart > schedEnd && pageNodeStart < pageEnvStart, 'pageNode 应位于 pageSched 与 pageEnv 之间');
   const nodeRegion = source.slice(pageNodeStart, pageNodeEnd);
   const envRegion = source.slice(pageEnvStart, pageEnvEnd);
-  ['envTable', 'envAdd', 'envFilter', 'envInfoRefresh', 'gpuRefreshAll', 'envName', 'envIp', 'envNodeIp', 'envUser', 'envPass', 'envAllApply', 'envCancelEdit', 'envCount']
+  ['envTable', 'envAdd', 'envFilter', 'envInfoRefresh', 'gpuRefreshAll', 'envName', 'envIp', 'envNodeIp', 'envLlmAddr', 'envUser', 'envPass', 'envAllApply', 'envCancelEdit', 'envCount']
     .forEach(id => {
       assert.ok(nodeRegion.includes(`id="${id}"`), `pageNode 应包含节点环境卡片元素 #${id}`);
       assert.ok(!envRegion.includes(`id="${id}"`), `pageEnv 不应再包含 #${id}`);
     });
   assert.match(nodeRegion, /<th[^>]*>预留<\/th>/, 'envTable 表头应新增「预留」列');
+  assert.match(nodeRegion, /<th>内网IP<\/th><th>LLM服务地址<\/th>/, 'envTable 表头应为「内网IP」与「LLM服务地址」列');
   assert.match(nodeRegion, /预留.{0,30}不随「导入导出」/, '节点页说明行应注明预留数据不随配置导出');
   assert.ok(nodeRegion.indexOf('<th data-sort="name"') < nodeRegion.indexOf('>预留</th>'), '「预留」列在既有排序列之后，不动既有 data-sort');
 });

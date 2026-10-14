@@ -35,7 +35,7 @@ function context({remote,fetchError,local,base}={}){
       if(fetchError) throw fetchError;
       return remote;
     },
-    normalizeEnv:e=>({id:e.id,name:e.name,ip:e.ip,nodeIp:e.nodeIp||'',user:e.user||'',pass:e.pass||''}),
+    normalizeEnv:e=>({id:e.id,name:e.name,ip:e.ip,nodeIp:e.nodeIp||'',llmAddr:e.llmAddr||'',user:e.user||'',pass:e.pass||''}),
     renderEnvs:()=>{ calls.envs++; },
     renderEnvOptions:()=>{ calls.options++; },
     toast:m=>toasts.push(String(m)),
@@ -60,7 +60,7 @@ test('刷新节点信息：他端新增/修改同步进来，本地未落盘新�
   const remote={config:{environments:[
     {id:'env-old',name:'旧节点-他端改名',ip:'10.0.0.1',user:'ops'},
     {id:'env-a',name:'开发',ip:'10.0.0.2',user:'ops'},
-    {id:'env-b',name:'生产',ip:'10.0.0.3',nodeIp:'192.168.31.10',user:'root',pass:'p'},
+    {id:'env-b',name:'生产',ip:'10.0.0.3',nodeIp:'192.168.31.10',llmAddr:'192.168.31.10:8000',user:'root',pass:'p'},
   ]}};
   const localNew={id:'env-new',name:'本页刚加未落盘',ip:'10.0.0.9',nodeIp:'',user:'root',pass:'x'};
   const {ctx,stored,alerts,toasts,calls,button}=context({
@@ -71,7 +71,9 @@ test('刷新节点信息：他端新增/修改同步进来，本地未落盘新�
   assert.deepEqual(J(ctx.environments).map(e=>e.id),['env-old','env-a','env-b','env-new'],'远端序在前，本地未落盘新增追加保留');
   assert.equal(ctx.environments[0].name,'旧节点-他端改名','本地未改动的条目以服务端为准');
   assert.equal(ctx.environments[2].nodeIp,'192.168.31.10');
+  assert.equal(ctx.environments[2].llmAddr,'192.168.31.10:8000','他端 LLM服务地址 同步进来');
   assert.equal(ctx.environments[0].nodeIp,'','normalizeEnv 补齐缺省 nodeIp');
+  assert.equal(ctx.environments[0].llmAddr,'','normalizeEnv 补齐缺省 llmAddr');
   assert.deepEqual(J(ctx.serverConfigBase.environments).map(e=>e.id),['env-old','env-a','env-b'],'基线推进到服务端快照（不含本地未落盘新增）');
   assert.equal(stored.get('pip-envs'),JSON.stringify(ctx.environments));
   assert.equal(calls.envs,1);

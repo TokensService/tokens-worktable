@@ -133,7 +133,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);
 
   ctx.applyImportedSettings({
-    environments:[{id:'env-dev',name:'开发',ip:'192.168.1.10',user:'root',pass:'new-pass',extra:'drop'}],
+    environments:[{id:'env-dev',name:'开发',ip:'192.168.1.10',llmAddr:'192.168.1.10:8000',user:'root',pass:'new-pass',extra:'drop'}],
     repositories:[{id:'r1',name:'myapp',url:'https://git.example.com/a.git',user:'u',pass:'new-token',fetchMode:'jenkins'}],
     scriptsDir:'/new/scripts', theme:'dark', buildNo:99,
     cleanupScript:null, cleanupEnabled:true, checkScript:{name:'check.sh',params:[]}, checkEnabled:true,
@@ -149,7 +149,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     histFilter:{kw:'err',status:'fail',pipeline:'A'}, histPageSize:50,
   });
 
-  assert.deepEqual(J(ctx.environments),[{id:'env-dev',name:'开发',ip:'192.168.1.10',nodeIp:'',user:'root',pass:'new-pass'}],'环境按文件恢复并归一化（多余字段剔除）');
+  assert.deepEqual(J(ctx.environments),[{id:'env-dev',name:'开发',ip:'192.168.1.10',nodeIp:'',llmAddr:'192.168.1.10:8000',user:'root',pass:'new-pass'}],'环境按文件恢复并归一化（多余字段剔除，llmAddr 保留）');
   assert.equal(ctx.repositories[0].pass,'new-token','代码仓访问令牌按文件内容恢复');
   assert.equal(ctx.repositories[0].fetchMode,'jenkins-browser','fetchMode 归一化（旧 jenkins 值→jenkins-browser）');
   assert.equal(ctx.scriptsDir,'/new/scripts');
