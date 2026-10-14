@@ -597,8 +597,12 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     'id="perfDownloadBtn"', "perfDownloadBtn').addEventListener('click'", "大文件解析可能需要数分钟",
     /* 服务端大文件：/file 走 raw=1 流式（绕开 256MB 全量读上限）；读取失败后晚到 PONG 不覆盖错误 */
     "encodeURIComponent(path) + '&raw=1'", "encodeURIComponent(it.path) + '&raw=1'", "perf.failed = true", "perf.failed) return",
-    /* 入口按钮固定在列表卡标题行，勾选集优先于当前选中条目，两者皆空才禁用 */
-    ">Perfetto打开<", "$('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length",
+    /* 入口按钮固定在列表卡标题行（Perfetto / AI分析），勾选集优先于当前选中条目，两者皆空才禁用 */
+    ">Perfetto<", "$('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length",
+    'id="aiAnalyzeBtn"', ">AI分析<", "$('aiAnalyzeBtn').disabled = !cur",
+    "async function runAiAnalysis(", "$('aiAnalyzeBtn').addEventListener('click'", "$('runAiBtn').addEventListener('click'",
+    /* 内置助手只填会话草稿，不再走 analyze-log 自动提交（旧通道点击即触发 AI 分析） */
+    "__dshNewChatSessionForCurrentProject(prompt)",
     /* 点击先保存到本地（服务端文件）再打开；内嵌 iframe 走 embedded 模式关侧边栏 */
     "function downloadTraceFile(", "PERFETTO_EMBED_URL", "mode=embedded&hideSidebar=true",
     "已保存 trace 到本地下载目录",
@@ -613,6 +617,9 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
   assert.ok(!html.includes('saveDirBtn'), "FS API 版「保存目录」按钮应已移除（改为设置页路径）");
   assert.ok(!html.includes('showDirectoryPicker'), "FS API 目录选择器应已移除");
   assert.ok(!html.includes('在 Perfetto 中打开</button>'), "概览卡内的旧按钮注入已移除");
+  /* 「点击就触发 AI 分析」的 analyze-log 自动提交通道已移除（只保留会话草稿桥） */
+  assert.ok(!html.includes("worktable:analyze-log"), "worktable:analyze-log 自动提交通道应已移除");
+  assert.ok(!html.includes("Perfetto打开"), "按钮文案应改为「Perfetto」，不再出现「Perfetto打开」");
 });
 
 test("页面静态契约：列表项删除（× 按钮 / 墓碑防扫描带回 / 显式重加清墓碑）", () => {
