@@ -21,6 +21,7 @@ TEMPLATE_DIR="$RUN_DIR/template"
 PULL_RETRIES="${PULL_RETRIES:-2}"
 PULL_RETRY_DELAY_SECONDS="${PULL_RETRY_DELAY_SECONDS:-5}"
 SKIP_CONTAINERD_CLEANUP="${SKIP_CONTAINERD_CLEANUP:-0}"
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-auto}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -39,6 +40,26 @@ MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
 # The target-side proxy is an SSH reverse forward to the execution host's
 # existing loopback proxy.  It exists only for the remote ctr command.
 MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"
+
+resolve_container_runtime() {
+  case "$CONTAINER_RUNTIME" in
+    nerdctl|ctr) command -v "$CONTAINER_RUNTIME" >/dev/null 2>&1 || {
+      echo "container runtime '$CONTAINER_RUNTIME' is not installed" >&2
+      return 2
+    } ;;
+    auto)
+      if command -v nerdctl >/dev/null 2>&1; then
+        CONTAINER_RUNTIME=nerdctl
+      elif command -v ctr >/dev/null 2>&1; then
+        CONTAINER_RUNTIME=ctr
+      else
+        echo "nerdctl or ctr is required on the execution host" >&2
+        return 2
+      fi
+      ;;
+    *) echo "unsupported CONTAINER_RUNTIME: $CONTAINER_RUNTIME (expected auto, nerdctl, or ctr)" >&2; return 2 ;;
+  esac
+}
 
 cleanup_unused_containerd_resources() {
   [[ "$SKIP_CONTAINERD_CLEANUP" == "1" ]] && return 0
@@ -59,7 +80,11 @@ print_storage_diagnostics() {
   echo "[pull] containerd storage after failed pull:" >&2
   df -h /var/lib/containerd 2>&1 || true
   df -i /var/lib/containerd 2>&1 || true
-  nerdctl --namespace k8s.io system df 2>&1 || true
+  if command -v nerdctl >/dev/null 2>&1; then
+    nerdctl --namespace k8s.io system df 2>&1 || true
+  elif command -v ctr >/dev/null 2>&1; then
+    ctr -n k8s.io images ls 2>&1 || true
+  fi
 }
 
 remote_quote() {
@@ -183,8 +208,15 @@ PY
 
     echo "[pull] target $endpoint: registry pull failed (exit $pull_status); import image from execution host" >&2
     printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images import -"
-    if ! nerdctl --namespace k8s.io save "$image" \
-      | run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+    resolve_container_runtime
+    if [[ "$CONTAINER_RUNTIME" == nerdctl ]]; then
+      nerdctl --namespace k8s.io save "$image" \
+        | run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+    else
+      ctr -n k8s.io images export - "$image" \
+        | run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+    fi
+    if [[ "${PIPESTATUS[0]}" -ne 0 || "${PIPESTATUS[1]}" -ne 0 ]]; then
       echo "[pull] target $endpoint: streamed image import failed" >&2
       return 1
     fi
@@ -201,14 +233,14 @@ PY
 pull_image() {
   local image="$1" registry_host attempt pull_status
   registry_host="${image%%/*}"
-
-  command -v nerdctl >/dev/null 2>&1 || {
-    echo "nerdctl is required on the pipeline execution host; install it and run nerdctl login $registry_host" >&2
-    exit 2
-  }
+  resolve_container_runtime
 
   echo "[pull] execution host: pull $image"
-  if nerdctl --namespace k8s.io image inspect "$image" >/dev/null 2>&1; then
+  if [[ "$CONTAINER_RUNTIME" == nerdctl ]] && nerdctl --namespace k8s.io image inspect "$image" >/dev/null 2>&1; then
+    echo "[pull] image already exists: $image"
+    return 0
+  fi
+  if [[ "$CONTAINER_RUNTIME" == ctr ]] && ctr -n k8s.io images ls -q | grep -Fqx -- "$image"; then
     echo "[pull] image already exists: $image"
     return 0
   fi
@@ -219,10 +251,22 @@ pull_image() {
     # also what removes the accumulated <none>:<none> image records.
     cleanup_unused_containerd_resources
     echo "[pull] image pull attempt $attempt/$PULL_RETRIES: $image"
-    if nerdctl --namespace k8s.io pull "$image"; then
-      return 0
+    if [[ "$CONTAINER_RUNTIME" == nerdctl ]]; then
+      if nerdctl --namespace k8s.io pull "$image"; then
+        return 0
+      else
+        pull_status=$?
+      fi
     else
-      pull_status=$?
+      [[ -n "$IMAGE_PULL_AK" && -n "$IMAGE_PULL_LOGIN_KEY" ]] || {
+        echo "AK and LOGIN_KEY are required for ctr image pulls" >&2
+        return 2
+      }
+      if ctr -n k8s.io images pull --user "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}" "$image"; then
+        return 0
+      else
+        pull_status=$?
+      fi
     fi
     echo "[pull] image pull attempt $attempt failed (exit $pull_status)" >&2
     cleanup_unused_containerd_resources
@@ -231,11 +275,11 @@ pull_image() {
     fi
   done
   print_storage_diagnostics
-  echo "image pull failed after $PULL_RETRIES attempts; run nerdctl --namespace k8s.io login $registry_host as the pipeline execution user" >&2
+  echo "image pull failed after $PULL_RETRIES attempts; authenticate the execution user's nerdctl/ctr runtime for $registry_host" >&2
   return "$pull_status"
 }
 
-export_templates() {
+export_templates_nerdctl() {
   local work_dir container_name source_dir probe_output probe_status
   work_dir="$(mktemp -d)"
   container_name="op-test-template-$$"
@@ -332,6 +376,69 @@ export_templates() {
   cp -a "$source_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
   cp -a "$source_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
   cp -a "$source_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
+}
+
+export_templates_ctr() {
+  local work_dir mount_dir source_dir chart_path values_path architecture_path
+  work_dir="$(mktemp -d)"
+  mount_dir="$work_dir/image-root"
+  source_dir="$work_dir/deploy-template"
+  mkdir -p "$mount_dir"
+  cleanup() {
+    ctr -n k8s.io images unmount "$mount_dir" >/dev/null 2>&1 || true
+    rm -rf "$work_dir"
+  }
+  trap cleanup RETURN
+
+  echo "[pull] execution host: export render templates from $TEMPLATE_IMAGE with ctr"
+  ctr -n k8s.io images mount "$TEMPLATE_IMAGE" "$mount_dir" >/dev/null
+  chart_path="$mount_dir$DEPLOY_TEMPLATE_DIR/xds_template/k8s/xds-cluster"
+  values_path="$mount_dir$DEPLOY_TEMPLATE_DIR/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml"
+  architecture_path="$mount_dir$DEPLOY_TEMPLATE_DIR/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
+  if [[ ! -f "$chart_path/Chart.yaml" || ! -f "$values_path" || ! -f "$architecture_path" ]]; then
+    chart_path="$mount_dir$FALLBACK_DEPLOY_TEMPLATE_DIR/xds_template/k8s/xds-cluster"
+    values_path="$mount_dir$FALLBACK_DEPLOY_TEMPLATE_DIR/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml"
+    architecture_path="$mount_dir$FALLBACK_DEPLOY_TEMPLATE_DIR/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
+  fi
+  if [[ ! -f "$chart_path/Chart.yaml" || ! -f "$values_path" || ! -f "$architecture_path" ]]; then
+    echo "[pull] configured template roots are unavailable; discovering template files in the image"
+    chart_file="$(find "$mount_dir" -xdev -type f -path '*/xds_template/k8s/xds-cluster/Chart.yaml' -print -quit 2>/dev/null || true)"
+    values_path="$(find "$mount_dir" -xdev -type f -name values-16Node-je-cpp-bnt3.yaml -print -quit 2>/dev/null || true)"
+    architecture_path="$(find "$mount_dir" -xdev -type f -name model_arch-lt-je-cpp-bnt3.json -print -quit 2>/dev/null || true)"
+    chart_path="${chart_file%/Chart.yaml}"
+  fi
+  if [[ -z "$chart_path" || ! -f "$chart_path/Chart.yaml" || -z "$values_path" || -z "$architecture_path" ]]; then
+    echo "unable to locate the xds chart, values template, and architecture file in the image" >&2
+    return 3
+  fi
+  printf '[pull] discovered chart=%s values=%s architecture=%s\n' \
+    "${chart_path#$mount_dir}" "${values_path#$mount_dir}" "${architecture_path#$mount_dir}"
+  rm -rf "$source_dir"
+  mkdir -p "$source_dir"
+  cp -a "$chart_path" "$source_dir/xds-cluster"
+  cp -a "$values_path" "$source_dir/values-16Node-je-cpp-bnt3.yaml"
+  cp -a "$architecture_path" "$source_dir/model_arch-lt-je-cpp-bnt3.json"
+  if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then
+    [[ -f "$VALUES_TEMPLATE_SOURCE" ]] || { echo "values template source does not exist: $VALUES_TEMPLATE_SOURCE" >&2; return 2; }
+    cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"
+  fi
+  mkdir -p "$TEMPLATE_DIR"
+  cp -a "$source_dir/xds-cluster" "$TEMPLATE_DIR/xds-cluster"
+  cp -a "$source_dir/values-16Node-je-cpp-bnt3.yaml" "$TEMPLATE_DIR/values-16Node-je-cpp-bnt3.yaml"
+  cp -a "$source_dir/model_arch-lt-je-cpp-bnt3.json" "$TEMPLATE_DIR/model_arch-lt-je-cpp-bnt3.json"
+}
+
+export_templates() {
+  resolve_container_runtime
+  if [[ "$CONTAINER_RUNTIME" == ctr ]]; then
+    export_templates_ctr
+  else
+    export_templates_nerdctl
+  fi
+  # RETURN traps are process-global in bash; clear the helper's cleanup trap
+  # before this dispatcher itself returns, otherwise its local variables are
+  # already out of scope when the inherited trap fires a second time.
+  trap - RETURN
 }
 
 if [[ "${PULL_TARGET_IMAGES_ONLY:-0}" == "1" ]]; then
