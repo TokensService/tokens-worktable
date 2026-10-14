@@ -30,8 +30,8 @@ NUM_DECODE="${NUM_DECODE:-}"
 PREFILL_GPU="${PREFILL_GPU:-}"
 DECODE_GPU="${DECODE_GPU:-}"
 ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
-PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
-PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
+PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/mnt/paas/xds-profile/prefill-64k}"
+PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/mnt/paas/xds-profile/decode-64k}"
 PROFILING_TIMESTAMP="${PROFILING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 NAMESPACE_ARCH="${arch:-}"
 [[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
@@ -385,17 +385,18 @@ for package in arch.get("deploy_spec_packages", []):
             profiler_config = params.setdefault("profiler_config", {})
             if not isinstance(profiler_config, dict):
                 raise SystemExit(f"{role}.profiler_config must be a mapping")
+            profiler_config.pop("wait_iterations", None)
+            profiler_config.pop("warmup_iterations", None)
             profiler_config.update({
                 "profiler": "torch",
                 "torch_profiler_dir": profiling_prefill_dir if role == "prefill" else profiling_decode_dir,
-                "ignore_frontend": True,
-                "wait_iterations": 0,
-                "warmup_iterations": 0,
+                "torch_profiler_with_stack": False,
                 "torch_profiler_record_shapes": False,
                 "torch_profiler_with_memory": False,
-                "torch_profiler_with_stack": False,
-                "torch_profiler_use_gzip": True,
-                "torch_profiler_dump_cuda_time_total": True,
+                "torch_profiler_use_gzip": False,
+                "torch_profiler_dump_cuda_time_total": False,
+                "ignore_frontend": True,
+                "max_iterations": 3,
             })
         if replicas_override is not None:
             spec["min"] = spec["max"] = spec["default"] = replicas_override
