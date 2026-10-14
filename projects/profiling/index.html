@@ -79,6 +79,15 @@
   .pf-prio.p4 { color: var(--dsw-alias-label-tertiary, #6b7280); }
   .pf-conf { color: #3fb950; }
   .pf-cand { color: var(--dsw-alias-label-tertiary, #6b7280); }
+  /* Perfetto 内嵌模态框（ui.perfetto.dev iframe） */
+  .pf-modal { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.55); display: flex; padding: 14px; }
+  .pf-modalBox { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--dsw-alias-bg-base, #0b0e14); border: 1px solid var(--dsw-alias-border-l1, #262b36); border-radius: 10px; overflow: hidden; }
+  .pf-modalBar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1, #262b36); font-size: 12px; }
+  .pf-modalBar .grow { flex: 1; min-width: 0; }
+  .pf-perfStatus { color: var(--dsw-alias-label-tertiary, #6b7280); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pf-perfStatus.err { color: #f85149; white-space: normal; }
+  .pf-modalBody { flex: 1; position: relative; min-height: 0; }
+  .pf-modalBody iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 </style>
 </head>
 <body>
@@ -92,7 +101,7 @@
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="dark">深色</button>
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="light">浅色</button>
   </div>
-  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点，并可一键交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
+  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器）中打开做交互式时间线分析，也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
 
   <div class="pf-layout">
     <!-- ============ 左栏：数据来源 + 列表 ============ -->
@@ -224,6 +233,20 @@
   </div>
 </div>
 
+<!-- Perfetto UI 内嵌模态框（iframe + postMessage 握手，trace 仅在浏览器内存） -->
+<div class="pf-modal" id="perfModal" style="display:none">
+  <div class="pf-modalBox">
+    <div class="pf-modalBar">
+      <b id="perfTitle">Perfetto UI</b>
+      <span class="pf-perfStatus grow" id="perfStatus"></span>
+      <button class="dshell-btn dshell-btnGhost" id="perfRetryBtn" style="display:none">重试</button>
+      <button class="dshell-btn dshell-btnGhost" id="perfPopBtn" disabled title="在新窗口打开 ui.perfetto.dev 并传输当前 trace（iframe 内看着拥挤时使用）">↗ 弹出到新窗口</button>
+      <button class="dshell-btn" id="perfCloseBtn">关闭 Esc</button>
+    </div>
+    <div class="pf-modalBody" id="perfBody"></div>
+  </div>
+</div>
+
 <script>
 'use strict';
 /* ================= 工具 ================= */
@@ -312,6 +335,12 @@ const api = {
     const buf = await r.arrayBuffer();
     const text = decodeText(buf);
     return { text, size, truncated, buf };
+  },
+  /* 原始字节读取（不做文本解码）：Perfetto 传输等大文件场景，避免大字符串解码开销 */
+  async fileBuffer(path){
+    const r = await fetch('/api/worktable/file?path=' + encodeURIComponent(path));
+    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || ('HTTP ' + r.status)); }
+    return { buf: await r.arrayBuffer(), size: Number(r.headers.get('x-worktable-file-size')) || 0 };
   },
   /* 服务端执行（汇总器等一次性脚本）：返回 {code, stdout, stderr} */
   async exec(path, args, cwd, timeoutMs){
@@ -677,6 +706,98 @@ function analyzeTraceKernels(events, cap){
 }
 /* ==KERNEL-ANALYZER-END== */
 
+/* ==PERFETTO-BRIDGE-BEGIN== */
+/* Perfetto UI（ui.perfetto.dev）集成桥：iframe 内嵌 + postMessage 传输（官方 deep-linking 协议，
+   协议实现见 perfetto 仓库 ui/src/frontend/post_message_handler.ts）。
+   流程：本页向 iframe 周期发送字符串 'PING'，UI 就绪（document.readyState complete 且处理器已注册）
+   后回 'PONG'，随后投递 {perfetto:{buffer,title,fileName,keepApiOpen:true}}；
+   keepApiOpen 保活消息处理器，同一会话可连续投递多个 trace（换条目重投）。
+   安全：postMessage 目标 origin 与 PONG 来源 origin 恒校验为 https://ui.perfetto.dev；
+   trace 只存在于浏览器内存（Perfetto UI 是纯前端应用），不上传任何服务器。
+   本块自包含（不引用块外符号），测试经标记注释整段抽取。 */
+const PERFETTO_ORIGIN = 'https://ui.perfetto.dev';
+/* 可交给 Perfetto 的 trace 文件名判定（与服务端汇总器分流同口径：Chrome/PyTorch JSON trace） */
+function isPerfettoTraceName(name){
+  return /\.trace\.json(\.gz)?$/i.test(name || '') || /trace.*\.json(\.gz)?$/i.test(name || '');
+}
+/* 条目可否在 Perfetto 打开：非二进制报告（nsys/ncu 需专用工具），且已解析出 traceEvents 或文件名是 trace */
+function perfettoEligible(it){
+  if (!it || it.binary) return false;
+  if (it.data && Array.isArray(it.data.traceEvents)) return true;
+  return isPerfettoTraceName(it.name);
+}
+/* Perfetto 会把 title/fileName 中的非 ASCII 字符逐个清洗成空格（sanitizeString），中文名提前转成可读占位 */
+function pfAscii(s){
+  const t = String(s == null ? '' : s).replace(/[^\x20-\x7e]+/g, '_').replace(/\s{2,}/g, ' ').trim();
+  return t || 'trace';
+}
+/* 投递消息体：buffer 经结构化克隆传入；keepApiOpen 使同一会话可连续投递多个 trace */
+function buildPerfettoTraceMessage(buf, title, fileName){
+  return { perfetto: { buffer: buf, title: pfAscii(title), fileName: pfAscii(fileName), keepApiOpen: true } };
+}
+/* 非回环地址访问时 Perfetto 会弹 "Open trace?" 信任确认（isTrustedOrigin 仅豁免 localhost/127.0.0.1/[::1]），需给用户提示 */
+function perfettoNeedsTrustHint(hostname){
+  return !(hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]');
+}
+/* PING/PONG 握手会话：deps 注入 host（message 事件源）、target（iframe.contentWindow / 弹出窗口）
+   与计时器，便于测试整段抽取后注入假对象驱动。
+   onState(state, detail)：ready（握手完成）→ send（已投递，detail=fileName）/ error（detail=错误文案）。
+   send() 在握手完成前排队，就绪后立即投递；dispose() 摘除监听并停止全部计时器。
+   握手超时默认 90s：Perfetto 的消息处理器要等 document.readyState=complete（含全部子资源）才注册，
+   慢网/代理下首次加载可能耗时数十秒，PING 持续重试不受影响。 */
+function createPerfettoSession(deps){
+  const origin = deps.origin || PERFETTO_ORIGIN;
+  const host = deps.host, target = deps.target;
+  const onState = typeof deps.onState === 'function' ? deps.onState : function(){};
+  const setIv = deps.setInterval || setInterval, clearIv = deps.clearInterval || clearInterval;
+  const setTo = deps.setTimeout || setTimeout, clearTo = deps.clearTimeout || clearTimeout;
+  const pingMs = deps.pingMs || 250, timeoutMs = deps.timeoutMs || 90000;
+  let ready = false, disposed = false, pingTimer = null, timeoutTimer = null;
+  const pending = [];
+  function flush(){
+    while (ready && pending.length){
+      const m = pending.shift();
+      target.postMessage(m, origin);
+      onState('send', m.perfetto.fileName);
+    }
+  }
+  function onMsg(e){
+    if (disposed || ready) return;
+    if (!e || e.source !== target || e.origin !== origin || e.data !== 'PONG') return;
+    ready = true;
+    if (pingTimer != null){ clearIv(pingTimer); pingTimer = null; }
+    if (timeoutTimer != null){ clearTo(timeoutTimer); timeoutTimer = null; }
+    onState('ready');
+    flush();
+  }
+  function dispose(){
+    if (disposed) return;
+    disposed = true;
+    if (pingTimer != null){ clearIv(pingTimer); pingTimer = null; }
+    if (timeoutTimer != null){ clearTo(timeoutTimer); timeoutTimer = null; }
+    host.removeEventListener('message', onMsg);
+  }
+  host.addEventListener('message', onMsg);
+  const ping = function(){ if (!disposed && !ready) target.postMessage('PING', origin); };
+  ping();
+  pingTimer = setIv(ping, pingMs);
+  timeoutTimer = setTo(function(){
+    if (ready || disposed) return;
+    dispose();
+    onState('error', '等待 Perfetto UI 响应超时：请确认网络可访问 ' + origin + '（或需配置代理），然后点「重试」');
+  }, timeoutMs);
+  return {
+    send: function(buf, title, fileName){
+      if (disposed){ onState('error', 'Perfetto 会话已关闭'); return; }
+      pending.push(buildPerfettoTraceMessage(buf, title, fileName));
+      flush();
+    },
+    isReady: function(){ return ready; },
+    dispose: dispose,
+  };
+}
+/* ==PERFETTO-BRIDGE-END== */
+
 /* ================= 解析归一化 ================= */
 /* trace 事件分侧：cat 含 kernel 或 gpu_ 前缀 → GPU 设备侧；其余（cpu_op/cuda_runtime/user_annotation 等）→ CPU host 侧。
    两侧时长口径不同域（host 墙钟 vs 设备执行），分别累计、各自作占比分母，不得混算。
@@ -876,7 +997,9 @@ function renderOverview(){
   let kv = '';
   for (const [k, v] of Object.entries(p.meta)) if (v !== undefined && v !== null && v !== '') kv += '<div class="dshell-kvRow"><span class="dshell-kvKey">' + esc(k) + '</span><span class="dshell-kvValue">' + esc(v) + '</span></div>';
   card.innerHTML =
-    '<div class="pf-row"><h2 class="dshell-title grow" style="margin:0;font-size:14px">' + esc(m.tag || p.title) + '</h2>' + (it.binary ? '<span class="dshell-badge dshell-badgeWait">二进制报告</span>' : '<span class="dshell-badge dshell-badgeDone">已解析</span>') + '</div>'
+    '<div class="pf-row"><h2 class="dshell-title grow" style="margin:0;font-size:14px">' + esc(m.tag || p.title) + '</h2>'
+    + (perfettoEligible(it) ? '<button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" style="flex:none" title="在内嵌 Perfetto UI（ui.perfetto.dev）中打开交互式时间线；trace 经 postMessage 传入浏览器内存，不上传服务器">在 Perfetto 中打开</button>' : '')
+    + (it.binary ? '<span class="dshell-badge dshell-badgeWait">二进制报告</span>' : '<span class="dshell-badge dshell-badgeDone">已解析</span>') + '</div>'
     + (m.desc ? '<p class="dshell-muted" style="margin:4px 0">' + esc(m.desc) + '</p>' : '')
     + '<p class="dshell-muted" style="margin:4px 0 10px;word-break:break-all">' + esc(it.path || '本地文件') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</p>'
     + '<div class="dshell-grid">'
@@ -891,6 +1014,8 @@ function renderOverview(){
   $('stageCard').style.display = p.stages.length ? '' : 'none';
   $('bottleneckCard').style.display = '';
   $('aiCard').style.display = '';
+  const perfBtn = $('perfettoOpenBtn');
+  if (perfBtn) perfBtn.addEventListener('click', openPerfettoForCurrent);
   renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();
 }
 let waterfall = false;
@@ -1096,6 +1221,99 @@ function renderKernelAnalysis(){
     : '<p class="dshell-muted" style="margin:4px 0">未识别到融合候选模式。</p>';
 }
 
+/* ================= Perfetto UI 内嵌打开 ================= */
+/* postMessage 结构化克隆要整份复制 buffer，超 1GiB 提示降采样（Perfetto 自身对超大 JSON trace 也难以加载） */
+const PERFETTO_MAX_BYTES = 1 << 30;
+let perf = null;         // { session, frame } —— 模态框生命周期内的握手会话
+let perfBufCache = null; // { itemId, buf, name } —— trace 字节缓存（重试 / 弹出窗口复用，关闭模态框即清）
+function perfStatus(text, isErr){
+  const el = $('perfStatus');
+  el.textContent = text || '';
+  el.classList.toggle('err', !!isErr);
+  $('perfRetryBtn').style.display = isErr ? '' : 'none';
+}
+/* 取条目原始 trace 字节：本地 File 直读（保留原始内容）；服务端经 /file 原始字节；仅有内存数据时重建 JSON */
+async function perfettoTraceBuffer(it){
+  let buf = null, name = it.name;
+  if (it.source === 'local' && it.file) buf = await it.file.arrayBuffer();
+  else if (it.path) buf = (await api.fileBuffer(it.path)).buf;
+  else if (it.data && Array.isArray(it.data.traceEvents)) buf = new TextEncoder().encode(JSON.stringify(it.data)).buffer;
+  else throw new Error('无法取得 trace 原始内容（仅支持本地文件或服务端路径条目）');
+  if (isGzipBuf(buf)){ buf = await gunzip(buf); name = name.replace(/\.gz$/i, ''); }
+  if (!buf.byteLength) throw new Error('trace 内容为空');
+  if (buf.byteLength > PERFETTO_MAX_BYTES) throw new Error('trace 超过 1GiB（' + fmtSize(buf.byteLength) + '），浏览器 postMessage 传不下；建议降采样或切分后再试');
+  return { buf, name };
+}
+async function openPerfettoForCurrent(){
+  if (!cur){ toast('请先加载一个 profiling'); return; }
+  const it = cur.item;
+  if (!perfettoEligible(it)){ toast('该条目不是 Chrome/PyTorch trace，Perfetto 无法打开'); return; }
+  /* 模态框打开期间整页被遮罩、入口按钮不可达，这里恒为冷启动：
+     清掉旧会话（perfBufCache 保留，重试路径复用已读字节），重建 iframe + PING/PONG 握手 */
+  if (perf && perf.session) perf.session.dispose();
+  perf = null;
+  $('perfBody').innerHTML = '';
+  $('perfModal').style.display = 'flex';
+  $('perfTitle').textContent = 'Perfetto UI · ' + it.name;
+  perfStatus('加载 Perfetto UI（' + PERFETTO_ORIGIN + '）…');
+  const frame = document.createElement('iframe');
+  frame.src = PERFETTO_ORIGIN + '/';
+  frame.setAttribute('title', 'Perfetto UI');
+  $('perfBody').appendChild(frame);
+  const session = createPerfettoSession({
+    host: window, target: frame.contentWindow,
+    onState: (st, detail) => {
+      if (!perf || perf.session !== session) return;
+      if (st === 'ready') perfStatus('握手完成，读取并传输 trace…');
+      else if (st === 'send'){
+        perfStatus('已发送 ' + detail + ' —— trace 仅在浏览器内存，不上传服务器'
+          + (perfettoNeedsTrustHint(location.hostname) ? '；若 Perfetto 弹 "Open trace?" 请点击 Yes / Always trust' : ''));
+        $('perfPopBtn').disabled = false;
+      }
+      else if (st === 'error') perfStatus(detail, true);
+    },
+  });
+  perf = { session, frame };
+  await perfettoSendCurrent(it);
+}
+async function perfettoSendCurrent(it){
+  if (!perf || !perf.session) return;
+  try{
+    $('perfTitle').textContent = 'Perfetto UI · ' + it.name;
+    if (!(perfBufCache && perfBufCache.itemId === it.id)){
+      perfStatus('读取 trace：' + it.name + (it.size ? '（' + fmtSize(it.size) + '）' : '') + '…');
+      const r = await perfettoTraceBuffer(it);
+      perfBufCache = { itemId: it.id, buf: r.buf, name: r.name };
+    }
+    const c = perfBufCache, tag = metaOf(it).tag;
+    perf.session.send(c.buf, (tag ? tag + ' - ' : '') + c.name, c.name);
+  }catch(e){ perfStatus('读取 trace 失败：' + (e && e.message || e), true); }
+}
+function closePerfetto(){
+  if (perf && perf.session) perf.session.dispose();
+  perf = null;
+  perfBufCache = null;
+  $('perfBody').innerHTML = '';
+  $('perfModal').style.display = 'none';
+  $('perfPopBtn').disabled = true;
+}
+$('perfCloseBtn').addEventListener('click', closePerfetto);
+$('perfRetryBtn').addEventListener('click', () => {
+  const cache = perfBufCache;      // 重试只重建 iframe + 握手，已读出的 trace 字节保留复用
+  closePerfetto();
+  perfBufCache = cache;
+  openPerfettoForCurrent();
+});
+$('perfPopBtn').addEventListener('click', () => {
+  if (!perfBufCache) return;
+  const win = window.open(PERFETTO_ORIGIN, '_blank');
+  if (!win){ toast('浏览器拦截了弹窗，请允许本站点弹出窗口后重试'); return; }
+  /* 弹出窗口独立握手会话（fromOpener 通道），不随模态框关闭；就绪/超时后自行收尾 */
+  const pop = createPerfettoSession({ host: window, target: win });
+  pop.send(perfBufCache.buf, perfBufCache.name, perfBufCache.name);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('perfModal').style.display !== 'none') closePerfetto(); });
+
 /* ================= 列表 ================= */
 function renderList(){
   const box = $('itemList');
@@ -1205,7 +1423,7 @@ $('localFileInput').addEventListener('change', async (ev) => {
   const files = Array.from(ev.target.files || []);
   for (const f of files){
     const id = 'local:' + f.name;
-    const it = { id, name: f.name, path: null, source: 'local', size: f.size, binary: isBinaryName(f.name), data: null, rawText: null };
+    const it = { id, name: f.name, path: null, source: 'local', size: f.size, binary: isBinaryName(f.name), data: null, rawText: null, file: f };
     if (!it.binary){
       try{
         let buf = await f.arrayBuffer();
