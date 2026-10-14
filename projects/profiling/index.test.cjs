@@ -477,6 +477,23 @@ test("isPerfettoTraceName / perfettoEligible：trace 判定口径", () => {
   assert.ok(!ctx.perfettoEligible(null));
 });
 
+test("resolvePerfettoTargets：勾选集优先（按列表顺序、滤掉不可开），无勾选回退当前条目", () => {
+  const ctx = perfettoContext();
+  const trace = (id) => ({ id, name: id + ".pt.trace.json", binary: false, path: "/p/" + id, data: null });
+  const nonTrace = { id: "n", name: "run.profile.json", binary: false, data: { stages: [] } };
+  const list = [trace("a"), nonTrace, trace("b"), trace("c")];
+  const ids = (arr) => [...arr].map(x => x.id);   /* vm 上下文返回的数组是跨 realm 对象，展开回主 realm 再断言 */
+  /* 勾选优先：按列表顺序、非 trace 被过滤 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(["c", "a", "n"]), null)), ["a", "c"]);
+  /* 无勾选回退当前条目 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(), { item: trace("b") })), ["b"]);
+  /* 勾选为空集且当前条目不可开 → 空 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(), { item: nonTrace })), []);
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(), null)), []);
+  /* picks 为 null/undefined 安全 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, null, { item: trace("a") })), ["a"]);
+});
+
 test("pfAscii / perfettoNeedsTrustHint / buildPerfettoTraceMessage", () => {
   const ctx = perfettoContext();
   assert.equal(ctx.pfAscii("run-01.pt.trace.json"), "run-01.pt.trace.json");
@@ -568,7 +585,7 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     "function buildPerfettoTraceMessage(", "function pfAscii(", "function perfettoNeedsTrustHint(",
     'id="perfModal"', 'id="perfBody"', 'id="perfStatus"', 'id="perfTitle"',
     'id="perfRetryBtn"', 'id="perfPopBtn"', 'id="perfCloseBtn"',
-    'id="perfettoOpenBtn"', "$('perfettoOpenBtn').addEventListener('click', () => {",
+    'id="perfettoOpenBtn"', "$('perfettoOpenBtn').addEventListener('click', async () => {",
     "async function perfettoTraceBuffer(", "async fileBuffer(", "rawText: null, file: f }",
     "function closePerfetto(", "e.key === 'Escape'", "perfettoNeedsTrustHint(location.hostname)",
     "window.open(PERFETTO_ORIGIN, '_blank')",
@@ -580,11 +597,15 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     'id="perfDownloadBtn"', "perfDownloadBtn').addEventListener('click'", "大文件解析可能需要数分钟",
     /* 服务端大文件：/file 走 raw=1 流式（绕开 256MB 全量读上限）；读取失败后晚到 PONG 不覆盖错误 */
     "encodeURIComponent(path) + '&raw=1'", "encodeURIComponent(it.path) + '&raw=1'", "perf.failed = true", "perf.failed) return",
-    /* 入口按钮固定在列表卡标题行，按当前选中条目资格启停 */
-    ">Perfetto打开<", "$('perfettoOpenBtn').disabled = !(cur && perfettoEligible(cur.item))",
+    /* 入口按钮固定在列表卡标题行，勾选集优先于当前选中条目，两者皆空才禁用 */
+    ">Perfetto打开<", "$('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length",
     /* 点击先保存到本地（服务端文件）再打开；内嵌 iframe 走 embedded 模式关侧边栏 */
     "function downloadTraceFile(", "PERFETTO_EMBED_URL", "mode=embedded&hideSidebar=true",
     "已保存 trace 到本地下载目录",
+    /* 保存目录（FS API + IndexedDB 持久化）与重复下载跳过；多选同时打开 */
+    'id="saveDirBtn"', 'id="saveDirClear"', "showDirectoryPicker", "dsh-profiling",
+    "function resolvePerfettoTargets(", "perfPicks", 'class="pf-pick"', "此前已下载过，跳过重复下载",
+    "function maybeWriteToSaveDir(", "已保存到 ", "function ensureSaveDirPermission(",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
   /* 「清空本地」按钮已删除（标记、处理器均不再存在） */
   assert.ok(!html.includes('clearLocalBtn'), "「清空本地」按钮及其处理器应已移除");
