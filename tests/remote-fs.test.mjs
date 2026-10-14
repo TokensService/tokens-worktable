@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { networkInterfaces } from 'node:os'
 import { resolve as pathResolve, basename } from 'node:path'
 import { createHash } from 'node:crypto'
-import { stat as fsStat } from 'node:fs/promises'
+import { stat as fsStat, rename as fsRename, unlink as fsUnlink } from 'node:fs/promises'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 
@@ -28,7 +28,7 @@ function loadRemoteBlock(execFileImpl, extra = {}) {
     Buffer, process, URL,
     DSH_HOME: '/tmp/.test-dsh-home',
     pathResolve, basename, createHash,
-    fsStat,
+    fsStat, fsRename, fsUnlink,
     fsMkdir: extra.fsMkdir || (async () => {}),
     listDirectory: extra.listDirectory || (async () => { throw new Error('不应走到本地 listDirectory') }),
     localAddrs: () => new Set(['127.0.0.1', 'localhost', '::1']),
@@ -155,4 +155,42 @@ test('rfetch：远程文件不存在（__NOENT__）→ 404', async () => {
   const res = fakeRes()
   await handlers['/api/worktable/rfetch']({ method: 'POST', body: { ip: '192.0.2.9', path: '/nope' } }, res)
   assert.equal(res.status, 404)
+})
+
+test('rfetch：dstDir 指定时直接落该目录（不走 remote-cache 哈希子目录），临时名 scp 后原子改名，二次命中', async t => {
+  const dir = await mkdtemp(tmpdir() + '/rfetch-dstdir-')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const dstDir = dir + '/save'
+  const calls = []
+  const execFile = (cmd, args, opts, cb) => {
+    calls.push({ cmd, args: [...args] })
+    if (cmd === 'sshpass' && args.includes('ssh')) { cb(null, '  777\n', ''); return }
+    if (cmd === 'sshpass' && args.includes('scp')) {
+      const temp = args[args.length - 1]
+      import('node:fs').then(fs => { fs.mkdirSync(pathResolve(temp, '..'), { recursive: true }); fs.writeFile(temp, Buffer.alloc(777), (e) => cb(e, '', '')) })
+      return
+    }
+    cb(new Error('unexpected call'), '', '')
+  }
+  const handlers = loadRemoteBlock(execFile)
+  let res = fakeRes()
+  await handlers['/api/worktable/rfetch']({ method: 'POST', body: { ip: '192.0.2.9', user: 'u', pass: 'pw', path: '/data/big.pt.trace.json', dstDir } }, res)
+  assert.equal(res.status, 200)
+  assert.equal(res.body.path, pathResolve(dstDir, 'big.pt.trace.json'), '落在 dstDir 下、保留原始文件名')
+  assert.ok(!res.body.path.includes('remote-cache'), '不经 remote-cache')
+  const scpCall = calls.find(c => c.args.includes('scp'))
+  assert.ok(scpCall.args[scpCall.args.length - 1].includes('.rfetch-'), 'scp 先落临时名')
+  /* 二次调用大小一致 → 命中不拉取 */
+  calls.length = 0
+  res = fakeRes()
+  await handlers['/api/worktable/rfetch']({ method: 'POST', body: { ip: '192.0.2.9', user: 'u', pass: 'pw', path: '/data/big.pt.trace.json', dstDir } }, res)
+  assert.equal(res.body.cached, true)
+  assert.equal(calls.filter(c => c.args.includes('scp')).length, 0)
+  /* 相对路径 dstDir 被丢弃（非绝对路径不生效，回退默认缓存口径） */
+  res = fakeRes()
+  await handlers['/api/worktable/rfetch']({ method: 'POST', body: { ip: '192.0.2.9', user: 'u', pass: 'pw', path: '/data/big.pt.trace.json', dstDir: 'relative/dir' } }, res)
+  assert.equal(res.status, 200)
+  assert.ok(res.body.path.includes('remote-cache'), res.body.path)
+  const { rm: rm2 } = await import('node:fs/promises')
+  await rm2('/tmp/.test-dsh-home', { recursive: true, force: true })
 })

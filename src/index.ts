@@ -5278,8 +5278,10 @@ export function apply(ctx: Context) {
     const truncated = entries.length > 500
     return { path: abs, entries: truncated ? entries.slice(0, 500) : entries, truncated }
   }
-  /** 把远程文件 scp 拉到本机缓存；已缓存且大小一致直接命中。返回 {path:<本地路径>, size, cached} */
-  async function remoteFetchFile(ip: string, user: string, pass: string, path: string) {
+  /** 把远程文件 scp 拉到本机；已拉取且大小一致直接命中。落点：dstDir（绝对路径，profiling 设置页按节点配置的保存目录）优先，
+      未给走默认缓存 ~/.dsh/storages/remote-cache/<sha1(host:path)>/。scp 先落临时名再原子改名，目录里不留半截文件。
+      返回 {path:<本地路径>, size, cached} */
+  async function remoteFetchFile(ip: string, user: string, pass: string, path: string, dstDir?: string) {
     const { host, port } = parseHostPort(ip)
     if (localAddrs().has(host)) {
       const st = await fsStat(path)
@@ -5289,18 +5291,25 @@ export function apply(ctx: Context) {
     const sizeOut = await sshExec(ip, user, pass, 'stat -c %s ' + shq(path) + ' 2>/dev/null || echo __NOENT__')
     if (sizeOut.indexOf('__NOENT__') >= 0) { const err: any = new Error('远程文件不存在：' + path); err.statusCode = 404; throw err }
     const size = Number(sizeOut.trim()) || 0
-    const dir = pathResolve(REMOTE_CACHE, createHash('sha1').update(host + ':' + path).digest('hex'))
+    const dir = dstDir ? pathResolve(dstDir) : pathResolve(REMOTE_CACHE, createHash('sha1').update(host + ':' + path).digest('hex'))
     const local = pathResolve(dir, basename(path))
     try {
       const st = await fsStat(local)
       if (st.size === size) return { path: local, size, cached: true }
-    } catch { /* 未缓存 */ }
+    } catch { /* 未拉取过 */ }
     await fsMkdir(dir, { recursive: true })
+    const temp = local + '.rfetch-' + process.pid + '-' + Date.now() + '.tmp'
     const target = (user ? user + '@' : '') + host + ':' + shq(path)
-    const scpArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', ...(port ? ['-P', port] : []), target, local]
-    await execTextT(pass ? 'sshpass' : 'scp', pass
-      ? ['-p', pass, 'scp', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...scpArgs]
-      : ['-o', 'BatchMode=yes', ...scpArgs], 3600000)
+    const scpArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', ...(port ? ['-P', port] : []), target, temp]
+    try {
+      await execTextT(pass ? 'sshpass' : 'scp', pass
+        ? ['-p', pass, 'scp', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...scpArgs]
+        : ['-o', 'BatchMode=yes', ...scpArgs], 3600000)
+      await fsRename(temp, local)
+    } catch (err) {
+      try { await fsUnlink(temp) } catch {}
+      throw err
+    }
     const st2 = await fsStat(local)
     return { path: local, size: st2.size, cached: false }
   }
@@ -5330,8 +5339,9 @@ export function apply(ctx: Context) {
         const body = await readJsonBody(req)
         const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
         const path = typeof body.path === 'string' ? body.path : ''
+        const dstDir = typeof body.dstDir === 'string' && body.dstDir.startsWith('/') ? body.dstDir.replace(/\/+$/, '') : ''
         if (!ip || !path) { json(res, 400, { error: 'missing ip/path' }); return }
-        const r = await remoteFetchFile(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', path)
+        const r = await remoteFetchFile(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', path, dstDir || undefined)
         json(res, 200, r)
       } catch (err) {
         json(res, (err as any)?.statusCode === 404 ? 404 : 500, { error: String((err as any)?.message || err) })
