@@ -438,6 +438,30 @@ print(f'{host.get("user") or "root"}\t{address}\t{port}\t{endpoint}\t{password}'
 PY
 }
 
+# Once the SSH target has been resolved to a Kubernetes InternalIP, use that
+# address for remote rendering and template extraction.  A forwarded/NAT SSH
+# endpoint can reach the host but may not have the same egress route to SWR.
+# Keep the original endpoint when no distinct InternalIP mapping exists.
+render_target_host() {
+  local user host port endpoint password node_ip
+  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+  if [[ "${REMOTE_RENDER_USE_NODE_IP:-1}" == "1" ]]; then
+    node_ip="$(python3 - "$TARGET_NODE_IP_MAP" "$endpoint" <<'PY'
+import json
+import sys
+mapping = json.loads(sys.argv[1])
+value = mapping.get(sys.argv[2], "")
+print(value if isinstance(value, str) else "")
+PY
+)"
+    if [[ -n "$node_ip" && "$node_ip" != "$host" ]]; then
+      host="$node_ip"
+      port=22
+    fi
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$user" "$host" "$port" "$endpoint" "$password"
+}
+
 write_remote_render_environment() {
   local environment_file="$1" target_run_dir="$2" target_render_dir="$3"
   local variable
@@ -476,7 +500,7 @@ write_remote_render_environment() {
 render_on_first_target() {
   local user host port endpoint password target target_script_dir target_env_file
   local remote_command
-  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+  IFS=$'\t' read -r user host port endpoint password <<<"$(render_target_host)"
   target="${user}@${host}"
   target_script_dir="${TARGET_RUN_DIR}/scripts"
   target_env_file="${TARGET_RUN_DIR}/remote-render.env"
@@ -497,7 +521,7 @@ render_on_first_target() {
 
 sync_rendered_from_first_target() {
   local user host port endpoint password target target_render_dir_q render_dir_q
-  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+  IFS=$'\t' read -r user host port endpoint password <<<"$(render_target_host)"
   target="${user}@${host}"
   printf -v target_render_dir_q '%q' "$TARGET_RENDER_DIR"
   printf -v render_dir_q '%q' "$RENDER_DIR"
