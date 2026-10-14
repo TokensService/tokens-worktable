@@ -14,7 +14,7 @@ function context(overrides={}){
     section('/* ---------- 流水线 API 调用说明 ---------- */','/* ---------- 流水线 API 调用说明结束 ---------- */');
   /* currentUsername：执行人只读、固定取登录用户后的唯一读取点；缺省留空（回退 api），用例按需覆盖 */
   const ctx=Object.assign({Array,Object,String,Set,JSON,encodeURIComponent,environments:[],repositories:[],currentUsername:'',
-    $:()=>null,curEnvs:()=>[],curStrategy:()=>'',selectedPresetKeys:()=>[]},overrides);
+    $:()=>null,curEnvs:()=>[],curStrategy:()=>'',curWeightsPath:()=>'',selectedPresetKeys:()=>[]},overrides);
   vm.createContext(ctx);vm.runInContext(code,ctx);return ctx;
 }
 function form(values){ const map=values||{}; return id=>({value:map[id]||''}); }
@@ -26,12 +26,13 @@ test('API 请求体与 curl 按运行框当前填写的参数动态生成',()=>{
     currentUsername:'alice',
     curEnvs:()=>[{id:'env-prod',ip:'10.0.0.8'}],
     curStrategy:()=>'blue-green',
+    curWeightsPath:()=>'/models/glm52',
     selectedPresetKeys:()=>['cleanup','check'],
   });
   const spec=ctx.pipelineApiSpec({id:'release 2026',name:'发布',defaults:{branch:'ignored-branch',presets:['profiling']}},'https://dsh.example');
   assert.equal(spec.endpoint,'/api/worktable/pipeline/run/release%202026');
   assert.deepEqual(J(spec.body),{
-    environmentIds:['env-prod'],repositoryId:'repo-app',branch:'release',strategy:'blue-green',presets:['cleanup','check'],by:'alice',
+    environmentIds:['env-prod'],repositoryId:'repo-app',branch:'release',strategy:'blue-green',weightsPath:'/models/glm52',presets:['cleanup','check'],by:'alice',
   });
   assert.equal(spec.warning,'');
   assert.match(spec.curl,/curl -X POST/);
@@ -47,7 +48,7 @@ test('分支与执行人留空时回退 main 与 api，空策略/空预设显式
   });
   const spec=ctx.pipelineApiSpec({id:'pl-1',defaults:{branch:'trunk',strategy:'canary',presets:['check']}},'https://dsh.example');
   assert.deepEqual(J(spec.body),{
-    environmentIds:['env-dev'],repositoryId:'repo-app',branch:'main',strategy:'',presets:[],by:'api',
+    environmentIds:['env-dev'],repositoryId:'repo-app',branch:'main',strategy:'',weightsPath:'',presets:[],by:'api',
   });
 });
 

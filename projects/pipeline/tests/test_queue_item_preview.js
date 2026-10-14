@@ -1160,7 +1160,7 @@ test('startRun：队列项启动时把原队列 id 传给运行上下文', () =>
     findPipeline: id => ({ id, name: 'P1', stages: [] }), curPipeline: () => ({ id: 'p1', name: 'P1', stages: [] }),
     resolveEnv: ip => ({ ip }), curEnvs: () => [{ ip: 'A' }],
     resolveRepo: () => ({ id: 'repo1', name: 'repo1', url: '' }),
-    $: () => ({ value: '' }), curStrategy: () => '', selectedPresetKeys: () => [],
+    $: () => ({ value: '' }), curStrategy: () => '', curWeightsPath: () => '', selectedPresetKeys: () => [],
     runIps: run => new Set((run.envs || []).map(env => env.ip).filter(Boolean)),
     startSimRun: (pl, runContext) => calls.push({ pl, runContext }),
   };
@@ -1189,7 +1189,7 @@ function makeScheduleContext(stages = [
     curEnvs: () => [{ ip: '10.0.0.1' }],
     resolveEnv: ip => ({ ip }),
     resolveRepo: () => ({ id: 'repo1', name: 'repo1' }),
-    curStrategy: () => '',
+    curStrategy: () => '', curWeightsPath: () => '',
     selectedPresetKeys: () => [],
     startRun: item => { calls.start.push(item); context.activeRuns.push(item); return true; },
     submitServerRun: item => { calls.submit.push(item); },

@@ -108,7 +108,7 @@ test('runPipeline：入队项携带 settings，出队启动沿用入队时副本
     resolveEnv:e=>e,
     resolveRepo:id=>({id,name:'repo',url:'https://git'}),
     selectedPresetKeys:()=>[],
-    curStrategy:()=>'',
+    curStrategy:()=>'',curWeightsPath:()=>'',
     DEFAULT_IMAGE:'img',
     $:()=>({value:''}),
     scriptsDir:'/snap/scripts',

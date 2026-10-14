@@ -78,11 +78,13 @@ function makeContext(runResult = 'submitted') {
     pipelineRunStrategy: { value: '', focus() {} },
     pipelineRunStrategyPanel: new FakePanel(),
     pipelineRunRepo: new FakeSelect(),
+    pipelineRunWeightsPath: { value: '' },
     pipelineRunPresets: { querySelectorAll: () => presetInputs },
     pipelineRunWarning: { textContent: '', style: { display: 'none' } },
     repoSel: new FakeSelect(),
     branchName: { value: 'main-control-branch' },
     deployStrategyName: { value: 'main-control-strategy' },
+    weightsPath: { value: '' },
   };
   const body = {
     children: [],
@@ -118,6 +120,7 @@ function makeContext(runResult = 'submitted') {
     curEnvs: () => [context.environments[0]],
     curRepo: () => context.repositories.find(repo => repo.id === elements.repoSel.value) || context.repositories[0],
     curStrategy: () => elements.deployStrategyName.value,
+    curWeightsPath: () => elements.weightsPath.value,
     selectedPresetKeys: () => ['cleanup'],
     resolveRepo: id => context.repositories.find(repo => repo.id === id),
     esc: value => String(value),
@@ -238,7 +241,7 @@ test('确认弹窗把临时参数显式交给运行流程，执行人仍由登�
 
   assert.deepEqual(J(calls.run), [{
     pipelineId: 'pipe-2', envs: [{ id: 'env-a', name: '开发', ip: '10.0.0.1' }],
-    repoId: 'repo-a', branch: 'feature/dialog', strategy: '', presets: ['cleanup'],
+    repoId: 'repo-a', branch: 'feature/dialog', strategy: '', weightsPath: '', presets: ['cleanup'],
   }]);
   assert.equal('by' in calls.run[0], false, '执行人必须继续由 runPipeline 读取当前登录用户');
   assert.equal('useDefaults' in calls.run[0], false, '确认后使用弹窗中的显式临时参数');

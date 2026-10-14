@@ -219,7 +219,7 @@ function elStub(){ return {value:'',checked:false,style:{},textContent:'',datase
 function elMapStub(els){ return id=>els[id]||(els[id]=elStub()); }
 
 function exportCtx(){
-  const els={branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},
+  const els={branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},weightsPath:{value:'/models/w1'},
     cleanupEnv:{checked:true},checkEnv:{checked:false},profilingEnv:{checked:false}};
   const ctx={
     $:elMapStub(els),
@@ -278,7 +278,7 @@ test('导出设置→导入 roundtrip：视图状态随 config 携带（含 pass
   ['schedEnvIds','histFilter','plFilter','histPageSize','plPageSize'].forEach(k=>{
     assert.ok(k in data.config,`config 应携带视图状态键 ${k}`);
   });
-  ['curPipelineId','selectedEnvIds','curRepoId','branch','strategy','cleanupEnabled','checkEnabled','profilingEnabled'].forEach(k=>{
+  ['curPipelineId','selectedEnvIds','curRepoId','branch','strategy','weightsPath','cleanupEnabled','checkEnabled','profilingEnabled'].forEach(k=>{
     assert.ok(!(k in data.config),`config 不携带运行行临时配置 ${k}`);
     assert.ok(k in data.local,`local 块携带运行行临时配置 ${k}`);
   });
@@ -287,7 +287,7 @@ test('导出设置→导入 roundtrip：视图状态随 config 携带（含 pass
   assert.equal(data.config.histPageSize,20);
   assert.equal(data.config.plPageSize,50);
   assert.deepEqual(J(data.local),{curPipelineId:'pl-b',selectedEnvIds:['env-a'],curRepoId:'r1',schedEnvIds:['env-a'],
-    branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'err',status:'failed',pipeline:'构建'},histPageSize:20,
+    branch:'0830_dev',strategy:'arch-a',weightsPath:'/models/w1',histFilter:{kw:'err',status:'failed',pipeline:'构建'},histPageSize:20,
     cleanupEnabled:true,checkEnabled:false,profilingEnabled:false},
     'local 块携带运行行临时配置（向后兼容旧版页面导入）');
 
@@ -299,6 +299,7 @@ test('导出设置→导入 roundtrip：视图状态随 config 携带（含 pass
   assert.deepEqual(J(f.ctx.schedEnvIds),['env-a']);
   assert.equal(f.els.branchName.value,'0830_dev');
   assert.equal(f.els.deployStrategyName.value,'arch-a');
+  assert.equal(f.els.weightsPath.value,'/models/w1','权重路径随 local 块导入恢复');
   assert.equal(f.els.cleanupEnv.checked,true);
   assert.equal(f.els.checkEnv.checked,false);
   assert.equal(f.els.profilingEnv.checked,false);

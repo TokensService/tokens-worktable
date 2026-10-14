@@ -734,7 +734,7 @@ test('runPipeline：本次实际 envs 被预留给他人时 alert 并 return res
     pipelineDefaultRunIssue: () => '',
     $: () => ({ value: '' }), alert: m => alerts.push(String(m)),
     resolveRepo: () => ({ id: 'r', name: 'r' }), curEnvs: () => [envB], resolveEnv: v => envB,
-    curStrategy: () => '', selectedPresetKeys: () => [], DEFAULT_IMAGE: 'img',
+    curStrategy: () => '', curWeightsPath: () => '', selectedPresetKeys: () => [], DEFAULT_IMAGE: 'img',
     submitServerRun: item => started.push(item),
     Date, Math,
   });
@@ -758,6 +758,7 @@ test('submitPipelineRunDialog：弹窗选中节点被预留给他人时 alert �
     pipelineRunRepo: { value: 'repo-a' },
     pipelineRunBranch: { value: 'main' },
     pipelineRunStrategy: { value: '' },
+    pipelineRunWeightsPath: { value: '' },
   };
   const ctx = pureCtx({
     environments: [envB], repositories: [{ id: 'repo-a', name: 'A' }],
@@ -839,7 +840,7 @@ test('startRun 租约 acquire 遇 reserved：alert 服务端 message 并按启�
     curPipeline: () => ({ id: 'p1', name: 'PL', stages: [] }),
     curEnvs: () => [{ ip: '10.0.0.1' }], resolveEnv: ip => ({ ip }),
     resolveRepo: () => ({ id: 'r', name: 'r' }),
-    $: () => ({ value: '' }), currentUsername: 'me', curStrategy: () => '',
+    $: () => ({ value: '' }), currentUsername: 'me', curStrategy: () => '', curWeightsPath: () => '',
     selectedPresetKeys: () => [],
     startSimRun: () => { calls.sim++; },
     queue: [], renderQueue: () => { calls.render++; },
