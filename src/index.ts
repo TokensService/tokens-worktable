@@ -1034,6 +1034,31 @@ function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedCon
 }
 /* ---------- 可信/内置流水线结束 ---------- */
 
+/* ---------- 节点环境写保护（配节点仅 admin） ---------- */
+/** 节点环境写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得新增/修改/删除节点。
+ *  按 id 集合 + sameEnvironmentContent 规范字段比对（多余字段、键序、条目顺序均不算变更——页面无
+ *  节点排序写路径）；合并层已保证「客户端未改动的条目以磁盘为准」，故只保存流水线/设置的
+ *  非 admin 请求 merged==stored 放行，他端并发的节点增删改也照常随合并保留。
+ *  空库播种放行：磁盘尚无节点环境（全新部署）时不拦，否则非 admin 连首次保存都会被 403 锁死；
+ *  存量节点仅 admin 可改（非 admin 删空要先过「删除」关，构造不出空库）。
+ *  无认证服务（token 共享模式）返回 null 维持旧行为；admin 全权。返回 null = 放行。 */
+function environmentsWriteDeny(ctx: any, req: any, storedConfig: any, mergedConfig: any): { message: string } | null {
+  const caller = resolveRequestAuth(ctx, req)
+  if (!caller || caller.isAdmin) return null
+  const envsOf = (value: any): any[] => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.environments) ? value.environments : []
+  const mapOf = (items: any[]) => new Map<string, any>(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item) => [item.id, item]))
+  const stored = mapOf(envsOf(storedConfig))
+  if (!stored.size) return null   /* 空库播种放行（见函数头注释） */
+  const merged = mapOf(envsOf(mergedConfig))
+  const deny = { message: '节点环境仅 admin 用户可配置（新增/修改/删除节点）' }
+  if (stored.size !== merged.size) return deny
+  for (const [id, storedEntry] of stored) {
+    const mergedEntry = merged.get(id)
+    if (!mergedEntry || !sameEnvironmentContent(storedEntry, mergedEntry)) return deny
+  }
+  return null
+}
+
 /* ---------- 节点预留：节点环境按「日期 + 时间段」分配给指定用户（纯函数区，供 vm 抽取测试） ----------
  * 存储形态（worktable-pipeline-reservations.json，与 PLANS_STORE 同目录 storages/）：
  *   { reservations: [{ id:'rsv-…', nodeId:<environment id>, users:[...], start:<ISO>, end:<ISO>,
@@ -4134,6 +4159,9 @@ export function apply(ctx: Context) {
             /* 拥有者写保护：非 admin 仅可更新/删除自己拥有的流水线，且不得把他人已删条目提交回来 */
             const ownerDeny = ownerPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
             if (ownerDeny) return { conflicts: [] as string[], config: diskCfg, owner: ownerDeny }
+            /* 节点环境写保护：非 admin 不得新增/修改/删除节点（配节点 admin 专属；违规整体不写盘，403 由调用方在锁外响应） */
+            const envDeny = environmentsWriteDeny(ctx, req, diskCfg, configMerge.config)
+            if (envDeny) return { conflicts: [] as string[], config: diskCfg, envs: envDeny }
             const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
             /* 视图态写入用户槽位（其余用户原样保留）；共享配置不得回流顶层视图键 */
             merged.config.userViewStates = userViewStates
@@ -4151,6 +4179,10 @@ export function apply(ctx: Context) {
           }
           if ('owner' in outcome && outcome.owner) {
             json(res, 403, { error: 'owner', message: outcome.owner.message, pipelineIds: outcome.owner.pipelineIds })
+            return
+          }
+          if ('envs' in outcome && outcome.envs) {
+            json(res, 403, { error: 'envs', message: outcome.envs.message })
             return
           }
           if (outcome.conflicts.length) {

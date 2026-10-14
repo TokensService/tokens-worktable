@@ -127,7 +127,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     histFilter:{kw:'',status:'',pipeline:''}, histPageSize:10,
     viewRc:{stages:[{id:'s0'}],nodes:{},selId:'s0',token:'t0',over:false,vars:{},timer:null}, runStages:null, selectedId:'s0',
     curPipeline:function(){ return this.pipelines.find(p=>p.id===this.curPipelineId)||this.pipelines[0]; },
-  },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','applyImportedSettings']);
+  },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','envConfigEditable','applyImportedSettings']);
   ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter','savePlFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{ ctx[n]=()=>rendered.push(n); });
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);

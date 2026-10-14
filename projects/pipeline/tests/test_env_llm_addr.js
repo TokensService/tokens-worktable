@@ -71,7 +71,7 @@ function formCtx(envs){
     renderEnvs:()=>{out.rendered++;}, renderEnvOptions:()=>{out.options++;},
   };
   vm.createContext(ctx);
-  vm.runInContext(['startEnvEdit','resetEnvForm','saveEnvForm','copyEnv'].map(extractFunction).join('\n'),ctx);
+  vm.runInContext(['envConfigEditable','startEnvEdit','resetEnvForm','saveEnvForm','copyEnv'].map(extractFunction).join('\n'),ctx);
   return {ctx,els,out};
 }
 function fill(els,o){
@@ -161,7 +161,7 @@ test('renderEnvs：行渲染含 llmAddr 单元格（内网IP 列之后），缺�
     gpuCellFull:()=>'GPUCELL', envResSummaryHtml:()=>'RES',
   };
   vm.createContext(ctx);
-  vm.runInContext(['envFilterMatch','envSortVal','envSortList','renderEnvs'].map(extractFunction).join('\n'),ctx);
+  vm.runInContext(['envFilterMatch','envSortVal','envSortList','envConfigEditable','renderEnvs'].map(extractFunction).join('\n'),ctx);
   ctx.renderEnvs();
   assert.equal(tbody.children.length,2);
   const row1=tbody.children[0].innerHTML, row2=tbody.children[1].innerHTML;

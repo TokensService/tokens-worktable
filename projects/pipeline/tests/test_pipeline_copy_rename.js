@@ -136,7 +136,7 @@ const CLIENT_FUNCTIONS = [
   'loadPlDraft', 'clearPlDraft', 'savePlDraft',
   'applyPlFormReadOnly', 'openPlForm', 'savePlForm',
   'loadServerState', 'applyPipelineRefreshPayload', 'refreshPipelinesFromServer',
-  'beginRefreshSpin',
+  'beginRefreshSpin', 'envConfigEditable',
 ];
 
 function makeClient(server, options) {
