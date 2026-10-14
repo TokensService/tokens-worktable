@@ -150,7 +150,7 @@
             <button class="dshell-btn" id="saveDirSaveBtn">保存</button>
             <button class="dshell-btn dshell-btnGhost" id="saveDirClearBtn">清除</button>
           </div>
-          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto打开」会把服务端 trace 直接保存到该目录（保留原始文件名，目录不存在自动创建），已存在同名文件自动跳过；留空则回退为浏览器下载（已下载过的自动跳过重复下载）。本地文件本就在本地，不上送。</p>
+          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto」会把服务端 trace 直接保存到该目录（保留原始文件名，目录不存在自动创建），已存在同名文件自动跳过；留空则回退为浏览器下载（已下载过的自动跳过重复下载）。本地文件本就在本地，不上送。</p>
         </div>
       </div>
 
@@ -158,7 +158,8 @@
         <div class="pf-row">
           <h2 class="dshell-sub" style="margin:0" class="grow">Profiling 列表</h2>
           <span class="dshell-badge" id="countBadge">0</span>
-          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把选中（或勾选）的 trace 保存到本地（服务端文件：设了保存目录则直接存入该目录、已存在跳过；否则下载到浏览器默认下载目录、已下载过跳过），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
+          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把选中（或勾选）的 trace 保存到本地（服务端文件：设了保存目录则直接存入该目录、已存在跳过；否则下载到浏览器默认下载目录、已下载过跳过），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto</button>
+          <button class="dshell-btn dshell-btnGhost" id="aiAnalyzeBtn" disabled title="对当前选中的条目发起 AI 深度分析（与下方「AI 深度分析」卡片同一套提示词与 Agent 选择；内置助手只填会话草稿，不自动提交）">AI分析</button>
         </div>
         <div class="dshell-list" id="itemList" style="margin-top:8px; max-height:480px; overflow:auto"></div>
       </div>
@@ -1004,8 +1005,9 @@ function statusBadge(s){
 }
 function renderOverview(){
   const card = $('overviewCard');
-  /* 「Perfetto打开」按钮固定在列表卡标题行；勾选集优先于当前选中条目，两者皆空才禁用 */
+  /* 「Perfetto」「AI分析」按钮固定在列表卡标题行；勾选集优先于当前选中条目，两者皆空才禁用 */
   $('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length;
+  $('aiAnalyzeBtn').disabled = !cur;
   if (!cur){ card.innerHTML = '<div class="pf-empty">尚未加载 profiling —— 从左侧选择本地文件、服务端文件，或设置服务端文件夹自动扫描。</div>'; $('stageCard').style.display='none'; $('bottleneckCard').style.display='none'; $('kernelCard').style.display='none'; $('aiCard').style.display='none'; return; }
   const p = cur.p, it = cur.item, m = metaOf(it);
   $('srcBadge').textContent = it.source === 'local' ? '本地文件' : '服务端';
@@ -1366,7 +1368,7 @@ function downloadTraceFile(it){
   return true;
 }
 /* ================= 保存目录（服务端路径，「设置」标签页配置） ================= */
-/* 「设置」标签页配置保存目录（服务端绝对路径）：「Perfetto打开」把服务端 trace 直接 cp 进该目录，
+/* 「设置」标签页配置保存目录（服务端绝对路径）：「Perfetto」把服务端 trace 直接 cp 进该目录，
    已存在同名文件则跳过；留空则回退浏览器默认下载（localStorage 记录去重）。
    本地文件本就在本地，两种模式都不上送。 */
 const SAVE_DIR_KEY = 'dsh.profiling.saveDir';
@@ -1420,7 +1422,7 @@ $('saveDirClearBtn').addEventListener('click', () => {
   toast('已清除保存目录设置与「已下载」记录');
 });
 refreshSaveDirUi();
-/* 「Perfetto打开」（列表卡标题行）：先保存到本地（服务端条目，已保存过的跳过），再打开。
+/* 「Perfetto」「AI分析」（列表卡标题行）：先保存到本地（服务端条目，已保存过的跳过），再打开。
    勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口（同一 PING/PONG 握手协议，全功能界面）。
    弹窗必须发生在用户手势窗口期内：先同步 window.open 占位，再异步读字节投递。 */
 $('perfettoOpenBtn').addEventListener('click', async () => {
@@ -1474,7 +1476,7 @@ $('perfPopBtn').addEventListener('click', () => {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('perfModal').style.display !== 'none') closePerfetto(); });
 
 /* ================= 列表 ================= */
-const perfPicks = new Set();   /* 「Perfetto打开」多选集（条目 id），仅会话内有效 */
+const perfPicks = new Set();   /* 「Perfetto」多选集（条目 id），仅会话内有效 */
 function renderList(){
   const box = $('itemList');
   $('countBadge').textContent = items.length;
@@ -1484,7 +1486,7 @@ function renderList(){
   box.innerHTML = items.map(it => {
     const m = metaOf(it);
     return '<div class="dshell-listItem pf-item' + (it.id === currentId ? ' on' : '') + '" data-id="' + esc(it.id) + '">'
-      + (perfettoEligible(it) ? '<input type="checkbox" class="pf-pick" data-pick="' + esc(it.id) + '" title="勾选后「Perfetto打开」同时打开多条（首个内嵌、其余弹出独立窗口）"' + (perfPicks.has(it.id) ? ' checked' : '') + '>' : '')
+      + (perfettoEligible(it) ? '<input type="checkbox" class="pf-pick" data-pick="' + esc(it.id) + '" title="勾选后「Perfetto」同时打开多条（首个内嵌、其余弹出独立窗口）"' + (perfPicks.has(it.id) ? ' checked' : '') + '>' : '')
       + '<div style="min-width:0;flex:1"><div class="dshell-listItemTitle">' + esc(m.tag || it.name) + '</div>'
       + '<div class="pf-row" style="gap:6px"><span class="dshell-listItemMeta">' + (it.remote ? '远程·' + it.remote.node : (it.source === 'local' ? '本地' : '服务端')) + (it.binary ? ' · 二进制' : '') + (it.size ? ' · ' + fmtSize(it.size) : '') + '</span>'
       + (m.tag ? '<span class="tag">#' + esc(m.tag) + '</span>' : '') + '</div>'
@@ -1904,7 +1906,10 @@ function aiPrint(text, cls){
   out.appendChild(span);
   out.scrollTop = out.scrollHeight;
 }
-$('runAiBtn').addEventListener('click', async () => {
+/* 发起 AI 深度分析（「AI分析」列表标题行按钮与卡片内「开始分析」共用）。
+   内置助手只把提示词填进新会话草稿（用户确认后发送），不再走 analyze-log
+   自动提交通道——旧通道点击即自动触发 AI 分析且提示词是硬编码的流水线日志口径，与本页不符。 */
+async function runAiAnalysis(){
   if (!cur) { toast('请先加载一个 profiling'); return; }
   const prompt = buildPrompt();
   $('aiOut').innerHTML = '';
@@ -1912,11 +1917,10 @@ $('runAiBtn').addEventListener('click', async () => {
     let sent = false;
     try{
       if (window.parent && window.parent !== window){
-        if (cur.item.path) { window.parent.postMessage({ type: 'worktable:analyze-log', path: cur.item.path }, '*'); sent = true; }
         if (typeof window.parent.__dshNewChatSessionForCurrentProject === 'function'){ window.parent.__dshNewChatSessionForCurrentProject(prompt); sent = true; }
       }
     }catch(e){}
-    aiPrint(sent ? '已发送到工作台 AI 助手，请在工作台会话中查看分析进度。\n\n—— 以下为发送的分析简报 ——\n\n' + prompt
+    aiPrint(sent ? '已把分析简报填入工作台 AI 会话草稿，请在会话中确认后发送。\n\n—— 以下为发送的分析简报 ——\n\n' + prompt
                : '未检测到工作台宿主环境，无法内置分析。请改用 CLI Agent。\n\n' + prompt, 'sys');
     return;
   }
@@ -1947,7 +1951,7 @@ $('runAiBtn').addEventListener('click', async () => {
     await api.write(promptPath, prompt);
     await api.write(scriptPath, script);
   }catch(e){ aiPrint('准备工作失败：' + e.message, 'err'); return; }
-  $('runAiBtn').disabled = true; $('stopAiBtn').disabled = false;
+  $('runAiBtn').disabled = true; $('aiAnalyzeBtn').disabled = true; $('stopAiBtn').disabled = false;
   aiPrint('$ ' + (cmds[agentId] || '') + '\n', 'sys');
   aiRunning = execStream(scriptPath, [], dir, 600000, (frame) => {
     if (frame.type === 'out') aiPrint(frame.text);
@@ -1962,8 +1966,10 @@ $('runAiBtn').addEventListener('click', async () => {
     else aiPrint('\n[运行失败] ' + e.message + '\n', 'err');
   }
   aiRunning = null;
-  $('runAiBtn').disabled = false; $('stopAiBtn').disabled = true;
-});
+  $('runAiBtn').disabled = false; $('aiAnalyzeBtn').disabled = !cur; $('stopAiBtn').disabled = true;
+}
+$('aiAnalyzeBtn').addEventListener('click', () => { runAiAnalysis(); });
+$('runAiBtn').addEventListener('click', () => { runAiAnalysis(); });
 $('stopAiBtn').addEventListener('click', () => { if (aiRunning) aiRunning.abort(); });
 $('copyAiBtn').addEventListener('click', async () => {
   try{ await navigator.clipboard.writeText($('aiOut').innerText); toast('已复制'); }catch(e){ toast('复制失败'); }
