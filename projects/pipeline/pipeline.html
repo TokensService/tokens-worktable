@@ -2449,8 +2449,8 @@ function closeNodeResDialog(){
   $('nodeResDialog').style.display='none';
 }
 /* 快捷时段计算：sh~eh 整点时段（eh<=sh 为跨零点，结束落在次日）。基准日期取该行已填开始
-   （datetime-local 本地值），未填则用 now；未填且当天该时段开始时间已过则推到次日，保证给出将来时段。
-   返回 {start,end}（datetime-local 本地值）。 */
+   （datetime-local 本地值），未填则用 now；未填且当天该时段结束时间已过才推到次日
+   （开始已过但结束未过的时段仍给当天——时段覆盖当前，仍是有效预留）。返回 {start,end}（datetime-local 本地值）。 */
 function quickResRange(baseStart, sh, eh, nowMs){
   const now=(typeof nowMs==='number')?new Date(nowMs):new Date();
   const hasBase=(typeof baseStart==='string'&&!!baseStart);
@@ -2458,7 +2458,11 @@ function quickResRange(baseStart, sh, eh, nowMs){
   const p2=n=>String(n).padStart(2,'0');
   const fmt=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'T'+p2(d.getHours())+':'+p2(d.getMinutes());
   const start=new Date(base.getFullYear(), base.getMonth(), base.getDate(), sh, 0);
-  if(!hasBase && now>=start) start.setDate(start.getDate()+1);
+  if(!hasBase){
+    const endToday=new Date(base.getFullYear(), base.getMonth(), base.getDate(), eh, 0);
+    if(eh<=sh) endToday.setDate(endToday.getDate()+1);
+    if(now>=endToday) start.setDate(start.getDate()+1);
+  }
   const end=new Date(start.getFullYear(), start.getMonth(), start.getDate(), eh, 0);
   if(eh<=sh) end.setDate(end.getDate()+1);
   return {start:fmt(start), end:fmt(end)};
@@ -2513,7 +2517,7 @@ function renderNodeResWindows(){
         b.style.cssText='padding:2px 7px;';
         b.textContent=sh+'~'+eh;
         b.setAttribute('data-res-quick', sh+'-'+eh);
-        b.title='填为 '+String(sh).padStart(2,'0')+':00 ~ '+String(eh).padStart(2,'0')+':00'+(eh<=sh?'（次日）':'')+'；未填开始日期取今天（当天该时段已过则取次日）';
+        b.title='填为 '+String(sh).padStart(2,'0')+':00 ~ '+String(eh).padStart(2,'0')+':00'+(eh<=sh?'（次日）':'')+'；未填开始日期取今天（当天该时段已结束才取次日）';
         b.addEventListener('click',()=>{ const r=quickResRange(w.start, sh, eh); w.start=r.start; w.end=r.end; renderNodeResWindows(); });
         quick.appendChild(b);
       });
