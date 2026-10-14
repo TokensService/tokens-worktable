@@ -113,6 +113,8 @@ XDS_READY_TIMEOUT_SECONDS="${XDS_READY_TIMEOUT_SECONDS:-1800}"
 XDS_READY_POLL_SECONDS="${XDS_READY_POLL_SECONDS:-5}"
 TASK_EXECUTOR_READY_TIMEOUT_SECONDS="${TASK_EXECUTOR_READY_TIMEOUT_SECONDS:-900}"
 TASK_EXECUTOR_READY_POLL_SECONDS="${TASK_EXECUTOR_READY_POLL_SECONDS:-5}"
+SERVICE_READY_TIMEOUT_SECONDS="${SERVICE_READY_TIMEOUT_SECONDS:-120}"
+SERVICE_READY_POLL_SECONDS="${SERVICE_READY_POLL_SECONDS:-5}"
 SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${ARCHIVE_DIR}}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
@@ -379,7 +381,7 @@ PY
     printf 'export HELM_BIN=%q\nexport KUBECTL_BIN=%q\nexport HELM_TIMEOUT=%q\n' "$HELM_BIN" "$KUBECTL_BIN" "$HELM_TIMEOUT"
     printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
     printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
-    printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS"
+    printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\nexport SERVICE_READY_TIMEOUT_SECONDS=%q\nexport SERVICE_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS" "$SERVICE_READY_TIMEOUT_SECONDS" "$SERVICE_READY_POLL_SECONDS"
     printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' \
       "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
     printf 'export EMS_LOG_SYNC_INTERVAL_SECONDS=%q\nexport EMS_LOG_SOURCE_DIR=%q\nexport EMS_LOG_CONTAINER=%q\n' \
@@ -466,6 +468,8 @@ fi
 [[ "$RELEASE_CLEANUP_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid RELEASE_CLEANUP_POLL_SECONDS: $RELEASE_CLEANUP_POLL_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_TIMEOUT_SECONDS: $TASK_EXECUTOR_READY_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_POLL_SECONDS: $TASK_EXECUTOR_READY_POLL_SECONDS" >&2; exit 2; }
+[[ "$SERVICE_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid SERVICE_READY_TIMEOUT_SECONDS: $SERVICE_READY_TIMEOUT_SECONDS" >&2; exit 2; }
+[[ "$SERVICE_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid SERVICE_READY_POLL_SECONDS: $SERVICE_READY_POLL_SECONDS" >&2; exit 2; }
 [[ "$EMS_LOG_SYNC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid EMS_LOG_SYNC_INTERVAL_SECONDS: $EMS_LOG_SYNC_INTERVAL_SECONDS" >&2; exit 2; }
 [[ "$REMOTE_LOG_COLLECTOR_ENABLED" == "true" || "$REMOTE_LOG_COLLECTOR_ENABLED" == "false" ]] || { echo "REMOTE_LOG_COLLECTOR_ENABLED must be true or false: $REMOTE_LOG_COLLECTOR_ENABLED" >&2; exit 2; }
 [[ "$EMS_LOG_SOURCE_DIR" == /* ]] || { echo "EMS_LOG_SOURCE_DIR must be an absolute path: $EMS_LOG_SOURCE_DIR" >&2; exit 2; }
@@ -498,31 +502,38 @@ PY
 fi
 
 resolve_xds_url_from_service() {
-  local node_port
+  local node_port="" deadline=$((SECONDS + SERVICE_READY_TIMEOUT_SECONDS))
 
   [[ "$XDS_URL_EXPLICIT" == false ]] || return 0
-  node_port="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json | python3 -c '
+  while (( SECONDS < deadline )); do
+    node_port="$($KUBECTL_BIN -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json 2>/dev/null | python3 -c '''
 import json
 import sys
 
-service = json.load(sys.stdin)
+try:
+    service = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(1)
 for port in service.get("spec", {}).get("ports", []):
     if isinstance(port.get("nodePort"), int):
         print(port["nodePort"])
         break
 else:
-    raise SystemExit("service does not expose a NodePort")
-' 2>/dev/null)" || {
-    echo "failed to resolve NodePort from service $SERVICE_NAME" >&2
-    return 1
-  }
-  [[ "$node_port" =~ ^[0-9]+$ ]] || {
-    echo "invalid service NodePort: $node_port" >&2
-    return 1
-  }
-  XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
-  echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
+    raise SystemExit(1)
+''' || true)"
+    if [[ "$node_port" =~ ^[0-9]+$ ]]; then
+      XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
+      echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
+      return 0
+    fi
+    echo "[deploy] waiting for Service $NAMESPACE/$SERVICE_NAME and its NodePort"
+    sleep "$SERVICE_READY_POLL_SECONDS"
+  done
+  echo "[deploy] failed to resolve NodePort from service $NAMESPACE/$SERVICE_NAME after ${SERVICE_READY_TIMEOUT_SECONDS}s" >&2
+  "$KUBECTL_BIN" -n "$NAMESPACE" get svc "$SERVICE_NAME" -o yaml >&2 || true
+  return 1
 }
+
 
 rewrite_xds_url_to_mapped_host() {
   local original_url="$XDS_URL" rewrite_result mapped_host
