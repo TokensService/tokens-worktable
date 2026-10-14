@@ -620,12 +620,12 @@
         <span class="dshell-muted" style="font-size:11px;">归档写入日志/profiling 后执行该脚本收集日志；默认 <code>scripts/collect_logs.sh</code>（脚本不存在则跳过）。同样注入 TARGET_*/IMAGE_*/PIPELINE_NAME 与 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_LOG_FILE</code>，失败不影响运行；其中归档脚本收到的 <code>ARCHIVE_DIR</code>=归档根目录（host 节点环境日志写到根目录，跨运行共享，不占单次运行目录）、<code>ARCHIVE_FOLDER</code>=本次运行归档文件夹。运行启动时即按「流水线名称_年月日时分秒」生成归档文件夹（每次运行独立目录），并把 <code>ARCHIVE_DIR</code>/<code>ARCHIVE_FOLDER</code>/<code>ARCHIVE_PIPELINE</code>/<code>ARCHIVE_TAG</code> 注入到流水线每个任务（脚本阶段、HTTP/EvalTokens 阶段、清理脚本；任务内 <code>ARCHIVE_DIR</code> 仍=本次运行归档文件夹），脚本显式参数优先。</span>
       </div>
     </div>
-    <!-- 分析配置：运行历史标题行分析按钮的提示词模板 -->
+    <!-- 分析配置：运行历史标题行与阶段详情分析按钮的提示词模板 -->
     <div class="dshell-card" style="margin-top:10px;">
-      <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行分析按钮的提示词模板</span></h2>
+      <h2 class="dshell-sub" style="margin:0 0 8px">分析配置 <span class="dshell-muted">运行历史标题行与阶段详情「🔍 AI 分析」按钮的提示词模板</span></h2>
       <p class="dshell-muted" style="margin:0 0 10px; font-size:11px;">
-        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会打开侧边会话框，并在本项目设置的工作区中新建 AI 会话；项目尚未设置工作区时会先弹出工作区选择，选定后继续创建。对应提示词包含归档文件绝对路径，只填入输入框，确认无误后手动发送。
-        模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）。
+        在「运行历史」勾选一条记录可做单次分析，按勾选顺序选择两条可做 A/B 对比（最多两条）；未勾选时仍使用当前点击回放行。点标题行的 🔍 AI 日志分析 / 📈 Profiling 分析 / ⚡ 性能诊断 按钮会打开侧边会话框，并在本项目设置的工作区中新建 AI 会话；项目尚未设置工作区时会先弹出工作区选择，选定后继续创建。对应提示词包含归档文件绝对路径，只填入输入框，确认无误后手动发送。阶段详情「日志文件」行的「🔍 AI 分析」对该次运行的当前阶段发起分析，用「阶段日志分析」模板，提示词含本阶段归档日志文件路径。
+        模板占位符：<code>{no}</code> <code>{pipeline}</code> <code>{env}</code> <code>{by}</code> <code>{commit}</code> <code>{status}</code> <code>{dur}</code> <code>{time}</code> <code>{tag}</code> <code>{summary}</code>（单行运行摘要）<code>{archive}</code>（归档文件夹）<code>{logFile}</code> <code>{profileFile}</code>（归档内日志 / profiling 文件，未配置归档时为「（未归档）」）；「阶段日志分析」额外可用 <code>{stage}</code>（阶段名）<code>{stageLogFile}</code>（本阶段归档日志文件，无归档时为「（未归档）」）。
       </p>
       <div style="display:flex; flex-direction:column; gap:10px;">
         <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">AI 日志分析
@@ -636,6 +636,9 @@
         </label>
         <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">性能诊断
           <textarea id="cfgPromptPerf" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
+        </label>
+        <label class="dshell-muted" style="display:flex; flex-direction:column; gap:4px;">阶段日志分析（阶段详情「🔍 AI 分析」按钮）
+          <textarea id="cfgPromptStage" class="dshell-input" rows="6" style="width:100%; font-family:Menlo,Consolas,monospace; font-size:11px;"></textarea>
         </label>
         <div style="display:flex; gap:8px; align-items:center;">
           <button id="cfgSave" class="dshell-btn mini">保存</button>
@@ -4972,9 +4975,9 @@ function currentStageAnalysisRec(){
    两个按钮；过程/结果提示写入紧随其后的提示行（#stageLogTipRow，默认隐藏）。
    path 与 rec 都为空时不渲染本行（实时态未配置归档且运行未入历史、回放态旧记录无独立日志文件等）。
    「📄 打开日志」打开本阶段归档日志文件本身（文件尚未生成/已清理时才回退打开所在目录，
-   此时效果同「📂 打开归档目录」）；「🔍 AI 分析」与运行历史标题行 AI 分析按钮同一入口，
-   详见两按钮的 title。 */
-function appendStageLogRow(kv, path, rec){
+   此时效果同「📂 打开归档目录」）；「🔍 AI 分析」对本阶段发起阶段级日志分析（提示词含本阶段
+   日志文件路径，模板见「设置」页分析配置「阶段日志分析」），详见两按钮的 title。 */
+function appendStageLogRow(kv, stage, path, rec){
   if(!path && !rec) return;
   const replayMode=typeof replayRec!=='undefined' && !!replayRec;
   const row=document.createElement('div');
@@ -4990,9 +4993,9 @@ function appendStageLogRow(kv, path, rec){
   const aiBtn=document.createElement('button');
   aiBtn.className='dshell-btn dshell-btnGhost mini'; aiBtn.type='button'; aiBtn.id='stageLogAiBtn';
   aiBtn.textContent='🔍 AI 分析';
-  aiBtn.title='对本阶段所属运行发起 AI 日志分析：效果同运行历史标题行的「🔍 AI 日志分析」——新建 AI 会话并填入提示词草稿（需手动确认发送，不自动提交；提示词见「设置」页分析配置）；本次运行尚未写入运行历史时禁用。';
+  aiBtn.title='对本阶段发起 AI 日志分析：新建 AI 会话并填入阶段级提示词草稿，提示词含本阶段归档日志文件路径（需手动确认发送，不自动提交；提示词模板见「设置」页分析配置「阶段日志分析」）；本次运行尚未写入运行历史时禁用。';
   aiBtn.disabled=!rec;
-  aiBtn.addEventListener('click', stageDetailAnalysis);
+  aiBtn.addEventListener('click', ()=>stageDetailAnalysis(stage, path));
   const openBtn=document.createElement('button');
   openBtn.className='dshell-btn dshell-btnGhost mini'; openBtn.type='button'; openBtn.id='stageLogOpenBtn';
   openBtn.textContent='📄 打开日志';
@@ -5009,12 +5012,13 @@ function appendStageLogRow(kv, path, rec){
   tipRow.appendChild(tipKey); tipRow.appendChild(tip);
   kv.appendChild(tipRow);
 }
-/* 「🔍 AI 分析」点击：对本阶段所属运行发起 AI 日志分析（新建 AI 会话并填入提示词草稿，
-   与运行历史标题行分析按钮同一入口 createAnalysisChat，不自动发送）。 */
-function stageDetailAnalysis(){
+/* 「🔍 AI 分析」点击：对本阶段发起阶段级 AI 日志分析（新建 AI 会话并填入提示词草稿，
+   提示词含本阶段归档日志文件路径——即「日志文件」行展示的路径，经 extra 占位符 {stage}/{stageLogFile}
+   注入「阶段日志分析」模板；与运行历史标题行分析按钮同一入口 createAnalysisChat，不自动发送）。 */
+function stageDetailAnalysis(stage, logFile){
   const rec=currentStageAnalysisRec();
   if(!rec){ alert('未找到本次运行的历史记录，暂不能发起 AI 分析。'); return; }
-  createAnalysisChat('log',[rec]);
+  createAnalysisChat('stage',[rec],{ stage:(stage && stage.name)||'', stageLogFile:logFile||'（未归档）' });
 }
 function renderDetail(){
   if(replayRec){ renderReplayDetail(replayRec); return; }   // 历史回放态：详情/回显改由 renderReplayDetail 从 rec.logs 渲染
@@ -5061,7 +5065,7 @@ function renderDetail(){
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
   /* 日志文件行：实时运行态展示本阶段归档日志文件路径，附 AI 分析与打开日志目录按钮 */
-  if(curRun) appendStageLogRow(kv, stageLogFileFor(s,curRun), currentStageAnalysisRec());
+  if(curRun) appendStageLogRow(kv, s, stageLogFileFor(s,curRun), currentStageAnalysisRec());
   /* 阶段间变量传递：上游 stdout 的 KEY=VALUE 行注入下游；此处展示本阶段接收/产出的变量 */
   (function(){
     const vIn=n.varsIn, vOut=n.varsOut;
@@ -9293,11 +9297,13 @@ async function pmcCollect(){
     if(res.code===0) pmcDetectExisting(ctx);   // 采集成功后刷新状态行为「已收集 + 目录」
   }
 }
-/* ---------- AI 分析（历史标题行按钮 → 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
+/* ---------- AI 分析（历史标题行按钮 / 阶段详情「🔍 AI 分析」→ 新建 AI 会话；提示词在「分析配置」页维护） ---------- */
 const DEFAULT_PROMPTS = {
   log:  '请分析下面这条流水线运行的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n完整日志文件夹：{archive}\n（请先用文件读取工具读完日志再分析；若文件不存在，说明本次运行未归档，请基于运行信息给出通用排查建议。）',
   prof: '请对下面这条流水线运行做 profiling 分析：解读各阶段耗时占比、找出瓶颈阶段，并给出优化建议。\n运行信息：{summary}\nprofiling 数据文件：{profileFile}\n（请先用文件读取工具读取该 JSON 再分析；若文件不存在，说明本次运行未归档，请基于运行信息做估算性分析。）',
   perf: '请对下面这条流水线运行做性能诊断：结合日志与 profiling 数据评估整体性能表现，定位耗时异常与改进点。\n运行信息：{summary}\n归档目录：{archive}\n（目录下 run-{tag}.log 为汇总日志、run-{tag}-NN-任务名.log 为各任务独立回显、run-{tag}.profile.json 为 profiling 数据，请先读取再分析；若目录不存在，说明本次运行未归档，请基于运行信息给出通用建议。）',
+  /* 阶段详情「日志文件」行「🔍 AI 分析」：分析单个阶段，{stage}/{stageLogFile} 由按钮按当前阶段与展示路径注入 */
+  stage:'请分析下面这条流水线运行中指定阶段的日志，找出失败/异常点、关键告警与可优化环节，给出结论和建议。\n运行信息：{summary}\n分析阶段：{stage}\n阶段日志文件：{stageLogFile}\n（请先用文件读取工具读取该阶段日志再分析；若文件不存在，说明本阶段日志尚未归档或已清理，可改读归档文件夹 {archive} 下的汇总日志 run-{tag}.log 与其它任务日志；都不可用时基于运行信息给出通用排查建议。）',
 };
 function loadPrompts(){ try{ const p=JSON.parse(localStorage.getItem('pip-analysisPrompts')); if(p && typeof p==='object') return Object.assign({}, DEFAULT_PROMPTS, p); }catch(e){} return Object.assign({}, DEFAULT_PROMPTS); }
 let analysisPrompts = loadPrompts();
@@ -9324,7 +9330,7 @@ function pruneAnalysisHistory(){
   analysisHistoryKeys=analysisHistoryKeys.filter(key=>valid.has(key)).slice(0,2);
 }
 function analysisSummary(rec){ return '#'+rec.no+' 流水线「'+rec.pipeline+'」 环境 '+rec.env+' · 执行人 '+rec.by+' · 状态 '+labelOf(rec.status)+' · 耗时 '+rec.dur+' · '+fmtHistTime(rec)+' · commit '+rec.commit; }
-function buildAnalysisPrompt(kind, rec){
+function buildAnalysisPrompt(kind, rec, extra){
   const tpl = analysisPrompts[kind] || DEFAULT_PROMPTS[kind] || '';
   const archive = rec.archive || '';
   const vars = {
@@ -9335,6 +9341,8 @@ function buildAnalysisPrompt(kind, rec){
     logFile: archive ? archive+'/run-'+rec.tag+'.log' : '（未归档）',
     profileFile: archive ? archive+'/run-'+rec.tag+'.profile.json' : '（未归档）',
   };
+  /* 额外占位符（如阶段详情的 {stage}/{stageLogFile}）：调用方按场景注入，覆盖同名内置变量 */
+  if(extra && typeof extra==='object') Object.keys(extra).forEach(k=>{ if(extra[k]!==undefined && extra[k]!==null) vars[k]=String(extra[k]); });
   return tpl.replace(/\{(\w+)\}/g, (m,k)=> vars[k]!==undefined ? String(vars[k]) : m);
 }
 const COMPARE_FOCUS = {
@@ -9368,10 +9376,11 @@ function commonAnalysisArchiveFolder(records){
   const folder=(absolute?'/':'')+common.join('/');
   return folder==='/'?paths[0]:folder;
 }
-function buildAnalysisRequest(kind, records){
+function buildAnalysisRequest(kind, records, extra){
   const recs=(Array.isArray(records)?records:[records]).filter(Boolean).slice(0,2);
   if(!recs.length) return {text:'',cwd:archiveRootFolder()||null};
-  if(recs.length===1) return {text:buildAnalysisPrompt(kind,recs[0]),cwd:(recs[0].archive||'').trim()||archiveRootFolder()||null};
+  /* extra 额外占位符（阶段详情的 {stage}/{stageLogFile}）只对单运行分析生效；双运行对比不注入 */
+  if(recs.length===1) return {text:buildAnalysisPrompt(kind,recs[0],extra),cwd:(recs[0].archive||'').trim()||archiveRootFolder()||null};
   /* 双运行从记录自身路径推导共同目录；配置后来改变时仍能读取旧归档。 */
   return {text:buildComparisonPrompt(kind,recs),cwd:commonAnalysisArchiveFolder(recs)};
 }
@@ -9380,9 +9389,9 @@ function buildAnalysisRequest(kind, records){
    会话聊天列关闭时先打开。单次/双运行仍按归档目录生成 cwd 提示，绝对路径写进提示词供读取；
    提示词只填入输入框草稿（不自动提交，用户确认后手动发送）。旧版插件无新桥时依次退化为
    __dshNewChatSessionAt（归档目录 cwd + 草稿）及 __dshSessions/__dshPromptIntoSession（自动发送）路径。 */
-async function createAnalysisChat(kind, records){
+async function createAnalysisChat(kind, records, extra){
   const P = window.parent;
-  const request = buildAnalysisRequest(kind, records);
+  const request = buildAnalysisRequest(kind, records, extra);
   const text = request.text, cwd = request.cwd;
   if(P && typeof P.__dshNewChatSessionForCurrentProject==='function'){
     try{ await P.__dshNewChatSessionForCurrentProject(text, cwd || null); }
@@ -9568,7 +9577,7 @@ function renderReplayDetail(rec){
   rows.forEach(([k,v])=>{ const r=document.createElement('div'); r.className='dshell-kvRow';
     r.innerHTML='<span class="dshell-kvKey">'+esc(k)+'</span><span class="dshell-kvValue">'+esc(v)+'</span>'; kv.appendChild(r); });
   /* 日志文件行：回放态取日志条目里的 logFile（旧版内嵌日志记录无独立文件时路径为空），附 AI 分析与打开日志目录按钮 */
-  appendStageLogRow(kv, (entry && entry.logFile) || null, rec);
+  appendStageLogRow(kv, s, (entry && entry.logFile) || null, rec);
   const bar=$('detailBar'); const wrap=$('detailBarWrap');
   const pct=(n.status==='success'||n.status==='skipped')?100:(n.progress||0);
   bar.style.width=pct+'%';
@@ -11193,9 +11202,9 @@ $('navSched').addEventListener('click', ()=>switchPage('sched'));
 $('navNode').addEventListener('click', ()=>switchPage('node'));
 $('navEnv').addEventListener('click', ()=>switchPage('env'));
 /* 分析配置（设置页内卡片）：提示词模板编辑 */
-function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; }
+function fillCfgForm(){ $('cfgPromptLog').value=analysisPrompts.log; $('cfgPromptProf').value=analysisPrompts.prof; $('cfgPromptPerf').value=analysisPrompts.perf; $('cfgPromptStage').value=analysisPrompts.stage; }
 $('cfgSave').addEventListener('click', ()=>{
-  analysisPrompts={log:$('cfgPromptLog').value, prof:$('cfgPromptProf').value, perf:$('cfgPromptPerf').value};
+  analysisPrompts={log:$('cfgPromptLog').value, prof:$('cfgPromptProf').value, perf:$('cfgPromptPerf').value, stage:$('cfgPromptStage').value};
   savePrompts();
   $('cfgSavedTip').textContent='已保存。'; setTimeout(()=>{ $('cfgSavedTip').textContent=''; },2000);
 });
