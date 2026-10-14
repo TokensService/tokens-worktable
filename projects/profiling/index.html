@@ -101,7 +101,7 @@
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="dark">深色</button>
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="light">浅色</button>
   </div>
-  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器）中打开做交互式时间线分析，也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
+  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器；支持 ≤2GiB，超限可下载到本地拖入 Perfetto 打开）中打开做交互式时间线分析，也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
 
   <div class="pf-layout">
     <!-- ============ 左栏：数据来源 + 列表 ============ -->
@@ -240,6 +240,7 @@
       <b id="perfTitle">Perfetto UI</b>
       <span class="pf-perfStatus grow" id="perfStatus"></span>
       <button class="dshell-btn dshell-btnGhost" id="perfRetryBtn" style="display:none">重试</button>
+      <button class="dshell-btn dshell-btnGhost" id="perfDownloadBtn" style="display:none" title="trace 超过 2GiB 无法内嵌传输时：下载原始文件到本地，拖入 Perfetto 窗口打开（不经 postMessage，无多份内存拷贝）">下载到本地</button>
       <button class="dshell-btn dshell-btnGhost" id="perfPopBtn" disabled title="在新窗口打开 ui.perfetto.dev 并传输当前 trace（iframe 内看着拥挤时使用）">↗ 弹出到新窗口</button>
       <button class="dshell-btn" id="perfCloseBtn">关闭 Esc</button>
     </div>
@@ -336,9 +337,10 @@ const api = {
     const text = decodeText(buf);
     return { text, size, truncated, buf };
   },
-  /* 原始字节读取（不做文本解码）：Perfetto 传输等大文件场景，避免大字符串解码开销 */
+  /* 原始字节读取（不做文本解码）：Perfetto 传输等大文件场景，避免大字符串解码开销；
+     raw=1 走流式输出，不受全量读 256MB 上限约束（Perfetto 侧仍有 2GiB 上限） */
   async fileBuffer(path){
-    const r = await fetch('/api/worktable/file?path=' + encodeURIComponent(path));
+    const r = await fetch('/api/worktable/file?path=' + encodeURIComponent(path) + '&raw=1');
     if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || ('HTTP ' + r.status)); }
     return { buf: await r.arrayBuffer(), size: Number(r.headers.get('x-worktable-file-size')) || 0 };
   },
@@ -1222,8 +1224,10 @@ function renderKernelAnalysis(){
 }
 
 /* ================= Perfetto UI 内嵌打开 ================= */
-/* postMessage 结构化克隆要整份复制 buffer，超 1GiB 提示降采样（Perfetto 自身对超大 JSON trace 也难以加载） */
-const PERFETTO_MAX_BYTES = 1 << 30;
+/* postMessage 结构化克隆会整份复制 buffer：页面、iframe、WASM 解析各占一份内存。
+   实测 1.3GB JSON trace（800 万+ 事件）可正常投递并解析渲染（trace_processor_memory64），
+   上限放宽到 2GiB；超限走「下载到本地拖入 Perfetto」兜底（Perfetto 打开本地文件无 postMessage 拷贝） */
+const PERFETTO_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 let perf = null;         // { session, frame } —— 模态框生命周期内的握手会话
 let perfBufCache = null; // { itemId, buf, name } —— trace 字节缓存（重试 / 弹出窗口复用，关闭模态框即清）
 function perfStatus(text, isErr){
@@ -1232,6 +1236,7 @@ function perfStatus(text, isErr){
   el.title = text || '';   /* 状态栏单行省略显示，悬停可见完整文案 */
   el.classList.toggle('err', !!isErr);
   $('perfRetryBtn').style.display = isErr ? '' : 'none';
+  $('perfDownloadBtn').style.display = 'none';   /* 仅超限错误在 perfStatus 之后重新点亮 */
 }
 /* 握手等待计时：Perfetto UI 首次加载要从 ui.perfetto.dev 下载数十 MB 前端资源（含 WASM trace 处理器），
    慢网/代理下常需数十秒甚至更久；期间状态栏逐秒刷新等待时长，避免误以为卡死 */
@@ -1251,15 +1256,22 @@ function perfWaitBegin(){
   perfWaitTimer = setInterval(tick, 1000);
 }
 /* 取条目原始 trace 字节：本地 File 直读（保留原始内容）；服务端经 /file 原始字节；仅有内存数据时重建 JSON */
+function perfOversizeError(nbytes){
+  const err = new Error('trace 超过 2GiB（' + fmtSize(nbytes) + '），内嵌传输会让浏览器同时占用多份内存（页面 / iframe / WASM 解析各一份）');
+  err.oversize = true;   /* 超限标记：perfettoSendCurrent 据此给出「下载到本地」兜底按钮 */
+  return err;
+}
 async function perfettoTraceBuffer(it){
   let buf = null, name = it.name;
+  /* 本地非压缩文件大小已知，超限直接拦截（免整份读入内存）；.gz 解压后更大，读后再判 */
+  if (it.source === 'local' && it.file && !/\.gz$/i.test(it.name) && it.file.size > PERFETTO_MAX_BYTES) throw perfOversizeError(it.file.size);
   if (it.source === 'local' && it.file) buf = await it.file.arrayBuffer();
   else if (it.path) buf = (await api.fileBuffer(it.path)).buf;
   else if (it.data && Array.isArray(it.data.traceEvents)) buf = new TextEncoder().encode(JSON.stringify(it.data)).buffer;
   else throw new Error('无法取得 trace 原始内容（仅支持本地文件或服务端路径条目）');
   if (isGzipBuf(buf)){ buf = await gunzip(buf); name = name.replace(/\.gz$/i, ''); }
   if (!buf.byteLength) throw new Error('trace 内容为空');
-  if (buf.byteLength > PERFETTO_MAX_BYTES) throw new Error('trace 超过 1GiB（' + fmtSize(buf.byteLength) + '），浏览器 postMessage 传不下；建议降采样或切分后再试');
+  if (buf.byteLength > PERFETTO_MAX_BYTES) throw perfOversizeError(buf.byteLength);
   return { buf, name };
 }
 async function openPerfettoForCurrent(){
@@ -1281,11 +1293,12 @@ async function openPerfettoForCurrent(){
   const session = createPerfettoSession({
     host: window, target: frame.contentWindow,
     onState: (st, detail) => {
-      if (!perf || perf.session !== session) return;
+      if (!perf || perf.session !== session || perf.failed) return;   /* 读取已失败时晚到的 PONG 不得覆盖错误状态 */
       if (st === 'ready'){ perfWaitStop(); perfStatus('握手完成，传输 trace…'); }
       else if (st === 'send'){
         perfWaitStop();
         perfStatus('已发送 ' + detail + ' —— trace 仅在浏览器内存，不上传服务器'
+          + (perfBufCache && perfBufCache.buf.byteLength > 512 * 1024 * 1024 ? '；大文件解析可能需要数分钟，请稍候' : '')
           + (perfettoNeedsTrustHint(location.hostname) ? '；若 Perfetto 弹 "Open trace?" 请点击 Yes / Always trust' : ''));
         $('perfPopBtn').disabled = false;
       }
@@ -1308,7 +1321,17 @@ async function perfettoSendCurrent(it){
     perf.session.send(c.buf, (tag ? tag + ' - ' : '') + c.name, c.name);
     /* 投递完成但握手未就绪：进入等待计时状态（trace 已读完，瓶颈在 Perfetto UI 加载） */
     if (perf && perf.session && !perf.session.isReady()) perfWaitBegin();
-  }catch(e){ perfWaitStop(); perfStatus('读取 trace 失败：' + (e && e.message || e), true); }
+  }catch(e){
+    perfWaitStop();
+    /* 读取失败：停掉握手会话（不再 PING、忽略晚到 PONG），保留错误状态供重试 */
+    if (perf && perf.session) perf.session.dispose();
+    if (perf) perf.failed = true;
+    if (e && e.oversize){
+      /* 超限兜底：引导下载到本地后拖入 Perfetto（本地文件打开不经 postMessage，无多份内存拷贝） */
+      perfStatus(e.message + '。可点「下载到本地」保存 trace 后拖入 Perfetto 窗口打开（支持 .gz），或降采样/切分后再内嵌打开', true);
+      $('perfDownloadBtn').style.display = '';
+    } else perfStatus('读取 trace 失败：' + (e && e.message || e), true);
+  }
 }
 function closePerfetto(){
   perfWaitStop();
@@ -1325,6 +1348,22 @@ $('perfRetryBtn').addEventListener('click', () => {
   closePerfetto();
   perfBufCache = cache;
   openPerfettoForCurrent();
+});
+/* 超限兜底：下载原始 trace（本地 File 直接给 blob URL，服务端走 /file 同源下载），并打开 Perfetto 窗口引导拖入 */
+$('perfDownloadBtn').addEventListener('click', () => {
+  const it = cur && cur.item;
+  if (!it) return;
+  const a = document.createElement('a');
+  let blobUrl = '';
+  if (it.source === 'local' && it.file){ blobUrl = URL.createObjectURL(it.file); a.href = blobUrl; }
+  else if (it.path){ a.href = '/api/worktable/file?path=' + encodeURIComponent(it.path) + '&raw=1'; }
+  else { toast('该条目无原始文件可下载'); return; }
+  a.download = it.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  const win = window.open(PERFETTO_ORIGIN, '_blank');
+  perfStatus('已下载 ' + it.name + (win ? '，并打开了 Perfetto 窗口——把下载的文件拖进去（或点 Open trace 选择）即可' : '；浏览器拦截了弹窗，请手动打开 ' + PERFETTO_ORIGIN + ' 后拖入下载的文件'), false);
+  $('perfDownloadBtn').style.display = '';   /* perfStatus 会收按钮，下载可重复点击，重新点亮 */
 });
 $('perfPopBtn').addEventListener('click', () => {
   if (!perfBufCache) return;

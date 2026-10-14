@@ -3856,6 +3856,23 @@ export function apply(ctx: Context) {
         const p = u.searchParams.get('path') || ''
         if (!p) { json(res, 400, { error: 'missing path' }); return }
         const abs = pathResolve(p)
+        // raw=1：原始字节流式输出（Perfetto 大 trace 传输 / 超大文件下载到本地兜底），
+        // 不受全量读 256MB 上限约束；流式背压输出，服务端不整份驻留内存
+        if (u.searchParams.get('raw') === '1') {
+          const stat = await fsStat(abs)
+          if (!stat.isFile()) { json(res, 404, { error: 'not a file' }); return }
+          res.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'cache-control': 'no-store',
+            'content-length': String(stat.size),
+            'x-worktable-file-size': String(stat.size),
+            'x-worktable-file-truncated': 'none',
+          })
+          const stream = createReadStream(abs)
+          stream.on('error', () => { try { res.destroy() } catch {} })
+          stream.pipe(res)
+          return
+        }
         const file = await readLocalFile(abs, u.searchParams.get('tailBytes'))
         const ext = (abs.split('.').pop() || '').toLowerCase()
         const types: Record<string, string> = {
