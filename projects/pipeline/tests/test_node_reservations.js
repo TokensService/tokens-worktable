@@ -328,7 +328,7 @@ function renderEnvsCtx(globals, envs) {
     fetch: async () => ({ ok: true, status: 200, json: async () => ({ users: [{ username: 'u1' }, { username: 'u2' }, { username: 'me' }] }) }),
     alert: () => {}, toast: () => {},
   }, globals || {}));
-  vm.runInContext(['gpuBusy', 'envFilterMatch', 'envSortVal', 'envSortList', 'renderEnvs'].map(extractFunction).join('\n'), ctx);
+  vm.runInContext(['gpuBusy', 'envFilterMatch', 'envSortVal', 'envSortList', 'envConfigEditable', 'renderEnvs'].map(extractFunction).join('\n'), ctx);
   return { ctx, els, tbody };
 }
 
@@ -337,7 +337,7 @@ test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用�
   const fmt = d => p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
   const now = Date.now();
   const activeRange = fmt(new Date(now - 3600e3)) + ' ~ ' + fmt(new Date(now + 3600e3));
-  const { ctx, tbody } = renderEnvsCtx(null, [envOf('env-a', '开发', '10.0.0.1'), envOf('env-b', '生产', '10.0.0.2'), envOf('env-c', '测试', '10.0.0.3')]);
+  const { ctx, tbody } = renderEnvsCtx({ currentUserIsAdmin: true, currentUsername: 'admin' }, [envOf('env-a', '开发', '10.0.0.1'), envOf('env-b', '生产', '10.0.0.2'), envOf('env-c', '测试', '10.0.0.3')]);   /* admin 身份：操作列才有「编辑/复制/删除」，供下方按钮位置断言 */
   vm.runInContext(`nodeReservations=${JSON.stringify([
     resNow('r1', 'env-c', ['u1', 'u2'], { note: '专项压测' }),
     resFuture('r2', 'env-b', ['u1']), resFuture('r3', 'env-b', ['u3']),

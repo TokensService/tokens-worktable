@@ -101,7 +101,7 @@ function loadStateFixture(serverConfig,opts){
   };
   vm.createContext(ctx);
   vm.runInContext(['stripPipelineSharedMeta','mergePipelinesFromServer','fetchPipelineStateFresh',
-    'normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','plOwnerFilterLabel','loadServerState',
+    'normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','plOwnerFilterLabel','envConfigEditable','loadServerState',
   ].map(extractFunction).join('\n'),ctx);
   return {ctx,calls,storage,els};
 }
@@ -266,7 +266,7 @@ function importCtx(overrides){
    'saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts',
    'saveSchedEnvSel','saveRunSelLS','saveHistFilter','savePlFilter','saveCustomPresets'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   vm.createContext(ctx);
-  vm.runInContext(['normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','syncViewRun','plOwnerFilterLabel','applyImportedSettings'].map(extractFunction).join('\n'),ctx);
+  vm.runInContext(['normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','syncViewRun','plOwnerFilterLabel','envConfigEditable','applyImportedSettings'].map(extractFunction).join('\n'),ctx);
   return {ctx,saved,els,store};
 }
 

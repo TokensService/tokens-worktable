@@ -141,7 +141,7 @@ function loadStateFixture(serverConfig, seeds) {
   };
   vm.createContext(ctx);
   vm.runInContext(['stripPipelineSharedMeta', 'mergePipelinesFromServer', 'sameEnvEntry', 'mergeEnvironmentsFromServer',
-    'fetchPipelineStateFresh', 'normalizeEnv', 'curPipeline', 'plOwnerFilterLabel', 'loadServerState',
+    'fetchPipelineStateFresh', 'normalizeEnv', 'curPipeline', 'plOwnerFilterLabel', 'envConfigEditable', 'loadServerState',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, storage };
 }
