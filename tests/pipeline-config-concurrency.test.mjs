@@ -396,6 +396,31 @@ test('节点环境：条目比对只看规范字段，多余字段/键序不造�
   assert.deepEqual(result.config.environments.map(item => item.id), ['env-1'], '规范字段一致即未改动，不复活多余字段也不丢条目')
 })
 
+test('节点环境：llmAddr（LLM服务地址）属规范字段——仅改 llmAddr 视为本端改动，他端 llmAddr 改动同步生效', () => {
+  const base = { environments: [env('env-1', '节点一')] }
+  const disk = { environments: [env('env-1', '节点一')] }
+  const client = { pipelines: [], environments: [env('env-1', '节点一', { llmAddr: '10.0.0.1:8000' })] }
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.equal(result.config.environments[0].llmAddr, '10.0.0.1:8000', '本端仅改 llmAddr 取本端（比对不含该字段会被当作未改动而落 disk 丢失）')
+
+  const remoteEdited = merge(
+    { pipelines: [], environments: [env('env-1', '节点一')] },
+    base,
+    { environments: [env('env-1', '节点一', { llmAddr: '10.0.0.1:9000' })] },
+  )
+  assert.equal(remoteEdited.config.environments[0].llmAddr, '10.0.0.1:9000', '本端未改时他端 llmAddr 修改同步生效')
+})
+
+test('源码契约：runStageScript 注入 TARGET_LLM_ADDR_MAP（SSH 地址 → LLM服务地址，仅填了的节点，与 TARGET_NODE_IP_MAP 同口径）', () => {
+  const fn = extractFunction('runStageScript')
+  assert.match(fn, /env\.TARGET_NODE_IP_MAP === undefined && runCtx\.envs/, '既有 TARGET_NODE_IP_MAP 注入应在场')
+  assert.match(fn, /env\.TARGET_LLM_ADDR_MAP === undefined && runCtx\.envs/, '缺少 TARGET_LLM_ADDR_MAP 注入')
+  assert.match(fn, /if \(e\.ip && e\.llmAddr\) llmAddrMap\[e\.ip\] = e\.llmAddr/, '映射应只含同时有 ip 与 llmAddr 的节点')
+})
+
 test('节点环境：合并不影响流水线冲突判定，流水线冲突时 environments 仍按合并结果随响应返回', () => {
   const base = { pipelines: [pipeline('p1', '原始')], environments: [env('env-1', '节点一')] }
   const disk = { pipelines: [pipeline('p1', '浏览器 A')], environments: [env('env-1', '节点一'), env('env-a', '他端新增')] }

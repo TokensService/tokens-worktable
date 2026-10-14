@@ -133,7 +133,7 @@ test('refreshEnvsFromServer：拉取在途期间挂 rf-busy，落定恢复并toa
     localStorage:{setItem(){}},
     $:id=>id==='envInfoRefresh'?btn:null,
     fetchPipelineStateFresh:()=>new Promise(r=>{resolveFetch=r;}),
-    normalizeEnv:e=>({id:e.id,name:e.name,ip:e.ip,nodeIp:e.nodeIp||'',user:e.user||'',pass:e.pass||''}),
+    normalizeEnv:e=>({id:e.id,name:e.name,ip:e.ip,nodeIp:e.nodeIp||'',llmAddr:e.llmAddr||'',user:e.user||'',pass:e.pass||''}),
     renderEnvs(){}, renderEnvOptions(){},
     toast:m=>toasts.push(String(m)),
     alert:m=>{ throw new Error('不应告警: '+m); },
