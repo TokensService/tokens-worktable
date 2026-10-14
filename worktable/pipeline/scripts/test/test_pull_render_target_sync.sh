@@ -79,7 +79,21 @@ EOF
 cat >"$fake_bin/ctr" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$*" == '-n k8s.io images pull --user cn-southwest-2@test-ak:test-login-key registry.example/xds:test' ]]
+case "$*" in
+  *'images mount'*)
+    mount_dir="${@: -1}"
+    mkdir -p "$mount_dir/opt/op_test/xds_template/k8s/xds-cluster"
+    mkdir -p "$mount_dir/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s"
+    mkdir -p "$mount_dir/opt/op_test/xds_template/cap/model_arch"
+    cp -a "$FAKE_TEMPLATE_DIR/xds-cluster/." "$mount_dir/opt/op_test/xds_template/k8s/xds-cluster/"
+    cp -a "$FAKE_TEMPLATE_DIR/values.yaml" "$mount_dir/opt/op_test/xds_template_values/xds-cluster-low-latency/k8s/values-16Node-je-cpp-bnt3.yaml"
+    cp -a "$FAKE_TEMPLATE_DIR/architectures.json" "$mount_dir/opt/op_test/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
+    ;;
+  *'images unmount'*) ;;
+  *'images ls -q'*) exit 1 ;;
+  *'images pull --user cn-southwest-2@test-ak:test-login-key registry.example/xds:test'*) ;;
+  *) exit 2 ;;
+esac
 EOF
 cat >"$fake_bin/sudo" <<'EOF'
 #!/usr/bin/env bash
