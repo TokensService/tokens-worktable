@@ -92,7 +92,7 @@ DEFAULT_TARGET_NODE_IP_MAP='{"115.33.98.101:2224":"192.168.31.140","115.33.98.10
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
 if [[ -z "${NODE_PORT_MAP:-}" ]]; then
-  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044}'
+  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044}'
 fi
 TARGET_NODE_IP_MAP="$(python3 - "$DEFAULT_TARGET_NODE_IP_MAP" "$TARGET_NODE_IP_MAP" <<'PY'
 import json
@@ -316,46 +316,6 @@ write_target_pipeline_env() {
   )
 }
 
-# The execution-host image is required only while pull-image.sh exports the
-# chart, values, and architecture templates. Target images are checked after
-# rendering, so the temporary local copy can be released before rendering.
-cleanup_render_images() {
-  local image
-  local -A seen_images=()
-
-  [[ "${RENDER_RESOURCES_CLEANED:-0}" == "1" ]] && return 0
-  RENDER_RESOURCES_CLEANED=1
-
-  command -v nerdctl >/dev/null 2>&1 || {
-    echo "[pull] nerdctl is unavailable; skip execution-host image cleanup" >&2
-    return 0
-  }
-
-  for image in "$DEPLOY_IMAGE" "${TEMPLATE_IMAGE:-$DEPLOY_IMAGE}"; do
-    [[ -n "$image" && -z "${seen_images[$image]:-}" ]] || continue
-    seen_images["$image"]=1
-    echo "[pull] execution host: remove temporary render image $image"
-    if ! nerdctl --namespace k8s.io image rm -f "$image" >/dev/null; then
-      echo "[pull] warning: could not remove temporary render image $image" >&2
-    fi
-  done
-
-  # Removing a tag alone leaves unreferenced manifests, content, and failed
-  # extraction snapshots behind. Reclaim all unused execution-host resources;
-  # running containers and images referenced by them are retained.
-  echo "[pull] execution host: reclaim unused containerd resources"
-  nerdctl --namespace k8s.io system prune -a -f >/dev/null 2>&1 || \
-    echo "[pull] warning: system prune did not complete" >&2
-  nerdctl --namespace k8s.io image prune -a -f >/dev/null 2>&1 || \
-    echo "[pull] warning: image prune did not complete" >&2
-  nerdctl --namespace k8s.io snapshot prune >/dev/null 2>&1 || \
-    echo "[pull] warning: snapshot prune did not complete" >&2
-}
-
-# Also reclaim resources when image extraction or template export fails before
-# the normal post-export cleanup point.
-trap cleanup_render_images EXIT
-
 remote_ssh() {
   local target="$1" port="$2" password="$3"
   shift 3
@@ -365,6 +325,18 @@ remote_ssh() {
   else
     ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 -o LogLevel=ERROR "$target" "$@"
   fi
+}
+
+remote_quote() {
+  printf '%q' "$1"
+}
+
+sync_remote_file() {
+  local source="$1" destination="$2" target="$3" port="$4" password="${5:-}"
+  local destination_dir
+  destination_dir="$(dirname "$destination")"
+  cat "$source" | remote_ssh "$target" "$port" "$password" \
+    "mkdir -p $(remote_quote "$destination_dir") && umask 077 && cat > $(remote_quote "$destination")"
 }
 
 # TARGET_HOSTS describes the SSH endpoint used by the pipeline.  Kubernetes
@@ -443,6 +415,84 @@ PY
   export TARGET_NODE_IP_MAP
 }
 
+first_target_host() {
+  python3 - "$TARGET_HOSTS" <<'PY'
+import json
+import re
+import sys
+
+hosts = json.loads(sys.argv[1])
+if not isinstance(hosts, list) or not hosts:
+    raise SystemExit("TARGET_HOSTS must be a non-empty JSON array")
+host = hosts[0]
+if not isinstance(host, dict) or not isinstance(host.get("ip"), str) or not host["ip"]:
+    raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
+endpoint = host["ip"]
+match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
+address, port = match.groups() if match else (endpoint, "22")
+password = host.get("pass", host.get("password", "")) or ""
+print(f'{host.get("user") or "root"}\t{address}\t{port}\t{endpoint}\t{password}')
+PY
+}
+
+write_remote_render_environment() {
+  local environment_file="$1" target_run_dir="$2" target_render_dir="$3"
+  local variable
+  mkdir -p "$(dirname "$environment_file")"
+  (
+    umask 077
+    {
+      printf '# Generated for remote target rendering.\n'
+      printf 'export RUN_DIR=%q\n' "$target_run_dir"
+      printf 'export RENDER_DIR=%q\n' "$target_render_dir"
+      printf 'export SKIP_CONTAINERD_CLEANUP=1\n'
+      for variable in \
+        IMAGE_NAME DEPLOY_IMAGE TEMPLATE_IMAGE ARCH_NAME EMS_NAMESPACE NAMESPACE_ARCH EXECUTOR PIPELINE_NAME \
+        TARGET_HOSTS TARGET_NODE_IP_MAP ENABLE_PROFILING PROFILING_TIMESTAMP PROFILING_PREFILL_DIR PROFILING_DECODE_DIR \
+        NUM_PREFILL NUM_DECODE PREFILL_GPU DECODE_GPU IMAGE_PULL_SECRETS IMAGE_PULL_SECRET \
+        PREFILL_OVERRIDES_JSON DECODE_OVERRIDES_JSON REPLACE_MAP_JSON EQUAL_REPLACE_JSON YAML_REPLACE_JSON \
+        TEMPLATE_VARS_JSON COLLECTOR_GATEWAY_URL MAPPED_COLLECTOR_GATEWAY_URL MODEL_CACHE_HOST_PATH MOCK_DB \
+        DEPLOY_TEMPLATE_DIR FALLBACK_DEPLOY_TEMPLATE_DIR VALUES_TEMPLATE_SOURCE \
+        AK LOGKEY LOGIN_KEY SWR_PROJECT REGISTRY IMAGE_PULL_PROJECT IMAGE_PULL_AK IMAGE_PULL_LOGIN_KEY; do
+        printf 'export %s=%q\n' "$variable" "${!variable-}"
+      done
+    } >"$environment_file"
+  )
+}
+
+render_on_first_target() {
+  local user host port endpoint password target target_script_dir target_env_file
+  local remote_command
+  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+  target="${user}@${host}"
+  target_script_dir="${TARGET_RUN_DIR}/scripts"
+  target_env_file="${TARGET_RUN_DIR}/remote-render.env"
+  echo "[render] target host: pull image and render templates on $endpoint"
+  sync_remote_file "$SCRIPT_DIR/pull-image.sh" "${target_script_dir}/pull-image.sh" "$target" "$port" "$password"
+  sync_remote_file "$SCRIPT_DIR/render-config.sh" "${target_script_dir}/render-config.sh" "$target" "$port" "$password"
+  sync_remote_file "$SCRIPT_DIR/lib/render-lmcache.sh" "${target_script_dir}/lib/render-lmcache.sh" "$target" "$port" "$password"
+  local local_env_file
+  local_env_file="$(mktemp)"
+  write_remote_render_environment "$local_env_file" "$TARGET_RUN_DIR" "$TARGET_RENDER_DIR"
+  sync_remote_file "$local_env_file" "$target_env_file" "$target" "$port" "$password"
+  rm -f "$local_env_file"
+
+  printf -v remote_command '%s' \
+    "set -e; source $(remote_quote "$target_env_file"); bash $(remote_quote "${target_script_dir}/pull-image.sh"); CHART_TEMPLATE_DIR=$(remote_quote "${TARGET_RUN_DIR}/template/xds-cluster") VALUES_TEMPLATE=$(remote_quote "${TARGET_RUN_DIR}/template/values-16Node-je-cpp-bnt3.yaml") ARCH_FILE=$(remote_quote "${TARGET_RUN_DIR}/template/model_arch-lt-je-cpp-bnt3.json") bash $(remote_quote "${target_script_dir}/render-config.sh"); rm -f $(remote_quote "$target_env_file")"
+  remote_ssh "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"
+}
+
+sync_rendered_from_first_target() {
+  local user host port endpoint password target target_render_dir_q render_dir_q
+  IFS=$'\t' read -r user host port endpoint password <<<"$(first_target_host)"
+  target="${user}@${host}"
+  printf -v target_render_dir_q '%q' "$TARGET_RENDER_DIR"
+  printf -v render_dir_q '%q' "$RENDER_DIR"
+  echo "[sync] $endpoint: copy remotely rendered files to $RENDER_DIR"
+  mkdir -p "$RENDER_DIR"
+  remote_ssh "$target" "$port" "$password" "tar -C $target_render_dir_q -cf - ." | tar -C "$render_dir_q" -xf -
+}
+
 sync_rendered_to_targets() {
   local endpoint host port user password target target_run_dir_q target_render_dir_q target_env_q
   local target_env_source="${RUN_DIR}/.target.pipeline.env"
@@ -484,15 +534,14 @@ PY
 
 resolve_target_node_ip_map
 echo "[pipeline] image=$IMAGE_NAME arch=$ARCH_NAME run_dir=$RUN_DIR render_dir=$RENDER_DIR"
-bash "$SCRIPT_DIR/pull-image.sh"
-cleanup_render_images
-# pull-image.sh runs as a child process. Retain the resolved template outputs
-# in this orchestration shell so both rendering and pipeline.env use them.
-CHART_TEMPLATE_DIR="${CHART_TEMPLATE_DIR:-${RUN_DIR}/template/xds-cluster}"
-VALUES_TEMPLATE="${VALUES_TEMPLATE:-${RUN_DIR}/template/values-16Node-je-cpp-bnt3.yaml}"
-ARCH_FILE="${ARCH_FILE:-${RUN_DIR}/template/model_arch-lt-je-cpp-bnt3.json}"
+render_on_first_target
+sync_rendered_from_first_target
+# Keep the local pipeline contract pointing at the copied artifacts even
+# though template extraction and rendering happened on the target host.
+CHART_TEMPLATE_DIR="$RENDER_DIR/xds-cluster"
+VALUES_TEMPLATE="$RENDER_DIR/values.rendered.yaml"
+ARCH_FILE="$RENDER_DIR/architecture.request.json"
 export CHART_TEMPLATE_DIR VALUES_TEMPLATE ARCH_FILE
-bash "$SCRIPT_DIR/render-config.sh"
 write_pipeline_env
 write_target_pipeline_env
 sync_rendered_to_targets

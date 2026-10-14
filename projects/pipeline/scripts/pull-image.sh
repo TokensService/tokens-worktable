@@ -14,12 +14,13 @@ else
 fi
 TEMPLATE_IMAGE="${TEMPLATE_IMAGE:-$IMAGE}"
 VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"
-DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/opt/deploy_template}"
+DEPLOY_TEMPLATE_DIR="${DEPLOY_TEMPLATE_DIR:-/data/zcx/open-xds-runtime-release-wheels/deploy/xds/A3}"
 FALLBACK_DEPLOY_TEMPLATE_DIR="${FALLBACK_DEPLOY_TEMPLATE_DIR:-/opt/op_test}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline-$(date +%Y%m%d_%H%M%S)}"
 TEMPLATE_DIR="$RUN_DIR/template"
 PULL_RETRIES="${PULL_RETRIES:-2}"
 PULL_RETRY_DELAY_SECONDS="${PULL_RETRY_DELAY_SECONDS:-5}"
+SKIP_CONTAINERD_CLEANUP="${SKIP_CONTAINERD_CLEANUP:-0}"
 TARGET_HOSTS="${TARGET_HOSTS:-[]}"
 TARGET_NODE_IP_MAP="${TARGET_NODE_IP_MAP:-}"
 [[ -n "$TARGET_NODE_IP_MAP" ]] || TARGET_NODE_IP_MAP='{}'
@@ -40,6 +41,7 @@ MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"
 MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"
 
 cleanup_unused_containerd_resources() {
+  [[ "$SKIP_CONTAINERD_CLEANUP" == "1" ]] && return 0
   command -v nerdctl >/dev/null 2>&1 || return 0
   echo "[pull][gc] reclaim unused containers, images, snapshots, and build cache"
   # Do not remove running containers or named images still referenced by a
@@ -86,7 +88,7 @@ run_target() {
 }
 
 pull_target_images() {
-  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status pull_status
+  local image="$1" target_line target_json endpoint user host port password target remote_command mapped_targets_text image_check_status pull_status mapped_target
   local -a mapped_targets
 
   mapped_targets_text="$(python3 - "$TARGET_HOSTS" "$TARGET_NODE_IP_MAP" <<'PY'
@@ -109,11 +111,6 @@ for item in hosts:
     if not isinstance(item, dict) or not isinstance(item.get("ip"), str) or not item["ip"]:
         raise SystemExit("every TARGET_HOSTS entry must contain a non-empty ip")
     endpoint = item["ip"]
-    if endpoint not in mapping:
-        continue
-    mapped_ip = mapping[endpoint]
-    if not isinstance(mapped_ip, str) or not mapped_ip:
-        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     match = re.fullmatch(r"([^:]+):(\d+)", endpoint)
     if match:
         host, port = match.groups()
@@ -121,14 +118,14 @@ for item in hosts:
             raise SystemExit(f"invalid TARGET_HOSTS port: {endpoint}")
     else:
         host, port = endpoint, "22"
-    # TARGET_NODE_IP_MAP also contains resolved direct targets.  Registry
-    # credentials and explicit target pre-pulls are only needed for endpoints
-    # translated to a different Kubernetes InternalIP.
-    if mapped_ip == host:
-        continue
+    # Missing entries are direct/non-mapped targets and still need a remote pull.
+    mapped_ip = mapping.get(endpoint, host)
+    if not isinstance(mapped_ip, str) or not mapped_ip:
+        raise SystemExit(f"TARGET_NODE_IP_MAP value must be a non-empty IP for target endpoint: {endpoint}")
     payload = {"endpoint": endpoint, "host": host, "port": port,
                "user": item.get("user") or "root",
-               "password": item.get("pass", item.get("password", "")) or ""}
+               "password": item.get("pass", item.get("password", "")) or "",
+               "mapped": mapped_ip != host}
     print(base64.b64encode(json.dumps(payload).encode()).decode())
 PY
   )"
@@ -137,14 +134,30 @@ PY
 
   for target_line in "${mapped_targets[@]}"; do
     target_json="$(printf '%s' "$target_line" | base64 -d)"
-    read -r endpoint user host port password < <(python3 - "$target_json" <<'PY'
+    read -r endpoint user host port password mapped_target < <(python3 - "$target_json" <<'PY'
 import json
 import sys
 item = json.loads(sys.argv[1])
-print(item["endpoint"], item["user"], item["host"], item["port"], item["password"])
+print(item["endpoint"], item["user"], item["host"], item["port"], item["password"], int(item["mapped"]))
 PY
     )
     target="${user}@${host}"
+    if [[ "$mapped_target" != 1 ]]; then
+      if [[ -z "$IMAGE_PULL_AK" || -z "$IMAGE_PULL_LOGIN_KEY" ]]; then
+        echo "AK and LOGIN_KEY are required for non-mapped target image pulls" >&2
+        return 2
+      fi
+      printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images pull --user $(remote_quote "${IMAGE_PULL_PROJECT}@${IMAGE_PULL_AK}:${IMAGE_PULL_LOGIN_KEY}") $(remote_quote "$image")"
+      echo "[pull] target $endpoint (non-mapped): pull image $image with ctr"
+      if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
+        :
+      else
+        pull_status=$?
+        echo "[pull] target $endpoint: non-mapped registry pull failed (exit $pull_status)" >&2
+        return "$pull_status"
+      fi
+      continue
+    fi
     printf -v remote_command '%s' "command -v ctr >/dev/null 2>&1 || { echo '[pull] target has no ctr' >&2; exit 2; }; sudo ctr -n k8s.io images ls -q | grep -Fqx -- $(remote_quote "$image")"
     echo "[pull] target $endpoint: ensure image $image"
     if run_target "$target" "$port" "$password" "bash -lc $(remote_quote "$remote_command")"; then
@@ -223,7 +236,7 @@ pull_image() {
 }
 
 export_templates() {
-  local work_dir container_name source_dir probe_output
+  local work_dir container_name source_dir probe_output probe_status
   work_dir="$(mktemp -d)"
   container_name="op-test-template-$$"
   cleanup() {
@@ -252,11 +265,14 @@ export_templates() {
         if [ -z "$architecture" ] && [ -f "$root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json" ]; then
           architecture="$root/xds_template/cap/model_arch/model_arch-lt-je-cpp-bnt3.json"
         fi
+        if [ -z "$architecture" ] && [ -f "$root/xds_template/k8s/xds-cluster/model_arch/model_arch-lt-je-cpp-bnt3.json" ]; then
+          architecture="$root/xds_template/k8s/xds-cluster/model_arch/model_arch-lt-je-cpp-bnt3.json"
+        fi
       done
-      [ -n "$chart" ] || chart_file="$(find / -xdev -type f -path "*/xds_template/k8s/xds-cluster/Chart.yaml" -print -quit 2>/dev/null)"
+      [ -n "$chart" ] || chart_file="$(find / -xdev -type f -path "*/xds_template/k8s/xds-cluster/Chart.yaml" -print -quit 2>/dev/null || true)"
       [ -n "$chart" ] || chart="${chart_file%/Chart.yaml}"
-      [ -n "$values" ] || values="$(find / -xdev -type f -name values-16Node-je-cpp-bnt3.yaml -print -quit 2>/dev/null)"
-      [ -n "$architecture" ] || architecture="$(find / -xdev -type f -name model_arch-lt-je-cpp-bnt3.json -print -quit 2>/dev/null)"
+      [ -n "$values" ] || values="$(find / -xdev -type f -name values-16Node-je-cpp-bnt3.yaml -print -quit 2>/dev/null || true)"
+      [ -n "$architecture" ] || architecture="$(find / -xdev -type f -name model_arch-lt-je-cpp-bnt3.json -print -quit 2>/dev/null || true)"
       if [ -z "$chart" ] || [ -z "$values" ] || [ -z "$architecture" ]; then
         echo "unable to locate the xds chart, values template, and architecture file in the image" >&2
         exit 3
@@ -287,7 +303,9 @@ export_templates() {
     echo "[pull] template root $DEPLOY_TEMPLATE_DIR is unavailable; using $FALLBACK_DEPLOY_TEMPLATE_DIR"
   else
     echo "[pull] configured template roots are unavailable; discovering template files in the image"
-    if ! probe_output="$(nerdctl --namespace k8s.io start -a "$container_name")"; then
+    probe_status=0
+    probe_output="$(nerdctl --namespace k8s.io start -a "$container_name")" || probe_status=$?
+    if [[ "$probe_status" -ne 0 && -z "$probe_output" ]]; then
       echo "template discovery failed in $TEMPLATE_IMAGE" >&2
       return 1
     fi
