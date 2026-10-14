@@ -30,6 +30,10 @@ function makeCtx(overrides={},names=[]){
     DEFAULT_PROM:{url:'http://192.168.10.6:25889',linkUrl:'',mode:'local',collectScript:''},
     DEFAULT_PROMPTS:{log:'L',prof:'P',perf:'F'},
     defaultPipeline:()=>({id:'pl-xds',name:'安装部署XDS',stages:[{id:'s0',name:'检出'}],builtIn:true}),
+    /* 内置注册表重组桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines:(list)=>{ const l=Array.isArray(list)?list:[]; return [l.find(p=>p&&p.builtIn&&p.id==='pl-xds')||{id:'pl-xds',name:'安装部署XDS',stages:[{id:'s0',name:'检出'}],builtIn:true}].concat(l.filter(p=>p&&!p.builtIn)); },
+    rebindBuiltinScriptPaths:()=>{},
+    builtinSeedOmittable:()=>false,
   },overrides);
   vm.createContext(ctx);
   if(names.length) vm.runInContext(names.map(extractFunction).join('\n'),ctx);

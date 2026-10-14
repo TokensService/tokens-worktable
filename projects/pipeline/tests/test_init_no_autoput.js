@@ -62,6 +62,9 @@ function makeCtx(serverState){
     /* loadServerState 的流水线/字段依赖（恒等桩：本组用例不验证迁移行为本身） */
     DEFAULT_PIPELINE_ID:'pl-xds',
     defaultPipeline:()=>({id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0',name:'检出'}]}),
+    /* 内置注册表重组/脚本路径回填桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines:(list)=>{ const l=Array.isArray(list)?list:[]; return [l.find(p=>p&&p.builtIn&&p.id==='pl-xds')||{id:'pl-xds',name:'安装部署XDS',builtIn:true,stages:[{id:'s0',name:'检出'}]}].concat(l.filter(p=>p&&!p.builtIn)); },
+    rebindBuiltinScriptPaths:()=>{},
     migrateGate:p=>p, migrateStageUrl:p=>p, migratePrefillDefaults:p=>p, migratePipelineDefaults:p=>p, migratePromPreset:p=>p,
     normalizeEnv:e=>e, normalizeRepo:r=>r,
     /* 全局状态初值 */

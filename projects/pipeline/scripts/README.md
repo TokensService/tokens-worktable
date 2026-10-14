@@ -428,3 +428,56 @@ TARGET_IPS='["192.168.0.243","192.168.0.128"]' bash ems-uninstall.sh
 # 正式清理
 TARGET_IPS='["192.168.0.243","192.168.0.128"]' EMS_DRY_RUN=0 bash ems-uninstall.sh
 ```
+
+## vLLM 原生部署（vllm-native-*.sh）
+
+`vllm-native-*` 脚本族是「原生 vLLM 部署」流水线的 step 主脚本族（配方来源：
+`native_vllm_deployment_from_xds.md` 第 12 节；vLLM 代码基线
+[TokensService/vllm](https://github.com/TokensService/vllm) 分支 `v0.30.0.tokens`）。
+**全程不接 XDS 控制面**：Pod 内设 `VLLM_PLUGINS=""` 关闭全部 XDS 补丁，跑镜像内的
+原生 vLLM；Decode 侧 DP>1 的上游 MoERunner bug（vllm-project/vllm #47982/#56759）
+用节点准备 step 写入的自写修复文件解决（meta_path import hook，**只挂给 Decode**）。
+
+内置流水线「部署vLLM（原生P/D）」（开箱即有的第二条内置流水线）按以下顺序绑定：
+
+| 阶段 | 脚本 | 职责 |
+|------|------|------|
+| vLLM环境检查 | `vllm-native-check.sh` | 只读门禁：kubectl/RuntimeClass/节点解析（`VLLM_NODE` 留空按本机 IP 匹配 InternalIP）/GPU 余量/模型文件（`config.json`+tokenizer）/pd 必备 `/dev/infiniband`/宿主端口/并行度一致性（PP 切分段数=`PREFILL_PP`、`PREFILL_GPU`=`VLLM_TP`×`PREFILL_PP` 等）；契约输出 `VLLM_NODE`/`VLLM_GATE=PASS` |
+| vLLM节点准备 | `vllm-native-prepare.sh` | 建命名空间（幂等）+ 写 MoERunner 修复文件到 `VLLM_MOEFIX_DIR`（幂等，内容一致跳过） |
+| 部署Prefill(PP) | `vllm-native-deploy.sh`（`VLLM_ROLE=prefill`） | 渲染并先删后建 Prefill Pod（TP×PP、kv_producer、挂模型/RDMA/内存型 dshm） |
+| 部署Decode(DP) | `vllm-native-deploy.sh`（`VLLM_ROLE=decode`） | Decode Pod（TP×DP + Ray、kv_consumer、挂 moefix 与 RDMA） |
+| 等待服务就绪 | `vllm-native-wait.sh` | 轮询 Pod Running + 日志 `Application startup complete`（默认 40 分钟超时；Failed 终态带日志尾快速失败） |
+| 重建PD-Proxy | `vllm-native-deploy.sh`（`VLLM_ROLE=proxy`） | Mooncake 代理（对外 `:8000`）。**必须在 P/D 就绪后部署/重建**——代理只在启动时查询一次 prefill bootstrap 并缓存 `engine_id`，P/D 重启后旧代理会「200 但流无数据」 |
+| P/D联调验证 | `vllm-native-verify.sh` | `/v1/models` 200 + 真实 `/v1/completions`（最多 3 次重试）+ pd 硬校验 Decode `/metrics` 的 `external_kv_transfer` 计数 > 0（P/D KV 传输生效的直接证据）；契约输出 `VLLM_SERVICE_ADDR` |
+
+编排外还有 `vllm-native-cleanup.sh`（默认 `VLLM_CLEANUP_DRY_RUN=1` 预演，设 0 正式删除
+本部署全部 Pod；`VLLM_CLEANUP_MOEFIX=1` 连带删修复文件目录；不删命名空间），可按需
+绑为阶段或在「设置 → 清理脚本」选用。
+
+**模式**：`DEPLOY_MODE=pd`（默认）= Prefill + Decode + Proxy 的 P/D 分离；
+`DEPLOY_MODE=standalone` = 仅 Prefill 原生基线（直听对外端口 `PROXY_PORT`，不接
+Mooncake/Proxy，Decode/Proxy 阶段自动跳过），用于先验证模型与单机配方。
+
+**执行位置**：与 ems-check 同一自推送模式——注入 `TARGET_HOSTS` 时推送到**首个**目标
+节点（= 部署节点，vLLM 单节点部署）执行；执行机仅需 ssh（密码认证需 sshpass），目标
+节点需 kubectl + python3。手工独立运行（不注入 TARGET_HOSTS）则在执行机本地跑。
+
+**主要参数**（均为环境变量、阶段参数区可覆盖；脚本头注释逐条说明）：
+`DEPLOY_MODE`、`VLLM_NAMESPACE`（默认 `native-vllm`）、`VLLM_NODE`、`VLLM_IMAGE`、
+`VLLM_RUNTIME_CLASS`（默认 `dcgm-nvidia-runtime`）、`VLLM_IMAGE_PULL_SECRETS`、
+`MODEL_PATH`（容器内模型路径，主控「权重路径」同名注入优先）/`MODEL_HOST_PATH`/
+`MODEL_MOUNT_PATH`、`VLLM_SERVED_MODEL_NAME`、`VLLM_TP`/`PREFILL_PP`/`DECODE_DP`/
+`PREFILL_GPU`/`DECODE_GPU`、`PP_LAYER_PARTITION`（默认 `22,20,20,16`）、
+`PREFILL_PORT`/`DECODE_PORT`/`PROXY_PORT`/`MOONCAKE_BOOTSTRAP_PORT`（8010/8020/8000/8998）、
+`VLLM_MAX_MODEL_LEN`、`PREFILL_MAX_NUM_SEQS`/`PREFILL_MAX_NUM_BATCHED_TOKENS`/
+`PREFILL_GPU_MEM_UTIL`、`DECODE_MAX_NUM_SEQS`/`DECODE_MAX_NUM_BATCHED_TOKENS`/
+`DECODE_GPU_MEM_UTIL`、`VLLM_BLOCK_SIZE`（默认 64，GLM-5.2 NVFP4 各 PP rank 页面须统一）、
+`VLLM_SPECULATIVE_CONFIG`（默认 MTP3）、`VLLM_DSHM_SIZE`、`PREFILL_EXTRA_ARGS`/
+`DECODE_EXTRA_ARGS`（追加到 `vllm serve` 的自由参数）。
+
+**注意**：① 配方假设 Pod 内 `nvidia-smi` 可见容器分到的 GPU 并重编号为 `0..N-1`
+（启动脚本自设 `CUDA_VISIBLE_DEVICES`，不要用 `NVIDIA_VISIBLE_DEVICES`）；② 不要给
+Pod 加 `privileged: true`（会让 runtime 暴露全部节点 GPU）；③ P/D 输出与「Decode 直连」
+可能措辞不同（异构并行数值差异，Prefill PP 与 Decode DP 专家布局不同），语义一致即正常；
+④ 部署参数的镜像 tag 应与所选代码仓分支对应（check 阶段对 `GIT_BRANCH` 中的版本号与
+镜像 tag 做一致性提示）。单测：`test/test_vllm_native_scripts.sh`。

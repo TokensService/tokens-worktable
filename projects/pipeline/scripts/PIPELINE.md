@@ -40,3 +40,17 @@ together to bypass template-image export.
 template, such as database settings, service ports, and the task-executor node
 label. `DEPLOY_NAMESPACE` and `IMAGE_TAG` are derived automatically. Rendering
 fails before YAML parsing if any other `{UPPER_CASE_PLACEHOLDER}` is unresolved.
+
+## Native vLLM deployment pipeline
+
+The `vllm-native-*.sh` family backs the built-in 「部署vLLM（原生P/D）」 pipeline
+(recipe: `native_vllm_deployment_from_xds.md` §12; code baseline:
+TokensService/vllm branch `v0.30.0.tokens`). Stage order: `vllm-native-check.sh`
+(read-only gate) → `vllm-native-prepare.sh` (namespace + MoERunner fix files) →
+`vllm-native-deploy.sh` with `VLLM_ROLE=prefill|decode` → `vllm-native-wait.sh`
+→ `vllm-native-deploy.sh` with `VLLM_ROLE=proxy` (must be rebuilt after every
+P/D restart — the proxy caches the bootstrap `engine_id` at startup) →
+`vllm-native-verify.sh`. All configuration is supplied through environment
+variables (see each script header); `DEPLOY_MODE=standalone` deploys only the
+Prefill baseline. See `README.md` 的「vLLM 原生部署」章节 for the full
+parameter/contract list.

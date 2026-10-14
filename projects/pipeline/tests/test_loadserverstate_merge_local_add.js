@@ -110,6 +110,9 @@ function loadFixture(response, seeds) {
     curPipelineId: seeds.curPipelineId || 'pa',
     DEFAULT_PIPELINE_ID: 'pl-xds',
     defaultPipeline: () => ({ id: 'pl-xds', name: '内置', builtIn: true, stages: [{ id: 's0' }] }),
+    /* 内置注册表重组/脚本路径回填的页面桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines: (list) => { const l = Array.isArray(list) ? list : []; return [l.find(p => p && p.builtIn && p.id === 'pl-xds') || { id: 'pl-xds', name: '内置', builtIn: true, stages: [{ id: 's0' }] }].concat(l.filter(p => p && !p.builtIn)); },
+    rebindBuiltinScriptPaths: () => {},
     migrateGate: value => value, migrateStageUrl: value => value, migratePrefillDefaults: value => value,
     migratePipelineDefaults: value => value,
     migratePromPreset: value => { migrateCalls.prom += 1; return value; },
@@ -200,6 +203,9 @@ function raceFixture() {
     renderPipelines: () => {},
     DEFAULT_PIPELINE_ID: 'pl-xds',
     defaultPipeline: () => JSON.parse(JSON.stringify(xds)),
+    /* 内置注册表重组/脚本路径回填的页面桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines: (list) => { const l = Array.isArray(list) ? list : []; return [l.find(p => p && p.builtIn && p.id === 'pl-xds') || JSON.parse(JSON.stringify(xds))].concat(l.filter(p => p && !p.builtIn)); },
+    rebindBuiltinScriptPaths: () => {},
     migrateGate: value => value, migrateStageUrl: value => value, migratePrefillDefaults: value => value,
     migratePipelineDefaults: value => value, migratePromPreset: value => value,
     normalizeEnv: value => value, normalizeRepo: value => value,

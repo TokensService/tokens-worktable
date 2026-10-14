@@ -264,6 +264,9 @@ function loadServerCtx(response, seeds, globals) {
     curPipelineId: 'pa',
     DEFAULT_PIPELINE_ID: 'pl-xds',
     defaultPipeline: () => ({ id: 'pl-xds', name: '内置', builtIn: true, stages: [{ id: 's0' }] }),
+    /* 内置注册表重组/脚本路径回填桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines: (list) => { const l = Array.isArray(list) ? list : []; return [l.find(p => p && p.builtIn && p.id === 'pl-xds') || { id: 'pl-xds', name: '内置', builtIn: true, stages: [{ id: 's0' }] }].concat(l.filter(p => p && !p.builtIn)); },
+    rebindBuiltinScriptPaths: () => {},
     migrateGate: v => v, migrateStageUrl: v => v, migratePrefillDefaults: v => v,
     migratePipelineDefaults: v => v, migratePromPreset: v => v,
     normalizeRepo: v => v,
