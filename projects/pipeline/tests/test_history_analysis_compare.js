@@ -270,3 +270,48 @@ test('旧版工作台没有当前项目工作区桥时继续使用归档目录�
   assert.equal(calls[0].cwd, '/archive/run-a');
   assert.match(calls[0].text, /#101 流水线「部署」/);
 });
+
+test('阶段级分析：extra 占位符 {stage}/{stageLogFile} 注入模板，cwd 仍取该次运行归档目录', () => {
+  const ctx = analysisContext({
+    analysisPrompts: { stage: '阶段 {stage} 日志 {stageLogFile} 摘要 {summary}' },
+  });
+
+  const request = ctx.buildAnalysisRequest('stage', [runA], { stage: '构建', stageLogFile: '/archive/run-a/run-run-a-01-构建.log' });
+
+  assert.equal(request.cwd, '/archive/run-a');
+  assert.match(request.text, /阶段 构建 日志 \/archive\/run-a\/run-run-a-01-构建\.log/);
+  assert.match(request.text, /#101 流水线「部署」/);
+});
+
+test('阶段级分析：extra 缺省时 {stage}/{stageLogFile} 占位符保持原样（不崩溃）', () => {
+  const ctx = analysisContext({
+    analysisPrompts: { stage: '阶段 {stage} 日志 {stageLogFile}' },
+  });
+
+  const request = ctx.buildAnalysisRequest('stage', [runA]);
+
+  assert.match(request.text, /阶段 \{stage\} 日志 \{stageLogFile\}/, '未注入的额外占位符应原样保留');
+});
+
+test('extra 占位符不注入双运行对比提示词', () => {
+  const ctx = analysisContext({
+    analysisPrompts: { stage: '阶段 {stage} 日志 {stageLogFile}' },
+  });
+
+  const request = ctx.buildAnalysisRequest('stage', [runA, runB], { stage: '构建', stageLogFile: '/archive/run-a/run-run-a-01-构建.log' });
+
+  assert.match(request.text, /运行 A（基准）/);
+  assert.match(request.text, /阶段 \{stage\} 日志 \{stageLogFile\}/, '对比模式不得注入单阶段占位符');
+  assert.doesNotMatch(request.text, /run-run-a-01-构建\.log/);
+});
+
+test('extra 占位符可覆盖同名内置变量（如自定义 stage 文案里的 {archive}）', () => {
+  const ctx = analysisContext({
+    analysisPrompts: { stage: '阶段 {stage} 归档 {archive}' },
+  });
+
+  const request = ctx.buildAnalysisRequest('stage', [runA], { stage: '部署', archive: '/override/x' });
+
+  assert.equal(request.text, '阶段 部署 归档 /override/x');
+  assert.equal(request.cwd, '/archive/run-a', 'cwd 不受 extra 影响，仍取记录归档目录');
+});
