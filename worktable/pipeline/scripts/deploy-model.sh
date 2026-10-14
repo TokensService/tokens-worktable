@@ -1008,7 +1008,11 @@ wait_for_release_cleanup() {
     mapfile -t stale_pods < <("$KUBECTL_BIN" -n "$NAMESPACE" get pods -l "$selector" -o name 2>/dev/null || true)
     if ((${#stale_pods[@]})); then
       echo "[deploy] force delete ${#stale_pods[@]} stale pods for selector: $selector"
-      "$KUBECTL_BIN" -n "$NAMESPACE" delete "${stale_pods[@]}" --grace-period=0 --force --wait=false
+      # The Ray controller may remove a pod between `get` and this delete.
+      # Treat that race as success; the polling loop below still verifies that
+      # no stale pods remain before deployment continues.
+      "$KUBECTL_BIN" -n "$NAMESPACE" delete "${stale_pods[@]}" \
+        --grace-period=0 --force --wait=false --ignore-not-found
     fi
   done
 

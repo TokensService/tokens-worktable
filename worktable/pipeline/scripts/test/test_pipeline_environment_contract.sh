@@ -54,6 +54,8 @@ grep -Fq 'cleanup_stale_raycluster' "$script_dir/deploy-model.sh"
 grep -Fq 'ensure_raycluster_cleanup_service_account' "$script_dir/deploy-model.sh"
 grep -Fq 'delete raycluster "$raycluster"' "$script_dir/deploy-model.sh"
 grep -Fq -- '--ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"' "$script_dir/deploy-model.sh"
+grep -Fq -- '--grace-period=0 --force --wait=false' "$script_dir/deploy-model.sh"
+grep -Fq -- '--ignore-not-found' "$script_dir/deploy-model.sh"
 grep -Fq '"$HELM_BIN" install "$RELEASE_NAME" "$CHART_DIR"' "$script_dir/deploy-model.sh"
 
 uninstall_line="$(grep -nF '"$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE"' "$script_dir/deploy-model.sh" | cut -d: -f1)"
