@@ -380,6 +380,21 @@ test('服务端执行队列满时拒绝继续持有任务，API 不返回虚假�
   releases.shift()(); await Promise.all([running, queued])
 })
 
+test('API 可选 weightsPath 随计划传递，缺省与空串均为不注入', async () => {
+  const f = loadRunRoute(stored)
+  const res = await call(f.handler, 'pipe-release', { weightsPath: ' /models/glm52 ' })
+  assert.equal(res.status, 202)
+  assert.equal(f.executions[0].weightsPath, '/models/glm52', '权重路径去空白后随计划传递')
+
+  const unset = loadRunRoute(stored)
+  await call(unset.handler, 'pipe-release', {})
+  assert.equal(unset.executions[0].weightsPath, '', '未传 weightsPath 按不注入处理')
+
+  const empty = loadRunRoute(stored)
+  await call(empty.handler, 'pipe-release', { weightsPath: '' })
+  assert.equal(empty.executions[0].weightsPath, '', '显式空串=不注入（权重路径无流水线默认值）')
+})
+
 test('API 请求体可以覆盖全部运行参数，空策略和空预设也是显式覆盖', async () => {
   const f = loadRunRoute(stored)
   const res = await call(f.handler, 'pipe-release', {
@@ -481,6 +496,7 @@ test('API 拒绝未知流水线、环境、代码仓、非法预设和非 POST �
     ['pipe-release', { repository: { pass: 7 } }, 400, 'invalid repository.pass'],
     ['pipe-release', { presets: [7] }, 400, 'invalid presets'],
     ['pipe-release', { presets: ['cleanup', 'root-shell'] }, 400, 'invalid preset'],
+    ['pipe-release', { weightsPath: 7 }, 400, 'invalid weightsPath'],
   ]
   for (const [id, body, status, error] of cases) {
     const f = loadRunRoute(stored)
@@ -678,6 +694,55 @@ test('API 选择的代码仓凭据和地址进入服务端脚本运行环境', a
   assert.equal(called.options.env.DEPLOY_STRATEGY, 'blue-green')
   assert.equal(called.options.env.TRIGGERED_BY, 'jenkins')
   assert.equal(called.options.env.KEEP_ME, 'yes')
+})
+
+test('服务端脚本运行环境注入 MODEL_PATH 与 PIPELINE_PRESETS', async () => {
+  const loaded = loadRunStageScript()
+
+  const result = await loaded.ctx.runStageScript(
+    { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [], values: {} },
+    {
+      env: '10.0.0.2',
+      envs: [{ ip: '10.0.0.2', user: 'root', pass: 'node-pass' }],
+      pipelineName: '发布流水线',
+      weightsPath: '/models/glm52',
+      presets: ['cleanup', 'profiling'],
+    },
+    '/scripts',
+  )
+
+  const called = loaded.getCalled()
+  assert.equal(result.code, 0)
+  assert.equal(called.options.env.MODEL_PATH, '/models/glm52', 'API 下发的权重路径作为 MODEL_PATH 注入')
+  assert.equal(called.options.env.PIPELINE_PRESETS, '["cleanup","profiling"]', '勾选的预设任务 key 以 JSON 数组注入')
+
+  /* 缺省不注入（脚本 :- 默认值兜底）；上游变量池/阶段显式参数优先于运行级注入 */
+  const minimal = loadRunStageScript()
+  await minimal.ctx.runStageScript(
+    { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [], values: {} },
+    { env: '', envs: [], pipelineName: 'p' },
+    '/scripts',
+  )
+  assert.ok(!('MODEL_PATH' in minimal.getCalled().options.env), '未下发 weightsPath 时不注入 MODEL_PATH')
+  assert.ok(!('PIPELINE_PRESETS' in minimal.getCalled().options.env), '无 presets（旧计划）时不注入 PIPELINE_PRESETS')
+
+  const override = loadRunStageScript()
+  await override.ctx.runStageScript(
+    { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [{ key: 'MODEL_PATH', kind: 'env' }], values: { MODEL_PATH: '/models/explicit' } },
+    { env: '', envs: [], pipelineName: 'p', weightsPath: '/models/run-level', presets: [] },
+    '/scripts',
+    { MODEL_PATH: '/models/from-upstream' },
+  )
+  assert.equal(override.getCalled().options.env.MODEL_PATH, '/models/explicit', '阶段显式参数最优先')
+
+  const upstream = loadRunStageScript()
+  await upstream.ctx.runStageScript(
+    { name: 'deploy.sh', path: '/scripts/deploy.sh', params: [], values: {} },
+    { env: '', envs: [], pipelineName: 'p', weightsPath: '/models/run-level', presets: ['profiling'] },
+    '/scripts',
+    { MODEL_PATH: '/models/from-upstream' },
+  )
+  assert.equal(upstream.getCalled().options.env.MODEL_PATH, '/models/from-upstream', '上游阶段产出优先于运行级权重路径')
 })
 
 test('服务端脚本收到取消信号后终止子进程并保留中止前输出', async () => {

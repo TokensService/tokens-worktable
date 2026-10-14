@@ -97,7 +97,7 @@ test('runPipeline 把列表运行的默认参数提交到服务端，不启动�
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,queue:[],
     $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
     resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
-    curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'current-strategy',runtimePipelineProm:()=>({enabled:false}),
+    curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'current-strategy',curWeightsPath:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},
     startRun:()=>{throw new Error('浏览器执行器不应启动');},submitServerRun:item=>{submitted=item;},
   });
@@ -129,7 +129,7 @@ test('submitServerRun 用 keepalive 提交脱敏运行参数并立即刷新权�
   assert.equal(requests[0].options.method,'POST');
   assert.equal(requests[0].options.keepalive,true,'页面提交后立即离开时请求仍应送达服务端');
   assert.deepEqual(JSON.parse(requests[0].options.body),{
-    environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',presets:['check'],image:'app',by:'operator',source:'manual',
+    environmentIds:['env-b'],repositoryId:'repo-b',branch:'release',strategy:'blue-green',weightsPath:'',presets:['check'],image:'app',by:'operator',source:'manual',
   });
   assert.equal(requests[0].options.body.includes('secret'),false,'节点/代码仓凭据与阶段配置不得由页面重复上传');
   assert.equal(pulls,1);
@@ -164,7 +164,7 @@ test('runPipeline 遇到失效默认引用时提示并阻止列表直接运行',
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,queue:[],
     $:id=>els[id],alert:msg=>{alerted=msg;},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
     resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
-    curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    curEnvs:()=>[ctx.environments[0]],curStrategy:()=>'',curWeightsPath:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},startRun:()=>{started=true;},
   });
   vm.runInContext(extractFunction('runPipeline'),ctx);
@@ -183,7 +183,7 @@ test('显式环境与代码仓参数可覆盖失效默认引用并继续运行',
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,queue:[],
     $:id=>els[id],alert:msg=>{alerted=msg;},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
     resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),
-    curEnvs:()=>[explicitEnv],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    curEnvs:()=>[explicitEnv],curStrategy:()=>'',curWeightsPath:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},submitServerRun:item=>{submitted=item;},
   });
   vm.runInContext(extractFunction('runPipeline'),ctx);
@@ -204,7 +204,7 @@ test('页面已有本地旧运行时，新运行仍交给服务端统一调度',
   Object.assign(ctx,{
     DEFAULT_IMAGE:'app',QUEUE_CAP:8,MAX_ACTIVE_RUNS:4,queue:[],activeRuns:Array.from({length:4},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.0.'+(i+1)}]})),
     $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
-    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',curWeightsPath:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},submitServerRun:item=>{submitted=item;},
   });
   vm.runInContext(extractFunction('runPipeline'),ctx);
@@ -224,7 +224,7 @@ test('本地运行的租约申请在途时预留队列容量，避免租约拒�
     activeRuns:Array.from({length:3},(_,i)=>({id:'r'+i,envs:[{ip:'10.0.2.'+i}]})),
     pendingLeaseStarts:[{envs:[{ip:'10.0.3.1'}],queueItem:{id:'pending'}}],
     $:id=>els[id],alert(){},findPipeline:id=>id===pipeline.id?pipeline:null,curPipeline:()=>pipeline,curPipelineId:pipeline.id,
-    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',runtimePipelineProm:()=>({enabled:false}),
+    resolveRepo:id=>ctx.repositories.find(repo=>repo.id===id),curEnvs:()=>[env],curStrategy:()=>'',curWeightsPath:()=>'',runtimePipelineProm:()=>({enabled:false}),
     conflictsActive:()=>false,machineConflict:()=>false,renderQueue(){},
     startRun:()=>{throw new Error('浏览器执行槽位已满，不应直接启动');},
     submitServerRun:()=>{throw new Error('本地阶段不得提交服务端');},

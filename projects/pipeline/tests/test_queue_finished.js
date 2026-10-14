@@ -283,7 +283,7 @@ function loadRerunContext(overrides) {
     repositories: [{ id: 'repo-1', name: 'myapp' }],
     environments: [{ id: 'e1', ip: '10.0.0.1', name: '节点1' }],
     $: id => ({ value: id === 'branchName' ? 'main' : 'repo-1' }),
-    curStrategy: () => '',
+    curStrategy: () => '', curWeightsPath: () => '',
     selectedPresetKeys: () => [],
     expandRunStages: stages => stages,
     conflictsActive: () => false,

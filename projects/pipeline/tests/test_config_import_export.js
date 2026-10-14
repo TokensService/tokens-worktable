@@ -54,7 +54,7 @@ test('导出设置：剔除流水线（独立导出）；repositories 携带访�
 
 test('导出文件形状：设置带 config+local（含运行选择），流水线带 pipelines 列表',()=>{
   const downloads=[];
-  const els={branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},triggeredBy:{value:'lhf'}};
+  const els={branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},weightsPath:{value:'/models/w1'},triggeredBy:{value:'lhf'}};
   const shared={
     downloadJson:(name,data)=>downloads.push({name,data}),
     ioTipShow:()=>{},
@@ -75,7 +75,7 @@ test('导出文件形状：设置带 config+local（含运行选择），流水�
   assert.equal(s.data.version,1);
   assert.ok(typeof s.data.exportedAt==='string' && s.data.exportedAt.length>0);
   assert.equal(s.data.config.repositories[0].pass,'tk');
-  assert.deepEqual(J(s.data.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20,cleanupEnabled:false,checkEnabled:false,profilingEnabled:false},'运行行临时配置只在 local 块导出（执行人只读不导出）');
+  assert.deepEqual(J(s.data.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',weightsPath:'/models/w1',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20,cleanupEnabled:false,checkEnabled:false,profilingEnabled:false},'运行行临时配置只在 local 块导出（执行人只读不导出）');
   assert.match(p.name,/^pipeline-pipelines-\d{8}-\d{6}\.json$/);
   assert.equal(p.data.kind,'pipeline-pipelines');
   assert.equal(p.data.pipelines.length,2);
@@ -145,7 +145,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     analysisPrompts:{log:'newL'}, histClearedAt:123,
   },{
     curPipelineId:'pl-custom', selectedEnvIds:['env-dev'], curRepoId:'r1', schedEnvIds:['env-dev'],
-    branch:'main', strategy:'arch-b', by:'alice',
+    branch:'main', strategy:'arch-b', weightsPath:'/models/w2', by:'alice',
     histFilter:{kw:'err',status:'fail',pipeline:'A'}, histPageSize:50,
   });
 
@@ -175,6 +175,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
   assert.deepEqual(J(ctx.schedEnvIds),['env-dev']);
   assert.equal(els.branchName.value,'main');
   assert.equal(els.deployStrategyName.value,'arch-b');
+  assert.equal(els.weightsPath.value,'/models/w2','运行行「权重路径」随导入恢复');
   assert.ok(!els.triggeredBy || !els.triggeredBy.value,'旧导出文件里的执行人（by）不再恢复：执行人只读、固定取当前登录用户');
   assert.deepEqual(J(ctx.histFilter),{kw:'err',status:'fail',pipeline:'A'});
   assert.equal(els.histFilterKw.value,'err');
@@ -439,7 +440,7 @@ test('服务端备份列表面板：渲染目录 / 文件行（导入按钮按�
 test('导出到剪贴板：与本地下载同一份 payload，copyText 写入剪贴板并给提示',()=>{
   const copied=[],tips=[];
   const els={
-    branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},triggeredBy:{value:'lhf'},
+    branchName:{value:'0830_dev'},deployStrategyName:{value:'arch-a'},weightsPath:{value:'/models/clip'},triggeredBy:{value:'lhf'},
     ioExpSettingsClip:{textContent:'⤓ 复制设置到剪贴板'},ioExpPipelinesClip:{textContent:'⤓ 复制流水线到剪贴板'},
   };
   const shared={
@@ -460,7 +461,7 @@ test('导出到剪贴板：与本地下载同一份 payload，copyText 写入剪
   assert.equal(s.app,'worktable-pipeline');
   assert.equal(s.kind,'pipeline-settings');
   assert.equal(s.config.repositories[0].pass,'tk','复制设置含代码仓令牌，与本地下载同源');
-  assert.deepEqual(J(s.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20,cleanupEnabled:false,checkEnabled:false,profilingEnabled:false},'运行行临时配置只在 local 块导出');
+  assert.deepEqual(J(s.local),{curPipelineId:'pl-custom',selectedEnvIds:['env-dev'],curRepoId:'r1',schedEnvIds:['env-prod'],branch:'0830_dev',strategy:'arch-a',weightsPath:'/models/clip',histFilter:{kw:'x',status:'',pipeline:''},histPageSize:20,cleanupEnabled:false,checkEnabled:false,profilingEnabled:false},'运行行临时配置只在 local 块导出');
   const p=JSON.parse(copied[1].text);
   assert.equal(p.kind,'pipeline-pipelines');
   assert.equal(p.pipelines.length,2);

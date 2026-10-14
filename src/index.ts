@@ -1589,6 +1589,8 @@ function serverRunVariables(runCtx: any, varsPool?: Record<string, string>): Rec
   if (runCtx.branch) vars.GIT_BRANCH = String(runCtx.branch)
   if (runCtx.strategy) { vars.DEPLOY_STRATEGY = String(runCtx.strategy); vars.arch = String(runCtx.strategy) }
   if (runCtx.by) { vars.BY = String(runCtx.by); vars.EXECUTOR = String(runCtx.by) }
+  if (runCtx.weightsPath) vars.MODEL_PATH = String(runCtx.weightsPath)   // 权重路径（API 可选下发）；未下发不注入，保持占位符未解析
+  if (Array.isArray(runCtx.presets)) vars.PIPELINE_PRESETS = JSON.stringify(runCtx.presets)   // 本次运行勾选的预设任务 key（JSON 数组）
   if (runCtx.archive) {
     vars.ARCHIVE_DIR = String(runCtx.archive)
     vars.ARCHIVE_FOLDER = String(runCtx.archive)
@@ -2418,10 +2420,13 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
   if (own(input, 'strategy') && typeof input.strategy !== 'string') return { status: 400, error: 'invalid strategy' }
   if (own(input, 'by') && typeof input.by !== 'string') return { status: 400, error: 'invalid by' }
   if (own(input, 'image') && typeof input.image !== 'string') return { status: 400, error: 'invalid image' }
+  if (own(input, 'weightsPath') && typeof input.weightsPath !== 'string') return { status: 400, error: 'invalid weightsPath' }
 
   const branch = own(input, 'branch') && input.branch.trim() ? input.branch.trim() : defaults.branch
   const strategy = own(input, 'strategy') ? input.strategy.trim() : defaults.strategy
   const by = own(input, 'by') && input.by.trim() ? input.by.trim() : 'api'
+  /* 权重路径（可选）：非空时作为 MODEL_PATH 注入本次运行的每个任务；无流水线默认值，省略/空串=不注入 */
+  const weightsPath = own(input, 'weightsPath') ? input.weightsPath.trim() : ''
   const envs = selectedEnvironments.map((item: any) => ({ ...item }))
   const repo = repository ? { ...repository } : null
   return {
@@ -2438,6 +2443,7 @@ function buildPipelineApiRun(store: any, pipelineId: string, body: any, runId: s
       branch,
       strategy,
       presets,
+      weightsPath,
       image: own(input, 'image') ? input.image.trim() : '',
       by,
       source: input.source === 'manual' ? 'manual' : 'api',
@@ -5416,6 +5422,8 @@ export function apply(ctx: Context) {
     if (runCtx.branch) look.GIT_BRANCH = String(runCtx.branch)
     if (runCtx.strategy) { look.DEPLOY_STRATEGY = String(runCtx.strategy); look.arch = String(runCtx.strategy) }
     if (runCtx.by) { look.BY = String(runCtx.by); look.EXECUTOR = String(runCtx.by) }
+    if (runCtx.weightsPath) look.MODEL_PATH = String(runCtx.weightsPath)
+    if (Array.isArray(runCtx.presets)) look.PIPELINE_PRESETS = JSON.stringify(runCtx.presets)
     if (repository.user) look.GIT_USER = String(repository.user)
     if (repository.pass) look.GIT_PASSWORD = String(repository.pass)
     if (runCtx.archive) { look.ARCHIVE_DIR = String(runCtx.archive); look.ARCHIVE_FOLDER = String(runCtx.archive) }
@@ -5467,6 +5475,10 @@ export function apply(ctx: Context) {
     if (env.EXECUTOR === undefined && runCtx.by) env.EXECUTOR = String(runCtx.by)
     if (env.GIT_USER === undefined && repository.user) env.GIT_USER = String(repository.user)
     if (env.GIT_PASSWORD === undefined && repository.pass) env.GIT_PASSWORD = String(repository.pass)
+    // 与前端 execScript 一致：权重路径（API 可选下发）非空时作为 MODEL_PATH 注入；
+    // PIPELINE_PRESETS=本次运行勾选的预设任务 key（JSON 数组，如 ["cleanup","profiling"]），脚本可据此判断预设任务是否启用
+    if (env.MODEL_PATH === undefined && runCtx.weightsPath) env.MODEL_PATH = String(runCtx.weightsPath)
+    if (env.PIPELINE_PRESETS === undefined && Array.isArray(runCtx.presets)) env.PIPELINE_PRESETS = JSON.stringify(runCtx.presets)
     if (ctx0) {
       if (ctx0.user && env.TARGET_USER === undefined) env.TARGET_USER = String(ctx0.user)
       if (ctx0.pass && env.TARGET_PASSWORD === undefined) env.TARGET_PASSWORD = String(ctx0.pass)
@@ -5668,6 +5680,7 @@ export function apply(ctx: Context) {
       image: pl.image || '',
       branch: pl.branch || '',
       strategy: pl.strategy || '',
+      weightsPath: typeof pl.weightsPath === 'string' ? pl.weightsPath : '',
       by: pl.by || (pl.source === 'api' ? 'api' : 'schedule'),
     }
     // 变量池（与页面 curRun.vars 一致）：定时后缀由页面登记时随计划快照上游阶段变量（pl.vars，
@@ -5702,6 +5715,7 @@ export function apply(ctx: Context) {
       repoId: pl.repoId || (pl.repository && pl.repository.id) || null,
       branch: pl.branch || '',
       strategy: pl.strategy || '',
+      weightsPath: typeof pl.weightsPath === 'string' ? pl.weightsPath : '',
       source: pl.source || (isSuffixRun ? 'schedule-suffix' : 'schedule'),
       envNodes: pipelineHistoryEnvNodes(pl.envs, runCtx.env),
     })
@@ -5717,6 +5731,9 @@ export function apply(ctx: Context) {
     const executionStages = apiPresetMode
       ? materializeServerPipelineStages(Array.isArray(pl.stages) ? pl.stages : [], pl.presets, runCfg)
       : (Array.isArray(pl.stages) ? pl.stages : [])
+    /* PIPELINE_PRESETS 注入值（与页面 rc.presets 同口径）：本次运行勾选并实际进入编排序列的预设任务 key；
+       旧计划无 presets 字段（回退清理模式）时保持 undefined，不注入 */
+    if (apiPresetMode) runCtx.presets = executionStages.filter((s: any) => s && s.preset).map((s: any) => String(s.pkey || ''))
     /* 混合编排本地前缀快照（页面 buildSuffixPlan 随计划带上）：写入同 tag 历史与运行快照的完整阶段
        列表（本地前缀 + 服务端后缀），远端/他端详情能看到全部阶段；前缀带 local:true 作本地执行标识，
        不进入下方执行循环。 */

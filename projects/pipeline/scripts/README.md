@@ -31,6 +31,8 @@
 | `GIT_URL` / `GIT_BRANCH` | 主控选择的代码仓地址 / 分支 | `https://gitcode.com/org/repo.git` / `main` |
 | `GIT_USER` / `GIT_PASSWORD` | 仓库访问令牌（来自「设置」页代码仓列表） | `oauth2` |
 | `DEPLOY_STRATEGY` | 所选分支的部署策略（代码仓配置了部署策略来源时注入） | `low-latency` |
+| `MODEL_PATH` | 模型权重路径（主控「权重路径」可选填写，非空才注入；留空不注入，由脚本自身 `:-` 默认值兜底） | `/models/GLM-5.2/v1` |
+| `PIPELINE_PRESETS` | 本次运行勾选的预设任务 key 的 JSON 数组（系统预设：`cleanup`/`check`/`profiling`，含自定义预设 key）；脚本可据此判断预设任务是否启用，如 `echo "$PIPELINE_PRESETS" \| grep -q profiling` | `["cleanup","profiling"]` |
 
 节点 IP / 用户名 / 密码来自「设置」页的节点环境列表（每个节点可配各自的用户名、密码）；主控「环境（可多选）」勾选哪些节点，注入的就是哪些。`template.sh` 开头会把上述全部变量连同 `ARCHIVE_*` 一起打印（未注入的显示 `<未注入>`），凭据类变量（`TARGET_PASSWORD` / `TARGET_HOSTS` / `GIT_PASSWORD`）会明文出现在阶段日志与归档日志中，注意脱敏。
 

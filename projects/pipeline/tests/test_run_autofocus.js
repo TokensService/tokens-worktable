@@ -40,7 +40,7 @@ function makeContext(overrides) {
     resolveEnv: env => ({ id: 'env-1', ip: String(env || '') }),
     resolveRepo: () => ({ id: 'repo-1', name: 'myapp' }),
     $: id => ({ value: id === 'branchName' ? 'main' : 'repo-1' }),
-    curStrategy: () => 'serial',
+    curStrategy: () => 'serial', curWeightsPath: () => '',
     selectedPresetKeys: () => [],
     expandRunStages: stages => stages,
     conflictsActive: () => false,
