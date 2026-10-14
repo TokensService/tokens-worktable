@@ -200,7 +200,7 @@ grep -Fq 'EMS_NAME=ems13-13' <<<"$out"
 grep -Fq 'EMS_NAMESPACE=ems13-13' <<<"$out"
 grep -Fq 'EMS_LABEL_KEY=ems13' <<<"$out"
 grep -Fq 'EMS_NODES=10.0.0.1,10.0.0.2' <<<"$out"
-grep -Fq 'EMS_CHART_VERSION=26.8.0-b6' <<<"$out"
+grep -Fq 'EMS_CHART_VERSION=26.8.0-b02' <<<"$out"
 grep -Fq 'EMS_POD_HEALTH=8/8' <<<"$out"
 grep -Fq 'EMS_STATUS=installed' <<<"$out"
 

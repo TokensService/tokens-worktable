@@ -315,7 +315,7 @@ grep -Fq 'EMS_GATE=passed' <<<"$outg4"
 grep -Fq 'EMS_RELEASE_NAMESPACES=x-ns' <<<"$outg4"
 grep -q 'EMS_NAME=ems13-13' "$tmp/ssh.log"
 grep -q 'EMS_RELEASE_NAMESPACES=x-ns' "$tmp/ssh.log"
-grep -q 'ems_chart_expected=26.8.0-b6' "$tmp/ssh.log"
+grep -q 'ems_chart_expected=26.8.0-b02' "$tmp/ssh.log"
 
 # ⑧h 单节点门禁也通过（check 是通用 step；节点数下限由 ems-deploy 校验，不在此拦）
 outg5=$(TARGET_IPS='["10.0.0.4"]' EMS_NAME=ems13-13 bash "$script") || {
