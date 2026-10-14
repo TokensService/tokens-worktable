@@ -102,7 +102,7 @@
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="dark">深色</button>
     <button class="dshell-btn dshell-btnGhost pf-themeBtn" data-theme="light">浅色</button>
   </div>
-  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器；支持 ≤2GiB，超限可下载到本地拖入 Perfetto 打开）中打开做交互式时间线分析——服务端 trace 打开前自动保存到本地（可设固定保存目录、已下载过自动跳过），列表勾选多条可同时打开（首个内嵌、其余弹出独立窗口），也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
+  <p class="dshell-sub">浏览本地或服务端的 CUDA / 流水线 profiling 文件，展示阶段耗时与瀑布图；对 PyTorch trace 自动做 GPU 内核三表分析（归因 / 重叠机会 / 融合候选，参考 llm-torch-profiler-analysis skill），定位瓶颈点；trace 文件可一键在内嵌 Perfetto UI（ui.perfetto.dev，postMessage 传输，trace 只在浏览器内存、不上传服务器；支持 ≤2GiB，超限可下载到本地拖入 Perfetto 打开）中打开做交互式时间线分析——服务端 trace 打开前自动保存到本地（「设置」标签页可配固定保存目录——服务端绝对路径直接落盘、已存在跳过；留空则浏览器下载、已下载过自动跳过），列表勾选多条可同时打开（首个内嵌、其余弹出独立窗口），也可交给不同 AI Agent（内置助手 / MiMo Code / Kimi Code / Codex / Claude Code）深入分析。</p>
 
   <div class="pf-layout">
     <!-- ============ 左栏：数据来源 + 列表 ============ -->
@@ -112,6 +112,7 @@
           <button class="dshell-tab dshell-tabOn" data-tab="local">本地文件</button>
           <button class="dshell-tab" data-tab="serverFile">服务端文件</button>
           <button class="dshell-tab" data-tab="serverDir">服务端文件夹</button>
+          <button class="dshell-tab" data-tab="settings">设置</button>
         </div>
         <div style="height:10px"></div>
         <div id="tab-local">
@@ -151,15 +152,22 @@
             <div class="dshell-list" id="dirBrowserList" style="margin-top:6px; max-height:260px; overflow:auto"></div>
           </div>
         </div>
+        <div id="tab-settings" style="display:none">
+          <h3 class="pf-sub" style="margin-top:0">Perfetto 保存目录</h3>
+          <input class="dshell-input" id="saveDirPath" placeholder="服务端目录绝对路径，如 /data/traces；留空 = 浏览器默认下载目录" />
+          <div class="pf-row" style="margin-top:8px">
+            <button class="dshell-btn" id="saveDirSaveBtn">保存</button>
+            <button class="dshell-btn dshell-btnGhost" id="saveDirClearBtn">清除</button>
+          </div>
+          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto打开」会把服务端 trace 直接保存到该目录（保留原始文件名，目录不存在自动创建），已存在同名文件自动跳过；留空则回退为浏览器下载（已下载过的自动跳过重复下载）。本地文件本就在本地，不上送。</p>
+        </div>
       </div>
 
       <div class="dshell-card">
         <div class="pf-row">
           <h2 class="dshell-sub" style="margin:0" class="grow">Profiling 列表</h2>
           <span class="dshell-badge" id="countBadge">0</span>
-          <button class="dshell-btn dshell-btnGhost" id="saveDirBtn" title="设置 trace 的默认保存目录（File System Access API，选择后「Perfetto打开」自动把服务端 trace 存进该目录、已存在则跳过）；未设置时用浏览器默认下载目录，已下载过的会跳过重复下载">📁 保存目录</button>
-          <button class="dshell-btn dshell-btnGhost" id="saveDirClear" style="display:none" title="清除保存目录设置与「已下载」记录">×</button>
-          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把选中（或勾选）的 trace 保存到本地下载目录（服务端文件，已保存过的跳过），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
+          <button class="dshell-btn dshell-btnGhost" id="perfettoOpenBtn" disabled title="先把选中（或勾选）的 trace 保存到本地（服务端文件：设了保存目录则直接存入该目录、已存在跳过；否则下载到浏览器默认下载目录、已下载过跳过），再在内嵌 Perfetto UI（ui.perfetto.dev，已关闭侧边栏）中打开交互式时间线；勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口；trace 经 postMessage 传入浏览器内存（≤2GiB），不上传服务器">Perfetto打开</button>
         </div>
         <div class="dshell-list" id="itemList" style="margin-top:8px; max-height:480px; overflow:auto"></div>
       </div>
@@ -1327,7 +1335,6 @@ async function perfettoSendCurrent(it){
       perfStatus('读取 trace：' + it.name + (it.size ? '（' + fmtSize(it.size) + '）' : '') + '…');
       const r = await perfettoTraceBuffer(it);
       perfBufCache = { itemId: it.id, buf: r.buf, name: r.name };
-      await maybeWriteToSaveDir(it, perfBufCache);   /* 设置了保存目录时把读出的字节落进去 */
     }
     const c = perfBufCache, tag = metaOf(it).tag;
     perf.session.send(c.buf, (tag ? tag + ' - ' : '') + c.name, c.name);
@@ -1367,80 +1374,37 @@ function downloadTraceFile(it){
   if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
   return true;
 }
-/* ================= 保存目录（File System Access API） ================= */
-/* 设置目录后：「Perfetto打开」把服务端 trace 直接写进该目录（gzip 剥壳后与投递同名），
-   已存在同名文件则跳过；目录句柄持久化在 IndexedDB。无 FS API（非安全上下文/旧浏览器）时按钮禁用 */
-let saveDirHandle = null, saveDirName = '';
-const saveDirSupported = typeof window.showDirectoryPicker === 'function';
+/* ================= 保存目录（服务端路径，「设置」标签页配置） ================= */
+/* 「设置」标签页配置保存目录（服务端绝对路径）：「Perfetto打开」把服务端 trace 直接 cp 进该目录，
+   已存在同名文件则跳过；留空则回退浏览器默认下载（localStorage 记录去重）。
+   本地文件本就在本地，两种模式都不上送。 */
+const SAVE_DIR_KEY = 'dsh.profiling.saveDir';
 const DL_KEY = 'dsh.profiling.downloaded';   /* 默认下载模式的去重记录：{path: ts} */
-function idbOpen(){
-  return new Promise((res, rej) => {
-    const rq = indexedDB.open('dsh-profiling', 1);
-    rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
-    rq.onsuccess = () => res(rq.result);
-    rq.onerror = () => rej(rq.error);
-  });
+function saveDirPath(){ return String(load(SAVE_DIR_KEY, '') || '').trim(); }
+/* 服务端 trace 落进保存目录：目录不存在先建（api.mkdir 幂等），同名文件已存在则跳过；
+   拷贝走 /api/worktable/copy（服务端流式复制，字节不过浏览器、无大小限制），保留原始文件名（.gz 不剥壳） */
+async function saveTraceToServerDir(it, dir){
+  const name = it.name;
+  let entries = [];
+  try{ entries = (await api.fs(dir)).entries || []; }
+  catch(e){
+    const md = await api.mkdir(dir);
+    if (md && md.error) throw new Error('创建保存目录失败：' + md.error);
+  }
+  if (entries.some(e => e.name === name)){ toast('保存目录已存在，跳过：' + name); return; }
+  const r = await fetch('/api/worktable/copy', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ src: it.path, dst: dir.replace(/\/+$/, '') + '/' + name }) });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok && d.ok) toast('已保存到 ' + dir + '：' + name + (d.size ? '（' + fmtSize(d.size) + '）' : ''));
+  else throw new Error('保存到 ' + dir + ' 失败：' + (d.error || ('HTTP ' + r.status)));
 }
-async function idbSet(k, v){ try{ const db = await idbOpen(); await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); db.close(); }catch(e){} }
-async function idbGet(k){ try{ const db = await idbOpen(); const v = await new Promise((res, rej) => { const rq = db.transaction('kv').objectStore('kv').get(k); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); }); db.close(); return v; }catch(e){ return undefined; } }
-async function idbDel(k){ try{ const db = await idbOpen(); await new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); db.close(); }catch(e){} }
-function refreshSaveDirUi(){
-  $('saveDirBtn').textContent = saveDirHandle ? '📁 ' + saveDirName : '📁 保存目录';
-  $('saveDirClear').style.display = (saveDirHandle || Object.keys(load(DL_KEY, {})).length) ? '' : 'none';
-}
-async function ensureSaveDirPermission(){
-  if (!saveDirHandle) return false;
-  try{
-    if (await saveDirHandle.queryPermission({ mode: 'readwrite' }) === 'granted') return true;
-    return await saveDirHandle.requestPermission({ mode: 'readwrite' }) === 'granted';   /* 需在用户手势窗口期调用 */
-  }catch(e){ return false; }
-}
-/* 已写进保存目录（或与投递同名的 gzip 剥壳名）则跳过再次写入 */
-async function existsInSaveDir(it){
-  if (!saveDirHandle) return false;
-  const name = /\.gz$/i.test(it.name) ? it.name.replace(/\.gz$/i, '') : it.name;
-  try{ await saveDirHandle.getFileHandle(name); return true; }catch(e){ return false; }
-}
-/* 读到的 trace 字节落进保存目录（只在实际读出字节后调用；_skipSave=已存在跳过） */
-async function maybeWriteToSaveDir(it, c){
-  if (!saveDirHandle || !it.path || it._skipSave) return;
-  try{
-    const fh = await saveDirHandle.getFileHandle(c.name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(c.buf); await w.close();
-    toast('已保存到 ' + saveDirName + '：' + c.name);
-  }catch(e){ toast('保存到 ' + saveDirName + ' 失败：' + (e && e.message || e)); }
-}
-$('saveDirBtn').addEventListener('click', async () => {
-  if (!saveDirSupported) return;
-  try{
-    const h = await window.showDirectoryPicker({ mode: 'readwrite' });
-    saveDirHandle = h; saveDirName = h.name;
-    await idbSet('saveDir', h);
-    refreshSaveDirUi();
-    toast('保存目录已设置：' + h.name + '（服务端 trace 将自动存入，已存在则跳过）');
-  }catch(e){ /* 用户取消 */ }
-});
-$('saveDirClear').addEventListener('click', async () => {
-  saveDirHandle = null; saveDirName = '';
-  await idbDel('saveDir');
-  store(DL_KEY, {});
-  refreshSaveDirUi();
-  toast('已清除保存目录设置与「已下载」记录');
-});
-if (!saveDirSupported){ $('saveDirBtn').disabled = true; $('saveDirBtn').title = '当前浏览器/访问方式不支持选择本地目录（需 Chrome/Edge 且 localhost 或 HTTPS）；trace 将保存到浏览器默认下载目录'; }
-(async () => {
-  const h = await idbGet('saveDir');
-  if (h){ saveDirHandle = h; saveDirName = h.name; }
-  refreshSaveDirUi();
-})();
-/* 打开前保存：目录模式查存在性（存在则标 _skipSave，读出字节后跳过写入）；
-   默认下载模式按 localStorage 记录去重（已下载过则跳过，记录经 ×按钮清除） */
+/* 打开前保存：设了保存目录走服务端拷贝（存在跳过）；否则浏览器默认下载并按记录去重 */
 async function saveTraceBeforeOpen(it){
   if (it.source === 'local' || !it.path) return;
-  if (saveDirHandle){
-    if (await existsInSaveDir(it)){ it._skipSave = true; toast('保存目录已存在，跳过下载：' + it.name); }
-    return;   /* 写入发生在读出字节之后（maybeWriteToSaveDir），不重复拉取 */
+  const dir = saveDirPath();
+  if (dir){
+    try{ await saveTraceToServerDir(it, dir); }
+    catch(e){ toast(e && e.message || String(e)); }
+    return;
   }
   const rec = load(DL_KEY, {});
   if (rec[it.path]){ toast('此前已下载过，跳过重复下载：' + it.name); return; }
@@ -1449,13 +1413,28 @@ async function saveTraceBeforeOpen(it){
     toast('已保存 trace 到本地下载目录：' + it.name);
   }
 }
+/* 设置页：保存目录的载入/保存/清除 */
+function refreshSaveDirUi(){ $('saveDirPath').value = saveDirPath(); }
+$('saveDirSaveBtn').addEventListener('click', async () => {
+  const v = $('saveDirPath').value.trim();
+  if (v && !v.startsWith('/')){ toast('保存目录需为服务端绝对路径（以 / 开头）'); return; }
+  if (v){ const md = await api.mkdir(v); if (md && md.error){ toast('目录不存在且创建失败：' + md.error); return; } }
+  store(SAVE_DIR_KEY, v);
+  toast(v ? '保存目录已设置：' + v : '已清除保存目录，回退浏览器默认下载');
+});
+$('saveDirClearBtn').addEventListener('click', () => {
+  store(SAVE_DIR_KEY, '');
+  store(DL_KEY, {});
+  refreshSaveDirUi();
+  toast('已清除保存目录设置与「已下载」记录');
+});
+refreshSaveDirUi();
 /* 「Perfetto打开」（列表卡标题行）：先保存到本地（服务端条目，已保存过的跳过），再打开。
    勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口（同一 PING/PONG 握手协议，全功能界面）。
    弹窗必须发生在用户手势窗口期内：先同步 window.open 占位，再异步读字节投递。 */
 $('perfettoOpenBtn').addEventListener('click', async () => {
   const targets = resolvePerfettoTargets(items, perfPicks, cur);
   if (!targets.length){ toast('请先选中（或勾选）一个 trace 条目'); return; }
-  if (saveDirHandle && !await ensureSaveDirPermission()) toast('保存目录无写权限，本次将不写入 ' + saveDirName);
   const wins = [];
   for (let i = 1; i < targets.length; i++) wins.push(window.open(PERFETTO_ORIGIN, '_blank'));
   const blocked = wins.filter(w => !w).length;
@@ -1466,7 +1445,6 @@ $('perfettoOpenBtn').addEventListener('click', async () => {
     if (!win) continue;
     try{
       const r = await perfettoTraceBuffer(targets[i]);
-      await maybeWriteToSaveDir(targets[i], r);
       const tag = metaOf(targets[i]).tag;
       createPerfettoSession({ host: window, target: win }).send(r.buf, (tag ? tag + ' - ' : '') + r.name, r.name);
     }catch(e){ win.close(); toast(targets[i].name + '：' + (e && e.message || e)); }
@@ -1749,7 +1727,7 @@ $('dirUpBtn').addEventListener('click', () => { const up = dirBrowseDir.replace(
 /* ================= 数据来源页签 ================= */
 $('srcTabs').querySelectorAll('.dshell-tab').forEach(t => t.addEventListener('click', () => {
   $('srcTabs').querySelectorAll('.dshell-tab').forEach(x => x.classList.toggle('dshell-tabOn', x === t));
-  for (const name of ['local', 'serverFile', 'serverDir']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
+  for (const name of ['local', 'serverFile', 'serverDir', 'settings']) $('tab-' + name).style.display = name === t.dataset.tab ? '' : 'none';
 }));
 
 /* ================= AI 分析 ================= */

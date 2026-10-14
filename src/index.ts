@@ -1,7 +1,8 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
-import { createReadStream, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { createReadStream, createWriteStream, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
+import { pipeline as streamPipeline } from 'node:stream/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { homedir, networkInterfaces } from 'node:os'
@@ -3848,6 +3849,33 @@ export function apply(ctx: Context) {
         try { res.end() } catch {}
       } catch (err) {
         json(res, 502, { error: String(err) })
+      }
+    },
+  })
+
+  // 服务端文件复制（profiling「保存目录」落盘等）：流式拷贝 + 临时文件原子改名，字节不经过浏览器、不整份驻留内存
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/copy',
+    handler: async (req: any, res: any) => {
+      let temp = ''
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const src = typeof body.src === 'string' ? body.src : ''
+        const dst = typeof body.dst === 'string' ? body.dst : ''
+        if (!src || !dst) { json(res, 400, { error: 'missing src/dst' }); return }
+        const srcAbs = pathResolve(src), dstAbs = pathResolve(dst)
+        if (srcAbs === dstAbs) { json(res, 400, { error: 'src 与 dst 相同' }); return }
+        const st = await fsStat(srcAbs)
+        if (!st.isFile()) { json(res, 404, { error: 'src 不是文件' }); return }
+        temp = dstAbs + '.worktable-copy-' + process.pid + '-' + Date.now() + '.tmp'
+        await streamPipeline(createReadStream(srcAbs), createWriteStream(temp))
+        await fsRename(temp, dstAbs); temp = ''
+        json(res, 200, { ok: true, size: st.size })
+      } catch (err) {
+        if (temp) { try { await fsUnlink(temp) } catch {} }
+        json(res, 500, { error: String((err as any)?.message || err) })
       }
     },
   })
