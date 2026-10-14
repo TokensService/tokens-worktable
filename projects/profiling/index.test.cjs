@@ -618,10 +618,23 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
 test("页面静态契约：列表项删除（× 按钮 / 墓碑防扫描带回 / 显式重加清墓碑）", () => {
   for (const needle of [
     'data-role="del"', "function deleteItem(", "dsh.profiling.deleted", "function untombstone(",
-    "!deleted[e.path]", "ev.target.closest('[data-role=\"del\"]')",
+    "!deleted[tk]", "ev.target.closest('[data-role=\"del\"]')",
     "已删除：", "服务端目录扫描将不再带回",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
-  /* 两个显式加载入口都清墓碑（服务端文件「加载」与文件夹「选择文件」点选） */
+  /* 显式加载入口清墓碑（loadSrvPath 本机/远程两分支 + 定义处） */
   const loads = html.match(/untombstone\(/g) || [];
-  assert.ok(loads.length >= 3, "loadSrvFileBtn / dirBrowser 点选 / untombstone 定义 应至少 3 处引用");
+  assert.ok(loads.length >= 3, "loadSrvPath 本机与远程两分支 / untombstone 定义 应至少 3 处引用");
+});
+
+test("页面静态契约：服务端标签合并（文件/文件夹一体）+ 服务器下拉 + 远程缓存拉取", () => {
+  for (const needle of [
+    'data-tab="server"', 'id="tab-server"', 'id="srvNode"', 'id="srvNodeRefresh"', 'id="srvPath"',
+    'id="srvLoadBtn"', 'id="srvRescanBtn"', 'id="srvBrowseBtn"', 'id="srvPickDirBtn"',
+    "dsh.profiling.srvNode", "/api/worktable/pipeline", "config.environments",
+    "/api/worktable/rfs", "/api/worktable/rfetch", "remote-cache",
+    "function ensureLocalPath(", "function tombKeyOf(", "remote:", "remote.rpath",
+  ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  /* 旧的两个标签与 id 已移除 */
+  for (const gone of ['data-tab="serverFile"', 'data-tab="serverDir"', 'id="srvFilePath"', 'id="srvDirPath"', 'id="loadSrvFileBtn"', 'id="scanDirBtn"', 'id="dirBrowser"'])
+    assert.ok(!html.includes(gone), `index.html 仍残留 ${gone}`);
 });
