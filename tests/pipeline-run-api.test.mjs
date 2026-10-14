@@ -245,13 +245,13 @@ test('服务端执行池持有可实时查询的运行状态，排队与运行�
   assert.deepEqual(aborted, ['manual-1'])
   const settled = plain(pool.snapshot())
   assert.deepEqual({ runs: settled.runs, queue: settled.queue }, { runs: [], queue: [] })
-  /* 运行中被取消 → 进 finished（cancelled）；时间字段取实际值 */
+  /* 运行中被取消 → 进 finished（cancelled）；时间字段取实际值；阶段摘要携带已打点的开始时间 */
   assert.equal(settled.finished.length, 1)
   const finishedEntry = { ...settled.finished[0], dur: 0, startedAt: 0, endedAt: 0 }
   assert.deepEqual(finishedEntry, {
     id: 'manual-1', pipelineId: 'pipe-release', pipelineName: '发布流水线', by: 'alice', source: 'manual',
     status: 'cancelled', dur: 0, startedAt: 0, endedAt: 0,
-    stages: [{ stage: '构建', status: 'running', dur: 0 }, { stage: '部署', status: 'idle', dur: 0 }],
+    stages: [{ stage: '构建', status: 'running', dur: 0, startedAt: 1759999999000 }, { stage: '部署', status: 'idle', dur: 0 }],
   })
   assert.ok(settled.finished[0].endedAt >= settled.finished[0].startedAt)
   assert.deepEqual(plain(pool.cancel('missing')), { ok: false, state: 'missing' })

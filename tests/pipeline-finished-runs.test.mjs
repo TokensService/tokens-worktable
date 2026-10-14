@@ -115,6 +115,43 @@ test('终态映射：成功/失败/取消都进 finished，字段符合 Finished
   assert.equal(JSON.stringify(finished).includes('boom'), false, '失败原因不进 finished')
 })
 
+test('阶段开始时间：updateStage 打点 startedAt 随节点保留到终态，finished 阶段摘要携带', async () => {
+  const ctx = loadApiRegion()
+  let now = 1_000_000
+  const pool = ctx.createPipelineExecutionQueue(async (plan, runtime) => {
+    const startedAt = now
+    runtime.updateStage('s1', { status: 'running', progress: 5, dur: 0, startedAt })
+    now += 300
+    runtime.updateStage('s1', { status: 'success', progress: 100, dur: 0.3 })   // 终态更新不带 startedAt：沿用 running 时的打点
+    runtime.updateStage('s2', { status: 'success', progress: 100, dur: 0 })     // 从未打点的阶段不携带
+    return 'success'
+  }, 1, 10, { nowFn: () => now })
+
+  await pool.run(planOf('with-stage-start'))
+  const finished = plain(pool.snapshot().finished)
+  assert.equal(finished.length, 1)
+  assert.deepEqual(finished[0].stages, [
+    { stage: '阶段一', status: 'success', dur: 0.3, startedAt: 1_000_000 },
+    { stage: '阶段二', status: 'success', dur: 0 },
+  ], 'startedAt>0 的阶段摘要携带开始时间，未打点阶段不携带')
+
+  /* 快照在跑节点的 startedAt 同样透传（cleanQueueNode 白名单，供远端预览展示开始时间） */
+  let now2 = 2_000_000
+  let release
+  const live = ctx.createPipelineExecutionQueue(async (plan, runtime) => {
+    runtime.updateStage('s1', { status: 'running', progress: 5, dur: 0, startedAt: now2 })
+    await new Promise(resolve => { release = resolve })
+    return 'success'
+  }, 1, 10, { nowFn: () => now2 })
+  const inflight = live.run(planOf('live-run'))
+  await new Promise(resolve => setImmediate(resolve))
+  const snap = plain(live.snapshot())
+  assert.equal(snap.runs[0].nodes.s1.startedAt, 2_000_000, '在跑节点快照携带 startedAt')
+  assert.equal(snap.runs[0].nodes.s2.startedAt, undefined, '未开始节点无 startedAt')
+  release()
+  await inflight
+})
+
 test('排队即取消不入 finished；保留策略：上限 20 丢最旧、TTL 120s 惰性 prune', async () => {
   const ctx = loadApiRegion()
   let now = 1_000_000
