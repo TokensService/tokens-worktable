@@ -153,7 +153,9 @@ resolve_container_model_path() {
 resolve_container_model_path
 
 remote_quote() {
-  printf '%q' "$1"
+  local value="$1"
+  value="${value//\'/\'\"\'\"\'}"
+  printf "'%s'" "$value"
 }
 
 run_remote() {

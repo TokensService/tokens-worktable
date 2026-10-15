@@ -85,7 +85,9 @@ print_storage_diagnostics() {
 }
 
 remote_quote() {
-  printf '%q' "$1"
+  local value="$1"
+  value="${value//\'/\'\"\'\"\'}"
+  printf "'%s'" "$value"
 }
 
 run_target() {

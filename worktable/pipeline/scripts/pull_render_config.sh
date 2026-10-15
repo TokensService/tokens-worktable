@@ -331,7 +331,9 @@ remote_ssh() {
 }
 
 remote_quote() {
-  printf '%q' "$1"
+  local value="$1"
+  value="${value//\'/\'\"\'\"\'}"
+  printf "'%s'" "$value"
 }
 
 sync_remote_file() {
