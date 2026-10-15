@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>推理大模型社区分析</title>
+<link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+<style>
+/* ---- 最小自造样式（主题/布局/少量交互态）---- */
+body { min-height: 100vh; }
+/* 主题：跟随 / 深色 / 浅色 —— 直接定义 dshell 变量，保证 iframe 内对比度足够 */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --rc-bg:#0d1117; --rc-fg:#eef2f6; --rc-fg2:#b9c2cc; --rc-card:rgba(255,255,255,.04); --rc-border:#2c333d;
+  --dsw-alias-bg-base:#0d1117;
+  --dsw-alias-label-primary:#eef2f6;
+  --dsw-alias-label-secondary:#b9c2cc;
+  --dsw-alias-label-tertiary:#8b95a1;
+  --dsw-alias-border-l1:#2c333d; --dsw-alias-border-l2:#3d4652;
+  --dsw-alias-fill-l1:rgba(255,255,255,.04);
+  --dsw-alias-state-accent-primary:#5b9bf8;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  --rc-bg:#f6f8fa; --rc-fg:#1a1f24; --rc-fg2:#3f4a56; --rc-card:#ffffff; --rc-border:#c9d1d9;
+  --dsw-alias-bg-base:#f6f8fa;
+  --dsw-alias-label-primary:#1a1f24;
+  --dsw-alias-label-secondary:#3f4a56;
+  --dsw-alias-label-tertiary:#6a7684;
+  --dsw-alias-border-l1:#c9d1d9; --dsw-alias-border-l2:#aeb8c2;
+  --dsw-alias-fill-l1:rgba(0,0,0,.03);
+  --dsw-alias-state-accent-primary:#2f6feb;
+}
+html[data-theme="light"] .dshell-btn { background:#1f883d; color:#fff; }
+html[data-theme="light"] .dshell-listItem:hover { background:#eef2f6; }
+html[data-theme="light"] .dshell-input, html[data-theme="light"] .dshell-textarea { background:#fff; }
+html[data-theme="light"] .rc-chip { background:#eef1f5; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); }
+html[data-theme="light"] .dshell-badgeDone { color:#1a7f37; border-color:rgba(26,127,55,.45); background:rgba(26,127,55,.06); }
+html[data-theme="light"] .dshell-badgeDone::before { background:#1a7f37; box-shadow:0 0 5px rgba(26,127,55,.5); }
+html[data-theme="light"] .dshell-badgeWait { color:#9a6700; border-color:rgba(154,103,0,.45); background:rgba(154,103,0,.07); }
+html[data-theme="light"] .dshell-badgeWait::before { background:#9a6700; box-shadow:0 0 5px rgba(154,103,0,.5); }
+html[data-theme="light"] .dshell-badge { color:#3f4a56; background:rgba(0,0,0,.04); }
+html[data-theme="light"] .dshell-badge::before { background:#6a7684; }
+html[data-theme="light"] .dshell-btnDanger { color:#cf222e; border-color:#cf222e; }
+html[data-theme="light"] .dshell-btnGhost { color:#3f4a56; }
+html[data-theme="light"] .dshell-btnGhost:hover { color:#1a1f24; }
+html[data-theme="light"] .rc-mark code { background:rgba(0,0,0,.07); }
+html[data-theme="light"] .rc-mark pre { background:rgba(0,0,0,.05); }
+html[data-theme="light"] ::placeholder { color:#8a95a3; }
+/* 可读性：整体放大字号（覆盖 dshell 基线） */
+body { background: var(--dsw-alias-bg-base, var(--rc-bg)); color: var(--dsw-alias-label-primary, var(--rc-fg)); font-size:14px; }
+.dshell-title { font-size:19px; }
+.dshell-sub { font-size:13px; }
+.dshell-muted { font-size:12.5px; }
+.dshell-btn { font-size:13px; }
+.dshell-badge { font-size:12px; }
+.dshell-listItemTitle { font-size:13.5px; }
+.dshell-listItemMeta { font-size:12px; }
+.dshell-input, .dshell-textarea { font-size:13px; }
+.rc-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.rc-head .rc-spacer { flex:1 1 auto; }
+.rc-themeGroup { display:flex; gap:4px; border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); border-radius:999px; padding:3px; }
+.rc-themeBtn { border:none; background:transparent; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); font:inherit; font-size:13px; padding:4px 12px; border-radius:999px; cursor:pointer; }
+.rc-themeBtn.rc-on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+.rc-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; background:var(--dsw-alias-fill-l1, rgba(127,127,127,.12)); font-size:12.5px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); cursor:pointer; }
+.rc-chip:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+.rc-chip.rc-on { border-color:var(--dsw-alias-state-accent-primary,#4f8ef7); color:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+.rc-sectionTitle { display:flex; align-items:center; gap:8px; margin:2px 0 8px; flex-wrap:wrap; }
+.rc-addRow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+.rc-addRow .dshell-input { flex:1 1 180px; min-width:140px; }
+.rc-check { width:15px; height:15px; flex:none; accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7); cursor:pointer; }
+.rc-selRow { cursor:pointer; }
+.rc-selOn { border-color:var(--dsw-alias-state-accent-primary,#4f8ef7) !important; background:var(--dsw-alias-fill-l1, rgba(127,127,127,.10)) !important; }
+.rc-link { color:var(--dsw-alias-state-accent-primary,#4f8ef7); text-decoration:none; }
+.rc-link:hover { text-decoration:underline; }
+.rc-linkName { font-weight:600; font-size:13.5px; }
+.rc-linkUrl { display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
+.rc-del { border:none; background:transparent; color:var(--dsw-alias-label-tertiary,#8b95a1); font:inherit; font-size:15px; cursor:pointer; padding:2px 6px; border-radius:6px; flex:none; }
+.rc-del:hover { color:#cf222e; background:rgba(207,34,46,.10); }
+/* ---- AI Agent 选择 ---- */
+.rc-agentPick { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:4px 0 10px; }
+.rc-agent { border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; padding:8px 10px; cursor:pointer; font-size:12px; }
+.rc-agent:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+.rc-agent small { display:block; color:var(--dsw-alias-label-tertiary,#6b7280); font-size:10.5px; margin-top:2px; }
+.rc-agent.on { border-color:var(--dsw-alias-state-accent-primary,#4f8ef7); box-shadow:inset 0 0 0 1px var(--dsw-alias-state-accent-primary,#4f8ef7); }
+.rc-agentPick-lock .rc-agent { opacity:.55; cursor:not-allowed; }
+/* ---- 对话区 ---- */
+.rc-chat { max-height:460px; overflow:auto; border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); border-radius:8px; padding:12px; background:var(--dsw-alias-fill-l1, var(--rc-card)); display:flex; flex-direction:column; gap:10px; margin:4px 0 10px; min-height:120px; }
+.rc-msg { max-width:92%; border-radius:8px; padding:8px 10px; }
+.rc-msg-role { font-size:11px; color:var(--dsw-alias-label-tertiary,#8b95a1); margin-bottom:3px; }
+.rc-msg-body { font-size:13px; line-height:1.7; white-space:pre-wrap; word-break:break-word; }
+.rc-msg-user { align-self:flex-end; background:var(--dsw-alias-fill-l1, rgba(127,127,127,.14)); border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); }
+.rc-msg-agent { align-self:flex-start; background:var(--dsw-alias-fill-l1, rgba(79,142,247,.10)); border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); }
+.rc-msg-sys { align-self:center; background:transparent; color:var(--dsw-alias-label-tertiary,#8b95a1); font-size:12px; max-width:100%; text-align:center; }
+.rc-msg-agent .rc-msg-body { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+.rc-msg-agent.rc-done .rc-msg-body { font-family:inherit; font-size:13px; }
+.rc-promptPresets { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+.rc-btnRow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+/* ---- Markdown 渲染 ---- */
+.rc-mark { font-size:13.5px; line-height:1.8; }
+.rc-mark p { margin:0 0 8px; }
+.rc-mark h1,.rc-mark h2,.rc-mark h3 { font-size:15px; margin:12px 0 6px; color:var(--dsw-alias-label-primary, var(--rc-fg)); }
+.rc-mark ul,.rc-mark ol { margin:0 0 8px; padding-left:20px; }
+.rc-mark code { background:rgba(127,127,127,.18); padding:1px 5px; border-radius:4px; font-size:12.5px; }
+.rc-mark pre { background:rgba(127,127,127,.12); padding:10px; border-radius:8px; overflow:auto; }
+.rc-mark pre code { background:none; padding:0; }
+.rc-mark blockquote { border-left:3px solid var(--dsw-alias-border-l2,#3a4150); margin:0 0 8px; padding:2px 10px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); }
+.rc-mark table { width:100%; border-collapse:collapse; margin:0 0 8px; }
+.rc-mark th,.rc-mark td { border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); padding:5px 8px; font-size:12.5px; }
+.rc-footNote { font-size:12.5px; color:var(--dsw-alias-label-tertiary,#8b95a1); line-height:1.7; margin-top:12px; }
+</style>
+</head>
+<body>
+<div class="dshell">
+
+  <!-- 标题区 -->
+  <div class="rc-head">
+    <div>
+      <h1 class="dshell-title">推理大模型社区分析</h1>
+      <p class="dshell-sub">添加社区链接 → 勾选目标 → 写提示词 → 选 AI Code Agent 分析；支持持续对话式追问（Kimi Code / MiMo Code / Codex / Claude Code）</p>
+    </div>
+    <div class="rc-spacer"></div>
+    <div class="rc-themeGroup" title="背景主题">
+      <button class="rc-themeBtn" data-theme="follow">跟随</button>
+      <button class="rc-themeBtn" data-theme="dark">深色</button>
+      <button class="rc-themeBtn" data-theme="light">浅色</button>
+    </div>
+  </div>
+
+  <!-- 社区链接管理 -->
+  <div class="dshell-card" style="margin-top:12px">
+    <div class="rc-sectionTitle">
+      <h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">社区链接</h2>
+      <span class="dshell-muted" id="linkCount"></span>
+      <span style="flex:1"></span>
+      <label class="dshell-muted" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="rc-check" id="linkSelAll" /> 全选</label>
+      <button class="dshell-btn dshell-btnGhost" id="btnDelSel">删除所选</button>
+      <button class="dshell-btn dshell-btnGhost" id="btnResetLinks">恢复默认</button>
+    </div>
+    <div class="rc-addRow">
+      <input class="dshell-input" id="linkName" placeholder="名称（可选）" />
+      <input class="dshell-input" id="linkUrl" placeholder="链接 URL（必填，如 https://github.com/vllm-project/vllm）" />
+      <input class="dshell-input" id="linkNote" placeholder="备注（可选）" />
+      <button class="dshell-btn" id="btnAddLink">➕ 添加</button>
+      <span class="dshell-muted" id="linkHint"></span>
+    </div>
+    <div class="dshell-list" id="linkList"></div>
+    <div class="dshell-muted" style="margin-top:8px">勾选要分析的社区链接（可多选），首轮分析会把所选链接连同下方提示词交给所选 AI Code Agent；链接保存在浏览器本地。</div>
+  </div>
+
+  <!-- AI Code Agent 对话式分析 -->
+  <div class="dshell-card" style="margin-top:12px">
+    <div class="rc-sectionTitle">
+      <h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">AI Code Agent 对话式分析</h2>
+      <span class="dshell-badge" id="aiStateBadge">待命</span>
+      <span style="flex:1"></span>
+      <span class="dshell-muted">CLI Agent 在服务端非交互运行，续聊沿用同一会话上下文</span>
+    </div>
+    <div class="rc-agentPick" id="agentPick"></div>
+    <div class="rc-promptPresets" id="promptPresets"></div>
+    <label class="dshell-muted">分析提示词（首轮连同勾选的社区链接发出；后续在同一对话里持续追问）</label>
+    <textarea class="dshell-textarea" id="promptInput" rows="5" placeholder="例如：这些推理框架社区近期的主要演进方向有什么异同？对我们的选型有什么建议？（Enter 发送，Shift+Enter 换行）"></textarea>
+    <div class="rc-btnRow">
+      <button class="dshell-btn" id="btnAnalyze">▶ 开始分析</button>
+      <button class="dshell-btn dshell-btnDanger" id="btnStop" disabled>■ 停止</button>
+      <button class="dshell-btn dshell-btnGhost" id="btnNewChat">✚ 新会话</button>
+      <button class="dshell-btn dshell-btnGhost" id="btnCopy">复制记录</button>
+      <span class="dshell-muted" id="aiHint"></span>
+    </div>
+    <div class="rc-chat" id="aiChat"></div>
+  </div>
+
+  <div class="rc-footNote">
+    · 社区链接保存在浏览器本地（localStorage），可随时添加 / 删除，支持勾选多个目标组合分析；「恢复默认」回到内置的四个推理框架社区链接。<br/>
+    · CLI Agent（Kimi Code / MiMo Code / Codex / Claude Code）在服务端以非交互模式运行（<code>kimi -p</code> / <code>mimo run</code> / <code>codex exec</code> / <code>claude -p</code>），输出实时回显；续聊沿用同一服务端会话（<code>kimi -c</code> / <code>mimo run -c</code> / <code>codex exec resume --last</code> / <code>claude -p -c</code>），运行目录为本页目录下的 <code>.ai-community/</code>。需执行环境已安装对应 CLI。<br/>
+    · Agent 可自行抓取链接内容（curl / gh api / 网页）做深入分析；分析结果由所选模型生成，仅供参考。
+  </div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ========== 主题 ========== */
+var THEME_KEY='rc_theme';
+function applyTheme(mode){
+  if(mode==='follow'){
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark?'dark':'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', mode);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.rc-themeBtn'), function(b){
+    b.classList.toggle('rc-on', b.getAttribute('data-theme')===mode);
+  });
+  try{ localStorage.setItem(THEME_KEY, mode); }catch(e){}
+}
+function initTheme(){
+  var mode='follow';
+  try{ mode=localStorage.getItem(THEME_KEY)||'follow'; }catch(e){}
+  applyTheme(mode);
+  if(window.matchMedia){
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
+      var m='follow'; try{ m=localStorage.getItem(THEME_KEY)||'follow'; }catch(e){}
+      if(m==='follow') applyTheme('follow');
+    });
+  }
+}
+document.addEventListener('click', function(e){
+  var b=e.target.closest && e.target.closest('.rc-themeBtn');
+  if(b) applyTheme(b.getAttribute('data-theme'));
+});
+
+/* ========== 通用工具 ========== */
+function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function lsGet(k,d){ try{ var v=localStorage.getItem(k); return v===null?d:JSON.parse(v); }catch(e){ return d; } }
+function lsSet(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
+
+/* 简易 Markdown 渲染（标题/列表/代码/引用/表格/加粗） */
+function mdRender(md){
+  var esc=function(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  var lines=esc(md).split(/\r?\n/), out=[], inCode=false, inList=false, inTable=false;
+  function closeAll(){ if(inList){out.push('</ul>');inList=false;} if(inTable){out.push('</table>');inTable=false;} }
+  for(var i=0;i<lines.length;i++){
+    var l=lines[i];
+    if(/^```/.test(l)){ closeAll(); out.push(inCode?'</code></pre>':'<pre><code>'); inCode=!inCode; continue; }
+    if(inCode){ out.push(l+'\n'); continue; }
+    if(/^\|.*\|\s*$/.test(l)){
+      var cells=l.split('|').slice(1,-1).map(function(c){return c.trim();});
+      if(!inTable){ closeAll(); out.push('<table>'); inTable=true; out.push('<tr>'+cells.map(function(c){return '<th>'+c+'</th>';}).join('')+'</tr>'); }
+      else if(!/^\|[\s:|-]+\|\s*$/.test(l)){ out.push('<tr>'+cells.map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>'); }
+      continue;
+    } else if(inTable){ out.push('</table>'); inTable=false; }
+    if(/^\s*[-*+]\s+/.test(l)){ if(!inList){closeAll(); out.push('<ul>'); inList=true;} out.push('<li>'+inline(l.replace(/^\s*[-*+]\s+/,''))+'</li>'); continue; }
+    if(/^\s*\d+[.)]\s+/.test(l)){ if(!inList){closeAll(); out.push('<ul>'); inList=true;} out.push('<li>'+inline(l.replace(/^\s*\d+[.)]\s+/,''))+'</li>'); continue; }
+    closeAll();
+    if(/^###\s+/.test(l)) out.push('<h3>'+inline(l.replace(/^###\s+/,''))+'</h3>');
+    else if(/^##\s+/.test(l)) out.push('<h2>'+inline(l.replace(/^##\s+/,''))+'</h2>');
+    else if(/^#\s+/.test(l)) out.push('<h1>'+inline(l.replace(/^#\s+/,''))+'</h1>');
+    else if(/^&gt;\s?/.test(l)) out.push('<blockquote>'+inline(l.replace(/^&gt;\s?/,''))+'</blockquote>');
+    else if(l.trim()==='') continue;
+    else out.push('<p>'+inline(l)+'</p>');
+  }
+  closeAll(); if(inCode) out.push('</code></pre>');
+  function inline(s){
+    return s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+            .replace(/`([^`]+)`/g,'<code>$1</code>')
+            .replace(/\*([^*]+)\*/g,'<em>$1</em>')
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a class="rc-link" href="$2" target="_blank" rel="noopener">$1</a>');
+  }
+  return out.join('\n');
+}
+
+/* ========== 社区链接：数据与纯逻辑 ========== */
+var LINK_KEY='rc_links';
+var DEFAULT_LINKS=[
+  {id:'vllm', name:'vLLM', url:'https://github.com/vllm-project/vllm', note:'高吞吐 LLM 推理与服务引擎', addedAt:'2026-10-15'},
+  {id:'sglang', name:'SGLang', url:'https://github.com/sgl-project/sglang', note:'结构化生成与快速推理引擎', addedAt:'2026-10-15'},
+  {id:'trtllm', name:'TensorRT-LLM', url:'https://github.com/NVIDIA/TensorRT-LLM', note:'NVIDIA LLM 推理优化库', addedAt:'2026-10-15'},
+  {id:'lmdeploy', name:'LMDeploy', url:'https://github.com/InternLM/lmdeploy', note:'LLM 模型部署工具包', addedAt:'2026-10-15'}
+];
+/* 从 URL 推导默认名称：GitHub 取 org/repo，其余取主机名 */
+function autoNameFromUrl(url){
+  try{
+    var u=new URL(url);
+    var p=u.pathname.replace(/^\/+|\/+$/g,'');
+    if(u.hostname==='github.com' && p) return p.split('/').slice(0,2).join('/');
+    return p ? u.hostname+'/'+p.split('/')[0] : u.hostname;
+  }catch(e){
+    return String(url||'').replace(/^https?:\/\//i,'').split(/[\/?#]/)[0];
+  }
+}
+/* 链接输入归一化：校验 URL（缺协议自动补 https://）、空名称按 URL 推导。
+   纯函数：不生成 id / addedAt（由调用方补齐），便于单测。 */
+function normalizeLinkInput(name,url,note){
+  url=String(url==null?'':url).trim();
+  name=String(name==null?'':name).trim();
+  note=String(note==null?'':note).trim();
+  if(!url) return {ok:false, error:'请填写链接 URL'};
+  if(!/^https?:\/\//i.test(url)){
+    if(/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}([\/?#]|$)/i.test(url)) url='https://'+url;
+    else return {ok:false, error:'链接需以 http(s):// 开头或形如 example.com/xx'};
+  }
+  if(!/^https?:\/\/[^\s]+\.[^\s]+/i.test(url)) return {ok:false, error:'链接格式不正确'};
+  if(!name) name=autoNameFromUrl(url);
+  return {ok:true, link:{name:name, url:url, note:note}};
+}
+
+var links=lsGet(LINK_KEY, null);
+if(!Array.isArray(links) || !links.length) links=DEFAULT_LINKS.slice();
+var selectedIds=new Set(links.map(function(l){ return l.id; }));   // 缺省全选，开箱即可开始分析
+function selectedLinks(){
+  return links.filter(function(l){ return selectedIds.has(l.id); });
+}
+
+function renderLinks(){
+  var el=document.getElementById('linkList');
+  if(!links.length){
+    el.innerHTML='<div class="dshell-muted" style="padding:12px 4px">暂无社区链接，请在上方添加。</div>';
+  }else{
+    el.innerHTML=links.map(function(l){
+      var on=selectedIds.has(l.id);
+      return '<div class="dshell-listItem rc-selRow'+(on?' rc-selOn':'')+'" data-link="'+escHtml(l.id)+'">'+
+        '<input type="checkbox" class="rc-check" data-sellink="'+escHtml(l.id)+'"'+(on?' checked':'')+' />'+
+        '<span class="dshell-listItemTitle"><span class="rc-linkName">'+escHtml(l.name)+'</span>'+
+        '<div class="rc-relHi" style="margin-top:2px"><a class="rc-link rc-linkUrl" href="'+escHtml(l.url)+'" target="_blank" rel="noopener">'+escHtml(l.url)+'</a></div>'+
+        (l.note?'<div class="dshell-listItemMeta" style="margin-top:2px">'+escHtml(l.note)+'</div>':'')+
+        '</span>'+
+        '<span class="dshell-listItemMeta">'+escHtml(l.addedAt||'')+'</span>'+
+        '<button class="rc-del" data-dellink="'+escHtml(l.id)+'" title="删除该链接">×</button></div>';
+    }).join('');
+  }
+  el.querySelectorAll('[data-link]').forEach(function(row){
+    row.addEventListener('click', function(e){
+      if(e.target.closest('.rc-del') || e.target.closest('a')) return;
+      var id=row.getAttribute('data-link');
+      if(!e.target.matches('input.rc-check')) toggleSelect(id, !selectedIds.has(id));
+      else toggleSelect(id, e.target.checked);
+    });
+  });
+  el.querySelectorAll('[data-dellink]').forEach(function(b){
+    b.addEventListener('click', function(e){
+      e.stopPropagation();
+      removeLink(b.getAttribute('data-dellink'));
+    });
+  });
+  updateLinkCount();
+}
+function toggleSelect(id,on){
+  if(on) selectedIds.add(id); else selectedIds.delete(id);
+  renderLinks();
+}
+function updateLinkCount(){
+  document.getElementById('linkCount').textContent='已选 '+selectedIds.size+' / 共 '+links.length;
+  var all=document.getElementById('linkSelAll');
+  all.checked=links.length>0 && selectedIds.size===links.length;
+}
+function persistLinks(){ lsSet(LINK_KEY, links); }
+function removeLink(id){
+  links=links.filter(function(l){ return l.id!==id; });
+  selectedIds.delete(id);
+  persistLinks(); renderLinks();
+}
+function addLinkFromInputs(){
+  var hint=document.getElementById('linkHint');
+  var res=normalizeLinkInput(
+    document.getElementById('linkName').value,
+    document.getElementById('linkUrl').value,
+    document.getElementById('linkNote').value
+  );
+  if(!res.ok){ hint.textContent=res.error; return; }
+  var id='lk_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7);
+  var d=new Date(); var addedAt=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+  links.unshift(Object.assign({id:id, addedAt:addedAt}, res.link));
+  selectedIds.add(id);
+  persistLinks(); renderLinks();
+  document.getElementById('linkName').value='';
+  document.getElementById('linkUrl').value='';
+  document.getElementById('linkNote').value='';
+  hint.textContent='已添加 ✓';
+  setTimeout(function(){ if(hint.textContent==='已添加 ✓') hint.textContent=''; }, 1500);
+}
+document.getElementById('btnAddLink').addEventListener('click', addLinkFromInputs);
+document.getElementById('linkUrl').addEventListener('keydown', function(e){
+  if(e.key!=='Enter') return;
+  if(e.isComposing || e.keyCode===229 || e.key==='Process') return;   /* 输入法组词 Enter 不提交 */
+  e.preventDefault(); addLinkFromInputs();
+});
+document.getElementById('linkSelAll').addEventListener('change', function(){
+  selectedIds.clear();
+  if(this.checked) links.forEach(function(l){ selectedIds.add(l.id); });
+  renderLinks();
+});
+document.getElementById('btnDelSel').addEventListener('click', function(){
+  if(!selectedIds.size){ document.getElementById('linkHint').textContent='请先勾选要删除的链接'; return; }
+  links=links.filter(function(l){ return !selectedIds.has(l.id); });
+  selectedIds.clear();
+  persistLinks(); renderLinks();
+});
+document.getElementById('btnResetLinks').addEventListener('click', function(){
+  links=DEFAULT_LINKS.map(function(l){ return Object.assign({}, l); });
+  selectedIds=new Set(links.map(function(l){ return l.id; }));
+  persistLinks(); renderLinks();
+});
+
+/* ========== 提示词预设 ========== */
+var PRESETS=[
+  {name:'深度解读', p:'你是资深的 LLM 推理社区分析师。请抓取并分析这些社区链接的近期动态与技术方向，输出结构化中文分析（Markdown），包含：1) **各社区摘要** 2) **技术要点对比** 3) **社区活跃度与趋势** 4) **对我们选型/部署的建议**。'},
+  {name:'风险扫描', p:'请作为发布/安全评审专家，扫描这些社区近期变化中的回归风险、兼容性破坏与潜在坑点（Markdown 输出，列出风险等级与验证建议）：'},
+  {name:'性能视角', p:'请从推理性能工程视角（吞吐/延迟/显存/并行策略/量化）分析这些社区的技术演进与差异，输出 Markdown 对比表与结论。'},
+  {name:'一句话总结', p:'请用 3 句话以内总结这些社区各自的核心变化与对使用者的意义。'}
+];
+function fillPresets(){
+  var el=document.getElementById('promptPresets');
+  el.innerHTML=PRESETS.map(function(p,i){ return '<span class="rc-chip" data-preset="'+i+'">'+escHtml(p.name)+'</span>'; }).join('');
+  el.querySelectorAll('[data-preset]').forEach(function(c){
+    c.addEventListener('click', function(){
+      document.getElementById('promptInput').value=PRESETS[+c.getAttribute('data-preset')].p;
+      document.getElementById('promptInput').focus();
+    });
+  });
+}
+
+/* ========== AI Agent：命令行与提示词组装（纯函数，供单测） ========== */
+var AGENTS=[
+  {id:'kimi', name:'Kimi Code', desc:'kimi -p（续聊 -c）'},
+  {id:'mimo', name:'MiMo Code', desc:'mimo run（续聊 -c）'},
+  {id:'codex', name:'Codex', desc:'codex exec（续聊 resume --last）'},
+  {id:'claude', name:'Claude Code', desc:'claude -p（续聊 -c）'}
+];
+/* 各 CLI 的非交互命令行：首轮开新会话，续轮带会话续接参数（同一 .ai-community 工作目录内锚定同一会话）；
+   统一 < /dev/null —— exec-stream 的 stdin 是空管道，不重定向 claude/codex 会等 stdin 甚至当附加输入 */
+function aiAgentCmd(id, continued){
+  var first={kimi:'kimi -p "$PROMPT"', mimo:'mimo run "$PROMPT"', codex:'codex exec --skip-git-repo-check "$PROMPT"', claude:'claude -p "$PROMPT"'};
+  var cont={kimi:'kimi -c -p "$PROMPT"', mimo:'mimo run -c "$PROMPT"', codex:'codex exec resume --last --skip-git-repo-check "$PROMPT"', claude:'claude -p -c "$PROMPT"'};
+  var t=continued?cont:first;
+  return (t[id]||first.claude)+' < /dev/null';
+}
+function linksBlock(links){
+  return links.map(function(l,i){
+    return (i+1)+'. '+(l.name||l.url)+' — '+l.url+(l.note?'\n   备注：'+l.note:'');
+  }).join('\n');
+}
+/* 首轮分析提示词：角色说明 + 分析对象（勾选的社区链接）+ 用户提示词 */
+function buildAnalyzePrompt(links, promptText){
+  var L=[];
+  L.push('# 社区链接分析任务');
+  L.push('');
+  L.push('你是运行在 dsh 宿主机上的 AI Code Agent，可用 curl / gh api / 网页抓取等手段自行抓取下列社区链接内容做深入分析；无法访问的链接请说明情况，并结合名称 / URL / 备注做合理推断。');
+  L.push('');
+  L.push('## 分析对象（'+links.length+' 个社区链接）');
+  L.push(linksBlock(links));
+  L.push('');
+  L.push('## 我的分析要求');
+  L.push(String(promptText==null?'':promptText));
+  L.push('');
+  L.push('请以 Markdown 输出分析结果。');
+  return L.join('\n');
+}
+/* 续聊提示词：默认只发本轮文字（会话上下文里已有分析对象）；勾选变化时附上更新后的对象清单 */
+function buildFollowupPrompt(text, linksIfChanged){
+  var t=String(text==null?'':text);
+  if(!linksIfChanged || !linksIfChanged.length) return t;
+  return '## 分析对象更新（勾选变化，以此为准）\n'+linksBlock(linksIfChanged)+'\n\n## 本轮请求\n'+t;
+}
+
+/* ========== 对话状态（按 Agent 分桶；历史上限防无限膨胀） ========== */
+var AI_HIST_MAX=60;
+var AI_AGENT=lsGet('rc_aiAgent','claude');
+var AI_HIST=lsGet('rc_aiHist',{});
+var AI_SESS=lsGet('rc_aiSess',{});
+var AI_RUNNING=null;
+var lastLinkKey='';   // 上次发送时的勾选组合，用于检测勾选是否变化
+Object.keys(AI_HIST).forEach(function(k){ (AI_HIST[k]||[]).forEach(function(m){ delete m._live; }); });  // 关页残留的流式标记不恢复
+function aiHist(id){ return AI_HIST[id]||(AI_HIST[id]=[]); }
+function aiHistPush(id,msg){
+  var h=aiHist(id); h.push(msg);
+  while(h.length>AI_HIST_MAX) h.shift();
+  lsSet('rc_aiHist', AI_HIST);
+  return msg;
+}
+function aiAgentById(id){ for(var i=0;i<AGENTS.length;i++) if(AGENTS[i].id===id) return AGENTS[i]; return AGENTS[3]; }
+function currentLinkKey(){ return selectedLinks().map(function(l){ return l.id; }).join(','); }
+
+/* ========== 服务端协作：页面目录反推 / mkdir / write / exec-stream ========== */
+function pageDir(){
+  try{
+    var m=location.pathname.match(/^\/api\/worktable\/site\/([^/]+)\//);
+    if(m) return decodeURIComponent(m[1]);
+  }catch(e){}
+  return '';
+}
+function apiMkdir(path){
+  return fetch('/api/worktable/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})})
+    .then(function(r){ return r.json().catch(function(){ return {}; }); })
+    .then(function(d){ if(d&&d.error) throw new Error(d.error); });
+}
+function apiWrite(path,content){
+  return fetch('/api/worktable/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,content:content})})
+    .then(function(r){ return r.json().catch(function(){ return {}; }); })
+    .then(function(d){ if(d&&d.error) throw new Error(d.error); });
+}
+/* exec-stream：NDJSON 帧 {type:out|err|done|error}；返回 {done,abort} */
+function execStream(path,args,cwd,timeoutMs,onFrame){
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var done=fetch('/api/worktable/exec-stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path,args:args,cwd:cwd,timeoutMs:timeoutMs}),signal:ctrl?ctrl.signal:undefined})
+    .then(function(r){
+      if(!r.ok||!r.body) throw new Error('HTTP '+r.status);
+      var reader=r.body.getReader(),dec=new TextDecoder(),buf='',last=null;
+      var pump=function(){
+        return reader.read().then(function(res){
+          if(res.done) return;
+          buf+=dec.decode(res.value,{stream:true});
+          var idx;
+          while((idx=buf.indexOf('\n'))>=0){
+            var line=buf.slice(0,idx); buf=buf.slice(idx+1);
+            if(!line.trim()) continue;
+            try{ last=JSON.parse(line); onFrame(last); }catch(e){}
+          }
+          return pump();
+        });
+      };
+      return pump().then(function(){
+        if(buf.trim()){ try{ last=JSON.parse(buf); onFrame(last); }catch(e){} }
+        return last;
+      });
+    });
+  return {done:done, abort:function(){ if(ctrl) ctrl.abort(); }};
+}
+
+/* ========== 对话渲染 ========== */
+function renderAgents(){
+  var pick=document.getElementById('agentPick');
+  pick.innerHTML=AGENTS.map(function(a){
+    return '<div class="rc-agent'+(a.id===AI_AGENT?' on':'')+'" data-id="'+a.id+'"><b>'+escHtml(a.name)+'</b><small>'+escHtml(a.desc)+'</small></div>';
+  }).join('');
+  pick.classList.toggle('rc-agentPick-lock', !!AI_RUNNING);
+  pick.querySelectorAll('.rc-agent').forEach(function(el){
+    el.addEventListener('click', function(){
+      if(AI_RUNNING) return;   /* 运行中锁定切换：流式回显与续接标记都按发起时的 Agent 记账 */
+      AI_AGENT=el.getAttribute('data-id'); lsSet('rc_aiAgent', AI_AGENT);
+      renderAgents(); renderChat(); aiSyncButtons();
+    });
+  });
+}
+function renderChat(){
+  var box=document.getElementById('aiChat'), h=aiHist(AI_AGENT);
+  box.innerHTML='';
+  if(!h.length){
+    var empty=document.createElement('div');
+    empty.className='rc-msg rc-msg-sys';
+    empty.textContent='暂无对话。输入分析提示词并点「开始分析」发起首轮（自动附上勾选的社区链接），随后可继续追问。';
+    box.appendChild(empty);
+  }
+  h.forEach(function(m){
+    var w=document.createElement('div');
+    w.className='rc-msg rc-msg-'+m.role+(m.role==='agent'&&!m._live?' rc-done':'');
+    var r=document.createElement('div'); r.className='rc-msg-role';
+    r.textContent=m.role==='user'?'我':m.role==='agent'?aiAgentById(m.agent||AI_AGENT).name:'系统';
+    var b=document.createElement('div'); b.className='rc-msg-body';
+    if(m.role==='agent'&&!m._live) b.innerHTML=mdRender(m.text);
+    else b.textContent=m.text;
+    w.appendChild(r); w.appendChild(b); box.appendChild(w);
+  });
+  box.scrollTop=box.scrollHeight;
+}
+function aiLastMsgEl(){
+  var msgs=document.getElementById('aiChat').querySelectorAll('.rc-msg-agent');
+  return msgs.length?msgs[msgs.length-1]:null;
+}
+/* 流式追加到指定 Agent 的气泡：气泡随首帧创建（_live 标记直到本轮结束才摘除并落盘） */
+function aiAppendStream(aid,text){
+  var h=aiHist(aid), m=h[h.length-1];
+  if(!m||m.role!=='agent'||!m._live){
+    m={role:'agent', agent:aid, text:text, _live:true, ts:Date.now()};
+    h.push(m);
+    while(h.length>AI_HIST_MAX) h.shift();
+    if(aid===AI_AGENT) renderChat();
+  }else{
+    m.text+=text;
+    if(aid===AI_AGENT){
+      var el=aiLastMsgEl();
+      if(el){
+        var body=el.querySelector('.rc-msg-body');
+        if(body) body.textContent=m.text;
+      }
+      var box=document.getElementById('aiChat'); box.scrollTop=box.scrollHeight;
+    }
+  }
+}
+function aiSyncButtons(){
+  var running=!!AI_RUNNING;
+  var started=!!(AI_SESS[AI_AGENT]&&AI_SESS[AI_AGENT].started);
+  var btn=document.getElementById('btnAnalyze');
+  btn.textContent=started?'➤ 发送':'▶ 开始分析';
+  btn.title=started?'在同一会话里继续追问（CLI 会话续聊）':'首轮分析：提示词连同勾选的社区链接交给所选 Agent';
+  btn.disabled=running;
+  document.getElementById('btnStop').disabled=!running;
+  document.getElementById('btnNewChat').disabled=running;
+  document.getElementById('promptInput').disabled=running;
+  document.getElementById('agentPick').classList.toggle('rc-agentPick-lock',running);
+  var badge=document.getElementById('aiStateBadge');
+  badge.textContent=running?'运行中…':started?'会话已建立 · 续聊':'待命';
+  badge.className='dshell-badge '+(running?'dshell-badgeWait':started?'dshell-badgeDone':'');
+}
+function aiFinishRun(aid,code){   /* code===null：中止 / 连接失败，保留既有续接标记（下轮按原模式重试） */
+  var h=aiHist(aid), m=h[h.length-1];
+  if(m&&m.role==='agent'){
+    delete m._live;
+    if(!m.failed && m.text.trim()) m.done=true;
+  }
+  if(code!==null&&code!==undefined){
+    AI_SESS[aid]={started:code===0};   /* 仅成功跑完才视为会话已建立；失败下一轮自动重发完整提示词重建会话 */
+    lsSet('rc_aiSess', AI_SESS);
+    if(code===0) lastLinkKey=currentLinkKey();
+  }
+  lsSet('rc_aiHist', AI_HIST);
+  AI_RUNNING=null;
+  if(aid===AI_AGENT) renderChat();
+  aiSyncButtons();
+}
+
+/* ========== 发起一轮 Agent 运行 ========== */
+function aiRunCli(prompt, continued){
+  var aid=AI_AGENT;   /* 本轮记账锚点：整个运行周期的回显与续接标记都归属发起时的 Agent */
+  var dir=pageDir();
+  if(!dir){
+    aiHistPush(aid,{role:'sys', text:'无法确定页面目录（需经工作台项目页访问本页），CLI Agent 需要服务端可写目录。', ts:Date.now()});
+    renderChat(); return;
+  }
+  var agent=aiAgentById(aid);
+  var workDir=dir+'/.ai-community';
+  var promptPath=workDir+'/prompt-'+aid+'.md';
+  var scriptPath=workDir+'/run-'+aid+'.sh';
+  var script=[
+    '#!/usr/bin/env bash',
+    'export PATH="/root/.mimocode/bin:/root/.kimi-code/bin:/root/.local/bin:/usr/local/bin:$PATH"',
+    'cd '+JSON.stringify(workDir),
+    'PROMPT="$(cat '+JSON.stringify(promptPath)+')"',
+    'echo "[agent] '+agent.name+(continued?'（续聊）':'（新会话）')+' 运行中…"',
+    aiAgentCmd(aid, continued),
+    ''
+  ].join('\n');
+  AI_RUNNING={abort:function(){}};   /* 占位：准备期即视为运行中，禁止并发发送 */
+  renderAgents(); aiSyncButtons();
+  apiMkdir(workDir).then(function(){
+    return apiWrite(promptPath, prompt);
+  }).then(function(){
+    return apiWrite(scriptPath, script);
+  }).then(function(){
+    aiAppendStream(aid, '$ '+aiAgentCmd(aid, continued)+'\n\n');
+    var run=execStream(scriptPath, [], workDir, 600000, function(frame){
+      if(frame.type==='out'||frame.type==='err') aiAppendStream(aid, frame.text);
+      else if(frame.type==='error') aiAppendStream(aid, '\n[error] '+frame.message+'\n');
+      else if(frame.type==='done'){ aiAppendStream(aid, '\n[done] exit='+frame.code+'\n'); aiFinishRun(aid, frame.code); }
+    });
+    AI_RUNNING=run;
+    aiSyncButtons();
+    run.done.then(function(){
+      /* 正常路径由 done 帧收尾；流异常结束没等到 done 帧时兜底摘掉运行态 */
+      if(AI_RUNNING){ aiAppendStream(aid, '\n[运行结束]\n'); aiFinishRun(aid, null); }
+    }).catch(function(e){
+      if(e&&e.name==='AbortError') aiAppendStream(aid, '\n[已停止]\n');
+      else aiAppendStream(aid, '\n[运行失败] '+(e&&e.message||e)+'\n');
+      aiFinishRun(aid, null);
+    });
+  }).catch(function(e){
+    aiFinishRun(aid, null);
+    aiHistPush(aid,{role:'sys', text:'准备工作失败：'+(e&&e.message||e), ts:Date.now()});
+    if(aid===AI_AGENT) renderChat();
+  });
+}
+
+/* 统一入口：首轮附带勾选链接的完整分析提示词；续聊默认只发追问文本 */
+function aiSend(text){
+  text=String(text==null?'':text).trim();
+  var hint=document.getElementById('aiHint');
+  if(AI_RUNNING){ hint.textContent='Agent 运行中，请等待完成或点「停止」。'; return; }
+  if(!text){ hint.textContent='请先输入分析提示词。'; return; }
+  if(text.length>40000){ hint.textContent='提示词过长（约 '+text.length+' 字符），请精简到 40000 字符以内。'; return; }
+  var started=!!(AI_SESS[AI_AGENT]&&AI_SESS[AI_AGENT].started);
+  if(!started && !selectedLinks().length){ hint.textContent='请先勾选要分析的社区链接（可多选）。'; return; }
+  hint.textContent='';
+  var prompt;
+  if(!started){
+    prompt=buildAnalyzePrompt(selectedLinks(), text);
+    lastLinkKey=currentLinkKey();
+  }else{
+    var changed=currentLinkKey()!==lastLinkKey;
+    prompt=buildFollowupPrompt(text, changed?selectedLinks():null);
+    if(changed) lastLinkKey=currentLinkKey();
+  }
+  aiHistPush(AI_AGENT,{role:'user', text:text, ts:Date.now()});
+  document.getElementById('promptInput').value='';
+  renderChat();
+  aiRunCli(prompt, started);
+}
+document.getElementById('btnAnalyze').addEventListener('click', function(){ aiSend(document.getElementById('promptInput').value); });
+document.getElementById('btnStop').addEventListener('click', function(){ if(AI_RUNNING) AI_RUNNING.abort(); });
+document.getElementById('btnNewChat').addEventListener('click', function(){
+  if(AI_RUNNING) return;
+  if(aiHist(AI_AGENT).length && window.confirm && !window.confirm('清空与 '+aiAgentById(AI_AGENT).name+' 的对话记录并开启新会话？（服务端会话上下文一并弃用）')) return;
+  AI_SESS[AI_AGENT]={started:false}; lsSet('rc_aiSess', AI_SESS);
+  AI_HIST[AI_AGENT]=[]; lsSet('rc_aiHist', AI_HIST);
+  lastLinkKey='';
+  renderChat(); aiSyncButtons();
+  document.getElementById('aiHint').textContent='已清空上下文，下一次发送将开启新会话（重新附上当前勾选的社区链接）。';
+});
+document.getElementById('btnCopy').addEventListener('click', function(){
+  var text=aiHist(AI_AGENT).map(function(m){
+    return (m.role==='user'?'我':m.role==='agent'?aiAgentById(m.agent||AI_AGENT).name:'系统')+'：\n'+m.text;
+  }).join('\n\n');
+  var hint=document.getElementById('aiHint');
+  if(!text){ hint.textContent='暂无可复制的对话记录。'; return; }
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function(){ hint.textContent='已复制全部对话记录。'; }, function(){ hint.textContent='复制失败（剪贴板不可用）。'; });
+  else hint.textContent='复制失败（剪贴板不可用）。';
+});
+document.getElementById('promptInput').addEventListener('keydown', function(e){
+  if(e.key!=='Enter') return;
+  if(e.shiftKey) return;
+  if(e.isComposing || e.keyCode===229 || e.key==='Process') return;   /* 输入法组词 Enter 不发送 */
+  e.preventDefault(); aiSend(this.value);
+});
+
+/* ========== 启动 ========== */
+initTheme();
+fillPresets();
+renderLinks();
+renderAgents();
+renderChat();
+aiSyncButtons();
+})();
+</script>
+</body>
+</html>
