@@ -5,12 +5,15 @@
 
 附带 GPU 内核三表分析（参考 llm-torch-profiler-analysis skill 简化移植，与页面
 index.html 内 KERNEL-ANALYZER 段同款逻辑、同形输出）：
-  ① kernels 内核归因表（算子族分类 + External id → cpu_op 归属）
+  ① kernels 内核归因表（算子族分类 + CPU 算子归属 + SM 占用；只统计真正的内核/设备工作，
+    gpu_user_annotation 等注释与内核重复计量、不计入）
   ② gpu 时间口径（window=wall / busy=各流区间并集 / sum=内核累计 / idle / overlap /
     maxConcurrent / stageUs）
   ③ overlap 重叠机会（headroom 暴露 + low-roi-hidden + 依赖风险 + P1/P2/P4 建议）
   ④ fusion 融合候选（active 关键词 → Confirmed；split 组共现达阈 → Candidate）
-页面侧据此渲染阶段耗时、瓶颈分析与内核三表。仅标准库。"""
+CPU 算子归属两级：内核自带 External id → cpu_op；缺失经 correlation → cudaLaunchKernel/driver
+的 External id 回溯。SM 占用取 args['est. achieved occupancy %'] 时长加权均值（occPct）。
+页面侧据此渲染内核占用、瓶颈分析与内核三表。仅标准库。"""
 import sys
 import json
 import gzip
@@ -102,17 +105,26 @@ FUSION_PATTERNS = [
 ]
 
 KERNEL_CAT_RE = re.compile(r'kernel|^gpu_')
+ANNOTATION_CAT_RE = re.compile(r'annotation', re.I)
 # host 同步点特征（GPU 空闲归因用）：cuda_runtime/driver 的同步调用 + cpu_op 的 .item() 类
 HOST_SYNC_RE = re.compile(r'cudaStreamSynchronize|cudaDeviceSynchronize|cudaEventSynchronize|cudaStreamWaitEvent|cudaMemcpy|aten::item|_local_scalar_dense')
+
+
+def is_device_work(cat):
+    """真正的设备侧工作事件：内核 + memcpy/memset；排除 gpu_user_annotation 等注释——
+    注释常与所包住的内核等长重复计量（如 nccl:broadcast 注释 vs ncclDevKernel_*）。"""
+    return bool(KERNEL_CAT_RE.search(cat)) and not ANNOTATION_CAT_RE.search(cat)
 
 
 def analyze_trace_kernels(events, cap=2000000):
     empty = {'kernels': [], 'gpu': None, 'overlap': [], 'fusion': []}
     if not isinstance(events, list):
         return empty
-    # 第一遍：主 rank 选择 + cpu_op（External id → 算子名）+ 阶段注释窗口 + host 同步事件
+    # 第一遍：主 rank 选择 + cpu_op（External id → 算子名）+ 启动链（correlation → 启动调用
+    # External id）+ 阶段注释窗口 + host 同步事件
     pid_us = defaultdict(float)
     cpu_ops = {}
+    launch_ext = {}
     annos = []
     host_sync = []
     scanned = 0
@@ -129,14 +141,20 @@ def analyze_trace_kernels(events, cap=2000000):
             dur = 0.0
         if dur <= 0:
             continue
-        if KERNEL_CAT_RE.search(cat):
+        if is_device_work(cat):
             pid_us[str(e.get('pid'))] += dur
         elif cat in ('cpu_op', 'cuda_runtime', 'cuda_driver'):
+            args = e.get('args') if isinstance(e.get('args'), dict) else {}
             if cat == 'cpu_op':
-                args = e.get('args') if isinstance(e.get('args'), dict) else {}
                 ext = args.get('External id')
                 if ext is not None and ext not in cpu_ops:
                     cpu_ops[ext] = str(e.get('name') or '')
+            else:
+                # 启动链：内核无 External id 时经 correlation 回溯到启动调用的 External id 再映射 cpu_op
+                corr = args.get('correlation')
+                ext = args.get('External id')
+                if corr is not None and ext is not None and corr not in launch_ext:
+                    launch_ext[corr] = ext
             nm2 = str(e.get('name') or '')
             if HOST_SYNC_RE.search(nm2):
                 ts2 = float(e.get('ts') or 0)
@@ -179,7 +197,7 @@ def analyze_trace_kernels(events, cap=2000000):
                 best = w
         return best['st'] if best and best_dist <= 20000 else 'all'
 
-    # 第二遍：收集主 rank 内核实例
+    # 第二遍：收集主 rank 内核实例（真正的内核/设备工作）
     kers = []
     scanned = 0
     for e in events:
@@ -189,7 +207,7 @@ def analyze_trace_kernels(events, cap=2000000):
         if scanned > cap:
             break
         cat = str(e.get('cat') or '')
-        if not KERNEL_CAT_RE.search(cat):
+        if not is_device_work(cat):
             continue
         try:
             dur = float(e.get('dur') or 0)
@@ -203,13 +221,25 @@ def analyze_trace_kernels(events, cap=2000000):
         except Exception:  # noqa: BLE001
             ts = 0.0
         ext = args.get('External id')
+        corr = args.get('correlation')
+        # CPU 算子归属：内核自带 External id 优先；缺失经 correlation → 启动调用 External id 回溯
+        cpu_op = cpu_ops.get(ext, '') if ext is not None else ''
+        if not cpu_op and corr is not None:
+            cpu_op = cpu_ops.get(launch_ext.get(corr), '')
+        occ_raw = args.get('est. achieved occupancy %')
+        try:
+            occ = float(occ_raw) if occ_raw is not None and occ_raw != '' else None
+        except Exception:  # noqa: BLE001
+            occ = None
         stream = args.get('stream')
         if stream is None:
             stream = args.get('cuda_stream')
         kers.append({
             'name': str(e.get('name') or '?'), 'ts': ts, 'end': ts + dur, 'dur': dur,
             'stream': str(stream if stream is not None else 'tid=' + str(e.get('tid'))),
-            'cpuOp': cpu_ops.get(ext, '') if ext is not None else '',
+            'cpuOp': cpu_op,
+            # SM 占用（est. achieved occupancy %，0-100）；无此字段记 None
+            'occ': occ,
         })
         if len(kers) >= 100000:
             break
@@ -226,10 +256,14 @@ def analyze_trace_kernels(events, cap=2000000):
         if a is None:
             a = {'name': canon, 'family': classify_kernel(k['name']), 'total': 0.0, 'count': 0,
                  'hidden': 0.0, 'exclusive': 0.0, 'hiddenByCompute': 0.0, 'depRank': -1,
-                 'cpuOps': defaultdict(int), 'stages': {'decode': 0.0, 'prefill': 0.0, 'all': 0.0}}
+                 'cpuOps': defaultdict(int), 'occSum': 0.0, 'occDur': 0.0,
+                 'stages': {'decode': 0.0, 'prefill': 0.0, 'all': 0.0}}
             agg[canon] = a
         a['total'] += k['dur']
         a['count'] += 1
+        if k['occ'] is not None:
+            a['occSum'] += k['occ'] * k['dur']
+            a['occDur'] += k['dur']
         if k['cpuOp']:
             a['cpuOps'][k['cpuOp']] += 1
         st = stage_of(k['ts'])
@@ -387,7 +421,7 @@ def analyze_trace_kernels(events, cap=2000000):
             'share': rel / (kernel_sum or 1.0) * 100,
             'evidence': [a['name'] for a in related_sorted[:3]], 'note': p['note'],
         })
-    # 内核归因表（share 分母 = 内核累计）
+    # 内核归因表（share 分母 = 内核累计；occPct = SM 占用时长加权，无数据 None）
     kernels = []
     for a in sorted(krows, key=lambda a: -a['total'])[:30]:
         cpu_op = ''
@@ -396,7 +430,9 @@ def analyze_trace_kernels(events, cap=2000000):
         kernels.append({
             'name': a['name'], 'family': a['family'], 'total': a['total'], 'count': a['count'],
             'share': a['total'] / (kernel_sum or 1.0) * 100,
-            'cpuOp': cpu_op, 'stages': a['stages'],
+            'cpuOp': cpu_op,
+            'occPct': (a['occSum'] / a['occDur']) if a['occDur'] > 0 else None,
+            'stages': a['stages'],
             'exclusiveRatio': a['exclusive'] / a['total'] if a['total'] else 0,
             'hiddenRatio': a['hidden'] / a['total'] if a['total'] else 0,
         })
