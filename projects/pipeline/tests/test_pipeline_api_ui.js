@@ -1,4 +1,5 @@
-/* 每条流水线的 API 调用说明：端点、按运行框当前填写的参数动态生成的请求体和可复制 curl。 */
+/* 每条流水线的 API 调用说明：端点、按运行框当前填写的参数动态生成的请求体和可复制 curl，
+   以及「▶ 直接调用」——页面内同源发起一次真实 POST 并内联展示结果（免导出 Cookie 验证）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -67,4 +68,60 @@ test('API 调用说明弹窗包含端点、JSON、curl 与复制入口',()=>{
   });
   assert.match(source,/repository.*name\/url\/user\/pass/,'弹窗应说明一次性代码仓凭据覆盖字段');
   assert.match(source,/\$\('pipelineApiBody'\)\.textContent=spec\.bodyText/,'警告不能混入可复制的 JSON 请求体');
+});
+
+test('API 弹窗含「直接调用」按钮与内联结果区，点击经 invokePipelineApi 同源发起 POST 并接入运行跟随',()=>{
+  ['pipelineApiInvoke','pipelineApiResult'].forEach(id=>assert.ok(source.includes('id="'+id+'"'),'缺少 API 弹窗元素 '+id));
+  assert.match(source,/\$\('pipelineApiInvoke'\)\.addEventListener\('click'/,'「直接调用」按钮未接线');
+  assert.match(source,/fetch\(spec\.endpoint,\{method:'POST',headers:\{'Content-Type':'application\/json'\},body:JSON\.stringify\(spec\.body\)\}\)/,'应按弹窗展示的端点与请求体原样 POST');
+  assert.match(source,/pipelineApiCur=\{endpoint:spec\.endpoint,body:spec\.body\}/,'showPipelineApi 应冻结当前展示规范供直接调用');
+  assert.match(source,/pendingServerRunFocus=\{runId:String\(result\.runId\)/,'202 受理后应接入运行跟随机制');
+});
+
+function fakeEl(){ return {textContent:'',style:{},disabled:false,value:''}; }
+
+test('直接调用：按弹窗冻结的端点与请求体原样 POST，202 后内联展示 runId 并拉取队列跟随',async()=>{
+  const els={}; const $=id=>els[id]||(els[id]=fakeEl());
+  const calls=[];
+  const ctx=context({
+    $, location:{origin:'https://dsh.example'}, Promise, Date,
+    fetch:async(url,opts)=>{ calls.push({url,opts}); return {status:202,json:async()=>({ok:true,accepted:true,runId:'api-x1',pipelineName:'发布'})}; },
+    pullRemoteQueue:async()=>{ ctx.__pulled=(ctx.__pulled||0)+1; },
+    followPendingServerRun:()=>{ ctx.__followed=(ctx.__followed||0)+1; },
+    SERVER_RUN_FOCUS_MS:15000,
+  });
+  ctx.showPipelineApi({id:'pl-9',name:'发布',defaults:{branch:'trunk'}});
+  await ctx.invokePipelineApi();
+  assert.equal(calls.length,1,'应只发起一次调用');
+  assert.equal(calls[0].url,'/api/worktable/pipeline/run/pl-9');
+  assert.equal(calls[0].opts.method,'POST');
+  assert.equal(calls[0].opts.headers['Content-Type'],'application/json');
+  assert.deepEqual(J(JSON.parse(calls[0].opts.body)),J(JSON.parse(els.pipelineApiBody.textContent)),'请求体应与弹窗展示一致');
+  assert.match(els.pipelineApiResult.textContent,/api-x1/,'结果区应展示 runId');
+  assert.equal(els.pipelineApiResult.style.display,'','结果区应可见');
+  assert.equal(els.pipelineApiInvoke.disabled,false,'结束后按钮恢复可用');
+  assert.equal(els.pipelineApiInvoke.textContent,'▶ 直接调用');
+  assert.equal(ctx.__pulled,1,'202 后应拉取远端队列');
+  assert.equal(ctx.__followed,1,'202 后应触发运行跟随');
+  assert.equal(ctx.pendingServerRunFocus&&ctx.pendingServerRunFocus.runId,'api-x1');
+});
+
+test('直接调用失败路径：非 202 内联展示服务端错误，网络异常不向外抛出',async()=>{
+  const els={}; const $=id=>els[id]||(els[id]=fakeEl());
+  const ctx=context({
+    $, location:{origin:'https://dsh.example'}, Promise, Date,
+    fetch:async()=>({status:403,json:async()=>({error:'reserved',message:'节点预留给他人'})}),
+  });
+  ctx.showPipelineApi({id:'pl-9',name:'发布'});
+  await ctx.invokePipelineApi();
+  assert.match(els.pipelineApiResult.textContent,/403/);
+  assert.match(els.pipelineApiResult.textContent,/reserved|节点预留/);
+  assert.equal(els.pipelineApiInvoke.disabled,false);
+  // 网络异常
+  const els2={}; const $2=id=>els2[id]||(els2[id]=fakeEl());
+  const ctx2=context({ $:$2, location:{origin:'https://dsh.example'}, Promise, Date, fetch:async()=>{ throw new Error('conn refused'); } });
+  ctx2.showPipelineApi({id:'pl-9',name:'发布'});
+  await ctx2.invokePipelineApi();
+  assert.match(els2.pipelineApiResult.textContent,/网络错误.*conn refused/);
+  assert.equal(els2.pipelineApiInvoke.disabled,false);
 });

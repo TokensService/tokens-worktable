@@ -908,9 +908,10 @@
         <pre id="pipelineApiBody" class="logbox" style="max-height:260px;margin:0;"></pre>
       </div>
       <div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>curl 示例</b><button id="pipelineApiCopyCurl" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>curl 示例</b><span style="display:flex;gap:6px;"><button id="pipelineApiInvoke" type="button" class="dshell-btn mini" title="按上方接口地址与请求体在页面内直接发起一次真实调用（同源携带登录会话，无需导出 Cookie），结果展示在下方">▶ 直接调用</button><button id="pipelineApiCopyCurl" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></span></div>
         <pre id="pipelineApiCurl" class="logbox" style="max-height:260px;margin:0;"></pre>
-        <div class="dshell-muted" style="font-size:11px;margin-top:5px;">先从已登录浏览器导出 Cookie 到 <code>cookies.txt</code>，或由调用方按部署环境完成认证。</div>
+        <div id="pipelineApiResult" style="display:none;font-size:12px;margin-top:5px;word-break:break-all;"></div>
+        <div class="dshell-muted" style="font-size:11px;margin-top:5px;">外部调用先从已登录浏览器导出 Cookie 到 <code>cookies.txt</code>，或由调用方按部署环境完成认证；页面内可点「▶ 直接调用」免导出验证。</div>
       </div>
     </div>
   </div>
@@ -2001,15 +2002,48 @@ function pipelineApiSpec(pl,origin){
   const curl="curl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -b cookies.txt \\\n  --data "+shellSingleQuoted(JSON.stringify(body));
   return {endpoint,body,bodyText,curl,warning:issues.join('；')};
 }
+let pipelineApiCur=null;   // 弹窗当前展示的调用规范（{endpoint,body}，showPipelineApi 打开时冻结）：「直接调用」按展示内容原样发起
+/* 「▶ 直接调用」：页面内同源发起一次真实 POST（携带登录会话，免导出 Cookie），按对话框当前展示的
+   端点与请求体原样调用；202 受理后复用 submitServerRun 的跟随机制（pendingServerRunFocus +
+   pullRemoteQueue + followPendingServerRun）把编排区/阶段详情切到本次运行，结果内联展示不关闭弹窗。
+   typeof 守卫：vm 抽取测试未注入跟随/拉取函数时跳过，不影响结果展示与断言。 */
+async function invokePipelineApi(){
+  const spec=pipelineApiCur; if(!spec) return;
+  const btn=$('pipelineApiInvoke'), out=$('pipelineApiResult');
+  if(btn){ btn.disabled=true; btn.textContent='调用中…'; }
+  if(out){ out.style.display=''; out.style.color=''; out.textContent=''; }
+  try{
+    const res=await fetch(spec.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(spec.body)});
+    const result=await res.json().catch(()=>({}));
+    if(res.status===202&&result&&result.runId){
+      if(out){ out.style.color='var(--log-ok,#4ade80)'; out.textContent='✓ 已受理：runId='+result.runId+'（流水线「'+(result.pipelineName||'')+'」），运行队列 / 运行历史中可查看进度与回显'; }
+      if(typeof followPendingServerRun==='function'&&typeof SERVER_RUN_FOCUS_MS==='number'){
+        pendingServerRunFocus={runId:String(result.runId),until:Date.now()+SERVER_RUN_FOCUS_MS,previewId:''};
+      }
+      if(typeof pullRemoteQueue==='function') await pullRemoteQueue();
+      if(typeof followPendingServerRun==='function') followPendingServerRun();
+    }else if(out){
+      out.style.color='var(--log-err,#f87171)';
+      out.textContent='✗ HTTP '+res.status+'：'+String((result&&(result.error||result.message))||'调用失败');
+    }
+  }catch(e){
+    if(out){ out.style.color='var(--log-err,#f87171)'; out.textContent='✗ 网络错误：'+String(e&&e.message||e); }
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='▶ 直接调用'; }
+  }
+}
 function showPipelineApi(pl){
   if(!pl) return;
   const spec=pipelineApiSpec(pl,location.origin);
+  pipelineApiCur={endpoint:spec.endpoint,body:spec.body};
   $('pipelineApiTitle').textContent='流水线 API：'+(pl.name||pl.id);
   $('pipelineApiEndpoint').textContent=spec.endpoint;
   $('pipelineApiWarning').textContent=spec.warning?'⚠ '+spec.warning:'';
   $('pipelineApiWarning').style.display=spec.warning?'':'none';
   $('pipelineApiBody').textContent=spec.bodyText;
   $('pipelineApiCurl').textContent=spec.curl;
+  const apiOut=$('pipelineApiResult'); if(apiOut){ apiOut.style.display='none'; apiOut.textContent=''; }
+  const apiBtn=$('pipelineApiInvoke'); if(apiBtn){ apiBtn.disabled=false; apiBtn.textContent='▶ 直接调用'; }
   $('pipelineApiDialog').style.display='flex';
 }
 /* ---------- 流水线 API 调用说明结束 ---------- */
@@ -11313,6 +11347,7 @@ $('pipelineApiDialog').addEventListener('click',e=>{ if(e.target===$('pipelineAp
 $('pipelineApiCopyEndpoint').addEventListener('click',e=>copyText($('pipelineApiEndpoint').textContent,e.currentTarget));
 $('pipelineApiCopyBody').addEventListener('click',e=>copyText($('pipelineApiBody').textContent,e.currentTarget));
 $('pipelineApiCopyCurl').addEventListener('click',e=>copyText($('pipelineApiCurl').textContent,e.currentTarget));
+$('pipelineApiInvoke').addEventListener('click',()=>{ invokePipelineApi(); });
 $('plSave').addEventListener('click', savePlForm);
 $('plCancel').addEventListener('click', ()=>{ clearPlDraft(); $('plForm').style.display='none'; });
 $('plFormClose').addEventListener('click', ()=>{ $('plForm').style.display='none'; });   /* 关闭=保留草稿（误操作退出保护），仅「取消」显式丢弃 */
