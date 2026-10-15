@@ -9,6 +9,8 @@ grep -Fq 'build_cmd=(buildctl' "$SCRIPT"
 grep -Fq 'ctr -n' "$SCRIPT"
 grep -Fq 'images import' "$SCRIPT"
 grep -Fq 'images push' "$SCRIPT"
+grep -Fq 'build_cmd=(nerdctl' "$SCRIPT"
+grep -Fq 'BUILD_MAX_JOBS' "$SCRIPT"
 
 source_dir="$(mktemp -d)"
 trap 'rm -rf "$source_dir"' EXIT

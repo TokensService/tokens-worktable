@@ -4,7 +4,7 @@
 
 ## vLLM 镜像编译与 SWR 推送
 
-`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本使用 BuildKit 编译 OCI 镜像，再使用 `ctr -n k8s.io images import` 导入 containerd，最后使用 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
+`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本在流水线执行机本地编译：优先使用 `buildctl`，缺少时回退到 `nerdctl build`；编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
 
 最小配置：
 
