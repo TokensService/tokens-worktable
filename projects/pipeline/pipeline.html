@@ -911,7 +911,7 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>curl 示例</b><span style="display:flex;gap:6px;"><button id="pipelineApiInvoke" type="button" class="dshell-btn mini" title="按上方接口地址与请求体在页面内直接发起一次真实调用（同源携带登录会话，无需导出 Cookie），结果展示在下方">▶ 直接调用</button><button id="pipelineApiCopyCurl" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></span></div>
         <pre id="pipelineApiCurl" class="logbox" style="max-height:260px;margin:0;"></pre>
         <div id="pipelineApiResult" style="display:none;font-size:12px;margin-top:5px;word-break:break-all;"></div>
-        <div class="dshell-muted" style="font-size:11px;margin-top:5px;">外部调用先从已登录浏览器导出 Cookie 到 <code>cookies.txt</code>，或由调用方按部署环境完成认证；页面内可点「▶ 直接调用」免导出验证。</div>
+        <div class="dshell-muted" style="font-size:11px;margin-top:5px;">外部调用按上方两步脚本执行：① 账号密码登录即得 cookies.txt（也可从已登录浏览器导出 Cookie）；页面内可点「▶ 直接调用」免导出验证。</div>
       </div>
     </div>
   </div>
@@ -1997,9 +1997,12 @@ function pipelineApiSpec(pl,origin){
   body.presets=presets;     // 显式空数组=不执行预设任务（逐项覆盖默认值）
   body.by=by;
   const endpoint='/api/worktable/pipeline/run/'+encodeURIComponent(pl&&pl.id||'');
-  const url=String(origin||'').replace(/\/+$/,'')+endpoint;
+  const base=String(origin||'').replace(/\/+$/,'');
+  const url=base+endpoint;
   const bodyText=JSON.stringify(body,null,2);
-  const curl="curl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -b cookies.txt \\\n  --data "+shellSingleQuoted(JSON.stringify(body));
+  /* curl 示例为可直接执行的两步脚本：① 账号密码登录写 cookies.txt（--data-urlencode 防特殊字符；未启用
+     认证插件的 token 共享部署可跳过）；② 携带会话调运行接口。不内嵌真实凭据，占位 <用户名>/<密码>。 */
+  const curl="# ① 账号密码登录，会话写入 cookies.txt（一次性；未启用认证插件时跳过）\ncurl -c cookies.txt -X POST "+shellSingleQuoted(base+'/auth/login')+" \\\n  --data-urlencode 'username=<用户名>' \\\n  --data-urlencode 'password=<密码>'\n\n# ② 携带会话调用运行接口\ncurl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -b cookies.txt \\\n  --data "+shellSingleQuoted(JSON.stringify(body));
   return {endpoint,body,bodyText,curl,warning:issues.join('；')};
 }
 let pipelineApiCur=null;   // 弹窗当前展示的调用规范（{endpoint,body}，showPipelineApi 打开时冻结）：「直接调用」按展示内容原样发起
