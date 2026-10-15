@@ -65,6 +65,7 @@ INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
 INDOCKER_RUNNER_IMAGE="${INDOCKER_RUNNER_IMAGE:-local/vllm-indocker-runner:latest}"
 INDOCKER_OUTPUT_DIR="${INDOCKER_OUTPUT_DIR:-}"
 INDOCKER_NETWORK="${INDOCKER_NETWORK:-host}"
+ALPINE_MIRROR="${ALPINE_MIRROR:-https://mirrors.aliyun.com/alpine}"
 BUILDX_BUILDER="${BUILDX_BUILDER:-vllm-builder}"
 BUILDX_AUTO_CREATE="${BUILDX_AUTO_CREATE:-true}"
 BUILDKIT_ADDR="${BUILDKIT_ADDR:-unix:///run/buildkit/buildkitd.sock}"
@@ -169,17 +170,28 @@ resolve_indocker_runtime() {
 
 ensure_indocker_runner() {
   local runner_context="$SCRIPT_DIR/indocker"
+  local -a runner_build_args=(--network=host)
+  local proxy_name proxy_value
+
+  # The runner itself installs apk packages while it is being built.  Pass the
+  # same proxy settings used by the inner dockerd; otherwise a localhost proxy
+  # is lost at this outer Docker build boundary.
+  for proxy_name in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
+    proxy_value="${!proxy_name:-}"
+    [[ -n "$proxy_value" ]] && runner_build_args+=(--build-arg "${proxy_name}=${proxy_value}")
+  done
+  runner_build_args+=(--build-arg "ALPINE_MIRROR=${ALPINE_MIRROR}")
   case "$INDOCKER_RUNTIME" in
     docker)
       if ! docker image inspect "$INDOCKER_RUNNER_IMAGE" >/dev/null 2>&1; then
         info "构建 indocker runner: $INDOCKER_RUNNER_IMAGE"
-        docker build --network=host -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
+        docker build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
       fi
       ;;
     nerdctl)
       if ! nerdctl -n "$CTR_NAMESPACE" image inspect "$INDOCKER_RUNNER_IMAGE" >/dev/null 2>&1; then
         info "构建 indocker runner: $INDOCKER_RUNNER_IMAGE"
-        nerdctl -n "$CTR_NAMESPACE" build --network=host -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
+        nerdctl -n "$CTR_NAMESPACE" build "${runner_build_args[@]}" -t "$INDOCKER_RUNNER_IMAGE" "$runner_context"
       fi
       ;;
     ctr)
