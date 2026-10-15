@@ -3,6 +3,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+normalize_kubernetes_name() {
+  local value="$1" max_length="$2"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
+  value="${value:0:max_length}"
+  value="${value%-}"
+  [[ -n "$value" ]] || { echo "cannot derive a Kubernetes name from: $1" >&2; return 2; }
+  printf '%s' "$value"
+}
+
 DEPLOY_ON_TARGET_HOST="${DEPLOY_ON_TARGET_HOST:-0}"
 MOCK_HELM_DEPLOY="${MOCK_HELM_DEPLOY:-}"
 RUN_DIR="${RUN_DIR:-/tmp/op-test-pipeline}"
@@ -12,7 +22,24 @@ ARCHIVE_DIR="${ARCHIVE_DIR:-${PWD}/archive}"
 RENDER_DIR="${RENDER_DIR:-${RUN_DIR}/rendered}"
 ARCH_NAME="${ARCH_NAME:-default}"
 PIPELINE_NAME="${PIPELINE_NAME:-xds-${ARCH_NAME}}"
-NAMESPACE="${NAMESPACE:-xds-${ARCH_NAME}-local}"
+EXECUTOR="${EXECUTOR:-}"
+[[ -n "$EXECUTOR" ]] || EXECUTOR="${BY:-}"
+NAMESPACE_ARCH="${NAMESPACE_ARCH:-}"
+DEPLOY_STRATEGY="${DEPLOY_STRATEGY:-}"
+BY="${BY:-}"
+IMAGE_NAME="${IMAGE_NAME:-}"
+DEPLOY_IMAGE="${DEPLOY_IMAGE:-}"
+EMS_NAMESPACE="${EMS_NAMESPACE:-}"
+NAMESPACE="${NAMESPACE:-}"
+if [[ -z "$NAMESPACE" ]]; then
+  namespace_base="${NAMESPACE_ARCH:-}"
+  [[ -n "$namespace_base" ]] || namespace_base="$ARCH_NAME"
+  if [[ -n "$EXECUTOR" ]]; then
+    NAMESPACE="xds-${namespace_base}-${EXECUTOR}"
+  else
+    NAMESPACE="xds-${namespace_base}-local"
+  fi
+fi
 RELEASE_NAME="${RELEASE_NAME:-${NAMESPACE}}"
 CHART_DIR="${CHART_DIR:-${RENDER_DIR}/xds-cluster}"
 VALUES_FILE="${VALUES_FILE:-${RENDER_DIR}/values.rendered.yaml}"
@@ -68,6 +95,7 @@ XDS_URL="${XDS_URL%/}"
 XDS_URL="${XDS_URL%/chat/completions}"
 XDS_URL_EXPLICIT=false
 [[ -n "$XDS_URL" ]] && XDS_URL_EXPLICIT=true
+XDS_OM="${XDS_OM:-}"
 XDS_API_HOST=""
 SERVICE_NAME="${SERVICE_NAME:-ray-svc}"
 MODEL_NAME="${MODEL_NAME:-$ARCH_NAME}"
@@ -85,6 +113,8 @@ XDS_READY_TIMEOUT_SECONDS="${XDS_READY_TIMEOUT_SECONDS:-1800}"
 XDS_READY_POLL_SECONDS="${XDS_READY_POLL_SECONDS:-5}"
 TASK_EXECUTOR_READY_TIMEOUT_SECONDS="${TASK_EXECUTOR_READY_TIMEOUT_SECONDS:-900}"
 TASK_EXECUTOR_READY_POLL_SECONDS="${TASK_EXECUTOR_READY_POLL_SECONDS:-5}"
+SERVICE_READY_TIMEOUT_SECONDS="${SERVICE_READY_TIMEOUT_SECONDS:-120}"
+SERVICE_READY_POLL_SECONDS="${SERVICE_READY_POLL_SECONDS:-5}"
 SLOT_CONFIG_NAMESPACE="${SLOT_CONFIG_NAMESPACE:-default}"
 HEAD_LOG_ROOT="${HEAD_LOG_ROOT:-${ARCHIVE_DIR}}"
 HEAD_LOG_DIR="${HEAD_LOG_DIR:-${HEAD_LOG_ROOT}/xds_head_follow_logs_${NAMESPACE}_$(date +%Y%m%d_%H%M%S)}"
@@ -95,10 +125,10 @@ EMS_LOG_SYNC_INTERVAL_SECONDS="${EMS_LOG_SYNC_INTERVAL_SECONDS:-30}"
 EMS_LOG_SOURCE_DIR="${EMS_LOG_SOURCE_DIR:-/opt/cloud/logs/ems}"
 EMS_LOG_CONTAINER="${EMS_LOG_CONTAINER:-ray-worker}"
 ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
-PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
-PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
+PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill-64k}"
+PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode-64k}"
 if [[ -z "${NODE_PORT_MAP:-}" ]]; then
-  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017}'
+  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044,"192.168.47.92":31035,"192.168.47.148":31036}'
 fi
 
 resolve_container_model_path() {
@@ -278,7 +308,7 @@ PY
 
 deploy_from_target_host() {
   local parsed target_ip target_port target_user target remote_script_dir remote_script
-  local remote_env remote_xds_url remote_head_log_root remote_command
+  local remote_env remote_xds_url remote_command remote_head_log_root
 
   command -v ssh >/dev/null 2>&1 || { echo "ssh is required on the pipeline execution host" >&2; return 2; }
   parsed="$(python3 - "$TARGET_HOSTS" "${TARGET_PASSWORD:-}" <<'PY'
@@ -327,6 +357,10 @@ PY
     printf 'export RUN_DIR=%q\n' "$TARGET_RUN_DIR"
     printf 'export RENDER_DIR=%q\n' "$TARGET_RENDER_DIR"
     printf 'export ARCH_NAME=%q\nexport PIPELINE_NAME=%q\n' "$ARCH_NAME" "$PIPELINE_NAME"
+    printf 'export EXECUTOR=%q\nexport NAMESPACE_ARCH=%q\nexport DEPLOY_STRATEGY=%q\nexport BY=%q\n' \
+      "$EXECUTOR" "$NAMESPACE_ARCH" "$DEPLOY_STRATEGY" "$BY"
+    printf 'export IMAGE_NAME=%q\nexport DEPLOY_IMAGE=%q\nexport EMS_NAMESPACE=%q\n' \
+      "${IMAGE_NAME:-}" "${DEPLOY_IMAGE:-}" "${EMS_NAMESPACE:-}"
     printf 'export NAMESPACE=%q\nexport RELEASE_NAME=%q\n' "$NAMESPACE" "$RELEASE_NAME"
     printf 'export CHART_DIR=%q\n' "${TARGET_RENDER_DIR}/xds-cluster"
     printf 'export VALUES_FILE=%q\n' "${TARGET_RENDER_DIR}/values.rendered.yaml"
@@ -347,27 +381,40 @@ PY
     printf 'export HELM_BIN=%q\nexport KUBECTL_BIN=%q\nexport HELM_TIMEOUT=%q\n' "$HELM_BIN" "$KUBECTL_BIN" "$HELM_TIMEOUT"
     printf 'export RELEASE_CLEANUP_TIMEOUT_SECONDS=%q\nexport RELEASE_CLEANUP_POLL_SECONDS=%q\n' "$RELEASE_CLEANUP_TIMEOUT_SECONDS" "$RELEASE_CLEANUP_POLL_SECONDS"
     printf 'export XDS_READY_TIMEOUT_SECONDS=%q\nexport XDS_READY_POLL_SECONDS=%q\n' "$XDS_READY_TIMEOUT_SECONDS" "$XDS_READY_POLL_SECONDS"
-    printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS"
-    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
+    printf 'export TASK_EXECUTOR_READY_TIMEOUT_SECONDS=%q\nexport TASK_EXECUTOR_READY_POLL_SECONDS=%q\nexport SERVICE_READY_TIMEOUT_SECONDS=%q\nexport SERVICE_READY_POLL_SECONDS=%q\n' "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" "$TASK_EXECUTOR_READY_POLL_SECONDS" "$SERVICE_READY_TIMEOUT_SECONDS" "$SERVICE_READY_POLL_SECONDS"
+    printf 'export SLOT_CONFIG_NAMESPACE=%q\nexport HEAD_LOG_ROOT=%q\nexport POLL_INTERVAL_SECONDS=%q\n' \
+      "$SLOT_CONFIG_NAMESPACE" "$remote_head_log_root" "$POLL_INTERVAL_SECONDS"
     printf 'export EMS_LOG_SYNC_INTERVAL_SECONDS=%q\nexport EMS_LOG_SOURCE_DIR=%q\nexport EMS_LOG_CONTAINER=%q\n' \
       "$EMS_LOG_SYNC_INTERVAL_SECONDS" "$EMS_LOG_SOURCE_DIR" "$EMS_LOG_CONTAINER"
   } >"$remote_env"
 
   echo "[deploy] execution host delegates deployment to target host: ${target_ip}:${target_port}"
   run_remote "$target" "$target_port" "mkdir -p $(remote_quote "$TARGET_RUN_DIR") $(remote_quote "$remote_script_dir")"
-  tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
-    "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
+  if [[ -d "$RENDER_DIR" ]]; then
+    tar -C "$RENDER_DIR" -cf - . | run_remote "$target" "$target_port" \
+      "rm -rf $(remote_quote "$TARGET_RENDER_DIR") && mkdir -p $(remote_quote "$TARGET_RENDER_DIR") && tar -C $(remote_quote "$TARGET_RENDER_DIR") -xf -"
+  else
+    # Remote rendering already placed the artifacts on the deployment target.
+    # A separately invoked deploy stage may not receive the local RUN_DIR, so
+    # do not overwrite the valid remote render with an empty/missing bundle.
+    echo "[deploy] local rendered directory is unavailable: $RENDER_DIR; reuse remote rendered directory $TARGET_RENDER_DIR"
+    run_remote "$target" "$target_port" \
+      "test -d $(remote_quote "$TARGET_RENDER_DIR") && test -f $(remote_quote "$TARGET_RENDER_DIR/xds-cluster/Chart.yaml") || { echo '[deploy] remote rendered directory is missing; rerun pull_render_config.sh' >&2; exit 2; }"
+  fi
+  # Upload the complete exported environment before the scripts.  The remote
+  # entrypoint sources this contract before executing deploy-model.sh, so every
+  # subsequent script sees the same namespace and pipeline context.
+  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/deploy-model.sh" "$remote_script" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/follow-xds-head-logs.sh" "${remote_script_dir}/follow-xds-head-logs.sh" "$target" "$target_port"
   sync_remote_file "$SCRIPT_DIR/register-model.sh" "${remote_script_dir}/register-model.sh" "$target" "$target_port"
-  sync_remote_file "$remote_env" "$TARGET_PIPELINE_ENV_FILE" "$target" "$target_port"
   run_remote "$target" "$target_port" "chmod +x $(remote_quote "$remote_script") $(remote_quote "${remote_script_dir}/follow-xds-head-logs.sh") $(remote_quote "${remote_script_dir}/register-model.sh")"
 
   remote_command="set -e; source $(remote_quote "$TARGET_PIPELINE_ENV_FILE"); export DEPLOY_ON_TARGET_HOST=1; exec bash $(remote_quote "$remote_script")"
   local mapped_target_host
   mapped_target_host="$(mapped_execution_target_host)"
   if [[ -n "$mapped_target_host" ]]; then
-    if ! run_remote "$target" "$target_port" "$remote_command" | sed -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
+    if ! run_remote "$target" "$target_port" "$remote_command" | sed -u -E '/^(XDS_URL|XDS_API_HOST|SERVICE_API|MODEL_API)=/d'; then
       [[ ! -e "$remote_env" ]] || unlink "$remote_env"
       return 1
     fi
@@ -421,6 +468,8 @@ fi
 [[ "$RELEASE_CLEANUP_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid RELEASE_CLEANUP_POLL_SECONDS: $RELEASE_CLEANUP_POLL_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_TIMEOUT_SECONDS: $TASK_EXECUTOR_READY_TIMEOUT_SECONDS" >&2; exit 2; }
 [[ "$TASK_EXECUTOR_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid TASK_EXECUTOR_READY_POLL_SECONDS: $TASK_EXECUTOR_READY_POLL_SECONDS" >&2; exit 2; }
+[[ "$SERVICE_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid SERVICE_READY_TIMEOUT_SECONDS: $SERVICE_READY_TIMEOUT_SECONDS" >&2; exit 2; }
+[[ "$SERVICE_READY_POLL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid SERVICE_READY_POLL_SECONDS: $SERVICE_READY_POLL_SECONDS" >&2; exit 2; }
 [[ "$EMS_LOG_SYNC_INTERVAL_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid EMS_LOG_SYNC_INTERVAL_SECONDS: $EMS_LOG_SYNC_INTERVAL_SECONDS" >&2; exit 2; }
 [[ "$REMOTE_LOG_COLLECTOR_ENABLED" == "true" || "$REMOTE_LOG_COLLECTOR_ENABLED" == "false" ]] || { echo "REMOTE_LOG_COLLECTOR_ENABLED must be true or false: $REMOTE_LOG_COLLECTOR_ENABLED" >&2; exit 2; }
 [[ "$EMS_LOG_SOURCE_DIR" == /* ]] || { echo "EMS_LOG_SOURCE_DIR must be an absolute path: $EMS_LOG_SOURCE_DIR" >&2; exit 2; }
@@ -453,31 +502,71 @@ PY
 fi
 
 resolve_xds_url_from_service() {
-  local node_port
+  local node_port="" service_name="" service_info="" services_json=""
+  local deadline=$((SECONDS + SERVICE_READY_TIMEOUT_SECONDS))
 
   [[ "$XDS_URL_EXPLICIT" == false ]] || return 0
-  node_port="$("$KUBECTL_BIN" -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json | python3 -c '
+  while (( SECONDS < deadline )); do
+    services_json="$($KUBECTL_BIN -n "$NAMESPACE" get svc "$SERVICE_NAME" -o json 2>/dev/null || true)"
+    if [[ -z "$services_json" ]]; then
+      services_json="$($KUBECTL_BIN -n "$NAMESPACE" get svc -o json 2>/dev/null || true)"
+    fi
+    if [[ -n "$services_json" ]]; then
+      # Prefer SERVICE_NAME, then fall back to the first NodePort Service in
+      # this namespace. Chart versions may render a different service name.
+      service_info="$(SERVICES_JSON="$services_json" python3 - "$SERVICE_NAME" <<'PY'
 import json
+import os
 import sys
 
-service = json.load(sys.stdin)
-for port in service.get("spec", {}).get("ports", []):
-    if isinstance(port.get("nodePort"), int):
-        print(port["nodePort"])
-        break
-else:
-    raise SystemExit("service does not expose a NodePort")
-' 2>/dev/null)" || {
-    echo "failed to resolve NodePort from service $SERVICE_NAME" >&2
-    return 1
-  }
-  [[ "$node_port" =~ ^[0-9]+$ ]] || {
-    echo "invalid service NodePort: $node_port" >&2
-    return 1
-  }
-  XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
-  echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
+try:
+    payload = json.loads(os.environ.get("SERVICES_JSON", ""))
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    if not items and isinstance(payload, dict):
+        # `kubectl get svc <name> -o json` test doubles and some wrappers may
+        # omit metadata; the requested name is still authoritative here.
+        payload.setdefault("metadata", {})
+        payload["metadata"].setdefault("name", sys.argv[1])
+        items = [payload]
+except json.JSONDecodeError:
+    items = []
+
+preferred = sys.argv[1]
+candidates = []
+for service in items:
+    name = service.get("metadata", {}).get("name")
+    if not isinstance(name, str):
+        continue
+    for port in service.get("spec", {}).get("ports", []):
+        node_port = port.get("nodePort")
+        if isinstance(node_port, int):
+            candidates.append((name, node_port))
+            break
+
+for name, node_port in candidates:
+    if name == preferred:
+        print(f"{name}\t{node_port}")
+        raise SystemExit
+if candidates:
+    name, node_port = candidates[0]
+    print(f"{name}\t{node_port}")
+PY
+)"
+      if IFS=$'\t' read -r service_name node_port <<<"$service_info" && [[ "$node_port" =~ ^[0-9]+$ ]]; then
+        SERVICE_NAME="$service_name"
+        XDS_URL="http://${XDS_API_HOST}:${node_port}/xds/v1"
+      echo "[deploy] resolved XDS API URL from $SERVICE_NAME: $XDS_URL"
+      return 0
+      fi
+    fi
+    echo "[deploy] waiting for a NodePort Service in namespace $NAMESPACE (preferred: $SERVICE_NAME)"
+    sleep "$SERVICE_READY_POLL_SECONDS"
+  done
+  echo "[deploy] failed to resolve a NodePort Service in namespace $NAMESPACE after ${SERVICE_READY_TIMEOUT_SECONDS}s" >&2
+  "$KUBECTL_BIN" -n "$NAMESPACE" get svc -o wide >&2 || true
+  return 1
 }
+
 
 rewrite_xds_url_to_mapped_host() {
   local original_url="$XDS_URL" rewrite_result mapped_host
@@ -573,6 +662,12 @@ PY
   [[ -n "$rewritten_host" ]] && XDS_API_HOST="$rewritten_host"
 }
 
+resolve_xds_om_url() {
+  [[ -n "$XDS_URL" ]] || return 1
+  XDS_OM="${XDS_OM:-${XDS_URL%/}/OM/diagnose/post}"
+  echo "[deploy] resolved XDS OM URL before host mapping: $XDS_OM"
+}
+
 persist_runtime_environment() {
   local variable
   SERVICE_API="${XDS_URL%/}"
@@ -584,8 +679,10 @@ persist_runtime_environment() {
     printf 'export XDS_URL=%q\n' "$XDS_CHAT_COMPLETIONS_URL"
     for variable in \
       XDS_API_HOST SERVICE_NAME SERVICE_API MODEL_NAME MODEL_ENDPOINT MODEL_VERSION MODEL_API \
+      XDS_OM \
       MODEL_PATH MODEL_WEIGHT_NAME DEPLOY_VALUES_FILE HEAD_LOG_DIR HEAD_LOG_COLLECTOR_PID \
-      EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER; do
+      EMS_LOG_SYNC_INTERVAL_SECONDS EMS_LOG_SOURCE_DIR EMS_LOG_CONTAINER \
+      ARCH_NAME EXECUTOR NAMESPACE_ARCH DEPLOY_STRATEGY BY IMAGE_NAME DEPLOY_IMAGE EMS_NAMESPACE; do
       printf 'export %s=%q\n' "$variable" "${!variable}"
     done
   } >>"$PIPELINE_ENV_FILE"
@@ -624,12 +721,16 @@ print_runtime_environment() {
   printf 'XDS_URL=%s\n' "$XDS_CHAT_COMPLETIONS_URL"
   printf 'SERVICE_NAME=%s\n' "$SERVICE_NAME"
   printf 'SERVICE_API=%s\n' "$SERVICE_API"
+  printf 'XDS_OM=%s\n' "$XDS_OM"
   printf 'MODEL_NAME=%s\n' "$MODEL_NAME"
   printf 'MODEL=%s\n' "$MODEL_NAME"
   printf 'MODEL_ENDPOINT=%s\n' "$MODEL_ENDPOINT"
   printf 'MODEL_VERSION=%s\n' "$MODEL_VERSION"
   printf 'MODEL_API=%s\n' "$MODEL_API"
   printf 'MODEL_PATH=%s\n' "$MODEL_PATH"
+  printf 'EXECUTOR=%s\n' "$EXECUTOR"
+  printf 'NAMESPACE_ARCH=%s\n' "$NAMESPACE_ARCH"
+  printf 'DEPLOY_STRATEGY=%s\n' "$DEPLOY_STRATEGY"
   printf 'HEAD_LOG_DIR=%s\n' "$HEAD_LOG_DIR"
 }
 
@@ -899,14 +1000,6 @@ PY
   done <"$labels"
 }
 
-cleanup_stale_raycluster() {
-  local raycluster="$RELEASE_NAME-kuberay"
-
-  echo "[deploy] ensure stale RayCluster is removed: $raycluster"
-  "$KUBECTL_BIN" --namespace "$NAMESPACE" delete raycluster "$raycluster" \
-    --ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"
-}
-
 clear_target_node_taints() {
   local inventory nodes node key effect
   inventory="$(mktemp)"
@@ -922,32 +1015,22 @@ labels_file, inventory_file = sys.argv[1:]
 labels = json.load(open(labels_file, encoding="utf-8"))
 inventory = json.load(open(inventory_file, encoding="utf-8"))
 by_ip = {}
-for item in inventory.get("items", []):
-    name = item.get("metadata", {}).get("name")
-    for address in item.get("status", {}).get("addresses", []):
-        if address.get("type") == "InternalIP" and isinstance(name, str) and name:
+for node in inventory.get("items", []):
+    name = node.get("metadata", {}).get("name")
+    for address in node.get("status", {}).get("addresses", []):
+        if address.get("type") == "InternalIP" and name:
             by_ip[address.get("address")] = name
 
 assignments = [{"hosts": labels.get("hosts", [])}]
-extra_assignments = labels.get("assignments", [])
-if not isinstance(extra_assignments, list):
-    raise SystemExit("node label assignments must be a list")
-assignments.extend(extra_assignments)
-
+assignments.extend(labels.get("assignments", []))
 seen = set()
 for assignment in assignments:
     if not isinstance(assignment, dict):
-        raise SystemExit("node label assignment must be an object")
-    hosts = assignment.get("hosts", [])
-    if not isinstance(hosts, list):
-        raise SystemExit("node label assignment hosts must be a list")
-    for host in hosts:
-        if not isinstance(host, dict) or not isinstance(host.get("ip"), str):
-            raise SystemExit("node label host requires an IP")
-        node = by_ip.get(host["ip"])
-        if not node:
-            raise SystemExit("target node IP does not match Kubernetes InternalIP: " + host["ip"])
-        if node not in seen:
+        continue
+    for host in assignment.get("hosts", []):
+        ip = host.get("ip") if isinstance(host, dict) else None
+        node = by_ip.get(ip)
+        if node and node not in seen:
             seen.add(node)
             print(node)
 PY
@@ -969,6 +1052,61 @@ for taint in json.load(sys.stdin).get("spec", {}).get("taints", []):
   done <"$nodes"
 }
 
+cleanup_stale_raycluster() {
+  local raycluster="$RELEASE_NAME-kuberay"
+
+  echo "[deploy] ensure stale RayCluster is removed: $raycluster"
+  "$KUBECTL_BIN" --namespace "$NAMESPACE" delete raycluster "$raycluster" \
+    --ignore-not-found --wait=true --timeout="$HELM_TIMEOUT"
+}
+
+cleanup_legacy_cluster_rbac() {
+  local namespace_base legacy_release legacy_namespace role_name binding_name release_name release_namespace
+  namespace_base="${NAMESPACE_ARCH:-}"
+  [[ -n "$namespace_base" ]] || namespace_base="$ARCH_NAME"
+  [[ -n "$EXECUTOR" ]] || return 0
+  legacy_namespace="$(normalize_kubernetes_name "xds-${namespace_base}" 63)"
+  legacy_release="xds-${legacy_namespace#xds-}"
+  [[ "$legacy_namespace" != "$NAMESPACE" ]] || return 0
+  role_name="${legacy_release}-role"
+  binding_name="${legacy_release}-role-binding"
+  for resource in "clusterrole/$role_name" "clusterrolebinding/$binding_name"; do
+    release_name="$($KUBECTL_BIN get "$resource" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}' 2>/dev/null || true)"
+    release_namespace="$($KUBECTL_BIN get "$resource" -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}' 2>/dev/null || true)"
+    if [[ "$release_name" == "$legacy_release" && "$release_namespace" == "$legacy_namespace" ]]; then
+      echo "[deploy] remove legacy Helm RBAC resource: $resource (release=$legacy_release namespace=$legacy_namespace)"
+      "$KUBECTL_BIN" delete "$resource" --ignore-not-found
+    fi
+  done
+}
+
+ensure_raycluster_cleanup_service_account() {
+  local raycluster="$RELEASE_NAME-kuberay" service_account
+
+  if ! service_account="$("$KUBECTL_BIN" --namespace "$NAMESPACE" get raycluster "$raycluster" \
+    -o jsonpath='{.spec.headGroupSpec.template.spec.serviceAccountName}' 2>/dev/null)"; then
+    return 0
+  fi
+  [[ -n "$service_account" ]] || return 0
+  if "$KUBECTL_BIN" --namespace "$NAMESPACE" get serviceaccount "$service_account" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[deploy] restore missing ServiceAccount for RayCluster cleanup: $service_account"
+  cat <<EOF | "$KUBECTL_BIN" apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: $service_account
+  namespace: $NAMESPACE
+  labels:
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: $RELEASE_NAME
+    meta.helm.sh/release-namespace: $NAMESPACE
+EOF
+}
+
 wait_for_release_cleanup() {
   local deadline selector pending
   local -a selectors
@@ -981,7 +1119,11 @@ wait_for_release_cleanup() {
     mapfile -t stale_pods < <("$KUBECTL_BIN" -n "$NAMESPACE" get pods -l "$selector" -o name 2>/dev/null || true)
     if ((${#stale_pods[@]})); then
       echo "[deploy] force delete ${#stale_pods[@]} stale pods for selector: $selector"
-      "$KUBECTL_BIN" -n "$NAMESPACE" delete "${stale_pods[@]}" --grace-period=0 --force --wait=false
+      # The Ray controller may remove a pod between `get` and this delete.
+      # Treat that race as success; the polling loop below still verifies that
+      # no stale pods remain before deployment continues.
+      "$KUBECTL_BIN" -n "$NAMESPACE" delete "${stale_pods[@]}" \
+        --grace-period=0 --force --wait=false --ignore-not-found
     fi
   done
 
@@ -1096,6 +1238,7 @@ PY
 
 if [[ "$MOCK_HELM_DEPLOY" == "true" ]]; then
   resolve_mock_xds_url
+  resolve_xds_om_url
   rewrite_xds_url_to_execution_host
   HEAD_LOG_COLLECTOR_PID=""
   persist_runtime_environment
@@ -1107,10 +1250,14 @@ fi
 
 label_target_nodes
 echo "[deploy] helm release=$RELEASE_NAME namespace=$NAMESPACE chart=$CHART_DIR"
+# Keep the prior release's ServiceAccount alive while KubeRay reconciles the
+# deleted RayCluster.  Its redis-cleanup Job inherits that ServiceAccount.
+ensure_raycluster_cleanup_service_account
+cleanup_stale_raycluster
+cleanup_legacy_cluster_rbac
+wait_for_release_cleanup
 "$HELM_BIN" uninstall "$RELEASE_NAME" --namespace "$NAMESPACE" \
   --wait --timeout "$HELM_TIMEOUT" 2>/dev/null || true
-cleanup_stale_raycluster
-wait_for_release_cleanup
 prepare_available_node_ports
 prepare_ctrl_slot_capacity
 # Remove taints immediately before the new RayCluster is installed.  This
@@ -1120,14 +1267,15 @@ clear_target_node_taints
   --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" \
   --timeout "$HELM_TIMEOUT"
 resolve_xds_url_from_service
+resolve_xds_om_url
 rewrite_xds_url_to_mapped_host
 
 mkdir -p "$HEAD_LOG_DIR"
 nohup env KUBECTL_BIN="$KUBECTL_BIN" POLL_INTERVAL_SECONDS="$POLL_INTERVAL_SECONDS" \
-  EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
-  EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
-  "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
-  >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
+    EMS_LOG_SYNC_INTERVAL_SECONDS="$EMS_LOG_SYNC_INTERVAL_SECONDS" \
+    EMS_LOG_SOURCE_DIR="$EMS_LOG_SOURCE_DIR" EMS_LOG_CONTAINER="$EMS_LOG_CONTAINER" \
+    "$SCRIPT_DIR/follow-xds-head-logs.sh" "$NAMESPACE" "$HEAD_LOG_DIR" \
+    >"$HEAD_LOG_DIR/launcher.log" 2>&1 < /dev/null &
 HEAD_LOG_COLLECTOR_PID=$!
 printf 'HEAD_LOG_COLLECTOR_PID=%s\nHEAD_LOG_DIR=%s\n' \
   "$HEAD_LOG_COLLECTOR_PID" "$HEAD_LOG_DIR"

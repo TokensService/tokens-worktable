@@ -127,8 +127,8 @@ function failRecord(overrides) {
     status: 'failed', dur: '12s', time: '今天 10:00', ts: 1791822000000, startTs: 1791821988000,
     by: 'tester', source: 'local', closeError: '浏览器页面已关闭，本地任务未执行完，本次运行按失败结束',
     logs: [
-      { stage: '检出', status: 'success', dur: 5, local: true },
-      { stage: '部署', status: 'failed', dur: 12, local: true },
+      { stage: '检出', status: 'success', dur: 5, local: true, startedAt: 1791821989000 },
+      { stage: '部署', status: 'failed', dur: 12, local: true, startedAt: 1791821995000 },
       { stage: '健康检查', status: 'skipped', dur: 0, local: true },
     ],
   }, overrides || {})
@@ -155,6 +155,8 @@ test('fail-run：同 tag「进行中」记录原地终态化——保留编号�
   assert.ok(/浏览器页面已关闭/.test(rec.closeError), '中断原因随记录落史')
   assert.equal(rec.logs.length, 3, '阶段日志落史（成功/失败/跳过）')
   assert.equal(rec.logs.find(l => l.stage === '部署').status, 'failed')
+  assert.equal(rec.logs.find(l => l.stage === '部署').startedAt, 1791821995000, '阶段开始时间过白名单落史（回放详情展示）')
+  assert.equal(rec.logs.find(l => l.stage === '健康检查').startedAt, undefined, '从未启动的跳过阶段无开始时间')
   assert.equal(rec.logs.find(l => l.stage === '健康检查').status, 'skipped')
   const other = store.history.find(h => h.tag === 't-other')
   assert.equal(other.status, 'running', '他人/其他运行不受影响')

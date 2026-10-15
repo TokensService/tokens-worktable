@@ -30,6 +30,7 @@ test('collectConfig：repositories 保留 pass，携带视图状态/定时环境
     cleanupEnv:{checked:true},checkEnv:{checked:false},profilingEnv:{checked:true}};
   const ctx={
     $:id=>els[id]||null,
+    builtinSeedOmittable:()=>false,
     pipelines:[{id:'pl-xds'}], environments:[{id:'env-a',name:'开发',ip:'10.0.0.1',user:'root',pass:'node-pass'}],
     repositories:[{id:'r1',name:'myapp',url:'https://git.example/a.git',user:'u',pass:'git-token'}],
     scriptsDir:'/srv/scripts', themePref:'dark', buildNo:7,
@@ -74,6 +75,10 @@ function loadStateFixture(serverConfig,opts){
     serverConfigBase:opts.base!==undefined?opts.base:null,
     DEFAULT_PIPELINE_ID:'pl-xds',
     defaultPipeline:plXds,
+    /* 内置注册表重组/脚本路径回填的页面桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines:(list)=>{ const l=Array.isArray(list)?list:[]; return [l.find(p=>p&&p.builtIn&&p.id==='pl-xds')||plXds()].concat(l.filter(p=>p&&!p.builtIn)); },
+    rebindBuiltinScriptPaths:()=>{},
+    builtinSeedOmittable:()=>false,
     migrateGate:p=>p, migrateStageUrl:p=>p, migratePrefillDefaults:p=>p, migratePipelineDefaults:p=>p, migratePromPreset:p=>p,
     pipelines:opts.localPipelines||[plXds()],
     environments:[], repositories:opts.localRepos||[],
@@ -102,7 +107,7 @@ function loadStateFixture(serverConfig,opts){
   };
   vm.createContext(ctx);
   vm.runInContext(['stripPipelineSharedMeta','mergePipelinesFromServer','fetchPipelineStateFresh',
-    'normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','plOwnerFilterLabel','loadServerState',
+    'normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','plOwnerFilterLabel','envConfigEditable','loadServerState',
   ].map(extractFunction).join('\n'),ctx);
   return {ctx,calls,storage,els};
 }
@@ -224,6 +229,7 @@ function exportCtx(){
     cleanupEnv:{checked:true},checkEnv:{checked:false},profilingEnv:{checked:false}};
   const ctx={
     $:elMapStub(els),
+    builtinSeedOmittable:()=>false,
     pipelines:[{id:'pl-xds',builtIn:true,stages:[{id:'s0'}]},{id:'pl-b',name:'B',stages:[{id:'sb'}]}],
     environments:[{id:'env-a',name:'开发',ip:'10.0.0.1',user:'root',pass:'node-pass'}],
     repositories:[{id:'r1',name:'myapp',url:'https://git.example/a.git',user:'u',pass:'git-token'}],
@@ -267,7 +273,7 @@ function importCtx(overrides){
    'saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts',
    'saveSchedEnvSel','saveRunSelLS','saveHistFilter','savePlFilter','saveCustomPresets'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   vm.createContext(ctx);
-  vm.runInContext(['normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','syncViewRun','plOwnerFilterLabel','applyImportedSettings'].map(extractFunction).join('\n'),ctx);
+  vm.runInContext(['normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','syncViewRun','plOwnerFilterLabel','envConfigEditable','applyImportedSettings'].map(extractFunction).join('\n'),ctx);
   return {ctx,saved,els,store};
 }
 

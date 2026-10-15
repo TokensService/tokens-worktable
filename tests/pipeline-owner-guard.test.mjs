@@ -26,7 +26,9 @@ function extractFunction(name) {
 const BUILTIN_CONST_DECL = (() => {
   const match = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)
   assert.ok(match, 'src/index.ts 缺少 BUILTIN_PIPELINE_ID 常量')
-  return match[0]
+  const ids = /^const BUILTIN_PIPELINE_IDS = .+$/m.exec(source)
+  assert.ok(ids, 'src/index.ts 缺少 BUILTIN_PIPELINE_IDS 常量')
+  return match[0] + '\n' + ids[0]
 })()
 
 const OWNERSHIP_HELPERS = [
@@ -35,6 +37,7 @@ const OWNERSHIP_HELPERS = [
     'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
     'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny',
+    'sameEnvironmentContent', 'environmentsWriteDeny',
   ].map((name) => extractFunction(name)),
 ].join('\n')
 

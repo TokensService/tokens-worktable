@@ -30,6 +30,10 @@ function makeCtx(overrides={},names=[]){
     DEFAULT_PROM:{url:'http://192.168.10.6:25889',linkUrl:'',mode:'local',collectScript:''},
     DEFAULT_PROMPTS:{log:'L',prof:'P',perf:'F'},
     defaultPipeline:()=>({id:'pl-xds',name:'安装部署XDS',stages:[{id:'s0',name:'检出'}],builtIn:true}),
+    /* 内置注册表重组桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines:(list)=>{ const l=Array.isArray(list)?list:[]; return [l.find(p=>p&&p.builtIn&&p.id==='pl-xds')||{id:'pl-xds',name:'安装部署XDS',stages:[{id:'s0',name:'检出'}],builtIn:true}].concat(l.filter(p=>p&&!p.builtIn)); },
+    rebindBuiltinScriptPaths:()=>{},
+    builtinSeedOmittable:()=>false,
   },overrides);
   vm.createContext(ctx);
   if(names.length) vm.runInContext(names.map(extractFunction).join('\n'),ctx);
@@ -127,7 +131,7 @@ test('导入设置：按文件整体恢复（含令牌），缺省键保持当�
     histFilter:{kw:'',status:'',pipeline:''}, histPageSize:10,
     viewRc:{stages:[{id:'s0'}],nodes:{},selId:'s0',token:'t0',over:false,vars:{},timer:null}, runStages:null, selectedId:'s0',
     curPipeline:function(){ return this.pipelines.find(p=>p.id===this.curPipelineId)||this.pipelines[0]; },
-  },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','applyImportedSettings']);
+  },['normalizeFetchMode','normalizeEnv','normalizeRepo','syncViewRun','envConfigEditable','applyImportedSettings']);
   ['saveEnvs','saveEnvSel','saveRepos','saveRepoSel','saveScriptsDir','saveCleanup','saveCheck','saveProfiling','saveJenkins','saveEvaltok','saveProm','saveArchiveDir','saveArchiveScript','savePrompts','saveSchedEnvSel','saveRunSelLS','saveHistFilter','savePlFilter'].forEach(n=>{ ctx[n]=()=>saved.push(n); });
   ['renderCleanupParams','renderCheckParams','renderProfilingParams','renderAll'].forEach(n=>{ ctx[n]=()=>rendered.push(n); });
   vm.runInContext('curPipeline=function(){ return pipelines.find(p=>p.id===curPipelineId)||pipelines[0]; };',ctx);

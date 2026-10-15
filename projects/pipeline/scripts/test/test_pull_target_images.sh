@@ -83,23 +83,27 @@ TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175","115.33.98.101:2222":
 AK='test-ak' \
 LOGKEY='test-login-key' \
 LOGIN_KEY='stale-login-key' \
+http_proxy='http://192.0.2.10:8080' \
+https_proxy='http://192.0.2.10:8080' \
+HTTP_PROXY='http://192.0.2.20:8080' \
+HTTPS_PROXY='http://192.0.2.20:8080' \
 PULL_TARGET_IMAGES_ONLY=1 \
 bash "$script" >/dev/null
 
 grep -Fxq '2223' "$work_dir/ssh-ports.log"
 grep -Fxq '2222' "$work_dir/ssh-ports.log"
-if grep -Fxq '2224' "$work_dir/ssh-ports.log"; then
-  echo 'unmapped SSH endpoint must not receive registry credentials' >&2
-  exit 1
-fi
+grep -Fxq '2224' "$work_dir/ssh-ports.log"
 expected_pull='-n k8s.io images pull --user cn-southwest-2@test-ak:test-login-key swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test'
 if grep -Fxq "2223|$expected_pull" "$work_dir/ctr.log"; then
   echo 'mapped target pull must be skipped when the exact image already exists' >&2
   exit 1
 fi
 grep -Fxq "2222|$expected_pull" "$work_dir/ctr.log"
-grep -Fxq '18118:127.0.0.1:8118' "$work_dir/ssh-reverse-forwards.log"
-grep -Fxq '2222|http://127.0.0.1:18118|http://127.0.0.1:18118|http://127.0.0.1:18118|http://127.0.0.1:18118' "$work_dir/proxy.log"
+if [[ -s "$work_dir/ssh-reverse-forwards.log" ]]; then
+  echo 'registry pulls must not create a proxy reverse forward' >&2
+  exit 1
+fi
+grep -Fxq '2222|http://192.0.2.10:8080|http://192.0.2.10:8080|http://192.0.2.20:8080|http://192.0.2.20:8080' "$work_dir/proxy.log"
 grep -Fxq '2223|-n k8s.io images ls -q' "$work_dir/ctr.log"
 grep -Fxq '2222|-n k8s.io images ls -q' "$work_dir/ctr.log"
 
@@ -129,12 +133,12 @@ CTR_LOG="$work_dir/direct-target-ctr.log" \
 IMAGE_NAME='swr.cn-southwest-2.myhuaweicloud.com/dataartsfabric/xds:test' \
 TARGET_HOSTS='[{"ip":"192.168.0.128","user":"root"}]' \
 TARGET_NODE_IP_MAP='{"192.168.0.128":"192.168.0.128"}' \
+AK='test-ak' \
+LOGKEY='test-login-key' \
 PULL_TARGET_IMAGES_ONLY=1 \
 bash "$script" >/dev/null
-if [[ -s "$work_dir/direct-target-ssh.log" || -s "$work_dir/direct-target-ctr.log" ]]; then
-  echo 'direct non-mapped targets must not require credentials or run a target pre-pull' >&2
-  exit 1
-fi
+grep -Fxq '22' "$work_dir/direct-target-ssh.log"
+grep -Fq 'images pull --user cn-southwest-2@test-ak:test-login-key' "$work_dir/direct-target-ctr.log"
 
 PATH="$work_dir/bin:$PATH" \
 SSH_PORT_LOG="$work_dir/cached-without-credentials-ssh.log" \

@@ -30,7 +30,9 @@ function extractFunction(name) {
 const BUILTIN_CONST_DECL = (() => {
   const match = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)
   assert.ok(match, 'src/index.ts 缺少 BUILTIN_PIPELINE_ID 常量')
-  return match[0]
+  const ids = /^const BUILTIN_PIPELINE_IDS = .+$/m.exec(source)
+  assert.ok(ids, 'src/index.ts 缺少 BUILTIN_PIPELINE_IDS 常量')
+  return match[0] + '\n' + ids[0]
 })()
 
 const TRUST_HELPERS = [
@@ -39,6 +41,7 @@ const TRUST_HELPERS = [
     'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
     'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny',
+    'sameEnvironmentContent', 'environmentsWriteDeny',
   ].map((name) => extractFunction(name)),
 ].join('\n')
 
@@ -495,4 +498,29 @@ test('存储中 id 命中 pl-xds 但无 builtIn 标志的条目同样视同内�
   const favOnly = await call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('pl-xds', '安装部署XDS', { favoriteUsers: ['alice'] }), pl('p2', '普通')] }, baseConfig: config, history: [] }, TOKEN_USER))
   assert.equal(favOnly.status, 200, 'favoriteUsers 豁免对 id 命中的条目同样成立')
   assert.deepEqual((await readStore(home)).config.pipelines[0].favoriteUsers, ['alice'])
+})
+
+test('内置 id 集合化：pl-vllm-native 与 pl-xds 同等保护（改内容/删除/抢占 id 均 403）', async t => {
+  const config = { pipelines: [pl('pl-xds', '安装部署XDS', { builtIn: true }), pl('pl-vllm-native', '部署vLLM（原生P/D）', { builtIn: true }), pl('p2', '普通')] }
+  const home = await seedHome(t, { config })
+  const h = loadPipelineRoutes(home, { ctx: authCtx() })
+  const put = (pipelines) => call(h['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines }, baseConfig: config, history: [] }, TOKEN_USER))
+
+  const tampered = await put([pl('pl-xds', '安装部署XDS', { builtIn: true }), pl('pl-vllm-native', '篡改', { builtIn: true }), pl('p2', '普通')])
+  assert.equal(tampered.status, 403, '非 admin 改第二条内置内容')
+  assert.deepEqual(tampered.json().pipelineIds, ['pl-vllm-native'])
+
+  const removed = await put([pl('pl-xds', '安装部署XDS', { builtIn: true }), pl('p2', '普通')])
+  assert.equal(removed.status, 403, '非 admin 删除第二条内置')
+  assert.deepEqual(removed.json().pipelineIds, ['pl-vllm-native'])
+  assert.deepEqual((await readStore(home)).config, config, '拒绝时不写盘')
+
+  /* 抢占 id：存储无内置条目、非 admin 新建 id 命中集合（无 builtIn 标志）的条目 → 拒绝 */
+  const squatBase = { pipelines: [pl('p2', '普通')] }
+  const home2 = await seedHome(t, { config: squatBase })
+  const h2 = loadPipelineRoutes(home2, { ctx: authCtx() })
+  const squat = await call(h2['/api/worktable/pipeline'], reqWith('PUT', { config: { pipelines: [pl('pl-vllm-native', '抢占'), pl('p2', '普通')] }, baseConfig: squatBase, history: [] }, TOKEN_USER))
+  assert.equal(squat.status, 403, '非 admin 抢占内置 id（无 builtIn 标志）同样拦截')
+  assert.match(squat.json().message, /仅 admin 可新建内置流水线/)
+  assert.deepEqual((await readStore(home2)).config, squatBase, '抢占被拒时不写盘')
 })

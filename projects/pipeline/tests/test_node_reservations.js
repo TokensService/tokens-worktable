@@ -1,4 +1,4 @@
-/* 节点预留（「节点」独立页签 + 按用户/日期时间段分配）的页面侧测试：
+/* 节点预留（「节点管理」独立页签 + 按用户/日期时间段分配）的页面侧测试：
    - 静态契约：navNode 页签在 navEnv 之前；pageNode 容器持有节点环境卡片（DOM id 不变）、pageEnv 不再含 envTable；
      switchPage 有 node 分支并顺带 loadNodeReservations；绑定在尾部统一初始化区（const $ 声明之后，防 TDZ 回归）；
      预留数据不进配置导出（collectConfig 不引用 nodeReservations）。
@@ -6,7 +6,7 @@
      envReservationInfo（覆盖判定 T==start 覆盖 / T==end 不覆盖、users 并集、until 取最早 end）、
      envReservedForOthers（admin 旁路 / 本人可用 / 他人拦截 / authReady=false 不拦）、envReservationIssue、
      quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留）。
-   - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）与「分配」按钮、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
+   - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）、「分配」按钮在操作列（「编辑」之前）、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
    - 运行校验接入：pipelineDefaultRunIssue / runPipeline / submitPipelineRunDialog / addPlan 四处的预留拦截；
@@ -106,7 +106,7 @@ test('静态契约：navNode 页签位于 navSched 与 navEnv 之间，带 data-
   const navNode = source.indexOf('id="navNode"');
   const navEnv = source.indexOf('id="navEnv"');
   assert.ok(navSched > 0 && navNode > navSched && navEnv > navNode, 'navNode 应在 navSched 之后、navEnv 之前');
-  assert.match(source, /<button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点<\/button>/);
+  assert.match(source, /<button id="navNode" class="dshell-btn dshell-btnGhost mini" data-pagenav="node">节点管理<\/button>/);
 });
 
 test('静态契约：pageNode 容器持有节点环境卡片（DOM id 不变），pageEnv 不再含节点环境卡片', () => {
@@ -328,16 +328,16 @@ function renderEnvsCtx(globals, envs) {
     fetch: async () => ({ ok: true, status: 200, json: async () => ({ users: [{ username: 'u1' }, { username: 'u2' }, { username: 'me' }] }) }),
     alert: () => {}, toast: () => {},
   }, globals || {}));
-  vm.runInContext(['gpuBusy', 'envFilterMatch', 'envSortVal', 'envSortList', 'renderEnvs'].map(extractFunction).join('\n'), ctx);
+  vm.runInContext(['gpuBusy', 'envFilterMatch', 'envSortVal', 'envSortList', 'envConfigEditable', 'renderEnvs'].map(extractFunction).join('\n'), ctx);
   return { ctx, els, tbody };
 }
 
-test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用户 | 备注），生效中整行高亮无「预留中」文案 / 无预留 —；行内含「分配」按钮', () => {
+test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用户 | 备注），生效中整行高亮无「预留中」文案 / 无预留 —；「分配」按钮在操作列、「编辑」之前', () => {
   const p2 = n => String(n).padStart(2, '0');
   const fmt = d => p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
   const now = Date.now();
   const activeRange = fmt(new Date(now - 3600e3)) + ' ~ ' + fmt(new Date(now + 3600e3));
-  const { ctx, tbody } = renderEnvsCtx(null, [envOf('env-a', '开发', '10.0.0.1'), envOf('env-b', '生产', '10.0.0.2'), envOf('env-c', '测试', '10.0.0.3')]);
+  const { ctx, tbody } = renderEnvsCtx({ currentUserIsAdmin: true, currentUsername: 'admin' }, [envOf('env-a', '开发', '10.0.0.1'), envOf('env-b', '生产', '10.0.0.2'), envOf('env-c', '测试', '10.0.0.3')]);   /* admin 身份：操作列才有「编辑/复制/删除」，供下方按钮位置断言 */
   vm.runInContext(`nodeReservations=${JSON.stringify([
     resNow('r1', 'env-c', ['u1', 'u2'], { note: '专项压测' }),
     resFuture('r2', 'env-b', ['u1']), resFuture('r3', 'env-b', ['u3']),
@@ -361,7 +361,14 @@ test('renderEnvs「预留」列：逐时段一行三列对齐（时间段 | 用�
   assert.ok(!htmlOf('env-b').includes('预留中') && !htmlOf('env-b').includes('个时段'), '未来时段无预留中标记、不再折叠为时段数');
   /* 无预留显示 — */
   assert.ok(/<span class="dshell-muted">—<\/span>/.test(htmlOf('env-a')), '无预留显示 —');
-  ['env-a', 'env-b', 'env-c'].forEach(id => assert.ok(htmlOf(id).includes(`data-envres="${id}"`), `行内应有「分配」按钮（data-envres=${id}）`));
+  /* 「分配」按钮在操作列（最后一个 td）、位于「编辑」之前；「预留」列（倒数第二个 td）只展示时段摘要 */
+  ['env-a', 'env-b', 'env-c'].forEach(id => {
+    const cells = htmlOf(id).split(/<td[\s>]/);
+    const resCell = cells[cells.length - 2], opsCell = cells[cells.length - 1];
+    assert.ok(!resCell.includes('data-envres'), `「预留」列不再含「分配」按钮（${id}）`);
+    assert.ok(opsCell.includes(`data-envres="${id}"`), `操作列应有「分配」按钮（data-envres=${id}）`);
+    assert.ok(opsCell.indexOf(`data-envres="${id}"`) < opsCell.indexOf(`data-envedit="${id}"`), `「分配」应在「编辑」之前（${id}）`);
+  });
 });
 
 test('renderEnvs「预留」列：已结束时段整行置灰并在备注格后缀（已结束）；多时段按开始时间升序逐行排列', () => {

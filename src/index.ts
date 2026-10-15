@@ -1,9 +1,11 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
-import { createReadStream, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { createReadStream, createWriteStream, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
+import { pipeline as streamPipeline } from 'node:stream/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { homedir, networkInterfaces } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -182,13 +184,26 @@ const PLUGIN_DIR = (() => {
 
 /** 流水线脚本目录的安装默认：插件安装后的 projects/pipeline/scripts（tgz 安装即 profile
  *  node_modules 下的包内路径，link: 安装即源码树内路径；包 files 含 projects 目录）。
- *  设置文件（worktable-pipeline.json 的 config.scriptsDir）未配置时服务端执行器兜底到它。 */
+ *  设置文件（worktable-pipeline.json 的 config.scriptsDir）未配置或配置目录已不存在时，
+ *  服务端执行器兜底到它（见 resolvePipelineScriptsDir）。 */
 const DEFAULT_PIPELINE_SCRIPTS_DIR = pathResolve(PLUGIN_DIR, 'projects', 'pipeline', 'scripts')
 
-/** 解析流水线脚本目录：设置文件已配置 scriptsDir（trim 后非空）即用，否则用安装默认路径。 */
-function resolvePipelineScriptsDir(config: any, installedDir: string): string {
+/** 解析流水线脚本目录：设置文件已配置 scriptsDir（trim 后非空）即用，否则用安装默认路径。
+ *  配置值指向的目录已不存在（典型：指向已删除的 git worktree / 已卸载的挂载，曾致全部相对路径
+ *  脚本阶段 spawn ENOENT）时同样兜底安装默认路径，并经 onMissingDir 回调告知调用方（可记日志）。
+ *  typeof 守卫：vm 抽取测试未注入 statSync 时跳过存在性检查，维持纯映射语义。 */
+function resolvePipelineScriptsDir(config: any, installedDir: string, onMissingDir?: (configured: string, fallback: string) => void): string {
   const configured = config && typeof config.scriptsDir === 'string' ? config.scriptsDir.trim() : ''
-  return configured || installedDir
+  if (!configured) return installedDir
+  if (typeof statSync === 'function') {
+    let missing = false
+    try { missing = !statSync(configured).isDirectory() } catch { missing = true }
+    if (missing) {
+      if (typeof onMissingDir === 'function') { try { onMissingDir(configured, installedDir) } catch {} }
+      return installedDir
+    }
+  }
+  return configured
 }
 
 /** 从插件模块所在 lib/ 目录推断 DSH home：标准安装路径为
@@ -915,16 +930,21 @@ function deepEqualIgnoring(a: any, b: any, ignoreKeys?: string[]): boolean {
  *  服务端据此把内置条目视同 trusted 保护，字面量不散落到校验逻辑里。 */
 const BUILTIN_PIPELINE_ID = 'pl-xds'
 
-/** 内置条目判定：builtIn===true 或 id 命中 BUILTIN_PIPELINE_ID 任一即算
+/** 内置流水线固定 id 集合（与 projects/pipeline/pipeline.html 的 BUILTIN_PIPELINE_DEFS 对齐）：
+ *  pl-xds「安装部署XDS」、pl-vllm-native「部署vLLM（原生P/D）」。新增内置 id 加入本集合即受
+ *  同等保护（防抢先占位固定 id）。 */
+const BUILTIN_PIPELINE_IDS = new Set([BUILTIN_PIPELINE_ID, 'pl-vllm-native'])
+
+/** 内置条目判定：builtIn===true 或 id 命中 BUILTIN_PIPELINE_IDS 任一即算
  *  （防伪造 builtIn 标志混入，也防抢先占位固定 id 或剥掉标志绕过保护）。 */
 function isBuiltinPipelineEntry(entry: any): boolean {
   return !!entry && typeof entry === 'object' && !Array.isArray(entry)
-    && (entry.builtIn === true || entry.id === BUILTIN_PIPELINE_ID)
+    && (entry.builtIn === true || BUILTIN_PIPELINE_IDS.has(entry.id))
 }
 
 /** 可信/内置流水线写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得删除/改内容/摘除
  *  trusted 标记，也不得新建 trusted 条目或给既有条目打标；内置条目（builtIn===true 或 id 命中
- *  BUILTIN_PIPELINE_ID）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
+ *  BUILTIN_PIPELINE_IDS）视同 trusted 同等保护——不得改内容、不得删除、不得翻转其 builtIn/trusted
  *  标志，也不得新建内置条目（防伪造内置混入 customs 或抢先占位固定 id）。favoriteUsers 是按用户
  *  收藏的个人数据、pinnedAt 是全局视图排序的置顶时间戳（任何登录用户可置顶/取消），二者均属
  *  非内容元数据，豁免条目顶层内容比对（与合并层 stripPipelineSharedMeta 的剥离口径一致）。
@@ -1031,6 +1051,31 @@ function ownerPipelineWriteDeny(ctx: any, req: any, storedConfig: any, mergedCon
   }
 }
 /* ---------- 可信/内置流水线结束 ---------- */
+
+/* ---------- 节点环境写保护（配节点仅 admin） ---------- */
+/** 节点环境写校验（stored = 磁盘现状，merged = 合并后待写配置）：非 admin 不得新增/修改/删除节点。
+ *  按 id 集合 + sameEnvironmentContent 规范字段比对（多余字段、键序、条目顺序均不算变更——页面无
+ *  节点排序写路径）；合并层已保证「客户端未改动的条目以磁盘为准」，故只保存流水线/设置的
+ *  非 admin 请求 merged==stored 放行，他端并发的节点增删改也照常随合并保留。
+ *  空库播种放行：磁盘尚无节点环境（全新部署）时不拦，否则非 admin 连首次保存都会被 403 锁死；
+ *  存量节点仅 admin 可改（非 admin 删空要先过「删除」关，构造不出空库）。
+ *  无认证服务（token 共享模式）返回 null 维持旧行为；admin 全权。返回 null = 放行。 */
+function environmentsWriteDeny(ctx: any, req: any, storedConfig: any, mergedConfig: any): { message: string } | null {
+  const caller = resolveRequestAuth(ctx, req)
+  if (!caller || caller.isAdmin) return null
+  const envsOf = (value: any): any[] => value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.environments) ? value.environments : []
+  const mapOf = (items: any[]) => new Map<string, any>(items.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && typeof item.id === 'string' && item.id).map((item) => [item.id, item]))
+  const stored = mapOf(envsOf(storedConfig))
+  if (!stored.size) return null   /* 空库播种放行（见函数头注释） */
+  const merged = mapOf(envsOf(mergedConfig))
+  const deny = { message: '节点环境仅 admin 用户可配置（新增/修改/删除节点）' }
+  if (stored.size !== merged.size) return deny
+  for (const [id, storedEntry] of stored) {
+    const mergedEntry = merged.get(id)
+    if (!mergedEntry || !sameEnvironmentContent(storedEntry, mergedEntry)) return deny
+  }
+  return null
+}
 
 /* ---------- 节点预留：节点环境按「日期 + 时间段」分配给指定用户（纯函数区，供 vm 抽取测试） ----------
  * 存储形态（worktable-pipeline-reservations.json，与 PLANS_STORE 同目录 storages/）：
@@ -1180,6 +1225,7 @@ function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
       if (prev.local && e.local === undefined) merged.local = true
       if (!merged.logFile && prev.logFile) merged.logFile = prev.logFile
       if (merged.dur === undefined && prev.dur !== undefined) merged.dur = prev.dur
+      if (merged.startedAt === undefined && prev.startedAt !== undefined) merged.startedAt = prev.startedAt   // 任一侧记录了阶段开始时间即保留
       if (merged.log === undefined && prev.log !== undefined) merged.log = prev.log
       byName.set(name, merged)
       const idx = out.indexOf(prev)
@@ -1208,6 +1254,8 @@ function cleanCloseFailRecord(raw: any): any | null {
     const stage = text(entry.stage, 200)
     if (!stage) return null
     const out: any = { stage, status: LOG_STATUSES.has(entry.status) ? entry.status : 'skipped', dur: Math.max(0, Number(entry.dur) || 0) }
+    const startedAt = Number(entry.startedAt)
+    if (Number.isFinite(startedAt) && startedAt > 0) out.startedAt = startedAt   // 阶段开始时间随关页落史保留，回放详情可展示
     if (entry.local === true) out.local = true
     if (typeof entry.logFile === 'string' && entry.logFile) out.logFile = entry.logFile.slice(0, 512)
     if (typeof entry.log === 'string' && entry.log) out.log = entry.log.slice(-8192)
@@ -2729,7 +2777,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       endedAt,
       stages: item.stages.map((stage) => {
         const node = item.nodes[String(stage.id ?? '')] || idleNode()
-        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}) }
+        const nodeStartedAt = Number(node.startedAt)
+        return { stage: String(stage.name ?? stage.id ?? ''), status: node.status, dur: node.dur, ...(stage && stage.local ? { local: true } : {}), ...(Number.isFinite(nodeStartedAt) && nodeStartedAt > 0 ? { startedAt: nodeStartedAt } : {}) }
       }),
     })
     pruneFinished(endedAt)
@@ -3852,6 +3901,33 @@ export function apply(ctx: Context) {
     },
   })
 
+  // 服务端文件复制（profiling「保存目录」落盘等）：流式拷贝 + 临时文件原子改名，字节不经过浏览器、不整份驻留内存
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/copy',
+    handler: async (req: any, res: any) => {
+      let temp = ''
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const src = typeof body.src === 'string' ? body.src : ''
+        const dst = typeof body.dst === 'string' ? body.dst : ''
+        if (!src || !dst) { json(res, 400, { error: 'missing src/dst' }); return }
+        const srcAbs = pathResolve(src), dstAbs = pathResolve(dst)
+        if (srcAbs === dstAbs) { json(res, 400, { error: 'src 与 dst 相同' }); return }
+        const st = await fsStat(srcAbs)
+        if (!st.isFile()) { json(res, 404, { error: 'src 不是文件' }); return }
+        temp = dstAbs + '.worktable-copy-' + process.pid + '-' + Date.now() + '.tmp'
+        await streamPipeline(createReadStream(srcAbs), createWriteStream(temp))
+        await fsRename(temp, dstAbs); temp = ''
+        json(res, 200, { ok: true, size: st.size })
+      } catch (err) {
+        if (temp) { try { await fsUnlink(temp) } catch {} }
+        json(res, 500, { error: String((err as any)?.message || err) })
+      }
+    },
+  })
+
   // 本地文件读取（资源管理器点击 .html 后浏览器标签内打开）
   webServer.register({
     kind: 'exact',
@@ -3967,7 +4043,8 @@ export function apply(ctx: Context) {
           : serverCwd(ctx, body.sessionId, body.cwd)
         json(res, 200, await listDirectory(path))
       } catch (err) {
-        json(res, 500, { path: '', entries: [], truncated: false, error: String(err) })
+        const code = (err as any)?.code === 'ENOTDIR' || (err as any)?.code === 'ENOENT' ? 404 : 500
+        json(res, code, { path: '', entries: [], truncated: false, error: String(err) })
       }
     },
   })
@@ -4104,6 +4181,9 @@ export function apply(ctx: Context) {
             /* 拥有者写保护：非 admin 仅可更新/删除自己拥有的流水线，且不得把他人已删条目提交回来 */
             const ownerDeny = ownerPipelineWriteDeny(ctx, req, diskCfg, configMerge.config)
             if (ownerDeny) return { conflicts: [] as string[], config: diskCfg, owner: ownerDeny }
+            /* 节点环境写保护：非 admin 不得新增/修改/删除节点（配节点 admin 专属；违规整体不写盘，403 由调用方在锁外响应） */
+            const envDeny = environmentsWriteDeny(ctx, req, diskCfg, configMerge.config)
+            if (envDeny) return { conflicts: [] as string[], config: diskCfg, envs: envDeny }
             const merged = mergePipelineHistoryForWrite(configMerge.config, diskCfg, history, diskHistory)
             /* 视图态写入用户槽位（其余用户原样保留）；共享配置不得回流顶层视图键 */
             merged.config.userViewStates = userViewStates
@@ -4121,6 +4201,10 @@ export function apply(ctx: Context) {
           }
           if ('owner' in outcome && outcome.owner) {
             json(res, 403, { error: 'owner', message: outcome.owner.message, pipelineIds: outcome.owner.pipelineIds })
+            return
+          }
+          if ('envs' in outcome && outcome.envs) {
+            json(res, 403, { error: 'envs', message: outcome.envs.message })
             return
           }
           if (outcome.conflicts.length) {
@@ -5159,7 +5243,137 @@ export function apply(ctx: Context) {
     },
   })
 
+
   const planRunning = new Set<string>()
+
+  // ---- 远程服务器文件浏览 / 拉取（profiling 页选择 pipeline 节点；本机直连，远程经 sshpass+ssh/scp）----
+  // 与 queryGpu 同模式：凭据由页面每次请求上送（来自 pipeline 节点配置），服务端不落盘；
+  // 本机地址（回环/本机网卡）直接走本地 fs，不经 ssh；远程命令 base64 包裹经管道交 bash，与登录 shell 解耦。
+  const REMOTE_CACHE = pathResolve(DSH_HOME, 'storages', 'remote-cache')
+  /** execText 的可调超时版：scp 拉取大文件需要远超 60s 的窗口 */
+  function execTextT(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+    return new Promise((resolvePromise, reject) => {
+      execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) {
+          const why = (err as any).killed ? '（执行超过 ' + Math.round(timeoutMs / 1000) + 's 被终止）' : ''
+          reject(new Error((String(stderr || '').trim() || String((err as Error).message || err)) + why))
+        }
+        else resolvePromise(String(stdout || ''))
+      })
+    })
+  }
+  /** shell 单引号转义（远端 shell 解析路径用） */
+  const shq = (s: string) => "'" + String(s).replace(/'/g, "'\\''") + "'"
+  /** 在目标服务器上执行一段 shell 脚本并取回 stdout（本机直连 bash -c；远程 base64 + sshpass/ssh） */
+  async function sshExec(ip: string, user: string, pass: string, script: string, timeoutMs = 60000): Promise<string> {
+    const { host, port } = parseHostPort(ip)
+    if (localAddrs().has(host)) return execTextT('bash', ['-c', script], timeoutMs)
+    const target = user ? user + '@' + host : host
+    const remoteCmd = 'echo ' + Buffer.from(script).toString('base64') + ' | base64 -d | bash'
+    const sshArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=8', ...(port ? ['-p', port] : []), target, remoteCmd]
+    return execTextT(pass ? 'sshpass' : 'ssh', pass
+      ? ['-p', pass, 'ssh', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...sshArgs]
+      : ['-o', 'BatchMode=yes', ...sshArgs], timeoutMs)
+  }
+  /** 远程列目录，与本机 listDirectory 同形输出（{path, entries, truncated}） */
+  async function remoteListDir(ip: string, user: string, pass: string, path: string) {
+    const { host } = parseHostPort(ip)
+    if (localAddrs().has(host)) return listDirectory(path)
+    const script = 'd=$(echo ' + Buffer.from(path).toString('base64') + ' | base64 -d); [ -d "$d" ] || { echo __ENOTDIR__; exit 0; }; find "$d" -mindepth 1 -maxdepth 1 -printf \'%f\\t%y\\n\' 2>/dev/null | head -501'
+    const out = await sshExec(ip, user, pass, script)
+    if (out.indexOf('__ENOTDIR__') >= 0) { const err: any = new Error('不是目录：' + path); err.statusCode = 404; throw err }
+    const abs = path.replace(/\/+$/, '') || '/'
+    let entries = out.trim().split('\n').filter(Boolean).map((l) => {
+      const t = l.indexOf('\t')
+      const name = t < 0 ? l : l.slice(0, t)
+      const ty = t < 0 ? 'f' : l.slice(t + 1)
+      return { name, path: (abs === '/' ? '' : abs) + '/' + name, isDir: ty === 'd', hidden: name.startsWith('.') }
+    })
+    entries = entries.sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    })
+    const truncated = entries.length > 500
+    return { path: abs, entries: truncated ? entries.slice(0, 500) : entries, truncated }
+  }
+  /** 把远程文件 scp 拉到本机；已拉取且大小一致直接命中。落点：dstDir（绝对路径，profiling 设置页按节点配置的保存目录）优先，
+      未给走默认缓存 ~/.dsh/storages/remote-cache/<sha1(host:path)>/。scp 先落临时名再原子改名，目录里不留半截文件。
+      返回 {path:<本地路径>, size, cached} */
+  async function remoteFetchFile(ip: string, user: string, pass: string, path: string, dstDir?: string) {
+    const { host, port } = parseHostPort(ip)
+    if (localAddrs().has(host)) {
+      let st
+      try { st = await fsStat(path) } catch (e) {
+        if ((e as any)?.code === 'ENOENT' || (e as any)?.code === 'ENOTDIR') { const err: any = new Error('远程文件不存在：' + path); err.statusCode = 404; throw err }
+        throw e
+      }
+      if (!st.isFile()) { const err: any = new Error('不是文件：' + path); err.statusCode = 404; throw err }
+      return { path, size: st.size, cached: true }
+    }
+    const sizeOut = await sshExec(ip, user, pass, 'stat -c %s ' + shq(path) + ' 2>/dev/null || echo __NOENT__')
+    if (sizeOut.indexOf('__NOENT__') >= 0) { const err: any = new Error('远程文件不存在：' + path); err.statusCode = 404; throw err }
+    const size = Number(sizeOut.trim()) || 0
+    const dir = dstDir ? pathResolve(dstDir) : pathResolve(REMOTE_CACHE, createHash('sha1').update(host + ':' + path).digest('hex'))
+    const local = pathResolve(dir, basename(path))
+    try {
+      const st = await fsStat(local)
+      if (st.size === size) return { path: local, size, cached: true }
+    } catch { /* 未拉取过 */ }
+    await fsMkdir(dir, { recursive: true })
+    const temp = local + '.rfetch-' + process.pid + '-' + Date.now() + '.tmp'
+    /* scp 远程路径不套 shell 引号：execFile 直传参数数组本无本地 shell；而 OpenSSH ≥9 的 scp 默认走
+       SFTP 协议，远程路径按字面使用，单引号会被当成文件名的一部分（报 scp: '…': No such file or directory）。
+       代价：含空格/Shell 特殊字符的远程路径不支持拉取（trace 路径通常无此字符）。
+       注意 sshExec 里的 stat 仍用 shq —— 那条命令经远程 bash 执行，引号是正确且必要的。 */
+    const target = (user ? user + '@' : '') + host + ':' + path
+    const scpArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', ...(port ? ['-P', port] : []), target, temp]
+    try {
+      await execTextT(pass ? 'sshpass' : 'scp', pass
+        ? ['-p', pass, 'scp', '-o', 'PreferredAuthentications=password,keyboard-interactive', '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', ...scpArgs]
+        : ['-o', 'BatchMode=yes', ...scpArgs], 3600000)
+      await fsRename(temp, local)
+    } catch (err) {
+      try { await fsUnlink(temp) } catch {}
+      throw err
+    }
+    const st2 = await fsStat(local)
+    return { path: local, size: st2.size, cached: false }
+  }
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/rfs',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
+        const path = typeof body.path === 'string' ? body.path : ''
+        if (!ip || !path) { json(res, 400, { error: 'missing ip/path' }); return }
+        const d = await remoteListDir(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', path)
+        json(res, 200, d)
+      } catch (err) {
+        json(res, (err as any)?.statusCode === 404 ? 404 : 500, { error: String((err as any)?.message || err) })
+      }
+    },
+  })
+  webServer.register({
+    kind: 'exact',
+    path: '/api/worktable/rfetch',
+    handler: async (req: any, res: any) => {
+      try {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        const body = await readJsonBody(req)
+        const ip = typeof body.ip === 'string' ? body.ip.trim() : ''
+        const path = typeof body.path === 'string' ? body.path : ''
+        const dstDir = typeof body.dstDir === 'string' && body.dstDir.startsWith('/') ? body.dstDir.replace(/\/+$/, '') : ''
+        if (!ip || !path) { json(res, 400, { error: 'missing ip/path' }); return }
+        const r = await remoteFetchFile(ip, typeof body.user === 'string' ? body.user.trim() : '', typeof body.pass === 'string' ? body.pass : '', path, dstDir || undefined)
+        json(res, 200, r)
+      } catch (err) {
+        json(res, (err as any)?.statusCode === 404 ? 404 : 500, { error: String((err as any)?.message || err) })
+      }
+    },
+  })
   const planLastRun = new Map<string, number>()
   const randHex = (n: number) => Math.random().toString(16).slice(2, 2 + n)
   const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') }
@@ -5652,7 +5866,9 @@ export function apply(ctx: Context) {
     /* 运行期设置副本：计划自带 settings 时按提交/登记时快照执行，下一次运行前的设置修改不影响本运行；
        旧计划无该字段时取执行开始时的配置快照（与旧行为一致，但同样定格在启动瞬间）。 */
     const runCfg = resolvePlanRunSettings(pl, cfg)
-    const scriptsDir = resolvePipelineScriptsDir(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 快照 scriptsDir 已解析，缺省时兜底安装路径
+    const scriptsDir = resolvePipelineScriptsDir(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR, (configured, fallback) => {   // 快照 scriptsDir 已解析，缺省时兜底安装路径
+      ctx.logger?.warn?.('[tokens-worktable] 流水线脚本目录不存在，本次运行兜底安装默认路径：' + configured + ' → ' + fallback)
+    })
     // 归档上下文（与页面约定一致）：
     //   阶段定时后缀沿用页面传入的 pl.archive/pl.tag/baseSeq——回显写入本地前缀同一归档文件夹、编号连贯；
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
@@ -5694,9 +5910,11 @@ export function apply(ctx: Context) {
     const histLogs: any[] = []    // 历史记录条目：只存元数据 + 日志文件路径（全量日志在归档文件，页面回放时按需读取）
     const profileStages: any[] = []
     let status = 'success'
-    /* 历史条目：有归档文件时只存 logFile 路径；folder=null（无归档目录）时内嵌全文兜底 */
-    const pushHist = (stage: string, st: string, text: string, logFile: string | null, durSec: number) => {
+    /* 历史条目：有归档文件时只存 logFile 路径；folder=null（无归档目录）时内嵌全文兜底；
+       startedAt（服务端纪元毫秒）为阶段开始时间，回放详情据此展示 */
+    const pushHist = (stage: string, st: string, text: string, logFile: string | null, durSec: number, startedAt?: number) => {
       const e: any = { stage, status: st, dur: durSec }
+      if (Number.isFinite(Number(startedAt)) && Number(startedAt) > 0) e.startedAt = Number(startedAt)
       if (logFile) e.logFile = logFile; else e.log = text
       histLogs.push(e)
     }
@@ -5805,20 +6023,23 @@ export function apply(ctx: Context) {
       const text = stageLogText(runCfg.cleanupScript.name, r)
       const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
       logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text, logFile })
-      pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10)
-      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, script: runCfg.cleanupScript.name || null, logFile })
+      pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10, st0)
+      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, startedAt: st0, script: runCfg.cleanupScript.name || null, logFile })
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
-      const startedAt = Date.now()
+      /* 「不执行」阶段从未启动：不打点开始时间（详情/回放不展示「开始时间」，与页面 skipStage 口径一致），
+         也不写 running 快照（避免跳过阶段在远端预览闪一下进行中）；startedAt=0 由 recordStageResult 折算 dur 0 */
+      const skipped = !!(s && (s.skip || s.gate))   // 兼容旧计划中的 gate（审批门）标记
+      const startedAt = skipped ? 0 : Date.now()
       const stageId = String(s && s.id || '')
       runtime?.replaceLog?.(stageId, '')
       /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
-      runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
+      if (!skipped) runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
       const localPool = { ...baseVars }
       const varsOut: Record<string, string> = {}
       let entry: any = null
       let shouldStop = false
-      if (s.skip || s.gate) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }   // 兼容旧计划中的 gate（审批门）标记
+      if (skipped) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }
       else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
         const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
         if (!r.aborted) {
@@ -5915,10 +6136,10 @@ export function apply(ctx: Context) {
       // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
       const logFile = result.logFile || (folder ? await writeTaskLogFile(folder, tag, seq, s.name, result.text) : null)
       const noteWritten = result.logFile && result.promNote ? await appendTaskLogNote(result.logFile, result.promNote) : true
-      const durSec = Math.round((result.endedAt - result.startedAt) / 100) / 10
+      const durSec = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0   // 跳过阶段未打点：耗时记 0
       logs.push({ stage: s.name, status: result.status, log: result.text, logFile, logSuffix: noteWritten ? '' : (result.promNote ? '\n' + result.promNote : '') })
-      pushHist(s.name, result.status, result.text, logFile, durSec)
-      profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, script: result.scriptName, logFile })
+      pushHist(s.name, result.status, result.text, logFile, durSec, result.startedAt)
+      profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, startedAt: result.startedAt, script: result.scriptName, logFile })
       runtime?.updateStage(String(s && s.id || ''), { status: result.status, progress: 100, dur: durSec })
       await writeLiveHistory('running')   // 逐阶段刷新「进行中」历史：服务端长任务执行期间记录不再停滞
     }

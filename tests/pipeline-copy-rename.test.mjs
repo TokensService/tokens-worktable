@@ -32,6 +32,7 @@ function extractFunction(name, text = source) {
 
 /* BUILTIN_PIPELINE_ID 常量声明（trustedPipelineViolations 引用；从源码抽取，避免字面量分叉） */
 const BUILTIN_CONST_DECL = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)[0]
+  + '\n' + /^const BUILTIN_PIPELINE_IDS = .+$/m.exec(source)[0]
 
 const TRUST_HELPERS = [
   BUILTIN_CONST_DECL,
@@ -39,6 +40,7 @@ const TRUST_HELPERS = [
     'requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'deepEqualIgnoring', 'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
     'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny',
+    'sameEnvironmentContent', 'environmentsWriteDeny',
   ].map((name) => extractFunction(name)),
 ].join('\n')
 

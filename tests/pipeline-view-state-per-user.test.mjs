@@ -136,6 +136,7 @@ test('助手：resolveViewStateForUser 槽位优先、遗留兜底、不暴露 u
 /* ---------- 路由级：真落盘（临时 DSH_HOME），多用户互不覆盖 ---------- */
 
 const BUILTIN_PIPELINE_ID_DECL = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)[0]
+  + '\n' + /^const BUILTIN_PIPELINE_IDS = .+$/m.exec(source)[0]
 const SHARED_META = ['stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
   .map(extractFunction).join('\n')
 const TRUST_HELPERS = [
@@ -143,6 +144,7 @@ const TRUST_HELPERS = [
   ...['requestAuthToken', 'parseAuthUsersYaml', 'readAuthAdminUsers', 'resolveRequestAuth',
     'isBuiltinPipelineEntry', 'trustedPipelineViolations', 'trustedPipelineWriteDeny',
     'pipelineEntryOwner', 'ownerPipelineViolations', 'ownerPipelineWriteDeny'].map(extractFunction),
+    ...['sameEnvironmentContent', 'environmentsWriteDeny'].map(extractFunction),
 ].join('\n')
 
 function loadPipelineRoutes(home, { auth } = {}) {

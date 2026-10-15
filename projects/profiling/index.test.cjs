@@ -477,6 +477,23 @@ test("isPerfettoTraceName / perfettoEligible：trace 判定口径", () => {
   assert.ok(!ctx.perfettoEligible(null));
 });
 
+test("resolvePerfettoTargets：勾选集优先（按列表顺序、滤掉不可开），无勾选回退当前条目", () => {
+  const ctx = perfettoContext();
+  const trace = (id) => ({ id, name: id + ".pt.trace.json", binary: false, path: "/p/" + id, data: null });
+  const nonTrace = { id: "n", name: "run.profile.json", binary: false, data: { stages: [] } };
+  const list = [trace("a"), nonTrace, trace("b"), trace("c")];
+  const ids = (arr) => [...arr].map(x => x.id);   /* vm 上下文返回的数组是跨 realm 对象，展开回主 realm 再断言 */
+  /* 勾选优先：按列表顺序、非 trace 被过滤 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(["c", "a", "n"]), null)), ["a", "c"]);
+  /* 无勾选回退当前条目 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(), { item: trace("b") })), ["b"]);
+  /* 勾选为空集且当前条目不可开 → 空 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(), { item: nonTrace })), []);
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, new Set(), null)), []);
+  /* picks 为 null/undefined 安全 */
+  assert.deepEqual(ids(ctx.resolvePerfettoTargets(list, null, { item: trace("a") })), ["a"]);
+});
+
 test("pfAscii / perfettoNeedsTrustHint / buildPerfettoTraceMessage", () => {
   const ctx = perfettoContext();
   assert.equal(ctx.pfAscii("run-01.pt.trace.json"), "run-01.pt.trace.json");
@@ -568,8 +585,8 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     "function buildPerfettoTraceMessage(", "function pfAscii(", "function perfettoNeedsTrustHint(",
     'id="perfModal"', 'id="perfBody"', 'id="perfStatus"', 'id="perfTitle"',
     'id="perfRetryBtn"', 'id="perfPopBtn"', 'id="perfCloseBtn"',
-    'id="perfettoOpenBtn"', "perfBtn.addEventListener('click', openPerfettoForCurrent)",
-    "async function perfettoTraceBuffer(", "async fileBuffer(", "rawText: null, file: f }",
+    'id="perfettoOpenBtn"', "$('perfettoOpenBtn').addEventListener('click', async () => {",
+    "async function perfettoTraceBuffer(", "async fileBuffer(",
     "function closePerfetto(", "e.key === 'Escape'", "perfettoNeedsTrustHint(location.hostname)",
     "window.open(PERFETTO_ORIGIN, '_blank')",
     /* 握手等待计时：慢网加载期间状态栏逐秒刷新，避免「读取 trace…」假象卡死 */
@@ -580,5 +597,68 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     'id="perfDownloadBtn"', "perfDownloadBtn').addEventListener('click'", "大文件解析可能需要数分钟",
     /* 服务端大文件：/file 走 raw=1 流式（绕开 256MB 全量读上限）；读取失败后晚到 PONG 不覆盖错误 */
     "encodeURIComponent(path) + '&raw=1'", "encodeURIComponent(it.path) + '&raw=1'", "perf.failed = true", "perf.failed) return",
+    /* 入口按钮固定在列表卡标题行（Perfetto / AI分析），勾选集优先于当前选中条目，两者皆空才禁用 */
+    ">Perfetto<", "$('perfettoOpenBtn').disabled = !resolvePerfettoTargets(items, perfPicks, cur).length",
+    'id="aiAnalyzeBtn"', ">AI分析<", "$('aiAnalyzeBtn').disabled = !cur",
+    "async function runAiAnalysis(", "$('aiAnalyzeBtn').addEventListener('click'", "$('runAiBtn').addEventListener('click'",
+    /* 内置助手只填会话草稿，不再走 analyze-log 自动提交（旧通道点击即触发 AI 分析） */
+    "__dshNewChatSessionForCurrentProject(prompt)",
+    /* 点击先保存到本地再打开；内嵌 iframe 走 embedded 模式关侧边栏 */
+    "function downloadTraceFile(", "PERFETTO_EMBED_URL", "mode=embedded&hideSidebar=true",
+    "已保存 trace 到本地下载目录",
+    /* 服务端保存目录：按服务器节点独立保存（saveDirByNode）+ 浏览选择 + copy 落盘 / 远程 rfetch dstDir 落点 + 存在跳过 */
+    'id="tab-settings"', 'data-tab="settings"', 'id="saveDirPath"', 'id="saveDirSaveBtn"', 'id="saveDirClearBtn"',
+    'id="saveDirNodeLabel"', 'id="saveDirBrowseBtn"', 'id="saveDirBrowser"', 'id="saveDirPickCurBtn"', 'id="saveDirAll"',
+    "dsh.profiling.saveDirByNode", "function saveDirForNode(", "function saveTraceToServerDir(", "/api/worktable/copy",
+    "保存目录已存在，跳过", "dstDir", 'data-save-dir-clear',
+    /* 本地保存目录：FS API 目录选择器 + IndexedDB 句柄 + 流式 pipeTo 落盘 + 同名同大小跳过并回读复用 + 完整路径备注 */
+    'id="saveDirLocalPickBtn"', 'id="saveDirLocalClearBtn"', 'id="saveDirLocalLabel"', 'id="saveDirLocalNote"', 'id="saveDirLocalNoteRow"',
+    "showDirectoryPicker", "perfettoSaveDir", "dsh.profiling.saveDirLocalNote", "function saveDirLocalNote(", "function saveTraceToLocalDir(", "resp.body.pipeTo(w)",
+    "本地保存目录已有该文件，跳过下载", "已保存到本地目录",
+    /* 多选同时打开 + 默认下载去重 */
+    "function resolvePerfettoTargets(", "perfPicks", 'class="pf-pick"', "function downloadWithDedupe(", "此前已下载过，跳过重复下载",
+    "已保存到 ",
+    /* 服务器选择支持搜索（隐藏 select 存值 + 输入过滤候选面板） */
+    'id="srvNodeSearch"', 'id="srvNodePanel"', 'data-node-pick', "pf-nodePicker", "function renderSrvNodePanel(", "function srvNodeText(",
+    /* 远程条目拉取失败从打开目标剔除（占位弹窗关闭、全部失败不开模态框），失败 toast 延长驻留 8s */
+    "const pulled = []", "pulled.push(it)", "if (!pulled.length)", "wins.get(it)", "for (const w of wins.values())",
+    "远程拉取失败：' + it.name + '：' + (e && e.message || e), 8000", "function toast(msg, holdMs)",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  /* 「清空本地」按钮已删除（标记、处理器均不再存在） */
+  assert.ok(!html.includes('clearLocalBtn'), "「清空本地」按钮及其处理器应已移除");
+  assert.ok(!html.includes('在 Perfetto 中打开</button>'), "概览卡内的旧按钮注入已移除");
+  /* 「点击就触发 AI 分析」的 analyze-log 自动提交通道已移除（只保留会话草稿桥） */
+  assert.ok(!html.includes("worktable:analyze-log"), "worktable:analyze-log 自动提交通道应已移除");
+  assert.ok(!html.includes("Perfetto打开"), "按钮文案应改为「Perfetto」，不再出现「Perfetto打开」");
+});
+
+test("页面静态契约：「本地文件」来源已移除（条目全部走服务端/远程路径）", () => {
+  for (const gone of [
+    'data-tab="local"', 'id="tab-local"', 'id="pickLocalBtn"', 'id="localFileInput"',
+    "source: 'local'", "source === 'local'", "it.file", "'local:'",
+  ]) assert.ok(!html.includes(gone), `index.html 仍残留 ${gone}`);
+});
+
+test("页面静态契约：列表项删除（× 按钮 / 墓碑防扫描带回 / 显式重加清墓碑）", () => {
+  for (const needle of [
+    'data-role="del"', "function deleteItem(", "dsh.profiling.deleted", "function untombstone(",
+    "!deleted[tk]", "ev.target.closest('[data-role=\"del\"]')",
+    "已删除：", "服务端目录扫描将不再带回",
+  ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  /* 显式加载入口清墓碑（loadSrvPath 本机/远程两分支 + 定义处） */
+  const loads = html.match(/untombstone\(/g) || [];
+  assert.ok(loads.length >= 3, "loadSrvPath 本机与远程两分支 / untombstone 定义 应至少 3 处引用");
+});
+
+test("页面静态契约：服务端标签合并（文件/文件夹一体）+ 服务器下拉 + 远程缓存拉取", () => {
+  for (const needle of [
+    'data-tab="server"', 'id="tab-server"', 'id="srvNode"', 'id="srvNodeRefresh"', 'id="srvPath"',
+    'id="srvLoadBtn"', 'id="srvRescanBtn"', 'id="srvBrowseBtn"', 'id="srvPickDirBtn"',
+    "dsh.profiling.srvNode", "/api/worktable/pipeline", "config.environments",
+    "/api/worktable/rfs", "/api/worktable/rfetch", "remote-cache",
+    "function ensureLocalPath(", "function tombKeyOf(", "remote:", "remote.rpath",
+  ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  /* 旧的两个标签与 id 已移除 */
+  for (const gone of ['data-tab="serverFile"', 'data-tab="serverDir"', 'id="srvFilePath"', 'id="srvDirPath"', 'id="loadSrvFileBtn"', 'id="scanDirBtn"', 'id="dirBrowser"'])
+    assert.ok(!html.includes(gone), `index.html 仍残留 ${gone}`);
 });

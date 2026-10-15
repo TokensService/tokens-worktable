@@ -135,6 +135,23 @@
   /* 数据集对比：图例虚线指示（与实线同色，区分劣化对象 B / 基线 A） */
   .diag-dash { width:16px; height:0; border-top:2px dashed currentColor; display:inline-block; flex:none; align-self:center; }
   .diag-clg { opacity:.8; }
+  /* AI 诊断与优化：Agent 选择卡片 + 持续对话区 */
+  .diag-agentPick { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:10px 0; }
+  .diag-agent { border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; padding:8px 10px; cursor:pointer; font-size:12px; }
+  .diag-agent:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+  .diag-agent small { display:block; color:var(--dsw-alias-label-tertiary,#6b7280); font-size:10.5px; margin-top:2px; }
+  .diag-agent.on { border-color:var(--dsw-alias-state-accent-primary,#4f8ef7); box-shadow:inset 0 0 0 1px var(--dsw-alias-state-accent-primary,#4f8ef7); }
+  .diag-agentPick-lock .diag-agent { opacity:.55; cursor:not-allowed; }   /* 运行中锁定切换（流式回显按发起时 Agent 记账） */
+  .diag-chat { max-height:460px; overflow:auto; display:flex; flex-direction:column; gap:8px; margin-top:4px; }
+  .diag-msg { border:1px solid var(--dsw-alias-border-l1,#262b36); border-radius:8px; padding:8px 10px; }
+  .diag-msg-role { font-size:11px; color:var(--dsw-alias-label-tertiary,#6b7280); margin-bottom:4px; }
+  .diag-msg-body { font-size:12.5px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+  .diag-msg-user { background:var(--dsw-alias-fill-l1,rgba(128,128,128,.08)); }
+  .diag-msg-agent .diag-msg-body { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+  .diag-msg-sys { border-style:dashed; opacity:.78; }
+  .diag-msg-sys .diag-msg-body { font-size:12px; }
+  .diag-ai-input { width:100%; box-sizing:border-box; resize:vertical; min-height:52px; margin-top:10px; }
+  #aiCard .dshell-btn:disabled, .diag-ai-input:disabled { opacity:.45; cursor:not-allowed; }
   </style>
 </head>
 <body>
@@ -270,6 +287,25 @@
         <button class="dshell-btn dshell-btnGhost" id="btnExport" type="button">导出诊断报告（JSON）</button>
       </div>
       <div class="diag-note">结论由规则引擎按当前看板真实数据自动研判，随数据拉取实时更新；导出内容为概览统计与全部看板数据的 JSON 快照。</div>
+    </div>
+    <!-- AI 诊断与优化：多 Agent 选择 + 持续对话 -->
+    <div class="dshell-card" id="aiCard">
+      <div class="diag-formrow" style="justify-content:space-between;flex-wrap:nowrap">
+        <h2 class="dshell-sub" style="margin:0">AI 诊断与优化（持续对话）</h2>
+        <span class="dshell-badge" id="aiStateBadge">待命</span>
+      </div>
+      <div class="diag-note" style="margin-top:8px">选择 AI Code Agent 后点「开始 AI 诊断」发起首轮分析（自动附带当前诊断简报：概览统计 / 规则引擎结论 / A/B 对比 / 日志与 Profiling 摘要及目录路径），随后在下方输入框持续追问或下达优化指令。CLI Agent 在服务端以非交互模式运行、输出实时回显，续聊沿用同一服务端会话上下文（kimi -c / mimo run -c / codex exec resume --last / claude -c），可直接读取简报中的日志 / Profiling 目录做深入分析；「新会话」清空上下文重新开始。内置助手把简报填入工作台会话草稿，后续在工作台会话窗内对话。</div>
+      <div class="diag-agentPick" id="aiAgentPick"></div>
+      <div class="diag-chat" id="aiChat"></div>
+      <textarea class="dshell-input diag-ai-input" id="aiInput" placeholder="追问或下达优化指令…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <div class="diag-formrow" style="margin-top:8px">
+        <button class="dshell-btn" id="aiStartBtn" type="button">▶ 开始 AI 诊断</button>
+        <button class="dshell-btn" id="aiSendBtn" type="button">发送</button>
+        <button class="dshell-btn dshell-btnDanger" id="aiStopBtn" type="button" disabled>■ 停止</button>
+        <button class="dshell-btn dshell-btnGhost" id="aiNewBtn" type="button">新会话</button>
+        <button class="dshell-btn dshell-btnGhost" id="aiCopyBtn" type="button">复制记录</button>
+      </div>
+      <div class="diag-note" id="aiHint"></div>
     </div>
   </div>
 
@@ -1132,6 +1168,8 @@ function profileDiff(){
   Object.keys(base).forEach(function(name){if(!seen[name])out.push({name:name,base:base[name],now:0,delta:-base[name]});});
   return out.sort(function(a,b){return b.delta-a.delta;});
 }
+/* 最近一轮规则引擎诊断结论（renderAll 每次重算后刷新；AI 诊断简报引用，随数据拉取保持最新） */
+var LAST_FINDINGS=[];
 function renderAll(){
   /* 概览统计（无真实数据的末值返回 null，界面显示「—」） */
   var last=function(a){var v=a[a.length-1];return (typeof v==="number"&&isFinite(v))?v:null;};
@@ -1209,6 +1247,7 @@ function renderAll(){
     if(tpot99!==null&&tpot99>100)findings.push([ownPrefix+"TPOT P99 "+tpot99+"ms：Decode 侧 HBM 带宽接近饱和（88%），属带宽瓶颈，建议减小 batch 或启用投机解码。","warn"]);
     if(!findings.length)findings.push([ANALYSIS_MODE==="compare"&&compareConclusive?("已形成的 "+comparable+" 项 A/B 同口径指标中，未发现超过 5% 的显著劣化信号。其余数据不足项不参与判断。") :"各项指标处于正常区间，未发现显著瓶颈。","ok"]);
   }
+  LAST_FINDINGS=findings;
   document.getElementById("diagFindings").innerHTML=findings.map(function(f){
     return '<div class="dshell-listItem"><span class="dshell-listItemTitle">'+esc(f[0])+'</span><span class="dshell-badge '+(f[1]==="warn"?"dshell-badgeWait":"dshell-badgeDone")+'">'+(f[1]==="warn"?"关注":"正常")+'</span></div>';
   }).join("");
@@ -2538,6 +2577,340 @@ function applySettings(save){
 ["setPromUrl","setPollS","setUseProxy"].forEach(function(id){
   document.getElementById(id).addEventListener("change",function(){applySettings(true);});
 });
+
+/* ================= AI 诊断与优化（多 Agent + 持续对话） =================
+   首轮自动附带当前诊断简报（概览统计 / 规则引擎结论 / A/B 对比 / 日志与 Profiling 摘要及目录路径），
+   后续追问经各 CLI 的会话续接参数在同一服务端会话中持续进行：
+   kimi -c / mimo run -c / claude -c 均按工作目录锚定续接会话，codex 用 exec resume --last
+   （取最近会话，未按目录隔离——宿主机上并行使用 codex 时注意）；因此运行目录固定为页面目录下的 .ai-diag/。
+   prompt 一律落盘为 md 文件经 $PROMPT 传入，不进命令行，杜绝 shell 注入。
+   内置助手只把简报填进工作台会话草稿（持续对话在工作台会话窗内进行）。 */
+var AI_AGENTS=[
+  {id:"builtin",name:"工作台 AI 助手",desc:"填入工作台会话草稿"},
+  {id:"kimi",name:"Kimi Code",desc:"kimi -p（续聊 -c）"},
+  {id:"mimo",name:"MiMo Code",desc:"mimo run（续聊 -c）"},
+  {id:"codex",name:"Codex",desc:"codex exec（续聊 resume --last）"},
+  {id:"claude",name:"Claude Code",desc:"claude -p（续聊 -c）"}
+];
+function aiAgentById(id){for(var i=0;i<AI_AGENTS.length;i++)if(AI_AGENTS[i].id===id)return AI_AGENTS[i];return AI_AGENTS[0];}
+/* 各 CLI 的非交互命令行：首轮开新会话，续轮带会话续接参数（同一 .ai-diag 工作目录内锚定同一会话）。 */
+function aiAgentCmd(id,continued){
+  var first={kimi:'kimi -p "$PROMPT"',mimo:'mimo run "$PROMPT"',codex:'codex exec --skip-git-repo-check "$PROMPT"',claude:'claude -p "$PROMPT"'};
+  var cont={kimi:'kimi -c -p "$PROMPT"',mimo:'mimo run -c "$PROMPT"',codex:'codex exec resume --last "$PROMPT"',claude:'claude -p -c "$PROMPT"'};
+  var t=continued?cont:first;
+  return t[id]||first.claude;
+}
+function aiLastVal(a){var v=a[a.length-1];return (typeof v==="number"&&isFinite(v))?v:null;}
+/* 首轮诊断简报：随发送实时重建（概览统计 / 规则引擎结论 / A/B 对比 / 日志与 Profiling 摘要），
+   日志与 Profiling 目录以绝对路径交给 CLI Agent 自行深读（其运行在 dsh 宿主机）。 */
+function buildAiBrief(){
+  var L=[];
+  L.push("# 大模型推理性能诊断与优化请求");
+  L.push("");
+  L.push("你是运行在 dsh 宿主机上的 AI Code Agent，可直接读取下列日志 / Profiling 路径做深入分析；请结合给出的看板数据完成瓶颈诊断并给出可落地的优化方案。");
+  L.push("");
+  L.push("## 诊断配置");
+  L.push("- 诊断模式："+(ANALYSIS_MODE==="compare"?"双数据集劣化对比（B 相对基线 A）":"单数据集瓶颈分析"));
+  L.push("- Prometheus："+PROM_URL+"（"+(PROM_PANEL_MODE==="ok"?"query_range 已命中":PROM_PANEL_MODE==="metrics"?"/metrics 瞬时抓取兜底":PROM_PANEL_MODE==="empty"?"已连通但指标名未匹配":"不可达")+"）");
+  var cfgKeys=ANALYSIS_MODE==="compare"?["a","b"]:["a"];
+  cfgKeys.forEach(function(k){
+    var ds=DATASETS[k],tag=k.toUpperCase();
+    var bits=[];
+    if(ds.model_name)bits.push('model_name="'+ds.model_name+'"');
+    if(ds.xds_namespace)bits.push('xds_namespace="'+ds.xds_namespace+'"');
+    L.push("- 数据集 "+tag+"：标签 {"+(bits.join(",")||"无")+"} · 窗口 "+(ds.abs?("绝对 "+fmtTs(ds.abs.from)+" ~ "+fmtTs(ds.abs.to)):fmtRange(ds)));
+    if(ds.logDir)L.push("  - 日志目录："+ds.logDir);
+    if(ds.profDir)L.push("  - Profiling 目录："+ds.profDir);
+  });
+  L.push("");
+  L.push("## 概览统计（当前窗口末值）");
+  var ttft99=aiLastVal(DATA.ttft.p99),tpot99=aiLastVal(DATA.tpot.p99);
+  var qGw=aiLastVal(DATA.queue.gw),qSched=aiLastVal(DATA.queue.sched),qPd=aiLastVal(DATA.queue.pd);
+  var tpsV=aiLastVal(DATA.tps),hitV=aiLastVal(DATA.hit),kvU=aiLastVal(DATA.kv.usage);
+  L.push("- TTFT P99："+(ttft99===null?"—":ttft99+" ms")+" · TPOT P99："+(tpot99===null?"—":tpot99+" ms"));
+  L.push("- 队列时延（网关+调度+PD）："+((qGw===null&&qSched===null&&qPd===null)?"—":((qGw||0)+(qSched||0)+(qPd||0)).toFixed(0)+" ms"));
+  L.push("- 吞吐 TPS："+(tpsV===null?"—":tpsV.toFixed(0))+" · 前缀缓存命中率："+(hitV===null?"—":hitV.toFixed(1)+"%")+" · KV Blocks 占用："+(kvU===null?"—":kvU.toFixed(1)+"%"));
+  if(ANALYSIS_MODE==="compare"){
+    var rows=compareRows().filter(function(r){return !!r.change;});
+    if(rows.length){
+      L.push("");
+      L.push("## A/B 劣化对比（B 相对基线 A，劣化幅度 >0 为劣化方向）");
+      L.push("| 指标 | 基线 A | 数据集 B | 变化 | 劣化幅度 |");
+      L.push("| --- | --- | --- | --- | --- |");
+      rows.forEach(function(r){
+        L.push("| "+r.name+" | "+fmtNum(r.base)+r.unit+" | "+fmtNum(r.now)+r.unit+" | "+(r.change.pct===null?("Δ "+fmtNum(r.change.delta)):(r.change.pct>0?"+":"")+r.change.pct.toFixed(1)+"%")+" | "+r.change.worsePct.toFixed(1)+"% |");
+      });
+    }
+  }
+  if(LAST_FINDINGS.length){
+    L.push("");
+    L.push("## 规则引擎诊断结论");
+    LAST_FINDINGS.forEach(function(f){L.push("- "+f[0]);});
+  }
+  if(DATA.profOps.length){
+    L.push("");
+    L.push("## Profiling 算子耗时 Top10（单次 Decode Step）");
+    DATA.profOps.forEach(function(p){L.push("- "+p[0]+"："+p[1]);});
+  }
+  cfgKeys.forEach(function(k){
+    var x=AUX[k];
+    if(!x||x.logState!=="loaded"||!x.logs.length)return;
+    var abnormal=x.logs.filter(function(l){return logClass(l)!=="info";}).slice(-15);
+    var lines=abnormal.length?abnormal:x.logs.slice(-15);
+    L.push("");
+    L.push("## 数据集 "+k.toUpperCase()+" 日志摘要（"+x.logName+" · "+(abnormal.length?"异常行":"尾部")+" "+lines.length+" 行，完整日志见日志目录）");
+    L.push("```");
+    lines.forEach(function(l){L.push(l.slice(0,300));});
+    L.push("```");
+  });
+  L.push("");
+  L.push("## 请输出");
+  L.push("1. 主要瓶颈点定位与证据（引用上面的指标 / 日志 / Profiling 数据）");
+  L.push("2. 根因分析（算子 / 显存带宽 / 调度队列 / KV Cache / 网络传输等角度）");
+  L.push("3. 优化建议，按预期收益排序，注明代价与风险");
+  L.push("4. 可直接落地的优化动作（启动参数 / 配置改写 / 脚本）；需要写文件时写到当前工作目录下");
+  L.push("5. 验证方法（应观察哪些指标、预期变化方向）");
+  return L.join("\n");
+}
+/* ---- 对话状态：历史与会话续接标记按 Agent 分桶存 localStorage；历史上限防无限膨胀 ---- */
+function aiLoadJSON(k,d){try{var v=localStorage.getItem(k);return v===null?d:JSON.parse(v);}catch(e){return d;}}
+function aiSaveJSON(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+var AI_AGENT=lsGet("diagPerf.aiAgent","kimi");
+var AI_HIST=aiLoadJSON("diagPerf.aiHist",{});
+var AI_SESS=aiLoadJSON("diagPerf.aiSess",{});
+var AI_RUNNING=null;
+var AI_HIST_MAX=60;   /* 每 Agent 最多保留的界面对话条数（超出从头部丢弃；CLI 侧服务端会话上下文不受影响） */
+Object.keys(AI_HIST).forEach(function(k){(AI_HIST[k]||[]).forEach(function(m){delete m._live;});});   /* 上次中途关页残留的流式标记不恢复 */
+function aiHist(id){return AI_HIST[id]||(AI_HIST[id]=[]);}
+function aiHistPush(id,msg){
+  var h=aiHist(id);h.push(msg);
+  while(h.length>AI_HIST_MAX)h.shift();
+  aiSaveJSON("diagPerf.aiHist",AI_HIST);
+  return msg;
+}
+/* ---- 服务端协作：页面目录反推 / mkdir / write / exec-stream（NDJSON 帧实时回显） ---- */
+function aiPageDir(){
+  try{var m=location.pathname.match(/^\/api\/worktable\/site\/([^/]+)\//);if(m)return decodeURIComponent(m[1]);}catch(e){}
+  return "";
+}
+function aiApiMkdir(path){
+  return fetch("/api/worktable/mkdir",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:path})})
+    .then(function(r){return r.json().catch(function(){return {};});})
+    .then(function(d){if(d&&d.error)throw new Error(d.error);});
+}
+function aiApiWrite(path,content){
+  return fetch("/api/worktable/write",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:path,content:content})})
+    .then(function(r){return r.json().catch(function(){return {};});})
+    .then(function(d){if(d&&d.error)throw new Error(d.error);});
+}
+function aiExecStream(path,args,cwd,timeoutMs,onFrame){   /* NDJSON 帧 {type:out|err|done|error}；返回 {done,abort} */
+  var ctrl=typeof AbortController!=="undefined"?new AbortController():null;
+  var done=fetch("/api/worktable/exec-stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:path,args:args,cwd:cwd,timeoutMs:timeoutMs}),signal:ctrl?ctrl.signal:undefined})
+    .then(function(r){
+      if(!r.ok||!r.body)throw new Error("HTTP "+r.status);
+      var reader=r.body.getReader(),dec=new TextDecoder(),buf="",last=null;
+      var pump=function(){
+        return reader.read().then(function(res){
+          if(res.done)return;
+          buf+=dec.decode(res.value,{stream:true});
+          var idx;
+          while((idx=buf.indexOf("\n"))>=0){
+            var line=buf.slice(0,idx);buf=buf.slice(idx+1);
+            if(!line.trim())continue;
+            try{last=JSON.parse(line);onFrame(last);}catch(e){}
+          }
+          return pump();
+        });
+      };
+      return pump().then(function(){
+        if(buf.trim()){try{last=JSON.parse(buf);onFrame(last);}catch(e){}}
+        return last;
+      });
+    });
+  return {done:done,abort:function(){if(ctrl)ctrl.abort();}};
+}
+/* ---- 渲染：Agent 选择卡 + 对话气泡 ---- */
+function renderAiAgents(){
+  var pick=document.getElementById("aiAgentPick");
+  pick.innerHTML=AI_AGENTS.map(function(a){
+    return '<div class="diag-agent'+(a.id===AI_AGENT?" on":"")+'" data-id="'+a.id+'"><b>'+esc(a.name)+'</b><small>'+esc(a.desc)+'</small></div>';
+  }).join("");
+  pick.classList.toggle("diag-agentPick-lock",!!AI_RUNNING);
+  pick.querySelectorAll(".diag-agent").forEach(function(el){
+    el.addEventListener("click",function(){
+      if(AI_RUNNING)return;   /* 运行中锁定切换：流式回显与续接标记都按发起时的 Agent 记账 */
+      AI_AGENT=el.getAttribute("data-id");lsSet("diagPerf.aiAgent",AI_AGENT);
+      renderAiAgents();renderAiChat();aiSyncButtons();
+    });
+  });
+}
+function renderAiChat(){
+  var box=document.getElementById("aiChat"),h=aiHist(AI_AGENT);
+  box.innerHTML="";
+  if(!h.length){
+    var empty=document.createElement("div");
+    empty.className="diag-note";empty.style.cssText="padding:18px 10px;text-align:center";
+    empty.textContent="暂无对话。点「开始 AI 诊断」发起首轮（自动附带当前诊断简报），或直接在下方输入框提问。";
+    box.appendChild(empty);
+  }
+  h.forEach(function(m){
+    var w=document.createElement("div");w.className="diag-msg diag-msg-"+m.role;
+    var r=document.createElement("div");r.className="diag-msg-role";
+    r.textContent=m.role==="user"?"我":m.role==="agent"?aiAgentById(m.agent||AI_AGENT).name:"系统";
+    var b=document.createElement("div");b.className="diag-msg-body";b.textContent=m.text;
+    w.appendChild(r);w.appendChild(b);box.appendChild(w);
+  });
+  box.scrollTop=box.scrollHeight;
+}
+function aiLastBodyEl(){
+  var bodies=document.getElementById("aiChat").querySelectorAll(".diag-msg-body");
+  return bodies.length?bodies[bodies.length-1]:null;
+}
+/* 流式追加到指定 Agent 的气泡：气泡随首帧创建（_live 标记直到本轮结束才摘除并落盘）；
+   aid 显式传发起时的 Agent——数据记账与 DOM 更新分离，避免运行中切换选择串桶 */
+function aiAppendStream(aid,text){
+  var h=aiHist(aid),m=h[h.length-1];
+  if(!m||m.role!=="agent"||!m._live){
+    m={role:"agent",agent:aid,text:text,_live:true};
+    h.push(m);
+    while(h.length>AI_HIST_MAX)h.shift();
+    if(aid===AI_AGENT)renderAiChat();
+  }else{
+    m.text+=text;
+    if(aid===AI_AGENT){
+      var el=aiLastBodyEl();if(el)el.textContent=m.text;
+      document.getElementById("aiChat").scrollTop=1e9;
+    }
+  }
+}
+function aiSyncButtons(){
+  var running=!!AI_RUNNING,hasHist=aiHist(AI_AGENT).length>0;
+  var startBtn=document.getElementById("aiStartBtn");
+  startBtn.disabled=running||hasHist;
+  startBtn.title=hasHist?"已有会话记录：直接在下方输入框追问，或点「新会话」重新开始":"发起首轮 AI 诊断（自动附带当前诊断简报）";
+  document.getElementById("aiSendBtn").disabled=running;
+  document.getElementById("aiStopBtn").disabled=!running;
+  document.getElementById("aiNewBtn").disabled=running;
+  document.getElementById("aiInput").disabled=running;
+  document.getElementById("aiAgentPick").classList.toggle("diag-agentPick-lock",running);
+  var sess=!!(AI_SESS[AI_AGENT]&&AI_SESS[AI_AGENT].started);
+  var badge=document.getElementById("aiStateBadge");
+  badge.textContent=running?"运行中…":sess?"会话已建立 · 续聊":"待命";
+  badge.className="dshell-badge "+(running?"dshell-badgeWait":sess?"dshell-badgeDone":"");
+}
+function aiFinishRun(aid,code){   /* code===null：中止 / 连接失败，保留既有续接标记（下轮按原模式重试） */
+  var h=aiHist(aid),m=h[h.length-1];
+  if(m&&m.role==="agent")delete m._live;
+  if(code!==null&&code!==undefined){
+    AI_SESS[aid]={started:code===0};   /* 仅成功跑完才视为会话已建立；失败下一轮自动重发完整简报重建会话 */
+    aiSaveJSON("diagPerf.aiSess",AI_SESS);
+  }
+  aiSaveJSON("diagPerf.aiHist",AI_HIST);
+  AI_RUNNING=null;
+  if(aid===AI_AGENT)renderAiChat();
+  aiSyncButtons();
+}
+function aiRunCli(prompt,continued){
+  var aid=AI_AGENT;   /* 本轮记账锚点：整个运行周期的回显与续接标记都归属发起时的 Agent */
+  var dir=aiPageDir();
+  if(!dir){
+    aiHistPush(aid,{role:"sys",text:"无法确定页面目录（需经工作台项目页访问本页），CLI Agent 需要服务端可写目录。",ts:Date.now()});
+    renderAiChat();return;
+  }
+  var agent=aiAgentById(aid);
+  var workDir=dir+"/.ai-diag";
+  var promptPath=workDir+"/prompt-"+aid+".md";
+  var scriptPath=workDir+"/run-"+aid+".sh";
+  var script=[
+    "#!/usr/bin/env bash",
+    'export PATH="/root/.mimocode/bin:/root/.kimi-code/bin:/root/.local/bin:/usr/local/bin:$PATH"',
+    "cd "+JSON.stringify(workDir),
+    'PROMPT="$(cat '+JSON.stringify(promptPath)+')"',
+    'echo "[agent] '+agent.name+(continued?"（续聊）":"（新会话）")+' 运行中…"',
+    aiAgentCmd(aid,continued),
+    ""
+  ].join("\n");
+  AI_RUNNING={abort:function(){}};   /* 占位：准备期即视为运行中，禁止并发发送 */
+  renderAiAgents();aiSyncButtons();
+  aiApiMkdir(workDir).then(function(){
+    return aiApiWrite(promptPath,prompt);
+  }).then(function(){
+    return aiApiWrite(scriptPath,script);
+  }).then(function(){
+    aiAppendStream(aid,"$ "+aiAgentCmd(aid,continued)+"\n\n");
+    var run=aiExecStream(scriptPath,[],workDir,600000,function(frame){
+      if(frame.type==="out"||frame.type==="err")aiAppendStream(aid,frame.text);
+      else if(frame.type==="error")aiAppendStream(aid,"\n[error] "+frame.message+"\n");
+      else if(frame.type==="done"){aiAppendStream(aid,"\n[done] exit="+frame.code+"\n");aiFinishRun(aid,frame.code);}
+    });
+    AI_RUNNING=run;
+    aiSyncButtons();
+    run.done.catch(function(e){
+      if(e&&e.name==="AbortError")aiAppendStream(aid,"\n[已停止]\n");
+      else aiAppendStream(aid,"\n[运行失败] "+(e&&e.message||e)+"\n");
+      aiFinishRun(aid,null);
+    });
+  }).catch(function(e){
+    aiFinishRun(aid,null);
+    aiHistPush(aid,{role:"sys",text:"准备工作失败："+(e&&e.message||e),ts:Date.now()});
+    if(aid===AI_AGENT)renderAiChat();
+  });
+}
+function aiSend(text){
+  text=String(text||"").trim();
+  var first=!aiHist(AI_AGENT).length;
+  if(!text){
+    if(first)text="请基于附带的诊断简报开始瓶颈诊断与优化分析。";
+    else{document.getElementById("aiHint").textContent="请输入追问内容。";return;}
+  }
+  if(AI_RUNNING)return;
+  var hint=document.getElementById("aiHint");
+  hint.textContent="";
+  var continued=!!(AI_SESS[AI_AGENT]&&AI_SESS[AI_AGENT].started);
+  if(AI_AGENT==="builtin"){
+    if(continued){   /* 内置助手的持续对话在工作台会话窗内进行，本页不重复创建会话 */
+      aiHistPush(AI_AGENT,{role:"sys",text:"内置助手的持续对话请在工作台会话窗内继续；点「新会话」可基于最新诊断数据重新发起。",ts:Date.now()});
+      renderAiChat();return;
+    }
+    aiHistPush(AI_AGENT,{role:"user",text:text,ts:Date.now()});
+    document.getElementById("aiInput").value="";
+    var prompt=buildAiBrief()+"\n\n## 我的问题\n"+text;
+    var sent=false;
+    try{if(window.parent&&window.parent!==window&&typeof window.parent.__dshNewChatSessionForCurrentProject==="function"){window.parent.__dshNewChatSessionForCurrentProject(prompt);sent=true;}}catch(e){}
+    if(sent){AI_SESS.builtin={started:true};aiSaveJSON("diagPerf.aiSess",AI_SESS);}
+    aiHistPush(AI_AGENT,{role:"sys",text:sent?"已把诊断简报填入工作台会话草稿，请在会话中确认后发送；后续追问在工作台会话窗内持续进行。":"未检测到工作台宿主环境，无法内置分析，请改用 CLI Agent。",ts:Date.now()});
+    renderAiChat();aiSyncButtons();
+    return;
+  }
+  aiHistPush(AI_AGENT,{role:"user",text:text,ts:Date.now()});
+  document.getElementById("aiInput").value="";
+  renderAiChat();
+  aiRunCli(continued?text:(buildAiBrief()+"\n\n## 我的问题\n"+text),continued);
+}
+document.getElementById("aiStartBtn").addEventListener("click",function(){aiSend("");});
+document.getElementById("aiSendBtn").addEventListener("click",function(){aiSend(document.getElementById("aiInput").value);});
+document.getElementById("aiStopBtn").addEventListener("click",function(){if(AI_RUNNING)AI_RUNNING.abort();});
+document.getElementById("aiNewBtn").addEventListener("click",function(){
+  if(AI_RUNNING)return;
+  if(aiHist(AI_AGENT).length&&window.confirm&&!window.confirm("清空与 "+aiAgentById(AI_AGENT).name+" 的对话记录并开启新会话？（服务端会话上下文一并弃用）"))return;
+  AI_SESS[AI_AGENT]={started:false};aiSaveJSON("diagPerf.aiSess",AI_SESS);
+  AI_HIST[AI_AGENT]=[];aiSaveJSON("diagPerf.aiHist",AI_HIST);
+  renderAiChat();aiSyncButtons();
+  document.getElementById("aiHint").textContent="已清空上下文，下一次发送将开启新会话（重新附带最新诊断简报）。";
+});
+document.getElementById("aiCopyBtn").addEventListener("click",function(){
+  var text=aiHist(AI_AGENT).map(function(m){
+    return (m.role==="user"?"我":m.role==="agent"?aiAgentById(m.agent||AI_AGENT).name:"系统")+"：\n"+m.text;
+  }).join("\n\n");
+  var hint=document.getElementById("aiHint");
+  if(!text){hint.textContent="暂无可复制的对话记录。";return;}
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(function(){hint.textContent="已复制全部对话记录。";},function(){hint.textContent="复制失败（剪贴板不可用）。";});
+  else hint.textContent="复制失败（剪贴板不可用）。";
+});
+document.getElementById("aiInput").addEventListener("keydown",function(e){
+  if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();aiSend(this.value);}   /* isComposing：中文输入法选词 Enter 不触发发送 */
+});
+renderAiAgents();renderAiChat();aiSyncButtons();
 
 window.addEventListener("resize",function(){clearTimeout(window.__diagRt);window.__diagRt=setTimeout(renderAll,200);});
 DATA.ts=winLabels();   /* 首屏时间轴即按当前「窗口」网格（含 localStorage 恢复的小时数/绝对窗口） */

@@ -46,6 +46,7 @@ const extractServer = name => extractFunction(serverJs, name);
 function loadServerFns() {
   const js = [
     "const BUILTIN_PIPELINE_ID = 'pl-xds';",
+    "const BUILTIN_PIPELINE_IDS = new Set([BUILTIN_PIPELINE_ID, 'pl-vllm-native']);",
     'stripPipelineSharedMeta', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta',
     'mergePipelineConfigForWrite', 'mergePipelineOneForWrite', 'pipelineConfigDifferenceIds',
     'deepEqualIgnoring', 'samePipelineContent', 'isBuiltinPipelineEntry', 'trustedPipelineViolations',
@@ -136,7 +137,7 @@ const CLIENT_FUNCTIONS = [
   'loadPlDraft', 'clearPlDraft', 'savePlDraft',
   'applyPlFormReadOnly', 'openPlForm', 'savePlForm',
   'loadServerState', 'applyPipelineRefreshPayload', 'refreshPipelinesFromServer',
-  'beginRefreshSpin',
+  'beginRefreshSpin', 'envConfigEditable',
 ];
 
 function makeClient(server, options) {
@@ -196,6 +197,9 @@ function makeClient(server, options) {
     clearTimeout: timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); },
     /* loadServerState/刷新的周边依赖桩（本组用例的种子 config 不触及的字段按恒等/空桩注入） */
     defaultPipeline: () => ({ id: 'pl-xds', name: '安装部署XDS', builtIn: true, stages: [{ id: 's0', name: '检出' }] }),
+    /* 内置注册表重组/脚本路径回填桩：本组用例不验证多内置重组（专项见 test_pipeline_builtin_vllm.js），按单内置口径处理 */
+    regroupBuiltinPipelines: (list) => { const l = Array.isArray(list) ? list : []; return [l.find(p => p && p.builtIn && p.id === 'pl-xds') || { id: 'pl-xds', name: '安装部署XDS', builtIn: true, stages: [{ id: 's0', name: '检出' }] }].concat(l.filter(p => p && !p.builtIn)); },
+    rebindBuiltinScriptPaths: () => {},
     normalizeEnv: e => e, normalizeRepo: r => r,
     maybeAdoptInstalledScriptsDir: () => {},
     renderCleanupParams: () => {}, renderCheckParams: () => {}, renderProfilingParams: () => {},

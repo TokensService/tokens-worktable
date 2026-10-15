@@ -35,6 +35,7 @@ function loadFunctions(names, extraDecls = []) {
 
 /* BUILTIN_PIPELINE_ID 常量声明（trustedPipelineViolations 引用；从源码抽取，避免字面量分叉） */
 const BUILTIN_CONST_DECL = /^const BUILTIN_PIPELINE_ID = .+$/m.exec(source)[0]
+  + '\n' + /^const BUILTIN_PIPELINE_IDS = .+$/m.exec(source)[0]
 
 function merge(clientConfig, baseConfig, diskConfig) {
   /* mergePipelineConfigForWrite 现依赖 preserveDiskOnlyConfigKeys（磁盘独有键保留），抽取时一并加载 */
