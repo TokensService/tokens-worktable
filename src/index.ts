@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
 import { createReadStream, createWriteStream, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
+import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink, writeFile as fsWriteFile } from 'node:fs/promises'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
@@ -249,6 +249,7 @@ const DEV_INSTALL = (() => {
 
 export const HEALTH_PATH = '/api/worktable/health'
 export const PROXY_PATH = '/api/worktable/proxy'
+export const SESSION_API_PATH = '/api/worktable/session'
 
 /** 服务端代联目标白名单：仅回环 / RFC1918 内网 / 链路本地，避免成为任意 SSRF 出口 */
 function isLocalTarget(hostname: string): boolean {
@@ -3283,6 +3284,206 @@ function registerPipelineRunApi(webServer: any, deps: {
   })
 }
 /* ---------- 流水线 API 触发结束 ---------- */
+
+/* ---------- 当前会话信息（API 调用方自服务） ---------- */
+/** GET /api/worktable/session：回显调用方自己本次请求已携带的会话身份与令牌，供流水线页
+ *  API 弹窗把「实际值」填进 curl 示例（守卫接受 Authorization: Bearer 会话令牌，与 Cookie 同权）。
+ *  只读回显请求已携带的凭据，不签发新会话、不放大权限——调用方拿到的只有自己本会话；
+ *  无 auth 服务（token 共享模式）时 username 为空串，无会话凭据时 token 为空串（页面省略认证行）。
+ *  响应经 json() 统一带 cache-control: no-store，令牌不落缓存。 */
+function registerSessionApi(webServer: any, ctx: any) {
+  webServer.register({
+    kind: 'exact',
+    path: SESSION_API_PATH,
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+      try {
+        const caller = resolveRequestAuth(ctx, req)
+        json(res, 200, { username: caller ? caller.username : '', token: requestAuthToken(req) })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+}
+/* ---------- 当前会话信息结束 ---------- */
+
+/* ---------- 团队任务管理（projects/tasks/task-manager.html）共享存储与 API ----------
+ * GET    /api/worktable/tasks          列出全部任务（任意会话可读；无 auth 服务的 token 共享模式同权）。
+ * POST   /api/worktable/tasks          新建 {title, desc?, assignee, prio?, deadline?} → 201 回显新任务；仅 admin。
+ * PATCH  /api/worktable/tasks          更新 {id, ...} → 200 回显更新后任务；admin 可改全部字段，
+ *                                      普通成员仅可改「分配给自己」任务的 status / effect（其余字段或他人任务 → 403）。
+ * DELETE /api/worktable/tasks?id=...   删除 → 200 {ok, id}；仅 admin。
+ * 权限判定走 resolveRequestAuth（dsh-auth-gate 会话 + users.yaml role）；auth 服务存在但无有效会话 → 401；
+ * 无 auth 服务（token 共享模式）退化为全权（与流水线「页面退化为全权」约定一致，此时 assignee 为自由文本）。
+ * assignee 在 auth 存在时强校验为 users.yaml 里的真实启用用户（页面「真实用户」约定的服务端兜底）。
+ * 存储 $DSH_HOME/storages/worktable-tasks.json（{tasks: []}）；读-改-写经 deps.lock 串行化（与流水线
+ * 存储共用同一把锁）、tmp+rename 原子落盘；任务 id 服务端签发（t<base36 毫秒><base36 随机>，库内查重）。 */
+const TASKS_API_PATH = '/api/worktable/tasks'
+const TASK_PRIORITIES = ['high', 'mid', 'low'] as const
+const TASK_STATUSES = ['todo', 'doing', 'done'] as const
+const TASK_TEXT_CAP = { title: 200, desc: 4000, effect: 4000, assignee: 64 }
+const TASKS_STORE_CAP = 2000   // 任务总量上限（防误刷无限增长；超出新建 413）
+
+function tasksStoreFile(): string { return pathResolve(DSH_HOME, 'storages', 'worktable-tasks.json') }
+
+/** users.yaml 全量用户 Map（每次请求新鲜读，与 readAuthAdminUsers 同纪律不缓存）；
+ *  文件缺失 / 读取失败 → 空 Map（无任何真实用户可校验，assignee 校验随之全部判负——
+ *  auth 存在却读不到用户文件属于异常部署，宁可拒绝写入也不接受游离身份）。 */
+function readAuthUserMap(file: string): Map<string, { role?: string; disabled?: boolean }> {
+  let text = ''
+  try { text = readFileSync(file, 'utf8') } catch { return new Map() }
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1)
+  return parseAuthUsersYaml(text)
+}
+
+function taskTextField(v: any, cap: number): string { return typeof v === 'string' ? v.trim().slice(0, cap) : '' }
+function taskDeadlineField(v: any): number | null { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n) : null }
+
+/** POST/PATCH 入库字段清洗：partial=true（PATCH）只带出参字段、缺省不补默认；partial=false（POST）
+ *  补齐 status/prio/desc/effect/deadline 默认并要求 title/assignee 必填。校验失败抛带 status 的 Error。 */
+function taskCleanFields(body: any, partial: boolean): Record<string, any> {
+  const has = (k: string) => !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, k)
+  const out: Record<string, any> = {}
+  if (has('title')) {
+    const title = taskTextField(body.title, TASK_TEXT_CAP.title)
+    if (!title) throw Object.assign(new Error('任务标题不能为空'), { status: 400 })
+    out.title = title
+  } else if (!partial) throw Object.assign(new Error('任务标题不能为空'), { status: 400 })
+  if (has('desc')) out.desc = taskTextField(body.desc, TASK_TEXT_CAP.desc)
+  else if (!partial) out.desc = ''
+  if (has('prio')) {
+    if (!(TASK_PRIORITIES as readonly string[]).includes(body.prio)) throw Object.assign(new Error('优先级无效'), { status: 400 })
+    out.prio = body.prio
+  } else if (!partial) out.prio = 'mid'
+  if (has('status')) {
+    if (!(TASK_STATUSES as readonly string[]).includes(body.status)) throw Object.assign(new Error('任务状态无效'), { status: 400 })
+    out.status = body.status
+  } else if (!partial) out.status = 'todo'
+  if (has('effect')) out.effect = taskTextField(body.effect, TASK_TEXT_CAP.effect)
+  else if (!partial) out.effect = ''
+  if (has('deadline')) out.deadline = taskDeadlineField(body.deadline)
+  else if (!partial) out.deadline = null
+  if (has('assignee')) {
+    const assignee = taskTextField(body.assignee, TASK_TEXT_CAP.assignee)
+    if (!assignee) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
+    out.assignee = assignee
+  } else if (!partial) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
+  return out
+}
+
+function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () => Promise<T>) => Promise<T> }) {
+  const lock: <T>(fn: () => Promise<T>) => Promise<T> = deps && typeof deps.lock === 'function' ? deps.lock : (fn) => fn()
+  const storeFile = tasksStoreFile()
+  const storeDir = pathResolve(DSH_HOME, 'storages')
+  const usersFileOf = () => pathResolve(DSH_HOME, 'auth', 'users.yaml')
+  async function readTasksStore(): Promise<{ tasks: any[] }> {
+    try {
+      const raw = await readFile(storeFile, 'utf8')
+      const j = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
+      return { tasks: Array.isArray(j.tasks) ? j.tasks.filter((t: any) => t && typeof t === 'object' && typeof t.id === 'string') : [] }
+    } catch { return { tasks: [] } }
+  }
+  async function writeTasksStore(data: { tasks: any[] }): Promise<void> {
+    await fsMkdir(storeDir, { recursive: true })
+    const tmp = storeFile + '.tmp'
+    await fsWriteFile(tmp, JSON.stringify(data), 'utf8')
+    await fsRename(tmp, storeFile)
+  }
+  /** auth 存在时 assignee 必须是 users.yaml 里的真实启用用户；返回错误文案或空串（通过）。 */
+  function assigneeProblem(assignee: string): string {
+    const rec = readAuthUserMap(usersFileOf()).get(assignee)
+    if (!rec) return '负责人不是 users.yaml 中的真实用户'
+    if (rec.disabled) return '负责人账号已停用'
+    return ''
+  }
+
+  webServer.register({
+    kind: 'exact',
+    path: TASKS_API_PATH,
+    handler: async (req: any, res: any) => {
+      try {
+        const caller = resolveRequestAuth(ctx, req)
+        const username = caller ? caller.username : ''
+        const isAdmin = caller ? caller.isAdmin : true   // 无 auth 服务（token 共享模式）：全权
+        if (req.method === 'GET') {
+          const store = await readTasksStore()
+          json(res, 200, { tasks: store.tasks })
+          return
+        }
+        if (caller && !username) { json(res, 401, { error: '未登录或会话已失效' }); return }
+        if (req.method === 'POST') {
+          if (!isAdmin) { json(res, 403, { error: '仅 admin 可新建任务' }); return }
+          const fields = taskCleanFields(await readJsonBody(req), false)
+          if (caller) {
+            const problem = assigneeProblem(fields.assignee)
+            if (problem) { json(res, 400, { error: problem }); return }
+          }
+          const task = await lock(async () => {
+            const store = await readTasksStore()
+            if (store.tasks.length >= TASKS_STORE_CAP) throw Object.assign(new Error('任务数量已达上限'), { status: 413 })
+            const now = Date.now()
+            let id = ''
+            do { id = 't' + now.toString(36) + Math.random().toString(36).slice(2, 6) } while (store.tasks.some((t) => t.id === id))
+            const created = { id, ...fields, created: now, updated: now, createdBy: username }
+            store.tasks.push(created)
+            await writeTasksStore(store)
+            return created
+          })
+          json(res, 201, { task })
+          return
+        }
+        if (req.method === 'PATCH') {
+          const body = await readJsonBody(req)
+          const id = typeof body.id === 'string' ? body.id : ''
+          if (!id) { json(res, 400, { error: '缺少任务 id' }); return }
+          const outcome: any = await lock(async () => {
+            const store = await readTasksStore()
+            const task = store.tasks.find((t) => t.id === id)
+            if (!task) return { status: 404, error: '任务不存在或已删除' }
+            const own = !!username && task.assignee === username
+            if (!isAdmin && !own) return { status: 403, error: '只能更新分配给自己的任务' }
+            const patch = taskCleanFields(body, true)
+            if (!isAdmin && Object.keys(patch).some((k) => k !== 'status' && k !== 'effect')) {
+              return { status: 403, error: '普通成员仅可更新任务状态与效果' }
+            }
+            if (caller && typeof patch.assignee === 'string') {
+              const problem = assigneeProblem(patch.assignee)
+              if (problem) return { status: 400, error: problem }
+            }
+            Object.assign(task, patch)
+            task.updated = Date.now()
+            await writeTasksStore(store)
+            return { status: 200, task }
+          })
+          json(res, outcome.status, outcome.status === 200 ? { task: outcome.task } : { error: outcome.error })
+          return
+        }
+        if (req.method === 'DELETE') {
+          if (!isAdmin) { json(res, 403, { error: '仅 admin 可删除任务' }); return }
+          const id = new URL(req.url ?? '/', 'http://dsh.internal').searchParams.get('id') || ''
+          if (!id) { json(res, 400, { error: '缺少任务 id' }); return }
+          const removed = await lock(async () => {
+            const store = await readTasksStore()
+            const rest = store.tasks.filter((t) => t.id !== id)
+            if (rest.length === store.tasks.length) return false
+            await writeTasksStore({ tasks: rest })
+            return true
+          })
+          if (!removed) { json(res, 404, { error: '任务不存在或已删除' }); return }
+          json(res, 200, { ok: true, id })
+          return
+        }
+        res.writeHead(405, { allow: 'GET, POST, PATCH, DELETE' })
+        res.end()
+      } catch (err) {
+        const status = Number(err && (err as any).status) || 500
+        json(res, status, { error: String(err && (err as Error).message ? (err as Error).message : err) })
+      }
+    },
+  })
+}
+/* ---------- 团队任务管理结束 ---------- */
 
 /* ---------- 流水线阶段完成轮询（服务端长轮询） ----------
  * 「任务是否完成」的轮询从浏览器移到服务端：客户端对每个 Jenkins/EvalTokens 阶段改发本区端点，
@@ -6348,6 +6549,8 @@ export function apply(ctx: Context) {
     ctx,
     readReservations: async () => (await readReservationsStore()).reservations,
   })
+  registerSessionApi(webServer, ctx)
+  registerTasksApi(webServer, ctx, { lock: withStoreLock })
   async function planTick() {
     const plans = await readPlansFile()
     const now = Date.now()

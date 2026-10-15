@@ -50,6 +50,11 @@
 - `projects/pipeline/`：流水线工作台、阶段脚本、桥接工具与测试。
 - `projects/codereview/`：PR 检视台及配套脚本。
 - `projects/diag_perf/`：性能诊断页及测试。
+- `projects/tasks/`：团队任务管理页（`task-manager.html`）。任务数据走服务端共享存储
+  `GET/POST/PATCH/DELETE /api/worktable/tasks`（落盘 `$DSH_HOME/storages/worktable-tasks.json`），
+  全团队实时可见；用户身份取 dsh-auth-gate 真实用户（`/auth/status` 当前登录、
+  `/auth/users` 负责人列表），admin 可新增/编辑/删除，普通成员仅可更新分配给自己任务的
+  状态与效果（服务端强校验）；token 共享部署退化为全权本地模式（负责人自由文本）。
 
 `projects/package.json` 保留项目脚本的 CommonJS 运行方式；显式使用 `.mjs` 的测试仍按 ESM 执行。
 
@@ -94,7 +99,7 @@ Content-Type: application/json
 
 页面中的手动运行也使用此服务端执行池。运行与排队状态由 `GET /api/worktable/pipeline/queue` 返回，所有打开的浏览器每秒同步同一份阶段快照；关闭或刷新发起页面不会终止任务。有控制权的用户可在任一浏览器中止或取消服务端条目（非 admin 仅限本人署名任务）。状态仅保留在当前 dsh 进程内，服务重启后清空。
 
-接口继承 dsh web 的登录守卫，命令行调用需携带有效登录 Cookie。非空请求体必须是 `application/json` 的 JSON 对象，最大 64 KiB；畸形 JSON、数组/标量、错误媒体类型和超限请求会分别被拒绝。显式空 `environmentIds`（或流水线默认环境保存为空列表）按不选择任何节点运行；传入不存在的 ID 会返回 `400`；流水线保存的默认环境/代码仓引用已失效时返回 `409`，不会静默改投配置首项。只有从未保存过默认环境字段的旧流水线才兼容回退首个环境/代码仓。流水线列表中的 `API` 按钮可直接查看并复制当前流水线的端点、默认请求体和 curl 示例。
+接口继承 dsh web 的登录守卫，命令行调用需携带有效登录凭据（会话 Cookie 或 `Authorization: Bearer <会话令牌>` 均可，令牌随会话长期有效、退出登录后失效）。非空请求体必须是 `application/json` 的 JSON 对象，最大 64 KiB；畸形 JSON、数组/标量、错误媒体类型和超限请求会分别被拒绝。显式空 `environmentIds`（或流水线默认环境保存为空列表）按不选择任何节点运行；传入不存在的 ID 会返回 `400`；流水线保存的默认环境/代码仓引用已失效时返回 `409`，不会静默改投配置首项。只有从未保存过默认环境字段的旧流水线才兼容回退首个环境/代码仓。流水线列表中的 `API` 按钮可直接查看并复制当前流水线的端点、默认请求体和 curl 示例：示例会把当前登录会话令牌的实际值直接内嵌进 `Authorization: Bearer` 头（弹窗打开时经 `GET /api/worktable/session` 实时取调用方自己的会话，响应含 `username` 与 `token`），复制即可在任意机器执行，无需手工导出 Cookie。
 
 ## 相关文档
 
