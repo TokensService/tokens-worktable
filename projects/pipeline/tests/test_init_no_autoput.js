@@ -57,6 +57,8 @@ function makeCtx(serverState){
     persistState:()=>{ calls.persist+=1; },
     persistTimer:null,
     stateLoaded:false,
+    /* #73 会话闩锁（pipeline.html 里是模块级 let）：沙盒以全局属性提供，语义等价 */
+    _migratedPersistDone:false, _migrateInlineLogsDone:false,
     serverConfigBase:null,
     stateFetchEpoch:0,   /* 基线纪元（fetchPipelineStateFresh 过期重拉依据；本组用例无在途保存，恒不触发重拉） */
     /* loadServerState 的流水线/字段依赖（恒等桩：本组用例不验证迁移行为本身） */

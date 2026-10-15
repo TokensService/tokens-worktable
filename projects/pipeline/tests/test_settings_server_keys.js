@@ -70,6 +70,7 @@ function loadStateFixture(serverConfig,opts){
   const els={};
   const ctx={
     persistInFlight:null, stateFetchEpoch:0, stateLoaded:false,
+    _migratedPersistDone:false,   /* #73 schema 迁移回推会话闩锁（pipeline.html 模块级 let）：沙盒以全局属性提供 */
     serverConfigBase:opts.base!==undefined?opts.base:null,
     DEFAULT_PIPELINE_ID:'pl-xds',
     defaultPipeline:plXds,
