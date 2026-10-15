@@ -344,6 +344,7 @@ if [[ "$BUILD_ENGINE" == nerdctl ]]; then
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker ]]; then
   build_cmd=(docker build
+    --network "$BUILD_NETWORK"
     --platform "$BUILD_PLATFORM"
     --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
     --tag "$IMAGE"
