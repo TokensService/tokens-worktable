@@ -17,7 +17,7 @@ export SWR_PASSWORD='<SWR_TOKEN>'
 build_vllm_image_ctr.sh
 ```
 
-可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_MAX_JOBS`、`BUILD_ARGS`、`BUILD_CACHE`、`BUILD_CACHE_DIR`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。执行机的 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（含小写写法）会自动作为构建参数传入 Dockerfile 的安装步骤；若在 `BUILD_ARGS` 中显式设置同名参数，则以显式值为准。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
+可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_MAX_JOBS`、`BUILD_ARGS`、`BUILD_CACHE`、`BUILD_CACHE_DIR`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。执行机的 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（含小写写法）以及 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL`/`UV_INDEX_URL`/`UV_EXTRA_INDEX_URL` 会自动作为构建参数传入 Dockerfile 的安装步骤；若在 `BUILD_ARGS` 中显式设置同名参数，则以显式值为准。`docker-buildx` 分支默认自动创建名为 `vllm-builder` 的 `docker-container` builder，并注入 HTTP/HTTPS 代理；可将 `BUILDX_AUTO_CREATE=false` 关闭。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
 
 ## 参数识别规则
 
