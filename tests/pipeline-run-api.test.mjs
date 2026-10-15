@@ -2467,7 +2467,7 @@ test('勾选收集普罗数据的任务在终态按其起止注入 collect 动�
 
   const collect = f.calls.find(call => call.script === 'collect.py')
   assert.ok(collect)
-  assert.equal(collect.timeout, 0)
+  assert.equal(collect.timeout, 600, '采集脚本默认兜底超时 600s（不再是无超时，防挂起永久卡 running）')
   assert.equal(collect.extraEnv.METRICS_ACTION, 'collect')
   assert.equal(collect.extraEnv.PROMETHEUS_URL, 'http://prom.internal:9090')
   assert.equal(collect.extraEnv.MODEL_NAME, '/models/demo')
@@ -2475,6 +2475,120 @@ test('勾选收集普罗数据的任务在终态按其起止注入 collect 动�
   assert.match(collect.extraEnv.METRICS_OUTPUT_DIR, /^\/var\/pipeline-runs\/.+\/测试模型-01-普罗数据$/)
   assert.ok(Date.parse(collect.extraEnv.PROM_START) <= Date.parse(collect.extraEnv.PROM_END))
   assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已收集 → /)
+})
+
+test('普罗采集接运行级取消信号：采集挂起时中止可让运行及时按 aborted 收尾', async () => {
+  const controller = new AbortController()
+  let collectSignal = null
+  let collectTimeout = null
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  }, {}, undefined, (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) => {
+    if (script.name === 'collect.py') {
+      collectSignal = signal
+      collectTimeout = timeout
+      return new Promise(resolve => {   // 采集挂起：只在取消信号到达时收尾（复现挂起即永久卡 running 的旧缺陷）
+        signal?.addEventListener('abort', () => resolve({ code: 1, stdout: '', stderr: 'killed', aborted: true }), { once: true })
+      })
+    }
+    return Promise.resolve({ code: 0, stdout: '', stderr: '' })
+  })
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh', params: [], values: {} } }]
+  const updates = []
+  const runtime = { signal: controller.signal, setStages: () => {}, updateStage: (id, state) => updates.push([id, plain(state)]) }
+
+  const running = f.execPlan(plan, runtime)
+  await tick()
+  assert.equal(collectTimeout, 600, '采集脚本默认兜底超时 600s')
+  assert.ok(collectSignal, '采集脚本应收到取消信号')
+  assert.equal(collectSignal, controller.signal, '采集接的是运行级 signal，而非已结算组的 fail-fast signal（同组失败不该株连采集）')
+  assert.equal(controller.signal.aborted, false)
+  assert.ok(
+    updates.some(([id, state]) => id === 'test-model' && state.status === 'success' && state.progress === 100),
+    '采集在途期间组终态已先刷新进快照（进度不再冻结在 running 等采集结束）',
+  )
+
+  controller.abort(new Error('pipeline run cancelled'))
+  await running
+
+  assert.equal(f.history[0].status, 'aborted', '取消挂起的采集后运行按 aborted 收尾，不再永久卡 running')
+  assert.match(f.history[0].logs[0].log, /\[普罗采集\] 已随运行中止取消/)
+})
+
+test('阶段无视组级取消返回成功但运行已中止时，跳过普罗采集', async () => {
+  const controller = new AbortController()
+  const called = []
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py' },
+  }, {}, undefined, script => new Promise(resolve => {
+    called.push(script.name)
+    setTimeout(() => resolve({ code: 0, stdout: '', stderr: '' }), 20)   // 阶段不理会取消信号，照常成功返回
+  }))
+  const plan = apiExecutionPlan([])
+  plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh' } }]
+
+  const running = f.execPlan(plan, { signal: controller.signal, setStages: () => {}, updateStage: () => {} })
+  await tick()
+  controller.abort(new Error('pipeline run cancelled'))   // 中止在阶段执行期间到达
+  await running
+
+  assert.ok(called.includes('test.sh'))
+  assert.ok(!called.includes('collect.py'), '运行已中止：不再启动普罗采集')
+  assert.equal(f.history[0].status, 'aborted')
+})
+
+test('普罗采集兜底超时可用 prom.collectTimeoutSec 覆盖并按 1~3600 秒夹取', async () => {
+  const collectTimeoutFor = async collectTimeoutSec => {
+    let seen = null
+    const f = loadExecPlan({
+      ...apiExecutionConfig,
+      prom: { url: 'http://prom.internal:9090', collectScript: 'collect.py', ...(collectTimeoutSec === undefined ? {} : { collectTimeoutSec }) },
+    }, {}, undefined, script => {
+      if (script.name === 'collect.py') return Promise.resolve({ code: 0, stdout: '', stderr: '' })
+      return Promise.resolve({ code: 0, stdout: '', stderr: '' })
+    })
+    /* 通过 calls 记录读超时（harness 统一记录 timeout 字段） */
+    const plan = apiExecutionPlan([])
+    plan.stages = [{ id: 'test-model', name: '测试模型', promCollect: true, script: { name: 'test.sh', path: '/scripts/test.sh' } }]
+    await f.execPlan(plan)
+    seen = f.calls.find(call => call.script === 'collect.py')
+    assert.ok(seen)
+    return seen.timeout
+  }
+  assert.equal(await collectTimeoutFor(undefined), 600, '缺省 600s')
+  assert.equal(await collectTimeoutFor(120), 120, '显式覆盖生效')
+  assert.equal(await collectTimeoutFor(99999), 3600, '超上限夹到 3600')
+  assert.equal(await collectTimeoutFor(-5), 1, '非法小值夹到 1')
+})
+
+test('环境清理脚本接运行级取消信号：清理挂起时中止按 aborted 收尾', async () => {
+  const controller = new AbortController()
+  let cleanupSignal = null
+  const f = loadExecPlan({
+    ...apiExecutionConfig,
+    cleanupScript: { name: 'cleanup.sh', path: '/scripts/cleanup.sh', params: [], values: {} },
+  }, {}, undefined, (script, runContext, scriptsDir, varsPool, timeout, extraEnv, outputFile, signal) => {
+    if (script.name === 'cleanup.sh') {
+      cleanupSignal = signal
+      return new Promise(resolve => {   // 清理挂起：只在取消信号到达时收尾
+        signal?.addEventListener('abort', () => resolve({ code: 1, stdout: '', stderr: 'killed', aborted: true }), { once: true })
+      })
+    }
+    return Promise.resolve({ code: 0, stdout: '', stderr: '' })
+  })
+  const plan = apiExecutionPlan([])
+  delete plan.presets   // 旧计划无 presets 字段时才走「启动前清理脚本」路径（apiPresetMode 下清理是编排内预设任务）
+  const running = f.execPlan(plan, { signal: controller.signal, setStages: () => {}, updateStage: () => {} })
+  await tick()
+  assert.equal(cleanupSignal, controller.signal, '清理脚本接运行级取消信号')
+  controller.abort(new Error('pipeline run cancelled'))
+  await running
+  assert.equal(f.history[0].status, 'aborted')
+  assert.equal(f.history[0].logs[0].status, 'aborted', '清理被中止记 aborted（不再误记 failed）')
+  assert.equal(f.history[0].logs.some(log => /test\.sh|deploy\.sh/.test(log.log || '')), false, '清理中止后不再执行后续阶段')
 })
 
 test('任务级普罗采集在部署策略解析不出时不注入命名空间残段', async () => {

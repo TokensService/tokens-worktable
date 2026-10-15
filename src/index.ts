@@ -2604,6 +2604,9 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   generation?: string;
   generationId?: string;
   nowFn?: () => number;
+  /* 运行中条目取消后的强制结算宽限（ms）：执行器未在宽限期内响应取消（如收尾脚本挂起且未接
+     取消信号）时按 cancelled 强制结算出 running，释放并发槽与节点租约；默认 15000。 */
+  cancelForceSettleMs?: number;
 }) {
   interface ExecutionItem {
     plan: any;
@@ -2618,6 +2621,10 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     controller: AbortController | null;
     resolve: () => void;
     reject: (error: unknown) => void;
+    /* 取消兜底：条目一经结算（正常或强制）置位，迟到的执行器返回不再重复记账；
+       cancelForceTimer 为「取消后执行器未响应」的强制结算定时器（settle 时清除） */
+    settled: boolean;
+    cancelForceTimer: any;
   }
   const concurrency = Math.max(1, Math.floor(Number(limit) || 1))
   const pendingLimit = Math.max(1, Math.floor(Number(queueLimit) || 1))
@@ -2634,6 +2641,7 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
   let disposal: Promise<void> | null = null
   const idleWaiters: Array<() => void> = []
   const retryWait = Math.max(50, Math.floor(Number(hooks && hooks.retryMs) || 5000))
+  const cancelForceWait = Math.max(0, Math.floor(Number(hooks && hooks.cancelForceSettleMs) || 15000))
   const ipsOf = (plan: any): string[] => {
     if (!hooks || !hooks.ipsOf) return []
     try { return hooks.ipsOf(plan) || [] } catch { return [] }
@@ -2788,6 +2796,20 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
     const waiters = idleWaiters.splice(0)
     for (const resolve of waiters) resolve()
   }
+  /* 条目结算（正常返回 / 抛错 / 取消兜底强制结算共用）：幂等——条目只结算一次，
+     强制结算后执行器迟到返回不再重复扣槽位、重复记终态、重复释放租约 */
+  const settleEntry = (entry: { item: ExecutionItem; ips: string[] }, outcome?: unknown, error?: unknown) => {
+    const item = entry.item
+    if (item.settled) return
+    item.settled = true
+    if (item.cancelForceTimer) { clearTimeout(item.cancelForceTimer); item.cancelForceTimer = null }
+    active -= 1
+    const index = running.indexOf(entry)
+    if (index >= 0) running.splice(index, 1)
+    recordFinished(item, outcome, error)
+    if (entry.ips.length) release(item.plan)
+    pump()
+  }
   const pump = () => {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     while (active < concurrency && pending.length) {
@@ -2815,17 +2837,9 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
         replaceLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, false),
         appendLog: (stageId: string, text: unknown) => writeLog(item, stageId, text, true),
       }
-      const settle = (outcome?: unknown, error?: unknown) => {
-        active -= 1
-        const index = running.indexOf(entry)
-        if (index >= 0) running.splice(index, 1)
-        recordFinished(item, outcome, error)
-        if (entry.ips.length) release(item.plan)
-        pump()
-      }
       Promise.resolve().then(() => execute(item.plan, runtime)).then(
-        (outcome) => { settle(outcome); item.resolve() },
-        (error) => { settle(undefined, error); item.reject(error) },
+        (outcome) => { settleEntry(entry, outcome); item.resolve() },
+        (error) => { settleEntry(entry, undefined, error); item.reject(error) },
       )
     }
     /* 仍有排队项但被节点占用挡住：周期重试（池外租约释放/到期、在跑结束都会再次 drain） */
@@ -2859,6 +2873,8 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
           controller: null,
           resolve: resolvePromise,
           reject,
+          settled: false,
+          cancelForceTimer: null,
         }
         resetStages(item, boundPlan && boundPlan.stages)
         pending.push(item)
@@ -2913,11 +2929,24 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       }
       const activeEntry = running.find((entry) => runIdOf(entry.item.plan) === id)
       if (activeEntry) {
-        if (!activeEntry.item.controller?.signal.aborted) {
+        const item = activeEntry.item
+        if (!item.controller?.signal.aborted) {
           const error: any = new Error('pipeline run cancelled')
           error.name = 'AbortError'
           error.code = 'PIPELINE_RUN_CANCELLED'
-          activeEntry.item.controller?.abort(error)
+          item.controller?.abort(error)
+          /* 兜底强制结算：执行器未在宽限期内响应取消（如普罗采集/清理等收尾脚本挂起且未接
+             取消信号）时，条目不应永久占住并发槽与节点租约——到点按 cancelled 强制结算出
+             running；执行器稍后自然返回时 settleEntry 按 settled 幂等跳过。正常取消路径
+             （各执行段均已接信号）远快于该宽限，兜底只在异常挂起时触发。 */
+          if (cancelForceWait > 0 && !item.cancelForceTimer) {
+            item.cancelForceTimer = setTimeout(() => {
+              item.cancelForceTimer = null
+              settleEntry(activeEntry, undefined, error)
+              item.reject(error)
+            }, cancelForceWait)
+            if (typeof item.cancelForceTimer.unref === 'function') item.cancelForceTimer.unref()
+          }
         }
         return { ok: true, state: 'running' }
       }
@@ -6016,15 +6045,17 @@ export function apply(ctx: Context) {
     /* 页面起源运行启动即写「进行中」历史（含本地前缀阶段快照）：执行期间他端历史列表可见在跑 */
     await writeLiveHistory('running')
     // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
+    // 接入运行级取消信号：清理脚本挂起时「中止」可杀掉进程树（此前无信号，挂起即永久卡 running）
     if (!apiPresetMode && runCfg.cleanupScript && runCfg.cleanupScript.path) {
       const st0 = Date.now()
       const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
-      const r = await runStageScript(runCfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog)
+      const r = await runStageScript(runCfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog, runtime?.signal)
+      const cleanupStatus = r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed')
       const text = stageLogText(runCfg.cleanupScript.name, r)
       const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
-      logs.push({ stage: '环境清理', status: r.code === 0 ? 'success' : 'failed', log: text, logFile })
-      pushHist('环境清理', r.code === 0 ? 'success' : 'failed', text, logFile, Math.round((Date.now() - st0) / 100) / 10, st0)
-      profileStages.push({ id: '__cleanup__', name: '环境清理', status: r.code === 0 ? 'success' : 'failed', durSec: Math.round((Date.now() - st0) / 100) / 10, startedAt: st0, script: runCfg.cleanupScript.name || null, logFile })
+      logs.push({ stage: '环境清理', status: cleanupStatus, log: text, logFile })
+      pushHist('环境清理', cleanupStatus, text, logFile, Math.round((Date.now() - st0) / 100) / 10, st0)
+      profileStages.push({ id: '__cleanup__', name: '环境清理', status: cleanupStatus, durSec: Math.round((Date.now() - st0) / 100) / 10, startedAt: st0, script: runCfg.cleanupScript.name || null, logFile })
     }
     const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
       /* 「不执行」阶段从未启动：不打点开始时间（详情/回放不展示「开始时间」，与页面 skipStage 口径一致），
@@ -6118,7 +6149,16 @@ export function apply(ctx: Context) {
       try {
         const penv = buildServerTaskPromEnv(runCtx, runCfg, result.varsPool, result.startedAt, result.endedAt, promDir)
         const promLog = promDir + '/collect.log'
-        const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, 0, penv, promLog)   // 不设超时；完整输出流式落 collect.log，且不复用已结算组的 fail-fast signal
+        /* 采集挂起（Prometheus 不可达、子进程不退出等）曾使运行永久卡「运行中」——快照冻结、取消无效：
+           接入运行级取消信号（runtime.signal，池取消即杀采集进程树；注意不能用组级 fail-fast signal，
+           同组任务失败不该株连采集），并给有界兜底超时（默认 600s，运行设置 prom.collectTimeoutSec
+           可覆盖，1~3600 秒夹取，与阶段超时同口径）；完整输出流式落 collect.log */
+        const collectTimeoutSec = Math.min(Math.max(Number(runCfg.prom && runCfg.prom.collectTimeoutSec) || 600, 1), 3600)
+        const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, collectTimeoutSec, penv, promLog, runtime?.signal)
+        if (pr.aborted) {
+          addNote('[普罗采集] 已随运行中止取消')
+          return
+        }
         if (!pr.logFile) try {
           const fsx = await import('node:fs/promises')
           await fsx.mkdir(promDir, { recursive: true })
@@ -6169,8 +6209,14 @@ export function apply(ctx: Context) {
       if (!blockingFailure || results.length === 1) {
         for (const result of results) Object.assign(varsPool, result.varsOut)
       }
+      /* 组内任务一到终态立刻刷新快照：recordStageResult 的 updateStage 在普罗采集之后才执行，
+         采集耗时长时阶段会长时间停在 running 假进度（进度冻结）——先按真实终态上屏，采集仅补充回显 */
+      for (const result of results) {
+        const durDone = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0
+        runtime?.updateStage(String(result.stage && result.stage.id || ''), { status: result.status, progress: 100, dur: durDone })
+      }
       const promResult = longestServerPromResult(results)
-      if (promResult) await collectStageProm(promResult)
+      if (promResult && !runtime?.signal.aborted) await collectStageProm(promResult)   // 已中止的运行不再启动采集（采集脚本自身也接运行级信号兜底）
       for (const result of results) {
         await recordStageResult(result, serverStageSeq(executionStages, result.index, baseSeq))
       }
@@ -6211,15 +6257,17 @@ export function apply(ctx: Context) {
         await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), 'utf8')
       } catch (e) { console.warn('[archive] 定时运行 profiling 写入失败（不影响执行）:', e) }
       // 归档脚本（可选）：与页面一致，写完日志/profiling 后执行（如 collect_logs.sh），收集额外日志到归档目录；失败不影响执行
+      // 接运行级取消信号：中止在归档阶段到达时立刻杀掉归档脚本（已有 120s 超时兜底，信号让取消即时生效）
       const archiveScriptName = typeof runCfg.archiveScriptName === 'string' ? runCfg.archiveScriptName.trim() : ''
-      if (archiveScriptName && archiveRoot && typeof runCfg.archiveDir === 'string' && runCfg.archiveDir.trim()) {
+      if (archiveScriptName && archiveRoot && typeof runCfg.archiveDir === 'string' && runCfg.archiveDir.trim() && !runtime?.signal.aborted) {
         try {
           await new Promise<void>((resolve) => {
             execFile('bash', [pathResolve(scriptsDir, archiveScriptName)], {
               cwd: scriptsDir || undefined,
               env: { ...process.env, ARCHIVE_DIR: folder, ARCHIVE_FOLDER: folder, ARCHIVE_LOG_FILE: folder + '/run-' + tag + '.log', ARCHIVE_PROFILE_FILE: folder + '/run-' + tag + '.profile.json', ARCHIVE_PIPELINE: pipeName, ARCHIVE_TAG: tag, ARCHIVE_RESULT: status },
               timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
-            }, (err) => { if (err) console.warn('[archive] 归档脚本退出码 ' + ((err as any).code ?? err) + '（不影响执行）'); resolve() })
+              ...(runtime?.signal ? { signal: runtime.signal } : {}),
+            }, (err) => { if (err && (err as any).name !== 'AbortError') console.warn('[archive] 归档脚本退出码 ' + ((err as any).code ?? err) + '（不影响执行）'); resolve() })
           })
         } catch (e) { console.warn('[archive] 归档脚本执行失败（不影响执行）:', e) }
       }

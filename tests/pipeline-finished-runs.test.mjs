@@ -115,6 +115,64 @@ test('终态映射：成功/失败/取消都进 finished，字段符合 Finished
   assert.equal(JSON.stringify(finished).includes('boom'), false, '失败原因不进 finished')
 })
 
+test('运行中条目取消后执行器失去响应：宽限期后强制结算，释放并发槽与节点租约', async () => {
+  const ctx = loadApiRegion()
+  let now = 1_000_000
+  const released = []
+  const pool = ctx.createPipelineExecutionQueue(async (plan) => {
+    if (plan.stuck) await new Promise(() => {})   // 永不返回：复现收尾脚本挂起、执行器不响应取消
+    return 'success'
+  }, 1, 10, {
+    nowFn: () => now,
+    cancelForceSettleMs: 30,
+    ipsOf: plan => plan.ips || [],
+    acquire: () => true,
+    release: plan => released.push(plan.id),
+  })
+  const stuck = pool.run(planOf('stuck', { stuck: true, ips: ['10.0.0.1'] }))
+  stuck.catch(() => {})
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(pool.snapshot().runs.length, 1)
+
+  assert.deepEqual(plain(pool.cancel('stuck')), { ok: true, state: 'running' })
+  assert.equal(pool.snapshot().runs.length, 1, '宽限期内仍按在跑展示（等待执行器自然收尾）')
+
+  await new Promise(resolve => setTimeout(resolve, 80))
+  assert.equal(pool.snapshot().runs.length, 0, '执行器不响应取消：宽限期后强制结算出 running（不再永久卡「运行中」）')
+  assert.deepEqual(plain(pool.snapshot().finished).map(e => [e.id, e.status]), [['stuck', 'cancelled']])
+  assert.deepEqual(released, ['stuck'], '节点租约随强制结算释放，后续同节点运行不再被僵尸条目挡住')
+  await assert.rejects(stuck, e => e?.code === 'PIPELINE_RUN_CANCELLED')
+
+  await pool.run(planOf('after', { ips: ['10.0.0.1'] }))   // 并发槽与节点都已释放：后续运行立即完成
+  assert.equal(plain(pool.snapshot().finished)[0].id, 'after')
+})
+
+test('强制结算后执行器迟到返回：结算幂等，不重复记账/扣槽/释放租约', async () => {
+  const ctx = loadApiRegion()
+  let now = 1_000_000
+  const released = []
+  let releaseLate = null
+  const pool = ctx.createPipelineExecutionQueue(plan => {
+    if (plan.late) return new Promise(resolve => { releaseLate = () => resolve('success') })
+    return Promise.resolve('success')
+  }, 1, 10, { nowFn: () => now, cancelForceSettleMs: 30, ipsOf: plan => plan.ips || [], release: plan => released.push(plan.id) })
+  const late = pool.run(planOf('late', { late: true, ips: ['10.0.0.2'] }))
+  late.catch(() => {})
+  await new Promise(resolve => setImmediate(resolve))
+  pool.cancel('late')
+  await new Promise(resolve => setTimeout(resolve, 80))   // 强制结算已发生
+  assert.deepEqual(plain(pool.snapshot().finished).map(e => [e.id, e.status]), [['late', 'cancelled']])
+  await assert.rejects(late, e => e?.code === 'PIPELINE_RUN_CANCELLED')
+
+  releaseLate()   // 执行器迟到返回成功：结算幂等跳过（终态、槽位、租约均不重复处理）
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(plain(pool.snapshot().finished).map(e => [e.id, e.status]), [['late', 'cancelled']])
+  assert.deepEqual(released, ['late'])
+
+  await pool.run(planOf('next'))   // 槽位计数仍正确：新运行可立即调度完成
+  assert.equal(plain(pool.snapshot().finished)[0].id, 'next')
+})
+
 test('阶段开始时间：updateStage 打点 startedAt 随节点保留到终态，finished 阶段摘要携带', async () => {
   const ctx = loadApiRegion()
   let now = 1_000_000
