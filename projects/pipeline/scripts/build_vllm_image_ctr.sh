@@ -16,7 +16,7 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
-  BUILD_ENGINE        构建器：auto、buildctl、nerdctl、docker 或 docker-buildx，默认 auto
+  BUILD_ENGINE        构建器：auto、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
   BUILDKIT_ADDR       BuildKit 地址，默认 unix:///run/buildkit/buildkitd.sock
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
@@ -139,18 +139,17 @@ if [[ "$DRY_RUN" != true ]]; then
   command -v ctr >/dev/null || die "缺少 ctr"
     case "$BUILD_ENGINE" in
     auto)
-      if command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
-      elif command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
-      elif command -v docker >/dev/null; then BUILD_ENGINE=docker
+      if command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=docker
+      elif command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
       elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
-      else die "缺少可用构建器：请安装 buildctl+buildkitd、Docker、Docker Buildx 或 nerdctl+buildkitd"; fi
+      else die "缺少可用构建器：请安装可用的 Docker、buildctl+buildkitd 或 nerdctl+buildkitd"; fi
       ;;
     buildctl|nerdctl|docker) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
     docker-buildx)
       command -v docker >/dev/null || die "缺少 docker"
       docker buildx version >/dev/null 2>&1 || die "缺少 Docker Buildx，请安装 buildx 或改用可用的 BUILD_ENGINE"
       ;;
-    *) die "BUILD_ENGINE 必须是 auto、buildctl、nerdctl、docker 或 docker-buildx" ;;
+    *) die "BUILD_ENGINE 必须是 auto、docker、buildctl、nerdctl 或 docker-buildx" ;;
   esac
   if [[ "$BUILD_ENGINE" == docker || "$BUILD_ENGINE" == docker-buildx ]]; then
     docker info >/dev/null 2>&1 || die "docker 命令存在但 Docker daemon 不可用，请启动 Docker 或改用可用的 BUILD_ENGINE"
