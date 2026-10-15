@@ -1,6 +1,6 @@
 /* /api/worktable/tasks 团队任务共享存储 API：
-   GET 列出（任意会话）；POST 新建 / DELETE 删除仅 admin；PATCH 中 admin 改全部字段、
-   普通成员仅可改分配给自己任务的 status/effect；auth 存在时 assignee 强校验 users.yaml
+   GET 列出（任意会话）；POST 新建 / DELETE 删除仅 admin；PATCH 中 admin 改全部字段（含 tags）、
+   普通成员仅可改分配给自己任务的 status/effect/addProgress；auth 存在时 assignee 强校验 users.yaml
    真实启用用户；无 auth 服务（token 共享模式）退化为全权。存储 $DSH_HOME/storages/worktable-tasks.json。 */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -118,13 +118,15 @@ test('GET 空存储返回空列表；无会话也可读（页面加载不报错�
 
 test('POST admin 新建：补齐默认值、服务端签发 id/时间/创建人并落盘', async () => {
   const { handler, home } = await loadTasksRoute({ auth: AUTH.admin })
-  const task = await createTask(handler, { desc: '汇总 Q3 进度', prio: 'high', deadline: Date.now() + 86400000 })
+  const task = await createTask(handler, { desc: '汇总 Q3 进度', prio: 'high', deadline: Date.now() + 86400000, tags: ['汇报', '材料'] })
   assert.ok(/^t[a-z0-9]+$/.test(task.id), `id 形态异常：${task.id}`)
   assert.equal(task.title, '季度汇报 PPT')
   assert.equal(task.assignee, 'bob')
   assert.equal(task.prio, 'high')
   assert.equal(task.status, 'todo')
   assert.equal(task.effect, '')
+  assert.deepEqual(task.tags, ['汇报', '材料'])
+  assert.deepEqual(task.progress, [])
   assert.equal(task.createdBy, 'alice')
   assert.ok(task.created > 0 && task.updated >= task.created)
   const disk = JSON.parse(await readFile(join(home, 'storages', 'worktable-tasks.json'), 'utf8'))
@@ -173,12 +175,12 @@ test('POST 权限：普通成员 403、无会话 401；token 共享模式退化�
   assert.equal(created.json().task.createdBy, '')
 })
 
-test('PATCH admin 可改全部字段（含换负责人；新负责人同样校验真实用户）', async () => {
+test('PATCH admin 可改全部字段（含换负责人/标签；新负责人同样校验真实用户）', async () => {
   const { handler } = await loadTasksRoute({ auth: AUTH.admin })
   const task = await createTask(handler)
   const res = await call(handler, {
     method: 'PATCH',
-    body: { id: task.id, title: '改名', prio: 'low', status: 'doing', deadline: Date.now() + 3600000, assignee: 'alice', desc: 'd', effect: 'e' },
+    body: { id: task.id, title: '改名', prio: 'low', status: 'doing', deadline: Date.now() + 3600000, assignee: 'alice', desc: 'd', effect: 'e', tags: ['紧急', '安全', '紧急'] },
   })
   assert.equal(res.status, 200, res.body)
   const updated = res.json().task
@@ -186,12 +188,25 @@ test('PATCH admin 可改全部字段（含换负责人；新负责人同样校�
   assert.equal(updated.prio, 'low')
   assert.equal(updated.status, 'doing')
   assert.equal(updated.assignee, 'alice')
+  assert.deepEqual(updated.tags, ['紧急', '安全'], '标签应去重')
   assert.ok(updated.updated >= task.updated)
   const bad = await call(handler, { method: 'PATCH', body: { id: task.id, assignee: 'ghost' } })
   assert.equal(bad.status, 400)
 })
 
-test('PATCH 成员：可改自己任务的 status/effect；改受限字段或他人任务 403', async () => {
+test('标签校验：非数组 / 空标签 / 超 10 个均 400', async () => {
+  const { handler } = await loadTasksRoute({ auth: AUTH.admin })
+  const task = await createTask(handler)
+  for (const tags of ['oops', [''], Array.from({ length: 11 }, (_, i) => 't' + i)]) {
+    const res = await call(handler, { method: 'PATCH', body: { id: task.id, tags } })
+    assert.equal(res.status, 400, `应判 400：${JSON.stringify(tags)} → ${res.body}`)
+  }
+  const ok = await call(handler, { method: 'PATCH', body: { id: task.id, tags: Array.from({ length: 10 }, (_, i) => 'g' + i) } })
+  assert.equal(ok.status, 200)
+  assert.equal(ok.json().task.tags.length, 10)
+})
+
+test('PATCH 成员：可改自己任务的 status/effect/addProgress；改 tags/标题或他人任务 403', async () => {
   const admin = await loadTasksRoute({ auth: AUTH.admin })
   const own = await createTask(admin.handler, { assignee: 'bob' })
   const other = await createTask(admin.handler, { assignee: 'alice' })
@@ -201,10 +216,38 @@ test('PATCH 成员：可改自己任务的 status/effect；改受限字段或他
   assert.equal(ok.status, 200, ok.body)
   assert.equal(ok.json().task.status, 'doing')
   assert.equal(ok.json().task.effect, '已过半')
+  const prog = await call(member.handler, { method: 'PATCH', body: { id: own.id, addProgress: '接口联调完成' } })
+  assert.equal(prog.status, 200, prog.body)
+  const entries = prog.json().task.progress
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].text, '接口联调完成')
+  assert.equal(entries[0].by, 'bob')
+  assert.ok(entries[0].at > 0 && entries[0].id)
   const restricted = await call(member.handler, { method: 'PATCH', body: { id: own.id, title: '越权' } })
   assert.equal(restricted.status, 403)
+  const tagsForbidden = await call(member.handler, { method: 'PATCH', body: { id: own.id, tags: ['x'] } })
+  assert.equal(tagsForbidden.status, 403)
   const foreign = await call(member.handler, { method: 'PATCH', body: { id: other.id, status: 'done' } })
   assert.equal(foreign.status, 403)
+  const foreignProg = await call(member.handler, { method: 'PATCH', body: { id: other.id, addProgress: '偷加' } })
+  assert.equal(foreignProg.status, 403)
+})
+
+test('addProgress 校验：空内容 400；进展条数达上限 400；admin 也可追加', async () => {
+  const { handler, home } = await loadTasksRoute({ auth: AUTH.admin })
+  const task = await createTask(handler)
+  const empty = await call(handler, { method: 'PATCH', body: { id: task.id, addProgress: '   ' } })
+  assert.equal(empty.status, 400)
+  const ok = await call(handler, { method: 'PATCH', body: { id: task.id, addProgress: '第一步完成' } })
+  assert.equal(ok.status, 200)
+  assert.equal(ok.json().task.progress.length, 1)
+  await mkdir(join(home, 'storages'), { recursive: true })
+  const disk = JSON.parse(await readFile(join(home, 'storages', 'worktable-tasks.json'), 'utf8'))
+  disk.tasks[0].progress = Array.from({ length: 50 }, (_, i) => ({ id: 'p' + i, text: 'x' + i, by: 'alice', at: 1 }))
+  await writeFile(join(home, 'storages', 'worktable-tasks.json'), JSON.stringify(disk), 'utf8')
+  const over = await call(handler, { method: 'PATCH', body: { id: task.id, addProgress: '溢出' } })
+  assert.equal(over.status, 400)
+  assert.match(over.json().error, /上限/)
 })
 
 test('PATCH 不存在任务 404；缺 id 400；无会话 401', async () => {
