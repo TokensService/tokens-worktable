@@ -17,6 +17,8 @@ grep -Fq 'BUILD_MAX_JOBS' "$SCRIPT"
 grep -Fq 'BUILD_CACHE_DIR' "$SCRIPT"
 grep -Fq 'import-cache' "$SCRIPT"
 grep -Fq 'export-cache' "$SCRIPT"
+grep -Fq 'HTTP_PROXY' "$SCRIPT"
+grep -Fq 'HTTPS_PROXY' "$SCRIPT"
 
 source_dir="$(mktemp -d)"
 trap 'rm -rf "$source_dir"' EXIT
