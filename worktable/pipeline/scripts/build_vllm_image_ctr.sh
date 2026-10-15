@@ -14,6 +14,7 @@ usage() {
   DOCKERFILE          Dockerfile 路径，相对于源码目录，默认 docker/Dockerfile
   BUILD_CONTEXT       构建上下文，相对于源码目录，默认 .
   BUILD_PLATFORM      目标平台，默认 linux/amd64
+  BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
   BUILD_ENGINE        构建器：auto、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
@@ -49,6 +50,7 @@ VLLM_UPDATE="${VLLM_UPDATE:-false}"
 DOCKERFILE="${DOCKERFILE:-docker/Dockerfile}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
+BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
 BUILD_ENGINE="${BUILD_ENGINE:-auto}"
@@ -230,6 +232,8 @@ elif [[ "$BUILD_ENGINE" == docker ]]; then
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
   build_cmd=(docker buildx build --builder "$BUILDX_BUILDER"
+    --allow network.host
+    --network "$BUILD_NETWORK"
     --platform "$BUILD_PLATFORM"
     --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
     --tag "$IMAGE"
