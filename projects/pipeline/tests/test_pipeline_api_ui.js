@@ -42,6 +42,16 @@ test('API 请求体与 curl 按运行框当前填写的参数动态生成',()=>{
   assert.match(spec.curl,/env-prod/,'curl 应携带运行框当前选中的环境');
 });
 
+test('curl 示例含账号密码登录步骤：/auth/login 写 cookies.txt，占位凭据不内嵌真实口令',()=>{
+  const ctx=context({$:form({repoSel:'repo-app'})});
+  const spec=ctx.pipelineApiSpec({id:'pl-1'},'https://dsh.example');
+  assert.match(spec.curl,/curl -c cookies\.txt -X POST 'https:\/\/dsh\.example\/auth\/login'/,'示例应包含账号密码登录步骤');
+  assert.match(spec.curl,/--data-urlencode 'username=<用户名>'/);
+  assert.match(spec.curl,/--data-urlencode 'password=<密码>'/,'口令只应出现占位符');
+  assert.ok(spec.curl.indexOf('/auth/login')<spec.curl.indexOf('/api/worktable/pipeline/run/'),'登录步骤应在运行调用之前');
+  assert.match(spec.curl,/未启用认证插件时跳过/,'应说明 token 共享部署可跳过登录步骤');
+});
+
 test('分支与执行人留空时回退 main 与 api，空策略/空预设显式覆盖流水线默认值',()=>{
   const ctx=context({
     $:form({repoSel:'repo-app'}),
