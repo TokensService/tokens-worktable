@@ -316,3 +316,129 @@ test("导入标签选项：运行记录值优先，唯一候选自动选中", ()
     { options: [], selected: "" },
   );
 });
+
+test("AI 诊断卡片挂在诊断报告页：选择器、按钮与函数齐备", () => {
+  for (const id of ["aiCard", "aiAgentPick", "aiChat", "aiInput", "aiStartBtn", "aiSendBtn", "aiStopBtn", "aiNewBtn", "aiCopyBtn", "aiStateBadge", "aiHint"])
+    assert.ok(html.includes(`id="${id}"`), `index.html 应包含 #${id}`);
+  for (const name of ["aiAgentCmd", "buildAiBrief", "aiHistPush", "aiExecStream", "aiSend", "aiRunCli"])
+    assert.notEqual(html.indexOf(`function ${name}(`), -1, `index.html 应定义 ${name}()`);
+  /* 卡片挂在「诊断报告」标签页内（报告页起点之后、时延页起点之前） */
+  const reportPane = html.indexOf('data-pane="report"');
+  const aiCard = html.indexOf('id="aiCard"');
+  const latencyPane = html.indexOf('data-pane="latency"');
+  assert.ok(reportPane !== -1 && reportPane < aiCard && aiCard < latencyPane, "aiCard 应位于诊断报告页内");
+  /* 运行中锁定 Agent 切换：流式回显与续接标记按发起时 Agent 记账 */
+  assert.ok(html.includes("diag-agentPick-lock"), "运行中应锁定 Agent 选择样式");
+  assert.ok(html.includes("if(AI_RUNNING)return;"), "运行中应拦截 Agent 切换点击");
+  assert.ok(html.includes("function aiAppendStream(aid,text)"), "流式回显应显式按发起时 Agent 记账");
+});
+
+test("规则引擎结论写入 LAST_FINDINGS 供 AI 简报引用", () => {
+  assert.ok(html.includes("var LAST_FINDINGS=[];"), "index.html 应声明 LAST_FINDINGS");
+  assert.ok(html.includes("LAST_FINDINGS=findings;"), "renderAll 应把诊断结论写入 LAST_FINDINGS");
+});
+
+test("AI Agent 命令行：首轮开新会话，续聊带各 CLI 的会话续接参数", () => {
+  const ctx = loadFunctions(["aiAgentCmd"]);
+
+  assert.equal(ctx.aiAgentCmd("kimi", false), 'kimi -p "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("kimi", true), 'kimi -c -p "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("mimo", false), 'mimo run "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("mimo", true), 'mimo run -c "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("codex", false), 'codex exec --skip-git-repo-check "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("codex", true), 'codex exec resume --last "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("claude", false), 'claude -p "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("claude", true), 'claude -p -c "$PROMPT"');
+  /* 未知 Agent 回退 claude 首轮命令（续聊标记不误传到不存在的会话） */
+  assert.equal(ctx.aiAgentCmd("unknown", false), 'claude -p "$PROMPT"');
+  assert.equal(ctx.aiAgentCmd("unknown", true), 'claude -p "$PROMPT"');
+});
+
+test("AI 简报（单数据集）：概览统计、诊断结论、日志摘要与目录路径齐备", () => {
+  const ctx = loadFunctions(["buildAiBrief", "aiLastVal", "fmtRange", "logClass"]);
+  ctx.ANALYSIS_MODE = "single";
+  ctx.PROM_URL = "http://prom:9090";
+  ctx.PROM_PANEL_MODE = "ok";
+  ctx.PROM_RANGE_M = 240;
+  ctx.DATASETS = {
+    a: { model_name: "m1", xds_namespace: "ns1", rangeM: 60, abs: null, logDir: "/logs/a", profDir: "/prof/a" },
+    b: { model_name: "", xds_namespace: "", rangeM: 240, abs: null, logDir: "", profDir: "" },
+  };
+  ctx.DATA = {
+    ttft: { p99: [NaN, 820] }, tpot: { p99: [95] },
+    queue: { gw: [3], sched: [50], pd: [2] },
+    tps: [812], hit: [58.2], kv: { usage: [91.5] },
+    profOps: [["gemm", "30.0%"]],
+  };
+  ctx.LAST_FINDINGS = [["TPOT P99 95ms：Decode 侧带宽接近饱和", "warn"]];
+  ctx.AUX = {
+    a: { logState: "loaded", logName: "/logs/a/server.log", logs: ["INFO serving", "ERROR kv cache overflow", "WARN retry"] },
+    b: { logState: "unconfigured", logName: "", logs: [] },
+  };
+
+  const brief = ctx.buildAiBrief();
+
+  assert.match(brief, /单数据集瓶颈分析/);
+  assert.match(brief, /model_name="m1"/);
+  assert.match(brief, /TTFT P99：820 ms/);
+  assert.match(brief, /队列时延（网关\+调度\+PD）：55 ms/);
+  assert.match(brief, /KV Blocks 占用：91\.5%/);
+  assert.match(brief, /TPOT P99 95ms：Decode 侧带宽接近饱和/);
+  assert.match(brief, /gemm：30\.0%/);
+  assert.match(brief, /日志目录：\/logs\/a/);
+  assert.match(brief, /Profiling 目录：\/prof\/a/);
+  assert.match(brief, /ERROR kv cache overflow/);
+  assert.match(brief, /WARN retry/);
+  assert.ok(!brief.includes("INFO serving"));   /* 有异常行时只摘异常行 */
+  assert.ok(!brief.includes("A/B 劣化对比"));
+});
+
+test("AI 简报（双数据集）：含 A/B 劣化对比表与两侧日志摘要", () => {
+  const ctx = loadFunctions(["buildAiBrief", "aiLastVal", "fmtRange", "fmtTs", "logClass", "compareRows", "seriesAvg", "metricChange", "fmtNum"]);
+  ctx.ANALYSIS_MODE = "compare";
+  ctx.PROM_URL = "http://prom:9090";
+  ctx.PROM_PANEL_MODE = "ok";
+  ctx.PROM_RANGE_M = 240;
+  ctx.DATASETS = {
+    a: { model_name: "m1", xds_namespace: "ns1", rangeM: 240, abs: { from: 1700000000, to: 1700003600 }, logDir: "/logs/a", profDir: "" },
+    b: { model_name: "m1", xds_namespace: "ns1", rangeM: 240, abs: null, logDir: "/logs/b", profDir: "" },
+  };
+  ctx.DATA = {
+    ttft: { p99: [820] }, tpot: { p99: [95] },
+    queue: { gw: [3], sched: [50], pd: [2] },
+    tps: [800], hit: [58], kv: { usage: [90] },
+    batch: { wait: [12] }, transfer: { kv: [40] },
+    profOps: [],
+  };
+  ctx.COMPARE = { "ttft.p99": [600], "tpot.p99": [80], tps: [1000], hit: [70], kvUsage: [80], "batch.wait": [4], "transfer.kv": [20], "queue.gw": [2], "queue.sched": [30], "queue.pd": [1] };
+  ctx.LAST_FINDINGS = [["【Prometheus】TPOT 上升 18.8%：Decode 计算、HBM 带宽或 KV 换出是优先排查方向。", "warn"]];
+  ctx.AUX = {
+    a: { logState: "loaded", logName: "/logs/a/server.log", logs: ["INFO a ok"] },
+    b: { logState: "loaded", logName: "/logs/b/server.log", logs: ["ERROR b boom"] },
+  };
+
+  const brief = ctx.buildAiBrief();
+
+  assert.match(brief, /双数据集劣化对比（B 相对基线 A）/);
+  assert.match(brief, /A\/B 劣化对比/);
+  assert.match(brief, /\| TTFT P99 \| 600ms \| 820ms \| \+36\.7% \| 36\.7% \|/);
+  assert.match(brief, /基线 A/);
+  assert.match(brief, /数据集 A 日志摘要/);
+  assert.match(brief, /INFO a ok/);   /* A 无异常行 → 退化为尾部摘要 */
+  assert.match(brief, /ERROR b boom/);
+  assert.match(brief, /绝对 .* ~ /);   /* 基线 A 用绝对时间窗口 */
+});
+
+test("AI 对话历史上限：超出条数从头部丢弃", () => {
+  const ctx = loadFunctions(["aiHist", "aiHistPush"]);
+  ctx.AI_HIST = {};
+  ctx.AI_HIST_MAX = 3;
+  let saved = 0;
+  ctx.aiSaveJSON = () => { saved += 1; };
+
+  for (let i = 0; i < 5; i += 1) ctx.aiHistPush("kimi", { role: "user", text: "m" + i });
+
+  assert.equal(ctx.AI_HIST.kimi.length, 3);
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx.AI_HIST.kimi.map((m) => m.text))), ["m2", "m3", "m4"]);
+  assert.equal(saved, 5);
+});
