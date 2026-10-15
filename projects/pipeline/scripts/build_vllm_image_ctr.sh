@@ -29,14 +29,15 @@ EOF
 DRY_RUN=false
 while (($#)); do
   case "$1" in
+    '') shift ;; # 工作台空参数表示未填写可选参数
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "未知参数: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-VLLM_REPO_URL="${VLLM_REPO_URL:-https://github.com/TokensService/vllm.git}"
-VLLM_REF="${VLLM_REF:-main}"
+VLLM_REPO_URL="${VLLM_REPO_URL:-${GIT_URL:-https://github.com/TokensService/vllm.git}}"
+VLLM_REF="${VLLM_REF:-${GIT_BRANCH:-main}}"
 VLLM_SOURCE_DIR="${VLLM_SOURCE_DIR:-/tmp/vllm-build}"
 VLLM_UPDATE="${VLLM_UPDATE:-false}"
 DOCKERFILE="${DOCKERFILE:-docker/Dockerfile}"
@@ -46,7 +47,7 @@ BUILD_ARGS="${BUILD_ARGS:-}"
 BUILDKIT_ADDR="${BUILDKIT_ADDR:-unix:///run/buildkit/buildkitd.sock}"
 CTR_NAMESPACE="${CTR_NAMESPACE:-k8s.io}"
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
-SWR_REPOSITORY="${SWR_REPOSITORY:-dataartsfabric/vllm}"
+SWR_REPOSITORY="${SWR_REPOSITORY:-vllm}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 SWR_USERNAME="${SWR_USERNAME:-}"
 SWR_PASSWORD="${SWR_PASSWORD:-}"
@@ -92,9 +93,17 @@ if [[ -n "$BUILD_ARGS" ]]; then
 fi
 
 context_path="$VLLM_SOURCE_DIR/$BUILD_CONTEXT"
-[[ -d "$context_path" ]] || die "构建上下文不存在: $context_path"
-[[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
-mkdir -p "$BUILD_OUTPUT_DIR"
+if [[ "$DRY_RUN" != true ]]; then
+  [[ -n "$SWR_USERNAME" ]] || die "必须设置 SWR_USERNAME"
+  [[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
+  command -v git >/dev/null || die "缺少 git"
+  command -v buildctl >/dev/null || die "缺少 buildctl"
+  command -v ctr >/dev/null || die "缺少 ctr"
+  ensure_source
+  [[ -d "$context_path" ]] || die "构建上下文不存在: $context_path"
+  [[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
+  mkdir -p "$BUILD_OUTPUT_DIR"
+fi
 archive="$BUILD_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
 
 build_cmd=(buildctl --addr "$BUILDKIT_ADDR" build
@@ -109,6 +118,7 @@ import_cmd=(ctr -n "$CTR_NAMESPACE" images import "$archive")
 push_cmd=(ctr -n "$CTR_NAMESPACE" images push --user "${SWR_USERNAME}:***" "$IMAGE")
 
 info "目标镜像: $IMAGE"
+info "源码仓库: $VLLM_REPO_URL"
 info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
 info "构建命令: $(quote_cmd "${build_cmd[@]}")"
@@ -119,13 +129,6 @@ if [[ "$DRY_RUN" == true ]]; then
   exit 0
 fi
 
-[[ -n "$SWR_USERNAME" ]] || die "必须设置 SWR_USERNAME"
-[[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
-command -v git >/dev/null || die "缺少 git"
-command -v buildctl >/dev/null || die "缺少 buildctl"
-command -v ctr >/dev/null || die "缺少 ctr"
-
-ensure_source
 info "开始使用 BuildKit 编译 OCI 镜像"
 "${build_cmd[@]}"
 [[ -s "$archive" ]] || die "BuildKit 未生成 OCI 包: $archive"

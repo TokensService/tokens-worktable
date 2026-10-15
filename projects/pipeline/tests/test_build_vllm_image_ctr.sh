@@ -16,17 +16,22 @@ mkdir -p "$source_dir/docker"
 printf 'FROM scratch\n' > "$source_dir/docker/Dockerfile"
 
 output="$(VLLM_SOURCE_DIR="$source_dir" \
+  GIT_URL=https://github.com/TokensService/vllm \
+  GIT_BRANCH=v0.30.0 \
+  IMAGE_NAME=myapp \
   SWR_REGISTRY=swr.example.com \
-  SWR_REPOSITORY=dataartsfabric/vllm \
+  SWR_REPOSITORY='' \
   IMAGE_TAG=test-tag \
   SWR_USERNAME=test-user \
   SWR_PASSWORD=test-password \
-  "$SCRIPT" --dry-run 2>&1)"
+  "$SCRIPT" "" --dry-run 2>&1)"
 
 grep -Fq 'buildctl --addr' <<<"$output"
 grep -Fq 'ctr -n k8s.io images import' <<<"$output"
 grep -Fq 'ctr -n k8s.io images push' <<<"$output"
-grep -Fq 'swr.example.com/dataartsfabric/vllm:test-tag' <<<"$output"
+grep -Fq 'swr.example.com/vllm:test-tag' <<<"$output"
+grep -Fq '源码仓库: https://github.com/TokensService/vllm' <<<"$output"
+grep -Fq '源码: '"$source_dir"'@v0.30.0' <<<"$output"
 ! grep -Fq 'test-password' <<<"$output"
 
 echo 'PASS: vLLM BuildKit/ctr image build and push contract'
