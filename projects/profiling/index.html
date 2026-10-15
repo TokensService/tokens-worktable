@@ -315,10 +315,10 @@ function looksBinary(text){
   for (let i = 0; i < n; i++){ const c = text.charCodeAt(i); if (c === 0 || c === 65533) bad++; }
   return bad / n > 0.01;
 }
-function toast(msg){
+function toast(msg, holdMs){
   let t = $('pfToast'); if(!t){ t = document.createElement('div'); t.id = 'pfToast'; document.body.appendChild(t);
     t.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--dsw-alias-label-primary,#e6e8eb);color:var(--dsw-alias-bg-base,#0b0e14);padding:6px 14px;border-radius:999px;font-size:12px;z-index:99;opacity:0;transition:opacity .2s'; }
-  t.textContent = msg; t.style.opacity = 1; clearTimeout(t._tm); t._tm = setTimeout(() => { t.style.opacity = 0; }, 2200);
+  t.textContent = msg; t.style.opacity = 1; clearTimeout(t._tm); t._tm = setTimeout(() => { t.style.opacity = 0; }, holdMs || 2200);
 }
 
 /* ================= 主题三态 ================= */
@@ -1584,33 +1584,51 @@ refreshSaveDirLocalUi();
 /* 「Perfetto」（列表卡标题行）：先保存到本地（服务端目录落盘[按节点] → 本地目录写入[跳过已存] → 默认下载），再打开。
    勾选多条时第一个内嵌打开、其余各自弹出独立 Perfetto 窗口（同一 PING/PONG 握手协议，全功能界面）。
    弹窗必须发生在用户手势窗口期内：先同步 window.open 占位，再异步读字节投递；
-   本地目录授权申请同样必须先做（远程拉取等长 await 会耗尽手势激活）。 */
+   本地目录授权申请同样必须先做（远程拉取等长 await 会耗尽手势激活）。
+   远程条目拉取失败即从打开目标剔除（其占位弹窗一并关闭），全部失败时不打开模态框——
+   否则模态框会显示兜底的「无法取得 trace 原始内容」，把真实的拉取失败原因（toast）盖掉。 */
 $('perfettoOpenBtn').addEventListener('click', async () => {
   const targets = resolvePerfettoTargets(items, perfPicks, cur);
   if (!targets.length){ toast('请先选中（或勾选）一个 trace 条目'); return; }
   if (saveDirLocalHandle && !await ensureSaveDirLocalPermission()) toast('本地保存目录无写权限，本次该级回退浏览器下载');
-  const wins = [];
-  for (let i = 1; i < targets.length; i++) wins.push(window.open(PERFETTO_ORIGIN, '_blank'));
-  const blocked = wins.filter(w => !w).length;
+  const wins = new Map();   /* 条目 → 占位弹窗（仅非首个目标）；拉取失败/全程未用到的一律关闭 */
+  for (let i = 1; i < targets.length; i++) wins.set(targets[i], window.open(PERFETTO_ORIGIN, '_blank'));
+  let blocked = 0;
+  for (const w of wins.values()) if (!w) blocked++;
   const preRaws = {};   /* 保存到本地目录时回读的原始字节（条目 id → ArrayBuffer），打开链路复用免二次拉取 */
+  const pulled = [];
   for (const it of targets){
     if (it.remote && !it.path){
       try{ await ensureLocalPath(it); }
-      catch(e){ toast('远程拉取失败：' + it.name + '：' + (e && e.message || e)); continue; }
+      catch(e){
+        toast('远程拉取失败：' + it.name + '：' + (e && e.message || e), 8000);   /* 失败原因要留足阅读时间（模态框不再兜底打开） */
+        const w = wins.get(it); if (w && !w.closed) w.close();
+        wins.delete(it);
+        continue;
+      }
     }
     const s = await saveTraceBeforeOpen(it);
     if (s && s.buf) preRaws[it.id] = s.buf;
+    pulled.push(it);
   }
-  await openPerfettoFor(targets[0], preRaws[targets[0].id]);
-  for (let i = 1; i < targets.length; i++){
-    const win = wins[i - 1];
+  if (!pulled.length){
+    for (const w of wins.values()) if (w && !w.closed) w.close();
+    if (blocked) toast('有 ' + blocked + ' 个 Perfetto 窗口被浏览器拦截，请允许本站弹出窗口后重试');
+    return;
+  }
+  await openPerfettoFor(pulled[0], preRaws[pulled[0].id]);
+  for (let i = 1; i < pulled.length; i++){
+    const win = wins.get(pulled[i]);
     if (!win) continue;
+    wins.delete(pulled[i]);
     try{
-      const r = await perfettoTraceBuffer(targets[i], preRaws[targets[i].id]);
-      const tag = metaOf(targets[i]).tag;
+      const r = await perfettoTraceBuffer(pulled[i], preRaws[pulled[i].id]);
+      const tag = metaOf(pulled[i]).tag;
       createPerfettoSession({ host: window, target: win }).send(r.buf, (tag ? tag + ' - ' : '') + r.name, r.name);
-    }catch(e){ win.close(); toast(targets[i].name + '：' + (e && e.message || e)); }
+    }catch(e){ win.close(); toast(pulled[i].name + '：' + (e && e.message || e)); }
   }
+  /* 未被使用的占位窗（如首个目标拉取失败、后续目标顶上内嵌后空出的）一律关掉 */
+  for (const w of wins.values()) if (w && !w.closed) w.close();
   if (blocked) toast('有 ' + blocked + ' 个 Perfetto 窗口被浏览器拦截，请允许本站弹出窗口后重试');
 });
 $('perfRetryBtn').addEventListener('click', () => {
@@ -1711,7 +1729,7 @@ async function selectItem(id){
   /* 远程条目：先经 rfetch 拉到本机缓存再走本机链路 */
   if (it.remote && !it.path){
     try{ await ensureLocalPath(it); }
-    catch(e){ toast('远程拉取失败：' + (e && e.message || e)); return; }
+    catch(e){ toast('远程拉取失败：' + (e && e.message || e), 8000); return; }
   }
   if (it.binary){
     /* 二进制报告：调用服务端专用 CUDA 工具（nsys / ncu）分析 */

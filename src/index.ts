@@ -5289,7 +5289,11 @@ export function apply(ctx: Context) {
   async function remoteFetchFile(ip: string, user: string, pass: string, path: string, dstDir?: string) {
     const { host, port } = parseHostPort(ip)
     if (localAddrs().has(host)) {
-      const st = await fsStat(path)
+      let st
+      try { st = await fsStat(path) } catch (e) {
+        if ((e as any)?.code === 'ENOENT' || (e as any)?.code === 'ENOTDIR') { const err: any = new Error('远程文件不存在：' + path); err.statusCode = 404; throw err }
+        throw e
+      }
       if (!st.isFile()) { const err: any = new Error('不是文件：' + path); err.statusCode = 404; throw err }
       return { path, size: st.size, cached: true }
     }

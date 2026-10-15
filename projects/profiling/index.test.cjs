@@ -620,6 +620,9 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     "已保存到 ",
     /* 服务器选择支持搜索（隐藏 select 存值 + 输入过滤候选面板） */
     'id="srvNodeSearch"', 'id="srvNodePanel"', 'data-node-pick', "pf-nodePicker", "function renderSrvNodePanel(", "function srvNodeText(",
+    /* 远程条目拉取失败从打开目标剔除（占位弹窗关闭、全部失败不开模态框），失败 toast 延长驻留 8s */
+    "const pulled = []", "pulled.push(it)", "if (!pulled.length)", "wins.get(it)", "for (const w of wins.values())",
+    "远程拉取失败：' + it.name + '：' + (e && e.message || e), 8000", "function toast(msg, holdMs)",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
   /* 「清空本地」按钮已删除（标记、处理器均不再存在） */
   assert.ok(!html.includes('clearLocalBtn'), "「清空本地」按钮及其处理器应已移除");
