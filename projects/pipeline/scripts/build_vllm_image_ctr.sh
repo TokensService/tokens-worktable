@@ -16,7 +16,7 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
-  BUILD_ENGINE        构建器：auto、buildctl、nerdctl 或 docker，默认 auto
+  BUILD_ENGINE        构建器：auto、buildctl、nerdctl、docker 或 docker-buildx，默认 auto
   BUILDKIT_ADDR       BuildKit 地址，默认 unix:///run/buildkit/buildkitd.sock
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
@@ -116,6 +116,7 @@ docker_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
 
 build_cache_args=()
 nerdctl_cache_args=()
+docker_buildx_cache_args=()
 if [[ "$BUILD_CACHE" == true ]]; then
   if [[ "$DRY_RUN" != true ]]; then
     mkdir -p "$BUILD_CACHE_DIR"
@@ -123,6 +124,8 @@ if [[ "$BUILD_CACHE" == true ]]; then
   build_cache_args+=("--import-cache" "type=local,src=$BUILD_CACHE_DIR"
     "--export-cache" "type=local,dest=$BUILD_CACHE_DIR,mode=max")
   nerdctl_cache_args+=("--cache-from" "type=local,src=$BUILD_CACHE_DIR"
+    "--cache-to" "type=local,dest=$BUILD_CACHE_DIR,mode=max")
+  docker_buildx_cache_args+=("--cache-from" "type=local,src=$BUILD_CACHE_DIR"
     "--cache-to" "type=local,dest=$BUILD_CACHE_DIR,mode=max")
 elif [[ "$BUILD_CACHE" != false ]]; then
   die "BUILD_CACHE 必须是 true 或 false: $BUILD_CACHE"
@@ -134,17 +137,22 @@ if [[ "$DRY_RUN" != true ]]; then
   [[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
   command -v git >/dev/null || die "缺少 git"
   command -v ctr >/dev/null || die "缺少 ctr"
-  case "$BUILD_ENGINE" in
+    case "$BUILD_ENGINE" in
     auto)
       if command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
+      elif command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
       elif command -v docker >/dev/null; then BUILD_ENGINE=docker
       elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
-      else die "缺少可用构建器：请安装 buildctl+buildkitd、Docker 或 nerdctl+buildkitd"; fi
+      else die "缺少可用构建器：请安装 buildctl+buildkitd、Docker、Docker Buildx 或 nerdctl+buildkitd"; fi
       ;;
     buildctl|nerdctl|docker) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
-    *) die "BUILD_ENGINE 必须是 auto、buildctl、nerdctl 或 docker" ;;
+    docker-buildx)
+      command -v docker >/dev/null || die "缺少 docker"
+      docker buildx version >/dev/null 2>&1 || die "缺少 Docker Buildx，请安装 buildx 或改用可用的 BUILD_ENGINE"
+      ;;
+    *) die "BUILD_ENGINE 必须是 auto、buildctl、nerdctl、docker 或 docker-buildx" ;;
   esac
-  if [[ "$BUILD_ENGINE" == docker ]]; then
+  if [[ "$BUILD_ENGINE" == docker || "$BUILD_ENGINE" == docker-buildx ]]; then
     docker info >/dev/null 2>&1 || die "docker 命令存在但 Docker daemon 不可用，请启动 Docker 或改用可用的 BUILD_ENGINE"
   fi
   ensure_source
@@ -169,6 +177,15 @@ elif [[ "$BUILD_ENGINE" == docker ]]; then
     --tag "$IMAGE"
     "${docker_build_args[@]}"
     "$context_path")
+elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
+  build_cmd=(docker buildx build
+    --platform "$BUILD_PLATFORM"
+    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --tag "$IMAGE"
+    "${docker_build_args[@]}"
+    "${docker_buildx_cache_args[@]}"
+    --output "type=oci,dest=$archive"
+    "$context_path")
 else
   build_cmd=(buildctl --addr "$BUILDKIT_ADDR" build
     --frontend dockerfile.v0
@@ -189,6 +206,9 @@ info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
 info "构建器: $BUILD_ENGINE，编译并发: $BUILD_MAX_JOBS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
+if [[ "$BUILD_ENGINE" == docker && "$BUILD_CACHE" == true ]]; then
+  info "Docker Buildx 不可用，使用 Docker daemon 内置层缓存；如需 BUILD_CACHE_DIR，请安装 Buildx"
+fi
 info "构建命令: $(quote_cmd "${build_cmd[@]}")"
 info "导入命令: $(quote_cmd "${import_cmd[@]}")"
 info "推送命令: $(quote_cmd "${push_cmd[@]}")"
@@ -199,7 +219,7 @@ fi
 
 info "开始在流水线执行机编译镜像"
 "${build_cmd[@]}"
-if [[ "$BUILD_ENGINE" == buildctl ]]; then
+if [[ "$BUILD_ENGINE" == buildctl || "$BUILD_ENGINE" == docker-buildx ]]; then
   [[ -s "$archive" ]] || die "BuildKit 未生成 OCI 包: $archive"
   info "导入镜像到 containerd namespace=$CTR_NAMESPACE"
   ctr -n "$CTR_NAMESPACE" images import --base-name "$IMAGE" "$archive"
