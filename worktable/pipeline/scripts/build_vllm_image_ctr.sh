@@ -17,6 +17,8 @@ usage() {
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
   BUILD_ENGINE        构建器：auto、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
+  BUILDX_BUILDER      Docker Buildx builder 名称，默认 vllm-builder
+  BUILDX_AUTO_CREATE  docker-buildx 分支是否自动创建/配置 builder，默认 true
   BUILDKIT_ADDR       BuildKit 地址，默认 unix:///run/buildkit/buildkitd.sock
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
@@ -50,6 +52,8 @@ BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
 BUILD_ENGINE="${BUILD_ENGINE:-auto}"
+BUILDX_BUILDER="${BUILDX_BUILDER:-vllm-builder}"
+BUILDX_AUTO_CREATE="${BUILDX_AUTO_CREATE:-true}"
 BUILDKIT_ADDR="${BUILDKIT_ADDR:-unix:///run/buildkit/buildkitd.sock}"
 CTR_NAMESPACE="${CTR_NAMESPACE:-k8s.io}"
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
@@ -89,6 +93,36 @@ ensure_source() {
     mkdir -p "$(dirname "$VLLM_SOURCE_DIR")"
     git clone --depth 1 --branch "$VLLM_REF" "$VLLM_REPO_URL" "$VLLM_SOURCE_DIR"
   fi
+}
+
+ensure_buildx_builder() {
+  [[ "$BUILDX_AUTO_CREATE" == true || "$BUILDX_AUTO_CREATE" == false ]] || die "BUILDX_AUTO_CREATE 必须是 true 或 false: $BUILDX_AUTO_CREATE"
+  [[ "$BUILDX_AUTO_CREATE" == true ]] || return 0
+
+  local inspect_output proxy_value
+  if docker buildx inspect "$BUILDX_BUILDER" >/dev/null 2>&1; then
+    inspect_output="$(docker buildx inspect "$BUILDX_BUILDER" 2>/dev/null || true)"
+    proxy_value="${HTTPS_PROXY:-${https_proxy:-}}"
+    if [[ -n "$proxy_value" ]] && ! grep -Fq 'env.https_proxy' <<<"$inspect_output"; then
+      info "Buildx builder=$BUILDX_BUILDER 缺少代理配置，自动重建"
+      docker buildx rm "$BUILDX_BUILDER" >/dev/null
+    else
+      docker buildx use "$BUILDX_BUILDER" >/dev/null
+      return 0
+    fi
+  fi
+
+  local create_args=(docker buildx create
+    --name "$BUILDX_BUILDER"
+    --driver docker-container
+    --driver-opt network=host)
+  proxy_value="${HTTP_PROXY:-${http_proxy:-}}"
+  [[ -n "$proxy_value" ]] && create_args+=(--driver-opt "env.http_proxy=$proxy_value")
+  proxy_value="${HTTPS_PROXY:-${https_proxy:-}}"
+  [[ -n "$proxy_value" ]] && create_args+=(--driver-opt "env.https_proxy=$proxy_value")
+  "${create_args[@]}" --use >/dev/null
+  docker buildx inspect "$BUILDX_BUILDER" --bootstrap >/dev/null
+  info "Buildx builder=$BUILDX_BUILDER 已就绪"
 }
 
 build_args=()
@@ -169,6 +203,9 @@ if [[ "$DRY_RUN" != true ]]; then
   if [[ "$BUILD_ENGINE" == docker || "$BUILD_ENGINE" == docker-buildx ]]; then
     docker info >/dev/null 2>&1 || die "docker 命令存在但 Docker daemon 不可用，请启动 Docker 或改用可用的 BUILD_ENGINE"
   fi
+  if [[ "$BUILD_ENGINE" == docker-buildx ]]; then
+    ensure_buildx_builder
+  fi
   ensure_source
   [[ -d "$context_path" ]] || die "构建上下文不存在: $context_path"
   [[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
@@ -192,7 +229,7 @@ elif [[ "$BUILD_ENGINE" == docker ]]; then
     "${docker_build_args[@]}"
     "$context_path")
 elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
-  build_cmd=(docker buildx build
+  build_cmd=(docker buildx build --builder "$BUILDX_BUILDER"
     --platform "$BUILD_PLATFORM"
     --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
     --tag "$IMAGE"
