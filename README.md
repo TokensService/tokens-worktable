@@ -50,6 +50,9 @@
 - `projects/pipeline/`：流水线工作台、阶段脚本、桥接工具与测试。
 - `projects/codereview/`：PR 检视台及配套脚本。
 - `projects/diag_perf/`：性能诊断页及测试。
+- `projects/research_community/`：社区研究页（`community-research.html`）。添加社区链接（列表多选），
+  写提示词后选 AI Code Agent（Kimi Code / MiMo Code / Codex / Claude Code）做持续对话式分析；
+  CLI 非交互运行于本页目录 `.ai-community/`，续聊沿用同一服务端会话。
 - `projects/tasks/`：团队任务管理页（`task-manager.html`）。任务数据走服务端共享存储
   `GET/POST/PATCH/DELETE /api/worktable/tasks`（落盘 `$DSH_HOME/storages/worktable-tasks.json`），
   全团队实时可见；用户身份取 dsh-auth-gate 真实用户（`/auth/status` 当前登录、
