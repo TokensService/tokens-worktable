@@ -25,13 +25,19 @@
 #   [1/3] 配大页：只读预检（MemAvailable < 目标+余量 → 秒级失败并输出大内存
 #         进程 / /dev/shm 诊断，不自动清理——涉业务确认红线）→ /sys per-node
 #         接口、只增不减（固定 2000Gi = 1024000 页/节点）、nohup 后台写入 +
-#         轮询到位（900s）；停滞自愈：连续多轮无增长时后台 drop_caches +
-#         compact_memory 主动压实，压实后仍有顽固碎片缺口则把缺口转移到
-#         buddyinfo 高阶连续块最富余的 NUMA（重写配额文件，写入器自动应用；
-#         k8s 按节点总量调度大页，per-NUMA 不均不影响调度）；已达标节点跳过
+#         轮询到位；停滞自愈三件套：① 写入器退出自愈——3T 内存一轮压实约
+#         10 分钟，常超出写入器初始存活窗口，退出即重启以收割压实成果；
+#         ② 后台 drop_caches + compact_memory 主动压实（冷却 600s 可重复
+#         触发，每次顺延写入器存活窗口与本节点超时，绝对硬上限 3600s）；
+#         ③ 配额重算（缺口转移：NUMA 物理容量上限 + buddyinfo 高阶块分布
+#         按比例分配、总量守恒，重写配额文件后写入器自动应用；k8s 按节点
+#         总量调度大页，per-NUMA 不均不影响调度）；已达标节点跳过
 #   [2/3] 刷 allocatable：allocatable 未达标的节点重启 kubelet（pod 不重启、节点
 #         NotReady 数十秒——cadvisor 只在 kubelet 启动时采集大页），轮询 Ready + 达标（240s）
-#   [3/3] 终验：全部目标节点 HugePages_Total 与 allocatable 双达标 + 契约输出
+#   [3/3] 终验：全部目标节点 HugePages_Total 与 allocatable 双达标 + 契约输出；
+#         超额护栏：物理大页 > 目标（只增不减 + 历史/手工写入残留）时响亮告警并
+#         记入 EMS_HUGEPAGES_OVERPROVISIONED（内核无法运行时缩回，需重启节点回收，
+#         不影响 EMS 使用，故告警不失败）；allocatable 低于物理时提示 kubelet 采集滞后
 #
 # ⚠️ 内存顺序：compaction 需要干净内存，目标节点上若有待释放的业务 pod，请先
 # 释放再跑本 step（ems-deploy 的释放阶段在本 step 之后执行——busy 节点编排时
@@ -53,6 +59,8 @@ HUGEPAGE_GIB=2000
 HUGEPAGE_PRECHECK_MARGIN_GIB=200   # 预检余量：MemAvailable 需 ≥ 目标+余量，低于则提前失败
 HUGEPAGE_TIMEOUT_SECONDS=900
 HUGEPAGE_POLL_SECONDS=10
+HUGEPAGE_HARD_TIMEOUT_SECONDS=3600      # 单节点绝对硬上限：压实顺延可多次拉长超时，但最多等这么久必出结果
+HUGEPAGE_COMPACT_COOLDOWN_SECONDS=600   # 两次主动压实最小间隔（≈3T 内存一轮 compaction 耗时，短于此再压无意义）
 HUGEPAGE_STALL_ROUNDS=6            # 连续 N 轮（×POLL 秒）无增长判停滞：先主动压实，再缺口转移
 KUBELET_TIMEOUT_SECONDS=240
 KUBELET_POLL_SECONDS=5
@@ -268,6 +276,100 @@ print(value)
 ' <<<"$1"
 }
 
+start_hp_writer() { # <node_ip>  启动/重启大页写入器（存活窗口文件已过期则先顺延；沿用配额文件，只增不减）
+    node_ssh "$1" "now_r=\$(date +%s); [ \"\$(cat /tmp/ems_hp_until 2>/dev/null || echo 0)\" -lt \"\$now_r\" ] && echo \$(( now_r + ${HUGEPAGE_TIMEOUT_SECONDS} )) > /tmp/ems_hp_until || true; rm -f /tmp/ems_hp_done; nohup bash -c 'while [ \$(cat /tmp/ems_hp_until 2>/dev/null || echo 0) -gt \$(date +%s) ]; do ok=1; while read -r d q; do cur=\$(cat \$d/nr_hugepages 2>/dev/null || echo 0); if [ \$cur -lt \$q ]; then ok=0; echo \$q > \$d/nr_hugepages 2>/dev/null || true; fi; done < /tmp/ems_hp_quota; [ \$ok -eq 1 ] && break; sleep 5; done; echo done > /tmp/ems_hp_done' >/tmp/ems_hp.log 2>&1 &" \
+        || die "在节点 $1 启动大页写入器失败"
+}
+
+hp_quota_recalc() { # <numa_info文本>  stdin外的纯算法：配额行(dir quota cur) + NUMA meminfo 行 + buddyinfo 行 → stdout 新配额行（无变化无输出）
+    python3 - "$1" <<'PY'
+import re
+import sys
+
+lines = (sys.argv[1] or "").splitlines()
+quota, cur, cap, high = {}, {}, {}, {}
+for ln in lines:
+    parts = ln.split()
+    if parts and parts[0].startswith("/sys/") and parts[0].endswith("/hugepages-2048kB") and len(parts) >= 3:
+        quota[parts[0]] = int(parts[1])
+        cur[parts[0]] = int(parts[2])
+if not quota:
+    raise SystemExit
+node_of = lambda d: d.rsplit("/node", 1)[1].split("/", 1)[0]
+for ln in lines:                      # Node N MemTotal:  xxx kB（grep 带文件名前缀形态亦兼容）
+    m = re.search(r"Node\s+(\d+)\s+MemTotal:\s+(\d+)", ln)
+    if m:
+        cap[m.group(1)] = int(m.group(2)) // 2048
+for ln in lines:                      # Node N, zone Normal c0..c10 → buddy 可立即转大页页数 = c9 + 2*c10
+    parts = ln.split()
+    if parts[:1] == ["Node"] and len(parts) >= 6 and parts[3] == "Normal":
+        counts = ([int(x) for x in parts[4:]] + [0] * 11)[:11]
+        high[parts[1].rstrip(",")] = counts[9] + 2 * counts[10]
+total = sum(quota.values())
+orig = dict(quota)
+need = total - sum(cur.values())
+if need <= 0:
+    raise SystemExit
+room = {d: max(0, min(cap.get(node_of(d), 10 ** 9), cur[d] + high.get(node_of(d), 0)) - cur[d]) for d in quota}
+sum_room = sum(room.values())
+if sum_room >= need:                  # 总量守恒：缺口按 buddy 可转页数比例分配，上限为各 NUMA 可达额
+    assigned = 0
+    for d in quota:
+        share = need * room[d] // sum_room
+        quota[d] = cur[d] + share
+        assigned += share
+    for d in sorted(quota, key=lambda x: (-room[x], x)):
+        if assigned >= need:
+            break
+        quota[d] += 1
+        assigned += 1
+else:                                  # 总可达性不足：先吃满各 NUMA 可达额，残量给物理容量最大 NUMA（写入器持续重试，压实扩大 room 后下轮重算收敛）
+    for d in quota:
+        quota[d] = cur[d] + room[d]
+    quota[max(quota, key=lambda d: (cap.get(node_of(d), 0), d))] += need - sum_room
+if quota == orig:
+    raise SystemExit
+print("\n".join("%s %d" % (d, q) for d, q in quota.items()))
+PY
+}
+
+rebalance_hp_quota() { # <node_ip> <node_name>  容量上限感知配额重算（缺口转移，总量守恒），写回远程配额文件
+    local r_ip=$1 r_node=$2 numa_info new_quota quota_args d_line
+    numa_info="$(node_ssh "$r_ip" 'while read -r d q; do echo "$d $q $(cat $d/nr_hugepages 2>/dev/null || echo 0)"; done < /tmp/ems_hp_quota; grep " MemTotal:" /sys/devices/system/node/node*/meminfo; cat /proc/buddyinfo' 2>/dev/null)" || return 0
+    [[ -n "$numa_info" ]] || return 0
+    new_quota="$(hp_quota_recalc "$numa_info")"
+    [[ -n "$new_quota" ]] || return 0
+    quota_args=''
+    while read -r d_line; do quota_args+=" '$d_line'"; done <<<"$new_quota"
+    if node_ssh "$r_ip" "printf '%s\n'${quota_args} > /tmp/ems_hp_quota" >/dev/null 2>&1; then
+        log "$r_node: 配额重算（NUMA 容量上限 + buddy 高阶块比例转移缺口，总量守恒），写入器自动应用"
+    else
+        log "$r_node: 配额重算写回失败（继续按原配额等待）"
+    fi
+}
+
+# 大页物理现状快照：Total/Free（页）+ 每 NUMA nr_hugepages——供超额护栏输出明细
+hp_snapshot() { # <node_ip>
+    node_ssh "$1" 'grep "^HugePages_Total:" /proc/meminfo; grep "^HugePages_Free:" /proc/meminfo; for d in /sys/devices/system/node/node*/hugepages/hugepages-2048kB; do n=$(echo "$d" | sed -E "s#.*/(node[0-9]+)/.*#\1#"); printf "numa %s %s\n" "$n" "$(cat "$d/nr_hugepages" 2>/dev/null || echo 0)"; done' 2>/dev/null
+}
+
+# 大页超额护栏：节点已预留大页 > 目标（历史/手工写入或只增不减残留的常见后果）。
+# 内核无法运行时缩回大页（release 卡死，见 skill 坑 3），只能重启节点回收；不影响
+# EMS 使用，故响亮告警并记入契约而非失败。
+hp_overprov_warn() { # <node_name> <current_pages> <target_pages> [snapshot]
+    local g_node=$1 g_cur=$2 g_target=$3 g_snap=${4:-} extra detail=''
+    (( g_cur > g_target )) || return 1
+    extra=$(( g_cur - g_target ))
+    detail="$(awk '/^numa /{printf "%s=%s ", $2, $3}' <<<"$g_snap" 2>/dev/null)"
+    if [[ -n "$detail" ]]; then
+        log "警告: $g_node 大页超额预留 —— 物理 ${g_cur} 页 > 目标 ${g_target} 页（多 ${extra} 页 ≈ $(( extra / 512 ))Gi），每 NUMA ${detail% }"
+    else
+        log "警告: $g_node 大页超额预留 —— 物理 ${g_cur} 页 > 目标 ${g_target} 页（多 ${extra} 页 ≈ $(( extra / 512 ))Gi）"
+    fi
+    log "警告: $g_node 超额部分为已预留但闲置的大页，内核无法运行时缩回（需重启节点回收），不影响 EMS 使用"
+    return 0
+}
+
 hugepages_main() {
     local node_json ip node_name access resolved
     local -a target_nodes=() target_access=()
@@ -370,7 +472,7 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
 
     # ---- [1/3] 配大页（只增不减，已达标跳过）----
     log "=== [1/3] 配置大页（${HUGEPAGE_GIB}Gi/节点，只增不减） ==="
-    local total_pages per_numa renewed_nodes=''
+    local total_pages per_numa renewed_nodes='' overprov_nodes=''
     total_pages=$((HUGEPAGE_GIB * 512))
     local hp_idx hp_node node_ip
     for hp_idx in "${!target_nodes[@]}"; do
@@ -403,16 +505,20 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
             die "$hp_node 大内存进程需业务方确认、/dev/shm 孤儿文件可 rm、必要时 drop_caches；清理后重跑本 step（幂等）"
         fi
         log "$hp_node: 预检通过（还需 ${remaining_gib}Gi，MemAvailable ${avail_gib}Gi ≥ ${need_gib}Gi）"
-        log "$hp_node: $current 页 → $total_pages 页（per-NUMA 后台写入，停滞自动压实/缺口转移，最长 ${HUGEPAGE_TIMEOUT_SECONDS}s）"
+        log "$hp_node: $current 页 → $total_pages 页（per-NUMA 后台写入 + 停滞自愈：主动压实/配额重算/写入器重启）"
         # 配额文件（每行「NUMA大页目录 目标页数」）：初始均分向上取整；写入器每轮
-        # 重读文件，后续缺口转移只需重写本文件（写入器只增不减，配额只升不降语义不变）
-        node_ssh "$node_ip" "total=$total_pages; rm -f /tmp/ems_hp_done /tmp/ems_hp_quota; numa=\$(ls -d /sys/devices/system/node/node*/hugepages/hugepages-2048kB 2>/dev/null | wc -l); per=\$(( (total + numa - 1) / numa )); ls -d /sys/devices/system/node/node*/hugepages/hugepages-2048kB | awk -v p=\$per '{print \$1, p}' > /tmp/ems_hp_quota; nohup bash -c 'deadline=\$(( \$(date +%s) + ${HUGEPAGE_TIMEOUT_SECONDS} - 60 )); while [ \$(date +%s) -lt \$deadline ]; do ok=1; while read -r d q; do cur=\$(cat \$d/nr_hugepages 2>/dev/null || echo 0); if [ \$cur -lt \$q ]; then ok=0; echo \$q > \$d/nr_hugepages 2>/dev/null || true; fi; done < /tmp/ems_hp_quota; [ \$ok -eq 1 ] && break; sleep 5; done; echo done > /tmp/ems_hp_done' >/tmp/ems_hp.log 2>&1 &" \
-            || die "在 $hp_node 启动大页写入失败"
-        # 轮询到位；停滞自愈：① 主动压实（后台 drop_caches + compact_memory，3T
-        # 内存约 10 分钟，期间分配持续推进，轮询不阻塞）② 压实后仍停滞 → 缺口
-        # 转移（本地算新配额重写配额文件，写入器自动应用）
-        local waited=0 got='' last_got=-1 stall_rounds=0 compact_done=0 shift_done=0
-        while (( waited < HUGEPAGE_TIMEOUT_SECONDS )); do
+        # 重读文件（只增不减：cur ≥ 配额不回写），stall 时按 NUMA 容量与 buddy
+        # 高阶块重算缺口分配（总量守恒），重写本文件即被写入器自动应用
+        node_ssh "$node_ip" "rm -f /tmp/ems_hp_done /tmp/ems_hp_quota /tmp/ems_hp_until; numa=\$(ls -d /sys/devices/system/node/node*/hugepages/hugepages-2048kB 2>/dev/null | wc -l); per=\$(( ( ${total_pages} + numa - 1 ) / numa )); ls -d /sys/devices/system/node/node*/hugepages/hugepages-2048kB | awk -v p=\$per '{print \$1, p}' > /tmp/ems_hp_quota" \
+            || die "在 $hp_node 初始化大页配额失败"
+        start_hp_writer "$node_ip"
+        # 轮询到位；停滞自愈三件套：① 写入器退出自愈（3T 压实一轮约 10 分钟，
+        # 常超出写入器初始存活窗口，退出即重启收割压实成果）② 主动压实（冷却
+        # HUGEPAGE_COMPACT_COOLDOWN_SECONDS 可重复触发，每次顺延写入器存活窗口
+        # 与本节点超时；绝对硬上限 HUGEPAGE_HARD_TIMEOUT_SECONDS）③ 配额重算
+        local waited=0 got='' last_got=-1 stall_rounds=0 compact_last=0 compact_count=0 \
+              timeout_effective=$HUGEPAGE_TIMEOUT_SECONDS now_s
+        while (( waited < HUGEPAGE_HARD_TIMEOUT_SECONDS && waited < timeout_effective )); do
             sleep "$HUGEPAGE_POLL_SECONDS"
             waited=$((waited + HUGEPAGE_POLL_SECONDS))
             got="$(node_ssh "$node_ip" 'grep HugePages_Total /proc/meminfo' | awk '{print $2}')"
@@ -422,63 +528,31 @@ print(node["metadata"]["name"] + "\t" + access + "\t" + via)
             last_got=$got
             (( stall_rounds < HUGEPAGE_STALL_ROUNDS )) && continue
             stall_rounds=0
-            if (( compact_done == 0 )); then
-                compact_done=1
-                log "$hp_node: 写入停滞（${HUGEPAGE_STALL_ROUNDS} 轮无增长），后台触发 drop_caches + compact_memory 主动压实（3T 内存约 10 分钟）"
-                node_ssh "$node_ip" "nohup bash -c 'sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null' >/tmp/ems_hp_compact.log 2>&1 &" >/dev/null 2>&1 || true
-            elif (( shift_done == 0 )); then
-                shift_done=1
-                local numa_info new_quota quota_args d_line
-                numa_info="$(node_ssh "$node_ip" 'while read -r d q; do echo "$d $q $(cat $d/nr_hugepages 2>/dev/null || echo 0)"; done < /tmp/ems_hp_quota; cat /proc/buddyinfo' 2>/dev/null || true)"
-                new_quota="$(python3 - "$numa_info" <<'PY'
-import sys
-
-lines = (sys.argv[1] or '').strip().splitlines()
-quota, cur = {}, {}
-for ln in lines:
-    parts = ln.split()
-    if parts and parts[0].startswith('/sys/') and len(parts) >= 3:
-        quota[parts[0]] = int(parts[1])
-        cur[parts[0]] = int(parts[2])
-if not quota:
-    raise SystemExit
-high = {}
-for ln in lines:
-    parts = ln.split()
-    if parts and parts[0] == 'Node' and len(parts) >= 3:
-        try:
-            high[parts[1].rstrip(',')] = int(parts[-1]) + int(parts[-2])
-        except ValueError:
-            pass
-node_of = lambda d: d.rsplit('/node', 1)[1].split('/', 1)[0]
-best = max(quota, key=lambda d: high.get(node_of(d), 0))
-moved = 0
-for d in quota:
-    if cur.get(d, 0) < quota[d] and d != best:
-        deficit = quota[d] - cur.get(d, 0)
-        moved += deficit
-        quota[best] += deficit
-        quota[d] = cur.get(d, 0)
-if moved:
-    print('\n'.join('%s %d' % (d, q) for d, q in quota.items()))
-PY
-)"
-                if [[ -n "$new_quota" ]]; then
-                    log "$hp_node: 压实后仍有顽固碎片缺口，缺口转移到高阶空闲最富余 NUMA（重写配额，写入器自动应用）"
-                    quota_args=''
-                    while read -r d_line; do quota_args+=" '$d_line'"; done <<<"$new_quota"
-                    node_ssh "$node_ip" "printf '%s\n'${quota_args} > /tmp/ems_hp_quota" >/dev/null 2>&1 || log "$hp_node: 配额文件更新失败（继续按原配额等待）"
-                else
-                    log "$hp_node: 无可转移缺口（单 NUMA 或均可达标），继续等待"
-                fi
-            else
-                log "$hp_node: 压实与缺口转移均已尝试，继续等待至超时"
+            now_s=$(date +%s)
+            # ① 写入器退出自愈：done 文件在 = 写入器已退（存活窗口早于压实完成
+            # 到期的典型现场），重启后立即补写把压实整理出的高阶块收进大页池
+            if node_ssh "$node_ip" 'test -f /tmp/ems_hp_done' >/dev/null 2>&1; then
+                log "$hp_node: 写入器已退出但大页未到位（压实完成晚于存活窗口的典型现场），重启写入器收割压实成果"
+                start_hp_writer "$node_ip"
             fi
+            # ② 周期性主动压实（冷却内不重复触发）；顺延写入器存活窗口与本节点超时
+            if (( now_s - compact_last >= HUGEPAGE_COMPACT_COOLDOWN_SECONDS )); then
+                compact_last=$now_s
+                compact_count=$((compact_count + 1))
+                timeout_effective=$(( waited + HUGEPAGE_TIMEOUT_SECONDS ))
+                log "$hp_node: 写入停滞（${HUGEPAGE_STALL_ROUNDS} 轮无增长），第 ${compact_count} 次后台主动压实（drop_caches + compact_memory，3T 内存约 10 分钟），写入器存活窗口与超时顺延（已等 ${waited}s → ${timeout_effective}s）"
+                node_ssh "$node_ip" "echo \$(( \$(date +%s) + ${HUGEPAGE_TIMEOUT_SECONDS} )) > /tmp/ems_hp_until; nohup bash -c 'sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null' >/tmp/ems_hp_compact.log 2>&1 &" >/dev/null 2>&1 || true
+            fi
+            # ③ 配额重算（容量上限感知的缺口转移，总量守恒）
+            rebalance_hp_quota "$node_ip" "$hp_node"
         done
         if (( got < total_pages )); then
-            die "$hp_node 大页 ${HUGEPAGE_TIMEOUT_SECONDS}s 内未到位（$got/$total_pages；已自动尝试主动压实（drop_caches+compact_memory）与 NUMA 缺口转移仍不足，碎片极度顽固场景请人工释放内存或重启节点后重跑本 step，脚本不硬杀内核态进程）"
+            die "$hp_node 大页 ${waited}s 内未到位（$got/$total_pages；已自动尝试 ${compact_count} 次主动压实（drop_caches+compact_memory）、配额重算与写入器重启仍不足，碎片极度顽固场景请人工释放内存或重启节点后重跑本 step，脚本不硬杀内核态进程）"
         fi
-        log "$hp_node: 大页到位（$got 页）"
+        log "$hp_node: 大页到位（$got 页，等待 ${waited}s，压实 ${compact_count} 次）"
+        if (( got > total_pages )); then
+            log "警告: $hp_node 分配结果 ${got} 页 > 目标 ${total_pages} 页（多 $(( got - total_pages )) 页）—— 疑似分配超额（配额文件总量应守恒于目标），请排查"
+        fi
         renewed_nodes+="$hp_node "
     done
     [[ -n "$renewed_nodes" ]] || log "全部节点大页原已达标，本轮未新增"
@@ -530,13 +604,18 @@ print(("True" if ready else "False"), int(value // 2**30))
     # ---- [3/3] 终验 + 契约 ----
     log "=== [3/3] 终验（每节点大页总量 + allocatable 双达标） ==="
     node_json2="$(kubectl get nodes -o json)" || die '获取节点列表失败'
-    local kube_idx2 node_ip3 alloc3
+    local kube_idx2 node_ip3 alloc3 phys_gib
     for kube_idx2 in "${!target_nodes[@]}"; do
         kube_node="${target_nodes[$kube_idx2]}"
         node_ip3="${target_access[$kube_idx2]}"
         current="$(node_ssh "$node_ip3" 'grep HugePages_Total /proc/meminfo' | awk '{print $2}')" \
             || die "终验读取 $kube_node 大页失败"
         (( current >= total_pages )) || die "$kube_node 终验大页不足（$current/$total_pages 页）"
+        # 超额护栏：物理 > 目标（只增不减 + 历史/手工写入残留）→ 告警 + 契约标记（不失败）
+        if (( current > total_pages )); then
+            hp_overprov_warn "$kube_node" "$current" "$total_pages" "$(hp_snapshot "$node_ip3")"
+            overprov_nodes+="$kube_node "
+        fi
         alloc3="$(allocatable_gib_of "$(printf '%s' "$node_json2" | python3 -c '
 import json, sys
 for node in json.load(sys.stdin).get("items", []):
@@ -544,6 +623,12 @@ for node in json.load(sys.stdin).get("items", []):
         print(json.dumps(node)); break
 ' "$kube_node")")"
         (( alloc3 >= HUGEPAGE_GIB )) || die "$kube_node 终验 allocatable 不足（${alloc3}Gi < ${HUGEPAGE_GIB}Gi；请重跑本 step）"
+        # allocatable 低于物理大页：cadvisor 只在 kubelet 启动时采集，物理被抬高而
+        # kubelet 未重启时 allocatable 陈旧偏低，提示重启 kubelet 可对齐（EMS 按 allocatable 调度）
+        phys_gib=$(( current / 512 ))
+        if (( alloc3 < phys_gib )); then
+            log "警告: $kube_node allocatable ${alloc3}Gi < 物理大页 ${phys_gib}Gi —— kubelet 采集滞后，重启 kubelet 可对齐"
+        fi
         log "$kube_node: 大页 $current 页 · allocatable ${alloc3}Gi ✓"
     done
 
@@ -552,6 +637,7 @@ for node in json.load(sys.stdin).get("items", []):
     printf 'EMS_HUGEPAGES_OK=%s\n' 1
     printf 'EMS_HUGEPAGES_RENEWED=%s\n' "$(echo "${renewed_nodes// /,}" | sed 's/,$//')"
     printf 'EMS_KUBELET_RESTARTED=%s\n' "$(echo "${restarted_nodes// /,}" | sed 's/,$//')"
+    printf 'EMS_HUGEPAGES_OVERPROVISIONED=%s\n' "$(echo "${overprov_nodes// /,}" | sed 's/,$//')"
 }
 
 main() {
