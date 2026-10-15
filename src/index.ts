@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { execFile, spawn } from 'node:child_process'
-import { createReadStream, createWriteStream, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { createReadStream, createWriteStream, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { appendFile as fsAppendFile, readdir, readFile, mkdir as fsMkdir, open as fsOpen, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { basename, dirname, resolve as pathResolve, sep } from 'node:path'
@@ -184,13 +184,26 @@ const PLUGIN_DIR = (() => {
 
 /** 流水线脚本目录的安装默认：插件安装后的 projects/pipeline/scripts（tgz 安装即 profile
  *  node_modules 下的包内路径，link: 安装即源码树内路径；包 files 含 projects 目录）。
- *  设置文件（worktable-pipeline.json 的 config.scriptsDir）未配置时服务端执行器兜底到它。 */
+ *  设置文件（worktable-pipeline.json 的 config.scriptsDir）未配置或配置目录已不存在时，
+ *  服务端执行器兜底到它（见 resolvePipelineScriptsDir）。 */
 const DEFAULT_PIPELINE_SCRIPTS_DIR = pathResolve(PLUGIN_DIR, 'projects', 'pipeline', 'scripts')
 
-/** 解析流水线脚本目录：设置文件已配置 scriptsDir（trim 后非空）即用，否则用安装默认路径。 */
-function resolvePipelineScriptsDir(config: any, installedDir: string): string {
+/** 解析流水线脚本目录：设置文件已配置 scriptsDir（trim 后非空）即用，否则用安装默认路径。
+ *  配置值指向的目录已不存在（典型：指向已删除的 git worktree / 已卸载的挂载，曾致全部相对路径
+ *  脚本阶段 spawn ENOENT）时同样兜底安装默认路径，并经 onMissingDir 回调告知调用方（可记日志）。
+ *  typeof 守卫：vm 抽取测试未注入 statSync 时跳过存在性检查，维持纯映射语义。 */
+function resolvePipelineScriptsDir(config: any, installedDir: string, onMissingDir?: (configured: string, fallback: string) => void): string {
   const configured = config && typeof config.scriptsDir === 'string' ? config.scriptsDir.trim() : ''
-  return configured || installedDir
+  if (!configured) return installedDir
+  if (typeof statSync === 'function') {
+    let missing = false
+    try { missing = !statSync(configured).isDirectory() } catch { missing = true }
+    if (missing) {
+      if (typeof onMissingDir === 'function') { try { onMissingDir(configured, installedDir) } catch {} }
+      return installedDir
+    }
+  }
+  return configured
 }
 
 /** 从插件模块所在 lib/ 目录推断 DSH home：标准安装路径为
@@ -5853,7 +5866,9 @@ export function apply(ctx: Context) {
     /* 运行期设置副本：计划自带 settings 时按提交/登记时快照执行，下一次运行前的设置修改不影响本运行；
        旧计划无该字段时取执行开始时的配置快照（与旧行为一致，但同样定格在启动瞬间）。 */
     const runCfg = resolvePlanRunSettings(pl, cfg)
-    const scriptsDir = resolvePipelineScriptsDir(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR)   // 快照 scriptsDir 已解析，缺省时兜底安装路径
+    const scriptsDir = resolvePipelineScriptsDir(runCfg, DEFAULT_PIPELINE_SCRIPTS_DIR, (configured, fallback) => {   // 快照 scriptsDir 已解析，缺省时兜底安装路径
+      ctx.logger?.warn?.('[tokens-worktable] 流水线脚本目录不存在，本次运行兜底安装默认路径：' + configured + ' → ' + fallback)
+    })
     // 归档上下文（与页面约定一致）：
     //   阶段定时后缀沿用页面传入的 pl.archive/pl.tag/baseSeq——回显写入本地前缀同一归档文件夹、编号连贯；
     //   独立定时计划自建「<流水线名>_<年月日时分秒>」文件夹（archiveDir 或 scriptsDir 旁 runs/ 兜底，同页面 fallbackArchiveRoot）。
