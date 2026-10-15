@@ -4,7 +4,7 @@
 
 ## vLLM 镜像编译与 SWR 推送
 
-`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本在流水线执行机本地编译：优先使用 `buildctl`，其次使用 Docker，最后回退到 `nerdctl build`；编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。默认启用 BuildKit 本地层缓存（`BUILD_CACHE=true`，目录为 `/tmp/vllm-build-cache`，可用 `BUILD_CACHE_DIR` 修改），相同 Dockerfile 层会在后续构建中复用。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
+`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本在流水线执行机本地编译：`BUILD_ENGINE=auto` 优先使用可用的 Docker daemon，以复用执行机预拉取的基础镜像；也可显式选择 `docker-buildx`、`buildctl` 或 `nerdctl`。编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。使用 `docker-buildx`、`buildctl` 或 `nerdctl` 时默认启用 BuildKit 本地层缓存（`BUILD_CACHE=true`，目录为 `/tmp/vllm-build-cache`，可用 `BUILD_CACHE_DIR` 修改），相同 Dockerfile 层会在后续构建中复用。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
 
 最小配置：
 
