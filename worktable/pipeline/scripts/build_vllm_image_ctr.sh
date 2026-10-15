@@ -104,6 +104,19 @@ if [[ -n "$BUILD_ARGS" ]]; then
   done <<< "$BUILD_ARGS"
 fi
 
+# 将执行机代理传入 Dockerfile 的 RUN 步骤（例如 uv 下载 FlashInfer）。
+# 显式 BUILD_ARGS 优先，避免自动注入覆盖用户配置。
+for proxy_name in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+  proxy_lower="${proxy_name,,}"
+  proxy_value="${!proxy_name:-${!proxy_lower:-}}"
+  [[ -n "$proxy_value" ]] || continue
+  if ! printf '%s\n' "$BUILD_ARGS" | grep -Fq "${proxy_name}="; then
+    build_args+=("--opt" "build-arg:${proxy_name}=${proxy_value}")
+    nerdctl_build_args+=("--build-arg" "${proxy_name}=${proxy_value}")
+    docker_build_args+=("--build-arg" "${proxy_name}=${proxy_value}")
+  fi
+done
+
 if [[ -z "$BUILD_MAX_JOBS" ]]; then
   cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
   BUILD_MAX_JOBS=$((cpu_count / 2))
