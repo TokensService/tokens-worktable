@@ -114,6 +114,11 @@ test('rfetch：本机地址直接返回原路径（不拷贝）；非文件 404'
   res = fakeRes()
   await handlers['/api/worktable/rfetch']({ method: 'POST', body: { ip: 'localhost', path: dir } }, res)
   assert.equal(res.status, 404)
+  /* 本机短路：不存在的文件 ENOENT 也应归一为 404 + 中文提示（页面 toast 直接展示该文案） */
+  res = fakeRes()
+  await handlers['/api/worktable/rfetch']({ method: 'POST', body: { ip: 'localhost', path: dir + '/nope.pt.trace.json' } }, res)
+  assert.equal(res.status, 404)
+  assert.ok(res.body.error.includes('远程文件不存在'), res.body.error)
 })
 
 test('rfetch：远程经 stat 探测 + sshpass scp 拉取到缓存，大小一致二次命中缓存', async () => {
