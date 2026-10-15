@@ -5308,7 +5308,11 @@ export function apply(ctx: Context) {
     } catch { /* 未拉取过 */ }
     await fsMkdir(dir, { recursive: true })
     const temp = local + '.rfetch-' + process.pid + '-' + Date.now() + '.tmp'
-    const target = (user ? user + '@' : '') + host + ':' + shq(path)
+    /* scp 远程路径不套 shell 引号：execFile 直传参数数组本无本地 shell；而 OpenSSH ≥9 的 scp 默认走
+       SFTP 协议，远程路径按字面使用，单引号会被当成文件名的一部分（报 scp: '…': No such file or directory）。
+       代价：含空格/Shell 特殊字符的远程路径不支持拉取（trace 路径通常无此字符）。
+       注意 sshExec 里的 stat 仍用 shq —— 那条命令经远程 bash 执行，引号是正确且必要的。 */
+    const target = (user ? user + '@' : '') + host + ':' + path
     const scpArgs = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR', ...(port ? ['-P', port] : []), target, temp]
     try {
       await execTextT(pass ? 'sshpass' : 'scp', pass
