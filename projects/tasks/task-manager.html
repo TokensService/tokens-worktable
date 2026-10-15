@@ -1,0 +1,432 @@
+<!doctype html>
+<!-- 团队任务管理 · tokens-worktable 自定义窗口（窗口1）
+     皮肤：/api/worktable/template/dshell.css（DSH 原生主题变量）
+     主题：跟随 / 深色 / 浅色（"跟随"随系统明暗自动切换）
+     数据：服务端共享存储 /api/worktable/tasks（$DSH_HOME/storages/worktable-tasks.json，全团队可见）
+     用户：dsh-auth-gate 真实用户（/auth/status 取当前登录身份，/auth/users 取用户列表）；
+           token 共享部署 / 探测失败时退化为全权本地模式（负责人自由文本）
+     权限：admin 可新增/编辑/删除任务；普通成员可更新自己的任务状态并录入效果（服务端强校验） -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>团队任务管理</title>
+<link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+<style>
+  /* 主题覆盖：仅最小范围，其余走 dshell.css 原生变量。
+     变量只挂在 body[data-theme] 上（不污染 :root），color-scheme 由 JS 随主题同步设置，
+     避免浅色模式下 UA 表单控件仍按深色渲染。 */
+  body[data-theme="dark"] {
+    --dsw-alias-bg-base: #0b0e14;
+    --dsw-alias-label-primary: #e6e8eb;
+    --dsw-alias-label-secondary: #9aa4b2;
+    --dsw-alias-label-tertiary: #6b7280;
+    --dsw-alias-border-l1: #262b36;
+    --dsw-alias-border-l2: #3a4150;
+    --dsw-alias-fill-l1: rgba(255,255,255,.03);
+    --dsw-alias-state-accent-primary: #4f8ef7;
+    --dsw-tm-btn-text: #0b0e14;
+    color-scheme: dark;
+  }
+  body[data-theme="light"] {
+    --dsw-alias-bg-base: #f5f7fa;
+    --dsw-alias-label-primary: #1f2328;
+    --dsw-alias-label-secondary: #57606a;
+    --dsw-alias-label-tertiary: #8c959f;
+    --dsw-alias-border-l1: #d8dee4;
+    --dsw-alias-border-l2: #b6bec8;
+    --dsw-alias-fill-l1: rgba(0,0,0,.03);
+    --dsw-alias-state-accent-primary: #2f6feb;
+    --dsw-tm-btn-text: #0b0e14;
+    color-scheme: light;
+  }
+  body[data-theme="light"] .dshell-card,
+  body[data-theme="light"] .dshell-listItem,
+  body[data-theme="light"] .dshell-stat { background: rgba(255,255,255,.65); }
+  /* 主按钮两态都用深色文字（绿色底上的可读对比）；幽灵/危险按钮颜色由 dshell.css 按主题变量给，不得覆盖 */
+  .dshell-btn:not(.dshell-btnGhost):not(.dshell-btnDanger) { color: var(--dsw-tm-btn-text, #0b0e14); }
+
+  .tm-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .tm-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .tm-controls select { width:auto; padding:5px 8px; }
+  .tm-userChip { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--dsw-alias-label-primary); padding:3px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-fill-l1); }
+  .tm-prio { display:inline-flex; align-items:center; gap:5px; padding:1px 9px; border-radius:999px; font-size:11px; border:1px solid; }
+  .tm-prioHigh { color:#f85149; border-color:rgba(248,81,73,.45); }
+  .tm-prioMid  { color:#d29922; border-color:rgba(210,153,34,.45); }
+  .tm-prioLow  { color:#3fb950; border-color:rgba(63,185,80,.45); }
+  .tm-task { display:flex; flex-direction:column; gap:6px; align-items:stretch; cursor:default; }
+  .tm-taskTop { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .tm-taskTitle { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); flex:1; min-width:120px; }
+  .tm-taskTitle.done { text-decoration:line-through; opacity:.55; }
+  .tm-meta { display:flex; gap:12px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-tertiary); }
+  .tm-desc { font-size:12px; color:var(--dsw-alias-label-secondary); white-space:pre-wrap; }
+  .tm-overdue { color:#f85149 !important; font-weight:600; }
+  .tm-effect { margin-top:4px; padding:7px 10px; border-radius:8px; border:1px dashed var(--dsw-alias-border-l1); font-size:12px; color:var(--dsw-alias-label-secondary); }
+  .tm-taskActions { display:flex; gap:6px; flex-wrap:wrap; margin-top:2px; }
+  .tm-taskActions .dshell-btn, .tm-taskActions .dshell-btnGhost, .tm-taskActions .dshell-btnDanger { padding:3px 10px; font-size:11.5px; }
+  .tm-mask { position:fixed; inset:0; background:rgba(0,0,0,.5); display:none; align-items:center; justify-content:center; z-index:99; padding:16px; }
+  .tm-mask.on { display:flex; }
+  .tm-modal { width:100%; max-width:460px; max-height:90vh; overflow:auto; background:var(--dsw-alias-bg-base, #0b0e14); }
+  .tm-field { margin-bottom:10px; }
+  .tm-field label { display:block; font-size:11.5px; color:var(--dsw-alias-label-secondary); margin-bottom:4px; }
+  .tm-row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .tm-empty { text-align:center; padding:26px 0; color:var(--dsw-alias-label-tertiary); font-size:12.5px; }
+  .tm-roleTag { font-size:10.5px; padding:0 7px; border-radius:999px; border:1px solid var(--dsw-alias-state-accent-primary); color:var(--dsw-alias-state-accent-primary); }
+  .tm-err { display:none; padding:7px 12px; border:1px solid rgba(248,81,73,.5); border-radius:8px; color:#f85149; font-size:12px; }
+  .tm-err.on { display:block; }
+</style>
+</head>
+<body>
+<div class="dshell">
+
+  <div class="tm-head">
+    <div>
+      <h1 class="dshell-title">团队任务管理</h1>
+      <p class="dshell-sub">任务分配 · 优先级 · 截止时间 · 效果录入（admin 可新增/编辑任务，成员更新自己的任务）</p>
+    </div>
+    <div class="tm-controls">
+      <select id="themeSel" class="dshell-input" title="页面背景">
+        <option value="follow">背景：跟随</option>
+        <option value="dark">背景：深色</option>
+        <option value="light">背景：浅色</option>
+      </select>
+      <span id="userChip" class="tm-userChip">👤 …</span>
+      <span id="roleTag" class="tm-roleTag"></span>
+      <button id="refreshBtn" class="dshell-btn dshell-btnGhost" title="刷新任务列表">🔄</button>
+    </div>
+  </div>
+
+  <div id="errBar" class="tm-err"></div>
+
+  <!-- 统计 -->
+  <div class="dshell-grid">
+    <div class="dshell-stat"><div class="dshell-statLabel">全部任务</div><div class="dshell-statValue" id="stTotal">0</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">进行中</div><div class="dshell-statValue" id="stDoing" style="color:#d29922">0</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">已完成</div><div class="dshell-statValue" id="stDone" style="color:#3fb950">0</div></div>
+    <div class="dshell-stat"><div class="dshell-statLabel">已逾期</div><div class="dshell-statValue" id="stOver" style="color:#f85149">0</div></div>
+  </div>
+
+  <!-- 筛选 / 排序 -->
+  <div class="tm-controls">
+    <div class="dshell-tabs" style="flex:1;border-bottom:none">
+      <button class="dshell-tab dshell-tabOn" data-filter="all">全部</button>
+      <button class="dshell-tab" data-filter="mine" id="mineTab">我的任务</button>
+      <button class="dshell-tab" data-filter="todo">未开始</button>
+      <button class="dshell-tab" data-filter="doing">进行中</button>
+      <button class="dshell-tab" data-filter="done">已完成</button>
+    </div>
+    <select id="sortSel" class="dshell-input" title="排序方式">
+      <option value="priority">按优先级排序</option>
+      <option value="assignee">按用户排序</option>
+      <option value="deadline">按截止时间排序</option>
+      <option value="created">按创建时间排序</option>
+    </select>
+    <button id="addBtn" class="dshell-btn">＋ 新建任务</button>
+  </div>
+
+  <!-- 任务列表 -->
+  <div id="taskList" class="dshell-list"></div>
+
+  <!-- 新建/编辑弹窗 -->
+  <div id="mask" class="tm-mask">
+    <div class="dshell-card tm-modal">
+      <h2 class="dshell-sub" id="modalTitle" style="margin:0 0 10px;font-size:13px;font-weight:600">新建任务</h2>
+      <div class="tm-field"><label>任务标题 *</label><input id="fTitle" class="dshell-input" placeholder="输入任务标题" /></div>
+      <div class="tm-field"><label>任务描述</label><textarea id="fDesc" class="dshell-textarea" rows="3" placeholder="任务详情、要求…"></textarea></div>
+      <div class="tm-row2">
+        <div class="tm-field"><label>分配给</label><select id="fAssignee" class="dshell-input"></select><input id="fAssigneeFree" class="dshell-input" placeholder="负责人（自由文本）" style="display:none" /></div>
+        <div class="tm-field"><label>优先级</label>
+          <select id="fPrio" class="dshell-input">
+            <option value="high">高</option><option value="mid" selected>中</option><option value="low">低</option>
+          </select>
+        </div>
+      </div>
+      <div class="tm-field"><label>截止时间</label><input id="fDeadline" type="datetime-local" class="dshell-input" /></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+        <button class="dshell-btn dshell-btnGhost" id="cancelBtn">取消</button>
+        <button class="dshell-btn" id="saveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var LS_THEME = 'tm_theme_v1';
+  var API = '/api/worktable/tasks';
+  var PRIO = { high: { label: '高', cls: 'tm-prioHigh', w: 3 }, mid: { label: '中', cls: 'tm-prioMid', w: 2 }, low: { label: '低', cls: 'tm-prioLow', w: 1 } };
+  var STATUS = { todo: '未开始', doing: '进行中', done: '已完成' };
+
+  /* 当前身份：username 为 dsh-auth-gate 登录用户；shared=true 表示 token 共享部署 /
+     认证探测失败（退化为全权，负责人自由文本）；admin 来自 users.yaml 的 role。 */
+  var me = { username: '', admin: false, shared: false, ready: false };
+  var users = [];      // dsh-auth-gate 用户列表 [{username, admin, disabled}]
+  var tasks = [];
+  var filter = 'all', sortBy = 'priority', editingId = null;
+
+  function isAdmin() { return me.shared || me.admin; }
+
+  /* ---------- 错误提示 ---------- */
+  var errBar = document.getElementById('errBar');
+  var errTimer = null;
+  function showErr(msg) {
+    errBar.textContent = msg || '';
+    errBar.classList.toggle('on', !!msg);
+    if (errTimer) clearTimeout(errTimer);
+    if (msg) errTimer = setTimeout(function () { errBar.classList.remove('on'); }, 6000);
+  }
+
+  /* ---------- API ---------- */
+  function apiSend(method, body, query) {
+    var opts = { method: method, headers: {} };
+    if (body !== undefined) { opts.headers['content-type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    return fetch(API + (query || ''), opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok) {
+          if (r.status === 401 || r.status === 403) loadIdentity().then(render);
+          throw new Error((d && d.error) || ('请求失败（HTTP ' + r.status + '）'));
+        }
+        return d;
+      });
+    });
+  }
+  function loadTasks() {
+    return fetch(API).then(function (r) { return r.ok ? r.json() : { tasks: [] }; })
+      .then(function (d) { tasks = Array.isArray(d.tasks) ? d.tasks : []; render(); })
+      .catch(function () { /* 网络抖动静默，下轮轮询自愈 */ });
+  }
+
+  /* ---------- 身份与真实用户 ---------- */
+  function loadIdentity() {
+    return fetch('/auth/status').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (d && d.authenticated && typeof d.username === 'string' && d.username) {
+        me.username = d.username; me.shared = false;
+        return fetch('/auth/users').then(function (r) { return r.ok ? r.json() : null; }).then(function (u) {
+          users = u && Array.isArray(u.users) ? u.users.filter(function (x) { return x && typeof x.username === 'string'; }) : [];
+          var self = null;
+          for (var i = 0; i < users.length; i++) if (users[i].username === me.username) self = users[i];
+          me.admin = !!(self && self.admin);
+        });
+      }
+      /* username 为 null（token 共享模式）或探测失败：退化为全权共享模式 */
+      me.username = ''; me.shared = true; me.admin = true; users = [];
+    }).catch(function () { me.username = ''; me.shared = true; me.admin = true; users = []; })
+      .then(function () {
+        me.ready = true;
+        if (me.shared && filter === 'mine') { filter = 'all'; syncTabs(); }
+        renderHead();
+      });
+  }
+
+  /* ---------- 主题 ---------- */
+  var mq = window.matchMedia('(prefers-color-scheme: light)');
+  function applyTheme() {
+    var mode = localStorage.getItem(LS_THEME) || 'follow';
+    document.getElementById('themeSel').value = mode;
+    var t = mode === 'follow' ? (mq.matches ? 'light' : 'dark') : mode;
+    document.body.setAttribute('data-theme', t);
+    document.documentElement.style.colorScheme = t;
+  }
+  mq.addEventListener ? mq.addEventListener('change', applyTheme) : mq.addListener(applyTheme);
+  document.getElementById('themeSel').addEventListener('change', function (e) {
+    localStorage.setItem(LS_THEME, e.target.value); applyTheme();
+  });
+
+  /* ---------- 工具 ---------- */
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function fmtDL(ts) {
+    if (!ts) return '无截止';
+    var d = new Date(ts);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function isOverdue(t) { return t.status !== 'done' && t.deadline && t.deadline < Date.now(); }
+  function enabledUsers() { return users.filter(function (u) { return !u.disabled; }); }
+  function userLabel(name) {
+    var u = null;
+    for (var i = 0; i < users.length; i++) if (users[i].username === name) u = users[i];
+    return name + (u && u.admin ? '（admin）' : '') + (u && u.disabled ? '（已停用）' : '');
+  }
+
+  /* ---------- 排序 / 筛选 ---------- */
+  function visibleTasks() {
+    var list = tasks.filter(function (t) {
+      if (filter === 'mine') return me.username && t.assignee === me.username;
+      if (filter === 'all') return true;
+      return t.status === filter;
+    });
+    var cmp = {
+      priority: function (a, b) { return (PRIO[b.prio] || PRIO.mid).w - (PRIO[a.prio] || PRIO.mid).w || (a.deadline || Infinity) - (b.deadline || Infinity); },
+      assignee: function (a, b) { return String(a.assignee).localeCompare(String(b.assignee), 'zh') || (PRIO[b.prio] || PRIO.mid).w - (PRIO[a.prio] || PRIO.mid).w; },
+      deadline: function (a, b) { return (a.deadline || Infinity) - (b.deadline || Infinity); },
+      created: function (a, b) { return (b.created || 0) - (a.created || 0); }
+    };
+    return list.sort(cmp[sortBy]);
+  }
+
+  /* ---------- 渲染 ---------- */
+  function renderHead() {
+    document.getElementById('userChip').textContent = me.shared ? '👤 共享模式' : ('👤 ' + (me.username || '未登录'));
+    document.getElementById('roleTag').textContent = me.shared ? '全权' : (me.admin ? 'admin' : '成员');
+    document.getElementById('addBtn').style.display = isAdmin() ? '' : 'none';
+    document.getElementById('mineTab').style.display = me.shared ? 'none' : '';
+  }
+  function render() {
+    renderHead();
+    document.getElementById('stTotal').textContent = tasks.length;
+    document.getElementById('stDoing').textContent = tasks.filter(function (t) { return t.status === 'doing'; }).length;
+    document.getElementById('stDone').textContent = tasks.filter(function (t) { return t.status === 'done'; }).length;
+    document.getElementById('stOver').textContent = tasks.filter(isOverdue).length;
+
+    var box = document.getElementById('taskList');
+    box.innerHTML = '';
+    var list = visibleTasks();
+    if (!list.length) {
+      box.innerHTML = '<div class="dshell-card tm-empty">暂无任务' +
+        (filter === 'all' && isAdmin() ? '，点击右上角「＋ 新建任务」创建第一条团队任务' : '') + '</div>';
+      return;
+    }
+
+    list.forEach(function (t) {
+      var p = PRIO[t.prio] || PRIO.mid;
+      var item = document.createElement('div');
+      item.className = 'dshell-listItem tm-task';
+      var badgeCls = t.status === 'done' ? 'dshell-badgeDone' : (t.status === 'doing' ? 'dshell-badgeWait' : '');
+      var dlCls = isOverdue(t) ? 'tm-overdue' : '';
+
+      var html =
+        '<div class="tm-taskTop">' +
+          '<span class="tm-prio ' + p.cls + '">优先级 · ' + p.label + '</span>' +
+          '<span class="tm-taskTitle' + (t.status === 'done' ? ' done' : '') + '">' + esc(t.title) + '</span>' +
+          '<span class="dshell-badge ' + badgeCls + '">' + (STATUS[t.status] || t.status) + '</span>' +
+        '</div>' +
+        (t.desc ? '<div class="tm-desc">' + esc(t.desc) + '</div>' : '') +
+        '<div class="tm-meta">' +
+          '<span>👤 ' + esc(userLabel(t.assignee)) + '</span>' +
+          '<span class="' + dlCls + '">⏰ ' + fmtDL(t.deadline) + (isOverdue(t) ? '（已逾期）' : '') + '</span>' +
+          '<span>创建于 ' + fmtDL(t.created).split(' ')[0] + (t.createdBy ? ' · ' + esc(t.createdBy) : '') + '</span>' +
+        '</div>';
+
+      if (t.effect) html += '<div class="tm-effect">📋 效果：' + esc(t.effect) + '</div>';
+
+      // 操作按钮：admin 全部；成员仅自己任务可改状态/录效果（服务端同样强校验）
+      var canAll = isAdmin(), canSelf = !me.shared && me.username && t.assignee === me.username;
+      if (canAll || canSelf) {
+        html += '<div class="tm-taskActions">';
+        if (t.status !== 'done') {
+          html += '<button class="dshell-btn" data-act="advance">' + (t.status === 'todo' ? '开始' : '完成') + '</button>';
+        }
+        html += '<button class="dshell-btn dshell-btnGhost" data-act="effect">录入效果</button>';
+        if (canAll) {
+          html += '<button class="dshell-btn dshell-btnGhost" data-act="edit">编辑</button>' +
+                  '<button class="dshell-btn dshell-btnDanger" data-act="del">删除</button>';
+        }
+        html += '</div>';
+      }
+      item.innerHTML = html;
+
+      item.addEventListener('click', function (e) {
+        var act = e.target.getAttribute && e.target.getAttribute('data-act');
+        if (!act) return;
+        if (act === 'advance') {
+          var next = t.status === 'todo' ? 'doing' : 'done';
+          apiSend('PATCH', { id: t.id, status: next }).then(loadTasks).catch(function (err) { showErr(err.message); });
+        } else if (act === 'del') {
+          if (confirm('确认删除任务「' + t.title + '」？')) {
+            apiSend('DELETE', undefined, '?id=' + encodeURIComponent(t.id)).then(loadTasks).catch(function (err) { showErr(err.message); });
+          }
+        } else if (act === 'edit') { openModal(t); }
+        else if (act === 'effect') {
+          var v = prompt('录入任务效果 / 成果：', t.effect || '');
+          if (v !== null) {
+            apiSend('PATCH', { id: t.id, effect: v.trim() }).then(loadTasks).catch(function (err) { showErr(err.message); });
+          }
+        }
+      });
+      box.appendChild(item);
+    });
+  }
+
+  /* ---------- 弹窗 ---------- */
+  var mask = document.getElementById('mask');
+  var fAssignee = document.getElementById('fAssignee');
+  var fAssigneeFree = document.getElementById('fAssigneeFree');
+  function fillAssignees(t) {
+    var list = enabledUsers();
+    if (!users.length) {   // 共享模式 / 用户列表不可用：自由文本
+      fAssignee.style.display = 'none'; fAssigneeFree.style.display = '';
+      fAssigneeFree.value = t ? t.assignee : '';
+      return;
+    }
+    fAssignee.style.display = ''; fAssigneeFree.style.display = 'none';
+    fAssignee.innerHTML = '';
+    list.forEach(function (u) {
+      var o = document.createElement('option'); o.value = u.username; o.textContent = userLabel(u.username); fAssignee.appendChild(o);
+    });
+    /* 编辑时原负责人已停用/已删除：保留为可选项，避免打开弹窗就静默改人（保存时服务端仍会校验） */
+    if (t && t.assignee && !list.some(function (u) { return u.username === t.assignee; })) {
+      var ox = document.createElement('option'); ox.value = t.assignee; ox.textContent = userLabel(t.assignee); fAssignee.appendChild(ox);
+    }
+  }
+  function currentAssignee() { return users.length ? fAssignee.value : fAssigneeFree.value.trim(); }
+  function openModal(t) {
+    fillAssignees(t);
+    editingId = t ? t.id : null;
+    document.getElementById('modalTitle').textContent = t ? '编辑任务' : '新建任务';
+    document.getElementById('fTitle').value = t ? t.title : '';
+    document.getElementById('fDesc').value = t ? (t.desc || '') : '';
+    var defAssignee = t ? t.assignee : (me.username || (enabledUsers()[0] ? enabledUsers()[0].username : ''));
+    if (users.length) fAssignee.value = defAssignee;
+    document.getElementById('fPrio').value = t ? t.prio : 'mid';
+    document.getElementById('fDeadline').value = t && t.deadline ? toLocal(t.deadline) : '';
+    mask.classList.add('on');
+  }
+  function toLocal(ts) {
+    var d = new Date(ts), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  document.getElementById('addBtn').addEventListener('click', function () { if (isAdmin()) openModal(null); });
+  document.getElementById('cancelBtn').addEventListener('click', function () { mask.classList.remove('on'); });
+  mask.addEventListener('click', function (e) { if (e.target === mask) mask.classList.remove('on'); });
+  document.getElementById('saveBtn').addEventListener('click', function () {
+    var title = document.getElementById('fTitle').value.trim();
+    if (!title) { showErr('请填写任务标题'); return; }
+    var assignee = currentAssignee();
+    if (!assignee) { showErr('请填写负责人'); return; }
+    var dl = document.getElementById('fDeadline').value;
+    var data = {
+      title: title,
+      desc: document.getElementById('fDesc').value.trim(),
+      assignee: assignee,
+      prio: document.getElementById('fPrio').value,
+      deadline: dl ? new Date(dl).getTime() : null
+    };
+    var saving = editingId ? apiSend('PATCH', Object.assign({ id: editingId }, data)) : apiSend('POST', data);
+    saving.then(function () { mask.classList.remove('on'); return loadTasks(); })
+      .catch(function (err) { showErr(err.message); });
+  });
+
+  /* ---------- 筛选 / 排序控件 ---------- */
+  function syncTabs() {
+    document.querySelectorAll('[data-filter]').forEach(function (x) {
+      x.classList.toggle('dshell-tabOn', x.getAttribute('data-filter') === filter);
+    });
+  }
+  document.querySelectorAll('[data-filter]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      filter = b.getAttribute('data-filter'); syncTabs(); render();
+    });
+  });
+  document.getElementById('sortSel').addEventListener('change', function (e) { sortBy = e.target.value; render(); });
+  document.getElementById('refreshBtn').addEventListener('click', function () { loadIdentity().then(loadTasks); });
+
+  /* 团队共享数据：15 秒轮询（页面不可见时暂停），他人增删改自动可见 */
+  setInterval(function () { if (!document.hidden) loadTasks(); }, 15000);
+
+  applyTheme();
+  loadIdentity().then(loadTasks);
+})();
+</script>
+</body>
+</html>
