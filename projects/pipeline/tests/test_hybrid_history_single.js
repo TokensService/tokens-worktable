@@ -109,7 +109,7 @@ test('finish：本地记录按 tag 原地落定终态、只承载本地阶段（
 
 test('handoffSchedSuffix：移交成功 toast 轻提示（不再 alert 弹窗），历史记录保持「进行中」', async () => {
   const calls = { toast: [], alert: [], persist: 0, finish: [] };
-  const rec = { no: 3, tag: 'T1', pipeline: 'test', status: 'running', by: 'lihaifeng', logs: [] };
+  const rec = { no: 3, tag: 'T1', pipeline: 'test', status: 'running', by: 'lihaifeng', logs: [], ts: 1000 };
   const ctx = load({
     console, Date, JSON, Object, Array, Promise,
     history: [rec],
@@ -136,6 +136,7 @@ test('handoffSchedSuffix：移交成功 toast 轻提示（不再 alert 弹窗）
   assert.deepEqual(calls.finish, ['success']);
   assert.equal(rc.suffixPlanHeld, false, '已激活：休眠计划不再清理');
   assert.equal(rec.status, 'running', '历史记录保持「进行中」待服务端后缀落终态（单条记录状态真实）');
+  assert.ok(rec.ts > 1000, '终态→running 翻转同步 bump ts：凭严格更新的 ts 通过合并层「终态不可逆」规则，不依赖 ts 相等 tie');
   assert.ok(calls.persist >= 1, '翻转状态后持久化上送');
   assert.equal(rc.nodes.b.status, 'skipped', '后缀阶段编排区标记移交（skipped）');
   assert.equal(rc.handoffFromIdx, 1);

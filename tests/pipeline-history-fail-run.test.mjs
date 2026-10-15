@@ -256,6 +256,24 @@ test('fail-run：无有效记录 400；GET 405；非法记录（缺 tag）被剔
   assert.equal(get.status, 405)
 })
 
+test('fail-run：落史 ts 恒取服务端时间（不沿用客户端 raw.ts），startTs 保留原逻辑', async () => {
+  /* pagehide fail-run 与 400ms 防抖整存 PUT 竞态时，若 ts 沿用客户端值会与页面持有的 running
+     副本同 ts（合并层 tie 不复活终态的前提是终态 ts 严格较新）；ts 取服务端 Date.now() 后，
+     fail-run 的 failed 记录对任何持有同 ts running 副本的页面天然较新。 */
+  const home = await mkdtemp(pathJoin(tmpdir(), 'wt-failrun-'))
+  await mkdir(pathJoin(home, 'storages'), { recursive: true })
+  await writeFile(pathJoin(home, 'storages', 'worktable-pipeline.json'), JSON.stringify({ config: {}, history: [] }), 'utf8')
+  const handler = await loadFailRunRoute(home)
+  const before = Date.now()
+  const res = await call(handler, 'POST', { records: [failRecord({ ts: 1791822000000, startTs: 1791821988000 })] })
+  const after = Date.now()
+  assert.equal(res.status, 200)
+  const store = await readStore(home)
+  const rec = store.history.find(h => h.tag === 't-close-1')
+  assert.ok(rec.ts >= before && rec.ts <= after, '终态 ts 取服务端时间而非客户端 raw.ts：' + rec.ts)
+  assert.equal(rec.startTs, 1791821988000, 'startTs 保留客户端原值（运行起点是历史事实）')
+})
+
 test('cleanCloseFailRecord：字段白名单与截断——envNodes 剥离凭据、logs 白名单、tag 非法拒收', async () => {
   const home = await mkdtemp(pathJoin(tmpdir(), 'wt-failrun-'))
   await mkdir(pathJoin(home, 'storages'), { recursive: true })

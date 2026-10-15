@@ -6675,11 +6675,14 @@ async function discardHeldSuffixPlan(rc){
 /* 混合编排移交成功后：本次运行的历史记录（同 tag 一条）保持「进行中」，待服务端后缀跑完由
    execPlan 落终态——本地前缀完成 ≠ 整条运行完成；若这里落定 success，刷新合并
    （applyHistoryRefreshPayload 本地终态优先于远端 running）会压住服务端后缀的「进行中」，
-   后缀执行期间历史误显「已完成」。服务端终态写入后经 3s 历史刷新收敛。 */
+   后缀执行期间历史误显「已完成」。服务端终态写入后经 3s 历史刷新收敛。
+   翻回 running 时同步 bump ts：合并层（mergePipelineHistoryForWrite）「终态不可逆」规则要求
+   客户端 ts 严格大于磁盘 ts 才允许终态→running 翻转，本函数是这个设计内翻转的唯一入口。 */
 function markHistorySuffixRunning(rc){
   const rec=rc&&rc.tag?history.find(h=>h&&h.tag===rc.tag):null;
   if(!rec||rec.status==='running') return;
   rec.status='running';
+  rec.ts=Date.now();
   renderHistory(); renderStats(); persistState();
 }
 async function handoffSchedSuffix(rc, i){
