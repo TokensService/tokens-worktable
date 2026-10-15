@@ -357,9 +357,15 @@
     });
   }
   function loadTasks() {
-    return fetch(API).then(function (r) { return r.ok ? r.json() : { tasks: [] }; })
-      .then(function (d) { tasks = Array.isArray(d.tasks) ? d.tasks : []; render(); })
-      .catch(function () { /* 网络抖动静默，下轮轮询自愈 */ });
+    return fetch(API).then(function (r) {
+      if (!r.ok) { var err = new Error('HTTP ' + r.status); err.http = r.status; throw err; }
+      return r.json();
+    }).then(function (d) { tasks = Array.isArray(d.tasks) ? d.tasks : []; render(); })
+      .catch(function (err) {
+        /* 失败保留现有列表不清空：一次会话内已见任务不因服务端瞬时错误（401/500 等）消失；
+           HTTP 层错误提示一次，网络抖动静默（下轮轮询自愈）。 */
+        if (err && err.http) showErr('任务列表加载失败（HTTP ' + err.http + '）');
+      });
   }
 
   /* ---------- 身份与真实用户 ---------- */
@@ -581,9 +587,14 @@
     });
   }
   fTagsInput.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter' && e.key !== ',') return;
+    /* 输入法组词期的 Enter/逗号是「上屏候选词」而非确认添加，必须放行给 IME：
+       Safari 以 isComposing 标记，Chrome 以 key=Process / keyCode=229 标记，
+       都不得当作添加标签（否则中文标签输入被拦腰打断、候选词被误收成半截标签）。 */
+    if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+    /* 半角/全角逗号都作分隔符（与导入解析的 [,，、] 口径一致），结尾逗号剥掉 */
+    if (e.key !== 'Enter' && e.key !== ',' && e.key !== '，') return;
     e.preventDefault();
-    var v = fTagsInput.value.trim().replace(/,$/, '');
+    var v = fTagsInput.value.trim().replace(/[,，]+$/, '');
     if (!v) return;
     if (editTags.length >= 10) { showErr('标签最多 10 个'); return; }
     if (editTags.indexOf(v) < 0) editTags.push(v);
