@@ -45,6 +45,11 @@
 - 非零退出 / 超时（30 秒）视为拉取失败，错误原因（含 stderr 摘要）显示在策略面板与「策略测试」提示中；
 - 脚本不作为流水线阶段执行，参数识别规则不适用。
 
+内置示例：`list_open_xds_archs.sh`（浅克隆 Open-XDS 仓读 JSON 架构文件）、
+`list_vllm_model_archs.sh`（读 TokensService/vllm 仓 `model_arch.yaml` 的顶层
+arch_name——github.com 地址推导 raw URL 秒级拉取，其他远端自动退化为浅克隆；
+`MODEL_ARCH_PATH`/`MODEL_ARCH_URL` 可改数据源）。
+
 ## 快速开始
 
 1. 复制模板：`cp template.sh my-step.sh`，按注释改掉 `deploy_one` 里的演示逻辑；
@@ -457,6 +462,14 @@ TARGET_IPS='["192.168.0.243","192.168.0.128"]' EMS_DRY_RUN=0 bash ems-uninstall.
 **模式**：`DEPLOY_MODE=pd`（默认）= Prefill + Decode + Proxy 的 P/D 分离；
 `DEPLOY_MODE=standalone` = 仅 Prefill 原生基线（直听对外端口 `PROXY_PORT`，不接
 Mooncake/Proxy，Decode/Proxy 阶段自动跳过），用于先验证模型与单机配方。
+
+**部署策略选择（arch）**：代码仓设置把 vllm 仓库（`https://github.com/TokensService/vllm`）
+的「部署策略」来源设为「策略·脚本」并选用 `list_vllm_model_archs.sh` 后，主控/定时页/
+运行弹窗的「部署策略」下拉会按当前分支列出该分支 `model_arch.yaml` 注册的全部
+arch_name（命名规则 `<model>-<quant>-<platform>-<n>P<m>D>`，如
+`GLM-5.2-W4A4C8-MG40-BNT3-1P1D`），所选值随运行注入 `DEPLOY_STRATEGY`。
+当前脚本族参数默认值对应 `GLM-5.2-W4A4C8-MG40-BNT3-1P1D`；按 `DEPLOY_STRATEGY`
+切换引擎参数的多 arch 映射留待后续接入。
 
 **执行位置**：与 ems-check 同一自推送模式——注入 `TARGET_HOSTS` 时推送到**首个**目标
 节点（= 部署节点，vLLM 单节点部署）执行；执行机仅需 ssh（密码认证需 sshpass），目标

@@ -6,7 +6,9 @@ pipeline="$script_dir/pull_render_config.sh"
 
 [[ -x "$pipeline" ]] || { echo "pull_render_config.sh must exist and be executable" >&2; exit 1; }
 grep -Fq 'bash "$SCRIPT_DIR/pull-image.sh"' "$pipeline"
-grep -Fq 'bash "$SCRIPT_DIR/render-config.sh"' "$pipeline"
+# 新版编排：render-config.sh 推送到首个目标节点远程执行（render_on_first_target）
+grep -Fq 'sync_remote_file "$SCRIPT_DIR/render-config.sh"' "$pipeline"
+grep -Fq 'bash $(remote_quote "${target_script_dir}/render-config.sh")' "$pipeline"
 grep -Fq 'IMAGE_NAME' "$pipeline"
 grep -Fq 'ARCH_NAME' "$pipeline"
 grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$pipeline"
