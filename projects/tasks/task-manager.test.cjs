@@ -44,6 +44,18 @@ test("任务增删改走服务端共享存储 API", () => {
   assert.ok(html.includes("setInterval("), "应有团队共享数据的定时刷新");
 });
 
+test("无独立「录入效果」按钮：点「完成」时弹输入框，结果随 status=done 一并 PATCH", () => {
+  assert.ok(!html.includes('data-act="effect"'), "不应再有 data-act=effect 按钮");
+  assert.ok(html.includes("录入任务结果"), "完成时应提示录入任务结果");
+  assert.ok(html.includes("status: 'done', effect:"), "任务结果应随 status=done 一并提交");
+  assert.ok(html.includes("v === null"), "取消输入应中止完成操作");
+});
+
+test("编辑弹窗含任务结果字段（admin 可随时修订；新建态隐藏）", () => {
+  assert.ok(html.includes('id="fEffect"'), "弹窗应含任务结果输入框");
+  assert.ok(html.includes("fEffectWrap"), "结果字段应按编辑态切换显隐");
+});
+
 test("权限 UI：admin 门控新建按钮，成员仅自己任务可操作", () => {
   assert.ok(html.includes("isAdmin()"), "应有 admin 判定");
   assert.ok(html.includes("t.assignee === me.username"), "成员操作应限定自己的任务");

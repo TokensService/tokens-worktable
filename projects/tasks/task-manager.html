@@ -5,7 +5,7 @@
      数据：服务端共享存储 /api/worktable/tasks（$DSH_HOME/storages/worktable-tasks.json，全团队可见）
      用户：dsh-auth-gate 真实用户（/auth/status 取当前登录身份，/auth/users 取用户列表）；
            token 共享部署 / 探测失败时退化为全权本地模式（负责人自由文本）
-     权限：admin 可新增/编辑/删除任务；普通成员可更新自己的任务状态并录入效果（服务端强校验） -->
+     权限：admin 可新增/编辑/删除任务；普通成员可推进自己的任务状态，点「完成」时一并录入任务结果（服务端强校验） -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -82,7 +82,7 @@
   <div class="tm-head">
     <div>
       <h1 class="dshell-title">团队任务管理</h1>
-      <p class="dshell-sub">任务分配 · 优先级 · 截止时间 · 效果录入（admin 可新增/编辑任务，成员更新自己的任务）</p>
+      <p class="dshell-sub">任务分配 · 优先级 · 截止时间 · 完成时录入任务结果（admin 可新增/编辑任务，成员更新自己的任务）</p>
     </div>
     <div class="tm-controls">
       <select id="themeSel" class="dshell-input" title="页面背景">
@@ -142,6 +142,7 @@
         </div>
       </div>
       <div class="tm-field"><label>截止时间</label><input id="fDeadline" type="datetime-local" class="dshell-input" /></div>
+      <div class="tm-field" id="fEffectWrap" style="display:none"><label>任务结果 / 成果</label><textarea id="fEffect" class="dshell-textarea" rows="2" placeholder="完成情况、产出、结论…"></textarea></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
         <button class="dshell-btn dshell-btnGhost" id="cancelBtn">取消</button>
         <button class="dshell-btn" id="saveBtn">保存</button>
@@ -310,14 +311,13 @@
 
       if (t.effect) html += '<div class="tm-effect">📋 效果：' + esc(t.effect) + '</div>';
 
-      // 操作按钮：admin 全部；成员仅自己任务可改状态/录效果（服务端同样强校验）
+      // 操作按钮：admin 全部；成员仅自己任务可推进状态（点「完成」时一并录入任务结果；服务端同样强校验）
       var canAll = isAdmin(), canSelf = !me.shared && me.username && t.assignee === me.username;
       if (canAll || canSelf) {
         html += '<div class="tm-taskActions">';
         if (t.status !== 'done') {
           html += '<button class="dshell-btn" data-act="advance">' + (t.status === 'todo' ? '开始' : '完成') + '</button>';
         }
-        html += '<button class="dshell-btn dshell-btnGhost" data-act="effect">录入效果</button>';
         if (canAll) {
           html += '<button class="dshell-btn dshell-btnGhost" data-act="edit">编辑</button>' +
                   '<button class="dshell-btn dshell-btnDanger" data-act="del">删除</button>';
@@ -330,19 +330,19 @@
         var act = e.target.getAttribute && e.target.getAttribute('data-act');
         if (!act) return;
         if (act === 'advance') {
-          var next = t.status === 'todo' ? 'doing' : 'done';
-          apiSend('PATCH', { id: t.id, status: next }).then(loadTasks).catch(function (err) { showErr(err.message); });
+          if (t.status === 'todo') {
+            apiSend('PATCH', { id: t.id, status: 'doing' }).then(loadTasks).catch(function (err) { showErr(err.message); });
+          } else {
+            /* doing → done：完成时输入任务结果（取消 = 不标记完成；结果随状态一并 PATCH） */
+            var v = prompt('任务完成，录入任务结果 / 成果：', t.effect || '');
+            if (v === null) return;
+            apiSend('PATCH', { id: t.id, status: 'done', effect: v.trim() }).then(loadTasks).catch(function (err) { showErr(err.message); });
+          }
         } else if (act === 'del') {
           if (confirm('确认删除任务「' + t.title + '」？')) {
             apiSend('DELETE', undefined, '?id=' + encodeURIComponent(t.id)).then(loadTasks).catch(function (err) { showErr(err.message); });
           }
         } else if (act === 'edit') { openModal(t); }
-        else if (act === 'effect') {
-          var v = prompt('录入任务效果 / 成果：', t.effect || '');
-          if (v !== null) {
-            apiSend('PATCH', { id: t.id, effect: v.trim() }).then(loadTasks).catch(function (err) { showErr(err.message); });
-          }
-        }
       });
       box.appendChild(item);
     });
@@ -380,6 +380,9 @@
     if (users.length) fAssignee.value = defAssignee;
     document.getElementById('fPrio').value = t ? t.prio : 'mid';
     document.getElementById('fDeadline').value = t && t.deadline ? toLocal(t.deadline) : '';
+    /* 任务结果字段仅编辑态可见（新建任务尚无结果；成员走「完成」弹输入框，admin 可在此随时修订） */
+    document.getElementById('fEffectWrap').style.display = t ? '' : 'none';
+    document.getElementById('fEffect').value = t ? (t.effect || '') : '';
     mask.classList.add('on');
   }
   function toLocal(ts) {
@@ -402,6 +405,7 @@
       prio: document.getElementById('fPrio').value,
       deadline: dl ? new Date(dl).getTime() : null
     };
+    if (editingId) data.effect = document.getElementById('fEffect').value.trim();
     var saving = editingId ? apiSend('PATCH', Object.assign({ id: editingId }, data)) : apiSend('POST', data);
     saving.then(function () { mask.classList.remove('on'); return loadTasks(); })
       .catch(function (err) { showErr(err.message); });
