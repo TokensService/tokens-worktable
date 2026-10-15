@@ -29,7 +29,7 @@ output="$(VLLM_SOURCE_DIR="$source_dir" \
 grep -Fq 'buildctl --addr' <<<"$output"
 grep -Fq 'ctr -n k8s.io images import' <<<"$output"
 grep -Fq 'ctr -n k8s.io images push' <<<"$output"
-grep -Fq 'swr.example.com/myapp:test-tag' <<<"$output"
+grep -Fq 'swr.example.com/vllm:test-tag' <<<"$output"
 grep -Fq '源码仓库: https://github.com/TokensService/vllm' <<<"$output"
 grep -Fq '源码: '"$source_dir"'@v0.30.0' <<<"$output"
 ! grep -Fq 'test-password' <<<"$output"

@@ -11,7 +11,7 @@
 ```bash
 export IMAGE_TAG="vllm-$(date +%Y%m%d%H%M%S)"
 export SWR_REGISTRY=swr.cn-southwest-2.myhuaweicloud.com
-export SWR_REPOSITORY=dataartsfabric/vllm
+export SWR_REPOSITORY=vllm
 export SWR_USERNAME='cn-southwest-2@<AK>'
 export SWR_PASSWORD='<SWR_TOKEN>'
 build_vllm_image_ctr.sh
