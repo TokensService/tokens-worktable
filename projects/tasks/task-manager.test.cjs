@@ -99,3 +99,20 @@ test("AI 配置本地保存 + DSH 会话桥兜底", () => {
   assert.ok(html.includes("__dshSendChatForResult"), "应支持 DSH 会话 AI 桥");
   assert.ok(html.includes('id="aiMask"'), "应有 AI 设置弹窗");
 });
+
+test("点击任务卡打开详情弹窗：标签/描述/结果/全部进展", () => {
+  assert.ok(html.includes('id="detailMask"'), "应有详情弹窗");
+  assert.ok(html.includes("openDetailModal"), "点击卡片应打开详情");
+  assert.ok(html.includes('id="detailTags"'), "详情应展示标签");
+  assert.ok(html.includes('id="detailDesc"'), "详情应展示描述");
+  assert.ok(html.includes('id="detailEffect"'), "详情应展示结果");
+  assert.ok(html.includes('id="detailProgress"'), "详情应展示进展列表");
+  assert.ok(html.includes('id="detailProgCount"'), "详情应展示进展条数");
+});
+
+test("进展可编辑、删除（PATCH updateProgress / deleteProgress）", () => {
+  assert.ok(html.includes("updateProgress:"), "应支持更新进展");
+  assert.ok(html.includes("deleteProgress:"), "应支持删除进展");
+  assert.ok(html.includes("data-prog-act"), "进展条目应有编辑/删除操作");
+  assert.ok(html.includes("canEditProgEntry"), "应按作者/admin 裁剪进展操作");
+});

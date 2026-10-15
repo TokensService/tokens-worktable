@@ -250,6 +250,62 @@ test('addProgress 校验：空内容 400；进展条数达上限 400；admin 也
   assert.match(over.json().error, /上限/)
 })
 
+test('updateProgress：admin/作者/任务负责人可改写；非相关人员 403；缺 id/空文本 400；不存在 404', async () => {
+  const admin = await loadTasksRoute({ auth: AUTH.admin })
+  const task = await createTask(admin.handler, { assignee: 'bob' })
+  const added = await call(admin.handler, { method: 'PATCH', body: { id: task.id, addProgress: '初稿' } })
+  const entry = added.json().task.progress[0]
+  const member = await loadTasksRoute({ auth: AUTH.member, home: admin.home })
+  /* 任务负责人 bob 可改本任务上任意进展 */
+  const ok = await call(member.handler, { method: 'PATCH', body: { id: task.id, updateProgress: { id: entry.id, text: '修订后的进展' } } })
+  assert.equal(ok.status, 200, ok.body)
+  assert.equal(ok.json().task.progress[0].text, '修订后的进展')
+  /* admin 可改任意 */
+  const byAdmin = await call(admin.handler, { method: 'PATCH', body: { id: task.id, updateProgress: { id: entry.id, text: 'admin 再改' } } })
+  assert.equal(byAdmin.status, 200)
+  assert.equal(byAdmin.json().task.progress[0].text, 'admin 再改')
+  /* 非负责人、非作者：alice 任务上的进展 bob 改不了 */
+  const other = await createTask(admin.handler, { assignee: 'alice' })
+  const otherEntry = await call(admin.handler, { method: 'PATCH', body: { id: other.id, addProgress: 'alice 任务上的进展' } })
+  const otherId = otherEntry.json().task.progress[0].id
+  const forbidden = await call(member.handler, { method: 'PATCH', body: { id: other.id, updateProgress: { id: otherId, text: '偷改' } } })
+  assert.equal(forbidden.status, 403)
+  assert.match(forbidden.json().error, /作者|负责人|admin|分配给自/)
+  const badId = await call(admin.handler, { method: 'PATCH', body: { id: task.id, updateProgress: { id: entry.id } } })
+  assert.equal(badId.status, 400)
+  const missing = await call(admin.handler, { method: 'PATCH', body: { id: task.id, updateProgress: { id: 'p-none', text: 'x' } } })
+  assert.equal(missing.status, 404)
+})
+
+test('deleteProgress：admin/作者/任务负责人可删；非相关人员 403；缺 id 400；不存在 404', async () => {
+  const admin = await loadTasksRoute({ auth: AUTH.admin })
+  const task = await createTask(admin.handler, { assignee: 'bob' })
+  const a = await call(admin.handler, { method: 'PATCH', body: { id: task.id, addProgress: '将删' } })
+  const b = await call(admin.handler, { method: 'PATCH', body: { id: task.id, addProgress: '保留' } })
+  const delId = a.json().task.progress.find((e) => e.text === '将删').id
+  const keepId = b.json().task.progress.find((e) => e.text === '保留').id
+  const member = await loadTasksRoute({ auth: AUTH.member, home: admin.home })
+  /* 任务负责人 bob 可删本任务上任意进展 */
+  const ok = await call(member.handler, { method: 'PATCH', body: { id: task.id, deleteProgress: delId } })
+  assert.equal(ok.status, 200, ok.body)
+  assert.equal(ok.json().task.progress.length, 1)
+  assert.equal(ok.json().task.progress[0].id, keepId)
+  /* 非相关人员：他人任务上的进展删不了 */
+  const other = await createTask(admin.handler, { assignee: 'alice' })
+  const otherEntry = await call(admin.handler, { method: 'PATCH', body: { id: other.id, addProgress: '别动' } })
+  const otherId = otherEntry.json().task.progress[0].id
+  const forbidden = await call(member.handler, { method: 'PATCH', body: { id: other.id, deleteProgress: otherId } })
+  assert.equal(forbidden.status, 403)
+  /* admin 删剩下的 + 幂等 404 */
+  const byAdmin = await call(admin.handler, { method: 'PATCH', body: { id: task.id, deleteProgress: keepId } })
+  assert.equal(byAdmin.status, 200)
+  assert.equal(byAdmin.json().task.progress.length, 0)
+  const again = await call(admin.handler, { method: 'PATCH', body: { id: task.id, deleteProgress: keepId } })
+  assert.equal(again.status, 404)
+  const empty = await call(admin.handler, { method: 'PATCH', body: { id: task.id, deleteProgress: '' } })
+  assert.equal(empty.status, 400)
+})
+
 test('PATCH 不存在任务 404；缺 id 400；无会话 401', async () => {
   const { handler } = await loadTasksRoute({ auth: AUTH.admin })
   const missing = await call(handler, { method: 'PATCH', body: { id: 't-none', status: 'done' } })

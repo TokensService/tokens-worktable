@@ -54,10 +54,10 @@
   `GET/POST/PATCH/DELETE /api/worktable/tasks`（落盘 `$DSH_HOME/storages/worktable-tasks.json`），
   全团队实时可见；用户身份取 dsh-auth-gate 真实用户（`/auth/status` 当前登录、
   `/auth/users` 负责人列表），admin 可新增/编辑/删除/批量导入（文本按行解析或 AI 分析）、
-  维护标签，普通成员可更新分配给自己任务的状态、效果与进展（`addProgress` append-only，
-  服务端强校验）；完成时走多行弹窗录入结果（支持 AI 总结润色）；token 共享部署退化为
-  全权本地模式（负责人自由文本）。AI 能力可配 OpenAI 兼容 API（页面「⚙ AI」）或复用
-  DSH 会话 AI。
+  维护标签，普通成员可更新分配给自己任务的状态、效果与进展（服务端强校验）；点击任务卡
+  打开详情弹窗（标签/描述/结果/全部进展），进展条目可编辑、删除（admin / 作者 / 任务负责人）；
+  完成时走多行弹窗录入结果（支持 AI 总结润色）；token 共享部署退化为全权本地模式
+  （负责人自由文本）。AI 能力可配 OpenAI 兼容 API（页面「⚙ AI」）或复用 DSH 会话 AI。
 
 `projects/package.json` 保留项目脚本的 CommonJS 运行方式；显式使用 `.mjs` 的测试仍按 ESM 执行。
 

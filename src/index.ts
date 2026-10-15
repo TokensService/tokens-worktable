@@ -3312,9 +3312,11 @@ function registerSessionApi(webServer: any, ctx: any) {
  * GET    /api/worktable/tasks          列出全部任务（任意会话可读；无 auth 服务的 token 共享模式同权）。
  * POST   /api/worktable/tasks          新建 {title, desc?, assignee, prio?, deadline?, tags?} → 201 回显新任务；仅 admin。
  * PATCH  /api/worktable/tasks          更新 {id, ...} → 200 回显更新后任务；admin 可改全部字段（含 tags），
- *                                      普通成员仅可改「分配给自己」任务的 status / effect / addProgress
+ *                                      普通成员仅可改「分配给自己」任务的 status / effect 与进展动作
  *                                      （其余字段或他人任务 → 403）。
- *                                      addProgress: string 为追加一条进展（append-only，不开放改删历史条目）。
+ *                                      进展动作：addProgress: string 追加；updateProgress: {id, text} 改写；
+ *                                      deleteProgress: id 删除。改删仅 admin、该条进展作者（by）
+ *                                      或本任务负责人可操作。
  * DELETE /api/worktable/tasks?id=...   删除 → 200 {ok, id}；仅 admin。
  * 权限判定走 resolveRequestAuth（dsh-auth-gate 会话 + users.yaml role）；auth 服务存在但无有效会话 → 401；
  * 无 auth 服务（token 共享模式）退化为全权（与流水线「页面退化为全权」约定一致，此时 assignee 为自由文本）。
@@ -3326,7 +3328,7 @@ const TASK_PRIORITIES = ['high', 'mid', 'low'] as const
 const TASK_STATUSES = ['todo', 'doing', 'done'] as const
 const TASK_TEXT_CAP = { title: 200, desc: 4000, effect: 4000, assignee: 64, tag: 32, progress: 2000 }
 const TASK_TAGS_CAP = 10          // 单任务标签数上限
-const TASK_PROGRESS_CAP = 50      // 单任务进展条数上限（append-only，超出拒加）
+const TASK_PROGRESS_CAP = 50      // 单任务进展条数上限（超出拒加）
 const TASKS_STORE_CAP = 2000   // 任务总量上限（防误刷无限增长；超出新建 413）
 
 function tasksStoreFile(): string { return pathResolve(DSH_HOME, 'storages', 'worktable-tasks.json') }
@@ -3466,6 +3468,8 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
           const id = typeof body.id === 'string' ? body.id : ''
           if (!id) { json(res, 400, { error: '缺少任务 id' }); return }
           const hasAddProgress = !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'addProgress')
+          const hasUpdateProgress = !!body && typeof body === 'object' && body.updateProgress != null
+          const hasDeleteProgress = !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'deleteProgress')
           const outcome: any = await lock(async () => {
             const store = await readTasksStore()
             const task = store.tasks.find((t) => t.id === id)
@@ -3473,7 +3477,7 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
             const own = !!username && task.assignee === username
             if (!isAdmin && !own) return { status: 403, error: '只能更新分配给自己的任务' }
             const patch = taskCleanFields(body, true)
-            /* 成员可写面：status / effect / addProgress（进展 append-only）；tags 等其余字段 admin 专属 */
+            /* 成员可写面：status / effect 与进展动作（add/update/delete）；tags 等其余字段 admin 专属 */
             if (!isAdmin && Object.keys(patch).some((k) => k !== 'status' && k !== 'effect')) {
               return { status: 403, error: '普通成员仅可更新任务状态、效果与进展' }
             }
@@ -3482,11 +3486,38 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
               if (problem) return { status: 400, error: problem }
             }
             Object.assign(task, patch)
+            const list = Array.isArray(task.progress) ? task.progress : []
+            /* 进展改删：admin / 该条作者 / 本任务负责人 */
+            const canEditProg = (entry: any) => isAdmin || (!!username && (entry && entry.by === username || task.assignee === username))
             if (hasAddProgress) {
-              const list = Array.isArray(task.progress) ? task.progress : []
               if (list.length >= TASK_PROGRESS_CAP) return { status: 400, error: '进展条数已达上限（' + TASK_PROGRESS_CAP + '）' }
               const entry = taskProgressEntry(body.addProgress, username || 'anonymous', Date.now())
               task.progress = list.concat([entry])
+            }
+            if (hasUpdateProgress) {
+              const up = body.updateProgress
+              const upId = up && typeof up === 'object' ? String(up.id || '') : ''
+              const upText = up && typeof up === 'object' ? taskTextField(up.text, TASK_TEXT_CAP.progress) : ''
+              if (!upId) return { status: 400, error: '缺少进展 id' }
+              if (!upText) return { status: 400, error: '进展内容不能为空' }
+              const entry = list.find((e: any) => e && e.id === upId)
+              if (!entry) return { status: 404, error: '进展不存在或已删除' }
+              if (!canEditProg(entry)) {
+                return { status: 403, error: '仅进展作者、任务负责人或 admin 可修改该条进展' }
+              }
+              entry.text = upText
+              entry.at = Date.now()
+              task.progress = list.slice()
+            }
+            if (hasDeleteProgress) {
+              const delId = String(body.deleteProgress || '')
+              if (!delId) return { status: 400, error: '缺少进展 id' }
+              const entry = list.find((e: any) => e && e.id === delId)
+              if (!entry) return { status: 404, error: '进展不存在或已删除' }
+              if (!canEditProg(entry)) {
+                return { status: 403, error: '仅进展作者、任务负责人或 admin 可删除该条进展' }
+              }
+              task.progress = list.filter((e: any) => !e || e.id !== delId)
             }
             if (!Array.isArray(task.tags)) task.tags = []
             if (!Array.isArray(task.progress)) task.progress = []
