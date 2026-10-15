@@ -108,8 +108,10 @@ ensure_source() {
   if [[ -d "$VLLM_SOURCE_DIR/.git" ]]; then
     if [[ "$VLLM_UPDATE" == true ]]; then
       info "更新源码: $VLLM_SOURCE_DIR@$VLLM_REF"
-      git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin
+      git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin "$VLLM_REF" \
+        || git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin
       ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify "${VLLM_REF}^{commit}" 2>/dev/null || true)"
+      [[ -n "$ref_commit" ]] || ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify FETCH_HEAD^{commit} 2>/dev/null || true)"
       [[ -n "$ref_commit" ]] || die "无法解析源码引用: $VLLM_REF"
       git -C "$VLLM_SOURCE_DIR" checkout --detach "$ref_commit"
     fi
