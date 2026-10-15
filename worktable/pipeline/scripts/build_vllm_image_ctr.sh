@@ -16,7 +16,7 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
-  BUILD_ENGINE        构建器：auto、buildctl 或 nerdctl，默认 auto
+  BUILD_ENGINE        构建器：auto、buildctl、nerdctl 或 docker，默认 auto
   BUILDKIT_ADDR       BuildKit 地址，默认 unix:///run/buildkit/buildkitd.sock
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
@@ -25,6 +25,8 @@ usage() {
   SWR_USERNAME        SWR 用户名，非 dry-run 必填
   SWR_PASSWORD        SWR 密码或 Token，非 dry-run 必填
   BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
+  BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
+  BUILD_CACHE         是否启用本地层缓存，默认 true
 EOF
 }
 
@@ -56,6 +58,8 @@ IMAGE_TAG="${IMAGE_TAG:-}"
 SWR_USERNAME="${SWR_USERNAME:-}"
 SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
+BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
+BUILD_CACHE="${BUILD_CACHE:-true}"
 
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "[vllm-image] $*"; }
@@ -89,12 +93,14 @@ ensure_source() {
 
 build_args=()
 nerdctl_build_args=()
+docker_build_args=()
 if [[ -n "$BUILD_ARGS" ]]; then
   while IFS= read -r build_arg; do
     [[ -z "$build_arg" ]] && continue
     [[ "$build_arg" == *=* ]] || die "BUILD_ARGS 每行必须是 KEY=VALUE: $build_arg"
     build_args+=("--opt" "build-arg:${build_arg}")
     nerdctl_build_args+=("--build-arg" "$build_arg")
+    docker_build_args+=("--build-arg" "$build_arg")
   done <<< "$BUILD_ARGS"
 fi
 
@@ -106,6 +112,21 @@ fi
 [[ "$BUILD_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_MAX_JOBS 必须是正整数: $BUILD_MAX_JOBS"
 build_args+=("--opt" "build-arg:max_jobs=$BUILD_MAX_JOBS")
 nerdctl_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
+docker_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
+
+build_cache_args=()
+nerdctl_cache_args=()
+if [[ "$BUILD_CACHE" == true ]]; then
+  if [[ "$DRY_RUN" != true ]]; then
+    mkdir -p "$BUILD_CACHE_DIR"
+  fi
+  build_cache_args+=("--import-cache" "type=local,src=$BUILD_CACHE_DIR"
+    "--export-cache" "type=local,dest=$BUILD_CACHE_DIR,mode=max")
+  nerdctl_cache_args+=("--cache-from" "type=local,src=$BUILD_CACHE_DIR"
+    "--cache-to" "type=local,dest=$BUILD_CACHE_DIR,mode=max")
+elif [[ "$BUILD_CACHE" != false ]]; then
+  die "BUILD_CACHE 必须是 true 或 false: $BUILD_CACHE"
+fi
 
 context_path="$VLLM_SOURCE_DIR/$BUILD_CONTEXT"
 if [[ "$DRY_RUN" != true ]]; then
@@ -116,12 +137,16 @@ if [[ "$DRY_RUN" != true ]]; then
   case "$BUILD_ENGINE" in
     auto)
       if command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
+      elif command -v docker >/dev/null; then BUILD_ENGINE=docker
       elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
-      else die "缺少 buildctl 和 nerdctl，请安装其中一个构建器"; fi
+      else die "缺少可用构建器：请安装 buildctl+buildkitd、Docker 或 nerdctl+buildkitd"; fi
       ;;
-    buildctl|nerdctl) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
-    *) die "BUILD_ENGINE 必须是 auto、buildctl 或 nerdctl" ;;
+    buildctl|nerdctl|docker) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
+    *) die "BUILD_ENGINE 必须是 auto、buildctl、nerdctl 或 docker" ;;
   esac
+  if [[ "$BUILD_ENGINE" == docker ]]; then
+    docker info >/dev/null 2>&1 || die "docker 命令存在但 Docker daemon 不可用，请启动 Docker 或改用可用的 BUILD_ENGINE"
+  fi
   ensure_source
   [[ -d "$context_path" ]] || die "构建上下文不存在: $context_path"
   [[ -f "$VLLM_SOURCE_DIR/$DOCKERFILE" ]] || die "Dockerfile 不存在: $VLLM_SOURCE_DIR/$DOCKERFILE"
@@ -135,6 +160,14 @@ if [[ "$BUILD_ENGINE" == nerdctl ]]; then
     --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
     --tag "$IMAGE"
     "${nerdctl_build_args[@]}"
+    "${nerdctl_cache_args[@]}"
+    "$context_path")
+elif [[ "$BUILD_ENGINE" == docker ]]; then
+  build_cmd=(docker build
+    --platform "$BUILD_PLATFORM"
+    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --tag "$IMAGE"
+    "${docker_build_args[@]}"
     "$context_path")
 else
   build_cmd=(buildctl --addr "$BUILDKIT_ADDR" build
@@ -144,6 +177,7 @@ else
     --opt "filename=$DOCKERFILE"
     --opt "platform=$BUILD_PLATFORM"
     "${build_args[@]}"
+    "${build_cache_args[@]}"
     --output "type=oci,name=$IMAGE,dest=$archive")
 fi
 import_cmd=(ctr -n "$CTR_NAMESPACE" images import "$archive")
@@ -154,6 +188,7 @@ info "源码仓库: $VLLM_REPO_URL"
 info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
 info "构建器: $BUILD_ENGINE，编译并发: $BUILD_MAX_JOBS"
+info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
 info "构建命令: $(quote_cmd "${build_cmd[@]}")"
 info "导入命令: $(quote_cmd "${import_cmd[@]}")"
 info "推送命令: $(quote_cmd "${push_cmd[@]}")"
@@ -168,8 +203,11 @@ if [[ "$BUILD_ENGINE" == buildctl ]]; then
   [[ -s "$archive" ]] || die "BuildKit 未生成 OCI 包: $archive"
   info "导入镜像到 containerd namespace=$CTR_NAMESPACE"
   ctr -n "$CTR_NAMESPACE" images import --base-name "$IMAGE" "$archive"
-else
+elif [[ "$BUILD_ENGINE" == nerdctl ]]; then
   info "nerdctl 已直接将镜像写入 containerd namespace=$CTR_NAMESPACE"
+else
+  info "导出 Docker 镜像并导入 containerd namespace=$CTR_NAMESPACE"
+  docker save "$IMAGE" | ctr -n "$CTR_NAMESPACE" images import -
 fi
 ctr -n "$CTR_NAMESPACE" images ls -q "$IMAGE" | grep -Fxq "$IMAGE" || die "镜像未成功导入: $IMAGE"
 
