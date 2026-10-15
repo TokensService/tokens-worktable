@@ -7,5 +7,8 @@ __pycache__/
 projects/profiling/.ai-analysis/
 projects/profiling/widget-result.json
 
+# diag_perf 页运行时产物（AI 诊断与优化的服务端工作目录：prompt / 运行脚本）
+projects/diag_perf/.ai-diag/
+
 # EMS 厂商 chart：含证书私钥/密码，不入库，随部署环境分发（scripts/ems-chart/）
 projects/pipeline/scripts/ems-chart/
