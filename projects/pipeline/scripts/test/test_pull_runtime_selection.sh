@@ -10,7 +10,6 @@ grep -q 'image inspect' "$script"
 grep -Fq 'IMAGE_NAME="${IMAGE_NAME:-${DEPLOY_IMAGE:-myapp}}"' "$script"
 grep -Fq 'VALUES_TEMPLATE_SOURCE="${VALUES_TEMPLATE_SOURCE:-}"' "$script"
 grep -Fq 'execution host: pull' "$script"
-grep -Fq 'nerdctl is required on the pipeline execution host' "$script"
 grep -Fq 'nerdctl --namespace k8s.io create --net=none' "$script"
 grep -Fq 'cp -a "$VALUES_TEMPLATE_SOURCE" "$source_dir/values-16Node-je-cpp-bnt3.yaml"' "$script"
 grep -Fq 'if [[ -n "$VALUES_TEMPLATE_SOURCE" ]]; then' "$script"
@@ -29,10 +28,14 @@ grep -Fq 'TARGET_NODE_IP_MAP' "$script"
 grep -Fq 'command -v ctr >/dev/null 2>&1' "$script"
 grep -Fq 'IMAGE_PULL_PROJECT="${IMAGE_PULL_PROJECT:-${SWR_PROJECT:-cn-southwest-2}}"' "$script"
 grep -Fq 'IMAGE_PULL_LOGIN_KEY="${IMAGE_PULL_LOGIN_KEY:-${LOGKEY:-${LOGIN_KEY:-}}}"' "$script"
-grep -Fq 'MAPPED_IMAGE_PULL_PROXY="${MAPPED_IMAGE_PULL_PROXY:-http://127.0.0.1:18118}"' "$script"
-grep -Fq 'MAPPED_IMAGE_PULL_REVERSE_FORWARD="${MAPPED_IMAGE_PULL_REVERSE_FORWARD:-18118:127.0.0.1:8118}"' "$script"
-grep -Fq 'ssh_options+=(-o ExitOnForwardFailure=no -R "$MAPPED_IMAGE_PULL_REVERSE_FORWARD")' "$script"
-grep -Fq 'sudo env http_proxy=$(remote_quote "$MAPPED_IMAGE_PULL_PROXY")' "$script"
+if grep -Eq 'env -u HTTP_PROXY|env -u HTTPS_PROXY|env -u ALL_PROXY|env -u http_proxy|env -u https_proxy|env -u all_proxy' "$script"; then
+  echo 'pull-image.sh must not modify proxy environment variables' >&2
+  exit 1
+fi
+if grep -Eq 'MAPPED_IMAGE_PULL_PROXY|MAPPED_IMAGE_PULL_REVERSE_FORWARD|ssh_options.*-R' "$script"; then
+  echo 'pull-image.sh must not route registry pulls through a proxy' >&2
+  exit 1
+fi
 grep -Fq 'ctr -n k8s.io images pull --user' "$script"
 grep -Fq 'AK and LOGIN_KEY are required' "$script"
 grep -Fq 'sudo ctr -n k8s.io images ls -q' "$script"

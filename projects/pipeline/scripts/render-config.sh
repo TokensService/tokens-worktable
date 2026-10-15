@@ -30,8 +30,8 @@ NUM_DECODE="${NUM_DECODE:-}"
 PREFILL_GPU="${PREFILL_GPU:-}"
 DECODE_GPU="${DECODE_GPU:-}"
 ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
-PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill}"
-PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode}"
+PROFILING_PREFILL_DIR="${PROFILING_PREFILL_DIR:-/home/service/works/models_ssd/profile/prefill-64k}"
+PROFILING_DECODE_DIR="${PROFILING_DECODE_DIR:-/home/service/works/models_ssd/profile/decode-64k}"
 PROFILING_TIMESTAMP="${PROFILING_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
 NAMESPACE_ARCH="${arch:-}"
 [[ -n "$NAMESPACE_ARCH" ]] || NAMESPACE_ARCH="${DEPLOY_STRATEGY:-}"
@@ -66,7 +66,7 @@ YAML_REPLACE_JSON="${YAML_REPLACE_JSON:-}"
 TEMPLATE_VARS_JSON="${TEMPLATE_VARS_JSON:-}"
 EMS_NAMESPACE="${ems_namespace:-${EMS_NAMESPACE:-}}"
 if [[ -z "${NODE_PORT_MAP:-}" ]]; then
-  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017}'
+  NODE_PORT_MAP='{"192.168.31.59":31000,"192.168.31.125":31001,"192.168.31.18":31002,"192.168.31.127":31003,"192.168.31.190":31004,"192.168.31.104":31005,"192.168.31.197":31007,"192.168.31.175":31008,"192.168.31.17":31009,"192.168.31.238":31010,"192.168.31.163":31011,"192.168.31.70":31012,"192.168.31.214":31013,"192.168.31.111":31014,"192.168.31.65":31015,"192.168.31.96":31016,"192.168.31.105":31017,"192.168.31.89":31018,"192.168.31.140":31000,"192.168.31.120":31001,"192.168.31.113":31002,"192.168.31.164":31003,"192.168.31.7":31004,"192.168.31.181":31006,"192.168.0.243":31002,"192.168.0.128":31004,"192.168.0.215":31008,"192.168.0.55":31009,"192.168.0.126":31016,"192.168.0.237":31017,"192.168.47.35":31008,"192.168.47.181":31009,"192.168.47.115":31040,"192.168.47.3":31041,"192.168.47.71":31042,"192.168.47.44":31043,"192.168.47.214":31044,"192.168.47.92":31035,"192.168.47.148":31036}'
 fi
 COLLECTOR_GATEWAY_URL="${COLLECTOR_GATEWAY_URL:-192.168.10.6:25888}"
 MAPPED_COLLECTOR_GATEWAY_URL="${MAPPED_COLLECTOR_GATEWAY_URL:-192.168.16.146:25888}"
@@ -386,17 +386,18 @@ for package in arch.get("deploy_spec_packages", []):
             profiler_config = params.setdefault("profiler_config", {})
             if not isinstance(profiler_config, dict):
                 raise SystemExit(f"{role}.profiler_config must be a mapping")
+            profiler_config.pop("wait_iterations", None)
+            profiler_config.pop("warmup_iterations", None)
             profiler_config.update({
                 "profiler": "torch",
                 "torch_profiler_dir": profiling_prefill_dir if role == "prefill" else profiling_decode_dir,
-                "ignore_frontend": True,
-                "wait_iterations": 0,
-                "warmup_iterations": 0,
+                "torch_profiler_with_stack": False,
                 "torch_profiler_record_shapes": False,
                 "torch_profiler_with_memory": False,
-                "torch_profiler_with_stack": False,
-                "torch_profiler_use_gzip": True,
-                "torch_profiler_dump_cuda_time_total": True,
+                "torch_profiler_use_gzip": False,
+                "torch_profiler_dump_cuda_time_total": False,
+                "ignore_frontend": True,
+                "max_iterations": 3,
             })
         if replicas_override is not None:
             spec["min"] = spec["max"] = spec["default"] = replicas_override
