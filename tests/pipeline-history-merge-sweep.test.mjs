@@ -51,8 +51,9 @@ function loadHistoryHelpers() {
 const plain = value => JSON.parse(JSON.stringify(value))
 
 /* execPlan 捕获型 harness：appendPipelineHistory 只记录不写盘（断言写入序列用）。
- * 与 pipeline-run-api.test.mjs 的 loadExecPlan 同结构，精简到本文件所需。 */
-function loadExecPlanCapture() {
+ * 与 pipeline-run-api.test.mjs 的 loadExecPlan 同结构，精简到本文件所需。
+ * overrides 可覆盖 vm 上下文条目（如让 writeTaskLogFile 抛错模拟中盘异常）。 */
+function loadExecPlanCapture(overrides = {}) {
   const apiStart = source.indexOf('/* ---------- 流水线 API 触发 ---------- */')
   const apiEnd = source.indexOf('/* ---------- 流水线 API 触发结束 ---------- */', apiStart)
   assert.ok(apiStart >= 0 && apiEnd > apiStart, '流水线 API helper 未找到')
@@ -89,6 +90,7 @@ function loadExecPlanCapture() {
     stageLogText: (name, result) => `${name}:${result.code}`,
     runStageScript: async script => ({ code: 0, stdout: '', stderr: '', script: script.name }),
     appendPipelineHistory: async record => { history.push(plain(record)) },
+    ...overrides,
   }
   vm.createContext(ctx)
   vm.runInContext(code, ctx, { importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER })
@@ -305,4 +307,65 @@ test('静态契约：拆分标记与 -srv 派生记录移除；同 tag 合并保
   assert.ok(source.includes('本地执行中断：页面失联'), '判死记录补系统日志说明')
   assert.ok(source.includes('sweepStaleRunningHistory'), '清扫器接入定时循环')
   assert.ok(source.includes("planStaleHistorySweep(now, history, liveTags, activePlanTags, evidence, dormantPlans)"), '清扫器调用纯函数决策')
+  assert.ok(source.includes('pipelineExecutions.runningTags()'), '清扫器把执行池在跑条目的 tag 并入活体信号（防长运行 neverSeen 误判死）')
+})
+
+/* 中盘异常兜底：写入 running 与终态落史之间的执行主体被 try/catch 兜住——阶段组 Promise.all 拒绝、
+   HTTP/EvalTokens 阶段抛错、recordStageResult 写任务日志失败等任何逃逸都无条件落终态。 */
+test('execPlan 兜底：执行主体中盘抛错（写任务日志失败）仍落 failed 终态并记「（系统）」行', async () => {
+  const f = loadExecPlanCapture({ writeTaskLogFile: async () => { throw new Error('disk full') } })
+  const result = await f.execPlan(suffixPlan())
+  assert.equal(result, 'failed', '执行器向执行池回报 failed 终态')
+  assert.equal(f.history[0].status, 'running', '启动已写「进行中」')
+  const last = f.history[f.history.length - 1]
+  assert.equal(last.status, 'failed', '终态无条件落史（不再停在 running 等 sweep 判死）')
+  const sys = last.logs.find(l => l.stage === '（系统）')
+  assert.ok(sys, '终态记录带（系统）日志行')
+  assert.equal(sys.status, 'failed')
+  assert.ok(sys.log.includes('执行异常：disk full'), '系统行含异常原因：' + sys.log)
+})
+
+test('execPlan 兜底：abort 类错误（用户取消语义）按 aborted 落史，不记失败行', async () => {
+  const f = loadExecPlanCapture({
+    writeTaskLogFile: async () => { const e = new Error('操作已取消'); e.name = 'AbortError'; throw e },
+  })
+  const result = await f.execPlan(suffixPlan())
+  assert.equal(result, 'aborted', 'abort 不记 failed')
+  const last = f.history[f.history.length - 1]
+  assert.equal(last.status, 'aborted')
+  assert.ok(!last.logs.some(l => l.stage === '（系统）' && l.status === 'failed'), 'abort 不记（系统）失败行')
+})
+
+/* 终态不可逆：磁盘已终态（success/failed/aborted）而客户端仍是 running 且 ts 不严格更新时，
+   status 取磁盘终态——ts 相等（tie）也不得复活（fail-run 与防抖整存 PUT 竞态下两侧同 ts）。 */
+test('mergePipelineHistoryForWrite：终态不可逆——磁盘 failed + 客户端同 ts running → failed（不复活）', () => {
+  const ctx = loadHistoryHelpers()
+  const client = [{ no: 5, tag: 't-1', ts: 200, status: 'running', pipeline: 'PL', logs: [{ stage: '本地A', status: 'success', local: true, dur: 1 }] }]
+  const disk = [{ no: 5, tag: 't-1', ts: 200, status: 'failed', pipeline: 'PL', closeError: '浏览器页面已关闭', logs: [{ stage: '定时B', status: 'failed', dur: 2 }] }]
+  const out = ctx.mergePipelineHistoryForWrite({}, {}, client, disk)
+  assert.equal(out.history.length, 1, '同 tag 只留一条')
+  const rec = out.history[0]
+  assert.equal(rec.status, 'failed', 'ts 相等（tie）也不得把终态复活成 running')
+  assert.equal(rec.closeError, '浏览器页面已关闭', '其余顶层字段仍按既有规则合并（客户端缺失的键从磁盘侧并入）')
+  const names = rec.logs.map(e => e.stage)
+  assert.ok(names.includes('本地A') && names.includes('定时B') && rec.logs.length === 2, 'logs 仍按名并集合并')
+})
+
+test('mergePipelineHistoryForWrite：终态不可逆的放行口——客户端 ts 严格更新时允许翻回 running', () => {
+  const ctx = loadHistoryHelpers()
+  const client = [{ no: 5, tag: 't-1', ts: 300, status: 'running', pipeline: 'PL', logs: [{ stage: '本地A', status: 'success', local: true, dur: 1 }] }]
+  const disk = [{ no: 5, tag: 't-1', ts: 200, status: 'failed', pipeline: 'PL', logs: [{ stage: '定时B', status: 'failed', dur: 2 }] }]
+  const out = ctx.mergePipelineHistoryForWrite({}, {}, client, disk)
+  assert.equal(out.history[0].status, 'running', '设计内的终态→running 翻转（markHistorySuffixRunning 会 bump ts）凭严格更新的 ts 放行')
+})
+
+test('planStaleHistorySweep：liveTags 含执行池在跑 tag 的记录不判死（长运行 neverSeen 场景）', () => {
+  const ctx = loadHistoryHelpers()
+  const now = 100000000
+  /* 服务端执行池在跑 45 分钟的长运行：once 计划已从计划文件移除（无活动计划）、无浏览器在场证据——
+     sweepStaleRunningHistory 把执行池 runningTags 并入 liveTags 后不得被 neverSeen 兜底误判死 */
+  const history = [{ tag: 't-pool', status: 'running', ts: now - 45 * 60 * 1000, startTs: now - 45 * 60 * 1000 }]
+  const { deadTags, dropPlanIds } = ctx.planStaleHistorySweep(now, history, new Set(['t-pool']), new Set(), new Map(), [])
+  assert.equal(deadTags.size, 0, '执行池在跑 tag 是活体信号')
+  assert.deepEqual(dropPlanIds, [])
 })

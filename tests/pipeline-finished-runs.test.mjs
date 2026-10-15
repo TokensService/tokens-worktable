@@ -271,6 +271,41 @@ test('多代际：旧代 drain 期间与退役后的终态都能从管理器快�
   await manager.dispose()
 })
 
+test('runningTags：在跑条目的 tag 透出（清扫活体信号用），排队/终态不计入；管理器跨代聚合', async () => {
+  const ctx = loadApiRegion()
+  let release = () => {}
+  const pool = ctx.createPipelineExecutionQueue(() => new Promise(resolve => { release = resolve }), 1, 10, {})
+  const first = pool.run(planOf('r1', { tag: 't-run-1' }))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(plain(pool.runningTags()), ['t-run-1'], '在跑条目的 tag 透出')
+  const queued = pool.run(planOf('q1', { tag: 't-queued-1' }))   // 并发 1：进入排队
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(plain(pool.runningTags()), ['t-run-1'], '排队条目不计入')
+  release(); await first
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(plain(pool.runningTags()), ['t-queued-1'], '排队条目转入在跑后计入')
+  release(); await queued
+  assert.deepEqual(plain(pool.runningTags()), [], '终态后立即移出')
+
+  /* 管理器聚合：多代际在跑条目合并——旧代 drain 期间的在跑条目仍算活体（防长运行被 neverSeen 误判死） */
+  const manager = ctx.createPipelineGenerationManager()
+  let releaseOld = () => {}
+  let releaseNew = () => {}
+  const oldPool = ctx.createPipelineExecutionQueue(() => new Promise(resolve => { releaseOld = resolve }), 1, 10, { generation: 'g-old' })
+  manager.activate('g-old', oldPool)
+  const oldRun = manager.run(planOf('old', { tag: 't-old' }))
+  await new Promise(resolve => setImmediate(resolve))
+  const newPool = ctx.createPipelineExecutionQueue(() => new Promise(resolve => { releaseNew = resolve }), 1, 10, { generation: 'g-new' })
+  manager.activate('g-new', newPool)   // 旧代进入 drain，但在跑条目继续执行
+  const newRun = manager.run(planOf('new', { tag: 't-new' }))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(plain(manager.runningTags()).sort(), ['t-new', 't-old'], '旧代 drain 期间的在跑条目与新代一并算活体')
+  releaseOld(); await oldRun
+  releaseNew(); await newRun
+  assert.deepEqual(plain(manager.runningTags()), [])
+  await manager.dispose()
+})
+
 test('GET /api/worktable/pipeline/queue 的 server.finished：白名单清洗、非法条目剔除、恒为数组', async () => {
   const dirty = {
     id: 'run-1', pipelineId: 'pipe-1', pipelineName: '发布', by: 'alice', source: 'api', generation: 'g-1',

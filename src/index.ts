@@ -1243,7 +1243,10 @@ function mergeStageLogsForHistory(prevLogs: any, nextLogs: any) {
 
 /** 关页即失败（pagehide fail-run）上送的终态历史记录清洗：必须带合法 tag；status 由服务端强制为
  *  failed（该通道只落「浏览器关闭导致本地任务中断」这一种终态，不信客户端字段）；字符串字段截断、
- *  envNodes 走与共享存储同一清洗（绝不带凭据）、logs 只留白名单字段；不合格返回 null。 */
+ *  envNodes 走与共享存储同一清洗（绝不带凭据）、logs 只留白名单字段；不合格返回 null。
+ *  ts 恒取服务端 Date.now()（不沿用客户端 raw.ts）：fail-run 终态必须比任何页面持有的同 ts running
+ *  副本严格较新，否则合并层（mergePipelineHistoryForWrite）ts 相等时客户端赢，pagehide 竞态下
+ *  防抖整存 PUT 会把 failed 复活成 running；startTs 仍保留客户端原值（运行起点是历史事实）。 */
 function cleanCloseFailRecord(raw: any): any | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const tag = typeof raw.tag === 'string' ? raw.tag.trim() : ''
@@ -1270,7 +1273,7 @@ function cleanCloseFailRecord(raw: any): any | null {
     status: 'failed',
     dur: text(raw.dur, 64),
     time: text(raw.time, 64),
-    ts: Number(raw.ts) || Date.now(),
+    ts: Date.now(),
     startTs: Number(raw.startTs) || Number(raw.ts) || Date.now(),
     by: text(raw.by, 128) || 'anonymous',
     source: text(raw.source, 64) || 'local',
@@ -1295,8 +1298,14 @@ function cleanCloseFailRecord(raw: any): any | null {
 }
 
 /** 合并页面与磁盘历史；最终清空点同时约束两侧，防旧标签页把已清空记录重新提交回来。
- *  同 tag 记录按阶段日志并集合并（不再整条客户端覆盖），避免混合编排任一侧冲掉另一侧阶段。 */
+ *  同 tag 记录按阶段日志并集合并（不再整条客户端覆盖），避免混合编排任一侧冲掉另一侧阶段。
+ *  终态不可逆：磁盘侧已是终态而客户端侧仍是 running、且客户端 ts 不严格大于磁盘 ts 时，status 取磁盘
+ *  终态（ts 相等不得复活——fail-run 终态与 400ms 防抖整存 PUT 竞态下，页面持有的 running 副本与终态
+ *  记录同 ts）；客户端确以严格更新的 ts 翻回 running（markHistorySuffixRunning 的设计内翻转会
+ *  bump ts）仍放行。该规则只钳制 status，其余顶层字段仍按 ts 较新一侧合并，logs 仍按名并集。
+ *  终态集合写为函数内局部常量：本函数被多个 vm 抽取式测试按名单独抽取，模块级依赖会越界。 */
 function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, clientHistory: any[], diskHistory: any[]) {
+  const TERMINAL_STATUSES = new Set(['success', 'failed', 'aborted'])
   const config = { ...(clientConfig && typeof clientConfig === 'object' ? clientConfig : {}) }
   const diskCfg = diskConfig && typeof diskConfig === 'object' ? diskConfig : {}
   const clearedAt = Math.max(Number(config.histClearedAt) || 0, Number(diskCfg.histClearedAt) || 0)
@@ -1317,12 +1326,18 @@ function mergePipelineHistoryForWrite(clientConfig: any, diskConfig: any, client
       /* 同 tag 双边都有：顶层取 ts 较新一侧（终态/耗时以更晚写入为准），阶段日志按名并集 */
       const later = (Number(record.ts) || 0) > (Number(clientRec.ts) || 0) ? record : clientRec
       const earlier = later === record ? clientRec : record
-      byKey.set(key, {
+      const merged: any = {
         ...earlier,
         ...later,
         no: Number(earlier.no) || Number(later.no) || 0,
         logs: mergeStageLogsForHistory(earlier.logs, later.logs),
-      })
+      }
+      /* 终态不可逆（见函数头注释）：磁盘已终态 + 客户端仍 running + 客户端 ts 不严格更新 → 取磁盘终态 */
+      if (TERMINAL_STATUSES.has(record.status) && clientRec.status === 'running'
+        && (Number(clientRec.ts) || 0) <= (Number(record.ts) || 0)) {
+        merged.status = record.status
+      }
+      byKey.set(key, merged)
     } else {
       byKey.set(key, record)
     }
@@ -2891,6 +2906,17 @@ function createPipelineExecutionQueue(execute: (plan: any, runtime: PipelineExec
       }
       return generation ? { generation, accepting, ...value } : value
     },
+    /* 在跑条目的运行 tag 列表（不含排队/终态）：sweepStaleRunningHistory 的活体信号之一——
+       服务端长运行（>neverSeen 宽限）的 once 计划已从计划文件移除、又可能无浏览器在场证据，
+       缺此信号会被误判死。快照条目不含 tag（snapshotEntry 是客户端契约，不动），故单列本方法。 */
+    runningTags: () => {
+      const tags: string[] = []
+      for (const entry of running) {
+        const tag = entry.item.plan && typeof entry.item.plan.tag === 'string' ? entry.item.plan.tag : ''
+        if (tag) tags.push(tag)
+      }
+      return tags
+    },
     /* sinceEnd 增量：客户端已持有逻辑流末尾（endLen）之前的全部内容时只回后缀 append。
        条件：自 sinceRevision 起无 replaceLog（lastReplaceRev）、sinceEnd 仍落在当前窗口内。
        触顶截尾只推 baseLen，sinceEnd 仍在窗口内即可续传；窗口滑过客户端位置才退回全量。
@@ -3082,6 +3108,13 @@ function createPipelineGenerationManager() {
         queue: all.flatMap(record => record.queue),
         finished,
       }
+    },
+    /* 全部代际在跑条目的运行 tag 聚合（退役代际 drain 期间的在跑条目仍算活体）：
+       sweepStaleRunningHistory 据此把执行池在跑运行并入活体信号，防长运行被 neverSeen 兜底误判死。 */
+    runningTags(): string[] {
+      const tags: string[] = []
+      for (const record of generations.values()) tags.push(...record.queue.runningTags())
+      return tags
     },
     health() {
       const snapshot = this.snapshot()
@@ -6245,232 +6278,252 @@ export function apply(ctx: Context) {
     }
     /* 页面起源运行启动即写「进行中」历史（含本地前缀阶段快照）：执行期间他端历史列表可见在跑 */
     await writeLiveHistory('running')
-    // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
-    // 接入运行级取消信号：清理脚本挂起时「中止」可杀掉进程树（此前无信号，挂起即永久卡 running）
-    if (!apiPresetMode && runCfg.cleanupScript && runCfg.cleanupScript.path) {
-      const st0 = Date.now()
-      const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
-      const r = await runStageScript(runCfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog, runtime?.signal)
-      const cleanupStatus = r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed')
-      const text = stageLogText(runCfg.cleanupScript.name, r)
-      const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
-      logs.push({ stage: '环境清理', status: cleanupStatus, log: text, logFile })
-      pushHist('环境清理', cleanupStatus, text, logFile, Math.round((Date.now() - st0) / 100) / 10, st0)
-      profileStages.push({ id: '__cleanup__', name: '环境清理', status: cleanupStatus, durSec: Math.round((Date.now() - st0) / 100) / 10, startedAt: st0, script: runCfg.cleanupScript.name || null, logFile })
-    }
-    const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
-      /* 「不执行」阶段从未启动：不打点开始时间（详情/回放不展示「开始时间」，与页面 skipStage 口径一致），
-         也不写 running 快照（避免跳过阶段在远端预览闪一下进行中）；startedAt=0 由 recordStageResult 折算 dur 0 */
-      const skipped = !!(s && (s.skip || s.gate))   // 兼容旧计划中的 gate（审批门）标记
-      const startedAt = skipped ? 0 : Date.now()
-      const stageId = String(s && s.id || '')
-      runtime?.replaceLog?.(stageId, '')
-      /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
-      if (!skipped) runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
-      const localPool = { ...baseVars }
-      const varsOut: Record<string, string> = {}
-      let entry: any = null
-      let shouldStop = false
-      if (skipped) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }
-      else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
-        const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
-        if (!r.aborted) {
-          Object.assign(varsOut, parseStageVars(r.stdout))
-          Object.assign(localPool, varsOut)
-          applyOutVars(serverStageOutVars(s), localPool, parseStageJson(r.stdout), r.stdout, varsOut)
-        }
-        entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
-        if (r.code !== 0 && !r.aborted) shouldStop = true
-      } else if (s.kind === 'evaltokens') {
-        const r = await executeServerEvaltokensStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
-        if (!r.aborted) {
-          Object.assign(varsOut, parseStageVars(r.stdout))
-          Object.assign(localPool, varsOut)
-          applyOutVars(s.evaltokens && s.evaltokens.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
-        }
-        entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
-        if (r.code !== 0 && !r.aborted) shouldStop = true
+    /* 执行主体兜底：running 落史之后任何逃逸异常（阶段组 Promise.all 拒绝 / HTTP·EvalTokens 阶段抛错 /
+       recordStageResult 写任务日志失败等）都必须走到末尾的终态落史——详见下方 catch 注释。 */
+    try {
+      // 与页面行为一致：启动前执行清理脚本（回显归档为 00 号任务日志）
+      // 接入运行级取消信号：清理脚本挂起时「中止」可杀掉进程树（此前无信号，挂起即永久卡 running）
+      if (!apiPresetMode && runCfg.cleanupScript && runCfg.cleanupScript.path) {
+        const st0 = Date.now()
+        const directLog = folder ? taskLogPath(folder, tag, 0, '环境清理') : undefined
+        const r = await runStageScript(runCfg.cleanupScript, runCtx, scriptsDir, varsPool, 0, undefined, directLog, runtime?.signal)
+        const cleanupStatus = r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed')
+        const text = stageLogText(runCfg.cleanupScript.name, r)
+        const logFile = r.logFile || (folder ? await writeTaskLogFile(folder, tag, 0, '环境清理', text) : null)
+        logs.push({ stage: '环境清理', status: cleanupStatus, log: text, logFile })
+        pushHist('环境清理', cleanupStatus, text, logFile, Math.round((Date.now() - st0) / 100) / 10, st0)
+        profileStages.push({ id: '__cleanup__', name: '环境清理', status: cleanupStatus, durSec: Math.round((Date.now() - st0) / 100) / 10, startedAt: st0, script: runCfg.cleanupScript.name || null, logFile })
       }
-      else if (s.script && s.script.path) {
-        let r: any
-        try {
-          const directLog = folder ? taskLogPath(folder, tag, serverStageSeq(executionStages, index, baseSeq), s.name) : undefined
-          r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
-        } catch (error) {
-          r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
+      const executeStage = async (s: any, index: number, baseVars: Record<string, string>, signal: AbortSignal): Promise<ServerStageResult> => {
+        /* 「不执行」阶段从未启动：不打点开始时间（详情/回放不展示「开始时间」，与页面 skipStage 口径一致），
+           也不写 running 快照（避免跳过阶段在远端预览闪一下进行中）；startedAt=0 由 recordStageResult 折算 dur 0 */
+        const skipped = !!(s && (s.skip || s.gate))   // 兼容旧计划中的 gate（审批门）标记
+        const startedAt = skipped ? 0 : Date.now()
+        const stageId = String(s && s.id || '')
+        runtime?.replaceLog?.(stageId, '')
+        /* startedAt（服务端纪元毫秒）随节点入快照，供远端预览按本地时钟实时折算本阶段已耗时 */
+        if (!skipped) runtime?.updateStage(stageId, { status: 'running', progress: 5, dur: 0, startedAt })
+        const localPool = { ...baseVars }
+        const varsOut: Record<string, string> = {}
+        let entry: any = null
+        let shouldStop = false
+        if (skipped) { entry = { status: 'skipped', text: '[定时执行] 本阶段配置为不执行，已跳过' } }
+        else if (s.kind === 'http' || s.kind === 'url' || s.kind === 'jenkins') {
+          const r = await executeServerHttpStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, sleep: abortableServerSleep }, signal)
+          if (!r.aborted) {
+            Object.assign(varsOut, parseStageVars(r.stdout))
+            Object.assign(localPool, varsOut)
+            applyOutVars(serverStageOutVars(s), localPool, parseStageJson(r.stdout), r.stdout, varsOut)
+          }
+          entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ HTTP ' + serverStageUrl(s) + '\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
+          if (r.code !== 0 && !r.aborted) shouldStop = true
+        } else if (s.kind === 'evaltokens') {
+          const r = await executeServerEvaltokensStage(s, runCtx, runCfg, localPool, { fetchFn: globalThis.fetch, directFetchFn: serverLocalFetch, sleep: abortableServerSleep }, signal)
+          if (!r.aborted) {
+            Object.assign(varsOut, parseStageVars(r.stdout))
+            Object.assign(localPool, varsOut)
+            applyOutVars(s.evaltokens && s.evaltokens.outVars, localPool, parseStageJson(r.stdout), r.stdout, varsOut)
+          }
+          entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: '$ EvalTokens run\n' + (r.stdout || '') + (r.stderr ? '\n✗ ' + r.stderr : '') + '\n[exit ' + r.code + ']' }
+          if (r.code !== 0 && !r.aborted) shouldStop = true
         }
-        // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
-        // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
-        if (!r.aborted) {
-          Object.assign(varsOut, r.vars || parseStageVars(r.stdout))
-          Object.assign(localPool, varsOut)
-          applyOutVars(s.script.outVars, localPool, r.json === undefined ? parseStageJson(r.stdout) : r.json, r.fullTextOverflow ? undefined as any : (r.fullText === undefined ? r.stdout : r.fullText), varsOut)
+        else if (s.script && s.script.path) {
+          let r: any
+          try {
+            const directLog = folder ? taskLogPath(folder, tag, serverStageSeq(executionStages, index, baseSeq), s.name) : undefined
+            r = await runStageScript(s.script, runCtx, scriptsDir, localPool, s.timeout, undefined, directLog, signal, text => runtime?.appendLog?.(stageId, text))   // 每个并行成员使用独立变量快照与取消信号；完整输出直接流式落本阶段日志，并同步更新队列详情尾窗
+          } catch (error) {
+            r = { code: 1, stdout: '', stderr: String(error && (error as Error).message ? (error as Error).message : error), ...(signal.aborted ? { aborted: true } : {}) }
+          }
+          // 阶段间变量传递（与页面 mergeStageVars/applyOutVars 一致）：本阶段 stdout 的 KEY=VALUE 行 /
+          // 单行 JSON 顶层标量累计进变量池，再按「输出变量」映射改名/JSON 路径/全文赋值，注入后续阶段
+          if (!r.aborted) {
+            Object.assign(varsOut, r.vars || parseStageVars(r.stdout))
+            Object.assign(localPool, varsOut)
+            applyOutVars(s.script.outVars, localPool, r.json === undefined ? parseStageJson(r.stdout) : r.json, r.fullTextOverflow ? undefined as any : (r.fullText === undefined ? r.stdout : r.fullText), varsOut)
+          }
+          entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: stageLogText(s.script.name, r), logFile: r.logFile || null }
+          // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
+          if (r.code !== 0 && !r.aborted && (!s.preset || s.presetBlock)) shouldStop = true
+        } else if (s.preset) {
+          entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
+        } else {
+          try {
+            await abortableServerSleep(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000, signal)
+            entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
+          } catch (error) {
+            if (signal.aborted) entry = { status: 'aborted', text: '[定时执行] 同组任务失败，模拟阶段已取消' }
+            else throw error
+          }
         }
-        entry = { status: r.aborted ? 'aborted' : (r.code === 0 ? 'success' : 'failed'), text: stageLogText(s.script.name, r), logFile: r.logFile || null }
-        // 环境检查与普通任务失败会阻断；清理 / Profiling 属于非阻断辅助任务。
-        if (r.code !== 0 && !r.aborted && (!s.preset || s.presetBlock)) shouldStop = true
-      } else if (s.preset) {
-        entry = { status: 'skipped', text: '[服务端执行] 预设任务未配置脚本，已跳过' }
-      } else {
-        try {
-          await abortableServerSleep(Math.min(Math.max(1, Number(s.dur) || 5), 60) * 1000, signal)
-          entry = { status: 'success', text: '[定时执行] 模拟阶段完成' }
-        } catch (error) {
-          if (signal.aborted) entry = { status: 'aborted', text: '[定时执行] 同组任务失败，模拟阶段已取消' }
-          else throw error
+        if (!(s.script && s.script.path)) runtime?.replaceLog?.(stageId, entry.text)
+        return {
+          index,
+          stage: s,
+          status: entry.status,
+          shouldStop,
+          text: entry.text,
+          varsOut,
+          varsPool: localPool,
+          startedAt,
+          endedAt: Date.now(),
+          scriptName: (s.script && s.script.name) || null,
+          logFile: entry.logFile || null,
         }
       }
-      if (!(s.script && s.script.path)) runtime?.replaceLog?.(stageId, entry.text)
-      return {
-        index,
-        stage: s,
-        status: entry.status,
-        shouldStop,
-        text: entry.text,
-        varsOut,
-        varsPool: localPool,
-        startedAt,
-        endedAt: Date.now(),
-        scriptName: (s.script && s.script.name) || null,
-        logFile: entry.logFile || null,
-      }
-    }
-    /* 主任务全部进入终态后再采集普罗数据。先让阻断结果返回给组协调器，确保失败能立即取消同组在途任务；
-       每批只采集最长的合格任务，采集只补充其回显，绝不改写已确定的任务状态/阻断权。 */
-    const collectStageProm = async (result: ServerStageResult) => {
-      const s = result.stage
-      const collectScript = serverPromCollectScript(runCfg)
-      const seq = serverStageSeq(executionStages, result.index, baseSeq)
-      const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
-      const addNote = (note: string) => { result.promNote = note; result.text += '\n' + note }
-      if (!collectScript) {
-        addNote('[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过')
-        return
-      }
-      try {
-        const penv = buildServerTaskPromEnv(runCtx, runCfg, result.varsPool, result.startedAt, result.endedAt, promDir)
-        const promLog = promDir + '/collect.log'
-        /* 采集挂起（Prometheus 不可达、子进程不退出等）曾使运行永久卡「运行中」——快照冻结、取消无效：
-           接入运行级取消信号（runtime.signal，池取消即杀采集进程树；注意不能用组级 fail-fast signal，
-           同组任务失败不该株连采集），并给有界兜底超时（默认 600s，运行设置 prom.collectTimeoutSec
-           可覆盖，1~3600 秒夹取，与阶段超时同口径）；完整输出流式落 collect.log */
-        const collectTimeoutSec = Math.min(Math.max(Number(runCfg.prom && runCfg.prom.collectTimeoutSec) || 600, 1), 3600)
-        const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, collectTimeoutSec, penv, promLog, runtime?.signal)
-        if (pr.aborted) {
-          addNote('[普罗采集] 已随运行中止取消')
+      /* 主任务全部进入终态后再采集普罗数据。先让阻断结果返回给组协调器，确保失败能立即取消同组在途任务；
+         每批只采集最长的合格任务，采集只补充其回显，绝不改写已确定的任务状态/阻断权。 */
+      const collectStageProm = async (result: ServerStageResult) => {
+        const s = result.stage
+        const collectScript = serverPromCollectScript(runCfg)
+        const seq = serverStageSeq(executionStages, result.index, baseSeq)
+        const promDir = (folder ? String(folder).replace(/\/+$/, '') : scriptsDir.replace(/\/+$/, '') + '/vllm-metrics') + '/' + sanitizeFsName(s.name) + '-' + String(seq).padStart(2, '0') + '-普罗数据'
+        const addNote = (note: string) => { result.promNote = note; result.text += '\n' + note }
+        if (!collectScript) {
+          addNote('[普罗采集] 已勾选收集普罗数据，但未配置收集脚本（设置 → 普罗数据服务配置），已跳过')
           return
         }
-        if (!pr.logFile) try {
-          const fsx = await import('node:fs/promises')
-          await fsx.mkdir(promDir, { recursive: true })
-          await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
-        } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
-        addNote('[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir)
-        if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
-      } catch (e) {
-        addNote('[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）')
-        console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
-      }
-    }
-    const recordStageResult = async (result: ServerStageResult, seq: number) => {
-      const s = result.stage
-      // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
-      const logFile = result.logFile || (folder ? await writeTaskLogFile(folder, tag, seq, s.name, result.text) : null)
-      const noteWritten = result.logFile && result.promNote ? await appendTaskLogNote(result.logFile, result.promNote) : true
-      const durSec = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0   // 跳过阶段未打点：耗时记 0
-      logs.push({ stage: s.name, status: result.status, log: result.text, logFile, logSuffix: noteWritten ? '' : (result.promNote ? '\n' + result.promNote : '') })
-      pushHist(s.name, result.status, result.text, logFile, durSec, result.startedAt)
-      profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, startedAt: result.startedAt, script: result.scriptName, logFile })
-      runtime?.updateStage(String(s && s.id || ''), { status: result.status, progress: 100, dur: durSec })
-      await writeLiveHistory('running')   // 逐阶段刷新「进行中」历史：服务端长任务执行期间记录不再停滞
-    }
-    for (const group of serverPipelineStageGroups(executionStages)) {
-      if (runtime?.signal.aborted) { status = 'aborted'; break }
-      const groupBase = { ...varsPool }
-      const controller = new AbortController()
-      const abortFromQueue = () => {
-        if (!controller.signal.aborted) controller.abort(serverAbortReason(runtime?.signal))
-      }
-      if (runtime?.signal) {
-        runtime.signal.addEventListener('abort', abortFromQueue, { once: true })
-        if (runtime.signal.aborted) abortFromQueue()
-      }
-      let results: ServerStageResult[]
-      try {
-        const jobs = group.stages.map((stage, offset) =>
-          executeStage(stage, group.start + offset, groupBase, controller.signal).then(result => {
-            if (result.shouldStop && !controller.signal.aborted) controller.abort()
-            return result
-          }))
-        results = await Promise.all(jobs)
-      } finally {
-        runtime?.signal.removeEventListener('abort', abortFromQueue)
-      }
-      const blockingFailure = results.some(result => result.shouldStop)
-      if (!blockingFailure || results.length === 1) {
-        for (const result of results) Object.assign(varsPool, result.varsOut)
-      }
-      /* 组内任务一到终态立刻刷新快照：recordStageResult 的 updateStage 在普罗采集之后才执行，
-         采集耗时长时阶段会长时间停在 running 假进度（进度冻结）——先按真实终态上屏，采集仅补充回显 */
-      for (const result of results) {
-        const durDone = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0
-        runtime?.updateStage(String(result.stage && result.stage.id || ''), { status: result.status, progress: 100, dur: durDone })
-      }
-      const promResult = longestServerPromResult(results)
-      if (promResult && !runtime?.signal.aborted) await collectStageProm(promResult)   // 已中止的运行不再启动采集（采集脚本自身也接运行级信号兜底）
-      for (const result of results) {
-        await recordStageResult(result, serverStageSeq(executionStages, result.index, baseSeq))
-      }
-      if (runtime?.signal.aborted) { status = 'aborted'; break }
-      if (blockingFailure) { status = 'failed'; break }
-    }
-    // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
-    //   任务日志逐文件流式复制进汇总，不把大输出 split/join 成第二份内存；定时后缀追加、独立计划新建。
-    if (folder) {
-      try {
-        const sumFile = folder + '/run-' + tag + '.log'
-        await writePipelineSummaryFile(sumFile, isSuffixRun, logs, status)
-      } catch (e) { console.warn('[archive] 定时运行日志汇总失败（不影响执行）:', e) }
-      try {
-        const fsx = await import('node:fs/promises')
-        const profFile = folder + '/run-' + tag + '.profile.json'
-        let profile: any = null
-        try { profile = JSON.parse(await fsx.readFile(profFile, 'utf8')) } catch { /* 首次创建 */ }
-        if (!profile || typeof profile !== 'object') profile = {}
-        profile.pipeline = pipeName
-        profile.tag = tag
-        if (!profile.commit) profile.commit = randHex(7)
-        profile.env = pl.env || ''
-        profile.image = pl.image || ''
-        profile.by = pl.by || 'schedule'
-        profile.source = pl.source === 'api' ? 'API' : (pl.source === 'manual' ? '手动' : (isSuffixRun ? '定时后缀' : '定时计划'))
-        profile.result = status
-        if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
-        profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
-        // 阶段间变量随 profile 持久化（与页面 archiveRun 的 vars 一致）：定时后缀在页面写入的基础上合并本轮捕获
-        if (Object.keys(varsPool).length) profile.vars = Object.assign({}, profile.vars || {}, varsPool)
-        if (!Array.isArray(profile.stages)) profile.stages = []
-        profileStages.forEach(rec => {
-          const idx = profile.stages.findIndex((x: any) => x && (x.id === rec.id || x.name === rec.name))
-          if (idx >= 0) profile.stages[idx] = { ...profile.stages[idx], ...rec }
-          else profile.stages.push(rec)
-        })
-        await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), 'utf8')
-      } catch (e) { console.warn('[archive] 定时运行 profiling 写入失败（不影响执行）:', e) }
-      // 归档脚本（可选）：与页面一致，写完日志/profiling 后执行（如 collect_logs.sh），收集额外日志到归档目录；失败不影响执行
-      // 接运行级取消信号：中止在归档阶段到达时立刻杀掉归档脚本（已有 120s 超时兜底，信号让取消即时生效）
-      const archiveScriptName = typeof runCfg.archiveScriptName === 'string' ? runCfg.archiveScriptName.trim() : ''
-      if (archiveScriptName && archiveRoot && typeof runCfg.archiveDir === 'string' && runCfg.archiveDir.trim() && !runtime?.signal.aborted) {
         try {
-          await new Promise<void>((resolve) => {
-            execFile('bash', [pathResolve(scriptsDir, archiveScriptName)], {
-              cwd: scriptsDir || undefined,
-              env: { ...process.env, ARCHIVE_DIR: folder, ARCHIVE_FOLDER: folder, ARCHIVE_LOG_FILE: folder + '/run-' + tag + '.log', ARCHIVE_PROFILE_FILE: folder + '/run-' + tag + '.profile.json', ARCHIVE_PIPELINE: pipeName, ARCHIVE_TAG: tag, ARCHIVE_RESULT: status },
-              timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
-              ...(runtime?.signal ? { signal: runtime.signal } : {}),
-            }, (err) => { if (err && (err as any).name !== 'AbortError') console.warn('[archive] 归档脚本退出码 ' + ((err as any).code ?? err) + '（不影响执行）'); resolve() })
+          const penv = buildServerTaskPromEnv(runCtx, runCfg, result.varsPool, result.startedAt, result.endedAt, promDir)
+          const promLog = promDir + '/collect.log'
+          /* 采集挂起（Prometheus 不可达、子进程不退出等）曾使运行永久卡「运行中」——快照冻结、取消无效：
+             接入运行级取消信号（runtime.signal，池取消即杀采集进程树；注意不能用组级 fail-fast signal，
+             同组任务失败不该株连采集），并给有界兜底超时（默认 600s，运行设置 prom.collectTimeoutSec
+             可覆盖，1~3600 秒夹取，与阶段超时同口径）；完整输出流式落 collect.log */
+          const collectTimeoutSec = Math.min(Math.max(Number(runCfg.prom && runCfg.prom.collectTimeoutSec) || 600, 1), 3600)
+          const pr = await runStageScript(collectScript, runCtx, scriptsDir, result.varsPool, collectTimeoutSec, penv, promLog, runtime?.signal)
+          if (pr.aborted) {
+            addNote('[普罗采集] 已随运行中止取消')
+            return
+          }
+          if (!pr.logFile) try {
+            const fsx = await import('node:fs/promises')
+            await fsx.mkdir(promDir, { recursive: true })
+            await fsx.writeFile(promDir + '/collect.log', stageLogText(collectScript.name, pr) + '\n', 'utf8')   // 采集输出落产物目录 collect.log（同页面）
+          } catch (e) { console.warn('[prom] 任务普罗采集日志写入失败（不影响执行）:', e) }
+          addNote('[普罗采集] ' + (pr.code === 0 ? '已收集 → ' : '失败（exit ' + pr.code + '，不影响任务结果）→ ') + promDir)
+          if (pr.code !== 0) console.warn('[prom] 任务「' + s.name + '」普罗采集失败（exit ' + pr.code + '，不影响执行）')
+        } catch (e) {
+          addNote('[普罗采集] 失败（' + String(e && (e as Error).message ? (e as Error).message : e) + '，不影响任务结果）')
+          console.warn('[prom] 任务「' + s.name + '」普罗采集异常（不影响执行）:', e)
+        }
+      }
+      const recordStageResult = async (result: ServerStageResult, seq: number) => {
+        const s = result.stage
+        // 每个任务的回显都写入归档文件夹、独立日志文件（run-<tag>-NN-任务名.log）
+        const logFile = result.logFile || (folder ? await writeTaskLogFile(folder, tag, seq, s.name, result.text) : null)
+        const noteWritten = result.logFile && result.promNote ? await appendTaskLogNote(result.logFile, result.promNote) : true
+        const durSec = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0   // 跳过阶段未打点：耗时记 0
+        logs.push({ stage: s.name, status: result.status, log: result.text, logFile, logSuffix: noteWritten ? '' : (result.promNote ? '\n' + result.promNote : '') })
+        pushHist(s.name, result.status, result.text, logFile, durSec, result.startedAt)
+        profileStages.push({ id: s.id, name: s.name, status: result.status, durSec, startedAt: result.startedAt, script: result.scriptName, logFile })
+        runtime?.updateStage(String(s && s.id || ''), { status: result.status, progress: 100, dur: durSec })
+        await writeLiveHistory('running')   // 逐阶段刷新「进行中」历史：服务端长任务执行期间记录不再停滞
+      }
+      for (const group of serverPipelineStageGroups(executionStages)) {
+        if (runtime?.signal.aborted) { status = 'aborted'; break }
+        const groupBase = { ...varsPool }
+        const controller = new AbortController()
+        const abortFromQueue = () => {
+          if (!controller.signal.aborted) controller.abort(serverAbortReason(runtime?.signal))
+        }
+        if (runtime?.signal) {
+          runtime.signal.addEventListener('abort', abortFromQueue, { once: true })
+          if (runtime.signal.aborted) abortFromQueue()
+        }
+        let results: ServerStageResult[]
+        try {
+          const jobs = group.stages.map((stage, offset) =>
+            executeStage(stage, group.start + offset, groupBase, controller.signal).then(result => {
+              if (result.shouldStop && !controller.signal.aborted) controller.abort()
+              return result
+            }))
+          results = await Promise.all(jobs)
+        } finally {
+          runtime?.signal.removeEventListener('abort', abortFromQueue)
+        }
+        const blockingFailure = results.some(result => result.shouldStop)
+        if (!blockingFailure || results.length === 1) {
+          for (const result of results) Object.assign(varsPool, result.varsOut)
+        }
+        /* 组内任务一到终态立刻刷新快照：recordStageResult 的 updateStage 在普罗采集之后才执行，
+           采集耗时长时阶段会长时间停在 running 假进度（进度冻结）——先按真实终态上屏，采集仅补充回显 */
+        for (const result of results) {
+          const durDone = result.startedAt > 0 ? Math.round((result.endedAt - result.startedAt) / 100) / 10 : 0
+          runtime?.updateStage(String(result.stage && result.stage.id || ''), { status: result.status, progress: 100, dur: durDone })
+        }
+        const promResult = longestServerPromResult(results)
+        if (promResult && !runtime?.signal.aborted) await collectStageProm(promResult)   // 已中止的运行不再启动采集（采集脚本自身也接运行级信号兜底）
+        for (const result of results) {
+          await recordStageResult(result, serverStageSeq(executionStages, result.index, baseSeq))
+        }
+        if (runtime?.signal.aborted) { status = 'aborted'; break }
+        if (blockingFailure) { status = 'failed'; break }
+      }
+      // 汇总 run-<tag>.log + profiling run-<tag>.profile.json（与页面 archiveRun 同约定）：
+      //   任务日志逐文件流式复制进汇总，不把大输出 split/join 成第二份内存；定时后缀追加、独立计划新建。
+      if (folder) {
+        try {
+          const sumFile = folder + '/run-' + tag + '.log'
+          await writePipelineSummaryFile(sumFile, isSuffixRun, logs, status)
+        } catch (e) { console.warn('[archive] 定时运行日志汇总失败（不影响执行）:', e) }
+        try {
+          const fsx = await import('node:fs/promises')
+          const profFile = folder + '/run-' + tag + '.profile.json'
+          let profile: any = null
+          try { profile = JSON.parse(await fsx.readFile(profFile, 'utf8')) } catch { /* 首次创建 */ }
+          if (!profile || typeof profile !== 'object') profile = {}
+          profile.pipeline = pipeName
+          profile.tag = tag
+          if (!profile.commit) profile.commit = randHex(7)
+          profile.env = pl.env || ''
+          profile.image = pl.image || ''
+          profile.by = pl.by || 'schedule'
+          profile.source = pl.source === 'api' ? 'API' : (pl.source === 'manual' ? '手动' : (isSuffixRun ? '定时后缀' : '定时计划'))
+          profile.result = status
+          if (!profile.startTime) profile.startTime = new Date(t0).toISOString()
+          profile.totalDurSec = Math.round((Date.now() - t0) / 100) / 10
+          // 阶段间变量随 profile 持久化（与页面 archiveRun 的 vars 一致）：定时后缀在页面写入的基础上合并本轮捕获
+          if (Object.keys(varsPool).length) profile.vars = Object.assign({}, profile.vars || {}, varsPool)
+          if (!Array.isArray(profile.stages)) profile.stages = []
+          profileStages.forEach(rec => {
+            const idx = profile.stages.findIndex((x: any) => x && (x.id === rec.id || x.name === rec.name))
+            if (idx >= 0) profile.stages[idx] = { ...profile.stages[idx], ...rec }
+            else profile.stages.push(rec)
           })
-        } catch (e) { console.warn('[archive] 归档脚本执行失败（不影响执行）:', e) }
+          await fsx.writeFile(profFile, JSON.stringify(profile, null, 2), 'utf8')
+        } catch (e) { console.warn('[archive] 定时运行 profiling 写入失败（不影响执行）:', e) }
+        // 归档脚本（可选）：与页面一致，写完日志/profiling 后执行（如 collect_logs.sh），收集额外日志到归档目录；失败不影响执行
+        // 接运行级取消信号：中止在归档阶段到达时立刻杀掉归档脚本（已有 120s 超时兜底，信号让取消即时生效）
+        const archiveScriptName = typeof runCfg.archiveScriptName === 'string' ? runCfg.archiveScriptName.trim() : ''
+        if (archiveScriptName && archiveRoot && typeof runCfg.archiveDir === 'string' && runCfg.archiveDir.trim() && !runtime?.signal.aborted) {
+          try {
+            await new Promise<void>((resolve) => {
+              execFile('bash', [pathResolve(scriptsDir, archiveScriptName)], {
+                cwd: scriptsDir || undefined,
+                env: { ...process.env, ARCHIVE_DIR: folder, ARCHIVE_FOLDER: folder, ARCHIVE_LOG_FILE: folder + '/run-' + tag + '.log', ARCHIVE_PROFILE_FILE: folder + '/run-' + tag + '.profile.json', ARCHIVE_PIPELINE: pipeName, ARCHIVE_TAG: tag, ARCHIVE_RESULT: status },
+                timeout: 120000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
+                ...(runtime?.signal ? { signal: runtime.signal } : {}),
+              }, (err) => { if (err && (err as any).name !== 'AbortError') console.warn('[archive] 归档脚本退出码 ' + ((err as any).code ?? err) + '（不影响执行）'); resolve() })
+            })
+          } catch (e) { console.warn('[archive] 归档脚本执行失败（不影响执行）:', e) }
+        }
+      }
+    } catch (error) {
+      /* 捕获执行主体逃逸的异常：置 failed、记「（系统）」日志行，继续走到下方无条件的终态落史——
+         否则执行池正常结算、once 计划照常移除（队列干净），历史却停在 running（此前最长 30 分钟才由
+         sweepStaleRunningHistory 兜底判死）。用户取消（运行级中止信号 / AbortError /「操作已取消」）
+         按 aborted 落史、不记失败行。异常不向调用方再抛：执行池结算不依赖 rejection（pump 在 resolve/
+         reject 双路都 settleEntry），planTick 对 execution 仅 catch 吞掉、运行 API 只 warn 留痕，
+         返回的 status 已足够 finished 终态判定（failed→failure / aborted→cancelled）。 */
+      const aborted = runtime?.signal?.aborted === true
+        || (error && (error as any).name === 'AbortError')
+        || (error && typeof (error as any).message === 'string' && (error as any).message.includes('操作已取消'))
+      status = aborted ? 'aborted' : 'failed'
+      if (!aborted) {
+        const message = String(error && (error as Error).message ? (error as Error).message : error)
+        console.warn('[pipeline] 执行异常（按失败落史）:', error)
+        pushHist('（系统）', 'failed', '执行异常：' + message, null, 0)
       }
     }
     await appendPipelineHistory(historyRecordFor(status))
@@ -6589,6 +6642,12 @@ export function apply(ctx: Context) {
     }
     for (const orphan of queueOrphans.values()) {
       noteEvidence((orphan as any).tag, (orphan as any).orphanedAt)
+    }
+    /* 服务端执行池在跑条目的 tag 一并算活体：长运行（>neverSeen 宽限）的 once 计划已从计划文件
+       移除、又可能没有任何浏览器在场证据，缺此信号会被 neverSeen 兜底误判死（执行池仍在跑）。
+       守卫兼容 vm 抽取测试未注入执行池的场景。 */
+    if (typeof pipelineExecutions !== 'undefined' && pipelineExecutions && typeof pipelineExecutions.runningTags === 'function') {
+      try { for (const tag of pipelineExecutions.runningTags()) if (tag) liveTags.add(tag) } catch {}
     }
     const plans = await readPlansFile()
     const activePlanTags = new Set<string>()
