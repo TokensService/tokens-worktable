@@ -55,7 +55,7 @@
   .tm-prioHigh { color:#f85149; border-color:rgba(248,81,73,.45); }
   .tm-prioMid  { color:#d29922; border-color:rgba(210,153,34,.45); }
   .tm-prioLow  { color:#3fb950; border-color:rgba(63,185,80,.45); }
-  .tm-task { display:flex; flex-direction:column; gap:6px; align-items:stretch; cursor:default; }
+  .tm-task { display:flex; flex-direction:column; gap:6px; align-items:stretch; cursor:pointer; }
   .tm-taskTop { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .tm-taskTitle { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); flex:1; min-width:120px; }
   .tm-taskTitle.done { text-decoration:line-through; opacity:.55; }
@@ -87,6 +87,18 @@
   .tm-progressItem:last-child { border-bottom:none; }
   .tm-progressMeta { font-size:10.5px; color:var(--dsw-alias-label-tertiary); margin-bottom:2px; }
   .tm-progressText { color:var(--dsw-alias-label-secondary); white-space:pre-wrap; }
+  .tm-detailBlock { margin-bottom:12px; }
+  .tm-detailLabel { font-size:11px; color:var(--dsw-alias-label-tertiary); margin-bottom:3px; text-transform:none; }
+  .tm-detailBody { font-size:12.5px; color:var(--dsw-alias-label-primary); white-space:pre-wrap; line-height:1.55; }
+  .tm-detailBody.muted { color:var(--dsw-alias-label-tertiary); }
+  .tm-detailGrid { display:grid; grid-template-columns:1fr 1fr; gap:8px 14px; margin-bottom:12px; }
+  .tm-progressList { max-height:260px; overflow:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:8px 10px; background:var(--dsw-alias-fill-l1); }
+  .tm-progressList .tm-progressItem { position:relative; padding-right:52px; }
+  .tm-progActs { position:absolute; top:4px; right:0; display:flex; gap:4px; }
+  .tm-progActs button { border:none; background:transparent; color:var(--dsw-alias-label-tertiary); cursor:pointer; font-size:11px; padding:1px 5px; border-radius:4px; }
+  .tm-progActs button:hover { color:var(--dsw-alias-state-accent-primary); background:var(--dsw-alias-fill-l1); }
+  .tm-progActs button.danger:hover { color:#f85149; }
+  .tm-progEdit { width:100%; margin:4px 0; }
   .tm-aiRow { display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap; }
   .tm-aiStatus { font-size:11px; color:var(--dsw-alias-label-tertiary); }
   .tm-importPreview { max-height:220px; overflow:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:8px; margin-bottom:10px; }
@@ -197,6 +209,41 @@
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
         <button class="dshell-btn dshell-btnGhost" id="doneCancelBtn">取消</button>
         <button class="dshell-btn" id="doneOkBtn">确认完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 任务详情弹窗 -->
+  <div id="detailMask" class="tm-mask">
+    <div class="dshell-card tm-modal tm-modalWide">
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+        <h2 class="dshell-sub" id="detailTitle" style="margin:0;font-size:14px;font-weight:600;flex:1"></h2>
+        <span id="detailStatus" class="dshell-badge"></span>
+      </div>
+      <div class="tm-detailGrid">
+        <div><div class="tm-detailLabel">优先级</div><div class="tm-detailBody" id="detailPrio"></div></div>
+        <div><div class="tm-detailLabel">负责人</div><div class="tm-detailBody" id="detailAssignee"></div></div>
+        <div><div class="tm-detailLabel">截止时间</div><div class="tm-detailBody" id="detailDeadline"></div></div>
+        <div><div class="tm-detailLabel">创建</div><div class="tm-detailBody" id="detailCreated"></div></div>
+      </div>
+      <div class="tm-detailBlock">
+        <div class="tm-detailLabel">标签</div>
+        <div id="detailTags"></div>
+      </div>
+      <div class="tm-detailBlock">
+        <div class="tm-detailLabel">任务描述</div>
+        <div class="tm-detailBody" id="detailDesc"></div>
+      </div>
+      <div class="tm-detailBlock">
+        <div class="tm-detailLabel">任务结果 / 成果</div>
+        <div class="tm-detailBody" id="detailEffect"></div>
+      </div>
+      <div class="tm-detailBlock">
+        <div class="tm-detailLabel">进展（<span id="detailProgCount">0</span> 条，可编辑 / 删除）</div>
+        <div class="tm-progressList" id="detailProgress"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+        <button class="dshell-btn dshell-btnGhost" id="detailCloseBtn">关闭</button>
       </div>
     </div>
   </div>
@@ -493,21 +540,25 @@
 
       item.addEventListener('click', function (e) {
         var act = e.target.getAttribute && e.target.getAttribute('data-act');
-        if (!act) return;
-        if (act === 'advance') {
-          if (t.status === 'todo') {
-            apiSend('PATCH', { id: t.id, status: 'doing' }).then(loadTasks).catch(function (err) { showErr(err.message); });
-          } else {
-            /* doing → done：多行弹窗录入任务结果（取消 = 不标记完成；结果随状态一并 PATCH） */
-            openDoneModal(t);
-          }
-        } else if (act === 'progress') {
-          openProgModal(t);
-        } else if (act === 'del') {
-          if (confirm('确认删除任务「' + t.title + '」？')) {
-            apiSend('DELETE', undefined, '?id=' + encodeURIComponent(t.id)).then(loadTasks).catch(function (err) { showErr(err.message); });
-          }
-        } else if (act === 'edit') { openModal(t); }
+        if (act) {
+          if (act === 'advance') {
+            if (t.status === 'todo') {
+              apiSend('PATCH', { id: t.id, status: 'doing' }).then(loadTasks).catch(function (err) { showErr(err.message); });
+            } else {
+              /* doing → done：多行弹窗录入任务结果（取消 = 不标记完成；结果随状态一并 PATCH） */
+              openDoneModal(t);
+            }
+          } else if (act === 'progress') {
+            openProgModal(t);
+          } else if (act === 'del') {
+            if (confirm('确认删除任务「' + t.title + '」？')) {
+              apiSend('DELETE', undefined, '?id=' + encodeURIComponent(t.id)).then(loadTasks).catch(function (err) { showErr(err.message); });
+            }
+          } else if (act === 'edit') { openModal(t); }
+          return;
+        }
+        /* 点任务卡（非操作按钮）→ 详情弹窗：标签 / 描述 / 结果 / 全部进展 */
+        openDetailModal(t);
       });
       box.appendChild(item);
     });
@@ -649,6 +700,123 @@
       statusEl.textContent = '';
       showErr(err.message || String(err));
     });
+  });
+
+  /* ---------- 任务详情弹窗（点击卡片：标签/描述/结果/全部进展，进展可改删） ---------- */
+  var detailMask = document.getElementById('detailMask');
+  var detailTask = null;
+  function canEditProgEntry(t, e) {
+    if (isAdmin()) return true;
+    if (!me.shared && me.username && t && t.assignee === me.username) return true;
+    return !!(me.username && e && e.by === me.username);
+  }
+  function renderDetailProgress(t) {
+    var box = document.getElementById('detailProgress');
+    var prog = taskProgress(t);
+    document.getElementById('detailProgCount').textContent = prog.length;
+    if (!prog.length) {
+      box.innerHTML = '<div class="tm-hint">暂无进展记录</div>';
+      return;
+    }
+    /* 最新在前 */
+    box.innerHTML = prog.slice().reverse().map(function (e) {
+      var editable = canEditProgEntry(t, e);
+      return '<div class="tm-progressItem" data-prog-id="' + esc(e.id) + '">' +
+        '<div class="tm-progressMeta">' + esc(e.by || '') + ' · ' + fmtDL(e.at) + '</div>' +
+        '<div class="tm-progressText">' + esc(e.text) + '</div>' +
+        (editable ? '<div class="tm-progActs">' +
+          '<button type="button" data-prog-act="edit">编辑</button>' +
+          '<button type="button" class="danger" data-prog-act="del">删除</button>' +
+        '</div>' : '') +
+        '</div>';
+    }).join('');
+  }
+  function openDetailModal(t) {
+    detailTask = t;
+    document.getElementById('detailTitle').textContent = t.title;
+    var badgeCls = t.status === 'done' ? 'dshell-badgeDone' : (t.status === 'doing' ? 'dshell-badgeWait' : '');
+    var st = document.getElementById('detailStatus');
+    st.className = 'dshell-badge ' + badgeCls;
+    st.textContent = STATUS[t.status] || t.status;
+    document.getElementById('detailPrio').textContent = (PRIO[t.prio] || PRIO.mid).label;
+    document.getElementById('detailAssignee').textContent = userLabel(t.assignee);
+    var dlEl = document.getElementById('detailDeadline');
+    dlEl.textContent = fmtDL(t.deadline) + (isOverdue(t) ? '（已逾期）' : '');
+    dlEl.className = 'tm-detailBody' + (isOverdue(t) ? ' tm-overdue' : '');
+    document.getElementById('detailCreated').textContent = fmtDL(t.created) + (t.createdBy ? ' · ' + t.createdBy : '');
+    var tags = taskTags(t);
+    var tagsEl = document.getElementById('detailTags');
+    tagsEl.innerHTML = tags.length
+      ? '<div class="tm-tags">' + tags.map(function (g) { return '<span class="tm-tag">' + esc(g) + '</span>'; }).join('') + '</div>'
+      : '<div class="tm-detailBody muted">无标签</div>';
+    var descEl = document.getElementById('detailDesc');
+    descEl.textContent = t.desc || '无描述';
+    descEl.className = 'tm-detailBody' + (t.desc ? '' : ' muted');
+    var effEl = document.getElementById('detailEffect');
+    effEl.textContent = t.effect || '尚未录入';
+    effEl.className = 'tm-detailBody' + (t.effect ? '' : ' muted');
+    renderDetailProgress(t);
+    detailMask.classList.add('on');
+  }
+  function closeDetail() { detailMask.classList.remove('on'); detailTask = null; }
+  document.getElementById('detailCloseBtn').addEventListener('click', closeDetail);
+  detailMask.addEventListener('click', function (e) { if (e.target === detailMask) closeDetail(); });
+
+  document.getElementById('detailProgress').addEventListener('click', function (e) {
+    if (!detailTask) return;
+    var act = e.target.getAttribute && e.target.getAttribute('data-prog-act');
+    if (!act) return;
+    var itemEl = e.target.closest ? e.target.closest('[data-prog-id]') : null;
+    var progId = itemEl && itemEl.getAttribute('data-prog-id');
+    if (!progId) return;
+    var t = detailTask;
+    var entry = taskProgress(t).find(function (x) { return x && x.id === progId; });
+    if (!entry) return;
+    if (act === 'edit') {
+      /* 行内编辑：替换成 textarea + 保存/取消 */
+      if (itemEl.querySelector('textarea')) return;
+      var textEl = itemEl.querySelector('.tm-progressText');
+      if (!textEl) return;
+      var ta = document.createElement('textarea');
+      ta.className = 'dshell-textarea tm-progEdit';
+      ta.rows = 3;
+      ta.value = entry.text;
+      textEl.style.display = 'none';
+      textEl.parentNode.insertBefore(ta, textEl.nextSibling);
+      var acts = itemEl.querySelector('.tm-progActs');
+      if (acts) acts.style.display = 'none';
+      var row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.gap = '6px';
+      row.style.justifyContent = 'flex-end';
+      row.innerHTML = '<button type="button" class="dshell-btn dshell-btnGhost" data-prog-act="cancel-edit">取消</button>' +
+        '<button type="button" class="dshell-btn" data-prog-act="save-edit">保存</button>';
+      ta.parentNode.insertBefore(row, ta.nextSibling);
+      ta.focus();
+    } else if (act === 'cancel-edit') {
+      renderDetailProgress(t);
+    } else if (act === 'save-edit') {
+      var ta2 = itemEl.querySelector('textarea');
+      var v = ta2 ? ta2.value.trim() : '';
+      if (!v) { showErr('进展内容不能为空'); return; }
+      apiSend('PATCH', { id: t.id, updateProgress: { id: progId, text: v } }).then(function () {
+        return loadTasks();
+      }).then(function () {
+        /* 列表刷新后重开详情（t 对象已换新引用） */
+        var fresh = tasks.find(function (x) { return x.id === t.id; });
+        if (fresh) openDetailModal(fresh);
+        else closeDetail();
+      }).catch(function (err) { showErr(err.message); });
+    } else if (act === 'del') {
+      if (!confirm('确认删除这条进展？')) return;
+      apiSend('PATCH', { id: t.id, deleteProgress: progId }).then(function () {
+        return loadTasks();
+      }).then(function () {
+        var fresh = tasks.find(function (x) { return x.id === t.id; });
+        if (fresh) openDetailModal(fresh);
+        else closeDetail();
+      }).catch(function (err) { showErr(err.message); });
+    }
   });
 
   /* ---------- 进展弹窗 ---------- */
