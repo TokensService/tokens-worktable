@@ -140,10 +140,10 @@ test('rfetch：远程经 stat 探测 + sshpass scp 拉取到缓存，大小一�
   assert.equal(res.body.cached, false)
   assert.equal(res.body.size, 12345)
   assert.ok(res.body.path.includes('remote-cache') && res.body.path.endsWith('big.pt.trace.json'), res.body.path)
-  /* scp 端口用 -P（大写）、目标 user@host:'path' 单引号包裹 */
+  /* scp 端口用 -P（大写）；远程路径不套引号（OpenSSH ≥9 scp 默认 SFTP 协议，引号会被当成文件名字符） */
   const scpCall = calls.find(c => c.args.includes('scp'))
   const target = scpCall.args[scpCall.args.length - 2]
-  assert.equal(target, "u@192.0.2.9:'/data/big.pt.trace.json'")
+  assert.equal(target, "u@192.0.2.9:/data/big.pt.trace.json")
   /* 二次调用：stat 相同大小 → 直接命中缓存，不再 scp */
   calls.length = 0
   res = fakeRes()
