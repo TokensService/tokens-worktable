@@ -1,5 +1,5 @@
-/* 每条流水线的 API 调用说明：端点、按运行框当前填写的参数动态生成的请求体和可复制 curl，
-   以及「▶ 直接调用」——页面内同源发起一次真实 POST 并内联展示结果（免导出 Cookie 验证）。 */
+/* 每条流水线的 API 调用说明：端点、按运行框当前填写的参数动态生成的请求体和可复制 curl（内嵌当前登录
+   会话令牌实际值，无占位符），以及「▶ 直接调用」——页面内同源发起一次真实 POST 并内联展示结果。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
 const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
@@ -30,7 +30,7 @@ test('API 请求体与 curl 按运行框当前填写的参数动态生成',()=>{
     curWeightsPath:()=>'/models/glm52',
     selectedPresetKeys:()=>['cleanup','check'],
   });
-  const spec=ctx.pipelineApiSpec({id:'release 2026',name:'发布',defaults:{branch:'ignored-branch',presets:['profiling']}},'https://dsh.example');
+  const spec=ctx.pipelineApiSpec({id:'release 2026',name:'发布',defaults:{branch:'ignored-branch',presets:['profiling']}},'https://dsh.example','tok-live-1');
   assert.equal(spec.endpoint,'/api/worktable/pipeline/run/release%202026');
   assert.deepEqual(J(spec.body),{
     environmentIds:['env-prod'],repositoryId:'repo-app',branch:'release',strategy:'blue-green',weightsPath:'/models/glm52',presets:['cleanup','check'],by:'alice',
@@ -38,18 +38,22 @@ test('API 请求体与 curl 按运行框当前填写的参数动态生成',()=>{
   assert.equal(spec.warning,'');
   assert.match(spec.curl,/curl -X POST/);
   assert.match(spec.curl,/https:\/\/dsh\.example\/api\/worktable\/pipeline\/run\/release%202026/);
-  assert.match(spec.curl,/-b cookies\.txt/,'受登录守卫保护的 API 示例应携带 cookie 文件');
+  assert.match(spec.curl,/-H 'Authorization: Bearer tok-live-1'/,'curl 应内嵌当前会话令牌实际值');
   assert.match(spec.curl,/env-prod/,'curl 应携带运行框当前选中的环境');
 });
 
-test('curl 示例含账号密码登录步骤：/auth/login 写 cookies.txt，占位凭据不内嵌真实口令',()=>{
+test('curl 示例内嵌当前会话令牌实际值（无占位符）；未取到会话时省略认证行',()=>{
   const ctx=context({$:form({repoSel:'repo-app'})});
-  const spec=ctx.pipelineApiSpec({id:'pl-1'},'https://dsh.example');
-  assert.match(spec.curl,/curl -c cookies\.txt -X POST 'https:\/\/dsh\.example\/auth\/login'/,'示例应包含账号密码登录步骤');
-  assert.match(spec.curl,/--data-urlencode 'username=<用户名>'/);
-  assert.match(spec.curl,/--data-urlencode 'password=<密码>'/,'口令只应出现占位符');
-  assert.ok(spec.curl.indexOf('/auth/login')<spec.curl.indexOf('/api/worktable/pipeline/run/'),'登录步骤应在运行调用之前');
-  assert.match(spec.curl,/未启用认证插件时跳过/,'应说明 token 共享部署可跳过登录步骤');
+  const withTok=ctx.pipelineApiSpec({id:'pl-1'},'https://dsh.example','abc.def+ghi');
+  assert.match(withTok.curl,/curl -X POST 'https:\/\/dsh\.example\/api\/worktable\/pipeline\/run\/pl-1'/);
+  assert.match(withTok.curl,/-H 'Authorization: Bearer abc\.def\+ghi'/,'应原样内嵌传入的会话令牌');
+  assert.ok(!/cookies\.txt|\/auth\/login|<用户名>|<密码>/.test(withTok.curl),'不再出现 cookies.txt / 登录步骤 / 占位符');
+  assert.match(withTok.curl,/退出登录后失效/,'应说明令牌失效条件');
+  const noTok=ctx.pipelineApiSpec({id:'pl-1'},'https://dsh.example');
+  assert.ok(!noTok.curl.includes('Authorization'),'无会话令牌时省略认证行');
+  assert.match(noTok.curl,/未检测到登录会话/,'无令牌时应说明无需令牌');
+  const emptyTok=ctx.pipelineApiSpec({id:'pl-1'},'https://dsh.example','');
+  assert.ok(!emptyTok.curl.includes('Authorization'),'空令牌同样省略认证行');
 });
 
 test('分支与执行人留空时回退 main 与 api，空策略/空预设显式覆盖流水线默认值',()=>{
@@ -78,6 +82,7 @@ test('API 调用说明弹窗包含端点、JSON、curl 与复制入口',()=>{
   });
   assert.match(source,/repository.*name\/url\/user\/pass/,'弹窗应说明一次性代码仓凭据覆盖字段');
   assert.match(source,/\$\('pipelineApiBody'\)\.textContent=spec\.bodyText/,'警告不能混入可复制的 JSON 请求体');
+  assert.match(source,/fetch\('\/api\/worktable\/session',\{cache:'no-store'\}\)/,'弹窗打开应实时取当前会话令牌填入 curl');
 });
 
 test('API 弹窗含「直接调用」按钮与内联结果区，点击经 invokePipelineApi 同源发起 POST 并接入运行跟随',()=>{
@@ -95,14 +100,18 @@ test('直接调用：按弹窗冻结的端点与请求体原样 POST，202 后�
   const calls=[];
   const ctx=context({
     $, location:{origin:'https://dsh.example'}, Promise, Date,
-    fetch:async(url,opts)=>{ calls.push({url,opts}); return {status:202,json:async()=>({ok:true,accepted:true,runId:'api-x1',pipelineName:'发布'})}; },
+    fetch:async(url,opts)=>{
+      if(url==='/api/worktable/session') return {ok:true,json:async()=>({username:'alice',token:'tok-xyz'})};
+      calls.push({url,opts}); return {status:202,json:async()=>({ok:true,accepted:true,runId:'api-x1',pipelineName:'发布'})};
+    },
     pullRemoteQueue:async()=>{ ctx.__pulled=(ctx.__pulled||0)+1; },
     followPendingServerRun:()=>{ ctx.__followed=(ctx.__followed||0)+1; },
     SERVER_RUN_FOCUS_MS:15000,
   });
-  ctx.showPipelineApi({id:'pl-9',name:'发布',defaults:{branch:'trunk'}});
+  await ctx.showPipelineApi({id:'pl-9',name:'发布',defaults:{branch:'trunk'}});
+  assert.match(els.pipelineApiCurl.textContent,/-H 'Authorization: Bearer tok-xyz'/,'curl 示例应内嵌会话接口返回的令牌实际值');
   await ctx.invokePipelineApi();
-  assert.equal(calls.length,1,'应只发起一次调用');
+  assert.equal(calls.length,1,'应只发起一次调用（会话取数不计入调用）');
   assert.equal(calls[0].url,'/api/worktable/pipeline/run/pl-9');
   assert.equal(calls[0].opts.method,'POST');
   assert.equal(calls[0].opts.headers['Content-Type'],'application/json');
@@ -122,7 +131,8 @@ test('直接调用失败路径：非 202 内联展示服务端错误，网络异
     $, location:{origin:'https://dsh.example'}, Promise, Date,
     fetch:async()=>({status:403,json:async()=>({error:'reserved',message:'节点预留给他人'})}),
   });
-  ctx.showPipelineApi({id:'pl-9',name:'发布'});
+  await ctx.showPipelineApi({id:'pl-9',name:'发布'});
+  assert.ok(!els.pipelineApiCurl.textContent.includes('Authorization'),'会话取数未放行（无 ok）时省略认证行');
   await ctx.invokePipelineApi();
   assert.match(els.pipelineApiResult.textContent,/403/);
   assert.match(els.pipelineApiResult.textContent,/reserved|节点预留/);
@@ -130,7 +140,7 @@ test('直接调用失败路径：非 202 内联展示服务端错误，网络异
   // 网络异常
   const els2={}; const $2=id=>els2[id]||(els2[id]=fakeEl());
   const ctx2=context({ $:$2, location:{origin:'https://dsh.example'}, Promise, Date, fetch:async()=>{ throw new Error('conn refused'); } });
-  ctx2.showPipelineApi({id:'pl-9',name:'发布'});
+  await ctx2.showPipelineApi({id:'pl-9',name:'发布'});
   await ctx2.invokePipelineApi();
   assert.match(els2.pipelineApiResult.textContent,/网络错误.*conn refused/);
   assert.equal(els2.pipelineApiInvoke.disabled,false);

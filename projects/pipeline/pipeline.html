@@ -911,7 +911,7 @@
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;"><b>curl 示例</b><span style="display:flex;gap:6px;"><button id="pipelineApiInvoke" type="button" class="dshell-btn mini" title="按上方接口地址与请求体在页面内直接发起一次真实调用（同源携带登录会话，无需导出 Cookie），结果展示在下方">▶ 直接调用</button><button id="pipelineApiCopyCurl" type="button" class="dshell-btn dshell-btnGhost mini">复制</button></span></div>
         <pre id="pipelineApiCurl" class="logbox" style="max-height:260px;margin:0;"></pre>
         <div id="pipelineApiResult" style="display:none;font-size:12px;margin-top:5px;word-break:break-all;"></div>
-        <div class="dshell-muted" style="font-size:11px;margin-top:5px;">外部调用按上方两步脚本执行：① 账号密码登录即得 cookies.txt（也可从已登录浏览器导出 Cookie）；页面内可点「▶ 直接调用」免导出验证。</div>
+        <div class="dshell-muted" style="font-size:11px;margin-top:5px;">curl 示例已内嵌当前登录会话令牌（实际值，非占位符），复制即可在任意机器直接执行；令牌与浏览器登录同权，退出登录后失效（重新打开本弹窗取新值），请勿泄露或提交进仓库；页面内可点「▶ 直接调用」免复制验证。</div>
       </div>
     </div>
   </div>
@@ -1979,7 +1979,7 @@ function submitPipelineRunDialog(){
 /* ---------- 流水线任务列表运行弹窗结束 ---------- */
 /* ---------- 流水线 API 调用说明 ---------- */
 function shellSingleQuoted(value){ return "'"+String(value).replace(/'/g,"'\"'\"'")+"'"; }
-function pipelineApiSpec(pl,origin){
+function pipelineApiSpec(pl,origin,sessionToken){
   /* 请求体与 curl 按主控运行框当前填写的运行参数动态生成（与点「▶ 运行流水线」取数一致：
      环境多选/代码仓/分支/部署策略/执行人/预设任务均取当前值），不再读取流水线保存的默认参数；
      默认参数仅在 API 调用方省略字段时由服务端逐项回退。 */
@@ -2008,9 +2008,14 @@ function pipelineApiSpec(pl,origin){
   const base=String(origin||'').replace(/\/+$/,'');
   const url=base+endpoint;
   const bodyText=JSON.stringify(body,null,2);
-  /* curl 示例为可直接执行的两步脚本：① 账号密码登录写 cookies.txt（--data-urlencode 防特殊字符；未启用
-     认证插件的 token 共享部署可跳过）；② 携带会话调运行接口。不内嵌真实凭据，占位 <用户名>/<密码>。 */
-  const curl="# ① 账号密码登录，会话写入 cookies.txt（一次性；未启用认证插件时跳过）\ncurl -c cookies.txt -X POST "+shellSingleQuoted(base+'/auth/login')+" \\\n  --data-urlencode 'username=<用户名>' \\\n  --data-urlencode 'password=<密码>'\n\n# ② 携带会话调用运行接口\ncurl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -b cookies.txt \\\n  --data "+shellSingleQuoted(JSON.stringify(body));
+  /* curl 示例内嵌当前登录会话令牌（实际值，无占位符）：dsh-auth-gate 守卫接受 Authorization: Bearer
+     会话令牌（与 Cookie 同权），复制即可在任意机器直接执行；令牌由弹窗打开时经 /api/worktable/session
+     实时取当前会话生成，退出登录/换号后失效，重新打开本弹窗即得新值。未取到会话（未启用认证插件的
+     token 共享部署）时省略认证行，单条命令直接调用。 */
+  const token=String(sessionToken||'');
+  const curl=(token
+    ? "# 已内嵌当前登录会话令牌（实际值；与浏览器登录同权，退出登录后失效，届时重新打开本弹窗取新值）\ncurl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  -H "+shellSingleQuoted('Authorization: Bearer '+token)+" \\\n  --data "+shellSingleQuoted(JSON.stringify(body))
+    : "# 未检测到登录会话（未启用认证插件的部署无需令牌），直接调用\ncurl -X POST "+shellSingleQuoted(url)+" \\\n  -H 'Content-Type: application/json' \\\n  --data "+shellSingleQuoted(JSON.stringify(body)));
   return {endpoint,body,bodyText,curl,warning:issues.join('；')};
 }
 let pipelineApiCur=null;   // 弹窗当前展示的调用规范（{endpoint,body}，showPipelineApi 打开时冻结）：「直接调用」按展示内容原样发起
@@ -2043,9 +2048,18 @@ async function invokePipelineApi(){
     if(btn){ btn.disabled=false; btn.textContent='▶ 直接调用'; }
   }
 }
-function showPipelineApi(pl){
+async function showPipelineApi(pl){
   if(!pl) return;
-  const spec=pipelineApiSpec(pl,location.origin);
+  /* 打开时实时取当前会话令牌填进 curl 示例（实际值，无占位符）；取不到（未启用认证插件 / 网络异常）
+     按无令牌生成（省略认证行）。typeof 守卫：vm 抽取测试未注入 fetch 时跳过，同步路径不受影响 */
+  let sessionToken='';
+  try{
+    if(typeof fetch==='function'){
+      const sessionRes=await fetch('/api/worktable/session',{cache:'no-store'});
+      if(sessionRes&&sessionRes.ok){ const sessionInfo=await sessionRes.json(); sessionToken=String(sessionInfo&&sessionInfo.token||''); }
+    }
+  }catch(e){}
+  const spec=pipelineApiSpec(pl,location.origin,sessionToken);
   pipelineApiCur={endpoint:spec.endpoint,body:spec.body};
   $('pipelineApiTitle').textContent='流水线 API：'+(pl.name||pl.id);
   $('pipelineApiEndpoint').textContent=spec.endpoint;

@@ -249,6 +249,7 @@ const DEV_INSTALL = (() => {
 
 export const HEALTH_PATH = '/api/worktable/health'
 export const PROXY_PATH = '/api/worktable/proxy'
+export const SESSION_API_PATH = '/api/worktable/session'
 
 /** 服务端代联目标白名单：仅回环 / RFC1918 内网 / 链路本地，避免成为任意 SSRF 出口 */
 function isLocalTarget(hostname: string): boolean {
@@ -3250,6 +3251,29 @@ function registerPipelineRunApi(webServer: any, deps: {
   })
 }
 /* ---------- 流水线 API 触发结束 ---------- */
+
+/* ---------- 当前会话信息（API 调用方自服务） ---------- */
+/** GET /api/worktable/session：回显调用方自己本次请求已携带的会话身份与令牌，供流水线页
+ *  API 弹窗把「实际值」填进 curl 示例（守卫接受 Authorization: Bearer 会话令牌，与 Cookie 同权）。
+ *  只读回显请求已携带的凭据，不签发新会话、不放大权限——调用方拿到的只有自己本会话；
+ *  无 auth 服务（token 共享模式）时 username 为空串，无会话凭据时 token 为空串（页面省略认证行）。
+ *  响应经 json() 统一带 cache-control: no-store，令牌不落缓存。 */
+function registerSessionApi(webServer: any, ctx: any) {
+  webServer.register({
+    kind: 'exact',
+    path: SESSION_API_PATH,
+    handler: async (req: any, res: any) => {
+      if (req.method !== 'GET') { res.writeHead(405); res.end(); return }
+      try {
+        const caller = resolveRequestAuth(ctx, req)
+        json(res, 200, { username: caller ? caller.username : '', token: requestAuthToken(req) })
+      } catch (err) {
+        json(res, 500, { error: String(err) })
+      }
+    },
+  })
+}
+/* ---------- 当前会话信息结束 ---------- */
 
 /* ---------- 流水线阶段完成轮询（服务端长轮询） ----------
  * 「任务是否完成」的轮询从浏览器移到服务端：客户端对每个 Jenkins/EvalTokens 阶段改发本区端点，
@@ -6295,6 +6319,7 @@ export function apply(ctx: Context) {
     ctx,
     readReservations: async () => (await readReservationsStore()).reservations,
   })
+  registerSessionApi(webServer, ctx)
   async function planTick() {
     const plans = await readPlansFile()
     const now = Date.now()
