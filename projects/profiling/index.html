@@ -173,7 +173,10 @@
             <button class="dshell-btn" id="saveDirLocalPickBtn">选择目录…</button>
             <button class="dshell-btn dshell-btnGhost" id="saveDirLocalClearBtn">清除</button>
           </div>
-          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto」会把 trace 同时保存到该本地目录（保留原始文件名与字节，.gz 不剥壳；已存在同名同大小文件自动跳过、直接读本地副本打开）。需 Chrome / Edge 等 Chromium 内核且 localhost 或 HTTPS 访问（File System Access API）；目录授权记忆在浏览器 IndexedDB 中，换浏览器 / 清站点数据需重新选择。未设置或不支持时回退为浏览器默认下载目录（已下载过的自动跳过重复下载）。</p>
+          <div class="pf-row" style="margin-top:8px" id="saveDirLocalNoteRow">
+            <input class="dshell-input grow" id="saveDirLocalNote" placeholder="目录完整路径备注（如 D:\traces 或 /data/traces）" />
+          </div>
+          <p class="dshell-muted" style="margin:8px 0 0">设置后，「Perfetto」会把 trace 同时保存到该本地目录（保留原始文件名与字节，.gz 不剥壳；已存在同名同大小文件自动跳过、直接读本地副本打开）。需 Chrome / Edge 等 Chromium 内核且 localhost 或 HTTPS 访问（File System Access API）；目录授权记忆在浏览器 IndexedDB 中，换浏览器 / 清站点数据需重新选择。未设置或不支持时回退为浏览器默认下载目录（已下载过的自动跳过重复下载）。注：浏览器安全限制只返回所选目录的名字、拿不到完整路径，请在上面的输入框里备注完整路径（仅作显示，不影响保存行为）。</p>
 
         </div>
       </div>
@@ -1557,23 +1560,37 @@ $('saveDirPickCurBtn').addEventListener('click', () => {
   toast('已选择：' + saveDirBrowsePath + '（点「保存」生效）');
 });
 /* ---- 设置页接线：本地保存目录（FS API） ---- */
+/* 浏览器安全限制只返回所选目录的名字（handle.name）、拿不到完整路径；
+   完整路径由用户在备注输入框手动填写，随 localStorage 持久化，仅作显示（不影响保存行为） */
+const SAVE_DIR_LOCAL_NOTE_KEY = 'dsh.profiling.saveDirLocalNote';
+function saveDirLocalNote(){ return String(load(SAVE_DIR_LOCAL_NOTE_KEY, '') || '').trim(); }
 function refreshSaveDirLocalUi(){
-  $('saveDirLocalLabel').textContent = saveDirLocalHandle ? '已设置：' + (saveDirLocalHandle.name || '（浏览器私有目录）') : '未设置（用浏览器默认下载目录）';
+  const note = saveDirLocalNote();
+  $('saveDirLocalLabel').textContent = saveDirLocalHandle ? '已设置：' + (note || saveDirLocalHandle.name || '（浏览器私有目录）') : '未设置（用浏览器默认下载目录）';
   $('saveDirLocalClearBtn').style.display = saveDirLocalHandle ? '' : 'none';
+  $('saveDirLocalNoteRow').style.display = saveDirLocalHandle ? '' : 'none';
+  $('saveDirLocalNote').value = note || (saveDirLocalHandle && saveDirLocalHandle.name) || '';
 }
+$('saveDirLocalNote').addEventListener('change', () => {
+  store(SAVE_DIR_LOCAL_NOTE_KEY, $('saveDirLocalNote').value.trim());
+  refreshSaveDirLocalUi();
+  toast('本地目录完整路径备注已保存');
+});
 $('saveDirLocalPickBtn').addEventListener('click', async () => {
   if (!saveDirLocalSupported) return;
   try{
     const h = await window.showDirectoryPicker({ mode: 'readwrite' });
     saveDirLocalHandle = h;
     await idbSet(SAVE_DIR_LOCAL_IDB_KEY, h);
+    store(SAVE_DIR_LOCAL_NOTE_KEY, h.name || '');   /* 预填目录名，用户可改成完整路径 */
     refreshSaveDirLocalUi();
-    toast('本地保存目录已设置：' + h.name);
+    toast('本地保存目录已设置：' + h.name + '（可在输入框备注完整路径）');
   }catch(e){ /* 用户取消选择不提示 */ }
 });
 $('saveDirLocalClearBtn').addEventListener('click', async () => {
   saveDirLocalHandle = null;
   await idbDel(SAVE_DIR_LOCAL_IDB_KEY);
+  store(SAVE_DIR_LOCAL_NOTE_KEY, '');
   store(DL_KEY, {});
   refreshSaveDirLocalUi();
   toast('已清除本地保存目录设置与「已下载」记录');
