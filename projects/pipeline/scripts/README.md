@@ -2,6 +2,23 @@
 
 流水线工作台（`../pipeline.html`）在「编辑流水线」中给阶段绑定本目录下的脚本；绑定时点「识别参数」会自动从脚本源码识别可配置项。运行到该阶段时通过 `/api/worktable/exec` 执行脚本，并自动注入运行上下文。
 
+## vLLM 镜像编译与 SWR 推送
+
+`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本使用 BuildKit 编译 OCI 镜像，再使用 `ctr -n k8s.io images import` 导入 containerd，最后使用 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
+
+最小配置：
+
+```bash
+export IMAGE_TAG="vllm-$(date +%Y%m%d%H%M%S)"
+export SWR_REGISTRY=swr.cn-southwest-2.myhuaweicloud.com
+export SWR_REPOSITORY=dataartsfabric/vllm
+export SWR_USERNAME='cn-southwest-2@<AK>'
+export SWR_PASSWORD='<SWR_TOKEN>'
+build_vllm_image_ctr.sh
+```
+
+可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_ARGS`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
+
 ## 参数识别规则
 
 脚本源码中出现以下写法会被识别为可配置参数，在阶段行里可填值覆盖：
