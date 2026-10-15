@@ -92,6 +92,22 @@ function makeFixture() {
 
 const EXPECT_GPU = { window: 780, busy: 407, sum: 437, idle: 373, overlap: 30, serial: 377, maxConcurrent: 2, streams: 3, kernelCount: 10 };
 
+/* 内核占用 fixture：gpu_user_annotation 注释与内核等长冒充占用（应剔除）、
+   内核无 External id 经 correlation → cudaLaunchKernel → cpu_op 归属、
+   est. achieved occupancy % 时长加权、无占用字段记 null */
+function makeOccFixture() {
+  return {
+    traceEvents: [
+      { ph: "X", cat: "cpu_op", pid: 1, tid: 11, ts: 0, dur: 500, name: "aten::add", args: { "External id": 7 } },
+      { ph: "X", cat: "cuda_runtime", pid: 1, tid: 11, ts: 10, dur: 5, name: "cudaLaunchKernel", args: { correlation: 42, "External id": 7 } },
+      { ph: "X", cat: "gpu_user_annotation", pid: 2, tid: 5, ts: 100, dur: 100, name: "nccl:broadcast", args: { stream: 7 } },
+      { ph: "X", cat: "kernel", pid: 2, tid: 107, ts: 100, dur: 100, name: "gemm_kernel_a", args: { stream: 7, correlation: 42, "est. achieved occupancy %": 50 } },
+      { ph: "X", cat: "kernel", pid: 2, tid: 107, ts: 300, dur: 100, name: "gemm_kernel_a", args: { stream: 7, correlation: 42, "est. achieved occupancy %": 100 } },
+      { ph: "X", cat: "kernel", pid: 2, tid: 107, ts: 500, dur: 50, name: "rmsnorm_kernel_b", args: { stream: 7 } },
+    ],
+  };
+}
+
 /* 空闲段 TOP3：1100-1200（100µs，含 cudaStreamSynchronize ×1）、1632-1700（68µs）、1440-1500（60µs） */
 function assertIdleGaps(g) {
   assert.equal(g.idleGaps.length, 3);
@@ -218,6 +234,67 @@ test("analyzeTraceKernels：无内核事件返回空形态", () => {
   assert.deepEqual(J(ctx.analyzeTraceKernels(null)), { kernels: [], gpu: null, overlap: [], fusion: [] });
 });
 
+test("isDeviceWork：内核/memcpy/memset 计入，gpu_user_annotation 等注释剔除", () => {
+  const ctx = analyzerContext();
+  assert.equal(ctx.isDeviceWork("kernel"), true);
+  assert.equal(ctx.isDeviceWork("gpu_memcpy"), true);
+  assert.equal(ctx.isDeviceWork("gpu_memset"), true);
+  assert.equal(ctx.isDeviceWork("gpu_user_annotation"), false);
+  assert.equal(ctx.isDeviceWork("user_annotation"), false);
+  assert.equal(ctx.isDeviceWork("cpu_op"), false);
+});
+
+test("内核占用：注释不冒充内核 + correlation 补 CPU 算子 + SM 占用时长加权", () => {
+  const ctx = analyzerContext();
+  const ka = ctx.analyzeTraceKernels(makeOccFixture().traceEvents, 2000000);
+  const names = ka.kernels.map((x) => x.name);
+  assert.deepEqual(J(names), ["gemm_kernel_a", "rmsnorm_kernel_b"], "gpu_user_annotation 不得进内核占用表");
+  assert.equal(ka.gpu.kernelCount, 3, "只数真正的内核实例");
+  assert.equal(ka.gpu.sum, 250, "内核累计不含注释的 100µs");
+  assert.equal(ka.gpu.busy, 250);
+  const gemm = ka.kernels[0];
+  assert.equal(gemm.cpuOp, "aten::add", "无 External id 经 correlation → cudaLaunchKernel → cpu_op 归属");
+  assert.equal(gemm.count, 2);
+  assert.equal(gemm.occPct, 75, "SM 占用时长加权 (50×100 + 100×100) / 200");
+  const rms = ka.kernels[1];
+  assert.equal(rms.occPct, null, "无 est. achieved occupancy % 字段记 null");
+  assert.equal(rms.cpuOp, "", "无 External id 也无 correlation 记空");
+  /* 有 External id 时优先直连，不被 correlation 链覆盖 */
+  const direct = ctx.analyzeTraceKernels([
+    { ph: "X", cat: "cpu_op", pid: 1, tid: 1, ts: 0, dur: 10, name: "aten::mm", args: { "External id": 3 } },
+    { ph: "X", cat: "cpu_op", pid: 1, tid: 1, ts: 0, dur: 10, name: "aten::add", args: { "External id": 7 } },
+    { ph: "X", cat: "cuda_runtime", pid: 1, tid: 1, ts: 0, dur: 2, name: "cudaLaunchKernel", args: { correlation: 42, "External id": 7 } },
+    { ph: "X", cat: "kernel", pid: 2, tid: 3, ts: 0, dur: 100, name: "k_direct", args: { stream: 7, correlation: 42, "External id": 3 } },
+  ], 1000);
+  assert.equal(direct.kernels[0].cpuOp, "aten::mm", "内核自带 External id 优先");
+});
+
+test("内核占用：JS 与 trace_summary.py 对拍（注释剔除 / correlation 归属 / occPct）", (t) => {
+  const tmp = path.join(os.tmpdir(), `pf-occ-fixture-${process.pid}.json`);
+  fs.writeFileSync(tmp, JSON.stringify(makeOccFixture()));
+  let out;
+  try {
+    out = execFileSync("python3", [path.join(__dirname, "trace_summary.py"), tmp], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    t.skip(`python3 不可执行：${e.message}`);
+    return;
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  const d = JSON.parse(out);
+  const ctx = analyzerContext();
+  const kaJs = ctx.analyzeTraceKernels(makeOccFixture().traceEvents, 2000000);
+  for (const [key, val] of Object.entries(kaJs.gpu)) {
+    if (val !== null && typeof val === "object") continue; /* stageUs/idleGaps 形态由主 fixture 对拍覆盖 */
+    assert.equal(d.kernelAnalysis.gpu[key], val, `对拍 gpu.${key}`);
+  }
+  assert.deepEqual(
+    J(d.kernelAnalysis.kernels.map((k2) => [k2.name, k2.cpuOp, k2.occPct])),
+    J(kaJs.kernels.map((k2) => [k2.name, k2.cpuOp, k2.occPct])),
+    "内核占用（名字/CPU 算子/SM 占用）一致",
+  );
+});
+
 test("normalizeTrace 透传 kernelAnalysis（无内核计数则丢弃）", () => {
   const context = vm.createContext({});
   vm.runInContext(functionSource("fmtDur"), context);
@@ -331,17 +408,20 @@ test("analyzeStages：分侧后 GPU/CPU 分开定位，不再混合定性", () =
   assert.ok(fs3.some((f) => f.title.includes("严重瓶颈：构建")), "流水线路径保持原判定");
 });
 
-test("页面静态契约：内核三表卡片 / 分侧表格 / 渲染函数 / AI 提示词", () => {
+test("页面静态契约：内核占用表 / 内核三表卡片 / 渲染函数 / AI 提示词", () => {
   for (const needle of [
     'id="kernelCard"', 'id="kernelTable"', 'id="overlapWrap"', 'id="fusionWrap"', 'id="gpuStatGrid"', 'id="gpuNoteLine"',
-    'id="stageGpuHead"', 'id="stageTableCpu"', 'id="stageCpuWrap"', "CPU · Host 事件",
+    'id="stageOccHead"', "内核占用（真正的 GPU 内核", "SM 占用", "est. achieved occupancy %",
     "function renderKernelAnalysis()", "function kernelFindings(ka)", "function analyzeSide(", "function traceEventSide(",
+    "function kernelOccRows()", "function occCell(", "function isDeviceWork(",
     "hasSideSplit", "串行(单流)",
     "renderStages(); renderFindings(); renderCharts(); renderKernelAnalysis();",
     "agg.kernelAnalysis = analyzeTraceKernels(data.traceEvents, 2000000);",
-    "### 融合候选", "### 重叠机会", "### 内核归因 TOP 10", "## GPU 设备事件耗时", "## CPU/Host 事件耗时",
+    "### 融合候选", "### 重叠机会", "### 内核归因 TOP 10", "## GPU 内核占用",
     "llm-torch-profiler-analysis",
   ]) assert.ok(html.includes(needle), `index.html 缺少 ${needle}`);
+  for (const gone of ['id="stageGpuHead"', 'id="stageTableCpu"', 'id="stageCpuWrap"', "CPU · Host 事件（", "## GPU 设备事件耗时", "## CPU/Host 事件耗时"])
+    assert.ok(!html.includes(gone), `index.html 应移除 ${gone}`);
 });
 
 test("trace_summary.py 服务端汇总器产出同款内核分析（对拍）", (t) => {
