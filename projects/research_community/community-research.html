@@ -1,0 +1,1065 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>推理大模型社区分析</title>
+<link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+<script src="data-seed.js"></script>
+<style>
+/* ---- 最小自造样式（主题/布局/少量交互态）---- */
+body { min-height: 100vh; }
+/* 主题：跟随 / 深色 / 浅色 —— 直接定义 dshell 变量，保证 iframe 内对比度足够 */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --rc-bg:#0d1117; --rc-fg:#eef2f6; --rc-fg2:#b9c2cc; --rc-card:rgba(255,255,255,.04); --rc-border:#2c333d;
+  --dsw-alias-bg-base:#0d1117;
+  --dsw-alias-label-primary:#eef2f6;
+  --dsw-alias-label-secondary:#b9c2cc;
+  --dsw-alias-label-tertiary:#8b95a1;
+  --dsw-alias-border-l1:#2c333d; --dsw-alias-border-l2:#3d4652;
+  --dsw-alias-fill-l1:rgba(255,255,255,.04);
+  --dsw-alias-state-accent-primary:#5b9bf8;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  --rc-bg:#f6f8fa; --rc-fg:#1a1f24; --rc-fg2:#3f4a56; --rc-card:#ffffff; --rc-border:#c9d1d9;
+  --dsw-alias-bg-base:#f6f8fa;
+  --dsw-alias-label-primary:#1a1f24;
+  --dsw-alias-label-secondary:#3f4a56;
+  --dsw-alias-label-tertiary:#6a7684;
+  --dsw-alias-border-l1:#c9d1d9; --dsw-alias-border-l2:#aeb8c2;
+  --dsw-alias-fill-l1:rgba(0,0,0,.03);
+  --dsw-alias-state-accent-primary:#2f6feb;
+}
+html[data-theme="light"] .dshell-btn { background:#1f883d; color:#fff; }
+html[data-theme="light"] .dshell-listItem:hover { background:#eef2f6; }
+html[data-theme="light"] .dshell-input, html[data-theme="light"] .dshell-textarea { background:#fff; }
+html[data-theme="light"] .rc-chip { background:#eef1f5; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); }
+/* 浅色模式：把深色主题写死的高亮色换成高对比版本（亮绿/琥珀在白底上发白看不清） */
+html[data-theme="light"] .dshell-badgeDone { color:#1a7f37; border-color:rgba(26,127,55,.45); background:rgba(26,127,55,.06); }
+html[data-theme="light"] .dshell-badgeDone::before { background:#1a7f37; box-shadow:0 0 5px rgba(26,127,55,.5); }
+html[data-theme="light"] .dshell-badgeWait { color:#9a6700; border-color:rgba(154,103,0,.45); background:rgba(154,103,0,.07); }
+html[data-theme="light"] .dshell-badgeWait::before { background:#9a6700; box-shadow:0 0 5px rgba(154,103,0,.5); }
+html[data-theme="light"] .dshell-badge { color:#3f4a56; background:rgba(0,0,0,.04); }
+html[data-theme="light"] .dshell-badge::before { background:#6a7684; }
+html[data-theme="light"] .dshell-statDelta { color:#1a7f37; }
+html[data-theme="light"] .dshell-btnDanger { color:#cf222e; border-color:#cf222e; }
+html[data-theme="light"] .dshell-btnGhost { color:#3f4a56; }
+html[data-theme="light"] .dshell-btnGhost:hover { color:#1a1f24; }
+html[data-theme="light"] .dshell-progressBar { background:#1f883d; }
+html[data-theme="light"] .rc-mark code { background:rgba(0,0,0,.07); }
+html[data-theme="light"] .rc-mark pre { background:rgba(0,0,0,.05); }
+html[data-theme="light"] ::placeholder { color:#8a95a3; }
+/* 可读性：整体放大字号（覆盖 dshell 基线） */
+body { background: var(--dsw-alias-bg-base, var(--rc-bg)); color: var(--dsw-alias-label-primary, var(--rc-fg)); font-size:14px; }
+.dshell-title { font-size:19px; }
+.dshell-sub { font-size:13px; }
+.dshell-muted { font-size:12.5px; }
+.dshell-btn { font-size:13px; }
+.dshell-badge { font-size:12px; }
+.dshell-tab { font-size:13.5px; }
+.dshell-listItemTitle { font-size:13.5px; }
+.dshell-listItemMeta { font-size:12px; }
+.dshell-statLabel { font-size:12px; }
+.dshell-statValue { font-size:22px; }
+.dshell-input, .dshell-textarea { font-size:13px; }
+.dshell-table { font-size:13px; }
+.dshell-kvRow { font-size:13px; }
+.rc-head { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.rc-head .rc-spacer { flex:1 1 auto; }
+.rc-themeGroup { display:flex; gap:4px; border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); border-radius:999px; padding:3px; }
+.rc-themeBtn { border:none; background:transparent; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); font:inherit; font-size:13px; padding:4px 12px; border-radius:999px; cursor:pointer; }
+.rc-themeBtn.rc-on { background:var(--dsw-alias-state-accent-primary,#4f8ef7); color:#fff; }
+.rc-chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; background:var(--dsw-alias-fill-l1, rgba(127,127,127,.12)); font-size:12.5px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); cursor:pointer; }
+.rc-chip:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+.rc-chip.rc-on { border-color:var(--dsw-alias-state-accent-primary,#4f8ef7); color:var(--dsw-alias-state-accent-primary,#4f8ef7); }
+.rc-sectionTitle { display:flex; align-items:center; gap:8px; margin:2px 0; }
+.rc-relItem { padding:10px 12px; border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); border-radius:8px; background:var(--dsw-alias-fill-l1, var(--rc-card)); cursor:pointer; }
+.rc-relItem:hover { border-color:var(--dsw-alias-border-l2,#3a4150); }
+.rc-relTag { font-weight:600; font-size:14px; color:var(--dsw-alias-label-primary, var(--rc-fg)); }
+.rc-relDate { font-size:12px; color:var(--dsw-alias-label-tertiary,#6b7280); margin-left:8px; }
+.rc-relHi { font-size:12.5px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); margin-top:4px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.rc-mark { font-size:13.5px; line-height:1.8; }
+.rc-mark p { margin:0 0 8px; }
+.rc-mark h1,.rc-mark h2,.rc-mark h3 { font-size:15px; margin:12px 0 6px; color:var(--dsw-alias-label-primary, var(--rc-fg)); }
+.rc-mark ul,.rc-mark ol { margin:0 0 8px; padding-left:20px; }
+.rc-mark code { background:rgba(127,127,127,.18); padding:1px 5px; border-radius:4px; font-size:12.5px; }
+.rc-mark pre { background:rgba(127,127,127,.12); padding:10px; border-radius:8px; overflow:auto; }
+.rc-mark pre code { background:none; padding:0; }
+.rc-mark blockquote { border-left:3px solid var(--dsw-alias-border-l2,#3a4150); margin:0 0 8px; padding:2px 10px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); }
+.rc-mark table { width:100%; border-collapse:collapse; margin:0 0 8px; }
+.rc-mark th,.rc-mark td { border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); padding:5px 8px; font-size:12.5px; }
+.rc-analyzeBox { display:flex; flex-direction:column; gap:8px; }
+.rc-analyzeBtnRow { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.rc-promptPresets { display:flex; gap:6px; flex-wrap:wrap; }
+.rc-aiOut { max-height:420px; overflow:auto; border:1px solid var(--dsw-alias-border-l1, var(--rc-border)); border-radius:8px; padding:12px; background:var(--dsw-alias-fill-l1, var(--rc-card)); }
+.rc-spin { display:inline-block; width:12px; height:12px; border:2px solid var(--dsw-alias-label-tertiary,#6b7280); border-top-color:transparent; border-radius:50%; animation:rcspin 1s linear infinite; vertical-align:-2px; }
+@keyframes rcspin { to { transform:rotate(360deg); } }
+.rc-grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+@media (max-width: 900px) { .rc-grid2 { grid-template-columns:1fr; } }
+.rc-hidden { display:none !important; }
+select.dshell-input, input[type="date"].dshell-input { width:auto; min-width:132px; }
+.rc-cmpHead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.rc-commitList { max-height:300px; overflow:auto; display:flex; flex-direction:column; gap:4px; }
+.rc-commitItem { display:flex; gap:8px; align-items:baseline; font-size:12.5px; padding:4px 8px; border-radius:6px; }
+.rc-commitItem:hover { background:var(--dsw-alias-fill-l1, rgba(127,127,127,.08)); }
+.rc-commitSha { font-family:ui-monospace,monospace; font-size:11.5px; color:var(--dsw-alias-label-tertiary); flex:none; }
+.rc-commitMsg { color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rc-midRel { border-top:1px solid var(--dsw-alias-border-l1, #2c333d); }
+.rc-midRel summary { cursor:pointer; font-weight:600; font-size:13px; padding:7px 2px; color:var(--dsw-alias-label-primary); list-style:none; }
+.rc-midRel summary::before { content:'▸ '; color:var(--dsw-alias-label-tertiary); }
+.rc-midRel[open] summary::before { content:'▾ '; }
+.rc-check { width:15px; height:15px; flex:none; accent-color:var(--dsw-alias-state-accent-primary,#4f8ef7); cursor:pointer; }
+.rc-selRow { cursor:pointer; }
+.rc-selOn { border-color:var(--dsw-alias-state-accent-primary,#4f8ef7) !important; background:var(--dsw-alias-fill-l1, rgba(127,127,127,.10)) !important; }
+.rc-single { cursor:pointer; }
+.rc-range { user-select:none; }
+.rc-latestFull { max-height:460px; overflow:auto; padding-right:6px; }
+.rc-fwDot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:0; }
+.rc-fwTitle { font-size:17px; font-weight:600; }
+.rc-tabBar { display:flex; gap:4px; flex-wrap:wrap; }
+.rc-miniStat { display:flex; gap:14px; flex-wrap:wrap; font-size:12.5px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); }
+.rc-miniStat b { color:var(--dsw-alias-label-primary, var(--rc-fg)); font-size:14px; }
+.rc-link { color:var(--dsw-alias-state-accent-primary,#4f8ef7); text-decoration:none; }
+.rc-link:hover { text-decoration:underline; }
+.rc-settingRow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.rc-settingRow label { min-width:110px; font-size:13px; color:var(--dsw-alias-label-secondary, var(--rc-fg2)); }
+.rc-footNote { font-size:12.5px; color:var(--dsw-alias-label-tertiary,#8b95a1); line-height:1.7; }
+.rc-kv2 { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:13px; }
+.rc-kv2 dt { color:var(--dsw-alias-label-secondary, var(--rc-fg2)); }
+.rc-kv2 dd { margin:0; color:var(--dsw-alias-label-primary, var(--rc-fg)); }
+</style>
+</head>
+<body>
+<div class="dshell">
+
+  <!-- 标题区 -->
+  <div class="rc-head">
+    <div>
+      <h1 class="dshell-title">推理大模型社区分析</h1>
+      <p class="dshell-sub">vLLM · SGLang · TensorRT-LLM · LMDeploy — 版本发布 / PR / Issue 一站追踪，支持 AI 一键分析 PR</p>
+    </div>
+    <div class="rc-spacer"></div>
+    <div class="rc-themeGroup" title="背景主题">
+      <button class="rc-themeBtn" data-theme="follow">跟随</button>
+      <button class="rc-themeBtn" data-theme="dark">深色</button>
+      <button class="rc-themeBtn" data-theme="light">浅色</button>
+    </div>
+    <button class="dshell-btn dshell-btnGhost" id="btnRefresh">刷新数据</button>
+    <button class="dshell-btn dshell-btnGhost" id="btnSettings">⚙ 设置</button>
+  </div>
+
+  <!-- 顶部统计 -->
+  <div class="dshell-grid" id="overviewStats"></div>
+
+  <!-- 框架选择标签 -->
+  <div class="dshell-tabs rc-tabBar" id="fwTabs"></div>
+
+  <!-- 框架主面板 -->
+  <div id="fwPanel">
+    <div class="rc-head" style="margin-bottom:6px">
+      <div>
+        <div class="rc-fwTitle"><span class="rc-fwDot" id="fwDot"></span><span id="fwName"></span> <span id="fwStatus"></span></div>
+        <div class="dshell-sub" id="fwTagline"></div>
+      </div>
+      <div class="rc-spacer"></div>
+      <div class="rc-miniStat" id="fwMiniStats"></div>
+      <a class="dshell-btn dshell-btnGhost" id="fwRepoLink" href="#" target="_blank" rel="noopener">GitHub 仓库</a>
+    </div>
+
+    <!-- 二级标签：发布 / PR / Issue -->
+    <div class="dshell-tabs rc-tabBar" id="sectionTabs">
+      <button class="dshell-tab dshell-tabOn" data-sec="releases">版本发布</button>
+      <button class="dshell-tab" data-sec="prs">PR</button>
+      <button class="dshell-tab" data-sec="issues">Issue</button>
+      <button class="dshell-tab" data-sec="compare">版本对比</button>
+      <button class="dshell-tab" data-sec="ai">AI 分析</button>
+    </div>
+
+    <!-- 发布 -->
+    <div id="sec-releases" style="margin-top:12px">
+      <div class="rc-grid2">
+        <div>
+          <div class="rc-sectionTitle"><h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">最新版本发布说明（全文）</h2><span class="dshell-badge dshell-badgeDone" id="latestTag"></span><span style="flex:1"></span><button class="dshell-btn dshell-btnGhost" id="btnLangToggle" style="padding:2px 12px;font-size:12px">🌐 中文</button></div>
+          <div class="dshell-card">
+            <div class="rc-mark rc-latestFull" id="latestFull"></div>
+            <div class="dshell-divider"></div>
+            <a class="rc-link" id="latestLink" href="#" target="_blank" rel="noopener">在 GitHub 查看原始排版 →</a>
+          </div>
+        </div>
+        <div>
+          <div class="rc-sectionTitle"><h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">历史发布（近 12 个）</h2><span class="dshell-muted">勾选可统一 AI 分析；点「详情」看单版</span></div>
+          <div class="rc-analyzeBtnRow" style="margin:6px 0">
+            <label class="dshell-muted" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="rc-check" id="relSelAll" /> 全选</label>
+            <button class="dshell-btn dshell-btnGhost" id="btnRelBatch">AI 汇总分析所选（0）</button>
+          </div>
+          <div class="dshell-list" id="relList"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PR -->
+    <div id="sec-prs" class="rc-hidden" style="margin-top:12px">
+      <div class="rc-sectionTitle">
+        <h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">PR 列表</h2>
+        <span class="dshell-muted">点击任意 PR 进入 AI 分析（默认使用设置中的提示词）</span>
+      </div>
+      <div class="dshell-card" style="margin-bottom:10px">
+        <div class="rc-analyzeBtnRow">
+          <label class="dshell-muted">状态</label>
+          <select class="dshell-input" id="prState">
+            <option value="open">开放的</option>
+            <option value="merged">已合并</option>
+            <option value="closed">已关闭(未合并)</option>
+            <option value="all">全部</option>
+          </select>
+          <label class="dshell-muted">日期</label>
+          <input type="date" class="dshell-input" id="prFrom" />
+          <span class="dshell-muted">至</span>
+          <input type="date" class="dshell-input" id="prTo" />
+          <button class="dshell-btn" id="btnLoadPRs">查询</button>
+          <button class="dshell-btn dshell-btnGhost" id="btnPRHot">回到热门</button>
+          <span class="dshell-muted" id="prStatus"></span>
+        </div>
+        <div class="rc-analyzeBtnRow" style="margin-top:8px">
+          <span class="dshell-muted">快捷时段</span>
+          <span class="rc-chip rc-range" data-days="3">最近 3 天</span>
+          <span class="rc-chip rc-range" data-days="7">最近一周</span>
+          <span class="rc-chip rc-range rc-on" data-days="30">最近一个月</span>
+          <span class="rc-chip rc-range" data-days="custom">自定义</span>
+        </div>
+        <div class="dshell-muted" style="margin-top:6px">说明：日期按所选状态匹配「创建」或「合并」时间过滤，经 GitHub 搜索 API 实时拉取（无需 Token，每分钟限 10 次）。</div>
+      </div>
+      <div class="rc-analyzeBtnRow" style="margin-bottom:8px">
+        <label class="dshell-muted" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" class="rc-check" id="prSelAll" /> 全选</label>
+        <button class="dshell-btn" id="btnPRBatch">AI 汇总分析所选（0）</button>
+        <span class="dshell-muted">勾选多条后统一分析；条目右侧徽标仍是单条分析</span>
+      </div>
+      <div class="dshell-list" id="prList"></div>
+    </div>
+
+    <!-- Issue -->
+    <div id="sec-issues" class="rc-hidden" style="margin-top:12px">
+      <div class="rc-sectionTitle"><h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">热门 / 最新 Issue</h2></div>
+      <div class="dshell-list" id="issueList"></div>
+    </div>
+
+    <!-- 版本对比 -->
+    <div id="sec-compare" class="rc-hidden" style="margin-top:12px">
+      <div class="rc-sectionTitle">
+        <h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">版本对比</h2>
+        <span class="dshell-muted">选两个版本，看新版本做了哪些工作（提交数 / 提交清单 / 新版发布说明）</span>
+      </div>
+      <div class="dshell-card" style="margin-bottom:10px">
+        <div class="rc-analyzeBtnRow">
+          <label class="dshell-muted">旧版本</label>
+          <select class="dshell-input" id="cmpFrom"></select>
+          <span class="dshell-muted">→</span>
+          <label class="dshell-muted">新版本</label>
+          <select class="dshell-input" id="cmpTo"></select>
+          <button class="dshell-btn" id="btnCompare">对比</button>
+          <button class="dshell-btn dshell-btnGhost" id="btnCompareAI">AI 总结新版工作</button>
+          <span class="dshell-muted" id="cmpStatus"></span>
+        </div>
+      </div>
+      <div id="compareOut"><p class="dshell-muted">选择两个版本后点击「对比」。</p></div>
+    </div>
+
+    <!-- AI 分析 -->
+    <div id="sec-ai" class="rc-hidden" style="margin-top:12px">
+      <div class="rc-grid2">
+        <div class="dshell-card rc-analyzeBox">
+          <div class="rc-sectionTitle"><h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">AI 一键分析</h2><span class="dshell-badge" id="aiTarget">未选择 PR</span></div>
+          <div class="rc-promptPresets" id="promptPresets"></div>
+          <label class="dshell-muted">分析提示词（默认来自设置，可临时修改）</label>
+          <textarea class="dshell-textarea" id="promptInput" rows="5"></textarea>
+          <div class="rc-analyzeBtnRow">
+            <button class="dshell-btn" id="btnAnalyze">▶ 一键分析</button>
+            <button class="dshell-btn dshell-btnGhost" id="btnAnalyzeIssue">分析 Issue</button>
+            <span class="dshell-muted" id="aiStatus"></span>
+          </div>
+          <div class="dshell-muted" id="aiHint"></div>
+        </div>
+        <div>
+          <div class="rc-sectionTitle"><h2 class="dshell-sub" style="margin:0;font-size:14px;color:inherit">分析结果</h2><span class="dshell-muted">Markdown 渲染，可复制</span></div>
+          <div class="rc-aiOut rc-mark" id="aiOutput"><p class="dshell-muted">选择一个 PR / Issue，点击「一键分析」开始。</p></div>
+          <div class="rc-analyzeBtnRow" style="margin-top:8px">
+            <button class="dshell-btn dshell-btnGhost" id="btnCopy">复制 Markdown</button>
+            <button class="dshell-btn dshell-btnGhost" id="btnClear">清空</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置面板 -->
+  <div id="settingsPanel" class="rc-hidden">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 10px;font-size:14px;color:inherit">⚙ 分析设置</h2>
+      <div class="rc-settingRow">
+        <label>AI 服务地址</label>
+        <input class="dshell-input" id="setApiBase" style="width:320px" placeholder="https://api.deepseek.com/v1" />
+        <span class="dshell-muted">需支持 OpenAI 兼容 /chat/completions 且允许浏览器跨域（CORS）</span>
+      </div>
+      <div class="rc-settingRow">
+        <label>API Key</label>
+        <input class="dshell-input" id="setApiKey" style="width:320px" type="password" placeholder="sk-..." />
+        <span class="dshell-muted">仅保存在本机 localStorage</span>
+      </div>
+      <div class="rc-settingRow">
+        <label>模型名</label>
+        <input class="dshell-input" id="setModel" style="width:320px" placeholder="deepseek-chat" />
+      </div>
+      <div class="rc-settingRow">
+        <label>默认分析提示词</label>
+        <span class="dshell-muted">每次「一键分析」自动填充；支持 {"repo"} {"title"} {"url"} {"body"} 占位符</span>
+      </div>
+      <textarea class="dshell-textarea" id="setPrompt" rows="8"></textarea>
+      <div class="rc-analyzeBtnRow" style="margin-top:10px">
+        <button class="dshell-btn" id="btnSaveSettings">保存设置</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnResetPrompt">恢复默认提示词</button>
+        <button class="dshell-btn dshell-btnGhost" id="btnCloseSettings">返回看板</button>
+        <span class="dshell-muted" id="settingsStatus"></span>
+      </div>
+      <div class="dshell-divider"></div>
+      <div class="rc-footNote">
+        提示词占位符：<code>{"repo"}</code> 仓库名 · <code>{"title"}</code> 标题 · <code>{"url"}</code> 链接 · <code>{"body"}</code> 正文/描述。<br/>
+        AI 调用优先级：已配置 API → 直连该服务；未配置 → 自动复用 DSH 会话 AI（右侧聊天窗新开分析会话，用你当前对话的模型，无需另配 Key）。两者都不可用时才回退本地草稿。
+      </div>
+    </div>
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px;font-size:14px;color:inherit">数据源说明</h2>
+      <div class="rc-footNote">
+        · 内置快照数据（2026-10-12 采集）：发布 / PR / Issue 榜单，无需联网即可浏览。<br/>
+        · 点击「刷新数据」通过 GitHub REST API（无需 Token）拉取最新信息并覆盖快照；跨域已由 GitHub 官方支持。
+      </div>
+    </div>
+  </div>
+
+  <div class="rc-footNote" id="footNote"></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ========== 主题 ========== */
+var THEME_KEY='rc_theme';
+function applyTheme(mode){
+  if(mode==='follow'){
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark?'dark':'light');
+  } else {
+    document.documentElement.setAttribute('data-theme', mode);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('.rc-themeBtn'), function(b){
+    b.classList.toggle('rc-on', b.getAttribute('data-theme')===mode);
+  });
+  try{ localStorage.setItem(THEME_KEY, mode); }catch(e){}
+}
+function initTheme(){
+  var mode='follow';
+  try{ mode=localStorage.getItem(THEME_KEY)||'follow'; }catch(e){}
+  applyTheme(mode);
+  if(window.matchMedia){
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
+      var m='follow'; try{ m=localStorage.getItem(THEME_KEY)||'follow'; }catch(e){}
+      if(m==='follow') applyTheme('follow');
+    });
+  }
+}
+document.addEventListener('click', function(e){
+  var b=e.target.closest && e.target.closest('.rc-themeBtn');
+  if(b) applyTheme(b.getAttribute('data-theme'));
+});
+
+/* ========== 设置 ========== */
+var SET_KEY='rc_settings';
+var DEFAULT_PROMPT='你是资深的 LLM 推理框架社区分析师。请针对以下 GitHub 内容输出结构化中文分析（Markdown）：\n\n仓库：{"repo"}\n标题：{"title"}\n链接：{"url"}\n正文/描述：\n{"body"}\n\n请包含：\n1. **摘要**：这段内容在改什么 / 提出什么；\n2. **技术要点**：涉及的模块、算法、性能或兼容性影响；\n3. **社区影响**：对用户/部署方的影响面、风险点、值得关注的讨论；\n4. **建议动作**：作为使用方是否需要跟进、验证或规避。';
+function loadSettings(){
+  var s={apiBase:'',apiKey:'',model:'',prompt:DEFAULT_PROMPT};
+  try{ var raw=localStorage.getItem(SET_KEY); if(raw) s=Object.assign(s, JSON.parse(raw)); }catch(e){}
+  return s;
+}
+function saveSettings(s){ try{ localStorage.setItem(SET_KEY, JSON.stringify(s)); }catch(e){} }
+
+/* ========== 数据 ========== */
+var SEED = window.__SEED__ || {frameworks:[],fetchedAt:''};
+var DATA = SEED;
+try{ var raw=localStorage.getItem('rc_live_data'); if(raw){ DATA=JSON.parse(raw); } }catch(e){}
+
+var SEC_LABELS={releases:'版本发布',prs:'PR',issues:'Issue',compare:'版本对比',ai:'AI 分析'};
+var state={ fwIdx:0, section:'releases', target:null /*{type:'pr'|'issue'|'compare',repo,title,url,body}*/ };
+var livePRs=null;      // 筛选查询结果（null = 显示热门快照）
+var relLang='en';            // 发布说明显示语言：zh=中文 / en=原文
+try{ relLang=localStorage.getItem('rc_rel_lang')||'zh'; }catch(e){ relLang='zh'; }
+var latestBodyCache={};      // repo@tag → 英文原文
+var selectedPRs=new Set();   // 当前 PR 列表中被勾选的索引
+var selectedRels=new Set();  // 版本发布中被勾选的索引
+function updateSelLabels(){
+  var b1=document.getElementById('btnPRBatch'), b2=document.getElementById('btnRelBatch');
+  if(b1) b1.textContent='AI 汇总分析所选（'+selectedPRs.size+'）';
+  if(b2) b2.textContent='AI 汇总分析所选（'+selectedRels.size+'）';
+}
+var cmpData=null;      // 最近一次版本对比数据
+function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ========== 渲染：总览统计 ========== */
+function fmt(n){ return (n===undefined||n===null)?'—':(typeof n==='number'? n.toLocaleString('en-US') : n); }
+function daysAgo(iso){
+  if(!iso) return '';
+  var d=(Date.now()-new Date(iso).getTime())/86400000;
+  return d<1? '今天' : Math.round(d)+' 天前';
+}
+function renderOverview(){
+  var fws=DATA.frameworks||[];
+  var el=document.getElementById('overviewStats');
+  var totalStars=fws.reduce(function(a,f){return a+(f.stats?f.stats.stars||0:0);},0);
+  var totalPR=fws.reduce(function(a,f){return a+(f.stats?f.stats.mergedPRs30d||0:0);},0);
+  var totalIss=fws.reduce(function(a,f){return a+(f.stats?f.stats.newIssues30d||0:0);},0);
+  var active=fws.filter(function(f){return f.status==='活跃';}).length;
+  el.innerHTML=[
+    stat('跟踪框架', fws.length+' 个', active+' 个活跃'),
+    stat('社区总星标', fmt(totalStars), '四仓合计'),
+    stat('近 30 天合并 PR', fmt(totalPR), '含 hotfix'),
+    stat('近 30 天新增 Issue', fmt(totalIss), '社区反馈量'),
+    stat('数据快照', (DATA.fetchedAt||'').slice(0,10), '点击右上角刷新')
+  ].join('');
+}
+function stat(label,value,delta){
+  return '<div class="dshell-stat"><div class="dshell-statLabel">'+label+'</div><div class="dshell-statValue">'+value+'</div><div class="dshell-statDelta">'+(delta||'')+'</div></div>';
+}
+
+/* ========== 渲染：框架标签 ========== */
+function renderFwTabs(){
+  var el=document.getElementById('fwTabs');
+  el.innerHTML=(DATA.frameworks||[]).map(function(f,i){
+    return '<button class="dshell-tab'+(i===state.fwIdx?' dshell-tabOn':'')+'" data-fw="'+i+'"><span class="rc-fwDot" style="background:'+f.color+'"></span>'+f.name+'</button>';
+  }).join('');
+  el.querySelectorAll('[data-fw]').forEach(function(b){
+    b.addEventListener('click', function(){
+      state.fwIdx=+b.getAttribute('data-fw');
+      renderFwTabs(); renderFwPanel();
+    });
+  });
+}
+
+function currentFw(){ return (DATA.frameworks||[])[state.fwIdx]; }
+
+function renderFwPanel(){
+  var f=currentFw(); if(!f) return;
+  document.getElementById('fwDot').style.background=f.color;
+  document.getElementById('fwName').textContent=f.name;
+  var badge='<span class="dshell-badge '+(f.status==='活跃'?'dshell-badgeDone':'dshell-badgeWait')+'">'+f.status+'</span>';
+  document.getElementById('fwStatus').innerHTML=badge;
+  document.getElementById('fwTagline').textContent=f.tagline||'';
+  document.getElementById('fwRepoLink').href='https://github.com/'+f.repo;
+  var s=f.stats||{};
+  document.getElementById('fwMiniStats').innerHTML=[
+    '<span>★ <b>'+fmt(s.stars)+'</b></span>',
+    '<span>Fork <b>'+fmt(s.forks)+'</b></span>',
+    '<span>Open Issue <b>'+fmt(s.openIssues)+'</b></span>',
+    '<span>提交 <b>'+fmt(s.commits)+'</b></span>',
+    '<span>30 天合并 PR <b>'+fmt(s.mergedPRs30d)+'</b></span>'
+  ].join('');
+  livePRs=null; cmpData=null; selectedPRs.clear(); selectedRels.clear();
+  document.getElementById('prStatus').textContent='';
+  var pa=document.getElementById('prSelAll'), ra=document.getElementById('relSelAll');
+  if(pa) pa.checked=false; if(ra) ra.checked=false;
+  renderReleases(f); renderPRs(f); renderIssues(f); fillCompare(f);
+  renderSection();
+}
+
+function renderReleases(f){
+  var lt=f.latest||{};
+  document.getElementById('latestTag').textContent=lt.tag||'';
+  var fullEl=document.getElementById('latestFull');
+  fullEl.innerHTML='<ul style="margin:0;padding-left:18px">'+((lt.highlights||[]).map(function(h){return '<li>'+escHtml(h)+'</li>';}).join('')||'<li class="dshell-muted">暂无发布信息</li>')+'</ul>'+
+    (lt.tag?'<p class="dshell-muted">正在拉取完整发布说明…</p>':'');
+  document.getElementById('latestLink').href=lt.url||('#');
+  if(lt.tag){
+    fetchRelBody(f, lt.tag).then(function(body){
+      if(!body || currentFw()!==f) return;   // 防串框架：切走后再回来不覆盖
+      latestBodyCache[relKey(f,lt.tag)]=body;
+      renderLatestBody(f);
+    });
+  }
+  var list=f.releaseHistory||[];
+  document.getElementById('relList').innerHTML=list.map(function(r,i){
+    return '<div class="dshell-listItem rc-selRow'+(selectedRels.has(i)?' rc-selOn':'')+'" data-rel="'+i+'">'+
+      '<input type="checkbox" class="rc-check" data-selrel="'+i+'"'+(selectedRels.has(i)?' checked':'')+' />'+
+      '<span class="dshell-listItemTitle"><span class="rc-relTag">'+escHtml(r.tag)+'</span><span class="rc-relDate">'+r.date+' · '+daysAgo(r.date)+'</span>'+
+      '<div class="rc-relHi">'+escHtml(r.lines&&r.lines[0]?r.lines[0]:'')+'</div></span>'+
+      '<span class="dshell-badge dshell-badgeDone rc-single" data-onerel="'+i+'">详情</span></div>';
+  }).join('');
+  var relListEl=document.getElementById('relList');
+  relListEl.querySelectorAll('[data-rel]').forEach(function(row){
+    row.addEventListener('click', function(e){
+      if(e.target.closest('.rc-single')) return;
+      var i=+row.getAttribute('data-rel');
+      var cb=row.querySelector('input.rc-check');
+      if(!e.target.matches('input.rc-check')) cb.checked=!cb.checked;
+      if(cb.checked) selectedRels.add(i); else selectedRels.delete(i);
+      row.classList.toggle('rc-selOn', cb.checked);
+      updateSelLabels();
+    });
+  });
+  relListEl.querySelectorAll('.rc-single').forEach(function(el){
+    el.addEventListener('click', function(e){
+      e.stopPropagation();
+      showRelDetail(f, list[+el.getAttribute('data-onerel')]);
+    });
+  });
+  updateSelLabels();
+}
+function showRelDetail(f,r){
+  selectTarget({type:'release', repo:f.repo, title:f.name+' '+r.tag, url:r.url,
+    body:'版本：'+r.tag+'\n发布日期：'+r.date+'\n仓库：'+f.repo+'\n\n发布说明（快照节选）：\n'+((r.lines||[]).join('\n')||'（快照无详细内容）')+'\n\n（完整发布说明可访问上述链接，或在该版本「版本对比」中查看）'});
+  var out=document.getElementById('aiOutput');
+  out.innerHTML='<h3>'+f.name+' '+r.tag+' <a class="rc-link" href="'+r.url+'" target="_blank" rel="noopener">原文 ↗</a></h3>'+
+    '<p class="dshell-muted">'+r.date+'</p><ul>'+
+    (r.lines||[]).map(function(l){return '<li>'+escHtml(l)+'</li>';}).join('')+'</ul>'+
+    '<p class="dshell-muted">提示词已按该版本自动填好，点左侧「一键分析」即可让 AI 分析此版本。</p>';
+  out.scrollTop=0;
+}
+
+function prStateBadge(p){
+  if(p.merged) return '<span class="dshell-badge dshell-badgeDone">已合并</span>';
+  if(p.state==='open') return '<span class="dshell-badge dshell-badgeWait">开放</span>';
+  if(p.state==='closed') return '<span class="dshell-badge">已关闭</span>';
+  return '';
+}
+function prBodyText(f,p){
+  return 'PR 标题：'+p.title+'\n仓库：'+f.repo+'\n状态：'+(p.merged?'已合并 '+(p.mergedAt||''):(p.state==='open'?'开放中':(p.state==='closed'?'已关闭(未合并)':'未知')))+
+    '\n创建：'+(p.created||'')+'\n最近更新：'+(p.updated||'')+'\n\n正文：\n'+(p.body||'（未获取到正文，可手动粘贴 diff 摘要）');
+}
+function renderPRs(f){
+  var list=livePRs || (f.hotPRs||[]);
+  var prListEl=document.getElementById('prList');
+  prListEl.innerHTML=list.map(function(p,i){
+    var meta = livePRs
+      ? (p.created||'')+' 创建'+(p.mergedAt?' · '+p.mergedAt+' 合并':'')+(p.updated?' · 更新 '+p.updated:'')
+      : '最后更新 '+p.updated+' · '+daysAgo(p.updated);
+    return '<div class="dshell-listItem rc-selRow'+(selectedPRs.has(i)?' rc-selOn':'')+'" data-pr="'+i+'">'+
+      '<input type="checkbox" class="rc-check" data-sel="'+i+'"'+(selectedPRs.has(i)?' checked':'')+' />'+
+      '<span class="dshell-listItemTitle">#'+p.num+' '+escHtml(p.title)+'<div class="rc-relHi">'+meta+'</div></span>'+
+      prStateBadge(p)+
+      '<span class="dshell-badge dshell-badgeWait rc-single" data-one="'+i+'">AI 分析</span></div>';
+  }).join('')||'<div class="dshell-muted">暂无 PR 数据</div>';
+  prListEl.querySelectorAll('[data-pr]').forEach(function(row){
+    row.addEventListener('click', function(e){
+      if(e.target.closest('.rc-single')) return;
+      var i=+row.getAttribute('data-pr');
+      var cb=row.querySelector('input.rc-check');
+      if(!e.target.matches('input.rc-check')) cb.checked=!cb.checked;
+      if(cb.checked) selectedPRs.add(i); else selectedPRs.delete(i);
+      row.classList.toggle('rc-selOn', cb.checked);
+      updateSelLabels();
+    });
+  });
+  prListEl.querySelectorAll('.rc-single').forEach(function(el){
+    el.addEventListener('click', function(e){
+      e.stopPropagation();
+      var p=list[+el.getAttribute('data-one')];
+      selectTarget({type:'pr', repo:f.repo, title:'#'+p.num+' '+p.title, url:p.url, body:prBodyText(f,p)});
+    });
+  });
+  updateSelLabels();
+}
+/* 汇总分析：PR / 版本发布 */
+document.getElementById('btnPRBatch').addEventListener('click', function(){
+  var f=currentFw(); if(!f) return;
+  var list=livePRs || (f.hotPRs||[]);
+  var sel=[...selectedPRs].sort(function(a,b){return a-b;}).map(function(i){return list[i];}).filter(Boolean);
+  if(!sel.length){ alert('请先勾选要分析的 PR'); return; }
+  var body=sel.map(function(p,idx){ return '### '+(idx+1)+'. #'+p.num+' '+p.title+'\n'+prBodyText(f,p); }).join('\n\n');
+  selectTarget({type:'multi', repo:f.repo, title:f.name+' '+sel.length+' 个 PR 汇总',
+    url:'https://github.com/'+f.repo+'/pulls',
+    body:'以下是 '+f.name+'（'+f.repo+'）勾选的 '+sel.length+' 个 PR 信息。请逐一概括每个 PR 做什么，然后汇总整体趋势（涉及哪些模块/主题、风险点、值得关注的共性）：\n\n'+body});
+  document.getElementById('aiOutput').innerHTML='<p class="dshell-muted">已汇总 '+sel.length+' 个 PR，点击「一键分析」开始。</p>';
+});
+document.getElementById('btnRelBatch').addEventListener('click', function(){
+  var f=currentFw(); if(!f) return;
+  var sel=[...selectedRels].sort(function(a,b){return a-b;}).map(function(i){return (f.releaseHistory||[])[i];}).filter(Boolean);
+  if(!sel.length){ alert('请先勾选要分析的版本'); return; }
+  var btn=this; btn.textContent='拉取发布说明…'; btn.disabled=true;
+  var jobs=sel.slice(0,6).map(function(r){ return fetchRelBody(f,r.tag).then(function(b){ return {r:r,body:b}; }); });
+  Promise.all(jobs).then(function(arr){
+    var text=arr.map(function(x,idx){
+      var notes=x.body?x.body.slice(0,2500):((x.r.lines||[]).join('\n'));
+      return '### '+(idx+1)+'. '+x.r.tag+'（'+x.r.date+'）\n'+notes;
+    }).join('\n\n');
+    selectTarget({type:'multi', repo:f.repo, title:f.name+' '+arr.length+' 个版本发布汇总',
+      url:'https://github.com/'+f.repo+'/releases',
+      body:'以下是 '+f.name+'（'+f.repo+'）勾选的 '+arr.length+' 个版本的发布说明。请逐一概括每个版本的重点工作，然后汇总整体演进趋势：\n\n'+text});
+    document.getElementById('aiOutput').innerHTML='<p class="dshell-muted">已汇总 '+arr.length+' 个版本，点击「一键分析」开始。</p>';
+    btn.disabled=false; updateSelLabels();
+  });
+});
+/* 全选 */
+document.getElementById('prSelAll').addEventListener('change', function(){
+  var f=currentFw(); var list=livePRs || ((f&&f.hotPRs)||[]);
+  selectedPRs.clear();
+  if(this.checked) list.forEach(function(_,i){ selectedPRs.add(i); });
+  renderPRs(f);
+});
+document.getElementById('relSelAll').addEventListener('change', function(){
+  var f=currentFw(); var list=(f&&f.releaseHistory)||[];
+  selectedRels.clear();
+  if(this.checked) list.forEach(function(_,i){ selectedRels.add(i); });
+  renderReleases(f);
+});
+function loadPRs(){
+  var f=currentFw(); if(!f) return;
+  var st=document.getElementById('prState').value;
+  var from=document.getElementById('prFrom').value, to=document.getElementById('prTo').value;
+  var q='repo:'+f.repo+' type:pr';
+  if(st==='open') q+=' is:open';
+  else if(st==='merged') q+=' is:merged';
+  else if(st==='closed') q+=' is:closed -is:merged';
+  var df = st==='merged' ? 'merged' : 'created';
+  if(from && to) q+=' '+df+':'+from+'..'+to;
+  else if(from) q+=' '+df+':>='+from;
+  else if(to) q+=' '+df+':<='+to;
+  var status=document.getElementById('prStatus');
+  status.innerHTML='<span class="rc-spin"></span> 查询中…';
+  fetch('https://api.github.com/search/issues?q='+encodeURIComponent(q)+'&sort=updated&order=desc&per_page=30')
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(!Array.isArray(j.items)){ status.textContent='查询失败：'+(j.message||'未知错误'); return; }
+      selectedPRs.clear();
+      livePRs=j.items.map(function(x){
+        return {num:x.number,title:x.title,state:x.state,merged:!!(x.pull_request&&x.pull_request.merged_at),
+          mergedAt:x.pull_request&&x.pull_request.merged_at?x.pull_request.merged_at.slice(0,10):'',
+          created:(x.created_at||'').slice(0,10),updated:(x.updated_at||'').slice(0,10),
+          url:x.html_url,body:(x.body||'').slice(0,2000)};
+      });
+      status.textContent='共 '+fmt(j.total_count)+' 条，显示最近更新前 '+livePRs.length+' 条';
+      renderPRs(f);
+    })
+    .catch(function(e){ status.textContent='网络错误：'+e; });
+}
+document.getElementById('btnLoadPRs').addEventListener('click', loadPRs);
+document.getElementById('btnPRHot').addEventListener('click', function(){
+  livePRs=null; selectedPRs.clear();
+  document.getElementById('prStatus').textContent='已回到热门快照';
+  renderPRs(currentFw());
+});
+(function initPrDates(){
+  var to=new Date(), from=new Date(Date.now()-30*86400000);
+  document.getElementById('prTo').value=to.toISOString().slice(0,10);
+  document.getElementById('prFrom').value=from.toISOString().slice(0,10);
+})();
+function markRangeChip(days){
+  document.querySelectorAll('.rc-range').forEach(function(x){
+    x.classList.toggle('rc-on', x.getAttribute('data-days')===String(days));
+  });
+}
+document.querySelectorAll('.rc-range').forEach(function(el){
+  el.addEventListener('click', function(){
+    markRangeChip(el.getAttribute('data-days'));
+    var d=el.getAttribute('data-days');
+    if(d!=='custom'){
+      var days=+d, to=new Date(), from=new Date(Date.now()-(days-1)*86400000);
+      document.getElementById('prTo').value=to.toISOString().slice(0,10);
+      document.getElementById('prFrom').value=from.toISOString().slice(0,10);
+      loadPRs();
+    } else {
+      document.getElementById('prFrom').focus();
+    }
+  });
+});
+document.getElementById('prFrom').addEventListener('change', function(){ markRangeChip('custom'); });
+document.getElementById('prTo').addEventListener('change', function(){ markRangeChip('custom'); });
+function renderIssues(f){
+  document.getElementById('issueList').innerHTML=(f.hotIssues||[]).map(function(p,i){
+    return '<div class="dshell-listItem" data-iss="'+i+'">'+
+      '<span class="dshell-listItemTitle">#'+p.num+' '+p.title+'<div class="rc-relHi">'+p.created+' 创建'+(p.comments!==undefined?' · '+p.comments+' 条评论':'')+'</div></span>'+
+      '<span class="dshell-badge">Issue</span></div>';
+  }).join('')||'<div class="dshell-muted">暂无 Issue 数据</div>';
+  document.getElementById('issueList').querySelectorAll('[data-iss]').forEach(function(it){
+    it.addEventListener('click', function(){
+      var p=f.hotIssues[+it.getAttribute('data-iss')];
+      selectTarget({type:'issue', repo:f.repo, title:'#'+p.num+' '+p.title, url:p.url,
+        body:'Issue 标题：'+p.title+'\n仓库：'+f.repo+'\n创建：'+p.created+'\n评论数：'+(p.comments||0)});
+    });
+  });
+}
+
+function renderSection(){
+  ['releases','prs','issues','compare','ai'].forEach(function(sec){
+    document.getElementById('sec-'+sec).classList.toggle('rc-hidden', sec!==state.section);
+  });
+}
+document.getElementById('sectionTabs').addEventListener('click', function(e){
+  var t=e.target.closest('.dshell-tab'); if(!t) return;
+  state.section=t.getAttribute('data-sec');
+  document.querySelectorAll('#sectionTabs .dshell-tab').forEach(function(x){ x.classList.toggle('dshell-tabOn', x===t); });
+  renderSection();
+});
+
+/* ========== 发布说明中文显示（AI 翻译，本地缓存） ========== */
+function relKey(f,tag){ return f.repo+'@'+tag; }
+function getZhCache(){ try{ return JSON.parse(localStorage.getItem('rc_rel_zh')||'{}'); }catch(e){ return {}; } }
+function setZhCache(k,v){ try{ var o=getZhCache(); o[k]=v; var ks=Object.keys(o); if(ks.length>40) delete o[ks[0]]; localStorage.setItem('rc_rel_zh',JSON.stringify(o)); }catch(e){} }
+var lastAiVia='';
+function aiChat(prompt){
+  var s=loadSettings();
+  if(s.apiBase && s.apiKey){
+    lastAiVia='自定义 API（'+s.apiBase+'）';
+    return fetch(s.apiBase.replace(/\/$/,'')+'/chat/completions',{method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+s.apiKey},
+      body:JSON.stringify({model:s.model||'deepseek-chat',messages:[{role:'user',content:prompt}],temperature:0.2})
+    }).then(function(r){return r.json();}).then(function(j){
+      if(j&&j.choices&&j.choices[0]&&j.choices[0].message) return j.choices[0].message.content||'';
+      throw new Error((j&&j.error&&j.error.message)||'AI 服务返回异常');
+    });
+  }
+  var bridge=null;
+  try{ bridge=window.parent && window.parent.__dshSendChatForResult; }catch(e){}
+  if(typeof bridge==='function'){
+    lastAiVia='DSH 会话 AI（右侧聊天窗会新开一个分析会话）';
+    return Promise.resolve().then(function(){ return bridge(prompt); }).then(function(t){
+      if(!t || !String(t).trim()) throw new Error('DSH 会话 AI 未返回文本');
+      return String(t);
+    });
+  }
+  lastAiVia='';
+  return Promise.reject(new Error('未找到可用 AI：请在 ⚙ 设置 配置 API 服务，或在工作台内打开本页面（可复用 DSH 会话 AI）'));
+}
+function renderLatestBody(f){
+  var fullEl=document.getElementById('latestFull');
+  var lt=f.latest||{}; if(!lt.tag) return;
+  var key=relKey(f,lt.tag), orig=latestBodyCache[key];
+  document.getElementById('btnLangToggle').textContent = relLang==='zh' ? '原文' : '🌐 中文';
+  if(!orig) return;   // 原文未就绪时保持快照摘要
+  if(relLang!=='zh'){ fullEl.innerHTML=mdRender(orig); return; }
+  var zh=getZhCache()[key];
+  if(zh){
+    fullEl.innerHTML=mdRender(zh)+'<p class="dshell-muted">— AI 翻译，仅供参考；点上方「原文」查看英文原版。</p>';
+    return;
+  }
+  var hasApi=!!(loadSettings().apiBase && loadSettings().apiKey);
+  fullEl.innerHTML='<p class="dshell-muted"><span class="rc-spin"></span> 正在将发布说明翻译为中文（'+(hasApi?'自定义 API':'DSH 会话 AI')+'）…</p>';
+  aiChat('请将以下 GitHub Release Notes 完整翻译为简体中文，保持 Markdown 结构；代码、命令、版本号、PR 编号（#123）、链接、项目名与模型名原样保留不译：\n\n'+orig.slice(0,12000))
+    .then(function(txt){
+      setZhCache(key,txt);
+      var cf=currentFw();
+      if(cf && relKey(cf,(cf.latest||{}).tag)===key) renderLatestBody(cf);
+    })
+    .catch(function(err){
+      var cf=currentFw();
+      if(cf && relKey(cf,(cf.latest||{}).tag)===key){
+        fullEl.innerHTML=mdRender(orig)+'<p class="dshell-muted">翻译失败：'+escHtml(err&&err.message?err.message:String(err))+'，已显示原文。点「🌐 中文」可重试。</p>';
+      }
+    });
+}
+document.getElementById('btnLangToggle').addEventListener('click', function(){
+  relLang = relLang==='zh' ? 'en' : 'zh';
+  try{ localStorage.setItem('rc_rel_lang', relLang); }catch(e){}
+  var f=currentFw(); if(f) renderLatestBody(f);
+});
+
+/* ========== 版本对比 ========== */
+function fillCompare(f){
+  var opts=(f.releaseHistory||[]).map(function(r,i){ return '<option value="'+i+'">'+r.tag+'（'+r.date+'）</option>'; }).join('');
+  document.getElementById('cmpFrom').innerHTML=opts;
+  document.getElementById('cmpTo').innerHTML=opts;
+  var n=(f.releaseHistory||[]).length;
+  document.getElementById('cmpFrom').value=String(n>1?1:0);   // 次新（较旧）
+  document.getElementById('cmpTo').value='0';                 // 最新
+  document.getElementById('compareOut').innerHTML='<p class="dshell-muted">选择两个版本后点击「对比」。</p>';
+  document.getElementById('cmpStatus').textContent='';
+}
+function fetchRelBody(f, tag){
+  return fetch('https://api.github.com/repos/'+f.repo+'/releases/tags/'+encodeURIComponent(tag))
+    .then(function(r){ return r.json(); })
+    .then(function(j){ return (j && typeof j.body==='string') ? j.body : ''; })
+    .catch(function(){ return ''; });
+}
+function fetchCompare(f, oldTag, newTag){
+  return fetch('https://api.github.com/repos/'+f.repo+'/compare/'+encodeURIComponent(oldTag)+'...'+encodeURIComponent(newTag))
+    .then(function(r){ return r.json(); })
+    .catch(function(){ return null; });
+}
+function runCompare(){
+  var f=currentFw(); if(!f) return;
+  var iA=+document.getElementById('cmpFrom').value, iB=+document.getElementById('cmpTo').value;
+  var status=document.getElementById('cmpStatus');
+  if(iA===iB){ status.textContent='请选择两个不同版本'; return; }
+  var iOld=Math.max(iA,iB), iNew=Math.min(iA,iB);  // releaseHistory 新→旧排序，索引小=新
+  var rOld=f.releaseHistory[iOld], rNew=f.releaseHistory[iNew];
+  status.innerHTML='<span class="rc-spin"></span> 拉取对比数据…';
+  var mids=(f.releaseHistory||[]).slice(iNew+1, iOld);   // 中间版本（新→旧顺序）
+  var midJobs=mids.slice(0,8).map(function(r){
+    return fetchRelBody(f,r.tag).then(function(b){ return {tag:r.tag,date:r.date,url:r.url,body:b}; });
+  });
+  Promise.all([fetchRelBody(f,rOld.tag), fetchRelBody(f,rNew.tag), fetchCompare(f,rOld.tag,rNew.tag), Promise.all(midJobs)]).then(function(res){
+    var bodyOld=res[0], bodyNew=res[1], cmp=res[2], midData=res[3];
+    var commits=[], ahead=null;
+    if(cmp && Array.isArray(cmp.commits)){
+      ahead=cmp.ahead_by;
+      commits=cmp.commits.map(function(c){
+        return {sha:(c.sha||'').slice(0,7), msg:((c.commit&&c.commit.message)||'').split('\n')[0],
+          date:((c.commit&&c.commit.committer&&c.commit.committer.date)||'').slice(0,10),
+          url:c.html_url};
+      });
+      if(cmp.total_commits!==undefined && cmp.total_commits>commits.length) status.textContent='提交较多，仅显示前 '+commits.length+' 条';
+    }
+    cmpData={f:f, rOld:rOld, rNew:rNew, bodyOld:bodyOld, bodyNew:bodyNew, commits:commits, ahead:ahead, mids:midData,
+      compareUrl:'https://github.com/'+f.repo+'/compare/'+rOld.tag+'...'+rNew.tag};
+    renderCompare();
+    if(!status.textContent) status.textContent='完成'+(ahead!=null?'：新版本领先 '+ahead+' 个提交':'');
+  });
+}
+function renderCompare(){
+  var d=cmpData; if(!d) return;
+  var out=document.getElementById('compareOut');
+  var stats='<div class="dshell-grid" style="margin-bottom:12px">'+
+    stat('旧版本', d.rOld.tag, d.rOld.date)+
+    stat('新版本', d.rNew.tag, d.rNew.date)+
+    stat('新增提交', d.ahead!=null?fmt(d.ahead):'—', 'compare API')+
+    stat('对比链接', '<a class="rc-link" href="'+d.compareUrl+'" target="_blank" rel="noopener" style="font-size:13px">GitHub Compare ↗</a>', '')+
+    '</div>';
+  var commitHtml = d.commits.length
+    ? '<div class="dshell-card"><h2 class="dshell-sub" style="margin:0 0 8px;font-size:14px;color:inherit">新版本包含的提交（'+d.commits.length+'）</h2><div class="rc-commitList">'+
+      d.commits.map(function(c){ return '<div class="rc-commitItem"><span class="rc-commitSha">'+c.sha+'</span><span class="rc-commitMsg">'+escHtml(c.msg)+'</span><span class="dshell-listItemMeta">'+c.date+'</span></div>'; }).join('')+
+      '</div></div>'
+    : '<div class="dshell-card"><span class="dshell-muted">提交清单不可用（可能是 API 限流或标签不存在），可点上方 GitHub Compare 查看。</span></div>';
+  var relHtml='<div class="dshell-card" style="margin-top:12px"><h2 class="dshell-sub" style="margin:0 0 8px;font-size:14px;color:inherit">新版本 '+d.rNew.tag+' 发布说明 <a class="rc-link" href="'+d.rNew.url+'" target="_blank" rel="noopener">原文 ↗</a></h2>'+
+    '<div class="rc-mark">'+(d.bodyNew?mdRender(d.bodyNew):'<p class="dshell-muted">未获取到发布说明。</p>')+'</div></div>';
+  var midHtml = (d.mids && d.mids.length)
+    ? '<div class="dshell-card" style="margin-top:12px"><h2 class="dshell-sub" style="margin:0 0 4px;font-size:14px;color:inherit">中间版本发布说明（'+d.mids.length+' 个版本，均已计入本次对比）</h2>'+
+      d.mids.map(function(m){
+        return '<details class="rc-midRel"><summary>'+m.tag+'（'+m.date+'）</summary>'+
+          '<div class="rc-mark" style="margin:6px 0 10px">'+(m.body?mdRender(m.body):'<p class="dshell-muted">未获取到该版本发布说明。</p>')+
+          '<p><a class="rc-link" href="'+m.url+'" target="_blank" rel="noopener">GitHub 原文 ↗</a></p></div></details>';
+      }).join('')+'</div>'
+    : '';
+  out.innerHTML=stats+midHtml+commitHtml+relHtml;
+  out.scrollTop=0;
+}
+document.getElementById('btnCompare').addEventListener('click', function(){ document.getElementById('cmpStatus').textContent=''; runCompare(); });
+document.getElementById('btnCompareAI').addEventListener('click', function(){
+  if(!cmpData){ document.getElementById('cmpStatus').textContent='正在先拉取对比数据…'; runCompare(); 
+    var wait=setInterval(function(){ if(cmpData){ clearInterval(wait); compareToAI(); } },400);
+    setTimeout(function(){ clearInterval(wait); }, 20000);
+    return; }
+  compareToAI();
+});
+function compareToAI(){
+  var d=cmpData; if(!d) return;
+  var commitLines=d.commits.slice(0,40).map(function(c){ return '- '+c.sha+' '+c.msg; }).join('\n');
+  var midText=(d.mids||[]).map(function(m){
+    return '\n\n### 中间版本 '+m.tag+'（'+m.date+'）发布说明（节选）：\n'+(m.body||'').slice(0,2500);
+  }).join('');
+  var body='对比目标：'+d.f.name+'（'+d.f.repo+'）\n旧版本：'+d.rOld.tag+'（'+d.rOld.date+'）\n新版本：'+d.rNew.tag+'（'+d.rNew.date+'）'+
+    '\n新增提交数：'+(d.ahead!=null?d.ahead:'未知')+'\n中间经过版本数：'+(d.mids||[]).length+
+    '\n\n新版本发布说明（节选）：\n'+(d.bodyNew||'').slice(0,8000)+
+    midText+
+    '\n\n旧版本发布说明（节选）：\n'+(d.bodyOld||'').slice(0,4000)+
+    '\n\n新版本相对旧版本新增提交（前 40 条，覆盖所有中间版本）：\n'+commitLines+
+    '\n\n请汇总时把所有中间版本的工作一并归纳，不要只讲新旧两端。';
+  selectTarget({type:'compare', repo:d.f.repo, title:d.f.name+' '+d.rOld.tag+' → '+d.rNew.tag, url:d.compareUrl, body:body});
+  document.getElementById('aiOutput').innerHTML='<p class="dshell-muted">已生成对比上下文，点击「一键分析」让 AI 总结新版本做了哪些工作。</p>';
+}
+
+/* ========== AI 分析 ========== */
+function selectTarget(t){
+  state.target=t;
+  document.getElementById('aiTarget').textContent=(t.type==='pr'?'PR：':(t.type==='issue'?'Issue：':(t.type==='multi'?'汇总：':(t.type==='release'?'版本：':'对比：'))))+t.title;
+  document.getElementById('aiHint').textContent='目标链接：'+t.url;
+  state.section='ai';
+  renderSection();
+  document.querySelectorAll('#sectionTabs .dshell-tab').forEach(function(x){
+    var sec=x.getAttribute('data-sec');
+    x.classList.toggle('dshell-tabOn', sec==='ai');
+    x.textContent=SEC_LABELS[sec];
+  });
+  var s=loadSettings();
+  var prompt=s.prompt||DEFAULT_PROMPT;
+  prompt=prompt.replace(/\{"repo"\}/g,t.repo).replace(/\{"title"\}/g,t.title).replace(/\{"url"\}/g,t.url).replace(/\{"body"\}/g,t.body);
+  document.getElementById('promptInput').value=prompt;
+  document.getElementById('aiOutput').innerHTML='<p class="dshell-muted">已选择 '+t.title+'，点击「一键分析」开始。</p>';
+}
+document.getElementById('btnAnalyzeIssue').addEventListener('click', function(){
+  if(state.target && state.target.type==='issue'){ runAnalysis(); return; }
+  alert('请先在「Issue」标签里点击一个 Issue');
+});
+
+function fillPromptPresets(){
+  var presets=[
+    {name:'深度解读', p:'你是资深的 LLM 推理框架社区分析师。请针对以下 GitHub 内容输出结构化中文分析（Markdown）：\n\n仓库：{"repo"}\n标题：{"title"}\n链接：{"url"}\n正文/描述：\n{"body"}\n\n请包含：1) **摘要** 2) **技术要点** 3) **社区影响** 4) **建议动作**。'},
+    {name:'风险扫描', p:'请作为发布/安全评审专家，扫描以下 GitHub 内容中的回归风险、兼容性破坏与潜在 bug（Markdown 输出，列出风险等级与验证建议）：\n\n仓库：{"repo"}\n标题：{"title"}\n链接：{"url"}\n正文：\n{"body"}'},
+    {name:'性能视角', p:'请从性能工程视角分析以下 GitHub 内容（吞吐/延迟/显存/并行策略），输出 Markdown：\n仓库：{"repo"}\n标题：{"title"}\n链接：{"url"}\n正文：\n{"body"}'},
+    {name:'一句话总结', p:'请用 3 句话以内总结以下 GitHub 内容的核心变化与对使用者的意义：\n仓库：{"repo"}\n标题：{"title"}\n链接：{"url"}\n正文：\n{"body"}'}
+  ];
+  document.getElementById('promptPresets').innerHTML=presets.map(function(p,i){
+    return '<span class="rc-chip" data-preset="'+i+'">'+p.name+'</span>';
+  }).join('');
+  document.getElementById('promptPresets').querySelectorAll('[data-preset]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var t=state.target;
+      var raw=presets[+el.getAttribute('data-preset')].p;
+      if(t){ raw=raw.replace(/\{"repo"\}/g,t.repo).replace(/\{"title"\}/g,t.title).replace(/\{"url"\}/g,t.url).replace(/\{"body"\}/g,t.body); }
+      document.getElementById('promptInput').value=raw;
+    });
+  });
+}
+
+/* 简易 Markdown 渲染（标题/列表/代码/引用/表格/加粗） */
+function mdRender(md){
+  var esc=function(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  var lines=esc(md).split(/\r?\n/), out=[], inCode=false, inList=false, inTable=false;
+  function closeAll(){ if(inList){out.push('</ul>');inList=false;} if(inTable){out.push('</table>');inTable=false;} }
+  for(var i=0;i<lines.length;i++){
+    var l=lines[i];
+    if(/^```/.test(l)){ closeAll(); out.push(inCode?'</code></pre>':'<pre><code>'); inCode=!inCode; continue; }
+    if(inCode){ out.push(l+'\n'); continue; }
+    if(/^\|.*\|\s*$/.test(l)){
+      var cells=l.split('|').slice(1,-1).map(function(c){return c.trim();});
+      if(!inTable){ closeAll(); out.push('<table>'); inTable=true; out.push('<tr>'+cells.map(function(c){return '<th>'+c+'</th>';}).join('')+'</tr>'); }
+      else if(!/^\|[\s:|-]+\|\s*$/.test(l)){ out.push('<tr>'+cells.map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>'); }
+      continue;
+    } else if(inTable){ out.push('</table>'); inTable=false; }
+    if(/^\s*[-*+]\s+/.test(l)){ if(!inList){closeAll(); out.push('<ul>'); inList=true;} out.push('<li>'+inline(l.replace(/^\s*[-*+]\s+/,''))+'</li>'); continue; }
+    if(/^\s*\d+[.)]\s+/.test(l)){ if(!inList){closeAll(); out.push('<ul>'); inList=true;} out.push('<li>'+inline(l.replace(/^\s*\d+[.)]\s+/,''))+'</li>'); continue; }
+    closeAll();
+    if(/^###\s+/.test(l)) out.push('<h3>'+inline(l.replace(/^###\s+/,''))+'</h3>');
+    else if(/^##\s+/.test(l)) out.push('<h2>'+inline(l.replace(/^##\s+/,''))+'</h2>');
+    else if(/^#\s+/.test(l)) out.push('<h1>'+inline(l.replace(/^#\s+/,''))+'</h1>');
+    else if(/^&gt;\s?/.test(l)) out.push('<blockquote>'+inline(l.replace(/^&gt;\s?/,''))+'</blockquote>');
+    else if(l.trim()==='') continue;
+    else out.push('<p>'+inline(l)+'</p>');
+  }
+  closeAll(); if(inCode) out.push('</code></pre>');
+  function inline(s){
+    return s.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+            .replace(/`([^`]+)`/g,'<code>$1</code>')
+            .replace(/\*([^*]+)\*/g,'<em>$1</em>')
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a class="rc-link" href="$2" target="_blank" rel="noopener">$1</a>');
+  }
+  return out.join('\n');
+}
+
+function localDraft(t){
+  return ['## 摘要','（本地草稿：未配置 AI API，以下为规则化提炼）','**'+t.title+'** — 来自 `'+t.repo+'`。',
+    '','## 技术要点','- '+(t.body||'').split('\n').filter(Boolean).slice(0,4).join('\n- '),
+    '','## 社区影响','- 可能影响相关模块的使用者与部署方，建议关注讨论区后续结论。',
+    '','## 建议动作','- 在测试环境先行验证；关注链接中的后续回复。'].join('\n');
+}
+
+function runAnalysis(){
+  if(!state.target){ alert('请先在「PR」或「Issue」标签里点击一个条目'); return; }
+  var prompt=document.getElementById('promptInput').value;
+  var out=document.getElementById('aiOutput');
+  var status=document.getElementById('aiStatus');
+  status.innerHTML='<span class="rc-spin"></span> 分析中…';
+  out.innerHTML='<p class="dshell-muted">正在分析…</p>';
+  aiChat(prompt).then(function(txt){
+    out.innerHTML=mdRender(txt);
+    status.textContent='完成（'+lastAiVia+'）';
+  }).catch(function(err){
+    out.innerHTML='<p class="dshell-muted">AI 分析失败：'+escHtml(err&&err.message?err.message:String(err))+'</p>'+
+      '<p class="dshell-muted">以下为本地结构化草稿（未调用 AI，仅供参考）：</p>'+mdRender(localDraft(state.target));
+    status.textContent='失败（已回退本地草稿）';
+  });
+}
+document.getElementById('btnAnalyze').addEventListener('click', runAnalysis);
+document.getElementById('btnCopy').addEventListener('click', function(){
+  var txt=document.getElementById('aiOutput').innerText;
+  if(navigator.clipboard) navigator.clipboard.writeText(txt);
+  this.textContent='已复制'; var self=this; setTimeout(function(){ self.textContent='复制 Markdown'; },1200);
+});
+document.getElementById('btnClear').addEventListener('click', function(){
+  document.getElementById('aiOutput').innerHTML='<p class="dshell-muted">已清空。</p>';
+});
+
+/* ========== 设置面板 ========== */
+function openSettings(){
+  var s=loadSettings();
+  document.getElementById('setApiBase').value=s.apiBase||'';
+  document.getElementById('setApiKey').value=s.apiKey||'';
+  document.getElementById('setModel').value=s.model||'';
+  document.getElementById('setPrompt').value=s.prompt||DEFAULT_PROMPT;
+  document.getElementById('settingsPanel').classList.remove('rc-hidden');
+  document.getElementById('fwPanel').classList.add('rc-hidden');
+}
+function closeSettings(){
+  document.getElementById('settingsPanel').classList.add('rc-hidden');
+  document.getElementById('fwPanel').classList.remove('rc-hidden');
+}
+document.getElementById('btnSettings').addEventListener('click', openSettings);
+document.getElementById('btnCloseSettings').addEventListener('click', closeSettings);
+document.getElementById('btnSaveSettings').addEventListener('click', function(){
+  saveSettings({
+    apiBase:document.getElementById('setApiBase').value.trim(),
+    apiKey:document.getElementById('setApiKey').value.trim(),
+    model:document.getElementById('setModel').value.trim(),
+    prompt:document.getElementById('setPrompt').value
+  });
+  document.getElementById('settingsStatus').textContent='已保存 ✓';
+  setTimeout(function(){ document.getElementById('settingsStatus').textContent=''; },1500);
+});
+document.getElementById('btnResetPrompt').addEventListener('click', function(){
+  document.getElementById('setPrompt').value=DEFAULT_PROMPT;
+});
+
+/* ========== 刷新数据（GitHub API） ========== */
+var REPOS={
+  vllm:'vllm-project/vllm', sglang:'sgl-project/sglang', trtllm:'NVIDIA/TensorRT-LLM',
+  lmdeploy:'InternLM/lmdeploy'
+};
+function gh(url){ return fetch(url).then(function(r){ return r.json(); }); }
+document.getElementById('btnRefresh').addEventListener('click', function(){
+  var btn=this; btn.textContent='刷新中…'; btn.disabled=true;
+  var jobs=[];
+  (DATA.frameworks||[]).forEach(function(f){
+    var repo=REPOS[f.id]||f.repo;
+    jobs.push(Promise.all([
+      gh('https://api.github.com/repos/'+repo+'/releases?per_page=12'),
+      gh('https://api.github.com/repos/'+repo),
+      gh('https://api.github.com/repos/'+repo+'/pulls?state=open&sort=updated&direction=desc&per_page=5')
+    ]).then(function(res){
+      var rels=res[0], meta=res[1], prs=res[2];
+      if(Array.isArray(rels) && rels.length){
+        f.releaseHistory=rels.map(function(r){
+          return {tag:r.tag_name, date:(r.published_at||'').slice(0,10), url:r.html_url,
+            lines:(r.body||'').split('\n').map(function(x){return x.replace(/https?:\/\/\S+/g,'').replace(/\(#(\d+)\)/g,'#$1').trim().replace(/^[-#*\s]+/,'');})
+              .filter(Boolean).slice(0,22)};
+        });
+        var top=rels[0];
+        f.latest={tag:top.tag_name,date:(top.published_at||'').slice(0,10),url:top.html_url,
+          highlights:(top.body||'').split('\n').map(function(x){return x.replace(/https?:\/\/\S+/g,'').trim().replace(/^[-#*\s]+/,'');}).filter(Boolean).slice(0,4)};
+      }
+      if(meta && meta.stargazers_count!==undefined){
+        f.stats=Object.assign({},f.stats,{stars:meta.stargazers_count,forks:meta.forks_count,openIssues:meta.open_issues_count});
+      }
+      if(Array.isArray(prs)){
+        f.hotPRs=prs.map(function(p){ return {num:p.number,title:p.title,updated:(p.updated_at||'').slice(0,10),url:p.html_url}; });
+      }
+    }).catch(function(e){ console.warn('refresh failed',f.id,e); }));
+  });
+  Promise.all(jobs).then(function(){
+    DATA.fetchedAt=new Date().toISOString();
+    try{ localStorage.setItem('rc_live_data', JSON.stringify(DATA)); }catch(e){}
+    renderOverview(); renderFwTabs(); renderFwPanel();
+    btn.textContent='刷新数据 ✓'; btn.disabled=false;
+    setTimeout(function(){ btn.textContent='刷新数据'; },1500);
+    document.getElementById('footNote').textContent='数据已更新：'+DATA.fetchedAt.slice(0,19).replace('T',' ')+'（GitHub API 实时拉取）。';
+  });
+});
+
+/* ========== 启动 ========== */
+initTheme();
+fillPromptPresets();
+renderOverview();
+renderFwTabs();
+renderFwPanel();
+document.getElementById('footNote').textContent='内置快照数据采集于 '+(SEED.fetchedAt||'—')+'；点击「刷新数据」获取最新 GitHub 信息。';
+})();
+</script>
+</body>
+</html>
