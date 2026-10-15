@@ -4,7 +4,7 @@
 
 ## vLLM 镜像编译与 SWR 推送
 
-`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本在流水线执行机本地编译：`BUILD_ENGINE=auto` 优先使用可用的 Docker daemon，以复用执行机预拉取的基础镜像；也可显式选择 `docker-buildx`、`buildctl` 或 `nerdctl`。编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。使用 `docker-buildx`、`buildctl` 或 `nerdctl` 时默认启用 BuildKit 本地层缓存（`BUILD_CACHE=true`，目录为 `/tmp/vllm-build-cache`，可用 `BUILD_CACHE_DIR` 修改），相同 Dockerfile 层会在后续构建中复用。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
+`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。`BUILD_ENGINE=auto` 默认启动 Docker-in-Docker runner：外层启动特权 runner，runner 内启动独立 Docker daemon 并完成编译，外层再用 `ctr` 导入和推送；也可显式选择 `indocker`、`docker`、`docker-buildx`、`buildctl` 或 `nerdctl`。编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。使用 `docker-buildx`、`buildctl` 或 `nerdctl` 时默认启用 BuildKit 本地层缓存（`BUILD_CACHE=true`，目录为 `/tmp/vllm-build-cache`，可用 `BUILD_CACHE_DIR` 修改），相同 Dockerfile 层会在后续构建中复用。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
 
 最小配置：
 
@@ -17,7 +17,7 @@ export SWR_PASSWORD='<SWR_TOKEN>'
 build_vllm_image_ctr.sh
 ```
 
-可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_MAX_JOBS`、`BUILD_ARGS`、`BUILD_CACHE`、`BUILD_CACHE_DIR`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。执行机的 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（含小写写法）以及 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL`/`UV_INDEX_URL`/`UV_EXTRA_INDEX_URL` 会自动作为构建参数传入 Dockerfile 的安装步骤；若在 `BUILD_ARGS` 中显式设置同名参数，则以显式值为准。`docker-buildx` 分支默认使用 `host` 网络，使 Dockerfile 的安装步骤可以访问宿主机代理，并自动创建名为 `vllm-builder` 的 `docker-container` builder、注入 HTTP/HTTPS 代理；可通过 `BUILD_NETWORK` 覆盖网络模式，或将 `BUILDX_AUTO_CREATE=false` 关闭。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
+可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_NETWORK`、`BUILD_MAX_JOBS`、`BUILD_ARGS`、`BUILD_CACHE`、`BUILD_CACHE_DIR`、`BUILD_PROXY_URL`、`INDOCKER_RUNTIME`、`INDOCKER_RUNNER_IMAGE`、`INDOCKER_OUTPUT_DIR`、`INDOCKER_NETWORK`、`BUILDX_BUILDER`、`BUILDX_AUTO_CREATE`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。代理和 Python 包源会自动作为构建参数传入 Dockerfile；`BUILD_PROXY_URL` 仅在构建网络无法访问宿主机回环代理时设置为构建网络可达的地址。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
 
 ## 参数识别规则
 
@@ -33,7 +33,7 @@ build_vllm_image_ctr.sh
 
 ## 自动注入的环境变量
 
-每次执行脚本（含环境清理/环境检查/Profiling 等系统预设任务）都会注入以下变量；**脚本或页面里显式配置的同名参数优先，不会被覆盖**：
+每次执行脚本（含环境清理/环境检查/Profiling/收集普罗数据等系统预设任务）都会注入以下变量；**脚本或页面里显式配置的同名参数优先，不会被覆盖**：
 
 | 变量 | 内容 | 示例 |
 |---|---|---|
@@ -45,18 +45,9 @@ build_vllm_image_ctr.sh
 | `PIPELINE_NAME` | 流水线名 | `安装部署XDS` |
 | `GIT_URL` / `GIT_BRANCH` | 主控选择的代码仓地址 / 分支 | `https://gitcode.com/org/repo.git` / `main` |
 | `GIT_USER` / `GIT_PASSWORD` | 仓库访问令牌（来自「设置」页代码仓列表） | `oauth2` |
-| `DEPLOY_STRATEGY` | 所选分支的部署策略（代码仓配置了部署策略来源时注入） | `low-latency` |
+| `DEPLOY_STRATEGY` | 所选分支的部署策略（配置了部署策略 URL 时注入） | `low-latency` |
 
 节点 IP / 用户名 / 密码来自「设置」页的节点环境列表（每个节点可配各自的用户名、密码）；主控「环境（可多选）」勾选哪些节点，注入的就是哪些。`template.sh` 开头会把上述全部变量连同 `ARCHIVE_*` 一起打印（未注入的显示 `<未注入>`），凭据类变量（`TARGET_PASSWORD` / `TARGET_HOSTS` / `GIT_PASSWORD`）会明文出现在阶段日志与归档日志中，注意脱敏。
-
-## 部署策略脚本（代码仓设置）
-
-「设置」页代码仓的「部署策略」来源可选「策略·脚本」：主控/定时页选择分支后，工作台经 `/api/worktable/exec` 执行本目录中配置的脚本，取其 stdout 作为该分支支持的部署策略列表。约定：
-
-- 注入环境变量：`GIT_BRANCH`（当前分支）、`GIT_URL`、`GIT_USER`、`GIT_PASSWORD`（代码仓凭据）；无运行上下文，TARGET_*/IMAGE_* 等运行级变量不注入；
-- 输出契约：stdout **每行一个策略名**（去首尾空白、跳过空行、按序去重）；
-- 非零退出 / 超时（30 秒）视为拉取失败，错误原因（含 stderr 摘要）显示在策略面板与「策略测试」提示中；
-- 脚本不作为流水线阶段执行，参数识别规则不适用。
 
 ## 快速开始
 
@@ -95,14 +86,14 @@ XDS 流水线按以下顺序绑定脚本：
 
 缺少上述主目录时，脚本自动回退到 `/opt/op_test` 下相同的相对路径。
 
-## LMCache 脚本族（按生命周期）
+## LMCache 脚本族（渲染期分离）
 
 | 脚本 | 阶段 | 职责 |
 |------|------|------|
 | `lmcache-config.sh` | **step 主脚本**（pull_render_config 前） | 入参校验（fail-fast）+ 契约输出；step 存在即开启（`ENABLE_LMCACHE` 缺省 true） |
 | `lib/render-lmcache.sh` | 渲染期（render-config 内部依赖） | 占位符默认值（`defaults`）与渲染后 chart patch（`patch`：tracing 兜底 + `LMCACHE_EXTRA_ARGS` 实验注入，含 sidecar 启用守卫与幂等） |
-| `check-lmcache-readiness.sh` | 部署期 | GPU context 就绪轮询（部署尾动态启用，输出 `LMCACHE_HEALTH` 契约） |
-| `clear-lmcache-cache.sh` | 运行期 | 三层缓存热清理（见下节） |
+
+（`check-lmcache-readiness.sh` / `clear-lmcache-cache.sh` 等部署期、运行期脚本在 tokens-worktable 仓，未同步本仓。）
 
 **流水线接法**：要开 LMCache，在 pull_render_config 前加一个 `lmcache-config` step，参数即该 step 的环境变量（`LMCACHE_OTLP_ENDPOINT` / `LMCACHE_L2_ENABLED` / `LMCACHE_LOG_LEVEL` / `LMCACHE_EXTRA_ARGS`，详见脚本头部）；契约输出经平台注入下游，渲染自动点亮 sidecar。不加该 step 则默认全关，pull_render_config 自身不再暴露任何 LMCache 参数（老流水线直配 `ENABLE_LMCACHE=true` 仍兼容）。
 
@@ -113,17 +104,6 @@ LMCACHE_EXTRA_ARGS=--worker-reap-timeout-seconds 60 --worker-registration-grace-
 ```
 
 单测：`test/test_lmcache_config.sh`（step 契约与下游点亮）、`test/test_render_lmcache.sh`（defaults/patch）；集成：`test/test_render_target_labels.sh`。
-
-## LMCache 缓存热清理
-
-`clear-lmcache-cache.sh` 在不重启服务的前提下清空 XDS+LMCache 部署的三层缓存，供打流前后复用同一基线：L1（DRAM，sidecar 内 `POST /cache/clear`）、HBM prefix cache（XDS OM diagnose `reset_prefix_cache`）、L2（`fs_native` 磁盘文件，sidecar 容器内 `find -delete`，按 node:path 去重）。全部操作经 `kubectl exec` 完成，无需 SSH；sidecar 端口从 `/etc/lmcache-ports/ports.env` 动态读取，L2 路径从 `--l2-adapter` 参数解析，FE 地址从 `ray-svc` NodePort 自动发现。执行机仅需 `kubectl`、`curl`（清 HBM 时）与 `python3`（发现 L2 路径时）。
-
-```bash
-DRY_RUN=0 bash clear-lmcache-cache.sh          # 默认全清三层
-CLEAR_L2=0 DRY_RUN=0 bash clear-lmcache-cache.sh  # 只清 L1+HBM
-```
-
-`NAMESPACE` 留空时自动发现（全集群唯一含 `lmcache-sidecar` 容器的命名空间，多候选报错需显式指定）。清理 L2 前默认校验入口流量已停止（`IDLE_CHECK=1`，frontgroup 最近 `get request` 距今超过 `IDLE_SECONDS`，默认 60 秒，否则中止）。注意 `l2_usage_bytes` 指标是运行时记账不感知外部删除，脚本以 L2 目录文件数归零为完成依据。HBM reset 后默认轮询引擎日志确认每个引擎 success 才算清理成功（`HBM_VERIFY=1`，超时 `HBM_VERIFY_TIMEOUT_SECONDS` 默认 120 秒；设 0 则退回仅确认已调度）。`DRY_RUN=1`（默认）仅打印将执行的操作。单测：`test/test_clear_lmcache_cache.sh`。
 
 ## 归档与 AI 分析
 
@@ -141,16 +121,13 @@ CLEAR_L2=0 DRY_RUN=0 bash clear-lmcache-cache.sh  # 只清 L1+HBM
 
 运行启动时即按上述格式生成归档文件夹并快照到本次运行，再把 `ARCHIVE_DIR` / `ARCHIVE_FOLDER` / `ARCHIVE_PIPELINE` / `ARCHIVE_TAG` 注入到流水线的每个任务（脚本阶段、URL 请求阶段和系统预设任务；任务内 `ARCHIVE_DIR` 与 `ARCHIVE_FOLDER` 均=本次运行归档文件夹，与归档脚本收到的根目录语义不同），脚本显式参数优先，方便各阶段把产物直接写入归档目录；`ARCHIVE_LOG_FILE` / `ARCHIVE_PROFILE_FILE` / `ARCHIVE_RESULT` 仅在末尾注入给归档脚本。
 
-运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：若侧边会话框已关闭会先打开，新会话归入流水线项目设置的工作区；项目未设置工作区时先弹出该项目的工作区选择，选定后自动继续。提示词保留本次运行归档目录/文件的绝对路径，只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。
+运行历史里选中某次运行后，可用标题行的「AI 日志分析 / Profiling 分析 / 性能诊断」新建 AI 会话分析：新会话工作目录取该次运行的归档目录，提示词只填入输入框（不自动提交，确认后手动发送），提示词模板在「设置」页维护。
 
 ## 收集普罗数据
 
-「设置 → 普罗数据服务配置 → 收集脚本」可配置一个按时间段采集普罗（Prometheus）指标的脚本（在 scripts 目录按名选用，留空=不启用）。收集有两种方式：
+「设置 → 普罗数据服务配置 → 收集脚本」可配置一个按时间段采集普罗（Prometheus）指标的脚本（在 scripts 目录按名选用，留空=不启用）。主控「预设任务」勾选「收集普罗数据」后，流水线会在编排位置执行该任务（新建/旧流水线默认放在最后，失败不阻断）；也可在运行历史选中某次运行（或运行中的流水线）后，点标题行的「📊 收集普罗数据」手动补采。
 
-- **任务级采集**：在「编辑流水线」的任务卡上勾选「收集普罗数据」，该任务进入终态（成功/失败）后即按「本任务开始→结束」时段后台调用收集脚本，产物写入本次运行归档目录的 `{任务名}-{阶段序号}-普罗数据` 文件夹（采集输出落该目录 `collect.log`；后台采集、失败不阻断流水线，未配置归档时落到 scripts 目录 `vllm-metrics/` 下同名子目录）。定时计划与 API（服务端）执行的流水线同样生效，采集结果标注在该任务日志的 `[普罗采集]` 行。
-- **手动补采**：在运行历史选中某次运行（或运行中的流水线）后，点标题行的「📊 收集普罗数据」，弹出对话框按所选运行的起止时间采集（可在对话框里临时覆盖起止时间），指标产物写入归档目录的 `metrics` 子目录。
-
-`model_name` 默认 `${MODEL_PATH}`（按上游 deploy 阶段产出的 `MODEL_PATH` 解析）、`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`（按本次运行的部署策略与执行人解析），均在采集时点解析，解析不出则不注入。打开手动补采对话框时会先检测该运行是否已收集过普罗数据（产物目录下存在 `summary.json` 或 `snapshots/*/summary.json` 即视为已收集），并在状态行展示收集归档目录；采集成功后状态行同步刷新为已收集。手动补采经流式执行接口运行，输出实时回显。
+`model_name`、`xds_namespace`、开始时间和结束时间直接在「编辑流水线」的「收集普罗数据」预设任务行中配置，并随该任务保存。起止时间留空时，预设任务执行会取流水线开始时间与执行到该任务时的时间；手动补采会取所选运行的起止时间，且可在对话框里临时覆盖。打开对话框时会先检测该运行是否已收集过普罗数据（产物目录下存在 `summary.json` 或 `snapshots/*/summary.json` 即视为已收集），并在状态行展示收集归档目录；采集成功后状态行同步刷新为已收集。脚本经流式执行接口运行，输出实时回显；预设任务的输出按普通任务日志规则写入 `run-<tag>-00-收集普罗数据.log`，指标产物写入归档目录的 `metrics` 子目录。采集失败仅标记该任务失败，不影响后续任务和流水线最终结果。
 
 除常规的 `PIPELINE_NAME` 外，「收集」时还会注入以下环境变量（同名时脚本自身参数优先）：
 
@@ -158,9 +135,9 @@ CLEAR_L2=0 DRY_RUN=0 bash clear-lmcache-cache.sh  # 只清 L1+HBM
 - `VLLM_METRICS_START` / `VLLM_METRICS_END` — 同一起止时间的 Unix 秒（兼容旧脚本；`collect_vllm_metrics.py` 优先读取 `PROM_START`/`PROM_END`）
 - `METRICS_ACTION` — 固定 `collect`（`collect_vllm_metrics.py` 默认 action 为 `start` 即后台采集；前台按段采集需 `collect`）
 - `PROMETHEUS_URL` — 普罗数据服务配置的数据源地址
-- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 按上述默认占位在采集时点解析后注入（`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
-- `ARCHIVE_FOLDER` — 本次运行（任务级采集）/ 选中运行（手动补采）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
-- `METRICS_OUTPUT_DIR` — 采集产物目录（任务级采集 = `ARCHIVE_FOLDER/{任务名}-{阶段序号}-普罗数据`，手动补采 = `ARCHIVE_FOLDER/metrics`；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
+- `ARCH_NAME` / `MODEL_NAME` / `NAMESPACE` / `XDS_NAMESPACE` — 主控启用「收集普罗数据」预设任务时注入（`model_name` 默认 `${MODEL_PATH}`，按上游 deploy 阶段产出的 `MODEL_PATH` 解析；`xds_namespace` 默认 `${DEPLOY_STRATEGY}-${BY}`，按本次运行的部署策略与执行人解析；`collect_vllm_metrics.py` 的 `--model-name` 取 `ARCH_NAME`、`--namespace` 取 `NAMESPACE`，普通模型名会查询 `/home/service/works/models_ssd/<模型名>/v1` 标签值；以 `/` 开头的绝对路径原样使用；`MODEL_NAME` / `XDS_NAMESPACE` 为兼容其他脚本的同值副本）
+- `ARCHIVE_FOLDER` — 本次运行（预设任务）/ 选中运行（手动收集）的归档文件夹（绝对路径，便于把采集产物写入归档目录；未归档则不注入）
+- `METRICS_OUTPUT_DIR` — 采集产物目录（有归档时 = `ARCHIVE_FOLDER/metrics`，采集产物随本次运行归档；未归档则不注入，`collect_vllm_metrics.py` 默认落到执行目录下 `vllm-metrics`）。采集完成后脚本会打印「收集归档目录」
 
 示例：`collect_vllm_metrics.py` 已按上述变量命名实现 —— 不传任何参数时，`--action` 取 `METRICS_ACTION=collect`、`--start`/`--end` 优先取 `PROM_START`/`PROM_END`（兼容 `VLLM_METRICS_START`/`VLLM_METRICS_END`）、`--prometheus-url` 取 `PROMETHEUS_URL`、`--namespace` 取 `NAMESPACE`、`--model-name` 取 `ARCH_NAME`，即可完成该时间段的指标采集；输出目录默认取 `METRICS_OUTPUT_DIR`，未设置时依次回退 `ARCHIVE_FOLDER/metrics`、`RUN_DIR/vllm-metrics`、执行目录下 `vllm-metrics`。
 
@@ -177,7 +154,8 @@ CLEAR_L2=0 DRY_RUN=0 bash clear-lmcache-cache.sh  # 只清 L1+HBM
 DRY_RUN=1 bash cleanup-env.sh
 bash cleanup-env.sh
 
-# 仅驱逐目标节点的 EMS Pod，确认退出后释放 2 MiB 大页；默认只预演
+# 仅处理目标节点上的 EMS Pod，并在它们退出后释放 2 MiB 大页。
+# 未设置 DRY_RUN 时该独立脚本默认预演；设为 0 才会删除 Pod 和写 nr_hugepages。
 NODE=node-128 DRY_RUN=0 bash evict-ems-hugepages.sh
 
 # 仅检查，不清理工作负载、不启停服务
@@ -243,29 +221,6 @@ GPU Worker 到启动根的同进程组链，并终止整个进程组，防止残
 `HUGEPAGE_TRIGGER_GIB=2048`、`MIN_AVAILABLE_WITH_HUGEPAGES_GIB=700` 可覆盖大页规则，
 这些参数会传入远端。CNI、代理或内存检查执行失败判 FAIL。
 
-## 部署准入门禁（check-deploy-gate.sh）
-
-`check-deploy-gate.sh` 是只读的部署前置检查：任一 FAIL 即非零退出，把流水线阻断在
-绑定位置。绑成普通阶段（放在拉取/渲染/部署之前）或在「设置」页选为环境检查脚本均可生效。
-
-- 执行机输入：`IMAGE_NAME` / `DEPLOY_IMAGE` 至少其一非空；有目标节点时检查执行机
-  `ssh` 可用（节点配密码认证时还需 `sshpass`）。
-- 目标机：经 SSH 把脚本逐节点下发执行（取 `TARGET_HOSTS` 各自凭据，首节点按
-  `deploy-model.sh` 契约为控制节点）：
-  - `kubectl` / `helm` / `curl`：控制节点缺失判 FAIL，工作节点仅 WARN；
-  - GPU 数量：`MIN_GPU` 显式门槛；留空按 `PREFILL_GPU` / `DECODE_GPU` 较大值推导
-    （仍为空则 1），`MIN_GPU=0` 跳过；
-  - 磁盘：`TARGET_RUN_DIR`（默认 `/tmp/op-test-pipeline`）所在盘剩余空间不少于
-    `MIN_DISK_FREE_GIB`（默认 20 GiB）；
-  - 镜像凭证：同时配置 `NAMESPACE` 与 `IMAGE_PULL_SECRETS`（逗号分隔）时，在控制节点
-    逐个核实 Secret 是否存在于该命名空间，缺失判 FAIL；命名空间本身不存在只 WARN
-    （部署时由 helm 创建，提示需同步创建 Secret）。
-- 无目标节点运行时只做执行机输入检查（WARN 提示，不判 FAIL）。
-- 输出 `GATE_RESULT=PASS|FAIL` 供下游阶段引用；脚本只读，不创建/删除任何资源，
-  凭据只用于 SSH 登录、不打印。
-
-契约测试：`scripts/test/test_check_deploy_gate.sh`。
-
 ### 指定普罗数据采集时间
 
 支持 ISO 8601 UTC 时间（含毫秒形式），例如：
@@ -314,130 +269,3 @@ TP、PP、DP保留 arch 配置，不再将 Decode DP 强制改为 GPU 数。
 角色 JSON overrides 先合并，显式数量/GPU变量最后覆盖。
 每个角色当前支持一个 resources 条目，并检查 min <= default <= max。
 旧流水线若保存过这些参数的显式值，需要清空才能继承 arch。
-
-## EMS 实例巡检（ems-check.sh）
-
-`ems-check.sh` 是 EMS（mfv-kv 内存池存储）的统一只读巡检 **step 主脚本**（无参调用，
-类似 `lmcache-config.sh`）：在流水线中任意位置插入本 step，理论上无需配置任何
-参数——目标节点由平台注入的 `TARGET_IP`/`TARGET_IPS` 提供。**执行位置**：平台
-注入 `TARGET_HOSTS` 时自动推送自身到首个具备 kubectl 的目标节点上远程执行
-（同 `evict-ems-hugepages.sh` 的自推送模式；工作台服务端所在主机不需要
-kubectl，kubectl 视图是集群级的，任一节点结果一致；密码认证需执行机有
-sshpass）；未注入时在执行机本地运行（手工独立运行场景，需本机有 kubectl）。
-**跨 region（hd2 等）**：平台注入的 TARGET_IP/TARGET_IPS 可能是外网入口
-endpoint（`ip:port` 形态，如 `115.33.98.101:2224`），与集群 InternalIP 对不上；
-分发阶段会逐节点 SSH 采集内网身份（`hostname`/`hostname -I`）构建映射表随
-小写 env 下传，目标定位按「直接命中（内网 IP/节点名）→ endpoint 身份映射 →
-剥端口兜底」三级解析（gy1 内网标识行为不变；门禁 G-2 同样走该解析）。
-输出三个部分：
-
-1. **集群巡检**（精简版，团队设备口径）：团队设备上的健康实例为主体——每实例
-   两行（实例名·chart 版本·运行时长；团队节点与大页已分配，按全部 pod 的
-   `hugepages-2Mi` requests 汇总，非团队节点仅计数）；异常实例仅一行标注，
-   非团队设备实例、空壳/遗留 ns 与孤儿 release 一行汇总（不展开）。团队设备
-   清单内置（gy1：243/128/215/55/126/237；hd2：140/120/113/164/7，以
-   tokens-devices 清单为准增减）；
-2. **目标节点定位**：逐个检查 `TARGET_IP`/`TARGET_IPS` 的归属，命中实例则输出
-   实例简报（chart 版本/运行时长/节点数，跨 region endpoint 经身份映射解析，
-   非团队设备节点带标注）；未注入 TARGET_* 时回退识别本机（手工独立运行场景）；
-3. **KEY=VALUE 契约**（注入下游 step）：`EMS_INSTANCE_COUNT`、`EMS_INSTANCES`、
-   `EMS_HEALTHY_COUNT`、`EMS_UNHEALTHY`；注入目标时附 `EMS_TARGET_TOTAL`/
-   `EMS_TARGET_MATCHED`，命中时附 `EMS_TARGET_INSTANCE/LABEL_KEY/NODES/`
-   `CHART_VERSION/POD_HEALTH`（首个命中目标）。
-
-```bash
-bash ems-check.sh                     # 手工运行（回退本机识别）
-TARGET_IP=192.168.0.215 bash ems-check.sh   # 指定目标节点（模拟平台注入）
-TARGET_HOSTS='[{"ip":"192.168.0.128","user":"root"}]' TARGET_IP=192.168.0.128 bash ems-check.sh
-                                      # 模拟平台完整注入：自推送到目标节点执行
-```
-
-**安装前门禁模式**（可选参数 `EMS_NAME` 激活，如 `ems8-8`）：在巡检输出后追加
-五连检——名字格式 / label 占用 / 同名 ns·release 残留（含版本比对，健康同名安装
-输出 `EMS_IDEMPOTENT=1` 幂等判定）/ **CPU·内存资源余量**（调度器 requests 口径：
-每节点 ≥41C/41Gi，且至少一节点再余 12C/20Gi 供 controller+zk；不关心节点上跑着
-什么业务，大页由 ems-hugepages step 另行保障）。任一不过即 exit 1 拦住下游
-ems-deploy；通过时输出 `EMS_GATE=passed` 及 `EMS_NAME/EMS_LABEL_KEY/EMS_NODES/
-EMS_IDEMPOTENT` 契约，供 ems-deploy 留空继承。可选参数 `EMS_RELEASE_NAMESPACES`
-（逗号分隔 ns）仅在门禁通过时原样透传下游（ems-deploy S1 据此删除授权 ns）。
-
-纯巡检模式（未填 `EMS_NAME`）无任何行为分支：异常实例只在报告与
-`EMS_UNHEALTHY` 契约键中体现，不影响退出码。实际巡检节点需要 kubectl（可访问
-集群）与 python3，helm 可选（缺失时版本信息降级为未知）；分发时执行机需要
-ssh/scp（解析 TARGET_HOSTS 需 python3，密码认证还需 sshpass）。退出码：0 正常；
-1 环境错误（门禁模式下含门禁不过）。单测：`test/test_ems_check.sh`。
-
-## EMS 大页配置（ems-hugepages.sh）
-
-`ems-hugepages.sh` 是 EMS 安装前置的大页准备 **step 主脚本**（零参数）：目标
-2000Gi/节点（内部常量，1000Gi 规格已废弃）。三段式：①解析目标节点（平台注入
-`TARGET_IP`/`TARGET_IPS`）；②逐节点配置大页——已达标跳过，未达标先做只读内存
-预检（`MemAvailable` < 剩余需求+200Gi 余量即秒级失败并输出 Top 进程/shm 诊断到
-stderr），再写入 `/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试触发
-direct compaction，840s 兜底）；③刷新 allocatable（按需重启 kubelet）+ 终验
-（大页总量与 allocatable 双达标）。执行位置同 ems-check（TARGET_HOSTS 自推送
-到首个有 kubectl 的目标节点）；**跨 region（hd2 等）**：TARGET_IPS 为外网入口
-endpoint（ip:port）时，分发阶段采集内网身份映射后三级解析（直接命中 → endpoint
-映射 → 剥端口），节点操作经 endpoint 凭据 SSH（同外网 IP 多端口按 address:port
-组合匹配），执行宿主即目标节点时本地直执，gy1 内网行为不变。契约输出
-`EMS_HUGEPAGES_OK/RENEWED/KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检
-失败/终验不达标。单测：`test/test_ems_hugepages.sh`。
-
-## EMS 安装（ems-deploy.sh）
-
-`ems-deploy.sh` 是 EMS 部署执行 **step 主脚本**（参数 `EMS_NAME` 必填——显式
-填写或经前置 ems-check 门禁契约继承；`EMS_RELEASE_NAMESPACES` 可选，授权后
-S1 会删除这些 ns）。流程：S0 名字格式与节点数（≥2）校验 + 盲装防线（同名
-ns/release 存在且无 `EMS_IDEMPOTENT=1` 判定时拒绝）；S1 释放（删除授权 ns，
-默认跳过）；S2 打 label（名字首段，如 ems8-8 → `ems8=true`）+ `helm install`
-（release 名 = `EMS_NAME`，存放在首段 ns；**工作负载 ns 由 chart 自动创建为
-release 名**）；S3 验证 pod 全 Running&Ready + 每节点大页分配达标（最长 900s）。
-**跨 region（hd2 等）**：TARGET_IPS 为外网入口 endpoint（ip:port）时，分发阶段
-采集内网身份映射后三级解析（直接命中 → endpoint 映射 → 剥端口），label 打在
-解析出的集群节点名上，gy1 内网行为不变。
-契约输出 `EMS_NAME/EMS_NAMESPACE/EMS_LABEL_KEY/EMS_NODES/EMS_CHART_VERSION/
-EMS_POD_HEALTH/EMS_STATUS`。退出码：0 安装成功；1 环境错误/验证失败。
-
-**chart 分发**：安装版本由与本脚本同目录的 `ems-chart/`（Chart.yaml 26.8.0-b6）
-整体决定；**该目录不入 git**（含厂商证书私钥与密码，见 .gitignore），随部署
-环境分发——平台机 scripts 目录、执行机需与本脚本同目录放置（自检缺失即报
-`未找到仓内 chart` 拒跑）。升级 chart = 替换该目录后重跑（同名 release 版本
-不一致由前置门禁拦截）。单测：`test/test_ems_deploy.sh`。
-
-**推荐编排**（三段，平台已验证）：`ems-check`（EMS_NAME=新实例名，门禁）→
-`ems-hugepages`（大页准备，幂等可单独重跑）→ `ems-deploy`（EMS_NAME/
-EMS_RELEASE_NAMESPACES 留空，自动继承 check 契约；TARGET_IPS 留空用平台注入）。
-
-## EMS 卸载（ems-uninstall.sh）
-
-`ems-uninstall.sh` 是 EMS 完整卸载 **step 主脚本**（唯一可选参数 `EMS_DRY_RUN`，
-默认 1 预演；推荐两段式：先默认预演看清单 → 设 0 正式清理）。目标节点 = 平台
-注入的 `TARGET_IP`/`TARGET_IPS`（勾选环境即表达意图，支持跨 region endpoint 三级
-解析），脚本自动推导实例：目标节点 label 前缀（唯一性校验）+ 其上 EMS pod 的
-ns 交叉；卸载范围 = 该 label 的**全部**节点（不止勾选的）。四段流程：
-
-1. **[1/4]** `helm uninstall`（按 release 实际所在 ns——历史遗留 release 装在
-   default 等非标准 ns 也能卸；不存在跳过）+ 删资源 ns（等待 + 超时强删 pod 兜底
-   + 复活检测，kuberay/CI 自动重装 → 失败并提示人工协调）；
-2. **[2/4]** 等待节点大页全 free（目标节点无 hugepages 请求 pod + 每节点
-   `HugePages_Free==Total`）——这是大页还原的硬前提，被占用时缩减只会挂 surplus；
-3. **[3/4]** 大页还原：per-NUMA `nr_hugepages` 写 0（nohup 后台写入 + 轮询归零，
-   规避 sysfs 写入阻塞拖死主流程；surplus 释放卡住是内核已知行为，超时 die 并
-   提示唯一回收途径 = 重启节点）+ 重启 kubelet 刷 allocatable（不刷则节点大页
-   allocatable 虚高 2000Gi 误导后续调度）；
-4. **[4/4]** 清 label（放最后：label 是幂等重入的节点定位依据）+ 终验 + 契约输出
-   （`EMS_STATUS/EMS_NODES/EMS_RELEASE_REMOVED/EMS_NAMESPACE_REMOVED/
-   EMS_HUGEPAGES_RELEASED/EMS_KUBELET_RESTARTED/EMS_LABEL_REMOVED`）。
-
-边界语义：目标节点不属于任何实例 = 已卸干净，**幂等成功退出**（无操作）；
-目标节点交叉多个实例（脏 label）→ die 拒卸请人工；无 pod/release 的纯 label
-残留同样可清（仅清 label 与大页）。
-
-退出码：0 卸载完成（或幂等退出）；1 失败。单测：`test/test_ems_uninstall.sh`。
-
-```bash
-# 预演（默认）：目标节点选好即可，实例名自动推导
-TARGET_IPS='["192.168.0.243","192.168.0.128"]' bash ems-uninstall.sh
-# 正式清理
-TARGET_IPS='["192.168.0.243","192.168.0.128"]' EMS_DRY_RUN=0 bash ems-uninstall.sh
-```

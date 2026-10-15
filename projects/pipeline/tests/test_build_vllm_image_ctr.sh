@@ -25,6 +25,9 @@ grep -Fq 'HTTP_PROXY' "$SCRIPT"
 grep -Fq 'HTTPS_PROXY' "$SCRIPT"
 grep -Fq 'PIP_INDEX_URL' "$SCRIPT"
 grep -Fq 'UV_INDEX_URL' "$SCRIPT"
+grep -Fq 'BUILD_PROXY_URL' "$SCRIPT"
+grep -Fq 'INDOCKER_RUNTIME' "$SCRIPT"
+grep -Fq -- '--privileged' "$SCRIPT"
 
 source_dir="$(mktemp -d)"
 trap 'rm -rf "$source_dir"' EXIT
@@ -49,5 +52,10 @@ grep -Fq 'swr.example.com/vllm:test-tag' <<<"$output"
 grep -Fq '源码仓库: https://github.com/TokensService/vllm' <<<"$output"
 grep -Fq '源码: '"$source_dir"'@v0.30.0' <<<"$output"
 ! grep -Fq 'test-password' <<<"$output"
+
+indocker_output="$(VLLM_SOURCE_DIR="$source_dir" IMAGE_TAG=test-tag SWR_USERNAME=test-user SWR_PASSWORD=test-password BUILD_ENGINE=indocker INDOCKER_RUNTIME=docker "$SCRIPT" --dry-run 2>&1)"
+grep -Fq 'docker run --rm --privileged' <<<"$indocker_output"
+grep -Fq 'local/vllm-indocker-runner:latest' <<<"$indocker_output"
+! grep -Fq 'test-password' <<<"$indocker_output"
 
 echo 'PASS: vLLM BuildKit/ctr image build and push contract'
