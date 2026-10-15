@@ -116,3 +116,19 @@ test("进展可编辑、删除（PATCH updateProgress / deleteProgress）", () =
   assert.ok(html.includes("data-prog-act"), "进展条目应有编辑/删除操作");
   assert.ok(html.includes("canEditProgEntry"), "应按作者/admin 裁剪进展操作");
 });
+
+test("标签输入兼容输入法：组词期的 Enter/Process 键放行给 IME，不误加标签", () => {
+  assert.ok(html.includes("e.isComposing || e.keyCode === 229 || e.key === 'Process'"),
+    "keydown 应先识别组词键（Safari isComposing / Chrome Process+229）直接放行");
+});
+
+test("标签输入支持全角逗号分隔（与导入解析 [,，、] 口径一致）", () => {
+  assert.ok(html.includes("e.key !== '，'"), "全角逗号应与半角一样作为分隔键");
+  assert.ok(html.includes("replace(/[,，]+$/, '')"), "收尾逗号（含全角）应剥掉再入库");
+});
+
+test("任务列表加载失败不得清空现有列表", () => {
+  assert.ok(!html.includes("r.ok ? r.json() : { tasks: [] }"), "非 2xx 不得回落成空列表把已见任务抹掉");
+  assert.ok(html.includes("err.http") && html.includes("任务列表加载失败"),
+    "HTTP 层错误应提示一次，网络抖动仍静默保留旧数据");
+});
