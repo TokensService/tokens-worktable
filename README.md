@@ -50,6 +50,11 @@
 - `projects/pipeline/`：流水线工作台、阶段脚本、桥接工具与测试。
 - `projects/codereview/`：PR 检视台及配套脚本。
 - `projects/diag_perf/`：性能诊断页及测试。
+- `projects/tasks/`：团队任务管理页（`task-manager.html`）。任务数据走服务端共享存储
+  `GET/POST/PATCH/DELETE /api/worktable/tasks`（落盘 `$DSH_HOME/storages/worktable-tasks.json`），
+  全团队实时可见；用户身份取 dsh-auth-gate 真实用户（`/auth/status` 当前登录、
+  `/auth/users` 负责人列表），admin 可新增/编辑/删除，普通成员仅可更新分配给自己任务的
+  状态与效果（服务端强校验）；token 共享部署退化为全权本地模式（负责人自由文本）。
 
 `projects/package.json` 保留项目脚本的 CommonJS 运行方式；显式使用 `.mjs` 的测试仍按 ESM 执行。
 

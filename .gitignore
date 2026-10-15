@@ -7,6 +7,9 @@ __pycache__/
 projects/profiling/.ai-analysis/
 projects/profiling/widget-result.json
 
+# tasks 页运行时产物（工作台自动挂载标记）
+projects/tasks/widget-result.json
+
 # diag_perf 页运行时产物（AI 诊断与优化的服务端工作目录：prompt / 运行脚本）
 projects/diag_perf/.ai-diag/
 
