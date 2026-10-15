@@ -611,9 +611,9 @@ test("页面静态契约：Perfetto 模态框 / 入口按钮 / 桥接段 / 取�
     'id="saveDirNodeLabel"', 'id="saveDirBrowseBtn"', 'id="saveDirBrowser"', 'id="saveDirPickCurBtn"', 'id="saveDirAll"',
     "dsh.profiling.saveDirByNode", "function saveDirForNode(", "function saveTraceToServerDir(", "/api/worktable/copy",
     "保存目录已存在，跳过", "dstDir", 'data-save-dir-clear',
-    /* 本地保存目录：FS API 目录选择器 + IndexedDB 句柄 + 流式 pipeTo 落盘 + 同名同大小跳过并回读复用 */
-    'id="saveDirLocalPickBtn"', 'id="saveDirLocalClearBtn"', 'id="saveDirLocalLabel"',
-    "showDirectoryPicker", "perfettoSaveDir", "function saveTraceToLocalDir(", "resp.body.pipeTo(w)",
+    /* 本地保存目录：FS API 目录选择器 + IndexedDB 句柄 + 流式 pipeTo 落盘 + 同名同大小跳过并回读复用 + 完整路径备注 */
+    'id="saveDirLocalPickBtn"', 'id="saveDirLocalClearBtn"', 'id="saveDirLocalLabel"', 'id="saveDirLocalNote"', 'id="saveDirLocalNoteRow"',
+    "showDirectoryPicker", "perfettoSaveDir", "dsh.profiling.saveDirLocalNote", "function saveDirLocalNote(", "function saveTraceToLocalDir(", "resp.body.pipeTo(w)",
     "本地保存目录已有该文件，跳过下载", "已保存到本地目录",
     /* 多选同时打开 + 默认下载去重 */
     "function resolvePerfettoTargets(", "perfPicks", 'class="pf-pick"', "function downloadWithDedupe(", "此前已下载过，跳过重复下载",
