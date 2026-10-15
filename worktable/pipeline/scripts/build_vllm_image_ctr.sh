@@ -104,16 +104,18 @@ if [[ -n "$BUILD_ARGS" ]]; then
   done <<< "$BUILD_ARGS"
 fi
 
-# 将执行机代理传入 Dockerfile 的 RUN 步骤（例如 uv 下载 FlashInfer）。
-# 显式 BUILD_ARGS 优先，避免自动注入覆盖用户配置。
-for proxy_name in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
-  proxy_lower="${proxy_name,,}"
-  proxy_value="${!proxy_name:-${!proxy_lower:-}}"
-  [[ -n "$proxy_value" ]] || continue
-  if ! printf '%s\n' "$BUILD_ARGS" | grep -Fq "${proxy_name}="; then
-    build_args+=("--opt" "build-arg:${proxy_name}=${proxy_value}")
-    nerdctl_build_args+=("--build-arg" "${proxy_name}=${proxy_value}")
-    docker_build_args+=("--build-arg" "${proxy_name}=${proxy_value}")
+# 将执行机的网络与 Python 包源传入 Dockerfile 的 RUN 步骤（例如 uv 下载
+# FlashInfer 和 uv 自身）。显式 BUILD_ARGS 优先，避免自动注入覆盖用户配置。
+for build_env_name in \
+  HTTP_PROXY HTTPS_PROXY NO_PROXY \
+  PIP_INDEX_URL PIP_EXTRA_INDEX_URL UV_INDEX_URL UV_EXTRA_INDEX_URL; do
+  build_env_lower="${build_env_name,,}"
+  build_env_value="${!build_env_name:-${!build_env_lower:-}}"
+  [[ -n "$build_env_value" ]] || continue
+  if ! printf '%s\n' "$BUILD_ARGS" | grep -Fq "${build_env_name}="; then
+    build_args+=("--opt" "build-arg:${build_env_name}=${build_env_value}")
+    nerdctl_build_args+=("--build-arg" "${build_env_name}=${build_env_value}")
+    docker_build_args+=("--build-arg" "${build_env_name}=${build_env_value}")
   fi
 done
 
