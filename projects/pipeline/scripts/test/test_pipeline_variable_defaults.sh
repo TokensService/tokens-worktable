@@ -11,16 +11,17 @@ for variable in PIPELINE_NAME RUN_DIR RENDER_DIR DEPLOY_IMAGE NAMESPACE RELEASE_
   grep -Fq "${variable}=\"\${${variable}:-}\"" "$script"
 done
 
-if grep -Eq '=\"\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' "$script"; then
-  echo 'pipeline entrypoint must not use nested parameter defaults' >&2
-  exit 1
-fi
-
 grep -Fq 'contains_unexpanded_placeholder' "$script"
 grep -Fq '|| RUN_DIR="/tmp/${PIPELINE_NAME}-$(date +%Y%m%d_%H%M%S)"' "$script"
 grep -Fq '|| RENDER_DIR="${RUN_DIR}/rendered"' "$script"
 
 config="$(sed -n '/^contains_unexpanded_placeholder()/,/^export IMAGE_NAME/{ /^export IMAGE_NAME/q; p; }' "$script")"
+# 嵌套默认值禁令只约束初始化块（本测试 sed 抽取并 eval 的区间）；函数体内的
+# 运行时回退（如 IMAGE_PULL_PROJECT:-${SWR_PROJECT:-...}）不受此限。
+if grep -Eq '=\"\$\{[A-Z_][A-Z0-9_]*:-[^}]*\$\{' <<<"$config"; then
+  echo 'pipeline entrypoint must not use nested parameter defaults' >&2
+  exit 1
+fi
 resolved="$(ARCH_NAME='test-arch' \
   PIPELINE_NAME='${PIPELINE_NAME' \
   RUN_DIR='/tmp/${PIPELINE_NAME' \

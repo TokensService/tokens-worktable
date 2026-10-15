@@ -83,6 +83,10 @@ TARGET_NODE_IP_MAP='{"115.33.98.101:2223":"192.168.31.175","115.33.98.101:2222":
 AK='test-ak' \
 LOGKEY='test-login-key' \
 LOGIN_KEY='stale-login-key' \
+http_proxy='http://192.0.2.10:8080' \
+https_proxy='http://192.0.2.10:8080' \
+HTTP_PROXY='http://192.0.2.20:8080' \
+HTTPS_PROXY='http://192.0.2.20:8080' \
 PULL_TARGET_IMAGES_ONLY=1 \
 bash "$script" >/dev/null
 
@@ -99,7 +103,7 @@ if [[ -s "$work_dir/ssh-reverse-forwards.log" ]]; then
   echo 'registry pulls must not create a proxy reverse forward' >&2
   exit 1
 fi
-grep -Fxq '2222||||' "$work_dir/proxy.log"
+grep -Fxq '2222|http://192.0.2.10:8080|http://192.0.2.10:8080|http://192.0.2.20:8080|http://192.0.2.20:8080' "$work_dir/proxy.log"
 grep -Fxq '2223|-n k8s.io images ls -q' "$work_dir/ctr.log"
 grep -Fxq '2222|-n k8s.io images ls -q' "$work_dir/ctr.log"
 

@@ -54,3 +54,9 @@ P/D restart — the proxy caches the bootstrap `engine_id` at startup) →
 variables (see each script header); `DEPLOY_MODE=standalone` deploys only the
 Prefill baseline. See `README.md` 的「vLLM 原生部署」章节 for the full
 parameter/contract list.
+
+Deployment strategy (arch) selection: `list_vllm_model_archs.sh` is a
+「策略·脚本」 source for the repo settings — it lists the arch_name entries
+registered in `model_arch.yaml` of TokensService/vllm (raw URL for github.com
+remotes, shallow clone fallback), so the 部署策略 dropdown can offer the archs
+of the current branch; the chosen value is injected as `DEPLOY_STRATEGY`.
