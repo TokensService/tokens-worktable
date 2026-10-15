@@ -1465,6 +1465,7 @@ async function fetchPipelineStateFresh(){
     retries+=1; epochAtFetch=stateFetchEpoch;
   }
 }
+let _migratedPersistDone=false;   // schema 迁移回推会话闩锁（见 loadServerState finally）：与 _migrateInlineLogsDone 同理断 403 死循环
 async function loadServerState(){
   const st=await fetchPipelineStateFresh();
   /* 旧版服务端配置迁移标记：服务端缺新键（且启动时本地有对应旧值，见 legacyLocalKeys）或代码仓条目
@@ -1609,13 +1610,20 @@ async function loadServerState(){
     if(st && (!st.config || !Object.keys(st.config).length)) persistState();
     /* 旧版服务端缺新键 / 代码仓令牌被旧版剔除：本地旧值已在上方采用（migrated），回推一次完成迁移
        （沿用上方「服务端为空迁移」同一模式；此时 stateLoaded 已置位，pushState 不会再重试加载） */
-    else if(migrated) persistState();
+    else if(migrated && !_migratedPersistDone){ _migratedPersistDone=true; persistState(); }   // 会话闩锁：旧版 schema 迁移回推最多一次；非 admin 看可信流水线 persist 必 403，不闩则与 migrateInlineLogs 同理死循环
   }
 }
 /* 存量迁移：旧版记录内嵌的 logs 全文 → 补齐归档文件夹里对应的任务日志文件后改存 logFile 引用。
    已有同名文件不覆盖（归档文件才是全量实体，内嵌可能是旧版截断版）；归档目录不可读/写失败时保持内嵌。
    迁移完成后 persistState 一次，把引用形态推上服务端 */
+let _migrateInlineLogsDone=false;   // 存量迁移会话闩锁（见 migrateInlineLogs 内说明）：断非 admin 看可信流水线时 migrate→persist→403→重拉 的死循环
 async function migrateInlineLogs(){
+  /* 一次性会话闩锁。动机：旧版"内嵌日志全文"→新版"归档文件引用"是存量迁移，本应一次性完成。
+     bug：非 admin 看可信流水线时 persist 必 403；migrate 在 loadServerState 末尾每次重跑→persist→403→
+     403 分支重拉 loadServerState→又重跑 migrate，形成每秒一圈的 229KB GET + 403 PUT + 整页重渲染（#73 的 17-19% CPU）。
+     代价：只读用户的迁移不在本会话完成——但只读用户本就写不进去，迁移对他们从不会成功，无真实损失；
+     有写权限者（admin）打开时迁移照常落盘。瞬态错误重试推迟到下次刷新，可接受。 */
+  if(_migrateInlineLogsDone) return; _migrateInlineLogsDone=true;
   let changed=false;
   for(const rec of history){
     if(!rec || rec.demo || !rec.archive || !rec.tag || !Array.isArray(rec.logs)) continue;
