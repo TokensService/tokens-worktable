@@ -4,7 +4,7 @@
 
 ## vLLM 镜像编译与 SWR 推送
 
-`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。脚本在流水线执行机本地编译：`BUILD_ENGINE=auto` 优先使用可用的 Docker daemon，以复用执行机预拉取的基础镜像；也可显式选择 `docker-buildx`、`buildctl` 或 `nerdctl`。编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。使用 `docker-buildx`、`buildctl` 或 `nerdctl` 时默认启用 BuildKit 本地层缓存（`BUILD_CACHE=true`，目录为 `/tmp/vllm-build-cache`，可用 `BUILD_CACHE_DIR` 修改），相同 Dockerfile 层会在后续构建中复用。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
+`build_vllm_image_ctr.sh` 从 `VLLM_REPO_URL` 指定的 vLLM 仓库获取源码，默认使用 `docker/Dockerfile` 和 `main` 分支。`BUILD_ENGINE=auto` 默认启动 Docker-in-Docker runner：外层启动特权 runner，runner 内启动独立 Docker daemon 并完成编译，外层再用 `ctr` 导入和推送；也可显式选择 `indocker`、`docker`、`docker-buildx`、`buildctl` 或 `nerdctl`。编译并发默认为执行机 CPU 数的一半，可用 `BUILD_MAX_JOBS` 覆盖。使用 `docker-buildx`、`buildctl` 或 `nerdctl` 时默认启用 BuildKit 本地层缓存（`BUILD_CACHE=true`，目录为 `/tmp/vllm-build-cache`，可用 `BUILD_CACHE_DIR` 修改），相同 Dockerfile 层会在后续构建中复用。镜像最终由 `ctr -n k8s.io images push --user` 推送到 SWR。编译和推送所需的凭据只通过环境变量传入。
 
 最小配置：
 
@@ -17,7 +17,7 @@ export SWR_PASSWORD='<SWR_TOKEN>'
 build_vllm_image_ctr.sh
 ```
 
-可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_NETWORK`、`BUILD_MAX_JOBS`、`BUILD_ARGS`、`BUILD_CACHE`、`BUILD_CACHE_DIR`、`BUILDX_BUILDER`、`BUILDX_AUTO_CREATE`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。执行机的 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`（含小写写法）以及 `PIP_INDEX_URL`/`PIP_EXTRA_INDEX_URL`/`UV_INDEX_URL`/`UV_EXTRA_INDEX_URL` 会自动作为构建参数传入 Dockerfile 的安装步骤；若在 `BUILD_ARGS` 中显式设置同名参数，则以显式值为准。`docker-buildx` 分支默认使用 `host` 网络，使 Dockerfile 的安装步骤可以访问宿主机代理，并自动创建名为 `vllm-builder` 的 `docker-container` builder、注入 HTTP/HTTPS 代理；可通过 `BUILD_NETWORK` 覆盖网络模式，或将 `BUILDX_AUTO_CREATE=false` 关闭。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
+可通过 `VLLM_REF`、`VLLM_SOURCE_DIR`、`DOCKERFILE`、`BUILD_PLATFORM`、`BUILD_NETWORK`、`BUILD_MAX_JOBS`、`BUILD_ARGS`、`BUILD_CACHE`、`BUILD_CACHE_DIR`、`BUILD_PROXY_URL`、`INDOCKER_RUNTIME`、`INDOCKER_RUNNER_IMAGE`、`INDOCKER_OUTPUT_DIR`、`INDOCKER_NETWORK`、`BUILDX_BUILDER`、`BUILDX_AUTO_CREATE`、`BUILDKIT_ADDR` 和 `CTR_NAMESPACE` 覆盖默认值。代理和 Python 包源会自动作为构建参数传入 Dockerfile；`BUILD_PROXY_URL` 仅在构建网络无法访问宿主机回环代理时设置为构建网络可达的地址。执行 `build_vllm_image_ctr.sh --dry-run` 可只检查命令，不会克隆、编译或推送。
 
 ## 参数识别规则
 
