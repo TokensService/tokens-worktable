@@ -271,6 +271,11 @@ for build_env_name in \
   if [[ -n "$BUILD_PROXY_URL" && ( "$build_env_name" == HTTP_PROXY || "$build_env_name" == HTTPS_PROXY ) ]]; then
     build_env_value="$BUILD_PROXY_URL"
   fi
+  if [[ "$build_env_name" == NO_PROXY && -n "$build_env_value" ]]; then
+    # httpx/puccinialin 在 Rust wheel 构建时无法解析 NO_PROXY 中的
+    # `[::1]`（会误报 Invalid port: ':1]'），使用无括号 IPv6 形式。
+    build_env_value="${build_env_value//\[::1\]/::1}"
+  fi
   [[ -n "$build_env_value" ]] || continue
   if ! printf '%s\n' "$BUILD_ARGS" | grep -Fq "${build_env_name}="; then
     build_args+=("--opt" "build-arg:${build_env_name}=${build_env_value}")
