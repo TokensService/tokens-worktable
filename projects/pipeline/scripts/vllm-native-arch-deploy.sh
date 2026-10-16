@@ -106,9 +106,20 @@ declare -n hidden_router_port='NATIVE_VLLM_ROUTER_PORT' 2>/dev/null || true
 declare -n hidden_router_bin='NATIVE_VLLM_ROUTER_BIN' 2>/dev/null || true
 declare -n hidden_router_policy='NATIVE_VLLM_ROUTER_POLICY' 2>/dev/null || true
 declare -n hidden_router_kv='NATIVE_VLLM_KV_CONNECTOR' 2>/dev/null || true
+declare -n hidden_router_version='NATIVE_VLLM_ROUTER_VERSION' 2>/dev/null || true
+declare -n hidden_pip_index='NATIVE_VLLM_PIP_INDEX' 2>/dev/null || true
 
 router_port="${hidden_router_port:-8000}"
 router_bin="${hidden_router_bin:-vllm-router}"
+# 目标机缺 vllm-router 时脚本自动补装：父阶段在执行机下 wheel（走国内镜像、缓存复用），随产物送到
+# 目标机，远端离线装进下面这个专用 venv（目标机通常没有外网），并把 router_bin 指向它。
+router_version="${hidden_router_version:-0.1.16}"
+router_venv='/opt/vllm-router/venv'
+router_wheels_cache="${HOME}/.cache/vllm-native/router-wheels-${router_version}"
+# pip 源：默认国内镜像（阿里云），可用 NATIVE_VLLM_PIP_INDEX 或 PIP_INDEX_URL 覆盖
+pip_index="${hidden_pip_index:-${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}}"
+pip_trusted_host="${pip_index#*://}"
+pip_trusted_host="${pip_trusted_host%%/*}"
 
 # P/D 的 HTTP keep-alive：镜像默认 5s，而 router 复用同一连接的空闲间隔可能远超 5s
 # （多 DP worker 轮转时尤其明显）→ 服务端先关空闲连接、router 再写请求体就撞 Broken pipe。
@@ -782,6 +793,38 @@ free_port() {
   return 1
 }
 
+# 目标机通常没有外网：用父阶段随产物推送的 wheel 离线安装 vllm-router。
+# ① 优先装进专用 venv（不污染系统 python）；部分节点缺 python3-venv、且无外网装不了 apt 包 →
+# ② 回落用系统 pip 装到 /usr/local（--break-system-packages，与 237/164 现有方式一致）。
+# 成功则把 router_bin 指向可执行文件（后续启动 router 就用它）。
+install_router_from_wheels() {
+  local wheels="$work_dir/router-wheels" bin_path
+  local -a pip_args=(--no-index --find-links "$wheels" --disable-pip-version-check --quiet)
+  [[ -d "$wheels" ]] || return 1
+  log "  目标机缺 vllm-router：从随产物推送的 wheel 离线安装（$router_version）"
+  if python3 -m venv "$router_venv" >"$work_dir/router-install.log" 2>&1 \
+    && "$router_venv/bin/pip" install "${pip_args[@]}" "vllm-router==$router_version" >>"$work_dir/router-install.log" 2>&1 \
+    && [[ -x "$router_venv/bin/vllm-router" ]]; then
+    router_bin="$router_venv/bin/vllm-router"
+    log "  已补装 vllm-router（venv）：$router_bin"
+    return 0
+  fi
+  log "  venv 方式不可用（常见：节点缺 python3-venv），改用系统 pip 安装到 /usr/local"
+  if python3 -m pip install "${pip_args[@]}" --break-system-packages \
+    "vllm-router==$router_version" >>"$work_dir/router-install.log" 2>&1; then
+    bin_path="$(command -v vllm-router 2>/dev/null || true)"
+    [[ -n "$bin_path" ]] || bin_path='/usr/local/bin/vllm-router'
+    if [[ -x "$bin_path" ]]; then
+      router_bin="$bin_path"
+      log "  已补装 vllm-router（系统）：$router_bin"
+      return 0
+    fi
+  fi
+  warn "离线安装失败，日志尾部："
+  tail -8 "$work_dir/router-install.log" >&2
+  return 1
+}
+
 # GPU 列表自动纠偏（直接改写全局 NATIVE_VLLM_*_GPUS，后续流程都用纠偏后的值）：
 #   ① 丢弃越界序号 ② 给多则截断到需求张数
 #   ③ pd：decode 与 prefill 重叠的项改派到本机空闲卡（保留 prefill 的原意）
@@ -935,17 +978,36 @@ remote_precheck() {
   if [[ "$mode" == 'pd' ]]; then
     local router_path router_help missing='' flag
     router_path="$(command -v "$router_bin" 2>/dev/null || true)"
+    if [[ -z "$router_path" && -x /usr/local/bin/vllm-router ]]; then
+      router_path='/usr/local/bin/vllm-router'
+      router_bin="$router_path"
+    fi
+    if [[ -z "$router_path" && -x "$router_venv/bin/vllm-router" ]]; then
+      router_path="$router_venv/bin/vllm-router"
+      router_bin="$router_path"
+    fi
+    if [[ -z "$router_path" ]]; then
+      # 离线补装；函数会把 router_bin 指向装好的可执行文件（venv 或系统 /usr/local/bin）
+      install_router_from_wheels || true
+      if [[ -n "$router_bin" && -x "$router_bin" ]]; then
+        router_path="$router_bin"
+      else
+        router_path="$(command -v vllm-router 2>/dev/null || true)"
+      fi
+    fi
     [[ -n "$router_path" ]] \
-      || die "pd 模式需要 vllm-router：$router_bin 不在 PATH 中（装官方 vllm-project/router；也可用隐藏参数 NATIVE_VLLM_ROUTER_BIN 指绝对路径）" 1
-    router_help="$(timeout 20 "$router_bin" --help 2>&1 || true)"
-    [[ -n "$router_help" ]] \
-      || die "vllm-router 无法执行：$router_path（--help 无输出，可能装包不完整或缺依赖）" 1
-    for flag in --policy --vllm-pd-disaggregation --kv-connector --prefill --decode --host --port --intra-node-data-parallel-size; do
-      [[ "$router_help" == *"$flag"* ]] || missing="$missing $flag"
-    done
-    [[ -z "$missing" ]] \
-      || die "vllm-router 版本不兼容：$router_path 不支持$missing（本路线需要官方 vllm-project/router；可用 NATIVE_VLLM_ROUTER_BIN 指定正确版本）" 1
-    log "  router：$router_path（--help 与 8 个所需 flags 校验通过）"
+      || die "pd 模式需要 vllm-router：$router_bin 不在 PATH 中，离线补装也不可用（产物里缺 router-wheels/）；请装官方 vllm-project/router，或用隐藏参数 NATIVE_VLLM_ROUTER_BIN 指绝对路径" 1
+    if [[ -n "$router_path" ]]; then
+      router_help="$(timeout 20 "$router_path" --help 2>&1 || true)"
+      [[ -n "$router_help" ]] \
+        || die "vllm-router 无法执行：$router_path（--help 无输出，可能装包不完整或缺依赖）" 1
+      for flag in --policy --vllm-pd-disaggregation --kv-connector --prefill --decode --host --port --intra-node-data-parallel-size; do
+        [[ "$router_help" == *"$flag"* ]] || missing="$missing $flag"
+      done
+      [[ -z "$missing" ]] \
+        || die "vllm-router 版本不兼容：$router_path 不支持$missing（本路线需要官方 vllm-project/router；可用 NATIVE_VLLM_ROUTER_BIN 指定正确版本）" 1
+      log "  router：$router_path（--help 与 8 个所需 flags 校验通过）"
+    fi
   fi
 
   # ---- 2) RDMA：pd 模式的 Mooncake KV 传输依赖 RoCE/iWARP，缺失会挂住而不是报错 ----
@@ -1030,7 +1092,13 @@ remote_precheck() {
   fi
 
   # ---- 6) 环境摘要（出问题时省一轮排查） ----
-  log "  目标机 $(hostname) / $(hostname -I 2>/dev/null | awk '{print $1}')；内核 $(uname -r)"
+  # 注意：不能用 `hostname -I | awk '{print $1}'`——装了 docker 的节点会优先返回 docker0（如 172.17.0.1）
+  local host_ip="${target_ip:-}"
+  if [[ -z "$host_ip" ]]; then
+    host_ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+  fi
+  log "  目标机 $(hostname) / ${host_ip:-unknown}；内核 $(uname -r)"
   log "  运行时 $runtime_bin；containerd 命名空间 $containerd_ns；驱动 $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)；GPU 数 $gpu_total"
   log "  镜像 $image_ref"
   log "环境预检通过 ✓"
@@ -1451,6 +1519,7 @@ PY
   fi
 
   log "推送产物到 $target_ip:$work_dir"
+  ensure_router_wheels
   target_ssh "mkdir -p '$work_dir'" || die "目标机创建目录失败：$work_dir"
   target_scp "$stage_dir/." "$work_dir/" || die "推送渲染产物失败"
   target_scp "$script_path" "$work_dir/${SCRIPT_NAME}.sh" || die "推送脚本失败"
@@ -1489,6 +1558,34 @@ PY
   )
   # 远端不需要目标节点列表（防递归）；模型名由父阶段解析后下发
   target_ssh "env $(printf '%q ' "${remote_env[@]}")MODEL_NAME='$model_name' bash '$work_dir/${SCRIPT_NAME}.sh' --remote"
+}
+
+# pd 模式：目标机没有可用 vllm-router 时，在执行机下载 wheel（走国内镜像，含依赖，首次较慢、之后走缓存）
+# 放进产物目录，随产物一起推送到目标机，由远端阶段离线安装（目标机通常没有外网）。
+ensure_router_wheels() {
+  [[ "$mode" == 'pd' ]] || return 0
+  if target_ssh "command -v '$router_bin' >/dev/null 2>&1 || [[ -x '$router_venv/bin/vllm-router' ]]"; then
+    return 0
+  fi
+  log "目标机没有可用的 vllm-router，准备离线安装包（版本 $router_version，源 $pip_index）"
+  if [[ ! -f "$router_wheels_cache/.complete" ]]; then
+    rm -rf "$router_wheels_cache"
+    mkdir -p "$router_wheels_cache"
+    log "  在执行机下载 wheel（缓存目录 $router_wheels_cache）"
+    python3 -m pip download --only-binary=:all: -d "$router_wheels_cache" \
+      -i "$pip_index" --trusted-host "$pip_trusted_host" \
+      "vllm-router==$router_version" >"$router_wheels_cache/.download.log" 2>&1 \
+      || {
+        warn "wheel 下载失败，日志尾部："
+        tail -5 "$router_wheels_cache/.download.log" >&2
+        die "无法在执行机下载 vllm-router==$router_version（源 $pip_index；可用 NATIVE_VLLM_PIP_INDEX 换源，或用 NATIVE_VLLM_ROUTER_BIN 指已装好的绝对路径）" 2
+      }
+    : >"$router_wheels_cache/.complete"
+  fi
+  mkdir -p "$stage_dir/router-wheels"
+  cp -f "$router_wheels_cache"/*.whl "$stage_dir/router-wheels/" \
+    || die "复制 wheel 到产物目录失败" 2
+  log "  已备好 $(find "$stage_dir/router-wheels" -name '*.whl' | wc -l) 个 wheel（$(du -sh "$stage_dir/router-wheels" 2>/dev/null | cut -f1)），随产物推送到目标机离线安装"
 }
 
 main() {
