@@ -56,9 +56,12 @@
 - `projects/tasks/`：团队任务管理页（`task-manager.html`）。任务数据走服务端共享存储
   `GET/POST/PATCH/DELETE /api/worktable/tasks`（落盘 `$DSH_HOME/storages/worktable-tasks.json`），
   全团队实时可见；用户身份取 dsh-auth-gate 真实用户（`/auth/status` 当前登录、
-  `/auth/users` 负责人列表），admin 可新增/编辑/删除/批量导入（文本按行解析或 AI 分析）、
-  维护标签，普通成员可更新分配给自己任务的状态、效果与进展（服务端强校验）；点击任务卡
-  打开详情弹窗（标签/描述/结果/全部进展），进展条目可编辑、删除（admin / 作者 / 任务负责人）；
+  `/auth/users` 负责人列表），admin 可新增/删除/批量导入（文本按行解析或 AI 分析）
+  并在详情面板内联编辑全部字段，普通成员可更新分配给自己任务的状态、效果与进展（服务端强校验）。
+  任务支持**多负责人**（`assignees: string[]`，兼容旧单值 `assignee`）与**开始 / 结束时间**
+  （`startAt` / `endAt`，状态推进 todo→doing→done 自动补记，已有值不覆盖）；主从双栏布局，
+  点击任务卡在右侧详情面板**直接编辑保存**（无独立编辑按钮），进展可**行内添加**/编辑/删除
+  （admin / 作者 / 任一任务负责人）；列表支持**状态 × 用户 × 标签**三维叠加筛选（标签 chip 可点快捷筛选）；
   完成时走多行弹窗录入结果（支持 AI 总结润色）；token 共享部署退化为全权本地模式
   （负责人自由文本）。AI 能力可配 OpenAI 兼容 API（页面「⚙ AI」）或复用 DSH 会话 AI。
 

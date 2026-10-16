@@ -5,10 +5,13 @@
      数据：服务端共享存储 /api/worktable/tasks（$DSH_HOME/storages/worktable-tasks.json，全团队可见）
      用户：dsh-auth-gate 真实用户（/auth/status 取当前登录身份，/auth/users 取用户列表）；
            token 共享部署 / 探测失败时退化为全权本地模式（负责人自由文本）
-     权限：admin 可新增/编辑/删除/批量导入任务；普通成员可推进自己的任务状态、录入结果与进展
+     权限：admin 可新增/删除/批量导入并编辑全部字段；普通成员可推进自己的任务状态、录入结果与进展
            （点「完成」弹多行输入 + AI 总结，服务端强校验）
-     布局：主从双栏——左侧紧凑任务列表，点击任务卡在右侧详情面板展示完整详情；窄窗口自动上下堆叠；
-     筛选：任务列表支持按用户过滤（选项 = 启用用户 ∪ 任务中出现的负责人）；
+     布局：主从双栏——左侧紧凑任务列表，点击任务卡在右侧详情面板展示并直接编辑保存（无独立编辑按钮）；
+           窄窗口自动上下堆叠；
+     任务：支持多负责人（assignees）、开始 / 结束时间（状态推进自动补记）；
+     筛选：状态 tab × 用户下拉 × 标签下拉 三者叠加（标签也可点任务卡上的 chip 快捷筛选）；
+     进展：详情面板内直接添加 / 行内编辑 / 删除；
      总结：选用户 + 时间段（周 / 月 / 年 / 自定义区间）AI 生成个人工作总结 -->
 <html lang="zh-CN">
 <head>
@@ -68,8 +71,9 @@
   .tm-taskActions .dshell-btn, .tm-taskActions .dshell-btnGhost, .tm-taskActions .dshell-btnDanger { padding:3px 10px; font-size:11.5px; }
   /* 主从布局：左任务列表 + 右详情面板；窄窗口（≤860px）纵向堆叠，详情回到列表下方 */
   .tm-split { display:flex; gap:12px; align-items:flex-start; }
-  .tm-splitMain { flex:1 1 340px; min-width:0; }
-  .tm-detailCol { flex:0 0 360px; max-width:46%; position:sticky; top:10px; max-height:calc(100vh - 20px); overflow:auto; }
+  .tm-splitMain { flex:1 1 300px; min-width:0; }
+  /* 详情面板加宽（原 360px/46%）：行内编辑表单 + 进展区并排更舒展 */
+  .tm-detailCol { flex:0 0 520px; max-width:58%; position:sticky; top:10px; max-height:calc(100vh - 20px); overflow:auto; }
   .tm-detailHead { display:flex; align-items:flex-start; gap:8px; margin-bottom:10px; }
   .tm-detailHead #detailCloseBtn { padding:2px 10px; font-size:13px; line-height:1.3; }
   .tm-detailEmpty { text-align:center; padding:36px 8px; color:var(--dsw-alias-label-tertiary); font-size:12.5px; line-height:1.8; }
@@ -127,6 +131,19 @@
   .tm-sumOut .tm-mdLi { padding-left:16px; text-indent:-12px; margin:1px 0; }
   .tm-sumOut .tm-mdSp { height:7px; }
   .tm-sumMatch { font-size:11.5px; color:var(--dsw-alias-label-secondary); line-height:1.5; margin-bottom:8px; }
+  /* 详情行内编辑：字段表单 / 负责人多选 / 保存栏 / 行内添加进展 */
+  .tm-detailForm input.dshell-input, .tm-detailForm select.dshell-input, .tm-detailForm textarea.dshell-textarea { width:100%; font-size:12px; }
+  .tm-detailForm textarea.dshell-textarea { min-height:64px; resize:vertical; }
+  .tm-assigneeBox { display:flex; flex-wrap:wrap; gap:5px 10px; padding:6px 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-fill-l1); max-height:120px; overflow:auto; }
+  .tm-assigneeBox label { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; color:var(--dsw-alias-label-primary); margin:0; cursor:pointer; white-space:nowrap; }
+  .tm-assigneeBox input:disabled, .tm-detailForm input:disabled, .tm-detailForm select:disabled, .tm-detailForm textarea:disabled { opacity:.55; cursor:not-allowed; }
+  .tm-detailSaveBar { display:flex; gap:8px; justify-content:flex-end; align-items:center; margin:10px 0 4px; }
+  .tm-detailSaveBar .tm-aiStatus { margin-right:auto; }
+  .tm-addProg { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+  .tm-addProg textarea { min-height:52px; }
+  .tm-addProgRow { display:flex; gap:8px; justify-content:flex-end; }
+  .tm-tagClick { cursor:pointer; }
+  .tm-tagClick:hover { border-color:var(--dsw-alias-state-accent-primary); color:var(--dsw-alias-state-accent-primary); }
 </style>
 </head>
 <body>
@@ -135,7 +152,7 @@
   <div class="tm-head">
     <div>
       <h1 class="dshell-title">团队任务管理</h1>
-      <p class="dshell-sub">任务分配 · 优先级 · 截止时间 · 标签 · 进展 · 完成时录入结果（支持 AI 总结）· 文本批量导入 · 用户筛选 · AI 个人总结</p>
+      <p class="dshell-sub">任务分配（支持多人） · 优先级 · 起止时间 · 截止 · 标签 · 进展 · 详情内直接编辑保存 · 状态/标签筛选 · AI 个人总结</p>
     </div>
     <div class="tm-controls">
       <select id="themeSel" class="dshell-input" title="页面背景">
@@ -169,8 +186,11 @@
       <button class="dshell-tab" data-filter="doing">进行中</button>
       <button class="dshell-tab" data-filter="done">已完成</button>
     </div>
-    <select id="userSel" class="dshell-input" title="按用户筛选任务列表">
+    <select id="userSel" class="dshell-input" title="按用户筛选任务列表（与状态 tab / 标签叠加）">
       <option value="">用户：全部</option>
+    </select>
+    <select id="tagSel" class="dshell-input" title="按标签筛选任务列表（与状态 tab / 用户叠加）">
+      <option value="">标签：全部</option>
     </select>
     <select id="sortSel" class="dshell-input" title="排序方式">
       <option value="priority">按优先级排序</option>
@@ -183,65 +203,99 @@
     <button id="addBtn" class="dshell-btn">＋ 新建任务</button>
   </div>
 
-  <!-- 主从布局：左侧任务列表（紧凑卡片）+ 右侧任务详情面板（点击卡片切换） -->
+  <!-- 主从布局：左侧任务列表（紧凑卡片）+ 右侧任务详情面板（点击卡片切换；详情内直接编辑保存） -->
   <div class="tm-split">
     <div id="taskList" class="dshell-list tm-splitMain"></div>
     <aside id="detailPanel" class="dshell-card tm-detailCol">
-      <div id="detailEmpty" class="tm-detailEmpty">点击左侧任务卡<br />查看任务详情（标签 / 描述 / 结果 / 全部进展）</div>
+      <div id="detailEmpty" class="tm-detailEmpty">点击左侧任务卡<br />查看并编辑任务详情（标签 / 描述 / 结果 / 起止时间 / 进展）</div>
       <div id="detailBox" style="display:none">
         <div class="tm-detailHead">
           <h2 class="dshell-sub" id="detailTitle" style="margin:0;font-size:14px;font-weight:600;flex:1"></h2>
           <span id="detailStatus" class="dshell-badge"></span>
           <button id="detailCloseBtn" class="dshell-btn dshell-btnGhost" title="取消选中">×</button>
         </div>
-        <div class="tm-detailGrid">
-          <div><div class="tm-detailLabel">优先级</div><div class="tm-detailBody" id="detailPrio"></div></div>
-          <div><div class="tm-detailLabel">负责人</div><div class="tm-detailBody" id="detailAssignee"></div></div>
-          <div><div class="tm-detailLabel">截止时间</div><div class="tm-detailBody" id="detailDeadline"></div></div>
-          <div><div class="tm-detailLabel">创建</div><div class="tm-detailBody" id="detailCreated"></div></div>
+        <!-- 行内编辑表单：取消独立「编辑」按钮，详情内直接改、点「保存」落库 -->
+        <div class="tm-detailForm" id="detailForm">
+          <div class="tm-detailGrid">
+            <div class="tm-field"><label>任务标题</label><input id="dTitle" class="dshell-input" /></div>
+            <div class="tm-field"><label>状态</label>
+              <select id="dStatus" class="dshell-input">
+                <option value="todo">未开始</option>
+                <option value="doing">进行中</option>
+                <option value="done">已完成</option>
+              </select>
+            </div>
+            <div class="tm-field"><label>优先级</label>
+              <select id="dPrio" class="dshell-input">
+                <option value="high">高</option>
+                <option value="mid">中</option>
+                <option value="low">低</option>
+              </select>
+            </div>
+            <div class="tm-field"><label>截止时间</label><input id="dDeadline" type="datetime-local" class="dshell-input" /></div>
+            <div class="tm-field"><label>开始时间</label><input id="dStartAt" type="datetime-local" class="dshell-input" /></div>
+            <div class="tm-field"><label>结束时间</label><input id="dEndAt" type="datetime-local" class="dshell-input" /></div>
+          </div>
+          <div class="tm-field"><label>负责人（可多选）</label>
+            <div class="tm-assigneeBox" id="dAssignees"></div>
+          </div>
+          <div class="tm-field">
+            <label>标签（回车添加，最多 10 个）</label>
+            <div class="tm-tagInput" id="dTagsBox">
+              <input id="dTagsInput" placeholder="输入标签后回车" />
+            </div>
+          </div>
+          <div class="tm-field"><label>任务描述</label><textarea id="dDesc" class="dshell-textarea" rows="3" placeholder="任务详情、要求…"></textarea></div>
+          <div class="tm-field"><label>任务结果 / 成果</label><textarea id="dEffect" class="dshell-textarea" rows="2" placeholder="完成情况、产出、结论…"></textarea></div>
+          <div class="tm-detailSaveBar">
+            <span class="tm-aiStatus" id="dSaveHint"></span>
+            <button type="button" class="dshell-btn dshell-btnGhost" id="dResetBtn">还原</button>
+            <button type="button" class="dshell-btn" id="dSaveBtn">保存</button>
+          </div>
+          <div class="tm-hint" id="dCreatedLine"></div>
         </div>
         <div class="tm-detailBlock">
-          <div class="tm-detailLabel">标签</div>
-          <div id="detailTags"></div>
-        </div>
-        <div class="tm-detailBlock">
-          <div class="tm-detailLabel">任务描述</div>
-          <div class="tm-detailBody" id="detailDesc"></div>
-        </div>
-        <div class="tm-detailBlock">
-          <div class="tm-detailLabel">任务结果 / 成果</div>
-          <div class="tm-detailBody" id="detailEffect"></div>
-        </div>
-        <div class="tm-detailBlock">
-          <div class="tm-detailLabel">进展（<span id="detailProgCount">0</span> 条，可编辑 / 删除）</div>
+          <div class="tm-detailLabel">进展（<span id="detailProgCount">0</span> 条，可添加 / 编辑 / 删除）</div>
+          <div class="tm-addProg" id="addProgBox">
+            <textarea id="addProgText" class="dshell-textarea" rows="2" placeholder="本次推进了什么、遇到什么、下一步…（回车换行，点「添加进展」保存）"></textarea>
+            <div class="tm-addProgRow">
+              <button type="button" class="dshell-btn" id="addProgBtn">＋ 添加进展</button>
+            </div>
+          </div>
           <div class="tm-progressList" id="detailProgress"></div>
         </div>
       </div>
     </aside>
   </div>
 
-  <!-- 新建/编辑弹窗 -->
+  <!-- 新建任务弹窗（编辑已改到详情面板内联，本弹窗仅新建） -->
   <div id="mask" class="tm-mask">
     <div class="dshell-card tm-modal">
       <h2 class="dshell-sub" id="modalTitle" style="margin:0 0 10px;font-size:13px;font-weight:600">新建任务</h2>
       <div class="tm-field"><label>任务标题 *</label><input id="fTitle" class="dshell-input" placeholder="输入任务标题" /></div>
       <div class="tm-field"><label>任务描述</label><textarea id="fDesc" class="dshell-textarea" rows="3" placeholder="任务详情、要求…"></textarea></div>
+      <div class="tm-field"><label>负责人（可多选）*</label>
+        <div class="tm-assigneeBox" id="fAssignees"></div>
+        <input id="fAssigneeFree" class="dshell-input" placeholder="负责人（自由文本）" style="display:none" />
+      </div>
       <div class="tm-row2">
-        <div class="tm-field"><label>分配给</label><select id="fAssignee" class="dshell-input"></select><input id="fAssigneeFree" class="dshell-input" placeholder="负责人（自由文本）" style="display:none" /></div>
         <div class="tm-field"><label>优先级</label>
           <select id="fPrio" class="dshell-input">
             <option value="high">高</option><option value="mid" selected>中</option><option value="low">低</option>
           </select>
         </div>
+        <div class="tm-field"><label>截止时间</label><input id="fDeadline" type="datetime-local" class="dshell-input" /></div>
       </div>
-      <div class="tm-field"><label>截止时间</label><input id="fDeadline" type="datetime-local" class="dshell-input" /></div>
+      <div class="tm-row2">
+        <div class="tm-field"><label>开始时间</label><input id="fStartAt" type="datetime-local" class="dshell-input" /></div>
+        <div class="tm-field"><label>结束时间</label><input id="fEndAt" type="datetime-local" class="dshell-input" /></div>
+      </div>
       <div class="tm-field">
         <label>标签（回车添加，最多 10 个）</label>
         <div class="tm-tagInput" id="fTagsBox">
           <input id="fTagsInput" placeholder="输入标签后回车" />
         </div>
       </div>
-      <div class="tm-field" id="fEffectWrap" style="display:none"><label>任务结果 / 成果</label><textarea id="fEffect" class="dshell-textarea" rows="2" placeholder="完成情况、产出、结论…"></textarea></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
         <button class="dshell-btn dshell-btnGhost" id="cancelBtn">取消</button>
         <button class="dshell-btn" id="saveBtn">保存</button>
@@ -382,11 +436,14 @@
   var users = [];      // dsh-auth-gate 用户列表 [{username, admin, disabled}]
   var tasks = [];
   var filter = 'all', sortBy = 'priority', editingId = null;
-  var userFilter = '';      // 任务列表的用户筛选（'' = 全部用户；与状态 tab 是叠加关系）
-  var editTags = [];   // 新建/编辑弹窗里的标签缓冲
+  var userFilter = '';      // 任务列表的用户筛选（'' = 全部用户；与状态 tab / 标签筛选叠加）
+  var tagFilter = '';       // 任务列表的标签筛选（'' = 全部标签；与状态 tab / 用户筛选叠加）
+  var editTags = [];   // 新建弹窗 / 详情面板里的标签缓冲
+  var detailTagsBuf = []; // 详情面板标签缓冲（保存时一并 PATCH）
   var doneTask = null, progTask = null, importParsed = [];
   var selectedId = null;    // 右侧详情面板当前展示的任务 id（renderDetail 按 id 从 tasks 重取最新数据）
   var progEditingId = null; // 详情面板里正在行内编辑的进展 id（编辑中轮询重绘须让行，见 renderDetail）
+  var detailEditing = false; // 详情表单有未保存改动（轮询重绘让行，避免冲掉正在编辑的内容）
 
   function isAdmin() { return me.shared || me.admin; }
 
@@ -479,12 +536,33 @@
   }
   function taskTags(t) { return Array.isArray(t.tags) ? t.tags : []; }
   function taskProgress(t) { return Array.isArray(t.progress) ? t.progress : []; }
+  /* 多负责人：兼容存量单值 assignee 与新 assignees 数组，去空去重保序 */
+  function taskAssignees(t) {
+    var raw = Array.isArray(t && t.assignees) && t.assignees.length ? t.assignees : (t && t.assignee ? [t.assignee] : []);
+    var out = [], seen = {};
+    for (var i = 0; i < raw.length; i++) {
+      var s = String(raw[i] || '').trim();
+      if (s && !seen[s]) { seen[s] = 1; out.push(s); }
+    }
+    return out;
+  }
+  function taskHasAssignee(t, name) { return !!(name && taskAssignees(t).indexOf(name) >= 0); }
   /* 已知用户名集合：启用用户 ∪ 任务中出现的负责人（共享模式 / 已停用用户兜底），中文序排序 */
   function knownAssignees() {
     var names = [], seen = {};
     enabledUsers().forEach(function (u) { if (u.username && !seen[u.username]) { seen[u.username] = 1; names.push(u.username); } });
-    tasks.forEach(function (t) { if (t.assignee && !seen[t.assignee]) { seen[t.assignee] = 1; names.push(t.assignee); } });
+    tasks.forEach(function (t) {
+      taskAssignees(t).forEach(function (a) { if (!seen[a]) { seen[a] = 1; names.push(a); } });
+    });
     return names.sort(function (a, b) { return a.localeCompare(b, 'zh'); });
+  }
+  /* 已知标签集合：全部任务标签去重，中文序排序（供标签筛选下拉） */
+  function knownTags() {
+    var seen = {}, out = [];
+    tasks.forEach(function (t) {
+      taskTags(t).forEach(function (g) { if (g && !seen[g]) { seen[g] = 1; out.push(g); } });
+    });
+    return out.sort(function (a, b) { return a.localeCompare(b, 'zh'); });
   }
 
   /* ---------- AI 配置与调用（自定义 API → DSH 会话桥） ---------- */
@@ -518,14 +596,15 @@
   /* ---------- 排序 / 筛选 ---------- */
   function visibleTasks() {
     var list = tasks.filter(function (t) {
-      if (userFilter && t.assignee !== userFilter) return false;   // 用户筛选与状态 tab 叠加
-      if (filter === 'mine') return me.username && t.assignee === me.username;
+      if (userFilter && !taskHasAssignee(t, userFilter)) return false;   // 用户筛选与状态 tab / 标签叠加（任一负责人命中）
+      if (tagFilter && taskTags(t).indexOf(tagFilter) < 0) return false; // 标签筛选与状态 tab / 用户叠加
+      if (filter === 'mine') return me.username && taskHasAssignee(t, me.username);
       if (filter === 'all') return true;
       return t.status === filter;
     });
     var cmp = {
       priority: function (a, b) { return (PRIO[b.prio] || PRIO.mid).w - (PRIO[a.prio] || PRIO.mid).w || (a.deadline || Infinity) - (b.deadline || Infinity); },
-      assignee: function (a, b) { return String(a.assignee).localeCompare(String(b.assignee), 'zh') || (PRIO[b.prio] || PRIO.mid).w - (PRIO[a.prio] || PRIO.mid).w; },
+      assignee: function (a, b) { return String(taskAssignees(a)[0] || '').localeCompare(String(taskAssignees(b)[0] || ''), 'zh') || (PRIO[b.prio] || PRIO.mid).w - (PRIO[a.prio] || PRIO.mid).w; },
       deadline: function (a, b) { return (a.deadline || Infinity) - (b.deadline || Infinity); },
       created: function (a, b) { return (b.created || 0) - (a.created || 0); }
     };
@@ -543,6 +622,7 @@
   function render() {
     renderHead();
     syncUserFilter();
+    syncTagFilter();
     document.getElementById('stTotal').textContent = tasks.length;
     document.getElementById('stDoing').textContent = tasks.filter(function (t) { return t.status === 'doing'; }).length;
     document.getElementById('stDone').textContent = tasks.filter(function (t) { return t.status === 'done'; }).length;
@@ -553,7 +633,9 @@
     var list = visibleTasks();
     if (!list.length) {
       var emptyMsg = '暂无任务';
-      if (userFilter) emptyMsg = '「' + userLabel(userFilter) + '」在当前筛选下暂无任务';
+      if (userFilter && tagFilter) emptyMsg = '「' + userLabel(userFilter) + '」+ 标签「' + tagFilter + '」在当前筛选下暂无任务';
+      else if (userFilter) emptyMsg = '「' + userLabel(userFilter) + '」在当前筛选下暂无任务';
+      else if (tagFilter) emptyMsg = '标签「' + tagFilter + '」在当前筛选下暂无任务';
       else if (filter === 'all' && isAdmin()) emptyMsg = '暂无任务，点击右上角「＋ 新建任务」创建第一条团队任务';
       box.innerHTML = '<div class="dshell-card tm-empty">' + esc(emptyMsg) + '</div>';
       renderDetail();
@@ -569,14 +651,17 @@
       var dlCls = isOverdue(t) ? 'tm-overdue' : '';
       var tags = taskTags(t);
       var prog = taskProgress(t);
+      var assignees = taskAssignees(t);
 
       var tagsHtml = '';
       if (tags.length) {
-        tagsHtml = '<div class="tm-tags">' + tags.map(function (g) { return '<span class="tm-tag">' + esc(g) + '</span>'; }).join('') + '</div>';
+        tagsHtml = '<div class="tm-tags">' + tags.map(function (g) {
+          return '<span class="tm-tag tm-tagClick' + (tagFilter === g ? ' tm-taskSel' : '') + '" data-tag-filter="' + esc(g) + '" title="点击按该标签筛选">' + esc(g) + '</span>';
+        }).join('') + '</div>';
       }
 
       /* 紧凑主列表：只留标题 / 优先级 / 状态 / 标签 / 元信息与操作；
-         描述、任务结果、全部进展移到右侧详情面板（selectTask）展示 */
+         描述、任务结果、全部进展移到右侧详情面板（selectTask）展示；编辑在详情内联（无独立编辑按钮） */
       var html =
         '<div class="tm-taskTop">' +
           '<span class="tm-prio ' + p.cls + '">优先级 · ' + p.label + '</span>' +
@@ -585,14 +670,14 @@
         '</div>' +
         tagsHtml +
         '<div class="tm-meta">' +
-          '<span>👤 ' + esc(userLabel(t.assignee)) + '</span>' +
+          '<span>👤 ' + esc(assignees.map(userLabel).join('、') || '未分配') + '</span>' +
           '<span class="' + dlCls + '">⏰ ' + fmtDL(t.deadline) + (isOverdue(t) ? '（已逾期）' : '') + '</span>' +
           '<span>创建于 ' + fmtDL(t.created).split(' ')[0] + (t.createdBy ? ' · ' + esc(t.createdBy) : '') + '</span>' +
           (prog.length ? '<span>📝 进展 ' + prog.length + ' 条</span>' : '') +
         '</div>';
 
       // 操作按钮：admin 全部；成员仅自己任务可推进状态/进展（点「完成」弹多行录入 + AI 总结；服务端同样强校验）
-      var canAll = isAdmin(), canSelf = !me.shared && me.username && t.assignee === me.username;
+      var canAll = isAdmin(), canSelf = !me.shared && me.username && taskHasAssignee(t, me.username);
       if (canAll || canSelf) {
         html += '<div class="tm-taskActions">';
         if (t.status !== 'done') {
@@ -600,14 +685,22 @@
         }
         html += '<button class="dshell-btn dshell-btnGhost" data-act="progress">进展</button>';
         if (canAll) {
-          html += '<button class="dshell-btn dshell-btnGhost" data-act="edit">编辑</button>' +
-                  '<button class="dshell-btn dshell-btnDanger" data-act="del">删除</button>';
+          html += '<button class="dshell-btn dshell-btnDanger" data-act="del">删除</button>';
         }
         html += '</div>';
       }
       item.innerHTML = html;
 
       item.addEventListener('click', function (e) {
+        var tagEl = e.target.getAttribute && e.target.getAttribute('data-tag-filter') != null ? e.target : (e.target.closest ? e.target.closest('[data-tag-filter]') : null);
+        if (tagEl && tagEl.getAttribute) {
+          var tg = tagEl.getAttribute('data-tag-filter') || '';
+          tagFilter = (tagFilter === tg) ? '' : tg;
+          var tagSelEl = document.getElementById('tagSel');
+          if (tagSelEl) tagSelEl.value = tagFilter;
+          render();
+          return;
+        }
         var act = e.target.getAttribute && e.target.getAttribute('data-act');
         if (act) {
           if (act === 'advance') {
@@ -624,10 +717,10 @@
               if (selectedId === t.id) selectedId = null;   // 删除的是当前选中任务：面板随刷新回到占位
               apiSend('DELETE', undefined, '?id=' + encodeURIComponent(t.id)).then(loadTasks).catch(function (err) { showErr(err.message); });
             }
-          } else if (act === 'edit') { openModal(t); }
+          }
           return;
         }
-        /* 点任务卡（非操作按钮）→ 右侧详情面板：标签 / 描述 / 结果 / 全部进展 */
+        /* 点任务卡（非操作按钮）→ 右侧详情面板：行内编辑 + 标签 / 描述 / 结果 / 起止时间 / 全部进展 */
         selectTask(t);
       });
       box.appendChild(item);
@@ -635,9 +728,9 @@
     renderDetail();
   }
 
-  /* ---------- 新建/编辑弹窗 ---------- */
+  /* ---------- 新建任务弹窗（编辑已迁到详情面板内联） ---------- */
   var mask = document.getElementById('mask');
-  var fAssignee = document.getElementById('fAssignee');
+  var fAssigneesBox = document.getElementById('fAssignees');
   var fAssigneeFree = document.getElementById('fAssigneeFree');
   var fTagsBox = document.getElementById('fTagsBox');
   var fTagsInput = document.getElementById('fTagsInput');
@@ -674,65 +767,78 @@
     fTagsInput.focus();
   });
 
-  function fillAssignees(t) {
+  /** 渲染负责人多选框到容器（创建弹窗 / 详情面板共用）；selected 为已选用户名数组。 */
+  function renderAssigneeChecks(box, selected, disabled) {
+    if (!box) return;
     var list = enabledUsers();
-    if (!users.length) {   // 共享模式 / 用户列表不可用：自由文本
-      fAssignee.style.display = 'none'; fAssigneeFree.style.display = '';
-      fAssigneeFree.value = t ? t.assignee : '';
-      return;
-    }
-    fAssignee.style.display = ''; fAssigneeFree.style.display = 'none';
-    fAssignee.innerHTML = '';
-    list.forEach(function (u) {
-      var o = document.createElement('option'); o.value = u.username; o.textContent = userLabel(u.username); fAssignee.appendChild(o);
+    if (!list.length) return;   // 共享模式由调用方切自由文本
+    var sel = {};
+    (selected || []).forEach(function (n) { if (n) sel[n] = 1; });
+    /* 编辑时原负责人已停用/已删除：保留为可选项，避免打开就静默改人（保存时服务端仍会校验） */
+    (selected || []).forEach(function (n) {
+      if (n && !list.some(function (u) { return u.username === n; })) list = list.concat([{ username: n }]);
     });
-    /* 编辑时原负责人已停用/已删除：保留为可选项，避免打开弹窗就静默改人（保存时服务端仍会校验） */
-    if (t && t.assignee && !list.some(function (u) { return u.username === t.assignee; })) {
-      var ox = document.createElement('option'); ox.value = t.assignee; ox.textContent = userLabel(t.assignee); fAssignee.appendChild(ox);
-    }
+    box.innerHTML = list.map(function (u) {
+      var id = (box.id || 'as') + '-' + String(u.username).replace(/[^\w-]/g, '_');
+      return '<label for="' + esc(id) + '"><input type="checkbox" id="' + esc(id) + '" value="' + esc(u.username) + '"' +
+        (sel[u.username] ? ' checked' : '') + (disabled ? ' disabled' : '') + ' />' + esc(userLabel(u.username)) + '</label>';
+    }).join('');
   }
-  function currentAssignee() { return users.length ? fAssignee.value : fAssigneeFree.value.trim(); }
-  function openModal(t) {
-    fillAssignees(t);
-    editingId = t ? t.id : null;
-    document.getElementById('modalTitle').textContent = t ? '编辑任务' : '新建任务';
-    document.getElementById('fTitle').value = t ? t.title : '';
-    document.getElementById('fDesc').value = t ? (t.desc || '') : '';
-    var defAssignee = t ? t.assignee : (me.username || (enabledUsers()[0] ? enabledUsers()[0].username : ''));
-    if (users.length) fAssignee.value = defAssignee;
-    document.getElementById('fPrio').value = t ? t.prio : 'mid';
-    document.getElementById('fDeadline').value = t && t.deadline ? toLocal(t.deadline) : '';
-    editTags = t ? taskTags(t).slice() : [];
+  function checkedAssignees(box) {
+    if (!box) return [];
+    var out = [];
+    box.querySelectorAll('input[type=checkbox]:checked').forEach(function (n) { if (n.value) out.push(n.value); });
+    return out;
+  }
+
+  function openModal() {
+    /* 仅新建：编辑在详情面板内联完成（取消卡片上的独立「编辑」按钮） */
+    editingId = null;
+    document.getElementById('modalTitle').textContent = '新建任务';
+    document.getElementById('fTitle').value = '';
+    document.getElementById('fDesc').value = '';
+    if (users.length) {
+      fAssigneesBox.style.display = ''; fAssigneeFree.style.display = 'none';
+      var def = me.username && enabledUsers().some(function (u) { return u.username === me.username; }) ? [me.username] : [];
+      renderAssigneeChecks(fAssigneesBox, def, false);
+    } else {
+      fAssigneesBox.style.display = 'none'; fAssigneeFree.style.display = '';
+      fAssigneeFree.value = me.username || '';
+    }
+    document.getElementById('fPrio').value = 'mid';
+    document.getElementById('fDeadline').value = '';
+    document.getElementById('fStartAt').value = '';
+    document.getElementById('fEndAt').value = '';
+    editTags = [];
     renderTagChips();
-    /* 任务结果字段仅编辑态可见（新建任务尚无结果；成员走「完成」弹窗，admin 可在此随时修订） */
-    document.getElementById('fEffectWrap').style.display = t ? '' : 'none';
-    document.getElementById('fEffect').value = t ? (t.effect || '') : '';
     mask.classList.add('on');
   }
   function toLocal(ts) {
     var d = new Date(ts), p = function (n) { return (n < 10 ? '0' : '') + n; };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
-  document.getElementById('addBtn').addEventListener('click', function () { if (isAdmin()) openModal(null); });
+  document.getElementById('addBtn').addEventListener('click', function () { if (isAdmin()) openModal(); });
   document.getElementById('cancelBtn').addEventListener('click', function () { mask.classList.remove('on'); });
   mask.addEventListener('click', function (e) { if (e.target === mask) mask.classList.remove('on'); });
   document.getElementById('saveBtn').addEventListener('click', function () {
     var title = document.getElementById('fTitle').value.trim();
     if (!title) { showErr('请填写任务标题'); return; }
-    var assignee = currentAssignee();
-    if (!assignee) { showErr('请填写负责人'); return; }
+    var assignees = users.length ? checkedAssignees(fAssigneesBox) : (fAssigneeFree.value.trim() ? [fAssigneeFree.value.trim()] : []);
+    if (!assignees.length) { showErr('请至少勾选一位负责人'); return; }
     var dl = document.getElementById('fDeadline').value;
+    var st = document.getElementById('fStartAt').value;
+    var en = document.getElementById('fEndAt').value;
     var data = {
       title: title,
       desc: document.getElementById('fDesc').value.trim(),
-      assignee: assignee,
+      assignees: assignees,
       prio: document.getElementById('fPrio').value,
       deadline: dl ? new Date(dl).getTime() : null,
+      startAt: st ? new Date(st).getTime() : null,
+      endAt: en ? new Date(en).getTime() : null,
       tags: editTags.slice()
     };
-    if (editingId) data.effect = document.getElementById('fEffect').value.trim();
-    var saving = editingId ? apiSend('PATCH', Object.assign({ id: editingId }, data)) : apiSend('POST', data);
-    saving.then(function () { mask.classList.remove('on'); return loadTasks(); })
+    apiSend('POST', data).then(function () { mask.classList.remove('on'); return loadTasks(); })
       .catch(function (err) { showErr(err.message); });
   });
 
@@ -778,14 +884,19 @@
     });
   });
 
-  /* ---------- 右侧详情面板（点击卡片：标签/描述/结果/全部进展，进展可改删） ---------- */
+  /* ---------- 右侧详情面板（行内编辑保存 + 标签/描述/结果/起止/全部进展，进展可添加改删） ---------- */
   var detailPanel = document.getElementById('detailPanel');
   var detailBox = document.getElementById('detailBox');
   var detailTask = null;
   function canEditProgEntry(t, e) {
     if (isAdmin()) return true;
-    if (!me.shared && me.username && t && t.assignee === me.username) return true;
+    if (!me.shared && me.username && taskHasAssignee(t, me.username)) return true;
     return !!(me.username && e && e.by === me.username);
+  }
+  /* 详情表单可写面：admin 全字段；普通成员对自己任务仅 status/effect/进展（服务端同口径） */
+  function detailCanEditFields(t) { return isAdmin(); }
+  function detailCanEditStatusEffect(t) {
+    return isAdmin() || (!me.shared && me.username && taskHasAssignee(t, me.username));
   }
   function renderDetailProgress(t) {
     var box = document.getElementById('detailProgress');
@@ -808,9 +919,23 @@
         '</div>';
     }).join('');
   }
+  /* 详情标签 chip（独立于新建弹窗的 editTags 缓冲） */
+  function renderDetailTagChips() {
+    var box = document.getElementById('dTagsBox');
+    var input = document.getElementById('dTagsInput');
+    if (!box || !input) return;
+    box.querySelectorAll('.tm-tagChip').forEach(function (n) { n.remove(); });
+    detailTagsBuf.forEach(function (tag, idx) {
+      var chip = document.createElement('span');
+      chip.className = 'tm-tagChip';
+      chip.innerHTML = esc(tag) + '<button type="button" data-dtag-idx="' + idx + '" title="移除">×</button>';
+      box.insertBefore(chip, input);
+    });
+  }
   function selectTask(t) {
     selectedId = t.id;
     progEditingId = null;   // 换选中任务时丢弃未保存的行内编辑
+    detailEditing = false;
     syncListSelection();
     renderDetail();
     /* 窄窗口（详情堆叠在列表下方）时把面板滚进视野 */
@@ -822,16 +947,26 @@
       el.classList.toggle('tm-taskSel', el.getAttribute('data-task-id') === selectedId);
     });
   }
+  function markDetailDirty() {
+    detailEditing = true;
+    var hint = document.getElementById('dSaveHint');
+    if (hint) hint.textContent = '有未保存的改动';
+  }
+  function clearDetailDirty() {
+    detailEditing = false;
+    var hint = document.getElementById('dSaveHint');
+    if (hint) hint.textContent = '';
+  }
   function renderDetail() {
-    /* 行内编辑进展中不重绘面板：15s 轮询不得打断输入（保存/取消后由 loadTasks 全量刷新） */
-    if (progEditingId) return;
+    /* 行内编辑进展中 / 表单有未保存改动时不让 15s 轮询重绘面板（保存/取消后由 loadTasks 全量刷新） */
+    if (progEditingId || detailEditing) return;
     var t = null;
     for (var i = 0; i < tasks.length; i++) if (tasks[i].id === selectedId) t = tasks[i];
     var emptyEl = document.getElementById('detailEmpty');
     if (!selectedId || !t) {
       /* 未选中，或所选任务已被删除（他人操作 / 轮询后发现）：取消选中回到占位提示 */
       if (selectedId) emptyEl.textContent = '所选任务已不存在（可能已被删除）';
-      else emptyEl.innerHTML = '点击左侧任务卡<br />查看任务详情（标签 / 描述 / 结果 / 全部进展）';
+      else emptyEl.innerHTML = '点击左侧任务卡<br />查看并编辑任务详情（标签 / 描述 / 结果 / 起止时间 / 进展）';
       selectedId = null; detailTask = null;
       detailBox.style.display = 'none';
       emptyEl.style.display = '';
@@ -845,27 +980,142 @@
     var st = document.getElementById('detailStatus');
     st.className = 'dshell-badge ' + badgeCls;
     st.textContent = STATUS[t.status] || t.status;
-    document.getElementById('detailPrio').textContent = (PRIO[t.prio] || PRIO.mid).label;
-    document.getElementById('detailAssignee').textContent = userLabel(t.assignee);
-    var dlEl = document.getElementById('detailDeadline');
-    dlEl.textContent = fmtDL(t.deadline) + (isOverdue(t) ? '（已逾期）' : '');
-    dlEl.className = 'tm-detailBody' + (isOverdue(t) ? ' tm-overdue' : '');
-    document.getElementById('detailCreated').textContent = fmtDL(t.created) + (t.createdBy ? ' · ' + t.createdBy : '');
-    var tags = taskTags(t);
-    var tagsEl = document.getElementById('detailTags');
-    tagsEl.innerHTML = tags.length
-      ? '<div class="tm-tags">' + tags.map(function (g) { return '<span class="tm-tag">' + esc(g) + '</span>'; }).join('') + '</div>'
-      : '<div class="tm-detailBody muted">无标签</div>';
-    var descEl = document.getElementById('detailDesc');
-    descEl.textContent = t.desc || '无描述';
-    descEl.className = 'tm-detailBody' + (t.desc ? '' : ' muted');
-    var effEl = document.getElementById('detailEffect');
-    effEl.textContent = t.effect || '尚未录入';
-    effEl.className = 'tm-detailBody' + (t.effect ? '' : ' muted');
+    var canFields = detailCanEditFields(t), canSE = detailCanEditStatusEffect(t);
+    document.getElementById('dTitle').value = t.title || '';
+    document.getElementById('dTitle').disabled = !canFields;
+    document.getElementById('dStatus').value = t.status || 'todo';
+    document.getElementById('dStatus').disabled = !canSE;
+    document.getElementById('dPrio').value = t.prio || 'mid';
+    document.getElementById('dPrio').disabled = !canFields;
+    document.getElementById('dDeadline').value = t.deadline ? toLocal(t.deadline) : '';
+    document.getElementById('dDeadline').disabled = !canFields;
+    document.getElementById('dStartAt').value = t.startAt ? toLocal(t.startAt) : '';
+    document.getElementById('dStartAt').disabled = !canFields;
+    document.getElementById('dEndAt').value = t.endAt ? toLocal(t.endAt) : '';
+    document.getElementById('dEndAt').disabled = !canFields;
+    if (users.length) {
+      renderAssigneeChecks(document.getElementById('dAssignees'), taskAssignees(t), !canFields);
+      document.getElementById('dAssignees').style.display = '';
+    } else {
+      document.getElementById('dAssignees').style.display = 'none';
+    }
+    detailTagsBuf = taskTags(t).slice();
+    renderDetailTagChips();
+    var dTagsInput = document.getElementById('dTagsInput');
+    if (dTagsInput) dTagsInput.disabled = !canFields;
+    document.getElementById('dDesc').value = t.desc || '';
+    document.getElementById('dDesc').disabled = !canFields;
+    document.getElementById('dEffect').value = t.effect || '';
+    document.getElementById('dEffect').disabled = !canSE;
+    document.getElementById('dResetBtn').style.display = (canFields || canSE) ? '' : 'none';
+    document.getElementById('dSaveBtn').style.display = (canFields || canSE) ? '' : 'none';
+    document.getElementById('dSaveBtn').disabled = !(canFields || canSE);
+    var dlNote = isOverdue(t) ? '（已逾期）' : '';
+    document.getElementById('dCreatedLine').textContent = '创建 ' + fmtDL(t.created) + (t.createdBy ? ' · ' + t.createdBy : '') + ' · 截止 ' + fmtDL(t.deadline) + dlNote;
+    clearDetailDirty();
     renderDetailProgress(t);
   }
-  function clearSelection() { selectedId = null; progEditingId = null; syncListSelection(); renderDetail(); }
+  function clearSelection() {
+    selectedId = null; progEditingId = null; detailEditing = false; detailTask = null;
+    syncListSelection(); renderDetail();
+  }
   document.getElementById('detailCloseBtn').addEventListener('click', clearSelection);
+
+  /* 详情表单：标签 chip 交互（与新建弹窗同口径：IME 组词放行、全角逗号分隔） */
+  (function bindDetailTags() {
+    var box = document.getElementById('dTagsBox');
+    var input = document.getElementById('dTagsInput');
+    if (!box || !input) return;
+    input.addEventListener('keydown', function (e) {
+      if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+      if (e.key !== 'Enter' && e.key !== ',' && e.key !== '，') return;
+      e.preventDefault();
+      var v = input.value.trim().replace(/[,，]+$/, '');
+      if (!v) return;
+      if (detailTagsBuf.length >= 10) { showErr('标签最多 10 个'); return; }
+      if (detailTagsBuf.indexOf(v) < 0) detailTagsBuf.push(v);
+      input.value = '';
+      renderDetailTagChips();
+      markDetailDirty();
+    });
+    box.addEventListener('click', function (e) {
+      var idx = e.target.getAttribute && e.target.getAttribute('data-dtag-idx');
+      if (idx == null) return;
+      detailTagsBuf.splice(Number(idx), 1);
+      renderDetailTagChips();
+      markDetailDirty();
+      input.focus();
+    });
+  })();
+
+  /* 详情表单脏标记：任一字段改动即提示未保存（轮询让行） */
+  ['dTitle', 'dStatus', 'dPrio', 'dDeadline', 'dStartAt', 'dEndAt', 'dDesc', 'dEffect'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', markDetailDirty);
+    if (el) el.addEventListener('change', markDetailDirty);
+  });
+  document.getElementById('dAssignees').addEventListener('change', markDetailDirty);
+
+  function detailFormData() {
+    var assignees = users.length ? checkedAssignees(document.getElementById('dAssignees')) : taskAssignees(detailTask);
+    return {
+      title: document.getElementById('dTitle').value.trim(),
+      status: document.getElementById('dStatus').value,
+      prio: document.getElementById('dPrio').value,
+      deadline: (function () { var v = document.getElementById('dDeadline').value; return v ? new Date(v).getTime() : null; })(),
+      startAt: (function () { var v = document.getElementById('dStartAt').value; return v ? new Date(v).getTime() : null; })(),
+      endAt: (function () { var v = document.getElementById('dEndAt').value; return v ? new Date(v).getTime() : null; })(),
+      assignees: assignees,
+      tags: detailTagsBuf.slice(),
+      desc: document.getElementById('dDesc').value.trim(),
+      effect: document.getElementById('dEffect').value.trim()
+    };
+  }
+  document.getElementById('dResetBtn').addEventListener('click', function () {
+    if (!detailTask) return;
+    detailEditing = false;
+    renderDetail();
+  });
+  document.getElementById('dSaveBtn').addEventListener('click', function () {
+    if (!detailTask) return;
+    var t = detailTask;
+    var canFields = detailCanEditFields(t), canSE = detailCanEditStatusEffect(t);
+    if (!canFields && !canSE) return;
+    var data = { id: t.id };
+    var body = detailFormData();
+    if (!body.title) { showErr('请填写任务标题'); return; }
+    if (canFields) {
+      if (!body.assignees.length) { showErr('请至少勾选一位负责人'); return; }
+      data.title = body.title;
+      data.prio = body.prio;
+      data.deadline = body.deadline;
+      data.startAt = body.startAt;
+      data.endAt = body.endAt;
+      data.assignees = body.assignees;
+      data.tags = body.tags;
+      data.desc = body.desc;
+    }
+    if (canSE) {
+      data.status = body.status;
+      data.effect = body.effect;
+    }
+    apiSend('PATCH', data).then(function () {
+      clearDetailDirty();
+      return loadTasks();
+    }).catch(function (err) { showErr(err.message); });
+  });
+
+  /* 详情面板行内添加进展（不用弹窗） */
+  document.getElementById('addProgBtn').addEventListener('click', function () {
+    if (!detailTask) return;
+    var ta = document.getElementById('addProgText');
+    var v = ta.value.trim();
+    if (!v) { showErr('请填写进展内容'); return; }
+    apiSend('PATCH', { id: detailTask.id, addProgress: v }).then(function () {
+      ta.value = '';
+      return loadTasks();
+    }).catch(function (err) { showErr(err.message); });
+  });
 
   document.getElementById('detailProgress').addEventListener('click', function (e) {
     if (!detailTask) return;
@@ -1115,7 +1365,7 @@
     var r = sumRangeStartEnd();
     if (!r) return null;
     var who = sumUserEl.value;
-    return { who: who, range: r, list: tasks.filter(function (t) { return who && t.assignee === who && taskInSumRange(t, r[0], r[1]); }) };
+    return { who: who, range: r, list: tasks.filter(function (t) { return who && taskHasAssignee(t, who) && taskInSumRange(t, r[0], r[1]); }) };
   }
   function updateSumMatch() {
     var el = document.getElementById('sumMatch');
@@ -1285,6 +1535,22 @@
     userSelEl.value = userFilter;
   }
   userSelEl.addEventListener('change', function (e) { userFilter = e.target.value; render(); });
+
+  /* 标签筛选：选项 = 全部任务标签；与用户筛选同款签名重建（15s 轮询不打断展开中的下拉） */
+  var tagSelEl = document.getElementById('tagSel');
+  var tagSelSig = null;
+  function syncTagFilter() {
+    var names = knownTags();
+    var sig = names.join('\n');
+    if (sig === tagSelSig) return;
+    tagSelSig = sig;
+    tagSelEl.innerHTML = '<option value="">标签：全部</option>' + names.map(function (n) {
+      return '<option value="' + esc(n) + '">' + esc(n) + '</option>';
+    }).join('');
+    if (tagFilter && names.indexOf(tagFilter) < 0) tagFilter = '';
+    tagSelEl.value = tagFilter;
+  }
+  tagSelEl.addEventListener('change', function (e) { tagFilter = e.target.value; render(); });
 
   document.getElementById('refreshBtn').addEventListener('click', function () { loadIdentity().then(loadTasks); });
 

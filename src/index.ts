@@ -3310,17 +3310,21 @@ function registerSessionApi(webServer: any, ctx: any) {
 
 /* ---------- 团队任务管理（projects/tasks/task-manager.html）共享存储与 API ----------
  * GET    /api/worktable/tasks          列出全部任务（任意会话可读；无 auth 服务的 token 共享模式同权）。
- * POST   /api/worktable/tasks          新建 {title, desc?, assignee, prio?, deadline?, tags?} → 201 回显新任务；仅 admin。
+ * POST   /api/worktable/tasks          新建 {title, desc?, assignee|assignees?, prio?, deadline?, startAt?, endAt?, tags?}
+ *                                      → 201 回显新任务；仅 admin。
  * PATCH  /api/worktable/tasks          更新 {id, ...} → 200 回显更新后任务；admin 可改全部字段（含 tags），
  *                                      普通成员仅可改「分配给自己」任务的 status / effect 与进展动作
  *                                      （其余字段或他人任务 → 403）。
  *                                      进展动作：addProgress: string 追加；updateProgress: {id, text} 改写；
  *                                      deleteProgress: id 删除。改删仅 admin、该条进展作者（by）
- *                                      或本任务负责人可操作。
+ *                                      或本任务任一负责人可操作。
  * DELETE /api/worktable/tasks?id=...   删除 → 200 {ok, id}；仅 admin。
  * 权限判定走 resolveRequestAuth（dsh-auth-gate 会话 + users.yaml role）；auth 服务存在但无有效会话 → 401；
  * 无 auth 服务（token 共享模式）退化为全权（与流水线「页面退化为全权」约定一致，此时 assignee 为自由文本）。
- * assignee 在 auth 存在时强校验为 users.yaml 里的真实启用用户（页面「真实用户」约定的服务端兜底）。
+ * 负责人支持多人：assignees: string[]（≤ TASK_ASSIGNEES_CAP）；兼容旧单值 assignee: string（等价 [assignee]）。
+ * 入库恒存 assignees 数组，并回写 assignee = assignees[0]（旧客户端 / 存量数据向后兼容）。
+ * assignee(s) 在 auth 存在时强校验为 users.yaml 里的真实启用用户（页面「真实用户」约定的服务端兜底）。
+ * startAt / endAt 为任务开始 / 结束时间戳（与 deadline 同口径，可空）。
  * 存储 $DSH_HOME/storages/worktable-tasks.json（{tasks: []}）；读-改-写经 deps.lock 串行化（与流水线
  * 存储共用同一把锁）、tmp+rename 原子落盘；任务 id 服务端签发（t<base36 毫秒><base36 随机>，库内查重）。 */
 const TASKS_API_PATH = '/api/worktable/tasks'
@@ -3329,6 +3333,7 @@ const TASK_STATUSES = ['todo', 'doing', 'done'] as const
 const TASK_TEXT_CAP = { title: 200, desc: 4000, effect: 4000, assignee: 64, tag: 32, progress: 2000 }
 const TASK_TAGS_CAP = 10          // 单任务标签数上限
 const TASK_PROGRESS_CAP = 50      // 单任务进展条数上限（超出拒加）
+const TASK_ASSIGNEES_CAP = 20     // 单任务负责人数上限
 const TASKS_STORE_CAP = 2000   // 任务总量上限（防误刷无限增长；超出新建 413）
 
 function tasksStoreFile(): string { return pathResolve(DSH_HOME, 'storages', 'worktable-tasks.json') }
@@ -3345,6 +3350,40 @@ function readAuthUserMap(file: string): Map<string, { role?: string; disabled?: 
 
 function taskTextField(v: any, cap: number): string { return typeof v === 'string' ? v.trim().slice(0, cap) : '' }
 function taskDeadlineField(v: any): number | null { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n) : null }
+
+/** 任务负责人列表（兼容存量单值 assignee 与新 assignees 数组）：去空、去重，顺序保留。 */
+function taskAssigneeList(t: any): string[] {
+  const raw = Array.isArray(t && t.assignees) ? t.assignees : (t && typeof t.assignee === 'string' && t.assignee ? [t.assignee] : [])
+  const out: string[] = []
+  for (const x of raw) { const s = taskTextField(x, TASK_TEXT_CAP.assignee); if (s && !out.includes(s)) out.push(s) }
+  return out
+}
+
+/** 负责人字段清洗：接受 assignees 数组或旧单值 assignee，归一为 {assignees, assignee}；
+ *  assignee 恒取列表首人（旧读取方兼容）。POST 必填非空；PATCH 空值视为「不改」跳过。 */
+function taskAssigneeFields(body: any, partial: boolean): { assignees: string[]; assignee: string } | null {
+  const hasA = !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'assignees')
+  const hasS = !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'assignee')
+  if (hasA) {
+    if (!Array.isArray(body.assignees)) throw Object.assign(new Error('负责人必须是数组'), { status: 400 })
+    const list = taskAssigneeList({ assignees: body.assignees })
+    if (body.assignees.some((x: any) => !taskTextField(x, TASK_TEXT_CAP.assignee))) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
+    if (list.length !== body.assignees.length) throw Object.assign(new Error('负责人不能重复'), { status: 400 })
+    if (!list.length) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
+    if (list.length > TASK_ASSIGNEES_CAP) throw Object.assign(new Error('负责人数量超上限（' + TASK_ASSIGNEES_CAP + '）'), { status: 400 })
+    return { assignees: list, assignee: list[0] }
+  }
+  if (hasS) {
+    const s = taskTextField(body.assignee, TASK_TEXT_CAP.assignee)
+    if (!s) {
+      if (!partial) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
+      return null   // PATCH 空串 = 不改负责人
+    }
+    return { assignees: [s], assignee: s }
+  }
+  if (!partial) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
+  return null
+}
 
 /** 标签数组清洗：去空白、去重、逐个截断；超 TASK_TAGS_CAP 或含空串 → 400。 */
 function taskTagsField(v: any): string[] {
@@ -3368,7 +3407,7 @@ function taskProgressEntry(text: any, by: string, at: number): { id: string; tex
 }
 
 /** POST/PATCH 入库字段清洗：partial=true（PATCH）只带出参字段、缺省不补默认；partial=false（POST）
- *  补齐 status/prio/desc/effect/deadline/tags 默认并要求 title/assignee 必填。
+ *  补齐 status/prio/desc/effect/deadline/startAt/endAt/tags/assignees 默认并要求 title/负责人必填。
  *  不含 addProgress（PATCH 专有追加动作，在路由内单独处理）。校验失败抛带 status 的 Error。 */
 function taskCleanFields(body: any, partial: boolean): Record<string, any> {
   const has = (k: string) => !!body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, k)
@@ -3392,12 +3431,15 @@ function taskCleanFields(body: any, partial: boolean): Record<string, any> {
   else if (!partial) out.effect = ''
   if (has('deadline')) out.deadline = taskDeadlineField(body.deadline)
   else if (!partial) out.deadline = null
+  if (has('startAt')) out.startAt = taskDeadlineField(body.startAt)
+  else if (!partial) out.startAt = null
+  if (has('endAt')) out.endAt = taskDeadlineField(body.endAt)
+  else if (!partial) out.endAt = null
   if (has('tags')) out.tags = taskTagsField(body.tags)
   else if (!partial) out.tags = []
-  if (has('assignee')) {
-    const assignee = taskTextField(body.assignee, TASK_TEXT_CAP.assignee)
-    if (!assignee) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
-    out.assignee = assignee
+  if (has('assignees') || has('assignee')) {
+    const a = taskAssigneeFields(body, partial)
+    if (a) { out.assignees = a.assignees; out.assignee = a.assignee }
   } else if (!partial) throw Object.assign(new Error('负责人不能为空'), { status: 400 })
   return out
 }
@@ -3411,7 +3453,16 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
     try {
       const raw = await readFile(storeFile, 'utf8')
       const j = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw)
-      return { tasks: Array.isArray(j.tasks) ? j.tasks.filter((t: any) => t && typeof t === 'object' && typeof t.id === 'string') : [] }
+      const tasks = Array.isArray(j.tasks) ? j.tasks.filter((t: any) => t && typeof t === 'object' && typeof t.id === 'string') : []
+      /* 存量单值 assignee 归一：读出时补齐 assignees 数组（写回时同样保证），旧数据无需迁移 */
+      for (const t of tasks) {
+        if (!Array.isArray(t.assignees)) {
+          const legacy = taskAssigneeList(t)
+          t.assignees = legacy
+          if (!t.assignee && legacy.length) t.assignee = legacy[0]
+        }
+      }
+      return { tasks }
     } catch { return { tasks: [] } }
   }
   async function writeTasksStore(data: { tasks: any[] }): Promise<void> {
@@ -3425,6 +3476,11 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
     const rec = readAuthUserMap(usersFileOf()).get(assignee)
     if (!rec) return '负责人不是 users.yaml 中的真实用户'
     if (rec.disabled) return '负责人账号已停用'
+    return ''
+  }
+  /** 多负责人逐个校验；返回首个错误文案或空串（全部通过）。 */
+  function assigneesProblem(list: string[]): string {
+    for (const a of list) { const p = assigneeProblem(a); if (p) return p }
     return ''
   }
 
@@ -3446,7 +3502,7 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
           if (!isAdmin) { json(res, 403, { error: '仅 admin 可新建任务' }); return }
           const fields = taskCleanFields(await readJsonBody(req), false)
           if (caller) {
-            const problem = assigneeProblem(fields.assignee)
+            const problem = assigneesProblem(taskAssigneeList(fields))
             if (problem) { json(res, 400, { error: problem }); return }
           }
           const task = await lock(async () => {
@@ -3474,21 +3530,34 @@ function registerTasksApi(webServer: any, ctx: any, deps?: { lock?: <T>(fn: () =
             const store = await readTasksStore()
             const task = store.tasks.find((t) => t.id === id)
             if (!task) return { status: 404, error: '任务不存在或已删除' }
-            const own = !!username && task.assignee === username
+            const assignees = taskAssigneeList(task)
+            const own = !!username && assignees.includes(username)
             if (!isAdmin && !own) return { status: 403, error: '只能更新分配给自己的任务' }
             const patch = taskCleanFields(body, true)
             /* 成员可写面：status / effect 与进展动作（add/update/delete）；tags 等其余字段 admin 专属 */
             if (!isAdmin && Object.keys(patch).some((k) => k !== 'status' && k !== 'effect')) {
               return { status: 403, error: '普通成员仅可更新任务状态、效果与进展' }
             }
-            if (caller && typeof patch.assignee === 'string') {
+            if (caller && typeof patch.assignees === 'undefined' && typeof patch.assignee === 'string') {
               const problem = assigneeProblem(patch.assignee)
               if (problem) return { status: 400, error: problem }
             }
+            if (caller && Array.isArray(patch.assignees)) {
+              const problem = assigneesProblem(patch.assignees)
+              if (problem) return { status: 400, error: problem }
+            }
             Object.assign(task, patch)
+            /* 状态推进时自动记录起止时间（已有值不覆盖）：todo→doing 记 startAt，→done 记 endAt */
+            if (patch.status === 'doing' && !task.startAt) task.startAt = Date.now()
+            if (patch.status === 'done' && !task.endAt) task.endAt = Date.now()
+            if (!Array.isArray(task.assignees)) {
+              const legacy = taskAssigneeList(task)
+              task.assignees = legacy
+              task.assignee = legacy[0] || task.assignee || ''
+            }
             const list = Array.isArray(task.progress) ? task.progress : []
-            /* 进展改删：admin / 该条作者 / 本任务负责人 */
-            const canEditProg = (entry: any) => isAdmin || (!!username && (entry && entry.by === username || task.assignee === username))
+            /* 进展改删：admin / 该条作者 / 本任务任一负责人 */
+            const canEditProg = (entry: any) => isAdmin || (!!username && (entry && entry.by === username || assignees.includes(username)))
             if (hasAddProgress) {
               if (list.length >= TASK_PROGRESS_CAP) return { status: 400, error: '进展条数已达上限（' + TASK_PROGRESS_CAP + '）' }
               const entry = taskProgressEntry(body.addProgress, username || 'anonymous', Date.now())
