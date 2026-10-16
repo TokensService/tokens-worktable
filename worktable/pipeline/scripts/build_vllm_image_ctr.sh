@@ -16,6 +16,11 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
+  BUILD_REMOTE_HOST   远程编译主机；设置后通过 SSH 在远端执行本脚本
+  BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
+  BUILD_REMOTE_USER   远程 SSH 用户，默认 root
+  BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认使用 192.168.10.6:3128 HTTP 代理
+  BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
@@ -63,6 +68,15 @@ BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
+# 默认使用指定的远程编译机；设置 BUILD_REMOTE_HOST= 可显式关闭远程模式。
+BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST:-115.120.93.136}"
+BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
+BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
+BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
+BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
+BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
+BUILD_MAX_JOBS_WAS_SET="${BUILD_MAX_JOBS+x}"
+BUILD_NVCC_THREADS_WAS_SET="${BUILD_NVCC_THREADS+x}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
 BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
 BUILD_CPUS="${BUILD_CPUS:-}"
@@ -115,6 +129,74 @@ fi
 
 die() { echo "✗ $*" >&2; exit 1; }
 info() { echo "[vllm-image] $*"; }
+
+run_remote_build() {
+  [[ "$BUILD_REMOTE_EXEC" == 0 ]] || return 0
+  [[ -n "$BUILD_REMOTE_HOST" ]] || return 0
+  [[ "$BUILD_REMOTE_PORT" =~ ^[1-9][0-9]*$ ]] || die "BUILD_REMOTE_PORT 必须是正整数: $BUILD_REMOTE_PORT"
+
+  local remote_script remote_env remote_target
+  remote_script="/tmp/build_vllm_image_ctr.$$.sh"
+  remote_env="/tmp/build_vllm_image_ctr.$$.env"
+  remote_target="${BUILD_REMOTE_USER}@${BUILD_REMOTE_HOST}"
+  local -a ssh_cmd=(ssh -o BatchMode=yes
+    -o "ProxyCommand=$BUILD_REMOTE_PROXY_COMMAND"
+    -p "$BUILD_REMOTE_PORT" "$remote_target")
+
+  local remote_probe remote_cpu remote_mem_mb
+  remote_probe="$("${ssh_cmd[@]}" "awk '\''/MemAvailable:/ {mem=\$2} /MemTotal:/ {total=\$2} END {printf \"%s %s\\n\", total, mem}'\'' /proc/meminfo; nproc" 2>/dev/null)" \
+    || die "无法通过 SSH 登录远程编译机: $remote_target"
+  remote_mem_mb="$(awk 'NR==1 {print int($2 / 1024)}' <<<"$remote_probe")"
+  remote_cpu="$(awk 'NR==2 {print $1}' <<<"$remote_probe")"
+  info "远程资源: CPU=${remote_cpu:-unknown}，MemAvailable=${remote_mem_mb:-unknown}MiB"
+  if [[ "$BUILD_REMOTE_AUTO_TUNE" == true && -z "$BUILD_MAX_JOBS_WAS_SET" && -z "$BUILD_NVCC_THREADS_WAS_SET" ]]; then
+    if [[ "${remote_mem_mb:-0}" -lt 32768 ]]; then
+      BUILD_MAX_JOBS=1
+      BUILD_NVCC_THREADS=1
+    elif [[ "${remote_mem_mb:-0}" -lt 65536 ]]; then
+      BUILD_MAX_JOBS=1
+      BUILD_NVCC_THREADS=2
+    else
+      BUILD_MAX_JOBS=2
+      BUILD_NVCC_THREADS=2
+    fi
+    info "远端自动并发: max_jobs=$BUILD_MAX_JOBS，nvcc_threads=$BUILD_NVCC_THREADS"
+  fi
+
+  # 通过 stdin 传脚本和环境文件，避免凭据出现在 SSH 命令行中。
+  local env_name env_value
+  {
+    for env_name in \
+      VLLM_REPO_URL VLLM_REF VLLM_SOURCE_DIR VLLM_UPDATE DOCKERFILE BUILD_CONTEXT \
+      BUILD_PLATFORM BUILD_NETWORK BUILD_PROXY_URL BUILD_MAX_JOBS BUILD_NVCC_THREADS \
+      BUILD_CPUS BUILD_ARGS BUILD_ENGINE INDOCKER_RUNTIME INDOCKER_RUNNER_IMAGE \
+      INDOCKER_OUTPUT_DIR INDOCKER_NETWORK ALPINE_MIRROR BUILDX_BUILDER \
+      BUILDX_AUTO_CREATE BUILDKIT_ADDR CTR_NAMESPACE SWR_REGISTRY SWR_REPOSITORY \
+      IMAGE_TAG IMAGE_TAG_MODE SWR_USERNAME SWR_PASSWORD BUILD_OUTPUT_DIR \
+      BUILD_CACHE_DIR BUILD_CACHE BUILD_UV_CACHE_SHARING HTTP_PROXY HTTPS_PROXY \
+      NO_PROXY http_proxy https_proxy no_proxy UV_INDEX_URL UV_EXTRA_INDEX_URL \
+      PIP_INDEX_URL PIP_EXTRA_INDEX_URL; do
+      if [[ -v "$env_name" ]]; then
+        env_value="${!env_name}"
+        printf '%s=%q\n' "$env_name" "$env_value"
+      fi
+    done
+  } >"$remote_env"
+
+  info "远程编译主机: $remote_target"
+  info "SSH ProxyCommand: $BUILD_REMOTE_PROXY_COMMAND"
+  "${ssh_cmd[@]}" "mkdir -p /tmp && cat > '$remote_script' && chmod 700 '$remote_script'" <"$0"
+  "${ssh_cmd[@]}" "cat > '$remote_env'" <"$remote_env"
+  rm -f "$remote_env"
+  set +e
+  "${ssh_cmd[@]}" "set -a; . '$remote_env'; set +a; BUILD_REMOTE_HOST= BUILD_REMOTE_EXEC=1 IMAGE_TAG_MODE=explicit bash '$remote_script'; rc=\$?; rm -f '$remote_script' '$remote_env'; exit \$rc"
+  local rc=$?
+  set -e
+  rm -f "$remote_env"
+  return "$rc"
+}
+
+run_remote_build
 
 [[ -n "$IMAGE_TAG" ]] || die "必须设置 IMAGE_TAG"
 [[ "$SWR_REGISTRY" != */ ]] || SWR_REGISTRY="${SWR_REGISTRY%/}"
