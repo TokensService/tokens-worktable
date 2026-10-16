@@ -163,6 +163,8 @@ service_name="$NATIVE_VLLM_SERVICE_NAME"
 arch_source='local'
 roles=()
 container_names=("${container_prefix}-prefill" "${container_prefix}-decode" "${container_prefix}-standalone" "${container_prefix}-lmcache")
+# 本部署旧实例当前占用的端口（预检填充，供 port_check_and_fix 在清理前判定）
+declare -A ours_port=()
 script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15)
 
@@ -535,6 +537,9 @@ write_entry_scripts() {
       printf 'set -a\n. "%s/env-%s.sh"\nset +a\n' "$work_dir" "$role"
       printf '. "%s/apply-patches-%s.sh"\n' "$work_dir" "$role"
       printf '. "%s/args-%s.sh"\n' "$work_dir" "$role"
+      printf '# 运行期参数覆盖（预检自动纠偏端口时生成；在 args 之后追加，后写覆盖先写）\n'
+      printf 'if [[ -f "%s/args-override-%s.sh" ]]; then . "%s/args-override-%s.sh"; fi\n' \
+        "$work_dir" "$role" "$work_dir" "$role"
       printf 'exec vllm serve "${vllm_native_args[@]}"\n'
     } >"$entry"
     chmod 700 "$entry"
@@ -720,12 +725,182 @@ PY
   printf 'import vllm_native_moefix\n' >"$stage_dir/moefix/zz_vllm_native_moefix.pth"
 }
 
+# 父阶段把「各角色端口 + 所需卡数」落成纯 shell 变量文件，随产物推到目标机：
+# 目标机因此不再需要 python3/PyYAML 成能解析渲染产物（远端只 . 这个文件）。
+# 格式（每行一个赋值，可安全 source，变量是全局）：role_port_<role>=8010 / role_need_<role>=4
+write_role_facts() {
+  local role
+  [[ ${#roles[@]} -gt 0 ]] || die "没有可渲染的角色" 2
+  python3 - "$stage_dir" "${roles[@]}" >"$stage_dir/role-facts.env" <<'PY' \
+    || die "生成 role-facts.env 失败" 2
+import os
+import sys
+
+import yaml
+
+stage = sys.argv[1]
+for role in sys.argv[2:]:
+    path = os.path.join(stage, f"config-{role}.yaml")
+    if not os.path.exists(path):
+        continue
+    with open(path, encoding="utf-8") as handle:
+        cfg = yaml.safe_load(handle) or {}
+    need = (
+        int(cfg.get("tensor-parallel-size", 1) or 1)
+        * int(cfg.get("pipeline-parallel-size", 1) or 1)
+        * int(cfg.get("data-parallel-size", 1) or 1)
+    )
+    print(f"role_port_{role}={int(cfg.get('port', 0) or 0)}")
+    print(f"role_need_{role}={need}")
+PY
+  [[ -s "$stage_dir/role-facts.env" ]] || die "role-facts.env 为空（渲染产物异常）" 2
+  for role in "${roles[@]}"; do
+    grep -q "^role_need_$role=" "$stage_dir/role-facts.env" \
+      || die "role-facts.env 缺少角色 $role" 2
+  done
+}
+
 # ---------------------------------------------------------------------------
 # 远端阶段（在目标 GPU 节点执行）
 # ---------------------------------------------------------------------------
 container_status() {
   nerdctl -n "$containerd_ns" ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null \
     | awk -v name="$1" '$1==name {print $2}'
+}
+
+# 在目标机上找一个从 start 开始递增的空闲端口（最多试 200 个）
+free_port() {
+  local candidate="$1" tries=0
+  while (( tries < 200 )); do
+    if ! ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${candidate}\$"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+# GPU 列表自动纠偏（直接改写全局 NATIVE_VLLM_*_GPUS，后续流程都用纠偏后的值）：
+#   ① 丢弃越界序号 ② 给多则截断到需求张数
+#   ③ pd：decode 与 prefill 重叠的项改派到本机空闲卡（保留 prefill 的原意）
+#   ④ 纠偏后仍不够张数则报错（不臆造卡）
+fix_gpu_lists() {
+  local need_prefill="$1" need_decode="$2" gpu_total="$3"
+  local -a pre=() dec=() pre_ok=() dec_ok=()
+  local id index changed=0
+  IFS=',' read -r -a pre <<<"$NATIVE_VLLM_PREFILL_GPUS"
+  IFS=',' read -r -a dec <<<"$NATIVE_VLLM_DECODE_GPUS"
+  for id in "${pre[@]}"; do
+    [[ -n "$id" ]] || continue
+    if (( id < gpu_total )); then pre_ok+=("$id"); else
+      changed=1; log "  [GPU 纠偏] prefill 丢弃越界序号 $id（本机 0..$((gpu_total - 1))）"
+    fi
+  done
+  for id in "${dec[@]}"; do
+    [[ -n "$id" ]] || continue
+    if (( id < gpu_total )); then dec_ok+=("$id"); else
+      changed=1; log "  [GPU 纠偏] decode 丢弃越界序号 $id（本机 0..$((gpu_total - 1))）"
+    fi
+  done
+  if (( ${#pre_ok[@]} > need_prefill )); then
+    pre_ok=("${pre_ok[@]:0:need_prefill}")
+    changed=1
+    log "  [GPU 纠偏] prefill 给多了，截断为 ${pre_ok[*]}（需 $need_prefill 张）"
+  fi
+  if (( need_decode > 0 && ${#dec_ok[@]} > need_decode )); then
+    dec_ok=("${dec_ok[@]:0:need_decode}")
+    changed=1
+    log "  [GPU 纠偏] decode 给多了，截断为 ${dec_ok[*]}（需 $need_decode 张）"
+  fi
+  if (( need_decode > 0 )); then
+    local -A used=()
+    for id in "${pre_ok[@]}"; do used["$id"]=1; done
+    local -a dec_new=()
+    for id in "${dec_ok[@]}"; do
+      if [[ -n "${used[$id]:-}" ]]; then dec_new+=('__OVERLAP__'); else dec_new+=("$id"); used["$id"]=1; fi
+    done
+    id=0
+    for index in "${!dec_new[@]}"; do
+      [[ "${dec_new[$index]}" == '__OVERLAP__' ]] || continue
+      while (( id < gpu_total )) && [[ -n "${used[$id]:-}" ]]; do id=$((id + 1)); done
+      (( id < gpu_total )) \
+        || die "GPU 不足：decode 与 prefill 有重叠且本机没有空闲卡可改派（需 $need_decode 张）" 1
+      dec_new[$index]="$id"
+      used["$id"]=1
+      changed=1
+      log "  [GPU 纠偏] decode 与 prefill 重叠项改派到空闲卡 $id"
+      id=$((id + 1))
+    done
+    dec_ok=("${dec_new[@]}")
+  fi
+  (( ${#pre_ok[@]} == need_prefill )) \
+    || die "prefill 可用 GPU 不足：需 $need_prefill 张，过滤越界后只剩 ${#pre_ok[@]} 张（请显式指定 NATIVE_VLLM_PREFILL_GPUS）" 1
+  (( ${#dec_ok[@]} == need_decode )) \
+    || die "decode 可用 GPU 不足：需 $need_decode 张，过滤重叠/越界后只剩 ${#dec_ok[@]} 张（请显式指定 NATIVE_VLLM_DECODE_GPUS）" 1
+  if (( changed )); then
+    NATIVE_VLLM_PREFILL_GPUS="$(IFS=,; printf '%s' "${pre_ok[*]}")"
+    if (( need_decode > 0 )); then
+      NATIVE_VLLM_DECODE_GPUS="$(IFS=,; printf '%s' "${dec_ok[*]}")"
+    fi
+    log "  [GPU 纠偏] 生效：prefill=$NATIVE_VLLM_PREFILL_GPUS decode=$NATIVE_VLLM_DECODE_GPUS"
+  fi
+}
+
+# 端口占用处理：pre=清理前（本部署旧实例占用只提示，等清理回收）；post=清理后（任何占用都算外部）。
+# 外部占用时自动纠偏：router / LMCache HTTP 直接改写运行期变量；引擎端口写
+# args-override-<role>.sh（entry 脚本在 args 之后追加，argparse 后者覆盖前者）。
+# LMCache MP 端口写在 arch 的 kv-transfer-config 里，改了会与引擎配置不一致 → 只报错不自动改。
+port_check_and_fix() {
+  local phase="$1" port line owner newport role pvar
+  local -a ports=() rlist=()
+  local -A role_of=() ours=()
+  if [[ "$mode" == 'pd' ]]; then rlist=(prefill decode); else rlist=(standalone); fi
+  for role in "${rlist[@]}"; do
+    pvar="role_port_$role"
+    port="${!pvar:-}"
+    [[ -n "$port" && "$port" != '0' ]] || continue
+    ports+=("$port")
+    role_of["$port"]="$role"
+  done
+  [[ "$mode" == 'pd' ]] && ports+=("$router_port")
+  if [[ "$LMCACHE_ENABLE" == '1' && "$mode" == 'pd' ]]; then
+    ports+=("$lmcache_mp_port" "$lmcache_http_port")
+  fi
+  if [[ "$phase" == 'pre' ]]; then
+    for port in "${!ours_port[@]}"; do ours["$port"]=1; done
+  fi
+  for port in "${ports[@]}"; do
+    line="$(ss -ltnpH 2>/dev/null | awk -v p=":$port" '$4 ~ p"$"' | head -1)"
+    [[ -n "$line" ]] || continue
+    if [[ -n "${ours[$port]:-}" ]]; then
+      log "  端口 $port 被本部署旧实例占用（随后的清理步骤会回收）"
+      continue
+    fi
+    if [[ "$mode" == 'pd' && "$port" == "$router_port" ]]; then
+      newport="$(free_port $((port + 1)) || true)"
+      [[ -n "$newport" ]] || die "router 端口 $port 被外部占用，且其后 200 个端口都不空闲" 1
+      log "  [端口纠偏] router $port → $newport（$port 被外部占用：$(printf '%s' "$line" | cut -c1-70)）"
+      router_port="$newport"
+    elif [[ "$LMCACHE_ENABLE" == '1' && "$port" == "$lmcache_mp_port" ]]; then
+      die "LMCache MP 端口 $port 被外部占用：该端口写在 arch 的 kv-transfer-config 里，自动改会与引擎配置不一致；请释放 $port 或在 arch 策略里改端口" 1
+    elif [[ "$LMCACHE_ENABLE" == '1' && "$port" == "$lmcache_http_port" ]]; then
+      newport="$(free_port $((port + 1)) || true)"
+      [[ -n "$newport" ]] || die "LMCache HTTP 端口 $port 被外部占用，且其后 200 个端口都不空闲" 1
+      log "  [端口纠偏] LMCache HTTP $port → $newport（$port 被外部占用）"
+      lmcache_http_port="$newport"
+    else
+      owner="${role_of[$port]:-}"
+      [[ -n "$owner" ]] || die "端口 $port 被外部占用，但无法定位它属于哪个角色（渲染产物异常）" 1
+      newport="$(free_port $((port + 1)) || true)"
+      [[ -n "$newport" ]] || die "$owner 引擎端口 $port 被外部占用，且其后 200 个端口都不空闲" 1
+      printf 'vllm_native_args+=(--port %s)\n' "$newport" >>"$work_dir/args-override-$owner.sh"
+      printf -v "role_port_$owner" '%s' "$newport"
+      role_of["$newport"]="$owner"
+      log "  [端口纠偏] $owner 引擎 $port → $newport（$port 被外部占用：$(printf '%s' "$line" | cut -c1-70)）"
+    fi
+  done
 }
 
 # 部署前环境预检（在目标节点执行）：把"会让部署静默失败/挂住"的前置条件先拦掉。
@@ -735,8 +910,6 @@ remote_precheck() {
   local role entry needed gpus have gpu_total id st port line
   local primary_role='prefill'
   local all_gpus="$NATIVE_VLLM_PREFILL_GPUS"
-  local -a check_ports=()
-  local -A ours_port=()
   local -A role_port_map=()
   [[ "$mode" == 'standalone' ]] && primary_role='standalone'
   [[ "$mode" == 'pd' ]] && all_gpus="$all_gpus,$NATIVE_VLLM_DECODE_GPUS"
@@ -746,8 +919,12 @@ remote_precheck() {
   [[ -x "$runtime_bin" ]] \
     || die "目标机缺少 nvidia 容器运行时：$runtime_bin（nerdctl --runtime 依赖它）" 1
   command -v nvidia-smi >/dev/null 2>&1 || die "目标机缺少 nvidia-smi（无法核验 GPU）" 1
-  python3 -c 'import yaml' 2>/dev/null \
-    || die "目标机 python3 缺少 pyyaml（远端解析策略产物需要）" 1
+  command -v python3 >/dev/null 2>&1 \
+    || die "目标机缺少 python3（校验阶段构造请求与解析 LMCache 状态需要）" 1
+  [[ -f "$work_dir/role-facts.env" ]] \
+    || die "缺少渲染产物 role-facts.env（父阶段未生成：请更新 step 脚本后重跑，或清理旧产物目录）" 1
+  # shellcheck disable=SC1090
+  . "$work_dir/role-facts.env"
   nerdctl -n "$containerd_ns" image inspect "$image_ref" >/dev/null 2>&1 \
     || die "目标机本地没有镜像 $image_ref：请先跑「拉取镜像」步骤，或先在目标机 nerdctl pull" 1
   [[ -f "$MODEL_DIR/config.json" ]] || die "权重目录缺少 config.json：$MODEL_DIR" 1
@@ -777,61 +954,25 @@ remote_precheck() {
       || die "pd 模式需要 RDMA 设备 /dev/infiniband（Mooncake KV 传输依赖 RoCE/iWARP）" 1
   fi
 
-  # ---- 3) GPU：数量与 arch 并行度对齐（tp×pp×dp），序号在位、P/D 不重叠 ----
-  # 数量严格相等是刻意为之：多给卡会被 vLLM 静默忽略，与 arch 不一致多半是写错了。
-  local counts
-  counts="$(python3 - "$work_dir" "$mode" <<'PY'
-import os
-import sys
-
-import yaml
-
-work, mode = sys.argv[1], sys.argv[2]
-roles = ["prefill", "decode"] if mode == "pd" else ["standalone"]
-out = []
-for role in roles:
-    path = os.path.join(work, f"config-{role}.yaml")
-    if not os.path.exists(path):
-        continue
-    with open(path, encoding="utf-8") as handle:
-        cfg = yaml.safe_load(handle) or {}
-    need = (
-        int(cfg.get("tensor-parallel-size", 1) or 1)
-        * int(cfg.get("pipeline-parallel-size", 1) or 1)
-        * int(cfg.get("data-parallel-size", 1) or 1)
-    )
-    out.append(f"{role}:{need}:{int(cfg.get('port', 0) or 0)}")
-print(" ".join(out))
-PY
-)" || die "解析渲染产物失败（角色并行度），检查 $work_dir/config-*.yaml" 1
-  [[ -n "$counts" ]] || die "渲染产物里没有可识别的角色 config（$work_dir）" 1
-  local rest port
-  for entry in $counts; do
-    role="${entry%%:*}"
-    rest="${entry#*:}"
-    needed="${rest%%:*}"
-    port="${rest##*:}"
-    if [[ "$role" == 'decode' ]]; then gpus="$NATIVE_VLLM_DECODE_GPUS"; else gpus="$NATIVE_VLLM_PREFILL_GPUS"; fi
-    [[ -n "$gpus" ]] || die "NATIVE_VLLM_${role^^}_GPUS 为空（$role 需要 $needed 张卡）" 1
-    have="$(printf '%s' "$gpus" | awk -F, '{print NF}')"
-    [[ "$have" == "$needed" ]] \
-      || die "GPU 数量不匹配：$role 按 arch 并行度（tp×pp×dp）需要 $needed 张，实际给了 $have 张（$gpus）" 1
-    [[ "$port" == '0' ]] || { check_ports+=("$port"); role_port_map["$role"]="$port"; }
+  # ---- 3) GPU：按渲染产物核对数量（tp×pp×dp），并自动纠偏越界/给多/重叠 ----
+  local -a role_list=()
+  if [[ "$mode" == 'pd' ]]; then role_list=(prefill decode); else role_list=("$primary_role"); fi
+  local need_prefill='' need_decode='0' nv pv
+  for role in "${role_list[@]}"; do
+    nv="role_need_$role"
+    pv="role_port_$role"
+    needed="${!nv:-}"
+    port="${!pv:-}"
+    [[ -n "$needed" && "$needed" -gt 0 ]] \
+      || die "渲染产物里 $role 缺少并行度信息（role-facts.env 不完整）" 1
+    if [[ "$role" == 'decode' ]]; then need_decode="$needed"; else need_prefill="$needed"; fi
+    [[ "$port" == '0' || -z "$port" ]] || role_port_map["$role"]="$port"
   done
   gpu_total="$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)"
   (( gpu_total > 0 )) || die "目标机 nvidia-smi 看不到 GPU" 1
-  for id in ${NATIVE_VLLM_PREFILL_GPUS//,/ } ${NATIVE_VLLM_DECODE_GPUS//,/ }; do
-    (( id < gpu_total )) || die "GPU 序号 $id 超出本机范围（0..$((gpu_total - 1))）" 1
-  done
-  if [[ "$mode" == 'pd' ]]; then
-    local overlap
-    overlap="$(awk -v a="$NATIVE_VLLM_PREFILL_GPUS" -v b="$NATIVE_VLLM_DECODE_GPUS" 'BEGIN{
-      n=split(a,A,","); m=split(b,B,",");
-      for(i=1;i<=n;i++) for(j=1;j<=m;j++) if(A[i]==B[j]) o=o" "A[j];
-      print o}')"
-    [[ -z "$overlap" ]] \
-      || die "prefill 与 decode 的 GPU 列表重叠：$overlap（同一张卡不能同时给两侧）" 1
-  fi
+  fix_gpu_lists "$need_prefill" "$need_decode" "$gpu_total"
+  all_gpus="$NATIVE_VLLM_PREFILL_GPUS"
+  [[ "$mode" == 'pd' ]] && all_gpus="$all_gpus,$NATIVE_VLLM_DECODE_GPUS"
   # 本部署旧实例状态（一次取全）：决定"端口/显存/内存被占"是该拦还是该等信息
   local ps_dump old_running=0 old_lmcache_up=0 name
   ps_dump="$(nerdctl -n "$containerd_ns" ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null || true)"
@@ -853,11 +994,8 @@ PY
     fi
   fi
 
-  # ---- 4) 端口占用：本部署旧实例（容器/router）还活着时算"待清理"，否则算外部占用 ----
-  [[ "$mode" == 'pd' ]] && check_ports+=("$router_port")
-  if [[ "$LMCACHE_ENABLE" == '1' && "$mode" == 'pd' ]]; then
-    check_ports+=("$lmcache_mp_port" "$lmcache_http_port")
-  fi
+  # ---- 4) 端口占用：先记下本部署旧实例占用的端口，再交给 port_check_and_fix 处理 ----
+  ours_port=()
   [[ "$ps_dump" == *"${container_prefix}-$primary_role Up"* ]] \
     && [[ -n "${role_port_map[$primary_role]:-}" ]] \
     && ours_port["${role_port_map[$primary_role]}"]=1
@@ -869,20 +1007,7 @@ PY
     ours_port["$lmcache_http_port"]=1
   fi
   [[ "$mode" == 'pd' ]] && pgrep -f 'vllm::router' >/dev/null 2>&1 && ours_port["$router_port"]=1
-  local foreign=''
-  for port in "${check_ports[@]}"; do
-    [[ -n "$port" ]] || continue
-    line="$(ss -ltnpH 2>/dev/null | awk -v p=":$port" '$4 ~ p"$"' | head -1)"
-    [[ -n "$line" ]] || continue
-    if [[ -n "${ours_port[$port]:-}" ]]; then
-      log "  端口 $port 被本部署旧实例占用（随后的清理步骤会回收）"
-    else
-      foreign="$foreign $port"
-      warn "端口 $port 已被外部占用：$(printf '%s' "$line" | cut -c1-110)"
-    fi
-  done
-  [[ -z "$foreign" ]] \
-    || die "以下端口被外部进程占用，部署会失败：$foreign（先用 ss -ltnp 查清；如需换端口用隐藏参数 NATIVE_VLLM_ROUTER_PORT / LMCACHE_MP_PORT / LMCACHE_HTTP_PORT）" 1
+  port_check_and_fix pre
 
   # ---- 5) 内存与磁盘余量 ----
   if [[ "$LMCACHE_ENABLE" == '1' && "$mode" == 'pd' ]]; then
@@ -1119,6 +1244,10 @@ remote_main() {
   [[ -n "$image_ref" ]] || die "远端缺少镜像参数" 2
   [[ -f "$work_dir/config-prefill.yaml" || -f "$work_dir/config-standalone.yaml" ]] \
     || die "远端缺少渲染产物（$work_dir）" 2
+  [[ -f "$work_dir/role-facts.env" ]] \
+    || die "远端缺少 role-facts.env（父阶段未生成：请更新 step 脚本后重跑）" 2
+  # shellcheck disable=SC1090
+  . "$work_dir/role-facts.env"
   command -v nerdctl >/dev/null 2>&1 || die "目标机缺少 nerdctl" 2
   [[ -d "$MODEL_DIR" ]] || die "目标机权重目录不存在：$MODEL_DIR" 2
   if [[ "$mode" == 'pd' ]]; then
@@ -1132,6 +1261,8 @@ remote_main() {
   fi
 
   [[ "$clean_old" == '1' ]] && remote_clean
+  # 清理后再核一遍端口：此时旧实例已退，任何占用都是外部的 → 该纠偏就纠偏、该报错就报错
+  port_check_and_fix post
 
   local primary_role='prefill' primary_port='' decode_port='' health_rc=0
   [[ "$mode" == 'standalone' ]] && primary_role='standalone'
@@ -1150,13 +1281,20 @@ remote_main() {
   log "启动 $primary_role 容器（GPU $NATIVE_VLLM_PREFILL_GPUS）"
   remote_run_container "${container_prefix}-$primary_role" "$NATIVE_VLLM_PREFILL_GPUS" \
     "entry-$primary_role.sh" >/dev/null || return 1
-  primary_port="$(role_port "$primary_role")"
+  local pvar pport
+  pvar="role_port_$primary_role"
+  primary_port="${!pvar:-}"
+  [[ -n "$primary_port" && "$primary_port" != '0' ]] \
+    || die "渲染产物里 $primary_role 缺少端口（role-facts.env）" 1
 
   if [[ "$mode" == 'pd' ]]; then
     log "启动 decode 容器（GPU $NATIVE_VLLM_DECODE_GPUS）"
     remote_run_container "${container_prefix}-decode" "$NATIVE_VLLM_DECODE_GPUS" \
       "entry-decode.sh" >/dev/null || return 1
-    decode_port="$(role_port decode)"
+    pvar='role_port_decode'
+    decode_port="${!pvar:-}"
+    [[ -n "$decode_port" && "$decode_port" != '0' ]] \
+      || die "渲染产物里 decode 缺少端口（role-facts.env）" 1
   fi
 
   log "两侧容器已并行启动，等待就绪（上限 ${NATIVE_VLLM_READY_TIMEOUT_SECONDS}s）"
@@ -1259,6 +1397,7 @@ PY
   for role in "${roles[@]}"; do
     render_role "$role"
   done
+  write_role_facts
 
   # 策略 env 之外，本路线固定追加的运行期环境变量
   local item
