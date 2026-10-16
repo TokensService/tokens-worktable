@@ -1,6 +1,7 @@
 /* task-manager.html 静态契约：配色修复（浅色幽灵按钮可读 / color-scheme 随主题）、
    dsh-auth-gate 真实用户（/auth/status + /auth/users）、任务增删改走 /api/worktable/tasks
-   服务端共享存储（不再 localStorage 假数据）；进展 / 标签 / 完成弹窗 AI 总结 / 文本导入。 */
+   服务端共享存储（不再 localStorage 假数据）；进展 / 标签 / 完成弹窗 AI 总结 / 文本导入；
+   主从双栏布局——左侧紧凑任务列表 + 右侧详情面板（点击卡片切换，不再是详情弹窗）。 */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -100,14 +101,33 @@ test("AI 配置本地保存 + DSH 会话桥兜底", () => {
   assert.ok(html.includes('id="aiMask"'), "应有 AI 设置弹窗");
 });
 
-test("点击任务卡打开详情弹窗：标签/描述/结果/全部进展", () => {
-  assert.ok(html.includes('id="detailMask"'), "应有详情弹窗");
-  assert.ok(html.includes("openDetailModal"), "点击卡片应打开详情");
+test("主从双栏布局：点击任务卡在右侧详情面板展示详情（不再是弹窗）", () => {
+  assert.ok(html.includes('class="tm-split"'), "应有主从分栏容器");
+  assert.ok(html.includes('id="detailPanel"'), "应有右侧详情面板");
+  assert.ok(html.includes('id="detailEmpty"'), "未选中时应有占位提示");
+  assert.ok(!html.includes('id="detailMask"'), "详情不应再走弹窗");
+  assert.ok(html.includes("selectTask("), "点击卡片应选中任务");
+  assert.ok(html.includes("renderDetail()"), "应按选中状态渲染详情");
+  assert.ok(html.includes('id="detailTitle"'), "详情应展示标题");
   assert.ok(html.includes('id="detailTags"'), "详情应展示标签");
   assert.ok(html.includes('id="detailDesc"'), "详情应展示描述");
   assert.ok(html.includes('id="detailEffect"'), "详情应展示结果");
   assert.ok(html.includes('id="detailProgress"'), "详情应展示进展列表");
   assert.ok(html.includes('id="detailProgCount"'), "详情应展示进展条数");
+  assert.ok(html.includes("clearSelection"), "面板应有取消选中（×）入口");
+});
+
+test("详情面板随数据刷新：轮询重绘 + 选中任务被删回到占位", () => {
+  assert.ok(html.includes("selectedId"), "应以 selectedId 记录当前选中任务");
+  assert.ok(html.includes("所选任务已不存在"), "所选任务被删后应提示并回到占位");
+  assert.ok(html.includes("renderDetail();"), "render 应联动重绘详情面板");
+});
+
+test("详情面板行内编辑进展不被轮询打断；窄窗口纵向堆叠", () => {
+  assert.ok(html.includes("progEditingId"), "行内编辑期间轮询重绘应让行（守卫）");
+  assert.ok(html.includes("@media (max-width:860px)"), "窄窗口应切换纵向堆叠");
+  assert.ok(html.includes("scrollIntoView"), "窄窗口选中任务时应把详情面板滚进视野");
+  assert.ok(html.includes("tm-taskSel"), "选中任务卡应有高亮样式");
 });
 
 test("进展可编辑、删除（PATCH updateProgress / deleteProgress）", () => {
