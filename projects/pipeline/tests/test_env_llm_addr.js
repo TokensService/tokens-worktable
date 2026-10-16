@@ -122,9 +122,9 @@ test('startEnvEdit 回填 llmAddr，保存更新该字段；copyEnv 副本携带
 
 /* ---------- 节点筛选 / 面板搜索 ---------- */
 test('envFilterMatch：节点页筛选可按 内网IP / LLM服务地址 命中',()=>{
-  const ctx={envFilterText:'',gpuStatus:{}};
+  const ctx={envFilterText:'',gpuStatus:{},nodeReservations:[]};   // envFilterMatch 依赖 reservationsForNode（预留区块），空数据时行为不变
   vm.createContext(ctx);
-  vm.runInContext(extractFunction('envFilterMatch'),ctx);
+  vm.runInContext(extractFunction('reservationsForNode')+'\n'+extractFunction('envFilterMatch'),ctx);
   const e={id:'e1',name:'生产',ip:'10.0.0.1',nodeIp:'172.16.0.1',llmAddr:'172.16.0.1:8000',user:'root'};
   ctx.envFilterText='172.16'; assert.ok(ctx.envFilterMatch(e),'内网IP 命中');
   ctx.envFilterText=':8000'; assert.ok(ctx.envFilterMatch(e),'LLM服务地址命中');

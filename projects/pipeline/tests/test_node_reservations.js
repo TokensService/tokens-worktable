@@ -8,6 +8,8 @@
      quickResRange（快捷时段：四档整点、22~9 跨零点次日、未填日期当天结束已过才取次日、已填日期保留）。
    - 渲染：renderEnvs「预留」列逐时段一行三列对齐（时间段 | 用户 | 备注，生效中整行高亮）、「分配」按钮在操作列（「编辑」之前）、非 admin 只读弹窗；renderEnvMulti 未选中态禁用 + 徽标、
      已选中可取消、admin 不拦但显示徽标。
+   - 筛选：envFilterMatch 把「预留」列数据（各时段预留用户名与备注，含已结束时段，大小写不敏感）纳入节点筛选命中，
+     renderEnvs 随之只保留命中行并显示 x/y 计数。
    - 弹窗保存：datetime-local → ISO UTC 转换、base 快照随 PUT 上送、409 刷新重开、403 alert 服务端 message。
    - 运行校验接入：pipelineDefaultRunIssue / runPipeline / submitPipelineRunDialog / addPlan 四处的预留拦截；
      租约 acquire 403 reserved → alert 服务端 message 并按启动失败收尾（不进入运行、不回队）。 */
@@ -390,6 +392,68 @@ test('renderEnvs「预留」列：已结束时段整行置灰并在备注格后�
   const hiCells = (html.match(/color:var\(--st-run\);font-weight:600;/g) || []).length;
   assert.equal(hiCells, 3, '生效中时段整行三格高亮');
   assert.ok(!html.includes('预留中'), '不再出现「预留中」文案');
+});
+
+/* ---------- 节点筛选：预留用户名与备注参与命中（envFilterMatch × renderEnvs） ---------- */
+test('静态契约：envFilter 占位含「预留用户 / 备注」；envFilterMatch 调用 reservationsForNode', () => {
+  const iFilter = source.indexOf('id="envFilter"');
+  assert.ok(iFilter > 0, '应有 envFilter 输入框');
+  const tag = source.slice(iFilter, source.indexOf('>', iFilter));
+  assert.ok(tag.includes('预留用户') && tag.includes('备注'), 'envFilter 占位应含「预留用户 / 备注」');
+  assert.ok(extractFunction('envFilterMatch').includes('reservationsForNode'), 'envFilterMatch 应把预留数据纳入匹配');
+});
+
+test('envFilterMatch：预留用户名与备注参与节点筛选命中（含已结束时段），大小写不敏感；不改变原有字段口径', () => {
+  const ctx = pureCtx({ gpuStatus: {} });
+  vm.runInContext(`nodeReservations=${JSON.stringify([
+    resNow('r1', 'env-a', ['zhangsan'], { note: '专项压测' }),
+    { id: 'r0', nodeId: 'env-b', users: ['lisi'], start: new Date(Date.now() - 7200e3).toISOString(), end: new Date(Date.now() - 3600e3).toISOString(), note: '回归环境', createdBy: 'admin', createdAt: '', updatedAt: '' },
+    resFuture('r2', 'env-c', ['wangwu']),
+  ])}`, ctx);
+  vm.runInContext(extractFunction('envFilterMatch'), ctx);
+  const envA = envOf('env-a', '开发', '10.0.0.1'), envB = envOf('env-b', '生产', '10.0.0.2'), envC = envOf('env-c', '测试', '10.0.0.3');
+  const hit = kw => { ctx.envFilterText = kw; return [envA, envB, envC].filter(e => ctx.envFilterMatch(e)).map(e => e.id); };
+
+  assert.deepEqual(hit('zhangsan'), ['env-a'], '生效中时段预留用户命中');
+  assert.deepEqual(hit('ZHANGSAN'), ['env-a'], '预留用户大小写不敏感');
+  assert.deepEqual(hit('压测'), ['env-a'], '备注命中');
+  assert.deepEqual(hit('lisi'), ['env-b'], '已结束时段预留用户同样命中（与「预留」列展示口径一致）');
+  assert.deepEqual(hit('回归'), ['env-b'], '已结束时段备注命中');
+  assert.deepEqual(hit('wangwu'), ['env-c'], '未来时段预留用户命中');
+  assert.deepEqual(hit('王五'), [], '非预留用户/备注关键词不误命中');
+  assert.deepEqual(hit('10.0.0.1'), ['env-a'], '原有 IP 命中口径不变');
+  assert.deepEqual(hit('开发'), ['env-a'], '原有名称命中口径不变');
+  assert.deepEqual(hit('生产 lisi'), [], '关键词按整串包含匹配、不拆词（与原行为一致）');
+});
+
+test('renderEnvs：筛选词命中预留用户/备注时只保留对应节点行，计数显示 x/y；清空恢复全量', () => {
+  const envs = [envOf('env-a', '开发', '10.0.0.1'), envOf('env-b', '生产', '10.0.0.2')];
+  const { ctx, tbody, els } = renderEnvsCtx({ currentUserIsAdmin: true, currentUsername: 'admin' }, envs);
+  vm.runInContext(`nodeReservations=${JSON.stringify([
+    resNow('r1', 'env-a', ['zhangsan'], { note: '专项压测' }),
+    resNow('r2', 'env-b', ['lisi']),
+  ])}`, ctx);
+
+  ctx.envFilterText = 'zhangsan';
+  ctx.renderEnvs();
+  assert.equal(tbody.children.length, 1, '只保留预留命中的节点行');
+  assert.ok(tbody.children[0].innerHTML.includes('data-envres="env-a"'), '保留的是 env-a');
+  assert.equal(els.envCount.textContent, '(1/2)', '筛选态计数 x/y');
+
+  ctx.envFilterText = '压测';
+  ctx.renderEnvs();
+  assert.equal(tbody.children.length, 1, '备注筛选同样只保留命中行');
+  assert.ok(tbody.children[0].innerHTML.includes('data-envres="env-a"'), '备注命中的是 env-a');
+
+  ctx.envFilterText = 'lisi';
+  ctx.renderEnvs();
+  assert.equal(tbody.children.length, 1, '另一预留用户筛选换行保留');
+  assert.ok(tbody.children[0].innerHTML.includes('data-envres="env-b"'), '保留的是 env-b');
+
+  ctx.envFilterText = '';
+  ctx.renderEnvs();
+  assert.equal(tbody.children.length, 2, '清空筛选恢复全量');
+  assert.equal(els.envCount.textContent, '(2)', '无筛选计数为总数');
 });
 
 test('renderEnvs「分配」按钮：admin 点击打开可编辑弹窗；非 admin 打开只读形态（输入禁用、无保存按钮、标题旁注明）', async () => {

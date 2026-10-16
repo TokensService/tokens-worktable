@@ -504,7 +504,7 @@
   <div id="pageNode" style="display:none">
     <div class="dshell-card">
       <div style="display:flex; align-items:center; margin-bottom:8px;">
-        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;"><span class="rf-ico">↻</span> 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;"><span class="rf-ico">⟳</span> 设备状态</button> <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 内网IP / LLM / 用户名 / 设备状态" style="width:260px; margin-left:6px; font-weight:normal;" /></h2>
+        <h2 class="dshell-sub" style="margin:0">节点环境 <span id="envCount" class="dshell-muted"></span> <button id="envInfoRefresh" type="button" class="dshell-btn dshell-btnGhost mini" title="从服务端重新拉取节点环境列表（其他浏览器添加/修改/删除的节点一并同步进来）" style="margin-left:6px;"><span class="rf-ico">↻</span> 刷新节点信息</button> <button id="gpuRefreshAll" class="dshell-btn dshell-btnGhost mini" title="刷新所有节点设备状态" style="margin-left:6px;"><span class="rf-ico">⟳</span> 设备状态</button> <input id="envFilter" class="dshell-input" placeholder="筛选：名称 / IP / 内网IP / LLM / 用户名 / 预留用户 / 备注 / 设备状态" title="关键词模糊过滤节点：节点自身信息（名称 / IP / 内网IP / LLM服务地址 / 用户名 / 设备状态）之外，也匹配「预留」列各时段的预留用户名与备注（含已结束时段）" style="width:360px; margin-left:6px; font-weight:normal;" /></h2>
       </div>
       <div id="envEditBar" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
         <input id="envName" class="dshell-input" placeholder="名称（如 生产）" style="width:120px;" />
@@ -2490,7 +2490,8 @@ function envSortList(list){
     return a.i-b.i;                              // 同值保持原顺序
   }).map(x=>x.e);
 }
-/* 节点筛选：匹配名称 / IP / 内网IP / LLM服务地址 / 用户名 / 设备状态文本（容器名、空闲、占用、查询失败、卡数） */
+/* 节点筛选：匹配名称 / IP / 内网IP / LLM服务地址 / 用户名 / 预留用户与备注 / 设备状态文本（容器名、空闲、占用、查询失败、卡数）。
+   预留口径与「预留」列展示一致：该节点全部时段（生效中 / 未来 / 已结束）的预留用户名与备注均参与命中。 */
 function envFilterMatch(e){
   const kw=envFilterText.trim().toLowerCase();
   if(!kw) return true;
@@ -2504,6 +2505,11 @@ function envFilterMatch(e){
       text+=gpuBusy(st)?' 占用':' 空闲';
     }
   }
+  /* 「预留」列数据一并参与命中：reservationsForNode 按 nodeId 取全部时段记录，用户与备注拼接进匹配文本 */
+  reservationsForNode(e.id).forEach(r=>{
+    if(Array.isArray(r&&r.users)) text+=' '+r.users.join(' ').toLowerCase();
+    if(r&&typeof r.note==='string'&&r.note) text+=' '+r.note.toLowerCase();
+  });
   return text.indexOf(kw)>=0;
 }
 /* 节点配置（新增/编辑/复制/删除/统一凭证/导入覆盖 environments）是否可写：仅「password 模式且当前会话
