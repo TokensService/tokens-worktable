@@ -13,6 +13,7 @@ SOURCE_DIR="${SOURCE_DIR:-/workspace/source}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-$SOURCE_DIR/docker/Dockerfile}"
 BUILD_CONTEXT_PATH="${BUILD_CONTEXT_PATH:-$SOURCE_DIR}"
 DOCKERD_TIMEOUT_SECONDS="${DOCKERD_TIMEOUT_SECONDS:-120}"
+BUILD_CPUS="${BUILD_CPUS:-}"
 
 mkdir -p /var/lib/docker /var/run
 echo '[indocker] starting inner dockerd'
@@ -35,7 +36,11 @@ while IFS= read -r arg; do
 done <<< "${BUILD_ARGS_TEXT:-}"
 
 echo "[indocker] building ${IMAGE_REF}"
-docker build --network="${BUILD_NETWORK:-host}" --provenance=false --sbom=false --file "$DOCKERFILE_PATH" --tag "$IMAGE_REF" "${build_args[@]}" "$BUILD_CONTEXT_PATH"
+cpu_args=()
+if [[ "$BUILD_CPUS" =~ ^[1-9][0-9]*$ ]]; then
+  cpu_args=(--cpu-period=100000 --cpu-quota=$((BUILD_CPUS * 100000)))
+fi
+docker build --network="${BUILD_NETWORK:-host}" "${cpu_args[@]}" --provenance=false --sbom=false --file "$DOCKERFILE_PATH" --tag "$IMAGE_REF" "${build_args[@]}" "$BUILD_CONTEXT_PATH"
 docker image inspect "$IMAGE_REF" >/dev/null || die "built image is missing"
 OUTPUT_ARCHIVE="${OUTPUT_ARCHIVE:-$OUTPUT_DIR/vllm-image.tar}"
 docker save --output "$OUTPUT_ARCHIVE" "$IMAGE_REF"

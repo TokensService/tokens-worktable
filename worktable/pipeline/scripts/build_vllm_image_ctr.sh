@@ -17,6 +17,7 @@ usage() {
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
+  BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
   BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
   INDOCKER_RUNTIME    runner 外层运行时：auto、docker、nerdctl 或 ctr，默认 auto
@@ -59,6 +60,7 @@ BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-}"
+BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
 BUILD_ENGINE="${BUILD_ENGINE:-auto}"
 INDOCKER_RUNTIME="${INDOCKER_RUNTIME:-auto}"
@@ -258,12 +260,17 @@ for build_env_name in \
   fi
 done
 
+cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
 if [[ -z "$BUILD_MAX_JOBS" ]]; then
-  cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
   BUILD_MAX_JOBS=$((cpu_count / 2))
   ((BUILD_MAX_JOBS >= 1)) || BUILD_MAX_JOBS=1
 fi
+if [[ -z "$BUILD_CPUS" ]]; then
+  BUILD_CPUS=$((cpu_count / 2))
+  ((BUILD_CPUS >= 1)) || BUILD_CPUS=1
+fi
 [[ "$BUILD_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_MAX_JOBS 必须是正整数: $BUILD_MAX_JOBS"
+[[ "$BUILD_CPUS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_CPUS 必须是正整数: $BUILD_CPUS"
 build_args+=("--opt" "build-arg:max_jobs=$BUILD_MAX_JOBS")
 nerdctl_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
 docker_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
@@ -345,6 +352,8 @@ if [[ "$BUILD_ENGINE" == nerdctl ]]; then
 elif [[ "$BUILD_ENGINE" == docker ]]; then
   build_cmd=(docker build
     --network "$BUILD_NETWORK"
+    --cpu-period 100000
+    --cpu-quota "$((BUILD_CPUS * 100000))"
     --platform "$BUILD_PLATFORM"
     --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
     --tag "$IMAGE"
@@ -376,6 +385,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
         -e "BUILD_NETWORK=$BUILD_NETWORK"
+        -e "BUILD_CPUS=$BUILD_CPUS"
         -e "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
@@ -389,7 +399,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         -e "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         -e "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         -e "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
-        -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_ARGS_TEXT=$indocker_args_text"
+        -e "BUILD_NETWORK=$BUILD_NETWORK" -e "BUILD_CPUS=$BUILD_CPUS" -e "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE")
       ;;
@@ -402,7 +412,7 @@ elif [[ "$BUILD_ENGINE" == indocker ]]; then
         --env "DOCKERFILE_PATH=/workspace/source/$DOCKERFILE"
         --env "BUILD_CONTEXT_PATH=/workspace/source/$BUILD_CONTEXT"
         --env "OUTPUT_ARCHIVE=/output/$(basename "$archive")"
-        --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_ARGS_TEXT=$indocker_args_text"
+        --env "BUILD_NETWORK=$BUILD_NETWORK" --env "BUILD_CPUS=$BUILD_CPUS" --env "BUILD_ARGS_TEXT=$indocker_args_text"
         "${indocker_proxy_args[@]}"
         "$INDOCKER_RUNNER_IMAGE" vllm-indocker-runner)
       ;;
