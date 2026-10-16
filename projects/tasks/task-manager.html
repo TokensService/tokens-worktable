@@ -7,7 +7,9 @@
            token 共享部署 / 探测失败时退化为全权本地模式（负责人自由文本）
      权限：admin 可新增/编辑/删除/批量导入任务；普通成员可推进自己的任务状态、录入结果与进展
            （点「完成」弹多行输入 + AI 总结，服务端强校验）
-     布局：主从双栏——左侧紧凑任务列表，点击任务卡在右侧详情面板展示完整详情；窄窗口自动上下堆叠 -->
+     布局：主从双栏——左侧紧凑任务列表，点击任务卡在右侧详情面板展示完整详情；窄窗口自动上下堆叠；
+     筛选：任务列表支持按用户过滤（选项 = 启用用户 ∪ 任务中出现的负责人）；
+     总结：选用户 + 时间段（周 / 月 / 年 / 自定义区间）AI 生成个人工作总结 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
@@ -119,6 +121,12 @@
   .tm-importItem .bad { color:#f85149; }
   .tm-hint { font-size:11px; color:var(--dsw-alias-label-tertiary); margin-top:4px; line-height:1.5; }
   .tm-modal textarea.dshell-textarea { min-height:88px; resize:vertical; }
+  /* AI 个人总结输出区：极简 Markdown（标题行 / 列表行 / 空行占位） */
+  .tm-sumOut { max-height:44vh; overflow:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:10px 12px; background:var(--dsw-alias-fill-l1); font-size:12.5px; line-height:1.6; color:var(--dsw-alias-label-primary); }
+  .tm-sumOut .tm-mdH { font-weight:600; margin:8px 0 3px; }
+  .tm-sumOut .tm-mdLi { padding-left:16px; text-indent:-12px; margin:1px 0; }
+  .tm-sumOut .tm-mdSp { height:7px; }
+  .tm-sumMatch { font-size:11.5px; color:var(--dsw-alias-label-secondary); line-height:1.5; margin-bottom:8px; }
 </style>
 </head>
 <body>
@@ -127,7 +135,7 @@
   <div class="tm-head">
     <div>
       <h1 class="dshell-title">团队任务管理</h1>
-      <p class="dshell-sub">任务分配 · 优先级 · 截止时间 · 标签 · 进展 · 完成时录入结果（支持 AI 总结）· 文本批量导入</p>
+      <p class="dshell-sub">任务分配 · 优先级 · 截止时间 · 标签 · 进展 · 完成时录入结果（支持 AI 总结）· 文本批量导入 · 用户筛选 · AI 个人总结</p>
     </div>
     <div class="tm-controls">
       <select id="themeSel" class="dshell-input" title="页面背景">
@@ -161,6 +169,9 @@
       <button class="dshell-tab" data-filter="doing">进行中</button>
       <button class="dshell-tab" data-filter="done">已完成</button>
     </div>
+    <select id="userSel" class="dshell-input" title="按用户筛选任务列表">
+      <option value="">用户：全部</option>
+    </select>
     <select id="sortSel" class="dshell-input" title="排序方式">
       <option value="priority">按优先级排序</option>
       <option value="assignee">按用户排序</option>
@@ -168,6 +179,7 @@
       <option value="created">按创建时间排序</option>
     </select>
     <button id="importBtn" class="dshell-btn dshell-btnGhost" title="从文本批量导入任务（支持 AI 分析）">⇩ 导入</button>
+    <button id="summaryBtn" class="dshell-btn dshell-btnGhost" title="按用户 + 时间段（周 / 月 / 年 / 自定义）AI 生成个人总结">✨ 个人总结</button>
     <button id="addBtn" class="dshell-btn">＋ 新建任务</button>
   </div>
 
@@ -296,6 +308,39 @@
     </div>
   </div>
 
+  <!-- AI 个人总结弹窗：选用户 + 时间段（周 / 月 / 年 / 自定义区间），AI 输出个人工作总结 -->
+  <div id="summaryMask" class="tm-mask">
+    <div class="dshell-card tm-modal tm-modalWide">
+      <h2 class="dshell-sub" style="margin:0 0 10px;font-size:13px;font-weight:600">AI 个人总结</h2>
+      <div class="tm-row2">
+        <div class="tm-field"><label>用户</label><select id="sumUser" class="dshell-input"></select></div>
+        <div class="tm-field"><label>时间段</label>
+          <select id="sumRange" class="dshell-input">
+            <option value="week">本周</option>
+            <option value="month">本月</option>
+            <option value="year">今年</option>
+            <option value="custom">自定义区间</option>
+          </select>
+        </div>
+      </div>
+      <div class="tm-row2" id="sumCustomRow" style="display:none">
+        <div class="tm-field"><label>开始日期</label><input id="sumFrom" type="date" class="dshell-input" /></div>
+        <div class="tm-field"><label>结束日期</label><input id="sumTo" type="date" class="dshell-input" /></div>
+      </div>
+      <div class="tm-sumMatch" id="sumMatch"></div>
+      <div class="tm-aiRow">
+        <button class="dshell-btn" id="sumGoBtn" type="button">✨ 生成总结</button>
+        <button class="dshell-btn dshell-btnGhost" id="sumCopyBtn" type="button" style="display:none">复制</button>
+        <span class="tm-aiStatus" id="sumStatus"></span>
+      </div>
+      <div class="tm-sumOut" id="sumOut"></div>
+      <div class="tm-hint">命中口径：任务的创建时间、截止时间或任一进展时间落在所选区间内即计入；AI 服务走右上角「⚙ AI」配置。</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">
+        <button class="dshell-btn dshell-btnGhost" id="sumCloseBtn">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- AI 设置弹窗 -->
   <div id="aiMask" class="tm-mask">
     <div class="dshell-card tm-modal">
@@ -337,6 +382,7 @@
   var users = [];      // dsh-auth-gate 用户列表 [{username, admin, disabled}]
   var tasks = [];
   var filter = 'all', sortBy = 'priority', editingId = null;
+  var userFilter = '';      // 任务列表的用户筛选（'' = 全部用户；与状态 tab 是叠加关系）
   var editTags = [];   // 新建/编辑弹窗里的标签缓冲
   var doneTask = null, progTask = null, importParsed = [];
   var selectedId = null;    // 右侧详情面板当前展示的任务 id（renderDetail 按 id 从 tasks 重取最新数据）
@@ -433,6 +479,13 @@
   }
   function taskTags(t) { return Array.isArray(t.tags) ? t.tags : []; }
   function taskProgress(t) { return Array.isArray(t.progress) ? t.progress : []; }
+  /* 已知用户名集合：启用用户 ∪ 任务中出现的负责人（共享模式 / 已停用用户兜底），中文序排序 */
+  function knownAssignees() {
+    var names = [], seen = {};
+    enabledUsers().forEach(function (u) { if (u.username && !seen[u.username]) { seen[u.username] = 1; names.push(u.username); } });
+    tasks.forEach(function (t) { if (t.assignee && !seen[t.assignee]) { seen[t.assignee] = 1; names.push(t.assignee); } });
+    return names.sort(function (a, b) { return a.localeCompare(b, 'zh'); });
+  }
 
   /* ---------- AI 配置与调用（自定义 API → DSH 会话桥） ---------- */
   function loadAiCfg() {
@@ -465,6 +518,7 @@
   /* ---------- 排序 / 筛选 ---------- */
   function visibleTasks() {
     var list = tasks.filter(function (t) {
+      if (userFilter && t.assignee !== userFilter) return false;   // 用户筛选与状态 tab 叠加
       if (filter === 'mine') return me.username && t.assignee === me.username;
       if (filter === 'all') return true;
       return t.status === filter;
@@ -488,6 +542,7 @@
   }
   function render() {
     renderHead();
+    syncUserFilter();
     document.getElementById('stTotal').textContent = tasks.length;
     document.getElementById('stDoing').textContent = tasks.filter(function (t) { return t.status === 'doing'; }).length;
     document.getElementById('stDone').textContent = tasks.filter(function (t) { return t.status === 'done'; }).length;
@@ -497,8 +552,10 @@
     box.innerHTML = '';
     var list = visibleTasks();
     if (!list.length) {
-      box.innerHTML = '<div class="dshell-card tm-empty">暂无任务' +
-        (filter === 'all' && isAdmin() ? '，点击右上角「＋ 新建任务」创建第一条团队任务' : '') + '</div>';
+      var emptyMsg = '暂无任务';
+      if (userFilter) emptyMsg = '「' + userLabel(userFilter) + '」在当前筛选下暂无任务';
+      else if (filter === 'all' && isAdmin()) emptyMsg = '暂无任务，点击右上角「＋ 新建任务」创建第一条团队任务';
+      box.innerHTML = '<div class="dshell-card tm-empty">' + esc(emptyMsg) + '</div>';
       renderDetail();
       return;
     }
@@ -1014,6 +1071,171 @@
     }).catch(function (err) { showErr(err.message); });
   });
 
+  /* ---------- AI 个人总结（选用户 + 时间段 → 个人工作总结） ---------- */
+  var summaryMask = document.getElementById('summaryMask');
+  var sumUserEl = document.getElementById('sumUser');
+  var sumRangeEl = document.getElementById('sumRange');
+  var sumOutEl = document.getElementById('sumOut');
+  var sumOutText = '';   // 最近一次总结的原始文本（复制用）
+  var sumBusy = false;   // 生成期间防重入
+
+  function toDayInput(ts) {
+    var d = new Date(ts), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+  function endOfDayTs(ts) { var d = new Date(ts); d.setHours(23, 59, 59, 999); return d.getTime(); }
+
+  /* 时间段起止：周 = 本周一 00:00 ~ 周日 24:00 前；月 / 年取整月整年；自定义按日期输入取整天。
+     区间不完整或开始晚于结束返回 null（调用方提示补齐）。 */
+  function sumRangeStartEnd() {
+    var mode = sumRangeEl.value;
+    var now = new Date();
+    if (mode === 'custom') {
+      var fv = document.getElementById('sumFrom').value, tv = document.getElementById('sumTo').value;
+      if (!fv || !tv) return null;
+      var s = new Date(fv + 'T00:00:00').getTime(), e = endOfDayTs(new Date(tv + 'T00:00:00').getTime());
+      return s <= e ? [s, e] : null;
+    }
+    if (mode === 'week') {
+      var mon = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (now.getDay() + 6) % 7);
+      return [mon.getTime(), endOfDayTs(mon.getTime() + 6 * 86400000)];
+    }
+    if (mode === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), endOfDayTs(new Date(now.getFullYear(), now.getMonth() + 1, 0).getTime())];
+    return [new Date(now.getFullYear(), 0, 1).getTime(), endOfDayTs(new Date(now.getFullYear(), 11, 31).getTime())];
+  }
+  /* 区间命中口径：创建 / 截止 / 任一进展时间落在区间内（任务无 doneAt，以三类时间戳近似活跃区间） */
+  function taskInSumRange(t, s, e) {
+    if (t.created && t.created >= s && t.created <= e) return true;
+    if (t.deadline && t.deadline >= s && t.deadline <= e) return true;
+    var prog = taskProgress(t);
+    for (var i = 0; i < prog.length; i++) { var at = prog[i] && prog[i].at; if (at && at >= s && at <= e) return true; }
+    return false;
+  }
+  function sumMatched() {
+    var r = sumRangeStartEnd();
+    if (!r) return null;
+    var who = sumUserEl.value;
+    return { who: who, range: r, list: tasks.filter(function (t) { return who && t.assignee === who && taskInSumRange(t, r[0], r[1]); }) };
+  }
+  function updateSumMatch() {
+    var el = document.getElementById('sumMatch');
+    var st = sumMatched();
+    if (!st) { el.textContent = '自定义区间不完整或开始日期晚于结束日期，请补齐。'; return; }
+    el.textContent = '已匹配 ' + st.list.length + ' 条任务 · ' + (st.who || '（未选用户）') + ' · ' +
+      toDayInput(st.range[0]) + ' ~ ' + toDayInput(st.range[1]) + '（命中口径：创建 / 截止 / 任一进展时间落在区间内）';
+  }
+
+  /* 极简 Markdown 渲染（标题行 / **粗体** / 列表行 / 空行占位）：先 esc 再组 DOM，不引入外部库 */
+  function mdLite(src) {
+    var html = '';
+    String(src || '').split(/\r?\n/).forEach(function (line) {
+      var s = esc(line);
+      var li = s.match(/^\s*(?:[-*•]|\d+[.)、])\s+(.*)$/);
+      if (li) { html += '<div class="tm-mdLi">• ' + li[1].replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>') + '</div>'; return; }
+      if (!s.trim()) { html += '<div class="tm-mdSp"></div>'; return; }
+      var h = s.match(/^#{1,6}\s+(.*)$/);
+      var body = (h ? h[1] : s).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+      html += '<div' + (h ? ' class="tm-mdH"' : '') + '>' + body + '</div>';
+    });
+    return html || '<div class="tm-hint">（AI 未返回内容）</div>';
+  }
+
+  function buildSummaryPrompt(who, range, list) {
+    var cap = 60;   // 提示词任务条数上限，防超长
+    var lines = list.slice(0, cap).map(function (t) {
+      var seg = ['- 「' + t.title + '」（' + (STATUS[t.status] || t.status) + ' · 优先级' + (PRIO[t.prio] || PRIO.mid).label + '）'];
+      if (t.deadline) seg.push('截止 ' + fmtDL(t.deadline));
+      var tags = taskTags(t);
+      if (tags.length) seg.push('标签: ' + tags.join(','));
+      if (t.effect) seg.push('结果: ' + String(t.effect).slice(0, 200));
+      var prog = taskProgress(t);
+      if (prog.length) seg.push('近期进展: ' + prog.slice(-3).map(function (e) { return String(e.text || '').slice(0, 120); }).join('；'));
+      return seg.join(' | ');
+    }).join('\n');
+    return '你是团队绩效助理。请基于成员在指定时间段内的任务记录，输出一份实事求是的中文个人工作总结（Markdown，简洁分点，只依据记录，不得编造）。\n\n' +
+      '成员：' + who + '\n时间段：' + toDayInput(range[0]) + ' ~ ' + toDayInput(range[1]) + '\n' +
+      '任务数：' + list.length + (list.length > cap ? '（以下仅列前 ' + cap + ' 条）' : '') + '\n\n' +
+      '输出结构：\n## 概览\n## 主要成果\n## 进行中与风险\n## 小结与建议\n\n' +
+      '任务记录（含状态 / 优先级 / 截止 / 标签 / 结果 / 近期进展）：\n' + lines;
+  }
+
+  function fillSumUsers() {
+    var names = knownAssignees();
+    sumUserEl.innerHTML = names.length
+      ? names.map(function (n) { return '<option value="' + esc(n) + '">' + esc(userLabel(n)) + '</option>'; }).join('')
+      : '<option value="">（暂无用户 / 任务）</option>';
+    /* 默认人选：当前列表的用户筛选 → 本人 → 第一个用户 */
+    var def = (userFilter && names.indexOf(userFilter) >= 0) ? userFilter
+      : (me.username && names.indexOf(me.username) >= 0 ? me.username : (names[0] || ''));
+    sumUserEl.value = def;
+  }
+  function openSummary() {
+    fillSumUsers();
+    sumRangeEl.value = 'week';
+    document.getElementById('sumCustomRow').style.display = 'none';
+    /* 自定义区间预填本周（周一 ~ 周日），切换过去立即可生成 */
+    var n = new Date();
+    var mon = new Date(n.getFullYear(), n.getMonth(), n.getDate() - (n.getDay() + 6) % 7);
+    document.getElementById('sumFrom').value = toDayInput(mon.getTime());
+    document.getElementById('sumTo').value = toDayInput(mon.getTime() + 6 * 86400000);
+    sumOutText = '';
+    sumOutEl.innerHTML = '<div class="tm-hint">选择用户与时间段后点「✨ 生成总结」，AI 将基于区间内任务输出个人工作总结。</div>';
+    document.getElementById('sumCopyBtn').style.display = 'none';
+    document.getElementById('sumStatus').textContent = '';
+    updateSumMatch();
+    summaryMask.classList.add('on');
+  }
+  document.getElementById('summaryBtn').addEventListener('click', openSummary);
+  document.getElementById('sumCloseBtn').addEventListener('click', function () { summaryMask.classList.remove('on'); });
+  summaryMask.addEventListener('click', function (e) { if (e.target === summaryMask) summaryMask.classList.remove('on'); });
+  sumRangeEl.addEventListener('change', function () {
+    document.getElementById('sumCustomRow').style.display = sumRangeEl.value === 'custom' ? '' : 'none';
+    updateSumMatch();
+  });
+  sumUserEl.addEventListener('change', updateSumMatch);
+  document.getElementById('sumFrom').addEventListener('change', updateSumMatch);
+  document.getElementById('sumTo').addEventListener('change', updateSumMatch);
+  document.getElementById('sumGoBtn').addEventListener('click', function () {
+    if (sumBusy) return;
+    var st = sumMatched();
+    if (!st) { showErr('请补齐自定义日期区间（开始 ≤ 结束）'); return; }
+    if (!st.who) { showErr('暂无用户可选'); return; }
+    if (!st.list.length) { showErr('该时间段内没有匹配任务，请调整用户或时间段'); return; }
+    var statusEl = document.getElementById('sumStatus');
+    var goBtn = document.getElementById('sumGoBtn');
+    sumBusy = true; goBtn.disabled = true;
+    statusEl.textContent = 'AI 总结中（' + st.list.length + ' 条任务）…';
+    aiChat(buildSummaryPrompt(st.who, st.range, st.list)).then(function (out) {
+      sumOutText = String(out || '').trim();
+      sumOutEl.innerHTML = mdLite(sumOutText);
+      document.getElementById('sumCopyBtn').style.display = '';
+      statusEl.textContent = '生成完成，可复制或调整条件重新生成';
+    }).catch(function (err) {
+      statusEl.textContent = '';
+      showErr(err.message || String(err));
+    }).then(function () { sumBusy = false; goBtn.disabled = false; });
+  });
+  document.getElementById('sumCopyBtn').addEventListener('click', function () {
+    if (!sumOutText) return;
+    var btn = this;
+    var done = function () { btn.textContent = '已复制'; setTimeout(function () { btn.textContent = '复制'; }, 1500); };
+    var fail = function () { showErr('复制失败，请在总结输出区手动选择文本复制'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(sumOutText).then(done, fail);
+      return;
+    }
+    /* 非 secure context（如局域网 IP 直开）回落：临时 textarea + execCommand */
+    var ta = document.createElement('textarea');
+    ta.value = sumOutText;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    if (ok) done(); else fail();
+  });
+
   /* ---------- AI 设置弹窗 ---------- */
   var aiMask = document.getElementById('aiMask');
   document.getElementById('aiCfgBtn').addEventListener('click', function () {
@@ -1046,6 +1268,24 @@
     });
   });
   document.getElementById('sortSel').addEventListener('change', function (e) { sortBy = e.target.value; render(); });
+
+  /* 用户筛选：选项 = 启用用户 ∪ 任务负责人；选项集合有变化才重建（15s 轮询不反复重绘，
+     避免打断展开中的下拉），当前选中用户从选项中消失时回落「全部用户」 */
+  var userSelEl = document.getElementById('userSel');
+  var userSelSig = null;
+  function syncUserFilter() {
+    var names = knownAssignees();
+    var sig = names.join('\n');
+    if (sig === userSelSig) return;
+    userSelSig = sig;
+    userSelEl.innerHTML = '<option value="">用户：全部</option>' + names.map(function (n) {
+      return '<option value="' + esc(n) + '">' + esc(userLabel(n)) + '</option>';
+    }).join('');
+    if (userFilter && names.indexOf(userFilter) < 0) userFilter = '';
+    userSelEl.value = userFilter;
+  }
+  userSelEl.addEventListener('change', function (e) { userFilter = e.target.value; render(); });
+
   document.getElementById('refreshBtn').addEventListener('click', function () { loadIdentity().then(loadTasks); });
 
   /* 团队共享数据：15 秒轮询（页面不可见时暂停），他人增删改自动可见 */
