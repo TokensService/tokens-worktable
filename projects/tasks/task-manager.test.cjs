@@ -1,7 +1,8 @@
 /* task-manager.html 静态契约：配色修复（浅色幽灵按钮可读 / color-scheme 随主题）、
    dsh-auth-gate 真实用户（/auth/status + /auth/users）、任务增删改走 /api/worktable/tasks
    服务端共享存储（不再 localStorage 假数据）；进展 / 标签 / 完成弹窗 AI 总结 / 文本导入；
-   主从双栏布局——左侧紧凑任务列表 + 右侧详情面板（点击卡片切换，不再是详情弹窗）。 */
+   主从双栏布局——左侧紧凑任务列表 + 右侧详情面板（点击卡片切换，不再是详情弹窗）；
+   任务列表按用户筛选；AI 个人总结——选用户 + 时间段（周 / 月 / 年 / 自定义）生成个人工作总结。 */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -151,4 +152,33 @@ test("任务列表加载失败不得清空现有列表", () => {
   assert.ok(!html.includes("r.ok ? r.json() : { tasks: [] }"), "非 2xx 不得回落成空列表把已见任务抹掉");
   assert.ok(html.includes("err.http") && html.includes("任务列表加载失败"),
     "HTTP 层错误应提示一次，网络抖动仍静默保留旧数据");
+});
+
+test("任务列表支持按用户筛选（与状态 tab 叠加）", () => {
+  assert.ok(html.includes('id="userSel"'), "应有用户筛选下拉");
+  assert.ok(html.includes('var userFilter'), "应有用户筛选状态");
+  assert.ok(html.includes("t.assignee !== userFilter"), "visibleTasks 应按 assignee 过滤");
+  assert.ok(html.includes("syncUserFilter();"), "render 应联动同步用户选项");
+  assert.ok(html.includes("knownAssignees()"), "选项应取 启用用户 ∪ 任务负责人（共享模式兜底）");
+});
+
+test("用户筛选选项集合变化才重建（15s 轮询不打断展开中的下拉）", () => {
+  assert.ok(html.includes("userSelSig"), "应以选项签名跳过无变化轮次");
+  assert.ok(html.includes("names.indexOf(userFilter) < 0"), "选中用户从选项消失应回落「全部用户」");
+});
+
+test("AI 个人总结：选用户 + 时间段（周/月/年/自定义）生成", () => {
+  assert.ok(html.includes('id="summaryBtn"'), "应有个人总结入口按钮");
+  assert.ok(html.includes('id="summaryMask"'), "应有总结弹窗");
+  assert.ok(html.includes('id="sumUser"'), "应可选用户");
+  assert.ok(html.includes('value="week"') && html.includes('value="month"') && html.includes('value="year"') && html.includes('value="custom"'),
+    "时间段应支持本周 / 本月 / 今年 / 自定义");
+  assert.ok(html.includes('id="sumFrom"') && html.includes('id="sumTo"'), "自定义区间应有起止日期输入");
+  assert.ok(html.includes("sumRangeStartEnd"), "应计算时间段起止");
+  assert.ok(html.includes("taskInSumRange"), "应按创建 / 截止 / 任一进展时间命中区间");
+  assert.ok(html.includes("sumMatched()"), "应实时统计匹配任务数并展示");
+  assert.ok(html.includes("buildSummaryPrompt"), "应组装个人总结提示词");
+  assert.ok(html.includes("aiChat("), "应复用 AI 调用封装");
+  assert.ok(html.includes('id="sumOut"'), "应有总结输出区");
+  assert.ok(html.includes("mdLite("), "输出应经安全 Markdown 渲染（先 esc 再组 DOM）");
 });
