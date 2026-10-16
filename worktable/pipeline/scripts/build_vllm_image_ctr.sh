@@ -20,6 +20,7 @@ usage() {
   BUILD_REMOTE_PORT   远程 SSH 端口，默认 2222
   BUILD_REMOTE_USER   远程 SSH 用户，默认 root
   BUILD_REMOTE_PROXY_COMMAND SSH ProxyCommand，默认使用 192.168.10.6:3128 HTTP 代理
+  BUILD_REMOTE_PROXY_URL  远程构建步骤使用的代理；为空时不转发本地回环代理
   BUILD_REMOTE_AUTO_TUNE  根据远端 CPU/内存自动选择 CUDA 并发，默认 true
   BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
   BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2
@@ -73,6 +74,7 @@ BUILD_REMOTE_HOST="${BUILD_REMOTE_HOST:-115.120.93.136}"
 BUILD_REMOTE_PORT="${BUILD_REMOTE_PORT:-2222}"
 BUILD_REMOTE_USER="${BUILD_REMOTE_USER:-root}"
 BUILD_REMOTE_PROXY_COMMAND="${BUILD_REMOTE_PROXY_COMMAND:-ncat --proxy 192.168.10.6:3128 --proxy-type http %h %p}"
+BUILD_REMOTE_PROXY_URL="${BUILD_REMOTE_PROXY_URL:-}"
 BUILD_REMOTE_EXEC="${BUILD_REMOTE_EXEC:-0}"
 BUILD_REMOTE_AUTO_TUNE="${BUILD_REMOTE_AUTO_TUNE:-true}"
 BUILD_MAX_JOBS_WAS_SET="${BUILD_MAX_JOBS+x}"
@@ -178,6 +180,14 @@ run_remote_build() {
       PIP_INDEX_URL PIP_EXTRA_INDEX_URL; do
       if [[ -v "$env_name" ]]; then
         env_value="${!env_name}"
+        if [[ "$env_name" == HTTP_PROXY || "$env_name" == HTTPS_PROXY ||
+              "$env_name" == http_proxy || "$env_name" == https_proxy ]]; then
+          if [[ -n "$BUILD_REMOTE_PROXY_URL" ]]; then
+            env_value="$BUILD_REMOTE_PROXY_URL"
+          elif [[ "$env_value" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
+            continue
+          fi
+        fi
         printf '%s=%q\n' "$env_name" "$env_value"
       fi
     done
