@@ -189,7 +189,7 @@ function pushFixture(response) {
   return { ctx, requests, baseConfig, clientConfig, timers };
 }
 
-test('配置 PUT 携带最近一次服务端基线（pipelines + environments，三方合并按 id 比对），供服务端做三方合并', async () => {
+test('配置 PUT 携带最近一次服务端基线（pipelines + environments + repositories，三方合并按 id 比对），供服务端做三方合并', async () => {
   const merged = { pipelines: [{ id: 'p1', name: '本页修改', stages: [] }], theme: 'dark' };
   const f = pushFixture({ ok: true, status: 200, json: async () => ({ ok: true, config: merged }) });
 
@@ -198,8 +198,8 @@ test('配置 PUT 携带最近一次服务端基线（pipelines + environments，
   assert.equal(result.ok, true);
   assert.equal(f.requests.length, 1);
   const body = JSON.parse(f.requests[0].options.body);
-  assert.deepEqual(body.baseConfig, { pipelines: f.baseConfig.pipelines, environments: f.baseConfig.environments },
-    '基线只带 pipelines + environments：合并从不读取其余基线字段，压缩上行负载；environments 基线供服务端按 id 合并节点环境');
+  assert.deepEqual(body.baseConfig, { pipelines: f.baseConfig.pipelines, environments: f.baseConfig.environments, repositories: [] },
+    '基线只带 pipelines + environments + repositories：合并从不读取其余基线字段，压缩上行负载；environments/repositories 基线供服务端按 id 合并');
   assert.deepEqual(body.config, f.clientConfig);
   assert.deepEqual(body.history, [{ tag: 'run-1', ts: 1 }], '常规保存仍携带历史正文');
 })

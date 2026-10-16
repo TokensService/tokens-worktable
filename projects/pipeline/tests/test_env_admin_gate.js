@@ -291,7 +291,8 @@ function loadServerCtx(response, seeds, globals) {
   vm.createContext(ctx);
   vm.runInContext([
     'historyPersistSig', 'stripPipelineSharedMeta', 'mergePipelinesFromServer', 'sameEnvEntry', 'mergeEnvironmentsFromServer',
-    'normalizeEnv', 'envConfigEditable', 'fetchPipelineStateFresh', 'loadServerState',
+    'sameRepoEntry', 'mergeRepositoriesFromServer',
+    'normalizeEnv', 'normalizeRepo', 'envConfigEditable', 'fetchPipelineStateFresh', 'loadServerState',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, storage };
 }

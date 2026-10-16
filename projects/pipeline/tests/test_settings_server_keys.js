@@ -106,7 +106,7 @@ function loadStateFixture(serverConfig,opts){
     fetch:async()=>({ok:true,status:200,json:async()=>({config:JSON.parse(JSON.stringify(serverConfig)),history:[]})}),
   };
   vm.createContext(ctx);
-  vm.runInContext(['stripPipelineSharedMeta','mergePipelinesFromServer','fetchPipelineStateFresh',
+  vm.runInContext(['stripPipelineSharedMeta','mergePipelinesFromServer','sameRepoEntry','mergeRepositoriesFromServer','fetchPipelineStateFresh',
     'normalizeFetchMode','normalizeEnv','normalizeRepo','curPipeline','plOwnerFilterLabel','envConfigEditable','loadServerState',
   ].map(extractFunction).join('\n'),ctx);
   return {ctx,calls,storage,els};
