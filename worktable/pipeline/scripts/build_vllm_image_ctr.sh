@@ -17,6 +17,7 @@ usage() {
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
   BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
+  BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2；内存不足时可设为 1
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
   BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
@@ -62,6 +63,7 @@ BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
 BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-}"
+BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
 BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
 BUILD_ENGINE="${BUILD_ENGINE:-auto}"
@@ -294,10 +296,14 @@ if [[ -z "$BUILD_CPUS" ]]; then
   ((BUILD_CPUS >= 1)) || BUILD_CPUS=1
 fi
 [[ "$BUILD_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_MAX_JOBS 必须是正整数: $BUILD_MAX_JOBS"
+[[ "$BUILD_NVCC_THREADS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_NVCC_THREADS 必须是正整数: $BUILD_NVCC_THREADS"
 [[ "$BUILD_CPUS" =~ ^[1-9][0-9]*$ ]] || die "BUILD_CPUS 必须是正整数: $BUILD_CPUS"
 build_args+=("--opt" "build-arg:max_jobs=$BUILD_MAX_JOBS")
+build_args+=("--opt" "build-arg:nvcc_threads=$BUILD_NVCC_THREADS")
 nerdctl_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
+nerdctl_build_args+=("--build-arg" "nvcc_threads=$BUILD_NVCC_THREADS")
 docker_build_args+=("--build-arg" "max_jobs=$BUILD_MAX_JOBS")
+docker_build_args+=("--build-arg" "nvcc_threads=$BUILD_NVCC_THREADS")
 
 build_cache_args=()
 nerdctl_cache_args=()
@@ -483,7 +489,7 @@ info "目标镜像: $IMAGE"
 info "源码仓库: $VLLM_REPO_URL"
 info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
-info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS"
+info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS，nvcc 线程: $BUILD_NVCC_THREADS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
 [[ "$BUILD_ENGINE" != indocker ]] && info "uv 缓存并发: $BUILD_UV_CACHE_SHARING"
 if [[ "$BUILD_ENGINE" == docker-buildx && -z "$BUILD_PROXY_URL" && "${HTTP_PROXY:-${http_proxy:-}}" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
