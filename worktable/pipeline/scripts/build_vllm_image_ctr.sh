@@ -300,10 +300,14 @@ if [[ "$DRY_RUN" != true ]]; then
   command -v ctr >/dev/null || die "缺少 ctr"
     case "$BUILD_ENGINE" in
     auto)
-      if command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=indocker
+      # 优先使用 Buildx：它支持可持久化的本地 layer cache；只有 Buildx
+      # 不可用时才回退到普通 Docker/indocker。显式指定 BUILD_ENGINE 仍优先。
+      if command -v docker >/dev/null && docker info >/dev/null 2>&1 \
+          && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
+      elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=docker
       elif command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
       elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
-      else die "缺少可用构建器：请安装可用的 Docker、buildctl+buildkitd 或 nerdctl+buildkitd"; fi
+      else die "缺少可用构建器：请安装 Docker（推荐含 Buildx）、buildctl+buildkitd 或 nerdctl+buildkitd"; fi
       ;;
     buildctl|nerdctl|docker) command -v "$BUILD_ENGINE" >/dev/null || die "缺少 $BUILD_ENGINE" ;;
     indocker) command -v docker >/dev/null || command -v nerdctl >/dev/null || command -v ctr >/dev/null || die "缺少 indocker 外层运行时" ;;
