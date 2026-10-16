@@ -1295,6 +1295,48 @@ function mergeEnvironmentsFromServer(baseList, localList, remoteList){
   });
   return result;
 }
+/* 代码仓条目比对：只看 normalizeRepo 的规范字段（id/name/url/user/pass/fetchMode/jenkinsJob/strategyUrl/strategyMode/strategyScript），
+   与键序、多余字段无关——基线条目来自服务端快照（原始 JSON），本页条目经 normalizeRepo 归一，直接 JSON.stringify 会 phantom 不同。 */
+function sameRepoEntry(a,b){
+  if(a===b) return true;
+  if(!a||!b) return false;
+  return String(a.id)===String(b.id) && String(a.name||'')===String(b.name||'') && String(a.url||'')===String(b.url||'')
+    && String(a.user||'')===String(b.user||'') && String(a.pass||'')===String(b.pass||'')
+    && String(a.fetchMode||'')===String(b.fetchMode||'') && String(a.jenkinsJob||'')===String(b.jenkinsJob||'')
+    && String(a.strategyUrl||'')===String(b.strategyUrl||'') && String(a.strategyMode||'')===String(b.strategyMode||'')
+    && String(a.strategyScript||'')===String(b.strategyScript||'');
+}
+/* loadServerState 的代码仓按 id 三方合并（与节点环境 mergeEnvironmentsFromServer 同口径，替代整表替换）：
+   共同基线 = serverConfigBase.repositories，本地 = 当前全局 repositories，远端 = GET 响应 cfg.repositories。
+   - 仅本地存在（基线/远端都无）：本地新增未落盘 → 保留（追加在合并结果末尾）——409 自愈重拉、
+     他端保存触发的快照同步不再把本页刚添加的代码仓冲掉；
+   - 基线有、远端无（远端已删除）：本地与基线一致 → 随远端删除；本地相对基线有改动（删除正撞保存在途）→ 保留本地；
+   - 本地==基线 → 取远端；远端==基线 → 保留本地；双边都改且内容不一致 → 取远端（同步语义下服务端为准）；
+   - 本地无、远端有：远端==基线 → 维持本地删除（在途删除不复活）；远端已改或为新增 → 取远端。
+   结果顺序：先按远端顺序（保留他端新增的位置），再追加仅本地的条目。
+   合并后对空 pass 做本地令牌回填迁移（与旧版整表替换路径同口径）。 */
+function mergeRepositoriesFromServer(baseList, localList, remoteList){
+  const valid=r=>r&&typeof r==='object'&&!Array.isArray(r)&&r.id!==undefined&&r.id!==null&&String(r.id)!=='';
+  const mapOf=list=>{ const m=new Map(); (Array.isArray(list)?list:[]).forEach(r=>{ if(valid(r)) m.set(String(r.id),r); }); return m; };
+  const base=mapOf(baseList), local=mapOf(localList), remote=mapOf(remoteList);
+  const same=(a,b)=>{ const ah=a!==undefined, bh=b!==undefined; return ah===bh&&(!ah||sameRepoEntry(a,b)); };
+  const result=[], seen=new Set();
+  (Array.isArray(remoteList)?remoteList:[]).forEach(r=>{
+    if(!valid(r)) return; const id=String(r.id); if(seen.has(id)) return; seen.add(id);
+    const b=base.get(id), l=local.get(id), r2=remote.get(id);
+    if(!local.has(id)){ if(!same(r2,b)) result.push(normalizeRepo(r2)); return; }   /* 本地已删除：远端未改维持删除；远端已改/他端新增取远端 */
+    if(same(l,b)){ result.push(normalizeRepo(r2)); return; }                        /* 本地未改：取远端（远端新增/修改照常同步） */
+    if(same(r2,b)){ result.push(normalizeRepo(l)); return; }                        /* 远端未改：保留本地（在途修改不被重拉冲掉） */
+    result.push(normalizeRepo(r2));                                                 /* 双边都改且不一致：服务端为准 */
+  });
+  (Array.isArray(localList)?localList:[]).forEach(r=>{
+    if(!valid(r)) return; const id=String(r.id); if(seen.has(id)) return; seen.add(id);
+    const b=base.get(id), l=local.get(id);
+    if(!base.has(id)){ result.push(normalizeRepo(l)); return; }                     /* 仅本地存在：本地新增未落盘，保留 */
+    if(!same(l,b)) result.push(normalizeRepo(l));                                   /* 基线有、远端无（远端已删）：本地有改动（保存在途）保留本地 */
+  });
+  return result;
+}
 /* options.silentConflict：409 冲突时不提示、不重拉（编辑器 savePlForm 的回退全量保存使用——
    冲突由编辑器自己的回滚 + alert 单独处理）；默认（含 persistState 防抖调用）非静默。 */
 async function pushState(options){
@@ -1316,13 +1358,15 @@ async function pushState(options){
     /* 演示数据（demo 标记）不上服务端；历史只存元数据 + 日志文件路径（全量日志在归档文件）；
        服务端 PUT 路由按 tag/ts 合并磁盘上页面未知的记录（定时运行产出），不再全量覆盖。
        负载瘦身（「保存中…」等待与上行字节数成正比，公网映射等慢上行链路下全量负载曾需 10 秒级）：
-       baseConfig 只带 pipelines 与 environments——服务端三方合并仅按这两类条目的 id 比对基线
+       baseConfig 带 pipelines / environments / repositories——服务端三方合并按这三类条目的 id 比对基线
        （mergePipelineConfigForWrite），其余基线字段从不读取；历史正文仅在内容自上次确认同步后有变化时携带（签名比对），
        未变不带——服务端合并对客户端未上报的记录一律按磁盘保留，不丢定时/他端/本页运行历史。 */
     const payload={config, baseConfig:{
       pipelines:(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[],
       /* 节点环境基线随保存上送：服务端据此按 id 三方合并，他端并发新增的节点不再被本页整表覆盖 */
       environments:(serverConfigBase&&Array.isArray(serverConfigBase.environments))?serverConfigBase.environments:[],
+      /* 代码仓基线随保存上送：服务端据此按 id 三方合并，他端并发新增/修改的代码仓不再被本页整表覆盖 */
+      repositories:(serverConfigBase&&Array.isArray(serverConfigBase.repositories))?serverConfigBase.repositories:[],
     }};
     if(historySig!==historySyncSig) payload.history=savedHistory;
     /* 看门狗：链路黑洞（连接在但无响应）时 60 秒中止，防一次卡死的 PUT 长期占用 persistInFlight、
@@ -1373,6 +1417,15 @@ async function pushState(options){
         environments=reconcilePipelinesAfterSave(config.environments,body.config.environments,environments)
           .map(e=>JSON.parse(JSON.stringify(e))).map(normalizeEnv);
         try{ localStorage.setItem('pip-envs',JSON.stringify(environments)); }catch(e){}
+      }
+      /* 代码仓同样按响应合回：服务端三方合并可能带进他端并发新增/修改的代码仓；
+         请求在途期间本页产生的代码仓改动（继续添加/编辑/删除）由 reconcile 保留，不被响应覆盖。 */
+      if(Array.isArray(body.config.repositories) && typeof repositories!=='undefined'){
+        repositories=reconcilePipelinesAfterSave(config.repositories,body.config.repositories,repositories)
+          .map(r=>JSON.parse(JSON.stringify(r))).map(normalizeRepo);
+        try{ localStorage.setItem('pip-repos',JSON.stringify(repositories)); }catch(e){}
+        if(typeof renderRepos==='function') renderRepos();
+        if(typeof renderRepoOptions==='function') renderRepoOptions();
       }
     }
     historySyncSig=historySig;   // 本批历史已确认落盘：下次内容未变不再携带
@@ -1472,9 +1525,10 @@ async function loadServerState(){
      服务端令牌为空而本地有同 id 令牌时置位；finally 里据此 persistState 一次，把迁移结果推上服务端 */
   let migrated=false;
   try{
-    /* 流水线/节点环境三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
+    /* 流水线/节点环境/代码仓三方合并的共同基线必须先取出：serverConfigBase 随后即被响应快照替换 */
     const prevBasePipelines=(serverConfigBase&&Array.isArray(serverConfigBase.pipelines))?serverConfigBase.pipelines:[];
     const prevBaseEnvironments=(serverConfigBase&&Array.isArray(serverConfigBase.environments))?serverConfigBase.environments:[];
+    const prevBaseRepositories=(serverConfigBase&&Array.isArray(serverConfigBase.repositories))?serverConfigBase.repositories:[];
     if(st){ serverConfigBase=JSON.parse(JSON.stringify((st.config&&typeof st.config==='object'&&!Array.isArray(st.config))?st.config:{})); stateFetchEpoch+=1; }   // 基线前进（新鲜快照应用）：在途 GET 快照自此视为过期
     if(st && st.config && Object.keys(st.config).length){
       const cfg=st.config;
@@ -1499,12 +1553,14 @@ async function loadServerState(){
         if(!envConfigEditable()) environments=cfg.environments.map(normalizeEnv);
         else if(cfg.environments.length) environments=mergeEnvironmentsFromServer(prevBaseEnvironments, environments, cfg.environments);
       }
+      /* 代码仓按 id 三方合并（替代整表替换，与节点环境 mergeEnvironmentsFromServer 同口径）：
+         409 自愈重拉/快照同步不再把本地未落盘的新增/修改代码仓冲掉，他端新增/修改/删除照常同步进来。
+         合并后对空 pass 做本地令牌回填迁移：旧版客户端上送时剔除 pass，服务端条目 pass 为空而本页
+         （启动时从 localStorage 离线缓存装入）存有同 id 令牌 → 回填并标记 migrated（末尾统一回推一次）；
+         服务端已有令牌的条目一律以服务端为准（merge 结果中远端条目已含服务端 pass）。 */
       if(Array.isArray(cfg.repositories) && cfg.repositories.length){
-        /* 代码仓访问令牌 pass 随服务端配置持久化（团队各浏览器共享，见 collectConfig）。迁移：旧版客户端
-           上送时剔除 pass，服务端条目 pass 为空而本页（启动时从 localStorage 离线缓存装入）存有同 id
-           令牌 → 回填并标记 migrated（末尾统一回推一次）；服务端已有令牌的条目一律以服务端为准。 */
         const prevPass={}; repositories.forEach(function(r){ if(r.pass) prevPass[r.id]=r.pass; });
-        repositories=cfg.repositories.map(normalizeRepo);
+        repositories=mergeRepositoriesFromServer(prevBaseRepositories, repositories, cfg.repositories);
         repositories.forEach(function(r){ if(!r.pass && prevPass[r.id]){ r.pass=prevPass[r.id]; migrated=true; } });
       }
       /* 视图状态与定时环境选择（定时环境/历史与流水线筛选/页大小）：键存在（含空串/空数组）一律以服务端为准；

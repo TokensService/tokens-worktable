@@ -24,7 +24,7 @@ function extractFunction(name) {
 }
 
 /* 合并函数引用的共享元数据助手（剥离比对 + 键序无关深比较 + 三方合并 + 节点环境条目比对），抽函数时一并加载 */
-const SHARED_META_HELPERS = ['stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'sameEnvironmentContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
+const SHARED_META_HELPERS = ['stripPipelineSharedMeta', 'deepEqualIgnoring', 'samePipelineContent', 'sameEnvironmentContent', 'sameRepositoryContent', 'mergePipelineFavoriteUsers', 'mergePipelinePinnedAt', 'withPipelineSharedMeta']
 
 function loadFunctions(names, extraDecls = []) {
   const ctx = {}
@@ -431,4 +431,103 @@ test('节点环境：合并不影响流水线冲突判定，流水线冲突时 e
 
   assert.deepEqual(result.conflicts, ['p1'], '流水线真冲突仍 409')
   assert.deepEqual(result.config.environments.map(item => item.id), ['env-1', 'env-a', 'env-b'], '409 不落盘，响应里的合并结果仅供调用方参考')
+})
+
+/* ---------- 代码仓（repositories）按 id 三方合并：整表 last-write-wins 修复 ---------- */
+/* 场景原型：两个浏览器同时打开设置页，A 添加代码仓落盘后，B（仍是旧列表快照）添加另一个代码仓——
+   修复前 B 的整表保存把 A 的代码仓覆盖丢失；修复后按 id 合并，双方新增都保留。 */
+const repo = (id, name, extra) => ({ id, name, url: 'https://git.example.com/' + name + '.git', user: '', pass: '', fetchMode: 'server', jenkinsJob: '', strategyUrl: '', strategyMode: 'url', strategyScript: '', ...(extra || {}) })
+
+test('代码仓：两个浏览器各添加不同仓库，双方新增都保留（磁盘序在前，本端新增追加）', () => {
+  const base = { repositories: [repo('r-1', 'repo-one')] }
+  const disk = { repositories: [repo('r-1', 'repo-one'), repo('r-a', 'A 添加')] }
+  const client = { pipelines: [], repositories: [repo('r-1', 'repo-one'), repo('r-b', 'B 添加')] }
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [], '代码仓合并不产生 409 冲突')
+  assert.deepEqual(result.config.repositories.map(item => item.id), ['r-1', 'r-a', 'r-b'], '双方新增都保留，磁盘顺序在前')
+})
+
+test('代码仓：本端未改动的条目以磁盘为准（他端修改/删除同步生效）', () => {
+  const base = { repositories: [repo('r-1', 'repo-one'), repo('r-2', 'repo-two'), repo('r-3', 'repo-three')] }
+  const disk = { repositories: [repo('r-1', '改名-他端', { url: 'https://new.example.com/x.git' }), repo('r-3', 'repo-three')] }   // 他端改 r-1、删 r-2
+  const client = { pipelines: [], repositories: [repo('r-1', 'repo-one'), repo('r-2', 'repo-two'), repo('r-3', 'repo-three')] }   // 本端未动
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.deepEqual(result.config.repositories.map(item => [item.id, item.name]), [['r-1', '改名-他端'], ['r-3', 'repo-three']])
+})
+
+test('代码仓：本端删除磁盘未动的条目删除生效；本端修改取本端', () => {
+  const base = { repositories: [repo('r-1', 'repo-one'), repo('r-2', 'repo-two')] }
+  const disk = { repositories: [repo('r-1', 'repo-one'), repo('r-2', 'repo-two')] }
+  const client = { pipelines: [], repositories: [repo('r-2', 'repo-two', { pass: 'new-token', strategyUrl: 'http://s/{branch}' })] }   // 本端删 r-1、改 r-2
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.deepEqual(result.config.repositories.map(item => item.id), ['r-2'], '本端删除生效')
+  assert.equal(result.config.repositories[0].pass, 'new-token', '本端修改生效')
+  assert.equal(result.config.repositories[0].strategyUrl, 'http://s/{branch}', '部署策略 URL 修改生效')
+})
+
+test('代码仓：同 id 双边都改按后写赢取本端，不报冲突；本端改 vs 他端删由本端复活', () => {
+  const base = { repositories: [repo('r-1', '原始'), repo('r-2', 'repo-two')] }
+  const bothChanged = merge(
+    { pipelines: [], repositories: [repo('r-1', 'B 改', { user: 'bob' }), repo('r-2', 'repo-two')] },
+    base,
+    { repositories: [repo('r-1', 'A 改'), repo('r-2', 'repo-two')] },
+  )
+  assert.deepEqual(bothChanged.conflicts, [], '同 id 双边都改不产生 409（区别于流水线的冲突语义）')
+  assert.deepEqual(bothChanged.config.repositories.map(item => [item.id, item.name]), [['r-1', 'B 改'], ['r-2', 'repo-two']])
+  assert.equal(bothChanged.config.repositories[0].user, 'bob')
+
+  const editVsDelete = merge(
+    { pipelines: [], repositories: [repo('r-1', '原始'), repo('r-2', 'repo-two', { pass: 'p2' })] },
+    base,
+    { repositories: [repo('r-1', '原始')] },   // 他端删了 r-2
+  )
+  assert.deepEqual(editVsDelete.conflicts, [])
+  assert.deepEqual(editVsDelete.config.repositories.map(item => item.id), ['r-1', 'r-2'], '本端在途修改不被他端删除吞掉')
+})
+
+test('代码仓：旧页面 baseConfig 不带 repositories 基线时维持整表 last-write-wins（向后兼容）', () => {
+  const disk = { repositories: [repo('r-1', 'repo-one'), repo('r-a', '他端新增')] }
+  const client = { pipelines: [], repositories: [repo('r-1', 'repo-one'), repo('r-b', '旧页面新增')] }
+
+  const result = merge(client, { pipelines: [] }, disk)
+
+  assert.deepEqual(result.config.repositories.map(item => item.id), ['r-1', 'r-b'], '无基线时客户端整表为准（磁盘他端新增被覆盖，同旧行为）')
+})
+
+test('代码仓：条目比对只看规范字段（含 fetchMode/strategyMode/strategyScript/jenkinsJob/strategyUrl），多余字段/键序不造成 phantom 偏离', () => {
+  const base = { repositories: [{ id: 'r-1', name: 'repo-one', url: 'u', user: '', pass: '', fetchMode: 'server', jenkinsJob: '', strategyUrl: '', strategyMode: 'url', strategyScript: '', legacy: 'x' }] }
+  const disk = { repositories: [repo('r-1', 'repo-one')] }
+  const client = { pipelines: [], repositories: [{ pass: '', user: '', url: 'u', name: 'repo-one', id: 'r-1', fetchMode: 'server', strategyScript: '', strategyMode: 'url', strategyUrl: '', jenkinsJob: '' }] }   // 键序打乱
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.deepEqual(result.config.repositories.map(item => item.id), ['r-1'], '规范字段一致即未改动，不复活多余字段也不丢条目')
+})
+
+test('代码仓：strategyUrl/strategyScript/fetchMode/jenkinsJob 属规范字段——仅改其一视为本端改动', () => {
+  const base = { repositories: [repo('r-1', 'repo-one')] }
+  const disk = { repositories: [repo('r-1', 'repo-one')] }
+  const client = { pipelines: [], repositories: [repo('r-1', 'repo-one', { strategyUrl: 'http://s/{branch}' })] }
+
+  const result = merge(client, base, disk)
+
+  assert.deepEqual(result.conflicts, [])
+  assert.equal(result.config.repositories[0].strategyUrl, 'http://s/{branch}', '本端仅改 strategyUrl 取本端')
+
+  const remoteEdited = merge(
+    { pipelines: [], repositories: [repo('r-1', 'repo-one')] },
+    base,
+    { repositories: [repo('r-1', 'repo-one', { fetchMode: 'jenkins-server', jenkinsJob: 'job-x' })] },
+  )
+  assert.equal(remoteEdited.config.repositories[0].fetchMode, 'jenkins-server', '本端未改时他端 fetchMode 修改同步生效')
+  assert.equal(remoteEdited.config.repositories[0].jenkinsJob, 'job-x')
 })

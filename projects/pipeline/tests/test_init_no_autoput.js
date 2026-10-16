@@ -99,7 +99,7 @@ function makeCtx(serverState){
     },
   };
   vm.createContext(ctx);
-  ['applyTheme','renderAll','loadServerState','fetchPipelineStateFresh','migrateInlineLogs','sanitizeFsName','stripPipelineSharedMeta','mergePipelinesFromServer','sameEnvEntry','mergeEnvironmentsFromServer','envConfigEditable']
+  ['applyTheme','renderAll','loadServerState','fetchPipelineStateFresh','migrateInlineLogs','sanitizeFsName','stripPipelineSharedMeta','mergePipelinesFromServer','sameEnvEntry','mergeEnvironmentsFromServer','sameRepoEntry','mergeRepositoriesFromServer','normalizeFetchMode','normalizeRepo','envConfigEditable']
     .forEach(n=>vm.runInContext(extractFunction(n),ctx));
   ctx.__calls=calls;
   return ctx;

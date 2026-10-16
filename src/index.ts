@@ -528,6 +528,29 @@ function sameEnvironmentContent(left: any, right: any): boolean {
   return deepEqualIgnoring(a, b)
 }
 
+/** 代码仓条目内容同一性比对：只认页面 normalizeRepo 的规范字段（name/url/user/pass/fetchMode/jenkinsJob/strategyUrl/strategyMode/strategyScript），
+ *  多余字段剥离后键序无关深比较。基线条目来自服务端快照（原始 JSON），客户端条目经 normalizeRepo 归一，
+ *  直接整体深比较会把同一条目误判为「偏离基线」。 */
+function sameRepositoryContent(left: any, right: any): boolean {
+  const norm = (entry: any) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
+    return {
+      name: typeof entry.name === 'string' ? entry.name : '',
+      url: typeof entry.url === 'string' ? entry.url : '',
+      user: typeof entry.user === 'string' ? entry.user : '',
+      pass: typeof entry.pass === 'string' ? entry.pass : '',
+      fetchMode: typeof entry.fetchMode === 'string' ? entry.fetchMode : '',
+      jenkinsJob: typeof entry.jenkinsJob === 'string' ? entry.jenkinsJob : '',
+      strategyUrl: typeof entry.strategyUrl === 'string' ? entry.strategyUrl : '',
+      strategyMode: typeof entry.strategyMode === 'string' ? entry.strategyMode : '',
+      strategyScript: typeof entry.strategyScript === 'string' ? entry.strategyScript : '',
+    }
+  }
+  const a = norm(left ?? null), b = norm(right ?? null)
+  if (a === null || b === null) return a === b
+  return deepEqualIgnoring(a, b)
+}
+
 /** favoriteUsers 三方集合合并：(client ∩ disk) ∪ (client − base) ∪ (disk − base)——双方共同保留的，
  *  加上各端相对基线新增的；并发取消收藏（相对基线删除）因此同样生效。元素为修剪后的非空字符串；
  *  顺序确定：先按 client 数组顺序，再追加仅 disk 有的元素（按 disk 数组顺序）。任一侧缺失/非数组按空集。 */
@@ -690,6 +713,8 @@ function preserveDiskOnlyConfigKeys(clientConfig: any, diskConfig: any) {
  * 的条目以磁盘为准（他端并发新增/修改/删除不再被本端整表保存覆盖），本端相对基线改动的条目以本端
  * 为准（同 id 双边都改按后写赢取本端，节点条目是简单凭据记录，不报 409 锁死）；旧页面不带
  * environments 基线时维持整表 last-write-wins 旧行为。
+ * 代码仓（repositories）：与 environments 同口径——客户端 baseConfig 携带 repositories 基线时按 id
+ * 三方合并（本端未改取磁盘、本端改动取本端、双边都改后写赢），旧页面不带基线时维持整表 last-write-wins。
  * pipelines 之外的配置键：客户端未携带的磁盘独有键按磁盘值保留（preserveDiskOnlyConfigKeys）。
  */
 function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskConfig: any) {
@@ -762,6 +787,35 @@ function mergePipelineConfigForWrite(clientConfig: any, baseConfig: any, diskCon
     for (const item of clientEnvs) if (valid(item) && mergedEnvs.has(item.id)) { orderedEnvs.push(mergedEnvs.get(item.id)); mergedEnvs.delete(item.id) }
     for (const item of mergedEnvs.values()) orderedEnvs.push(item)
     config.environments = orderedEnvs
+  }
+  /* 代码仓按 id 三方合并（仅在客户端携带 repositories 基线时启用；旧页面 baseConfig 无此键，
+     维持整表 last-write-wins 旧行为，preserveDiskOnlyConfigKeys 已把客户端整表放进 config）：
+     - 本端未改动（与基线一致）的条目以磁盘为准——他端并发新增/修改/删除照常保留，
+       本页一次整表保存不再把其他用户刚添加的代码仓冲掉；
+     - 本端相对基线有改动（含新增/删除）的条目以本端为准；同 id 双边都改按「后写赢」取本端，
+       不报 409——代码仓条目是简单配置记录，冲突锁死的代价高于条目级 last-write-wins；
+     - 仅单边独有的条目（本端新建 / 他端新增）同时保留。
+     顺序与流水线一致：先沿用磁盘顺序（保留他端新增的位置），再追加仅客户端新增的条目。 */
+  if (Array.isArray(base.repositories)) {
+    const clientRepos = Array.isArray(client.repositories) ? client.repositories : []
+    const baseRepos = base.repositories
+    const diskRepos = Array.isArray(disk.repositories) ? disk.repositories : []
+    const repoClientMap = mapOf(clientRepos), repoBaseMap = mapOf(baseRepos), repoDiskMap = mapOf(diskRepos)
+    const sameRepo = (left: Map<string, any>, right: Map<string, any>, id: string) => {
+      const leftHas = left.has(id), rightHas = right.has(id)
+      return leftHas === rightHas && (!leftHas || sameRepositoryContent(left.get(id), right.get(id)))
+    }
+    const repoIds = new Set<string>([...repoBaseMap.keys(), ...repoClientMap.keys(), ...repoDiskMap.keys()])
+    const mergedRepos = new Map<string, any>()
+    for (const id of repoIds) {
+      const source = sameRepo(repoClientMap, repoBaseMap, id) ? repoDiskMap : repoClientMap
+      if (source.has(id)) mergedRepos.set(id, source.get(id))
+    }
+    const orderedRepos: any[] = []
+    for (const item of diskRepos) if (valid(item) && mergedRepos.has(item.id)) { orderedRepos.push(mergedRepos.get(item.id)); mergedRepos.delete(item.id) }
+    for (const item of clientRepos) if (valid(item) && mergedRepos.has(item.id)) { orderedRepos.push(mergedRepos.get(item.id)); mergedRepos.delete(item.id) }
+    for (const item of mergedRepos.values()) orderedRepos.push(item)
+    config.repositories = orderedRepos
   }
   return { config, conflicts }
 }

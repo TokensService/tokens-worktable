@@ -144,7 +144,8 @@ function loadStateFixture(serverConfig, seeds) {
   };
   vm.createContext(ctx);
   vm.runInContext(['stripPipelineSharedMeta', 'mergePipelinesFromServer', 'sameEnvEntry', 'mergeEnvironmentsFromServer',
-    'fetchPipelineStateFresh', 'normalizeEnv', 'curPipeline', 'plOwnerFilterLabel', 'envConfigEditable', 'loadServerState',
+    'sameRepoEntry', 'mergeRepositoriesFromServer',
+    'fetchPipelineStateFresh', 'normalizeEnv', 'normalizeRepo', 'curPipeline', 'plOwnerFilterLabel', 'envConfigEditable', 'loadServerState',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, storage };
 }
@@ -207,7 +208,7 @@ test('pushState：baseConfig 携带 environments 基线；保存确认后他端�
 
   assert.equal(result.ok, true);
   const body = JSON.parse(f.requests[0].options.body);
-  assert.deepEqual(J(body.baseConfig), { pipelines: [], environments: [env('env-1', '节点一')] }, 'environments 基线随保存上送（供服务端按 id 三方合并）');
+  assert.deepEqual(J(body.baseConfig), { pipelines: [], environments: [env('env-1', '节点一')], repositories: [] }, 'environments/repositories 基线随保存上送（供服务端按 id 三方合并）');
   assert.deepEqual(J(f.ctx.environments).map(e => e.id), ['env-1', 'env-theirs', 'env-mine'], '服务端合并结果（含他端并发新增）合回本页');
   assert.deepEqual(J(JSON.parse(f.ctx.__storage['pip-envs'])).map(e => e.id), ['env-1', 'env-theirs', 'env-mine'], '离线缓存同步');
   assert.deepEqual(J(f.ctx.serverConfigBase.environments).map(e => e.id), ['env-1', 'env-theirs', 'env-mine'], '基线随保存确认前进');
