@@ -369,9 +369,15 @@ stderr），再写入 `/sys/kernel/mm/hugepages/.../nr_hugepages`（多轮重试
 direct compaction，840s 兜底）；③刷新 allocatable（按需重启 kubelet）+ 终验
 （大页总量与 allocatable 双达标）。执行位置同 ems-check（TARGET_HOSTS 自推送
 到首个有 kubectl 的目标节点）；**跨 region（hd2 等）**：TARGET_IPS 为外网入口
-endpoint（ip:port）时，分发阶段采集内网身份映射后三级解析（直接命中 → endpoint
-映射 → 剥端口），节点操作经 endpoint 凭据 SSH（同外网 IP 多端口按 address:port
-组合匹配），执行宿主即目标节点时本地直执，gy1 内网行为不变。契约输出
+endpoint（ip:port）时，分发阶段采集内网身份映射（含该 endpoint 的登录凭据）
+后三级解析（直接命中 → endpoint 映射 → 剥端口），**节点级 SSH 一律走集群内网
+地址**（映射命中时取该节点 InternalIP，解析不到才退回 endpoint 地址）——这类
+集群的外网入口在集群内不可路由（2026-10-15 实测 node 侧访问为 Network
+unreachable）。节点凭据三级解析：凭据表按内网 IP / ip:port 命中 → 身份映射回退
+（按内网身份反查 endpoint 的 user/pass，连接走内网 22——映射里的 port 是外网
+NAT 端口）；先密钥认证（节点间通常 root 免密），失败且凭据带密码则走密码认证
+（执行宿主有 sshpass 用 sshpass，没有则用 SSH_ASKPASS 喂密码——GPU 节点普遍
+未装 sshpass）。执行宿主即目标节点时本地直执，gy1 内网行为不变。契约输出
 `EMS_HUGEPAGES_OK/RENEWED/KUBELET_RESTARTED`。退出码：0 正常；1 环境错误/预检
 失败/终验不达标。单测：`test/test_ems_hugepages.sh`。
 
@@ -402,11 +408,15 @@ EMS_RELEASE_NAMESPACES 留空，自动继承 check 契约；TARGET_IPS 留空用
 
 ## EMS 卸载（ems-uninstall.sh）
 
-`ems-uninstall.sh` 是 EMS 完整卸载 **step 主脚本**（唯一可选参数 `EMS_DRY_RUN`，
-默认 1 预演；推荐两段式：先默认预演看清单 → 设 0 正式清理）。目标节点 = 平台
-注入的 `TARGET_IP`/`TARGET_IPS`（勾选环境即表达意图，支持跨 region endpoint 三级
-解析），脚本自动推导实例：目标节点 label 前缀（唯一性校验）+ 其上 EMS pod 的
-ns 交叉；卸载范围 = 该 label 的**全部**节点（不止勾选的）。四段流程：
+`ems-uninstall.sh` 是 EMS 完整卸载 **step 主脚本**（零参数：执行即卸载，2026-10-15
+取消 dry-run；幂等可重跑——已卸干净的节点全跳过）。目标节点 = 平台注入的
+`TARGET_IP`/`TARGET_IPS`（勾选环境即表达意图，支持跨 region endpoint 三级
+解析）；**跨 region（hd2/NAT 类）**：TARGET_IPS 为外网入口 endpoint（ip:port）
+时经分发阶段采集的身份映射三级解析，**节点级 SSH 一律走集群内网 InternalIP +
+该 endpoint 的登录凭据**（外网入口在集群内不可路由，实测 Network unreachable；
+凭据按内网身份回退，连接走内网 22），先密钥认证、失败后密码认证（无 sshpass
+时走 SSH_ASKPASS）。脚本自动推导实例：目标节点 label 前缀（唯一性校验）+ 其上
+EMS pod 的 ns 交叉；卸载范围 = 该 label 的**全部**节点（不止勾选的）。四段流程：
 
 1. **[1/4]** `helm uninstall`（按 release 实际所在 ns——历史遗留 release 装在
    default 等非标准 ns 也能卸；不存在跳过）+ 删资源 ns（等待 + 超时强删 pod 兜底
@@ -428,10 +438,8 @@ ns 交叉；卸载范围 = 该 label 的**全部**节点（不止勾选的）。
 退出码：0 卸载完成（或幂等退出）；1 失败。单测：`test/test_ems_uninstall.sh`。
 
 ```bash
-# 预演（默认）：目标节点选好即可，实例名自动推导
+# 卸载（幂等，可直接重跑；实例名由目标节点 label 自动推导）
 TARGET_IPS='["192.168.0.243","192.168.0.128"]' bash ems-uninstall.sh
-# 正式清理
-TARGET_IPS='["192.168.0.243","192.168.0.128"]' EMS_DRY_RUN=0 bash ems-uninstall.sh
 ```
 
 ## vLLM 原生部署（vllm-native-*.sh）
