@@ -112,11 +112,15 @@ ensure_source() {
   if [[ -d "$VLLM_SOURCE_DIR/.git" ]]; then
     if [[ "$VLLM_UPDATE" == true ]]; then
       info "更新源码: $VLLM_SOURCE_DIR@$VLLM_REF"
-      git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin "$VLLM_REF" \
-        || git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin
-      ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify "${VLLM_REF}^{commit}" 2>/dev/null || true)"
-      [[ -n "$ref_commit" ]] || ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify FETCH_HEAD^{commit} 2>/dev/null || true)"
-      [[ -n "$ref_commit" ]] || die "无法解析源码引用: $VLLM_REF"
+      if git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin "$VLLM_REF"; then
+        ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify "${VLLM_REF}^{commit}" 2>/dev/null || true)"
+        [[ -n "$ref_commit" ]] || ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify FETCH_HEAD^{commit} 2>/dev/null || true)"
+      else
+        # 刷新远端引用仅用于诊断，不能将无效引用静默替换成默认分支。
+        git -C "$VLLM_SOURCE_DIR" fetch --tags --prune origin || true
+        ref_commit="$(git -C "$VLLM_SOURCE_DIR" rev-parse --verify "${VLLM_REF}^{commit}" 2>/dev/null || true)"
+      fi
+      [[ -n "$ref_commit" ]] || die "无法解析源码引用: $VLLM_REF（请使用存在的分支、标签或提交，例如 v0.30.0）"
       git -C "$VLLM_SOURCE_DIR" checkout --detach "$ref_commit"
     fi
   elif [[ -e "$VLLM_SOURCE_DIR" ]]; then
