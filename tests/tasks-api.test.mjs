@@ -1,7 +1,10 @@
 /* /api/worktable/tasks 团队任务共享存储 API：
-   GET 列出（任意会话）；POST 新建 / DELETE 删除仅 admin；PATCH 中 admin 改全部字段（含 tags）、
-   普通成员仅可改分配给自己任务的 status/effect/addProgress；auth 存在时 assignee 强校验 users.yaml
-   真实启用用户；无 auth 服务（token 共享模式）退化为全权。存储 $DSH_HOME/storages/worktable-tasks.json。 */
+   GET 列出（任意会话）；POST 新建 / DELETE 删除仅 admin；PATCH 中 admin 改全部字段（含 tags），
+   普通成员仅可改分配给自己任务的 status/effect/addProgress；auth 存在时 assignee(s) 强校验 users.yaml
+   真实启用用户；无 auth 服务（token 共享模式）退化为全权。
+   多负责人 assignees: string[]（兼容旧单值 assignee，入库归一并回写 assignee=首人）；
+   startAt/endAt 起止时间戳（状态推进 todo→doing→done 自动补记，已有值不覆盖）。
+   存储 $DSH_HOME/storages/worktable-tasks.json。 */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
@@ -346,3 +349,96 @@ test('未支持的方法 405', async () => {
   const res = await call(handler, { method: 'PUT', body: {} })
   assert.equal(res.status, 405)
 })
+
+test('多负责人：assignees 数组入库归一（含旧单值兼容），成员为任一负责人即可写 status/effect/进展', async () => {
+  const admin = await loadTasksRoute({ auth: AUTH.admin })
+  /* 新建：assignees 数组 */
+  const created = await call(admin.handler, { method: 'POST', body: { title: '联调', assignees: ['alice', 'bob'] } })
+  assert.equal(created.status, 201, created.body)
+  const task = created.json().task
+  assert.deepEqual(task.assignees, ['alice', 'bob'])
+  assert.equal(task.assignee, 'alice', 'assignee 恒取列表首人（旧读取方兼容）')
+  /* 旧单值 assignee 入库同样补齐 assignees */
+  const legacy = await createTask(admin.handler, { title: '旧单值', assignee: 'bob' })
+  assert.deepEqual(legacy.assignees, ['bob'])
+  assert.equal(legacy.assignee, 'bob')
+  /* 校验：空数组 / 含空串 / 重复 / 超上限 / 非法用户 */
+  for (const body of [
+    { id: task.id, assignees: [] },
+    { id: task.id, assignees: ['alice', ''] },
+    { id: task.id, assignees: ['alice', 'alice'] },
+    { id: task.id, assignees: Array.from({ length: 21 }, (_, i) => 'u' + i) },
+    { id: task.id, assignees: ['ghost'] },
+    { id: task.id, assignees: ['carol'] },
+    { id: task.id, assignees: 'alice' },
+  ]) {
+    const bad = await call(admin.handler, { method: 'PATCH', body })
+    assert.equal(bad.status, 400, `应判 400：${JSON.stringify(body)} → ${bad.body}`)
+  }
+  /* 成员 bob 是第二负责人：可改自己任务 */
+  const member = await loadTasksRoute({ auth: AUTH.member, home: admin.home })
+  const own = await call(member.handler, { method: 'PATCH', body: { id: task.id, status: 'doing', effect: '两人协作中' } })
+  assert.equal(own.status, 200, own.body)
+  /* 成员 bob 在他人任务（仅 alice）上仍 403 */
+  const other = await createTask(admin.handler, { assignees: ['alice'] })
+  const foreign = await call(member.handler, { method: 'PATCH', body: { id: other.id, status: 'done' } })
+  assert.equal(foreign.status, 403)
+  /* 换负责人同样强校验 */
+  const badAssignees = await call(admin.handler, { method: 'PATCH', body: { id: task.id, assignees: ['alice', 'ghost'] } })
+  assert.equal(badAssignees.status, 400)
+  const okAssignees = await call(admin.handler, { method: 'PATCH', body: { id: task.id, assignees: ['bob', 'alice'] } })
+  assert.equal(okAssignees.status, 200)
+  assert.deepEqual(okAssignees.json().task.assignees, ['bob', 'alice'])
+  assert.equal(okAssignees.json().task.assignee, 'bob')
+})
+
+test('开始/结束时间：startAt/endAt 可存取；状态推进自动补记（已有值不覆盖）', async () => {
+  const { handler } = await loadTasksRoute({ auth: AUTH.admin })
+  /* 显式创建时带起止时间 */
+  const t0 = Date.now()
+  const explicit = await createTask(handler, { title: '显式起止', startAt: t0 - 3600000, endAt: t0 + 3600000 })
+  assert.equal(explicit.startAt, t0 - 3600000)
+  assert.equal(explicit.endAt, t0 + 3600000)
+  /* 缺省为 null */
+  const bare = await createTask(handler, { title: '缺省起止' })
+  assert.equal(bare.startAt, null)
+  assert.equal(bare.endAt, null)
+  /* todo→doing 自动记 startAt；→done 自动记 endAt */
+  const auto = await createTask(handler, { title: '自动起止' })
+  const doing = await call(handler, { method: 'PATCH', body: { id: auto.id, status: 'doing' } })
+  assert.equal(doing.status, 200)
+  assert.ok(doing.json().task.startAt > 0, 'todo→doing 应自动记录 startAt')
+  assert.equal(doing.json().task.endAt, null)
+  const done = await call(handler, { method: 'PATCH', body: { id: auto.id, status: 'done' } })
+  assert.equal(done.status, 200)
+  assert.ok(done.json().task.endAt >= done.json().task.startAt, 'done 应自动记录 endAt')
+  /* 已有值不覆盖 */
+  const keep = await createTask(handler, { title: '保留起止', startAt: 111, endAt: 222 })
+  const redo = await call(handler, { method: 'PATCH', body: { id: keep.id, status: 'doing' } })
+  assert.equal(redo.json().task.startAt, 111, '已有 startAt 不被自动补记覆盖')
+  const redone = await call(handler, { method: 'PATCH', body: { id: keep.id, status: 'done' } })
+  assert.equal(redone.json().task.endAt, 222, '已有 endAt 不被自动补记覆盖')
+  /* PATCH 显式改写 */
+  const patch = await call(handler, { method: 'PATCH', body: { id: bare.id, startAt: 333, endAt: 444 } })
+  assert.equal(patch.status, 200)
+  assert.equal(patch.json().task.startAt, 333)
+  assert.equal(patch.json().task.endAt, 444)
+  /* 非法时间戳 → null（与 deadline 同口径） */
+  const bad = await call(handler, { method: 'PATCH', body: { id: bare.id, startAt: 'oops', endAt: -1 } })
+  assert.equal(bad.status, 200)
+  assert.equal(bad.json().task.startAt, null)
+  assert.equal(bad.json().task.endAt, null)
+})
+
+test('存量单值 assignee 读出时归一补 assignees（无需迁移）', async () => {
+  const { handler, home } = await loadTasksRoute({ auth: AUTH.admin })
+  await mkdir(join(home, 'storages'), { recursive: true })
+  await writeFile(join(home, 'storages', 'worktable-tasks.json'), JSON.stringify({
+    tasks: [{ id: 't-old', title: '旧数据', assignee: 'bob', prio: 'mid', status: 'todo' }],
+  }), 'utf8')
+  const list = await call(handler)
+  const t = list.json().tasks[0]
+  assert.deepEqual(t.assignees, ['bob'], 'GET 应把旧单值归一为 assignees 数组')
+  assert.equal(t.assignee, 'bob')
+})
+

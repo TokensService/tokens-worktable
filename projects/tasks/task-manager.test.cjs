@@ -1,8 +1,9 @@
 /* task-manager.html 静态契约：配色修复（浅色幽灵按钮可读 / color-scheme 随主题）、
    dsh-auth-gate 真实用户（/auth/status + /auth/users）、任务增删改走 /api/worktable/tasks
    服务端共享存储（不再 localStorage 假数据）；进展 / 标签 / 完成弹窗 AI 总结 / 文本导入；
-   主从双栏布局——左侧紧凑任务列表 + 右侧详情面板（点击卡片切换，不再是详情弹窗）；
-   任务列表按用户筛选；AI 个人总结——选用户 + 时间段（周 / 月 / 年 / 自定义）生成个人工作总结。 */
+   主从双栏布局——左侧紧凑任务列表 + 右侧详情面板（点击卡片切换，不再是详情弹窗），
+   详情内联编辑保存（无独立编辑按钮）+ 行内添加进展；
+   多负责人（assignees）、开始/结束时间、状态×用户×标签三维筛选；AI 个人总结。 */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -85,14 +86,17 @@ test("支持 text 导入多个任务 + AI 分析导入", () => {
   assert.ok(html.includes("apiSend('POST'"), "导入应走 POST 新建");
 });
 
-test("编辑弹窗含任务结果字段（admin 可随时修订；新建态隐藏）", () => {
-  assert.ok(html.includes('id="fEffect"'), "弹窗应含任务结果输入框");
-  assert.ok(html.includes("fEffectWrap"), "结果字段应按编辑态切换显隐");
+test("详情面板内联编辑任务结果（无独立编辑按钮 / 编辑弹窗）", () => {
+  assert.ok(html.includes('id="dEffect"'), "详情表单应含任务结果输入框");
+  assert.ok(html.includes('id="dSaveBtn"'), "详情应有保存按钮");
+  assert.ok(html.includes('id="dResetBtn"'), "详情应有还原按钮");
+  assert.ok(!html.includes('data-act="edit"'), "卡片不应再有独立编辑按钮");
+  assert.ok(!html.includes('id="fEffect"'), "新建弹窗不应再含结果字段（编辑在详情内联）");
 });
 
 test("权限 UI：admin 门控新建/导入按钮，成员仅自己任务可操作", () => {
   assert.ok(html.includes("isAdmin()"), "应有 admin 判定");
-  assert.ok(html.includes("t.assignee === me.username"), "成员操作应限定自己的任务");
+  assert.ok(html.includes("taskHasAssignee(t, me.username)"), "成员操作应限定自己的任务（多负责人命中）");
   assert.ok(html.includes("importBtn"), "应有导入按钮（admin 门控）");
 });
 
@@ -102,7 +106,7 @@ test("AI 配置本地保存 + DSH 会话桥兜底", () => {
   assert.ok(html.includes('id="aiMask"'), "应有 AI 设置弹窗");
 });
 
-test("主从双栏布局：点击任务卡在右侧详情面板展示详情（不再是弹窗）", () => {
+test("主从双栏布局：点击任务卡在右侧详情面板展示并编辑详情（不再是弹窗）", () => {
   assert.ok(html.includes('class="tm-split"'), "应有主从分栏容器");
   assert.ok(html.includes('id="detailPanel"'), "应有右侧详情面板");
   assert.ok(html.includes('id="detailEmpty"'), "未选中时应有占位提示");
@@ -110,9 +114,9 @@ test("主从双栏布局：点击任务卡在右侧详情面板展示详情（�
   assert.ok(html.includes("selectTask("), "点击卡片应选中任务");
   assert.ok(html.includes("renderDetail()"), "应按选中状态渲染详情");
   assert.ok(html.includes('id="detailTitle"'), "详情应展示标题");
-  assert.ok(html.includes('id="detailTags"'), "详情应展示标签");
-  assert.ok(html.includes('id="detailDesc"'), "详情应展示描述");
-  assert.ok(html.includes('id="detailEffect"'), "详情应展示结果");
+  assert.ok(html.includes('id="dTagsBox"'), "详情表单应含标签输入");
+  assert.ok(html.includes('id="dDesc"'), "详情表单应含描述");
+  assert.ok(html.includes('id="dEffect"'), "详情表单应含结果");
   assert.ok(html.includes('id="detailProgress"'), "详情应展示进展列表");
   assert.ok(html.includes('id="detailProgCount"'), "详情应展示进展条数");
   assert.ok(html.includes("clearSelection"), "面板应有取消选中（×）入口");
@@ -154,12 +158,50 @@ test("任务列表加载失败不得清空现有列表", () => {
     "HTTP 层错误应提示一次，网络抖动仍静默保留旧数据");
 });
 
-test("任务列表支持按用户筛选（与状态 tab 叠加）", () => {
+test("任务列表支持按用户筛选（与状态 tab / 标签叠加，任一负责人命中）", () => {
   assert.ok(html.includes('id="userSel"'), "应有用户筛选下拉");
   assert.ok(html.includes('var userFilter'), "应有用户筛选状态");
-  assert.ok(html.includes("t.assignee !== userFilter"), "visibleTasks 应按 assignee 过滤");
+  assert.ok(html.includes("!taskHasAssignee(t, userFilter)"), "visibleTasks 应按任一负责人过滤");
   assert.ok(html.includes("syncUserFilter();"), "render 应联动同步用户选项");
   assert.ok(html.includes("knownAssignees()"), "选项应取 启用用户 ∪ 任务负责人（共享模式兜底）");
+});
+
+test("任务列表支持按标签筛选（与状态 tab / 用户叠加）", () => {
+  assert.ok(html.includes('id="tagSel"'), "应有标签筛选下拉");
+  assert.ok(html.includes('var tagFilter'), "应有标签筛选状态");
+  assert.ok(html.includes("taskTags(t).indexOf(tagFilter) < 0"), "visibleTasks 应按标签过滤");
+  assert.ok(html.includes("syncTagFilter();"), "render 应联动同步标签选项");
+  assert.ok(html.includes("knownTags()"), "选项应取全部任务标签");
+  assert.ok(html.includes("data-tag-filter"), "任务卡标签 chip 可点快捷筛选");
+});
+
+test("任务支持多负责人（assignees 数组 + 详情/新建多选）", () => {
+  assert.ok(html.includes("function taskAssignees(t)"), "应有负责人列表归一函数");
+  assert.ok(html.includes("id=\"dAssignees\""), "详情应有多选负责人");
+  assert.ok(html.includes("id=\"fAssignees\""), "新建弹窗应有多选负责人");
+  assert.ok(html.includes("assignees:"), "保存应携带 assignees");
+  assert.ok(html.includes("renderAssigneeChecks("), "应渲染负责人复选框");
+});
+
+test("任务详情记录开始/结束时间（可编辑保存）", () => {
+  assert.ok(html.includes('id="dStartAt"'), "详情应有开始时间");
+  assert.ok(html.includes('id="dEndAt"'), "详情应有结束时间");
+  assert.ok(html.includes('id="fStartAt"'), "新建弹窗应有开始时间");
+  assert.ok(html.includes('id="fEndAt"'), "新建弹窗应有结束时间");
+  assert.ok(html.includes("startAt:"), "保存应携带 startAt");
+  assert.ok(html.includes("endAt:"), "保存应携带 endAt");
+});
+
+test("详情面板内联添加进展（不再依赖弹窗）", () => {
+  assert.ok(html.includes('id="addProgBox"'), "详情应有行内添加进展区");
+  assert.ok(html.includes('id="addProgText"'), "应有进展输入框");
+  assert.ok(html.includes('id="addProgBtn"'), "应有添加进展按钮");
+  assert.ok(html.includes("addProgress:"), "应走 PATCH addProgress");
+});
+
+test("详情表单未保存改动时不被 15s 轮询冲掉（detailEditing 守卫）", () => {
+  assert.ok(html.includes("detailEditing"), "应有详情编辑中守卫");
+  assert.ok(html.includes("markDetailDirty"), "字段改动应标记脏");
 });
 
 test("用户筛选选项集合变化才重建（15s 轮询不打断展开中的下拉）", () => {
