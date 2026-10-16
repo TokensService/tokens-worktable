@@ -38,7 +38,8 @@ usage() {
   BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
   BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
   BUILD_CACHE         是否启用本地层缓存，默认 true
-  BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 private
+  BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，private、locked 或 shared，默认 shared
+  UV_INDEX_URL             Python 主索引，默认清华 PyPI 镜像
 EOF
 }
 
@@ -96,7 +97,10 @@ SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
 BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
-BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-private}"
+# 两个 Docker 构建阶段会并行安装相同的 Python 依赖。共享 uv 缓存可避免
+# runtime/base 阶段重复下载；uv 自身会对缓存文件加锁。
+BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-shared}"
+UV_INDEX_URL="${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 
 # 流水线可能不注入代理变量，但执行机通过 SSH/ssservice 暴露了本机代理。
 # 仅在明确发现 127.0.0.1:8118 正在监听时自动启用，避免改变无代理环境。
