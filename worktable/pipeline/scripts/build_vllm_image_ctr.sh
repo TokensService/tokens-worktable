@@ -78,17 +78,17 @@ SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
 SWR_REPOSITORY="${SWR_REPOSITORY:-vllm}"
 IMAGE_TAG_MODE="${IMAGE_TAG_MODE:-branch-time}"
 case "$IMAGE_TAG_MODE" in
-  branch-time)
+  branch-time|explicit) ;;
+  *) die "IMAGE_TAG_MODE 必须是 branch-time 或 explicit: $IMAGE_TAG_MODE" ;;
+esac
+if [[ -n "${GIT_BRANCH:-}" || "$IMAGE_TAG_MODE" == branch-time ]]; then
   image_branch="${GIT_BRANCH:-$VLLM_REF}"
   image_branch="$(printf '%s' "$image_branch" | sed 's/[^A-Za-z0-9_.-]/-/g; s/^[.-]*//')"
   [[ -n "$image_branch" ]] || image_branch=main
   IMAGE_TAG="${image_branch}-$(date +%Y%m%d%H%M%S)"
-  ;;
-  explicit)
+elif [[ "$IMAGE_TAG_MODE" == explicit ]]; then
   IMAGE_TAG="${IMAGE_TAG:-}"
-  ;;
-  *) die "IMAGE_TAG_MODE 必须是 branch-time 或 explicit: $IMAGE_TAG_MODE" ;;
-esac
+fi
 SWR_USERNAME="${SWR_USERNAME:-}"
 SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
