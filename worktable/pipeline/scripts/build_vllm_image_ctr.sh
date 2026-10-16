@@ -36,6 +36,7 @@ usage() {
   BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
   BUILD_CACHE_DIR     BuildKit 本地缓存目录，默认 /tmp/vllm-build-cache
   BUILD_CACHE         是否启用本地层缓存，默认 true
+  BUILD_UV_CACHE_SHARING  uv 缓存挂载并发策略，locked 或 shared，默认 locked
 EOF
 }
 
@@ -80,6 +81,7 @@ SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
 BUILD_CACHE_DIR="${BUILD_CACHE_DIR:-/tmp/vllm-build-cache}"
 BUILD_CACHE="${BUILD_CACHE:-true}"
+BUILD_UV_CACHE_SHARING="${BUILD_UV_CACHE_SHARING:-locked}"
 
 # 流水线可能不注入代理变量，但执行机通过 SSH/ssservice 暴露了本机代理。
 # 仅在明确发现 127.0.0.1:8118 正在监听时自动启用，避免改变无代理环境。
@@ -342,6 +344,17 @@ if [[ "$DRY_RUN" != true ]]; then
   mkdir -p "$BUILD_OUTPUT_DIR"
 fi
 archive="$BUILD_OUTPUT_DIR/vllm-${IMAGE_TAG//[^A-Za-z0-9_.-]/_}.oci.tar"
+build_dockerfile="$VLLM_SOURCE_DIR/$DOCKERFILE"
+if [[ "$BUILD_UV_CACHE_SHARING" != locked && "$BUILD_UV_CACHE_SHARING" != shared ]]; then
+  die "BUILD_UV_CACHE_SHARING 必须是 locked 或 shared: $BUILD_UV_CACHE_SHARING"
+elif [[ "$DRY_RUN" != true && "$BUILD_UV_CACHE_SHARING" == locked && "$BUILD_ENGINE" != indocker ]]; then
+  # vLLM 的 base/runtime 阶段会并行执行 uv。默认 cache mount 是 shared，
+  # 两个 uv 进程可能争用同一个 wheel lock，等待 300 秒后失败。仅生成
+  # 构建副本并改为 locked，不修改源码 checkout。
+  build_dockerfile="$BUILD_OUTPUT_DIR/.vllm-Dockerfile-uv-locked"
+  sed 's#--mount=type=cache,target=/opt/uv/cache#--mount=type=cache,target=/opt/uv/cache,sharing=locked#g' \
+    "$VLLM_SOURCE_DIR/$DOCKERFILE" > "$build_dockerfile"
+fi
 if [[ -z "$INDOCKER_OUTPUT_DIR" ]]; then INDOCKER_OUTPUT_DIR="$BUILD_OUTPUT_DIR"; fi
 mkdir -p "$INDOCKER_OUTPUT_DIR" 2>/dev/null || true
 if [[ "$BUILD_ENGINE" == indocker ]]; then
@@ -357,7 +370,7 @@ fi
 if [[ "$BUILD_ENGINE" == nerdctl ]]; then
   build_cmd=(nerdctl -n "$CTR_NAMESPACE" build
     --platform "$BUILD_PLATFORM"
-    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --file "$build_dockerfile"
     --tag "$IMAGE"
     "${nerdctl_build_args[@]}"
     "${nerdctl_cache_args[@]}"
@@ -368,7 +381,7 @@ elif [[ "$BUILD_ENGINE" == docker ]]; then
     --cpu-period 100000
     --cpu-quota "$((BUILD_CPUS * 100000))"
     --platform "$BUILD_PLATFORM"
-    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --file "$build_dockerfile"
     --tag "$IMAGE"
     "${docker_build_args[@]}"
     "$context_path")
@@ -377,7 +390,7 @@ elif [[ "$BUILD_ENGINE" == docker-buildx ]]; then
     --allow network.host
     --network "$BUILD_NETWORK"
     --platform "$BUILD_PLATFORM"
-    --file "$VLLM_SOURCE_DIR/$DOCKERFILE"
+    --file "$build_dockerfile"
     --tag "$IMAGE"
     "${docker_build_args[@]}"
     "${docker_buildx_cache_args[@]}"
@@ -450,6 +463,7 @@ info "源码: $VLLM_SOURCE_DIR@$VLLM_REF"
 info "Dockerfile: $DOCKERFILE"
 info "构建器: $BUILD_ENGINE${BUILD_ENGINE:+/$INDOCKER_RUNTIME}，编译并发: $BUILD_MAX_JOBS"
 info "编译缓存: $([[ "$BUILD_CACHE" == true ]] && printf '%s' "$BUILD_CACHE_DIR" || printf '关闭')"
+[[ "$BUILD_ENGINE" != indocker ]] && info "uv 缓存并发: $BUILD_UV_CACHE_SHARING"
 if [[ "$BUILD_ENGINE" == docker-buildx && -z "$BUILD_PROXY_URL" && "${HTTP_PROXY:-${http_proxy:-}}" =~ ^https?://(127\.0\.0\.1|localhost)(:|/) ]]; then
   info "警告：当前代理仅绑定宿主机回环地址，BuildKit RUN 可能无法访问；请设置 BUILD_PROXY_URL 为构建网络可达的代理地址"
 fi
