@@ -293,6 +293,15 @@ elif [[ "$BUILD_CACHE" != false ]]; then
 fi
 
 context_path="$VLLM_SOURCE_DIR/$BUILD_CONTEXT"
+if [[ "$DRY_RUN" == true && "$BUILD_ENGINE" == auto ]]; then
+  # 预演也按真实执行顺序选择构建器，方便确认是否会命中 Buildx 缓存。
+  if command -v docker >/dev/null && docker info >/dev/null 2>&1 \
+      && docker buildx version >/dev/null 2>&1; then BUILD_ENGINE=docker-buildx
+  elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then BUILD_ENGINE=docker
+  elif command -v buildctl >/dev/null; then BUILD_ENGINE=buildctl
+  elif command -v nerdctl >/dev/null; then BUILD_ENGINE=nerdctl
+  fi
+fi
 if [[ "$DRY_RUN" != true ]]; then
   [[ -n "$SWR_USERNAME" ]] || die "必须设置 SWR_USERNAME"
   [[ -n "$SWR_PASSWORD" ]] || die "必须设置 SWR_PASSWORD"
