@@ -16,8 +16,8 @@ usage() {
   BUILD_PLATFORM      目标平台，默认 linux/amd64
   BUILD_NETWORK       docker-buildx RUN 网络，默认 host
   BUILD_PROXY_URL     构建步骤使用的可达代理，例如 http://192.168.1.46:8118；为空时沿用 HTTP_PROXY/HTTPS_PROXY
-  BUILD_MAX_JOBS      编译并发数，默认执行机 CPU 数的一半
-  BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 2；内存不足时可设为 1
+  BUILD_MAX_JOBS      编译并发数，默认 1（CUDA 扩展内存占用较高）
+  BUILD_NVCC_THREADS  每个 nvcc 编译进程的线程数，默认 1
   BUILD_CPUS          构建容器 CPU 配额，默认执行机 CPU 数的一半
   BUILD_ARGS          额外构建参数，每行一个 KEY=VALUE
   BUILD_ENGINE        构建器：auto、indocker、docker、buildctl、nerdctl 或 docker-buildx，默认 auto
@@ -63,8 +63,8 @@ BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
 BUILD_PLATFORM="${BUILD_PLATFORM:-linux/amd64}"
 BUILD_NETWORK="${BUILD_NETWORK:-host}"
 BUILD_PROXY_URL="${BUILD_PROXY_URL:-}"
-BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-}"
-BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-2}"
+BUILD_MAX_JOBS="${BUILD_MAX_JOBS:-1}"
+BUILD_NVCC_THREADS="${BUILD_NVCC_THREADS:-1}"
 BUILD_CPUS="${BUILD_CPUS:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
 BUILD_ENGINE="${BUILD_ENGINE:-auto}"
@@ -291,10 +291,6 @@ for build_env_name in \
 done
 
 cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
-if [[ -z "$BUILD_MAX_JOBS" ]]; then
-  BUILD_MAX_JOBS=$((cpu_count / 2))
-  ((BUILD_MAX_JOBS >= 1)) || BUILD_MAX_JOBS=1
-fi
 if [[ -z "$BUILD_CPUS" ]]; then
   BUILD_CPUS=$((cpu_count / 2))
   ((BUILD_CPUS >= 1)) || BUILD_CPUS=1
