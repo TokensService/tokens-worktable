@@ -30,7 +30,8 @@ usage() {
   CTR_NAMESPACE       containerd 命名空间，默认 k8s.io
   SWR_REGISTRY        SWR registry，例如 swr.cn-southwest-2.myhuaweicloud.com
   SWR_REPOSITORY      SWR 仓库路径，例如 dataartsfabric/vllm
-  IMAGE_TAG           镜像标签，默认分支名-YYYYMMDDHHMMSS
+  IMAGE_TAG           镜像标签；branch-time 模式下由分支名和时间自动生成
+  IMAGE_TAG_MODE      branch-time（默认）或 explicit；explicit 才使用 IMAGE_TAG
   SWR_USERNAME        SWR 用户名，非 dry-run 必填
   SWR_PASSWORD        SWR 密码或 Token，非 dry-run 必填
   BUILD_OUTPUT_DIR    OCI 临时包目录，默认 /tmp/vllm-image-build
@@ -75,12 +76,19 @@ BUILDKIT_ADDR="${BUILDKIT_ADDR:-unix:///run/buildkit/buildkitd.sock}"
 CTR_NAMESPACE="${CTR_NAMESPACE:-k8s.io}"
 SWR_REGISTRY="${SWR_REGISTRY:-swr.cn-southwest-2.myhuaweicloud.com}"
 SWR_REPOSITORY="${SWR_REPOSITORY:-vllm}"
-if [[ -z "${IMAGE_TAG:-}" ]]; then
+IMAGE_TAG_MODE="${IMAGE_TAG_MODE:-branch-time}"
+case "$IMAGE_TAG_MODE" in
+  branch-time)
   image_branch="${GIT_BRANCH:-$VLLM_REF}"
   image_branch="$(printf '%s' "$image_branch" | sed 's/[^A-Za-z0-9_.-]/-/g; s/^[.-]*//')"
   [[ -n "$image_branch" ]] || image_branch=main
   IMAGE_TAG="${image_branch}-$(date +%Y%m%d%H%M%S)"
-fi
+  ;;
+  explicit)
+  IMAGE_TAG="${IMAGE_TAG:-}"
+  ;;
+  *) die "IMAGE_TAG_MODE 必须是 branch-time 或 explicit: $IMAGE_TAG_MODE" ;;
+esac
 SWR_USERNAME="${SWR_USERNAME:-}"
 SWR_PASSWORD="${SWR_PASSWORD:-}"
 BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-/tmp/vllm-image-build}"
