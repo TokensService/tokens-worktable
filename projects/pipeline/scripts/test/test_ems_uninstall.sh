@@ -13,6 +13,10 @@ set -euo pipefail
 #      ⑥ release 位于非标准 ns（default）→ 按实际 ns 卸载
 #      ⑦ TARGET_HOSTS 远程分发模式冒烟（翻译路径本地 eval，凭据下传）。
 #      ⑧ 真交叉（目标节点双活实例 pod 证据）→ 带证据明细 die 拒卸。
+#      ⑨ 跨 region NAT：TARGET_IPS 为外网入口 endpoint（与集群内网 IP 对不上）
+#          且节点间无 root 免密 → 身份映射回退取该 endpoint 凭据 + 内网 22 端口，
+#          sshpass 分支完成卸载（外网入口不得作为 ssh 目标，密码不进日志）
+#      ⑩ 同场景但执行宿主无 sshpass → SSH_ASKPASS 兜底分支（临时目录用完即删）。
 # 全程不接触真实集群/真实 sysfs。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -185,6 +189,11 @@ cmd="${@: -1}"
 target=''
 for a in "$@"; do [[ "$a" == *@* ]] && target="$a"; done
 ip="${target#*@}"
+# 跨 region 场景：标记文件在 → 模拟「集群节点间无 root 免密」，密钥认证整段 255
+if [[ -e "$FIXTURES/keyauth_fail_$ip" && "$*" == *BatchMode=yes* ]]; then
+    echo "root@$ip: Permission denied (publickey,password)." >&2
+    exit 255
+fi
 case "$cmd" in
   *'command -v kubectl'*) exit 0 ;;
   *'cat > /tmp/ems-uninstall.sh'*) exit 0 ;;
@@ -205,7 +214,33 @@ esac
 EOF
 
     chmod +x "$t/bin/sleep" "$t/bin/kubectl" "$t/bin/helm" "$t/bin/ssh"
+    # sshpass：只记录密码长度（不回显明文），其余参数转交 mock ssh（模拟 sshpass -e ssh ...）
+    cat >"$t/bin/sshpass" <<'EOF'
+#!/usr/bin/env bash
+echo "sshpass pass_len=${#SSHPASS} $*" >>"$FIXTURES/ssh.log"
+exec "$FIXTURES/bin/ssh" "${@:2}"
+EOF
+    chmod +x "$t/bin/sshpass"
     touch "$t/kubectl.log" "$t/helm.log" "$t/ssh.log"   # 预创建：无调用的场景断言 cat 不报错
+}
+
+# 构造一个不含 sshpass 的 PATH（镜像当前 PATH + 覆盖 mock 工具）：测 SSH_ASKPASS 兜底分支
+make_path_without_sshpass() { # <tmp> → $tmp/bin2
+    local t=$1 d f n
+    mkdir -p "$t/bin2"
+    local -a dirs=()
+    IFS=: read -r -a dirs <<<"$PATH"
+    for d in "${dirs[@]}"; do
+        [[ -d "$d" ]] || continue
+        for f in "$d"/*; do
+            [[ -e "$f" || -L "$f" ]] || continue
+            n="${f##*/}"
+            [[ "$n" == sshpass ]] && continue
+            [[ -e "$t/bin2/$n" || -L "$t/bin2/$n" ]] && continue
+            ln -s "$f" "$t/bin2/$n"
+        done
+    done
+    for n in ssh kubectl helm sleep; do ln -sf "$t/bin/$n" "$t/bin2/$n"; done
 }
 
 run_script() { # <tmp> [env assignments...] → stdout/stderr 合并，rc 透传
@@ -368,6 +403,50 @@ assert_contains "$(cat "$t/ssh.log")" 'systemctl restart kubelet' ⑦
 assert_not_contains "$out" 'unexpected' ⑦
 rm -rf "$t"
 case_ok '场景⑦ TARGET_HOSTS 远程分发模式冒烟'
+
+# ==================== 场景⑨：跨 region NAT（身份映射回退凭据 + sshpass） ====================
+# 平台注入的是外网入口 endpoint（ip:port）、与集群内网 IP 对不上，节点间又无 root
+# 免密：凭据只能按「内网 IP 反查 endpoint 身份映射」回退，连接走内网 22 端口。
+nat_creds='[{"ip":"203.0.113.9","port":"2226","user":"root","pass":"pwA1"},{"ip":"203.0.113.9","port":"2227","user":"root","pass":"pwB22"}]'
+nat_idmap='[{"endpoint":"203.0.113.9:2226","address":"203.0.113.9","port":"2226","user":"root","pass":"pwA1","hostname":"node-1","ips":["10.0.0.1"]},{"endpoint":"203.0.113.9:2227","address":"203.0.113.9","port":"2227","user":"root","pass":"pwB22","hostname":"node-2","ips":["10.0.0.2"]}]'
+t=$(mktemp -d)
+make_fixtures "$t" 1
+touch "$t/keyauth_fail_10.0.0.1" "$t/keyauth_fail_10.0.0.2"
+rc=0; out=$(env -u TARGET_HOSTS PATH="$t/bin:$PATH" FIXTURES="$t" REAL_SCRIPT="$script" \
+    TARGET_IPS='["203.0.113.9:2226","203.0.113.9:2227"]' \
+    ems_node_creds="$nat_creds" ems_target_id_map="$nat_idmap" \
+    bash "$script" 2>&1) || rc=$?
+assert_rc 0 "$rc" ⑨
+assert_contains "$out" '目标节点：203.0.113.9:2227 → node-2' ⑨
+assert_contains "$(cat "$t/ssh.log")" 'sshpass pass_len=5' ⑨         # node-2 → endpoint 2227 的凭据
+assert_contains "$(cat "$t/ssh.log")" 'root@10.0.0.2' ⑨              # 节点操作走内网 IP
+assert_not_contains "$(cat "$t/ssh.log")" 'root@203.0.113.9' ⑨        # 外网入口集群内不可路由，绝不作 ssh 目标
+assert_not_contains "$(cat "$t/ssh.log")" 'pwB22' ⑨                  # 密码不进日志
+assert_not_contains "$out" '未提供密码' ⑨
+assert_contains "$out" 'EMS_HUGEPAGES_RELEASED=10.0.0.1,10.0.0.2' ⑨
+assert_contains "$out" '终验通过' ⑨
+assert_not_contains "$out" 'unexpected' ⑨
+rm -rf "$t"
+case_ok '场景⑨ 跨 region NAT（无节点间免密 → 身份映射回退凭据 + 内网 22）'
+
+# ==================== 场景⑩：同场景但执行宿主无 sshpass → SSH_ASKPASS 兜底 ====================
+t=$(mktemp -d)
+make_fixtures "$t" 1
+touch "$t/keyauth_fail_10.0.0.1" "$t/keyauth_fail_10.0.0.2"
+make_path_without_sshpass "$t"
+rc=0; out=$(env -u TARGET_HOSTS PATH="$t/bin2" FIXTURES="$t" REAL_SCRIPT="$script" \
+    TARGET_IPS='["203.0.113.9:2226","203.0.113.9:2227"]' \
+    ems_node_creds="$nat_creds" ems_target_id_map="$nat_idmap" \
+    bash "$script" 2>&1) || rc=$?
+assert_rc 0 "$rc" ⑩
+assert_contains "$(cat "$t/ssh.log")" '-o PreferredAuthentications=password,keyboard-interactive' ⑩
+assert_not_contains "$(cat "$t/ssh.log")" 'sshpass' ⑩
+assert_not_contains "$(cat "$t/ssh.log")" 'pwB22' ⑩
+assert_contains "$out" 'EMS_HUGEPAGES_RELEASED=10.0.0.1,10.0.0.2' ⑩
+assert_not_contains "$out" 'unexpected' ⑩
+[[ -z "$(ls -d /tmp/ems-askpass.* 2>/dev/null)" ]] || { echo 'FAIL[⑩]: askpass 临时目录未清理'; failures=$((failures + 1)); }
+rm -rf "$t"
+case_ok '场景⑩ 无 sshpass 执行宿主 → SSH_ASKPASS 兜底（密码不入日志、临时目录清理）'
 
 echo
 if (( failures > 0 )); then

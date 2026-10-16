@@ -24,7 +24,17 @@
 # 执行位置：工作台服务端（无 kubectl/helm）经 TARGET_HOSTS 自推送到首个具备
 # kubectl+helm 的目标节点远程执行；对各目标节点的大页写入 / kubelet 重启：
 # 执行宿主自身本地直接执行，其余节点优先密钥认证（集群节点间通常 root 免密
-# 互通），密钥失败且凭据带密码时才 sshpass 重试（同 ems-hugepages 模式）。
+# 互通），密钥失败且凭据带密码时改走密码认证——执行宿主机上有 sshpass 用
+# sshpass，没有则用 SSH_ASKPASS 喂密码（集群节点普遍未装 sshpass，见下）。
+#
+# 节点凭据三级解析（跨 region NAT 集群踩坑，2026-10-15）：①凭据表按内网 IP
+# 命中（gy1：TARGET_HOSTS 的 ip 就是内网 IP）；②凭据表按 address:port 命中
+# （TARGET_HOSTS 直接给 ip:port）；③身份映射回退——平台注入的是外网入口
+# ip:port、与集群内网 IP 对不上时，按内网 IP/hostname 反查该节点 endpoint 的
+# user/pass，连接仍走内网 22 端口（映射里的 port 是外网 NAT 端口，集群内 sshd
+# 监听 22）。⚠️ 这类集群的外网入口在集群内不可路由（实测 node 侧访问外网
+# 入口为 Network unreachable），故节点间操作只能走内网 + 密码（无节点间
+# root 免密时）。
 #
 # 流程（fail-fast + 幂等）：
 #   [0/4] 解析：TARGET_IP/TARGET_IPS 三级解析 → 目标节点 → 实例推导（label
@@ -144,7 +154,9 @@ PY
         || die "推送脚本到 $probe_host 失败"
 
     # 跨 region 身份映射：逐节点 SSH 采集内网身份（hostname/-I），经小写 env
-    # 下传供远程侧目标三级解析；specs 为 JSON 数组，先展开为 tab 四元组。
+    # 下传供远程侧目标三级解析；同时带上该 endpoint 的登录凭据，供远程侧
+    # node_ssh 在「凭据表按内网 IP 查不到」时按内网身份回退（NAT 集群节点间
+    # 无 root 免密，只能密码认证）。specs 为 JSON 数组，先展开为 tab 四元组。
     local id_lines='' id_user id_host id_port id_pass id_out id_hostname id_ips
     local -a id_specs=()
     mapfile -t id_specs < <(printf '%s\n' "${specs[@]}" | python3 -c '
@@ -162,7 +174,7 @@ for line in sys.stdin.read().splitlines():
         id_hostname="$(sed -n '1p' <<<"$id_out" | tr -d '\r')"
         id_ips="$(sed -n '2p' <<<"$id_out" | tr -d '\r')"
         [[ -n "$id_hostname" || -n "$id_ips" ]] || continue
-        id_lines+="${id_host}:${id_port}"$'\t'"${id_host}"$'\t'"${id_hostname}"$'\t'"${id_ips}"$'\n'
+        id_lines+="${id_user}"$'\t'"${id_host}"$'\t'"${id_port}"$'\t'"${id_pass}"$'\t'"${id_hostname}"$'\t'"${id_ips}"$'\n'
     done
     local id_map='[]'
     if [[ -n "$id_lines" ]]; then
@@ -172,9 +184,9 @@ entries = []
 for line in sys.stdin.read().splitlines():
     if not line.strip():
         continue
-    endpoint, address, hostname, ips = (line.split("\t") + ["", "", "", ""])[:4]
-    entries.append({"endpoint": endpoint, "address": address,
-                    "hostname": hostname, "ips": ips.split()})
+    user, address, port, password, hostname, ips = (line.split("\t") + [""] * 6)[:6]
+    entries.append({"endpoint": address + ":" + port, "address": address, "port": port,
+                    "user": user, "pass": password, "hostname": hostname, "ips": ips.split()})
 print(json.dumps(entries))')" || id_map='[]'
     fi
 
@@ -195,7 +207,37 @@ print(json.dumps(entries))')" || id_map='[]'
 
 # ==================== 远程阶段（首个有 kubectl+helm 的目标节点） ====================
 
-node_ssh() { # <ip> <command...>
+node_ssh_password() { # <user> <port> <ip> <pass> <ssh 选项...> <远程命令...>
+    local user=$1 port=$2 ip=$3 pass=$4
+    shift 4
+    # 密码不改走公钥试探（避免 agent 密钥过多触发 Too many authentication failures），
+    # 只喂一次（错密码不重试，防账户锁定）
+    local auth_opts='-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1'
+    if have sshpass; then
+        SSHPASS="$pass" sshpass -e ssh $auth_opts -p "$port" "$user@$ip" "$@"
+        return $?
+    fi
+    # 无 sshpass（集群节点普遍未装、也不便为流水线装）——SSH_ASKPASS 喂密码：
+    # 密码只落执行宿主临时目录（600，askpass 助手读完即删），不进命令行/日志。
+    # SSH_ASKPASS_REQUIRE 是环境变量（不是 -o 配置项，写成配置项会 Bad
+    # configuration option）；force 需 OpenSSH ≥ 8.4（集群节点实测 9.6），
+    # 低于 8.4 时该变量被忽略（故同时补显示屏环境变量，迎合旧版的
+    # 「无 tty + 有显示屏」判定）——仍不生效则密码认证直接失败，报错附解法。
+    local askdir rc
+    askdir="$(mktemp -d /tmp/ems-askpass.XXXXXX)" || die '创建 askpass 临时目录失败'
+    printf '%s\n' "$pass" >"$askdir/pass"
+    chmod 600 "$askdir/pass"
+    printf '#!/bin/sh\nexec cat %s/pass\n' "$askdir" >"$askdir/askpass"
+    chmod 700 "$askdir/askpass"
+    SSH_ASKPASS="$askdir/askpass" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
+        ssh $auth_opts -p "$port" "$user@$ip" "$@" </dev/null
+    rc=$?
+    rm -rf "$askdir"
+    (( rc == 255 )) && die "节点 $ip 密码认证失败（执行宿主无 sshpass，已走 SSH_ASKPASS：密码有误，或 ssh < 8.4 不支持 askpass 优先）：请装 sshpass 或配置节点间 root 免密互通"
+    return $rc
+}
+
+node_ssh() { # <ip> <command...>   ip：集群内网 IP（gy1 与跨 region 均传内网 IP）
     local ip=$1
     shift
     # 执行宿主即目标节点：本地直接执行（分发宿主本身常是目标之一，免去自 SSH 与 sshpass 依赖）
@@ -203,37 +245,56 @@ node_ssh() { # <ip> <command...>
         bash -c "$*"
         return $?
     fi
-    local entry
-    entry="$(python3 - "${ems_node_creds:-}" "$ip" <<'PY'
+    # 凭据逻辑三级解析：①凭据表按内网 IP 命中（gy1：TARGET_HOSTS 的 ip 即内网 IP）
+    # ②凭据表按 address:port 命中（TARGET_HOSTS 直接给 ip:port）③身份映射回退（跨
+    # region NAT 集群：TARGET_HOSTS 是外网入口 ip:port，与集群内网 IP 对不上，按内网
+    # IP/hostname 反查该节点 endpoint 的 user/pass；连接端口固定 22，映射里的 port 是
+    # 外网 NAT 端口，集群内 sshd 监听 22）。
+    local entry user port pass ssh_base rc=0
+    entry="$(python3 - "${ems_node_creds:-}" "${ems_target_id_map:-}" "$ip" <<'PY'
 import json
 import sys
 
-for entry in json.loads(sys.argv[1] or "[]"):
-    if entry.get("ip") == sys.argv[2]:
+creds, id_map, key = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def matches(entry, value):
+    if entry.get("ip") == value:
+        return True
+    if ":" in value:
+        address, _, port = value.rpartition(":")
+        return entry.get("ip") == address and str(entry.get("port") or "22") == port
+    return False
+
+
+for entry in json.loads(creds or "[]"):
+    if matches(entry, key):
         print(f'{entry.get("user") or "root"}\t{entry.get("port") or "22"}\t{entry.get("pass") or ""}')
-        break
+        raise SystemExit(0)
+for entry in json.loads(id_map or "[]"):
+    if key in list(entry.get("ips") or []) or key == (entry.get("hostname") or ""):
+        print(f'{entry.get("user") or "root"}\t22\t{entry.get("pass") or ""}')
+        raise SystemExit(0)
 PY
 )"
-    # 凭据表无该节点（本机直执模式）→ 退化为默认 root@ip:22 纯密钥认证
-    # （集群节点间通常 root 免密互通；不通时由下方 BatchMode 失败给出明确报错）
-    local user port pass ssh_base rc=0
+    # 凭据表与身份映射都未命中（本机直执/gy1 无凭据模式）→ 退化为默认
+    # root@ip:22 纯密钥认证（集群节点间通常 root 免密互通）
     if [[ -n "$entry" ]]; then
         IFS=$'\t' read -r user port pass <<<"$entry"
     else
         user=root port=22 pass=''
     fi
     ssh_base='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15'
-    # 优先密钥认证（集群节点间通常 root 免密互通）。rc=255 才是认证/连接失败，此时带密码则 sshpass 重试。
+    # 优先密钥认证（集群节点间通常 root 免密互通）。rc=255 才是认证/连接失败，此时带密码则改走密码认证。
     ssh $ssh_base -o BatchMode=yes -p "$port" "$user@$ip" "$@" 2>/dev/null || rc=$?
     if (( rc != 255 )); then
         return $rc
     fi
     if [[ -n "$pass" ]]; then
-        have sshpass || die "节点 $ip 密钥认证失败且本机未安装 sshpass（或配置节点间 root 免密）"
-        SSHPASS="$pass" sshpass -e ssh $ssh_base -p "$port" "$user@$ip" "$@"
+        node_ssh_password "$user" "$port" "$ip" "$pass" $ssh_base "$@"
         return $?
     fi
-    die "节点 $ip SSH 密钥认证失败且未提供密码（检查节点间 root 免密互通）"
+    die "节点 $ip SSH 密钥认证失败且未提供密码（集群节点间无 root 免密时，请在平台节点环境里填写该节点的登录密码）"
 }
 
 meminfo_of() { # <ip> → "total free surp"（大页三值；末尾带换行供 read 判成功，空输出=读取失败由调用方判）
