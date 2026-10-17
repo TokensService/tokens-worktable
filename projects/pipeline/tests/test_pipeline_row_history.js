@@ -5,7 +5,8 @@
 // 最后把运行历史卡片 #histCard 平滑滚动到视口顶部；openPlRowMenu 展开时动态刷新该列表项 title（含流水线名）。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
+const {extractStatement,lineOf}=require('./_page-source.cjs');
 
 function extractFunction(name){
   const match=new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -75,19 +76,29 @@ function load(opts){
       histFilterKw:kwInp, histFilterStatus:stSel, histCard:card})[id]||null,
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
-  const end=source.indexOf('function togglePipelinePin',start);
-  assert.ok(start>=0&&end>start,'⋯ 菜单代码区域未找到');
-  let script=source.slice(start,end)+'\n'
+  // 页面脚本拆分后，「⋯」菜单的状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 原「注释标记 → function togglePipelinePin」的区域切片两端已跨分片失序。改为按名逐条取出
+  // 原切片所覆盖的同一批声明（原文 10869–10958 区间，不含终点的 togglePipelinePin），
+  // 断言、桩与测试数量一律未改动。
+  assert.ok(source.includes('/* 行内「⋯」菜单当前展开项'),'⋯ 菜单代码区域未找到');
+  assert.ok(source.includes("$('plRowMenuHistory').addEventListener"),'「运行历史」列表项绑定未找到');
+  let script=[
+    extractStatement('let plMenuOpenId='),
+    extractFunction('closePlRowMenu'),
+    extractFunction('openPlRowMenu'),
+    extractFunction('showPipelineHistory'),
+    extractFunction('showPipelineFromHistory'),
+    extractStatement('let historyMenuOpenRec='),
+    extractFunction('closeHistoryRowMenu'),
+    extractFunction('openHistoryRowMenu'),
+    extractStatement('const historyRowMenuViewPipeline='),
+  ].join('\n')+'\n'
     +extractFunction('findPipeline')+'\n'
     +extractFunction('saveHistFilter')+'\n'
     +extractFunction('showPipelineHistory');
   let bindLine='';
   if(!opts.missingHistoryItem){   // 缺 history 项的守卫场景不跑绑定行（$('plRowMenuHistory') 为空会抛错，与页面守卫语义无关）
-    const bindStart=source.indexOf("$('plRowMenuHistory').addEventListener");
-    const bindEnd=source.indexOf('\n',bindStart);
-    assert.ok(bindStart>=0&&bindEnd>bindStart,'「运行历史」列表项绑定未找到');
-    bindLine=source.slice(bindStart,bindEnd);
+    bindLine=lineOf("$('plRowMenuHistory').addEventListener");
     script+='\n'+bindLine;
   }
   vm.runInContext(script,ctx);

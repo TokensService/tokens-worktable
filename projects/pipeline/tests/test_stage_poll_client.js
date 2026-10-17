@@ -10,8 +10,7 @@ const vm = require("vm");
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
-const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html";
-const source = fs.readFileSync(pipelineHtml, "utf8");
+const source = require("./_page-source.cjs").loadPageSource();
 
 const s0 = source.indexOf("function stageUrlOf(s)");
 const e0 = source.indexOf("\n", s0) + 1;

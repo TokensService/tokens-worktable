@@ -1,17 +1,22 @@
 // GPU 仅当前浏览器标签页首次载入自动刷新，项目 iframe 重建后只允许手动刷新。
-const fs=require('node:fs');
 const vm=require('node:vm');
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const {extractFunction,extractStatement}=require('./_page-source.cjs');
 function context(storage){
   const ctx={sessionStorage:storage,window:{},auto:[],calls:0,
     setTimeout(fn){ctx.auto.push(fn);},refreshGpuAll(){ctx.calls++;}};
   vm.createContext(ctx);
-  const a=source.indexOf('/* 节点设备状态查询'), b=source.indexOf('/* 占用判定',a);
-  vm.runInContext(source.slice(a,b),ctx);
-  const c=source.indexOf('let _gpuInited='), d=source.indexOf('/* 从服务端拉取配置与历史',c);
-  vm.runInContext(source.slice(c,d),ctx);
+  // 页面脚本拆分后，状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 故按名逐条取出本页所需的状态与函数，替代原先「按相邻注释标记切片」的写法。
+  vm.runInContext([
+    extractStatement('const GPU_SESSION_KEY='),
+    extractStatement('const gpuSession='),
+    extractStatement('let gpuStatus='),
+    extractFunction('saveGpuSession'),
+    extractStatement('let _gpuInited='),
+    extractFunction('scheduleGpuRefresh'),
+  ].join('\n'),ctx);
   return ctx;
 }
 test('首次载入一次，重建 iframe 不查询，手动刷新仍生效',()=>{

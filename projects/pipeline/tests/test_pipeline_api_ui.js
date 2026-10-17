@@ -2,7 +2,7 @@
    会话令牌实际值，无占位符），以及「▶ 直接调用」——页面内同源发起一次真实 POST 并内联展示结果。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function section(begin,end){
   const start=source.indexOf(begin),finish=source.indexOf(end,start);

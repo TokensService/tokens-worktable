@@ -19,7 +19,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const esbuild = require('esbuild');
 
-const clientSource = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const clientSource = require('./_page-source.cjs').loadPageSource();
 const serverSource = fs.readFileSync(process.env.WORKTABLE_SERVER_TS || __dirname + '/../../../src/index.ts', 'utf8');
 
 function extractFunction(source, name) {

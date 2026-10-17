@@ -7,7 +7,7 @@
      （SSH 地址 → LLM服务地址，仅填了的节点，脚本显式同名参数优先）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 const J=x=>JSON.parse(JSON.stringify(x));
 
 function extractFunction(name){

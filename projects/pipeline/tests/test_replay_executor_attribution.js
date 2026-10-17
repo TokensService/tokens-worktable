@@ -3,7 +3,7 @@
 // 使 fillExecutorFromAuth 因输入框非空而跳过 /auth/status 探测，执行人长期错署为历史记录作者。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function extractFunction(name){
   const match=new RegExp(`function\\s+${name}\\s*\\(`).exec(source);

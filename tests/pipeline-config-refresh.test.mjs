@@ -2,8 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
+import { loadPageSource } from '../projects/pipeline/tests/_page-source.mjs'
 
-const page = await readFile(new URL('../projects/pipeline/pipeline.html', import.meta.url), 'utf8')
+const page = await loadPageSource()
 
 function extractFunction(name) {
   const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(page)

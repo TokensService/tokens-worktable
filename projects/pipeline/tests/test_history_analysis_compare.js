@@ -3,12 +3,10 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractFunction, extractStatement } = require('./_page-source.cjs');
 
 function analysisContext(extra) {
-  const start = source.indexOf('function analysisHistoryKey(');
-  const end = source.indexOf('/* ---------- 历史 & 统计 ---------- */', start);
-  assert.ok(start >= 0 && end > start, '缺少运行历史单双选分析实现');
   const ctx = Object.assign({
     analysisPrompts: {
       log: '日志 {summary} {logFile}',
@@ -26,7 +24,25 @@ function analysisContext(extra) {
     window: { parent: {} },
   }, extra || {});
   vm.createContext(ctx);
-  vm.runInContext(source.slice(start, end), ctx);
+  // 页面脚本拆分后，状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 原「function analysisHistoryKey → /* ---------- 历史 & 统计 ---------- */」的区域切片
+  // 会连带吞进本节靠后的 `let analysisPrompts = loadPrompts()`（loadPrompts 在切片外 → ReferenceError），
+  // 而它又会以词法绑定覆盖 ctx 里的 analysisPrompts 桩。改为按名逐条取出原切片覆盖的
+  // 同一批声明（原文 9734–9836 区间：10 个函数 + const COMPARE_FOCUS），断言与桩一律未改动。
+  assert.ok(source.includes('/* ---------- 历史 & 统计 ---------- */'), '缺少运行历史单双选分析实现');
+  vm.runInContext([
+    extractFunction('analysisHistoryKey'),
+    extractFunction('toggleAnalysisHistory'),
+    extractFunction('selectedAnalysisHistory'),
+    extractFunction('pruneAnalysisHistory'),
+    extractFunction('analysisSummary'),
+    extractFunction('buildAnalysisPrompt'),
+    extractStatement('const COMPARE_FOCUS'),
+    extractFunction('buildComparisonPrompt'),
+    extractFunction('commonAnalysisArchiveFolder'),
+    extractFunction('buildAnalysisRequest'),
+    extractFunction('createAnalysisChat'),
+  ].join('\n'), ctx);
   return ctx;
 }
 

@@ -7,7 +7,8 @@
    其他用户只读（仍可运行）；删除对任何人（含 admin）保持禁止；行菜单「标记可信」对内置隐藏（无需切换）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
+const {extractStatement}=require('./_page-source.cjs');
 
 function extractFunction(name){
   const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
@@ -18,6 +19,28 @@ function extractFunction(name){
     else if(source[i]==='}'&&--depth===0) return source.slice(match.index,i+1);
   }
   throw new Error(`无法提取函数 ${name}`);
+}
+
+/* 页面脚本拆分后，「⋯」菜单的状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+   原「注释标记 → function selectPipeline」的区域切片两端已跨分片失序（切空 / 吞进整页 HTML）。
+   改为按名逐条取出原切片所覆盖的同一批声明（原文 10869–11057 区间，不含终点的 selectPipeline），
+   与 test_pipeline_pin.js 同款；断言、桩与测试数量一律未改动。 */
+function menuRegionScript(){
+  return [
+    extractStatement('let plMenuOpenId='),
+    extractFunction('closePlRowMenu'),
+    extractFunction('openPlRowMenu'),
+    extractFunction('showPipelineHistory'),
+    extractFunction('showPipelineFromHistory'),
+    extractStatement('let historyMenuOpenRec='),
+    extractFunction('closeHistoryRowMenu'),
+    extractFunction('openHistoryRowMenu'),
+    extractStatement('const historyRowMenuViewPipeline='),
+    extractFunction('togglePipelinePin'),
+    extractFunction('togglePipelineTrusted'),
+    extractFunction('renderPipelines'),
+    extractFunction('renderPipelineSel'),
+  ].join('\n');
 }
 
 /* ---------- plEditable：trusted 规则 ---------- */
@@ -220,10 +243,8 @@ function loadPipelineRows(){
     alert:()=>{},
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
-  const end=source.indexOf('function selectPipeline',start);
-  assert.ok(start>=0&&end>start,'流水线菜单与列表区域未找到');
-  vm.runInContext(source.slice(start,end),ctx);
+  assert.ok(source.includes('/* 行内「⋯」菜单当前展开项'),'流水线菜单与列表区域未找到');
+  vm.runInContext(menuRegionScript(),ctx);
   ctx.renderPipelines();
   return {ctx,tbody};
 }
@@ -263,10 +284,8 @@ test('renderPipelines：内置行只渲染「可信」徽章（不再渲染「�
     selectPipeline:()=>{},
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
-  const end=source.indexOf('function selectPipeline',start);
-  assert.ok(start>=0&&end>start,'流水线菜单与列表区域未找到');
-  vm.runInContext(source.slice(start,end),ctx);
+  assert.ok(source.includes('/* 行内「⋯」菜单当前展开项'),'流水线菜单与列表区域未找到');
+  vm.runInContext(menuRegionScript(),ctx);
   ctx.renderPipelines();
   const html=tbody.children[0].innerHTML;
   assert.doesNotMatch(html,/>内置<\/span>/,'内置行不再渲染「内置」徽章');
@@ -301,9 +320,7 @@ test('renderPipelines：admin 视角内置行渲染「编辑」按钮但仍不�
     selectPipeline:()=>{},
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
-  const end=source.indexOf('function selectPipeline',start);
-  vm.runInContext(source.slice(start,end),ctx);
+  vm.runInContext(menuRegionScript(),ctx);
   ctx.renderPipelines();
   const html=tbody.children[0].innerHTML;
   assert.match(html,/>编辑</,'admin 行内按钮为「编辑」');

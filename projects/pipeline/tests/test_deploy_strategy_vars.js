@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 /* 与 test_stage_variable_precedence.js 同一切片：substRunVars（含普罗模板解析 substPromTemplate）到 execScript 之间 */
 const start=source.indexOf('function substRunVars(v, rc)');
 const end=source.indexOf('async function runScriptStep(rc, i)',start);

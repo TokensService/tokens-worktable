@@ -1,7 +1,75 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
+const {extractFunction,extractStatement}=require('./_page-source.cjs');
 function load(a,b,ctx){const start=source.indexOf(a);vm.runInContext(source.slice(start,source.indexOf(b,start)),ctx);}
+function loadDecls(decls,ctx){vm.runInContext(decls.join('\n'),ctx);}
+/* 页面脚本拆分后，顶层状态语句（boot 分片）与同分节的函数声明不再文本相邻，三处切片失效：
+   - 「/* ---------- 渲染流水线编排 ---------- *\/ → const PIPELINE_DEFAULT_PRESET_KEYS」会多吞同分节靠后的
+     10 个 pipelineDefault* 函数（原文只覆盖 PRESET_DEF/PRESET_ORDER/PRESET_BY_NAME + presetDefOf/presetOrderAll/
+     rebuildPresetNameMap + rebuildPresetNameMap() 调用）；
+   - 「function presetOn( → function applyStatusClasses(」会多吞 boot 里的 let nodes/let selectedId/const $ 等
+     状态语句（覆盖测试的桩，且 curPipeline().stages[0] 直接 TypeError），同时漏掉 let flowDragFromId；
+   - 「let editSelStage → function renderStageParams(」终点锚点（函数）在视图里跑到了起点锚点（状态语句）之前，
+     indexOf 返回 -1，切片一路吞到页面尾部 HTML（SyntaxError: Unexpected token '<'）。
+   三处都改为按名逐条取出原切片覆盖的同一批声明（原文 1839–1869、4927–5177、4497–4637 区间）；
+   终点锚点原本排除的 applyStatusClasses / renderStageParams 等被桩函数一律不取，桩保持原样。 */
+const PRESET_DEF_DECLS=[
+  extractStatement('const PRESET_DEF=',source),
+  extractStatement('const PRESET_ORDER=',source),
+  extractStatement('const PRESET_BY_NAME={};',source),
+  extractFunction('presetDefOf',source),
+  extractFunction('presetOrderAll',source),
+  extractFunction('rebuildPresetNameMap',source),
+  extractStatement('\nrebuildPresetNameMap();',source),
+];
+const FLOW_RENDER_DECLS=[
+  extractFunction('presetOn',source),
+  extractFunction('selectedPresetKeys',source),
+  extractFunction('presetRuntime',source),
+  extractFunction('presetMarker',source),
+  extractFunction('withPresetMarkers',source),
+  extractFunction('runSettingsSnapshot',source),
+  extractFunction('runSettingsOf',source),
+  extractFunction('runScriptsDir',source),
+  extractFunction('runJenkinsCfg',source),
+  extractFunction('runEvaltokCfg',source),
+  extractFunction('runPromCfg',source),
+  extractFunction('runArchiveDir',source),
+  extractFunction('runArchiveScriptName',source),
+  extractFunction('expandRunStages',source),
+  extractFunction('flowStages',source),
+  extractFunction('pipelineStageGroups',source),
+  extractFunction('pipelineStageGroupAt',source),
+  extractFunction('flowDraggable',source),
+  extractFunction('flowWorkList',source),
+  extractStatement('let flowDragFromId=null;',source),
+  extractFunction('clearFlowDragMarks',source),
+  extractFunction('flowNodeDragStart',source),
+  extractFunction('flowNodeDragOver',source),
+  extractFunction('flowNodeDrop',source),
+  extractFunction('flowNodeDragEnd',source),
+  extractFunction('persistFlowOrder',source),
+  extractFunction('createFlowNode',source),
+  extractFunction('renderFlow',source),
+  extractFunction('flowNodeElementById',source),
+  extractFunction('flowSubElementByName',source),
+];
+const STAGE_EDITOR_DECLS=[
+  extractStatement('let editSelStage=null;',source),
+  extractFunction('applyEditSel',source),
+  extractFunction('selectEditStage',source),
+  extractFunction('insertEditStage',source),
+  extractFunction('moveEditStage',source),
+  extractFunction('stageDropTarget',source),
+  extractFunction('clearStageDragMarks',source),
+  extractFunction('stageCardMouseDown',source),
+  extractFunction('stageCardDragStart',source),
+  extractFunction('stageCardDragOver',source),
+  extractFunction('stageCardDrop',source),
+  extractFunction('stageCardDragEnd',source),
+  extractFunction('renderStageEditor',source),
+];
 function context(){
   const flow={innerHTML:'',children:[],appendChild(n){this.children.push(n);}};
   const checkbox={checked:true},checkBox={checked:false},profilingBox={checked:false};
@@ -15,7 +83,7 @@ function context(){
     viewActive:()=>!!(ctx.viewRc&&!ctx.viewRc.over),
     runPreviewReadOnly:rc=>!!(rc&&(rc.queuedPreview===true||rc.remotePreview===true)),
     setSel:id=>{ctx.selectedId=id;if(ctx.viewRc)ctx.viewRc.selId=id;}};
-  vm.createContext(ctx);load('/* ---------- 渲染流水线编排 ---------- */','const PIPELINE_DEFAULT_PRESET_KEYS',ctx);load('function presetOn(','function applyStatusClasses(',ctx);
+  vm.createContext(ctx);loadDecls(PRESET_DEF_DECLS,ctx);loadDecls(FLOW_RENDER_DECLS,ctx);
   return {ctx,flow,checkbox,checkBox,profilingBox};
 }
 test('勾选后首位显示清理，取消后移除，普通任务可编辑（编辑器内预设行占位，焦点序号含预设行）',()=>{
@@ -190,7 +258,7 @@ test('流水线编辑器普通任务卡展示「收集普罗数据」开关（�
     stageCardMouseDown(){},stageCardDragStart(){},stageCardDragOver(){},stageCardDrop(){},stageCardDragEnd(){},
     renderStageActionRow(){},renderStageParams(){},renderStageSched(){},
     document:{createElement:()=>({dataset:{},style:{},innerHTML:'',classList:{toggle(){},add(){},remove(){},contains(){return false;}},addEventListener(){},querySelector(){return null;}})}};
-  vm.createContext(ctx);load('let editSelStage', 'function renderStageParams(',ctx);ctx.renderStageEditor();
+  vm.createContext(ctx);loadDecls(STAGE_EDITOR_DECLS,ctx);ctx.renderStageEditor();
   assert.match(wrap.children[0].innerHTML,/data-f="promCollect" checked[^>]*\/> 收集普罗数据/);
   assert.match(wrap.children[1].innerHTML,/data-f="promCollect" \/> 收集普罗数据/);
 });

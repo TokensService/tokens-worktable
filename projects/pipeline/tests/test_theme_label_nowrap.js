@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
 
 test('「主题」label 带 white-space:nowrap，二字不断行', () => {
   const m = source.match(/<label[^>]*>\s*主题[\s\S]*?<select[^>]*\bid="theme"/);

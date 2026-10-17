@@ -4,16 +4,13 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractFunction, extractStatement } = require('./_page-source.cjs');
 
-function extract(startMark, endMark) {
-  const start = source.indexOf(startMark);
-  const end = source.indexOf(endMark, start);
-  assert.ok(start >= 0 && end > start, startMark + ' not found');
-  return source.slice(start, end);
-}
-
-/* 与 test_queue_item_preview.js 同一片段：注释行 → $('queueRefresh')，含 _queuePullSig/queuePollSig/pullRemoteQueue */
+/* 与 test_queue_item_preview.js 同一片段：注释行 → $('queueRefresh')，含 _queuePullSig/queuePollSig/pullRemoteQueue。
+   页面脚本拆分后状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，该区域切片只剩两条 let
+   （queuePollSig/noteServerFinished/pullRemoteQueue 全被排到锚点注释之前），故改为按名逐条取出
+   原区间（原文 6493–6600 行）覆盖的同一批声明；断言与桩一律未改动。 */
 function loadPullContext(overrides) {
   const context = Object.assign({
     QCLIENT_ID: 'self', remoteQueueClients: [], viewRc: null,
@@ -22,7 +19,13 @@ function loadPullContext(overrides) {
     applyRemoteQueuePreviewRefresh: () => {}, pullRemoteQueueLog: async () => null, renderQueue: () => {},
   }, overrides || {});
   vm.createContext(context);
-  vm.runInContext(extract('/* 拉取服务端权威队列及旧标签页', "$('queueRefresh')"), context);
+  vm.runInContext([
+    extractStatement('let _queuePullSig='),
+    extractFunction('queuePollSig'),
+    extractFunction('noteServerFinished'),
+    extractStatement('let _queuePullPromise='),
+    extractFunction('pullRemoteQueue'),
+  ].join('\n'), context);
   return context;
 }
 
@@ -186,7 +189,16 @@ function loadPollLifecycle(overrides) {
     pullRemoteQueue: () => { calls.pull += 1; },
   }, overrides || {});
   vm.createContext(context);
-  vm.runInContext(extract('const QUEUE_POLL_MS', "document.addEventListener('visibilitychange'"), context);
+  // 原「const QUEUE_POLL_MS → document.addEventListener('visibilitychange'」区间（原文 12218–12232 行）：
+  // 拆分后三个函数进了阶段一分片、visibilitychange 接线留在 boot 分片且排在前面，两端锚点失序，
+  // 改为按名逐条取出原区间的同一批声明。
+  vm.runInContext([
+    extractStatement('const QUEUE_POLL_MS='),
+    extractStatement('let _queuePollTimer='),
+    extractFunction('startQueuePolling'),
+    extractFunction('stopQueuePolling'),
+    extractFunction('syncQueuePolling'),
+  ].join('\n'), context);
   return { context, calls, intervals };
 }
 

@@ -1,8 +1,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html";
-const source = fs.readFileSync(pipelineHtml, "utf8");
+const source = require("./_page-source.cjs").loadPageSource();
 
 // 切片：parseStageVars / parseStageJson / jsonPathGet / mergeStageVars / applyOutVars / substRunVars
 const s1 = source.indexOf("function forEachOutputLine(output, visit)");
