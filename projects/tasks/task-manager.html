@@ -9,7 +9,8 @@
            （点「完成」弹多行输入 + AI 总结，服务端强校验）
      布局：主从双栏——左侧紧凑任务列表，点击任务卡在右侧详情面板展示并直接编辑保存（无独立编辑按钮）；
            窄窗口自动上下堆叠；
-     任务：支持多负责人（assignees）、开始 / 结束时间（状态推进自动补记）；
+     任务：支持多负责人（assignees）、开始 / 结束时间（不提供手工填写：点「开始」按钮记开始时间、
+           走「完成」录入结果时记结束时间，由服务端状态推进落库，详情内只读展示）；
      筛选：状态 tab × 用户下拉 × 标签下拉 三者叠加（标签也可点任务卡上的 chip 快捷筛选）；
      进展：详情面板内直接添加 / 行内编辑 / 删除；
      总结：选用户 + 时间段（周 / 月 / 年 / 自定义区间）AI 生成个人工作总结 -->
@@ -152,7 +153,7 @@
   <div class="tm-head">
     <div>
       <h1 class="dshell-title">团队任务管理</h1>
-      <p class="dshell-sub">任务分配（支持多人） · 优先级 · 起止时间 · 截止 · 标签 · 进展 · 详情内直接编辑保存 · 状态/标签筛选 · AI 个人总结</p>
+      <p class="dshell-sub">任务分配（支持多人） · 优先级 · 截止 · 标签 · 进展 · 详情内直接编辑保存 · 起止随「开始 / 完成」自动记录 · 状态/标签筛选 · AI 个人总结</p>
     </div>
     <div class="tm-controls">
       <select id="themeSel" class="dshell-input" title="页面背景">
@@ -207,7 +208,7 @@
   <div class="tm-split">
     <div id="taskList" class="dshell-list tm-splitMain"></div>
     <aside id="detailPanel" class="dshell-card tm-detailCol">
-      <div id="detailEmpty" class="tm-detailEmpty">点击左侧任务卡<br />查看并编辑任务详情（标签 / 描述 / 结果 / 起止时间 / 进展）</div>
+      <div id="detailEmpty" class="tm-detailEmpty">点击左侧任务卡<br />查看并编辑任务详情（标签 / 描述 / 结果 / 进展；起止时间随「开始 / 完成」自动记录）</div>
       <div id="detailBox" style="display:none">
         <div class="tm-detailHead">
           <h2 class="dshell-sub" id="detailTitle" style="margin:0;font-size:14px;font-weight:600;flex:1"></h2>
@@ -233,8 +234,6 @@
               </select>
             </div>
             <div class="tm-field"><label>截止时间</label><input id="dDeadline" type="datetime-local" class="dshell-input" /></div>
-            <div class="tm-field"><label>开始时间</label><input id="dStartAt" type="datetime-local" class="dshell-input" /></div>
-            <div class="tm-field"><label>结束时间</label><input id="dEndAt" type="datetime-local" class="dshell-input" /></div>
           </div>
           <div class="tm-field"><label>负责人（可多选）</label>
             <div class="tm-assigneeBox" id="dAssignees"></div>
@@ -286,10 +285,7 @@
         </div>
         <div class="tm-field"><label>截止时间</label><input id="fDeadline" type="datetime-local" class="dshell-input" /></div>
       </div>
-      <div class="tm-row2">
-        <div class="tm-field"><label>开始时间</label><input id="fStartAt" type="datetime-local" class="dshell-input" /></div>
-        <div class="tm-field"><label>结束时间</label><input id="fEndAt" type="datetime-local" class="dshell-input" /></div>
-      </div>
+      <div class="tm-hint">开始 / 结束时间不在此填写：点任务卡「开始」按钮记开始时间，走「完成」录入结果时记结束时间。</div>
       <div class="tm-field">
         <label>标签（回车添加，最多 10 个）</label>
         <div class="tm-tagInput" id="fTagsBox">
@@ -528,6 +524,14 @@
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
   function isOverdue(t) { return t.status !== 'done' && t.deadline && t.deadline < Date.now(); }
+  /* 起止时间只读展示：与 fmtDL 同格式，但未记录时给「未记录」而非「无截止」
+     （起止不可手填，只由「开始」按钮 / 完成动作经服务端状态推进落库） */
+  function fmtTs(ts) {
+    if (!ts) return '未记录';
+    var d = new Date(ts);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
   function enabledUsers() { return users.filter(function (u) { return !u.disabled; }); }
   function userLabel(name) {
     var u = null;
@@ -720,7 +724,7 @@
           }
           return;
         }
-        /* 点任务卡（非操作按钮）→ 右侧详情面板：行内编辑 + 标签 / 描述 / 结果 / 起止时间 / 全部进展 */
+        /* 点任务卡（非操作按钮）→ 右侧详情面板：行内编辑 + 标签 / 描述 / 结果 / 全部进展（起止时间只读展示） */
         selectTask(t);
       });
       box.appendChild(item);
@@ -807,8 +811,6 @@
     }
     document.getElementById('fPrio').value = 'mid';
     document.getElementById('fDeadline').value = '';
-    document.getElementById('fStartAt').value = '';
-    document.getElementById('fEndAt').value = '';
     editTags = [];
     renderTagChips();
     mask.classList.add('on');
@@ -826,16 +828,13 @@
     var assignees = users.length ? checkedAssignees(fAssigneesBox) : (fAssigneeFree.value.trim() ? [fAssigneeFree.value.trim()] : []);
     if (!assignees.length) { showErr('请至少勾选一位负责人'); return; }
     var dl = document.getElementById('fDeadline').value;
-    var st = document.getElementById('fStartAt').value;
-    var en = document.getElementById('fEndAt').value;
+    /* 不提交 startAt / endAt：起止时间只由「开始」按钮与完成动作经服务端状态推进记录 */
     var data = {
       title: title,
       desc: document.getElementById('fDesc').value.trim(),
       assignees: assignees,
       prio: document.getElementById('fPrio').value,
       deadline: dl ? new Date(dl).getTime() : null,
-      startAt: st ? new Date(st).getTime() : null,
-      endAt: en ? new Date(en).getTime() : null,
       tags: editTags.slice()
     };
     apiSend('POST', data).then(function () { mask.classList.remove('on'); return loadTasks(); })
@@ -966,7 +965,7 @@
     if (!selectedId || !t) {
       /* 未选中，或所选任务已被删除（他人操作 / 轮询后发现）：取消选中回到占位提示 */
       if (selectedId) emptyEl.textContent = '所选任务已不存在（可能已被删除）';
-      else emptyEl.innerHTML = '点击左侧任务卡<br />查看并编辑任务详情（标签 / 描述 / 结果 / 起止时间 / 进展）';
+      else emptyEl.innerHTML = '点击左侧任务卡<br />查看并编辑任务详情（标签 / 描述 / 结果 / 进展；起止时间随「开始 / 完成」自动记录）';
       selectedId = null; detailTask = null;
       detailBox.style.display = 'none';
       emptyEl.style.display = '';
@@ -989,10 +988,6 @@
     document.getElementById('dPrio').disabled = !canFields;
     document.getElementById('dDeadline').value = t.deadline ? toLocal(t.deadline) : '';
     document.getElementById('dDeadline').disabled = !canFields;
-    document.getElementById('dStartAt').value = t.startAt ? toLocal(t.startAt) : '';
-    document.getElementById('dStartAt').disabled = !canFields;
-    document.getElementById('dEndAt').value = t.endAt ? toLocal(t.endAt) : '';
-    document.getElementById('dEndAt').disabled = !canFields;
     if (users.length) {
       renderAssigneeChecks(document.getElementById('dAssignees'), taskAssignees(t), !canFields);
       document.getElementById('dAssignees').style.display = '';
@@ -1011,7 +1006,9 @@
     document.getElementById('dSaveBtn').style.display = (canFields || canSE) ? '' : 'none';
     document.getElementById('dSaveBtn').disabled = !(canFields || canSE);
     var dlNote = isOverdue(t) ? '（已逾期）' : '';
-    document.getElementById('dCreatedLine').textContent = '创建 ' + fmtDL(t.created) + (t.createdBy ? ' · ' + t.createdBy : '') + ' · 截止 ' + fmtDL(t.deadline) + dlNote;
+    /* 起止时间只读追加在「创建 · 截止」这一行：不可手填，只由「开始」按钮 / 完成动作记录 */
+    document.getElementById('dCreatedLine').textContent = '创建 ' + fmtDL(t.created) + (t.createdBy ? ' · ' + t.createdBy : '') + ' · 截止 ' + fmtDL(t.deadline) + dlNote +
+      ' · 开始 ' + fmtTs(t.startAt) + ' · 结束 ' + fmtTs(t.endAt);
     clearDetailDirty();
     renderDetailProgress(t);
   }
@@ -1049,7 +1046,7 @@
   })();
 
   /* 详情表单脏标记：任一字段改动即提示未保存（轮询让行） */
-  ['dTitle', 'dStatus', 'dPrio', 'dDeadline', 'dStartAt', 'dEndAt', 'dDesc', 'dEffect'].forEach(function (id) {
+  ['dTitle', 'dStatus', 'dPrio', 'dDeadline', 'dDesc', 'dEffect'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('input', markDetailDirty);
     if (el) el.addEventListener('change', markDetailDirty);
@@ -1063,8 +1060,6 @@
       status: document.getElementById('dStatus').value,
       prio: document.getElementById('dPrio').value,
       deadline: (function () { var v = document.getElementById('dDeadline').value; return v ? new Date(v).getTime() : null; })(),
-      startAt: (function () { var v = document.getElementById('dStartAt').value; return v ? new Date(v).getTime() : null; })(),
-      endAt: (function () { var v = document.getElementById('dEndAt').value; return v ? new Date(v).getTime() : null; })(),
       assignees: assignees,
       tags: detailTagsBuf.slice(),
       desc: document.getElementById('dDesc').value.trim(),
@@ -1089,8 +1084,6 @@
       data.title = body.title;
       data.prio = body.prio;
       data.deadline = body.deadline;
-      data.startAt = body.startAt;
-      data.endAt = body.endAt;
       data.assignees = body.assignees;
       data.tags = body.tags;
       data.desc = body.desc;

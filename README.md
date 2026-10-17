@@ -72,11 +72,26 @@
   `/auth/users` 负责人列表），admin 可新增/删除/批量导入（文本按行解析或 AI 分析）
   并在详情面板内联编辑全部字段，普通成员可更新分配给自己任务的状态、效果与进展（服务端强校验）。
   任务支持**多负责人**（`assignees: string[]`，兼容旧单值 `assignee`）与**开始 / 结束时间**
-  （`startAt` / `endAt`，状态推进 todo→doing→done 自动补记，已有值不覆盖）；主从双栏布局，
+  （`startAt` / `endAt`）——起止时间**不提供手工填写**：点任务卡「开始」按钮（todo→doing）记开始时间、
+  走「完成」录入结果（→done）记结束时间，由服务端状态推进落库（已有值不覆盖），详情面板在
+  「创建 · 截止」行**只读展示**（未记录显示「未记录」）；主从双栏布局，
   点击任务卡在右侧详情面板**直接编辑保存**（无独立编辑按钮），进展可**行内添加**/编辑/删除
   （admin / 作者 / 任一任务负责人）；列表支持**状态 × 用户 × 标签**三维叠加筛选（标签 chip 可点快捷筛选）；
   完成时走多行弹窗录入结果（支持 AI 总结润色）；token 共享部署退化为全权本地模式
   （负责人自由文本）。AI 能力可配 OpenAI 兼容 API（页面「⚙ AI」）或复用 DSH 会话 AI。
+
+- `projects/images/`：镜像仓库管理页（`index.html`）。浏览私有 Docker Registry 全部镜像与标签
+  （`/v2/_catalog` 分页跟随 Link 全量取回 + `/v2/<repo>/tags/list`，经 DSH 服务端
+  `/api/worktable/proxy` 代连、仅回环/内网目标，Authorization 头随设置透传），支持按 digest
+  删除标签（manifest DELETE，OCI Accept）与一键垃圾回收（`docker exec registry registry
+  garbage-collect` 经 `/api/worktable/exec` 执行）；「远程缓存」提交镜像缓存任务——
+  `/api/worktable/exec-stream` 流式跑 `registry_cache.sh`（docker pull → login → tag → push），
+  NDJSON 实时回显、可中止（杀进程组）、历史记录与失败退出码留痕；「设置」页配置镜像仓库地址 /
+  账号密码 / 超时（本机 localStorage，不上传服务端）。背景支持跟随系统 / 深色 / 浅色。配套 `registry_cache.sh`（缓存任务执行体；login 失败按 TLS/401/refused 三类给归因提示，TERM/INT trap 保证中止时不残留 docker 客户端）与 `registry_test.sh`（CLI 探活 / GC 助手）。
+  本机仓库已开启 htpasswd 认证（realm `lhf private registry`，账号 `admin`），页面**不内置任何口令**：
+  首次使用需在「设置」页填入仓库密码并保存，否则 `/v2/` 请求全部 401、列表恒为空——此时错误条会
+  给出归因（区分「仓库要认证」与「DSH 会话失效」）并挂出直达设置页的按钮。口令见部署机
+  `/mnt/images/docker-registry/README.md`。
 
 `projects/package.json` 保留项目脚本的 CommonJS 运行方式；显式使用 `.mjs` 的测试仍按 ESM 执行。
 

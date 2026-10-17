@@ -37,7 +37,7 @@ async function fixture(t, options = {}) {
   let drainEventCount = 0
   let activeDrainListeners = 0
   const json = (res, status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
-  vm.runInNewContext(code, { execFile, spawn: options.spawn || spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout, clearTimeout, lockStreamWritePath,
+  vm.runInNewContext(code, { execFile: options.execFile || execFile, spawn: options.spawn || spawn, fsMkdir, fsOpen: options.fsOpen || fsOpen, dirname, pathResolve, process, Buffer, setTimeout: options.setTimeout || setTimeout, clearTimeout, lockStreamWritePath,
     webServer: { register: r => routes.set(r.path, r.handler) }, json, dropOversizeEnv: () => '',
     readJsonBody: async req => { let s = ''; for await (const c of req) s += c; return JSON.parse(s) } })
   const server = createServer((req, res) => {
@@ -176,6 +176,43 @@ test('超时保留输出及终止原因', async t => {
   const log = await readFile(f.dir + '/nested/stage.log', 'utf8')
   assert.match(log, /before-timeout/); assert.match(log, /timed out/)
   assert.notEqual(events.at(-1).code, 0)
+})
+/* 镜像仓库页「远程缓存」拉 32GB 级镜像，仅 blob 下载实测就要 40 分钟以上（mirror 把 blob 302 到境外
+   CDN，实测 3~4MB/s），加解压落盘与 push 常超 1 小时。旧的 1 小时硬夹让页面「超时（分钟）」填 120 被
+   静默降到 60，任务在 push 前被 SIGKILL。这里用 setTimeout 间谍取真实生效的定时值，无需等一小时。 */
+function timeoutSpy() {
+  const delays = []
+  return { delays, setTimeout: (fn, delay, ...rest) => { delays.push(delay); return setTimeout(fn, delay, ...rest) } }
+}
+test('exec-stream：略超旧 1 小时上限的请求值原样生效，不再被静默截断', async t => {
+  const spy = timeoutSpy()
+  const f = await fixture(t, { setTimeout: spy.setTimeout })
+  await (await f.run('echo ok\n', { timeoutMs: 3_700_000 })).text()
+  assert.ok(spy.delays.includes(3_700_000), '3700000ms 应原样用于 kill 定时器')
+  assert.ok(!spy.delays.includes(3_600_000), '不得再被夹成旧的 1 小时上限')
+})
+test('exec-stream：超过 24h 按上限夹取，0 仍表示不挂超时', async t => {
+  const spy = timeoutSpy()
+  const f = await fixture(t, { setTimeout: spy.setTimeout })
+  await (await f.run('echo ok\n', { timeoutMs: 100_000_000 })).text()
+  assert.ok(spy.delays.includes(86_400_000), '超过 24h 应夹到 EXEC_TIMEOUT_CAP_MS')
+  const spy0 = timeoutSpy()
+  const f0 = await fixture(t, { setTimeout: spy0.setTimeout })
+  await (await f0.run('echo ok\n', { timeoutMs: 0 })).text()
+  assert.ok(!spy0.delays.some(d => d >= 86_400_000), 'timeoutMs=0 不得挂超时 kill 定时器（既有语义不变）')
+})
+test('exec 与 exec-stream 共用同一超时上限常量，且超时文案带可操作出口', async t => {
+  const f = await fixture(t)
+  await (await f.run('echo ok\n', { timeoutMs: 7_200_000 }, 'exec')).json()
+  assert.ok(/EXEC_TIMEOUT_CAP_MS = 86_400_000/.test(source), '应有 24h 上限常量')
+  const clamps = source.match(/Math\.min\(Math\.max\(Number\(body\.timeoutMs\), 1000\), (\w+)\)/g) || []
+  assert.equal(clamps.length, 2, 'exec 与 exec-stream 各一处夹取')
+  assert.ok(clamps.every(c => c.includes('EXEC_TIMEOUT_CAP_MS')), '两处都必须用常量，不得写死 3600000')
+  const res = await f.run('sleep 10\n', { timeoutMs: 1000 })
+  const events = (await res.text()).trim().split('\n').map(x => JSON.parse(x))
+  const errMsg = events.find(e => e.type === 'error')?.message || ''
+  assert.match(errMsg, /可调大页面「超时（分钟）」/, '超时文案应指路调大超时')
+  assert.match(errMsg, /留空表示不限时/, '超时文案应告知可留空不限时')
 })
 test('无归档参数的旧调用保持原有返回协议', async t => {
   const f = await fixture(t), res = await f.run('echo old\n', { logFile: null })

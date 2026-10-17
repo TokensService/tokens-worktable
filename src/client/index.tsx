@@ -2836,13 +2836,44 @@ function buildCustomLayoutPrompt(req: string): string {
       const items = Array.isArray(d) ? d : [d]
       const open = splitStore.active && splitStore.spec?.id === projectId
       const saved = open ? splitStore.spec : (projectsRef.current.projects.views[projectId] ?? projectsRef.current.projects.layouts.find((l) => l.id === projectId))
-      // 逐项解析目标窗格；同窗格冲突时保留先出现者（防止把两个窗口压进同一个窗格互相覆盖）
+      /* 逐项解析目标窗格；同窗格冲突时保留先出现者（防止把两个窗口压进同一个窗格互相覆盖）。
+         窗口标签解析不到对应窗格（布局里还没有那么多窗格）时按序号补建窗格——否则整项会退化
+         落到 main[0]，多个清单窗口互相挤占同一窗格、后续项被去重丢弃（如单窗布局挂「窗口2」）。 */
+      const paneCount = (spec: any) => ((spec?.left ? 1 : 0) + ((spec?.top ?? []).length) + ((spec?.main ?? []).length))
+      const paneAt = (spec: any, n: number): { row: 'left' | 'top' | 'main'; index: number } | null => {
+        let idx = n - 1
+        if (spec?.left) {
+          if (idx === 0) return { row: 'left', index: 0 }
+          idx -= 1
+        }
+        const top = spec?.top ?? []
+        if (idx < top.length) return { row: 'top', index: idx }
+        idx -= top.length
+        const main = spec?.main ?? []
+        if (idx < main.length) return { row: 'main', index: idx }
+        return null
+      }
+      const ensurePaneAt = (spec: any, n: number): { row: 'left' | 'top' | 'main'; index: number } => {
+        for (let count = paneCount(spec); count < n; count += 1) {
+          if (!Array.isArray(spec.top)) spec.top = []
+          if (!Array.isArray(spec.main)) spec.main = []
+          // 与「拖出新窗格」同一建窗动作：main 两窗起横向并排，第三窗起进 top 行
+          if (spec.main.length < 2) spec.main.push({ tabs: [] })
+          else spec.top.push({ tabs: [] })
+        }
+        return paneAt(spec, n) ?? { row: 'main', index: 0 }
+      }
       const targets: { row: 'left' | 'top' | 'main'; index: number; content: any }[] = []
       for (const it of items) {
         if (!it) continue
         const content = buildMountContent(folder, it)
         if (!content) continue
-        const pane = windowLabelToPane(saved, it.window)
+        const pane = windowLabelToPane(saved, it.window) ?? (() => {
+          const m = /^窗口(\d+)$/.exec(String(it.window ?? '').trim())
+          if (!m) return null
+          const n = parseInt(m[1], 10)
+          return Number.isFinite(n) && n >= 1 && saved ? ensurePaneAt(saved, n) : null
+        })()
         const row = pane?.row ?? 'main'
         const index = pane?.index ?? 0
         if (targets.some((t) => t.row === row && t.index === index)) continue
