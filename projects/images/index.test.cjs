@@ -3,6 +3,7 @@
    - 镜像浏览：/v2/_catalog 全量取回（跟随 Link rel=next）+ 本地搜索过滤、tags/list 按需预取
    - 删除标签：GET manifest（OCI Accept 四类型）→ DELETE manifests/<digest>
    - 远程缓存任务：exec-stream 流式跑 registry_cache.sh（env 注入凭证），NDJSON 帧回显 / 中止 / 历史
+   - 打标 / 改仓库名 / 清理空仓：纯 Registry API 的 manifest GET+PUT 与跨仓 blob mount
    - 设置页：仓库地址 / 账号密码 / 超时 本机 localStorage，测试连接经 proxy 探活
    - GC：write .gc.sh + exec 执行；会话 401 给出重登提示 */
 const assert = require('node:assert/strict');
@@ -15,6 +16,7 @@ const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
 const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1] ?? '';
 const cacheSh = fs.readFileSync(path.join(dir, 'registry_cache.sh'), 'utf8');
 const testSh = fs.readFileSync(path.join(dir, 'registry_test.sh'), 'utf8');
+const rmSh = fs.readFileSync(path.join(dir, 'registry_repo_rm.sh'), 'utf8');
 
 test('皮肤走工作台 dshell.css 模板', () => {
   assert.ok(html.includes('/api/worktable/template/dshell.css'));
@@ -51,6 +53,85 @@ test('删除标签：GET manifest（OCI Accept 四类型）→ DELETE manifests/
   assert.ok(script.includes('docker-content-digest'), '应从响应头取 digest');
   assert.ok(/\/manifests\/' \+ encodeURIComponent\(dg\)/.test(script) || script.includes("manifests/' + encodeURIComponent(dg)"), 'DELETE 目标应为 digest');
   assert.ok(script.includes("'DELETE'"), '应发 DELETE 请求');
+});
+
+/* Registry v2 既无「重命名仓库」也无「改标签指向」接口，两者都只能靠 manifest 的 GET+PUT 组合出来；
+   跨仓还必须先 mount blob——blob link 是按仓库隔离的，直接跨仓 PUT 会 400 MANIFEST_BLOB_UNKNOWN
+   （已实测）。以下守住这套编排里最容易写错、且错了就静默损坏镜像的几个不变量。 */
+test('打标/改名走纯 Registry API：manifest 原文 GET→PUT，跨仓先 mount blob', () => {
+  assert.ok(script.includes('function regGetManifest'), '应取 manifest');
+  assert.ok(script.includes('function regPutManifest'), '应按原样 PUT 回去');
+  assert.ok(script.includes('function regMountBlob'), '跨仓必须先 mount blob');
+  assert.ok(script.includes('?mount='), 'mount 走 blobs/uploads/?mount=<dg>&from=<repo>');
+  assert.ok(script.includes('function copyManifest') && script.includes('function renameRepo') && script.includes('function addOrMoveTag'));
+  // PUT 必须回填 GET 时的 Content-Type：registry 按 mediaType 计 digest，类型不对会算出另一个 digest 或直接 400
+  assert.ok(/'Content-Type': contentType/.test(script), 'PUT 必须回填原 Content-Type');
+  assert.ok(script.includes('docker-content-digest'), '应从响应头取 digest');
+  // manifest 必须按原始字节回写，任何 JSON 重排都会改 digest
+  assert.ok(/body: d\.body \|\| ''/.test(script), '应保留 manifest 原始字节');
+  assert.ok(!/JSON\.stringify\(mf\)/.test(script), '不得把解析后的对象重新序列化后 PUT（会改 digest）');
+});
+
+test('manifest list / OCI index 的子 manifest 递归复制（多架构镜像不漏）', () => {
+  assert.ok(script.includes('function manifestListChildren'), '应识别 list/index 的子 manifest');
+  assert.ok(script.includes('function manifestBlobDigests'), '应收集 config + layers 的 blob');
+  assert.ok(script.includes('mf.config') && script.includes('mf.layers'), 'blob 收集应覆盖 config 与 layers');
+  assert.ok(/copyManifest\(fromRepo, toRepo, kd, kd, progress\)/.test(script), '子 manifest 应按 digest 递归复制到新仓');
+});
+
+test('mount 被拒（202）时明确失败，绝不改走真实 blob 传输', () => {
+  assert.ok(script.includes('d.status === 202'), '应识别 202（仓库要求改走真实上传）');
+  assert.ok(script.includes('需要真实传输'), '应说明为何不支持并给出替代路径');
+  assert.ok(!/PATCH/.test(script), '不得实现 blob 分块上传（代连整包缓冲，多 GB 层会打爆服务端内存）');
+});
+
+test('改名为移动语义：先搬全部标签，全部落地后才删旧仓', () => {
+  const fn = script.slice(script.indexOf('function renameRepo'), script.indexOf('var TAG_RE'));
+  assert.ok(fn.length > 200, '应能定位到 renameRepo 函数体');
+  assert.ok(fn.indexOf('copyManifest') < fn.indexOf('deleteTag'), '必须先复制后删除（中途失败源仓完整）');
+  assert.ok(/deleteTag\(oldRepo, tag\)\.catch/.test(fn), '按 digest 删会连带同 digest 的其它标签，删不到属正常应吞掉');
+  assert.ok(fn.includes('没有任何标签'), '无标签的残仓应给出明确失败原因');
+  assert.ok(fn.includes('搬运标签'), '逐标签进度应可见');
+});
+
+test('打标：目标标签已存在时明示是「修改/覆盖」而非静默新增', () => {
+  assert.ok(/var verb = exists \? '修改' : '添加'/.test(script), '应按目标标签是否已存在区分文案');
+  assert.ok(script.includes('会被覆盖'), '覆盖必须提前告知');
+  assert.ok(script.includes('newTag === srcTag'), '源与目标同名应直接拦下');
+  assert.ok(script.includes('function validTag') && script.includes('function validRepoName'), '名字应在前端先校验');
+  assert.ok(script.includes('新标签名不合法') && script.includes('新仓库名不合法'), '非法名应给出具体规则');
+});
+
+test('打标/改名有进度回显与串行互斥（不允许并发改名互相删对方 manifest）', () => {
+  assert.ok(script.includes('var repoOpBusy'), '应有互斥标志');
+  assert.ok(script.includes('已有仓库操作在进行中'), '并发第二次操作应被拒');
+  assert.ok(html.includes('id="repoOpLog"'), '应有进度日志区');
+  assert.ok(script.includes('function runRepoOp'), '应统一走执行壳（进度+错误+刷新）');
+  assert.ok(/repoOpBusy = false/.test(script), '结束后必须释放互斥（含失败路径）');
+});
+
+test('registry_repo_rm.sh：删仓前守卫（名字合法性 + tags link + revision link）', () => {
+  assert.ok(rmSh.startsWith('#!/bin/bash'));
+  assert.ok(rmSh.includes('*..*'), '应拒绝路径穿越');
+  assert.ok(rmSh.includes('*[!a-z0-9._/-]*'), '应做字符集白名单（防注入）');
+  assert.ok(rmSh.includes('/*|*/)'), '应拒绝首尾斜杠');
+  // 关键：必须数 link 文件而不是目录名。实测 DELETE 只摘掉 link、空目录留在原地，
+  // 按目录名计数会把无害残留当成活数据，恰好堵死「改名后清理旧仓」这个主要用途。
+  assert.ok(rmSh.includes("-path '*/current/link'"), '标签数应按 current/link 计（每标签另有 index link，全数会把 3 报成 6）');
+  assert.ok(rmSh.includes("_manifests/revisions' -name link"), 'revision 也应按 link 文件计，不能数目录名');
+  assert.ok(rmSh.includes('拒绝删除'), '两类守卫都必须硬拒绝');
+  assert.ok(rmSh.includes('docker ps'), '删前应确认 registry 容器在跑');
+  assert.ok(rmSh.includes('REPO_RM_OK'), '成功应有明确标记');
+  assert.ok(rmSh.includes('-type d -empty -delete'), '应顺带清掉变空的父目录（否则 catalog 留空壳路径）');
+  assert.ok(/\bexit [3-7]\b/.test(rmSh), '各类拒绝应有区分度退出码');
+});
+
+test('清理空仓只对「标签已加载且为空」的仓出现，且仓库名经 args 传参不拼进脚本', () => {
+  assert.ok(script.includes('var isEmptyRepo = Array.isArray(t) && !t.length'), '仅标签加载后为空才算幽灵仓');
+  assert.ok(script.includes('data-rmrepo'), '应有清理入口');
+  assert.ok(script.includes("projectScript('registry_repo_rm.sh')"), '应复用 site 路径反解定位同目录脚本');
+  assert.ok(/args: \[vr\]/.test(script), '仓库名应作为参数传，不得写进脚本正文（注入面）');
+  assert.ok(script.includes('Registry 没有「删除仓库」接口'), '应向用户解释为何需要这一步');
 });
 
 test('所有 Registry 请求经服务端 /api/worktable/proxy 代连（不直连上游）', () => {

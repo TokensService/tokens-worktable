@@ -149,11 +149,13 @@
         </div>
       </div>
       <div id="repoList" class="dshell-list"></div>
+      <div id="repoOpLog" class="ir-jobLog" style="display:none;margin-top:8px;"></div>
       <div class="ir-pager">
         <span class="dshell-muted" id="pagerInfo">—</span>
       </div>
     </div>
     <p class="ir-hint">数据来自 Registry HTTP API（<code>/v2/_catalog</code> 分页 + <code>/v2/&lt;repo&gt;/tags/list</code>），经 DSH 服务端代连（仅回环/内网目标）；删除标签按 digest 删除 manifest，删除后建议到「设置」页执行垃圾回收（garbage-collect）释放磁盘。</p>
+    <p class="ir-hint"><b>添加/改标签</b>与<b>改仓库名</b>都走纯 Registry API、<b>不传输任何镜像数据</b>：加/改标签是「取源标签的 manifest 原文 → PUT 到新标签」（新标签已存在即覆盖）；改仓库名是「对每个 blob 做跨仓 <code>mount</code>（只建引用）→ PUT manifest → 删旧仓 manifest」，因为 blob 存储是内容寻址的全局库，32GB 镜像改名同样是秒级。<b>改名为移动语义</b>：搬完会删掉旧仓库名下的 manifest（磁盘释放仍需 GC）。</p>
   </div>
 
   <!-- ===== 远程缓存 ===== -->
@@ -490,14 +492,25 @@ function renderRepoList() {
       }).join('') + '</div>';
     }
     var tb = '';
-    if (t === undefined || t === null) {
-      tb = '<div class="ir-newTagRow"><input class="dshell-input" placeholder="新标签（提交缓存任务用）" data-tag-input="' + esc(r) + '" />' +
-        '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-cache-repo="' + esc(r) + '">缓存到此</button>' +
-        '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-load-tags="' + esc(r) + '">加载标签</button></div>';
-    } else {
-      tb = '<div class="ir-newTagRow"><input class="dshell-input" placeholder="新标签（提交缓存任务用）" data-tag-input="' + esc(r) + '" />' +
-        '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-cache-repo="' + esc(r) + '">缓存到此</button></div>';
-    }
+    /* 标签未加载时无法枚举「源标签」，打标操作只能禁用并引导先加载；
+       「缓存到此」不依赖源标签（目标标签可留空沿用源镜像标签），故始终可用。 */
+    var canTag = Array.isArray(t) && t.length > 0;
+    /* 标签已加载且为空 = 幽灵仓（manifest 被删净或被「改名」搬走）。Registry v2 没有「删除仓库」
+       接口，这种条目会一直赖在 _catalog 里，只能到存储层删目录才会真正消失。 */
+    var isEmptyRepo = Array.isArray(t) && !t.length;
+    var tagOpts = canTag ? t.map(function (tag) {
+      return '<option value="' + esc(tag) + '">' + esc(tag) + '</option>';
+    }).join('') : '<option value="">（先加载标签）</option>';
+    tb = '<div class="ir-newTagRow">' +
+      '<label class="dshell-muted" style="display:flex;align-items:center;gap:5px;font-size:11.5px;">源标签' +
+        '<select class="dshell-input" data-tag-src="' + esc(r) + '"' + (canTag ? '' : ' disabled') + ' style="width:auto;padding:3px 8px;font-size:11.5px;">' + tagOpts + '</select>' +
+      '</label>' +
+      '<input class="dshell-input" placeholder="新标签名" data-tag-input="' + esc(r) + '" />' +
+      '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-addtag-repo="' + esc(r) + '"' + (canTag ? '' : ' disabled') +
+        ' title="把「源标签」的 manifest 原样写到「新标签名」；新标签已存在即覆盖（= 改标签指向）">添加/改标签</button>' +
+      '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-cache-repo="' + esc(r) + '" title="以该仓库为目标提交远程缓存任务">缓存到此</button>' +
+      (canTag ? '' : '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-load-tags="' + esc(r) + '">加载标签</button>') +
+      '</div>';
     return '<div class="dshell-listItem" style="flex-direction:column;align-items:stretch;cursor:default;">' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
         '<span class="ir-repoName" style="flex:1;">' + esc(r) + '</span>' +
@@ -505,6 +518,10 @@ function renderRepoList() {
         '<span class="ir-rowActions">' +
           '<button class="dshell-btn dshell-btnGhost" data-open-repo="' + esc(r) + '" title="在新标签页打开 /v2/&lt;repo&gt;/tags/list">API</button>' +
           '<button class="dshell-btn dshell-btnGhost" data-refresh-repo="' + esc(r) + '">刷新标签</button>' +
+          '<button class="dshell-btn dshell-btnGhost" data-rename-repo="' + esc(r) + '"' + (canTag ? '' : ' disabled') +
+            ' title="把整仓所有标签搬到新仓库名，搬完删旧仓 manifest（移动语义）">改名</button>' +
+          (isEmptyRepo ? '<button class="dshell-btn dshell-btnDanger" data-rmrepo="' + esc(r) + '"' +
+            ' title="到存储层删除该空仓库目录，使其从列表消失（脚本会校验无标签且无 digest 引用才删）">清理空仓</button>' : '') +
         '</span>' +
       '</div>' +
       '<div style="margin-top:6px;">' + tagsHtml + '</div>' +
@@ -548,6 +565,142 @@ function deleteTag(repo, tag) {
   });
 }
 
+/* ==================== 打标 / 改仓库名（纯 Registry API，零 blob 传输） ====================
+   Registry v2 没有「重命名」接口，也没有「改标签指向」接口——两者都只能靠 manifest 的
+   GET + PUT 组合出来：
+   - 同仓加/改标签：GET manifests/<源> 拿原文 → PUT manifests/<新标签>。目标标签已存在即覆盖（= 改标签）。
+   - 改仓库名：blob link 是**按仓库隔离**的，直接跨仓 PUT 会 400 MANIFEST_BLOB_UNKNOWN，
+     所以要先对每个 blob 做 cross-repo mount（POST blobs/uploads/?mount=<dg>&from=<旧仓>），
+     再 PUT manifest，最后删旧仓 manifest。mount 只建 link、不传数据——registry 的 blob 是
+     内容寻址的全局存储，所以 32GB 镜像改名同样是秒级。 */
+function regGetManifest(repo, ref) {
+  return regFetch('/v2/' + repo + '/manifests/' + encodeURIComponent(ref), 'GET', { Accept: MFS }).then(function (d) {
+    if (d.status !== 200) { var e = registryError(d); e.message = '取 manifest 失败（' + e.message + '）'; throw e; }
+    var h = d.headers || {};
+    var ct = String(h['content-type'] || h['Content-Type'] || '').split(';')[0].trim();
+    return {
+      body: d.body || '',
+      digest: h['docker-content-digest'] || h['Docker-Content-Digest'] || '',
+      contentType: ct,
+    };
+  });
+}
+function regPutManifest(repo, ref, body, contentType) {
+  /* Content-Type 必须回填 GET 时拿到的原类型：registry 按 mediaType 计 digest，
+     类型不对会算出另一个 digest 或直接 400。 */
+  return regFetch('/v2/' + repo + '/manifests/' + encodeURIComponent(ref), 'PUT',
+    { 'Content-Type': contentType || 'application/vnd.docker.distribution.manifest.v2+json' }, body).then(function (d) {
+      if (d.status !== 201 && d.status !== 200) { var e = registryError(d); e.message = '写入 manifest 失败（' + e.message + '）'; throw e; }
+      return d;
+    });
+}
+function regMountBlob(toRepo, digest, fromRepo) {
+  return regFetch('/v2/' + toRepo + '/blobs/uploads/?mount=' + encodeURIComponent(digest) + '&from=' + encodeURIComponent(fromRepo), 'POST')
+    .then(function (d) {
+      if (d.status === 201) return true;
+      /* 202 = 仓库拒绝 mount、要求改走真实上传。绝不能在这里传 blob：代连是「整包缓冲」的，
+         多 GB 层会把服务端内存打爆。直接失败并说明原因。 */
+      if (d.status === 202) throw new Error('仓库未授权跨仓 mount（返回 202），blob ' + digest + ' 需要真实传输，本功能不支持——请改用「远程缓存」重新 push');
+      var e = registryError(d); e.message = '挂载 blob 失败（' + e.message + '）'; throw e;
+    });
+}
+/* manifest 直接依赖的 blob：config + layers。manifest list / OCI index 的子 manifest 不是 blob，要单独递归复制。 */
+function manifestBlobDigests(mf) {
+  var out = [];
+  if (mf && mf.config && mf.config.digest) out.push(mf.config.digest);
+  (mf && Array.isArray(mf.layers) ? mf.layers : []).forEach(function (l) { if (l && l.digest) out.push(l.digest); });
+  return out;
+}
+function manifestListChildren(mf) {
+  return (mf && Array.isArray(mf.manifests) ? mf.manifests : []).map(function (m) { return m && m.digest; }).filter(Boolean);
+}
+/* 把 fromRepo 里 ref 指向的 manifest 完整复制到 toRepo 的 targetRef：
+   list/index 先递归复制子 manifest（按 digest 落），再 mount 所有 blob，最后 PUT。 */
+function copyManifest(fromRepo, toRepo, ref, targetRef, progress) {
+  return regGetManifest(fromRepo, ref).then(function (m) {
+    var mf = {}; try { mf = JSON.parse(m.body || '{}'); } catch (e) { mf = {}; }
+    var chain = Promise.resolve();
+    manifestListChildren(mf).forEach(function (kd) {
+      chain = chain.then(function () { return copyManifest(fromRepo, toRepo, kd, kd, progress); });
+    });
+    return chain.then(function () {
+      var c = Promise.resolve();
+      manifestBlobDigests(mf).forEach(function (dg) {
+        c = c.then(function () { if (progress) progress('挂载 blob ' + dg.slice(7, 19)); return regMountBlob(toRepo, dg, fromRepo); });
+      });
+      return c;
+    }).then(function () {
+      if (progress) progress('写入 manifest → ' + targetRef);
+      return regPutManifest(toRepo, targetRef, m.body, m.contentType).then(function () { return m; });
+    });
+  });
+}
+/* 同仓添加/修改标签：把 srcRef 的 manifest 原文写到 newTag（newTag 已存在即覆盖=改标签） */
+function addOrMoveTag(repo, srcRef, newTag) {
+  return regGetManifest(repo, srcRef).then(function (m) {
+    return regPutManifest(repo, newTag, m.body, m.contentType).then(function () { return m.digest; });
+  });
+}
+/* 改仓库名（移动语义）：整仓所有标签逐个搬到新仓，全部落地后再删旧仓 manifest */
+function renameRepo(oldRepo, newRepo, progress) {
+  return regGetJson('/v2/' + oldRepo + '/tags/list?n=1000').then(function (j) {
+    var tags = Array.isArray(j.tags) ? j.tags : [];
+    if (!tags.length) throw new Error('源仓库没有任何标签，无法改名（改名靠逐个搬标签的 manifest；无标签的残仓请直接 GC）');
+    var chain = Promise.resolve();
+    tags.forEach(function (tag, i) {
+      chain = chain.then(function () {
+        if (progress) progress('[' + (i + 1) + '/' + tags.length + '] 搬运标签 ' + tag);
+        return copyManifest(oldRepo, newRepo, tag, tag, progress);
+      });
+    });
+    return chain.then(function () { return tags; });
+  }).then(function (tags) {
+    /* 复制成功后才删旧仓：按 digest 删，多标签共用同一 manifest 时一次 DELETE 即全清，
+       后续的删不到属正常（已随 digest 一起没了），吞掉即可。 */
+    var chain = Promise.resolve();
+    tags.forEach(function (tag) {
+      chain = chain.then(function () {
+        if (progress) progress('清理旧仓标签 ' + tag);
+        return deleteTag(oldRepo, tag).catch(function () {});
+      });
+    });
+    return chain.then(function () { return tags; });
+  });
+}
+var TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+var REPO_RE = /^[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*$/;
+function validTag(v) { return TAG_RE.test(v); }
+function validRepoName(v) { return v.length <= 255 && REPO_RE.test(v); }
+
+/* ==================== 打标 / 改名：进度回显与串行互斥 ====================
+   改名要按标签数 × blob 数发很多次请求，必须让用户看见在动、且不允许并发第二个操作
+   （两个改名同时跑会互相删对方刚写好的 manifest）。 */
+var repoOpBusy = false;
+function opLog(text) {
+  var b = $('repoOpLog');
+  b.style.display = '';
+  b.textContent += text + '\n';
+  b.scrollTop = b.scrollHeight;
+}
+function runRepoOp(title, work, after) {
+  if (repoOpBusy) { showErr('已有仓库操作在进行中，请等它结束（进度见列表下方日志）'); return; }
+  repoOpBusy = true;
+  $('repoOpLog').textContent = '';
+  opLog('== ' + title);
+  var t0 = Date.now();
+  work(opLog).then(function () {
+    opLog('-- 完成，用时 ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
+    showErr(title + ' 完成');
+  }).catch(function (e) {
+    var msg = e && e.message ? e.message : String(e);
+    opLog('!! 失败：' + msg);
+    showErr(title + ' 失败：' + msg, e && e.registryAuth ? 'registry-auth' : null);
+  }).then(function () {
+    repoOpBusy = false;
+    if (after) after();
+  });
+}
+
 /* 列表交互（事件委托） */
 $('repoList').addEventListener('click', function (e) {
   var t = e.target;
@@ -581,6 +734,69 @@ $('repoList').addEventListener('click', function (e) {
     showErr('已带入目标仓库「' + cr + '」' + (tag ? '，标签 ' + tag : '') + '，填写源镜像后提交。');
     return;
   }
+  var addtag = t.closest('[data-addtag-repo]');
+  if (addtag) {
+    var ar = addtag.getAttribute('data-addtag-repo');
+    var arow = addtag.closest('.dshell-listItem');
+    var asel = arow ? arow.querySelector('[data-tag-src]') : null;
+    var ainput = arow ? arow.querySelector('[data-tag-input]') : null;
+    var srcTag = asel ? (asel.value || '').trim() : '';
+    var newTag = ainput ? (ainput.value || '').trim() : '';
+    if (!srcTag) { showErr('先选「源标签」（标签未加载时请先点「加载标签」）'); return; }
+    if (!newTag) { showErr('请填写「新标签名」'); if (ainput) ainput.focus(); return; }
+    if (!validTag(newTag)) { showErr('新标签名不合法：只能用字母/数字与 . _ -，首字符须为字母/数字/下划线，最长 128 字符'); return; }
+    if (newTag === srcTag) { showErr('新标签名与源标签相同，无需操作'); return; }
+    /* 目标标签已存在 = 改标签指向（覆盖），必须让用户明确知道会覆盖 */
+    var exists = Array.isArray(repoState.tags[ar]) && repoState.tags[ar].indexOf(newTag) !== -1;
+    var verb = exists ? '修改' : '添加';
+    if (!confirm(verb + '标签 ' + ar + ':' + newTag + '，指向 ' + srcTag + ' 的同一 manifest？' +
+      (exists ? '\n\n注意：该标签已存在，会被覆盖（原指向的 manifest 若无其它标签引用，需 GC 才释放磁盘）。' : '') +
+      '\n\n只写 manifest，不传输镜像数据。')) return;
+    runRepoOp(verb + '标签 ' + ar + ':' + newTag, function (p) {
+      p('源标签 ' + srcTag + ' → 新标签 ' + newTag);
+      return addOrMoveTag(ar, srcTag, newTag).then(function (dg) { p('完成，digest ' + (dg || '—')); });
+    }, function () { return loadTags(ar).catch(function () {}); });
+    return;
+  }
+  var ren = t.closest('[data-rename-repo]');
+  if (ren) {
+    var rr = ren.getAttribute('data-rename-repo');
+    var nn = (prompt('把仓库「' + rr + '」改名为（整仓所有标签一起搬，搬完删除旧仓库名下的 manifest）：', rr) || '').trim();
+    if (!nn) return;
+    if (nn === rr) { showErr('新仓库名与原仓库名相同，无需改名'); return; }
+    if (!validRepoName(nn)) { showErr('新仓库名不合法：只能小写字母/数字，用 . _ - / 分隔且不得以分隔符开头结尾，最长 255 字符'); return; }
+    var occupied = repoState.repos.indexOf(nn) !== -1;
+    if (occupied) {
+      if (!confirm('目标仓库名「' + nn + '」已存在，其中同名标签会被覆盖。仍要继续？')) return;
+    } else if (!confirm('确认改名：' + rr + ' → ' + nn + '？\n\n移动语义：整仓所有标签搬到新名后，删除旧仓库名下的 manifest（磁盘释放仍需到「设置」页执行 GC）。\n只建 blob 引用，不传输镜像数据。')) return;
+    runRepoOp('改名 ' + rr + ' → ' + nn, function (p) {
+      return renameRepo(rr, nn, p).then(function (tags) {
+        p('完成，共搬 ' + tags.length + ' 个标签');
+        /* 移动语义下旧仓的 manifest 已删净，但 Registry 无「删除仓库」接口，
+           旧名会作为幽灵条目留在列表里——指路一键清理，不自动删（存储层操作要用户显式确认）。 */
+        p('注意：旧仓库名「' + rr + '」已无标签，但仍会留在列表里（Registry 没有删除仓库的接口）；');
+        p('      在它那一行点「清理空仓」即可移除，磁盘释放仍需到「设置」页执行 GC。');
+      });
+    }, function () { return loadRepos(true); });
+    return;
+  }
+  var rmrepo = t.closest('[data-rmrepo]');
+  if (rmrepo) {
+    var vr = rmrepo.getAttribute('data-rmrepo');
+    var sp = projectScript('registry_repo_rm.sh');
+    if (!sp) { showErr('无法解析脚本路径（页面需经 /api/worktable/site 托管）'); return; }
+    if (!confirm('清理空仓库「' + vr + '」？\n\nRegistry 没有「删除仓库」接口：manifest 删净后仓库名仍会赖在列表里，只能到存储层删目录。\n脚本会先校验该仓库既无标签、也无按 digest 存在的 manifest，两者任一非空都拒绝删除。')) return;
+    runRepoOp('清理空仓库 ' + vr, function (p) {
+      return fetch('/api/worktable/exec', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: sp, args: [vr], timeoutMs: 120000 }),
+      }).then(function (r2) { return r2.json(); }).then(function (d) {
+        p(String(d.stdout || '') + String(d.stderr || ''));
+        if (d.code !== 0) throw new Error('脚本退出码 ' + (d.code == null ? '?' : d.code));
+      });
+    }, function () { return loadRepos(true); });
+    return;
+  }
 });
 $('searchBox').addEventListener('input', function () { renderRepoList(); });
 $('pageSize').addEventListener('change', function () { loadRepos(true); });
@@ -594,6 +810,11 @@ function projectScriptPath() {
   var m = /^\/api\/worktable\/site\/(.+)\/[^/]+$/.exec(location.pathname);
   if (m) { try { return decodeURIComponent(m[1]) + '/registry_cache.sh'; } catch (e) {} }
   return '';
+}
+/* 同目录下的其它脚本（如清理空仓库的 registry_repo_rm.sh）：复用同一套 site 路径反解 */
+function projectScript(name) {
+  var p = projectScriptPath();
+  return p ? p.replace(/registry_cache\.sh$/, name) : '';
 }
 var SS_DRAFT = 'ir_jobdraft_v1';
 function loadDraft() { try { return JSON.parse(sessionStorage.getItem(SS_DRAFT) || '{}') || {}; } catch (e) { return {}; } }

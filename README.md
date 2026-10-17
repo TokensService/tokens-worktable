@@ -86,8 +86,23 @@
   删除标签（manifest DELETE，OCI Accept）与一键垃圾回收（`docker exec registry registry
   garbage-collect` 经 `/api/worktable/exec` 执行）；「远程缓存」提交镜像缓存任务——
   `/api/worktable/exec-stream` 流式跑 `registry_cache.sh`（docker pull → login → tag → push），
-  NDJSON 实时回显、可中止（杀进程组）、历史记录与失败退出码留痕；「设置」页配置镜像仓库地址 /
-  账号密码 / 超时（本机 localStorage，不上传服务端）。背景支持跟随系统 / 深色 / 浅色。配套 `registry_cache.sh`（缓存任务执行体；login 失败按 TLS/401/refused 三类给归因提示，TERM/INT trap 保证中止时不残留 docker 客户端）与 `registry_test.sh`（CLI 探活 / GC 助手）。
+  NDJSON 实时回显、可中止（杀进程组）、历史记录与失败退出码留痕；还支持**添加/修改标签**与
+  **修改镜像名（改仓库名）**——Registry v2 既无「重命名仓库」也无「改标签指向」接口，页面用
+  manifest 的 `GET` + `PUT` 组合实现：同仓加/改标签是「取源标签 manifest 原文 → PUT 到新标签」
+  （新标签已存在即覆盖 = 改指向）；改仓库名是「逐个标签：跨仓 `mount` 其全部 blob（只建 link、
+  **不传输任何镜像数据**，故 32GB 镜像也是秒级）→ PUT manifest」，全部搬完后才删旧仓 manifest
+  （移动语义；中途失败源仓保持完整，重跑幂等）。manifest list / OCI index 会递归复制子 manifest。
+  因 Registry 没有删仓接口，manifest 删净后旧仓库名仍会留在 `_catalog` 里成为「幽灵条目」，页面
+  对无标签的仓给出**清理空仓**入口（经 `/api/worktable/exec` 跑 `registry_repo_rm.sh`）。
+  「设置」页配置镜像仓库地址 /
+  账号密码 / 超时（本机 localStorage，不上传服务端）。背景支持跟随系统 / 深色 / 浅色。配套
+  `registry_cache.sh`（缓存任务执行体；pull 失败按 manifest unknown / 磁盘不足 / TLS / 网络与限流 /
+  源仓需认证五类给归因并回报用时，login 失败按 TLS/401/refused 三类给归因提示，TERM/INT trap 保证
+  中止时不残留 docker 客户端）、`registry_repo_rm.sh`（清理空仓库目录；删前三重守卫——仓库名白名单
+  防路径穿越与注入、`_manifests/tags` 下 `current/link` 计数必须为 0、`_manifests/revisions` 下
+  `link` 计数必须为 0，任一不满足硬拒绝）与 `registry_test.sh`（CLI 探活 / GC 助手）。
+  注意 **GC 必须在 registry 停机或只读态下跑、跑完重启**：对运行中的 registry 直接 GC 会让其内存
+  blob 缓存与磁盘失配，随后的 `docker push` 会跳过落盘、产出「标签在而 manifest 实体 404」的损坏镜像。
   本机仓库已开启 htpasswd 认证（realm `lhf private registry`，账号 `admin`），页面**不内置任何口令**：
   首次使用需在「设置」页填入仓库密码并保存，否则 `/v2/` 请求全部 401、列表恒为空——此时错误条会
   给出归因（区分「仓库要认证」与「DSH 会话失效」）并挂出直达设置页的按钮。口令见部署机
