@@ -107,6 +107,7 @@ declare -n hidden_router_bin='NATIVE_VLLM_ROUTER_BIN' 2>/dev/null || true
 declare -n hidden_router_policy='NATIVE_VLLM_ROUTER_POLICY' 2>/dev/null || true
 declare -n hidden_router_kv='NATIVE_VLLM_KV_CONNECTOR' 2>/dev/null || true
 declare -n hidden_router_version='NATIVE_VLLM_ROUTER_VERSION' 2>/dev/null || true
+declare -n hidden_nerdctl_src='NATIVE_VLLM_NERDCTL_SRC' 2>/dev/null || true
 declare -n hidden_pip_index='NATIVE_VLLM_PIP_INDEX' 2>/dev/null || true
 
 router_port="${hidden_router_port:-8000}"
@@ -116,6 +117,8 @@ router_bin="${hidden_router_bin:-vllm-router}"
 router_version="${hidden_router_version:-0.1.16}"
 router_venv='/opt/vllm-router/venv'
 router_wheels_cache="${HOME}/.cache/vllm-native/router-wheels-${router_version}"
+# 目标机缺 nerdctl 时从执行机分发静态二进制（gy1-2/hd2 多台节点没装 nerdctl，但都在跑 containerd）
+nerdctl_src="${hidden_nerdctl_src:-/usr/local/bin/nerdctl}"
 # pip 源：默认国内镜像（阿里云），可用 NATIVE_VLLM_PIP_INDEX 或 PIP_INDEX_URL 覆盖
 pip_index="${hidden_pip_index:-${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}}"
 pip_trusted_host="${pip_index#*://}"
@@ -165,6 +168,7 @@ containerd_ns='k8s.io'
 work_dir="$native_run_dir"
 stage_dir=''
 target_ip=''
+target_port=''   # 目标机 SSH 端口（target 写成 host:port 时生效；只用于 ssh/scp，不进 URL/契约）
 target_user='root'
 target_pass=''
 image_ref=''
@@ -191,27 +195,39 @@ need_cmd() {
 }
 
 target_ssh() {
+  local -a port_args=()
+  [[ -n "$target_port" ]] && port_args=(-p "$target_port")
   if [[ -n "$target_pass" ]]; then
-    SSHPASS="$target_pass" sshpass -e ssh "${ssh_opts[@]}" "${target_user}@${target_ip}" "$@"
+    SSHPASS="$target_pass" sshpass -e ssh "${ssh_opts[@]}" ${port_args[@]+"${port_args[@]}"} "${target_user}@${target_ip}" "$@"
   else
-    ssh "${ssh_opts[@]}" "${target_user}@${target_ip}" "$@"
+    ssh "${ssh_opts[@]}" ${port_args[@]+"${port_args[@]}"} "${target_user}@${target_ip}" "$@"
   fi
 }
 
 target_scp() {
+  local -a port_args=()
+  [[ -n "$target_port" ]] && port_args=(-P "$target_port")
   if [[ -n "$target_pass" ]]; then
-    SSHPASS="$target_pass" sshpass -e scp "${ssh_opts[@]}" -r "$1" "${target_user}@${target_ip}:$2"
+    SSHPASS="$target_pass" sshpass -e scp "${ssh_opts[@]}" ${port_args[@]+"${port_args[@]}"} -r "$1" "${target_user}@${target_ip}:$2"
   else
-    scp "${ssh_opts[@]}" -r "$1" "${target_user}@${target_ip}:$2"
+    scp "${ssh_opts[@]}" ${port_args[@]+"${port_args[@]}"} -r "$1" "${target_user}@${target_ip}:$2"
   fi
 }
 
 # 从目标节点列表（JSON 数组）解析目标机；显式指定 IP 优先
 resolve_target() {
-  local picked
-  picked="$(python3 - "${platform_target_hosts:-[]}" "$target_ip_param" <<'PY'
+  local -a picked_lines=()
+  mapfile -t picked_lines < <(python3 - "${platform_target_hosts:-[]}" "$target_ip_param" <<'PY'
 import json
 import sys
+
+
+def split_host_port(value):
+    """host:port → (host, port)；无端口时 port 为空串。"""
+    text = str(value or "")
+    host, sep, port = text.partition(":")
+    return host, (port if sep else "")
+
 
 raw, wanted = sys.argv[1], sys.argv[2]
 try:
@@ -222,23 +238,41 @@ if not isinstance(hosts, list):
     raise SystemExit("target host list must be a JSON array")
 entry = None
 if wanted:
+    wanted_host, wanted_port = split_host_port(wanted)
+    # ① 完整串（含端口）精确匹配 ② 主机名匹配
     for item in hosts:
-        if isinstance(item, dict) and str(item.get("ip", "")).split(":")[0] == wanted:
+        if isinstance(item, dict) and str(item.get("ip", "")) == wanted:
             entry = item
             break
+    if entry is None:
+        for item in hosts:
+            if isinstance(item, dict) and split_host_port(item.get("ip"))[0] == wanted_host:
+                entry = item
+                break
     entry = entry or {"ip": wanted}
 elif hosts:
     entry = hosts[0]
 if not isinstance(entry, dict) or not entry.get("ip"):
     raise SystemExit("no usable target host: list empty and target IP unset")
-ip = str(entry["ip"]).split(":")[0]
+host, port = split_host_port(entry["ip"])
+if not port:
+    _, port = split_host_port(wanted)   # 平台直接把 host:port 传进来时
 user = str(entry.get("user") or "root")
 password = entry.get("pass") or entry.get("password") or ""
-print(f"{ip}\t{user}\t{password}")
+# 逐行输出（port/password 可能为空；不能用 tab 分隔的 read——tab 是 IFS 空白符，空字段会被合并）
+print(host)
+print(port)
+print(user)
+print(password)
 PY
-)" || die "解析目标节点失败" 2
-  IFS=$'\t' read -r target_ip target_user target_pass <<<"$picked"
+)
+  target_ip="${picked_lines[0]:-}"
+  target_port="${picked_lines[1]:-}"
+  target_user="${picked_lines[2]:-root}"
+  target_pass="${picked_lines[3]:-}"
   [[ -n "$target_ip" ]] || die "未能确定目标节点 IP" 2
+  [[ "$target_port" =~ ^[0-9]+$ ]] || target_port=''
+  [[ -z "$target_port" ]] || log "目标机 SSH 端口：$target_port（host:port 形式）"
 }
 
 resolve_image() {
@@ -769,6 +803,58 @@ PY
     grep -q "^role_need_$role=" "$stage_dir/role-facts.env" \
       || die "role-facts.env 缺少角色 $role" 2
   done
+}
+
+# 从 role-facts.env 取某角色「每实例卡数」（= tp×pp×dp）
+role_need() {
+  sed -n "s/^role_need_$1=//p" "$stage_dir/role-facts.env" | head -1
+}
+
+# 形态与卡数校验 + 摘要日志。约定：arch 名形如 <...>-<a>P<b>D[-<n>G]
+#   a/b = P/D 实例数（当前只支持 1），n = 两侧卡数之和（总卡数）
+# 事实源是 arch 结构（每角色 tp×pp×dp × instances），名字只是人读摘要：
+# 带 -<n>G 但与结构算出来的不一致 → 直接失败（避免名字骗人）；
+# 没带后缀只 warn（向后兼容现有 arch 名）。
+check_topology_and_log() {
+  local arch="$deploy_strategy" role gpus need have used inst total=0 label
+  local -a parts=()
+  local p_inst=1 d_inst=1 name_cards='' rest
+  # 取「最后一个」xPyD token（名字里若残留旧的形态 token，以最靠后的为准）
+  rest="$arch"
+  while [[ "$rest" =~ ([0-9]+)P([0-9]+)D ]]; do
+    p_inst="${BASH_REMATCH[1]}"
+    d_inst="${BASH_REMATCH[2]}"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+  [[ "$arch" =~ -([0-9]+)G$ ]] && name_cards="${BASH_REMATCH[1]}"
+  for role in "${roles[@]}"; do
+    need="$(role_need "$role")"
+    [[ -n "$need" && "$need" -gt 0 ]] || die "role-facts.env 缺 $role 的卡数（渲染产物异常）" 2
+    if [[ "$role" == 'decode' ]]; then gpus="$NATIVE_VLLM_DECODE_GPUS"; else gpus="$NATIVE_VLLM_PREFILL_GPUS"; fi
+    have="$(printf '%s' "$gpus" | awk -F, '{print NF}')"
+    (( have >= need )) \
+      || die "$role 的 GPU 不足：按 arch 并行度（tp×pp×dp）需要 $need 张，实际只给了 $have 张（$gpus）" 2
+    (( have == need )) \
+      || warn "$role 给了 $have 张、只需 $need 张：多出的卡不参与部署（远端会按需截断）"
+    used="$gpus"
+    (( have == need )) || used="$(printf '%s' "$gpus" | cut -d, -f1-"$need")"
+    inst=1
+    [[ "$role" == 'decode' ]] && inst="$d_inst"
+    [[ "$mode" == 'pd' && "$role" == 'prefill' ]] && inst="$p_inst"
+    total=$(( total + need * inst ))
+    parts+=("$role×${inst}: 每实例 ${need} 卡 ← GPU $used")
+  done
+  if [[ "$mode" == 'pd' ]] && { [[ "$p_inst" != 1 ]] || [[ "$d_inst" != 1 ]]; }; then
+    die "arch 名声明了 ${p_inst}P${d_inst}D，但当前脚本只支持每角色单实例（1P1D）：多实例形态尚未实现" 2
+  fi
+  label="${p_inst}P${d_inst}D"
+  [[ "$mode" == 'standalone' ]] && label='standalone'
+  log "形态：${label}${name_cards:+-${name_cards}G}（$(printf '%s；' "${parts[@]}")共 ${total} 卡）"
+  if [[ -z "$name_cards" ]]; then
+    warn "arch 名未带总卡数后缀：建议改名为 ${arch}-${total}G（本形态共 ${total} 卡）"
+  elif [[ "$name_cards" != "$total" ]]; then
+    die "arch 名的卡数后缀 -${name_cards}G 与按 arch 结构算出的 ${total} 卡不一致：$(printf '%s；' "${parts[@]}")；规范名应为 ${arch%-*G}-${total}G" 2
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1316,12 +1402,21 @@ remote_main() {
     || die "远端缺少 role-facts.env（父阶段未生成：请更新 step 脚本后重跑）" 2
   # shellcheck disable=SC1090
   . "$work_dir/role-facts.env"
-  command -v nerdctl >/dev/null 2>&1 || die "目标机缺少 nerdctl" 2
+  command -v nerdctl >/dev/null 2>&1 || {
+    # 目标机缺 nerdctl：若产物里带了执行机的静态二进制就就地补装（gy1-2/hd2 多台节点如此）
+    if [[ -x "$work_dir/nerdctl" ]]; then
+      if install -m 755 "$work_dir/nerdctl" /usr/local/bin/nerdctl; then
+        log "  已补装 nerdctl：/usr/local/bin/nerdctl（$(/usr/local/bin/nerdctl --version 2>/dev/null | head -1)）"
+      else
+        warn "nerdctl 补装失败（$work_dir/nerdctl → /usr/local/bin/nerdctl）"
+      fi
+    fi
+    command -v nerdctl >/dev/null 2>&1 \
+      || die "目标机缺少 nerdctl、且无随产物推送的二进制可补装（$work_dir/nerdctl）：若目标其实是入口/跳板机而非 GPU 节点，hd2 请填 外网入口:映射端口（如 115.33.98.101:2224）" 2
+  }
   [[ -d "$MODEL_DIR" ]] || die "目标机权重目录不存在：$MODEL_DIR" 2
-  if [[ "$mode" == 'pd' ]]; then
-    command -v "$router_bin" >/dev/null 2>&1 \
-      || die "目标机缺少 router 可执行文件：$router_bin（可用隐藏参数 NATIVE_VLLM_ROUTER_BIN 指定）" 2
-  fi
+  # router 的存在性/补装/flag 兼容性统一由 remote_precheck 负责（缺 router 时会用父阶段推送的 wheel 离线补装），
+  # 这里不再提前判定——否则会在补装之前先 die。
   if [[ "$skip_precheck" == '1' ]]; then
     warn "NATIVE_VLLM_SKIP_PRECHECK=1：跳过部署前环境预检"
   else
@@ -1457,7 +1552,7 @@ PY
   else
     roles=(standalone)
   fi
-  log "部署形态：$mode（角色：${roles[*]}）；镜像 $image_ref；目标机 $target_ip"
+  log "部署形态：$mode（角色：${roles[*]}）；镜像 $image_ref；目标机 ${target_ip}${target_port:+:$target_port}"
   [[ "$LMCACHE_ENABLE" == '1' ]] && log "LMCache：开启（L1=${LMCACHE_L1_SIZE_GB}G，端口 ${lmcache_mp_port}/${lmcache_http_port}）"
   [[ "$NATIVE_VLLM_PROFILER" == '1' ]] && log "Profiler：开启（torch，落盘 $native_run_dir/profiles；POST /start_profile 起、/stop_profile 停，delay 5 步、最多 50 步）"
 
@@ -1466,6 +1561,7 @@ PY
     render_role "$role"
   done
   write_role_facts
+  check_topology_and_log
 
   # 策略 env 之外，本路线固定追加的运行期环境变量
   local item
@@ -1518,8 +1614,9 @@ PY
     return 0
   fi
 
-  log "推送产物到 $target_ip:$work_dir"
+  log "推送产物到 $target_ip:$work_dir${target_port:+（SSH 端口 $target_port）}"
   ensure_router_wheels
+  ensure_nerdctl_binary
   target_ssh "mkdir -p '$work_dir'" || die "目标机创建目录失败：$work_dir"
   target_scp "$stage_dir/." "$work_dir/" || die "推送渲染产物失败"
   target_scp "$script_path" "$work_dir/${SCRIPT_NAME}.sh" || die "推送脚本失败"
@@ -1558,6 +1655,18 @@ PY
   )
   # 远端不需要目标节点列表（防递归）；模型名由父阶段解析后下发
   target_ssh "env $(printf '%q ' "${remote_env[@]}")MODEL_NAME='$model_name' bash '$work_dir/${SCRIPT_NAME}.sh' --remote"
+}
+
+# 目标机缺 nerdctl 时，把执行机的静态二进制放进产物目录（随产物推送），由远端阶段装到 /usr/local/bin。
+# 只在目标机确实缺失时复制；执行机侧源路径可用隐藏参数 NATIVE_VLLM_NERDCTL_SRC 指定。
+ensure_nerdctl_binary() {
+  if target_ssh "command -v nerdctl >/dev/null 2>&1 || [[ -x /usr/local/bin/nerdctl ]]"; then
+    return 0
+  fi
+  [[ -x "$nerdctl_src" ]] \
+    || die "目标机缺 nerdctl，但执行机上也找不到可分发源：$nerdctl_src（用隐藏参数 NATIVE_VLLM_NERDCTL_SRC 指定，或先在执行机装 nerdctl）" 2
+  log "目标机没有 nerdctl，从执行机分发二进制：$nerdctl_src（$(du -h "$nerdctl_src" | cut -f1)）"
+  install -m 755 "$nerdctl_src" "$stage_dir/nerdctl" || die "复制 nerdctl 到产物目录失败" 2
 }
 
 # pd 模式：目标机没有可用 vllm-router 时，在执行机下载 wheel（走国内镜像，含依赖，首次较慢、之后走缓存）
