@@ -72,6 +72,35 @@ test('远程缓存任务：exec-stream 流式 + registry_cache.sh + 凭证 env �
   assert.ok(script.includes('sessionStorage'), '草稿用 sessionStorage');
 });
 
+/* 页面超时上限曾是 120 分钟，而服务端 exec-stream 把 timeoutMs 硬夹到 60 分钟——用户填 120 被静默
+   截断且无任何提示；默认 30 分钟更连 9GB 压缩层的下载（实测 40+ 分钟）都不够，任务必在 push 前被
+   SIGKILL，页面只看到一行英文 exec timed out。以下守住「上限对齐服务端 + 可表达不限时 + 归因可操作」。 */
+test('页面：任务超时上限与服务端一致，且支持「留空/0 = 不限时」', () => {
+  assert.ok(html.includes('max="1440"'), '上限应为 1440 分钟（= 服务端 EXEC_TIMEOUT_CAP_MS 24h）');
+  assert.ok(!html.includes('max="120"'), '不得再留 120 分钟旧上限（会被服务端静默截断）');
+  assert.ok(html.includes('min="0"'), '应允许 0（不限时）');
+  assert.ok(/Math\.min\(1440, Math\.floor\(rawTimeoutMin\)\)/.test(script), 'JS 夹取上限应与 markup 一致');
+  assert.ok(!/Math\.min\(120,/.test(script), '不得再按 120 夹取');
+  assert.ok(script.includes('rawTimeoutMin') && /timeoutMin = .*: 0;/.test(script), '留空/0/非法值应得到 0（服务端 0 = 不挂超时 kill）');
+  assert.ok(script.includes('timeoutMs: timeoutMin * 60000'), '0 分钟应如实传 0，不得回落成默认值');
+  assert.ok(!/Math\.max\(1, Math\.min\(/.test(script), '不得再把超时强制抬到至少 1 分钟（否则无法表达不限时）');
+  assert.ok(script.includes("logLine('', '超时: '"), '任务日志应回显实际生效的超时');
+  assert.ok(script.includes('不限时'), '不限时应在 UI 明示');
+});
+
+test('页面：超时被杀给出可操作归因（区别于网络/凭证失败）', () => {
+  assert.ok(/timed out\/i\.test/.test(script), '应识别服务端超时错误帧');
+  assert.ok(script.includes('任务因超时被终止'), '应点明是超时而非网络/凭证问题');
+  assert.ok(script.includes('重跑是续传而非从头下载'), '应说明重跑可续传');
+});
+
+test('页面：默认超时足以覆盖大镜像，且草稿能还原「不限时」', () => {
+  assert.ok(html.includes('value="180"'), '默认应为 180 分钟（旧默认 30 分钟连下载都不够）');
+  assert.ok(html.includes('重跑即续传'), '表单说明应告知超时被杀不是白跑');
+  assert.ok(/if \(typeof d\.timeout === 'string'\)/.test(script), '空串（不限时）也应从草稿还原');
+  assert.ok(!/if \(d\.timeout\) \$\('jobTimeout'\)/.test(script), '不得用真值判断（会吞掉空串、退回默认值）');
+});
+
 test('registry_cache.sh：pull → login(--password-stdin) → tag → push → 清理临时 tag', () => {
   assert.ok(cacheSh.startsWith('#!/bin/bash'));
   assert.ok(cacheSh.includes('docker pull'));
@@ -91,6 +120,33 @@ test('registry_cache.sh：login 失败排障（stderr 不吞 + 原因分类 + �
   assert.ok(cacheSh.includes('${REG_HOST#http://}') && cacheSh.includes('${REG_HOST#https://}'), '地址应剥协议前缀');
   assert.ok(cacheSh.includes("REG_PASS%$'\\n'"), '密码应剥尾随换行');
   assert.ok(cacheSh.includes('未配置镜像仓库地址'), '仓库地址为空应在 login 前拦截（否则退到 Docker Hub）');
+});
+
+/* 大镜像（如 vllm/vllm-openai:v0.31.0：40 层 / 9GB 压缩 / 32GB 解压）经公网 mirror 拉取时，
+   blob 被 302 到境外 CDN，实测只有 3~4MB/s → 光下载就要 40 分钟以上。此前 pull 失败只有一句
+   「[FAIL] docker pull 失败」，与 login 失败的四类归因严重不对称，用户分不清是超时、网络还是拼错标签。 */
+test('registry_cache.sh：pull 失败排障（原因分类 + 用时 + 续传提示）', () => {
+  assert.ok(cacheSh.includes('docker pull 失败'), 'pull 失败应有明确标记');
+  assert.ok(/exit=\$PULL_CODE/.test(cacheSh), '失败应带 docker 退出码');
+  assert.ok(cacheSh.includes('拉取用时'), '应回报拉取用时，供用户校准超时设置');
+  assert.ok(cacheSh.includes('manifest unknown'), 'manifest unknown 应归因到镜像名/标签不存在');
+  assert.ok(cacheSh.includes('no space left on device'), '磁盘不足应有归因');
+  assert.ok(cacheSh.includes('docker image prune'), '磁盘不足应给出清理动作');
+  assert.ok(cacheSh.includes('proxyconnect'), '代理不可达应有归因');
+  assert.ok(cacheSh.includes('toomanyrequests'), 'mirror 限流应有归因');
+  assert.ok(cacheSh.includes('authentication required'), '源仓库要认证应归因到需先登录源仓库');
+  assert.ok(cacheSh.includes('重跑本任务即为续传'), '必须说明重跑是续传而非从头下载');
+  assert.ok(cacheSh.includes('调大或留空（不限时）'), '网络类/长耗时失败应指路调大超时');
+  // 不得用裸状态码匹配：层 ID 是 12 位十六进制，"503" / "EOF" 会误命中
+  assert.ok(!/\*"503"\*/.test(cacheSh) && !/\*"EOF"\*/.test(cacheSh), '不得用裸 "503"/"EOF" 匹配（会误命中十六进制层 ID）');
+  assert.ok(cacheSh.includes('503 Service Unavailable'), '应匹配完整错误措辞');
+});
+
+test('registry_cache.sh：pull 必须流式回显（大镜像不得整体缓冲）', () => {
+  assert.ok(/docker pull "\$SRC" 2>&1 \| tee/.test(cacheSh), 'pull 应经 tee 边跑边回显');
+  assert.ok(cacheSh.includes('PIPESTATUS[0]'), '管道后应取 docker 的退出码而非 tee 的');
+  assert.ok(!/\$\(\s*docker pull/.test(cacheSh), '不得用命令替换整体缓冲 pull 输出（40 分钟全程无回显）');
+  assert.ok(cacheSh.includes('mktemp') && cacheSh.includes('rm -f "$PULL_LOG"'), '归因用的临时日志应清理');
 });
 
 test('registry_cache.sh：中止语义（TERM/INT trap 打断 docker 子进程，避免残留）', () => {
