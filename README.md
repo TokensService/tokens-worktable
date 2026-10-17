@@ -67,6 +67,19 @@
   完成时走多行弹窗录入结果（支持 AI 总结润色）；token 共享部署退化为全权本地模式
   （负责人自由文本）。AI 能力可配 OpenAI 兼容 API（页面「⚙ AI」）或复用 DSH 会话 AI。
 
+- `projects/images/`：镜像仓库管理页（`index.html`）。浏览私有 Docker Registry 全部镜像与标签
+  （`/v2/_catalog` 分页跟随 Link 全量取回 + `/v2/<repo>/tags/list`，经 DSH 服务端
+  `/api/worktable/proxy` 代连、仅回环/内网目标，Authorization 头随设置透传），支持按 digest
+  删除标签（manifest DELETE，OCI Accept）与一键垃圾回收（`docker exec registry registry
+  garbage-collect` 经 `/api/worktable/exec` 执行）；「远程缓存」提交镜像缓存任务——
+  `/api/worktable/exec-stream` 流式跑 `registry_cache.sh`（docker pull → login → tag → push），
+  NDJSON 实时回显、可中止（杀进程组）、历史记录与失败退出码留痕；「设置」页配置镜像仓库地址 /
+  账号密码 / 超时（本机 localStorage，不上传服务端）。背景支持跟随系统 / 深色 / 浅色。配套 `registry_cache.sh`（缓存任务执行体；login 失败按 TLS/401/refused 三类给归因提示，TERM/INT trap 保证中止时不残留 docker 客户端）与 `registry_test.sh`（CLI 探活 / GC 助手）。
+  本机仓库已开启 htpasswd 认证（realm `lhf private registry`，账号 `admin`），页面**不内置任何口令**：
+  首次使用需在「设置」页填入仓库密码并保存，否则 `/v2/` 请求全部 401、列表恒为空——此时错误条会
+  给出归因（区分「仓库要认证」与「DSH 会话失效」）并挂出直达设置页的按钮。口令见部署机
+  `/mnt/images/docker-registry/README.md`。
+
 `projects/package.json` 保留项目脚本的 CommonJS 运行方式；显式使用 `.mjs` 的测试仍按 ESM 执行。
 
 `projects/` 会随 npm 安装包发布。`widget-result.json`、流水线 `runs/`、备份和指标汇总属于运行产物，不进入插件源码或发布包。

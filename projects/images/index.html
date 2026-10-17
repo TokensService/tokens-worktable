@@ -1,0 +1,824 @@
+<!doctype html>
+<!-- 镜像仓库管理 · tokens-worktable 自定义窗口（窗口1）
+     皮肤：/api/worktable/template/dshell.css（DSH 原生主题变量）
+     主题：跟随 / 深色 / 浅色（"跟随"随系统明暗自动切换）
+     数据：Docker Distribution Registry HTTP API（/v2/：_catalog 分页、tags/list、manifests GET/DELETE）
+           经 DSH 服务端 /api/worktable/proxy 代连（仅回环/内网目标；Authorization 头透传）
+     远程缓存任务：/api/worktable/exec-stream 流式跑 registry_cache.sh（pull → login → tag → push），
+           NDJSON 帧实时回显，页面中止即杀进程组（detached）
+     设置：镜像仓库地址与账号密码存 localStorage（本机，不上传服务端） -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>镜像仓库</title>
+<link rel="stylesheet" href="/api/worktable/template/dshell.css" />
+<style>
+  /* 主题覆盖：仅最小范围，其余走 dshell.css 原生变量。
+     变量只挂 body[data-theme]（不污染 :root），color-scheme 由 JS 随主题同步设置。 */
+  body[data-theme="dark"] {
+    --dsw-alias-bg-base: #0b0e14;
+    --dsw-alias-label-primary: #e6e8eb;
+    --dsw-alias-label-secondary: #9aa4b2;
+    --dsw-alias-label-tertiary: #6b7280;
+    --dsw-alias-border-l1: #262b36;
+    --dsw-alias-border-l2: #3a4150;
+    --dsw-alias-fill-l1: rgba(255,255,255,.03);
+    --dsw-alias-state-accent-primary: #4f8ef7;
+    --ir-btn-text: #0b0e14;
+    color-scheme: dark;
+  }
+  body[data-theme="light"] {
+    --dsw-alias-bg-base: #f5f7fa;
+    --dsw-alias-label-primary: #1f2328;
+    --dsw-alias-label-secondary: #57606a;
+    --dsw-alias-label-tertiary: #8c959f;
+    --dsw-alias-border-l1: #d8dee4;
+    --dsw-alias-border-l2: #b6bec8;
+    --dsw-alias-fill-l1: rgba(0,0,0,.03);
+    --dsw-alias-state-accent-primary: #2f6feb;
+    --ir-btn-text: #0b0e14;
+    color-scheme: light;
+  }
+  body[data-theme="light"] .dshell-card,
+  body[data-theme="light"] .dshell-listItem,
+  body[data-theme="light"] .dshell-stat { background: rgba(255,255,255,.65); }
+  /* 主按钮两态统一深色文字（绿色底对比度）；幽灵/危险按钮颜色由 dshell.css 按主题变量给 */
+  .dshell-btn:not(.dshell-btnGhost):not(.dshell-btnDanger) { color: var(--ir-btn-text, #0b0e14); }
+
+  .ir-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  .ir-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .ir-controls select, .ir-controls input { width:auto; padding:5px 8px; }
+  .mini { font-size:11px; padding:5px 12px; }
+  .ir-userChip { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--dsw-alias-label-primary); padding:3px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-fill-l1); }
+  .ir-err { display:none; margin:2px 0 0; padding:7px 11px; border:1px solid rgba(248,81,73,.45); border-radius:8px; color:#f85149; font-size:12px; background:rgba(248,81,73,.08); }
+  .ir-err.on { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .ir-errAction { flex:none; padding:2px 10px; font-size:11.5px; }
+  .ir-needAuth { border-color:rgba(248,81,73,.7) !important; }
+  .ir-repoName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); word-break:break-all; }
+  .ir-tags { display:flex; gap:6px; flex-wrap:wrap; }
+  .ir-tag { display:inline-flex; align-items:center; gap:5px; padding:1px 9px; border-radius:999px; font-size:11px; border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-fill-l1); }
+  .ir-tag button { border:none; background:none; color:var(--dsw-alias-label-tertiary); cursor:pointer; font-size:12px; line-height:1; padding:0; }
+  .ir-tag button:hover { color:#f85149; }
+  .ir-empty { color:var(--dsw-alias-label-tertiary); font-size:11.5px; padding:4px 0; }
+  .ir-rowActions { display:flex; gap:6px; flex-wrap:wrap; }
+  .ir-rowActions .dshell-btn, .ir-rowActions .dshell-btnGhost, .ir-rowActions .dshell-btnDanger { padding:3px 10px; font-size:11.5px; }
+  .ir-pager { display:flex; gap:8px; align-items:center; justify-content:flex-end; margin-top:8px; }
+  .ir-pager .dshell-btn { padding:3px 10px; font-size:11.5px; }
+  .ir-search { min-width:180px; }
+  .ir-mono { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:11px; }
+  .ir-newTagRow { display:flex; gap:6px; align-items:center; margin-top:6px; flex-wrap:wrap; }
+  .ir-newTagRow input { width:140px; }
+  .ir-log { height:260px; overflow:auto; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11.5px; line-height:1.55; white-space:pre-wrap; word-break:break-all; background:var(--dsw-alias-fill-l1); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; padding:9px 11px; color:var(--dsw-alias-label-primary); }
+  .ir-log .err { color:#f85149; }
+  .ir-log .ok { color:#3fb950; }
+  .ir-form { display:grid; grid-template-columns:110px 1fr; gap:8px 10px; align-items:center; }
+  .ir-form label { font-size:12px; color:var(--dsw-alias-label-secondary); text-align:right; }
+  .ir-form .dshell-input { width:100%; }
+  .ir-form .full { grid-column:1 / -1; }
+  .ir-jobList { display:flex; flex-direction:column; gap:6px; }
+  .ir-job { border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-fill-l1); padding:8px 11px; display:flex; flex-direction:column; gap:5px; }
+  .ir-jobTop { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ir-jobSrc { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); flex:1; min-width:140px; word-break:break-all; }
+  .ir-jobMeta { display:flex; gap:14px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-tertiary); }
+  .ir-jobLog { max-height:170px; overflow:auto; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; line-height:1.5; white-space:pre-wrap; word-break:break-all; background:rgba(0,0,0,.15); border-radius:6px; padding:7px 9px; }
+  body[data-theme="light"] .ir-jobLog { background:rgba(0,0,0,.05); }
+  .ir-hint { color:var(--dsw-alias-label-tertiary); font-size:11.5px; margin:6px 0 0; }
+  @media (max-width:760px) {
+    .ir-form { grid-template-columns:1fr; }
+    .ir-form label { text-align:left; }
+  }
+</style>
+</head>
+<body>
+<div class="dshell">
+  <!-- 页头 -->
+  <div class="ir-head">
+    <div>
+      <h1 class="dshell-title">镜像仓库</h1>
+      <p class="dshell-sub">私有 Docker Registry 镜像浏览 · 远程镜像缓存任务 · 删除与清理</p>
+    </div>
+    <div class="ir-controls">
+      <select id="themeSel" class="dshell-input" title="页面背景">
+        <option value="follow">背景：跟随</option>
+        <option value="dark">背景：深色</option>
+        <option value="light">背景：浅色</option>
+      </select>
+      <span id="userChip" class="ir-userChip">👤 …</span>
+      <button id="refreshBtn" class="dshell-btn dshell-btnGhost" title="刷新当前列表">🔄</button>
+      <button id="toSettingsBtn" class="dshell-btn dshell-btnGhost" title="镜像仓库地址与账号设置">⚙ 设置</button>
+    </div>
+  </div>
+
+  <div id="errBar" class="ir-err"><span id="errText"></span><button id="errAction" class="dshell-btn dshell-btnGhost ir-errAction" type="button" style="display:none">⚙ 填写仓库账号密码</button></div>
+
+  <!-- 标签页：镜像仓库 / 远程缓存 / 设置 -->
+  <div class="dshell-tabs" id="mainTabs">
+    <button class="dshell-tab dshell-tabOn" data-tab="repo">镜像仓库</button>
+    <button class="dshell-tab" data-tab="cache">远程缓存</button>
+    <button class="dshell-tab" data-tab="settings">设置</button>
+  </div>
+
+  <!-- ===== 镜像仓库 ===== -->
+  <div id="tab-repo">
+    <div class="dshell-grid">
+      <div class="dshell-stat"><div class="dshell-statLabel">仓库数</div><div class="dshell-statValue" id="stRepo">0</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">标签总数</div><div class="dshell-statValue" id="stTags">0</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">展示仓库</div><div class="dshell-statValue" id="stPage">0</div></div>
+      <div class="dshell-stat"><div class="dshell-statLabel">仓库地址</div><div class="dshell-statValue" id="stAddr" style="font-size:13px">—</div></div>
+    </div>
+
+    <div class="dshell-card" style="margin-top:10px;">
+      <div class="ir-controls" style="justify-content:space-between; margin-bottom:8px;">
+        <div class="ir-controls">
+          <input id="searchBox" class="dshell-input ir-search" placeholder="搜索仓库名…" />
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;">
+            <input type="checkbox" id="autoTags" checked /> 自动加载标签
+          </label>
+          <label class="dshell-muted" style="display:flex;align-items:center;gap:5px;" title="Registry 目录接口单次返回条数（页面跟随 Link 自动取回全部）">
+            单页条数
+            <select id="pageSize" class="dshell-input">
+              <option value="100">100</option>
+              <option value="200" selected>200</option>
+              <option value="500">500</option>
+            </select>
+          </label>
+        </div>
+        <div class="ir-controls">
+          <button id="loadRepoBtn" class="dshell-btn mini">加载仓库列表</button>
+        </div>
+      </div>
+      <div id="repoList" class="dshell-list"></div>
+      <div class="ir-pager">
+        <span class="dshell-muted" id="pagerInfo">—</span>
+      </div>
+    </div>
+    <p class="ir-hint">数据来自 Registry HTTP API（<code>/v2/_catalog</code> 分页 + <code>/v2/&lt;repo&gt;/tags/list</code>），经 DSH 服务端代连（仅回环/内网目标）；删除标签按 digest 删除 manifest，删除后建议到「设置」页执行垃圾回收（garbage-collect）释放磁盘。</p>
+  </div>
+
+  <!-- ===== 远程缓存 ===== -->
+  <div id="tab-cache" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px;font-size:13px;font-weight:600">提交远程镜像缓存任务</h2>
+      <div class="ir-form">
+        <label for="jobSrc">源镜像</label>
+        <input id="jobSrc" class="dshell-input" placeholder="如 alpine:3.19 或 ghcr.io/org/app:1.2.3" />
+        <label for="jobDstRepo">目标仓库名</label>
+        <input id="jobDstRepo" class="dshell-input" placeholder="如 library/alpine（留空=同源镜像名）" />
+        <label for="jobTag">目标标签</label>
+        <input id="jobTag" class="dshell-input" placeholder="留空=沿用源标签（latest）" />
+        <label for="jobTimeout">超时（分钟）</label>
+        <input id="jobTimeout" class="dshell-input" type="number" min="1" max="120" value="30" />
+        <div class="full" style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="jobSubmit" class="dshell-btn">▶ 提交任务</button>
+          <button id="jobStop" class="dshell-btn dshell-btnDanger" disabled>■ 中止</button>
+          <button id="jobClear" class="dshell-btn dshell-btnGhost">清空日志</button>
+        </div>
+      </div>
+      <p class="ir-hint">流程：<code>docker pull 源镜像 → docker login 目标仓库 → docker tag → docker push</code>（脚本 <code>registry_cache.sh</code>）。目标仓库地址与账号取「设置」页配置；同一时间只跑一个任务（本机 Docker 串行更稳）。中止会杀掉任务进程组。</p>
+    </div>
+
+    <div class="dshell-card" style="margin-top:10px;">
+      <div class="ir-controls" style="justify-content:space-between;margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0;font-size:13px;font-weight:600">任务日志</h2>
+        <span class="dshell-muted" id="jobState">空闲</span>
+      </div>
+      <div id="jobLog" class="ir-log"></div>
+      <div class="dshell-progress" style="margin-top:8px;"><div id="jobBar" class="dshell-progressBar" style="width:0%"></div></div>
+    </div>
+
+    <div class="dshell-card" style="margin-top:10px;">
+      <div class="ir-controls" style="justify-content:space-between;margin-bottom:8px;">
+        <h2 class="dshell-sub" style="margin:0;font-size:13px;font-weight:600">历史任务</h2>
+        <button id="histClear" class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;">清空历史</button>
+      </div>
+      <div id="jobHist" class="ir-jobList"></div>
+    </div>
+  </div>
+
+  <!-- ===== 设置 ===== -->
+  <div id="tab-settings" style="display:none">
+    <div class="dshell-card">
+      <h2 class="dshell-sub" style="margin:0 0 8px;font-size:13px;font-weight:600">镜像仓库连接</h2>
+      <div class="ir-form">
+        <label for="setHost">仓库地址</label>
+        <input id="setHost" class="dshell-input" placeholder="127.0.0.1:5000" />
+        <label for="setProto">协议</label>
+        <select id="setProto" class="dshell-input">
+          <option value="http">http（本机回环默认）</option>
+          <option value="https">https</option>
+        </select>
+        <label for="setUser">账号</label>
+        <input id="setUser" class="dshell-input" autocomplete="username" placeholder="admin" />
+        <label for="setPass">密码</label>
+        <input id="setPass" class="dshell-input" type="password" autocomplete="current-password" placeholder="仓库访问密码" />
+        <label for="setTimeoutSec" title="经服务端代连请求上游的超时（秒）">超时（秒）</label>
+        <input id="setTimeoutSec" class="dshell-input" type="number" min="5" max="600" value="60" />
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <button id="setSave" class="dshell-btn">保存设置</button>
+        <button id="setTest" class="dshell-btn dshell-btnGhost">测试连接</button>
+        <button id="setReset" class="dshell-btn dshell-btnDanger">恢复默认</button>
+      </div>
+      <p class="ir-hint" id="setHint">设置仅保存在本机 localStorage（<code>ir_cfg_v1</code>），不上传服务端；密码仅用于本页经服务端代连时构造 Authorization 头。</p>
+      <p class="ir-hint"><b>仓库已开启 htpasswd 认证</b>（realm <code>lhf private registry</code>，账号 <code>admin</code>）：本页不内置任何密码，<b>首次使用必须在上面填入仓库密码并「保存设置」</b>，否则所有 <code>/v2/</code> 请求都会 401、列表恒为空。密码见仓库部署机上的 <code>/mnt/images/docker-registry/README.md</code>（与 Web UI 8080 登录口令同一套；换口令用 <code>htpasswd -Bbn</code> 重写 <code>auth/htpasswd</code> 后 <code>docker compose restart registry</code>）。</p>
+      <p class="ir-hint">「远程缓存」的 <code>docker login</code> 由本机 <b>docker daemon</b> 执行（CLI → daemon POST /auth），失败常见三类：<b>① TLS handshake timeout</b> —— 仓库地址填了局域网 IP（如 192.168.1.101:5000）而 daemon 只信任回环：需在 <code>/etc/docker/daemon.json</code> 加 <code>"insecure-registries": ["192.168.1.101:5000"]</code> 并重启 docker（本机用 <code>127.0.0.1:5000</code> 免配置）；<b>② 401 Unauthorized</b> —— 账号/密码与仓库 htpasswd 不一致（仓库账号为 <code>admin</code>）；<b>③ connection refused</b> —— 地址或端口填错 / 仓库未运行。</p>
+      <div class="dshell-divider"></div>
+      <div class="dshell-kv">
+        <div class="dshell-kvRow"><span class="dshell-kvKey">Web UI</span><span class="dshell-kvValue" id="kvUi">—</span></div>
+        <div class="dshell-kvRow"><span class="dshell-kvKey">仓库 API</span><span class="dshell-kvValue" id="kvApi">—</span></div>
+        <div class="dshell-kvRow"><span class="dshell-kvKey">登录状态</span><span class="dshell-kvValue" id="kvAuth">—</span></div>
+      </div>
+    </div>
+
+    <div class="dshell-card" style="margin-top:10px;">
+      <h2 class="dshell-sub" style="margin:0 0 8px;font-size:13px;font-weight:600">运维</h2>
+      <p class="ir-hint" style="margin-top:0">删除标签释放的是 manifest 引用；磁盘上的 layer blob 需要垃圾回收才会真正删除（在 registry 容器内执行 <code>registry garbage-collect</code>）。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="gcBtn" class="dshell-btn dshell-btnGhost">🧹 执行垃圾回收（GC）</button>
+      </div>
+      <div id="gcLog" class="ir-jobLog" style="display:none;margin-top:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ==================== 工具 ==================== */
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+var errBar = $('errBar'), errText = $('errText'), errAction = $('errAction'), errTimer = null;
+/* action='registry-auth' 时挂出「去设置填密码」按钮，并且不自动消失——
+   认证类错误需要用户动手改设置，7 秒后自动隐藏等于把唯一的排障线索丢掉。 */
+function showErr(msg, action) {
+  var needAuth = !!msg && action === 'registry-auth';
+  errText.textContent = msg || '';
+  errBar.classList.toggle('on', !!msg);
+  errAction.style.display = needAuth ? '' : 'none';
+  if (errTimer) { clearTimeout(errTimer); errTimer = null; }
+  if (msg && !needAuth) errTimer = setTimeout(function () { errBar.classList.remove('on'); }, 7000);
+}
+errAction.addEventListener('click', function () {
+  switchTab('settings');
+  var p = $('setPass');
+  p.classList.add('ir-needAuth');
+  if (!p.value) p.focus(); else p.select();
+});
+function fmtTime(ts) {
+  if (!ts) return '—';
+  var d = new Date(ts);
+  var p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function fmtBytes(n) {
+  if (!Number.isFinite(n) || n < 0) return '—';
+  var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+}
+
+/* ==================== 主题（跟随 / 深色 / 浅色） ==================== */
+var LS_THEME = 'ir_theme_v1';
+var mq = window.matchMedia('(prefers-color-scheme: light)');
+function applyTheme() {
+  var mode = localStorage.getItem(LS_THEME) || 'follow';
+  $('themeSel').value = mode;
+  var t = mode === 'follow' ? (mq.matches ? 'light' : 'dark') : mode;
+  document.body.setAttribute('data-theme', t);
+  document.documentElement.style.colorScheme = t;
+}
+mq.addEventListener ? mq.addEventListener('change', applyTheme) : mq.addListener(applyTheme);
+$('themeSel').addEventListener('change', function (e) { localStorage.setItem(LS_THEME, e.target.value); applyTheme(); });
+applyTheme();
+
+/* ==================== 设置（localStorage） ==================== */
+var LS_CFG = 'ir_cfg_v1';
+var CFG_DEFAULT = { proto: 'http', host: '127.0.0.1:5000', user: 'admin', pass: '', uiHost: '127.0.0.1:8080', timeoutMs: 60000 };
+function loadCfg() {
+  try {
+    var c = JSON.parse(localStorage.getItem(LS_CFG) || '{}') || {};
+    return {
+      proto: c.proto === 'https' ? 'https' : 'http',
+      host: typeof c.host === 'string' && c.host ? c.host : CFG_DEFAULT.host,
+      user: typeof c.user === 'string' ? c.user : CFG_DEFAULT.user,
+      pass: typeof c.pass === 'string' ? c.pass : '',
+      uiHost: typeof c.uiHost === 'string' && c.uiHost ? c.uiHost : CFG_DEFAULT.uiHost,
+      timeoutMs: Number(c.timeoutMs) > 0 ? Math.min(Number(c.timeoutMs), 600000) : CFG_DEFAULT.timeoutMs,
+    };
+  } catch (e) { return Object.assign({}, CFG_DEFAULT); }
+}
+function saveCfg(c) { try { localStorage.setItem(LS_CFG, JSON.stringify(c)); } catch (e) {} }
+var cfg = loadCfg();
+function regBase() {
+  /* 归一化：设置里可能残留 scheme / 尾斜杠（手改 localStorage 等），拼 URL 前剥干净 */
+  var h = String(cfg.host || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return cfg.proto + '://' + h;
+}
+function uiUrl() { return 'http://' + cfg.uiHost; }
+function authHeader() {
+  /* 密码为空时不发 Authorization：半截凭证（"admin:"）会被 htpasswd 仓库判成
+     invalid authorization credential，且把支持匿名拉取的仓库也一并挡成 401；
+     不发则退化为匿名访问，401 时也能准确归因成「没填密码」而非「密码错」。 */
+  if (!cfg.pass) return {};
+  var b64 = '';
+  try { b64 = btoa(unescape(encodeURIComponent((cfg.user || '') + ':' + cfg.pass))); } catch (e) { b64 = ''; }
+  return b64 ? { Authorization: 'Basic ' + b64 } : {};
+}
+function renderSettings() {
+  $('setHost').value = cfg.host;
+  $('setProto').value = cfg.proto;
+  $('setUser').value = cfg.user;
+  $('setPass').value = cfg.pass;
+  $('setTimeoutSec').value = Math.round((cfg.timeoutMs || 60000) / 1000);
+  $('kvUi').textContent = uiUrl();
+  $('kvApi').innerHTML = '<a href="' + esc(regBase()) + '/v2/" target="_blank" rel="noopener" style="color:var(--dsw-alias-state-accent-primary)">' + esc(regBase()) + '/v2/</a>';
+  renderAuthState();
+}
+/* 「登录状态」在未测试前先如实反映凭证配置情况，别等撞上 401 才知道密码没填 */
+function renderAuthState() {
+  var el = $('kvAuth');
+  var pass = $('setPass');
+  if (pass) pass.classList.toggle('ir-needAuth', !cfg.pass);
+  if (!el) return;
+  if (cfg.pass) { el.textContent = '已配置凭证（账号 ' + (cfg.user || '空') + '）· 点「测试连接」验证'; el.classList.remove('ir-needAuth'); }
+  else { el.textContent = '未填密码 · 仓库若开启认证会 401'; el.classList.add('ir-needAuth'); }
+}
+
+/* ==================== Registry API（经 DSH 服务端 proxy 代连） ==================== */
+/* 上游 401 归因：proxy 自身成功（HTTP 200）但上游仓库回 401 时，说明是**仓库**在要认证，
+   与 DSH 会话无关。此前只抛一句「HTTP 401」，用户既不知道要填密码、也不知道去哪儿填，
+   整页看起来像坏了（仓库开启 htpasswd 后页面直接不可用）。这里给出 realm + 凭证现状 + 下一步。 */
+function registryAuthError(d) {
+  var h = (d && d.headers) || {};
+  var wa = h['www-authenticate'] || h['WWW-Authenticate'] || h['Www-Authenticate'] || '';
+  var realm = /realm="?([^",]+)"?/i.exec(wa);
+  var code = '';
+  try {
+    var b = JSON.parse((d && d.body) || '{}');
+    code = (b.errors && b.errors[0] && b.errors[0].code) || '';
+  } catch (x) {}
+  var why = cfg.pass
+    ? '账号 ' + (cfg.user || '（空）') + ' 的密码不被仓库接受'
+    : '当前未填写仓库密码（账号 ' + (cfg.user || '（空）') + '）';
+  var e = new Error('镜像仓库要求认证（HTTP 401'
+    + (code ? ' ' + code : '')
+    + (realm && realm[1] ? '，realm "' + realm[1] + '"' : '')
+    + '）：' + why + '——请在「设置」页填写仓库账号密码后重试');
+  e.status = 401;
+  e.registryAuth = true;
+  return e;
+}
+/* 上游非 200 统一造错：401 走认证归因，其余带上仓库返回的 errors[0].message */
+function registryError(d) {
+  if (d && d.status === 401) return registryAuthError(d);
+  var msg = '';
+  try { var e = JSON.parse((d && d.body) || '{}'); msg = (e.errors && e.errors[0] && e.errors[0].message) || ''; } catch (x) {}
+  var err = new Error('HTTP ' + (d && d.status) + (msg ? '：' + msg : ''));
+  err.status = d && d.status;
+  return err;
+}
+function regFetch(path, method, headers, body) {
+  var opts = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      url: regBase() + path,
+      method: method || 'GET',
+      headers: Object.assign({}, authHeader(), headers || {}),
+      body: typeof body === 'string' ? body : undefined,
+      timeoutMs: cfg.timeoutMs || 60000,
+    }),
+  };
+  return fetch('/api/worktable/proxy', opts).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (d) {
+      if (!r.ok) {
+        if (r.status === 401) {
+          /* proxy 这一层就 401 = DSH 会话失效（auth-gate 拦下），不是仓库认证问题 */
+          var e401 = new Error('会话未登录或已过期（DSH 登录态失效，与镜像仓库凭证无关）——请在工作台外层页面重新登录后刷新本窗口');
+          e401.status = 401;
+          e401.session = true;
+          throw e401;
+        }
+        throw new Error((d && d.error) || ('代理请求失败（HTTP ' + r.status + '）'));
+      }
+      return d;
+    });
+  });
+}
+function regGetJson(path, headers) {
+  return regFetch(path, 'GET', headers).then(function (d) {
+    if (d.status !== 200) throw registryError(d);
+    try { return JSON.parse(d.body || 'null'); } catch (e) { throw new Error('响应不是合法 JSON'); }
+  });
+}
+/* 全量取 _catalog：单页 n 条起，跟随 Link rel="next" 直到取回全部仓库（页面不翻页，搜索本地过滤） */
+function regCatalog(pageSize) {
+  var out = [], nextUrl = '/v2/_catalog?n=' + pageSize;
+  var follow = function () {
+    if (!nextUrl) return Promise.resolve(out);
+    return regFetch(nextUrl, 'GET').then(function (d) {
+      if (d.status !== 200) throw registryError(d);
+      var j = {};
+      try { j = JSON.parse(d.body || '{}'); } catch (e) {}
+      var repos = Array.isArray(j.repositories) ? j.repositories : [];
+      out = out.concat(repos);
+      var link = (d.headers && (d.headers.link || d.headers.Link)) || '';
+      var m = /<([^>]+)>\s*;\s*rel="?next"?/.exec(link);
+      if (m && m[1] && out.length < pageSize * 50) { nextUrl = m[1]; return follow(); }
+      nextUrl = null;
+      return out;
+    });
+  };
+  return follow();
+}
+
+/* ==================== 镜像仓库列表 ==================== */
+var repoState = { repos: [], tags: {}, loading: false };
+function loadRepos(reset) {
+  if (repoState.loading) return;
+  repoState.loading = true;
+  $('loadRepoBtn').disabled = true;
+  $('loadRepoBtn').textContent = '加载中…';
+  regCatalog(Number($('pageSize').value)).then(function (repos) {
+    repoState.repos = repos;
+    repoState.tags = {};
+    $('stRepo').textContent = repos.length;
+    renderRepoList();
+    if ($('autoTags').checked) prefetchTags();
+    showErr('');
+  }).catch(function (e) {
+    showErr('仓库列表加载失败：' + e.message, e && e.registryAuth ? 'registry-auth' : null);
+    renderRepoList();
+  }).finally(function () {
+    repoState.loading = false;
+    $('loadRepoBtn').disabled = false;
+    $('loadRepoBtn').textContent = '加载仓库列表';
+  });
+}
+/* 仓库搜索（在已加载全量上过滤；标签按需） */
+function filteredRepos() {
+  var q = ($('searchBox').value || '').trim().toLowerCase();
+  var all = repoState.repos;
+  if (!q) return all;
+  return all.filter(function (r) { return r.toLowerCase().indexOf(q) !== -1; });
+}
+function renderRepoList() {
+  var box = $('repoList');
+  var list = filteredRepos();
+  $('stPage').textContent = list.length;
+  var totalTags = 0;
+  Object.keys(repoState.tags).forEach(function (k) { var t = repoState.tags[k]; if (Array.isArray(t)) totalTags += t.length; });
+  $('stTags').textContent = totalTags;
+  $('stAddr').textContent = cfg.host;
+  if (!repoState.repos.length) {
+    box.innerHTML = '<div class="ir-empty">仓库为空（或尚未加载）。点击「加载仓库列表」，或先在「远程缓存」提交一个镜像缓存任务。</div>';
+    $('pagerInfo').textContent = '—';
+    return;
+  }
+  if (!list.length) { box.innerHTML = '<div class="ir-empty">没有匹配「' + esc($('searchBox').value) + '」的仓库。</div>'; }
+  var html = list.map(function (r) {
+    var t = repoState.tags[r];
+    var tagsHtml;
+    if (t === undefined) {
+      tagsHtml = '<span class="ir-empty">' + ($('autoTags').checked ? '标签加载中…' : '标签未加载（勾选自动加载或点「加载标签」）') + '</span>';
+    } else if (!Array.isArray(t) || !t.length) {
+      tagsHtml = '<span class="ir-empty">无标签（manifest 已删或未推送）</span>';
+    } else {
+      tagsHtml = '<div class="ir-tags">' + t.map(function (tag) {
+        return '<span class="ir-tag">' + esc(tag) +
+          ' <button title="删除标签（按 digest 删 manifest）" data-del-repo="' + esc(r) + '" data-del-tag="' + esc(tag) + '">×</button></span>';
+      }).join('') + '</div>';
+    }
+    var tb = '';
+    if (t === undefined || t === null) {
+      tb = '<div class="ir-newTagRow"><input class="dshell-input" placeholder="新标签（提交缓存任务用）" data-tag-input="' + esc(r) + '" />' +
+        '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-cache-repo="' + esc(r) + '">缓存到此</button>' +
+        '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-load-tags="' + esc(r) + '">加载标签</button></div>';
+    } else {
+      tb = '<div class="ir-newTagRow"><input class="dshell-input" placeholder="新标签（提交缓存任务用）" data-tag-input="' + esc(r) + '" />' +
+        '<button class="dshell-btn dshell-btnGhost" style="padding:3px 10px;font-size:11.5px;" data-cache-repo="' + esc(r) + '">缓存到此</button></div>';
+    }
+    return '<div class="dshell-listItem" style="flex-direction:column;align-items:stretch;cursor:default;">' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+        '<span class="ir-repoName" style="flex:1;">' + esc(r) + '</span>' +
+        '<span class="dshell-badge">' + (Array.isArray(t) ? t.length : '?') + ' 标签</span>' +
+        '<span class="ir-rowActions">' +
+          '<button class="dshell-btn dshell-btnGhost" data-open-repo="' + esc(r) + '" title="在新标签页打开 /v2/&lt;repo&gt;/tags/list">API</button>' +
+          '<button class="dshell-btn dshell-btnGhost" data-refresh-repo="' + esc(r) + '">刷新标签</button>' +
+        '</span>' +
+      '</div>' +
+      '<div style="margin-top:6px;">' + tagsHtml + '</div>' +
+      tb +
+      '</div>';
+  }).join('');
+  box.innerHTML = html;
+  $('pagerInfo').textContent = '共 ' + repoState.repos.length + ' 个仓库' + (list.length !== repoState.repos.length ? '（匹配 ' + list.length + '）' : '');
+}
+function prefetchTags() {
+  var repos = filteredRepos().slice(0, 40);
+  var chain = Promise.resolve();
+  repos.forEach(function (r) {
+    chain = chain.then(function () {
+      /* 列表已被下一次加载清空 / 该仓已有标签：跳过，避免旧链覆盖新状态 */
+      if (repoState.tags[r] !== undefined) return null;
+      if (repoState.repos.indexOf(r) === -1) return null;
+      return loadTags(r).catch(function () { if (repoState.repos.indexOf(r) !== -1) repoState.tags[r] = null; });
+    });
+  });
+}
+function loadTags(repo) {
+  return regGetJson('/v2/' + repo + '/tags/list?n=1000').then(function (j) {
+    if (repoState.repos.indexOf(repo) === -1) return [];   /* 列表已刷新：丢弃过期标签 */
+    repoState.tags[repo] = Array.isArray(j.tags) ? j.tags : [];
+    renderRepoList();
+    return repoState.tags[repo];
+  });
+}
+/* 删除标签：GET manifest 拿 digest → DELETE manifest（Accept 需含 OCI 类型） */
+var MFS = 'application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json';
+function deleteTag(repo, tag) {
+  return regFetch('/v2/' + repo + '/manifests/' + encodeURIComponent(tag), 'GET', { Accept: MFS }).then(function (d) {
+    if (d.status !== 200) { var em = registryError(d); em.message = '取 manifest 失败（' + em.message + '）'; throw em; }
+    var dg = (d.headers && (d.headers['docker-content-digest'] || d.headers['Docker-Content-Digest'])) || '';
+    if (!dg) throw new Error('响应缺少 Docker-Content-Digest');
+    return regFetch('/v2/' + repo + '/manifests/' + encodeURIComponent(dg), 'DELETE', { Accept: MFS }).then(function (r) {
+      if (r.status !== 202 && r.status !== 200) { var ed = registryError(r); ed.message = '删除失败（' + ed.message + '）'; throw ed; }
+      return dg;
+    });
+  });
+}
+
+/* 列表交互（事件委托） */
+$('repoList').addEventListener('click', function (e) {
+  var t = e.target;
+  if (!t || !t.closest) return;
+  var del = t.closest('[data-del-repo]');
+  if (del) {
+    var repo = del.getAttribute('data-del-repo'), tag = del.getAttribute('data-del-tag');
+    if (!confirm('确认删除标签 ' + repo + ':' + tag + '？（按 digest 删 manifest，之后需 GC 释放磁盘）')) return;
+    deleteTag(repo, tag).then(function () {
+      showErr('已删除 ' + repo + ':' + tag + '（磁盘释放需在设置页执行 GC）');
+      loadTags(repo).catch(function () {});
+    }).catch(function (e2) { showErr('删除失败：' + e2.message, e2 && e2.registryAuth ? 'registry-auth' : null); });
+    return;
+  }
+  var load = t.closest('[data-load-tags]');
+  if (load) { loadTags(load.getAttribute('data-load-tags')).catch(function (e3) { showErr('标签加载失败：' + e3.message, e3 && e3.registryAuth ? 'registry-auth' : null); }); return; }
+  var ref = t.closest('[data-refresh-repo]');
+  if (ref) { delete repoState.tags[ref.getAttribute('data-refresh-repo')]; loadTags(ref.getAttribute('data-refresh-repo')).catch(function (e4) { showErr(e4.message, e4 && e4.registryAuth ? 'registry-auth' : null); }); return; }
+  var open = t.closest('[data-open-repo]');
+  if (open) { window.open(regBase() + '/v2/' + open.getAttribute('data-open-repo') + '/tags/list', '_blank'); return; }
+  var cache = t.closest('[data-cache-repo]');
+  if (cache) {
+    var cr = cache.getAttribute('data-cache-repo');
+    var row = cache.closest('.dshell-listItem');
+    var input = row ? row.querySelector('[data-tag-input]') : null;
+    var tag = input ? (input.value || '').trim() : '';
+    $('jobDstRepo').value = cr;
+    $('jobTag').value = tag;
+    switchTab('cache');
+    $('jobSrc').focus();
+    showErr('已带入目标仓库「' + cr + '」' + (tag ? '，标签 ' + tag : '') + '，填写源镜像后提交。');
+    return;
+  }
+});
+$('searchBox').addEventListener('input', function () { renderRepoList(); });
+$('pageSize').addEventListener('change', function () { loadRepos(true); });
+$('autoTags').addEventListener('change', function () { if ($('autoTags').checked) prefetchTags(); });
+$('loadRepoBtn').addEventListener('click', function () { loadRepos(true); });
+$('refreshBtn').addEventListener('click', function () { repoState.tags = {}; loadRepos(false); });
+/* ==================== 远程缓存任务（exec-stream） ==================== */
+/* 页面经 site 托管：location.pathname = /api/worktable/site/<编码目录>/index.html；
+   脚本绝对路径 = 反解目录 + registry_cache.sh（decodeURIComponent 各段）。 */
+function projectScriptPath() {
+  var m = /^\/api\/worktable\/site\/(.+)\/[^/]+$/.exec(location.pathname);
+  if (m) { try { return decodeURIComponent(m[1]) + '/registry_cache.sh'; } catch (e) {} }
+  return '';
+}
+var SS_DRAFT = 'ir_jobdraft_v1';
+function loadDraft() { try { return JSON.parse(sessionStorage.getItem(SS_DRAFT) || '{}') || {}; } catch (e) { return {}; } }
+function saveDraft() {
+  try {
+    sessionStorage.setItem(SS_DRAFT, JSON.stringify({
+      src: $('jobSrc').value, dstRepo: $('jobDstRepo').value, tag: $('jobTag').value, timeout: $('jobTimeout').value,
+    }));
+  } catch (e) {}
+}
+['jobSrc', 'jobDstRepo', 'jobTag', 'jobTimeout'].forEach(function (id) {
+  $(id).addEventListener('input', saveDraft);
+});
+var LS_HIST = 'ir_jobs_v1';
+function loadHist() { try { return JSON.parse(localStorage.getItem(LS_HIST) || '[]') || []; } catch (e) { return []; } }
+function saveHist(h) { try { localStorage.setItem(LS_HIST, JSON.stringify(h.slice(0, 50))); } catch (e) {} }
+function renderHist() {
+  var h = loadHist();
+  var box = $('jobHist');
+  if (!h.length) { box.innerHTML = '<div class="ir-empty">暂无历史任务。</div>'; return; }
+  box.innerHTML = h.map(function (j, i) {
+    var badge = j.status === 'success' ? '<span class="dshell-badge dshell-badgeDone">成功</span>'
+      : j.status === 'failed' ? '<span class="dshell-badge" style="color:#f85149;border-color:rgba(248,81,73,.45)">失败</span>'
+      : j.status === 'aborted' ? '<span class="dshell-badge dshell-badgeWait">已中止</span>'
+      : '<span class="dshell-badge dshell-badgeWait">运行中</span>';
+    return '<div class="ir-job" data-idx="' + i + '">' +
+      '<div class="ir-jobTop"><span class="ir-jobSrc">' + esc(j.src) + ' → ' + esc(j.dst || '（默认）') + '</span>' + badge + '</div>' +
+      '<div class="ir-jobMeta"><span>提交 ' + esc(fmtTime(j.at)) + '</span><span>' + esc(j.user || '') + '</span><span>退出码 ' + (j.code == null ? '—' : esc(j.code)) + '</span></div>' +
+      '</div>';
+  }).join('');
+}
+var jobCtrl = null, jobRunning = false;
+function setJobRunning(r) {
+  jobRunning = r;
+  $('jobSubmit').disabled = r;
+  $('jobStop').disabled = !r;
+  $('jobState').textContent = r ? '运行中…' : '空闲';
+}
+function logLine(cls, text) {
+  var el = document.createElement('div');
+  if (cls) el.className = cls;
+  el.textContent = text;
+  $('jobLog').appendChild(el);
+  $('jobLog').scrollTop = $('jobLog').scrollHeight;
+}
+function submitJob() {
+  if (jobRunning) return;
+  var src = ($('jobSrc').value || '').trim();
+  if (!src) { showErr('请填写源镜像（如 alpine:3.19）'); $('jobSrc').focus(); return; }
+  var dstRepo = ($('jobDstRepo').value || '').trim();
+  var tag = ($('jobTag').value || '').trim();
+  if (!dstRepo) {
+    /* 默认：目标仓库名 = 源镜像名（不含 tag） */
+    var s = src.split(':')[0];
+    dstRepo = s;
+  }
+  var dst = dstRepo + (tag ? ':' + tag : '');
+  var script = projectScriptPath();
+  if (!script) { showErr('无法解析脚本路径（页面需经 /api/worktable/site 托管）'); return; }
+  var timeoutMin = Math.max(1, Math.min(120, Number($('jobTimeout').value) || 30));
+  var args = [src, regBase().replace(/^https?:\/\//, '') + '/' + dstRepo];
+  if (tag) args.push(tag);
+  var regHost = String(cfg.host || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (!regHost) { showErr('先到「设置」页填写镜像仓库地址（留空任务会退到 Docker Hub 并登录失败）'); switchTab('settings'); return; }
+  var env = { REG_HOST: regHost, REG_USER: cfg.user, REG_PASS: cfg.pass };
+  if (cfg.proto === 'https') env.REG_INSECURE = '1';
+  var hist = loadHist();
+  var entry = { src: src, dst: dst, at: Date.now(), status: 'running', code: null, user: me.username || '' };
+  hist.unshift(entry); saveHist(hist); renderHist();
+  $('jobLog').innerHTML = '';
+  setJobRunning(true);
+  $('jobBar').style.width = '5%';
+  logLine('', '$ registry_cache.sh ' + args.join(' '));
+  logLine('', '目标仓库: ' + regHost + '  账号: ' + (cfg.user || '（未配置）') + (cfg.pass ? '' : '  密码未填（将跳过 login，push 可能 401）'));
+  var ctrl = new AbortController();
+  jobCtrl = ctrl;
+  fetch('/api/worktable/exec-stream', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: script, args: args, env: env, timeoutMs: timeoutMin * 60000 }),
+    signal: ctrl.signal,
+  }).then(function (r) {
+    if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+    var reader = r.body.getReader(), dec = new TextDecoder(), buf = '';
+    var step = 5;
+    var pump = function () {
+      return reader.read().then(function (res) {
+        if (res.done) return null;
+        buf += dec.decode(res.value, { stream: true });
+        var lines = buf.split('\n'); buf = lines.pop();
+        lines.forEach(function (ln) {
+          if (!ln) return;
+          var f; try { f = JSON.parse(ln); } catch (e) { return; }
+          if (f.type === 'out') { logLine('', String(f.text || '').replace(/\n$/, '')); step = Math.min(90, step + 1); $('jobBar').style.width = step + '%'; }
+          else if (f.type === 'err') { logLine('err', String(f.text || '').replace(/\n$/, '')); }
+          else if (f.type === 'error') { logLine('err', '错误：' + f.message); entry.status = 'failed'; }
+          else if (f.type === 'done') {
+            entry.code = f.code;
+            if (entry.status === 'running') entry.status = (f.code === 0 ? 'success' : 'failed');
+            logLine(entry.status === 'success' ? 'ok' : 'err', '[exit ' + f.code + '] 任务' + (entry.status === 'success' ? '成功' : '失败'));
+          }
+        });
+        return pump();
+      });
+    };
+    return pump();
+  }).catch(function (e) {
+    if (e && e.name === 'AbortError') { logLine('err', '[已中止] 用户主动中止任务'); entry.status = 'aborted'; }
+    else { logLine('err', '任务异常：' + e.message); if (entry.status === 'running') entry.status = 'failed'; }
+  }).finally(function () {
+    $('jobBar').style.width = '100%';
+    setTimeout(function () { $('jobBar').style.width = '0%'; }, 800);
+    setJobRunning(false);
+    jobCtrl = null;
+    var h = loadHist(); if (h[0] === entry) { h[0] = entry; saveHist(h); renderHist(); }
+    if (entry.status === 'success') showErr('缓存任务完成：' + entry.dst + '（列表页点「加载仓库列表」查看）');
+    else if (entry.status === 'failed') showErr('缓存任务失败，见日志');
+  });
+}
+$('jobSubmit').addEventListener('click', submitJob);
+$('jobStop').addEventListener('click', function () { if (jobCtrl) jobCtrl.abort(); });
+$('jobClear').addEventListener('click', function () { $('jobLog').innerHTML = ''; });
+$('histClear').addEventListener('click', function () { if (confirm('清空全部历史任务记录？')) { saveHist([]); renderHist(); } });
+
+/* 垃圾回收：docker exec registry registry garbage-collect（经 exec 一次性执行） */
+$('gcBtn').addEventListener('click', function () {
+  if (!confirm('在 registry 容器内执行垃圾回收（GC）？将清理无 manifest 引用的 layer blob（约几秒~几十秒）。')) return;
+  $('gcBtn').disabled = true;
+  var box = $('gcLog'); box.style.display = ''; box.textContent = 'GC 执行中…\n';
+  var script = '#!/bin/bash\ndocker exec registry registry garbage-collect /etc/docker/registry/config.yml 2>&1\nexit $?\n';
+  /* 用 write + exec 临时脚本（写入项目文件夹 .gc.sh，执行后不清理也无害） */
+  var tmpPath = projectScriptPath().replace(/registry_cache\.sh$/, '.gc.sh');
+  if (!tmpPath) { box.textContent += '路径解析失败'; $('gcBtn').disabled = false; return; }
+  fetch('/api/worktable/write', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tmpPath, content: script }) })
+    .then(function (r) { return r.json(); })
+    .then(function () {
+      return fetch('/api/worktable/exec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: tmpPath, timeoutMs: 120000 }) });
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      box.textContent += (d.stdout || '') + (d.stderr || '');
+      box.textContent += '\n[exit ' + (d.code == null ? '?' : d.code) + '] GC ' + (d.code === 0 ? '完成' : '失败');
+      showErr(d.code === 0 ? 'GC 完成' : 'GC 失败，见日志');
+    })
+    .catch(function (e) { box.textContent += 'GC 执行异常：' + e.message; })
+    .finally(function () { $('gcBtn').disabled = false; });
+});
+
+/* ==================== 设置页交互 ==================== */
+$('setSave').addEventListener('click', function () {
+  cfg = {
+    proto: $('setProto').value === 'https' ? 'https' : 'http',
+    host: ($('setHost').value || '').trim().replace(/^https?:\/\//, '').replace(/\/+$/, ''),
+    user: ($('setUser').value || '').trim(),
+    pass: $('setPass').value || '',
+    timeoutMs: Math.max(5, Math.min(600, Number($('setTimeoutSec').value) || 60)) * 1000,
+    uiHost: ($('setHost').value || '').trim().replace(/^https?:\/\//, '').replace(/:\d+$/, '').replace(/\/+$/, '') + ':8080',
+  };
+  if (!cfg.host) { showErr('仓库地址不能为空'); return; }
+  saveCfg(cfg); renderSettings();
+  showErr('设置已保存（本机 localStorage）');
+  loadRepos(true);   /* 地址/凭据可能变化：保存后立刻重连刷新列表 */
+});
+$('setReset').addEventListener('click', function () {
+  if (!confirm('恢复默认（127.0.0.1:5000 / admin）？')) return;
+  cfg = Object.assign({}, CFG_DEFAULT); saveCfg(cfg); renderSettings();
+  showErr('已恢复默认设置');
+  loadRepos(true);
+});
+$('setTest').addEventListener('click', function () {
+  $('kvAuth').textContent = '测试中…';
+  regGetJson('/v2/_catalog?n=1').then(function (j) {
+    showErr('连接成功：仓库可访问（当前 ' + (Array.isArray(j.repositories) ? j.repositories.length : 0) + ' 个仓库）');
+    $('kvAuth').textContent = 'OK（账号 ' + (cfg.user || '匿名') + '）';
+    $('kvAuth').classList.remove('ir-needAuth');
+    $('setPass').classList.remove('ir-needAuth');
+  }).catch(function (e) {
+    var needAuth = !!(e && e.registryAuth);
+    showErr('连接失败：' + e.message, needAuth ? 'registry-auth' : null);
+    $('kvAuth').textContent = needAuth ? '认证未通过（401）' : '失败';
+    $('kvAuth').classList.toggle('ir-needAuth', needAuth);
+  });
+});
+$('toSettingsBtn').addEventListener('click', function () { switchTab('settings'); });
+
+/* ==================== 标签页切换 ==================== */
+function switchTab(name) {
+  $('mainTabs').querySelectorAll('.dshell-tab').forEach(function (t) { t.classList.toggle('dshell-tabOn', t.dataset.tab === name); });
+  ['repo', 'cache', 'settings'].forEach(function (n) { $('tab-' + n).style.display = n === name ? '' : 'none'; });
+}
+$('mainTabs').querySelectorAll('.dshell-tab').forEach(function (t) {
+  t.addEventListener('click', function () { switchTab(t.dataset.tab); });
+});
+
+/* ==================== 身份 ==================== */
+var me = { username: '', admin: false, shared: false };
+function loadIdentity() {
+  return fetch('/auth/status').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+    if (d && d.authenticated && d.username) { me.username = d.username; me.shared = false; }
+    else { me.username = ''; me.shared = true; }
+    renderUser();
+  }).catch(function () { me.username = ''; me.shared = true; renderUser(); });
+}
+function renderUser() {
+  $('userChip').textContent = me.username ? '👤 ' + me.username : '👤 未登录';
+}
+
+/* ==================== 初始化 ==================== */
+renderSettings();
+renderHist();
+(function restoreDraft() {
+  var d = loadDraft();
+  if (d && typeof d === 'object') {
+    if (typeof d.src === 'string') $('jobSrc').value = d.src;
+    if (typeof d.dstRepo === 'string') $('jobDstRepo').value = d.dstRepo;
+    if (typeof d.tag === 'string') $('jobTag').value = d.tag;
+    if (d.timeout) $('jobTimeout').value = d.timeout;
+  }
+  /* 中途刷新会丢流：历史里残留 running 一律标记为「已中断」（exec-stream 随页面断开被杀） */
+  var h = loadHist(), changed = false;
+  h.forEach(function (j) { if (j && j.status === 'running') { j.status = 'aborted'; changed = true; } });
+  if (changed) { saveHist(h); renderHist(); }
+})();
+loadIdentity().then(function () {
+  loadRepos(true);
+});
+</script>
+</body>
+</html>
