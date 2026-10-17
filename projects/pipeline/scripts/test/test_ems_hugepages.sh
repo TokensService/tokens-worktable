@@ -9,7 +9,8 @@ set -euo pipefail
 #      ⑤ 单节点目标亦合法（无 ≥2 限制）
 #      ⑥ MemAvailable 不足 → 只读预检秒级失败并输出诊断（不启动写入器）
 #      ⑦ 重跑续配预检（已锁部分不再占可用内存）
-#      ⑧ 跨 region（hd2 形态）endpoint 身份映射解析
+#      ⑧ 跨 region（hd2/NAT 形态）endpoint 身份映射解析：节点级 SSH 一律走
+#         内网 InternalIP（外网入口在集群内不可路由），外网地址不得作为 ssh 目标
 #      ⑨ 写入器存活窗口早于压实完成退出 → 重启自愈后到位（243 现场回放）
 #      ⑩ 配额重算算法：NUMA 容量上限 + buddy 高阶块比例分配、总量守恒。
 #      ⑪ 超额护栏：节点物理大页 > 目标 → 告警 + 契约 EMS_HUGEPAGES_OVERPROVISIONED（不失败）。
@@ -304,6 +305,8 @@ echo "ssh \$*" >>"\$FIXTURES/ssh.log"
 cmd="\${@: -1}"
 port=''; prev=''
 for a in "\$@"; do [[ "\$prev" == -p ]] && port="\$a"; prev="\$a"; done
+target=''; for a in "\$@"; do [[ "\$a" == *@* ]] && target="\$a"; done
+ip="\${target#*@}"
 case "\$cmd" in
   *'command -v kubectl'*) exit 0 ;;
   *'hostname -I'*)
@@ -319,11 +322,11 @@ case "\$cmd" in
     eval "\$cmd" ;;
   *'MemAvailable'*)
     printf 'MemTotal:       32959684 kB\nMemAvailable:    3221225472 kB\ntmpfs  1.6T  100G   1.5T   7%% /dev/shm\n' ;;
-  *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$port" 2>/dev/null || echo 0)" ;;
-  *'nr_hugepages'*) echo 1024000 >"\$FIXTURES/hp_\$port" ;;
+  *'HugePages_Total'*) echo "HugePages_Total:    \$(cat "\$FIXTURES/hp_\$ip" 2>/dev/null || echo 0)" ;;
+  *'nr_hugepages'*) echo 1024000 >"\$FIXTURES/hp_\$ip" ;;
   *'systemctl restart kubelet'*)
-    case "\$port" in 2224) touch "\$FIXTURES/marker_kubelet_192.168.31.140" ;; 2225) touch "\$FIXTURES/marker_kubelet_192.168.31.120" ;; esac
-    echo "kubelet-restarted @port\$port" >>"\$FIXTURES/ssh.log" ;;
+    touch "\$FIXTURES/marker_kubelet_\$ip"
+    echo "kubelet-restarted @\$ip" >>"\$FIXTURES/ssh.log" ;;
   *) echo "unexpected ssh cmd: \$cmd" >&2; exit 1 ;;
 esac
 EOF
@@ -342,16 +345,19 @@ out=$(FIXTURES="$tmp8" REAL_SCRIPT="$script" PATH="$tmp8/bin:$PATH" \
   echo "scenario8 failed:" >&2; echo "$out" >&2; rm -rf "$tmp8"; exit 1
 }
 grep -Fq 'remote execution via root@115.33.98.101:2224' <<<"$out"
-grep -Fq '目标节点：115.33.98.101:2224 → tokens-engine-bnt3-13lrp（endpoint 115.33.98.101:2224 访问）' <<<"$out"
-grep -Fq '目标节点：115.33.98.101:2225 → tokens-engine-bnt3-9d0ee（endpoint 115.33.98.101:2225 访问）' <<<"$out"
+grep -Fq '目标节点：115.33.98.101:2224 → tokens-engine-bnt3-13lrp（经 endpoint 身份映射，内网 192.168.31.140 访问）' <<<"$out"
+grep -Fq '目标节点：115.33.98.101:2225 → tokens-engine-bnt3-9d0ee（经 endpoint 身份映射，内网 192.168.31.120 访问）' <<<"$out"
 grep -Fq 'tokens-engine-bnt3-13lrp: 大页到位（1024000 页，' <<<"$out"
 grep -Fq 'tokens-engine-bnt3-9d0ee: Ready 且 allocatable 2000Gi 达标' <<<"$out"
 grep -Fq 'tokens-engine-bnt3-9d0ee: 大页 1024000 页 · allocatable 2000Gi ✓' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_OK=1' <<<"$out"
 grep -Fq 'EMS_HUGEPAGES_RENEWED=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out"
 grep -Fq 'EMS_KUBELET_RESTARTED=tokens-engine-bnt3-13lrp,tokens-engine-bnt3-9d0ee' <<<"$out"
-grep -Fq 'kubelet-restarted @port2224' "$tmp8/ssh.log"
-grep -Fq 'kubelet-restarted @port2225' "$tmp8/ssh.log"
+grep -Fq 'kubelet-restarted @192.168.31.140' "$tmp8/ssh.log"
+grep -Fq 'kubelet-restarted @192.168.31.120' "$tmp8/ssh.log"
+grep -Fq 'root@192.168.31.140' "$tmp8/ssh.log"                     # 节点级 SSH 走内网 IP
+grep -Fq 'root@192.168.31.120' "$tmp8/ssh.log"
+! grep -Fq 'root@115.33.98.101' "$tmp8/ssh.log"                     # 外网入口不可路由：不得作 ssh 目标
 rm -rf "$tmp8"
 
 # ==== 场景⑨：写入器存活窗口早于压实完成退出 → 重启自愈后到位（243 现场回放）====
