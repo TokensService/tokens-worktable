@@ -167,8 +167,8 @@
         <input id="jobDstRepo" class="dshell-input" placeholder="如 library/alpine（留空=同源镜像名）" />
         <label for="jobTag">目标标签</label>
         <input id="jobTag" class="dshell-input" placeholder="留空=沿用源标签（latest）" />
-        <label for="jobTimeout">超时（分钟）</label>
-        <input id="jobTimeout" class="dshell-input" type="number" min="1" max="120" value="30" />
+        <label for="jobTimeout" title="大镜像（数 GB 以上）经公网镜像站拉取常超 1 小时；留空或填 0 表示不限时">超时（分钟）</label>
+        <input id="jobTimeout" class="dshell-input" type="number" min="0" max="1440" step="1" value="180" placeholder="留空或 0 = 不限时" />
         <div class="full" style="display:flex;gap:8px;flex-wrap:wrap;">
           <button id="jobSubmit" class="dshell-btn">▶ 提交任务</button>
           <button id="jobStop" class="dshell-btn dshell-btnDanger" disabled>■ 中止</button>
@@ -176,6 +176,7 @@
         </div>
       </div>
       <p class="ir-hint">流程：<code>docker pull 源镜像 → docker login 目标仓库 → docker tag → docker push</code>（脚本 <code>registry_cache.sh</code>）。目标仓库地址与账号取「设置」页配置；同一时间只跑一个任务（本机 Docker 串行更稳）。中止会杀掉任务进程组。</p>
+      <p class="ir-hint"><b>超时怎么填</b>：公网镜像站把 blob 转发到境外 CDN，实测只有 3~4 MB/s——一个 9 GB 压缩层的镜像（如 <code>vllm/vllm-openai</code>，解压后 32 GB）光下载就要 40 分钟以上，加解压落盘与 push 常超 1 小时。默认 180 分钟；拿不准就<b>留空（不限时）</b>，随时可点「■ 中止」。超时被杀不是白跑：<code>docker</code> 会复用已下载完成的层，<b>重跑即续传</b>。</p>
     </div>
 
     <div class="dshell-card" style="margin-top:10px;">
@@ -652,7 +653,11 @@ function submitJob() {
   var dst = dstRepo + (tag ? ':' + tag : '');
   var script = projectScriptPath();
   if (!script) { showErr('无法解析脚本路径（页面需经 /api/worktable/site 托管）'); return; }
-  var timeoutMin = Math.max(1, Math.min(120, Number($('jobTimeout').value) || 30));
+  /* 超时：留空 / 0 / 非法值 = 不限时（传 0，服务端不挂超时 kill）；有值按服务端上限 1440 分钟夹取。
+     上限必须与服务端 EXEC_TIMEOUT_CAP_MS（24h）一致——旧代码页面收 120 分钟而服务端只认 60 分钟，
+     用户填 120 被静默截断，大镜像任务在 push 前被杀且看不出是上限所致。 */
+  var rawTimeoutMin = Number($('jobTimeout').value);
+  var timeoutMin = Number.isFinite(rawTimeoutMin) && rawTimeoutMin > 0 ? Math.min(1440, Math.floor(rawTimeoutMin)) : 0;
   var args = [src, regBase().replace(/^https?:\/\//, '') + '/' + dstRepo];
   if (tag) args.push(tag);
   var regHost = String(cfg.host || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
@@ -667,6 +672,7 @@ function submitJob() {
   $('jobBar').style.width = '5%';
   logLine('', '$ registry_cache.sh ' + args.join(' '));
   logLine('', '目标仓库: ' + regHost + '  账号: ' + (cfg.user || '（未配置）') + (cfg.pass ? '' : '  密码未填（将跳过 login，push 可能 401）'));
+  logLine('', '超时: ' + (timeoutMin > 0 ? timeoutMin + ' 分钟' : '不限时（随时可点「■ 中止」）'));
   var ctrl = new AbortController();
   jobCtrl = ctrl;
   fetch('/api/worktable/exec-stream', {
@@ -688,7 +694,15 @@ function submitJob() {
           var f; try { f = JSON.parse(ln); } catch (e) { return; }
           if (f.type === 'out') { logLine('', String(f.text || '').replace(/\n$/, '')); step = Math.min(90, step + 1); $('jobBar').style.width = step + '%'; }
           else if (f.type === 'err') { logLine('err', String(f.text || '').replace(/\n$/, '')); }
-          else if (f.type === 'error') { logLine('err', '错误：' + f.message); entry.status = 'failed'; }
+          else if (f.type === 'error') {
+            logLine('err', '错误：' + f.message); entry.status = 'failed';
+            /* 超时兜底提示：新服务端文案自带行动建议，但旧服务端只回一行英文 exec timed out，
+               这里补上归因与「重跑即续传」，避免用户以为要完全从头再来。 */
+            if (/timed out/i.test(String(f.message || ''))) {
+              logLine('err', '提示：任务因超时被终止（不是网络或凭证问题）。把上面「超时: 」对应的「超时（分钟）」调大，或留空表示不限时后重跑；');
+              logLine('err', '      docker 会复用已下载完成的层，重跑是续传而非从头下载。');
+            }
+          }
           else if (f.type === 'done') {
             entry.code = f.code;
             if (entry.status === 'running') entry.status = (f.code === 0 ? 'success' : 'failed');
@@ -809,7 +823,8 @@ renderHist();
     if (typeof d.src === 'string') $('jobSrc').value = d.src;
     if (typeof d.dstRepo === 'string') $('jobDstRepo').value = d.dstRepo;
     if (typeof d.tag === 'string') $('jobTag').value = d.tag;
-    if (d.timeout) $('jobTimeout').value = d.timeout;
+    /* 空串是用户显式选的「不限时」，也要还原；旧写法 if (d.timeout) 会把它吞掉、退回默认值 */
+    if (typeof d.timeout === 'string') $('jobTimeout').value = d.timeout;
   }
   /* 中途刷新会丢流：历史里残留 running 一律标记为「已中断」（exec-stream 随页面断开被杀） */
   var h = loadHist(), changed = false;

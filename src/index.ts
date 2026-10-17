@@ -6946,6 +6946,12 @@ export function apply(ctx: Context) {
       }
     }
   }
+  /* exec / exec-stream 的 body.timeoutMs 夹取上限（0 或缺省 = 不启用超时，不在此列）。
+     上限必须覆盖长任务：镜像仓库页的「远程缓存」拉一个 32GB 级镜像，仅 blob 下载实测就要 40 分钟以上
+     （mirror 把 blob 302 到公网 CDN，实测 3~4MB/s），加上解压落盘与 push 常超 1 小时。旧的 1 小时上限
+     会让页面「超时（分钟）」填 120 被静默降到 60，任务在 push 前被 SIGKILL 且看不出是超时上限所致。
+     这里只是防呆护栏而非资源限制——真要不限时的调用方传 0（既有语义，未变）。 */
+  const EXEC_TIMEOUT_CAP_MS = 86_400_000
   webServer.register({
     kind: 'exact',
     path: '/api/worktable/exec',
@@ -6961,7 +6967,7 @@ export function apply(ctx: Context) {
         const env: Record<string, string> = {}
         for (const k of Object.keys(envIn)) { const v = (envIn as any)[k]; if (v !== undefined && v !== null) env[k] = String(v) }
         const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
-        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), 3600000) : 0   // 0/缺省=无超时（execFile timeout:0 不启用超时）；页面阶段「超时(分钟)」留空即传 0
+        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), EXEC_TIMEOUT_CAP_MS) : 0   // 0/缺省=无超时（execFile timeout:0 不启用超时）；页面阶段「超时(分钟)」留空即传 0
         const interp = /\.py$/i.test(path) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 execFile 直接 E2BIG，见 dropOversizeEnv）
         const log = await openExecLog(body.logFile, '$ ' + interp + ' ' + path + (args.length ? ' ' + args.join(' ') : ''))
@@ -7016,7 +7022,7 @@ export function apply(ctx: Context) {
         const env: Record<string, string> = {}
         for (const k of Object.keys(envIn)) { const v = (envIn as any)[k]; if (v !== undefined && v !== null) env[k] = String(v) }
         const cwd = typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined
-        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), 3600000) : 0   // 0/缺省=无超时（页面阶段「超时(分钟)」留空即传 0）：不挂超时 kill 定时器
+        const timeoutMs = Number(body.timeoutMs) > 0 ? Math.min(Math.max(Number(body.timeoutMs), 1000), EXEC_TIMEOUT_CAP_MS) : 0   // 0/缺省=无超时（页面阶段「超时(分钟)」留空即传 0）：不挂超时 kill 定时器
         const interp = /.py$/i.test(scriptPath) ? 'python3' : 'bash'
         const oversizeWarn = dropOversizeEnv(env)   // 超 128KiB 的变量剔除并告警（否则 spawn 直接 E2BIG，见 dropOversizeEnv）
         let disconnected = false
@@ -7105,7 +7111,9 @@ export function apply(ctx: Context) {
           clearTimeout(killTimer)
           clearTimeout(abortTimer)
           if (timedOut) {
-            const message = 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's'
+            /* 与 runStageScript 的超时文案同口径：带上「怎么解」，否则页面只看到一行英文
+               exec timed out，无从判断该调大超时还是任务本身挂了。 */
+            const message = 'exec timed out after ' + Math.round(timeoutMs / 1000) + 's（超时，进程组已被终止；可调大页面「超时（分钟）」，或留空表示不限时后重跑）'
             writeLog('\n' + message + '\n'); send({ type: 'error', message })
           }
           const exitCode = typeof code === 'number' ? code : 1

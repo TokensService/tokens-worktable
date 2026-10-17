@@ -32,10 +32,43 @@ REG_PASS="${REG_PASS%$'\r'}"
 
 # 若未提供标签，docker 会按默认 latest 处理（pull 后的 RepoTags 即含默认标签）
 echo "== [1/4] 拉取源镜像: $SRC"
-if ! docker pull "$SRC"; then
-  echo "[FAIL] docker pull 失败: $SRC" >&2
+# 必须边跑边回显（tee）而不是用命令替换把 pull 输出整体缓冲：大镜像经公网 mirror 拉取可达
+# 40 分钟以上（mirror 把 blob 302 到境外 CDN，实测仅 3~4MB/s），缓冲会让页面任务日志全程空白，
+# 用户无法分辨是卡死还是在下载。失败归因需要完整输出，故同时落一份临时文件。
+PULL_LOG="$(mktemp)"
+PULL_START=$(date +%s)
+docker pull "$SRC" 2>&1 | tee "$PULL_LOG"
+PULL_CODE=${PIPESTATUS[0]}
+PULL_ELAPSED=$(( $(date +%s) - PULL_START ))
+echo "-- 拉取用时 ${PULL_ELAPSED}s（约 $((PULL_ELAPSED / 60)) 分 $((PULL_ELAPSED % 60)) 秒）"
+if [ "$PULL_CODE" -ne 0 ]; then
+  echo "[FAIL] docker pull 失败 (exit=$PULL_CODE, 用时 ${PULL_ELAPSED}s): $SRC" >&2
+  # 与 login 失败同口径：给可操作的归因，而不是只有一句「失败」。
+  # 匹配串取 docker 的完整错误措辞，不用裸 "503"/"EOF"——层 ID 是 12 位十六进制，会误命中。
+  PULL_TEXT="$(cat "$PULL_LOG")"
+  PULL_NET=0
+  case "$PULL_TEXT" in
+    *"manifest unknown"*|*"MANIFEST_UNKNOWN"*|*"not found"*)
+      echo "       原因: 源仓库没有这个镜像或标签（核对镜像名/标签拼写；mirror 可能尚未缓存该 tag）" >&2 ;;
+    *"no space left on device"*|*"disk quota exceeded"*)
+      echo "       原因: 本机磁盘不足（docker 数据目录所在盘）——先看 docker system df，再 docker image prune 清理" >&2 ;;
+    *"TLS handshake"*|*"x509"*|*"certificate signed by unknown authority"*)
+      echo "       原因: TLS 握手/证书失败（代理 MITM 或系统时间偏差）" >&2 ;;
+    *"proxyconnect"*|*"connection refused"*|*"no such host"*|*"i/o timeout"*|*"unexpected EOF"*|*"503 Service Unavailable"*|*"502 Bad Gateway"*|*"toomanyrequests"*|*"rate limit"*)
+      echo "       原因: 网络或上游不可达（docker daemon 代理未运行、mirror 限流、CDN 5xx）——代理配置见 /etc/docker/daemon.json，稍后重试" >&2
+      PULL_NET=1 ;;
+    *"unauthorized"*|*"authentication required"*)
+      echo "       原因: 源仓库需要认证——私有源要先在本机 docker login 源仓库" >&2 ;;
+  esac
+  echo "       提示: 重跑本任务即为续传——已下载完成的层 docker 会复用，不会从头下载。" >&2
+  # 网络类失败或已经跑了很久才失败：多半是撞上页面超时，指路调大超时
+  if [ "$PULL_NET" -eq 1 ] || [ "$PULL_ELAPSED" -ge 600 ]; then
+    echo "       提示: 大镜像（数 GB 以上）经公网 mirror 拉取常超 1 小时，请把页面「超时（分钟）」调大或留空（不限时）。" >&2
+  fi
+  rm -f "$PULL_LOG"
   exit 10
 fi
+rm -f "$PULL_LOG"
 
 # 解析实际拉取到的引用（保留 digest 型源引用的可追溯性）
 SRC_REPO="${SRC%%:*}"
