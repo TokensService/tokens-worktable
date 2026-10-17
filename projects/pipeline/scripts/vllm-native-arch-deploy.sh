@@ -36,13 +36,19 @@ NATIVE_VLLM_PREFILL_GPUS="${NATIVE_VLLM_PREFILL_GPUS:-0,1,2,3}"
 NATIVE_VLLM_DECODE_GPUS="${NATIVE_VLLM_DECODE_GPUS:-4,5,6,7}"
 # NATIVE_VLLM_MOEFIX = decode 侧注入 MoE scratch 补丁（DP>1 必需；1 开 0 关）
 NATIVE_VLLM_MOEFIX="${NATIVE_VLLM_MOEFIX:-1}"
-# NATIVE_VLLM_AUTOTUNE = flashinfer autotune（0=关闭以最快拉起，1=跟随默认）
+# NATIVE_VLLM_AUTOTUNE = flashinfer autotune（1=开 0=关），**仅对 decode 侧生效**；
+# prefill（PP）/ standalone 侧一律强制关闭：PP + autotune 在 _profile_single_kernel 里要跨 rank
+# all_reduce，两个 PP rank 调优进度一旦错开就永久死锁（2026-10-17 实测：PP1 早调完 → PP0 all_reduce 无人应答）。
 NATIVE_VLLM_AUTOTUNE="${NATIVE_VLLM_AUTOTUNE:-0}"
 # NATIVE_VLLM_DEV_MODE = vLLM 服务端 DEV 模式（1=开 0=关；对应 VLLM_SERVER_DEV_MODE=1）。开启后 vLLM 才暴露
 #   /reset_prefix_cache、/reset_mm_cache、/sleep、/wake_up、/collective_rpc 等管理端点，可用于清 HBM/KV 缓存
 NATIVE_VLLM_DEV_MODE="${NATIVE_VLLM_DEV_MODE:-0}"
 # NATIVE_VLLM_PROFILER = vLLM profiler 开关（1=开 0=关），开启后两侧引擎追加 --profiler-config（torch，落盘 <工作目录>/profiles，start_profile 后跳 5 步、最多记 50 步）
 NATIVE_VLLM_PROFILER="${NATIVE_VLLM_PROFILER:-0}"
+# NATIVE_VLLM_XCCL_ENV_PREFILL = prefill 侧应用 XCCL 插件（xccl-vllm-turbo）的专属环境变量，逗号分隔（如 XCCL_TURBO_ENABLE_MOONCAKE=1,XCCL_TURBO_ENABLE_RMSNORM=1）；留空=不装插件
+NATIVE_VLLM_XCCL_ENV_PREFILL="${NATIVE_VLLM_XCCL_ENV_PREFILL:-}"
+# NATIVE_VLLM_XCCL_ENV_DECODE = decode 侧同上（留空=该侧不装插件）
+NATIVE_VLLM_XCCL_ENV_DECODE="${NATIVE_VLLM_XCCL_ENV_DECODE:-}"
 # NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS = 容器内引擎初始化等待上限（权重加载慢）
 NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS="${NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS:-3600}"
 # NATIVE_VLLM_EXTRA_ENV = 追加到两侧容器的环境变量（空格分隔的若干赋值）
@@ -108,6 +114,7 @@ declare -n hidden_router_policy='NATIVE_VLLM_ROUTER_POLICY' 2>/dev/null || true
 declare -n hidden_router_kv='NATIVE_VLLM_KV_CONNECTOR' 2>/dev/null || true
 declare -n hidden_router_version='NATIVE_VLLM_ROUTER_VERSION' 2>/dev/null || true
 declare -n hidden_nerdctl_src='NATIVE_VLLM_NERDCTL_SRC' 2>/dev/null || true
+declare -n hidden_xccl_wheel='NATIVE_VLLM_XCCL_WHEEL' 2>/dev/null || true
 declare -n hidden_pip_index='NATIVE_VLLM_PIP_INDEX' 2>/dev/null || true
 
 router_port="${hidden_router_port:-8000}"
@@ -119,6 +126,9 @@ router_venv='/opt/vllm-router/venv'
 router_wheels_cache="${HOME}/.cache/vllm-native/router-wheels-${router_version}"
 # 目标机缺 nerdctl 时从执行机分发静态二进制（gy1-2/hd2 多台节点没装 nerdctl，但都在跑 containerd）
 nerdctl_src="${hidden_nerdctl_src:-/usr/local/bin/nerdctl}"
+# XCCL 插件（xccl-vllm-turbo）：whl 默认在执行机的仓 built/ 目录下（可用隐藏参数 NATIVE_VLLM_XCCL_WHEEL 指定）
+xccl_wheel_src="${hidden_xccl_wheel:-}"
+xccl_wheel_glob='/mnt/data/lichangsong/xccl-vllm-turbo/built/xccl_vllm_turbo-*.whl'
 # pip 源：默认国内镜像（阿里云），可用 NATIVE_VLLM_PIP_INDEX 或 PIP_INDEX_URL 覆盖
 pip_index="${hidden_pip_index:-${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}}"
 pip_trusted_host="${pip_index#*://}"
@@ -149,9 +159,12 @@ declare -n hidden_lmcache_wm='LMCACHE_EVICTION_TRIGGER_WATERMARK' 2>/dev/null ||
 declare -n hidden_lmcache_ratio='LMCACHE_EVICTION_RATIO' 2>/dev/null || true
 declare -n hidden_lmcache_l1_init='LMCACHE_L1_INIT_SIZE_GB' 2>/dev/null || true
 declare -n hidden_lmcache_ready_timeout='LMCACHE_READY_TIMEOUT_SECONDS' 2>/dev/null || true
+declare -n hidden_lmcache_cpu_workers='LMCACHE_MAX_CPU_WORKERS' 2>/dev/null || true
 
 lmcache_mp_port="${hidden_lmcache_mp_port:-6555}"
 lmcache_http_port="${hidden_lmcache_http_port:-8090}"
+# LMCache MP CPU 亲和池 worker 数（默认 8；可用隐藏变量 LMCACHE_MAX_CPU_WORKERS 覆盖）
+lmcache_max_cpu_workers="${hidden_lmcache_cpu_workers:-8}"
 lmcache_chunk_size="${hidden_lmcache_chunk_size:-1024}"
 lmcache_eviction_policy="${hidden_lmcache_eviction:-LRU}"
 # 驱逐触发水位 / 单次驱逐比例（lmcache server 默认 0.8 / 0.2）
@@ -181,7 +194,9 @@ container_names=("${container_prefix}-prefill" "${container_prefix}-decode" "${c
 # 本部署旧实例当前占用的端口（预检填充，供 port_check_and_fix 在清理前判定）
 declare -A ours_port=()
 script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15)
+# 保活：跨 NAT/EIP 的长任务里链路空闲会被静默丢弃，没保活会导致 ssh 永远挂在 do_select（远端早完成、父进程等半小时）。
+ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=15 \
+  -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 # ---------------------------------------------------------------------------
 # 基础工具
@@ -467,11 +482,12 @@ if isinstance(dp_size, int) and dp_size > 1:
     config["data-parallel-backend"] = "mp"
     config["data-parallel-size-local"] = dp_size
 
-# 先把 autotune 关掉以最快拉起（需要时用 NATIVE_VLLM_AUTOTUNE 打开）
+# flashinfer autotune：只给 decode 侧（有 DP、无 PP）；prefill 强制关——PP + autotune 会跨 rank
+# all_reduce，两 rank 进度错开即永久死锁（详见参数注释）。
 kernel_config = config.get("kernel-config")
 if not isinstance(kernel_config, dict):
     kernel_config = {}
-kernel_config["enable_flashinfer_autotune"] = bool(int(autotune))
+kernel_config["enable_flashinfer_autotune"] = bool(int(autotune)) if role == "decode" else False
 config["kernel-config"] = kernel_config
 
 # 可选：prefill 的 PD 连接器外面再包一层 MultiConnector 接本地 LMCache
@@ -503,12 +519,13 @@ if int(profiler_enable) == 1:
         "profiler": "torch",
         "torch_profiler_dir": f"{run_dir}/profiles",
         "torch_profiler_with_stack": False,
-        "torch_profiler_with_flops": False,
-        "torch_profiler_record_shapes": False,
+        "torch_profiler_with_flops": True,
+        "torch_profiler_record_shapes": True,
         "torch_profiler_with_memory": False,
         "torch_profiler_use_gzip": True,
         "torch_profiler_dump_cuda_time_total": True,
         "ignore_frontend": True,
+        "detailed_trace_annotation": True,
         "delay_iterations": 5,
         "max_iterations": 50,
     }
@@ -585,6 +602,14 @@ write_entry_scripts() {
       printf '# 运行期参数覆盖（预检自动纠偏端口时生成；在 args 之后追加，后写覆盖先写）\n'
       printf 'if [[ -f "%s/args-override-%s.sh" ]]; then . "%s/args-override-%s.sh"; fi\n' \
         "$work_dir" "$role" "$work_dir" "$role"
+      printf '# XCCL 插件（xccl-vllm-turbo）：仅当本次部署该侧启用时随产物安装\n'
+      printf 'if [[ -n "${VLLM_XCCL_TURBO_WHL:-}" && -f "$VLLM_XCCL_TURBO_WHL" ]]; then\n'
+      printf '  if python3 -m pip install --no-index --no-deps --disable-pip-version-check --quiet "$VLLM_XCCL_TURBO_WHL"; then\n'
+      printf '    echo "[entry] XCCL 插件已安装：$VLLM_XCCL_TURBO_WHL"\n'
+      printf '  else\n'
+      printf '    echo "[entry][warn] XCCL 插件安装失败：$VLLM_XCCL_TURBO_WHL"\n'
+      printf '  fi\n'
+      printf 'fi\n'
       printf 'exec vllm serve "${vllm_native_args[@]}"\n'
     } >"$entry"
     chmod 700 "$entry"
@@ -1293,6 +1318,7 @@ remote_start_lmcache() {
         --eviction-policy $lmcache_eviction_policy \
         --eviction-trigger-watermark $lmcache_eviction_watermark --eviction-ratio $lmcache_eviction_ratio \
         --chunk-size $lmcache_chunk_size --separate-object-groups --instance-id prefill \
+        --max-cpu-workers "$lmcache_max_cpu_workers" \
         ${LMCACHE_OTLP_ENDPOINT:+--otlp-endpoint $LMCACHE_OTLP_ENDPOINT --enable-tracing}" \
     >/dev/null || return 1
   while (( waited < lmcache_ready_timeout )); do
@@ -1311,15 +1337,91 @@ remote_start_lmcache() {
   return 1
 }
 
+# 设备 → 启动时使用的转发端口（脚本只负责在本机监听该端口并转发到 router）。
+# 维护：新节点上线时在这里加一行「<内网IP> <端口>」。不在表中的节点自动跳过转发。
+# 2026-10-17 用户提供的 gy1（含 gy1-2 47.x）+ hd2 首批 5 台。
+exposed_port_for_ip() {
+  local ip="$1"
+  [[ -n "$ip" ]] || return 0
+  sed -n "s/^${ip//./\\.} \\([0-9][0-9]*\\)$/\\1/p" <<'MAP'
+192.168.0.156 8100
+192.168.0.78 8101
+192.168.0.243 8102
+192.168.0.68 8103
+192.168.0.128 8104
+192.168.0.218 8105
+192.168.0.102 8106
+192.168.0.172 8107
+192.168.47.35 8108
+192.168.47.181 8109
+192.168.0.126 8116
+192.168.0.237 8117
+192.168.47.137 8131
+192.168.47.6 8132
+192.168.47.200 8133
+192.168.47.92 8135
+192.168.47.148 8136
+192.168.47.172 8137
+192.168.47.236 8138
+192.168.47.240 8139
+192.168.47.115 8140
+192.168.47.3 8141
+192.168.47.71 8142
+192.168.47.44 8143
+192.168.47.214 8144
+192.168.47.86 8145
+# hd2（192.168.31.x）2026-10-17 首批 5 台
+192.168.31.140 8100
+192.168.31.120 8101
+192.168.31.113 8102
+192.168.31.164 8103
+192.168.31.7 8104
+MAP
+}
+
+# 自动端口转发：按设备IP查表得到对外端口 → socat 把该端口转发到本机 router。
+# 表里没有的节点（如 hd2）自动跳过；重复部署会重建转发（幂等）。
+remote_setup_port_forward() {
+  local ip="$1" upstream_port="$2" port socat_bin code
+  port="$(exposed_port_for_ip "$ip")"
+  if [[ -z "$port" ]]; then
+    log "端口转发：$ip 不在转发映射表中，跳过"
+    return 0
+  fi
+  socat_bin="$(command -v socat 2>/dev/null || true)"
+  [[ -n "$socat_bin" ]] || { [[ -x /usr/local/bin/socat ]] && socat_bin=/usr/local/bin/socat; }
+  if [[ -z "$socat_bin" && -f "$work_dir/socat" ]]; then
+    install -m 755 "$work_dir/socat" /usr/local/bin/socat && socat_bin=/usr/local/bin/socat
+  fi
+  if [[ -z "$socat_bin" ]]; then
+    warn "端口转发跳过：目标机没有 socat 且产物里也没带"
+    return 0
+  fi
+  pkill -f "socat TCP-LISTEN:${port}," 2>/dev/null || true
+  sleep 1
+  setsid nohup "$socat_bin" "TCP-LISTEN:${port},bind=0.0.0.0,reuseaddr,fork" "TCP:127.0.0.1:${upstream_port}" \
+    >"$work_dir/socat-${port}.log" 2>&1 </dev/null &
+  sleep 2
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/v1/models" 2>/dev/null)"
+  if [[ "$code" == '200' ]]; then
+    log "端口转发就绪：127.0.0.1:${port} → 127.0.0.1:${upstream_port}（对外端口 ${port}）"
+  else
+    warn "端口转发校验未通过（http://127.0.0.1:${port}/v1/models → ${code:-无响应}）"
+  fi
+}
+
 remote_start_router() {
   local prefill_port="$1" decode_port="$2" waited=0 code
+  # ⚠️ 注释不能插在 nohup 的续行（\）中间——注释会终止续行，导致后面的参数被当成独立命令。
+  # 引擎与 router 同机，必须用回环地址：target_ip 可能是外网映射入口（如 hd2 的 EIP），
+  # 节点访问自己的 EIP 一般没有 hairpin，会让 router 卡在探测引擎上（表现为不监听对外端口）。
   log "启动 vllm-router（连接器 $router_kv_connector，对外端口 $router_port）"
   nohup "$router_bin" \
     --policy "$router_policy" \
     --vllm-pd-disaggregation \
     --kv-connector "$router_kv_connector" \
-    --prefill "http://$target_ip:$prefill_port" \
-    --decode "http://$target_ip:$decode_port" \
+    --prefill "http://127.0.0.1:$prefill_port" \
+    --decode "http://127.0.0.1:$decode_port" \
     --host 0.0.0.0 --port "$router_port" \
     --intra-node-data-parallel-size 1 \
     >"$work_dir/router.log" 2>&1 &
@@ -1469,26 +1571,40 @@ remote_main() {
 
   if [[ "$mode" == 'pd' ]]; then
     remote_start_router "$primary_port" "$decode_port" || return 1
+    # 自动端口转发：对外暴露端口 → router（表里没有的节点会自动跳过）
+    remote_setup_port_forward "$service_ip" "$router_port"
     if [[ "$verify_after" == '1' ]]; then
       remote_verify_pd "$decode_port" || return 1
     fi
   fi
 
+  # 契约里的地址用目标机【小网 IP】：平台传的 target 可能是外网映射入口（如 hd2 的 EIP），
+  # 小网内的调用方访问不到。取法：默认路由的源地址，兵底用 hostname -I 过滤掉回环/docker/link-local。
+  local service_ip=''
+  service_ip="$(ip -4 route get 1.1.1.1 2>/dev/null \
+    | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}')"
+  if [[ -z "$service_ip" ]]; then
+    service_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' \
+      | grep -vE '^(127\.|172\.(1[7-9]|2[0-9]|3[01])\.|169\.254\.)' | head -1)"
+  fi
+  [[ -n "$service_ip" ]] || service_ip="$target_ip"
+  log "契约地址使用目标机小网 IP：$service_ip（平台 target=$target_ip）"
+
   if [[ "$mode" == 'pd' ]]; then
-    printf 'NATIVE_VLLM_API_BASE=http://%s:%s/v1\n' "$target_ip" "$router_port"
-    printf 'SERVICE_API=http://%s:%s\n' "$target_ip" "$router_port"
+    printf 'NATIVE_VLLM_API_BASE=http://%s:%s/v1\n' "$service_ip" "$router_port"
+    printf 'SERVICE_API=http://%s:%s\n' "$service_ip" "$router_port"
     printf 'NATIVE_VLLM_PREFILL_PORT=%s\n' "$primary_port"
     printf 'NATIVE_VLLM_DECODE_PORT=%s\n' "$decode_port"
   else
-    printf 'NATIVE_VLLM_API_BASE=http://%s:%s/v1\n' "$target_ip" "$primary_port"
-    printf 'SERVICE_API=http://%s:%s\n' "$target_ip" "$primary_port"
+    printf 'NATIVE_VLLM_API_BASE=http://%s:%s/v1\n' "$service_ip" "$primary_port"
+    printf 'SERVICE_API=http://%s:%s\n' "$service_ip" "$primary_port"
     printf 'NATIVE_VLLM_STANDALONE_PORT=%s\n' "$primary_port"
   fi
   printf 'NATIVE_VLLM_DEPLOY=ok\n'
   printf 'NATIVE_VLLM_MODE=%s\n' "$mode"
   printf 'NATIVE_VLLM_ARCH=%s\n' "$deploy_strategy"
   printf 'NATIVE_VLLM_ARCH_SOURCE=%s\n' "$arch_source"
-  printf 'NATIVE_VLLM_TARGET_IP=%s\n' "$target_ip"
+  printf 'NATIVE_VLLM_TARGET_IP=%s\n' "$service_ip"
   printf 'NATIVE_VLLM_IMAGE=%s\n' "$image_ref"
   printf 'NATIVE_VLLM_LMCACHE=%s\n' "$LMCACHE_ENABLE"
   printf 'NATIVE_VLLM_ROUTER_PORT=%s\n' "$router_port"
@@ -1555,6 +1671,7 @@ PY
   log "部署形态：$mode（角色：${roles[*]}）；镜像 $image_ref；目标机 ${target_ip}${target_port:+:$target_port}"
   [[ "$LMCACHE_ENABLE" == '1' ]] && log "LMCache：开启（L1=${LMCACHE_L1_SIZE_GB}G，端口 ${lmcache_mp_port}/${lmcache_http_port}）"
   [[ "$NATIVE_VLLM_PROFILER" == '1' ]] && log "Profiler：开启（torch，落盘 $native_run_dir/profiles；POST /start_profile 起、/stop_profile 停，delay 5 步、最多 50 步）"
+  log "autotune：decode=${NATIVE_VLLM_AUTOTUNE}（仅 decode 生效），prefill/standalone=强制关闭（PP+autotune 会跨 rank 死锁）"
 
   local role
   for role in "${roles[@]}"; do
@@ -1564,13 +1681,28 @@ PY
   check_topology_and_log
 
   # 策略 env 之外，本路线固定追加的运行期环境变量
-  local item
+  local item xccl_list xccl_item xccl_whl
+  ensure_xccl_wheel
   for role in "${roles[@]}"; do
     {
       printf 'export VLLM_ENGINE_READY_TIMEOUT_S=%s\n' "$NATIVE_VLLM_ENGINE_READY_TIMEOUT_SECONDS"
       printf 'export VLLM_USE_RUST_FRONTEND=%s\n' "$use_rust_frontend"
       # DEV 模式：开启后 vLLM 才暴露 /reset_prefix_cache、/sleep、/wake_up 等管理端点（清 HBM/KV 缓存）
       [[ "$NATIVE_VLLM_DEV_MODE" == '1' ]] && printf 'export VLLM_SERVER_DEV_MODE=1\n'
+      # XCCL 插件（xccl-vllm-turbo）：按角色传入逗号分隔的 KEY=VALUE；为空则该侧不装插件
+      if [[ "$role" == 'decode' ]]; then xccl_list="$NATIVE_VLLM_XCCL_ENV_DECODE"; else xccl_list="$NATIVE_VLLM_XCCL_ENV_PREFILL"; fi
+      if [[ -n "$xccl_list" ]]; then
+        xccl_whl="$(ls "$stage_dir"/xccl/*.whl 2>/dev/null | head -1)"
+        [[ -n "$xccl_whl" ]] && printf 'export VLLM_XCCL_TURBO_WHL=%s/xccl/%s\n' "$work_dir" "$(basename "$xccl_whl")"
+        IFS=',' read -r -a xccl_items <<<"$xccl_list"
+        for xccl_item in "${xccl_items[@]}"; do
+          xccl_item="${xccl_item#"${xccl_item%%[![:space:]]*}"}"
+          xccl_item="${xccl_item%"${xccl_item##*[![:space:]]}"}"
+          [[ -n "$xccl_item" ]] || continue
+          [[ "$xccl_item" == *=* ]] || { warn "XCCL 环境变量应为 KEY=VALUE，已忽略：$xccl_item"; continue; }
+          printf 'export %s\n' "$xccl_item"
+        done
+      fi
       for item in $NATIVE_VLLM_EXTRA_ENV; do
         [[ -n "$item" ]] && printf 'export %s\n' "$item"
       done
@@ -1617,6 +1749,7 @@ PY
   log "推送产物到 $target_ip:$work_dir${target_port:+（SSH 端口 $target_port）}"
   ensure_router_wheels
   ensure_nerdctl_binary
+  ensure_socat_binary
   target_ssh "mkdir -p '$work_dir'" || die "目标机创建目录失败：$work_dir"
   target_scp "$stage_dir/." "$work_dir/" || die "推送渲染产物失败"
   target_scp "$script_path" "$work_dir/${SCRIPT_NAME}.sh" || die "推送脚本失败"
@@ -1659,6 +1792,33 @@ PY
 
 # 目标机缺 nerdctl 时，把执行机的静态二进制放进产物目录（随产物推送），由远端阶段装到 /usr/local/bin。
 # 只在目标机确实缺失时复制；执行机侧源路径可用隐藏参数 NATIVE_VLLM_NERDCTL_SRC 指定。
+# XCCL 插件（xccl-vllm-turbo）：P/D 任一角色启用时，把 whl 放进产物目录（随产物推送），
+# 再由对应角色的 entry 脚本在容器内 pip 安装（本地 wheel，--no-index --no-deps）。
+ensure_xccl_wheel() {
+  [[ -n "$NATIVE_VLLM_XCCL_ENV_PREFILL$NATIVE_VLLM_XCCL_ENV_DECODE" ]] || return 0
+  local src="$xccl_wheel_src"
+  [[ -n "$src" ]] || src="$(ls -1t $xccl_wheel_glob 2>/dev/null | head -1)"
+  [[ -n "$src" && -f "$src" ]] \
+    || die "启用了 XCCL 插件（NATIVE_VLLM_XCCL_ENV_*）但找不到 whl：$xccl_wheel_glob（可用隐藏参数 NATIVE_VLLM_XCCL_WHEEL 指定）" 2
+  mkdir -p "$stage_dir/xccl"
+  cp -f "$src" "$stage_dir/xccl/" || die "复制 XCCL whl 到产物目录失败" 2
+  log "XCCL 插件：随产物推送 $(basename "$src")（$(du -h "$src" | cut -f1)）；prefill=$([[ -n "$NATIVE_VLLM_XCCL_ENV_PREFILL" ]] && echo 启用 || echo 关)，decode=$([[ -n "$NATIVE_VLLM_XCCL_ENV_DECODE" ]] && echo 启用 || echo 关)"
+}
+
+# 目标机在转发映射表中、且自身没有 socat 时，把执行机的 socat 推到产物目录（远端装到 /usr/local/bin）。
+ensure_socat_binary() {
+  [[ -n "$(exposed_port_for_ip "$target_ip")" ]] || return 0
+  if target_ssh "command -v socat >/dev/null 2>&1 || [[ -x /usr/local/bin/socat ]]"; then
+    return 0
+  fi
+  local src
+  src="$(command -v socat 2>/dev/null || echo /usr/bin/socat)"
+  [[ -x "$src" ]] \
+    || die "目标机缺 socat（端口转发需要），且执行机上也找不到：$src" 2
+  log "目标机没有 socat，从执行机分发：$src（端口转发用）"
+  install -m 755 "$src" "$stage_dir/socat" || die "复制 socat 到产物目录失败" 2
+}
+
 ensure_nerdctl_binary() {
   if target_ssh "command -v nerdctl >/dev/null 2>&1 || [[ -x /usr/local/bin/nerdctl ]]"; then
     return 0
