@@ -138,6 +138,7 @@ function loadStateFixture(serverConfig, opts) {
   const ctx = {
     persistInFlight: null, stateFetchEpoch: 0, stateLoaded: false,
     _migratedPersistDone: false,
+    reposSeededByDefault: opts.reposSeeded || false,
     serverConfigBase: opts.base !== undefined ? opts.base : null,
     DEFAULT_PIPELINE_ID: 'pl-xds',
     defaultPipeline: plXds,
@@ -173,6 +174,7 @@ function loadStateFixture(serverConfig, opts) {
   vm.createContext(ctx);
   vm.runInContext(['stripPipelineSharedMeta', 'mergePipelinesFromServer', 'mergeRepositoriesFromServer', 'fetchPipelineStateFresh',
     'normalizeFetchMode', 'normalizeEnv', 'normalizeRepo', 'sameRepoEntry', 'curPipeline', 'plOwnerFilterLabel', 'envConfigEditable', 'loadServerState',
+    'loadServerBaseLS', 'markServerBaseConfirmed',
   ].map(extractFunction).join('\n'), ctx);
   return { ctx, calls, storage, els };
 }
@@ -267,7 +269,7 @@ function pushStateFixture(opts) {
   ctx.setTimeout = (fn, ms) => 0;
   ctx.clearTimeout = () => { };
   vm.createContext(ctx);
-  vm.runInContext(['collectConfig', 'historyForPersist', 'historyPersistSig', 'pushState'].map(extractFunction).join('\n'), ctx);
+  vm.runInContext(['collectConfig', 'historyForPersist', 'historyPersistSig', 'pushState', 'markServerBaseConfirmed'].map(extractFunction).join('\n'), ctx);
   return { ctx, putBodies, storage };
 }
 
@@ -282,3 +284,113 @@ test('pushState：baseConfig 携带 repositories 基线（供服务端按 id 三
   assert.equal(f.putBodies.length, 1);
   assert.deepEqual(J(f.putBodies[0].baseConfig.repositories), J(baseRepos), 'baseConfig.repositories 携带共同基线');
 });
+
+/* ---------- 基线随会话持久化 + 在途改动重载保留（「刷新丢改动」修复） ---------- */
+
+test('loadServerState：基线持久化——GET 应用后把 serverConfigBase 写入 localStorage（pip-server-base），供重载识别在途改动', async () => {
+  const serverConfig = { pipelines: [plXds()], repositories: [repo('r-1', '仓一')] };
+  const f = loadStateFixture(serverConfig, {});
+  assert.equal(f.ctx.serverConfigBase, null, '启动时无基线');
+  await f.ctx.loadServerState();
+  assert.ok(f.storage['pip-server-base'], 'GET 应用后基线写入 localStorage');
+  assert.deepEqual(JSON.parse(f.storage['pip-server-base']), serverConfig, '持久化内容 = 服务端确认快照');
+  assert.equal(f.calls.persist, 0, '本地与服务端一致：不排写');
+});
+
+test('loadServerState：重载后（基线自 localStorage 恢复）在途修改保留 + 回推一次补送——刷新不再丢改动', async () => {
+  /* 场景：上次会话编辑 r-1 令牌后保存失败（PUT 未落盘），页面重载；基线（旧确认快照）自 pip-server-base
+     恢复 → 三方合并识别「本地≠基线而远端==基线」→ 保留本地改动并标记 migrated 回推一次。 */
+  const f = loadStateFixture(
+    { pipelines: [plXds()], repositories: [repo('r-1', '仓一')] },   // 服务端仍是旧值
+    {
+      localRepos: [repo('r-1', '仓一', { pass: 'edited-token' })],   // localStorage 离线缓存带在途修改
+      base: { repositories: [repo('r-1', '仓一')] },                 // 重载时恢复的持久化基线
+    });
+  await f.ctx.loadServerState();
+  assert.equal(f.ctx.repositories[0].pass, 'edited-token', '在途修改不被「双边都改取服务端」回滚');
+  assert.equal(f.calls.persist, 1, '检测到未同步的本地改动：回推一次补送服务端');
+  assert.ok(JSON.parse(f.storage['pip-repos'])[0].pass === 'edited-token', '离线缓存保留在途值（不被旧值覆盖）');
+});
+
+test('loadServerState：重载后在途新增（本地新增未落盘）保留 + 回推一次', async () => {
+  const f = loadStateFixture(
+    { pipelines: [plXds()], repositories: [repo('r-1', '仓一')] },
+    {
+      localRepos: [repo('r-1', '仓一'), repo('r-new', '离线新增未落盘')],
+      base: { repositories: [repo('r-1', '仓一')] },
+    });
+  await f.ctx.loadServerState();
+  assert.deepEqual(J(f.ctx.repositories).map(r => r.id), ['r-1', 'r-new'], '在途新增保留');
+  assert.equal(f.calls.persist, 1, '服务端解释不了 r-new：回推一次');
+});
+
+test('loadServerState：基线在的旧条目被他端删除——本地未改动随远端删除，不复活不回推（持久化基线防复活）', async () => {
+  const f = loadStateFixture(
+    { pipelines: [plXds()], repositories: [repo('r-1', '仓一')] },   // 远端已无 r-2
+    {
+      localRepos: [repo('r-1', '仓一'), repo('r-2', '旧缓存')],      // 本地缓存仍有 r-2（==基线，未改动）
+      base: { repositories: [repo('r-1', '仓一'), repo('r-2', '旧缓存')] },
+    });
+  await f.ctx.loadServerState();
+  assert.deepEqual(J(f.ctx.repositories).map(r => r.id), ['r-1'], '基线有、远端无、本地未改 → 随远端删除');
+  assert.equal(f.calls.persist, 0, '合并结果服务端全能解释：不排写');
+});
+
+test('loadServerState：本地与服务端完全一致（含基线）→ 零排写（不破坏「初始化不自动 PUT」口径）', async () => {
+  const f = loadStateFixture(
+    { pipelines: [plXds()], repositories: [repo('r-1', '仓一')] },
+    {
+      localRepos: [repo('r-1', '仓一')],
+      base: { repositories: [repo('r-1', '仓一')] },
+    });
+  await f.ctx.loadServerState();
+  assert.equal(f.calls.persist, 0, '无在途改动：loadServerState 不排写');
+});
+
+/* ---------- 演示种子（myapp）不再上送团队共享配置 ---------- */
+
+test('loadServerState：种子态丢弃——新浏览器（无本地缓存）拉到服务端非空代码仓时，演示种子不进合并/上送', async () => {
+  const f = loadStateFixture(
+    { pipelines: [plXds()], repositories: [repo('r-1', '仓一')] },
+    {
+      reposSeeded: true,
+      localRepos: [{ id: 'repo-1', name: 'myapp', url: 'https://git.example.com/dev/myapp.git', user: '', pass: '', fetchMode: 'server' }],
+    });
+  await f.ctx.loadServerState();
+  assert.deepEqual(J(f.ctx.repositories).map(r => r.id), ['r-1'], '演示种子被丢弃，列表 = 服务端代码仓');
+  assert.equal(f.ctx.reposSeededByDefault, false, '种子态清除');
+  assert.equal(f.calls.persist, 0, '种子丢弃不触发回推（服务端快照解释了全部条目）');
+});
+
+test('loadServerState：服务端无代码仓（空/无键）时演示种子保留（首次体验）', async () => {
+  const f = loadStateFixture({ pipelines: [plXds()] }, {   // config 无 repositories 键
+    reposSeeded: true,
+    localRepos: [{ id: 'repo-1', name: 'myapp', url: 'https://git.example.com/dev/myapp.git', user: '', pass: '', fetchMode: 'server' }],
+  });
+  await f.ctx.loadServerState();
+  assert.deepEqual(J(f.ctx.repositories).map(r => r.id), ['repo-1'], '服务端无代码仓：种子保留');
+  assert.equal(f.ctx.reposSeededByDefault, true, '种子态维持');
+});
+
+/* ---------- 基线读写助手 ---------- */
+
+test('loadServerBaseLS：解析 localStorage 的持久化基线；坏值/缺失返回 null', () => {
+  const ctx = { localStorage: { getItem: () => null } };
+  vm.createContext(ctx);
+  vm.runInContext(extractFunction('loadServerBaseLS'), ctx);
+  assert.equal(ctx.loadServerBaseLS(), null, '无存储 → null');
+  ctx.localStorage.getItem = () => JSON.stringify({ repositories: [repo('r-1', '仓一')] });
+  assert.equal(JSON.stringify(ctx.loadServerBaseLS().repositories), JSON.stringify([repo('r-1', '仓一')]), '有存储 → 解析对象（vm 上下文原型不同，按 JSON 比较）');
+  ctx.localStorage.getItem = () => 'not-json';
+  assert.equal(ctx.loadServerBaseLS(), null, '坏 JSON → null（容错不抛）');
+  ctx.localStorage.getItem = () => JSON.stringify(['array']);
+  assert.equal(ctx.loadServerBaseLS(), null, '非对象（数组）→ null');
+});
+
+test('源码契约：基线持久化接线——启动自 localStorage 装入、四处理基线前进点随行写入', () => {
+  assert.match(source, /let serverConfigBase=loadServerBaseLS\(\);/, '启动时从 pip-server-base 恢复基线');
+  const marks = source.match(/if\(typeof markServerBaseConfirmed==='function'\) markServerBaseConfirmed\(\)/g) || [];
+  assert.equal(marks.length, 4, 'pushState 成功 / save-one 409 采纳 / save-one 成功 / loadServerState GET 四处基线前进点都持久化');
+  assert.match(source, /localStorage\.setItem\('pip-server-base'/, '基线写入 localStorage');
+});
+
