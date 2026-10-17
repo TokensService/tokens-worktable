@@ -3,7 +3,8 @@
    服务端共享存储（不再 localStorage 假数据）；进展 / 标签 / 完成弹窗 AI 总结 / 文本导入；
    主从双栏布局——左侧紧凑任务列表 + 右侧详情面板（点击卡片切换，不再是详情弹窗），
    详情内联编辑保存（无独立编辑按钮）+ 行内添加进展；
-   多负责人（assignees）、开始/结束时间、状态×用户×标签三维筛选；AI 个人总结。 */
+   多负责人（assignees）、起止时间只由「开始 / 完成」动作记录（不可手填、详情只读展示）、
+   状态×用户×标签三维筛选；AI 个人总结。 */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -183,13 +184,29 @@ test("任务支持多负责人（assignees 数组 + 详情/新建多选）", () 
   assert.ok(html.includes("renderAssigneeChecks("), "应渲染负责人复选框");
 });
 
-test("任务详情记录开始/结束时间（可编辑保存）", () => {
-  assert.ok(html.includes('id="dStartAt"'), "详情应有开始时间");
-  assert.ok(html.includes('id="dEndAt"'), "详情应有结束时间");
-  assert.ok(html.includes('id="fStartAt"'), "新建弹窗应有开始时间");
-  assert.ok(html.includes('id="fEndAt"'), "新建弹窗应有结束时间");
-  assert.ok(html.includes("startAt:"), "保存应携带 startAt");
-  assert.ok(html.includes("endAt:"), "保存应携带 endAt");
+test("起止时间不可手填：只由「开始」按钮 / 完成动作记录，详情只读展示", () => {
+  /* 手工输入口全部撤掉（详情面板 + 新建弹窗） */
+  assert.ok(!html.includes('id="dStartAt"'), "详情不应再有开始时间输入框");
+  assert.ok(!html.includes('id="dEndAt"'), "详情不应再有结束时间输入框");
+  assert.ok(!html.includes('id="fStartAt"'), "新建弹窗不应再有开始时间输入框");
+  assert.ok(!html.includes('id="fEndAt"'), "新建弹窗不应再有结束时间输入框");
+  /* 前端不再提交起止字段：新建 POST 与详情保存 PATCH 都不得携带 */
+  assert.ok(!/startAt:\s*(st|body\.startAt)/.test(html), "保存不应再携带手工 startAt");
+  assert.ok(!/endAt:\s*(en|body\.endAt)/.test(html), "保存不应再携带手工 endAt");
+  assert.ok(!html.includes("data.startAt"), "详情保存不应再写入 startAt");
+  assert.ok(!html.includes("data.endAt"), "详情保存不应再写入 endAt");
+  /* 截止时间仍可手填（datetime-local 只剩这一处 + 个人总结的自定义区间 date） */
+  assert.ok(html.includes('id="dDeadline"') && html.includes('id="fDeadline"'), "截止时间输入应保留");
+  /* 只读展示：详情「创建 · 截止」行追加 开始 / 结束 */
+  assert.ok(html.includes("function fmtTs("), "应有起止时间只读格式化函数");
+  assert.ok(/fmtTs\(ts\)\s*\{[\s\S]{0,120}未记录/.test(html), "未记录时应给「未记录」占位而非「无截止」");
+  assert.ok(html.includes("' · 开始 ' + fmtTs(t.startAt) + ' · 结束 ' + fmtTs(t.endAt)"),
+    "详情应只读展示开始 / 结束时间");
+  /* 记录来源：点「开始」→ PATCH status=doing；完成弹窗确认 → PATCH status=done + effect
+     （服务端据此自动补记 startAt / endAt） */
+  assert.ok(html.includes("apiSend('PATCH', { id: t.id, status: 'doing' })"),
+    "「开始」按钮应只推进状态，由服务端记开始时间");
+  assert.ok(html.includes("status: 'done', effect:"), "完成应随状态提交结果，由服务端记结束时间");
 });
 
 test("详情面板内联添加进展（不再依赖弹窗）", () => {
