@@ -4,7 +4,8 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractFunction, extractStatement, lineOf } = require('./_page-source.cjs');
 function extract(startMark, endMark) {
   const start = source.indexOf(startMark);
   const end = source.indexOf(endMark, start);
@@ -70,9 +71,55 @@ function makePreviewContext() {
   const presenceStart = source.indexOf('function queueStagePresence');
   const presenceEnd = source.indexOf('function publishQueue', presenceStart);
   assert.ok(presenceStart >= 0 && presenceEnd > presenceStart, '缺少运行队列安全快照函数');
-  vm.runInContext(source.slice(presenceStart, presenceEnd), context);
-  vm.runInContext(extract('function localQueueItems', '/* ---------- 服务端权威运行队列实时同步'), context);
-  vm.runInContext(extract('function remoteRunsOf', '/* ---------- 运行引擎'), context);
+  // 页面脚本拆分后状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，原区间切片会丢掉
+  // 夹在函数之间的 const QUEUE_FINISHED_TTL_MS / let queueFinished（queueFinishedPrune 一调用即
+  // ReferenceError）。改为按名逐条取出原区间（原文 6238–6318 行）覆盖的同一批声明；断言与桩未改动。
+  vm.runInContext([
+    extractFunction('queueStagePresence'),
+    extractFunction('queueNodePresence'),
+    extractFunction('queuePresenceEntry'),
+    extractFunction('runningPresenceEntry'),
+    extractFunction('queuedPresenceEntry'),
+    extractStatement('const QUEUE_FINISHED_TTL_MS='),
+    extractStatement('let queueFinished='),
+    // 刷新后从 sessionStorage 恢复登记：这是一条非声明的顶层 try 语句且不带结尾分号，
+    // extractStatement 的「行末配平」判据要求跨行才收口，会越过它多吞下一条声明，故用 lineOf 取整行。
+    lineOf('try{ const raw=sessionStorage.getItem('),
+    extractFunction('queueFinishedPrune'),
+    extractFunction('queueFinishedSave'),
+    extractFunction('queueFinishedNote'),
+    extractFunction('queueFinishedIds'),
+    extractFunction('queuePublishBody'),
+  ].join('\n'), context);
+  // 原「function localQueueItems → /* ---------- 服务端权威运行队列实时同步」区间（原文 5974–6211 行）：
+  // 拆分后区间尾部多带别节的 const pendingLeaseStarts=[] / NODE_LEASE_* 等状态声明，
+  // 会遮蔽本文件 ctx.pendingLeaseStarts 桩（focusQueueItem 因此找不到租约申请中的条目）。
+  vm.runInContext([
+    extractFunction('localQueueItems'),
+    extractFunction('isPendingQueueItem'),
+    extractFunction('queuePreviewRc'),
+    extractFunction('serverSubmissionPreviewRc'),
+    extractFunction('clearServerSubmissionPreview'),
+    extractFunction('focusQueueItem'),
+    extractFunction('remoteQueueDetailAvailable'),
+    extractFunction('remoteQueueDetailHint'),
+    extractFunction('remoteFinishedOf'),
+    extractFunction('remoteFinishedPreviewRc'),
+    extractFunction('remoteQueuePreviewRc'),
+    extractFunction('remoteQueueItem'),
+    extractFunction('focusRemoteQueueItem'),
+    extractStatement('const SERVER_RUN_FOCUS_MS='),
+    extractStatement('let pendingServerRunFocus='),
+    extractFunction('focusServerRunById'),
+    extractFunction('followPendingServerRun'),
+    extractFunction('refreshRemoteQueuePreviewRc'),
+    extractFunction('applyRemoteQueuePreviewRefresh'),
+    extractFunction('orphanQueueItem'),
+    extractFunction('orphanPreviewRc'),
+    extractFunction('focusOrphanQueueItem'),
+    extractFunction('applyOrphanPreviewRefresh'),
+  ].join('\n'), context);
+  vm.runInContext(extractFunction('remoteRunsOf'), context);   // 原文 7338 行（原区间尾部会多带别节声明）
   return { context, calls };
 }
 
@@ -330,7 +377,15 @@ test('pullRemoteQueue：每次轮询把服务端权威队列与旧浏览器在�
     planActiveSig: () => '', _planActiveSig: '', renderPlanList: () => {},
   };
   vm.createContext(context);
-  vm.runInContext(extract('/* 拉取服务端权威队列及旧标签页', "$('queueRefresh')"), context);
+  // 原「注释行 → $('queueRefresh')」区间（原文 6493–6600 行）：拆分后三个函数被排到锚点注释之前，
+  // 切片只剩两条 let，改为按名逐条取出原区间的同一批声明。
+  vm.runInContext([
+    extractStatement('let _queuePullSig='),
+    extractFunction('queuePollSig'),
+    extractFunction('noteServerFinished'),
+    extractStatement('let _queuePullPromise='),
+    extractFunction('pullRemoteQueue'),
+  ].join('\n'), context);
   await context.pullRemoteQueue();
   assert.deepEqual(Array.from(context.remoteQueueClients, client => client.id), ['server', 'legacy-other']);
   assert.equal(previews, 1);
@@ -356,7 +411,14 @@ test('pullRemoteQueueLog：仅按当前服务端运行和阶段拉取日志，�
     },
   };
   vm.createContext(context);
-  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+  // 原「const LIVE_LOG_TAIL_LINES → /* 拉取服务端权威队列及旧标签页」区间（原文 6421–6492 行）：
+  // 拆分后终点注释跟着状态语句进了 boot 分片，切片丢掉 async function pullRemoteQueueLog，改为按名取出。
+  vm.runInContext([
+    extractStatement('const LIVE_LOG_TAIL_LINES='),
+    extractStatement('const LIVE_LOG_TAIL_LIMIT='),
+    extractStatement('let _remoteLogPullSeq='),
+    extractFunction('pullRemoteQueueLog'),
+  ].join('\n'), context);
 
   const pending = context.pullRemoteQueueLog();
   assert.equal(requests[0], '/api/worktable/pipeline/queue?runId=run%201&stageId=build%2Fone&tailLines=20');
@@ -405,7 +467,14 @@ test('pullRemoteQueueLog：服务端回 append 时拼接后缀，不重传整段
     },
   };
   vm.createContext(context);
-  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+  // 原「const LIVE_LOG_TAIL_LINES → /* 拉取服务端权威队列及旧标签页」区间（原文 6421–6492 行）：
+  // 拆分后终点注释跟着状态语句进了 boot 分片，切片丢掉 async function pullRemoteQueueLog，改为按名取出。
+  vm.runInContext([
+    extractStatement('const LIVE_LOG_TAIL_LINES='),
+    extractStatement('const LIVE_LOG_TAIL_LIMIT='),
+    extractStatement('let _remoteLogPullSeq='),
+    extractFunction('pullRemoteQueueLog'),
+  ].join('\n'), context);
 
   await context.pullRemoteQueueLog();
   assert.match(requests[0], /[?&]sinceEnd=6(?:&|$)/, '已持有日志流末尾偏移时应传 sinceEnd');
@@ -438,7 +507,14 @@ test('pullRemoteQueueLog：缓存只保留末尾 20 行，与历史回放尾窗�
     fetch: async () => ({ ok: true, json: async () => ({ text: many + '\n', baseLen: 0, endLen: many.length + 1, truncated: false, revision: 1 }) }),
   };
   vm.createContext(context);
-  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+  // 原「const LIVE_LOG_TAIL_LINES → /* 拉取服务端权威队列及旧标签页」区间（原文 6421–6492 行）：
+  // 拆分后终点注释跟着状态语句进了 boot 分片，切片丢掉 async function pullRemoteQueueLog，改为按名取出。
+  vm.runInContext([
+    extractStatement('const LIVE_LOG_TAIL_LINES='),
+    extractStatement('const LIVE_LOG_TAIL_LIMIT='),
+    extractStatement('let _remoteLogPullSeq='),
+    extractFunction('pullRemoteQueueLog'),
+  ].join('\n'), context);
   await context.pullRemoteQueueLog();
   const lines = context.viewRc.remoteLogs['build/one'].text.split('\n').filter(Boolean);
   assert.equal(lines.length, 20, '只留最后 20 行');
@@ -491,7 +567,7 @@ test('runPreviewReadOnly：本页排队预览和他端预览都禁止编辑或�
   assert.ok(start >= 0 && end > start, '缺少运行预览只读判定');
   const context = {};
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  vm.runInContext(extractFunction('runPreviewReadOnly'), context);   // 与 source.slice(start,end) 逐字等价，不再依赖「首个行首 }」的位置
   assert.equal(context.runPreviewReadOnly({ queuedPreview: true }), true);
   assert.equal(context.runPreviewReadOnly({ remotePreview: true }), true);
   assert.equal(context.runPreviewReadOnly({}), false);
@@ -511,7 +587,7 @@ test('detailLogLinesFor：服务端预览显示已拉取的最新日志，他端
     buildLog: (...args) => { calls.push(args); return ['本页日志']; },
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  vm.runInContext(extractFunction('detailLogLinesFor'), context);   // 与 source.slice(start,end) 逐字等价，不再依赖「首个行首 }」的位置
   const stage = { id: 's1', name: '构建' };
   const node = { status: 'running' };
   assert.deepEqual(Array.from(context.detailLogLinesFor(stage, { remotePreview: true }, node)), [
@@ -551,7 +627,25 @@ function loadPresenceSnapshotContext() {
     expandRunStages: (stages, presets) => stages.concat((presets || []).map(key => ({ id: '__' + key, name: key, preset: true, pkey: key }))),
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  // 原 queueStagePresence → publishQueue 区间（原文 6238–6318 行）：同 makePreviewContext，
+  // 拆分后丢掉夹在中间的 const QUEUE_FINISHED_TTL_MS / let queueFinished，改为按名逐条取出。
+  vm.runInContext([
+    extractFunction('queueStagePresence'),
+    extractFunction('queueNodePresence'),
+    extractFunction('queuePresenceEntry'),
+    extractFunction('runningPresenceEntry'),
+    extractFunction('queuedPresenceEntry'),
+    extractStatement('const QUEUE_FINISHED_TTL_MS='),
+    extractStatement('let queueFinished='),
+    // 刷新后从 sessionStorage 恢复登记：这是一条非声明的顶层 try 语句且不带结尾分号，
+    // extractStatement 的「行末配平」判据要求跨行才收口，会越过它多吞下一条声明，故用 lineOf 取整行。
+    lineOf('try{ const raw=sessionStorage.getItem('),
+    extractFunction('queueFinishedPrune'),
+    extractFunction('queueFinishedSave'),
+    extractFunction('queueFinishedNote'),
+    extractFunction('queueFinishedIds'),
+    extractFunction('queuePublishBody'),
+  ].join('\n'), context);
   return context;
 }
 
@@ -636,7 +730,27 @@ test('publishQueue：节点租约申请期间继续把待启动项作为可查�
   };
   vm.createContext(context);
   vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
-  vm.runInContext(extract('function queueStagePresence', '/* renderQueue 渲染很频繁'), context);
+  // 原「function queueStagePresence → /* renderQueue 渲染很频繁」区间（原文 6238–6328 行）：
+  // 拆分后丢掉夹在中间的 const QUEUE_FINISHED_TTL_MS / let queueFinished 两条状态，
+  // queuePublishBody → queueFinishedIds → queueFinishedPrune 一调用即 ReferenceError。改为按名取出。
+  vm.runInContext([
+    extractFunction('queueStagePresence'),
+    extractFunction('queueNodePresence'),
+    extractFunction('queuePresenceEntry'),
+    extractFunction('runningPresenceEntry'),
+    extractFunction('queuedPresenceEntry'),
+    extractStatement('const QUEUE_FINISHED_TTL_MS='),
+    extractStatement('let queueFinished='),
+    // 刷新后从 sessionStorage 恢复登记：这是一条非声明的顶层 try 语句且不带结尾分号，
+    // extractStatement 的「行末配平」判据要求跨行才收口，会越过它多吞下一条声明，故用 lineOf 取整行。
+    lineOf('try{ const raw=sessionStorage.getItem('),
+    extractFunction('queueFinishedPrune'),
+    extractFunction('queueFinishedSave'),
+    extractFunction('queueFinishedNote'),
+    extractFunction('queueFinishedIds'),
+    extractFunction('queuePublishBody'),
+    extractFunction('publishQueue'),
+  ].join('\n'), context);
   context.publishQueue(true);
   const body = JSON.parse(calls[0].options.body);
   assert.equal(body.queue.length, 1);
@@ -681,7 +795,12 @@ function makeQueueContext() {
   vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueDetailAvailable', 'function remoteQueuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueViewAttrs', 'function renderQueue(){'), context);
-  vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
+  // 原「function renderQueue(){ → /* ---------- 运行引擎」区间（原文 7095–7339 行）只含
+  // renderQueue 与 remoteRunsOf；拆分后区间尾部会多带别节的 const CLOSE_FAIL_TEXT 等状态声明。
+  vm.runInContext([
+    extractFunction('renderQueue'),
+    extractFunction('remoteRunsOf'),
+  ].join('\n'), context);
   return { context, list, countCell, els, calls };
 }
 
@@ -910,7 +1029,10 @@ test('applyPresenceCancelRequests：只认领本页条目，排队取消 / 在�
     renderQueue: () => { calls.render += 1; },
   };
   vm.createContext(context);
-  vm.runInContext(extract('function applyPresenceCancelRequests', '/* 服务端在跑阶段的日志尾窗'), context);
+  // 原「function applyPresenceCancelRequests → /* 服务端在跑阶段的日志尾窗」区间（原文 6405–6418 行）
+  // 只含 applyPresenceCancelRequests 一个函数；拆分后终点注释跟着状态语句进了 boot 分片，
+  // 区间吞进整节的 const QCLIENT_ID=(function(){…})() 等声明并遮蔽本文件的 QCLIENT_ID 桩。
+  vm.runInContext(extractFunction('applyPresenceCancelRequests'), context);
 
   context.applyPresenceCancelRequests([
     { clientId: 'other', itemId: 'q-mine' },          // 不是本页：忽略
@@ -1198,7 +1320,23 @@ function makeScheduleContext(stages = [
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extract('function runPipeline(opts){', 'function cancelQueue'), context);
+  // 原「function runPipeline(opts){ → function cancelQueue」区间（原文 5852–5967 行）：拆分后
+  // 别节的 const QUEUE_CAP / const MAX_ACTIVE_RUNS / let queue=[] 被夹进区间并遮蔽本文件的桩
+  // （runPipeline 因此看不到测试塞满的 queue），同时丢掉 NODE_LEASE_* 与 const pendingLeaseStarts=[]。
+  // 改为按名逐条取出原区间覆盖的同一批声明。
+  vm.runInContext([
+    extractFunction('runPipeline'),
+    extractFunction('runIps'),
+    extractFunction('machineConflict'),
+    extractFunction('conflictsActive'),
+    extractStatement('const NODE_LEASE_PATH='),
+    extractStatement('const NODE_LEASE_RENEW_MS='),
+    extractStatement('const NODE_WAIT_RETRY_MS='),
+    extractStatement('const pendingLeaseStarts='),
+    extractFunction('nodeLeaseRequest'),
+    extractFunction('releaseNodeLease'),
+    extractFunction('drainQueue'),
+  ].join('\n'), context);
   return { context, calls };
 }
 

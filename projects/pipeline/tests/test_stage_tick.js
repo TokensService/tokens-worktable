@@ -8,7 +8,8 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractStatement } = require('./_page-source.cjs');
 
 function extractFunction(name) {
   const match = new RegExp('(?:async\\s+)?function\\s+' + name + '\\s*\\(').exec(source);
@@ -22,12 +23,20 @@ function extractFunction(name) {
   throw new Error('未闭合的函数 ' + name);
 }
 
-/* 共享 tick 块整段切片（store/ensure/run/paint + visibilitychange 监听注册） */
+/* 共享 tick 块（store/ensure/run/paint + visibilitychange 监听注册）。
+   页面脚本拆分后，visibilitychange 监听注册这类顶层语句进了 boot 分片，与同分节的函数声明
+   不再文本相邻：原「function stageTickStore( → function createParallelStageContext(」的切片
+   只会切到 4 个函数、漏掉监听注册（listeners.visibilitychange 拿不到）。
+   改为按名逐条取出原切片覆盖的同一批声明；断言与桩一律未改动。 */
 function tickBlock() {
-  const start = source.indexOf('function stageTickStore(');
-  const end = source.indexOf('function createParallelStageContext(', start);
-  assert.ok(start >= 0 && end > start, '共享 tick 块切片标记丢失');
-  return source.slice(start, end);
+  assert.ok(source.indexOf("document.addEventListener('visibilitychange'") >= 0, '共享 tick 块切片标记丢失');
+  return [
+    extractFunction('stageTickStore'),
+    extractFunction('stageTickEnsure'),
+    extractFunction('stageTickRun'),
+    extractFunction('stageTickPaint'),
+    extractStatement("if(typeof document!=='undefined'&&typeof document.addEventListener==='function'){"),
+  ].join('\n');
 }
 
 function makeCtx() {

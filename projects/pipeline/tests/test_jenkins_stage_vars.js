@@ -1,8 +1,7 @@
 const fs = require("fs");
 const vm = require("vm");
 
-const pipelineHtml = process.env.PIPELINE_HTML || __dirname + "/../pipeline.html";
-const source = fs.readFileSync(pipelineHtml, "utf8");
+const source = require("./_page-source.cjs").loadPageSource();
 
 // 切片 0：HTTP 阶段统一取 URL（兼容存量 jenkins.job）
 const s0 = source.indexOf("function stageUrlOf(s)");

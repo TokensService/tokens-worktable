@@ -1,7 +1,7 @@
 /* 代码仓「部署策略」脚本来源：配置归一化、来源解析、缓存 key、脚本输出解析与执行拉取。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function extractFunction(name){
   const marker=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`);

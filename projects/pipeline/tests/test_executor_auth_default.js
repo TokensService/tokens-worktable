@@ -3,7 +3,7 @@
    「未获取到登录用户」拦截）。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function loadSection(overrides={}){
   const start=source.indexOf('/* ---------- 执行人固定取 dsh 登录用户（只读） ---------- */');

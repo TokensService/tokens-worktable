@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
 
 /* node:vm 跨 realm 数组不能直接 assert.deepEqual（结构相同但引用不等）：统一转宿主数组再断言 */
 const hostArr = (v) => Array.from(v || []);

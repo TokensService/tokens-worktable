@@ -1,7 +1,7 @@
 // 流水线任务署名审计：创建者 + 最后修改人（来源 dsh-auth-gate /auth/status 登录用户）的记录、迁移与列表展示（列表行按拥有者口径展示）。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function extractFunction(name){
   const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);

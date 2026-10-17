@@ -3,7 +3,7 @@
    导入归一化与整体恢复语义（新键 config 优先、旧版文件 local 块兜底）、坏文件校验 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function extractFunction(name){
   const marker=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`);
