@@ -11,7 +11,7 @@
            窄窗口自动上下堆叠；
      任务：支持多负责人（assignees）、开始 / 结束时间（不提供手工填写：点「开始」按钮记开始时间、
            走「完成」录入结果时记结束时间，由服务端状态推进落库，详情内只读展示）；
-     筛选：状态 tab × 用户下拉 × 标签下拉 三者叠加（标签也可点任务卡上的 chip 快捷筛选）；
+     筛选：状态 tab × 多用户筛选（可搜索、多选叠加） × 标签下拉（标签也可点任务卡上的 chip 快捷筛选）；
      进展：详情面板内直接添加 / 行内编辑 / 删除；
      总结：选用户 + 时间段（周 / 月 / 年 / 自定义区间）AI 生成个人工作总结 -->
 <html lang="zh-CN">
@@ -138,6 +138,20 @@
   .tm-assigneeBox { display:flex; flex-wrap:wrap; gap:5px 10px; padding:6px 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-fill-l1); max-height:120px; overflow:auto; }
   .tm-assigneeBox label { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; color:var(--dsw-alias-label-primary); margin:0; cursor:pointer; white-space:nowrap; }
   .tm-assigneeBox input:disabled, .tm-detailForm input:disabled, .tm-detailForm select:disabled, .tm-detailForm textarea:disabled { opacity:.55; cursor:not-allowed; }
+  /* 负责人/用户筛选的搜索输入 + 候选滚动区（勾选多选，与负责人复选框同一皮肤） */
+  .tm-pickSearch { width:100%; font-size:12px; margin-bottom:4px; }
+  .tm-pickBox { display:flex; flex-wrap:wrap; gap:5px 10px; padding:4px 6px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-fill-l1); max-height:88px; overflow:auto; }
+  .tm-pickBox label { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; color:var(--dsw-alias-label-primary); margin:0; cursor:pointer; white-space:nowrap; }
+  .tm-pickBox .tm-pickNone { font-size:11px; color:var(--dsw-alias-label-tertiary); padding:2px 4px; }
+  /* 筛选栏里的多用户选择器（可换行：输入框一行，chips 常驻其下） */
+  .tm-userPick { display:flex; flex-wrap:wrap; align-items:center; gap:6px; position:relative; }
+  .tm-userPick .dshell-input { width:150px; padding:5px 8px; }
+  .tm-userPickChips { display:flex; flex-wrap:wrap; gap:4px; align-items:center; max-width:340px; }
+  .tm-userPickChips .tm-userChip { padding:1px 8px; font-size:11px; cursor:pointer; }
+  .tm-userPickChips .tm-userChip:hover { border-color:var(--dsw-alias-state-accent-primary); color:var(--dsw-alias-state-accent-primary); }
+  .tm-userDrop { position:absolute; top:calc(100% + 4px); left:0; z-index:60; width:250px; background:var(--dsw-alias-bg-base,#0b0e14); border:1px solid var(--dsw-alias-border-l1); border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.35); padding:6px; display:none; }
+  .tm-userDrop.on { display:block; }
+  .tm-userDrop .tm-pickBox { max-height:150px; margin-top:0; }
   .tm-detailSaveBar { display:flex; gap:8px; justify-content:flex-end; align-items:center; margin:10px 0 4px; }
   .tm-detailSaveBar .tm-aiStatus { margin-right:auto; }
   .tm-addProg { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
@@ -187,10 +201,14 @@
       <button class="dshell-tab" data-filter="doing">进行中</button>
       <button class="dshell-tab" data-filter="done">已完成</button>
     </div>
-    <select id="userSel" class="dshell-input" title="按用户筛选任务列表（与状态 tab / 标签叠加）">
-      <option value="">用户：全部</option>
-    </select>
-    <select id="tagSel" class="dshell-input" title="按标签筛选任务列表（与状态 tab / 用户叠加）">
+    <div class="tm-userPick" id="userPick" title="按用户筛选任务列表（可多选，支持搜索；与状态 tab / 标签叠加）">
+      <input id="userPickSearch" class="dshell-input" type="text" placeholder="🔍 用户筛选…" autocomplete="off" />
+      <div class="tm-userPickChips" id="userPickChips"></div>
+      <div class="tm-userDrop" id="userDrop">
+        <div class="tm-pickBox" id="userOptions"></div>
+      </div>
+    </div>
+    <select id="tagSel" class="dshell-input" title="按标签筛选任务列表（与状态 tab / 多用户叠加）">
       <option value="">标签：全部</option>
     </select>
     <select id="sortSel" class="dshell-input" title="排序方式">
@@ -236,6 +254,7 @@
             <div class="tm-field"><label>截止时间</label><input id="dDeadline" type="datetime-local" class="dshell-input" /></div>
           </div>
           <div class="tm-field"><label>负责人（可多选）</label>
+            <input id="dAssigneeSearch" class="dshell-input tm-pickSearch" type="text" placeholder="搜索负责人…" autocomplete="off" />
             <div class="tm-assigneeBox" id="dAssignees"></div>
           </div>
           <div class="tm-field">
@@ -274,6 +293,7 @@
       <div class="tm-field"><label>任务标题 *</label><input id="fTitle" class="dshell-input" placeholder="输入任务标题" /></div>
       <div class="tm-field"><label>任务描述</label><textarea id="fDesc" class="dshell-textarea" rows="3" placeholder="任务详情、要求…"></textarea></div>
       <div class="tm-field"><label>负责人（可多选）*</label>
+        <input id="fAssigneeSearch" class="dshell-input tm-pickSearch" type="text" placeholder="搜索负责人…" autocomplete="off" />
         <div class="tm-assigneeBox" id="fAssignees"></div>
         <input id="fAssigneeFree" class="dshell-input" placeholder="负责人（自由文本）" style="display:none" />
       </div>
@@ -432,8 +452,8 @@
   var users = [];      // dsh-auth-gate 用户列表 [{username, admin, disabled}]
   var tasks = [];
   var filter = 'all', sortBy = 'priority', editingId = null;
-  var userFilter = '';      // 任务列表的用户筛选（'' = 全部用户；与状态 tab / 标签筛选叠加）
-  var tagFilter = '';       // 任务列表的标签筛选（'' = 全部标签；与状态 tab / 用户筛选叠加）
+  var userFilters = [];   // 任务列表的多用户筛选（[] = 全部用户；任一命中；与状态 tab / 标签筛选叠加）
+  var tagFilter = '';       // 任务列表的标签筛选（'' = 全部标签；与状态 tab / 多用户筛选叠加）
   var editTags = [];   // 新建弹窗 / 详情面板里的标签缓冲
   var detailTagsBuf = []; // 详情面板标签缓冲（保存时一并 PATCH）
   var doneTask = null, progTask = null, importParsed = [];
@@ -600,8 +620,8 @@
   /* ---------- 排序 / 筛选 ---------- */
   function visibleTasks() {
     var list = tasks.filter(function (t) {
-      if (userFilter && !taskHasAssignee(t, userFilter)) return false;   // 用户筛选与状态 tab / 标签叠加（任一负责人命中）
-      if (tagFilter && taskTags(t).indexOf(tagFilter) < 0) return false; // 标签筛选与状态 tab / 用户叠加
+      if (userFilters.length && !userFilters.some(function (n) { return taskHasAssignee(t, n); })) return false;  // 多用户筛选（任一命中）与状态 tab / 标签叠加
+      if (tagFilter && taskTags(t).indexOf(tagFilter) < 0) return false; // 标签筛选与状态 tab / 多用户叠加
       if (filter === 'mine') return me.username && taskHasAssignee(t, me.username);
       if (filter === 'all') return true;
       return t.status === filter;
@@ -637,8 +657,8 @@
     var list = visibleTasks();
     if (!list.length) {
       var emptyMsg = '暂无任务';
-      if (userFilter && tagFilter) emptyMsg = '「' + userLabel(userFilter) + '」+ 标签「' + tagFilter + '」在当前筛选下暂无任务';
-      else if (userFilter) emptyMsg = '「' + userLabel(userFilter) + '」在当前筛选下暂无任务';
+      if (userFilters.length && tagFilter) emptyMsg = '已选 ' + userFilters.length + ' 位用户 + 标签「' + tagFilter + '」在当前筛选下暂无任务';
+      else if (userFilters.length) emptyMsg = '已选 ' + userFilters.length + ' 位用户，当前筛选下暂无任务';
       else if (tagFilter) emptyMsg = '标签「' + tagFilter + '」在当前筛选下暂无任务';
       else if (filter === 'all' && isAdmin()) emptyMsg = '暂无任务，点击右上角「＋ 新建任务」创建第一条团队任务';
       box.innerHTML = '<div class="dshell-card tm-empty">' + esc(emptyMsg) + '</div>';
@@ -771,8 +791,9 @@
     fTagsInput.focus();
   });
 
-  /** 渲染负责人多选框到容器（创建弹窗 / 详情面板共用）；selected 为已选用户名数组。 */
-  function renderAssigneeChecks(box, selected, disabled) {
+  /** 渲染负责人多选框到容器（创建弹窗 / 详情面板共用）；selected 为已选用户名数组；
+   *  query 为搜索词（用户名子串过滤，空 = 全部；已选用户始终保留在列表中）。 */
+  function renderAssigneeChecks(box, selected, disabled, query) {
     if (!box) return;
     var list = enabledUsers();
     if (!list.length) return;   // 共享模式由调用方切自由文本
@@ -782,11 +803,16 @@
     (selected || []).forEach(function (n) {
       if (n && !list.some(function (u) { return u.username === n; })) list = list.concat([{ username: n }]);
     });
-    box.innerHTML = list.map(function (u) {
+    var q = String(query || '').trim().toLowerCase();
+    var shown = list.filter(function (u) {
+      return !q || String(u.username).toLowerCase().indexOf(q) >= 0 || sel[u.username];
+    });
+    box.innerHTML = shown.map(function (u) {
       var id = (box.id || 'as') + '-' + String(u.username).replace(/[^\w-]/g, '_');
       return '<label for="' + esc(id) + '"><input type="checkbox" id="' + esc(id) + '" value="' + esc(u.username) + '"' +
         (sel[u.username] ? ' checked' : '') + (disabled ? ' disabled' : '') + ' />' + esc(userLabel(u.username)) + '</label>';
     }).join('');
+    if (!shown.length) box.innerHTML = '<span class="tm-pickNone">无匹配用户</span>';
   }
   function checkedAssignees(box) {
     if (!box) return [];
@@ -794,6 +820,17 @@
     box.querySelectorAll('input[type=checkbox]:checked').forEach(function (n) { if (n.value) out.push(n.value); });
     return out;
   }
+  /* 负责人搜索框：输入即按用户名子串过滤复选框候选（已选项始终保留），不改变选中集合 */
+  var fAssigneeSearchEl = document.getElementById('fAssigneeSearch');
+  if (fAssigneeSearchEl) fAssigneeSearchEl.addEventListener('input', function () {
+    if (!users.length) return;
+    renderAssigneeChecks(fAssigneesBox, checkedAssignees(fAssigneesBox), false, fAssigneeSearchEl.value);
+  });
+  var dAssigneeSearchEl = document.getElementById('dAssigneeSearch');
+  if (dAssigneeSearchEl) dAssigneeSearchEl.addEventListener('input', function () {
+    if (!users.length) return;
+    renderAssigneeChecks(document.getElementById('dAssignees'), checkedAssignees(document.getElementById('dAssignees')), !detailCanEditFields(detailTask), dAssigneeSearchEl.value);
+  });
 
   function openModal() {
     /* 仅新建：编辑在详情面板内联完成（取消卡片上的独立「编辑」按钮） */
@@ -801,12 +838,16 @@
     document.getElementById('modalTitle').textContent = '新建任务';
     document.getElementById('fTitle').value = '';
     document.getElementById('fDesc').value = '';
+    var fSearchEl = document.getElementById('fAssigneeSearch');
+    if (fSearchEl) fSearchEl.value = '';
     if (users.length) {
       fAssigneesBox.style.display = ''; fAssigneeFree.style.display = 'none';
+      if (fSearchEl) fSearchEl.style.display = '';
       var def = me.username && enabledUsers().some(function (u) { return u.username === me.username; }) ? [me.username] : [];
-      renderAssigneeChecks(fAssigneesBox, def, false);
+      renderAssigneeChecks(fAssigneesBox, def, false, '');
     } else {
       fAssigneesBox.style.display = 'none'; fAssigneeFree.style.display = '';
+      if (fSearchEl) fSearchEl.style.display = 'none';
       fAssigneeFree.value = me.username || '';
     }
     document.getElementById('fPrio').value = 'mid';
@@ -828,10 +869,12 @@
     var assignees = users.length ? checkedAssignees(fAssigneesBox) : (fAssigneeFree.value.trim() ? [fAssigneeFree.value.trim()] : []);
     if (!assignees.length) { showErr('请至少勾选一位负责人'); return; }
     var dl = document.getElementById('fDeadline').value;
-    /* 不提交 startAt / endAt：起止时间只由「开始」按钮与完成动作经服务端状态推进记录 */
+    /* 不提交 startAt / endAt：起止时间只由「开始」按钮与完成动作经服务端状态推进记录
+       同时携带 assignee（首人，兼容只认单值的历史服务端）与 assignees（数组，多负责人） */
     var data = {
       title: title,
       desc: document.getElementById('fDesc').value.trim(),
+      assignee: assignees[0],
       assignees: assignees,
       prio: document.getElementById('fPrio').value,
       deadline: dl ? new Date(dl).getTime() : null,
@@ -989,10 +1032,14 @@
     document.getElementById('dDeadline').value = t.deadline ? toLocal(t.deadline) : '';
     document.getElementById('dDeadline').disabled = !canFields;
     if (users.length) {
-      renderAssigneeChecks(document.getElementById('dAssignees'), taskAssignees(t), !canFields);
+      renderAssigneeChecks(document.getElementById('dAssignees'), taskAssignees(t), !canFields, '');
       document.getElementById('dAssignees').style.display = '';
+      var dSearchEl = document.getElementById('dAssigneeSearch');
+      if (dSearchEl) { dSearchEl.value = ''; dSearchEl.style.display = ''; }
     } else {
       document.getElementById('dAssignees').style.display = 'none';
+      var dSearchEl2 = document.getElementById('dAssigneeSearch');
+      if (dSearchEl2) dSearchEl2.style.display = 'none';
     }
     detailTagsBuf = taskTags(t).slice();
     renderDetailTagChips();
@@ -1060,6 +1107,7 @@
       status: document.getElementById('dStatus').value,
       prio: document.getElementById('dPrio').value,
       deadline: (function () { var v = document.getElementById('dDeadline').value; return v ? new Date(v).getTime() : null; })(),
+      assignee: assignees[0] || '',
       assignees: assignees,
       tags: detailTagsBuf.slice(),
       desc: document.getElementById('dDesc').value.trim(),
@@ -1407,8 +1455,8 @@
     sumUserEl.innerHTML = names.length
       ? names.map(function (n) { return '<option value="' + esc(n) + '">' + esc(userLabel(n)) + '</option>'; }).join('')
       : '<option value="">（暂无用户 / 任务）</option>';
-    /* 默认人选：当前列表的用户筛选 → 本人 → 第一个用户 */
-    var def = (userFilter && names.indexOf(userFilter) >= 0) ? userFilter
+    /* 默认人选：当前列表的多用户筛选首人 → 本人 → 第一个用户 */
+    var def = (userFilters.length && names.indexOf(userFilters[0]) >= 0) ? userFilters[0]
       : (me.username && names.indexOf(me.username) >= 0 ? me.username : (names[0] || ''));
     sumUserEl.value = def;
   }
@@ -1512,22 +1560,61 @@
   });
   document.getElementById('sortSel').addEventListener('change', function (e) { sortBy = e.target.value; render(); });
 
-  /* 用户筛选：选项 = 启用用户 ∪ 任务负责人；选项集合有变化才重建（15s 轮询不反复重绘，
-     避免打断展开中的下拉），当前选中用户从选项中消失时回落「全部用户」 */
-  var userSelEl = document.getElementById('userSel');
+  /* 多用户筛选 + 搜索：选项 = 启用用户 ∪ 任务负责人；搜索按用户名子串过滤；勾选多选（任一命中）。
+     选项集合有变化才重建候选（15s 轮询不反复重绘），已选用户从选项中消失时自动剔除。 */
+  var userPickSearchEl = document.getElementById('userPickSearch');
+  var userDropEl = document.getElementById('userDrop');
+  var userOptionsEl = document.getElementById('userOptions');
+  var userPickChipsEl = document.getElementById('userPickChips');
   var userSelSig = null;
+  function drawUserOptions() {
+    var names = knownAssignees();
+    var q = String(userPickSearchEl.value || '').trim().toLowerCase();
+    var shown = names.filter(function (n) { return !q || String(n).toLowerCase().indexOf(q) >= 0; });
+    var sel = {};
+    userFilters.forEach(function (n) { if (n) sel[n] = 1; });
+    userOptionsEl.innerHTML = shown.length ? shown.map(function (n) {
+      var id = 'uf-' + String(n).replace(/[^\w-]/g, '_');
+      return '<label for="' + esc(id) + '"><input type="checkbox" id="' + esc(id) + '" value="' + esc(n) + '"' +
+        (sel[n] ? ' checked' : '') + ' />' + esc(userLabel(n)) + '</label>';
+    }).join('') : '<span class="tm-pickNone">无匹配用户</span>';
+    userPickChipsEl.innerHTML = userFilters.length ? userFilters.map(function (n) {
+      return '<span class="tm-userChip" data-user-chip="' + esc(n) + '" title="点击移除该用户筛选">' + esc(userLabel(n)) + ' ×</span>';
+    }).join('') : '';
+    userPickSearchEl.title = userFilters.length
+      ? ('已选 ' + userFilters.length + ' 位用户：' + userFilters.join('、'))
+      : '按用户筛选任务列表（可多选，支持搜索；与状态 tab / 标签叠加）';
+  }
   function syncUserFilter() {
     var names = knownAssignees();
     var sig = names.join('\n');
-    if (sig === userSelSig) return;
-    userSelSig = sig;
-    userSelEl.innerHTML = '<option value="">用户：全部</option>' + names.map(function (n) {
-      return '<option value="' + esc(n) + '">' + esc(userLabel(n)) + '</option>';
-    }).join('');
-    if (userFilter && names.indexOf(userFilter) < 0) userFilter = '';
-    userSelEl.value = userFilter;
+    if (sig !== userSelSig) {
+      userSelSig = sig;
+      userFilters = userFilters.filter(function (n) { return names.indexOf(n) >= 0; });
+    }
+    drawUserOptions();
   }
-  userSelEl.addEventListener('change', function (e) { userFilter = e.target.value; render(); });
+  userPickSearchEl.addEventListener('focus', function () { userDropEl.classList.add('on'); });
+  userPickSearchEl.addEventListener('input', drawUserOptions);
+  userPickSearchEl.addEventListener('blur', function () { setTimeout(function () { userDropEl.classList.remove('on'); }, 150); });
+  userPickSearchEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') userDropEl.classList.remove('on'); });
+  userOptionsEl.addEventListener('change', function (e) {
+    var n = e.target && e.target.value;
+    if (!n) return;
+    var i = userFilters.indexOf(n);
+    if (e.target.checked) { if (i < 0) userFilters.push(n); }
+    else if (i >= 0) userFilters.splice(i, 1);
+    drawUserOptions();
+    render();
+  });
+  userPickChipsEl.addEventListener('click', function (e) {
+    var chip = e.target.getAttribute && e.target.getAttribute('data-user-chip') != null ? e.target : (e.target.closest ? e.target.closest('[data-user-chip]') : null);
+    var n = chip && chip.getAttribute('data-user-chip');
+    if (!n) return;
+    userFilters = userFilters.filter(function (x) { return x !== n; });
+    drawUserOptions();
+    render();
+  });
 
   /* 标签筛选：选项 = 全部任务标签；与用户筛选同款签名重建（15s 轮询不打断展开中的下拉） */
   var tagSelEl = document.getElementById('tagSel');
