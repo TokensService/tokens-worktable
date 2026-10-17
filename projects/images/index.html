@@ -52,7 +52,9 @@
   .mini { font-size:11px; padding:5px 12px; }
   .ir-userChip { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--dsw-alias-label-primary); padding:3px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:999px; background:var(--dsw-alias-fill-l1); }
   .ir-err { display:none; margin:2px 0 0; padding:7px 11px; border:1px solid rgba(248,81,73,.45); border-radius:8px; color:#f85149; font-size:12px; background:rgba(248,81,73,.08); }
-  .ir-err.on { display:block; }
+  .ir-err.on { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .ir-errAction { flex:none; padding:2px 10px; font-size:11.5px; }
+  .ir-needAuth { border-color:rgba(248,81,73,.7) !important; }
   .ir-repoName { font-size:12.5px; font-weight:600; color:var(--dsw-alias-label-primary); word-break:break-all; }
   .ir-tags { display:flex; gap:6px; flex-wrap:wrap; }
   .ir-tag { display:inline-flex; align-items:center; gap:5px; padding:1px 9px; border-radius:999px; font-size:11px; border:1px solid var(--dsw-alias-border-l1); color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-fill-l1); }
@@ -108,7 +110,7 @@
     </div>
   </div>
 
-  <div id="errBar" class="ir-err"></div>
+  <div id="errBar" class="ir-err"><span id="errText"></span><button id="errAction" class="dshell-btn dshell-btnGhost ir-errAction" type="button" style="display:none">⚙ 填写仓库账号密码</button></div>
 
   <!-- 标签页：镜像仓库 / 远程缓存 / 设置 -->
   <div class="dshell-tabs" id="mainTabs">
@@ -219,6 +221,7 @@
         <button id="setReset" class="dshell-btn dshell-btnDanger">恢复默认</button>
       </div>
       <p class="ir-hint" id="setHint">设置仅保存在本机 localStorage（<code>ir_cfg_v1</code>），不上传服务端；密码仅用于本页经服务端代连时构造 Authorization 头。</p>
+      <p class="ir-hint"><b>仓库已开启 htpasswd 认证</b>（realm <code>lhf private registry</code>，账号 <code>admin</code>）：本页不内置任何密码，<b>首次使用必须在上面填入仓库密码并「保存设置」</b>，否则所有 <code>/v2/</code> 请求都会 401、列表恒为空。密码见仓库部署机上的 <code>/mnt/images/docker-registry/README.md</code>（与 Web UI 8080 登录口令同一套；换口令用 <code>htpasswd -Bbn</code> 重写 <code>auth/htpasswd</code> 后 <code>docker compose restart registry</code>）。</p>
       <p class="ir-hint">「远程缓存」的 <code>docker login</code> 由本机 <b>docker daemon</b> 执行（CLI → daemon POST /auth），失败常见三类：<b>① TLS handshake timeout</b> —— 仓库地址填了局域网 IP（如 192.168.1.101:5000）而 daemon 只信任回环：需在 <code>/etc/docker/daemon.json</code> 加 <code>"insecure-registries": ["192.168.1.101:5000"]</code> 并重启 docker（本机用 <code>127.0.0.1:5000</code> 免配置）；<b>② 401 Unauthorized</b> —— 账号/密码与仓库 htpasswd 不一致（仓库账号为 <code>admin</code>）；<b>③ connection refused</b> —— 地址或端口填错 / 仓库未运行。</p>
       <div class="dshell-divider"></div>
       <div class="dshell-kv">
@@ -243,13 +246,23 @@
 /* ==================== 工具 ==================== */
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-var errBar = $('errBar'), errTimer = null;
-function showErr(msg) {
-  errBar.textContent = msg || '';
+var errBar = $('errBar'), errText = $('errText'), errAction = $('errAction'), errTimer = null;
+/* action='registry-auth' 时挂出「去设置填密码」按钮，并且不自动消失——
+   认证类错误需要用户动手改设置，7 秒后自动隐藏等于把唯一的排障线索丢掉。 */
+function showErr(msg, action) {
+  var needAuth = !!msg && action === 'registry-auth';
+  errText.textContent = msg || '';
   errBar.classList.toggle('on', !!msg);
-  if (errTimer) clearTimeout(errTimer);
-  if (msg) errTimer = setTimeout(function () { errBar.classList.remove('on'); }, 7000);
+  errAction.style.display = needAuth ? '' : 'none';
+  if (errTimer) { clearTimeout(errTimer); errTimer = null; }
+  if (msg && !needAuth) errTimer = setTimeout(function () { errBar.classList.remove('on'); }, 7000);
 }
+errAction.addEventListener('click', function () {
+  switchTab('settings');
+  var p = $('setPass');
+  p.classList.add('ir-needAuth');
+  if (!p.value) p.focus(); else p.select();
+});
 function fmtTime(ts) {
   if (!ts) return '—';
   var d = new Date(ts);
@@ -302,9 +315,12 @@ function regBase() {
 }
 function uiUrl() { return 'http://' + cfg.uiHost; }
 function authHeader() {
-  if (!cfg.user && !cfg.pass) return {};
+  /* 密码为空时不发 Authorization：半截凭证（"admin:"）会被 htpasswd 仓库判成
+     invalid authorization credential，且把支持匿名拉取的仓库也一并挡成 401；
+     不发则退化为匿名访问，401 时也能准确归因成「没填密码」而非「密码错」。 */
+  if (!cfg.pass) return {};
   var b64 = '';
-  try { b64 = btoa(unescape(encodeURIComponent(cfg.user + ':' + cfg.pass))); } catch (e) { b64 = ''; }
+  try { b64 = btoa(unescape(encodeURIComponent((cfg.user || '') + ':' + cfg.pass))); } catch (e) { b64 = ''; }
   return b64 ? { Authorization: 'Basic ' + b64 } : {};
 }
 function renderSettings() {
@@ -315,9 +331,51 @@ function renderSettings() {
   $('setTimeoutSec').value = Math.round((cfg.timeoutMs || 60000) / 1000);
   $('kvUi').textContent = uiUrl();
   $('kvApi').innerHTML = '<a href="' + esc(regBase()) + '/v2/" target="_blank" rel="noopener" style="color:var(--dsw-alias-state-accent-primary)">' + esc(regBase()) + '/v2/</a>';
+  renderAuthState();
+}
+/* 「登录状态」在未测试前先如实反映凭证配置情况，别等撞上 401 才知道密码没填 */
+function renderAuthState() {
+  var el = $('kvAuth');
+  var pass = $('setPass');
+  if (pass) pass.classList.toggle('ir-needAuth', !cfg.pass);
+  if (!el) return;
+  if (cfg.pass) { el.textContent = '已配置凭证（账号 ' + (cfg.user || '空') + '）· 点「测试连接」验证'; el.classList.remove('ir-needAuth'); }
+  else { el.textContent = '未填密码 · 仓库若开启认证会 401'; el.classList.add('ir-needAuth'); }
 }
 
 /* ==================== Registry API（经 DSH 服务端 proxy 代连） ==================== */
+/* 上游 401 归因：proxy 自身成功（HTTP 200）但上游仓库回 401 时，说明是**仓库**在要认证，
+   与 DSH 会话无关。此前只抛一句「HTTP 401」，用户既不知道要填密码、也不知道去哪儿填，
+   整页看起来像坏了（仓库开启 htpasswd 后页面直接不可用）。这里给出 realm + 凭证现状 + 下一步。 */
+function registryAuthError(d) {
+  var h = (d && d.headers) || {};
+  var wa = h['www-authenticate'] || h['WWW-Authenticate'] || h['Www-Authenticate'] || '';
+  var realm = /realm="?([^",]+)"?/i.exec(wa);
+  var code = '';
+  try {
+    var b = JSON.parse((d && d.body) || '{}');
+    code = (b.errors && b.errors[0] && b.errors[0].code) || '';
+  } catch (x) {}
+  var why = cfg.pass
+    ? '账号 ' + (cfg.user || '（空）') + ' 的密码不被仓库接受'
+    : '当前未填写仓库密码（账号 ' + (cfg.user || '（空）') + '）';
+  var e = new Error('镜像仓库要求认证（HTTP 401'
+    + (code ? ' ' + code : '')
+    + (realm && realm[1] ? '，realm "' + realm[1] + '"' : '')
+    + '）：' + why + '——请在「设置」页填写仓库账号密码后重试');
+  e.status = 401;
+  e.registryAuth = true;
+  return e;
+}
+/* 上游非 200 统一造错：401 走认证归因，其余带上仓库返回的 errors[0].message */
+function registryError(d) {
+  if (d && d.status === 401) return registryAuthError(d);
+  var msg = '';
+  try { var e = JSON.parse((d && d.body) || '{}'); msg = (e.errors && e.errors[0] && e.errors[0].message) || ''; } catch (x) {}
+  var err = new Error('HTTP ' + (d && d.status) + (msg ? '：' + msg : ''));
+  err.status = d && d.status;
+  return err;
+}
 function regFetch(path, method, headers, body) {
   var opts = {
     method: 'POST',
@@ -334,8 +392,10 @@ function regFetch(path, method, headers, body) {
     return r.json().catch(function () { return {}; }).then(function (d) {
       if (!r.ok) {
         if (r.status === 401) {
-          var e401 = new Error('会话未登录或已过期——请在工作台外层页面重新登录后刷新本窗口');
+          /* proxy 这一层就 401 = DSH 会话失效（auth-gate 拦下），不是仓库认证问题 */
+          var e401 = new Error('会话未登录或已过期（DSH 登录态失效，与镜像仓库凭证无关）——请在工作台外层页面重新登录后刷新本窗口');
           e401.status = 401;
+          e401.session = true;
           throw e401;
         }
         throw new Error((d && d.error) || ('代理请求失败（HTTP ' + r.status + '）'));
@@ -346,13 +406,7 @@ function regFetch(path, method, headers, body) {
 }
 function regGetJson(path, headers) {
   return regFetch(path, 'GET', headers).then(function (d) {
-    if (d.status !== 200) {
-      var msg = '';
-      try { var e = JSON.parse(d.body || '{}'); msg = (e.errors && e.errors[0] && e.errors[0].message) || ''; } catch (x) {}
-      var err = new Error('HTTP ' + d.status + (msg ? '：' + msg : ''));
-      err.status = d.status;
-      throw err;
-    }
+    if (d.status !== 200) throw registryError(d);
     try { return JSON.parse(d.body || 'null'); } catch (e) { throw new Error('响应不是合法 JSON'); }
   });
 }
@@ -362,7 +416,7 @@ function regCatalog(pageSize) {
   var follow = function () {
     if (!nextUrl) return Promise.resolve(out);
     return regFetch(nextUrl, 'GET').then(function (d) {
-      if (d.status !== 200) { var err = new Error('HTTP ' + d.status); err.status = d.status; throw err; }
+      if (d.status !== 200) throw registryError(d);
       var j = {};
       try { j = JSON.parse(d.body || '{}'); } catch (e) {}
       var repos = Array.isArray(j.repositories) ? j.repositories : [];
@@ -392,7 +446,7 @@ function loadRepos(reset) {
     if ($('autoTags').checked) prefetchTags();
     showErr('');
   }).catch(function (e) {
-    showErr('仓库列表加载失败：' + e.message);
+    showErr('仓库列表加载失败：' + e.message, e && e.registryAuth ? 'registry-auth' : null);
     renderRepoList();
   }).finally(function () {
     repoState.loading = false;
@@ -483,11 +537,11 @@ function loadTags(repo) {
 var MFS = 'application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json';
 function deleteTag(repo, tag) {
   return regFetch('/v2/' + repo + '/manifests/' + encodeURIComponent(tag), 'GET', { Accept: MFS }).then(function (d) {
-    if (d.status !== 200) throw new Error('取 manifest 失败（HTTP ' + d.status + '）');
+    if (d.status !== 200) { var em = registryError(d); em.message = '取 manifest 失败（' + em.message + '）'; throw em; }
     var dg = (d.headers && (d.headers['docker-content-digest'] || d.headers['Docker-Content-Digest'])) || '';
     if (!dg) throw new Error('响应缺少 Docker-Content-Digest');
     return regFetch('/v2/' + repo + '/manifests/' + encodeURIComponent(dg), 'DELETE', { Accept: MFS }).then(function (r) {
-      if (r.status !== 202 && r.status !== 200) throw new Error('删除失败（HTTP ' + r.status + '）');
+      if (r.status !== 202 && r.status !== 200) { var ed = registryError(r); ed.message = '删除失败（' + ed.message + '）'; throw ed; }
       return dg;
     });
   });
@@ -504,13 +558,13 @@ $('repoList').addEventListener('click', function (e) {
     deleteTag(repo, tag).then(function () {
       showErr('已删除 ' + repo + ':' + tag + '（磁盘释放需在设置页执行 GC）');
       loadTags(repo).catch(function () {});
-    }).catch(function (e2) { showErr('删除失败：' + e2.message); });
+    }).catch(function (e2) { showErr('删除失败：' + e2.message, e2 && e2.registryAuth ? 'registry-auth' : null); });
     return;
   }
   var load = t.closest('[data-load-tags]');
-  if (load) { loadTags(load.getAttribute('data-load-tags')).catch(function (e3) { showErr('标签加载失败：' + e3.message); }); return; }
+  if (load) { loadTags(load.getAttribute('data-load-tags')).catch(function (e3) { showErr('标签加载失败：' + e3.message, e3 && e3.registryAuth ? 'registry-auth' : null); }); return; }
   var ref = t.closest('[data-refresh-repo]');
-  if (ref) { delete repoState.tags[ref.getAttribute('data-refresh-repo')]; loadTags(ref.getAttribute('data-refresh-repo')).catch(function (e4) { showErr(e4.message); }); return; }
+  if (ref) { delete repoState.tags[ref.getAttribute('data-refresh-repo')]; loadTags(ref.getAttribute('data-refresh-repo')).catch(function (e4) { showErr(e4.message, e4 && e4.registryAuth ? 'registry-auth' : null); }); return; }
   var open = t.closest('[data-open-repo]');
   if (open) { window.open(regBase() + '/v2/' + open.getAttribute('data-open-repo') + '/tags/list', '_blank'); return; }
   var cache = t.closest('[data-cache-repo]');
@@ -712,10 +766,14 @@ $('setTest').addEventListener('click', function () {
   $('kvAuth').textContent = '测试中…';
   regGetJson('/v2/_catalog?n=1').then(function (j) {
     showErr('连接成功：仓库可访问（当前 ' + (Array.isArray(j.repositories) ? j.repositories.length : 0) + ' 个仓库）');
-    $('kvAuth').textContent = 'OK';
+    $('kvAuth').textContent = 'OK（账号 ' + (cfg.user || '匿名') + '）';
+    $('kvAuth').classList.remove('ir-needAuth');
+    $('setPass').classList.remove('ir-needAuth');
   }).catch(function (e) {
-    showErr('连接失败：' + e.message);
-    $('kvAuth').textContent = '失败';
+    var needAuth = !!(e && e.registryAuth);
+    showErr('连接失败：' + e.message, needAuth ? 'registry-auth' : null);
+    $('kvAuth').textContent = needAuth ? '认证未通过（401）' : '失败';
+    $('kvAuth').classList.toggle('ir-needAuth', needAuth);
   });
 });
 $('toSettingsBtn').addEventListener('click', function () { switchTab('settings'); });

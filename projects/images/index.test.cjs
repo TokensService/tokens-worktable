@@ -133,6 +133,53 @@ test('GC 运维：write .gc.sh + exec 执行，日志内联', () => {
 test('会话 401 给出重登提示（不静默）', () => {
   assert.ok(script.includes('401'));
   assert.ok(script.includes('会话未登录或已过期'));
+  assert.ok(script.includes('e401.session = true'), 'proxy 层 401 应标记为会话问题');
+});
+
+/* 仓库开启 htpasswd 认证后，页面曾只剩一条「仓库列表加载失败：HTTP 401」——
+   既没说是仓库在要认证、也没说去哪儿填密码，整页看起来像坏了。以下守住归因与出口。 */
+test('仓库 401 精确归因：区分「仓库要认证」与「DSH 会话失效」', () => {
+  assert.ok(script.includes('function registryAuthError'), '应有上游 401 归因函数');
+  assert.ok(script.includes('www-authenticate'), '应从上游响应头取 Basic realm 作为证据');
+  assert.ok(script.includes('registryAuth = true'), '认证类错误应打标，供 UI 决定出口');
+  assert.ok(script.includes('镜像仓库要求认证'), '文案必须点明是仓库在要认证');
+  assert.ok(script.includes('请在「设置」页填写仓库账号密码'), '必须给出下一步动作');
+  assert.ok(script.includes('与镜像仓库凭证无关'), '会话失效的 401 应与仓库认证区分开');
+  assert.ok(script.includes('function registryError'), '上游非 200 应统一造错');
+  assert.ok(/registryError\(d\)/.test(script), 'catalog / tags / manifest 路径应复用统一归因');
+  assert.ok(script.includes('当前未填写仓库密码') && script.includes('密码不被仓库接受'), '应区分「没填密码」与「密码错」两种成因');
+});
+
+test('401 时错误条挂出「去设置填密码」按钮且不自动消失', () => {
+  assert.ok(html.includes('id="errAction"'), 'markup 应有认证错误的动作按钮');
+  assert.ok(html.includes('填写仓库账号密码'), '按钮文案应直指动作');
+  assert.ok(html.includes('id="errText"'), '错误文案与按钮分离（textContent 不会抹掉按钮）');
+  assert.ok(script.includes("action === 'registry-auth'"), 'showErr 应按 action 决定是否挂按钮');
+  assert.ok(script.includes('errAction.style.display'), '按钮显隐应随错误类型切换');
+  assert.ok(/if \(msg && !needAuth\) errTimer/.test(script), '认证类错误不应 7 秒自动隐藏（排障线索会丢）');
+  assert.ok(script.includes("errAction.addEventListener('click'"), '按钮应接线');
+  assert.ok(script.includes("p.classList.add('ir-needAuth')"), '跳转后应高亮待填的密码框');
+  assert.ok(/switchTab\('settings'\);\s*\n\s*var p = \$\('setPass'\)/.test(script), '点按钮应切到设置页并聚焦密码框');
+});
+
+test('密码为空时不发半截 Authorization（避免 invalid credential / 误挡匿名仓库）', () => {
+  assert.ok(/if \(!cfg\.pass\) return \{\};/.test(script), 'authHeader 应在无密码时直接返回空头');
+  assert.ok(!/if \(!cfg\.user && !cfg\.pass\)/.test(script), '不得再按「账号与密码都空」判断（会发出 "admin:" 半截凭证）');
+});
+
+test('设置页「登录状态」先如实反映凭证是否已配置', () => {
+  assert.ok(script.includes('function renderAuthState'), '应有登录状态渲染');
+  assert.ok(script.includes('renderAuthState()'), 'renderSettings 应带出登录状态');
+  assert.ok(script.includes('未填密码 · 仓库若开启认证会 401'), '未配置口令时应直接提示');
+  assert.ok(script.includes('认证未通过（401）'), '测试连接失败应区分认证失败与其它失败');
+  assert.ok(html.includes('仓库已开启 htpasswd 认证'), '设置页应说明仓库需要认证');
+});
+
+test('页面不内置仓库口令（凭据只来自本机设置）', () => {
+  assert.ok(/pass: ''/.test(script), 'CFG_DEFAULT 的密码必须为空');
+  assert.ok(!/pass:\s*'[A-Za-z0-9!@#$%^&*._-]{6,}'/.test(script), '不得硬编码任何仓库口令');
+  assert.ok(html.includes('本页不内置任何密码'), '设置页应明示口令不随页面分发');
+  assert.ok(!/REG_PASS=[A-Za-z0-9]{6,}/.test(cacheSh), '缓存脚本不得内置口令');
 });
 
 test('三标签结构：镜像仓库 / 远程缓存 / 设置', () => {
