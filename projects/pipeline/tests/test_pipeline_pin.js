@@ -3,7 +3,8 @@
 // pinnedAt 经 savePipelines→persistState 随服务端同步；复制副本不继承。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
+const {extractStatement,lineOf}=require('./_page-source.cjs');
 
 function extractFunction(name){
   const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
@@ -89,13 +90,27 @@ function load(pinStates){
     queue:[],
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
-  const end=source.indexOf('function selectPipeline',start);
-  const bindStart=source.indexOf("$('plRowMenuPin').addEventListener");
-  const bindEnd=source.indexOf('\n',bindStart);
-  assert.ok(start>=0&&end>start,'置顶相关代码区域未找到');
-  assert.ok(bindStart>=0&&bindEnd>bindStart,'「置顶」列表项绑定未找到');
-  vm.runInContext(source.slice(start,end)+'\n'+source.slice(bindStart,bindEnd),ctx);
+  // 页面脚本拆分后，「⋯」菜单的状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 原「注释标记 → function selectPipeline」的切片会因两端跨分片而失序。改为按名逐条取出
+  // 原切片所覆盖的同一批声明（原文 10869–11057 区间），断言与桩一律未改动。
+  assert.ok(source.includes('/* 行内「⋯」菜单当前展开项'),'置顶相关代码区域未找到');
+  assert.ok(source.includes("$('plRowMenuPin').addEventListener"),'「置顶」列表项绑定未找到');
+  const decls=[
+    extractStatement('let plMenuOpenId='),
+    extractFunction('closePlRowMenu'),
+    extractFunction('openPlRowMenu'),
+    extractFunction('showPipelineHistory'),
+    extractFunction('showPipelineFromHistory'),
+    extractStatement('let historyMenuOpenRec='),
+    extractFunction('closeHistoryRowMenu'),
+    extractFunction('openHistoryRowMenu'),
+    extractStatement('const historyRowMenuViewPipeline='),
+    extractFunction('togglePipelinePin'),
+    extractFunction('togglePipelineTrusted'),
+    extractFunction('renderPipelines'),
+    extractFunction('renderPipelineSel'),
+  ];
+  vm.runInContext(decls.join('\n')+'\n'+lineOf("$('plRowMenuPin').addEventListener"),ctx);
   ctx.renderPipelines();
   return {ctx,tbody,selNode,panel,pinItem,saves};
 }

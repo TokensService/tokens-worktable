@@ -3,7 +3,8 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractFunction, extractStatement } = require('./_page-source.cjs');
 
 function loadLogBuilders() {
   const start = source.indexOf('function stageOutputLines(');
@@ -74,12 +75,35 @@ function renderFixture(output) {
       createDocumentFragment: () => ({ isFragment: true, children: [], appendChild(node) { this.children.push(node); } }),
     },
   };
-  const renderStart = source.indexOf("let _detailKey='';");
-  const renderEnd = source.indexOf('/* 日志行着色分类', renderStart);
-  const logStart = source.indexOf('function logClass(', renderEnd);
-  const logEnd = source.indexOf('/* ---------- 运行队列 + 调度 ---------- */', logStart);
+  // 页面脚本拆分后，详情面板的 3 个状态语句（boot 分片）与函数声明（12-detail-panel 分片）不再文本相邻：
+  // 起点 `let _detailKey='';` 已排到终点注释 `/* 日志行着色分类` 之后，原两段区域切片会退化成
+  // source.slice(renderStart, -1)（把整页 HTML 吞进沙箱 → SyntaxError）。改为按名逐条取出
+  // 原两段切片覆盖的同一批声明（原文 5224–5497 的 3 状态 + 10 函数，5499–5677 的 6 个日志构建函数），
+  // 断言与桩一律未改动。日志构建函数用 extractStatement 抽取：buildLog 体内的正则/字符串含花括号，
+  // extractFunction 的裸花括号计数会失衡。
+  assert.ok(source.includes('/* 日志行着色分类'), '详情面板日志渲染实现未找到');
   vm.createContext(context);
-  vm.runInContext(source.slice(renderStart, renderEnd) + '\n' + source.slice(logStart, logEnd), context);
+  vm.runInContext([
+    extractStatement("let _detailKey='';"),
+    extractStatement('const DETAIL_LOG_LIMIT'),
+    extractStatement('let _detailLogCache'),
+    extractFunction('syncDetailLogLines'),
+    extractFunction('detailLogLinesFor'),
+    extractFunction('isLocalExecStage'),
+    extractFunction('appendLocalExecBadge'),
+    extractFunction('detailContextRows'),
+    extractFunction('stageLogFileFor'),
+    extractFunction('currentStageAnalysisRec'),
+    extractFunction('appendStageLogRow'),
+    extractFunction('stageDetailAnalysis'),
+    extractFunction('renderDetail'),
+    extractStatement('function logClass('),
+    extractStatement('function stageOutputLines('),
+    extractStatement('function buildLog('),
+    extractStatement('function appendArchivePart('),
+    extractStatement('function appendArchiveOutput('),
+    extractStatement('function buildLogParts('),
+  ].join('\n'), context);
   const buildLog = context.buildLog;
   let buildCount = 0;
   context.buildLog = (...args) => { buildCount++; return buildLog(...args); };
@@ -140,9 +164,11 @@ test('Jenkins 中止归档保持原始控制台分片连续，不在块边界注
 });
 
 test('归档分片通过 Blob 原始流上传，不进入 JSON content', async () => {
-  const start = source.indexOf('async function apiWriteParts(');
-  const end = source.indexOf('/* 按目录跟踪完整归档任务', start);
-  assert.ok(start >= 0 && end > start, 'apiWriteParts not found');
+  // 页面脚本拆分后，原终点注释「/* 按目录跟踪完整归档任务」修饰的是状态语句 const archiveWrites，
+  // 随状态进了 boot 分片（排到本节函数之后），令切片越界吞进真实的 trackArchiveWrite ——
+  // 它既覆盖 context 里的 trackArchiveWrite 桩，又引用切片外的 archiveWrites（ReferenceError）。
+  // 改为按名逐条取出原切片覆盖的同一批声明（原文 9215–9231：3 个 api* 函数），断言与桩一律未改动。
+  assert.ok(source.includes('async function apiWriteParts('), 'apiWriteParts not found');
   let request = null;
   const context = {
     Blob, encodeURIComponent,
@@ -150,7 +176,11 @@ test('归档分片通过 Blob 原始流上传，不进入 JSON content', async (
     fetch: async (url, options) => { request = { url, options }; return { ok: true, status: 200, json: async () => ({ ok: true }) }; },
   };
   vm.createContext(context);
-  vm.runInContext(source.slice(start, end), context);
+  vm.runInContext([
+    extractStatement('function apiWriteParts('),
+    extractStatement('function apiAppendParts('),
+    extractStatement('function apiConcatFile('),
+  ].join('\n'), context);
   const parts = ['head\n', 'x'.repeat(1024 * 1024), '\ntail'];
   await context.apiWriteParts('/tmp/run.log', parts);
   assert.match(request.url, /\/api\/worktable\/write-stream\?path=/);

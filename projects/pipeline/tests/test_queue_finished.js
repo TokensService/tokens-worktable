@@ -9,7 +9,8 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractFunction, extractStatement, lineOf } = require('./_page-source.cjs');
 const plain = value => JSON.parse(JSON.stringify(value));   // vm 沙盒产物的原型链与主 realm 不同，深比较前先归一化
 function extract(startMark, endMark) {
   const start = source.indexOf(startMark);
@@ -50,7 +51,16 @@ function loadPullContext(overrides) {
     console,
   }, overrides || {});
   vm.createContext(context);
-  vm.runInContext(extract('/* 拉取服务端权威队列及旧标签页', "$('queueRefresh')"), context);
+  // 页面脚本拆分后状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 原「注释标记 → $('queueRefresh')」的区域切片只剩两条 let（函数全被排到标记之前）。
+  // 改为按名逐条取出原切片（原文 6493–6600 行）覆盖的同一批声明；断言与桩一律未改动。
+  vm.runInContext([
+    extractStatement('let _queuePullSig='),
+    extractFunction('queuePollSig'),
+    extractFunction('noteServerFinished'),
+    extractStatement('let _queuePullPromise='),
+    extractFunction('pullRemoteQueue'),
+  ].join('\n'), context);
   return { context, calls };
 }
 
@@ -95,8 +105,27 @@ test('noteServerFinished 与真实 queueFinishedNote 组合：登记进 complete
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extract('const QUEUE_FINISHED_TTL_MS', '/* 上报快照体'), context);   // queueFinishedNote/queueFinishedIds
-  vm.runInContext(extract('/* 拉取服务端权威队列及旧标签页', "$('queueRefresh')"), context);   // noteServerFinished
+  // queueFinishedNote/queueFinishedIds：原「const QUEUE_FINISHED_TTL_MS → /* 上报快照体」切片，
+  // 拆分后两端锚点跨分片（终点注释在起点之前）而失序，改为按名取出原区间（原文 6287–6299 行）的同一批声明。
+  vm.runInContext([
+    extractStatement('const QUEUE_FINISHED_TTL_MS='),
+    extractStatement('let queueFinished='),
+    // 刷新后从 sessionStorage 恢复登记：这是一条非声明的顶层 try 语句且不带结尾分号，
+    // extractStatement 的「行末配平」判据要求跨行才收口，会越过它多吞下一条声明，故用 lineOf 取整行。
+    lineOf('try{ const raw=sessionStorage.getItem('),
+    extractFunction('queueFinishedPrune'),
+    extractFunction('queueFinishedSave'),
+    extractFunction('queueFinishedNote'),
+    extractFunction('queueFinishedIds'),
+  ].join('\n'), context);
+  // noteServerFinished：同上，按名取出原「拉取服务端权威队列…」区间（原文 6493–6600 行）的同一批声明。
+  vm.runInContext([
+    extractStatement('let _queuePullSig='),
+    extractFunction('queuePollSig'),
+    extractFunction('noteServerFinished'),
+    extractStatement('let _queuePullPromise='),
+    extractFunction('pullRemoteQueue'),
+  ].join('\n'), context);
 
   context.noteServerFinished([finEntry('srv-1', 'success'), finEntry('srv-2', 'cancelled')]);
   assert.deepEqual(plain(context.queueFinishedIds()), ['srv-1', 'srv-2'], '终态 id 进入 completed 登记（随上报豁免孤儿判定）');
@@ -154,7 +183,12 @@ function makeQueueContext(overrides) {
   vm.runInContext(extract('function localQueueItems', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueDetailAvailable', 'function remoteQueuePreviewRc'), context);
   vm.runInContext(extract('function remoteQueueViewAttrs', 'function renderQueue(){'), context);
-  vm.runInContext(extract('function renderQueue(){', '/* ---------- 运行引擎'), context);
+  // 原「function renderQueue(){ → /* ---------- 运行引擎」区间（原文 7095–7339 行）只含 renderQueue 与 remoteRunsOf；
+  // 拆分后该区间尾部会多带两条别节的声明，改为按名取出原本的那两条。
+  vm.runInContext([
+    extractFunction('renderQueue'),
+    extractFunction('remoteRunsOf'),
+  ].join('\n'), context);
   return { context, list, els };
 }
 
@@ -209,9 +243,33 @@ function loadPreviewContext() {
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extract('function queueStagePresence', '/* 最近正常终态登记'), context);   // queueStagePresence/queueNodePresence
-  vm.runInContext(extract('function remoteQueueDetailAvailable(item){', 'function applyRemoteQueuePreviewRefresh(){'), context);
-  vm.runInContext(extract('function remoteRunsOf', '/* ---------- 运行引擎'), context);
+  // 拆分后以下三段区域切片的锚点跨分片失序：终点注释被绑到 boot 分片的状态语句上，
+  // 导致区间吞进整节的其它声明（其中 let remoteServerFinished/remoteOrphans 会遮蔽本文件的桩）。
+  // 一律改为按名逐条取出原区间覆盖的同一批声明。
+  // queueStagePresence/queueNodePresence（原文 6238–6282 行）
+  vm.runInContext([
+    extractFunction('queueStagePresence'),
+    extractFunction('queueNodePresence'),
+    extractFunction('queuePresenceEntry'),
+    extractFunction('runningPresenceEntry'),
+    extractFunction('queuedPresenceEntry'),
+  ].join('\n'), context);
+  // 他端/终态预览一族（原文 6027–6157 行），含 SERVER_RUN_FOCUS_MS / pendingServerRunFocus 两条状态
+  vm.runInContext([
+    extractFunction('remoteQueueDetailAvailable'),
+    extractFunction('remoteQueueDetailHint'),
+    extractFunction('remoteFinishedOf'),
+    extractFunction('remoteFinishedPreviewRc'),
+    extractFunction('remoteQueuePreviewRc'),
+    extractFunction('remoteQueueItem'),
+    extractFunction('focusRemoteQueueItem'),
+    extractStatement('const SERVER_RUN_FOCUS_MS='),
+    extractStatement('let pendingServerRunFocus='),
+    extractFunction('focusServerRunById'),
+    extractFunction('followPendingServerRun'),
+    extractFunction('refreshRemoteQueuePreviewRc'),
+  ].join('\n'), context);
+  vm.runInContext(extractFunction('remoteRunsOf'), context);   // 原文 7338 行
   return context;
 }
 
@@ -251,7 +309,14 @@ test('pullRemoteQueueLog：已进入终态的预览停止日志轮询（不再�
     console,
   };
   vm.createContext(context);
-  vm.runInContext(extract('const LIVE_LOG_TAIL_LINES', '/* 拉取服务端权威队列及旧标签页'), context);
+  // 原「const LIVE_LOG_TAIL_LINES → /* 拉取服务端权威队列及旧标签页」区间（原文 6421–6492 行）：
+  // 拆分后终点注释跟着状态语句进了 boot 分片，切片丢掉 async function pullRemoteQueueLog，改为按名取出。
+  vm.runInContext([
+    extractStatement('const LIVE_LOG_TAIL_LINES='),
+    extractStatement('const LIVE_LOG_TAIL_LIMIT='),
+    extractStatement('let _remoteLogPullSeq='),
+    extractFunction('pullRemoteQueueLog'),
+  ].join('\n'), context);
   const skipped = await context.pullRemoteQueueLog();
   assert.equal(skipped, null);
   assert.equal(fetches, 0, 'remoteFinished 标记后直接返回，不再轮询该 run 的日志');
@@ -306,13 +371,35 @@ function loadRerunContext(overrides) {
   vm.createContext(context);
   vm.runInContext(extract('function localQueueItems(){', 'function queuePreviewRc'), context);
   vm.runInContext(extract('function queuePreviewRc(item){', 'function focusQueueItem(id){'), context);
-  vm.runInContext(extract('function remoteQueueDetailAvailable(item){', 'function applyRemoteQueuePreviewRefresh(){'), context);
-  vm.runInContext(extract('function orphanQueueItem', '/* ---------- 服务端权威运行队列实时同步'), context);
-  vm.runInContext(extract('function remoteRunsOf', '/* ---------- 运行引擎'), context);
+  // 以下四段原区域切片的锚点在拆分后跨分片失序（终点注释跟着状态语句进了 boot 分片），
+  // 区间会吞进别节声明或丢掉状态语句，一律改为按名取出原区间覆盖的同一批声明。
+  // 他端/终态预览一族（原文 6027–6157 行）
+  vm.runInContext([
+    extractFunction('remoteQueueDetailAvailable'),
+    extractFunction('remoteQueueDetailHint'),
+    extractFunction('remoteFinishedOf'),
+    extractFunction('remoteFinishedPreviewRc'),
+    extractFunction('remoteQueuePreviewRc'),
+    extractFunction('remoteQueueItem'),
+    extractFunction('focusRemoteQueueItem'),
+    extractStatement('const SERVER_RUN_FOCUS_MS='),
+    extractStatement('let pendingServerRunFocus='),
+    extractFunction('focusServerRunById'),
+    extractFunction('followPendingServerRun'),
+    extractFunction('refreshRemoteQueuePreviewRc'),
+  ].join('\n'), context);
+  // 孤儿一族（原文 6174–6211 行）
+  vm.runInContext([
+    extractFunction('orphanQueueItem'),
+    extractFunction('orphanPreviewRc'),
+    extractFunction('focusOrphanQueueItem'),
+    extractFunction('applyOrphanPreviewRefresh'),
+  ].join('\n'), context);
+  vm.runInContext(extractFunction('remoteRunsOf'), context);   // 原文 7338 行
   vm.runInContext(extract('async function submitServerRun(item){', 'function runPipeline(opts){'), context);
   vm.runInContext(extract('function runPipeline(opts){', '/* 机器占用判定'), context);
   vm.runInContext(extract('function rerunOrphanQueueItem', '/* 取消服务端权威任务'), context);
-  vm.runInContext(extract('function rerunFromHistory(rec){', "$('histRerun')"), context);
+  vm.runInContext(extractFunction('rerunFromHistory'), context);   // 原文 10370–10383 行（终点 $('histRerun') 已跨到 boot 分片）
   return { context, calls };
 }
 

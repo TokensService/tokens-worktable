@@ -1,7 +1,8 @@
 // 流水线收藏：按登录用户名隔离，随流水线配置同步；收藏筛选只匹配当前用户，复制副本不继承收藏。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
+const {extractStatement,lineOf}=require('./_page-source.cjs');
 
 function extractFunction(name){
   const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
@@ -66,10 +67,26 @@ function loadFilterBindings(initialFilter){
     _plOwnerActive:-1,
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 流水线任务筛选：关键字 + 拥有者');
-  const end=source.indexOf('function labelOf',start);
-  assert.ok(start>=0&&end>start,'流水线筛选控件绑定区域未找到');
-  vm.runInContext(source.slice(start,end),ctx);
+  // 页面脚本拆分后，筛选控件的状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 原「注释标记 → function labelOf」的区域切片两端已跨分片失序。改为按名逐条取出原切片
+  // 所覆盖的同一批声明（原文 10582–10663 区间，不含终点的 labelOf），断言与桩一律未改动。
+  assert.ok(source.includes('/* 流水线任务筛选：关键字 + 拥有者'),'流水线筛选控件绑定区域未找到');
+  vm.runInContext([
+    extractFunction('plOwnerFilterLabel'),
+    extractFunction('plOwnerFilterValue'),
+    extractStatement("$('plFilterKw').value=plFilter.kw;"),
+    extractStatement("$('plFilterOwner').value=plOwnerFilterLabel(plFilter.owner);"),
+    extractStatement("$('plFilterFavorite').value=plFilter.favorite;"),
+    lineOf("$('plFilterKw').addEventListener('input'"),
+    extractFunction('pickPlOwner'),
+    lineOf("$('plFilterOwner').addEventListener('focus'"),
+    extractStatement("$('plFilterOwner').addEventListener('input'"),
+    extractStatement("$('plFilterOwner').addEventListener('keydown'"),
+    // 本区间内有两处同文本的 document click 绑定（运行历史候选面板的在前），用次行锚点消歧
+    extractStatement("document.addEventListener('click', e=>{\n  const p=$('plOwnerPanel')"),
+    lineOf("$('plFilterFavorite').addEventListener('change'"),
+    lineOf("$('plFilterClear').addEventListener('click'"),
+  ].join('\n'),ctx);
   return {ctx,nodes,saves,renders};
 }
 
@@ -122,14 +139,26 @@ function loadFavoriteUi(username){
     savePipelines:()=>saves.push(1),flashRunTip:()=>{},alert:()=>{},
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 行内「⋯」菜单当前展开项');
-  const end=source.indexOf('function selectPipeline',start);
-  assert.ok(start>=0&&end>start,'流水线菜单与列表区域未找到');
+  // 同上：原「注释标记 → function selectPipeline」的区域切片两端已跨分片失序，改为按名逐条取出
+  // 原切片所覆盖的同一批声明（原文 10869–11057 区间，不含终点的 selectPipeline，与 test_pipeline_pin.js 同款）。
+  assert.ok(source.includes('/* 行内「⋯」菜单当前展开项'),'流水线菜单与列表区域未找到');
   vm.runInContext([
     extractFunction('pipelineFavoriteUsers'),
     extractFunction('isPipelineFavorite'),
     extractFunction('togglePipelineFavorite'),
-    source.slice(start,end),
+    extractStatement('let plMenuOpenId='),
+    extractFunction('closePlRowMenu'),
+    extractFunction('openPlRowMenu'),
+    extractFunction('showPipelineHistory'),
+    extractFunction('showPipelineFromHistory'),
+    extractStatement('let historyMenuOpenRec='),
+    extractFunction('closeHistoryRowMenu'),
+    extractFunction('openHistoryRowMenu'),
+    extractStatement('const historyRowMenuViewPipeline='),
+    extractFunction('togglePipelinePin'),
+    extractFunction('togglePipelineTrusted'),
+    extractFunction('renderPipelines'),
+    extractFunction('renderPipelineSel'),
   ].join('\n'),ctx);
   ctx.renderPipelines();
   return {ctx,tbody,panel,pinItem,favoriteItem,saves};

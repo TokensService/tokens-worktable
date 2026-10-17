@@ -47,7 +47,20 @@
 
 可直接挂载到工作台的项目页统一放在 `projects/`：
 
-- `projects/pipeline/`：流水线工作台、阶段脚本、桥接工具与测试。
+- `projects/pipeline/`：流水线工作台、阶段脚本、桥接工具与测试。页面脚本不在 `pipeline.html` 内联，
+  而是拆在 `projects/pipeline/js/*.js`（`pipeline.html` 按序 `<script src>` 加载，均为 classic script、
+  共享同一全局作用域），**两阶段结构，加载顺序不可调整**：
+  - 阶段一 `js/01-*.js … js/25-*.js`：只放顶层 `function` 声明，按功能域分组；
+  - 阶段二 `js/99-state-and-boot.js`：其余全部顶层语句（状态 `let`/`const`、事件绑定、启动渲染），
+    严格保持原有先后顺序（`let`/`const` 的 TDZ 与初始化次序依赖它）。
+
+  原因：本页引导期会调用散布在各功能域的函数，原单内联脚本靠函数声明整体提升成立；拆成多个
+  classic script 后**跨文件提升消失**，第 k 个文件执行时第 k+1..N 个尚未实例化，故必须让全部声明
+  先于任何执行代码加载。往阶段一分片里写执行代码、或把 `99-*` 挪到前面，都会让页面在加载期
+  `ReferenceError`。该约束由 `projects/pipeline/tests/test_page_split_integrity.js` 强制。
+  页面测试仍按字符串标记切片取代码，经 `projects/pipeline/tests/_page-source.cjs` 把分片重建为
+  「按分节交错」的单文件视图（第 n 节函数 + 第 n 节状态语句），故测试无需感知分片边界；
+  该 helper 另提供 `extractFunction` / `extractStatement` / `lineOf` 按名精确取用单条声明。
 - `projects/codereview/`：PR 检视台及配套脚本。
 - `projects/diag_perf/`：性能诊断页及测试。
 - `projects/research_community/`：社区研究页（`community-research.html`）。添加社区链接（列表多选），

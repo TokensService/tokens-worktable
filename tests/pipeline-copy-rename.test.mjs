@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { resolve as pathResolve, dirname } from 'node:path'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
+import { loadPageSource } from '../projects/pipeline/tests/_page-source.mjs'
 
 /* 「列表复制按钮生成的副本无法在编辑器改名」的服务端复现/回归测试：
    用真实路由代码（从 src/index.ts 抽取，临时 DSH_HOME 落真盘）+ 字节级忠实的客户端模拟
@@ -15,7 +16,7 @@ import vm from 'node:vm'
 const rawSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
 /* 先整体去类型（strip 模式保留注释标记、类型注解抹成空白、不改变偏移），与 pipeline-trust 测试同一手法 */
 const source = stripTypeScriptTypes(rawSource, { mode: 'strip' })
-const page = await readFile(new URL('../projects/pipeline/pipeline.html', import.meta.url), 'utf8')
+const page = await loadPageSource()
 
 function extractFunction(name, text = source) {
   const marker = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`)

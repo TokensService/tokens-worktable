@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
 const plain = value => JSON.parse(JSON.stringify(value));   // vm 沙盒产物的原型链与主 realm 不同，深比较前先归一化
 /* 按花括号配平精确抽取单个函数（所取函数体字符串内无花括号字面量） */
 function extractFn(mark) {

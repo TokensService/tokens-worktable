@@ -13,7 +13,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
 const J = x => JSON.parse(JSON.stringify(x));   // vm 沙盒产物与主 realm 原型不同，深比较前先归一化
 
 function extractFunction(name) {

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
 
 // 截取 #plForm 弹窗片段（到紧随其后的 pipelineRunDialog 弹窗为止）
 function plFormSection() {

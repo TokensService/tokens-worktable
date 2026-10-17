@@ -5,7 +5,7 @@
 const fs=require('node:fs');
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 test('顶层初始化顺序：const $ 声明之前无列 0 顶层 $(...) 语句',()=>{
   const declIdx=source.indexOf('const $ =');

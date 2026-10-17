@@ -4,7 +4,8 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractStatement, sliceBetween } = require('./_page-source.cjs');
 
 function extractFunction(name) {
   const match = new RegExp(`function\\s+${name}\\s*\\(`).exec(source);
@@ -84,14 +85,26 @@ function loadSearchable(opts) {
   };
   vm.createContext(context);
   vm.runInContext(extractFunction('saveHistFilter'), context);
-  const fnStart = source.indexOf('let _histFilterPipelineSig');
-  const fnEnd = source.indexOf('function renderHistory(){', fnStart);
-  assert.ok(fnStart >= 0 && fnEnd > fnStart, '流水线搜索控件函数块未找到');
-  vm.runInContext(source.slice(fnStart, fnEnd), context);
-  const bindStart = source.indexOf('/* 历史筛选：');
-  const bindEnd = source.indexOf('/* 流水线任务筛选：', bindStart);
-  assert.ok(bindStart >= 0 && bindEnd > bindStart, '历史筛选事件绑定未找到');
-  vm.runInContext(source.slice(bindStart, bindEnd), context);
+  // 页面脚本拆分后，控件的 3 个 let 状态（boot 分片）与 6 个函数（20-history-replay 分片）不再文本相邻，
+  // 原「let _histFilterPipelineSig → function renderHistory(){」的区域切片两端已顺序颠倒（renderHistory 在前）。
+  // 改为按名逐条取出原切片覆盖的同一批声明（原文 10076–10130 区间：3 个 let + 6 个函数），断言与桩一律未改动。
+  assert.ok(source.includes('let _histFilterPipelineSig'), '流水线搜索控件函数块未找到');
+  vm.runInContext([
+    extractStatement('let _histFilterPipelineSig'),
+    extractStatement('let _histPipelineNames'),
+    extractStatement('let _histPipelineActive'),
+    extractFunction('histPipelineDisplay'),
+    extractFunction('renderHistFilterOptions'),
+    extractFunction('renderHistPipelinePanel'),
+    extractFunction('histPipelinePanelItems'),
+    extractFunction('pickHistPipeline'),
+    extractFunction('historyEnvNodesCell'),
+  ].join('\n'), context);
+  // 事件绑定块本身整体落在 boot 分片内、原文顺序未变，但紧随其后的分节注释「/* 流水线任务筛选：」
+  // 修饰的是函数，随函数进了阶段一分片，令原终点锚点跑到起点之前（切空）。改用绑定块之后紧邻的
+  // 下一条 boot 语句作终点；取出的文本与原文 10535–10581 逐字节一致。
+  assert.ok(source.includes('/* 历史筛选：'), '历史筛选事件绑定未找到');
+  vm.runInContext(sliceBetween('/* 历史筛选：', "$('plFilterKw').value=plFilter.kw;"), context);
   return { context, nodes, docHandlers, saved, renderCalls };
 }
 

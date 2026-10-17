@@ -5,7 +5,7 @@
    auth 探测在途对署名流水线保守只读，探测完成仍无登录用户（token 共享模式/未装认证插件/探测失败）退化为全权。 */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
 
 function extractFunction(name){
   const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);

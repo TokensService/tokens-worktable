@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
 
 test('buildNo 初始化为 0（真实运行从 #1 编号）', () => {
   const m = /let buildNo = (\d+);/.exec(source);

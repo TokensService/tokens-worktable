@@ -4,7 +4,8 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const source = fs.readFileSync(process.env.PIPELINE_HTML || __dirname + '/../pipeline.html', 'utf8');
+const source = require('./_page-source.cjs').loadPageSource();
+const { extractFunction, extractStatement } = require('./_page-source.cjs');
 
 function slice(startMark, endMark) {
   const start = source.indexOf(startMark);
@@ -13,11 +14,30 @@ function slice(startMark, endMark) {
   return source.slice(start, end);
 }
 
+/* 页面脚本拆分后，顶层状态语句（boot 分片）与同分节的函数声明不再文本相邻：
+   - 原「function remoteQueueDetailAvailable → function applyRemoteQueuePreviewRefresh」的切片会漏掉
+     const SERVER_RUN_FOCUS_MS / let pendingServerRunFocus 两条状态（followPendingServerRun 直接 ReferenceError）；
+   - 原「function remoteRunsOf → /* ---------- 运行引擎」的切片反过来会多吞同分节靠后的
+     CLOSE_FAIL_TEXT 与立即执行的 schedEnvIds IIFE。
+   两处改为按名逐条取出原切片覆盖的同一批声明（原文 6027–6157、7338–7339 区间）；断言与桩一律未改动。 */
 const SLICES = [
   slice('function localQueueItems(){', 'function queuePreviewRc'),   // localQueueItems + isPendingQueueItem
   slice('function queuePreviewRc(item){', 'function focusQueueItem(id){'),
-  slice('function remoteQueueDetailAvailable(item){', 'function applyRemoteQueuePreviewRefresh(){'),   // 远端预览 + 自动跟随助手
-  slice('function remoteRunsOf', '/* ---------- 运行引擎'),
+  [   // 远端预览 + 自动跟随助手
+    extractFunction('remoteQueueDetailAvailable', source),
+    extractFunction('remoteQueueDetailHint', source),
+    extractFunction('remoteFinishedOf', source),
+    extractFunction('remoteFinishedPreviewRc', source),
+    extractFunction('remoteQueuePreviewRc', source),
+    extractFunction('remoteQueueItem', source),
+    extractFunction('focusRemoteQueueItem', source),
+    extractStatement('const SERVER_RUN_FOCUS_MS=15000;', source),
+    extractStatement('let pendingServerRunFocus=null;', source),
+    extractFunction('focusServerRunById', source),
+    extractFunction('followPendingServerRun', source),
+    extractFunction('refreshRemoteQueuePreviewRc', source),
+  ].join('\n'),
+  extractFunction('remoteRunsOf', source),
   slice('async function submitServerRun(item){', 'function runPipeline(opts){'),
   slice('function runPipeline(opts){', '/* 机器占用判定'),
 ];

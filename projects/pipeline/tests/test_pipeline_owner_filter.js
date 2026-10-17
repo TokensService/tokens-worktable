@@ -2,7 +2,8 @@
 // 用户名精确匹配、非精确输入的子串搜索（大小写不敏感）、候选名单填充、localStorage 旧值兼容。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const {test}=require('node:test');
-const source=fs.readFileSync(process.env.PIPELINE_HTML||__dirname+'/../pipeline.html','utf8');
+const source=require('./_page-source.cjs').loadPageSource();
+const {extractStatement,lineOf}=require('./_page-source.cjs');
 
 function extractFunction(name){
   const match=new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
@@ -45,10 +46,26 @@ function loadFilterBindings(owner){
     pickPlOwner:v=>picks.push(v),
   };
   vm.createContext(ctx);
-  const start=source.indexOf('/* 流水线任务筛选：关键字 + 拥有者');
-  const end=source.indexOf('function labelOf',start);
-  assert.ok(start>=0&&end>start,'流水线筛选控件绑定区域未找到');
-  vm.runInContext(source.slice(start,end),ctx);
+  // 页面脚本拆分后，筛选控件的状态语句（boot 分片）与函数声明（功能域分片）不再文本相邻，
+  // 原「注释标记 → function labelOf」的区域切片两端已跨分片失序。改为按名逐条取出原切片
+  // 所覆盖的同一批声明（原文 10582–10663 区间，不含终点的 labelOf），断言与桩一律未改动。
+  assert.ok(source.includes('/* 流水线任务筛选：关键字 + 拥有者'),'流水线筛选控件绑定区域未找到');
+  vm.runInContext([
+    extractFunction('plOwnerFilterLabel'),
+    extractFunction('plOwnerFilterValue'),
+    extractStatement("$('plFilterKw').value=plFilter.kw;"),
+    extractStatement("$('plFilterOwner').value=plOwnerFilterLabel(plFilter.owner);"),
+    extractStatement("$('plFilterFavorite').value=plFilter.favorite;"),
+    lineOf("$('plFilterKw').addEventListener('input'"),
+    extractFunction('pickPlOwner'),
+    lineOf("$('plFilterOwner').addEventListener('focus'"),
+    extractStatement("$('plFilterOwner').addEventListener('input'"),
+    extractStatement("$('plFilterOwner').addEventListener('keydown'"),
+    // 本区间内有两处同文本的 document click 绑定（运行历史候选面板的在前），用次行锚点消歧
+    extractStatement("document.addEventListener('click', e=>{\n  const p=$('plOwnerPanel')"),
+    lineOf("$('plFilterFavorite').addEventListener('change'"),
+    lineOf("$('plFilterClear').addEventListener('click'"),
+  ].join('\n'),ctx);
   return {ctx,nodes,saves,renders,picks,docHandlers};
 }
 
@@ -95,10 +112,16 @@ function loadOwnerOptions(pipelines,owner){
 function loadPlFilterFromStorage(stored){
   const ctx={localStorage:{getItem:k=>k==='pip-plFilter'?stored:null,setItem(){}}};
   vm.createContext(ctx);
-  const start=source.indexOf('/* 流水线任务筛选状态');
-  const end=source.indexOf('function savePlFilter',start);
-  assert.ok(start>=0&&end>start,'plFilter 状态声明区域未找到');
-  return vm.runInContext(source.slice(start,end)+';plFilter;',ctx);
+  // 同上：原「注释标记 → function savePlFilter」的状态声明切片已跨分片失序，改为按名取出
+  // 原切片所覆盖的同一批声明（原文 10048–10052 区间：let plFilter + 旧值兼容 try 块，
+  // 不含终点的 savePlFilter）。try 块单行且无结尾分号，用 lineOf 精确取整行，
+  // 避免 extractStatement 继续配平而多吞下一条 let plPage=0;
+  assert.ok(source.includes('/* 流水线任务筛选状态'),'plFilter 状态声明区域未找到');
+  const script=[
+    extractStatement('let plFilter='),
+    lineOf("try{ const _pf=JSON.parse(localStorage.getItem('pip-plFilter'))"),
+  ].join('\n');
+  return vm.runInContext(script+';plFilter;',ctx);
 }
 
 test('筛选栏为「拥有者」input+自定义候选面板（不再是 select/datalist）',()=>{
