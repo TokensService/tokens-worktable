@@ -2,7 +2,8 @@
 # list_vllm_model_archs.sh 契约测试：
 #   - git 浅克隆兜底（file:// 本地仓）：按序去重输出合法 arch_name，过滤无拓扑后缀的顶层键
 #   - MODEL_ARCH_URL 直指定（file:// + {branch} 占位）：raw 拉取路径
-#   - github.com GIT_URL 推导 raw 地址（fake curl 拦截断言 URL，.git 后缀两形态）
+#   - github.com GIT_URL 推导地址：API contents 优先、raw 兜底（fake curl 拦截断言 URL 与调用顺序）
+#   - 拓扑后缀后可跟 -<tag> 段：-6G / -PP2TP2-8G 等命名也能解析
 #   - 失败路径：缺 GIT_BRANCH 退出 2；仓内无文件/零策略退出 1 且 stdout 为空
 set -euo pipefail
 
@@ -25,13 +26,17 @@ GLM-5.2-W4A4C8-MG40-BNT3-1P1D:
       port: 8010
 GLM-5.2-W4A4C8-EMS-3P1D:
   description: y
+GLM-5.3-NVFP4-NVIDIA-BNT3-1P1D-6G:
+  description: 拓扑后缀后带 GPU 数标签
+GLM-5.3-NVFP4-NVIDIA-BNT3-1P1D-PP2TP2-8G:
+  description: 拓扑后缀后带并行策略与 GPU 数标签
 META_REGISTRY_NOTE:
   x: 1
 GLM-5.2-W4A4C8-MG40-BNT3-1P1D:
   description: duplicate
 YAML
 EXPECTED="$WORK/expected"
-printf 'GLM-5.2-W4A4C8-MG40-BNT3-1P1D\nGLM-5.2-W4A4C8-EMS-3P1D\n' >"$EXPECTED"
+printf 'GLM-5.2-W4A4C8-MG40-BNT3-1P1D\nGLM-5.2-W4A4C8-EMS-3P1D\nGLM-5.3-NVFP4-NVIDIA-BNT3-1P1D-6G\nGLM-5.3-NVFP4-NVIDIA-BNT3-1P1D-PP2TP2-8G\n' >"$EXPECTED"
 
 # ---- 1. git 克隆兜底（file:// 本地仓，非 github → 走 clone 路径）----
 mkdir -p "$WORK/source/examples/disaggregated/tokens_native_pd"
@@ -57,7 +62,7 @@ GIT_BRANCH=v0.30.0.tokens GIT_URL='' GIT_USER='' GIT_PASSWORD='' \
 cmp "$EXPECTED" "$WORK/out-rawurl"
 echo 'PASS: MODEL_ARCH_URL 直指定（{branch} 占位替换）'
 
-# ---- 3. github.com GIT_URL 推导 raw 地址（fake curl 拦截，断言 URL 与 -o 落盘）----
+# ---- 3. github.com GIT_URL 推导地址（fake curl 拦截：API contents 优先、raw 兜底）----
 FAKE_BIN="$WORK/bin"
 mkdir -p "$FAKE_BIN"
 cat >"$FAKE_BIN/curl" <<EOF
@@ -66,29 +71,40 @@ out=''; url=''
 while (( \$# )); do
   case "\$1" in
     -o) out="\$2"; shift 2 ;;
-    -*) shift ;;            # -fsSL / --max-time 20 / -H 等整串跳过（-H 值随下一步 shift 带不过来，测试场景无凭据）
+    -H|--max-time) shift 2 ;;   # 带值选项整体跳过，避免把其值当成 URL
+    -*) shift ;;
     *)  url="\$1"; shift ;;
   esac
 done
-echo "\$url" >"$WORK/curl-url"
+printf '%s\n' "\$url" >>"$WORK/curl-urls"
+case "\$url" in
+  # FAIL_API=1 时模拟 api.github.com 失败，用以验证 raw 兜底分支
+  *api.github.com*) [[ -n "\${FAIL_API:-}" ]] && exit 22 ;;
+esac
 cp "$FIXTURE" "\$out"
 EOF
 chmod +x "$FAKE_BIN/curl"
 
-PATH="$FAKE_BIN:$PATH" GIT_BRANCH=v0.30.0.tokens \
-  GIT_URL='https://github.com/TokensService/vllm' GIT_USER='' GIT_PASSWORD='' \
-  bash "$ROOT/list_vllm_model_archs.sh" >"$WORK/out-gh"
-cmp "$EXPECTED" "$WORK/out-gh"
-grep -Fxq 'https://raw.githubusercontent.com/TokensService/vllm/v0.30.0.tokens/examples/disaggregated/tokens_native_pd/model_arch.yaml' \
-  "$WORK/curl-url"
+# 预期地址：api 走 contents API（raw 对新提交有 CDN 滞后，会把新加的 arch 漏掉），raw 作兜底
+API_URL='https://api.github.com/repos/TokensService/vllm/contents/examples/disaggregated/tokens_native_pd/model_arch.yaml?ref=v0.30.0.tokens'
+RAW_URL='https://raw.githubusercontent.com/TokensService/vllm/v0.30.0.tokens/examples/disaggregated/tokens_native_pd/model_arch.yaml'
 
-PATH="$FAKE_BIN:$PATH" GIT_BRANCH=v0.30.0.tokens \
-  GIT_URL='git@github.com:TokensService/vllm.git' GIT_USER='' GIT_PASSWORD='' \
-  bash "$ROOT/list_vllm_model_archs.sh" >"$WORK/out-gh-ssh"
-cmp "$EXPECTED" "$WORK/out-gh-ssh"
-grep -Fxq 'https://raw.githubusercontent.com/TokensService/vllm/v0.30.0.tokens/examples/disaggregated/tokens_native_pd/model_arch.yaml' \
-  "$WORK/curl-url"
-echo 'PASS: github.com GIT_URL（https / ssh / .git 后缀）推导 raw 地址正确'
+for gh_url in 'https://github.com/TokensService/vllm' 'git@github.com:TokensService/vllm.git'; do
+  rm -f "$WORK/curl-urls"
+  PATH="$FAKE_BIN:$PATH" GIT_BRANCH=v0.30.0.tokens \
+    GIT_URL="$gh_url" GIT_USER='' GIT_PASSWORD='' \
+    bash "$ROOT/list_vllm_model_archs.sh" >"$WORK/out-gh"
+  cmp "$EXPECTED" "$WORK/out-gh"
+  cmp <(printf '%s\n' "$API_URL") "$WORK/curl-urls"
+done
+
+rm -f "$WORK/curl-urls"
+PATH="$FAKE_BIN:$PATH" FAIL_API=1 GIT_BRANCH=v0.30.0.tokens \
+  GIT_URL='https://github.com/TokensService/vllm' GIT_USER='' GIT_PASSWORD='' \
+  bash "$ROOT/list_vllm_model_archs.sh" >"$WORK/out-gh-raw"
+cmp "$EXPECTED" "$WORK/out-gh-raw"
+cmp <(printf '%s\n%s\n' "$API_URL" "$RAW_URL") "$WORK/curl-urls"
+echo 'PASS: github.com GIT_URL（https / ssh / .git 后缀）API contents 优先、raw 兜底'
 
 # ---- 4. 失败路径 ----
 if GIT_URL='' bash "$ROOT/list_vllm_model_archs.sh" >"$WORK/err.out" 2>"$WORK/err.err"; then
